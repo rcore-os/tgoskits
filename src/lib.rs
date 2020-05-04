@@ -1,5 +1,4 @@
 #![no_std]
-#![feature(asm)]
 
 use bit_field::BitField;
 use core::ops::Range;
@@ -67,7 +66,7 @@ impl<T: BitAlloc> BitAlloc for BitAllocCascade16<T> {
 
     fn alloc(&mut self) -> Option<usize> {
         if self.any() {
-            let i = log2(self.bitset);
+            let i = self.bitset.trailing_zeros() as usize;
             let res = self.sub[i].alloc().unwrap() + i * T::CAP;
             self.bitset.set_bit(i, self.sub[i].any());
             Some(res)
@@ -152,7 +151,7 @@ impl BitAlloc for BitAlloc16 {
 
     fn alloc(&mut self) -> Option<usize> {
         if self.any() {
-            let i = log2(self.0);
+            let i = self.0.trailing_zeros() as usize;
             self.0.set_bit(i, false);
             Some(i)
         } else {
@@ -227,45 +226,9 @@ fn find_contiguous<T: BitAlloc>(
     }
 }
 
-#[inline(always)]
-#[cfg(target_arch = "x86_64")]
-fn log2(x: u16) -> usize {
-    assert_ne!(x, 0);
-    let pos: u16;
-    unsafe { asm!("bsrw $1, $0" :"=r"(pos) :"r"(x) : :"volatile") };
-    pos as usize
-}
-
-#[inline(always)]
-#[cfg(not(target_arch = "x86_64"))]
-fn log2(x: u16) -> usize {
-    log2_naive(x)
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-#[inline(always)]
-fn log2_naive(mut x: u16) -> usize {
-    //a naive implement
-    assert_ne!(x, 0);
-    let mut pos = -1;
-    while x != 0 {
-        pos += 1;
-        x >>= 1;
-    }
-    pos as usize
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(not(target_arch = "x86_64"))]
-    #[test]
-    fn log2_() {
-        for x in 1..=0xffff {
-            assert_eq!(log2(x), log2_naive(x), "log2 failed: {}", x);
-        }
-    }
 
     #[test]
     fn bitalloc16() {
@@ -275,13 +238,13 @@ mod tests {
         for i in 0..16 {
             assert_eq!(ba.test(i), true);
         }
-        ba.remove(8..14);
-        assert_eq!(ba.alloc(), Some(15));
-        assert_eq!(ba.alloc(), Some(14));
-        assert_eq!(ba.alloc(), Some(7));
-        ba.dealloc(14);
-        ba.dealloc(15);
-        ba.dealloc(7);
+        ba.remove(2..8);
+        assert_eq!(ba.alloc(), Some(0));
+        assert_eq!(ba.alloc(), Some(1));
+        assert_eq!(ba.alloc(), Some(8));
+        ba.dealloc(0);
+        ba.dealloc(1);
+        ba.dealloc(8);
 
         for _ in 0..10 {
             assert!(ba.alloc().is_some());
@@ -298,18 +261,18 @@ mod tests {
         for i in 0..4096 {
             assert_eq!(ba.test(i), true);
         }
-        ba.remove(8..4094);
+        ba.remove(2..4094);
         for i in 0..4096 {
-            assert_eq!(ba.test(i), i < 8 || i >= 4094);
+            assert_eq!(ba.test(i), i < 2 || i >= 4094);
         }
-        assert_eq!(ba.alloc(), Some(4095));
+        assert_eq!(ba.alloc(), Some(0));
+        assert_eq!(ba.alloc(), Some(1));
         assert_eq!(ba.alloc(), Some(4094));
-        assert_eq!(ba.alloc(), Some(7));
-        ba.dealloc(4095);
+        ba.dealloc(0);
+        ba.dealloc(1);
         ba.dealloc(4094);
-        ba.dealloc(7);
 
-        for _ in 0..10 {
+        for _ in 0..4 {
             assert!(ba.alloc().is_some());
         }
         assert!(ba.alloc().is_none());
