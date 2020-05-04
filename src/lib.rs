@@ -18,6 +18,9 @@ pub trait BitAlloc: Default {
     /// Allocate a free block with a given size, and return the first bit position.
     fn alloc_contiguous(&mut self, size: usize, align_log2: usize) -> Option<usize>;
 
+    /// Find a index not less than a given key, where the bit is free.
+    fn next(&self, key: usize) -> Option<usize>;
+
     /// Free an allocated bit.
     fn dealloc(&mut self, key: usize);
 
@@ -73,33 +76,11 @@ impl<T: BitAlloc> BitAlloc for BitAllocCascade16<T> {
         }
     }
     fn alloc_contiguous(&mut self, size: usize, align_log2: usize) -> Option<usize> {
-        if Self::CAP < (1 << align_log2) || size > (1 << align_log2) || !self.any() {
-            None
+        if let Some(base) = find_contiguous(self, Self::CAP, size, align_log2) {
+            self.remove(base..base + size);
+            Some(base)
         } else {
-            let block = 1 << align_log2;
-            if block <= T::CAP {
-                for i in 0..16 {
-                    let res = self.sub[i]
-                        .alloc_contiguous(size, align_log2)
-                        .map(|x| x + i * T::CAP);
-                    if let Some(_) = res {
-                        self.bitset.set_bit(i, self.sub[i].any());
-                        return res;
-                    }
-                }
-                None
-            } else {
-                let mut offset = 0;
-                while offset < Self::CAP {
-                    let ok = !(0..size).any(|x| !self.test(x + offset));
-                    if ok {
-                        self.remove(offset..offset + size);
-                        return Some(offset);
-                    }
-                    offset += block;
-                }
-                None
-            }
+            None
         }
     }
     fn dealloc(&mut self, key: usize) {
@@ -118,6 +99,21 @@ impl<T: BitAlloc> BitAlloc for BitAllocCascade16<T> {
     }
     fn test(&self, key: usize) -> bool {
         self.sub[key / T::CAP].test(key % T::CAP)
+    }
+    fn next(&self, key: usize) -> Option<usize> {
+        let ind = key / T::CAP;
+        if ind < 16 && self.bitset.get_bit(ind) {
+            if let Some(res) = self.sub[ind].next(key - T::CAP * ind) {
+                return Some(res).map(|x| x + T::CAP * ind);
+            }
+        }
+        (ind + 1..16).find_map(|i| {
+            if self.bitset.get_bit(i) {
+                self.sub[i].next(0).map(|x| x + T::CAP * i)
+            } else {
+                None
+            }
+        })
     }
 }
 
@@ -164,24 +160,11 @@ impl BitAlloc for BitAlloc16 {
         }
     }
     fn alloc_contiguous(&mut self, size: usize, align_log2: usize) -> Option<usize> {
-        if Self::CAP < (1 << align_log2) || size > (1 << align_log2) || !self.any() {
-            None
+        if let Some(base) = find_contiguous(self, Self::CAP, size, align_log2) {
+            self.remove(base..base + size);
+            Some(base)
         } else {
-            if align_log2 == 0 {
-                self.alloc()
-            } else {
-                let inner_size = 1 << align_log2;
-                let mut offset = 0;
-                while offset < Self::CAP {
-                    let ok = !(0..size).any(|x| !self.test(x + offset));
-                    if ok {
-                        self.remove(offset..offset + size);
-                        return Some(offset);
-                    }
-                    offset += inner_size;
-                }
-                None
-            }
+            None
         }
     }
     fn dealloc(&mut self, key: usize) {
@@ -199,6 +182,48 @@ impl BitAlloc for BitAlloc16 {
     }
     fn test(&self, key: usize) -> bool {
         self.0.get_bit(key)
+    }
+    fn next(&self, key: usize) -> Option<usize> {
+        for i in key..16 {
+            if self.0.get_bit(i) {
+                return Some(i);
+            }
+        }
+        None
+    }
+}
+
+fn find_contiguous<T: BitAlloc>(
+    ba: &T,
+    capacity: usize,
+    size: usize,
+    align_log2: usize,
+) -> Option<usize> {
+    if capacity < (1 << align_log2) || !ba.any() {
+        None
+    } else {
+        let mut base = 0;
+        let mut offset = base;
+        while offset < capacity {
+            if let Some(next) = ba.next(offset) {
+                if next != offset {
+                    // it can be guarenteed that no bit in (offset..next) is free
+                    // move to next aligned position after next-1
+                    assert!(next > offset);
+                    base = (((next - 1) >> align_log2) + 1) << align_log2;
+                    assert_ne!(offset, next);
+                    offset = base;
+                    continue;
+                }
+            } else {
+                return None;
+            }
+            offset += 1;
+            if offset - base == size {
+                return Some(base);
+            }
+        }
+        None
     }
 }
 
@@ -291,20 +316,56 @@ mod tests {
     }
 
     #[test]
-    fn bitallocContiguous() {
+    fn bitalloc_contiguous() {
+        let mut ba0 = BitAlloc16::default();
+        ba0.insert(0..BitAlloc16::CAP);
+        ba0.remove(3..6);
+        assert_eq!(ba0.next(0), Some(0));
+        assert_eq!(ba0.alloc_contiguous(1, 1), Some(0));
+        assert_eq!(find_contiguous(&ba0, BitAlloc4K::CAP, 2, 0), Some(1));
+
         let mut ba = BitAlloc4K::default();
         assert_eq!(BitAlloc4K::CAP, 4096);
         ba.insert(0..BitAlloc4K::CAP);
         ba.remove(3..6);
-        assert_eq!(ba.alloc_contiguous(2, 0), None);
-        assert_eq!(ba.alloc_contiguous(2, 1), Some(0));
+        assert_eq!(ba.next(0), Some(0));
+        assert_eq!(ba.alloc_contiguous(1, 1), Some(0));
+        assert_eq!(ba.next(0), Some(1));
+        assert_eq!(ba.next(1), Some(1));
+        assert_eq!(ba.next(2), Some(2));
+        assert_eq!(find_contiguous(&ba, BitAlloc4K::CAP, 2, 0), Some(1));
+        assert_eq!(ba.alloc_contiguous(2, 0), Some(1));
         assert_eq!(ba.alloc_contiguous(2, 3), Some(8));
         ba.remove(0..4096 - 64);
         assert_eq!(ba.alloc_contiguous(128, 7), None);
         assert_eq!(ba.alloc_contiguous(7, 3), Some(4096 - 64));
-        ba.remove(321..323);
+        ba.insert(321..323);
         assert_eq!(ba.alloc_contiguous(2, 1), Some(4096 - 64 + 8));
+        assert_eq!(ba.alloc_contiguous(2, 0), Some(321));
         assert_eq!(ba.alloc_contiguous(64, 6), None);
-        assert_eq!(ba.alloc_contiguous(32, 5), Some(4096 - 32));
+        assert_eq!(ba.alloc_contiguous(32, 4), Some(4096 - 48));
+        for i in 0..4096 - 64 + 7 {
+            ba.dealloc(i);
+        }
+        for i in 4096 - 64 + 8..4096 - 64 + 10 {
+            ba.dealloc(i);
+        }
+        for i in 4096 - 48..4096 - 16 {
+            ba.dealloc(i);
+        }
+        // for i in 4096 - 32..4096 {
+        //     ba.dealloc(i);
+        // }
     }
+
+    // #[test]
+    // fn bitallocContPerformance() {
+    //     let mut ba = Box::new(BitAlloc256M::default());
+    //     assert_eq!(BitAlloc256M::CAP, 1 << 28);
+    //     ba.insert(0..BitAlloc256M::CAP);
+    //     assert_eq!(ba.alloc_contiguous(1 << 20, 20), Some(0));
+    //     assert_eq!(ba.alloc_contiguous(1 << 19, 19), Some(1 << 20));
+    //     assert_eq!(ba.alloc_contiguous(1 << 21, 21), Some(1 << 21));
+    //     assert_eq!(ba.alloc_contiguous(1 << 19, 19), Some(3 << 19));
+    // }
 }
