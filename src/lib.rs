@@ -9,6 +9,7 @@ pub trait BitAlloc: Default {
     const CAP: usize;
 
     /// The default value. Workaround for `const fn new() -> Self`.
+    #[allow(clippy::declare_interior_mutable_const)]
     const DEFAULT: Self;
 
     /// Allocate a free bit.
@@ -100,15 +101,11 @@ impl<T: BitAlloc> BitAlloc for BitAllocCascade16<T> {
         self.sub[key / T::CAP].test(key % T::CAP)
     }
     fn next(&self, key: usize) -> Option<usize> {
-        let ind = key / T::CAP;
-        if ind < 16 && self.bitset.get_bit(ind) {
-            if let Some(res) = self.sub[ind].next(key - T::CAP * ind) {
-                return Some(res).map(|x| x + T::CAP * ind);
-            }
-        }
-        (ind + 1..16).find_map(|i| {
+        let idx = key / T::CAP;
+        (idx..16).find_map(|i| {
             if self.bitset.get_bit(i) {
-                self.sub[i].next(0).map(|x| x + T::CAP * i)
+                let key = if i == idx { key - T::CAP * idx } else { 0 };
+                self.sub[i].next(key).map(|x| x + T::CAP * i)
             } else {
                 None
             }
@@ -183,47 +180,41 @@ impl BitAlloc for BitAlloc16 {
         self.0.get_bit(key)
     }
     fn next(&self, key: usize) -> Option<usize> {
-        for i in key..16 {
-            if self.0.get_bit(i) {
-                return Some(i);
-            }
-        }
-        None
+        (key..16).find(|&i| self.0.get_bit(i))
     }
 }
 
-fn find_contiguous<T: BitAlloc>(
-    ba: &T,
+fn find_contiguous(
+    ba: &impl BitAlloc,
     capacity: usize,
     size: usize,
     align_log2: usize,
 ) -> Option<usize> {
     if capacity < (1 << align_log2) || !ba.any() {
-        None
-    } else {
-        let mut base = 0;
-        let mut offset = base;
-        while offset < capacity {
-            if let Some(next) = ba.next(offset) {
-                if next != offset {
-                    // it can be guarenteed that no bit in (offset..next) is free
-                    // move to next aligned position after next-1
-                    assert!(next > offset);
-                    base = (((next - 1) >> align_log2) + 1) << align_log2;
-                    assert_ne!(offset, next);
-                    offset = base;
-                    continue;
-                }
-            } else {
-                return None;
-            }
-            offset += 1;
-            if offset - base == size {
-                return Some(base);
-            }
-        }
-        None
+        return None;
     }
+    let mut base = 0;
+    let mut offset = base;
+    while offset < capacity {
+        if let Some(next) = ba.next(offset) {
+            if next != offset {
+                // it can be guarenteed that no bit in (offset..next) is free
+                // move to next aligned position after next-1
+                assert!(next > offset);
+                base = (((next - 1) >> align_log2) + 1) << align_log2;
+                assert_ne!(offset, next);
+                offset = base;
+                continue;
+            }
+        } else {
+            return None;
+        }
+        offset += 1;
+        if offset - base == size {
+            return Some(base);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
