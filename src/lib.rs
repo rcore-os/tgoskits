@@ -1,3 +1,5 @@
+//! Bit allocator based on segment tree algorithm.
+
 #![no_std]
 
 use bit_field::BitField;
@@ -9,7 +11,6 @@ pub trait BitAlloc: Default {
     const CAP: usize;
 
     /// The default value. Workaround for `const fn new() -> Self`.
-    #[allow(clippy::declare_interior_mutable_const)]
     const DEFAULT: Self;
 
     /// Allocate a free bit.
@@ -31,7 +32,11 @@ pub trait BitAlloc: Default {
     fn remove(&mut self, range: Range<usize>);
 
     /// Whether there are free bits remaining
+    #[deprecated = "use `!self.is_empty()` instead"]
     fn any(&self) -> bool;
+
+    /// Returns true if no bits is available.
+    fn is_empty(&self) -> bool;
 
     /// Whether a specific bit is free
     fn test(&self, key: usize) -> bool;
@@ -66,10 +71,10 @@ impl<T: BitAlloc> BitAlloc for BitAllocCascade16<T> {
     };
 
     fn alloc(&mut self) -> Option<usize> {
-        if self.any() {
+        if !self.is_empty() {
             let i = self.bitset.trailing_zeros() as usize;
             let res = self.sub[i].alloc().unwrap() + i * T::CAP;
-            self.bitset.set_bit(i, self.sub[i].any());
+            self.bitset.set_bit(i, !self.sub[i].is_empty());
             Some(res)
         } else {
             None
@@ -95,7 +100,10 @@ impl<T: BitAlloc> BitAlloc for BitAllocCascade16<T> {
         self.for_range(range, |sub: &mut T, range| sub.remove(range));
     }
     fn any(&self) -> bool {
-        self.bitset != 0
+        !self.is_empty()
+    }
+    fn is_empty(&self) -> bool {
+        self.bitset == 0
     }
     fn test(&self, key: usize) -> bool {
         self.sub[key / T::CAP].test(key % T::CAP)
@@ -130,25 +138,24 @@ impl<T: BitAlloc> BitAllocCascade16<T> {
                 T::CAP
             };
             f(&mut self.sub[i], begin..end);
-            self.bitset.set_bit(i, self.sub[i].any());
+            self.bitset.set_bit(i, !self.sub[i].is_empty());
         }
     }
 }
 
 /// A bitmap consisting of only 16 bits.
-/// BitAlloc16 acts as the leaf (except the leaf bits of course) nodes
-/// in the segment trees.
+/// BitAlloc16 acts as the leaf (except the leaf bits of course) nodes in the segment trees.
 #[derive(Default)]
 pub struct BitAlloc16(u16);
 
 impl BitAlloc for BitAlloc16 {
-    const CAP: usize = 16;
+    const CAP: usize = u16::BITS as usize;
 
-    const DEFAULT: Self = BitAlloc16(0);
+    const DEFAULT: Self = Self(0);
 
     fn alloc(&mut self) -> Option<usize> {
-        if self.any() {
-            let i = self.0.trailing_zeros() as usize;
+        let i = self.0.trailing_zeros() as usize;
+        if i < Self::CAP {
             self.0.set_bit(i, false);
             Some(i)
         } else {
@@ -174,13 +181,16 @@ impl BitAlloc for BitAlloc16 {
         self.0.set_bits(range, 0);
     }
     fn any(&self) -> bool {
-        self.0 != 0
+        !self.is_empty()
+    }
+    fn is_empty(&self) -> bool {
+        self.0 == 0
     }
     fn test(&self, key: usize) -> bool {
         self.0.get_bit(key)
     }
     fn next(&self, key: usize) -> Option<usize> {
-        (key..16).find(|&i| self.0.get_bit(i))
+        (key..Self::CAP).find(|&i| self.0.get_bit(i))
     }
 }
 
@@ -190,7 +200,7 @@ fn find_contiguous(
     size: usize,
     align_log2: usize,
 ) -> Option<usize> {
-    if capacity < (1 << align_log2) || !ba.any() {
+    if capacity < (1 << align_log2) || ba.is_empty() {
         return None;
     }
     let mut base = 0;
@@ -227,7 +237,7 @@ mod tests {
         assert_eq!(BitAlloc16::CAP, 16);
         ba.insert(0..16);
         for i in 0..16 {
-            assert_eq!(ba.test(i), true);
+            assert!(ba.test(i));
         }
         ba.remove(2..8);
         assert_eq!(ba.alloc(), Some(0));
@@ -237,10 +247,11 @@ mod tests {
         ba.dealloc(1);
         ba.dealloc(8);
 
+        assert!(!ba.is_empty());
         for _ in 0..10 {
             assert!(ba.alloc().is_some());
         }
-        assert!(!ba.any());
+        assert!(ba.is_empty());
         assert!(ba.alloc().is_none());
     }
 
@@ -250,11 +261,11 @@ mod tests {
         assert_eq!(BitAlloc4K::CAP, 4096);
         ba.insert(0..4096);
         for i in 0..4096 {
-            assert_eq!(ba.test(i), true);
+            assert!(ba.test(i));
         }
         ba.remove(2..4094);
         for i in 0..4096 {
-            assert_eq!(ba.test(i), i < 2 || i >= 4094);
+            assert_eq!(ba.test(i), !(2..4094).contains(&i));
         }
         assert_eq!(ba.alloc(), Some(0));
         assert_eq!(ba.alloc(), Some(1));
@@ -263,9 +274,11 @@ mod tests {
         ba.dealloc(1);
         ba.dealloc(4094);
 
+        assert!(!ba.is_empty());
         for _ in 0..4 {
             assert!(ba.alloc().is_some());
         }
+        assert!(ba.is_empty());
         assert!(ba.alloc().is_none());
     }
 

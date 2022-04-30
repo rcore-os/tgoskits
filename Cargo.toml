@@ -2,7 +2,8 @@
 name = "bitmap-allocator"
 version = "0.1.0"
 authors = ["WangRunji <wangrunji0408@163.com>"]
-edition = "2018"
+edition = "2021"
+readme = "README.md"
 
 [dependencies]
-bit_field = "0.9"
+bit_field = "0.10"
