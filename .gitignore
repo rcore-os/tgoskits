@@ -1,0 +1,16 @@
+# Junk
+.DS_Store
+.vscode/
+.#*
+*.iml
+.idea
+.fuse_hidden*
+
+# Compiled
+/doc
+target/
+examples/generated-wasm
+
+# Service
+Cargo.lock
+*.swp
