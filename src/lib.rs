@@ -35,7 +35,12 @@ where
     }
 
     pub fn grow_to(&mut self, new_end: T) {
-        if let Some(last_range) = self.free_ranges.last_mut() {
+        let initial_range_end = self.initial_range.end;
+        if let Some(last_range) = self
+            .free_ranges
+            .last_mut()
+            .filter(|last_range| last_range.end == initial_range_end)
+        {
             last_range.end = new_end;
         } else {
             self.free_ranges.push(self.initial_range.end..new_end);
@@ -220,6 +225,30 @@ mod tests {
         alloc.grow_to(20);
         assert_eq!(alloc.allocate_range(4), Ok(10..14));
         alloc.free_range(0..14);
+    }
+
+    #[test]
+    fn test_grow_with_hole_at_start() {
+        let mut alloc = RangeAllocator::new(0..6);
+
+        assert_eq!(alloc.allocate_range(3), Ok(0..3));
+        assert_eq!(alloc.allocate_range(3), Ok(3..6));
+        alloc.free_range(0..3);
+
+        alloc.grow_to(9);
+        assert_eq!(alloc.allocated_ranges().collect::<Vec<_>>(), [3..6]);
+    }
+    #[test]
+    fn test_grow_with_hole_in_middle() {
+        let mut alloc = RangeAllocator::new(0..6);
+
+        assert_eq!(alloc.allocate_range(2), Ok(0..2));
+        assert_eq!(alloc.allocate_range(2), Ok(2..4));
+        assert_eq!(alloc.allocate_range(2), Ok(4..6));
+        alloc.free_range(2..4);
+
+        alloc.grow_to(9);
+        assert_eq!(alloc.allocated_ranges().collect::<Vec<_>>(), [0..2, 4..6]);
     }
 
     #[test]
