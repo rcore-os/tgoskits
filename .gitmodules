@@ -3,4 +3,4 @@
 	url = https://github.com/equation314/nimbos.git
 [submodule "arceos"]
 	path = arceos
-	url = https://github.com/hky1999/arceos
+	url = https://github.com/915604903T/arceos
