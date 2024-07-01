@@ -3,7 +3,7 @@ use core::marker::PhantomData;
 use memory_addr::{PhysAddr, VirtAddr};
 use page_table_entry::MappingFlags;
 
-use crate::AxvmHal;
+use crate::AxVMHal;
 
 mod npt;
 
@@ -31,12 +31,12 @@ pub struct NestedPageFaultInfo {
 /// A 4K-sized contiguous physical memory page, it will deallocate the page
 /// automatically on drop.
 #[derive(Debug)]
-pub struct PhysFrame<H: AxvmHal> {
+pub struct PhysFrame<H: AxVMHal> {
     start_paddr: HostPhysAddr,
     _phantom: PhantomData<H>,
 }
 
-impl<H: AxvmHal> PhysFrame<H> {
+impl<H: AxVMHal> PhysFrame<H> {
     pub fn alloc() -> AxResult<Self> {
         let start_paddr = H::alloc_page()
             .ok_or_else(|| ax_err_type!(NoMemory, "allocate physical frame failed"))?;
@@ -74,7 +74,7 @@ impl<H: AxvmHal> PhysFrame<H> {
     }
 }
 
-impl<H: AxvmHal> Drop for PhysFrame<H> {
+impl<H: AxVMHal> Drop for PhysFrame<H> {
     fn drop(&mut self) {
         if self.start_paddr.as_usize() > 0 {
             H::dealloc_page(self.start_paddr);

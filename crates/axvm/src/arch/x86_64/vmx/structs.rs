@@ -6,15 +6,15 @@ use memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
 
 use crate::arch::msr::{Msr, MsrReadWrite};
 use crate::mm::PhysFrame;
-use crate::{AxvmHal, HostPhysAddr};
+use crate::{AxVMHal, HostPhysAddr};
 
 /// VMCS/VMXON region in 4K size. (SDM Vol. 3C, Section 24.2)
 #[derive(Debug)]
-pub struct VmxRegion<H: AxvmHal> {
+pub struct VmxRegion<H: AxVMHal> {
     frame: PhysFrame<H>,
 }
 
-impl<H: AxvmHal> VmxRegion<H> {
+impl<H: AxVMHal> VmxRegion<H> {
     pub const unsafe fn uninit() -> Self {
         Self {
             frame: PhysFrame::uninit(),
@@ -37,11 +37,11 @@ impl<H: AxvmHal> VmxRegion<H> {
 }
 
 #[derive(Debug)]
-pub struct MsrBitmap<H: AxvmHal> {
+pub struct MsrBitmap<H: AxVMHal> {
     frame: PhysFrame<H>,
 }
 
-impl<H: AxvmHal> MsrBitmap<H> {
+impl<H: AxVMHal> MsrBitmap<H> {
     pub fn passthrough_all() -> AxResult<Self> {
         Ok(Self {
             frame: PhysFrame::alloc_zero()?,

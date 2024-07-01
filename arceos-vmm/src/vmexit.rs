@@ -1,10 +1,10 @@
 use super::device_emu::{self, VirtLocalApic};
-use super::hal::AxvmHalImpl;
+use super::hal::AxVMHalImpl;
 use axerrno::{AxError, AxResult};
 use axvm::arch::{VmxExitInfo, VmxExitReason};
-use axvm::AxvmVcpu;
+use axvm::AxVMVcpu;
 
-type Vcpu = AxvmVcpu<AxvmHalImpl>;
+type Vcpu = AxVMVcpu<AxVMHalImpl>;
 
 const VM_EXIT_INSTR_LEN_CPUID: u8 = 2;
 const VM_EXIT_INSTR_LEN_RDMSR: u8 = 2;

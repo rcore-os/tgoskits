@@ -1,7 +1,7 @@
 use bit_field::BitField;
 use core::marker::PhantomData;
 
-use crate::AxvmHal;
+use crate::AxVMHal;
 use axerrno::{ax_err, AxResult};
 
 const APIC_FREQ_MHZ: u64 = 1000; // 1000 MHz
@@ -21,7 +21,7 @@ pub enum TimerMode {
 }
 
 /// A virtual local APIC timer. (SDM Vol. 3C, Section 10.5.4)
-pub struct ApicTimer<H: AxvmHal> {
+pub struct ApicTimer<H: AxVMHal> {
     lvt_timer_bits: u32,
     divide_shift: u8,
     initial_count: u32,
@@ -30,7 +30,7 @@ pub struct ApicTimer<H: AxvmHal> {
     _phantom: PhantomData<H>,
 }
 
-impl<H: AxvmHal> ApicTimer<H> {
+impl<H: AxVMHal> ApicTimer<H> {
     pub(crate) const fn new() -> Self {
         Self {
             lvt_timer_bits: 0x1_0000, // masked

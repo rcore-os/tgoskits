@@ -11,12 +11,12 @@ use x86_64::registers::control::{Cr0, Cr4, Cr4Flags};
 
 use self::structs::{FeatureControl, FeatureControlFlags, VmxBasic, VmxRegion};
 use crate::arch::msr::Msr;
-use crate::hal::AxvmHal;
+use crate::hal::AxVMHal;
 use axerrno::{ax_err, ax_err_type, AxResult};
 
 pub use self::definitions::VmxExitReason;
 pub use self::ept::ExtendedPageTable as X64NestedPageTable;
-pub use self::vcpu::VmxVcpu as AxvmVcpu;
+pub use self::vcpu::VmxVcpu as AxVMVcpu;
 pub use self::vmcs::{VmxExitInfo, VmxInterruptInfo, VmxIoExitInfo};
 pub use self::VmxPerCpuState as ArchPerCpuState;
 
@@ -28,12 +28,12 @@ pub fn has_hardware_support() -> bool {
     }
 }
 
-pub struct VmxPerCpuState<H: AxvmHal> {
+pub struct VmxPerCpuState<H: AxVMHal> {
     vmcs_revision_id: u32,
     vmx_region: VmxRegion<H>,
 }
 
-impl<H: AxvmHal> VmxPerCpuState<H> {
+impl<H: AxVMHal> VmxPerCpuState<H> {
     pub const fn new() -> Self {
         Self {
             vmcs_revision_id: 0,

@@ -16,12 +16,12 @@ use super::vmcs::{
 };
 use super::VmxPerCpuState;
 use crate::arch::{msr::Msr, ApicTimer, GeneralRegisters};
-use crate::{AxvmHal, GuestPhysAddr, HostPhysAddr, NestedPageFaultInfo};
+use crate::{AxVMHal, GuestPhysAddr, HostPhysAddr, NestedPageFaultInfo};
 use axerrno::AxResult;
 
 /// A virtual CPU within a guest.
 #[repr(C)]
-pub struct VmxVcpu<H: AxvmHal> {
+pub struct VmxVcpu<H: AxVMHal> {
     guest_regs: GeneralRegisters,
     host_stack_top: u64,
     vmcs: VmxRegion<H>,
@@ -30,7 +30,7 @@ pub struct VmxVcpu<H: AxvmHal> {
     pending_events: VecDeque<(u8, Option<u32>)>,
 }
 
-impl<H: AxvmHal> VmxVcpu<H> {
+impl<H: AxVMHal> VmxVcpu<H> {
     pub(crate) fn new(
         percpu: &VmxPerCpuState<H>,
         entry: GuestPhysAddr,
@@ -137,7 +137,7 @@ impl<H: AxvmHal> VmxVcpu<H> {
 }
 
 // Implementation of private methods
-impl<H: AxvmHal> VmxVcpu<H> {
+impl<H: AxVMHal> VmxVcpu<H> {
     fn setup_msr_bitmap(&mut self) -> AxResult {
         // Intercept IA32_APIC_BASE MSR accesses
         let msr = x86::msr::IA32_APIC_BASE;
@@ -480,7 +480,7 @@ impl<H: AxvmHal> VmxVcpu<H> {
     }
 }
 
-impl<H: AxvmHal> Drop for VmxVcpu<H> {
+impl<H: AxVMHal> Drop for VmxVcpu<H> {
     fn drop(&mut self) {
         unsafe { vmx::vmclear(self.vmcs.phys_addr().as_usize() as u64).unwrap() };
         info!("[AxVM] dropped VmxVcpu(vmcs: {:#x})", self.vmcs.phys_addr());
@@ -503,7 +503,7 @@ fn get_tr_base(tr: SegmentSelector, gdt: &DescriptorTablePointer<u64>) -> u64 {
     }
 }
 
-impl<H: AxvmHal> Debug for VmxVcpu<H> {
+impl<H: AxVMHal> Debug for VmxVcpu<H> {
     fn fmt(&self, f: &mut Formatter) -> Result {
         (|| -> AxResult<Result> {
             Ok(f.debug_struct("VmxVcpu")

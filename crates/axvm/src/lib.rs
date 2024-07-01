@@ -16,8 +16,8 @@ pub mod arch;
 use arch::ArchPerCpuState;
 use axerrno::{ax_err, AxResult};
 
-pub use arch::AxvmVcpu;
-pub use hal::AxvmHal;
+pub use arch::AxVMVcpu;
+pub use hal::AxVMHal;
 pub use mm::{AxNestedPageTable, NestedPageFaultInfo};
 pub use mm::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, HostVirtAddr};
 
@@ -27,12 +27,12 @@ pub fn has_hardware_support() -> bool {
 }
 
 /// Host per-CPU states to run the guest. All methods must be called on the corresponding CPU.
-pub struct AxvmPerCpu<H: AxvmHal> {
+pub struct AxVMPerCpu<H: AxVMHal> {
     _cpu_id: usize,
     arch: ArchPerCpuState<H>,
 }
 
-impl<H: AxvmHal> AxvmPerCpu<H> {
+impl<H: AxVMHal> AxVMPerCpu<H> {
     /// Create an uninitialized instance.
     pub fn new(cpu_id: usize) -> Self {
         Self {
@@ -56,22 +56,22 @@ impl<H: AxvmHal> AxvmPerCpu<H> {
         self.arch.hardware_disable()
     }
 
-    /// Create a [`AxvmVcpu`], set the entry point to `entry`, set the nested
+    /// Create a [`AxVMVcpu`], set the entry point to `entry`, set the nested
     /// page table root to `npt_root`.
     pub fn create_vcpu(
         &self,
         entry: GuestPhysAddr,
         npt_root: HostPhysAddr,
-    ) -> AxResult<AxvmVcpu<H>> {
+    ) -> AxResult<AxVMVcpu<H>> {
         if !self.is_enabled() {
             ax_err!(BadState, "virtualization is not enabled")
         } else {
-            AxvmVcpu::new(&self.arch, entry, npt_root)
+            AxVMVcpu::new(&self.arch, entry, npt_root)
         }
     }
 }
 
-impl<H: AxvmHal> Drop for AxvmPerCpu<H> {
+impl<H: AxVMHal> Drop for AxVMPerCpu<H> {
     fn drop(&mut self) {
         if self.is_enabled() {
             self.hardware_disable().unwrap();

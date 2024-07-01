@@ -19,12 +19,12 @@ mod vmexit;
 
 use axerrno::{AxError, AxResult};
 use axhal::mem::virt_to_phys;
-use axvm::{AxvmPerCpu, GuestPhysAddr, HostPhysAddr, HostVirtAddr};
+use axvm::{AxVMPerCpu, GuestPhysAddr, HostPhysAddr, HostVirtAddr};
 use page_table_entry::MappingFlags;
 
 use self::gconfig::*;
 use self::gpm::{GuestMemoryRegion, GuestPhysMemorySet};
-use self::hal::AxvmHalImpl;
+use self::hal::AxVMHalImpl;
 
 #[repr(align(4096))]
 struct AlignedMemory<const LEN: usize>([u8; LEN]);
@@ -120,7 +120,7 @@ fn main() {
     println!("Starting virtualization...");
     info!("Hardware support: {:?}", axvm::has_hardware_support());
 
-    let mut percpu = AxvmPerCpu::<AxvmHalImpl>::new(0);
+    let mut percpu = AxVMPerCpu::<AxVMHalImpl>::new(0);
     percpu
         .hardware_enable()
         .expect("Failed to enable virtualization");

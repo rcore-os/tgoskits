@@ -3,9 +3,9 @@
 #![allow(dead_code)]
 
 use axerrno::{AxError, AxResult};
-use axvm::AxvmVcpu;
+use axvm::AxVMVcpu;
 
-type Vcpu = AxvmVcpu<crate::hal::AxvmHalImpl>;
+type Vcpu = AxVMVcpu<crate::hal::AxVMHalImpl>;
 
 /// ID register.
 const APICID: u32 = 0x2;
