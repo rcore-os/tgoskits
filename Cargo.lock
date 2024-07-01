@@ -276,6 +276,7 @@ dependencies = [
  "raw-cpuid 11.0.2",
  "riscv",
  "sbi-rt",
+ "spin 0.9.8",
  "spinlock",
  "static_assertions",
  "tock-registers",
