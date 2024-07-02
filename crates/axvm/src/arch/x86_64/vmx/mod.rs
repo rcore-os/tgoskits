@@ -28,13 +28,17 @@ pub fn has_hardware_support() -> bool {
     }
 }
 
+pub fn read_vmcs_revision_id() -> u32 {
+    VmxBasic::read().revision_id
+}
+
 pub struct VmxPerCpuState<H: AxVMHal> {
-    vmcs_revision_id: u32,
+    pub(crate) vmcs_revision_id: u32,
     vmx_region: VmxRegion<H>,
 }
 
 impl<H: AxVMHal> VmxPerCpuState<H> {
-    pub const fn new() -> Self {
+    pub const fn new(_cpu_id: usize) -> Self {
         Self {
             vmcs_revision_id: 0,
             vmx_region: unsafe { VmxRegion::uninit() },
@@ -100,7 +104,7 @@ impl<H: AxVMHal> VmxPerCpuState<H> {
             return ax_err!(Unsupported);
         }
         self.vmcs_revision_id = vmx_basic.revision_id;
-        self.vmx_region = VmxRegion::new(vmx_basic.revision_id, false)?;
+        self.vmx_region = VmxRegion::new(self.vmcs_revision_id, false)?;
 
         unsafe {
             // Enable VMX using the VMXE bit.
@@ -113,7 +117,7 @@ impl<H: AxVMHal> VmxPerCpuState<H> {
                 )
             })?;
         }
-        info!("[AxVM] successed to turn on VMX.");
+        info!("[AxVM] succeeded to turn on VMX.");
 
         Ok(())
     }
@@ -134,7 +138,7 @@ impl<H: AxVMHal> VmxPerCpuState<H> {
             // Remove VMXE bit in CR4.
             Cr4::update(|cr4| cr4.remove(Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS));
         };
-        info!("[AxVM] successed to turn off VMX.");
+        info!("[AxVM] succeeded to turn off VMX.");
 
         self.vmx_region = unsafe { VmxRegion::uninit() };
         Ok(())

@@ -15,6 +15,7 @@ use super::vmcs::{
     VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW,
 };
 use super::VmxPerCpuState;
+use crate::arch::x86_64::vmx::read_vmcs_revision_id;
 use crate::arch::{msr::Msr, ApicTimer, GeneralRegisters};
 use crate::{AxVMHal, GuestPhysAddr, HostPhysAddr, NestedPageFaultInfo};
 use axerrno::AxResult;
@@ -32,14 +33,14 @@ pub struct VmxVcpu<H: AxVMHal> {
 
 impl<H: AxVMHal> VmxVcpu<H> {
     pub(crate) fn new(
-        percpu: &VmxPerCpuState<H>,
         entry: GuestPhysAddr,
         ept_root: HostPhysAddr,
     ) -> AxResult<Self> {
+        let vmcs_revision_id: u32 = read_vmcs_revision_id();
         let mut vcpu = Self {
             guest_regs: GeneralRegisters::default(),
             host_stack_top: 0,
-            vmcs: VmxRegion::new(percpu.vmcs_revision_id, false)?,
+            vmcs: VmxRegion::new(vmcs_revision_id, false)?,
             msr_bitmap: MsrBitmap::passthrough_all()?,
             apic_timer: ApicTimer::new(),
             pending_events: VecDeque::with_capacity(8),

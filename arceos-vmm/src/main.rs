@@ -19,7 +19,9 @@ mod vmexit;
 
 use axerrno::{AxError, AxResult};
 use axhal::mem::virt_to_phys;
-use axvm::{AxVMPerCpu, GuestPhysAddr, HostPhysAddr, HostVirtAddr};
+use axvm::arch::AxArchVCpuConfig;
+use axvm::config::{AxVCpuConfig, AxVMConfig};
+use axvm::{AxVMPerCpu, GuestPhysAddr, HostPhysAddr, HostVirtAddr, AxVM};
 use page_table_entry::MappingFlags;
 
 use self::gconfig::*;
@@ -120,10 +122,11 @@ fn main() {
     println!("Starting virtualization...");
     info!("Hardware support: {:?}", axvm::has_hardware_support());
 
-    let mut percpu = AxVMPerCpu::<AxVMHalImpl>::new(0);
-    percpu
-        .hardware_enable()
-        .expect("Failed to enable virtualization");
+    let percpu = unsafe {
+        AXVM_PER_CPU.current_ref_mut_raw()
+    };
+    percpu.init(0).expect("Failed to initialize percpu state");
+    percpu.hardware_enable().expect("Failed to enable virtualization");
 
     let gpm = setup_gpm().expect("Failed to set guest physical memory set");
     debug!("{:#x?}", gpm);
@@ -136,4 +139,21 @@ fn main() {
     println!("Running guest...");
 
     vcpu.run();
+}
+
+#[percpu::def_percpu]
+pub static mut AXVM_PER_CPU: AxVMPerCpu<AxVMHalImpl> = AxVMPerCpu::new_uninit();
+
+fn main_new() {
+    let config = AxVMConfig {
+        cpu_count: 1,
+        cpu_config: AxVCpuConfig {
+            arch_config: AxArchVCpuConfig {},
+            ap_entry: GUEST_ENTRY,
+            bsp_entry: GUEST_ENTRY,
+        }
+    };
+
+    let vm = AxVM::<AxVMHalImpl>::new(config, 0).expect("Failed to create VM");
+    vm.boot().unwrap()
 }

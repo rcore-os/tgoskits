@@ -28,6 +28,7 @@ axvm = { path = "../crates/axvm" }
 axerrno = { path = "../arceos/crates/axerrno" }
 page_table_entry = { path = "../arceos/crates/page_table_entry" }
 memory_addr = { path = "../arceos/crates/memory_addr" }
+percpu = { path = "../arceos/crates/percpu" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"
