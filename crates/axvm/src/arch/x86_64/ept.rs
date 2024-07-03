@@ -1,4 +1,3 @@
-
 #[derive(Debug)]
 /// The information of guest page walk.
 pub struct GuestPageWalkInfo {

@@ -1,19 +1,23 @@
-use crate::{arch::AxArchPerCpuState, mm::{GuestPhysAddr, HostPhysAddr}, AxVMVcpu, AxVMHal};
+use crate::{
+    arch::AxArchPerCpuState,
+    mm::{GuestPhysAddr, HostPhysAddr},
+    AxVMHal, AxVMVcpu,
+};
 use axerrno::{ax_err, AxResult};
 use core::mem::MaybeUninit;
 
 /// Host per-CPU states to run the guest.
-/// 
+///
 /// Recommended usage:
 /// - Define a per-CPU state in hypervisor:
-/// 
+///
 ///   ```rust
 ///   #[percpu::def_percpu]
 ///   pub static AXVM_PER_CPU: AxVMPerCpu<MyHal> = AxVMPerCpu::new_uninit();
 ///   ```
-/// 
+///
 /// - Then initialize and enable virtualization on each CPU in the hypervisor initialization code:
-/// 
+///
 ///   ```rust
 ///   let percpu = unsafe {
 ///       AXVM_PER_CPU.current_ref_mut_raw()
@@ -99,4 +103,3 @@ impl<H: AxVMHal> Drop for AxVMPerCpu<H> {
         }
     }
 }
-

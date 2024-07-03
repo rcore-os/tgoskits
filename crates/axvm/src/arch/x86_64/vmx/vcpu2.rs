@@ -10,23 +10,19 @@ use x86::dtables::{self, DescriptorTablePointer};
 use x86::segmentation::SegmentSelector;
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr4, Cr4Flags, EferFlags};
 
+use super::as_axerr;
 use super::definitions::VmxExitReason;
 use super::structs::{IOBitmap, MsrBitmap, VmxRegion};
 use super::vmcs::{
     self, VmcsControl32, VmcsControl64, VmcsControlNW, VmcsGuest16, VmcsGuest32, VmcsGuest64,
     VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW,
 };
-use super::as_axerr;
-use crate::arch::{
-    msr::Msr, regs::GeneralRegisters,
-};
-use crate::arch::ept::GuestPageWalkInfo;
-use crate::NestedPageFaultInfo;
-use crate::{
-    GuestPhysAddr, GuestVirtAddr, HostPhysAddr, AxVMHal,
-};
-use axerrno::{ax_err, ax_err_type, AxResult};
 use super::VmxExitInfo;
+use crate::arch::ept::GuestPageWalkInfo;
+use crate::arch::{msr::Msr, regs::GeneralRegisters};
+use crate::NestedPageFaultInfo;
+use crate::{AxVMHal, GuestPhysAddr, GuestVirtAddr, HostPhysAddr};
+use axerrno::{ax_err, ax_err_type, AxResult};
 
 static mut VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 1000_000;
 

@@ -3,9 +3,9 @@ use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use axerrno::{ax_err, AxResult};
 
-use crate::{has_hardware_support, AxVMHal, HostPhysAddr};
 use crate::config::AxVMConfig;
 use crate::AxVCpu;
+use crate::{has_hardware_support, AxVMHal, HostPhysAddr};
 
 struct AxVMInnerConst<H: AxVMHal> {
     id: usize,
@@ -29,7 +29,9 @@ impl<H: AxVMHal> AxVM<H> {
         let result = Arc::new_cyclic(|weak_self| {
             let mut vcpu_list = Vec::with_capacity(config.cpu_count);
             for vcpu_id in 0..config.cpu_count {
-                vcpu_list.push(AxVCpu::new(config.cpu_config, vcpu_id, weak_self.clone(), 0, 0).unwrap());
+                vcpu_list.push(
+                    AxVCpu::new(config.cpu_config, vcpu_id, weak_self.clone(), 0, 0).unwrap(),
+                );
             }
 
             Self {
@@ -39,7 +41,7 @@ impl<H: AxVMHal> AxVM<H> {
                 },
                 inner_mut: AxVMInnerMut {
                     _marker: core::marker::PhantomData,
-                }
+                },
             }
         });
 

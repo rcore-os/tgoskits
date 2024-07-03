@@ -16,6 +16,4 @@ pub struct AxVMConfig {
 }
 
 /// The configuration of axvm crate.
-pub struct AxVMCrateConfig {
-
-}
+pub struct AxVMCrateConfig {}

@@ -2,6 +2,7 @@ use alloc::{format, sync::Weak};
 // use spinlock::{SpinNoIrq, SpinNoIrqGuard};
 use axerrno::{ax_err, ax_err_type, AxResult};
 use core::cell::{RefCell, UnsafeCell};
+
 use crate::{arch::AxArchVCpu, config::AxVCpuConfig, AxVM, AxVMHal, GuestPhysAddr};
 
 /// The constant part of `AxVCpu`.
@@ -40,7 +41,7 @@ pub struct AxVCpuInnerMut<H: AxVMHal> {
     _marker: core::marker::PhantomData<H>,
 }
 
-impl <H: AxVMHal> AxVCpuInnerMut<H> {
+impl<H: AxVMHal> AxVCpuInnerMut<H> {
     pub fn new(_config: AxVCpuConfig) -> AxResult<Self> {
         Ok(Self {
             state: VCpuState::Free,
@@ -50,7 +51,7 @@ impl <H: AxVMHal> AxVCpuInnerMut<H> {
 }
 
 /// The width of an access.
-/// 
+///
 /// Note that the term "word" here refers to 16-bit data, as in the x86 architecture.
 pub enum AccessWidth {
     Byte,
@@ -89,48 +90,69 @@ type Port = u16;
 /// The result of `AxArchVCpu::run`.
 pub enum AxArchVCpuExitReason {
     /// The instruction executed by the vcpu performs a MMIO read operation.
-    MmioRead { addr: GuestPhysAddr, width: AccessWidth },
+    MmioRead {
+        addr: GuestPhysAddr,
+        width: AccessWidth,
+    },
     /// The instruction executed by the vcpu performs a MMIO write operation.
-    MmioWrite { addr: GuestPhysAddr, width: AccessWidth, data: u64 },
+    MmioWrite {
+        addr: GuestPhysAddr,
+        width: AccessWidth,
+        data: u64,
+    },
     /// The instruction executed by the vcpu performs a I/O read operation.
-    /// 
+    ///
     /// It's unnecessary to specify the destination register because it's always `al`, `ax`, or `eax`.
     IoRead { port: Port, width: AccessWidth },
     /// The instruction executed by the vcpu performs a I/O write operation.
-    /// 
+    ///
     /// It's unnecessary to specify the source register because it's always `al`, `ax`, or `eax`.
-    IoWrite { port: Port, width: AccessWidth, data: u64 },
+    IoWrite {
+        port: Port,
+        width: AccessWidth,
+        data: u64,
+    },
     /// The vcpu is halted.
     Halt,
 }
 
 /// A virtual CPU.
-/// 
+///
 /// This struct handles internal mutability itself, almost all the methods are `&self`.
-/// 
+///
 /// Note that the `AxVCpu` is not thread-safe. It's caller's responsibility to ensure the safety.
 pub struct AxVCpu<H: AxVMHal> {
     /// The constant part of the vcpu.
     inner_const: AxVCpuInnerConst<H>,
     /// The mutable part of the vcpu.
     inner_mut: RefCell<AxVCpuInnerMut<H>>,
-    /// The architecture-specific state of the vcpu. 
-    /// 
-    /// `UnsafeCell` is used to allow interior mutability. 
-    /// 
+    /// The architecture-specific state of the vcpu.
+    ///
+    /// `UnsafeCell` is used to allow interior mutability.
+    ///
     /// `RefCell` or `Mutex` is not suitable here because it's not possible to drop the guard when launching a vcpu.
     arch_vcpu: UnsafeCell<AxArchVCpu<H>>,
 }
 
 impl<H: AxVMHal> AxVCpu<H> {
-    pub fn new(config: AxVCpuConfig, id: usize, vm: Weak<AxVM<H>>, favor_phys_cpu: usize, affinity: usize) -> AxResult<Self> {
+    pub fn new(
+        config: AxVCpuConfig,
+        id: usize,
+        vm: Weak<AxVM<H>>,
+        favor_phys_cpu: usize,
+        affinity: usize,
+    ) -> AxResult<Self> {
         Ok(Self {
             inner_const: AxVCpuInnerConst {
                 id,
                 vm,
                 favor_phys_cpu,
                 affinity,
-                entry: if id == 0 { config.bsp_entry } else { config.ap_entry },
+                entry: if id == 0 {
+                    config.bsp_entry
+                } else {
+                    config.ap_entry
+                },
             },
             inner_mut: RefCell::new(AxVCpuInnerMut::new(config)?),
             arch_vcpu: UnsafeCell::new(AxArchVCpu::new(config.arch_config)?),
@@ -138,9 +160,13 @@ impl<H: AxVMHal> AxVCpu<H> {
     }
 
     pub fn init(&self) -> AxResult {
-        let vm = self.vm().upgrade().ok_or(ax_err_type!(BadState, "VM is dropped"))?;
+        let vm = self
+            .vm()
+            .upgrade()
+            .ok_or(ax_err_type!(BadState, "VM is dropped"))?;
         let ept_root = vm.ept_root();
-        self.get_arch_vcpu().set_entry_and_ept(self.inner_const.entry, ept_root)
+        self.get_arch_vcpu()
+            .set_entry_and_ept(self.inner_const.entry, ept_root)
     }
 
     pub fn id(&self) -> usize {
@@ -167,7 +193,10 @@ impl<H: AxVMHal> AxVCpu<H> {
     pub fn transition_state(&self, from: VCpuState, to: VCpuState) -> AxResult<()> {
         let mut inner_mut = self.inner_mut.borrow_mut();
         if inner_mut.state != from {
-            ax_err!(BadState, format!("VCpu state is not {:?}, but {:?}", from, inner_mut.state))
+            ax_err!(
+                BadState,
+                format!("VCpu state is not {:?}, but {:?}", from, inner_mut.state)
+            )
         } else {
             inner_mut.state = to;
             Ok(())

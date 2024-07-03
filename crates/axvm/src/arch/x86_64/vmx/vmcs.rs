@@ -26,7 +26,8 @@ macro_rules! vmcs_read {
                 #[cfg(target_pointer_width = "32")]
                 unsafe {
                     let field = self as u32;
-                    Ok(vmx::vmread(field).map_err(as_axerr)? + (vmx::vmread(field + 1).map_err(as_axerr)? << 32))
+                    Ok(vmx::vmread(field).map_err(as_axerr)?
+                        + (vmx::vmread(field + 1).map_err(as_axerr)? << 32))
                 }
             }
         }
@@ -441,7 +442,7 @@ pub enum VmcsReadOnly64 {
     /// Guest-physical address (full).
     GUEST_PHYSICAL_ADDR = 0x2400,
 }
-define_vmcs_fields_ro!(VmcsReadOnly64,u64);
+define_vmcs_fields_ro!(VmcsReadOnly64, u64);
 
 /// 32-Bit Read-Only Data Fields. (SDM Vol. 3D, Appendix B.3.2)
 #[derive(Clone, Copy, Debug)]
@@ -463,7 +464,7 @@ pub enum VmcsReadOnly32 {
     /// VM-exit instruction information.
     VMEXIT_INSTRUCTION_INFO = 0x440E,
 }
-define_vmcs_fields_ro!(VmcsReadOnly32,u32);
+define_vmcs_fields_ro!(VmcsReadOnly32, u32);
 
 /// Natural-Width Read-Only Data Fields. (SDM Vol. 3D, Appendix B.4.2)
 #[derive(Clone, Copy, Debug)]
@@ -481,7 +482,7 @@ pub enum VmcsReadOnlyNW {
     /// Guest-linear address.
     GUEST_LINEAR_ADDR = 0x640A,
 }
-define_vmcs_fields_ro!(VmcsReadOnlyNW,usize);
+define_vmcs_fields_ro!(VmcsReadOnlyNW, usize);
 
 /// VM-Exit Informations. (SDM Vol. 3C, Section 24.9.1)
 #[derive(Debug)]
@@ -648,8 +649,7 @@ pub fn exit_info() -> AxResult<VmxExitInfo> {
             .try_into()
             .expect("Unknown VM-exit reason"),
         entry_failure: full_reason.get_bit(31),
-        exit_instruction_length: VmcsReadOnly32::VMEXIT_INSTRUCTION_LEN
-            .read()?,
+        exit_instruction_length: VmcsReadOnly32::VMEXIT_INSTRUCTION_LEN.read()?,
         guest_rip: VmcsGuestNW::RIP.read()?,
     })
 }
@@ -660,16 +660,12 @@ pub fn raw_interrupt_exit_info() -> AxResult<u32> {
 
 pub fn interrupt_exit_info() -> AxResult<VmxInterruptInfo> {
     // SDM Vol. 3C, Section 24.9.2
-    let info = VmcsReadOnly32::VMEXIT_INTERRUPTION_INFO
-        .read()?;
+    let info = VmcsReadOnly32::VMEXIT_INTERRUPTION_INFO.read()?;
     Ok(VmxInterruptInfo {
         vector: info.get_bits(0..8) as u8,
         int_type: VmxInterruptionType::try_from(info.get_bits(8..11) as u8).unwrap(),
         err_code: if info.get_bit(11) {
-            Some(
-                VmcsReadOnly32::VMEXIT_INTERRUPTION_ERR_CODE
-                    .read()?,
-            )
+            Some(VmcsReadOnly32::VMEXIT_INTERRUPTION_ERR_CODE.read()?)
         } else {
             None
         },
@@ -686,25 +682,19 @@ pub fn inject_event(vector: u8, err_code: Option<u32>) -> AxResult {
     };
     let int_info = VmxInterruptInfo::from(vector, err_code);
     if let Some(err_code) = int_info.err_code {
-        VmcsControl32::VMENTRY_EXCEPTION_ERR_CODE
-            .write(err_code)?;
+        VmcsControl32::VMENTRY_EXCEPTION_ERR_CODE.write(err_code)?;
     }
     if int_info.int_type.is_soft() {
         VmcsControl32::VMENTRY_INSTRUCTION_LEN
-            .write(
-                VmcsReadOnly32::VMEXIT_INSTRUCTION_LEN
-                    .read()?,
-            )?;
+            .write(VmcsReadOnly32::VMEXIT_INSTRUCTION_LEN.read()?)?;
     }
-    VmcsControl32::VMENTRY_INTERRUPTION_INFO_FIELD
-        .write(int_info.bits())?;
+    VmcsControl32::VMENTRY_INTERRUPTION_INFO_FIELD.write(int_info.bits())?;
     Ok(())
 }
 
 pub fn io_exit_info() -> AxResult<VmxIoExitInfo> {
     // SDM Vol. 3C, Section 27.2.1, Table 27-5
-    let qualification = VmcsReadOnlyNW::EXIT_QUALIFICATION
-        .read()?;
+    let qualification = VmcsReadOnlyNW::EXIT_QUALIFICATION.read()?;
     Ok(VmxIoExitInfo {
         access_size: qualification.get_bits(0..3) as u8 + 1,
         is_in: qualification.get_bit(3),
@@ -716,10 +706,8 @@ pub fn io_exit_info() -> AxResult<VmxIoExitInfo> {
 
 pub fn ept_violation_info() -> AxResult<NestedPageFaultInfo> {
     // SDM Vol. 3C, Section 27.2.1, Table 27-7
-    let qualification = VmcsReadOnlyNW::EXIT_QUALIFICATION
-        .read()?;
-    let fault_guest_paddr = VmcsReadOnly64::GUEST_PHYSICAL_ADDR
-        .read()? as usize;
+    let qualification = VmcsReadOnlyNW::EXIT_QUALIFICATION.read()?;
+    let fault_guest_paddr = VmcsReadOnly64::GUEST_PHYSICAL_ADDR.read()? as usize;
     let mut access_flags = MappingFlags::empty();
     if qualification.get_bit(0) {
         access_flags |= MappingFlags::READ;

@@ -21,7 +21,7 @@ use axerrno::{AxError, AxResult};
 use axhal::mem::virt_to_phys;
 use axvm::arch::AxArchVCpuConfig;
 use axvm::config::{AxVCpuConfig, AxVMConfig};
-use axvm::{AxVMPerCpu, GuestPhysAddr, HostPhysAddr, HostVirtAddr, AxVM};
+use axvm::{AxVM, AxVMPerCpu, GuestPhysAddr, HostPhysAddr, HostVirtAddr};
 use page_table_entry::MappingFlags;
 
 use self::gconfig::*;
@@ -122,11 +122,11 @@ fn main() {
     println!("Starting virtualization...");
     info!("Hardware support: {:?}", axvm::has_hardware_support());
 
-    let percpu = unsafe {
-        AXVM_PER_CPU.current_ref_mut_raw()
-    };
+    let percpu = unsafe { AXVM_PER_CPU.current_ref_mut_raw() };
     percpu.init(0).expect("Failed to initialize percpu state");
-    percpu.hardware_enable().expect("Failed to enable virtualization");
+    percpu
+        .hardware_enable()
+        .expect("Failed to enable virtualization");
 
     let gpm = setup_gpm().expect("Failed to set guest physical memory set");
     debug!("{:#x?}", gpm);
@@ -151,7 +151,7 @@ fn main_new() {
             arch_config: AxArchVCpuConfig {},
             ap_entry: GUEST_ENTRY,
             bsp_entry: GUEST_ENTRY,
-        }
+        },
     };
 
     let vm = AxVM::<AxVMHalImpl>::new(config, 0).expect("Failed to create VM");
