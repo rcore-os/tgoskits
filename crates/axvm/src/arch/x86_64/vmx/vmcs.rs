@@ -13,26 +13,28 @@ use super::as_axerr;
 use super::definitions::{VmxExitReason, VmxInstructionError, VmxInterruptionType};
 use crate::{arch::msr::Msr, HostPhysAddr, NestedPageFaultInfo};
 
+// HYGIENE: These macros are only used in this file, so we can use `as_axerr` directly.
+
 macro_rules! vmcs_read {
     ($field_enum: ident, u64) => {
         impl $field_enum {
-            pub fn read(self) -> x86::vmx::Result<u64> {
+            pub fn read(self) -> AxResult<u64> {
                 #[cfg(target_pointer_width = "64")]
                 unsafe {
-                    vmx::vmread(self as u32)
+                    vmx::vmread(self as u32).map_err(as_axerr)
                 }
                 #[cfg(target_pointer_width = "32")]
                 unsafe {
                     let field = self as u32;
-                    Ok(vmx::vmread(field)? + (vmx::vmread(field + 1)? << 32))
+                    Ok(vmx::vmread(field).map_err(as_axerr)? + (vmx::vmread(field + 1).map_err(as_axerr)? << 32))
                 }
             }
         }
     };
     ($field_enum: ident, $ux: ty) => {
         impl $field_enum {
-            pub fn read(self) -> x86::vmx::Result<$ux> {
-                unsafe { vmx::vmread(self as u32).map(|v| v as $ux) }
+            pub fn read(self) -> AxResult<$ux> {
+                unsafe { vmx::vmread(self as u32).map(|v| v as $ux).map_err(as_axerr) }
             }
         }
     };
@@ -41,16 +43,16 @@ macro_rules! vmcs_read {
 macro_rules! vmcs_write {
     ($field_enum: ident, u64) => {
         impl $field_enum {
-            pub fn write(self, value: u64) -> x86::vmx::Result<()> {
+            pub fn write(self, value: u64) -> AxResult {
                 #[cfg(target_pointer_width = "64")]
                 unsafe {
-                    vmx::vmwrite(self as u32, value)
+                    vmx::vmwrite(self as u32, value).map_err(as_axerr)
                 }
                 #[cfg(target_pointer_width = "32")]
                 unsafe {
                     let field = self as u32;
-                    vmx::vmwrite(field, value & 0xffff_ffff)?;
-                    vmx::vmwrite(field + 1, value >> 32)?;
+                    vmx::vmwrite(field, value & 0xffff_ffff).map_err(as_axerr)?;
+                    vmx::vmwrite(field + 1, value >> 32).map_err(as_axerr)?;
                     Ok(())
                 }
             }
@@ -58,10 +60,23 @@ macro_rules! vmcs_write {
     };
     ($field_enum: ident, $ux: ty) => {
         impl $field_enum {
-            pub fn write(self, value: $ux) -> x86::vmx::Result<()> {
-                unsafe { vmx::vmwrite(self as u32, value as u64) }
+            pub fn write(self, value: $ux) -> AxResult {
+                unsafe { vmx::vmwrite(self as u32, value as u64).map_err(as_axerr) }
             }
         }
+    };
+}
+
+macro_rules! define_vmcs_fields_ro {
+    ($field_enum:ident, $ty:ty) => {
+        vmcs_read!($field_enum, $ty);
+    };
+}
+
+macro_rules! define_vmcs_fields_rw {
+    ($field_enum:ident, $ty:ty) => {
+        vmcs_read!($field_enum, $ty);
+        vmcs_write!($field_enum, $ty);
     };
 }
 
@@ -75,8 +90,7 @@ pub enum VmcsControl16 {
     /// EPTP index.
     EPTP_INDEX = 0x4,
 }
-vmcs_read!(VmcsControl16, u16);
-vmcs_write!(VmcsControl16, u16);
+define_vmcs_fields_rw!(VmcsControl16, u16);
 
 /// 64-Bit Control Fields. (SDM Vol. 3D, Appendix B.2.1)
 #[derive(Clone, Copy, Debug)]
@@ -134,8 +148,7 @@ pub enum VmcsControl64 {
     /// TSC multiplier (full).
     TSC_MULTIPLIER = 0x2032,
 }
-vmcs_read!(VmcsControl64, u64);
-vmcs_write!(VmcsControl64, u64);
+define_vmcs_fields_rw!(VmcsControl64, u64);
 
 /// 32-Bit Control Fields. (SDM Vol. 3D, Appendix B.3.1)
 #[derive(Clone, Copy, Debug)]
@@ -177,8 +190,7 @@ pub enum VmcsControl32 {
     /// PLE_Window.
     PLE_WINDOW = 0x4022,
 }
-vmcs_read!(VmcsControl32, u32);
-vmcs_write!(VmcsControl32, u32);
+define_vmcs_fields_rw!(VmcsControl32, u32);
 
 /// Natural-Width Control Fields. (SDM Vol. 3D, Appendix B.4.1)
 #[derive(Clone, Copy, Debug)]
@@ -200,8 +212,7 @@ pub enum VmcsControlNW {
     /// CR3-target value 3.
     CR3_TARGET_VALUE3 = 0x600E,
 }
-vmcs_read!(VmcsControlNW, usize);
-vmcs_write!(VmcsControlNW, usize);
+define_vmcs_fields_rw!(VmcsControlNW, usize);
 
 /// 16-Bit Guest-State Fields. (SDM Vol. 3D, Appendix B.1.2)
 pub enum VmcsGuest16 {
@@ -226,8 +237,7 @@ pub enum VmcsGuest16 {
     /// PML index.
     PML_INDEX = 0x812,
 }
-vmcs_read!(VmcsGuest16, u16);
-vmcs_write!(VmcsGuest16, u16);
+define_vmcs_fields_rw!(VmcsGuest16, u16);
 
 /// 64-Bit Guest-State Fields. (SDM Vol. 3D, Appendix B.2.3)
 #[derive(Clone, Copy, Debug)]
@@ -255,8 +265,7 @@ pub enum VmcsGuest64 {
     /// Guest IA32_RTIT_CTL (full).
     IA32_RTIT_CTL = 0x2814,
 }
-vmcs_read!(VmcsGuest64, u64);
-vmcs_write!(VmcsGuest64, u64);
+define_vmcs_fields_rw!(VmcsGuest64, u64);
 
 /// 32-Bit Guest-State Fields. (SDM Vol. 3D, Appendix B.3.3)
 #[derive(Clone, Copy, Debug)]
@@ -308,8 +317,7 @@ pub enum VmcsGuest32 {
     /// VMX-preemption timer value.
     VMX_PREEMPTION_TIMER_VALUE = 0x482E,
 }
-vmcs_read!(VmcsGuest32, u32);
-vmcs_write!(VmcsGuest32, u32);
+define_vmcs_fields_rw!(VmcsGuest32, u32);
 
 /// Natural-Width Guest-State Fields. (SDM Vol. 3D, Appendix B.4.3)
 #[derive(Clone, Copy, Debug)]
@@ -355,8 +363,7 @@ pub enum VmcsGuestNW {
     /// Guest IA32_SYSENTER_EIP.
     IA32_SYSENTER_EIP = 0x6826,
 }
-vmcs_read!(VmcsGuestNW, usize);
-vmcs_write!(VmcsGuestNW, usize);
+define_vmcs_fields_rw!(VmcsGuestNW, usize);
 
 /// 16-Bit Host-State Fields. (SDM Vol. 3D, Appendix B.1.3)
 #[derive(Clone, Copy, Debug)]
@@ -376,8 +383,7 @@ pub enum VmcsHost16 {
     /// Host TR selector.
     TR_SELECTOR = 0xC0C,
 }
-vmcs_read!(VmcsHost16, u16);
-vmcs_write!(VmcsHost16, u16);
+define_vmcs_fields_rw!(VmcsHost16, u16);
 
 /// 64-Bit Host-State Fields. (SDM Vol. 3D, Appendix B.2.4)
 #[derive(Clone, Copy, Debug)]
@@ -389,8 +395,7 @@ pub enum VmcsHost64 {
     /// Host IA32_PERF_GLOBAL_CTRL (full).
     IA32_PERF_GLOBAL_CTRL = 0x2C04,
 }
-vmcs_read!(VmcsHost64, u64);
-vmcs_write!(VmcsHost64, u64);
+define_vmcs_fields_rw!(VmcsHost64, u64);
 
 /// 32-Bit Host-State Field. (SDM Vol. 3D, Appendix B.3.4)
 #[derive(Clone, Copy, Debug)]
@@ -398,8 +403,7 @@ pub enum VmcsHost32 {
     /// Host IA32_SYSENTER_CS.
     IA32_SYSENTER_CS = 0x4C00,
 }
-vmcs_read!(VmcsHost32, u32);
-vmcs_write!(VmcsHost32, u32);
+define_vmcs_fields_rw!(VmcsHost32, u32);
 
 /// Natural-Width Host-State Fields. (SDM Vol. 3D, Appendix B.4.4)
 #[derive(Clone, Copy, Debug)]
@@ -429,8 +433,7 @@ pub enum VmcsHostNW {
     /// Host RIP.
     RIP = 0x6C16,
 }
-vmcs_read!(VmcsHostNW, usize);
-vmcs_write!(VmcsHostNW, usize);
+define_vmcs_fields_rw!(VmcsHostNW, usize);
 
 /// 64-Bit Read-Only Data Fields. (SDM Vol. 3D, Appendix B.2.2)
 #[derive(Clone, Copy, Debug)]
@@ -438,7 +441,7 @@ pub enum VmcsReadOnly64 {
     /// Guest-physical address (full).
     GUEST_PHYSICAL_ADDR = 0x2400,
 }
-vmcs_read!(VmcsReadOnly64, u64);
+define_vmcs_fields_ro!(VmcsReadOnly64,u64);
 
 /// 32-Bit Read-Only Data Fields. (SDM Vol. 3D, Appendix B.3.2)
 #[derive(Clone, Copy, Debug)]
@@ -460,7 +463,7 @@ pub enum VmcsReadOnly32 {
     /// VM-exit instruction information.
     VMEXIT_INSTRUCTION_INFO = 0x440E,
 }
-vmcs_read!(VmcsReadOnly32, u32);
+define_vmcs_fields_ro!(VmcsReadOnly32,u32);
 
 /// Natural-Width Read-Only Data Fields. (SDM Vol. 3D, Appendix B.4.2)
 #[derive(Clone, Copy, Debug)]
@@ -478,7 +481,7 @@ pub enum VmcsReadOnlyNW {
     /// Guest-linear address.
     GUEST_LINEAR_ADDR = 0x640A,
 }
-vmcs_read!(VmcsReadOnlyNW, usize);
+define_vmcs_fields_ro!(VmcsReadOnlyNW,usize);
 
 /// VM-Exit Informations. (SDM Vol. 3C, Section 24.9.1)
 #[derive(Debug)]
@@ -543,6 +546,39 @@ pub struct VmxIoExitInfo {
     pub port: u16,
 }
 
+/// Exit Qualification for Control Register Accesses. (SDM Vol. 3C, Section 28.2.1, Table 28-5)
+#[derive(Debug)]
+pub struct CrAccessInfo {
+    /// [3:0]
+    /// Number of control register
+    ///     (0 for CLTS and LMSW).
+    /// Bit 3 is always 0 on processors that do not support Intel 64 architecture as they do not support CR8.
+    pub cr_number: u8,
+    /// [5:4]
+    /// Access type:
+    ///     0 = MOV to CR
+    ///     1 = MOV from CR
+    ///     2 = CLTS
+    ///     3 = LMSW
+    pub access_type: u8,
+    /// [6]
+    /// LMSW operand type:
+    ///     0 = register
+    ///     1 = memory
+    /// For CLTS and MOV CR, cleared to 0
+    pub lmsw_op_type: u8,
+    /// [11:8]
+    /// For MOV CR, the general-purpose register:
+    ///     0=RAX 1=RCX 2=RDX 3=RBX 4=RSP 5=RBP 6=RSI 7=RDI
+    ///     8–15 represent R8–R15, respectively (used only on processors that support Intel 64 architecture)
+    /// For CLTS and LMSW, cleared to 0
+    pub gpr: u8,
+    /// [31:16]
+    /// For LMSW, the LMSW source data
+    /// For CLTS and MOV CR, cleared to 0
+    pub lmsw_source_data: u8,
+}
+
 pub mod controls {
     pub use x86::vmx::vmcs::control::{EntryControls, ExitControls};
     pub use x86::vmx::vmcs::control::{PinbasedControls, PrimaryControls, SecondaryControls};
@@ -588,14 +624,14 @@ pub fn set_control(
     let unknown = flexible & !(set | clear); // hypervisor untouched bits
     let default = unknown & old_value; // these bits keep unchanged in old value
     let fixed1 = allowed0; // these bits are fixed to 1
-    control.write(fixed1 | default | set).map_err(as_axerr)?;
+    control.write(fixed1 | default | set)?;
     Ok(())
 }
 
 pub fn set_ept_pointer(pml4_paddr: HostPhysAddr) -> AxResult {
     use super::instructions::{invept, InvEptType};
     let eptp = super::structs::EPTPointer::from_table_phys(pml4_paddr).bits();
-    VmcsControl64::EPTP.write(eptp).map_err(as_axerr)?;
+    VmcsControl64::EPTP.write(eptp);
     unsafe { invept(InvEptType::SingleContext, eptp).map_err(as_axerr)? };
     Ok(())
 }
@@ -605,7 +641,7 @@ pub fn instruction_error() -> VmxInstructionError {
 }
 
 pub fn exit_info() -> AxResult<VmxExitInfo> {
-    let full_reason = VmcsReadOnly32::EXIT_REASON.read().map_err(as_axerr)?;
+    let full_reason = VmcsReadOnly32::EXIT_REASON.read()?;
     Ok(VmxExitInfo {
         exit_reason: full_reason
             .get_bits(0..16)
@@ -613,25 +649,26 @@ pub fn exit_info() -> AxResult<VmxExitInfo> {
             .expect("Unknown VM-exit reason"),
         entry_failure: full_reason.get_bit(31),
         exit_instruction_length: VmcsReadOnly32::VMEXIT_INSTRUCTION_LEN
-            .read()
-            .map_err(as_axerr)?,
-        guest_rip: VmcsGuestNW::RIP.read().map_err(as_axerr)?,
+            .read()?,
+        guest_rip: VmcsGuestNW::RIP.read()?,
     })
+}
+
+pub fn raw_interrupt_exit_info() -> AxResult<u32> {
+    Ok(VmcsReadOnly32::VMEXIT_INTERRUPTION_INFO.read()?)
 }
 
 pub fn interrupt_exit_info() -> AxResult<VmxInterruptInfo> {
     // SDM Vol. 3C, Section 24.9.2
     let info = VmcsReadOnly32::VMEXIT_INTERRUPTION_INFO
-        .read()
-        .map_err(as_axerr)?;
+        .read()?;
     Ok(VmxInterruptInfo {
         vector: info.get_bits(0..8) as u8,
         int_type: VmxInterruptionType::try_from(info.get_bits(8..11) as u8).unwrap(),
         err_code: if info.get_bit(11) {
             Some(
                 VmcsReadOnly32::VMEXIT_INTERRUPTION_ERR_CODE
-                    .read()
-                    .map_err(as_axerr)?,
+                    .read()?,
             )
         } else {
             None
@@ -650,29 +687,24 @@ pub fn inject_event(vector: u8, err_code: Option<u32>) -> AxResult {
     let int_info = VmxInterruptInfo::from(vector, err_code);
     if let Some(err_code) = int_info.err_code {
         VmcsControl32::VMENTRY_EXCEPTION_ERR_CODE
-            .write(err_code)
-            .map_err(as_axerr)?;
+            .write(err_code)?;
     }
     if int_info.int_type.is_soft() {
         VmcsControl32::VMENTRY_INSTRUCTION_LEN
             .write(
                 VmcsReadOnly32::VMEXIT_INSTRUCTION_LEN
-                    .read()
-                    .map_err(as_axerr)?,
-            )
-            .map_err(as_axerr)?;
+                    .read()?,
+            )?;
     }
     VmcsControl32::VMENTRY_INTERRUPTION_INFO_FIELD
-        .write(int_info.bits())
-        .map_err(as_axerr)?;
+        .write(int_info.bits())?;
     Ok(())
 }
 
 pub fn io_exit_info() -> AxResult<VmxIoExitInfo> {
     // SDM Vol. 3C, Section 27.2.1, Table 27-5
     let qualification = VmcsReadOnlyNW::EXIT_QUALIFICATION
-        .read()
-        .map_err(as_axerr)?;
+        .read()?;
     Ok(VmxIoExitInfo {
         access_size: qualification.get_bits(0..3) as u8 + 1,
         is_in: qualification.get_bit(3),
@@ -685,11 +717,9 @@ pub fn io_exit_info() -> AxResult<VmxIoExitInfo> {
 pub fn ept_violation_info() -> AxResult<NestedPageFaultInfo> {
     // SDM Vol. 3C, Section 27.2.1, Table 27-7
     let qualification = VmcsReadOnlyNW::EXIT_QUALIFICATION
-        .read()
-        .map_err(as_axerr)?;
+        .read()?;
     let fault_guest_paddr = VmcsReadOnly64::GUEST_PHYSICAL_ADDR
-        .read()
-        .map_err(as_axerr)? as usize;
+        .read()? as usize;
     let mut access_flags = MappingFlags::empty();
     if qualification.get_bit(0) {
         access_flags |= MappingFlags::READ;
@@ -703,5 +733,53 @@ pub fn ept_violation_info() -> AxResult<NestedPageFaultInfo> {
     Ok(NestedPageFaultInfo {
         access_flags,
         fault_guest_paddr,
+    })
+}
+
+pub fn update_efer() -> AxResult {
+    use x86_64::registers::control::EferFlags;
+
+    let efer = VmcsGuest64::IA32_EFER.read()?;
+    let mut guest_efer = EferFlags::from_bits_truncate(efer);
+
+    if guest_efer.contains(EferFlags::LONG_MODE_ENABLE)
+        && guest_efer.contains(EferFlags::LONG_MODE_ACTIVE)
+    {
+        // debug!("Guest IA32_EFER LONG_MODE_ACTIVE is set, just return");
+        return Ok(());
+    }
+
+    guest_efer.set(EferFlags::LONG_MODE_ACTIVE, true);
+
+    // debug!(
+    //     "Guest IA32_EFER from {:?} update to {:?}",
+    //     EferFlags::from_bits_truncate(efer),
+    //     guest_efer
+    // );
+
+    VmcsGuest64::IA32_EFER.write(guest_efer.bits())?;
+
+    use controls::EntryControls as EntryCtrl;
+    set_control(
+        VmcsControl32::VMENTRY_CONTROLS,
+        Msr::IA32_VMX_TRUE_ENTRY_CTLS,
+        VmcsControl32::VMENTRY_CONTROLS.read()? as u32,
+        (EntryCtrl::IA32E_MODE_GUEST).bits(),
+        0,
+    )?;
+
+    Ok(())
+}
+
+pub fn cr_access_info() -> AxResult<CrAccessInfo> {
+    let qualification = VmcsReadOnlyNW::EXIT_QUALIFICATION.read()?;
+    // debug!("cr_access_info qualification {:#x}", qualification);
+
+    Ok(CrAccessInfo {
+        cr_number: qualification.get_bits(0..4) as u8,
+        access_type: qualification.get_bits(4..6) as u8,
+        lmsw_op_type: qualification.get_bits(6..7) as u8,
+        gpr: qualification.get_bits(8..12) as u8,
+        lmsw_source_data: qualification.get_bits(16..32) as u8,
     })
 }

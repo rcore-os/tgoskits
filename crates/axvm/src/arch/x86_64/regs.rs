@@ -20,6 +20,32 @@ pub struct GeneralRegisters {
     pub r15: u64,
 }
 
+impl GeneralRegisters {
+    pub fn get_reg_of_index(&self, index: u8) -> u64 {
+        match index {
+            0 => self.rax,
+            1 => self.rcx,
+            2 => self.rdx,
+            3 => self.rbx,
+            // 4 => self._unused_rsp,
+            5 => self.rbp,
+            6 => self.rsi,
+            7 => self.rdi,
+            8 => self.r8,
+            9 => self.r9,
+            10 => self.r10,
+            11 => self.r11,
+            12 => self.r12,
+            13 => self.r13,
+            14 => self.r14,
+            15 => self.r15,
+            _ => {
+                panic!("Illegal index of GeneralRegisters {}", index);
+            }
+        }
+    }
+}
+
 macro_rules! save_regs_to_stack {
     () => {
         "

@@ -36,6 +36,70 @@ impl<H: AxVMHal> VmxRegion<H> {
     }
 }
 
+// (SDM Vol. 3C, Section 25.6.4)
+// The VM-execution control fields include the 64-bit physical addresses of I/O bitmaps A and B (each of which are 4 KBytes in size).
+// I/O bitmap A contains one bit for each I/O port in the range 0000H through 7FFFH;
+// I/O bitmap B contains bits for ports in the range 8000H through FFFFH.
+#[derive(Debug)]
+pub struct IOBitmap<H: AxVMHal> {
+    io_bitmap_a_frame: PhysFrame<H>,
+    io_bitmap_b_frame: PhysFrame<H>,
+}
+
+impl<H: AxVMHal> IOBitmap<H> {
+    pub fn passthrough_all() -> AxResult<Self> {
+        Ok(Self {
+            io_bitmap_a_frame: PhysFrame::alloc_zero()?,
+            io_bitmap_b_frame: PhysFrame::alloc_zero()?,
+        })
+    }
+
+    #[allow(unused)]
+    pub fn intercept_all() -> AxResult<Self> {
+        let mut io_bitmap_a_frame = PhysFrame::alloc()?;
+        io_bitmap_a_frame.fill(u8::MAX);
+        let mut io_bitmap_b_frame = PhysFrame::alloc()?;
+        io_bitmap_b_frame.fill(u8::MAX);
+        Ok(Self {
+            io_bitmap_a_frame,
+            io_bitmap_b_frame,
+        })
+    }
+
+    pub fn phys_addr(&self) -> (HostPhysAddr, HostPhysAddr) {
+        (
+            self.io_bitmap_a_frame.start_paddr(),
+            self.io_bitmap_b_frame.start_paddr(),
+        )
+    }
+
+    // Execution of an I/O instruction causes a VM exit
+    // if any bit in the I/O bitmaps corresponding to a port it accesses is 1.
+    // See Section 26.1.3 for details.
+    pub fn set_intercept(&mut self, port: u32, intercept: bool) {
+        let (port, io_bit_map_frame) = if port <= 0x7fff {
+            (port, &mut self.io_bitmap_a_frame)
+        } else {
+            (port - 0x8000, &mut self.io_bitmap_b_frame)
+        };
+        let bitmap =
+            unsafe { core::slice::from_raw_parts_mut(io_bit_map_frame.as_mut_ptr(), 1024) };
+        let byte = (port / 8) as usize;
+        let bits = port % 8;
+        if intercept {
+            bitmap[byte] |= 1 << bits;
+        } else {
+            bitmap[byte] &= !(1 << bits);
+        }
+    }
+
+    pub fn set_intercept_of_range(&mut self, port_base: u32, count: u32, intercept: bool) {
+        for port in port_base..port_base + count {
+            self.set_intercept(port, intercept)
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct MsrBitmap<H: AxVMHal> {
     frame: PhysFrame<H>,

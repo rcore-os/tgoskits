@@ -30,7 +30,7 @@ cfg_if::cfg_if! {
                 unimplemented!()
             }
 
-            pub fn run(&mut self) -> AxResult<()> {
+            pub fn run(&mut self) -> AxResult<crate::vcpu::AxArchVCpuExitReason> {
                 unimplemented!()
             }
 

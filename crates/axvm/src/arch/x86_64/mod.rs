@@ -4,6 +4,8 @@ pub(crate) mod msr;
 #[macro_use]
 pub(crate) mod regs;
 
+pub(crate) mod ept;
+
 cfg_if::cfg_if! {
     if #[cfg(feature = "vmx")] {
         mod vmx;
@@ -12,7 +14,7 @@ cfg_if::cfg_if! {
     }
 }
 
-pub(crate) use vender::{has_hardware_support};
+pub(crate) use vender::has_hardware_support;
 
 pub use lapic::ApicTimer;
 pub use regs::GeneralRegisters;
@@ -25,9 +27,7 @@ use axerrno::AxResult;
 
 /// The architecture dependent configuration of a `AxArchVCpu`.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct AxArchVCpuConfig {
-
-}
+pub struct AxArchVCpuConfig {}
 
 // just a stub here
 pub struct AxArchVCpu<H: AxVMHal> {
@@ -45,7 +45,7 @@ impl<H: AxVMHal> AxArchVCpu<H> {
         unimplemented!()
     }
 
-    pub fn run(&mut self) -> AxResult {
+    pub fn run(&mut self) -> AxResult<crate::vcpu::AxArchVCpuExitReason> {
         unimplemented!()
     }
 

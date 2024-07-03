@@ -102,8 +102,8 @@ impl<H: AxVMHal> VmxVcpu<H> {
     /// Advance guest `RIP` by `instr_len` bytes.
     pub fn advance_rip(&mut self, instr_len: u8) -> AxResult {
         Ok(VmcsGuestNW::RIP
-            .write(VmcsGuestNW::RIP.read().map_err(as_axerr)? + instr_len as usize)
-            .map_err(as_axerr)?)
+            .write(VmcsGuestNW::RIP.read()? + instr_len as usize)
+            ?)
     }
 
     /// Add a virtual interrupt or exception to the pending events list,
@@ -118,7 +118,7 @@ impl<H: AxVMHal> VmxVcpu<H> {
     pub fn set_interrupt_window(&mut self, enable: bool) -> AxResult {
         let mut ctrl = VmcsControl32::PRIMARY_PROCBASED_EXEC_CONTROLS
             .read()
-            .map_err(as_axerr)?;
+            ?;
         let bits = vmcs::controls::PrimaryControls::INTERRUPT_WINDOW_EXITING.bits();
         if enable {
             ctrl |= bits
@@ -127,7 +127,7 @@ impl<H: AxVMHal> VmxVcpu<H> {
         }
         VmcsControl32::PRIMARY_PROCBASED_EXEC_CONTROLS
             .write(ctrl)
-            .map_err(as_axerr)?;
+            ?;
         Ok(())
     }
 
@@ -167,45 +167,45 @@ impl<H: AxVMHal> VmxVcpu<H> {
     fn setup_vmcs_host(&mut self) -> AxResult {
         VmcsHost64::IA32_PAT
             .write(Msr::IA32_PAT.read())
-            .map_err(as_axerr)?;
+            ?;
         VmcsHost64::IA32_EFER
             .write(Msr::IA32_EFER.read())
-            .map_err(as_axerr)?;
+            ?;
 
         VmcsHostNW::CR0
             .write(Cr0::read_raw() as _)
-            .map_err(as_axerr)?;
+            ?;
         VmcsHostNW::CR3
             .write(Cr3::read_raw().0.start_address().as_u64() as _)
-            .map_err(as_axerr)?;
+            ?;
         VmcsHostNW::CR4
             .write(Cr4::read_raw() as _)
-            .map_err(as_axerr)?;
+            ?;
 
         VmcsHost16::ES_SELECTOR
             .write(x86::segmentation::es().bits())
-            .map_err(as_axerr)?;
+            ?;
         VmcsHost16::CS_SELECTOR
             .write(x86::segmentation::cs().bits())
-            .map_err(as_axerr)?;
+            ?;
         VmcsHost16::SS_SELECTOR
             .write(x86::segmentation::ss().bits())
-            .map_err(as_axerr)?;
+            ?;
         VmcsHost16::DS_SELECTOR
             .write(x86::segmentation::ds().bits())
-            .map_err(as_axerr)?;
+            ?;
         VmcsHost16::FS_SELECTOR
             .write(x86::segmentation::fs().bits())
-            .map_err(as_axerr)?;
+            ?;
         VmcsHost16::GS_SELECTOR
             .write(x86::segmentation::gs().bits())
-            .map_err(as_axerr)?;
+            ?;
         VmcsHostNW::FS_BASE
             .write(Msr::IA32_FS_BASE.read() as _)
-            .map_err(as_axerr)?;
+            ?;
         VmcsHostNW::GS_BASE
             .write(Msr::IA32_GS_BASE.read() as _)
-            .map_err(as_axerr)?;
+            ?;
 
         let tr = unsafe { x86::task::tr() };
         let mut gdtp = DescriptorTablePointer::<u64>::default();
@@ -214,23 +214,23 @@ impl<H: AxVMHal> VmxVcpu<H> {
             dtables::sgdt(&mut gdtp);
             dtables::sidt(&mut idtp);
         }
-        VmcsHost16::TR_SELECTOR.write(tr.bits()).map_err(as_axerr)?;
+        VmcsHost16::TR_SELECTOR.write(tr.bits())?;
         VmcsHostNW::TR_BASE
             .write(get_tr_base(tr, &gdtp) as _)
-            .map_err(as_axerr)?;
+            ?;
         VmcsHostNW::GDTR_BASE
             .write(gdtp.base as _)
-            .map_err(as_axerr)?;
+            ?;
         VmcsHostNW::IDTR_BASE
             .write(idtp.base as _)
-            .map_err(as_axerr)?;
+            ?;
         VmcsHostNW::RIP
             .write(Self::vmx_exit as usize)
-            .map_err(as_axerr)?;
+            ?;
 
-        VmcsHostNW::IA32_SYSENTER_ESP.write(0).map_err(as_axerr)?;
-        VmcsHostNW::IA32_SYSENTER_EIP.write(0).map_err(as_axerr)?;
-        VmcsHost32::IA32_SYSENTER_CS.write(0).map_err(as_axerr)?;
+        VmcsHostNW::IA32_SYSENTER_ESP.write(0)?;
+        VmcsHostNW::IA32_SYSENTER_EIP.write(0)?;
+        VmcsHost32::IA32_SYSENTER_CS.write(0)?;
 
         Ok(())
     }
@@ -243,13 +243,13 @@ impl<H: AxVMHal> VmxVcpu<H> {
         let cr0_read_shadow = Cr0Flags::NUMERIC_ERROR;
         VmcsGuestNW::CR0
             .write(cr0_guest.bits() as _)
-            .map_err(as_axerr)?;
+            ?;
         VmcsControlNW::CR0_GUEST_HOST_MASK
             .write(cr0_host_owned.bits() as _)
-            .map_err(as_axerr)?;
+            ?;
         VmcsControlNW::CR0_READ_SHADOW
             .write(cr0_read_shadow.bits() as _)
-            .map_err(as_axerr)?;
+            ?;
 
         // enable physical address extensions that required in IA-32e mode.
         let cr4_guest = Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS;
@@ -257,27 +257,27 @@ impl<H: AxVMHal> VmxVcpu<H> {
         let cr4_read_shadow = 0;
         VmcsGuestNW::CR4
             .write(cr4_guest.bits() as _)
-            .map_err(as_axerr)?;
+            ?;
         VmcsControlNW::CR4_GUEST_HOST_MASK
             .write(cr4_host_owned.bits() as _)
-            .map_err(as_axerr)?;
+            ?;
         VmcsControlNW::CR4_READ_SHADOW
             .write(cr4_read_shadow)
-            .map_err(as_axerr)?;
+            ?;
 
         macro_rules! set_guest_segment {
             ($seg: ident, $access_rights: expr) => {{
                 use VmcsGuest16::*;
                 use VmcsGuest32::*;
                 use VmcsGuestNW::*;
-                concat_idents!($seg, _SELECTOR).write(0).map_err(as_axerr)?;
-                concat_idents!($seg, _BASE).write(0).map_err(as_axerr)?;
+                concat_idents!($seg, _SELECTOR).write(0)?;
+                concat_idents!($seg, _BASE).write(0)?;
                 concat_idents!($seg, _LIMIT)
                     .write(0xffff)
-                    .map_err(as_axerr)?;
+                    ?;
                 concat_idents!($seg, _ACCESS_RIGHTS)
                     .write($access_rights)
-                    .map_err(as_axerr)?;
+                    ?;
             }};
         }
 
@@ -290,37 +290,37 @@ impl<H: AxVMHal> VmxVcpu<H> {
         set_guest_segment!(TR, 0x8b); // present, system, 32-bit TSS busy
         set_guest_segment!(LDTR, 0x82); // present, system, LDT
 
-        VmcsGuestNW::GDTR_BASE.write(0).map_err(as_axerr)?;
-        VmcsGuest32::GDTR_LIMIT.write(0xffff).map_err(as_axerr)?;
-        VmcsGuestNW::IDTR_BASE.write(0).map_err(as_axerr)?;
-        VmcsGuest32::IDTR_LIMIT.write(0xffff).map_err(as_axerr)?;
+        VmcsGuestNW::GDTR_BASE.write(0)?;
+        VmcsGuest32::GDTR_LIMIT.write(0xffff)?;
+        VmcsGuestNW::IDTR_BASE.write(0)?;
+        VmcsGuest32::IDTR_LIMIT.write(0xffff)?;
 
-        VmcsGuestNW::CR3.write(0).map_err(as_axerr)?;
-        VmcsGuestNW::DR7.write(0x400).map_err(as_axerr)?;
-        VmcsGuestNW::RSP.write(0).map_err(as_axerr)?;
-        VmcsGuestNW::RIP.write(entry).map_err(as_axerr)?;
-        VmcsGuestNW::RFLAGS.write(0x2).map_err(as_axerr)?;
+        VmcsGuestNW::CR3.write(0)?;
+        VmcsGuestNW::DR7.write(0x400)?;
+        VmcsGuestNW::RSP.write(0)?;
+        VmcsGuestNW::RIP.write(entry)?;
+        VmcsGuestNW::RFLAGS.write(0x2)?;
         VmcsGuestNW::PENDING_DBG_EXCEPTIONS
             .write(0)
-            .map_err(as_axerr)?;
-        VmcsGuestNW::IA32_SYSENTER_ESP.write(0).map_err(as_axerr)?;
-        VmcsGuestNW::IA32_SYSENTER_EIP.write(0).map_err(as_axerr)?;
-        VmcsGuest32::IA32_SYSENTER_CS.write(0).map_err(as_axerr)?;
+            ?;
+        VmcsGuestNW::IA32_SYSENTER_ESP.write(0)?;
+        VmcsGuestNW::IA32_SYSENTER_EIP.write(0)?;
+        VmcsGuest32::IA32_SYSENTER_CS.write(0)?;
 
         VmcsGuest32::INTERRUPTIBILITY_STATE
             .write(0)
-            .map_err(as_axerr)?;
-        VmcsGuest32::ACTIVITY_STATE.write(0).map_err(as_axerr)?;
+            ?;
+        VmcsGuest32::ACTIVITY_STATE.write(0)?;
         VmcsGuest32::VMX_PREEMPTION_TIMER_VALUE
             .write(0)
-            .map_err(as_axerr)?;
+            ?;
 
-        VmcsGuest64::LINK_PTR.write(u64::MAX).map_err(as_axerr)?; // SDM Vol. 3C, Section 24.4.2
-        VmcsGuest64::IA32_DEBUGCTL.write(0).map_err(as_axerr)?;
+        VmcsGuest64::LINK_PTR.write(u64::MAX)?; // SDM Vol. 3C, Section 24.4.2
+        VmcsGuest64::IA32_DEBUGCTL.write(0)?;
         VmcsGuest64::IA32_PAT
             .write(Msr::IA32_PAT.read())
-            .map_err(as_axerr)?;
-        VmcsGuest64::IA32_EFER.write(0).map_err(as_axerr)?;
+            ?;
+        VmcsGuest64::IA32_EFER.write(0)?;
         Ok(())
     }
 
@@ -393,21 +393,21 @@ impl<H: AxVMHal> VmxVcpu<H> {
         // No MSR switches if hypervisor doesn't use and there is only one vCPU.
         VmcsControl32::VMEXIT_MSR_STORE_COUNT
             .write(0)
-            .map_err(as_axerr)?;
+            ?;
         VmcsControl32::VMEXIT_MSR_LOAD_COUNT
             .write(0)
-            .map_err(as_axerr)?;
+            ?;
         VmcsControl32::VMENTRY_MSR_LOAD_COUNT
             .write(0)
-            .map_err(as_axerr)?;
+            ?;
 
         // Pass-through exceptions, don't use I/O bitmap, set MSR bitmaps.
-        VmcsControl32::EXCEPTION_BITMAP.write(0).map_err(as_axerr)?;
-        VmcsControl64::IO_BITMAP_A_ADDR.write(0).map_err(as_axerr)?;
-        VmcsControl64::IO_BITMAP_B_ADDR.write(0).map_err(as_axerr)?;
+        VmcsControl32::EXCEPTION_BITMAP.write(0)?;
+        VmcsControl64::IO_BITMAP_A_ADDR.write(0)?;
+        VmcsControl64::IO_BITMAP_B_ADDR.write(0)?;
         VmcsControl64::MSR_BITMAPS_ADDR
             .write(self.msr_bitmap.phys_addr().as_usize() as _)
-            .map_err(as_axerr)?;
+            ?;
         Ok(())
     }
 
@@ -509,16 +509,16 @@ impl<H: AxVMHal> Debug for VmxVcpu<H> {
         (|| -> AxResult<Result> {
             Ok(f.debug_struct("VmxVcpu")
                 .field("guest_regs", &self.guest_regs)
-                .field("rip", &VmcsGuestNW::RIP.read().map_err(as_axerr)?)
-                .field("rsp", &VmcsGuestNW::RSP.read().map_err(as_axerr)?)
-                .field("rflags", &VmcsGuestNW::RFLAGS.read().map_err(as_axerr)?)
-                .field("cr0", &VmcsGuestNW::CR0.read().map_err(as_axerr)?)
-                .field("cr3", &VmcsGuestNW::CR3.read().map_err(as_axerr)?)
-                .field("cr4", &VmcsGuestNW::CR4.read().map_err(as_axerr)?)
-                .field("cs", &VmcsGuest16::CS_SELECTOR.read().map_err(as_axerr)?)
-                .field("fs_base", &VmcsGuestNW::FS_BASE.read().map_err(as_axerr)?)
-                .field("gs_base", &VmcsGuestNW::GS_BASE.read().map_err(as_axerr)?)
-                .field("tss", &VmcsGuest16::TR_SELECTOR.read().map_err(as_axerr)?)
+                .field("rip", &VmcsGuestNW::RIP.read()?)
+                .field("rsp", &VmcsGuestNW::RSP.read()?)
+                .field("rflags", &VmcsGuestNW::RFLAGS.read()?)
+                .field("cr0", &VmcsGuestNW::CR0.read()?)
+                .field("cr3", &VmcsGuestNW::CR3.read()?)
+                .field("cr4", &VmcsGuestNW::CR4.read()?)
+                .field("cs", &VmcsGuest16::CS_SELECTOR.read()?)
+                .field("fs_base", &VmcsGuestNW::FS_BASE.read()?)
+                .field("gs_base", &VmcsGuestNW::GS_BASE.read()?)
+                .field("tss", &VmcsGuest16::TR_SELECTOR.read()?)
                 .finish())
         })()
         .unwrap()

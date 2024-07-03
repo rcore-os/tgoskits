@@ -49,6 +49,61 @@ impl <H: AxVMHal> AxVCpuInnerMut<H> {
     }
 }
 
+/// The width of an access.
+/// 
+/// Note that the term "word" here refers to 16-bit data, as in the x86 architecture.
+pub enum AccessWidth {
+    Byte,
+    Word,
+    Dword,
+    Qword,
+}
+
+impl TryFrom<usize> for AccessWidth {
+    type Error = ();
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::Byte),
+            2 => Ok(Self::Word),
+            4 => Ok(Self::Dword),
+            8 => Ok(Self::Qword),
+            _ => Err(()),
+        }
+    }
+}
+
+impl From<AccessWidth> for usize {
+    fn from(width: AccessWidth) -> usize {
+        match width {
+            AccessWidth::Byte => 1,
+            AccessWidth::Word => 2,
+            AccessWidth::Dword => 4,
+            AccessWidth::Qword => 8,
+        }
+    }
+}
+
+type Port = u16;
+
+/// The result of `AxArchVCpu::run`.
+pub enum AxArchVCpuExitReason {
+    /// The instruction executed by the vcpu performs a MMIO read operation.
+    MmioRead { addr: GuestPhysAddr, width: AccessWidth },
+    /// The instruction executed by the vcpu performs a MMIO write operation.
+    MmioWrite { addr: GuestPhysAddr, width: AccessWidth, data: u64 },
+    /// The instruction executed by the vcpu performs a I/O read operation.
+    /// 
+    /// It's unnecessary to specify the destination register because it's always `al`, `ax`, or `eax`.
+    IoRead { port: Port, width: AccessWidth },
+    /// The instruction executed by the vcpu performs a I/O write operation.
+    /// 
+    /// It's unnecessary to specify the source register because it's always `al`, `ax`, or `eax`.
+    IoWrite { port: Port, width: AccessWidth, data: u64 },
+    /// The vcpu is halted.
+    Halt,
+}
+
 /// A virtual CPU.
 /// 
 /// This struct handles internal mutability itself, almost all the methods are `&self`.
@@ -123,10 +178,11 @@ impl<H: AxVMHal> AxVCpu<H> {
         unsafe { &mut *self.arch_vcpu.get() }
     }
 
-    pub fn run(&self) -> AxResult<()> {
+    pub fn run(&self) -> AxResult<AxArchVCpuExitReason> {
         self.transition_state(VCpuState::Ready, VCpuState::Running)?;
-        self.get_arch_vcpu().run()?;
-        self.transition_state(VCpuState::Running, VCpuState::Ready)
+        let result = self.get_arch_vcpu().run()?;
+        self.transition_state(VCpuState::Running, VCpuState::Ready)?;
+        Ok(result)
     }
 
     pub fn bind(&self) -> AxResult<()> {

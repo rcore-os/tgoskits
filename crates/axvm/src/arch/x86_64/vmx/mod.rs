@@ -3,6 +3,7 @@ mod ept;
 mod instructions;
 mod structs;
 mod vcpu;
+mod vcpu2;
 mod vmcs;
 
 use raw_cpuid::CpuId;
