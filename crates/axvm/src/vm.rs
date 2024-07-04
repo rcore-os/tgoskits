@@ -82,7 +82,14 @@ impl<H: AxVMHal> AxVM<H> {
         if !has_hardware_support() {
             ax_err!(Unsupported, "Hardware does not support virtualization")
         } else {
-            self.vcpu(0).unwrap().run()
+            self.run_vcpu(0)
+        }
+    }
+
+    pub fn run_vcpu(&self, vcpu_id: usize) -> AxResult {
+        loop {
+            // todo: device access
+            let _ = self.vcpu(vcpu_id).unwrap().run()?;
         }
     }
 }

@@ -1,4 +1,8 @@
 //! Architecture dependent structures.
+
+use axerrno::AxResult;
+
+use crate::HostPhysAddr;
 cfg_if::cfg_if! {
     if #[cfg(target_arch = "x86_64")] {
         mod x86_64;
@@ -11,9 +15,7 @@ cfg_if::cfg_if! {
 
         /// The architecture dependent configuration of a `AxArchVCpu`.
         #[derive(Clone, Copy, Debug, Default)]
-        pub struct AxArchVCpuConfig {
-
-        }
+        pub struct AxArchVCpuConfig {}
 
         pub struct AxArchVCpu<H: AxVMHal> {
             _marker: core::marker::PhantomData<H>,
@@ -26,7 +28,11 @@ cfg_if::cfg_if! {
                 })
             }
 
-            pub fn set_entry_and_ept(&mut self, entry: GuestPhysAddr, ept: HostPhysAddr) -> AxResult<()> {
+            pub fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
+                unimplemented!()
+            }
+
+            pub fn set_ept_root(&mut self, ept_root: HostPhysAddr) -> AxResult {
                 unimplemented!()
             }
 
@@ -34,11 +40,11 @@ cfg_if::cfg_if! {
                 unimplemented!()
             }
 
-            pub fn bind(&mut self) -> AxResult<()> {
+            pub fn bind(&mut self) -> AxResult {
                 unimplemented!()
             }
 
-            pub fn unbind(&mut self) -> AxResult<()> {
+            pub fn unbind(&mut self) -> AxResult {
                 unimplemented!()
             }
         }
@@ -66,6 +72,5 @@ cfg_if::cfg_if! {
                 unimplemented!()
             }
         }
-
     }
 }

@@ -1,14 +1,15 @@
 use alloc::collections::VecDeque;
+use bit_field::BitField;
 use core::fmt::{Debug, Formatter, Result};
 use core::{arch::asm, mem::size_of};
-
-use bit_field::BitField;
 use raw_cpuid::CpuId;
 use x86::bits64::vmx;
 use x86::controlregs::{xcr0 as xcr0_read, xcr0_write, Xcr0};
 use x86::dtables::{self, DescriptorTablePointer};
 use x86::segmentation::SegmentSelector;
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr4, Cr4Flags, EferFlags};
+
+use axerrno::{ax_err, ax_err_type, AxResult};
 
 use super::as_axerr;
 use super::definitions::VmxExitReason;
@@ -18,11 +19,8 @@ use super::vmcs::{
     VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW,
 };
 use super::VmxExitInfo;
-use crate::arch::ept::GuestPageWalkInfo;
-use crate::arch::{msr::Msr, regs::GeneralRegisters};
-use crate::NestedPageFaultInfo;
-use crate::{AxVMHal, GuestPhysAddr, GuestVirtAddr, HostPhysAddr};
-use axerrno::{ax_err, ax_err_type, AxResult};
+use crate::arch::{ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters};
+use crate::{AxVMHal, GuestPhysAddr, GuestVirtAddr, HostPhysAddr, NestedPageFaultInfo};
 
 static mut VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 1000_000;
 

@@ -392,6 +392,7 @@ dependencies = [
  "numeric-enum-macro",
  "page_table",
  "page_table_entry",
+ "percpu",
  "raw-cpuid 11.0.2",
  "spinlock",
  "x86",

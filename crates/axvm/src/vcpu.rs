@@ -165,8 +165,10 @@ impl<H: AxVMHal> AxVCpu<H> {
             .upgrade()
             .ok_or(ax_err_type!(BadState, "VM is dropped"))?;
         let ept_root = vm.ept_root();
-        self.get_arch_vcpu()
-            .set_entry_and_ept(self.inner_const.entry, ept_root)
+        let arch_vcpu = self.get_arch_vcpu();
+        arch_vcpu.set_entry(self.inner_const.entry)?;
+        arch_vcpu.set_ept_root(ept_root)?;
+        Ok(())
     }
 
     pub fn id(&self) -> usize {
@@ -203,13 +205,15 @@ impl<H: AxVMHal> AxVCpu<H> {
         }
     }
 
-    fn get_arch_vcpu(&self) -> &mut AxArchVCpu<H> {
+    pub fn get_arch_vcpu(&self) -> &mut AxArchVCpu<H> {
         unsafe { &mut *self.arch_vcpu.get() }
     }
 
     pub fn run(&self) -> AxResult<AxArchVCpuExitReason> {
         self.transition_state(VCpuState::Ready, VCpuState::Running)?;
+        set_current_vcpu(&self);
         let result = self.get_arch_vcpu().run()?;
+        clear_current_vcpu::<H>();
         self.transition_state(VCpuState::Running, VCpuState::Ready)?;
         Ok(result)
     }
@@ -222,5 +226,32 @@ impl<H: AxVMHal> AxVCpu<H> {
     pub fn unbind(&self) -> AxResult<()> {
         self.transition_state(VCpuState::Ready, VCpuState::Free)?;
         self.get_arch_vcpu().unbind()
+    }
+}
+
+#[percpu::def_percpu]
+static mut CURRENT_VCPU: Option<*mut u8> = None;
+
+pub fn get_current_vcpu<H: AxVMHal>() -> Option<&'static AxVCpu<H>> {
+    unsafe {
+        CURRENT_VCPU.current_ref_raw().as_ref().copied().map(|p| (p as *const AxVCpu<H>).as_ref()).flatten()
+    }
+}
+
+pub fn get_current_vcpu_mut<H: AxVMHal>() -> Option<&'static mut AxVCpu<H>> {
+    unsafe {
+        CURRENT_VCPU.current_ref_mut_raw().as_mut().copied().map(|p| (p as *mut AxVCpu<H>).as_mut()).flatten()
+    }
+}
+
+pub fn set_current_vcpu<H: AxVMHal>(vcpu: &AxVCpu<H>) {
+    unsafe {
+        CURRENT_VCPU.current_ref_mut_raw().replace(vcpu as *const _ as *mut u8);
+    }
+}
+
+pub fn clear_current_vcpu<H: AxVMHal>() {
+    unsafe {
+        CURRENT_VCPU.current_ref_mut_raw().take();
     }
 }

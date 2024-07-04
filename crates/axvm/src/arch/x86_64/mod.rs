@@ -29,7 +29,6 @@ use axerrno::AxResult;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AxArchVCpuConfig {}
 
-// just a stub here
 pub struct AxArchVCpu<H: AxVMHal> {
     _marker: core::marker::PhantomData<H>,
 }
@@ -41,7 +40,11 @@ impl<H: AxVMHal> AxArchVCpu<H> {
         })
     }
 
-    pub fn set_entry_and_ept(&mut self, entry: GuestPhysAddr, ept: HostPhysAddr) -> AxResult {
+    pub fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
+        unimplemented!()
+    }
+
+    pub fn set_ept_root(&mut self, ept_root: HostPhysAddr) -> AxResult {
         unimplemented!()
     }
 
