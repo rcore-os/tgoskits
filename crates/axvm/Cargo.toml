@@ -22,6 +22,9 @@ page_table = { path = "../../arceos/crates/page_table" }
 page_table_entry = { path = "../../arceos/crates/page_table_entry" }
 percpu = { path = "../../arceos/crates/percpu" }
 
+# Operating system dependent modules provided by ArceOS, these modules could be imported by remote url.
+axhal = { path = "../../arceos/modules/axhal" }
+
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"
 x86_64 = "0.14"
