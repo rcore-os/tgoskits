@@ -37,7 +37,7 @@ pub fn get_current_cpu() -> HostPhysAddr {
 /// sits at the top of a secondary CPU's stack.
 #[repr(C)]
 #[repr(align(4096))]
-pub struct PerCpu<H:HyperCraftHal>{   //stack_top_addr has no use yet?
+pub struct AxArchPerCpuState<H:HyperCraftHal>{   //stack_top_addr has no use yet?
     /// per cpu id
     pub cpu_id: usize,
     /// current active vcpu
@@ -51,7 +51,7 @@ pub struct PerCpu<H:HyperCraftHal>{   //stack_top_addr has no use yet?
     marker: core::marker::PhantomData<H>,
 }
 
-impl <H: HyperCraftHal + 'static> PerCpu<H> {
+impl <H: HyperCraftHal + 'static> AxArchPerCpuState<H> {
     const fn new(cpu_id: usize) -> Self {
         Self {
             cpu_id: cpu_id,
@@ -63,11 +63,15 @@ impl <H: HyperCraftHal + 'static> PerCpu<H> {
         }
     }
 
-    /// Initializes the `PerCpu` structures for each CPU. This (the boot CPU's) per-CPU
+    pub fn is_enabled(&self) -> bool {
+        
+    }
+
+    /// Initializes the `AxArchPerCpuState` structures for each CPU. This (the boot CPU's) per-CPU
     /// area is initialized and loaded into TPIDR_EL1 as well.
     pub fn init(boot_id: usize) -> HyperResult<()> {
         let cpu_nums: usize = 2;
-        let pcpu_size = core::mem::size_of::<PerCpu<H>>() * cpu_nums;
+        let pcpu_size = core::mem::size_of::<AxArchPerCpuState<H>>() * cpu_nums;
         debug!("pcpu_size: {:#x}", pcpu_size);
         let pcpu_pages = H::alloc_pages((pcpu_size + PAGE_SIZE_4K - 1) / PAGE_SIZE_4K)
             .ok_or(HyperError::NoMemory)?;
@@ -82,12 +86,12 @@ impl <H: HyperCraftHal + 'static> PerCpu<H> {
                 H::alloc_pages((stack_size + PAGE_SIZE_4K - 1) / PAGE_SIZE_4K)
                     .ok_or(HyperError::NoMemory)?
             };*/
-            let pcpu: PerCpu<H> = Self::new(cpu_id);
+            let pcpu: AxArchPerCpuState<H> = Self::new(cpu_id);
             let ptr = Self::ptr_for_cpu(cpu_id);
             // Safety: ptr is guaranteed to be properly aligned and point to valid memory owned by
-            // PerCpu. No other CPUs are alive at this point, so it cannot be concurrently modified
+            // AxArchPerCpuState. No other CPUs are alive at this point, so it cannot be concurrently modified
             // either.
-            unsafe { core::ptr::write(ptr as *mut PerCpu<H>, pcpu) };
+            unsafe { core::ptr::write(ptr as *mut AxArchPerCpuState<H>, pcpu) };
         }
 
         // Initialize TP register and set this CPU online to be consistent with secondary CPUs.
@@ -96,10 +100,10 @@ impl <H: HyperCraftHal + 'static> PerCpu<H> {
         Ok(())
     }
 
-    /// Initializes the TP pointer to point to PerCpu data.
+    /// Initializes the TP pointer to point to AxArchPerCpuState data.
     pub fn setup_this_cpu(cpu_id: usize) -> HyperResult<()> {
-        // Load TP with address of pur PerCpu struct.
-        let tp = PER_CPU_BASE.get().unwrap() + cpu_id * core::mem::size_of::<PerCpu<H>>();
+        // Load TP with address of pur AxArchPerCpuState struct.
+        let tp = PER_CPU_BASE.get().unwrap() + cpu_id * core::mem::size_of::<AxArchPerCpuState<H>>();
         // let tp = Self::ptr_for_cpu(cpu_id) as usize;
         // unsafe {
             // asm!("msr TPIDR_EL1, {}", in(reg) tp)
@@ -108,17 +112,17 @@ impl <H: HyperCraftHal + 'static> PerCpu<H> {
         Ok(())
     }
 
-    /// Returns this CPU's `PerCpu` structure.
-    pub fn this_cpu() -> &'static mut PerCpu<H> {
-        // Make sure PerCpu has been set up.
+    /// Returns this CPU's `AxArchPerCpuState` structure.
+    pub fn this_cpu() -> &'static mut AxArchPerCpuState<H> {
+        // Make sure AxArchPerCpuState has been set up.
         assert!(PER_CPU_BASE.get().is_some());
         // let tp: u64;
         let tp = get_current_cpu() as u64;
         // unsafe { core::arch::asm!("mrs {}, TPIDR_EL1", out(reg) tp) };
-        // let pcpu_ptr = tp as *mut PerCpu<H>;
-        let pcpu_ptr = tp as *mut PerCpu<H>;
+        // let pcpu_ptr = tp as *mut AxArchPerCpuState<H>;
+        let pcpu_ptr = tp as *mut AxArchPerCpuState<H>;
         let pcpu = unsafe {
-            // Safe since TP is set uo to point to a valid PerCpu
+            // Safe since TP is set uo to point to a valid AxArchPerCpuState
             pcpu_ptr.as_mut().unwrap()
         };
         pcpu
@@ -147,12 +151,12 @@ impl <H: HyperCraftHal + 'static> PerCpu<H> {
         self.active_vcpu.as_mut()
     }
 
-    /// Returns a pointer to the `PerCpu` for the given CPU.
-    pub fn ptr_for_cpu(cpu_id: usize) ->  &'static mut PerCpu<H> {
-        let pcpu_addr = PER_CPU_BASE.get().unwrap() + cpu_id * core::mem::size_of::<PerCpu<H>>();
-        let pcpu_ptr = pcpu_addr as *mut PerCpu<H>;
+    /// Returns a pointer to the `AxArchPerCpuState` for the given CPU.
+    pub fn ptr_for_cpu(cpu_id: usize) ->  &'static mut AxArchPerCpuState<H> {
+        let pcpu_addr = PER_CPU_BASE.get().unwrap() + cpu_id * core::mem::size_of::<AxArchPerCpuState<H>>();
+        let pcpu_ptr = pcpu_addr as *mut AxArchPerCpuState<H>;
         let pcpu = unsafe {
-            // Safe since TP is set uo to point to a valid PerCpu
+            // Safe since TP is set uo to point to a valid AxArchPerCpuState
             pcpu_ptr.as_mut().unwrap()
         };
         pcpu

@@ -7,6 +7,9 @@ cfg_if::cfg_if! {
     if #[cfg(target_arch = "x86_64")] {
         mod x86_64;
         pub use self::x86_64::*;
+    } else if #[cfg(target_arch = "aarch64")] {
+        mod aarch64;
+        pub use self::aarch64::*;
     } else {
         // Following are things for the new, unified code structure. Just a stub here.
         use crate::AxVMHal;
