@@ -386,10 +386,13 @@ dependencies = [
 name = "axvm"
 version = "0.1.0"
 dependencies = [
+ "aarch64-cpu",
  "axerrno",
+ "axhal",
  "bit_field",
  "bitflags 2.5.0",
  "cfg-if",
+ "cortex-a",
  "log",
  "memory_addr",
  "numeric-enum-macro",
@@ -397,6 +400,7 @@ dependencies = [
  "page_table_entry",
  "percpu",
  "raw-cpuid 11.0.2",
+ "smccc",
  "spinlock",
  "x86",
  "x86_64",
@@ -1392,6 +1396,12 @@ version = "0.3.1"
 dependencies = [
  "buddy_system_allocator",
 ]
+
+[[package]]
+name = "smccc"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "617d17f088ec733e5a6b86da6ce4cce1414e6e856d6061c16dda51cceae6f68c"
 
 [[package]]
 name = "smoltcp"

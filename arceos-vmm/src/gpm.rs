@@ -169,6 +169,21 @@ impl GuestPhysMemorySet {
         }
         self.regions.clear();
     }
+
+    pub fn token(&self) -> usize {
+        #[cfg(any(target_arch = "riscv64", target_arch = "x86_64"))]
+        {
+            8usize << 60 | usize::from(self.1.root_paddr()) >> 12
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            usize::from(self.1.root_paddr())  // need to lrs 1 bit for CnP??
+        }
+        #[cfg(not(any(target_arch = "riscv64", target_arch = "x86_64", target_arch = "aarch64")))]
+        {
+            todo!()
+        }
+    }
 }
 
 impl Drop for GuestPhysMemorySet {

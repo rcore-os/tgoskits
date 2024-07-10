@@ -1,16 +1,17 @@
 use alloc::{format, sync::Weak};
 // use spinlock::{SpinNoIrq, SpinNoIrqGuard};
 use axerrno::{ax_err, ax_err_type, AxResult};
+use page_table::PagingIf;
 use core::cell::{RefCell, UnsafeCell};
 
 use crate::{arch::AxArchVCpu, config::AxVCpuConfig, AxVM, AxVMHal, GuestPhysAddr};
 
 /// The constant part of `AxVCpu`.
-struct AxVCpuInnerConst<H: AxVMHal> {
+struct AxVCpuInnerConst<H: AxVMHal, I: PagingIf> {
     /// The id of the vcpu.
     id: usize,
     /// The VM this vcpu belongs to.
-    vm: Weak<AxVM<H>>,
+    vm: Weak<AxVM<H, I>>,
     /// The id of the physical CPU who has the priority to run this vcpu. Not implemented yet.
     favor_phys_cpu: usize,
     /// The mask of physical CPUs who can run this vcpu. Not implemented yet.
@@ -121,9 +122,9 @@ pub enum AxArchVCpuExitReason {
 /// This struct handles internal mutability itself, almost all the methods are `&self`.
 ///
 /// Note that the `AxVCpu` is not thread-safe. It's caller's responsibility to ensure the safety.
-pub struct AxVCpu<H: AxVMHal> {
+pub struct AxVCpu<H: AxVMHal, I: PagingIf> {
     /// The constant part of the vcpu.
-    inner_const: AxVCpuInnerConst<H>,
+    inner_const: AxVCpuInnerConst<H,I>,
     /// The mutable part of the vcpu.
     inner_mut: RefCell<AxVCpuInnerMut<H>>,
     /// The architecture-specific state of the vcpu.
@@ -134,11 +135,11 @@ pub struct AxVCpu<H: AxVMHal> {
     arch_vcpu: UnsafeCell<AxArchVCpu<H>>,
 }
 
-impl<H: AxVMHal> AxVCpu<H> {
+impl<H: AxVMHal,I: PagingIf> AxVCpu<H,I> {
     pub fn new(
         config: AxVCpuConfig,
         id: usize,
-        vm: Weak<AxVM<H>>,
+        vm: Weak<AxVM<H,I>>,
         favor_phys_cpu: usize,
         affinity: usize,
     ) -> AxResult<Self> {
@@ -179,7 +180,7 @@ impl<H: AxVMHal> AxVCpu<H> {
         self.inner_const.id == 0
     }
 
-    pub fn vm(&self) -> Weak<AxVM<H>> {
+    pub fn vm(&self) -> Weak<AxVM<H,I>> {
         self.inner_const.vm.clone()
     }
 
@@ -232,19 +233,19 @@ impl<H: AxVMHal> AxVCpu<H> {
 #[percpu::def_percpu]
 static mut CURRENT_VCPU: Option<*mut u8> = None;
 
-pub fn get_current_vcpu<H: AxVMHal>() -> Option<&'static AxVCpu<H>> {
+pub fn get_current_vcpu<H: AxVMHal, I: PagingIf>() -> Option<&'static AxVCpu<H,I>> {
     unsafe {
-        CURRENT_VCPU.current_ref_raw().as_ref().copied().map(|p| (p as *const AxVCpu<H>).as_ref()).flatten()
+        CURRENT_VCPU.current_ref_raw().as_ref().copied().map(|p| (p as *const AxVCpu<H,I>).as_ref()).flatten()
     }
 }
 
-pub fn get_current_vcpu_mut<H: AxVMHal>() -> Option<&'static mut AxVCpu<H>> {
+pub fn get_current_vcpu_mut<H: AxVMHal, I: PagingIf>() -> Option<&'static mut AxVCpu<H,I>> {
     unsafe {
-        CURRENT_VCPU.current_ref_mut_raw().as_mut().copied().map(|p| (p as *mut AxVCpu<H>).as_mut()).flatten()
+        CURRENT_VCPU.current_ref_mut_raw().as_mut().copied().map(|p| (p as *mut AxVCpu<H,I>).as_mut()).flatten()
     }
 }
 
-pub fn set_current_vcpu<H: AxVMHal>(vcpu: &AxVCpu<H>) {
+pub fn set_current_vcpu<H: AxVMHal, I: PagingIf>(vcpu: &AxVCpu<H,I>) {
     unsafe {
         CURRENT_VCPU.current_ref_mut_raw().replace(vcpu as *const _ as *mut u8);
     }

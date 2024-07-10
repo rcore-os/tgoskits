@@ -27,6 +27,10 @@ use page_table_entry::MappingFlags;
 use self::gconfig::*;
 use self::gpm::{GuestMemoryRegion, GuestPhysMemorySet};
 use self::hal::AxVMHalImpl;
+use alloc::vec;
+
+#[cfg(target_arch = "aarch64")]
+use dtb_aarch64::MachineMeta;
 
 #[repr(align(4096))]
 struct AlignedMemory<const LEN: usize>([u8; LEN]);
@@ -73,11 +77,22 @@ fn load_guest_image_from_file_system(file_name: &str, load_gpa: GuestPhysAddr) -
 
 fn setup_gpm() -> AxResult<GuestPhysMemorySet> {
     // copy BIOS and guest images from file system
+    #[cfg(target_arch = "x86_64")]
     load_guest_image_from_file_system("rvm-bios.bin", BIOS_ENTRY)?;
+
     load_guest_image_from_file_system("nimbos.bin", GUEST_ENTRY)?;
+    
+    #[cfg(target_arch = "aarch64")]
+    load_guest_image_from_file_system("nimbos-aarch64.dtb", DTB_ENTRY)?;
+
 
     // create nested page table and add mapping
     let mut gpm = GuestPhysMemorySet::new()?;
+
+    #[cfg(target_arch = "aarch64")]
+    let meta = MachineMeta::parse(DTB_ENTRY);
+
+    #[cfg(target_arch = "x86_64")]
     let guest_memory_regions = [
         GuestMemoryRegion {
             // RAM
@@ -110,6 +125,59 @@ fn setup_gpm() -> AxResult<GuestPhysMemorySet> {
             flags: MappingFlags::READ | MappingFlags::WRITE | MappingFlags::DEVICE,
         },
     ];
+
+    #[cfg(target_arch = "aarch64")]
+    {
+    let mut guest_memory_regions = vec![
+        GuestMemoryRegion {
+            // RAM
+            gpa: GUEST_PHYS_MEMORY_BASE,
+            hpa: virt_to_phys(HostVirtAddr::from(
+                gpa_as_mut_ptr(GUEST_PHYS_MEMORY_BASE) as usize
+            )),
+            size: GUEST_PHYS_MEMORY_SIZE,
+            flags: MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE,
+        },
+        GuestMemoryRegion {
+            // virt io
+            gpa: 0x0a00_0000,
+            hpa: HostPhysAddr::from(0x0a00_0000),
+            size: 0x4000,
+            flags: MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
+        },
+        GuestMemoryRegion {
+            // map gicc to gicv. the address is qemu setting, it is different from real hardware
+            gpa: 0x0801_0000,
+            hpa: HostPhysAddr::from(0x0804_0000),
+            size: 0x2000,
+            flags: MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
+        },
+        GuestMemoryRegion {
+            // 
+            gpa: 0x0802_0000,
+            hpa: HostPhysAddr::from(0x0802_0000),
+            size: 0x1_0000,
+            flags: MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
+        },
+        GuestMemoryRegion {
+            // physical memory offset
+            gpa: meta.physical_memory_offset,
+            hpa: HostPhysAddr::from(meta.physical_memory_offset),
+            size: meta.physical_memory_size,
+            flags: MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE | MappingFlags::USER,
+        },
+        GuestMemoryRegion {
+            // 
+            gpa: 0xffff_0000_4008_0000,
+            hpa: HostPhysAddr::from(GUEST_ENTRY),
+            size: meta.physical_memory_size,
+            flags: MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE | MappingFlags::USER,
+        },
+    ];
+
+    // some devices not map(flash,pcie... )
+    }
+
     for r in guest_memory_regions.into_iter() {
         trace!("{:#x?}", r);
         gpm.map_region(r.into())?;
