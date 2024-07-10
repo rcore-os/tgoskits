@@ -1,7 +1,6 @@
 use crate::{
     arch::AxArchPerCpuState,
-    mm::{GuestPhysAddr, HostPhysAddr},
-    AxVMHal, AxVMVcpu,
+    AxVMHal,
 };
 use axerrno::{ax_err, AxResult};
 use core::mem::MaybeUninit;
@@ -32,7 +31,7 @@ pub struct AxVMPerCpu<H: AxVMHal> {
     arch: MaybeUninit<AxArchPerCpuState<H>>,
 }
 
-impl<H: AxVMHal> AxVMPerCpu<H> {
+impl<H: AxVMHal + 'static> AxVMPerCpu<H> {
     /// Create a new, uninitialized per-CPU state.
     pub const fn new_uninit() -> Self {
         Self {
@@ -81,25 +80,25 @@ impl<H: AxVMHal> AxVMPerCpu<H> {
         self.arch_checked_mut().hardware_disable()
     }
 
-    /// Create a [`AxVMVcpu`], set the entry point to `entry`, set the nested
-    /// page table root to `npt_root`.
-    pub fn create_vcpu(
-        &self,
-        entry: GuestPhysAddr,
-        npt_root: HostPhysAddr,
-    ) -> AxResult<AxVMVcpu<H>> {
-        if !self.is_enabled() {
-            ax_err!(BadState, "virtualization is not enabled")
-        } else {
-            AxVMVcpu::new(entry, npt_root)
-        }
-    }
+    // // Create a [`AxVMVcpu`], set the entry point to `entry`, set the nested
+    // // page table root to `npt_root`.
+    // pub fn create_vcpu(
+    //     &self,
+    //     entry: GuestPhysAddr,
+    //     npt_root: HostPhysAddr,
+    // ) -> AxResult<AxVMVcpu<H>> {
+    //     if !self.is_enabled() {
+    //         ax_err!(BadState, "virtualization is not enabled")
+    //     } else {
+    //         AxVMVcpu::new(entry, npt_root)
+    //     }
+    // }
 }
 
-impl<H: AxVMHal> Drop for AxVMPerCpu<H> {
-    fn drop(&mut self) {
-        if self.is_enabled() {
-            self.hardware_disable().unwrap();
-        }
-    }
-}
+// impl<H: AxVMHal> Drop for AxVMPerCpu<H> {
+//     fn drop(&mut self) {
+//         if self.is_enabled() {
+//             self.hardware_disable().unwrap();
+//         }
+//     }
+// }

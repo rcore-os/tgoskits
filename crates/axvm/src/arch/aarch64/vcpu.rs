@@ -19,10 +19,11 @@ use cortex_a::registers::*;
 use tock_registers::interfaces::*;
 
 use super::ContextFrame;
-use super::VmContext;
+use super::context_frame::VmContext;
 use super::register_lower_aarch64_synchronous_handler;
+use axerrno::{AxResult, AxError};
 
-use crate::AxvmHal;
+use crate::{AxVMHal, GuestPhysAddr, HostPhysAddr};
 
 core::arch::global_asm!(include_str!("entry.S"));
 // use crate::arch::hvc::run_guest_by_trap2el2;
@@ -47,7 +48,7 @@ pub enum VcpuState {
 /// (v)CPU register state that must be saved or restored when entering/exiting a VM or switching
 /// between VMs.
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Copy, Default)]
 pub struct VmCpuRegisters {
     /// guest trap context
     pub trap_context_regs: ContextFrame,
@@ -67,9 +68,10 @@ impl VmCpuRegisters {
 
 /// A virtual CPU within a guest
 #[derive(Clone, Debug)]
-pub struct VCpu<H:AxvmHal> {
+pub struct VCpu<H:AxVMHal> {
     /// Vcpu context
     pub regs: VmCpuRegisters,
+    vcpu_id: usize,
 
     marker: PhantomData<H>,
 }
@@ -78,42 +80,51 @@ extern "C" {
     fn context_vm_entry(ctx: usize) -> !;
 }
 
-type AxArchVCpuConfig = VmCpuRegisters;
+pub type AxArchVCpuConfig = VmCpuRegisters;
 
 // Public Function
-impl <H:AxvmHal> VCpu<H> {
+impl <H:AxVMHal> VCpu<H> {
+
     /// Create a new vCPU
-    pub fn new(_config: AxArchVCpuConfig) -> Self {
+    pub fn new(_config: AxArchVCpuConfig) -> AxResult<Self> {
         // Self {
         //     regs: VmCpuRegisters::default(),
         //     marker: PhantomData,
         // }
-        Self {
+        Ok(Self {
             regs: AxArchVCpuConfig::default(),
+            vcpu_id: 0, // need to pass a parameter!!!!
             marker: PhantomData,
-        }
+        })
     }
+    
+    // pub fn new(entry: GuestPhysAddr, ept_root: HostPhysAddr) -> AxResult<Self> {
+    //     let mut vcpu = Self::new(AxArchVCpuConfig::default());
+    //     vcpu.set_entry(entry)?;
+    //     vcpu.set_ept_root(ept_root)?;
+    //     Ok(vcpu)
+    // }
 
     /// Set guest entry point
     pub fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
-        self.set_elr(elr);
+        self.set_elr(entry);
         Ok(())
     }
 
     /// Set ept root
     pub fn set_ept_root(&mut self, ept_root: HostPhysAddr) -> AxResult {
-        self.regs.vm_system_regs.vttbr_el2 = ept_root as u64;
+        self.regs.vm_system_regs.vttbr_el2 = ept_root.as_usize() as u64;
         Ok(())
     }
 
     /// Run vcpu
     pub fn run(&mut self) -> AxResult<crate::vcpu::AxArchVCpuExitReason> {
-        register_lower_aarch64_synchronous_handler();
+        register_lower_aarch64_synchronous_handler()?;
         self.init_hv();
         unsafe {
-            context_vm_entry(self.vcpu_trap_ctx_addr(true));
+            context_vm_entry(self.vcpu_trap_ctx_addr());
         }
-        Ok(())
+        Err(AxError::BadState)
     }
 
     pub fn bind(&mut self) -> AxResult {
@@ -127,7 +138,7 @@ impl <H:AxvmHal> VCpu<H> {
 }
 
 // Private function
-impl <H:AxvmHal> VCpu<H> {
+impl <H:AxVMHal> VCpu<H> {
     fn init_hv(&mut self) {
         self.regs.trap_context_regs.spsr =( SPSR_EL1::M::EL1h + 
             SPSR_EL1::I::Masked + 

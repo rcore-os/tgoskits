@@ -5,42 +5,36 @@ use tock_registers::interfaces::*;
 
 use spin::{Mutex, Once};
 
-use crate::{AxResult, HostPhysAddr};
+use crate::{HostPhysAddr, AxVMHal};
 use super::ContextFrame;
-// use crate::{HyperCraftHal, HyperResult, HyperError, HostPhysAddr, HostVirtAddr, GuestPhysAddr};
+use axerrno::AxResult;
+// use crate::{AxVMHal, HyperResult, HyperError, HostPhysAddr, HostVirtAddr, GuestPhysAddr};
 // use crate::arch::vcpu::VCpu;
 // use crate::arch::ContextFrame;
 
-/// need to move to a suitable file?
-const PAGE_SIZE_4K: usize = 0x1000;
+// // The base address of the per-CPU memory region.
+// static PER_CPU_BASE: Once<HostPhysAddr> = Once::new();
 
-pub const CPU_MASTER: usize = 0;
-pub const CONTEXT_GPR_NUM: usize = 31;
-pub const PTE_PER_PAGE: usize = 512;
+// pub static mut CURRENT_CPU_HV: Mutex<HostPhysAddr> = Mutex::new(0);
 
-/// The base address of the per-CPU memory region.
-static PER_CPU_BASE: Once<HostPhysAddr> = Once::new();
-
-pub static mut CURRENT_CPU_HV: Mutex<HostPhysAddr> = Mutex::new(0);
-
-pub fn set_current_cpu(addr: HostPhysAddr) {
-    unsafe {
-        let mut current_cpu = CURRENT_CPU_HV.lock();
-        *current_cpu = addr;
-    }
-}
-pub fn get_current_cpu() -> HostPhysAddr {
-    unsafe {
-        let current_cpu = CURRENT_CPU_HV.lock();
-        *current_cpu
-    }
-}
+// pub fn set_current_cpu(addr: HostPhysAddr) {
+//     unsafe {
+//         let mut current_cpu = CURRENT_CPU_HV.lock();
+//         *current_cpu = addr;
+//     }
+// }
+// pub fn get_current_cpu() -> HostPhysAddr {
+//     unsafe {
+//         let current_cpu = CURRENT_CPU_HV.lock();
+//         *current_cpu
+//     }
+// }
 
 /// Per-CPU data. A pointer to this struct is loaded into TP when a CPU starts. This structure
 /// sits at the top of a secondary CPU's stack.
 #[repr(C)]
 #[repr(align(4096))]
-pub struct PerCpu<H:HyperCraftHal>{   //stack_top_addr has no use yet?
+pub struct PerCpu<H:AxVMHal>{   //stack_top_addr has no use yet?
     /// per cpu id
     pub cpu_id: usize,
     /// context address of this cpu
@@ -49,7 +43,7 @@ pub struct PerCpu<H:HyperCraftHal>{   //stack_top_addr has no use yet?
     marker: core::marker::PhantomData<H>,
 }
 
-impl <H: HyperCraftHal + 'static> PerCpu<H> {
+impl <H: AxVMHal + 'static> PerCpu<H> {
     pub const fn new(cpu_id: usize) -> Self {
         Self {
             cpu_id: cpu_id,
@@ -61,7 +55,7 @@ impl <H: HyperCraftHal + 'static> PerCpu<H> {
 
     pub fn is_enabled(&self) -> bool {
         let hcr_el2 = HCR_EL2.get();
-        hcr_el2.is_set(HCR_EL2::VM)
+        return hcr_el2 & 1 != 0;
     }
 
     pub fn hardware_enable(&mut self) -> AxResult {
@@ -74,7 +68,7 @@ impl <H: HyperCraftHal + 'static> PerCpu<H> {
 }
 
 // Other function (do we need?)
-// impl <H: HyperCraftHal + 'static> PerCpu<H> {
+// impl <H: AxVMHal + 'static> PerCpu<H> {
 //     /// Initializes the `PerCpu` structures for each CPU. This (the boot CPU's) per-CPU
 //     /// area is initialized and loaded into TPIDR_EL1 as well.
 //     pub fn init(boot_id: usize) -> HyperResult<()> {

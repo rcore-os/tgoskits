@@ -64,12 +64,14 @@ checksum = "038dfcf04a5feb68e9c60b21c9625a54c2c0616e79b72b0fd87075a056ae1d1b"
 name = "arceos-vmm"
 version = "0.1.0"
 dependencies = [
+ "arrayvec",
  "axalloc",
  "axerrno",
  "axhal",
  "axstd",
  "axvm",
  "bitflags 2.5.0",
+ "fdt",
  "lazy_static",
  "log",
  "memory_addr",
@@ -112,6 +114,12 @@ version = "0.1.0"
 dependencies = [
  "tock-registers",
 ]
+
+[[package]]
+name = "arrayvec"
+version = "0.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96d30a06541fbafbc7f82ed10c06164cfbd2c401138f6addd8404629c4b16711"
 
 [[package]]
 name = "atomic-polyfill"
@@ -276,7 +284,6 @@ dependencies = [
  "raw-cpuid 11.0.2",
  "riscv",
  "sbi-rt",
- "spin 0.9.8",
  "spinlock",
  "static_assertions",
  "tock-registers",
@@ -401,7 +408,9 @@ dependencies = [
  "percpu",
  "raw-cpuid 11.0.2",
  "smccc",
+ "spin 0.9.8",
  "spinlock",
+ "tock-registers",
  "x86",
  "x86_64",
 ]
@@ -802,6 +811,12 @@ dependencies = [
  "bitflags 1.3.2",
  "log",
 ]
+
+[[package]]
+name = "fdt"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "784a4df722dc6267a04af36895398f59d21d07dce47232adf31ec0ff2fa45e67"
 
 [[package]]
 name = "getrandom"

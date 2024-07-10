@@ -10,7 +10,7 @@
 
 use super::vcpu::VmCpuRegisters;
 use super::hvc::{HVC_SYS, HVC_SYS_BOOT, hvc_guest_handler};
-user super::ContextFrame;
+use super::ContextFrame;
 
 use axhal::arch::TrapFrame;
 use axhal::arch::exception_utils::*;
@@ -19,8 +19,8 @@ use axhal::arch::exception_utils::*;
 const HVC_RETURN_REG: usize = 0;
 const SMC_RETURN_REG: usize = 0;
 
-const HVC_EXCEPTION: usize = 0x16;
-const DATA_ABORT_EXCEPTION: usize = 0x24;
+pub const HVC_EXCEPTION: usize = 0x16;
+pub const DATA_ABORT_EXCEPTION: usize = 0x24;
 
 pub fn data_abort_handler(ctx: &mut TrapFrame) {
     /* 

@@ -35,3 +35,7 @@ percpu = { path = "../arceos/crates/percpu" }
 x86 = "0.52"
 x86_64 = "0.14"
 raw-cpuid = "11.0"
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+fdt = {version = "0.1.5"}
+arrayvec = { version = "0.7.2", default-features = false }

@@ -11,7 +11,7 @@ pub trait AxVMHal: Sized {
     /// Converts a virtual address to the corresponding physical address.
     fn virt_to_phys(vaddr: HostVirtAddr) -> HostPhysAddr;
     /// VM-Exit handler.
-    fn vmexit_handler(vcpu: &mut crate::AxVMVcpu<Self>);
+    // fn vmexit_handler(vcpu: &mut crate::AxVMVcpu<Self>);
     /// Current time in nanoseconds.
     fn current_time_nanos() -> u64;
 }

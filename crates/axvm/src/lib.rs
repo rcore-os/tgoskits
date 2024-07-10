@@ -17,7 +17,7 @@ mod vm;
 pub mod arch;
 pub mod config;
 
-pub use arch::AxVMVcpu;
+// pub use arch::AxVMVcpu;
 pub use hal::AxVMHal;
 pub use mm::{AxNestedPageTable, NestedPageFaultInfo};
 pub use mm::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, HostVirtAddr};

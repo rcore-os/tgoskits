@@ -82,11 +82,6 @@ impl<H: AxVMHal, I: PagingIf> AxVM<H,I> {
         self.inner_mut.gpm.root_paddr()
     }
 
-    #[cfg(target_arch = "aarch64")]
-    pub fn dtb_ipa(&self) -> GuestPhysAddr {
-        unimplemented!()
-    }
-
     pub fn boot(&self) -> AxResult {
         if !has_hardware_support() {
             ax_err!(Unsupported, "Hardware does not support virtualization")

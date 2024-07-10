@@ -11,17 +11,24 @@ extern crate alloc;
 #[macro_use]
 extern crate log;
 
+#[cfg(target_arch = "x86_64")]
 mod device_emu;
 mod gconfig;
 mod gpm;
 mod hal;
+#[cfg(target_arch = "x86_64")]
 mod vmexit;
+
+#[cfg(target_arch = "aarch64")]
+mod dtb_aarch64;
 
 use axerrno::{AxError, AxResult};
 use axhal::mem::virt_to_phys;
+use axhal::paging::{PageSize, PagingIfImpl};
 use axvm::arch::AxArchVCpuConfig;
 use axvm::config::{AxVCpuConfig, AxVMConfig};
-use axvm::{AxVM, AxVMPerCpu, GuestPhysAddr, HostPhysAddr, HostVirtAddr};
+use axvm::AxVMPerCpu;
+use axvm::{AxVM, GuestPhysAddr, HostPhysAddr, HostVirtAddr};
 use page_table_entry::MappingFlags;
 
 use self::gconfig::*;
@@ -81,10 +88,9 @@ fn setup_gpm() -> AxResult<GuestPhysMemorySet> {
     load_guest_image_from_file_system("rvm-bios.bin", BIOS_ENTRY)?;
 
     load_guest_image_from_file_system("nimbos.bin", GUEST_ENTRY)?;
-    
+
     #[cfg(target_arch = "aarch64")]
     load_guest_image_from_file_system("nimbos-aarch64.dtb", DTB_ENTRY)?;
-
 
     // create nested page table and add mapping
     let mut gpm = GuestPhysMemorySet::new()?;
@@ -127,7 +133,6 @@ fn setup_gpm() -> AxResult<GuestPhysMemorySet> {
     ];
 
     #[cfg(target_arch = "aarch64")]
-    {
     let mut guest_memory_regions = vec![
         GuestMemoryRegion {
             // RAM
@@ -153,7 +158,7 @@ fn setup_gpm() -> AxResult<GuestPhysMemorySet> {
             flags: MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
         },
         GuestMemoryRegion {
-            // 
+            //
             gpa: 0x0802_0000,
             hpa: HostPhysAddr::from(0x0802_0000),
             size: 0x1_0000,
@@ -164,19 +169,23 @@ fn setup_gpm() -> AxResult<GuestPhysMemorySet> {
             gpa: meta.physical_memory_offset,
             hpa: HostPhysAddr::from(meta.physical_memory_offset),
             size: meta.physical_memory_size,
-            flags: MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE | MappingFlags::USER,
+            flags: MappingFlags::READ
+                | MappingFlags::WRITE
+                | MappingFlags::EXECUTE
+                | MappingFlags::USER,
         },
         GuestMemoryRegion {
-            // 
+            //
             gpa: 0xffff_0000_4008_0000,
             hpa: HostPhysAddr::from(GUEST_ENTRY),
             size: meta.physical_memory_size,
-            flags: MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE | MappingFlags::USER,
+            flags: MappingFlags::READ
+                | MappingFlags::WRITE
+                | MappingFlags::EXECUTE
+                | MappingFlags::USER,
         },
     ];
-
     // some devices not map(flash,pcie... )
-    }
 
     for r in guest_memory_regions.into_iter() {
         trace!("{:#x?}", r);
@@ -185,43 +194,53 @@ fn setup_gpm() -> AxResult<GuestPhysMemorySet> {
     Ok(gpm)
 }
 
-#[cfg_attr(feature = "axstd", no_mangle)]
-fn main() {
-    println!("Starting virtualization...");
-    info!("Hardware support: {:?}", axvm::has_hardware_support());
+// #[cfg_attr(feature = "axstd", no_mangle)]
+// fn main_prev() {
+//     println!("Starting virtualization...");
+//     info!("Hardware support: {:?}", axvm::has_hardware_support());
 
-    let percpu = unsafe { AXVM_PER_CPU.current_ref_mut_raw() };
-    percpu.init(0).expect("Failed to initialize percpu state");
-    percpu
-        .hardware_enable()
-        .expect("Failed to enable virtualization");
+//     let percpu = unsafe { AXVM_PER_CPU.current_ref_mut_raw() };
+//     percpu.init(0).expect("Failed to initialize percpu state");
+//     percpu
+//         .hardware_enable()
+//         .expect("Failed to enable virtualization");
 
-    let gpm = setup_gpm().expect("Failed to set guest physical memory set");
-    debug!("{:#x?}", gpm);
-    let mut vcpu = percpu
-        .create_vcpu(GUEST_ENTRY, gpm.nest_page_table_root())
-        .expect("Failed to create vcpu");
+//     let gpm = setup_gpm().expect("Failed to set guest physical memory set");
+//     debug!("{:#x?}", gpm);
+//     let mut vcpu = percpu
+//         .create_vcpu(GUEST_ENTRY, gpm.nest_page_table_root())
+//         .expect("Failed to create vcpu");
 
-    debug!("{:#x?}", vcpu);
+//     debug!("{:#x?}", vcpu);
 
-    println!("Running guest...");
+//     println!("Running guest...");
 
-    vcpu.run();
-}
+//     vcpu.run();
+// }
 
 #[percpu::def_percpu]
 pub static mut AXVM_PER_CPU: AxVMPerCpu<AxVMHalImpl> = AxVMPerCpu::new_uninit();
 
-fn main_new() {
+#[cfg_attr(feature = "axstd", no_mangle)]
+fn main() {
     let config = AxVMConfig {
         cpu_count: 1,
         cpu_config: AxVCpuConfig {
-            arch_config: AxArchVCpuConfig {},
+            arch_config: AxArchVCpuConfig::default(),
             ap_entry: GUEST_ENTRY,
             bsp_entry: GUEST_ENTRY,
         },
     };
 
-    let vm = AxVM::<AxVMHalImpl>::new(config, 0).expect("Failed to create VM");
+    unsafe {
+        let percpu = AXVM_PER_CPU.current_ref_mut_raw();
+        // cpu id todo
+        percpu.init(0).expect("Failed to initialize percpu state");
+        percpu
+            .hardware_enable()
+            .expect("Failed to enable virtualization");
+    }
+    let gpm = setup_gpm().expect("Failed to set guest physical memory set");
+    let vm = AxVM::<AxVMHalImpl, PagingIfImpl>::new(config, 0, gpm).expect("Failed to create VM");
     vm.boot().unwrap()
 }
