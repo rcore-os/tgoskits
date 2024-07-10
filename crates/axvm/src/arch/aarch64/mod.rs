@@ -2,8 +2,10 @@ mod ept;
 mod pcpu;
 mod vcpu;
 mod context_frame;
+// hvc todo!
 
-pub use pcpu::AxArchPerCpuState;
+pub use pcpu::PerCpu as AxArchPerCpuState;
+pub use vcpu::VCpu as AxArchVCpu;
 use axerrno::AxResult;
 pub use self::ept::NestedPageTable as A64PageTable;
 

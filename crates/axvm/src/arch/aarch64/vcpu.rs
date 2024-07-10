@@ -17,7 +17,7 @@ use core::marker::PhantomData;
 // type ContextFrame = crate::arch::contextFrame::Aarch64ContextFrame;
 use cortex_a::registers::*;
 use tock_registers::interfaces::*;
- 
+
 use super::ContextFrame;
 use super::VmContext;
 use crate::AxvmHal;
@@ -48,7 +48,7 @@ pub enum VcpuState {
 #[derive(Clone, Debug)]
 pub struct VmCpuRegisters {
     /// guest trap context
-    pub guest_trap_context_regs: ContextFrame,
+    pub trap_context_regs: ContextFrame,
     /// virtual machine system regs setting
     pub vm_system_regs: VmContext,
 }
@@ -57,7 +57,7 @@ impl VmCpuRegisters {
     /// create a default VmCpuRegisters
     pub fn default() -> VmCpuRegisters {
         VmCpuRegisters {
-            guest_trap_context_regs: ContextFrame::default(),
+            trap_context_regs: ContextFrame::default(),
             vm_system_regs: VmContext::default(),
         }
     }
@@ -66,16 +66,8 @@ impl VmCpuRegisters {
 /// A virtual CPU within a guest
 #[derive(Clone, Debug)]
 pub struct VCpu<H:AxvmHal> {
-    /// Vcpu id
-    pub vcpu_id: usize,
-    /// vm id
-    pub vm_id: usize,
-    /// pcpu id
-    pub pcpu_id: usize,
     /// Vcpu context
     pub regs: VmCpuRegisters,
-    /// Vcpu state
-    pub state: VcpuState,
 
     marker: PhantomData<H>,
 }
@@ -84,68 +76,88 @@ extern "C" {
     fn context_vm_entry(ctx: usize) -> !;
 }
 
+type AxArchVCpuConfig = VmCpuRegisters;
+
+// Public Function
 impl <H:AxvmHal> VCpu<H> {
     /// Create a new vCPU
-    pub fn new(vm_id:usize, id: usize, pcpu_id: usize) -> Self {
+    pub fn new(_config: AxArchVCpuConfig) -> Self {
+        // Self {
+        //     regs: VmCpuRegisters::default(),
+        //     marker: PhantomData,
+        // }
         Self {
-            vcpu_id: id,
-            vm_id: vm_id,
-            pcpu_id: pcpu_id,
-            regs: VmCpuRegisters::default(),
-            state: VcpuState::Inv,
+            regs: AxArchVCpuConfig::default(),
             marker: PhantomData,
         }
     }
 
-    /// Init Vcpu registers
-    pub fn init(&mut self, kernel_entry_point: usize, device_tree_ipa: usize) {
-        self.vcpu_arch_init(kernel_entry_point, device_tree_ipa);
-        self.init_vm_context();
+    /// Set guest entry point
+    pub fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
+        self.set_elr(elr);
+        Ok(())
     }
 
-    /// Get vcpu id
-    pub fn vcpu_id(&self) -> usize {
-        self.vcpu_id
+    /// Set ept root
+    pub fn set_ept_root(&mut self, ept_root: HostPhysAddr) -> AxResult {
+        self.regs.vm_system_regs.vttbr_el2 = ept_root as u64;
+        Ok(())
     }
 
-    /// Run this vcpu
-    pub fn run(&self, vttbr_token: usize) {
-        init_hv(vttbr_token, self.vcpu_ctx_addr());
+    /// Set device tree ipa
+    pub fn set_dtb_ipa(&mut self, dtb_ipa: GuestPhysAddr) -> AxResult {
+        self.set_gpr(0, device_tree_ipa);
+        Ok(())
+    }
+
+    /// Run vcpu
+    pub fn run(&mut self) -> AxResult<crate::vcpu::AxArchVCpuExitReason> {
+        self.init_hv();
         unsafe {
             context_vm_entry(self.vcpu_trap_ctx_addr(true));
         }
-        // loop {  // because of elr_el2, it will not return to this?
-            // _ = run_guest_by_trap2el2(vttbr_token, self.vcpu_ctx_addr());
-        // }
+        Ok(())
     }
-    
-    /// Get vcpu whole context address
-    pub fn vcpu_ctx_addr(&self) -> usize {
-        &(self.regs) as *const _ as usize
+
+    pub fn bind(&mut self) -> AxResult {
+        unimplemented!()
     }
-    
-    /// Get vcpu trap context for guest or arceos
-    pub fn vcpu_trap_ctx_addr(&self, if_guest: bool) -> usize {
-        if if_guest {
-            &(self.regs.guest_trap_context_regs) as *const _ as usize
-        }else {
-            &(self.regs.save_for_os_context_regs) as *const _ as usize
+
+    pub fn unbind(&mut self) -> AxResult {
+        unimplemented!()
+    }
+
+}
+
+// Private function
+impl <H:AxvmHal> VCpu<H> {
+    fn init_hv(&mut self) {
+        self.regs.trap_context_regs.spsr =( SPSR_EL1::M::EL1h + 
+            SPSR_EL1::I::Masked + 
+            SPSR_EL1::F::Masked + 
+            SPSR_EL1::A::Masked + 
+            SPSR_EL1::D::Masked )
+            .value;
+        self.init_vm_context();
+
+        unsafe {
+            core::arch::asm!("
+                mov x3, xzr           // Trap nothing from EL1 to El2.
+                msr cptr_el2, x3"
+            );
         }
-    }
-
-    /// Set exception return pc
-    pub fn set_elr(&mut self, elr: usize) {
-        self.regs.guest_trap_context_regs.set_exception_pc(elr);
-    }
-
-    /// Get general purpose register
-    pub fn get_gpr(&mut self, idx: usize) {
-        self.regs.guest_trap_context_regs.gpr(idx);
-    }
-
-    /// Set general purpose register
-    pub fn set_gpr(&mut self, idx: usize, val: usize) {
-        self.regs.guest_trap_context_regs.set_gpr(idx, val);
+        self.regs.vm_system_regs.ext_regs_restore();
+        unsafe {
+            cache_invalidate(0<<1);
+            cache_invalidate(1<<1);
+            core::arch::asm!("
+                ic  iallu
+                tlbi	alle2
+                tlbi	alle1         // Flush tlb
+                dsb	nsh
+                isb"
+            );
+        }
     }
 
     /// Init guest context. Also set some el2 register value.
@@ -176,48 +188,31 @@ impl <H:AxvmHal> VCpu<H> {
         self.regs.vm_system_regs.vmpidr_el2 = vmpidr as u64;
         // self.gic_ctx_reset(); // because of passthrough gic, do not need gic context anymore?
     }
-
-    /// Init guest contextFrame
-    fn vcpu_arch_init(&mut self, kernel_entry_point: usize, device_tree_ipa: usize) {
-        self.set_gpr(0, device_tree_ipa);
-        self.set_elr(kernel_entry_point);
-        self.regs.guest_trap_context_regs.spsr =( SPSR_EL1::M::EL1h + 
-                                            SPSR_EL1::I::Masked + 
-                                            SPSR_EL1::F::Masked + 
-                                            SPSR_EL1::A::Masked + 
-                                            SPSR_EL1::D::Masked )
-                                            .value;
+    
+    /// Get vcpu whole context address
+    fn vcpu_ctx_addr(&self) -> usize {
+        &(self.regs) as *const _ as usize
+    }
+    
+    /// Get vcpu trap context for guest or arceos
+    fn vcpu_trap_ctx_addr(&self) -> usize {
+        &(self.regs.trap_context_regs) as *const _ as usize
     }
 
-}
-
-#[inline(never)]
-#[no_mangle]
-/// hvc handler for initial hv
-/// x0: root_paddr, x1: vm regs context addr
-fn init_hv(root_paddr: usize, vm_ctx_addr: usize) {
-    unsafe {
-        core::arch::asm!("
-            mov x3, xzr           // Trap nothing from EL1 to El2.
-            msr cptr_el2, x3"
-        );
+    /// Set exception return pc
+    fn set_elr(&mut self, elr: usize) {
+        self.regs.trap_context_regs.set_exception_pc(elr);
     }
-    let regs: &VmCpuRegisters = unsafe{core::mem::transmute(vm_ctx_addr)};
-    // set vm system related register
-    msr!(VTTBR_EL2, root_paddr);
-    regs.vm_system_regs.ext_regs_restore();
 
-    unsafe {
-        cache_invalidate(0<<1);
-        cache_invalidate(1<<1);
-        core::arch::asm!("
-            ic  iallu
-            tlbi	alle2
-            tlbi	alle1         // Flush tlb
-            dsb	nsh
-            isb"
-        );
-    }   
+    /// Get general purpose register
+    fn get_gpr(&mut self, idx: usize) {
+        self.regs.trap_context_regs.gpr(idx);
+    }
+
+    /// Set general purpose register
+    fn set_gpr(&mut self, idx: usize, val: usize) {
+        self.regs.trap_context_regs.set_gpr(idx, val);
+    }
 }
 
 unsafe fn cache_invalidate(cache_level: usize) {
