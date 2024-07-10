@@ -2,10 +2,17 @@ mod ept;
 mod pcpu;
 mod vcpu;
 mod context_frame;
-// hvc todo!
+mod sync;
+mod hvc;
+
+use core::sync::Once;
+
+use axhal::arch::register_exception_handler_aarch64;
 
 pub use pcpu::PerCpu as AxArchPerCpuState;
 pub use vcpu::VCpu as AxArchVCpu;
+use sync::{hvc_handler, data_abort_handler, HVC_EXCEPTION, DATA_ABORT_EXCEPTION};
+
 use axerrno::AxResult;
 pub use self::ept::NestedPageTable as A64PageTable;
 
@@ -21,10 +28,19 @@ pub fn has_hardware_support(&mut self) -> AxResult {
     Ok(vmid_bits != 0)
 }
 
-// Following are things for the new, unified code structure. Just a stub here.
-use crate::AxVMHal;
-use axerrno::AxResult;
-use crate::mm::{GuestPhysAddr, HostPhysAddr};
+static INIT: Once = Once::new();
+
+pub fn register_lower_aarch64_synchronous_handler() {
+    INIT.call_once(|| {
+        register_exception_handler_aarch64(HVC_EXCEPTION, hvc_handler);
+        register_exception_handler_aarch64(DATA_ABORT_EXCEPTION, data_abort_handler);
+    });
+}
+
+// // Following are things for the new, unified code structure. Just a stub here.
+// use crate::AxVMHal;
+// use axerrno::AxResult;
+// use crate::mm::{GuestPhysAddr, HostPhysAddr};
 
 /// The architecture dependent configuration of a `AxArchVCpu`.
 #[derive(Clone, Copy, Debug, Default)]

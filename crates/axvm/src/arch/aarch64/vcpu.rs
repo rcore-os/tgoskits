@@ -20,6 +20,8 @@ use tock_registers::interfaces::*;
 
 use super::ContextFrame;
 use super::VmContext;
+use super::register_lower_aarch64_synchronous_handler;
+
 use crate::AxvmHal;
 
 core::arch::global_asm!(include_str!("entry.S"));
@@ -104,14 +106,9 @@ impl <H:AxvmHal> VCpu<H> {
         Ok(())
     }
 
-    /// Set device tree ipa
-    pub fn set_dtb_ipa(&mut self, dtb_ipa: GuestPhysAddr) -> AxResult {
-        self.set_gpr(0, device_tree_ipa);
-        Ok(())
-    }
-
     /// Run vcpu
     pub fn run(&mut self) -> AxResult<crate::vcpu::AxArchVCpuExitReason> {
+        register_lower_aarch64_synchronous_handler();
         self.init_hv();
         unsafe {
             context_vm_entry(self.vcpu_trap_ctx_addr(true));

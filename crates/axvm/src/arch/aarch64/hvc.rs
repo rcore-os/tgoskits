@@ -57,27 +57,10 @@ pub fn hvc_guest_handler(
     }
 }
 
-/// Runs the guest by trapping to EL2.
-///
-/// # Arguments
-///
-/// * `token` - The vttbr_el2 value.
-/// * `regs_addr` - The address of the registers.
-///
-/// # Returns
-///
-/// The result of the hvc_call function.
-pub fn run_guest_by_trap2el2(token: usize, regs_addr: usize) -> usize {
-    // mode is in x7. hvc_type: HVC_SYS; event: HVC_SYS_BOOT
-    hvc_call(token, regs_addr, 0, 0, 0, 0, 0, 0)
-}
-
 #[inline(never)]
 fn hvc_sys_handler(event: usize, _root_paddr: usize, _vm_ctx_addr: usize) -> Result<usize, ()> {
     match event {
         HVC_SYS_BOOT => {
-            // init_hv(root_paddr, vm_ctx_addr);
-            // panic!("abandon area");
             Ok(0)
         }
 

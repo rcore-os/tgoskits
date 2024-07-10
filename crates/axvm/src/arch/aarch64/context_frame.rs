@@ -4,7 +4,6 @@ use core::fmt::Formatter;
 use core::arch::asm;
 use cortex_a::registers::*;
 
-use axhal::{msr, mrs};
 use axhal::arch::TrapFrame;
 
 #[repr(C)]
@@ -36,6 +35,17 @@ impl From<Aarch64ContextFrame> for TrapFrame {
         TrapFrame {
             r: item.gpr,
             usp: item.sp,
+            elr: item.elr,
+            spsr: item.spsr,
+        }
+    }
+}
+
+impl From<TrapFrame> for Aarch64ContextFrame {
+    fn from(item: TrapFrame) -> Self {
+        Aarch64ContextFrame {
+            gpr: item.r,
+            sp: item.usp,
             elr: item.elr,
             spsr: item.spsr,
         }

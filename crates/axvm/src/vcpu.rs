@@ -169,8 +169,6 @@ impl<H: AxVMHal,I: PagingIf> AxVCpu<H,I> {
         let arch_vcpu = self.get_arch_vcpu();
         arch_vcpu.set_entry(self.inner_const.entry)?;
         arch_vcpu.set_ept_root(ept_root)?;
-        #[cfg(target_arch = "aarch64")]
-        arch_vcpu.set_dtb_ipa(vm.dtb_ipa())?;
         Ok(())
     }
 
