@@ -83,9 +83,7 @@ pub struct VmxVcpu<H: AxVMHal> {
 
 impl<H: AxVMHal> VmxVcpu<H> {
     /// Create a new [`VmxVcpu`].
-    pub fn new(
-        vcpu_id: usize,
-    ) -> AxResult<Self> {
+    pub fn new(vcpu_id: usize) -> AxResult<Self> {
         let vmcs_revision_id = super::read_vmcs_revision_id();
         XState::enable_xsave();
         let vcpu = Self {

@@ -167,7 +167,8 @@ fn main() {
         },
     };
 
-    let vm = AxVM::<AxVMHalImpl>::new(config, 0, gpm.nest_page_table_root()).expect("Failed to create VM");
+    let vm = AxVM::<AxVMHalImpl>::new(config, 0, gpm.nest_page_table_root())
+        .expect("Failed to create VM");
     info!("Boot VM...");
     vm.boot().unwrap();
     panic!("VM boot failed")

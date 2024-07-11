@@ -3,10 +3,10 @@ use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use axerrno::{ax_err, ax_err_type, AxResult};
 
-use crate::config::AxVMConfig;
-use axvcpu::AxVCpu;
 use crate::arch::AxArchVCpu;
+use crate::config::AxVMConfig;
 use crate::{has_hardware_support, AxVMHal, HostPhysAddr};
+use axvcpu::AxVCpu;
 
 type VCpu<H: AxVMHal> = AxVCpu<AxArchVCpu<H>>;
 
@@ -31,12 +31,12 @@ pub struct AxVM<H: AxVMHal> {
 impl<H: AxVMHal> AxVM<H> {
     // TODO: move guest memory mapping to AxVMConfig, and store GuestPhysMemorySet in AxVM
     pub fn new(config: AxVMConfig, id: usize, ept_root: HostPhysAddr) -> AxResult<Arc<Self>> {
-        let result = Arc::new({  
+        let result = Arc::new({
             let mut vcpu_list = Vec::with_capacity(config.cpu_count);
             for id in 0..config.cpu_count {
                 vcpu_list.push(VCpu::new(id, 0, 0, (id,))?);
             }
-    
+
             Self {
                 inner_const: AxVMInnerConst {
                     id,
@@ -91,7 +91,9 @@ impl<H: AxVMHal> AxVM<H> {
     }
 
     pub fn run_vcpu(&self, vcpu_id: usize) -> AxResult {
-        let vcpu = self.vcpu(vcpu_id).ok_or(ax_err_type!(InvalidInput, "Invalid vcpu_id"))?;
+        let vcpu = self
+            .vcpu(vcpu_id)
+            .ok_or(ax_err_type!(InvalidInput, "Invalid vcpu_id"))?;
         vcpu.bind()?;
         loop {
             // todo: device access
