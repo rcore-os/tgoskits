@@ -13,6 +13,7 @@ cfg_if::cfg_if! {
         pub use vmx::{VmxExitInfo, VmxExitReason, VmxInterruptInfo, VmxIoExitInfo};
 
         pub use vender::VmxArchVCpu as VenderArchVCpu;
+        pub use vender::VmxArchPerCpuState as VenderArchPerCpuState;
     }
 }
 
@@ -22,9 +23,5 @@ pub use lapic::ApicTimer;
 pub use regs::GeneralRegisters;
 pub use vender::X64NestedPageTable;
 
-pub use VenderArchVCpu as AxArchVCpu;
-
-pub use vender::ArchPerCpuState as AxArchPerCpuState;
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct AxArchVCpuConfig {}
+pub use VenderArchVCpu as AxArchVCpuImpl;
+pub use VenderArchPerCpuState as AxVMArchPerCpuImpl;

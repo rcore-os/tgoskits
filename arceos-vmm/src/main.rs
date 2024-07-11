@@ -19,8 +19,7 @@ mod hal;
 
 use axerrno::{AxError, AxResult};
 use axhal::mem::virt_to_phys;
-use axvm::arch::AxArchVCpuConfig;
-use axvm::config::{AxVCpuConfig, AxVMConfig};
+use axvm::config::{AxArchVCpuConfig, AxVCpuConfig, AxVMConfig};
 use axvm::{AxVM, AxVMPerCpu, GuestPhysAddr, HostPhysAddr, HostVirtAddr};
 use page_table_entry::MappingFlags;
 
@@ -137,7 +136,10 @@ fn main() {
     let config = AxVMConfig {
         cpu_count: 1,
         cpu_config: AxVCpuConfig {
-            arch_config: AxArchVCpuConfig {},
+            arch_config: AxArchVCpuConfig {
+                setup_config: (),
+                create_config: (),
+            },
             ap_entry: GUEST_ENTRY,
             bsp_entry: GUEST_ENTRY,
         },

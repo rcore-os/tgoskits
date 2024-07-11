@@ -2,7 +2,7 @@ mod definitions;
 mod ept;
 mod instructions;
 mod structs;
-mod vcpu2;
+mod vcpu;
 mod vmcs;
 
 use raw_cpuid::CpuId;
@@ -12,15 +12,14 @@ use x86_64::registers::control::{Cr0, Cr4, Cr4Flags};
 use self::structs::{FeatureControl, FeatureControlFlags, VmxBasic, VmxRegion};
 use crate::arch::msr::Msr;
 use crate::hal::AxVMHal;
+use crate::percpu::AxVMArchPerCpu;
 use axerrno::{ax_err, ax_err_type, AxResult};
 
 pub use self::definitions::VmxExitReason;
 pub use self::ept::ExtendedPageTable as X64NestedPageTable;
 pub use self::vmcs::{VmxExitInfo, VmxInterruptInfo, VmxIoExitInfo};
-pub use self::VmxPerCpuState as ArchPerCpuState;
-
-// TODO: Remove old vcpu::VmxVcpu, and rename vcpu2 to vcpu.
-pub use self::vcpu2::VmxVcpu as VmxArchVCpu;
+pub use self::VmxPerCpuState as VmxArchPerCpuState;
+pub use self::vcpu::VmxVcpu as VmxArchVCpu;
 
 pub fn has_hardware_support() -> bool {
     if let Some(feature) = CpuId::new().get_feature_info() {
@@ -39,19 +38,19 @@ pub struct VmxPerCpuState<H: AxVMHal> {
     vmx_region: VmxRegion<H>,
 }
 
-impl<H: AxVMHal> VmxPerCpuState<H> {
-    pub const fn new(_cpu_id: usize) -> Self {
-        Self {
+impl<H: AxVMHal> AxVMArchPerCpu for VmxPerCpuState<H> {
+    fn new(_cpu_id: usize) -> AxResult<Self> {
+        Ok(Self {
             vmcs_revision_id: 0,
             vmx_region: unsafe { VmxRegion::uninit() },
-        }
+        })
     }
 
-    pub fn is_enabled(&self) -> bool {
+    fn is_enabled(&self) -> bool {
         Cr4::read().contains(Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS)
     }
 
-    pub fn hardware_enable(&mut self) -> AxResult {
+    fn hardware_enable(&mut self) -> AxResult {
         if !has_hardware_support() {
             return ax_err!(Unsupported, "CPU does not support feature VMX");
         }
@@ -124,7 +123,7 @@ impl<H: AxVMHal> VmxPerCpuState<H> {
         Ok(())
     }
 
-    pub fn hardware_disable(&mut self) -> AxResult {
+    fn hardware_disable(&mut self) -> AxResult {
         if !self.is_enabled() {
             return ax_err!(BadState, "VMX is not enabled");
         }
