@@ -380,10 +380,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "axvcpu"
+version = "0.1.0"
+dependencies = [
+ "axerrno",
+ "memory_addr",
+ "percpu",
+]
+
+[[package]]
 name = "axvm"
 version = "0.1.0"
 dependencies = [
  "axerrno",
+ "axvcpu",
  "bit_field",
  "bitflags 2.5.0",
  "cfg-if",

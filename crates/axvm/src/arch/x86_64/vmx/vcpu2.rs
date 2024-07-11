@@ -1,4 +1,5 @@
 use alloc::collections::VecDeque;
+use axvcpu::AxArchVCpu;
 use bit_field::BitField;
 use core::fmt::{Debug, Formatter, Result};
 use core::{arch::asm, mem::size_of};
@@ -75,6 +76,8 @@ pub struct VmxVcpu<H: AxVMHal> {
     msr_bitmap: MsrBitmap<H>,
     pending_events: VecDeque<(u8, Option<u32>)>,
     xstate: XState,
+    entry: Option<GuestPhysAddr>,
+    ept_root: Option<HostPhysAddr>,
     // is_host: bool, temporary removed because we don't care about type 1.5 now
 }
 
@@ -82,10 +85,8 @@ impl<H: AxVMHal> VmxVcpu<H> {
     /// Create a new [`VmxVcpu`].
     pub fn new(
         vcpu_id: usize,
-        vmcs_revision_id: u32,
-        // entry: GuestPhysAddr,
-        // ept_root: HostPhysAddr,
     ) -> AxResult<Self> {
+        let vmcs_revision_id = super::read_vmcs_revision_id();
         XState::enable_xsave();
         let vcpu = Self {
             guest_regs: GeneralRegisters::default(),
@@ -97,6 +98,8 @@ impl<H: AxVMHal> VmxVcpu<H> {
             msr_bitmap: MsrBitmap::passthrough_all()?,
             pending_events: VecDeque::with_capacity(8),
             xstate: XState::new(),
+            entry: None,
+            ept_root: None,
             // is_host: false,
         };
         // Todo: remove these functions.
@@ -1067,5 +1070,46 @@ impl<H: AxVMHal> Debug for VmxVcpu<H> {
                 .finish())
         })()
         .unwrap()
+    }
+}
+
+impl<H: AxVMHal> axvcpu::AxArchVCpu for VmxVcpu<H> {
+    type CreateConfig = (usize,); // vcpu_id
+
+    type SetupConfig = ();
+
+    fn new(config: Self::CreateConfig) -> AxResult<Self> {
+        Self::new(config.0)
+    }
+
+    fn set_entry(&mut self, entry: axvcpu::GuestPhysAddr) -> AxResult {
+        self.entry = Some(entry);
+        Ok(())
+    }
+
+    fn set_ept_root(&mut self, ept_root: axvcpu::HostPhysAddr) -> AxResult {
+        self.ept_root = Some(ept_root);
+        Ok(())
+    }
+
+    fn setup(&mut self, _config: Self::SetupConfig) -> AxResult {
+        self.setup_vmcs(self.entry.unwrap(), self.ept_root.unwrap())
+    }
+
+    fn run(&mut self) -> AxResult<axvcpu::AxArchVCpuExitReason> {
+        match self.run() {
+            Some(reason) => Ok(match reason {
+                _ => unimplemented!(),
+            }),
+            None => Ok(axvcpu::AxArchVCpuExitReason::Nothing),
+        }
+    }
+
+    fn bind(&mut self) -> AxResult {
+        self.bind_to_current_processor()
+    }
+
+    fn unbind(&mut self) -> AxResult {
+        self.unbind_from_current_processor()
     }
 }

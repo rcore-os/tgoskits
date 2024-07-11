@@ -1,15 +1,19 @@
 use alloc::boxed::Box;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use axerrno::{ax_err, AxResult};
+use axerrno::{ax_err, ax_err_type, AxResult};
 
 use crate::config::AxVMConfig;
-use crate::AxVCpu;
+use axvcpu::AxVCpu;
+use crate::arch::AxArchVCpu;
 use crate::{has_hardware_support, AxVMHal, HostPhysAddr};
+
+type VCpu<H: AxVMHal> = AxVCpu<AxArchVCpu<H>>;
 
 struct AxVMInnerConst<H: AxVMHal> {
     id: usize,
-    vcpu_list: Box<[AxVCpu<H>]>,
+    ept_root: HostPhysAddr,
+    vcpu_list: Box<[VCpu<H>]>,
     // to be added: device_list: ...
 }
 
@@ -25,18 +29,18 @@ pub struct AxVM<H: AxVMHal> {
 }
 
 impl<H: AxVMHal> AxVM<H> {
-    pub fn new(config: AxVMConfig, id: usize) -> AxResult<Arc<Self>> {
-        let result = Arc::new_cyclic(|weak_self| {
+    // TODO: move guest memory mapping to AxVMConfig, and store GuestPhysMemorySet in AxVM
+    pub fn new(config: AxVMConfig, id: usize, ept_root: HostPhysAddr) -> AxResult<Arc<Self>> {
+        let result = Arc::new({  
             let mut vcpu_list = Vec::with_capacity(config.cpu_count);
-            for vcpu_id in 0..config.cpu_count {
-                vcpu_list.push(
-                    AxVCpu::new(config.cpu_config, vcpu_id, weak_self.clone(), 0, 0).unwrap(),
-                );
+            for id in 0..config.cpu_count {
+                vcpu_list.push(VCpu::new(id, 0, 0, (id,))?);
             }
-
+    
             Self {
                 inner_const: AxVMInnerConst {
                     id,
+                    ept_root,
                     vcpu_list: vcpu_list.into_boxed_slice(),
                 },
                 inner_mut: AxVMInnerMut {
@@ -45,7 +49,16 @@ impl<H: AxVMHal> AxVM<H> {
             }
         });
 
-        result.init_vcpu()?;
+        info!("VM created: id={}", result.id());
+        for vcpu in result.vcpu_list() {
+            let entry = if vcpu.id() == 0 {
+                config.cpu_config.bsp_entry
+            } else {
+                config.cpu_config.ap_entry
+            };
+            vcpu.setup(entry, result.ept_root(), ())?;
+        }
+        info!("VM setup: id={}", result.id());
 
         Ok(result)
     }
@@ -56,26 +69,17 @@ impl<H: AxVMHal> AxVM<H> {
     }
 
     #[inline]
-    pub fn vcpu(&self, vcpu_id: usize) -> Option<&AxVCpu<H>> {
+    pub fn vcpu(&self, vcpu_id: usize) -> Option<&VCpu<H>> {
         self.vcpu_list().get(vcpu_id)
     }
 
     #[inline]
-    pub fn vcpu_list(&self) -> &[AxVCpu<H>] {
+    pub fn vcpu_list(&self) -> &[VCpu<H>] {
         &self.inner_const.vcpu_list
     }
 
-    #[inline]
-    fn init_vcpu(&self) -> AxResult {
-        for vcpu in self.vcpu_list() {
-            vcpu.init()?;
-        }
-
-        Ok(())
-    }
-
     pub fn ept_root(&self) -> HostPhysAddr {
-        unimplemented!()
+        self.inner_const.ept_root
     }
 
     pub fn boot(&self) -> AxResult {
@@ -87,9 +91,12 @@ impl<H: AxVMHal> AxVM<H> {
     }
 
     pub fn run_vcpu(&self, vcpu_id: usize) -> AxResult {
+        let vcpu = self.vcpu(vcpu_id).ok_or(ax_err_type!(InvalidInput, "Invalid vcpu_id"))?;
+        vcpu.bind()?;
         loop {
             // todo: device access
             let _ = self.vcpu(vcpu_id).unwrap().run()?;
         }
+        vcpu.unbind()
     }
 }

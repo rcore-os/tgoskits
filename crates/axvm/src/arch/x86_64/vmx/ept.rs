@@ -160,7 +160,7 @@ impl fmt::Debug for EPTEntry {
     }
 }
 
-/// Metadata of VMX extented page tables.
+/// Metadata of VMX extended page tables.
 pub struct ExtendedPageTableMetadata;
 
 impl const PagingMetaData for ExtendedPageTableMetadata {

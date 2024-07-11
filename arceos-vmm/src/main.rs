@@ -118,7 +118,7 @@ fn setup_gpm() -> AxResult<GuestPhysMemorySet> {
 }
 
 #[cfg_attr(feature = "axstd", no_mangle)]
-fn main() {
+fn main_old() {
     println!("Starting virtualization...");
     info!("Hardware support: {:?}", axvm::has_hardware_support());
 
@@ -144,7 +144,20 @@ fn main() {
 #[percpu::def_percpu]
 pub static mut AXVM_PER_CPU: AxVMPerCpu<AxVMHalImpl> = AxVMPerCpu::new_uninit();
 
-fn main_new() {
+#[cfg_attr(feature = "axstd", no_mangle)]
+fn main() {
+    println!("Starting virtualization...");
+    info!("Hardware support: {:?}", axvm::has_hardware_support());
+
+    let percpu = unsafe { AXVM_PER_CPU.current_ref_mut_raw() };
+    percpu.init(0).expect("Failed to initialize percpu state");
+    percpu
+        .hardware_enable()
+        .expect("Failed to enable virtualization");
+
+    let gpm = setup_gpm().expect("Failed to set guest physical memory set");
+    debug!("{:#x?}", gpm);
+
     let config = AxVMConfig {
         cpu_count: 1,
         cpu_config: AxVCpuConfig {
@@ -154,6 +167,8 @@ fn main_new() {
         },
     };
 
-    let vm = AxVM::<AxVMHalImpl>::new(config, 0).expect("Failed to create VM");
-    vm.boot().unwrap()
+    let vm = AxVM::<AxVMHalImpl>::new(config, 0, gpm.nest_page_table_root()).expect("Failed to create VM");
+    info!("Boot VM...");
+    vm.boot().unwrap();
+    panic!("VM boot failed")
 }

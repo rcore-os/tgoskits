@@ -21,6 +21,9 @@ pub use self::vcpu::VmxVcpu as AxVMVcpu;
 pub use self::vmcs::{VmxExitInfo, VmxInterruptInfo, VmxIoExitInfo};
 pub use self::VmxPerCpuState as ArchPerCpuState;
 
+// TODO: Remove old vcpu::VmxVcpu, and rename vcpu2 to vcpu.
+pub use self::vcpu2::VmxVcpu as VmxArchVCpu;
+
 pub fn has_hardware_support() -> bool {
     if let Some(feature) = CpuId::new().get_feature_info() {
         feature.has_vmx()

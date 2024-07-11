@@ -1,6 +1,7 @@
 use alloc::{format, sync::Weak};
 // use spinlock::{SpinNoIrq, SpinNoIrqGuard};
 use axerrno::{ax_err, ax_err_type, AxResult};
+use axvcpu::AxArchVCpu;
 use core::cell::{RefCell, UnsafeCell};
 
 use crate::{arch::AxArchVCpu, config::AxVCpuConfig, AxVM, AxVMHal, GuestPhysAddr};
@@ -88,6 +89,7 @@ impl From<AccessWidth> for usize {
 type Port = u16;
 
 /// The result of `AxArchVCpu::run`.
+#[non_exhaustive]
 pub enum AxArchVCpuExitReason {
     /// The instruction executed by the vcpu performs a MMIO read operation.
     MmioRead {

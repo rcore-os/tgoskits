@@ -21,6 +21,7 @@ memory_addr = { path = "../../arceos/crates/memory_addr" }
 page_table = { path = "../../arceos/crates/page_table" }
 page_table_entry = { path = "../../arceos/crates/page_table_entry" }
 percpu = { path = "../../arceos/crates/percpu" }
+axvcpu = { path = "../axvcpu" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"
