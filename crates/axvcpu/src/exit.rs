@@ -66,7 +66,7 @@ pub enum AxArchVCpuExitReason {
     /// The vcpu is halted.
     Halt,
     /// Nothing special happened, the vcpu itself has handled the exit itself.
-    /// 
+    ///
     /// This exists to allow the caller to have a chance to check virtual devices/physical devices/virtual interrupts.
     Nothing,
 }

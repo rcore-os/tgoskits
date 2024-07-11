@@ -20,7 +20,7 @@ pub(crate) use vender::has_hardware_support;
 
 pub use lapic::ApicTimer;
 pub use regs::GeneralRegisters;
-pub use vender::{AxVMVcpu, X64NestedPageTable};
+pub use vender::X64NestedPageTable;
 
 pub use VenderArchVCpu as AxArchVCpu;
 

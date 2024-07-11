@@ -15,7 +15,7 @@ mod device_emu;
 mod gconfig;
 mod gpm;
 mod hal;
-mod vmexit;
+// mod vmexit; temporarily removed
 
 use axerrno::{AxError, AxResult};
 use axhal::mem::virt_to_phys;
@@ -115,30 +115,6 @@ fn setup_gpm() -> AxResult<GuestPhysMemorySet> {
         gpm.map_region(r.into())?;
     }
     Ok(gpm)
-}
-
-#[cfg_attr(feature = "axstd", no_mangle)]
-fn main_old() {
-    println!("Starting virtualization...");
-    info!("Hardware support: {:?}", axvm::has_hardware_support());
-
-    let percpu = unsafe { AXVM_PER_CPU.current_ref_mut_raw() };
-    percpu.init(0).expect("Failed to initialize percpu state");
-    percpu
-        .hardware_enable()
-        .expect("Failed to enable virtualization");
-
-    let gpm = setup_gpm().expect("Failed to set guest physical memory set");
-    debug!("{:#x?}", gpm);
-    let mut vcpu = percpu
-        .create_vcpu(GUEST_ENTRY, gpm.nest_page_table_root())
-        .expect("Failed to create vcpu");
-
-    debug!("{:#x?}", vcpu);
-
-    println!("Running guest...");
-
-    vcpu.run();
 }
 
 #[percpu::def_percpu]
