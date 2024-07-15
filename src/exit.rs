@@ -35,9 +35,10 @@ impl From<AccessWidth> for usize {
     }
 }
 
+/// The port number of an I/O operation.
 type Port = u16;
 
-/// The result of `AxArchVCpu::run`.
+/// The result of [`crate::AxArchVCpu::run`].
 #[non_exhaustive]
 pub enum AxArchVCpuExitReason {
     /// The instruction executed by the vcpu performs a MMIO read operation.
@@ -53,11 +54,11 @@ pub enum AxArchVCpuExitReason {
     },
     /// The instruction executed by the vcpu performs a I/O read operation.
     ///
-    /// It's unnecessary to specify the destination register because it's always `al`, `ax`, or `eax`.
+    /// It's unnecessary to specify the destination register because it's always `al`, `ax`, or `eax`(as port-I/O exists only in x86).
     IoRead { port: Port, width: AccessWidth },
     /// The instruction executed by the vcpu performs a I/O write operation.
     ///
-    /// It's unnecessary to specify the source register because it's always `al`, `ax`, or `eax`.
+    /// It's unnecessary to specify the source register because it's always `al`, `ax`, or `eax`(as port-I/O exists only in x86).
     IoWrite {
         port: Port,
         width: AccessWidth,
