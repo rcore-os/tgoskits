@@ -39,11 +39,16 @@ pub struct AxVCpuInnerMut {
     state: VCpuState,
 }
 
-/// A virtual CPU.
+/// A virtual CPU with architecture-independent interface.
 ///
-/// This struct handles internal mutability itself, almost all the methods are `&self`.
+/// By delegating the architecture-specific operations to a struct implementing [`AxArchVCpu`], this struct provides
+/// a unified interface and state management model for virtual CPUs of different architectures.
 ///
-/// Note that the `AxVCpu` is not thread-safe. It's caller's responsibility to ensure the safety.
+/// The architecture-specific operations are delegated to a struct implementing [`AxArchVCpu`].
+///
+/// Note that:
+/// - This struct handles internal mutability itself, almost all the methods are `&self`.
+/// - This struct is not thread-safe. It's caller's responsibility to ensure the safety.
 pub struct AxVCpu<A: AxArchVCpu> {
     /// The constant part of the vcpu.
     inner_const: AxVCpuInnerConst,
@@ -51,24 +56,9 @@ pub struct AxVCpu<A: AxArchVCpu> {
     inner_mut: RefCell<AxVCpuInnerMut>,
     /// The architecture-specific state of the vcpu.
     ///
-    /// `UnsafeCell` is used to allow interior mutability.
-    ///
-    /// `RefCell` or `Mutex` is not suitable here because it's not possible to drop the guard when launching a vcpu.
+    /// `UnsafeCell` is used to allow interior mutability. Note that `RefCell` or `Mutex` is not suitable here
+    /// because it's not possible to drop the guard when launching a vcpu.
     arch_vcpu: UnsafeCell<A>,
-}
-
-/// Execute a block with the current vcpu set to `$self`.
-macro_rules! with_current_cpu_set {
-    ($self:ident, $arch:ident, $block:block) => {
-        if get_current_vcpu::<$arch>().is_some() {
-            panic!("Nested vcpu operation is not allowed!");
-        } else {
-            set_current_vcpu($self);
-            let result = $block;
-            clear_current_vcpu::<$arch>();
-            result
-        }
-    };
 }
 
 impl<A: AxArchVCpu> AxVCpu<A> {
@@ -99,16 +89,12 @@ impl<A: AxArchVCpu> AxVCpu<A> {
         ept_root: HostPhysAddr,
         arch_config: A::SetupConfig,
     ) -> AxResult {
-        self.transition_state(VCpuState::Created, VCpuState::Free)?;
-
-        with_current_cpu_set!(self, A, {
-            let arch_vcpu = self.get_arch_vcpu();
+        self.manipulate_arch_vcpu(VCpuState::Created, VCpuState::Free, |arch_vcpu| {
             arch_vcpu.set_entry(entry)?;
             arch_vcpu.set_ept_root(ept_root)?;
             arch_vcpu.setup(arch_config)?;
-        });
-
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Get the id of the vcpu.
@@ -126,45 +112,95 @@ impl<A: AxArchVCpu> AxVCpu<A> {
         self.inner_mut.borrow().state
     }
 
-    /// Set the state of the vcpu. This method is unsafe because it shouldn't be called unless the caller DOES know what it's doing.
+    /// Set the state of the vcpu. This method is unsafe because it may break the state transition model. Use it with caution.
     pub unsafe fn set_state(&self, state: VCpuState) {
         self.inner_mut.borrow_mut().state = state;
     }
 
-    /// Transition the state of the vcpu. If the current state is not `from`, return an error.
-    pub fn transition_state(&self, from: VCpuState, to: VCpuState) -> AxResult<()> {
-        // TODO: make this method a macro or add a function parameter to ensure that whenever a error occurs, the state is set to [`VCpuState::Invalid`]
+    /// Execute a block with the state of the vcpu transitioned from `from` to `to`. If the current state is not `from`, return an error.
+    ///
+    /// The state will be set to [`VCpuState::Invalid`] if an error occurs (including the case that the current state is not `from`).
+    ///
+    /// The state will be set to `to` if the block is executed successfully.
+    pub fn with_state_transition<F, T>(&self, from: VCpuState, to: VCpuState, f: F) -> AxResult<T>
+    where
+        F: FnOnce() -> AxResult<T>,
+    {
         let mut inner_mut = self.inner_mut.borrow_mut();
         if inner_mut.state != from {
+            inner_mut.state = VCpuState::Invalid;
             ax_err!(
                 BadState,
                 format!("VCpu state is not {:?}, but {:?}", from, inner_mut.state)
             )
         } else {
-            inner_mut.state = to;
-            Ok(())
+            let result = f();
+            inner_mut.state = if result.is_err() {
+                VCpuState::Invalid
+            } else {
+                to
+            };
+            result
         }
     }
 
+    /// Execute a block with the current vcpu set to `&self`.
+    pub fn with_current_cpu_set<F, T>(&self, f: F) -> T
+    where
+        F: FnOnce() -> T,
+    {
+        if get_current_vcpu::<A>().is_some() {
+            panic!("Nested vcpu operation is not allowed!");
+        } else {
+            set_current_vcpu(self);
+            let result = f();
+            clear_current_vcpu::<A>();
+            result
+        }
+    }
+
+    /// Execute an operation on the architecture-specific vcpu, with the state transitioned from `from` to `to` and the current vcpu set to `&self`.
+    ///
+    /// This method is a combination of [`AxVCpu::with_state_transition`] and [`AxVCpu::with_current_cpu_set`].
+    pub fn manipulate_arch_vcpu<F, T>(&self, from: VCpuState, to: VCpuState, f: F) -> AxResult<T>
+    where
+        F: FnOnce(&mut A) -> AxResult<T>,
+    {
+        self.with_state_transition(from, to, || {
+            self.with_current_cpu_set(|| f(self.get_arch_vcpu()))
+        })
+    }
+
+    /// Transition the state of the vcpu. If the current state is not `from`, return an error.
+    pub fn transition_state(&self, from: VCpuState, to: VCpuState) -> AxResult<()> {
+        self.with_state_transition(from, to, || Ok(()))
+    }
+
+    /// Get the architecture-specific vcpu.
     pub fn get_arch_vcpu(&self) -> &mut A {
         unsafe { &mut *self.arch_vcpu.get() }
     }
 
+    /// Run the vcpu.
     pub fn run(&self) -> AxResult<AxArchVCpuExitReason> {
         self.transition_state(VCpuState::Ready, VCpuState::Running)?;
-        let result = with_current_cpu_set!(self, A, { self.get_arch_vcpu().run()? });
-        self.transition_state(VCpuState::Running, VCpuState::Ready)?;
-        Ok(result)
+        self.manipulate_arch_vcpu(VCpuState::Running, VCpuState::Ready, |arch_vcpu| {
+            arch_vcpu.run()
+        })
     }
 
+    /// Bind the vcpu to the current physical CPU.
     pub fn bind(&self) -> AxResult<()> {
-        self.transition_state(VCpuState::Free, VCpuState::Ready)?;
-        with_current_cpu_set!(self, A, { self.get_arch_vcpu().bind() })
+        self.manipulate_arch_vcpu(VCpuState::Free, VCpuState::Ready, |arch_vcpu| {
+            arch_vcpu.bind()
+        })
     }
 
+    /// Unbind the vcpu from the current physical CPU.
     pub fn unbind(&self) -> AxResult<()> {
-        self.transition_state(VCpuState::Ready, VCpuState::Free)?;
-        with_current_cpu_set!(self, A, { self.get_arch_vcpu().unbind() })
+        self.manipulate_arch_vcpu(VCpuState::Ready, VCpuState::Free, |arch_vcpu| {
+            arch_vcpu.unbind()
+        })
     }
 }
 
