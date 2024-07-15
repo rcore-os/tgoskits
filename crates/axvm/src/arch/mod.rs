@@ -1,8 +1,5 @@
 //! Architecture dependent structures.
 
-use axerrno::AxResult;
-
-use crate::{percpu::AxVMArchPerCpu, HostPhysAddr};
 cfg_if::cfg_if! {
     if #[cfg(target_arch = "x86_64")] {
         mod x86_64;

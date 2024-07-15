@@ -5,9 +5,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# axerrno = { git = "https://github.com/arceos-org/arceos.git", rev = "7defbff" }
-# memory_addr = { git = "https://github.com/arceos-org/arceos.git", rev = "7defbff" }
-# percpu = { git = "https://github.com/arceos-org/arceos.git", rev = "7defbff" }
-axerrno = { path = "../../arceos/crates/axerrno" }
-memory_addr = { path = "../../arceos/crates/memory_addr" }
-percpu = { path = "../../arceos/crates/percpu" }
+# TODO: use main repo "https://github.com/arceos-org/arceos.git" instead
+axerrno = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
+memory_addr = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
+percpu = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
+# axerrno = { path = "../../arceos/crates/axerrno" }
+# memory_addr = { path = "../../arceos/crates/memory_addr" }
+# percpu = { path = "../../arceos/crates/percpu" }

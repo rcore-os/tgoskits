@@ -12,23 +12,19 @@ spin = "0.9"
 lazy_static = { version = "1.4", features = ["spin_no_std"] }
 
 # System dependent modules provided by ArceOS.
-axstd = { path = "../arceos/ulib/axstd", features = [
-    "alloc",
-    "paging",
-    "fs",
-    "irq",
-], optional = true }
-axalloc = { path = "../arceos/modules/axalloc" }
-axhal = { path = "../arceos/modules/axhal" }
+# axstd = { path = "../arceos/ulib/axstd", features = ["alloc", "paging", "fs", "irq"], optional = true }
+axstd = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f", features = ["alloc", "paging", "fs", "irq"], optional = true }
+axalloc = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
+axhal = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
 
 # System independent crates used for constructing hypervisor.
 axvm = { path = "../crates/axvm" }
 
 # System independent crates provided by ArceOS, these crates could be imported by remote url. 
-axerrno = { path = "../arceos/crates/axerrno" }
-page_table_entry = { path = "../arceos/crates/page_table_entry" }
-memory_addr = { path = "../arceos/crates/memory_addr" }
-percpu = { path = "../arceos/crates/percpu" }
+axerrno = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
+page_table_entry = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
+memory_addr = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
+percpu = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"

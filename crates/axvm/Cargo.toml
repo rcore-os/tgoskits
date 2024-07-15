@@ -17,18 +17,18 @@ numeric-enum-macro = "0.2"
 axvcpu = { path = "../axvcpu" }
 
 # System independent crates provided by ArceOS, these crates could be imported by remote url. 
-axerrno = { path = "../../arceos/crates/axerrno" }
-spinlock = { path = "../../arceos/crates/spinlock" }
-memory_addr = { path = "../../arceos/crates/memory_addr" }
-page_table = { path = "../../arceos/crates/page_table" }
-page_table_entry = { path = "../../arceos/crates/page_table_entry" }
-percpu = { path = "../../arceos/crates/percpu" }
-# axerrno = { git = "https://github.com/arceos-org/arceos.git", rev = "7defbff" }
-# spinlock = { git = "https://github.com/arceos-org/arceos.git", rev = "7defbff" }
-# memory_addr = { git = "https://github.com/arceos-org/arceos.git", rev = "7defbff" }
-# page_table = { git = "https://github.com/arceos-org/arceos.git", rev = "7defbff" }
-# page_table_entry = { git = "https://github.com/arceos-org/arceos.git", rev = "7defbff" }
-# percpu = { git = "https://github.com/arceos-org/arceos.git", rev = "7defbff" }
+# axerrno = { path = "../../arceos/crates/axerrno" }
+# spinlock = { path = "../../arceos/crates/spinlock" }
+# memory_addr = { path = "../../arceos/crates/memory_addr" }
+# page_table = { path = "../../arceos/crates/page_table" }
+# page_table_entry = { path = "../../arceos/crates/page_table_entry" }
+# percpu = { path = "../../arceos/crates/percpu" }
+axerrno = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
+spinlock = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
+memory_addr = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
+page_table = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
+page_table_entry = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
+percpu = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"
