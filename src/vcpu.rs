@@ -1,5 +1,5 @@
 use super::{AxArchVCpu, AxArchVCpuExitReason, GuestPhysAddr, HostPhysAddr};
-use axerrno::{ax_err, ax_err_type, AxResult};
+use axerrno::{ax_err, AxResult};
 use core::cell::{RefCell, UnsafeCell};
 extern crate alloc;
 use alloc::format;
@@ -8,8 +8,10 @@ use alloc::format;
 struct AxVCpuInnerConst {
     /// The id of the vcpu.
     id: usize,
+    #[allow(dead_code)]
     /// The id of the physical CPU who has the priority to run this vcpu. Not implemented yet.
     favor_phys_cpu: usize,
+    #[allow(dead_code)]
     /// The mask of physical CPUs who can run this vcpu. Not implemented yet.
     affinity: usize,
 }
