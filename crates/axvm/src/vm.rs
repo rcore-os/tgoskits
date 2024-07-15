@@ -9,26 +9,26 @@ use crate::AxVCpu;
 use crate::{has_hardware_support, AxVMHal, HostPhysAddr};
 use crate::AxNestedPageTable;
 
-struct AxVMInnerConst<H: AxVMHal, I: PagingIf> {
+struct AxVMInnerConst<H: AxVMHal> {
     id: usize,
-    vcpu_list: Box<[AxVCpu<H,I>]>,
+    vcpu_list: Box<[AxVCpu<H>]>,
     // to be added: device_list: ...
 }
 
-struct AxVMInnerMut<H: AxVMHal, I: PagingIf> {
-    gpm: AxNestedPageTable<I>,
+struct AxVMInnerMut<H: AxVMHal> {
+    npt_root: HostPhysAddr,
     // memory: ...
     _marker: core::marker::PhantomData<H>,
 }
 
 /// A Virtual Machine.
-pub struct AxVM<H: AxVMHal, I: PagingIf> {
-    inner_const: AxVMInnerConst<H,I>,
-    inner_mut: AxVMInnerMut<H,I>,
+pub struct AxVM<H: AxVMHal> {
+    inner_const: AxVMInnerConst<H>,
+    inner_mut: AxVMInnerMut<H>,
 }
 
-impl<H: AxVMHal, I: PagingIf> AxVM<H,I> {
-    pub fn new(config: AxVMConfig, id: usize, gpm: AxNestedPageTable<I>) -> AxResult<Arc<Self>> {
+impl<H: AxVMHal> AxVM<H> {
+    pub fn new(config: AxVMConfig, id: usize, npt_root: HostPhysAddr) -> AxResult<Arc<Self>> {
         let result = Arc::new_cyclic(|weak_self| {
             let mut vcpu_list = Vec::with_capacity(config.cpu_count);
             for vcpu_id in 0..config.cpu_count {
@@ -43,7 +43,7 @@ impl<H: AxVMHal, I: PagingIf> AxVM<H,I> {
                     vcpu_list: vcpu_list.into_boxed_slice(),
                 },
                 inner_mut: AxVMInnerMut {
-                    gpm,
+                    npt_root,
                     _marker: core::marker::PhantomData,
                 },
             }
@@ -60,12 +60,12 @@ impl<H: AxVMHal, I: PagingIf> AxVM<H,I> {
     }
 
     #[inline]
-    pub fn vcpu(&self, vcpu_id: usize) -> Option<&AxVCpu<H,I>> {
+    pub fn vcpu(&self, vcpu_id: usize) -> Option<&AxVCpu<H>> {
         self.vcpu_list().get(vcpu_id)
     }
 
     #[inline]
-    pub fn vcpu_list(&self) -> &[AxVCpu<H,I>] {
+    pub fn vcpu_list(&self) -> &[AxVCpu<H>] {
         &self.inner_const.vcpu_list
     }
 
@@ -79,7 +79,7 @@ impl<H: AxVMHal, I: PagingIf> AxVM<H,I> {
     }
 
     pub fn ept_root(&self) -> HostPhysAddr {
-        self.inner_mut.gpm.root_paddr()
+        self.inner_mut.npt_root
     }
 
     pub fn boot(&self) -> AxResult {

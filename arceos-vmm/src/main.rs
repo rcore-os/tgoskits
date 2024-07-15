@@ -1,7 +1,7 @@
 #![cfg_attr(feature = "axstd", no_std)]
 #![cfg_attr(feature = "axstd", no_main)]
 #![feature(naked_functions)]
-
+#![allow(warnings)]
 #[macro_use]
 #[cfg(feature = "axstd")]
 extern crate axstd as std;
@@ -241,6 +241,6 @@ fn main() {
             .expect("Failed to enable virtualization");
     }
     let gpm = setup_gpm().expect("Failed to set guest physical memory set");
-    let vm = AxVM::<AxVMHalImpl, PagingIfImpl>::new(config, 0, gpm).expect("Failed to create VM");
+    let vm = AxVM::<AxVMHalImpl>::new(config, 0, gpm.nest_page_table_root()).expect("Failed to create VM");
     vm.boot().unwrap()
 }

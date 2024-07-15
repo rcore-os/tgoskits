@@ -3,6 +3,7 @@
 #![feature(concat_idents)]
 #![feature(naked_functions)]
 #![feature(const_trait_impl)]
+#![allow(warnings)]
 
 extern crate alloc;
 #[macro_use]

@@ -112,8 +112,8 @@ impl From<GuestMemoryRegion> for MapRegion {
 }
 
 pub struct GuestPhysMemorySet {
-    regions: BTreeMap<GuestPhysAddr, MapRegion>,
-    npt: NestedPageTable,
+    pub regions: BTreeMap<GuestPhysAddr, MapRegion>,
+    pub npt: NestedPageTable,
 }
 
 impl GuestPhysMemorySet {
@@ -177,7 +177,7 @@ impl GuestPhysMemorySet {
         }
         #[cfg(target_arch = "aarch64")]
         {
-            usize::from(self.1.root_paddr())  // need to lrs 1 bit for CnP??
+            usize::from(self.npt.root_paddr())  // need to lrs 1 bit for CnP??
         }
         #[cfg(not(any(target_arch = "riscv64", target_arch = "x86_64", target_arch = "aarch64")))]
         {
