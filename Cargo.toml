@@ -1,8 +1,8 @@
 [workspace]
 resolver = "2"
 
-members = ["arceos-vmm", "crates/axvcpu", "crates/axvm"]
-exclude = ["modules/arceos","guest/nimbos"]
+members = ["arceos-vmm", "crates/axvm"]
+exclude = ["guest/nimbos"]
 
 [profile.release]
 lto = true
