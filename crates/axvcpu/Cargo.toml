@@ -1,0 +1,10 @@
+[package]
+name = "axvcpu"
+authors = [ "aarkegz <aarkegz@gmail.com>" ]
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axerrno = { path = "../../arceos/crates/axerrno" }
+memory_addr = { path = "../../arceos/crates/memory_addr" }
+percpu = { path = "../../arceos/crates/percpu" }

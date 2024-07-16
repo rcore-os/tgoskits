@@ -1,11 +1,11 @@
 mod dtb_riscv64;
 
+use self::dtb_riscv64::MachineMeta;
+use axalloc::GlobalPage;
 use axerrno::{AxError, AxResult};
 use axhal::mem::virt_to_phys;
 use axvm::{GuestPhysAddr, HostPhysAddr, HostVirtAddr};
 use page_table_entry::MappingFlags;
-use axalloc::GlobalPage;
-use self::dtb_riscv64::MachineMeta;
 
 use crate::gpm::{GuestMemoryRegion, GuestPhysMemorySet};
 
@@ -20,7 +20,7 @@ struct AlignedMemory<const LEN: usize>([u8; LEN]);
 static mut GUEST_PHYS_MEMORY: AlignedMemory<GUEST_PHYS_MEMORY_SIZE> =
     AlignedMemory([0; GUEST_PHYS_MEMORY_SIZE]);
 
-// TODO:need use gpm to transfer 
+// TODO:need use gpm to transfer
 fn gpa_as_mut_ptr(guest_paddr: GuestPhysAddr) -> *mut u8 {
     let offset = unsafe { core::ptr::addr_of!(GUEST_PHYS_MEMORY) as *const _ as usize };
     let host_vaddr = guest_paddr + offset - GUEST_PHYS_MEMORY_BASE;
@@ -59,7 +59,6 @@ fn load_guest_image_from_file_system(file_name: &str, load_gpa: GuestPhysAddr) -
 }
 
 pub fn setup_gpm() -> AxResult<GuestPhysMemorySet> {
-
     load_guest_image_from_file_system("nimbos.dtb", DTB_ENTRY)?;
     load_guest_image_from_file_system("nimbos.bin", GUEST_ENTRY)?;
 
@@ -71,8 +70,12 @@ pub fn setup_gpm() -> AxResult<GuestPhysMemorySet> {
                 gpa: test.base_address,
                 hpa: test.base_address.into(),
                 size: test.size + 0x1000,
-                flags: MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER | MappingFlags::EXECUTE,
-            }.into()
+                flags: MappingFlags::READ
+                    | MappingFlags::WRITE
+                    | MappingFlags::USER
+                    | MappingFlags::EXECUTE,
+            }
+            .into(),
         )?;
     }
     for virtio in meta.virtio.iter() {
@@ -82,7 +85,8 @@ pub fn setup_gpm() -> AxResult<GuestPhysMemorySet> {
                 hpa: virtio.base_address.into(),
                 size: virtio.size,
                 flags: MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
-            }.into()
+            }
+            .into(),
         )?;
     }
 
@@ -93,7 +97,8 @@ pub fn setup_gpm() -> AxResult<GuestPhysMemorySet> {
                 hpa: uart.base_address.into(),
                 size: 0x1000,
                 flags: MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
-            }.into()
+            }
+            .into(),
         )?;
     }
 
@@ -104,7 +109,8 @@ pub fn setup_gpm() -> AxResult<GuestPhysMemorySet> {
                 hpa: clint.base_address.into(),
                 size: clint.size,
                 flags: MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
-            }.into()
+            }
+            .into(),
         )?;
     }
 
@@ -115,7 +121,8 @@ pub fn setup_gpm() -> AxResult<GuestPhysMemorySet> {
                 hpa: plic.base_address.into(),
                 size: 0x20_0000,
                 flags: MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
-            }.into()
+            }
+            .into(),
         )?;
     }
 
@@ -126,7 +133,8 @@ pub fn setup_gpm() -> AxResult<GuestPhysMemorySet> {
                 hpa: pci.base_address.into(),
                 size: pci.size,
                 flags: MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
-            }.into()
+            }
+            .into(),
         )?;
     }
 
@@ -135,7 +143,7 @@ pub fn setup_gpm() -> AxResult<GuestPhysMemorySet> {
         meta.physical_memory_offset,
         meta.physical_memory_offset + meta.physical_memory_size
     );
-    
+
     gpm.map_region(
         GuestMemoryRegion {
             gpa: meta.physical_memory_offset,
@@ -143,8 +151,12 @@ pub fn setup_gpm() -> AxResult<GuestPhysMemorySet> {
                 gpa_as_mut_ptr(GUEST_PHYS_MEMORY_BASE) as usize
             )),
             size: meta.physical_memory_size,
-            flags: MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE | MappingFlags::USER,
-        }.into()
+            flags: MappingFlags::READ
+                | MappingFlags::WRITE
+                | MappingFlags::EXECUTE
+                | MappingFlags::USER,
+        }
+        .into(),
     )?;
 
     Ok(gpm)

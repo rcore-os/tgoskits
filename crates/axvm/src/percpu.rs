@@ -1,10 +1,16 @@
-use crate::{
-    arch::AxArchPerCpuState,
-    mm::{GuestPhysAddr, HostPhysAddr},
-    AxVMHal,
-};
 use axerrno::{ax_err, AxResult};
 use core::mem::MaybeUninit;
+
+pub trait AxVMArchPerCpu: Sized {
+    /// Create a new per-CPU state.
+    fn new(cpu_id: usize) -> AxResult<Self>;
+    /// Whether hardware virtualization is enabled on the current CPU.
+    fn is_enabled(&self) -> bool;
+    /// Enable hardware virtualization on the current CPU.
+    fn hardware_enable(&mut self) -> AxResult;
+    /// Disable hardware virtualization on the current CPU.
+    fn hardware_disable(&mut self) -> AxResult;
+}
 
 /// Host per-CPU states to run the guest.
 ///
@@ -25,14 +31,14 @@ use core::mem::MaybeUninit;
 ///   percpu.init(0).expect("Failed to initialize percpu state");
 ///   percpu.hardware_enable().expect("Failed to enable virtualization");
 ///   ```
-pub struct AxVMPerCpu<H: AxVMHal> {
+pub struct AxVMPerCpu<A: AxVMArchPerCpu> {
     /// The id of the CPU. It's also used to check whether the per-CPU state is initialized.
     cpu_id: Option<usize>,
     /// The architecture-specific per-CPU state.
-    arch: MaybeUninit<AxArchPerCpuState<H>>,
+    arch: MaybeUninit<A>,
 }
 
-impl<H: AxVMHal> AxVMPerCpu<H> {
+impl<A: AxVMArchPerCpu> AxVMPerCpu<A> {
     /// Create a new, uninitialized per-CPU state.
     pub const fn new_uninit() -> Self {
         Self {
@@ -47,20 +53,20 @@ impl<H: AxVMHal> AxVMPerCpu<H> {
             ax_err!(BadState, "per-CPU state is already initialized")
         } else {
             self.cpu_id = Some(cpu_id);
-            self.arch.write(AxArchPerCpuState::<H>::new(cpu_id));
+            self.arch.write(A::new(cpu_id)?);
             Ok(())
         }
     }
 
     /// Return the architecture-specific per-CPU state. Panics if the per-CPU state is not initialized.
-    pub fn arch_checked(&self) -> &AxArchPerCpuState<H> {
+    pub fn arch_checked(&self) -> &A {
         assert!(self.cpu_id.is_some(), "per-CPU state is not initialized");
         // SAFETY: `cpu_id` is `Some` here, so `arch` must be initialized.
         unsafe { self.arch.assume_init_ref() }
     }
 
     /// Return the mutable architecture-specific per-CPU state. Panics if the per-CPU state is not initialized.
-    pub fn arch_checked_mut(&mut self) -> &mut AxArchPerCpuState<H> {
+    pub fn arch_checked_mut(&mut self) -> &mut A {
         assert!(self.cpu_id.is_some(), "per-CPU state is not initialized");
         // SAFETY: `cpu_id` is `Some` here, so `arch` must be initialized.
         unsafe { self.arch.assume_init_mut() }
@@ -80,10 +86,9 @@ impl<H: AxVMHal> AxVMPerCpu<H> {
     pub fn hardware_disable(&mut self) -> AxResult {
         self.arch_checked_mut().hardware_disable()
     }
-
 }
 
-impl<H: AxVMHal> Drop for AxVMPerCpu<H> {
+impl<A: AxVMArchPerCpu> Drop for AxVMPerCpu<A> {
     fn drop(&mut self) {
         if self.is_enabled() {
             self.hardware_disable().unwrap();

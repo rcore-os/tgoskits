@@ -2,7 +2,7 @@ use core::arch::global_asm;
 
 use riscv_decode::Instruction;
 
-use crate::{GuestPhysAddr};
+use crate::GuestPhysAddr;
 use axerrno::{AxError, AxResult};
 global_asm!(include_str!("mem_extable.S"));
 
@@ -11,7 +11,6 @@ extern "C" {
     fn _copy_from_guest(dest: *mut u8, src_gpa: usize, len: usize) -> usize;
     fn _fetch_guest_instruction(gva: usize, raw_inst: *mut u32) -> isize;
 }
-
 
 /// Represents the activate VM address space. Used to directly access a guest's memory.
 pub fn fetch_guest_instruction(pc: GuestPhysAddr) -> AxResult<u32> {

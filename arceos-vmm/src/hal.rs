@@ -1,5 +1,5 @@
 // use super::vmexit;
-use axvm::{AxVMHal, AxVCpu, HostPhysAddr, HostVirtAddr};
+use axvm::{AxVMHal, HostPhysAddr, HostVirtAddr};
 use memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
 
 pub struct AxvmHalImpl;
@@ -24,9 +24,9 @@ impl AxVMHal for AxvmHalImpl {
         axhal::mem::virt_to_phys(vaddr)
     }
 
-    fn vmexit_handler(vcpu: &mut AxVCpu<Self>) {
-        todo!()
-    }
+    // fn vmexit_handler(vcpu: &mut AxVCpu<Self>) {
+    //     todo!()
+    // }
 
     fn current_time_nanos() -> u64 {
         axhal::time::current_time_nanos()
