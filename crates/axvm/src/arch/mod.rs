@@ -8,13 +8,17 @@ cfg_if::cfg_if! {
         // Following are things for the new, unified code structure. It's just demonstration and won't compile.
         pub struct AxArchVCpuImpl<H: AxVMHal> {}
         impl<H: AxVMHal> axvcpu::AxArchVCpu for AxArchVCpuImpl<H> {
-            /// ...implementation...
+            // ...implementation...
         }
 
         pub struct AxArchPerCpuState<H: AxVMHal> {}
 
         impl<H: AxVMHal> AxVMArchPerCpu for AxVMArchPerCpuImpl<H> {
-            /// ...implementation...
+            // ...implementation...
+        }
+
+        pub fn has_hardware_support() -> bool {
+            // ...implementation...
         }
     }
 }

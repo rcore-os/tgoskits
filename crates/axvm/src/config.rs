@@ -1,6 +1,9 @@
-use axvcpu::AxArchVCpu;
 use crate::{arch::AxArchVCpuImpl, AxVMHal};
+use axvcpu::AxArchVCpu;
 
+/// A part of `AxVCpuConfig`, which represents an architecture-dependent `VCpu`.
+///
+/// The concrete type of configuration is defined in `AxArchVCpuImpl`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AxArchVCpuConfig<H: AxVMHal> {
     pub create_config: <AxArchVCpuImpl<H> as AxArchVCpu>::CreateConfig,
@@ -20,7 +23,9 @@ pub struct AxVCpuConfig<H: AxVMHal> {
 pub struct AxVMConfig<H: AxVMHal> {
     pub cpu_count: usize,
     pub cpu_config: AxVCpuConfig<H>,
+    // To be added: memory mapping configuration
+    // To be added: device configuration
 }
 
-/// The configuration of axvm crate.
+/// The configuration of axvm crate. It's not used yet, may be used in the future.
 pub struct AxVMCrateConfig {}

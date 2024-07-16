@@ -35,7 +35,12 @@ impl<H: AxVMHal> AxVM<H> {
         let result = Arc::new({
             let mut vcpu_list = Vec::with_capacity(config.cpu_count);
             for id in 0..config.cpu_count {
-                vcpu_list.push(VCpu::new(id, 0, 0, config.cpu_config.arch_config.create_config)?);
+                vcpu_list.push(VCpu::new(
+                    id,
+                    0,
+                    0,
+                    config.cpu_config.arch_config.create_config,
+                )?);
             }
 
             Self {
@@ -57,7 +62,11 @@ impl<H: AxVMHal> AxVM<H> {
             } else {
                 config.cpu_config.ap_entry
             };
-            vcpu.setup(entry, result.ept_root(), config.cpu_config.arch_config.setup_config)?;
+            vcpu.setup(
+                entry,
+                result.ept_root(),
+                config.cpu_config.arch_config.setup_config,
+            )?;
         }
         info!("VM setup: id={}", result.id());
 

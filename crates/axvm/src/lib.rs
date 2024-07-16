@@ -4,6 +4,14 @@
 #![feature(naked_functions)]
 #![feature(const_trait_impl)]
 
+//! This crate provides a minimal VM monitor (VMM) for running guest VMs.
+//!
+//! This crate contains:
+//! - [`AxVM`]: The main structure representing a VM.
+//!   - It currently handles only virtual CPUs
+//!   - Memory mapping and device emulation are not implemented yet
+//! - Implementations for [`axvcpu::AxArchVCpu`]: The architecture-dependent part of a virtual CPU.
+
 extern crate alloc;
 #[macro_use]
 extern crate log;

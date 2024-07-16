@@ -23,5 +23,5 @@ pub use lapic::ApicTimer;
 pub use regs::GeneralRegisters;
 pub use vender::X64NestedPageTable;
 
-pub use VenderArchVCpu as AxArchVCpuImpl;
 pub use VenderArchPerCpuState as AxVMArchPerCpuImpl;
+pub use VenderArchVCpu as AxArchVCpuImpl;
