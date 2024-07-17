@@ -23,17 +23,17 @@ pub enum VCpuState {
     Invalid = 0,
     /// The vcpu is created but not initialized yet.
     Created = 1,
-    /// The vcpu is free and can be bound to a physical CPU.
+    /// The vcpu is already initialized and can be bound to a physical CPU.
     Free = 2,
     /// The vcpu is bound to a physical CPU and ready to run.
     Ready = 3,
-    /// The vcpu is running.
+    /// The vcpu is bound to a physical CPU and running.
     Running = 4,
     /// The vcpu is blocked.
     Blocked = 5,
 }
 
-/// The mutable part of `AxVCpu`.
+/// The mutable part of [`AxVCpu`].
 pub struct AxVCpuInnerMut {
     /// The state of the vcpu.
     state: VCpuState,
@@ -102,7 +102,7 @@ impl<A: AxArchVCpu> AxVCpu<A> {
         self.inner_const.id
     }
 
-    /// Get whether the vcpu is the BSP. We always assume the first vcpu is the BSP.
+    /// Get whether the vcpu is the BSP. We always assume the first vcpu (vcpu with id #0) is the BSP.
     pub fn is_bsp(&self) -> bool {
         self.inner_const.id == 0
     }
@@ -152,9 +152,13 @@ impl<A: AxArchVCpu> AxVCpu<A> {
         if get_current_vcpu::<A>().is_some() {
             panic!("Nested vcpu operation is not allowed!");
         } else {
-            set_current_vcpu(self);
+            unsafe {
+                set_current_vcpu(self);
+            }
             let result = f();
-            clear_current_vcpu::<A>();
+            unsafe {
+                clear_current_vcpu::<A>();
+            }
             result
         }
     }
@@ -172,7 +176,7 @@ impl<A: AxArchVCpu> AxVCpu<A> {
     }
 
     /// Transition the state of the vcpu. If the current state is not `from`, return an error.
-    pub fn transition_state(&self, from: VCpuState, to: VCpuState) -> AxResult<()> {
+    pub fn transition_state(&self, from: VCpuState, to: VCpuState) -> AxResult {
         self.with_state_transition(from, to, || Ok(()))
     }
 
@@ -190,14 +194,14 @@ impl<A: AxArchVCpu> AxVCpu<A> {
     }
 
     /// Bind the vcpu to the current physical CPU.
-    pub fn bind(&self) -> AxResult<()> {
+    pub fn bind(&self) -> AxResult {
         self.manipulate_arch_vcpu(VCpuState::Free, VCpuState::Ready, |arch_vcpu| {
             arch_vcpu.bind()
         })
     }
 
     /// Unbind the vcpu from the current physical CPU.
-    pub fn unbind(&self) -> AxResult<()> {
+    pub fn unbind(&self) -> AxResult {
         self.manipulate_arch_vcpu(VCpuState::Ready, VCpuState::Free, |arch_vcpu| {
             arch_vcpu.unbind()
         })
@@ -207,6 +211,10 @@ impl<A: AxArchVCpu> AxVCpu<A> {
 #[percpu::def_percpu]
 static mut CURRENT_VCPU: Option<*mut u8> = None;
 
+/// Get the current vcpu on the current physical CPU.
+///
+/// It's guaranteed that each time before a method of [`AxArchVCpu`] is called, the current vcpu is set to the corresponding [`AxVCpu`].
+/// So methods of [`AxArchVCpu`] can always get the [`AxVCpu`] containing itself by calling this method.
 pub fn get_current_vcpu<'a, A: AxArchVCpu>() -> Option<&'a AxVCpu<A>> {
     unsafe {
         CURRENT_VCPU
@@ -218,6 +226,9 @@ pub fn get_current_vcpu<'a, A: AxArchVCpu>() -> Option<&'a AxVCpu<A>> {
     }
 }
 
+/// Get a mutable reference to the current vcpu on the current physical CPU.
+///
+/// See [`get_current_vcpu`] for more details.
 pub fn get_current_vcpu_mut<'a, A: AxArchVCpu>() -> Option<&'a mut AxVCpu<A>> {
     unsafe {
         CURRENT_VCPU
@@ -229,16 +240,18 @@ pub fn get_current_vcpu_mut<'a, A: AxArchVCpu>() -> Option<&'a mut AxVCpu<A>> {
     }
 }
 
-pub fn set_current_vcpu<A: AxArchVCpu>(vcpu: &AxVCpu<A>) {
-    unsafe {
-        CURRENT_VCPU
-            .current_ref_mut_raw()
-            .replace(vcpu as *const _ as *mut u8);
-    }
+/// Set the current vcpu on the current physical CPU.
+///
+/// This method is marked as `unsafe` because it may result in unexpected behavior if not used properly. Do not call this method unless you know what you are doing.
+pub unsafe fn set_current_vcpu<A: AxArchVCpu>(vcpu: &AxVCpu<A>) {
+    CURRENT_VCPU
+        .current_ref_mut_raw()
+        .replace(vcpu as *const _ as *mut u8);
 }
 
-pub fn clear_current_vcpu<A: AxArchVCpu>() {
-    unsafe {
-        CURRENT_VCPU.current_ref_mut_raw().take();
-    }
+/// Clear the current vcpu on the current physical CPU.
+///
+/// This method is marked as `unsafe` because it may result in unexpected behavior if not used properly. Do not call this method unless you know what you are doing.
+pub unsafe fn clear_current_vcpu<A: AxArchVCpu>() {
+    CURRENT_VCPU.current_ref_mut_raw().take();
 }

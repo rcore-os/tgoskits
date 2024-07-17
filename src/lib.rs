@@ -1,3 +1,6 @@
+//! This crate provides a simple virtual CPU abstraction for hypervisors.
+//!
+
 #![no_std]
 
 mod arch_vcpu;

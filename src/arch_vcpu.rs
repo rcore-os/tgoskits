@@ -6,9 +6,9 @@ use super::{AxArchVCpuExitReason, GuestPhysAddr, HostPhysAddr};
 ///
 /// This trait is an abstraction for virtual CPUs of different architectures.
 pub trait AxArchVCpu: Sized {
-    /// The configuration for creating a new [`AxArchVCpu`].
+    /// The configuration for creating a new [`AxArchVCpu`]. Used by [`AxArchVCpu::new`].
     type CreateConfig;
-    /// The configuration for setting up a created [`AxArchVCpu`].
+    /// The configuration for setting up a created [`AxArchVCpu`]. Used by [`AxArchVCpu::setup`].
     type SetupConfig;
 
     /// Create a new `AxArchVCpu`.
