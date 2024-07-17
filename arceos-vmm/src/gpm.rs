@@ -1,5 +1,7 @@
 use alloc::collections::BTreeMap;
 use core::fmt::{Debug, Formatter, Result};
+#[cfg(target_arch = "x86_64")]
+use x86_64::registers::debug;
 
 use axerrno::{AxError, AxResult};
 use axhal::paging::{PageSize, PagingIfImpl};
@@ -177,9 +179,13 @@ impl GuestPhysMemorySet {
         }
         #[cfg(target_arch = "aarch64")]
         {
-            usize::from(self.npt.root_paddr())  // need to lrs 1 bit for CnP??
+            usize::from(self.npt.root_paddr()) // need to lrs 1 bit for CnP??
         }
-        #[cfg(not(any(target_arch = "riscv64", target_arch = "x86_64", target_arch = "aarch64")))]
+        #[cfg(not(any(
+            target_arch = "riscv64",
+            target_arch = "x86_64",
+            target_arch = "aarch64"
+        )))]
         {
             todo!()
         }

@@ -73,6 +73,7 @@ impl<H: AxVMHal> AxVM<H> {
     fn init_vcpu(&self) -> AxResult {
         for vcpu in self.vcpu_list() {
             vcpu.init()?;
+            vcpu.bind()?;
         }
 
         Ok(())

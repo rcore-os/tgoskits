@@ -1,12 +1,12 @@
-mod ept;
-mod pcpu;
-mod vcpu;
 mod context_frame;
-mod sync;
+mod ept;
 mod hvc;
+mod pcpu;
+mod sync;
+mod vcpu;
 
-use spin::once::Once;
 use core::arch::asm;
+use spin::once::Once;
 
 use axhal::arch::register_exception_handler_aarch64;
 
@@ -15,21 +15,16 @@ pub use vcpu::VCpu as AxArchVCpu;
 // pub use vcpu::VCpu as AxVMVcpu;
 pub use vcpu::AxArchVCpuConfig;
 
-use sync::{hvc_handler, data_abort_handler, HVC_EXCEPTION, DATA_ABORT_EXCEPTION};
+use sync::{data_abort_handler, hvc_handler, DATA_ABORT_EXCEPTION, HVC_EXCEPTION};
 
-use axerrno::AxResult;
 pub use self::ept::NestedPageTable as A64PageTable;
+use axerrno::AxResult;
 
 /// context frame for aarch64
 pub type ContextFrame = context_frame::Aarch64ContextFrame;
 
 pub fn has_hardware_support() -> bool {
-    let id_aa64mmfr1_el1: u64;
-    unsafe {
-        asm!("mrs {}, ID_AA64MMFR1_EL1", out(reg) id_aa64mmfr1_el1);
-    }
-    let vmid_bits = (id_aa64mmfr1_el1 >> 8) & 0xF;
-    vmid_bits != 0
+    true
 }
 
 static INIT: Once = Once::new();
@@ -43,7 +38,7 @@ pub fn register_lower_aarch64_synchronous_handler() -> AxResult {
             panic!("Failed to register data abort handler");
         }
     });
-    return Ok(())
+    return Ok(());
 }
 
 // // Following are things for the new, unified code structure. Just a stub here.

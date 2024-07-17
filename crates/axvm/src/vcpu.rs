@@ -167,6 +167,7 @@ impl<H: AxVMHal> AxVCpu<H> {
             .ok_or(ax_err_type!(BadState, "VM is dropped"))?;
         let ept_root = vm.ept_root();
         let arch_vcpu = self.get_arch_vcpu();
+        debug!("set entry:{:#x}", self.inner_const.entry);
         arch_vcpu.set_entry(self.inner_const.entry)?;
         arch_vcpu.set_ept_root(ept_root)?;
         Ok(())

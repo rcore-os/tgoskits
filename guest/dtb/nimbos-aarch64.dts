@@ -16,8 +16,8 @@
 		compatible = "arm,psci-1.0\0arm,psci-0.2\0arm,psci";
 	};
 
-	memory@40000000 {
-		reg = <0x00 0x70000000 0x00 0x8000000>;
+	memory@200000 {
+		reg = <0x00 0x200000 0x00 0x1000000>;
 		device_type = "memory";
 	};
 
