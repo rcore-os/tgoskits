@@ -16,7 +16,6 @@ numeric-enum-macro = "0.2"
 
 
 axvcpu = { git = "https://github.com/arceos-hypervisor/axvcpu.git", branch = "main" }
-# axvcpu = { path = "../axvcpu" }
 
 
 # System independent crates provided by ArceOS, these crates could be imported by remote url. 

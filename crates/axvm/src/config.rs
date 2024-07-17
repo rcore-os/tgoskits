@@ -1,6 +1,5 @@
-
-use axvcpu::AxArchVCpu;
 use crate::{arch::AxArchVCpuImpl, AxVMHal};
+use axvcpu::AxArchVCpu;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AxArchVCpuConfig<H: AxVMHal> {

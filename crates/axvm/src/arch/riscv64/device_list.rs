@@ -3,9 +3,9 @@ use super::regs::GprIndex;
 use super::vcpu::VCpu;
 use super::vmexit::PrivilegeLevel;
 use super::{devices::plic::PlicState, traps, vcpu, vm_pages::fetch_guest_instruction, CSR};
-use axvcpu::AxArchVCpuExitReason;
 use crate::{AxVMHal, GuestPhysAddr, GuestVirtAddr};
 use axerrno::{AxError, AxResult};
+use axvcpu::AxArchVCpuExitReason;
 use core::panic;
 use riscv_decode::Instruction;
 
@@ -26,9 +26,7 @@ impl<H: AxVMHal> DeviceList<H> {
 
     pub fn vmexit_handler(&mut self, vcpu: &mut VCpu<H>, vm_exit_info: AxArchVCpuExitReason) {
         match vm_exit_info {
-            AxArchVCpuExitReason::NestedPageFault{addr:fault_addr} => {
-                // let fault_addr =
-                //     vcpu.regs().trap_csrs.htval << 2 | vcpu.regs().trap_csrs.stval & 0x3;
+            AxArchVCpuExitReason::NestedPageFault { addr: fault_addr } => {
                 let falut_pc = vcpu.regs().guest_regs.sepc;
                 let inst = vcpu.regs().trap_csrs.htinst as u32;
                 let priv_level = PrivilegeLevel::from_hstatus(vcpu.regs().guest_regs.hstatus);
@@ -51,7 +49,7 @@ impl<H: AxVMHal> DeviceList<H> {
                     }
                 }
             }
-            AxArchVCpuExitReason::ExternalInterrupt{..} => self.handle_irq(),
+            AxArchVCpuExitReason::ExternalInterrupt { .. } => self.handle_irq(),
             _ => {}
         }
     }

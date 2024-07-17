@@ -10,8 +10,8 @@ use riscv::register::{htinst, htval, hvip, scause, sstatus, stval};
 
 use super::csrs::{traps, RiscvCsrTrait, CSR};
 use super::sbi::{BaseFunction, PmuFunction, RemoteFenceFunction, SbiMessage};
-use axvcpu::AxArchVCpuExitReason;
 use crate::{AxVMHal, GuestPhysAddr, GuestVirtAddr, HostPhysAddr};
+use axvcpu::AxArchVCpuExitReason;
 
 use super::csrs::defs::hstatus;
 use super::regs::{GeneralPurposeRegisters, GprIndex};
@@ -381,32 +381,12 @@ impl<H: AxVMHal> VCpu<H> {
                 Ok(AxArchVCpuExitReason::Nothing)
             }
             Trap::Interrupt(Interrupt::SupervisorExternal) => {
-                Ok(AxArchVCpuExitReason::ExternalInterrupt{vector:0})
+                Ok(AxArchVCpuExitReason::ExternalInterrupt { vector: 0 })
             }
             Trap::Exception(Exception::LoadGuestPageFault)
             | Trap::Exception(Exception::StoreGuestPageFault) => {
                 let fault_addr = self.regs.trap_csrs.htval << 2 | self.regs.trap_csrs.stval & 0x3;
-                // debug!(
-                //     "fault_addr: {:#x}, htval: {:#x}, stval: {:#x}, sepc: {:#x}, scause: {:?}",
-                //     fault_addr,
-                //     regs.trap_csrs.htval,
-                //     regs.trap_csrs.stval,
-                //     regs.guest_regs.sepc,
-                //     scause.cause()
-                // );
-                // VmExitInfo::PageFault {
-                //     fault_addr,
-                //     // Note that this address is not necessarily guest virtual as the guest may or
-                //     // may not have 1st-stage translation enabled in VSATP. We still use GuestVirtAddr
-                //     // here though to distinguish it from addresses (e.g. in HTVAL, or passed via a
-                //     // TEECALL) which are exclusively guest-physical. Furthermore we only access guest
-                //     // instructions via the HLVX instruction, which will take the VSATP translation
-                //     // mode into account.
-                //     falut_pc: regs.guest_regs.sepc,
-                //     inst: regs.trap_csrs.htinst as u32,
-                //     priv_level: PrivilegeLevel::from_hstatus(regs.guest_regs.hstatus),
-                // }
-                Ok(AxArchVCpuExitReason::NestedPageFault{addr:fault_addr})
+                Ok(AxArchVCpuExitReason::NestedPageFault { addr: fault_addr })
             }
             _ => {
                 panic!(

@@ -3,11 +3,11 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use axerrno::{ax_err, ax_err_type, AxResult};
 
+use crate::arch::AxArchDeviceList;
 use crate::arch::AxArchVCpuImpl;
 use crate::config::AxVMConfig;
 use crate::{has_hardware_support, AxVMHal, HostPhysAddr};
 use axvcpu::AxVCpu;
-use crate::arch::AxArchDeviceList;
 use core::cell::UnsafeCell;
 
 #[allow(type_alias_bounds)] // we know the bound is not enforced here, we keep it for clarity
@@ -38,7 +38,12 @@ impl<H: AxVMHal> AxVM<H> {
         let result = Arc::new({
             let mut vcpu_list = Vec::with_capacity(config.cpu_count);
             for id in 0..config.cpu_count {
-                vcpu_list.push(VCpu::new(id, 0, 0, config.cpu_config.arch_config.create_config)?);
+                vcpu_list.push(VCpu::new(
+                    id,
+                    0,
+                    0,
+                    config.cpu_config.arch_config.create_config,
+                )?);
             }
 
             Self {
@@ -61,7 +66,11 @@ impl<H: AxVMHal> AxVM<H> {
             } else {
                 config.cpu_config.ap_entry
             };
-            vcpu.setup(entry, result.ept_root(), config.cpu_config.arch_config.setup_config)?;
+            vcpu.setup(
+                entry,
+                result.ept_root(),
+                config.cpu_config.arch_config.setup_config,
+            )?;
         }
         info!("VM setup: id={}", result.id());
 
