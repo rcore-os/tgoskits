@@ -1,8 +1,8 @@
 [workspace]
 resolver = "2"
 
-# members = ["arceos-vmm", "crates/axvm"]
-members = ["arceos-vmm", "crates/axvcpu", "crates/axvm"]
+members = ["arceos-vmm", "crates/axvm"]
+# members = ["arceos-vmm", "crates/axvcpu", "crates/axvm"]
 exclude = ["guest/nimbos"]
 
 [profile.release]

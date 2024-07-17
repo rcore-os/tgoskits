@@ -381,11 +381,11 @@ impl<H: AxVMHal> VCpu<H> {
                 Ok(AxArchVCpuExitReason::Nothing)
             }
             Trap::Interrupt(Interrupt::SupervisorExternal) => {
-                Ok(AxArchVCpuExitReason::ExternalInterruptEmulation)
+                Ok(AxArchVCpuExitReason::ExternalInterrupt{vector:0})
             }
             Trap::Exception(Exception::LoadGuestPageFault)
             | Trap::Exception(Exception::StoreGuestPageFault) => {
-                // let fault_addr = self.regs.trap_csrs.htval << 2 | self.regs.trap_csrs.stval & 0x3;
+                let fault_addr = self.regs.trap_csrs.htval << 2 | self.regs.trap_csrs.stval & 0x3;
                 // debug!(
                 //     "fault_addr: {:#x}, htval: {:#x}, stval: {:#x}, sepc: {:#x}, scause: {:?}",
                 //     fault_addr,
@@ -406,7 +406,7 @@ impl<H: AxVMHal> VCpu<H> {
                 //     inst: regs.trap_csrs.htinst as u32,
                 //     priv_level: PrivilegeLevel::from_hstatus(regs.guest_regs.hstatus),
                 // }
-                Ok(AxArchVCpuExitReason::PageFault)
+                Ok(AxArchVCpuExitReason::NestedPageFault{addr:fault_addr})
             }
             _ => {
                 panic!(
