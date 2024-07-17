@@ -47,7 +47,7 @@ dependencies = [
  "memory_addr",
  "page_table_entry",
  "percpu",
- "raw-cpuid 11.0.2",
+ "raw-cpuid 11.1.0",
  "spin",
  "x86",
  "x86_64 0.14.12",
@@ -229,7 +229,7 @@ dependencies = [
  "page_table_entry",
  "percpu",
  "ratio",
- "raw-cpuid 11.0.2",
+ "raw-cpuid 11.1.0",
  "riscv 0.11.1",
  "sbi-rt 0.0.3",
  "spinlock",
@@ -308,7 +308,6 @@ dependencies = [
 [[package]]
 name = "axvcpu"
 version = "0.1.0"
-source = "git+https://github.com/arceos-hypervisor/axvcpu.git?branch=main#ee0540c00c7ae73cb33952a34b649ae1c612af14"
 dependencies = [
  "axerrno",
  "memory_addr",
@@ -331,7 +330,7 @@ dependencies = [
  "page_table",
  "page_table_entry",
  "percpu",
- "raw-cpuid 11.0.2",
+ "raw-cpuid 11.1.0",
  "riscv 0.6.0",
  "riscv-decode",
  "sbi-rt 0.0.2",
@@ -676,9 +675,9 @@ dependencies = [
 
 [[package]]
 name = "raw-cpuid"
-version = "11.0.2"
+version = "11.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e29830cbb1290e404f24c73af91c5d8d631ce7e128691e9477556b540cd01ecd"
+checksum = "cb9ee317cfe3fbd54b36a511efc1edd42e216903c9cd575e686dd68a2ba90d8d"
 dependencies = [
  "bitflags 2.6.0",
 ]
