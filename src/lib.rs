@@ -1,6 +1,5 @@
-//! Bit allocator based on segment tree algorithm.
-
 #![no_std]
+#![doc = include_str!("../README.md")]
 
 use bit_field::BitField;
 use core::ops::Range;
