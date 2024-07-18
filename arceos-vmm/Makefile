@@ -37,7 +37,8 @@ LOG ?= warn
 V ?=
 
 # App options
-A ?= apps/helloworld
+# A ?= apps/helloworld
+A ?= $(CURDIR)
 APP ?= $(A)
 FEATURES ?=
 APP_FEATURES ?=
@@ -226,11 +227,20 @@ else
 endif
 
 clean: clean_c
+	rm -rf $(APP)/target
 	rm -rf $(APP)/*.bin $(APP)/*.elf
 	cargo clean
 
-clean_c::
+clean_c:
 	rm -rf ulib/axlibc/build_*
 	rm -rf $(app-objs)
+
+# clean: clean_c
+# 	rm -rf $(APP)/*.bin $(APP)/*.elf
+# 	cargo clean
+
+# clean_c::
+# 	rm -rf ulib/axlibc/build_*
+# 	rm -rf $(app-objs)
 
 .PHONY: all build disasm run justrun debug clippy fmt fmt_c test test_no_fail_fast clean clean_c doc disk_image

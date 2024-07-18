@@ -10,10 +10,9 @@ log = "=0.4.19"
 bitflags = "2.2"
 spin = "0.9"
 lazy_static = { version = "1.4", features = ["spin_no_std"] }
+cfg-if = "1.0"
 
 # System dependent modules provided by ArceOS.
-# axstd = { path = "../arceos/ulib/axstd", features = ["alloc", "paging", "fs", "irq"], optional = true }
-axstd = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f", features = ["alloc", "paging", "fs", "irq"], optional = true }
 axalloc = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
 axhal = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
 
@@ -27,6 +26,13 @@ memory_addr = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "
 percpu = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
+## todo: use features to disable "irq" in riscv
+axstd = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f", features = ["alloc", "paging", "fs", "irq"], optional = true }
 x86 = "0.52"
 x86_64 = "0.14"
 raw-cpuid = "11.0"
+
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+axstd = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f", features = ["alloc", "paging", "fs"], optional = true }
+fdt = {version = "0.1.5"}
+arrayvec = { version = "0.7.2", default-features = false }

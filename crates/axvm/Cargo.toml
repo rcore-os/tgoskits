@@ -34,3 +34,11 @@ percpu = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df
 x86 = "0.52"
 x86_64 = "0.14"
 raw-cpuid = "11.0"
+
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+riscv = { git = "https://github.com/rcore-os/riscv", features = ["inline-asm"] }
+riscv-decode = { git = "https://github.com/KuangjuX/riscv-decode.git" }
+sbi-spec = { version = "0.0.6", features = ["legacy"] }
+sbi-rt = {version = "0.0.2", features = ["integer-impls", "legacy"]}
+tock-registers = "0.8.1"
+memoffset = { version = ">=0.6.5", features = ["unstable_const"] }

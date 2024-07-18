@@ -3,10 +3,12 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use axerrno::{ax_err, ax_err_type, AxResult};
 
+use crate::arch::AxArchDeviceList;
 use crate::arch::AxArchVCpuImpl;
 use crate::config::AxVMConfig;
 use crate::{has_hardware_support, AxVMHal, HostPhysAddr};
 use axvcpu::AxVCpu;
+use core::cell::UnsafeCell;
 
 #[allow(type_alias_bounds)] // we know the bound is not enforced here, we keep it for clarity
 type VCpu<H: AxVMHal> = AxVCpu<AxArchVCpuImpl<H>>;
@@ -16,6 +18,7 @@ struct AxVMInnerConst<H: AxVMHal> {
     ept_root: HostPhysAddr,
     vcpu_list: Box<[VCpu<H>]>,
     // to be added: device_list: ...
+    device_list: UnsafeCell<AxArchDeviceList<H>>,
 }
 
 struct AxVMInnerMut<H: AxVMHal> {
@@ -48,6 +51,7 @@ impl<H: AxVMHal> AxVM<H> {
                     id,
                     ept_root,
                     vcpu_list: vcpu_list.into_boxed_slice(),
+                    device_list: UnsafeCell::new(AxArchDeviceList::<H>::new()),
                 },
                 inner_mut: AxVMInnerMut {
                     _marker: core::marker::PhantomData,
@@ -100,6 +104,10 @@ impl<H: AxVMHal> AxVM<H> {
         }
     }
 
+    pub fn get_device_list(&self) -> &mut AxArchDeviceList<H> {
+        unsafe { &mut *self.inner_const.device_list.get() }
+    }
+
     pub fn run_vcpu(&self, vcpu_id: usize) -> AxResult {
         let vcpu = self
             .vcpu(vcpu_id)
@@ -107,7 +115,9 @@ impl<H: AxVMHal> AxVM<H> {
         vcpu.bind()?;
         loop {
             // todo: device access
-            let _ = self.vcpu(vcpu_id).unwrap().run()?;
+            let exit_reason = vcpu.run()?;
+            let device_list = self.get_device_list();
+            device_list.vmexit_handler(vcpu.get_arch_vcpu(), exit_reason);
         }
         vcpu.unbind()
     }
