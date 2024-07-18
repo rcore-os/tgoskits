@@ -1,6 +1,6 @@
 # ArceOS-VMM-Tutorial
 
-Let's build a VMM (Virtual Machine Minotor or hypervisor) upon [ArceOS](https://github.com/rcore-os/arceos) unikernel!
+Let's build a VMM (Virtual Machine Minotor or hypervisor) upon [ArceOS](https://github.com/arceos-org/arceos) unikernel!
 
 ## Preparation
 
@@ -36,7 +36,7 @@ $ make
 ## Build File System image
 
 ```console
-$ cd arceos
+$ cd arceos-vmm
 $ make disk_img
 $ mkdir -p tmp
 $ sudo mount disk.img tmp
@@ -51,7 +51,7 @@ $ sudo umount tmp
 
 ```console
 $ cd arceos-vmm
-$ make -C ../arceos/ A=$(pwd) run ACCEL=y [LOG=warn|info|debug|trace]
+$ make A=$(pwd) ACCEL=y BLK=y [LOG=warn|info|debug|trace] run
 ......
 Booting from ROM..
 Initialize IDT & GDT...
