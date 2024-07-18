@@ -6,7 +6,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - name: Check code format
         uses: actions-rs/cargo@v1
         with:
@@ -20,7 +20,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - name: Build
         uses: actions-rs/cargo@v1
         with:
@@ -30,7 +30,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: nightly
@@ -53,3 +53,31 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: bench
+
+  doc:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    permissions:
+      contents: write
+    env:
+      default-branch: ${{ format('refs/heads/{0}', github.event.repository.default_branch) }}
+      RUSTDOCFLAGS: -D rustdoc::broken_intra_doc_links -D missing-docs
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build docs
+      uses: actions-rs/cargo@v1
+      continue-on-error: ${{ github.ref != env.default-branch && github.event_name != 'pull_request' }}
+      with:
+        command: doc
+        args: --no-deps --all-features
+    - name: Generate index.html
+      run: |
+        printf '<meta http-equiv="refresh" content="0;url=bitmap_allocator/index.html">' > target/doc/index.html
+    - name: Deploy to Github Pages
+      if: ${{ github.ref == env.default-branch }}
+      uses: JamesIves/github-pages-deploy-action@v4
+      with:
+        single-commit: true
+        branch: gh-pages
+        folder: target/doc
