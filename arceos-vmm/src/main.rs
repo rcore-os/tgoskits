@@ -165,18 +165,19 @@ fn setup_gpm() -> AxResult<GuestPhysMemorySet> {
                 flags: MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
             });
         }
-        guest_memory_regions.push(GuestMemoryRegion {
-            // physical memory offset
-            gpa: 0xffff_0000_4008_0000,
-            hpa: virt_to_phys(HostVirtAddr::from(
-                gpa_as_mut_ptr(GUEST_ENTRY) as usize
-            )),
-            size: meta.physical_memory_size,
-            flags: MappingFlags::READ
-                | MappingFlags::WRITE
-                | MappingFlags::EXECUTE
-                | MappingFlags::USER,
-        });
+    //     guest_memory_regions.push(GuestMemoryRegion {
+    //         // physical memory offset
+    //         gpa: 0xffff_0000_4008_0000,
+    //         hpa: virt_to_phys(HostVirtAddr::from(
+    //             gpa_as_mut_ptr(GUEST_ENTRY) as usize
+    //         )),
+    //         size: meta.physical_memory_size,
+    //         flags: MappingFlags::READ
+    //             | MappingFlags::WRITE
+    //             | MappingFlags::EXECUTE
+    //             | MappingFlags::USER,
+    //     }
+    // );
         // for flash in meta.flash.iter() {
         //     guest_memory_regions.push(GuestMemoryRegion {
         //         // flash
