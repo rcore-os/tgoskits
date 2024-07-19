@@ -6,9 +6,13 @@ edition = "2021"
 
 [dependencies]
 # TODO: use main repo "https://github.com/arceos-org/arceos.git" instead
-axerrno = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
-memory_addr = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
-percpu = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
-# axerrno = { path = "../../arceos/crates/axerrno" }
-# memory_addr = { path = "../../arceos/crates/memory_addr" }
-# percpu = { path = "../../arceos/crates/percpu" }
+# axerrno = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
+# memory_addr = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
+# percpu = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
+# axerrno = { path = "../arceos-vmm-branch/crates/axerrno" }
+# memory_addr = { path = "../arceos-vmm-branch/crates/memory_addr" }
+# percpu = { path = "../arceos-vmm-branch/crates/percpu" }
+
+axerrno = { git = "https://github.com/915604903T/arceos.git", rev = "e89a758" }
+memory_addr = { git = "https://github.com/915604903T/arceos.git", rev = "e89a758" }
+percpu = { git = "https://github.com/915604903T/arceos.git", rev = "e89a758" }
