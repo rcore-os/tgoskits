@@ -1,7 +1,5 @@
 use alloc::collections::BTreeMap;
 use core::fmt::{Debug, Formatter, Result};
-#[cfg(target_arch = "x86_64")]
-use x86_64::registers::debug;
 
 use axerrno::{AxError, AxResult};
 use axhal::paging::{PageSize, PagingIfImpl};
@@ -71,6 +69,7 @@ impl MapRegion {
     fn map_to(&self, npt: &mut NestedPageTable) -> AxResult {
         let mut start = self.start;
         let end = start + self.size;
+        debug!("map_to() {:#x?}", self);
         while start < end {
             let target = self.target(start);
             // Here `VirtAddr` represents `GuestPhysAddr`, the physical address from the Guest's perspective.
@@ -117,8 +116,8 @@ impl From<GuestMemoryRegion> for MapRegion {
 }
 
 pub struct GuestPhysMemorySet {
-    pub regions: BTreeMap<GuestPhysAddr, MapRegion>,
-    pub npt: NestedPageTable,
+    regions: BTreeMap<GuestPhysAddr, MapRegion>,
+    npt: NestedPageTable,
 }
 
 impl GuestPhysMemorySet {
@@ -168,7 +167,6 @@ impl GuestPhysMemorySet {
         if region.size == 0 {
             return Ok(());
         }
-        debug!("MapRegion({:#x}..{:#x}) flags={:?}", region.start, region.start + region.size, region.flags);
         if !self.test_free_area(&region) {
             warn!(
                 "MapRegion({:#x}..{:#x}) overlapped in:\n{:#x?}",
@@ -188,25 +186,6 @@ impl GuestPhysMemorySet {
             region.unmap_to(&mut self.npt).unwrap();
         }
         self.regions.clear();
-    }
-
-    pub fn token(&self) -> usize {
-        #[cfg(any(target_arch = "riscv64", target_arch = "x86_64"))]
-        {
-            8usize << 60 | usize::from(self.1.root_paddr()) >> 12
-        }
-        #[cfg(target_arch = "aarch64")]
-        {
-            usize::from(self.npt.root_paddr()) // need to lrs 1 bit for CnP??
-        }
-        #[cfg(not(any(
-            target_arch = "riscv64",
-            target_arch = "x86_64",
-            target_arch = "aarch64"
-        )))]
-        {
-            todo!()
-        }
     }
 }
 

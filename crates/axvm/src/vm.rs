@@ -22,7 +22,6 @@ struct AxVMInnerConst<H: AxVMHal> {
 }
 
 struct AxVMInnerMut<H: AxVMHal> {
-    npt_root: HostPhysAddr,
     // memory: ...
     _marker: core::marker::PhantomData<H>,
 }
@@ -55,7 +54,6 @@ impl<H: AxVMHal> AxVM<H> {
                     device_list: UnsafeCell::new(AxArchDeviceList::<H>::new()),
                 },
                 inner_mut: AxVMInnerMut {
-                    npt_root,
                     _marker: core::marker::PhantomData,
                 },
             }

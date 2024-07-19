@@ -92,12 +92,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96d30a06541fbafbc7f82ed10c06164cfbd2c401138f6addd8404629c4b16711"
 
 [[package]]
-name = "atomic-polyfill"
-version = "1.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96d30a06541fbafbc7f82ed10c06164cfbd2c401138f6addd8404629c4b16711"
-
-[[package]]
 name = "autocfg"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -146,7 +140,6 @@ version = "0.1.0"
 source = "git+https://github.com/arceos-hypervisor/arceos.git?rev=b42df3f#b42df3fc0c588cf25aefd1957474367aa4d0075e"
 dependencies = [
  "log",
- "x86",
 ]
 
 [[package]]
@@ -226,7 +219,6 @@ dependencies = [
  "axlog",
  "bitflags 2.6.0",
  "cfg-if",
- "cortex-a",
  "crate_interface 0.1.1",
  "dw_apb_uart",
  "handler_table",
@@ -333,8 +325,8 @@ version = "0.1.0"
 dependencies = [
  "aarch64-cpu",
  "axerrno",
- "axvcpu",
  "axhal",
+ "axvcpu",
  "bit_field",
  "bitflags 2.6.0",
  "cfg-if",
@@ -352,7 +344,7 @@ dependencies = [
  "sbi-rt 0.0.2",
  "sbi-spec 0.0.6",
  "smccc",
- "spin 0.9.8",
+ "spin",
  "spinlock",
  "tock-registers",
  "x86",
@@ -432,18 +424,6 @@ name = "const-default"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b396d1f76d455557e1218ec8066ae14bba60b4b36ecd55577ba979f5db7ecaa"
-
-[[package]]
-name = "core-foundation-sys"
-version = "0.8.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06ea2b9bc92be3c2baa9334a323ebca2d6f074ff852cd1d7b11064035cd3868f"
-
-[[package]]
-name = "core_detect"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
 
 [[package]]
 name = "cortex-a"
@@ -537,12 +517,6 @@ dependencies = [
 [[package]]
 name = "fdt"
 version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "784a4df722dc6267a04af36895398f59d21d07dce47232adf31ec0ff2fa45e67"
-
-[[package]]
-name = "getrandom"
-version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "784a4df722dc6267a04af36895398f59d21d07dce47232adf31ec0ff2fa45e67"
 
@@ -904,48 +878,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_json"
-version = "1.0.117"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "455182ea6142b14f93f4bc5320a2b31c1f266b66a4a5c858b013302a5d8cbfc3"
-dependencies = [
- "itoa",
- "ryu",
- "serde",
-]
-
-[[package]]
-name = "slab_allocator"
-version = "0.3.1"
-dependencies = [
- "buddy_system_allocator",
-]
-
-[[package]]
 name = "smccc"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "617d17f088ec733e5a6b86da6ce4cce1414e6e856d6061c16dda51cceae6f68c"
-
-[[package]]
-name = "smoltcp"
-version = "0.10.0"
-source = "git+https://github.com/rcore-os/smoltcp.git?rev=2ade274#2ade2747abc4d779d0836154b0413d13ce16cd5b"
-dependencies = [
- "bitflags 1.3.2",
- "byteorder",
- "cfg-if",
- "defmt",
- "heapless",
- "log",
- "managed",
-]
-
-[[package]]
-name = "spin"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e63cff320ae2c57904679ba7cb63280a3dc4613885beafb148ee7bf9aa9042d"
 
 [[package]]
 name = "spin"

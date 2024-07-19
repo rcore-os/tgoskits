@@ -31,7 +31,6 @@ page_table_entry = { git = "https://github.com/arceos-hypervisor/arceos.git", re
 percpu = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
 
 # Operating system dependent modules provided by ArceOS, these modules could be imported by remote url.
-axhal = { path = "../../arceos/modules/axhal" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"
@@ -47,6 +46,7 @@ tock-registers = "0.8.1"
 memoffset = { version = ">=0.6.5", features = ["unstable_const"] }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
+axhal = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
 cortex-a = "8.1.1"
 aarch64-cpu = "9.3"
 smccc = "0.1.1"
