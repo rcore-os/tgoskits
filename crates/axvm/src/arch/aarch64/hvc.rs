@@ -1,4 +1,3 @@
-
 use aarch64_cpu::{asm, asm::barrier, registers::*};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
@@ -51,7 +50,10 @@ pub fn hvc_guest_handler(
     match hvc_type {
         HVC_SYS => hvc_sys_handler(event, x0, x1),
         _ => {
-            info!("hvc_guest_handler: unknown hvc type {} event {}", hvc_type, event);
+            debug!(
+                "hvc_guest_handler: unknown hvc type {} event {}",
+                hvc_type, event
+            );
             Err(())
         }
     }
@@ -60,9 +62,7 @@ pub fn hvc_guest_handler(
 #[inline(never)]
 fn hvc_sys_handler(event: usize, _root_paddr: usize, _vm_ctx_addr: usize) -> Result<usize, ()> {
     match event {
-        HVC_SYS_BOOT => {
-            Ok(0)
-        }
+        HVC_SYS_BOOT => Ok(0),
 
         _ => Err(()),
     }
@@ -70,10 +70,10 @@ fn hvc_sys_handler(event: usize, _root_paddr: usize, _vm_ctx_addr: usize) -> Res
 
 #[inline(never)]
 fn hvc_call(
-    x0: usize, 
-    x1: usize, 
-    x2: usize, 
-    x3: usize, 
+    x0: usize,
+    x1: usize,
+    x2: usize,
+    x3: usize,
     x4: usize,
     x5: usize,
     x6: usize,

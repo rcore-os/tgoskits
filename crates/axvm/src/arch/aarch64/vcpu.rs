@@ -1,20 +1,9 @@
-// Copyright (c) 2023 Beihang University, Huawei Technologies Co.,Ltd. All rights reserved.
-// Rust-Shyper is licensed under Mulan PSL v2.
-// You can use this software according to the terms and conditions of the Mulan PSL v2.
-// You may obtain a copy of Mulan PSL v2 at:
-//          http://license.coscl.org.cn/MulanPSL2
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-// EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-// MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-// See the Mulan PSL v2 for more details.
-
 use alloc::vec::Vec;
 use core::arch::global_asm;
 use core::marker::PhantomData;
 use core::mem::size_of;
 use spin::Mutex;
 
-// type ContextFrame = crate::arch::contextFrame::Aarch64ContextFrame;
 use cortex_a::registers::*;
 use tock_registers::interfaces::*;
 
@@ -105,7 +94,7 @@ impl<H: AxVMHal> VCpu<H> {
 
     /// Set ept root
     pub fn set_ept_root(&mut self, ept_root: HostPhysAddr) -> AxResult {
-        info!("set vcpu ept root:{:#x}", ept_root);
+        debug!("set vcpu ept root:{:#x}", ept_root);
         self.regs.vm_system_regs.vttbr_el2 = ept_root.as_usize() as u64;
         Ok(())
     }
@@ -115,8 +104,6 @@ impl<H: AxVMHal> VCpu<H> {
         register_lower_aarch64_synchronous_handler()?;
         self.init_hv();
         unsafe {
-            let ctx = self.vcpu_ctx_addr() as *const ContextFrame;
-            info!("context frame:\n{}", &*ctx);
             context_vm_entry(self.vcpu_trap_ctx_addr());
         }
         Err(AxError::BadState)
