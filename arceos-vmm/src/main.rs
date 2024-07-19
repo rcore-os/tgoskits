@@ -49,7 +49,7 @@ static mut GUEST_PHYS_MEMORY: AlignedMemory<GUEST_PHYS_MEMORY_SIZE> =
 
 fn gpa_as_mut_ptr(guest_paddr: GuestPhysAddr) -> *mut u8 {
     let offset = unsafe { core::ptr::addr_of!(GUEST_PHYS_MEMORY) as *const _ as usize };
-    debug!("offset: {:#x}", offset);
+    info!("offset: {:#x}", offset);
     let host_vaddr = guest_paddr + offset;
     host_vaddr as *mut u8
 }
@@ -63,7 +63,7 @@ fn load_guest_image_from_file_system(file_name: &str, load_gpa: GuestPhysAddr) -
         );
         AxError::NotFound
     })?;
-    debug!("Loading {} to GPA {:#x} gpa_ptr_addr:{:#x}", file_name, load_gpa, gpa_as_mut_ptr(load_gpa) as usize);
+    // debug!("Loading {} to GPA {:#x} gpa_ptr_addr:{:#x}", file_name, load_gpa, gpa_as_mut_ptr(load_gpa) as usize);
     let buffer = unsafe {
         core::slice::from_raw_parts_mut(
             gpa_as_mut_ptr(load_gpa),

@@ -105,7 +105,7 @@ impl<H: AxVMHal> VCpu<H> {
 
     /// Set ept root
     pub fn set_ept_root(&mut self, ept_root: HostPhysAddr) -> AxResult {
-        debug!("set vcpu ept root:{:#x}", ept_root);
+        info!("set vcpu ept root:{:#x}", ept_root);
         self.regs.vm_system_regs.vttbr_el2 = ept_root.as_usize() as u64;
         Ok(())
     }
@@ -116,7 +116,7 @@ impl<H: AxVMHal> VCpu<H> {
         self.init_hv();
         unsafe {
             let ctx = self.vcpu_ctx_addr() as *const ContextFrame;
-            debug!("context frame:\n{}", &*ctx);
+            info!("context frame:\n{}", &*ctx);
             context_vm_entry(self.vcpu_trap_ctx_addr());
         }
         Err(AxError::BadState)
@@ -187,6 +187,7 @@ impl<H: AxVMHal> VCpu<H> {
                                           + VTCR_EL2::T0SZ.val(64 - 40))
             .into();
         self.regs.vm_system_regs.hcr_el2 = (HCR_EL2::VM::Enable + HCR_EL2::RW::EL1IsAarch64).into();
+        // self.regs.vm_system_regs.hcr_el2 |= 1<<27;
         // + HCR_EL2::IMO::EnableVirtualIRQ).into();
         // trap el1 smc to el2
         // self.regs.vm_system_regs.hcr_el2 |= HCR_TSC_TRAP as u64;

@@ -31,7 +31,6 @@ use axerrno::AxResult;
 // }
 
 /// Per-CPU data. A pointer to this struct is loaded into TP when a CPU starts. This structure
-/// sits at the top of a secondary CPU's stack.
 #[repr(C)]
 #[repr(align(4096))]
 pub struct PerCpu<H:AxVMHal>{   //stack_top_addr has no use yet?

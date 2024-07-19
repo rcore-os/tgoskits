@@ -1,20 +1,9 @@
-// Copyright (c) 2023 Beihang University, Huawei Technologies Co.,Ltd. All rights reserved.
-// Rust-Shyper is licensed under Mulan PSL v2.
-// You can use this software according to the terms and conditions of the Mulan PSL v2.
-// You may obtain a copy of Mulan PSL v2 at:
-//          http://license.coscl.org.cn/MulanPSL2
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-// EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-// MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-// See the Mulan PSL v2 for more details.
-
+use super::hvc::{hvc_guest_handler, HVC_SYS, HVC_SYS_BOOT};
 use super::vcpu::VmCpuRegisters;
-use super::hvc::{HVC_SYS, HVC_SYS_BOOT, hvc_guest_handler};
 use super::ContextFrame;
 
-use axhal::arch::TrapFrame;
 use axhal::arch::exception_utils::*;
-
+use axhal::arch::TrapFrame;
 
 const HVC_RETURN_REG: usize = 0;
 const SMC_RETURN_REG: usize = 0;
@@ -23,7 +12,7 @@ pub const HVC_EXCEPTION: usize = 0x16;
 pub const DATA_ABORT_EXCEPTION: usize = 0x24;
 
 pub fn data_abort_handler(ctx: &mut TrapFrame) {
-    /* 
+    /*
     let emu_ctx = EmuContext {
         address: exception_fault_addr(),
         width: exception_data_abort_access_width(),
@@ -33,11 +22,13 @@ pub fn data_abort_handler(ctx: &mut TrapFrame) {
         reg_width: exception_data_abort_access_reg_width(),
     };
     */
-    let context_frame: &mut ContextFrame = unsafe {
-        &mut *(ctx as *mut TrapFrame as *mut ContextFrame)
-    };
-    debug!("data fault addr 0x{:x}, esr: 0x{:x}",
-        exception_fault_addr(), exception_esr());
+    let context_frame: &mut ContextFrame =
+        unsafe { &mut *(ctx as *mut TrapFrame as *mut ContextFrame) };
+    debug!(
+        "data fault addr 0x{:x}, esr: 0x{:x}",
+        exception_fault_addr(),
+        exception_esr()
+    );
     let elr = context_frame.exception_pc();
 
     if !exception_data_abort_handleable() {
@@ -52,10 +43,11 @@ pub fn data_abort_handler(ctx: &mut TrapFrame) {
         // No migrate need
         panic!(
             "Data abort is not translate fault 0x{:x}\n ctx: {}",
-            exception_fault_addr(), context_frame
-        );           
+            exception_fault_addr(),
+            context_frame
+        );
     }
-    /* 
+    /*
     if !emu_handler(&emu_ctx) {
         active_vm().unwrap().show_pagetable(emu_ctx.address);
         info!(
@@ -81,9 +73,8 @@ pub fn data_abort_handler(ctx: &mut TrapFrame) {
 
 #[inline(never)]
 pub fn hvc_handler(ctx: &mut TrapFrame) {
-    let context_frame: &mut ContextFrame = unsafe {
-        &mut *(ctx as *mut TrapFrame as *mut ContextFrame)
-    };
+    let context_frame: &mut ContextFrame =
+        unsafe { &mut *(ctx as *mut TrapFrame as *mut ContextFrame) };
     let x0 = context_frame.gpr(0);
     let x1 = context_frame.gpr(1);
     let x2 = context_frame.gpr(2);
@@ -101,7 +92,10 @@ pub fn hvc_handler(ctx: &mut TrapFrame) {
             context_frame.set_gpr(HVC_RETURN_REG, val);
         }
         Err(_) => {
-            warn!("Failed to handle hvc request fid 0x{:x} event 0x{:x}", hvc_type, event);
+            warn!(
+                "Failed to handle hvc request fid 0x{:x} event 0x{:x}",
+                hvc_type, event
+            );
             context_frame.set_gpr(HVC_RETURN_REG, usize::MAX);
         }
     }
