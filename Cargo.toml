@@ -6,9 +6,10 @@ edition = "2021"
 
 [dependencies]
 # TODO: use main repo "https://github.com/arceos-org/arceos.git" instead
-axerrno = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
-memory_addr = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
-percpu = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "b42df3f" }
-# axerrno = { path = "../../arceos/crates/axerrno" }
-# memory_addr = { path = "../../arceos/crates/memory_addr" }
-# percpu = { path = "../../arceos/crates/percpu" }
+# axerrno = { path = "../arceos-vmm-branch/crates/axerrno" }
+# memory_addr = { path = "../arceos-vmm-branch/crates/memory_addr" }
+# percpu = { path = "../arceos-vmm-branch/crates/percpu" }
+
+axerrno = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c" }
+memory_addr = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c" }
+percpu = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c" }
