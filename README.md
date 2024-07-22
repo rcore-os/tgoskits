@@ -9,10 +9,12 @@ System Real Time Clock (RTC) Drivers for aarch64 based on PL031.
 ```rust
 use arm_pl031::Rtc;
 
-let epoch_time = Rtc::new(0x901_0000).get_unix_timestamp();
+let rtc = unsafe { Rtc::new(0x901_0000 as _) };
+let epoch_time = rtc.get_unix_timestamp();
 ```
 
-`base_addr` needs to be the device virtual address available for mmio, which can be obtained from the device tree, for example:
+`base_addr` needs to be the device virtual address available for mmio, which can be obtained from
+the device tree, for example:
 
 ```
 / {
