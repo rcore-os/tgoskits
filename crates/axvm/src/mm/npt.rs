@@ -7,6 +7,6 @@ cfg_if::cfg_if! {
         pub type AxNestedPageTable<I> = page_table::riscv::Sv39PageTable<I>;
     } else if #[cfg(target_arch = "aarch64")]{
         /// The architecture-specific page table.
-        // pub type AxNestedPageTable<I> = page_table::aarch64::A64PageTable<I>;
+        pub type AxNestedPageTable<I> = crate::arch::A64PageTable<I>;
     }
 }

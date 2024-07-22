@@ -7,29 +7,8 @@ cfg_if::cfg_if! {
     } else if #[cfg(target_arch = "riscv64")] {
         mod riscv64;
         pub use self::riscv64::*;
-    } else {
-        // Following are things for the new, unified code structure. It's just demonstration and won't compile.
-        pub struct AxArchVCpuImpl<H: AxVMHal> {}
-        impl<H: AxVMHal> axvcpu::AxArchVCpu for AxArchVCpuImpl<H> {
-            // ...implementation...
-        }
-
-        pub struct AxArchPerCpuState<H: AxVMHal> {}
-
-        impl<H: AxVMHal> AxVMArchPerCpu for AxVMArchPerCpuImpl<H> {
-            // ...implementation...
-        }
-
-        pub struct AxArchDeviceList<H: AxVMHal> {}
-
-        impl<H: AxVMHal> AxArchDeviceList<H> {
-            pub fn new() -> Self {
-                // ...implementation...
-            }
-        }
-
-        pub fn has_hardware_support() -> bool {
-            // ...implementation...
-        }
+    } else if #[cfg(target_arch = "aarch64")] {
+        mod aarch64;
+        pub use self::aarch64::*;
     }
 }

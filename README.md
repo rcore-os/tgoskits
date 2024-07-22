@@ -51,7 +51,12 @@ $ sudo umount tmp
 
 ```console
 $ cd arceos-vmm
+# x86_64
 $ make A=$(pwd) ACCEL=y BLK=y [LOG=warn|info|debug|trace] run
+# aarch64
+$ make A=$(pwd) LOG=info BLK=y ARCH=aarch64 run
+# riscv64
+$ make A=$(pwd) LOG=info BLK=y ARCH=riscv64 run
 ......
 Booting from ROM..
 Initialize IDT & GDT...

@@ -1,7 +1,7 @@
 #![cfg_attr(feature = "axstd", no_std)]
 #![cfg_attr(feature = "axstd", no_main)]
 #![feature(naked_functions)]
-
+#![allow(warnings)]
 #[macro_use]
 #[cfg(feature = "axstd")]
 extern crate axstd as std;
@@ -16,6 +16,8 @@ mod gpm;
 mod hal;
 // mod vmexit; temporarily removed
 
+use alloc::vec::Vec;
+
 use axerrno::{AxError, AxResult};
 use axvm::config::{AxArchVCpuConfig, AxVCpuConfig, AxVMConfig};
 use axvm::{AxVM, AxVMPerCpu, GuestPhysAddr, HostPhysAddr, HostVirtAddr};
@@ -23,6 +25,7 @@ use page_table_entry::MappingFlags;
 
 use self::gpm::{setup_gpm, GuestMemoryRegion, GuestPhysMemorySet, GUEST_ENTRY};
 use self::hal::AxVMHalImpl;
+use alloc::vec;
 
 #[percpu::def_percpu]
 pub static mut AXVM_PER_CPU: AxVMPerCpu<AxVMHalImpl> = AxVMPerCpu::new_uninit();
