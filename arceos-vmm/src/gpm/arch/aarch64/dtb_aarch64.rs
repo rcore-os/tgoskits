@@ -1,4 +1,4 @@
-use crate::gpa_as_mut_ptr;
+use super::gpa_as_mut_ptr;
 use arrayvec::ArrayVec;
 use fdt::Fdt;
 

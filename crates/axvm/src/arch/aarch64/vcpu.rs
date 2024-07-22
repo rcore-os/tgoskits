@@ -4,6 +4,7 @@ use core::marker::PhantomData;
 use core::mem::size_of;
 use spin::Mutex;
 
+use axvcpu::AxArchVCpuExitReason;
 use cortex_a::registers::*;
 use tock_registers::interfaces::*;
 
@@ -71,9 +72,12 @@ extern "C" {
 pub type AxArchVCpuConfig = VmCpuRegisters;
 
 // Public Function
-impl<H: AxVMHal> VCpu<H> {
-    /// Create a new vCPU
-    pub fn new(_config: AxArchVCpuConfig) -> AxResult<Self> {
+impl<H: AxVMHal> axvcpu::AxArchVCpu for VCpu<H> {
+    type CreateConfig = ();
+
+    type SetupConfig = ();
+
+    fn new(_config: Self::CreateConfig) -> AxResult<Self> {
         // Self {
         //     regs: VmCpuRegisters::default(),
         //     marker: PhantomData,
@@ -85,22 +89,23 @@ impl<H: AxVMHal> VCpu<H> {
         })
     }
 
-    /// Set guest entry point
-    pub fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
+    fn setup(&mut self, _config: Self::SetupConfig) -> AxResult {
+        Ok(())
+    }
+
+    fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
         debug!("set vcpu entry:{:#x}", entry);
         self.set_elr(entry);
         Ok(())
     }
 
-    /// Set ept root
-    pub fn set_ept_root(&mut self, ept_root: HostPhysAddr) -> AxResult {
+    fn set_ept_root(&mut self, ept_root: HostPhysAddr) -> AxResult {
         debug!("set vcpu ept root:{:#x}", ept_root);
         self.regs.vm_system_regs.vttbr_el2 = ept_root.as_usize() as u64;
         Ok(())
     }
 
-    /// Run vcpu
-    pub fn run(&mut self) -> AxResult<crate::vcpu::AxArchVCpuExitReason> {
+    fn run(&mut self) -> AxResult<AxArchVCpuExitReason> {
         register_lower_aarch64_synchronous_handler()?;
         self.init_hv();
         unsafe {
@@ -109,15 +114,11 @@ impl<H: AxVMHal> VCpu<H> {
         Err(AxError::BadState)
     }
 
-    pub fn bind(&mut self) -> AxResult {
-        // unimplemented!()
-        debug!("bind vcpu");
+    fn bind(&mut self) -> AxResult {
         Ok(())
     }
 
-    pub fn unbind(&mut self) -> AxResult {
-        // unimplemented!()
-        debug!("unbind vcpu");
+    fn unbind(&mut self) -> AxResult {
         Ok(())
     }
 }
@@ -171,7 +172,7 @@ impl<H: AxVMHal> VCpu<H> {
                                           + VTCR_EL2::ORGN0::NormalWBRAWA
                                           + VTCR_EL2::IRGN0::NormalWBRAWA
                                           + VTCR_EL2::SL0.val(0b01)
-                                          + VTCR_EL2::T0SZ.val(64 - 40))
+                                          + VTCR_EL2::T0SZ.val(64 - 39))
             .into();
         self.regs.vm_system_regs.hcr_el2 = (HCR_EL2::VM::Enable + HCR_EL2::RW::EL1IsAarch64).into();
         // self.regs.vm_system_regs.hcr_el2 |= 1<<27;

@@ -122,27 +122,13 @@ pub struct GuestPhysMemorySet {
 
 impl GuestPhysMemorySet {
     pub fn new() -> AxResult<Self> {
-        let mut npt = NestedPageTable::try_new().map_err(|err| {
-            warn!("NestedPageTable try_new() get err {:?}", err);
-            AxError::NoMemory
-        })?;
-        if usize::from(npt.root_paddr()) & (1<<12) != 0 {
-            npt = NestedPageTable::try_new().map_err(|err| {
+        Ok(Self {
+            npt: NestedPageTable::try_new().map_err(|err| {
                 warn!("NestedPageTable try_new() get err {:?}", err);
                 AxError::NoMemory
-            })?;
-        }
-        Ok(Self {
-            npt: npt,
+            })?,
             regions: BTreeMap::new(),
         })
-        // Ok(Self {
-        //     npt: NestedPageTable::try_new().map_err(|err| {
-        //         warn!("NestedPageTable try_new() get err {:?}", err);
-        //         AxError::NoMemory
-        //     })?,
-        //     regions: BTreeMap::new(),
-        // })
     }
 
     pub fn nest_page_table_root(&self) -> HostPhysAddr {

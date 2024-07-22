@@ -6,6 +6,7 @@ use tock_registers::interfaces::*;
 use spin::{Mutex, Once};
 
 use super::ContextFrame;
+use crate::percpu::AxVMArchPerCpu;
 use crate::{AxVMHal, HostPhysAddr};
 use axerrno::AxResult;
 /// Per-CPU data. A pointer to this struct is loaded into TP when a CPU starts. This structure
@@ -21,26 +22,26 @@ pub struct PerCpu<H: AxVMHal> {
     marker: core::marker::PhantomData<H>,
 }
 
-impl<H: AxVMHal + 'static> PerCpu<H> {
-    pub const fn new(cpu_id: usize) -> Self {
-        Self {
+impl<H: AxVMHal + 'static> AxVMArchPerCpu for PerCpu<H> {
+    fn new(cpu_id: usize) -> AxResult<Self> {
+        Ok(Self {
             cpu_id: cpu_id,
             ctx: None,
 
             marker: core::marker::PhantomData,
-        }
+        })
     }
 
-    pub fn is_enabled(&self) -> bool {
+    fn is_enabled(&self) -> bool {
         let hcr_el2 = HCR_EL2.get();
         return hcr_el2 & 1 != 0;
     }
 
-    pub fn hardware_enable(&mut self) -> AxResult {
+    fn hardware_enable(&mut self) -> AxResult {
         Ok(HCR_EL2.set(HCR_EL2::VM::Enable.into()))
     }
 
-    pub fn hardware_disable(&mut self) -> AxResult {
+    fn hardware_disable(&mut self) -> AxResult {
         Ok(HCR_EL2.set(HCR_EL2::VM::Disable.into()))
     }
 }

@@ -16,9 +16,6 @@ mod gpm;
 mod hal;
 // mod vmexit; temporarily removed
 
-#[cfg(target_arch = "aarch64")]
-mod dtb_aarch64;
-
 use alloc::vec::Vec;
 
 use axerrno::{AxError, AxResult};
@@ -29,9 +26,6 @@ use page_table_entry::MappingFlags;
 use self::gpm::{setup_gpm, GuestMemoryRegion, GuestPhysMemorySet, GUEST_ENTRY};
 use self::hal::AxVMHalImpl;
 use alloc::vec;
-
-#[cfg(target_arch = "aarch64")]
-use dtb_aarch64::MachineMeta;
 
 #[percpu::def_percpu]
 pub static mut AXVM_PER_CPU: AxVMPerCpu<AxVMHalImpl> = AxVMPerCpu::new_uninit();

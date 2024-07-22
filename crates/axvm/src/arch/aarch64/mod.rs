@@ -1,4 +1,5 @@
 mod context_frame;
+pub mod device_list;
 mod ept;
 mod hvc;
 mod pcpu;
@@ -10,9 +11,9 @@ use spin::once::Once;
 
 use axhal::arch::register_exception_handler_aarch64;
 
-pub use pcpu::PerCpu as AxArchPerCpuState;
-pub use vcpu::VCpu as AxArchVCpu;
-// pub use vcpu::VCpu as AxVMVcpu;
+pub use self::device_list::AxArchDeviceList;
+pub use self::pcpu::PerCpu as AxVMArchPerCpuImpl;
+pub use self::vcpu::VCpu as AxArchVCpuImpl;
 pub use vcpu::AxArchVCpuConfig;
 
 use sync::{data_abort_handler, hvc_handler, DATA_ABORT_EXCEPTION, HVC_EXCEPTION};
