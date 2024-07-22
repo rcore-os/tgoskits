@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### New features
+
+- Added methods for match register and interrupts.
+
 ## 0.2.0
 
 ### Breaking changes
