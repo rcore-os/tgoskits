@@ -2,6 +2,9 @@
 
 #![cfg_attr(not(test), no_std)]
 
+#[cfg(feature = "chrono")]
+mod chrono;
+
 use core::ptr::{addr_of, addr_of_mut};
 
 #[repr(C, align(4))]
