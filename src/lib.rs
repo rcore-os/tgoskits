@@ -7,6 +7,7 @@ mod chrono;
 
 use core::ptr::{addr_of, addr_of_mut};
 
+#[derive(Default)]
 #[repr(C, align(4))]
 struct Registers {
     /// Data register
@@ -120,3 +121,33 @@ unsafe impl Send for Rtc {}
 // SAFETY: An `&Rtc` only allows reading device registers, which can safety be done from multiple
 // places at once.
 unsafe impl Sync for Rtc {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_timestamp() {
+        let mut registers = Registers {
+            dr: 12345678,
+            ..Registers::default()
+        };
+
+        // SAFETY: The pointer is constructed from a reference so it must be valid
+        let rtc = unsafe { Rtc::new(&mut registers as *mut Registers as _) };
+
+        assert_eq!(rtc.get_unix_timestamp(), 12345678);
+    }
+
+    #[test]
+    fn test_set_timestamp() {
+        let mut registers = Registers::default();
+
+        // SAFETY: The pointer is constructed from a reference so it must be valid
+        let mut rtc = unsafe { Rtc::new(&mut registers as *mut Registers as _) };
+
+        rtc.set_unix_timestamp(424242);
+        drop(rtc);
+        assert_eq!(registers.lr, 424242);
+    }
+}
