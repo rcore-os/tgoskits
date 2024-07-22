@@ -13,21 +13,21 @@ lazy_static = { version = "1.4", features = ["spin_no_std"] }
 cfg-if = "1.0"
 
 # System dependent modules provided by ArceOS.
-axalloc = { git = "https://github.com/915604903T/arceos.git", rev = "e89a758" }
-axhal = { git = "https://github.com/915604903T/arceos.git", rev = "e89a758" }
+axalloc = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c" }
+axhal = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c" }
 
 # System independent crates used for constructing hypervisor.
 axvm = { path = "../crates/axvm" }
 
 # System independent crates provided by ArceOS, these crates could be imported by remote url. 
-axerrno = { git = "https://github.com/915604903T/arceos.git", rev = "e89a758" }
-page_table_entry = { git = "https://github.com/915604903T/arceos.git", rev = "e89a758" }
-memory_addr = { git = "https://github.com/915604903T/arceos.git", rev = "e89a758" }
-percpu = { git = "https://github.com/915604903T/arceos.git", rev = "e89a758" }
+axerrno = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c" }
+page_table_entry = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c" }
+memory_addr = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c" }
+percpu = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 ## todo: use features to disable "irq" in riscv
-axstd = { git = "https://github.com/915604903T/arceos.git", rev = "e89a758", features = [
+axstd = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c", features = [
     "alloc",
     "paging",
     "fs",
@@ -38,7 +38,7 @@ x86_64 = "0.14"
 raw-cpuid = "11.0"
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
-axstd = { git = "https://github.com/915604903T/arceos.git", rev = "e89a758", features = [
+axstd = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c", features = [
     "alloc",
     "paging",
     "fs",
@@ -47,7 +47,7 @@ fdt = { version = "0.1.5" }
 arrayvec = { version = "0.7.2", default-features = false }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
-axstd = { git = "https://github.com/915604903T/arceos.git", rev = "e89a758", features = [
+axstd = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c", features = [
     "alloc",
     "paging",
     "fs",

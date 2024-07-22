@@ -14,7 +14,7 @@ bitflags = "2.2"
 bit_field = "0.10"
 numeric-enum-macro = "0.2"
 
-axvcpu = { git = "https://github.com/915604903T/axvcpu.git", branch = "main" }
+axvcpu = { git = "https://github.com/arceos-hypervisor/axvcpu.git", branch = "main" }
 
 # System independent crates provided by ArceOS, these crates could be imported by remote url. 
 # axerrno = { path = "../../arceos/crates/axerrno" }
@@ -23,12 +23,12 @@ axvcpu = { git = "https://github.com/915604903T/axvcpu.git", branch = "main" }
 # page_table = { path = "../../arceos/crates/page_table" }
 # page_table_entry = { path = "../../arceos/crates/page_table_entry" }
 # percpu = { path = "../../arceos/crates/percpu" }
-axerrno = { git = "https://github.com/915604903T/arceos.git", rev = "e89a758" }
-spinlock = { git = "https://github.com/915604903T/arceos.git", rev = "e89a758" }
-memory_addr = { git = "https://github.com/915604903T/arceos.git", rev = "e89a758" }
-page_table = { git = "https://github.com/915604903T/arceos.git", rev = "e89a758" }
-page_table_entry = { git = "https://github.com/915604903T/arceos.git", rev = "e89a758" }
-percpu = { git = "https://github.com/915604903T/arceos.git", rev = "e89a758" }
+axerrno = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c" }
+spinlock = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c" }
+memory_addr = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c" }
+page_table = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c" }
+page_table_entry = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c" }
+percpu = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c" }
 
 # Operating system dependent modules provided by ArceOS, these modules could be imported by remote url.
 
@@ -46,7 +46,7 @@ tock-registers = "0.8.1"
 memoffset = { version = ">=0.6.5", features = ["unstable_const"] }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
-axhal = { git = "https://github.com/915604903T/arceos.git", rev = "e89a758" }
+axhal = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c" }
 cortex-a = "8.1.1"
 aarch64-cpu = "9.3"
 smccc = "0.1.1"
