@@ -1,6 +1,11 @@
 //! System Real Time Clock (RTC) Drivers for aarch64 based on PL031.
 
 #![cfg_attr(not(test), no_std)]
+#![deny(
+    clippy::missing_safety_doc,
+    clippy::undocumented_unsafe_blocks,
+    unsafe_op_in_unsafe_fn
+)]
 
 #[cfg(feature = "chrono")]
 mod chrono;
