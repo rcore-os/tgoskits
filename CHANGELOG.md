@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### New features
+
+- Added methods for match register and interrupts.
+- Added optional dependency on `chrono`.
+
 ## 0.2.0
 
 ### Breaking changes

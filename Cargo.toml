@@ -12,3 +12,8 @@ keywords = ["arceos", "aarch64", "rtc", "pl031"]
 categories = ["os", "hardware-support", "no-std"]
 
 [dependencies]
+chrono = { version = "0.4.38", default-features = false, optional = true }
+
+[features]
+chrono = ["dep:chrono"]
+default = ["chrono"]
