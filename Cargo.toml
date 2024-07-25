@@ -1,15 +1,10 @@
 [package]
 name = "axvcpu"
-authors = [ "aarkegz <aarkegz@gmail.com>" ]
+authors = ["aarkegz <aarkegz@gmail.com>"]
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# TODO: use main repo "https://github.com/arceos-org/arceos.git" instead
-# axerrno = { path = "../arceos-vmm-branch/crates/axerrno" }
-# memory_addr = { path = "../arceos-vmm-branch/crates/memory_addr" }
-# percpu = { path = "../arceos-vmm-branch/crates/percpu" }
-
-axerrno = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c" }
-memory_addr = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c" }
-percpu = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c" }
+axerrno = "0.1.0"
+memory_addr = "0.2.0"
+percpu = { git = "https://github.com/arceos-hypervisor/percpu-hv.git" }
