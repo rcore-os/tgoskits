@@ -1,17 +1,17 @@
 [package]
 name = "page_table_multiarch"
-version = "0.1.2"
 edition = "2021"
-authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "Generic page table structures for various hardware architectures"
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
-homepage = "https://github.com/arceos-org/arceos"
-repository = "https://github.com/arceos-org/page_table_multiarch"
 documentation = "https://docs.rs/page_table_multiarch"
-keywords = ["arceos", "paging", "page-table", "virtual-memory"]
-categories = ["os", "hardware-support", "memory-management", "no-std"]
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 log = "0.4"
 memory_addr = "0.2"
-page_table_entry = { path = "../page_table_entry", version = "0.1" }
+page_table_entry = { path = "../page_table_entry", version = "0.2" }
