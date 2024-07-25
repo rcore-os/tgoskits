@@ -73,6 +73,40 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
         Ok(())
     }
 
+    /// Remap the mapping starts with `vaddr`, updates both the physical address
+    /// and flags.
+    ///
+    /// Returns the page size of the mapping.
+    ///
+    /// Returns [`Err(PagingError::NotMapped)`](PagingError::NotMapped) if the
+    /// intermediate level tables of the mapping is not present.
+    pub fn remap(
+        &mut self,
+        vaddr: VirtAddr,
+        paddr: PhysAddr,
+        flags: MappingFlags,
+    ) -> PagingResult<PageSize> {
+        let (entry, size) = self.get_entry_mut(vaddr)?;
+        entry.set_paddr(paddr);
+        entry.set_flags(flags, size.is_huge());
+        Ok(size)
+    }
+
+    /// Updates the flags of the mapping starts with `vaddr`.
+    ///
+    /// Returns the page size of the mapping.
+    ///
+    /// Returns [`Err(PagingError::NotMapped)`](PagingError::NotMapped) if the
+    /// mapping is not present.
+    pub fn protect(&mut self, vaddr: VirtAddr, flags: MappingFlags) -> PagingResult<PageSize> {
+        let (entry, size) = self.get_entry_mut(vaddr)?;
+        if entry.is_unused() {
+            return Err(PagingError::NotMapped);
+        }
+        entry.set_flags(flags, size.is_huge());
+        Ok(size)
+    }
+
     /// Unmaps the mapping starts with `vaddr`.
     ///
     /// Returns [`Err(PagingError::NotMapped)`](PagingError::NotMapped) if the
@@ -87,7 +121,7 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
         Ok((paddr, size))
     }
 
-    /// Query the result of the mapping starts with `vaddr`.
+    /// Queries the result of the mapping starts with `vaddr`.
     ///
     /// Returns the physical address of the target frame, mapping flags, and
     /// the page size.
@@ -95,7 +129,7 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
     /// Returns [`Err(PagingError::NotMapped)`](PagingError::NotMapped) if the
     /// mapping is not present.
     pub fn query(&self, vaddr: VirtAddr) -> PagingResult<(PhysAddr, MappingFlags, PageSize)> {
-        let (entry, size) = self.get_entry_mut(vaddr)?;
+        let (entry, size) = self.get_entry(vaddr)?;
         if entry.is_unused() {
             return Err(PagingError::NotMapped);
         }
@@ -103,30 +137,7 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
         Ok((entry.paddr() + off, entry.flags(), size))
     }
 
-    /// Updates the target or flags of the mapping starts with `vaddr`. If the
-    /// corresponding argument is `None`, it will not be updated.
-    ///
-    /// Returns the page size of the mapping.
-    ///
-    /// Returns [`Err(PagingError::NotMapped)`](PagingError::NotMapped) if the
-    /// mapping is not present.
-    pub fn update(
-        &mut self,
-        vaddr: VirtAddr,
-        paddr: Option<PhysAddr>,
-        flags: Option<MappingFlags>,
-    ) -> PagingResult<PageSize> {
-        let (entry, size) = self.get_entry_mut(vaddr)?;
-        if let Some(paddr) = paddr {
-            entry.set_paddr(paddr);
-        }
-        if let Some(flags) = flags {
-            entry.set_flags(flags, size.is_huge());
-        }
-        Ok(size)
-    }
-
-    /// Map a contiguous virtual memory region to a contiguous physical memory
+    /// Maps a contiguous virtual memory region to a contiguous physical memory
     /// region with the given mapping `flags`.
     ///
     /// The virtual and physical memory regions start with `vaddr` and `paddr`
@@ -194,10 +205,10 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
         Ok(())
     }
 
-    /// Unmap a contiguous virtual memory region.
+    /// Unmaps a contiguous virtual memory region.
     ///
     /// The region must be mapped before using [`PageTable64::map_region`], or
-    /// unexpected behaviors may occur.
+    /// unexpected behaviors may occur. It can deal with huge pages automatically.
     pub fn unmap_region(&mut self, vaddr: VirtAddr, size: usize) -> PagingResult {
         trace!(
             "unmap_region({:#x}) [{:#x}, {:#x})",
@@ -219,12 +230,43 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
         Ok(())
     }
 
+    /// Updates mapping flags of a contiguous virtual memory region.
+    ///
+    /// The region must be mapped before using [`PageTable64::map_region`], or
+    /// unexpected behaviors may occur. It can deal with huge pages automatically.
+    pub fn protect_region(
+        &mut self,
+        vaddr: VirtAddr,
+        size: usize,
+        flags: MappingFlags,
+    ) -> PagingResult {
+        trace!(
+            "protect_region({:#x}) [{:#x}, {:#x}) {:?}",
+            self.root_paddr(),
+            vaddr,
+            vaddr + size,
+            flags,
+        );
+        let mut vaddr = vaddr;
+        let mut size = size;
+        while size > 0 {
+            let page_size = self
+                .protect(vaddr, flags)
+                .inspect_err(|e| error!("failed to protect page: {:#x?}, {:?}", vaddr, e))?;
+            assert!(vaddr.is_aligned(page_size));
+            assert!(page_size as usize <= size);
+            vaddr += page_size as usize;
+            size -= page_size as usize;
+        }
+        Ok(())
+    }
+
     /// Walk the page table recursively.
     ///
-    /// When reaching the leaf page table, call `func` on the current page table
-    /// entry. The max number of enumerations in one table is limited by `limit`.
-    /// pre_func` and `post_func` are called before and after recursively walking
-    /// the page table.
+    /// When reaching a page table entry, call `pre_func` and `post_func` on the
+    /// entry if they are provided. The max number of enumerations in one table
+    /// is limited by `limit`. `pre_func` and `post_func` are called before and
+    /// after recursively walking the page table.
     ///
     /// The arguments of `*_func` are:
     /// - Current level (starts with `0`): `usize`
@@ -243,6 +285,27 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
             pre_func,
             post_func,
         )
+    }
+
+    /// Copy entries from another page table within the given virtual memory range.
+    pub fn copy_from(&mut self, other: &Self, start: VirtAddr, size: usize) {
+        if size == 0 {
+            return;
+        }
+        let src_table = self.table_of(other.root_paddr);
+        let dst_table = self.table_of_mut(self.root_paddr);
+        let index_fn = if M::LEVELS == 3 {
+            p3_index
+        } else if M::LEVELS == 4 {
+            p4_index
+        } else {
+            unreachable!()
+        };
+        let start_idx = index_fn(start);
+        let end_idx = index_fn(start + size - 1) + 1;
+        assert!(start_idx < ENTRY_COUNT);
+        assert!(end_idx <= ENTRY_COUNT);
+        dst_table[start_idx..end_idx].copy_from_slice(&src_table[start_idx..end_idx]);
     }
 }
 
@@ -263,12 +326,22 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
         unsafe { core::slice::from_raw_parts(ptr, ENTRY_COUNT) }
     }
 
-    fn table_of_mut<'a>(&self, paddr: PhysAddr) -> &'a mut [PTE] {
+    fn table_of_mut<'a>(&mut self, paddr: PhysAddr) -> &'a mut [PTE] {
         let ptr = H::phys_to_virt(paddr).as_mut_ptr() as _;
         unsafe { core::slice::from_raw_parts_mut(ptr, ENTRY_COUNT) }
     }
 
-    fn next_table_mut<'a>(&self, entry: &PTE) -> PagingResult<&'a mut [PTE]> {
+    fn next_table<'a>(&self, entry: &PTE) -> PagingResult<&'a [PTE]> {
+        if !entry.is_present() {
+            Err(PagingError::NotMapped)
+        } else if entry.is_huge() {
+            Err(PagingError::MappedToHugePage)
+        } else {
+            Ok(self.table_of(entry.paddr()))
+        }
+    }
+
+    fn next_table_mut<'a>(&mut self, entry: &PTE) -> PagingResult<&'a mut [PTE]> {
         if !entry.is_present() {
             Err(PagingError::NotMapped)
         } else if entry.is_huge() {
@@ -288,7 +361,33 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
         }
     }
 
-    fn get_entry_mut(&self, vaddr: VirtAddr) -> PagingResult<(&mut PTE, PageSize)> {
+    fn get_entry(&self, vaddr: VirtAddr) -> PagingResult<(&PTE, PageSize)> {
+        let p3 = if M::LEVELS == 3 {
+            self.table_of(self.root_paddr())
+        } else if M::LEVELS == 4 {
+            let p4 = self.table_of(self.root_paddr());
+            let p4e = &p4[p4_index(vaddr)];
+            self.next_table(p4e)?
+        } else {
+            unreachable!()
+        };
+        let p3e = &p3[p3_index(vaddr)];
+        if p3e.is_huge() {
+            return Ok((p3e, PageSize::Size1G));
+        }
+
+        let p2 = self.next_table(p3e)?;
+        let p2e = &p2[p2_index(vaddr)];
+        if p2e.is_huge() {
+            return Ok((p2e, PageSize::Size2M));
+        }
+
+        let p1 = self.next_table(p2e)?;
+        let p1e = &p1[p1_index(vaddr)];
+        Ok((p1e, PageSize::Size4K))
+    }
+
+    fn get_entry_mut(&mut self, vaddr: VirtAddr) -> PagingResult<(&mut PTE, PageSize)> {
         let p3 = if M::LEVELS == 3 {
             self.table_of_mut(self.root_paddr())
         } else if M::LEVELS == 4 {
@@ -364,7 +463,7 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
                     func(level, i, vaddr, entry);
                 }
                 if level < M::LEVELS - 1 && !entry.is_huge() {
-                    let table_entry = self.next_table_mut(entry)?;
+                    let table_entry = self.next_table(entry)?;
                     self.walk_recursive(table_entry, level + 1, vaddr, limit, pre_func, post_func)?;
                 }
                 if let Some(func) = post_func {
