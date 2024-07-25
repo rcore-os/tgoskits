@@ -1,12 +1,9 @@
 extern crate alloc;
 
-use alloc::{vec, vec::Vec};
-use core::marker::PhantomData;
-
-use memory_addr::{PhysAddr, VirtAddr, PAGE_SIZE_4K};
-
 use crate::{GenericPTE, PagingHandler, PagingMetaData};
 use crate::{MappingFlags, PageSize, PagingError, PagingResult};
+use core::marker::PhantomData;
+use memory_addr::{PhysAddr, VirtAddr, PAGE_SIZE_4K};
 
 const ENTRY_COUNT: usize = 512;
 
@@ -32,7 +29,6 @@ const fn p1_index(vaddr: VirtAddr) -> usize {
 /// When the [`PageTable64`] itself is dropped.
 pub struct PageTable64<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> {
     root_paddr: PhysAddr,
-    intrm_tables: Vec<PhysAddr>,
     _phantom: PhantomData<(M, PTE, H)>,
 }
 
@@ -44,7 +40,6 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
         let root_paddr = Self::alloc_table()?;
         Ok(Self {
             root_paddr,
-            intrm_tables: vec![root_paddr],
             _phantom: PhantomData,
         })
     }
@@ -228,13 +223,15 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
     ///
     /// When reaching the leaf page table, call `func` on the current page table
     /// entry. The max number of enumerations in one table is limited by `limit`.
+    /// pre_func` and `post_func` are called before and after recursively walking
+    /// the page table.
     ///
-    /// The arguments of `func` are:
+    /// The arguments of `*_func` are:
     /// - Current level (starts with `0`): `usize`
     /// - The index of the entry in the current-level table: `usize`
     /// - The virtual address that is mapped to the entry: [`VirtAddr`]
     /// - The reference of the entry: [`&PTE`](GenericPTE)
-    pub fn walk<F>(&self, limit: usize, func: &F) -> PagingResult
+    pub fn walk<F>(&self, limit: usize, pre_func: Option<&F>, post_func: Option<&F>) -> PagingResult
     where
         F: Fn(usize, usize, VirtAddr, &PTE),
     {
@@ -243,7 +240,8 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
             0,
             VirtAddr::from(0),
             limit,
-            func,
+            pre_func,
+            post_func,
         )
     }
 }
@@ -283,7 +281,6 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
     fn next_table_mut_or_create<'a>(&mut self, entry: &mut PTE) -> PagingResult<&'a mut [PTE]> {
         if entry.is_unused() {
             let paddr = Self::alloc_table()?;
-            self.intrm_tables.push(paddr);
             *entry = GenericPTE::new_table(paddr);
             Ok(self.table_of_mut(paddr))
         } else {
@@ -353,7 +350,8 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
         level: usize,
         start_vaddr: VirtAddr,
         limit: usize,
-        func: &F,
+        pre_func: Option<&F>,
+        post_func: Option<&F>,
     ) -> PagingResult
     where
         F: Fn(usize, usize, VirtAddr, &PTE),
@@ -362,10 +360,15 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
         for (i, entry) in table.iter().enumerate() {
             let vaddr = start_vaddr + (i << (12 + (M::LEVELS - 1 - level) * 9));
             if entry.is_present() {
-                func(level, i, vaddr, entry);
+                if let Some(func) = pre_func {
+                    func(level, i, vaddr, entry);
+                }
                 if level < M::LEVELS - 1 && !entry.is_huge() {
                     let table_entry = self.next_table_mut(entry)?;
-                    self.walk_recursive(table_entry, level + 1, vaddr, limit, func)?;
+                    self.walk_recursive(table_entry, level + 1, vaddr, limit, pre_func, post_func)?;
+                }
+                if let Some(func) = post_func {
+                    func(level, i, vaddr, entry);
                 }
                 n += 1;
                 if n >= limit {
@@ -379,8 +382,16 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
 
 impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> Drop for PageTable64<M, PTE, H> {
     fn drop(&mut self) {
-        for frame in &self.intrm_tables {
-            H::dealloc_frame(*frame);
-        }
+        // don't free the entries in last level, they are not array.
+        let _ = self.walk(
+            usize::MAX,
+            None,
+            Some(&|level, _index, _vaddr, entry: &PTE| {
+                if level < M::LEVELS - 1 && entry.is_present() && !entry.is_huge() {
+                    H::dealloc_frame(entry.paddr());
+                }
+            }),
+        );
+        H::dealloc_frame(self.root_paddr());
     }
 }
