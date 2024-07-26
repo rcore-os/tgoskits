@@ -43,7 +43,7 @@ jobs:
     - uses: dtolnay/rust-toolchain@nightly
     - name: Build docs
       continue-on-error: ${{ github.ref != env.default-branch && github.event_name != 'pull_request' }}
-      run: cargo doc --no-deps --all-features
+      run: cargo doc --no-deps
     - name: Deploy to Github Pages
       if: ${{ github.ref == env.default-branch }}
       uses: JamesIves/github-pages-deploy-action@v4
