@@ -55,6 +55,9 @@ not used.
 - `preempt`: For **preemptible** system use. In this case, we need to disable
 preemption when accessing per-CPU data. Otherwise, the data may be corrupted
 when it's being accessing and the current thread happens to be preempted.
+- `arm-el2`: For **ARM system** running at **EL2** use (e.g. hypervisors). 
+In this case, we use `TPIDR_EL2` instead of `TPIDR_EL1` 
+to store the base address of per-CPU data area.
 
 ## Note for RISC-V
 

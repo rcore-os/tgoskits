@@ -20,6 +20,9 @@ preempt = []
 
 default = []
 
+# ARM specific, whether to run at the EL2 privilege level.
+arm-el2 = []
+
 [dependencies]
 proc-macro2 = "1.0"
 quote = "1.0"
