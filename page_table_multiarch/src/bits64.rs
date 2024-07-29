@@ -1,7 +1,7 @@
 extern crate alloc;
 
 use crate::{GenericPTE, PagingHandler, PagingMetaData};
-use crate::{MappingFlags, PageSize, PagingError, PagingResult};
+use crate::{MappingFlags, PageSize, PagingError, PagingResult, TlbFlush, TlbFlushAll};
 use core::marker::PhantomData;
 use memory_addr::{PhysAddr, VirtAddr, PAGE_SIZE_4K};
 
@@ -64,13 +64,13 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
         target: PhysAddr,
         page_size: PageSize,
         flags: MappingFlags,
-    ) -> PagingResult {
+    ) -> PagingResult<TlbFlush<M>> {
         let entry = self.get_entry_mut_or_create(vaddr, page_size)?;
         if !entry.is_unused() {
             return Err(PagingError::AlreadyMapped);
         }
         *entry = GenericPTE::new_page(target.align_down(page_size), flags, page_size.is_huge());
-        Ok(())
+        Ok(TlbFlush::new(vaddr))
     }
 
     /// Remap the mapping starts with `vaddr`, updates both the physical address
@@ -85,11 +85,11 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
         vaddr: VirtAddr,
         paddr: PhysAddr,
         flags: MappingFlags,
-    ) -> PagingResult<PageSize> {
+    ) -> PagingResult<(PageSize, TlbFlush<M>)> {
         let (entry, size) = self.get_entry_mut(vaddr)?;
         entry.set_paddr(paddr);
         entry.set_flags(flags, size.is_huge());
-        Ok(size)
+        Ok((size, TlbFlush::new(vaddr)))
     }
 
     /// Updates the flags of the mapping starts with `vaddr`.
@@ -98,27 +98,31 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
     ///
     /// Returns [`Err(PagingError::NotMapped)`](PagingError::NotMapped) if the
     /// mapping is not present.
-    pub fn protect(&mut self, vaddr: VirtAddr, flags: MappingFlags) -> PagingResult<PageSize> {
+    pub fn protect(
+        &mut self,
+        vaddr: VirtAddr,
+        flags: MappingFlags,
+    ) -> PagingResult<(PageSize, TlbFlush<M>)> {
         let (entry, size) = self.get_entry_mut(vaddr)?;
         if entry.is_unused() {
             return Err(PagingError::NotMapped);
         }
         entry.set_flags(flags, size.is_huge());
-        Ok(size)
+        Ok((size, TlbFlush::new(vaddr)))
     }
 
     /// Unmaps the mapping starts with `vaddr`.
     ///
     /// Returns [`Err(PagingError::NotMapped)`](PagingError::NotMapped) if the
     /// mapping is not present.
-    pub fn unmap(&mut self, vaddr: VirtAddr) -> PagingResult<(PhysAddr, PageSize)> {
+    pub fn unmap(&mut self, vaddr: VirtAddr) -> PagingResult<(PhysAddr, PageSize, TlbFlush<M>)> {
         let (entry, size) = self.get_entry_mut(vaddr)?;
         if entry.is_unused() {
             return Err(PagingError::NotMapped);
         }
         let paddr = entry.paddr();
         entry.clear();
-        Ok((paddr, size))
+        Ok((paddr, size, TlbFlush::new(vaddr)))
     }
 
     /// Queries the result of the mapping starts with `vaddr`.
@@ -147,34 +151,35 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
     /// When `allow_huge` is true, it will try to map the region with huge pages
     /// if possible. Otherwise, it will map the region with 4K pages.
     ///
+    /// When `flush_tlb_by_page` is true, it will flush the TLB immediately after
+    /// mapping each page. Otherwise, the TLB flush should by handled by the caller.
+    ///
     /// [`Err(PagingError::NotAligned)`]: PagingError::NotAligned
     pub fn map_region(
         &mut self,
         vaddr: VirtAddr,
-        paddr: PhysAddr,
+        get_paddr: impl Fn(VirtAddr) -> PhysAddr,
         size: usize,
         flags: MappingFlags,
         allow_huge: bool,
-    ) -> PagingResult {
+        flush_tlb_by_page: bool,
+    ) -> PagingResult<TlbFlushAll<M>> {
         if !vaddr.is_aligned(PageSize::Size4K)
-            || !paddr.is_aligned(PageSize::Size4K)
             || !memory_addr::is_aligned(size, PageSize::Size4K.into())
         {
             return Err(PagingError::NotAligned);
         }
         trace!(
-            "map_region({:#x}): [{:#x}, {:#x}) -> [{:#x}, {:#x}) {:?}",
+            "map_region({:#x}): [{:#x}, {:#x}) {:?}",
             self.root_paddr(),
             vaddr,
             vaddr + size,
-            paddr,
-            paddr + size,
             flags,
         );
         let mut vaddr = vaddr;
-        let mut paddr = paddr;
         let mut size = size;
         while size > 0 {
+            let paddr = get_paddr(vaddr);
             let page_size = if allow_huge {
                 if vaddr.is_aligned(PageSize::Size1G)
                     && paddr.is_aligned(PageSize::Size1G)
@@ -192,24 +197,40 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
             } else {
                 PageSize::Size4K
             };
-            self.map(vaddr, paddr, page_size, flags).inspect_err(|e| {
+            let tlb = self.map(vaddr, paddr, page_size, flags).inspect_err(|e| {
                 error!(
                     "failed to map page: {:#x?}({:?}) -> {:#x?}, {:?}",
                     vaddr, page_size, paddr, e
                 )
             })?;
+            if flush_tlb_by_page {
+                M::flush_tlb(Some(vaddr));
+            }
+            if flush_tlb_by_page {
+                tlb.flush();
+            } else {
+                tlb.ignore();
+            }
+
             vaddr += page_size as usize;
-            paddr += page_size as usize;
             size -= page_size as usize;
         }
-        Ok(())
+        Ok(TlbFlushAll::new())
     }
 
     /// Unmaps a contiguous virtual memory region.
     ///
     /// The region must be mapped before using [`PageTable64::map_region`], or
     /// unexpected behaviors may occur. It can deal with huge pages automatically.
-    pub fn unmap_region(&mut self, vaddr: VirtAddr, size: usize) -> PagingResult {
+    ///
+    /// When `flush_tlb_by_page` is true, it will flush the TLB immediately after
+    /// mapping each page. Otherwise, the TLB flush should by handled by the caller.
+    pub fn unmap_region(
+        &mut self,
+        vaddr: VirtAddr,
+        size: usize,
+        flush_tlb_by_page: bool,
+    ) -> PagingResult<TlbFlushAll<M>> {
         trace!(
             "unmap_region({:#x}) [{:#x}, {:#x})",
             self.root_paddr(),
@@ -219,27 +240,37 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
         let mut vaddr = vaddr;
         let mut size = size;
         while size > 0 {
-            let (_, page_size) = self
+            let (_, page_size, tlb) = self
                 .unmap(vaddr)
                 .inspect_err(|e| error!("failed to unmap page: {:#x?}, {:?}", vaddr, e))?;
+            if flush_tlb_by_page {
+                tlb.flush();
+            } else {
+                tlb.ignore();
+            }
+
             assert!(vaddr.is_aligned(page_size));
             assert!(page_size as usize <= size);
             vaddr += page_size as usize;
             size -= page_size as usize;
         }
-        Ok(())
+        Ok(TlbFlushAll::new())
     }
 
     /// Updates mapping flags of a contiguous virtual memory region.
     ///
     /// The region must be mapped before using [`PageTable64::map_region`], or
     /// unexpected behaviors may occur. It can deal with huge pages automatically.
+    ///
+    /// When `flush_tlb_by_page` is true, it will flush the TLB immediately after
+    /// mapping each page. Otherwise, the TLB flush should by handled by the caller.
     pub fn protect_region(
         &mut self,
         vaddr: VirtAddr,
         size: usize,
         flags: MappingFlags,
-    ) -> PagingResult {
+        flush_tlb_by_page: bool,
+    ) -> PagingResult<TlbFlushAll<M>> {
         trace!(
             "protect_region({:#x}) [{:#x}, {:#x}) {:?}",
             self.root_paddr(),
@@ -250,15 +281,21 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
         let mut vaddr = vaddr;
         let mut size = size;
         while size > 0 {
-            let page_size = self
+            let (page_size, tlb) = self
                 .protect(vaddr, flags)
                 .inspect_err(|e| error!("failed to protect page: {:#x?}, {:?}", vaddr, e))?;
+            if flush_tlb_by_page {
+                tlb.flush();
+            } else {
+                tlb.ignore();
+            }
+
             assert!(vaddr.is_aligned(page_size));
             assert!(page_size as usize <= size);
             vaddr += page_size as usize;
             size -= page_size as usize;
         }
-        Ok(())
+        Ok(TlbFlushAll::new())
     }
 
     /// Walk the page table recursively.
