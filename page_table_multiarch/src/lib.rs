@@ -38,7 +38,7 @@ pub type PagingResult<T = ()> = Result<T, PagingError>;
 
 /// The **architecture-dependent** metadata that must be provided for
 /// [`PageTable64`].
-pub trait PagingMetaData: Sync + Send + Sized {
+pub trait PagingMetaData: Sync + Send {
     /// The number of levels of the hardware page table.
     const LEVELS: usize;
     /// The maximum number of bits of physical address.
@@ -62,6 +62,12 @@ pub trait PagingMetaData: Sync + Send + Sized {
         let top_mask = usize::MAX << (Self::VA_MAX_BITS - 1);
         (vaddr & top_mask) == 0 || (vaddr & top_mask) == top_mask
     }
+
+    /// Flushes the TLB.
+    ///
+    /// If `vaddr` is [`None`], flushes the entire TLB. Otherwise, flushes the TLB
+    /// entry at the given virtual address.
+    fn flush_tlb(vaddr: Option<VirtAddr>);
 }
 
 /// The low-level **OS-dependent** helpers that must be provided for

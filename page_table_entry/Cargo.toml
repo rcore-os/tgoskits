@@ -14,7 +14,12 @@ categories.workspace = true
 [dependencies]
 bitflags = "2.6"
 memory_addr = "0.2"
-aarch64-cpu = "9.4" # TODO: put it in [target.'cfg(target_arch = "aarch64")'.dependencies]
 
-[target.'cfg(target_arch = "x86_64")'.dependencies]
+[target.'cfg(any(target_arch = "aarch64", doc))'.dependencies]
+aarch64-cpu = "9.4"
+
+[target.'cfg(any(target_arch = "x86_64", doc))'.dependencies]
 x86_64 = "0.15"
+
+[package.metadata.docs.rs]
+rustc-args = [ "--cfg" , "doc"]

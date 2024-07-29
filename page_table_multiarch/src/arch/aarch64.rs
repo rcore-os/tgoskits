@@ -1,10 +1,12 @@
 //! AArch64 specific page table structures.
 
-use crate::{PageTable64, PagingMetaData};
+use core::arch::asm;
+use memory_addr::VirtAddr;
 use page_table_entry::aarch64::A64PTE;
 
+use crate::{PageTable64, PagingMetaData};
+
 /// Metadata of AArch64 page tables.
-#[derive(Copy, Clone)]
 pub struct A64PagingMetaData;
 
 impl PagingMetaData for A64PagingMetaData {
@@ -15,6 +17,19 @@ impl PagingMetaData for A64PagingMetaData {
     fn vaddr_is_valid(vaddr: usize) -> bool {
         let top_bits = vaddr >> Self::VA_MAX_BITS;
         top_bits == 0 || top_bits == 0xffff
+    }
+
+    #[inline]
+    fn flush_tlb(vaddr: Option<VirtAddr>) {
+        unsafe {
+            if let Some(vaddr) = vaddr {
+                // TLB Invalidate by VA, All ASID, EL1, Inner Shareable
+                asm!("tlbi vaae1is, {}; dsb sy; isb", in(reg) vaddr.as_usize())
+            } else {
+                // TLB Invalidate by VMID, All at stage 1, EL1
+                asm!("tlbi vmalle1; dsb sy; isb")
+            }
+        }
     }
 }
 
