@@ -1,7 +1,6 @@
 //! AArch64 specific page table structures.
 
 use core::arch::asm;
-use memory_addr::VirtAddr;
 use page_table_entry::aarch64::A64PTE;
 
 use crate::{PageTable64, PagingMetaData};
@@ -13,6 +12,7 @@ impl PagingMetaData for A64PagingMetaData {
     const LEVELS: usize = 4;
     const PA_MAX_BITS: usize = 48;
     const VA_MAX_BITS: usize = 48;
+    type VirtAddr = memory_addr::VirtAddr;
 
     fn vaddr_is_valid(vaddr: usize) -> bool {
         let top_bits = vaddr >> Self::VA_MAX_BITS;
@@ -20,7 +20,7 @@ impl PagingMetaData for A64PagingMetaData {
     }
 
     #[inline]
-    fn flush_tlb(vaddr: Option<VirtAddr>) {
+    fn flush_tlb(vaddr: Option<memory_addr::VirtAddr>) {
         unsafe {
             if let Some(vaddr) = vaddr {
                 // TLB Invalidate by VA, All ASID, EL1, Inner Shareable

@@ -1,11 +1,10 @@
 //! RISC-V specific page table structures.
 
 use crate::{PageTable64, PagingMetaData};
-use memory_addr::VirtAddr;
 use page_table_entry::riscv::Rv64PTE;
 
 #[inline]
-fn riscv_flush_tlb(vaddr: Option<VirtAddr>) {
+fn riscv_flush_tlb(vaddr: Option<memory_addr::VirtAddr>) {
     unsafe {
         if let Some(vaddr) = vaddr {
             riscv::asm::sfence_vma(0, vaddr.as_usize())
@@ -25,9 +24,10 @@ impl PagingMetaData for Sv39MetaData {
     const LEVELS: usize = 3;
     const PA_MAX_BITS: usize = 56;
     const VA_MAX_BITS: usize = 39;
+    type VirtAddr = memory_addr::VirtAddr;
 
     #[inline]
-    fn flush_tlb(vaddr: Option<VirtAddr>) {
+    fn flush_tlb(vaddr: Option<memory_addr::VirtAddr>) {
         riscv_flush_tlb(vaddr)
     }
 }
@@ -36,9 +36,10 @@ impl PagingMetaData for Sv48MetaData {
     const LEVELS: usize = 4;
     const PA_MAX_BITS: usize = 56;
     const VA_MAX_BITS: usize = 48;
+    type VirtAddr = memory_addr::VirtAddr;
 
     #[inline]
-    fn flush_tlb(vaddr: Option<VirtAddr>) {
+    fn flush_tlb(vaddr: Option<memory_addr::VirtAddr>) {
         riscv_flush_tlb(vaddr)
     }
 }
