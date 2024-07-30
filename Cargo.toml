@@ -7,4 +7,4 @@ edition = "2021"
 [dependencies]
 axerrno = "0.1.0"
 memory_addr = "0.2.0"
-percpu = { git = "https://github.com/arceos-hypervisor/percpu-hv.git" }
+percpu = "0.1.3"
