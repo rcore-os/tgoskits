@@ -9,7 +9,7 @@ extern crate log;
 mod arch;
 mod bits64;
 
-use core::marker::PhantomData;
+use core::{fmt::Debug, marker::PhantomData};
 
 use memory_addr::{PhysAddr, VirtAddr};
 
@@ -51,6 +51,13 @@ pub trait PagingMetaData: Sync + Send {
     /// The maximum physical address.
     const PA_MAX_ADDR: usize = (1 << Self::PA_MAX_BITS) - 1;
 
+    /// The virtual address to be translated in this page table.
+    ///
+    /// This associated type allows more flexible use of page tables structs like [`PageTable64`],
+    /// for example, to implement EPTs.
+    type VirtAddr: Into<usize> + From<usize> + Copy;
+    // (^)it can be converted from/to usize and it's trivially copyable
+
     /// Whether a given physical address is valid.
     #[inline]
     fn paddr_is_valid(paddr: usize) -> bool {
@@ -69,7 +76,7 @@ pub trait PagingMetaData: Sync + Send {
     ///
     /// If `vaddr` is [`None`], flushes the entire TLB. Otherwise, flushes the TLB
     /// entry at the given virtual address.
-    fn flush_tlb(vaddr: Option<VirtAddr>);
+    fn flush_tlb(vaddr: Option<Self::VirtAddr>);
 }
 
 /// The low-level **OS-dependent** helpers that must be provided for
@@ -102,6 +109,16 @@ impl PageSize {
     pub const fn is_huge(self) -> bool {
         matches!(self, Self::Size1G | Self::Size2M)
     }
+
+    /// Checks whether a given address or size is aligned to the page size.
+    pub const fn is_aligned(self, addr_or_size: usize) -> bool {
+        memory_addr::is_aligned(addr_or_size, self as usize)
+    }
+
+    /// Returns the offset of the address within the page size.
+    pub const fn align_offset(self, addr: usize) -> usize {
+        memory_addr::align_offset(addr, self as usize)
+    }
 }
 
 impl From<PageSize> for usize {
@@ -117,10 +134,10 @@ impl From<PageSize> for usize {
 /// the given virtual address, or call [`TlbFlushAll::ignore`] if it knowns the
 /// TLB will be flushed later.
 #[must_use]
-pub struct TlbFlush<M: PagingMetaData>(VirtAddr, PhantomData<M>);
+pub struct TlbFlush<M: PagingMetaData>(M::VirtAddr, PhantomData<M>);
 
 impl<M: PagingMetaData> TlbFlush<M> {
-    pub(crate) const fn new(vaddr: VirtAddr) -> Self {
+    pub(crate) const fn new(vaddr: M::VirtAddr) -> Self {
         Self(vaddr, PhantomData)
     }
 
