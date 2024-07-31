@@ -167,7 +167,7 @@ impl<M: PagingMetaData> TlbFlushAll<M> {
     pub fn ignore(self) {}
 
     /// Flush the entire TLB.
-    pub fn flush(self) {
+    pub fn flush_all(self) {
         M::flush_tlb(None)
     }
 }

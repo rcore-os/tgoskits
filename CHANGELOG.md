@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+
+- Allow generic virtual address types in `PageTable64`.
+
 ## 0.3.0
 
 ### New Features
