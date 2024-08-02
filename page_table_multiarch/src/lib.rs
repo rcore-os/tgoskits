@@ -130,8 +130,8 @@ impl From<PageSize> for usize {
 
 /// This type indicates the mapping of a virtual address has been changed.
 ///
-/// The caller can call [`TlbFlushAll::flush`] to flush TLB entries related to
-/// the given virtual address, or call [`TlbFlushAll::ignore`] if it knowns the
+/// The caller can call [`TlbFlush::flush`] to flush TLB entries related to
+/// the given virtual address, or call [`TlbFlush::ignore`] if it knowns the
 /// TLB will be flushed later.
 #[must_use]
 pub struct TlbFlush<M: PagingMetaData>(M::VirtAddr, PhantomData<M>);
@@ -153,7 +153,7 @@ impl<M: PagingMetaData> TlbFlush<M> {
 
 /// This type indicates the page table mappings have been changed.
 ///
-/// The caller can call [`TlbFlushAll::flush`] to flush the entire TLB, or call
+/// The caller can call [`TlbFlushAll::flush_all`] to flush the entire TLB, or call
 /// [`TlbFlushAll::ignore`] if it knowns the TLB will be flushed later.
 #[must_use]
 pub struct TlbFlushAll<M: PagingMetaData>(PhantomData<M>);
