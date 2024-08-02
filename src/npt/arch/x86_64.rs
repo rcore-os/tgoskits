@@ -112,11 +112,11 @@ impl GenericPTE for EPTEntry {
         if is_huge {
             flags |= EPTFlags::HUGE_PAGE;
         }
-        Self(flags.bits() | (paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK) as u64)
+        Self(flags.bits() | (paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK))
     }
     fn new_table(paddr: HostPhysAddr) -> Self {
         let flags = EPTFlags::READ | EPTFlags::WRITE | EPTFlags::EXECUTE;
-        Self(flags.bits() | (paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK) as u64)
+        Self(flags.bits() | (paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK))
     }
     fn paddr(&self) -> HostPhysAddr {
         HostPhysAddr::from((self.0 & Self::PHYS_ADDR_MASK) as usize)
@@ -167,10 +167,12 @@ impl fmt::Debug for EPTEntry {
 /// Metadata of VMX extended page tables.
 pub struct ExtendedPageTableMetadata;
 
-impl const PagingMetaData for ExtendedPageTableMetadata {
+impl PagingMetaData for ExtendedPageTableMetadata {
     const LEVELS: usize = 4;
     const PA_MAX_BITS: usize = 52;
     const VA_MAX_BITS: usize = 48;
+
+    type VirtAddr = memory_addr::VirtAddr;
 
     fn flush_tlb(_vaddr: Option<memory_addr::VirtAddr>) {
         todo!()

@@ -18,8 +18,3 @@ memory_addr = "0.2.0"
 memory_set = "0.1.0"
 page_table_multiarch = "0.3"
 page_table_entry = "0.3"
-
-# Operating system dependent modules provided by ArceOS.
-axhal = { git = "https://github.com/arceos-hypervisor/arceos.git", branch = "vmm_rebase", features = ["paging"] }
-axalloc = { git = "https://github.com/arceos-hypervisor/arceos.git", branch = "vmm_rebase" }
-axconfig = { git = "https://github.com/arceos-hypervisor/arceos.git", branch = "vmm_rebase" }

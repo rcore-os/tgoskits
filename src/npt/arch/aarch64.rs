@@ -1,4 +1,3 @@
-use bit_field::BitField;
 use core::fmt;
 use page_table_entry::{GenericPTE, MappingFlags};
 use page_table_multiarch::{PageTable64, PagingMetaData};
@@ -140,6 +139,9 @@ impl A64PTEHV {
 }
 
 impl GenericPTE for A64PTEHV {
+    fn bits(self) -> usize {
+        self.0 as usize
+    }
     fn new_page(paddr: HostPhysAddr, flags: MappingFlags, is_huge: bool) -> Self {
         let mut attr = DescriptorAttr::from(flags) | DescriptorAttr::AF;
         if !is_huge {
@@ -202,6 +204,12 @@ impl PagingMetaData for A64HVPagingMetaData {
     const PA_MAX_BITS: usize = 48;
     // The size of the IPA space can be configured in the same way as the
     const VA_MAX_BITS: usize = 40; //  virtual address space. VTCR_EL2.T0SZ controls the size.
+
+    type VirtAddr = memory_addr::VirtAddr;
+
+    fn flush_tlb(_vaddr: Option<Self::VirtAddr>) {
+        todo!()
+    }
 }
 /// According to rust shyper, AArch64 translation table.
 pub type NestedPageTable<H> = PageTable64<A64HVPagingMetaData, A64PTEHV, H>;
