@@ -112,7 +112,10 @@ impl<A: AxArchVCpu> AxVCpu<A> {
         self.inner_mut.borrow().state
     }
 
-    /// Set the state of the vcpu. This method is unsafe because it may break the state transition model. Use it with caution.
+    /// Set the state of the vcpu.
+    /// # Safety
+    /// This method is unsafe because it may break the state transition model.
+    /// Use it with caution.
     pub unsafe fn set_state(&self, state: VCpuState) {
         self.inner_mut.borrow_mut().state = state;
     }
@@ -181,6 +184,7 @@ impl<A: AxArchVCpu> AxVCpu<A> {
     }
 
     /// Get the architecture-specific vcpu.
+    #[allow(clippy::mut_from_ref)]
     pub fn get_arch_vcpu(&self) -> &mut A {
         unsafe { &mut *self.arch_vcpu.get() }
     }
@@ -221,8 +225,7 @@ pub fn get_current_vcpu<'a, A: AxArchVCpu>() -> Option<&'a AxVCpu<A>> {
             .current_ref_raw()
             .as_ref()
             .copied()
-            .map(|p| (p as *const AxVCpu<A>).as_ref())
-            .flatten()
+            .and_then(|p| (p as *const AxVCpu<A>).as_ref())
     }
 }
 
@@ -235,14 +238,15 @@ pub fn get_current_vcpu_mut<'a, A: AxArchVCpu>() -> Option<&'a mut AxVCpu<A>> {
             .current_ref_mut_raw()
             .as_mut()
             .copied()
-            .map(|p| (p as *mut AxVCpu<A>).as_mut())
-            .flatten()
+            .and_then(|p| (p as *mut AxVCpu<A>).as_mut())
     }
 }
 
 /// Set the current vcpu on the current physical CPU.
 ///
-/// This method is marked as `unsafe` because it may result in unexpected behavior if not used properly. Do not call this method unless you know what you are doing.
+/// # Safety
+/// This method is marked as unsafe because it may result in unexpected behavior if not used properly.
+/// Do not call this method unless you know what you are doing.
 pub unsafe fn set_current_vcpu<A: AxArchVCpu>(vcpu: &AxVCpu<A>) {
     CURRENT_VCPU
         .current_ref_mut_raw()
@@ -251,7 +255,9 @@ pub unsafe fn set_current_vcpu<A: AxArchVCpu>(vcpu: &AxVCpu<A>) {
 
 /// Clear the current vcpu on the current physical CPU.
 ///
-/// This method is marked as `unsafe` because it may result in unexpected behavior if not used properly. Do not call this method unless you know what you are doing.
+/// # Safety
+/// This method is marked as unsafe because it may result in unexpected behavior if not used properly.
+/// Do not call this method unless you know what you are doing.    
 pub unsafe fn clear_current_vcpu<A: AxArchVCpu>() {
     CURRENT_VCPU.current_ref_mut_raw().take();
 }
