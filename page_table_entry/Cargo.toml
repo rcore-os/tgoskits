@@ -11,6 +11,9 @@ repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+arm-el2 = []
+
 [dependencies]
 bitflags = "2.6"
 memory_addr = "0.2"
