@@ -17,6 +17,8 @@ pub trait MappingBackend<F: Copy, P>: Clone {
     fn map(&self, start: VirtAddr, size: usize, flags: F, page_table: &mut P) -> bool;
     /// What to do when unmaping a memory region within the area.
     fn unmap(&self, start: VirtAddr, size: usize, page_table: &mut P) -> bool;
+    /// What to do when changing access flags.
+    fn protect(&self, start: VirtAddr, size: usize, new_flags: F, page_table: &mut P) -> bool;
 }
 
 /// A memory area represents a continuous range of virtual memory with the same
@@ -74,6 +76,16 @@ impl<F: Copy, P, B: MappingBackend<F, P>> MemoryArea<F, P, B> {
 }
 
 impl<F: Copy, P, B: MappingBackend<F, P>> MemoryArea<F, P, B> {
+    /// Changes the flags.
+    pub(crate) fn set_flags(&mut self, new_flags: F) {
+        self.flags = new_flags;
+    }
+
+    /// Changes the end address of the memory area.
+    pub(crate) fn set_end(&mut self, new_end: VirtAddr) {
+        self.va_range.end = new_end;
+    }
+
     /// Maps the whole memory area in the page table.
     pub(crate) fn map_area(&self, page_table: &mut P) -> MappingResult {
         self.backend
@@ -88,6 +100,13 @@ impl<F: Copy, P, B: MappingBackend<F, P>> MemoryArea<F, P, B> {
             .unmap(self.start(), self.size(), page_table)
             .then_some(())
             .ok_or(MappingError::BadState)
+    }
+
+    /// Changes the flags in the page table.
+    pub(crate) fn protect_area(&mut self, new_flags: F, page_table: &mut P) -> MappingResult {
+        self.backend
+            .protect(self.start(), self.size(), new_flags, page_table);
+        Ok(())
     }
 
     /// Shrinks the memory area at the left side.

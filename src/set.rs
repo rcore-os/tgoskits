@@ -1,4 +1,4 @@
-use alloc::collections::BTreeMap;
+use alloc::{collections::BTreeMap, vec::Vec};
 use core::fmt;
 
 use memory_addr::{VirtAddr, VirtAddrRange};
@@ -174,6 +174,75 @@ impl<F: Copy, P, B: MappingBackend<F, P>> MemorySet<F, P, B> {
             area.unmap_area(page_table)?;
         }
         self.areas.clear();
+        Ok(())
+    }
+
+    /// Change the flags of memory mappings within the given address range.
+    ///
+    /// `update_flags` is a function that receives old flags and processes
+    /// new flags (e.g., some flags can not be changed through this interface).
+    /// It returns [`None`] if there is no bit to change.
+    ///
+    /// Memory areas will be skipped according to `update_flags`. Memory areas
+    /// that are fully contained in the range or contains the range or intersects
+    /// with the boundary will be handled similarly to `munmap`.
+    pub fn protect(
+        &mut self,
+        start: VirtAddr,
+        size: usize,
+        update_flags: impl Fn(F) -> Option<F>,
+        page_table: &mut P,
+    ) -> MappingResult {
+        let end = start + size;
+        let mut to_insert = Vec::new();
+        for (_, area) in self.areas.iter_mut() {
+            if let Some(new_flags) = update_flags(area.flags()) {
+                if area.start() >= end {
+                    // [ prot ]
+                    //          [ area ]
+                    break;
+                } else if area.end() <= start {
+                    //          [ prot ]
+                    // [ area ]
+                    // Do nothing
+                } else if area.start() >= start && area.end() <= end {
+                    // [   prot   ]
+                    //   [ area ]
+                    area.protect_area(new_flags, page_table)?;
+                    area.set_flags(new_flags);
+                } else if area.start() < start && area.end() > end {
+                    //        [ prot ]
+                    // [ left | area | right ]
+                    let right_part = area.split(end).unwrap();
+                    area.set_end(start);
+
+                    let mut middle_part =
+                        MemoryArea::new(start, size, area.flags(), area.backend().clone());
+                    middle_part.protect_area(new_flags, page_table)?;
+                    middle_part.set_flags(new_flags);
+
+                    to_insert.push((right_part.start(), right_part));
+                    to_insert.push((middle_part.start(), middle_part));
+                } else if area.end() > end {
+                    // [    prot ]
+                    //   [  area | right ]
+                    let right_part = area.split(end).unwrap();
+                    area.protect_area(new_flags, page_table)?;
+                    area.set_flags(new_flags);
+
+                    to_insert.push((right_part.start(), right_part));
+                } else {
+                    //        [ prot    ]
+                    // [ left |  area ]
+                    let mut right_part = area.split(start).unwrap();
+                    right_part.protect_area(new_flags, page_table)?;
+                    right_part.set_flags(new_flags);
+
+                    to_insert.push((right_part.start(), right_part));
+                }
+            }
+        }
+        self.areas.extend(to_insert.into_iter());
         Ok(())
     }
 }

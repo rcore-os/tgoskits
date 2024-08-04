@@ -6,9 +6,10 @@
 
 Data structures and operations for managing memory mappings.
 
-It is useful to implement [`mmap`][1] and [`munmap`][1].
+It is useful to implement [`mmap`][1], [`munmap`][1] and [`mprotect`][2].
 
 [1]: https://man7.org/linux/man-pages/man2/mmap.2.html
+[2]: https://man7.org/linux/man-pages/man2/mprotect.2.html
 
 ## Examples
 
@@ -62,6 +63,22 @@ impl MappingBackend<MockFlags, MockPageTable> for MockBackend {
                 return false;
             }
             *entry = 0;
+        }
+        true
+    }
+
+    fn protect(
+        &self,
+        start: VirtAddr,
+        size: usize,
+        new_flags: MockFlags,
+        pt: &mut MockPageTable,
+    ) -> bool {
+        for entry in pt.iter_mut().skip(start.as_usize()).take(size) {
+            if *entry == 0 {
+                return false;
+            }
+            *entry = new_flags;
         }
         true
     }
