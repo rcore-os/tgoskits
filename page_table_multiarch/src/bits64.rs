@@ -104,7 +104,7 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
         flags: MappingFlags,
     ) -> PagingResult<(PageSize, TlbFlush<M>)> {
         let (entry, size) = self.get_entry_mut(vaddr)?;
-        if entry.is_unused() {
+        if !entry.is_present() {
             return Err(PagingError::NotMapped);
         }
         entry.set_flags(flags, size.is_huge());
@@ -117,7 +117,8 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
     /// mapping is not present.
     pub fn unmap(&mut self, vaddr: M::VirtAddr) -> PagingResult<(PhysAddr, PageSize, TlbFlush<M>)> {
         let (entry, size) = self.get_entry_mut(vaddr)?;
-        if entry.is_unused() {
+        if !entry.is_present() {
+            entry.clear();
             return Err(PagingError::NotMapped);
         }
         let paddr = entry.paddr();
