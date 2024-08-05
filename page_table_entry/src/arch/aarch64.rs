@@ -120,13 +120,22 @@ impl From<DescriptorAttr> for MappingFlags {
         if !attr.contains(DescriptorAttr::AP_RO) {
             flags |= Self::WRITE;
         }
-        if attr.contains(DescriptorAttr::AP_EL0) {
-            flags |= Self::USER;
-            if !attr.contains(DescriptorAttr::UXN) {
+        #[cfg(not(feature = "arm-el2"))]
+        {
+            if attr.contains(DescriptorAttr::AP_EL0) {
+                flags |= Self::USER;
+                if !attr.contains(DescriptorAttr::UXN) {
+                    flags |= Self::EXECUTE;
+                }
+            } else if !attr.intersects(DescriptorAttr::PXN) {
                 flags |= Self::EXECUTE;
             }
-        } else if !attr.intersects(DescriptorAttr::PXN) {
-            flags |= Self::EXECUTE;
+        }
+        #[cfg(feature = "arm-el2")]
+        {
+            if !attr.intersects(DescriptorAttr::UXN) {
+                flags |= Self::EXECUTE;
+            }
         }
         match attr.mem_attr() {
             Some(MemAttr::Device) => flags |= Self::DEVICE,
@@ -155,15 +164,24 @@ impl From<MappingFlags> for DescriptorAttr {
         if !flags.contains(MappingFlags::WRITE) {
             attr |= Self::AP_RO;
         }
-        if flags.contains(MappingFlags::USER) {
-            attr |= Self::AP_EL0 | Self::PXN;
+        #[cfg(not(feature = "arm-el2"))]
+        {
+            if flags.contains(MappingFlags::USER) {
+                attr |= Self::AP_EL0 | Self::PXN;
+                if !flags.contains(MappingFlags::EXECUTE) {
+                    attr |= Self::UXN;
+                }
+            } else {
+                attr |= Self::UXN;
+                if !flags.contains(MappingFlags::EXECUTE) {
+                    attr |= Self::PXN;
+                }
+            }
+        }
+        #[cfg(feature = "arm-el2")]
+        {
             if !flags.contains(MappingFlags::EXECUTE) {
                 attr |= Self::UXN;
-            }
-        } else {
-            attr |= Self::UXN;
-            if !flags.contains(MappingFlags::EXECUTE) {
-                attr |= Self::PXN;
             }
         }
         attr
