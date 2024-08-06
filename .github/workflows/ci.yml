@@ -44,3 +44,30 @@ jobs:
     - run: ./scripts/get_deps.sh
     - name: Build for ${{ matrix.arch }}
       run: make ARCH=${{ matrix.arch }}
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rust-toolchain: [nightly]
+        arch: [x86_64]
+    env:
+      qemu-version: 8.2.0
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@nightly
+      with:
+        toolchain: ${{ matrix.rust-toolchain }}
+        components: rust-src, llvm-tools
+    - uses: Swatinem/rust-cache@v2
+    - run: cargo install cargo-binutils
+    - run: ./scripts/get_deps.sh
+    - uses: ./.github/workflows/actions/setup-musl
+      with:
+        arch: ${{ matrix.arch }}
+    - uses: ./.github/workflows/actions/setup-qemu
+      with:
+        qemu-version: ${{ env.qemu-version }}
+    - name: Run tests
+      run: make test ARCH=${{ matrix.arch }}

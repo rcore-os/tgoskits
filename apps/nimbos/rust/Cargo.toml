@@ -1,0 +1,9 @@
+[package]
+name = "user_lib"
+version = "0.1.0"
+authors = ["Yifan Wu <shinbokuow@163.com>", "Yuekai Jia <equation618@gmail.com>"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]

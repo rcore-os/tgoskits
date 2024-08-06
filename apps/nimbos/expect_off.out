@@ -1,0 +1,15 @@
+smp = 1
+build_mode = release
+log_level = off
+
+Hello world from user mode program!
+Hello, world!
+Hello, I am process 2.
+Back in process 2, iteration 0.
+Back in process 2, iteration 1.
+Back in process 2, iteration 2.
+Back in process 2, iteration 3.
+Back in process 2, iteration 4.
+yield passed!
+into sleep test!
+simple_sleep passed!

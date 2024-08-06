@@ -11,6 +11,7 @@ log = "0.4"
 linkme = "0.3"
 axerrno = "0.1"
 memory_addr = "0.2"
+xmas-elf = "0.8"
 
 axstd = { git = "https://github.com/arceos-org/arceos.git", features = ["paging"] }
 arceos_posix_api = { git = "https://github.com/arceos-org/arceos.git" }
