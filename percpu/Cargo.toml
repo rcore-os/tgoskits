@@ -21,7 +21,7 @@ preempt = ["percpu_macros/preempt", "dep:kernel_guard"]
 default = []
 
 # ARM specific, whether to run at the EL2 privilege level.
-arm-el2 = []
+arm-el2 = ["percpu_macros/arm-el2"]
 
 [dependencies]
 cfg-if = "1.0"
