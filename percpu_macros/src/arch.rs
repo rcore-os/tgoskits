@@ -39,6 +39,15 @@ pub fn gen_offset(symbol: &Ident) -> proc_macro2::TokenStream {
 }
 
 pub fn gen_current_ptr(symbol: &Ident, ty: &Type) -> proc_macro2::TokenStream {
+    let aarch64_tpidr = if cfg!(feature = "arm-el2") {
+        "TPIDR_EL2"
+    } else {
+        // For ARM architecture, we assume running in EL1 by default,
+        // and use `TPIDR_EL1` to store the base address of the per-CPU data area.
+        "TPIDR_EL1"
+    };
+    let aarch64_asm = format!("mrs {{}}, {aarch64_tpidr}");
+
     macos_unimplemented(quote! {
         let base: usize;
         #[cfg(target_arch = "x86_64")]
@@ -54,10 +63,8 @@ pub fn gen_current_ptr(symbol: &Ident, ty: &Type) -> proc_macro2::TokenStream {
         }
         #[cfg(not(target_arch = "x86_64"))]
         {
-            #[cfg(all(target_arch = "aarch64", not(feature = "arm-el2")))]
-            ::core::arch::asm!("mrs {}, TPIDR_EL1", out(reg) base);
-            #[cfg(all(target_arch = "aarch64", feature = "arm-el2"))]
-            ::core::arch::asm!("mrs {}, TPIDR_EL2", out(reg) base);
+            #[cfg(target_arch = "aarch64")]
+            ::core::arch::asm!(#aarch64_asm, out(reg) base);
             #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
             ::core::arch::asm!("mv {}, gp", out(reg) base);
             (base + self.offset()) as *const #ty
