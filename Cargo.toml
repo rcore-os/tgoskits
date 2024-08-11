@@ -7,5 +7,4 @@ edition = "2021"
 [dependencies]
 axerrno = "0.1.0"
 memory_addr = "0.2.0"
-# percpu = "0.1.3"
-percpu = { git = "https://github.com/arceos-org/percpu.git", features = ["arm-el2"], recv = "63f58ed" }
+percpu = "0.1.4"
