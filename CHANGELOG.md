@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.3
+
+- Support the use of `page_table_entry` at the ARM EL2 privilege level (via the `arm-el2` feature).
+
+## 0.3.2
+
+- Fix the Rust documentation for `TlbFlush` and `TlbFlushAll`.
+
 ## 0.3.1
 
 - Allow generic virtual address types in `PageTable64`.
