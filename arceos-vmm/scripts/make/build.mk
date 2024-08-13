@@ -44,5 +44,6 @@ $(OUT_DIR):
 
 $(OUT_BIN): _cargo_build $(OUT_ELF)
 	$(call run_cmd,$(OBJCOPY),$(OUT_ELF) --strip-all -O binary $@)
+	$(call run_cmd,$(OBJDUMP),$(OUT_ELF) --demangle -d > $(OUT_ASM))
 
 .PHONY: _cargo_build

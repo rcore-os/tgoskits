@@ -2,8 +2,9 @@ use super::csrs::RiscvCsrTrait;
 use super::regs::GprIndex;
 use super::vcpu::VCpu;
 use super::vmexit::PrivilegeLevel;
-use super::{devices::plic::PlicState, traps, vcpu, vm_pages::fetch_guest_instruction, CSR};
-use crate::{AxVMHal, GuestPhysAddr, GuestVirtAddr};
+use super::{devices::plic::PlicState, traps, vm_pages::fetch_guest_instruction, CSR};
+use crate::AxVMHal;
+use axaddrspace::{GuestPhysAddr, GuestVirtAddr};
 use axerrno::{AxError, AxResult};
 use axvcpu::AxArchVCpuExitReason;
 use core::panic;
@@ -24,7 +25,11 @@ impl<H: AxVMHal> DeviceList<H> {
         }
     }
 
-    pub fn vmexit_handler(&mut self, vcpu: &mut VCpu<H>, vm_exit_info: AxArchVCpuExitReason) {
+    pub fn vmexit_handler(
+        &mut self,
+        vcpu: &mut VCpu<H>,
+        vm_exit_info: AxArchVCpuExitReason,
+    ) -> AxResult {
         match vm_exit_info {
             AxArchVCpuExitReason::NestedPageFault { addr: fault_addr } => {
                 let falut_pc = vcpu.regs().guest_regs.sepc;
@@ -32,7 +37,12 @@ impl<H: AxVMHal> DeviceList<H> {
                 let priv_level = PrivilegeLevel::from_hstatus(vcpu.regs().guest_regs.hstatus);
                 match priv_level {
                     PrivilegeLevel::Supervisor => {
-                        match self.handle_page_fault(falut_pc, inst, fault_addr, vcpu) {
+                        match self.handle_page_fault(
+                            GuestVirtAddr::from(falut_pc),
+                            inst,
+                            GuestPhysAddr::from(fault_addr),
+                            vcpu,
+                        ) {
                             Ok(inst_len) => {
                                 vcpu.advance_pc(inst_len);
                             }
@@ -52,6 +62,7 @@ impl<H: AxVMHal> DeviceList<H> {
             AxArchVCpuExitReason::ExternalInterrupt { .. } => self.handle_irq(),
             _ => {}
         }
+        Ok(())
     }
 }
 
@@ -65,7 +76,9 @@ impl<H: AxVMHal> DeviceList<H> {
         vcpu: &mut VCpu<H>,
     ) -> AxResult<usize> {
         //  plic
-        if fault_addr >= self.plic.base() && fault_addr < self.plic.base() + 0x0400_0000 {
+        if fault_addr.as_usize() >= self.plic.base()
+            && fault_addr.as_usize() < self.plic.base() + 0x0400_0000
+        {
             self.handle_plic(inst_addr, inst, fault_addr, vcpu)
         } else {
             error!("inst_addr: {:#x}, fault_addr: {:#x}", inst_addr, fault_addr);
@@ -98,10 +111,10 @@ impl<H: AxVMHal> DeviceList<H> {
         match decode_inst {
             Instruction::Sw(i) => {
                 let val = vcpu.get_gpr(GprIndex::from_raw(i.rs2()).unwrap()) as u32;
-                self.plic.write_u32(fault_addr, val)
+                self.plic.write_u32(fault_addr.as_usize(), val)
             }
             Instruction::Lw(i) => {
-                let val = self.plic.read_u32(fault_addr);
+                let val = self.plic.read_u32(fault_addr.as_usize());
                 vcpu.set_gpr(GprIndex::from_raw(i.rd()).unwrap(), val as usize)
             }
             _ => return Err(AxError::BadAddress),

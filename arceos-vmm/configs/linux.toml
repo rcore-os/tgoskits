@@ -1,0 +1,12 @@
+id = 1
+name = "linux"
+vm_type = 2
+cpu_set = 2
+entry_point = 0x7c00
+bios_path = "vlbl.bin"
+bios_load_addr = 0x7c00
+kernel_path = "arceos-x86.bin"
+kernel_load_addr = 0x70200000
+ramdisk_path = "bzImage.bin"
+ramdisk_load_addr = 0x72000000
+disk_path = ""

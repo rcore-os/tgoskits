@@ -1,7 +1,6 @@
 use defs::*;
-use tock_registers::fields::Field;
 use tock_registers::interfaces::{Readable, Writeable};
-use tock_registers::{register_bitfields, RegisterLongName};
+use tock_registers::RegisterLongName;
 
 /// Define each registers of hypervisor using.
 pub struct CSR {

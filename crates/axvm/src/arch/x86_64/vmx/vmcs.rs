@@ -6,12 +6,13 @@
 use bit_field::BitField;
 use x86::bits64::vmx;
 
+use axaddrspace::{GuestPhysAddr, HostPhysAddr};
 use axerrno::{ax_err, AxResult};
 use page_table_entry::MappingFlags;
 
 use super::as_axerr;
 use super::definitions::{VmxExitReason, VmxInstructionError, VmxInterruptionType};
-use crate::{arch::msr::Msr, HostPhysAddr, NestedPageFaultInfo};
+use crate::{arch::msr::Msr, NestedPageFaultInfo};
 
 // HYGIENE: These macros are only used in this file, so we can use `as_axerr` directly.
 
@@ -632,7 +633,7 @@ pub fn set_control(
 pub fn set_ept_pointer(pml4_paddr: HostPhysAddr) -> AxResult {
     use super::instructions::{invept, InvEptType};
     let eptp = super::structs::EPTPointer::from_table_phys(pml4_paddr).bits();
-    VmcsControl64::EPTP.write(eptp);
+    VmcsControl64::EPTP.write(eptp)?;
     unsafe { invept(InvEptType::SingleContext, eptp).map_err(as_axerr)? };
     Ok(())
 }
@@ -720,7 +721,7 @@ pub fn ept_violation_info() -> AxResult<NestedPageFaultInfo> {
     }
     Ok(NestedPageFaultInfo {
         access_flags,
-        fault_guest_paddr,
+        fault_guest_paddr: GuestPhysAddr::from(fault_guest_paddr),
     })
 }
 

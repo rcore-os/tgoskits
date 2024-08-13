@@ -16,7 +16,7 @@ build_args := \
   $(build_args-$(MODE)) \
   $(verbose)
 
-RUSTFLAGS := -C link-arg=-T$(LD_SCRIPT) -C link-arg=-no-pie
+RUSTFLAGS := -C link-arg=-T$(LD_SCRIPT) -C link-arg=-no-pie -C link-arg=-znostart-stop-gc
 RUSTDOCFLAGS := --enable-index-page -Zunstable-options -D rustdoc::broken_intra_doc_links
 
 ifeq ($(MAKECMDGOALS), doc_check_missing)

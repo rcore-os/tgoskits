@@ -22,7 +22,6 @@ pub(crate) use vender::has_hardware_support;
 
 pub use lapic::ApicTimer;
 pub use regs::GeneralRegisters;
-pub use vender::X64NestedPageTable;
 
 pub use VenderArchPerCpuState as AxVMArchPerCpuImpl;
 pub use VenderArchVCpu as AxArchVCpuImpl;
@@ -35,10 +34,16 @@ pub struct AxArchDeviceList<H: AxVMHal> {
 
 impl<H: AxVMHal> AxArchDeviceList<H> {
     pub fn new() -> Self {
-        Self { _marker: core::marker::PhantomData }
+        Self {
+            _marker: core::marker::PhantomData,
+        }
     }
-    
-    pub fn vmexit_handler(&self, _arch_vcpu: &mut AxArchVCpuImpl<H>, _exit_reason: axvcpu::AxArchVCpuExitReason) -> AxResult {
+
+    pub fn vmexit_handler(
+        &self,
+        _arch_vcpu: &mut AxArchVCpuImpl<H>,
+        _exit_reason: axvcpu::AxArchVCpuExitReason,
+    ) -> AxResult {
         Ok(())
     }
 }

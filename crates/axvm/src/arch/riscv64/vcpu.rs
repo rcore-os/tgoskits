@@ -1,4 +1,3 @@
-use alloc::boxed::Box;
 use axerrno::AxResult;
 use core::arch::global_asm;
 use core::marker::PhantomData;
@@ -6,17 +5,16 @@ use core::mem::size_of;
 use memoffset::offset_of;
 use tock_registers::LocalRegisterCopy;
 // use alloc::sync::Arc;
-use riscv::register::{htinst, htval, hvip, scause, sstatus, stval};
+use riscv::register::{htinst, htval, scause, sstatus, stval};
 
 use super::csrs::{traps, RiscvCsrTrait, CSR};
 use super::sbi::{BaseFunction, PmuFunction, RemoteFenceFunction, SbiMessage};
-use crate::{AxVMHal, GuestPhysAddr, GuestVirtAddr, HostPhysAddr};
+use crate::AxVMHal;
+use axaddrspace::HostPhysAddr;
 use axvcpu::AxArchVCpuExitReason;
 
 use super::csrs::defs::hstatus;
 use super::regs::{GeneralPurposeRegisters, GprIndex};
-use super::vmexit::VmExitInfo;
-use super::PerCpu;
 use sbi_rt::{pmu_counter_get_info, pmu_counter_stop};
 
 /// Hypervisor GPR and CSR state which must be saved/restored when entering/exiting virtualization.
@@ -259,7 +257,7 @@ impl<H: AxVMHal> axvcpu::AxArchVCpu for VCpu<H> {
         Ok(())
     }
 
-    fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
+    fn set_entry(&mut self, entry: usize) -> AxResult {
         let regs = &mut self.regs;
         regs.guest_regs.sepc = entry;
         Ok(())

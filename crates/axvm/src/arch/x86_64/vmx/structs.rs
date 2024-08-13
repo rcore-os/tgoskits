@@ -1,12 +1,13 @@
 use bit_field::BitField;
 use bitflags::bitflags;
 
+use axaddrspace::HostPhysAddr;
 use axerrno::AxResult;
 use memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
 
 use crate::arch::msr::{Msr, MsrReadWrite};
 use crate::mm::PhysFrame;
-use crate::{AxVMHal, HostPhysAddr};
+use crate::AxVMHal;
 
 /// VMCS/VMXON region in 4K size. (SDM Vol. 3C, Section 24.2)
 #[derive(Debug)]

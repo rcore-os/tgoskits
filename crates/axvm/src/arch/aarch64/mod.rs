@@ -1,6 +1,5 @@
 mod context_frame;
 pub mod device_list;
-mod ept;
 mod hvc;
 mod pcpu;
 mod sync;
@@ -18,7 +17,6 @@ pub use vcpu::AxArchVCpuConfig;
 
 use sync::{data_abort_handler, hvc_handler, DATA_ABORT_EXCEPTION, HVC_EXCEPTION};
 
-pub use self::ept::NestedPageTable as A64PageTable;
 use axerrno::AxResult;
 
 /// context frame for aarch64

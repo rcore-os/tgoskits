@@ -1,8 +1,6 @@
 use core::arch::global_asm;
 
-use riscv_decode::Instruction;
-
-use crate::GuestPhysAddr;
+use axaddrspace::GuestPhysAddr;
 use axerrno::{AxError, AxResult};
 global_asm!(include_str!("mem_extable.S"));
 
@@ -17,7 +15,7 @@ pub fn fetch_guest_instruction(pc: GuestPhysAddr) -> AxResult<u32> {
     let mut raw_inst = 0u32;
     // Safety: _fetch_guest_instruction internally detects and handles an invalid guest virtual
     // address in `pc' and will only write up to 4 bytes to `raw_inst`.
-    let ret = unsafe { _fetch_guest_instruction(pc, &mut raw_inst) };
+    let ret = unsafe { _fetch_guest_instruction(pc.into(), &mut raw_inst) };
     if ret < 0 {
         return Err(AxError::BadAddress);
     }

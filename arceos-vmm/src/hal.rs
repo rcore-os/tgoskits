@@ -1,26 +1,14 @@
-// use super::vmexit;
-use axvm::{AxVMHal, HostPhysAddr, HostVirtAddr};
+use axvm::AxVMHal;
 use memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
+// Todo: should we know about HostPhysAddr and HostVirtAddr here???
+use memory_addr::{PhysAddr, VirtAddr};
 
 pub struct AxVMHalImpl;
 
 impl AxVMHal for AxVMHalImpl {
-    fn alloc_page() -> Option<HostPhysAddr> {
-        axalloc::global_allocator()
-            .alloc_pages(1, PAGE_SIZE)
-            .map(|vaddr| axhal::mem::virt_to_phys(vaddr.into()))
-            .ok()
-    }
+    type PagingHandler = axhal::paging::PagingHandlerImpl;
 
-    fn dealloc_page(paddr: HostPhysAddr) {
-        axalloc::global_allocator().dealloc_pages(axhal::mem::phys_to_virt(paddr).as_usize(), 1)
-    }
-
-    fn phys_to_virt(paddr: HostPhysAddr) -> HostVirtAddr {
-        axhal::mem::phys_to_virt(paddr)
-    }
-
-    fn virt_to_phys(vaddr: HostVirtAddr) -> HostPhysAddr {
+    fn virt_to_phys(vaddr: VirtAddr) -> PhysAddr {
         axhal::mem::virt_to_phys(vaddr)
     }
 
@@ -29,6 +17,6 @@ impl AxVMHal for AxVMHalImpl {
     // }
 
     fn current_time_nanos() -> u64 {
-        axhal::time::current_time_nanos()
+        axhal::time::monotonic_time_nanos()
     }
 }

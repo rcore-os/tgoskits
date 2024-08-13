@@ -9,6 +9,7 @@ use x86::dtables::{self, DescriptorTablePointer};
 use x86::segmentation::SegmentSelector;
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr4, Cr4Flags, EferFlags};
 
+use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr};
 use axerrno::{ax_err, ax_err_type, AxResult};
 
 use super::as_axerr;
@@ -20,7 +21,7 @@ use super::vmcs::{
 };
 use super::VmxExitInfo;
 use crate::arch::{ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters};
-use crate::{AxVMHal, GuestPhysAddr, GuestVirtAddr, HostPhysAddr, NestedPageFaultInfo};
+use crate::{AxVMHal, NestedPageFaultInfo};
 
 static mut VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 1000_000;
 
@@ -187,7 +188,7 @@ impl<H: AxVMHal> VmxVcpu<H> {
 
         // Handle vm-exits
         let exit_info = self.exit_info().unwrap();
-        trace!("VM exit: {:#x?}", exit_info);
+        debug!("VM exit: {:#x?}", exit_info);
 
         match self.builtin_vmexit_handler(&exit_info) {
             Some(result) => {
@@ -247,7 +248,7 @@ impl<H: AxVMHal> VmxVcpu<H> {
     }
 
     /// Translate guest virtual addr to linear addr    
-    pub fn gla2gva(&self, guest_rip: usize) -> GuestVirtAddr {
+    pub fn gla2gva(&self, guest_rip: GuestVirtAddr) -> GuestVirtAddr {
         let cpu_mode = self.get_cpu_mode();
         let seg_base;
         if cpu_mode == VmCpuMode::Mode64 {
@@ -259,7 +260,7 @@ impl<H: AxVMHal> VmxVcpu<H> {
         //     "seg_base: {:#x}, guest_rip: {:#x} cpu mode:{:?}",
         //     seg_base, guest_rip, cpu_mode
         // );
-        seg_base + guest_rip
+        guest_rip + seg_base
     }
 
     /// Get Translate guest page table info
@@ -357,6 +358,7 @@ impl<H: AxVMHal> VmxVcpu<H> {
 
 // Implementation of private methods
 impl<H: AxVMHal> VmxVcpu<H> {
+    #[allow(dead_code)]
     fn setup_io_bitmap(&mut self) -> AxResult {
         // By default, I/O bitmap is set as `intercept_all`.
         // Todo: these should be combined with emulated pio device management,
@@ -397,6 +399,7 @@ impl<H: AxVMHal> VmxVcpu<H> {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn setup_msr_bitmap(&mut self) -> AxResult {
         // Intercept IA32_APIC_BASE MSR accesses
         // let msr = x86::msr::IA32_APIC_BASE;
@@ -504,7 +507,7 @@ impl<H: AxVMHal> VmxVcpu<H> {
         VmcsGuestNW::CR3.write(0)?;
         VmcsGuestNW::DR7.write(0x400)?;
         VmcsGuestNW::RSP.write(0)?;
-        VmcsGuestNW::RIP.write(entry)?;
+        VmcsGuestNW::RIP.write(entry.as_usize())?;
         VmcsGuestNW::RFLAGS.write(0x2)?;
         VmcsGuestNW::PENDING_DBG_EXCEPTIONS.write(0)?;
         VmcsGuestNW::IA32_SYSENTER_ESP.write(0)?;
@@ -699,6 +702,7 @@ impl<H: AxVMHal> VmxVcpu<H> {
         .expect("Failed to write guest control register")
     }
 
+    #[allow(dead_code)]
     fn cr(&self, cr_idx: usize) -> usize {
         (|| -> AxResult<usize> {
             Ok(match cr_idx {
@@ -721,12 +725,12 @@ macro_rules! vmx_entry_with {
     ($instr:literal) => {
         asm!(
             save_regs_to_stack!(),                  // save host status
-            "mov    [rdi + {host_stack_top}], rsp", // save current RSP to Vcpu::host_stack_top
+            "mov    [rdi + {host_stack_size}], rsp", // save current RSP to Vcpu::host_stack_top
             "mov    rsp, rdi",                      // set RSP to guest regs area
             restore_regs_from_stack!(),             // restore guest status
             $instr,                                 // let's go!
             "jmp    {failed}",
-            host_stack_top = const size_of::<GeneralRegisters>(),
+            host_stack_size = const size_of::<GeneralRegisters>(),
             failed = sym Self::vmx_entry_failed,
             options(noreturn),
         )
@@ -929,14 +933,14 @@ impl<H: AxVMHal> VmxVcpu<H> {
             EAX_FREQUENCY_INFO => {
                 /// Timer interrupt frequencyin Hz.
                 /// Todo: this should be the same as `axconfig::TIMER_FREQUENCY` defined in ArceOS's config file.
-                const TIMER_FREQUENCY_MHz: u32 = 3_000;
+                const TIMER_FREQUENCY_MHZ: u32 = 3_000;
                 let mut res = cpuid!(regs_clone.rax, regs_clone.rcx);
                 if res.eax == 0 {
                     warn!(
                         "handle_cpuid: Failed to get TSC frequency by CPUID, default to {} MHz",
-                        TIMER_FREQUENCY_MHz
+                        TIMER_FREQUENCY_MHZ
                     );
-                    res.eax = TIMER_FREQUENCY_MHz;
+                    res.eax = TIMER_FREQUENCY_MHZ;
                 }
                 res
             }
@@ -1068,17 +1072,18 @@ impl<H: AxVMHal> Debug for VmxVcpu<H> {
     }
 }
 
+// Todo: remove GuestVirtAddr and GuestPhysAddr definition in axvcpu.
 impl<H: AxVMHal> axvcpu::AxArchVCpu for VmxVcpu<H> {
     type CreateConfig = ();
 
     type SetupConfig = ();
 
-    fn new(config: Self::CreateConfig) -> AxResult<Self> {
+    fn new(_config: Self::CreateConfig) -> AxResult<Self> {
         Self::new()
     }
 
-    fn set_entry(&mut self, entry: axvcpu::GuestPhysAddr) -> AxResult {
-        self.entry = Some(entry);
+    fn set_entry(&mut self, entry: usize) -> AxResult {
+        self.entry = Some(GuestPhysAddr::from(entry));
         Ok(())
     }
 
@@ -1094,7 +1099,14 @@ impl<H: AxVMHal> axvcpu::AxArchVCpu for VmxVcpu<H> {
     fn run(&mut self) -> AxResult<axvcpu::AxArchVCpuExitReason> {
         match self.run() {
             Some(reason) => Ok(match reason {
-                _ => unimplemented!(),
+                _ => {
+                    warn!("{:#x?}", reason);
+                    warn!("{:#x?}", self);
+                    axvcpu::AxArchVCpuExitReason::MmioRead {
+                        addr: self.rip(),
+                        width: axvcpu::AccessWidth::Byte,
+                    }
+                }
             }),
             None => Ok(axvcpu::AxArchVCpuExitReason::Nothing),
         }

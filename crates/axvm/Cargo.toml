@@ -13,24 +13,20 @@ cfg-if = "1.0"
 bitflags = "2.2"
 bit_field = "0.10"
 numeric-enum-macro = "0.2"
+serde = { version = "1.0.204", default-features = false, features = ["derive"] }
+toml = { git = "https://github.com/arceos-hypervisor/toml.git", branch = "no_std" }
+spin = "0.9"
 
-axvcpu = { git = "https://github.com/arceos-hypervisor/axvcpu.git", branch = "main" }
+axvcpu = { git = "https://github.com/arceos-hypervisor/axvcpu.git", rev = "559734" }
 
-# System independent crates provided by ArceOS, these crates could be imported by remote url. 
-# axerrno = { path = "../../arceos/crates/axerrno" }
-# spinlock = { path = "../../arceos/crates/spinlock" }
-# memory_addr = { path = "../../arceos/crates/memory_addr" }
-# page_table = { path = "../../arceos/crates/page_table" }
-# page_table_entry = { path = "../../arceos/crates/page_table_entry" }
-# percpu = { path = "../../arceos/crates/percpu" }
-axerrno = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c" }
-spinlock = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c" }
-memory_addr = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c" }
-page_table = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c" }
-page_table_entry = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c" }
-percpu = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c" }
-
-# Operating system dependent modules provided by ArceOS, these modules could be imported by remote url.
+# System independent crates provided by ArceOS.
+axerrno = "0.1.0"
+# kspin = "0.1.0"
+memory_addr = "0.2.0"
+page_table_entry = { version = "0.3.3", features = ["arm-el2"] }
+page_table_multiarch = "0.3.3"
+percpu = { version = "0.1.4", features = ["arm-el2"] }
+axaddrspace = { git = "https://github.com/arceos-hypervisor/axaddrspace.git", rev = "17378d" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"
@@ -46,9 +42,8 @@ tock-registers = "0.8.1"
 memoffset = { version = ">=0.6.5", features = ["unstable_const"] }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
-axhal = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "ccda26c" }
+axhal = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "f04a23f", features = ["hv"] }
 cortex-a = "8.1.1"
 aarch64-cpu = "9.3"
 smccc = "0.1.1"
 tock-registers = "0.8"
-spin = "0.9"

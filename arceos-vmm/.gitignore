@@ -13,6 +13,3 @@ rusty-tags.vi
 
 # macOS system files
 .DS_Store
-
-# We ignore Cargo.lock because `axvcpu` is just a library
-Cargo.lock

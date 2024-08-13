@@ -1,5 +1,4 @@
 mod definitions;
-mod ept;
 mod instructions;
 mod structs;
 mod vcpu;
@@ -16,7 +15,6 @@ use crate::percpu::AxVMArchPerCpu;
 use axerrno::{ax_err, ax_err_type, AxResult};
 
 pub use self::definitions::VmxExitReason;
-pub use self::ept::ExtendedPageTable as X64NestedPageTable;
 pub use self::vcpu::VmxVcpu as VmxArchVCpu;
 pub use self::vmcs::{VmxExitInfo, VmxInterruptInfo, VmxIoExitInfo};
 pub use self::VmxPerCpuState as VmxArchPerCpuState;

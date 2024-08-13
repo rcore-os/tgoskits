@@ -1,6 +1,6 @@
 use riscv::register::mcause::Interrupt;
 
-use crate::{GuestPhysAddr, GuestVirtAddr};
+use axaddrspace::{GuestPhysAddr, GuestVirtAddr};
 use tock_registers::LocalRegisterCopy;
 
 use super::{csrs::defs::hstatus, sbi::SbiMessage};

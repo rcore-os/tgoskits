@@ -13,7 +13,8 @@ use super::register_lower_aarch64_synchronous_handler;
 use super::ContextFrame;
 use axerrno::{AxError, AxResult};
 
-use crate::{AxVMHal, GuestPhysAddr, HostPhysAddr};
+use crate::AxVMHal;
+use axaddrspace::{GuestPhysAddr, HostPhysAddr};
 
 core::arch::global_asm!(include_str!("entry.S"));
 // use crate::arch::hvc::run_guest_by_trap2el2;
@@ -93,7 +94,7 @@ impl<H: AxVMHal> axvcpu::AxArchVCpu for VCpu<H> {
         Ok(())
     }
 
-    fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
+    fn set_entry(&mut self, entry: usize) -> AxResult {
         debug!("set vcpu entry:{:#x}", entry);
         self.set_elr(entry);
         Ok(())

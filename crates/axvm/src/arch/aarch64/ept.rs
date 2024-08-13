@@ -1,7 +1,7 @@
 use bit_field::BitField;
 use core::fmt;
-use page_table::{PageTable64, PagingMetaData};
 use page_table_entry::{GenericPTE, MappingFlags};
+use page_table_multiarch::{PageTable64, PagingMetaData};
 // use memory_addr::HostPhysAddr;
 use crate::HostPhysAddr;
 

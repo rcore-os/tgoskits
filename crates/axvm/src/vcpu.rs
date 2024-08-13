@@ -1,7 +1,7 @@
 use alloc::{format, sync::Weak};
 // use spinlock::{SpinNoIrq, SpinNoIrqGuard};
 use axerrno::{ax_err, ax_err_type, AxResult};
-use page_table::PagingIf;
+use page_table_multiarch::PagingIf;
 use core::cell::{RefCell, UnsafeCell};
 
 use crate::{arch::AxArchVCpu, config::AxVCpuConfig, AxVM, AxVMHal, GuestPhysAddr};

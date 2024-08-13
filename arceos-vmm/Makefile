@@ -47,7 +47,8 @@ APP_FEATURES ?=
 BLK ?= n
 NET ?= n
 GRAPHIC ?= n
-BUS ?= mmio
+# To keep consistent with the latest `main` branch of ArceOS.
+BUS ?= pci
 
 DISK_IMG ?= disk.img
 QEMU_LOG ?= n
@@ -159,6 +160,7 @@ APP_NAME := $(shell basename $(APP))
 LD_SCRIPT := $(CURDIR)/scripts/lds/linker_$(PLATFORM_NAME).lds
 OUT_ELF := $(OUT_DIR)/$(APP_NAME)_$(PLATFORM_NAME).elf
 OUT_BIN := $(OUT_DIR)/$(APP_NAME)_$(PLATFORM_NAME).bin
+OUT_ASM := $(OUT_DIR)/$(APP_NAME)_$(PLATFORM_NAME).asm
 
 all: build
 
@@ -183,12 +185,12 @@ justrun:
 	$(call run_qemu)
 
 debug: build
-	$(call run_qemu_debug) &
-	sleep 1
+	$(call run_qemu_debug)
+
+gdb:
 	$(GDB) $(OUT_ELF) \
 	  -ex 'target remote localhost:1234' \
 	  -ex 'b rust_entry' \
-	  -ex 'continue' \
 	  -ex 'disp /16i $$pc'
 
 clippy:
@@ -228,7 +230,7 @@ endif
 
 clean: clean_c
 	rm -rf $(APP)/target
-	rm -rf $(APP)/*.bin $(APP)/*.elf
+	rm -rf $(APP)/*.bin $(APP)/*.elf $(APP)/*.asm
 	cargo clean
 
 clean_c:
