@@ -1,5 +1,6 @@
 # Build output and other log files from arceos
 /target
+/tmp
 *.asm
 *.img
 *.bin

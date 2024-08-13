@@ -1,9 +1,9 @@
-use super::hvc::{hvc_guest_handler, HVC_SYS, HVC_SYS_BOOT};
-use super::vcpu::VmCpuRegisters;
-use super::ContextFrame;
+use axerrno::{AxError, AxResult};
+use axvcpu::{AccessWidth, AxArchVCpuExitReason};
 
-use axhal::arch::exception_utils::*;
-use axhal::arch::TrapFrame;
+use super::exception_utils::*;
+use super::hvc::{hvc_guest_handler, HVC_SYS, HVC_SYS_BOOT};
+use super::ContextFrame;
 
 const HVC_RETURN_REG: usize = 0;
 const SMC_RETURN_REG: usize = 0;
@@ -11,69 +11,43 @@ const SMC_RETURN_REG: usize = 0;
 pub const HVC_EXCEPTION: usize = 0x16;
 pub const DATA_ABORT_EXCEPTION: usize = 0x24;
 
-pub fn data_abort_handler(ctx: &mut TrapFrame) {
-    /*
-    let emu_ctx = EmuContext {
-        address: exception_fault_addr(),
-        width: exception_data_abort_access_width(),
-        write: exception_data_abort_access_is_write(),
-        sign_ext: exception_data_abort_access_is_sign_ext(),
-        reg: exception_data_abort_access_reg(),
-        reg_width: exception_data_abort_access_reg_width(),
-    };
-    */
-    let context_frame: &mut ContextFrame =
-        unsafe { &mut *(ctx as *mut TrapFrame as *mut ContextFrame) };
+pub fn data_abort_handler(context_frame: &mut ContextFrame) -> AxResult<AxArchVCpuExitReason> {
     debug!(
         "data fault addr 0x{:x}, esr: 0x{:x}",
         exception_fault_addr(),
         exception_esr()
     );
+
+    let address = exception_fault_addr();
+    let width = exception_data_abort_access_width();
+    let is_write = exception_data_abort_access_is_write();
+    // let sign_ext = exception_data_abort_access_is_sign_ext();
+    let reg = exception_data_abort_access_reg();
+    // let reg_width = exception_data_abort_access_reg_width();
+
     let elr = context_frame.exception_pc();
-
-    if !exception_data_abort_handleable() {
-        panic!(
-            "Data abort not handleable 0x{:x}, esr 0x{:x}",
-            exception_fault_addr(),
-            exception_esr()
-        );
-    }
-
-    if !exception_data_abort_is_translate_fault() {
-        // No migrate need
-        panic!(
-            "Data abort is not translate fault 0x{:x}\n ctx: {}",
-            exception_fault_addr(),
-            context_frame
-        );
-    }
-    /*
-    if !emu_handler(&emu_ctx) {
-        active_vm().unwrap().show_pagetable(emu_ctx.address);
-        info!(
-            "write {}, width {}, reg width {}, addr {:x}, iss {:x}, reg idx {}, reg val 0x{:x}, esr 0x{:x}",
-            exception_data_abort_access_is_write(),
-            emu_ctx.width,
-            emu_ctx.reg_width,
-            emu_ctx.address,
-            exception_iss(),
-            emu_ctx.reg,
-            ctx.get_gpr(emu_ctx.reg),
-            exception_esr()
-        );
-        panic!(
-            "data_abort_handler: Failed to handler emul device request, ipa 0x{:x} elr 0x{:x}",
-            emu_ctx.address, elr
-        );
-    }
-    */
     let val = elr + exception_next_instruction_step();
     context_frame.set_exception_pc(val);
+
+    let access_width = match AccessWidth::try_from(width) {
+        Ok(width) => width,
+        Err(_) => return Err(AxError::InvalidInput),
+    };
+
+    if is_write {
+        return Ok(AxArchVCpuExitReason::MmioWrite {
+            addr: address,
+            width: access_width,
+            data: context_frame.gpr(reg) as u64,
+        });
+    }
+    Ok(AxArchVCpuExitReason::MmioRead {
+        addr: address,
+        width: access_width,
+    })
 }
 
-pub fn hvc_handler(ctx: &mut TrapFrame) {
-    let context_frame: &mut ContextFrame =
-        unsafe { &mut *(ctx as *mut TrapFrame as *mut ContextFrame) };
+pub fn hvc_handler(context_frame: &mut ContextFrame) -> AxResult<AxArchVCpuExitReason> {
     let x0 = context_frame.gpr(0);
     let x1 = context_frame.gpr(1);
     let x2 = context_frame.gpr(2);
@@ -98,4 +72,6 @@ pub fn hvc_handler(ctx: &mut TrapFrame) {
             context_frame.set_gpr(HVC_RETURN_REG, usize::MAX);
         }
     }
+
+    Ok(AxArchVCpuExitReason::Nothing)
 }

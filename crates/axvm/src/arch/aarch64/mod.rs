@@ -1,5 +1,7 @@
 mod context_frame;
 pub mod device_list;
+#[macro_use]
+mod exception_utils;
 mod hvc;
 mod pcpu;
 mod sync;
@@ -8,14 +10,12 @@ mod vcpu;
 use core::arch::asm;
 use spin::once::Once;
 
-use axhal::arch::register_exception_handler_aarch64;
+use axhal::arch::register_lower_aarch64_synchronous_handler;
 
 pub use self::device_list::AxArchDeviceList;
 pub use self::pcpu::PerCpu as AxVMArchPerCpuImpl;
 pub use self::vcpu::VCpu as AxArchVCpuImpl;
 pub use vcpu::AxArchVCpuConfig;
-
-use sync::{data_abort_handler, hvc_handler, DATA_ABORT_EXCEPTION, HVC_EXCEPTION};
 
 use axerrno::AxResult;
 
@@ -28,14 +28,11 @@ pub fn has_hardware_support() -> bool {
 
 static INIT: Once = Once::new();
 
-pub fn register_lower_aarch64_synchronous_handler() -> AxResult {
-    INIT.call_once(|| {
-        if !register_exception_handler_aarch64(HVC_EXCEPTION, hvc_handler) {
-            panic!("Failed to register HVC handler");
-        };
-        if !register_exception_handler_aarch64(DATA_ABORT_EXCEPTION, data_abort_handler) {
-            panic!("Failed to register data abort handler");
-        }
-    });
+pub fn register_lower_aarch64_synchronous_handler_arch() -> AxResult {
+    unsafe {
+        INIT.call_once(|| {
+            register_lower_aarch64_synchronous_handler(self::vcpu::vmexit_aarch64_handler)
+        });
+    }
     return Ok(());
 }
