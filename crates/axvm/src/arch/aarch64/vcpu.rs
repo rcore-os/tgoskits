@@ -3,19 +3,19 @@ use core::marker::PhantomData;
 use spin::Mutex;
 
 use axvcpu::AxArchVCpuExitReason;
-use cortex_a::registers::*;
+// use cortex_a::registers::*;
+use aarch64_cpu::registers::*;
 use tock_registers::interfaces::*;
 
 use super::context_frame::VmContext;
+use super::do_register_lower_aarch64_synchronous_handler;
 use super::exception_utils::*;
-use super::register_lower_aarch64_synchronous_handler_arch;
 use super::sync::{data_abort_handler, hvc_handler};
 use super::ContextFrame;
 use axerrno::{AxError, AxResult};
 
 use crate::AxVMHal;
 use axaddrspace::{GuestPhysAddr, HostPhysAddr};
-
 
 global_asm!(include_str!("entry.S"));
 
@@ -77,7 +77,7 @@ impl<H: AxVMHal> axvcpu::AxArchVCpu for VCpu<H> {
     }
 
     fn setup(&mut self, _config: Self::SetupConfig) -> AxResult {
-        register_lower_aarch64_synchronous_handler_arch()?;
+        do_register_lower_aarch64_synchronous_handler()?;
         self.init_hv();
         Ok(())
     }
@@ -150,8 +150,8 @@ impl<H: AxVMHal> VCpu<H> {
 
     fn vmexit_handler(&mut self) -> AxResult<AxArchVCpuExitReason> {
         debug!(
-            "enter lower_aarch64_synchronous exception class:0x{:X} ctx:{:#x?}",
-            exception_class(),
+            "enter lower_aarch64_synchronous esr:{:#x} ctx:{:#x?}",
+            exception_class_value(),
             self.ctx
         );
         // save system regs
@@ -159,20 +159,19 @@ impl<H: AxVMHal> VCpu<H> {
 
         let ctx = &mut self.ctx;
         match exception_class() {
-            0x24 => return data_abort_handler(ctx),
-            0x16 => return hvc_handler(ctx),
-            // 0x18 todo？
+            Some(ESR_EL2::EC::Value::DataAbortLowerEL) => return data_abort_handler(ctx),
+            Some(ESR_EL2::EC::Value::HVC64) => return hvc_handler(ctx),
             _ => {
                 panic!(
                     "handler not presents for EC_{} @ipa 0x{:x}, @pc 0x{:x}, @esr 0x{:x}, @sctlr_el1 0x{:x}, @vttbr_el2 0x{:x}, @vtcr_el2: {:#x} hcr: {:#x} ctx:{}",
-                    exception_class(),
+                    exception_class_value(),
                     exception_fault_addr(),
                     (*ctx).exception_pc(),
                     exception_esr(),
-                    cortex_a::registers::SCTLR_EL1.get() as usize,
-                    cortex_a::registers::VTTBR_EL2.get() as usize,
-                    cortex_a::registers::VTCR_EL2.get() as usize,
-                    cortex_a::registers::HCR_EL2.get() as usize,
+                    SCTLR_EL1.get() as usize,
+                    VTTBR_EL2.get() as usize,
+                    VTCR_EL2.get() as usize,
+                    HCR_EL2.get() as usize,
                     ctx
                 );
             }
@@ -240,8 +239,8 @@ pub unsafe extern "C" fn vmexit_aarch64_handler() {
         "add sp, sp, 34 * 8", // skip the exception frame
         "mov x9, sp",
         "ldr x10, [x9]",
-        "mov sp, x10",            // move sp to the host stack top value
-        restore_regs_to_stack!(), // restore host context
+        "mov sp, x10",              // move sp to the host stack top value
+        restore_regs_from_stack!(), // restore host context
         "ret",
         options(noreturn),
     )

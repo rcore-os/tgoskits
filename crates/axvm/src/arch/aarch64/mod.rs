@@ -28,7 +28,7 @@ pub fn has_hardware_support() -> bool {
 
 static INIT: Once = Once::new();
 
-pub fn register_lower_aarch64_synchronous_handler_arch() -> AxResult {
+pub fn do_register_lower_aarch64_synchronous_handler() -> AxResult {
     unsafe {
         INIT.call_once(|| {
             register_lower_aarch64_synchronous_handler(self::vcpu::vmexit_aarch64_handler)

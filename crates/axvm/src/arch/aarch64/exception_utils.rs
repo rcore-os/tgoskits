@@ -1,23 +1,29 @@
+use aarch64_cpu::registers::{ESR_EL1, ESR_EL2, FAR_EL2, PAR_EL1};
 use tock_registers::interfaces::*;
 
 #[inline(always)]
 pub fn exception_esr() -> usize {
-    cortex_a::registers::ESR_EL2.get() as usize
+    ESR_EL2.get() as usize
 }
 
 #[inline(always)]
 pub fn exception_esr_el1() -> usize {
-    cortex_a::registers::ESR_EL1.get() as usize
+    ESR_EL1.get() as usize
 }
 
 #[inline(always)]
-pub fn exception_class() -> usize {
-    (exception_esr() >> 26) & 0b111111
+pub fn exception_class() -> Option<ESR_EL2::EC::Value> {
+    ESR_EL2.read_as_enum(ESR_EL2::EC)
+}
+
+#[inline(always)]
+pub fn exception_class_value() -> u64 {
+    ESR_EL2.read(ESR_EL2::EC)
 }
 
 #[inline(always)]
 fn exception_far() -> usize {
-    cortex_a::registers::FAR_EL2.get() as usize
+    FAR_EL2.get() as usize
 }
 
 #[inline(always)]
@@ -54,8 +60,6 @@ fn translate_far_to_hpfar(far: usize) -> Result<usize, ()> {
         let mask = ((1 << (52 - 12)) - 1) << 12;
         (par & mask) >> 8
     }
-
-    use cortex_a::registers::PAR_EL1;
 
     let par = PAR_EL1.get();
     arm_at!("s1e1r", far);
@@ -176,7 +180,7 @@ macro_rules! save_regs_to_stack {
     };
 }
 
-macro_rules! restore_regs_to_stack {
+macro_rules! restore_regs_from_stack {
     () => {
         "
         sub     sp, sp, 34 * 8

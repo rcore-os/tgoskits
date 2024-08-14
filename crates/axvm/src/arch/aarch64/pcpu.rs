@@ -1,6 +1,6 @@
+use aarch64_cpu::registers::*;
 use alloc::collections::VecDeque;
 use core::arch::asm;
-use cortex_a::registers::*;
 use tock_registers::interfaces::*;
 
 use spin::{Mutex, Once};
