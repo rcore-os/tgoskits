@@ -1,6 +1,5 @@
 use aarch64_cpu::registers::*;
 use core::arch::asm;
-use core::arch::global_asm;
 use core::fmt::Formatter;
 
 use axhal::arch::TrapFrame;

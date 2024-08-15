@@ -1,4 +1,4 @@
-use aarch64_cpu::registers::{ESR_EL1, ESR_EL2, FAR_EL2, PAR_EL1};
+use aarch64_cpu::registers::{ESR_EL2, FAR_EL2, PAR_EL1};
 use tock_registers::interfaces::*;
 
 #[inline(always)]
@@ -7,18 +7,13 @@ pub fn exception_esr() -> usize {
 }
 
 #[inline(always)]
-pub fn exception_esr_el1() -> usize {
-    ESR_EL1.get() as usize
-}
-
-#[inline(always)]
 pub fn exception_class() -> Option<ESR_EL2::EC::Value> {
     ESR_EL2.read_as_enum(ESR_EL2::EC)
 }
 
 #[inline(always)]
-pub fn exception_class_value() -> u64 {
-    ESR_EL2.read(ESR_EL2::EC)
+pub fn exception_class_value() -> usize {
+    ESR_EL2.read(ESR_EL2::EC) as usize
 }
 
 #[inline(always)]
@@ -101,17 +96,7 @@ pub fn exception_next_instruction_step() -> usize {
 
 #[inline(always)]
 pub fn exception_iss() -> usize {
-    exception_esr() & ((1 << 25) - 1)
-}
-
-#[inline(always)]
-pub fn exception_data_abort_handleable() -> bool {
-    (!(exception_iss() & (1 << 10)) | (exception_iss() & (1 << 24))) != 0
-}
-
-#[inline(always)]
-pub fn exception_data_abort_is_translate_fault() -> bool {
-    (exception_iss() & 0b111111 & (0xf << 2)) == 4
+    ESR_EL2.read(ESR_EL2::ISS) as usize
 }
 
 #[inline(always)]
@@ -130,24 +115,19 @@ pub fn exception_data_abort_access_is_write() -> bool {
 }
 
 #[inline(always)]
-pub fn exception_data_abort_access_in_stage2() -> bool {
-    (exception_iss() & (1 << 7)) != 0
-}
-
-#[inline(always)]
 pub fn exception_data_abort_access_reg() -> usize {
     (exception_iss() >> 16) & 0b11111
 }
 
-#[inline(always)]
-pub fn exception_data_abort_access_reg_width() -> usize {
-    4 + 4 * ((exception_iss() >> 15) & 1)
-}
+// #[inline(always)]
+// pub fn exception_data_abort_access_reg_width() -> usize {
+//     4 + 4 * ((exception_iss() >> 15) & 1)
+// }
 
-#[inline(always)]
-pub fn exception_data_abort_access_is_sign_ext() -> bool {
-    ((exception_iss() >> 21) & 1) != 0
-}
+// #[inline(always)]
+// pub fn exception_data_abort_access_is_sign_ext() -> bool {
+//     ((exception_iss() >> 21) & 1) != 0
+// }
 
 macro_rules! save_regs_to_stack {
     () => {

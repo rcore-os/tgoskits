@@ -1,6 +1,7 @@
+use axerrno::AxResult;
+
 use super::AxArchVCpuImpl;
 use crate::AxVMHal;
-use axerrno::AxResult;
 
 pub struct AxArchDeviceList<H: AxVMHal> {
     _marker: core::marker::PhantomData<H>,

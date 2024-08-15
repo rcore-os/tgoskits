@@ -1,26 +1,20 @@
+use aarch64_cpu::registers::*;
 use core::arch::global_asm;
 use core::marker::PhantomData;
-use spin::Mutex;
-
-use axvcpu::AxArchVCpuExitReason;
-// use cortex_a::registers::*;
-use aarch64_cpu::registers::*;
 use tock_registers::interfaces::*;
+
+use axaddrspace::HostPhysAddr;
+use axerrno::AxResult;
+use axvcpu::AxArchVCpuExitReason;
 
 use super::context_frame::VmContext;
 use super::exception_utils::*;
-use super::sync::{data_abort_handler, hvc_handler};
+use super::sync::data_abort_handler;
 use super::ContextFrame;
 use super::{do_register_lower_aarch64_irq_handler, do_register_lower_aarch64_synchronous_handler};
-use axerrno::{AxError, AxResult};
-
 use crate::AxVMHal;
-use axaddrspace::{GuestPhysAddr, HostPhysAddr};
 
 global_asm!(include_str!("entry.S"));
-
-// TSC, bit [19]
-const HCR_TSC_TRAP: usize = 1 << 19;
 
 /// (v)CPU register state that must be saved or restored when entering/exiting a VM or switching
 /// between VMs.
@@ -53,10 +47,6 @@ pub struct VCpu<H: AxVMHal> {
     vcpu_id: usize,
 
     marker: PhantomData<H>,
-}
-
-extern "C" {
-    fn context_vm_entry(ctx: usize);
 }
 
 pub type AxArchVCpuConfig = VmCpuRegisters;
@@ -125,7 +115,6 @@ impl<H: AxVMHal> VCpu<H> {
                 in(reg) &self.host_stack_top as *const _ as usize,
                 options(nostack)
             );
-            // context_vm_entry(&self.host_stack_top as *const _ as usize);
         }
     }
 
@@ -161,7 +150,10 @@ impl<H: AxVMHal> VCpu<H> {
         let ctx = &mut self.ctx;
         match exception_class() {
             Some(ESR_EL2::EC::Value::DataAbortLowerEL) => return data_abort_handler(ctx),
-            Some(ESR_EL2::EC::Value::HVC64) => return hvc_handler(ctx),
+            Some(ESR_EL2::EC::Value::HVC64) => {
+                debug!("hvc call: {:#x?}", ctx);
+                return Ok(AxArchVCpuExitReason::Nothing);
+            }
             _ => {
                 panic!(
                     "handler not presents for EC_{} @ipa 0x{:x}, @pc 0x{:x}, @esr 0x{:x}, @sctlr_el1 0x{:x}, @vttbr_el2 0x{:x}, @vtcr_el2: {:#x} hcr: {:#x} ctx:{}",
