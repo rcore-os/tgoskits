@@ -8,10 +8,10 @@ use aarch64_cpu::registers::*;
 use tock_registers::interfaces::*;
 
 use super::context_frame::VmContext;
-use super::do_register_lower_aarch64_synchronous_handler;
 use super::exception_utils::*;
 use super::sync::{data_abort_handler, hvc_handler};
 use super::ContextFrame;
+use super::{do_register_lower_aarch64_irq_handler, do_register_lower_aarch64_synchronous_handler};
 use axerrno::{AxError, AxResult};
 
 use crate::AxVMHal;
@@ -78,6 +78,7 @@ impl<H: AxVMHal> axvcpu::AxArchVCpu for VCpu<H> {
 
     fn setup(&mut self, _config: Self::SetupConfig) -> AxResult {
         do_register_lower_aarch64_synchronous_handler()?;
+        do_register_lower_aarch64_irq_handler()?;
         self.init_hv();
         Ok(())
     }

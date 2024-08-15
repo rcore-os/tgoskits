@@ -177,7 +177,7 @@ pub struct AxVMCrateConfig {
     pub dtb_load_addr: Option<usize>,
     pub ramdisk_path: Option<String>,
     pub ramdisk_load_addr: Option<usize>,
-    
+
     disk_path: Option<String>,
 
     /// Memory Information
