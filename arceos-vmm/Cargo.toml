@@ -13,9 +13,9 @@ lazy_static = { version = "1.4", features = ["spin_no_std"] }
 cfg-if = "1.0"
 
 # System dependent modules provided by ArceOS.
-axalloc = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "f04a23f" }
-axhal = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "f04a23f", features = ["paging"] }
-axstd = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "f04a23f", features = [
+axalloc = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "5c9ee79" }
+axhal = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "5c9ee79", features = ["paging"] }
+axstd = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "5c9ee79", features = [
     "alloc",
     "paging",
     "fs",

@@ -1,7 +1,6 @@
+use aarch64_cpu::registers::*;
 use core::arch::asm;
-use core::arch::global_asm;
 use core::fmt::Formatter;
-use cortex_a::registers::*;
 
 use axhal::arch::TrapFrame;
 

@@ -1,15 +1,9 @@
-use alloc::collections::VecDeque;
-use core::arch::asm;
-use cortex_a::registers::*;
-use tock_registers::interfaces::*;
+use aarch64_cpu::registers::*;
 
-use spin::{Mutex, Once};
+use axerrno::AxResult;
 
-use super::ContextFrame;
 use crate::percpu::AxVMArchPerCpu;
 use crate::AxVMHal;
-use axaddrspace::HostPhysAddr;
-use axerrno::AxResult;
 
 /// Per-CPU data. A pointer to this struct is loaded into TP when a CPU starts. This structure
 #[repr(C)]
