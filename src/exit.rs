@@ -5,6 +5,7 @@ use super::GuestPhysAddr;
 /// The width of an access.
 ///
 /// Note that the term "word" here refers to 16-bit data, as in the x86 architecture.
+#[derive(Debug)]
 pub enum AccessWidth {
     /// 8-bit access.
     Byte,
@@ -45,8 +46,17 @@ impl From<AccessWidth> for usize {
 type Port = u16;
 
 /// The result of [`AxArchVCpu::run`].
+/// Can we reference or directly reuse content from [kvm-ioctls](https://github.com/rust-vmm/kvm-ioctls/blob/main/src/ioctls/vcpu.rs) ?
 #[non_exhaustive]
-pub enum AxArchVCpuExitReason {
+#[derive(Debug)]
+pub enum AxVCpuExitReason {
+    /// The instruction executed by the vcpu performs a hypercall.
+    Hypercall {
+        /// The hypercall number.
+        nr: u64,
+        /// The arguments for the hypercall.
+        args: [u64; 6],
+    },
     /// The instruction executed by the vcpu performs a MMIO read operation.
     MmioRead {
         /// The physical address of the MMIO read.
@@ -103,4 +113,11 @@ pub enum AxArchVCpuExitReason {
     ///
     /// This exists to allow the caller to have a chance to check virtual devices/physical devices/virtual interrupts.
     Nothing,
+    /// Something bad happened during VM entry, the vcpu could not be run due to unknown reasons.
+    /// Further architecture-specific information is available in hardware_entry_failure_reason.
+    /// Corresponds to `KVM_EXIT_FAIL_ENTRY`.
+    FailEntry {
+        /// Architecture related VM entry failure reasons.
+        hardware_entry_failure_reason: u64,
+    },
 }

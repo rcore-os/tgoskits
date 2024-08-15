@@ -1,4 +1,4 @@
-use super::{AxArchVCpu, AxArchVCpuExitReason, GuestPhysAddr, HostPhysAddr};
+use super::{AxArchVCpu, AxVCpuExitReason, GuestPhysAddr, HostPhysAddr};
 use axerrno::{ax_err, AxResult};
 use core::cell::{RefCell, UnsafeCell};
 extern crate alloc;
@@ -190,7 +190,7 @@ impl<A: AxArchVCpu> AxVCpu<A> {
     }
 
     /// Run the vcpu.
-    pub fn run(&self) -> AxResult<AxArchVCpuExitReason> {
+    pub fn run(&self) -> AxResult<AxVCpuExitReason> {
         self.transition_state(VCpuState::Ready, VCpuState::Running)?;
         self.manipulate_arch_vcpu(VCpuState::Running, VCpuState::Ready, |arch_vcpu| {
             arch_vcpu.run()

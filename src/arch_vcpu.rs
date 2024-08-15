@@ -1,6 +1,6 @@
 use axerrno::AxResult;
 
-use super::{AxArchVCpuExitReason, GuestPhysAddr, HostPhysAddr};
+use super::{AxVCpuExitReason, GuestPhysAddr, HostPhysAddr};
 
 /// A trait for architecture-specific vcpu.
 ///
@@ -28,7 +28,7 @@ pub trait AxArchVCpu: Sized {
     fn setup(&mut self, config: Self::SetupConfig) -> AxResult;
 
     /// Run the vcpu until a vm-exit occurs.
-    fn run(&mut self) -> AxResult<AxArchVCpuExitReason>;
+    fn run(&mut self) -> AxResult<AxVCpuExitReason>;
     /// Bind the vcpu to the current physical CPU.
     fn bind(&mut self) -> AxResult;
     /// Unbind the vcpu from the current physical CPU.
