@@ -1,8 +1,9 @@
-use super::{AxArchVCpu, AxVCpuExitReason, GuestPhysAddr, HostPhysAddr};
-use axerrno::{ax_err, AxResult};
 use core::cell::{RefCell, UnsafeCell};
-extern crate alloc;
-use alloc::format;
+
+use axaddrspace::{GuestPhysAddr, HostPhysAddr};
+use axerrno::{ax_err, AxResult};
+
+use super::{AxArchVCpu, AxVCpuExitReason};
 
 /// The constant part of `AxVCpu`.
 struct AxVCpuInnerConst {

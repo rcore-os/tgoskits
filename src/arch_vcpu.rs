@@ -1,6 +1,7 @@
+use axaddrspace::{GuestPhysAddr, HostPhysAddr};
 use axerrno::AxResult;
 
-use super::{AxVCpuExitReason, GuestPhysAddr, HostPhysAddr};
+use crate::exit::AxVCpuExitReason;
 
 /// A trait for architecture-specific vcpu.
 ///

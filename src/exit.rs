@@ -1,6 +1,7 @@
+use axaddrspace::GuestPhysAddr;
+
 #[allow(unused_imports)] // used in doc
 use super::AxArchVCpu;
-use super::GuestPhysAddr;
 
 /// The width of an access.
 ///
