@@ -1,5 +1,4 @@
 use axvm::AxVMHal;
-use memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
 // Todo: should we know about HostPhysAddr and HostVirtAddr here???
 use memory_addr::{PhysAddr, VirtAddr};
 

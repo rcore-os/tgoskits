@@ -3,9 +3,9 @@ use core::arch::global_asm;
 use core::marker::PhantomData;
 use tock_registers::interfaces::*;
 
-use axaddrspace::HostPhysAddr;
+use axaddrspace::{GuestPhysAddr, HostPhysAddr};
 use axerrno::AxResult;
-use axvcpu::AxArchVCpuExitReason;
+use axvcpu::AxVCpuExitReason;
 
 use super::context_frame::VmContext;
 use super::exception_utils::*;
@@ -73,9 +73,9 @@ impl<H: AxVMHal> axvcpu::AxArchVCpu for VCpu<H> {
         Ok(())
     }
 
-    fn set_entry(&mut self, entry: usize) -> AxResult {
-        debug!("set vcpu entry:{:#x}", entry);
-        self.set_elr(entry);
+    fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
+        debug!("set vcpu entry:{:?}", entry);
+        self.set_elr(entry.as_usize());
         Ok(())
     }
 
@@ -85,7 +85,7 @@ impl<H: AxVMHal> axvcpu::AxArchVCpu for VCpu<H> {
         Ok(())
     }
 
-    fn run(&mut self) -> AxResult<AxArchVCpuExitReason> {
+    fn run(&mut self) -> AxResult<AxVCpuExitReason> {
         self.restore_vm_system_regs();
         self.run_guest();
         self.vmexit_handler()
@@ -138,13 +138,13 @@ impl<H: AxVMHal> VCpu<H> {
         }
     }
 
-    fn vmexit_handler(&mut self) -> AxResult<AxArchVCpuExitReason> {
+    fn vmexit_handler(&mut self) -> AxResult<AxVCpuExitReason> {
         debug!(
             "enter lower_aarch64_synchronous esr:{:#x} ctx:{:#x?}",
             exception_class_value(),
             self.ctx
         );
-        // save system regs
+        // restore system regs
         self.system_regs.ext_regs_store();
 
         let ctx = &mut self.ctx;
@@ -152,7 +152,10 @@ impl<H: AxVMHal> VCpu<H> {
             Some(ESR_EL2::EC::Value::DataAbortLowerEL) => return data_abort_handler(ctx),
             Some(ESR_EL2::EC::Value::HVC64) => {
                 debug!("hvc call: {:#x?}", ctx);
-                return Ok(AxArchVCpuExitReason::Nothing);
+                return Ok(AxVCpuExitReason::Hypercall {
+                    nr: 0,
+                    args: [0, 0, 0, 0, 0, 0],
+                });
             }
             _ => {
                 panic!(

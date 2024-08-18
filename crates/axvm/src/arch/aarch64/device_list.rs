@@ -17,7 +17,7 @@ impl<H: AxVMHal> AxArchDeviceList<H> {
     pub fn vmexit_handler(
         &self,
         _arch_vcpu: &mut AxArchVCpuImpl<H>,
-        _exit_reason: axvcpu::AxArchVCpuExitReason,
+        _exit_reason: axvcpu::AxVCpuExitReason,
     ) -> AxResult {
         Ok(())
     }

@@ -1,6 +1,8 @@
 use aarch64_cpu::registers::{ESR_EL2, FAR_EL2, PAR_EL1};
 use tock_registers::interfaces::*;
 
+use axaddrspace::GuestPhysAddr;
+
 #[inline(always)]
 pub fn exception_esr() -> usize {
     ESR_EL2.get() as usize
@@ -69,7 +71,7 @@ fn translate_far_to_hpfar(far: usize) -> Result<usize, ()> {
 
 // addr be ipa
 #[inline(always)]
-pub fn exception_fault_addr() -> usize {
+pub fn exception_fault_addr() -> GuestPhysAddr {
     let far = exception_far();
     let hpfar =
         if (exception_esr() & ESR_ELx_S1PTW) == 0 && exception_data_abort_is_permission_fault() {
@@ -80,7 +82,7 @@ pub fn exception_fault_addr() -> usize {
         } else {
             exception_hpfar()
         };
-    (far & 0xfff) | (hpfar << 8)
+    GuestPhysAddr::from((far & 0xfff) | (hpfar << 8))
 }
 
 /// return 1 means 32-bit instruction, 0 means 16-bit instruction

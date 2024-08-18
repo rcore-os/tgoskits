@@ -11,7 +11,8 @@ use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr4, Cr4Flags, EferFlags};
 
 use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr};
 use axerrno::{ax_err, ax_err_type, AxResult};
-
+use axvcpu::{AxArchVCpu, AxVCpuExitReason};
+// Todo: remove this.
 use super::as_axerr;
 use super::definitions::VmxExitReason;
 use super::structs::{IOBitmap, MsrBitmap, VmxRegion};
@@ -22,6 +23,7 @@ use super::vmcs::{
 use super::VmxExitInfo;
 use crate::arch::{ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters};
 use crate::{AxVMHal, NestedPageFaultInfo};
+use axvcpu::get_current_vcpu;
 
 static mut VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 1000_000;
 
@@ -114,7 +116,7 @@ impl<H: AxVMHal> VmxVcpu<H> {
 
     /// Get the identifier of this [`VmxVcpu`].
     pub fn vcpu_id(&self) -> usize {
-        axvcpu::get_current_vcpu::<Self>().unwrap().id()
+        get_current_vcpu::<Self>().unwrap().id()
     }
 
     /// Bind this [`VmxVcpu`] to current logical processor.
@@ -164,7 +166,7 @@ impl<H: AxVMHal> VmxVcpu<H> {
     }
 
     /// Run the guest. It returns when a vm-exit happens and returns the vm-exit if it cannot be handled by this [`VmxVcpu`] itself.
-    pub fn run(&mut self) -> Option<VmxExitInfo> {
+    pub fn inner_run(&mut self) -> Option<VmxExitInfo> {
         // Inject pending events
         if self.launched {
             self.inject_pending_events().unwrap();
@@ -188,7 +190,7 @@ impl<H: AxVMHal> VmxVcpu<H> {
 
         // Handle vm-exits
         let exit_info = self.exit_info().unwrap();
-        debug!("VM exit: {:#x?}", exit_info);
+        // debug!("VM exit: {:#x?}", exit_info);
 
         match self.builtin_vmexit_handler(&exit_info) {
             Some(result) => {
@@ -809,10 +811,6 @@ impl<H: AxVMHal> VmxVcpu<H> {
     ///
     /// Return the result or None if the vm-exit was not handled.
     fn builtin_vmexit_handler(&mut self, exit_info: &VmxExitInfo) -> Option<AxResult> {
-        if exit_info.entry_failure {
-            panic!("VM entry failed: {:#x?}", exit_info);
-        }
-
         // Following vm-exits are handled here:
         // - interrupt window: turn off interrupt window;
         // - xsetbv: set guest xcr;
@@ -1072,8 +1070,7 @@ impl<H: AxVMHal> Debug for VmxVcpu<H> {
     }
 }
 
-// Todo: remove GuestVirtAddr and GuestPhysAddr definition in axvcpu.
-impl<H: AxVMHal> axvcpu::AxArchVCpu for VmxVcpu<H> {
+impl<H: AxVMHal> AxArchVCpu for VmxVcpu<H> {
     type CreateConfig = ();
 
     type SetupConfig = ();
@@ -1082,12 +1079,12 @@ impl<H: AxVMHal> axvcpu::AxArchVCpu for VmxVcpu<H> {
         Self::new()
     }
 
-    fn set_entry(&mut self, entry: usize) -> AxResult {
-        self.entry = Some(GuestPhysAddr::from(entry));
+    fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
+        self.entry = Some(entry);
         Ok(())
     }
 
-    fn set_ept_root(&mut self, ept_root: axvcpu::HostPhysAddr) -> AxResult {
+    fn set_ept_root(&mut self, ept_root: HostPhysAddr) -> AxResult {
         self.ept_root = Some(ept_root);
         Ok(())
     }
@@ -1096,19 +1093,37 @@ impl<H: AxVMHal> axvcpu::AxArchVCpu for VmxVcpu<H> {
         self.setup_vmcs(self.entry.unwrap(), self.ept_root.unwrap())
     }
 
-    fn run(&mut self) -> AxResult<axvcpu::AxArchVCpuExitReason> {
-        match self.run() {
-            Some(reason) => Ok(match reason {
-                _ => {
-                    warn!("{:#x?}", reason);
-                    warn!("{:#x?}", self);
-                    axvcpu::AxArchVCpuExitReason::MmioRead {
-                        addr: self.rip(),
-                        width: axvcpu::AccessWidth::Byte,
+    fn run(&mut self) -> AxResult<AxVCpuExitReason> {
+        match self.inner_run() {
+            Some(exit_info) => Ok(if exit_info.entry_failure {
+                AxVCpuExitReason::FailEntry {
+                    // Todo: get `hardware_entry_failure_reason` somehow.
+                    hardware_entry_failure_reason: 0,
+                }
+            } else {
+                match exit_info.exit_reason {
+                    VmxExitReason::VMCALL => {
+                        self.advance_rip(exit_info.exit_instruction_length as _)?;
+                        AxVCpuExitReason::Hypercall {
+                            nr: self.regs().rax,
+                            args: [
+                                self.regs().rdi,
+                                self.regs().rsi,
+                                self.regs().rdx,
+                                self.regs().rcx,
+                                self.regs().r8,
+                                self.regs().r9,
+                            ],
+                        }
+                    }
+                    _ => {
+                        warn!("VMX unsupported VM-Exit: {:#x?}", exit_info);
+                        warn!("VCpu {:#x?}", self);
+                        AxVCpuExitReason::Halt
                     }
                 }
             }),
-            None => Ok(axvcpu::AxArchVCpuExitReason::Nothing),
+            None => Ok(AxVCpuExitReason::Nothing),
         }
     }
 
@@ -1117,6 +1132,7 @@ impl<H: AxVMHal> axvcpu::AxArchVCpu for VmxVcpu<H> {
     }
 
     fn unbind(&mut self) -> AxResult {
+        self.launched = false;
         self.unbind_from_current_processor()
     }
 }

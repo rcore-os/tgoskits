@@ -1,12 +1,12 @@
 use axerrno::{AxError, AxResult};
-use axvcpu::{AccessWidth, AxArchVCpuExitReason};
+use axvcpu::{AccessWidth, AxVCpuExitReason};
 
 use super::exception_utils::*;
 use super::ContextFrame;
 
 const HVC_RETURN_REG: usize = 0;
 
-pub fn data_abort_handler(context_frame: &mut ContextFrame) -> AxResult<AxArchVCpuExitReason> {
+pub fn data_abort_handler(context_frame: &mut ContextFrame) -> AxResult<AxVCpuExitReason> {
     debug!(
         "data fault addr 0x{:x}, esr: 0x{:x}",
         exception_fault_addr(),
@@ -30,13 +30,13 @@ pub fn data_abort_handler(context_frame: &mut ContextFrame) -> AxResult<AxArchVC
     };
 
     if is_write {
-        return Ok(AxArchVCpuExitReason::MmioWrite {
+        return Ok(AxVCpuExitReason::MmioWrite {
             addr: address,
             width: access_width,
             data: context_frame.gpr(reg) as u64,
         });
     }
-    Ok(AxArchVCpuExitReason::MmioRead {
+    Ok(AxVCpuExitReason::MmioRead {
         addr: address,
         width: access_width,
     })

@@ -17,8 +17,6 @@ serde = { version = "1.0.204", default-features = false, features = ["derive"] }
 toml = { git = "https://github.com/arceos-hypervisor/toml.git", branch = "no_std" }
 spin = "0.9"
 
-axvcpu = { git = "https://github.com/arceos-hypervisor/axvcpu.git", rev = "559734" }
-
 # System independent crates provided by ArceOS.
 axerrno = "0.1.0"
 # kspin = "0.1.0"
@@ -26,7 +24,10 @@ memory_addr = "0.2.0"
 page_table_entry = { version = "0.3.3", features = ["arm-el2"] }
 page_table_multiarch = "0.3.3"
 percpu = { version = "0.1.4", features = ["arm-el2"] }
-axaddrspace = { git = "https://github.com/arceos-hypervisor/axaddrspace.git", rev = "17378d" }
+
+# System dependent modules provided by ArceOS-Hypervisor.
+axvcpu = { workspace = true }
+axaddrspace = { workspace = true }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"
@@ -42,7 +43,7 @@ tock-registers = "0.8.1"
 memoffset = { version = ">=0.6.5", features = ["unstable_const"] }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
-axhal = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "5c9ee79", features = ["hv"] }
+axhal = { workspace = true, features = ["hv"] }
 cortex-a = "8.1.1"
 aarch64-cpu = "9.3"
 smccc = "0.1.1"

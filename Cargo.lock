@@ -53,10 +53,11 @@ name = "arceos-vmm"
 version = "0.1.0"
 dependencies = [
  "arrayvec",
- "axalloc",
  "axerrno",
  "axhal",
  "axstd",
+ "axtask",
+ "axvcpu",
  "axvm",
  "bitflags 2.6.0",
  "cfg-if",
@@ -88,6 +89,7 @@ dependencies = [
  "axlog",
  "axruntime",
  "axsync",
+ "axtask",
 ]
 
 [[package]]
@@ -228,6 +230,8 @@ dependencies = [
  "axhal",
  "axlog",
  "axruntime",
+ "axsync",
+ "axtask",
 ]
 
 [[package]]
@@ -365,6 +369,7 @@ dependencies = [
  "axhal",
  "axlog",
  "axmm",
+ "axtask",
  "chrono",
  "crate_interface",
 ]
@@ -393,18 +398,28 @@ dependencies = [
 [[package]]
 name = "axtask"
 version = "0.1.0"
-source = "git+https://github.com/arceos-hypervisor/arceos.git?rev=5c9ee79#5c9ee79277f2455e84e90195f784a264aaebc79b"
+source = "git+https://github.com/arceos-org/arceos.git?branch=monolithic#d4cf00a7a62d9b7c3588f9f796a64e0f25ccdaab"
 dependencies = [
+ "axconfig",
  "axhal",
  "cfg-if",
+ "crate_interface",
+ "kernel_guard",
+ "kspin",
+ "lazyinit",
  "log",
+ "memory_addr",
+ "percpu",
+ "scheduler",
+ "timer_list",
 ]
 
 [[package]]
 name = "axvcpu"
 version = "0.1.0"
-source = "git+https://github.com/arceos-hypervisor/axvcpu.git?rev=559734#559734c55ef3bc089c031f89fc77424292ffd676"
+source = "git+https://github.com/arceos-hypervisor/axvcpu.git#6fa0cb4f96e8dbd12e8ed17c1c87ed7ff09b8044"
 dependencies = [
+ "axaddrspace",
  "axerrno",
  "memory_addr",
  "percpu",
@@ -699,6 +714,11 @@ name = "libc"
 version = "0.2.155"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "97b3888a4aecf77e811145cadf6eef5901f4782c53886191b2f693f24761847c"
+
+[[package]]
+name = "linked_list"
+version = "0.1.0"
+source = "git+https://github.com/arceos-org/linked_list.git?tag=v0.1.0#34c8db301882cecfeb56df0f7c89978dbc62f49a"
 
 [[package]]
 name = "linkme"
@@ -1013,6 +1033,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e36312fb5ddc10d08ecdc65187402baba4ac34585cb9d1b78522ae2358d890"
 
 [[package]]
+name = "scheduler"
+version = "0.1.0"
+source = "git+https://github.com/arceos-org/scheduler.git?tag=v0.1.0#c8d25d9aed146dca28dc8987afd229b52c20361a"
+dependencies = [
+ "linked_list",
+]
+
+[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1116,6 +1144,12 @@ dependencies = [
  "quote",
  "unicode-ident",
 ]
+
+[[package]]
+name = "timer_list"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "158b52ace9609dd94f4af338f4828ff23b600d9160def8c001f2c73885521936"
 
 [[package]]
 name = "tiny-keccak"

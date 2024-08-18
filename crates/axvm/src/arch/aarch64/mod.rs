@@ -10,7 +10,7 @@ mod vcpu;
 use spin::once::Once;
 
 use axerrno::AxResult;
-use axhal::arch::{register_lower_aarch64_irq_handler, register_lower_aarch64_synchronous_handler};
+use axhal::arch::register_lower_aarch64_synchronous_handler;
 
 pub use self::device_list::AxArchDeviceList;
 pub use self::pcpu::PerCpu as AxVMArchPerCpuImpl;

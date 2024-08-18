@@ -27,8 +27,9 @@ pub mod config;
 
 pub use hal::AxVMHal;
 pub use mm::NestedPageFaultInfo;
-// pub use mm::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, HostVirtAddr};
+pub use vm::AxVCpuRef;
 pub use vm::AxVM;
+pub use vm::AxVMRef;
 
 pub type AxVMPerCpu<H> = percpu::AxVMPerCpu<arch::AxVMArchPerCpuImpl<H>>;
 

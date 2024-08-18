@@ -10,8 +10,8 @@ use riscv::register::{htinst, htval, scause, sstatus, stval};
 use super::csrs::{traps, RiscvCsrTrait, CSR};
 use super::sbi::{BaseFunction, PmuFunction, RemoteFenceFunction, SbiMessage};
 use crate::AxVMHal;
-use axaddrspace::HostPhysAddr;
-use axvcpu::AxArchVCpuExitReason;
+use axaddrspace::{GuestPhysAddr, HostPhysAddr, MappingFlags};
+use axvcpu::AxVCpuExitReason;
 
 use super::csrs::defs::hstatus;
 use super::regs::{GeneralPurposeRegisters, GprIndex};
@@ -257,9 +257,9 @@ impl<H: AxVMHal> axvcpu::AxArchVCpu for VCpu<H> {
         Ok(())
     }
 
-    fn set_entry(&mut self, entry: usize) -> AxResult {
+    fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
         let regs = &mut self.regs;
-        regs.guest_regs.sepc = entry;
+        regs.guest_regs.sepc = entry.as_usize();
         Ok(())
     }
 
@@ -275,7 +275,7 @@ impl<H: AxVMHal> axvcpu::AxArchVCpu for VCpu<H> {
         Ok(())
     }
 
-    fn run(&mut self) -> AxResult<AxArchVCpuExitReason> {
+    fn run(&mut self) -> AxResult<AxVCpuExitReason> {
         let regs = &mut self.regs;
         unsafe {
             // Safe to run the guest as it only touches memory assigned to it by being owned
@@ -319,7 +319,7 @@ impl<H: AxVMHal> VCpu<H> {
 }
 
 impl<H: AxVMHal> VCpu<H> {
-    fn vmexit_handler(&mut self) -> AxResult<AxArchVCpuExitReason> {
+    fn vmexit_handler(&mut self) -> AxResult<AxVCpuExitReason> {
         self.regs.trap_csrs.scause = scause::read().bits();
         self.regs.trap_csrs.stval = stval::read();
         self.regs.trap_csrs.htval = htval::read();
@@ -363,7 +363,7 @@ impl<H: AxVMHal> VCpu<H> {
                         _ => todo!(),
                     }
                     self.advance_pc(4);
-                    Ok(AxArchVCpuExitReason::Nothing)
+                    Ok(AxVCpuExitReason::Nothing)
                 } else {
                     panic!()
                 }
@@ -376,15 +376,18 @@ impl<H: AxVMHal> VCpu<H> {
                 // Clear host timer interrupt
                 CSR.sie
                     .read_and_clear_bits(traps::interrupt::SUPERVISOR_TIMER);
-                Ok(AxArchVCpuExitReason::Nothing)
+                Ok(AxVCpuExitReason::Nothing)
             }
             Trap::Interrupt(Interrupt::SupervisorExternal) => {
-                Ok(AxArchVCpuExitReason::ExternalInterrupt { vector: 0 })
+                Ok(AxVCpuExitReason::ExternalInterrupt { vector: 0 })
             }
             Trap::Exception(Exception::LoadGuestPageFault)
             | Trap::Exception(Exception::StoreGuestPageFault) => {
                 let fault_addr = self.regs.trap_csrs.htval << 2 | self.regs.trap_csrs.stval & 0x3;
-                Ok(AxArchVCpuExitReason::NestedPageFault { addr: fault_addr })
+                Ok(AxVCpuExitReason::NestedPageFault {
+                    addr: GuestPhysAddr::from(fault_addr),
+                    access_flags: MappingFlags::empty(),
+                })
             }
             _ => {
                 panic!(

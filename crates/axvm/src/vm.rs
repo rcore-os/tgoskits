@@ -3,12 +3,13 @@ use alloc::format;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use axerrno::{ax_err, ax_err_type, AxResult};
 use memory_addr::VirtAddr;
 use spin::Mutex;
 
-use axvcpu::{AxArchVCpu, AxVCpu};
+use axvcpu::{AxArchVCpu, AxVCpu, AxVCpuExitReason};
 
 use axaddrspace::{AddrSpace, GuestPhysAddr, HostPhysAddr, MappingFlags};
 
@@ -19,16 +20,25 @@ use crate::{has_hardware_support, AxVMHal};
 const VM_ASPACE_BASE: usize = 0x0;
 const VM_ASPACE_SIZE: usize = 0x7fff_ffff_f000;
 
+// Todo: should Vcpu related type be put into `axvcpu`` crate?
 #[allow(type_alias_bounds)] // we know the bound is not enforced here, we keep it for clarity
 type VCpu<H: AxVMHal> = AxVCpu<AxArchVCpuImpl<H>>;
+#[allow(type_alias_bounds)]
+pub type AxVCpuRef<H: AxVMHal> = Arc<VCpu<H>>;
+
+#[allow(type_alias_bounds)]
+pub type AxVMRef<H: AxVMHal> = Arc<AxVM<H>>;
 
 struct AxVMInnerConst<H: AxVMHal> {
     id: usize,
     config: AxVMConfig,
-    vcpu_list: Box<[VCpu<H>]>,
+    vcpu_list: Box<[AxVCpuRef<H>]>,
     // to be added: device_list: ...
     device_list: UnsafeCell<AxArchDeviceList<H>>,
 }
+
+unsafe impl<H: AxVMHal> Send for AxVMInnerConst<H> {}
+unsafe impl<H: AxVMHal> Sync for AxVMInnerConst<H> {}
 
 struct AxVMInnerMut<H: AxVMHal> {
     // Todo: use more efficient lock.
@@ -38,12 +48,13 @@ struct AxVMInnerMut<H: AxVMHal> {
 
 /// A Virtual Machine.
 pub struct AxVM<H: AxVMHal> {
+    running: AtomicBool,
     inner_const: AxVMInnerConst<H>,
     inner_mut: AxVMInnerMut<H>,
 }
 
 impl<H: AxVMHal> AxVM<H> {
-    pub fn new(config: AxVMConfig) -> AxResult<Arc<Self>> {
+    pub fn new(config: AxVMConfig) -> AxResult<AxVMRef<H>> {
         let result = Arc::new({
             let vcpu_pcpu_id_pairs = config.get_vcpu_pcpu_id_pairs();
 
@@ -52,12 +63,12 @@ impl<H: AxVMHal> AxVM<H> {
 
             for (vcpu_id, pcpu_id) in vcpu_pcpu_id_pairs {
                 // Todo: distinguish between `favor_phys_cpu` and `affinity`.
-                vcpu_list.push(VCpu::new(
+                vcpu_list.push(Arc::new(VCpu::new(
                     vcpu_id,
                     pcpu_id,
                     pcpu_id,
                     <AxArchVCpuImpl<H> as AxArchVCpu>::CreateConfig::default(),
-                )?);
+                )?));
             }
 
             // Set up Memory regions.
@@ -100,6 +111,7 @@ impl<H: AxVMHal> AxVM<H> {
             let device_list = AxArchDeviceList::<H>::new();
 
             Self {
+                running: AtomicBool::new(false),
                 inner_const: AxVMInnerConst {
                     id: config.id(),
                     config,
@@ -123,7 +135,7 @@ impl<H: AxVMHal> AxVM<H> {
                 result.inner_const.config.ap_entry()
             };
             vcpu.setup(
-                entry.as_usize(),
+                entry,
                 result.ept_root(),
                 <AxArchVCpuImpl<H> as AxArchVCpu>::SetupConfig::default(),
             )?;
@@ -135,20 +147,26 @@ impl<H: AxVMHal> AxVM<H> {
 
     /// Returns the VM id.
     #[inline]
-    pub fn id(&self) -> usize {
+    pub const fn id(&self) -> usize {
         self.inner_const.id
     }
 
     /// Retrieves the vCPU corresponding to the given vcpu_id for the VM.
     /// Returns None if the vCPU does not exist.
     #[inline]
-    pub fn vcpu(&self, vcpu_id: usize) -> Option<&VCpu<H>> {
-        self.vcpu_list().get(vcpu_id)
+    pub fn vcpu(&self, vcpu_id: usize) -> Option<AxVCpuRef<H>> {
+        self.vcpu_list().get(vcpu_id).cloned()
+    }
+
+    /// Returns the number of vCPUs corresponding to the VM.
+    #[inline]
+    pub const fn vcpu_num(&self) -> usize {
+        self.inner_const.vcpu_list.len()
     }
 
     /// Returns a reference to the list of vCPUs corresponding to the VM.
     #[inline]
-    pub fn vcpu_list(&self) -> &[VCpu<H>] {
+    pub fn vcpu_list(&self) -> &[AxVCpuRef<H>] {
         &self.inner_const.vcpu_list
     }
 
@@ -177,11 +195,19 @@ impl<H: AxVMHal> AxVM<H> {
         Ok(image_load_hva)
     }
 
+    pub fn running(&self) -> bool {
+        self.running.load(Ordering::Relaxed)
+    }
+
     pub fn boot(&self) -> AxResult {
         if !has_hardware_support() {
             ax_err!(Unsupported, "Hardware does not support virtualization")
+        } else if self.running() {
+            ax_err!(BadState, format!("VM[{}] is running", self.id()))
         } else {
-            self.run_vcpu(0)
+            info!("Booting VM[{}]", self.id());
+            self.running.store(true, Ordering::Relaxed);
+            Ok(())
         }
     }
 
@@ -189,36 +215,43 @@ impl<H: AxVMHal> AxVM<H> {
         unsafe { &mut *self.inner_const.device_list.get() }
     }
 
-    pub fn run_vcpu(&self, vcpu_id: usize) -> AxResult {
+    pub fn run_vcpu(&self, vcpu_id: usize) -> AxResult<AxVCpuExitReason> {
         let vcpu = self
             .vcpu(vcpu_id)
             .ok_or_else(|| ax_err_type!(InvalidInput, "Invalid vcpu_id"))?;
+
         vcpu.bind()?;
-        loop {
-            // todo: device access
+
+        let exit_reason = loop {
             let exit_reason = vcpu.run()?;
 
-            match exit_reason {
-                axvcpu::AxArchVCpuExitReason::MmioRead { addr, width: _ } => {
-                    debug!("EPT from addr {:#x}", addr);
-
-                    let paddr = self
-                        .inner_mut
-                        .address_space
-                        .lock()
-                        .translate(VirtAddr::from(addr));
-
-                    debug!("EPT mapped to {:#x?}", paddr);
-
-                    break;
-                }
-                _ => {
-                    let device_list = self.get_device_list();
-                    device_list.vmexit_handler(vcpu.get_arch_vcpu(), exit_reason)?;
-                }
+            trace!("{exit_reason:#x?}");
+            let handled = match &exit_reason {
+                AxVCpuExitReason::MmioRead { addr: _, width: _ } => true,
+                AxVCpuExitReason::MmioWrite {
+                    addr: _,
+                    width: _,
+                    data: _,
+                } => true,
+                AxVCpuExitReason::IoRead { port: _, width: _ } => true,
+                AxVCpuExitReason::IoWrite {
+                    port: _,
+                    width: _,
+                    data: _,
+                } => true,
+                AxVCpuExitReason::NestedPageFault { addr, access_flags } => self
+                    .inner_mut
+                    .address_space
+                    .lock()
+                    .handle_page_fault(*addr, *access_flags),
+                _ => false,
+            };
+            if !handled {
+                break exit_reason;
             }
-        }
+        };
+
         vcpu.unbind()?;
-        panic!("VCpu [{}] halt", vcpu.id())
+        Ok(exit_reason)
     }
 }

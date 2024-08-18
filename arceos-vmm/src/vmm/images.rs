@@ -1,28 +1,27 @@
 use alloc::string::String;
-use alloc::sync::Arc;
-use alloc::vec::Vec;
 
 use std::fs::File;
 
-use axerrno::{ax_err, ax_err_type, AxError, AxResult};
+use axerrno::{ax_err, ax_err_type, AxResult};
 use memory_addr::VirtAddr;
 
 use axvm::config::AxVMCrateConfig;
-use axvm::AxVM;
 
-use crate::hal::AxVMHalImpl;
+use crate::vmm::VMRef;
 
-pub fn load_vm_images(config: AxVMCrateConfig, vm: Arc<AxVM<AxVMHalImpl>>) -> AxResult {
+/// Loads the VM image files from the filesystem
+/// into the guest VM's memory space based on the VM configuration.
+pub fn load_vm_images(config: AxVMCrateConfig, vm: VMRef) -> AxResult {
     // Load kernel image.
     load_vm_image(
         config.kernel_path,
         VirtAddr::from(config.kernel_load_addr),
         vm.clone(),
-    );
+    )?;
     // Load BIOS image if needed.
     if let Some(bios_path) = config.bios_path {
         if let Some(bios_load_addr) = config.bios_load_addr {
-            load_vm_image(bios_path, VirtAddr::from(bios_load_addr), vm.clone());
+            load_vm_image(bios_path, VirtAddr::from(bios_load_addr), vm.clone())?;
         } else {
             return ax_err!(NotFound, "BIOS load addr is missed");
         }
@@ -30,7 +29,7 @@ pub fn load_vm_images(config: AxVMCrateConfig, vm: Arc<AxVM<AxVMHalImpl>>) -> Ax
     // Load Ramdisk image if needed.
     if let Some(ramdisk_path) = config.ramdisk_path {
         if let Some(ramdisk_load_addr) = config.ramdisk_load_addr {
-            load_vm_image(ramdisk_path, VirtAddr::from(ramdisk_load_addr), vm.clone());
+            load_vm_image(ramdisk_path, VirtAddr::from(ramdisk_load_addr), vm.clone())?;
         } else {
             return ax_err!(NotFound, "Ramdisk load addr is missed");
         }
@@ -39,7 +38,7 @@ pub fn load_vm_images(config: AxVMCrateConfig, vm: Arc<AxVM<AxVMHalImpl>>) -> Ax
     // Todo: generate DTB file for guest VM.
     if let Some(dtb_path) = config.dtb_path {
         if let Some(dtb_load_addr) = config.dtb_load_addr {
-            load_vm_image(dtb_path, VirtAddr::from(dtb_load_addr), vm.clone());
+            load_vm_image(dtb_path, VirtAddr::from(dtb_load_addr), vm.clone())?;
         } else {
             return ax_err!(NotFound, "DTB load addr is missed");
         }
@@ -47,11 +46,7 @@ pub fn load_vm_images(config: AxVMCrateConfig, vm: Arc<AxVM<AxVMHalImpl>>) -> Ax
     Ok(())
 }
 
-fn load_vm_image(
-    image_path: String,
-    image_load_gpa: VirtAddr,
-    vm: Arc<AxVM<AxVMHalImpl>>,
-) -> AxResult {
+fn load_vm_image(image_path: String, image_load_gpa: VirtAddr, vm: VMRef) -> AxResult {
     use std::io::{BufReader, Read};
     let (image_file, image_size) = open_image_file(image_path.as_str())?;
 

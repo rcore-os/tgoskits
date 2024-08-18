@@ -6,7 +6,7 @@ use super::{devices::plic::PlicState, traps, vm_pages::fetch_guest_instruction, 
 use crate::AxVMHal;
 use axaddrspace::{GuestPhysAddr, GuestVirtAddr};
 use axerrno::{AxError, AxResult};
-use axvcpu::AxArchVCpuExitReason;
+use axvcpu::AxVCpuExitReason;
 use core::panic;
 use riscv_decode::Instruction;
 
@@ -28,10 +28,12 @@ impl<H: AxVMHal> DeviceList<H> {
     pub fn vmexit_handler(
         &mut self,
         vcpu: &mut VCpu<H>,
-        vm_exit_info: AxArchVCpuExitReason,
+        vm_exit_info: AxVCpuExitReason,
     ) -> AxResult {
         match vm_exit_info {
-            AxArchVCpuExitReason::NestedPageFault { addr: fault_addr } => {
+            AxVCpuExitReason::NestedPageFault {
+                addr: fault_addr, ..
+            } => {
                 let falut_pc = vcpu.regs().guest_regs.sepc;
                 let inst = vcpu.regs().trap_csrs.htinst as u32;
                 let priv_level = PrivilegeLevel::from_hstatus(vcpu.regs().guest_regs.hstatus);
@@ -40,7 +42,7 @@ impl<H: AxVMHal> DeviceList<H> {
                         match self.handle_page_fault(
                             GuestVirtAddr::from(falut_pc),
                             inst,
-                            GuestPhysAddr::from(fault_addr),
+                            fault_addr,
                             vcpu,
                         ) {
                             Ok(inst_len) => {
@@ -59,7 +61,7 @@ impl<H: AxVMHal> DeviceList<H> {
                     }
                 }
             }
-            AxArchVCpuExitReason::ExternalInterrupt { .. } => self.handle_irq(),
+            AxVCpuExitReason::ExternalInterrupt { .. } => self.handle_irq(),
             _ => {}
         }
         Ok(())
