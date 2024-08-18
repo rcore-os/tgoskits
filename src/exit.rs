@@ -1,4 +1,4 @@
-use axaddrspace::GuestPhysAddr;
+use axaddrspace::{GuestPhysAddr, MappingFlags};
 
 #[allow(unused_imports)] // used in doc
 use super::AxArchVCpu;
@@ -107,6 +107,8 @@ pub enum AxVCpuExitReason {
     NestedPageFault {
         /// The guest physical address of the fault.
         addr: GuestPhysAddr,
+        /// The access flags of the fault.
+        access_flags: MappingFlags,
     },
     /// The vcpu is halted.
     Halt,
