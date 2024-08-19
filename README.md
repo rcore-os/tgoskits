@@ -9,7 +9,7 @@ Wrappers and helper functions for physical and virtual memory addresses.
 ## Examples
 
 ```rust
-use memory_addr::{pa, va, va_range, PhysAddr, VirtAddr};
+use memory_addr::{pa, va, va_range, PhysAddr, VirtAddr, MemoryAddr};
 
 let phys_addr = PhysAddr::from(0x12345678);
 let virt_addr = VirtAddr::from(0x87654321);
