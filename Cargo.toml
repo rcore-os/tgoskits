@@ -1,14 +1,18 @@
-[package]
-name = "memory_addr"
-version = "0.2.1"
+[workspace]
+resolver = "2"
+
+members = [
+    "memory_addr",
+    "memory_set",
+]
+
+[workspace.package]
+version = "0.3.0-dev" # dev here to avoid publishing it mistakenly, as `memory_set` is not updated yet
 edition = "2021"
-authors = ["Yuekai Jia <equation618@gmail.com>"]
-description = "Wrappers and helper functions for physical and virtual addresses"
+authors = ["Yuekai Jia <equation618@gmail.com>", "aarkegz <aarkegz@gmail.com>"]
 license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
 homepage = "https://github.com/arceos-org/arceos"
+# documentation = "let member have their own documentation links"
 repository = "https://github.com/arceos-org/memory_addr"
-documentation = "https://docs.rs/memory_addr"
-keywords = ["arceos", "address", "virtual-memory"]
+# keywords = ["let member have their own keywords"]
 categories = ["os", "memory-management", "no-std"]
-
-[dependencies]

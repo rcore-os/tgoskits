@@ -1,0 +1,15 @@
+[package]
+name = "memory_addr"
+description = "Wrappers and helper functions for physical and virtual addresses"
+documentation = "https://docs.rs/memory_addr"
+keywords = ["arceos", "address", "virtual-memory"]
+
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+
+[dependencies]
