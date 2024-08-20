@@ -1,0 +1,18 @@
+[package]
+name = "memory_set"
+description = "Data structures and operations for managing memory mappings"
+documentation = "https://docs.rs/memory_set"
+keywords = ["arceos", "virtual-memory", "memory-area", "mmap"]
+
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+
+[dependencies]
+memory_addr = "0.2"
+# todo: update it to local one once it gets adapted to the current version
+# memory_addr = { path = "../memory_addr", version = "0.2" }
