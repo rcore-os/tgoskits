@@ -1,8 +1,7 @@
 use aarch64_cpu::registers::*;
 
 use axerrno::AxResult;
-
-use axvcpu::AxVMArchPerCpu;
+use axvcpu::AxArchPerCpu;
 
 /// Per-CPU data. A pointer to this struct is loaded into TP when a CPU starts. This structure
 #[repr(C)]
@@ -22,7 +21,7 @@ extern "C" {
     fn exception_vector_base_vcpu();
 }
 
-impl AxVMArchPerCpu for Aarch64PerCpu {
+impl AxArchPerCpu for Aarch64PerCpu {
     fn new(cpu_id: usize) -> AxResult<Self> {
         Ok(Self { cpu_id, ctx: None })
     }

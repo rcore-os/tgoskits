@@ -15,4 +15,4 @@ axerrno = "0.1.0"
 percpu = "0.1.4"
 
 axaddrspace = { git = "https://github.com/arceos-hypervisor/axaddrspace.git" }
-axvcpu = { git = "https://github.com/arceos-hypervisor/axvcpu.git", rev = "6b374a5" }
+axvcpu = { git = "https://github.com/arceos-hypervisor/axvcpu.git", rev = "2c08c99" }
