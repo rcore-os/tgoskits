@@ -26,6 +26,15 @@ pub type HostVirtAddr = VirtAddr;
 /// Host physical address.
 pub type HostPhysAddr = PhysAddr;
 
+/// Information about nested page faults.
+#[derive(Debug)]
+pub struct NestedPageFaultInfo {
+    /// Access type that caused the nested page fault.
+    pub access_flags: MappingFlags,
+    /// Guest physical address that caused the nested page fault.
+    pub fault_guest_paddr: GuestPhysAddr,
+}
+
 fn mapping_err_to_ax_err(err: MappingError) -> AxError {
     warn!("Mapping error: {:?}", err);
     match err {
