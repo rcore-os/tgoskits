@@ -14,6 +14,7 @@ pub(crate) mod msr;
 #[macro_use]
 pub(crate) mod regs;
 mod ept;
+mod frame;
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "vmx")] {
@@ -26,8 +27,7 @@ cfg_if::cfg_if! {
     }
 }
 
-pub use vender::has_hardware_support;
-
-pub use regs::GeneralRegisters;
-
 pub use ept::GuestPageWalkInfo;
+pub use frame::PhysFrameIf;
+pub use regs::GeneralRegisters;
+pub use vender::has_hardware_support;

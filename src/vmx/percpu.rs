@@ -2,19 +2,33 @@ use x86::bits64::vmx;
 use x86_64::registers::control::{Cr0, Cr4, Cr4Flags};
 
 use axerrno::{ax_err, ax_err_type, AxResult};
-use axvcpu::AxVMArchPerCpu;
+use axvcpu::AxArchPerCpu;
 use memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
 
 use crate::msr::Msr;
 use crate::vmx::has_hardware_support;
 use crate::vmx::structs::{FeatureControl, FeatureControlFlags, VmxBasic, VmxRegion};
 
+/// Represents the per-CPU state for Virtual Machine Extensions (VMX).
+///
+/// This structure holds the state information specific to a CPU core
+/// when operating in VMX mode, including the VMCS revision identifier and
+/// the VMX region.
 pub struct VmxPerCpuState {
+    /// The VMCS (Virtual Machine Control Structure) revision identifier.
+    ///
+    /// This identifier is used to ensure compatibility between the software
+    /// and the specific version of the VMCS that the CPU supports.
     pub(crate) vmcs_revision_id: u32,
+
+    /// The VMX region for this CPU.
+    ///
+    /// This region typically contains the VMCS and other state information
+    /// required for managing virtual machines on this particular CPU.
     vmx_region: VmxRegion,
 }
 
-impl AxVMArchPerCpu for VmxPerCpuState {
+impl AxArchPerCpu for VmxPerCpuState {
     fn new(_cpu_id: usize) -> AxResult<Self> {
         Ok(Self {
             vmcs_revision_id: 0,

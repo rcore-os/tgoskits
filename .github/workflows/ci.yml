@@ -9,7 +9,7 @@ jobs:
       fail-fast: false
       matrix:
         rust-toolchain: [nightly]
-        targets: [aarch64-unknown-none-softfloat]
+        targets: [x86_64-unknown-none]
     steps:
     - uses: actions/checkout@v4
     - uses: dtolnay/rust-toolchain@nightly
