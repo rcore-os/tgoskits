@@ -445,17 +445,15 @@ dependencies = [
 [[package]]
 name = "axvm"
 version = "0.1.0"
+source = "git+https://github.com/arceos-hypervisor/axvm.git#32100ab4988bd8b8ad7cc6e25166084191e424d8"
 dependencies = [
  "arm_vcpu",
  "axaddrspace",
  "axerrno",
  "axvcpu",
- "bit_field",
- "bitflags 2.6.0",
  "cfg-if",
  "log",
  "memory_addr",
- "numeric-enum-macro",
  "page_table_entry",
  "page_table_multiarch",
  "percpu",

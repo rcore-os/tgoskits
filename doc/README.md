@@ -33,11 +33,11 @@ Arceos-Hypervisor runs as an ArceOS app, mainly composed of the following indepe
 
 ### modules
 
-* [axvm](https://github.com/arceos-hypervisor/arceos-umhv/tree/master/crates/axvm): responsible for **resource management** within each VM
+* [axvm](https://github.com/arceos-hypervisor/axvm): responsible for **resource management** within each VM
     * partially architecture-independent
     * resources:
         * vcpu: [axvcpu](https://github.com/arceos-hypervisor/axvcpu) list
-        * memory: [axaddrspace] for guest memory management
+        * memory: [axaddrspace](https://github.com/arceos-hypervisor/axaddrspace) for guest memory management
         * device: [axdevice](https://github.com/arceos-hypervisor/axdevice) list
 
 * [axvcpu](https://github.com/arceos-hypervisor/axvcpu): providing CPU virtualization support
@@ -104,7 +104,7 @@ pub struct AddrSpace<H: PagingHandler> {
 }
 ```
 
-`axaddrspace` is owned and managed by `axvm`'s `AxVM` structure, which replies on `AxVMHal` trait ( defined in `axvm`'s [hal.rs](https://github.com/arceos-hypervisor/arceos-umhv/blob/master/crates/axvm/src/hal.rs) ) .
+`axaddrspace` is owned and managed by `axvm`'s `AxVM` structure, which replies on `AxVMHal` trait ( defined in `axvm`'s [hal.rs](https://github.com/arceos-hypervisor/axvm/blob/master/src/hal.rs) ) .
 
 Indeed, `PagingHandler` is a associate type of `AxVMHal` trait.
 

@@ -1,8 +1,7 @@
 [workspace]
 resolver = "2"
 
-members = ["arceos-vmm", "crates/axvm"]
-exclude = ["guest/nimbos"]
+members = ["arceos-vmm"]
 
 [profile.release]
 lto = true
@@ -13,7 +12,7 @@ axhal = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "4f29e0
 axstd = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "4f29e06" }
 axtask = { git = "https://github.com/arceos-org/arceos.git", branch = "monolithic" }
 
-axvm = { path = "./crates/axvm" }
+axvm = { git = "https://github.com/arceos-hypervisor/axvm.git" }
 axvcpu = { git = "https://github.com/arceos-hypervisor/axvcpu.git" }
 axaddrspace = { git = "https://github.com/arceos-hypervisor/axaddrspace.git" }
 
