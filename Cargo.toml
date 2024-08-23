@@ -21,4 +21,4 @@ page_table_entry = "0.3.3"
 memory_addr = "0.2.0"
 
 axaddrspace = { git = "https://github.com/arceos-hypervisor/axaddrspace.git" }
-axvcpu = { git = "https://github.com/arceos-hypervisor/axvcpu.git", rev = "2c08c99" }
+axvcpu = { git = "https://github.com/arceos-hypervisor/axvcpu.git" }
