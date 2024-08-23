@@ -1,0 +1,19 @@
+id = 1
+name = "arceos"
+vm_type = 1
+cpu_set = 2
+entry_point = 0x4008_0000
+kernel_path = "arceos-aarch64.bin"
+kernel_load_addr = 0x4008_0000
+# ramdisk_path = ""
+# ramdisk_load_addr = 0
+# disk_path = "disk.img"
+# Memory regions with format (`base_paddr`, `size`, `flags`).
+memory_regions = [
+    [0x4000_0000, 0x100_0000, 0x7],   # Low RAM		    16M 0b00111 R|W|EXECUTE
+    [0x800_0000, 0x10_000, 0x17],     # intc 		    4K  0b10111 R|W|DEVICE
+    [0x801_0000, 0x10_000, 0x17],     # intc 		    4K  0b10111 R|W|DEVICE
+    [0x900_0000, 0x1000, 0x17],       # pl011 (Uart)	4K  0b10111 R|W|DEVICE
+    [0x901_0000, 0x1000, 0x17],       # pl031 (timer)	4K  0b10111 R|W|DEVICE
+    [0xfed0_0000, 0x1000, 0x17],      # HPET 		    4K  0b10111 R|W|DEVICE
+]

@@ -4,12 +4,6 @@ Let's build a VMM (Virtual Machine Minotor or hypervisor) upon [ArceOS](https://
 
 ## Preparation
 
-Initialize the ArceOS repository using Git submodule.
-
-```console
-$ git submodule init && git submodule update
-```
-
 Install [cargo-binutils](https://github.com/rust-embedded/cargo-binutils) to use `rust-objcopy` and `rust-objdump` tools:
 
 ```console
@@ -18,20 +12,23 @@ $ cargo install cargo-binutils
 
 Your also need to install [musl-gcc](http://musl.cc/x86_64-linux-musl-cross.tgz) to build guest user applications.
 
-## Build Guest OS
+## Guest VM
 
-```console
-$ cd guest/nimbos/kernel
-$ make user
-$ make GUEST=on
-```
+### Configuration files
 
-## Build Guest BIOS
+We provide several configuration file [templates](arceos-vmm/configs) for setting up guest VMs. 
 
-```console
-$ cd guest/bios
-$ make
-```
+These configuration files are read and parsed by the `init_guest_vms()` in the [vmm/config](arceos-vmm/src/vmm/config.rs) mod, and are used to configure the guest VMs.
+
+### Supported guest VMs
+
+* [ArceOS](https://github.com/arceos-org/arceos)
+    * ArceOS HelloWorld application that can be used to test hypercall functionality is provided [here](https://github.com/arceos-hypervisor/arceos/blob/gvm_test/examples/helloworld/src/main.rs).
+    * Just run `make A=examples/helloworld ARCH=[x86_64|aarch64|riscv64] build` to get binary images. 
+* [NimbOS](https://github.com/arceos-hypervisor/nimbos)
+    *  Some runnable Nimbos images are provided [here](https://github.com/arceos-hypervisor/nimbos/releases/tag/v0.6).
+
+You can get a simple bios for x86_64 guests [here](https://github.com/arceos-hypervisor/axvm-bios-x86/releases/download/v0.1/axvm-bios.bin).
 
 ## Build File System image
 
@@ -40,10 +37,8 @@ $ cd arceos-vmm
 $ make disk_img
 $ mkdir -p tmp
 $ sudo mount disk.img tmp
-$ # Copy guest OS binary image file.
-$ sudo cp ../guest/nimbos/kernel/target/x86_64/release/nimbos.bin tmp/
-$ # Copy guest BIOS binary image file.
-$ sudo cp ../guest/bios/out/rvm-bios.bin tmp/
+$ # Copy guest VM binary image files.
+$ sudo cp /PATH/TO/YOUR/GUEST/VM/IMAGE tmp/
 $ sudo umount tmp
 ```
 
@@ -53,10 +48,9 @@ $ sudo umount tmp
 $ cd arceos-vmm
 # x86_64
 $ make A=$(pwd) ACCEL=y BLK=y [LOG=warn|info|debug|trace] run
-# aarch64
-$ make A=$(pwd) LOG=info BLK=y ARCH=aarch64 run
-# riscv64
-$ make A=$(pwd) LOG=info BLK=y ARCH=riscv64 run
+# aarch64 & riscv64
+$ make A=$(pwd) LOG=info BLK=y ARCH=[aarch64|riscv64] run
+
 ......
 Booting from ROM..
 Initialize IDT & GDT...

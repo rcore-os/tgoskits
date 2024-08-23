@@ -8,22 +8,26 @@ exclude = ["guest/nimbos"]
 lto = true
 
 [workspace.dependencies]
-axalloc = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "5c9ee79" }
-axhal = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "5c9ee79" }
-axstd = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "5c9ee79" }
+axalloc = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "4f29e06" }
+axhal = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "4f29e06" }
+axstd = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "4f29e06" }
 axtask = { git = "https://github.com/arceos-org/arceos.git", branch = "monolithic" }
 
 axvm = { path = "./crates/axvm" }
 axvcpu = { git = "https://github.com/arceos-hypervisor/axvcpu.git" }
-axaddrspace = { git = "https://github.com/arceos-hypervisor/axaddrspace.git", rev = "17378d" }
+axaddrspace = { git = "https://github.com/arceos-hypervisor/axaddrspace.git" }
+
+arm_vcpu = { git = "https://github.com/arceos-hypervisor/arm_vcpu.git" }
+x86_vcpu = { git = "https://github.com/arceos-hypervisor/x86_vcpu.git" }
+riscv_vcpu = { git = "https://github.com/arceos-hypervisor/riscv_vcpu.git" }
 
 # Since we need to rely on the `axtask` module from the `monolithic` branch of arceos-org/arceos repository, which supports TaskExt,
 # and this module depends on different versions of `axhal` and `axconfig`, 
 # (ref: https://github.com/arceos-org/arceos/blob/monolithic/modules/axtask/Cargo.toml)
 # we temporarily use [patch] here to unify the dependency versions of these modules.
 [patch."https://github.com/arceos-org/arceos.git"]
-axhal = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "5c9ee79" }
-axconfig = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "5c9ee79" }
+axhal = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "4f29e06" }
+axconfig = { git = "https://github.com/arceos-hypervisor/arceos.git", rev = "4f29e06" }
 
 # The complexity: 
 # `axstd` depends on the `axtask` from the `arceos-hypervisor\arceos` repository when the 'multitask' feature is enabled. 

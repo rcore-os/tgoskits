@@ -13,10 +13,8 @@ mod vmm;
 
 use axvm::AxVMPerCpu;
 
-use crate::hal::AxVMHalImpl;
-
 #[percpu::def_percpu]
-pub static mut AXVM_PER_CPU: AxVMPerCpu<AxVMHalImpl> = AxVMPerCpu::new_uninit();
+pub static mut AXVM_PER_CPU: AxVMPerCpu = AxVMPerCpu::new_uninit();
 
 #[no_mangle]
 fn main() {

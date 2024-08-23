@@ -2,7 +2,7 @@ use alloc::boxed::Box;
 use alloc::format;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::cell::UnsafeCell;
+// use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use axerrno::{ax_err, ax_err_type, AxResult};
@@ -13,8 +13,8 @@ use axvcpu::{AxArchVCpu, AxVCpu, AxVCpuExitReason};
 
 use axaddrspace::{AddrSpace, GuestPhysAddr, HostPhysAddr, MappingFlags};
 
-use crate::arch::{AxArchDeviceList, AxArchVCpuImpl};
 use crate::config::AxVMConfig;
+use crate::vcpu::AxArchVCpuImpl;
 use crate::{has_hardware_support, AxVMHal};
 
 const VM_ASPACE_BASE: usize = 0x0;
@@ -22,23 +22,23 @@ const VM_ASPACE_SIZE: usize = 0x7fff_ffff_f000;
 
 // Todo: should Vcpu related type be put into `axvcpu`` crate?
 #[allow(type_alias_bounds)] // we know the bound is not enforced here, we keep it for clarity
-type VCpu<H: AxVMHal> = AxVCpu<AxArchVCpuImpl<H>>;
+type VCpu = AxVCpu<AxArchVCpuImpl>;
 #[allow(type_alias_bounds)]
-pub type AxVCpuRef<H: AxVMHal> = Arc<VCpu<H>>;
+pub type AxVCpuRef = Arc<VCpu>;
 
 #[allow(type_alias_bounds)]
 pub type AxVMRef<H: AxVMHal> = Arc<AxVM<H>>;
 
-struct AxVMInnerConst<H: AxVMHal> {
+struct AxVMInnerConst {
     id: usize,
     config: AxVMConfig,
-    vcpu_list: Box<[AxVCpuRef<H>]>,
+    vcpu_list: Box<[AxVCpuRef]>,
     // to be added: device_list: ...
-    device_list: UnsafeCell<AxArchDeviceList<H>>,
+    // device_list: UnsafeCell<AxArchDeviceList<H>>,
 }
 
-unsafe impl<H: AxVMHal> Send for AxVMInnerConst<H> {}
-unsafe impl<H: AxVMHal> Sync for AxVMInnerConst<H> {}
+unsafe impl Send for AxVMInnerConst {}
+unsafe impl Sync for AxVMInnerConst {}
 
 struct AxVMInnerMut<H: AxVMHal> {
     // Todo: use more efficient lock.
@@ -49,7 +49,7 @@ struct AxVMInnerMut<H: AxVMHal> {
 /// A Virtual Machine.
 pub struct AxVM<H: AxVMHal> {
     running: AtomicBool,
-    inner_const: AxVMInnerConst<H>,
+    inner_const: AxVMInnerConst,
     inner_mut: AxVMInnerMut<H>,
 }
 
@@ -67,7 +67,7 @@ impl<H: AxVMHal> AxVM<H> {
                     vcpu_id,
                     pcpu_id,
                     pcpu_id,
-                    <AxArchVCpuImpl<H> as AxArchVCpu>::CreateConfig::default(),
+                    <AxArchVCpuImpl as AxArchVCpu>::CreateConfig::default(),
                 )?));
             }
 
@@ -108,7 +108,7 @@ impl<H: AxVMHal> AxVM<H> {
 
             // Setup Devices.
             // Todo:
-            let device_list = AxArchDeviceList::<H>::new();
+            // let device_list = AxArchDeviceList::<H>::new();
 
             Self {
                 running: AtomicBool::new(false),
@@ -116,7 +116,7 @@ impl<H: AxVMHal> AxVM<H> {
                     id: config.id(),
                     config,
                     vcpu_list: vcpu_list.into_boxed_slice(),
-                    device_list: UnsafeCell::new(device_list),
+                    // device_list: UnsafeCell::new(device_list),
                 },
                 inner_mut: AxVMInnerMut {
                     address_space: Mutex::new(address_space),
@@ -137,7 +137,7 @@ impl<H: AxVMHal> AxVM<H> {
             vcpu.setup(
                 entry,
                 result.ept_root(),
-                <AxArchVCpuImpl<H> as AxArchVCpu>::SetupConfig::default(),
+                <AxArchVCpuImpl as AxArchVCpu>::SetupConfig::default(),
             )?;
         }
         info!("VM setup: id={}", result.id());
@@ -154,7 +154,7 @@ impl<H: AxVMHal> AxVM<H> {
     /// Retrieves the vCPU corresponding to the given vcpu_id for the VM.
     /// Returns None if the vCPU does not exist.
     #[inline]
-    pub fn vcpu(&self, vcpu_id: usize) -> Option<AxVCpuRef<H>> {
+    pub fn vcpu(&self, vcpu_id: usize) -> Option<AxVCpuRef> {
         self.vcpu_list().get(vcpu_id).cloned()
     }
 
@@ -166,7 +166,7 @@ impl<H: AxVMHal> AxVM<H> {
 
     /// Returns a reference to the list of vCPUs corresponding to the VM.
     #[inline]
-    pub fn vcpu_list(&self) -> &[AxVCpuRef<H>] {
+    pub fn vcpu_list(&self) -> &[AxVCpuRef] {
         &self.inner_const.vcpu_list
     }
 
@@ -211,9 +211,9 @@ impl<H: AxVMHal> AxVM<H> {
         }
     }
 
-    pub fn get_device_list(&self) -> &mut AxArchDeviceList<H> {
-        unsafe { &mut *self.inner_const.device_list.get() }
-    }
+    // pub fn get_device_list(&self) -> &mut AxArchDeviceList<H> {
+    //     unsafe { &mut *self.inner_const.device_list.get() }
+    // }
 
     pub fn run_vcpu(&self, vcpu_id: usize) -> AxResult<AxVCpuExitReason> {
         let vcpu = self

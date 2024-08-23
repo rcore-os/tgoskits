@@ -7,11 +7,11 @@ pub struct TaskExt {
     /// The VM.
     pub vm: AxVMRef<AxVMHalImpl>,
     /// The virtual memory address space.
-    pub vcpu: AxVCpuRef<AxVMHalImpl>,
+    pub vcpu: AxVCpuRef,
 }
 
 impl TaskExt {
-    pub const fn new(vm: AxVMRef<AxVMHalImpl>, vcpu: AxVCpuRef<AxVMHalImpl>) -> Self {
+    pub const fn new(vm: AxVMRef<AxVMHalImpl>, vcpu: AxVCpuRef) -> Self {
         Self { vm, vcpu }
     }
 }
