@@ -8,9 +8,11 @@ extern crate alloc;
 
 mod arch_vcpu;
 mod exit;
+mod percpu;
 mod vcpu;
 
 pub use arch_vcpu::AxArchVCpu;
+pub use percpu::*;
 pub use vcpu::*;
 
 // TODO: consider, should [`AccessWidth`] be moved to a new crate?
