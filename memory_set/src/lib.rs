@@ -4,12 +4,14 @@
 extern crate alloc;
 
 mod area;
+mod backend;
 mod set;
 
 #[cfg(test)]
 mod tests;
 
-pub use self::area::{MappingBackend, MemoryArea};
+pub use self::area::MemoryArea;
+pub use self::backend::MappingBackend;
 pub use self::set::MemorySet;
 
 /// Error type for memory mapping operations.

@@ -1,4 +1,4 @@
-use crate::is_aligned;
+use crate::MemoryAddr;
 
 /// A page-by-page iterator.
 ///
@@ -16,10 +16,12 @@ use crate::is_aligned;
 /// assert_eq!(iter.next(), Some(0x1000));
 /// assert_eq!(iter.next(), Some(0x2000));
 /// assert_eq!(iter.next(), None);
+///
+/// assert!(PageIter::<0x1000, usize>::new(0x1000, 0x3001).is_none());
 /// ```
 pub struct PageIter<const PAGE_SIZE: usize, A>
 where
-    A: Into<usize> + Copy,
+    A: MemoryAddr,
 {
     start: A,
     end: A,
@@ -27,7 +29,7 @@ where
 
 impl<A, const PAGE_SIZE: usize> PageIter<PAGE_SIZE, A>
 where
-    A: Into<usize> + Copy,
+    A: MemoryAddr,
 {
     /// Creates a new [`PageIter`].
     ///
@@ -35,8 +37,8 @@ where
     /// is not page-aligned.
     pub fn new(start: A, end: A) -> Option<Self> {
         if !PAGE_SIZE.is_power_of_two()
-            || !is_aligned(Into::<usize>::into(start), PAGE_SIZE)
-            || !is_aligned(Into::<usize>::into(end), PAGE_SIZE)
+            || !start.is_aligned(PAGE_SIZE)
+            || !end.is_aligned(PAGE_SIZE)
         {
             None
         } else {
@@ -47,14 +49,14 @@ where
 
 impl<A, const PAGE_SIZE: usize> Iterator for PageIter<PAGE_SIZE, A>
 where
-    A: Into<usize> + Copy + PartialOrd + core::ops::AddAssign<usize>,
+    A: MemoryAddr,
 {
     type Item = A;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.start < self.end {
             let ret = self.start;
-            self.start += PAGE_SIZE;
+            self.start = self.start.add(PAGE_SIZE);
             Some(ret)
         } else {
             None

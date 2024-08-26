@@ -29,7 +29,7 @@ type MockPageTable = [MockFlags; MAX_ADDR];
 struct MockBackend;
 
 let mut pt = [0; MAX_ADDR];
-let mut memory_set = MemorySet::<MockFlags, MockPageTable, MockBackend>::new();
+let mut memory_set = MemorySet::<MockBackend>::new();
 
 // Map [0x1000..0x5000).
 memory_set.map(
@@ -46,7 +46,11 @@ assert_eq!(areas[0].va_range(), va_range!(0x1000..0x2000));
 assert_eq!(areas[1].va_range(), va_range!(0x4000..0x5000));
 
 // Underlying operations to do when manipulating mappings.
-impl MappingBackend<MockFlags, MockPageTable> for MockBackend {
+impl MappingBackend for MockBackend {
+    type Addr = VirtAddr;
+    type Flags = MockFlags;
+    type PageTable = MockPageTable;
+
     fn map(&self, start: VirtAddr, size: usize, flags: MockFlags, pt: &mut MockPageTable) -> bool {
         for entry in pt.iter_mut().skip(start.as_usize()).take(size) {
             if *entry != 0 {

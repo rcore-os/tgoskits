@@ -1,16 +1,18 @@
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::collections::BTreeMap;
+#[allow(unused_imports)] // this is a weird false alarm
+use alloc::vec::Vec;
 use core::fmt;
 
-use memory_addr::{VirtAddr, VirtAddrRange};
+use memory_addr::{AddrRange, MemoryAddr};
 
 use crate::{MappingBackend, MappingError, MappingResult, MemoryArea};
 
 /// A container that maintains memory mappings ([`MemoryArea`]).
-pub struct MemorySet<F: Copy, P, B: MappingBackend<F, P>> {
-    areas: BTreeMap<VirtAddr, MemoryArea<F, P, B>>,
+pub struct MemorySet<B: MappingBackend> {
+    areas: BTreeMap<B::Addr, MemoryArea<B>>,
 }
 
-impl<F: Copy, P, B: MappingBackend<F, P>> MemorySet<F, P, B> {
+impl<B: MappingBackend> MemorySet<B> {
     /// Creates a new memory set.
     pub const fn new() -> Self {
         Self {
@@ -29,12 +31,12 @@ impl<F: Copy, P, B: MappingBackend<F, P>> MemorySet<F, P, B> {
     }
 
     /// Returns the iterator over all memory areas.
-    pub fn iter(&self) -> impl Iterator<Item = &MemoryArea<F, P, B>> {
+    pub fn iter(&self) -> impl Iterator<Item = &MemoryArea<B>> {
         self.areas.values()
     }
 
     /// Returns whether the given address range overlaps with any existing area.
-    pub fn overlaps(&self, range: VirtAddrRange) -> bool {
+    pub fn overlaps(&self, range: AddrRange<B::Addr>) -> bool {
         if let Some((_, before)) = self.areas.range(..range.start).last() {
             if before.va_range().overlaps(range) {
                 return true;
@@ -49,7 +51,7 @@ impl<F: Copy, P, B: MappingBackend<F, P>> MemorySet<F, P, B> {
     }
 
     /// Finds the memory area that contains the given address.
-    pub fn find(&self, addr: VirtAddr) -> Option<&MemoryArea<F, P, B>> {
+    pub fn find(&self, addr: B::Addr) -> Option<&MemoryArea<B>> {
         let candidate = self.areas.range(..=addr).last().map(|(_, a)| a);
         candidate.filter(|a| a.va_range().contains(addr))
     }
@@ -63,19 +65,22 @@ impl<F: Copy, P, B: MappingBackend<F, P>> MemorySet<F, P, B> {
     /// area is found.
     pub fn find_free_area(
         &self,
-        hint: VirtAddr,
+        hint: B::Addr,
         size: usize,
-        limit: VirtAddrRange,
-    ) -> Option<VirtAddr> {
+        limit: AddrRange<B::Addr>,
+    ) -> Option<B::Addr> {
         // brute force: try each area's end address as the start.
         let mut last_end = hint.max(limit.start);
-        for (addr, area) in self.areas.iter() {
-            if last_end + size <= *addr {
+        for (&addr, area) in self.areas.iter() {
+            if last_end.checked_add(size).is_some_and(|end| end <= addr) {
                 return Some(last_end);
             }
             last_end = area.end();
         }
-        if last_end + size <= limit.end {
+        if last_end
+            .checked_add(size)
+            .is_some_and(|end| end <= limit.end)
+        {
             Some(last_end)
         } else {
             None
@@ -92,8 +97,8 @@ impl<F: Copy, P, B: MappingBackend<F, P>> MemorySet<F, P, B> {
     /// error.
     pub fn map(
         &mut self,
-        area: MemoryArea<F, P, B>,
-        page_table: &mut P,
+        area: MemoryArea<B>,
+        page_table: &mut B::PageTable,
         unmap_overlap: bool,
     ) -> MappingResult {
         if area.va_range().is_empty() {
@@ -119,12 +124,19 @@ impl<F: Copy, P, B: MappingBackend<F, P>> MemorySet<F, P, B> {
     /// directly. If the area intersects with the boundary, it will be shrinked.
     /// If the unmapped range is in the middle of an existing area, it will be
     /// split into two areas.
-    pub fn unmap(&mut self, start: VirtAddr, size: usize, page_table: &mut P) -> MappingResult {
-        let range = VirtAddrRange::from_start_size(start, size);
-        let end = range.end;
+    pub fn unmap(
+        &mut self,
+        start: B::Addr,
+        size: usize,
+        page_table: &mut B::PageTable,
+    ) -> MappingResult {
+        let range =
+            AddrRange::try_from_start_size(start, size).ok_or(MappingError::InvalidParam)?;
         if range.is_empty() {
             return Ok(());
         }
+
+        let end = range.end;
 
         // Unmap entire areas that are contained by the range.
         self.areas.retain(|_, area| {
@@ -137,17 +149,17 @@ impl<F: Copy, P, B: MappingBackend<F, P>> MemorySet<F, P, B> {
         });
 
         // Shrink right if the area intersects with the left boundary.
-        if let Some((before_start, before)) = self.areas.range_mut(..start).last() {
+        if let Some((&before_start, before)) = self.areas.range_mut(..start).last() {
             let before_end = before.end();
             if before_end > start {
                 if before_end <= end {
                     // the unmapped area is at the end of `before`.
-                    before.shrink_right(start.as_usize() - before_start.as_usize(), page_table)?;
+                    before.shrink_right(start.sub_addr(before_start), page_table)?;
                 } else {
                     // the unmapped area is in the middle `before`, need to split.
                     let right_part = before.split(end).unwrap();
-                    before.shrink_right(start.as_usize() - before_start.as_usize(), page_table)?;
-                    assert_eq!(right_part.start(), end);
+                    before.shrink_right(start.sub_addr(before_start), page_table)?;
+                    assert_eq!(right_part.start().into(), Into::<usize>::into(end));
                     self.areas.insert(end, right_part);
                 }
             }
@@ -159,8 +171,8 @@ impl<F: Copy, P, B: MappingBackend<F, P>> MemorySet<F, P, B> {
             if after_start < end {
                 // the unmapped area is at the start of `after`.
                 let mut new_area = self.areas.remove(&after_start).unwrap();
-                new_area.shrink_left(after_end.as_usize() - end.as_usize(), page_table)?;
-                assert_eq!(new_area.start(), end);
+                new_area.shrink_left(after_end.sub_addr(end), page_table)?;
+                assert_eq!(new_area.start().into(), Into::<usize>::into(end));
                 self.areas.insert(end, new_area);
             }
         }
@@ -169,7 +181,7 @@ impl<F: Copy, P, B: MappingBackend<F, P>> MemorySet<F, P, B> {
     }
 
     /// Remove all memory areas and the underlying mappings.
-    pub fn clear(&mut self, page_table: &mut P) -> MappingResult {
+    pub fn clear(&mut self, page_table: &mut B::PageTable) -> MappingResult {
         for (_, area) in self.areas.iter() {
             area.unmap_area(page_table)?;
         }
@@ -184,33 +196,35 @@ impl<F: Copy, P, B: MappingBackend<F, P>> MemorySet<F, P, B> {
     /// It returns [`None`] if there is no bit to change.
     ///
     /// Memory areas will be skipped according to `update_flags`. Memory areas
-    /// that are fully contained in the range or contains the range or intersects
-    /// with the boundary will be handled similarly to `munmap`.
+    /// that are fully contained in the range or contains the range or
+    /// intersects with the boundary will be handled similarly to `munmap`.
     pub fn protect(
         &mut self,
-        start: VirtAddr,
+        start: B::Addr,
         size: usize,
-        update_flags: impl Fn(F) -> Option<F>,
-        page_table: &mut P,
+        update_flags: impl Fn(B::Flags) -> Option<B::Flags>,
+        page_table: &mut B::PageTable,
     ) -> MappingResult {
-        let end = start + size;
+        let end = start.checked_add(size).ok_or(MappingError::InvalidParam)?;
         let mut to_insert = Vec::new();
-        for (_, area) in self.areas.iter_mut() {
+        for (&area_start, area) in self.areas.iter_mut() {
+            let area_end = area.end();
+
             if let Some(new_flags) = update_flags(area.flags()) {
-                if area.start() >= end {
+                if area_start >= end {
                     // [ prot ]
                     //          [ area ]
                     break;
-                } else if area.end() <= start {
+                } else if area_end <= start {
                     //          [ prot ]
                     // [ area ]
                     // Do nothing
-                } else if area.start() >= start && area.end() <= end {
+                } else if area_start >= start && area_end <= end {
                     // [   prot   ]
                     //   [ area ]
                     area.protect_area(new_flags, page_table)?;
                     area.set_flags(new_flags);
-                } else if area.start() < start && area.end() > end {
+                } else if area_start < start && area_end > end {
                     //        [ prot ]
                     // [ left | area | right ]
                     let right_part = area.split(end).unwrap();
@@ -223,7 +237,7 @@ impl<F: Copy, P, B: MappingBackend<F, P>> MemorySet<F, P, B> {
 
                     to_insert.push((right_part.start(), right_part));
                     to_insert.push((middle_part.start(), middle_part));
-                } else if area.end() > end {
+                } else if area_end > end {
                     // [    prot ]
                     //   [  area | right ]
                     let right_part = area.split(end).unwrap();
@@ -242,12 +256,16 @@ impl<F: Copy, P, B: MappingBackend<F, P>> MemorySet<F, P, B> {
                 }
             }
         }
-        self.areas.extend(to_insert.into_iter());
+        self.areas.extend(to_insert);
         Ok(())
     }
 }
 
-impl<F: Copy + fmt::Debug, P, B: MappingBackend<F, P>> fmt::Debug for MemorySet<F, P, B> {
+impl<B: MappingBackend> fmt::Debug for MemorySet<B>
+where
+    B::Addr: fmt::Debug,
+    B::Flags: fmt::Debug,
+{
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_list().entries(self.areas.values()).finish()
     }

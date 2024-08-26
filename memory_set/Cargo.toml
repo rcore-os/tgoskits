@@ -13,6 +13,4 @@ repository.workspace = true
 categories.workspace = true
 
 [dependencies]
-memory_addr = "0.2"
-# todo: update it to local one once it gets adapted to the current version
-# memory_addr = { path = "../memory_addr", version = "0.2" }
+memory_addr = { path = "../memory_addr", version = "0.3.0" }
