@@ -17,3 +17,8 @@ memory_regions = [
     [0x901_0000, 0x1000, 0x17],       # pl031 (timer)	4K  0b10111 R|W|DEVICE
     [0xfed0_0000, 0x1000, 0x17],      # HPET 		    4K  0b10111 R|W|DEVICE
 ]
+
+# Emu_devices
+# Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig
+emu_devices = [
+]
