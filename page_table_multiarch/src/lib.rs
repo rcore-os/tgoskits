@@ -11,7 +11,7 @@ mod bits64;
 
 use core::{fmt::Debug, marker::PhantomData};
 
-use memory_addr::{PhysAddr, VirtAddr};
+use memory_addr::{MemoryAddr, PhysAddr, VirtAddr};
 
 pub use self::arch::*;
 pub use self::bits64::PageTable64;
@@ -55,7 +55,7 @@ pub trait PagingMetaData: Sync + Send {
     ///
     /// This associated type allows more flexible use of page tables structs like [`PageTable64`],
     /// for example, to implement EPTs.
-    type VirtAddr: Into<usize> + From<usize> + Copy;
+    type VirtAddr: MemoryAddr;
     // (^)it can be converted from/to usize and it's trivially copyable
 
     /// Whether a given physical address is valid.

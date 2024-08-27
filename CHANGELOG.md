@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0
+
+### Breaking Changes
+
+- Update `memory_addr` to `0.3.0`, which is not backward compatible with `0.2.0`.
+
 ## 0.3.3
 
 - Support the use of `page_table_entry` at the ARM EL2 privilege level (via the `arm-el2` feature).

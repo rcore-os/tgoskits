@@ -16,7 +16,7 @@ arm-el2 = []
 
 [dependencies]
 bitflags = "2.6"
-memory_addr = "0.2"
+memory_addr = "0.3"
 
 [target.'cfg(any(target_arch = "aarch64", doc))'.dependencies]
 aarch64-cpu = "9.4"

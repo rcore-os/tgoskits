@@ -3,7 +3,7 @@ extern crate alloc;
 use crate::{GenericPTE, PagingHandler, PagingMetaData};
 use crate::{MappingFlags, PageSize, PagingError, PagingResult, TlbFlush, TlbFlushAll};
 use core::marker::PhantomData;
-use memory_addr::{PhysAddr, PAGE_SIZE_4K};
+use memory_addr::{MemoryAddr, PhysAddr, PAGE_SIZE_4K};
 
 const ENTRY_COUNT: usize = 512;
 
@@ -139,7 +139,7 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
             return Err(PagingError::NotMapped);
         }
         let off = size.align_offset(vaddr.into());
-        Ok((entry.paddr() + off, entry.flags(), size))
+        Ok((entry.paddr().add(off), entry.flags(), size))
     }
 
     /// Maps a contiguous virtual memory region to a contiguous physical memory
