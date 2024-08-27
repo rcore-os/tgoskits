@@ -1,6 +1,10 @@
-# ArceOS-VMM-Tutorial
+# ArceOS-VMM
 
 Let's build a VMM (Virtual Machine Minotor or hypervisor) upon [ArceOS](https://github.com/arceos-org/arceos) unikernel!
+
+Overall architecture overview can be found [here](doc/README.md).
+
+Refer to these [discussions](https://github.com/arceos-hypervisor/arceos-umhv/discussions) to gain insights into the thoughts and future development directions of this project.
 
 ## Preparation
 
@@ -20,15 +24,9 @@ We provide several configuration file [templates](arceos-vmm/configs) for settin
 
 These configuration files are read and parsed by the `init_guest_vms()` in the [vmm/config](arceos-vmm/src/vmm/config.rs) mod, and are used to configure the guest VMs.
 
-### Supported guest VMs
+### [Supported guest VMs](doc/GuestVMs.md)
 
-* [ArceOS](https://github.com/arceos-org/arceos)
-    * ArceOS HelloWorld application that can be used to test hypercall functionality is provided [here](https://github.com/arceos-hypervisor/arceos/blob/gvm_test/examples/helloworld/src/main.rs).
-    * Just run `make A=examples/helloworld ARCH=[x86_64|aarch64|riscv64] build` to get binary images. 
-* [NimbOS](https://github.com/arceos-hypervisor/nimbos)
-    *  Some runnable Nimbos images are provided [here](https://github.com/arceos-hypervisor/nimbos/releases/tag/v0.6).
-
-You can get a simple bios for x86_64 guests [here](https://github.com/arceos-hypervisor/axvm-bios-x86/releases/download/v0.1/axvm-bios.bin).
+WIP on Linux guests.
 
 ## Build File System image
 
