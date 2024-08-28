@@ -1,7 +1,9 @@
 .global context_vm_entry
 context_vm_entry:
+    # Curretly `x0` points to the address of `Aarch64VCpu.host_stack_top`.
     mov     sp, x0
     sub     sp, sp, 34 * 8
+    # Curretly `sp` points to the base address of `Aarch64VCpu.ctx`, which stores guest's `TrapFrame`.
 
     ldp     x10, x11, [sp, 32 * 8]
     msr     elr_el2, x10
@@ -24,6 +26,5 @@ context_vm_entry:
     ldp     x2, x3, [sp, 2 * 8]
     ldp     x0, x1, [sp]
 
-    # keep sp as host stack top addr
-    add     sp, sp, 34 * 8
+    # Keep `sp` as the base address of `Aarch64VCpu.ctx`
     eret

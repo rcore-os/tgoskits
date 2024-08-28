@@ -1,5 +1,5 @@
-.macro SAVE_REGS_EL2
-    sub     sp, sp, 34 * 8
+.macro SAVE_REGS_FROM_EL1
+    # Curretly `sp` points to the base address of `Aarch64VCpu.ctx`, which stores guest's `TrapFrame`.
     stp     x0, x1, [sp]
     stp     x2, x3, [sp, 2 * 8]
     stp     x4, x5, [sp, 4 * 8]
@@ -24,7 +24,7 @@
     stp     x10, x11, [sp, 32 * 8]
 .endm
 
-.macro RESTORE_REGS_EL2
+.macro RESTORE_REGS_INTO_EL1
     ldp     x10, x11, [sp, 32 * 8]
     msr     elr_el2, x10
     msr     spsr_el2, x11
@@ -45,13 +45,13 @@
     ldp     x4, x5, [sp, 4 * 8]
     ldp     x2, x3, [sp, 2 * 8]
     ldp     x0, x1, [sp]
-    add     sp, sp, 34 * 8
+    # Keep `sp` as the base address of `Aarch64VCpu.ctx`
 .endm
 
 
 .macro INVALID_EXCP_EL2, kind, source
 .p2align 7
-    SAVE_REGS_EL2
+    SAVE_REGS_FROM_EL1
     mov     x0, sp
     mov     x1, \kind
     mov     x2, \source
@@ -61,14 +61,16 @@
 
 .macro HANDLE_IRQ_VCPU
 .p2align 7
-    SAVE_REGS_EL2
-    bl     vmexit_aarch64_handler
+    SAVE_REGS_FROM_EL1
+    mov    x0, {exception_irq}
+    bl     vmexit_trampoline
 .endm
 
 .macro HANDLE_LOWER_SYNC_VCPU
 .p2align 7
-    SAVE_REGS_EL2
-    bl     vmexit_aarch64_handler
+    SAVE_REGS_FROM_EL1
+    mov    x0, {exception_sync}
+    bl     vmexit_trampoline
 .endm
 
 
@@ -101,5 +103,5 @@ exception_vector_base_vcpu:
     INVALID_EXCP_EL2 3 3
 
 .Lexception_return_el2:
-    RESTORE_REGS_EL2
+    RESTORE_REGS_INTO_EL1
     eret

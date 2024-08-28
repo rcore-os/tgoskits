@@ -18,6 +18,7 @@ pub struct Aarch64ContextFrame {
     /// An array of 31 `u64` values representing the general-purpose registers.
     pub gpr: [u64; 31],
     /// The stack pointer.
+    /// The value currently stored in this field is meaningless (the base address of Aarch64ContextFrame).
     pub sp: u64,
     /// The exception link register, which stores the return address after an exception.
     pub elr: u64,
@@ -98,11 +99,14 @@ impl Aarch64ContextFrame {
     }
 
     /// Returns the stack pointer (SP).
+    /// Note: currently returned value is meaningless.
     pub fn stack_pointer(&self) -> usize {
         self.sp as usize
     }
 
     /// Sets the stack pointer (SP).
+    ///
+    /// Note: currently useless.
     ///
     /// # Arguments
     ///

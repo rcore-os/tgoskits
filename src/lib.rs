@@ -1,6 +1,7 @@
 #![no_std]
 #![feature(naked_functions)]
 #![feature(doc_cfg)]
+#![feature(asm_const)]
 #![doc = include_str!("../README.md")]
 
 #[macro_use]
@@ -9,8 +10,8 @@ extern crate log;
 mod context_frame;
 #[macro_use]
 mod exception_utils;
+mod exception;
 mod pcpu;
-mod sync;
 mod vcpu;
 
 pub use self::pcpu::Aarch64PerCpu;
