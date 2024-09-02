@@ -211,6 +211,11 @@ impl<A: AxArchVCpu> AxVCpu<A> {
             arch_vcpu.unbind()
         })
     }
+
+    /// Sets the value of a general-purpose register according to the given index.
+    pub fn set_gpr(&self, reg: usize, val: usize) {
+        self.get_arch_vcpu().set_gpr(reg, val);
+    }
 }
 
 #[percpu::def_percpu]
