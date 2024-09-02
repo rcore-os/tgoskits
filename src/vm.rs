@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 // use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use axdevice::{AxVmDeviceConfig, AxVmDevices};
 use axerrno::{ax_err, ax_err_type, AxResult};
 use memory_addr::VirtAddr;
 use spin::Mutex;
@@ -34,7 +35,7 @@ struct AxVMInnerConst {
     config: AxVMConfig,
     vcpu_list: Box<[AxVCpuRef]>,
     // to be added: device_list: ...
-    // device_list: UnsafeCell<AxArchDeviceList<H>>,
+    devices: AxVmDevices,
 }
 
 unsafe impl Send for AxVMInnerConst {}
@@ -106,9 +107,9 @@ impl<H: AxVMHal> AxVM<H> {
                 }
             }
 
-            // Setup Devices.
-            // Todo:
-            // let device_list = AxArchDeviceList::<H>::new();
+            let devices = axdevice::AxVmDevices::new(AxVmDeviceConfig {
+                emu_configs: config.emu_devices().to_vec(),
+            });
 
             Self {
                 running: AtomicBool::new(false),
@@ -116,7 +117,7 @@ impl<H: AxVMHal> AxVM<H> {
                     id: config.id(),
                     config,
                     vcpu_list: vcpu_list.into_boxed_slice(),
-                    // device_list: UnsafeCell::new(device_list),
+                    devices,
                 },
                 inner_mut: AxVMInnerMut {
                     address_space: Mutex::new(address_space),
@@ -211,9 +212,9 @@ impl<H: AxVMHal> AxVM<H> {
         }
     }
 
-    // pub fn get_device_list(&self) -> &mut AxArchDeviceList<H> {
-    //     unsafe { &mut *self.inner_const.device_list.get() }
-    // }
+    pub fn get_devices(&self) -> &AxVmDevices {
+        &self.inner_const.devices
+    }
 
     pub fn run_vcpu(&self, vcpu_id: usize) -> AxResult<AxVCpuExitReason> {
         let vcpu = self
@@ -224,15 +225,25 @@ impl<H: AxVMHal> AxVM<H> {
 
         let exit_reason = loop {
             let exit_reason = vcpu.run()?;
-
             trace!("{exit_reason:#x?}");
             let handled = match &exit_reason {
-                AxVCpuExitReason::MmioRead { addr: _, width: _ } => true,
-                AxVCpuExitReason::MmioWrite {
-                    addr: _,
-                    width: _,
-                    data: _,
-                } => true,
+                AxVCpuExitReason::MmioRead {
+                    addr,
+                    width,
+                    reg,
+                    reg_width,
+                } => {
+                    let val = self
+                        .get_devices()
+                        .handle_mmio_read(*addr, (*width).into())?;
+                    vcpu.set_gpr(*reg, val);
+                    true
+                }
+                AxVCpuExitReason::MmioWrite { addr, width, data } => {
+                    self.get_devices()
+                        .handle_mmio_write(*addr, (*width).into(), *data as usize);
+                    true
+                }
                 AxVCpuExitReason::IoRead { port: _, width: _ } => true,
                 AxVCpuExitReason::IoWrite {
                     port: _,

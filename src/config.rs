@@ -5,6 +5,8 @@ use axerrno::AxResult;
 
 use axaddrspace::GuestPhysAddr;
 
+use axdevice_base::EmulatedDeviceConfig;
+
 /// A part of `AxVCpuConfig`, which represents an architecture-dependent `VCpu`.
 ///
 /// The concrete type of configuration is defined in `AxArchVCpuImpl`.
@@ -71,6 +73,8 @@ pub struct AxVMConfig {
     image_config: VMImageConfig,
 
     memory_regions: Vec<VmMemConfig>,
+
+    emu_devices: Vec<EmulatedDeviceConfig>,
     // To be added: device configuration
 }
 
@@ -92,6 +96,7 @@ impl From<AxVMCrateConfig> for AxVMConfig {
                 ramdisk_load_gpa: cfg.ramdisk_load_addr.map(|addr| GuestPhysAddr::from(addr)),
             },
             memory_regions: cfg.memory_regions,
+            emu_devices: cfg.emu_devices,
         }
     }
 }
@@ -146,6 +151,10 @@ impl AxVMConfig {
     pub fn memory_regions(&self) -> &Vec<VmMemConfig> {
         &self.memory_regions
     }
+
+    pub fn emu_devices(&self) -> &Vec<EmulatedDeviceConfig> {
+        &self.emu_devices
+    }
 }
 
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
@@ -184,16 +193,19 @@ pub struct AxVMCrateConfig {
     memory_regions: Vec<VmMemConfig>,
     // Todo:
     // Device Information
+    /// Emu device Information
+    emu_devices: Vec<EmulatedDeviceConfig>,
 }
 
 impl AxVMCrateConfig {
     pub fn from_toml(raw_cfg_str: &str) -> AxResult<Self> {
-        let config = toml::from_str(raw_cfg_str).map_err(|err| {
+        let config: AxVMCrateConfig = toml::from_str(raw_cfg_str).map_err(|err| {
             axerrno::ax_err_type!(
                 InvalidInput,
                 alloc::format!("toml deserialize get err {err:?}")
             )
         })?;
+        debug!("emu devices configs: {:?}", config.emu_devices);
         Ok(config)
     }
 }
