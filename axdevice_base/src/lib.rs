@@ -5,8 +5,10 @@ extern crate alloc;
 #[macro_use]
 extern crate log;
 
-use axerrno::AxResult;
+use alloc::string::String;
+use alloc::vec::Vec;
 use axaddrspace::GuestPhysAddr;
+use axerrno::AxResult;
 use memory_addr::AddrRange;
 
 // TODO: support vgicv2
@@ -14,7 +16,6 @@ use memory_addr::AddrRange;
 mod emu_type;
 // pub use emu_config_notuse::EmulatedDeviceConfig;
 pub use emu_type::EmuDeviceType;
-
 
 /// Represents the configuration of an emulated device for a virtual machine.
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
