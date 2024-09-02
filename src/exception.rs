@@ -5,8 +5,10 @@ use axvcpu::{AccessWidth, AxVCpuExitReason};
 
 use crate::exception_utils::{
     exception_class, exception_class_value, exception_data_abort_access_is_write,
-    exception_data_abort_access_reg, exception_data_abort_access_width, exception_esr,
-    exception_fault_addr, exception_next_instruction_step,
+    exception_data_abort_access_reg, exception_data_abort_access_reg_width,
+    exception_data_abort_access_width, exception_data_abort_handleable,
+    exception_data_abort_is_permission_fault, exception_data_abort_is_translate_fault,
+    exception_esr, exception_fault_addr, exception_next_instruction_step,
 };
 use crate::TrapFrame;
 
@@ -131,40 +133,58 @@ pub fn handle_exception_sync(ctx: &mut TrapFrame) -> AxResult<AxVCpuExitReason> 
 }
 
 fn handle_data_abort(context_frame: &mut TrapFrame) -> AxResult<AxVCpuExitReason> {
-    let address = exception_fault_addr()?;
-    debug!(
-        "data fault addr {:?}, esr: 0x{:x}",
-        address,
-        exception_esr()
-    );
+    let addr = exception_fault_addr()?;
+    debug!("data fault addr {:?}, esr: 0x{:x}", addr, exception_esr());
 
-    let width = exception_data_abort_access_width();
+    let access_width = exception_data_abort_access_width();
     let is_write = exception_data_abort_access_is_write();
-    // let sign_ext = exception_data_abort_access_is_sign_ext();
+    //let sign_ext = exception_data_abort_access_is_sign_ext();
     let reg = exception_data_abort_access_reg();
-    // let reg_width = exception_data_abort_access_reg_width();
+    let reg_width = exception_data_abort_access_reg_width();
 
     let elr = context_frame.exception_pc();
     let val = elr + exception_next_instruction_step();
     context_frame.set_exception_pc(val);
 
-    let access_width = match AccessWidth::try_from(width) {
-        Ok(width) => width,
+    let width = match AccessWidth::try_from(access_width) {
+        Ok(access_width) => access_width,
         Err(_) => return Err(AxError::InvalidInput),
     };
 
-    if is_write {
-        Ok(AxVCpuExitReason::MmioWrite {
-            addr: address,
-            width: access_width,
-            data: context_frame.gpr(reg) as u64,
-        })
-    } else {
-        Ok(AxVCpuExitReason::MmioRead {
-            addr: address,
-            width: access_width,
-        })
+    let reg_width = match AccessWidth::try_from(reg_width) {
+        Ok(reg_width) => reg_width,
+        Err(_) => return Err(AxError::InvalidInput),
+    };
+
+    if !exception_data_abort_handleable() {
+        panic!(
+            "Core data abort not handleable {:#x}, esr {:#x}",
+            addr,
+            exception_esr()
+        );
     }
+
+    if !exception_data_abort_is_translate_fault() {
+        if exception_data_abort_is_permission_fault() {
+            return Err(AxError::Unsupported);
+        } else {
+            panic!("Core data abort is not translate fault {:#x}", addr,);
+        }
+    }
+
+    if is_write {
+        return Ok(AxVCpuExitReason::MmioWrite {
+            addr,
+            width,
+            data: context_frame.gpr(reg) as u64,
+        });
+    }
+    Ok(AxVCpuExitReason::MmioRead {
+        addr,
+        width,
+        reg,
+        reg_width,
+    })
 }
 
 /// A trampoline function for sp switching during handling VM exits.

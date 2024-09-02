@@ -190,6 +190,17 @@ pub fn exception_data_abort_access_width() -> usize {
     1 << ((exception_iss() >> 22) & 0b11)
 }
 
+/// Determines the DA can be handled
+#[inline(always)]
+pub fn exception_data_abort_handleable() -> bool {
+    (!(exception_iss() & (1 << 10)) | (exception_iss() & (1 << 24))) != 0
+}
+
+#[inline(always)]
+pub fn exception_data_abort_is_translate_fault() -> bool {
+    (exception_iss() & 0b111111 & (0xf << 2)) == 4
+}
+
 /// Checks if the data abort exception was caused by a write access.
 ///
 /// # Returns
