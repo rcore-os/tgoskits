@@ -6,7 +6,7 @@ use super::AxArchVCpu;
 /// The width of an access.
 ///
 /// Note that the term "word" here refers to 16-bit data, as in the x86 architecture.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum AccessWidth {
     /// 8-bit access.
     Byte,
