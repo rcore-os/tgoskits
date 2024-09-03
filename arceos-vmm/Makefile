@@ -138,6 +138,11 @@ export AX_TARGET=$(TARGET)
 export AX_IP=$(IP)
 export AX_GW=$(GW)
 
+# The pathes of the VM configurations
+ifneq ($(VM_CONFIGS),)
+  export UMHV_VM_CONFIGS=$(VM_CONFIGS)
+endif
+
 # Binutils
 CROSS_COMPILE ?= $(ARCH)-linux-musl-
 CC := $(CROSS_COMPILE)gcc

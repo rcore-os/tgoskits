@@ -1,7 +1,8 @@
 id = 1
 name = "nimbos"
 vm_type = 1
-cpu_set = 2
+cpu_num = 1
+phys_cpu_sets = [1]
 entry_point = 0x4008_0000
 # bios_path = ""
 # bios_load_addr = 0

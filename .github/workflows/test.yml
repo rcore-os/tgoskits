@@ -1,0 +1,49 @@
+name: Test CI
+
+on: [push, pull_request]
+
+env:
+  qemu-version: 8.2.0
+  arceos-apps: '68054e8'
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        arch: [x86_64, riscv64, aarch64]
+        rust-toolchain: [nightly, nightly-2024-05-02]
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: ${{ matrix.rust-toolchain }}
+        components: rust-src
+    - uses: Swatinem/rust-cache@v2
+    - run: cargo install cargo-binutils
+    - uses: ./.github/workflows/actions/setup-qemu
+      with:
+        qemu-version: ${{ env.qemu-version }}
+    - uses: ./.github/workflows/actions/setup-nimbos-guest-image
+      with:
+        nimbos-version: 'tags/v0.7'
+        arch: ${{ matrix.arch }}
+        disk-path: ${{ github.workspace }}/disk-${{ matrix.arch }}.img
+    - name: Enable KVM group perms
+      run: |
+        echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+        sudo udevadm control --reload-rules
+        sudo udevadm trigger --name-match=kvm
+    - name: Run guests
+      run: |
+        cat /proc/cpuinfo
+        if [ "${{ matrix.arch }}" = "x86_64" ]; then
+          export ACCEL=y
+        else
+          export ACCEL=n
+        fi
+        export DISK_IMG="${{ github.workspace }}/disk-${{ matrix.arch }}.img"
+        export VM_CONFIGS="$(pwd)/arceos-vmm/configs/nimbos-${{ matrix.arch }}.toml"
+        make -C arceos-vmm ARCH=${{ matrix.arch }} DISK_IMG=${DISK_IMG} LOG=info BLK=y ACCEL=${ACCEL} VM_CONFIGS=${VM_CONFIGS} run

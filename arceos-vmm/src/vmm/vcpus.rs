@@ -141,6 +141,10 @@ pub fn setup_vm_vcpus(vm: VMRef) {
                                 wait(vm_id)
                             }
                             AxVCpuExitReason::Nothing => {}
+                            AxVCpuExitReason::SystemDown => {
+                                warn!("VM[{}] run VCpu[{}] SystemDown", vm_id, vcpu_id);
+                                axhal::misc::terminate()
+                            }
                             _ => {
                                 warn!("Unhandled VM-Exit");
                             }
