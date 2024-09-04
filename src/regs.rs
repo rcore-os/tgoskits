@@ -94,6 +94,61 @@ impl GeneralRegisters {
             }
         }
     }
+
+    /// Sets the value of the general-purpose register corresponding to the given index.
+    ///
+    /// The mapping of indices to registers is as follows:
+    /// - 0: `rax`
+    /// - 1: `rcx`
+    /// - 2: `rdx`
+    /// - 3: `rbx`
+    /// - 5: `rbp`
+    /// - 6: `rsi`
+    /// - 7: `rdi`
+    /// - 8: `r8`
+    /// - 9: `r9`
+    /// - 10: `r10`
+    /// - 11: `r11`
+    /// - 12: `r12`
+    /// - 13: `r13`
+    /// - 14: `r14`
+    /// - 15: `r15`
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the provided index is out of the range [0, 15] or if the index
+    /// corresponds to an unused register (`rsp` at index 4).
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - A `u8` value representing the index of the register.
+    ///
+    /// # Returns
+    ///
+    /// * `u64` - The value of the corresponding general-purpose register.
+    pub fn set_reg_of_index(&mut self, index: u8, value: u64) {
+        match index {
+            0 => self.rax = value,
+            1 => self.rcx = value,
+            2 => self.rdx = value,
+            3 => self.rbx = value,
+            // 4 => self._unused_rsp,
+            5 => self.rbp = value,
+            6 => self.rsi = value,
+            7 => self.rdi = value,
+            8 => self.r8 = value,
+            9 => self.r9 = value,
+            10 => self.r10 = value,
+            11 => self.r11 = value,
+            12 => self.r12 = value,
+            13 => self.r13 = value,
+            14 => self.r14 = value,
+            15 => self.r15 = value,
+            _ => {
+                panic!("Illegal index of GeneralRegisters {}", index);
+            }
+        }
+    }
 }
 
 macro_rules! save_regs_to_stack {

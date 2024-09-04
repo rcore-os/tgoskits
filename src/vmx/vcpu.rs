@@ -1127,4 +1127,8 @@ impl AxArchVCpu for VmxVcpu {
         self.launched = false;
         self.unbind_from_current_processor()
     }
+
+    fn set_gpr(&mut self, reg: usize, val: usize) {
+        self.regs_mut().set_reg_of_index(reg as u8, val as u64);
+    }
 }
