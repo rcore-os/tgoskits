@@ -116,6 +116,14 @@ pub enum AxVCpuExitReason {
     },
     /// The vcpu is halted.
     Halt,
+    /// The vcpu is powered off.
+    ///
+    /// This vcpu may be resumed later.
+    CpuDown,
+    /// The system should be powered off.
+    ///
+    /// This is used to notify the hypervisor that the whole system should be powered off.
+    SystemDown,
     /// Nothing special happened, the vcpu has handled the exit itself.
     ///
     /// This exists to allow the caller to have a chance to check virtual devices/physical devices/virtual interrupts.
