@@ -6,7 +6,7 @@ use super::AxArchVCpu;
 /// The width of an access.
 ///
 /// Note that the term "word" here refers to 16-bit data, as in the x86 architecture.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AccessWidth {
     /// 8-bit access.
     Byte,
@@ -39,6 +39,23 @@ impl From<AccessWidth> for usize {
             AccessWidth::Word => 2,
             AccessWidth::Dword => 4,
             AccessWidth::Qword => 8,
+        }
+    }
+}
+
+impl AccessWidth {
+    /// Returns the size of the access in bytes.
+    pub fn size(&self) -> usize {
+        (*self).into()
+    }
+
+    /// Returns the range of bits that the access covers.
+    pub fn bits_range(&self) -> core::ops::Range<usize> {
+        match self {
+            AccessWidth::Byte => 0..8,
+            AccessWidth::Word => 0..16,
+            AccessWidth::Dword => 0..32,
+            AccessWidth::Qword => 0..64,
         }
     }
 }
