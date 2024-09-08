@@ -9,12 +9,12 @@ use super::{AxArchVCpu, AxVCpuExitReason};
 struct AxVCpuInnerConst {
     /// The id of the vcpu.
     id: usize,
-    #[allow(dead_code)]
-    /// The id of the physical CPU who has the priority to run this vcpu. Not implemented yet.
+    /// The id of the physical CPU who has the priority to run this vcpu.
     favor_phys_cpu: usize,
-    #[allow(dead_code)]
-    /// The mask of physical CPUs who can run this vcpu. Not implemented yet.
-    affinity: usize,
+    /// The set of physical CPUs who can run this vcpu.
+    /// If `None`, the vcpu can run on any physical CPU.
+    /// Refer to [CPU_SET](https://man7.org/linux/man-pages/man3/CPU_SET.3.html) in Linux.
+    phys_cpu_set: Option<usize>,
 }
 
 /// The state of a virtual CPU.
@@ -67,14 +67,14 @@ impl<A: AxArchVCpu> AxVCpu<A> {
     pub fn new(
         id: usize,
         favor_phys_cpu: usize,
-        affinity: usize,
+        phys_cpu_set: Option<usize>,
         arch_config: A::CreateConfig,
     ) -> AxResult<Self> {
         Ok(Self {
             inner_const: AxVCpuInnerConst {
                 id,
                 favor_phys_cpu,
-                affinity,
+                phys_cpu_set,
             },
             inner_mut: RefCell::new(AxVCpuInnerMut {
                 state: VCpuState::Created,
@@ -99,12 +99,24 @@ impl<A: AxArchVCpu> AxVCpu<A> {
     }
 
     /// Get the id of the vcpu.
-    pub fn id(&self) -> usize {
+    pub const fn id(&self) -> usize {
         self.inner_const.id
     }
 
+    /// Get the id of the physical CPU who has the priority to run this vcpu.
+    /// Currently unused.
+    pub const fn favor_phys_cpu(&self) -> usize {
+        self.inner_const.favor_phys_cpu
+    }
+
+    /// Get the set of physical CPUs who can run this vcpu.
+    /// If `None`, this vcpu has no limitation and can be scheduled on any physical CPU.
+    pub const fn phys_cpu_set(&self) -> Option<usize> {
+        self.inner_const.phys_cpu_set
+    }
+
     /// Get whether the vcpu is the BSP. We always assume the first vcpu (vcpu with id #0) is the BSP.
-    pub fn is_bsp(&self) -> bool {
+    pub const fn is_bsp(&self) -> bool {
         self.inner_const.id == 0
     }
 

@@ -19,10 +19,12 @@ pub trait AxArchVCpu: Sized {
     ///
     /// It's guaranteed that this function is called only once, before [`AxArchVCpu::setup`] being called.
     fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult;
+
     /// Set the EPT root of the vcpu.
     ///
     /// It's guaranteed that this function is called only once, before [`AxArchVCpu::setup`] being called.
     fn set_ept_root(&mut self, ept_root: HostPhysAddr) -> AxResult;
+
     /// Setup the vcpu.
     ///
     /// It's guaranteed that this function is called only once, after [`AxArchVCpu::set_entry`] and [`AxArchVCpu::set_ept_root`] being called.
@@ -30,10 +32,13 @@ pub trait AxArchVCpu: Sized {
 
     /// Run the vcpu until a vm-exit occurs.
     fn run(&mut self) -> AxResult<AxVCpuExitReason>;
+
     /// Bind the vcpu to the current physical CPU.
     fn bind(&mut self) -> AxResult;
+
     /// Unbind the vcpu from the current physical CPU.
     fn unbind(&mut self) -> AxResult;
+
     /// Set the value of a general-purpose register according to the given index.
     fn set_gpr(&mut self, reg: usize, val: usize);
 }
