@@ -21,7 +21,7 @@ pub trait PhysFrameIf {
 /// automatically on drop.
 #[derive(Debug)]
 pub struct PhysFrame {
-    start_paddr: HostPhysAddr,
+    start_paddr: Option<HostPhysAddr>,
 }
 
 impl PhysFrame {
@@ -30,7 +30,9 @@ impl PhysFrame {
             .ok_or_else(|| ax_err_type!(NoMemory, "allocate physical frame failed"))?;
         assert_ne!(start_paddr.as_usize(), 0);
         debug!("[AxVM] allocated PhysFrame({:#x})", start_paddr);
-        Ok(Self { start_paddr })
+        Ok(Self {
+            start_paddr: Some(start_paddr),
+        })
     }
 
     pub fn alloc_zero() -> AxResult<Self> {
@@ -40,17 +42,15 @@ impl PhysFrame {
     }
 
     pub const unsafe fn uninit() -> Self {
-        Self {
-            start_paddr: PhysAddr::from(0xdead_beef),
-        }
+        Self { start_paddr: None }
     }
 
     pub fn start_paddr(&self) -> HostPhysAddr {
-        self.start_paddr
+        self.start_paddr.expect("uninitialized PhysFrame")
     }
 
     pub fn as_mut_ptr(&self) -> *mut u8 {
-        crate_interface::call_interface!(PhysFrameIf::phys_to_virt(self.start_paddr)).as_mut_ptr()
+        crate_interface::call_interface!(PhysFrameIf::phys_to_virt(self.start_paddr())).as_mut_ptr()
     }
 
     pub fn fill(&mut self, byte: u8) {
@@ -60,9 +60,9 @@ impl PhysFrame {
 
 impl Drop for PhysFrame {
     fn drop(&mut self) {
-        if self.start_paddr.as_usize() > 0 {
-            crate_interface::call_interface!(PhysFrameIf::dealloc_frame(self.start_paddr));
-            debug!("[AxVM] deallocated PhysFrame({:#x})", self.start_paddr);
+        if let Some(start_paddr) = self.start_paddr {
+            crate_interface::call_interface!(PhysFrameIf::dealloc_frame(start_paddr));
+            debug!("[AxVM] deallocated PhysFrame({:#x})", start_paddr);
         }
     }
 }

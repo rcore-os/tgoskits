@@ -48,6 +48,9 @@ impl AxArchPerCpu for VmxPerCpuState {
             return ax_err!(ResourceBusy, "VMX is already turned on");
         }
 
+        // Enable XSAVE/XRSTOR.
+        super::vcpu::XState::enable_xsave();
+
         // Enable VMXON, if required.
         let ctrl = FeatureControl::read();
         let locked = ctrl.contains(FeatureControlFlags::LOCKED);

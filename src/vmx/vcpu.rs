@@ -54,7 +54,8 @@ impl XState {
         }
     }
 
-    fn enable_xsave() {
+    /// Enables extended processor state management instructions, including XGETBV and XSAVE.
+    pub fn enable_xsave() {
         unsafe { Cr4::write(Cr4::read() | Cr4Flags::OSXSAVE) };
     }
 }
@@ -84,7 +85,6 @@ impl VmxVcpu {
     /// Create a new [`VmxVcpu`].
     pub fn new() -> AxResult<Self> {
         let vmcs_revision_id = super::read_vmcs_revision_id();
-        XState::enable_xsave();
         let vcpu = Self {
             guest_regs: GeneralRegisters::default(),
             host_stack_top: 0,
@@ -122,6 +122,7 @@ impl VmxVcpu {
         unsafe {
             vmx::vmptrld(self.vmcs.phys_addr().as_usize() as u64).map_err(as_axerr)?;
         }
+        self.setup_vmcs_host()?;
         Ok(())
     }
 
@@ -422,14 +423,13 @@ impl VmxVcpu {
             vmx::vmclear(paddr).map_err(as_axerr)?;
         }
         self.bind_to_current_processor()?;
-        self.setup_vmcs_host()?;
         self.setup_vmcs_guest(entry)?;
         self.setup_vmcs_control(ept_root, true)?;
         self.unbind_from_current_processor()?;
         Ok(())
     }
 
-    fn setup_vmcs_host(&mut self) -> AxResult {
+    fn setup_vmcs_host(&self) -> AxResult {
         VmcsHost64::IA32_PAT.write(Msr::IA32_PAT.read())?;
         VmcsHost64::IA32_EFER.write(Msr::IA32_EFER.read())?;
 
