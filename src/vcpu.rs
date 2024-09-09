@@ -278,6 +278,11 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
         // unimplemented!()
         Ok(())
     }
+
+    /// Set one of the vCPU's general purpose register.
+    fn set_gpr(&mut self, index: usize, val: usize) {
+        self.set_gpr_from_gpr_index(GprIndex::from_raw(index as u32).unwrap(), val);
+    }
 }
 
 impl RISCVVCpu {
@@ -287,7 +292,7 @@ impl RISCVVCpu {
     }
 
     /// Set one of the vCPU's general purpose register.
-    pub fn set_gpr(&mut self, index: GprIndex, val: usize) {
+    pub fn set_gpr_from_gpr_index(&mut self, index: GprIndex, val: usize) {
         self.regs.guest_regs.gprs.set_reg(index, val);
     }
 
@@ -321,7 +326,7 @@ impl RISCVVCpu {
                         }
                         SbiMessage::GetChar => {
                             let c = sbi_rt::legacy::console_getchar();
-                            self.set_gpr(GprIndex::A0, c);
+                            self.set_gpr_from_gpr_index(GprIndex::A0, c);
                         }
                         SbiMessage::PutChar(c) => {
                             sbi_rt::legacy::console_putchar(c);
@@ -388,7 +393,7 @@ impl RISCVVCpu {
         match base {
             BaseFunction::GetSepcificationVersion => {
                 let version = sbi_rt::get_spec_version();
-                self.set_gpr(GprIndex::A1, version.major() << 24 | version.minor());
+                self.set_gpr_from_gpr_index(GprIndex::A1, version.major() << 24 | version.minor());
                 debug!(
                     "GetSepcificationVersion: {}",
                     version.major() << 24 | version.minor()
@@ -396,43 +401,43 @@ impl RISCVVCpu {
             }
             BaseFunction::GetImplementationID => {
                 let id = sbi_rt::get_sbi_impl_id();
-                self.set_gpr(GprIndex::A1, id);
+                self.set_gpr_from_gpr_index(GprIndex::A1, id);
             }
             BaseFunction::GetImplementationVersion => {
                 let impl_version = sbi_rt::get_sbi_impl_version();
-                self.set_gpr(GprIndex::A1, impl_version);
+                self.set_gpr_from_gpr_index(GprIndex::A1, impl_version);
             }
             BaseFunction::ProbeSbiExtension(extension) => {
                 let extension = sbi_rt::probe_extension(extension as usize).raw;
-                self.set_gpr(GprIndex::A1, extension);
+                self.set_gpr_from_gpr_index(GprIndex::A1, extension);
             }
             BaseFunction::GetMachineVendorID => {
                 let mvendorid = sbi_rt::get_mvendorid();
-                self.set_gpr(GprIndex::A1, mvendorid);
+                self.set_gpr_from_gpr_index(GprIndex::A1, mvendorid);
             }
             BaseFunction::GetMachineArchitectureID => {
                 let marchid = sbi_rt::get_marchid();
-                self.set_gpr(GprIndex::A1, marchid);
+                self.set_gpr_from_gpr_index(GprIndex::A1, marchid);
             }
             BaseFunction::GetMachineImplementationID => {
                 let mimpid = sbi_rt::get_mimpid();
-                self.set_gpr(GprIndex::A1, mimpid);
+                self.set_gpr_from_gpr_index(GprIndex::A1, mimpid);
             }
         }
-        self.set_gpr(GprIndex::A0, 0);
+        self.set_gpr_from_gpr_index(GprIndex::A0, 0);
         Ok(())
     }
 
     fn handle_rfnc_function(&mut self, rfnc: RemoteFenceFunction) -> AxResult<()> {
-        self.set_gpr(GprIndex::A0, 0);
+        self.set_gpr_from_gpr_index(GprIndex::A0, 0);
         match rfnc {
             RemoteFenceFunction::FenceI {
                 hart_mask,
                 hart_mask_base,
             } => {
                 let sbi_ret = sbi_rt::remote_fence_i(hart_mask as usize, hart_mask_base as usize);
-                self.set_gpr(GprIndex::A0, sbi_ret.error);
-                self.set_gpr(GprIndex::A1, sbi_ret.value);
+                self.set_gpr_from_gpr_index(GprIndex::A0, sbi_ret.error);
+                self.set_gpr_from_gpr_index(GprIndex::A1, sbi_ret.value);
             }
             RemoteFenceFunction::RemoteSFenceVMA {
                 hart_mask,
@@ -446,21 +451,23 @@ impl RISCVVCpu {
                     start_addr as usize,
                     size as usize,
                 );
-                self.set_gpr(GprIndex::A0, sbi_ret.error);
-                self.set_gpr(GprIndex::A1, sbi_ret.value);
+                self.set_gpr_from_gpr_index(GprIndex::A0, sbi_ret.error);
+                self.set_gpr_from_gpr_index(GprIndex::A1, sbi_ret.value);
             }
         }
         Ok(())
     }
 
     fn handle_pmu_function(&mut self, pmu: PmuFunction) -> AxResult<()> {
-        self.set_gpr(GprIndex::A0, 0);
+        self.set_gpr_from_gpr_index(GprIndex::A0, 0);
         match pmu {
-            PmuFunction::GetNumCounters => self.set_gpr(GprIndex::A1, sbi_rt::pmu_num_counters()),
+            PmuFunction::GetNumCounters => {
+                self.set_gpr_from_gpr_index(GprIndex::A1, sbi_rt::pmu_num_counters())
+            }
             PmuFunction::GetCounterInfo(counter_index) => {
                 let sbi_ret = pmu_counter_get_info(counter_index as usize);
-                self.set_gpr(GprIndex::A0, sbi_ret.error);
-                self.set_gpr(GprIndex::A1, sbi_ret.value);
+                self.set_gpr_from_gpr_index(GprIndex::A0, sbi_ret.error);
+                self.set_gpr_from_gpr_index(GprIndex::A1, sbi_ret.value);
             }
             PmuFunction::StopCounter {
                 counter_index,
@@ -472,8 +479,8 @@ impl RISCVVCpu {
                     counter_mask as usize,
                     stop_flags as usize,
                 );
-                self.set_gpr(GprIndex::A0, sbi_ret.error);
-                self.set_gpr(GprIndex::A1, sbi_ret.value);
+                self.set_gpr_from_gpr_index(GprIndex::A0, sbi_ret.error);
+                self.set_gpr_from_gpr_index(GprIndex::A1, sbi_ret.value);
             }
         }
         Ok(())
