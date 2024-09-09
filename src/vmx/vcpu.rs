@@ -11,7 +11,7 @@ use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr4, Cr4Flags, EferFlags};
 
 use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, NestedPageFaultInfo};
 use axerrno::{ax_err, ax_err_type, AxResult};
-use axvcpu::{AxArchVCpu, AxVCpuExitReason};
+use axvcpu::{AccessWidth, AxArchVCpu, AxVCpuExitReason};
 
 use super::as_axerr;
 use super::definitions::VmxExitReason;
@@ -1106,6 +1106,53 @@ impl AxArchVCpu for VmxVcpu {
                                 self.regs().r8,
                                 self.regs().r9,
                             ],
+                        }
+                    }
+                    VmxExitReason::IO_INSTRUCTION => {
+                        let io_info = self.io_exit_info().unwrap();
+                        self.advance_rip(exit_info.exit_instruction_length as _)?;
+
+                        let port = io_info.port;
+
+                        if io_info.is_repeat || io_info.is_string {
+                            warn!(
+                                "VMX unsupported IO-Exit: {:#x?} of {:#x?}",
+                                io_info, exit_info
+                            );
+                            warn!("VCpu {:#x?}", self);
+                            AxVCpuExitReason::Halt
+                        } else {
+                            const QEMU_EXIT_PORT: u16 = 0x604;
+                            const QEMU_EXIT_MAGIC: u64 = 0x2000;
+
+                            let width = match AccessWidth::try_from(io_info.access_size as usize) {
+                                Ok(width) => width,
+                                Err(_) => {
+                                    warn!(
+                                        "VMX invalid IO-Exit: {:#x?} of {:#x?}",
+                                        io_info, exit_info
+                                    );
+                                    warn!("VCpu {:#x?}", self);
+                                    return Ok(AxVCpuExitReason::Halt);
+                                }
+                            };
+
+                            if io_info.is_in {
+                                AxVCpuExitReason::IoRead { port, width }
+                            } else {
+                                if port == QEMU_EXIT_PORT
+                                    && width == AccessWidth::Word
+                                    && self.regs().rax == QEMU_EXIT_MAGIC
+                                {
+                                    AxVCpuExitReason::SystemDown
+                                } else {
+                                    AxVCpuExitReason::IoWrite {
+                                        port,
+                                        width,
+                                        data: self.regs().rax.get_bits(width.bits_range()),
+                                    }
+                                }
+                            }
                         }
                     }
                     _ => {
