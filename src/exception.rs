@@ -103,6 +103,14 @@ pub fn handle_exception_sync(ctx: &mut TrapFrame) -> AxResult<AxVCpuExitReason> 
             // The `#imm`` argument when triggering a hvc call, currently not used.
             let _hvc_arg_imm16 = ESR_EL2.read(ESR_EL2::ISS);
 
+            // Is this a psci call?
+            //
+            // By convention, a psci call can use either the `hvc` or the `smc` instruction.
+            // NimbOS uses `hvc`, `ArceOS` use `hvc` too when running on QEMU.
+            if let Some(result) = handle_psci_call(ctx) {
+                return result;
+            }
+
             // We assume that guest VM triggers HVC through a `hvc #0`` instruction.
             // And arm64 hcall implementation uses `x0` to specify the hcall number.
             // For more details on the hypervisor call (HVC) mechanism and the use of general-purpose registers,
@@ -184,6 +192,34 @@ fn handle_data_abort(context_frame: &mut TrapFrame) -> AxResult<AxVCpuExitReason
         width,
         reg,
         reg_width,
+    })
+}
+
+/// Handles HVC or SMC exceptions that serve as psci (Power State Coordination Interface) calls.
+///
+/// A hvc or smc call with the function in range 0x8000_0000..=0x8000_001F  (when the 32-bit
+/// hvc/smc calling convention is used) or 0xC000_0000..=0xC000_001F (when the 64-bit hvc/smc
+/// calling convention is used) is a psci call. This function handles them all.
+///
+/// Returns `None` if the HVC is not a psci call.
+fn handle_psci_call(ctx: &mut TrapFrame) -> Option<AxResult<AxVCpuExitReason>> {
+    const PSCI_FN_RANGE_32: core::ops::RangeInclusive<u64> = 0x8400_0000..=0x8400_001F;
+    const PSCI_FN_RANGE_64: core::ops::RangeInclusive<u64> = 0xC400_0000..=0xC400_001F;
+
+    const PSCI_FN_SYSTEM_OFF: u64 = 0x8;
+
+    let fn_ = ctx.gpr[0];
+    let fn_offset = if PSCI_FN_RANGE_32.contains(&fn_) {
+        Some(fn_ - PSCI_FN_RANGE_32.start())
+    } else if PSCI_FN_RANGE_64.contains(&fn_) {
+        Some(fn_ - PSCI_FN_RANGE_64.start())
+    } else {
+        None
+    };
+
+    fn_offset.map(|fn_offset| match fn_offset {
+        PSCI_FN_SYSTEM_OFF => Ok(AxVCpuExitReason::SystemDown),
+        _ => Err(AxError::Unsupported),
     })
 }
 
