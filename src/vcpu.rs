@@ -104,21 +104,21 @@ impl axvcpu::AxArchVCpu for Aarch64VCpu {
 impl Aarch64VCpu {
     #[inline(never)]
     fn run_guest(&mut self) -> usize {
-        let mut ret;
         unsafe {
             core::arch::asm!(
                 save_regs_to_stack!(),  // Save host context.
                 "mov x9, sp",
-                "mov x10, {0}",
+                "mov x10, x11",
                 "str x9, [x10]",    // Save current host stack top in the `Aarch64VCpu` struct.
-                "mov x0, {0}",
+                "mov x0, x11",
                 "b context_vm_entry",
-                in(reg) &self.host_stack_top as *const _ as usize,
-                out("x0") ret,
+                // in(reg) here is dangerous, because the compiler may use the register we want to use, creating a conflict.
+                in("x11") &self.host_stack_top as *const _ as usize,
                 options(nostack)
             );
         }
-        ret
+        // the dummy return value, the real return value is in x0 when `vmexit_trampoline` returns
+        0
     }
 
     fn restore_vm_system_regs(&mut self) {

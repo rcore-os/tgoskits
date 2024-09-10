@@ -23,10 +23,10 @@ pub enum TrapKind {
 }
 }
 
-/// This is equal to the type defined by the `TrapKind` enum.
-/// TODO: How can we reuse `TrapKind` directly?
-const EXCEPTION_SYNC: usize = 0;
-const EXCEPTION_IRQ: usize = 1;
+/// Equals to [`TrapKind::Synchronous`], used in exception.S.
+const EXCEPTION_SYNC: usize = TrapKind::Synchronous as usize;
+/// Equals to [`TrapKind::Irq`], used in exception.S.
+const EXCEPTION_IRQ: usize = TrapKind::Irq as usize;
 
 #[repr(u8)]
 #[derive(Debug)]
