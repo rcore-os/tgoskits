@@ -1,5 +1,7 @@
 .macro SAVE_REGS_FROM_EL1
     # Curretly `sp` points to the base address of `Aarch64VCpu.ctx`, which stores guest's `TrapFrame`.
+    
+    # Save general purpose registers into `Aarch64VCpu.ctx`
     stp     x0, x1, [sp]
     stp     x2, x3, [sp, 2 * 8]
     stp     x4, x5, [sp, 4 * 8]
@@ -15,19 +17,30 @@
     stp     x24, x25, [sp, 24 * 8]
     stp     x26, x27, [sp, 26 * 8]
     stp     x28, x29, [sp, 28 * 8]
+    str     x30,      [sp, 30 * 8]
 
-    mov     x9, sp
-    add     x9, x9, #(0x110)
+    # Swap `sp_el0` with `Aarch64VCpu.ctx`'s `sp`
+    ldr     x10,      [sp, 31 * 8]
+    mrs     x11, sp_el0
+    msr     sp_el0, x10
+    str     x11,      [sp, 31 * 8]
+
+    # Save `elr_el2` and `spsr_el2` into `Aarch64VCpu.ctx`
     mrs     x10, elr_el2
     mrs     x11, spsr_el2
-    stp     x30, x9, [sp, 30 * 8]
     stp     x10, x11, [sp, 32 * 8]
 .endm
 
+# Same as `context_vm_entry` in `src/entry.S`
 .macro RESTORE_REGS_INTO_EL1
     ldp     x10, x11, [sp, 32 * 8]
     msr     elr_el2, x10
     msr     spsr_el2, x11
+
+    ldr     x10,      [sp, 31 * 8]
+    mrs     x11, sp_el0
+    msr     sp_el0, x10
+    str     x11,      [sp, 31 * 8]
 
     ldr     x30,      [sp, 30 * 8]
     ldp     x28, x29, [sp, 28 * 8]

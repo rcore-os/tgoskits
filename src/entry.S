@@ -5,10 +5,18 @@ context_vm_entry:
     sub     sp, sp, 34 * 8
     # Curretly `sp` points to the base address of `Aarch64VCpu.ctx`, which stores guest's `TrapFrame`.
 
+    # Restore saved `elr_el2` and `spsr_el2` from `Aarch64VCpu.ctx`
     ldp     x10, x11, [sp, 32 * 8]
     msr     elr_el2, x10
     msr     spsr_el2, x11
 
+    # Swap `sp_el0` with `Aarch64VCpu.ctx`'s `sp`
+    ldr     x10,      [sp, 31 * 8]
+    mrs     x11, sp_el0
+    msr     sp_el0, x10
+    str     x11,      [sp, 31 * 8]
+
+    # Restore saved general purpose registers from `Aarch64VCpu.ctx`
     ldr     x30,      [sp, 30 * 8]
     ldp     x28, x29, [sp, 28 * 8]
     ldp     x26, x27, [sp, 26 * 8]
