@@ -2,7 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/memory_addr)](https://crates.io/crates/memory_addr)
 [![Docs.rs](https://docs.rs/memory_addr/badge.svg)](https://docs.rs/memory_addr)
-[![CI](https://github.com/arceos-org/memory_addr/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/arceos-org/memory_addr/actions/workflows/ci.yml)
+[![CI](https://github.com/arceos-org/axmm_crates/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/arceos-org/axmm_crates/actions/workflows/ci.yml)
 
 Wrappers and helper functions for physical and virtual memory addresses.
 
