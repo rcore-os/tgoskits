@@ -1,0 +1,7 @@
+smp = 1
+build_mode = release
+log_level = off
+
+Hello, World!
+Sleeping for 5 seconds...
+Done!

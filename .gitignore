@@ -1,8 +1,9 @@
-/target
 /.vscode
 /.arceos
 /.cargo
 .DS_Store
-Cargo.lock
 *.elf
 *.bin
+apps/*/build/
+**/target/
+**/Cargo.lock
