@@ -52,7 +52,7 @@ function run_and_compare() {
 
     echo -ne "    run with \"${BLOD_C}$args${END_C}\": "
 
-    make -C "$ROOT" A="$APP" $args > "$actual" 2>&1
+    make -C "$ROOT" AX_TESTCASE=$APP $args > "$actual" 2>&1
     if [ $? -ne 0 ]; then
         return $S_BUILD_FAILED
     fi
@@ -77,8 +77,8 @@ function run_and_compare() {
 
 function test_one() {
     local args=$1
-    local expect="$APP/$2"
-    local actual="$APP/actual.out"
+    local expect="$APP_DIR/$2"
+    local actual="$APP_DIR/actual.out"
     args="$args ARCH=$ARCH ACCEL=n"
     rm -f "$actual"
 
@@ -109,13 +109,15 @@ function test_one() {
 # TODO: add more testcases
 test_list=(
     "nimbos"
+    "libc"
 )
 
 for t in ${test_list[@]}; do
-    APP=$(realpath "$(pwd)/apps/$t")
+    APP=$t
+    APP_DIR=$(realpath "$(pwd)/apps/$t")
     make -C "$ROOT" user_apps AX_TESTCASE=$t
     echo -e "${CYAN_C}Testing${END_C} $t:"
-    source "$APP/test_cmd"
+    source "$APP_DIR/test_cmd"
 done
 
 echo -e "test script exited with: $EXIT_STATUS"

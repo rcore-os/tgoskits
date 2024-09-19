@@ -11,7 +11,7 @@ jobs:
         rust-toolchain: [nightly]
     steps:
     - uses: actions/checkout@v4
-    - uses: dtolnay/rust-toolchain@nightly
+    - uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: ${{ matrix.rust-toolchain }}
         components: rust-src, clippy, rustfmt
@@ -45,7 +45,7 @@ jobs:
     - name: Build for ${{ matrix.arch }}
       run: make ARCH=${{ matrix.arch }}
 
-  test:
+  test-musl:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -56,7 +56,7 @@ jobs:
       qemu-version: 8.2.0
     steps:
     - uses: actions/checkout@v4
-    - uses: dtolnay/rust-toolchain@nightly
+    - uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: ${{ matrix.rust-toolchain }}
         components: rust-src, llvm-tools
@@ -69,5 +69,7 @@ jobs:
     - uses: ./.github/workflows/actions/setup-qemu
       with:
         qemu-version: ${{ env.qemu-version }}
-    - name: Run tests
+    - name: Build rustup target
+      run: rustup target add ${{ matrix.arch }}-unknown-linux-musl
+    - name: Run tests for musl applications
       run: make test ARCH=${{ matrix.arch }}

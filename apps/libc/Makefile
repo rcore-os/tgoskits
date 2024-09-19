@@ -35,7 +35,9 @@ else
   $(error "Unknown TARGET")
 endif
 
-all: build_dir build_c build_rust
+all: build
+
+build: build_dir build_c build_rust
 
 build_dir:
 	@mkdir -p build

@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![doc = include_str!("../README.md")]
 
 #[macro_use]
 extern crate log;
