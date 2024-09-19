@@ -1,3 +1,5 @@
+use core::sync::atomic::AtomicU64;
+
 use alloc::sync::Arc;
 
 use axhal::arch::UspaceContext;
@@ -9,6 +11,12 @@ use axtask::{AxTaskRef, TaskExtRef, TaskInner};
 pub struct TaskExt {
     /// The process ID.
     pub proc_id: usize,
+    /// The clear thread tid field
+    ///
+    /// See <https://manpages.debian.org/unstable/manpages-dev/set_tid_address.2.en.html#clear_child_tid>
+    ///
+    /// When the thread exits, the kernel clears the word at this address if it is not NULL.
+    clear_child_tid: AtomicU64,
     /// The user space context.
     pub uctx: UspaceContext,
     /// The virtual memory address space.
@@ -20,8 +28,19 @@ impl TaskExt {
         Self {
             proc_id: 233,
             uctx,
+            clear_child_tid: AtomicU64::new(0),
             aspace,
         }
+    }
+
+    pub(crate) fn clear_child_tid(&self) -> u64 {
+        self.clear_child_tid
+            .load(core::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub(crate) fn set_clear_child_tid(&self, clear_child_tid: u64) {
+        self.clear_child_tid
+            .store(clear_child_tid, core::sync::atomic::Ordering::Relaxed);
     }
 }
 

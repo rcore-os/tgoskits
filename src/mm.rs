@@ -1,8 +1,6 @@
 use alloc::string::ToString;
-use alloc::vec;
-use alloc::vec::Vec;
 use axerrno::AxResult;
-use memory_addr::VirtAddr;
+use memory_addr::{MemoryAddr, PageIter4K, VirtAddr, PAGE_SIZE_4K};
 
 use axhal::mem::phys_to_virt;
 use axhal::paging::MappingFlags;
@@ -37,7 +35,7 @@ pub fn load_user_app(app_name: &str) -> AxResult<(VirtAddr, VirtAddr, AddrSpace)
         let mut segement_data_offset = 0;
 
         for (idx, vaddr) in
-            memory_addr::PageIter4K::new(segement.start_vaddr, segement.start_vaddr + segement.size)
+            PageIter4K::new(segement.start_vaddr, segement.start_vaddr + segement.size)
                 .expect("Failed to create page iterator")
                 .enumerate()
         {
@@ -48,12 +46,9 @@ pub fn load_user_app(app_name: &str) -> AxResult<(VirtAddr, VirtAddr, AddrSpace)
 
             let (start_paddr, mut copied_size) = if idx == 0 {
                 // Align the start of the segment to the start of the page
-                (
-                    paddr + segement.offset,
-                    memory_addr::PAGE_SIZE_4K - segement.offset,
-                )
+                (paddr + segement.offset, PAGE_SIZE_4K - segement.offset)
             } else {
-                (paddr, memory_addr::PAGE_SIZE_4K)
+                (paddr, PAGE_SIZE_4K)
             };
 
             if copied_size + segement_data_offset > segement.data.len() {
@@ -84,32 +79,43 @@ pub fn load_user_app(app_name: &str) -> AxResult<(VirtAddr, VirtAddr, AddrSpace)
         ustack_top, ustack_base
     );
     // FIXME: Add more arguments and environment variables
-    let args = vec![app_name.to_string()];
-    let (stack_data, ustack_bottom) =
-        elf_parser::get_app_stack_region(args, &Vec::new(), elf_info.auxv, ustack_top, ustack_size);
+    let (stack_data, ustack_bottom) = elf_parser::get_app_stack_region(
+        &[app_name.to_string()],
+        &[],
+        &elf_info.auxv,
+        ustack_top,
+        ustack_size,
+    );
     uspace.map_alloc(
         ustack_top,
         ustack_size,
         MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
         true,
     )?;
-
-    for (idx, vaddr) in memory_addr::PageIter4K::new(ustack_top, ustack_base)
-        .expect("Failed to create page iterator")
-        .enumerate()
     {
-        let (paddr, _, _) = uspace
-            .page_table()
-            .query(vaddr)
-            .unwrap_or_else(|e| panic!("Mapping failed for stack: {:#x?} error: {:?}", vaddr, e));
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                stack_data.as_ptr().add(idx * memory_addr::PAGE_SIZE_4K),
-                phys_to_virt(paddr).as_mut_ptr(),
-                memory_addr::PAGE_SIZE_4K,
-            );
+        // Copy the stack data to the user stack
+        let ustack_bottom_align = VirtAddr::from_usize(ustack_bottom).align_down_4k();
+        let stack_data_offset = ustack_bottom_align - ustack_top;
+        // Only copy data which contains args, envs and auxv.
+        for (idx, vaddr) in PageIter4K::new(ustack_bottom_align, ustack_base)
+            .expect("Failed to create page iterator")
+            .enumerate()
+        {
+            let (paddr, _, _) = uspace.page_table().query(vaddr).unwrap_or_else(|e| {
+                panic!("Mapping failed for stack: {:#x?} error: {:?}", vaddr, e)
+            });
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    stack_data
+                        .as_ptr()
+                        .add(stack_data_offset + idx * PAGE_SIZE_4K),
+                    phys_to_virt(paddr).as_mut_ptr(),
+                    PAGE_SIZE_4K,
+                );
+            }
         }
     }
+
     Ok((elf_info.entry, VirtAddr::from(ustack_bottom), uspace))
 }
 
