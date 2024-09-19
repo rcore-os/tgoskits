@@ -5,9 +5,9 @@
 //! Now these apps are loaded into memory as a part of the kernel image.
 use core::arch::global_asm;
 
-use alloc::vec::Vec;
+use alloc::{collections::btree_map::BTreeMap, vec::Vec};
 use axhal::paging::MappingFlags;
-use memory_addr::VirtAddr;
+use memory_addr::{MemoryAddr, VirtAddr};
 
 global_asm!(include_str!(concat!(env!("OUT_DIR"), "/link_app.S")));
 
@@ -85,6 +85,8 @@ pub struct ELFInfo {
     pub entry: VirtAddr,
     /// The segments of the ELF file
     pub segments: Vec<ELFSegment>,
+    /// The auxiliary vectors of the ELF file
+    pub auxv: BTreeMap<u8, usize>,
 }
 
 /// Load the ELF files by the given app name and return
@@ -92,10 +94,11 @@ pub struct ELFInfo {
 ///
 /// # Arguments
 /// * `name` - The name of the app
+/// * `base_addr` - The minimal address of user space
 ///
 /// # Returns
 /// Entry and information about segments of the given ELF file
-pub(crate) fn load_user_app(name: &str) -> ELFInfo {
+pub(crate) fn load_elf(name: &str, base_addr: VirtAddr) -> ELFInfo {
     use xmas_elf::program::{Flags, SegmentData};
     use xmas_elf::{header, ElfFile};
 
@@ -105,15 +108,7 @@ pub(crate) fn load_user_app(name: &str) -> ELFInfo {
     .expect("invalid ELF file");
     let elf_header = elf.header;
 
-    let elf_magic_number = elf_header.pt1.magic;
-
-    assert_eq!(elf_magic_number, *b"\x7fELF", "invalid elf!");
-
-    assert_eq!(
-        elf.header.pt2.type_().as_type(),
-        header::Type::Executable,
-        "ELF is not an executable object"
-    );
+    assert_eq!(elf_header.pt1.magic, *b"\x7fELF", "invalid elf!");
 
     let expect_arch = if cfg!(target_arch = "x86_64") {
         header::Machine::X86_64
@@ -145,14 +140,22 @@ pub(crate) fn load_user_app(name: &str) -> ELFInfo {
     }
 
     let mut segments = Vec::new();
+
+    let elf_offset = elf_parser::get_elf_base_addr(&elf, base_addr.as_usize()).unwrap();
+    assert!(
+        elf_offset & 0xfff == 0,
+        "ELF base address must be aligned to 4k"
+    );
+
     elf.program_iter()
         .filter(|ph| ph.get_type() == Ok(xmas_elf::program::Type::Load))
         .for_each(|ph| {
             // align the segment to 4k
-            let st_vaddr = VirtAddr::from(ph.virtual_addr() as usize);
+            let st_vaddr = VirtAddr::from(ph.virtual_addr() as usize) + elf_offset;
             let st_vaddr_align: VirtAddr = st_vaddr.align_down_4k();
-            let ed_vaddr_align =
-                VirtAddr::from((ph.virtual_addr() + ph.mem_size()) as usize).align_up_4k();
+            let ed_vaddr_align = VirtAddr::from((ph.virtual_addr() + ph.mem_size()) as usize)
+                .align_up_4k()
+                + elf_offset;
             let data = match ph.get_data(&elf).unwrap() {
                 SegmentData::Undefined(data) => data,
                 _ => panic!("failed to get ELF segment data"),
@@ -166,7 +169,8 @@ pub(crate) fn load_user_app(name: &str) -> ELFInfo {
             });
         });
     ELFInfo {
-        entry: VirtAddr::from(elf.header.pt2.entry_point() as usize),
+        entry: VirtAddr::from(elf.header.pt2.entry_point() as usize + elf_offset),
         segments,
+        auxv: elf_parser::get_auxv_vector(&elf, elf_offset),
     }
 }

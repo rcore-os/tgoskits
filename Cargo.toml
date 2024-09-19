@@ -10,11 +10,14 @@ repository = "https://github.com/arceos-org/starry-next"
 log = "0.4"
 linkme = "0.3"
 axerrno = "0.1"
-memory_addr = "0.2"
-xmas-elf = "0.8"
+memory_addr = "0.3"
+xmas-elf = "0.9"
+bitflags = "2.6"
 
 axstd = { git = "https://github.com/arceos-org/arceos.git", features = ["paging"] }
 arceos_posix_api = { git = "https://github.com/arceos-org/arceos.git" }
+elf_parser = { git = "https://github.com/Starry-OS/elf-parser.git" }
+numeric-enum-macro = { git = "https://github.com/mexus/numeric-enum-macro" }
 
 axhal = { git = "https://github.com/arceos-org/arceos.git", features = ["uspace"] }
 axmm = { git = "https://github.com/arceos-org/arceos.git" }

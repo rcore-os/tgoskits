@@ -26,6 +26,7 @@ fn main() {
         .split(',')
         .filter(|&x| !x.is_empty());
     for testcase in testcases {
+        log::info!("Running testcase: {}", testcase);
         let (entry_vaddr, ustack_top, uspace) = mm::load_user_app(testcase).unwrap();
         let user_task = task::spawn_user_task(
             Arc::new(Mutex::new(uspace)),
