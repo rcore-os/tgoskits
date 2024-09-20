@@ -2,9 +2,12 @@ use alloc::string::ToString;
 use axerrno::AxResult;
 use memory_addr::{MemoryAddr, PageIter4K, VirtAddr, PAGE_SIZE_4K};
 
-use axhal::mem::phys_to_virt;
-use axhal::paging::MappingFlags;
-use axhal::trap::{register_trap_handler, PAGE_FAULT};
+use axhal::{
+    mem::phys_to_virt,
+    paging::MappingFlags,
+    trap::{register_trap_handler, PAGE_FAULT},
+};
+
 use axmm::AddrSpace;
 use axtask::TaskExtRef;
 
@@ -71,33 +74,37 @@ pub fn load_user_app(app_name: &str) -> AxResult<(VirtAddr, VirtAddr, AddrSpace)
         // TDOO: flush the I-cache
     }
 
-    let ustack_base = uspace.end();
+    // The user stack is divided into two parts:
+    // `ustack_bottom` -> `ustack top`: It is the stack space that users actually read and write.
+    // `ustack_top` -> `ustack end`: It is the space that contains the arguments, environment variables and auxv passed to the app.
+    //  When the app starts running, the stack pointer points to `ustack_top`.
+    let ustack_end = uspace.end();
     let ustack_size = crate::USER_STACK_SIZE;
-    let ustack_top = ustack_base - ustack_size;
+    let ustack_bottom = ustack_end - ustack_size;
     debug!(
         "Mapping user stack: {:#x?} -> {:#x?}",
-        ustack_top, ustack_base
+        ustack_bottom, ustack_end
     );
     // FIXME: Add more arguments and environment variables
-    let (stack_data, ustack_bottom) = elf_parser::get_app_stack_region(
+    let (stack_data, ustack_top) = elf_parser::get_app_stack_region(
         &[app_name.to_string()],
         &[],
         &elf_info.auxv,
-        ustack_top,
+        ustack_bottom,
         ustack_size,
     );
     uspace.map_alloc(
-        ustack_top,
+        ustack_bottom,
         ustack_size,
         MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
         true,
     )?;
     {
         // Copy the stack data to the user stack
-        let ustack_bottom_align = VirtAddr::from_usize(ustack_bottom).align_down_4k();
-        let stack_data_offset = ustack_bottom_align - ustack_top;
+        let ustack_top_align = VirtAddr::from_usize(ustack_top).align_down_4k();
+        let stack_data_offset = ustack_top_align - ustack_bottom;
         // Only copy data which contains args, envs and auxv.
-        for (idx, vaddr) in PageIter4K::new(ustack_bottom_align, ustack_base)
+        for (idx, vaddr) in PageIter4K::new(ustack_top_align, ustack_end)
             .expect("Failed to create page iterator")
             .enumerate()
         {
@@ -116,7 +123,7 @@ pub fn load_user_app(app_name: &str) -> AxResult<(VirtAddr, VirtAddr, AddrSpace)
         }
     }
 
-    Ok((elf_info.entry, VirtAddr::from(ustack_bottom), uspace))
+    Ok((elf_info.entry, VirtAddr::from(ustack_top), uspace))
 }
 
 #[register_trap_handler(PAGE_FAULT)]

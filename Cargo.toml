@@ -24,3 +24,6 @@ axmm = { git = "https://github.com/arceos-org/arceos.git" }
 axtask = { git = "https://github.com/arceos-org/arceos.git" }
 axsync = { git = "https://github.com/arceos-org/arceos.git" }
 axruntime = { git = "https://github.com/arceos-org/arceos.git", features = ["multitask"] }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+x86 = "0.52"

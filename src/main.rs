@@ -9,7 +9,7 @@ extern crate axstd;
 
 mod loader;
 mod mm;
-mod syscall;
+mod syscall_imp;
 mod task;
 use alloc::sync::Arc;
 
