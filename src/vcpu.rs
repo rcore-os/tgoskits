@@ -1,16 +1,29 @@
-use aarch64_cpu::registers::{CNTHCTL_EL2, HCR_EL2, SPSR_EL1, VTCR_EL2};
-use tock_registers::interfaces::ReadWriteable;
+use aarch64_cpu::registers::{CNTHCTL_EL2, HCR_EL2, SPSR_EL1, SP_EL0, VTCR_EL2};
+use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
 use axaddrspace::{GuestPhysAddr, HostPhysAddr};
 use axerrno::AxResult;
 use axvcpu::AxVCpuExitReason;
 
-use crate::context_frame::VmContext;
+use crate::context_frame::GuestSystemRegisters;
 use crate::exception::{handle_exception_irq, handle_exception_sync, TrapKind};
 use crate::exception_utils::exception_class_value;
 use crate::TrapFrame;
 
 core::arch::global_asm!(include_str!("entry.S"));
+
+#[percpu::def_percpu]
+static HOST_SP_EL0: u64 = 0;
+
+/// Save host's `SP_EL0` to the current percpu region.
+unsafe fn save_host_sp_el0() {
+    HOST_SP_EL0.write_current_raw(SP_EL0.get())
+}
+
+/// Restore host's `SP_EL0` from the current percpu region.
+unsafe fn restore_host_sp_el0() {
+    SP_EL0.set(HOST_SP_EL0.read_current_raw());
+}
 
 /// (v)CPU register state that must be saved or restored when entering/exiting a VM or switching
 /// between VMs.
@@ -20,17 +33,7 @@ pub struct VmCpuRegisters {
     /// guest trap context
     pub trap_context_regs: TrapFrame,
     /// virtual machine system regs setting
-    pub vm_system_regs: VmContext,
-}
-
-impl VmCpuRegisters {
-    /// create a default VmCpuRegisters
-    pub fn default() -> VmCpuRegisters {
-        VmCpuRegisters {
-            trap_context_regs: TrapFrame::default(),
-            vm_system_regs: VmContext::default(),
-        }
-    }
+    pub vm_system_regs: GuestSystemRegisters,
 }
 
 /// A virtual CPU within a guest
@@ -41,7 +44,7 @@ pub struct Aarch64VCpu {
     // DO NOT add anything before or between them unless you do know what you are doing!
     ctx: TrapFrame,
     host_stack_top: u64,
-    system_regs: VmContext,
+    guest_system_regs: GuestSystemRegisters,
     vcpu_id: usize,
 }
 
@@ -57,14 +60,12 @@ impl axvcpu::AxArchVCpu for Aarch64VCpu {
         Ok(Self {
             ctx: TrapFrame::default(),
             host_stack_top: 0,
-            system_regs: VmContext::default(),
+            guest_system_regs: GuestSystemRegisters::default(),
             vcpu_id: 0, // need to pass a parameter!!!!
         })
     }
 
     fn setup(&mut self, _config: Self::SetupConfig) -> AxResult {
-        // do_register_lower_aarch64_synchronous_handler()?;
-        // do_register_lower_aarch64_irq_handler()?;
         self.init_hv();
         Ok(())
     }
@@ -77,14 +78,22 @@ impl axvcpu::AxArchVCpu for Aarch64VCpu {
 
     fn set_ept_root(&mut self, ept_root: HostPhysAddr) -> AxResult {
         debug!("set vcpu ept root:{:#x}", ept_root);
-        self.system_regs.vttbr_el2 = ept_root.as_usize() as u64;
+        self.guest_system_regs.vttbr_el2 = ept_root.as_usize() as u64;
         Ok(())
     }
 
     fn run(&mut self) -> AxResult<AxVCpuExitReason> {
-        self.restore_vm_system_regs();
-        let exit_reason = TrapKind::try_from(self.run_guest() as u8).expect("Invalid TrapKind");
-        self.vmexit_handler(exit_reason)
+        // Run guest.
+        let exit_reson = unsafe {
+            // Save host SP_EL0 to the ctx becase it's used as current task ptr.
+            // This has to be done before vm system regs are restored.
+            save_host_sp_el0();
+            self.restore_vm_system_regs();
+            self.run_guest()
+        };
+
+        let trap_kind = TrapKind::try_from(exit_reson as u8).expect("Invalid TrapKind");
+        self.vmexit_handler(trap_kind)
     }
 
     fn bind(&mut self) -> AxResult {
@@ -103,42 +112,40 @@ impl axvcpu::AxArchVCpu for Aarch64VCpu {
 // Private function
 impl Aarch64VCpu {
     #[inline(never)]
-    fn run_guest(&mut self) -> usize {
-        unsafe {
-            core::arch::asm!(
-                save_regs_to_stack!(),  // Save host context.
-                "mov x9, sp",
-                "mov x10, x11",
-                "str x9, [x10]",    // Save current host stack top in the `Aarch64VCpu` struct.
-                "mov x0, x11",
-                "b context_vm_entry",
-                // in(reg) here is dangerous, because the compiler may use the register we want to use, creating a conflict.
-                in("x11") &self.host_stack_top as *const _ as usize,
-                options(nostack)
-            );
-        }
+    unsafe fn run_guest(&mut self) -> usize {
+        // Save function call context.
+        core::arch::asm!(
+            save_regs_to_stack!(),  // Save host context.
+            "mov x9, sp",
+            "mov x10, x11",
+            "str x9, [x10]",    // Save current host stack top in the `Aarch64VCpu` struct.
+            "mov x0, x11",
+            "b context_vm_entry",
+            // in(reg) here is dangerous, because the compiler may use the register we want to use, creating a conflict.
+            in("x11") &self.host_stack_top as *const _ as usize,
+            options(nostack)
+        );
+
         // the dummy return value, the real return value is in x0 when `vmexit_trampoline` returns
         0
     }
 
-    fn restore_vm_system_regs(&mut self) {
-        unsafe {
-            // load system regs
-            core::arch::asm!(
-                "
-                mov x3, xzr           // Trap nothing from EL1 to El2.
-                msr cptr_el2, x3"
-            );
-            self.system_regs.ext_regs_restore();
-            core::arch::asm!(
-                "
-                ic  iallu
-                tlbi	alle2
-                tlbi	alle1         // Flush tlb
-                dsb	nsh
-                isb"
-            );
-        }
+    unsafe fn restore_vm_system_regs(&mut self) {
+        // load system regs
+        core::arch::asm!(
+            "
+            mov x3, xzr           // Trap nothing from EL1 to El2.
+            msr cptr_el2, x3"
+        );
+        self.guest_system_regs.restore();
+        core::arch::asm!(
+            "
+            ic  iallu
+            tlbi	alle2
+            tlbi	alle1         // Flush tlb
+            dsb	nsh
+            isb"
+        );
     }
 
     fn vmexit_handler(&mut self, exit_reason: TrapKind) -> AxResult<AxVCpuExitReason> {
@@ -147,13 +154,18 @@ impl Aarch64VCpu {
             exception_class_value(),
             self.ctx
         );
-        // restore system regs
-        self.system_regs.ext_regs_store();
 
-        let ctx = &mut self.ctx;
+        unsafe {
+            // Store guest system regs
+            self.guest_system_regs.store();
+            // Restore host SP_EL0.
+            // This has to be done after guest's SP_EL0 is stored by `ext_regs_store`.
+            restore_host_sp_el0();
+        }
+
         match exit_reason {
-            TrapKind::Synchronous => handle_exception_sync(ctx),
-            TrapKind::Irq => handle_exception_irq(ctx),
+            TrapKind::Synchronous => handle_exception_sync(&mut self.ctx),
+            TrapKind::Irq => handle_exception_irq(&mut self.ctx),
             _ => panic!("Unhandled exception {:?}", exit_reason),
         }
     }
@@ -171,12 +183,12 @@ impl Aarch64VCpu {
     /// Init guest context. Also set some el2 register value.
     fn init_vm_context(&mut self) {
         CNTHCTL_EL2.modify(CNTHCTL_EL2::EL1PCEN::SET + CNTHCTL_EL2::EL1PCTEN::SET);
-        self.system_regs.cntvoff_el2 = 0;
-        self.system_regs.cntkctl_el1 = 0;
+        self.guest_system_regs.cntvoff_el2 = 0;
+        self.guest_system_regs.cntkctl_el1 = 0;
 
-        self.system_regs.sctlr_el1 = 0x30C50830;
-        self.system_regs.pmcr_el0 = 0;
-        self.system_regs.vtcr_el2 = (VTCR_EL2::PS::PA_40B_1TB
+        self.guest_system_regs.sctlr_el1 = 0x30C50830;
+        self.guest_system_regs.pmcr_el0 = 0;
+        self.guest_system_regs.vtcr_el2 = (VTCR_EL2::PS::PA_40B_1TB
             + VTCR_EL2::TG0::Granule4KB
             + VTCR_EL2::SH0::Inner
             + VTCR_EL2::ORGN0::NormalWBRAWA
@@ -184,7 +196,7 @@ impl Aarch64VCpu {
             + VTCR_EL2::SL0.val(0b01)
             + VTCR_EL2::T0SZ.val(64 - 39))
         .into();
-        self.system_regs.hcr_el2 = (HCR_EL2::VM::Enable + HCR_EL2::RW::EL1IsAarch64).into();
+        self.guest_system_regs.hcr_el2 = (HCR_EL2::VM::Enable + HCR_EL2::RW::EL1IsAarch64).into();
         // self.system_regs.hcr_el2 |= 1<<27;
         // + HCR_EL2::IMO::EnableVirtualIRQ).into();
         // trap el1 smc to el2
@@ -193,7 +205,7 @@ impl Aarch64VCpu {
         let mut vmpidr = 0;
         vmpidr |= 1 << 31;
         vmpidr |= self.vcpu_id;
-        self.system_regs.vmpidr_el2 = vmpidr as u64;
+        self.guest_system_regs.vmpidr_el2 = vmpidr as u64;
     }
 
     /// Set exception return pc

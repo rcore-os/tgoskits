@@ -17,13 +17,11 @@
     stp     x24, x25, [sp, 24 * 8]
     stp     x26, x27, [sp, 26 * 8]
     stp     x28, x29, [sp, 28 * 8]
-    str     x30,      [sp, 30 * 8]
 
-    # Swap `sp_el0` with `Aarch64VCpu.ctx`'s `sp`
-    ldr     x10,      [sp, 31 * 8]
-    mrs     x11, sp_el0
-    msr     sp_el0, x10
-    str     x11,      [sp, 31 * 8]
+    # The value currently stored in `sp` is unused, (the base address of Aarch64ContextFrame).
+    mov     x9, sp
+    add     x9, x9, #(0x110)
+    stp     x30, x9, [sp, 30 * 8]
 
     # Save `elr_el2` and `spsr_el2` into `Aarch64VCpu.ctx`
     mrs     x10, elr_el2

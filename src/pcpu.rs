@@ -28,7 +28,7 @@ impl AxArchPerCpu for Aarch64PerCpu {
 
     fn is_enabled(&self) -> bool {
         let hcr_el2 = HCR_EL2.get();
-        return hcr_el2 & 1 != 0;
+        hcr_el2 & 1 != 0
     }
 
     fn hardware_enable(&mut self) -> AxResult {
@@ -41,7 +41,8 @@ impl AxArchPerCpu for Aarch64PerCpu {
         // defined in this crate.
         VBAR_EL2.set(exception_vector_base_vcpu as usize as _);
 
-        Ok(HCR_EL2.set(HCR_EL2::VM::Enable.into()))
+        HCR_EL2.set(HCR_EL2::VM::Enable.into());
+        Ok(())
     }
 
     fn hardware_disable(&mut self) -> AxResult {
@@ -50,6 +51,7 @@ impl AxArchPerCpu for Aarch64PerCpu {
         // Todo: take care of `preemption`
         VBAR_EL2.set(unsafe { ORI_EXCEPTION_VECTOR_BASE.read_current_raw() } as _);
 
-        Ok(HCR_EL2.set(HCR_EL2::VM::Disable.into()))
+        HCR_EL2.set(HCR_EL2::VM::Disable.into());
+        Ok(())
     }
 }
