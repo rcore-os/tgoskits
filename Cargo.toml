@@ -27,3 +27,6 @@ axruntime = { git = "https://github.com/arceos-org/arceos.git", features = ["mul
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"
+
+[build-dependencies]
+toml_edit = "0.22"

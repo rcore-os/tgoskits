@@ -60,7 +60,7 @@ pub fn spawn_user_task(aspace: Arc<Mutex<AddrSpace>>, uctx: UspaceContext) -> Ax
             unsafe { curr.task_ext().uctx.enter_uspace(kstack_top) };
         },
         "userboot".into(),
-        crate::KERNEL_STACK_SIZE,
+        crate::config::KERNEL_STACK_SIZE,
     );
     task.ctx_mut()
         .set_page_table_root(aspace.lock().page_table_root());

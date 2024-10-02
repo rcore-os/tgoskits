@@ -6,7 +6,8 @@
 extern crate log;
 extern crate alloc;
 extern crate axstd;
-
+#[allow(unused)]
+mod config;
 mod loader;
 mod mm;
 mod syscall_imp;
@@ -15,9 +16,6 @@ use alloc::sync::Arc;
 
 use axhal::arch::UspaceContext;
 use axsync::Mutex;
-
-const USER_STACK_SIZE: usize = 0x10000;
-const KERNEL_STACK_SIZE: usize = 0x40000; // 256 KiB
 
 #[no_mangle]
 fn main() {
