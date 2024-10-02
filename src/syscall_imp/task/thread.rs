@@ -13,17 +13,17 @@ use crate::syscall_body;
 /// to generate automatically via c_to_rust binding.
 enum ArchPrctlCode {
     /// Set the GS segment base
-    ArchSetGs = 0x1001,
+    SetGs = 0x1001,
     /// Set the FS segment base
-    ArchSetFs = 0x1002,
+    SetFs = 0x1002,
     /// Get the FS segment base
-    ArchGetFs = 0x1003,
+    GetFs = 0x1003,
     /// Get the GS segment base
-    ArchGetGs = 0x1004,
+    GetGs = 0x1004,
     /// The setting of the flag manipulated by ARCH_SET_CPUID
-    ArchGetCpuid = 0x1011,
+    GetCpuid = 0x1011,
     /// Enable (addr != 0) or disable (addr == 0) the cpuid instruction for the calling thread.
-    ArchSetCpuid = 0x1012,
+    SetCpuid = 0x1012,
 }
 
 pub(crate) fn sys_getpid() -> i32 {
@@ -66,25 +66,25 @@ pub(crate) fn sys_arch_prctl(code: i32, addr: *mut usize) -> isize {
     syscall_body!(sys_arch_prctl, {
         match ArchPrctlCode::try_from(code) {
             // TODO: check the legality of the address
-            Ok(ArchPrctlCode::ArchSetFs) => {
+            Ok(ArchPrctlCode::SetFs) => {
                 unsafe {
                     axhal::arch::write_thread_pointer(*addr);
                 }
                 Ok(0)
             }
-            Ok(ArchPrctlCode::ArchGetFs) => {
+            Ok(ArchPrctlCode::GetFs) => {
                 unsafe {
                     *addr = axhal::arch::read_thread_pointer();
                 }
                 Ok(0)
             }
-            Ok(ArchPrctlCode::ArchSetGs) => {
+            Ok(ArchPrctlCode::SetGs) => {
                 unsafe {
                     x86::msr::wrmsr(x86::msr::IA32_KERNEL_GSBASE, *addr as u64);
                 }
                 Ok(0)
             }
-            Ok(ArchPrctlCode::ArchGetGs) => {
+            Ok(ArchPrctlCode::GetGs) => {
                 unsafe {
                     *addr = x86::msr::rdmsr(x86::msr::IA32_KERNEL_GSBASE) as usize;
                 }

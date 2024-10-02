@@ -141,7 +141,7 @@ pub(crate) fn load_elf(name: &str, base_addr: VirtAddr) -> ELFInfo {
 
     let mut segments = Vec::new();
 
-    let elf_offset = elf_parser::get_elf_base_addr(&elf, base_addr.as_usize()).unwrap();
+    let elf_offset = kernel_elf_parser::get_elf_base_addr(&elf, base_addr.as_usize()).unwrap();
     assert!(
         elf_offset & 0xfff == 0,
         "ELF base address must be aligned to 4k"
@@ -171,6 +171,6 @@ pub(crate) fn load_elf(name: &str, base_addr: VirtAddr) -> ELFInfo {
     ELFInfo {
         entry: VirtAddr::from(elf.header.pt2.entry_point() as usize + elf_offset),
         segments,
-        auxv: elf_parser::get_auxv_vector(&elf, elf_offset),
+        auxv: kernel_elf_parser::get_auxv_vector(&elf, elf_offset),
     }
 }

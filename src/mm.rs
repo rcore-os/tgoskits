@@ -1,9 +1,8 @@
 use alloc::string::ToString;
 use axerrno::AxResult;
-use memory_addr::{MemoryAddr, PageIter4K, VirtAddr, PAGE_SIZE_4K};
+use memory_addr::VirtAddr;
 
 use axhal::{
-    mem::phys_to_virt,
     paging::MappingFlags,
     trap::{register_trap_handler, PAGE_FAULT},
 };
@@ -20,10 +19,7 @@ use crate::{config, loader};
 /// - The second return value is the top of the user stack.
 /// - The third return value is the address space of the user app.
 pub fn load_user_app(app_name: &str) -> AxResult<(VirtAddr, VirtAddr, AddrSpace)> {
-    let mut uspace = axmm::new_user_aspace(
-        VirtAddr::from_usize(config::USER_SPACE_BASE),
-        config::USER_SPACE_SIZE,
-    )?;
+    let mut uspace = axmm::new_user_aspace()?;
     let elf_info = loader::load_elf(app_name, uspace.base());
     for segement in elf_info.segments {
         debug!(
@@ -38,42 +34,8 @@ pub fn load_user_app(app_name: &str) -> AxResult<(VirtAddr, VirtAddr, AddrSpace)
             continue;
         }
 
-        let mut segement_data_offset = 0;
+        uspace.write(segement.start_vaddr + segement.offset, segement.data)?;
 
-        for (idx, vaddr) in
-            PageIter4K::new(segement.start_vaddr, segement.start_vaddr + segement.size)
-                .expect("Failed to create page iterator")
-                .enumerate()
-        {
-            let (paddr, _, _) = uspace
-                .page_table()
-                .query(vaddr)
-                .unwrap_or_else(|_| panic!("Mapping failed for segment: {:#x?}", vaddr));
-
-            let (start_paddr, mut copied_size) = if idx == 0 {
-                // Align the start of the segment to the start of the page
-                (paddr + segement.offset, PAGE_SIZE_4K - segement.offset)
-            } else {
-                (paddr, PAGE_SIZE_4K)
-            };
-
-            if copied_size + segement_data_offset > segement.data.len() {
-                copied_size = segement.data.len() - segement_data_offset;
-            }
-
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    segement.data.as_ptr().add(segement_data_offset),
-                    phys_to_virt(start_paddr).as_mut_ptr(),
-                    copied_size,
-                );
-            }
-            assert!(uspace.page_table().query(vaddr).is_ok());
-            segement_data_offset += copied_size;
-            if segement_data_offset >= segement.data.len() {
-                break;
-            }
-        }
         // TDOO: flush the I-cache
     }
 
@@ -89,7 +51,7 @@ pub fn load_user_app(app_name: &str) -> AxResult<(VirtAddr, VirtAddr, AddrSpace)
         ustack_bottom, ustack_end
     );
     // FIXME: Add more arguments and environment variables
-    let (stack_data, ustack_top) = elf_parser::get_app_stack_region(
+    let (stack_data, ustack_top) = kernel_elf_parser::get_app_stack_region(
         &[app_name.to_string()],
         &[],
         &elf_info.auxv,
@@ -102,30 +64,8 @@ pub fn load_user_app(app_name: &str) -> AxResult<(VirtAddr, VirtAddr, AddrSpace)
         MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
         true,
     )?;
-    {
-        // Copy the stack data to the user stack
-        let ustack_top_align = VirtAddr::from_usize(ustack_top).align_down_4k();
-        let stack_data_offset = ustack_top_align - ustack_bottom;
-        // Only copy data which contains args, envs and auxv.
-        for (idx, vaddr) in PageIter4K::new(ustack_top_align, ustack_end)
-            .expect("Failed to create page iterator")
-            .enumerate()
-        {
-            let (paddr, _, _) = uspace.page_table().query(vaddr).unwrap_or_else(|e| {
-                panic!("Mapping failed for stack: {:#x?} error: {:?}", vaddr, e)
-            });
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    stack_data
-                        .as_ptr()
-                        .add(stack_data_offset + idx * PAGE_SIZE_4K),
-                    phys_to_virt(paddr).as_mut_ptr(),
-                    PAGE_SIZE_4K,
-                );
-            }
-        }
-    }
 
+    uspace.write(VirtAddr::from_usize(ustack_top), stack_data.as_slice())?;
     Ok((elf_info.entry, VirtAddr::from(ustack_top), uspace))
 }
 
@@ -138,7 +78,11 @@ fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags, is_user: bool)
             .lock()
             .handle_page_fault(vaddr, access_flags)
         {
-            warn!("{}: segmentation fault, exit!", axtask::current().id_name());
+            warn!(
+                "{}: segmentation fault at {:#x}, exit!",
+                axtask::current().id_name(),
+                vaddr
+            );
             axtask::exit(-1);
         }
         true

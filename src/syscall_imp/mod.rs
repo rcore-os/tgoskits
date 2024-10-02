@@ -9,24 +9,9 @@ use axhal::{
 };
 use fs::*;
 use mm::*;
+use syscalls::Sysno;
 use task::*;
 use time::*;
-const SYS_READ: usize = 0;
-const SYS_WRITE: usize = 1;
-const SYS_MMAP: usize = 9;
-const SYS_IOCTL: usize = 16;
-const SYS_WRITEV: usize = 20;
-const SYS_SCHED_YIELD: usize = 24;
-const SYS_NANOSLEEP: usize = 35;
-const SYS_GETPID: usize = 39;
-const SYS_EXIT: usize = 60;
-#[cfg(target_arch = "x86_64")]
-const SYS_ARCH_PRCTL: usize = 158;
-const SYS_SET_TID_ADDRESS: usize = 218;
-const SYS_CLOCK_GETTIME: usize = 228;
-const SYS_CLOCK_NANOSLEEP: usize = 230;
-const SYS_EXITGROUP: usize = 231;
-
 /// Macro to generate syscall body
 ///
 /// It will receive a function which return Result<_, LinuxError> and convert it to
@@ -51,10 +36,10 @@ macro_rules! syscall_body {
 
 #[register_trap_handler(SYSCALL)]
 fn handle_syscall(tf: &TrapFrame, syscall_num: usize) -> isize {
-    let ret = match syscall_num {
-        SYS_READ => sys_read(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
-        SYS_WRITE => sys_write(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
-        SYS_MMAP => sys_mmap(
+    match Sysno::from(syscall_num as u32) {
+        Sysno::read => sys_read(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
+        Sysno::write => sys_write(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
+        Sysno::mmap => sys_mmap(
             tf.arg0() as _,
             tf.arg1() as _,
             tf.arg2() as _,
@@ -62,22 +47,20 @@ fn handle_syscall(tf: &TrapFrame, syscall_num: usize) -> isize {
             tf.arg4() as _,
             tf.arg5() as _,
         ) as _,
-        SYS_IOCTL => sys_ioctl(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _) as _,
-        SYS_WRITEV => sys_writev(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
-        SYS_SCHED_YIELD => sys_sched_yield() as isize,
-        SYS_NANOSLEEP => sys_nanosleep(tf.arg0() as _, tf.arg1() as _) as _,
-        SYS_GETPID => sys_getpid() as isize,
-        SYS_EXIT => sys_exit(tf.arg0() as _),
+        Sysno::ioctl => sys_ioctl(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _) as _,
+        Sysno::writev => sys_writev(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
+        Sysno::sched_yield => sys_sched_yield() as isize,
+        Sysno::nanosleep => sys_nanosleep(tf.arg0() as _, tf.arg1() as _) as _,
+        Sysno::getpid => sys_getpid() as isize,
+        Sysno::exit => sys_exit(tf.arg0() as _),
         #[cfg(target_arch = "x86_64")]
-        SYS_ARCH_PRCTL => sys_arch_prctl(tf.arg0() as _, tf.arg1() as _),
-        SYS_SET_TID_ADDRESS => sys_set_tid_address(tf.arg0() as _),
-        SYS_CLOCK_GETTIME => sys_clock_gettime(tf.arg0() as _, tf.arg1() as _) as _,
-        SYS_CLOCK_NANOSLEEP => sys_nanosleep(tf.arg0() as _, tf.arg1() as _) as _,
-        SYS_EXITGROUP => sys_exit_group(tf.arg0() as _),
+        Sysno::arch_prctl => sys_arch_prctl(tf.arg0() as _, tf.arg1() as _),
+        Sysno::set_tid_address => sys_set_tid_address(tf.arg0() as _),
+        Sysno::clock_gettime => sys_clock_gettime(tf.arg0() as _, tf.arg1() as _) as _,
+        Sysno::exit_group => sys_exit_group(tf.arg0() as _),
         _ => {
             warn!("Unimplemented syscall: {}", syscall_num);
             axtask::exit(LinuxError::ENOSYS as _)
         }
-    };
-    ret
+    }
 }

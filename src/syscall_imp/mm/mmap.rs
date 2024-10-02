@@ -69,7 +69,7 @@ pub(crate) fn sys_mmap(
         let curr = current();
         let curr_ext = curr.task_ext();
         let mut aspace = curr_ext.aspace.lock();
-        let permiss_flags = MmapProt::from_bits_truncate(prot);
+        let permission_flags = MmapProt::from_bits_truncate(prot);
         // TODO: check illegal flags for mmap
         // An example is the flags contained none of MAP_PRIVATE, MAP_SHARED, or MAP_SHARED_VALIDATE.
         let map_flags = MmapFlags::from_bits_truncate(flags);
@@ -92,7 +92,7 @@ pub(crate) fn sys_mmap(
         };
 
         aspace
-            .map_alloc(start_addr, length, permiss_flags.into(), false)
+            .map_alloc(start_addr, length, permission_flags.into(), false)
             .map_err(<AxError as From<_>>::from)?;
 
         Ok(start_addr.as_usize())

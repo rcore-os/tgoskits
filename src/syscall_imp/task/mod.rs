@@ -1,4 +1,4 @@
 mod schedule;
-mod task;
+mod thread;
 pub(crate) use schedule::*;
-pub(crate) use task::*;
+pub(crate) use thread::*;

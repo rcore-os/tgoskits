@@ -76,7 +76,7 @@ _app_count:
 
 fn gen_kernel_config(arch: &str) -> Result<()> {
     let config_path = PathBuf::from(format!("configs/{}.toml", arch));
-    let config = std::fs::read_to_string(&config_path)?;
+    let config = std::fs::read_to_string(config_path)?;
     let out_path = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("uspace_config.rs");
     let config_content = config
         .parse::<DocumentMut>()
