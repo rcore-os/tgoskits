@@ -1,3 +1,4 @@
+use core::arch::asm;
 use core::fmt;
 use page_table_entry::{GenericPTE, MappingFlags};
 use page_table_multiarch::{PageTable64, PagingMetaData};
@@ -16,10 +17,10 @@ bitflags::bitflags! {
         /// (not a 2M, 1G block)
         const NON_BLOCK =   1 << 1;
         /// Memory attributes index field.
-        const ATTR_INDX =   0b111 << 2;
+        const ATTR =   0b1111 << 2;
         /// Non-secure bit. For memory accesses from Secure state, specifies whether the output
         /// address is in Secure or Non-secure memory.
-        const NS =          1 << 5;
+        // const NS =          1 << 5;
        /// Access permission: read-only.
         const S2AP_RO =      1 << 6;
         /// Access permission: write-only.
@@ -60,25 +61,37 @@ bitflags::bitflags! {
 enum MemType {
     Device = 0,
     Normal = 1,
+    NormalNonCache = 2,
 }
 
 impl DescriptorAttr {
     #[allow(clippy::unusual_byte_groupings)]
-    const ATTR_INDEX_MASK: u64 = 0b111_00;
+    const ATTR_INDEX_MASK: u64 = 0b1111_00;
+    const PTE_S2_MEM_ATTR_NORMAL_INNER_WRITE_BACK_CACHEABLE: u64 = 0b11 << 2;
+    const PTE_S2_MEM_ATTR_NORMAL_OUTER_WRITE_BACK_CACHEABLE: u64 = 0b11 << 4;
+    const PTE_S2_MEM_ATTR_NORMAL_OUTER_WRITE_BACK_NOCACHEABLE: u64 = 0b1 << 4;
+    const NORMAL_BIT: u64 = Self::PTE_S2_MEM_ATTR_NORMAL_INNER_WRITE_BACK_CACHEABLE
+        | Self::PTE_S2_MEM_ATTR_NORMAL_OUTER_WRITE_BACK_CACHEABLE;
 
     const fn from_mem_type(mem_type: MemType) -> Self {
-        let mut bits = (mem_type as u64) << 2;
-        if matches!(mem_type, MemType::Normal) {
-            bits |= Self::INNER.bits() | Self::SHAREABLE.bits();
-        }
+        let bits = match mem_type {
+            MemType::Normal => Self::NORMAL_BIT | Self::SHAREABLE.bits(),
+            MemType::NormalNonCache => {
+                Self::PTE_S2_MEM_ATTR_NORMAL_INNER_WRITE_BACK_CACHEABLE
+                    | Self::PTE_S2_MEM_ATTR_NORMAL_OUTER_WRITE_BACK_NOCACHEABLE
+                    | Self::SHAREABLE.bits()
+            }
+            MemType::Device => Self::SHAREABLE.bits(),
+        };
         Self::from_bits_retain(bits)
     }
 
     fn mem_type(&self) -> MemType {
-        let idx = (self.bits() & Self::ATTR_INDEX_MASK) >> 2;
+        let idx = (self.bits() & Self::ATTR_INDEX_MASK);
         match idx {
+            Self::NORMAL_BIT => MemType::Normal,
+            Self::PTE_S2_MEM_ATTR_NORMAL_OUTER_WRITE_BACK_NOCACHEABLE => MemType::NormalNonCache,
             0 => MemType::Device,
-            1 => MemType::Normal,
             _ => panic!("Invalid memory attribute index"),
         }
     }
@@ -106,7 +119,11 @@ impl From<DescriptorAttr> for MappingFlags {
 impl From<MappingFlags> for DescriptorAttr {
     fn from(flags: MappingFlags) -> Self {
         let mut attr = if flags.contains(MappingFlags::DEVICE) {
-            Self::from_mem_type(MemType::Device)
+            if flags.contains(MappingFlags::UNCACHED) {
+                Self::from_mem_type(MemType::NormalNonCache)
+            } else {
+                Self::from_mem_type(MemType::Device)
+            }
         } else {
             Self::from_mem_type(MemType::Normal)
         };
@@ -207,8 +224,29 @@ impl PagingMetaData for A64HVPagingMetaData {
 
     type VirtAddr = memory_addr::VirtAddr;
 
-    fn flush_tlb(_vaddr: Option<Self::VirtAddr>) {
-        todo!()
+    fn flush_tlb(vaddr: Option<Self::VirtAddr>) {
+        unsafe {
+            if let Some(vaddr) = vaddr {
+                #[cfg(not(feature = "hv"))]
+                {
+                    asm!("tlbi vaae1is, {}; dsb sy; isb", in(reg) vaddr.as_usize())
+                }
+                #[cfg(feature = "hv")]
+                {
+                    asm!("tlbi vae2is, {}; dsb sy; isb", in(reg) vaddr.as_usize())
+                }
+            } else {
+                // flush the entire TLB
+                #[cfg(not(feature = "hv"))]
+                {
+                    asm!("tlbi vmalle1; dsb sy; isb")
+                }
+                #[cfg(feature = "hv")]
+                {
+                    asm!("tlbi alle2is; dsb sy; isb")
+                }
+            }
+        }
     }
 }
 /// According to rust shyper, AArch64 translation table.
