@@ -1,19 +1,18 @@
-use memory_addr::{PhysAddr, VirtAddr};
-use page_table_multiarch::MappingFlags;
-use page_table_multiarch::PagingHandler;
+use memory_addr::PhysAddr;
+use page_table_multiarch::{MappingFlags, PagingHandler};
 
-use crate::backend::Backend;
-use crate::npt::NestedPageTable as PageTable;
+use super::Backend;
+use crate::{npt::NestedPageTable as PageTable, GuestPhysAddr};
 
-impl Backend {
+impl<H: PagingHandler> Backend<H> {
     /// Creates a new linear mapping backend.
     pub const fn new_linear(pa_va_offset: usize) -> Self {
         Self::Linear { pa_va_offset }
     }
 
-    pub(crate) fn map_linear<H: PagingHandler>(
+    pub(crate) fn map_linear(
         &self,
-        start: VirtAddr,
+        start: GuestPhysAddr,
         size: usize,
         flags: MappingFlags,
         pt: &mut PageTable<H>,
@@ -39,9 +38,9 @@ impl Backend {
         .is_ok()
     }
 
-    pub(crate) fn unmap_linear<H: PagingHandler>(
+    pub(crate) fn unmap_linear(
         &self,
-        start: VirtAddr,
+        start: GuestPhysAddr,
         size: usize,
         pt: &mut PageTable<H>,
         _pa_va_offset: usize,

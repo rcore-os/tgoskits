@@ -7,24 +7,15 @@
 extern crate log;
 extern crate alloc;
 
+mod addr;
 mod address_space;
-mod backend;
 mod npt;
 
+pub use addr::*;
 pub use address_space::*;
 
 use axerrno::AxError;
-use memory_addr::{PhysAddr, VirtAddr};
 use memory_set::MappingError;
-
-/// Guest virtual address.
-pub type GuestVirtAddr = VirtAddr;
-/// Guest physical address.
-pub type GuestPhysAddr = VirtAddr;
-/// Host virtual address.
-pub type HostVirtAddr = VirtAddr;
-/// Host physical address.
-pub type HostPhysAddr = PhysAddr;
 
 /// Information about nested page faults.
 #[derive(Debug)]

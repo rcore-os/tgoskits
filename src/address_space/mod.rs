@@ -2,36 +2,38 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use axerrno::{ax_err, AxError, AxResult};
-use memory_addr::{is_aligned_4k, PhysAddr, VirtAddr, VirtAddrRange};
+use memory_addr::{is_aligned_4k, MemoryAddr, PhysAddr};
 use memory_set::{MemoryArea, MemorySet};
 use page_table_multiarch::PagingHandler;
 
-use crate::backend::Backend;
-use crate::mapping_err_to_ax_err;
 use crate::npt::NestedPageTable as PageTable;
+use crate::{mapping_err_to_ax_err, GuestPhysAddr, GuestPhysAddrRange};
 
+mod backend;
+
+pub use backend::Backend;
 pub use page_table_entry::MappingFlags;
 
 /// The virtual memory address space.
 pub struct AddrSpace<H: PagingHandler> {
-    va_range: VirtAddrRange,
-    areas: MemorySet<MappingFlags, PageTable<H>, Backend>,
+    va_range: GuestPhysAddrRange,
+    areas: MemorySet<Backend<H>>,
     pt: PageTable<H>,
 }
 
 impl<H: PagingHandler> AddrSpace<H> {
     /// Returns the address space base.
-    pub const fn base(&self) -> VirtAddr {
+    pub const fn base(&self) -> GuestPhysAddr {
         self.va_range.start
     }
 
     /// Returns the address space end.
-    pub const fn end(&self) -> VirtAddr {
+    pub const fn end(&self) -> GuestPhysAddr {
         self.va_range.end
     }
 
     /// Returns the address space size.
-    pub const fn size(&self) -> usize {
+    pub fn size(&self) -> usize {
         self.va_range.size()
     }
 
@@ -46,15 +48,15 @@ impl<H: PagingHandler> AddrSpace<H> {
     }
 
     /// Checks if the address space contains the given address range.
-    pub const fn contains_range(&self, start: VirtAddr, size: usize) -> bool {
+    pub fn contains_range(&self, start: GuestPhysAddr, size: usize) -> bool {
         self.va_range
-            .contains_range(VirtAddrRange::from_start_size(start, size))
+            .contains_range(GuestPhysAddrRange::from_start_size(start, size))
     }
 
     /// Creates a new empty address space.
-    pub fn new_empty(base: VirtAddr, size: usize) -> AxResult<Self> {
+    pub fn new_empty(base: GuestPhysAddr, size: usize) -> AxResult<Self> {
         Ok(Self {
-            va_range: VirtAddrRange::from_start_size(base, size),
+            va_range: GuestPhysAddrRange::from_start_size(base, size),
             areas: MemorySet::new(),
             pt: PageTable::try_new().map_err(|_| AxError::NoMemory)?,
         })
@@ -67,7 +69,7 @@ impl<H: PagingHandler> AddrSpace<H> {
     /// The `flags` parameter indicates the mapping permissions and attributes.
     pub fn map_linear(
         &mut self,
-        start_vaddr: VirtAddr,
+        start_vaddr: GuestPhysAddr,
         start_paddr: PhysAddr,
         size: usize,
         flags: MappingFlags,
@@ -94,7 +96,7 @@ impl<H: PagingHandler> AddrSpace<H> {
     /// The `flags` parameter indicates the mapping permissions and attributes.
     pub fn map_alloc(
         &mut self,
-        start: VirtAddr,
+        start: GuestPhysAddr,
         size: usize,
         flags: MappingFlags,
         populate: bool,
@@ -117,7 +119,7 @@ impl<H: PagingHandler> AddrSpace<H> {
     }
 
     /// Removes mappings within the specified virtual address range.
-    pub fn unmap(&mut self, start: VirtAddr, size: usize) -> AxResult {
+    pub fn unmap(&mut self, start: GuestPhysAddr, size: usize) -> AxResult {
         if !self.contains_range(start, size) {
             return ax_err!(InvalidInput, "address out of range");
         }
@@ -142,7 +144,7 @@ impl<H: PagingHandler> AddrSpace<H> {
     ///
     /// Returns `true` if the page fault is handled successfully (not a real
     /// fault).
-    pub fn handle_page_fault(&mut self, vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
+    pub fn handle_page_fault(&mut self, vaddr: GuestPhysAddr, access_flags: MappingFlags) -> bool {
         if !self.va_range.contains(vaddr) {
             return false;
         }
@@ -161,7 +163,7 @@ impl<H: PagingHandler> AddrSpace<H> {
     /// Translates the given `VirtAddr` into `PhysAddr`.
     ///
     /// Returns `None` if the virtual address is out of range or not mapped.
-    pub fn translate(&self, vaddr: VirtAddr) -> Option<PhysAddr> {
+    pub fn translate(&self, vaddr: GuestPhysAddr) -> Option<PhysAddr> {
         if !self.va_range.contains(vaddr) {
             return None;
         }
@@ -179,7 +181,7 @@ impl<H: PagingHandler> AddrSpace<H> {
     /// Returns `None` if the virtual address is out of range or not mapped.
     pub fn translated_byte_buffer(
         &self,
-        vaddr: VirtAddr,
+        vaddr: GuestPhysAddr,
         len: usize,
     ) -> Option<Vec<&'static mut [u8]>> {
         if !self.va_range.contains(vaddr) {
@@ -229,7 +231,7 @@ impl<H: PagingHandler> AddrSpace<H> {
     /// and returns the size of the `MemoryArea` corresponding to the target vaddr.
     ///
     /// Returns `None` if the virtual address is out of range or not mapped.
-    pub fn translate_and_get_limit(&self, vaddr: VirtAddr) -> Option<(PhysAddr, usize)> {
+    pub fn translate_and_get_limit(&self, vaddr: GuestPhysAddr) -> Option<(PhysAddr, usize)> {
         if !self.va_range.contains(vaddr) {
             return None;
         }

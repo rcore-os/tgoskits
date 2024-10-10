@@ -1,18 +1,21 @@
-use memory_addr::{PageIter4K, PhysAddr, VirtAddr};
+use memory_addr::{PageIter4K, PhysAddr};
 use page_table_multiarch::{MappingFlags, PageSize, PagingHandler};
 
-use crate::backend::Backend;
-use crate::npt::NestedPageTable as PageTable;
+use super::Backend;
+use crate::{npt::NestedPageTable as PageTable, GuestPhysAddr};
 
-impl Backend {
+impl<H: PagingHandler> Backend<H> {
     /// Creates a new allocation mapping backend.
     pub const fn new_alloc(populate: bool) -> Self {
-        Self::Alloc { populate }
+        Self::Alloc {
+            populate,
+            _phantom: core::marker::PhantomData,
+        }
     }
 
-    pub(crate) fn map_alloc<H: PagingHandler>(
+    pub(crate) fn map_alloc(
         &self,
-        start: VirtAddr,
+        start: GuestPhysAddr,
         size: usize,
         flags: MappingFlags,
         pt: &mut PageTable<H>,
@@ -50,9 +53,9 @@ impl Backend {
         }
     }
 
-    pub(crate) fn unmap_alloc<H: PagingHandler>(
+    pub(crate) fn unmap_alloc(
         &self,
-        start: VirtAddr,
+        start: GuestPhysAddr,
         size: usize,
         pt: &mut PageTable<H>,
         _populate: bool,
@@ -73,9 +76,9 @@ impl Backend {
         true
     }
 
-    pub(crate) fn handle_page_fault_alloc<H: PagingHandler>(
+    pub(crate) fn handle_page_fault_alloc(
         &self,
-        vaddr: VirtAddr,
+        vaddr: GuestPhysAddr,
         orig_flags: MappingFlags,
         pt: &mut PageTable<H>,
         populate: bool,

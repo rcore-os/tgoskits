@@ -3,7 +3,7 @@ use core::fmt;
 use page_table_entry::{GenericPTE, MappingFlags};
 use page_table_multiarch::{PageTable64, PagingMetaData};
 // use memory_addr::HostPhysAddr;
-use crate::HostPhysAddr;
+use crate::{GuestPhysAddr, HostPhysAddr};
 
 bitflags::bitflags! {
     /// Memory attribute fields in the VMSAv8-64 translation table format descriptors.
@@ -221,7 +221,7 @@ impl PagingMetaData for A64HVPagingMetaData {
     // The size of the IPA space can be configured in the same way as the
     const VA_MAX_BITS: usize = 40; //  virtual address space. VTCR_EL2.T0SZ controls the size.
 
-    type VirtAddr = memory_addr::VirtAddr;
+    type VirtAddr = GuestPhysAddr;
 
     fn flush_tlb(vaddr: Option<Self::VirtAddr>) {
         unsafe {
