@@ -18,9 +18,6 @@ bitflags::bitflags! {
         const NON_BLOCK =   1 << 1;
         /// Memory attributes index field.
         const ATTR =   0b1111 << 2;
-        /// Non-secure bit. For memory accesses from Secure state, specifies whether the output
-        /// address is in Secure or Non-secure memory.
-        // const NS =          1 << 5;
        /// Access permission: read-only.
         const S2AP_RO =      1 << 6;
         /// Access permission: write-only.
@@ -39,7 +36,9 @@ bitflags::bitflags! {
         // const PXN =         1 <<  53;
         /// The Execute-never or Unprivileged execute-never field.
         const XN =         1 <<  54;
-
+        /// Non-secure bit. For memory accesses from Secure state, specifies whether the output
+        /// address is in Secure or Non-secure memory.
+        const NS =          1 << 55;
         // Next-level attributes in stage 1 VMSAv8-64 Table descriptors:
 
         /// PXN limit for subsequent levels of lookup.
