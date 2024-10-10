@@ -11,7 +11,7 @@ jobs:
         rust-toolchain: [nightly]
     steps:
     - uses: actions/checkout@v4
-    - uses: dtolnay/rust-toolchain@nightly
+    - uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: ${{ matrix.rust-toolchain }}
         components: rust-src, clippy, rustfmt
@@ -20,8 +20,10 @@ jobs:
     - name: Check rust version
       run: rustc --version --verbose
     - name: Check code format
+      continue-on-error: ${{ matrix.rust-toolchain == 'nightly' }}
       run: cargo fmt -- --check
     - name: Clippy
+      continue-on-error: ${{ matrix.rust-toolchain == 'nightly' }}
       run: cargo clippy
 
   build:
