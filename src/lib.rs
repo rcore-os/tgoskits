@@ -1,14 +1,5 @@
-//! CPU mask library
-//! Cpumasks provide a bitmap suitable for representing the set of CPUs in a system,
-//! one bit position per CPU number.
-//! In general, only nr_cpu_ids (<= NR_CPUS) bits are valid.
-//! Refering to `cpumask_t` in Linux.
-//! Reference:
-//!     * <https://man7.org/linux/man-pages/man2/sched_setaffinity.2.html>
-//!     * <https://man7.org/linux/man-pages/man3/CPU_SET.3.html>
-//!     * <https://elixir.bootlin.com/linux/v6.11/source/include/linux/cpumask_types.h>
-
 #![cfg_attr(not(test), no_std)]
+#![doc = include_str!("../README.md")]
 
 use core::hash::{Hash, Hasher};
 use core::ops::*;

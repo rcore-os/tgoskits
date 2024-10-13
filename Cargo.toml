@@ -2,6 +2,14 @@
 name = "cpumask"
 version = "0.1.0"
 edition = "2021"
+authors = ["keyang.hu@qq.com"]
+description = "CPU mask library in Rust"
+license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
+homepage = "https://github.com/arceos-org/arceos"
+repository = "https://github.com/arceos-org/cpumask"
+documentation = "https://docs.rs/cpumask"
+keywords = ["arceos", "cpu-affinity", "cpumask"]
+categories = ["os", "no-std"]
 
 [dependencies]
 bitmaps = { version = "3.2.1", default-features = false }
