@@ -6,7 +6,7 @@ edition = "2021"
 
 [dependencies]
 axerrno = "0.1.0"
-memory_addr = "0.2.0"
+memory_addr = "0.3.1"
 percpu = "0.1.4"
 
 axaddrspace = { git = "https://github.com/arceos-hypervisor/axaddrspace.git" }
