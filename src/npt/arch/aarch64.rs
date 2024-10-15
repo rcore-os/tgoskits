@@ -86,7 +86,7 @@ impl DescriptorAttr {
     }
 
     fn mem_type(&self) -> MemType {
-        let idx = (self.bits() & Self::ATTR_INDEX_MASK);
+        let idx = self.bits() & Self::ATTR_INDEX_MASK;
         match idx {
             Self::NORMAL_BIT => MemType::Normal,
             Self::PTE_S2_MEM_ATTR_NORMAL_OUTER_WRITE_BACK_NOCACHEABLE => MemType::NormalNonCache,
@@ -226,21 +226,21 @@ impl PagingMetaData for A64HVPagingMetaData {
     fn flush_tlb(vaddr: Option<Self::VirtAddr>) {
         unsafe {
             if let Some(vaddr) = vaddr {
-                #[cfg(not(feature = "hv"))]
+                #[cfg(not(feature = "arm-el2"))]
                 {
                     asm!("tlbi vaae1is, {}; dsb sy; isb", in(reg) vaddr.as_usize())
                 }
-                #[cfg(feature = "hv")]
+                #[cfg(feature = "arm-el2")]
                 {
                     asm!("tlbi vae2is, {}; dsb sy; isb", in(reg) vaddr.as_usize())
                 }
             } else {
                 // flush the entire TLB
-                #[cfg(not(feature = "hv"))]
+                #[cfg(not(feature = "arm-el2"))]
                 {
                     asm!("tlbi vmalle1; dsb sy; isb")
                 }
-                #[cfg(feature = "hv")]
+                #[cfg(feature = "arm-el2")]
                 {
                     asm!("tlbi alle2is; dsb sy; isb")
                 }

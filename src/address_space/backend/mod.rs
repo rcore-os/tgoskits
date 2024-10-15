@@ -35,6 +35,7 @@ pub enum Backend<H: PagingHandler> {
     Alloc {
         /// Whether to populate the physical frames when creating the mapping.
         populate: bool,
+        /// A phantom data for the paging handler.
         _phantom: core::marker::PhantomData<H>,
     },
 }
