@@ -8,7 +8,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        rust-toolchain: [nightly]
+        rust-toolchain: [nightly-2024-05-02, nightly-2024-08-24]
         targets: [x86_64-unknown-none]
     steps:
     - uses: actions/checkout@v4
