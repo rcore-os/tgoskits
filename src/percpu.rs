@@ -5,6 +5,7 @@ use axvcpu::AxArchPerCpu;
 use crate::csrs::{traps, RiscvCsrTrait, CSR};
 use crate::has_hardware_support;
 
+/// Risc-V per-CPU state.
 pub struct RISCVPerCpu {}
 
 impl AxArchPerCpu for RISCVPerCpu {

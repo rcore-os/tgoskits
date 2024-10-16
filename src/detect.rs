@@ -3,7 +3,7 @@
 //! First, it disables all S-level interrupts. Remaining traps in RISC-V core
 //! are all exceptions.
 //! Then, it filters out illegal instruction from exceptions.
-//! ref: https://github.com/luojia65/zihai/blob/main/zihai/src/detect.rs
+//! ref: <https://github.com/luojia65/zihai/blob/main/zihai/src/detect.rs>
 
 use core::arch::asm;
 use riscv::register::{
@@ -12,9 +12,9 @@ use riscv::register::{
     stvec::{self, Stvec, TrapMode},
 };
 
-// Detect if hypervisor extension exists on current hart environment
-//
-// This function tries to read hgatp and returns false if the read operation failed.
+/// Detect if hypervisor extension exists on current hart environment
+///
+/// This function tries to read hgatp and returns false if the read operation failed.
 pub fn detect_h_extension() -> bool {
     // run detection by trap on csrr instruction.
     let ans = with_detect_trap(0, || unsafe {

@@ -4,11 +4,17 @@ use tock_registers::RegisterLongName;
 
 /// Define each registers of hypervisor using.
 pub struct CSR {
+    /// The `sie` csr.
     pub sie: ReadWriteCsr<sie::Register, CSR_SIE>,
+    /// The `hstatus` csr.
     pub hstatus: ReadWriteCsr<hstatus::Register, CSR_HSTATUS>,
+    /// The `hedeleg` csr.
     pub hedeleg: ReadWriteCsr<hedeleg::Register, CSR_HEDELEG>,
+    /// The `hideleg` csr.
     pub hideleg: ReadWriteCsr<hideleg::Register, CSR_HIDELEG>,
+    /// The `hcounteren` csr.
     pub hcounteren: ReadWriteCsr<hcounteren::Register, CSR_HCOUNTEREN>,
+    /// The `hvip` csr.
     pub hvip: ReadWriteCsr<hvip::Register, CSR_HVIP>,
 }
 
@@ -47,6 +53,7 @@ pub struct ReadWriteCsr<R: RegisterLongName, const V: u16> {
 }
 
 impl<R: RegisterLongName, const V: u16> ReadWriteCsr<R, V> {
+    /// Create a new instance of the CSR.
     pub const fn new() -> Self {
         Self {
             associated_register: core::marker::PhantomData,
@@ -116,6 +123,7 @@ impl<R: RegisterLongName, const V: u16> Writeable for ReadWriteCsr<R, V> {
     }
 }
 
+/// Definitions
 pub mod defs {
     use tock_registers::register_bitfields;
     pub const CSR_SSTATUS: u16 = 0x100;
@@ -170,33 +178,51 @@ pub mod defs {
 
     // Hypervisor exception delegation register.
     register_bitfields![usize,
+    /// Hypervisor exception delegation register.
     pub hedeleg [
+        /// Instruction address misaligned.
         instr_misaligned OFFSET(0) NUMBITS(1) [],
+        /// Instruction access fault.
         instr_fault OFFSET(1) NUMBITS(1) [],
+        /// Illegal instruction.
         illegal_instr OFFSET(2) NUMBITS(1) [],
+        /// Breakpoint.
         breakpoint OFFSET(3) NUMBITS(1) [],
+        /// Load address misaligned.
         load_misaligned OFFSET(4) NUMBITS(1) [],
+        /// Load access fault.
         load_fault OFFSET(5) NUMBITS(1) [],
+        /// Store address misaligned.
         store_misaligned OFFSET(6) NUMBITS(1) [],
+        /// Store access fault.
         store_fault OFFSET(7) NUMBITS(1) [],
+        /// User environment call.
         u_ecall OFFSET(8) NUMBITS(1) [],
+        /// Instruction page fault.
         instr_page_fault OFFSET(12) NUMBITS(1) [],
+        /// Load page fault.
         load_page_fault OFFSET(13) NUMBITS(1) [],
+        /// Store page fault.
         store_page_fault OFFSET(15) NUMBITS(1) [],
     ]
     ];
 
     // Supervisor interrupt enable register.
     register_bitfields![usize,
+    /// Supervisor interrupt enable register.
     pub sie [
+        /// Supervisor software interrupt.
         ssoft OFFSET(1) NUMBITS(1) [],
+        /// Supervisor timer interrupt.
         stimer OFFSET(5) NUMBITS(1) [],
+        /// Supervisor external interrupt.
         sext OFFSET(9) NUMBITS(1) [],
     ]
     ];
 
     // Hypervisor status register.
     register_bitfields![usize,
+    /// Hypervisor status register.
     pub hstatus [
         // VS mode endianness control.
         vsbe OFFSET(6) NUMBITS(1) [],
@@ -204,12 +230,16 @@ pub mod defs {
         gva OFFSET(6) NUMBITS(1) [],
         // Virtualization mode at time of trap.
         spv OFFSET(7) NUMBITS(1) [
+            /// User mode.
             User = 0,
+            /// Supervisor mode.
             Supervisor = 1,
         ],
         // Privilege level the virtual hart was executing before entering HS-mode.
         spvp OFFSET(8) NUMBITS(1) [
+            /// User mode.
             User = 0,
+            /// Supervisor mode.
             Supervisor = 1,
         ],
         // Allow hypervisor instructions in U-mode.
@@ -224,7 +254,9 @@ pub mod defs {
         vtsr OFFSET(22) NUMBITS(1) [],
         // Native base integer ISA width for VS-mode.
         vsxl OFFSET(32) NUMBITS(2) [
+            /// 32-bit.
             Xlen32 = 1,
+            /// 64-bit.
             Xlen64 = 2,
         ],
     ]
@@ -232,79 +264,132 @@ pub mod defs {
 
     // Hypervisor interrupt delegation register.
     register_bitfields![usize,
+    /// Hypervisor interrupt delegation register.
     pub hideleg [
+        /// VS-mode software interrupt.
         vssoft OFFSET(2) NUMBITS(1) [],
+        /// VS-mode timer interrupt.
         vstimer OFFSET(6) NUMBITS(1) [],
+        /// VS-mode external interrupt.
         vsext OFFSET(10) NUMBITS(1) [],
     ]
     ];
 
     // Hypervisor interrupt enable register.
     register_bitfields![usize,
+    /// Hypervisor interrupt enable register.
     pub hie [
+        /// VS-mode software interrupt.
         vssoft OFFSET(2) NUMBITS(1) [],
+        /// VS-mode timer interrupt.
         vstimer OFFSET(6) NUMBITS(1) [],
+        /// VS-mode external interrupt.
         vsext OFFSET(10) NUMBITS(1) [],
+        /// Supervisor guest external interrupt.
         sgext OFFSET(12) NUMBITS(1) [],
     ]
     ];
 
     // VS-mode counter availability control.
     register_bitfields![usize,
+    /// Hypervisor counter enable register.
     pub hcounteren [
+        /// Cycle.
         cycle OFFSET(0) NUMBITS(1) [],
+        /// Time.
         time OFFSET(1) NUMBITS(1) [],
+        /// Instret.
         instret OFFSET(2) NUMBITS(1) [],
+        /// HPM.
         hpm OFFSET(3) NUMBITS(29) [],
     ]
     ];
 
     // Hypervisor virtual interrupt pending.
     register_bitfields![usize,
+    /// Hypervisor virtual interrupt pending.
     pub hvip [
+        /// VS-mode software interrupt.
         vssoft OFFSET(2) NUMBITS(1) [],
+        /// VS-mode timer interrupt.
         vstimer OFFSET(6) NUMBITS(1) [],
+        /// VS-mode external interrupt.
         vsext OFFSET(10) NUMBITS(1) [],
     ]
     ];
 }
 
+/// Constants about traps.
 pub mod traps {
+    /// Constants about interrupt.
     pub mod interrupt {
+        /// User software interrupt.
         pub const USER_SOFT: usize = 1 << 0;
+        /// Supervisor software interrupt.
         pub const SUPERVISOR_SOFT: usize = 1 << 1;
+        /// Virtual supervisor software interrupt.
         pub const VIRTUAL_SUPERVISOR_SOFT: usize = 1 << 2;
+        /// Machine software interrupt.
         pub const MACHINE_SOFT: usize = 1 << 3;
+        /// User timer interrupt.
         pub const USER_TIMER: usize = 1 << 4;
+        /// Supervisor timer interrupt.
         pub const SUPERVISOR_TIMER: usize = 1 << 5;
+        /// Virtual supervisor timer interrupt.
         pub const VIRTUAL_SUPERVISOR_TIMER: usize = 1 << 6;
+        /// Machine timer interrupt.
         pub const MACHINE_TIMER: usize = 1 << 7;
+        /// User external interrupt.
         pub const USER_EXTERNAL: usize = 1 << 8;
+        /// Supervisor external interrupt.
         pub const SUPERVISOR_EXTERNAL: usize = 1 << 9;
+        /// Virtual supervisor external interrupt.
         pub const VIRTUAL_SUPERVISOR_EXTERNAL: usize = 1 << 10;
+        /// Machine external interrupt.
         pub const MACHINEL_EXTERNAL: usize = 1 << 11;
+        /// Supervisor guest external interrupt.
         pub const SUPERVISOR_GUEST_EXTERNEL: usize = 1 << 12;
     }
 
+    /// Constants about exception.
     pub mod exception {
+        /// Instruction address misaligned.
         pub const INST_ADDR_MISALIGN: usize = 1 << 0;
+        /// Instruction access fault.
         pub const INST_ACCESSS_FAULT: usize = 1 << 1;
+        /// Illegal instruction.
         pub const ILLEGAL_INST: usize = 1 << 2;
+        /// Breakpoint.
         pub const BREAKPOINT: usize = 1 << 3;
+        /// Load address misaligned.
         pub const LOAD_ADDR_MISALIGNED: usize = 1 << 4;
+        /// Load access fault.
         pub const LOAD_ACCESS_FAULT: usize = 1 << 5;
+        /// Store address misaligned.
         pub const STORE_ADDR_MISALIGNED: usize = 1 << 6;
+        /// Store access fault.
         pub const STORE_ACCESS_FAULT: usize = 1 << 7;
+        /// Environment call from U-mode or VU-mode.
         pub const ENV_CALL_FROM_U_OR_VU: usize = 1 << 8;
+        /// Environment call from HS-mode.
         pub const ENV_CALL_FROM_HS: usize = 1 << 9;
+        /// Environment call from VS-mode.
         pub const ENV_CALL_FROM_VS: usize = 1 << 10;
+        /// Environment call from M-mode.
         pub const ENV_CALL_FROM_M: usize = 1 << 11;
+        /// Instruction page fault.
         pub const INST_PAGE_FAULT: usize = 1 << 12;
+        /// Load page fault.
         pub const LOAD_PAGE_FAULT: usize = 1 << 13;
+        /// Store page fault.
         pub const STORE_PAGE_FAULT: usize = 1 << 15;
+        /// Instruction guest page fault.
         pub const INST_GUEST_PAGE_FAULT: usize = 1 << 20;
+        /// Load guest page fault.
         pub const LOAD_GUEST_PAGE_FAULT: usize = 1 << 21;
+        /// Virtual instruction.
         pub const VIRTUAL_INST: usize = 1 << 22;
+        /// Store guest page fault.
         pub const STORE_GUEST_PAGE_FAULT: usize = 1 << 23;
     }
 }

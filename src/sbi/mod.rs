@@ -12,12 +12,20 @@ pub use rfnc::RemoteFenceFunction;
 use sbi_spec;
 pub use srst::ResetFunction;
 
+// The values returned from an SBI function call.
+/// Success.
 pub const SBI_SUCCESS: usize = 0;
+/// Failure.
 pub const SBI_ERR_FAILUER: isize = -1;
+/// Not supported.
 pub const SBI_ERR_NOT_SUPPORTED: isize = -2;
+/// Invalid parameter.
 pub const SBI_ERR_INAVLID_PARAM: isize = -3;
+/// Denied.
 pub const SBI_ERR_DENIED: isize = -4;
+/// Invalid address.
 pub const SBI_ERR_INVALID_ADDRESS: isize = -5;
+/// Already available.
 pub const SBI_ERR_ALREADY_AVAILABLE: isize = -6;
 
 /// The values returned from an SBI function call.

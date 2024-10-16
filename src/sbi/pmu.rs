@@ -1,5 +1,6 @@
 use axerrno::AxResult;
 
+/// Performance Monitor Unit (PMU) function.
 #[derive(Clone, Copy, Debug)]
 pub enum PmuFunction {
     /// Returns the total of performance counters (hardware and fireware).
