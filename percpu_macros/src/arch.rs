@@ -3,17 +3,21 @@ use syn::{Ident, Type};
 
 fn macos_unimplemented(item: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
     quote! {
-        #[cfg(not(target_os = "macos"))]
-        { #item }
-        #[cfg(target_os = "macos")]
-        unimplemented!()
+        {
+            #[cfg(not(target_os = "macos"))]
+            { #item }
+            #[cfg(target_os = "macos")]
+            unimplemented!()
+        }
     }
 }
 
+/// Generate a code block that calculates the offset of the per-CPU variable based on the inner symbol name.
 pub fn gen_offset(symbol: &Ident) -> proc_macro2::TokenStream {
+    // the outer pair of braces is necessary to make the result an expression
     quote! {
-        let value: usize;
         unsafe {
+            let value: usize;
             #[cfg(target_arch = "x86_64")]
             ::core::arch::asm!(
                 "movabs {0}, offset {VAR}",
@@ -33,11 +37,13 @@ pub fn gen_offset(symbol: &Ident) -> proc_macro2::TokenStream {
                 out(reg) value,
                 VAR = sym #symbol,
             );
+            value
         }
-        value
     }
 }
 
+/// Generate a code block that calculates the pointer to the per-CPU variable on the current CPU, based on the inner
+/// symbol name and the type of the variable.
 pub fn gen_current_ptr(symbol: &Ident, ty: &Type) -> proc_macro2::TokenStream {
     let aarch64_tpidr = if cfg!(feature = "arm-el2") {
         "TPIDR_EL2"
@@ -72,6 +78,10 @@ pub fn gen_current_ptr(symbol: &Ident, ty: &Type) -> proc_macro2::TokenStream {
     })
 }
 
+/// Generate a code block that reads the value of the per-CPU variable on the current CPU, based on the inner symbol
+/// name and the type of the variable.
+///
+/// The type of the variable must be one of the following: `bool`, `u8`, `u16`, `u32`, `u64`, or `usize`.
 pub fn gen_read_current_raw(symbol: &Ident, ty: &Type) -> proc_macro2::TokenStream {
     let ty_str = quote!(#ty).to_string();
     let rv64_op = match ty_str.as_str() {
@@ -143,6 +153,10 @@ pub fn gen_read_current_raw(symbol: &Ident, ty: &Type) -> proc_macro2::TokenStre
     })
 }
 
+/// Generate a code block that writes the value of the per-CPU variable on the current CPU, based on the inner symbol
+/// name, the identifier of the value to write, and the type of the variable.
+///
+/// The type of the variable must be one of the following: `bool`, `u8`, `u16`, `u32`, `u64`, or `usize`.
 pub fn gen_write_current_raw(symbol: &Ident, val: &Ident, ty: &Type) -> proc_macro2::TokenStream {
     let ty_str = quote!(#ty).to_string();
     let ty_fixup = if ty_str.as_str() == "bool" {
