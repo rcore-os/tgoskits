@@ -7,7 +7,6 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
 use axerrno::{ax_err, ax_err_type, AxResult};
-use memory_addr::VirtAddr;
 use spin::Mutex;
 
 use axvcpu::{AxArchVCpu, AxVCpu, AxVCpuExitReason};
@@ -76,7 +75,7 @@ impl<H: AxVMHal> AxVM<H> {
 
             // Set up Memory regions.
             let mut address_space =
-                AddrSpace::new_empty(VirtAddr::from(VM_ASPACE_BASE), VM_ASPACE_SIZE)?;
+                AddrSpace::new_empty(GuestPhysAddr::from(VM_ASPACE_BASE), VM_ASPACE_SIZE)?;
             for mem_region in config.memory_regions() {
                 let mapping_flags = MappingFlags::from_bits(mem_region.flags).ok_or_else(|| {
                     ax_err_type!(
