@@ -209,6 +209,8 @@ pub struct AxVMCrateConfig {
     pub ramdisk_path: Option<String>,
     /// The load address of the ramdisk image, `None` if not used.
     pub ramdisk_load_addr: Option<usize>,
+    /// The location of the image, default is 'fs'.
+    pub image_location: Option<String>,
 
     disk_path: Option<String>,
 
