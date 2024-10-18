@@ -99,4 +99,57 @@ fn test_percpu() {
         assert_eq!(s.foo, 0x2333);
         assert_eq!(s.bar, 100);
     });
+
+    // test remote write
+    unsafe {
+        *BOOL.remote_ref_mut_raw(1) = false;
+        *U8.remote_ref_mut_raw(1) = 222;
+        *U16.remote_ref_mut_raw(1) = 0x1234;
+        *U32.remote_ref_mut_raw(1) = 0xf00d_f00d;
+        *U64.remote_ref_mut_raw(1) = 0xfeed_feed_feed_feed;
+        *USIZE.remote_ref_mut_raw(1) = 0x0000_ffff;
+
+        *STRUCT.remote_ref_mut_raw(1) = Struct {
+            foo: 0x6666,
+            bar: 200,
+        };
+    }
+
+    // test remote read
+    unsafe {
+        assert!(!*BOOL.remote_ptr(1));
+        assert_eq!(*U8.remote_ptr(1), 222);
+        assert_eq!(*U16.remote_ptr(1), 0x1234);
+        assert_eq!(*U32.remote_ptr(1), 0xf00d_f00d);
+        assert_eq!(*U64.remote_ptr(1), 0xfeed_feed_feed_feed);
+        assert_eq!(*USIZE.remote_ptr(1), 0x0000_ffff);
+
+        let s = STRUCT.remote_ref_raw(1);
+        assert_eq!(s.foo, 0x6666);
+        assert_eq!(s.bar, 200);
+    }
+
+    // test read on another CPU
+    set_local_thread_pointer(1); // we are now on CPU 1
+
+    println!("bool value on CPU 1: {}", BOOL.read_current());
+    println!("u8 value on CPU 1: {}", U8.read_current());
+    println!("u16 value on CPU 1: {:#x}", U16.read_current());
+    println!("u32 value on CPU 1: {:#x}", U32.read_current());
+    println!("u64 value on CPU 1: {:#x}", U64.read_current());
+    println!("usize value on CPU 1: {:#x}", USIZE.read_current());
+
+    assert!(!BOOL.read_current());
+    assert_eq!(U8.read_current(), 222);
+    assert_eq!(U16.read_current(), 0x1234);
+    assert_eq!(U32.read_current(), 0xf00d_f00d);
+    assert_eq!(U64.read_current(), 0xfeed_feed_feed_feed);
+    assert_eq!(USIZE.read_current(), 0x0000_ffff);
+
+    STRUCT.with_current(|s| {
+        println!("struct.foo value on CPU 1: {:#x}", s.foo);
+        println!("struct.bar value on CPU 1: {}", s.bar);
+        assert_eq!(s.foo, 0x6666);
+        assert_eq!(s.bar, 200);
+    });
 }

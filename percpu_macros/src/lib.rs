@@ -3,7 +3,7 @@
 //! **DO NOT** use this crate directly. Use the [percpu] crate instead.
 //!
 //! [percpu]: https://docs.rs/percpu
-//! 
+//!
 //! ## Implementation details of the `def_percpu` macro
 //!
 //! ### Core idea
