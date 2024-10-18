@@ -6,7 +6,7 @@ edition = "2021"
 [features]
 
 [dependencies]
-log = "=0.4.19"
+log = "0.4"
 cfg-if = "1.0"
 serde = { version = "1.0.204", default-features = false, features = ["derive", "alloc"] }
 # System independent crates provided by ArceOS.
