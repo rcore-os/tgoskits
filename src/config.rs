@@ -225,10 +225,8 @@ impl AxVMCrateConfig {
     /// Deserialize the toml string to `AxVMCrateConfig`.
     pub fn from_toml(raw_cfg_str: &str) -> AxResult<Self> {
         let config: AxVMCrateConfig = toml::from_str(raw_cfg_str).map_err(|err| {
-            axerrno::ax_err_type!(
-                InvalidInput,
-                alloc::format!("toml deserialize get err {err:?}")
-            )
+            warn!("Config TOML parse error {:?}", err.message());
+            axerrno::ax_err_type!(InvalidInput, alloc::format!("Error details {err:?}"))
         })?;
         Ok(config)
     }
