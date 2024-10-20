@@ -1,3 +1,3 @@
 mod mmap;
 
-pub(crate) use mmap::*;
+pub(crate) use self::mmap::*;

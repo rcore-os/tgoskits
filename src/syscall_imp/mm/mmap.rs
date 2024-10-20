@@ -1,4 +1,4 @@
-use axerrno::{AxError, LinuxError};
+use axerrno::LinuxError;
 use axhal::paging::MappingFlags;
 use axtask::{current, TaskExtRef};
 use memory_addr::{VirtAddr, VirtAddrRange};
@@ -91,9 +91,7 @@ pub(crate) fn sys_mmap(
                 .ok_or(LinuxError::ENOMEM)?
         };
 
-        aspace
-            .map_alloc(start_addr, length, permission_flags.into(), false)
-            .map_err(<AxError as From<_>>::from)?;
+        aspace.map_alloc(start_addr, length, permission_flags.into(), false)?;
 
         Ok(start_addr.as_usize())
     })

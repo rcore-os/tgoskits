@@ -143,7 +143,7 @@ pub(crate) fn load_elf(name: &str, base_addr: VirtAddr) -> ELFInfo {
 
     let elf_offset = kernel_elf_parser::get_elf_base_addr(&elf, base_addr.as_usize()).unwrap();
     assert!(
-        elf_offset & 0xfff == 0,
+        memory_addr::is_aligned_4k(elf_offset),
         "ELF base address must be aligned to 4k"
     );
 

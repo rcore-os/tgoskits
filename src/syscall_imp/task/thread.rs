@@ -5,12 +5,12 @@ use num_enum::TryFromPrimitive;
 
 use crate::syscall_body;
 
-#[derive(Debug, Eq, PartialEq, TryFromPrimitive)]
-#[repr(i32)]
 /// ARCH_PRCTL codes
 ///
 /// It is only avaliable on x86_64, and is not convenient
 /// to generate automatically via c_to_rust binding.
+#[derive(Debug, Eq, PartialEq, TryFromPrimitive)]
+#[repr(i32)]
 enum ArchPrctlCode {
     /// Set the GS segment base
     SetGs = 0x1001,
@@ -61,32 +61,32 @@ pub(crate) fn sys_set_tid_address(tid_ptd: *const i32) -> isize {
 }
 
 #[cfg(target_arch = "x86_64")]
-pub(crate) fn sys_arch_prctl(code: i32, addr: *mut usize) -> isize {
+pub(crate) fn sys_arch_prctl(code: i32, addr: u64) -> isize {
     use axerrno::LinuxError;
     syscall_body!(sys_arch_prctl, {
         match ArchPrctlCode::try_from(code) {
             // TODO: check the legality of the address
             Ok(ArchPrctlCode::SetFs) => {
                 unsafe {
-                    axhal::arch::write_thread_pointer(*addr);
+                    axhal::arch::write_thread_pointer(addr as usize);
                 }
                 Ok(0)
             }
             Ok(ArchPrctlCode::GetFs) => {
                 unsafe {
-                    *addr = axhal::arch::read_thread_pointer();
+                    *(addr as *mut u64) = axhal::arch::read_thread_pointer() as u64;
                 }
                 Ok(0)
             }
             Ok(ArchPrctlCode::SetGs) => {
                 unsafe {
-                    x86::msr::wrmsr(x86::msr::IA32_KERNEL_GSBASE, *addr as u64);
+                    x86::msr::wrmsr(x86::msr::IA32_KERNEL_GSBASE, addr);
                 }
                 Ok(0)
             }
             Ok(ArchPrctlCode::GetGs) => {
                 unsafe {
-                    *addr = x86::msr::rdmsr(x86::msr::IA32_KERNEL_GSBASE) as usize;
+                    *(addr as *mut u64) = x86::msr::rdmsr(x86::msr::IA32_KERNEL_GSBASE);
                 }
                 Ok(0)
             }

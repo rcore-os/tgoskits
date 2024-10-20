@@ -6,7 +6,7 @@
 extern crate log;
 extern crate alloc;
 extern crate axstd;
-#[allow(unused)]
+
 mod config;
 mod loader;
 mod mm;

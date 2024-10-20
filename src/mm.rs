@@ -40,33 +40,33 @@ pub fn load_user_app(app_name: &str) -> AxResult<(VirtAddr, VirtAddr, AddrSpace)
     }
 
     // The user stack is divided into two parts:
-    // `ustack_bottom` -> `ustack top`: It is the stack space that users actually read and write.
-    // `ustack_top` -> `ustack end`: It is the space that contains the arguments, environment variables and auxv passed to the app.
-    //  When the app starts running, the stack pointer points to `ustack_top`.
+    // `ustack_start` -> `ustack_pointer`: It is the stack space that users actually read and write.
+    // `ustack_pointer` -> `ustack_end`: It is the space that contains the arguments, environment variables and auxv passed to the app.
+    //  When the app starts running, the stack pointer points to `ustack_pointer`.
     let ustack_end = VirtAddr::from_usize(config::USER_STACK_TOP);
     let ustack_size = config::USER_STACK_SIZE;
-    let ustack_bottom = ustack_end - ustack_size;
+    let ustack_start = ustack_end - ustack_size;
     debug!(
         "Mapping user stack: {:#x?} -> {:#x?}",
-        ustack_bottom, ustack_end
+        ustack_start, ustack_end
     );
     // FIXME: Add more arguments and environment variables
-    let (stack_data, ustack_top) = kernel_elf_parser::get_app_stack_region(
+    let (stack_data, ustack_pointer) = kernel_elf_parser::get_app_stack_region(
         &[app_name.to_string()],
         &[],
         &elf_info.auxv,
-        ustack_bottom,
+        ustack_start,
         ustack_size,
     );
     uspace.map_alloc(
-        ustack_bottom,
+        ustack_start,
         ustack_size,
         MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
         true,
     )?;
 
-    uspace.write(VirtAddr::from_usize(ustack_top), stack_data.as_slice())?;
-    Ok((elf_info.entry, VirtAddr::from(ustack_top), uspace))
+    uspace.write(VirtAddr::from_usize(ustack_pointer), stack_data.as_slice())?;
+    Ok((elf_info.entry, VirtAddr::from(ustack_pointer), uspace))
 }
 
 #[register_trap_handler(PAGE_FAULT)]
