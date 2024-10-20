@@ -6,6 +6,7 @@ mod config {
     use alloc::vec::Vec;
 
     /// Default static VM configs. Used when no VM config is provided.
+    #[allow(dead_code)]
     pub fn default_static_vm_configs() -> Vec<&'static str> {
         vec![
             // #[cfg(target_arch = "x86_64")]

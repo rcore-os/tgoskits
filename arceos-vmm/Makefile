@@ -44,7 +44,7 @@ FEATURES ?=
 APP_FEATURES ?=
 
 # QEMU options
-BLK ?= n
+BLK ?= y
 NET ?= n
 GRAPHIC ?= n
 # To keep consistent with the latest `main` branch of ArceOS.
@@ -79,7 +79,8 @@ else ifneq ($(PLATFORM),)
   # `PLATFORM` is specified, override the `ARCH` variables
   builtin_platforms := $(patsubst platforms/%.toml,%,$(wildcard platforms/*))
   ifneq ($(filter $(PLATFORM),$(builtin_platforms)),)
-    # builtin platform
+    # builtin platform, use custom config file in platforms directory for building hypervisor apps
+    PLATFORM := platforms/$(PLATFORM).toml
     PLATFORM_NAME := $(PLATFORM)
     _arch := $(word 1,$(subst -, ,$(PLATFORM)))
   else ifneq ($(wildcard $(PLATFORM)),)
@@ -108,7 +109,8 @@ else ifeq ($(ARCH), riscv64)
   PLATFORM_NAME ?= riscv64-qemu-virt
 else ifeq ($(ARCH), aarch64)
   ACCEL ?= n
-  PLATFORM_NAME ?= aarch64-qemu-virt
+  PLATFORM_NAME ?= aarch64-qemu-virt-hv
+  PLATFORM := platforms/aarch64-qemu-virt-hv.toml
 else
   $(error "ARCH" must be one of "x86_64", "riscv64", or "aarch64")
 endif
@@ -131,6 +133,8 @@ endif
 
 export AX_ARCH=$(ARCH)
 export AX_PLATFORM=$(PLATFORM_NAME)
+# Use absolute path for AX_PLATFORM_PATH
+export AX_PLATFORM_PATH=$(CURDIR)/$(PLATFORM)
 export AX_SMP=$(SMP)
 export AX_MODE=$(MODE)
 export AX_LOG=$(LOG)

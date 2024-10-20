@@ -47,9 +47,11 @@ First, you need to prepare your configuration file for the guest VM (several exa
 ```console
 $ cd arceos-vmm
 # x86_64
-$ make A=$(pwd) ACCEL=y BLK=y ARCH=x86_64 [LOG=warn|info|debug|trace] VM_CONFIGS=/PATH/TO/CONFIG/FILE run
-# aarch64 & riscv64
-$ make A=$(pwd) ACCEL=n BLK=y ARCH=[aarch64|riscv64] [LOG=warn|info|debug|trace] VM_CONFIGS=/PATH/TO/CONFIG/FILE run
+$ make ACCEL=y ARCH=x86_64 [LOG=warn|info|debug|trace] VM_CONFIGS=/PATH/TO/CONFIG/FILE run
+# aarch64
+$ make ACCEL=n ARCH=aarch64 [LOG=warn|info|debug|trace] VM_CONFIGS=/PATH/TO/CONFIG/FILE run
+# riscv64
+$ make ACCEL=n ARCH=riscv64 [LOG=warn|info|debug|trace] VM_CONFIGS=/PATH/TO/CONFIG/FILE run
 
 ......
 Booting from ROM..

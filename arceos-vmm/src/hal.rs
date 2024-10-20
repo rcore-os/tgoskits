@@ -1,6 +1,6 @@
 use axvm::AxVMHal;
 // Todo: should we know about HostPhysAddr and HostVirtAddr here???
-use memory_addr::{PhysAddr, VirtAddr};
+use axaddrspace::{HostPhysAddr, HostVirtAddr};
 
 /// Implementation for `AxVMHal` trait.
 pub struct AxVMHalImpl;
@@ -8,7 +8,7 @@ pub struct AxVMHalImpl;
 impl AxVMHal for AxVMHalImpl {
     type PagingHandler = axhal::paging::PagingHandlerImpl;
 
-    fn virt_to_phys(vaddr: VirtAddr) -> PhysAddr {
+    fn virt_to_phys(vaddr: HostVirtAddr) -> HostPhysAddr {
         axhal::mem::virt_to_phys(vaddr)
     }
 
@@ -26,7 +26,7 @@ impl AxVMHal for AxVMHalImpl {
 /// and use it to call OS-related resource allocation interfaces to implement `PhysFrameIf`.
 #[cfg(target_arch = "x86_64")]
 mod frame_x86 {
-    use memory_addr::{PhysAddr, VirtAddr};
+    use axaddrspace::{HostPhysAddr, HostVirtAddr};
     use page_table_multiarch::PagingHandler;
 
     use axvm::AxVMHal;
@@ -38,16 +38,16 @@ mod frame_x86 {
 
     #[crate_interface::impl_interface]
     impl x86_vcpu::PhysFrameIf for PhysFrameIfImpl {
-        fn alloc_frame() -> Option<PhysAddr> {
+        fn alloc_frame() -> Option<HostPhysAddr> {
             <AxVMHalImpl as AxVMHal>::PagingHandler::alloc_frame()
         }
 
-        fn dealloc_frame(paddr: PhysAddr) {
+        fn dealloc_frame(paddr: HostPhysAddr) {
             <AxVMHalImpl as AxVMHal>::PagingHandler::dealloc_frame(paddr)
         }
 
         #[inline]
-        fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
+        fn phys_to_virt(paddr: HostPhysAddr) -> HostVirtAddr {
             <AxVMHalImpl as AxVMHal>::PagingHandler::phys_to_virt(paddr)
         }
     }

@@ -6,7 +6,7 @@ authors = ["Keyang Hu <976929993@qq.com>"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-log = "=0.4.19"
+log = "=0.4.21"
 bitflags = "2.2"
 spin = "0.9"
 
@@ -25,12 +25,13 @@ axstd = { workspace = true, features = [
 # System dependent modules provided by ArceOS-Hypervisor.
 axvm = { workspace = true }
 axvcpu = { workspace = true }
+axaddrspace = { workspace = true }
 
 # System independent crates provided by ArceOS, these crates could be imported by remote url. 
 axerrno = "0.1.0"
-memory_addr = "0.2.0"
-page_table_entry = { version = "0.3.3", features = ["arm-el2"] }
-page_table_multiarch = "0.3.3"
+memory_addr = "0.3"
+page_table_entry = { version = "0.4.1", features = ["arm-el2"] }
+page_table_multiarch = "0.4.1"
 percpu = { version = "0.1.4", features = ["arm-el2"] }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
