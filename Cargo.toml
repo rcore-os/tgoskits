@@ -11,6 +11,6 @@ cfg-if = "1.0"
 serde = { version = "1.0.204", default-features = false, features = ["derive", "alloc"] }
 # System independent crates provided by ArceOS.
 axerrno = "0.1.0"
-memory_addr = "0.3.0"
+memory_addr = "0.3"
 axaddrspace  = { git = "https://github.com/arceos-hypervisor/axaddrspace.git" }
 axdevice_base = { git = "https://github.com/arceos-hypervisor/axdevice_crates.git"}
