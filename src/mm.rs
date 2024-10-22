@@ -20,7 +20,7 @@ use crate::{config, loader};
 /// - The third return value is the address space of the user app.
 pub fn load_user_app(app_name: &str) -> AxResult<(VirtAddr, VirtAddr, AddrSpace)> {
     let mut uspace = axmm::new_user_aspace()?;
-    let elf_info = loader::load_elf(app_name, uspace.base());
+    let elf_info = loader::load_elf(app_name, VirtAddr::from_usize(0));
     for segement in elf_info.segments {
         debug!(
             "Mapping ELF segment: [{:#x?}, {:#x?}) flags: {:#x?}",

@@ -9,7 +9,7 @@ CC := $(ARCH)-linux-$(TARGET)-gcc
 
 # Build target for rust programs
 ifeq ($(TARGET),musl)
-  CFLAGS := -static
+  CFLAGS := -static -no-pie
   ifeq ($(ARCH),x86_64)
     RUST_TARGET := x86_64-unknown-linux-musl
   else ifeq ($(ARCH),aarch64)
