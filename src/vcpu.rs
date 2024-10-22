@@ -224,6 +224,11 @@ impl<A: AxArchVCpu> AxVCpu<A> {
         })
     }
 
+    /// Sets the entry address of the vcpu.
+    pub fn set_entry(&self, entry: GuestPhysAddr) -> AxResult {
+        self.get_arch_vcpu().set_entry(entry)
+    }
+
     /// Sets the value of a general-purpose register according to the given index.
     pub fn set_gpr(&self, reg: usize, val: usize) {
         self.get_arch_vcpu().set_gpr(reg, val);

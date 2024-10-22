@@ -133,10 +133,36 @@ pub enum AxVCpuExitReason {
     },
     /// The vcpu is halted.
     Halt,
+    /// Try to bring up a secondary CPU.
+    ///
+    /// This is used to notify the hypervisor that the target vcpu
+    /// is powered on and ready to run, generally used in the boot process
+    /// of a multi-core VM.
+    /// This VM exit reason is architecture-specific, may be triggered by
+    /// * a PSCI call in ARM
+    /// * a SIPI in x86
+    /// * a sbi call in RISC-V
+    CpuUp {
+        /// The target vcpu id that is to be started.
+        /// * for aarch64, it contains the affinity fields of the MPIDR register,
+        /// * for x86_64, it contains the APIC ID of the secondary CPU,
+        /// * for RISC-V, it contains the hartid of the secondary CPU.
+        target_cpu: u64,
+        /// Runtime-specified physical address of the secondary CPU's entry point, where the vcpu can start executing.
+        entry_point: GuestPhysAddr,
+        /// This argument will be passed to the `x0` register of the secondary CPU.
+        arg: u64,
+        /// RISC-V only, the `opaque` value that will be set in the `a1` register when the hart starts executing at `entry_point`.
+        opaque: u64,
+    },
     /// The vcpu is powered off.
     ///
     /// This vcpu may be resumed later.
-    CpuDown,
+    CpuDown {
+        /// Currently unused.
+        /// Maybe used for `PSCI_POWER_STATE` in the future.
+        _state: u64,
+    },
     /// The system should be powered off.
     ///
     /// This is used to notify the hypervisor that the whole system should be powered off.
