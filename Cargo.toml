@@ -1,6 +1,6 @@
 [package]
 name = "scheduler"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "Various scheduler algorithms in a unified interface"
@@ -10,5 +10,4 @@ repository = "https://github.com/arceos-org/scheduler"
 documentation = "https://arceos-org.github.io/scheduler"
 
 [dependencies]
-linked_list = { git = "https://github.com/arceos-org/linked_list.git", tag = "v0.1.0" }
-
+linked_list_r4l = { version = "0.2.0" }

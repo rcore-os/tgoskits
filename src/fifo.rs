@@ -1,48 +1,14 @@
 use alloc::sync::Arc;
-use core::ops::Deref;
 
-use linked_list::{Adapter, Links, List};
+use linked_list_r4l::{def_node, List};
 
 use crate::BaseScheduler;
 
-/// A task wrapper for the [`FifoScheduler`].
-///
-/// It add extra states to use in [`linked_list::List`].
-pub struct FifoTask<T> {
-    inner: T,
-    links: Links<Self>,
-}
-
-unsafe impl<T> Adapter for FifoTask<T> {
-    type EntryType = Self;
-
-    #[inline]
-    fn to_links(t: &Self) -> &Links<Self> {
-        &t.links
-    }
-}
-
-impl<T> FifoTask<T> {
-    /// Creates a new [`FifoTask`] from the inner task struct.
-    pub const fn new(inner: T) -> Self {
-        Self {
-            inner,
-            links: Links::new(),
-        }
-    }
-
-    /// Returns a reference to the inner task struct.
-    pub const fn inner(&self) -> &T {
-        &self.inner
-    }
-}
-
-impl<T> Deref for FifoTask<T> {
-    type Target = T;
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
+def_node! {
+    /// A task wrapper for the [`FifoScheduler`].
+    ///
+    /// It add extra states to use in [`linked_list::List`].
+    pub struct FifoTask<T>(T);
 }
 
 /// A simple FIFO (First-In-First-Out) cooperative scheduler.
