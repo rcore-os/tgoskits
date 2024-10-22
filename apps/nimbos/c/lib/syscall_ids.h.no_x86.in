@@ -1,0 +1,11 @@
+#define __NR_read               63
+#define __NR_write              64
+#define __NR_exit               93
+#define __NR_yield              124
+#define __NR_getpid             172
+#define __NR_clone              220
+#define __NR_fork               220
+#define __NR_exec               221
+#define __NR_waitpid            260
+#define __NR_clock_gettime      403
+#define __NR_clock_nanosleep    407

@@ -3,17 +3,34 @@ use crate::arch::syscall;
 
 pub use crate::arch::sys_clone;
 
-pub const SYSCALL_READ: usize = 0;
-pub const SYSCALL_WRITE: usize = 1;
-pub const SYSCALL_YIELD: usize = 24;
-pub const SYSCALL_GETPID: usize = 39;
-pub const SYSCALL_CLONE: usize = 56;
-pub const SYSCALL_FORK: usize = 57;
-pub const SYSCALL_EXEC: usize = 59;
-pub const SYSCALL_EXIT: usize = 60;
-pub const SYSCALL_WAITPID: usize = 61;
-pub const SYSCALL_CLOCK_GETTIME: usize = 228;
-pub const SYSCALL_CLOCK_NANOSLEEP: usize = 230;
+cfg_if::cfg_if! {
+    if #[cfg(target_arch = "x86_64")] {
+        pub const SYSCALL_READ: usize = 0;
+        pub const SYSCALL_WRITE: usize = 1;
+        pub const SYSCALL_YIELD: usize = 24;
+        pub const SYSCALL_GETPID: usize = 39;
+        pub const SYSCALL_CLONE: usize = 56;
+        pub const SYSCALL_FORK: usize = 57;
+        pub const SYSCALL_EXEC: usize = 59;
+        pub const SYSCALL_EXIT: usize = 60;
+        pub const SYSCALL_WAITPID: usize = 61;
+        pub const SYSCALL_CLOCK_GETTIME: usize = 228;
+        pub const SYSCALL_CLOCK_NANOSLEEP: usize = 230;
+    }
+    else {
+        pub const SYSCALL_READ: usize = 63;
+        pub const SYSCALL_WRITE: usize = 64;
+        pub const SYSCALL_YIELD: usize = 124;
+        pub const SYSCALL_GETPID: usize = 172;
+        pub const SYSCALL_CLONE: usize = 220;
+        pub const SYSCALL_FORK: usize = 220;
+        pub const SYSCALL_EXEC: usize = 221;
+        pub const SYSCALL_EXIT: usize = 93;
+        pub const SYSCALL_WAITPID: usize = 260;
+        pub const SYSCALL_CLOCK_GETTIME: usize = 403;
+        pub const SYSCALL_CLOCK_NANOSLEEP: usize = 407;
+    }
+}
 
 pub fn sys_read(fd: usize, buffer: &mut [u8]) -> isize {
     syscall(

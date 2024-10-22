@@ -9,22 +9,24 @@ jobs:
       fail-fast: false
       matrix:
         rust-toolchain: [nightly]
+        targets: [x86_64-unknown-none, riscv64gc-unknown-none-elf, aarch64-unknown-none-softfloat]
     steps:
     - uses: actions/checkout@v4
     - uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: ${{ matrix.rust-toolchain }}
         components: rust-src, clippy, rustfmt
+        targets: ${{ matrix.targets }}
     - name: Setup ArceOS
       run: ./scripts/get_deps.sh
     - name: Check rust version
       run: rustc --version --verbose
     - name: Check code format
       continue-on-error: ${{ matrix.rust-toolchain == 'nightly' }}
-      run: cargo fmt -- --check
+      run: cargo fmt --all -- --check
     - name: Clippy
       continue-on-error: ${{ matrix.rust-toolchain == 'nightly' }}
-      run: cargo clippy
+      run: cargo clippy --target ${{ matrix.targets }} --all-features -- -D warnings -A clippy::new_without_default
 
   build:
     runs-on: ${{ matrix.os }}
@@ -32,7 +34,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        arch: [x86_64]
+        arch: [x86_64, riscv64, aarch64]
         rust-toolchain: [nightly]
     steps:
     - uses: actions/checkout@v4
@@ -40,7 +42,7 @@ jobs:
       with:
         toolchain: ${{ matrix.rust-toolchain }}
         components: rust-src, llvm-tools
-        targets: x86_64-unknown-none
+        targets: x86_64-unknown-none, riscv64gc-unknown-none-elf, aarch64-unknown-none, aarch64-unknown-none-softfloat
     - uses: Swatinem/rust-cache@v2
     - run: cargo install cargo-binutils
     - run: ./scripts/get_deps.sh
@@ -48,12 +50,13 @@ jobs:
       run: make ARCH=${{ matrix.arch }}
 
   test-musl:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest]
+        arch: [x86_64, riscv64, aarch64]
         rust-toolchain: [nightly]
-        arch: [x86_64]
     env:
       qemu-version: 8.2.0
     steps:
@@ -72,6 +75,7 @@ jobs:
       with:
         qemu-version: ${{ env.qemu-version }}
     - name: Build rustup target
+      if: ${{ matrix.arch != 'riscv64' }}
       run: rustup target add ${{ matrix.arch }}-unknown-linux-musl
     - name: Run tests for musl applications
       run: make test ARCH=${{ matrix.arch }}

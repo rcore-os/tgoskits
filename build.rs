@@ -102,10 +102,10 @@ fn gen_kernel_config(arch: &str) -> Result<()> {
             let key_name = key.to_uppercase().replace('-', "_");
             match value {
                 toml_edit::Value::Integer(i) => {
-                    writeln!(f, "pub(crate) const {}: usize = {};", key_name, i)?;
+                    writeln!(f, "pub const {}: usize = {};", key_name, i)?;
                 }
                 toml_edit::Value::String(s) => {
-                    writeln!(f, "pub(crate) const {}: &str = \"{}\";", key_name, s)?;
+                    writeln!(f, "pub const {}: &str = \"{}\";", key_name, s)?;
                 }
                 _ => {
                     panic!("Unsupported value type");
