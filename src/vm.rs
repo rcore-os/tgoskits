@@ -14,7 +14,7 @@ use axvcpu::{AxArchVCpu, AxVCpu, AxVCpuExitReason};
 use axaddrspace::{AddrSpace, GuestPhysAddr, HostPhysAddr, MappingFlags};
 
 use crate::config::AxVMConfig;
-use crate::vcpu::AxArchVCpuImpl;
+use crate::vcpu::{AxArchVCpuImpl, AxVCpuCreateConfig};
 use crate::{has_hardware_support, AxVMHal};
 
 const VM_ASPACE_BASE: usize = 0x0;
@@ -59,17 +59,24 @@ impl<H: AxVMHal> AxVM<H> {
     /// The VM is not started until `boot` is called.
     pub fn new(config: AxVMConfig) -> AxResult<AxVMRef<H>> {
         let result = Arc::new({
-            let vcpu_id_pcpu_sets = config.get_vcpu_affinities();
+            let vcpu_id_pcpu_sets = config.get_vcpu_affinities_pcpu_ids();
 
             // Create VCpus.
             let mut vcpu_list = Vec::with_capacity(vcpu_id_pcpu_sets.len());
 
-            for (vcpu_id, phys_cpu_set) in vcpu_id_pcpu_sets {
+            for (vcpu_id, phys_cpu_set, _pcpu_id) in vcpu_id_pcpu_sets {
+                #[cfg(target_arch = "aarch64")]
+                let arch_config = AxVCpuCreateConfig {
+                    mpidr_el1: _pcpu_id as _,
+                };
+                #[cfg(not(target_arch = "aarch64"))]
+                let arch_config = AxVCpuCreateConfig::default();
+
                 vcpu_list.push(Arc::new(VCpu::new(
                     vcpu_id,
                     0, // Currently not used.
                     phys_cpu_set,
-                    <AxArchVCpuImpl as AxArchVCpu>::CreateConfig::default(),
+                    arch_config,
                 )?));
             }
 

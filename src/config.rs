@@ -74,6 +74,7 @@ pub struct AxVMConfig {
     #[allow(dead_code)]
     vm_type: VMType,
     cpu_num: usize,
+    phys_cpu_ids: Option<Vec<usize>>,
     phys_cpu_sets: Option<Vec<usize>>,
     cpu_config: AxVCpuConfig,
     image_config: VMImageConfig,
@@ -88,6 +89,7 @@ impl From<AxVMCrateConfig> for AxVMConfig {
             name: cfg.name,
             vm_type: VMType::from(cfg.vm_type),
             cpu_num: cfg.cpu_num,
+            phys_cpu_ids: cfg.phys_cpu_ids,
             phys_cpu_sets: cfg.phys_cpu_sets,
             cpu_config: AxVCpuConfig {
                 bsp_entry: GuestPhysAddr::from(cfg.entry_point),
@@ -116,19 +118,30 @@ impl AxVMConfig {
         self.name.clone()
     }
 
-    /// Returns vCpu id list and its corresponding pCpu affinity list.
+    /// Returns vCpu id list and its corresponding pCpu affinity list, as well as its physical id.
     /// If the pCpu affinity is None, it means the vCpu will be allocated to any available pCpu randomly.
-    pub fn get_vcpu_affinities(&self) -> Vec<(usize, Option<usize>)> {
-        let mut vcpu_pcpu_pairs = Vec::new();
+    /// if the pCPU id is not provided, the vCpu's physical id will be set as vCpu id.
+    ///
+    /// Returns a vector of tuples, each tuple contains:
+    /// - The vCpu id.
+    /// - The pCpu affinity mask, `None` if not set.
+    /// - The physical id of the vCpu, equal to vCpu id if not provided.
+    pub fn get_vcpu_affinities_pcpu_ids(&self) -> Vec<(usize, Option<usize>, usize)> {
+        let mut vcpu_pcpu_tuples = Vec::new();
         for vcpu_id in 0..self.cpu_num {
-            vcpu_pcpu_pairs.push((vcpu_id, None));
+            vcpu_pcpu_tuples.push((vcpu_id, None, vcpu_id));
         }
         if let Some(phys_cpu_sets) = &self.phys_cpu_sets {
             for (vcpu_id, pcpu_mask_bitmap) in phys_cpu_sets.iter().enumerate() {
-                vcpu_pcpu_pairs[vcpu_id].1 = Some(*pcpu_mask_bitmap);
+                vcpu_pcpu_tuples[vcpu_id].1 = Some(*pcpu_mask_bitmap);
             }
         }
-        vcpu_pcpu_pairs
+        if let Some(phys_cpu_ids) = &self.phys_cpu_ids {
+            for (vcpu_id, phys_id) in phys_cpu_ids.iter().enumerate() {
+                vcpu_pcpu_tuples[vcpu_id].2 = *phys_id;
+            }
+        }
+        vcpu_pcpu_tuples
     }
 
     /// Returns configurations related to VM image load addresses.
@@ -180,15 +193,24 @@ pub struct AxVMCrateConfig {
     vm_type: usize,
 
     // Resources.
-    // The number of virtual CPUs.
+    /// The number of virtual CPUs.
     cpu_num: usize,
-    // The mask of physical CPUs who can run this VM.
-    // * If None, vcpu will be scheduled on available physical CPUs randomly.
-    // * If set, each vcpu will be scheduled on the specified physical CPUs.
-    //      For example, [0x0101, 0x0010] means:
-    //          * vCpu0 can be scheduled at pCpu0 and pCpu2;
-    //          * vCpu1 will only be scheduled at pCpu1;
-    //      It will phrase an error if the number of vCpus is not equal to the length of `phys_cpu_sets` array.
+    /// The physical CPU ids.
+    /// - if `None`, vcpu's physical id will be set as vcpu id.
+    /// - if set, each vcpu will be assigned to the specified physical CPU mask.
+    ///
+    /// Some ARM platforms will provide a specified cpu hw id in the device tree, which is
+    /// read from `MPIDR_EL1` register (probably for clustering).
+    phys_cpu_ids: Option<Vec<usize>>,
+    /// The mask of physical CPUs who can run this VM.
+    ///
+    /// - If `None`, vcpu will be scheduled on available physical CPUs randomly.
+    /// - If set, each vcpu will be scheduled on the specified physical CPUs.
+    ///      
+    ///     For example, [0x0101, 0x0010] means:
+    ///          - vCpu0 can be scheduled at pCpu0 and pCpu2;
+    ///          - vCpu1 will only be scheduled at pCpu1;
+    ///      It will phrase an error if the number of vCpus is not equal to the length of `phys_cpu_sets` array.
     phys_cpu_sets: Option<Vec<usize>>,
 
     entry_point: usize,
