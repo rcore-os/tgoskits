@@ -1,5 +1,6 @@
 use aarch64_cpu::registers::{Readable, ESR_EL2, HCR_EL2, SCTLR_EL1, VTCR_EL2, VTTBR_EL2};
 
+use axaddrspace::GuestPhysAddr;
 use axerrno::{AxError, AxResult};
 use axvcpu::{AccessWidth, AxVCpuExitReason};
 
@@ -206,7 +207,12 @@ fn handle_psci_call(ctx: &mut TrapFrame) -> Option<AxResult<AxVCpuExitReason>> {
     const PSCI_FN_RANGE_32: core::ops::RangeInclusive<u64> = 0x8400_0000..=0x8400_001F;
     const PSCI_FN_RANGE_64: core::ops::RangeInclusive<u64> = 0xC400_0000..=0xC400_001F;
 
+    const _PSCI_FN_CPU_SUSPEND: u64 = 0x1;
+    const PSCI_FN_CPU_OFF: u64 = 0x2;
+    const PSCI_FN_CPU_ON: u64 = 0x3;
+    const _PSCI_FN_MIGRATE: u64 = 0x5;
     const PSCI_FN_SYSTEM_OFF: u64 = 0x8;
+    const _PSCI_FN_SYSTEM_RESET: u64 = 0x9;
 
     let fn_ = ctx.gpr[0];
     let fn_offset = if PSCI_FN_RANGE_32.contains(&fn_) {
@@ -218,6 +224,13 @@ fn handle_psci_call(ctx: &mut TrapFrame) -> Option<AxResult<AxVCpuExitReason>> {
     };
 
     fn_offset.map(|fn_offset| match fn_offset {
+        PSCI_FN_CPU_OFF => Ok(AxVCpuExitReason::CpuDown { _state: ctx.gpr[1] }),
+        PSCI_FN_CPU_ON => Ok(AxVCpuExitReason::CpuUp {
+            target_cpu: ctx.gpr[1],
+            entry_point: GuestPhysAddr::from(ctx.gpr[2] as usize),
+            arg: ctx.gpr[3],
+            opaque: 0,
+        }),
         PSCI_FN_SYSTEM_OFF => Ok(AxVCpuExitReason::SystemDown),
         _ => Err(AxError::Unsupported),
     })

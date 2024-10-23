@@ -8,7 +8,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        rust-toolchain: [nightly-2024-05-02, nightly-2024-08-24]
+        rust-toolchain: [nightly, nightly-2024-05-02]
         targets: [aarch64-unknown-none-softfloat]
     steps:
     - uses: actions/checkout@v4
@@ -22,8 +22,10 @@ jobs:
     - name: Check code format
       run: cargo fmt --all -- --check
     - name: Clippy
+      continue-on-error: ${{ matrix.rust-toolchain == 'nightly' }}
       run: cargo clippy --target ${{ matrix.targets }} --all-features -- -A clippy::new_without_default
     - name: Build
+      continue-on-error: ${{ matrix.rust-toolchain == 'nightly' }}
       run: cargo build --target ${{ matrix.targets }} --all-features
     - name: Unit test
       if: ${{ matrix.targets == 'x86_64-unknown-linux-gnu' }}

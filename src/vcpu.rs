@@ -45,23 +45,30 @@ pub struct Aarch64VCpu {
     ctx: TrapFrame,
     host_stack_top: u64,
     guest_system_regs: GuestSystemRegisters,
-    vcpu_id: usize,
+    /// The MPIDR_EL1 value for the vCPU.
+    mpidr: u64,
 }
 
-/// Indicates the parameter type used for creating a vCPU, currently using `VmCpuRegisters` directly.
-pub type AxArchVCpuConfig = VmCpuRegisters;
+/// Configuration for creating a new `Aarch64VCpu`
+#[derive(Clone, Debug, Default)]
+pub struct Aarch64VCpuCreateConfig {
+    /// The MPIDR_EL1 value for the new vCPU,
+    /// which is used to identify the CPU in a multiprocessor system.
+    /// Note: mind CPU cluster.
+    pub mpidr_el1: u64,
+}
 
 impl axvcpu::AxArchVCpu for Aarch64VCpu {
-    type CreateConfig = ();
+    type CreateConfig = Aarch64VCpuCreateConfig;
 
     type SetupConfig = ();
 
-    fn new(_config: Self::CreateConfig) -> AxResult<Self> {
+    fn new(config: Self::CreateConfig) -> AxResult<Self> {
         Ok(Self {
             ctx: TrapFrame::default(),
             host_stack_top: 0,
             guest_system_regs: GuestSystemRegisters::default(),
-            vcpu_id: 0, // need to pass a parameter!!!!
+            mpidr: config.mpidr_el1,
         })
     }
 
@@ -202,9 +209,11 @@ impl Aarch64VCpu {
         // trap el1 smc to el2
         // self.system_regs.hcr_el2 |= HCR_TSC_TRAP as u64;
 
-        let mut vmpidr = 0;
-        vmpidr |= 1 << 31;
-        vmpidr |= self.vcpu_id;
+        // Set VMPIDR_EL2, which provides the value of the Virtualization Multiprocessor ID.
+        // This is the value returned by Non-secure EL1 reads of MPIDR.
+        let mut vmpidr = 1 << 31;
+        // Note: mind CPU cluster here.
+        vmpidr |= self.mpidr;
         self.guest_system_regs.vmpidr_el2 = vmpidr as u64;
     }
 

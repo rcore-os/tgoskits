@@ -239,6 +239,7 @@ impl GuestSystemRegisters {
     ///
     /// This method allows the `GuestSystemRegisters` instance to be reused by resetting
     /// its state to the default values (all zeros).
+    #[allow(unused)]
     pub fn reset(&mut self) {
         *self = GuestSystemRegisters::default()
     }
