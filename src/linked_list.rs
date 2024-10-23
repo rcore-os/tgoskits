@@ -161,6 +161,20 @@ impl<G: GetLinksWrapped> List<G> {
         }
     }
 
+    /// Adds the given object to the first (front) of the list.
+    ///
+    /// It is dropped if it's already on this (or another) list; this can happen for
+    /// reference-counted objects, so dropping means decrementing the reference count.
+    pub fn push_front(&mut self, data: G::Wrapped) {
+        let ptr = data.into_pointer();
+
+        // SAFETY: We took ownership of the entry, so it is safe to insert it.
+        if !unsafe { self.list.push_front(ptr.as_ref()) } {
+            // If insertion failed, rebuild object so that it can be freed.
+            unsafe { G::Wrapped::from_pointer(ptr) };
+        }
+    }
+
     /// Inserts the given object after `existing`.
     ///
     /// It is dropped if it's already on this (or another) list; this can happen for

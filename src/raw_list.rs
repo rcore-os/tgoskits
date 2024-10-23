@@ -152,7 +152,7 @@ impl<G: GetLinks> RawList<G> {
         true
     }
 
-    fn push_back_internal(&mut self, new: &G::EntryType) -> bool {
+    fn push_back_internal(&mut self, new: &G::EntryType, front: bool) -> bool {
         let links = G::get_links(new);
         if !links.acquire_for_insertion() {
             // Nothing to do if already inserted.
@@ -164,7 +164,13 @@ impl<G: GetLinks> RawList<G> {
         let new_ptr = Some(NonNull::from(new));
         match self.back() {
             // SAFETY: `back` is valid as the list cannot change.
-            Some(back) => self.insert_after_priv(unsafe { back.as_ref() }, new_entry, new_ptr),
+            Some(back) => {
+                self.insert_after_priv(unsafe { back.as_ref() }, new_entry, new_ptr);
+                // if push front, update head
+                if front {
+                    self.head = new_ptr;
+                }
+            }
             None => {
                 self.head = new_ptr;
                 new_entry.next = new_ptr;
@@ -175,7 +181,11 @@ impl<G: GetLinks> RawList<G> {
     }
 
     pub(crate) unsafe fn push_back(&mut self, new: &G::EntryType) -> bool {
-        self.push_back_internal(new)
+        self.push_back_internal(new, false)
+    }
+
+    pub(crate) unsafe fn push_front(&mut self, new: &G::EntryType) -> bool {
+        self.push_back_internal(new, true)
     }
 
     fn remove_internal(&mut self, data: &G::EntryType) -> bool {
@@ -535,6 +545,21 @@ mod tests {
             // and outlives the list.
             unsafe { list.push_back(&v[n - 1]) };
             assert_list_contents(&v[..n], &list);
+        }
+    }
+
+    #[test]
+    fn test_push_front() {
+        const MAX: usize = 10;
+        let v = build_vector(MAX);
+        let mut list = super::RawList::<Example>::new();
+
+        for n in 1..=MAX {
+            // SAFETY: The entry was allocated above, it's not in any lists yet, is never moved,
+            // and outlives the list.
+            println!("push front: {}", MAX - n);
+            unsafe { list.push_front(&v[MAX - n]) };
+            assert_list_contents(&v[MAX - n..MAX], &list);
         }
     }
 
