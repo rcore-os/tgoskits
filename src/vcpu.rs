@@ -3,7 +3,7 @@ use core::mem::size_of;
 
 use memoffset::offset_of;
 use riscv::register::{htinst, htval, scause, sstatus, stval};
-use sbi_rt::{pmu_counter_get_info, pmu_counter_stop};
+use rustsbi::{Forward, RustSBI};
 use tock_registers::LocalRegisterCopy;
 
 use axaddrspace::{GuestPhysAddr, HostPhysAddr, MappingFlags};
@@ -12,7 +12,6 @@ use axvcpu::AxVCpuExitReason;
 
 use super::csrs::defs::hstatus;
 use super::csrs::{traps, RiscvCsrTrait, CSR};
-use super::sbi::{BaseFunction, PmuFunction, RemoteFenceFunction, SbiMessage};
 
 use super::regs::{GeneralPurposeRegisters, GprIndex};
 
@@ -207,6 +206,39 @@ pub struct VCpuConfig {}
 /// A virtual CPU within a guest
 pub struct RISCVVCpu {
     regs: VmCpuRegisters,
+    sbi: RISCVVCpuSbi,
+}
+
+#[derive(RustSBI)]
+struct RISCVVCpuSbi {
+    timer: RISCVVCpuSbiTimer,
+    #[rustsbi(console, pmu, fence, reset, info)]
+    forward: Forward,
+}
+
+impl Default for RISCVVCpuSbi {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            timer: RISCVVCpuSbiTimer,
+            forward: Forward,
+        }
+    }
+}
+
+struct RISCVVCpuSbiTimer;
+
+impl rustsbi::Timer for RISCVVCpuSbiTimer {
+    #[inline]
+    fn set_timer(&self, stime_value: u64) {
+        sbi_rt::set_timer(stime_value);
+        // Clear guest timer interrupt
+        CSR.hvip
+            .read_and_clear_bits(traps::interrupt::VIRTUAL_SUPERVISOR_TIMER);
+        //  Enable host timer interrupt
+        CSR.sie
+            .read_and_set_bits(traps::interrupt::SUPERVISOR_TIMER);
+    }
 }
 
 impl axvcpu::AxArchVCpu for RISCVVCpu {
@@ -234,7 +266,8 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
         regs.guest_regs.gprs.set_reg(GprIndex::A0, 0);
         regs.guest_regs.gprs.set_reg(GprIndex::A1, 0x9000_0000);
 
-        Ok(Self { regs })
+        let sbi = RISCVVCpuSbi::default();
+        Ok(Self { regs, sbi })
     }
 
     fn setup(&mut self, _config: Self::SetupConfig) -> AxResult {
@@ -318,44 +351,13 @@ impl RISCVVCpu {
         use scause::{Exception, Interrupt, Trap};
         match scause.cause() {
             Trap::Exception(Exception::VirtualSupervisorEnvCall) => {
-                let sbi_msg = SbiMessage::from_regs(self.regs.guest_regs.gprs.a_regs()).ok();
-                if let Some(sbi_msg) = sbi_msg {
-                    match sbi_msg {
-                        SbiMessage::Base(base) => {
-                            self.handle_base_function(base).unwrap();
-                        }
-                        SbiMessage::GetChar => {
-                            let c = sbi_rt::legacy::console_getchar();
-                            self.set_gpr_from_gpr_index(GprIndex::A0, c);
-                        }
-                        SbiMessage::PutChar(c) => {
-                            sbi_rt::legacy::console_putchar(c);
-                        }
-                        SbiMessage::SetTimer(timer) => {
-                            sbi_rt::set_timer(timer as u64);
-                            // Clear guest timer interrupt
-                            CSR.hvip
-                                .read_and_clear_bits(traps::interrupt::VIRTUAL_SUPERVISOR_TIMER);
-                            //  Enable host timer interrupt
-                            CSR.sie
-                                .read_and_set_bits(traps::interrupt::SUPERVISOR_TIMER);
-                        }
-                        SbiMessage::Reset(_) => {
-                            sbi_rt::system_reset(sbi_rt::Shutdown, sbi_rt::SystemFailure);
-                        }
-                        SbiMessage::RemoteFence(rfnc) => {
-                            self.handle_rfnc_function(rfnc).unwrap();
-                        }
-                        SbiMessage::PMU(pmu) => {
-                            self.handle_pmu_function(pmu).unwrap();
-                        }
-                        _ => todo!(),
-                    }
-                    self.advance_pc(4);
-                    Ok(AxVCpuExitReason::Nothing)
-                } else {
-                    panic!()
-                }
+                let a = self.regs.guest_regs.gprs.a_regs();
+                let param = [a[0], a[1], a[2], a[3], a[4], a[5]];
+                let ret = self.sbi.handle_ecall(a[7], a[6], param);
+                self.set_gpr_from_gpr_index(GprIndex::A0, ret.error);
+                self.set_gpr_from_gpr_index(GprIndex::A1, ret.value);
+                self.advance_pc(4);
+                Ok(AxVCpuExitReason::Nothing)
             }
             Trap::Interrupt(Interrupt::SupervisorTimer) => {
                 // debug!("timer irq emulation");
@@ -387,102 +389,5 @@ impl RISCVVCpu {
                 );
             }
         }
-    }
-
-    fn handle_base_function(&mut self, base: BaseFunction) -> AxResult<()> {
-        match base {
-            BaseFunction::GetSepcificationVersion => {
-                let version = sbi_rt::get_spec_version();
-                self.set_gpr_from_gpr_index(GprIndex::A1, version.major() << 24 | version.minor());
-                debug!(
-                    "GetSepcificationVersion: {}",
-                    version.major() << 24 | version.minor()
-                );
-            }
-            BaseFunction::GetImplementationID => {
-                let id = sbi_rt::get_sbi_impl_id();
-                self.set_gpr_from_gpr_index(GprIndex::A1, id);
-            }
-            BaseFunction::GetImplementationVersion => {
-                let impl_version = sbi_rt::get_sbi_impl_version();
-                self.set_gpr_from_gpr_index(GprIndex::A1, impl_version);
-            }
-            BaseFunction::ProbeSbiExtension(extension) => {
-                let extension = sbi_rt::probe_extension(extension as usize).raw;
-                self.set_gpr_from_gpr_index(GprIndex::A1, extension);
-            }
-            BaseFunction::GetMachineVendorID => {
-                let mvendorid = sbi_rt::get_mvendorid();
-                self.set_gpr_from_gpr_index(GprIndex::A1, mvendorid);
-            }
-            BaseFunction::GetMachineArchitectureID => {
-                let marchid = sbi_rt::get_marchid();
-                self.set_gpr_from_gpr_index(GprIndex::A1, marchid);
-            }
-            BaseFunction::GetMachineImplementationID => {
-                let mimpid = sbi_rt::get_mimpid();
-                self.set_gpr_from_gpr_index(GprIndex::A1, mimpid);
-            }
-        }
-        self.set_gpr_from_gpr_index(GprIndex::A0, 0);
-        Ok(())
-    }
-
-    fn handle_rfnc_function(&mut self, rfnc: RemoteFenceFunction) -> AxResult<()> {
-        self.set_gpr_from_gpr_index(GprIndex::A0, 0);
-        match rfnc {
-            RemoteFenceFunction::FenceI {
-                hart_mask,
-                hart_mask_base,
-            } => {
-                let sbi_ret = sbi_rt::remote_fence_i(hart_mask as usize, hart_mask_base as usize);
-                self.set_gpr_from_gpr_index(GprIndex::A0, sbi_ret.error);
-                self.set_gpr_from_gpr_index(GprIndex::A1, sbi_ret.value);
-            }
-            RemoteFenceFunction::RemoteSFenceVMA {
-                hart_mask,
-                hart_mask_base,
-                start_addr,
-                size,
-            } => {
-                let sbi_ret = sbi_rt::remote_sfence_vma(
-                    hart_mask as usize,
-                    hart_mask_base as usize,
-                    start_addr as usize,
-                    size as usize,
-                );
-                self.set_gpr_from_gpr_index(GprIndex::A0, sbi_ret.error);
-                self.set_gpr_from_gpr_index(GprIndex::A1, sbi_ret.value);
-            }
-        }
-        Ok(())
-    }
-
-    fn handle_pmu_function(&mut self, pmu: PmuFunction) -> AxResult<()> {
-        self.set_gpr_from_gpr_index(GprIndex::A0, 0);
-        match pmu {
-            PmuFunction::GetNumCounters => {
-                self.set_gpr_from_gpr_index(GprIndex::A1, sbi_rt::pmu_num_counters())
-            }
-            PmuFunction::GetCounterInfo(counter_index) => {
-                let sbi_ret = pmu_counter_get_info(counter_index as usize);
-                self.set_gpr_from_gpr_index(GprIndex::A0, sbi_ret.error);
-                self.set_gpr_from_gpr_index(GprIndex::A1, sbi_ret.value);
-            }
-            PmuFunction::StopCounter {
-                counter_index,
-                counter_mask,
-                stop_flags,
-            } => {
-                let sbi_ret = pmu_counter_stop(
-                    counter_index as usize,
-                    counter_mask as usize,
-                    stop_flags as usize,
-                );
-                self.set_gpr_from_gpr_index(GprIndex::A0, sbi_ret.error);
-                self.set_gpr_from_gpr_index(GprIndex::A1, sbi_ret.value);
-            }
-        }
-        Ok(())
     }
 }

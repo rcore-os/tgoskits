@@ -12,7 +12,6 @@ pub mod csrs;
 mod detect;
 mod percpu;
 mod regs;
-pub mod sbi;
 mod vcpu;
 
 pub use self::percpu::RISCVPerCpu;
