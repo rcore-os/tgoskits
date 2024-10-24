@@ -4,7 +4,7 @@
 mod linked_list;
 mod raw_list;
 pub use linked_list::List;
-pub use raw_list::{GetLinks, Links};
+pub use raw_list::{GetLinks, Links, RawList};
 
 #[macro_export(local_inner_macros)]
 #[doc(hidden)]

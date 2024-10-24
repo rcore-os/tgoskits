@@ -1,6 +1,6 @@
 [package]
 name = "linked_list_r4l"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 authors = ["Wedson Almeida Filho <wedsonaf@google.com>", "WeiKang Guo <guoweikang.kernel@gmail.com>"]
 description = "Linked lists that supports arbitrary removal in constant time"
