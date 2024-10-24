@@ -3,10 +3,10 @@ use core::mem::size_of;
 
 use memoffset::offset_of;
 use riscv::register::{htinst, htval, scause, sstatus, stval};
-use rustsbi::{Forward, RustSBI};
+use rustsbi::{Forward, RustSBI, Timer};
 use tock_registers::LocalRegisterCopy;
 
-use axaddrspace::{GuestPhysAddr, HostPhysAddr, MappingFlags};
+use axaddrspace::{GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags};
 use axerrno::AxResult;
 use axvcpu::AxVCpuExitReason;
 
@@ -349,13 +349,79 @@ impl RISCVVCpu {
 
         let scause = scause::read();
         use scause::{Exception, Interrupt, Trap};
+
+        trace!(
+            "vmexit_handler: {:?}, sepc: {:#x}, stval: {:#x}",
+            scause.cause(),
+            self.regs.guest_regs.sepc,
+            self.regs.trap_csrs.stval
+        );
+
         match scause.cause() {
             Trap::Exception(Exception::VirtualSupervisorEnvCall) => {
                 let a = self.regs.guest_regs.gprs.a_regs();
                 let param = [a[0], a[1], a[2], a[3], a[4], a[5]];
-                let ret = self.sbi.handle_ecall(a[7], a[6], param);
-                self.set_gpr_from_gpr_index(GprIndex::A0, ret.error);
-                self.set_gpr_from_gpr_index(GprIndex::A1, ret.value);
+                let extension_id = a[7];
+                let function_id = a[6];
+
+                match extension_id {
+                    // Compatibility with Legacy Extensions `LEGACY_SET_TIMER`
+                    sbi_spec::legacy::LEGACY_SET_TIMER => {
+                        // sbi_call_legacy_1(LEGACY_SET_TIMER, time_value)
+                        self.sbi.timer.set_timer(param[0] as _);
+                        self.set_gpr_from_gpr_index(GprIndex::A0, 0);
+                    }
+
+                    // Compatibility with Legacy Extensions `LEGACY_CONSOLE_PUTCHAR`
+                    sbi_spec::legacy::LEGACY_CONSOLE_PUTCHAR => {
+                        // sbi_call_legacy_1(LEGACY_CONSOLE_PUTCHAR, c)
+                        let ret = sbi_rt::console_write_byte(param[0] as _);
+                        self.set_gpr_from_gpr_index(GprIndex::A0, ret.error);
+                        // Note:
+                        // The RustSBI implementation does not return a value for this call,
+                        // we do not set `a1` here, because guest VM may not expect a modification to `a1`.
+                    }
+                    // Compatibility with Legacy Extensions `LEGACY_CONSOLE_GETCHAR`
+                    sbi_spec::legacy::LEGACY_CONSOLE_GETCHAR => {
+                        // sbi_call_legacy_0(LEGACY_CONSOLE_GETCHAR)
+                        let c: isize = -1;
+                        let ret = sbi_rt::console_read(sbi_rt::Physical::new(
+                            1,
+                            crate_interface::call_interface!(crate::HalIf::virt_to_phys(
+                                HostVirtAddr::from_ptr_of(core::ptr::addr_of!(c))
+                            ))
+                            .as_usize(),
+                            0,
+                        ));
+                        if ret.is_ok() {
+                            self.set_gpr_from_gpr_index(GprIndex::A0, c as _);
+                        } else {
+                            warn!(
+                                "LEGACY_CONSOLE_GETCHAR c {:#x} param {:#x?} err {:#x} value {:#x}",
+                                c, param, ret.error, ret.value
+                            );
+                            self.set_gpr_from_gpr_index(GprIndex::A0, ret.error);
+                        }
+                    }
+                    sbi_spec::legacy::LEGACY_SHUTDOWN => {
+                        // sbi_call_legacy_0(LEGACY_SHUTDOWN)
+                        return Ok(AxVCpuExitReason::SystemDown);
+                    }
+                    // By default, forward the SBI call to the RustSBI implementation.
+                    // See [`RISCVVCpuSbi`].
+                    _ => {
+                        let ret = self.sbi.handle_ecall(extension_id, function_id, param);
+                        if ret.is_err() {
+                            warn!(
+                                "forward ecall eid {:#x} fid {:#x} param {:#x?} err {:#x} value {:#x}",
+                                extension_id, function_id, param, ret.error, ret.value
+                            );
+                        }
+                        self.set_gpr_from_gpr_index(GprIndex::A0, ret.error);
+                        self.set_gpr_from_gpr_index(GprIndex::A1, ret.value);
+                    }
+                };
+
                 self.advance_pc(4);
                 Ok(AxVCpuExitReason::Nothing)
             }

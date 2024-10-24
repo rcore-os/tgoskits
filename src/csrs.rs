@@ -1,3 +1,22 @@
+/// This module defines the Control and Status Registers (CSRs) for a RISC-V hypervisor.
+/// It provides structures and traits to interact with these registers, allowing for
+/// reading, writing, and atomic operations.
+///
+/// # Structures
+///
+/// - `CSR`: Defines the hypervisor CSRs including `sie`, `hstatus`, `hedeleg`, `hideleg`,
+///   `hcounteren`, and `hvip`.
+/// - `ReadWriteCsr`: A generic structure representing a read/write CSR.
+///
+/// # Traits
+///
+/// - `RiscvCsrTrait`: Defines the possible operations on a RISC-V CSR, including reading,
+///   writing, atomic replace, and atomic bitwise operations.
+///
+/// # Modules
+///
+/// - `defs`: Contains definitions of CSR addresses and bitfields.
+/// - `traps`: Contains constants related to traps, including interrupts and exceptions.
 use defs::*;
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::RegisterLongName;
@@ -19,6 +38,7 @@ pub struct CSR {
 }
 
 #[allow(clippy::identity_op, clippy::erasing_op)]
+/// The hypervisor CSRs.
 pub const CSR: &CSR = &CSR {
     sie: ReadWriteCsr::new(),
     hstatus: ReadWriteCsr::new(),
@@ -30,7 +50,9 @@ pub const CSR: &CSR = &CSR {
 
 /// Trait defining the possible operations on a RISC-V CSR.
 pub trait RiscvCsrTrait {
+    /// Descriptive name for each register.
     type R: RegisterLongName;
+
     /// Reads the value of the CSR.
     fn get_value(&self) -> usize;
 
@@ -124,6 +146,7 @@ impl<R: RegisterLongName, const V: u16> Writeable for ReadWriteCsr<R, V> {
 }
 
 /// Definitions
+#[doc(hidden)]
 pub mod defs {
     use tock_registers::register_bitfields;
     pub const CSR_SSTATUS: u16 = 0x100;

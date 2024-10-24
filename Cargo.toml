@@ -8,11 +8,13 @@ log = "0.4.19"
 cfg-if = "1.0"
 bitflags = "2.2"
 bit_field = "0.10"
+crate_interface = "0.1"
 
 riscv = { git = "https://github.com/rcore-os/riscv", features = ["inline-asm"] }
 riscv-decode = { git = "https://github.com/KuangjuX/riscv-decode.git" }
 rustsbi = { version = "0.4.0", features = ["forward"] }
 sbi-rt = { version = "0.0.3", features = ["integer-impls"] }
+sbi-spec = { version = "0.0.7", features = ["legacy"] }
 tock-registers = "0.8.1"
 memoffset = { version = ">=0.6.5", features = ["unstable_const"] }
 
