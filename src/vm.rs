@@ -69,7 +69,15 @@ impl<H: AxVMHal> AxVM<H> {
                 let arch_config = AxVCpuCreateConfig {
                     mpidr_el1: _pcpu_id as _,
                 };
-                #[cfg(not(target_arch = "aarch64"))]
+                #[cfg(target_arch = "riscv64")]
+                let arch_config = AxVCpuCreateConfig {
+                    hart_id: vcpu_id as _,
+                    dtb_addr: config
+                        .image_config()
+                        .dtb_load_gpa
+                        .unwrap_or(GuestPhysAddr::from_usize(0x9000_0000)),
+                };
+                #[cfg(target_arch = "x86_64")]
                 let arch_config = AxVCpuCreateConfig::default();
 
                 vcpu_list.push(Arc::new(VCpu::new(
