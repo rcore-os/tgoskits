@@ -150,10 +150,11 @@ pub enum AxVCpuExitReason {
         target_cpu: u64,
         /// Runtime-specified physical address of the secondary CPU's entry point, where the vcpu can start executing.
         entry_point: GuestPhysAddr,
-        /// This argument will be passed to the `x0` register of the secondary CPU.
+        /// This argument passed as the first argument to the secondary CPU's.
+        /// * for aarch64, it is the `arg` value that will be set in the `x0` register when the vcpu starts executing at `entry_point`.
+        /// * for RISC-V, it will be set in the `a1` register when the hart starts executing at `entry_point`, and the `a0` register will be set to the hartid.
+        /// * for x86_64, it is currently unused.
         arg: u64,
-        /// RISC-V only, the `opaque` value that will be set in the `a1` register when the hart starts executing at `entry_point`.
-        opaque: u64,
     },
     /// The vcpu is powered off.
     ///
