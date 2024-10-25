@@ -4,16 +4,15 @@ use core::mem::size_of;
 use memoffset::offset_of;
 use riscv::register::{htinst, htval, scause, sstatus, stval};
 use rustsbi::{Forward, RustSBI, Timer};
-use tock_registers::LocalRegisterCopy;
+use sbi_spec::{hsm, legacy};
 
 use axaddrspace::{GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags};
 use axerrno::AxResult;
 use axvcpu::AxVCpuExitReason;
 
-use super::csrs::defs::hstatus;
 use super::csrs::{traps, RiscvCsrTrait, CSR};
-
 use super::regs::{GeneralPurposeRegisters, GprIndex};
+use crate::{RISCVVCpuCreateConfig, EID_HVC};
 
 /// Hypervisor GPR and CSR state which must be saved/restored when entering/exiting virtualization.
 #[derive(Default)]
@@ -212,7 +211,7 @@ pub struct RISCVVCpu {
 #[derive(RustSBI)]
 struct RISCVVCpuSbi {
     timer: RISCVVCpuSbiTimer,
-    #[rustsbi(console, pmu, fence, reset, info)]
+    #[rustsbi(console, pmu, fence, reset, info, hsm)]
     forward: Forward,
 }
 
@@ -242,46 +241,57 @@ impl rustsbi::Timer for RISCVVCpuSbiTimer {
 }
 
 impl axvcpu::AxArchVCpu for RISCVVCpu {
-    type CreateConfig = ();
+    type CreateConfig = RISCVVCpuCreateConfig;
 
     type SetupConfig = ();
 
-    fn new(_config: Self::CreateConfig) -> AxResult<Self> {
+    fn new(config: Self::CreateConfig) -> AxResult<Self> {
         let mut regs = VmCpuRegisters::default();
-        // Set hstatus
-        let mut hstatus = LocalRegisterCopy::<usize, hstatus::Register>::new(
-            riscv::register::hstatus::read().bits(),
-        );
-        hstatus.modify(hstatus::spv::Supervisor);
-        // Set SPVP bit in order to accessing VS-mode memory from HS-mode.
-        hstatus.modify(hstatus::spvp::Supervisor);
-        CSR.hstatus.write_value(hstatus.get());
-        regs.guest_regs.hstatus = hstatus.get();
+        // Setup the guest's general purpose registers.
+        // `a0` is the hartid
+        regs.guest_regs.gprs.set_reg(GprIndex::A0, config.hart_id);
+        // `a1` is the address of the device tree blob.
+        regs.guest_regs
+            .gprs
+            .set_reg(GprIndex::A1, config.dtb_addr.as_usize());
 
-        // Set sstatus
-        let mut sstatus = sstatus::read();
-        sstatus.set_spp(sstatus::SPP::Supervisor);
-        regs.guest_regs.sstatus = sstatus.bits();
-
-        regs.guest_regs.gprs.set_reg(GprIndex::A0, 0);
-        regs.guest_regs.gprs.set_reg(GprIndex::A1, 0x9000_0000);
-
-        let sbi = RISCVVCpuSbi::default();
-        Ok(Self { regs, sbi })
+        Ok(Self {
+            regs: VmCpuRegisters::default(),
+            sbi: RISCVVCpuSbi::default(),
+        })
     }
 
     fn setup(&mut self, _config: Self::SetupConfig) -> AxResult {
+        // Set sstatus.
+        let mut sstatus = sstatus::read();
+        sstatus.set_spp(sstatus::SPP::Supervisor);
+        self.regs.guest_regs.sstatus = sstatus.bits();
+
+        // Set hstatus.
+        self.regs.guest_regs.hstatus = riscv::register::hstatus::read().bits();
         Ok(())
     }
 
     fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
-        let regs = &mut self.regs;
-        regs.guest_regs.sepc = entry.as_usize();
+        self.regs.guest_regs.sepc = entry.as_usize();
         Ok(())
     }
 
     fn set_ept_root(&mut self, ept_root: HostPhysAddr) -> AxResult {
         self.regs.virtual_hs_csrs.hgatp = 8usize << 60 | usize::from(ept_root) >> 12;
+        Ok(())
+    }
+
+    fn run(&mut self) -> AxResult<AxVCpuExitReason> {
+        unsafe {
+            // Safe to run the guest as it only touches memory assigned to it by being owned
+            // by its page table
+            _run_guest(&mut self.regs);
+        }
+        self.vmexit_handler()
+    }
+
+    fn bind(&mut self) -> AxResult {
         unsafe {
             core::arch::asm!(
                 "csrw hgatp, {hgatp}",
@@ -292,29 +302,23 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
         Ok(())
     }
 
-    fn run(&mut self) -> AxResult<AxVCpuExitReason> {
-        let regs = &mut self.regs;
-        unsafe {
-            // Safe to run the guest as it only touches memory assigned to it by being owned
-            // by its page table
-            _run_guest(regs);
-        }
-        self.vmexit_handler()
-    }
-
-    fn bind(&mut self) -> AxResult {
-        // unimplemented!()
-        Ok(())
-    }
-
     fn unbind(&mut self) -> AxResult {
-        // unimplemented!()
         Ok(())
     }
 
     /// Set one of the vCPU's general purpose register.
     fn set_gpr(&mut self, index: usize, val: usize) {
-        self.set_gpr_from_gpr_index(GprIndex::from_raw(index as u32).unwrap(), val);
+        match index {
+            0..=7 => {
+                self.set_gpr_from_gpr_index(GprIndex::from_raw(index as u32 + 10).unwrap(), val);
+            }
+            _ => {
+                warn!(
+                    "RISCVVCpu: Unsupported general purpose register index: {}",
+                    index
+                );
+            }
+        }
     }
 }
 
@@ -365,47 +369,92 @@ impl RISCVVCpu {
                 let function_id = a[6];
 
                 match extension_id {
-                    // Compatibility with Legacy Extensions `LEGACY_SET_TIMER`
-                    sbi_spec::legacy::LEGACY_SET_TIMER => {
-                        // sbi_call_legacy_1(LEGACY_SET_TIMER, time_value)
-                        self.sbi.timer.set_timer(param[0] as _);
-                        self.set_gpr_from_gpr_index(GprIndex::A0, 0);
-                    }
-
-                    // Compatibility with Legacy Extensions `LEGACY_CONSOLE_PUTCHAR`
-                    sbi_spec::legacy::LEGACY_CONSOLE_PUTCHAR => {
-                        // sbi_call_legacy_1(LEGACY_CONSOLE_PUTCHAR, c)
-                        let ret = sbi_rt::console_write_byte(param[0] as _);
-                        self.set_gpr_from_gpr_index(GprIndex::A0, ret.error);
-                        // Note:
-                        // The RustSBI implementation does not return a value for this call,
-                        // we do not set `a1` here, because guest VM may not expect a modification to `a1`.
-                    }
-                    // Compatibility with Legacy Extensions `LEGACY_CONSOLE_GETCHAR`
-                    sbi_spec::legacy::LEGACY_CONSOLE_GETCHAR => {
-                        // sbi_call_legacy_0(LEGACY_CONSOLE_GETCHAR)
-                        let c: isize = -1;
-                        let ret = sbi_rt::console_read(sbi_rt::Physical::new(
-                            1,
-                            crate_interface::call_interface!(crate::HalIf::virt_to_phys(
-                                HostVirtAddr::from_ptr_of(core::ptr::addr_of!(c))
-                            ))
-                            .as_usize(),
-                            0,
-                        ));
-                        if ret.is_ok() {
-                            self.set_gpr_from_gpr_index(GprIndex::A0, c as _);
-                        } else {
-                            warn!(
+                    // Compatibility with Legacy Extensions.
+                    legacy::LEGACY_SET_TIMER..=legacy::LEGACY_SHUTDOWN => match extension_id {
+                        legacy::LEGACY_SET_TIMER => {
+                            // sbi_call_legacy_1(LEGACY_SET_TIMER, time_value)
+                            self.sbi.timer.set_timer(param[0] as _);
+                            self.set_gpr_from_gpr_index(GprIndex::A0, 0);
+                        }
+                        legacy::LEGACY_CONSOLE_PUTCHAR => {
+                            // sbi_call_legacy_1(LEGACY_CONSOLE_PUTCHAR, c)
+                            let ret = sbi_rt::console_write_byte(param[0] as _);
+                            self.set_gpr_from_gpr_index(GprIndex::A0, ret.error);
+                            // Note:
+                            // The RustSBI implementation does not return a value for this call,
+                            // we do not set `a1` here, because guest VM may not expect a modification to `a1`.
+                        }
+                        legacy::LEGACY_CONSOLE_GETCHAR => {
+                            // sbi_call_legacy_0(LEGACY_CONSOLE_GETCHAR)
+                            let c: isize = -1;
+                            let ret = sbi_rt::console_read(sbi_rt::Physical::new(
+                                1,
+                                crate_interface::call_interface!(crate::HalIf::virt_to_phys(
+                                    HostVirtAddr::from_ptr_of(core::ptr::addr_of!(c))
+                                ))
+                                .as_usize(),
+                                0,
+                            ));
+                            if ret.is_ok() {
+                                self.set_gpr_from_gpr_index(GprIndex::A0, c as _);
+                            } else {
+                                warn!(
                                 "LEGACY_CONSOLE_GETCHAR c {:#x} param {:#x?} err {:#x} value {:#x}",
                                 c, param, ret.error, ret.value
                             );
-                            self.set_gpr_from_gpr_index(GprIndex::A0, ret.error);
+                                self.set_gpr_from_gpr_index(GprIndex::A0, ret.error);
+                            }
                         }
-                    }
-                    sbi_spec::legacy::LEGACY_SHUTDOWN => {
-                        // sbi_call_legacy_0(LEGACY_SHUTDOWN)
-                        return Ok(AxVCpuExitReason::SystemDown);
+                        legacy::LEGACY_SHUTDOWN => {
+                            // sbi_call_legacy_0(LEGACY_SHUTDOWN)
+                            return Ok(AxVCpuExitReason::SystemDown);
+                        }
+                        _ => {
+                            warn!(
+                                "Unsupported SBI legacy extension id {:#x} function id {:#x}",
+                                extension_id, function_id
+                            );
+                        }
+                    },
+                    // Handle HSM extension
+                    hsm::EID_HSM => match function_id {
+                        hsm::HART_START => {
+                            let hartid = a[0];
+                            let start_addr = a[1];
+                            let opaque = a[2];
+                            self.advance_pc(4);
+                            return Ok(AxVCpuExitReason::CpuUp {
+                                target_cpu: hartid as _,
+                                entry_point: GuestPhysAddr::from(start_addr),
+                                arg: opaque as _,
+                            });
+                        }
+                        hsm::HART_STOP => {
+                            return Ok(AxVCpuExitReason::CpuDown { _state: 0 });
+                        }
+                        hsm::HART_SUSPEND => {
+                            // Todo: support these parameters.
+                            let _suspend_type = a[0];
+                            let _resume_addr = a[1];
+                            let _opaque = a[2];
+                            return Ok(AxVCpuExitReason::Halt);
+                        }
+                        _ => todo!(),
+                    },
+                    // Handle hypercall
+                    EID_HVC => {
+                        self.advance_pc(4);
+                        return Ok(AxVCpuExitReason::Hypercall {
+                            nr: function_id as _,
+                            args: [
+                                param[0] as _,
+                                param[1] as _,
+                                param[2] as _,
+                                param[3] as _,
+                                param[4] as _,
+                                param[5] as _,
+                            ],
+                        });
                     }
                     // By default, forward the SBI call to the RustSBI implementation.
                     // See [`RISCVVCpuSbi`].

@@ -1,8 +1,9 @@
-use axerrno::{AxError, AxResult};
+use tock_registers::LocalRegisterCopy;
 
+use axerrno::{AxError, AxResult};
 use axvcpu::AxArchPerCpu;
 
-use crate::csrs::{traps, RiscvCsrTrait, CSR};
+use crate::csrs::{defs::hstatus, traps, RiscvCsrTrait, CSR};
 use crate::has_hardware_support;
 
 /// Risc-V per-CPU state.
@@ -23,6 +24,15 @@ impl AxArchPerCpu for RISCVPerCpu {
 
     fn hardware_enable(&mut self) -> AxResult<()> {
         if has_hardware_support() {
+            // Set hstatus
+            let mut hstatus = LocalRegisterCopy::<usize, hstatus::Register>::new(
+                riscv::register::hstatus::read().bits(),
+            );
+            hstatus.modify(hstatus::spv::Supervisor);
+            // Set SPVP bit in order to accessing VS-mode memory from HS-mode.
+            hstatus.modify(hstatus::spvp::Supervisor);
+            CSR.hstatus.write_value(hstatus.get());
+
             Ok(())
         } else {
             Err(AxError::Unsupported)

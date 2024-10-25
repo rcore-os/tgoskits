@@ -59,4 +59,4 @@ jobs:
       with:
         single-commit: true
         branch: gh-pages
-        folder: target/doc
+        folder: target/${{ matrix.targets }}/doc
