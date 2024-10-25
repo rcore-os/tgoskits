@@ -2,6 +2,7 @@ use axvm::config::{AxVMConfig, AxVMCrateConfig};
 
 use crate::vmm::{images::load_vm_images, vm_list::push_vm, VM};
 
+#[allow(clippy::module_inception)]
 mod config {
     use alloc::vec::Vec;
 

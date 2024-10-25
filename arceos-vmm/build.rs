@@ -75,7 +75,7 @@ fn open_output_file() -> fs::File {
         .write(true)
         .create(true)
         .truncate(true)
-        .open(&output_file)
+        .open(output_file)
         .unwrap()
 }
 

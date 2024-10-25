@@ -2,6 +2,9 @@
 
 QEMU := qemu-system-$(ARCH)
 
+TELNET_PORT ?= 4321
+SECOND_SERIAL ?= n
+
 ifeq ($(BUS), mmio)
   vdev-suffix := device
 else ifeq ($(BUS), pci)
@@ -69,6 +72,9 @@ endif
 ifeq ($(QEMU_LOG), y)
   qemu_args-y += -D qemu.log -d in_asm,int,mmu,pcall,cpu_reset,guest_errors
 endif
+
+qemu_args-$(SECOND_SERIAL) +=  -serial mon:stdio \
+  -serial telnet:localhost:$(TELNET_PORT),server
 
 qemu_args-debug := $(qemu_args-y) -s -S
 

@@ -1,8 +1,10 @@
+use std::os::arceos::modules::axtask::def_task_ext;
+
 use axvm::{AxVCpuRef, AxVMRef};
 
 use crate::hal::AxVMHalImpl;
 
-/// Task extended data for the monolithic kernel.
+/// Task extended data for the hypervisor.
 pub struct TaskExt {
     /// The VM.
     pub vm: AxVMRef<AxVMHalImpl>,
@@ -16,4 +18,4 @@ impl TaskExt {
     }
 }
 
-axtask::def_task_ext!(TaskExt);
+def_task_ext!(TaskExt);
