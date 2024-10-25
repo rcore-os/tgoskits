@@ -229,7 +229,6 @@ fn handle_psci_call(ctx: &mut TrapFrame) -> Option<AxResult<AxVCpuExitReason>> {
             target_cpu: ctx.gpr[1],
             entry_point: GuestPhysAddr::from(ctx.gpr[2] as usize),
             arg: ctx.gpr[3],
-            opaque: 0,
         }),
         PSCI_FN_SYSTEM_OFF => Ok(AxVCpuExitReason::SystemDown),
         _ => Err(AxError::Unsupported),
