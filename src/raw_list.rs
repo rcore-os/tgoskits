@@ -90,21 +90,23 @@ impl<T: ?Sized> ListEntry<T> {
 /// # Invariants
 ///
 /// The links of objects added to a list are owned by the list.
-pub(crate) struct RawList<G: GetLinks> {
+pub struct RawList<G: GetLinks> {
     head: Option<NonNull<G::EntryType>>,
 }
 
 impl<G: GetLinks> RawList<G> {
-    pub(crate) const fn new() -> Self {
+    /// Constructs a new empty RawList.
+    pub const fn new() -> Self {
         Self { head: None }
     }
 
     /// Returns an iterator for the list starting at the first entry.
-    pub(crate) fn iter(&self) -> Iterator<'_, G> {
+    pub fn iter(&self) -> Iterator<'_, G> {
         Iterator::new(self.cursor_front(), self.cursor_back())
     }
 
-    pub(crate) const fn is_empty(&self) -> bool {
+    /// Returns whether the RawList is empty.
+    pub const fn is_empty(&self) -> bool {
         self.head.is_none()
     }
 
@@ -135,11 +137,7 @@ impl<G: GetLinks> RawList<G> {
     /// # Safety
     ///
     /// Callers must ensure that `existing` points to a valid entry that is on the list.
-    pub(crate) unsafe fn insert_after(
-        &mut self,
-        existing: &G::EntryType,
-        new: &G::EntryType,
-    ) -> bool {
+    pub unsafe fn insert_after(&mut self, existing: &G::EntryType, new: &G::EntryType) -> bool {
         let links = G::get_links(new);
         if !links.acquire_for_insertion() {
             // Nothing to do if already inserted.
@@ -152,7 +150,7 @@ impl<G: GetLinks> RawList<G> {
         true
     }
 
-    fn push_back_internal(&mut self, new: &G::EntryType) -> bool {
+    fn push_back_internal(&mut self, new: &G::EntryType, front: bool) -> bool {
         let links = G::get_links(new);
         if !links.acquire_for_insertion() {
             // Nothing to do if already inserted.
@@ -164,7 +162,13 @@ impl<G: GetLinks> RawList<G> {
         let new_ptr = Some(NonNull::from(new));
         match self.back() {
             // SAFETY: `back` is valid as the list cannot change.
-            Some(back) => self.insert_after_priv(unsafe { back.as_ref() }, new_entry, new_ptr),
+            Some(back) => {
+                self.insert_after_priv(unsafe { back.as_ref() }, new_entry, new_ptr);
+                // if push front, update head
+                if front {
+                    self.head = new_ptr;
+                }
+            }
             None => {
                 self.head = new_ptr;
                 new_entry.next = new_ptr;
@@ -174,8 +178,22 @@ impl<G: GetLinks> RawList<G> {
         true
     }
 
-    pub(crate) unsafe fn push_back(&mut self, new: &G::EntryType) -> bool {
-        self.push_back_internal(new)
+    /// Adds the given object to the end (back) of the list.
+    ///
+    /// Rawlist will save the reference as node ptr.
+    /// The caller must ensure the validity of the reference while it is on
+    /// the linked list.
+    pub unsafe fn push_back(&mut self, new: &G::EntryType) -> bool {
+        self.push_back_internal(new, false)
+    }
+
+    /// Adds the given object to the first (front) of the list.
+    ///
+    /// Rawlist will save the reference as node ptr.
+    /// The caller must ensure the validity of the reference while it is on
+    /// the linked list.
+    pub unsafe fn push_front(&mut self, new: &G::EntryType) -> bool {
+        self.push_back_internal(new, true)
     }
 
     fn remove_internal(&mut self, data: &G::EntryType) -> bool {
@@ -222,7 +240,7 @@ impl<G: GetLinks> RawList<G> {
     ///
     /// Callers must ensure that `data` is either on this list or in no list. It being on another
     /// list leads to memory unsafety.
-    pub(crate) unsafe fn remove(&mut self, data: &G::EntryType) -> bool {
+    pub unsafe fn remove(&mut self, data: &G::EntryType) -> bool {
         self.remove_internal(data)
     }
 
@@ -234,7 +252,7 @@ impl<G: GetLinks> RawList<G> {
     }
 
     /// Get and Remove the first element of the list.
-    pub(crate) fn pop_front(&mut self) -> Option<NonNull<G::EntryType>> {
+    pub fn pop_front(&mut self) -> Option<NonNull<G::EntryType>> {
         self.pop_front_internal()
     }
 
@@ -260,7 +278,7 @@ impl<G: GetLinks> RawList<G> {
     }
 
     /// Returns a mut cursor starting on the first element of the list.
-    pub(crate) fn cursor_front_mut(&mut self) -> CursorMut<'_, G> {
+    pub fn cursor_front_mut(&mut self) -> CursorMut<'_, G> {
         CursorMut::new(self, self.front())
     }
 }
@@ -351,7 +369,7 @@ impl<'a, G: GetLinks> Cursor<'a, G> {
     }
 }
 
-pub(crate) struct CursorMut<'a, G: GetLinks> {
+pub struct CursorMut<'a, G: GetLinks> {
     cursor: CommonCursor<G>,
     list: &'a mut RawList<G>,
 }
@@ -364,7 +382,7 @@ impl<'a, G: GetLinks> CursorMut<'a, G> {
         }
     }
 
-    pub(crate) fn current(&mut self) -> Option<&mut G::EntryType> {
+    pub fn current(&mut self) -> Option<&mut G::EntryType> {
         let cur = self.cursor.cur?;
         // SAFETY: Objects must be kept alive while on the list.
         Some(unsafe { &mut *cur.as_ptr() })
@@ -372,7 +390,7 @@ impl<'a, G: GetLinks> CursorMut<'a, G> {
 
     /// Removes the entry the cursor is pointing to and advances the cursor to the next entry. It
     /// returns a raw pointer to the removed element (if one is removed).
-    pub(crate) fn remove_current(&mut self) -> Option<NonNull<G::EntryType>> {
+    pub fn remove_current(&mut self) -> Option<NonNull<G::EntryType>> {
         let entry = self.cursor.cur?;
         self.cursor.move_next(self.list);
         // SAFETY: The entry is on the list as we just got it from there and it cannot change.
@@ -380,26 +398,26 @@ impl<'a, G: GetLinks> CursorMut<'a, G> {
         Some(entry)
     }
 
-    pub(crate) fn peek_next(&mut self) -> Option<&mut G::EntryType> {
+    pub fn peek_next(&mut self) -> Option<&mut G::EntryType> {
         let mut new = CommonCursor::new(self.cursor.cur);
         new.move_next(self.list);
         // SAFETY: Objects must be kept alive while on the list.
         Some(unsafe { &mut *new.cur?.as_ptr() })
     }
 
-    pub(crate) fn peek_prev(&mut self) -> Option<&mut G::EntryType> {
+    pub fn peek_prev(&mut self) -> Option<&mut G::EntryType> {
         let mut new = CommonCursor::new(self.cursor.cur);
         new.move_prev(self.list);
         // SAFETY: Objects must be kept alive while on the list.
         Some(unsafe { &mut *new.cur?.as_ptr() })
     }
 
-    pub(crate) fn move_next(&mut self) {
+    pub fn move_next(&mut self) {
         self.cursor.move_next(self.list);
     }
 
     #[allow(dead_code)]
-    pub(crate) fn move_prev(&mut self) {
+    pub fn move_prev(&mut self) {
         self.cursor.move_prev(self.list);
     }
 }
@@ -413,7 +431,7 @@ impl<'a, G: GetLinks> iter::IntoIterator for &'a RawList<G> {
 }
 
 /// An iterator for the linked list.
-pub(crate) struct Iterator<'a, G: GetLinks> {
+pub struct Iterator<'a, G: GetLinks> {
     cursor_front: Cursor<'a, G>,
     cursor_back: Cursor<'a, G>,
 }
@@ -535,6 +553,21 @@ mod tests {
             // and outlives the list.
             unsafe { list.push_back(&v[n - 1]) };
             assert_list_contents(&v[..n], &list);
+        }
+    }
+
+    #[test]
+    fn test_push_front() {
+        const MAX: usize = 10;
+        let v = build_vector(MAX);
+        let mut list = super::RawList::<Example>::new();
+
+        for n in 1..=MAX {
+            // SAFETY: The entry was allocated above, it's not in any lists yet, is never moved,
+            // and outlives the list.
+            println!("push front: {}", MAX - n);
+            unsafe { list.push_front(&v[MAX - n]) };
+            assert_list_contents(&v[MAX - n..MAX], &list);
         }
     }
 
