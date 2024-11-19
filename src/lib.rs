@@ -19,13 +19,6 @@ pub use self::percpu::RISCVPerCpu;
 pub use self::vcpu::RISCVVCpu;
 pub use detect::detect_h_extension as has_hardware_support;
 
-/// Low-level resource interfaces that must be implemented by the crate user.
-#[crate_interface::def_interface]
-pub trait HalIf {
-    /// Returns the physical address of the given virtual address.
-    fn virt_to_phys(vaddr: axaddrspace::HostVirtAddr) -> axaddrspace::HostPhysAddr;
-}
-
 /// Extension ID for hypercall, defined by ourselves.
 /// `0x48`, `0x56`, `0x43` is "HVC" in ASCII.
 ///

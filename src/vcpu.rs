@@ -8,7 +8,7 @@ use sbi_spec::{hsm, legacy};
 
 use axaddrspace::{GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags};
 use axerrno::AxResult;
-use axvcpu::AxVCpuExitReason;
+use axvcpu::{AxVCpuExitReason, AxVCpuHal};
 
 use super::csrs::{traps, RiscvCsrTrait, CSR};
 use super::regs::{GeneralPurposeRegisters, GprIndex};
@@ -203,9 +203,10 @@ pub struct VCpuConfig {}
 
 #[derive(Default)]
 /// A virtual CPU within a guest
-pub struct RISCVVCpu {
+pub struct RISCVVCpu<H: AxVCpuHal> {
     regs: VmCpuRegisters,
     sbi: RISCVVCpuSbi,
+    _marker: core::marker::PhantomData<H>,
 }
 
 #[derive(RustSBI)]
@@ -240,7 +241,7 @@ impl rustsbi::Timer for RISCVVCpuSbiTimer {
     }
 }
 
-impl axvcpu::AxArchVCpu for RISCVVCpu {
+impl<H: AxVCpuHal> axvcpu::AxArchVCpu for RISCVVCpu<H> {
     type CreateConfig = RISCVVCpuCreateConfig;
 
     type SetupConfig = ();
@@ -258,6 +259,7 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
         Ok(Self {
             regs: VmCpuRegisters::default(),
             sbi: RISCVVCpuSbi::default(),
+            _marker: core::marker::PhantomData,
         })
     }
 
@@ -322,7 +324,7 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
     }
 }
 
-impl RISCVVCpu {
+impl<H: AxVCpuHal> RISCVVCpu<H> {
     /// Gets one of the vCPU's general purpose registers.
     pub fn get_gpr(&self, index: GprIndex) -> usize {
         self.regs.guest_regs.gprs.reg(index)
@@ -344,7 +346,7 @@ impl RISCVVCpu {
     }
 }
 
-impl RISCVVCpu {
+impl<H: AxVCpuHal> RISCVVCpu<H> {
     fn vmexit_handler(&mut self) -> AxResult<AxVCpuExitReason> {
         self.regs.trap_csrs.scause = scause::read().bits();
         self.regs.trap_csrs.stval = stval::read();
@@ -389,10 +391,8 @@ impl RISCVVCpu {
                             let c: isize = -1;
                             let ret = sbi_rt::console_read(sbi_rt::Physical::new(
                                 1,
-                                crate_interface::call_interface!(crate::HalIf::virt_to_phys(
-                                    HostVirtAddr::from_ptr_of(core::ptr::addr_of!(c))
-                                ))
-                                .as_usize(),
+                                H::virt_to_phys(HostVirtAddr::from_ptr_of(core::ptr::addr_of!(c)))
+                                    .as_usize(),
                                 0,
                             ));
                             if ret.is_ok() {
