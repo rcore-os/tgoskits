@@ -2,7 +2,7 @@ use x86::bits64::vmx;
 use x86_64::registers::control::{Cr0, Cr4, Cr4Flags};
 
 use axerrno::{ax_err, ax_err_type, AxResult};
-use axvcpu::AxArchPerCpu;
+use axvcpu::{AxArchPerCpu, AxVCpuHal};
 use memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
 
 use crate::msr::Msr;
@@ -14,7 +14,7 @@ use crate::vmx::structs::{FeatureControl, FeatureControlFlags, VmxBasic, VmxRegi
 /// This structure holds the state information specific to a CPU core
 /// when operating in VMX mode, including the VMCS revision identifier and
 /// the VMX region.
-pub struct VmxPerCpuState {
+pub struct VmxPerCpuState<H: AxVCpuHal> {
     /// The VMCS (Virtual Machine Control Structure) revision identifier.
     ///
     /// This identifier is used to ensure compatibility between the software
@@ -25,10 +25,10 @@ pub struct VmxPerCpuState {
     ///
     /// This region typically contains the VMCS and other state information
     /// required for managing virtual machines on this particular CPU.
-    vmx_region: VmxRegion,
+    vmx_region: VmxRegion<H>,
 }
 
-impl AxArchPerCpu for VmxPerCpuState {
+impl<H: AxVCpuHal> AxArchPerCpu for VmxPerCpuState<H> {
     fn new(_cpu_id: usize) -> AxResult<Self> {
         Ok(Self {
             vmcs_revision_id: 0,

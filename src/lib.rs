@@ -28,6 +28,5 @@ cfg_if::cfg_if! {
 }
 
 pub use ept::GuestPageWalkInfo;
-pub use frame::PhysFrameIf;
 pub use regs::GeneralRegisters;
 pub use vender::has_hardware_support;

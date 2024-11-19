@@ -11,7 +11,7 @@ use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr4, Cr4Flags, EferFlags};
 
 use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, NestedPageFaultInfo};
 use axerrno::{ax_err, ax_err_type, AxResult};
-use axvcpu::{AccessWidth, AxArchVCpu, AxVCpuExitReason};
+use axvcpu::{AccessWidth, AxArchVCpu, AxVCpuExitReason, AxVCpuHal};
 
 use super::as_axerr;
 use super::definitions::VmxExitReason;
@@ -65,15 +65,15 @@ const CR0_PE: usize = 1 << 0;
 
 /// A virtual CPU within a guest.
 #[repr(C)]
-pub struct VmxVcpu {
+pub struct VmxVcpu<H: AxVCpuHal> {
     // DO NOT modify `guest_regs` and `host_stack_top` and their order unless you do know what you are doing!
     // DO NOT add anything before or between them unless you do know what you are doing!
     guest_regs: GeneralRegisters,
     host_stack_top: u64,
     launched: bool,
-    vmcs: VmxRegion,
-    io_bitmap: IOBitmap,
-    msr_bitmap: MsrBitmap,
+    vmcs: VmxRegion<H>,
+    io_bitmap: IOBitmap<H>,
+    msr_bitmap: MsrBitmap<H>,
     pending_events: VecDeque<(u8, Option<u32>)>,
     xstate: XState,
     entry: Option<GuestPhysAddr>,
@@ -81,7 +81,7 @@ pub struct VmxVcpu {
     // is_host: bool, temporary removed because we don't care about type 1.5 now
 }
 
-impl VmxVcpu {
+impl<H: AxVCpuHal> VmxVcpu<H> {
     /// Create a new [`VmxVcpu`].
     pub fn new() -> AxResult<Self> {
         let vmcs_revision_id = super::read_vmcs_revision_id();
@@ -352,7 +352,7 @@ impl VmxVcpu {
 }
 
 // Implementation of private methods
-impl VmxVcpu {
+impl<H: AxVCpuHal> VmxVcpu<H> {
     #[allow(dead_code)]
     fn setup_io_bitmap(&mut self) -> AxResult {
         // By default, I/O bitmap is set as `intercept_all`.
@@ -657,7 +657,7 @@ impl VmxVcpu {
 
 // Implementaton for type1.5 hypervisor
 // #[cfg(feature = "type1_5")]
-impl VmxVcpu {
+impl<H: AxVCpuHal> VmxVcpu<H> {
     fn set_cr(&mut self, cr_idx: usize, val: u64) {
         (|| -> AxResult {
             // debug!("set guest CR{} to val {:#x}", cr_idx, val);
@@ -731,7 +731,7 @@ macro_rules! vmx_entry_with {
     }
 }
 
-impl VmxVcpu {
+impl<H: AxVCpuHal> VmxVcpu<H> {
     #[naked]
     /// Enter guest with vmlaunch.
     ///
@@ -1018,7 +1018,7 @@ impl VmxVcpu {
     }
 }
 
-impl Drop for VmxVcpu {
+impl<H: AxVCpuHal> Drop for VmxVcpu<H> {
     fn drop(&mut self) {
         unsafe { vmx::vmclear(self.vmcs.phys_addr().as_usize() as u64).unwrap() };
         info!("[HV] dropped VmxVcpu(vmcs: {:#x})", self.vmcs.phys_addr());
@@ -1041,7 +1041,7 @@ fn get_tr_base(tr: SegmentSelector, gdt: &DescriptorTablePointer<u64>) -> u64 {
     }
 }
 
-impl Debug for VmxVcpu {
+impl<H: AxVCpuHal> Debug for VmxVcpu<H> {
     fn fmt(&self, f: &mut Formatter) -> Result {
         (|| -> AxResult<Result> {
             Ok(f.debug_struct("VmxVcpu")
@@ -1062,7 +1062,7 @@ impl Debug for VmxVcpu {
     }
 }
 
-impl AxArchVCpu for VmxVcpu {
+impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
     type CreateConfig = ();
 
     type SetupConfig = ();
