@@ -272,7 +272,7 @@ macro_rules! save_regs_to_stack {
 ///
 /// ## Note
 ///
-/// This macro is called in `vmexit_trampoline()` in exception.rs,
+/// This macro is called in `return_run_guest()` in exception.rs,
 /// it should only be used after `save_regs_to_stack!` to correctly restore the control flow of `Aarch64VCpu.run()`.
 macro_rules! restore_regs_from_stack {
     () => {

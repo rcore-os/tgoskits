@@ -6,9 +6,7 @@ edition = "2021"
 [dependencies]
 log = "0.4.21"
 
-cortex-a = "8.1.1"
 aarch64-cpu = "9.3"
-smccc = "0.1.1"
 tock-registers = "0.8"
 numeric-enum-macro = "0.2"
 

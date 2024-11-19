@@ -1,6 +1,8 @@
 .macro SAVE_REGS_FROM_EL1
+    # Curretly `sp` points to the address of `Aarch64VCpu.host_stack_top`.
+    sub     sp, sp, 34 * 8
     # Curretly `sp` points to the base address of `Aarch64VCpu.ctx`, which stores guest's `TrapFrame`.
-    
+
     # Save general purpose registers into `Aarch64VCpu.ctx`
     stp     x0, x1, [sp]
     stp     x2, x3, [sp, 2 * 8]
@@ -18,9 +20,7 @@
     stp     x26, x27, [sp, 26 * 8]
     stp     x28, x29, [sp, 28 * 8]
 
-    # The value currently stored in `sp` is unused, (the base address of Aarch64ContextFrame).
-    mov     x9, sp
-    add     x9, x9, #(0x110)
+    mrs     x9, sp_el0
     stp     x30, x9, [sp, 30 * 8]
 
     # Save `elr_el2` and `spsr_el2` into `Aarch64VCpu.ctx`
@@ -29,16 +29,12 @@
     stp     x10, x11, [sp, 32 * 8]
 .endm
 
-# Same as `context_vm_entry` in `src/entry.S`
 .macro RESTORE_REGS_INTO_EL1
     ldp     x10, x11, [sp, 32 * 8]
+    ldp     x30, x9, [sp, 30 * 8]
+    msr     sp_el0, x9
     msr     elr_el2, x10
     msr     spsr_el2, x11
-
-    ldr     x10,      [sp, 31 * 8]
-    mrs     x11, sp_el0
-    msr     sp_el0, x10
-    str     x11,      [sp, 31 * 8]
 
     ldr     x30,      [sp, 30 * 8]
     ldp     x28, x29, [sp, 28 * 8]
@@ -56,7 +52,9 @@
     ldp     x4, x5, [sp, 4 * 8]
     ldp     x2, x3, [sp, 2 * 8]
     ldp     x0, x1, [sp]
-    # Keep `sp` as the base address of `Aarch64VCpu.ctx`
+    # Curretly `sp` points to the base address of `Aarch64VCpu.ctx`
+    add     sp, sp, 34 * 8
+     # Curretly `x0` points to the address of `Aarch64VCpu.host_stack_top`.
 .endm
 
 
@@ -75,6 +73,7 @@
     SAVE_REGS_FROM_EL1
     mov    x0, {exception_irq}
     bl     vmexit_trampoline
+    # b .Lexception_return_el2 is called by `vmexit_trampoline`
 .endm
 
 .macro HANDLE_LOWER_SYNC_VCPU
@@ -82,6 +81,7 @@
     SAVE_REGS_FROM_EL1
     mov    x0, {exception_sync}
     bl     vmexit_trampoline
+    # b .Lexception_return_el2 is called by `vmexit_trampoline`
 .endm
 
 
@@ -113,6 +113,12 @@ exception_vector_base_vcpu:
     INVALID_EXCP_EL2 2 3
     INVALID_EXCP_EL2 3 3
 
+.global context_vm_entry
+context_vm_entry:
+    # Curretly `x0` points to the address of `Aarch64VCpu.host_stack_top`.
+    mov     sp, x0
+    sub     sp, sp, 34 * 8
+    # Curretly `sp` points to the base address of `Aarch64VCpu.ctx`, which stores guest's `TrapFrame`.
 .Lexception_return_el2:
     RESTORE_REGS_INTO_EL1
     eret

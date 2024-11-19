@@ -5,21 +5,22 @@ use aarch64_cpu::registers::*;
 
 /// A struct representing the AArch64 CPU context frame.
 ///
-/// This context frame includes the general-purpose registers (GPRs),
-/// the stack pointer (SP), the exception link register (ELR), and
-/// the saved program status register (SPSR).
+/// This context frame includes
+/// * the general-purpose registers (GPRs),
+/// * the stack pointer associated with EL0 (SP_EL0),
+/// * the exception link register (ELR),
+/// * the saved program status register (SPSR).
 ///
 /// The `#[repr(C)]` attribute ensures that the struct has a C-compatible
 /// memory layout, which is important when interfacing with hardware or
 /// other low-level components.
 #[repr(C)]
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug)]
 pub struct Aarch64ContextFrame {
     /// An array of 31 `u64` values representing the general-purpose registers.
     pub gpr: [u64; 31],
-    /// The stack pointer.
-    /// The value currently stored in this field is meaningless (the base address of Aarch64ContextFrame).
-    pub sp: u64,
+    /// The stack pointer associated with EL0 (SP_EL0)
+    pub sp_el0: u64,
     /// The exception link register, which stores the return address after an exception.
     pub elr: u64,
     /// The saved program status register, which holds the state of the program at the time of an exception.
@@ -37,16 +38,16 @@ impl core::fmt::Display for Aarch64ContextFrame {
         }
         writeln!(f, "spsr:{:016x}", self.spsr)?;
         write!(f, "elr: {:016x}", self.elr)?;
-        writeln!(f, "   sp:  {:016x}", self.sp)?;
+        writeln!(f, "   sp_el0:  {:016x}", self.sp_el0)?;
         Ok(())
     }
 }
 
-impl Aarch64ContextFrame {
+impl Default for Aarch64ContextFrame {
     /// Returns the default context frame.
     ///
     /// The default state sets the SPSR to mask all exceptions and sets the mode to EL1h.
-    pub fn default() -> Aarch64ContextFrame {
+    fn default() -> Self {
         Aarch64ContextFrame {
             gpr: [0; 31],
             spsr: (SPSR_EL1::M::EL1h
@@ -56,34 +57,12 @@ impl Aarch64ContextFrame {
                 + SPSR_EL1::D::Masked)
                 .value,
             elr: 0,
-            sp: 0,
+            sp_el0: 0,
         }
     }
+}
 
-    /// Creates a new context frame with a specific program counter, stack pointer, and argument.
-    ///
-    /// Sets the SPSR to mask all exceptions and sets the mode to EL1h by default.
-    /// # Arguments
-    ///
-    /// * `pc` - The initial program counter (PC).
-    /// * `sp` - The initial stack pointer (SP).
-    /// * `arg` - The argument to be passed in register x0.
-    pub fn new(pc: usize, sp: usize, arg: usize) -> Self {
-        let mut r = Aarch64ContextFrame {
-            gpr: [0; 31],
-            spsr: (SPSR_EL1::M::EL1h
-                + SPSR_EL1::I::Masked
-                + SPSR_EL1::F::Masked
-                + SPSR_EL1::A::Masked
-                + SPSR_EL1::D::Masked)
-                .value,
-            elr: pc as u64,
-            sp: sp as u64,
-        };
-        r.set_argument(arg);
-        r
-    }
-
+impl Aarch64ContextFrame {
     /// Returns the exception program counter (ELR).
     pub fn exception_pc(&self) -> usize {
         self.elr as usize
@@ -96,23 +75,6 @@ impl Aarch64ContextFrame {
     /// * `pc` - The new program counter value.
     pub fn set_exception_pc(&mut self, pc: usize) {
         self.elr = pc as u64;
-    }
-
-    /// Returns the stack pointer (SP).
-    /// Note: currently returned value is meaningless.
-    pub fn stack_pointer(&self) -> usize {
-        self.sp as usize
-    }
-
-    /// Sets the stack pointer (SP).
-    ///
-    /// Note: currently useless.
-    ///
-    /// # Arguments
-    ///
-    /// * `sp` - The new stack pointer value.
-    pub fn set_stack_pointer(&mut self, sp: usize) {
-        self.sp = sp as u64;
     }
 
     /// Sets the argument in register x0.
@@ -200,7 +162,7 @@ pub struct GuestSystemRegisters {
     pub vmpidr_el2: u64,
 
     // 64bit EL1/EL0 register
-    sp_el0: u64,
+    pub sp_el0: u64,
     sp_el1: u64,
     elr_el1: u64,
     spsr_el1: u32,
@@ -300,7 +262,9 @@ impl GuestSystemRegisters {
         asm!("msr CNTV_CVAL_EL0, {0}", in(reg) self.cntv_cval_el0);
         asm!("msr CNTKCTL_EL1, {0:x}", in (reg) self.cntkctl_el1);
         asm!("msr CNTV_CTL_EL0, {0:x}", in (reg) self.cntv_ctl_el0);
-        asm!("msr SP_EL0, {0}", in(reg) self.sp_el0);
+        // The restoration of SP_EL0 is done in `exception_return_el2`,
+        // which move the value from `self.ctx.sp_el0` to `SP_EL0`.
+        // asm!("msr SP_EL0, {0}", in(reg) self.sp_el0);
         asm!("msr SP_EL1, {0}", in(reg) self.sp_el1);
         asm!("msr ELR_EL1, {0}", in(reg) self.elr_el1);
         asm!("msr SPSR_EL1, {0:x}", in(reg) self.spsr_el1);
