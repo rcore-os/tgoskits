@@ -24,7 +24,7 @@ pub use vm::AxVM;
 pub use vm::AxVMRef;
 
 /// The architecture-independent per-CPU type.
-pub type AxVMPerCpu = axvcpu::AxPerCpu<vcpu::AxVMArchPerCpuImpl>;
+pub type AxVMPerCpu<U> = axvcpu::AxPerCpu<vcpu::AxVMArchPerCpuImpl<U>>;
 
 /// Whether the hardware has virtualization support.
 pub fn has_hardware_support() -> bool {

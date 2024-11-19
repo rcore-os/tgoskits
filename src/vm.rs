@@ -9,7 +9,7 @@ use axdevice::{AxVmDeviceConfig, AxVmDevices};
 use axerrno::{ax_err, ax_err_type, AxResult};
 use spin::Mutex;
 
-use axvcpu::{AxArchVCpu, AxVCpu, AxVCpuExitReason};
+use axvcpu::{AxArchVCpu, AxVCpu, AxVCpuExitReason, AxVCpuHal};
 
 use axaddrspace::{AddrSpace, GuestPhysAddr, HostPhysAddr, MappingFlags};
 
@@ -22,23 +22,23 @@ const VM_ASPACE_SIZE: usize = 0x7fff_ffff_f000;
 
 /// A vCPU with architecture-independent interface.
 #[allow(type_alias_bounds)]
-type VCpu = AxVCpu<AxArchVCpuImpl>;
+type VCpu<U: AxVCpuHal> = AxVCpu<AxArchVCpuImpl<U>>;
 /// A reference to a vCPU.
 #[allow(type_alias_bounds)]
-pub type AxVCpuRef = Arc<VCpu>;
+pub type AxVCpuRef<U: AxVCpuHal> = Arc<VCpu<U>>;
 /// A reference to a VM.
 #[allow(type_alias_bounds)]
-pub type AxVMRef<H: AxVMHal> = Arc<AxVM<H>>; // we know the bound is not enforced here, we keep it for clarity
+pub type AxVMRef<H: AxVMHal, U: AxVCpuHal> = Arc<AxVM<H, U>>; // we know the bound is not enforced here, we keep it for clarity
 
-struct AxVMInnerConst {
+struct AxVMInnerConst<U: AxVCpuHal> {
     id: usize,
     config: AxVMConfig,
-    vcpu_list: Box<[AxVCpuRef]>,
+    vcpu_list: Box<[AxVCpuRef<U>]>,
     devices: AxVmDevices,
 }
 
-unsafe impl Send for AxVMInnerConst {}
-unsafe impl Sync for AxVMInnerConst {}
+unsafe impl<U: AxVCpuHal> Send for AxVMInnerConst<U> {}
+unsafe impl<U: AxVCpuHal> Sync for AxVMInnerConst<U> {}
 
 struct AxVMInnerMut<H: AxVMHal> {
     // Todo: use more efficient lock.
@@ -47,17 +47,17 @@ struct AxVMInnerMut<H: AxVMHal> {
 }
 
 /// A Virtual Machine.
-pub struct AxVM<H: AxVMHal> {
+pub struct AxVM<H: AxVMHal, U: AxVCpuHal> {
     running: AtomicBool,
-    inner_const: AxVMInnerConst,
+    inner_const: AxVMInnerConst<U>,
     inner_mut: AxVMInnerMut<H>,
 }
 
-impl<H: AxVMHal> AxVM<H> {
+impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
     /// Creates a new VM with the given configuration.
     /// Returns an error if the configuration is invalid.
     /// The VM is not started until `boot` is called.
-    pub fn new(config: AxVMConfig) -> AxResult<AxVMRef<H>> {
+    pub fn new(config: AxVMConfig) -> AxResult<AxVMRef<H, U>> {
         let result = Arc::new({
             let vcpu_id_pcpu_sets = config.get_vcpu_affinities_pcpu_ids();
 
@@ -154,7 +154,7 @@ impl<H: AxVMHal> AxVM<H> {
             vcpu.setup(
                 entry,
                 result.ept_root(),
-                <AxArchVCpuImpl as AxArchVCpu>::SetupConfig::default(),
+                <AxArchVCpuImpl<U> as AxArchVCpu>::SetupConfig::default(),
             )?;
         }
         info!("VM setup: id={}", result.id());
@@ -171,7 +171,7 @@ impl<H: AxVMHal> AxVM<H> {
     /// Retrieves the vCPU corresponding to the given vcpu_id for the VM.
     /// Returns None if the vCPU does not exist.
     #[inline]
-    pub fn vcpu(&self, vcpu_id: usize) -> Option<AxVCpuRef> {
+    pub fn vcpu(&self, vcpu_id: usize) -> Option<AxVCpuRef<U>> {
         self.vcpu_list().get(vcpu_id).cloned()
     }
 
@@ -183,7 +183,7 @@ impl<H: AxVMHal> AxVM<H> {
 
     /// Returns a reference to the list of vCPUs corresponding to the VM.
     #[inline]
-    pub fn vcpu_list(&self) -> &[AxVCpuRef] {
+    pub fn vcpu_list(&self) -> &[AxVCpuRef<U>] {
         &self.inner_const.vcpu_list
     }
 
