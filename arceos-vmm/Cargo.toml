@@ -50,3 +50,6 @@ riscv_vcpu = {workspace = true}
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 fdt = { version = "0.1.5" }
 arrayvec = { version = "0.7.2", default-features = false }
+
+[build-dependencies]
+toml = { git = "https://github.com/arceos-hypervisor/toml.git", branch = "no_std" }

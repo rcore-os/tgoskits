@@ -2,8 +2,7 @@ use axvm::config::{AxVMConfig, AxVMCrateConfig};
 
 use crate::vmm::{images::load_vm_images, vm_list::push_vm, VM};
 
-#[allow(clippy::module_inception)]
-mod config {
+pub mod config {
     use alloc::vec::Vec;
 
     /// Default static VM configs. Used when no VM config is provided.
@@ -16,6 +15,8 @@ mod config {
             core::include_str!("../../configs/arceos-x86_64.toml"),
             // #[cfg(target_arch = "aarch64")]
             // core::include_str!("../../configs/nimbos-aarch64.toml"),
+            // #[cfg(target_arch = "aarch64")]
+            // core::include_str!("../../configs/rk3588-aarch64.toml"),
             #[cfg(target_arch = "aarch64")]
             core::include_str!("../../configs/arceos-aarch64.toml"),
             // #[cfg(target_arch = "riscv64")]

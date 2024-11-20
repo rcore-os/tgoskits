@@ -5,6 +5,7 @@
 *.img
 *.bin
 *.elf
+*.dtb
 actual.out
 qemu.log
 rusty-tags.vi

@@ -33,11 +33,15 @@ WIP on Linux guests.
 ```console
 $ cd arceos-vmm
 $ make disk_img
+$
+$ # Copy guest VM binary image files.
 $ mkdir -p tmp
 $ sudo mount disk.img tmp
-$ # Copy guest VM binary image files.
 $ sudo cp /PATH/TO/YOUR/GUEST/VM/IMAGE tmp/
 $ sudo umount tmp
+$
+$ # Otherwise, set `image_location = "memory"` in CONFIG/FILE, then set kernel_path
+$ # Arceos-VMM will load the image binaries from the first configuration in the VM_CONFIGS.
 ```
 
 ## Build & Run Hypervisor

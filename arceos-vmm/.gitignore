@@ -5,6 +5,8 @@
 *.img
 *.bin
 *.elf
+*.tmp_its
+*guest.S
 actual.out
 qemu.log
 rusty-tags.vi
@@ -14,3 +16,6 @@ rusty-tags.vi
 
 # macOS system files
 .DS_Store
+
+# tools should be downloaded from github
+tools/*

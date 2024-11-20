@@ -26,3 +26,19 @@
 * A extremely simple bios for x86_64 guests
 * It can act as a bootloader for NimbOS and ArceOS
 * Binary product available at [here](https://github.com/arceos-hypervisor/axvm-bios-x86/releases/download/v0.1/axvm-bios.bin)
+
+# ArceOS-Hypervisor in RK3588 board
+## How to run ArceOS on rk3588
+1. Prepare your kernal file `linux-rk3588-aarch64.bin` and DTB file `rk3588.dtb`.
+2. Set the kernel path and DTB path in the configuration file `configs/linux-rk3588-aarch64.toml`.
+   ```toml
+   image_location = "memory"
+   kernel_path = "/path/to/linux-rk3588-aarch64.bin"
+   dtb_path = "/path/to/rk3588.dtb"
+   ```
+3. Use Command `make A=(pwd) ARCH=aarch64 VM_CONFIGS=configs/linux-rk3588-aarch64.toml kernel` to build the kernel image `boot.img`.
+4. Download the [RKDevTool](https://download.t-firefly.com/product/Board/RK3588/Tool/Window/RKDevTool_Release_v3.31.zip). 
+    >This tool has only been tested on [Pji's](https://www.pji.net.cn/) Electronic Control Unit of RK3588. Other RK3588 development boards require independent testing.
+5. Set the path of `boot.img` in **boot** and connect the RK3588 board.
+6. Press the `Run` button to flash the image to the RK3588 board.
+![RKDevTool](./figures/RKDevTool3.3.png)

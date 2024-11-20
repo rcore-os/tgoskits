@@ -4,10 +4,14 @@ vm_type = 1
 cpu_num = 1
 phys_cpu_sets = [1]
 entry_point = 0x4008_0000
-# bios_path = ""
-# bios_load_addr = 0
+
+# The location of image: "memory" | "fs"
+image_location = "fs" 
 kernel_path = "nimbos-aarch64.bin"
 kernel_load_addr = 0x4008_0000
+
+# bios_path = ""
+# bios_load_addr = 0
 # ramdisk_path = ""
 # ramdisk_load_addr = 0
 # disk_path = ""
