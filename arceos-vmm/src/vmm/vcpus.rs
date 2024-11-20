@@ -7,13 +7,12 @@ use std::os::arceos::modules::axtask;
 use axaddrspace::GuestPhysAddr;
 use axtask::{AxTaskRef, TaskExtRef, TaskInner, WaitQueue};
 use axvcpu::{AxVCpuExitReason, VCpuState};
-use axvm::AxVCpuRef;
 
 use api::sys::ax_terminate;
 use api::task::AxCpuMask;
 
 use crate::task::TaskExt;
-use crate::vmm::VMRef;
+use crate::vmm::{VCpuRef, VMRef};
 
 const KERNEL_STACK_SIZE: usize = 0x40000; // 256 KiB
 
@@ -204,7 +203,7 @@ pub fn setup_vm_primary_vcpu(vm: VMRef) {
 ///
 /// * The task associated with the vCPU is created with a kernel stack size of 256 KiB.
 /// * The task is scheduled on the scheduler of arceos after it is spawned.
-fn alloc_vcpu_task(vm: VMRef, vcpu: AxVCpuRef) -> AxTaskRef {
+fn alloc_vcpu_task(vm: VMRef, vcpu: VCpuRef) -> AxTaskRef {
     info!("Spawning task for VM[{}] Vcpu[{}]", vm.id(), vcpu.id());
     let mut vcpu_task = TaskInner::new(
         vcpu_run,

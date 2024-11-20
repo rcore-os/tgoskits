@@ -15,9 +15,10 @@ axstd = { workspace = true, features = [
     "alloc",
     "paging",
     "fs",
-    # "irq",
+    "irq", # It has to be disabed in riscv64. Todo: fix it.
     "hv",
     "multitask",
+    # "sched_rr"
 ] }
 
 # System dependent modules provided by ArceOS-Hypervisor.
@@ -37,15 +38,10 @@ percpu = { version = "0.1.4", features = ["arm-el2"] }
 x86 = "0.52"
 x86_64 = "0.14"
 raw-cpuid = "11.0"
-# According to the requirements of x86_vcpu, 
-# we need to implement PhysFrameIf for it, so we directly import `x86_vcpu` as a dependency in the app.
-# Ref: [x86_vcpu](https://github.com/arceos-hypervisor/x86_vcpu/)
-x86_vcpu = { workspace = true }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 fdt = { version = "0.1.5" }
 arrayvec = { version = "0.7.2", default-features = false }
-riscv_vcpu = {workspace = true}
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 fdt = { version = "0.1.5" }

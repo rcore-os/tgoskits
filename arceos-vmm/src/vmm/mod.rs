@@ -8,11 +8,12 @@ use std::os::arceos::api::task::{self, AxWaitQueueHandle};
 use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::Ordering;
 
-use crate::hal::AxVMHalImpl;
-use axvm::{AxVM, AxVMRef};
+use crate::hal::{AxVCpuHalImpl, AxVMHalImpl};
 
-pub type VM = AxVM<AxVMHalImpl>;
-pub type VMRef = AxVMRef<AxVMHalImpl>;
+pub type VM = axvm::AxVM<AxVMHalImpl, AxVCpuHalImpl>;
+pub type VMRef = axvm::AxVMRef<AxVMHalImpl, AxVCpuHalImpl>;
+
+pub type VCpuRef = axvm::AxVCpuRef<AxVCpuHalImpl>;
 
 static VMM: AxWaitQueueHandle = AxWaitQueueHandle::new();
 

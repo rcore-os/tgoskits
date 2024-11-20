@@ -44,9 +44,9 @@ dependencies = [
 
 [[package]]
 name = "allocator-api2"
-version = "0.2.18"
+version = "0.2.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c6cb57a04249c6480766f7f7cef5467412af1490f8d1e243141daddada3264f"
+checksum = "45862d1c77f2228b9e10bc609d5bc203d86ebc9b87ad8d5d5167a6c9abf739d9"
 
 [[package]]
 name = "arceos-vmm"
@@ -67,18 +67,16 @@ dependencies = [
  "page_table_multiarch",
  "percpu",
  "raw-cpuid 11.2.0",
- "riscv_vcpu",
  "spin",
  "toml",
  "x86",
  "x86_64 0.14.12",
- "x86_vcpu",
 ]
 
 [[package]]
 name = "arceos_api"
 version = "0.1.0"
-source = "git+https://github.com/arceos-hypervisor/arceos.git?branch=vmm#a3d5558c7aa8864d9bb8fd636bb8a64475534847"
+source = "git+https://github.com/arceos-hypervisor/arceos.git?branch=vmm#9a845553df23944a6a3a0dd3e45df23c15f26465"
 dependencies = [
  "axalloc",
  "axconfig",
@@ -97,9 +95,8 @@ dependencies = [
 [[package]]
 name = "arm_gicv2"
 version = "0.1.0"
-source = "git+https://github.com/arceos-hypervisor/arm_gicv2?rev=7acc0dd#7acc0dd1e1fefa90b4cd45342072d2350a74b071"
+source = "git+https://github.com/arceos-hypervisor/arm_gicv2#dfe5f164b94cdd07081c2fe74a0cfe4bef2852c9"
 dependencies = [
- "crate_interface",
  "tock-registers",
 ]
 
@@ -115,17 +112,15 @@ dependencies = [
 [[package]]
 name = "arm_vcpu"
 version = "0.1.0"
-source = "git+https://github.com/arceos-hypervisor/arm_vcpu.git#9a6c2587a36f4060505a6451e9a5c388a8b265ff"
+source = "git+https://github.com/arceos-hypervisor/arm_vcpu.git#63fbc026fb730fdde2a81d6abc67666551bd2d9d"
 dependencies = [
  "aarch64-cpu",
  "axaddrspace",
  "axerrno",
  "axvcpu",
- "cortex-a",
  "log",
  "numeric-enum-macro",
  "percpu",
- "smccc",
  "tock-registers",
 ]
 
@@ -162,7 +157,7 @@ dependencies = [
 [[package]]
 name = "axalloc"
 version = "0.1.0"
-source = "git+https://github.com/arceos-hypervisor/arceos.git?branch=vmm#a3d5558c7aa8864d9bb8fd636bb8a64475534847"
+source = "git+https://github.com/arceos-hypervisor/arceos.git?branch=vmm#9a845553df23944a6a3a0dd3e45df23c15f26465"
 dependencies = [
  "allocator",
  "axerrno",
@@ -175,7 +170,7 @@ dependencies = [
 [[package]]
 name = "axconfig"
 version = "0.1.0"
-source = "git+https://github.com/arceos-hypervisor/arceos.git?branch=vmm#a3d5558c7aa8864d9bb8fd636bb8a64475534847"
+source = "git+https://github.com/arceos-hypervisor/arceos.git?branch=vmm#9a845553df23944a6a3a0dd3e45df23c15f26465"
 dependencies = [
  "serde",
  "toml_edit 0.22.22",
@@ -210,7 +205,7 @@ dependencies = [
 [[package]]
 name = "axdriver"
 version = "0.1.0"
-source = "git+https://github.com/arceos-hypervisor/arceos.git?branch=vmm#a3d5558c7aa8864d9bb8fd636bb8a64475534847"
+source = "git+https://github.com/arceos-hypervisor/arceos.git?branch=vmm#9a845553df23944a6a3a0dd3e45df23c15f26465"
 dependencies = [
  "axalloc",
  "axconfig",
@@ -267,7 +262,7 @@ dependencies = [
 [[package]]
 name = "axfeat"
 version = "0.1.0"
-source = "git+https://github.com/arceos-hypervisor/arceos.git?branch=vmm#a3d5558c7aa8864d9bb8fd636bb8a64475534847"
+source = "git+https://github.com/arceos-hypervisor/arceos.git?branch=vmm#9a845553df23944a6a3a0dd3e45df23c15f26465"
 dependencies = [
  "axalloc",
  "axdriver",
@@ -282,7 +277,7 @@ dependencies = [
 [[package]]
 name = "axfs"
 version = "0.1.0"
-source = "git+https://github.com/arceos-hypervisor/arceos.git?branch=vmm#a3d5558c7aa8864d9bb8fd636bb8a64475534847"
+source = "git+https://github.com/arceos-hypervisor/arceos.git?branch=vmm#9a845553df23944a6a3a0dd3e45df23c15f26465"
 dependencies = [
  "axdriver",
  "axdriver_block",
@@ -335,7 +330,7 @@ dependencies = [
 [[package]]
 name = "axhal"
 version = "0.1.0"
-source = "git+https://github.com/arceos-hypervisor/arceos.git?branch=vmm#a3d5558c7aa8864d9bb8fd636bb8a64475534847"
+source = "git+https://github.com/arceos-hypervisor/arceos.git?branch=vmm#9a845553df23944a6a3a0dd3e45df23c15f26465"
 dependencies = [
  "aarch64-cpu",
  "arm_gicv2",
@@ -381,7 +376,7 @@ dependencies = [
 [[package]]
 name = "axlog"
 version = "0.1.0"
-source = "git+https://github.com/arceos-hypervisor/arceos.git?branch=vmm#a3d5558c7aa8864d9bb8fd636bb8a64475534847"
+source = "git+https://github.com/arceos-hypervisor/arceos.git?branch=vmm#9a845553df23944a6a3a0dd3e45df23c15f26465"
 dependencies = [
  "cfg-if",
  "crate_interface",
@@ -392,7 +387,7 @@ dependencies = [
 [[package]]
 name = "axmm"
 version = "0.1.0"
-source = "git+https://github.com/arceos-hypervisor/arceos.git?branch=vmm#a3d5558c7aa8864d9bb8fd636bb8a64475534847"
+source = "git+https://github.com/arceos-hypervisor/arceos.git?branch=vmm#9a845553df23944a6a3a0dd3e45df23c15f26465"
 dependencies = [
  "axconfig",
  "axerrno",
@@ -406,7 +401,7 @@ dependencies = [
 [[package]]
 name = "axruntime"
 version = "0.1.0"
-source = "git+https://github.com/arceos-hypervisor/arceos.git?branch=vmm#a3d5558c7aa8864d9bb8fd636bb8a64475534847"
+source = "git+https://github.com/arceos-hypervisor/arceos.git?branch=vmm#9a845553df23944a6a3a0dd3e45df23c15f26465"
 dependencies = [
  "axalloc",
  "axconfig",
@@ -418,12 +413,14 @@ dependencies = [
  "axtask",
  "chrono",
  "crate_interface",
+ "kernel_guard",
+ "percpu",
 ]
 
 [[package]]
 name = "axstd"
 version = "0.1.0"
-source = "git+https://github.com/arceos-hypervisor/arceos.git?branch=vmm#a3d5558c7aa8864d9bb8fd636bb8a64475534847"
+source = "git+https://github.com/arceos-hypervisor/arceos.git?branch=vmm#9a845553df23944a6a3a0dd3e45df23c15f26465"
 dependencies = [
  "arceos_api",
  "axerrno",
@@ -435,7 +432,7 @@ dependencies = [
 [[package]]
 name = "axsync"
 version = "0.1.0"
-source = "git+https://github.com/arceos-hypervisor/arceos.git?branch=vmm#a3d5558c7aa8864d9bb8fd636bb8a64475534847"
+source = "git+https://github.com/arceos-hypervisor/arceos.git?branch=vmm#9a845553df23944a6a3a0dd3e45df23c15f26465"
 dependencies = [
  "axtask",
  "kspin",
@@ -444,7 +441,7 @@ dependencies = [
 [[package]]
 name = "axtask"
 version = "0.1.0"
-source = "git+https://github.com/arceos-hypervisor/arceos.git?branch=vmm#a3d5558c7aa8864d9bb8fd636bb8a64475534847"
+source = "git+https://github.com/arceos-hypervisor/arceos.git?branch=vmm#9a845553df23944a6a3a0dd3e45df23c15f26465"
 dependencies = [
  "axconfig",
  "axhal",
@@ -464,7 +461,7 @@ dependencies = [
 [[package]]
 name = "axvcpu"
 version = "0.1.0"
-source = "git+https://github.com/arceos-hypervisor/axvcpu.git#fba6c6a070fc3e3091201f22fd7698c2d5315543"
+source = "git+https://github.com/arceos-hypervisor/axvcpu.git#1e9fa523378872ed0c947e2abd4699ed2d5025f2"
 dependencies = [
  "axaddrspace",
  "axerrno",
@@ -475,7 +472,7 @@ dependencies = [
 [[package]]
 name = "axvm"
 version = "0.1.0"
-source = "git+https://github.com/arceos-hypervisor/axvm.git#bd990021bef1e72a7c6d1ac6199a201380297c45"
+source = "git+https://github.com/arceos-hypervisor/axvm.git#6092edec74692767b51a9648228a050bae5e113b"
 dependencies = [
  "arm_vcpu",
  "axaddrspace",
@@ -632,7 +629,7 @@ checksum = "6af24c4862260a825484470f5526a91ad1031e04ab899be62478241231f62b46"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.85",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -712,9 +709,9 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
-version = "0.15.0"
+version = "0.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e087f84d4f86bf4b218b927129862374b72199ae7d8657835f1e89000eea4fb"
+checksum = "3a9bfc1af68b1726ea47d3d5109de126281def866b33970e10fbab11b5dafab3"
 
 [[package]]
 name = "indexmap"
@@ -723,7 +720,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "707907fe3c25f5424cce2cb7e1cbcafee6bdbe735ca90ef77c29e84591e5b9da"
 dependencies = [
  "equivalent",
- "hashbrown 0.15.0",
+ "hashbrown 0.15.1",
 ]
 
 [[package]]
@@ -766,9 +763,9 @@ checksum = "3861aac8febbb038673bf945ee47ac67940ca741b94d1bb3ff6066af2a181338"
 
 [[package]]
 name = "libc"
-version = "0.2.161"
+version = "0.2.164"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e9489c2807c139ffd9c1794f4af0ebe86a828db53ecdc7fea2111d0fed085d1"
+checksum = "433bfe06b8c75da9b2e3fbea6e5329ff87748f0b144ef75306e674c3f6f7c13f"
 
 [[package]]
 name = "linked_list"
@@ -777,22 +774,22 @@ source = "git+https://github.com/arceos-org/linked_list.git?tag=v0.1.0#34c8db301
 
 [[package]]
 name = "linkme"
-version = "0.3.29"
+version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70fe496a7af8c406f877635cbf3cd6a9fac9d6f443f58691cd8afe6ce0971af4"
+checksum = "566336154b9e58a4f055f6dd4cbab62c7dc0826ce3c0a04e63b2d2ecd784cdae"
 dependencies = [
  "linkme-impl",
 ]
 
 [[package]]
 name = "linkme-impl"
-version = "0.3.29"
+version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b01f197a15988fb5b2ec0a5a9800c97e70771499c456ad757d63b3c5e9b96e75"
+checksum = "edbe595006d355eaf9ae11db92707d4338cd2384d16866131cc1afdbdd35d8d9"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.85",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -913,7 +910,7 @@ checksum = "c825bdd6a7ddc470e59e65fbe2c80d0582e70f25067fbd4fa5a576b28bb25878"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.85",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -966,9 +963,9 @@ dependencies = [
 
 [[package]]
 name = "regex-automata"
-version = "0.4.8"
+version = "0.4.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "368758f23274712b504848e9d5a6f010445cc8b87a7cdb4d7cbee666c1288da3"
+checksum = "809e8dc61f6de73b46c85f4c96486310fe304c434cfa43669d7b40f711150908"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -1021,7 +1018,7 @@ dependencies = [
 [[package]]
 name = "riscv_vcpu"
 version = "0.1.0"
-source = "git+https://github.com/arceos-hypervisor/riscv_vcpu.git#1021d026e413acaae3cf994420bb1fd94ff91dd9"
+source = "git+https://github.com/arceos-hypervisor/riscv_vcpu.git#e3c992967219f10daadd0a71f6187641f381f563"
 dependencies = [
  "axaddrspace",
  "axerrno",
@@ -1082,7 +1079,7 @@ checksum = "a71347da9582cc6b6f3652c7d2c06516c9555690b3738ecdff7e84297f4e17fc"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.85",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -1137,22 +1134,22 @@ checksum = "388a1df253eca08550bef6c72392cfe7c30914bf41df5269b68cbd6ff8f570a3"
 
 [[package]]
 name = "serde"
-version = "1.0.213"
+version = "1.0.215"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ea7893ff5e2466df8d720bb615088341b295f849602c6956047f8f80f0e9bc1"
+checksum = "6513c1ad0b11a9376da888e3e0baa0077f1aed55c17f50e7b2397136129fb88f"
 dependencies = [
  "serde_derive",
 ]
 
 [[package]]
 name = "serde_derive"
-version = "1.0.213"
+version = "1.0.215"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e85ad2009c50b58e87caa8cd6dac16bdf511bbfb7af6c33df902396aa480fa5"
+checksum = "ad1e866f866923f252f05c889987993144fb74e722403468a4ebd70c3cd756c0"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.85",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -1162,12 +1159,6 @@ source = "git+https://github.com/arceos-hypervisor/toml.git?branch=no_std#fdb24a
 dependencies = [
  "serde",
 ]
-
-[[package]]
-name = "smccc"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "617d17f088ec733e5a6b86da6ce4cce1414e6e856d6061c16dda51cceae6f68c"
 
 [[package]]
 name = "spin"
@@ -1210,9 +1201,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "2.0.85"
+version = "2.0.87"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5023162dfcd14ef8f32034d8bcd4cc5ddc61ef7a247c024a33e24e1f24d21b56"
+checksum = "25aa4ce346d03a6dcd68dd8b4010bcb74e54e62c90c573f394c46eae99aba32d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1392,7 +1383,7 @@ dependencies = [
 [[package]]
 name = "x86_vcpu"
 version = "0.1.0"
-source = "git+https://github.com/arceos-hypervisor/x86_vcpu.git#991fa12d24859fef6b8a018d1c16494b9166f946"
+source = "git+https://github.com/arceos-hypervisor/x86_vcpu.git#dc088685f76f83d52378d2fe78952cde3c187da9"
 dependencies = [
  "axaddrspace",
  "axerrno",
@@ -1428,5 +1419,5 @@ checksum = "fa4f8080344d4671fb4e831a13ad1e68092748387dfc4f55e356242fae12ce3e"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.85",
+ "syn 2.0.87",
 ]
