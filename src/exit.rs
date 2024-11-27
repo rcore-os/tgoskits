@@ -95,6 +95,32 @@ pub enum AxVCpuExitReason {
         /// The data to be written.
         data: u64,
     },
+    SysRegRead {
+        /// Register identifier,
+        ///
+        /// Under Aarch64
+        /// following the ESR_EL2.ISS format:
+        ///  - <op0><op2><op1><CRn>00000<CRm>0,
+        /// consistent with the numbering in the `aarch64_sysreg` crate.
+        ///
+        /// Under x86_64 and RISC-V, this field is the address.
+        addr: usize,
+        /// General-purpose register (GPR) number.
+        reg: usize,
+    },
+    SysRegWrite {
+        /// Register identifier,
+        ///
+        /// Under Aarch64
+        /// following the ESR_EL2.ISS format:
+        ///  - <op0><op2><op1><CRn>00000<CRm>0,
+        /// consistent with the numbering in the `aarch64_sysreg` crate.
+        ///
+        /// Under x86_64 and RISC-V, this field is the address.
+        addr: usize,
+        /// Data to be written.
+        value: u64,
+    },
     /// The instruction executed by the vcpu performs a I/O read operation.
     ///
     /// It's unnecessary to specify the destination register because it's always `al`, `ax`, or `eax` (as port-I/O exists only in x86).
