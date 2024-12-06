@@ -179,7 +179,7 @@ impl<H: AxVCpuHal> Aarch64VCpu<H> {
         let mut vmpidr = 1 << 31;
         // Note: mind CPU cluster here.
         vmpidr |= self.mpidr;
-        self.guest_system_regs.vmpidr_el2 = vmpidr as u64;
+        self.guest_system_regs.vmpidr_el2 = vmpidr;
     }
 
     /// Set exception return pc

@@ -9,7 +9,8 @@ use crate::exception_utils::{
     exception_data_abort_access_reg, exception_data_abort_access_reg_width,
     exception_data_abort_access_width, exception_data_abort_handleable,
     exception_data_abort_is_permission_fault, exception_data_abort_is_translate_fault,
-    exception_esr, exception_fault_addr, exception_next_instruction_step,
+    exception_esr, exception_fault_addr, exception_next_instruction_step, exception_sysreg_addr,
+    exception_sysreg_direction_write, exception_sysreg_gpr,
 };
 use crate::TrapFrame;
 
@@ -94,6 +95,7 @@ pub fn handle_exception_sync(ctx: &mut TrapFrame) -> AxResult<AxVCpuExitReason> 
                 ],
             })
         }
+        Some(ESR_EL2::EC::Value::TrappedMsrMrs) => handle_system_register(ctx),
         _ => {
             panic!(
                 "handler not presents for EC_{} @ipa 0x{:x}, @pc 0x{:x}, @esr 0x{:x},
@@ -167,6 +169,35 @@ fn handle_data_abort(context_frame: &mut TrapFrame) -> AxResult<AxVCpuExitReason
     })
 }
 
+/// Handles a system register access exception.
+///
+/// This function processes the exception by reading or writing to a system register
+/// based on the information in the `context_frame`.
+///
+/// # Arguments
+/// * `context_frame` - A mutable reference to the trap frame containing the CPU state.
+///
+/// # Returns
+/// * `AxResult<AxVCpuExitReason>` - An `AxResult` containing an `AxVCpuExitReason` indicating
+///   whether the operation was a read or write and the relevant details.
+fn handle_system_register(context_frame: &mut TrapFrame) -> AxResult<AxVCpuExitReason> {
+    let iss = ESR_EL2.read(ESR_EL2::ISS);
+
+    let addr = exception_sysreg_addr(iss.try_into().unwrap());
+    let elr = context_frame.exception_pc();
+    let val = elr + exception_next_instruction_step();
+    let write = exception_sysreg_direction_write(iss);
+    let reg = exception_sysreg_gpr(iss) as usize;
+    context_frame.set_exception_pc(val);
+    if write {
+        return Ok(AxVCpuExitReason::SysRegWrite {
+            addr,
+            value: context_frame.gpr(reg as usize) as u64,
+        });
+    }
+    Ok(AxVCpuExitReason::SysRegRead { addr, reg })
+}
+
 /// Handles HVC or SMC exceptions that serve as psci (Power State Coordination Interface) calls.
 ///
 /// A hvc or smc call with the function in range 0x8000_0000..=0x8000_001F  (when the 32-bit
@@ -220,7 +251,7 @@ fn dispatch_irq() {
 ///
 /// 1. **Check if VCPU is running:**
 ///    - The `vcpu_running` function is called to check if the VCPU is currently running.
-///     If the VCPU is running, the control flow is transferred to the `return_run_guest` function.
+///      If the VCPU is running, the control flow is transferred to the `return_run_guest` function.
 ///
 /// 2. **Dispatch IRQ:**
 ///   - If there is no active vcpu running, the `dispatch_irq` function is called to handle the IRQ,
