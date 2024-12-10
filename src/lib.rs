@@ -56,6 +56,27 @@ pub trait BitAlloc: Default {
 }
 
 /// A bitmap of 256 bits
+///
+/// ## Example
+///
+/// ```rust
+/// use bitmap_allocator::{BitAlloc, BitAlloc256};
+///
+/// let mut ba = BitAlloc256::default();
+/// ba.insert(0..16);
+/// for i in 0..16 {
+///     assert!(ba.test(i));
+/// }
+/// ba.remove(2..8);
+/// assert_eq!(ba.alloc(), Some(0));
+/// assert_eq!(ba.alloc(), Some(1));
+/// assert_eq!(ba.alloc(), Some(8));
+/// ba.dealloc(0);
+/// ba.dealloc(1);
+/// ba.dealloc(8);
+///
+/// assert!(!ba.is_empty());
+/// ```
 pub type BitAlloc256 = BitAllocCascade16<BitAlloc16>;
 /// A bitmap of 4K bits
 pub type BitAlloc4K = BitAllocCascade16<BitAlloc256>;
@@ -196,6 +217,28 @@ impl<T: BitAlloc> BitAllocCascade16<T> {
 
 /// A bitmap consisting of only 16 bits.
 /// BitAlloc16 acts as the leaf (except the leaf bits of course) nodes in the segment trees.
+///
+/// ## Example
+///
+/// ```rust
+/// use bitmap_allocator::{BitAlloc, BitAlloc16};
+///
+/// let mut ba = BitAlloc16::default();
+/// assert_eq!(BitAlloc16::CAP, 16);
+/// ba.insert(0..16);
+/// for i in 0..16 {
+///     assert!(ba.test(i));
+/// }
+/// ba.remove(2..8);
+/// assert_eq!(ba.alloc(), Some(0));
+/// assert_eq!(ba.alloc(), Some(1));
+/// assert_eq!(ba.alloc(), Some(8));
+/// ba.dealloc(0);
+/// ba.dealloc(1);
+/// ba.dealloc(8);
+///
+/// assert!(!ba.is_empty());
+/// ```
 #[derive(Default)]
 pub struct BitAlloc16(u16);
 
