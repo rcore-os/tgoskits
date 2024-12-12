@@ -1,6 +1,6 @@
 [package]
 name = "allocator"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "Various allocator algorithms in a unified interface"
