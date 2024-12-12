@@ -88,6 +88,14 @@ pub trait PageAllocator: BaseAllocator {
     /// Deallocate contiguous memory pages with given position and count.
     fn dealloc_pages(&mut self, pos: usize, num_pages: usize);
 
+    /// Allocate contiguous memory pages with given base address, count and alignment.
+    fn alloc_pages_at(
+        &mut self,
+        base: usize,
+        num_pages: usize,
+        align_pow2: usize,
+    ) -> AllocResult<usize>;
+
     /// Returns the total number of memory pages.
     fn total_pages(&self) -> usize;
 
@@ -130,6 +138,14 @@ const fn align_down(pos: usize, align: usize) -> usize {
 #[inline]
 const fn align_up(pos: usize, align: usize) -> usize {
     (pos + align - 1) & !(align - 1)
+}
+
+/// Checks whether the address has the demanded alignment.
+///
+/// Equivalent to `addr % align == 0`, but the alignment must be a power of two.
+#[inline]
+const fn is_aligned(base_addr: usize, align: usize) -> bool {
+    base_addr & (align - 1) == 0
 }
 
 #[cfg(feature = "allocator_api")]
