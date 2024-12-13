@@ -4,7 +4,6 @@
 //!
 //! This crate contains:
 //! [`BaseDeviceOps`] trait: The trait that all emulated devices must implement.
-//! [`EmulatedDeviceConfig`] struct: Represents the configuration of an emulated device for a virtual machine.
 //! [`EmuDeviceType`] enum: Enumeration representing the type of emulator devices.
 
 extern crate alloc;
