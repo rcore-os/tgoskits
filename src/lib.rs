@@ -8,11 +8,12 @@
 #[macro_use]
 extern crate log;
 
+mod consts;
 /// The Control and Status Registers (CSRs) for a RISC-V hypervisor.
-pub mod csrs;
 mod detect;
 mod percpu;
 mod regs;
+mod trap;
 mod vcpu;
 
 pub use self::percpu::RISCVPerCpu;
