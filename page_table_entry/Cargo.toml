@@ -22,7 +22,7 @@ memory_addr = "0.3"
 aarch64-cpu = "9.4"
 
 [target.'cfg(any(target_arch = "x86_64", doc))'.dependencies]
-x86_64 = "0.15"
+x86_64 = "=0.15.1"
 
 [package.metadata.docs.rs]
 rustc-args = [ "--cfg" , "doc"]
