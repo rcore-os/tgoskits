@@ -42,10 +42,10 @@ pub enum Backend<H: PagingHandler> {
 
 impl<H: PagingHandler> Clone for Backend<H> {
     fn clone(&self) -> Self {
-        match self {
-            &Self::Linear { pa_va_offset } => Self::Linear { pa_va_offset },
-            &Self::Alloc { populate, .. } => Self::Alloc {
-                populate: populate,
+        match *self {
+            Self::Linear { pa_va_offset } => Self::Linear { pa_va_offset },
+            Self::Alloc { populate, .. } => Self::Alloc {
+                populate,
                 _phantom: core::marker::PhantomData,
             },
         }
