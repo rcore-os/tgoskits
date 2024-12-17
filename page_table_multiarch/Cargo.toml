@@ -1,6 +1,6 @@
 [package]
 name = "page_table_multiarch"
-edition = "2021"
+edition = "2024"
 description = "Generic page table structures for various hardware architectures"
 documentation = "https://docs.rs/page_table_multiarch"
 version.workspace = true
@@ -14,7 +14,7 @@ categories.workspace = true
 [dependencies]
 log = "0.4"
 memory_addr = "0.3"
-page_table_entry = { path = "../page_table_entry", version = "0.4.2" }
+page_table_entry = { path = "../page_table_entry", version = "0.5.0" }
 
 [target.'cfg(any(target_arch = "x86_64", doc))'.dependencies]
 x86 = "0.52"

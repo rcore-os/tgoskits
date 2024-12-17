@@ -1,6 +1,6 @@
 [package]
 name = "page_table_entry"
-edition = "2021"
+edition = "2024"
 description = "Page table entry definition for various hardware architectures"
 documentation = "https://docs.rs/page_table_entry"
 version.workspace = true
@@ -22,7 +22,7 @@ memory_addr = "0.3"
 aarch64-cpu = "9.4"
 
 [target.'cfg(any(target_arch = "x86_64", doc))'.dependencies]
-x86_64 = "=0.15.1"
+x86_64 = "0.15.2"
 
 [package.metadata.docs.rs]
 rustc-args = [ "--cfg" , "doc"]
