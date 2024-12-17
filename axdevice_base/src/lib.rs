@@ -8,9 +8,6 @@
 
 extern crate alloc;
 
-use alloc::string::String;
-use alloc::vec::Vec;
-
 use memory_addr::AddrRange;
 
 use axaddrspace::GuestPhysAddr;
