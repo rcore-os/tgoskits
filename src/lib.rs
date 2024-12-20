@@ -10,6 +10,7 @@ use core::{cmp::PartialEq, fmt};
 /// improve precision.
 ///
 /// Currently, it only supports `u32` as the numerator and denominator.
+#[derive(Clone, Copy)]
 pub struct Ratio {
     numerator: u32,
     denominator: u32,
@@ -19,6 +20,20 @@ pub struct Ratio {
 
 impl Ratio {
     /// The zero ratio.
+    ///
+    /// It is a ratio of `0/0``, and behaves like a zero value in calculation. It
+    /// differs from other `0/x` ratios in that it does not panic when getting
+    /// the inverse ratio. Instead, it returns another zero ratio.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use int_ratio::Ratio;
+    ///
+    /// let zero = Ratio::zero();
+    /// assert_eq!(zero.mul_trunc(123), 0);
+    /// assert_eq!(zero.inverse(), Ratio::zero());
+    /// ```
     pub const fn zero() -> Self {
         Self {
             numerator: 0,
@@ -29,6 +44,10 @@ impl Ratio {
     }
 
     /// Creates a new ratio `numerator / denominator`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `denominator` is zero and `numerator` is not zero.
     pub const fn new(numerator: u32, denominator: u32) -> Self {
         assert!(!(denominator == 0 && numerator != 0));
         if numerator == 0 {
@@ -73,8 +92,11 @@ impl Ratio {
     ///
     /// let ratio = Ratio::new(1, 2);
     /// assert_eq!(ratio.inverse(), Ratio::new(2, 1));
+    ///
+    /// let zero = Ratio::zero();
+    /// assert_eq!(zero.inverse(), Ratio::zero());
     /// ```
-    pub const fn inverse(&self) -> Self {
+    pub const fn inverse(self) -> Self {
         Self::new(self.denominator, self.numerator)
     }
 
@@ -89,7 +111,7 @@ impl Ratio {
     /// assert_eq!(ratio.mul_trunc(99), 66);  // 99 * 2 / 3 = 66
     /// assert_eq!(ratio.mul_trunc(100), 66); // trunc(100 * 2 / 3) = trunc(66.66...) = 66
     /// ```
-    pub const fn mul_trunc(&self, value: u64) -> u64 {
+    pub const fn mul_trunc(self, value: u64) -> u64 {
         ((value as u128 * self.mult as u128) >> self.shift) as u64
     }
 
@@ -105,7 +127,7 @@ impl Ratio {
     /// assert_eq!(ratio.mul_round(99), 66);  // 99 * 2 / 3 = 66
     /// assert_eq!(ratio.mul_round(100), 67); // round(100 * 2 / 3) = round(66.66...) = 67
     /// ```
-    pub const fn mul_round(&self, value: u64) -> u64 {
+    pub const fn mul_round(self, value: u64) -> u64 {
         ((value as u128 * self.mult as u128 + (1 << self.shift >> 1)) >> self.shift) as u64
     }
 }
@@ -153,6 +175,8 @@ mod tests {
         assert_eq!(c.mult, 1);
         assert_eq!(c.shift, 0);
         assert_eq!(c.mul_trunc(u32::MAX as _), u32::MAX as _);
+
+        assert_eq!(b.inverse(), d);
 
         println!("{:?}", a);
         println!("{:?}", b);
