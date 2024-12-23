@@ -2,6 +2,7 @@
 #![feature(naked_functions)]
 #![feature(doc_cfg)]
 #![feature(asm_const)]
+#![feature(exclusive_range_pattern)]
 #![doc = include_str!("../README.md")]
 
 #[macro_use]
@@ -12,6 +13,7 @@ mod context_frame;
 mod exception_utils;
 mod exception;
 mod pcpu;
+mod smc;
 mod vcpu;
 
 pub use self::pcpu::Aarch64PerCpu;

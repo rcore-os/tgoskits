@@ -71,7 +71,12 @@ core::arch::global_asm!(
 ///
 pub fn handle_exception_sync(ctx: &mut TrapFrame) -> AxResult<AxVCpuExitReason> {
     match exception_class() {
-        Some(ESR_EL2::EC::Value::DataAbortLowerEL) => handle_data_abort(ctx),
+        Some(ESR_EL2::EC::Value::DataAbortLowerEL) => {
+            let elr = ctx.exception_pc();
+            let val = elr + exception_next_instruction_step();
+            ctx.set_exception_pc(val);
+            handle_data_abort(ctx)
+        }
         Some(ESR_EL2::EC::Value::HVC64) => {
             // The `#imm`` argument when triggering a hvc call, currently not used.
             let _hvc_arg_imm16 = ESR_EL2.read(ESR_EL2::ISS);
@@ -96,6 +101,12 @@ pub fn handle_exception_sync(ctx: &mut TrapFrame) -> AxResult<AxVCpuExitReason> 
             })
         }
         Some(ESR_EL2::EC::Value::TrappedMsrMrs) => handle_system_register(ctx),
+        Some(ESR_EL2::EC::Value::SMC64) => {
+            let elr = ctx.exception_pc();
+            let val = elr + exception_next_instruction_step();
+            ctx.set_exception_pc(val);
+            handle_smc64_exception(ctx)
+        }
         _ => {
             panic!(
                 "handler not presents for EC_{} @ipa 0x{:x}, @pc 0x{:x}, @esr 0x{:x},
@@ -116,17 +127,18 @@ pub fn handle_exception_sync(ctx: &mut TrapFrame) -> AxResult<AxVCpuExitReason> 
 
 fn handle_data_abort(context_frame: &mut TrapFrame) -> AxResult<AxVCpuExitReason> {
     let addr = exception_fault_addr()?;
-    debug!("data fault addr {:?}, esr: 0x{:x}", addr, exception_esr());
-
     let access_width = exception_data_abort_access_width();
     let is_write = exception_data_abort_access_is_write();
     //let sign_ext = exception_data_abort_access_is_sign_ext();
     let reg = exception_data_abort_access_reg();
     let reg_width = exception_data_abort_access_reg_width();
 
-    let elr = context_frame.exception_pc();
-    let val = elr + exception_next_instruction_step();
-    context_frame.set_exception_pc(val);
+    trace!(
+        "Data fault @{:?}, ELR {:#x}, esr: 0x{:x}",
+        addr,
+        context_frame.exception_pc(),
+        exception_esr(),
+    );
 
     let width = match AccessWidth::try_from(access_width) {
         Ok(access_width) => access_width,
@@ -209,12 +221,14 @@ fn handle_psci_call(ctx: &mut TrapFrame) -> Option<AxResult<AxVCpuExitReason>> {
     const PSCI_FN_RANGE_32: core::ops::RangeInclusive<u64> = 0x8400_0000..=0x8400_001F;
     const PSCI_FN_RANGE_64: core::ops::RangeInclusive<u64> = 0xC400_0000..=0xC400_001F;
 
+    const PSCI_FN_VERSION: u64 = 0x0;
     const _PSCI_FN_CPU_SUSPEND: u64 = 0x1;
     const PSCI_FN_CPU_OFF: u64 = 0x2;
     const PSCI_FN_CPU_ON: u64 = 0x3;
     const _PSCI_FN_MIGRATE: u64 = 0x5;
     const PSCI_FN_SYSTEM_OFF: u64 = 0x8;
     const _PSCI_FN_SYSTEM_RESET: u64 = 0x9;
+    const PSCI_FN_END: u64 = 0x1f;
 
     let fn_ = ctx.gpr[0];
     let fn_offset = if PSCI_FN_RANGE_32.contains(&fn_) {
@@ -225,16 +239,35 @@ fn handle_psci_call(ctx: &mut TrapFrame) -> Option<AxResult<AxVCpuExitReason>> {
         None
     };
 
-    fn_offset.map(|fn_offset| match fn_offset {
-        PSCI_FN_CPU_OFF => Ok(AxVCpuExitReason::CpuDown { _state: ctx.gpr[1] }),
-        PSCI_FN_CPU_ON => Ok(AxVCpuExitReason::CpuUp {
+    match fn_offset {
+        Some(PSCI_FN_CPU_OFF) => Some(Ok(AxVCpuExitReason::CpuDown { _state: ctx.gpr[1] })),
+        Some(PSCI_FN_CPU_ON) => Some(Ok(AxVCpuExitReason::CpuUp {
             target_cpu: ctx.gpr[1],
             entry_point: GuestPhysAddr::from(ctx.gpr[2] as usize),
             arg: ctx.gpr[3],
-        }),
-        PSCI_FN_SYSTEM_OFF => Ok(AxVCpuExitReason::SystemDown),
-        _ => Err(AxError::Unsupported),
-    })
+        })),
+        Some(PSCI_FN_SYSTEM_OFF) => Some(Ok(AxVCpuExitReason::SystemDown)),
+        // We just forward these request to the ATF directly.
+        Some(PSCI_FN_VERSION..PSCI_FN_END) => None,
+        _ => None,
+    }
+}
+
+/// Handles SMC (Secure Monitor Call) exceptions.
+///
+/// This function will judge if the SMC call is a PSCI call, if so, it will handle it as a PSCI call.
+/// Otherwise, it will forward the SMC call to the ATF directly.
+fn handle_smc64_exception(ctx: &mut TrapFrame) -> AxResult<AxVCpuExitReason> {
+    // Is this a psci call?
+    if let Some(result) = handle_psci_call(ctx) {
+        return result;
+    } else {
+        // We just forward the SMC call to the ATF directly.
+        // The args are from lower EL, so it is safe to call the ATF.
+        (ctx.gpr[0], ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]) =
+            unsafe { crate::smc::smc_call(ctx.gpr[0], ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]) };
+        Ok(AxVCpuExitReason::Nothing)
+    }
 }
 
 /// Dispatches IRQs to the appropriate handler provided by the underlying host OS,

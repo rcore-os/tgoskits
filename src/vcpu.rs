@@ -75,6 +75,8 @@ pub struct Aarch64VCpuCreateConfig {
     /// which is used to identify the CPU in a multiprocessor system.
     /// Note: mind CPU cluster.
     pub mpidr_el1: u64,
+    /// The address of the device tree blob.
+    pub dtb_addr: usize,
 }
 
 impl<H: AxVCpuHal> axvcpu::AxArchVCpu for Aarch64VCpu<H> {
@@ -83,8 +85,11 @@ impl<H: AxVCpuHal> axvcpu::AxArchVCpu for Aarch64VCpu<H> {
     type SetupConfig = ();
 
     fn new(config: Self::CreateConfig) -> AxResult<Self> {
+        let mut ctx = TrapFrame::default();
+        ctx.set_argument(config.dtb_addr);
+
         Ok(Self {
-            ctx: TrapFrame::default(),
+            ctx,
             host_stack_top: 0,
             guest_system_regs: GuestSystemRegisters::default(),
             mpidr: config.mpidr_el1,
@@ -168,11 +173,11 @@ impl<H: AxVCpuHal> Aarch64VCpu<H> {
             + VTCR_EL2::SL0.val(0b01)
             + VTCR_EL2::T0SZ.val(64 - 39))
         .into();
-        self.guest_system_regs.hcr_el2 = (HCR_EL2::VM::Enable + HCR_EL2::RW::EL1IsAarch64).into();
+        self.guest_system_regs.hcr_el2 =
+            (HCR_EL2::VM::Enable + HCR_EL2::RW::EL1IsAarch64 + HCR_EL2::TSC::EnableTrapEl1SmcToEl2)
+                .into();
         // self.system_regs.hcr_el2 |= 1<<27;
         // + HCR_EL2::IMO::EnableVirtualIRQ).into();
-        // trap el1 smc to el2
-        // self.system_regs.hcr_el2 |= HCR_TSC_TRAP as u64;
 
         // Set VMPIDR_EL2, which provides the value of the Virtualization Multiprocessor ID.
         // This is the value returned by Non-secure EL1 reads of MPIDR.
