@@ -4,9 +4,9 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use axaddrspace::GuestPhysAddr;
-use axdevice_base::EmulatedDeviceConfig;
-use axdevice_base::{BaseDeviceOps, EmuDeviceType};
+use axdevice_base::BaseDeviceOps;
 use axerrno::AxResult;
+use axvmconfig::EmulatedDeviceConfig;
 
 /// represent A vm own devices
 pub struct AxVmDevices {
@@ -28,7 +28,7 @@ impl AxVmDevices {
     }
 
     /// According the emu_configs to init every  specific device
-    fn init(this: &mut Self, emu_configs: &Vec<EmulatedDeviceConfig>) {
+    fn init(_this: &mut Self, _emu_configs: &Vec<EmulatedDeviceConfig>) {
         /*
         for config in emu_configs {
             let dev = match EmuDeviceType::from_usize(config.emu_type) {

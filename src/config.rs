@@ -1,5 +1,5 @@
 use alloc::vec::Vec;
-use axdevice_base::EmulatedDeviceConfig;
+use axvmconfig::EmulatedDeviceConfig;
 
 /// The vector of DeviceConfig
 pub struct AxVmDeviceConfig {
