@@ -5,8 +5,11 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use axaddrspace::GuestPhysAddr;
-use axdevice_base::EmulatedDeviceConfig;
-use axerrno::AxResult;
+
+pub use axvmconfig::{
+    AxVMCrateConfig, EmulatedDeviceConfig, PassThroughDeviceConfig, VMType, VmMemConfig,
+    VmMemMappingType,
+};
 
 /// A part of `AxVCpuConfig`, which represents an architecture-dependent `VCpu`.
 ///
@@ -25,32 +28,6 @@ pub struct AxVCpuConfig {
     pub bsp_entry: GuestPhysAddr,
     /// The entry address in GPA for the Application Processor (AP).
     pub ap_entry: GuestPhysAddr,
-}
-
-/// A part of `AxVMConfig`, which represents guest VM type.
-#[derive(Default, Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
-pub enum VMType {
-    /// Host VM, used for boot from Linux like Jailhouse do, named "type1.5".
-    VMTHostVM = 0,
-    /// Guest RTOS, generally a simple guest OS with most of the resource passthrough.
-    #[default]
-    VMTRTOS = 1,
-    /// Guest Linux, generally a full-featured guest OS with complicated device emulation requirements.
-    VMTLinux = 2,
-}
-
-impl From<usize> for VMType {
-    fn from(value: usize) -> Self {
-        match value {
-            0 => Self::VMTHostVM,
-            1 => Self::VMTRTOS,
-            2 => Self::VMTLinux,
-            _ => {
-                warn!("Unknown VmType value: {}, default to VMTRTOS", value);
-                Self::default()
-            }
-        }
-    }
 }
 
 /// A part of `AxVMConfig`, which stores configuration attributes related to the load address of VM images.
@@ -80,6 +57,7 @@ pub struct AxVMConfig {
     image_config: VMImageConfig,
     memory_regions: Vec<VmMemConfig>,
     emu_devices: Vec<EmulatedDeviceConfig>,
+    pass_through_devices: Vec<PassThroughDeviceConfig>,
 }
 
 impl From<AxVMCrateConfig> for AxVMConfig {
@@ -103,6 +81,7 @@ impl From<AxVMCrateConfig> for AxVMConfig {
             },
             memory_regions: cfg.memory_regions,
             emu_devices: cfg.emu_devices,
+            pass_through_devices: cfg.passthrough_devices,
         }
     }
 }
@@ -170,86 +149,9 @@ impl AxVMConfig {
     pub fn emu_devices(&self) -> &Vec<EmulatedDeviceConfig> {
         &self.emu_devices
     }
-}
 
-/// A part of `AxVMConfig`, which represents a memory region.
-#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
-pub struct VmMemConfig {
-    /// The start address of the memory region in GPA.
-    pub gpa: usize,
-    /// The size of the memory region.
-    pub size: usize,
-    /// The mappings flags of the memory region, refers to `MappingFlags` provided by `axaddrspace`.
-    pub flags: usize,
-}
-
-/// The configuration structure for the guest VM serialized from a toml file provided by user,
-/// and then converted to `AxVMConfig` for the VM creation.
-#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
-pub struct AxVMCrateConfig {
-    // Basic Information
-    id: usize,
-    name: String,
-    vm_type: usize,
-
-    // Resources.
-    /// The number of virtual CPUs.
-    cpu_num: usize,
-    /// The physical CPU ids.
-    /// - if `None`, vcpu's physical id will be set as vcpu id.
-    /// - if set, each vcpu will be assigned to the specified physical CPU mask.
-    ///
-    /// Some ARM platforms will provide a specified cpu hw id in the device tree, which is
-    /// read from `MPIDR_EL1` register (probably for clustering).
-    phys_cpu_ids: Option<Vec<usize>>,
-    /// The mask of physical CPUs who can run this VM.
-    ///
-    /// - If `None`, vcpu will be scheduled on available physical CPUs randomly.
-    /// - If set, each vcpu will be scheduled on the specified physical CPUs.
-    ///      
-    ///     For example, [0x0101, 0x0010] means:
-    ///          - vCpu0 can be scheduled at pCpu0 and pCpu2;
-    ///          - vCpu1 will only be scheduled at pCpu1;
-    ///      It will phrase an error if the number of vCpus is not equal to the length of `phys_cpu_sets` array.
-    phys_cpu_sets: Option<Vec<usize>>,
-
-    entry_point: usize,
-
-    /// The file path of the kernel image.
-    pub kernel_path: String,
-    /// The load address of the kernel image.
-    pub kernel_load_addr: usize,
-    /// The file path of the BIOS image, `None` if not used.
-    pub bios_path: Option<String>,
-    /// The load address of the BIOS image, `None` if not used.
-    pub bios_load_addr: Option<usize>,
-    /// The file path of the device tree blob (DTB), `None` if not used.
-    pub dtb_path: Option<String>,
-    /// The load address of the device tree blob (DTB), `None` if not used.
-    pub dtb_load_addr: Option<usize>,
-    /// The file path of the ramdisk image, `None` if not used.
-    pub ramdisk_path: Option<String>,
-    /// The load address of the ramdisk image, `None` if not used.
-    pub ramdisk_load_addr: Option<usize>,
-    /// The location of the image, default is 'fs'.
-    pub image_location: Option<String>,
-
-    disk_path: Option<String>,
-
-    /// Memory Information
-    memory_regions: Vec<VmMemConfig>,
-    /// Emu device Information
-    /// Todo: passthrough devices
-    emu_devices: Vec<EmulatedDeviceConfig>,
-}
-
-impl AxVMCrateConfig {
-    /// Deserialize the toml string to `AxVMCrateConfig`.
-    pub fn from_toml(raw_cfg_str: &str) -> AxResult<Self> {
-        let config: AxVMCrateConfig = toml::from_str(raw_cfg_str).map_err(|err| {
-            warn!("Config TOML parse error {:?}", err.message());
-            axerrno::ax_err_type!(InvalidInput, alloc::format!("Error details {err:?}"))
-        })?;
-        Ok(config)
+    /// Returns configurations related to VM passthrough devices.
+    pub fn pass_through_devices(&self) -> &Vec<PassThroughDeviceConfig> {
+        &self.pass_through_devices
     }
 }

@@ -10,23 +10,21 @@ vmx = []
 [dependencies]
 log = "0.4"
 cfg-if = "1.0"
-serde = { version = "1.0.204", default-features = false, features = ["derive"] }
-toml = { git = "https://github.com/arceos-hypervisor/toml.git", branch = "no_std" }
 spin = "0.9"
 
 # System independent crates provided by ArceOS.
 axerrno = "0.1.0"
 # kspin = "0.1.0"
 memory_addr = "0.3.1"
-page_table_entry = { version = "0.4.1", features = ["arm-el2"] }
-page_table_multiarch = "0.4.1"
+page_table_entry = { version = "0.4.2", features = ["arm-el2"] }
+page_table_multiarch = "0.4.2"
 percpu = { version = "0.1.4", features = ["arm-el2"] }
 
 # System dependent modules provided by ArceOS-Hypervisor.
 axvcpu = { git = "https://github.com/arceos-hypervisor/axvcpu.git" }
 axaddrspace = { git = "https://github.com/arceos-hypervisor/axaddrspace.git" }
 axdevice = { git = "https://github.com/arceos-hypervisor/axdevice.git" }
-axdevice_base = { git = "https://github.com/arceos-hypervisor/axdevice_crates.git" }
+axvmconfig = { git = "https://github.com/arceos-hypervisor/axvmconfig.git", default-features = false }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86_vcpu = { git = "https://github.com/arceos-hypervisor/x86_vcpu.git" }
