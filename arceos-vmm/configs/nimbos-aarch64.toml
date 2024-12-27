@@ -15,18 +15,24 @@ kernel_load_addr = 0x4008_0000
 # ramdisk_path = ""
 # ramdisk_load_addr = 0
 # disk_path = ""
-# Memory regions with format (`base_paddr`, `size`, `flags`).
+# Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
+# For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`.
 memory_regions = [
-    [0x4000_0000, 0x100_0000, 0x7],   # Low RAM		    16M 0b00111 R|W|EXECUTE
-    [0x800_0000, 0x10_000, 0x17],     # intc 		    4K  0b10111 R|W|DEVICE
-    [0x801_0000, 0x10_000, 0x17],     # intc 		    4K  0b10111 R|W|DEVICE
-    [0x900_0000, 0x1000, 0x17],       # pl011 (Uart)	4K  0b10111 R|W|DEVICE
-    [0x901_0000, 0x1000, 0x17],       # pl031 (timer)	4K  0b10111 R|W|DEVICE
-    [0xfed0_0000, 0x1000, 0x17],      # HPET 		    4K  0b10111 R|W|DEVICE
+    [0x4000_0000, 0x100_0000, 0x7, 0],   # Low RAM		    16M 0b00111 R|W|EXECUTE
 ]
 
 # Emu_devices
 # Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig
-emu_devices = [
-    #["vgicd-v2", 0x800_0000, 0x10_000, 25, 1, [2]] # Vgicdv2  4k irq-25 EmuDeviceTGicdV2  config: vcpu_num
+emu_devices = []
+
+# Pass-through devices
+# Name Base-Ipa Base-Pa Length Alloc-Irq
+passthrough_devices = [
+    ["intc@8000000", 0x800_0000, 0x800_0000, 0x50_000, 0x1],
+    ["pl011@9000000", 0x900_0000, 0x900_0000, 0x1000, 0x1],
+    ["pl031@9010000", 0x901_0000, 0x901_0000, 0x1000, 0x1],
+    ["pl061@9030000", 0x903_0000, 0x903_0000, 0x1000, 0x1],
+    # a003000.virtio_mmio virtio_mmio@a003000 
+    # a003200.virtio_mmio virtio_mmio@a003200
+    ["virtio_mmio", 0xa00_0000, 0xa00_0000, 0x4000, 0x1],
 ]

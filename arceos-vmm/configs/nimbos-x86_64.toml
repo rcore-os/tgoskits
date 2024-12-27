@@ -4,6 +4,7 @@ vm_type = 1
 cpu_num = 1
 phys_cpu_sets = [1]
 entry_point = 0x8000
+image_location = "fs" 
 bios_path = "rvm-bios.bin"
 bios_load_addr = 0x8000
 kernel_path = "nimbos-x86_64.bin"
@@ -11,15 +12,38 @@ kernel_load_addr = 0x20_0000
 # ramdisk_path = ""
 # ramdisk_load_addr = 0
 # disk_path = ""
-# Memory regions with format (`base_paddr`, `size`, `flags`).
+# Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
+# For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`.
 memory_regions = [
-    [0x0000_0000, 0x100_0000, 0x7],   # Low RAM		16M	0b111   R|W|EXECUTE
-    [0xfec0_0000, 0x1000, 0x17],      # IO APIC		4K	0b10111 R|W|DEVICE
-    [0xfee0_0000, 0x1000, 0x17],      # Local APIC	4K	0b10111 R|W|DEVICE
-    [0xfed0_0000, 0x1000, 0x17],      # HPET 		4K  0b10111 R|W|DEVICE
+    [0x0000_0000, 0x100_0000, 0x7, 0], # Low RAM		16M	0b111   R|W|EXECUTE
 ]
 
 # Emu_devices
 # Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig
-emu_devices = [
+emu_devices = []
+
+# Pass-through devices
+# Name Base-Ipa Base-Pa Length Alloc-Irq
+passthrough_devices = [
+    [
+        "IO APIC",
+        0xfec0_0000,
+        0xfec0_0000,
+        0x1000,
+        0x1,
+    ],
+    [
+        "Local APIC",
+        0xfee0_0000,
+        0xfee0_0000,
+        0x1000,
+        0x1,
+    ],
+    [
+        "HPET",
+        0xfed0_0000,
+        0xfed0_0000,
+        0x1000,
+        0x1,
+    ],
 ]

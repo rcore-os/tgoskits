@@ -5,6 +5,9 @@ edition = "2021"
 authors = ["Keyang Hu <976929993@qq.com>"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+fs = ["axstd/fs"]
+
 [dependencies]
 log = "=0.4.21"
 bitflags = "2.2"
@@ -14,7 +17,7 @@ spin = "0.9"
 axstd = { workspace = true, features = [
     "alloc",
     "paging",
-    "fs",
+    # "fs",
     "irq", # It has to be disabed in riscv64. Todo: fix it.
     "hv",
     "multitask",
@@ -30,22 +33,9 @@ axaddrspace = { workspace = true }
 crate_interface = "0.1"
 axerrno = "0.1.0"
 memory_addr = "0.3"
-page_table_entry = { version = "0.4.1", features = ["arm-el2"] }
-page_table_multiarch = "0.4.1"
+page_table_entry = { version = "0.4.2", features = ["arm-el2"] }
+page_table_multiarch = "0.4.2"
 percpu = { version = "0.1.4", features = ["arm-el2"] }
-
-[target.'cfg(target_arch = "x86_64")'.dependencies]
-x86 = "0.52"
-x86_64 = "0.14"
-raw-cpuid = "11.0"
-
-[target.'cfg(target_arch = "riscv64")'.dependencies]
-fdt = { version = "0.1.5" }
-arrayvec = { version = "0.7.2", default-features = false }
-
-[target.'cfg(target_arch = "aarch64")'.dependencies]
-fdt = { version = "0.1.5" }
-arrayvec = { version = "0.7.2", default-features = false }
 
 [build-dependencies]
 toml = { git = "https://github.com/arceos-hypervisor/toml.git", branch = "no_std" }

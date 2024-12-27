@@ -20,15 +20,41 @@ Your also need to install [musl-gcc](http://musl.cc/x86_64-linux-musl-cross.tgz)
 
 ### Configuration files
 
+Since guest VM configuration is a complex process, ArceOS-Hypervisor chooses to use toml files to manage guest VM configuration, 
+including vm id, vm name, vm type, number of CPU cores, memory size, virtual devices and pass-through devices, etc. 
+
 We provide several configuration file [templates](arceos-vmm/configs) for setting up guest VMs. 
 
 These configuration files are read and parsed by the `init_guest_vms()` in the [vmm/config](arceos-vmm/src/vmm/config.rs) mod, and are used to configure the guest VMs.
 
+You can also use [axvmconfig](https://github.com/arceos-hypervisor/axvmconfig) tool to generate a custom config.toml.
+
+For more information about VM configuration, visit [axvmconfig](https://arceos-hypervisor.github.io/axvmconfig/axvmconfig/index.html) for details.
+
 ### [Supported guest VMs](doc/GuestVMs.md)
 
-WIP on Linux guests.
+* [ArceOS](https://github.com/arceos-org/arceos)
+* [Starry-OS](https://github.com/Starry-OS)
+* [NimbOS](https://github.com/equation314/nimbos)
+* Linux
+  * currently only Linux with passthrough device on aarch64 is tested.
+  * single core: [config.toml](arceos-vmm/configs/linux-qemu-aarch64.toml) | [dts](arceos-vmm/configs/linux-qemu.dts)
+  * smp: [config.toml](arceos-vmm/configs/linux-qemu-aarch64-smp2.toml) | [dts](arceos-vmm/configs/linux-qemu-smp2.dts)
 
-## Build File System image
+### Loading Guest VM images
+
+Currently, arceos-hypervisor supports loading guest VM images from arceos' fat file system, or binding guest VM images to hypervisor images through a static compilation manner (`include_bytes`).
+
+* load from file system
+  * specify `image_location="fs"` in the `config.toml` file.
+  * `kernel_path` in `config.toml` refers to the location of the kernel image in the arceos rootfs (e.g. `disk.img`).
+  * Note: `"fs"` feature is required for arceos-umhv, this can be configured via environment variables `APP_FEATURES=fs`.
+* load from memory
+  * specify `image_location="memory"` in the `config.toml` file.
+  * `kernel_path` in `config.toml` refers to the relative/absolute path of the kernel image in your workspace when compiling arceos-vmm.
+  * Note that the current method of binding guest VM images through static compilation only supports the loading of one guest VM image at most (usually we use this method to start Linux as a guest VM).
+
+### Build File System image
 
 ```console
 $ cd arceos-vmm
@@ -46,17 +72,28 @@ $ # Arceos-VMM will load the image binaries from the first configuration in the 
 
 ## Build & Run Hypervisor
 
-First, you need to prepare your configuration file for the guest VM (several examples are provided in the [configs](arceos-vmm/configs) directory), and then run the hypervisor with the following command:
+### Example build commands
 
 ```console
 $ cd arceos-vmm
-# x86_64
-$ make ACCEL=y ARCH=x86_64 [LOG=warn|info|debug|trace] VM_CONFIGS=/PATH/TO/CONFIG/FILE run
-# aarch64
-$ make ACCEL=n ARCH=aarch64 [LOG=warn|info|debug|trace] VM_CONFIGS=/PATH/TO/CONFIG/FILE run
-# riscv64
-$ make ACCEL=n ARCH=riscv64 [LOG=warn|info|debug|trace] VM_CONFIGS=/PATH/TO/CONFIG/FILE run
+# x86_64 for nimbos
+# [LOG=warn|info|debug|trace]
+$ make ACCEL=y ARCH=x86_64 LOG=info VM_CONFIGS=configs/nimbos-x86_64.toml APP_FEATURES=fs run
+# aarch64 for nimbos
+$ make ACCEL=n ARCH=aarch64 LOG=info VM_CONFIGS=configs/nimbos-aarch64.toml APP_FEATURES=fs run
+# riscv64 for nimbos
+$ make ACCEL=n ARCH=riscv64 LOG=info VM_CONFIGS=configs/nimbos-riscv64.toml APP_FEATURES=fs run
+# aarch64 for Linux
+$ make ARCH=aarch64 VM_CONFIGS=configs/linux-qemu-aarch64.toml LOG=debug BUS=mmio NET=y DISK_IMG=ubuntu-22.04-rootfs_ext4.img run
+# aarch64 for Linux SMP=2
+$ make ARCH=aarch64 VM_CONFIGS=configs/linux-qemu-aarch64-smp2.toml LOG=debug BUS=mmio NET=y DISK_IMG=ubuntu-22.04-rootfs_ext4.img BLK=y SMP=2 run
+```
 
+### Demo Output
+
+```console
+$ cd arceos-vmm
+$ make ACCEL=y ARCH=x86_64 LOG=warn VM_CONFIGS=configs/nimbos-x86_64.toml APP_FEATURES=fs run
 ......
 Booting from ROM..
 Initialize IDT & GDT...
