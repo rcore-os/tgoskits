@@ -1,0 +1,31 @@
+id = 1
+name = "linux-a1000"
+vm_type = 1
+cpu_num = 8
+phys_cpu_ids = [0x00, 0x100, 0x200, 0x300, 0x400, 0x500, 0x600, 0x700]
+phys_cpu_sets = [1, 2, 4, 8, 16, 32, 64, 128]
+entry_point = 0x8100_0000
+kernel_load_addr = 0x8100_0000
+dtb_load_addr = 0x82e0_0000
+
+image_location = "memory" 
+kernel_path = "path/to/kernel"
+dtb_path = "path/to/dtb"
+# ramdisk_path = ""
+# ramdisk_load_addr = 0
+# disk_path = "disk.img"
+# Memory regions with format (`base_paddr`, `size`, `flags`).
+memory_regions = [
+    [0x8000_0000, 0x7000_0000, 0x7, 1],#ram 1792MB
+]
+
+
+# Emu_devices
+# Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig
+emu_devices = [
+]
+
+# Pass-through devices
+passthrough_devices = [
+	["most-devices", 0x0, 0x0, 0x8000_0000, 0x1],
+]

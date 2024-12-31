@@ -110,7 +110,7 @@ else ifeq ($(ARCH), riscv64)
 else ifeq ($(ARCH), aarch64)
   ACCEL ?= n
   PLATFORM_NAME ?= aarch64-qemu-virt-hv
-  PLATFORM := platforms/aarch64-qemu-virt-hv.toml
+  PLATFORM := platforms/$(PLATFORM_NAME).toml
 else
   $(error "ARCH" must be one of "x86_64", "riscv64", or "aarch64")
 endif
@@ -179,7 +179,7 @@ include scripts/make/qemu.mk
 include scripts/make/test.mk
 ifeq ($(PLATFORM_NAME), aarch64-raspi4)
   include scripts/make/raspi4.mk
-else ifeq ($(PLATFORM_NAME), aarch64-bsta1000b)
+else ifeq ($(PLATFORM_NAME), aarch64-bsta1000b-virt-hv)
   include scripts/make/bsta1000b-fada.mk
 else ifeq ($(PLATFORM_NAME), aarch64-rk3588j)
   include scripts/make/rk3588.mk
