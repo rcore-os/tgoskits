@@ -1,6 +1,6 @@
 [package]
 name = "axdevice_base"
-edition = "2021"
+edition = "2024"
 version.workspace = true
 authors.workspace = true
 license.workspace = true
