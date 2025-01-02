@@ -23,13 +23,23 @@ impl VmxInstructionError {
             15 => "VMXON executed in VMX root operation",
             16 => "VM entry with invalid executive-VMCS pointer",
             17 => "VM entry with non-launched executive VMCS",
-            18 => "VM entry with executive-VMCS pointer not VMXON pointer (when attempting to deactivate the dual-monitor treatment of SMIs and SMM)",
-            19 => "VMCALL with non-clear VMCS (when attempting to activate the dual-monitor treatment of SMIs and SMM)",
+            18 => {
+                "VM entry with executive-VMCS pointer not VMXON pointer (when attempting to deactivate the dual-monitor treatment of SMIs and SMM)"
+            }
+            19 => {
+                "VMCALL with non-clear VMCS (when attempting to activate the dual-monitor treatment of SMIs and SMM)"
+            }
             20 => "VMCALL with invalid VM-exit control fields",
-            22 => "VMCALL with incorrect MSEG revision identifier (when attempting to activate the dual-monitor treatment of SMIs and SMM)",
+            22 => {
+                "VMCALL with incorrect MSEG revision identifier (when attempting to activate the dual-monitor treatment of SMIs and SMM)"
+            }
             23 => "VMXOFF under dual-monitor treatment of SMIs and SMM",
-            24 => "VMCALL with invalid SMM-monitor features (when attempting to activate the dual-monitor treatment of SMIs and SMM)",
-            25 => "VM entry with invalid VM-execution control fields in executive VMCS (when attempting to return from SMM)",
+            24 => {
+                "VMCALL with invalid SMM-monitor features (when attempting to activate the dual-monitor treatment of SMIs and SMM)"
+            }
+            25 => {
+                "VM entry with invalid VM-execution control fields in executive VMCS (when attempting to return from SMM)"
+            }
             26 => "VM entry with events blocked by MOV SS",
             28 => "Invalid operand to INVEPT/INVVPID",
             _ => "[INVALID]",

@@ -1,7 +1,7 @@
 use core::marker::PhantomData;
 
 use axaddrspace::HostPhysAddr;
-use axerrno::{ax_err_type, AxResult};
+use axerrno::{AxResult, ax_err_type};
 
 use axvcpu::AxVCpuHal;
 

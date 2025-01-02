@@ -19,7 +19,7 @@ pub struct VmxRegion<H: AxVCpuHal> {
 impl<H: AxVCpuHal> VmxRegion<H> {
     pub const unsafe fn uninit() -> Self {
         Self {
-            frame: PhysFrame::uninit(),
+            frame: unsafe { PhysFrame::uninit() },
         }
     }
 

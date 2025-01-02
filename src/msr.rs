@@ -54,7 +54,7 @@ impl Msr {
     /// effects.
     #[inline(always)]
     pub unsafe fn write(self, value: u64) {
-        wrmsr(self as _, value)
+        unsafe { wrmsr(self as _, value) }
     }
 }
 
@@ -66,6 +66,8 @@ pub(super) trait MsrReadWrite {
     }
 
     unsafe fn write_raw(flags: u64) {
-        Self::MSR.write(flags);
+        unsafe {
+            Self::MSR.write(flags);
+        }
     }
 }

@@ -43,6 +43,8 @@ pub enum InvEptType {
 /// descriptor specified in the memory operand.
 pub unsafe fn invept(inv_type: InvEptType, eptp: u64) -> Result<()> {
     let invept_desc = [eptp, 0];
-    asm!("invept {0}, [{1}]", in(reg) inv_type as u64, in(reg) &invept_desc);
+    unsafe {
+        asm!("invept {0}, [{1}]", in(reg) inv_type as u64, in(reg) &invept_desc);
+    }
     vmx_capture_status()
 }

@@ -7,7 +7,7 @@ use bit_field::BitField;
 use x86::bits64::vmx;
 
 use axaddrspace::{GuestPhysAddr, HostPhysAddr, NestedPageFaultInfo};
-use axerrno::{ax_err, AxResult};
+use axerrno::{AxResult, ax_err};
 use page_table_entry::MappingFlags;
 
 use super::as_axerr;
@@ -631,7 +631,7 @@ pub fn set_control(
 }
 
 pub fn set_ept_pointer(pml4_paddr: HostPhysAddr) -> AxResult {
-    use super::instructions::{invept, InvEptType};
+    use super::instructions::{InvEptType, invept};
     let eptp = super::structs::EPTPointer::from_table_phys(pml4_paddr).bits();
     VmcsControl64::EPTP.write(eptp)?;
     unsafe { invept(InvEptType::SingleContext, eptp).map_err(as_axerr)? };
@@ -656,7 +656,7 @@ pub fn exit_info() -> AxResult<VmxExitInfo> {
 }
 
 pub fn raw_interrupt_exit_info() -> AxResult<u32> {
-    Ok(VmcsReadOnly32::VMEXIT_INTERRUPTION_INFO.read()?)
+    VmcsReadOnly32::VMEXIT_INTERRUPTION_INFO.read()
 }
 
 pub fn interrupt_exit_info() -> AxResult<VmxInterruptInfo> {
@@ -752,7 +752,7 @@ pub fn update_efer() -> AxResult {
     set_control(
         VmcsControl32::VMENTRY_CONTROLS,
         Msr::IA32_VMX_TRUE_ENTRY_CTLS,
-        VmcsControl32::VMENTRY_CONTROLS.read()? as u32,
+        VmcsControl32::VMENTRY_CONTROLS.read()?,
         (EntryCtrl::IA32E_MODE_GUEST).bits(),
         0,
     )?;

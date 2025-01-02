@@ -1,7 +1,6 @@
 #![no_std]
 #![feature(doc_cfg)]
 #![feature(concat_idents)]
-#![feature(asm_const)]
 #![feature(naked_functions)]
 #![doc = include_str!("../README.md")]
 
