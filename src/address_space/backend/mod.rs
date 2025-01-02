@@ -3,7 +3,7 @@
 use memory_set::MappingBackend;
 use page_table_multiarch::{MappingFlags, PagingHandler};
 
-use crate::{npt::NestedPageTable as PageTable, GuestPhysAddr};
+use crate::{GuestPhysAddr, npt::NestedPageTable as PageTable};
 
 mod alloc;
 mod linear;

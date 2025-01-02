@@ -1,13 +1,13 @@
 use alloc::vec::Vec;
 use core::fmt;
 
-use axerrno::{ax_err, AxError, AxResult};
-use memory_addr::{is_aligned_4k, MemoryAddr, PhysAddr};
+use axerrno::{AxError, AxResult, ax_err};
+use memory_addr::{MemoryAddr, PhysAddr, is_aligned_4k};
 use memory_set::{MemoryArea, MemorySet};
 use page_table_multiarch::PagingHandler;
 
 use crate::npt::NestedPageTable as PageTable;
-use crate::{mapping_err_to_ax_err, GuestPhysAddr, GuestPhysAddrRange};
+use crate::{GuestPhysAddr, GuestPhysAddrRange, mapping_err_to_ax_err};
 
 mod backend;
 

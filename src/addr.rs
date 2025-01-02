@@ -1,4 +1,4 @@
-use memory_addr::{def_usize_addr, def_usize_addr_formatter, AddrRange, PhysAddr, VirtAddr};
+use memory_addr::{AddrRange, PhysAddr, VirtAddr, def_usize_addr, def_usize_addr_formatter};
 
 /// Host virtual address.
 pub type HostVirtAddr = VirtAddr;

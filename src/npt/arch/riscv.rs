@@ -1,5 +1,5 @@
 use page_table_entry::riscv::Rv64PTE;
-use page_table_multiarch::{riscv::Sv39MetaData, PageTable64};
+use page_table_multiarch::{PageTable64, riscv::Sv39MetaData};
 
 use crate::GuestPhysAddr;
 

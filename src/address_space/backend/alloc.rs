@@ -2,7 +2,7 @@ use memory_addr::{PageIter4K, PhysAddr};
 use page_table_multiarch::{MappingFlags, PageSize, PagingHandler};
 
 use super::Backend;
-use crate::{npt::NestedPageTable as PageTable, GuestPhysAddr};
+use crate::{GuestPhysAddr, npt::NestedPageTable as PageTable};
 
 impl<H: PagingHandler> Backend<H> {
     /// Creates a new allocation mapping backend.
