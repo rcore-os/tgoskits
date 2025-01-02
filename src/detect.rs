@@ -5,7 +5,7 @@
 //! Then, it filters out illegal instruction from exceptions.
 //! ref: <https://github.com/luojia65/zihai/blob/main/zihai/src/detect.rs>
 
-use core::arch::asm;
+use core::arch::{asm, naked_asm};
 use riscv::register::{
     scause::{Exception, Scause, Trap},
     sstatus,
@@ -81,17 +81,21 @@ fn riscv_illegal_insn_bits(insn: u16) -> usize {
 unsafe fn init_detect_trap(param: usize) -> (bool, Stvec, usize) {
     // clear SIE to handle exception only
     let stored_sie = sstatus::read().sie();
-    sstatus::clear_sie();
+    unsafe {
+        sstatus::clear_sie();
+    }
     // use detect trap handler to handle exceptions
     let stored_stvec = stvec::read();
     let mut trap_addr = on_detect_trap as usize;
     if trap_addr & 0b1 != 0 {
         trap_addr += 0b1;
     }
-    stvec::write(trap_addr, TrapMode::Direct);
-    // store tp register. tp will be used to load parameter and store return value
     let stored_tp: usize;
-    asm!("mv  {}, tp", "mv  tp, {}", out(reg) stored_tp, in(reg) param, options(nomem, nostack));
+    unsafe {
+        stvec::write(trap_addr, TrapMode::Direct);
+        // store tp register. tp will be used to load parameter and store return value
+        asm!("mv  {}, tp", "mv  tp, {}", out(reg) stored_tp, in(reg) param, options(nomem, nostack));
+    }
     // returns preserved previous hardware states
     (stored_sie, stored_stvec, stored_tp)
 }
@@ -101,13 +105,15 @@ unsafe fn init_detect_trap(param: usize) -> (bool, Stvec, usize) {
 unsafe fn restore_detect_trap(sie: bool, stvec: Stvec, tp: usize) -> usize {
     // read the return value from tp register, and restore tp value
     let ans: usize;
-    asm!("mv  {}, tp", "mv  tp, {}", out(reg) ans, in(reg) tp, options(nomem, nostack));
-    // restore trap vector settings
-    asm!("csrw  stvec, {}", in(reg) stvec.bits(), options(nomem, nostack));
-    // enable interrupts
-    if sie {
-        sstatus::set_sie();
-    };
+    unsafe {
+        asm!("mv  {}, tp", "mv  tp, {}", out(reg) ans, in(reg) tp, options(nomem, nostack));
+        // restore trap vector settings
+        asm!("csrw  stvec, {}", in(reg) stvec.bits(), options(nomem, nostack));
+        // enable interrupts
+        if sie {
+            sstatus::set_sie();
+        };
+    }
     ans
 }
 
@@ -147,64 +153,65 @@ struct TrapFrame {
 // handle exceptions only rather than interrupts.
 #[naked]
 unsafe extern "C" fn on_detect_trap() -> ! {
-    asm!(
-        ".p2align 2",
-        "addi   sp, sp, -8*21",
-        "sd     ra, 0*8(sp)",
-        "sd     tp, 1*8(sp)",
-        "sd     a0, 2*8(sp)",
-        "sd     a1, 3*8(sp)",
-        "sd     a2, 4*8(sp)",
-        "sd     a3, 5*8(sp)",
-        "sd     a4, 6*8(sp)",
-        "sd     a5, 7*8(sp)",
-        "sd     a6, 8*8(sp)",
-        "sd     a7, 9*8(sp)",
-        "sd     t0, 10*8(sp)",
-        "sd     t1, 11*8(sp)",
-        "sd     t2, 12*8(sp)",
-        "sd     t3, 13*8(sp)",
-        "sd     t4, 14*8(sp)",
-        "sd     t5, 15*8(sp)",
-        "sd     t6, 16*8(sp)",
-        "csrr   t0, sstatus",
-        "sd     t0, 17*8(sp)",
-        "csrr   t1, sepc",
-        "sd     t1, 18*8(sp)",
-        "csrr   t2, scause",
-        "sd     t2, 19*8(sp)",
-        "csrr   t3, stval",
-        "sd     t3, 20*8(sp)",
-        "mv     a0, sp",
-        "call   {rust_detect_trap}",
-        "ld     t0, 17*8(sp)",
-        "csrw   sstatus, t0",
-        "ld     t1, 18*8(sp)",
-        "csrw   sepc, t1",
-        "ld     t2, 19*8(sp)",
-        "csrw   scause, t2",
-        "ld     t3, 20*8(sp)",
-        "csrw   stval, t3",
-        "ld     ra, 0*8(sp)",
-        "ld     tp, 1*8(sp)",
-        "ld     a0, 2*8(sp)",
-        "ld     a1, 3*8(sp)",
-        "ld     a2, 4*8(sp)",
-        "ld     a3, 5*8(sp)",
-        "ld     a4, 6*8(sp)",
-        "ld     a5, 7*8(sp)",
-        "ld     a6, 8*8(sp)",
-        "ld     a7, 9*8(sp)",
-        "ld     t0, 10*8(sp)",
-        "ld     t1, 11*8(sp)",
-        "ld     t2, 12*8(sp)",
-        "ld     t3, 13*8(sp)",
-        "ld     t4, 14*8(sp)",
-        "ld     t5, 15*8(sp)",
-        "ld     t6, 16*8(sp)",
-        "addi   sp, sp, 8*21",
-        "sret",
-        rust_detect_trap = sym rust_detect_trap,
-        options(noreturn),
-    )
+    unsafe {
+        naked_asm!(
+            ".p2align 2",
+            "addi   sp, sp, -8*21",
+            "sd     ra, 0*8(sp)",
+            "sd     tp, 1*8(sp)",
+            "sd     a0, 2*8(sp)",
+            "sd     a1, 3*8(sp)",
+            "sd     a2, 4*8(sp)",
+            "sd     a3, 5*8(sp)",
+            "sd     a4, 6*8(sp)",
+            "sd     a5, 7*8(sp)",
+            "sd     a6, 8*8(sp)",
+            "sd     a7, 9*8(sp)",
+            "sd     t0, 10*8(sp)",
+            "sd     t1, 11*8(sp)",
+            "sd     t2, 12*8(sp)",
+            "sd     t3, 13*8(sp)",
+            "sd     t4, 14*8(sp)",
+            "sd     t5, 15*8(sp)",
+            "sd     t6, 16*8(sp)",
+            "csrr   t0, sstatus",
+            "sd     t0, 17*8(sp)",
+            "csrr   t1, sepc",
+            "sd     t1, 18*8(sp)",
+            "csrr   t2, scause",
+            "sd     t2, 19*8(sp)",
+            "csrr   t3, stval",
+            "sd     t3, 20*8(sp)",
+            "mv     a0, sp",
+            "call   {rust_detect_trap}",
+            "ld     t0, 17*8(sp)",
+            "csrw   sstatus, t0",
+            "ld     t1, 18*8(sp)",
+            "csrw   sepc, t1",
+            "ld     t2, 19*8(sp)",
+            "csrw   scause, t2",
+            "ld     t3, 20*8(sp)",
+            "csrw   stval, t3",
+            "ld     ra, 0*8(sp)",
+            "ld     tp, 1*8(sp)",
+            "ld     a0, 2*8(sp)",
+            "ld     a1, 3*8(sp)",
+            "ld     a2, 4*8(sp)",
+            "ld     a3, 5*8(sp)",
+            "ld     a4, 6*8(sp)",
+            "ld     a5, 7*8(sp)",
+            "ld     a6, 8*8(sp)",
+            "ld     a7, 9*8(sp)",
+            "ld     t0, 10*8(sp)",
+            "ld     t1, 11*8(sp)",
+            "ld     t2, 12*8(sp)",
+            "ld     t3, 13*8(sp)",
+            "ld     t4, 14*8(sp)",
+            "ld     t5, 15*8(sp)",
+            "ld     t6, 16*8(sp)",
+            "addi   sp, sp, 8*21",
+            "sret",
+            rust_detect_trap = sym rust_detect_trap,
+        )
+    }
 }

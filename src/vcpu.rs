@@ -1,16 +1,16 @@
 use riscv::register::hstatus;
 use riscv::register::{htinst, htval, hvip, scause, sie, sstatus, stval};
-use rustsbi::{Forward, RustSBI, Timer};
+use rustsbi::{Forward, RustSBI};
 use sbi_spec::{hsm, legacy};
 
-use axaddrspace::{GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags};
+use axaddrspace::{GuestPhysAddr, HostPhysAddr, MappingFlags};
 use axerrno::AxResult;
 use axvcpu::{AxVCpuExitReason, AxVCpuHal};
 
 use crate::regs::*;
-use crate::{RISCVVCpuCreateConfig, EID_HVC};
+use crate::{EID_HVC, RISCVVCpuCreateConfig};
 
-extern "C" {
+unsafe extern "C" {
     fn _run_guest(state: *mut VmCpuRegisters);
 }
 
