@@ -1,7 +1,7 @@
 use core::cell::{RefCell, UnsafeCell};
 
 use axaddrspace::{GuestPhysAddr, HostPhysAddr};
-use axerrno::{ax_err, AxResult};
+use axerrno::{AxResult, ax_err};
 
 use super::{AxArchVCpu, AxVCpuExitReason};
 
@@ -271,9 +271,11 @@ pub fn get_current_vcpu_mut<'a, A: AxArchVCpu>() -> Option<&'a mut AxVCpu<A>> {
 /// This method is marked as unsafe because it may result in unexpected behavior if not used properly.
 /// Do not call this method unless you know what you are doing.
 pub unsafe fn set_current_vcpu<A: AxArchVCpu>(vcpu: &AxVCpu<A>) {
-    CURRENT_VCPU
-        .current_ref_mut_raw()
-        .replace(vcpu as *const _ as *mut u8);
+    unsafe {
+        CURRENT_VCPU
+            .current_ref_mut_raw()
+            .replace(vcpu as *const _ as *mut u8);
+    }
 }
 
 /// Clear the current vcpu on the current physical CPU.
@@ -282,5 +284,7 @@ pub unsafe fn set_current_vcpu<A: AxArchVCpu>(vcpu: &AxVCpu<A>) {
 /// This method is marked as unsafe because it may result in unexpected behavior if not used properly.
 /// Do not call this method unless you know what you are doing.    
 pub unsafe fn clear_current_vcpu<A: AxArchVCpu>() {
-    CURRENT_VCPU.current_ref_mut_raw().take();
+    unsafe {
+        CURRENT_VCPU.current_ref_mut_raw().take();
+    }
 }

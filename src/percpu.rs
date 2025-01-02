@@ -1,6 +1,6 @@
 use core::mem::MaybeUninit;
 
-use axerrno::{ax_err, AxResult};
+use axerrno::{AxResult, ax_err};
 
 /// Trait representing the per-CPU architecture-specific virtualization state in a virtual machine.
 ///
