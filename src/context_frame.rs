@@ -211,43 +211,45 @@ impl GuestSystemRegisters {
     /// This method uses inline assembly to read the values of various system registers
     /// and stores them in the corresponding fields of the `GuestSystemRegisters` structure.
     pub unsafe fn store(&mut self) {
-        asm!("mrs {0}, CNTVOFF_EL2", out(reg) self.cntvoff_el2);
-        asm!("mrs {0}, CNTV_CVAL_EL0", out(reg) self.cntv_cval_el0);
-        asm!("mrs {0:x}, CNTKCTL_EL1", out(reg) self.cntkctl_el1);
-        asm!("mrs {0:x}, CNTP_CTL_EL0", out(reg) self.cntp_ctl_el0);
-        asm!("mrs {0:x}, CNTV_CTL_EL0", out(reg) self.cntv_ctl_el0);
-        asm!("mrs {0:x}, CNTP_TVAL_EL0", out(reg) self.cntp_tval_el0);
-        asm!("mrs {0:x}, CNTV_TVAL_EL0", out(reg) self.cntv_tval_el0);
-        asm!("mrs {0}, CNTVCT_EL0", out(reg) self.cntvct_el0);
-        // MRS!("self.vpidr_el2, VPIDR_EL2, "x");
-        asm!("mrs {0}, VMPIDR_EL2", out(reg) self.vmpidr_el2);
+        unsafe {
+            asm!("mrs {0}, CNTVOFF_EL2", out(reg) self.cntvoff_el2);
+            asm!("mrs {0}, CNTV_CVAL_EL0", out(reg) self.cntv_cval_el0);
+            asm!("mrs {0:x}, CNTKCTL_EL1", out(reg) self.cntkctl_el1);
+            asm!("mrs {0:x}, CNTP_CTL_EL0", out(reg) self.cntp_ctl_el0);
+            asm!("mrs {0:x}, CNTV_CTL_EL0", out(reg) self.cntv_ctl_el0);
+            asm!("mrs {0:x}, CNTP_TVAL_EL0", out(reg) self.cntp_tval_el0);
+            asm!("mrs {0:x}, CNTV_TVAL_EL0", out(reg) self.cntv_tval_el0);
+            asm!("mrs {0}, CNTVCT_EL0", out(reg) self.cntvct_el0);
+            // MRS!("self.vpidr_el2, VPIDR_EL2, "x");
+            asm!("mrs {0}, VMPIDR_EL2", out(reg) self.vmpidr_el2);
 
-        asm!("mrs {0}, SP_EL0", out(reg) self.sp_el0);
-        asm!("mrs {0}, SP_EL1", out(reg) self.sp_el1);
-        asm!("mrs {0}, ELR_EL1", out(reg) self.elr_el1);
-        asm!("mrs {0:x}, SPSR_EL1", out(reg) self.spsr_el1);
-        asm!("mrs {0:x}, SCTLR_EL1", out(reg) self.sctlr_el1);
-        asm!("mrs {0:x}, CPACR_EL1", out(reg) self.cpacr_el1);
-        asm!("mrs {0}, TTBR0_EL1", out(reg) self.ttbr0_el1);
-        asm!("mrs {0}, TTBR1_EL1", out(reg) self.ttbr1_el1);
-        asm!("mrs {0}, TCR_EL1", out(reg) self.tcr_el1);
-        asm!("mrs {0:x}, ESR_EL1", out(reg) self.esr_el1);
-        asm!("mrs {0}, FAR_EL1", out(reg) self.far_el1);
-        asm!("mrs {0}, PAR_EL1", out(reg) self.par_el1);
-        asm!("mrs {0}, MAIR_EL1", out(reg) self.mair_el1);
-        asm!("mrs {0}, AMAIR_EL1", out(reg) self.amair_el1);
-        asm!("mrs {0}, VBAR_EL1", out(reg) self.vbar_el1);
-        asm!("mrs {0:x}, CONTEXTIDR_EL1", out(reg) self.contextidr_el1);
-        asm!("mrs {0}, TPIDR_EL0", out(reg) self.tpidr_el0);
-        asm!("mrs {0}, TPIDR_EL1", out(reg) self.tpidr_el1);
-        asm!("mrs {0}, TPIDRRO_EL0", out(reg) self.tpidrro_el0);
+            asm!("mrs {0}, SP_EL0", out(reg) self.sp_el0);
+            asm!("mrs {0}, SP_EL1", out(reg) self.sp_el1);
+            asm!("mrs {0}, ELR_EL1", out(reg) self.elr_el1);
+            asm!("mrs {0:x}, SPSR_EL1", out(reg) self.spsr_el1);
+            asm!("mrs {0:x}, SCTLR_EL1", out(reg) self.sctlr_el1);
+            asm!("mrs {0:x}, CPACR_EL1", out(reg) self.cpacr_el1);
+            asm!("mrs {0}, TTBR0_EL1", out(reg) self.ttbr0_el1);
+            asm!("mrs {0}, TTBR1_EL1", out(reg) self.ttbr1_el1);
+            asm!("mrs {0}, TCR_EL1", out(reg) self.tcr_el1);
+            asm!("mrs {0:x}, ESR_EL1", out(reg) self.esr_el1);
+            asm!("mrs {0}, FAR_EL1", out(reg) self.far_el1);
+            asm!("mrs {0}, PAR_EL1", out(reg) self.par_el1);
+            asm!("mrs {0}, MAIR_EL1", out(reg) self.mair_el1);
+            asm!("mrs {0}, AMAIR_EL1", out(reg) self.amair_el1);
+            asm!("mrs {0}, VBAR_EL1", out(reg) self.vbar_el1);
+            asm!("mrs {0:x}, CONTEXTIDR_EL1", out(reg) self.contextidr_el1);
+            asm!("mrs {0}, TPIDR_EL0", out(reg) self.tpidr_el0);
+            asm!("mrs {0}, TPIDR_EL1", out(reg) self.tpidr_el1);
+            asm!("mrs {0}, TPIDRRO_EL0", out(reg) self.tpidrro_el0);
 
-        asm!("mrs {0}, PMCR_EL0", out(reg) self.pmcr_el0);
-        asm!("mrs {0}, VTCR_EL2", out(reg) self.vtcr_el2);
-        asm!("mrs {0}, VTTBR_EL2", out(reg) self.vttbr_el2);
-        asm!("mrs {0}, HCR_EL2", out(reg) self.hcr_el2);
-        asm!("mrs {0}, ACTLR_EL1", out(reg) self.actlr_el1);
-        // println!("save sctlr {:x}", self.sctlr_el1);
+            asm!("mrs {0}, PMCR_EL0", out(reg) self.pmcr_el0);
+            asm!("mrs {0}, VTCR_EL2", out(reg) self.vtcr_el2);
+            asm!("mrs {0}, VTTBR_EL2", out(reg) self.vttbr_el2);
+            asm!("mrs {0}, HCR_EL2", out(reg) self.hcr_el2);
+            asm!("mrs {0}, ACTLR_EL1", out(reg) self.actlr_el1);
+            // println!("save sctlr {:x}", self.sctlr_el1);
+        }
     }
 
     /// Restores the values of all relevant system registers from the `GuestSystemRegisters` structure.
@@ -259,38 +261,40 @@ impl GuestSystemRegisters {
     /// Each system register is restored with its corresponding value from the `GuestSystemRegisters`, ensuring
     /// that the virtual machine or thread resumes execution with the correct context.
     pub unsafe fn restore(&self) {
-        asm!("msr CNTV_CVAL_EL0, {0}", in(reg) self.cntv_cval_el0);
-        asm!("msr CNTKCTL_EL1, {0:x}", in (reg) self.cntkctl_el1);
-        asm!("msr CNTV_CTL_EL0, {0:x}", in (reg) self.cntv_ctl_el0);
-        // The restoration of SP_EL0 is done in `exception_return_el2`,
-        // which move the value from `self.ctx.sp_el0` to `SP_EL0`.
-        // asm!("msr SP_EL0, {0}", in(reg) self.sp_el0);
-        asm!("msr SP_EL1, {0}", in(reg) self.sp_el1);
-        asm!("msr ELR_EL1, {0}", in(reg) self.elr_el1);
-        asm!("msr SPSR_EL1, {0:x}", in(reg) self.spsr_el1);
-        asm!("msr SCTLR_EL1, {0:x}", in(reg) self.sctlr_el1);
-        asm!("msr CPACR_EL1, {0:x}", in(reg) self.cpacr_el1);
-        asm!("msr TTBR0_EL1, {0}", in(reg) self.ttbr0_el1);
-        asm!("msr TTBR1_EL1, {0}", in(reg) self.ttbr1_el1);
-        asm!("msr TCR_EL1, {0}", in(reg) self.tcr_el1);
-        asm!("msr ESR_EL1, {0:x}", in(reg) self.esr_el1);
-        asm!("msr FAR_EL1, {0}", in(reg) self.far_el1);
-        asm!("msr PAR_EL1, {0}", in(reg) self.par_el1);
-        asm!("msr MAIR_EL1, {0}", in(reg) self.mair_el1);
-        asm!("msr AMAIR_EL1, {0}", in(reg) self.amair_el1);
-        asm!("msr VBAR_EL1, {0}", in(reg) self.vbar_el1);
-        asm!("msr CONTEXTIDR_EL1, {0:x}", in(reg) self.contextidr_el1);
-        asm!("msr TPIDR_EL0, {0}", in(reg) self.tpidr_el0);
-        asm!("msr TPIDR_EL1, {0}", in(reg) self.tpidr_el1);
-        asm!("msr TPIDRRO_EL0, {0}", in(reg) self.tpidrro_el0);
+        unsafe {
+            asm!("msr CNTV_CVAL_EL0, {0}", in(reg) self.cntv_cval_el0);
+            asm!("msr CNTKCTL_EL1, {0:x}", in (reg) self.cntkctl_el1);
+            asm!("msr CNTV_CTL_EL0, {0:x}", in (reg) self.cntv_ctl_el0);
+            // The restoration of SP_EL0 is done in `exception_return_el2`,
+            // which move the value from `self.ctx.sp_el0` to `SP_EL0`.
+            // asm!("msr SP_EL0, {0}", in(reg) self.sp_el0);
+            asm!("msr SP_EL1, {0}", in(reg) self.sp_el1);
+            asm!("msr ELR_EL1, {0}", in(reg) self.elr_el1);
+            asm!("msr SPSR_EL1, {0:x}", in(reg) self.spsr_el1);
+            asm!("msr SCTLR_EL1, {0:x}", in(reg) self.sctlr_el1);
+            asm!("msr CPACR_EL1, {0:x}", in(reg) self.cpacr_el1);
+            asm!("msr TTBR0_EL1, {0}", in(reg) self.ttbr0_el1);
+            asm!("msr TTBR1_EL1, {0}", in(reg) self.ttbr1_el1);
+            asm!("msr TCR_EL1, {0}", in(reg) self.tcr_el1);
+            asm!("msr ESR_EL1, {0:x}", in(reg) self.esr_el1);
+            asm!("msr FAR_EL1, {0}", in(reg) self.far_el1);
+            asm!("msr PAR_EL1, {0}", in(reg) self.par_el1);
+            asm!("msr MAIR_EL1, {0}", in(reg) self.mair_el1);
+            asm!("msr AMAIR_EL1, {0}", in(reg) self.amair_el1);
+            asm!("msr VBAR_EL1, {0}", in(reg) self.vbar_el1);
+            asm!("msr CONTEXTIDR_EL1, {0:x}", in(reg) self.contextidr_el1);
+            asm!("msr TPIDR_EL0, {0}", in(reg) self.tpidr_el0);
+            asm!("msr TPIDR_EL1, {0}", in(reg) self.tpidr_el1);
+            asm!("msr TPIDRRO_EL0, {0}", in(reg) self.tpidrro_el0);
 
-        asm!("msr PMCR_EL0, {0}", in(reg) self.pmcr_el0);
-        asm!("msr ACTLR_EL1, {0}", in(reg) self.actlr_el1);
+            asm!("msr PMCR_EL0, {0}", in(reg) self.pmcr_el0);
+            asm!("msr ACTLR_EL1, {0}", in(reg) self.actlr_el1);
 
-        asm!("msr VTCR_EL2, {0}", in(reg) self.vtcr_el2);
-        asm!("msr VTTBR_EL2, {0}", in(reg) self.vttbr_el2);
-        asm!("msr HCR_EL2, {0}", in(reg) self.hcr_el2);
-        asm!("msr VMPIDR_EL2, {0}", in(reg) self.vmpidr_el2);
-        asm!("msr CNTVOFF_EL2, {0}", in(reg) self.cntvoff_el2);
+            asm!("msr VTCR_EL2, {0}", in(reg) self.vtcr_el2);
+            asm!("msr VTTBR_EL2, {0}", in(reg) self.vttbr_el2);
+            asm!("msr HCR_EL2, {0}", in(reg) self.hcr_el2);
+            asm!("msr VMPIDR_EL2, {0}", in(reg) self.vmpidr_el2);
+            asm!("msr CNTVOFF_EL2, {0}", in(reg) self.cntvoff_el2);
+        }
     }
 }

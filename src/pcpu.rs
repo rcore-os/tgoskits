@@ -25,7 +25,7 @@ static ORI_EXCEPTION_VECTOR_BASE: usize = 0;
 #[percpu::def_percpu]
 pub static IRQ_HANDLER: OnceCell<&(dyn Fn() + Send + Sync)> = OnceCell::new();
 
-extern "C" {
+unsafe extern "C" {
     fn exception_vector_base_vcpu();
 }
 

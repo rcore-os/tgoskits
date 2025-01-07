@@ -2,7 +2,7 @@ use aarch64_cpu::registers::{ESR_EL2, FAR_EL2, PAR_EL1};
 use tock_registers::interfaces::*;
 
 use axaddrspace::GuestPhysAddr;
-use axerrno::{ax_err, AxResult};
+use axerrno::{AxResult, ax_err};
 
 /// Retrieves the Exception Syndrome Register (ESR) value from EL2.
 ///

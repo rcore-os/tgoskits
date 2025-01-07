@@ -68,7 +68,21 @@
     b       .Lexception_return_el2
 .endm
 
-.macro HANDLE_IRQ_VCPU
+.macro HANDLE_CURRENT_IRQ
+.p2align 7
+    SAVE_REGS_FROM_EL1
+    bl      current_el_irq_handler
+    b       .Lexception_return_el2
+.endm
+
+.macro HANDLE_CURRENT_SYNC
+.p2align 7
+    SAVE_REGS_FROM_EL1
+    bl      current_el_sync_handler
+    b       .Lexception_return_el2
+.endm
+
+.macro HANDLE_LOWER_IRQ_VCPU
 .p2align 7
     SAVE_REGS_FROM_EL1
     mov    x0, {exception_irq}
@@ -96,14 +110,14 @@ exception_vector_base_vcpu:
     INVALID_EXCP_EL2 3 0
 
     // current EL, with SP_ELx
-    INVALID_EXCP_EL2 0 1
-    HANDLE_IRQ_VCPU
+    HANDLE_CURRENT_SYNC
+    HANDLE_CURRENT_IRQ
     INVALID_EXCP_EL2 2 1
     INVALID_EXCP_EL2 3 1
 
     // lower EL, aarch64
     HANDLE_LOWER_SYNC_VCPU
-    HANDLE_IRQ_VCPU
+    HANDLE_LOWER_IRQ_VCPU
     INVALID_EXCP_EL2 2 2
     INVALID_EXCP_EL2 3 2
 

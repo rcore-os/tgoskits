@@ -1,9 +1,10 @@
-use aarch64_cpu::registers::{Readable, ESR_EL2, HCR_EL2, SCTLR_EL1, VTCR_EL2, VTTBR_EL2};
+use aarch64_cpu::registers::{ESR_EL2, HCR_EL2, Readable, SCTLR_EL1, VTCR_EL2, VTTBR_EL2};
 
 use axaddrspace::GuestPhysAddr;
 use axerrno::{AxError, AxResult};
 use axvcpu::{AccessWidth, AxVCpuExitReason};
 
+use crate::TrapFrame;
 use crate::exception_utils::{
     exception_class, exception_class_value, exception_data_abort_access_is_write,
     exception_data_abort_access_reg, exception_data_abort_access_reg_width,
@@ -12,7 +13,6 @@ use crate::exception_utils::{
     exception_esr, exception_fault_addr, exception_next_instruction_step, exception_sysreg_addr,
     exception_sysreg_direction_write, exception_sysreg_gpr,
 };
-use crate::TrapFrame;
 
 numeric_enum_macro::numeric_enum! {
 #[repr(u8)]
@@ -260,7 +260,7 @@ fn handle_psci_call(ctx: &mut TrapFrame) -> Option<AxResult<AxVCpuExitReason>> {
 fn handle_smc64_exception(ctx: &mut TrapFrame) -> AxResult<AxVCpuExitReason> {
     // Is this a psci call?
     if let Some(result) = handle_psci_call(ctx) {
-        return result;
+        result
     } else {
         // We just forward the SMC call to the ATF directly.
         // The args are from lower EL, so it is safe to call the ATF.
@@ -270,47 +270,23 @@ fn handle_smc64_exception(ctx: &mut TrapFrame) -> AxResult<AxVCpuExitReason> {
     }
 }
 
+/// Handles IRQ exceptions that occur from the current exception level.
 /// Dispatches IRQs to the appropriate handler provided by the underlying host OS,
 /// which is registered at [`crate::pcpu::IRQ_HANDLER`] during `Aarch64PerCpu::new()`.
-fn dispatch_irq() {
+#[unsafe(no_mangle)]
+fn current_el_irq_handler(_tf: &mut TrapFrame) {
     unsafe { crate::pcpu::IRQ_HANDLER.current_ref_raw() }
         .get()
         .unwrap()()
 }
 
-/// A trampoline function for handling exceptions (VM exits) in EL2.
-///
-/// Functionality:
-///
-/// 1. **Check if VCPU is running:**
-///    - The `vcpu_running` function is called to check if the VCPU is currently running.
-///      If the VCPU is running, the control flow is transferred to the `return_run_guest` function.
-///
-/// 2. **Dispatch IRQ:**
-///   - If there is no active vcpu running, the `dispatch_irq` function is called to handle the IRQ,
-///     which will dispatch this irq routine to the underlining host OS.
-///   - The IRQ handling routine will end up calling `exception_return_el2` here.
-///
-/// Note that the `return_run_guest` will never return.
-#[naked]
-#[no_mangle]
-unsafe extern "C" fn vmexit_trampoline() {
-    core::arch::asm!(
-        "bl {vcpu_running}", // Check if vcpu is running.
-        // If vcpu_running returns true, jump to `return_run_guest`,
-        // after that the control flow is handed back to Aarch64VCpu.run(),
-        // simulating the normal return of the `run_guest` function.
-        "cbnz x0, {return_run_guest}",
-        // If vcpu_running returns false, there is no active vcpu running,
-        // jump to `dispatch_irq`.
-        "bl {dispatch_irq}",
-        // Return from exception.
-        "b  .Lexception_return_el2",
-        vcpu_running = sym crate::vcpu::vcpu_running,
-        return_run_guest = sym return_run_guest,
-        dispatch_irq = sym dispatch_irq,
-        options(noreturn),
-    )
+/// Handles synchronous exceptions that occur from the current exception level.
+#[unsafe(no_mangle)]
+fn current_el_sync_handler(tf: &mut TrapFrame) {
+    panic!(
+        "Unhandled synchronous exception from current EL: {:#x?}",
+        tf
+    );
 }
 
 /// A trampoline function for sp switching during handling VM exits,
@@ -349,22 +325,23 @@ unsafe extern "C" fn vmexit_trampoline() {
 /// - This function is not typically called directly from Rust code. Instead, it is
 ///   invoked as part of the low-level hypervisor or VM exit handling routines.
 #[naked]
-#[no_mangle]
-unsafe extern "C" fn return_run_guest() -> ! {
-    core::arch::asm!(
-        // Curretly `sp` points to the base address of `Aarch64VCpu.ctx`, which stores guest's `TrapFrame`.
-        "add x9, sp, 34 * 8", // Skip the exception frame.
-        // Currently `x9` points to `&Aarch64VCpu.host_stack_top`, see `run_guest()` in vcpu.rs.
-        "ldr x10, [x9]", // Get `host_stack_top` value from `&Aarch64VCpu.host_stack_top`.
-        "mov sp, x10",   // Set `sp` as the host stack top.
-        restore_regs_from_stack!(), // Restore host function context frame.
-        "ret", // Control flow is handed back to Aarch64VCpu.run(), simulating the normal return of the `run_guest` function.
-        options(noreturn),
-    )
+#[unsafe(no_mangle)]
+unsafe extern "C" fn vmexit_trampoline() -> ! {
+    unsafe {
+        core::arch::naked_asm!(
+            // Curretly `sp` points to the base address of `Aarch64VCpu.ctx`, which stores guest's `TrapFrame`.
+            "add x9, sp, 34 * 8", // Skip the exception frame.
+            // Currently `x9` points to `&Aarch64VCpu.host_stack_top`, see `run_guest()` in vcpu.rs.
+            "ldr x10, [x9]", // Get `host_stack_top` value from `&Aarch64VCpu.host_stack_top`.
+            "mov sp, x10",   // Set `sp` as the host stack top.
+            restore_regs_from_stack!(), // Restore host function context frame.
+            "ret", // Control flow is handed back to Aarch64VCpu.run(), simulating the normal return of the `run_guest` function.
+        )
+    }
 }
 
 /// Deal with invalid aarch64 exception.
-#[no_mangle]
+#[unsafe(no_mangle)]
 fn invalid_exception_el2(tf: &mut TrapFrame, kind: TrapKind, source: TrapSource) {
     panic!(
         "Invalid exception {:?} from {:?}:\n{:#x?}",
