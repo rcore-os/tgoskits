@@ -12,7 +12,7 @@ mod hal;
 mod task;
 mod vmm;
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 fn main() {
     info!("Starting virtualization...");
 

@@ -1,16 +1,21 @@
 # Architecture identifier.
-arch = "aarch64"
+arch = "aarch64" # str
 # Platform identifier.
-platform = "aarch64-rk3588j"
+platform = "aarch64-rk3588j" # str
+
+#
+# Platform configs
+#
+[plat]
 # Platform family.
 family = "aarch64-rk3588j"
 
 # Base address of the whole physical memory.
-phys-memory-base = "0x20_0000"
+phys-memory-base = 0x20_0000 # uint
 # Size of the whole physical memory.
-phys-memory-size = "0x800_0000"     # 128M
+phys-memory-size = 0x800_0000    # uint
 # Base physical address of the kernel image.
-kernel-base-paddr = "0x48_0000"
+kernel-base-paddr = 0x48_0000 # uint
 # Base virtual address of the kernel image.
 kernel-base-vaddr = "0x0000_0000_0048_0000"
 # Linear mapping offset, for quick conversions between physical and virtual
@@ -20,6 +25,11 @@ phys-virt-offset = "0x0000_0000_0000_0000"
 kernel-aspace-base = "0x0000_0000_0000_0000"
 # Kernel address space size.
 kernel-aspace-size = "0x0000_ffff_ffff_f000"
+
+#
+# Device specifications
+#
+[devices]
 # MMIO regions with format (`base_paddr`, `size`).
 mmio-regions = [
     # ["0x0900_0000", "0x1000"],      # PL011 UART
@@ -27,35 +37,35 @@ mmio-regions = [
     # ["0x0a00_0000", "0x4000"],      # VirtIO
     # ["0x1000_0000", "0x2eff_0000"],     # PCI memory ranges (ranges 1: 32-bit MMIO space)
     # ["0x40_1000_0000", "0x1000_0000"],  # PCI config space
-    ["0xfeb50000", "0x1000"], # uart8250 UART0
-    ["0xfe600000", "0x10000"], # gic-v3 gicd
-    ["0xfe680000", "0x100000"], # gic-v3 gicr
-    ["0xa41000000", "0x400000"],
-    ["0xa40c00000", "0x400000"],
-    ["0xf4000000","0x1000000"],
-    ["0xf3000000","0x1000000"],
-]
+    [0xfeb50000, 0x1000], # uart8250 UART0
+    [0xfe600000, 0x10000], # gic-v3 gicd
+    [0xfe680000, 0x100000], # gic-v3 gicr
+    [0xa41000000, 0x400000],
+    [0xa40c00000, 0x400000],
+    [0xf4000000,0x1000000],
+    [0xf3000000,0x1000000],
+] # [(uint, uint)]
 # VirtIO MMIO regions with format (`base_paddr`, `size`).
-virtio-mmio-regions = []
+virtio-mmio-regions = []  # [(uint, uint)]
 
 # Base physical address of the PCIe ECAM space.
-pci-ecam-base = "0xf4000000"
+pci-ecam-base = 0xf4000000  # uint
 # End PCI bus number (`bus-range` property in device tree).
-pci-bus-end = "0xff"
+pci-bus-end = 0xff # uint
 # PCI device memory ranges (`ranges` property in device tree).
-pci-ranges = []
+pci-ranges = [] # [(uint, uint)]
 # UART Address
-uart-paddr = "0xfeb5_0000"
-uart-irq = "0x14d"
+uart-paddr = 0xfeb5_0000 # uint
+uart-irq = 0x14d # uint
 
 # GICC Address
-gicd-paddr = "0xfe600000"
+gicd-paddr = 0xfe600000 # uint
 # GICR Address
-gicc-paddr = "0xfe680000"
-gicr-paddr = "0xfe680000"
+gicc-paddr = 0xfe680000 # uint
+gicr-paddr = 0xfe680000 # uint
 
 # PSCI
-psci-method = "smc"
+psci-method = "smc" # str
 
 # pl031@9010000 {
 #     clock-names = "apb_pclk";
@@ -65,4 +75,4 @@ psci-method = "smc"
 #     compatible = "arm,pl031\0arm,primecell";
 # };
 # RTC (PL031) Address
-# rtc-paddr = "0x901_0000"
+rtc-paddr = 0x901_0000          # uint

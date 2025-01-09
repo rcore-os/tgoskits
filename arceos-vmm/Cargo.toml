@@ -1,8 +1,8 @@
 [package]
 name = "arceos-vmm"
 version = "0.1.0"
-edition = "2021"
-authors = ["Keyang Hu <976929993@qq.com>"]
+edition = "2024"
+authors = ["Keyang Hu <keyang.hu@qq.com>"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
@@ -12,13 +12,14 @@ fs = ["axstd/fs"]
 log = "=0.4.21"
 bitflags = "2.2"
 spin = "0.9"
+lazyinit = "0.2"
 
 # System dependent modules provided by ArceOS.
 axstd = { workspace = true, features = [
     "alloc",
     "paging",
     # "fs",
-    "irq", # It has to be disabed in riscv64. Todo: fix it.
+    "irq",
     "hv",
     "multitask",
     # "sched_rr"
@@ -33,9 +34,10 @@ axaddrspace = { workspace = true }
 crate_interface = "0.1"
 axerrno = "0.1.0"
 memory_addr = "0.3"
-page_table_entry = { version = "0.4.2", features = ["arm-el2"] }
-page_table_multiarch = "0.4.2"
+page_table_entry = { version = "0.5", features = ["arm-el2"] }
+page_table_multiarch = "0.5"
 percpu = { version = "0.1.4", features = ["arm-el2"] }
 
 [build-dependencies]
 toml = { git = "https://github.com/arceos-hypervisor/toml.git", branch = "no_std" }
+axconfig = { workspace = true }

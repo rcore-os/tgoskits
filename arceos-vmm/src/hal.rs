@@ -1,6 +1,6 @@
 use std::os::arceos;
 
-use memory_addr::{align_up_4k, PAGE_SIZE_4K};
+use memory_addr::{PAGE_SIZE_4K, align_up_4k};
 use page_table_multiarch::PagingHandler;
 
 use arceos::modules::{axalloc, axhal};
@@ -89,7 +89,7 @@ pub(crate) fn enable_virtualization() {
     use std::thread;
 
     use arceos::api::config;
-    use arceos::api::task::{ax_set_current_affinity, AxCpuMask};
+    use arceos::api::task::{AxCpuMask, ax_set_current_affinity};
     use arceos::modules::axhal::cpu::this_cpu_id;
 
     static CORES: AtomicUsize = AtomicUsize::new(0);

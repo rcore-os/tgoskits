@@ -19,7 +19,7 @@ const KERNEL_STACK_SIZE: usize = 0x40000; // 256 KiB
 /// A global static BTreeMap that holds the wait queues for vCPUs
 /// associated with their respective VMs, identified by their VM IDs.
 ///
-/// TODO: find a better data structure to replace the `static mut`.
+/// TODO: find a better data structure to replace the `static mut`, something like a contional variable.
 static mut VM_VCPU_TASK_WAIT_QUEUE: BTreeMap<usize, VMVcpus> = BTreeMap::new();
 
 /// A structure representing the vCPUs of a specific VM, including a wait queue

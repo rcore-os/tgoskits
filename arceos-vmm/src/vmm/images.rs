@@ -3,8 +3,8 @@ use axerrno::AxResult;
 
 use axvm::config::AxVMCrateConfig;
 
-use crate::vmm::config::config;
 use crate::vmm::VMRef;
+use crate::vmm::config::config;
 
 /// Loads the VM image files.
 pub fn load_vm_images(config: AxVMCrateConfig, vm: VMRef) -> AxResult {
@@ -92,7 +92,7 @@ mod fs {
 
     use std::fs::File;
 
-    use axerrno::{ax_err, ax_err_type, AxResult};
+    use axerrno::{AxResult, ax_err, ax_err_type};
 
     use super::*;
 

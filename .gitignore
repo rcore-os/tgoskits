@@ -9,3 +9,5 @@
 actual.out
 qemu.log
 rusty-tags.vi
+
+*/.axconfig.*

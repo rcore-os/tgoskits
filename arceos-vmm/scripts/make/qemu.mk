@@ -27,7 +27,7 @@ qemu_args-aarch64 := \
   -machine virt,virtualization=on,gic-version=2 \
   -kernel $(OUT_BIN)
 
-qemu_args-y := -m 8G -smp $(SMP) $(qemu_args-$(ARCH))
+qemu_args-y := -m $(MEM) -smp $(SMP) $(qemu_args-$(ARCH))
 
 qemu_args-$(BLK) += \
   -device virtio-blk-$(vdev-suffix),drive=disk0 \
