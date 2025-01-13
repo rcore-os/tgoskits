@@ -52,7 +52,6 @@
 //! ```
 
 #![no_std]
-#![feature(asm_const)]
 
 mod arch;
 
