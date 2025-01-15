@@ -116,6 +116,7 @@ dependencies = [
  "axvm",
  "bitflags 2.6.0",
  "crate_interface",
+ "kspin",
  "lazyinit",
  "log",
  "memory_addr",
@@ -123,6 +124,7 @@ dependencies = [
  "page_table_multiarch",
  "percpu",
  "spin",
+ "timer_list",
  "toml",
 ]
 
