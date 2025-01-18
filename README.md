@@ -7,6 +7,7 @@ Currently supported architectures:
 - x86_64
 - AArch64
 - RISC-V (Sv39, Sv48)
+- LoongArch64 (3 levels)
 
 See the documentation of the following crates for more details:
 

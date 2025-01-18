@@ -12,14 +12,16 @@ Currently supported architectures and page table entry types:
 - x86: [`x86_64::X64PTE`][1]
 - ARM: [`aarch64::A64PTE`][2]
 - RISC-V: [`riscv::Rv64PTE`][3]
+- LoongArch: [`LoongArch64::LA64PTE`][4]
 
-All these types implement the [`GenericPTE`][4] trait, which provides unified
+All these types implement the [`GenericPTE`][5] trait, which provides unified
 methods for manipulating various page table entries.
 
 [1]: https://docs.rs/page_table_entry/latest/page_table_entry/x86_64/struct.X64PTE.html
 [2]: https://docs.rs/page_table_entry/latest/page_table_entry/aarch64/struct.A64PTE.html
 [3]: https://docs.rs/page_table_entry/latest/page_table_entry/riscv/struct.Rv64PTE.html
-[4]: https://docs.rs/page_table_entry/latest/page_table_entry/trait.GenericPTE.html
+[4]: https://docs.rs/page_table_entry/latest/page_table_entry/loongarch64/struct.LA64PTE.html
+[5]: https://docs.rs/page_table_entry/latest/page_table_entry/trait.GenericPTE.html
 
 ## Examples (x86_64)
 
