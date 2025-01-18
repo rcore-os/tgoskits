@@ -17,6 +17,7 @@ Currently supported architectures and page table structures:
 - x86: [`x86_64::X64PageTable`][5]
 - ARM: [`aarch64::A64PageTable`][6]
 - RISC-V: [`riscv::Sv39PageTable`][7], [`riscv::Sv48PageTable`][8]
+- LoongArch64: [`loongarch64:LA64PageTable`][9]
 
 [1]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/struct.PageTable64.html
 [2]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/trait.PagingMetaData.html
@@ -26,6 +27,7 @@ Currently supported architectures and page table structures:
 [6]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/aarch64/type.A64PageTable.html
 [7]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/riscv/type.Sv39PageTable.html
 [8]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/riscv/type.Sv48PageTable.html
+[9]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/loongarch64/type.LA64PageTable.html
 
 ## Examples (x86_64)
 
