@@ -1,6 +1,5 @@
 #![cfg_attr(not(test), no_std)]
-#![feature(doc_auto_cfg)]
-#![feature(doc_cfg)]
+#![cfg_attr(doc, feature(doc_auto_cfg))]
 #![doc = include_str!("../README.md")]
 
 mod arch;

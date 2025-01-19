@@ -12,7 +12,7 @@ Currently supported architectures and page table entry types:
 - x86: [`x86_64::X64PTE`][1]
 - ARM: [`aarch64::A64PTE`][2]
 - RISC-V: [`riscv::Rv64PTE`][3]
-- LoongArch: [`LoongArch64::LA64PTE`][4]
+- LoongArch: [`loongarch64::LA64PTE`][4]
 
 All these types implement the [`GenericPTE`][5] trait, which provides unified
 methods for manipulating various page table entries.

@@ -1,26 +1,27 @@
 [package]
 name = "page_table_multiarch"
-edition = "2024"
 description = "Generic page table structures for various hardware architectures"
 documentation = "https://docs.rs/page_table_multiarch"
 version.workspace = true
+edition.workspace = true
 authors.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 log = "0.4"
 memory_addr = "0.3"
-page_table_entry = { path = "../page_table_entry", version = "0.5.0" }
+page_table_entry = { path = "../page_table_entry", version = "0.5.1" }
 
 [target.'cfg(any(target_arch = "x86_64", doc))'.dependencies]
 x86 = "0.52"
 
 [target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64", doc))'.dependencies]
-riscv = "0.11"
+riscv = { version = "0.12", default-features = false }
 
 [package.metadata.docs.rs]
 rustc-args = [ "--cfg" , "doc"]

@@ -1,6 +1,5 @@
 #![cfg_attr(not(test), no_std)]
-#![feature(const_trait_impl)]
-#![feature(doc_auto_cfg)]
+#![cfg_attr(doc, feature(doc_auto_cfg))]
 #![doc = include_str!("../README.md")]
 
 #[macro_use]

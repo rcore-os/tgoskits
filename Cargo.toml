@@ -7,7 +7,8 @@ members = [
 ]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.5.1"
+edition = "2024"
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
 homepage = "https://github.com/arceos-org/arceos"
@@ -15,3 +16,4 @@ documentation = "https://arceos-org.github.io/page_table_multiarch"
 repository = "https://github.com/arceos-org/page_table_multiarch"
 keywords = ["arceos", "paging", "page-table", "virtual-memory"]
 categories = ["os", "hardware-support", "memory-management", "no-std"]
+rust-version = "1.85"

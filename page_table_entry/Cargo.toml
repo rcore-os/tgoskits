@@ -1,15 +1,16 @@
 [package]
 name = "page_table_entry"
-edition = "2024"
 description = "Page table entry definition for various hardware architectures"
 documentation = "https://docs.rs/page_table_entry"
 version.workspace = true
+edition.workspace = true
 authors.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
+rust-version.workspace = true
 
 [features]
 arm-el2 = []
@@ -19,7 +20,7 @@ bitflags = "2.6"
 memory_addr = "0.3"
 
 [target.'cfg(any(target_arch = "aarch64", doc))'.dependencies]
-aarch64-cpu = "9.4"
+aarch64-cpu = "10.0"
 
 [target.'cfg(any(target_arch = "x86_64", doc))'.dependencies]
 x86_64 = "0.15.2"

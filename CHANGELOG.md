@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.1
+
+### LoongArch64
+
+- Add LoongArch64 support (https://github.com/arceos-org/page_table_multiarch/pull/11).
+
+## 0.5.0
+
+### Breaking Changes
+
+- Upgrade to Rust edition 2024, which requires Rust v1.85 or later.
+
+## 0.4.2
+
+- Fix [x86_64](https://crates.io/crates/x86_64) dependency version as v0.15.1.
+
+## 0.4.1
+
+### RISC-V
+
+- Add trait `SvVirtAddr` for custom virtual address types.
+
 ## 0.4.0
 
 ### Breaking Changes
