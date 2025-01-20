@@ -192,7 +192,7 @@ impl<G: BaseGuard, T: ?Sized + fmt::Debug> fmt::Debug for BaseSpinLock<G, T> {
     }
 }
 
-impl<'a, G: BaseGuard, T: ?Sized> Deref for BaseSpinLockGuard<'a, G, T> {
+impl<G: BaseGuard, T: ?Sized> Deref for BaseSpinLockGuard<'_, G, T> {
     type Target = T;
     #[inline(always)]
     fn deref(&self) -> &T {
@@ -201,7 +201,7 @@ impl<'a, G: BaseGuard, T: ?Sized> Deref for BaseSpinLockGuard<'a, G, T> {
     }
 }
 
-impl<'a, G: BaseGuard, T: ?Sized> DerefMut for BaseSpinLockGuard<'a, G, T> {
+impl<G: BaseGuard, T: ?Sized> DerefMut for BaseSpinLockGuard<'_, G, T> {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut T {
         // We know statically that only we are referencing data
@@ -209,13 +209,13 @@ impl<'a, G: BaseGuard, T: ?Sized> DerefMut for BaseSpinLockGuard<'a, G, T> {
     }
 }
 
-impl<'a, G: BaseGuard, T: ?Sized + fmt::Debug> fmt::Debug for BaseSpinLockGuard<'a, G, T> {
+impl<G: BaseGuard, T: ?Sized + fmt::Debug> fmt::Debug for BaseSpinLockGuard<'_, G, T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Debug::fmt(&**self, f)
     }
 }
 
-impl<'a, G: BaseGuard, T: ?Sized> Drop for BaseSpinLockGuard<'a, G, T> {
+impl<G: BaseGuard, T: ?Sized> Drop for BaseSpinLockGuard<'_, G, T> {
     /// The dropping of the [`BaseSpinLockGuard`] will release the lock it was
     /// created from.
     #[inline(always)]
