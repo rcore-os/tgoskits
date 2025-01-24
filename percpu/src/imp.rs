@@ -77,6 +77,10 @@ pub fn get_local_thread_pointer() -> usize {
                 core::arch::asm!("mrs {}, TPIDR_EL1", out(reg) tp)
             } else if #[cfg(all(target_arch = "aarch64", feature = "arm-el2"))] {
                 core::arch::asm!("mrs {}, TPIDR_EL2", out(reg) tp)
+            } else if #[cfg(target_arch = "loongarch64")] {
+                // Register Convention
+                // https://docs.kernel.org/arch/loongarch/introduction.html#gprs
+                core::arch::asm!("move {}, $r21", out(reg) tp)
             }
         }
     }
@@ -113,6 +117,8 @@ pub fn set_local_thread_pointer(cpu_id: usize) {
                 core::arch::asm!("msr TPIDR_EL1, {}", in(reg) tp)
             } else if #[cfg(all(target_arch = "aarch64", feature = "arm-el2"))] {
                 core::arch::asm!("msr TPIDR_EL2, {}", in(reg) tp)
+            } else if #[cfg(target_arch = "loongarch64")] {
+                core::arch::asm!("move $r21, {}", in(reg) tp)
             }
         }
     }
