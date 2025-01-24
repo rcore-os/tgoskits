@@ -16,6 +16,15 @@ When accessing the per-CPU data on the current CPU, it first use the thread
 pointer register to obtain the corresponding per-CPU data area, and then add
 an offset to access the corresponding field.
 
+## Thread Pointer Register Used
+
+| Architecture | Register        | per-CPU Data Addr |
+| ---          | ---             | ---               |
+| riscv        | gp              | gp + offset       |
+| aarch64      | tpidr           | tpidr + offset    |
+| x86_64       | gs              | gs:offset         |
+| loongarch64  | $r21            | $r21 + offset     |
+
 ## Examples
 
 ```rust,no_run
