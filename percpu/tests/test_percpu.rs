@@ -40,7 +40,7 @@ fn test_percpu() {
 
     #[cfg(not(feature = "sp-naive"))]
     let base = {
-        init(4);
+        assert_eq!(init(), 4);
         unsafe { write_percpu_reg(percpu_area_base(0)) };
 
         let base = read_percpu_reg();

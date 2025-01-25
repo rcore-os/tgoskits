@@ -7,6 +7,13 @@ pub fn percpu_area_size() -> usize {
     0
 }
 
+/// Returns the number of per-CPU data areas reserved.
+///
+/// Always returns `1` for "sp-naive" use.
+pub fn percpu_area_num() -> usize {
+    1
+}
+
 /// Returns the base address of the per-CPU data area on the given CPU.
 ///
 /// Always returns `0` for "sp-naive" use.
@@ -36,7 +43,11 @@ pub unsafe fn write_percpu_reg(_tp: usize) {}
 /// No effect for "sp-naive" use.
 pub fn init_percpu_reg(_cpu_id: usize) {}
 
-/// Initialize the per-CPU data area for `max_cpu_num` CPUs.
+/// Initialize all per-CPU data areas.
 ///
-/// No effect for "sp-naive" use.
-pub fn init(_max_cpu_num: usize) {}
+/// Returns the number of areas initialized.
+///
+/// For "sp-naive" use it does nothing and returns `1`.
+pub fn init() -> usize {
+    1
+}
