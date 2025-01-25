@@ -22,12 +22,14 @@ jobs:
     - name: Check code format
       run: cargo fmt --all -- --check
     - name: Clippy
-      run: cargo clippy --target ${{ matrix.targets }} --all-features -- -A clippy::new_without_default
+      run: cargo clippy --target ${{ matrix.targets }} --features "preempt,arm-el2"
     - name: Build
-      run: cargo build --target ${{ matrix.targets }} --all-features
+      run: cargo build --target ${{ matrix.targets }} --features "preempt,arm-el2"
     - name: Unit test
       if: ${{ matrix.targets == 'x86_64-unknown-linux-gnu' }}
-      run: cargo test --target ${{ matrix.targets }} -- --nocapture
+      run: |
+        cargo test --target ${{ matrix.targets }} --features "sp-naive" -- --nocapture
+        cargo test --target ${{ matrix.targets }} -- --nocapture
 
   doc:
     runs-on: ubuntu-latest

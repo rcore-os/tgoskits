@@ -70,8 +70,10 @@ pub fn init(max_cpu_num: usize) {
     }
 }
 
-/// Read the architecture-specific thread pointer register on the current CPU.
-pub fn get_local_thread_pointer() -> usize {
+/// Reads the architecture-specific per-CPU data register.
+///
+/// This register is used to hold the per-CPU data base on each CPU.
+pub fn read_percpu_reg() -> usize {
     let tp;
     unsafe {
         cfg_if::cfg_if! {
@@ -99,12 +101,14 @@ pub fn get_local_thread_pointer() -> usize {
     tp
 }
 
-/// Set the architecture-specific thread pointer register to the per-CPU data
-/// area base on the current CPU.
+/// Writes the architecture-specific per-CPU data register.
 ///
-/// `cpu_id` indicates which per-CPU data area to use.
-pub fn set_local_thread_pointer(cpu_id: usize) {
-    let tp = percpu_area_base(cpu_id);
+/// This register is used to hold the per-CPU data base on each CPU.
+///
+/// # Safety
+///
+/// This function is unsafe because it writes the low-level register directly.
+pub unsafe fn write_percpu_reg(tp: usize) {
     unsafe {
         cfg_if::cfg_if! {
             if #[cfg(target_arch = "x86_64")] {
@@ -134,6 +138,18 @@ pub fn set_local_thread_pointer(cpu_id: usize) {
             }
         }
     }
+}
+
+/// Initializes the per-CPU data register.
+///
+/// It is equivalent to `write_percpu_reg(percpu_area_base(cpu_id))`, which set
+/// the architecture-specific per-CPU data register to the base address of the
+/// corresponding per-CPU data area.
+///
+/// `cpu_id` indicates which per-CPU data area to use.
+pub fn init_percpu_reg(cpu_id: usize) {
+    let tp = percpu_area_base(cpu_id);
+    unsafe { write_percpu_reg(tp) }
 }
 
 /// To use `percpu::__priv::NoPreemptGuard::new()` and `percpu::percpu_area_base()` in macro expansion.

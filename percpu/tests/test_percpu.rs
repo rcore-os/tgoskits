@@ -41,9 +41,9 @@ fn test_percpu() {
     #[cfg(not(feature = "sp-naive"))]
     let base = {
         init(4);
-        set_local_thread_pointer(0);
+        unsafe { write_percpu_reg(percpu_area_base(0)) };
 
-        let base = get_local_thread_pointer();
+        let base = read_percpu_reg();
         println!("per-CPU area base = {:#x}", base);
         println!("per-CPU area size = {}", percpu_area_size());
         base
@@ -100,6 +100,12 @@ fn test_percpu() {
         assert_eq!(s.bar, 100);
     });
 
+    #[cfg(not(feature = "sp-naive"))]
+    test_remote_access();
+}
+
+#[cfg(all(target_os = "linux", not(feature = "sp-naive")))]
+fn test_remote_access() {
     // test remote write
     unsafe {
         *BOOL.remote_ref_mut_raw(1) = false;
@@ -130,8 +136,9 @@ fn test_percpu() {
     }
 
     // test read on another CPU
-    set_local_thread_pointer(1); // we are now on CPU 1
+    unsafe { write_percpu_reg(percpu_area_base(1)) }; // we are now on CPU 1
 
+    println!();
     println!("bool value on CPU 1: {}", BOOL.read_current());
     println!("u8 value on CPU 1: {}", U8.read_current());
     println!("u16 value on CPU 1: {:#x}", U16.read_current());
