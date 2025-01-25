@@ -20,27 +20,27 @@ pub fn gen_offset(symbol: &Ident) -> proc_macro2::TokenStream {
             let value: usize;
             #[cfg(target_arch = "x86_64")]
             ::core::arch::asm!(
-                "movabs {0}, offset {VAR}",
+                "mov {0:e}, offset {VAR}", // Requires offset <= 0xffff_ffff
                 out(reg) value,
                 VAR = sym #symbol,
             );
             #[cfg(target_arch = "aarch64")]
             ::core::arch::asm!(
-                "movz {0}, #:abs_g0_nc:{VAR}",
+                "movz {0}, #:abs_g0_nc:{VAR}", // Requires offset <= 0xffff
                 out(reg) value,
                 VAR = sym #symbol,
             );
             #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
             ::core::arch::asm!(
                 "lui {0}, %hi({VAR})",
-                "addi {0}, {0}, %lo({VAR})",
+                "addi {0}, {0}, %lo({VAR})", // Requires offset <= 0xffff_ffff
                 out(reg) value,
                 VAR = sym #symbol,
             );
             #[cfg(any(target_arch = "loongarch64"))]
             ::core::arch::asm!(
                 "lu12i.w {0}, %abs_hi20({VAR})",
-                "ori {0}, {0}, %abs_lo12({VAR})",
+                "ori {0}, {0}, %abs_lo12({VAR})", // Requires offset <= 0xffff_ffff
                 out(reg) value,
                 VAR = sym #symbol,
             );
@@ -94,12 +94,10 @@ pub fn gen_current_ptr(symbol: &Ident, ty: &Type) -> proc_macro2::TokenStream {
 pub fn gen_read_current_raw(symbol: &Ident, ty: &Type) -> proc_macro2::TokenStream {
     let ty_str = quote!(#ty).to_string();
     let rv64_op = match ty_str.as_str() {
-        "bool" => "lbu",
-        "u8" => "lbu",
+        "u8" | "bool" => "lbu",
         "u16" => "lhu",
         "u32" => "lwu",
-        "u64" => "ld",
-        "usize" => "ld",
+        "u64" | "usize" => "ld",
         _ => unreachable!(),
     };
     let rv64_asm = quote! {
@@ -114,12 +112,10 @@ pub fn gen_read_current_raw(symbol: &Ident, ty: &Type) -> proc_macro2::TokenStre
 
     // https://loongson.github.io/LoongArch-Documentation/LoongArch-Vol1-EN.html#_ldx_buhuwud_stx_bhwd
     let la64_op = match ty_str.as_str() {
-        "bool" => "ldx.bu",
-        "u8" => "ldx.bu",
+        "u8" | "bool" => "ldx.bu",
         "u16" => "ldx.hu",
         "u32" => "ldx.wu",
-        "u64" => "ldx.d",
-        "usize" => "ldx.d",
+        "u64" | "usize" => "ldx.d",
         _ => unreachable!(),
     };
     let la64_asm = quote! {
@@ -141,8 +137,7 @@ pub fn gen_read_current_raw(symbol: &Ident, ty: &Type) -> proc_macro2::TokenStre
         let (x64_mod, x64_ptr) = match ty_str.as_str() {
             "u16" => ("x", "word"),
             "u32" => ("e", "dword"),
-            "u64" => ("r", "qword"),
-            "usize" => ("r", "qword"),
+            "u64" | "usize" => ("r", "qword"),
             _ => unreachable!(),
         };
         (
@@ -198,12 +193,10 @@ pub fn gen_write_current_raw(symbol: &Ident, val: &Ident, ty: &Type) -> proc_mac
     };
 
     let rv64_op = match ty_str.as_str() {
-        "bool" => "sb",
-        "u8" => "sb",
+        "u8" | "bool" => "sb",
         "u16" => "sh",
         "u32" => "sw",
-        "u64" => "sd",
-        "usize" => "sd",
+        "u64" | "usize" => "sd",
         _ => unreachable!(),
     };
     let rv64_code = quote! {
@@ -219,12 +212,10 @@ pub fn gen_write_current_raw(symbol: &Ident, val: &Ident, ty: &Type) -> proc_mac
 
     // https://loongson.github.io/LoongArch-Documentation/LoongArch-Vol1-EN.html#common-memory-access-instructions
     let la64_op = match ty_str.as_str() {
-        "bool" => "stx.b",
-        "u8" => "stx.b",
+        "u8" | "bool" => "stx.b",
         "u16" => "stx.h",
         "u32" => "stx.w",
-        "u64" => "stx.d",
-        "usize" => "stx.d",
+        "u64" | "usize" => "stx.d",
         _ => unreachable!(),
     };
     let la64_code = quote! {
@@ -247,8 +238,7 @@ pub fn gen_write_current_raw(symbol: &Ident, val: &Ident, ty: &Type) -> proc_mac
         let (x64_mod, x64_ptr) = match ty_str.as_str() {
             "u16" => ("x", "word"),
             "u32" => ("e", "dword"),
-            "u64" => ("r", "qword"),
-            "usize" => ("r", "qword"),
+            "u64" | "usize" => ("r", "qword"),
             _ => unreachable!(),
         };
         (
