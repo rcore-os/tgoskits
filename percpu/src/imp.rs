@@ -7,7 +7,6 @@ const fn align_up_64(val: usize) -> usize {
 static PERCPU_AREA_BASE: spin::once::Once<usize> = spin::once::Once::new();
 
 /// Returns the per-CPU data area size for one CPU.
-#[doc(cfg(not(feature = "sp-naive")))]
 pub fn percpu_area_size() -> usize {
     extern "C" {
         fn _percpu_load_start();
@@ -21,7 +20,6 @@ pub fn percpu_area_size() -> usize {
 /// Returns the base address of the per-CPU data area on the given CPU.
 ///
 /// if `cpu_id` is 0, it returns the base address of all per-CPU data areas.
-#[doc(cfg(not(feature = "sp-naive")))]
 pub fn percpu_area_base(cpu_id: usize) -> usize {
     cfg_if::cfg_if! {
         if #[cfg(target_os = "none")] {

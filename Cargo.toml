@@ -8,10 +8,17 @@ members = [
 
 [workspace.package]
 version = "0.1.7"
-authors = ["Yuekai Jia <equation618@gmail.com>"]
+edition = "2021"
+authors = [
+    "Yuekai Jia <equation618@gmail.com>",
+    "hky1999 <976929993@qq.com>",
+    "Su Mingxian <aarkegz@gmail.com>",
+    "yufeng <321353225@qq.com>",
+]
 license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
 homepage = "https://github.com/arceos-org/arceos"
 documentation = "https://arceos-org.github.io/percpu"
 repository = "https://github.com/arceos-org/percpu"
 keywords = ["arceos", "percpu"]
 categories = ["development-tools::procedural-macro-helpers", "no-std"]
+rust-version = "1.66"

@@ -8,22 +8,32 @@ Define and access per-CPU data structures.
 
 All per-CPU data is placed into several contiguous memory regions called
 **per-CPU data areas**, the number of which is the number of CPUs. Each CPU
-has its own per-CPU data area. The architecture-specific thread pointer
-register (e.g., `GS_BASE` on x86_64) is set to the base address of the area
-on initialization.
+has its own per-CPU data area. The architecture-specific per-CPU register
+(e.g., `GS_BASE` on x86_64) is set to the base address of the area on
+initialization.
 
-When accessing the per-CPU data on the current CPU, it first use the thread
-pointer register to obtain the corresponding per-CPU data area, and then add
-an offset to access the corresponding field.
+When accessing the per-CPU data on the current CPU, it first use the per-CPU
+register to obtain the corresponding per-CPU data area, and then add an offset
+to access the corresponding field.
 
-## Thread Pointer Register Used
+## Supported Architectures
 
-| Architecture | Register        | per-CPU Data Addr |
-| ---          | ---             | ---               |
-| riscv        | gp              | gp + offset       |
-| aarch64      | tpidr           | tpidr + offset    |
-| x86_64       | gs              | gs:offset         |
-| loongarch64  | $r21            | $r21 + offset     |
+| Architecture | per-CPU Register Used  |
+| ---          | ---                    |
+| RISC-V       | `gp`                   |
+| AArch64      | `TPIDR_ELx`            |
+| x86_64       | `GS_BASE`              |
+| LoongArch    | `$r21`                 |
+
+> Notes for RISC-V:
+> Since RISC-V does not provide separate thread pointer registers for user and
+> kernel mode, we temporarily use the `gp` register to point to the per-CPU data
+> area, while the `tp` register is used for thread-local storage.
+
+
+> Notes for AArch64:
+> When feature `arm-el2` is enabled, `TPIDR_EL2` is used. Otherwise, `TPIDR_EL1`
+> is used.
 
 ## Examples
 
@@ -59,17 +69,11 @@ _percpu_start = .;
 ## Cargo Features
 
 - `sp-naive`: For **single-core** use. In this case, each per-CPU data is
-just a global variable, architecture-specific thread pointer register is
-not used.
+  just a global variable, architecture-specific thread pointer register is
+  not used.
 - `preempt`: For **preemptible** system use. In this case, we need to disable
-preemption when accessing per-CPU data. Otherwise, the data may be corrupted
-when it's being accessing and the current thread happens to be preempted.
+  preemption when accessing per-CPU data. Otherwise, the data may be corrupted
+  when it's being accessing and the current thread happens to be preempted.
 - `arm-el2`: For **ARM system** running at **EL2** use (e.g. hypervisors).
-In this case, we use `TPIDR_EL2` instead of `TPIDR_EL1`
-to store the base address of per-CPU data area.
-
-## Note for RISC-V
-
-Since RISC-V does not provide separate thread pointer registers for user and
-kernel mode, we temporarily use the `gp` register to point to the per-CPU data
-area, while the `tp` register is used for thread-local storage.
+  In this case, we use `TPIDR_EL2` instead of `TPIDR_EL1`
+  to store the base address of per-CPU data area.

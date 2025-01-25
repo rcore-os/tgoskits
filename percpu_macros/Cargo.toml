@@ -1,24 +1,25 @@
 [package]
 name = "percpu_macros"
-edition = "2021"
 description = "Macros to define and access a per-CPU data structure"
 documentation = "https://docs.rs/percpu_macros"
 version.workspace = true
+edition.workspace = true
 authors.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
+rust-version.workspace = true
 
 [features]
+default = []
+
 # For single CPU use, just make the per-CPU data a global variable.
 sp-naive = []
 
 # Whether the system enables preemption.
 preempt = []
-
-default = []
 
 # ARM specific, whether to run at the EL2 privilege level.
 arm-el2 = []

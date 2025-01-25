@@ -47,11 +47,9 @@
 //!   are generated to accelerate the access.
 //!
 //! - A static variable `X` of type `X_WRAPPER` that is used to access the per-CPU data.
-//!   
+//!
 //!   This variable is always generated with the same visibility and attributes as the original static variable.
 //!
-
-#![feature(doc_cfg)]
 
 use proc_macro::TokenStream;
 use proc_macro2::Span;

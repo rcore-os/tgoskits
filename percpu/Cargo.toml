@@ -1,24 +1,25 @@
 [package]
 name = "percpu"
-edition = "2021"
 description = "Define and access per-CPU data structures"
 documentation = "https://docs.rs/percpu"
 version.workspace = true
+edition.workspace = true
 authors.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
+rust-version.workspace = true
 
 [features]
+default = []
+
 # For single CPU use, just make the per-CPU data a global variable.
 sp-naive = ["percpu_macros/sp-naive"]
 
 # Whether the system enables preemption.
 preempt = ["percpu_macros/preempt", "dep:kernel_guard"]
-
-default = []
 
 # ARM specific, whether to run at the EL2 privilege level.
 arm-el2 = ["percpu_macros/arm-el2"]
@@ -26,7 +27,7 @@ arm-el2 = ["percpu_macros/arm-el2"]
 [dependencies]
 cfg-if = "1.0"
 kernel_guard = { version = "0.1", optional = true }
-percpu_macros = { path = "../percpu_macros", version = "0.1" }
+percpu_macros = { path = "../percpu_macros", version = "0.1.7" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"
