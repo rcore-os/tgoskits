@@ -1,3 +1,7 @@
+use core::sync::atomic::{AtomicBool, Ordering};
+
+static IS_INIT: AtomicBool = AtomicBool::new(false);
+
 const fn align_up_64(val: usize) -> usize {
     const SIZE_64BIT: usize = 0x40;
     (val + SIZE_64BIT - 1) & !(SIZE_64BIT - 1)
@@ -6,12 +10,15 @@ const fn align_up_64(val: usize) -> usize {
 #[cfg(not(target_os = "none"))]
 static PERCPU_AREA_BASE: spin::once::Once<usize> = spin::once::Once::new();
 
+extern "C" {
+    fn _percpu_start();
+    fn _percpu_end();
+    fn _percpu_load_start();
+    fn _percpu_load_end();
+}
+
 /// Returns the per-CPU data area size for one CPU.
 pub fn percpu_area_size() -> usize {
-    extern "C" {
-        fn _percpu_load_start();
-        fn _percpu_load_end();
-    }
     // It seems that `_percpu_load_start as usize - _percpu_load_end as usize` will result in more instructions.
     use percpu_macros::percpu_symbol_offset;
     percpu_symbol_offset!(_percpu_load_end) - percpu_symbol_offset!(_percpu_load_start)
@@ -23,9 +30,6 @@ pub fn percpu_area_size() -> usize {
 pub fn percpu_area_base(cpu_id: usize) -> usize {
     cfg_if::cfg_if! {
         if #[cfg(target_os = "none")] {
-            extern "C" {
-                fn _percpu_start();
-            }
             let base = _percpu_start as usize;
         } else {
             let base = *PERCPU_AREA_BASE.get().unwrap();
@@ -36,6 +40,14 @@ pub fn percpu_area_base(cpu_id: usize) -> usize {
 
 /// Initialize the per-CPU data area for `max_cpu_num` CPUs.
 pub fn init(max_cpu_num: usize) {
+    // avoid re-initialization.
+    if IS_INIT
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+
     let size = percpu_area_size();
 
     #[cfg(target_os = "linux")]
@@ -49,6 +61,8 @@ pub fn init(max_cpu_num: usize) {
     let base = percpu_area_base(0);
     for i in 1..max_cpu_num {
         let secondary_base = percpu_area_base(i);
+        #[cfg(target_os = "none")]
+        assert!(secondary_base + size <= _percpu_end as usize);
         // copy per-cpu data of the primary CPU to other CPUs.
         unsafe {
             core::ptr::copy_nonoverlapping(base as *const u8, secondary_base as *mut u8, size);
