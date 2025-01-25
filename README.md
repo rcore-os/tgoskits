@@ -30,7 +30,6 @@ to access the corresponding field.
 > kernel mode, we temporarily use the `gp` register to point to the per-CPU data
 > area, while the `tp` register is used for thread-local storage.
 
-
 > Notes for AArch64:
 > When feature `arm-el2` is enabled, `TPIDR_EL2` is used. Otherwise, `TPIDR_EL1`
 > is used.
