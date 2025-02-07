@@ -17,6 +17,8 @@ jobs:
         rust-toolchain: [nightly-2024-12-25, nightly]
     steps:
     - uses: actions/checkout@v4
+    - name: Compress source code
+      run: tar -czf ~/source.tar.gz -C ${{ github.workspace }} .
     - uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: ${{ matrix.rust-toolchain }}
@@ -24,6 +26,7 @@ jobs:
     - uses: Swatinem/rust-cache@v2
     - run: cargo install cargo-binutils
     - uses: ./.github/workflows/actions/setup-qemu
+      if: matrix.arch != 'x86_64'
       with:
         qemu-version: ${{ env.qemu-version }}
     - uses: ./.github/workflows/actions/setup-nimbos-guest-image
@@ -37,6 +40,7 @@ jobs:
         sudo udevadm control --reload-rules
         sudo udevadm trigger --name-match=kvm
     - name: Run guests
+      if: matrix.arch != 'x86_64'
       run: |
         cat /proc/cpuinfo
         if [ "${{ matrix.arch }}" = "x86_64" ]; then
@@ -46,4 +50,34 @@ jobs:
         fi
         export DISK_IMG="${{ github.workspace }}/disk-${{ matrix.arch }}.img"
         export VM_CONFIGS="$(pwd)/arceos-vmm/configs/vms/nimbos-${{ matrix.arch }}.toml"
-        make -C arceos-vmm ARCH=${{ matrix.arch }} DISK_IMG=${DISK_IMG} LOG=info BLK=y ACCEL=${ACCEL} VM_CONFIGS=${VM_CONFIGS} run
+        make -C arceos-vmm ARCH=${{ matrix.arch }} defconfig
+        make -C arceos-vmm ARCH=${{ matrix.arch }} DISK_IMG=${DISK_IMG} LOG=info BLK=y ACCEL=${ACCEL} VM_CONFIGS=${VM_CONFIGS} APP_FEATURES=fs run
+    - name: Copy files to current directory
+      if: matrix.arch == 'x86_64'
+      run: |
+        cp ~/source.tar.gz .
+    - name: Copy x86_64 files to remote runner
+      uses: appleboy/scp-action@v0.1.7
+      if: matrix.arch == 'x86_64'
+      with:
+        host: ${{ secrets.HOST }}
+        username: ${{ secrets.USERNAME }}
+        password: ${{ secrets.PASSWORD }}
+        port: ${{ secrets.PORT }}
+        source: './disk-x86_64.img,./source.tar.gz'
+        target: '~/runner/${{ github.run_id }}-${{ matrix.arch }}-${{ matrix.rust-toolchain }}'
+    - name: Running on remote runner
+      uses: appleboy/ssh-action@v1.1.0
+      if: matrix.arch == 'x86_64'
+      with:
+        host: ${{ secrets.HOST }}
+        username: ${{ secrets.USERNAME }}
+        password: ${{ secrets.PASSWORD }}
+        port: ${{ secrets.PORT }}
+        script: |
+          set -e
+          cd ~/runner/${{ github.run_id }}-${{ matrix.arch }}-${{ matrix.rust-toolchain }} && tar -xzf source.tar.gz
+          cd ~/runner/${{ github.run_id }}-${{ matrix.arch }}-${{ matrix.rust-toolchain }} && make -C arceos-vmm ARCH=x86_64 defconfig
+          cd ~/runner/${{ github.run_id }}-${{ matrix.arch }}-${{ matrix.rust-toolchain }} && make -C arceos-vmm ARCH=x86_64 DISK_IMG=$(pwd)/disk-x86_64.img LOG=info BLK=y ACCEL=y VM_CONFIGS=$(pwd)/arceos-vmm/configs/vms/nimbos-x86_64.toml APP_FEATURES=fs run
+          cd ~ && rm -rf ~/runner/${{ github.run_id }}-${{ matrix.arch }}-${{ matrix.rust-toolchain }}
+
