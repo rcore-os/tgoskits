@@ -1,8 +1,6 @@
 #![no_std]
 #![feature(linkage)]
-#![feature(asm_const)]
 #![feature(naked_functions)]
-#![feature(panic_info_message)]
 
 #[macro_use]
 pub mod console;
@@ -14,14 +12,14 @@ mod time;
 
 pub use time::*;
 
-#[no_mangle]
-#[link_section = ".text.entry"]
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".text.entry")]
 pub extern "C" fn _start() -> ! {
     exit(main());
 }
 
 #[linkage = "weak"]
-#[no_mangle]
+#[unsafe(no_mangle)]
 fn main() -> i32 {
     panic!("Cannot find main!");
 }

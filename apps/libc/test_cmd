@@ -1,1 +1,1 @@
-test_one "LOG=off FEATURES=fp_simd" "expect_off.out"
+test_one "LOG=off FEATURES=fp_simd BLK=y NET=y" "expect_off.out"

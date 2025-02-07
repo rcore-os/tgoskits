@@ -1,5 +1,5 @@
 ARCH ?= x86_64
-MODE ?= release
+MODE ?= debug
 
 ifeq ($(ARCH), x86_64)
   target := x86_64-unknown-none

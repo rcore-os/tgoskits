@@ -8,7 +8,7 @@ use user_lib::{exit, fork, get_time_us, getpid, usleep, wait};
 
 static NUM: usize = 30;
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn main() -> i32 {
     for _ in 0..NUM {
         let pid = fork();

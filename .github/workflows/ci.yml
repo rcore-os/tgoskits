@@ -9,7 +9,7 @@ jobs:
       fail-fast: false
       matrix:
         rust-toolchain: [nightly]
-        targets: [x86_64-unknown-none, riscv64gc-unknown-none-elf, aarch64-unknown-none-softfloat]
+        targets: [x86_64-unknown-none, riscv64gc-unknown-none-elf, aarch64-unknown-none]
     steps:
     - uses: actions/checkout@v4
     - uses: dtolnay/rust-toolchain@stable
@@ -26,7 +26,7 @@ jobs:
       run: cargo fmt --all -- --check
     - name: Clippy
       continue-on-error: ${{ matrix.rust-toolchain == 'nightly' }}
-      run: cargo clippy --target ${{ matrix.targets }} --all-features -- -D warnings -A clippy::new_without_default
+      run: make clippy TARGET=${{ matrix.targets }}
 
   build:
     runs-on: ${{ matrix.os }}

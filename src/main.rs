@@ -7,7 +7,6 @@ extern crate log;
 extern crate alloc;
 extern crate axstd;
 
-mod config;
 mod loader;
 mod mm;
 mod syscall_imp;
@@ -17,7 +16,7 @@ use alloc::sync::Arc;
 use axhal::arch::UspaceContext;
 use axsync::Mutex;
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 fn main() {
     loader::list_apps();
     let testcases = option_env!("AX_TESTCASES_LIST")

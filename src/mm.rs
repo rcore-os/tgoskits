@@ -4,13 +4,13 @@ use memory_addr::VirtAddr;
 
 use axhal::{
     paging::MappingFlags,
-    trap::{register_trap_handler, PAGE_FAULT},
+    trap::{PAGE_FAULT, register_trap_handler},
 };
 
 use axmm::AddrSpace;
 use axtask::TaskExtRef;
 
-use crate::{config, loader};
+use crate::loader;
 
 /// Load a user app.
 ///
@@ -20,8 +20,8 @@ use crate::{config, loader};
 /// - The third return value is the address space of the user app.
 pub fn load_user_app(app_name: &str) -> AxResult<(VirtAddr, VirtAddr, AddrSpace)> {
     let mut uspace = axmm::new_user_aspace(
-        VirtAddr::from_usize(config::USER_SPACE_BASE),
-        config::USER_SPACE_SIZE,
+        VirtAddr::from_usize(axconfig::plat::USER_SPACE_BASE),
+        axconfig::plat::USER_SPACE_SIZE,
     )?;
     let elf_info = loader::load_elf(app_name, uspace.base());
     for segement in elf_info.segments {
@@ -46,8 +46,8 @@ pub fn load_user_app(app_name: &str) -> AxResult<(VirtAddr, VirtAddr, AddrSpace)
     // `ustack_start` -> `ustack_pointer`: It is the stack space that users actually read and write.
     // `ustack_pointer` -> `ustack_end`: It is the space that contains the arguments, environment variables and auxv passed to the app.
     //  When the app starts running, the stack pointer points to `ustack_pointer`.
-    let ustack_end = VirtAddr::from_usize(config::USER_STACK_TOP);
-    let ustack_size = config::USER_STACK_SIZE;
+    let ustack_end = VirtAddr::from_usize(axconfig::plat::USER_STACK_TOP);
+    let ustack_size = axconfig::plat::USER_STACK_SIZE;
     let ustack_start = ustack_end - ustack_size;
     debug!(
         "Mapping user stack: {:#x?} -> {:#x?}",

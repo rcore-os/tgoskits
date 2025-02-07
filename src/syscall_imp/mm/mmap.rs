@@ -1,6 +1,6 @@
 use axerrno::LinuxError;
 use axhal::paging::MappingFlags;
-use axtask::{current, TaskExtRef};
+use axtask::{TaskExtRef, current};
 use memory_addr::{VirtAddr, VirtAddrRange};
 
 use crate::syscall_body;

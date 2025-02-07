@@ -5,7 +5,7 @@ mod time;
 use axerrno::LinuxError;
 use axhal::{
     arch::TrapFrame,
-    trap::{register_trap_handler, SYSCALL},
+    trap::{SYSCALL, register_trap_handler},
 };
 use fs::*;
 use mm::*;
@@ -52,6 +52,12 @@ fn handle_syscall(tf: &TrapFrame, syscall_num: usize) -> isize {
         Sysno::writev => sys_writev(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
         Sysno::sched_yield => sys_sched_yield() as isize,
         Sysno::nanosleep => sys_nanosleep(tf.arg0() as _, tf.arg1() as _) as _,
+        Sysno::clock_nanosleep => sys_clock_nanosleep(
+            tf.arg0() as _,
+            tf.arg1() as _,
+            tf.arg2() as _,
+            tf.arg3() as _,
+        ) as _,
         Sysno::getpid => sys_getpid() as isize,
         Sysno::exit => sys_exit(tf.arg0() as _),
         #[cfg(target_arch = "x86_64")]
@@ -59,6 +65,8 @@ fn handle_syscall(tf: &TrapFrame, syscall_num: usize) -> isize {
         Sysno::set_tid_address => sys_set_tid_address(tf.arg0() as _),
         Sysno::clock_gettime => sys_clock_gettime(tf.arg0() as _, tf.arg1() as _) as _,
         Sysno::exit_group => sys_exit_group(tf.arg0() as _),
+        // Sysno::getcwd => sys_getcwd(tf.arg0() as _, tf.arg1() as _) as _,
+        // Sysno::chdir => sys_chdir(tf.arg0() as _) as _,
         _ => {
             warn!("Unimplemented syscall: {}", syscall_num);
             axtask::exit(LinuxError::ENOSYS as _)

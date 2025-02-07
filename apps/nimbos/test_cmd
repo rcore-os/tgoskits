@@ -1,1 +1,1 @@
-test_one "LOG=off" "expect_off.out"
+test_one "LOG=off BLK=y NET=y" "expect_off.out"

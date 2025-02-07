@@ -1,6 +1,6 @@
 use arceos_posix_api::{self as api};
 
-use axtask::{current, TaskExtRef};
+use axtask::{TaskExtRef, current};
 use num_enum::TryFromPrimitive;
 
 use crate::syscall_body;
@@ -90,7 +90,7 @@ pub(crate) fn sys_arch_prctl(code: i32, addr: u64) -> isize {
                 }
                 Ok(0)
             }
-            _ => Err(LinuxError::ENOSYS),
+            _ => Err(LinuxError::EINVAL),
         }
     })
 }

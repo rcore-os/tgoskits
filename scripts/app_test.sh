@@ -3,7 +3,7 @@
 TIMEOUT=60s
 EXIT_STATUS=0
 ROOT=$(realpath $(dirname $0))/../
-
+AX_ROOT=$ROOT/.arceos
 S_PASS=0
 S_FAILED=1
 S_TIMEOUT=2
@@ -58,7 +58,7 @@ function run_and_compare() {
     fi
 
     TIMEFORMAT='%3Rs'
-    RUN_TIME=$( { time { timeout --foreground $TIMEOUT make -C "$ROOT" $args justrun > "$actual" 2>&1; }; } 2>&1 )
+    RUN_TIME=$( { time { timeout --foreground $TIMEOUT make -C "$ROOT" AX_TESTCASE=$APP $args justrun > "$actual" 2>&1; }; } 2>&1 )
     local res=$?
     if [ $res == 124 ]; then
         return $S_TIMEOUT
@@ -79,7 +79,8 @@ function test_one() {
     local args=$1
     local expect="$APP_DIR/$2"
     local actual="$APP_DIR/actual.out"
-    args="$args ARCH=$ARCH ACCEL=n"
+    local config_file=$(realpath --relative-to=$AX_ROOT "$ROOT/configs/$ARCH.toml")
+    args="$args ARCH=$ARCH ACCEL=n EXTRA_CONFIG=$config_file"
     rm -f "$actual"
 
     MSG=

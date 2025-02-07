@@ -1,7 +1,7 @@
 [package]
 name = "starry"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 authors = ["Azure-stars <Azure_stars@126.com>", "Yuekai Jia <equation618@gmail.com>"]
 homepage = "https://github.com/arceos-org/arceos"
 repository = "https://github.com/arceos-org/starry-next"
@@ -12,19 +12,24 @@ linkme = "0.3"
 axerrno = "0.1"
 memory_addr = "0.3"
 xmas-elf = "0.9"
+spin = "0.9"
+crate_interface = "0.1"
 bitflags = "2.6"
 
 kernel-elf-parser = "0.1.0"
 num_enum = { version = "0.7", default-features = false }
 syscalls = { version = "0.6", default-features = false }
 
+axconfig = { git = "https://github.com/arceos-org/arceos.git" }
+axfs = { git = "https://github.com/arceos-org/arceos.git", features = ["thread-local"] }
 axstd = { git = "https://github.com/arceos-org/arceos.git", features = ["paging"] }
 axhal = { git = "https://github.com/arceos-org/arceos.git", features = ["uspace"] }
 axmm = { git = "https://github.com/arceos-org/arceos.git" }
 axtask = { git = "https://github.com/arceos-org/arceos.git" }
 axsync = { git = "https://github.com/arceos-org/arceos.git" }
 axruntime = { git = "https://github.com/arceos-org/arceos.git", features = ["multitask"] }
-arceos_posix_api = { git = "https://github.com/arceos-org/arceos.git" }
+arceos_posix_api = { git = "https://github.com/arceos-org/arceos.git", features = ["uspace"] }
+axns = { git = "https://github.com/arceos-org/arceos.git", features = ["thread-local"] }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"

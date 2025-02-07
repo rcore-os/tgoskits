@@ -22,7 +22,7 @@ fn get_sp() -> usize {
     sp
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn main() -> i32 {
     let test_user_thread = |arg| {
         for _ in 0..100 {

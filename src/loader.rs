@@ -11,7 +11,7 @@ use memory_addr::{MemoryAddr, VirtAddr};
 
 global_asm!(include_str!(concat!(env!("OUT_DIR"), "/link_app.S")));
 
-extern "C" {
+unsafe extern "C" {
     fn _app_count();
 }
 
@@ -100,7 +100,7 @@ pub struct ELFInfo {
 /// Entry and information about segments of the given ELF file
 pub(crate) fn load_elf(name: &str, base_addr: VirtAddr) -> ELFInfo {
     use xmas_elf::program::{Flags, SegmentData};
-    use xmas_elf::{header, ElfFile};
+    use xmas_elf::{ElfFile, header};
 
     let elf = ElfFile::new(
         get_app_data_by_name(name).unwrap_or_else(|| panic!("failed to get app: {}", name)),

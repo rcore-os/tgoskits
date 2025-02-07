@@ -14,7 +14,7 @@ use user_lib::{exec, fork, waitpid};
 
 const MAX_CMD_LEN: usize = 256;
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn main() -> i32 {
     println!("Rust user shell");
     let mut line = [0; MAX_CMD_LEN];
