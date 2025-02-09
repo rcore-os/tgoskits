@@ -18,6 +18,8 @@ fn get_sp() -> usize {
         core::arch::asm!("mov {}, sp", out(reg) sp, options(pure, readonly));
         #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
         core::arch::asm!("mv {}, sp", out(reg) sp, options(pure, readonly));
+        #[cfg(target_arch = "loongarch64")]
+        core::arch::asm!("move {}, $r3", out(reg) sp, options(pure, readonly));
     }
     sp
 }

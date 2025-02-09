@@ -21,15 +21,24 @@ num_enum = { version = "0.7", default-features = false }
 syscalls = { version = "0.6", default-features = false }
 
 axconfig = { git = "https://github.com/arceos-org/arceos.git" }
-axfs = { git = "https://github.com/arceos-org/arceos.git", features = ["thread-local"] }
+axfs = { git = "https://github.com/arceos-org/arceos.git" }
 axstd = { git = "https://github.com/arceos-org/arceos.git", features = ["paging"] }
 axhal = { git = "https://github.com/arceos-org/arceos.git", features = ["uspace"] }
 axmm = { git = "https://github.com/arceos-org/arceos.git" }
 axtask = { git = "https://github.com/arceos-org/arceos.git" }
 axsync = { git = "https://github.com/arceos-org/arceos.git" }
 axruntime = { git = "https://github.com/arceos-org/arceos.git", features = ["multitask"] }
-arceos_posix_api = { git = "https://github.com/arceos-org/arceos.git", features = ["uspace"] }
+arceos_posix_api = { git = "https://github.com/arceos-org/arceos.git", features = ["uspace", "smp", "irq", "fs", "multitask", "net", "pipe", "select", "epoll"] }
 axns = { git = "https://github.com/arceos-org/arceos.git", features = ["thread-local"] }
+
+[patch.crates-io]
+syscalls = { git = "https://github.com/jasonwhite/syscalls.git", rev = "92624de"}
+# kernel-elf-parser = { path = "../kernel-elf-parser" }
+kernel-elf-parser = { git = "https://github.com/yfblock/kernel-elf-parser", rev = "d00e14e"}
+page_table_multiarch = { git = "https://github.com/yfblock/page_table_multiarch.git", rev = "c8a13b0"}
+page_table_entry = { git = "https://github.com/yfblock/page_table_multiarch.git", rev = "c8a13b0" }
+# page_table_multiarch = { path = "../page_table_multiarch/page_table_multiarch" }
+# page_table_entry = { path = "../page_table_multiarch/page_table_entry" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"

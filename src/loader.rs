@@ -116,6 +116,8 @@ pub(crate) fn load_elf(name: &str, base_addr: VirtAddr) -> ELFInfo {
         header::Machine::AArch64
     } else if cfg!(target_arch = "riscv64") {
         header::Machine::RISC_V
+    } else if cfg!(target_arch = "loongarch64") {
+        header::Machine::Other(0x102)
     } else {
         panic!("Unsupported architecture!");
     };

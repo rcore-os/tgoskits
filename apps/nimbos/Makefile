@@ -2,7 +2,13 @@ ARCH ?= x86_64
 MODE ?= release
 
 BUILD_RUST ?= y
-BUILD_C ?= y
+
+ifeq ($(ARCH),loongarch64)
+  # No build C for loongarch64
+  BUILD_C := n
+else
+  BUILD_C := y
+endif
 
 build_dir := build/$(ARCH)
 

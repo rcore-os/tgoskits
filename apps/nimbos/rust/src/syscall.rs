@@ -22,6 +22,7 @@ cfg_if::cfg_if! {
         pub const SYSCALL_WRITE: usize = 64;
         pub const SYSCALL_YIELD: usize = 124;
         pub const SYSCALL_GETPID: usize = 172;
+        #[allow(dead_code)]
         pub const SYSCALL_CLONE: usize = 220;
         pub const SYSCALL_FORK: usize = 220;
         pub const SYSCALL_EXEC: usize = 221;
@@ -33,10 +34,11 @@ cfg_if::cfg_if! {
 }
 
 pub fn sys_read(fd: usize, buffer: &mut [u8]) -> isize {
-    syscall(
-        SYSCALL_READ,
-        [fd, buffer.as_mut_ptr() as usize, buffer.len()],
-    )
+    syscall(SYSCALL_READ, [
+        fd,
+        buffer.as_mut_ptr() as usize,
+        buffer.len(),
+    ])
 }
 
 pub fn sys_write(fd: usize, buffer: &[u8]) -> isize {
@@ -65,10 +67,11 @@ pub fn sys_exec(path: &str) -> isize {
 }
 
 pub fn sys_waitpid(pid: isize, exit_code: *mut i32, options: u32) -> isize {
-    syscall(
-        SYSCALL_WAITPID,
-        [pid as usize, exit_code as _, options as _],
-    )
+    syscall(SYSCALL_WAITPID, [
+        pid as usize,
+        exit_code as _,
+        options as _,
+    ])
 }
 
 pub fn sys_clock_gettime(clk: ClockId, req: &mut TimeSpec) -> isize {
@@ -76,8 +79,9 @@ pub fn sys_clock_gettime(clk: ClockId, req: &mut TimeSpec) -> isize {
 }
 
 pub fn sys_clock_nanosleep(clk: ClockId, flags: u32, req: &TimeSpec) -> isize {
-    syscall(
-        SYSCALL_CLOCK_NANOSLEEP,
-        [clk as _, flags as _, req as *const _ as usize],
-    )
+    syscall(SYSCALL_CLOCK_NANOSLEEP, [
+        clk as _,
+        flags as _,
+        req as *const _ as usize,
+    ])
 }

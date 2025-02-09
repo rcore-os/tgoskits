@@ -29,7 +29,7 @@ fn main() {
         let user_task = task::spawn_user_task(
             Arc::new(Mutex::new(uspace)),
             UspaceContext::new(entry_vaddr.into(), ustack_top, 2333),
-        );
+        );        
         let exit_code = user_task.join();
         info!("User task {} exited with code: {:?}", testcase, exit_code);
     }

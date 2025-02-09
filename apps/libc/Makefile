@@ -20,6 +20,9 @@ ifeq ($(TARGET),musl)
     $(warning "Warn: Rust musl target not supported for riscv64")
     RUST_TARGET := ""
     RUSTFLAGS := ""
+  else ifeq ($(ARCH),loongarch64)
+    RUST_TARGET := loongarch64-unknown-linux-musl
+    RUSTFLAGS := "-C linker=loongarch-linux-musl-ld"
   else
     $(error "Unknown ARCH")
   endif
@@ -31,6 +34,8 @@ else ifeq ($(TARGET),gnu)
     RUST_TARGET := aarch64-unknown-linux-gnu
   else ifeq ($(ARCH),riscv64)
     RUST_TARGET := riscv64gc-unknown-linux-gnu
+  else ifeq ($(ARCH),loongarch64)
+    RUST_TARGET := loongarch64-unknown-linux-gnu
   else
     $(error "Unknown ARCH")
   endif
@@ -47,11 +52,14 @@ build_dir:
 	@mkdir -p build/$(ARCH)
 
 build_c:
-	@for app in $(wildcard c/*/*.c); do \
-		echo "Building $${app%.c}"; \
-		app_name=$$(basename $$(dirname $${app})); \
-		$(CC) -o build/$(ARCH)/$${app_name}_c $${app} $(CFLAGS); \
-	done
+  # No build for loongarch64
+	if [ "$(ARCH)" != "loongarch64" ]; then \
+		for app in $(wildcard c/*/*.c); do \
+			echo "Building $${app%.c}"; \
+			app_name=$$(basename $$(dirname $${app})); \
+			$(CC) -o build/$(ARCH)/$${app_name}_c $${app} $(CFLAGS); \
+		done \
+	fi
 
 build_rust:
 	if [ -n $(RUST_TARGET) ]; then \
