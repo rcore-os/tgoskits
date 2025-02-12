@@ -92,6 +92,7 @@ dependencies = [
 [[package]]
 name = "arceos_api"
 version = "0.1.0"
+source = "git+https://github.com/oscomp/arceos.git#0105b0aa198c1f397b4d3478a1ab8e990981cca5"
 dependencies = [
  "axconfig",
  "axerrno",
@@ -106,6 +107,7 @@ dependencies = [
 [[package]]
 name = "arceos_posix_api"
 version = "0.1.0"
+source = "git+https://github.com/oscomp/arceos.git#0105b0aa198c1f397b4d3478a1ab8e990981cca5"
 dependencies = [
  "axalloc",
  "axconfig",
@@ -164,6 +166,7 @@ checksum = "ace50bade8e6234aa140d9a2f552bbee1db4d353f69b8217bc503490fc1a9f26"
 [[package]]
 name = "axalloc"
 version = "0.1.0"
+source = "git+https://github.com/oscomp/arceos.git#0105b0aa198c1f397b4d3478a1ab8e990981cca5"
 dependencies = [
  "allocator",
  "axerrno",
@@ -176,6 +179,7 @@ dependencies = [
 [[package]]
 name = "axconfig"
 version = "0.1.0"
+source = "git+https://github.com/oscomp/arceos.git#0105b0aa198c1f397b4d3478a1ab8e990981cca5"
 dependencies = [
  "axconfig-gen-macros",
 ]
@@ -205,6 +209,7 @@ dependencies = [
 [[package]]
 name = "axdriver"
 version = "0.1.0"
+source = "git+https://github.com/oscomp/arceos.git#0105b0aa198c1f397b4d3478a1ab8e990981cca5"
 dependencies = [
  "axalloc",
  "axconfig",
@@ -273,6 +278,7 @@ dependencies = [
 [[package]]
 name = "axfeat"
 version = "0.1.0"
+source = "git+https://github.com/oscomp/arceos.git#0105b0aa198c1f397b4d3478a1ab8e990981cca5"
 dependencies = [
  "axalloc",
  "axdriver",
@@ -289,6 +295,7 @@ dependencies = [
 [[package]]
 name = "axfs"
 version = "0.1.0"
+source = "git+https://github.com/oscomp/arceos.git#0105b0aa198c1f397b4d3478a1ab8e990981cca5"
 dependencies = [
  "axdriver",
  "axdriver_block",
@@ -342,6 +349,7 @@ dependencies = [
 [[package]]
 name = "axhal"
 version = "0.1.0"
+source = "git+https://github.com/oscomp/arceos.git#0105b0aa198c1f397b4d3478a1ab8e990981cca5"
 dependencies = [
  "aarch64-cpu 10.0.0",
  "arm_gicv2",
@@ -386,6 +394,7 @@ dependencies = [
 [[package]]
 name = "axlog"
 version = "0.1.0"
+source = "git+https://github.com/oscomp/arceos.git#0105b0aa198c1f397b4d3478a1ab8e990981cca5"
 dependencies = [
  "cfg-if",
  "crate_interface",
@@ -396,6 +405,7 @@ dependencies = [
 [[package]]
 name = "axmm"
 version = "0.1.0"
+source = "git+https://github.com/oscomp/arceos.git#0105b0aa198c1f397b4d3478a1ab8e990981cca5"
 dependencies = [
  "axalloc",
  "axconfig",
@@ -411,6 +421,7 @@ dependencies = [
 [[package]]
 name = "axnet"
 version = "0.1.0"
+source = "git+https://github.com/oscomp/arceos.git#0105b0aa198c1f397b4d3478a1ab8e990981cca5"
 dependencies = [
  "axdriver",
  "axdriver_net",
@@ -429,6 +440,7 @@ dependencies = [
 [[package]]
 name = "axns"
 version = "0.1.0"
+source = "git+https://github.com/oscomp/arceos.git#0105b0aa198c1f397b4d3478a1ab8e990981cca5"
 dependencies = [
  "crate_interface",
  "lazyinit",
@@ -437,6 +449,7 @@ dependencies = [
 [[package]]
 name = "axruntime"
 version = "0.1.0"
+source = "git+https://github.com/oscomp/arceos.git#0105b0aa198c1f397b4d3478a1ab8e990981cca5"
 dependencies = [
  "axalloc",
  "axconfig",
@@ -457,6 +470,7 @@ dependencies = [
 [[package]]
 name = "axstd"
 version = "0.1.0"
+source = "git+https://github.com/oscomp/arceos.git#0105b0aa198c1f397b4d3478a1ab8e990981cca5"
 dependencies = [
  "arceos_api",
  "axerrno",
@@ -468,6 +482,7 @@ dependencies = [
 [[package]]
 name = "axsync"
 version = "0.1.0"
+source = "git+https://github.com/oscomp/arceos.git#0105b0aa198c1f397b4d3478a1ab8e990981cca5"
 dependencies = [
  "axtask",
  "kspin",
@@ -476,6 +491,7 @@ dependencies = [
 [[package]]
 name = "axtask"
 version = "0.1.0"
+source = "git+https://github.com/oscomp/arceos.git#0105b0aa198c1f397b4d3478a1ab8e990981cca5"
 dependencies = [
  "axconfig",
  "axhal",
@@ -1741,3 +1757,43 @@ dependencies = [
  "quote",
  "syn 2.0.98",
 ]
+
+[[patch.unused]]
+name = "arceos_posix_api"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "axconfig"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "axfs"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "axhal"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "axmm"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "axns"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "axruntime"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "axstd"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "axsync"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "axtask"
+version = "0.1.0"
