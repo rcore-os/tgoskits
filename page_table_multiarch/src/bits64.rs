@@ -371,7 +371,7 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
     }
 
     fn next_table<'a>(&self, entry: &PTE) -> PagingResult<&'a [PTE]> {
-        if !entry.is_present() {
+        if entry.paddr().as_usize() == 0 {
             Err(PagingError::NotMapped)
         } else if entry.is_huge() {
             Err(PagingError::MappedToHugePage)
@@ -381,7 +381,7 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
     }
 
     fn next_table_mut<'a>(&mut self, entry: &PTE) -> PagingResult<&'a mut [PTE]> {
-        if !entry.is_present() {
+        if entry.paddr().as_usize() == 0 {
             Err(PagingError::NotMapped)
         } else if entry.is_huge() {
             Err(PagingError::MappedToHugePage)
