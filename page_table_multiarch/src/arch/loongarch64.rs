@@ -30,20 +30,20 @@ impl LA64MetaData {
     ///
     /// | BitRange | Name                            | Value |
     /// | ----     | ----                            | ----  |
-    /// | 5:0      | Dir3Base                        |     0 |
-    /// | 11:6     | Dir3Width                       |     0 |
+    /// | 5:0      | Dir3Base                        |    39 |
+    /// | 11:6     | Dir3Width                       |     9 |
     /// | 17:12    | Dir4Base                        |     0 |
     /// | 23:18    | Dir4Width                       |     0 |
     /// | 24       | 0                               |     0 |
     /// | 24       | HPTW_En(CPUCFG.2.HPTW(bit24)=1) |     0 |
     /// | 31:25    | 0                               |     0 |
-    pub const PWCH_VALUE: u32 = 0;
+    pub const PWCH_VALUE: u32 = 39 | (9 << 6);
 }
 
 impl PagingMetaData for LA64MetaData {
-    const LEVELS: usize = 3;
+    const LEVELS: usize = 4;
     const PA_MAX_BITS: usize = 48;
-    const VA_MAX_BITS: usize = 39;
+    const VA_MAX_BITS: usize = 48;
     type VirtAddr = memory_addr::VirtAddr;
 
     #[inline]
@@ -79,7 +79,7 @@ impl PagingMetaData for LA64MetaData {
 ///
 /// <https://loongson.github.io/LoongArch-Documentation/LoongArch-Vol1-EN.html#section-multi-level-page-table-structure-supported-by-page-walking>
 ///
-/// 3 levels:
+/// 4 levels:
 ///
-/// using page table dir2, dir1 and pt, ignore dir3 and dir4
+/// using page table dir3, dir2, dir1 and pt, ignore dir4
 pub type LA64PageTable<I> = PageTable64<LA64MetaData, LA64PTE, I>;
