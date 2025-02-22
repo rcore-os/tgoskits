@@ -1,6 +1,8 @@
 [plat]
 # The base address of the user space.
 user-space-base = 0x1000
+# The base address for user interpreter.
+user-interp-base = 0x400_0000
 # The size of the user space.
 user-space-size = 0x3f_ffff_f000
 

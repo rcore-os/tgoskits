@@ -6,6 +6,9 @@ authors = ["Azure-stars <Azure_stars@126.com>", "Yuekai Jia <equation618@gmail.c
 homepage = "https://github.com/arceos-org/arceos"
 repository = "https://github.com/arceos-org/starry-next"
 
+[features]
+lwext4_rs = ["axstd/lwext4_rs"]
+
 [dependencies]
 log = "0.4"
 linkme = "0.3"
@@ -16,9 +19,10 @@ spin = "0.9"
 crate_interface = "0.1"
 bitflags = "2.6"
 
-kernel-elf-parser = "0.1.0"
+kernel-elf-parser = "0.3"
 num_enum = { version = "0.7", default-features = false }
 syscalls = { version = "0.6", default-features = false }
+numeric-enum-macro = "0.2.0"
 
 axconfig = { git = "https://github.com/oscomp/arceos.git" }
 axfs = { git = "https://github.com/oscomp/arceos.git" }
@@ -33,7 +37,6 @@ axns = { git = "https://github.com/oscomp/arceos.git", features = ["thread-local
 
 [patch.crates-io]
 syscalls = { git = "https://github.com/jasonwhite/syscalls.git", rev = "92624de"}
-kernel-elf-parser = { git = "https://github.com/yfblock/kernel-elf-parser", rev = "d00e14e"}
 page_table_multiarch = { git = "https://github.com/yfblock/page_table_multiarch.git", rev = "c8a13b0"}
 page_table_entry = { git = "https://github.com/yfblock/page_table_multiarch.git", rev = "c8a13b0" }
 

@@ -21,6 +21,18 @@ jobs:
       run: ./scripts/get_deps.sh
     - name: Check rust version
       run: rustc --version --verbose
+    - uses: ./.github/workflows/actions/setup-musl
+      with:
+        arch: x86_64
+    - uses: ./.github/workflows/actions/setup-musl
+      with:
+        arch: riscv64
+    - uses: ./.github/workflows/actions/setup-musl
+      with:
+        arch: aarch64
+    - uses: ./.github/workflows/actions/setup-musl
+      with:
+        arch: loongarch64
     - name: Check code format
       continue-on-error: ${{ matrix.rust-toolchain == 'nightly' }}
       run: cargo fmt --all -- --check
@@ -46,8 +58,11 @@ jobs:
     - uses: Swatinem/rust-cache@v2
     - run: cargo install cargo-binutils
     - run: ./scripts/get_deps.sh
+    - uses: ./.github/workflows/actions/setup-musl
+      with:
+        arch: ${{ matrix.arch }}
     - name: Build for ${{ matrix.arch }}
-      run: make ARCH=${{ matrix.arch }}
+      run: make ARCH=${{ matrix.arch }} build
 
   test-musl:
     runs-on: ${{ matrix.os }}

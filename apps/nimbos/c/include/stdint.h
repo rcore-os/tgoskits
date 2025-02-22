@@ -23,7 +23,7 @@ typedef unsigned long long uint64_t;
  * We use pointer types to represent addresses,
  * uintptr_t to represent the numerical values of addresses.
  * */
-#if __riscv_xlen == 64 || defined(__x86_64__) || defined(__aarch64__)
+#if __riscv_xlen == 64 || defined(__x86_64__) || defined(__aarch64__) || defined(__loongarch__)
 typedef int64_t intptr_t;
 typedef uint64_t uintptr_t;
 #elif __riscv_xlen == 32 || defined(__i386__)

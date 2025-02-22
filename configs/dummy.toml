@@ -41,6 +41,8 @@ kernel-aspace-size = 0      # uint
 kernel-stack-size = 0       # uint
 # The base address of the user space.
 user-space-base = 0         # uint
+# The base address for user interpreter.
+user-interp-base = 0   # uint
 # The size of the user space.
 user-space-size = 0         # uint
 # The highest address of the user stack.

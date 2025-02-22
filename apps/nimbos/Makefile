@@ -3,12 +3,7 @@ MODE ?= release
 
 BUILD_RUST ?= y
 
-ifeq ($(ARCH),loongarch64)
-  # No build C for loongarch64
-  BUILD_C := n
-else
-  BUILD_C := y
-endif
+BUILD_C := y
 
 build_dir := build/$(ARCH)
 

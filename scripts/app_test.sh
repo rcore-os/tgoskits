@@ -19,7 +19,7 @@ END_C="\x1b[0m"
 if [ -z "$ARCH" ]; then
     ARCH=x86_64
 fi
-if [ "$ARCH" != "x86_64" ] && [ "$ARCH" != "riscv64" ] && [ "$ARCH" != "aarch64" ]; then
+if [ "$ARCH" != "x86_64" ] && [ "$ARCH" != "riscv64" ] && [ "$ARCH" != "aarch64" ] && [ "$ARCH" != "loongarch64" ]; then
     echo "Unknown architecture: $ARCH"
     exit $S_FAILED
 fi
@@ -52,7 +52,7 @@ function run_and_compare() {
 
     echo -ne "    run with \"${BLOD_C}$args${END_C}\": "
 
-    make -C "$ROOT" AX_TESTCASE=$APP $args > "$actual" 2>&1
+    make -C "$ROOT" AX_TESTCASE=$APP $args build > "$actual" 2>&1
     if [ $? -ne 0 ]; then
         return $S_BUILD_FAILED
     fi
