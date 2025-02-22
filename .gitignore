@@ -7,4 +7,5 @@
 apps/*/build/
 **/target/
 **/Cargo.lock
+!/vendor/**/Cargo.lock
 /.axconfig.*
