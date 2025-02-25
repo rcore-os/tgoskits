@@ -19,7 +19,7 @@ pub use self::bits64::PageTable64;
 pub use page_table_entry::{GenericPTE, MappingFlags};
 
 /// The error type for page table operation failures.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum PagingError {
     /// Cannot allocate memory.
     NoMemory,
