@@ -15,7 +15,7 @@ rust-version.workspace = true
 [dependencies]
 log = "0.4"
 memory_addr = "0.3"
-page_table_entry = { path = "../page_table_entry", version = "0.5.1" }
+page_table_entry = { path = "../page_table_entry", version = "0.5.2" }
 
 [target.'cfg(any(target_arch = "x86_64", doc))'.dependencies]
 x86 = "0.52"

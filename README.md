@@ -4,10 +4,10 @@ Generic, unified, architecture-independent, and OS-free page table structures fo
 
 Currently supported architectures:
 
-- x86_64
-- AArch64
-- RISC-V (Sv39, Sv48)
-- LoongArch64 (3 levels)
+- x86_64 (4 levels)
+- AArch64 (4 levels)
+- RISC-V (3 level Sv39, 4 levels Sv48)
+- LoongArch64 (4 levels)
 
 See the documentation of the following crates for more details:
 
