@@ -6,20 +6,37 @@ A monolithic kernel based on [ArceOS](https://github.com/arceos-org/arceos).
 
 ## Quick Start
 
-### 1. Install Build Dependencies
+### Build and Run through Docker
+Install [Docker](https://www.docker.com/) in your system.
 
-Install [cargo-binutils](https://github.com/rust-embedded/cargo-binutils) to use `rust-objcopy` and `rust-objdump` tools:
+Then build all dependencies through provided dockerfile:
 
 ```bash
-cargo install cargo-binutils
+./scripts/get_deps.sh
+cd .arceos
+docker build -t starry -f Dockerfile .
 ```
 
-#### Dependencies for C apps
+Create a container and build/run app:
+```bash
+# back to the root directory of the project
+cd ..
+docker run --privileged --rm -it -v $(pwd):/starry -w /starry starry bash
 
-Install `libclang-dev`:
+# Now build/run app in the container
+make user_apps
+make defconfig
+make run
+```
+
+### Manually Build and Run
+
+#### 1. Install Build Dependencies
 
 ```bash
-sudo apt install libclang-dev
+cargo install cargo-binutils axconfig-gen
+
+sudo apt install libclang-dev cmake dosfstools build-essential
 ```
 
 Download & install [musl](https://musl.cc) toolchains:
@@ -29,19 +46,18 @@ Download & install [musl](https://musl.cc) toolchains:
 wget https://musl.cc/aarch64-linux-musl-cross.tgz
 wget https://musl.cc/riscv64-linux-musl-cross.tgz
 wget https://musl.cc/x86_64-linux-musl-cross.tgz
-wget https://github.com/LoongsonLab/oscomp-toolchains-for-oskernel/releases/download/gcc-13.2.0-loongarch64/gcc-13.2.0-loongarch64-linux-gnu.tgz
-wget https://github.com/LoongsonLab/oscomp-toolchains-for-oskernel/raw/refs/heads/main/musl-loongarch64-1.2.2.tgz
+wget https://github.com/LoongsonLab/oscomp-toolchains-for-oskernel/releases/download/loongarch64-linux-musl-cross-gcc-13.2.0/loongarch64-linux-musl-cross.tgz
 # install
 tar zxf aarch64-linux-musl-cross.tgz
 tar zxf riscv64-linux-musl-cross.tgz
 tar zxf x86_64-linux-musl-cross.tgz
-tar zxf gcc-13.2.0-loongarch64-linux-gnu.tgz
-tar zxf musl-loongarch64-1.2.2.tgz && cd musl-loongarch64-1.2.2 && ./setup && cd ..
+tar zxf loongarch64-linux-musl-cross.tgz
+
 # exec below command in bash OR add below info in ~/.bashrc
-export PATH=`pwd`/x86_64-linux-musl-cross/bin:`pwd`/aarch64-linux-musl-cross/bin:`pwd`/riscv64-linux-musl-cross/bin:`pwd`/gcc-13.2.0-loongarch64-linux-gnu/bin:`pwd`/musl-loongarch64-1.2.2/bin:$PATH
+export PATH=`pwd`/x86_64-linux-musl-cross/bin:`pwd`/aarch64-linux-musl-cross/bin:`pwd`/riscv64-linux-musl-cross/bin:`pwd`/loongarch64-linux-musl-cross/bin:$PATH
 ```
 
-#### Dependencies for running apps
+#### 2. Dependencies for running apps
 
 ```bash
 # for Debian/Ubuntu
@@ -57,33 +73,42 @@ Notice: The version of `qemu` should **be no less than 8.2.0**.
 
 Other systems, arch and version please refer to [Qemu Download](https://www.qemu.org/download/#linux)
 
-### 2. Build & Run
-
-#### Qucik Run
+#### 3. Build & Run
 
 ```bash
 # Clone the base repository
 ./scripts/get_deps.sh
 
 # Run riscv64 example
-make clean
 make ARCH=riscv64 AX_TESTCASE=nimbos user_apps
-make ARCH=riscv64 AX_TESTCASE=nimbos BLK=y NET=y ACCEL=n EXTRA_CONFIG=../configs/riscv64.toml FEATURES=fp_simd run
+# When running on a new architecture, you need to generate the configuration file again.
+make ARCH=riscv64 defconfig
+make ARCH=riscv64 AX_TESTCASE=nimbos BLK=y NET=y ACCEL=n run
+
 # Run x86_64 example
-make clean
 make ARCH=x86_64 AX_TESTCASE=nimbos user_apps
-make ARCH=x86_64 AX_TESTCASE=nimbos BLK=y NET=y ACCEL=n EXTRA_CONFIG=../configs/x86_64.toml FEATURES=fp_simd run
+# When running on a new architecture, you need to generate the configuration file again.
+make ARCH=x86_64 defconfig
+make ARCH=x86_64 AX_TESTCASE=nimbos BLK=y NET=y ACCEL=n run
+
 # Run aarch64 example
-make clean
 make ARCH=aarch64 AX_TESTCASE=nimbos user_apps
-make ARCH=aarch64 AX_TESTCASE=nimbos BLK=y NET=y ACCEL=n EXTRA_CONFIG=../configs/aarch64.toml FEATURES=fp_simd run
+make ARCH=aarch64 defconfig
+make ARCH=aarch64 AX_TESTCASE=nimbos BLK=y NET=y ACCEL=n run
+
 # Run Loongarch64 example
-make clean
 make ARCH=loongarch64 AX_TESTCASE=nimbos user_apps
-make ARCH=loongarch64 AX_TESTCASE=nimbos BLK=y NET=y ACCEL=n EXTRA_CONFIG=../configs/loongarch64.toml FEATURES=fp_simd run
+make ARCH=loongarch64 defconfig
+make ARCH=loongarch64 AX_TESTCASE=nimbos BLK=y NET=y ACCEL=n run
+
+# Run another example (libc testcases)
+make ARCH=riscv64 AX_TESTCASE=libc user_apps
+make ARCH=riscv64 defconfig
+# When running libc testcases, you need to enable `fp_simd` feature.
+make ARCH=riscv64 AX_TESTCASE=libc BLK=y NET=y FEATURES=fp_simd ACCEL=n run
 ```
 
-#### Commands Explanation
+#### 4. Commands Explanation
 
 ```bash
 # Clone the base repository
@@ -113,4 +138,8 @@ For example, to run the [nimbos testcases](apps/nimbos/) on `qemu-system-x86_64`
 make ARCH=x86_64 LOG=info AX_TESTCASE=nimbos run
 ```
 
-Note: Arguments like `NET`, `BLK`, and `GRAPHIC` enable devices in QEMU, which take effect only at runtime, not at build time.
+Note: Arguments like `NET`, `BLK`, and `GRAPHIC` enable devices in QEMU, which take effect only at runtime, not at build time. More features can be found in the [Cargo.toml of arceos](https://github.com/oscomp/arceos/blob/main/ulib/axstd/Cargo.toml).
+
+## Test for oscomp testcases
+
+We can run [testcases of the OS competition](https://github.com/oscomp/testsuits-for-oskernel/tree/pre-2025) with StarryOS. Guidence can be found in [Starry-Tutorial](https://azure-stars.github.io/Starry-Tutorial-Book/ch01-04.html#在-os-比赛上测试-starry).

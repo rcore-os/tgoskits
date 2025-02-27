@@ -1,2 +1,1 @@
-./musl/basic/brk
-./musl/basic/chdir
+./musl/basic/openat

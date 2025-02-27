@@ -115,6 +115,10 @@ fn handle_syscall(tf: &TrapFrame, syscall_num: usize) -> isize {
         }
     };
     time_stat_from_kernel_to_user();
-    info!("syscall return: {}", ans);
+    info!(
+        "Syscall {:?} return {}",
+        Sysno::from(syscall_num as u32),
+        ans
+    );
     ans
 }

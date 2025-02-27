@@ -877,9 +877,9 @@ dependencies = [
 
 [[package]]
 name = "kernel-elf-parser"
-version = "0.3.0"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00660cf6745731b6cb8cb945c25cd02cb31b0ec23fad11b087b2a3d0439c1582"
+checksum = "102999b07d80f34c1dca0d9e8f24adaa8028708842d39a3e5b98f4f085755627"
 dependencies = [
  "axerrno",
  "cfg-if",
@@ -1006,7 +1006,7 @@ dependencies = [
 [[package]]
 name = "lwext4_rust"
 version = "0.2.0"
-source = "git+https://github.com/Azure-stars/lwext4_rust.git#d1561e971c37555428695b12b869ec938af5a058"
+source = "git+https://github.com/Azure-stars/lwext4_rust.git#62519fadd8eece40cd6bbe9bb11943610cfcb908"
 dependencies = [
  "log",
 ]

@@ -4,11 +4,7 @@ ARCH ?= x86_64
 # Whether cross-compiling
 TARGET ?= musl
 
-ifeq ($(ARCH), loongarch64)
-  PREFIX := loongarch64-unknown-linux-${TARGET}
-else
-  PREFIX := $(ARCH)-linux-$(TARGET)
-endif
+PREFIX := $(ARCH)-linux-$(TARGET)
 
 # Build target for c programs
 CC := $(PREFIX)-gcc

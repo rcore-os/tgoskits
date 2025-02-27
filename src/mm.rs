@@ -27,7 +27,7 @@ fn map_elf(
     args: &mut VecDeque<String>,
     elf_parser: &ELFParser,
     uspace: &mut AddrSpace,
-) -> AxResult<(VirtAddr, [AuxvEntry; 17])> {
+) -> AxResult<(VirtAddr, [AuxvEntry; 16])> {
     let elf = elf_parser.elf();
     if let Some(interp) = elf
         .program_iter()
@@ -137,17 +137,7 @@ pub fn load_user_app(
         ustack_start, ustack_end
     );
     // FIXME: Add more arguments and environment variables
-    let env = vec![
-        "SHLVL=1".into(),
-        "PWD=/".into(),
-        "GCC_EXEC_PREFIX=/riscv64-linux-musl-native/bin/../lib/gcc/".into(),
-        "COLLECT_GCC=./riscv64-linux-musl-native/bin/riscv64-linux-musl-gcc".into(),
-        "COLLECT_LTO_WRAPPER=/riscv64-linux-musl-native/bin/../libexec/gcc/riscv64-linux-musl/11.2.1/lto-wrapper".into(),
-        "COLLECT_GCC_OPTIONS='-march=rv64gc' '-mabi=lp64d' '-march=rv64imafdc' '-dumpdir' 'a.'".into(),
-        "LIBRARY_PATH=/lib/".into(),
-        "LD_LIBRARY_PATH=/lib/".into(),
-        "LD_DEBUG=files".into(),
-    ];
+    let env = vec!["SHLVL=1".into(), "PWD=/".into(), "LD_DEBUG=files".into()];
 
     let stack_data = app_stack_region(
         args.make_contiguous(),

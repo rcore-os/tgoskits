@@ -100,11 +100,11 @@ if [ "x$os" = "xDarwin" ];then
 	hdiutil detach mnt
 	chmod 777 disk.img
 else
-	sudo mount disk.img mnt
+	mount disk.img mnt
 	# 根据命令行参数生成对应的测例
 	echo "Copying $arch $fs $FILE/* to disk"
-	sudo cp -r ./$FILE/* ./mnt/
-	sudo umount mnt
-	sudo rm -rf mnt
-	sudo chmod 777 disk.img
+	cp -r ./$FILE/* ./mnt/
+	umount mnt
+	rm -rf mnt
+	chmod 777 disk.img
 fi

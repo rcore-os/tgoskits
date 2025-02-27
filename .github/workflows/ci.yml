@@ -8,15 +8,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        rust-toolchain: [nightly]
-        targets: [x86_64-unknown-none, riscv64gc-unknown-none-elf, aarch64-unknown-none]
+        rust-toolchain: [nightly, nightly-2025-01-18]
+        arch: [x86_64, riscv64, aarch64, loongarch64]
     steps:
     - uses: actions/checkout@v4
     - uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: ${{ matrix.rust-toolchain }}
         components: rust-src, clippy, rustfmt
-        targets: ${{ matrix.targets }}
+        targets: x86_64-unknown-none, riscv64gc-unknown-none-elf, aarch64-unknown-none, aarch64-unknown-none-softfloat, loongarch64-unknown-none
     - name: Setup ArceOS
       run: ./scripts/get_deps.sh
     - name: Check rust version
@@ -38,7 +38,7 @@ jobs:
       run: cargo fmt --all -- --check
     - name: Clippy
       continue-on-error: ${{ matrix.rust-toolchain == 'nightly' }}
-      run: make clippy TARGET=${{ matrix.targets }}
+      run: make clippy ARCH=${{ matrix.arch }}
 
   build:
     runs-on: ${{ matrix.os }}
@@ -46,15 +46,15 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        arch: [x86_64, riscv64, aarch64]
-        rust-toolchain: [nightly]
+        arch: [x86_64, riscv64, aarch64, loongarch64]
+        rust-toolchain: [nightly, nightly-2025-01-18]
     steps:
     - uses: actions/checkout@v4
     - uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: ${{ matrix.rust-toolchain }}
         components: rust-src, llvm-tools
-        targets: x86_64-unknown-none, riscv64gc-unknown-none-elf, aarch64-unknown-none, aarch64-unknown-none-softfloat
+        targets: x86_64-unknown-none, riscv64gc-unknown-none-elf, aarch64-unknown-none, aarch64-unknown-none-softfloat, loongarch64-unknown-none
     - uses: Swatinem/rust-cache@v2
     - run: cargo install cargo-binutils
     - run: ./scripts/get_deps.sh
@@ -62,6 +62,7 @@ jobs:
       with:
         arch: ${{ matrix.arch }}
     - name: Build for ${{ matrix.arch }}
+      continue-on-error: ${{ matrix.rust-toolchain == 'nightly' }}
       run: make ARCH=${{ matrix.arch }} build
 
   test-musl:
@@ -70,10 +71,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        arch: [x86_64, riscv64, aarch64]
-        rust-toolchain: [nightly]
+        arch: [x86_64, riscv64, aarch64, loongarch64]
+        rust-toolchain: [nightly, nightly-2025-01-18]
     env:
-      qemu-version: 8.2.0
+      qemu-version: 9.2.1
     steps:
     - uses: actions/checkout@v4
     - uses: dtolnay/rust-toolchain@stable
@@ -93,4 +94,5 @@ jobs:
       if: ${{ matrix.arch != 'riscv64' }}
       run: rustup target add ${{ matrix.arch }}-unknown-linux-musl
     - name: Run tests for musl applications
+      continue-on-error: ${{ matrix.rust-toolchain == 'nightly' }}
       run: make test ARCH=${{ matrix.arch }}
