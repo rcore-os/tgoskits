@@ -40,8 +40,8 @@ mod fxmac_dma;
 mod fxmac_intr;
 mod fxmac;
 
-pub use fxmac::{FXmac, xmac_init};
-pub use fxmac_dma::{FXmacInitDma, FXmacLwipPortTx, FXmacRecvHandler};
+pub use fxmac::*;
+pub use fxmac_dma::*;
 pub use fxmac_intr::{FXmacIntrHandler, xmac_intr_handler};
 
 // PHY interface
