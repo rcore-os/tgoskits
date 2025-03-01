@@ -1,7 +1,7 @@
 //! Common traits and types for block storage device drivers (i.e. disk).
 
 #![no_std]
-#![feature(doc_auto_cfg)]
+#![cfg_attr(doc, feature(doc_auto_cfg))]
 
 #[cfg(feature = "ramdisk")]
 pub mod ramdisk;
