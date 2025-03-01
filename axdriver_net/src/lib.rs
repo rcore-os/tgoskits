@@ -2,8 +2,10 @@
 
 #![no_std]
 #![feature(const_mut_refs)]
-#![feature(const_slice_from_raw_parts_mut)]
 
+#[cfg(feature = "fxmac")]
+/// fxmac driver for PhytiumPi
+pub mod fxmac;
 #[cfg(feature = "ixgbe")]
 /// ixgbe NIC device driver.
 pub mod ixgbe;

@@ -14,9 +14,11 @@ categories.workspace = true
 [features]
 default = []
 ixgbe = ["dep:ixgbe-driver"]
+fxmac = ["dep:fxmac_rs"]
 
 [dependencies]
 spin = "0.9"
 log = "0.4"
 axdriver_base = { workspace = true }
 ixgbe-driver = { git = "https://github.com/KuangjuX/ixgbe-driver.git", rev = "8e5eb74", optional = true}
+fxmac_rs = { git = "https://github.com/elliott10/fxmac_rs.git", rev = "0dbc3916", optional = true }
