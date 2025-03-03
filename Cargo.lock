@@ -55,7 +55,7 @@ checksum = "6f769efcf10b9dfb4c913bebb409cda77b1a3f072b249bf5465e250bcb30eb49"
 
 [[package]]
 name = "page_table_entry"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "aarch64-cpu",
  "bitflags 2.8.0",
@@ -65,7 +65,7 @@ dependencies = [
 
 [[package]]
 name = "page_table_multiarch"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "log",
  "memory_addr",

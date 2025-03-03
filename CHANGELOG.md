@@ -4,6 +4,12 @@
 
 ### Minor Changes
 
+- Add `empty` method to page table entries for all architectures.
+
+## 0.5.2
+
+### Minor Changes
+
 - Make LoongArch64's page table default to 4 levels (https://github.com/arceos-org/page_table_multiarch/pull/12).
 - Do not link to alloc crate (https://github.com/arceos-org/page_table_multiarch/pull/13).
 - Implement `Clone` and `Copy` for `PagingError` (https://github.com/arceos-org/page_table_multiarch/pull/14).
