@@ -125,6 +125,11 @@ pub struct LA64PTE(u64);
 
 impl LA64PTE {
     const PHYS_ADDR_MASK: u64 = 0x0000_ffff_ffff_f000; // bits 12..48
+
+    /// Creates an empty descriptor with all bits set to zero.
+    pub const fn empty() -> Self {
+        Self(0)
+    }
 }
 
 impl GenericPTE for LA64PTE {

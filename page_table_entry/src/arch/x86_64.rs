@@ -58,6 +58,11 @@ pub struct X64PTE(u64);
 
 impl X64PTE {
     const PHYS_ADDR_MASK: u64 = 0x000f_ffff_ffff_f000; // bits 12..52
+
+    /// Creates an empty descriptor with all bits set to zero.
+    pub const fn empty() -> Self {
+        Self(0)
+    }
 }
 
 impl GenericPTE for X64PTE {

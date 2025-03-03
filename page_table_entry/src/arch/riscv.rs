@@ -81,6 +81,11 @@ pub struct Rv64PTE(u64);
 
 impl Rv64PTE {
     const PHYS_ADDR_MASK: u64 = (1 << 54) - (1 << 10); // bits 10..54
+
+    /// Creates an empty descriptor with all bits set to zero.
+    pub const fn empty() -> Self {
+        Self(0)
+    }
 }
 
 impl GenericPTE for Rv64PTE {
