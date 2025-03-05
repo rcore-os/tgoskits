@@ -17,3 +17,9 @@ pub(crate) fn sys_writev(fd: i32, iov: *const api::ctypes::iovec, iocnt: i32) ->
 pub(crate) fn sys_openat(dirfd: i32, path: *const c_char, flags: i32, modes: mode_t) -> isize {
     api::sys_openat(dirfd, path, flags, modes) as isize
 }
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn sys_open(path: *const c_char, flags: i32, modes: mode_t) -> isize {
+    use arceos_posix_api::AT_FDCWD;
+    sys_openat(AT_FDCWD as _, path, flags, modes)
+}

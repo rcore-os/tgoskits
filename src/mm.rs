@@ -44,6 +44,8 @@ fn map_elf(
             axfs::api::canonicalize(interp_path.trim_matches(char::from(0)))?;
         if real_interp_path == "/lib/ld-linux-riscv64-lp64.so.1"
             || real_interp_path == "/lib64/ld-linux-loongarch-lp64d.so.1"
+            || real_interp_path == "/lib64/ld-linux-x86-64.so.2"
+            || real_interp_path == "/lib/ld-linux-aarch64.so.1"
         {
             // TODO: Use soft link
             real_interp_path = String::from("./musl/lib/libc.so");
@@ -153,6 +155,15 @@ pub fn load_user_app(
         true,
     )?;
 
+    let heap_start = VirtAddr::from_usize(axconfig::plat::USER_HEAP_BASE);
+    let heap_size = axconfig::plat::USER_HEAP_SIZE;
+    uspace.map_alloc(
+        heap_start,
+        heap_size,
+        MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
+        true,
+    )?;
+
     let user_sp = ustack_end - stack_data.len();
 
     uspace.write(user_sp, stack_data.as_slice())?;
@@ -162,6 +173,10 @@ pub fn load_user_app(
 
 #[register_trap_handler(PAGE_FAULT)]
 fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags, is_user: bool) -> bool {
+    warn!(
+        "Page fault at {:#x}, access_flags: {:#x?}",
+        vaddr, access_flags
+    );
     if is_user {
         if !axtask::current()
             .task_ext()

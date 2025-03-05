@@ -94,7 +94,7 @@ make ARCH=x86_64 AX_TESTCASE=nimbos BLK=y NET=y ACCEL=n run
 # Run aarch64 example
 make ARCH=aarch64 AX_TESTCASE=nimbos user_apps
 make ARCH=aarch64 defconfig
-make ARCH=aarch64 AX_TESTCASE=nimbos BLK=y NET=y ACCEL=n run
+make ARCH=aarch64 AX_TESTCASE=nimbos BLK=y NET=y FEATURES=fp_simd ACCEL=n run
 
 # Run Loongarch64 example
 make ARCH=loongarch64 AX_TESTCASE=nimbos user_apps

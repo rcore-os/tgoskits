@@ -49,6 +49,10 @@ user-space-size = 0         # uint
 user-stack-top = 0          # uint
 # The size of the user stack.
 user-stack-size = 0         # uint
+# The lowest address of the user heap.
+user-heap-base = 0        # uint
+# The size of the user heap.
+user-heap-size = 0          # uint
 
 
 #
