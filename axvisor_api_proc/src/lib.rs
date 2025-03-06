@@ -130,6 +130,21 @@ fn process_api_mods(module: ItemApiModList) -> TokenStream {
     output
 }
 
+fn get_implementee_reuse_ident(implementee: &Path) -> Ident {
+    let mut ident = String::from(if implementee.leading_colon.is_some() {
+        "__axvisor_api_implementee_abs"
+    } else {
+        "__axvisor_api_implementee_rel"
+    });
+
+    for seg in implementee.segments.iter() {
+        ident.push('_');
+        ident.push_str(seg.ident.to_string().as_str());
+    }
+
+    Ident::new(&ident, implementee.span())
+}
+
 fn process_api_mod_impl(implementee: Path, input: ItemApiModImpl) -> TokenStream {
     let attrs = &input.attrs;
     let vis = &input.vis;
@@ -141,6 +156,9 @@ fn process_api_mod_impl(implementee: Path, input: ItemApiModImpl) -> TokenStream
         None => return quote! { compile_error!("Invalid implementee path") },
     };
     let implementee_trait_ident = get_api_trait_name(&implementee_name, implementee.span());
+    // we should reuse the implementee mod path besides the implementing mod, to make sure the `impl` block can find
+    // the corrent trait.
+    let implementee_reuse_ident = get_implementee_reuse_ident(&implementee);
 
     let axvisor_api_path = find_axvisor_api_crate();
 
@@ -166,6 +184,9 @@ fn process_api_mod_impl(implementee: Path, input: ItemApiModImpl) -> TokenStream
     }
 
     quote! {
+        #[doc(hidden)]
+        use #implementee as #implementee_reuse_ident;
+
         #(#attrs)*
         #vis #mod_token #mod_ident {
             #(#regular_items)*
@@ -173,7 +194,7 @@ fn process_api_mod_impl(implementee: Path, input: ItemApiModImpl) -> TokenStream
             #[doc(hidden)]
             pub struct __Impl;
             #[#axvisor_api_path::__priv::crate_interface::impl_interface]
-            impl #implementee::#implementee_trait_ident for __Impl {
+            impl super::#implementee_reuse_ident::#implementee_trait_ident for __Impl {
                 #api_fn_impls
             }
         }
