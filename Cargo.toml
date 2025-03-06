@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = [
+    "axvisor_api_proc",
+]
+
+[workspace.package]
+authors = ["aarkegz <aarkegz@gmail.com>"]
+edition = "2024"
+license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
+
+[package]
+name = "axvisor_api"
+description = "Basic API for components of the Hypervisor on ArceOS"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+axvisor_api_proc = { path = "axvisor_api_proc", version = "*"}
+
+crate_interface = "0.1"
+memory_addr = "0.3"
