@@ -71,7 +71,7 @@ impl<B: MappingBackend> MemorySet<B> {
     ) -> Option<B::Addr> {
         // brute force: try each area's end address as the start.
         let mut last_end = hint.max(limit.start);
-        for (&addr, area) in self.areas.iter() {
+        for (&addr, area) in self.areas.range(last_end..) {
             if last_end.checked_add(size).is_some_and(|end| end <= addr) {
                 return Some(last_end);
             }
