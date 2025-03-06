@@ -19,10 +19,12 @@
 //! function is defined with the `extern fn` syntax. Note that Vanilla Rust does not support defining extern functions
 //! in such a way, so the definition of the API functions can easily be distinguished from the regular functions.
 //!
-//! ```rust
+//! ```rust, standalone_crate
+//! # use axvisor_api::{api_mod, __priv}; // some inconviniece brought by proc-macro-name and doctest
+//! # fn main() {}
 //! api_mod! {
 //!     /// Memory-related API
-//!     pub mod memory {
+//!     pub mod memory_demo {
 //!         pub use memory_addr::PhysAddr;
 //!
 //!         /// Allocate a frame
@@ -35,14 +37,27 @@
 //!
 //! Defined APIs can be invoked by other components:
 //!
-//! ```rust, no_run
+//! ```rust, no_run, standalone_crate
+//! # use axvisor_api::{api_mod, __priv}; // some inconviniece brought by proc-macro-name and doctest
+//! # fn main() {}
+//! # api_mod! {
+//! #     /// Memory-related API
+//! #     pub mod memory_demo {
+//! #         pub use memory_addr::PhysAddr;
+//! #
+//! #         /// Allocate a frame
+//! #         extern fn alloc_frame() -> Option<PhysAddr>;
+//! #         /// Deallocate a frame
+//! #         extern fn dealloc_frame(addr: PhysAddr);
+//! #     }
+//! # }
 //! struct SomeComponent;
 //!
 //! impl SomeComponent {
 //!     fn some_method() {
-//!         let frame = axvisor_api::memory::alloc_frame().unwrap();
+//!         let frame = memory_demo::alloc_frame().unwrap();
 //!         // Do something with the frame
-//!         axvisor_api::memory::dealloc_frame(frame);
+//!         memory_demo::dealloc_frame(frame);
 //!     }
 //! }
 //! ```
@@ -54,10 +69,23 @@
 //! argument, on a module containing the implementation of the API functions. The implementations of the API functions
 //! are also defined with the `extern fn` syntax.
 //!
-//! ```rust, no_run
-//! #[api_mod_impl(axvisor::memory)]
+//! ```rust, no_run, standalone_crate
+//! # use axvisor_api::{api_mod, api_mod_impl, __priv}; // some inconviniece brought by proc-macro-name and doctest
+//! # fn main() {}
+//! # api_mod! {
+//! #     /// Memory-related API
+//! #     pub mod memory_demo {
+//! #         pub use memory_addr::PhysAddr;
+//! #
+//! #         /// Allocate a frame
+//! #         extern fn alloc_frame() -> Option<PhysAddr>;
+//! #         /// Deallocate a frame
+//! #         extern fn dealloc_frame(addr: PhysAddr);
+//! #     }
+//! # }
+//! #[api_mod_impl(memory_demo)]
 //! mod memory_impl {
-//!     use axvisor_api::memory::PhysAddr;
+//!     use memory_addr::PhysAddr;
 //!
 //!     extern fn alloc_frame() -> Option<PhysAddr> {
 //!         // Implementation of the `alloc_frame` API

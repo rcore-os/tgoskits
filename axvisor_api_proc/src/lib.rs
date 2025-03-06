@@ -33,7 +33,7 @@ fn capitalize_first_letter(s: &str) -> String {
 
 fn get_api_trait_name(module_name: impl AsRef<str>, span: Span) -> Ident {
     let module_name = module_name.as_ref();
-    let trait_name = format!("{}ApiTrait", capitalize_first_letter(module_name));
+    let trait_name = format!("Axvisor{}ApiTrait", capitalize_first_letter(module_name));
     Ident::new(&trait_name, span)
 }
 
@@ -64,7 +64,7 @@ fn process_api_mod(module: ItemApiMod, axvisor_api_path: &TokenStream) -> TokenS
     }
 
     // Generate the API trait
-    let trait_ident = get_api_trait_name(&mod_ident.to_string(), mod_ident.span());
+    let trait_ident = get_api_trait_name(mod_ident.to_string(), mod_ident.span());
     let api_fn_attrs = api_fn_items
         .iter()
         .map(|item| &item.attrs)
@@ -77,6 +77,7 @@ fn process_api_mod(module: ItemApiMod, axvisor_api_path: &TokenStream) -> TokenS
     let trait_def = quote! {
         #[doc(hidden)]
         #[#axvisor_api_path::__priv::crate_interface::def_interface]
+        #[allow(non_camel_case_types)]
         pub trait #trait_ident {
             #(#(#api_fn_attrs)* #api_fn_signatures;)*
         }
