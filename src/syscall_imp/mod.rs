@@ -79,7 +79,7 @@ fn handle_syscall(tf: &TrapFrame, syscall_num: usize) -> isize {
             tf.arg4() as _,
             tf.arg5() as _,
         ) as _,
-        Sysno::ioctl => sys_ioctl(tf.arg0() as _, tf.arg1().into(), tf.arg2().into()) as _,
+        Sysno::ioctl => sys_ioctl(tf.arg0() as _, tf.arg1() as _, tf.arg2().into()) as _,
         Sysno::writev => sys_writev(tf.arg0() as _, tf.arg1().into(), tf.arg2() as _),
         Sysno::sched_yield => sys_sched_yield() as isize,
         Sysno::nanosleep => sys_nanosleep(tf.arg0().into(), tf.arg1().into()) as _,

@@ -197,7 +197,7 @@ pub(crate) fn sys_getdents64(fd: i32, buf: UserPtr<c_void>, len: usize) -> isize
 
     axfs::api::read_dir(&path)
         .map_err(|_| -1)
-        .and_then(|entries| {
+        .map(|entries| {
             let mut total_size = initial_offset as usize;
             let mut current_offset = initial_offset;
 
@@ -228,7 +228,7 @@ pub(crate) fn sys_getdents64(fd: i32, buf: UserPtr<c_void>, len: usize) -> isize
                 let _ = buffer.write_entry(terminal, &[]);
             }
 
-            Ok(total_size as isize)
+            total_size as isize
         })
         .unwrap_or(-1)
 }
