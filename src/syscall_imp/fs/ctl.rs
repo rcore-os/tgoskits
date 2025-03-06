@@ -2,7 +2,7 @@ use core::ffi::{c_char, c_int, c_void};
 
 use alloc::string::ToString;
 use arceos_posix_api::AT_FDCWD;
-use axerrno::AxError;
+use axerrno::{AxError, LinuxError};
 use axtask::{TaskExtRef, current};
 
 use crate::{
@@ -196,7 +196,7 @@ pub(crate) fn sys_getdents64(fd: i32, buf: UserPtr<c_void>, len: usize) -> isize
     };
 
     axfs::api::read_dir(&path)
-        .map_err(|_| -1)
+        .map_err(|_| LinuxError::EINVAL as isize)
         .map(|entries| {
             let mut total_size = initial_offset as usize;
             let mut current_offset = initial_offset;
@@ -230,7 +230,7 @@ pub(crate) fn sys_getdents64(fd: i32, buf: UserPtr<c_void>, len: usize) -> isize
 
             total_size as isize
         })
-        .unwrap_or(-1)
+        .unwrap_or(LinuxError::ENOENT as isize)
 }
 
 /// create a link from new_path to old_path
