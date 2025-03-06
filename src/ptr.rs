@@ -1,10 +1,21 @@
 use axerrno::{LinuxError, LinuxResult};
+use axhal::paging::{MappingFlags, PageTable};
 use axtask::{TaskExtRef, current};
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, PageIter4K, VirtAddr};
 
 use core::{alloc::Layout, ffi::c_char};
 
-fn check_region(start: VirtAddr, layout: Layout) -> LinuxResult<()> {
+fn check_page(pt: &PageTable, page: VirtAddr, access_flags: MappingFlags) -> LinuxResult<()> {
+    let Ok((_, flags, _)) = pt.query(page) else {
+        return Err(LinuxError::EFAULT);
+    };
+    if !flags.contains(access_flags) {
+        return Err(LinuxError::EFAULT);
+    }
+    Ok(())
+}
+
+fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> LinuxResult<()> {
     let align = layout.align();
     if start.as_usize() & (align - 1) != 0 {
         return Err(LinuxError::EFAULT);
@@ -19,15 +30,13 @@ fn check_region(start: VirtAddr, layout: Layout) -> LinuxResult<()> {
     let page_start = start.align_down_4k();
     let page_end = (start + layout.size()).align_up_4k();
     for page in PageIter4K::new(page_start, page_end).unwrap() {
-        if pt.query(page).is_err() {
-            return Err(LinuxError::EFAULT);
-        }
+        check_page(pt, page, access_flags)?;
     }
 
     Ok(())
 }
 
-fn check_cstr(start: VirtAddr) -> LinuxResult<()> {
+fn check_cstr(start: VirtAddr, access_flags: MappingFlags) -> LinuxResult<()> {
     // TODO: see check_region
     let task = current();
     let aspace = task.task_ext().aspace.lock();
@@ -35,9 +44,7 @@ fn check_cstr(start: VirtAddr) -> LinuxResult<()> {
 
     let mut it = start;
     let mut page = it.align_down_4k();
-    if pt.query(page).is_err() {
-        return Err(LinuxError::EFAULT);
-    }
+    check_page(pt, page, access_flags)?;
     page += PAGE_SIZE_4K;
     loop {
         if unsafe { *it.as_ptr_of::<c_char>() } == 0 {
@@ -46,9 +53,7 @@ fn check_cstr(start: VirtAddr) -> LinuxResult<()> {
 
         it += 1;
         if it == page {
-            if pt.query(page).is_err() {
-                return Err(LinuxError::EFAULT);
-            }
+            check_page(pt, page, access_flags)?;
             page += PAGE_SIZE_4K;
         }
     }
@@ -64,6 +69,8 @@ fn check_cstr(start: VirtAddr) -> LinuxResult<()> {
 /// the current task's address space, and raises EFAULT if not.
 pub trait PtrWrapper<T>: Sized {
     type Ptr;
+
+    const ACCESS_FLAGS: MappingFlags;
 
     /// Unwrap the pointer to the inner type.
     ///
@@ -82,28 +89,36 @@ pub trait PtrWrapper<T>: Sized {
     /// Get the pointer as a raw pointer to `T`, validating the memory
     /// region given by the layout.
     fn get_as(self, layout: Layout) -> LinuxResult<Self::Ptr> {
-        check_region(self.address(), layout)?;
+        check_region(self.address(), layout, Self::ACCESS_FLAGS)?;
         unsafe { Ok(self.into_inner()) }
     }
 
     /// Get the pointer as a raw pointer to `T`, validating the memory
     /// region specified by the size.
     fn get_as_bytes(self, size: usize) -> LinuxResult<Self::Ptr> {
-        check_region(self.address(), Layout::from_size_align(size, 1).unwrap())?;
+        check_region(
+            self.address(),
+            Layout::from_size_align(size, 1).unwrap(),
+            Self::ACCESS_FLAGS,
+        )?;
         unsafe { Ok(self.into_inner()) }
     }
 
     /// Get the pointer as a raw pointer to `T`, validating the memory
     /// region given by the layout of `[T; len]`.
     fn get_as_array(self, len: usize) -> LinuxResult<Self::Ptr> {
-        check_region(self.address(), Layout::array::<T>(len).unwrap())?;
+        check_region(
+            self.address(),
+            Layout::array::<T>(len).unwrap(),
+            Self::ACCESS_FLAGS,
+        )?;
         unsafe { Ok(self.into_inner()) }
     }
 
     /// Get the pointer as a raw pointer to `T`, validating the memory
     /// region specified by the size of a C string.
     fn get_as_cstr(self) -> LinuxResult<Self::Ptr> {
-        check_cstr(self.address())?;
+        check_cstr(self.address(), Self::ACCESS_FLAGS)?;
         unsafe { Ok(self.into_inner()) }
     }
 }
@@ -122,6 +137,8 @@ impl<T> From<usize> for UserPtr<T> {
 
 impl<T> PtrWrapper<T> for UserPtr<T> {
     type Ptr = *mut T;
+
+    const ACCESS_FLAGS: MappingFlags = MappingFlags::READ.union(MappingFlags::WRITE);
 
     unsafe fn into_inner(self) -> Self::Ptr {
         self.0
@@ -146,6 +163,8 @@ impl<T> From<usize> for UserConstPtr<T> {
 
 impl<T> PtrWrapper<T> for UserConstPtr<T> {
     type Ptr = *const T;
+
+    const ACCESS_FLAGS: MappingFlags = MappingFlags::READ;
 
     unsafe fn into_inner(self) -> Self::Ptr {
         self.0
