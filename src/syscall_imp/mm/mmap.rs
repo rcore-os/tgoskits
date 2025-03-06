@@ -4,7 +4,10 @@ use axhal::paging::MappingFlags;
 use axtask::{TaskExtRef, current};
 use memory_addr::{VirtAddr, VirtAddrRange};
 
-use crate::syscall_body;
+use crate::{
+    ptr::{PtrWrapper, UserPtr},
+    syscall_body,
+};
 
 bitflags::bitflags! {
     /// permissions for sys_mmap
@@ -59,7 +62,7 @@ bitflags::bitflags! {
 }
 
 pub(crate) fn sys_mmap(
-    mut addr: *mut usize,
+    addr: UserPtr<usize>,
     length: usize,
     prot: i32,
     flags: i32,
@@ -67,6 +70,9 @@ pub(crate) fn sys_mmap(
     offset: isize,
 ) -> usize {
     syscall_body!(sys_mmap, {
+        // Safety: addr is used for mapping, and we won't directly access it.
+        let mut addr = unsafe { addr.into_inner() };
+
         let curr = current();
         let curr_ext = curr.task_ext();
         let mut aspace = curr_ext.aspace.lock();
@@ -147,8 +153,11 @@ pub(crate) fn sys_mmap(
     })
 }
 
-pub(crate) fn sys_munmap(addr: *mut usize, mut length: usize) -> i32 {
+pub(crate) fn sys_munmap(addr: UserPtr<usize>, mut length: usize) -> i32 {
     syscall_body!(sys_munmap, {
+        // Safety: addr is used for mapping, and we won't directly access it.
+        let addr = unsafe { addr.into_inner() };
+
         let curr = current();
         let curr_ext = curr.task_ext();
         let mut aspace = curr_ext.aspace.lock();

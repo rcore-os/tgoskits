@@ -1,8 +1,11 @@
-use core::ffi::c_void;
+use core::ffi::c_char;
 
 use axerrno::LinuxError;
 
-use crate::syscall_body;
+use crate::{
+    ptr::{PtrWrapper, UserConstPtr, UserPtr},
+    syscall_body, syscall_unwrap,
+};
 
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
@@ -70,8 +73,8 @@ impl From<arceos_posix_api::ctypes::stat> for Kstat {
     }
 }
 
-pub(crate) fn sys_fstat(fd: i32, kstatbuf: *mut c_void) -> i32 {
-    let kstatbuf = kstatbuf as *mut Kstat;
+pub(crate) fn sys_fstat(fd: i32, kstatbuf: UserPtr<Kstat>) -> i32 {
+    let kstatbuf = syscall_unwrap!(kstatbuf.get());
     let mut statbuf = arceos_posix_api::ctypes::stat::default();
 
     if unsafe {
@@ -149,10 +152,10 @@ pub struct StatX {
 
 pub(crate) fn sys_statx(
     dirfd: i32,
-    pathname: *const u8,
+    pathname: UserConstPtr<c_char>,
     flags: u32,
     _mask: u32,
-    statxbuf: *mut c_void,
+    statxbuf: UserPtr<StatX>,
 ) -> i32 {
     // `statx()` uses pathname, dirfd, and flags to identify the target
     // file in one of the following ways:
@@ -182,7 +185,7 @@ pub(crate) fn sys_statx(
     //        file descriptor dirfd.
 
     syscall_body!(sys_statx, {
-        let path = arceos_posix_api::char_ptr_to_str(pathname as *const _)?;
+        let path = arceos_posix_api::char_ptr_to_str(pathname.get_as_cstr()?)?;
 
         const AT_EMPTY_PATH: u32 = 0x1000;
         if path.is_empty() {
@@ -195,7 +198,7 @@ pub(crate) fn sys_statx(
             if res < 0 {
                 return Err(LinuxError::try_from(-res).unwrap());
             }
-            let statx = unsafe { &mut *(statxbuf as *mut StatX) };
+            let statx = unsafe { &mut *statxbuf.get()? };
             statx.stx_blksize = status.st_blksize as u32;
             statx.stx_attributes = status.st_mode as u64;
             statx.stx_nlink = status.st_nlink;

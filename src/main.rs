@@ -10,10 +10,11 @@ extern crate axstd;
 mod ctypes;
 
 mod mm;
+mod ptr;
 mod syscall_imp;
 mod task;
-use alloc::{string::ToString, sync::Arc, vec};
 
+use alloc::{string::ToString, sync::Arc, vec};
 use axhal::arch::UspaceContext;
 use axstd::println;
 use axsync::Mutex;
