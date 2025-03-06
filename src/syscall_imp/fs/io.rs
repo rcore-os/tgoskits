@@ -29,7 +29,7 @@ pub(crate) fn sys_openat(
     modes: mode_t,
 ) -> isize {
     let path = syscall_unwrap!(path.get_as_cstr());
-    api::sys_openat(dirfd, path, flags, modes) as _
+    api::sys_openat(dirfd, path.as_ptr(), flags, modes) as _
 }
 
 #[cfg(target_arch = "x86_64")]

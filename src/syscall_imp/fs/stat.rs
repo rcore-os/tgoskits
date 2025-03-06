@@ -3,8 +3,7 @@ use core::ffi::c_char;
 use axerrno::LinuxError;
 
 use crate::{
-    ptr::{PtrWrapper, UserConstPtr, UserPtr},
-    syscall_body, syscall_unwrap,
+    ptr::{PtrWrapper, UserConstPtr, UserPtr}, syscall_body, syscall_imp::read_path_str, syscall_unwrap
 };
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -185,7 +184,7 @@ pub(crate) fn sys_statx(
     //        file descriptor dirfd.
 
     syscall_body!(sys_statx, {
-        let path = arceos_posix_api::char_ptr_to_str(pathname.get_as_cstr()?)?;
+        let path = read_path_str(pathname)?;
 
         const AT_EMPTY_PATH: u32 = 0x1000;
         if path.is_empty() {

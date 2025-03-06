@@ -8,6 +8,7 @@ use crate::{
     ctypes::{WaitFlags, WaitStatus},
     ptr::{PtrWrapper, UserConstPtr, UserPtr},
     syscall_body,
+    syscall_imp::read_path_str,
     task::wait_pid,
 };
 
@@ -176,7 +177,7 @@ pub fn sys_execve(
     envp: UserConstPtr<usize>,
 ) -> isize {
     syscall_body!(sys_execve, {
-        let path_str = arceos_posix_api::char_ptr_to_str(path.get_as_cstr()?)?;
+        let path_str = read_path_str(path)?;
 
         info!("execve: {:?}", path_str);
         if path_str.split('/').filter(|s| !s.is_empty()).count() > 1 {

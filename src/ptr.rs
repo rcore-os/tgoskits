@@ -3,7 +3,7 @@ use axhal::paging::{MappingFlags, PageTable};
 use axtask::{TaskExtRef, current};
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, PageIter4K, VirtAddr};
 
-use core::{alloc::Layout, ffi::c_char};
+use core::{alloc::Layout, ffi::CStr, slice};
 
 fn check_page(pt: &PageTable, page: VirtAddr, access_flags: MappingFlags) -> LinuxResult<()> {
     let Ok((_, flags, _)) = pt.query(page) else {
@@ -36,29 +36,36 @@ fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> 
     Ok(())
 }
 
-fn check_cstr(start: VirtAddr, access_flags: MappingFlags) -> LinuxResult<()> {
+fn check_cstr(start: VirtAddr, access_flags: MappingFlags) -> LinuxResult<&'static CStr> {
     // TODO: see check_region
     let task = current();
     let aspace = task.task_ext().aspace.lock();
     let pt = aspace.page_table();
 
-    let mut it = start;
-    let mut page = it.align_down_4k();
+    let mut page = start.align_down_4k();
     check_page(pt, page, access_flags)?;
     page += PAGE_SIZE_4K;
-    loop {
-        if unsafe { *it.as_ptr_of::<c_char>() } == 0 {
-            break;
-        }
 
-        it += 1;
-        if it == page {
+    let start: *const u8 = start.as_ptr();
+    let mut len = 0;
+
+    loop {
+        // SAFETY: Outer caller has provided a pointer to a valid C string.
+        let ptr = unsafe { start.add(len) };
+        if ptr == page.as_ptr() {
             check_page(pt, page, access_flags)?;
             page += PAGE_SIZE_4K;
         }
+
+        // SAFETY: The pointer is valid and points to a valid memory region.
+        if unsafe { *ptr } == 0 {
+            break;
+        }
+        len += 1;
     }
 
-    Ok(())
+    // SAFETY: We've checked that the memory region contains a valid C string.
+    Ok(unsafe { CStr::from_bytes_with_nul_unchecked(slice::from_raw_parts(start, len + 1)) })
 }
 
 /// A trait representing a pointer in user space, which can be converted to a
@@ -115,11 +122,10 @@ pub trait PtrWrapper<T>: Sized {
         unsafe { Ok(self.into_inner()) }
     }
 
-    /// Get the pointer as a raw pointer to `T`, validating the memory
-    /// region specified by the size of a C string.
-    fn get_as_cstr(self) -> LinuxResult<Self::Ptr> {
-        check_cstr(self.address(), Self::ACCESS_FLAGS)?;
-        unsafe { Ok(self.into_inner()) }
+    /// Get the pointer as `&CStr`, validating the memory region specified by
+    /// the size of a C string.
+    fn get_as_cstr(self) -> LinuxResult<&'static CStr> {
+        check_cstr(self.address(), Self::ACCESS_FLAGS)
     }
 }
 
