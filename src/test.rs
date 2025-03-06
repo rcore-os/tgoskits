@@ -3,8 +3,8 @@ use memory_addr::{pa, va};
 /// A demonstration of the `memory` API implementation.
 #[crate::api_mod_impl(crate::memory)]
 mod memory_impl {
-    use memory_addr::{pa, va, PhysAddr, VirtAddr};
     use core::sync::atomic::AtomicUsize;
+    use memory_addr::{PhysAddr, VirtAddr, pa, va};
 
     static ALLOCATED: AtomicUsize = AtomicUsize::new(0);
     static RETURNED_SUM: AtomicUsize = AtomicUsize::new(0);
@@ -20,6 +20,9 @@ mod memory_impl {
         RETURNED_SUM.fetch_add(addr.as_usize(), core::sync::atomic::Ordering::SeqCst);
     }
 
+    /// Get the sum of all returned physical addresses.
+    ///
+    /// Note that this function demonstrates that non-API functions work well in a module with the `api_mod_impl` attribute.
     pub fn get_returned_sum() -> usize {
         RETURNED_SUM.load(core::sync::atomic::Ordering::SeqCst)
     }

@@ -1,8 +1,8 @@
 use proc_macro::TokenStream as TokenStream1;
-use proc_macro_crate::{crate_name, FoundCrate};
+use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
-use syn::{spanned::Spanned, FnArg, Ident, Path};
+use syn::{FnArg, Ident, Path, spanned::Spanned};
 
 mod items;
 
@@ -164,7 +164,7 @@ fn process_api_mod_impl(implementee: Path, input: ItemApiModImpl) -> TokenStream
             #sig #body
         });
     }
-    
+
     quote! {
         #(#attrs)*
         #vis #mod_token #mod_ident {
@@ -187,5 +187,9 @@ pub fn api_mod(input: TokenStream1) -> TokenStream1 {
 
 #[proc_macro_attribute]
 pub fn api_mod_impl(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
-    process_api_mod_impl(syn::parse_macro_input!(attr as Path), syn::parse_macro_input!(input as ItemApiModImpl)).into()
+    process_api_mod_impl(
+        syn::parse_macro_input!(attr as Path),
+        syn::parse_macro_input!(input as ItemApiModImpl),
+    )
+    .into()
 }
