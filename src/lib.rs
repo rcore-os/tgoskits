@@ -2,6 +2,7 @@
 
 #![cfg_attr(not(doc), no_std)]
 #![feature(doc_auto_cfg)]
+#![feature(maybe_uninit_slice)]
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
@@ -22,6 +23,107 @@ use alloc::{string::String, vec::Vec};
 
 use axerrno::ax_err;
 
+/// Default [`Read::read_to_end`] implementation with optional size hint.
+///
+/// Adapted from [`std::io::default_read_to_end`].
+///
+/// [`std::io::default_read_to_end`]: https://github.com/rust-lang/rust/blob/30f168ef811aec63124eac677e14699baa9395bd/library/std/src/io/mod.rs#L409
+#[cfg(feature = "alloc")]
+pub fn default_read_to_end<R: Read + ?Sized>(
+    r: &mut R,
+    buf: &mut Vec<u8>,
+    size_hint: Option<usize>,
+) -> Result<usize> {
+    const DEFAULT_BUF_SIZE: usize = 1024;
+
+    let start_len = buf.len();
+    let start_cap = buf.capacity();
+    // Optionally limit the maximum bytes read on each iteration.
+    // This adds an arbitrary fiddle factor to allow for more data than we expect.
+    let mut max_read_size = size_hint
+        .and_then(|s| {
+            s.checked_add(1024)?
+                .checked_next_multiple_of(DEFAULT_BUF_SIZE)
+        })
+        .unwrap_or(DEFAULT_BUF_SIZE);
+
+    const PROBE_SIZE: usize = 32;
+
+    fn small_probe_read<R: Read + ?Sized>(r: &mut R, buf: &mut Vec<u8>) -> Result<usize> {
+        let mut probe = [0u8; PROBE_SIZE];
+
+        let n = r.read(&mut probe)?;
+        buf.extend_from_slice(&probe[..n]);
+        Ok(n)
+    }
+
+    if (size_hint.is_none() || size_hint == Some(0)) && buf.capacity() - buf.len() < PROBE_SIZE {
+        let read = small_probe_read(r, buf)?;
+
+        if read == 0 {
+            return Ok(0);
+        }
+    }
+
+    let mut initialized = 0; // Extra initialized bytes from previous loop iteration
+
+    loop {
+        if buf.len() == buf.capacity() && buf.capacity() == start_cap {
+            // The buffer might be an exact fit. Let's read into a probe buffer
+            // and see if it returns `Ok(0)`. If so, we've avoided an
+            // unnecessary doubling of the capacity. But if not, append the
+            // probe buffer to the primary buffer and let its capacity grow.
+            let read = small_probe_read(r, buf)?;
+
+            if read == 0 {
+                return Ok(buf.len() - start_len);
+            }
+        }
+
+        if buf.len() == buf.capacity() {
+            // buf is full, need more space
+            if let Err(e) = buf.try_reserve(PROBE_SIZE) {
+                return ax_err!(NoMemory, e);
+            }
+        }
+
+        let mut spare = buf.spare_capacity_mut();
+        let buf_len = spare.len().min(max_read_size);
+        spare = &mut spare[..buf_len];
+
+        let uninit = &mut spare[initialized..];
+        // SAFETY: 0 is a valid value for MaybeUninit<u8> and the length matches the allocation
+        // since it is comes from a slice reference.
+        unsafe {
+            core::ptr::write_bytes(uninit.as_mut_ptr(), 0, uninit.len());
+        }
+
+        // SAFETY: spare is fully initialized
+        let unfilled = unsafe { spare.assume_init_mut() };
+
+        let bytes_read = r.read(unfilled)?;
+        // SAFETY: bytes_read is guaranteed to be less than or equal to spare.len()
+        unsafe {
+            let new_len = buf.len() + bytes_read;
+            buf.set_len(new_len);
+        }
+
+        if bytes_read == 0 {
+            return Ok(buf.len() - start_len);
+        }
+
+        initialized = buf_len - bytes_read;
+
+        if size_hint.is_none() {
+            // we have passed a larger buffer than previously and the
+            // reader still hasn't returned a short read
+            if buf_len >= max_read_size && bytes_read == buf_len {
+                max_read_size = max_read_size.saturating_mul(2);
+            }
+        }
+    }
+}
+
 /// The `Read` trait allows for reading bytes from a source.
 pub trait Read {
     /// Pull some bytes from this source into the specified buffer, returning
@@ -31,15 +133,7 @@ pub trait Read {
     /// Read all bytes until EOF in this source, placing them into `buf`.
     #[cfg(feature = "alloc")]
     fn read_to_end(&mut self, buf: &mut Vec<u8>) -> Result<usize> {
-        let start_len = buf.len();
-        let mut probe = [0u8; 32];
-        loop {
-            match self.read(&mut probe) {
-                Ok(0) => return Ok(buf.len() - start_len),
-                Ok(n) => buf.extend_from_slice(&probe[..n]),
-                Err(e) => return Err(e),
-            }
-        }
+        default_read_to_end(self, buf, None)
     }
 
     /// Read all bytes until EOF in this source, appending them to `buf`.
