@@ -5,7 +5,12 @@ use arceos_posix_api::AT_FDCWD;
 use axerrno::{AxError, LinuxError};
 use axtask::{TaskExtRef, current};
 
-use crate::syscall_body;
+use crate::{
+    ptr::{PtrWrapper, UserConstPtr, UserPtr},
+    syscall_body,
+    syscall_imp::read_path_str,
+    syscall_unwrap,
+};
 
 /// The ioctl() system call manipulates the underlying device parameters
 /// of special files.
@@ -15,22 +20,15 @@ use crate::syscall_body;
 /// * `op` - The request code. It is of type unsigned long in glibc and BSD,
 ///   and of type int in musl and other UNIX systems.
 /// * `argp` - The argument to the request. It is a pointer to a memory location
-pub(crate) fn sys_ioctl(_fd: i32, _op: usize, _argp: *mut c_void) -> i32 {
+pub(crate) fn sys_ioctl(_fd: i32, _op: usize, _argp: UserPtr<c_void>) -> i32 {
     syscall_body!(sys_ioctl, {
         warn!("Unimplemented syscall: SYS_IOCTL");
         Ok(0)
     })
 }
 
-pub(crate) fn sys_chdir(path: *const c_char) -> c_int {
-    let path = match arceos_posix_api::char_ptr_to_str(path) {
-        Ok(path) => path,
-        Err(err) => {
-            warn!("Failed to convert path: {err:?}");
-            return -1;
-        }
-    };
-
+pub(crate) fn sys_chdir(path: UserConstPtr<c_char>) -> c_int {
+    let path = syscall_unwrap!(read_path_str(path));
     axfs::api::set_current_dir(path)
         .map(|_| 0)
         .unwrap_or_else(|err| {
@@ -39,14 +37,8 @@ pub(crate) fn sys_chdir(path: *const c_char) -> c_int {
         })
 }
 
-pub(crate) fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> c_int {
-    let path = match arceos_posix_api::char_ptr_to_str(path) {
-        Ok(path) => path,
-        Err(err) => {
-            warn!("Failed to convert path: {err:?}");
-            return -1;
-        }
-    };
+pub(crate) fn sys_mkdirat(dirfd: i32, path: UserConstPtr<c_char>, mode: u32) -> c_int {
+    let path = syscall_unwrap!(read_path_str(path));
 
     if !path.starts_with("/") && dirfd != AT_FDCWD as i32 {
         warn!("unsupported.");
@@ -157,7 +149,9 @@ impl<'a> DirBuffer<'a> {
     }
 }
 
-pub(crate) fn sys_getdents64(fd: i32, buf: *mut c_void, len: usize) -> isize {
+pub(crate) fn sys_getdents64(fd: i32, buf: UserPtr<c_void>, len: usize) -> isize {
+    let buf = syscall_unwrap!(buf.get_as_bytes(len));
+
     if len < DirEnt::FIXED_SIZE {
         warn!("Buffer size too small: {len}");
         return -1;
@@ -202,6 +196,7 @@ pub(crate) fn sys_getdents64(fd: i32, buf: *mut c_void, len: usize) -> isize {
     };
 
     axfs::api::read_dir(&path)
+        .map_err(|_| LinuxError::EINVAL as isize)
         .map(|entries| {
             let mut total_size = initial_offset as usize;
             let mut current_offset = initial_offset;
@@ -232,6 +227,7 @@ pub(crate) fn sys_getdents64(fd: i32, buf: *mut c_void, len: usize) -> isize {
                 let terminal = DirEnt::new(1, current_offset, 0, FileType::Reg);
                 let _ = buffer.write_entry(terminal, &[]);
             }
+
             total_size as isize
         })
         .unwrap_or(LinuxError::ENOENT as isize)
@@ -244,23 +240,30 @@ pub(crate) fn sys_getdents64(fd: i32, buf: *mut c_void, len: usize) -> isize {
 /// return value: return 0 when success, else return -1.
 pub(crate) fn sys_linkat(
     old_dirfd: i32,
-    old_path: *const u8,
+    old_path: UserConstPtr<c_char>,
     new_dirfd: i32,
-    new_path: *const u8,
+    new_path: UserConstPtr<c_char>,
     flags: i32,
 ) -> i32 {
+    let old_path = syscall_unwrap!(old_path.get_as_cstr());
+    let new_path = syscall_unwrap!(new_path.get_as_cstr());
+
     if flags != 0 {
         warn!("Unsupported flags: {flags}");
     }
 
     // handle old path
-    arceos_posix_api::handle_file_path(old_dirfd as isize, Some(old_path), false)
+    arceos_posix_api::handle_file_path(old_dirfd as isize, Some(old_path.as_ptr() as _), false)
         .inspect_err(|err| warn!("Failed to convert new path: {err:?}"))
         .and_then(|old_path| {
             //handle new path
-            arceos_posix_api::handle_file_path(new_dirfd as isize, Some(new_path), false)
-                .inspect_err(|err| warn!("Failed to convert new path: {err:?}"))
-                .map(|new_path| (old_path, new_path))
+            arceos_posix_api::handle_file_path(
+                new_dirfd as isize,
+                Some(new_path.as_ptr() as _),
+                false,
+            )
+            .inspect_err(|err| warn!("Failed to convert new path: {err:?}"))
+            .map(|new_path| (old_path, new_path))
         })
         .and_then(|(old_path, new_path)| {
             arceos_posix_api::HARDLINK_MANAGER
@@ -277,10 +280,12 @@ pub(crate) fn sys_linkat(
 /// path: the name of link to be removed
 /// flags: can be 0 or AT_REMOVEDIR
 /// return 0 when success, else return -1
-pub fn sys_unlinkat(dir_fd: isize, path: *const u8, flags: usize) -> isize {
+pub fn sys_unlinkat(dir_fd: isize, path: UserConstPtr<c_char>, flags: usize) -> isize {
+    let path = syscall_unwrap!(path.get_as_cstr());
+
     const AT_REMOVEDIR: usize = 0x200;
 
-    arceos_posix_api::handle_file_path(dir_fd, Some(path), false)
+    arceos_posix_api::handle_file_path(dir_fd, Some(path.as_ptr() as _), false)
         .inspect_err(|e| warn!("unlinkat error: {:?}", e))
         .and_then(|path| {
             if flags == AT_REMOVEDIR {
@@ -307,6 +312,12 @@ pub fn sys_unlinkat(dir_fd: isize, path: *const u8, flags: usize) -> isize {
         .unwrap_or(-1)
 }
 
-pub(crate) fn sys_getcwd(buf: *mut c_char, size: usize) -> *mut c_char {
-    arceos_posix_api::sys_getcwd(buf, size)
+pub(crate) fn sys_getcwd(buf: UserPtr<c_char>, size: usize) -> *mut c_char {
+    syscall_body!(
+        sys_getcwd,
+        Ok(arceos_posix_api::sys_getcwd(
+            buf.get_as_cstr()?.as_ptr() as _,
+            size
+        ))
+    )
 }

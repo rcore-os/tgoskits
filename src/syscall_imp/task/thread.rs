@@ -6,7 +6,9 @@ use num_enum::TryFromPrimitive;
 
 use crate::{
     ctypes::{WaitFlags, WaitStatus},
+    ptr::{PtrWrapper, UserConstPtr, UserPtr},
     syscall_body,
+    syscall_imp::read_path_str,
     task::wait_pid,
 };
 
@@ -65,10 +67,11 @@ pub(crate) fn sys_exit_group(status: i32) -> ! {
 /// To set the clear_child_tid field in the task extended data.
 ///
 /// The set_tid_address() always succeeds
-pub(crate) fn sys_set_tid_address(tid_ptd: *const i32) -> isize {
+pub(crate) fn sys_set_tid_address(tid_ptd: UserConstPtr<i32>) -> isize {
     syscall_body!(sys_set_tid_address, {
         let curr = current();
-        curr.task_ext().set_clear_child_tid(tid_ptd as _);
+        curr.task_ext()
+            .set_clear_child_tid(tid_ptd.address().as_ptr() as _);
         Ok(curr.id().as_u64() as isize)
     })
 }
@@ -138,9 +141,10 @@ pub(crate) fn sys_clone(
     })
 }
 
-pub(crate) fn sys_wait4(pid: i32, exit_code_ptr: *mut i32, option: u32) -> isize {
+pub(crate) fn sys_wait4(pid: i32, exit_code_ptr: UserPtr<i32>, option: u32) -> isize {
     let option_flag = WaitFlags::from_bits(option).unwrap();
     syscall_body!(sys_wait4, {
+        let exit_code_ptr = exit_code_ptr.get()?;
         loop {
             let answer = wait_pid(pid, exit_code_ptr);
             match answer {
@@ -167,9 +171,13 @@ pub(crate) fn sys_wait4(pid: i32, exit_code_ptr: *mut i32, option: u32) -> isize
     })
 }
 
-pub fn sys_execve(path: *const c_char, argv: *const usize, envp: *const usize) -> isize {
+pub fn sys_execve(
+    path: UserConstPtr<c_char>,
+    argv: UserConstPtr<usize>,
+    envp: UserConstPtr<usize>,
+) -> isize {
     syscall_body!(sys_execve, {
-        let path_str = arceos_posix_api::char_ptr_to_str(path)?;
+        let path_str = read_path_str(path)?;
 
         info!("execve: {:?}", path_str);
         if path_str.split('/').filter(|s| !s.is_empty()).count() > 1 {
@@ -177,6 +185,8 @@ pub fn sys_execve(path: *const c_char, argv: *const usize, envp: *const usize) -
             return Err::<isize, _>(LinuxError::EINVAL);
         }
 
+        let argv = argv.get()?;
+        let envp = envp.get()?;
         let argv_valid = unsafe { argv.is_null() || *argv == 0 };
         let envp_valid = unsafe { envp.is_null() || *envp == 0 };
 

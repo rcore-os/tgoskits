@@ -1,3 +1,8 @@
+use crate::{
+    ptr::{PtrWrapper, UserPtr},
+    syscall_body,
+};
+
 #[repr(C)]
 pub struct UtsName {
     /// sysname
@@ -35,8 +40,9 @@ impl UtsName {
     }
 }
 
-pub fn sys_uname(name: *mut UtsName) -> i64 {
-    let utsname = unsafe { &mut *name };
-    *utsname = UtsName::default();
-    0
+pub fn sys_uname(name: UserPtr<UtsName>) -> i64 {
+    syscall_body!(sys_uname, {
+        unsafe { *name.get()? = UtsName::default() };
+        Ok(0)
+    })
 }
