@@ -1,12 +1,12 @@
 use proc_macro::TokenStream as TokenStream1;
 use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Span, TokenStream};
-use quote::quote;
+use quote::{quote, quote_spanned};
 use syn::{FnArg, Ident, Path, spanned::Spanned};
 
 mod items;
 
-use items::{ApiModImplItem, ApiModItem, ItemApiMod, ItemApiModImpl, ItemApiModList};
+use items::{ApiModItem, ItemApiModDef, ItemApiModImpl};
 
 /// Find the path to the `axvisor_api` crate.
 fn find_axvisor_api_crate() -> TokenStream {
@@ -37,7 +37,7 @@ fn get_api_trait_name(module_name: impl AsRef<str>, span: Span) -> Ident {
     Ident::new(&trait_name, span)
 }
 
-fn process_api_mod(module: ItemApiMod, axvisor_api_path: &TokenStream) -> TokenStream {
+fn process_api_mod(module: ItemApiModDef) -> TokenStream {
     let attrs = &module.attrs;
     let vis = &module.vis;
     let mod_token = &module.mod_token;
@@ -50,7 +50,7 @@ fn process_api_mod(module: ItemApiMod, axvisor_api_path: &TokenStream) -> TokenS
     for item in &module.items {
         match item {
             ApiModItem::Regular(item) => regular_items.push(item),
-            ApiModItem::ApiFnDef(item) => api_fn_items.push(item),
+            ApiModItem::ApiFn(item) => api_fn_items.push(item),
         }
     }
 
@@ -62,6 +62,8 @@ fn process_api_mod(module: ItemApiMod, axvisor_api_path: &TokenStream) -> TokenS
             }
         };
     }
+
+    let axvisor_api_path = find_axvisor_api_crate();
 
     // Generate the API trait
     let trait_ident = get_api_trait_name(mod_ident.to_string(), mod_ident.span());
@@ -120,17 +122,6 @@ fn process_api_mod(module: ItemApiMod, axvisor_api_path: &TokenStream) -> TokenS
     }
 }
 
-fn process_api_mods(module: ItemApiModList) -> TokenStream {
-    let mut output = TokenStream::new();
-    let axvisor_api_path = find_axvisor_api_crate();
-
-    for module in module.items {
-        output.extend(process_api_mod(module, &axvisor_api_path));
-    }
-
-    output
-}
-
 fn get_implementee_reuse_ident(implementee: &Path) -> Ident {
     let mut ident = String::from(if implementee.leading_colon.is_some() {
         "__axvisor_api_implementee_abs"
@@ -167,8 +158,8 @@ fn process_api_mod_impl(implementee: Path, input: ItemApiModImpl) -> TokenStream
     let mut api_fn_items = vec![];
     for item in input.items {
         match item {
-            ApiModImplItem::Regular(item) => regular_items.push(item),
-            ApiModImplItem::ApiFnImpl(item) => api_fn_items.push(item),
+            ApiModItem::Regular(item) => regular_items.push(item),
+            ApiModItem::ApiFn(item) => api_fn_items.push(item),
         }
     }
 
@@ -176,7 +167,7 @@ fn process_api_mod_impl(implementee: Path, input: ItemApiModImpl) -> TokenStream
     for api_fn_item in api_fn_items {
         let attrs = &api_fn_item.attrs;
         let sig = &api_fn_item.sig;
-        let body = &api_fn_item.block;
+        let body = &api_fn_item.body;
 
         api_fn_impls.extend(quote! {
             #(#attrs)*
@@ -202,9 +193,15 @@ fn process_api_mod_impl(implementee: Path, input: ItemApiModImpl) -> TokenStream
     }
 }
 
-#[proc_macro]
-pub fn api_mod(input: TokenStream1) -> TokenStream1 {
-    process_api_mods(syn::parse_macro_input!(input as ItemApiModList)).into()
+#[proc_macro_attribute]
+pub fn api_mod(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
+    if !attr.is_empty() {
+        return (quote_spanned! {
+            TokenStream::from(attr).span() => compile_error!("`api_mod` attribute does not accept any arguments")
+        }).into();
+    }
+
+    process_api_mod(syn::parse_macro_input!(input as ItemApiModDef)).into()
 }
 
 #[proc_macro_attribute]
