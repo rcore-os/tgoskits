@@ -121,9 +121,6 @@ jobs:
     - uses: ./.github/workflows/actions/setup-qemu
       with:
         qemu-version: ${{ env.qemu-version }}
-    - name: Build rustup target
-      if: ${{ matrix.arch != 'riscv64' }}
-      run: rustup target add ${{ matrix.arch }}-unknown-linux-musl
     - name: Run tests for oscomp musl testcases
       continue-on-error: true
       run: make oscomp_test ARCH=${{ matrix.arch }} LIBC=musl
