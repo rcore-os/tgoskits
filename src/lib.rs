@@ -8,14 +8,14 @@
 //!
 //!   these APIs are defined here, should be implemented by the axvisor Hypervisor, and can be use by all components.
 //!
-//! - a standard way to define and implement APIs, including the [`api_mod!`] and the [`api_mod_impl`] attributes, which
+//! - a standard way to define and implement APIs, including the [`api_mod`] and the [`api_mod_impl`] attributes, which
 //!   the components can utilize to define and implement their own APIs.
 //!
 //! # How to define and implement APIs
 //!
 //! ## Define APIs
 //!
-//! To define APIs, you can use the `api_mod!` attribute to define a module containing the API functions. An API
+//! To define APIs, you can use the `api_mod` attribute to define a module containing the API functions. An API
 //! function is defined with the `extern fn` syntax. Note that Vanilla Rust does not support defining extern functions
 //! in such a way, so the definition of the API functions can easily be distinguished from the regular functions.
 //!
@@ -161,36 +161,39 @@ pub mod time {
         nanos_to_ticks(time.as_nanos() as Nanos)
     }
 
-    /// Register a timer
+    /// Register a timer.
     extern fn register_timer(
         deadline: TimeValue,
         callback: Box<dyn FnOnce(TimeValue) + Send + 'static>,
     ) -> CancelToken;
-    /// Cancel a timer
+    /// Cancel a timer.
     extern fn cancel_timer(token: CancelToken);
 }
 
 #[api_mod]
+/// Virtual machine management API.
 pub mod vmm {
-    /// Virtual machine ID
+    /// Virtual machine ID.
     pub type VMId = usize;
-    /// Virtual CPU ID
+    /// Virtual CPU ID.
     pub type VCpuId = usize;
-    /// Interrupt vector
+    /// Interrupt vector.
     pub type InterruptVector = u8;
 
-    /// Get the ID of the current virtual machine
+    /// Get the ID of the current virtual machine.
     extern fn current_vm_id() -> VMId;
-    /// Get the ID of the current virtual CPU
+    /// Get the ID of the current virtual CPU.
     extern fn current_vcpu_id() -> VCpuId;
-
+    /// Get the number of virtual CPUs in a virtual machine.
     extern fn vcpu_num(vm_id: VMId) -> usize;
-
+    /// Get the mask of active virtual CPUs in a virtual machine.
     extern fn active_vcpus(vm_id: VMId) -> usize;
 
-    /// Inject an interrupt to a virtual CPU
+    /// Inject an interrupt to a virtual CPU.
     extern fn inject_interrupt(vm_id: VMId, vcpu_id: VCpuId, vector: InterruptVector);
-    /// TODO: determine whether we can skip this function
+    /// Notify that a virtual CPU timer has expired.
+    /// 
+    /// TODO: determine whether we can skip this function.
     extern fn notify_vcpu_timer_expired(vm_id: VMId, vcpu_id: VCpuId);
 }
 
