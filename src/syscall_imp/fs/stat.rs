@@ -75,15 +75,15 @@ impl From<arceos_posix_api::ctypes::stat> for Kstat {
     }
 }
 
-pub(crate) fn sys_fstat(fd: i32, kstatbuf: UserPtr<Kstat>) -> i32 {
+pub fn sys_fstat(fd: i32, kstatbuf: UserPtr<Kstat>) -> i32 {
     let kstatbuf = syscall_unwrap!(kstatbuf.get());
     let mut statbuf = arceos_posix_api::ctypes::stat::default();
 
-    if unsafe {
+    let result = unsafe {
         arceos_posix_api::sys_fstat(fd, &mut statbuf as *mut arceos_posix_api::ctypes::stat)
-    } < 0
-    {
-        return -1;
+    };
+    if result < 0 {
+        return result;
     }
 
     unsafe {
@@ -91,6 +91,38 @@ pub(crate) fn sys_fstat(fd: i32, kstatbuf: UserPtr<Kstat>) -> i32 {
         kstatbuf.write(kstat);
     }
     0
+}
+
+pub fn sys_fstatat(
+    dir_fd: isize,
+    path: UserConstPtr<c_char>,
+    kstatbuf: UserPtr<Kstat>,
+    _flags: i32,
+) -> i32 {
+    syscall_body!(sys_fstatat, {
+        let path = path.get_as_cstr()?;
+        let path = arceos_posix_api::handle_file_path(dir_fd, Some(path.as_ptr() as _), false)?;
+
+        let kstatbuf = kstatbuf.get()?;
+
+        let mut statbuf = arceos_posix_api::ctypes::stat::default();
+        let result = unsafe {
+            arceos_posix_api::sys_stat(
+                path.as_ptr() as _,
+                &mut statbuf as *mut arceos_posix_api::ctypes::stat,
+            )
+        };
+        if result < 0 {
+            return Ok(result);
+        }
+
+        unsafe {
+            let kstat = Kstat::from(statbuf);
+            kstatbuf.write(kstat);
+        }
+
+        Ok(0)
+    })
 }
 
 #[repr(C)]
@@ -152,7 +184,7 @@ pub struct StatX {
     pub stx_dio_offset_align: u32,
 }
 
-pub(crate) fn sys_statx(
+pub fn sys_statx(
     dirfd: i32,
     pathname: UserConstPtr<c_char>,
     flags: u32,
