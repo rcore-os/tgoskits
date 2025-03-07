@@ -94,7 +94,7 @@ fn handle_syscall(tf: &TrapFrame, syscall_num: usize) -> isize {
         Sysno::getcwd => sys_getcwd(tf.arg0().into(), tf.arg1() as _) as _,
         Sysno::dup => sys_dup(tf.arg0() as _) as _,
         Sysno::dup3 => sys_dup3(tf.arg0() as _, tf.arg1() as _) as _,
-        Sysno::fcntl => sys_fcntl(tf.arg0() as _, tf.arg1() as _, tf.arg2().into()) as _,
+        Sysno::fcntl => sys_fcntl(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _) as _,
         Sysno::clone => sys_clone(
             tf.arg0() as _,
             tf.arg1() as _,
