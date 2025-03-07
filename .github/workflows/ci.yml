@@ -72,7 +72,7 @@ jobs:
       matrix:
         os: [ubuntu-latest]
         arch: [x86_64, riscv64, aarch64, loongarch64]
-        rust-toolchain: [nightly, nightly-2025-01-18]
+        rust-toolchain: [nightly-2025-01-18]
     env:
       qemu-version: 9.2.1
     steps:
@@ -94,5 +94,39 @@ jobs:
       if: ${{ matrix.arch != 'riscv64' }}
       run: rustup target add ${{ matrix.arch }}-unknown-linux-musl
     - name: Run tests for musl applications
-      continue-on-error: ${{ matrix.rust-toolchain == 'nightly' }}
       run: make test ARCH=${{ matrix.arch }}
+
+  test-oscomp:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        arch: [x86_64, riscv64, aarch64, loongarch64]
+        rust-toolchain: [nightly-2025-01-18]
+    env:
+      qemu-version: 9.2.1
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: ${{ matrix.rust-toolchain }}
+        components: rust-src, llvm-tools
+    - uses: Swatinem/rust-cache@v2
+    - run: cargo install cargo-binutils
+    - run: ./scripts/get_deps.sh
+    - uses: ./.github/workflows/actions/setup-musl
+      with:
+        arch: ${{ matrix.arch }}
+    - uses: ./.github/workflows/actions/setup-qemu
+      with:
+        qemu-version: ${{ env.qemu-version }}
+    - name: Build rustup target
+      if: ${{ matrix.arch != 'riscv64' }}
+      run: rustup target add ${{ matrix.arch }}-unknown-linux-musl
+    - name: Run tests for oscomp musl testcases
+      continue-on-error: true
+      run: make oscomp_test ARCH=${{ matrix.arch }} LIBC=musl
+    - name: Run tests for oscomp glibc testcases
+      continue-on-error: true
+      run: make oscomp_test ARCH=${{ matrix.arch }} LIBC=glibc

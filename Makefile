@@ -58,9 +58,12 @@ user_apps:
 test:
 	@./scripts/app_test.sh
 
+oscomp_test:
+	@./scripts/oscomp_test.sh
+
 test_build: ax_root defconfig
 	@cp -r $(PWD)/bin/* /root/.cargo/bin
-	@make -C $(AX_ROOT) A=$(PWD) EXTRA_CONFIG=$(EXTRA_CONFIG) BLK=y NET=y build
+	@make -C $(AX_ROOT) A=$(PWD) EXTRA_CONFIG=$(EXTRA_CONFIG) build
 	@if [ "$(ARCH)" = "riscv64" ]; then \
 		cp $(OUT_BIN) kernel-rv; \
 	else \
@@ -68,7 +71,7 @@ test_build: ax_root defconfig
 	fi
 
 defconfig build run justrun debug disasm: ax_root
-	@make -C $(AX_ROOT) A=$(PWD) BLK=y NET=y EXTRA_CONFIG=$(EXTRA_CONFIG) $@
+	@make -C $(AX_ROOT) A=$(PWD) EXTRA_CONFIG=$(EXTRA_CONFIG) $@
 
 clean: ax_root
 	@make -C $(AX_ROOT) A=$(PWD) ARCH=$(ARCH) clean
