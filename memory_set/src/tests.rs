@@ -1,4 +1,4 @@
-use memory_addr::{MemoryAddr, VirtAddr};
+use memory_addr::{va_range, MemoryAddr, VirtAddr};
 
 use crate::{MappingBackend, MappingError, MemoryArea, MemorySet};
 
@@ -325,4 +325,40 @@ fn test_protect() {
     for addr in 0..MAX_ADDR {
         assert_eq!(pt[addr], 0);
     }
+}
+
+#[test]
+fn test_find_free_area() {
+    let mut set = MockMemorySet::new();
+    let mut pt = [0; MAX_ADDR];
+
+    // Map [0, 0x1000), [0x2000, 0x3000), ..., [0xe000, 0xf000)
+    for start in (0..MAX_ADDR).step_by(0x2000) {
+        assert_ok!(set.map(
+            MemoryArea::new(start.into(), 0x1000, 1, MockBackend),
+            &mut pt,
+            false,
+        ));
+    }
+
+    let addr = set.find_free_area(0.into(), 0x1000, va_range!(0..MAX_ADDR));
+    assert_eq!(addr, Some(0x1000.into()));
+
+    let addr = set.find_free_area(0x800.into(), 0x800, va_range!(0..MAX_ADDR));
+    assert_eq!(addr, Some(0x1000.into()));
+
+    let addr = set.find_free_area(0x1800.into(), 0x800, va_range!(0..MAX_ADDR));
+    assert_eq!(addr, Some(0x1800.into()));
+
+    let addr = set.find_free_area(0x1800.into(), 0x1000, va_range!(0..MAX_ADDR));
+    assert_eq!(addr, Some(0x3000.into()));
+
+    let addr = set.find_free_area(0x2000.into(), 0x1000, va_range!(0..MAX_ADDR));
+    assert_eq!(addr, Some(0x3000.into()));
+
+    let addr = set.find_free_area(0xf000.into(), 0x1000, va_range!(0..MAX_ADDR));
+    assert_eq!(addr, Some(0xf000.into()));
+
+    let addr = set.find_free_area(0xf001.into(), 0x1000, va_range!(0..MAX_ADDR));
+    assert_eq!(addr, None);
 }
