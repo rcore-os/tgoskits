@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 authors = ["Yuekai Jia <equation618@gmail.com>", "aarkegz <aarkegz@gmail.com>"]
 license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
@@ -16,3 +16,4 @@ homepage = "https://github.com/arceos-org/arceos"
 repository = "https://github.com/arceos-org/axmm_crates"
 # keywords = ["let member have their own keywords"]
 categories = ["os", "memory-management", "no-std"]
+rust-version = "1.70.0"

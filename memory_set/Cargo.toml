@@ -11,6 +11,7 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 categories.workspace = true
+rust-version.workspace = true
 
 [dependencies]
-memory_addr = { path = "../memory_addr", version = "0.3.0" }
+memory_addr = { path = "../memory_addr", version = "0.3" }
