@@ -3,6 +3,10 @@ use crate::{
     syscall_body,
 };
 
+pub fn sys_getuid() -> i32 {
+    0
+}
+
 #[repr(C)]
 pub struct UtsName {
     /// sysname

@@ -1,8 +1,8 @@
 mod fs;
 mod mm;
 mod signal;
+mod sys;
 mod task;
-mod user;
 mod utils;
 
 use core::ffi::c_char;
@@ -21,8 +21,8 @@ use syscalls::Sysno;
 use self::fs::*;
 use self::mm::*;
 use self::signal::*;
+use self::sys::*;
 use self::task::*;
-use self::user::*;
 use self::utils::*;
 
 /// Macro to unwrap a LinuxResult<_> into isize, returning -errno on error
