@@ -1,1 +1,1 @@
-./musl/basic/openat
+/musl/busybox sh /musl/libctest_testcode.sh

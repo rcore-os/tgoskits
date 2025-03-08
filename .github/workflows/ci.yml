@@ -121,9 +121,9 @@ jobs:
     - uses: ./.github/workflows/actions/setup-qemu
       with:
         qemu-version: ${{ env.qemu-version }}
+    - name: Build python environment
+      run: sudo apt-get install -y python3 python3-pip
     - name: Run tests for oscomp musl testcases
-      continue-on-error: true
       run: make oscomp_test ARCH=${{ matrix.arch }} LIBC=musl
     - name: Run tests for oscomp glibc testcases
-      continue-on-error: true
       run: make oscomp_test ARCH=${{ matrix.arch }} LIBC=glibc

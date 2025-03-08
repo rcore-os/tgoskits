@@ -31,42 +31,21 @@ if [ "$LIBC" != "musl" ] && [ "$LIBC" != "glibc" ]; then
     exit $S_FAILED
 fi
 
-test_list=(
+# TODO: add more basic testcases
+basic_testlist=(
     "/$LIBC/basic/brk"
     "/$LIBC/basic/chdir"
-    "/$LIBC/basic/clone"
-    "/$LIBC/basic/close"
-    "/$LIBC/basic/dup2"
-    "/$LIBC/basic/dup"
-    "/$LIBC/basic/execve"
-    "/$LIBC/basic/exit"
-    "/$LIBC/basic/fork"
-    "/$LIBC/basic/fstat"
-    "/$LIBC/basic/getcwd"
-    "/$LIBC/basic/getdents"
-    "/$LIBC/basic/getpid"
-    "/$LIBC/basic/getppid"
-    "/$LIBC/basic/gettimeofday"
-    "/$LIBC/basic/mkdir_"
-    "/$LIBC/basic/mmap"
-    "/$LIBC/basic/mount"
-    "/$LIBC/basic/munmap"
-    "/$LIBC/basic/openat"
-    "/$LIBC/basic/open"
-    "/$LIBC/basic/pipe"
-    "/$LIBC/basic/read"
-    "/$LIBC/basic/times"
-    "/$LIBC/basic/umount"
-    "/$LIBC/basic/uname"
-    "/$LIBC/basic/unlink"
-    "/$LIBC/basic/wait"
-    "/$LIBC/basic/waitpid"
-    "/$LIBC/basic/write"
-    "/$LIBC/basic/yield"
-    "/$LIBC/busybox sh /$LIBC/busybox_testcode.sh"
-    "/$LIBC/busybox sh /$LIBC/iozone_testcode.sh"
-    "/$LIBC/busybox sh /$LIBC/lua_testcode.sh"
-    "/$LIBC/busybox sh /$LIBC/libctest_testcode.sh"
+)
+busybox_testlist=("/$LIBC/busybox sh /$LIBC/busybox_testcode.sh")
+iozone_testlist=("/$LIBC/busybox sh /$LIBC/iozone_testcode.sh")
+lua_testlist=("/$LIBC/busybox sh /$LIBC/lua_testcode.sh")
+libctest_testlist=("/$LIBC/busybox sh /$LIBC/libctest_testcode.sh")
+
+testcases_type=(
+    "basic"
+    "busybox"
+    "lua"
+    "libctest"
 )
 
 IMG_URL=https://github.com/Azure-stars/testsuits-for-oskernel/releases/download/v0.1/sdcard-$ARCH.img.gz
@@ -90,11 +69,8 @@ if [ $? -ne 0 ]; then
 fi
 
 function test_one() {
-    local testcase=$1
-    echo $testcase > $ROOT/apps/oscomp/testcase_list
-    # replace '/' in testcase name with '_'
-    testcase=$(echo $testcase | sed 's/\//_/g')
-    local actual="apps/oscomp/actual$testcase.out"
+    local testcase_type=$1
+    local actual="apps/oscomp/actual_$testcase_type.out"
     RUN_TIME=$( { time { timeout --foreground $TIMEOUT make -C "$ROOT" $ARG run > "$actual" ; }; } )
     local res=$?
     if [ $res == 124 ]; then
@@ -116,13 +92,28 @@ function test_one() {
         fi
         echo -e "${RED_C}actual output${END_C}:"
     else
-        rm -f "$actual"
+        local judge_script="${ROOT}apps/oscomp/judge_${testcase_type}.py"
+        python3 $judge_script < "$actual"
+        if [ $? -ne 0 ]; then
+            echo -e "${RED_C}failed!${END_C}"
+            EXIT_STATUS=$S_FAILED
+        else
+            echo -e "${GREEN_C}passed!${END_C} $RUN_TIME"
+            rm -f "$actual"
+        fi
     fi
 }
 
-for t in "${test_list[@]}"; do
-    echo -e "${CYAN_C}Testing${END_C} $t:"
-    test_one $t
+for type in "${testcases_type[@]}"; do
+    declare -n test_list="${type}_testlist"
+    echo -e "${CYAN_C}Testing $type testcases${END_C}"
+
+    # clean the testcase_list file
+    rm -f $ROOT/apps/oscomp/testcase_list
+    for t in "${test_list[@]}"; do
+        echo $t >> $ROOT/apps/oscomp/testcase_list
+    done
+    test_one "$type"
 done
 
 echo -e "test script exited with: $EXIT_STATUS"
