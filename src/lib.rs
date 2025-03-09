@@ -2,7 +2,7 @@
 
 #![cfg_attr(not(doc), no_std)]
 #![feature(doc_auto_cfg)]
-#![feature(maybe_uninit_slice)]
+#![feature(core_io_borrowed_buf)]
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
@@ -34,6 +34,8 @@ pub fn default_read_to_end<R: Read + ?Sized>(
     buf: &mut Vec<u8>,
     size_hint: Option<usize>,
 ) -> Result<usize> {
+    use core::io::BorrowedBuf;
+
     const DEFAULT_BUF_SIZE: usize = 1024;
 
     let start_len = buf.len();
@@ -66,6 +68,7 @@ pub fn default_read_to_end<R: Read + ?Sized>(
     }
 
     let mut initialized = 0; // Extra initialized bytes from previous loop iteration
+    let mut consecutive_short_reads = 0;
 
     loop {
         if buf.len() == buf.capacity() && buf.capacity() == start_cap {
@@ -90,21 +93,25 @@ pub fn default_read_to_end<R: Read + ?Sized>(
         let mut spare = buf.spare_capacity_mut();
         let buf_len = spare.len().min(max_read_size);
         spare = &mut spare[..buf_len];
+        let mut read_buf: BorrowedBuf<'_> = spare.into();
 
-        let uninit = &mut spare[initialized..];
-        // SAFETY: 0 is a valid value for MaybeUninit<u8> and the length matches the allocation
-        // since it is comes from a slice reference.
+        // SAFETY: These bytes were initialized but not filled in the previous loop
         unsafe {
-            core::ptr::write_bytes(uninit.as_mut_ptr(), 0, uninit.len());
+            read_buf.set_init(initialized);
         }
 
-        // SAFETY: spare is fully initialized
-        let unfilled = unsafe { spare.assume_init_mut() };
+        let mut cursor = read_buf.unfilled();
+        // Difference from `std`: We don't have a `read_buf` method that returns both data and an error, so we return early on error.
+        let n = r.read(cursor.ensure_init().init_mut())?;
+        cursor.advance(n);
 
-        let bytes_read = r.read(unfilled)?;
-        // SAFETY: bytes_read is guaranteed to be less than or equal to spare.len()
+        let unfilled_but_initialized = cursor.init_ref().len();
+        let bytes_read = cursor.written();
+        let was_fully_initialized = read_buf.init_len() == buf_len;
+
+        // SAFETY: BorrowedBuf's invariants mean this much memory is initialized.
         unsafe {
-            let new_len = buf.len() + bytes_read;
+            let new_len = bytes_read + buf.len();
             buf.set_len(new_len);
         }
 
@@ -112,9 +119,27 @@ pub fn default_read_to_end<R: Read + ?Sized>(
             return Ok(buf.len() - start_len);
         }
 
-        initialized = buf_len - bytes_read;
+        if bytes_read < buf_len {
+            consecutive_short_reads += 1;
+        } else {
+            consecutive_short_reads = 0;
+        }
 
+        // store how much was initialized but not filled
+        initialized = unfilled_but_initialized;
+
+        // Use heuristics to determine the max read size if no initial size hint was provided
         if size_hint.is_none() {
+            // The reader is returning short reads but it doesn't call ensure_init().
+            // In that case we no longer need to restrict read sizes to avoid
+            // initialization costs.
+            // When reading from disk we usually don't get any short reads except at EOF.
+            // So we wait for at least 2 short reads before uncapping the read buffer;
+            // this helps with the Windows issue.
+            if !was_fully_initialized && consecutive_short_reads > 1 {
+                max_read_size = usize::MAX;
+            }
+
             // we have passed a larger buffer than previously and the
             // reader still hasn't returned a short read
             if buf_len >= max_read_size && bytes_read == buf_len {
