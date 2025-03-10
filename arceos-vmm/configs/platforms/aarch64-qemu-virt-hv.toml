@@ -12,8 +12,8 @@ family = "aarch64-qemu-virt"        # str
 
 # Base address of the whole physical memory.
 phys-memory-base = 0x4000_0000      # uint
-# Size of the whole physical memory. (128M)
-phys-memory-size = 0x800_0000       # uint
+# Size of the whole physical memory. (2GB)
+phys-memory-size = 0x8000_0000       # uint
 # Base physical address of the kernel image.
 kernel-base-paddr = 0x4008_0000     # uint
 # Base virtual address of the kernel image.

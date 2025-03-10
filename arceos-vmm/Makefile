@@ -213,6 +213,13 @@ else
 	$(call make_disk_image,fat32,$(DISK_IMG))
 endif
 
+ubuntu_img:
+ifneq ($(wildcard $(DISK_IMG)),)
+	@printf "$(YELLOW_C)warning$(END_C): disk image \"$(DISK_IMG)\" already exists!\n"
+else
+	$(call make_guest_ubuntu_ext4,$(DISK_IMG),$(ARCH_STR))
+endif
+
 clean: clean_c
 	rm -rf $(APP)/target
 	rm -rf $(APP)/*.bin $(APP)/*.elf $(APP)/*.asm $(OUT_CONFIG)
