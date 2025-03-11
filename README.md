@@ -193,3 +193,9 @@ Shell: Process 5 exited with code 0
 >>
 ......
 ```
+
+### Dev Environment Setup
+
+```shell
+tool/dev_env.py
+```
