@@ -370,9 +370,9 @@ dependencies = [
 
 [[package]]
 name = "axio"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8ca9c10ea4cd42bda87a2abde281fb481c76a0b05976fd03697385ea65d5122"
+checksum = "30aa258a37c25c5e9d3ff45ec80e728ff7c499586e3e40719daf7908f10fd5bd"
 dependencies = [
  "axerrno",
 ]
@@ -1006,7 +1006,7 @@ dependencies = [
 [[package]]
 name = "lwext4_rust"
 version = "0.2.0"
-source = "git+https://github.com/Azure-stars/lwext4_rust.git#62519fadd8eece40cd6bbe9bb11943610cfcb908"
+source = "git+https://github.com/Azure-stars/lwext4_rust.git#ee5131ca3fbb03f39ea0878431aadb521d191122"
 dependencies = [
  "log",
 ]

@@ -107,6 +107,7 @@ impl TaskExt {
             new_uctx.set_sp(stack);
         }
         // Skip current instruction
+        #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
         new_uctx.set_ip(new_uctx.get_ip() + 4);
         new_uctx.set_retval(0);
         let return_id: u64 = new_task.id().as_u64();
