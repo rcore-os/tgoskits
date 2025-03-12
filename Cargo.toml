@@ -1,16 +1,51 @@
-[workspace]
-resolver = "2"
-
-members = ["arceos-vmm"]
-exclude = ["crates"]
-
 [profile.release]
 lto = true
 
-[workspace.dependencies]
-axstd = { git = "https://github.com/arceos-hypervisor/arceos.git", branch = "vmm" }
-axconfig = { git = "https://github.com/arceos-hypervisor/arceos.git", branch = "vmm" }
+[package]
+name = "axvisor"
+version = "0.1.0"
+edition = "2024"
+authors = ["Keyang Hu <keyang.hu@qq.com>"]
+exclude = ["crates"]
 
+[features]
+fs = ["axstd/fs"]
+
+[dependencies]
+log = "=0.4.21"
+bitflags = "2.2"
+spin = "0.9"
+kspin = "0.1"
+lazyinit = "0.2"
+timer_list = "0.1.0"
+
+# System dependent modules provided by ArceOS.
+axstd = { git = "https://github.com/arceos-hypervisor/arceos.git", branch = "vmm", features = [
+    "alloc",
+    "paging",
+    # "fs",
+    "irq",
+    "hv",
+    "multitask",
+    # "sched_rr"
+]}
+
+# System dependent modules provided by ArceOS-Hypervisor.
 axvm = { git = "https://github.com/arceos-hypervisor/axvm.git" }
 axvcpu = { git = "https://github.com/arceos-hypervisor/axvcpu.git" }
 axaddrspace = { git = "https://github.com/arceos-hypervisor/axaddrspace.git" }
+
+# System independent crates provided by ArceOS, these crates could be imported by remote url. 
+crate_interface = "0.1"
+axerrno = "0.1.0"
+memory_addr = "0.3"
+page_table_entry = { version = "0.5", features = ["arm-el2"] }
+page_table_multiarch = "0.5"
+percpu = { version = "0.1.4", features = ["arm-el2"] }
+
+[build-dependencies]
+toml = { git = "https://github.com/arceos-hypervisor/toml.git", branch = "no_std" }
+axconfig = { git = "https://github.com/arceos-hypervisor/arceos.git", branch = "vmm" }
+prettyplease = "0.2"
+quote = "1.0"
+syn = "2.0"

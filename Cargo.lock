@@ -105,33 +105,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-vmm"
-version = "0.1.0"
-dependencies = [
- "axaddrspace",
- "axconfig",
- "axerrno",
- "axstd",
- "axvcpu",
- "axvm",
- "bitflags 2.6.0",
- "crate_interface",
- "kspin",
- "lazyinit",
- "log",
- "memory_addr",
- "page_table_entry",
- "page_table_multiarch",
- "percpu",
- "prettyplease",
- "quote",
- "spin",
- "syn 2.0.93",
- "timer_list",
- "toml",
-]
-
-[[package]]
 name = "arceos_api"
 version = "0.1.0"
 source = "git+https://github.com/arceos-hypervisor/arceos.git?branch=vmm#39848356f3bb43c1c0a5b02a6188bd3235e789a5"
@@ -542,6 +515,33 @@ dependencies = [
  "axerrno",
  "memory_addr",
  "percpu",
+]
+
+[[package]]
+name = "axvisor"
+version = "0.1.0"
+dependencies = [
+ "axaddrspace",
+ "axconfig",
+ "axerrno",
+ "axstd",
+ "axvcpu",
+ "axvm",
+ "bitflags 2.6.0",
+ "crate_interface",
+ "kspin",
+ "lazyinit",
+ "log",
+ "memory_addr",
+ "page_table_entry",
+ "page_table_multiarch",
+ "percpu",
+ "prettyplease",
+ "quote",
+ "spin",
+ "syn 2.0.93",
+ "timer_list",
+ "toml",
 ]
 
 [[package]]

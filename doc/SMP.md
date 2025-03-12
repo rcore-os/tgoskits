@@ -14,7 +14,7 @@
         * `make A=examples/helloworld build`
     * copy image: 
         * `sudo cp /PATH/TO/arceos/examples/helloworld/helloworld_x86_64-qemu-q35.bin DISK/MOUNT/ON/tmp/arceos-x86-sleep.bin`
-    * config file for vmm available at [arceos-x86_64-sleep.toml](../arceos-vmm/configs/arceos-x86_64-sleep.toml)
+    * config file for vmm available at [arceos-x86_64-sleep.toml](../configs/vms/arceos-x86_64-sleep.toml)
     * Note: ArceOS use COM1 at **0x2f8** for serial output.
 
 * Starry binary image
@@ -25,13 +25,12 @@
         * `make ARCH=x86_64 build`
     * copy image: 
         * `sudo cp /PATH/TO/starry-next/starry-next_x86_64-qemu-q35.bin DISK/MOUNT/ON/tmp/starry-x86_64.bin`
-    * config file for vmm available at [starry-x86_64.toml](../arceos-vmm/configs/starry-x86_64.toml)
+    * config file for vmm available at [starry-x86_64.toml](../configs/vms/starry-x86_64.toml)
 
 ### How to run
 
 * open first terminal
-    * `cd arceos-vmm`
-    * `make ARCH=x86_64 ACCEL=y VM_CONFIGS=configs/arceos-x86_64-sleep.toml:configs/starry-x86_64.toml SMP=2 SECOND_SERIAL=y run`
+    * `make ARCH=x86_64 ACCEL=y VM_CONFIGS=configs/vms/arceos-x86_64-sleep.toml:configs/vms/starry-x86_64.toml SMP=2 SECOND_SERIAL=y run`
     * ArceOS-hypervisor itself and Starry-next will print to this terminal.
     * `SECOND_SERIAL=y` will make qemu open a second serial port and listen on the socket interface from localhost constrained by the `TELNET_PORT` variable (default is 4321, currently only valid under `qemu_system_x86_64`)
         ```bash
@@ -53,7 +52,7 @@ Currently, the arceos-hypervisor supports booting a guest VM configured with mul
 
 Refer to [GuestVMs.md](./GuestVMs.md) for available guest VMs.
 
-[arceos-aarch64-smp.toml](../arceos-vmm/configs/arceos-aarch64-smp.toml) and [arceos-riscv64-smp.toml](../arceos-vmm/configs/arceos-riscv64-smp.toml) provide templates for configuring multiple vCPUs for a guest VM. 
+[arceos-aarch64-smp.toml](../configs/vms/arceos-aarch64-smp.toml) and [arceos-riscv64-smp.toml](../configs/vms/arceos-riscv64-smp.toml) provide templates for configuring multiple vCPUs for a guest VM. 
 
 Key configuration options include:
 * `cpu_num`: Specifies the number of vCPUs required by the guest VM.
@@ -75,5 +74,5 @@ Key configuration options include:
 * example command
 
     ```bash
-    make ARCH=aarch64 VM_CONFIGS=configs/arceos-aarch64-smp.toml SMP=2 run
+    make ARCH=aarch64 VM_CONFIGS=configs/vms/arceos-aarch64-smp.toml SMP=2 run
     ```

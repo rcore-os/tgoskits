@@ -4,13 +4,13 @@
 
 * Simple real time guest VM that can only be used for **single-core** testing
 * It supports the x86_64, aarch64, and riscv64 architectures
-* Configuration file templates at [nimbos-aarch64.toml](../arceos-vmm/configs/nimbos-aarch64.toml), [nimbos-x86_64.toml](../arceos-vmm/configs/nimbos-x86_64.toml), and [nimbos-riscv64.toml](../arceos-vmm/configs/nimbos-riscv64.toml)
+* Configuration file templates at [nimbos-aarch64.toml](../configs/vms/nimbos-aarch64.toml), [nimbos-x86_64.toml](../configs/vms/nimbos-x86_64.toml), and [nimbos-riscv64.toml](../configs/vms/nimbos-riscv64.toml)
 * Kernel binary images availble at [nimbos/releases](https://github.com/arceos-hypervisor/nimbos/releases/tag/v0.6)
 
 ## [ArceOS](https://github.com/arceos-hypervisor/arceos)
 * Used for **SMP** testing
 * It supports the x86_64, aarch64, and riscv64 architectures
-* Configuration file templates at [arceos-aarch64.toml](../arceos-vmm/configs/arceos-aarch64.toml), [arceos-x86_64.toml](../arceos-vmm/configs/arceos-x86_64.toml), and [arceos-riscv64.toml](../arceos-vmm/configs/arceos-riscv64.toml)
+* Configuration file templates at [arceos-aarch64.toml](../configs/vms/arceos-aarch64.toml), [arceos-x86_64.toml](../configs/vms/arceos-x86_64.toml), and [arceos-riscv64.toml](../configs/vms/arceos-riscv64.toml)
 
 ### Testcases
 
@@ -30,13 +30,13 @@
 # ArceOS-Hypervisor in RK3588 board
 ## How to run ArceOS on rk3588
 1. Prepare your kernal file `linux-rk3588-aarch64.bin` and DTB file `rk3588.dtb`.
-2. Set the kernel path and DTB path in the configuration file `configs/linux-rk3588-aarch64.toml`.
+2. Set the kernel path and DTB path in the configuration file `configs/vms/linux-rk3588-aarch64.toml`.
    ```toml
    image_location = "memory"
    kernel_path = "/path/to/linux-rk3588-aarch64.bin"
    dtb_path = "/path/to/rk3588.dtb"
    ```
-3. Use Command `make A=(pwd) ARCH=aarch64 VM_CONFIGS=configs/linux-rk3588-aarch64.toml kernel` to build the kernel image `boot.img`.
+3. Use Command `make A=(pwd) ARCH=aarch64 VM_CONFIGS=configs/vms/linux-rk3588-aarch64.toml kernel` to build the kernel image `boot.img`.
 4. Download the [RKDevTool](https://download.t-firefly.com/product/Board/RK3588/Tool/Window/RKDevTool_Release_v3.31.zip). 
     >This tool has only been tested on [Pji's](https://www.pji.net.cn/) Electronic Control Unit of RK3588. Other RK3588 development boards require independent testing.
 5. Set the path of `boot.img` in **boot** and connect the RK3588 board.

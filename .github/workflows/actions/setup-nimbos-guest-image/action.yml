@@ -59,7 +59,7 @@ runs:
   - name: Create Image
     shell: bash
     run: |
-      make -C arceos-vmm DISK_IMG=${{ inputs.disk-path }} disk_img
+      make DISK_IMG=${{ inputs.disk-path }} disk_img
       sudo mkdir -p img
       sudo chown root:root temp/*
       sudo mount ${{ inputs.disk-path }} img

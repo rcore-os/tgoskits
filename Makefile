@@ -115,7 +115,7 @@ endif
 
 # The pathes of the VM configurations
 ifneq ($(VM_CONFIGS),)
-  export UMHV_VM_CONFIGS=$(VM_CONFIGS)
+  export AXVISOR_VM_CONFIGS=$(VM_CONFIGS)
 endif
 
 # Binutils

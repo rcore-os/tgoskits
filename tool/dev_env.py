@@ -93,7 +93,7 @@ path = "crates/arm_gicv2"
     "rust-analyzer.check.allTargets": false,
     "rust-analyzer.cargo.features": ["fs"],
     "rust-analyzer.cargo.extraEnv": {
-        "AX_CONFIG_PATH": "${workspaceFolder}/arceos-vmm/.axconfig.toml"
+        "AX_CONFIG_PATH": "${workspaceFolder}/.axconfig.toml"
     }
 }
     """

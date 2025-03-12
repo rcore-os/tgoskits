@@ -21,9 +21,9 @@ jobs:
         targets: x86_64-unknown-none, riscv64gc-unknown-none-elf, aarch64-unknown-none, aarch64-unknown-none-softfloat
     - name: Check rust version
       run: rustc --version --verbose
-    - name: Clippy arceos-vmm
+    - name: Clippy the repo
       continue-on-error: ${{ matrix.rust-toolchain == 'nightly' }}
-      run: make -C arceos-vmm ARCH=${{ matrix.arch }} clippy
+      run: make ARCH=${{ matrix.arch }} clippy
 
   fmt:
     runs-on: ubuntu-latest
@@ -64,6 +64,6 @@ jobs:
         targets: x86_64-unknown-none, riscv64gc-unknown-none-elf, aarch64-unknown-none, aarch64-unknown-none-softfloat
     - uses: Swatinem/rust-cache@v2
     - run: cargo install cargo-binutils
-    - name: Build arceos-vmm
+    - name: Build the repo
       continue-on-error: ${{ matrix.rust-toolchain == 'nightly' }}
-      run: make -C arceos-vmm ARCH=${{ matrix.arch }} build
+      run: make ARCH=${{ matrix.arch }} build

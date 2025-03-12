@@ -1,17 +1,24 @@
+# Build output and other log/bin files from arceos
 /target
 /.vscode
+/tmp
 .DS_Store
 *.asm
 *.img
 *.bin
 *.elf
+*.tmp_its
 *.dtb
+*guest.S
 actual.out
 qemu.log
 rusty-tags.vi
 
-*/.axconfig.*
+/**/.axconfig.*
 
 # dev env
 /crates
 /Cargo.toml.bk
+
+# tools should be downloaded from github
+tools/*

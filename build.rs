@@ -1,27 +1,26 @@
-//! This build script reads config file paths from the `UMHV_VM_CONFIGS` environment variable,
+//! This build script reads config file paths from the `AXVISOR_VM_CONFIGS` environment variable,
 //! reads them, and then outputs them to `$(OUT_DIR)/vm_configs.rs` to be used by
 //! `src/vmm/config.rs`.
 //!
-//! The `UMHV_VM_CONFIGS` environment variable should follow the format convention for the
-//! `PATH` environment variable on the building platform, i.e., paths are separated by colons
-//! (`:`) on Unix-like systems and semicolons (`;`) on Windows.
+//! The `AXVISOR_VM_CONFIGS` environment variable should follow the format convention for the `PATH`
+//! environment variable on the building platform, i.e., paths are separated by colons (`:`) on
+//! Unix-like systems and semicolons (`;`) on Windows.
 //!
-//! In the generated `vm_configs.rs` file, a function `static_vm_configs` is defined that
-//! returns a `Vec<&'static str>` containing the contents of the configuration files.
+//! In the generated `vm_configs.rs` file, a function `static_vm_configs` is defined that returns a
+//! `Vec<&'static str>` containing the contents of the configuration files.
 //!
-//! If the `UMHV_VM_CONFIGS` environment variable is not set, `static_vm_configs` will call
-//! the `default_static_vm_configs` function from `src/vmm/config.rs` to return the default
+//! If the `AXVISOR_VM_CONFIGS` environment variable is not set, `static_vm_configs` will call the
+//! `default_static_vm_configs` function from `src/vmm/config.rs` to return the default
 //! configurations.
 //!
-//! If the `UMHV_VM_CONFIGS` environment variable is set but the configuration files cannot be
-//! read, the build script will output a `compile_error!` macro that will cause the build to
-//! fail.
+//! If the `AXVISOR_VM_CONFIGS` environment variable is set but the configuration files cannot be
+//! read, the build script will output a `compile_error!` macro that will cause the build to fail.
 //!
-//! A function `get_memory_images` is also provided to get every vm image from the
-//! configuration files.
+//! A function `get_memory_images` is also provided to get every vm image from the configuration
+//! files.
 //!
-//! This build script reruns if the `UMHV_VM_CONFIGS` environment variable changes, or if the
-//! `build.rs` file changes, or if any of the files in the paths specified by `UMHV_VM_CONFIGS`
+//! This build script reruns if the `AXVISOR_VM_CONFIGS` environment variable changes, or if the
+//! `build.rs` file changes, or if any of the files in the paths specified by `AXVISOR_VM_CONFIGS`
 //! change.
 use std::{
     env,
@@ -44,15 +43,15 @@ struct ConfigFile {
     pub content: String,
 }
 
-/// Gets the paths (colon-separated) from the `UMHV_VM_CONFIGS` environment variable.
+/// Gets the paths (colon-separated) from the `AXVISOR_VM_CONFIGS` environment variable.
 ///
 /// Returns `None` if the environment variable is not set.
 fn get_config_paths() -> Option<Vec<OsString>> {
-    env::var_os("UMHV_VM_CONFIGS")
+    env::var_os("AXVISOR_VM_CONFIGS")
         .map(|paths| env::split_paths(&paths).map(OsString::from).collect())
 }
 
-/// Gets the paths and contents of the configuration files specified by the `UMHV_VM_CONFIGS` environment variable.
+/// Gets the paths and contents of the configuration files specified by the `AXVISOR_VM_CONFIGS` environment variable.
 ///
 /// Returns a tuple of the paths and contents of the configuration files if successful, or an error message if not.
 fn get_configs() -> Result<Vec<ConfigFile>, String> {
@@ -222,7 +221,7 @@ fn main() -> io::Result<()> {
     let config_files = get_configs();
     let mut output_file = open_output_file();
 
-    println!("cargo:rerun-if-env-changed=UMHV_VM_CONFIGS");
+    println!("cargo:rerun-if-env-changed=AXVISOR_VM_CONFIGS");
     println!("cargo:rerun-if-changed=build.rs");
 
     writeln!(
@@ -275,7 +274,7 @@ fn gen_linker_script(arch: &str, platform: &str) -> io::Result<()> {
     );
     let ld_content = ld_content.replace("%SMP%", &format!("{}", axconfig::SMP));
 
-    // target/<target_triple>/<mode>/build/arceos-vmm-xxxx/out
+    // target/<target_triple>/<mode>/build/axvisor-xxxx/out
     let out_dir = std::env::var("OUT_DIR").unwrap();
     // target/<target_triple>/<mode>/linker_xxxx.lds
     let out_path = Path::new(&out_dir).join("../../../").join(fname);

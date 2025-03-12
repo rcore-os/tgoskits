@@ -1,9 +1,9 @@
-# ArceOS-Hypervisor Architecture Overview
+# Axvisor Architecture Overview
 
-About the overall architecture of [Arceos-Hypervisor](https://github.com/arceos-hypervisor/), 
+About the overall architecture of Axvisor (the [main repo](https://github.com/arceos-hypervisor/axvisor) and [all components repos](https://github.com/arceos-hypervisor/)), 
 a unified modular hypervisor based on [ArceOS](https://github.com/arceos-org/arceos).
 
-ArceOS-Hypervisor mainly consists of the VMM (Virtual Machine Monitor) app and modules/crates responsible for implementing virtualization functions.
+The hypervisor mainly consists of the VMM (Virtual Machine Monitor) app named `axvisor` (the very repo you are looking at) and modules/crates responsible for implementing virtualization functions (e.g., `axvm`, `axvcpu`, `axdevice`, etc., which are in separate repos under the [arceos-hypervisor](https://github.com/arceos-hypervisor/) organization).
 
 ## Design Goal
 
@@ -11,52 +11,52 @@ This project originated from the [discussion/13](https://github.com/orgs/rcore-o
 
 In general, this project hopes to build a modular hypervisor that supports multiple architectures based on the basic OS functions provided by ArceOS unikernel through add several virtualization support modules/crates.
 
-We hope to make the hypervisor as modular as possible and minimize modifications to the arceos kernel code.
+We hope to make the hypervisor as modular as possible and minimize modifications to the arceos kernel code while maximizing the reuse of codes across different architectures.
 
 ## Components
 
-Arceos-Hypervisor runs as an ArceOS app, mainly composed of the following independent components:
+Axvisor runs as an ArceOS app, mainly composed of the following independent components:
 
 (The definitions of ArceOS crates and modules can be seen in [ArceOS/doc/README.md](https://github.com/arceos-org/arceos/blob/main/doc/README.md))
 
-### APP
+### The App `axvisor`
 
-* [vmm-app](https://github.com/arceos-hypervisor/arceos-umhv/tree/master/arceos-vmm): a user app of ArceOS, acts like a VMM
-    * completely architecture-independent
-	* main entry point of ArceOS-Hypervisor
-    * responsible for VM management (configuration & runtime)
-	* **Note: we aim to consolidate all dependencies on ArceOS within the vmm-app**
-	* Currently, the modules from ArceOS that the vmm-app depends on include:
-		* [axstd](https://github.com/arceos-hypervisor/arceos/tree/vmm/ulib/axstd): a standard dependency interface for ArceOS's user app
-		* [axhal](https://github.com/arceos-hypervisor/arceos/tree/vmm/modules/axhal): for OS-related functions, including memory management, clock operations, and more
-		* [axtask](https://github.com/arceos-org/arceos/tree/monolithic/modules/axtask): for the scheduling of vCPUs
+A user app of ArceOS, which is:
+* completely architecture-independent,
+* main entry point of the hypervisor, and
+* responsible for VM management (configuration & runtime).
 
-### modules
+**Note that we aim to consolidate all dependencies on ArceOS within the vmm-app.** Currently, the modules from ArceOS that the vmm-app depends on include:
+* [axstd](https://github.com/arceos-hypervisor/arceos/tree/vmm/ulib/axstd): a standard dependency interface for ArceOS's user app.
+* [axhal](https://github.com/arceos-hypervisor/arceos/tree/vmm/modules/axhal): for OS-related functions, including memory management, clock operations, and more.
+* [axtask](https://github.com/arceos-org/arceos/tree/monolithic/modules/axtask): for the scheduling of vCPUs.
 
-* [axvm](https://github.com/arceos-hypervisor/axvm): responsible for **resource management** within each VM
-    * partially architecture-independent
-    * resources:
-        * vcpu: [axvcpu](https://github.com/arceos-hypervisor/axvcpu) list
-        * memory: [axaddrspace](https://github.com/arceos-hypervisor/axaddrspace) for guest memory management
-        * device: [axdevice](https://github.com/arceos-hypervisor/axdevice) list
+### Modules
 
-* [axvcpu](https://github.com/arceos-hypervisor/axvcpu): providing CPU virtualization support
-    * highly architecture-dependent
-    * stores exception context frame of different architecture
-    * basic scheduling item
-	* arch-specific vcpu implementations need to be separated into separate crates
+* [axvm](https://github.com/arceos-hypervisor/axvm): responsible for **resource management** within each VM.
+    * partially architecture-independent.
+    * resources include:
+        * vcpu: [axvcpu](https://github.com/arceos-hypervisor/axvcpu) list.
+        * memory: [axaddrspace](https://github.com/arceos-hypervisor/axaddrspace) for guest memory management.
+        * device: [axdevice](https://github.com/arceos-hypervisor/axdevice) list.
 
-* [axaddrspace](https://github.com/arceos-hypervisor/axaddrspace)
-	* architecture-independent
-	* responsible for managing and mapping the guest VM's second-stage address space (GPA -> HPA)
+* [axvcpu](https://github.com/arceos-hypervisor/axvcpu): providing CPU virtualization support.
+    * highly architecture-dependent.
+    * stores exception context frame of different architecture.
+    * basic scheduling item.
+	* arch-specific vcpu implementations need to be separated into separate crates.
 
-* [axdevice](https://github.com/arceos-hypervisor/axdevice): providing device emulation support
-    * partially architecture-independent
-    * different emulated device implementations need to be separated into separate crates
+* [axaddrspace](https://github.com/arceos-hypervisor/axaddrspace).
+	* architecture-independent.
+	* responsible for managing and mapping the guest VM's second-stage address space (GPA -> HPA).
 
-### crates
+* [axdevice](https://github.com/arceos-hypervisor/axdevice): providing device emulation support.
+    * partially architecture-independent.
+    * different emulated device implementations need to be separated into separate crates.
 
-`crates` includes implementations of vCPUs for different architectures, various emulated devices, and more.
+### Crates
+
+`crates` includes implementations of VCpus for different architectures, various emulated devices, and other utilities.
 
 ## Dependency diagram
 

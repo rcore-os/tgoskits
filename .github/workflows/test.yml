@@ -49,9 +49,9 @@ jobs:
           export ACCEL=n
         fi
         export DISK_IMG="${{ github.workspace }}/disk-${{ matrix.arch }}.img"
-        export VM_CONFIGS="$(pwd)/arceos-vmm/configs/vms/nimbos-${{ matrix.arch }}.toml"
-        make -C arceos-vmm ARCH=${{ matrix.arch }} defconfig
-        make -C arceos-vmm ARCH=${{ matrix.arch }} DISK_IMG=${DISK_IMG} LOG=info BLK=y ACCEL=${ACCEL} VM_CONFIGS=${VM_CONFIGS} APP_FEATURES=fs run
+        export VM_CONFIGS="$(pwd)/configs/vms/nimbos-${{ matrix.arch }}.toml"
+        make ARCH=${{ matrix.arch }} defconfig
+        make ARCH=${{ matrix.arch }} DISK_IMG=${DISK_IMG} LOG=info BLK=y ACCEL=${ACCEL} VM_CONFIGS=${VM_CONFIGS} APP_FEATURES=fs run
     - name: Copy files to current directory
       if: matrix.arch == 'x86_64'
       run: |
@@ -77,7 +77,7 @@ jobs:
         script: |
           set -e
           cd ~/runner/${{ github.run_id }}-${{ matrix.arch }}-${{ matrix.rust-toolchain }} && tar -xzf source.tar.gz
-          cd ~/runner/${{ github.run_id }}-${{ matrix.arch }}-${{ matrix.rust-toolchain }} && make -C arceos-vmm ARCH=x86_64 defconfig
-          cd ~/runner/${{ github.run_id }}-${{ matrix.arch }}-${{ matrix.rust-toolchain }} && make -C arceos-vmm ARCH=x86_64 DISK_IMG=$(pwd)/disk-x86_64.img LOG=info BLK=y ACCEL=y VM_CONFIGS=$(pwd)/arceos-vmm/configs/vms/nimbos-x86_64.toml APP_FEATURES=fs run
+          cd ~/runner/${{ github.run_id }}-${{ matrix.arch }}-${{ matrix.rust-toolchain }} && make ARCH=x86_64 defconfig
+          cd ~/runner/${{ github.run_id }}-${{ matrix.arch }}-${{ matrix.rust-toolchain }} && make ARCH=x86_64 DISK_IMG=$(pwd)/disk-x86_64.img LOG=info BLK=y ACCEL=y VM_CONFIGS=$(pwd)/configs/vms/nimbos-x86_64.toml APP_FEATURES=fs run
           cd ~ && rm -rf ~/runner/${{ github.run_id }}-${{ matrix.arch }}-${{ matrix.rust-toolchain }}
 
