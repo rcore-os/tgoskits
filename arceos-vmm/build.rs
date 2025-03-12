@@ -17,6 +17,9 @@
 //! read, the build script will output a `compile_error!` macro that will cause the build to
 //! fail.
 //!
+//! A function `get_memory_images` is also provided to get every vm image from the
+//! configuration files.
+//!
 //! This build script reruns if the `UMHV_VM_CONFIGS` environment variable changes, or if the
 //! `build.rs` file changes, or if any of the files in the paths specified by `UMHV_VM_CONFIGS`
 //! change.
@@ -28,6 +31,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use quote::quote;
 use toml::Value;
 
 static CONFIGS_DIR_PATH: &str = "configs/vms";
@@ -83,123 +87,125 @@ fn open_output_file() -> fs::File {
         .unwrap()
 }
 
+// Convert relative path to absolute path
+fn convert_to_absolute(configs_path: &str, path: &str) -> PathBuf {
+    let path = Path::new(path);
+    let configs_path = Path::new(configs_path).join(path);
+    if path.is_relative() {
+        fs::canonicalize(configs_path).unwrap_or_else(|_| path.to_path_buf())
+    } else {
+        path.to_path_buf()
+    }
+}
+
+struct MemoryImage {
+    pub id: usize,
+    pub kernel: PathBuf,
+    pub dtb: Option<PathBuf>,
+    pub bios: Option<PathBuf>,
+}
+
+fn parse_config_file(config_file: &ConfigFile) -> Option<MemoryImage> {
+    let config = config_file
+        .content
+        .parse::<Value>()
+        .expect("failed to parse config file");
+
+    let id = config.get("id")?.as_integer()? as usize;
+
+    let image_location_val = config.get("image_location")?;
+
+    let image_location = image_location_val.as_str()?;
+
+    if image_location != "memory" {
+        return None;
+    }
+
+    let kernel_path = config.get("kernel_path")?;
+
+    let kernel = convert_to_absolute(CONFIGS_DIR_PATH, kernel_path.as_str().unwrap());
+
+    let dtb = config
+        .get("dtb_path")
+        .and_then(|v| v.as_str())
+        .map(|v| convert_to_absolute(CONFIGS_DIR_PATH, v));
+
+    let bios = config
+        .get("bios_path")
+        .and_then(|v| v.as_str())
+        .map(|v| convert_to_absolute(CONFIGS_DIR_PATH, v));
+
+    Some(MemoryImage {
+        id,
+        kernel,
+        dtb,
+        bios,
+    })
+}
+
 /// Generate function to load guest images from config
 /// Toml file must be provided to load from memory.
-/// Only load the first config item, if there are multiple items in the config file.
-/// Other VMs are dynamically loaded from the file system by the first VM that starts.
 fn generate_guest_img_loading_functions(
     out_file: &mut fs::File,
     config_files: Vec<ConfigFile>,
 ) -> io::Result<()> {
-    // Convert relative path to absolute path
-    fn convert_to_absolute(configs_path: &str, path: &str) -> PathBuf {
-        let path = Path::new(path);
-        let configs_path = Path::new(configs_path).join(path);
-        if path.is_relative() {
-            fs::canonicalize(configs_path).unwrap_or_else(|_| path.to_path_buf())
-        } else {
-            path.to_path_buf()
-        }
-    }
-
-    let mut find_memory_image = false;
+    let mut memory_images = vec![];
 
     for config_file in config_files {
-        let config = config_file
-            .content
-            .parse::<Value>()
-            .expect("failed to parse config file");
-        if let Some(image_location_val) = config.get("image_location") {
-            if let Some(image_location) = image_location_val.as_str() {
-                if image_location == "memory" {
-                    // Check if there are multiple VMs in the config file list to be loaded from memory.
-                    // Cause we only support one VM to be loaded from memory at most.
-                    if find_memory_image {
-                        writeln!(
-                            out_file,
-                            r#"pub fn error_msg() -> Option<&'static [u8]> {{ "#
-                        )?;
-                        writeln!(
-                            out_file,
-                            "    compile_error!(\"ArceOS-Hypervisor currently only supports loading one guestVM image from memory\")"
-                        )?;
-                        writeln!(out_file, "}}\n")?;
-                        break;
-                    } else {
-                        find_memory_image = true;
-                    }
-
-                    writeln!(
-                        out_file,
-                        r#"pub fn get_kernel_binary() -> Option<&'static [u8]> {{ "#
-                    )?;
-                    if let Some(kernel_path) = config.get("kernel_path") {
-                        let kernel_path =
-                            convert_to_absolute(CONFIGS_DIR_PATH, kernel_path.as_str().unwrap());
-                        // use include_bytes! load image
-                        writeln!(out_file, "    Some(include_bytes!({:?}))", kernel_path)?;
-                    } else {
-                        writeln!(
-                            out_file,
-                            "    compile_error!(\"Kernel image path is not provided if you want to compile the binary file together!\")"
-                        )?;
-                    };
-
-                    writeln!(out_file, "}}\n")?;
-
-                    writeln!(
-                        out_file,
-                        r#"pub fn get_dtb_binary() -> Option<&'static [u8]> {{ "#
-                    )?;
-                    if let Some(dtb_path) = config.get("dtb_path") {
-                        let dtb_path =
-                            convert_to_absolute(CONFIGS_DIR_PATH, dtb_path.as_str().unwrap());
-                        // use include_bytes! load image
-                        writeln!(out_file, "    Some(include_bytes!({:?}))", dtb_path)?;
-                    } else {
-                        writeln!(out_file, "    None")?;
-                    };
-                    writeln!(out_file, "}}\n")?;
-
-                    writeln!(
-                        out_file,
-                        r#"pub fn get_bios_binary() -> Option<&'static [u8]> {{ "#
-                    )?;
-                    if let Some(bios_path) = config.get("bios_path") {
-                        let bios_path =
-                            convert_to_absolute(CONFIGS_DIR_PATH, bios_path.as_str().unwrap());
-                        // use include_bytes! load image
-                        writeln!(out_file, "    Some(include_bytes!({:?}))", bios_path)?;
-                    } else {
-                        writeln!(out_file, "    None")?;
-                    };
-
-                    writeln!(out_file, "}}\n")?;
+        if let Some(files) = parse_config_file(&config_file) {
+            let id = files.id;
+            let kernel = files.kernel.display().to_string();
+            let dtb = match files.dtb {
+                Some(v) => {
+                    let s = v.display().to_string();
+                    quote! { Some(include_bytes!(#s)) }
                 }
-            }
+                None => quote! { None },
+            };
+
+            let bios = match files.bios {
+                Some(v) => {
+                    let s = v.display().to_string();
+                    quote! { Some(include_bytes!(#s)) }
+                }
+                None => quote! { None },
+            };
+
+            memory_images.push(quote! {
+                MemoryImage {
+                    id: #id,
+                    kernel: include_bytes!(#kernel),
+                    dtb: #dtb,
+                    bios: #bios,
+                }
+            });
         }
     }
 
-    if !find_memory_image {
-        writeln!(
-            out_file,
-            r#"pub fn get_kernel_binary() -> Option<&'static [u8]> {{ "#
-        )?;
-        writeln!(out_file, "    None")?;
-        writeln!(out_file, "}}\n")?;
-        writeln!(
-            out_file,
-            r#"pub fn get_dtb_binary() -> Option<&'static [u8]> {{ "#
-        )?;
-        writeln!(out_file, "    None")?;
-        writeln!(out_file, "}}\n")?;
-        writeln!(
-            out_file,
-            r#"pub fn get_bios_binary() -> Option<&'static [u8]> {{ "#
-        )?;
-        writeln!(out_file, "    None")?;
-        writeln!(out_file, "}}")?;
-    }
+    let output = quote! {
+        /// One guest image data from memory.
+        pub struct MemoryImage{
+            /// vm id in config file
+            pub id: usize,
+            /// kernel image
+            pub kernel: &'static [u8],
+            /// dtb image
+            pub dtb: Option<&'static [u8]>,
+            /// bios image
+            pub bios: Option<&'static [u8]>,
+        }
+
+        /// Get memory images from config file.
+        pub fn get_memory_images() -> &'static [MemoryImage] {
+            &[
+                #(#memory_images),*
+            ]
+        }
+    };
+    let syntax_tree = syn::parse2(output).unwrap();
+    let formatted = prettyplease::unparse(&syntax_tree);
+    out_file.write_all(formatted.as_bytes())?;
+
     Ok(())
 }
 

@@ -123,7 +123,10 @@ dependencies = [
  "page_table_entry",
  "page_table_multiarch",
  "percpu",
+ "prettyplease",
+ "quote",
  "spin",
+ "syn 2.0.93",
  "timer_list",
  "toml",
 ]
@@ -1044,6 +1047,16 @@ checksum = "f56d145a4b532545c4932380a01bde738cc2f0bf2e18578358b2937e727231f5"
 dependencies = [
  "proc-macro2",
  "quote",
+ "syn 2.0.93",
+]
+
+[[package]]
+name = "prettyplease"
+version = "0.2.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "64d1ec885c64d0457d564db4ec299b2dae3f9c02808b8ad9c3a089c591b18033"
+dependencies = [
+ "proc-macro2",
  "syn 2.0.93",
 ]
 

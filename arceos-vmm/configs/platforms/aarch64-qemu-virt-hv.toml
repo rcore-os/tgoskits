@@ -35,7 +35,8 @@ kernel-aspace-size = "0x0000_ffff_ffff_f000"    # uint
 [devices]
 # MMIO regions with format (`base_paddr`, `size`).
 mmio-regions = [
-    [0x0900_0000, 0x1000],      # PL011 UART
+    [0x0900_0000, 0x1000],      # PL011 UART1
+    [0x0904_0000, 0x1000],      # PL011 UART2
     [0x0910_0000, 0x1000],      # PL031 RTC
     [0x0800_0000, 0x2_0000],    # GICv2
     [0x0a00_0000, 0x4000],      # VirtIO
