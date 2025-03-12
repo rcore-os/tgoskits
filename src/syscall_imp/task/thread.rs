@@ -1,4 +1,7 @@
-use core::ffi::{c_char, c_int};
+use core::{
+    ffi::{c_char, c_int},
+    ptr,
+};
 
 use axerrno::LinuxError;
 use axtask::{TaskExtRef, current, yield_now};
@@ -144,9 +147,9 @@ pub(crate) fn sys_clone(
 pub(crate) fn sys_wait4(pid: i32, exit_code_ptr: UserPtr<i32>, option: u32) -> isize {
     let option_flag = WaitFlags::from_bits(option).unwrap();
     syscall_body!(sys_wait4, {
-        let exit_code_ptr = exit_code_ptr.get()?;
+        let exit_code_ptr = exit_code_ptr.nullable(UserPtr::get)?;
         loop {
-            let answer = wait_pid(pid, exit_code_ptr);
+            let answer = wait_pid(pid, exit_code_ptr.unwrap_or_else(ptr::null_mut));
             match answer {
                 Ok(pid) => {
                     return Ok(pid as isize);

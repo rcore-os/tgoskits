@@ -245,8 +245,8 @@ pub(crate) fn sys_linkat(
     new_path: UserConstPtr<c_char>,
     flags: i32,
 ) -> i32 {
-    let old_path = syscall_unwrap!(old_path.get_as_cstr());
-    let new_path = syscall_unwrap!(new_path.get_as_cstr());
+    let old_path = syscall_unwrap!(old_path.get_as_null_terminated());
+    let new_path = syscall_unwrap!(new_path.get_as_null_terminated());
 
     if flags != 0 {
         warn!("Unsupported flags: {flags}");
@@ -281,7 +281,7 @@ pub(crate) fn sys_linkat(
 /// flags: can be 0 or AT_REMOVEDIR
 /// return 0 when success, else return -1
 pub fn sys_unlinkat(dir_fd: isize, path: UserConstPtr<c_char>, flags: usize) -> isize {
-    let path = syscall_unwrap!(path.get_as_cstr());
+    let path = syscall_unwrap!(path.get_as_null_terminated());
 
     const AT_REMOVEDIR: usize = 0x200;
 
@@ -316,7 +316,7 @@ pub(crate) fn sys_getcwd(buf: UserPtr<c_char>, size: usize) -> *mut c_char {
     syscall_body!(
         sys_getcwd,
         Ok(arceos_posix_api::sys_getcwd(
-            buf.get_as_cstr()?.as_ptr() as _,
+            buf.get_as_null_terminated()?.as_ptr() as _,
             size
         ))
     )

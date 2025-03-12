@@ -28,7 +28,7 @@ pub(crate) fn sys_openat(
     flags: i32,
     modes: mode_t,
 ) -> isize {
-    let path = syscall_unwrap!(path.get_as_cstr());
+    let path = syscall_unwrap!(path.get_as_null_terminated());
     api::sys_openat(dirfd, path.as_ptr(), flags, modes) as _
 }
 

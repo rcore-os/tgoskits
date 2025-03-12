@@ -1,19 +1,11 @@
 use axerrno::{LinuxError, LinuxResult};
-use axhal::paging::{MappingFlags, PageTable};
+use axhal::paging::MappingFlags;
 use axtask::{TaskExtRef, current};
-use memory_addr::{MemoryAddr, PAGE_SIZE_4K, PageIter4K, VirtAddr};
+use memory_addr::{MemoryAddr, PAGE_SIZE_4K, PageIter4K, VirtAddr, VirtAddrRange};
 
-use core::{alloc::Layout, ffi::CStr, slice};
+use core::{alloc::Layout, ffi::c_char, mem, slice, str};
 
-fn check_page(pt: &PageTable, page: VirtAddr, access_flags: MappingFlags) -> LinuxResult<()> {
-    let Ok((_, flags, _)) = pt.query(page) else {
-        return Err(LinuxError::EFAULT);
-    };
-    if !flags.contains(access_flags) {
-        return Err(LinuxError::EFAULT);
-    }
-    Ok(())
-}
+use crate::mm::access_user_memory;
 
 fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> LinuxResult<()> {
     let align = layout.align();
@@ -21,51 +13,81 @@ fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> 
         return Err(LinuxError::EFAULT);
     }
 
-    // TODO: currently we're doing a very basic and inefficient check, due to
-    // the fact that AddrSpace does not expose necessary API.
     let task = current();
     let aspace = task.task_ext().aspace.lock();
-    let pt = aspace.page_table();
 
-    let page_start = start.align_down_4k();
-    let page_end = (start + layout.size()).align_up_4k();
-    for page in PageIter4K::new(page_start, page_end).unwrap() {
-        check_page(pt, page, access_flags)?;
+    if !aspace.check_region_access(
+        VirtAddrRange::from_start_size(start, layout.size()),
+        access_flags,
+    ) {
+        return Err(LinuxError::EFAULT);
     }
+
+    // Now force each page to be loaded into memory.
+    access_user_memory(|| {
+        let page_start = start.align_down_4k();
+        let page_end = (start + layout.size()).align_up_4k();
+        for page in PageIter4K::new(page_start, page_end).unwrap() {
+            // SAFETY: The page is valid and we've checked the access flags.
+            unsafe { page.as_ptr_of::<u8>().read_volatile() };
+        }
+    });
 
     Ok(())
 }
 
-fn check_cstr(start: VirtAddr, access_flags: MappingFlags) -> LinuxResult<&'static CStr> {
-    // TODO: see check_region
-    let task = current();
-    let aspace = task.task_ext().aspace.lock();
-    let pt = aspace.page_table();
-
-    let mut page = start.align_down_4k();
-    check_page(pt, page, access_flags)?;
-    page += PAGE_SIZE_4K;
-
-    let start: *const u8 = start.as_ptr();
-    let mut len = 0;
-
-    loop {
-        // SAFETY: Outer caller has provided a pointer to a valid C string.
-        let ptr = unsafe { start.add(len) };
-        if ptr == page.as_ptr() {
-            check_page(pt, page, access_flags)?;
-            page += PAGE_SIZE_4K;
-        }
-
-        // SAFETY: The pointer is valid and points to a valid memory region.
-        if unsafe { *ptr } == 0 {
-            break;
-        }
-        len += 1;
+fn check_null_terminated<T: Eq + Default>(
+    start: VirtAddr,
+    access_flags: MappingFlags,
+) -> LinuxResult<(*const T, usize)> {
+    let align = Layout::new::<T>().align();
+    if start.as_usize() & (align - 1) != 0 {
+        return Err(LinuxError::EFAULT);
     }
 
-    // SAFETY: We've checked that the memory region contains a valid C string.
-    Ok(unsafe { CStr::from_bytes_with_nul_unchecked(slice::from_raw_parts(start, len + 1)) })
+    let zero = T::default();
+
+    let mut page = start.align_down_4k();
+
+    let start = start.as_ptr_of::<T>();
+    let mut len = 0;
+
+    access_user_memory(|| {
+        loop {
+            // SAFETY: This won't overflow the address space since we'll check
+            // it below.
+            let ptr = unsafe { start.add(len) };
+            while ptr as usize >= page.as_ptr() as usize {
+                // We cannot prepare `aspace` outside of the loop, since holding
+                // aspace requires a mutex which would be required on page
+                // fault, and page faults can trigger inside the loop.
+
+                // TODO: this is inefficient, but we have to do this instead of
+                // querying the page table since the page might has not been
+                // allocated yet.
+                let task = current();
+                let aspace = task.task_ext().aspace.lock();
+                if !aspace.check_region_access(
+                    VirtAddrRange::from_start_size(page, PAGE_SIZE_4K),
+                    access_flags,
+                ) {
+                    return Err(LinuxError::EFAULT);
+                }
+
+                page += PAGE_SIZE_4K;
+            }
+
+            // This might trigger a page fault
+            // SAFETY: The pointer is valid and points to a valid memory region.
+            if unsafe { ptr.read_volatile() } == zero {
+                break;
+            }
+            len += 1;
+        }
+        Ok(())
+    })?;
+
+    Ok((start, len))
 }
 
 /// A trait representing a pointer in user space, which can be converted to a
@@ -122,10 +144,12 @@ pub trait PtrWrapper<T>: Sized {
         unsafe { Ok(self.into_inner()) }
     }
 
-    /// Get the pointer as `&CStr`, validating the memory region specified by
-    /// the size of a C string.
-    fn get_as_cstr(self) -> LinuxResult<&'static CStr> {
-        check_cstr(self.address(), Self::ACCESS_FLAGS)
+    fn nullable<R>(self, f: impl FnOnce(Self) -> LinuxResult<R>) -> LinuxResult<Option<R>> {
+        if self.address().as_ptr().is_null() {
+            Ok(None)
+        } else {
+            f(self).map(Some)
+        }
     }
 }
 
@@ -155,6 +179,19 @@ impl<T> PtrWrapper<T> for UserPtr<T> {
     }
 }
 
+impl<T> UserPtr<T> {
+    /// Get the pointer as `&mut [T]`, terminated by a null value, validating
+    /// the memory region.
+    pub fn get_as_null_terminated(self) -> LinuxResult<&'static mut [T]>
+    where
+        T: Eq + Default,
+    {
+        let (ptr, len) = check_null_terminated::<T>(self.address(), Self::ACCESS_FLAGS)?;
+        // SAFETY: We've validated the memory region.
+        unsafe { Ok(slice::from_raw_parts_mut(ptr as *mut _, len)) }
+    }
+}
+
 /// An immutable pointer to user space memory.
 ///
 /// See [`PtrWrapper`] for more details.
@@ -178,5 +215,31 @@ impl<T> PtrWrapper<T> for UserConstPtr<T> {
 
     fn address(&self) -> VirtAddr {
         VirtAddr::from_ptr_of(self.0)
+    }
+}
+
+impl<T> UserConstPtr<T> {
+    /// Get the pointer as `&[T]`, terminated by a null value, validating the
+    /// memory region.
+    pub fn get_as_null_terminated(self) -> LinuxResult<&'static [T]>
+    where
+        T: Eq + Default,
+    {
+        let (ptr, len) = check_null_terminated::<T>(self.address(), Self::ACCESS_FLAGS)?;
+        // SAFETY: We've validated the memory region.
+        unsafe { Ok(slice::from_raw_parts(ptr, len)) }
+    }
+}
+
+static_assertions::const_assert_eq!(size_of::<c_char>(), size_of::<u8>());
+
+impl UserConstPtr<c_char> {
+    /// Get the pointer as `&str`, validating the memory region.
+    pub fn get_as_str(self) -> LinuxResult<Option<&'static str>> {
+        let slice = self.get_as_null_terminated()?;
+        // SAFETY: c_char is u8
+        let slice = unsafe { mem::transmute::<&[c_char], &[u8]>(slice) };
+
+        Ok(str::from_utf8(slice).ok())
     }
 }

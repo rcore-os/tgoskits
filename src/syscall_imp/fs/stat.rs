@@ -100,7 +100,7 @@ pub fn sys_fstatat(
     _flags: i32,
 ) -> i32 {
     syscall_body!(sys_fstatat, {
-        let path = path.get_as_cstr()?;
+        let path = path.get_as_null_terminated()?;
         let path = arceos_posix_api::handle_file_path(dir_fd, Some(path.as_ptr() as _), false)?;
 
         let kstatbuf = kstatbuf.get()?;
