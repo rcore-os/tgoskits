@@ -493,7 +493,7 @@ if __name__ == '__main__':
                 # test_name = line.replace("=", '').replace(" ", "").replace("START", "")
                 continue
             # 测试样例中间
-            data.append(line)
+            data.append(line.replace('\n', '').replace('\r', ''))
     test_results = [x.get_result() for x in runner.values()]
     for x in runner.values():
         result = x.get_result()
