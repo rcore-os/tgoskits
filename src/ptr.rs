@@ -235,11 +235,11 @@ static_assertions::const_assert_eq!(size_of::<c_char>(), size_of::<u8>());
 
 impl UserConstPtr<c_char> {
     /// Get the pointer as `&str`, validating the memory region.
-    pub fn get_as_str(self) -> LinuxResult<Option<&'static str>> {
+    pub fn get_as_str(self) -> LinuxResult<&'static str> {
         let slice = self.get_as_null_terminated()?;
         // SAFETY: c_char is u8
         let slice = unsafe { mem::transmute::<&[c_char], &[u8]>(slice) };
 
-        Ok(str::from_utf8(slice).ok())
+        str::from_utf8(slice).map_err(|_| LinuxError::EILSEQ)
     }
 }

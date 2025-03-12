@@ -5,12 +5,7 @@ mod sys;
 mod task;
 mod utils;
 
-use core::ffi::c_char;
-
-use crate::{
-    ptr::UserConstPtr,
-    task::{time_stat_from_kernel_to_user, time_stat_from_user_to_kernel},
-};
+use crate::task::{time_stat_from_kernel_to_user, time_stat_from_user_to_kernel};
 use axerrno::LinuxError;
 use axhal::{
     arch::TrapFrame,
@@ -59,13 +54,6 @@ macro_rules! syscall_body {
             }
         }
     }};
-}
-
-pub(crate) fn read_path_str(path: UserConstPtr<c_char>) -> Result<&'static str, LinuxError> {
-    path.get_as_str()?.ok_or_else(|| {
-        warn!("Invalid path");
-        LinuxError::EFAULT
-    })
 }
 
 #[register_trap_handler(SYSCALL)]

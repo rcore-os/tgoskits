@@ -4,9 +4,7 @@ use axerrno::LinuxError;
 
 use crate::{
     ptr::{PtrWrapper, UserConstPtr, UserPtr},
-    syscall_body,
-    syscall_imp::read_path_str,
-    syscall_unwrap,
+    syscall_body, syscall_unwrap,
 };
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -219,7 +217,7 @@ pub fn sys_statx(
     //        file descriptor dirfd.
 
     syscall_body!(sys_statx, {
-        let path = read_path_str(pathname)?;
+        let path = pathname.get_as_str()?;
 
         const AT_EMPTY_PATH: u32 = 0x1000;
         if path.is_empty() {

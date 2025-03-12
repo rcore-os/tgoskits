@@ -7,9 +7,7 @@ use axtask::{TaskExtRef, current};
 
 use crate::{
     ptr::{PtrWrapper, UserConstPtr, UserPtr},
-    syscall_body,
-    syscall_imp::read_path_str,
-    syscall_unwrap,
+    syscall_body, syscall_unwrap,
 };
 
 /// The ioctl() system call manipulates the underlying device parameters
@@ -28,7 +26,7 @@ pub(crate) fn sys_ioctl(_fd: i32, _op: usize, _argp: UserPtr<c_void>) -> i32 {
 }
 
 pub(crate) fn sys_chdir(path: UserConstPtr<c_char>) -> c_int {
-    let path = syscall_unwrap!(read_path_str(path));
+    let path = syscall_unwrap!(path.get_as_str());
     axfs::api::set_current_dir(path)
         .map(|_| 0)
         .unwrap_or_else(|err| {
@@ -38,7 +36,7 @@ pub(crate) fn sys_chdir(path: UserConstPtr<c_char>) -> c_int {
 }
 
 pub(crate) fn sys_mkdirat(dirfd: i32, path: UserConstPtr<c_char>, mode: u32) -> c_int {
-    let path = syscall_unwrap!(read_path_str(path));
+    let path = syscall_unwrap!(path.get_as_str());
 
     if !path.starts_with("/") && dirfd != AT_FDCWD as i32 {
         warn!("unsupported.");

@@ -1,6 +1,6 @@
-use core::str::from_utf8;
+use core::ffi::CStr;
 
-use alloc::{collections::vec_deque::VecDeque, string::String, vec};
+use alloc::{string::String, vec};
 
 use axerrno::{AxError, AxResult};
 use axhal::{
@@ -17,55 +17,21 @@ use xmas_elf::{ElfFile, program::SegmentData};
 /// Map the elf file to the user address space.
 ///
 /// # Arguments
-/// - `args`: The arguments of the user app. The first argument is the path of the user app.
-/// - `elf_parser`: The parser of the elf file.
 /// - `uspace`: The address space of the user app.
+/// - `elf`: The elf file.
 ///
 /// # Returns
 /// - The entry point of the user app.
-fn map_elf(
-    args: &mut VecDeque<String>,
-    elf_parser: &ELFParser,
-    uspace: &mut AddrSpace,
-) -> AxResult<(VirtAddr, [AuxvEntry; 16])> {
-    let elf = elf_parser.elf();
-    if let Some(interp) = elf
-        .program_iter()
-        .find(|ph| ph.get_type() == Ok(xmas_elf::program::Type::Interp))
-    {
-        let interp = match interp.get_data(elf) {
-            Ok(SegmentData::Undefined(data)) => data,
-            _ => panic!("Invalid data in Interp Elf Program Header"),
-        };
+fn map_elf(uspace: &mut AddrSpace, elf: &ElfFile) -> AxResult<(VirtAddr, [AuxvEntry; 16])> {
+    let uspace_base = uspace.base().as_usize();
+    let elf_parser = ELFParser::new(
+        elf,
+        axconfig::plat::USER_INTERP_BASE,
+        Some(uspace_base as isize),
+        uspace_base,
+    )
+    .map_err(|_| AxError::InvalidData)?;
 
-        let interp_path = from_utf8(interp).map_err(|_| AxError::InvalidInput)?;
-        // remove trailing '\0'
-        let mut real_interp_path =
-            axfs::api::canonicalize(interp_path.trim_matches(char::from(0)))?;
-        if real_interp_path == "/lib/ld-linux-riscv64-lp64.so.1"
-            || real_interp_path == "/lib64/ld-linux-loongarch-lp64d.so.1"
-            || real_interp_path == "/lib64/ld-linux-x86-64.so.2"
-            || real_interp_path == "/lib/ld-linux-aarch64.so.1"
-        {
-            // TODO: Use soft link
-            real_interp_path = String::from("./musl/lib/libc.so");
-        }
-
-        let interp_data = axfs::api::read(real_interp_path.as_str())?;
-        let interp_elf = ElfFile::new(&interp_data).map_err(|_| AxError::InvalidData)?;
-        let uspace_base = uspace.base().as_usize();
-
-        let interp_elf_parser = ELFParser::new(
-            &interp_elf,
-            axconfig::plat::USER_INTERP_BASE,
-            Some(uspace_base as isize),
-            uspace_base,
-        )
-        .map_err(|_| AxError::InvalidData)?;
-        // Set the first argument to the path of the user app.
-        args.push_front(real_interp_path);
-        return map_elf(args, &interp_elf_parser, uspace);
-    }
     for segement in elf_parser.ph_load() {
         debug!(
             "Mapping ELF segment: [{:#x?}, {:#x?}) flags: {:#x?}",
@@ -101,15 +67,17 @@ fn map_elf(
 /// Load the user app to the user address space.
 ///
 /// # Arguments
-/// - `args`: The arguments of the user app. The first argument is the path of the user app.
 /// - `uspace`: The address space of the user app.
+/// - `args`: The arguments of the user app. The first argument is the path of the user app.
+/// - `envs`: The environment variables of the user app.
 ///
 /// # Returns
 /// - The entry point of the user app.
 /// - The stack pointer of the user app.
 pub fn load_user_app(
-    args: &mut VecDeque<String>,
     uspace: &mut AddrSpace,
+    args: &[String],
+    envs: &[String],
 ) -> AxResult<(VirtAddr, VirtAddr)> {
     if args.is_empty() {
         return Err(AxError::InvalidInput);
@@ -117,16 +85,38 @@ pub fn load_user_app(
     let file_data = axfs::api::read(args[0].as_str())?;
     let elf = ElfFile::new(&file_data).map_err(|_| AxError::InvalidData)?;
 
-    let uspace_base = uspace.base().as_usize();
-    let elf_parser = ELFParser::new(
-        &elf,
-        axconfig::plat::USER_INTERP_BASE,
-        Some(uspace_base as isize),
-        uspace_base,
-    )
-    .map_err(|_| AxError::InvalidData)?;
+    if let Some(interp) = elf
+        .program_iter()
+        .find(|ph| ph.get_type() == Ok(xmas_elf::program::Type::Interp))
+    {
+        let interp = match interp.get_data(&elf) {
+            Ok(SegmentData::Undefined(data)) => data,
+            _ => panic!("Invalid data in Interp Elf Program Header"),
+        };
 
-    let (entry, mut auxv) = map_elf(args, &elf_parser, uspace)?;
+        let mut interp_path = axfs::api::canonicalize(
+            CStr::from_bytes_with_nul(interp)
+                .map_err(|_| AxError::InvalidData)?
+                .to_str()
+                .map_err(|_| AxError::InvalidData)?,
+        )?;
+
+        if interp_path == "/lib/ld-linux-riscv64-lp64.so.1"
+            || interp_path == "/lib64/ld-linux-loongarch-lp64d.so.1"
+            || interp_path == "/lib64/ld-linux-x86-64.so.2"
+            || interp_path == "/lib/ld-linux-aarch64.so.1"
+        {
+            // TODO: Use soft link
+            interp_path = String::from("/musl/lib/libc.so");
+        }
+
+        // Set the first argument to the path of the user app.
+        let mut new_args = vec![interp_path];
+        new_args.extend_from_slice(args);
+        return load_user_app(uspace, &new_args, envs);
+    }
+
+    let (entry, mut auxv) = map_elf(uspace, &elf)?;
     // The user stack is divided into two parts:
     // `ustack_start` -> `ustack_pointer`: It is the stack space that users actually read and write.
     // `ustack_pointer` -> `ustack_end`: It is the space that contains the arguments, environment variables and auxv passed to the app.
@@ -138,16 +128,8 @@ pub fn load_user_app(
         "Mapping user stack: {:#x?} -> {:#x?}",
         ustack_start, ustack_end
     );
-    // FIXME: Add more arguments and environment variables
-    let env = vec!["SHLVL=1".into(), "PWD=/".into(), "LD_DEBUG=files".into()];
 
-    let stack_data = app_stack_region(
-        args.make_contiguous(),
-        &env,
-        &mut auxv,
-        ustack_start,
-        ustack_size,
-    );
+    let stack_data = app_stack_region(args, envs, &mut auxv, ustack_start, ustack_size);
     uspace.map_alloc(
         ustack_start,
         ustack_size,

@@ -35,6 +35,7 @@ fi
 basic_testlist=(
     "/$LIBC/basic/brk"
     "/$LIBC/basic/chdir"
+    "/$LIBC/basic/execve"
 )
 busybox_testlist=("/$LIBC/busybox sh /$LIBC/busybox_testcode.sh")
 iozone_testlist=("/$LIBC/busybox sh /$LIBC/iozone_testcode.sh")
