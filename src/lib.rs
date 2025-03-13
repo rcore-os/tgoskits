@@ -106,17 +106,15 @@ pub struct PassThroughDeviceConfig {
     pub irq_id: usize,
 }
 
-/// The configuration structure for the guest VM serialized from a toml file provided by user,
-/// and then converted to `AxVMConfig` for the VM creation.
+/// The configuration structure for the guest VM base info.
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
-pub struct AxVMCrateConfig {
+pub struct VMBaseConfig {
     /// VM ID.
     pub id: usize,
     /// VM name.
     pub name: String,
     /// VM type.
     pub vm_type: usize,
-
     // Resources.
     /// The number of virtual CPUs.
     pub cpu_num: usize,
@@ -137,10 +135,13 @@ pub struct AxVMCrateConfig {
     ///          - vCpu1 will only be scheduled at pCpu1;
     ///      It will phrase an error if the number of vCpus is not equal to the length of `phys_cpu_sets` array.
     pub phys_cpu_sets: Option<Vec<usize>>,
+}
 
+/// The configuration structure for the guest VM kernel.
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+pub struct VMKernelConfig {
     /// The entry point of the kernel image.
     pub entry_point: usize,
-
     /// The file path of the kernel image.
     pub kernel_path: String,
     /// The load address of the kernel image.
@@ -159,19 +160,33 @@ pub struct AxVMCrateConfig {
     pub ramdisk_load_addr: Option<usize>,
     /// The location of the image, default is 'fs'.
     pub image_location: Option<String>,
-
     /// The command line of the kernel.
     pub cmdline: Option<String>,
-
     /// The path of the disk image.
     pub disk_path: Option<String>,
-
     /// Memory Information
     pub memory_regions: Vec<VmMemConfig>,
+}
+
+/// The configuration structure for the guest VM devices.
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+pub struct VMDevicesConfig {
     /// Emu device Information
     pub emu_devices: Vec<EmulatedDeviceConfig>,
     /// Passthrough device Information
     pub passthrough_devices: Vec<PassThroughDeviceConfig>,
+}
+
+/// The configuration structure for the guest VM serialized from a toml file provided by user,
+/// and then converted to `AxVMConfig` for the VM creation.
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AxVMCrateConfig {
+    /// The base configuration for the VM.
+    pub base: VMBaseConfig,
+    /// The kernel configuration for the VM.
+    pub kernel: VMKernelConfig,
+    /// The devices configuration for the VM.
+    pub devices: VMDevicesConfig,
 }
 
 impl AxVMCrateConfig {
