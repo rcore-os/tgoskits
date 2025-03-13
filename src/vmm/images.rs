@@ -8,7 +8,7 @@ use crate::vmm::config::config;
 
 /// Loads the VM image files.
 pub fn load_vm_images(config: AxVMCrateConfig, vm: VMRef) -> AxResult {
-    match config.image_location.as_deref() {
+    match config.kernel.image_location.as_deref() {
         Some("memory") => load_vm_images_from_memory(config, vm),
         #[cfg(feature = "fs")]
         Some("fs") => fs::load_vm_images_from_filesystem(config, vm),
@@ -21,25 +21,25 @@ pub fn load_vm_images(config: AxVMCrateConfig, vm: VMRef) -> AxResult {
 /// Load VM images from memory
 /// into the guest VM's memory space based on the VM configuration.
 fn load_vm_images_from_memory(config: AxVMCrateConfig, vm: VMRef) -> AxResult {
-    info!("Loading VM[{}] images from memory", config.id);
+    info!("Loading VM[{}] images from memory", config.base.id);
 
     let vm_imags = config::get_memory_images()
         .iter()
-        .find(|&v| v.id == config.id)
+        .find(|&v| v.id == config.base.id)
         .expect("VM images is missed, Perhaps add `VM_CONFIGS=PATH/CONFIGS/FILE` command.");
 
-    load_vm_image_from_memory(vm_imags.kernel, config.kernel_load_addr, vm.clone())
+    load_vm_image_from_memory(vm_imags.kernel, config.kernel.kernel_load_addr, vm.clone())
         .expect("Failed to load VM images");
 
     // Load DTB image
     if let Some(buffer) = vm_imags.dtb {
-        load_vm_image_from_memory(buffer, config.dtb_load_addr.unwrap(), vm.clone())
+        load_vm_image_from_memory(buffer, config.kernel.dtb_load_addr.unwrap(), vm.clone())
             .expect("Failed to load DTB images");
     }
 
     // Load BIOS image
     if let Some(buffer) = vm_imags.bios {
-        load_vm_image_from_memory(buffer, config.bios_load_addr.unwrap(), vm.clone())
+        load_vm_image_from_memory(buffer, config.kernel.bios_load_addr.unwrap(), vm.clone())
             .expect("Failed to load BIOS images");
     }
 
@@ -102,21 +102,21 @@ mod fs {
         info!("Loading VM images from filesystem");
         // Load kernel image.
         load_vm_image(
-            config.kernel_path,
-            GuestPhysAddr::from(config.kernel_load_addr),
+            config.kernel.kernel_path,
+            GuestPhysAddr::from(config.kernel.kernel_load_addr),
             vm.clone(),
         )?;
         // Load BIOS image if needed.
-        if let Some(bios_path) = config.bios_path {
-            if let Some(bios_load_addr) = config.bios_load_addr {
+        if let Some(bios_path) = config.kernel.bios_path {
+            if let Some(bios_load_addr) = config.kernel.bios_load_addr {
                 load_vm_image(bios_path, GuestPhysAddr::from(bios_load_addr), vm.clone())?;
             } else {
                 return ax_err!(NotFound, "BIOS load addr is missed");
             }
         };
         // Load Ramdisk image if needed.
-        if let Some(ramdisk_path) = config.ramdisk_path {
-            if let Some(ramdisk_load_addr) = config.ramdisk_load_addr {
+        if let Some(ramdisk_path) = config.kernel.ramdisk_path {
+            if let Some(ramdisk_load_addr) = config.kernel.ramdisk_load_addr {
                 load_vm_image(
                     ramdisk_path,
                     GuestPhysAddr::from(ramdisk_load_addr),
@@ -128,8 +128,8 @@ mod fs {
         };
         // Load DTB image if needed.
         // Todo: generate DTB file for guest VM.
-        if let Some(dtb_path) = config.dtb_path {
-            if let Some(dtb_load_addr) = config.dtb_load_addr {
+        if let Some(dtb_path) = config.kernel.dtb_path {
+            if let Some(dtb_load_addr) = config.kernel.dtb_load_addr {
                 load_vm_image(dtb_path, GuestPhysAddr::from(dtb_load_addr), vm.clone())?;
             } else {
                 return ax_err!(NotFound, "DTB load addr is missed");

@@ -110,9 +110,9 @@ fn parse_config_file(config_file: &ConfigFile) -> Option<MemoryImage> {
         .parse::<Value>()
         .expect("failed to parse config file");
 
-    let id = config.get("id")?.as_integer()? as usize;
+    let id = config.get("base")?.as_table()?.get("id")?.as_integer()? as usize;
 
-    let image_location_val = config.get("image_location")?;
+    let image_location_val = config.get("kernel")?.as_table()?.get("image_location")?;
 
     let image_location = image_location_val.as_str()?;
 
@@ -120,16 +120,20 @@ fn parse_config_file(config_file: &ConfigFile) -> Option<MemoryImage> {
         return None;
     }
 
-    let kernel_path = config.get("kernel_path")?;
+    let kernel_path = config.get("kernel")?.as_table()?.get("kernel_path")?;
 
     let kernel = convert_to_absolute(CONFIGS_DIR_PATH, kernel_path.as_str().unwrap());
 
     let dtb = config
+        .get("kernel")?
+        .as_table()?
         .get("dtb_path")
         .and_then(|v| v.as_str())
         .map(|v| convert_to_absolute(CONFIGS_DIR_PATH, v));
 
     let bios = config
+        .get("kernel")?
+        .as_table()?
         .get("bios_path")
         .and_then(|v| v.as_str())
         .map(|v| convert_to_absolute(CONFIGS_DIR_PATH, v));
