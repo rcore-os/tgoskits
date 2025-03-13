@@ -63,25 +63,25 @@ pub struct AxVMConfig {
 impl From<AxVMCrateConfig> for AxVMConfig {
     fn from(cfg: AxVMCrateConfig) -> Self {
         Self {
-            id: cfg.id,
-            name: cfg.name,
-            vm_type: VMType::from(cfg.vm_type),
-            cpu_num: cfg.cpu_num,
-            phys_cpu_ids: cfg.phys_cpu_ids,
-            phys_cpu_sets: cfg.phys_cpu_sets,
+            id: cfg.base.id,
+            name: cfg.base.name,
+            vm_type: VMType::from(cfg.base.vm_type),
+            cpu_num: cfg.base.cpu_num,
+            phys_cpu_ids: cfg.base.phys_cpu_ids,
+            phys_cpu_sets: cfg.base.phys_cpu_sets,
             cpu_config: AxVCpuConfig {
-                bsp_entry: GuestPhysAddr::from(cfg.entry_point),
-                ap_entry: GuestPhysAddr::from(cfg.entry_point),
+                bsp_entry: GuestPhysAddr::from(cfg.kernel.entry_point),
+                ap_entry: GuestPhysAddr::from(cfg.kernel.entry_point),
             },
             image_config: VMImageConfig {
-                kernel_load_gpa: GuestPhysAddr::from(cfg.kernel_load_addr),
-                bios_load_gpa: cfg.bios_load_addr.map(GuestPhysAddr::from),
-                dtb_load_gpa: cfg.dtb_load_addr.map(GuestPhysAddr::from),
-                ramdisk_load_gpa: cfg.ramdisk_load_addr.map(GuestPhysAddr::from),
+                kernel_load_gpa: GuestPhysAddr::from(cfg.kernel.kernel_load_addr),
+                bios_load_gpa: cfg.kernel.bios_load_addr.map(GuestPhysAddr::from),
+                dtb_load_gpa: cfg.kernel.dtb_load_addr.map(GuestPhysAddr::from),
+                ramdisk_load_gpa: cfg.kernel.ramdisk_load_addr.map(GuestPhysAddr::from),
             },
-            memory_regions: cfg.memory_regions,
-            emu_devices: cfg.emu_devices,
-            pass_through_devices: cfg.passthrough_devices,
+            memory_regions: cfg.kernel.memory_regions,
+            emu_devices: cfg.devices.emu_devices,
+            pass_through_devices: cfg.devices.passthrough_devices,
         }
     }
 }
