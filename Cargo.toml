@@ -7,6 +7,7 @@ version = "0.1.0"
 edition = "2024"
 authors = ["Keyang Hu <keyang.hu@qq.com>"]
 exclude = ["crates"]
+license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPubL-2.0 OR MulanPSL2"
 
 [features]
 fs = ["axstd/fs"]

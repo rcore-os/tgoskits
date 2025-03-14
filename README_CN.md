@@ -6,7 +6,7 @@
 
 <h2 align="center">AxVisor</h1>
 
-<p align="center">A unified modular hypervisor based on ArceOS.</p>
+<p align="center">一个基于 ArceOS 的统一模块化虚拟机管理程序</p>
 
 <div align="center">
 
@@ -16,35 +16,35 @@
 
 </div>
 
-English | [中文版](README_CN.md)
+[English](README.md) | 中文版
 
-# Introduction
+# 简介
 
-AxVisor is a hypervisor implemented based on the ArceOS unikernel framework. Its goal is to leverage the foundational operating system features provided by ArceOS to implement a unified modular hypervisor.
+AxVisor 是基于 ArceOS unikernel 框架实现的 Hypervisor。其目标是利用 ArceOS 提供的基础操作系统功能作为基础，实现一个统一的模块化 Hypervisor。
 
-"Unified" refers to using the same codebase to support x86_64, Arm (aarch64), and RISC-V architectures simultaneously, in order to maximize the reuse of architecture-independent code and simplify development and maintenance costs.
+“统一”指使用同一套代码同时支持 x86_64、Arm(aarch64) 和 RISC-V 三种架构，以最大化复用架构无关代码，简化代码开发和维护成本。
 
-"Modular" means that the functionality of the hypervisor is decomposed into multiple modules, each implementing a specific function. The modules communicate with each other through standard interfaces to achieve decoupling and reuse of functionality.
+“模块化”指 Hypervisor 的功能被分解为多个模块，每个模块实现一个特定的功能，模块之间通过标准接口进行通信，以实现功能的解耦和复用。
 
-## Architecture
+## 架构
 
-The software architecture of AxVisor is divided into five layers as shown in the diagram below. Each box represents an independent module, and the modules communicate with each other through standard interfaces.
+AxVisor 的软件架构分为如下图所示的五层，其中，每一个框都是一个独立的模块，模块之间通过标准接口进行通信。
 
 ![Architecture](https://arceos-hypervisor.github.io/doc/assets/arceos-hypervisor-architecture.png)
 
-The complete architecture description can be found in the [documentation](https://arceos-hypervisor.github.io/doc/arch_cn.html).
+完整的架构描述可以在[文档](https://arceos-hypervisor.github.io/doc/arch_cn.html)中找到。
 
-## Hardwares
+## 硬件平台
 
-Currently, AxVisor has been verified on the following platforms:
+目前，AxVisor 已经在如下平台进行了验证：
 
 - [x] QEMU ARM64 virt (qemu-max)
 - [x] Rockchip RK3568 / RK3588
 - [x] 黑芝麻华山 A1000
 
-## Guest VMs
+## 客户机
 
-Currently, AxVisor has been verified in scenarios with the following systems as guests:
+目前，AxVisor 已经在对如下系统作为客户机的情况进行了验证：
 
 * [ArceOS](https://github.com/arceos-org/arceos)
 * [Starry-OS](https://github.com/Starry-OS)
@@ -54,42 +54,43 @@ Currently, AxVisor has been verified in scenarios with the following systems as 
   * single core: [config.toml](configs/vms/linux-qemu-aarch64.toml) | [dts](configs/vms/linux-qemu.dts)
   * smp: [config.toml](configs/vms/linux-qemu-aarch64-smp2.toml) | [dts](configs/vms/linux-qemu-smp2.dts)
 
-# Build and Run
+# 构建及运行
 
-Use the command `git clone https://github.com/arceos-hypervisor/axvisor.git` to pull the AxVisor source code.
+使用 `git clone https://github.com/arceos-hypervisor/axvisor.git` 命令拉取 AxVisor 源代码
 
-## Build Environment
+## 构建环境
 
-AxVisor is written in the Rust programming language, so you need to install the Rust development environment following the instructions on the official Rust website. Additionally, you need to install cargo-binutils to use tools like rust-objcopy and rust-objdump.
+AxVisor 是使用 Rust 编程语言编写的，因此，需要根据 Rust 官方网站的说明安装 Rust 开发环境。此外，还需要安装 [cargo-binutils](https://github.com/rust-embedded/cargo-binutils) 以便使用 `rust-objcopy` 和 `rust-objdump` 等工具
+
 ```console
 $ cargo install cargo-binutils
 ```
 
-If necessary, you may also need to install [musl-gcc](http://musl.cc/x86_64-linux-musl-cross.tgz) to build guest applications.
+根据需要，可能还要安装 [musl-gcc](http://musl.cc/x86_64-linux-musl-cross.tgz) 来构建客户机应用程序
 
-## Prepare the Guest VM
+## 准备客户机
 
-After AxVisor starts, it loads and starts the guest based on the information in the guest configuration file. Currently, AxVisor supports loading guest images from a FAT32 file system and also supports binding guest images to the hypervisor image through static compilation (using include_bytes).
+AxVisor 启动之后会根据客户机配置文件中的信息加载并启动客户机。目前，AxVisor 即支持从 FAT32 文件系统加载客户机镜像，也支持通过静态编译方式（include_bytes）将客户机镜像绑定到虚拟机管理程序镜像中。
 
-### Configuration Files
+### 配置文件
 
-Since configuring the guest is a complex process, AxVisor chooses to use TOML files to manage the guest configurations. These configurations include the virtual machine ID, virtual machine name, virtual machine type, number of CPU cores, memory size, virtual devices, passthrough devices, and more. In the source code, the `./config/vms` directory contains some example templates for guest configurations.
+由于客户机配置是一个复杂的过程，AxVisor 选择使用 toml 文件来管理客户机的配置，其中包括虚拟机 ID、虚拟机名称、虚拟机类型、CPU 核心数量、内存大小、虚拟设备和直通设备等。在源码的 `./config/vms` 目录下是一些客户机配置的示例模板。
 
-In addition, you can use the [axvmconfig](https://github.com/arceos-hypervisor/axvmconfig) tool to generate a custom configuration file. For detailed information, refer to the [axvmconfig](https://arceos-hypervisor.github.io/axvmconfig/axvmconfig/index.html) documentation.
+此外，也可以使用 [axvmconfig](https://github.com/arceos-hypervisor/axvmconfig) 工具来生成一个自定义配置文件。详细介绍参见 [axvmconfig](https://arceos-hypervisor.github.io/axvmconfig/axvmconfig/index.html)。
 
-### Load from file system
+### 从文件系统加载
 
-1. Building your own guest machine image file
+1. 构建自己的客户机镜像文件
 
-2. Modify the configuration items in the corresponding `./configs/vms/<ARCH_CONFIG>.toml`
-     - `image_location="fs"` indicates loading from the file system.
-     - `kernel_path` specifies the path to the kernel image in the file system.
-     - others
+2. 修改对应的 `./configs/vms/<ARCH_CONFIG>.toml` 中的配置项
+     - `image_location="fs"` 表示从文件系统加载
+     - `kernel_path` 指出内核镜像在文件系统中的路径
+     - 其他
 
-3. Create a disk image file and place the guest machine image into the file system.
+3. 制作一个磁盘镜像文件，并将客户机镜像放到文件系统中
 
-  1. Use the `make disk_img` command to generate an empty FAT32 disk image file named `disk.img`.
-  2. Manually mount `disk.img`, and then place your guest machine image into the file system.
+  1. 使用 `make disk_img` 命令生成一个空的 FAT32 磁盘镜像文件 `disk.img`
+  2. 手动挂载 `disk.img`，然后将自己的客户机镜像放到该文件系统中
 
       ```console
       $ mkdir -p tmp
@@ -98,22 +99,22 @@ In addition, you can use the [axvmconfig](https://github.com/arceos-hypervisor/a
       $ sudo umount tmp
       ```
 
-4. When building AxVisor, the APP_FEATURES=fs option is required.
+4. 在构建 AxVisor 时，需要 `APP_FEATURES=fs` 选项
 
-### Load from memory
+### 从内存加载
 
-1. Building your own guest machine image file
+1. 构建自己的客户机镜像文件
 
-2. Modify the configuration items in the corresponding `./configs/vms/<ARCH_CONFIG>.toml`
-     - `image_location="memory"` indicates loading from the memory.
-     - `kernel_path` kernel_path specifies the relative/absolute path of the kernel image in the workspace.
-     - others
+2. 修改对应的 `./configs/vms/<ARCH_CONFIG>.toml` 中的配置项
+     - `image_location="memory"` 配置项
+     - `kernel_path` 指定内核镜像在工作空间中的相对/绝对路径
+     - 其他
 
-3. Currently, the method of statically compiling and binding the guest machine image only supports loading one guest machine image.
+3. 当前通过静态编译绑定客户机镜像的方法最多仅支持加载一个客户机镜像
 
-## Build and Run
+## 构建及启动
 
-Depending on the chosen method for loading the guest machine image, the following commands may need to be modified accordingly!
+根据选择的加载客户机镜像文件的方式的不同，以下命令需要有对应的修改！
 
 ### x86_64 for nimbos
 
@@ -132,7 +133,7 @@ Depending on the chosen method for loading the guest machine image, the followin
 
 ### aarch64 for Linux
 
-You need to modify the phys-memory-size in configs/platforms/aarch64-qemu-virt-hv.toml to 0x2_0000_0000 (8G).
+需要修改 `configs/platforms/aarch64-qemu-virt-hv.toml` 中的 `phys-memory-size` 为 `0x2_0000_0000` (8G)
 
 1. `make ARCH=aarch64 defconfig`
 2. `make ARCH=aarch64 VM_CONFIGS=configs/vms/linux-qemu-aarch64.toml LOG=debug BUS=mmio NET=y FEATURES=page-alloc-64g MEM=8g run`
@@ -142,7 +143,7 @@ You need to modify the phys-memory-size in configs/platforms/aarch64-qemu-virt-h
 1. `make ARCH=aarch64 defconfig`
 2. `make ARCH=aarch64 VM_CONFIGS=configs/vms/linux-qemu-aarch64-smp2.toml LOG=debug BUS=mmio NET=y  BLK=y SMP=2 FEATURES=page-alloc-64g MEM=8g run`
 
-## Demo
+## 启动示例
 
 ```console
 Booting from ROM..
@@ -234,27 +235,27 @@ Shell: Process 5 exited with code 0
 ......
 ```
 
-# Contributing
+# 如何贡献
 
-Feel free to fork this repository and submit a pull request.
+欢迎 FORK 本仓库并提交 PR。
 
-You can refer to these [discussions]((https://github.com/arceos-hypervisor/axvisor/discussions)) to gain deeper insights into the project's ideas and future development direction.
+您可以参考这些[讨论](https://github.com/arceos-hypervisor/axvisor/discussions)，以深入了解该项目的思路和未来发展方向。
 
-## Development
+## 开发
 
-AxVisor, as a modular hypervisor, has many components used as Crates. You can use the `tool/dev_env.py` command to localize the relevant Crates, making it easier for development and debugging.
+AxVisor 作为组件化的虚拟机管理程序，很多组件是作为 Crate 来使用的，可以使用 `tool/dev_env.py` 命令将相关 Crate 本地化，方便开发调试。
 
-## Contributors
+## 贡献者
 
-This project exists thanks to all the people who contribute.
+这个项目的存在得益于所有贡献者的支持。
 
 <a href="https://github.com/arceos-hypervisor/axvisor/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=arceos-hypervisor/axvisor" />
 </a>
 
-# License
+# 许可协议
 
-AxVisor uses the following open-source license:
+AxVisor 使用如下开源协议
 
  * Apache-2.0
  * MulanPubL-2.0
