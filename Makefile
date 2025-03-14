@@ -48,13 +48,16 @@ A ?= $(CURDIR)
 APP ?= $(A)
 FEATURES ?=
 APP_FEATURES ?=
+# make `FEATURES=page-alloc-64g` as the default configuration
+MEM_FEATURES ?= page-alloc-64g
+FEATURES += $(MEM_FEATURES)
 
 # QEMU options
 BLK ?= y
 NET ?= n
 GRAPHIC ?= n
 # To keep consistent with the latest `main` branch of ArceOS.
-MEM ?= 128M
+MEM ?= 4G
 BUS ?= pci
 
 DISK_IMG ?= disk.img
