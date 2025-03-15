@@ -137,7 +137,7 @@ fn handle_syscall(tf: &TrapFrame, syscall_num: usize) -> isize {
         Sysno::times => sys_times(tf.arg0().into()),
         Sysno::brk => sys_brk(tf.arg0() as _),
         #[cfg(target_arch = "x86_64")]
-        Sysno::arch_prctl => sys_arch_prctl(tf.arg0() as _, tf.arg1() as _),
+        Sysno::arch_prctl => sys_arch_prctl(tf.arg0() as _, tf.arg1().into()),
         Sysno::set_tid_address => sys_set_tid_address(tf.arg0().into()),
         Sysno::clock_gettime => sys_clock_gettime(tf.arg0() as _, tf.arg1().into()),
         Sysno::exit_group => sys_exit_group(tf.arg0() as _),

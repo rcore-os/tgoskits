@@ -76,35 +76,38 @@ pub fn sys_set_tid_address(tid_ptd: UserConstPtr<i32>) -> LinuxResult<isize> {
 
 #[cfg(target_arch = "x86_64")]
 #[apply(syscall_instrument)]
-pub fn sys_arch_prctl(code: i32, addr: u64) -> LinuxResult<isize> {
+pub fn sys_arch_prctl(code: i32, addr: UserPtr<u64>) -> LinuxResult<isize> {
     use axerrno::LinuxError;
-    match ArchPrctlCode::try_from(code) {
-        // TODO: check the legality of the address
-        Ok(ArchPrctlCode::SetFs) => {
+    match ArchPrctlCode::try_from(code).map_err(|_| LinuxError::EINVAL)? {
+        // According to Linux implementation, SetFs & SetGs does not return
+        // error at all
+        ArchPrctlCode::SetFs => {
             unsafe {
-                axhal::arch::write_thread_pointer(addr as usize);
+                axhal::arch::write_thread_pointer(addr.address().as_usize());
             }
             Ok(0)
         }
-        Ok(ArchPrctlCode::GetFs) => {
+        ArchPrctlCode::SetGs => {
             unsafe {
-                *(addr as *mut u64) = axhal::arch::read_thread_pointer() as u64;
+                x86::msr::wrmsr(x86::msr::IA32_KERNEL_GSBASE, addr.address().as_usize() as _);
             }
             Ok(0)
         }
-        Ok(ArchPrctlCode::SetGs) => {
+        ArchPrctlCode::GetFs => {
             unsafe {
-                x86::msr::wrmsr(x86::msr::IA32_KERNEL_GSBASE, addr);
+                *addr.get()? = axhal::arch::read_thread_pointer() as u64;
             }
             Ok(0)
         }
-        Ok(ArchPrctlCode::GetGs) => {
+
+        ArchPrctlCode::GetGs => {
             unsafe {
-                *(addr as *mut u64) = x86::msr::rdmsr(x86::msr::IA32_KERNEL_GSBASE);
+                *addr.get()? = x86::msr::rdmsr(x86::msr::IA32_KERNEL_GSBASE);
             }
             Ok(0)
         }
-        _ => Err(LinuxError::ENOSYS),
+        ArchPrctlCode::GetCpuid => Ok(0),
+        ArchPrctlCode::SetCpuid => Err(LinuxError::ENODEV),
     }
 }
 
