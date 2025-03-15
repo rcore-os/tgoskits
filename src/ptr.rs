@@ -1,7 +1,7 @@
 use axerrno::{LinuxError, LinuxResult};
 use axhal::paging::MappingFlags;
 use axtask::{TaskExtRef, current};
-use memory_addr::{MemoryAddr, PAGE_SIZE_4K, PageIter4K, VirtAddr, VirtAddrRange};
+use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 
 use core::{alloc::Layout, ffi::c_char, mem, slice, str};
 
@@ -14,7 +14,7 @@ fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> 
     }
 
     let task = current();
-    let aspace = task.task_ext().aspace.lock();
+    let mut aspace = task.task_ext().aspace.lock();
 
     if !aspace.check_region_access(
         VirtAddrRange::from_start_size(start, layout.size()),
@@ -23,15 +23,9 @@ fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> 
         return Err(LinuxError::EFAULT);
     }
 
-    // Now force each page to be loaded into memory.
-    access_user_memory(|| {
-        let page_start = start.align_down_4k();
-        let page_end = (start + layout.size()).align_up_4k();
-        for page in PageIter4K::new(page_start, page_end).unwrap() {
-            // SAFETY: The page is valid and we've checked the access flags.
-            unsafe { page.as_ptr_of::<u8>().read_volatile() };
-        }
-    });
+    let page_start = start.align_down_4k();
+    let page_end = (start + layout.size()).align_up_4k();
+    aspace.populate_area(page_start, page_end - page_start)?;
 
     Ok(())
 }

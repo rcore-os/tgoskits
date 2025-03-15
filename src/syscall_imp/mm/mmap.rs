@@ -21,6 +21,10 @@ bitflags::bitflags! {
         const PROT_WRITE = 1 << 1;
         /// Page can be executed.
         const PROT_EXEC = 1 << 2;
+        /// Extend change to start of growsdown vma (mprotect only).
+        const PROT_GROWDOWN = 0x01000000;
+        /// Extend change to start of growsup vma (mprotect only).
+        const PROT_GROWSUP = 0x02000000;
     }
 }
 
@@ -61,7 +65,7 @@ bitflags::bitflags! {
     }
 }
 
-pub(crate) fn sys_mmap(
+pub fn sys_mmap(
     addr: UserPtr<usize>,
     length: usize,
     prot: i32,
@@ -153,7 +157,7 @@ pub(crate) fn sys_mmap(
     })
 }
 
-pub(crate) fn sys_munmap(addr: UserPtr<usize>, mut length: usize) -> i32 {
+pub fn sys_munmap(addr: UserPtr<usize>, mut length: usize) -> i32 {
     syscall_body!(sys_munmap, {
         // Safety: addr is used for mapping, and we won't directly access it.
         let addr = unsafe { addr.into_inner() };
@@ -165,6 +169,30 @@ pub(crate) fn sys_munmap(addr: UserPtr<usize>, mut length: usize) -> i32 {
         let start_addr = VirtAddr::from(addr as usize);
         aspace.unmap(start_addr, length)?;
         axhal::arch::flush_tlb(None);
+        Ok(0)
+    })
+}
+
+pub fn sys_mprotect(addr: UserPtr<usize>, mut length: usize, prot: i32) -> i32 {
+    syscall_body!(sys_mprotect, {
+        // Safety: addr is used for mapping, and we won't directly access it.
+        let addr = unsafe { addr.into_inner() };
+
+        // TODO: implement PROT_GROWSUP & PROT_GROWSDOWN
+        let Some(permission_flags) = MmapProt::from_bits(prot) else {
+            return Err(LinuxError::EINVAL);
+        };
+        if permission_flags.contains(MmapProt::PROT_GROWDOWN | MmapProt::PROT_GROWSUP) {
+            return Err(LinuxError::EINVAL);
+        }
+
+        let curr = current();
+        let curr_ext = curr.task_ext();
+        let mut aspace = curr_ext.aspace.lock();
+        length = memory_addr::align_up_4k(length);
+        let start_addr = VirtAddr::from(addr as usize);
+        aspace.protect(start_addr, length, permission_flags.into())?;
+
         Ok(0)
     })
 }

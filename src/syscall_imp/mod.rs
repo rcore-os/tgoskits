@@ -137,6 +137,7 @@ fn handle_syscall(tf: &TrapFrame, syscall_num: usize) -> isize {
             tf.arg4().into(),
         ) as _,
         Sysno::munmap => sys_munmap(tf.arg0().into(), tf.arg1() as _) as _,
+        Sysno::mprotect => sys_mprotect(tf.arg0().into(), tf.arg1() as _, tf.arg2() as _) as _,
         Sysno::times => sys_times(tf.arg0().into()) as _,
         Sysno::brk => sys_brk(tf.arg0() as _) as _,
         #[cfg(target_arch = "x86_64")]
