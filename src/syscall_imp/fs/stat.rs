@@ -1,10 +1,11 @@
 use core::ffi::c_char;
 
-use axerrno::LinuxError;
+use axerrno::{LinuxError, LinuxResult};
+use macro_rules_attribute::apply;
 
 use crate::{
     ptr::{PtrWrapper, UserConstPtr, UserPtr},
-    syscall_body, syscall_unwrap,
+    syscall_imp::syscall_instrument,
 };
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -73,54 +74,53 @@ impl From<arceos_posix_api::ctypes::stat> for Kstat {
     }
 }
 
-pub fn sys_fstat(fd: i32, kstatbuf: UserPtr<Kstat>) -> i32 {
-    let kstatbuf = syscall_unwrap!(kstatbuf.get());
+pub fn sys_fstat(fd: i32, kstatbuf: UserPtr<Kstat>) -> LinuxResult<isize> {
+    let kstatbuf = kstatbuf.get()?;
     let mut statbuf = arceos_posix_api::ctypes::stat::default();
 
     let result = unsafe {
         arceos_posix_api::sys_fstat(fd, &mut statbuf as *mut arceos_posix_api::ctypes::stat)
     };
     if result < 0 {
-        return result;
+        return Ok(result as _);
     }
 
     unsafe {
         let kstat = Kstat::from(statbuf);
         kstatbuf.write(kstat);
     }
-    0
+    Ok(0)
 }
 
+#[apply(syscall_instrument)]
 pub fn sys_fstatat(
     dir_fd: isize,
     path: UserConstPtr<c_char>,
     kstatbuf: UserPtr<Kstat>,
     _flags: i32,
-) -> i32 {
-    syscall_body!(sys_fstatat, {
-        let path = path.get_as_null_terminated()?;
-        let path = arceos_posix_api::handle_file_path(dir_fd, Some(path.as_ptr() as _), false)?;
+) -> LinuxResult<isize> {
+    let path = path.get_as_null_terminated()?;
+    let path = arceos_posix_api::handle_file_path(dir_fd, Some(path.as_ptr() as _), false)?;
 
-        let kstatbuf = kstatbuf.get()?;
+    let kstatbuf = kstatbuf.get()?;
 
-        let mut statbuf = arceos_posix_api::ctypes::stat::default();
-        let result = unsafe {
-            arceos_posix_api::sys_stat(
-                path.as_ptr() as _,
-                &mut statbuf as *mut arceos_posix_api::ctypes::stat,
-            )
-        };
-        if result < 0 {
-            return Ok(result);
-        }
+    let mut statbuf = arceos_posix_api::ctypes::stat::default();
+    let result = unsafe {
+        arceos_posix_api::sys_stat(
+            path.as_ptr() as _,
+            &mut statbuf as *mut arceos_posix_api::ctypes::stat,
+        )
+    };
+    if result < 0 {
+        return Ok(result as _);
+    }
 
-        unsafe {
-            let kstat = Kstat::from(statbuf);
-            kstatbuf.write(kstat);
-        }
+    unsafe {
+        let kstat = Kstat::from(statbuf);
+        kstatbuf.write(kstat);
+    }
 
-        Ok(0)
-    })
+    Ok(0)
 }
 
 #[repr(C)]
@@ -182,13 +182,14 @@ pub struct StatX {
     pub stx_dio_offset_align: u32,
 }
 
+#[apply(syscall_instrument)]
 pub fn sys_statx(
     dirfd: i32,
     pathname: UserConstPtr<c_char>,
     flags: u32,
     _mask: u32,
     statxbuf: UserPtr<StatX>,
-) -> i32 {
+) -> LinuxResult<isize> {
     // `statx()` uses pathname, dirfd, and flags to identify the target
     // file in one of the following ways:
 
@@ -216,40 +217,38 @@ pub fn sys_statx(
     //        below), then the target file is the one referred to by the
     //        file descriptor dirfd.
 
-    syscall_body!(sys_statx, {
-        let path = pathname.get_as_str()?;
+    let path = pathname.get_as_str()?;
 
-        const AT_EMPTY_PATH: u32 = 0x1000;
-        if path.is_empty() {
-            if flags & AT_EMPTY_PATH == 0 {
-                return Err(LinuxError::EINVAL);
-            }
-            // Alloc a new space for stat struct
-            let mut status = arceos_posix_api::ctypes::stat::default();
-            let res = unsafe { arceos_posix_api::sys_fstat(dirfd, &mut status as *mut _) };
-            if res < 0 {
-                return Err(LinuxError::try_from(-res).unwrap());
-            }
-            let statx = unsafe { &mut *statxbuf.get()? };
-            statx.stx_blksize = status.st_blksize as u32;
-            statx.stx_attributes = status.st_mode as u64;
-            statx.stx_nlink = status.st_nlink;
-            statx.stx_uid = status.st_uid;
-            statx.stx_gid = status.st_gid;
-            statx.stx_mode = status.st_mode as u16;
-            statx.stx_ino = status.st_ino;
-            statx.stx_size = status.st_size as u64;
-            statx.stx_blocks = status.st_blocks as u64;
-            statx.stx_attributes_mask = 0x7FF;
-            statx.stx_atime.tv_sec = status.st_atime.tv_sec;
-            statx.stx_atime.tv_nsec = status.st_atime.tv_nsec as u32;
-            statx.stx_ctime.tv_sec = status.st_ctime.tv_sec;
-            statx.stx_ctime.tv_nsec = status.st_ctime.tv_nsec as u32;
-            statx.stx_mtime.tv_sec = status.st_mtime.tv_sec;
-            statx.stx_mtime.tv_nsec = status.st_mtime.tv_nsec as u32;
-            Ok(0)
-        } else {
-            Err(LinuxError::ENOSYS)
+    const AT_EMPTY_PATH: u32 = 0x1000;
+    if path.is_empty() {
+        if flags & AT_EMPTY_PATH == 0 {
+            return Err(LinuxError::EINVAL);
         }
-    })
+        // Alloc a new space for stat struct
+        let mut status = arceos_posix_api::ctypes::stat::default();
+        let res = unsafe { arceos_posix_api::sys_fstat(dirfd, &mut status as *mut _) };
+        if res < 0 {
+            return Err(LinuxError::try_from(-res).unwrap());
+        }
+        let statx = unsafe { &mut *statxbuf.get()? };
+        statx.stx_blksize = status.st_blksize as u32;
+        statx.stx_attributes = status.st_mode as u64;
+        statx.stx_nlink = status.st_nlink;
+        statx.stx_uid = status.st_uid;
+        statx.stx_gid = status.st_gid;
+        statx.stx_mode = status.st_mode as u16;
+        statx.stx_ino = status.st_ino;
+        statx.stx_size = status.st_size as u64;
+        statx.stx_blocks = status.st_blocks as u64;
+        statx.stx_attributes_mask = 0x7FF;
+        statx.stx_atime.tv_sec = status.st_atime.tv_sec;
+        statx.stx_atime.tv_nsec = status.st_atime.tv_nsec as u32;
+        statx.stx_ctime.tv_sec = status.st_ctime.tv_sec;
+        statx.stx_ctime.tv_nsec = status.st_ctime.tv_nsec as u32;
+        statx.stx_mtime.tv_sec = status.st_mtime.tv_sec;
+        statx.stx_mtime.tv_nsec = status.st_mtime.tv_nsec as u32;
+        Ok(0)
+    } else {
+        Err(LinuxError::ENOSYS)
+    }
 }

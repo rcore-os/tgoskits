@@ -1,19 +1,15 @@
 use arceos_posix_api as api;
+use axerrno::LinuxResult;
 
-use crate::{
-    ptr::{PtrWrapper, UserConstPtr, UserPtr},
-    syscall_body,
-};
+use crate::ptr::{PtrWrapper, UserConstPtr, UserPtr};
 
-pub(crate) fn sys_sched_yield() -> i32 {
-    api::sys_sched_yield()
+pub fn sys_sched_yield() -> LinuxResult<isize> {
+    Ok(api::sys_sched_yield() as _)
 }
 
-pub(crate) fn sys_nanosleep(
+pub fn sys_nanosleep(
     req: UserConstPtr<api::ctypes::timespec>,
     rem: UserPtr<api::ctypes::timespec>,
-) -> i32 {
-    syscall_body!(sys_nanosleep, unsafe {
-        Ok(api::sys_nanosleep(req.get()?, rem.get()?))
-    })
+) -> LinuxResult<isize> {
+    unsafe { Ok(api::sys_nanosleep(req.get()?, rem.get()?) as _) }
 }

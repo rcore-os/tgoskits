@@ -1,10 +1,9 @@
-use crate::{
-    ptr::{PtrWrapper, UserPtr},
-    syscall_body,
-};
+use axerrno::LinuxResult;
 
-pub fn sys_getuid() -> i32 {
-    0
+use crate::ptr::{PtrWrapper, UserPtr};
+
+pub fn sys_getuid() -> LinuxResult<isize> {
+    Ok(0)
 }
 
 #[repr(C)]
@@ -44,9 +43,7 @@ impl UtsName {
     }
 }
 
-pub fn sys_uname(name: UserPtr<UtsName>) -> i64 {
-    syscall_body!(sys_uname, {
-        unsafe { *name.get()? = UtsName::default() };
-        Ok(0)
-    })
+pub fn sys_uname(name: UserPtr<UtsName>) -> LinuxResult<isize> {
+    unsafe { *name.get()? = UtsName::default() };
+    Ok(0)
 }
