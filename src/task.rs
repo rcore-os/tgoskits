@@ -11,14 +11,18 @@ use core::{
     cell::UnsafeCell,
     sync::atomic::{AtomicU64, Ordering},
 };
+use memory_addr::VirtAddrRange;
 use spin::Once;
 
-use crate::ctypes::{CloneFlags, TimeStat, WaitStatus};
+use crate::{
+    copy_from_kernel,
+    ctypes::{CloneFlags, TimeStat, WaitStatus},
+};
 use axhal::{
     arch::{TrapFrame, UspaceContext},
     time::{NANOS_PER_MICROS, NANOS_PER_SEC, monotonic_time_nanos},
 };
-use axmm::AddrSpace;
+use axmm::{AddrSpace, kernel_aspace};
 use axns::{AxNamespace, AxNamespaceIf};
 use axsync::Mutex;
 use axtask::{AxTaskRef, TaskExtRef, TaskInner, current};
@@ -100,7 +104,8 @@ impl TaskExt {
 
         let current_task = current();
         let mut current_aspace = current_task.task_ext().aspace.lock();
-        let new_aspace = current_aspace.clone_or_err()?;
+        let mut new_aspace = current_aspace.clone_or_err()?;
+        copy_from_kernel(&mut new_aspace)?;
         new_task
             .ctx_mut()
             .set_page_table_root(new_aspace.page_table_root());
@@ -216,6 +221,18 @@ impl AxNamespaceIf for AxNamespaceImpl {
             })) as *mut u8;
         }
         current.task_ext().ns.base()
+    }
+}
+
+impl Drop for TaskExt {
+    fn drop(&mut self) {
+        if !cfg!(target_arch = "aarch64") && !cfg!(target_arch = "loongarch64") {
+            // See [`crate::new_user_aspace`]
+            let kernel = kernel_aspace().lock();
+            self.aspace
+                .lock()
+                .clear_mappings(VirtAddrRange::from_start_size(kernel.base(), kernel.size()));
+        }
     }
 }
 

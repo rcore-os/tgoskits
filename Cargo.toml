@@ -40,6 +40,8 @@ axns = { git = "https://github.com/oscomp/arceos.git", features = ["thread-local
 
 [patch.crates-io]
 syscalls = { git = "https://github.com/jasonwhite/syscalls.git", rev = "92624de"}
+page_table_multiarch = { git = "https://github.com/Mivik/page_table_multiarch.git", rev = "19ededd" }
+page_table_entry = { git = "https://github.com/Mivik/page_table_multiarch.git", rev = "19ededd" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"
