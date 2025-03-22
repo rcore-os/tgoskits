@@ -142,4 +142,89 @@ Note: Arguments like `NET`, `BLK`, and `GRAPHIC` enable devices in QEMU, which t
 
 ## Test for oscomp testcases
 
-We can run [testcases of the OS competition](https://github.com/oscomp/testsuits-for-oskernel/tree/pre-2025) with StarryOS. Guidence can be found in [Starry-Tutorial](https://azure-stars.github.io/Starry-Tutorial-Book/ch01-04.html#在-os-比赛上测试-starry).
+We can run [testcases of the OS competition](https://github.com/oscomp/testsuits-for-oskernel/tree/pre-2025) with StarryOS. Guidence can be found in [Starry-Tutorial](https://azure-stars.github.io/Starry-Tutorial-Book/ch03-02.html). 
+
+
+And you can run the testcases with the following commands:
+
+```bash
+# Clone the base repository
+./scripts/get_deps.sh
+
+# run the testcases of oscomp on x86_64
+$ make oscomp_run ARCH=x86_64   # If it reports an error: -accel kvm: failed to initialize kvm: Permission denied, please add `ACCEL=n` argument.
+
+# run the testcases of oscomp on riscv64
+$ make oscomp_run ARCH=riscv64
+
+# run the testcases of oscomp on aarch64
+$ make oscomp_run ARCH=aarch64
+
+# run the testcases of oscomp on loongarch64
+$ make oscomp_run ARCH=loongarch64
+```
+
+To run more testcases from oscomp, you can refer to the [oscomp README](./apps/oscomp/README.md).
+
+## How to add new testcases
+
+To allow the kernel to run user-written test cases, temporary test cases can be created. The specific steps are as follows:
+
+   1. Create a temporary test case folder
+
+      ```sh
+      cd apps && mkdir custom && cd custom
+      ```
+
+   2. Create a `Makefile` in the current directory and fill in the following content:
+
+      ```makefile
+      all: build
+
+      build:
+
+      clean:
+          rm -rf *.out
+      ```
+
+      The reason for creating an empty build `Makefile` is that when Starry packages test case images, it will first execute the test case's build program by default. However, since our temporary test case does not currently have a defined build program, `make all` does not need to perform any operations.
+
+   3. Copy your compiled executable file into the current directory.
+
+      Let's take a `hello_world` example. Create a `hello.c` file in the current directory and write the following content:
+
+      ```c
+      #include "syscall.h"
+      
+      int main()
+      {
+          char msg[] = "Hello, World!\n";
+          write(1, msg, sizeof(msg));
+          return 0;
+      }
+      ```
+
+      Then, run the following command to compile it:
+
+      ```sh
+      x86_64-linux-musl-gcc -static hello.c -o hello
+      ```
+
+      This generates an x86_64 executable file in the current folder. Of course, you can also complete the compilation process elsewhere and directly copy the executable file into the current directory.
+
+   4. Create a `testcase_list` file in the current directory and add the relative path of the executable file that needs to be executed. Note that this path should be relative to `apps/custom` (i.e., the current directory). In our example, the content should be:
+
+      ```sh
+      hello
+      ```
+
+   5. Return to the project root directory and run the following command:
+
+      ```sh
+      sudo ./build_img.sh -fs ext4 -file apps/custom
+      cp disk.img .arceos/disk.img
+      make defconfig
+      make AX_TESTCASE=custom EXTRA_CONFIG=../configs/x86_64.toml ARCH=x86_64 BLK=y NET=y FEATURES=fp_simd,lwext4_rs LOG=off ACCEL=n run
+      ```
+
+      This completes the execution of the custom test case.

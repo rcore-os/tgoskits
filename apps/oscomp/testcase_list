@@ -1,1 +1,1 @@
-/musl/busybox sh /musl/libctest_testcode.sh
+/musl/basic/waitpid
