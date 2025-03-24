@@ -23,6 +23,7 @@ Create a container and build/run app:
 cd ..
 docker run --privileged --rm -it -v $(pwd):/starry -w /starry starry bash
 
+
 # Now build/run app in the container
 make user_apps
 make defconfig
