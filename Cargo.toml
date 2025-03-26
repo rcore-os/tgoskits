@@ -1,0 +1,10 @@
+[package]
+name = "axprocess"
+version = "0.1.0"
+edition = "2024"
+authors = ["Asakura Mizu <asakuramizu111@gmail.com>"]
+description = "Process management for ArceOS"
+
+[dependencies]
+axerrno = "0.1"
+axsync = { git = "https://github.com/oscomp/arceos.git" }
