@@ -9,10 +9,16 @@ extern crate alloc;
 
 mod addr;
 mod address_space;
+pub mod device;
+mod frame;
+mod hal;
 mod npt;
 
 pub use addr::*;
 pub use address_space::*;
+
+pub use frame::PhysFrame;
+pub use hal::AxMmHal;
 
 use axerrno::AxError;
 use memory_set::MappingError;
