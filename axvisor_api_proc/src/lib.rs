@@ -2,7 +2,7 @@ use proc_macro::TokenStream as TokenStream1;
 use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Span, TokenStream};
 use quote::{quote, quote_spanned};
-use syn::{spanned::Spanned, FnArg, Ident, Path, Token};
+use syn::{FnArg, Ident, Path, Token, spanned::Spanned};
 
 mod items;
 
@@ -39,12 +39,15 @@ fn get_api_trait_name(module_name: impl AsRef<str>, span: Span) -> Ident {
 }
 
 /// Get the extra doc comments for an API module definition.
-fn get_api_mod_def_extra_doc_comments(mod_ident: &Ident, api_fn_items: &Vec<&ItemApiFn<Token![;]>>) -> TokenStream {
+fn get_api_mod_def_extra_doc_comments(
+    mod_ident: &Ident,
+    api_fn_items: &Vec<&ItemApiFn<Token![;]>>,
+) -> TokenStream {
     if api_fn_items.is_empty() {
         return quote! {
             #[doc = ""]
             #[doc = "This module does not contain any API functions to be implemented."]
-        }
+        };
     }
 
     let mod_name = mod_ident.to_string();
@@ -54,11 +57,11 @@ fn get_api_mod_def_extra_doc_comments(mod_ident: &Ident, api_fn_items: &Vec<&Ite
         api_fn_count,
         if api_fn_count == 1 { "" } else { "s" }
     );
-    let api_fn_list = api_fn_items.iter().map(|f| {
-        format!("- [`{0}`]({1}::{0})", f.sig.ident.to_string(), mod_name)
-    });
-    
-    quote! { 
+    let api_fn_list = api_fn_items
+        .iter()
+        .map(|f| format!("- [`{0}`]({1}::{0})", f.sig.ident.to_string(), mod_name));
+
+    quote! {
         #[doc = ""]
         #[doc = #api_fn_count_hint]
         #(
@@ -242,9 +245,9 @@ fn process_api_mod_impl(implementee: Path, input: ItemApiModImpl) -> TokenStream
 
 #[proc_macro_attribute]
 /// Define a module containing API functions.
-/// 
+///
 /// The module can contain regular items and API functions. API functions are defined with the `extern fn` syntax.
-/// 
+///
 /// **Does not work on outlined modules.** (i.e. `mod foo;` with content in `foo.rs`)
 pub fn api_mod(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
     if !attr.is_empty() {
@@ -258,7 +261,7 @@ pub fn api_mod(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
 
 #[proc_macro_attribute]
 /// Implement the API functions defined in another module.
-/// 
+///
 /// The module should contain the implementation of the API functions defined in another module. The path to the module
 /// defining the APIs should be passed as the argument.
 pub fn api_mod_impl(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
