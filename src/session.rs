@@ -4,6 +4,7 @@ use axsync::{Mutex, MutexGuard};
 
 use crate::{Pgid, ProcessGroup, Sid, session_table};
 
+/// A [`Session`] is a collection of [`ProcessGroup`]s.
 pub struct Session {
     sid: Sid,
     inner: Mutex<SessionInner>,
@@ -11,6 +12,7 @@ pub struct Session {
 
 pub(crate) struct SessionInner {
     pub(crate) process_groups: BTreeMap<Pgid, Arc<ProcessGroup>>,
+    // TODO: shell job control
 }
 
 impl Session {

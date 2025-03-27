@@ -8,6 +8,7 @@ use axsync::{Mutex, MutexGuard};
 
 use crate::{Pgid, Pid, ProcessGroup, Session, process_group_table, process_table, session_table};
 
+/// A process.
 pub struct Process {
     pid: Pid,
     inner: Mutex<ProcessInner>,
@@ -75,17 +76,23 @@ impl Process {
 /// [`ProcessGroup`] & [`Session`]
 impl Process {
     /// The [`ProcessGroup`] that the [`Process`] belongs to.
-    pub fn group(&self) -> Option<Arc<ProcessGroup>> {
-        self.inner().group.upgrade()
+    pub fn group(&self) -> Arc<ProcessGroup> {
+        // We have to guarantee that the group is always valid between two subsequent
+        // public function calls so `unwrap` never fails. This means that:
+        // - It cannot be `Weak::new()`.
+        // - It has at least one strong reference in the global process group table.
+        // So we don't expose the `Process::new` method to the public and carefully
+        // manage the `group` field in each public function.
+        self.inner().group.upgrade().unwrap()
     }
 
     /// The [`Session`] that the [`Process`] belongs to.
-    pub fn session(&self) -> Option<Arc<Session>> {
-        self.group()?.session()
+    pub fn session(&self) -> Arc<Session> {
+        self.group().session()
     }
 
     fn orphan(self: &Arc<Self>, drop_session: bool) {
-        let group = self.group().unwrap();
+        let group = self.group();
         let mut group_inner = group.inner();
 
         group_inner.processes.remove(&self.pid);
@@ -121,7 +128,7 @@ impl Process {
             return ax_err!(PermissionDenied, "cannot create new process group");
         }
 
-        let session = self.session().unwrap();
+        let session = self.session();
         if session.sid() == self.pid {
             return Ok(session);
         }
@@ -149,12 +156,12 @@ impl Process {
     ///
     /// Corresponds to the `setpgid` system call.
     pub fn set_group(self: &Arc<Self>, pgid: Pgid) -> AxResult<()> {
-        let group = self.group().unwrap();
+        let group = self.group();
         if pgid == group.pgid() {
             return Ok(());
         }
 
-        let session = group.session().unwrap();
+        let session = group.session();
         if session.sid() == self.pid {
             return ax_err!(
                 PermissionDenied,
@@ -163,7 +170,6 @@ impl Process {
         }
 
         if let Some(group) = process_group_table().get(&pgid).cloned() {
-            let session = self.session().unwrap();
             if !session.inner().process_groups.contains_key(&pgid) {
                 return ax_err!(PermissionDenied, "cannot move to a different session");
             }

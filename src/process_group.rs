@@ -7,6 +7,7 @@ use axsync::{Mutex, MutexGuard};
 
 use crate::{Pgid, Pid, Process, Session, process_group_table};
 
+/// A [`ProcessGroup`] is a collection of [`Process`]es.
 pub struct ProcessGroup {
     pgid: Pgid,
     inner: Mutex<ProcessGroupInner>,
@@ -48,7 +49,8 @@ impl ProcessGroup {
     }
 
     /// The [`Session`] that the [`ProcessGroup`] belongs to.
-    pub fn session(&self) -> Option<Arc<Session>> {
-        self.inner().session.upgrade()
+    pub fn session(&self) -> Arc<Session> {
+        // See the comments in `Process::group` for this `unwrap`.
+        self.inner().session.upgrade().unwrap()
     }
 }
