@@ -282,6 +282,10 @@ impl Process {
 
         self.unlink(true);
 
+        if let Some(parent) = self.parent() {
+            parent.inner().children.remove(&self.pid);
+        }
+
         process_table().remove(&self.pid);
     }
 }
@@ -290,16 +294,16 @@ impl Process {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessFilter {
     Any,
-    WithPid(Pid),
-    WithPgid(Pgid),
+    Process(Pid),
+    ProcessGroup(Pgid),
 }
 
 impl ProcessFilter {
     fn apply(&self, process: &Arc<Process>) -> bool {
         match self {
             ProcessFilter::Any => true,
-            ProcessFilter::WithPid(pid) => process.pid() == *pid,
-            ProcessFilter::WithPgid(pgid) => process.group().pgid() == *pgid,
+            ProcessFilter::Process(pid) => process.pid() == *pid,
+            ProcessFilter::ProcessGroup(pgid) => process.group().pgid() == *pgid,
         }
     }
 }
