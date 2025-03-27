@@ -3,12 +3,20 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 
 use axerrno::{AxResult, ax_err};
 use axsync::{Mutex, MutexGuard};
 
 use crate::{Pgid, Pid, ProcessGroup, Session, process_group_table, process_table, session_table};
+
+// FIXME: This should be a `Tid` counter after we implement threads.
+static PID_COUNTER: AtomicU32 = AtomicU32::new(1);
+
+/// Allocates a new [`Pid`].
+pub fn alloc_pid() -> Pid {
+    PID_COUNTER.fetch_add(1, Ordering::SeqCst)
+}
 
 /// A process.
 pub struct Process {
@@ -26,7 +34,8 @@ pub(crate) struct ProcessInner {
 }
 
 impl Process {
-    pub(crate) fn new(pid: Pid, parent: Weak<Process>) -> Arc<Self> {
+    pub(crate) fn new(parent: Weak<Process>) -> Arc<Self> {
+        let pid = alloc_pid();
         let process = Arc::new(Self {
             pid,
             is_zombie: AtomicBool::new(false),
@@ -54,8 +63,8 @@ impl Process {
     ///
     /// This means that the process has no parent and will have a new
     /// [`ProcessGroup`] and [`Session`].
-    pub fn new_init(pid: Pid) -> Arc<Self> {
-        let process = Process::new(pid, Weak::new());
+    pub fn new_init() -> Arc<Self> {
+        let process = Process::new(Weak::new());
         let group = ProcessGroup::new(&process);
         let _session = Session::new(&group);
 
@@ -71,10 +80,10 @@ impl Process {
     }
 
     /// Creates a new child [`Process`].
-    pub fn new_child(self: &Arc<Self>, pid: Pid) -> Arc<Self> {
-        let child = Process::new(pid, Arc::downgrade(self));
+    pub fn new_child(self: &Arc<Self>) -> Arc<Self> {
+        let child = Process::new(Arc::downgrade(self));
         let mut inner = self.inner();
-        inner.children.insert(pid, child.clone());
+        inner.children.insert(child.pid, child.clone());
         child.inner().group = inner.group.clone();
         child
     }
