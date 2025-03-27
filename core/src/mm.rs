@@ -1,18 +1,35 @@
 use core::ffi::CStr;
 
 use alloc::{string::String, vec};
-
 use axerrno::{AxError, AxResult};
 use axhal::{
     paging::MappingFlags,
     trap::{PAGE_FAULT, register_trap_handler},
 };
-
-use axmm::AddrSpace;
+use axmm::{AddrSpace, kernel_aspace};
 use axtask::TaskExtRef;
 use kernel_elf_parser::{AuxvEntry, ELFParser, app_stack_region};
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use xmas_elf::{ElfFile, program::SegmentData};
+
+pub fn new_user_aspace_empty() -> AxResult<AddrSpace> {
+    AddrSpace::new_empty(
+        VirtAddr::from_usize(axconfig::plat::USER_SPACE_BASE),
+        axconfig::plat::USER_SPACE_SIZE,
+    )
+}
+
+/// If the target architecture requires it, the kernel portion of the address
+/// space will be copied to the user address space.
+pub fn copy_from_kernel(aspace: &mut AddrSpace) -> AxResult {
+    if !cfg!(target_arch = "aarch64") && !cfg!(target_arch = "loongarch64") {
+        // ARMv8 (aarch64) and LoongArch64 use separate page tables for user space
+        // (aarch64: TTBR0_EL1, LoongArch64: PGDL), so there is no need to copy the
+        // kernel portion to the user page table.
+        aspace.copy_mappings_from(&kernel_aspace().lock())?;
+    }
+    Ok(())
+}
 
 /// Map the elf file to the user address space.
 ///

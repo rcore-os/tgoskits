@@ -7,7 +7,7 @@ use macro_rules_attribute::apply;
 
 use crate::{
     ptr::{PtrWrapper, UserConstPtr, UserPtr},
-    syscall_imp::syscall_instrument,
+    syscall_instrument,
 };
 
 /// The ioctl() system call manipulates the underlying device parameters
@@ -32,7 +32,7 @@ pub fn sys_chdir(path: UserConstPtr<c_char>) -> LinuxResult<isize> {
     })
 }
 
-pub(crate) fn sys_mkdirat(dirfd: i32, path: UserConstPtr<c_char>, mode: u32) -> LinuxResult<isize> {
+pub fn sys_mkdirat(dirfd: i32, path: UserConstPtr<c_char>, mode: u32) -> LinuxResult<isize> {
     let path = path.get_as_str()?;
 
     if !path.starts_with("/") && dirfd != AT_FDCWD as i32 {

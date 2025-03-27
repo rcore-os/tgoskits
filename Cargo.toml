@@ -1,50 +1,77 @@
-[package]
-name = "starry"
+[workspace]
+resolver = "2"
+members = ["api", "core"]
+exclude = [".arceos", "apps"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-authors = ["Azure-stars <Azure_stars@126.com>", "Yuekai Jia <equation618@gmail.com>"]
+authors = [
+    "Azure-stars <Azure_stars@126.com>",
+    "Yuekai Jia <equation618@gmail.com>",
+]
 homepage = "https://github.com/arceos-org/arceos"
 repository = "https://github.com/arceos-org/starry-next"
 
-[features]
-lwext4_rs = ["axstd/lwext4_rs"]
-
-[dependencies]
-log = "0.4"
-linkme = "0.3"
-axerrno = "0.1"
-memory_addr = "0.3"
-xmas-elf = "0.9"
-spin = "0.9"
-crate_interface = "0.1"
-bitflags = "2.6"
-percpu = "0.2.0"
-
-kernel-elf-parser = "0.3"
-num_enum = { version = "0.7", default-features = false }
-syscalls = { version = "0.6", default-features = false }
-numeric-enum-macro = "0.2.0"
-static_assertions = "1.1.0"
-macro_rules_attribute = "0.2.0"
+[workspace.dependencies]
+axfeat = { git = "https://github.com/oscomp/arceos.git" }
+arceos_posix_api = { git = "https://github.com/oscomp/arceos.git", features = [
+    "uspace",
+    "smp",
+    "irq",
+    "fs",
+    "multitask",
+    "net",
+    "pipe",
+    "select",
+    "epoll",
+] }
 
 axconfig = { git = "https://github.com/oscomp/arceos.git" }
 axfs = { git = "https://github.com/oscomp/arceos.git" }
-axstd = { git = "https://github.com/oscomp/arceos.git", features = ["paging"] }
 axhal = { git = "https://github.com/oscomp/arceos.git", features = ["uspace"] }
+axlog = { git = "https://github.com/oscomp/arceos.git" }
 axmm = { git = "https://github.com/oscomp/arceos.git" }
-axtask = { git = "https://github.com/oscomp/arceos.git" }
+axns = { git = "https://github.com/oscomp/arceos.git", features = [
+    "thread-local",
+] }
 axsync = { git = "https://github.com/oscomp/arceos.git" }
-axruntime = { git = "https://github.com/oscomp/arceos.git", features = ["multitask"] }
-arceos_posix_api = { git = "https://github.com/oscomp/arceos.git", features = ["uspace", "smp", "irq", "fs", "multitask", "net", "pipe", "select", "epoll"] }
-axns = { git = "https://github.com/oscomp/arceos.git", features = ["thread-local"] }
+axtask = { git = "https://github.com/oscomp/arceos.git" }
+
+axerrno = "0.1"
+bitflags = "2.6"
+linkme = "0.3"
+memory_addr = "0.3"
+
+starry-core = { path = "./core" }
+starry-api = { path = "./api" }
+
+[package]
+name = "starry"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[features]
+lwext4_rs = ["axfeat/lwext4_rs"]
+
+[dependencies]
+axfeat.workspace = true
+
+axhal.workspace = true
+axlog.workspace = true
+axtask.workspace = true
+
+axerrno.workspace = true
+linkme.workspace = true
+
+starry-core.workspace = true
+starry-api.workspace = true
+
+syscalls = { git = "https://github.com/jasonwhite/syscalls.git", rev = "92624de", default-features = false }
 
 [patch.crates-io]
-syscalls = { git = "https://github.com/jasonwhite/syscalls.git", rev = "92624de"}
 page_table_multiarch = { git = "https://github.com/Mivik/page_table_multiarch.git", rev = "19ededd" }
 page_table_entry = { git = "https://github.com/Mivik/page_table_multiarch.git", rev = "19ededd" }
-
-[target.'cfg(target_arch = "x86_64")'.dependencies]
-x86 = "0.52"
-
-[build-dependencies]
-toml_edit = "0.22"

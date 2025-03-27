@@ -1,11 +1,10 @@
+use core::{alloc::Layout, ffi::c_char, mem, slice, str};
+
 use axerrno::{LinuxError, LinuxResult};
 use axhal::paging::MappingFlags;
 use axtask::{TaskExtRef, current};
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
-
-use core::{alloc::Layout, ffi::c_char, mem, slice, str};
-
-use crate::mm::access_user_memory;
+use starry_core::mm::access_user_memory;
 
 fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> LinuxResult<()> {
     let align = layout.align();

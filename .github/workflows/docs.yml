@@ -27,7 +27,7 @@ jobs:
         arch: x86_64
     - name: Build docs
       continue-on-error: ${{ github.ref != env.default-branch && github.event_name != 'pull_request' }}
-      run: make doc_check_missing
+      run: make doc
     - name: Deploy to Github Pages
       if: ${{ github.ref == env.default-branch }}
       uses: JamesIves/github-pages-deploy-action@v4

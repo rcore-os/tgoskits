@@ -81,20 +81,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos_api"
-version = "0.1.0"
-dependencies = [
- "axconfig",
- "axerrno",
- "axfeat",
- "axhal",
- "axio",
- "axlog",
- "axruntime",
- "axsync",
-]
-
-[[package]]
 name = "arceos_posix_api"
 version = "0.1.0"
 dependencies = [
@@ -448,17 +434,6 @@ dependencies = [
  "ctor_bare",
  "kernel_guard",
  "percpu",
-]
-
-[[package]]
-name = "axstd"
-version = "0.1.0"
-dependencies = [
- "arceos_api",
- "axerrno",
- "axfeat",
- "axio",
- "kspin",
 ]
 
 [[package]]
@@ -1418,32 +1393,60 @@ checksum = "a8f112729512f8e442d81f95a8a7ddf2b7c6b8a1a6f509a95864142b30cab2d3"
 name = "starry"
 version = "0.1.0"
 dependencies = [
+ "axerrno",
+ "axfeat",
+ "axhal",
+ "axlog",
+ "axtask",
+ "linkme",
+ "starry-api",
+ "starry-core",
+ "syscalls",
+]
+
+[[package]]
+name = "starry-api"
+version = "0.1.0"
+dependencies = [
  "arceos_posix_api",
  "axconfig",
  "axerrno",
  "axfs",
  "axhal",
+ "axlog",
+ "axsync",
+ "axtask",
+ "bitflags 2.9.0",
+ "macro_rules_attribute",
+ "memory_addr",
+ "num_enum",
+ "starry-core",
+ "static_assertions",
+ "x86",
+]
+
+[[package]]
+name = "starry-core"
+version = "0.1.0"
+dependencies = [
+ "arceos_posix_api",
+ "axconfig",
+ "axerrno",
+ "axfs",
+ "axhal",
+ "axlog",
  "axmm",
  "axns",
- "axruntime",
- "axstd",
  "axsync",
  "axtask",
  "bitflags 2.9.0",
  "crate_interface",
  "kernel-elf-parser",
  "linkme",
- "log",
- "macro_rules_attribute",
  "memory_addr",
- "num_enum",
  "numeric-enum-macro",
  "percpu",
  "spin",
- "static_assertions",
- "syscalls",
- "toml_edit",
- "x86",
  "xmas-elf",
 ]
 

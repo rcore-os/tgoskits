@@ -7,7 +7,7 @@ use memory_addr::{VirtAddr, VirtAddrRange};
 
 use crate::{
     ptr::{PtrWrapper, UserPtr},
-    syscall_imp::syscall_instrument,
+    syscall_instrument,
 };
 
 bitflags::bitflags! {
