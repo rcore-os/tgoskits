@@ -6,7 +6,7 @@ use alloc::{
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 
 use axerrno::{AxResult, ax_err};
-use axsync::{Mutex, MutexGuard};
+use kspin::{SpinNoIrq, SpinNoIrqGuard};
 
 use crate::{Pgid, Pid, ProcessGroup, Session, process_group_table, process_table, session_table};
 
@@ -23,7 +23,7 @@ pub struct Process {
     pid: Pid,
     is_zombie: AtomicBool,
     exit_code: AtomicI32,
-    inner: Mutex<ProcessInner>,
+    inner: SpinNoIrq<ProcessInner>,
     // TODO: child subreaper
 }
 
@@ -40,7 +40,7 @@ impl Process {
             pid,
             is_zombie: AtomicBool::new(false),
             exit_code: AtomicI32::new(0),
-            inner: Mutex::new(ProcessInner {
+            inner: SpinNoIrq::new(ProcessInner {
                 children: BTreeMap::new(),
                 parent,
                 group: Weak::new(),
@@ -50,7 +50,7 @@ impl Process {
         process
     }
 
-    pub(crate) fn inner(&self) -> MutexGuard<ProcessInner> {
+    pub(crate) fn inner(&self) -> SpinNoIrqGuard<ProcessInner> {
         self.inner.lock()
     }
 

@@ -1,13 +1,13 @@
 use alloc::{collections::btree_map::BTreeMap, sync::Arc};
 
-use axsync::{Mutex, MutexGuard};
+use kspin::{SpinNoIrq, SpinNoIrqGuard};
 
 use crate::{Pgid, ProcessGroup, Sid, session_table};
 
 /// A [`Session`] is a collection of [`ProcessGroup`]s.
 pub struct Session {
     sid: Sid,
-    inner: Mutex<SessionInner>,
+    inner: SpinNoIrq<SessionInner>,
 }
 
 pub(crate) struct SessionInner {
@@ -25,7 +25,7 @@ impl Session {
 
         let session = Arc::new(Self {
             sid,
-            inner: Mutex::new(SessionInner { process_groups }),
+            inner: SpinNoIrq::new(SessionInner { process_groups }),
         });
         session_table().insert(sid, session.clone());
 
@@ -33,7 +33,7 @@ impl Session {
         session
     }
 
-    pub(crate) fn inner(&self) -> MutexGuard<SessionInner> {
+    pub(crate) fn inner(&self) -> SpinNoIrqGuard<SessionInner> {
         self.inner.lock()
     }
 

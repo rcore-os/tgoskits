@@ -3,14 +3,14 @@ use alloc::{
     sync::{Arc, Weak},
 };
 
-use axsync::{Mutex, MutexGuard};
+use kspin::{SpinNoIrq, SpinNoIrqGuard};
 
 use crate::{Pgid, Pid, Process, Session, process_group_table};
 
 /// A [`ProcessGroup`] is a collection of [`Process`]es.
 pub struct ProcessGroup {
     pgid: Pgid,
-    inner: Mutex<ProcessGroupInner>,
+    inner: SpinNoIrq<ProcessGroupInner>,
 }
 
 pub(crate) struct ProcessGroupInner {
@@ -28,7 +28,7 @@ impl ProcessGroup {
 
         let group = Arc::new(Self {
             pgid,
-            inner: Mutex::new(ProcessGroupInner {
+            inner: SpinNoIrq::new(ProcessGroupInner {
                 processes,
                 session: Weak::new(),
             }),
@@ -39,7 +39,7 @@ impl ProcessGroup {
         group
     }
 
-    pub(crate) fn inner(&self) -> MutexGuard<ProcessGroupInner> {
+    pub(crate) fn inner(&self) -> SpinNoIrqGuard<ProcessGroupInner> {
         self.inner.lock()
     }
 

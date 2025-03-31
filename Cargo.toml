@@ -7,4 +7,4 @@ description = "Process management for ArceOS"
 
 [dependencies]
 axerrno = "0.1"
-axsync = { git = "https://github.com/oscomp/arceos.git" }
+kspin = "0.1"
