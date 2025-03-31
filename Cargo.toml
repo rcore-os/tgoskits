@@ -6,5 +6,7 @@ authors = ["Asakura Mizu <asakuramizu111@gmail.com>"]
 description = "Process management for ArceOS"
 
 [dependencies]
-axerrno = "0.1"
 kspin = "0.1"
+
+[dev-dependencies]
+kspin = { version = "0.1", features = ["smp"] }

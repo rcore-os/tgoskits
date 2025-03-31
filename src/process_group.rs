@@ -1,11 +1,12 @@
 use alloc::{
     collections::btree_map::BTreeMap,
     sync::{Arc, Weak},
+    vec::Vec,
 };
 
 use kspin::{SpinNoIrq, SpinNoIrqGuard};
 
-use crate::{Pgid, Pid, Process, Session, process_group_table};
+use crate::{Pgid, Pid, Process, Session};
 
 /// A [`ProcessGroup`] is a collection of [`Process`]es.
 pub struct ProcessGroup {
@@ -14,35 +15,39 @@ pub struct ProcessGroup {
 }
 
 pub(crate) struct ProcessGroupInner {
-    pub(crate) processes: BTreeMap<Pid, Arc<Process>>,
-    pub(crate) session: Weak<Session>,
+    pub(crate) processes: BTreeMap<Pid, Weak<Process>>,
+    pub(crate) session: Arc<Session>,
+}
+
+impl ProcessGroupInner {
+    pub(crate) fn processes(&self) -> impl DoubleEndedIterator<Item = Arc<Process>> {
+        self.processes.values().filter_map(Weak::upgrade)
+    }
 }
 
 impl ProcessGroup {
-    /// Create a new [`ProcessGroup`] from a [`Process`].
-    pub(crate) fn new(process: &Arc<Process>) -> Arc<Self> {
-        let pgid = process.pid();
-
-        let mut processes = BTreeMap::new();
-        processes.insert(pgid, process.clone());
-
+    /// Create a new [`ProcessGroup`] within a [`Session`].
+    pub(crate) fn new(pgid: Pgid, session: &Arc<Session>) -> Arc<Self> {
         let group = Arc::new(Self {
             pgid,
             inner: SpinNoIrq::new(ProcessGroupInner {
-                processes,
-                session: Weak::new(),
+                processes: BTreeMap::new(),
+                session: session.clone(),
             }),
         });
-        process_group_table().insert(pgid, group.clone());
-
-        process.inner().group = Arc::downgrade(&group);
+        session
+            .inner()
+            .process_groups
+            .insert(pgid, Arc::downgrade(&group));
         group
     }
 
     pub(crate) fn inner(&self) -> SpinNoIrqGuard<ProcessGroupInner> {
         self.inner.lock()
     }
+}
 
+impl ProcessGroup {
     /// The [`ProcessGroup`] ID.
     pub fn pgid(&self) -> Pgid {
         self.pgid
@@ -50,7 +55,11 @@ impl ProcessGroup {
 
     /// The [`Session`] that the [`ProcessGroup`] belongs to.
     pub fn session(&self) -> Arc<Session> {
-        // See the comments in `Process::group` for this `unwrap`.
-        self.inner().session.upgrade().unwrap()
+        self.inner().session.clone()
+    }
+
+    /// The [`Process`]es that belong to this [`ProcessGroup`].
+    pub fn processes(&self) -> Vec<Arc<Process>> {
+        self.inner().processes().collect()
     }
 }

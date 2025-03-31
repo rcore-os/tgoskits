@@ -3,12 +3,11 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
-use axerrno::{AxResult, ax_err};
 use kspin::{SpinNoIrq, SpinNoIrqGuard};
 
-use crate::{Pgid, Pid, ProcessGroup, Session, process_group_table, process_table, session_table};
+use crate::{Pid, ProcessGroup, Session};
 
 // FIXME: This should be a `Tid` counter after we implement threads.
 static PID_COUNTER: AtomicU32 = AtomicU32::new(1);
@@ -21,39 +20,55 @@ pub fn alloc_pid() -> Pid {
 /// A process.
 pub struct Process {
     pid: Pid,
-    is_zombie: AtomicBool,
     exit_code: AtomicI32,
     inner: SpinNoIrq<ProcessInner>,
     // TODO: child subreaper
 }
 
 pub(crate) struct ProcessInner {
-    pub(crate) children: BTreeMap<Pid, Arc<Process>>,
-    pub(crate) parent: Weak<Process>,
-    pub(crate) group: Weak<ProcessGroup>,
+    is_zombie: bool,
+    children: BTreeMap<Pid, Arc<Process>>,
+    parent: Weak<Process>,
+    group: Arc<ProcessGroup>,
+}
+
+impl ProcessInner {
+    fn move_children_to(&mut self, target: &Arc<Process>) {
+        let new_parent = Arc::downgrade(target);
+        let mut target_inner = target.inner();
+
+        for (pid, child) in core::mem::take(&mut self.children) {
+            child.inner().parent = new_parent.clone();
+            target_inner.children.insert(pid, child);
+        }
+    }
 }
 
 impl Process {
-    pub(crate) fn new(parent: Weak<Process>) -> Arc<Self> {
-        let pid = alloc_pid();
+    pub(crate) fn new(pid: Pid, parent: Weak<Process>, group: &Arc<ProcessGroup>) -> Arc<Self> {
         let process = Arc::new(Self {
             pid,
-            is_zombie: AtomicBool::new(false),
             exit_code: AtomicI32::new(0),
             inner: SpinNoIrq::new(ProcessInner {
+                is_zombie: false,
                 children: BTreeMap::new(),
                 parent,
-                group: Weak::new(),
+                group: group.clone(),
             }),
         });
-        process_table().insert(pid, process.clone());
+        group
+            .inner()
+            .processes
+            .insert(pid, Arc::downgrade(&process));
         process
     }
 
     pub(crate) fn inner(&self) -> SpinNoIrqGuard<ProcessInner> {
         self.inner.lock()
     }
+}
 
+impl Process {
     /// The [`Process`] ID.
     pub fn pid(&self) -> Pid {
         self.pid
@@ -64,11 +79,11 @@ impl Process {
     /// This means that the process has no parent and will have a new
     /// [`ProcessGroup`] and [`Session`].
     pub fn new_init() -> Arc<Self> {
-        let process = Process::new(Weak::new());
-        let group = ProcessGroup::new(&process);
-        let _session = Session::new(&group);
+        let pid = alloc_pid();
+        let session = Session::new(pid);
+        let group = ProcessGroup::new(pid, &session);
 
-        process
+        Process::new(pid, Weak::new(), &group)
     }
 }
 
@@ -79,12 +94,17 @@ impl Process {
         self.inner().parent.upgrade()
     }
 
+    /// The child [`Process`]es.
+    pub fn children(&self) -> Vec<Arc<Process>> {
+        self.inner().children.values().cloned().collect()
+    }
+
     /// Creates a new child [`Process`].
-    pub fn new_child(self: &Arc<Self>) -> Arc<Self> {
-        let child = Process::new(Arc::downgrade(self));
+    pub fn fork(self: &Arc<Self>) -> Arc<Self> {
         let mut inner = self.inner();
-        inner.children.insert(child.pid, child.clone());
-        child.inner().group = inner.group.clone();
+        let pid = alloc_pid();
+        let child = Process::new(pid, Arc::downgrade(self), &inner.group);
+        inner.children.insert(pid, child.clone());
         child
     }
 }
@@ -93,139 +113,90 @@ impl Process {
 impl Process {
     /// The [`ProcessGroup`] that the [`Process`] belongs to.
     pub fn group(&self) -> Arc<ProcessGroup> {
-        // We have to guarantee that the group is always valid between two subsequent
-        // public function calls so `unwrap` never fails. This means that:
-        // - It cannot be `Weak::new()`.
-        // - It has at least one strong reference in the global process group table.
-        // So we don't expose the `Process::new` method to the public and carefully
-        // manage the `group` field in each public function.
-        self.inner().group.upgrade().unwrap()
+        self.inner().group.clone()
     }
 
-    /// The [`Session`] that the [`Process`] belongs to.
-    pub fn session(&self) -> Arc<Session> {
-        self.group().session()
+    fn set_group(self: &Arc<Self>, group: &Arc<ProcessGroup>) {
+        let mut inner = self.inner();
+
+        inner.group.inner().processes.remove(&self.pid);
+
+        group
+            .inner()
+            .processes
+            .insert(self.pid, Arc::downgrade(self));
+
+        inner.group = group.clone();
     }
 
-    /// Unlinks the [`Process`] from its [`ProcessGroup`] and [`Session`].
-    ///
-    /// If the [`Process`] is the last one in the [`ProcessGroup`], the
-    /// [`ProcessGroup`] is removed.
-    ///
-    /// If `drop_session` is `true` and the [`Session`] has no more
-    /// [`ProcessGroup`]s, the [`Session`] is removed.
-    fn unlink(self: &Arc<Self>, drop_session: bool) {
-        let group = self.group();
-        let mut group_inner = group.inner();
-
-        group_inner.processes.remove(&self.pid);
-
-        if group_inner.processes.is_empty() {
-            process_group_table().remove(&group.pgid());
-
-            let session = group_inner.session.upgrade().unwrap();
-            let mut session_inner = session.inner();
-
-            session_inner.process_groups.remove(&group.pgid());
-
-            if drop_session && session_inner.process_groups.is_empty() {
-                session_table().remove(&session.sid());
-            }
-        }
-    }
-
-    /// Creates a new [`Session`] and moves the [`Process`] to it.
+    /// Creates a new [`Session`] and new [`ProcessGroup`] and moves the
+    /// [`Process`] to it.
     ///
     /// If the [`Process`] is already a session leader, this method does
-    /// nothing.
+    /// nothing and returns `None`.
     ///
-    /// Returns the new [`Session`].
+    /// Otherwise, it returns the new [`Session`] and [`ProcessGroup`].
     ///
-    /// This method may fail if the [`Process`] ID equals any existing
-    /// [`ProcessGroup`] ID. Thus, the [`Process`] must not be a
-    /// [`ProcessGroup`] leader.
+    /// The caller has to ensure that the new [`ProcessGroup`] does not conflict
+    /// with any existing [`ProcessGroup`]. Thus, the [`Process`] must not
+    /// be a [`ProcessGroup`] leader.
     ///
-    /// Corresponds to the `setsid` system call.
-    pub fn create_session(self: &Arc<Self>) -> AxResult<Arc<Session>> {
-        if process_group_table().contains_key(&self.pid) {
-            return ax_err!(PermissionDenied, "cannot create new process group");
+    /// Checking [`Session`] conflicts is unnecessary.
+    pub fn create_session(self: &Arc<Self>) -> Option<(Arc<Session>, Arc<ProcessGroup>)> {
+        if self.inner().group.inner().session.sid() == self.pid {
+            return None;
         }
 
-        let session = self.session();
-        if session.sid() == self.pid {
-            return Ok(session);
-        }
+        let new_session = Session::new(self.pid);
+        let new_group = ProcessGroup::new(self.pid, &new_session);
+        self.set_group(&new_group);
 
-        self.unlink(true);
-
-        let new_group = ProcessGroup::new(self);
-        let new_session = Session::new(&new_group);
-
-        Ok(new_session)
+        Some((new_session, new_group))
     }
 
-    /// Moves the [`Process`] to a new [`ProcessGroup`]. If the [`ProcessGroup`]
-    /// does not exist and the [`Pgid`] is the same as the [`Process`] ID, a
-    /// new [`ProcessGroup`] is created.
+    /// Creates a new [`ProcessGroup`] and moves the [`Process`] to it.
+    ///
+    /// If the [`Process`] is already a group leader, this method does nothing
+    /// and returns `None`.
+    ///
+    /// Otherwise, it returns the new [`ProcessGroup`].
+    ///
+    /// The caller has to ensure that the new [`ProcessGroup`] does not conflict
+    /// with any existing [`ProcessGroup`].
+    pub fn create_group(self: &Arc<Self>) -> Option<Arc<ProcessGroup>> {
+        if self.inner().group.pgid() == self.pid {
+            return None;
+        }
+
+        let new_group = ProcessGroup::new(self.pid, &self.inner().group.inner().session);
+        self.set_group(&new_group);
+
+        Some(new_group)
+    }
+
+    /// Moves the [`Process`] to a specified [`ProcessGroup`].
+    ///
+    /// Returns `true` if the move succeeded. The move failed if the
+    /// [`ProcessGroup`] is not in the same [`Session`] as the [`Process`].
     ///
     /// If the [`Process`] is already in the specified [`ProcessGroup`], this
-    /// method does nothing.
-    ///
-    /// This method may fail if:
-    /// - The [`Process`] is a [`Session`] leader.
-    /// - The [`ProcessGroup`] does not belong to the same [`Session`].
-    /// - The [`ProcessGroup`] does not exist and the [`Pgid`] is not the same
-    ///   as the [`Process`] ID.
-    ///
-    /// Corresponds to the `setpgid` system call.
-    pub fn set_group(self: &Arc<Self>, pgid: Pgid) -> AxResult<()> {
-        let group = self.group();
-        if pgid == group.pgid() {
-            return Ok(());
+    /// method does nothing and returns `true`.
+    pub fn move_to_group(self: &Arc<Self>, group: &Arc<ProcessGroup>) -> bool {
+        if Arc::ptr_eq(&self.inner().group, group) {
+            return true;
         }
 
-        let session = group.session();
-        if session.sid() == self.pid {
-            return ax_err!(
-                PermissionDenied,
-                "cannot move session leader to new process group"
-            );
+        if !Arc::ptr_eq(&self.inner().group.inner().session, &group.inner().session) {
+            return false;
         }
 
-        if let Some(group) = process_group_table().get(&pgid).cloned() {
-            if !session.inner().process_groups.contains_key(&pgid) {
-                return ax_err!(PermissionDenied, "cannot move to a different session");
-            }
-
-            self.unlink(false);
-
-            group.inner().processes.insert(self.pid, self.clone());
-            self.inner().group = Arc::downgrade(&group);
-        } else {
-            if pgid != self.pid {
-                return ax_err!(PermissionDenied, "process group does not exist");
-            }
-
-            self.unlink(false);
-
-            let new_group = ProcessGroup::new(self);
-            new_group.inner().session = Arc::downgrade(&session);
-            session
-                .inner()
-                .process_groups
-                .insert(new_group.pgid(), new_group);
-        }
-        Ok(())
+        self.set_group(group);
+        true
     }
 }
 
 /// Status & exit
 impl Process {
-    /// Returns `true` if the [`Process`] is a zombie process.
-    pub fn is_zombie(&self) -> bool {
-        self.is_zombie.load(Ordering::Acquire)
-    }
-
     /// The exit code of the [`Process`].
     pub fn exit_code(&self) -> i32 {
         self.exit_code.load(Ordering::Acquire)
@@ -236,15 +207,9 @@ impl Process {
         self.exit_code.store(exit_code, Ordering::Release);
     }
 
-    fn move_children_to(&self, target: &Arc<Process>) {
-        let new_parent = Arc::downgrade(target);
-        let mut inner = self.inner();
-        let mut target_inner = target.inner();
-
-        for (pid, child) in core::mem::take(&mut inner.children) {
-            child.inner().parent = new_parent.clone();
-            target_inner.children.insert(pid, child);
-        }
+    /// Returns `true` if the [`Process`] is a zombie process.
+    pub fn is_zombie(&self) -> bool {
+        self.inner().is_zombie
     }
 
     /// Terminates the [`Process`].
@@ -253,8 +218,6 @@ impl Process {
     /// subreaper process.
     pub fn exit(&self) {
         // TODO: child subreaper
-
-        self.is_zombie.store(true, Ordering::Release);
 
         // find the init process by walking up the parent chain
         let mut current = self.parent();
@@ -265,68 +228,24 @@ impl Process {
             init = Some(parent);
         }
 
+        let mut inner = self.inner();
+        inner.is_zombie = true;
+
         if let Some(init) = init {
-            self.move_children_to(&init);
+            inner.move_children_to(&init);
         } else {
             // TODO: init process exited!?
         }
-
-        // the process is not removed from the process table until it is waited
     }
 
-    /// Frees a zombie [`Process`].
+    /// Frees a zombie [`Process`]. Removes it from the parent.
     ///
     /// This method panics if the [`Process`] is not a zombie.
     pub fn free(self: &Arc<Self>) {
         assert!(self.is_zombie(), "only zombie process can be freed");
 
-        self.unlink(true);
-
         if let Some(parent) = self.parent() {
             parent.inner().children.remove(&self.pid);
-        }
-
-        process_table().remove(&self.pid);
-    }
-}
-
-/// [`Process`] filter used for waiting.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProcessFilter {
-    Any,
-    Process(Pid),
-    ProcessGroup(Pgid),
-}
-
-impl ProcessFilter {
-    fn apply(&self, process: &Arc<Process>) -> bool {
-        match self {
-            ProcessFilter::Any => true,
-            ProcessFilter::Process(pid) => process.pid() == *pid,
-            ProcessFilter::ProcessGroup(pgid) => process.group().pgid() == *pgid,
-        }
-    }
-}
-
-/// Wait
-impl Process {
-    pub fn find_zombie_child(&self, filter: ProcessFilter) -> AxResult<Option<Arc<Process>>> {
-        let children = self
-            .inner()
-            .children
-            .values()
-            .filter(|child| filter.apply(child))
-            .cloned()
-            .collect::<Vec<_>>();
-
-        if children.is_empty() {
-            return ax_err!(NotFound, "no child to wait");
-        }
-
-        if let Some(zombie) = children.iter().find(|child| child.is_zombie()) {
-            Ok(Some(zombie.clone()))
-        } else {
-            Ok(None)
         }
     }
 }

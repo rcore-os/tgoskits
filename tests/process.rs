@@ -1,76 +1,51 @@
 use std::sync::Arc;
 
-use axerrno::AxError;
-use axprocess::{Process, ProcessFilter};
+use axprocess::Process;
 
 #[test]
-fn test_child() {
+fn child() {
     let init = Process::new_init();
 
-    let child = init.new_child();
+    let child = init.fork();
     assert!(Arc::ptr_eq(&init, &child.parent().unwrap()));
 }
 
 #[test]
-fn test_reap() {
+fn exit() {
     let init = Process::new_init();
 
-    let child = init.new_child();
-    let grandchild = child.new_child();
+    let child = init.fork();
+
+    child.exit();
+    assert!(child.is_zombie());
+    assert!(init.children().iter().any(|c| Arc::ptr_eq(c, &child)));
+}
+
+#[test]
+#[should_panic]
+fn free_not_zombie() {
+    let init = Process::new_init();
+    let child = init.fork();
+    child.free();
+}
+
+#[test]
+fn free() {
+    let init = Process::new_init();
+    let child = init.fork();
+    child.exit();
+    child.free();
+    assert!(init.children().is_empty());
+}
+
+#[test]
+fn reap() {
+    let init = Process::new_init();
+
+    let child = init.fork();
+    let grandchild = child.fork();
 
     child.exit();
 
     assert!(Arc::ptr_eq(&init, &grandchild.parent().unwrap()));
-}
-
-#[test]
-fn test_exit() {
-    let init = Process::new_init();
-
-    assert_eq!(
-        init.find_zombie_child(ProcessFilter::Any).err(),
-        Some(AxError::NotFound)
-    );
-
-    let child = init.new_child();
-
-    assert!(
-        init.find_zombie_child(ProcessFilter::Any)
-            .unwrap()
-            .is_none()
-    );
-
-    child.exit();
-
-    assert!(Arc::ptr_eq(
-        &child,
-        &init.find_zombie_child(ProcessFilter::Any).unwrap().unwrap()
-    ));
-    assert!(Arc::ptr_eq(
-        &child,
-        &init
-            .find_zombie_child(ProcessFilter::Process(child.pid()))
-            .unwrap()
-            .unwrap()
-    ));
-    assert!(Arc::ptr_eq(
-        &child,
-        &init
-            .find_zombie_child(ProcessFilter::ProcessGroup(child.group().pgid()))
-            .unwrap()
-            .unwrap()
-    ));
-
-    assert_eq!(
-        init.find_zombie_child(ProcessFilter::Process(init.pid()))
-            .err(),
-        Some(AxError::NotFound)
-    );
-
-    child.free();
-
-    assert_eq!(
-        init.find_zombie_child(ProcessFilter::Any).err(),
-        Some(AxError::NotFound)
-    );
 }
