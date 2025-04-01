@@ -1,0 +1,15 @@
+[package]
+name = "axptr"
+version = "0.1.0"
+edition = "2024"
+authors = ["Mivik <mivikq@gmail.com>"]
+
+[dependencies]
+axerrno = "0.1"
+axhal = { git = "https://github.com/oscomp/arceos.git", features = ["uspace"] }
+axmm = { git = "https://github.com/oscomp/arceos.git" }
+axtask = { git = "https://github.com/oscomp/arceos.git", features = [
+    "multitask",
+] }
+memory_addr = "0.3"
+percpu = "0.2.0"
