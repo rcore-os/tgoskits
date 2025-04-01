@@ -106,6 +106,25 @@ fn check_null_terminated<T: Eq + Default>(
     Ok((start, len))
 }
 
+// This function is to avoids excessive generic function instances.
+fn check_region_with(
+    mut aspace: impl AddrSpaceProvider,
+    start: VirtAddr,
+    layout: Layout,
+    access_flags: MappingFlags,
+) -> LinuxResult<()> {
+    aspace.with_addr_space(|aspace| check_region(aspace, start, layout, access_flags))
+}
+
+pub trait AddrSpaceProvider {
+    fn with_addr_space<R>(&mut self, f: impl FnOnce(&mut AddrSpace) -> R) -> R;
+}
+impl AddrSpaceProvider for &mut AddrSpace {
+    fn with_addr_space<R>(&mut self, f: impl FnOnce(&mut AddrSpace) -> R) -> R {
+        f(self)
+    }
+}
+
 #[repr(transparent)]
 pub struct UserPtr<T>(*mut T);
 impl<T> From<usize> for UserPtr<T> {
@@ -153,8 +172,8 @@ impl<T> UserPtr<T> {
     /// Get the value of the pointer.
     ///
     /// This will check the region and populate the page if necessary.
-    pub fn get<'a>(&'a mut self, aspace: &mut AddrSpace) -> LinuxResult<&'a mut T> {
-        check_region(
+    pub fn get<'a>(&'a mut self, aspace: impl AddrSpaceProvider) -> LinuxResult<&'a mut T> {
+        check_region_with(
             aspace,
             self.address(),
             Layout::new::<T>(),
@@ -166,10 +185,10 @@ impl<T> UserPtr<T> {
     /// Get the value of the pointer as a slice.
     pub fn get_as_slice<'a>(
         &'a mut self,
-        aspace: &mut AddrSpace,
+        aspace: impl AddrSpaceProvider,
         length: usize,
     ) -> LinuxResult<&'a mut [T]> {
-        check_region(
+        check_region_with(
             aspace,
             self.address(),
             Layout::array::<T>(length).unwrap(),
@@ -182,11 +201,16 @@ impl<T> UserPtr<T> {
 impl<T> UserPtr<T> {
     /// Get the pointer as `&mut [T]`, terminated by a null value, validating
     /// the memory region.
-    pub fn get_as_null_terminated(&mut self, aspace: &mut AddrSpace) -> LinuxResult<&mut [T]>
+    pub fn get_as_null_terminated(
+        &mut self,
+        mut aspace: impl AddrSpaceProvider,
+    ) -> LinuxResult<&mut [T]>
     where
         T: Eq + Default,
     {
-        let (ptr, len) = check_null_terminated::<T>(aspace, self.address(), Self::ACCESS_FLAGS)?;
+        let (ptr, len) = aspace.with_addr_space(|aspace| {
+            check_null_terminated::<T>(aspace, self.address(), Self::ACCESS_FLAGS)
+        })?;
         // SAFETY: We've validated the memory region.
         unsafe { Ok(slice::from_raw_parts_mut(ptr as *mut _, len)) }
     }
@@ -231,8 +255,8 @@ impl<T> UserConstPtr<T> {
 
 impl<T> UserConstPtr<T> {
     /// See [`UserPtr::get`].
-    pub fn get<'a>(&'a self, aspace: &mut AddrSpace) -> LinuxResult<&'a T> {
-        check_region(
+    pub fn get<'a>(&'a self, aspace: impl AddrSpaceProvider) -> LinuxResult<&'a T> {
+        check_region_with(
             aspace,
             self.address(),
             Layout::new::<T>(),
@@ -244,10 +268,10 @@ impl<T> UserConstPtr<T> {
     /// See [`UserPtr::get_as_slice`].
     pub fn get_as_slice<'a>(
         &'a self,
-        aspace: &mut AddrSpace,
+        aspace: impl AddrSpaceProvider,
         length: usize,
     ) -> LinuxResult<&'a [T]> {
-        check_region(
+        check_region_with(
             aspace,
             self.address(),
             Layout::array::<T>(length).unwrap(),
@@ -259,11 +283,13 @@ impl<T> UserConstPtr<T> {
 
 impl<T> UserConstPtr<T> {
     /// See [`UserPtr::get_as_null_terminated`].
-    pub fn get_as_null_terminated(&self, aspace: &mut AddrSpace) -> LinuxResult<&[T]>
+    pub fn get_as_null_terminated(&self, mut aspace: impl AddrSpaceProvider) -> LinuxResult<&[T]>
     where
         T: Eq + Default,
     {
-        let (ptr, len) = check_null_terminated::<T>(aspace, self.address(), Self::ACCESS_FLAGS)?;
+        let (ptr, len) = aspace.with_addr_space(|aspace| {
+            check_null_terminated::<T>(aspace, self.address(), Self::ACCESS_FLAGS)
+        })?;
         // SAFETY: We've validated the memory region.
         unsafe { Ok(slice::from_raw_parts(ptr as *const _, len)) }
     }
@@ -271,7 +297,7 @@ impl<T> UserConstPtr<T> {
 
 impl UserConstPtr<c_char> {
     /// Get the pointer as `&str`, validating the memory region.
-    pub fn get_as_str(&self, aspace: &mut AddrSpace) -> LinuxResult<&'static str> {
+    pub fn get_as_str(&self, aspace: impl AddrSpaceProvider) -> LinuxResult<&'static str> {
         let slice = self.get_as_null_terminated(aspace)?;
         // SAFETY: c_char is u8
         let slice = unsafe { mem::transmute::<&[c_char], &[u8]>(slice) };

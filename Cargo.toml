@@ -13,3 +13,7 @@ axtask = { git = "https://github.com/oscomp/arceos.git", features = [
 ] }
 memory_addr = "0.3"
 percpu = "0.2.0"
+
+[patch.crates-io]
+page_table_multiarch = { git = "https://github.com/Mivik/page_table_multiarch.git", rev = "19ededd" }
+page_table_entry = { git = "https://github.com/Mivik/page_table_multiarch.git", rev = "19ededd" }
