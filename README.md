@@ -16,7 +16,7 @@
 
 </div>
 
-English | [中文版](README_CN.md)
+English | [中文](README_CN.md)
 
 # Introduction
 
@@ -56,7 +56,7 @@ Currently, AxVisor has been verified in scenarios with the following systems as 
 
 # Build and Run
 
-Use the command `git clone https://github.com/arceos-hypervisor/axvisor.git` to pull the AxVisor source code.
+After AxVisor starts, it loads and starts the guest based on the information in the guest configuration file. Currently, AxVisor supports loading guest images from a FAT32 file system and also supports binding guest images to the hypervisor image through static compilation (using include_bytes).
 
 ## Build Environment
 
@@ -67,29 +67,20 @@ $ cargo install cargo-binutils
 
 If necessary, you may also need to install [musl-gcc](http://musl.cc/x86_64-linux-musl-cross.tgz) to build guest applications.
 
-## Prepare the Guest VM
-
-After AxVisor starts, it loads and starts the guest based on the information in the guest configuration file. Currently, AxVisor supports loading guest images from a FAT32 file system and also supports binding guest images to the hypervisor image through static compilation (using include_bytes).
-
-### Configuration Files
+## Configuration Files
 
 Since configuring the guest is a complex process, AxVisor chooses to use TOML files to manage the guest configurations. These configurations include the virtual machine ID, virtual machine name, virtual machine type, number of CPU cores, memory size, virtual devices, passthrough devices, and more. In the source code, the `./config/vms` directory contains some example templates for guest configurations.
 
 In addition, you can use the [axvmconfig](https://github.com/arceos-hypervisor/axvmconfig) tool to generate a custom configuration file. For detailed information, refer to the [axvmconfig](https://arceos-hypervisor.github.io/axvmconfig/axvmconfig/index.html) documentation.
 
-### Load from file system
+## Load and run from file system
 
-1. Building your own guest machine image file
+1. Build a client image file suitable for your own architecture. Taking the ArceOS mainline code as an example, run `make PLATFORM=aarch64-qemu-virt SMP=1 A=examples/helloworld` to generate `helloworld_aarch64-qemu-virt.bin`.
 
-2. Modify the configuration items in the corresponding `./configs/vms/<ARCH_CONFIG>.toml`
-     - `image_location="fs"` indicates loading from the file system.
-     - `kernel_path` specifies the path to the kernel image in the file system.
-     - others
+2. Create a disk image file and place the guest machine image into the file system.
 
-3. Create a disk image file and place the guest machine image into the file system.
-
-  1. Use the `make disk_img` command to generate an empty FAT32 disk image file named `disk.img`.
-  2. Manually mount `disk.img`, and then place your guest machine image into the file system.
+   1. Use the `make disk_img` command to generate an empty FAT32 disk image file named `disk.img`.
+   2. Manually mount `disk.img`, and then place your guest machine image into the file system.
 
       ```console
       $ mkdir -p tmp
@@ -98,55 +89,96 @@ In addition, you can use the [axvmconfig](https://github.com/arceos-hypervisor/a
       $ sudo umount tmp
       ```
 
-4. When building AxVisor, the APP_FEATURES=fs option is required.
+3. Modify the configuration items in the corresponding `./configs/vms/<ARCH_CONFIG>.toml`
+   - `image_location="fs"` indicates loading from the file system.
+   - `kernel_path` specifies the path to the kernel image in the file system.
+   - `entry_point` specifies the entry address of the kernel image.
+   - `kernel_load_addr` specifies the loading address of the kernel image.
+   - others
 
-### Load from memory
+4. Execute `make ACCEL=n ARCH=aarch64 LOG=info VM_CONFIGS=configs/vms/arceos-aarch64.toml APP_FEATURES=fs run` to build AxVisor and start it in QEMU.
 
-1. Building your own guest machine image file
+## Load and run from memory
+
+1. Build a client image file suitable for your own architecture. Taking the ArceOS mainline code as an example, run `make PLATFORM=aarch64-qemu-virt SMP=1 A=examples/helloworld` to generate `helloworld_aarch64-qemu-virt.bin`.
 
 2. Modify the configuration items in the corresponding `./configs/vms/<ARCH_CONFIG>.toml`
-     - `image_location="memory"` indicates loading from the memory.
-     - `kernel_path` kernel_path specifies the relative/absolute path of the kernel image in the workspace.
-     - others
+   - `image_location="memory"` indicates loading from the memory.
+   - `kernel_path` kernel_path specifies the relative/absolute path of the kernel image in the workspace.
+   - `entry_point` specifies the entry address of the kernel image.
+   - `kernel_load_addr` specifies the loading address of the kernel image.
+   - others
 
-3. Currently, the method of statically compiling and binding the guest machine image only supports loading one guest machine image.
-
-## Build and Run
-
-Depending on the chosen method for loading the guest machine image, the following commands may need to be modified accordingly!
-
-### x86_64 for nimbos
-
-1. `make ARCH=x86_64 defconfig`
-2. `make ACCEL=y ARCH=x86_64 LOG=info VM_CONFIGS=configs/vms/nimbos-x86_64.toml APP_FEATURES=fs run`
-
-### aarch64 for nimbos
-
-1. `make ARCH=aarch64 defconfig`
-2. `make ACCEL=n ARCH=aarch64 LOG=info VM_CONFIGS=configs/vms/nimbos-aarch64.toml APP_FEATURES=fs run`
-
-### riscv64 for nimbos
-
-1. `make ARCH=aarch64 defconfig`
-2. `make ACCEL=n ARCH=riscv64 LOG=info VM_CONFIGS=configs/vms/nimbos-riscv64.toml APP_FEATURES=fs run`
-
-### aarch64 for Linux
-
-You need to modify the phys-memory-size in configs/platforms/aarch64-qemu-virt-hv.toml to 0x2_0000_0000 (8G).
-
-1. `make ARCH=aarch64 defconfig`
-2. `make ARCH=aarch64 VM_CONFIGS=configs/vms/linux-qemu-aarch64.toml LOG=debug BUS=mmio NET=y FEATURES=page-alloc-64g MEM=8g run`
-
-### aarch64 for Linux SMP=2
-
-1. `make ARCH=aarch64 defconfig`
-2. `make ARCH=aarch64 VM_CONFIGS=configs/vms/linux-qemu-aarch64-smp2.toml LOG=debug BUS=mmio NET=y  BLK=y SMP=2 FEATURES=page-alloc-64g MEM=8g run`
+3. Execute `make ACCEL=n ARCH=aarch64 LOG=info VM_CONFIGS=configs/vms/arceos-aarch64.toml run` to build AxVisor and start it in QEMU.
 
 ## Demo
 
-```console
-Booting from ROM..
-Initialize IDT & GDT...
+```bash
+       d8888                            .d88888b.   .d8888b.
+      d88888                           d88P" "Y88b d88P  Y88b
+     d88P888                           888     888 Y88b.
+    d88P 888 888d888  .d8888b  .d88b.  888     888  "Y888b.
+   d88P  888 888P"   d88P"    d8P  Y8b 888     888     "Y88b.
+  d88P   888 888     888      88888888 888     888       "888
+ d8888888888 888     Y88b.    Y8b.     Y88b. .d88P Y88b  d88P
+d88P     888 888      "Y8888P  "Y8888   "Y88888P"   "Y8888P"
+
+arch = aarch64
+platform = aarch64-qemu-virt-hv
+target = aarch64-unknown-none-softfloat
+build_mode = release
+log_level = info
+smp = 1
+
+[  0.020822 0 axruntime:130] Logging is enabled.
+[  0.026419 0 axruntime:131] Primary CPU 0 started, dtb = 0x44000000.
+[  0.028520 0 axruntime:133] Found physcial memory regions:
+[  0.030673 0 axruntime:135]   [PA:0x40080000, PA:0x400d6000) .text (READ | EXECUTE | RESERVED)
+[  0.033564 0 axruntime:135]   [PA:0x400d6000, PA:0x400ef000) .rodata (READ | RESERVED)
+[  0.035313 0 axruntime:135]   [PA:0x400ef000, PA:0x400f5000) .data .tdata .tbss .percpu (READ | WRITE | RESERVED)
+[  0.037083 0 axruntime:135]   [PA:0x400f5000, PA:0x40135000) boot stack (READ | WRITE | RESERVED)
+[  0.038622 0 axruntime:135]   [PA:0x40135000, PA:0x4013b000) .bss (READ | WRITE | RESERVED)
+[  0.040643 0 axruntime:135]   [PA:0x4013b000, PA:0x48000000) free memory (READ | WRITE | FREE)
+[  0.042907 0 axruntime:135]   [PA:0x9000000, PA:0x9001000) mmio (READ | WRITE | DEVICE | RESERVED)
+[  0.045011 0 axruntime:135]   [PA:0x9040000, PA:0x9041000) mmio (READ | WRITE | DEVICE | RESERVED)
+[  0.047070 0 axruntime:135]   [PA:0x9100000, PA:0x9101000) mmio (READ | WRITE | DEVICE | RESERVED)
+[  0.049093 0 axruntime:135]   [PA:0x8000000, PA:0x8020000) mmio (READ | WRITE | DEVICE | RESERVED)
+[  0.051081 0 axruntime:135]   [PA:0xa000000, PA:0xa004000) mmio (READ | WRITE | DEVICE | RESERVED)
+[  0.053120 0 axruntime:135]   [PA:0x10000000, PA:0x3eff0000) mmio (READ | WRITE | DEVICE | RESERVED)
+[  0.055229 0 axruntime:135]   [PA:0x4010000000, PA:0x4020000000) mmio (READ | WRITE | DEVICE | RESERVED)
+[  0.057642 0 axruntime:208] Initialize global memory allocator...
+[  0.059377 0 axruntime:209]   use TLSF allocator.
+[  0.072071 0 axmm:60] Initialize virtual memory management...
+[  0.136312 0 axruntime:150] Initialize platform devices...
+[  0.137733 0 axhal::platform::aarch64_common::gic:67] Initialize GICv2...
+[  0.143653 0 axtask::api:73] Initialize scheduling...
+[  0.151435 0 axtask::api:79]   use FIFO scheduler.
+[  0.152744 0 axruntime:176] Initialize interrupt handlers...
+[  0.157472 0 axruntime:186] Primary CPU 0 init OK.
+[  0.159027 0:2 axvisor:17] Starting virtualization...
+[  0.160968 0:2 axvisor:19] Hardware support: true
+[  0.168619 0:4 axvisor::vmm::timer:103] Initing HV Timer...
+[  0.170399 0:4 axvisor::hal:117] Hardware virtualization support enabled on core 0
+[  0.295531 0:2 axvisor::vmm::config:33] Creating VM [1] "arceos"
+[  0.301423 0:2 axvm::vm:113] Setting up memory region: [0x40000000~0x41000000] READ | WRITE | EXECUTE
+[  0.334424 0:2 axvm::vm:156] Setting up passthrough device memory region: [0x8000000~0x8050000] -> [0x8000000~0x8050000]
+[  0.339431 0:2 axvm::vm:156] Setting up passthrough device memory region: [0x9000000~0x9001000] -> [0x9000000~0x9001000]
+[  0.341925 0:2 axvm::vm:156] Setting up passthrough device memory region: [0x9010000~0x9011000] -> [0x9010000~0x9011000]
+[  0.343758 0:2 axvm::vm:156] Setting up passthrough device memory region: [0x9030000~0x9031000] -> [0x9030000~0x9031000]
+[  0.345559 0:2 axvm::vm:156] Setting up passthrough device memory region: [0xa000000~0xa004000] -> [0xa000000~0xa004000]
+[  0.348819 0:2 axvm::vm:191] VM created: id=1
+[  0.350749 0:2 axvm::vm:206] VM setup: id=1
+[  0.352526 0:2 axvisor::vmm::config:40] VM[1] created success, loading images...
+[  0.355270 0:2 axvisor::vmm::images:24] Loading VM[1] images from memory
+[  0.363583 0:2 axvisor::vmm:29] Setting up vcpus...
+[  0.368014 0:2 axvisor::vmm::vcpus:176] Initializing VM[1]'s 1 vcpus
+[  0.370802 0:2 axvisor::vmm::vcpus:207] Spawning task for VM[1] Vcpu[0]
+[  0.374805 0:2 axvisor::vmm::vcpus:219] Vcpu task Task(5, "VM[1]-VCpu[0]") created cpumask: [0, ]
+[  0.378878 0:2 axvisor::vmm:36] VMM starting, booting VMs...
+[  0.380775 0:2 axvm::vm:273] Booting VM[1]
+[  0.382631 0:2 axvisor::vmm:42] VM[1] boot success
+[  0.387436 0:5 axvisor::vmm::vcpus:240] VM[1] Vcpu[0] waiting for running
+[  0.390048 0:5 axvisor::vmm::vcpus:243] VM[1] Vcpu[0] running...
 
        d8888                            .d88888b.   .d8888b.
       d88888                           d88P" "Y88b d88P  Y88b
@@ -157,81 +189,16 @@ Initialize IDT & GDT...
  d8888888888 888     Y88b.    Y8b.     Y88b. .d88P Y88b  d88P
 d88P     888 888      "Y8888P  "Y8888   "Y88888P"   "Y8888P"
 
-arch = x86_64
-platform = x86_64-qemu-q35
-target = x86_64-unknown-none
+arch = aarch64
+platform = aarch64-qemu-virt
+target = aarch64-unknown-none-softfloat
+build_mode = release
+log_level = warn
 smp = 1
-build_mode = release
-log_level = warn
 
-Starting virtualization...
-Running guest...
-
-NN   NN  iii               bb        OOOOO    SSSSS
-NNN  NN       mm mm mmmm   bb       OO   OO  SS
-NN N NN  iii  mmm  mm  mm  bbbbbb   OO   OO   SSSSS
-NN  NNN  iii  mmm  mm  mm  bb   bb  OO   OO       SS
-NN   NN  iii  mmm  mm  mm  bbbbbb    OOOO0    SSSSS
-              ___    ____    ___    ___
-             |__ \  / __ \  |__ \  |__ \
-             __/ / / / / /  __/ /  __/ /
-            / __/ / /_/ /  / __/  / __/
-           /____/ \____/  /____/ /____/
-
-arch = x86_64
-platform = rvm-guest-x86_64
-build_mode = release
-log_level = warn
-
-Initializing kernel heap at: [0xffffff800028ed00, 0xffffff800068ed00)
-Initializing IDT...
-Loading GDT for CPU 0...
-Initializing frame allocator at: [PA:0x68f000, PA:0x1000000)
-Mapping .text: [0xffffff8000200000, 0xffffff800021b000)
-Mapping .rodata: [0xffffff800021b000, 0xffffff8000220000)
-Mapping .data: [0xffffff8000220000, 0xffffff800028a000)
-Mapping .bss: [0xffffff800028e000, 0xffffff800068f000)
-Mapping boot stack: [0xffffff800028a000, 0xffffff800028e000)
-Mapping physical memory: [0xffffff800068f000, 0xffffff8001000000)
-Mapping MMIO: [0xffffff80fec00000, 0xffffff80fec01000)
-Mapping MMIO: [0xffffff80fed00000, 0xffffff80fed01000)
-Mapping MMIO: [0xffffff80fee00000, 0xffffff80fee01000)
-Initializing drivers...
-Initializing Local APIC...
-Initializing HPET...
-HPET: 100.000000 MHz, 64-bit, 3 timers
-Calibrated TSC frequency: 2993.778 MHz
-Calibrated LAPIC frequency: 1000.522 MHz
-Initializing task manager...
-/**** APPS ****
-cyclictest
-exit
-fantastic_text
-forktest
-forktest2
-forktest_simple
-forktest_simple_c
-forktree
-hello_c
-hello_world
-matrix
-sleep
-sleep_simple
-stack_overflow
-thread_simple
-user_shell
-usertests
-yield
-**************/
-Running tasks...
-test kernel task: pid = TaskId(2), arg = 0xdead
-test kernel task: pid = TaskId(3), arg = 0xbeef
-Rust user shell
->> hello_world
-Hello world from user mode program!
-Shell: Process 5 exited with code 0
->>
-......
+Hello, world!
+[  0.416823 0:5 axvisor::vmm::vcpus:288] VM[1] run VCpu[0] SystemDown
+[  0.419035 0:5 axhal::platform::aarch64_common::psci:98] Shutting down...
 ```
 
 # Contributing
