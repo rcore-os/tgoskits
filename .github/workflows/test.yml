@@ -78,6 +78,11 @@ jobs:
           set -e
           cd ~/runner/${{ github.run_id }}-${{ matrix.arch }}-${{ matrix.rust-toolchain }} && tar -xzf source.tar.gz
           cd ~/runner/${{ github.run_id }}-${{ matrix.arch }}-${{ matrix.rust-toolchain }} && make ARCH=x86_64 defconfig
-          cd ~/runner/${{ github.run_id }}-${{ matrix.arch }}-${{ matrix.rust-toolchain }} && make ARCH=x86_64 DISK_IMG=$(pwd)/disk-x86_64.img LOG=info BLK=y ACCEL=y VM_CONFIGS=$(pwd)/configs/vms/nimbos-x86_64.toml APP_FEATURES=fs run
+          cd ~/runner/${{ github.run_id }}-${{ matrix.arch }}-${{ matrix.rust-toolchain }} && make ARCH=x86_64 DISK_IMG=$(pwd)/disk-x86_64.img LOG=info BLK=y ACCEL=y VM_CONFIGS=$(pwd)/configs/vms/nimbos-x86_64.toml APP_FEATURES=fs run | tee make_output.log
+          cd ~/runner/${{ github.run_id }}-${{ matrix.arch }}-${{ matrix.rust-toolchain }} && if grep -q "panic" make_output.log; then
+            echo "Test failed: 'panic' found in output msg"
+            cat make_output.log
+            exit 1
+          fi
+          cat make_output.log
           cd ~ && rm -rf ~/runner/${{ github.run_id }}-${{ matrix.arch }}-${{ matrix.rust-toolchain }}
-

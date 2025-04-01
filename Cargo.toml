@@ -42,7 +42,7 @@ axerrno = "0.1.0"
 memory_addr = "0.3"
 page_table_entry = { version = "0.5", features = ["arm-el2"] }
 page_table_multiarch = "0.5"
-percpu = { version = "0.1.4", features = ["arm-el2"] }
+percpu = { version = "0.2.0", features = ["arm-el2"] }
 
 [build-dependencies]
 toml = { git = "https://github.com/arceos-hypervisor/toml.git", branch = "no_std" }

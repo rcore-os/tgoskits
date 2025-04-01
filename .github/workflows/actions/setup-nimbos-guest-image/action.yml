@@ -55,7 +55,7 @@ runs:
       file: axvm-bios.bin
       repo: ${{ inputs.bios-repo }}
       version: ${{ inputs.bios-version }}
-      target: temp/rvm-bios.bin
+      target: temp/axvm-bios.bin
   - name: Create Image
     shell: bash
     run: |

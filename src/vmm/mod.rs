@@ -1,5 +1,6 @@
 mod config;
 mod images;
+#[allow(unused)] //TODO: remove this with "irq" feature.
 mod timer;
 mod vcpus;
 mod vm_list;

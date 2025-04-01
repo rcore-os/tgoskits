@@ -26,7 +26,7 @@ kernel_path = "nimbos-x86_64.bin"
 # The load address of the kernel image.
 kernel_load_addr = 0x20_0000
 # The file path of the BIOS image.
-bios_path = "rvm-bios.bin"
+bios_path = "axvm-bios.bin"
 # The load address of the BIOS image.
 bios_load_addr = 0x8000
 

@@ -1,5 +1,3 @@
-extern crate alloc;
-
 use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::Ordering;
 
