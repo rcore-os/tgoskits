@@ -18,7 +18,7 @@ axerrno = "0.1.0"
 memory_addr = "0.3.1"
 page_table_entry = { version = "0.5", features = ["arm-el2"] }
 page_table_multiarch = "0.5"
-percpu = { version = "0.1.4", features = ["arm-el2"] }
+percpu = { version = "0.2.0", features = ["arm-el2"] }
 
 # System dependent modules provided by ArceOS-Hypervisor.
 axvcpu = { git = "https://github.com/arceos-hypervisor/axvcpu.git" }
