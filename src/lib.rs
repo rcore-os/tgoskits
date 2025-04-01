@@ -1,4 +1,5 @@
 //! Utilities for working with user-space pointers.
+#![no_std]
 
 use axerrno::{LinuxError, LinuxResult};
 use axhal::paging::MappingFlags;
