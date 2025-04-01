@@ -3,26 +3,17 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
+use core::fmt;
 
-use kspin::{SpinNoIrq, SpinNoIrqGuard};
+use kspin::SpinNoIrq;
 
 use crate::{Pgid, Pid, Process, Session};
 
 /// A [`ProcessGroup`] is a collection of [`Process`]es.
 pub struct ProcessGroup {
     pgid: Pgid,
-    inner: SpinNoIrq<ProcessGroupInner>,
-}
-
-pub(crate) struct ProcessGroupInner {
-    pub(crate) processes: BTreeMap<Pid, Weak<Process>>,
     pub(crate) session: Arc<Session>,
-}
-
-impl ProcessGroupInner {
-    pub(crate) fn processes(&self) -> impl DoubleEndedIterator<Item = Arc<Process>> {
-        self.processes.values().filter_map(Weak::upgrade)
-    }
+    pub(crate) processes: SpinNoIrq<BTreeMap<Pid, Weak<Process>>>,
 }
 
 impl ProcessGroup {
@@ -30,20 +21,14 @@ impl ProcessGroup {
     pub(crate) fn new(pgid: Pgid, session: &Arc<Session>) -> Arc<Self> {
         let group = Arc::new(Self {
             pgid,
-            inner: SpinNoIrq::new(ProcessGroupInner {
-                processes: BTreeMap::new(),
-                session: session.clone(),
-            }),
+            session: session.clone(),
+            processes: SpinNoIrq::new(BTreeMap::new()),
         });
         session
-            .inner()
             .process_groups
+            .lock()
             .insert(pgid, Arc::downgrade(&group));
         group
-    }
-
-    pub(crate) fn inner(&self) -> SpinNoIrqGuard<ProcessGroupInner> {
-        self.inner.lock()
     }
 }
 
@@ -55,11 +40,24 @@ impl ProcessGroup {
 
     /// The [`Session`] that the [`ProcessGroup`] belongs to.
     pub fn session(&self) -> Arc<Session> {
-        self.inner().session.clone()
+        self.session.clone()
     }
 
     /// The [`Process`]es that belong to this [`ProcessGroup`].
     pub fn processes(&self) -> Vec<Arc<Process>> {
-        self.inner().processes().collect()
+        self.processes
+            .lock()
+            .values()
+            .filter_map(Weak::upgrade)
+            .collect()
+    }
+}
+
+impl fmt::Debug for ProcessGroup {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProcessGroup")
+            .field("pgid", &self.pgid)
+            .field("session", &self.session)
+            .finish()
     }
 }

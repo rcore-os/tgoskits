@@ -3,7 +3,10 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
+use core::{
+    fmt,
+    sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
+};
 
 use kspin::SpinNoIrq;
 
@@ -42,10 +45,7 @@ impl Process {
             group: SpinNoIrq::new(group.clone()),
         });
 
-        group
-            .inner()
-            .processes
-            .insert(pid, Arc::downgrade(&process));
+        group.processes.lock().insert(pid, Arc::downgrade(&process));
 
         process
     }
@@ -101,11 +101,11 @@ impl Process {
     fn set_group(self: &Arc<Self>, group: &Arc<ProcessGroup>) {
         let mut self_group = self.group.lock();
 
-        self_group.inner().processes.remove(&self.pid);
+        self_group.processes.lock().remove(&self.pid);
 
         group
-            .inner()
             .processes
+            .lock()
             .insert(self.pid, Arc::downgrade(self));
 
         *self_group = group.clone();
@@ -125,7 +125,7 @@ impl Process {
     ///
     /// Checking [`Session`] conflicts is unnecessary.
     pub fn create_session(self: &Arc<Self>) -> Option<(Arc<Session>, Arc<ProcessGroup>)> {
-        if self.group.lock().inner().session.sid() == self.pid {
+        if self.group.lock().session.sid() == self.pid {
             return None;
         }
 
@@ -150,7 +150,7 @@ impl Process {
             return None;
         }
 
-        let new_group = ProcessGroup::new(self.pid, &self.group.lock().inner().session);
+        let new_group = ProcessGroup::new(self.pid, &self.group.lock().session);
         self.set_group(&new_group);
 
         Some(new_group)
@@ -168,7 +168,7 @@ impl Process {
             return true;
         }
 
-        if !Arc::ptr_eq(&self.group.lock().inner().session, &group.inner().session) {
+        if !Arc::ptr_eq(&self.group.lock().session, &group.session) {
             return false;
         }
 
@@ -230,11 +230,27 @@ impl Process {
     /// Frees a zombie [`Process`]. Removes it from the parent.
     ///
     /// This method panics if the [`Process`] is not a zombie.
-    pub fn free(self: &Arc<Self>) {
+    pub fn free(&self) {
         assert!(self.is_zombie(), "only zombie process can be freed");
 
         if let Some(parent) = self.parent() {
             parent.children.lock().remove(&self.pid);
         }
+    }
+}
+
+impl fmt::Debug for Process {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut builder = f.debug_struct("Process");
+        builder.field("pid", &self.pid);
+
+        if self.is_zombie() {
+            builder.field("exit_code", &self.exit_code());
+        }
+        if let Some(parent) = self.parent() {
+            builder.field("parent", &parent.pid());
+        }
+        builder.field("group", &self.group());
+        builder.finish()
     }
 }
