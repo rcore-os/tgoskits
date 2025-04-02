@@ -1,11 +1,11 @@
 use alloc::{
-    collections::btree_map::BTreeMap,
     sync::{Arc, Weak},
     vec::Vec,
 };
 use core::fmt;
 
 use kspin::SpinNoIrq;
+use weak_map::WeakMap;
 
 use crate::{Pgid, Pid, Process, Session};
 
@@ -13,7 +13,7 @@ use crate::{Pgid, Pid, Process, Session};
 pub struct ProcessGroup {
     pgid: Pgid,
     pub(crate) session: Arc<Session>,
-    pub(crate) processes: SpinNoIrq<BTreeMap<Pid, Weak<Process>>>,
+    pub(crate) processes: SpinNoIrq<WeakMap<Pid, Weak<Process>>>,
 }
 
 impl ProcessGroup {
@@ -22,12 +22,9 @@ impl ProcessGroup {
         let group = Arc::new(Self {
             pgid,
             session: session.clone(),
-            processes: SpinNoIrq::new(BTreeMap::new()),
+            processes: SpinNoIrq::new(WeakMap::new()),
         });
-        session
-            .process_groups
-            .lock()
-            .insert(pgid, Arc::downgrade(&group));
+        session.process_groups.lock().insert(pgid, &group);
         group
     }
 }
@@ -45,11 +42,7 @@ impl ProcessGroup {
 
     /// The [`Process`]es that belong to this [`ProcessGroup`].
     pub fn processes(&self) -> Vec<Arc<Process>> {
-        self.processes
-            .lock()
-            .values()
-            .filter_map(Weak::upgrade)
-            .collect()
+        self.processes.lock().values().collect()
     }
 }
 

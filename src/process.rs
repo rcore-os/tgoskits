@@ -1,5 +1,4 @@
 use alloc::{
-    collections::btree_map::BTreeMap,
     sync::{Arc, Weak},
     vec::Vec,
 };
@@ -9,6 +8,7 @@ use core::{
 };
 
 use kspin::SpinNoIrq;
+use weak_map::StrongMap;
 
 use crate::{Pid, ProcessGroup, Session};
 
@@ -27,7 +27,7 @@ pub struct Process {
     is_zombie: AtomicBool,
 
     // TODO: child subreaper
-    children: SpinNoIrq<BTreeMap<Pid, Arc<Process>>>,
+    children: SpinNoIrq<StrongMap<Pid, Arc<Process>>>,
     parent: SpinNoIrq<Weak<Process>>,
 
     group: SpinNoIrq<Arc<ProcessGroup>>,
@@ -40,12 +40,12 @@ impl Process {
             exit_code: AtomicI32::new(0),
             is_zombie: AtomicBool::new(false),
 
-            children: SpinNoIrq::new(BTreeMap::new()),
+            children: SpinNoIrq::new(StrongMap::new()),
             parent: SpinNoIrq::new(parent),
             group: SpinNoIrq::new(group.clone()),
         });
 
-        group.processes.lock().insert(pid, Arc::downgrade(&process));
+        group.processes.lock().insert(pid, &process);
 
         process
     }
@@ -103,10 +103,7 @@ impl Process {
 
         self_group.processes.lock().remove(&self.pid);
 
-        group
-            .processes
-            .lock()
-            .insert(self.pid, Arc::downgrade(self));
+        group.processes.lock().insert(self.pid, self);
 
         *self_group = group.clone();
     }

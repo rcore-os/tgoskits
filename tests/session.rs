@@ -17,6 +17,16 @@ fn basic() {
 }
 
 #[test]
+fn cleanup() {
+    let init = Process::new_init();
+    let session = Arc::downgrade(&init.group().session());
+
+    assert!(session.upgrade().is_some());
+    drop(init);
+    assert!(session.upgrade().is_none());
+}
+
+#[test]
 fn create() {
     let init = Process::new_init();
     let init_group = init.group();
@@ -67,4 +77,16 @@ fn move_to_different_session() {
     assert!(!Arc::ptr_eq(&child_session, &grandchild.group().session()));
 
     assert!(!grandchild.move_to_group(&child_group));
+}
+
+#[test]
+fn cleanup_groups() {
+    let init = Process::new_init();
+    let session = init.group().session();
+
+    init.exit();
+    init.free();
+    drop(init);
+
+    assert!(session.process_groups().is_empty());
 }

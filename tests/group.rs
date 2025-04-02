@@ -113,3 +113,15 @@ fn move_back() {
     assert_eq!(child_group.processes().len(), 1);
     assert_eq!(init_group.processes().len(), 1);
 }
+
+#[test]
+fn cleanup_processes() {
+    let init = Process::new_init();
+    let group = init.group();
+
+    init.exit();
+    init.free();
+    drop(init);
+
+    assert!(group.processes().is_empty());
+}

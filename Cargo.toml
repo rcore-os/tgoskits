@@ -7,6 +7,7 @@ description = "Process management for ArceOS"
 
 [dependencies]
 kspin = "0.1"
+weak-map = { git = "https://github.com/Starry-OS/weak-map" }
 
 [dev-dependencies]
 kspin = { version = "0.1", features = ["smp"] }
