@@ -223,7 +223,7 @@ impl SignalManager {
 
                 let restorer = action.restorer.map_or(0, |f| f as _);
                 #[cfg(target_arch = "x86_64")]
-                tf.write_ra(restorer);
+                tf.push_ra(restorer);
                 #[cfg(not(target_arch = "x86_64"))]
                 tf.set_ra(restorer);
 
