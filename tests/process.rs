@@ -1,20 +1,20 @@
 use std::sync::Arc;
 
-use axprocess::Process;
+mod common;
 
 #[test]
 fn child() {
-    let init = Process::new_init();
+    let init = common::new_init();
 
-    let child = init.fork();
+    let child = common::fork(&init);
     assert!(Arc::ptr_eq(&init, &child.parent().unwrap()));
 }
 
 #[test]
 fn exit() {
-    let init = Process::new_init();
+    let init = common::new_init();
 
-    let child = init.fork();
+    let child = common::fork(&init);
 
     child.exit();
     assert!(child.is_zombie());
@@ -24,15 +24,15 @@ fn exit() {
 #[test]
 #[should_panic]
 fn free_not_zombie() {
-    let init = Process::new_init();
-    let child = init.fork();
+    let init = common::new_init();
+    let child = common::fork(&init);
     child.free();
 }
 
 #[test]
 fn free() {
-    let init = Process::new_init();
-    let child = init.fork();
+    let init = common::new_init();
+    let child = common::fork(&init);
     child.exit();
     child.free();
     assert!(init.children().is_empty());
@@ -40,10 +40,10 @@ fn free() {
 
 #[test]
 fn reap() {
-    let init = Process::new_init();
+    let init = common::new_init();
 
-    let child = init.fork();
-    let grandchild = child.fork();
+    let child = common::fork(&init);
+    let grandchild = common::fork(&child);
 
     child.exit();
 

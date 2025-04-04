@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use axprocess::Process;
+mod common;
 
 #[test]
 fn basic() {
-    let init = Process::new_init();
+    let init = common::new_init();
     let init_group = init.group();
     let init_session = init_group.session();
 
@@ -18,7 +18,7 @@ fn basic() {
 
 #[test]
 fn cleanup() {
-    let init = Process::new_init();
+    let init = common::new_init();
     let session = Arc::downgrade(&init.group().session());
 
     assert!(session.upgrade().is_some());
@@ -28,11 +28,11 @@ fn cleanup() {
 
 #[test]
 fn create() {
-    let init = Process::new_init();
+    let init = common::new_init();
     let init_group = init.group();
     let init_session = init_group.session();
 
-    let child = init.fork();
+    let child = common::fork(&init);
     let (child_session, child_group) = child.create_session().unwrap();
 
     assert_eq!(child_group.pgid(), child.pid());
@@ -49,11 +49,11 @@ fn create() {
 
 #[test]
 fn create_group() {
-    let init = Process::new_init();
+    let init = common::new_init();
     let init_group = init.group();
     let init_session = init_group.session();
 
-    let child = init.fork();
+    let child = common::fork(&init);
     let child_group = child.create_group().unwrap();
 
     assert!(Arc::ptr_eq(&child_group.session(), &init_session));
@@ -66,10 +66,10 @@ fn create_group() {
 
 #[test]
 fn move_to_different_session() {
-    let init = Process::new_init();
+    let init = common::new_init();
 
-    let child = init.fork();
-    let grandchild = child.fork();
+    let child = common::fork(&init);
+    let grandchild = common::fork(&child);
 
     let (child_session, child_group) = child.create_session().unwrap();
 
@@ -81,7 +81,7 @@ fn move_to_different_session() {
 
 #[test]
 fn cleanup_groups() {
-    let init = Process::new_init();
+    let init = common::new_init();
     let session = init.group().session();
 
     init.exit();

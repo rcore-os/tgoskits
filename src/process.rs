@@ -1,10 +1,12 @@
 use alloc::{
+    boxed::Box,
     sync::{Arc, Weak},
     vec::Vec,
 };
 use core::{
+    any::Any,
     fmt,
-    sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
+    sync::atomic::{AtomicBool, AtomicI32, Ordering},
 };
 
 use kspin::SpinNoIrq;
@@ -12,19 +14,13 @@ use weak_map::StrongMap;
 
 use crate::{Pid, ProcessGroup, Session};
 
-// FIXME: This should be a `Tid` counter after we implement threads.
-static PID_COUNTER: AtomicU32 = AtomicU32::new(1);
-
-/// Allocates a new [`Pid`].
-pub fn alloc_pid() -> Pid {
-    PID_COUNTER.fetch_add(1, Ordering::SeqCst)
-}
-
 /// A process.
 pub struct Process {
     pid: Pid,
     exit_code: AtomicI32,
     is_zombie: AtomicBool,
+
+    data: Box<dyn Any + Send + Sync>,
 
     // TODO: child subreaper
     children: SpinNoIrq<StrongMap<Pid, Arc<Process>>>,
@@ -34,39 +30,14 @@ pub struct Process {
 }
 
 impl Process {
-    pub(crate) fn new(pid: Pid, parent: Weak<Process>, group: &Arc<ProcessGroup>) -> Arc<Self> {
-        let process = Arc::new(Self {
-            pid,
-            exit_code: AtomicI32::new(0),
-            is_zombie: AtomicBool::new(false),
-
-            children: SpinNoIrq::new(StrongMap::new()),
-            parent: SpinNoIrq::new(parent),
-            group: SpinNoIrq::new(group.clone()),
-        });
-
-        group.processes.lock().insert(pid, &process);
-
-        process
-    }
-}
-
-impl Process {
     /// The [`Process`] ID.
     pub fn pid(&self) -> Pid {
         self.pid
     }
 
-    /// Create a init [`Process`].
-    ///
-    /// This means that the process has no parent and will have a new
-    /// [`ProcessGroup`] and [`Session`].
-    pub fn new_init() -> Arc<Self> {
-        let pid = alloc_pid();
-        let session = Session::new(pid);
-        let group = ProcessGroup::new(pid, &session);
-
-        Process::new(pid, Weak::new(), &group)
+    /// The data associated with the [`Process`].
+    pub fn data<T: Any + Send + Sync>(&self) -> Option<&T> {
+        self.data.downcast_ref::<T>()
     }
 }
 
@@ -80,14 +51,6 @@ impl Process {
     /// The child [`Process`]es.
     pub fn children(&self) -> Vec<Arc<Process>> {
         self.children.lock().values().cloned().collect()
-    }
-
-    /// Creates a new child [`Process`].
-    pub fn fork(self: &Arc<Self>) -> Arc<Self> {
-        let pid = alloc_pid();
-        let child = Process::new(pid, Arc::downgrade(self), &self.group.lock());
-        self.children.lock().insert(pid, child.clone());
-        child
     }
 }
 
@@ -249,5 +212,70 @@ impl fmt::Debug for Process {
         }
         builder.field("group", &self.group());
         builder.finish()
+    }
+}
+
+/// A builder for creating a new [`Process`].
+pub struct ProcessBuilder {
+    pid: Pid,
+    parent: Option<Arc<Process>>,
+    data: Box<dyn Any + Send + Sync>,
+}
+
+impl ProcessBuilder {
+    /// Creates a new [`ProcessBuilder`] with the specified [`Process`] ID.
+    pub fn new(pid: Pid) -> Self {
+        Self {
+            pid,
+            parent: None,
+            data: Box::new(()),
+        }
+    }
+
+    /// Sets the parent [`Process`].
+    pub fn parent(self, parent: Arc<Process>) -> Self {
+        Self {
+            parent: Some(parent),
+            ..self
+        }
+    }
+
+    // Sets the data associated with the [`Process`].
+    pub fn data<T: Any + Send + Sync>(self, data: T) -> Self {
+        Self {
+            data: Box::new(data),
+            ..self
+        }
+    }
+
+    /// Finishes the builder and returns a new [`Process`].
+    pub fn build(self) -> Arc<Process> {
+        let Self { pid, parent, data } = self;
+
+        let group = parent.as_ref().map_or_else(
+            || {
+                let session = Session::new(pid);
+                ProcessGroup::new(pid, &session)
+            },
+            |p| p.group(),
+        );
+
+        let process = Arc::new(Process {
+            pid,
+            exit_code: AtomicI32::new(0),
+            is_zombie: AtomicBool::new(false),
+            data,
+            children: SpinNoIrq::new(StrongMap::new()),
+            parent: SpinNoIrq::new(parent.as_ref().map(Arc::downgrade).unwrap_or_default()),
+            group: SpinNoIrq::new(group.clone()),
+        });
+
+        group.processes.lock().insert(pid, &process);
+
+        if let Some(parent) = parent {
+            parent.children.lock().insert(pid, process.clone());
+        }
+
+        process
     }
 }

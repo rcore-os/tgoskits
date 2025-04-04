@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
-use axprocess::Process;
+mod common;
 
 #[test]
 fn basic() {
-    let init = Process::new_init();
+    let init = common::new_init();
     let init_group = init.group();
     assert_eq!(init_group.pgid(), init.pid());
 
-    let child = init.fork();
+    let child = common::fork(&init);
     assert!(Arc::ptr_eq(&init_group, &child.group()));
 
     let processes = init_group.processes();
@@ -19,7 +19,7 @@ fn basic() {
 
 #[test]
 fn cleanup() {
-    let init = Process::new_init();
+    let init = common::new_init();
     let group = Arc::downgrade(&init.group());
 
     assert!(group.upgrade().is_some());
@@ -29,9 +29,9 @@ fn cleanup() {
 
 #[test]
 fn create() {
-    let init = Process::new_init();
+    let init = common::new_init();
 
-    let child = init.fork();
+    let child = common::fork(&init);
     let child_group = child.create_group().unwrap();
 
     assert!(Arc::ptr_eq(&child_group, &child.group()));
@@ -43,7 +43,7 @@ fn create() {
 
 #[test]
 fn create_leader() {
-    let init = Process::new_init();
+    let init = common::new_init();
     let init_group = init.group();
 
     assert!(init.create_group().is_none());
@@ -52,29 +52,29 @@ fn create_leader() {
 
 #[test]
 fn inherit() {
-    let init = Process::new_init();
+    let init = common::new_init();
 
-    let child = init.fork();
+    let child = common::fork(&init);
     let child_group = child.create_group().unwrap();
 
-    let grandchild = child.fork();
+    let grandchild = common::fork(&child);
     assert!(Arc::ptr_eq(&child_group, &grandchild.group()));
     assert_eq!(child_group.processes().len(), 2);
 }
 
 #[test]
 fn move_to() {
-    let init = Process::new_init();
+    let init = common::new_init();
     let init_group = init.group();
 
-    let child1 = init.fork();
+    let child1 = common::fork(&init);
     let child1_group = child1.create_group().unwrap();
 
     assert!(child1.move_to_group(&child1.group()));
     assert!(Arc::ptr_eq(&child1_group, &child1.group()));
     assert_eq!(child1_group.processes().len(), 1);
 
-    let child2 = init.fork();
+    let child2 = common::fork(&init);
     let child2_group = child2.create_group().unwrap();
 
     assert!(child2.move_to_group(&child1_group));
@@ -87,10 +87,10 @@ fn move_to() {
 
 #[test]
 fn move_cleanup() {
-    let init = Process::new_init();
+    let init = common::new_init();
     let init_group = init.group();
 
-    let child = init.fork();
+    let child = common::fork(&init);
     let child_group = Arc::downgrade(&child.create_group().unwrap());
 
     assert!(child_group.upgrade().is_some());
@@ -100,10 +100,10 @@ fn move_cleanup() {
 
 #[test]
 fn move_back() {
-    let init = Process::new_init();
+    let init = common::new_init();
     let init_group = init.group();
 
-    let child = init.fork();
+    let child = common::fork(&init);
     let child_group = child.create_group().unwrap();
 
     assert!(child.move_to_group(&init_group));
@@ -116,7 +116,7 @@ fn move_back() {
 
 #[test]
 fn cleanup_processes() {
-    let init = Process::new_init();
+    let init = common::new_init();
     let group = init.group();
 
     init.exit();
