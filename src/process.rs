@@ -6,19 +6,35 @@ use alloc::{
 use core::{
     any::Any,
     fmt,
-    sync::atomic::{AtomicBool, AtomicI32, Ordering},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use kspin::SpinNoIrq;
-use weak_map::StrongMap;
+use weak_map::{StrongMap, WeakMap};
 
-use crate::{Pid, ProcessGroup, Session};
+use crate::{Pid, ProcessGroup, Session, Thread};
+
+pub(crate) struct ThreadGroup {
+    pub(crate) threads: WeakMap<Pid, Weak<Thread>>,
+    pub(crate) exit_code: i32,
+    pub(crate) group_exited: bool,
+}
+
+impl Default for ThreadGroup {
+    fn default() -> Self {
+        Self {
+            threads: WeakMap::new(),
+            exit_code: 0,
+            group_exited: false,
+        }
+    }
+}
 
 /// A process.
 pub struct Process {
     pid: Pid,
-    exit_code: AtomicI32,
     is_zombie: AtomicBool,
+    pub(crate) tg: SpinNoIrq<ThreadGroup>,
 
     data: Box<dyn Any + Send + Sync>,
 
@@ -141,12 +157,12 @@ impl Process {
 impl Process {
     /// The exit code of the [`Process`].
     pub fn exit_code(&self) -> i32 {
-        self.exit_code.load(Ordering::Acquire)
+        self.tg.lock().exit_code
     }
 
-    /// Sets the exit code of the [`Process`].
-    pub fn set_exit_code(&self, exit_code: i32) {
-        self.exit_code.store(exit_code, Ordering::Release);
+    /// Returns `true` if the [`Process`] is group exited.
+    pub fn is_group_exited(&self) -> bool {
+        self.tg.lock().group_exited
     }
 
     /// Returns `true` if the [`Process`] is a zombie process.
@@ -154,7 +170,7 @@ impl Process {
         self.is_zombie.load(Ordering::Acquire)
     }
 
-    /// Terminates the [`Process`].
+    /// Terminates the [`Process`], marking it as a zombie process.
     ///
     /// Child processes are inherited by the init process or by the nearest
     /// subreaper process.
@@ -204,9 +220,14 @@ impl fmt::Debug for Process {
         let mut builder = f.debug_struct("Process");
         builder.field("pid", &self.pid);
 
-        if self.is_zombie() {
-            builder.field("exit_code", &self.exit_code());
+        let tg = self.tg.lock();
+        if tg.group_exited {
+            builder.field("group_exited", &tg.group_exited);
         }
+        if self.is_zombie() {
+            builder.field("exit_code", &tg.exit_code);
+        }
+
         if let Some(parent) = self.parent() {
             builder.field("parent", &parent.pid());
         }
@@ -240,7 +261,7 @@ impl ProcessBuilder {
         }
     }
 
-    // Sets the data associated with the [`Process`].
+    /// Sets the data associated with the [`Process`].
     pub fn data<T: Any + Send + Sync>(self, data: T) -> Self {
         Self {
             data: Box::new(data),
@@ -262,8 +283,8 @@ impl ProcessBuilder {
 
         let process = Arc::new(Process {
             pid,
-            exit_code: AtomicI32::new(0),
             is_zombie: AtomicBool::new(false),
+            tg: SpinNoIrq::new(ThreadGroup::default()),
             data,
             children: SpinNoIrq::new(StrongMap::new()),
             parent: SpinNoIrq::new(parent.as_ref().map(Arc::downgrade).unwrap_or_default()),

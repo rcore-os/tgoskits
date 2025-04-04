@@ -7,18 +7,18 @@ use core::fmt;
 use kspin::SpinNoIrq;
 use weak_map::WeakMap;
 
-use crate::{Pgid, ProcessGroup, Sid};
+use crate::{Pid, ProcessGroup};
 
 /// A [`Session`] is a collection of [`ProcessGroup`]s.
 pub struct Session {
-    sid: Sid,
-    pub(crate) process_groups: SpinNoIrq<WeakMap<Pgid, Weak<ProcessGroup>>>,
+    sid: Pid,
+    pub(crate) process_groups: SpinNoIrq<WeakMap<Pid, Weak<ProcessGroup>>>,
     // TODO: shell job control
 }
 
 impl Session {
     /// Create a new [`Session`].
-    pub(crate) fn new(sid: Sid) -> Arc<Self> {
+    pub(crate) fn new(sid: Pid) -> Arc<Self> {
         Arc::new(Self {
             sid,
             process_groups: SpinNoIrq::new(WeakMap::new()),
@@ -28,7 +28,7 @@ impl Session {
 
 impl Session {
     /// The [`Session`] ID.
-    pub fn sid(&self) -> Sid {
+    pub fn sid(&self) -> Pid {
         self.sid
     }
 

@@ -7,18 +7,18 @@ use core::fmt;
 use kspin::SpinNoIrq;
 use weak_map::WeakMap;
 
-use crate::{Pgid, Pid, Process, Session};
+use crate::{Pid, Process, Session};
 
 /// A [`ProcessGroup`] is a collection of [`Process`]es.
 pub struct ProcessGroup {
-    pgid: Pgid,
+    pgid: Pid,
     pub(crate) session: Arc<Session>,
     pub(crate) processes: SpinNoIrq<WeakMap<Pid, Weak<Process>>>,
 }
 
 impl ProcessGroup {
     /// Create a new [`ProcessGroup`] within a [`Session`].
-    pub(crate) fn new(pgid: Pgid, session: &Arc<Session>) -> Arc<Self> {
+    pub(crate) fn new(pgid: Pid, session: &Arc<Session>) -> Arc<Self> {
         let group = Arc::new(Self {
             pgid,
             session: session.clone(),
@@ -31,7 +31,7 @@ impl ProcessGroup {
 
 impl ProcessGroup {
     /// The [`ProcessGroup`] ID.
-    pub fn pgid(&self) -> Pgid {
+    pub fn pgid(&self) -> Pid {
         self.pgid
     }
 
