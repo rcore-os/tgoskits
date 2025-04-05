@@ -165,6 +165,11 @@ impl Process {
         self.tg.lock().group_exited
     }
 
+    /// Marks the [`Process`] as group exited.
+    pub fn group_exit(&self) {
+        self.tg.lock().group_exited = true;
+    }
+
     /// Returns `true` if the [`Process`] is a zombie process.
     pub fn is_zombie(&self) -> bool {
         self.is_zombie.load(Ordering::Acquire)
