@@ -141,6 +141,17 @@ make ARCH=x86_64 LOG=info AX_TESTCASE=nimbos run
 
 Note: Arguments like `NET`, `BLK`, and `GRAPHIC` enable devices in QEMU, which take effect only at runtime, not at build time. More features can be found in the [Cargo.toml of arceos](https://github.com/oscomp/arceos/blob/main/ulib/axstd/Cargo.toml).
 
+#### Development with Visual Studio Code
+
+Since ArceOS relies on special build scripts and some environment variables, this usually causes `rust-analyzer` to prompt some annoying errors. You may want to put the following configuration into `.vscode/settings.json` (ie workspace settings):
+```json
+{
+  "rust-analyzer.cargo.extraEnv": {
+    "AX_CONFIG_PATH": "${workspaceFolder}/.axconfig.toml"
+  }
+}
+```
+
 ## Test for oscomp testcases
 
 We can run [testcases of the OS competition](https://github.com/oscomp/testsuits-for-oskernel/tree/pre-2025) with StarryOS. Guidence can be found in [Starry-Tutorial](https://azure-stars.github.io/Starry-Tutorial-Book/ch03-02.html). 
