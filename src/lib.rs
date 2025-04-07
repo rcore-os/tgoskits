@@ -14,9 +14,6 @@ use axptr::{AddrSpaceProvider, UserConstPtr};
 use axtask::WaitQueue;
 use ctypes::{SignalAction, SignalActionFlags, SignalDisposition, SignalInfo, SignalSet};
 
-pub const SIGKILL: u32 = 9;
-pub const SIGSTOP: u32 = 19;
-
 #[derive(Debug)]
 enum DefaultSignalAction {
     /// Terminate the process.

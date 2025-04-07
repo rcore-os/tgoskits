@@ -1,21 +1,28 @@
-use core::{mem, ops::Not};
+use core::{ffi::c_ulong, mem, ops::Not};
 
 use axerrno::LinuxError;
 use bitflags::bitflags;
-use linux_raw_sys::general::siginfo_t;
+use linux_raw_sys::{
+    general::{
+        __kernel_sighandler_t, __sigrestore_t, SA_NODEFER, SA_RESTORER, SA_SIGINFO, siginfo_t,
+    },
+    signal_macros::{SIG_DFL, sig_ign},
+};
 
 bitflags! {
     #[derive(Default, Debug)]
-    pub struct SignalActionFlags: u32 {
-        const SIGINFO = 4;
-        const NODEFER = 0x40000000;
-        const RESTORER = 0x04000000;
+    pub struct SignalActionFlags: c_ulong {
+        const SIGINFO = SA_SIGINFO as _;
+        const NODEFER = SA_NODEFER as _;
+        const RESTORER = SA_RESTORER as _;
     }
 }
 
 /// Signal set. Corresponds to `struct sigset_t` in libc.
 ///
 /// Currently we only support 32 standard signals.
+// TODO: wrap around `kernel_sigset_t`
+// TODO: real-time signals
 #[derive(Default, Clone, Copy)]
 #[repr(transparent)]
 pub struct SignalSet {
@@ -81,13 +88,14 @@ impl Not for SignalSet {
     }
 }
 
+// FIXME: replace with `kernel_sigaction` after finishing above "TODO"s for `SignalSet`
 #[derive(Clone, Copy)]
 #[repr(C)]
 #[allow(non_camel_case_types)]
 pub struct k_sigaction {
-    handler: Option<unsafe extern "C" fn(i32)>,
-    flags: u32,
-    restorer: Option<unsafe extern "C" fn()>,
+    handler: __kernel_sighandler_t,
+    flags: c_ulong,
+    restorer: __sigrestore_t,
     mask: SignalSet,
 }
 
@@ -108,7 +116,7 @@ pub struct SignalAction {
     pub flags: SignalActionFlags,
     pub mask: SignalSet,
     pub disposition: SignalDisposition,
-    pub restorer: Option<unsafe extern "C" fn()>,
+    pub restorer: __sigrestore_t,
 }
 impl SignalAction {
     pub fn to_ctype(&self, dest: &mut k_sigaction) {
@@ -116,12 +124,10 @@ impl SignalAction {
         dest.mask = self.mask;
         match &self.disposition {
             SignalDisposition::Default => {
-                dest.handler = None;
+                dest.handler = SIG_DFL;
             }
             SignalDisposition::Ignore => {
-                // SAFETY: SIG_IGN is 1
-                dest.handler =
-                    Some(unsafe { mem::transmute::<usize, unsafe extern "C" fn(i32)>(1) });
+                dest.handler = sig_ign();
             }
             SignalDisposition::Handler(handler) => {
                 dest.handler = Some(*handler);
