@@ -1,8 +1,8 @@
 use core::{mem, ops::Not};
 
-use arceos_posix_api as api;
 use axerrno::LinuxError;
 use bitflags::bitflags;
+use linux_raw_sys::general::siginfo_t;
 
 bitflags! {
     #[derive(Default, Debug)]
@@ -170,22 +170,27 @@ impl TryFrom<k_sigaction> for SignalAction {
 }
 
 /// Signal information. Corresponds to `struct siginfo_t` in libc.
-#[derive(Default, Clone)]
+#[derive(Clone)]
 #[repr(transparent)]
-pub struct SignalInfo(pub api::ctypes::siginfo_t);
+pub struct SignalInfo(pub siginfo_t);
+
 impl SignalInfo {
     pub const SI_USER: u32 = 0;
 
     pub fn new(signo: u32, code: u32) -> Self {
-        Self(api::ctypes::siginfo_t {
-            si_signo: signo as _,
-            si_errno: 0,
-            si_code: code as _,
-            ..Default::default()
-        })
+        // SAFETY: valid for `siginfo_t`
+        let mut info: siginfo_t = unsafe { mem::zeroed() };
+        info.__bindgen_anon_1.__bindgen_anon_1.si_signo = signo as _;
+        info.__bindgen_anon_1.__bindgen_anon_1.si_code = code as _;
+
+        Self(info)
     }
 
     pub fn signo(&self) -> u32 {
-        self.0.si_signo as u32
+        unsafe { self.0.__bindgen_anon_1.__bindgen_anon_1.si_signo as u32 }
+    }
+
+    pub fn code(&self) -> u32 {
+        unsafe { self.0.__bindgen_anon_1.__bindgen_anon_1.si_code as u32 }
     }
 }

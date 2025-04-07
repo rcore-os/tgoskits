@@ -7,24 +7,15 @@ edition = "2024"
 axerrno = "0.1"
 bitflags = "2.6"
 
-arceos_posix_api = { git = "https://github.com/oscomp/arceos.git", features = [
-    "uspace",
-    "smp",
-    "irq",
-    "fs",
-    "multitask",
-    "net",
-    "pipe",
-    "select",
-    "epoll",
-] }
 axconfig = { git = "https://github.com/oscomp/arceos.git" }
 axhal = { git = "https://github.com/oscomp/arceos.git", features = ["uspace"] }
 axptr = { git = "https://github.com/Starry-OS/axptr.git" }
-axtask = { git = "https://github.com/oscomp/arceos.git" }
+axtask = { git = "https://github.com/oscomp/arceos.git", features = [
+    "multitask",
+] }
 log = "0.4"
+linux-raw-sys = { version = "0.9.3", default-features = false, features = ["general", "no_std"] }
 
 [patch.crates-io]
-syscalls = { git = "https://github.com/jasonwhite/syscalls.git", rev = "92624de" }
 page_table_multiarch = { git = "https://github.com/Mivik/page_table_multiarch.git", rev = "19ededd" }
 page_table_entry = { git = "https://github.com/Mivik/page_table_multiarch.git", rev = "19ededd" }
