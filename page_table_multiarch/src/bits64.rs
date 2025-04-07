@@ -133,7 +133,7 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
     /// mapping is not present.
     pub fn query(&self, vaddr: M::VirtAddr) -> PagingResult<(PhysAddr, MappingFlags, PageSize)> {
         let (entry, size) = self.get_entry(vaddr)?;
-        if entry.is_unused() {
+        if !entry.is_present() {
             return Err(PagingError::NotMapped);
         }
         let off = size.align_offset(vaddr.into());
