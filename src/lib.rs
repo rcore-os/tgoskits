@@ -172,7 +172,7 @@ impl<T> UserPtr<T> {
     /// Get the value of the pointer.
     ///
     /// This will check the region and populate the page if necessary.
-    pub fn get<'a>(&'a mut self, aspace: impl AddrSpaceProvider) -> LinuxResult<&'a mut T> {
+    pub fn get(&mut self, aspace: impl AddrSpaceProvider) -> LinuxResult<&mut T> {
         check_region_with(
             aspace,
             self.address(),
@@ -183,11 +183,11 @@ impl<T> UserPtr<T> {
     }
 
     /// Get the value of the pointer as a slice.
-    pub fn get_as_slice<'a>(
-        &'a mut self,
+    pub fn get_as_slice(
+        &mut self,
         aspace: impl AddrSpaceProvider,
         length: usize,
-    ) -> LinuxResult<&'a mut [T]> {
+    ) -> LinuxResult<&mut [T]> {
         check_region_with(
             aspace,
             self.address(),
@@ -255,7 +255,7 @@ impl<T> UserConstPtr<T> {
 
 impl<T> UserConstPtr<T> {
     /// See [`UserPtr::get`].
-    pub fn get<'a>(&'a self, aspace: impl AddrSpaceProvider) -> LinuxResult<&'a T> {
+    pub fn get(&self, aspace: impl AddrSpaceProvider) -> LinuxResult<&T> {
         check_region_with(
             aspace,
             self.address(),
@@ -266,11 +266,7 @@ impl<T> UserConstPtr<T> {
     }
 
     /// See [`UserPtr::get_as_slice`].
-    pub fn get_as_slice<'a>(
-        &'a self,
-        aspace: impl AddrSpaceProvider,
-        length: usize,
-    ) -> LinuxResult<&'a [T]> {
+    pub fn get_as_slice(&self, aspace: impl AddrSpaceProvider, length: usize) -> LinuxResult<&[T]> {
         check_region_with(
             aspace,
             self.address(),
