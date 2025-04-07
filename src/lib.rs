@@ -2,9 +2,9 @@
 #![no_std]
 
 use axerrno::{LinuxError, LinuxResult};
-use axhal::paging::MappingFlags;
 use axmm::AddrSpace;
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
+use page_table_multiarch::MappingFlags;
 
 use core::{alloc::Layout, ffi::c_char, mem, slice, str};
 
