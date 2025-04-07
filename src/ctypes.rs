@@ -1,11 +1,9 @@
-use core::{ffi::c_ulong, mem, ops::Not};
+use core::{default, ffi::c_ulong, mem, ops::Not};
 
 use axerrno::LinuxError;
 use bitflags::bitflags;
 use linux_raw_sys::{
-    general::{
-        __kernel_sighandler_t, __sigrestore_t, SA_NODEFER, SA_RESTORER, SA_SIGINFO, siginfo_t,
-    },
+    general::{__kernel_sighandler_t, __sigrestore_t, SA_NODEFER, SA_SIGINFO, siginfo_t},
     signal_macros::{SIG_DFL, sig_ign},
 };
 
@@ -14,7 +12,8 @@ bitflags! {
     pub struct SignalActionFlags: c_ulong {
         const SIGINFO = SA_SIGINFO as _;
         const NODEFER = SA_NODEFER as _;
-        const RESTORER = SA_RESTORER as _;
+        #[cfg(sa_restorer)]
+        const RESTORER = linux_raw_sys::general::SA_RESTORER as _;
     }
 }
 
@@ -95,6 +94,7 @@ impl Not for SignalSet {
 pub struct k_sigaction {
     handler: __kernel_sighandler_t,
     flags: c_ulong,
+    #[cfg(sa_restorer)]
     restorer: __sigrestore_t,
     mask: SignalSet,
 }
@@ -133,7 +133,10 @@ impl SignalAction {
                 dest.handler = Some(*handler);
             }
         }
-        dest.restorer = self.restorer;
+        #[cfg(sa_restorer)]
+        {
+            dest.restorer = self.restorer;
+        }
     }
 }
 
@@ -161,16 +164,21 @@ impl TryFrom<k_sigaction> for SignalAction {
                 }
             }
         };
+
+        // SAFETY: `axconfig::plat::SIGNAL_TRAMPOLINE` is a valid function pointer
+        let default_restorer: __sigrestore_t =
+            unsafe { mem::transmute(axconfig::plat::SIGNAL_TRAMPOLINE) };
+
+        #[cfg(sa_restorer)]
+        let restorer = value.restorer.or(default_restorer);
+        #[cfg(not(sa_restorer))]
+        let restorer = default_restorer;
+
         Ok(SignalAction {
             flags,
             mask: value.mask,
             disposition,
-            restorer: Some(
-                // SAFETY: `axconfig::plat::SIGNAL_TRAMPOLINE` is a valid function pointer
-                value.restorer.unwrap_or_else(|| unsafe {
-                    mem::transmute(axconfig::plat::SIGNAL_TRAMPOLINE)
-                }),
-            ),
+            restorer,
         })
     }
 }
