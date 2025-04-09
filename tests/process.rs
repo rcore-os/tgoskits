@@ -1,51 +1,55 @@
 use std::sync::Arc;
 
+use axprocess::init_proc;
+
 mod common;
+use common::ProcessExt;
 
 #[test]
 fn child() {
-    let init = common::new_init();
-
-    let child = common::fork(&init);
-    assert!(Arc::ptr_eq(&init, &child.parent().unwrap()));
+    let parent = init_proc();
+    let child = parent.new_child();
+    assert!(Arc::ptr_eq(&parent, &child.parent().unwrap()));
+    assert!(parent.children().iter().any(|c| Arc::ptr_eq(c, &child)));
 }
 
 #[test]
 fn exit() {
-    let init = common::new_init();
-
-    let child = common::fork(&init);
-
+    let parent = init_proc();
+    let child = parent.new_child();
     child.exit();
     assert!(child.is_zombie());
-    assert!(init.children().iter().any(|c| Arc::ptr_eq(c, &child)));
+    assert!(parent.children().iter().any(|c| Arc::ptr_eq(c, &child)));
 }
 
 #[test]
 #[should_panic]
 fn free_not_zombie() {
-    let init = common::new_init();
-    let child = common::fork(&init);
-    child.free();
+    init_proc().new_child().free();
+}
+
+#[test]
+#[should_panic]
+fn init_proc_exit() {
+    init_proc().exit();
 }
 
 #[test]
 fn free() {
-    let init = common::new_init();
-    let child = common::fork(&init);
+    let parent = init_proc().new_child();
+    let child = parent.new_child();
     child.exit();
     child.free();
-    assert!(init.children().is_empty());
+    assert!(parent.children().is_empty());
 }
 
 #[test]
 fn reap() {
-    let init = common::new_init();
+    let init = init_proc();
 
-    let child = common::fork(&init);
-    let grandchild = common::fork(&child);
+    let parent = init.new_child();
+    let child = parent.new_child();
 
-    child.exit();
-
-    assert!(Arc::ptr_eq(&init, &grandchild.parent().unwrap()));
+    parent.exit();
+    assert!(Arc::ptr_eq(&init, &child.parent().unwrap()));
 }

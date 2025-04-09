@@ -56,9 +56,7 @@ pub struct ThreadBuilder {
 }
 
 impl ThreadBuilder {
-    /// Creates a new [`ThreadBuilder`] with the specified [`Thread`] ID and
-    /// [`Process`].
-    pub fn new(tid: Pid, process: Arc<Process>) -> Self {
+    pub(crate) fn new(tid: Pid, process: Arc<Process>) -> Self {
         Self {
             tid,
             process,

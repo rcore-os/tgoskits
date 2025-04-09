@@ -3,20 +3,26 @@ use std::sync::{
     atomic::{AtomicU32, Ordering},
 };
 
-use axprocess::{Process, ProcessBuilder};
+use axprocess::Process;
+use ctor::ctor;
 
 static PID: AtomicU32 = AtomicU32::new(0);
 
-fn new_pid() -> u32 {
+fn alloc_pid() -> u32 {
     PID.fetch_add(1, Ordering::SeqCst)
 }
 
-pub fn new_init() -> Arc<Process> {
-    ProcessBuilder::new(new_pid()).build()
+#[ctor]
+fn init() {
+    Process::new_init(alloc_pid()).build();
 }
 
-pub fn fork(parent: &Arc<Process>) -> Arc<Process> {
-    ProcessBuilder::new(new_pid())
-        .parent(parent.clone())
-        .build()
+pub trait ProcessExt {
+    fn new_child(&self) -> Self;
+}
+
+impl ProcessExt for Arc<Process> {
+    fn new_child(&self) -> Self {
+        self.fork(alloc_pid()).build()
+    }
 }

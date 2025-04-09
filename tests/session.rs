@@ -1,92 +1,108 @@
 use std::sync::Arc;
 
+use axprocess::init_proc;
+
 mod common;
+use common::ProcessExt;
 
 #[test]
 fn basic() {
-    let init = common::new_init();
-    let init_group = init.group();
-    let init_session = init_group.session();
+    let init = init_proc();
+    let group = init.group();
+    let session = group.session();
 
-    assert_eq!(init_group.pgid(), init.pid());
-    assert_eq!(init_session.sid(), init.pid());
+    assert_eq!(group.pgid(), init.pid());
+    assert_eq!(session.sid(), init.pid());
 
-    let process_groups = init_session.process_groups();
-    assert_eq!(process_groups.len(), 1);
-    assert!(process_groups.iter().any(|p| Arc::ptr_eq(p, &init_group)));
-}
-
-#[test]
-fn cleanup() {
-    let init = common::new_init();
-    let session = Arc::downgrade(&init.group().session());
-
-    assert!(session.upgrade().is_some());
-    drop(init);
-    assert!(session.upgrade().is_none());
+    let process_groups = session.process_groups();
+    assert!(process_groups.iter().any(|p| Arc::ptr_eq(p, &group)));
 }
 
 #[test]
 fn create() {
-    let init = common::new_init();
-    let init_group = init.group();
-    let init_session = init_group.session();
+    let parent = init_proc();
+    let group = parent.group();
+    let session = group.session();
 
-    let child = common::fork(&init);
+    let child = parent.new_child();
     let (child_session, child_group) = child.create_session().unwrap();
 
     assert_eq!(child_group.pgid(), child.pid());
     assert_eq!(child_session.sid(), child.pid());
     assert!(Arc::ptr_eq(&child_group, &child.group()));
     assert!(Arc::ptr_eq(&child_session, &child_group.session()));
-
-    assert_eq!(init_group.processes().len(), 1);
-    assert_eq!(init_session.process_groups().len(), 1);
-
     assert_eq!(child_group.processes().len(), 1);
     assert_eq!(child_session.process_groups().len(), 1);
+
+    assert!(group.processes().iter().all(|p| !Arc::ptr_eq(p, &child)));
+    assert!(
+        session
+            .process_groups()
+            .iter()
+            .all(|g| !Arc::ptr_eq(g, &child_group))
+    );
+}
+
+#[test]
+fn create_leader() {
+    assert!(init_proc().create_session().is_none());
+}
+
+#[test]
+fn cleanup() {
+    let child = init_proc().new_child();
+    let session = {
+        let (session, _) = child.create_session().unwrap();
+        Arc::downgrade(&session)
+    };
+
+    assert!(session.upgrade().is_some());
+    child.exit();
+    child.free();
+    drop(child);
+    assert!(session.upgrade().is_none());
 }
 
 #[test]
 fn create_group() {
-    let init = common::new_init();
-    let init_group = init.group();
-    let init_session = init_group.session();
+    let parent = init_proc();
+    let group = parent.group();
+    let session = group.session();
 
-    let child = common::fork(&init);
+    let child = parent.new_child();
     let child_group = child.create_group().unwrap();
 
-    assert!(Arc::ptr_eq(&child_group.session(), &init_session));
+    assert!(Arc::ptr_eq(&child_group.session(), &session));
 
-    let process_groups = init_session.process_groups();
-    assert_eq!(process_groups.len(), 2);
-    assert!(process_groups.iter().any(|p| Arc::ptr_eq(p, &init_group)));
-    assert!(process_groups.iter().any(|p| Arc::ptr_eq(p, &child_group)));
+    assert!(
+        session
+            .process_groups()
+            .iter()
+            .any(|p| Arc::ptr_eq(p, &child_group))
+    );
 }
 
 #[test]
 fn move_to_different_session() {
-    let init = common::new_init();
+    let parent = init_proc().new_child();
+    let child = parent.new_child();
 
-    let child = common::fork(&init);
-    let grandchild = common::fork(&child);
+    let (session, group) = parent.create_session().unwrap();
 
-    let (child_session, child_group) = child.create_session().unwrap();
+    assert!(!Arc::ptr_eq(&group, &child.group()));
+    assert!(!Arc::ptr_eq(&session, &child.group().session()));
 
-    assert!(!Arc::ptr_eq(&child_group, &grandchild.group()));
-    assert!(!Arc::ptr_eq(&child_session, &grandchild.group().session()));
-
-    assert!(!grandchild.move_to_group(&child_group));
+    assert!(!child.move_to_group(&group));
 }
 
 #[test]
 fn cleanup_groups() {
-    let init = common::new_init();
-    let session = init.group().session();
+    let child = init_proc().new_child();
+    let (session, _) = child.create_session().unwrap();
 
-    init.exit();
-    init.free();
-    drop(init);
+    child.exit();
+    child.free();
+    drop(child);
 
     assert!(session.process_groups().is_empty());
 }

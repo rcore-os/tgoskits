@@ -10,9 +10,10 @@ use core::{
 };
 
 use kspin::SpinNoIrq;
+use lazyinit::LazyInit;
 use weak_map::{StrongMap, WeakMap};
 
-use crate::{Pid, ProcessGroup, Session, Thread};
+use crate::{Pid, ProcessGroup, Session, Thread, ThreadBuilder};
 
 pub(crate) struct ThreadGroup {
     pub(crate) threads: WeakMap<Pid, Weak<Thread>>,
@@ -153,8 +154,13 @@ impl Process {
     }
 }
 
-/// Thread group
+/// Threads
 impl Process {
+    /// Creates a new [`Thread`] in this [`Process`].
+    pub fn new_thread(self: &Arc<Self>, tid: Pid) -> ThreadBuilder {
+        ThreadBuilder::new(tid, self.clone())
+    }
+
     /// The [`Thread`]s in this [`Process`].
     pub fn threads(&self) -> Vec<Arc<Thread>> {
         self.tg.lock().threads.values().collect()
@@ -187,32 +193,26 @@ impl Process {
     ///
     /// Child processes are inherited by the init process or by the nearest
     /// subreaper process.
-    pub fn exit(&self) {
-        // TODO: child subreaper
-
-        // find the init process by walking up the parent chain
-        let mut current = self.parent();
-        let mut init = None;
-
-        while let Some(parent) = current {
-            current = parent.parent();
-            init = Some(parent);
+    ///
+    /// This method panics if the [`Process`] is the init process.
+    pub fn exit(self: &Arc<Self>) {
+        let init = INIT_PROC.get().unwrap();
+        if Arc::ptr_eq(self, init) {
+            panic!("init process cannot exit");
         }
 
-        let mut children = self.children.lock();
+        // TODO: child subreaper
+        let reaper = init;
+
+        let mut children = self.children.lock(); // Acquire the lock first
         self.is_zombie.store(true, Ordering::Release);
 
-        if let Some(init) = init {
-            let new_parent = Arc::downgrade(&init);
-            let mut new_parent_children = init.children.lock();
+        let mut reaper_children = reaper.children.lock();
+        let reaper = Arc::downgrade(reaper);
 
-            for (pid, child) in core::mem::take(&mut *children) {
-                *child.parent.lock() = new_parent.clone();
-                new_parent_children.insert(pid, child);
-            }
-        } else {
-            // TODO: init process exited!?
-            children.clear();
+        for (pid, child) in core::mem::take(&mut *children) {
+            *child.parent.lock() = reaper.clone();
+            reaper_children.insert(pid, child);
         }
     }
 
@@ -249,6 +249,30 @@ impl fmt::Debug for Process {
     }
 }
 
+/// Builder
+impl Process {
+    /// Creates a init [`Process`].
+    ///
+    /// This function can be called multiple times, but
+    /// [`ProcessBuilder::build`] on the the result must be called only once.
+    pub fn new_init(pid: Pid) -> ProcessBuilder {
+        ProcessBuilder {
+            pid,
+            parent: None,
+            data: Box::new(()),
+        }
+    }
+
+    /// Creates a child [`Process`].
+    pub fn fork(self: &Arc<Process>, pid: Pid) -> ProcessBuilder {
+        ProcessBuilder {
+            pid,
+            parent: Some(self.clone()),
+            data: Box::new(()),
+        }
+    }
+}
+
 /// A builder for creating a new [`Process`].
 pub struct ProcessBuilder {
     pid: Pid,
@@ -257,23 +281,6 @@ pub struct ProcessBuilder {
 }
 
 impl ProcessBuilder {
-    /// Creates a new [`ProcessBuilder`] with the specified [`Process`] ID.
-    pub fn new(pid: Pid) -> Self {
-        Self {
-            pid,
-            parent: None,
-            data: Box::new(()),
-        }
-    }
-
-    /// Sets the parent [`Process`].
-    pub fn parent(self, parent: Arc<Process>) -> Self {
-        Self {
-            parent: Some(parent),
-            ..self
-        }
-    }
-
     /// Sets the data associated with the [`Process`].
     pub fn data<T: Any + Send + Sync>(self, data: T) -> Self {
         Self {
@@ -308,8 +315,19 @@ impl ProcessBuilder {
 
         if let Some(parent) = parent {
             parent.children.lock().insert(pid, process.clone());
+        } else {
+            INIT_PROC.init_once(process.clone());
         }
 
         process
     }
+}
+
+static INIT_PROC: LazyInit<Arc<Process>> = LazyInit::new();
+
+/// Gets the init process.
+///
+/// This function panics if the init process has not been initialized yet.
+pub fn init_proc() -> Arc<Process> {
+    INIT_PROC.get().unwrap().clone()
 }
