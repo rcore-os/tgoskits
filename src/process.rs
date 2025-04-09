@@ -153,11 +153,11 @@ impl Process {
     }
 }
 
-/// Status & exit
+/// Thread group
 impl Process {
-    /// The exit code of the [`Process`].
-    pub fn exit_code(&self) -> i32 {
-        self.tg.lock().exit_code
+    /// The [`Thread`]s in this [`Process`].
+    pub fn threads(&self) -> Vec<Arc<Thread>> {
+        self.tg.lock().threads.values().collect()
     }
 
     /// Returns `true` if the [`Process`] is group exited.
@@ -170,6 +170,14 @@ impl Process {
         self.tg.lock().group_exited = true;
     }
 
+    /// The exit code of the [`Process`].
+    pub fn exit_code(&self) -> i32 {
+        self.tg.lock().exit_code
+    }
+}
+
+/// Status & exit
+impl Process {
     /// Returns `true` if the [`Process`] is a zombie process.
     pub fn is_zombie(&self) -> bool {
         self.is_zombie.load(Ordering::Acquire)
