@@ -146,17 +146,6 @@ impl PendingSignals {
             .dequeue(mask)
             .and_then(|signo| self.pending_info[signo as usize].take())
     }
-
-    /// Restore the signal frame. Called by `sigreutrn`.
-    pub fn restore(&mut self, tf: &mut TrapFrame, blocked: &mut SignalSet) {
-        let frame_ptr = tf.sp() as *const SignalFrame;
-        // SAFETY: pointer is valid
-        let frame = unsafe { &*frame_ptr };
-
-        *tf = frame.tf;
-
-        *blocked = frame.blocked;
-    }
 }
 
 pub struct SignalFrame {
@@ -220,4 +209,15 @@ pub fn handle_signal(
             Some(SignalOSAction::Handler { add_blocked })
         }
     }
+}
+
+/// Restore the signal frame. Called by `sigreutrn`.
+pub fn restore(tf: &mut TrapFrame, blocked: &mut SignalSet) {
+    let frame_ptr = tf.sp() as *const SignalFrame;
+    // SAFETY: pointer is valid
+    let frame = unsafe { &*frame_ptr };
+
+    *tf = frame.tf;
+
+    *blocked = frame.blocked;
 }
