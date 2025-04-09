@@ -9,7 +9,6 @@ bitflags = "2.6"
 
 axconfig = { git = "https://github.com/oscomp/arceos.git" }
 axhal = { git = "https://github.com/oscomp/arceos.git", features = ["uspace"] }
-axptr = { git = "https://github.com/Starry-OS/axptr.git" }
 axtask = { git = "https://github.com/oscomp/arceos.git", features = [
     "multitask",
 ] }

@@ -1,4 +1,8 @@
-use core::{default, ffi::c_ulong, mem, ops::Not};
+use core::{
+    ffi::c_ulong,
+    mem,
+    ops::{BitOr, Not},
+};
 
 use axerrno::LinuxError;
 use bitflags::bitflags;
@@ -12,8 +16,7 @@ bitflags! {
     pub struct SignalActionFlags: c_ulong {
         const SIGINFO = SA_SIGINFO as _;
         const NODEFER = SA_NODEFER as _;
-        #[cfg(sa_restorer)]
-        const RESTORER = linux_raw_sys::general::SA_RESTORER as _;
+        const RESTORER = 0x4000000;
     }
 }
 
@@ -22,10 +25,10 @@ bitflags! {
 /// Currently we only support 32 standard signals.
 // TODO: wrap around `kernel_sigset_t`
 // TODO: real-time signals
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Debug, Clone, Copy)]
 #[repr(transparent)]
 pub struct SignalSet {
-    pub bits: [u32; 2],
+    bits: [u32; 2],
 }
 impl SignalSet {
     pub fn add(&mut self, signal: u32) -> bool {
@@ -86,6 +89,15 @@ impl Not for SignalSet {
         }
     }
 }
+impl BitOr for SignalSet {
+    type Output = Self;
+
+    fn bitor(self, other: Self) -> Self::Output {
+        Self {
+            bits: [self.bits[0] | other.bits[0], self.bits[1] | other.bits[1]],
+        }
+    }
+}
 
 // FIXME: replace with `kernel_sigaction` after finishing above "TODO"s for `SignalSet`
 #[derive(Clone, Copy)]
@@ -94,9 +106,8 @@ impl Not for SignalSet {
 pub struct k_sigaction {
     handler: __kernel_sighandler_t,
     flags: c_ulong,
-    #[cfg(sa_restorer)]
     restorer: __sigrestore_t,
-    mask: SignalSet,
+    pub mask: SignalSet,
 }
 
 #[derive(Default)]
@@ -133,10 +144,7 @@ impl SignalAction {
                 dest.handler = Some(*handler);
             }
         }
-        #[cfg(sa_restorer)]
-        {
-            dest.restorer = self.restorer;
-        }
+        dest.restorer = self.restorer;
     }
 }
 
@@ -169,10 +177,10 @@ impl TryFrom<k_sigaction> for SignalAction {
         let default_restorer: __sigrestore_t =
             unsafe { mem::transmute(axconfig::plat::SIGNAL_TRAMPOLINE) };
 
-        #[cfg(sa_restorer)]
+        // #[cfg(sa_restorer)]
         let restorer = value.restorer.or(default_restorer);
-        #[cfg(not(sa_restorer))]
-        let restorer = default_restorer;
+        // #[cfg(not(sa_restorer))]
+        // let restorer = default_restorer;
 
         Ok(SignalAction {
             flags,
@@ -185,26 +193,28 @@ impl TryFrom<k_sigaction> for SignalAction {
 
 /// Signal information. Corresponds to `struct siginfo_t` in libc.
 #[derive(Clone)]
-#[repr(transparent)]
-pub struct SignalInfo(pub siginfo_t);
+pub struct SignalInfo {
+    signo: u32,
+    code: u32,
+}
 
 impl SignalInfo {
     pub const SI_USER: u32 = 0;
 
     pub fn new(signo: u32, code: u32) -> Self {
-        // SAFETY: valid for `siginfo_t`
-        let mut info: siginfo_t = unsafe { mem::zeroed() };
-        info.__bindgen_anon_1.__bindgen_anon_1.si_signo = signo as _;
-        info.__bindgen_anon_1.__bindgen_anon_1.si_code = code as _;
+        Self { signo, code }
+    }
 
-        Self(info)
+    pub fn to_ctype(&self, dest: &mut siginfo_t) {
+        dest.__bindgen_anon_1.__bindgen_anon_1.si_signo = self.signo as _;
+        dest.__bindgen_anon_1.__bindgen_anon_1.si_code = self.code as _;
     }
 
     pub fn signo(&self) -> u32 {
-        unsafe { self.0.__bindgen_anon_1.__bindgen_anon_1.si_signo as u32 }
+        self.signo
     }
 
     pub fn code(&self) -> u32 {
-        unsafe { self.0.__bindgen_anon_1.__bindgen_anon_1.si_code as u32 }
+        self.code
     }
 }
