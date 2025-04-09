@@ -28,7 +28,7 @@ impl Thread {
 
     /// Exits the thread.
     ///
-    /// Returns `true` if the thread was the last one in the process group.
+    /// Returns `true` if the thread was the last one in the thread group.
     pub fn exit(&self, exit_code: i32) -> bool {
         let mut tg = self.process.tg.lock();
         if !tg.group_exited {
