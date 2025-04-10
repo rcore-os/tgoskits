@@ -157,8 +157,7 @@ pub struct SignalFrame {
 /// Handle a signal.
 ///
 /// Returns `Some(action)` if the signal is not ignored. In such case, the
-/// OS should execute the action accordingly (or do nothing if the action is
-/// [`SignalOSAction::Nothing`]).
+/// OS should execute the action accordingly.
 pub fn handle_signal(
     tf: &mut TrapFrame,
     restore_blocked: SignalSet,
