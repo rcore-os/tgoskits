@@ -199,8 +199,6 @@ pub struct SignalInfo {
 }
 
 impl SignalInfo {
-    pub const SI_USER: u32 = 0;
-
     pub fn new(signo: u32, code: u32) -> Self {
         Self { signo, code }
     }
