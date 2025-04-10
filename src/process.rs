@@ -56,6 +56,15 @@ impl Process {
     pub fn data<T: Any + Send + Sync>(&self) -> Option<&T> {
         self.data.downcast_ref::<T>()
     }
+
+    /// Returns `true` if the [`Process`] is the init process.
+    ///
+    /// This is a convenience method for checking if the [`Process`]
+    /// [`Arc::ptr_eq`]s with the init process, which is cheaper than
+    /// calling [`init_proc`] or testing if [`Process::parent`] is `None`.
+    pub fn is_init(self: &Arc<Self>) -> bool {
+        Arc::ptr_eq(self, INIT_PROC.get().unwrap())
+    }
 }
 
 /// Parent & children
@@ -196,13 +205,12 @@ impl Process {
     ///
     /// This method panics if the [`Process`] is the init process.
     pub fn exit(self: &Arc<Self>) {
-        let init = INIT_PROC.get().unwrap();
-        if Arc::ptr_eq(self, init) {
+        if self.is_init() {
             panic!("init process cannot exit");
         }
 
         // TODO: child subreaper
-        let reaper = init;
+        let reaper = INIT_PROC.get().unwrap();
 
         let mut children = self.children.lock(); // Acquire the lock first
         self.is_zombie.store(true, Ordering::Release);
