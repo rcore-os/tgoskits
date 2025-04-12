@@ -7,7 +7,10 @@ use core::{
 use axerrno::LinuxError;
 use bitflags::bitflags;
 use linux_raw_sys::{
-    general::{__kernel_sighandler_t, __sigrestore_t, SA_NODEFER, SA_SIGINFO, siginfo_t},
+    general::{
+        __kernel_sighandler_t, __sigrestore_t, SA_NODEFER, SA_RESETHAND, SA_RESTART, SA_SIGINFO,
+        siginfo_t,
+    },
     signal_macros::{SIG_DFL, sig_ign},
 };
 
@@ -16,6 +19,8 @@ bitflags! {
     pub struct SignalActionFlags: c_ulong {
         const SIGINFO = SA_SIGINFO as _;
         const NODEFER = SA_NODEFER as _;
+        const RESETHAND = SA_RESETHAND as _;
+        const RESTART = SA_RESTART as _;
         const RESTORER = 0x4000000;
     }
 }
@@ -178,7 +183,7 @@ impl TryFrom<k_sigaction> for SignalAction {
             unsafe { mem::transmute(axconfig::plat::SIGNAL_TRAMPOLINE) };
 
         // #[cfg(sa_restorer)]
-        let restorer = if flags.contains(SignalActionFlags::RESTORER)  {
+        let restorer = if flags.contains(SignalActionFlags::RESTORER) {
             value.restorer.or(default_restorer)
         } else {
             default_restorer
