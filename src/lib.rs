@@ -6,8 +6,9 @@ extern crate alloc;
 
 pub mod ctypes;
 
-use core::alloc::Layout;
+use core::{alloc::Layout, array};
 
+use alloc::collections::vec_deque::VecDeque;
 use axhal::arch::TrapFrame;
 use ctypes::{SignalAction, SignalActionFlags, SignalDisposition, SignalInfo, SignalSet};
 
@@ -121,30 +122,51 @@ pub struct PendingSignals {
     /// delivered but blocked from delivery, while `pending` here refers to any
     /// signal that is delivered and not yet handled.
     pub pending: SignalSet,
-    pending_info: [Option<SignalInfo>; 32],
+
+    /// Signal info of standard signals (1-32).
+    infos: [Option<SignalInfo>; 32],
+    /// Signal info queue for real-time signals.
+    info_queues: [VecDeque<SignalInfo>; 33],
 }
 impl PendingSignals {
     pub fn new() -> Self {
         Self {
             pending: SignalSet::default(),
-            pending_info: Default::default(),
+            infos: Default::default(),
+            info_queues: array::from_fn(|_| VecDeque::new()),
         }
     }
 
     pub fn send_signal(&mut self, sig: SignalInfo) -> bool {
         let signo = sig.signo();
-        if !self.pending.add(signo) {
-            return false;
+        let already_pending = self.pending.add(signo);
+
+        if signo < 32 {
+            if already_pending {
+                // At most one standard signal can be pending.
+                return false;
+            }
+            self.infos[signo as usize] = Some(sig);
+        } else {
+            self.info_queues[signo as usize - 32].push_back(sig);
         }
-        self.pending_info[signo as usize] = Some(sig);
         true
     }
 
     /// Dequeue the next pending signal contained in `mask`, if any.
     pub fn dequeue_signal(&mut self, mask: &SignalSet) -> Option<SignalInfo> {
-        self.pending
-            .dequeue(mask)
-            .and_then(|signo| self.pending_info[signo as usize].take())
+        self.pending.dequeue(mask).and_then(|signo| {
+            if signo < 32 {
+                self.infos[signo as usize].take()
+            } else {
+                let queue = &mut self.info_queues[signo as usize - 32];
+                let result = queue.pop_front();
+                if !queue.is_empty() {
+                    self.pending.add(signo);
+                }
+                result
+            }
+        })
     }
 }
 

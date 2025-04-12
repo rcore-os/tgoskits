@@ -32,54 +32,50 @@ bitflags! {
 // TODO: real-time signals
 #[derive(Default, Debug, Clone, Copy)]
 #[repr(transparent)]
-pub struct SignalSet {
-    bits: [u32; 2],
-}
+pub struct SignalSet(u64);
 impl SignalSet {
     pub fn add(&mut self, signal: u32) -> bool {
-        if !(1..32).contains(&signal) {
+        if !(1..64).contains(&signal) {
             return false;
         }
         let bit = 1 << (signal - 1);
-        if self.bits[0] & bit != 0 {
+        if self.0 & bit != 0 {
             return false;
         }
-        self.bits[0] |= bit;
+        self.0 |= bit;
         true
     }
     pub fn remove(&mut self, signal: u32) -> bool {
-        if !(1..32).contains(&signal) {
+        if !(1..64).contains(&signal) {
             return false;
         }
         let bit = 1 << (signal - 1);
-        if self.bits[0] & bit == 0 {
+        if self.0 & bit == 0 {
             return false;
         }
-        self.bits[0] &= !bit;
+        self.0 &= !bit;
         true
     }
 
     pub fn has(&self, signal: u32) -> bool {
-        (1..32).contains(&signal) && (self.bits[0] & (1 << (signal - 1))) != 0
+        (1..64).contains(&signal) && (self.0 & (1 << (signal - 1))) != 0
     }
 
     pub fn add_from(&mut self, other: &SignalSet) {
-        self.bits[0] |= other.bits[0];
-        self.bits[1] |= other.bits[1];
+        self.0 |= other.0;
     }
     pub fn remove_from(&mut self, other: &SignalSet) {
-        self.bits[0] &= !other.bits[0];
-        self.bits[1] &= !other.bits[1];
+        self.0 &= !other.0;
     }
 
     /// Dequeue the a signal in `mask` from this set, if any.
     pub fn dequeue(&mut self, mask: &SignalSet) -> Option<u32> {
-        let bits = self.bits[0] & mask.bits[0];
+        let bits = self.0 & mask.0;
         if bits == 0 {
             None
         } else {
             let signal = bits.trailing_zeros();
-            self.bits[0] &= !(1 << signal);
+            self.0 &= !(1 << signal);
             Some(signal + 1)
         }
     }
@@ -89,18 +85,14 @@ impl Not for SignalSet {
     type Output = Self;
 
     fn not(self) -> Self::Output {
-        Self {
-            bits: [!self.bits[0], !self.bits[1]],
-        }
+        Self(!self.0)
     }
 }
 impl BitOr for SignalSet {
     type Output = Self;
 
     fn bitor(self, other: Self) -> Self::Output {
-        Self {
-            bits: [self.bits[0] | other.bits[0], self.bits[1] | other.bits[1]],
-        }
+        Self(self.0 | other.0)
     }
 }
 
