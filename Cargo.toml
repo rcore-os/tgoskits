@@ -6,11 +6,5 @@ authors = ["Mivik <mivikq@gmail.com>"]
 
 [dependencies]
 axerrno = "0.1"
-axmm = { git = "https://github.com/oscomp/arceos.git" }
+crate_interface = "0.1"
 memory_addr = "0.3"
-page_table_multiarch = "0.5.3"
-percpu = "0.2.0"
-
-[patch.crates-io]
-page_table_multiarch = { git = "https://github.com/Mivik/page_table_multiarch.git", rev = "19ededd" }
-page_table_entry = { git = "https://github.com/Mivik/page_table_multiarch.git", rev = "19ededd" }
