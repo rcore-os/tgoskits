@@ -11,7 +11,9 @@ use core::{alloc::Layout, array};
 
 use alloc::collections::vec_deque::VecDeque;
 use axhal::arch::TrapFrame;
-use ctypes::{SignalAction, SignalActionFlags, SignalDisposition, SignalInfo, SignalSet};
+use ctypes::{
+    SignalAction, SignalActionFlags, SignalDisposition, SignalInfo, SignalSet, SignalStack,
+};
 use ucontext::UContext;
 
 #[derive(Debug)]
@@ -187,6 +189,7 @@ pub fn handle_signal(
     restore_blocked: SignalSet,
     sig: SignalInfo,
     action: &SignalAction,
+    stack: &SignalStack,
 ) -> Option<SignalOSAction> {
     let signo = sig.signo();
     info!("Handle signal: {} {}", signo, axtask::current().id_name());
@@ -201,7 +204,13 @@ pub fn handle_signal(
         SignalDisposition::Ignore => None,
         SignalDisposition::Handler(handler) => {
             let layout = Layout::new::<SignalFrame>();
-            let aligned_sp = (tf.sp() - layout.size()) & !(layout.align() - 1);
+            let sp = if stack.disabled() || !action.flags.contains(SignalActionFlags::ONSTACK) {
+                tf.sp()
+            } else {
+                stack.sp
+            };
+            // TODO: check if stack is large enough
+            let aligned_sp = (sp - layout.size()) & !(layout.align() - 1);
 
             let frame_ptr = aligned_sp as *mut SignalFrame;
             // SAFETY: pointer is valid

@@ -8,8 +8,8 @@ use axerrno::LinuxError;
 use bitflags::bitflags;
 use linux_raw_sys::{
     general::{
-        __kernel_sighandler_t, __sigrestore_t, SA_NODEFER, SA_RESETHAND, SA_RESTART, SA_SIGINFO,
-        siginfo_t,
+        __kernel_sighandler_t, __sigrestore_t, SA_NODEFER, SA_ONSTACK, SA_RESETHAND, SA_RESTART,
+        SA_SIGINFO, SS_DISABLE, siginfo_t,
     },
     signal_macros::{SIG_DFL, sig_ign},
 };
@@ -21,6 +21,7 @@ bitflags! {
         const NODEFER = SA_NODEFER as _;
         const RESETHAND = SA_RESETHAND as _;
         const RESTART = SA_RESTART as _;
+        const ONSTACK = SA_ONSTACK as _;
         const RESTORER = 0x4000000;
     }
 }
@@ -212,5 +213,28 @@ impl SignalInfo {
 
     pub fn code(&self) -> u32 {
         self.code
+    }
+}
+
+#[repr(C)]
+#[derive(Clone)]
+pub struct SignalStack {
+    pub sp: usize,
+    pub flags: u32,
+    pub size: usize,
+}
+impl Default for SignalStack {
+    fn default() -> Self {
+        Self {
+            sp: 0,
+            flags: SS_DISABLE,
+            size: 0,
+        }
+    }
+}
+
+impl SignalStack {
+    pub fn disabled(&self) -> bool {
+        self.flags == SS_DISABLE
     }
 }

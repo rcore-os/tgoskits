@@ -1,33 +1,13 @@
-use axhal::arch::{GeneralRegisters, TrapFrame};
-use linux_raw_sys::general::SS_DISABLE;
+use core::mem;
 
-use crate::ctypes::SignalSet;
+use axhal::arch::TrapFrame;
 
-#[repr(C)]
-#[derive(Clone)]
-pub struct SignalStack {
-    pub sp: usize,
-    pub flags: u32,
-    pub size: usize,
-}
-
-impl Default for SignalStack {
-    fn default() -> Self {
-        Self {
-            sp: 0,
-            flags: SS_DISABLE,
-            size: 0,
-        }
-    }
-}
+use crate::ctypes::{SignalSet, SignalStack};
 
 #[repr(C, align(16))]
-struct MContextPadding([u8; 4096]);
-
-#[repr(C)]
 #[derive(Clone)]
 pub struct MContext {
-    sc_pc: GeneralRegisters,
+    sc_pc: u64,
     sc_regs: [u64; 32],
     sc_flags: u32,
 }
@@ -35,15 +15,17 @@ pub struct MContext {
 impl MContext {
     pub fn new(tf: &TrapFrame) -> Self {
         Self {
-            sc_pc: tf.era,
-            sc_regs: tf.regs,
+            sc_pc: tf.era as _,
+            sc_regs: unsafe { mem::transmute::<_, [u64; 32]>(tf.regs) },
             sc_flags: 0,
         }
     }
 
     pub fn restore(&self, tf: &mut TrapFrame) {
-        tf.era = self.sc_pc;
-        tf.regs = self.sc_regs;
+        tf.era = self.sc_pc as _;
+        unsafe {
+            tf.regs = mem::transmute::<[u64; 32], _>(self.sc_regs);
+        }
     }
 }
 

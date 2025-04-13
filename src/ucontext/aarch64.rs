@@ -1,27 +1,9 @@
-use axhal::arch::{GeneralRegisters, TrapFrame};
-use linux_raw_sys::general::SS_DISABLE;
+use axhal::arch::TrapFrame;
 
-use crate::ctypes::SignalSet;
-
-#[repr(C)]
-#[derive(Clone)]
-pub struct SignalStack {
-    pub sp: usize,
-    pub flags: u32,
-    pub size: usize,
-}
-
-impl Default for SignalStack {
-    fn default() -> Self {
-        Self {
-            sp: 0,
-            flags: SS_DISABLE,
-            size: 0,
-        }
-    }
-}
+use crate::ctypes::{SignalSet, SignalStack};
 
 #[repr(C, align(16))]
+#[derive(Clone)]
 struct MContextPadding([u8; 4096]);
 
 #[repr(C)]
