@@ -5,12 +5,14 @@ extern crate log;
 extern crate alloc;
 
 pub mod ctypes;
+pub mod ucontext;
 
 use core::{alloc::Layout, array};
 
 use alloc::collections::vec_deque::VecDeque;
 use axhal::arch::TrapFrame;
 use ctypes::{SignalAction, SignalActionFlags, SignalDisposition, SignalInfo, SignalSet};
+use ucontext::UContext;
 
 #[derive(Debug)]
 enum DefaultSignalAction {
@@ -123,7 +125,7 @@ pub struct PendingSignals {
     /// signal that is delivered and not yet handled.
     pub pending: SignalSet,
 
-    /// Signal info of standard signals (1-32).
+    /// Signal info of standard signals (1-31).
     infos: [Option<SignalInfo>; 32],
     /// Signal info queue for real-time signals.
     info_queues: [VecDeque<SignalInfo>; 33],
@@ -139,10 +141,10 @@ impl PendingSignals {
 
     pub fn send_signal(&mut self, sig: SignalInfo) -> bool {
         let signo = sig.signo();
-        let already_pending = self.pending.add(signo);
+        let added = self.pending.add(signo);
 
         if signo < 32 {
-            if already_pending {
+            if !added {
                 // At most one standard signal can be pending.
                 return false;
             }
@@ -171,9 +173,9 @@ impl PendingSignals {
 }
 
 pub struct SignalFrame {
-    tf: TrapFrame,
-    blocked: SignalSet,
+    ucontext: UContext,
     siginfo: SignalInfo,
+    tf: TrapFrame,
 }
 
 /// Handle a signal.
@@ -187,7 +189,7 @@ pub fn handle_signal(
     action: &SignalAction,
 ) -> Option<SignalOSAction> {
     let signo = sig.signo();
-    info!("Handle signal: {}", signo);
+    info!("Handle signal: {} {}", signo, axtask::current().id_name());
     match action.disposition {
         SignalDisposition::Default => match DEFAULT_ACTIONS[signo as usize] {
             DefaultSignalAction::Terminate => Some(SignalOSAction::Terminate),
@@ -206,16 +208,16 @@ pub fn handle_signal(
             let frame = unsafe { &mut *frame_ptr };
 
             *frame = SignalFrame {
-                tf: *tf,
-                blocked: restore_blocked,
+                ucontext: UContext::new(tf, restore_blocked),
                 siginfo: sig,
+                tf: *tf,
             };
 
             tf.set_ip(handler as usize);
             tf.set_sp(aligned_sp);
             tf.set_arg0(signo as _);
             tf.set_arg1(&frame.siginfo as *const _ as _);
-            tf.set_arg2(frame_ptr as _);
+            tf.set_arg2(&frame.ucontext as *const _ as _);
 
             let restorer = action.restorer.map_or(0, |f| f as _);
             #[cfg(target_arch = "x86_64")]
@@ -239,6 +241,7 @@ pub fn restore(tf: &mut TrapFrame, blocked: &mut SignalSet) {
     let frame = unsafe { &*frame_ptr };
 
     *tf = frame.tf;
+    frame.ucontext.mcontext.restore(tf);
 
-    *blocked = frame.blocked;
+    *blocked = frame.ucontext.sigmask;
 }

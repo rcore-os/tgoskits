@@ -174,14 +174,11 @@ impl TryFrom<k_sigaction> for SignalAction {
         let default_restorer: __sigrestore_t =
             unsafe { mem::transmute(axconfig::plat::SIGNAL_TRAMPOLINE) };
 
-        // #[cfg(sa_restorer)]
         let restorer = if flags.contains(SignalActionFlags::RESTORER) {
             value.restorer.or(default_restorer)
         } else {
             default_restorer
         };
-        // #[cfg(not(sa_restorer))]
-        // let restorer = default_restorer;
 
         Ok(SignalAction {
             flags,
