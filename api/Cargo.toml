@@ -15,8 +15,11 @@ axsync.workspace = true
 axtask.workspace = true
 arceos_posix_api.workspace = true
 
+axprocess.workspace = true
+
 axerrno.workspace = true
 bitflags.workspace = true
+linux-raw-sys.workspace = true
 memory_addr.workspace = true
 
 starry-core.workspace = true

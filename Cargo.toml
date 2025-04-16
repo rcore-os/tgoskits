@@ -38,9 +38,18 @@ axns = { git = "https://github.com/oscomp/arceos.git", features = [
 axsync = { git = "https://github.com/oscomp/arceos.git" }
 axtask = { git = "https://github.com/oscomp/arceos.git" }
 
+axprocess = { git = "https://github.com/Starry-OS/axprocess.git" }
+
 axerrno = "0.1"
 bitflags = "2.6"
 linkme = "0.3"
+linux-raw-sys = { version = "0.9.3", default-features = false, features = [
+    "no_std",
+    "general",
+    "net",
+    "prctl",
+    "system",
+] }
 memory_addr = "0.3"
 
 starry-core = { path = "./core" }
@@ -60,12 +69,18 @@ lwext4_rs = ["axfeat/lwext4_rs"]
 [dependencies]
 axfeat.workspace = true
 
+axfs.workspace = true
 axhal.workspace = true
 axlog.workspace = true
+axsync.workspace = true
 axtask.workspace = true
+arceos_posix_api.workspace = true
+
+axprocess.workspace = true
 
 axerrno.workspace = true
 linkme.workspace = true
+linux-raw-sys.workspace = true
 
 starry-core.workspace = true
 starry-api.workspace = true

@@ -2,12 +2,8 @@ use core::ffi::CStr;
 
 use alloc::{string::String, vec};
 use axerrno::{AxError, AxResult};
-use axhal::{
-    paging::MappingFlags,
-    trap::{PAGE_FAULT, register_trap_handler},
-};
+use axhal::paging::MappingFlags;
 use axmm::{AddrSpace, kernel_aspace};
-use axtask::TaskExtRef;
 use kernel_elf_parser::{AuxvEntry, ELFParser, app_stack_region};
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use xmas_elf::{ElfFile, program::SegmentData};
@@ -184,28 +180,7 @@ pub fn access_user_memory<R>(f: impl FnOnce() -> R) -> R {
     })
 }
 
-#[register_trap_handler(PAGE_FAULT)]
-fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags, is_user: bool) -> bool {
-    warn!(
-        "Page fault at {:#x}, access_flags: {:#x?}",
-        vaddr, access_flags
-    );
-    if !is_user && !ACCESSING_USER_MEM.read_current() {
-        return false;
-    }
-
-    if !axtask::current()
-        .task_ext()
-        .aspace
-        .lock()
-        .handle_page_fault(vaddr, access_flags)
-    {
-        warn!(
-            "{}: segmentation fault at {:#x}, exit!",
-            axtask::current().id_name(),
-            vaddr
-        );
-        axtask::exit(-1);
-    }
-    true
+/// Check if the current thread is accessing user memory.
+pub fn is_accessing_user_memory() -> bool {
+    ACCESSING_USER_MEM.read_current()
 }

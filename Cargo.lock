@@ -417,6 +417,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "axprocess"
+version = "0.1.0"
+source = "git+https://github.com/Starry-OS/axprocess.git#f6f0d08f202be9310ec2b72d73915b5017fac631"
+dependencies = [
+ "kspin",
+ "lazyinit",
+ "weak-map",
+]
+
+[[package]]
 name = "axruntime"
 version = "0.1.0"
 dependencies = [
@@ -955,6 +965,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d26c52dbd32dccf2d10cac7725f8eae5296885fb5703b261f7d0a0739ec807ab"
 
 [[package]]
+name = "linux-raw-sys"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd945864f07fe9f5371a27ad7b52a172b4b499999f1d97574c9fa68373937e12"
+
+[[package]]
 name = "lock_api"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1309,7 +1325,7 @@ dependencies = [
  "bitflags 2.9.0",
  "errno",
  "libc",
- "linux-raw-sys",
+ "linux-raw-sys 0.4.15",
  "windows-sys",
 ]
 
@@ -1393,12 +1409,17 @@ checksum = "a8f112729512f8e442d81f95a8a7ddf2b7c6b8a1a6f509a95864142b30cab2d3"
 name = "starry"
 version = "0.1.0"
 dependencies = [
+ "arceos_posix_api",
  "axerrno",
  "axfeat",
+ "axfs",
  "axhal",
  "axlog",
+ "axprocess",
+ "axsync",
  "axtask",
  "linkme",
+ "linux-raw-sys 0.9.4",
  "starry-api",
  "starry-core",
  "syscalls",
@@ -1414,9 +1435,11 @@ dependencies = [
  "axfs",
  "axhal",
  "axlog",
+ "axprocess",
  "axsync",
  "axtask",
  "bitflags 2.9.0",
+ "linux-raw-sys 0.9.4",
  "macro_rules_attribute",
  "memory_addr",
  "num_enum",
@@ -1429,7 +1452,6 @@ dependencies = [
 name = "starry-core"
 version = "0.1.0"
 dependencies = [
- "arceos_posix_api",
  "axconfig",
  "axerrno",
  "axfs",
@@ -1437,9 +1459,9 @@ dependencies = [
  "axlog",
  "axmm",
  "axns",
+ "axprocess",
  "axsync",
  "axtask",
- "bitflags 2.9.0",
  "crate_interface",
  "kernel-elf-parser",
  "linkme",
@@ -1447,6 +1469,7 @@ dependencies = [
  "numeric-enum-macro",
  "percpu",
  "spin",
+ "weak-map",
  "xmas-elf",
 ]
 
@@ -1591,6 +1614,11 @@ name = "volatile"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "442887c63f2c839b346c192d047a7c87e73d0689c9157b00b53dcc27dd5ea793"
+
+[[package]]
+name = "weak-map"
+version = "0.1.0"
+source = "git+https://github.com/Starry-OS/weak-map.git#6a528cb160b8e2bcdb6bbc1b4086aa1de08e73ec"
 
 [[package]]
 name = "which"

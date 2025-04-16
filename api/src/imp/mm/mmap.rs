@@ -79,8 +79,8 @@ pub fn sys_mmap(
     let mut addr = unsafe { addr.into_inner() };
 
     let curr = current();
-    let curr_ext = curr.task_ext();
-    let mut aspace = curr_ext.aspace.lock();
+    let process_data = curr.task_ext().process_data();
+    let mut aspace = process_data.aspace.lock();
     let permission_flags = MmapProt::from_bits_truncate(prot);
     // TODO: check illegal flags for mmap
     // An example is the flags contained none of MAP_PRIVATE, MAP_SHARED, or MAP_SHARED_VALIDATE.
@@ -163,8 +163,8 @@ pub fn sys_munmap(addr: UserPtr<usize>, length: usize) -> LinuxResult<isize> {
     let addr = unsafe { addr.into_inner() };
 
     let curr = current();
-    let curr_ext = curr.task_ext();
-    let mut aspace = curr_ext.aspace.lock();
+    let process_data = curr.task_ext().process_data();
+    let mut aspace = process_data.aspace.lock();
     let length = memory_addr::align_up_4k(length);
     let start_addr = VirtAddr::from(addr as usize);
     aspace.unmap(start_addr, length)?;
@@ -186,8 +186,8 @@ pub fn sys_mprotect(addr: UserPtr<usize>, length: usize, prot: i32) -> LinuxResu
     }
 
     let curr = current();
-    let curr_ext = curr.task_ext();
-    let mut aspace = curr_ext.aspace.lock();
+    let process_data = curr.task_ext().process_data();
+    let mut aspace = process_data.aspace.lock();
     let length = memory_addr::align_up_4k(length);
     let start_addr = VirtAddr::from(addr as usize);
     aspace.protect(start_addr, length, permission_flags.into())?;

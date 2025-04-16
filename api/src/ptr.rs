@@ -13,7 +13,7 @@ fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> 
     }
 
     let task = current();
-    let mut aspace = task.task_ext().aspace.lock();
+    let mut aspace = task.task_ext().process_data().aspace.lock();
 
     if !aspace.check_region_access(
         VirtAddrRange::from_start_size(start, layout.size()),
@@ -59,7 +59,7 @@ fn check_null_terminated<T: Eq + Default>(
                 // querying the page table since the page might has not been
                 // allocated yet.
                 let task = current();
-                let aspace = task.task_ext().aspace.lock();
+                let aspace = task.task_ext().process_data().aspace.lock();
                 if !aspace.check_region_access(
                     VirtAddrRange::from_start_size(page, PAGE_SIZE_4K),
                     access_flags,

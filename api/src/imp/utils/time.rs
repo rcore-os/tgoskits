@@ -1,7 +1,7 @@
 use arceos_posix_api::{self as api, ctypes::timeval};
 use axerrno::LinuxResult;
 use axhal::time::{monotonic_time_nanos, nanos_to_ticks};
-use starry_core::{ctypes::Tms, task::time_stat_output};
+use starry_core::{task::time_stat_output, time::Tms};
 
 use crate::ptr::{PtrWrapper, UserPtr};
 
