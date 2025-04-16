@@ -8,7 +8,7 @@ use starry_core::task::{time_stat_from_kernel_to_user, time_stat_from_user_to_ke
 use syscalls::Sysno;
 
 #[register_trap_handler(SYSCALL)]
-fn handle_syscall(tf: &TrapFrame, syscall_num: usize) -> isize {
+fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
     info!("Syscall {:?}", Sysno::from(syscall_num as u32));
     time_stat_from_user_to_kernel();
     let result: LinuxResult<isize> = match Sysno::from(syscall_num as u32) {

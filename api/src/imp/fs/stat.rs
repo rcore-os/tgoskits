@@ -8,6 +8,48 @@ use crate::{
     syscall_instrument,
 };
 
+#[cfg(target_arch = "x86_64")]
+#[derive(Debug, Clone, Copy, Default)]
+#[repr(C)]
+pub struct Kstat {
+    /// 设备
+    pub st_dev: u64,
+    /// inode 编号
+    pub st_ino: u64,
+    /// 硬链接数
+    pub st_nlink: u64,
+    /// 文件类型
+    pub st_mode: u32,
+    /// 用户id
+    pub st_uid: u32,
+    /// 用户组id
+    pub st_gid: u32,
+    /// padding
+    pub __pad0: u32,
+    /// 设备号
+    pub st_rdev: u64,
+    /// 文件大小
+    pub st_size: i64,
+    /// 块大小
+    pub st_blksize: i64,
+    /// 块个数
+    pub st_blocks: i64,
+    /// 最后一次访问时间(秒)
+    pub st_atime_sec: u64,
+    /// 最后一次访问时间(纳秒)
+    pub st_atime_nsec: u64,
+    /// 最后一次修改时间(秒)
+    pub st_mtime_sec: u64,
+    /// 最后一次修改时间(纳秒)
+    pub st_mtime_nsec: u64,
+    /// 最后一次改变状态时间(秒)
+    pub st_ctime_sec: u64,
+    /// 最后一次改变状态时间(纳秒)
+    pub st_ctime_nsec: u64,
+    pub __unused: [i64; 3],
+}
+
+#[cfg(not(target_arch = "x86_64"))]
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct Kstat {
@@ -26,29 +68,58 @@ pub struct Kstat {
     /// 设备号
     pub st_rdev: u64,
     /// padding
-    pub _pad0: u64,
+    pub __pad1: u64,
     /// 文件大小
-    pub st_size: u64,
+    pub st_size: i64,
     /// 块大小
-    pub st_blksize: u32,
+    pub st_blksize: i32,
     /// padding
-    pub _pad1: u32,
+    pub __pad2: i32,
     /// 块个数
-    pub st_blocks: u64,
+    pub st_blocks: i64,
     /// 最后一次访问时间(秒)
-    pub st_atime_sec: isize,
+    pub st_atime_sec: i64,
     /// 最后一次访问时间(纳秒)
-    pub st_atime_nsec: isize,
+    pub st_atime_nsec: u64,
     /// 最后一次修改时间(秒)
-    pub st_mtime_sec: isize,
+    pub st_mtime_sec: i64,
     /// 最后一次修改时间(纳秒)
-    pub st_mtime_nsec: isize,
+    pub st_mtime_nsec: u64,
     /// 最后一次改变状态时间(秒)
-    pub st_ctime_sec: isize,
+    pub st_ctime_sec: i64,
     /// 最后一次改变状态时间(纳秒)
-    pub st_ctime_nsec: isize,
+    pub st_ctime_nsec: u64,
+    pub __unused4: u32,
+    pub __unused5: u32,
 }
 
+#[cfg(target_arch = "x86_64")]
+impl From<arceos_posix_api::ctypes::stat> for Kstat {
+    fn from(stat: arceos_posix_api::ctypes::stat) -> Self {
+        Self {
+            st_dev: stat.st_dev,
+            st_ino: stat.st_ino,
+            st_nlink: stat.st_nlink as u64,
+            st_mode: stat.st_mode,
+            st_uid: stat.st_uid,
+            st_gid: stat.st_gid,
+            __pad0: 0_u32,
+            st_rdev: stat.st_rdev,
+            st_size: stat.st_size,
+            st_blksize: stat.st_blksize,
+            st_blocks: stat.st_blocks,
+            st_atime_sec: stat.st_atime.tv_sec as u64,
+            st_atime_nsec: stat.st_atime.tv_nsec as u64,
+            st_mtime_sec: stat.st_mtime.tv_sec as u64,
+            st_mtime_nsec: stat.st_mtime.tv_nsec as u64,
+            st_ctime_sec: stat.st_ctime.tv_sec as u64,
+            st_ctime_nsec: stat.st_ctime.tv_nsec as u64,
+            __unused: [0_i64; 3],
+        }
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
 impl From<arceos_posix_api::ctypes::stat> for Kstat {
     fn from(stat: arceos_posix_api::ctypes::stat) -> Self {
         Self {
@@ -59,17 +130,19 @@ impl From<arceos_posix_api::ctypes::stat> for Kstat {
             st_uid: stat.st_uid,
             st_gid: stat.st_gid,
             st_rdev: stat.st_rdev,
-            _pad0: 0,
-            st_size: stat.st_size as u64,
-            st_blksize: stat.st_blksize as u32,
-            _pad1: 0,
-            st_blocks: stat.st_blocks as u64,
-            st_atime_sec: stat.st_atime.tv_sec as isize,
-            st_atime_nsec: stat.st_atime.tv_nsec as isize,
-            st_mtime_sec: stat.st_mtime.tv_sec as isize,
-            st_mtime_nsec: stat.st_mtime.tv_nsec as isize,
-            st_ctime_sec: stat.st_ctime.tv_sec as isize,
-            st_ctime_nsec: stat.st_ctime.tv_nsec as isize,
+            __pad1: 0_u64,
+            st_size: stat.st_size,
+            st_blksize: stat.st_blksize as i32,
+            __pad2: 0_i32,
+            st_blocks: stat.st_blocks,
+            st_atime_sec: stat.st_atime.tv_sec,
+            st_atime_nsec: stat.st_atime.tv_nsec as u64,
+            st_mtime_sec: stat.st_mtime.tv_sec,
+            st_mtime_nsec: stat.st_mtime.tv_nsec as u64,
+            st_ctime_sec: stat.st_ctime.tv_sec,
+            st_ctime_nsec: stat.st_ctime.tv_nsec as u64,
+            __unused4: 0_u32,
+            __unused5: 0_u32,
         }
     }
 }
