@@ -14,8 +14,16 @@ axtask = { git = "https://github.com/oscomp/arceos.git", features = [
 ] }
 
 cfg-if = "1.0.0"
-linux-raw-sys = { version = "0.9.3", default-features = false, features = ["general", "no_std"] }
+linux-raw-sys = { version = "0.9.3", default-features = false, features = [
+    "general",
+    "no_std",
+] }
 log = "0.4"
+strum_macros = "0.27.1"
+lock_api = "0.4.12"
+derive_more = { version = "2.0.1", default-features = false, features = [
+    "full",
+] }
 
 [patch.crates-io]
 page_table_multiarch = { git = "https://github.com/Mivik/page_table_multiarch.git", rev = "19ededd" }

@@ -15,3 +15,11 @@ cfg_if::cfg_if! {
         compile_error!("Unsupported architecture");
     }
 }
+
+unsafe extern "C" {
+    fn signal_trampoline();
+}
+
+pub fn signal_trampoline_address() -> usize {
+    signal_trampoline as usize
+}

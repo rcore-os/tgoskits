@@ -1,6 +1,20 @@
 use axhal::arch::TrapFrame;
 
-use crate::ctypes::{SignalSet, SignalStack};
+use crate::{SignalSet, SignalStack};
+
+core::arch::global_asm!(
+    "
+.section .text
+.code64
+.balign 4096
+.global signal_trampoline
+signal_trampoline:
+    mov rax, 0xf
+    syscall
+
+.fill 4096 - (. - signal_trampoline), 1, 0
+"
+);
 
 #[repr(C)]
 #[derive(Clone)]

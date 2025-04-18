@@ -1,39 +1,44 @@
+use core::mem;
+
 use axhal::arch::TrapFrame;
 
-use crate::ctypes::{SignalSet, SignalStack};
+use crate::{SignalSet, SignalStack};
+
+core::arch::global_asm!(
+    "
+.section .text
+.balign 4096
+.global signal_trampoline
+signal_trampoline:
+    li.w    $a7, 139
+    syscall 0
+
+.fill 4096 - (. - signal_trampoline), 1, 0
+"
+);
 
 #[repr(C, align(16))]
 #[derive(Clone)]
-struct MContextPadding([u8; 4096]);
-
-#[repr(C)]
-#[derive(Clone)]
 pub struct MContext {
-    fault_address: u64,
-    regs: [u64; 31],
-    sp: u64,
-    pc: u64,
-    pstate: u64,
-    __reserved: MContextPadding,
+    sc_pc: u64,
+    sc_regs: [u64; 32],
+    sc_flags: u32,
 }
 
 impl MContext {
     pub fn new(tf: &TrapFrame) -> Self {
         Self {
-            fault_address: 0,
-            regs: tf.r,
-            sp: tf.usp,
-            pc: tf.elr,
-            pstate: tf.spsr,
-            __reserved: MContextPadding([0; 4096]),
+            sc_pc: tf.era as _,
+            sc_regs: unsafe { mem::transmute::<_, [u64; 32]>(tf.regs) },
+            sc_flags: 0,
         }
     }
 
     pub fn restore(&self, tf: &mut TrapFrame) {
-        tf.r = self.regs;
-        tf.usp = self.sp;
-        tf.elr = self.pc;
-        tf.spsr = self.pstate;
+        tf.era = self.sc_pc as _;
+        unsafe {
+            tf.regs = mem::transmute::<[u64; 32], _>(self.sc_regs);
+        }
     }
 }
 
