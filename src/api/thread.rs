@@ -136,7 +136,7 @@ impl<M: RawMutex, WQ: WaitQueue> ThreadSignalManager<M, WQ> {
             let Some(sig) = self.dequeue_signal(&mask) else {
                 return None;
             };
-            let action = &actions[sig.signo() as usize - 1];
+            let action = ProcessSignalManager::<M, WQ>::action_locked(&actions, sig.signo());
             if let Some(os_action) = self.handle_signal(tf, restore_blocked, &sig, action) {
                 break Some((sig, os_action));
             }
@@ -171,6 +171,16 @@ impl<M: RawMutex, WQ: WaitQueue> ThreadSignalManager<M, WQ> {
     /// Applies a function to the blocked signals.
     pub fn with_blocked_mut<R>(&self, f: impl FnOnce(&mut SignalSet) -> R) -> R {
         f(&mut self.blocked.lock())
+    }
+
+    /// Gets the signal stack.
+    pub fn stack(&self) -> SignalStack {
+        self.signal_stack.lock().clone()
+    }
+
+    /// Applies a function to the signal stack.
+    pub fn with_stack_mut<R>(&self, f: impl FnOnce(&mut SignalStack) -> R) -> R {
+        f(&mut self.signal_stack.lock())
     }
 
     /// Gets current pending signals.

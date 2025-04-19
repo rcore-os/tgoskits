@@ -45,6 +45,10 @@ impl<M: RawMutex, WQ: WaitQueue> ProcessSignalManager<M, WQ> {
         self.signal_wq.notify_one();
     }
 
+    pub(crate) fn action_locked(actions: &[SignalAction; 64], signo: Signo) -> &SignalAction {
+        &actions[signo as usize - 1]
+    }
+
     /// Applies a function to the signal action.
     pub fn with_action_mut<R>(&self, signo: Signo, f: impl FnOnce(&mut SignalAction) -> R) -> R {
         f(&mut self.signal_actions.lock()[signo as usize - 1])
