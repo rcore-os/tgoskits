@@ -193,7 +193,7 @@ impl<M: RawMutex, WQ: WaitQueue> ThreadSignalManager<M, WQ> {
         // Non-blocked signals cannot be waited
         set &= self.blocked();
 
-        if let Some(sig) = self.pending.lock().dequeue_signal(&set) {
+        if let Some(sig) = self.dequeue_signal(&set) {
             return Some(sig);
         }
 
@@ -220,7 +220,7 @@ impl<M: RawMutex, WQ: WaitQueue> ThreadSignalManager<M, WQ> {
                 _ => wq.wait(),
             }
 
-            if let Some(sig) = self.pending.lock().dequeue_signal(&set) {
+            if let Some(sig) = self.dequeue_signal(&set) {
                 return Some(sig);
             }
         }
