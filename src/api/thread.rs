@@ -1,4 +1,4 @@
-use core::alloc::Layout;
+use core::{alloc::Layout, time::Duration};
 
 use alloc::sync::Arc;
 use axhal::arch::TrapFrame;
@@ -163,6 +163,11 @@ impl<M: RawMutex, WQ: WaitQueue> ThreadSignalManager<M, WQ> {
         self.proc.signal_wq.notify_all();
     }
 
+    /// Gets the blocked signals.
+    pub fn blocked(&self) -> SignalSet {
+        *self.blocked.lock()
+    }
+
     /// Applies a function to the blocked signals.
     pub fn with_blocked_mut<R>(&self, f: impl FnOnce(&mut SignalSet) -> R) -> R {
         f(&mut self.blocked.lock())
@@ -171,5 +176,59 @@ impl<M: RawMutex, WQ: WaitQueue> ThreadSignalManager<M, WQ> {
     /// Gets current pending signals.
     pub fn pending(&self) -> SignalSet {
         self.pending.lock().set | self.proc.pending()
+    }
+
+    /// Suspends execution of the calling thread until one of the signals in
+    /// `set` is pending.
+    ///
+    /// If one of the signals in set is already pending for the calling thread,
+    /// this will return immediately.
+    ///
+    /// Returns the signal that was received, or `None` if the timeout expired.
+    pub fn wait_timeout(
+        &self,
+        mut set: SignalSet,
+        timeout: Option<Duration>,
+    ) -> Option<SignalInfo> {
+        // Non-blocked signals cannot be waited
+        set &= self.blocked();
+
+        if let Some(sig) = self.pending.lock().dequeue_signal(&set) {
+            return Some(sig);
+        }
+
+        let wq = &self.proc.signal_wq;
+        let deadline = timeout.map(|dur| axhal::time::wall_time() + dur);
+
+        // There might be false wakeups, so we need a loop
+        loop {
+            match &deadline {
+                Some(deadline) => {
+                    match deadline.checked_sub(axhal::time::wall_time()) {
+                        Some(dur) => {
+                            if wq.wait_timeout(Some(dur)) {
+                                // timed out
+                                break;
+                            }
+                        }
+                        None => {
+                            // deadline passed
+                            break;
+                        }
+                    }
+                }
+                _ => {
+                    warn!("ENABLED? {}", axhal::arch::irqs_enabled());
+                    wq.wait()
+                },
+            }
+
+            if let Some(sig) = self.pending.lock().dequeue_signal(&set) {
+                return Some(sig);
+            }
+        }
+
+        // TODO: EINTR
+        None
     }
 }

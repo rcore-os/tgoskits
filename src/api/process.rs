@@ -54,4 +54,10 @@ impl<M: RawMutex, WQ: WaitQueue> ProcessSignalManager<M, WQ> {
     pub fn pending(&self) -> SignalSet {
         self.pending.lock().set
     }
+
+    /// Suspends current task until a signal is delivered. Note that this could
+    /// return early if a signal is delivered to another thread in this process.
+    pub fn wait_signal(&self) {
+        self.signal_wq.wait();
+    }
 }
