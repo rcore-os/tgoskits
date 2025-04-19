@@ -217,10 +217,7 @@ impl<M: RawMutex, WQ: WaitQueue> ThreadSignalManager<M, WQ> {
                         }
                     }
                 }
-                _ => {
-                    warn!("ENABLED? {}", axhal::arch::irqs_enabled());
-                    wq.wait()
-                },
+                _ => wq.wait(),
             }
 
             if let Some(sig) = self.pending.lock().dequeue_signal(&set) {
