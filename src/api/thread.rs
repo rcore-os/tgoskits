@@ -27,7 +27,7 @@ pub struct ThreadSignalManager<M, WQ> {
     /// The set of signals currently blocked from delivery.
     blocked: Mutex<M, SignalSet>,
     /// The stack used by signal handlers
-    signal_stack: Mutex<M, SignalStack>,
+    stack: Mutex<M, SignalStack>,
 }
 
 impl<M: RawMutex, WQ: WaitQueue> ThreadSignalManager<M, WQ> {
@@ -36,7 +36,7 @@ impl<M: RawMutex, WQ: WaitQueue> ThreadSignalManager<M, WQ> {
             proc,
             pending: Mutex::new(PendingSignals::new()),
             blocked: Mutex::new(SignalSet::default()),
-            signal_stack: Mutex::new(SignalStack::default()),
+            stack: Mutex::new(SignalStack::default()),
         }
     }
 
@@ -67,7 +67,7 @@ impl<M: RawMutex, WQ: WaitQueue> ThreadSignalManager<M, WQ> {
             SignalDisposition::Ignore => None,
             SignalDisposition::Handler(handler) => {
                 let layout = Layout::new::<SignalFrame>();
-                let stack = self.signal_stack.lock();
+                let stack = self.stack.lock();
                 let sp = if stack.disabled() || !action.flags.contains(SignalActionFlags::ONSTACK) {
                     tf.sp()
                 } else {
@@ -108,8 +108,7 @@ impl<M: RawMutex, WQ: WaitQueue> ThreadSignalManager<M, WQ> {
                 }
 
                 if action.flags.contains(SignalActionFlags::RESETHAND) {
-                    self.proc
-                        .with_action_mut(signo, |a| *a = SignalAction::default());
+                    self.proc.actions.lock()[signo] = SignalAction::default();
                 }
                 *self.blocked.lock() |= add_blocked;
                 Some(SignalOSAction::Handler)
@@ -125,7 +124,7 @@ impl<M: RawMutex, WQ: WaitQueue> ThreadSignalManager<M, WQ> {
         tf: &mut TrapFrame,
         restore_blocked: Option<SignalSet>,
     ) -> Option<(SignalInfo, SignalOSAction)> {
-        let actions = self.proc.signal_actions.lock();
+        let actions = self.proc.actions.lock();
 
         let blocked = self.blocked.lock();
         let mask = !*blocked;
@@ -136,7 +135,7 @@ impl<M: RawMutex, WQ: WaitQueue> ThreadSignalManager<M, WQ> {
             let Some(sig) = self.dequeue_signal(&mask) else {
                 return None;
             };
-            let action = ProcessSignalManager::<M, WQ>::action_locked(&actions, sig.signo());
+            let action = &actions[sig.signo()];
             if let Some(os_action) = self.handle_signal(tf, restore_blocked, &sig, action) {
                 break Some((sig, os_action));
             }
@@ -160,7 +159,7 @@ impl<M: RawMutex, WQ: WaitQueue> ThreadSignalManager<M, WQ> {
     /// See [`ProcessSignalManager::send_signal`] for the process-level version.
     pub fn send_signal(&self, sig: SignalInfo) {
         self.pending.lock().put_signal(sig);
-        self.proc.signal_wq.notify_all();
+        self.proc.wq.notify_all();
     }
 
     /// Gets the blocked signals.
@@ -175,12 +174,12 @@ impl<M: RawMutex, WQ: WaitQueue> ThreadSignalManager<M, WQ> {
 
     /// Gets the signal stack.
     pub fn stack(&self) -> SignalStack {
-        self.signal_stack.lock().clone()
+        self.stack.lock().clone()
     }
 
     /// Applies a function to the signal stack.
     pub fn with_stack_mut<R>(&self, f: impl FnOnce(&mut SignalStack) -> R) -> R {
-        f(&mut self.signal_stack.lock())
+        f(&mut self.stack.lock())
     }
 
     /// Gets current pending signals.
@@ -207,7 +206,7 @@ impl<M: RawMutex, WQ: WaitQueue> ThreadSignalManager<M, WQ> {
             return Some(sig);
         }
 
-        let wq = &self.proc.signal_wq;
+        let wq = &self.proc.wq;
         let deadline = timeout.map(|dur| axhal::time::wall_time() + dur);
 
         // There might be false wakeups, so we need a loop
