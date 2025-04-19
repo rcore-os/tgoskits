@@ -119,7 +119,7 @@ impl Signo {
     }
 }
 
-/// Signal set. Corresponds to `struct sigset_t` in libc.
+/// Signal set. Compatible with `struct sigset_t` in libc.
 #[derive(Default, Debug, Clone, Copy, Not, BitOr, BitOrAssign, BitAnd, BitAndAssign)]
 #[repr(transparent)]
 pub struct SignalSet(u64);
@@ -181,32 +181,40 @@ impl From<kernel_sigset_t> for SignalSet {
     }
 }
 
-/// Signal information. Corresponds to `struct siginfo_t` in libc.
+/// Signal information. Compatible with `struct siginfo` in libc.
 #[derive(Clone)]
-pub struct SignalInfo {
-    signo: Signo,
-    code: u32,
-}
+#[repr(transparent)]
+pub struct SignalInfo(pub siginfo_t);
 
 impl SignalInfo {
     pub fn new(signo: Signo, code: u32) -> Self {
-        Self { signo, code }
-    }
-
-    pub fn to_ctype(&self, dest: &mut siginfo_t) {
-        dest.__bindgen_anon_1.__bindgen_anon_1.si_signo = self.signo as _;
-        dest.__bindgen_anon_1.__bindgen_anon_1.si_code = self.code as _;
+        let mut result: Self = unsafe { mem::zeroed() };
+        result.set_signo(signo);
+        result.set_code(code);
+        result
     }
 
     pub fn signo(&self) -> Signo {
-        self.signo
+        unsafe { Signo::from_repr(self.0.__bindgen_anon_1.__bindgen_anon_1.si_signo as _).unwrap() }
+    }
+
+    pub fn set_signo(&mut self, signo: Signo) {
+        self.0.__bindgen_anon_1.__bindgen_anon_1.si_signo = signo as _;
     }
 
     pub fn code(&self) -> u32 {
-        self.code
+        unsafe { self.0.__bindgen_anon_1.__bindgen_anon_1.si_code as _ }
+    }
+
+    pub fn set_code(&mut self, code: u32) {
+        self.0.__bindgen_anon_1.__bindgen_anon_1.si_code = code as _;
     }
 }
 
+unsafe impl Send for SignalInfo {}
+unsafe impl Sync for SignalInfo {}
+
+/// Signal stack. Compatible with `struct sigaltstack` in libc.
 #[repr(C)]
 #[derive(Clone)]
 pub struct SignalStack {
