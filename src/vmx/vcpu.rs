@@ -25,6 +25,9 @@ use crate::{ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters};
 
 const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 1_000_000;
 
+const QEMU_EXIT_PORT: u16 = 0x604;
+const QEMU_EXIT_MAGIC: u64 = 0x2000;
+
 pub struct XState {
     host_xcr0: u64,
     guest_xcr0: u64,
@@ -431,40 +434,42 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
 
 // Implementation of private methods
 impl<H: AxVCpuHal> VmxVcpu<H> {
-    #[allow(dead_code)]
     fn setup_io_bitmap(&mut self) -> AxResult {
         // By default, I/O bitmap is set as `intercept_all`.
         // Todo: these should be combined with emulated pio device management,
         // in `modules/axvm/src/device/x86_64/mod.rs` somehow.
         let io_to_be_intercepted = [
-            // UART
-            // 0x3f8..0x3f8 + 8, // COM1
-            // We need to intercepted the access to COM2 ports.
-            // Because we want to reserve this port for host Linux.
-            0x2f8..0x2f8 + 8, // COM2
-            // 0x3e8..0x3e8 + 8, // COM3
-            // 0x2e8..0x2e8 + 8, // COM4
-            // Virual PIC
-            0x20..0x20 + 2, // PIC1
-            0xa0..0xa0 + 2, // PIC2
-            // Debug Port
-            // 0x80..0x80 + 1,   // Debug Port
-            //
-            0x92..0x92 + 1, // system_control_a
-            0x61..0x61 + 1, // system_control_b
-            // RTC
-            0x70..0x70 + 2, // CMOS
-            0x40..0x40 + 4, // PIT
-            // 0xf0..0xf0 + 2,   // ports about fpu
-            // 0x3d4..0x3d4 + 2, // ports about vga
-            0x87..0x87 + 1,   // port about dma
-            0x60..0x60 + 1,   // ports about ps/2 controller
-            0x64..0x64 + 1,   // ports about ps/2 controller
-            0xcf8..0xcf8 + 8, // PCI
+            // // UART
+            // // 0x3f8..0x3f8 + 8, // COM1
+            // // We need to intercepted the access to COM2 ports.
+            // // Because we want to reserve this port for host Linux.
+            // 0x2f8..0x2f8 + 8, // COM2
+            // // 0x3e8..0x3e8 + 8, // COM3
+            // // 0x2e8..0x2e8 + 8, // COM4
+            // // Virual PIC
+            // 0x20..0x20 + 2, // PIC1
+            // 0xa0..0xa0 + 2, // PIC2
+            // // Debug Port
+            // // 0x80..0x80 + 1,   // Debug Port
+            // //
+            // 0x92..0x92 + 1, // system_control_a
+            // 0x61..0x61 + 1, // system_control_b
+            // // RTC
+            // 0x70..0x70 + 2, // CMOS
+            // 0x40..0x40 + 4, // PIT
+            // // 0xf0..0xf0 + 2,   // ports about fpu
+            // // 0x3d4..0x3d4 + 2, // ports about vga
+            // 0x87..0x87 + 1,   // port about dma
+            // 0x60..0x60 + 1,   // ports about ps/2 controller
+            // 0x64..0x64 + 1,   // ports about ps/2 controller
+            // 0xcf8..0xcf8 + 8, // PCI
+
+            // QEMU exit port
+            QEMU_EXIT_PORT..QEMU_EXIT_PORT + 1, // QEMU exit port
         ];
         for port_range in io_to_be_intercepted {
             self.io_bitmap.set_intercept_of_range(
-                port_range.start,
+                port_range.start as _,
                 port_range.count() as u32,
                 true,
             );
@@ -703,6 +708,8 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
 
         // Pass-through exceptions (except #UD(6)), don't use I/O bitmap, set MSR bitmaps.
         let exception_bitmap: u32 = 1 << 6;
+
+        self.setup_io_bitmap()?;
 
         VmcsControl32::EXCEPTION_BITMAP.write(exception_bitmap)?;
         VmcsControl64::IO_BITMAP_A_ADDR.write(self.io_bitmap.phys_addr().0.as_usize() as _)?;
@@ -1194,9 +1201,6 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
                             warn!("VCpu {:#x?}", self);
                             AxVCpuExitReason::Halt
                         } else {
-                            const QEMU_EXIT_PORT: u16 = 0x604;
-                            const QEMU_EXIT_MAGIC: u64 = 0x2000;
-
                             let width = match AccessWidth::try_from(io_info.access_size as usize) {
                                 Ok(width) => width,
                                 Err(_) => {
