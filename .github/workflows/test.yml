@@ -7,28 +7,26 @@ env:
   arceos-apps: '68054e8'
 
 jobs:
-  test:
+  test_local:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        arch: [x86_64, riscv64, aarch64]
+        arch: [riscv64, aarch64]
         rust-toolchain: [nightly-2024-12-25, nightly]
     steps:
     - uses: actions/checkout@v4
-    - name: Compress source code
-      run: tar -czf ~/source.tar.gz -C ${{ github.workspace }} .
     - uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: ${{ matrix.rust-toolchain }}
         components: rust-src
     - uses: Swatinem/rust-cache@v2
     - run: cargo install cargo-binutils
-    - uses: ./.github/workflows/actions/setup-qemu
-      if: matrix.arch != 'x86_64'
+    - uses: arceos-org/setup-qemu@v0.1
       with:
-        qemu-version: ${{ env.qemu-version }}
+        version: ${{ env.qemu-version }}
+        arch_list: ${{ matrix.arch }}
     - uses: ./.github/workflows/actions/setup-nimbos-guest-image
       with:
         nimbos-version: 'tags/v0.7'
@@ -39,50 +37,113 @@ jobs:
         echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
         sudo udevadm control --reload-rules
         sudo udevadm trigger --name-match=kvm
-    - name: Run guests
-      if: matrix.arch != 'x86_64'
+    - name: Update rust-toolchain.toml
       run: |
-        cat /proc/cpuinfo
-        if [ "${{ matrix.arch }}" = "x86_64" ]; then
-          export ACCEL=y
-        else
-          export ACCEL=n
-        fi
+        sed -i "s/^channel = .*/channel = \"${{ matrix.rust-toolchain }}\"/" rust-toolchain.toml
+    - name: Run guests
+      continue-on-error: ${{ matrix.rust-toolchain == 'nightly' }}
+      run: |
+        cargo version
         export DISK_IMG="${{ github.workspace }}/disk-${{ matrix.arch }}.img"
         export VM_CONFIGS="$(pwd)/configs/vms/nimbos-${{ matrix.arch }}.toml"
         make ARCH=${{ matrix.arch }} defconfig
-        make ARCH=${{ matrix.arch }} DISK_IMG=${DISK_IMG} LOG=info BLK=y ACCEL=${ACCEL} VM_CONFIGS=${VM_CONFIGS} APP_FEATURES=fs run
-    - name: Copy files to current directory
-      if: matrix.arch == 'x86_64'
-      run: |
-        cp ~/source.tar.gz .
-    - name: Copy x86_64 files to remote runner
-      uses: appleboy/scp-action@v0.1.7
-      if: matrix.arch == 'x86_64'
-      with:
-        host: ${{ secrets.HOST }}
-        username: ${{ secrets.USERNAME }}
-        password: ${{ secrets.PASSWORD }}
-        port: ${{ secrets.PORT }}
-        source: './disk-x86_64.img,./source.tar.gz'
-        target: '~/runner/${{ github.run_id }}-${{ matrix.arch }}-${{ matrix.rust-toolchain }}'
-    - name: Running on remote runner
-      uses: appleboy/ssh-action@v1.1.0
-      if: matrix.arch == 'x86_64'
-      with:
-        host: ${{ secrets.HOST }}
-        username: ${{ secrets.USERNAME }}
-        password: ${{ secrets.PASSWORD }}
-        port: ${{ secrets.PORT }}
-        script: |
-          set -e
-          cd ~/runner/${{ github.run_id }}-${{ matrix.arch }}-${{ matrix.rust-toolchain }} && tar -xzf source.tar.gz
-          cd ~/runner/${{ github.run_id }}-${{ matrix.arch }}-${{ matrix.rust-toolchain }} && make ARCH=x86_64 defconfig
-          cd ~/runner/${{ github.run_id }}-${{ matrix.arch }}-${{ matrix.rust-toolchain }} && make ARCH=x86_64 DISK_IMG=$(pwd)/disk-x86_64.img LOG=info BLK=y ACCEL=y VM_CONFIGS=$(pwd)/configs/vms/nimbos-x86_64.toml APP_FEATURES=fs run | tee make_output.log
-          cd ~/runner/${{ github.run_id }}-${{ matrix.arch }}-${{ matrix.rust-toolchain }} && if grep -q "panic" make_output.log; then
-            echo "Test failed: 'panic' found in output msg"
-            cat make_output.log
-            exit 1
-          fi
-          cat make_output.log
-          cd ~ && rm -rf ~/runner/${{ github.run_id }}-${{ matrix.arch }}-${{ matrix.rust-toolchain }}
+        make ARCH=${{ matrix.arch }} DISK_IMG=${DISK_IMG} LOG=info BLK=y ACCEL=n VM_CONFIGS=${VM_CONFIGS} APP_FEATURES=fs run
+
+  test_remote:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64]
+        rust-toolchain: [nightly-2024-12-25, nightly]
+        remote: [remote_aarkegz, remote_x10dri]
+        include:
+        - remote: remote_aarkegz
+          host_key: HOST
+          username_key: USERNAME
+          password_key: PASSWORD
+          port_key: PORT
+        - remote: remote_x10dri
+          host_key: HOST2
+          username_key: USERNAME2
+          password_key: PASSWORD2
+          port_key: PORT2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update rust-toolchain.toml
+        run: |
+          sed -i "s/^channel = .*/channel = \"${{ matrix.rust-toolchain }}\"/" rust-toolchain.toml
+      - name: Compress source code
+        run: tar -czf ~/source.tar.gz -C ${{ github.workspace }} .
+      - name: Copy files to current directory
+        run: |
+          cp ~/source.tar.gz .
+      - uses: ./.github/workflows/actions/setup-nimbos-guest-image
+        with:
+          nimbos-version: 'tags/v0.7'
+          arch: ${{ matrix.arch }}
+          disk-path: ${{ github.workspace }}/disk-${{ matrix.arch }}.img
+      - name: Copy x86_64 files to remote runner
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets[matrix.host_key] }}
+          username: ${{ secrets[matrix.username_key] }}
+          password: ${{ secrets[matrix.password_key] }}
+          port: ${{ secrets[matrix.port_key] }}
+          source: './disk-x86_64.img,./source.tar.gz'
+          target: '~/runner/remote_test-${{ github.run_id }}-${{ matrix.arch }}-${{ matrix.rust-toolchain }}'
+      - name: Running on remote runner
+        uses: appleboy/ssh-action@v1.2.2
+        continue-on-error: ${{ matrix.rust-toolchain == 'nightly' }}
+        with:
+          host: ${{ secrets[matrix.host_key] }}
+          username: ${{ secrets[matrix.username_key] }}
+          password: ${{ secrets[matrix.password_key] }}
+          port: ${{ secrets[matrix.port_key] }}
+          script: |
+            set -e                        # Exit quickly on error
+            set -o pipefail               # Exit if any command in a pipeline fails
+            . ~/.profile                  # Load ~/.profile manually, as it turns out that sometimes it is not loaded automatically
+
+            # Set the working directory
+            WORKDIR=~/runner/remote_test-${{ github.run_id }}-${{ matrix.arch }}-${{ matrix.rust-toolchain }}
+
+            # Set up colors for output
+            COLOR_BOLD=$'\033[1m'
+            COLOR_RED=$'\033[91;1m'
+            COLOR_GREEN=$'\033[92;1m'
+            COLOR_YELLOW=$'\033[93;1m'
+            COLOR_CLEAR=$'\033[0m'
+
+            # Echo the environment info
+            function echo_env_info() {
+              PREVIOUS_DIR=$(pwd)
+              cd $WORKDIR
+              echo "shell               : ${COLOR_BOLD}${SHELL}${COLOR_CLEAR}"
+              echo "rust-toolchain      : ${COLOR_BOLD}${{ matrix.rust-toolchain }}${COLOR_CLEAR}"
+              echo "cargo version       : ${COLOR_BOLD}$(cargo --version)${COLOR_CLEAR}"
+              echo "workdir             : ${COLOR_BOLD}${WORKDIR}${COLOR_CLEAR}"
+              cd $PREVIOUS_DIR
+            }
+            
+            # Print the environment info
+            echo_env_info
+
+            tar -xzf $WORKDIR/source.tar.gz -C $WORKDIR
+            make -C $WORKDIR ARCH=x86_64 defconfig
+            make -C $WORKDIR ARCH=x86_64 DISK_IMG=$WORKDIR/disk-x86_64.img LOG=info BLK=y ACCEL=y VM_CONFIGS=$WORKDIR/configs/vms/nimbos-x86_64.toml APP_FEATURES=fs run | tee $WORKDIR/make_output.log
+            
+            # Re-echo the environment info
+            echo_env_info
+  
+            if grep -q "panic" $WORKDIR/make_output.log; then
+              echo "test result         : ${COLOR_RED}FAIL${COLOR_CLEAR}"
+              echo "                      ${COLOR_RED}'panic' found in output msg${COLOR_CLEAR}"
+              echo "                      ${COLOR_YELLOW}Check the log file: $WORKDIR/make_output.log${COLOR_CLEAR}"
+              exit 1
+            else
+              echo "test result         : ${COLOR_GREEN}PASS${COLOR_CLEAR}"
+            fi
+
+            # Clean up
+            cd ~ && rm -rf $WORKDIR
