@@ -6,7 +6,7 @@ use crate::vmm::{VCpuRef, VMRef};
 pub struct TaskExt {
     /// The VM.
     pub vm: VMRef,
-    /// The virtual memory address space.
+    /// The virtual CPU.
     pub vcpu: VCpuRef,
 }
 

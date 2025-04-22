@@ -30,7 +30,7 @@ pub fn init_guest_vms() {
             AxVMCrateConfig::from_toml(raw_cfg_str).expect("Failed to resolve VM config");
         let vm_config = AxVMConfig::from(vm_create_config.clone());
 
-        info!("Creating VM [{}] {:?}", vm_config.id(), vm_config.name());
+        info!("Creating VM[{}] {:?}", vm_config.id(), vm_config.name());
 
         // Create VM.
         let vm = VM::new(vm_config).expect("Failed to create VM");
