@@ -77,7 +77,7 @@ testcases_type=(
     "libctest"
 )
 
-IMG_URL=https://github.com/Azure-stars/testsuits-for-oskernel/releases/download/v0.1/sdcard-$ARCH.img.gz
+IMG_URL=https://github.com/Azure-stars/testsuits-for-oskernel/releases/download/v0.2/sdcard-$ARCH.img.gz
 if [ ! -f sdcard-$ARCH.img ]; then
     echo -e "${CYAN_C}Downloading${END_C} $IMG_URL"
     wget -q $IMG_URL
