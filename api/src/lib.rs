@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(missing_docs)]
 
 #[macro_use]
 extern crate axlog;

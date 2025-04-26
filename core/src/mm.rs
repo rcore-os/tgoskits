@@ -1,3 +1,5 @@
+//! User address space management.
+
 use core::ffi::CStr;
 
 use alloc::{string::String, vec};
@@ -8,6 +10,7 @@ use kernel_elf_parser::{AuxvEntry, ELFParser, app_stack_region};
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use xmas_elf::{ElfFile, program::SegmentData};
 
+/// Creates a new empty user address space.
 pub fn new_user_aspace_empty() -> AxResult<AddrSpace> {
     AddrSpace::new_empty(
         VirtAddr::from_usize(axconfig::plat::USER_SPACE_BASE),

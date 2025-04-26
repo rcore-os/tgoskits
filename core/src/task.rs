@@ -1,3 +1,5 @@
+//! User task management.
+
 use core::{
     alloc::Layout,
     cell::RefCell,
@@ -23,6 +25,7 @@ use weak_map::WeakMap;
 
 use crate::time::TimeStat;
 
+/// Create a new user task.
 pub fn new_user_task(
     name: &str,
     uctx: UspaceContext,
@@ -58,6 +61,7 @@ pub struct TaskExt {
 }
 
 impl TaskExt {
+    /// Create a new [`TaskExt`].
     pub fn new(thread: Arc<Thread>) -> Self {
         Self {
             time: RefCell::new(TimeStat::new()),
@@ -77,10 +81,12 @@ impl TaskExt {
         self.time.borrow().output()
     }
 
+    /// Get the [`ThreadData`] associated with this task.
     pub fn thread_data(&self) -> &ThreadData {
         self.thread.data().unwrap()
     }
 
+    /// Get the [`ProcessData`] associated with this task.
     pub fn process_data(&self) -> &ProcessData {
         self.thread.process().data().unwrap()
     }
@@ -88,6 +94,7 @@ impl TaskExt {
 
 axtask::def_task_ext!(TaskExt);
 
+/// Update the time statistics to reflect a switch from kernel mode to user mode.
 pub fn time_stat_from_kernel_to_user() {
     let curr_task = current();
     curr_task
@@ -95,6 +102,7 @@ pub fn time_stat_from_kernel_to_user() {
         .time_stat_from_kernel_to_user(monotonic_time_nanos() as usize);
 }
 
+/// Update the time statistics to reflect a switch from user mode to kernel mode.
 pub fn time_stat_from_user_to_kernel() {
     let curr_task = current();
     curr_task
@@ -102,6 +110,7 @@ pub fn time_stat_from_user_to_kernel() {
         .time_stat_from_user_to_kernel(monotonic_time_nanos() as usize);
 }
 
+/// Get the time statistics for the current task.
 pub fn time_stat_output() -> (usize, usize, usize, usize) {
     let curr_task = current();
     let (utime_ns, stime_ns) = curr_task.task_ext().time_stat_output();
@@ -113,6 +122,7 @@ pub fn time_stat_output() -> (usize, usize, usize, usize) {
     )
 }
 
+/// Extended data for [`Thread`].
 pub struct ThreadData {
     /// The clear thread tid field
     ///
@@ -123,6 +133,7 @@ pub struct ThreadData {
 }
 
 impl ThreadData {
+    /// Create a new [`ThreadData`].
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
@@ -130,16 +141,19 @@ impl ThreadData {
         }
     }
 
+    /// Get the clear child tid field.
     pub fn clear_child_tid(&self) -> usize {
         self.clear_child_tid.load(Ordering::Relaxed)
     }
 
+    /// Set the clear child tid field.
     pub fn set_clear_child_tid(&self, clear_child_tid: usize) {
         self.clear_child_tid
             .store(clear_child_tid, Ordering::Relaxed);
     }
 }
 
+/// Extended data for [`Process`].
 pub struct ProcessData {
     /// The executable path
     pub exe_path: RwLock<String>,
@@ -154,6 +168,7 @@ pub struct ProcessData {
 }
 
 impl ProcessData {
+    /// Create a new [`ProcessData`].
     pub fn new(exe_path: String, aspace: Arc<Mutex<AddrSpace>>) -> Self {
         Self {
             exe_path: RwLock::new(exe_path),
@@ -164,18 +179,22 @@ impl ProcessData {
         }
     }
 
+    /// Get the bottom address of the user heap.
     pub fn get_heap_bottom(&self) -> usize {
         self.heap_bottom.load(Ordering::Acquire)
     }
 
+    /// Set the bottom address of the user heap.
     pub fn set_heap_bottom(&self, bottom: usize) {
         self.heap_bottom.store(bottom, Ordering::Release)
     }
 
+    /// Get the top address of the user heap.
     pub fn get_heap_top(&self) -> usize {
         self.heap_top.load(Ordering::Acquire)
     }
 
+    /// Set the top address of the user heap.
     pub fn set_heap_top(&self, top: usize) {
         self.heap_top.store(top, Ordering::Release)
     }
@@ -221,6 +240,8 @@ static PROCESS_TABLE: RwLock<WeakMap<Pid, Weak<Process>>> = RwLock::new(WeakMap:
 static PROCESS_GROUP_TABLE: RwLock<WeakMap<Pid, Weak<ProcessGroup>>> = RwLock::new(WeakMap::new());
 static SESSION_TABLE: RwLock<WeakMap<Pid, Weak<Session>>> = RwLock::new(WeakMap::new());
 
+/// Add the thread and possibly its process, process group and session to the
+/// corresponding tables.
 pub fn add_thread_to_table(thread: &Arc<Thread>) {
     let mut thread_table = THREAD_TABLE.write();
     thread_table.insert(thread.tid(), thread);

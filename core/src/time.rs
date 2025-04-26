@@ -1,15 +1,3 @@
-#[repr(C)]
-pub struct Tms {
-    /// 进程用户态执行时间，单位为us
-    pub tms_utime: usize,
-    /// 进程内核态执行时间，单位为us
-    pub tms_stime: usize,
-    /// 子进程用户态执行时间和，单位为us
-    pub tms_cutime: usize,
-    /// 子进程内核态执行时间和，单位为us
-    pub tms_cstime: usize,
-}
-
 numeric_enum_macro::numeric_enum! {
     #[repr(i32)]
     #[allow(non_camel_case_types)]
