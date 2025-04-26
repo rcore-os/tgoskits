@@ -61,33 +61,38 @@ pub fn sys_set_tid_address(clear_child_tid: usize) -> LinuxResult<isize> {
 
 #[cfg(target_arch = "x86_64")]
 #[apply(syscall_instrument)]
-pub fn sys_arch_prctl(code: i32, addr: crate::ptr::UserPtr<u64>) -> LinuxResult<isize> {
-    use crate::ptr::PtrWrapper;
-    match ArchPrctlCode::try_from(code).map_err(|_| axerrno::LinuxError::EINVAL)? {
+pub fn sys_arch_prctl(
+    tf: &mut axhal::arch::TrapFrame,
+    code: i32,
+    addr: usize,
+) -> LinuxResult<isize> {
+    use crate::ptr::{PtrWrapper, UserPtr};
+
+    let code = ArchPrctlCode::try_from(code).map_err(|_| axerrno::LinuxError::EINVAL)?;
+    debug!("sys_arch_prctl: code = {:?}, addr = {:#x}", code, addr);
+
+    match code {
         // According to Linux implementation, SetFs & SetGs does not return
         // error at all
-        ArchPrctlCode::SetFs => {
+        ArchPrctlCode::GetFs => {
             unsafe {
-                axhal::arch::write_thread_pointer(addr.address().as_usize());
+                *UserPtr::from(addr).get()? = tf.tls();
+            }
+            Ok(0)
+        }
+        ArchPrctlCode::SetFs => {
+            tf.set_tls(addr);
+            Ok(0)
+        }
+        ArchPrctlCode::GetGs => {
+            unsafe {
+                *UserPtr::from(addr).get()? = x86::msr::rdmsr(x86::msr::IA32_KERNEL_GSBASE);
             }
             Ok(0)
         }
         ArchPrctlCode::SetGs => {
             unsafe {
-                x86::msr::wrmsr(x86::msr::IA32_KERNEL_GSBASE, addr.address().as_usize() as _);
-            }
-            Ok(0)
-        }
-        ArchPrctlCode::GetFs => {
-            unsafe {
-                *addr.get()? = axhal::arch::read_thread_pointer() as u64;
-            }
-            Ok(0)
-        }
-
-        ArchPrctlCode::GetGs => {
-            unsafe {
-                *addr.get()? = x86::msr::rdmsr(x86::msr::IA32_KERNEL_GSBASE);
+                x86::msr::wrmsr(x86::msr::IA32_KERNEL_GSBASE, addr as _);
             }
             Ok(0)
         }

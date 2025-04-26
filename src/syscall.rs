@@ -8,7 +8,7 @@ use starry_core::task::{time_stat_from_kernel_to_user, time_stat_from_user_to_ke
 use syscalls::Sysno;
 
 #[register_trap_handler(SYSCALL)]
-fn handle_syscall(tf: &TrapFrame, syscall_num: usize) -> isize {
+fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
     let sysno = Sysno::from(syscall_num as u32);
     info!("Syscall {}", sysno);
     time_stat_from_user_to_kernel();
@@ -37,17 +37,16 @@ fn handle_syscall(tf: &TrapFrame, syscall_num: usize) -> isize {
         Sysno::dup => sys_dup(tf.arg0() as _),
         Sysno::dup3 => sys_dup3(tf.arg0() as _, tf.arg1() as _),
         Sysno::fcntl => sys_fcntl(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
-        Sysno::clone => {
-            let (child_tid, tls) = if cfg!(any(target_arch = "x86_64", target_arch = "loongarch64"))
-            {
-                (tf.arg3() as _, tf.arg4() as _)
-            } else {
-                (tf.arg4() as _, tf.arg3() as _)
-            };
-            sys_clone(tf.arg0() as _, tf.arg1() as _, tf.arg2(), child_tid, tls)
-        }
+        Sysno::clone => sys_clone(
+            tf,
+            tf.arg0() as _,
+            tf.arg1() as _,
+            tf.arg2(),
+            tf.arg3(),
+            tf.arg4(),
+        ),
         #[cfg(target_arch = "x86_64")]
-        Sysno::fork => sys_fork(),
+        Sysno::fork => sys_fork(tf),
         Sysno::wait4 => sys_waitpid(tf.arg0() as _, tf.arg1().into(), tf.arg2() as _),
         Sysno::pipe2 => sys_pipe2(tf.arg0().into()),
         Sysno::close => sys_close(tf.arg0() as _),
@@ -107,7 +106,7 @@ fn handle_syscall(tf: &TrapFrame, syscall_num: usize) -> isize {
         Sysno::times => sys_times(tf.arg0().into()),
         Sysno::brk => sys_brk(tf.arg0() as _),
         #[cfg(target_arch = "x86_64")]
-        Sysno::arch_prctl => sys_arch_prctl(tf.arg0() as _, tf.arg1().into()),
+        Sysno::arch_prctl => sys_arch_prctl(tf, tf.arg0() as _, tf.arg1() as _),
         Sysno::set_tid_address => sys_set_tid_address(tf.arg0()),
         Sysno::clock_gettime => sys_clock_gettime(tf.arg0() as _, tf.arg1().into()),
         Sysno::getuid => sys_getuid(),
