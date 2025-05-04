@@ -16,6 +16,7 @@
 //! grouped into a namespace.
 
 #![no_std]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 extern crate alloc;
 
@@ -37,6 +38,8 @@ pub fn global_ns() -> &'static Namespace {
 /// # Safety
 /// See [`extern_trait`].
 #[cfg(feature = "thread-local")]
+// FIXME: why doc_auto_cfg doesn't work?
+#[cfg_attr(docsrs, doc(cfg(feature = "thread-local")))]
 #[extern_trait::extern_trait(CurrentNsImpl)]
 pub unsafe trait CurrentNs: AsRef<Namespace> {
     fn new() -> Self;
