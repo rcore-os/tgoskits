@@ -141,8 +141,6 @@ impl<T> Deref for ResCurrent<T> {
 macro_rules! def_resource {
     ( $( $(#[$attr:meta])* $vis:vis static $name:ident: $ty:ty = $default:expr; )+ ) => {
         $(
-            #[used]
-            #[doc(hidden)]
             $(#[$attr])*
             $vis static $name: $crate::ResWrapper<$ty> = {
                 #[unsafe(link_section = "axns_resources")]
