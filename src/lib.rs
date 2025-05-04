@@ -1,21 +1,6 @@
-//! [ArceOS](https://github.com/arceos-org/arceos) namespaces module.
-//!
-//! Namespaces are used to control system resource sharing between threads. This
-//! module provides a unified interface to access system resources in different
-//! scenarios.
-//!
-//! For a unikernel, there is only one global namespace, so all threads share
-//! the same system resources, such as virtual address space, working directory,
-//! and file descriptors, etc.
-//!
-//! For a monolithic kernel, each process corresponds to a namespace, all
-//! threads in the same process share the same system resources. Different
-//! processes have different namespaces and isolated resources.
-//!
-//! For further container support, some global system resources can also be
-//! grouped into a namespace.
-
+#![doc = include_str!("../README.md")]
 #![no_std]
+#![warn(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 extern crate alloc;
@@ -28,6 +13,11 @@ pub use def::{RESOURCES, ResCurrent, ResWrapper, Resource};
 mod ns;
 pub use ns::Namespace;
 
+/// Get a static reference to the global namespace.
+///
+/// This is useful for threads that do not have a isolated namespace but use the
+/// global namespace. Typically you should call this in your implementation of
+/// [`CurrentNs`].
 pub fn global_ns() -> &'static Namespace {
     use spin::Lazy;
     static NS: Lazy<Namespace> = Lazy::new(Namespace::new);
@@ -35,6 +25,11 @@ pub fn global_ns() -> &'static Namespace {
 }
 
 /// Get the current namespace.
+///
+/// Most of the time, namespaces are likely to be stored in containers with
+/// internal mutability such as `RefCell`/`Mutex`, and your implementation will
+/// need to be a RAII guard.
+///
 /// # Safety
 /// See [`extern_trait`].
 #[cfg(feature = "thread-local")]
@@ -42,6 +37,7 @@ pub fn global_ns() -> &'static Namespace {
 #[cfg_attr(docsrs, doc(cfg(feature = "thread-local")))]
 #[extern_trait::extern_trait(CurrentNsImpl)]
 pub unsafe trait CurrentNs: AsRef<Namespace> {
+    /// Get an instance of [`CurrentNs`].
     fn new() -> Self;
 }
 

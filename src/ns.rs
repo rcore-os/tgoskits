@@ -3,6 +3,7 @@ use core::{alloc::Layout, iter::zip, mem::MaybeUninit, ptr::NonNull};
 
 use crate::{RESOURCES, Resource, arc::ResArc};
 
+/// A namespace is a collection of resources.
 pub struct Namespace {
     // Not using [ResArc<A>] to save a `usize` because we know the length
     ptr: NonNull<ResArc>,
@@ -16,6 +17,8 @@ impl Namespace {
         Layout::array::<ResArc>(RESOURCES.len()).unwrap()
     }
 
+    /// Create a new namespace with all resources initialized as their default
+    /// value.
     pub fn new() -> Self {
         let layout = Self::layout();
         let ptr = NonNull::new(unsafe { alloc(layout) })

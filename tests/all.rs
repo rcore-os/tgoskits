@@ -144,7 +144,7 @@ mod local {
             NS.with(|ns| {
                 ns.call_once(|| {
                     let mut ns = Namespace::new();
-                    DATA.clone_from(&mut ns, &src_ns.read());
+                    DATA.share_from(&mut ns, &src_ns.read());
                     Arc::new(RwLock::new(ns))
                 });
             });
