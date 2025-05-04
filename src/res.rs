@@ -1,4 +1,9 @@
-use core::{alloc::Layout, marker::PhantomData, ops::Deref, ptr::NonNull};
+use core::{
+    alloc::Layout,
+    marker::PhantomData,
+    ops::Deref,
+    ptr::{NonNull, addr_of},
+};
 
 use crate::{Namespace, arc::ResArc};
 
@@ -9,16 +14,32 @@ pub struct Resource {
     pub drop: fn(NonNull<()>),
 }
 
-#[doc(hidden)]
-#[linkme::distributed_slice]
-pub static RESOURCES: [Resource];
+// Mimic `linkme`
+pub(crate) struct Resources;
+
+impl Deref for Resources {
+    type Target = [Resource];
+
+    fn deref(&self) -> &Self::Target {
+        unsafe extern "Rust" {
+            #[link_name = "__start_axns_resources"]
+            static RESOURCES_START: Resource;
+            #[link_name = "__stop_axns_resources"]
+            static RESOURCES_STOP: Resource;
+        }
+        let start = addr_of!(RESOURCES_START) as usize;
+        let len = (addr_of!(RESOURCES_STOP) as usize - start) / core::mem::size_of::<Resource>();
+        unsafe { core::slice::from_raw_parts(start as *const Resource, len) }
+    }
+}
 
 impl Resource {
     #[inline]
     pub(crate) fn index(&'static self) -> usize {
         // FIXME: offset_from_unsigned is not available on nightly-2025-01-18
-        // unsafe { (self as *const Resource).offset_from_unsigned(RESOURCES.as_ptr()) }
-        (self as *const _ as usize - RESOURCES.as_ptr() as usize) / core::mem::size_of::<Resource>()
+        // unsafe { (self as *const Resource).offset_from_unsigned(Resources.as_ptr()) }
+        (self as *const Resource as usize - Resources.as_ptr() as usize)
+            / core::mem::size_of::<Resource>()
     }
 }
 
@@ -124,7 +145,7 @@ macro_rules! def_resource {
             #[doc(hidden)]
             $(#[$attr])*
             $vis static $name: $crate::ResWrapper<$ty> = {
-                #[linkme::distributed_slice($crate::RESOURCES)]
+                #[unsafe(link_section = "axns_resources")]
                 static RES: $crate::Resource = $crate::Resource {
                     layout: core::alloc::Layout::new::<$ty>(),
                     init: |ptr| {

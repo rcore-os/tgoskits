@@ -1,7 +1,7 @@
 use alloc::alloc::{alloc, dealloc, handle_alloc_error};
 use core::{alloc::Layout, iter::zip, mem::MaybeUninit, ptr::NonNull};
 
-use crate::{RESOURCES, Resource, arc::ResArc};
+use crate::{Resource, arc::ResArc, res::Resources};
 
 /// A namespace is a collection of resources.
 pub struct Namespace {
@@ -14,7 +14,7 @@ unsafe impl Sync for Namespace {}
 
 impl Namespace {
     fn layout() -> Layout {
-        Layout::array::<ResArc>(RESOURCES.len()).unwrap()
+        Layout::array::<ResArc>(Resources.len()).unwrap()
     }
 
     /// Create a new namespace with all resources initialized as their default
@@ -26,9 +26,9 @@ impl Namespace {
             .cast();
 
         let slice = unsafe {
-            core::slice::from_raw_parts_mut(ptr.cast::<MaybeUninit<_>>().as_ptr(), RESOURCES.len())
+            core::slice::from_raw_parts_mut(ptr.cast::<MaybeUninit<_>>().as_ptr(), Resources.len())
         };
-        for (res, d) in zip(RESOURCES, slice) {
+        for (res, d) in zip(&*Resources, slice) {
             d.write(ResArc::new(res));
         }
 
@@ -54,7 +54,7 @@ impl Default for Namespace {
 
 impl Drop for Namespace {
     fn drop(&mut self) {
-        let ptr = NonNull::slice_from_raw_parts(self.ptr, RESOURCES.len());
+        let ptr = NonNull::slice_from_raw_parts(self.ptr, Resources.len());
         unsafe {
             ptr.drop_in_place();
             dealloc(self.ptr.cast().as_ptr(), Self::layout());

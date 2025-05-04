@@ -7,8 +7,8 @@ extern crate alloc;
 
 mod arc;
 
-mod def;
-pub use def::{RESOURCES, ResCurrent, ResWrapper, Resource};
+mod res;
+pub use res::{ResCurrent, ResWrapper, Resource};
 
 mod ns;
 pub use ns::Namespace;
