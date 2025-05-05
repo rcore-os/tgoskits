@@ -147,7 +147,7 @@ macro_rules! def_resource {
                 static RES: $crate::Resource = $crate::Resource {
                     layout: core::alloc::Layout::new::<$ty>(),
                     init: |ptr| {
-                        let val = $default;
+                        let val: $ty = $default;
                         unsafe { ptr.cast().write(val) }
                     },
                     drop: |ptr| unsafe {
