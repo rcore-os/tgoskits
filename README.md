@@ -1,6 +1,5 @@
 # Resource namespace module for [ArceOS](https://github.com/arceos-org/arceos)
 
-
 This was originally introduced by [arceos#224](https://github.com/arceos-org/arceos/pull/224), but it had limited functionality and issues with memory leaks, so the one here is an almost complete rewrite. And we split it from the main repo.
 
 ## Why Do We Need This?
