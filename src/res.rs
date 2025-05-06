@@ -81,7 +81,11 @@ impl<T> ResWrapper<T> {
         ns.get(self.res).as_ref()
     }
 
-    /// Get a mutable reference to the resource in the given namespace.
+    /// Get a mutable reference to the resource in the given namespace, if it is
+    /// not shared with other namespaces.
+    ///
+    /// Returns `None` otherwise, because it is not safe to mutate a shared
+    /// resource.
     #[inline]
     pub fn get_mut<'ns>(&self, ns: &'ns mut Namespace) -> Option<&'ns mut T> {
         ns.get_mut(self.res).get_mut()
