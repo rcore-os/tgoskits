@@ -1,0 +1,12 @@
+[package]
+name = "axfs-ng-vfs"
+version = "0.1.0"
+edition = "2024"
+authors = ["Mivik <mivikq@gmail.com>"]
+
+[lib]
+
+[dependencies]
+axerrno = "0.1.0"
+bitflags = "2.9.0"
+lock_api = "0.4.12"
