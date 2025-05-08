@@ -129,6 +129,13 @@ impl<M: RawMutex> DirEntry<M> {
         }))
     }
 
+    pub fn metadata(&self) -> VfsResult<Metadata> {
+        self.deref().metadata().map(|mut metadata| {
+            metadata.node_type = self.0.node_type;
+            metadata
+        })
+    }
+
     pub fn downcast<T: Send + Sync + 'static>(&self) -> VfsResult<Arc<T>> {
         self.0
             .node

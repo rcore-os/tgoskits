@@ -4,6 +4,7 @@ use core::time::Duration;
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum NodeType {
+    Unknown = 0,
     Fifo = 0o1,
     CharacterDevice = 0o2,
     Directory = 0o4,
@@ -12,19 +13,17 @@ pub enum NodeType {
     Symlink = 0o12,
     Socket = 0o14,
 }
-impl TryFrom<u8> for NodeType {
-    type Error = ();
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
+impl From<u8> for NodeType {
+    fn from(value: u8) -> Self {
         match value {
-            0o1 => Ok(Self::Fifo),
-            0o2 => Ok(Self::CharacterDevice),
-            0o4 => Ok(Self::Directory),
-            0o6 => Ok(Self::BlockDevice),
-            0o10 => Ok(Self::RegularFile),
-            0o12 => Ok(Self::Symlink),
-            0o14 => Ok(Self::Socket),
-            _ => Err(()),
+            0o1 => Self::Fifo,
+            0o2 => Self::CharacterDevice,
+            0o4 => Self::Directory,
+            0o6 => Self::BlockDevice,
+            0o10 => Self::RegularFile,
+            0o12 => Self::Symlink,
+            0o14 => Self::Socket,
+            _ => Self::Unknown,
         }
     }
 }
