@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 use axerrno::{LinuxError, LinuxResult};
-use axfs::{CURRENT_DIR, CURRENT_DIR_PATH};
+use axfs_ng::FS_CONTEXT;
 use axhal::arch::{TrapFrame, UspaceContext};
 use axprocess::Pid;
 use axsignal::Signo;
@@ -186,19 +186,13 @@ pub fn sys_clone(
         }
 
         if flags.contains(CloneFlags::FS) {
-            CURRENT_DIR
+            FS_CONTEXT
                 .deref_from(&process_data.ns)
-                .init_shared(CURRENT_DIR.share());
-            CURRENT_DIR_PATH
-                .deref_from(&process_data.ns)
-                .init_shared(CURRENT_DIR_PATH.share());
+                .init_shared(FS_CONTEXT.share());
         } else {
-            CURRENT_DIR
+            FS_CONTEXT
                 .deref_from(&process_data.ns)
-                .init_new(CURRENT_DIR.copy_inner());
-            CURRENT_DIR_PATH
-                .deref_from(&process_data.ns)
-                .init_new(CURRENT_DIR_PATH.copy_inner());
+                .init_new(FS_CONTEXT.copy_inner());
         }
         &builder.data(process_data).build()
     };

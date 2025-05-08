@@ -5,15 +5,12 @@ use core::{
 
 use alloc::ffi::CString;
 use axerrno::{LinuxError, LinuxResult};
-use axfs::fops::DirEntry;
-use linux_raw_sys::general::{
-    AT_FDCWD, AT_REMOVEDIR, DT_BLK, DT_CHR, DT_DIR, DT_FIFO, DT_LNK, DT_REG, DT_SOCK, DT_UNKNOWN,
-    linux_dirent64,
-};
+use axfs_ng::FS_CONTEXT;
+use axfs_ng_vfs::{NodePermission, NodeType};
+use linux_raw_sys::general::{AT_FDCWD, AT_REMOVEDIR, linux_dirent64};
 
 use crate::{
-    file::{Directory, FileLike},
-    path::{HARDLINK_MANAGER, handle_file_path},
+    file::{Directory, FileLike, with_fs},
     ptr::{UserConstPtr, UserPtr, nullable},
 };
 
@@ -32,51 +29,27 @@ pub fn sys_ioctl(_fd: i32, _op: usize, _argp: UserPtr<c_void>) -> LinuxResult<is
 
 pub fn sys_chdir(path: UserConstPtr<c_char>) -> LinuxResult<isize> {
     let path = path.get_as_str()?;
-    debug!("sys_chdir <= {:?}", path);
-
-    axfs::api::set_current_dir(path)?;
-    Ok(0)
+    with_fs(AT_FDCWD, |fs| {
+        let entry = fs.resolve(path)?;
+        fs.set_current_dir(entry)?;
+        Ok(0)
+    })
+    .inspect_err(|err| {
+        warn!("Failed to change directory: {err:?}");
+    })
 }
 
 pub fn sys_mkdirat(dirfd: i32, path: UserConstPtr<c_char>, mode: u32) -> LinuxResult<isize> {
     let path = path.get_as_str()?;
-    debug!(
-        "sys_mkdirat <= dirfd: {}, path: {}, mode: {}",
-        dirfd, path, mode
-    );
+    let mode = NodePermission::from_bits(mode as u16).ok_or(LinuxError::EINVAL)?;
 
-    if mode != 0 {
-        warn!("directory mode not supported.");
-    }
-
-    let path = handle_file_path(dirfd, path)?;
-    axfs::api::create_dir(path.as_str())?;
-
-    Ok(0)
-}
-
-#[allow(dead_code)]
-#[repr(u8)]
-#[derive(Debug, Clone, Copy)]
-pub enum FileType {
-    Unknown = DT_UNKNOWN as u8,
-    Fifo = DT_FIFO as u8,
-    Chr = DT_CHR as u8,
-    Dir = DT_DIR as u8,
-    Blk = DT_BLK as u8,
-    Reg = DT_REG as u8,
-    Lnk = DT_LNK as u8,
-    Socket = DT_SOCK as u8,
-}
-
-impl From<axfs::api::FileType> for FileType {
-    fn from(ft: axfs::api::FileType) -> Self {
-        match ft {
-            ft if ft.is_dir() => FileType::Dir,
-            ft if ft.is_file() => FileType::Reg,
-            _ => FileType::Unknown,
-        }
-    }
+    with_fs(dirfd, |fs| {
+        fs.create_dir(path, mode)?;
+        Ok(0)
+    })
+    .inspect_err(|err| {
+        warn!("Failed to create directory {path}: {err:?}");
+    })
 }
 
 // Directory buffer for getdents64 syscall
@@ -94,7 +67,7 @@ impl<'a> DirBuffer<'a> {
         self.buf.len().saturating_sub(self.offset)
     }
 
-    fn write_entry(&mut self, d_type: FileType, name: &[u8]) -> bool {
+    fn write_entry(&mut self, d_ino: u64, d_off: i64, d_type: NodeType, name: &[u8]) -> bool {
         const NAME_OFFSET: usize = offset_of!(linux_dirent64, d_name);
 
         let len = NAME_OFFSET + name.len() + 1;
@@ -108,8 +81,8 @@ impl<'a> DirBuffer<'a> {
             let entry_ptr = self.buf.as_mut_ptr().add(self.offset);
             entry_ptr.cast::<linux_dirent64>().write(linux_dirent64 {
                 // FIXME: real inode number
-                d_ino: 1,
-                d_off: 0,
+                d_ino,
+                d_off,
                 d_reclen: len as _,
                 d_type: d_type as _,
                 d_name: Default::default(),
@@ -137,34 +110,18 @@ pub fn sys_getdents64(fd: i32, buf: UserPtr<u8>, len: usize) -> LinuxResult<isiz
     let mut buffer = DirBuffer::new(buf);
 
     let dir = Directory::from_fd(fd)?;
+    let offset = dir.offset.lock();
 
-    let mut last_dirent = dir.last_dirent();
-    if let Some(ent) = last_dirent.take() {
-        if !buffer.write_entry(ent.entry_type().into(), ent.name_as_bytes()) {
-            *last_dirent = Some(ent);
-            return Err(LinuxError::EINVAL);
-        }
-    }
-
-    let mut inner = dir.inner();
-    loop {
-        let mut dirents = [DirEntry::default()];
-        let cnt = inner.read_dir(&mut dirents)?;
-        if cnt == 0 {
-            break;
-        }
-
-        let [ent] = dirents;
-        if !buffer.write_entry(ent.entry_type().into(), ent.name_as_bytes()) {
-            *last_dirent = Some(ent);
-            break;
-        }
-    }
-
-    if last_dirent.is_some() && buffer.offset == 0 {
-        return Err(LinuxError::EINVAL);
-    }
-    Ok(buffer.offset as _)
+    let mut count = 0;
+    dir.inner()
+        .read_dir(*offset, &mut |name: &str, ino, node_type, offset| {
+            if !buffer.write_entry(ino, offset as _, node_type, name.as_bytes()) {
+                return false;
+            }
+            count += 1;
+            true
+        })?;
+    Ok(count)
 }
 
 /// create a link from new_path to old_path
@@ -190,13 +147,11 @@ pub fn sys_linkat(
         warn!("Unsupported flags: {flags}");
     }
 
-    // handle old path
-    let old_path = handle_file_path(old_dirfd, old_path)?;
-    // handle new path
-    let new_path = handle_file_path(new_dirfd, new_path)?;
+    let old = with_fs(old_dirfd, |fs| Ok(fs.resolve(old_path)?))?;
+    let (new_dir, new_name) =
+        with_fs(new_dirfd, |fs| Ok(fs.resolve_nonexistent(new_path.into())?))?;
 
-    HARDLINK_MANAGER.create_link(&new_path, &old_path)?;
-
+    new_dir.link(new_name, &old)?;
     Ok(0)
 }
 
@@ -212,29 +167,17 @@ pub fn sys_link(
 /// path: the name of link to be removed
 /// flags: can be 0 or AT_REMOVEDIR
 /// return 0 when success, else return -1
-pub fn sys_unlinkat(dirfd: c_int, path: UserConstPtr<c_char>, flags: u32) -> LinuxResult<isize> {
+pub fn sys_unlinkat(dirfd: i32, path: UserConstPtr<c_char>, flags: usize) -> LinuxResult<isize> {
     let path = path.get_as_str()?;
-    debug!(
-        "sys_unlinkat <= dirfd: {}, path: {}, flags: {}",
-        dirfd, path, flags
-    );
 
-    let path = handle_file_path(dirfd, path)?;
-
-    if flags == AT_REMOVEDIR {
-        axfs::api::remove_dir(path.as_str())?;
-    } else {
-        let metadata = axfs::api::metadata(path.as_str())?;
-        if metadata.is_dir() {
-            return Err(LinuxError::EISDIR);
+    with_fs(dirfd, |fs| {
+        if flags == AT_REMOVEDIR as _ {
+            fs.remove_dir(path)?;
         } else {
-            debug!("unlink file: {:?}", path);
-            HARDLINK_MANAGER
-                .remove_link(&path)
-                .ok_or(LinuxError::ENOENT)?;
+            fs.remove_file(path)?;
         }
-    }
-    Ok(0)
+        Ok(0)
+    })
 }
 
 pub fn sys_unlink(path: UserConstPtr<c_char>) -> LinuxResult<isize> {
@@ -248,7 +191,8 @@ pub fn sys_getcwd(buf: UserPtr<u8>, size: usize) -> LinuxResult<isize> {
         return Ok(0);
     };
 
-    let cwd = CString::new(axfs::api::current_dir()?).map_err(|_| LinuxError::EINVAL)?;
+    let cwd = FS_CONTEXT.lock().current_dir().absolute_path()?;
+    let cwd = CString::new(cwd.as_str()).map_err(|_| LinuxError::EINVAL)?;
     let cwd = cwd.as_bytes_with_nul();
 
     if cwd.len() <= buf.len() {

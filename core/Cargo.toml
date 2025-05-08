@@ -8,7 +8,7 @@ repository.workspace = true
 
 [dependencies]
 axconfig.workspace = true
-axfs.workspace = true
+axfs-ng.workspace = true
 axhal.workspace = true
 axlog.workspace = true
 axmm.workspace = true

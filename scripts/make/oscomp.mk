@@ -18,7 +18,7 @@ oscomp_test: defconfig
 	# Test for os competition online
 	@./scripts/oscomp_test.sh
 
-IMG_URL := https://github.com/Azure-stars/testsuits-for-oskernel/releases/download/v0.1/sdcard-$(ARCH).img.gz
+IMG_URL := https://github.com/Azure-stars/testsuits-for-oskernel/releases/download/v0.2/sdcard-$(ARCH).img.gz
 
 define load_img
 	@if [ ! -f $(PWD)/sdcard-$(ARCH).img ]; then \

@@ -1,7 +1,7 @@
 use core::ffi::c_int;
 
 use axerrno::{LinuxError, LinuxResult};
-use axio::SeekFrom;
+use axio::{Seek, SeekFrom};
 use linux_raw_sys::general::{__kernel_off_t, iovec};
 
 use crate::{

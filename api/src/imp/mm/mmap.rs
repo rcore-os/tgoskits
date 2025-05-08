@@ -132,15 +132,15 @@ pub fn sys_mmap(
 
     if populate {
         let file = File::from_fd(fd)?;
-        let file = file.inner();
-        let file_size = file.get_attr()?.size() as usize;
+        let mut file = file.inner();
+        let file_size = file.inner().len()? as usize;
         if offset < 0 || offset as usize >= file_size {
             return Err(LinuxError::EINVAL);
         }
         let offset = offset as usize;
         let length = core::cmp::min(length, file_size - offset);
         let mut buf = vec![0u8; length];
-        file.read_at(offset as u64, &mut buf)?;
+        file.read_at(&mut buf, offset as u64)?;
         aspace.write(start_addr, &buf)?;
     }
     Ok(start_addr.as_usize() as _)

@@ -3,7 +3,8 @@
 use core::ffi::CStr;
 
 use alloc::{borrow::ToOwned, string::String, vec, vec::Vec};
-use axerrno::{AxError, AxResult};
+use axerrno::{AxError, AxResult, LinuxError, LinuxResult};
+use axfs_ng::FS_CONTEXT;
 use axhal::{mem::virt_to_phys, paging::MappingFlags};
 use axmm::{AddrSpace, kernel_aspace};
 use kernel_elf_parser::{AuxvEntry, ELFParser, app_stack_region};
@@ -106,11 +107,11 @@ pub fn load_user_app(
     uspace: &mut AddrSpace,
     args: &[String],
     envs: &[String],
-) -> AxResult<(VirtAddr, VirtAddr)> {
+) -> LinuxResult<(VirtAddr, VirtAddr)> {
     if args.is_empty() {
-        return Err(AxError::InvalidInput);
+        return Err(LinuxError::EINVAL);
     }
-    let file_data = axfs::api::read(args[0].as_str())?;
+    let file_data = FS_CONTEXT.lock().read(&args[0])?;
     if file_data.starts_with(b"#!") {
         let head = &file_data[2..file_data.len().min(256)];
         let pos = head.iter().position(|c| *c == b'\n').unwrap_or(head.len());
@@ -134,12 +135,19 @@ pub fn load_user_app(
             _ => panic!("Invalid data in Interp Elf Program Header"),
         };
 
-        let mut interp_path = axfs::api::canonicalize(
-            CStr::from_bytes_with_nul(interp)
-                .map_err(|_| AxError::InvalidData)?
-                .to_str()
-                .map_err(|_| AxError::InvalidData)?,
-        )?;
+        let interp_path = FS_CONTEXT
+            .lock()
+            .current_dir()
+            .absolute_path()?
+            .join(
+                CStr::from_bytes_with_nul(interp)
+                    .ok()
+                    .and_then(|it| it.to_str().ok())
+                    .ok_or(LinuxError::EINVAL)?,
+            )
+            .normalize()
+            .ok_or(LinuxError::EINVAL)?;
+        let mut interp_path = interp_path.as_str();
 
         if interp_path == "/lib/ld-linux-riscv64-lp64.so.1"
             || interp_path == "/lib64/ld-linux-loongarch-lp64d.so.1"
@@ -147,11 +155,11 @@ pub fn load_user_app(
             || interp_path == "/lib/ld-linux-aarch64.so.1"
         {
             // TODO: Use soft link
-            interp_path = String::from("/musl/lib/libc.so");
+            interp_path = "/musl/lib/libc.so";
         }
 
         // Set the first argument to the path of the user app.
-        let mut new_args = vec![interp_path];
+        let mut new_args = vec![interp_path.to_owned()];
         new_args.extend_from_slice(args);
         return load_user_app(uspace, &new_args, envs);
     }

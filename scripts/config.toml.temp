@@ -2,7 +2,7 @@
 axfeat = { path = "%AX_ROOT%/api/axfeat" }
 
 axconfig = { path = "%AX_ROOT%/modules/axconfig" }
-axfs = { path = "%AX_ROOT%/modules/axfs" }
+axfs-ng = { path = "%AX_ROOT%/modules/axfs-ng" }
 axhal = { path = "%AX_ROOT%/modules/axhal" }
 axlog = { path = "%AX_ROOT%/modules/axlog" }
 axmm = { path = "%AX_ROOT%/modules/axmm" }

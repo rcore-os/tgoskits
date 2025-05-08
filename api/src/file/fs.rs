@@ -1,35 +1,62 @@
 use core::{any::Any, ffi::c_int};
 
-use alloc::{string::String, sync::Arc};
+use alloc::sync::Arc;
 use axerrno::{LinuxError, LinuxResult};
-use axfs::fops::DirEntry;
-use axio::PollState;
-use axsync::{Mutex, MutexGuard};
-use linux_raw_sys::general::S_IFDIR;
+use axfs_ng::{FS_CONTEXT, FsContext};
+use axfs_ng_vfs::{Location, Metadata};
+use axio::{PollState, Read};
+use axsync::{Mutex, MutexGuard, RawMutex};
+use linux_raw_sys::general::AT_FDCWD;
 
 use super::{FileLike, Kstat, get_file_like};
 
+pub fn with_fs<R>(
+    dirfd: c_int,
+    f: impl FnOnce(&mut FsContext<RawMutex>) -> LinuxResult<R>,
+) -> LinuxResult<R> {
+    let mut fs = FS_CONTEXT.lock();
+    if dirfd == AT_FDCWD {
+        f(&mut fs)
+    } else {
+        let dir = Directory::from_fd(dirfd)?.inner.clone();
+        f(&mut fs.with_current_dir(dir)?)
+    }
+}
+
+pub fn metadata_to_kstat(metadata: &Metadata) -> Kstat {
+    let ty = metadata.node_type as u8;
+    let perm = metadata.mode.bits() as u32;
+    let mode = ((ty as u32) << 12) | perm;
+    Kstat {
+        dev: metadata.device,
+        ino: metadata.inode,
+        mode,
+        nlink: metadata.nlink as _,
+        uid: metadata.uid,
+        gid: metadata.gid,
+        size: metadata.size,
+        blksize: metadata.block_size as _,
+        blocks: metadata.blocks,
+        atime: metadata.atime,
+        mtime: metadata.mtime,
+        ctime: metadata.ctime,
+    }
+}
+
 /// File wrapper for `axfs::fops::File`.
 pub struct File {
-    inner: Mutex<axfs::fops::File>,
-    path: String,
+    inner: Mutex<axfs_ng::File<RawMutex>>,
 }
 
 impl File {
-    pub fn new(inner: axfs::fops::File, path: String) -> Self {
+    pub fn new(inner: axfs_ng::File<RawMutex>) -> Self {
         Self {
             inner: Mutex::new(inner),
-            path,
         }
     }
 
-    /// Get the path of the file.
-    pub fn path(&self) -> &str {
-        &self.path
-    }
-
     /// Get the inner node of the file.
-    pub fn inner(&self) -> MutexGuard<axfs::fops::File> {
+    pub fn inner(&self) -> MutexGuard<axfs_ng::File<RawMutex>> {
         self.inner.lock()
     }
 }
@@ -44,17 +71,7 @@ impl FileLike for File {
     }
 
     fn stat(&self) -> LinuxResult<Kstat> {
-        let metadata = self.inner().get_attr()?;
-        let ty = metadata.file_type() as u8;
-        let perm = metadata.perm().bits() as u32;
-
-        Ok(Kstat {
-            mode: ((ty as u32) << 12) | perm,
-            size: metadata.size(),
-            blocks: metadata.blocks(),
-            blksize: 512,
-            ..Default::default()
-        })
+        Ok(metadata_to_kstat(&self.inner().metadata()?))
     }
 
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
@@ -75,33 +92,21 @@ impl FileLike for File {
 
 /// Directory wrapper for `axfs::fops::Directory`.
 pub struct Directory {
-    inner: Mutex<axfs::fops::Directory>,
-    path: String,
-    last_dirent: Mutex<Option<DirEntry>>,
+    inner: Location<RawMutex>,
+    pub offset: Mutex<u64>,
 }
 
 impl Directory {
-    pub fn new(inner: axfs::fops::Directory, path: String) -> Self {
+    pub fn new(inner: Location<RawMutex>) -> Self {
         Self {
-            inner: Mutex::new(inner),
-            path,
-            last_dirent: Mutex::new(None),
+            inner,
+            offset: Mutex::new(0),
         }
     }
 
-    /// Get the path of the directory.
-    pub fn path(&self) -> &str {
-        &self.path
-    }
-
     /// Get the inner node of the directory.
-    pub fn inner(&self) -> MutexGuard<axfs::fops::Directory> {
-        self.inner.lock()
-    }
-
-    /// Get the last directory entry.
-    pub fn last_dirent(&self) -> MutexGuard<Option<DirEntry>> {
-        self.last_dirent.lock()
+    pub fn inner(&self) -> &Location<RawMutex> {
+        &self.inner
     }
 }
 
@@ -115,10 +120,7 @@ impl FileLike for Directory {
     }
 
     fn stat(&self) -> LinuxResult<Kstat> {
-        Ok(Kstat {
-            mode: S_IFDIR | 0o755u32, // rwxr-xr-x
-            ..Default::default()
-        })
+        Ok(metadata_to_kstat(&self.inner.metadata()?))
     }
 
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {

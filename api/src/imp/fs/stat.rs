@@ -1,35 +1,23 @@
 use core::ffi::{c_char, c_int};
 
-use axerrno::{AxError, LinuxError, LinuxResult};
-use axfs::fops::OpenOptions;
+use axerrno::{LinuxError, LinuxResult};
+use axfs_ng::FS_CONTEXT;
 use linux_raw_sys::general::{AT_EMPTY_PATH, stat, statx};
 
 use crate::{
-    file::{Directory, File, FileLike, Kstat, get_file_like},
-    path::handle_file_path,
+    file::{Kstat, get_file_like, metadata_to_kstat, with_fs},
     ptr::{UserConstPtr, UserPtr, nullable},
 };
-
-fn stat_at_path(path: &str) -> LinuxResult<Kstat> {
-    let opts = OpenOptions::new().set_read(true);
-    match axfs::fops::File::open(path, &opts) {
-        Ok(file) => File::new(file, path.into()).stat(),
-        Err(AxError::IsADirectory) => {
-            let dir = axfs::fops::Directory::open_dir(path, &opts)?;
-            Directory::new(dir, path.into()).stat()
-        }
-        Err(e) => Err(e.into()),
-    }
-}
 
 /// Get the file metadata by `path` and write into `statbuf`.
 ///
 /// Return 0 if success.
 pub fn sys_stat(path: UserConstPtr<c_char>, statbuf: UserPtr<stat>) -> LinuxResult<isize> {
     let path = path.get_as_str()?;
-    debug!("sys_stat <= path: {}", path);
+    let statbuf = statbuf.get_as_mut()?;
 
-    *statbuf.get_as_mut()? = stat_at_path(path)?.into();
+    let metadata = FS_CONTEXT.lock().metadata(path)?;
+    *statbuf = metadata_to_kstat(&metadata).into();
 
     Ok(0)
 }
@@ -51,29 +39,31 @@ pub fn sys_lstat(path: UserConstPtr<c_char>, statbuf: UserPtr<stat>) -> LinuxRes
     sys_stat(path, statbuf)
 }
 
+fn kstat_at(dirfd: i32, path: Option<&str>, flags: u32) -> LinuxResult<Kstat> {
+    Ok(match path {
+        Some("") | None => {
+            if flags & AT_EMPTY_PATH == 0 {
+                return Err(LinuxError::ENOENT);
+            }
+            let f = get_file_like(dirfd)?;
+            f.stat()?
+        }
+        Some(path) => {
+            let metadata = with_fs(dirfd, |fs| fs.metadata(path))?;
+            metadata_to_kstat(&metadata)
+        }
+    })
+}
+
 pub fn sys_fstatat(
-    dirfd: c_int,
+    dirfd: i32,
     path: UserConstPtr<c_char>,
     statbuf: UserPtr<stat>,
     flags: u32,
 ) -> LinuxResult<isize> {
     let path = nullable!(path.get_as_str())?;
-    debug!(
-        "sys_fstatat <= dirfd: {}, path: {:?}, flags: {}",
-        dirfd, path, flags
-    );
-
-    *statbuf.get_as_mut()? = if path.is_none_or(|s| s.is_empty()) {
-        if (flags & AT_EMPTY_PATH) == 0 {
-            return Err(LinuxError::ENOENT);
-        }
-        let f = get_file_like(dirfd)?;
-        f.stat()?.into()
-    } else {
-        let path = handle_file_path(dirfd, path.unwrap_or_default())?;
-        stat_at_path(path.as_str())?.into()
-    };
-
+    let statbuf = statbuf.get_as_mut()?;
+    *statbuf = kstat_at(dirfd, path, flags)?.into();
     Ok(0)
 }
 
@@ -117,16 +107,8 @@ pub fn sys_statx(
         dirfd, path, flags
     );
 
-    *statxbuf.get_as_mut()? = if path.is_none_or(|s| s.is_empty()) {
-        if (flags & AT_EMPTY_PATH) == 0 {
-            return Err(LinuxError::ENOENT);
-        }
-        let f = get_file_like(dirfd)?;
-        f.stat()?.into()
-    } else {
-        let path = handle_file_path(dirfd, path.unwrap_or_default())?;
-        stat_at_path(path.as_str())?.into()
-    };
+    let statxbuf = statxbuf.get_as_mut()?;
+    *statxbuf = kstat_at(dirfd, path, flags)?.into();
 
     Ok(0)
 }
