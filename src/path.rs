@@ -145,6 +145,7 @@ impl Path {
         self.inner.as_bytes()
     }
 
+    /// Produces an iterator over the [`Components`] of the path.
     pub fn components(&self) -> Components {
         Components {
             path: &self.inner,
@@ -152,6 +153,7 @@ impl Path {
         }
     }
 
+    /// Returns the final component of the `Path`, if there is one.
     pub fn file_name(&self) -> Option<&str> {
         self.components().next_back().and_then(|p| match p {
             Component::Normal(p) => Some(p),
@@ -159,12 +161,14 @@ impl Path {
         })
     }
 
+    /// Creates an owned [`PathBuf`] with path adjoined to `self`.
     pub fn join(&self, other: impl AsRef<Path>) -> PathBuf {
         let mut path = self.to_owned();
         path.push(other);
         path
     }
 
+    /// Returns the `Path` without its final component, if there is one.
     pub fn parent(&self) -> Option<&Path> {
         let mut comps = self.components();
         let comp = comps.next_back();
@@ -176,8 +180,32 @@ impl Path {
         })
     }
 
+    /// Returns `true` if the `Path` is absolute, i.e., if it is independent of
+    /// the current directory.
     pub fn is_absolute(&self) -> bool {
         self.inner.starts_with('/')
+    }
+
+    /// Normalizes a path without performing I/O.
+    pub fn normalize(&self) -> Option<PathBuf> {
+        let mut ret = PathBuf::new();
+        for component in self.components() {
+            match component {
+                Component::RootDir => {
+                    ret.push("/");
+                }
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    if !ret.pop() {
+                        return None;
+                    }
+                }
+                Component::Normal(c) => {
+                    ret.push(c);
+                }
+            }
+        }
+        Some(ret)
     }
 }
 
@@ -246,8 +274,10 @@ pub struct PathBuf {
 }
 
 impl PathBuf {
-    pub fn new(inner: String) -> Self {
-        Self { inner }
+    pub fn new() -> Self {
+        Self {
+            inner: String::new(),
+        }
     }
 
     pub fn pop(&mut self) -> bool {
