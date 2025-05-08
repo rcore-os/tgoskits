@@ -85,6 +85,7 @@ linux-raw-sys.workspace = true
 starry-core.workspace = true
 starry-api.workspace = true
 
+shlex = { version = "1.3.0", default-features = false }
 syscalls = { git = "https://github.com/jasonwhite/syscalls.git", rev = "92624de", default-features = false }
 
 [patch.crates-io]

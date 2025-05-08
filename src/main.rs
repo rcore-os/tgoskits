@@ -10,8 +10,6 @@ mod entry;
 mod mm;
 mod syscall;
 
-use alloc::vec::Vec;
-
 #[unsafe(no_mangle)]
 fn main() {
     // Create a init process
@@ -23,12 +21,15 @@ fn main() {
         .filter(|&x| !x.is_empty());
 
     for testcase in testcases {
-        let args = testcase
-            .split_ascii_whitespace()
-            .map(Into::into)
-            .collect::<Vec<_>>();
-
+        let Some(args) = shlex::split(testcase) else {
+            error!("Failed to parse testcase: {:?}", testcase);
+            continue;
+        };
+        if args.is_empty() {
+            continue;
+        }
+        info!("Running user task: {:?}", args);
         let exit_code = entry::run_user_app(&args, &[]);
-        info!("User task {} exited with code: {:?}", testcase, exit_code);
+        info!("User task {:?} exited with code: {:?}", args, exit_code);
     }
 }

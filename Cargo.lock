@@ -1421,6 +1421,7 @@ dependencies = [
  "axtask",
  "linkme",
  "linux-raw-sys 0.9.4",
+ "shlex",
  "starry-api",
  "starry-core",
  "syscalls",
