@@ -1,7 +1,6 @@
 use core::ops::Deref;
 
 use alloc::{borrow::ToOwned, collections::btree_map::BTreeMap, string::String, sync::Arc};
-use axerrno::LinuxError;
 use lock_api::{Mutex, MutexGuard, RawMutex};
 
 use crate::{NodeOps, NodePermission, NodeType, VfsError, VfsResult};
@@ -103,7 +102,7 @@ impl<M> From<DirNode<M>> for Arc<dyn NodeOps<M>> {
 
 fn verify_entry_name(name: &str) -> VfsResult<()> {
     if name == "." || name == ".." {
-        return Err(LinuxError::EINVAL);
+        return Err(VfsError::InvalidInput);
     }
     Ok(())
 }
@@ -125,7 +124,7 @@ impl<M: RawMutex> DirNode<M> {
             .clone()
             .into_any()
             .downcast()
-            .map_err(|_| VfsError::EINVAL)
+            .map_err(|_| VfsError::InvalidData)
     }
 
     fn lookup_locked(&self, name: &str, children: &mut DirChildren<M>) -> VfsResult<DirEntry<M>> {
@@ -168,8 +167,8 @@ impl<M: RawMutex> DirNode<M> {
         let mut children = self.cache.lock();
         let entry = self.lookup_locked(name, &mut children)?;
         match (entry.is_dir(), is_dir) {
-            (true, false) => return Err(LinuxError::EISDIR),
-            (false, true) => return Err(LinuxError::ENOTDIR),
+            (true, false) => return Err(VfsError::IsADirectory),
+            (false, true) => return Err(VfsError::NotADirectory),
             _ => {}
         }
 
@@ -217,13 +216,13 @@ impl<M: RawMutex> DirNode<M> {
                 if let Ok(dir) = dst.as_dir() {
                     if dir.has_children()? {
                         // God this chain is horrible
-                        return Err(LinuxError::ENOTEMPTY);
+                        return Err(VfsError::DirectoryNotEmpty);
                     }
                 }
             }
         } else if let Ok(dst) = dst_dir.lookup(dst_name) {
             if dst.node_type() == NodeType::Directory {
-                return Err(LinuxError::EISDIR);
+                return Err(VfsError::IsADirectory);
             }
         }
 
@@ -247,11 +246,11 @@ impl<M: RawMutex> DirNode<M> {
         match self.lookup_locked(name, &mut children) {
             Ok(val) => {
                 if create_new {
-                    return Err(LinuxError::EEXIST);
+                    return Err(VfsError::AlreadyExists);
                 }
                 return Ok(val);
             }
-            Err(err) if err == LinuxError::ENOENT && create => {}
+            Err(err) if err == VfsError::NotFound && create => {}
             Err(err) => return Err(err),
         }
 

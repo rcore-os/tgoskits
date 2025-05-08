@@ -86,7 +86,7 @@ impl<M> Clone for WeakDirEntry<M> {
 }
 impl<M> WeakDirEntry<M> {
     pub fn upgrade(&self) -> VfsResult<DirEntry<M>> {
-        self.0.upgrade().map(DirEntry).ok_or(VfsError::ENOENT)
+        self.0.upgrade().map(DirEntry).ok_or(VfsError::NotFound)
     }
 }
 
@@ -135,7 +135,7 @@ impl<M: RawMutex> DirEntry<M> {
             .clone_inner()
             .into_any()
             .downcast()
-            .map_err(|_| VfsError::EINVAL)
+            .map_err(|_| VfsError::InvalidData)
     }
 
     pub fn downgrade(&self) -> WeakDirEntry<M> {
@@ -200,13 +200,13 @@ impl<M: RawMutex> DirEntry<M> {
     pub fn as_file(&self) -> VfsResult<&FileNode<M>> {
         match &self.0.node {
             Node::File(file) => Ok(file),
-            _ => Err(VfsError::EISDIR),
+            _ => Err(VfsError::IsADirectory),
         }
     }
     pub fn as_dir(&self) -> VfsResult<&DirNode<M>> {
         match &self.0.node {
             Node::Dir(dir) => Ok(dir),
-            _ => Err(VfsError::ENOTDIR),
+            _ => Err(VfsError::NotADirectory),
         }
     }
 
