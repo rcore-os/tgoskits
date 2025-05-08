@@ -187,7 +187,7 @@ impl From<kernel_sigset_t> for SignalSet {
 pub struct SignalInfo(pub siginfo_t);
 
 impl SignalInfo {
-    pub fn new(signo: Signo, code: u32) -> Self {
+    pub fn new(signo: Signo, code: i32) -> Self {
         let mut result: Self = unsafe { mem::zeroed() };
         result.set_signo(signo);
         result.set_code(code);
@@ -202,12 +202,12 @@ impl SignalInfo {
         self.0.__bindgen_anon_1.__bindgen_anon_1.si_signo = signo as _;
     }
 
-    pub fn code(&self) -> u32 {
-        unsafe { self.0.__bindgen_anon_1.__bindgen_anon_1.si_code as _ }
+    pub fn code(&self) -> i32 {
+        unsafe { self.0.__bindgen_anon_1.__bindgen_anon_1.si_code }
     }
 
-    pub fn set_code(&mut self, code: u32) {
-        self.0.__bindgen_anon_1.__bindgen_anon_1.si_code = code as _;
+    pub fn set_code(&mut self, code: i32) {
+        self.0.__bindgen_anon_1.__bindgen_anon_1.si_code = code;
     }
 }
 
