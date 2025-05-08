@@ -18,3 +18,6 @@ user-heap-size = 0x1_0000
 
 # The size of the kernel stack.
 kernel-stack-size = 0x40000
+
+# The address of signal trampoline.
+signal-trampoline = 0x4001_0000

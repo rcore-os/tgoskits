@@ -5,7 +5,7 @@ use axerrno::{LinuxError, LinuxResult};
 use axhal::arch::UspaceContext;
 use axtask::{TaskExtRef, current};
 use macro_rules_attribute::apply;
-use starry_core::mm::load_user_app;
+use starry_core::mm::{load_user_app, map_trampoline};
 
 use crate::{ptr::UserConstPtr, syscall_instrument};
 
@@ -52,6 +52,7 @@ pub fn sys_execve(
 
     let mut aspace = curr_ext.process_data().aspace.lock();
     aspace.unmap_user_areas()?;
+    map_trampoline(&mut aspace)?;
     axhal::arch::flush_tlb(None);
 
     let (entry_point, user_stack_base) =

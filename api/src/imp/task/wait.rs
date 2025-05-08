@@ -7,6 +7,7 @@ use linux_raw_sys::general::{
     __WALL, __WCLONE, __WNOTHREAD, WCONTINUED, WEXITED, WNOHANG, WNOWAIT, WUNTRACED,
 };
 use macro_rules_attribute::apply;
+use starry_core::task::ProcessData;
 
 use crate::{
     ptr::{PtrWrapper, UserPtr},
@@ -64,6 +65,7 @@ pub fn sys_waitpid(pid: i32, exit_code_ptr: UserPtr<i32>, options: u32) -> Linux
     info!("sys_waitpid <= pid: {:?}, options: {:?}", pid, options);
 
     let curr = current();
+    let proc_data = curr.task_ext().process_data();
     let process = curr.task_ext().thread.process();
 
     let pid = if pid == -1 {
@@ -80,6 +82,11 @@ pub fn sys_waitpid(pid: i32, exit_code_ptr: UserPtr<i32>, options: u32) -> Linux
         .children()
         .into_iter()
         .filter(|child| pid.apply(child))
+        .filter(|child| {
+            options.contains(WaitOptions::WALL)
+                || (options.contains(WaitOptions::WCLONE)
+                    == child.data::<ProcessData>().unwrap().is_clone_child())
+        })
         .collect::<Vec<_>>();
     if children.is_empty() {
         return Err(LinuxError::ECHILD);
@@ -98,8 +105,7 @@ pub fn sys_waitpid(pid: i32, exit_code_ptr: UserPtr<i32>, options: u32) -> Linux
         } else if options.contains(WaitOptions::WNOHANG) {
             return Ok(0);
         } else {
-            // TODO: process wait queue
-            crate::sys_sched_yield()?;
+            proc_data.child_exit_wq.wait();
         }
     }
 }

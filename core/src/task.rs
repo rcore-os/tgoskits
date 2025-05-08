@@ -4,12 +4,15 @@ use core::{
     alloc::Layout,
     cell::RefCell,
     sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
 };
 
 use alloc::{
     string::String,
     sync::{Arc, Weak},
+    vec::Vec,
 };
+use axerrno::{LinuxError, LinuxResult};
 use axhal::{
     arch::UspaceContext,
     time::{NANOS_PER_MICROS, NANOS_PER_SEC, monotonic_time_nanos},
@@ -17,8 +20,12 @@ use axhal::{
 use axmm::{AddrSpace, kernel_aspace};
 use axns::{AxNamespace, AxNamespaceIf};
 use axprocess::{Pid, Process, ProcessGroup, Session, Thread};
-use axsync::Mutex;
-use axtask::{TaskExtRef, TaskInner, current};
+use axsignal::{
+    Signo,
+    api::{ProcessSignalManager, SignalActions, ThreadSignalManager},
+};
+use axsync::{Mutex, RawMutex};
+use axtask::{TaskExtRef, TaskInner, WaitQueue, current};
 use memory_addr::VirtAddrRange;
 use spin::{Once, RwLock};
 use weak_map::WeakMap;
@@ -122,6 +129,28 @@ pub fn time_stat_output() -> (usize, usize, usize, usize) {
     )
 }
 
+#[doc(hidden)]
+pub struct WaitQueueWrapper(WaitQueue);
+impl Default for WaitQueueWrapper {
+    fn default() -> Self {
+        Self(WaitQueue::new())
+    }
+}
+impl axsignal::api::WaitQueue for WaitQueueWrapper {
+    fn wait_timeout(&self, timeout: Option<Duration>) -> bool {
+        if let Some(timeout) = timeout {
+            self.0.wait_timeout(timeout)
+        } else {
+            self.0.wait();
+            true
+        }
+    }
+
+    fn notify_one(&self) -> bool {
+        self.0.notify_one(false)
+    }
+}
+
 /// Extended data for [`Thread`].
 pub struct ThreadData {
     /// The clear thread tid field
@@ -130,14 +159,19 @@ pub struct ThreadData {
     ///
     /// When the thread exits, the kernel clears the word at this address if it is not NULL.
     pub clear_child_tid: AtomicUsize,
+
+    /// The thread-level signal manager
+    pub signal: ThreadSignalManager<RawMutex, WaitQueueWrapper>,
 }
 
 impl ThreadData {
     /// Create a new [`ThreadData`].
     #[allow(clippy::new_without_default)]
-    pub fn new() -> Self {
+    pub fn new(proc: &ProcessData) -> Self {
         Self {
             clear_child_tid: AtomicUsize::new(0),
+
+            signal: ThreadSignalManager::new(proc.signal.clone()),
         }
     }
 
@@ -165,17 +199,38 @@ pub struct ProcessData {
     heap_bottom: AtomicUsize,
     /// The user heap top
     heap_top: AtomicUsize,
+
+    /// The child exit wait queue
+    pub child_exit_wq: WaitQueue,
+    /// The exit signal of the thread
+    pub exit_signal: Option<Signo>,
+
+    /// The process signal manager
+    pub signal: Arc<ProcessSignalManager<RawMutex, WaitQueueWrapper>>,
 }
 
 impl ProcessData {
     /// Create a new [`ProcessData`].
-    pub fn new(exe_path: String, aspace: Arc<Mutex<AddrSpace>>) -> Self {
+    pub fn new(
+        exe_path: String,
+        aspace: Arc<Mutex<AddrSpace>>,
+        signal_actions: Arc<Mutex<SignalActions>>,
+        exit_signal: Option<Signo>,
+    ) -> Self {
         Self {
             exe_path: RwLock::new(exe_path),
             aspace,
             ns: AxNamespace::new_thread_local(),
             heap_bottom: AtomicUsize::new(axconfig::plat::USER_HEAP_BASE),
             heap_top: AtomicUsize::new(axconfig::plat::USER_HEAP_BASE),
+
+            child_exit_wq: WaitQueue::new(),
+            exit_signal,
+
+            signal: Arc::new(ProcessSignalManager::new(
+                signal_actions,
+                axconfig::plat::SIGNAL_TRAMPOLINE,
+            )),
         }
     }
 
@@ -197,6 +252,12 @@ impl ProcessData {
     /// Set the top address of the user heap.
     pub fn set_heap_top(&self, top: usize) {
         self.heap_top.store(top, Ordering::Release)
+    }
+
+    /// Linux manual: A "clone" child is one which delivers no signal, or a
+    /// signal other than SIGCHLD to its parent upon termination.
+    pub fn is_clone_child(&self) -> bool {
+        self.exit_signal != Some(Signo::SIGCHLD)
     }
 }
 
@@ -266,4 +327,29 @@ pub fn add_thread_to_table(thread: &Arc<Thread>) {
         return;
     }
     session_table.insert(session.sid(), &session);
+}
+
+/// Lists all processes.
+pub fn processes() -> Vec<Arc<Process>> {
+    PROCESS_TABLE.read().values().collect()
+}
+
+/// Finds the thread with the given TID.
+pub fn get_thread(tid: Pid) -> LinuxResult<Arc<Thread>> {
+    THREAD_TABLE.read().get(&tid).ok_or(LinuxError::ESRCH)
+}
+/// Finds the process with the given PID.
+pub fn get_process(pid: Pid) -> LinuxResult<Arc<Process>> {
+    PROCESS_TABLE.read().get(&pid).ok_or(LinuxError::ESRCH)
+}
+/// Finds the process group with the given PGID.
+pub fn get_process_group(pgid: Pid) -> LinuxResult<Arc<ProcessGroup>> {
+    PROCESS_GROUP_TABLE
+        .read()
+        .get(&pgid)
+        .ok_or(LinuxError::ESRCH)
+}
+/// Finds the session with the given SID.
+pub fn get_session(sid: Pid) -> LinuxResult<Arc<Session>> {
+    SESSION_TABLE.read().get(&sid).ok_or(LinuxError::ESRCH)
 }

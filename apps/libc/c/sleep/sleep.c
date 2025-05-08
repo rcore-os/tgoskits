@@ -2,8 +2,8 @@
 #include <unistd.h>
 int main()
 {
-    printf("Sleeping for 5 seconds...\n");
-    sleep(5);
+    printf("Sleeping for 2 seconds...\n");
+    sleep(2);
     printf("Done!\n");
     return 0;
 }

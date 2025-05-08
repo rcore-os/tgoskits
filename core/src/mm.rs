@@ -4,7 +4,7 @@ use core::ffi::CStr;
 
 use alloc::{string::String, vec};
 use axerrno::{AxError, AxResult};
-use axhal::paging::MappingFlags;
+use axhal::{mem::virt_to_phys, paging::MappingFlags};
 use axmm::{AddrSpace, kernel_aspace};
 use kernel_elf_parser::{AuxvEntry, ELFParser, app_stack_region};
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
@@ -27,6 +27,18 @@ pub fn copy_from_kernel(aspace: &mut AddrSpace) -> AxResult {
         // kernel portion to the user page table.
         aspace.copy_mappings_from(&kernel_aspace().lock())?;
     }
+    Ok(())
+}
+
+/// Map the signal trampoline to the user address space.
+pub fn map_trampoline(aspace: &mut AddrSpace) -> AxResult {
+    let signal_trampoline_paddr = virt_to_phys(axsignal::arch::signal_trampoline_address().into());
+    aspace.map_linear(
+        axconfig::plat::SIGNAL_TRAMPOLINE.into(),
+        signal_trampoline_paddr,
+        PAGE_SIZE_4K,
+        MappingFlags::READ | MappingFlags::EXECUTE | MappingFlags::USER,
+    )?;
     Ok(())
 }
 

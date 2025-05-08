@@ -447,6 +447,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "axsignal"
+version = "0.1.0"
+source = "git+https://github.com/Starry-OS/axsignal.git?rev=b5b6089#b5b6089c40a989ff8ae434ec32ea388b7a9d7a11"
+dependencies = [
+ "axconfig",
+ "axerrno",
+ "axhal",
+ "axtask",
+ "bitflags 2.9.0",
+ "cfg-if",
+ "derive_more",
+ "linux-raw-sys 0.9.4",
+ "lock_api",
+ "log",
+ "strum_macros",
+]
+
+[[package]]
 name = "axsync"
 version = "0.1.0"
 dependencies = [
@@ -645,6 +663,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b396d1f76d455557e1218ec8066ae14bba60b4b36ecd55577ba979f5db7ecaa"
 
 [[package]]
+name = "convert_case"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb402b8d4c85569410425650ce3eddc7d698ed96d39a73f941b08fb63082f1e7"
+dependencies = [
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "cpumask"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -720,6 +747,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3983b127f13995e68c1e29071e5d115cd96f215ccb5e6812e3728cd6f92653b3"
 dependencies = [
  "thiserror",
+]
+
+[[package]]
+name = "derive_more"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "093242cf7570c207c83073cf82f79706fe7b8317e98620a47d5be7c3d8497678"
+dependencies = [
+ "derive_more-impl",
+]
+
+[[package]]
+name = "derive_more-impl"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bda628edc44c4bb645fbe0f758797143e4e07926f7ebf4e9bdfbd3d2ce621df3"
+dependencies = [
+ "convert_case",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.100",
+ "unicode-xid",
 ]
 
 [[package]]
@@ -1417,6 +1466,7 @@ dependencies = [
  "axhal",
  "axlog",
  "axprocess",
+ "axsignal",
  "axsync",
  "axtask",
  "linkme",
@@ -1438,9 +1488,11 @@ dependencies = [
  "axhal",
  "axlog",
  "axprocess",
+ "axsignal",
  "axsync",
  "axtask",
  "bitflags 2.9.0",
+ "linkme",
  "linux-raw-sys 0.9.4",
  "macro_rules_attribute",
  "memory_addr",
@@ -1462,6 +1514,7 @@ dependencies = [
  "axmm",
  "axns",
  "axprocess",
+ "axsignal",
  "axsync",
  "axtask",
  "crate_interface",
@@ -1486,6 +1539,19 @@ name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
+
+[[package]]
+name = "strum_macros"
+version = "0.27.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c77a8c5abcaf0f9ce05d62342b7d298c346515365c36b673df4ebe3ced01fde8"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "rustversion",
+ "syn 2.0.100",
+]
 
 [[package]]
 name = "svgbobdoc"
@@ -1589,10 +1655,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a5f39404a5da50712a4c1eecf25e90dd62b613502b7e925fd4e4d19b5c96512"
 
 [[package]]
+name = "unicode-segmentation"
+version = "1.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6ccf251212114b54433ec949fd6a7841275f9ada20dddd2f29e9ceea4501493"
+
+[[package]]
 name = "unicode-width"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7dd6e30e90baa6f72411720665d41d89b9a3d039dc45b8faea1ddd07f617f6af"
+
+[[package]]
+name = "unicode-xid"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 
 [[package]]
 name = "utf8parse"

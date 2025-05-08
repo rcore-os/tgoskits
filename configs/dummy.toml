@@ -54,6 +54,8 @@ user-heap-base = 0        # uint
 # The size of the user heap.
 user-heap-size = 0          # uint
 
+# The address of signal trampoline.
+signal-trampoline = 0
 
 #
 # Device specifications

@@ -17,6 +17,7 @@ axsync.workspace = true
 axtask.workspace = true
 
 axprocess.workspace = true
+axsignal.workspace = true
 
 axerrno.workspace = true
 linkme.workspace = true

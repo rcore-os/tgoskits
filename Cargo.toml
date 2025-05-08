@@ -39,6 +39,7 @@ axsync = { git = "https://github.com/oscomp/arceos.git" }
 axtask = { git = "https://github.com/oscomp/arceos.git" }
 
 axprocess = { git = "https://github.com/Starry-OS/axprocess.git" }
+axsignal = { git = "https://github.com/Starry-OS/axsignal.git", rev = "b5b6089" }
 
 axerrno = "0.1"
 bitflags = "2.6"
@@ -77,6 +78,7 @@ axtask.workspace = true
 arceos_posix_api.workspace = true
 
 axprocess.workspace = true
+axsignal.workspace = true
 
 axerrno.workspace = true
 linkme.workspace = true

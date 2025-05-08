@@ -3,5 +3,22 @@ build_mode = release
 log_level = off
 
 Hello, World!
-Sleeping for 5 seconds...
+Sleeping for 2 seconds...
 Done!
+
+test_term ok
+Received signal 15, count=1
+End, count=1
+Received signal 15, count=2
+test_sigaction ok1
+test_sigaction ok2
+test_sigprocmask ok1
+test_sigprocmask ok2
+test_sigkill_stop ok1
+test_sigkill_stop ok2
+test_sigwait ok1
+test_sigwait ok2
+test_sigwait ok3
+test_sigsuspend ok1
+test_sigsuspend ok2
+test_sigsuspend ok3
