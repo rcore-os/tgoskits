@@ -1,13 +1,13 @@
 use core::ffi::c_int;
 
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec};
 use axerrno::{LinuxError, LinuxResult};
 use axio::{Seek, SeekFrom};
 use linux_raw_sys::general::{__kernel_off_t, iovec};
 
 use crate::{
     file::{File, FileLike, get_file_like},
-    ptr::{UserConstPtr, UserPtr},
+    ptr::{UserConstPtr, UserPtr, nullable},
 };
 
 /// Read data from the file indicated by `fd`.
@@ -195,4 +195,65 @@ pub fn sys_pwritev2(
         offset += write as __kernel_off_t;
         Ok(write)
     })
+}
+
+fn do_sendfile<F, D>(mut read: F, dest: &D) -> LinuxResult<usize>
+where
+    F: FnMut(&mut [u8]) -> LinuxResult<usize>,
+    D: FileLike + ?Sized,
+{
+    let mut buf = vec![0; 0x4000];
+    let mut total_written = 0;
+    loop {
+        let bytes_read = read(&mut buf)?;
+        if bytes_read == 0 {
+            break;
+        }
+
+        let bytes_written = dest.write(&buf[..bytes_read])?;
+        if bytes_written < bytes_read {
+            break;
+        }
+        total_written += bytes_written;
+    }
+
+    Ok(total_written)
+}
+
+pub fn sys_sendfile(
+    out_fd: c_int,
+    in_fd: c_int,
+    offset: UserPtr<u64>,
+    len: usize,
+) -> LinuxResult<isize> {
+    debug!(
+        "sys_sendfile <= out_fd: {}, in_fd: {}, offset: {}, len: {}",
+        out_fd,
+        in_fd,
+        !offset.is_null(),
+        len
+    );
+
+    let src = get_file_like(in_fd)?;
+    let dest = get_file_like(out_fd)?;
+    let offset = nullable!(offset.get_as_mut())?;
+
+    if let Some(offset) = offset {
+        let src = src
+            .into_any()
+            .downcast::<File>()
+            .map_err(|_| LinuxError::ESPIPE)?;
+
+        do_sendfile(
+            |buf| {
+                let bytes_read = src.inner().read_at(buf, *offset)?;
+                *offset += bytes_read as u64;
+                Ok(bytes_read)
+            },
+            dest.as_ref(),
+        )
+    } else {
+        do_sendfile(|buf| src.read(buf), dest.as_ref())
+    }
+    .map(|n| n as _)
 }
