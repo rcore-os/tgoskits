@@ -182,10 +182,22 @@ impl FileLike for Pipe {
 
     fn poll(&self) -> LinuxResult<PollState> {
         let buf = self.buffer.lock();
-        Ok(PollState {
-            readable: self.readable() && buf.available_read() > 0,
-            writable: self.writable() && buf.available_write() > 0,
-        })
+
+        match self.readable {
+            true => {
+                if buf.available_read() == 0 && self.closed() {
+                    return Err(LinuxError::EPIPE);
+                }
+                Ok(PollState {
+                    readable: buf.available_read() > 0,
+                    writable: false,
+                })
+            }
+            false => Ok(PollState {
+                readable: false,
+                writable: buf.available_write() > 0,
+            }),
+        }
     }
 
     fn set_nonblocking(&self, _nonblocking: bool) -> LinuxResult {
