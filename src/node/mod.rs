@@ -255,8 +255,4 @@ impl<M: RawMutex> DirEntry<M> {
     pub fn is_mountpoint(&self) -> bool {
         self.0.mountpoint.lock().is_some()
     }
-
-    pub fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
-        self.as_dir()?.read_dir(offset, sink)
-    }
 }

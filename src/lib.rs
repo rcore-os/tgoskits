@@ -4,14 +4,15 @@
 extern crate alloc;
 
 mod fs;
+mod mount;
 mod node;
-mod path;
+pub mod path;
 mod types;
 
 pub use fs::*;
+pub use mount::*;
 pub use node::*;
-pub use path::*;
 pub use types::*;
 
-pub type VfsError = axerrno::AxError;
+pub type VfsError = axerrno::LinuxError;
 pub type VfsResult<T> = Result<T, VfsError>;
