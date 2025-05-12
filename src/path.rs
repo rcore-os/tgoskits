@@ -2,6 +2,23 @@ use core::{borrow::Borrow, fmt, ops::Deref};
 
 use alloc::{borrow::ToOwned, string::String, sync::Arc};
 
+use crate::{VfsError, VfsResult};
+
+pub const DOT: &str = ".";
+pub const DOTDOT: &str = "..";
+
+pub const MAX_NAME_LEN: usize = 255;
+
+pub(crate) fn verify_entry_name(name: &str) -> VfsResult<()> {
+    if name == DOT || name == DOTDOT {
+        return Err(VfsError::EINVAL);
+    }
+    if name.len() > MAX_NAME_LEN {
+        return Err(VfsError::ENAMETOOLONG);
+    }
+    Ok(())
+}
+
 /// A single component of a [`Path`].
 ///
 /// This corresponds to [`std::path::Component`].
@@ -300,6 +317,16 @@ impl PathBuf {
             self.inner.push('/');
         }
         self.inner += path.as_str();
+    }
+}
+
+impl<T: AsRef<Path>> FromIterator<T> for PathBuf {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        let mut path = PathBuf::new();
+        for item in iter {
+            path.push(item);
+        }
+        path
     }
 }
 

@@ -52,6 +52,6 @@ impl<M> FileNode<M> {
             .clone()
             .into_any()
             .downcast()
-            .map_err(|_| VfsError::InvalidData)
+            .map_err(|_| VfsError::EINVAL)
     }
 }

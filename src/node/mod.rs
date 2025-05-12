@@ -11,10 +11,14 @@ use alloc::{
     string::String,
     sync::{Arc, Weak},
     vec,
+    vec::Vec,
 };
-use lock_api::RawMutex;
+use inherit_methods_macro::inherit_methods;
+use lock_api::{Mutex, RawMutex};
 
-use crate::{FilesystemOps, Metadata, NodeType, PathBuf, VfsError, VfsResult};
+use crate::{
+    FilesystemOps, Metadata, NodeType, VfsError, VfsResult, mount::Mountpoint, path::PathBuf,
+};
 
 /// Filesystem node operationss
 pub trait NodeOps<M>: Send + Sync {
@@ -51,18 +55,38 @@ impl<M: RawMutex> Node<M> {
         }
     }
 }
+impl<M> Deref for Node<M> {
+    type Target = dyn NodeOps<M>;
+
+    fn deref(&self) -> &Self::Target {
+        match &self {
+            Node::File(file) => file.deref(),
+            Node::Dir(dir) => dir.deref(),
+        }
+    }
+}
+
+pub type ReferenceKey = (usize, String);
 
 pub struct Reference<M> {
-    parent: Option<WeakDirEntry<M>>,
+    parent: Option<DirEntry<M>>,
     name: String,
 }
 impl<M> Reference<M> {
-    pub fn new(parent: Option<WeakDirEntry<M>>, name: String) -> Self {
+    pub fn new(parent: Option<DirEntry<M>>, name: String) -> Self {
         Self { parent, name }
     }
 
     pub fn root() -> Self {
         Self::new(None, String::new())
+    }
+
+    pub fn key(&self) -> ReferenceKey {
+        let address = self
+            .parent
+            .as_ref()
+            .map_or(0, |it| Arc::as_ptr(&it.0) as usize);
+        (address, self.name.clone())
     }
 }
 
@@ -70,6 +94,7 @@ struct Inner<M> {
     node: Node<M>,
     node_type: NodeType,
     reference: Reference<M>,
+    mountpoint: Mutex<M, Option<Arc<Mountpoint<M>>>>,
 }
 pub struct DirEntry<M>(Arc<Inner<M>>);
 impl<M> Clone for DirEntry<M> {
@@ -85,19 +110,8 @@ impl<M> Clone for WeakDirEntry<M> {
     }
 }
 impl<M> WeakDirEntry<M> {
-    pub fn upgrade(&self) -> VfsResult<DirEntry<M>> {
-        self.0.upgrade().map(DirEntry).ok_or(VfsError::NotFound)
-    }
-}
-
-impl<M> Deref for DirEntry<M> {
-    type Target = dyn NodeOps<M>;
-
-    fn deref(&self) -> &Self::Target {
-        match &self.0.node {
-            Node::File(file) => file.deref(),
-            Node::Dir(dir) => dir.deref(),
-        }
+    pub fn upgrade(&self) -> Option<DirEntry<M>> {
+        self.0.upgrade().map(DirEntry)
     }
 }
 
@@ -110,12 +124,21 @@ impl<M> From<Node<M>> for Arc<dyn NodeOps<M>> {
     }
 }
 
+#[inherit_methods(from = "self.0.node")]
+impl<M: RawMutex> DirEntry<M> {
+    pub fn inode(&self) -> u64;
+    pub fn filesystem(&self) -> &dyn FilesystemOps<M>;
+    pub fn len(&self) -> VfsResult<u64>;
+    pub fn sync(&self, data_only: bool) -> VfsResult<()>;
+}
+
 impl<M: RawMutex> DirEntry<M> {
     pub fn new_file(node: FileNode<M>, node_type: NodeType, reference: Reference<M>) -> Self {
         Self(Arc::new(Inner {
             node: Node::File(node),
             node_type,
             reference,
+            mountpoint: Mutex::default(),
         }))
     }
     pub fn new_dir(
@@ -126,11 +149,12 @@ impl<M: RawMutex> DirEntry<M> {
             node: Node::Dir(node_fn(WeakDirEntry(this.clone()))),
             node_type: NodeType::Directory,
             reference,
+            mountpoint: Mutex::default(),
         }))
     }
 
     pub fn metadata(&self) -> VfsResult<Metadata> {
-        self.deref().metadata().map(|mut metadata| {
+        self.0.node.metadata().map(|mut metadata| {
             metadata.node_type = self.0.node_type;
             metadata
         })
@@ -142,26 +166,30 @@ impl<M: RawMutex> DirEntry<M> {
             .clone_inner()
             .into_any()
             .downcast()
-            .map_err(|_| VfsError::InvalidData)
+            .map_err(|_| VfsError::EINVAL)
     }
 
     pub fn downgrade(&self) -> WeakDirEntry<M> {
         WeakDirEntry(Arc::downgrade(&self.0))
     }
 
+    pub fn key(&self) -> ReferenceKey {
+        self.0.reference.key()
+    }
+
     pub fn node_type(&self) -> NodeType {
         self.0.node_type
     }
-    pub fn parent(&self) -> VfsResult<Option<DirEntry<M>>> {
-        self.0
-            .reference
-            .parent
-            .as_ref()
-            .map(|it| it.upgrade())
-            .transpose()
+    pub fn parent(&self) -> Option<Self> {
+        self.0.reference.parent.clone()
     }
     pub fn name(&self) -> &str {
         &self.0.reference.name
+    }
+
+    /// Checks if the entry is a root of a mount point.
+    pub fn is_root_of_mount(&self) -> bool {
+        self.0.reference.parent.is_none()
     }
 
     pub fn is_ancestor_of(&self, other: &Self) -> VfsResult<bool> {
@@ -170,7 +198,7 @@ impl<M: RawMutex> DirEntry<M> {
             if current.ptr_eq(self) {
                 return Ok(true);
             }
-            if let Some(parent) = current.parent()? {
+            if let Some(parent) = current.parent() {
                 current = parent;
             } else {
                 break;
@@ -179,22 +207,22 @@ impl<M: RawMutex> DirEntry<M> {
         Ok(false)
     }
 
-    pub fn absolute_path(&self) -> VfsResult<PathBuf> {
-        let mut components = vec![];
+    pub(crate) fn collect_absolute_path(&self, components: &mut Vec<String>) {
         let mut current = self.clone();
         loop {
             components.push(current.name().to_owned());
-            if let Some(parent) = current.parent()? {
+            if let Some(parent) = current.parent() {
                 current = parent;
             } else {
                 break;
             }
         }
-        let mut path: PathBuf = "/".into();
-        for comp in components.iter().rev() {
-            path.push(comp);
-        }
-        Ok(path)
+    }
+
+    pub fn absolute_path(&self) -> VfsResult<PathBuf> {
+        let mut components = vec![];
+        self.collect_absolute_path(&mut components);
+        Ok(components.iter().rev().collect())
     }
 
     pub fn is_file(&self) -> bool {
@@ -207,17 +235,24 @@ impl<M: RawMutex> DirEntry<M> {
     pub fn as_file(&self) -> VfsResult<&FileNode<M>> {
         match &self.0.node {
             Node::File(file) => Ok(file),
-            _ => Err(VfsError::IsADirectory),
+            _ => Err(VfsError::EISDIR),
         }
     }
     pub fn as_dir(&self) -> VfsResult<&DirNode<M>> {
         match &self.0.node {
             Node::Dir(dir) => Ok(dir),
-            _ => Err(VfsError::NotADirectory),
+            _ => Err(VfsError::ENOTDIR),
         }
     }
 
     pub fn ptr_eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
+    }
+
+    pub fn mountpoint(&self) -> Option<Arc<Mountpoint<M>>> {
+        self.0.mountpoint.lock().clone()
+    }
+    pub fn is_mountpoint(&self) -> bool {
+        self.0.mountpoint.lock().is_some()
     }
 }

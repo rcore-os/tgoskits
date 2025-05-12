@@ -9,4 +9,5 @@ authors = ["Mivik <mivikq@gmail.com>"]
 [dependencies]
 axerrno = "0.1.0"
 bitflags = "2.9.0"
+inherit-methods-macro = "0.1.0"
 lock_api = "0.4.12"
