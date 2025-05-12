@@ -14,11 +14,9 @@ use alloc::{
     vec::Vec,
 };
 use inherit_methods_macro::inherit_methods;
-use lock_api::{Mutex, RawMutex};
+use lock_api::RawMutex;
 
-use crate::{
-    FilesystemOps, Metadata, NodeType, VfsError, VfsResult, mount::Mountpoint, path::PathBuf,
-};
+use crate::{FilesystemOps, Metadata, NodeType, VfsError, VfsResult, path::PathBuf};
 
 /// Filesystem node operationss
 pub trait NodeOps<M>: Send + Sync {
@@ -94,7 +92,6 @@ struct Inner<M> {
     node: Node<M>,
     node_type: NodeType,
     reference: Reference<M>,
-    mountpoint: Mutex<M, Option<Arc<Mountpoint<M>>>>,
 }
 pub struct DirEntry<M>(Arc<Inner<M>>);
 impl<M> Clone for DirEntry<M> {
@@ -138,7 +135,6 @@ impl<M: RawMutex> DirEntry<M> {
             node: Node::File(node),
             node_type,
             reference,
-            mountpoint: Mutex::default(),
         }))
     }
     pub fn new_dir(
@@ -149,7 +145,6 @@ impl<M: RawMutex> DirEntry<M> {
             node: Node::Dir(node_fn(WeakDirEntry(this.clone()))),
             node_type: NodeType::Directory,
             reference,
-            mountpoint: Mutex::default(),
         }))
     }
 
@@ -247,12 +242,5 @@ impl<M: RawMutex> DirEntry<M> {
 
     pub fn ptr_eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
-    }
-
-    pub fn mountpoint(&self) -> Option<Arc<Mountpoint<M>>> {
-        self.0.mountpoint.lock().clone()
-    }
-    pub fn is_mountpoint(&self) -> bool {
-        self.0.mountpoint.lock().is_some()
     }
 }

@@ -1,9 +1,15 @@
-use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec};
+use alloc::{
+    collections::btree_map::BTreeMap,
+    sync::{Arc, Weak},
+    vec,
+};
 use inherit_methods_macro::inherit_methods;
 use lock_api::{Mutex, RawMutex};
 
 use crate::{
-    path::{PathBuf, DOT, DOTDOT}, DirEntry, DirEntrySink, Filesystem, Metadata, NodePermission, NodeType, ReferenceKey, VfsError, VfsResult
+    DirEntry, DirEntrySink, Filesystem, Metadata, NodePermission, NodeType, ReferenceKey, VfsError,
+    VfsResult,
+    path::{DOT, DOTDOT, PathBuf},
 };
 
 pub struct Mountpoint<M> {
@@ -12,7 +18,7 @@ pub struct Mountpoint<M> {
     /// Location in the parent mountpoint.
     location: Option<Location<M>>,
     /// Children of the mountpoint.
-    children: Mutex<M, BTreeMap<ReferenceKey, Arc<Self>>>,
+    children: Mutex<M, BTreeMap<ReferenceKey, Weak<Self>>>,
 }
 impl<M: RawMutex> Mountpoint<M> {
     pub fn new_root(fs: &Filesystem<M>) -> Arc<Self> {
@@ -45,7 +51,7 @@ impl<M: RawMutex> Mountpoint<M> {
     /// return `mnt2` for `mnt1.effective_mountpoint()`.
     pub(crate) fn effective_mountpoint(self: &Arc<Self>) -> Arc<Mountpoint<M>> {
         let mut mountpoint = self.clone();
-        while let Some(mount) = mountpoint.root.mountpoint() {
+        while let Some(mount) = mountpoint.root.as_dir().unwrap().mountpoint() {
             mountpoint = mount;
         }
         mountpoint
@@ -147,9 +153,13 @@ impl<M: RawMutex> Location<M> {
         Arc::ptr_eq(&self.mountpoint, &other.mountpoint) && self.entry.ptr_eq(&other.entry)
     }
 
+    pub fn is_mountpoint(&self) -> bool {
+        self.entry.as_dir().map_or(false, |it| it.is_mountpoint())
+    }
+
     /// See [`Mountpoint::effective_mountpoint`].
     fn resolve_mountpoint(self) -> Self {
-        if !self.entry.is_root_of_mount() {
+        if !self.is_mountpoint() {
             return self;
         }
 
@@ -222,5 +232,36 @@ impl<M: RawMutex> Location<M> {
 
     pub fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
         self.entry.as_dir()?.read_dir(offset, sink)
+    }
+
+    pub fn mount(&self, fs: &Filesystem<M>) -> VfsResult<Arc<Mountpoint<M>>> {
+        let mut mountpoint = self.entry.as_dir()?.mountpoint.lock();
+        if mountpoint.is_some() {
+            return Err(VfsError::EBUSY);
+        }
+        let result = Mountpoint::new_root(&fs);
+        *mountpoint = Some(result.clone());
+        self.mountpoint
+            .children
+            .lock()
+            .insert(self.entry.key(), Arc::downgrade(&result));
+        Ok(result)
+    }
+
+    pub fn unmount(&self) -> VfsResult<()> {
+        let Some(mountpoint) = self.entry.as_dir()?.mountpoint.lock().take() else {
+            return Err(VfsError::EINVAL);
+        };
+        mountpoint.root.as_dir()?.forget();
+        if self
+            .mountpoint
+            .children
+            .lock()
+            .remove(&self.entry.key())
+            .is_none()
+        {
+            return Err(VfsError::EINVAL);
+        }
+        Ok(())
     }
 }

@@ -25,6 +25,7 @@ dependencies = [
  "bitflags",
  "inherit-methods-macro",
  "lock_api",
+ "log",
 ]
 
 [[package]]

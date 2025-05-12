@@ -1,10 +1,10 @@
-use core::ops::Deref;
+use core::{mem, ops::{Deref, DerefMut}};
 
 use alloc::{borrow::ToOwned, collections::btree_map::BTreeMap, string::String, sync::Arc};
 use lock_api::{Mutex, RawMutex};
 
 use crate::{
-    NodeOps, NodePermission, NodeType, VfsError, VfsResult,
+    Mountpoint, NodeOps, NodePermission, NodeType, VfsError, VfsResult,
     path::{DOT, DOTDOT, verify_entry_name},
 };
 
@@ -74,6 +74,7 @@ pub trait DirNodeOps<M: RawMutex>: NodeOps<M> {
 pub struct DirNode<M> {
     ops: Arc<dyn DirNodeOps<M>>,
     cache: Mutex<M, BTreeMap<String, DirEntry<M>>>,
+    pub(crate) mountpoint: Mutex<M, Option<Arc<Mountpoint<M>>>>,
 }
 impl<M> Deref for DirNode<M> {
     type Target = dyn NodeOps<M>;
@@ -93,6 +94,7 @@ impl<M: RawMutex> DirNode<M> {
         Self {
             ops,
             cache: Mutex::new(BTreeMap::new()),
+            mountpoint: Mutex::new(None),
         }
     }
 
@@ -233,5 +235,21 @@ impl<M: RawMutex> DirNode<M> {
         }
 
         self.create(name, NodeType::RegularFile, permission)
+    }
+
+    pub fn mountpoint(&self) -> Option<Arc<Mountpoint<M>>> {
+        self.mountpoint.lock().clone()
+    }
+    pub fn is_mountpoint(&self) -> bool {
+        self.mountpoint.lock().is_some()
+    }
+
+    /// Clears the cache of directory entries, allowing them to be released.
+    pub(crate) fn forget(&self) {
+        for (_, child) in mem::take(self.cache.lock().deref_mut()) {
+            if let Ok(dir) = child.as_dir() {
+                dir.forget();
+            }
+        }
     }
 }
