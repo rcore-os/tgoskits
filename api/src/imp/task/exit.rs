@@ -19,12 +19,16 @@ pub fn do_exit(exit_code: i32, group_exit: bool) -> ! {
     let clear_child_tid = UserPtr::<Pid>::from(curr_ext.thread_data().clear_child_tid());
     if let Ok(clear_tid) = clear_child_tid.get() {
         unsafe { clear_tid.write(0) };
-        if let Some(futex) = curr_ext
+
+        // Since `guard` (WaitQueueGuard) acquires lock to the futex table on
+        // drop, we need to ensure that the temporary lock's lifetime is
+        // encapsulated within `guard`'s scope.
+        let guard = curr_ext
             .process_data()
             .futex_table
             .lock()
-            .get(clear_tid as *const _ as usize)
-        {
+            .get(clear_tid as *const _ as usize);
+        if let Some(futex) = guard {
             futex.notify_one(false);
         }
         axtask::yield_now();
