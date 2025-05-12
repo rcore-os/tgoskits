@@ -1,14 +1,17 @@
 use core::ops::Deref;
 
 use alloc::{borrow::ToOwned, collections::btree_map::BTreeMap, string::String, sync::Arc};
-use lock_api::{Mutex, MutexGuard, RawMutex};
+use lock_api::{Mutex, RawMutex};
 
-use crate::{NodeOps, NodePermission, NodeType, VfsError, VfsResult, path::verify_entry_name};
+use crate::{
+    NodeOps, NodePermission, NodeType, VfsError, VfsResult,
+    path::{DOT, DOTDOT, verify_entry_name},
+};
 
 use super::DirEntry;
 
 /// A trait for a sink that can receive directory entries.
-pub trait DirEntrySink<M> {
+pub trait DirEntrySink {
     /// Accept a directory entry, returns `false` if the sink is full.
     ///
     /// `offset` is the offset of the next entry to be read.
@@ -16,39 +19,24 @@ pub trait DirEntrySink<M> {
     /// It's not recommended to operate on the node inside the `accept`
     /// function, since some filesystem may impose a lock while iterating the
     /// directory, and operating on the node may cause deadlock.
-    fn accept(&mut self, entry: DirEntry<M>, offset: u64) -> bool;
+    fn accept(&mut self, name: &str, ino: u64, node_type: NodeType, offset: u64) -> bool;
 }
-impl<F: FnMut(DirEntry<M>, u64) -> bool, M> DirEntrySink<M> for F {
-    fn accept(&mut self, entry: DirEntry<M>, offset: u64) -> bool {
-        self(entry, offset)
+impl<F: FnMut(&str, u64, NodeType, u64) -> bool> DirEntrySink for F {
+    fn accept(&mut self, name: &str, ino: u64, node_type: NodeType, offset: u64) -> bool {
+        self(name, ino, node_type, offset)
     }
 }
 
 type DirChildren<M> = BTreeMap<String, DirEntry<M>>;
 
-pub struct DirEntryVisitor<'a, M: RawMutex> {
-    sink: &'a mut dyn DirEntrySink<M>,
-    children: MutexGuard<'a, M, DirChildren<M>>,
-}
-impl<'a, M: RawMutex> DirEntryVisitor<'a, M> {
-    pub fn accept_with(
-        &mut self,
-        name: String,
-        offset: u64,
-        f: impl FnOnce(&String) -> DirEntry<M>,
-    ) -> bool {
-        self.sink.accept(
-            self.children.entry(name).or_insert_with_key(f).clone(),
-            offset,
-        )
-    }
-}
-
 pub trait DirNodeOps<M: RawMutex>: NodeOps<M> {
     /// Reads directory entries.
     ///
     /// Returns the number of entries read.
-    fn read_dir(&self, offset: u64, visitor: DirEntryVisitor<'_, M>) -> VfsResult<usize>;
+    ///
+    /// Implementations should ensure that `.` and `..` are present in the
+    /// result.
+    fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize>;
 
     /// Lookups a directory entry by name.
     fn lookup(&self, name: &str) -> VfsResult<DirEntry<M>>;
@@ -137,11 +125,8 @@ impl<M: RawMutex> DirNode<M> {
         self.lookup_locked(name, &mut self.cache.lock())
     }
 
-    /// Reads directory entries.
-    pub fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink<M>) -> VfsResult<usize> {
-        let children = self.cache.lock();
-        let visitor = DirEntryVisitor { sink, children };
-        self.ops.read_dir(offset, visitor)
+    pub fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+        self.ops.read_dir(offset, sink)
     }
 
     /// Creates a link to a node.
@@ -173,8 +158,8 @@ impl<M: RawMutex> DirNode<M> {
     /// Returns whether the directory contains children.
     pub fn has_children(&self) -> VfsResult<bool> {
         let mut has_children = false;
-        self.read_dir(0, &mut |entry: DirEntry<M>, _offset| {
-            if entry.name() != "." && entry.name() != ".." {
+        self.read_dir(0, &mut |name: &str, _, _, _| {
+            if name != DOT && name != DOTDOT {
                 has_children = true;
                 false
             } else {
