@@ -3,15 +3,20 @@
 use core::ops::Deref;
 
 use alloc::{collections::btree_map::BTreeMap, sync::Arc};
+use axsync::Mutex;
 use axtask::{TaskExtRef, WaitQueue, current};
 
 /// A table mapping memory addresses to futex wait queues.
-#[derive(Default)]
-pub struct FutexTable(BTreeMap<usize, Arc<WaitQueue>>);
+pub struct FutexTable(Mutex<BTreeMap<usize, Arc<WaitQueue>>>);
 impl FutexTable {
+    /// Creates a new `FutexTable`.
+    pub fn new() -> Self {
+        Self(Mutex::new(BTreeMap::new()))
+    }
+
     /// Gets the wait queue associated with the given address.
     pub fn get(&self, addr: usize) -> Option<WaitQueueGuard> {
-        let wq = self.0.get(&addr).cloned()?;
+        let wq = self.0.lock().get(&addr).cloned()?;
         Some(WaitQueueGuard {
             key: addr,
             inner: wq,
@@ -20,9 +25,9 @@ impl FutexTable {
 
     /// Gets the wait queue associated with the given address, or inserts a a
     /// new one if it doesn't exist.
-    pub fn get_or_insert(&mut self, addr: usize) -> WaitQueueGuard {
-        let wq = self
-            .0
+    pub fn get_or_insert(&self, addr: usize) -> WaitQueueGuard {
+        let mut table = self.0.lock();
+        let wq = table
             .entry(addr)
             .or_insert_with(|| Arc::new(WaitQueue::new()));
         WaitQueueGuard {
@@ -47,9 +52,9 @@ impl Deref for WaitQueueGuard {
 impl Drop for WaitQueueGuard {
     fn drop(&mut self) {
         let curr = current();
-        let mut table = curr.task_ext().process_data().futex_table.lock();
+        let mut table = curr.task_ext().process_data().futex_table.0.lock();
         if Arc::strong_count(&self.inner) == 1 && self.inner.is_empty() {
-            table.0.remove(&self.key);
+            table.remove(&self.key);
         }
     }
 }

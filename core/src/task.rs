@@ -209,7 +209,7 @@ pub struct ProcessData {
     pub signal: Arc<ProcessSignalManager<RawMutex, WaitQueueWrapper>>,
 
     /// The futex table.
-    pub futex_table: Mutex<FutexTable>,
+    pub futex_table: FutexTable,
 }
 
 impl ProcessData {
@@ -235,7 +235,7 @@ impl ProcessData {
                 axconfig::plat::SIGNAL_TRAMPOLINE,
             )),
 
-            futex_table: Mutex::default(),
+            futex_table: FutexTable::new(),
         }
     }
 

@@ -27,7 +27,7 @@ pub fn sys_futex(
             if unsafe { uaddr.get()?.read() } != value {
                 return Err(LinuxError::EAGAIN);
             }
-            let wq = futex_table.lock().get_or_insert(addr);
+            let wq = futex_table.get_or_insert(addr);
 
             if let Some(timeout) = timeout.nullable(UserConstPtr::get)? {
                 wq.wait_timeout(unsafe { *timeout }.into());
@@ -38,7 +38,7 @@ pub fn sys_futex(
             Ok(0)
         }
         FUTEX_WAKE => {
-            let wq = futex_table.lock().get(addr);
+            let wq = futex_table.get(addr);
             let mut count = 0;
             if let Some(wq) = wq {
                 for _ in 0..value {
@@ -57,12 +57,8 @@ pub fn sys_futex(
             }
             let value2 = timeout.address().as_usize() as u32;
 
-            let mut futex_table = futex_table.lock();
             let wq = futex_table.get(addr);
-            let wq2 = futex_table
-                .get_or_insert(uaddr2.address().as_usize())
-                .clone();
-            drop(futex_table);
+            let wq2 = futex_table.get_or_insert(uaddr2.address().as_usize());
 
             let mut count = 0;
             if let Some(wq) = wq {
