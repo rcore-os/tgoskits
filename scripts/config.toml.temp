@@ -1,12 +1,13 @@
 [patch.'https://github.com/oscomp/arceos.git']
 axfeat = { path = "%AX_ROOT%/api/axfeat" }
-arceos_posix_api = { path = "%AX_ROOT%/api/arceos_posix_api" }
 
 axconfig = { path = "%AX_ROOT%/modules/axconfig" }
 axfs = { path = "%AX_ROOT%/modules/axfs" }
 axhal = { path = "%AX_ROOT%/modules/axhal" }
 axlog = { path = "%AX_ROOT%/modules/axlog" }
 axmm = { path = "%AX_ROOT%/modules/axmm" }
+axnet = { path = "%AX_ROOT%/modules/axnet" }
 axns = { path = "%AX_ROOT%/modules/axns" }
+axruntime = { path = "%AX_ROOT%/modules/axruntime" }
 axsync = { path = "%AX_ROOT%/modules/axsync" }
 axtask = { path = "%AX_ROOT%/modules/axtask" }

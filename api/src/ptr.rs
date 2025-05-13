@@ -1,4 +1,4 @@
-use core::{alloc::Layout, ffi::c_char, mem, slice, str};
+use core::{alloc::Layout, ffi::c_char, mem::transmute, ptr, slice, str};
 
 use axerrno::{LinuxError, LinuxResult};
 use axhal::paging::MappingFlags;
@@ -29,10 +29,10 @@ fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> 
     Ok(())
 }
 
-fn check_null_terminated<T: Eq + Default>(
+fn check_null_terminated<T: PartialEq + Default>(
     start: VirtAddr,
     access_flags: MappingFlags,
-) -> LinuxResult<(*const T, usize)> {
+) -> LinuxResult<usize> {
     let align = Layout::new::<T>().align();
     if start.as_usize() & (align - 1) != 0 {
         return Err(LinuxError::EFAULT);
@@ -80,76 +80,12 @@ fn check_null_terminated<T: Eq + Default>(
         Ok(())
     })?;
 
-    Ok((start, len))
-}
-
-/// A trait representing a pointer in user space, which can be converted to a
-/// pointer in kernel space through a series of checks.
-///
-/// Converting a `PtrWrapper<T>` to `*T` is done by `PtrWrapper::get` (or
-/// `get_as_*`). It checks whether the pointer along with its layout is valid in
-/// the current task's address space, and raises EFAULT if not.
-pub trait PtrWrapper<T>: Sized {
-    type Ptr;
-
-    const ACCESS_FLAGS: MappingFlags;
-
-    /// Unwrap the pointer to the inner type.
-    ///
-    /// This function is unsafe because it assumes that the pointer is valid and
-    /// points to a valid memory region.
-    unsafe fn into_inner(self) -> Self::Ptr;
-
-    /// Get the address of the pointer.
-    fn address(&self) -> VirtAddr;
-
-    /// Get the pointer as a raw pointer to `T`.
-    fn get(self) -> LinuxResult<Self::Ptr> {
-        self.get_as(Layout::new::<T>())
-    }
-
-    /// Get the pointer as a raw pointer to `T`, validating the memory
-    /// region given by the layout.
-    fn get_as(self, layout: Layout) -> LinuxResult<Self::Ptr> {
-        check_region(self.address(), layout, Self::ACCESS_FLAGS)?;
-        unsafe { Ok(self.into_inner()) }
-    }
-
-    /// Get the pointer as a raw pointer to `T`, validating the memory
-    /// region specified by the size.
-    fn get_as_bytes(self, size: usize) -> LinuxResult<Self::Ptr> {
-        check_region(
-            self.address(),
-            Layout::from_size_align(size, 1).unwrap(),
-            Self::ACCESS_FLAGS,
-        )?;
-        unsafe { Ok(self.into_inner()) }
-    }
-
-    /// Get the pointer as a raw pointer to `T`, validating the memory
-    /// region given by the layout of `[T; len]`.
-    fn get_as_array(self, len: usize) -> LinuxResult<Self::Ptr> {
-        check_region(
-            self.address(),
-            Layout::array::<T>(len).unwrap(),
-            Self::ACCESS_FLAGS,
-        )?;
-        unsafe { Ok(self.into_inner()) }
-    }
-
-    fn nullable<R>(self, f: impl FnOnce(Self) -> LinuxResult<R>) -> LinuxResult<Option<R>> {
-        if self.address().as_ptr().is_null() {
-            Ok(None)
-        } else {
-            f(self).map(Some)
-        }
-    }
+    Ok(len)
 }
 
 /// A pointer to user space memory.
-///
-/// See [`PtrWrapper`] for more details.
 #[repr(transparent)]
+#[derive(PartialEq, Clone, Copy)]
 pub struct UserPtr<T>(*mut T);
 
 impl<T> From<usize> for UserPtr<T> {
@@ -158,37 +94,49 @@ impl<T> From<usize> for UserPtr<T> {
     }
 }
 
-impl<T> PtrWrapper<T> for UserPtr<T> {
-    type Ptr = *mut T;
-
-    const ACCESS_FLAGS: MappingFlags = MappingFlags::READ.union(MappingFlags::WRITE);
-
-    unsafe fn into_inner(self) -> Self::Ptr {
-        self.0
-    }
-
-    fn address(&self) -> VirtAddr {
-        VirtAddr::from_mut_ptr_of(self.0)
+impl<T> Default for UserPtr<T> {
+    fn default() -> Self {
+        Self(ptr::null_mut())
     }
 }
 
 impl<T> UserPtr<T> {
-    /// Get the pointer as `&mut [T]`, terminated by a null value, validating
-    /// the memory region.
-    pub fn get_as_null_terminated(self) -> LinuxResult<&'static mut [T]>
+    const ACCESS_FLAGS: MappingFlags = MappingFlags::READ.union(MappingFlags::WRITE);
+
+    pub fn address(&self) -> VirtAddr {
+        VirtAddr::from_ptr_of(self.0)
+    }
+
+    pub fn is_null(&self) -> bool {
+        self.0.is_null()
+    }
+
+    pub fn get_as_mut(self) -> LinuxResult<&'static mut T> {
+        check_region(self.address(), Layout::new::<T>(), Self::ACCESS_FLAGS)?;
+        Ok(unsafe { &mut *self.0 })
+    }
+
+    pub fn get_as_mut_slice(self, len: usize) -> LinuxResult<&'static mut [T]> {
+        check_region(
+            self.address(),
+            Layout::array::<T>(len).unwrap(),
+            Self::ACCESS_FLAGS,
+        )?;
+        Ok(unsafe { slice::from_raw_parts_mut(self.0, len) })
+    }
+
+    pub fn get_as_mut_null_terminated(self) -> LinuxResult<&'static mut [T]>
     where
-        T: Eq + Default,
+        T: PartialEq + Default,
     {
-        let (ptr, len) = check_null_terminated::<T>(self.address(), Self::ACCESS_FLAGS)?;
-        // SAFETY: We've validated the memory region.
-        unsafe { Ok(slice::from_raw_parts_mut(ptr as *mut _, len)) }
+        let len = check_null_terminated::<T>(self.address(), Self::ACCESS_FLAGS)?;
+        Ok(unsafe { slice::from_raw_parts_mut(self.0, len) })
     }
 }
 
 /// An immutable pointer to user space memory.
-///
-/// See [`PtrWrapper`] for more details.
 #[repr(transparent)]
+#[derive(PartialEq, Clone, Copy)]
 pub struct UserConstPtr<T>(*const T);
 
 impl<T> From<usize> for UserConstPtr<T> {
@@ -197,42 +145,64 @@ impl<T> From<usize> for UserConstPtr<T> {
     }
 }
 
-impl<T> PtrWrapper<T> for UserConstPtr<T> {
-    type Ptr = *const T;
-
-    const ACCESS_FLAGS: MappingFlags = MappingFlags::READ;
-
-    unsafe fn into_inner(self) -> Self::Ptr {
-        self.0
-    }
-
-    fn address(&self) -> VirtAddr {
-        VirtAddr::from_ptr_of(self.0)
+impl<T> Default for UserConstPtr<T> {
+    fn default() -> Self {
+        Self(ptr::null())
     }
 }
 
 impl<T> UserConstPtr<T> {
-    /// Get the pointer as `&[T]`, terminated by a null value, validating the
-    /// memory region.
+    const ACCESS_FLAGS: MappingFlags = MappingFlags::READ;
+
+    pub fn address(&self) -> VirtAddr {
+        VirtAddr::from_ptr_of(self.0)
+    }
+
+    pub fn is_null(&self) -> bool {
+        self.0.is_null()
+    }
+
+    pub fn get_as_ref(self) -> LinuxResult<&'static T> {
+        check_region(self.address(), Layout::new::<T>(), Self::ACCESS_FLAGS)?;
+        Ok(unsafe { &*self.0 })
+    }
+
+    pub fn get_as_slice(self, len: usize) -> LinuxResult<&'static [T]> {
+        check_region(
+            self.address(),
+            Layout::array::<T>(len).unwrap(),
+            Self::ACCESS_FLAGS,
+        )?;
+        Ok(unsafe { slice::from_raw_parts(self.0, len) })
+    }
+
     pub fn get_as_null_terminated(self) -> LinuxResult<&'static [T]>
     where
-        T: Eq + Default,
+        T: PartialEq + Default,
     {
-        let (ptr, len) = check_null_terminated::<T>(self.address(), Self::ACCESS_FLAGS)?;
-        // SAFETY: We've validated the memory region.
-        unsafe { Ok(slice::from_raw_parts(ptr, len)) }
+        let len = check_null_terminated::<T>(self.address(), Self::ACCESS_FLAGS)?;
+        Ok(unsafe { slice::from_raw_parts(self.0, len) })
     }
 }
-
-static_assertions::const_assert_eq!(size_of::<c_char>(), size_of::<u8>());
 
 impl UserConstPtr<c_char> {
     /// Get the pointer as `&str`, validating the memory region.
     pub fn get_as_str(self) -> LinuxResult<&'static str> {
         let slice = self.get_as_null_terminated()?;
         // SAFETY: c_char is u8
-        let slice = unsafe { mem::transmute::<&[c_char], &[u8]>(slice) };
+        let slice = unsafe { transmute::<&[c_char], &[u8]>(slice) };
 
         str::from_utf8(slice).map_err(|_| LinuxError::EILSEQ)
     }
 }
+
+macro_rules! nullable {
+    ($ptr:ident.$func:ident($($arg:expr),*)) => {
+        if $ptr.is_null() {
+            Ok(None)
+        } else {
+            Some($ptr.$func($($arg),*)).transpose()
+        }
+    };
+}
+pub(crate) use nullable;

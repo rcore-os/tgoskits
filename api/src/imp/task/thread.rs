@@ -1,16 +1,11 @@
 use axerrno::LinuxResult;
 use axtask::{TaskExtRef, current};
-use macro_rules_attribute::apply;
 use num_enum::TryFromPrimitive;
 
-use crate::syscall_instrument;
-
-#[apply(syscall_instrument)]
 pub fn sys_getpid() -> LinuxResult<isize> {
     Ok(axtask::current().task_ext().thread.process().pid() as _)
 }
 
-#[apply(syscall_instrument)]
 pub fn sys_getppid() -> LinuxResult<isize> {
     Ok(axtask::current()
         .task_ext()
@@ -21,7 +16,6 @@ pub fn sys_getppid() -> LinuxResult<isize> {
         .pid() as _)
 }
 
-#[apply(syscall_instrument)]
 pub fn sys_gettid() -> LinuxResult<isize> {
     Ok(axtask::current().id().as_u64() as _)
 }
@@ -50,7 +44,6 @@ enum ArchPrctlCode {
 /// To set the clear_child_tid field in the task extended data.
 ///
 /// The set_tid_address() always succeeds
-#[apply(syscall_instrument)]
 pub fn sys_set_tid_address(clear_child_tid: usize) -> LinuxResult<isize> {
     let curr = current();
     curr.task_ext()
@@ -60,13 +53,12 @@ pub fn sys_set_tid_address(clear_child_tid: usize) -> LinuxResult<isize> {
 }
 
 #[cfg(target_arch = "x86_64")]
-#[apply(syscall_instrument)]
 pub fn sys_arch_prctl(
     tf: &mut axhal::arch::TrapFrame,
     code: i32,
     addr: usize,
 ) -> LinuxResult<isize> {
-    use crate::ptr::{PtrWrapper, UserPtr};
+    use crate::ptr::UserPtr;
 
     let code = ArchPrctlCode::try_from(code).map_err(|_| axerrno::LinuxError::EINVAL)?;
     debug!("sys_arch_prctl: code = {:?}, addr = {:#x}", code, addr);
@@ -75,9 +67,7 @@ pub fn sys_arch_prctl(
         // According to Linux implementation, SetFs & SetGs does not return
         // error at all
         ArchPrctlCode::GetFs => {
-            unsafe {
-                *UserPtr::from(addr).get()? = tf.tls();
-            }
+            *UserPtr::from(addr).get_as_mut()? = tf.tls();
             Ok(0)
         }
         ArchPrctlCode::SetFs => {
@@ -85,9 +75,8 @@ pub fn sys_arch_prctl(
             Ok(0)
         }
         ArchPrctlCode::GetGs => {
-            unsafe {
-                *UserPtr::from(addr).get()? = x86::msr::rdmsr(x86::msr::IA32_KERNEL_GSBASE);
-            }
+            *UserPtr::from(addr).get_as_mut()? =
+                unsafe { x86::msr::rdmsr(x86::msr::IA32_KERNEL_GSBASE) };
             Ok(0)
         }
         ArchPrctlCode::SetGs => {

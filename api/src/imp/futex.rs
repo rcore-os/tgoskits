@@ -1,11 +1,13 @@
-use arceos_posix_api::ctypes::timespec;
 use axerrno::{LinuxError, LinuxResult};
 use axtask::{TaskExtRef, current};
 use linux_raw_sys::general::{
-    FUTEX_CMD_MASK, FUTEX_CMP_REQUEUE, FUTEX_REQUEUE, FUTEX_WAIT, FUTEX_WAKE,
+    FUTEX_CMD_MASK, FUTEX_CMP_REQUEUE, FUTEX_REQUEUE, FUTEX_WAIT, FUTEX_WAKE, timespec,
 };
 
-use crate::ptr::{PtrWrapper, UserConstPtr, UserPtr};
+use crate::{
+    ptr::{UserConstPtr, UserPtr, nullable},
+    time::TimeValueLike,
+};
 
 pub fn sys_futex(
     uaddr: UserConstPtr<u32>,
@@ -24,13 +26,13 @@ pub fn sys_futex(
     let command = futex_op & (FUTEX_CMD_MASK as u32);
     match command {
         FUTEX_WAIT => {
-            if unsafe { uaddr.get()?.read() } != value {
+            if *uaddr.get_as_ref()? != value {
                 return Err(LinuxError::EAGAIN);
             }
             let wq = futex_table.get_or_insert(addr);
 
-            if let Some(timeout) = timeout.nullable(UserConstPtr::get)? {
-                wq.wait_timeout(unsafe { *timeout }.into());
+            if let Some(timeout) = nullable!(timeout.get_as_ref())? {
+                wq.wait_timeout(timeout.to_time_value());
             } else {
                 wq.wait();
             }
@@ -52,7 +54,7 @@ pub fn sys_futex(
             Ok(count)
         }
         FUTEX_REQUEUE | FUTEX_CMP_REQUEUE => {
-            if command == FUTEX_CMP_REQUEUE && unsafe { uaddr.get()?.read() } != value3 {
+            if command == FUTEX_CMP_REQUEUE && *uaddr.get_as_ref()? != value3 {
                 return Err(LinuxError::EAGAIN);
             }
             let value2 = timeout.address().as_usize() as u32;

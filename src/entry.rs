@@ -1,10 +1,10 @@
 use alloc::{string::String, sync::Arc};
-use arceos_posix_api::FD_TABLE;
 use axfs::{CURRENT_DIR, CURRENT_DIR_PATH, api::set_current_dir};
 use axhal::arch::UspaceContext;
 use axprocess::{Pid, init_proc};
 use axsignal::Signo;
 use axsync::Mutex;
+use starry_api::file::FD_TABLE;
 use starry_core::{
     mm::{copy_from_kernel, load_user_app, map_trampoline, new_user_aspace_empty},
     task::{ProcessData, TaskExt, ThreadData, add_thread_to_table, new_user_task},

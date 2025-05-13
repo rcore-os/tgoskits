@@ -1,24 +1,32 @@
-use alloc::vec::Vec;
-use arceos_posix_api::{AT_FDCWD, FilePath, handle_file_path};
-use axerrno::{LinuxError, LinuxResult};
-use axsync::Mutex;
 use core::ffi::{c_char, c_void};
 
-use crate::ptr::UserConstPtr;
+use alloc::vec::Vec;
+use axerrno::{LinuxError, LinuxResult};
+use axsync::Mutex;
+use linux_raw_sys::general::AT_FDCWD;
+
+use crate::{
+    path::{FilePath, handle_file_path},
+    ptr::UserConstPtr,
+};
 
 pub fn sys_mount(
     source: UserConstPtr<c_char>,
     target: UserConstPtr<c_char>,
     fs_type: UserConstPtr<c_char>,
-    _flags: i32,
+    flags: i32,
     _data: UserConstPtr<c_void>,
 ) -> LinuxResult<isize> {
-    info!("sys_mount");
-    let source = source.get_as_null_terminated()?;
-    let target = target.get_as_null_terminated()?;
+    let source = source.get_as_str()?;
+    let target = target.get_as_str()?;
     let fs_type = fs_type.get_as_str()?;
-    let device_path = handle_file_path(AT_FDCWD, Some(source.as_ptr() as _), false)?;
-    let mount_path = handle_file_path(AT_FDCWD, Some(target.as_ptr() as _), true)?;
+    info!(
+        "sys_mount <= source: {}, target: {}, fs_type: {}, flags: {}",
+        source, target, fs_type, flags
+    );
+
+    let device_path = handle_file_path(AT_FDCWD, source)?;
+    let mount_path = handle_file_path(AT_FDCWD, target)?;
     info!(
         "mount {:?} to {:?} with fs_type={:?}",
         device_path, mount_path, fs_type
@@ -47,9 +55,10 @@ pub fn sys_mount(
 }
 
 pub fn sys_umount2(target: UserConstPtr<c_char>, flags: i32) -> LinuxResult<isize> {
-    info!("sys_umount2");
-    let target = target.get_as_null_terminated()?;
-    let mount_path = handle_file_path(AT_FDCWD, Some(target.as_ptr() as _), true)?;
+    let target = target.get_as_str()?;
+    info!("sys_umount2 <= target: {}, flags: {}", target, flags);
+
+    let mount_path = handle_file_path(AT_FDCWD, target)?;
     if flags != 0 {
         debug!("flags unimplemented");
         return Err(LinuxError::EPERM);
@@ -69,7 +78,7 @@ pub fn sys_umount2(target: UserConstPtr<c_char>, flags: i32) -> LinuxResult<isiz
 
 /// Mounted File System
 /// "Mount" means read&write a file as a file system now
-pub struct MountedFs {
+struct MountedFs {
     //pub inner: Arc<Mutex<FATFileSystem>>,
     pub device: FilePath,
     pub mnt_dir: FilePath,
@@ -77,15 +86,12 @@ pub struct MountedFs {
 
 impl MountedFs {
     pub fn new(device: &FilePath, mnt_dir: &FilePath) -> Self {
-        assert!(
-            device.is_file() && mnt_dir.is_dir(),
-            "device must be a file and mnt_dir must be a dir"
-        );
         Self {
             device: device.clone(),
             mnt_dir: mnt_dir.clone(),
         }
     }
+
     #[allow(unused)]
     pub fn device(&self) -> FilePath {
         self.device.clone()

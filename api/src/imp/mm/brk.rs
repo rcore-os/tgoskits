@@ -1,10 +1,6 @@
 use axerrno::LinuxResult;
 use axtask::{TaskExtRef, current};
-use macro_rules_attribute::apply;
 
-use crate::syscall_instrument;
-
-#[apply(syscall_instrument)]
 pub fn sys_brk(addr: usize) -> LinuxResult<isize> {
     let task = current();
     let process_data = task.task_ext().process_data();

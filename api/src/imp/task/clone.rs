@@ -1,5 +1,4 @@
 use alloc::sync::Arc;
-use arceos_posix_api::FD_TABLE;
 use axerrno::{LinuxError, LinuxResult};
 use axfs::{CURRENT_DIR, CURRENT_DIR_PATH};
 use axhal::arch::{TrapFrame, UspaceContext};
@@ -14,7 +13,7 @@ use starry_core::{
     task::{ProcessData, TaskExt, ThreadData, add_thread_to_table, new_user_task},
 };
 
-use crate::ptr::{PtrWrapper, UserPtr};
+use crate::{file::FD_TABLE, ptr::UserPtr};
 
 bitflags! {
     /// Options for use with [`sys_clone`].
@@ -115,7 +114,7 @@ pub fn sys_clone(
     new_uctx.set_retval(0);
 
     let set_child_tid = if flags.contains(CloneFlags::CHILD_SETTID) {
-        unsafe { UserPtr::<u32>::from(child_tid).get()?.as_mut() }
+        Some(UserPtr::<u32>::from(child_tid).get_as_mut()?)
     } else {
         None
     };
@@ -125,7 +124,7 @@ pub fn sys_clone(
 
     let tid = new_task.id().as_u64() as Pid;
     if flags.contains(CloneFlags::PARENT_SETTID) {
-        unsafe { UserPtr::<Pid>::from(parent_tid).get()?.write(tid) };
+        *UserPtr::<Pid>::from(parent_tid).get_as_mut()? = tid;
     }
 
     let process = if flags.contains(CloneFlags::THREAD) {
