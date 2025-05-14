@@ -1,3 +1,5 @@
+use core::sync::atomic::{AtomicU64, Ordering};
+
 use alloc::{
     collections::btree_map::BTreeMap,
     sync::{Arc, Weak},
@@ -19,14 +21,19 @@ pub struct Mountpoint<M> {
     location: Option<Location<M>>,
     /// Children of the mountpoint.
     children: Mutex<M, BTreeMap<ReferenceKey, Weak<Self>>>,
+    /// Device ID
+    device: u64,
 }
 impl<M: RawMutex> Mountpoint<M> {
     pub fn new_root(fs: &Filesystem<M>) -> Arc<Self> {
+        static DEVICE_COUNTER: AtomicU64 = AtomicU64::new(1);
+
         let root = fs.root_dir();
         Arc::new(Self {
             root,
             location: None,
             children: Mutex::default(),
+            device: DEVICE_COUNTER.fetch_add(1, Ordering::Relaxed),
         })
     }
 
@@ -58,7 +65,7 @@ impl<M: RawMutex> Mountpoint<M> {
     }
 
     pub fn device(self: &Arc<Self>) -> u64 {
-        Arc::as_ptr(self) as u64
+        self.device
     }
 }
 
