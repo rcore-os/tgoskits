@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 axconfig.workspace = true
 axfs-ng.workspace = true
+axfs-ng-vfs.workspace = true
 axhal.workspace = true
 axlog.workspace = true
 axmm.workspace = true
@@ -31,4 +32,5 @@ numeric-enum-macro = "0.2"
 percpu = "0.2.0"
 xmas-elf = "0.9"
 
+slab = { version = "0.4.9", default-features = false }
 weak-map = { git = "https://github.com/Starry-OS/weak-map.git" }

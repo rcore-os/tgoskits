@@ -13,3 +13,4 @@ pub mod mm;
 pub mod resources;
 pub mod task;
 mod time;
+pub mod vfs;

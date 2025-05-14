@@ -15,6 +15,7 @@ mod syscall;
 fn main() {
     // Create a init process
     axprocess::Process::new_init(axtask::current().id().as_u64() as _).build();
+    starry_core::vfs::mount_all().expect("Failed to mount vfs");
 
     let testcases = option_env!("AX_TESTCASES_LIST")
         .unwrap_or_else(|| "Please specify the testcases list by making user_apps")
