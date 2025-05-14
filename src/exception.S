@@ -71,6 +71,7 @@
 .macro HANDLE_CURRENT_IRQ
 .p2align 7
     SAVE_REGS_FROM_EL1
+    mov     x0, sp
     bl      current_el_irq_handler
     b       .Lexception_return_el2
 .endm
@@ -78,6 +79,7 @@
 .macro HANDLE_CURRENT_SYNC
 .p2align 7
     SAVE_REGS_FROM_EL1
+    mov     x0, sp
     bl      current_el_sync_handler
     b       .Lexception_return_el2
 .endm
