@@ -2,13 +2,14 @@ use core::ffi::c_char;
 
 use alloc::{string::ToString, vec::Vec};
 use axerrno::{LinuxError, LinuxResult};
-use axhal::arch::UspaceContext;
+use axhal::arch::TrapFrame;
 use axtask::{TaskExtRef, current};
 use starry_core::mm::{load_user_app, map_trampoline};
 
 use crate::ptr::UserConstPtr;
 
 pub fn sys_execve(
+    tf: &mut TrapFrame,
     path: UserConstPtr<c_char>,
     argv: UserConstPtr<UserConstPtr<c_char>>,
     envp: UserConstPtr<UserConstPtr<c_char>>,
@@ -60,6 +61,7 @@ pub fn sys_execve(
 
     // TODO: fd close-on-exec
 
-    let uctx = UspaceContext::new(entry_point.as_usize(), user_stack_base, 0);
-    unsafe { uctx.enter_uspace(curr.kernel_stack_top().expect("No kernel stack top")) }
+    tf.set_ip(entry_point.as_usize());
+    tf.set_sp(user_stack_base.as_usize());
+    Ok(0)
 }
