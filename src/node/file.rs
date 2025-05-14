@@ -21,6 +21,9 @@ pub trait FileNodeOps<M>: NodeOps<M> {
 
     /// Sets the size of the file.
     fn set_len(&self, len: u64) -> VfsResult<()>;
+
+    /// Sets the file's symlink target.
+    fn set_symlink(&self, target: &str) -> VfsResult<()>;
 }
 
 #[repr(transparent)]

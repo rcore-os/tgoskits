@@ -2,6 +2,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use alloc::{
     collections::btree_map::BTreeMap,
+    string::String,
     sync::{Arc, Weak},
     vec,
 };
@@ -93,6 +94,8 @@ impl<M: RawMutex> Location<M> {
 
     pub fn node_type(&self) -> NodeType;
     pub fn is_root_of_mount(&self) -> bool;
+
+    pub fn read_link(&self) -> VfsResult<String>;
 }
 
 impl<M: RawMutex> Location<M> {
@@ -175,7 +178,7 @@ impl<M: RawMutex> Location<M> {
         Self::new(mountpoint, entry)
     }
 
-    pub fn lookup(&self, name: &str) -> VfsResult<Self> {
+    pub fn lookup_no_follow(&self, name: &str) -> VfsResult<Self> {
         Ok(match name {
             DOT => self.clone(),
             DOTDOT => self.parent().unwrap_or_else(|| self.clone()),

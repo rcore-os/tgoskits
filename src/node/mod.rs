@@ -243,4 +243,14 @@ impl<M: RawMutex> DirEntry<M> {
     pub fn ptr_eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
+
+    pub fn read_link(&self) -> VfsResult<String> {
+        if self.node_type() != NodeType::Symlink {
+            return Err(VfsError::EINVAL);
+        }
+        let file = self.as_file()?;
+        let mut buf = vec![0; file.len()? as usize];
+        file.read_at(&mut buf, 0)?;
+        String::from_utf8(buf).map_err(|_| VfsError::EINVAL)
+    }
 }
