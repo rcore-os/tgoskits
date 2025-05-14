@@ -1,4 +1,7 @@
-use core::{mem, ops::{Deref, DerefMut}};
+use core::{
+    mem,
+    ops::{Deref, DerefMut},
+};
 
 use alloc::{borrow::ToOwned, collections::btree_map::BTreeMap, string::String, sync::Arc};
 use lock_api::{Mutex, RawMutex};
@@ -153,7 +156,7 @@ impl<M: RawMutex> DirNode<M> {
         }
 
         self.ops.unlink(name).inspect(|_| {
-            self.cache.lock().remove(name);
+            children.remove(name);
         })
     }
 
@@ -171,6 +174,18 @@ impl<M: RawMutex> DirNode<M> {
         Ok(has_children)
     }
 
+    fn create_locked(
+        &self,
+        name: &str,
+        node_type: NodeType,
+        permission: NodePermission,
+        children: &mut DirChildren<M>,
+    ) -> VfsResult<DirEntry<M>> {
+        let entry = self.ops.create(name, node_type, permission)?;
+        children.insert(name.to_owned(), entry.clone());
+        Ok(entry)
+    }
+
     /// Creates a directory entry.
     pub fn create(
         &self,
@@ -179,10 +194,7 @@ impl<M: RawMutex> DirNode<M> {
         permission: NodePermission,
     ) -> VfsResult<DirEntry<M>> {
         verify_entry_name(name)?;
-
-        let entry = self.ops.create(name, node_type, permission)?;
-        self.cache.lock().insert(name.to_owned(), entry.clone());
-        Ok(entry)
+        self.create_locked(name, node_type, permission, &mut self.cache.lock())
     }
 
     /// Renames a directory entry.
@@ -233,8 +245,7 @@ impl<M: RawMutex> DirNode<M> {
             Err(err) if err == VfsError::ENOENT && create => {}
             Err(err) => return Err(err),
         }
-
-        self.create(name, NodeType::RegularFile, permission)
+        self.create_locked(name, NodeType::RegularFile, permission, &mut children)
     }
 
     pub fn mountpoint(&self) -> Option<Arc<Mountpoint<M>>> {
