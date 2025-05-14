@@ -130,6 +130,15 @@ impl<M: RawMutex> DirNode<M> {
         self.lookup_locked(name, &mut self.cache.lock())
     }
 
+    /// Looks up a directory entry by name in cache.
+    pub fn lookup_cache(&self, name: &str) -> Option<DirEntry<M>> {
+        self.cache.lock().get(name).cloned()
+    }
+    /// Inserts a directory entry into the cache.
+    pub fn insert_cache(&self, name: String, entry: DirEntry<M>) -> Option<DirEntry<M>> {
+        self.cache.lock().insert(name, entry)
+    }
+
     pub fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
         self.ops.read_dir(offset, sink)
     }
