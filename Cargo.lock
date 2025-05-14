@@ -245,7 +245,7 @@ version = "0.1.0"
 dependencies = [
  "axdriver",
  "axerrno",
- "axfs-ng-vfs 0.1.0",
+ "axfs-ng-vfs",
  "axio",
  "axns",
  "axsync",
@@ -262,18 +262,7 @@ dependencies = [
 [[package]]
 name = "axfs-ng-vfs"
 version = "0.1.0"
-dependencies = [
- "axerrno",
- "bitflags 2.9.0",
- "inherit-methods-macro",
- "lock_api",
- "log",
-]
-
-[[package]]
-name = "axfs-ng-vfs"
-version = "0.1.0"
-source = "git+https://github.com/Mivik/axfs-ng-vfs?rev=f180a66#f180a66ed5f6fa001ce83ea8d57a60f143740e61"
+source = "git+https://github.com/Mivik/axfs-ng-vfs?rev=f8b71f5#f8b71f56a4f4bf0454b865f40f13c17100665851"
 dependencies = [
  "axerrno",
  "bitflags 2.9.0",
@@ -397,7 +386,7 @@ dependencies = [
  "axconfig",
  "axdriver",
  "axfs-ng",
- "axfs-ng-vfs 0.1.0",
+ "axfs-ng-vfs",
  "axhal",
  "axlog",
  "axmm",
@@ -1477,7 +1466,7 @@ dependencies = [
  "axerrno",
  "axfeat",
  "axfs-ng",
- "axfs-ng-vfs 0.1.0 (git+https://github.com/Mivik/axfs-ng-vfs?rev=f180a66)",
+ "axfs-ng-vfs",
  "axhal",
  "axio",
  "axlog",
