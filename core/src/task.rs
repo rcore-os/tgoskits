@@ -30,7 +30,7 @@ use memory_addr::VirtAddrRange;
 use spin::{Once, RwLock};
 use weak_map::WeakMap;
 
-use crate::{futex::FutexTable, time::TimeStat};
+use crate::{futex::FutexTable, resources::Rlimits, time::TimeStat};
 
 /// Create a new user task.
 pub fn new_user_task(
@@ -200,6 +200,9 @@ pub struct ProcessData {
     /// The user heap top
     heap_top: AtomicUsize,
 
+    /// The resource limits
+    pub rlim: RwLock<Rlimits>,
+
     /// The child exit wait queue
     pub child_exit_wq: WaitQueue,
     /// The exit signal of the thread
@@ -226,6 +229,8 @@ impl ProcessData {
             ns: AxNamespace::new_thread_local(),
             heap_bottom: AtomicUsize::new(axconfig::plat::USER_HEAP_BASE),
             heap_top: AtomicUsize::new(axconfig::plat::USER_HEAP_BASE),
+
+            rlim: RwLock::default(),
 
             child_exit_wq: WaitQueue::new(),
             exit_signal,

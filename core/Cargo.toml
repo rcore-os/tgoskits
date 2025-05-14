@@ -21,6 +21,7 @@ axsignal.workspace = true
 
 axerrno.workspace = true
 linkme.workspace = true
+linux-raw-sys.workspace = true
 memory_addr.workspace = true
 spin.workspace = true
 
