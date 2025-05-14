@@ -262,7 +262,7 @@ dependencies = [
 [[package]]
 name = "axfs-ng-vfs"
 version = "0.1.0"
-source = "git+https://github.com/Mivik/axfs-ng-vfs?rev=515f3d5#515f3d557173a12310d5fddc257bfe73f3c73695"
+source = "git+https://github.com/Mivik/axfs-ng-vfs?rev=a87564e#a87564ebf02c0c4bbf78f60ec97fe621f8b52e91"
 dependencies = [
  "axerrno",
  "bitflags 2.9.0",
@@ -1035,7 +1035,7 @@ dependencies = [
 [[package]]
 name = "lwext4_rust"
 version = "0.2.0"
-source = "git+https://github.com/Mivik/lwext4_rust?rev=0741887#0741887a3cfe43061a7ed0a599dc6a8b12b87289"
+source = "git+https://github.com/Mivik/lwext4_rust?rev=dff1c0e#dff1c0e4eec6c67294614c7a16d70d5e85d0f294"
 dependencies = [
  "bindgen",
  "lock_api",
@@ -1440,6 +1440,7 @@ checksum = "a8f112729512f8e442d81f95a8a7ddf2b7c6b8a1a6f509a95864142b30cab2d3"
 name = "starry"
 version = "0.1.0"
 dependencies = [
+ "axconfig",
  "axerrno",
  "axfeat",
  "axfs-ng",
@@ -1508,6 +1509,7 @@ dependencies = [
  "crate_interface",
  "kernel-elf-parser",
  "linkme",
+ "linux-raw-sys",
  "memory_addr",
  "numeric-enum-macro",
  "percpu",

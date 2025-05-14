@@ -202,3 +202,52 @@ pub fn sys_getcwd(buf: UserPtr<u8>, size: usize) -> LinuxResult<isize> {
         Err(LinuxError::ERANGE)
     }
 }
+
+#[cfg(target_arch = "x86_64")]
+pub fn sys_symlink(
+    target: UserConstPtr<c_char>,
+    linkpath: UserConstPtr<c_char>,
+) -> LinuxResult<isize> {
+    sys_symlinkat(target, AT_FDCWD, linkpath)
+}
+
+pub fn sys_symlinkat(
+    target: UserConstPtr<c_char>,
+    new_dirfd: i32,
+    linkpath: UserConstPtr<c_char>,
+) -> LinuxResult<isize> {
+    let target = target.get_as_str()?;
+    let linkpath = linkpath.get_as_str()?;
+
+    with_fs(new_dirfd, |fs| {
+        fs.symlink(target, linkpath)?;
+        Ok(0)
+    })
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn sys_readlink(
+    path: UserConstPtr<c_char>,
+    buf: UserPtr<u8>,
+    size: usize,
+) -> LinuxResult<isize> {
+    sys_readlinkat(AT_FDCWD, path, buf, size)
+}
+
+pub fn sys_readlinkat(
+    dirfd: i32,
+    path: UserConstPtr<c_char>,
+    buf: UserPtr<u8>,
+    size: usize,
+) -> LinuxResult<isize> {
+    let path = path.get_as_str()?;
+    let buf = buf.get_as_mut_slice(size)?;
+
+    with_fs(dirfd, |fs| {
+        let entry = fs.resolve_no_follow(path)?;
+        let link = entry.read_link()?;
+        let read = size.min(link.len());
+        buf[..read].copy_from_slice(&link.as_bytes()[..read]);
+        Ok(read as isize)
+    })
+}
