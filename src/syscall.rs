@@ -34,6 +34,21 @@ fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
         #[cfg(target_arch = "x86_64")]
         Sysno::symlink => sys_symlink(tf.arg0().into(), tf.arg1().into()),
         Sysno::symlinkat => sys_symlinkat(tf.arg0().into(), tf.arg1() as _, tf.arg2().into()),
+        #[cfg(target_arch = "x86_64")]
+        Sysno::rename => sys_rename(tf.arg0().into(), tf.arg1().into()),
+        Sysno::renameat => sys_renameat(
+            tf.arg0() as _,
+            tf.arg1().into(),
+            tf.arg2() as _,
+            tf.arg3().into(),
+        ),
+        Sysno::renameat2 => sys_renameat2(
+            tf.arg0() as _,
+            tf.arg1().into(),
+            tf.arg2() as _,
+            tf.arg3().into(),
+            tf.arg4() as _,
+        ),
 
         // file ops
         Sysno::fchown => sys_fchown(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
@@ -60,19 +75,14 @@ fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
             tf.arg3() as _,
         ),
         #[cfg(target_arch = "x86_64")]
-        Sysno::rename => sys_rename(tf.arg0().into(), tf.arg1().into()),
-        Sysno::renameat => sys_renameat(
+        Sysno::utime => sys_utime(tf.arg0().into(), tf.arg1().into()),
+        #[cfg(target_arch = "x86_64")]
+        Sysno::utimes => sys_utimes(tf.arg0().into(), tf.arg1().into()),
+        Sysno::utimensat => sys_utimensat(
             tf.arg0() as _,
             tf.arg1().into(),
-            tf.arg2() as _,
-            tf.arg3().into(),
-        ),
-        Sysno::renameat2 => sys_renameat2(
-            tf.arg0() as _,
-            tf.arg1().into(),
-            tf.arg2() as _,
-            tf.arg3().into(),
-            tf.arg4() as _,
+            tf.arg2().into(),
+            tf.arg3() as _,
         ),
 
         // fd ops

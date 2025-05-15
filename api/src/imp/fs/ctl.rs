@@ -1,17 +1,20 @@
 use core::{
     ffi::{c_char, c_int, c_void},
     mem::offset_of,
+    time::Duration,
 };
 
 use alloc::ffi::CString;
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
 use axfs_ng_vfs::{MetadataUpdate, NodePermission, NodeType, path::Path};
-use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_REMOVEDIR, linux_dirent64};
+use axhal::time::wall_time;
+use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_REMOVEDIR, linux_dirent64, timespec};
 
 use crate::{
     file::{Directory, FileLike, resolve_at, with_fs},
     ptr::{UserConstPtr, UserPtr, nullable},
+    time::TimeValueLike,
 };
 
 /// The ioctl() system call manipulates the underlying device parameters
@@ -312,6 +315,66 @@ pub fn sys_fchmodat(
             mode: Some(NodePermission::from_bits(mode as u16).ok_or(LinuxError::EINVAL)?),
             ..Default::default()
         })?;
+    Ok(0)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[allow(non_camel_case_types)]
+pub struct utimbuf {
+    actime: linux_raw_sys::general::__kernel_old_time_t,
+    modtime: linux_raw_sys::general::__kernel_old_time_t,
+}
+
+fn update_times(
+    dirfd: i32,
+    path: UserConstPtr<c_char>,
+    atime: Option<Duration>,
+    mtime: Option<Duration>,
+    flags: u32,
+) -> LinuxResult<()> {
+    let path = nullable!(path.get_as_str())?;
+    resolve_at(dirfd, path, flags)?
+        .into_file()
+        .ok_or(LinuxError::EBADF)?
+        .update_metadata(MetadataUpdate {
+            atime: Some(atime.unwrap_or_else(wall_time)),
+            mtime: Some(mtime.unwrap_or_else(wall_time)),
+            ..Default::default()
+        })?;
+    Ok(())
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn sys_utime(path: UserConstPtr<c_char>, times: UserConstPtr<utimbuf>) -> LinuxResult<isize> {
+    let times = nullable!(times.get_as_ref())?;
+    let atime = times.map(|it| Duration::from_secs(it.actime as _));
+    let mtime = times.map(|it| Duration::from_secs(it.modtime as _));
+    update_times(AT_FDCWD, path, atime, mtime, 0)?;
+    Ok(0)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn sys_utimes(
+    path: UserConstPtr<c_char>,
+    times: UserConstPtr<linux_raw_sys::general::timeval>,
+) -> LinuxResult<isize> {
+    let times = nullable!(times.get_as_slice(2))?;
+    let atime = times.map(|it| it[0].to_time_value());
+    let mtime = times.map(|it| it[1].to_time_value());
+    update_times(AT_FDCWD, path, atime, mtime, 0)?;
+    Ok(0)
+}
+
+pub fn sys_utimensat(
+    dirfd: i32,
+    path: UserConstPtr<c_char>,
+    times: UserConstPtr<timespec>,
+    flags: u32,
+) -> LinuxResult<isize> {
+    let times = nullable!(times.get_as_slice(2))?;
+    let atime = times.map(|it| it[0].to_time_value());
+    let mtime = times.map(|it| it[1].to_time_value());
+    update_times(dirfd, path, atime, mtime, flags)?;
     Ok(0)
 }
 
