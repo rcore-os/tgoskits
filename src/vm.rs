@@ -365,4 +365,9 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
         vcpu.unbind()?;
         Ok(exit_reason)
     }
+
+    /// Returns a reference to the VM's configuration.
+    pub fn config(&self) -> &AxVMConfig {
+        &self.inner_const.config
+    }
 }
