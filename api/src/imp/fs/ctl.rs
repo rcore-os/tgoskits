@@ -83,7 +83,6 @@ impl<'a> DirBuffer<'a> {
         unsafe {
             let entry_ptr = self.buf.as_mut_ptr().add(self.offset);
             entry_ptr.cast::<linux_dirent64>().write(linux_dirent64 {
-                // FIXME: real inode number
                 d_ino,
                 d_off,
                 d_reclen: len as _,
@@ -115,17 +114,15 @@ pub fn sys_getdents64(fd: i32, buf: UserPtr<u8>, len: usize) -> LinuxResult<isiz
     let dir = Directory::from_fd(fd)?;
     let mut dir_offset = dir.offset.lock();
 
-    let mut count = 0;
     dir.inner()
         .read_dir(*dir_offset, &mut |name: &str, ino, node_type, offset| {
             if !buffer.write_entry(ino, offset as _, node_type, name.as_bytes()) {
                 return false;
             }
             *dir_offset = offset;
-            count += 1;
             true
         })?;
-    Ok(count)
+    Ok(buffer.offset as _)
 }
 
 /// create a link from new_path to old_path
