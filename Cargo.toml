@@ -15,6 +15,7 @@ fs = ["axstd/fs"]
 [dependencies]
 log = "=0.4.21"
 bitflags = "2.2"
+cfg-if = "1.0"
 spin = "0.9"
 kspin = "0.1"
 lazyinit = "0.2"

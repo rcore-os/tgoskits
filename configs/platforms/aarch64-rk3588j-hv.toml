@@ -62,6 +62,7 @@ uart-irq = 0x14d # uint
 gicd-paddr = 0xfe600000 # uint
 # GICR Address
 gicc-paddr = 0xfe680000 # uint
+# GICR Address
 gicr-paddr = 0xfe680000 # uint
 
 # PSCI

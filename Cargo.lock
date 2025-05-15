@@ -153,7 +153,7 @@ dependencies = [
 [[package]]
 name = "arm_vcpu"
 version = "0.1.0"
-source = "git+https://github.com/arceos-hypervisor/arm_vcpu.git#64a09bd5a37988233264f0e367fc246b40e35771"
+source = "git+https://github.com/arceos-hypervisor/arm_vcpu.git#e537c7b5125130e85b12a57390a251a86227c2ec"
 dependencies = [
  "aarch64-cpu 9.4.0",
  "aarch64_sysreg",
@@ -554,6 +554,7 @@ dependencies = [
  "axvcpu",
  "axvm",
  "bitflags 2.9.0",
+ "cfg-if",
  "crate_interface",
  "kspin",
  "lazyinit",
@@ -573,7 +574,7 @@ dependencies = [
 [[package]]
 name = "axvm"
 version = "0.1.0"
-source = "git+https://github.com/arceos-hypervisor/axvm.git#31d787c3009713178ada99038dd580624af1a089"
+source = "git+https://github.com/arceos-hypervisor/axvm.git#a0decfbcc8a3ad54f2a9c247f77e15be98984a2a"
 dependencies = [
  "arm_vcpu",
  "axaddrspace",

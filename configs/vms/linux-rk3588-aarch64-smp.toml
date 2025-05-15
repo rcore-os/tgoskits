@@ -1,0 +1,161 @@
+# Vm base info configs
+#
+[base]
+# Guest vm id.
+id = 1
+# Guest vm name.
+name = "linux"
+# Virtualization type.
+vm_type = 1
+# The number of virtual CPUs.
+cpu_num = 4
+# Guest vm physical cpu sets.
+# phys_cpu_sets = [1, 2, 4, 8, 16, 32, 64, 128]
+phys_cpu_ids = [0x00, 0x100, 0x200, 0x300]
+phys_cpu_sets = [1, 2, 4, 8]
+
+#
+# Vm kernel configs
+#
+[kernel]
+# The entry point of the kernel image.
+entry_point = 0x1008_0000
+# The load address of the kernel image.
+kernel_load_addr = 0x1008_0000
+# The load address of the device tree blob (DTB).
+dtb_load_addr = 0x1000_0000
+# The location of image: "memory" | "fs".
+# load from memory
+image_location = "memory"
+# The file path of the kernel image.
+kernel_path = "/path/to/linux-aarch64.bin"
+# The file path of the device tree blob (DTB).
+dtb_path = "/path/to/dtb"
+
+# load from file system.
+# image_location = "fs".
+## The file path of the kernel image.
+# kernel_path = "linux-arceos-aarch64.bin"
+## The file path of the device tree blob (DTB).
+# dtb_path = "linux-rk3588.dtb"
+
+## The file path of the ramdisk image.
+# ramdisk_path = ""
+## The load address of the ramdisk image.
+# ramdisk_load_addr = 0
+## The path of the disk image.
+# disk_path = "disk.img"
+
+# Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
+# For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`.
+memory_regions = [
+    # [0x0, 0x10_f000, 0x7, 1],        # passthrough uncahed MAP_IDENTICAL
+    [0x940_0000, 0xe6c00000, 0x7, 1], # ram 3G MAP_IDENTICAL
+    # [0x4000_0000, 0x4000_0000, 0x7, 1], # ram 1G MAP_IDENTICAL
+]
+
+#
+# Device specifications
+#
+[devices]
+# Emu_devices.
+# Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig.
+emu_devices = []
+
+# Pass-through devices.
+# Name Base-Ipa Base-Pa Length Alloc-Irq.
+passthrough_devices = [
+    [
+        "ramoops",
+        0x11_0000,
+        0x11_0000,
+        0xf_0000,
+        0x17,
+    ],
+    [
+        "sram",
+        0x10_f000,
+        0x10_f000,
+        0x1000,
+        0x17,
+    ],
+    [
+        "gpu",
+        0xfb00_0000,
+        0xfb00_0000,
+        0x20_0000,
+        0x17,
+    ],
+    [
+        "uart8250 UART",
+        0xfd00_0000,
+        0xfd00_0000,
+        0x200_0000,
+        0x17,
+    ],
+    [
+        "usb",
+        0xfc00_0000,
+        0xfc00_0000,
+        0x100_0000,
+        0x17,
+    ],
+    [
+        "uncached",
+        0x0,
+        0x0,
+        0x10_f000,
+        0x17,
+    ],
+    # [
+    #     "gicr",
+    #     0xfe68_0000,
+    #     0xfe68_0000,
+    #     0x10_0000,
+    #     0x1,
+    # ],
+    # [
+    #     "uncached",
+    #     0xf300_0000,
+    #     0xf300_0000,
+    #     0x100_0000,
+    #     0x17,
+    # ],
+    # [
+    #     "uncached",
+    #     0xf400_0000,
+    #     0xf400_0000,
+    #     0x100_0000,
+    #     0x17,
+    # ],
+    # [
+    #     "uncached",
+    #     0xa_4100_0000,
+    #     0xa_4100_0000,
+    #     0x40_0000,
+    #     0x17,
+    # ],
+    # [
+    #     "uncached",
+    #     0xa_40c0_0000,
+    #     0xa_40c0_0000,
+    #     0x40_0000,
+    #     0x17,
+    # ],
+    #     [
+    #     "uncached",
+    #     0x920_0000,
+    #     0x920_0000,
+    #     0x20_0000,
+    #     0x17,
+    # ],
+]
+
+
+#  [0xfe600000, 0x10000], # gic-v3 gicd
+#     [0xfe680000, 0x10_0000], # gic-v3 gicr
+
+    # [0xa41000000, 0x400000],
+    # [0xa40c00000, 0x400000],
+    # [0xf4000000,0x1000000],
+    # [0xf3000000,0x1000000],

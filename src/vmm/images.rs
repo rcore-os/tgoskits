@@ -3,6 +3,8 @@ use axerrno::AxResult;
 
 use axvm::config::AxVMCrateConfig;
 
+#[cfg(target_arch = "aarch64")]
+use crate::utils::cache::cache_clean_invalidate_d;
 use crate::vmm::VMRef;
 use crate::vmm::config::config;
 
@@ -41,6 +43,18 @@ fn load_vm_images_from_memory(config: AxVMCrateConfig, vm: VMRef) -> AxResult {
     if let Some(buffer) = vm_imags.bios {
         load_vm_image_from_memory(buffer, config.kernel.bios_load_addr.unwrap(), vm.clone())
             .expect("Failed to load BIOS images");
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        for mem_region in &config.kernel.memory_regions {
+            debug!(
+                "flush all guest cache GPA: 0x{:x}, Size: 0x{:x}",
+                mem_region.gpa, mem_region.size
+            );
+            unsafe {
+                cache_clean_invalidate_d(mem_region.gpa, mem_region.size);
+            }
+        }
     }
 
     Ok(())

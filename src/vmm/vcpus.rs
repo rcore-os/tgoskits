@@ -325,7 +325,26 @@ fn vcpu_run() {
                         "VM[{}]'s VCpu[{}] try to boot target_cpu [{}] entry_point={:x} arg={:#x}",
                         vm_id, vcpu_id, target_cpu, entry_point, arg
                     );
-                    vcpu_on(vm.clone(), target_cpu as _, entry_point, arg as _);
+
+                    // Get the mapping relationship between all vCPUs and physical CPUs from the configuration
+                    let vcpu_mappings = vm.config().get_vcpu_affinities_pcpu_ids();
+
+                    // Find the vCPU ID corresponding to the physical ID
+                    let target_vcpu_id = vcpu_mappings
+                        .iter()
+                        .find_map(|(vcpu_id, _, phys_id)| {
+                            if *phys_id == target_cpu as usize {
+                                Some(*vcpu_id)
+                            } else {
+                                None
+                            }
+                        })
+                        .expect(&format!(
+                            "Physical CPU ID {} not found in VM configuration",
+                            target_cpu
+                        ));
+
+                    vcpu_on(vm.clone(), target_vcpu_id, entry_point, arg as _);
                     vcpu.set_gpr(0, 0);
                 }
                 AxVCpuExitReason::SystemDown => {
