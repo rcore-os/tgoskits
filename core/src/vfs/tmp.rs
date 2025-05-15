@@ -5,7 +5,8 @@ use alloc::{
 };
 use axfs_ng_vfs::{
     DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem, FilesystemOps,
-    Metadata, NodeOps, NodePermission, NodeType, Reference, VfsError, VfsResult, WeakDirEntry,
+    Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, VfsError, VfsResult,
+    WeakDirEntry,
 };
 use axsync::{Mutex, RawMutex};
 use slab::Slab;
@@ -224,7 +225,35 @@ impl NodeOps<RawMutex> for MemoryNode {
     }
 
     fn metadata(&self) -> VfsResult<Metadata> {
-        Ok(self.get().metadata.lock().clone())
+        let mut metadata = self.get().metadata.lock().clone();
+        match &self.get().content {
+            NodeContent::File(content) => {
+                metadata.size = content.content.lock().len() as u64;
+            }
+            NodeContent::Dir(dir) => {
+                metadata.size = dir.entries.lock().len() as u64;
+            }
+        }
+        Ok(metadata)
+    }
+
+    fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()> {
+        let node = self.get();
+        let mut metadata = node.metadata.lock();
+        if let Some(mode) = update.mode {
+            metadata.mode = mode;
+        }
+        if let Some((uid, gid)) = update.owner {
+            metadata.uid = uid;
+            metadata.gid = gid;
+        }
+        if let Some(atime) = update.atime {
+            metadata.atime = atime;
+        }
+        if let Some(mtime) = update.mtime {
+            metadata.mtime = mtime;
+        }
+        Ok(())
     }
 
     fn filesystem(&self) -> &dyn FilesystemOps<RawMutex> {

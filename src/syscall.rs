@@ -43,6 +43,19 @@ fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
             tf.arg3() as _,
         ),
 
+        Sysno::fchown => sys_fchown(
+            tf.arg0() as _,
+            tf.arg1() as _,
+            tf.arg2() as _,
+        ),
+        Sysno::fchownat => sys_fchownat(
+            tf.arg0() as _,
+            tf.arg1().into(),
+            tf.arg2() as _,
+            tf.arg3() as _,
+            tf.arg4() as _,
+        ),
+
         // fd ops
         Sysno::openat => sys_openat(
             tf.arg0() as _,

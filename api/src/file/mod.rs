@@ -14,7 +14,7 @@ use linux_raw_sys::general::{stat, statx, statx_timestamp};
 use spin::RwLock;
 
 pub use self::{
-    fs::{Directory, File, metadata_to_kstat, with_fs},
+    fs::{Directory, File, ResolveAtResult, metadata_to_kstat, resolve_at, with_fs},
     net::Socket,
     pipe::Pipe,
 };

@@ -1,17 +1,18 @@
 use core::ffi::{c_char, c_int};
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::LinuxResult;
 use axfs_ng::FS_CONTEXT;
-use linux_raw_sys::general::{AT_EMPTY_PATH, stat, statx};
+use linux_raw_sys::general::{AT_FDCWD, AT_SYMLINK_FOLLOW, stat, statx};
 
 use crate::{
-    file::{Kstat, get_file_like, metadata_to_kstat, with_fs},
+    file::{get_file_like, metadata_to_kstat, resolve_at},
     ptr::{UserConstPtr, UserPtr, nullable},
 };
 
 /// Get the file metadata by `path` and write into `statbuf`.
 ///
 /// Return 0 if success.
+#[cfg(target_arch = "x86_64")]
 pub fn sys_stat(path: UserConstPtr<c_char>, statbuf: UserPtr<stat>) -> LinuxResult<isize> {
     let path = path.get_as_str()?;
     let statbuf = statbuf.get_as_mut()?;
@@ -34,25 +35,9 @@ pub fn sys_fstat(fd: i32, statbuf: UserPtr<stat>) -> LinuxResult<isize> {
 /// Get the metadata of the symbolic link and write into `buf`.
 ///
 /// Return 0 if success.
+#[cfg(target_arch = "x86_64")]
 pub fn sys_lstat(path: UserConstPtr<c_char>, statbuf: UserPtr<stat>) -> LinuxResult<isize> {
-    // TODO: symlink
-    sys_stat(path, statbuf)
-}
-
-fn kstat_at(dirfd: i32, path: Option<&str>, flags: u32) -> LinuxResult<Kstat> {
-    Ok(match path {
-        Some("") | None => {
-            if flags & AT_EMPTY_PATH == 0 {
-                return Err(LinuxError::ENOENT);
-            }
-            let f = get_file_like(dirfd)?;
-            f.stat()?
-        }
-        Some(path) => {
-            let metadata = with_fs(dirfd, |fs| fs.metadata(path))?;
-            metadata_to_kstat(&metadata)
-        }
-    })
+    sys_fstatat(AT_FDCWD, path, statbuf, AT_SYMLINK_FOLLOW)
 }
 
 pub fn sys_fstatat(
@@ -63,7 +48,9 @@ pub fn sys_fstatat(
 ) -> LinuxResult<isize> {
     let path = nullable!(path.get_as_str())?;
     let statbuf = statbuf.get_as_mut()?;
-    *statbuf = kstat_at(dirfd, path, flags)?.into();
+
+    *statbuf = resolve_at(dirfd, path, flags)?.stat()?.into();
+
     Ok(0)
 }
 
@@ -108,7 +95,7 @@ pub fn sys_statx(
     );
 
     let statxbuf = statxbuf.get_as_mut()?;
-    *statxbuf = kstat_at(dirfd, path, flags)?.into();
+    *statxbuf = resolve_at(dirfd, path, flags)?.stat()?.into();
 
     Ok(0)
 }

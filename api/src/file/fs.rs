@@ -6,7 +6,7 @@ use axfs_ng::{FS_CONTEXT, FsContext};
 use axfs_ng_vfs::{Location, Metadata};
 use axio::{PollState, Read};
 use axsync::{Mutex, MutexGuard, RawMutex};
-use linux_raw_sys::general::AT_FDCWD;
+use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW};
 
 use super::{FileLike, Kstat, get_file_like};
 
@@ -20,6 +20,53 @@ pub fn with_fs<R>(
     } else {
         let dir = Directory::from_fd(dirfd)?.inner.clone();
         f(&mut fs.with_current_dir(dir)?)
+    }
+}
+
+pub enum ResolveAtResult {
+    File(Location<RawMutex>),
+    Other(Arc<dyn FileLike>),
+}
+impl ResolveAtResult {
+    pub fn into_file(self) -> Option<Location<RawMutex>> {
+        match self {
+            Self::File(file) => Some(file),
+            Self::Other(_) => None,
+        }
+    }
+
+    pub fn stat(&self) -> LinuxResult<Kstat> {
+        match self {
+            Self::File(file) => file.metadata().map(|it| metadata_to_kstat(&it)),
+            Self::Other(file_like) => file_like.stat(),
+        }
+    }
+}
+
+pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> LinuxResult<ResolveAtResult> {
+    match path {
+        Some("") | None => {
+            if flags & AT_EMPTY_PATH == 0 {
+                return Err(LinuxError::ENOENT);
+            }
+            let file_like = get_file_like(dirfd)?;
+            let f = file_like.clone().into_any();
+            Ok(if let Some(file) = f.downcast_ref::<File>() {
+                ResolveAtResult::File(file.inner().inner().clone())
+            } else if let Some(dir) = f.downcast_ref::<Directory>() {
+                ResolveAtResult::File(dir.inner().clone())
+            } else {
+                ResolveAtResult::Other(file_like)
+            })
+        }
+        Some(path) => with_fs(dirfd, |fs| {
+            if flags & AT_SYMLINK_NOFOLLOW != 0 {
+                fs.resolve_no_follow(path)
+            } else {
+                fs.resolve(path)
+            }
+            .map(ResolveAtResult::File)
+        }),
     }
 }
 

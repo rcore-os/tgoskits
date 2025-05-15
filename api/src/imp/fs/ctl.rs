@@ -6,11 +6,11 @@ use core::{
 use alloc::ffi::CString;
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
-use axfs_ng_vfs::{NodePermission, NodeType};
-use linux_raw_sys::general::{AT_FDCWD, AT_REMOVEDIR, linux_dirent64};
+use axfs_ng_vfs::{MetadataUpdate, NodePermission, NodeType};
+use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_REMOVEDIR, linux_dirent64};
 
 use crate::{
-    file::{Directory, FileLike, with_fs},
+    file::{Directory, FileLike, resolve_at, with_fs},
     ptr::{UserConstPtr, UserPtr, nullable},
 };
 
@@ -134,12 +134,12 @@ pub fn sys_linkat(
     old_path: UserConstPtr<c_char>,
     new_dirfd: c_int,
     new_path: UserConstPtr<c_char>,
-    flags: i32,
+    flags: u32,
 ) -> LinuxResult<isize> {
-    let old_path = old_path.get_as_str()?;
+    let old_path = nullable!(old_path.get_as_str())?;
     let new_path = new_path.get_as_str()?;
     debug!(
-        "sys_linkat <= old_dirfd: {}, old_path: {}, new_dirfd: {}, new_path: {}, flags: {}",
+        "sys_linkat <= old_dirfd: {}, old_path: {:?}, new_dirfd: {}, new_path: {}, flags: {}",
         old_dirfd, old_path, new_dirfd, new_path, flags
     );
 
@@ -147,7 +147,12 @@ pub fn sys_linkat(
         warn!("Unsupported flags: {flags}");
     }
 
-    let old = with_fs(old_dirfd, |fs| Ok(fs.resolve(old_path)?))?;
+    let old = resolve_at(old_dirfd, old_path, flags)?
+        .into_file()
+        .ok_or(LinuxError::EBADF)?;
+    if old.is_dir() {
+        return Err(LinuxError::EPERM);
+    }
     let (new_dir, new_name) =
         with_fs(new_dirfd, |fs| Ok(fs.resolve_nonexistent(new_path.into())?))?;
 
@@ -250,4 +255,36 @@ pub fn sys_readlinkat(
         buf[..read].copy_from_slice(&link.as_bytes()[..read]);
         Ok(read as isize)
     })
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn sys_chown(path: UserConstPtr<c_char>, uid: u32, gid: u32) -> LinuxResult<isize> {
+    sys_fchownat(AT_FDCWD, path, uid, gid, 0)
+}
+#[cfg(target_arch = "x86_64")]
+pub fn sys_lchown(path: UserConstPtr<c_char>, uid: u32, gid: u32) -> LinuxResult<isize> {
+    use linux_raw_sys::general::AT_SYMLINK_NOFOLLOW;
+    sys_fchownat(AT_FDCWD, path, uid, gid, AT_SYMLINK_NOFOLLOW)
+}
+
+pub fn sys_fchown(fd: i32, uid: u32, gid: u32) -> LinuxResult<isize> {
+    sys_fchownat(fd, 0.into(), uid, gid, AT_EMPTY_PATH)
+}
+
+pub fn sys_fchownat(
+    dirfd: i32,
+    path: UserConstPtr<c_char>,
+    uid: u32,
+    gid: u32,
+    flags: u32,
+) -> LinuxResult<isize> {
+    let path = nullable!(path.get_as_str())?;
+    resolve_at(dirfd, path, flags)?
+        .into_file()
+        .ok_or(LinuxError::EBADF)?
+        .update_metadata(MetadataUpdate {
+            owner: Some((uid, gid)),
+            ..Default::default()
+        })?;
+    Ok(0)
 }
