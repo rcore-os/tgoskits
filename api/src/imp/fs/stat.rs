@@ -1,11 +1,10 @@
 use core::ffi::{c_char, c_int};
 
 use axerrno::LinuxResult;
-use axfs_ng::FS_CONTEXT;
-use linux_raw_sys::general::{AT_FDCWD, AT_SYMLINK_FOLLOW, stat, statx};
+use linux_raw_sys::general::{AT_EMPTY_PATH, stat, statx};
 
 use crate::{
-    file::{get_file_like, metadata_to_kstat, resolve_at},
+    file::resolve_at,
     ptr::{UserConstPtr, UserPtr, nullable},
 };
 
@@ -14,22 +13,16 @@ use crate::{
 /// Return 0 if success.
 #[cfg(target_arch = "x86_64")]
 pub fn sys_stat(path: UserConstPtr<c_char>, statbuf: UserPtr<stat>) -> LinuxResult<isize> {
-    let path = path.get_as_str()?;
-    let statbuf = statbuf.get_as_mut()?;
+    use linux_raw_sys::general::AT_FDCWD;
 
-    let metadata = FS_CONTEXT.lock().metadata(path)?;
-    *statbuf = metadata_to_kstat(&metadata).into();
-
-    Ok(0)
+    sys_fstatat(AT_FDCWD, path, statbuf, 0)
 }
 
 /// Get file metadata by `fd` and write into `statbuf`.
 ///
 /// Return 0 if success.
 pub fn sys_fstat(fd: i32, statbuf: UserPtr<stat>) -> LinuxResult<isize> {
-    debug!("sys_fstat <= fd: {}", fd);
-    *statbuf.get_as_mut()? = get_file_like(fd)?.stat()?.into();
-    Ok(0)
+    sys_fstatat(fd, 0.into(), statbuf, AT_EMPTY_PATH)
 }
 
 /// Get the metadata of the symbolic link and write into `buf`.
@@ -37,6 +30,8 @@ pub fn sys_fstat(fd: i32, statbuf: UserPtr<stat>) -> LinuxResult<isize> {
 /// Return 0 if success.
 #[cfg(target_arch = "x86_64")]
 pub fn sys_lstat(path: UserConstPtr<c_char>, statbuf: UserPtr<stat>) -> LinuxResult<isize> {
+    use linux_raw_sys::general::{AT_FDCWD, AT_SYMLINK_FOLLOW};
+
     sys_fstatat(AT_FDCWD, path, statbuf, AT_SYMLINK_FOLLOW)
 }
 
