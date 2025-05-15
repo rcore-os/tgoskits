@@ -121,23 +121,32 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
                 // Handle ram region.
                 match mem_region.map_type {
                     VmMemMappingType::MapIentical => {
-                        if H::alloc_memory_region_at(
+                        if !H::alloc_memory_region_at(
                             HostPhysAddr::from(mem_region.gpa),
                             mem_region.size,
                         ) {
-                            address_space.map_linear(
-                                GuestPhysAddr::from(mem_region.gpa),
-                                HostPhysAddr::from(mem_region.gpa),
-                                mem_region.size,
-                                mapping_flags,
-                            )?;
-                        } else {
                             warn!(
                                 "Failed to allocate memory region at {:#x} for VM [{}]",
                                 mem_region.gpa,
                                 config.id()
                             );
+                            warn!(
+                                "This is possibly due to that the physical memory assigned to the VM[{}] is not managed by the hypervisor.",
+                                config.id()
+                            );
+                            warn!(
+                                "Memory region: [{:#x}~{:#x}] will be mapped to the VM, but the memory region may not be accessible to the VM, and may cause a panic when accessed.",
+                                mem_region.gpa,
+                                mem_region.gpa + mem_region.size
+                            );
                         }
+
+                        address_space.map_linear(
+                            GuestPhysAddr::from(mem_region.gpa),
+                            HostPhysAddr::from(mem_region.gpa),
+                            mem_region.size,
+                            mapping_flags,
+                        )?;
                     }
                     VmMemMappingType::MapAlloc => {
                         // Note: currently we use `map_alloc`,
