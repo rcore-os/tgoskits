@@ -30,6 +30,8 @@ fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
             tf.arg4() as _,
         ),
         #[cfg(target_arch = "x86_64")]
+        Sysno::rmdir => sys_rmdir(tf.arg0().into()),
+        #[cfg(target_arch = "x86_64")]
         Sysno::unlink => sys_unlink(tf.arg0().into()),
         Sysno::unlinkat => sys_unlinkat(tf.arg0() as _, tf.arg1().into(), tf.arg2() as _),
         Sysno::getcwd => sys_getcwd(tf.arg0().into(), tf.arg1() as _),

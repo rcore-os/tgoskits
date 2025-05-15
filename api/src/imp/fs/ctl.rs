@@ -190,6 +190,11 @@ pub fn sys_unlinkat(dirfd: i32, path: UserConstPtr<c_char>, flags: usize) -> Lin
     })
 }
 
+#[cfg(target_arch = "x86_64")]
+pub fn sys_rmdir(path: UserConstPtr<c_char>) -> LinuxResult<isize> {
+    sys_unlinkat(AT_FDCWD, path, AT_REMOVEDIR as _)
+}
+
 pub fn sys_unlink(path: UserConstPtr<c_char>) -> LinuxResult<isize> {
     sys_unlinkat(AT_FDCWD, path, 0)
 }
