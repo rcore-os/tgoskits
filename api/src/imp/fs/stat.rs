@@ -1,7 +1,8 @@
 use core::ffi::{c_char, c_int};
 
-use axerrno::LinuxResult;
-use linux_raw_sys::general::{AT_EMPTY_PATH, stat, statx};
+use axerrno::{LinuxError, LinuxResult};
+use axfs_ng_vfs::NodePermission;
+use linux_raw_sys::general::{AT_EMPTY_PATH, R_OK, W_OK, X_OK, stat, statx};
 
 use crate::{
     file::resolve_at,
@@ -91,6 +92,42 @@ pub fn sys_statx(
 
     let statxbuf = statxbuf.get_as_mut()?;
     *statxbuf = resolve_at(dirfd, path, flags)?.stat()?.into();
+
+    Ok(0)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn sys_access(path: UserConstPtr<c_char>, mode: u32) -> LinuxResult<isize> {
+    use linux_raw_sys::general::AT_FDCWD;
+
+    sys_faccessat2(AT_FDCWD, path, mode, 0)
+}
+
+pub fn sys_faccessat2(
+    dirfd: c_int,
+    path: UserConstPtr<c_char>,
+    mode: u32,
+    flags: u32,
+) -> LinuxResult<isize> {
+    let path = nullable!(path.get_as_str())?;
+    let file = resolve_at(dirfd, path, flags)?;
+    if mode == 0 {
+        return Ok(0);
+    }
+    let mut required_mode = NodePermission::default();
+    if mode & R_OK != 0 {
+        required_mode |= NodePermission::OWNER_READ;
+    }
+    if mode & W_OK != 0 {
+        required_mode |= NodePermission::OWNER_WRITE;
+    }
+    if mode & X_OK != 0 {
+        required_mode |= NodePermission::OWNER_EXEC;
+    }
+    let required_mode = required_mode.bits();
+    if (file.stat()?.mode as u16 & required_mode) != required_mode {
+        return Err(LinuxError::EACCES);
+    }
 
     Ok(0)
 }
