@@ -1,5 +1,6 @@
 use core::ffi::c_int;
 
+use alloc::sync::Arc;
 use axerrno::{LinuxError, LinuxResult};
 use axio::{Seek, SeekFrom};
 use linux_raw_sys::general::{__kernel_off_t, iovec};
@@ -23,7 +24,11 @@ pub fn sys_read(fd: i32, buf: UserPtr<u8>, len: usize) -> LinuxResult<isize> {
     Ok(get_file_like(fd)?.read(buf)? as _)
 }
 
-pub fn sys_readv(fd: i32, iov: UserPtr<iovec>, iocnt: usize) -> LinuxResult<isize> {
+fn readv_impl(
+    iov: UserPtr<iovec>,
+    iocnt: usize,
+    mut f: impl FnMut(&mut [u8]) -> LinuxResult<usize>,
+) -> LinuxResult<isize> {
     if !(0..=1024).contains(&iocnt) {
         return Err(LinuxError::EINVAL);
     }
@@ -36,22 +41,50 @@ pub fn sys_readv(fd: i32, iov: UserPtr<iovec>, iocnt: usize) -> LinuxResult<isiz
         }
         let buf = UserPtr::<u8>::from(iov.iov_base as usize);
         let buf = buf.get_as_mut_slice(iov.iov_len as _)?;
-        debug!(
-            "sys_readv <= fd: {}, buf: {:p}, len: {}",
-            fd,
-            buf.as_ptr(),
-            buf.len()
-        );
 
-        let read = get_file_like(fd)?.read(buf)?;
-        ret += read as isize;
+        let read = f(buf)?;
+        ret += read;
 
         if read < buf.len() {
             break;
         }
     }
 
-    Ok(ret)
+    Ok(ret as isize)
+}
+
+fn writev_impl(
+    iov: UserConstPtr<iovec>,
+    iocnt: usize,
+    mut f: impl FnMut(&[u8]) -> LinuxResult<usize>,
+) -> LinuxResult<isize> {
+    if !(0..=1024).contains(&iocnt) {
+        return Err(LinuxError::EINVAL);
+    }
+
+    let iovs = iov.get_as_slice(iocnt)?;
+    let mut ret = 0;
+    for iov in iovs {
+        if iov.iov_len == 0 {
+            continue;
+        }
+        let buf = UserConstPtr::<u8>::from(iov.iov_base as usize);
+        let buf = buf.get_as_slice(iov.iov_len as _)?;
+
+        let write = f(buf)?;
+        ret += write;
+
+        if write < buf.len() {
+            break;
+        }
+    }
+
+    Ok(ret as isize)
+}
+
+pub fn sys_readv(fd: i32, iov: UserPtr<iovec>, iocnt: usize) -> LinuxResult<isize> {
+    let f = get_file_like(fd)?;
+    readv_impl(iov, iocnt, |buf| f.read(buf))
 }
 
 /// Write data to the file indicated by `fd`.
@@ -69,34 +102,8 @@ pub fn sys_write(fd: i32, buf: UserConstPtr<u8>, len: usize) -> LinuxResult<isiz
 }
 
 pub fn sys_writev(fd: i32, iov: UserConstPtr<iovec>, iocnt: usize) -> LinuxResult<isize> {
-    if !(0..=1024).contains(&iocnt) {
-        return Err(LinuxError::EINVAL);
-    }
-
-    let iovs = iov.get_as_slice(iocnt)?;
-    let mut ret = 0;
-    for iov in iovs {
-        if iov.iov_len == 0 {
-            continue;
-        }
-        let buf = UserConstPtr::<u8>::from(iov.iov_base as usize);
-        let buf = buf.get_as_slice(iov.iov_len as _)?;
-        debug!(
-            "sys_writev <= fd: {}, buf: {:p}, len: {}",
-            fd,
-            buf.as_ptr(),
-            buf.len()
-        );
-
-        let written = get_file_like(fd)?.write(buf)?;
-        ret += written as isize;
-
-        if written < buf.len() {
-            break;
-        }
-    }
-
-    Ok(ret)
+    let f = get_file_like(fd)?;
+    writev_impl(iov, iocnt, |buf| f.write(buf))
 }
 
 pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> LinuxResult<isize> {
@@ -109,4 +116,83 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> LinuxResul
     };
     let off = File::from_fd(fd)?.inner().seek(pos)?;
     Ok(off as _)
+}
+
+fn get_as_fs_file(fd: c_int) -> LinuxResult<Arc<File>> {
+    get_file_like(fd)?
+        .into_any()
+        .downcast::<File>()
+        .map_err(|_| LinuxError::EBADF)
+}
+
+pub fn sys_pread64(
+    fd: c_int,
+    buf: UserPtr<u8>,
+    len: usize,
+    offset: __kernel_off_t,
+) -> LinuxResult<isize> {
+    let buf = buf.get_as_mut_slice(len)?;
+    let f = get_as_fs_file(fd)?;
+    let read = f.inner().read_at(buf, offset as _)?;
+    Ok(read as _)
+}
+
+pub fn sys_pwrite64(
+    fd: c_int,
+    buf: UserConstPtr<u8>,
+    len: usize,
+    offset: __kernel_off_t,
+) -> LinuxResult<isize> {
+    let buf = buf.get_as_slice(len)?;
+    let f = get_as_fs_file(fd)?;
+    let write = f.inner().write_at(buf, offset as _)?;
+    Ok(write as _)
+}
+
+pub fn sys_preadv(
+    fd: c_int,
+    iov: UserPtr<iovec>,
+    iocnt: usize,
+    offset: __kernel_off_t,
+) -> LinuxResult<isize> {
+    sys_preadv2(fd, iov, iocnt, offset, 0)
+}
+
+pub fn sys_pwritev(
+    fd: c_int,
+    iov: UserConstPtr<iovec>,
+    iocnt: usize,
+    offset: __kernel_off_t,
+) -> LinuxResult<isize> {
+    sys_pwritev2(fd, iov, iocnt, offset, 0)
+}
+
+pub fn sys_preadv2(
+    fd: c_int,
+    iov: UserPtr<iovec>,
+    iocnt: usize,
+    mut offset: __kernel_off_t,
+    _flags: u32,
+) -> LinuxResult<isize> {
+    let f = get_as_fs_file(fd)?;
+    readv_impl(iov, iocnt, |buf| {
+        let read = f.inner().read_at(buf, offset as _)?;
+        offset += read as __kernel_off_t;
+        Ok(read)
+    })
+}
+
+pub fn sys_pwritev2(
+    fd: c_int,
+    iov: UserConstPtr<iovec>,
+    iocnt: usize,
+    mut offset: __kernel_off_t,
+    _flags: u32,
+) -> LinuxResult<isize> {
+    let f = get_as_fs_file(fd)?;
+    writev_impl(iov, iocnt, |buf| {
+        let write = f.inner().write_at(buf, offset as _)?;
+        offset += write as __kernel_off_t;
+        Ok(write)
+    })
 }
