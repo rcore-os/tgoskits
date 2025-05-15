@@ -10,5 +10,5 @@ pub fn new_procfs() -> Filesystem<RawMutex> {
         "mounts",
         Arc::new(|| "proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n"),
     );
-    DynamicFs::new("proc".to_owned(), Arc::new(root))
+    DynamicFs::new("proc".to_owned(), 0x9fa0, Arc::new(root))
 }

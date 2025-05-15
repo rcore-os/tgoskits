@@ -5,11 +5,13 @@ use alloc::{
 };
 use axfs_ng_vfs::{
     DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem, FilesystemOps,
-    Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, VfsError, VfsResult,
-    WeakDirEntry,
+    Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, StatFs, VfsError,
+    VfsResult, WeakDirEntry,
 };
 use axsync::{Mutex, RawMutex};
 use slab::Slab;
+
+use super::dynamic::dummy_stat_fs;
 
 #[derive(PartialEq, Eq, Clone)]
 struct FileName(String);
@@ -78,6 +80,10 @@ impl FilesystemOps<RawMutex> for MemoryFs {
 
     fn root_dir(&self) -> DirEntry<RawMutex> {
         self.root.lock().clone().unwrap()
+    }
+
+    fn stat(&self) -> VfsResult<StatFs> {
+        Ok(dummy_stat_fs(0x01021994))
     }
 }
 

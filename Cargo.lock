@@ -263,7 +263,7 @@ dependencies = [
 [[package]]
 name = "axfs-ng-vfs"
 version = "0.1.0"
-source = "git+https://github.com/Mivik/axfs-ng-vfs?rev=8f80288#8f802887eb251668eb952b6d93900b80b98ee4ab"
+source = "git+https://github.com/Mivik/axfs-ng-vfs?rev=646c003#646c00338675c545a46d73f06d4fe330b31fd508"
 dependencies = [
  "axerrno",
  "bitflags 2.9.0",
@@ -1011,7 +1011,7 @@ dependencies = [
 [[package]]
 name = "lwext4_rust"
 version = "0.2.0"
-source = "git+https://github.com/Mivik/lwext4_rust?rev=5b57bce#5b57bce58a96aab15330938f4a069013891e1be1"
+source = "git+https://github.com/Mivik/lwext4_rust?rev=7ce79ec#7ce79ec4f8fa479664b8b4a9df1298f5f69ba69f"
 dependencies = [
  "bindgen",
  "lock_api",

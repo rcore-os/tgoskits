@@ -140,7 +140,7 @@ pub fn sys_fdatasync(fd: c_int) -> LinuxResult<isize> {
     Ok(0)
 }
 
-fn get_as_fs_file(fd: c_int) -> LinuxResult<Arc<File>> {
+pub(crate) fn get_as_fs_file(fd: c_int) -> LinuxResult<Arc<File>> {
     get_file_like(fd)?
         .into_any()
         .downcast::<File>()

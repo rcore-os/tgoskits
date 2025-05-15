@@ -9,21 +9,40 @@ use alloc::{
 };
 use axfs_ng_vfs::{
     DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem, FilesystemOps,
-    Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, VfsError, VfsResult,
-    WeakDirEntry,
+    Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, StatFs, VfsError,
+    VfsResult, WeakDirEntry, path::MAX_NAME_LEN,
 };
 use axsync::{Mutex, RawMutex};
 use slab::Slab;
 
+pub fn dummy_stat_fs(fs_type: u32) -> StatFs {
+    StatFs {
+        fs_type,
+        block_size: 512,
+        blocks: 100,
+        blocks_free: 100,
+        blocks_available: 100,
+
+        file_count: 0,
+        free_file_count: 0,
+
+        name_length: MAX_NAME_LEN as _,
+        fragment_size: 0,
+        mount_flags: 0,
+    }
+}
+
 pub struct DynamicFs {
     name: String,
+    fs_type: u32,
     inodes: Mutex<Slab<()>>,
     root: Mutex<Option<DirEntry<RawMutex>>>,
 }
 impl DynamicFs {
-    pub fn new(name: String, root: Arc<dyn DynamicDirOps>) -> Filesystem<RawMutex> {
+    pub fn new(name: String,fs_type:u32, root: Arc<dyn DynamicDirOps>) -> Filesystem<RawMutex> {
         let fs = Arc::new(Self {
             name,
+            fs_type,
             inodes: Mutex::default(),
             root: Mutex::default(),
         });
@@ -56,6 +75,10 @@ impl FilesystemOps<RawMutex> for DynamicFs {
 
     fn root_dir(&self) -> DirEntry<RawMutex> {
         self.root.lock().clone().unwrap()
+    }
+
+    fn stat(&self) -> VfsResult<StatFs> {
+        Ok(dummy_stat_fs(self.fs_type))
     }
 }
 

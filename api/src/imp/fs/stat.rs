@@ -1,13 +1,19 @@
 use core::ffi::{c_char, c_int};
 
 use axerrno::{LinuxError, LinuxResult};
-use axfs_ng_vfs::NodePermission;
-use linux_raw_sys::general::{AT_EMPTY_PATH, R_OK, W_OK, X_OK, stat, statx};
+use axfs_ng::FS_CONTEXT;
+use axfs_ng_vfs::{Location, NodePermission};
+use axsync::RawMutex;
+use linux_raw_sys::general::{
+    __kernel_fsid_t, AT_EMPTY_PATH, R_OK, W_OK, X_OK, stat, statfs, statx,
+};
 
 use crate::{
     file::resolve_at,
     ptr::{UserConstPtr, UserPtr, nullable},
 };
+
+use super::get_as_fs_file;
 
 /// Get the file metadata by `path` and write into `statbuf`.
 ///
@@ -129,5 +135,42 @@ pub fn sys_faccessat2(
         return Err(LinuxError::EACCES);
     }
 
+    Ok(0)
+}
+
+fn statfs(loc: &Location<RawMutex>, buf: UserPtr<statfs>) -> LinuxResult<()> {
+    let stat = loc.filesystem().stat()?;
+    let dest = buf.get_as_mut()?;
+    dest.f_type = stat.fs_type as _;
+    dest.f_bsize = stat.block_size as _;
+    dest.f_blocks = stat.blocks as _;
+    dest.f_bfree = stat.blocks_free as _;
+    dest.f_bavail = stat.blocks_available as _;
+    dest.f_files = stat.file_count as _;
+    dest.f_ffree = stat.free_file_count as _;
+    // TODO: fsid
+    dest.f_fsid = __kernel_fsid_t {
+        val: [0, loc.mountpoint().device() as _],
+    };
+    dest.f_namelen = stat.name_length as _;
+    dest.f_frsize = stat.fragment_size as _;
+    dest.f_flags = stat.mount_flags as _;
+    Ok(())
+}
+
+pub fn sys_statfs(path: UserConstPtr<c_char>, buf: UserPtr<statfs>) -> LinuxResult<isize> {
+    statfs(
+        &FS_CONTEXT
+            .lock()
+            .resolve(path.get_as_str()?)?
+            .mountpoint()
+            .root_location(),
+        buf,
+    )?;
+    Ok(0)
+}
+
+pub fn sys_fstatfs(fd: i32, buf: UserPtr<statfs>) -> LinuxResult<isize> {
+    statfs(get_as_fs_file(fd)?.inner().inner(), buf)?;
     Ok(0)
 }
