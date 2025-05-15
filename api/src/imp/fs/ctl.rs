@@ -288,3 +288,31 @@ pub fn sys_fchownat(
         })?;
     Ok(0)
 }
+
+#[cfg(target_arch = "x86_64")]
+pub fn sys_chmod(path: UserConstPtr<c_char>, mode: u32) -> LinuxResult<isize> {
+    sys_fchmodat(AT_FDCWD, path, mode, 0)
+}
+
+pub fn sys_fchmod(fd: i32, mode: u32) -> LinuxResult<isize> {
+    sys_fchmodat(fd, 0.into(), mode, AT_EMPTY_PATH)
+}
+
+pub fn sys_fchmodat(
+    dirfd: i32,
+    path: UserConstPtr<c_char>,
+    mode: u32,
+    flags: u32,
+) -> LinuxResult<isize> {
+    let path = nullable!(path.get_as_str())?;
+    resolve_at(dirfd, path, flags)?
+        .into_file()
+        .ok_or(LinuxError::EBADF)?
+        .update_metadata(MetadataUpdate {
+            mode: Some(NodePermission::from_bits(mode as u16).ok_or(LinuxError::EINVAL)?),
+            ..Default::default()
+        })?;
+    Ok(0)
+}
+
+
