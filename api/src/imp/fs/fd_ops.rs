@@ -21,9 +21,10 @@ use crate::{
 const O_EXEC: u32 = O_PATH;
 
 /// Convert open flags to [`OpenOptions`].
-fn flags_to_options(flags: c_int, _mode: __kernel_mode_t) -> OpenOptions {
+fn flags_to_options(flags: c_int, mode: __kernel_mode_t) -> OpenOptions {
     let flags = flags as u32;
     let mut options = OpenOptions::new();
+    options.mode(mode);
     match flags & 0b11 {
         O_RDONLY => options.read(true),
         O_WRONLY => options.write(true),
