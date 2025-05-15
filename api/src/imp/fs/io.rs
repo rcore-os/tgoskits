@@ -2,6 +2,7 @@ use core::ffi::c_int;
 
 use alloc::{sync::Arc, vec};
 use axerrno::{LinuxError, LinuxResult};
+use axfs_ng::FileFlags;
 use axio::{Seek, SeekFrom};
 use linux_raw_sys::general::{__kernel_off_t, iovec};
 
@@ -116,6 +117,13 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> LinuxResul
     };
     let off = File::from_fd(fd)?.inner().seek(pos)?;
     Ok(off as _)
+}
+
+pub fn sys_ftruncate(fd: c_int, length: __kernel_off_t) -> LinuxResult<isize> {
+    debug!("sys_ftruncate <= {} {}", fd, length);
+    let f = get_as_fs_file(fd)?;
+    f.inner().access(FileFlags::WRITE)?.set_len(length as _)?;
+    Ok(0)
 }
 
 fn get_as_fs_file(fd: c_int) -> LinuxResult<Arc<File>> {
