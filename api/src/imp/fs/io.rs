@@ -126,6 +126,20 @@ pub fn sys_ftruncate(fd: c_int, length: __kernel_off_t) -> LinuxResult<isize> {
     Ok(0)
 }
 
+pub fn sys_fsync(fd: c_int) -> LinuxResult<isize> {
+    debug!("sys_fsync <= {}", fd);
+    let f = get_as_fs_file(fd)?;
+    f.inner().sync(false)?;
+    Ok(0)
+}
+
+pub fn sys_fdatasync(fd: c_int) -> LinuxResult<isize> {
+    debug!("sys_fdatasync <= {}", fd);
+    let f = get_as_fs_file(fd)?;
+    f.inner().sync(true)?;
+    Ok(0)
+}
+
 fn get_as_fs_file(fd: c_int) -> LinuxResult<Arc<File>> {
     get_file_like(fd)?
         .into_any()
