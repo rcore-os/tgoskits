@@ -42,6 +42,11 @@ pub fn sys_chdir(path: UserConstPtr<c_char>) -> LinuxResult<isize> {
     })
 }
 
+#[cfg(target_arch = "x86_64")]
+pub fn sys_mkdir(path: UserConstPtr<c_char>, mode: u32) -> LinuxResult<isize> {
+    sys_mkdirat(AT_FDCWD, path, mode)
+}
+
 pub fn sys_mkdirat(dirfd: i32, path: UserConstPtr<c_char>, mode: u32) -> LinuxResult<isize> {
     let path = path.get_as_str()?;
     let mode = NodePermission::from_bits(mode as u16).ok_or(LinuxError::EINVAL)?;
