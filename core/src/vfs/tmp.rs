@@ -72,6 +72,10 @@ impl MemoryFs {
     }
 }
 impl FilesystemOps<RawMutex> for MemoryFs {
+    fn name(&self) -> &str {
+        "tmpfs"
+    }
+
     fn root_dir(&self) -> DirEntry<RawMutex> {
         self.root.lock().clone().unwrap()
     }
