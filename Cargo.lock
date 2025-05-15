@@ -1111,7 +1111,7 @@ checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 [[package]]
 name = "page_table_entry"
 version = "0.5.3"
-source = "git+https://github.com/Mivik/page_table_multiarch.git?rev=19ededd#19ededdb806ab3b22efb4880661790524fa421a5"
+source = "git+https://github.com/Mivik/page_table_multiarch.git?rev=2659e3b#2659e3baa820989862fc00f876fc7a9a4dbce41b"
 dependencies = [
  "aarch64-cpu",
  "bitflags 2.9.0",
@@ -1122,7 +1122,7 @@ dependencies = [
 [[package]]
 name = "page_table_multiarch"
 version = "0.5.3"
-source = "git+https://github.com/Mivik/page_table_multiarch.git?rev=19ededd#19ededdb806ab3b22efb4880661790524fa421a5"
+source = "git+https://github.com/Mivik/page_table_multiarch.git?rev=2659e3b#2659e3baa820989862fc00f876fc7a9a4dbce41b"
 dependencies = [
  "log",
  "memory_addr",
