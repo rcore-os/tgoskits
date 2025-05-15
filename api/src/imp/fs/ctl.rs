@@ -110,14 +110,15 @@ pub fn sys_getdents64(fd: i32, buf: UserPtr<u8>, len: usize) -> LinuxResult<isiz
     let mut buffer = DirBuffer::new(buf);
 
     let dir = Directory::from_fd(fd)?;
-    let offset = dir.offset.lock();
+    let mut dir_offset = dir.offset.lock();
 
     let mut count = 0;
     dir.inner()
-        .read_dir(*offset, &mut |name: &str, ino, node_type, offset| {
+        .read_dir(*dir_offset, &mut |name: &str, ino, node_type, offset| {
             if !buffer.write_entry(ino, offset as _, node_type, name.as_bytes()) {
                 return false;
             }
+            *dir_offset = offset;
             count += 1;
             true
         })?;
