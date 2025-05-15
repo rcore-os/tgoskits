@@ -76,7 +76,7 @@ pub fn sys_openat(
     );
 
     let options = flags_to_options(flags, mode);
-    with_fs(dirfd, |fs| Ok(options.open(fs, path)?))
+    with_fs(dirfd, |fs| options.open(fs, path))
         .and_then(add_to_fd)
         .map(|fd| fd as isize)
 }

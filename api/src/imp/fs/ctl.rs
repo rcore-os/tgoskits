@@ -6,7 +6,7 @@ use core::{
 use alloc::ffi::CString;
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
-use axfs_ng_vfs::{MetadataUpdate, NodePermission, NodeType};
+use axfs_ng_vfs::{MetadataUpdate, NodePermission, NodeType, path::Path};
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_REMOVEDIR, linux_dirent64};
 
 use crate::{
@@ -153,8 +153,7 @@ pub fn sys_linkat(
     if old.is_dir() {
         return Err(LinuxError::EPERM);
     }
-    let (new_dir, new_name) =
-        with_fs(new_dirfd, |fs| Ok(fs.resolve_nonexistent(new_path.into())?))?;
+    let (new_dir, new_name) = with_fs(new_dirfd, |fs| fs.resolve_nonexistent(new_path.into()))?;
 
     new_dir.link(new_name, &old)?;
     Ok(0)
@@ -315,4 +314,39 @@ pub fn sys_fchmodat(
     Ok(0)
 }
 
+#[cfg(target_arch = "x86_64")]
+pub fn sys_rename(
+    old_path: UserConstPtr<c_char>,
+    new_path: UserConstPtr<c_char>,
+) -> LinuxResult<isize> {
+    sys_renameat(AT_FDCWD, old_path, AT_FDCWD, new_path)
+}
 
+pub fn sys_renameat(
+    old_dirfd: i32,
+    old_path: UserConstPtr<c_char>,
+    new_dirfd: i32,
+    new_path: UserConstPtr<c_char>,
+) -> LinuxResult<isize> {
+    sys_renameat2(old_dirfd, old_path, new_dirfd, new_path, 0)
+}
+pub fn sys_renameat2(
+    old_dirfd: i32,
+    old_path: UserConstPtr<c_char>,
+    new_dirfd: i32,
+    new_path: UserConstPtr<c_char>,
+    flags: u32,
+) -> LinuxResult<isize> {
+    let old_path = old_path.get_as_str()?;
+    let new_path = new_path.get_as_str()?;
+    debug!(
+        "sys_renameat2 <= old_dirfd: {}, old_path: {:?}, new_dirfd: {}, new_path: {}, flags: {}",
+        old_dirfd, old_path, new_dirfd, new_path, flags
+    );
+
+    let (old_dir, old_name) = with_fs(old_dirfd, |fs| fs.resolve_parent(Path::new(old_path)))?;
+    let (new_dir, new_name) = with_fs(new_dirfd, |fs| fs.resolve_nonexistent(new_path.into()))?;
+
+    old_dir.rename(&old_name, &new_dir, new_name)?;
+    Ok(0)
+}

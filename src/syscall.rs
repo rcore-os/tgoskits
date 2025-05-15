@@ -18,6 +18,8 @@ fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
         Sysno::chdir => sys_chdir(tf.arg0().into()),
         Sysno::mkdirat => sys_mkdirat(tf.arg0() as _, tf.arg1().into(), tf.arg2() as _),
         Sysno::getdents64 => sys_getdents64(tf.arg0() as _, tf.arg1().into(), tf.arg2() as _),
+        #[cfg(target_arch = "x86_64")]
+        Sysno::link => sys_link(tf.arg0().into(), tf.arg1().into()),
         Sysno::linkat => sys_linkat(
             tf.arg0() as _,
             tf.arg1().into(),
@@ -26,16 +28,15 @@ fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
             tf.arg4() as _,
         ),
         #[cfg(target_arch = "x86_64")]
-        Sysno::link => sys_link(tf.arg0().into(), tf.arg1().into()),
-        Sysno::unlinkat => sys_unlinkat(tf.arg0() as _, tf.arg1().into(), tf.arg2() as _),
-        #[cfg(target_arch = "x86_64")]
         Sysno::unlink => sys_unlink(tf.arg0().into()),
+        Sysno::unlinkat => sys_unlinkat(tf.arg0() as _, tf.arg1().into(), tf.arg2() as _),
         Sysno::getcwd => sys_getcwd(tf.arg0().into(), tf.arg1() as _),
-        Sysno::symlinkat => sys_symlinkat(tf.arg0().into(), tf.arg1() as _, tf.arg2().into()),
         #[cfg(target_arch = "x86_64")]
         Sysno::symlink => sys_symlink(tf.arg0().into(), tf.arg1().into()),
+        Sysno::symlinkat => sys_symlinkat(tf.arg0().into(), tf.arg1() as _, tf.arg2().into()),
 
         // file ops
+        Sysno::fchown => sys_fchown(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
         Sysno::fchownat => sys_fchownat(
             tf.arg0() as _,
             tf.arg1().into(),
@@ -43,14 +44,15 @@ fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
             tf.arg3() as _,
             tf.arg4() as _,
         ),
-        Sysno::fchown => sys_fchown(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
+        Sysno::fchmod => sys_fchmod(tf.arg0() as _, tf.arg1() as _),
         Sysno::fchmodat | Sysno::fchmodat2 => sys_fchmodat(
             tf.arg0() as _,
             tf.arg1().into(),
             tf.arg2() as _,
             tf.arg3() as _,
         ),
-        Sysno::fchmod => sys_fchmod(tf.arg0() as _, tf.arg1() as _),
+        #[cfg(target_arch = "x86_64")]
+        Sysno::readlink => sys_readlink(tf.arg0().into(), tf.arg1().into(), tf.arg2() as _),
         Sysno::readlinkat => sys_readlinkat(
             tf.arg0() as _,
             tf.arg1().into(),
@@ -58,17 +60,30 @@ fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
             tf.arg3() as _,
         ),
         #[cfg(target_arch = "x86_64")]
-        Sysno::readlink => sys_readlink(tf.arg0().into(), tf.arg1().into(), tf.arg2() as _),
+        Sysno::rename => sys_rename(tf.arg0().into(), tf.arg1().into()),
+        Sysno::renameat => sys_renameat(
+            tf.arg0() as _,
+            tf.arg1().into(),
+            tf.arg2() as _,
+            tf.arg3().into(),
+        ),
+        Sysno::renameat2 => sys_renameat2(
+            tf.arg0() as _,
+            tf.arg1().into(),
+            tf.arg2() as _,
+            tf.arg3().into(),
+            tf.arg4() as _,
+        ),
 
         // fd ops
+        #[cfg(target_arch = "x86_64")]
+        Sysno::open => sys_open(tf.arg0().into(), tf.arg1() as _, tf.arg2() as _),
         Sysno::openat => sys_openat(
             tf.arg0() as _,
             tf.arg1().into(),
             tf.arg2() as _,
             tf.arg3() as _,
         ),
-        #[cfg(target_arch = "x86_64")]
-        Sysno::open => sys_open(tf.arg0().into(), tf.arg1() as _, tf.arg2() as _),
         Sysno::close => sys_close(tf.arg0() as _),
         Sysno::dup => sys_dup(tf.arg0() as _),
         #[cfg(target_arch = "x86_64")]
