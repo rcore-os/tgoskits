@@ -16,7 +16,9 @@ use alloc::{
 use inherit_methods_macro::inherit_methods;
 use lock_api::RawMutex;
 
-use crate::{FilesystemOps, Metadata, NodeType, VfsError, VfsResult, path::PathBuf};
+use crate::{
+    FilesystemOps, Metadata, MetadataUpdate, NodeType, VfsError, VfsResult, path::PathBuf,
+};
 
 /// Filesystem node operationss
 pub trait NodeOps<M>: Send + Sync {
@@ -25,6 +27,9 @@ pub trait NodeOps<M>: Send + Sync {
 
     /// Gets the metadata of the node.
     fn metadata(&self) -> VfsResult<Metadata>;
+
+    /// Updates the metadata of the node.
+    fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
 
     /// Gets the filesystem
     fn filesystem(&self) -> &dyn FilesystemOps<M>;
@@ -125,6 +130,7 @@ impl<M> From<Node<M>> for Arc<dyn NodeOps<M>> {
 impl<M: RawMutex> DirEntry<M> {
     pub fn inode(&self) -> u64;
     pub fn filesystem(&self) -> &dyn FilesystemOps<M>;
+    pub fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
     pub fn len(&self) -> VfsResult<u64>;
     pub fn sync(&self, data_only: bool) -> VfsResult<()>;
 }

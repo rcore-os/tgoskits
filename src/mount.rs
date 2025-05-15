@@ -10,8 +10,8 @@ use inherit_methods_macro::inherit_methods;
 use lock_api::{Mutex, RawMutex};
 
 use crate::{
-    DirEntry, DirEntrySink, Filesystem, Metadata, NodePermission, NodeType, ReferenceKey, VfsError,
-    VfsResult,
+    DirEntry, DirEntrySink, Filesystem, Metadata, MetadataUpdate, NodePermission, NodeType,
+    ReferenceKey, VfsError, VfsResult,
     path::{DOT, DOTDOT, PathBuf},
 };
 
@@ -86,6 +86,7 @@ impl<M> Clone for Location<M> {
 #[inherit_methods(from = "self.entry")]
 impl<M: RawMutex> Location<M> {
     pub fn inode(&self) -> u64;
+    pub fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
     pub fn len(&self) -> VfsResult<u64>;
     pub fn sync(&self, data_only: bool) -> VfsResult<()>;
 

@@ -91,3 +91,17 @@ pub struct Metadata {
     /// Time of last status change
     pub ctime: Duration,
 }
+
+/// Filesystem node metadata update.
+#[derive(Default, Clone, Debug)]
+pub struct MetadataUpdate {
+    /// Permission mode
+    pub mode: Option<NodePermission>,
+    /// The owner (uid, gid)
+    pub owner: Option<(u32, u32)>,
+
+    /// Time of last access
+    pub atime: Option<Duration>,
+    /// Time of last modification
+    pub mtime: Option<Duration>,
+}
