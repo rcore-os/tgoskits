@@ -9,7 +9,9 @@ use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
 use axfs_ng_vfs::{MetadataUpdate, NodePermission, NodeType, path::Path};
 use axhal::time::wall_time;
-use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_REMOVEDIR, linux_dirent64, timespec};
+use linux_raw_sys::general::{
+    AT_EMPTY_PATH, AT_FDCWD, AT_REMOVEDIR, UTIME_NOW, UTIME_OMIT, linux_dirent64, timespec,
+};
 
 use crate::{
     file::{Directory, FileLike, resolve_at, with_fs},
@@ -344,8 +346,8 @@ fn update_times(
         .into_file()
         .ok_or(LinuxError::EBADF)?
         .update_metadata(MetadataUpdate {
-            atime: Some(atime.unwrap_or_else(wall_time)),
-            mtime: Some(mtime.unwrap_or_else(wall_time)),
+            atime,
+            mtime,
             ..Default::default()
         })?;
     Ok(())
@@ -354,9 +356,9 @@ fn update_times(
 #[cfg(target_arch = "x86_64")]
 pub fn sys_utime(path: UserConstPtr<c_char>, times: UserConstPtr<utimbuf>) -> LinuxResult<isize> {
     let times = nullable!(times.get_as_ref())?;
-    let atime = times.map(|it| Duration::from_secs(it.actime as _));
-    let mtime = times.map(|it| Duration::from_secs(it.modtime as _));
-    update_times(AT_FDCWD, path, atime, mtime, 0)?;
+    let atime = times.map_or_else(wall_time, |it| Duration::from_secs(it.actime as _));
+    let mtime = times.map_or_else(wall_time, |it| Duration::from_secs(it.modtime as _));
+    update_times(AT_FDCWD, path, Some(atime), Some(mtime), 0)?;
     Ok(0)
 }
 
@@ -366,9 +368,9 @@ pub fn sys_utimes(
     times: UserConstPtr<linux_raw_sys::general::timeval>,
 ) -> LinuxResult<isize> {
     let times = nullable!(times.get_as_slice(2))?;
-    let atime = times.map(|it| it[0].to_time_value());
-    let mtime = times.map(|it| it[1].to_time_value());
-    update_times(AT_FDCWD, path, atime, mtime, 0)?;
+    let atime = times.map_or_else(wall_time, |it| it[0].to_time_value());
+    let mtime = times.map_or_else(wall_time, |it| it[1].to_time_value());
+    update_times(AT_FDCWD, path, Some(atime), Some(mtime), 0)?;
     Ok(0)
 }
 
@@ -376,11 +378,24 @@ pub fn sys_utimensat(
     dirfd: i32,
     path: UserConstPtr<c_char>,
     times: UserConstPtr<timespec>,
-    flags: u32,
+    mut flags: u32,
 ) -> LinuxResult<isize> {
-    let times = nullable!(times.get_as_slice(2))?;
-    let atime = times.map(|it| it[0].to_time_value());
-    let mtime = times.map(|it| it[1].to_time_value());
+    if path.is_null() {
+        flags |= AT_EMPTY_PATH;
+    }
+    fn utime_to_duration(time: &timespec) -> Option<Duration> {
+        match time.tv_nsec {
+            val if val == UTIME_OMIT as _ => None,
+            val if val == UTIME_NOW as _ => Some(wall_time()),
+            _ => Some(time.to_time_value()),
+        }
+    }
+    let times = times.get_as_slice(2)?;
+    let atime = utime_to_duration(&times[0]);
+    let mtime = utime_to_duration(&times[1]);
+    if atime.is_none() && mtime.is_none() {
+        return Ok(0);
+    }
     update_times(dirfd, path, atime, mtime, flags)?;
     Ok(0)
 }
