@@ -32,6 +32,7 @@ numeric-enum-macro = "0.2"
 percpu = "0.2.0"
 xmas-elf = "0.9"
 
+rand = { version = "0.9.1", default-features = false, features = ["alloc", "small_rng"] }
 slab = { version = "0.4.9", default-features = false }
 weak-map = { git = "https://github.com/Starry-OS/weak-map.git" }
 inherit-methods-macro = "0.1.0"

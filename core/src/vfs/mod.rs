@@ -1,5 +1,6 @@
 //! Virtual filesystems
 
+mod dev;
 mod dynamic;
 mod file;
 mod proc;
@@ -20,6 +21,7 @@ fn mount_at(path: &str, mount_fs: Filesystem<RawMutex>) -> LinuxResult<()> {
 
 /// Mount all filesystems
 pub fn mount_all() -> LinuxResult<()> {
+    mount_at("/dev", dev::new_devfs())?;
     mount_at("/tmp", tmp::MemoryFs::new())?;
     mount_at("/proc", proc::new_procfs())?;
     Ok(())

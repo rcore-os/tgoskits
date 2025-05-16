@@ -38,14 +38,6 @@ pub struct DynamicFs {
     root: Mutex<Option<DirEntry<RawMutex>>>,
 }
 impl DynamicFs {
-    pub fn new(name: String, fs_type: u32) -> Arc<Self> {
-        Arc::new(Self {
-            name,
-            fs_type,
-            inodes: Mutex::default(),
-            root: Mutex::default(),
-        })
-    }
     pub fn new_with(
         name: String,
         fs_type: u32,

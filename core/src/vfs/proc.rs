@@ -66,6 +66,10 @@ DirectMap2M:    31492096 kB
 DirectMap1G:     1048576 kB
 ";
 
+pub fn new_procfs() -> Filesystem<RawMutex> {
+    DynamicFs::new_with("proc".into(), 0x9fa0, builder)
+}
+
 fn builder(fs: Arc<DynamicFs>) -> DirMaker {
     let mut root = DynamicDir::builder(fs.clone());
     root.add(
@@ -77,8 +81,4 @@ fn builder(fs: Arc<DynamicFs>) -> DirMaker {
     );
     root.add("meminfo", SimpleFile::new(fs.clone(), || DUMMY_MEMINFO));
     root.build()
-}
-
-pub fn new_procfs() -> Filesystem<RawMutex> {
-    DynamicFs::new_with("proc".into(), 0x9fa0, builder)
 }
