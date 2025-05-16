@@ -238,7 +238,7 @@ impl<M: RawMutex> Location<M> {
         self.entry
             .as_dir()?
             .open_file_or_create(name, create, create_new, permission)
-            .map(|entry| self.wrap(entry))
+            .map(|entry| self.wrap(entry).resolve_mountpoint())
     }
 
     pub fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
