@@ -182,6 +182,13 @@ pub fn sys_link(
 pub fn sys_unlinkat(dirfd: i32, path: UserConstPtr<c_char>, flags: usize) -> LinuxResult<isize> {
     let path = path.get_as_str()?;
 
+    debug!(
+        "sys_unlinkat <= dirfd: {}, path: {:?}, flags: {}",
+        dirfd,
+        path,
+        flags
+    );
+
     with_fs(dirfd, |fs| {
         if flags == AT_REMOVEDIR as _ {
             fs.remove_dir(path)?;

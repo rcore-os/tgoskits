@@ -87,6 +87,15 @@ impl FilesystemOps<RawMutex> for MemoryFs {
     }
 }
 
+fn release_inode(fs: &MemoryFs, inode: &Arc<Inode>, nlink : u64) {
+    let mut inodes = fs.inodes.lock();
+    let mut metadata = inode.metadata.lock();
+    metadata.nlink -= nlink;
+    if metadata.nlink == 0 && Arc::strong_count(inode) == 2 {
+        inodes.remove(metadata.inode as usize - 1);
+    }
+}
+
 #[derive(Default)]
 struct FileContent {
     content: Mutex<Vec<u8>>,
@@ -101,6 +110,7 @@ enum NodeContent {
     Dir(DirContent),
 }
 struct Inode {
+    ino: u64,
     metadata: Mutex<Metadata>,
     content: NodeContent,
 }
@@ -110,14 +120,14 @@ impl Inode {
         parent: Option<u64>,
         node_type: NodeType,
         permission: NodePermission,
-    ) -> u64 {
+    ) -> Arc<Inode> {
         let mut inodes = fs.inodes.lock();
         let entry = inodes.vacant_entry();
         let ino = entry.key() as u64 + 1;
         let metadata = Metadata {
             device: 0,
             inode: ino,
-            nlink: 1,
+            nlink: 0,
             mode: permission,
             node_type,
             uid: 0,
@@ -134,6 +144,7 @@ impl Inode {
             _ => NodeContent::File(FileContent::default()),
         };
         let result = Arc::new(Self {
+            ino,
             metadata: Mutex::new(metadata),
             content,
         });
@@ -147,7 +158,7 @@ impl Inode {
                 InodeRef::new(fs.clone(), parent.unwrap_or(ino)),
             );
         }
-        ino
+        result
     }
 
     fn as_file(&self) -> VfsResult<&FileContent> {
@@ -180,34 +191,29 @@ impl InodeRef {
 }
 impl Drop for InodeRef {
     fn drop(&mut self) {
-        let node = self.get();
-        let mut metadata = node.metadata.lock();
-        metadata.nlink -= 1;
-        if metadata.nlink == 0 {
-            self.fs.inodes.lock().remove(self.ino as usize - 1);
-        }
+        release_inode(&self.fs, &self.get(), 1);
     }
 }
 
 struct MemoryNode {
     fs: Arc<MemoryFs>,
-    ino: u64,
+    inode: Arc<Inode>,
     this: Option<WeakDirEntry<RawMutex>>,
 }
 impl MemoryNode {
-    pub fn new(fs: Arc<MemoryFs>, ino: u64, this: Option<WeakDirEntry<RawMutex>>) -> Arc<Self> {
-        Arc::new(Self { fs, ino, this })
-    }
-
-    fn get(&self) -> Arc<Inode> {
-        self.fs.get(self.ino)
+    pub fn new(
+        fs: Arc<MemoryFs>,
+        inode: Arc<Inode>,
+        this: Option<WeakDirEntry<RawMutex>>,
+    ) -> Arc<Self> {
+        Arc::new(Self { fs, inode, this })
     }
 
     fn new_entry(
         &self,
         name: &str,
         node_type: NodeType,
-        ino: u64,
+        inode: Arc<Inode>,
     ) -> VfsResult<DirEntry<RawMutex>> {
         let fs = self.fs.clone();
         let reference = Reference::new(
@@ -216,12 +222,12 @@ impl MemoryNode {
         );
         Ok(if node_type == NodeType::Directory {
             DirEntry::new_dir(
-                |this| DirNode::new(MemoryNode::new(fs, ino, Some(this))),
+                |this| DirNode::new(MemoryNode::new(fs, inode, Some(this))),
                 reference,
             )
         } else {
             DirEntry::new_file(
-                FileNode::new(MemoryNode::new(fs, ino, None)),
+                FileNode::new(MemoryNode::new(fs, inode, None)),
                 node_type,
                 reference,
             )
@@ -231,12 +237,12 @@ impl MemoryNode {
 
 impl NodeOps<RawMutex> for MemoryNode {
     fn inode(&self) -> u64 {
-        self.ino
+        self.inode.ino
     }
 
     fn metadata(&self) -> VfsResult<Metadata> {
-        let mut metadata = self.get().metadata.lock().clone();
-        match &self.get().content {
+        let mut metadata = self.inode.metadata.lock().clone();
+        match &self.inode.content {
             NodeContent::File(content) => {
                 metadata.size = content.content.lock().len() as u64;
             }
@@ -248,8 +254,7 @@ impl NodeOps<RawMutex> for MemoryNode {
     }
 
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()> {
-        let node = self.get();
-        let mut metadata = node.metadata.lock();
+        let mut metadata = self.inode.metadata.lock();
         if let Some(mode) = update.mode {
             metadata.mode = mode;
         }
@@ -280,8 +285,7 @@ impl NodeOps<RawMutex> for MemoryNode {
 }
 impl FileNodeOps<RawMutex> for MemoryNode {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
-        let node = self.get();
-        let content = node.as_file()?.content.lock();
+        let content = self.inode.as_file()?.content.lock();
         if offset >= content.len() as u64 {
             return Ok(0);
         }
@@ -292,8 +296,7 @@ impl FileNodeOps<RawMutex> for MemoryNode {
     }
 
     fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize> {
-        let node = self.get();
-        let mut content = node.as_file()?.content.lock();
+        let mut content = self.inode.as_file()?.content.lock();
         let end_pos = offset as usize + buf.len();
         if end_pos > content.len() {
             content.resize(end_pos, 0);
@@ -305,15 +308,13 @@ impl FileNodeOps<RawMutex> for MemoryNode {
     }
 
     fn append(&self, buf: &[u8]) -> VfsResult<(usize, u64)> {
-        let node = self.get();
-        let mut content = node.as_file()?.content.lock();
+        let mut content = self.inode.as_file()?.content.lock();
         content.extend_from_slice(buf);
         Ok((buf.len(), buf.len() as u64))
     }
 
     fn set_len(&self, len: u64) -> VfsResult<()> {
-        let node = self.get();
-        let mut content = node.as_file()?.content.lock();
+        let mut content = self.inode.as_file()?.content.lock();
         if len > content.len() as u64 {
             content.resize(len as usize, 0);
         } else {
@@ -323,7 +324,7 @@ impl FileNodeOps<RawMutex> for MemoryNode {
     }
 
     fn set_symlink(&self, target: &str) -> VfsResult<()> {
-        *self.get().as_file()?.content.lock() = target.as_bytes().to_vec();
+        *self.inode.as_file()?.content.lock() = target.as_bytes().to_vec();
         Ok(())
     }
 }
@@ -331,7 +332,7 @@ impl DirNodeOps<RawMutex> for MemoryNode {
     fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
         let mut count = 0;
         for (i, (name, entry)) in self
-            .get()
+            .inode
             .as_dir()?
             .entries
             .lock()
@@ -353,12 +354,13 @@ impl DirNodeOps<RawMutex> for MemoryNode {
     }
 
     fn lookup(&self, name: &str) -> VfsResult<DirEntry<RawMutex>> {
-        let node = self.get();
-        let dir = node.as_dir()?;
+        let dir = self.inode.as_dir()?;
         let entries = dir.entries.lock();
 
         let entry = entries.get(name).ok_or(VfsError::ENOENT)?;
-        self.new_entry(name, entry.get().metadata.lock().node_type, entry.ino)
+        let inode = entry.get();
+        let node_type = inode.metadata.lock().node_type;
+        self.new_entry(name, node_type, inode)
     }
 
     fn create(
@@ -367,20 +369,19 @@ impl DirNodeOps<RawMutex> for MemoryNode {
         node_type: NodeType,
         permission: NodePermission,
     ) -> VfsResult<DirEntry<RawMutex>> {
-        let node = self.get();
-        let dir = node.as_dir()?;
-        let entries = dir.entries.lock();
+        let dir = self.inode.as_dir()?;
+        let mut entries = dir.entries.lock();
 
         if entries.contains_key(name) {
             return Err(VfsError::EEXIST);
         }
-        let ino = Inode::new(&self.fs, Some(self.ino), node_type, permission);
-        self.new_entry(name, node_type, ino)
+        let inode = Inode::new(&self.fs, Some(self.inode.ino), node_type, permission);
+        entries.insert(name.into(), InodeRef::new(self.fs.clone(), inode.ino));
+        self.new_entry(name, node_type, inode)
     }
 
     fn link(&self, name: &str, target: &DirEntry<RawMutex>) -> VfsResult<DirEntry<RawMutex>> {
-        let node = self.get();
-        let dir = node.as_dir()?;
+        let dir = self.inode.as_dir()?;
         let mut entries = dir.entries.lock();
 
         let target = target.downcast::<Self>()?;
@@ -388,15 +389,14 @@ impl DirNodeOps<RawMutex> for MemoryNode {
         if entries.contains_key(name) {
             return Err(VfsError::EEXIST);
         }
-        let ino = target.ino;
+        let inode = target.inode.clone();
         let node_type = target.metadata()?.node_type;
-        entries.insert(name.into(), InodeRef::new(self.fs.clone(), ino));
-        self.new_entry(name, node_type, ino)
+        entries.insert(name.into(), InodeRef::new(self.fs.clone(), inode.ino));
+        self.new_entry(name, node_type, inode)
     }
 
     fn unlink(&self, name: &str) -> VfsResult<()> {
-        let node = self.get();
-        let dir = node.as_dir()?;
+        let dir = self.inode.as_dir()?;
         let mut entries = dir.entries.lock();
 
         let Some(entry) = entries.get(name) else {
@@ -414,7 +414,7 @@ impl DirNodeOps<RawMutex> for MemoryNode {
 
     // TODO: atomicity
     fn rename(&self, src_name: &str, dst_dir: &DirNode<RawMutex>, dst_name: &str) -> VfsResult<()> {
-        let dst_node = dst_dir.downcast::<Self>()?.get();
+        let dst_node = dst_dir.downcast::<Self>()?;
         if let Ok(entry) = dst_dir.lookup(dst_name) {
             let src_entry = self.lookup(src_name)?;
             if entry.inode() == src_entry.inode() {
@@ -423,17 +423,23 @@ impl DirNodeOps<RawMutex> for MemoryNode {
         }
 
         let src_entry = self
-            .get()
+            .inode
             .as_dir()?
             .entries
             .lock()
             .remove(src_name)
             .ok_or(VfsError::ENOENT)?;
         dst_node
+            .inode
             .as_dir()?
             .entries
             .lock()
             .insert(dst_name.into(), src_entry);
         Ok(())
+    }
+}
+impl Drop for MemoryNode {
+    fn drop(&mut self) {
+        release_inode(&self.fs, &self.inode, 0);
     }
 }
