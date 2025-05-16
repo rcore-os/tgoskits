@@ -234,10 +234,11 @@ impl<M: RawMutex> Location<M> {
         create: bool,
         create_new: bool,
         permission: NodePermission,
+        user: Option<(u32, u32)>,
     ) -> VfsResult<Location<M>> {
         self.entry
             .as_dir()?
-            .open_file_or_create(name, create, create_new, permission)
+            .open_file_or_create(name, create, create_new, permission, user)
             .map(|entry| self.wrap(entry).resolve_mountpoint())
     }
 

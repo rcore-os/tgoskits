@@ -7,8 +7,7 @@ use alloc::{borrow::ToOwned, collections::btree_map::BTreeMap, string::String, s
 use lock_api::{Mutex, RawMutex};
 
 use crate::{
-    Mountpoint, NodeOps, NodePermission, NodeType, VfsError, VfsResult,
-    path::{DOT, DOTDOT, verify_entry_name},
+    path::{verify_entry_name, DOT, DOTDOT}, MetadataUpdate, Mountpoint, NodeOps, NodePermission, NodeType, VfsError, VfsResult
 };
 
 use super::DirEntry;
@@ -240,6 +239,7 @@ impl<M: RawMutex> DirNode<M> {
         create: bool,
         create_new: bool,
         permission: NodePermission,
+        user: Option<(u32, u32)>,
     ) -> VfsResult<DirEntry<M>> {
         verify_entry_name(name)?;
 
@@ -254,7 +254,14 @@ impl<M: RawMutex> DirNode<M> {
             Err(err) if err == VfsError::ENOENT && create => {}
             Err(err) => return Err(err),
         }
-        self.create_locked(name, NodeType::RegularFile, permission, &mut children)
+        let entry = self.create_locked(name, NodeType::RegularFile, permission, &mut children)?;
+        if user.is_some() {
+            entry.update_metadata(MetadataUpdate {
+                owner: user,
+                ..Default::default()
+            })?;
+        }
+        Ok(entry)
     }
 
     pub fn mountpoint(&self) -> Option<Arc<Mountpoint<M>>> {
