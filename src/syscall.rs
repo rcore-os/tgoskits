@@ -63,6 +63,8 @@ fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
             tf.arg3() as _,
             tf.arg4() as _,
         ),
+        #[cfg(target_arch = "x86_64")]
+        Sysno::chmod => sys_chmod(tf.arg0().into(), tf.arg1() as _),
         Sysno::fchmod => sys_fchmod(tf.arg0() as _, tf.arg1() as _),
         Sysno::fchmodat | Sysno::fchmodat2 => sys_fchmodat(
             tf.arg0() as _,
@@ -326,6 +328,7 @@ fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
         Sysno::getegid => sys_getegid(),
         Sysno::uname => sys_uname(tf.arg0().into()),
         Sysno::sysinfo => sys_sysinfo(tf.arg0().into()),
+        Sysno::syslog => sys_syslog(tf.arg0() as _, tf.arg1().into(), tf.arg2() as _),
 
         // time
         Sysno::gettimeofday => sys_gettimeofday(tf.arg0().into()),
