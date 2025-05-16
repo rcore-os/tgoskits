@@ -1,4 +1,4 @@
-use core::time::Duration;
+use core::{fmt::Debug, time::Duration};
 
 /// Filesystem node type.
 #[repr(u8)]
@@ -83,6 +83,8 @@ pub struct Metadata {
     pub block_size: u64,
     /// Number of 512B blocks allocated
     pub blocks: u64,
+    /// Device ID (if special file)
+    pub rdev: DeviceId,
 
     /// Time of last access
     pub atime: Duration,
@@ -104,4 +106,38 @@ pub struct MetadataUpdate {
     pub atime: Option<Duration>,
     /// Time of last modification
     pub mtime: Option<Duration>,
+}
+
+/// Device Id
+#[derive(Default, Clone, PartialEq, Eq, Copy)]
+pub struct DeviceId(pub u64);
+
+impl DeviceId {
+    pub const fn new(major: u32, minor: u32) -> Self {
+        let major = major as u64;
+        let minor = minor as u64;
+        Self(
+            (major & 0xffff_f000) << 32
+                | (major & 0x0000_0fff) << 8
+                | (minor & 0xffff_ff00) << 12
+                | (minor & 0x0000_00ff),
+        )
+    }
+
+    pub const fn major(&self) -> u32 {
+        ((self.0 >> 32) & 0xffff_f000 | (self.0 >> 8) & 0x0000_0fff) as u32
+    }
+
+    pub const fn minor(&self) -> u32 {
+        ((self.0 >> 12) & 0xffff_ff00 | self.0 & 0x0000_00ff) as u32
+    }
+}
+
+impl Debug for DeviceId {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        f.debug_struct("DeviceId")
+            .field("major", &self.major())
+            .field("minor", &self.minor())
+            .finish()
+    }
 }
