@@ -184,9 +184,7 @@ pub fn sys_unlinkat(dirfd: i32, path: UserConstPtr<c_char>, flags: usize) -> Lin
 
     debug!(
         "sys_unlinkat <= dirfd: {}, path: {:?}, flags: {}",
-        dirfd,
-        path,
-        flags
+        dirfd, path, flags
     );
 
     with_fs(dirfd, |fs| {
@@ -397,9 +395,12 @@ pub fn sys_utimensat(
             _ => Some(time.to_time_value()),
         }
     }
-    let times = times.get_as_slice(2)?;
-    let atime = utime_to_duration(&times[0]);
-    let mtime = utime_to_duration(&times[1]);
+    let times = nullable!(times.get_as_slice(2))?;
+    let (atime, mtime) = match times {
+        Some([atime, mtime]) => (utime_to_duration(atime), utime_to_duration(mtime)),
+        None => (Some(wall_time()), Some(wall_time())),
+        _ => unreachable!(),
+    };
     if atime.is_none() && mtime.is_none() {
         return Ok(0);
     }

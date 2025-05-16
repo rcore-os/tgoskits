@@ -7,6 +7,7 @@ use core::{any::Any, ffi::c_int, time::Duration};
 
 use alloc::{sync::Arc, vec::Vec};
 use axerrno::{LinuxError, LinuxResult};
+use axfs_ng_vfs::DeviceId;
 use axio::PollState;
 use axns::{ResArc, def_resource};
 use axtask::{TaskExtRef, current};
@@ -32,6 +33,7 @@ pub struct Kstat {
     pub size: u64,
     pub blksize: u32,
     pub blocks: u64,
+    pub rdev: DeviceId,
     pub atime: Duration,
     pub mtime: Duration,
     pub ctime: Duration,
@@ -49,6 +51,7 @@ impl Default for Kstat {
             size: 0,
             blksize: 4096,
             blocks: 0,
+            rdev: DeviceId::default(),
             atime: Duration::default(),
             mtime: Duration::default(),
             ctime: Duration::default(),
@@ -69,6 +72,7 @@ impl From<Kstat> for stat {
         stat.st_size = value.size as _;
         stat.st_blksize = value.blksize as _;
         stat.st_blocks = value.blocks as _;
+        stat.st_rdev = value.rdev.0 as _;
 
         stat.st_atime = value.atime.as_secs() as _;
         stat.st_atime_nsec = value.atime.subsec_nanos() as _;
@@ -94,6 +98,8 @@ impl From<Kstat> for statx {
         statx.stx_ino = value.ino as _;
         statx.stx_size = value.size as _;
         statx.stx_blocks = value.blocks as _;
+        statx.stx_rdev_major = value.rdev.major();
+        statx.stx_rdev_minor = value.rdev.minor();
 
         fn time_to_statx(time: &Duration) -> statx_timestamp {
             statx_timestamp {

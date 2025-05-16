@@ -2,8 +2,8 @@ use core::{any::Any, cmp::Ordering};
 
 use alloc::{borrow::Cow, sync::Arc, vec::Vec};
 use axfs_ng_vfs::{
-    FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType,
-    VfsError, VfsResult,
+    DeviceId, FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeOps, NodePermission,
+    NodeType, VfsError, VfsResult,
 };
 use axsync::RawMutex;
 use inherit_methods_macro::inherit_methods;
@@ -136,9 +136,11 @@ impl Device {
     pub fn new(
         fs: Arc<DynamicFs>,
         node_type: NodeType,
+        device_id: DeviceId,
         ops: impl DeviceOps + 'static,
     ) -> Arc<Self> {
         let node = DynamicNode::new(fs, node_type, NodePermission::default());
+        node.metadata.lock().rdev = device_id;
         Arc::new(Self {
             node,
             ops: Arc::new(ops),

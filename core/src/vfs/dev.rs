@@ -1,5 +1,5 @@
 use alloc::sync::Arc;
-use axfs_ng_vfs::{Filesystem, NodeType, VfsResult};
+use axfs_ng_vfs::{DeviceId, Filesystem, NodeType, VfsResult};
 use axsync::{Mutex, RawMutex};
 use rand::{RngCore, SeedableRng, rngs::SmallRng};
 
@@ -52,23 +52,43 @@ fn builder(fs: Arc<DynamicFs>) -> DirMaker {
     let mut root = DynamicDir::builder(fs.clone());
     root.add(
         "null",
-        Device::new(fs.clone(), NodeType::CharacterDevice, Null),
+        Device::new(
+            fs.clone(),
+            NodeType::CharacterDevice,
+            DeviceId::new(1, 3),
+            Null,
+        ),
     );
     root.add(
         "zero",
-        Device::new(fs.clone(), NodeType::CharacterDevice, Zero),
+        Device::new(
+            fs.clone(),
+            NodeType::CharacterDevice,
+            DeviceId::new(1, 5),
+            Zero,
+        ),
     );
     root.add(
         "random",
-        Device::new(fs.clone(), NodeType::CharacterDevice, Random {
-            rng: Mutex::new(SmallRng::from_seed(*RANDOM_SEED)),
-        }),
+        Device::new(
+            fs.clone(),
+            NodeType::CharacterDevice,
+            DeviceId::new(1, 8),
+            Random {
+                rng: Mutex::new(SmallRng::from_seed(*RANDOM_SEED)),
+            },
+        ),
     );
     root.add(
         "urandom",
-        Device::new(fs.clone(), NodeType::CharacterDevice, Random {
-            rng: Mutex::new(SmallRng::from_seed(*RANDOM_SEED)),
-        }),
+        Device::new(
+            fs.clone(),
+            NodeType::CharacterDevice,
+            DeviceId::new(1, 9),
+            Random {
+                rng: Mutex::new(SmallRng::from_seed(*RANDOM_SEED)),
+            },
+        ),
     );
     root.build()
 }

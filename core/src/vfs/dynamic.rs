@@ -2,10 +2,7 @@ use core::{any::Any, time::Duration};
 
 use alloc::{borrow::ToOwned, collections::btree_map::BTreeMap, string::String, sync::Arc};
 use axfs_ng_vfs::{
-    DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem, FilesystemOps,
-    Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, StatFs, VfsError,
-    VfsResult, WeakDirEntry,
-    path::{DOT, DOTDOT, MAX_NAME_LEN},
+    path::{DOT, DOTDOT, MAX_NAME_LEN}, DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem, FilesystemOps, Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, StatFs, VfsError, VfsResult, WeakDirEntry
 };
 use axsync::{Mutex, RawMutex};
 use inherit_methods_macro::inherit_methods;
@@ -100,7 +97,7 @@ impl<T: FileNodeOps<RawMutex> + 'static> From<Arc<T>> for DynNodeOps {
 pub struct DynamicNode {
     fs: Arc<DynamicFs>,
     ino: u64,
-    metadata: Mutex<Metadata>,
+    pub(crate) metadata: Mutex<Metadata>,
 }
 impl DynamicNode {
     pub fn new(fs: Arc<DynamicFs>, node_type: NodeType, mode: NodePermission) -> Self {
@@ -116,6 +113,7 @@ impl DynamicNode {
             size: 0,
             block_size: 0,
             blocks: 0,
+            rdev: DeviceId::default(),
             atime: Duration::default(),
             mtime: Duration::default(),
             ctime: Duration::default(),

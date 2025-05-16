@@ -4,9 +4,9 @@ use alloc::{
     borrow::ToOwned, collections::btree_map::BTreeMap, string::String, sync::Arc, vec::Vec,
 };
 use axfs_ng_vfs::{
-    DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem, FilesystemOps,
-    Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, StatFs, VfsError,
-    VfsResult, WeakDirEntry,
+    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
+    FilesystemOps, Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, StatFs,
+    VfsError, VfsResult, WeakDirEntry,
 };
 use axsync::{Mutex, RawMutex};
 use slab::Slab;
@@ -87,7 +87,7 @@ impl FilesystemOps<RawMutex> for MemoryFs {
     }
 }
 
-fn release_inode(fs: &MemoryFs, inode: &Arc<Inode>, nlink : u64) {
+fn release_inode(fs: &MemoryFs, inode: &Arc<Inode>, nlink: u64) {
     let mut inodes = fs.inodes.lock();
     let mut metadata = inode.metadata.lock();
     metadata.nlink -= nlink;
@@ -135,6 +135,7 @@ impl Inode {
             size: 0,
             block_size: 0,
             blocks: 0,
+            rdev: DeviceId::default(),
             atime: Duration::default(),
             mtime: Duration::default(),
             ctime: Duration::default(),
