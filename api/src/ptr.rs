@@ -107,6 +107,10 @@ impl<T> UserPtr<T> {
         VirtAddr::from_ptr_of(self.0)
     }
 
+    pub fn cast<U>(self) -> UserPtr<U> {
+        UserPtr(self.0 as *mut U)
+    }
+
     pub fn is_null(&self) -> bool {
         self.0.is_null()
     }
@@ -156,6 +160,10 @@ impl<T> UserConstPtr<T> {
 
     pub fn address(&self) -> VirtAddr {
         VirtAddr::from_ptr_of(self.0)
+    }
+
+    pub fn cast<U>(self) -> UserConstPtr<U> {
+        UserConstPtr(self.0 as *const U)
     }
 
     pub fn is_null(&self) -> bool {

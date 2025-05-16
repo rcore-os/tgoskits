@@ -263,7 +263,7 @@ dependencies = [
 [[package]]
 name = "axfs-ng-vfs"
 version = "0.1.0"
-source = "git+https://github.com/Mivik/axfs-ng-vfs?rev=d8c42ee#d8c42eed8bc2a5242369b09da37764e559e96bac"
+source = "git+https://github.com/Mivik/axfs-ng-vfs?rev=70ce02f#70ce02fb2e11a8479fe758b8bc6fe8a88a83961b"
 dependencies = [
  "axerrno",
  "bitflags 2.9.0",
@@ -535,9 +535,9 @@ checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
 name = "chrono"
-version = "0.4.40"
+version = "0.4.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a7964611d71df112cb1730f2ee67324fcf4d0fc6606acbbe9bfe06df124637c"
+checksum = "c469d952047f47f91b68d1cba3f10d63c11d73e4636f24f08daf0278abf01c4d"
 dependencies = [
  "num-traits",
 ]
@@ -1467,6 +1467,7 @@ dependencies = [
  "axtask",
  "bitflags 2.9.0",
  "cfg-if",
+ "chrono",
  "ctor_bare",
  "flatten_objects",
  "linkme",

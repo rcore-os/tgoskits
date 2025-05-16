@@ -8,6 +8,9 @@ use super::{
     file::{Device, DeviceOps},
 };
 
+/// The device ID for /dev/rtc0
+pub const RTC0_DEVICE_ID: DeviceId = DeviceId::new(250, 0);
+
 const RANDOM_SEED: &[u8; 32] = b"0123456789abcdef0123456789abcdef";
 
 pub fn new_devfs() -> Filesystem<RawMutex> {
@@ -35,8 +38,25 @@ impl DeviceOps for Zero {
     }
 }
 
+struct Rtc;
+impl DeviceOps for Rtc {
+    fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
+        Ok(0)
+    }
+    fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
+        Ok(0)
+    }
+}
+
 struct Random {
     rng: Mutex<SmallRng>,
+}
+impl Random {
+    pub fn new() -> Self {
+        Self {
+            rng: Mutex::new(SmallRng::from_seed(*RANDOM_SEED)),
+        }
+    }
 }
 impl DeviceOps for Random {
     fn read_at(&self, buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
@@ -74,9 +94,7 @@ fn builder(fs: Arc<DynamicFs>) -> DirMaker {
             fs.clone(),
             NodeType::CharacterDevice,
             DeviceId::new(1, 8),
-            Random {
-                rng: Mutex::new(SmallRng::from_seed(*RANDOM_SEED)),
-            },
+            Random::new(),
         ),
     );
     root.add(
@@ -85,10 +103,12 @@ fn builder(fs: Arc<DynamicFs>) -> DirMaker {
             fs.clone(),
             NodeType::CharacterDevice,
             DeviceId::new(1, 9),
-            Random {
-                rng: Mutex::new(SmallRng::from_seed(*RANDOM_SEED)),
-            },
+            Random::new(),
         ),
+    );
+    root.add(
+        "rtc0",
+        Device::new(fs.clone(), NodeType::CharacterDevice, RTC0_DEVICE_ID, Rtc),
     );
     root.build()
 }

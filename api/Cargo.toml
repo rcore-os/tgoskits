@@ -27,13 +27,14 @@ axerrno.workspace = true
 bitflags.workspace = true
 cfg-if.workspace = true
 linkme.workspace = true
-linux-raw-sys.workspace = true
+linux-raw-sys = { workspace = true, features = ["ioctl"] }
 memory_addr.workspace = true
 spin.workspace = true
 
 starry-core.workspace = true
 
 axio = "0.1.1"
+chrono = { version = "0.4.41", default-features = false }
 ctor_bare = "0.2.1"
 flatten_objects = "0.2.3"
 num_enum = { version = "0.7", default-features = false }
