@@ -147,20 +147,7 @@ pub fn load_user_app(
             )
             .normalize()
             .ok_or(LinuxError::EINVAL)?;
-        let mut interp_path = interp_path.as_str();
-
-        if interp_path == "/lib/ld-linux-riscv64-lp64.so.1"
-            || interp_path == "/lib64/ld-linux-loongarch-lp64d.so.1"
-            || interp_path == "/lib64/ld-linux-x86-64.so.2"
-            || interp_path == "/lib/ld-linux-aarch64.so.1"
-            || interp_path == "/lib/ld-musl-riscv64.so.1"
-            || interp_path == "/lib/ld-musl-aarch64.so.1"
-            || interp_path == "/lib/ld-musl-x86_64.so.1"
-            || interp_path == "/lib64/ld-musl-loongarch-lp64d.so.1"
-        {
-            // TODO: Use soft link
-            interp_path = "/musl/lib/libc.so";
-        }
+        let interp_path = interp_path.as_str();
 
         debug!("Loading interpreter: {}", interp_path);
 

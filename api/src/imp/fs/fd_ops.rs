@@ -16,15 +16,16 @@ use crate::{
         Directory, FD_TABLE, File, FileLike, add_file_like, close_file_like, get_file_like, with_fs,
     },
     ptr::UserConstPtr,
+    sys_getegid, sys_geteuid,
 };
 
 const O_EXEC: u32 = O_PATH;
 
 /// Convert open flags to [`OpenOptions`].
-fn flags_to_options(flags: c_int, mode: __kernel_mode_t) -> OpenOptions {
+fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32)) -> OpenOptions {
     let flags = flags as u32;
     let mut options = OpenOptions::new();
-    options.mode(mode);
+    options.mode(mode).user(uid, gid);
     match flags & 0b11 {
         O_RDONLY => options.read(true),
         O_WRONLY => options.write(true),
@@ -76,7 +77,7 @@ pub fn sys_openat(
         dirfd, path, flags, mode
     );
 
-    let options = flags_to_options(flags, mode);
+    let options = flags_to_options(flags, mode, (sys_geteuid()? as _, sys_getegid()? as _));
     with_fs(dirfd, |fs| options.open(fs, path))
         .and_then(add_to_fd)
         .map(|fd| fd as isize)
