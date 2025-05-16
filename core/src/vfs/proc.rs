@@ -1,8 +1,11 @@
-use alloc::{borrow::ToOwned, sync::Arc};
+use alloc::sync::Arc;
 use axfs_ng_vfs::Filesystem;
 use axsync::RawMutex;
 
-use super::dynamic::{DynamicDir, DynamicFs};
+use super::{
+    dynamic::{DirMaker, DynamicDir, DynamicFs},
+    file::SimpleFile,
+};
 
 const DUMMY_MEMINFO: &str = "MemTotal:       32536204 kB
 MemFree:         5506524 kB
@@ -63,12 +66,19 @@ DirectMap2M:    31492096 kB
 DirectMap1G:     1048576 kB
 ";
 
-pub fn new_procfs() -> Filesystem<RawMutex> {
-    let mut root = DynamicDir::new();
-    root.add_file(
+fn builder(fs: Arc<DynamicFs>) -> DirMaker {
+    let mut root = DynamicDir::builder(fs.clone());
+    root.add(
         "mounts",
-        Arc::new(|| "proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n"),
+        SimpleFile::new(
+            fs.clone(),
+            || "proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n",
+        ),
     );
-    root.add_file("meminfo", Arc::new(|| DUMMY_MEMINFO));
-    DynamicFs::new("proc".to_owned(), 0x9fa0, Arc::new(root))
+    root.add("meminfo", SimpleFile::new(fs.clone(), || DUMMY_MEMINFO));
+    root.build()
+}
+
+pub fn new_procfs() -> Filesystem<RawMutex> {
+    DynamicFs::new_with("proc".into(), 0x9fa0, builder)
 }

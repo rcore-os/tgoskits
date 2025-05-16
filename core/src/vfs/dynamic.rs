@@ -1,19 +1,18 @@
-use core::{any::Any, cmp::Ordering, time::Duration};
+use core::{any::Any, time::Duration};
 
-use alloc::{
-    borrow::{Cow, ToOwned},
-    collections::btree_map::BTreeMap,
-    string::String,
-    sync::Arc,
-    vec::Vec,
-};
+use alloc::{borrow::ToOwned, collections::btree_map::BTreeMap, string::String, sync::Arc};
 use axfs_ng_vfs::{
     DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem, FilesystemOps,
     Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, StatFs, VfsError,
-    VfsResult, WeakDirEntry, path::MAX_NAME_LEN,
+    VfsResult, WeakDirEntry,
+    path::{DOT, DOTDOT, MAX_NAME_LEN},
 };
 use axsync::{Mutex, RawMutex};
+use inherit_methods_macro::inherit_methods;
 use slab::Slab;
+
+pub type DirMaker =
+    Arc<dyn Fn(WeakDirEntry<RawMutex>) -> Arc<dyn DirNodeOps<RawMutex>> + Send + Sync>;
 
 pub fn dummy_stat_fs(fs_type: u32) -> StatFs {
     StatFs {
@@ -39,26 +38,35 @@ pub struct DynamicFs {
     root: Mutex<Option<DirEntry<RawMutex>>>,
 }
 impl DynamicFs {
-    pub fn new(name: String,fs_type:u32, root: Arc<dyn DynamicDirOps>) -> Filesystem<RawMutex> {
+    pub fn new(name: String, fs_type: u32) -> Arc<Self> {
+        Arc::new(Self {
+            name,
+            fs_type,
+            inodes: Mutex::default(),
+            root: Mutex::default(),
+        })
+    }
+    pub fn new_with(
+        name: String,
+        fs_type: u32,
+        root: impl FnOnce(Arc<DynamicFs>) -> DirMaker,
+    ) -> Filesystem<RawMutex> {
         let fs = Arc::new(Self {
             name,
             fs_type,
             inodes: Mutex::default(),
             root: Mutex::default(),
         });
-        let root = DirEntry::new_dir(
-            |this| {
-                DirNode::new(DynamicNode::new(
-                    fs.clone(),
-                    NodeType::Directory,
-                    Some(this),
-                    DynamicContent::Dir(root),
-                ))
-            },
+        let root = root(fs.clone());
+        fs.set_root(DirEntry::new_dir(
+            |this| DirNode::new(root(this)),
             Reference::root(),
-        );
-        *fs.root.lock() = Some(root.clone());
+        ));
         Filesystem::new(fs)
+    }
+
+    pub fn set_root(&self, root: DirEntry<RawMutex>) {
+        *self.root.lock() = Some(root);
     }
 
     pub fn alloc_inode(&self) -> u64 {
@@ -82,78 +90,18 @@ impl FilesystemOps<RawMutex> for DynamicFs {
     }
 }
 
-pub trait DynamicFileOps: Send + Sync {
-    fn read_all(&self) -> VfsResult<Cow<[u8]>>;
-    fn write_all(&self, data: &[u8]) -> VfsResult<()>;
+pub enum DynNodeOps {
+    Dir(DirMaker),
+    File(Arc<dyn FileNodeOps<RawMutex>>),
 }
-pub trait DynamicDirOps: Send + Sync {
-    fn list_children(&self) -> Vec<Cow<str>>;
-    fn get_child(&self, name: &str) -> VfsResult<(DynamicContent, NodeType)>;
-}
-
-impl<F, R> DynamicFileOps for F
-where
-    F: Fn() -> R + Send + Sync + 'static,
-    R: Into<Vec<u8>>,
-{
-    fn read_all(&self) -> VfsResult<Cow<[u8]>> {
-        Ok(Cow::Owned((self)().into()))
-    }
-
-    fn write_all(&self, _data: &[u8]) -> VfsResult<()> {
-        Err(VfsError::EBADF)
+impl From<DirMaker> for DynNodeOps {
+    fn from(maker: DirMaker) -> Self {
+        Self::Dir(maker)
     }
 }
-
-pub struct DynamicDir {
-    children: BTreeMap<String, (DynamicContent, NodeType)>,
-}
-impl DynamicDir {
-    pub fn new() -> Self {
-        Self {
-            children: BTreeMap::new(),
-        }
-    }
-
-    pub fn add_file(&mut self, name: impl Into<String>, file: Arc<dyn DynamicFileOps>) {
-        self.add_file_with_type(name, file, NodeType::RegularFile);
-    }
-    pub fn add_dir(&mut self, name: impl Into<String>, dir: Arc<dyn DynamicDirOps>) {
-        self.children
-            .insert(name.into(), (dir.into(), NodeType::Directory));
-    }
-    pub fn add_file_with_type(
-        &mut self,
-        name: impl Into<String>,
-        file: Arc<dyn DynamicFileOps>,
-        node_type: NodeType,
-    ) {
-        self.children.insert(name.into(), (file.into(), node_type));
-    }
-}
-impl DynamicDirOps for DynamicDir {
-    fn list_children(&self) -> Vec<Cow<str>> {
-        self.children.keys().map(|it| it.into()).collect()
-    }
-
-    fn get_child(&self, name: &str) -> VfsResult<(DynamicContent, NodeType)> {
-        self.children.get(name).cloned().ok_or(VfsError::ENOENT)
-    }
-}
-
-#[derive(Clone)]
-pub enum DynamicContent {
-    File(Arc<dyn DynamicFileOps>),
-    Dir(Arc<dyn DynamicDirOps>),
-}
-impl From<Arc<dyn DynamicFileOps>> for DynamicContent {
-    fn from(file: Arc<dyn DynamicFileOps>) -> Self {
-        Self::File(file)
-    }
-}
-impl From<Arc<dyn DynamicDirOps>> for DynamicContent {
-    fn from(dir: Arc<dyn DynamicDirOps>) -> Self {
-        Self::Dir(dir)
+impl<T: FileNodeOps<RawMutex> + 'static> From<Arc<T>> for DynNodeOps {
+    fn from(ops: Arc<T>) -> Self {
+        Self::File(ops)
     }
 }
 
@@ -161,26 +109,15 @@ pub struct DynamicNode {
     fs: Arc<DynamicFs>,
     ino: u64,
     metadata: Mutex<Metadata>,
-    this: Option<WeakDirEntry<RawMutex>>,
-    content: DynamicContent,
 }
 impl DynamicNode {
-    pub fn new(
-        fs: Arc<DynamicFs>,
-        node_type: NodeType,
-        this: Option<WeakDirEntry<RawMutex>>,
-        content: DynamicContent,
-    ) -> Arc<Self> {
+    pub fn new(fs: Arc<DynamicFs>, node_type: NodeType, mode: NodePermission) -> Self {
         let ino = fs.alloc_inode();
         let metadata = Metadata {
             device: 0,
             inode: ino,
             nlink: 1,
-            mode: if node_type == NodeType::Directory {
-                NodePermission::from_bits_truncate(0o755)
-            } else {
-                NodePermission::from_bits_truncate(0o644)
-            },
+            mode,
             node_type,
             uid: 0,
             gid: 0,
@@ -191,32 +128,71 @@ impl DynamicNode {
             mtime: Duration::default(),
             ctime: Duration::default(),
         };
-        Arc::new(Self {
+        Self {
             fs,
             ino,
             metadata: Mutex::new(metadata),
+        }
+    }
+}
+
+pub struct DynamicDir {
+    node: DynamicNode,
+    this: WeakDirEntry<RawMutex>,
+    children: Arc<BTreeMap<String, DynNodeOps>>,
+}
+impl DynamicDir {
+    fn new(
+        node: DynamicNode,
+        children: Arc<BTreeMap<String, DynNodeOps>>,
+        this: WeakDirEntry<RawMutex>,
+    ) -> Arc<DynamicDir> {
+        Arc::new(Self {
+            node,
             this,
-            content,
+            children,
         })
     }
 
-    fn as_file(&self) -> VfsResult<&Arc<dyn DynamicFileOps>> {
-        match &self.content {
-            DynamicContent::File(file) => Ok(file),
-            DynamicContent::Dir(_) => Err(VfsError::EISDIR),
-        }
-    }
-
-    fn as_dir(&self) -> VfsResult<&Arc<dyn DynamicDirOps>> {
-        match &self.content {
-            DynamicContent::File(_) => Err(VfsError::ENOTDIR),
-            DynamicContent::Dir(dir) => Ok(dir),
-        }
+    pub fn builder(fs: Arc<DynamicFs>) -> DynamicDirBuilder {
+        DynamicDirBuilder::new(fs)
     }
 }
 impl Drop for DynamicNode {
     fn drop(&mut self) {
         self.fs.release_inode(self.ino);
+    }
+}
+
+pub struct DynamicDirBuilder {
+    fs: Arc<DynamicFs>,
+    children: BTreeMap<String, DynNodeOps>,
+}
+impl DynamicDirBuilder {
+    pub fn new(fs: Arc<DynamicFs>) -> Self {
+        Self {
+            fs,
+            children: BTreeMap::new(),
+        }
+    }
+
+    pub fn add(&mut self, name: impl Into<String>, ops: impl Into<DynNodeOps>) {
+        self.children.insert(name.into(), ops.into());
+    }
+
+    pub fn build(self) -> DirMaker {
+        let children = Arc::new(self.children);
+        Arc::new(move |this| {
+            DynamicDir::new(
+                DynamicNode::new(
+                    self.fs.clone(),
+                    NodeType::Directory,
+                    NodePermission::from_bits_truncate(0o755),
+                ),
+                children.clone(),
+                this,
+            )
+        })
     }
 }
 
@@ -232,10 +208,7 @@ impl NodeOps<RawMutex> for DynamicNode {
     }
 
     fn len(&self) -> VfsResult<u64> {
-        Ok(match &self.content {
-            DynamicContent::File(file) => file.read_all()?.len() as u64,
-            DynamicContent::Dir(_) => 0,
-        })
+        Ok(0)
     }
 
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()> {
@@ -269,81 +242,40 @@ impl NodeOps<RawMutex> for DynamicNode {
     }
 }
 
-impl FileNodeOps<RawMutex> for DynamicNode {
-    fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
-        let data = self.as_file()?.read_all()?;
-        if offset >= data.len() as u64 {
-            return Ok(0);
-        }
-        let data = &data[offset as usize..];
-        let read = data.len().min(buf.len());
-        buf[..read].copy_from_slice(&data[..read]);
-        Ok(read)
-    }
-
-    fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize> {
-        let file = self.as_file()?;
-        let data = file.read_all()?;
-        if offset == 0 && buf.len() >= data.len() {
-            file.write_all(buf)?;
-            return Ok(buf.len());
-        }
-        let mut data = data.to_vec();
-        let end_pos = offset + buf.len() as u64;
-        if end_pos > data.len() as u64 {
-            data.resize(end_pos as usize, 0);
-        }
-        data[offset as usize..].copy_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn append(&self, buf: &[u8]) -> VfsResult<(usize, u64)> {
-        let file = self.as_file()?;
-        let mut data = file.read_all()?.to_vec();
-        data.extend_from_slice(buf);
-        file.write_all(&data)?;
-        Ok((buf.len(), data.len() as u64))
-    }
-
-    fn set_len(&self, len: u64) -> VfsResult<()> {
-        let file = self.as_file()?;
-        let data = file.read_all()?;
-        match len.cmp(&(data.len() as u64)) {
-            Ordering::Less => file.write_all(&data[..len as usize]),
-            Ordering::Greater => {
-                let mut data = data.to_vec();
-                data.resize(len as usize, 0);
-                file.write_all(&data)
-            }
-            _ => Ok(()),
-        }
-    }
-
-    fn set_symlink(&self, target: &str) -> VfsResult<()> {
-        self.as_file()?.write_all(target.as_bytes())
+#[inherit_methods(from = "self.node")]
+impl NodeOps<RawMutex> for DynamicDir {
+    fn inode(&self) -> u64;
+    fn metadata(&self) -> VfsResult<Metadata>;
+    fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
+    fn filesystem(&self) -> &dyn FilesystemOps<RawMutex>;
+    fn sync(&self, data_only: bool) -> VfsResult<()>;
+    fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
+        self
     }
 }
 
-impl DirNodeOps<RawMutex> for DynamicNode {
+impl DirNodeOps<RawMutex> for DynamicDir {
     fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
-        let dir = self.as_dir()?;
-        let children = dir.list_children();
-        let children = [".", ".."]
+        let children = [DOT, DOTDOT]
             .into_iter()
-            .chain(children.iter().map(|it| it.as_ref()));
+            .chain(self.children.keys().map(|it| it.as_str()));
 
-        let this_entry = self.this.as_ref().unwrap().upgrade().unwrap();
+        let this_entry = self.this.upgrade().unwrap();
         let this_dir = this_entry.as_dir()?;
 
         let mut count = 0;
         for (i, name) in children.enumerate().skip(offset as usize) {
-            let entry = this_dir.lookup(name)?.downcast::<Self>()?;
-            if !sink.accept(
-                name,
-                entry.ino,
-                entry.metadata.lock().node_type,
-                i as u64 + 1,
-            ) {
+            let metadata = match name {
+                DOT => this_entry.metadata(),
+                DOTDOT => this_entry
+                    .parent()
+                    .map_or_else(|| this_entry.metadata(), |parent| parent.metadata()),
+                _ => {
+                    let entry = this_dir.lookup(name)?;
+                    entry.metadata()
+                } // DOTDOT => self.
+            }?;
+            if !sink.accept(name, metadata.inode, metadata.node_type, i as u64 + 1) {
                 break;
             }
             count += 1;
@@ -353,29 +285,16 @@ impl DirNodeOps<RawMutex> for DynamicNode {
     }
 
     fn lookup(&self, name: &str) -> VfsResult<DirEntry<RawMutex>> {
-        let dir = self.as_dir()?;
-        let (content, node_type) = dir.get_child(name)?;
-        let reference = Reference::new(
-            self.this.as_ref().and_then(WeakDirEntry::upgrade),
-            name.to_owned(),
-        );
-        Ok(match &content {
-            DynamicContent::Dir(_) => DirEntry::new_dir(
-                |this| {
-                    DirNode::new(DynamicNode::new(
-                        self.fs.clone(),
-                        node_type,
-                        Some(this),
-                        content,
-                    ))
-                },
-                reference,
-            ),
-            DynamicContent::File(_) => DirEntry::new_file(
-                FileNode::new(DynamicNode::new(self.fs.clone(), node_type, None, content)),
-                node_type,
-                reference,
-            ),
+        let ops = self.children.get(name).ok_or(VfsError::ENOENT)?;
+        let reference = Reference::new(self.this.upgrade(), name.to_owned());
+        Ok(match ops {
+            DynNodeOps::Dir(maker) => {
+                DirEntry::new_dir(|this| DirNode::new(maker(this)), reference)
+            }
+            DynNodeOps::File(ops) => {
+                let node_type = ops.metadata()?.node_type;
+                DirEntry::new_file(FileNode::new(ops.clone()), node_type, reference)
+            }
         })
     }
 

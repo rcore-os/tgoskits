@@ -34,3 +34,4 @@ xmas-elf = "0.9"
 
 slab = { version = "0.4.9", default-features = false }
 weak-map = { git = "https://github.com/Starry-OS/weak-map.git" }
+inherit-methods-macro = "0.1.0"

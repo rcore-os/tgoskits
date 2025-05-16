@@ -1,6 +1,7 @@
 //! Virtual filesystems
 
 mod dynamic;
+mod file;
 mod proc;
 mod tmp;
 

@@ -263,7 +263,7 @@ dependencies = [
 [[package]]
 name = "axfs-ng-vfs"
 version = "0.1.0"
-source = "git+https://github.com/Mivik/axfs-ng-vfs?rev=646c003#646c00338675c545a46d73f06d4fe330b31fd508"
+source = "git+https://github.com/Mivik/axfs-ng-vfs?rev=c3b58d0#c3b58d09dbb321dc90a0d1f24657c864f9b9b1c7"
 dependencies = [
  "axerrno",
  "bitflags 2.9.0",
@@ -1480,6 +1480,7 @@ dependencies = [
  "axsync",
  "axtask",
  "crate_interface",
+ "inherit-methods-macro",
  "kernel-elf-parser",
  "linkme",
  "linux-raw-sys",

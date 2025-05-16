@@ -1,0 +1,112 @@
+use core::{any::Any, cmp::Ordering};
+
+use alloc::{borrow::Cow, sync::Arc, vec::Vec};
+use axfs_ng_vfs::{
+    FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType,
+    VfsError, VfsResult,
+};
+use axsync::RawMutex;
+use inherit_methods_macro::inherit_methods;
+
+use super::dynamic::{DynamicFs, DynamicNode};
+
+pub trait SimpleFileOps: Send + Sync {
+    fn read_all(&self) -> VfsResult<Cow<[u8]>>;
+    fn write_all(&self, data: &[u8]) -> VfsResult<()>;
+}
+
+impl<F, R> SimpleFileOps for F
+where
+    F: Fn() -> R + Send + Sync + 'static,
+    R: Into<Vec<u8>>,
+{
+    fn read_all(&self) -> VfsResult<Cow<[u8]>> {
+        Ok(Cow::Owned((self)().into()))
+    }
+
+    fn write_all(&self, _data: &[u8]) -> VfsResult<()> {
+        Err(VfsError::EBADF)
+    }
+}
+
+pub struct SimpleFile {
+    node: DynamicNode,
+    ops: Arc<dyn SimpleFileOps>,
+}
+impl SimpleFile {
+    pub fn new(fs: Arc<DynamicFs>, ops: impl SimpleFileOps + 'static) -> Arc<Self> {
+        let node = DynamicNode::new(fs, NodeType::RegularFile, NodePermission::default());
+        Arc::new(Self {
+            node,
+            ops: Arc::new(ops),
+        })
+    }
+}
+
+#[inherit_methods(from = "self.node")]
+impl NodeOps<RawMutex> for SimpleFile {
+    fn inode(&self) -> u64;
+    fn metadata(&self) -> VfsResult<Metadata>;
+    fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
+    fn filesystem(&self) -> &dyn FilesystemOps<RawMutex>;
+    fn sync(&self, data_only: bool) -> VfsResult<()>;
+    fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
+        self
+    }
+
+    fn len(&self) -> VfsResult<u64> {
+        Ok(self.ops.read_all()?.len() as u64)
+    }
+}
+
+impl FileNodeOps<RawMutex> for SimpleFile {
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
+        let data = self.ops.read_all()?;
+        if offset >= data.len() as u64 {
+            return Ok(0);
+        }
+        let data = &data[offset as usize..];
+        let read = data.len().min(buf.len());
+        buf[..read].copy_from_slice(&data[..read]);
+        Ok(read)
+    }
+
+    fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize> {
+        let data = self.ops.read_all()?;
+        if offset == 0 && buf.len() >= data.len() {
+            self.ops.write_all(buf)?;
+            return Ok(buf.len());
+        }
+        let mut data = data.to_vec();
+        let end_pos = offset + buf.len() as u64;
+        if end_pos > data.len() as u64 {
+            data.resize(end_pos as usize, 0);
+        }
+        data[offset as usize..].copy_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn append(&self, buf: &[u8]) -> VfsResult<(usize, u64)> {
+        let mut data = self.ops.read_all()?.to_vec();
+        data.extend_from_slice(buf);
+        self.ops.write_all(&data)?;
+        Ok((buf.len(), data.len() as u64))
+    }
+
+    fn set_len(&self, len: u64) -> VfsResult<()> {
+        let data = self.ops.read_all()?;
+        match len.cmp(&(data.len() as u64)) {
+            Ordering::Less => self.ops.write_all(&data[..len as usize]),
+            Ordering::Greater => {
+                let mut data = data.to_vec();
+                data.resize(len as usize, 0);
+                self.ops.write_all(&data)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn set_symlink(&self, target: &str) -> VfsResult<()> {
+        self.ops.write_all(target.as_bytes())
+    }
+}
