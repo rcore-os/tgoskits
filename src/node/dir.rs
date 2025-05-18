@@ -4,10 +4,11 @@ use core::{
 };
 
 use alloc::{borrow::ToOwned, collections::btree_map::BTreeMap, string::String, sync::Arc};
-use lock_api::{Mutex, RawMutex};
+use lock_api::{Mutex, MutexGuard, RawMutex};
 
 use crate::{
-    path::{verify_entry_name, DOT, DOTDOT}, MetadataUpdate, Mountpoint, NodeOps, NodePermission, NodeType, VfsError, VfsResult
+    MetadataUpdate, Mountpoint, NodeOps, NodePermission, NodeType, VfsError, VfsResult,
+    path::{DOT, DOTDOT, verify_entry_name},
 };
 
 use super::DirEntry;
@@ -210,24 +211,37 @@ impl<M: RawMutex> DirNode<M> {
         verify_entry_name(src_name)?;
         verify_entry_name(dst_name)?;
 
-        let src = self.lookup(src_name)?;
-        if src.node_type() == NodeType::Directory {
-            if let Ok(dst) = dst_dir.lookup(dst_name) {
+        let mut src_children = self.cache.lock();
+        let mut dst_children = if self as *const _ == dst_dir as *const _ {
+            None
+        } else {
+            Some(dst_dir.cache.lock())
+        };
+
+        let src = self.lookup_locked(src_name, &mut src_children)?;
+        if let Ok(dst) = dst_dir.lookup_locked(
+            dst_name,
+            dst_children
+                .as_mut()
+                .map_or_else(|| src_children.deref_mut(), MutexGuard::deref_mut),
+        ) {
+            if src.node_type() == NodeType::Directory {
                 if let Ok(dir) = dst.as_dir() {
                     if dir.has_children()? {
-                        // God this chain is horrible
                         return Err(VfsError::ENOTEMPTY);
                     }
                 }
-            }
-        } else if let Ok(dst) = dst_dir.lookup(dst_name) {
-            if dst.node_type() == NodeType::Directory {
+            } else if dst.node_type() == NodeType::Directory {
                 return Err(VfsError::EISDIR);
             }
         }
 
         self.ops.rename(src_name, dst_dir, dst_name).inspect(|_| {
-            self.cache.lock().remove(src_name);
+            src_children.remove(src_name);
+            dst_children
+                .as_mut()
+                .map_or_else(|| src_children.deref_mut(), MutexGuard::deref_mut)
+                .remove(dst_name);
         })
     }
 
