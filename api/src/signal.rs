@@ -70,15 +70,14 @@ pub fn send_signal_process(proc: &Process, sig: SignalInfo) -> LinuxResult<()> {
     Ok(())
 }
 
-pub fn send_signal_process_group(pg: &ProcessGroup, sig: SignalInfo) -> usize {
+pub fn send_signal_process_group(pg: &ProcessGroup, sig: SignalInfo) -> LinuxResult<()> {
     info!(
         "Send signal {:?} to process group {}",
         sig.signo(),
         pg.pgid()
     );
-    let mut count = 0;
     for proc in pg.processes() {
-        count += send_signal_process(&proc, sig.clone()).is_ok() as usize;
+        send_signal_process(&proc, sig.clone())?;
     }
-    count
+    Ok(())
 }
