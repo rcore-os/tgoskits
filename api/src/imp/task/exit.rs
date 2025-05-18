@@ -5,6 +5,7 @@ use linux_raw_sys::general::SI_KERNEL;
 use starry_core::task::ProcessData;
 
 use crate::{
+    clear_proc_shm,
     file::FD_TABLE,
     ptr::UserPtr,
     signal::{send_signal_process, send_signal_thread},
@@ -43,6 +44,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) -> ! {
             }
         }
 
+        clear_proc_shm(process.pid());
         process.exit();
         // TODO: clear namespace resources
         // FIXME: axns should drop all the resources

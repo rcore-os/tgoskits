@@ -942,6 +942,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lazy_static"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
+dependencies = [
+ "spin 0.9.8",
+]
+
+[[package]]
 name = "lazyinit"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1488,10 +1497,13 @@ dependencies = [
  "chrono",
  "ctor_bare",
  "flatten_objects",
+ "lazy_static",
  "linkme",
  "linux-raw-sys",
  "memory_addr",
  "num_enum",
+ "page_table_entry",
+ "page_table_multiarch",
  "spin 0.9.8",
  "starry-core",
  "x86",
