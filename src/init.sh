@@ -3,6 +3,7 @@ echo @@@@@@@@@@ setup @@@@@@@@@@
 ./busybox mkdir -v /bin
 ./busybox ln -v -s /musl/busybox /bin/busybox
 cd /bin
+export PATH=/bin
 busybox ln -v -s busybox ln
 ln -v -s busybox cp
 ln -v -s busybox mv
@@ -45,6 +46,9 @@ echo "#### OS COMP TEST GROUP END libctest-glibc ####"
 echo "#### OS COMP TEST GROUP START busybox-glibc ####"
 ./busybox_testcode.sh
 echo "#### OS COMP TEST GROUP END busybox-glibc ####"
+echo "#### OS COMP TEST GROUP START iozone-glibc ####"
+./iozone_testcode.sh
+echo "#### OS COMP TEST GROUP END iozone-glibc ####"
 
 # FIXME: real glibc test
 # echo @@@@@@@@@@ glibc @@@@@@@@@@
@@ -53,3 +57,4 @@ echo "#### OS COMP TEST GROUP END busybox-glibc ####"
 # ./lua_testcode.sh
 # ./libctest_testcode.sh
 # ./busybox_testcode.sh
+# ./iozone_testcode.sh
