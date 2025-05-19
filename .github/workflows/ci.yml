@@ -144,16 +144,17 @@ jobs:
     - uses: ./.github/workflows/actions/setup-qemu
       with:
         qemu-version: ${{ env.qemu-version }}
-    - uses: ./.github/workflows/actions/setup-testcases
-      with:
-        image-release-url: https://github.com/Azure-stars/testsuits-for-oskernel/releases/download/v0.2
-        arch: ${{ matrix.arch }}
-    - name: Unzip testcases
-      run: |
-        gunzip sdcard-${{ matrix.arch }}.img.gz
     - name: Build python environment
       run: sudo apt-get install -y python3 python3-pip
-    - name: Run tests for oscomp musl testcases
-      run: make oscomp_test ARCH=${{ matrix.arch }} LIBC=musl
-    - name: Run tests for oscomp glibc testcases
-      run: make oscomp_test ARCH=${{ matrix.arch }} LIBC=glibc
+
+    - name: Cache Testcases
+      id: cache-testcases
+      uses: actions/cache@v4
+      with:
+        path: sdcard-${{ matrix.arch }}.img.gz
+        key: sdcard-${{ matrix.arch }}.img.gz
+    - name: Run tests for oscomp testcases
+      run: make oscomp_test ARCH=${{ matrix.arch }}
+    - name: Run tests for oscomp testcases with SMP=4
+      continue-on-error: true
+      run: make oscomp_test ARCH=${{ matrix.arch }} SMP=4

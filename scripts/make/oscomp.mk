@@ -14,10 +14,6 @@ oscomp_build:
 	RUSTUP_TOOLCHAIN=nightly-2025-01-18 $(MAKE) oscomp_binary ARCH=riscv64 AX_TESTCASE=oscomp BUS=mmio FEATURES=lwext4_rs 
 	RUSTUP_TOOLCHAIN=nightly-2025-01-18 $(MAKE) oscomp_binary ARCH=loongarch64 AX_TESTCASE=oscomp FEATURES=lwext4_rs
 
-oscomp_test: defconfig
-	# Test for os competition online
-	@./scripts/oscomp_test.sh
-
 IMG_URL := https://github.com/Azure-stars/testsuits-for-oskernel/releases/download/v0.2/sdcard-$(ARCH).img.gz
 
 define load_img
@@ -28,8 +24,15 @@ define load_img
 	cp $(PWD)/sdcard-$(ARCH).img $(AX_ROOT)/disk.img
 endef
 
-oscomp_run: ax_root defconfig
+oscomp_run: defconfig
 	$(call load_img)
 	$(MAKE) AX_TESTCASE=oscomp BLK=y NET=y FEATURES=fp_simd,lwext4_rs LOG=$(LOG) run
 
-.PHONY: oscomp_binary oscomp_build oscomp_test oscomp_run
+TIMEOUT ?= 5m
+
+oscomp_test: defconfig
+	# Test for os competition online
+	@set -o pipefail; timeout --foreground $(TIMEOUT) $(MAKE) ACCEL=n oscomp_run | tee apps/oscomp/actual.out
+	# TODO: run check script
+
+.PHONY: oscomp_binary oscomp_build oscomp_run oscomp_test

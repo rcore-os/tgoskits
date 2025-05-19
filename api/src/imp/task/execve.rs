@@ -46,8 +46,8 @@ pub fn sys_execve(
     map_trampoline(&mut aspace)?;
     axhal::arch::flush_tlb(None);
 
-    let (entry_point, user_stack_base) =
-        load_user_app(&mut aspace, &args, &envs).map_err(|_| {
+    let (entry_point, user_stack_base) = load_user_app(&mut aspace, Some(&path), &args, &envs)
+        .map_err(|_| {
             error!("Failed to load app {}", path);
             LinuxError::ENOENT
         })?;

@@ -29,7 +29,7 @@ pub fn run_user_app(args: &[String], envs: &[String]) -> Option<i32> {
     })
     .expect("Failed to resolve executable path");
 
-    let (entry_vaddr, ustack_top) = load_user_app(&mut uspace, args, envs)
+    let (entry_vaddr, ustack_top) = load_user_app(&mut uspace, None, args, envs)
         .unwrap_or_else(|e| panic!("Failed to load user app: {}", e));
 
     let uctx = UspaceContext::new(entry_vaddr.into(), ustack_top, 2333);

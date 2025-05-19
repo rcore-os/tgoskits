@@ -105,13 +105,14 @@ fn map_elf(uspace: &mut AddrSpace, elf: &ElfFile) -> AxResult<(VirtAddr, [AuxvEn
 /// - The stack pointer of the user app.
 pub fn load_user_app(
     uspace: &mut AddrSpace,
+    path: Option<&str>,
     args: &[String],
     envs: &[String],
 ) -> LinuxResult<(VirtAddr, VirtAddr)> {
-    if args.is_empty() {
-        return Err(LinuxError::EINVAL);
-    }
-    let file_data = FS_CONTEXT.lock().read(&args[0])?;
+    let path = path
+        .or_else(|| args.first().map(String::as_str))
+        .ok_or(AxError::InvalidInput)?;
+    let file_data = FS_CONTEXT.lock().read(path)?;
     if file_data.starts_with(b"#!") {
         let head = &file_data[2..file_data.len().min(256)];
         let pos = head.iter().position(|c| *c == b'\n').unwrap_or(head.len());
@@ -123,8 +124,9 @@ pub fn load_user_app(
             .map(|s| s.trim_ascii().to_owned())
             .chain(args.iter().cloned())
             .collect();
-        return load_user_app(uspace, &new_args, envs);
+        return load_user_app(uspace, None, &new_args, envs);
     }
+
     let elf = ElfFile::new(&file_data).map_err(|_| AxError::InvalidData)?;
 
     if let Some(interp) = elf
@@ -148,27 +150,14 @@ pub fn load_user_app(
             )
             .normalize()
             .ok_or(LinuxError::EINVAL)?;
-        let mut interp_path = interp_path.as_str();
-
-        if interp_path == "/lib/ld-linux-riscv64-lp64.so.1"
-            || interp_path == "/lib64/ld-linux-loongarch-lp64d.so.1"
-            || interp_path == "/lib64/ld-linux-x86-64.so.2"
-            || interp_path == "/lib/ld-linux-aarch64.so.1"
-            || interp_path == "/lib/ld-musl-riscv64.so.1"
-            || interp_path == "/lib/ld-musl-aarch64.so.1"
-            || interp_path == "/lib/ld-musl-x86_64.so.1"
-            || interp_path == "/lib64/ld-musl-loongarch-lp64d.so.1"
-        {
-            // TODO: Use soft link
-            interp_path = "/musl/lib/libc.so";
-        }
+        let interp_path = interp_path.as_str();
 
         debug!("Loading interpreter: {}", interp_path);
 
         // Set the first argument to the path of the user app.
         let mut new_args = vec![interp_path.to_owned()];
         new_args.extend_from_slice(args);
-        return load_user_app(uspace, &new_args, envs);
+        return load_user_app(uspace, None, &new_args, envs);
     }
 
     let (entry, mut auxv) = map_elf(uspace, &elf)?;
@@ -192,6 +181,9 @@ pub fn load_user_app(
         true,
     )?;
 
+    let user_sp = ustack_end - stack_data.len();
+    uspace.write(user_sp, stack_data.as_slice())?;
+
     let heap_start = VirtAddr::from_usize(axconfig::plat::USER_HEAP_BASE);
     let heap_size = axconfig::plat::USER_HEAP_SIZE;
     uspace.map_alloc(
@@ -200,10 +192,6 @@ pub fn load_user_app(
         MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
         true,
     )?;
-
-    let user_sp = ustack_end - stack_data.len();
-
-    uspace.write(user_sp, stack_data.as_slice())?;
 
     Ok((entry, user_sp))
 }
