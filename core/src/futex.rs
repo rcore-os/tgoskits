@@ -10,6 +10,7 @@ use axtask::{TaskExtRef, WaitQueue, current};
 pub struct FutexTable(Mutex<BTreeMap<usize, Arc<WaitQueue>>>);
 impl FutexTable {
     /// Creates a new `FutexTable`.
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self(Mutex::new(BTreeMap::new()))
     }

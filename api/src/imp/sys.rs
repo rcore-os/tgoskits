@@ -63,10 +63,6 @@ pub fn sys_sysinfo(info: UserPtr<sysinfo>) -> LinuxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_syslog(
-    _type: i32,
-    _buf: UserPtr<c_char>,
-    _len: usize,
-) -> LinuxResult<isize> {
+pub fn sys_syslog(_type: i32, _buf: UserPtr<c_char>, _len: usize) -> LinuxResult<isize> {
     Ok(0)
 }

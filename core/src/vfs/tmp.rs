@@ -51,6 +51,7 @@ pub struct MemoryFs {
     root: Mutex<Option<DirEntry<RawMutex>>>,
 }
 impl MemoryFs {
+    #[allow(clippy::new_ret_no_self)]
     pub fn new() -> Filesystem<RawMutex> {
         let fs = Arc::new(Self {
             inodes: Mutex::new(Slab::new()),

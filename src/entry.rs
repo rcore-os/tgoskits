@@ -5,7 +5,7 @@ use axprocess::{Pid, init_proc};
 use axsignal::Signo;
 use axsync::Mutex;
 use linux_raw_sys::general::AT_FDCWD;
-use starry_api::file::{with_fs, FD_TABLE};
+use starry_api::file::{FD_TABLE, with_fs};
 use starry_core::{
     mm::{copy_from_kernel, load_user_app, map_trampoline, new_user_aspace_empty},
     task::{ProcessData, TaskExt, ThreadData, add_thread_to_table, new_user_task},

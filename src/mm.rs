@@ -29,7 +29,7 @@ fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags, is_user: bool)
         let size = axconfig::plat::USER_STACK_TOP - vaddr.as_usize();
         if size as u64 > rlim.current {
             send_signal_process(
-                &curr.task_ext().thread.process(),
+                curr.task_ext().thread.process(),
                 SignalInfo::new(Signo::SIGSEGV, SI_KERNEL as _),
             )
             .expect("Failed to send SIGSEGV");

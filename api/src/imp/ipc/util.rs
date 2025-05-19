@@ -1,6 +1,6 @@
+use alloc::collections::btree_map::BTreeMap;
 use axsync::Mutex;
 use lazy_static::lazy_static;
-use alloc::collections::btree_map::BTreeMap;
 
 #[derive(Debug, Clone)]
 pub struct BiBTreeMap<K, V>
@@ -17,6 +17,7 @@ where
     K: Ord + Clone,
     V: Ord + Clone,
 {
+    #[allow(clippy::new_without_default)]
     pub const fn new() -> Self {
         BiBTreeMap {
             forward: BTreeMap::new(),
@@ -59,7 +60,6 @@ where
         }
     }
 }
-
 
 pub struct IpcidAllocator {
     next_ipcid: i32,

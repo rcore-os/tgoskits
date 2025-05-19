@@ -208,12 +208,9 @@ impl ShmManager {
     }
 
     fn get_shmids_by_pid(&self, pid: Pid) -> Option<Vec<i32>> {
-        let map = self.pid_shmid_vaddr.get(&pid);
-        if map.is_none() {
-            return None;
-        }
+        let map = self.pid_shmid_vaddr.get(&pid)?;
         let mut res = Vec::new();
-        for key in map.unwrap().forward.keys() {
+        for key in map.forward.keys() {
             res.push(*key);
         }
         Some(res)
@@ -247,24 +244,24 @@ impl ShmManager {
             .insert(shmid, vaddr);
     }
 
-    /**
+    /*
      * Garbage collection for shared memory:
      * 1. when the process call sys_shmdt, delete everything related to shmaddr,
-     *    including map 'shmid_vaddr';
+     *   including map 'shmid_vaddr';
      * 2. when the last process detach the shared memory and this shared memory
-     *    was specified with IPC_RMID, delete everything related to this shared memory,
-     *    including all the 3 maps;
+     *   was specified with IPC_RMID, delete everything related to this shared memory,
+     *   including all the 3 maps;
      * 3. when a process exit, delete everything related to this process, including 2
-     *    maps: 'shmid_vaddr' and 'shmid_inner';
+     *   maps: 'shmid_vaddr' and 'shmid_inner';
      *
      *
      * The attach between the process and the shared memory occurs in sys_shmat,
-     *   and the detach occurs in sys_shmdt, or when the process exits.
+     *  and the detach occurs in sys_shmdt, or when the process exits.
      */
 
-    /**
+    /*
      * Note: all the below delete functions only delete the mapping between the shm_id and the shm_inner,
-     *    but the shm_inner is not deleted or modifyed!
+     *   but the shm_inner is not deleted or modifyed!
      */
 
     // called by shmdt
@@ -367,7 +364,7 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> LinuxResult<isize> {
         shm_manager.get_inner_by_shmid(shmid).unwrap()
     };
     let mut shm_inner = shm_inner.lock();
-    let mut mapping_flags = shm_inner.mapping_flags.clone();
+    let mut mapping_flags = shm_inner.mapping_flags;
     let shm_flg = ShmAtFlags::from_bits_truncate(shmflg);
 
     if shm_flg.contains(ShmAtFlags::SHM_RDONLY) {

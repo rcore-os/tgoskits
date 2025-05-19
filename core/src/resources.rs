@@ -2,7 +2,7 @@
 
 use core::ops::{Index, IndexMut};
 
-use linux_raw_sys::general::{RLIMIT_NOFILE, RLIMIT_STACK, RLIM_NLIMITS};
+use linux_raw_sys::general::{RLIM_NLIMITS, RLIMIT_NOFILE, RLIMIT_STACK};
 
 /// The maximum number of open files
 pub const AX_FILE_LIMIT: usize = 1024;

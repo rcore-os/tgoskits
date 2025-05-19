@@ -1,6 +1,6 @@
+use alloc::sync::Arc;
 use core::{any::Any, ffi::c_int};
 
-use alloc::sync::Arc;
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::{FS_CONTEXT, FsContext};
 use axfs_ng_vfs::{Location, Metadata};
@@ -115,7 +115,7 @@ impl FileLike for File {
     }
 
     fn write(&self, buf: &[u8]) -> LinuxResult<usize> {
-        Ok(self.inner().write(buf)?)
+        self.inner().write(buf)
     }
 
     fn stat(&self) -> LinuxResult<Kstat> {
