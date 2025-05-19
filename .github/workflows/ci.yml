@@ -18,7 +18,12 @@ jobs:
         components: rust-src, clippy, rustfmt
         targets: x86_64-unknown-none, riscv64gc-unknown-none-elf, aarch64-unknown-none, aarch64-unknown-none-softfloat, loongarch64-unknown-none
     - name: Setup ArceOS
-      run: ./scripts/get_deps.sh
+      uses: actions/checkout@v4
+      with:
+        repository: Mivik/arceos
+        ref: fs2-test
+        path: .arceos
+    - run: ./scripts/get_deps.sh
     - name: Check rust version
       run: rustc --version --verbose
     - uses: ./.github/workflows/actions/setup-musl
@@ -57,6 +62,12 @@ jobs:
         targets: x86_64-unknown-none, riscv64gc-unknown-none-elf, aarch64-unknown-none, aarch64-unknown-none-softfloat, loongarch64-unknown-none
     - uses: Swatinem/rust-cache@v2
     - run: cargo install cargo-binutils
+    - name: Setup ArceOS
+      uses: actions/checkout@v4
+      with:
+        repository: Mivik/arceos
+        ref: fs2-test
+        path: .arceos
     - run: ./scripts/get_deps.sh
     - uses: ./.github/workflows/actions/setup-musl
       with:
@@ -83,6 +94,12 @@ jobs:
         components: rust-src, llvm-tools
     - uses: Swatinem/rust-cache@v2
     - run: cargo install cargo-binutils
+    - name: Setup ArceOS
+      uses: actions/checkout@v4
+      with:
+        repository: Mivik/arceos
+        ref: fs2-test
+        path: .arceos
     - run: ./scripts/get_deps.sh
     - uses: ./.github/workflows/actions/setup-musl
       with:
@@ -114,6 +131,12 @@ jobs:
         components: rust-src, llvm-tools
     - uses: Swatinem/rust-cache@v2
     - run: cargo install cargo-binutils
+    - name: Setup ArceOS
+      uses: actions/checkout@v4
+      with:
+        repository: Mivik/arceos
+        ref: fs2-test
+        path: .arceos
     - run: ./scripts/get_deps.sh
     - uses: ./.github/workflows/actions/setup-musl
       with:
