@@ -82,6 +82,7 @@ pub fn sys_futex(
 }
 
 pub fn sys_get_robust_list(
+    _pid: u32,
     _head: UserPtr<UserConstPtr<robust_list_head>>,
     _size: UserPtr<usize>,
 ) -> LinuxResult<isize> {
