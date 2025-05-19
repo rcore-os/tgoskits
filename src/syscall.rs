@@ -336,6 +336,8 @@ fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
             tf.arg4().into(),
             tf.arg5() as _,
         ),
+        Sysno::get_robust_list => sys_get_robust_list(tf.arg0().into(), tf.arg1().into()),
+        Sysno::set_robust_list => sys_set_robust_list(tf.arg0().into(), tf.arg1() as _),
 
         // sys
         Sysno::getuid => sys_getuid(),

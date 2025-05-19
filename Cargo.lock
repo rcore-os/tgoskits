@@ -294,6 +294,7 @@ dependencies = [
  "axlog",
  "bitflags 2.9.0",
  "cfg-if",
+ "chrono",
  "dw_apb_uart",
  "handler_table",
  "int_ratio",

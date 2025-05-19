@@ -1,7 +1,8 @@
 use axerrno::{LinuxError, LinuxResult};
 use axtask::{TaskExtRef, current};
 use linux_raw_sys::general::{
-    FUTEX_CMD_MASK, FUTEX_CMP_REQUEUE, FUTEX_REQUEUE, FUTEX_WAIT, FUTEX_WAKE, timespec,
+    FUTEX_CMD_MASK, FUTEX_CMP_REQUEUE, FUTEX_REQUEUE, FUTEX_WAIT, FUTEX_WAKE, robust_list_head,
+    timespec,
 };
 
 use crate::{
@@ -78,4 +79,18 @@ pub fn sys_futex(
         }
         _ => Err(LinuxError::ENOSYS),
     }
+}
+
+pub fn sys_get_robust_list(
+    _head: UserPtr<UserConstPtr<robust_list_head>>,
+    _size: UserPtr<usize>,
+) -> LinuxResult<isize> {
+    Ok(0)
+}
+
+pub fn sys_set_robust_list(
+    _head: UserConstPtr<robust_list_head>,
+    _size: usize,
+) -> LinuxResult<isize> {
+    Ok(0)
 }
