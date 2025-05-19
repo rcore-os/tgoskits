@@ -40,8 +40,8 @@ flatten_objects = "0.2.3"
 num_enum = { version = "0.7", default-features = false }
 
 lazy_static = { version = "1.5", features = ["spin_no_std"] }
-page_table_multiarch = { git = "https://github.com/Mivik/page_table_multiarch.git", rev = "2659e3b" }
-page_table_entry = { git = "https://github.com/Mivik/page_table_multiarch.git", rev = "2659e3b" }
+page_table_multiarch = "0.5"
+page_table_entry = "0.5"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"

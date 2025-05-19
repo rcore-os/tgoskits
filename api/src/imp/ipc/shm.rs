@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 use alloc::sync::Arc;
 use axerrno::{LinuxError, LinuxResult};
 use axhal::time::monotonic_time_nanos;
+use axmm::SharedPages;
 use axprocess::Pid;
 use axsync::Mutex;
 use axtask::{TaskExtRef, current};
@@ -11,7 +12,7 @@ use axtask::{TaskExtRef, current};
 use lazy_static::lazy_static;
 use linux_raw_sys::ctypes::{c_long, c_ushort};
 use linux_raw_sys::general::*;
-use memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
+use memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use page_table_entry::MappingFlags;
 
 use crate::imp::ipc::{BiBTreeMap, IPCID_ALLOCATOR};
@@ -99,7 +100,7 @@ struct ShmInner {
     pub shmid: i32,
     pub page_num: usize,
     pub va_range: BTreeMap<Pid, VirtAddrRange>, // In each process, this shm is mapped into different virt addr range
-    pub phys_pages: Option<Arc<[PhysAddr]>>,    // shm page num -> physical page
+    pub phys_pages: Option<Arc<SharedPages>>,   // shm page num -> physical page
     pub rmid: bool,                             // whether remove on last detach, see shm_ctl
     pub mapping_flags: MappingFlags,
     pub shmid_ds: ShmidDs, // c type struct, used in shm_ctl
@@ -138,7 +139,7 @@ impl ShmInner {
         Ok(self.shmid as isize)
     }
 
-    pub fn map_to_phys(&mut self, phys_pages: Arc<[PhysAddr]>) {
+    pub fn map_to_phys(&mut self, phys_pages: Arc<SharedPages>) {
         self.phys_pages = Some(phys_pages);
     }
 
