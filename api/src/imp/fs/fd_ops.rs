@@ -7,8 +7,8 @@ use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::{OpenOptions, OpenResult};
 use axsync::RawMutex;
 use linux_raw_sys::general::{
-    __kernel_mode_t, AT_FDCWD, F_DUPFD, F_DUPFD_CLOEXEC, F_SETFL, O_APPEND, O_CREAT, O_DIRECTORY,
-    O_EXCL, O_NONBLOCK, O_PATH, O_RDONLY, O_TRUNC, O_WRONLY,
+    __kernel_mode_t, AT_FDCWD, F_DUPFD, F_DUPFD_CLOEXEC, F_GETFD, F_GETFL, F_SETFL, FD_CLOEXEC,
+    O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_NONBLOCK, O_PATH, O_RDONLY, O_TRUNC, O_WRONLY,
 };
 
 use crate::{
@@ -145,6 +145,14 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> LinuxResult<isize> {
             }
             get_file_like(fd)?.set_nonblocking(arg & (O_NONBLOCK as usize) > 0)?;
             Ok(0)
+        }
+        F_GETFD => {
+            warn!("unsupported fcntl parameters: F_GETFD, returning FD_CLOEXEC");
+            Ok(FD_CLOEXEC as _)
+        }
+        F_GETFL => {
+            warn!("unsupported fcntl parameters: F_GETFL, returning O_NONBLOCK");
+            Ok(O_NONBLOCK as _)
         }
         _ => {
             warn!("unsupported fcntl parameters: cmd: {}", cmd);
