@@ -11,7 +11,7 @@ use starry_core::mm::is_accessing_user_memory;
 
 #[register_trap_handler(PAGE_FAULT)]
 fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags, is_user: bool) -> bool {
-    warn!(
+    info!(
         "Page fault at {:#x}, access_flags: {:#x?}",
         vaddr, access_flags
     );

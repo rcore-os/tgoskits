@@ -118,6 +118,7 @@ pub fn load_user_app(
         let line = core::str::from_utf8(&head[..pos]).map_err(|_| AxError::InvalidData)?;
 
         let new_args: Vec<String> = line
+            .trim()
             .splitn(2, |c: char| c.is_ascii_whitespace())
             .map(|s| s.trim_ascii().to_owned())
             .chain(args.iter().cloned())

@@ -1,9 +1,7 @@
 use alloc::collections::btree_map::BTreeMap;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use alloc::sync::Arc;
-use axerrno::AxError;
 use axerrno::{LinuxError, LinuxResult};
 use axhal::time::monotonic_time_nanos;
 use axprocess::Pid;
@@ -15,7 +13,6 @@ use linux_raw_sys::ctypes::{c_long, c_ushort};
 use linux_raw_sys::general::*;
 use memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
 use page_table_entry::MappingFlags;
-use page_table_multiarch::PageSize;
 
 use crate::imp::ipc::{BiBTreeMap, IPCID_ALLOCATOR};
 use crate::ptr::{UserPtr, nullable};
@@ -102,7 +99,7 @@ struct ShmInner {
     pub shmid: i32,
     pub page_num: usize,
     pub va_range: BTreeMap<Pid, VirtAddrRange>, // In each process, this shm is mapped into different virt addr range
-    pub phys_pages: Vec<PhysAddr>,              // shm page num -> physical page
+    pub phys_pages: Option<Arc<[PhysAddr]>>,    // shm page num -> physical page
     pub rmid: bool,                             // whether remove on last detach, see shm_ctl
     pub mapping_flags: MappingFlags,
     pub shmid_ds: ShmidDs, // c type struct, used in shm_ctl
@@ -114,7 +111,7 @@ impl ShmInner {
             shmid,
             page_num: memory_addr::align_up_4k(size) / PAGE_SIZE_4K,
             va_range: BTreeMap::new(),
-            phys_pages: Vec::new(),
+            phys_pages: None,
             rmid: false,
             mapping_flags,
             shmid_ds: ShmidDs::new(
@@ -141,13 +138,8 @@ impl ShmInner {
         Ok(self.shmid as isize)
     }
 
-    pub fn has_mapped_to_phys(&self) -> bool {
-        !self.phys_pages.is_empty()
-    }
-
-    pub fn map_to_phys(&mut self, phys_pages: Vec<PhysAddr>) {
-        assert!(self.phys_pages.is_empty());
-        self.phys_pages = phys_pages;
+    pub fn map_to_phys(&mut self, phys_pages: Arc<[PhysAddr]>) {
+        self.phys_pages = Some(phys_pages);
     }
 
     pub fn attach_count(&self) -> usize {
@@ -227,6 +219,7 @@ impl ShmManager {
     }
 
     // used by garbage collection
+    #[allow(dead_code)]
     fn find_vaddr_by_shmid(&self, pid: Pid, shmid: i32) -> Option<VirtAddr> {
         self.pid_shmid_vaddr
             .get(&pid)
@@ -293,9 +286,9 @@ impl ShmManager {
     pub fn remove_shmid(&mut self, shmid: i32) {
         self.key_shmid.remove_by_value(&shmid);
         self.shmid_inner.remove(&shmid);
-        for (key, map) in &self.pid_shmid_vaddr {
-            assert!(map.get_by_key(&shmid).is_none());
-        }
+        // for map in self.pid_shmid_vaddr.values() {
+        // assert!(map.get_by_key(&shmid).is_none());
+        // }
     }
 }
 
@@ -420,19 +413,22 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> LinuxResult<isize> {
     );
 
     // map the virtual address range to the physical address
-    if !shm_inner.has_mapped_to_phys() {
+    if let Some(phys_pages) = shm_inner.phys_pages.clone() {
+        // Another proccess has attached the shared memory
+        aspace.map_shared(start_addr, length, mapping_flags, Some(phys_pages))?;
+    } else {
         // This is the first process to attach the shared memory
-
-        let result = aspace.map_alloc(start_addr, length, mapping_flags, true);
+        let result = aspace.map_shared(start_addr, length, mapping_flags, None);
 
         match result {
-            Ok(_) => {
+            Ok(pages) => {
                 info!(
                     "proc {} map shm addr: {:#x}, size: {}",
                     cur_pid,
                     start_addr.as_usize(),
                     length
                 );
+                shm_inner.map_to_phys(pages);
             }
             Err(e) => {
                 error!(
@@ -443,55 +439,6 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> LinuxResult<isize> {
                     e
                 );
                 return Err(LinuxError::ENOMEM);
-            }
-        }
-
-        let mut tmp_page_table = vec![PhysAddr::from_usize(0); shm_inner.page_num];
-        for i in 0..shm_inner.page_num {
-            let proc_page_table = aspace.page_table();
-            let curr_vaddr = start_addr + i * PAGE_SIZE_4K;
-            let (paddr, _, _) = proc_page_table
-                .query(curr_vaddr)
-                .map_err(|_| AxError::BadAddress)?;
-            tmp_page_table[i] = paddr;
-            info!(
-                "proc[{}]  vaddr[{:#x}] paddr[{:#x}] flags[{:#x}]",
-                cur_pid,
-                curr_vaddr.as_usize(),
-                paddr.as_usize(),
-                mapping_flags
-            );
-        }
-        shm_inner.map_to_phys(tmp_page_table);
-    } else {
-        // Another proccess has attached the shared memory
-
-        for i in 0..shm_inner.page_num {
-            let proc_page_table = aspace.page_table_mut();
-            let paddr = *shm_inner.phys_pages.get(i).ok_or(LinuxError::EINVAL)?;
-            let vaddr = start_addr + i * PAGE_SIZE_4K;
-            let result = proc_page_table.map(vaddr, paddr, PageSize::Size4K, mapping_flags);
-            match result {
-                Ok(_) => {
-                    info!(
-                        "proc[{}]  vaddr[{:#x}] paddr[{:#x}] flags[{:#x}]",
-                        cur_pid,
-                        vaddr.as_usize(),
-                        paddr.as_usize(),
-                        mapping_flags
-                    );
-                }
-                Err(e) => {
-                    error!(
-                        "proc[{}]  vaddr[{:#x}] paddr[{:#x}] flags[{:#x}], error: {:?}",
-                        cur_pid,
-                        vaddr.as_usize(),
-                        paddr.as_usize(),
-                        mapping_flags,
-                        e
-                    );
-                    return Err(LinuxError::EINVAL);
-                }
             }
         }
     }

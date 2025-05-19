@@ -126,7 +126,7 @@ fn do_select(
     }
     let deadline = timeout.map(|t| wall_time() + t);
 
-    warn!(
+    debug!(
         "select timeout: {:?} {} {} {} {}",
         timeout,
         nfds,
