@@ -110,5 +110,10 @@ fn builder(fs: Arc<DynamicFs>) -> DirMaker {
         "rtc0",
         Device::new(fs.clone(), NodeType::CharacterDevice, RTC0_DEVICE_ID, Rtc),
     );
+
+    let shm = super::tmp::MemoryFs::new();
+    let shm: DirMaker = Arc::new(move |_| shm.root_dir().as_dir().unwrap().inner().clone());
+    root.add("shm", shm);
+
     root.build()
 }
