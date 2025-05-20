@@ -154,7 +154,7 @@ jobs:
         path: sdcard-${{ matrix.arch }}.img.gz
         key: sdcard-${{ matrix.arch }}.img.gz
     - name: Run tests for oscomp testcases
-      run: make oscomp_test ARCH=${{ matrix.arch }}
+      run: make oscomp_test SHELL=bash ARCH=${{ matrix.arch }}
     - name: Run tests for oscomp testcases with SMP=4
       continue-on-error: true
-      run: make oscomp_test ARCH=${{ matrix.arch }} SMP=4
+      run: make oscomp_test SHELL=bash ARCH=${{ matrix.arch }} SMP=4
