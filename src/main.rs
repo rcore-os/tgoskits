@@ -7,7 +7,7 @@ extern crate axlog;
 extern crate alloc;
 extern crate axruntime;
 
-use alloc::format;
+use alloc::{format, string::ToString};
 
 mod entry;
 mod mm;
@@ -23,15 +23,13 @@ fn main() {
         let envs = [format!("ARCH={}", option_env!("ARCH").unwrap_or("unknown"))];
 
         let init = include_str!("init.sh");
-        axfs_ng::FS_CONTEXT
-            .lock()
-            .write("/init.sh", init.as_bytes())
-            .expect("Failed to write init script to disk");
 
-        let args = shlex::split("/musl/busybox sh /init.sh").unwrap();
-        info!("Running user task: {:?}", args);
+        info!("Running init script");
+        let args = ["/musl/busybox", "sh", "-c", init]
+            .map(|s| s.to_string())
+            .to_vec();
         let exit_code = entry::run_user_app(&args, &envs);
-        info!("User task {:?} exited with code: {:?}", args, exit_code);
+        info!("Init script exited with code: {:?}", exit_code);
     } else {
         let testcases = option_env!("AX_TESTCASES_LIST")
             .unwrap_or_else(|| "Please specify the testcases list by making user_apps")
