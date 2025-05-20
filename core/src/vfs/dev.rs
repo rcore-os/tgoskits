@@ -1,4 +1,6 @@
 use alloc::sync::Arc;
+use axerrno::LinuxResult;
+use axfs_ng::FsContext;
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeType, VfsResult};
 use axsync::{Mutex, RawMutex};
 use rand::{RngCore, SeedableRng, rngs::SmallRng};
@@ -13,8 +15,13 @@ pub const RTC0_DEVICE_ID: DeviceId = DeviceId::new(250, 0);
 
 const RANDOM_SEED: &[u8; 32] = b"0123456789abcdef0123456789abcdef";
 
-pub fn new_devfs() -> Filesystem<RawMutex> {
-    DynamicFs::new_with("devdevtmpfs".into(), 0x01021994, builder)
+pub fn new_devfs() -> LinuxResult<Filesystem<RawMutex>> {
+    let fs = DynamicFs::new_with("devdevtmpfs".into(), 0x01021994, builder);
+    let mp = axfs_ng_vfs::Mountpoint::new_root(&fs);
+    FsContext::new(mp.root_location())
+        .resolve("/shm")?
+        .mount(&super::tmp::MemoryFs::new())?;
+    Ok(fs)
 }
 
 struct Null;
@@ -111,9 +118,8 @@ fn builder(fs: Arc<DynamicFs>) -> DirMaker {
         Device::new(fs.clone(), NodeType::CharacterDevice, RTC0_DEVICE_ID, Rtc),
     );
 
-    let shm = super::tmp::MemoryFs::new();
-    let shm: DirMaker = Arc::new(move |_| shm.root_dir().as_dir().unwrap().inner().clone());
-    root.add("shm", shm);
+    root.add("shm", DynamicDir::builder(fs.clone()).build());
 
-    root.build()
+    let builder = root.build();
+    Arc::new(move |this| builder(this))
 }
