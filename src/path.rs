@@ -311,6 +311,9 @@ impl PathBuf {
         self._push(path.as_ref());
     }
     fn _push(&mut self, path: &Path) {
+        if path.as_str().is_empty() {
+            return;
+        }
         if path.is_absolute() {
             self.inner.clear();
         } else if !self.inner.ends_with('/') {

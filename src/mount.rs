@@ -26,16 +26,19 @@ pub struct Mountpoint<M> {
     device: u64,
 }
 impl<M: RawMutex> Mountpoint<M> {
-    pub fn new_root(fs: &Filesystem<M>) -> Arc<Self> {
+    pub fn new(fs: &Filesystem<M>, location_in_parent: Option<Location<M>>) -> Arc<Self> {
         static DEVICE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
         let root = fs.root_dir();
         Arc::new(Self {
             root,
-            location: None,
+            location: location_in_parent,
             children: Mutex::default(),
             device: DEVICE_COUNTER.fetch_add(1, Ordering::Relaxed),
         })
+    }
+    pub fn new_root(fs: &Filesystem<M>) -> Arc<Self> {
+        Self::new(fs, None)
     }
 
     pub fn root_location(self: &Arc<Self>) -> Location<M> {
@@ -118,7 +121,7 @@ impl<M: RawMutex> Location<M> {
 
     pub fn name(&self) -> &str {
         if self.is_root_of_mount() {
-            self.mountpoint.root.name()
+            self.mountpoint.location.as_ref().map_or("", Location::name)
         } else {
             self.entry.name()
         }
@@ -251,7 +254,7 @@ impl<M: RawMutex> Location<M> {
         if mountpoint.is_some() {
             return Err(VfsError::EBUSY);
         }
-        let result = Mountpoint::new_root(&fs);
+        let result = Mountpoint::new(&fs, Some(self.clone()));
         *mountpoint = Some(result.clone());
         self.mountpoint
             .children
