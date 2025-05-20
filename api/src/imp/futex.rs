@@ -1,14 +1,19 @@
+use core::sync::atomic::Ordering;
+
 use axerrno::{LinuxError, LinuxResult};
 use axtask::{TaskExtRef, current};
 use linux_raw_sys::general::{
-    FUTEX_CMD_MASK, FUTEX_CMP_REQUEUE, FUTEX_REQUEUE, FUTEX_WAIT, FUTEX_WAKE, robust_list_head,
-    timespec,
+    FUTEX_CMD_MASK, FUTEX_CMP_REQUEUE, FUTEX_REQUEUE, FUTEX_WAIT, FUTEX_WAKE, robust_list,
+    robust_list_head, timespec,
 };
+use starry_core::task::{ThreadData, get_thread};
 
 use crate::{
     ptr::{UserConstPtr, UserPtr, nullable},
     time::TimeValueLike,
 };
+
+pub const ROBUST_LIST_LIMIT: usize = 2048;
 
 pub fn sys_futex(
     uaddr: UserConstPtr<u32>,
@@ -30,22 +35,25 @@ pub fn sys_futex(
             if *uaddr.get_as_ref()? != value {
                 return Err(LinuxError::EAGAIN);
             }
-            let wq = futex_table.get_or_insert(addr);
+            let futex = futex_table.get_or_insert(addr);
 
             if let Some(timeout) = nullable!(timeout.get_as_ref())? {
-                wq.wait_timeout(timeout.to_time_value());
+                futex.wq.wait_timeout(timeout.to_time_value());
             } else {
-                wq.wait();
+                futex.wq.wait();
             }
-
-            Ok(0)
+            if futex.owner_dead.swap(false, Ordering::SeqCst) {
+                Err(LinuxError::EOWNERDEAD)
+            } else {
+                Ok(0)
+            }
         }
         FUTEX_WAKE => {
-            let wq = futex_table.get(addr);
+            let futex = futex_table.get(addr);
             let mut count = 0;
-            if let Some(wq) = wq {
+            if let Some(futex) = futex {
                 for _ in 0..value {
-                    if !wq.notify_one(false) {
+                    if !futex.wq.notify_one(false) {
                         break;
                     }
                     count += 1;
@@ -60,19 +68,19 @@ pub fn sys_futex(
             }
             let value2 = timeout.address().as_usize() as u32;
 
-            let wq = futex_table.get(addr);
-            let wq2 = futex_table.get_or_insert(uaddr2.address().as_usize());
+            let futex = futex_table.get(addr);
+            let futex2 = futex_table.get_or_insert(uaddr2.address().as_usize());
 
             let mut count = 0;
-            if let Some(wq) = wq {
+            if let Some(futex) = futex {
                 for _ in 0..value {
-                    if !wq.notify_one(false) {
+                    if !futex.wq.notify_one(false) {
                         break;
                     }
                     count += 1;
                 }
                 if count == value as isize {
-                    count += wq.requeue(value2 as usize, &wq2) as isize;
+                    count += futex.wq.requeue(value2 as usize, &futex2.wq) as isize;
                 }
             }
             Ok(count)
@@ -82,16 +90,81 @@ pub fn sys_futex(
 }
 
 pub fn sys_get_robust_list(
-    _pid: u32,
-    _head: UserPtr<UserConstPtr<robust_list_head>>,
-    _size: UserPtr<usize>,
+    tid: u32,
+    head: UserPtr<UserConstPtr<robust_list_head>>,
+    size: UserPtr<usize>,
 ) -> LinuxResult<isize> {
+    let thr = if tid == 0 {
+        current().task_ext().thread.clone()
+    } else {
+        get_thread(tid)?
+    };
+    *head.get_as_mut()? = thr
+        .data::<ThreadData>()
+        .unwrap()
+        .robust_list_head
+        .load(Ordering::SeqCst)
+        .into();
+    *size.get_as_mut()? = size_of::<robust_list_head>();
+
     Ok(0)
 }
 
 pub fn sys_set_robust_list(
-    _head: UserConstPtr<robust_list_head>,
-    _size: usize,
+    head: UserConstPtr<robust_list_head>,
+    size: usize,
 ) -> LinuxResult<isize> {
+    if size != size_of::<robust_list_head>() {
+        return Err(LinuxError::EINVAL);
+    }
+    let curr = current();
+    curr.task_ext()
+        .thread_data()
+        .robust_list_head
+        .store(head.address().as_usize(), Ordering::SeqCst);
+
     Ok(0)
+}
+
+fn handle_futex_death(entry: *mut robust_list, offset: i64) -> LinuxResult<()> {
+    let address = (entry as u64)
+        .checked_add_signed(offset)
+        .ok_or(LinuxError::EINVAL)?;
+    let address: usize = address.try_into().map_err(|_| LinuxError::EINVAL)?;
+
+    let curr = current();
+    let futex_table = &curr.task_ext().process_data().futex_table;
+
+    let Some(futex) = futex_table.get(address) else {
+        return Ok(());
+    };
+    futex.owner_dead.store(true, Ordering::SeqCst);
+    futex.wq.notify_one(false);
+    Ok(())
+}
+
+pub fn exit_robust_list(head: &mut robust_list_head) -> LinuxResult<()> {
+    // Reference: https://elixir.bootlin.com/linux/v6.13.6/source/kernel/futex/core.c#L777
+
+    let mut limit = ROBUST_LIST_LIMIT;
+
+    let mut entry = head.list.next;
+    let offset = head.futex_offset;
+    let pending = head.list_op_pending;
+
+    while entry != &mut head.list as *mut _ {
+        let next_entry = UserPtr::from(entry).get_as_mut()?.next;
+        if entry != pending {
+            handle_futex_death(entry, offset)?;
+        }
+        entry = next_entry;
+
+        limit -= 1;
+        if limit == 0 {
+            return Err(LinuxError::ELOOP);
+        }
+        axtask::yield_now();
+    }
+
+    Ok(())
 }

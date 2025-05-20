@@ -93,6 +93,11 @@ impl<T> From<usize> for UserPtr<T> {
         UserPtr(value as *mut _)
     }
 }
+impl<T> From<*mut T> for UserPtr<T> {
+    fn from(value: *mut T) -> Self {
+        UserPtr(value)
+    }
+}
 
 impl<T> Default for UserPtr<T> {
     fn default() -> Self {
@@ -146,6 +151,11 @@ pub struct UserConstPtr<T>(*const T);
 impl<T> From<usize> for UserConstPtr<T> {
     fn from(value: usize) -> Self {
         UserConstPtr(value as *const _)
+    }
+}
+impl<T> From<*const T> for UserConstPtr<T> {
+    fn from(value: *const T) -> Self {
+        UserConstPtr(value)
     }
 }
 

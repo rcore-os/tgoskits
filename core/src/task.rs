@@ -160,6 +160,9 @@ pub struct ThreadData {
     /// When the thread exits, the kernel clears the word at this address if it is not NULL.
     pub clear_child_tid: AtomicUsize,
 
+    /// The head of the robust list
+    pub robust_list_head: AtomicUsize,
+
     /// The thread-level signal manager
     pub signal: ThreadSignalManager<RawMutex, WaitQueueWrapper>,
 }
@@ -170,6 +173,7 @@ impl ThreadData {
     pub fn new(proc: &ProcessData) -> Self {
         Self {
             clear_child_tid: AtomicUsize::new(0),
+            robust_list_head: AtomicUsize::new(0),
 
             signal: ThreadSignalManager::new(proc.signal.clone()),
         }

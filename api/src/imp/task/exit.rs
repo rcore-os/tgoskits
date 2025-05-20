@@ -1,13 +1,15 @@
+use core::sync::atomic::Ordering;
+
 use axprocess::Pid;
 use axsignal::{SignalInfo, Signo};
 use axtask::{TaskExtRef, current};
-use linux_raw_sys::general::SI_KERNEL;
+use linux_raw_sys::general::{SI_KERNEL, robust_list_head};
 use starry_core::task::ProcessData;
 
 use crate::{
-    clear_proc_shm,
+    clear_proc_shm, exit_robust_list,
     file::FD_TABLE,
-    ptr::UserPtr,
+    ptr::{UserPtr, nullable},
     signal::{send_signal_process, send_signal_thread},
 };
 
@@ -27,9 +29,19 @@ pub fn do_exit(exit_code: i32, group_exit: bool) -> ! {
             .futex_table
             .get(clear_tid as *const _ as usize);
         if let Some(futex) = guard {
-            futex.notify_one(false);
+            futex.wq.notify_one(false);
         }
         axtask::yield_now();
+    }
+    let head: UserPtr<robust_list_head> = curr_ext
+        .thread_data()
+        .robust_list_head
+        .load(Ordering::SeqCst)
+        .into();
+    if let Ok(Some(head)) = nullable!(head.get_as_mut()) {
+        if let Err(err) = exit_robust_list(head) {
+            warn!("exit robust list failed: {:?}", err);
+        }
     }
 
     let process = thread.process();
