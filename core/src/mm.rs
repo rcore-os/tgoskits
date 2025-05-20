@@ -51,7 +51,7 @@ pub fn map_trampoline(aspace: &mut AddrSpace) -> AxResult {
 ///
 /// # Returns
 /// - The entry point of the user app.
-fn map_elf(uspace: &mut AddrSpace, elf: &ElfFile) -> AxResult<(VirtAddr, [AuxvEntry; 16])> {
+fn map_elf(uspace: &mut AddrSpace, elf: &ElfFile) -> AxResult<(VirtAddr, [AuxvEntry; 17])> {
     let uspace_base = uspace.base().as_usize();
     let elf_parser = ELFParser::new(
         elf,
