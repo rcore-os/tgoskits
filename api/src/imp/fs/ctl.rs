@@ -68,6 +68,8 @@ pub fn sys_ioctl(fd: i32, op: usize, argp: UserPtr<c_void>) -> LinuxResult<isize
 
 pub fn sys_chdir(path: UserConstPtr<c_char>) -> LinuxResult<isize> {
     let path = path.get_as_str()?;
+    debug!("sys_chdir <= path: {}", path);
+
     with_fs(AT_FDCWD, |fs| {
         let entry = fs.resolve(path)?;
         fs.set_current_dir(entry)?;
@@ -248,6 +250,8 @@ pub fn sys_getcwd(buf: UserPtr<u8>, size: usize) -> LinuxResult<isize> {
     };
 
     let cwd = FS_CONTEXT.lock().current_dir().absolute_path()?;
+    debug!("sys_getcwd => cwd: {}", cwd);
+
     let cwd = CString::new(cwd.as_str()).map_err(|_| LinuxError::EINVAL)?;
     let cwd = cwd.as_bytes_with_nul();
 
