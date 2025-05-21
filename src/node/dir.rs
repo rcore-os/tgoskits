@@ -113,6 +113,14 @@ impl<M: RawMutex> DirNode<M> {
             .map_err(|_| VfsError::EINVAL)
     }
 
+    fn forget_entry(children: &mut DirChildren<M>, name: &str) {
+        if let Some(entry) = children.remove(name) {
+            if let Ok(dir) = entry.as_dir() {
+                dir.forget();
+            }
+        }
+    }
+
     fn lookup_locked(&self, name: &str, children: &mut DirChildren<M>) -> VfsResult<DirEntry<M>> {
         use alloc::collections::btree_map::Entry;
         match children.entry(name.to_owned()) {
@@ -165,7 +173,7 @@ impl<M: RawMutex> DirNode<M> {
         }
 
         self.ops.unlink(name).inspect(|_| {
-            children.remove(name);
+            Self::forget_entry(&mut children, name);
         })
     }
 
@@ -237,11 +245,13 @@ impl<M: RawMutex> DirNode<M> {
         }
 
         self.ops.rename(src_name, dst_dir, dst_name).inspect(|_| {
-            src_children.remove(src_name);
-            dst_children
-                .as_mut()
-                .map_or_else(|| src_children.deref_mut(), MutexGuard::deref_mut)
-                .remove(dst_name);
+            Self::forget_entry(&mut src_children, src_name);
+            Self::forget_entry(
+                dst_children
+                    .as_mut()
+                    .map_or_else(|| src_children.deref_mut(), MutexGuard::deref_mut),
+                dst_name,
+            );
         })
     }
 
