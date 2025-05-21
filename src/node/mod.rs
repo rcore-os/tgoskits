@@ -1,7 +1,7 @@
 mod dir;
 mod file;
 
-use core::ops::Deref;
+use core::{iter, ops::Deref};
 
 pub use dir::*;
 pub use file::*;
@@ -223,7 +223,9 @@ impl<M: RawMutex> DirEntry<M> {
     pub fn absolute_path(&self) -> VfsResult<PathBuf> {
         let mut components = vec![];
         self.collect_absolute_path(&mut components);
-        Ok(components.iter().rev().collect())
+        Ok(iter::once("/")
+            .chain(components.iter().map(String::as_str).rev())
+            .collect())
     }
 
     pub fn is_file(&self) -> bool {

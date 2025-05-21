@@ -1,4 +1,7 @@
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::{
+    iter,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use alloc::{
     collections::btree_map::BTreeMap,
@@ -161,7 +164,9 @@ impl<M: RawMutex> Location<M> {
                 None => break,
             }
         }
-        Ok(components.iter().rev().collect())
+        Ok(iter::once("/")
+            .chain(components.iter().map(String::as_str).rev())
+            .collect())
     }
 
     pub fn ptr_eq(&self, other: &Self) -> bool {
