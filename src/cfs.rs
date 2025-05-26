@@ -175,6 +175,9 @@ impl<T> BaseScheduler for CFScheduler<T> {
 
     fn task_tick(&mut self, current: &Self::SchedItem) -> bool {
         current.task_tick();
+        if self.ready_queue.is_empty() {
+            return false;
+        }
         self.min_vruntime.is_none()
             || current.get_vruntime() > self.min_vruntime.as_mut().unwrap().load(Ordering::Acquire)
     }
