@@ -52,7 +52,7 @@ FEATURES ?=
 APP_FEATURES ?=
 # make `FEATURES=page-alloc-64g` as the default configuration
 MEM_FEATURES ?= page-alloc-64g
-FEATURES += $(MEM_FEATURES)
+override FEATURES := $(FEATURES),$(MEM_FEATURES)
 
 # QEMU options
 BLK ?= y
