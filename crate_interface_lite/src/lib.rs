@@ -99,6 +99,7 @@ macro_rules! __interface_fn {
 }
 
 /// NON-PUBLIC APIs
+#[doc(hidden)]
 pub mod r#priv {
     /// The default implementor for all defined interfaces.
     pub struct DefaultImpl;
