@@ -37,8 +37,8 @@ macro_rules! def_interface {
 
 /// Implement the interface for a struct.
 ///
-/// This attribute should be use with a `impl` item of a trait for a struct, and
-/// the trait must be defined with [`def_interface!`].
+/// This attribute should be use with an `impl` item of a trait for a struct,
+/// and the trait must be defined with [`def_interface!`].
 ///
 /// It is not necessary to implement it in the same crate as the definition, but
 /// it is required that these crates are linked together.

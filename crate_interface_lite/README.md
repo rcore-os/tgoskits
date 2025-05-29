@@ -1,6 +1,6 @@
 # crate_interface_lite
 
-[![Crates.io](https://img.shields.io/crates/v/crate_interface)](https://crates.io/crates/crate_interface_lite)
+[![Crates.io](https://img.shields.io/crates/v/crate_interface_lite)](https://crates.io/crates/crate_interface_lite)
 [![Docs.rs](https://docs.rs/crate_interface/badge.svg)](https://docs.rs/crate_interface_lite)
 [![CI](https://github.com/arceos-org/crate_interface/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/arceos-org/crate_interface/actions/workflows/ci.yml)
 
