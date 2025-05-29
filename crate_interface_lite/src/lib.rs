@@ -12,10 +12,11 @@
 /// See the [crate-level documentation](crate) for more details.
 #[macro_export]
 macro_rules! def_interface {
-    ($vis:vis trait $name:ident {$(
+    ($(#[$attr:meta])* $vis:vis trait $name:ident {$(
         $(#[$fn_attr:meta])*
         fn $fn_name:ident($($arg_name:ident: $arg_ty:ty),* $(,)?) $(-> $ret_ty:ty)?;
     )*}) => {
+        $(#[$attr])*
         $vis trait $name {$(
             $(#[$fn_attr])*
             fn $fn_name($($arg_name: $arg_ty,)*) $(-> $ret_ty)?;
@@ -45,10 +46,11 @@ macro_rules! def_interface {
 /// See the [crate-level documentation](crate) for more details.
 #[macro_export]
 macro_rules! impl_interface {
-    (impl $interface:ident for $target:ident {$(
+    ($(#[$attr:meta])* impl $interface:ident for $target:ident {$(
         $(#[$fn_attr:meta])*
         fn $fn_name:ident($($arg_name:ident: $arg_ty:ty),* $(,)?) $(-> $ret_ty:ty)? { $($body:tt)* }
     )*}) => {
+        $(#[$attr])*
         impl $interface for $target {$(
             $(#[$fn_attr])*
             fn $fn_name($($arg_name: $arg_ty,)*) $(-> $ret_ty)? {
