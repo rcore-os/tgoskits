@@ -3,8 +3,8 @@
 
 /// Define an interface.
 ///
-/// This attribute should be added above the definition of a trait. All traits
-/// that use the attribute cannot have the same name.
+/// This attribute should be used with a `trait` item. All traits that use the
+/// attribute cannot have the same name.
 ///
 /// It is not necessary to define it in the same crate as the implementation,
 /// but it is required that these crates are linked together.
@@ -36,8 +36,8 @@ macro_rules! def_interface {
 
 /// Implement the interface for a struct.
 ///
-/// This attribute should be added above the implementation of a trait for a
-/// struct, and the trait must be defined with [`def_interface!`].
+/// This attribute should be use with a `impl` item of a trait for a struct, and
+/// the trait must be defined with [`def_interface!`].
 ///
 /// It is not necessary to implement it in the same crate as the definition, but
 /// it is required that these crates are linked together.
@@ -62,7 +62,7 @@ macro_rules! impl_interface {
     };
 }
 
-/// Call a function in the interface.
+/// Call a function in a defined interface.
 ///
 /// It is not necessary to call it in the same crate as the implementation, but
 /// it is required that these crates are linked together.
@@ -98,5 +98,6 @@ macro_rules! __interface_fn {
 
 /// NON-PUBLIC APIs
 pub mod r#priv {
+    /// The default implementor for all defined interfaces.
     pub struct DefaultImpl;
 }
