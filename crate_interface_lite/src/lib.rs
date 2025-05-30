@@ -17,10 +17,14 @@ macro_rules! def_interface {
         fn $fn_name:ident($($arg_name:ident: $arg_ty:ty),* $(,)?) $(-> $ret_ty:ty)?;
     )*}) => {
         $(#[$attr])*
-        $vis trait $name {$(
-            $(#[$fn_attr])*
-            fn $fn_name($($arg_name: $arg_ty,)*) $(-> $ret_ty)?;
-        )*}
+        $vis trait $name {
+            #[doc(hidden)]
+            #[allow(non_upper_case_globals)]
+            const $name: $crate::r#priv::MustNotAnAlias = $crate::r#priv::MustNotAnAlias;
+
+            $($(#[$fn_attr])*
+            fn $fn_name($($arg_name: $arg_ty,)*) $(-> $ret_ty)?;)*
+        }
 
         impl $name for $crate::r#priv::DefaultImpl {$(
             $(#[$fn_attr])*
@@ -44,6 +48,29 @@ macro_rules! def_interface {
 /// it is required that these crates are linked together.
 ///
 /// See the [crate-level documentation](crate) for more details.
+///
+/// # Caveat
+///
+/// The specified trait name must not be an alias to the originally defined
+/// name; otherwise, it will result in a compile error.
+///
+/// ```rust,compile_fail
+/// # use crate_interface_lite::*;
+/// def_interface!(
+///     trait MyIf {
+///         fn foo();
+///     }
+/// );
+///
+/// use MyIf as MyIf2;
+/// struct MyImpl;
+/// impl_interface!(
+///     impl MyIf2 for MyImpl {
+///     //   ^^^^^ You will get a compile error if a trait alias is used.
+///         fn foo() {}
+///     }
+/// );
+/// ```
 #[macro_export]
 macro_rules! impl_interface {
     ($(#[$attr:meta])* impl $interface:ident for $target:ident {$(
@@ -51,16 +78,18 @@ macro_rules! impl_interface {
         fn $fn_name:ident($($arg_name:ident: $arg_ty:ty),* $(,)?) $(-> $ret_ty:ty)? { $($body:tt)* }
     )*}) => {
         $(#[$attr])*
-        impl $interface for $target {$(
-            $(#[$fn_attr])*
+        impl $interface for $target {
+            const $interface: $crate::r#priv::MustNotAnAlias = $crate::r#priv::MustNotAnAlias;
+
+            $($(#[$fn_attr])*
             fn $fn_name($($arg_name: $arg_ty,)*) $(-> $ret_ty)? {
                 #[export_name = concat!("__", stringify!($interface), "__", stringify!($fn_name))]
                 extern "Rust" fn $fn_name($($arg_name: $arg_ty,)*) $(-> $ret_ty)? {
                     $($body)*
                 }
                 $fn_name($($arg_name,)*)
-            }
-        )*}
+            })*
+        }
     };
 }
 
@@ -103,4 +132,7 @@ macro_rules! __interface_fn {
 pub mod r#priv {
     /// The default implementor for all defined interfaces.
     pub struct DefaultImpl;
+
+    /// A dummy type to enforce no trait aliasing.
+    pub struct MustNotAnAlias;
 }
