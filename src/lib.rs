@@ -88,7 +88,8 @@ pub fn def_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Implement the interface for a struct.
 ///
 /// This attribute should be added above the implementation of a trait for a
-/// struct, and the trait must be defined with [`#[def_interface]`](def_interface!).
+/// struct, and the trait must be defined with
+/// [`#[def_interface]`](macro@crate::def_interface).
 ///
 /// It is not necessary to implement it in the same crate as the definition, but
 /// it is required that these crates are linked together.
