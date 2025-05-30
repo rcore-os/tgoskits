@@ -58,6 +58,9 @@ pub fn def_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
 
+    // Enforce no alias is used to implement an interface, as this makes it
+    // possible to link the function called by `call_interface` to an
+    // implementation with a different signature, which is extremely unsound.
     let alias_guard_name = format_ident!("__MustNotAnAlias__{}", trait_name);
     let alias_guard = parse_quote!(
         #[allow(non_upper_case_globals)]
@@ -111,7 +114,6 @@ pub fn def_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///     fn foo() {}
 /// }
 /// ```
-///
 #[proc_macro_attribute]
 pub fn impl_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
     if !attr.is_empty() {
