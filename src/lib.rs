@@ -5,7 +5,7 @@ use proc_macro2::Span;
 use quote::{format_ident, quote};
 use syn::parse::{Error, Parse, ParseStream, Result};
 use syn::punctuated::Punctuated;
-use syn::{parenthesized, parse_macro_input, Token};
+use syn::{parenthesized, parse_macro_input, parse_quote, Token};
 use syn::{
     Expr, FnArg, ImplItem, ImplItemFn, ItemImpl, ItemTrait, Path, PathArguments, PathSegment,
     TraitItem, Type,
@@ -33,7 +33,7 @@ pub fn def_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
         ));
     }
 
-    let ast = syn::parse_macro_input!(item as ItemTrait);
+    let mut ast = syn::parse_macro_input!(item as ItemTrait);
     let trait_name = &ast.ident;
     let vis = &ast.vis;
 
@@ -58,6 +58,14 @@ pub fn def_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
 
+    let alias_guard_name = format_ident!("__MustNotAnAlias__{}", trait_name);
+    let alias_guard = parse_quote!(
+        #[allow(non_upper_case_globals)]
+        #[doc(hidden)]
+        const #alias_guard_name: () = ();
+    );
+    ast.items.push(alias_guard);
+
     let mod_name = format_ident!("__{}_mod", trait_name);
     quote! {
         #ast
@@ -77,13 +85,33 @@ pub fn def_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Implement the interface for a struct.
 ///
 /// This attribute should be added above the implementation of a trait for a
-/// struct, and the trait must be defined with
-/// [`#[def_interface]`](macro@crate::def_interface).
+/// struct, and the trait must be defined with [`#[def_interface]`](def_interface!).
 ///
 /// It is not necessary to implement it in the same crate as the definition, but
 /// it is required that these crates are linked together.
 ///
 /// See the [crate-level documentation](crate) for more details.
+///
+/// # Caveat
+///
+/// The specified trait name must not be an alias to the originally defined
+/// name; otherwise, it will result in a compile error.
+///
+/// ```rust,compile_fail
+/// # use crate_interface::*;
+/// #[def_interface]
+/// trait MyIf {
+///     fn foo();
+/// }
+///
+/// use MyIf as MyIf2;
+/// struct MyImpl;
+/// #[impl_interface]
+/// impl MyIf2 for MyImpl {
+///     fn foo() {}
+/// }
+/// ```
+///
 #[proc_macro_attribute]
 pub fn impl_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
     if !attr.is_empty() {
@@ -157,6 +185,10 @@ pub fn impl_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
             *method = syn::parse_macro_input!(item as ImplItemFn);
         }
     }
+
+    let alias_guard_name = format_ident!("__MustNotAnAlias__{}", trait_name);
+    let alias_guard = parse_quote!(const #alias_guard_name: () = (););
+    ast.items.push(alias_guard);
 
     quote! { #ast }.into()
 }
