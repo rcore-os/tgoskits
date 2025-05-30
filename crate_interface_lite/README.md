@@ -91,8 +91,8 @@ fallbacks when no other implementations are provided.
 ```rust,compile_fail
 crate_interface_lite::def_interface!(
     pub trait HelloIf {
-        fn hello(self, name: &str, id: usize) -> String { todo!() }
-        //                                              ^^^^^^^^^^^ Not supported!
+        fn hello(name: &str, id: usize) -> String { todo!() }
+        //                                        ^^^^^^^^^^^ Not supported!
     }
 );
 ```
