@@ -5,7 +5,7 @@ use proc_macro2::Span;
 use quote::{format_ident, quote};
 use syn::parse::{Error, Parse, ParseStream, Result};
 use syn::punctuated::Punctuated;
-use syn::{parenthesized, parse_macro_input, Token};
+use syn::{parenthesized, parse_macro_input, parse_quote, Token};
 use syn::{
     Expr, FnArg, ImplItem, ImplItemFn, ItemImpl, ItemTrait, Path, PathArguments, PathSegment,
     TraitItem, Type,
@@ -33,7 +33,7 @@ pub fn def_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
         ));
     }
 
-    let ast = syn::parse_macro_input!(item as ItemTrait);
+    let mut ast = syn::parse_macro_input!(item as ItemTrait);
     let trait_name = &ast.ident;
     let vis = &ast.vis;
 
@@ -57,6 +57,17 @@ pub fn def_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
             extern_fn_list.push(extern_fn);
         }
     }
+
+    // Enforce no alias is used to implement an interface, as this makes it
+    // possible to link the function called by `call_interface` to an
+    // implementation with a different signature, which is extremely unsound.
+    let alias_guard_name = format_ident!("__MustNotAnAlias__{}", trait_name);
+    let alias_guard = parse_quote!(
+        #[allow(non_upper_case_globals)]
+        #[doc(hidden)]
+        const #alias_guard_name: () = ();
+    );
+    ast.items.push(alias_guard);
 
     let mod_name = format_ident!("__{}_mod", trait_name);
     quote! {
@@ -84,6 +95,26 @@ pub fn def_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// it is required that these crates are linked together.
 ///
 /// See the [crate-level documentation](crate) for more details.
+///
+/// # Caveat
+///
+/// The specified trait name must not be an alias to the originally defined
+/// name; otherwise, it will result in a compile error.
+///
+/// ```rust,compile_fail
+/// # use crate_interface::*;
+/// #[def_interface]
+/// trait MyIf {
+///     fn foo();
+/// }
+///
+/// use MyIf as MyIf2;
+/// struct MyImpl;
+/// #[impl_interface]
+/// impl MyIf2 for MyImpl {
+///     fn foo() {}
+/// }
+/// ```
 #[proc_macro_attribute]
 pub fn impl_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
     if !attr.is_empty() {
@@ -157,6 +188,10 @@ pub fn impl_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
             *method = syn::parse_macro_input!(item as ImplItemFn);
         }
     }
+
+    let alias_guard_name = format_ident!("__MustNotAnAlias__{}", trait_name);
+    let alias_guard = parse_quote!(const #alias_guard_name: () = (););
+    ast.items.push(alias_guard);
 
     quote! { #ast }.into()
 }
