@@ -1,8 +1,9 @@
 use aarch64_cpu::registers::{ESR_EL2, HCR_EL2, Readable, SCTLR_EL1, VTCR_EL2, VTTBR_EL2};
 
 use axaddrspace::GuestPhysAddr;
+use axaddrspace::device::AccessWidth;
 use axerrno::{AxError, AxResult};
-use axvcpu::{AccessWidth, AxVCpuExitReason};
+use axvcpu::AxVCpuExitReason;
 
 use crate::TrapFrame;
 use crate::exception_utils::{
