@@ -263,6 +263,12 @@ fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
         // task sched
         Sysno::sched_yield => sys_sched_yield(),
         Sysno::nanosleep => sys_nanosleep(tf.arg0().into(), tf.arg1().into()),
+        Sysno::sched_getaffinity => {
+            sys_sched_getaffinity(tf.arg0() as _, tf.arg1() as _, tf.arg2().into())
+        }
+        Sysno::sched_setaffinity => {
+            sys_sched_setaffinity(tf.arg0() as _, tf.arg1() as _, tf.arg2().into())
+        }
 
         // task ops
         Sysno::execve => sys_execve(tf, tf.arg0().into(), tf.arg1().into(), tf.arg2().into()),
