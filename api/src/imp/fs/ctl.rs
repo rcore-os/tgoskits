@@ -482,3 +482,12 @@ pub fn sys_renameat2(
     old_dir.rename(&old_name, &new_dir, new_name)?;
     Ok(0)
 }
+
+pub fn sys_sync() -> LinuxResult<isize> {
+    info!("Dummy sys_sync called");
+    Ok(0)
+}
+pub fn sys_syncfs(_fd: i32) -> LinuxResult<isize> {
+    info!("Dummy sys_syncfs called");
+    Ok(0)
+}

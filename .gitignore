@@ -11,3 +11,7 @@ apps/*/build/
 !/vendor/**/Cargo.lock
 /.axconfig.*
 *.img
+/kernel-rv
+/kernel-la
+/vendor
+/arceos

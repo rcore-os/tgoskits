@@ -53,6 +53,8 @@ fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
             tf.arg3().into(),
             tf.arg4() as _,
         ),
+        Sysno::sync => sys_sync(),
+        Sysno::syncfs => sys_syncfs(tf.arg0() as _),
 
         // file ops
         Sysno::fchown => sys_fchown(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
