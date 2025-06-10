@@ -13,19 +13,24 @@ You can reference a package by:
     dep_id: Vec<String>,
 
     /// Filesystem path to local crate to add
-    #[arg(long, help_heading = "Source")]
+    #[arg(long, help_heading = "Source", conflicts_with = "git")]
     path: Option<String>,
 
     /// Git repository location
     ///
     /// Without any other information, cargo will use latest commit on the main branch.
-    #[arg(long, value_name = "URI", help_heading = "Source")]
+    #[arg(
+        long,
+        value_name = "URI",
+        help_heading = "Source",
+        conflicts_with = "path"
+    )]
     git: Option<String>,
 }
 
 /// Add platform package dependencies to a Cargo.toml manifest file
 #[derive(Parser, Debug)]
-#[command(long_about = "Add a platform package as a dependency")]
+#[command(long_about = "Add platform package dependencies")]
 pub struct CommandAdd {
     /// Reference to a platform package to add as a dependency
     #[command(flatten)]

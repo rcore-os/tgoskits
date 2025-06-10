@@ -4,6 +4,7 @@ use std::process::Command;
 use clap::{Parser, Subcommand};
 
 mod add;
+mod info;
 mod new;
 
 #[rustfmt::skip]
@@ -20,6 +21,7 @@ struct Args {
 enum Commands {
     New(self::new::CommandNew),
     Add(self::add::CommandAdd),
+    Info(self::info::CommandInfo),
 }
 
 fn run_cargo_command(command: &str, add_args: impl FnOnce(&mut Command)) -> String {
@@ -28,8 +30,9 @@ fn run_cargo_command(command: &str, add_args: impl FnOnce(&mut Command)) -> Stri
 
     add_args(&mut cmd);
 
-    let output = cmd.output().expect("failed to execute `cargo add`");
-    std::io::stdout().write_all(&output.stdout).unwrap();
+    let output = cmd
+        .output()
+        .expect(&format!("error: failed to execute `cargo {command}`"));
     std::io::stderr().write_all(&output.stderr).unwrap();
     if !output.status.success() {
         std::process::exit(output.status.code().unwrap_or(1));
@@ -44,6 +47,9 @@ fn main() {
         }
         Commands::Add(args) => {
             self::add::add_platform(args);
+        }
+        Commands::Info(args) => {
+            self::info::platform_info(args);
         }
     }
 }
