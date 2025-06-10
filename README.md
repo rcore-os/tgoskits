@@ -6,9 +6,21 @@
 
 Initialize a static value lazily.
 
-Unlike [`lazy_static`][1], which hardcodes the initialization routine in a macro, you can initialize the value in any way.
+The crate provides a type for initializing static values lazily in a thread-safe manner.  
+Unlike compile-time initialization or macro-based solutions like [`lazy_static`][1], this type allows runtime initialization with arbitrary logic while guaranteeing that initialization occurs exactly once across all threads.
+
+The core abstraction is a struct that wraps a value and manages its initialization state through atomic operations. The value remains uninitialized until the first call to `init_once` or `call_once`, at which point it becomes permanently initialized and accessible.
 
 [1]: https://docs.rs/lazy_static
+
+## Features
+
+- Thread-Safe Initialization: Guarantees exactly one initialization across multiple threads
+- Flexible Initialization: Supports both direct value initialization and closure-based initialization
+- Safe Access Patterns: Provides both safe and unsafe access methods
+- State Inspection: Allows checking initialization status without accessing the value
+- Direct Access: Implements `Deref` and `DerefMut` for transparent access after initialization
+- No-std Compatibility: Works in embedded and kernel environments without the standard library. No external dependencies.
 
 ## Examples
 
