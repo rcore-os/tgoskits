@@ -61,6 +61,13 @@ impl<B: MappingBackend> MemorySet<B> {
     /// The search starts from the given `hint` address, and the area should be
     /// within the given `limit` range.
     ///
+    /// # Notes
+    /// The `align` parameter specifies the alignment of the start address and
+    /// the size of the area. The start address of the resulting area will
+    /// be aligned to this value. Also, the size of the area must be a multiple
+    /// of this value.
+    ///
+    /// # Returns
     /// Returns the start address of the free area. Returns `None` if no such
     /// area is found.
     pub fn find_free_area(
@@ -68,17 +75,22 @@ impl<B: MappingBackend> MemorySet<B> {
         hint: B::Addr,
         size: usize,
         limit: AddrRange<B::Addr>,
+        align: usize,
     ) -> Option<B::Addr> {
+        if size % align != 0 {
+            // size must be a multiple of align.
+            return None;
+        }
         // brute force: try each area's end address as the start.
-        let mut last_end = hint.max(limit.start);
+        let mut last_end: <B as MappingBackend>::Addr = hint.max(limit.start).align_up(align);
         if let Some((_, area)) = self.areas.range(..last_end).last() {
-            last_end = last_end.max(area.end());
+            last_end = last_end.max(area.end()).align_up(align);
         }
         for (&addr, area) in self.areas.range(last_end..) {
             if last_end.checked_add(size).is_some_and(|end| end <= addr) {
                 return Some(last_end);
             }
-            last_end = area.end();
+            last_end = area.end().align_up(align);
         }
         if last_end
             .checked_add(size)

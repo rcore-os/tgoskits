@@ -341,24 +341,24 @@ fn test_find_free_area() {
         ));
     }
 
-    let addr = set.find_free_area(0.into(), 0x1000, va_range!(0..MAX_ADDR));
+    let addr = set.find_free_area(0.into(), 0x1000, va_range!(0..MAX_ADDR), 1);
     assert_eq!(addr, Some(0x1000.into()));
 
-    let addr = set.find_free_area(0x800.into(), 0x800, va_range!(0..MAX_ADDR));
+    let addr = set.find_free_area(0x800.into(), 0x800, va_range!(0..MAX_ADDR), 0x800);
     assert_eq!(addr, Some(0x1000.into()));
 
-    let addr = set.find_free_area(0x1800.into(), 0x800, va_range!(0..MAX_ADDR));
+    let addr = set.find_free_area(0x1800.into(), 0x800, va_range!(0..MAX_ADDR), 0x800);
     assert_eq!(addr, Some(0x1800.into()));
 
-    let addr = set.find_free_area(0x1800.into(), 0x1000, va_range!(0..MAX_ADDR));
+    let addr = set.find_free_area(0x1800.into(), 0x1000, va_range!(0..MAX_ADDR), 0x1000);
     assert_eq!(addr, Some(0x3000.into()));
 
-    let addr = set.find_free_area(0x2000.into(), 0x1000, va_range!(0..MAX_ADDR));
+    let addr = set.find_free_area(0x2000.into(), 0x1000, va_range!(0..MAX_ADDR), 0x1000);
     assert_eq!(addr, Some(0x3000.into()));
 
-    let addr = set.find_free_area(0xf000.into(), 0x1000, va_range!(0..MAX_ADDR));
+    let addr = set.find_free_area(0xf000.into(), 0x1000, va_range!(0..MAX_ADDR), 0x1000);
     assert_eq!(addr, Some(0xf000.into()));
 
-    let addr = set.find_free_area(0xf001.into(), 0x1000, va_range!(0..MAX_ADDR));
+    let addr = set.find_free_area(0xf001.into(), 0x1000, va_range!(0..MAX_ADDR), 0x1000);
     assert_eq!(addr, None);
 }
