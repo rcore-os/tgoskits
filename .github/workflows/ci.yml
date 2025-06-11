@@ -57,6 +57,10 @@ jobs:
             target: aarch64-unknown-none
           - name: axplat-aarch64-raspi
             target: aarch64-unknown-none
+          - name: axplat-aarch64-bsta1000b
+            target: aarch64-unknown-none
+          - name: axplat-aarch64-phytium-pi
+            target: aarch64-unknown-none
           - name: axplat-riscv64-qemu-virt
             target: riscv64gc-unknown-none-elf
           - name: axplat-loongarch64-qemu-virt

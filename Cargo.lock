@@ -150,6 +150,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "axplat-aarch64-bsta1000b"
+version = "0.1.0"
+dependencies = [
+ "axconfig-gen-macros",
+ "axcpu",
+ "axplat",
+ "axplat-aarch64-common",
+ "dw_apb_uart",
+ "kspin",
+ "log",
+ "memory_addr",
+ "page_table_entry",
+]
+
+[[package]]
 name = "axplat-aarch64-common"
 version = "0.1.0"
 dependencies = [
@@ -162,6 +177,19 @@ dependencies = [
  "int_ratio",
  "kspin",
  "lazyinit",
+ "log",
+ "memory_addr",
+ "page_table_entry",
+]
+
+[[package]]
+name = "axplat-aarch64-phytium-pi"
+version = "0.1.0"
+dependencies = [
+ "axconfig-gen-macros",
+ "axcpu",
+ "axplat",
+ "axplat-aarch64-common",
  "log",
  "memory_addr",
  "page_table_entry",
@@ -373,6 +401,15 @@ name = "critical-section"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
+
+[[package]]
+name = "dw_apb_uart"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f93d496c8faa9dc676ebfa225432e1e3b57645c9268ead889286546f6d39356d"
+dependencies = [
+ "tock-registers 0.8.1",
+]
 
 [[package]]
 name = "embedded-hal"

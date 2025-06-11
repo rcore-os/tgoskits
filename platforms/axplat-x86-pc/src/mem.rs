@@ -37,7 +37,7 @@ struct MemIfImpl;
 impl MemoryManagement for MemIfImpl {
     unsafe fn paddr_to_slice(&self, addr: PAddr, size: usize) -> Option<&'static [u8]> {
         let ptr = phys_to_virt(pa!(addr as usize)).as_ptr();
-        Some(core::slice::from_raw_parts(ptr, size))
+        Some(unsafe { core::slice::from_raw_parts(ptr, size) })
     }
 
     unsafe fn allocate(&mut self, _length: usize) -> Option<(PAddr, &mut [u8])> {

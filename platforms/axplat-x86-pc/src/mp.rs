@@ -1,7 +1,7 @@
 //! Multi-processor booting.
 
-use axplat::time::{busy_wait, Duration};
-use memory_addr::{PhysAddr, PAGE_SIZE_4K};
+use axplat::time::{Duration, busy_wait};
+use memory_addr::{PAGE_SIZE_4K, PhysAddr};
 
 const START_PAGE_IDX: u8 = 6;
 const START_PAGE_PADDR: PhysAddr = pa!(START_PAGE_IDX as usize * PAGE_SIZE_4K);
@@ -20,12 +20,14 @@ unsafe fn setup_startup_page(stack_top: PhysAddr) {
     const U64_PER_PAGE: usize = PAGE_SIZE_4K / 8;
 
     let start_page_ptr = crate::mem::phys_to_virt(START_PAGE_PADDR).as_mut_ptr() as *mut u64;
-    let start_page = core::slice::from_raw_parts_mut(start_page_ptr, U64_PER_PAGE);
-    core::ptr::copy_nonoverlapping(
-        ap_start as *const u64,
-        start_page_ptr,
-        (ap_end as usize - ap_start as usize) / 8,
-    );
+    let start_page = unsafe { core::slice::from_raw_parts_mut(start_page_ptr, U64_PER_PAGE) };
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            ap_start as *const u64,
+            start_page_ptr,
+            (ap_end as usize - ap_start as usize) / 8,
+        );
+    }
     start_page[U64_PER_PAGE - 2] = stack_top.as_usize() as u64; // stack_top
     start_page[U64_PER_PAGE - 1] = ap_entry32 as usize as _; // entry
 }

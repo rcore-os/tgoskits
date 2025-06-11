@@ -21,9 +21,15 @@ unsafe fn init_boot_page_table() {
             MappingFlags::READ | MappingFlags::WRITE | MappingFlags::DEVICE,
             true,
         );
-        // 0x0000_4000_0000..0x0000_8000_0000, 1G block, normal memory
+        // 1G block, device memory
         BOOT_PT_L1[1] = A64PTE::new_page(
-            pa!(0x4000_0000),
+            pa!(0x40000000),
+            MappingFlags::READ | MappingFlags::WRITE | MappingFlags::DEVICE,
+            true,
+        );
+        // 1G block, normal memory
+        BOOT_PT_L1[2] = A64PTE::new_page(
+            pa!(0x80000000),
             MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE,
             true,
         );
@@ -88,7 +94,7 @@ unsafe extern "C" fn _start_primary() -> ! {
         bl      {enable_fp}             // enable fp/neon
         bl      {init_boot_page_table}
         adrp    x0, {boot_pt}
-        bl      {init_mmu}              // setup MMU
+        bl      {init_mmu}            // setup MMU
 
         mov     x8, {phys_virt_offset}  // set SP to the high address
         add     sp, sp, x8
@@ -100,11 +106,11 @@ unsafe extern "C" fn _start_primary() -> ! {
         b      .",
         switch_to_el1 = sym axcpu::init::switch_to_el1,
         init_mmu = sym axcpu::init::init_mmu,
-        init_boot_page_table = sym init_boot_page_table,
         enable_fp = sym enable_fp,
-        boot_pt = sym BOOT_PT_L0,
+        init_boot_page_table = sym init_boot_page_table,
         boot_stack = sym BOOT_STACK,
         boot_stack_size = const BOOT_STACK_SIZE,
+        boot_pt = sym BOOT_PT_L0,
         phys_virt_offset = const PHYS_VIRT_OFFSET,
         entry = sym axplat::call_main,
     )
@@ -122,9 +128,9 @@ pub(crate) unsafe extern "C" fn _start_secondary() -> ! {
 
         mov     sp, x0
         bl      {switch_to_el1}
-        bl      {enable_fp}
         adrp    x0, {boot_pt}
         bl      {init_mmu}
+        bl      {enable_fp}
 
         mov     x8, {phys_virt_offset}  // set SP to the high address
         add     sp, sp, x8

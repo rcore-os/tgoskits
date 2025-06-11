@@ -1,4 +1,4 @@
-use page_table_entry::{aarch64::A64PTE, GenericPTE, MappingFlags};
+use page_table_entry::{GenericPTE, MappingFlags, aarch64::A64PTE};
 
 use crate::config::plat::{BOOT_STACK_SIZE, PHYS_VIRT_OFFSET};
 
@@ -12,32 +12,34 @@ static mut BOOT_PT_L0: [A64PTE; 512] = [A64PTE::empty(); 512];
 static mut BOOT_PT_L1: [A64PTE; 512] = [A64PTE::empty(); 512];
 
 unsafe fn init_boot_page_table() {
-    // 0x0000_0000_0000 ~ 0x0080_0000_0000, table
-    BOOT_PT_L0[0] = A64PTE::new_table(pa!(&raw mut BOOT_PT_L1 as usize));
-    // 0x0000_0000_0000..0x0000_4000_0000, 1G block, device memory
-    BOOT_PT_L1[0] = A64PTE::new_page(
-        pa!(0),
-        MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE,
-        true,
-    );
-    // 0x0000_4000_0000..0x0000_8000_0000, 1G block, normal memory
-    BOOT_PT_L1[1] = A64PTE::new_page(
-        pa!(0x4000_0000),
-        MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE,
-        true,
-    );
-    // 0x0000_8000_0000..0x0000_C000_0000, 1G block, normal memory
-    BOOT_PT_L1[2] = A64PTE::new_page(
-        pa!(0x8000_0000),
-        MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE,
-        true,
-    );
-    // 0x0000_C000_0000..0x0001_0000_0000, 1G block, DEVICE memory
-    BOOT_PT_L1[3] = A64PTE::new_page(
-        pa!(0xc000_0000),
-        MappingFlags::READ | MappingFlags::WRITE | MappingFlags::DEVICE,
-        true,
-    );
+    unsafe {
+        // 0x0000_0000_0000 ~ 0x0080_0000_0000, table
+        BOOT_PT_L0[0] = A64PTE::new_table(pa!(&raw mut BOOT_PT_L1 as usize));
+        // 0x0000_0000_0000..0x0000_4000_0000, 1G block, device memory
+        BOOT_PT_L1[0] = A64PTE::new_page(
+            pa!(0),
+            MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE,
+            true,
+        );
+        // 0x0000_4000_0000..0x0000_8000_0000, 1G block, normal memory
+        BOOT_PT_L1[1] = A64PTE::new_page(
+            pa!(0x4000_0000),
+            MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE,
+            true,
+        );
+        // 0x0000_8000_0000..0x0000_C000_0000, 1G block, normal memory
+        BOOT_PT_L1[2] = A64PTE::new_page(
+            pa!(0x8000_0000),
+            MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE,
+            true,
+        );
+        // 0x0000_C000_0000..0x0001_0000_0000, 1G block, DEVICE memory
+        BOOT_PT_L1[3] = A64PTE::new_page(
+            pa!(0xc000_0000),
+            MappingFlags::READ | MappingFlags::WRITE | MappingFlags::DEVICE,
+            true,
+        );
+    }
 }
 
 unsafe fn enable_fp() {

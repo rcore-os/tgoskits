@@ -21,9 +21,9 @@ unsafe fn init_boot_page_table() {
             MappingFlags::READ | MappingFlags::WRITE | MappingFlags::DEVICE,
             true,
         );
-        // 0x0000_4000_0000..0x0000_8000_0000, 1G block, normal memory
-        BOOT_PT_L1[1] = A64PTE::new_page(
-            pa!(0x4000_0000),
+        // 0x0000_8000_0000..0x0000_C000_0000, 1G block, normal memory
+        BOOT_PT_L1[2] = A64PTE::new_page(
+            pa!(0x8000_0000),
             MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE,
             true,
         );
@@ -36,6 +36,13 @@ unsafe fn enable_fp() {
     // like `memset` and `memcpy`.
     #[cfg(feature = "fp_simd")]
     axcpu::asm::enable_fp();
+}
+
+fn hart_to_logid(hard_id: usize) -> usize {
+    crate::config::plat::CPU_ID_LIST
+        .iter()
+        .position(|&x| x == hard_id)
+        .unwrap()
 }
 
 /// Kernel entry point with Linux image header.
@@ -93,19 +100,21 @@ unsafe extern "C" fn _start_primary() -> ! {
         mov     x8, {phys_virt_offset}  // set SP to the high address
         add     sp, sp, x8
 
-        mov     x0, x19                 // call_main(cpu_id, dtb)
+        mov     x0, x19
+        bl      {hart_to_logid}         // x0 = logical CPU ID
         mov     x1, x20
-        ldr     x8, ={entry}
+        ldr     x8, ={entry}            // call_main(cpu_id, dtb)
         blr     x8
         b      .",
         switch_to_el1 = sym axcpu::init::switch_to_el1,
         init_mmu = sym axcpu::init::init_mmu,
-        init_boot_page_table = sym init_boot_page_table,
         enable_fp = sym enable_fp,
-        boot_pt = sym BOOT_PT_L0,
+        init_boot_page_table = sym init_boot_page_table,
         boot_stack = sym BOOT_STACK,
         boot_stack_size = const BOOT_STACK_SIZE,
+        boot_pt = sym BOOT_PT_L0,
         phys_virt_offset = const PHYS_VIRT_OFFSET,
+        hart_to_logid = sym hart_to_logid,
         entry = sym axplat::call_main,
     )
 }
@@ -122,15 +131,16 @@ pub(crate) unsafe extern "C" fn _start_secondary() -> ! {
 
         mov     sp, x0
         bl      {switch_to_el1}
-        bl      {enable_fp}
         adrp    x0, {boot_pt}
         bl      {init_mmu}
+        bl      {enable_fp}
 
         mov     x8, {phys_virt_offset}  // set SP to the high address
         add     sp, sp, x8
 
-        mov     x0, x19                 // call_secondary_main(cpu_id)
-        ldr     x8, ={entry}
+        mov     x0, x19
+        bl      {hart_to_logid}         // x0 = logical CPU ID
+        ldr     x8, ={entry}            // call_secondary_main(cpu_id)
         blr     x8
         b      .",
         switch_to_el1 = sym axcpu::init::switch_to_el1,
@@ -138,6 +148,7 @@ pub(crate) unsafe extern "C" fn _start_secondary() -> ! {
         enable_fp = sym enable_fp,
         boot_pt = sym BOOT_PT_L0,
         phys_virt_offset = const PHYS_VIRT_OFFSET,
+        hart_to_logid = sym hart_to_logid,
         entry = sym axplat::call_secondary_main,
     )
 }
