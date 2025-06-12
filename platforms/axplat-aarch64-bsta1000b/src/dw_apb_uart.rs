@@ -2,7 +2,7 @@
 
 use axplat::console::ConsoleIf;
 
-use crate::{config::devices::UART_IRQ, mem::phys_to_virt};
+use crate::mem::phys_to_virt;
 use dw_apb_uart::DW8250;
 use kspin::SpinNoIrq;
 use memory_addr::PhysAddr;
@@ -38,7 +38,7 @@ pub fn init_early() {
 #[cfg(feature = "irq")]
 pub fn init_irq() {
     UART.lock().set_ier(true);
-    axplat_aarch64_common::gic::register_handler(UART_IRQ, handle);
+    axplat_aarch64_common::gic::register_handler(crate::config::devices::UART_IRQ, handle);
 }
 
 /// UART IRQ Handler

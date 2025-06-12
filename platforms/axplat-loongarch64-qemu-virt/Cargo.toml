@@ -11,7 +11,7 @@ repository.workspace = true
 [features]
 fp_simd = ["axcpu/fp_simd"]
 irq = []
-rtc = []
+rtc = ["dep:chrono"]
 smp = []
 
 [dependencies]
@@ -22,6 +22,7 @@ memory_addr = "0.3"
 loongArch64 = "0.2.4"
 ns16550a = "0.5.0"
 page_table_entry = "0.5"
+chrono = { version = "0.4", default-features = false, optional = true }
 
 axconfig-gen-macros = { version = "0.1", features = ["nightly"] }
 axcpu = { workspace = true }
