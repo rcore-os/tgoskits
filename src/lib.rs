@@ -32,6 +32,9 @@ impl Ratio {
     ///
     /// let zero = Ratio::zero();
     /// assert_eq!(zero.mul_trunc(123), 0);
+    ///
+    /// // As a special case, the inverse of Ratio::zero() (0/0) is itself
+    /// // and does not panic.
     /// assert_eq!(zero.inverse(), Ratio::zero());
     /// ```
     pub const fn zero() -> Self {
@@ -90,9 +93,12 @@ impl Ratio {
     /// ```
     /// use int_ratio::Ratio;
     ///
+    /// // The inverse of a standard ratio.
     /// let ratio = Ratio::new(1, 2);
     /// assert_eq!(ratio.inverse(), Ratio::new(2, 1));
     ///
+    /// // `Ratio::zero()` is a special case representing `0/0` . Its inverse is defined
+    /// // as itself and does not panic, unlike a regular `0/x` ratio.
     /// let zero = Ratio::zero();
     /// assert_eq!(zero.inverse(), Ratio::zero());
     /// ```
@@ -108,7 +114,11 @@ impl Ratio {
     /// use int_ratio::Ratio;
     ///
     /// let ratio = Ratio::new(2, 3);
+    ///
+    /// // Works as expected for an exact integer result.
     /// assert_eq!(ratio.mul_trunc(99), 66);  // 99 * 2 / 3 = 66
+    ///
+    /// // The fractional part is truncated (floored) when the result is not an integer.
     /// assert_eq!(ratio.mul_trunc(100), 66); // trunc(100 * 2 / 3) = trunc(66.66...) = 66
     /// ```
     pub const fn mul_trunc(self, value: u64) -> u64 {
@@ -124,7 +134,11 @@ impl Ratio {
     /// use int_ratio::Ratio;
     ///
     /// let ratio = Ratio::new(2, 3);
+    ///
+    /// // Works as expected for an exact integer result.
     /// assert_eq!(ratio.mul_round(99), 66);  // 99 * 2 / 3 = 66
+    ///
+    /// // The result is rounded to the nearest whole number when it has a fractional part.
     /// assert_eq!(ratio.mul_round(100), 67); // round(100 * 2 / 3) = round(66.66...) = 67
     /// ```
     pub const fn mul_round(self, value: u64) -> u64 {
