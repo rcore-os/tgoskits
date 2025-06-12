@@ -20,7 +20,7 @@ mod time;
 mod mp;
 
 mod config {
-    axconfig_gen_macros::include_configs!("axconfig.toml");
+    axconfig_macros::include_configs!(path_env = "AX_CONFIG_PATH", fallback = "axconfig.toml");
 }
 
 fn current_cpu_id() -> usize {

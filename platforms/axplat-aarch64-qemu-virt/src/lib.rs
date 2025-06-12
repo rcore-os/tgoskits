@@ -12,7 +12,7 @@ mod mem;
 mod power;
 
 mod config {
-    axconfig_gen_macros::include_configs!("axconfig.toml");
+    axconfig_macros::include_configs!(path_env = "AX_CONFIG_PATH", fallback = "axconfig.toml");
 }
 
 axplat_aarch64_common::console_if_impl!(ConsoleIfImpl);

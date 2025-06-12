@@ -17,5 +17,5 @@ mod power;
 mod time;
 
 mod config {
-    axconfig_gen_macros::include_configs!("axconfig.toml");
+    axconfig_macros::include_configs!(path_env = "AX_CONFIG_PATH", fallback = "axconfig.toml");
 }

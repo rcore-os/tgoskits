@@ -96,19 +96,19 @@ checksum = "ace50bade8e6234aa140d9a2f552bbee1db4d353f69b8217bc503490fc1a9f26"
 
 [[package]]
 name = "axconfig-gen"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ffa518605969ff8f4ebce2cdc3b6090345152c14987ec540601335effbf36d5"
+checksum = "0bf14099a96dbb925e39a44c4f25555f1e24516194452a84a943aa7eda62383d"
 dependencies = [
  "clap",
  "toml_edit",
 ]
 
 [[package]]
-name = "axconfig-gen-macros"
-version = "0.1.0"
+name = "axconfig-macros"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92110c7e7a5633d7fb8a402393c91c326ad6d19710bb9cfa5ab4095e63c25948"
+checksum = "f86a6711b80fbd1dc4c1d8e2fb77a5de6fc8e2eb2b96bbd0420ca8af370eb74c"
 dependencies = [
  "axconfig-gen",
  "proc-macro2",
@@ -153,7 +153,7 @@ dependencies = [
 name = "axplat-aarch64-bsta1000b"
 version = "0.1.0"
 dependencies = [
- "axconfig-gen-macros",
+ "axconfig-macros",
  "axcpu",
  "axplat",
  "axplat-aarch64-common",
@@ -186,7 +186,7 @@ dependencies = [
 name = "axplat-aarch64-phytium-pi"
 version = "0.1.0"
 dependencies = [
- "axconfig-gen-macros",
+ "axconfig-macros",
  "axcpu",
  "axplat",
  "axplat-aarch64-common",
@@ -199,7 +199,7 @@ dependencies = [
 name = "axplat-aarch64-qemu-virt"
 version = "0.1.0"
 dependencies = [
- "axconfig-gen-macros",
+ "axconfig-macros",
  "axcpu",
  "axplat",
  "axplat-aarch64-common",
@@ -213,7 +213,7 @@ name = "axplat-aarch64-raspi"
 version = "0.1.0"
 dependencies = [
  "aarch64-cpu",
- "axconfig-gen-macros",
+ "axconfig-macros",
  "axcpu",
  "axplat",
  "axplat-aarch64-common",
@@ -235,7 +235,7 @@ dependencies = [
 name = "axplat-loongarch64-qemu-virt"
 version = "0.1.0"
 dependencies = [
- "axconfig-gen-macros",
+ "axconfig-macros",
  "axcpu",
  "axplat",
  "chrono",
@@ -262,7 +262,7 @@ dependencies = [
 name = "axplat-riscv64-qemu-virt"
 version = "0.1.0"
 dependencies = [
- "axconfig-gen-macros",
+ "axconfig-macros",
  "axcpu",
  "axplat",
  "log",
@@ -276,7 +276,7 @@ dependencies = [
 name = "axplat-x86-pc"
 version = "0.1.0"
 dependencies = [
- "axconfig-gen-macros",
+ "axconfig-macros",
  "axcpu",
  "axplat",
  "bitflags 2.9.1",

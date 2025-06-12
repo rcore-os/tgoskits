@@ -1,7 +1,7 @@
 use std::io;
 use std::path::Path;
 
-use clap::{builder::PossibleValuesParser, Parser};
+use clap::{Parser, builder::PossibleValuesParser};
 use toml_edit::DocumentMut;
 
 /// Create a new platform package

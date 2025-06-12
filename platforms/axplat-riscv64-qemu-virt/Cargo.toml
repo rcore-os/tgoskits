@@ -21,6 +21,6 @@ riscv = "0.13"
 sbi-rt = { version = "0.0.3", features = ["legacy"] }
 riscv_goldfish = { version = "0.1", optional = true }
 
-axconfig-gen-macros = { version = "0.1", features = ["nightly"] }
+axconfig-macros = "0.2"
 axcpu = { workspace = true }
 axplat = { workspace = true }

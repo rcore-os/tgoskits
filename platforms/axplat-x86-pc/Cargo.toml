@@ -24,7 +24,7 @@ int_ratio = "0.1"
 percpu = "0.2"
 memory_addr = "0.3"
 heapless = "0.8"
-axconfig-gen-macros = { version = "0.1", features = ["nightly"] }
+axconfig-macros = "0.2"
 axcpu = { workspace = true }
 axplat = { workspace = true }
 

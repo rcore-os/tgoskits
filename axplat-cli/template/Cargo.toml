@@ -4,5 +4,5 @@ version = "0.1.0"       # to be overwritten
 edition = "2021"        # to be overwritten
 
 [dependencies]
-axconfig-gen-macros = "0.1"
+axconfig-macros = "0.2"
 axplat = { git = "https://github.com/arceos-org/axplat_crates" }

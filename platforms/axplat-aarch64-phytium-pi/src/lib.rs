@@ -8,7 +8,7 @@ extern crate axplat;
 extern crate memory_addr;
 
 mod config {
-    axconfig_gen_macros::include_configs!("axconfig.toml");
+    axconfig_macros::include_configs!(path_env = "AX_CONFIG_PATH", fallback = "axconfig.toml");
 }
 
 mod boot;
