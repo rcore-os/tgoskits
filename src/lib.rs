@@ -21,7 +21,7 @@ pub struct Ratio {
 impl Ratio {
     /// The zero ratio.
     ///
-    /// It is a ratio of `0/0``, and behaves like a zero value in calculation. It
+    /// It is a ratio of `0/0`, and behaves like a zero value in calculation. It
     /// differs from other `0/x` ratios in that it does not panic when getting
     /// the inverse ratio. Instead, it returns another zero ratio.
     ///

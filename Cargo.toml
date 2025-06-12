@@ -1,6 +1,6 @@
 [package]
 name = "int_ratio"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "The type of ratios represented by two integers."
@@ -10,5 +10,6 @@ repository = "https://github.com/arceos-org/int_ratio"
 documentation = "https://docs.rs/int_ratio"
 keywords = ["ratio", "fraction", "integer", "approximation"]
 categories = ["mathematics"]
+rust-version = "1.57.0"
 
 [dependencies]
