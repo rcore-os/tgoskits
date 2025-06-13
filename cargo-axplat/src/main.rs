@@ -9,7 +9,9 @@ mod info;
 mod new;
 
 #[rustfmt::skip]
-mod template;
+mod template {
+    include!(concat!(env!("OUT_DIR"), "/template.rs"));
+}
 
 #[derive(Parser, Debug)]
 #[command(bin_name = "cargo", version, styles = CLAP_STYLING)]

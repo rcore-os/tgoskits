@@ -2,8 +2,8 @@
 name = "cargo-axplat"
 version = "0.1.0"
 description = "Manages hardware platform packages using `axplat`"
-keywords = ["arceos", "hal", "hardware-abstraction-layer"]
-categories = ["development-tools", "embedded", "hardware-support", "os"]
+keywords = ["arceos", "hal", "hardware", "cargo-subcommand"]
+categories = ["development-tools", "development-tools::cargo-plugins", "embedded", "hardware-support", "os"]
 edition.workspace = true
 authors.workspace = true
 license.workspace = true

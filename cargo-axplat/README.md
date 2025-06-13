@@ -44,10 +44,11 @@ note: see more `Cargo.toml` keys and their definitions at https://doc.rust-lang.
 Run in your project directory:
 
 ```console
-$ cargo axplat add axplat-aarch64-my-plat --path ./axplat-aarch64-my-plat
+$ cd my-project
+$ cargo axplat add axplat-aarch64-my-plat --path ../axplat-aarch64-my-plat
       Adding axplat-aarch64-my-plat (local) to dependencies
     Updating crates.io index
-      Adding axplat-aarch64-my-plat v0.1.0 (/home/user/my-project/axplat-aarch64-my-plat)
+      Adding axplat-aarch64-my-plat v0.1.0 (/home/user/axplat-aarch64-my-plat)
 ```
 
 It will add `axplat-aarch64-my-plat` as a dependency in your project's `Cargo.toml` file:
@@ -64,7 +65,7 @@ $ cargo axplat info axplat-aarch64-my-plat
 platform: axplat-aarch64-my-plat
 arch: aarch64
 version: 0.1.0
-source: path+file:///home/user/my-project/axplat-aarch64-my-plat#0.1.0
-manifest_path: /home/user/my-project/axplat-aarch64-my-plat/Cargo.toml
-config_path: /home/user/my-project/axplat-aarch64-my-plat/axconfig.toml
+source: path+file:///home/user/axplat-aarch64-my-plat#0.1.0
+manifest_path: /home/user/axplat-aarch64-my-plat/Cargo.toml
+config_path: /home/user/axplat-aarch64-my-plat/axconfig.toml
 ```
