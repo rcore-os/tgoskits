@@ -1,14 +1,16 @@
+use crate::sbi_console::*;
 use riscv::register::hstatus;
 use riscv::register::{htinst, htval, hvip, scause, sie, sstatus, stval};
 use rustsbi::{Forward, RustSBI};
 use sbi_spec::{hsm, legacy};
 
+use crate::regs::*;
+use crate::{EID_HVC, RISCVVCpuCreateConfig, mem_extables};
 use axaddrspace::{GuestPhysAddr, HostPhysAddr, MappingFlags};
 use axerrno::AxResult;
 use axvcpu::{AxVCpuExitReason, AxVCpuHal};
-
-use crate::regs::*;
-use crate::{EID_HVC, RISCVVCpuCreateConfig};
+use memory_addr::VirtAddr;
+use sbi_spec::binary::Physical;
 
 unsafe extern "C" {
     fn _run_guest(state: *mut VmCpuRegisters);
@@ -187,6 +189,13 @@ impl<H: AxVCpuHal> RISCVVCpu<H> {
                 let extension_id = a[7];
                 let function_id = a[6];
 
+                trace!(
+                    "sbi_call: eid {:#x} ('{}') fid {:#x} param {:?}",
+                    extension_id,
+                    alloc::string::String::from_utf8_lossy(&(extension_id as u32).to_be_bytes()),
+                    function_id,
+                    param
+                );
                 match extension_id {
                     // Compatibility with Legacy Extensions.
                     legacy::LEGACY_SET_TIMER..=legacy::LEGACY_SHUTDOWN => match extension_id {
@@ -258,6 +267,69 @@ impl<H: AxVCpuHal> RISCVVCpu<H> {
                             ],
                         });
                     }
+                    EID_DBCN => match function_id {
+                        FID_CONSOLE_WRITE => {
+                            let num_bytes = param[0];
+                            let gpa = join_u64(param[1], param[2]);
+
+                            if num_bytes == 0 {
+                                self.sbi_return(RET_SUCCESS, 0);
+                                return Ok(AxVCpuExitReason::Nothing);
+                            }
+
+                            let mut buf = alloc::vec![0u8; num_bytes as usize];
+                            let copied = mem_extables::copy_form_guest(&mut *buf, gpa as usize);
+                            let ptr = buf.as_ptr();
+
+                            if copied == buf.len() {
+                                let ret = console_write(&buf);
+                                self.sbi_return(ret.error, ret.value);
+                            } else {
+                                self.sbi_return(RET_ERR_FAILED, 0);
+                            }
+
+                            return Ok(AxVCpuExitReason::Nothing);
+                        }
+
+                        FID_CONSOLE_READ => {
+                            let num_bytes = param[0];
+                            let gpa = join_u64(param[1], param[2]);
+
+                            if num_bytes == 0 {
+                                self.sbi_return(RET_SUCCESS, 0);
+                                return Ok(AxVCpuExitReason::Nothing);
+                            }
+
+                            let mut buf = alloc::vec![0u8; num_bytes as usize];
+                            let ret = console_read(&mut buf);
+
+                            if ret.is_ok() && ret.value <= buf.len() {
+                                let copied =
+                                    mem_extables::copy_to_guest(&buf[..ret.value], gpa as usize);
+                                if copied == ret.value {
+                                    self.sbi_return(RET_SUCCESS, ret.value);
+                                } else {
+                                    self.sbi_return(RET_ERR_FAILED, 0);
+                                }
+                            } else {
+                                self.sbi_return(ret.error, ret.value);
+                            }
+
+                            return Ok(AxVCpuExitReason::Nothing);
+                        }
+
+                        FID_CONSOLE_WRITE_BYTE => {
+                            let byte = (param[0] & 0xff) as u8;
+                            print_byte(byte);
+                            self.sbi_return(RET_SUCCESS, 0);
+                            return Ok(AxVCpuExitReason::Nothing);
+                        }
+
+                        _ => {
+                            self.sbi_return(RET_ERR_NOT_SUPPORTED, 0);
+                            return Ok(AxVCpuExitReason::Nothing);
+                        }
+                    },
                     // By default, forward the SBI call to the RustSBI implementation.
                     // See [`RISCVVCpuSbi`].
                     _ => {
@@ -305,6 +377,13 @@ impl<H: AxVCpuHal> RISCVVCpu<H> {
                 );
             }
         }
+    }
+
+    #[inline]
+    fn sbi_return(&mut self, a0: usize, a1: usize) {
+        self.set_gpr_from_gpr_index(GprIndex::A0, a0);
+        self.set_gpr_from_gpr_index(GprIndex::A1, a1);
+        self.advance_pc(4);
     }
 }
 

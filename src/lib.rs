@@ -6,12 +6,15 @@
 
 #[macro_use]
 extern crate log;
+extern crate alloc;
 
 mod consts;
 /// The Control and Status Registers (CSRs) for a RISC-V hypervisor.
 mod detect;
+mod mem_extables;
 mod percpu;
 mod regs;
+mod sbi_console;
 mod trap;
 mod vcpu;
 
