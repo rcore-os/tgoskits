@@ -19,5 +19,4 @@ Reusable crates used for [ArceOS](https://github.com/arceos-org/arceos) Hardware
 
 ## Utility crates
 
-* [axplat-cli](./axplat-cli): A CLI tool to manage hardware platform packages using [axplat](./axplat).
-
+* [cargo-axplat](./cargo-axplat): A cargo subcommand to manage hardware platform packages using [axplat](./axplat).

@@ -8,8 +8,8 @@ struct PlatformCrate {
 Reference to a platform package to add as a dependency
 
 You can reference a package by:
-- `<name>`, like `axplat-cli add axplat-x86-pc` (latest version will be used)
-- `<name>@<version-req>`, like `axplat-cli add axplat-x86-pc@0.1` or `axplat-cli add axplat-x86-pc@=0.1.2`")]
+- `<name>`, like `cargo axplat add axplat-x86-pc` (latest version will be used)
+- `<name>@<version-req>`, like `cargo axplat add axplat-x86-pc@0.1` or `cargo axplat add axplat-x86-pc@=0.1.2`")]
     dep_id: Vec<String>,
 
     /// Filesystem path to local crate to add

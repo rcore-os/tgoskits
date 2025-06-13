@@ -1,8 +1,7 @@
 [package]
-name = "axplat-cli"
+name = "cargo-axplat"
 version = "0.1.0"
 description = "Manages hardware platform packages using `axplat`"
-documentation = "https://docs.rs/axplat-cli"
 keywords = ["arceos", "hal", "hardware-abstraction-layer"]
 categories = ["development-tools", "embedded", "hardware-support", "os"]
 edition.workspace = true
@@ -13,5 +12,6 @@ repository.workspace = true
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+clap-cargo = "0.15"
 toml_edit = "0.22"
 serde_json = "1.0"

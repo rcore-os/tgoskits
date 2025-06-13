@@ -1,7 +1,8 @@
 use std::io::Write;
 use std::process::Command;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
+use clap_cargo::style::CLAP_STYLING;
 
 mod add;
 mod info;
@@ -11,14 +12,25 @@ mod new;
 mod template;
 
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-struct Args {
-    #[command(subcommand)]
-    command: Commands,
+#[command(bin_name = "cargo", version, styles = CLAP_STYLING)]
+enum Cargo {
+    Axplat(CargoCommand),
 }
 
+#[derive(Args, Debug)]
+#[command(arg_required_else_help = true)]
+struct CargoCommand {
+    /// Print version
+    #[arg(short = 'V', long, global = true)]
+    version: bool,
+
+    #[command(subcommand)]
+    command: Option<AxplatCommand>,
+}
+
+/// Manages hardware platform packages using `axplat`
 #[derive(Subcommand, Debug)]
-enum Commands {
+enum AxplatCommand {
     New(self::new::CommandNew),
     Add(self::add::CommandAdd),
     Info(self::info::CommandInfo),
@@ -32,7 +44,7 @@ fn run_cargo_command(command: &str, add_args: impl FnOnce(&mut Command)) -> Stri
 
     let output = cmd
         .output()
-        .expect(&format!("error: failed to execute `cargo {command}`"));
+        .unwrap_or_else(|_| panic!("error: failed to execute `cargo {command}`"));
     std::io::stderr().write_all(&output.stderr).unwrap();
     if !output.status.success() {
         std::process::exit(output.status.code().unwrap_or(1));
@@ -41,14 +53,19 @@ fn run_cargo_command(command: &str, add_args: impl FnOnce(&mut Command)) -> Stri
 }
 
 fn main() {
-    match Args::parse().command {
-        Commands::New(args) => {
+    let Cargo::Axplat(axplat) = Cargo::parse();
+    if axplat.version {
+        println!("cargo-axplat {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    match axplat.command.unwrap() {
+        AxplatCommand::New(args) => {
             self::new::new_platform(args);
         }
-        Commands::Add(args) => {
+        AxplatCommand::Add(args) => {
             self::add::add_platform(args);
         }
-        Commands::Info(args) => {
+        AxplatCommand::Info(args) => {
             self::info::platform_info(args);
         }
     }

@@ -39,9 +39,9 @@ jobs:
       with:
         components: rust-src, clippy
     - name: Clippy
-      run: cargo clippy -p axplat-cli
+      run: cargo clippy -p cargo-axplat
     - name: Build
-      run: cargo build -p axplat-cli
+      run: cargo build -p cargo-axplat
 
   platforms:
     runs-on: ubuntu-latest

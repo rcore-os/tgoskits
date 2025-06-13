@@ -9,7 +9,7 @@ pub struct CommandInfo {
     /// Package to inspect
     ///
     /// Requires that the package has been added to dependencies,
-    /// e.g, by using `axplat-cli add <PLATFORM>`.
+    /// e.g, by using `cargo axplat add <PLATFORM>`.
     #[arg(required = true, value_name = "PLATFORM")]
     platform: String,
 
@@ -138,7 +138,7 @@ impl PlatformInfo {
             .to_string();
 
         let root_dir = manifest_path.strip_suffix("/Cargo.toml").unwrap();
-        let config_path = format!("{}/axconfig.toml", root_dir);
+        let config_path = format!("{root_dir}/axconfig.toml");
         let (platform, arch) = parse_config(&config_path)?;
         Ok(Self {
             platform,

@@ -4,7 +4,7 @@ resolver = "2"
 members = [
     "axplat",
     "axplat-macros",
-    "axplat-cli",
+    "cargo-axplat",
     "platforms/axplat-x86-pc",
     "platforms/axplat-aarch64-common",
     "platforms/axplat-aarch64-qemu-virt",
