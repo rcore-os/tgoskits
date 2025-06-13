@@ -13,5 +13,6 @@ repository.workspace = true
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 clap-cargo = "0.15"
+cargo_metadata = "0.20"
 toml_edit = "0.22"
-serde_json = "1.0"
+thiserror = "2.0"
