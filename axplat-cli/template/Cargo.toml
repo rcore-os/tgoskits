@@ -5,4 +5,4 @@ edition = "2021"        # to be overwritten
 
 [dependencies]
 axconfig-gen-macros = "0.1"
-axplat = { git = "https://github.com/arceos-org/axhal_crates" }
+axplat = { git = "https://github.com/arceos-org/axplat_crates" }

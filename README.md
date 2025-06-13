@@ -1,4 +1,4 @@
-# axhal_crates
+# axplat_crates
 
 Reusable crates used for [ArceOS](https://github.com/arceos-org/arceos) Hardware Abstraction Layer (HAL).
 
