@@ -9,8 +9,6 @@ use crate::{EID_HVC, RISCVVCpuCreateConfig, mem_extables};
 use axaddrspace::{GuestPhysAddr, HostPhysAddr, MappingFlags};
 use axerrno::AxResult;
 use axvcpu::{AxVCpuExitReason, AxVCpuHal};
-use memory_addr::VirtAddr;
-use sbi_spec::binary::Physical;
 
 unsafe extern "C" {
     fn _run_guest(state: *mut VmCpuRegisters);
@@ -267,7 +265,9 @@ impl<H: AxVCpuHal> RISCVVCpu<H> {
                             ],
                         });
                     }
+                    // Debug Console Extension
                     EID_DBCN => match function_id {
+                        // Write from memory region to debug console.
                         FID_CONSOLE_WRITE => {
                             let num_bytes = param[0];
                             let gpa = join_u64(param[1], param[2]);
@@ -278,8 +278,7 @@ impl<H: AxVCpuHal> RISCVVCpu<H> {
                             }
 
                             let mut buf = alloc::vec![0u8; num_bytes as usize];
-                            let copied = mem_extables::copy_form_guest(&mut *buf, gpa as usize);
-                            let ptr = buf.as_ptr();
+                            let copied = mem_extables::copy_from_guest(&mut *buf, gpa as usize);
 
                             if copied == buf.len() {
                                 let ret = console_write(&buf);
@@ -290,7 +289,7 @@ impl<H: AxVCpuHal> RISCVVCpu<H> {
 
                             return Ok(AxVCpuExitReason::Nothing);
                         }
-
+                        // Read to memory region from debug console.
                         FID_CONSOLE_READ => {
                             let num_bytes = param[0];
                             let gpa = join_u64(param[1], param[2]);
@@ -317,14 +316,14 @@ impl<H: AxVCpuHal> RISCVVCpu<H> {
 
                             return Ok(AxVCpuExitReason::Nothing);
                         }
-
+                        // Write a single byte to debug console.
                         FID_CONSOLE_WRITE_BYTE => {
                             let byte = (param[0] & 0xff) as u8;
                             print_byte(byte);
                             self.sbi_return(RET_SUCCESS, 0);
                             return Ok(AxVCpuExitReason::Nothing);
                         }
-
+                        // Unknown FID.
                         _ => {
                             self.sbi_return(RET_ERR_NOT_SUPPORTED, 0);
                             return Ok(AxVCpuExitReason::Nothing);

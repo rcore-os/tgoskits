@@ -35,12 +35,14 @@ pub fn console_read(buf: &mut [u8]) -> SbiRet {
 
 /// Writes a full string to console using SBI byte-wise API (no log prefix).
 #[inline(always)]
+#[allow(dead_code)]
 pub fn print_str(s: &str) {
     console_write(s.as_bytes());
 }
 
 /// Writes a full string + newline to console (no log prefix).
 #[inline(always)]
+#[allow(dead_code)]
 pub fn println_str(s: &str) {
     print_str(s);
     sbi_rt::console_write_byte(b'\n');
