@@ -57,7 +57,7 @@ impl<H: AxVCpuHal> axvcpu::AxArchVCpu for RISCVVCpu<H> {
             .set_reg(GprIndex::A1, config.dtb_addr.as_usize());
 
         Ok(Self {
-            regs: VmCpuRegisters::default(),
+            regs,
             sbi: RISCVVCpuSbi::default(),
             _marker: core::marker::PhantomData,
         })
