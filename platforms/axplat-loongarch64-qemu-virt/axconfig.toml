@@ -1,15 +1,16 @@
 # Architecture identifier.
-arch = "loongarch64"
+arch = "loongarch64"                            # str
 # Platform identifier.
-platform = "loongarch64-qemu-virt"
+platform = "loongarch64-qemu-virt"              # str
+# Platform package.
+package = "axplat-loongarch64-qemu-virt"        # str
 
 #
 # Platform configs
 #
 [plat]
-# Platform family.
-family = "loongarch64-qemu-virt"
-
+# Number of CPUs.
+cpu-num = 1                           # uint
 # Base address of the whole physical memory.
 phys-memory-base = 0x8000_0000        # uint
 # Size of the whole physical memory. (128M)

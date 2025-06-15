@@ -1,15 +1,16 @@
 # Architecture identifier.
-arch = "aarch64"                    # str
+arch = "aarch64"                                # str
 # Platform identifier.
-platform = "aarch64-bsta1000b"      # str
+platform = "aarch64-bsta1000b"                  # str
+# Platform package.
+package = "axplat-aarch64-bsta1000b"            # str
 
 #
 # Platform configs
 #
 [plat]
-# Platform family.
-family = "aarch64-bsta1000b"        # str
-
+# Number of CPUs.
+cpu-num = 8                         # uint
 # Base address of the whole physical memory.
 phys-memory-base = 0x8000_0000      # uint
 # Size of the whole physical memory.

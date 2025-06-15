@@ -1,15 +1,16 @@
 # Architecture identifier.
-arch = "x86_64"     # str
+arch = "x86_64"                 # str
 # Platform identifier.
-platform = "x86-pc" # str
+platform = "x86-pc"             # str
+# Platform Package.
+package = "axplat-x86-pc"       # str
 
 #
 # Platform configs
 #
 [plat]
-# Platform family (deprecated).
-family = "" # str
-
+# Number of CPUs.
+cpu-num = 1                     # uint
 # Base address of the whole physical memory.
 phys-memory-base = 0            # uint
 # Size of the whole physical memory. (128M)

@@ -2,14 +2,15 @@
 arch = "<ARCH>" # str
 # Platform identifier.
 platform = "<PLATFORM>" # str
+# Platform package.
+package = "<PACKAGE>" # str
 
 #
 # Platform configs
 #
 [plat]
-# Platform family (deprecated).
-family = "" # str
-
+# Number of CPUs.
+cpu-num = 1                     # uint
 # Base address of the whole physical memory.
 phys-memory-base = 0            # uint
 # Size of the whole physical memory. (128M)

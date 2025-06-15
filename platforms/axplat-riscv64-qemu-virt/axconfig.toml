@@ -1,15 +1,16 @@
 # Architecture identifier.
-arch = "riscv64"                    # str
+arch = "riscv64"                                # str
 # Platform identifier.
-platform = "riscv64-qemu-virt"      # str
+platform = "riscv64-qemu-virt"                  # str
+# Platform package.
+package = "axplat-riscv64-qemu-virt"            # str
 
 #
 # Platform configs
 #
 [plat]
-# Platform family.
-family = "riscv64-qemu-virt"        # str
-
+# Number of CPUs.
+cpu-num = 1                         # uint
 # Base address of the whole physical memory.
 phys-memory-base = 0x8000_0000      # uint
 # Size of the whole physical memory. (128M)

@@ -16,7 +16,39 @@ pub use crate_interface::impl_interface as impl_plat_interface;
 
 #[doc(hidden)]
 pub mod __priv {
+    pub use const_str::equal as const_str_eq;
     pub use crate_interface::{call_interface, def_interface};
+}
+
+/// Checks that two strings are equal. If they are not equal, it will cause a compile-time
+/// error. And the message will be printed if it is provided.
+///
+/// # Example
+///
+/// ```rust
+/// extern crate axplat;
+/// const A: &str = "hello";
+/// const B: &str = "hello";
+/// axplat::assert_str_eq!(A, B);
+/// ```
+///
+/// ```compile_fail
+/// extern crate axplat;
+/// const A: &str = "hello";
+/// const B: &str = "world";
+/// axplat::assert_str_eq!(A, B, "A and B are not equal!");
+/// ```
+#[macro_export]
+macro_rules! assert_str_eq {
+    ($expect:expr, $actual:expr, $mes:literal) => {
+        const _: () = assert!($crate::__priv::const_str_eq!($expect, $actual), $mes);
+    };
+    ($expect:expr, $actual:expr $(,)?) => {
+        const _: () = assert!(
+            $crate::__priv::const_str_eq!($expect, $actual),
+            "assertion failed: expected != actual.",
+        );
+    };
 }
 
 /// Call the function decorated by [`axplat::main`][main] for the primary core.

@@ -1,15 +1,16 @@
 # Architecture identifier.
-arch = "aarch64"                    # str
+arch = "aarch64"                                # str
 # Platform identifier.
-platform = "aarch64-phytium-pi"     # str
+platform = "aarch64-phytium-pi"                 # str
+# Platform package.
+package = "axplat-aarch64-phytium-pi"           # str
 
 #
 # Platform configs
 #
 [plat]
-# Platform family.
-family = "aarch64-phytium-pi"       # str
-
+# Number of CPUs.
+cpu-num = 4                         # uint
 # Base address of the whole physical memory.
 phys-memory-base = 0x8000_0000      # uint
 # Size of the whole physical memory. (2G)

@@ -1,15 +1,16 @@
 # Architecture identifier.
-arch = "aarch64"                    # str
+arch = "aarch64"                                # str
 # Platform identifier.
-platform = "aarch64-qemu-virt"      # str
+platform = "aarch64-qemu-virt"                  # str
+# Platform package.
+package = "axplat-aarch64-qemu-virt"            # str
 
 #
 # Platform configs
 #
 [plat]
-# Platform family.
-family = "aarch64-qemu-virt"        # str
-
+# Number of CPUs.
+cpu-num = 1                         # uint
 # Base address of the whole physical memory.
 phys-memory-base = 0x4000_0000      # uint
 # Size of the whole physical memory. (128M)
