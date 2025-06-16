@@ -1,5 +1,5 @@
 use core::arch::naked_asm;
-#[cfg(feature = "fp_simd")]
+#[cfg(feature = "fp-simd")]
 use core::mem::offset_of;
 use memory_addr::VirtAddr;
 
@@ -43,7 +43,7 @@ pub struct GeneralRegisters {
 }
 
 /// Floating-point registers of LoongArch64
-#[cfg(feature = "fp_simd")]
+#[cfg(feature = "fp-simd")]
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct FpStatus {
@@ -55,7 +55,7 @@ pub struct FpStatus {
     pub fcsr: u32,
 }
 
-#[cfg(feature = "fp_simd")]
+#[cfg(feature = "fp-simd")]
 impl FpStatus {
     #[inline]
     pub unsafe fn save(&mut self) {
@@ -137,7 +137,7 @@ pub struct TaskContext {
     #[cfg(feature = "uspace")]
     /// user page table root
     pub pgdl: usize,
-    #[cfg(feature = "fp_simd")]
+    #[cfg(feature = "fp-simd")]
     /// Floating Point Status
     pub fp_status: FpStatus,
 }
@@ -183,7 +183,7 @@ impl TaskContext {
                 crate::asm::flush_tlb(None); // currently flush the entire TLB
             }
         }
-        #[cfg(feature = "fp_simd")]
+        #[cfg(feature = "fp-simd")]
         unsafe {
             self.fp_status.save();
             next_ctx.fp_status.restore();
@@ -192,7 +192,7 @@ impl TaskContext {
     }
 }
 
-#[cfg(feature = "fp_simd")]
+#[cfg(feature = "fp-simd")]
 #[unsafe(naked)]
 unsafe extern "C" fn save_fp_registers(fp_status: &mut FpStatus) {
     naked_asm!(
@@ -209,7 +209,7 @@ unsafe extern "C" fn save_fp_registers(fp_status: &mut FpStatus) {
     )
 }
 
-#[cfg(feature = "fp_simd")]
+#[cfg(feature = "fp-simd")]
 #[unsafe(naked)]
 unsafe extern "C" fn restore_fp_registers(fp_status: &FpStatus) {
     naked_asm!(
