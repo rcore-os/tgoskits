@@ -38,10 +38,8 @@ pub fn init_mmu(root_paddr: PhysAddr, phys_virt_offset: usize) {
 
 /// Initializes trap handling on the current CPU.
 ///
-/// `cpu_id` indicates the CPU ID of the current CPU.
-///
 /// In detail, it initializes the exception vector on LoongArch64 platforms.
-pub fn init_trap(_cpu_id: usize) {
+pub fn init_trap() {
     unsafe extern "C" {
         fn exception_entry_base();
     }
