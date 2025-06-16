@@ -6,7 +6,7 @@ pub use super::idt::init_idt;
 #[cfg(feature = "uspace")]
 pub use super::syscall::init_syscall;
 
-/// Initializes CPU states on the current CPU.
+/// Initializes trap handling on the current CPU.
 ///
 /// `cpu_id` indicates the CPU ID of the current CPU.
 ///
@@ -17,7 +17,7 @@ pub use super::syscall::init_syscall;
 ///
 /// It also calls the initialization function of the [`percpu`] crate to use the
 /// per-CPU data.
-pub fn init_cpu(cpu_id: usize) {
+pub fn init_trap(cpu_id: usize) {
     // it's safe to call this function multiple times, the `percpu` crate
     // guarantees the actual initialization is only done once.
     percpu::init();
