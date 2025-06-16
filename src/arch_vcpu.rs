@@ -42,6 +42,16 @@ pub trait AxArchVCpu: Sized {
     /// Set the value of a general-purpose register according to the given index.
     fn set_gpr(&mut self, reg: usize, val: usize);
 
+    /// Inject an interrupt to the vcpu.
+    ///
+    /// It's guaranteed (for implementors, and required for callers) that this function is called
+    /// on the physical CPU where the vcpu is running or queueing.
+    ///
+    /// It's not guaranteed that the vcpu is running or bound to the current physical CPU when this
+    /// function is called. It means sometimes an irq queue is necessary to buffer the interrupts
+    /// until the vcpu is running.
+    fn inject_interrupt(&mut self, vector: usize) -> AxResult;
+
     /// Set return value of the vcpu.
     fn set_return_value(&mut self, val: usize);
 }

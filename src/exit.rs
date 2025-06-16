@@ -1,11 +1,10 @@
-use axaddrspace::device::AccessWidth;
-use axaddrspace::{GuestPhysAddr, MappingFlags};
+use axaddrspace::{
+    GuestPhysAddr, MappingFlags,
+    device::{AccessWidth, Port, SysRegAddr},
+};
 
 #[allow(unused_imports)] // used in doc
 use super::AxArchVCpu;
-
-/// The port number of an I/O operation.
-type Port = u16;
 
 /// The result of [`AxArchVCpu::run`].
 /// Can we reference or directly reuse content from [kvm-ioctls](https://github.com/rust-vmm/kvm-ioctls/blob/main/src/ioctls/vcpu.rs) ?
@@ -49,8 +48,10 @@ pub enum AxVCpuExitReason {
         ///
         /// Under Aarch64, this field follows the ESR_EL2.ISS format: `<op0><op2><op1><CRn>00000<CRm>0`,
         /// which is consistent with the numbering scheme in the `aarch64_sysreg` crate.
-        addr: usize,
+        addr: SysRegAddr,
         /// The index of the GPR (general purpose register) where the value should be stored.
+        ///
+        /// Note that in x86_64, the destination register is always `[edx:eax]`, so this field is unused.
         reg: usize,
     },
     /// The instruction executed by the vcpu performs a system register write operation.
@@ -63,7 +64,7 @@ pub enum AxVCpuExitReason {
         ///
         /// Under Aarch64, this field follows the ESR_EL2.ISS format: `<op0><op2><op1><CRn>00000<CRm>0`,
         /// which is consistent with the numbering scheme in the `aarch64_sysreg` crate.
-        addr: usize,
+        addr: SysRegAddr,
         /// Data to be written.
         value: u64,
     },
@@ -150,5 +151,24 @@ pub enum AxVCpuExitReason {
     FailEntry {
         /// Architecture related VM entry failure reasons.
         hardware_entry_failure_reason: u64,
+    },
+    /// The vcpu is trying to send an Inter-Processor Interrupt (IPI) to another CPU.
+    ///
+    /// This does not include SIPI, which is handled by [`AxVCpuExitReason::CpuUp`].
+    SendIPI {
+        /// The target CPU to send the IPI to. Invalid if any of `send_to_all` or `send_to_self` is
+        /// true.
+        target_cpu: u64,
+        /// The auxiliary field for the target CPU list. Used currently only in aarch64.
+        ///
+        /// In aarch64, `target_cpu` contains Aff3.Aff2.Aff1.0, while this field contains a bitmask
+        /// specifying the Aff0 values of the target CPUs.
+        target_cpu_aux: u64,
+        /// Specifies whether the IPI should be sent to all CPUs except the current one.
+        send_to_all: bool,
+        /// Specifies whether the IPI should be sent to the current CPU.
+        send_to_self: bool,
+        /// The IPI vector to be sent.
+        vector: u64,
     },
 }
