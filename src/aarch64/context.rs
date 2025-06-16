@@ -20,7 +20,7 @@ impl fmt::Debug for TrapFrame {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "TrapFrame: {{")?;
         for (i, &reg) in self.r.iter().enumerate() {
-            writeln!(f, "    r{}: {:#x},", i, reg)?;
+            writeln!(f, "    r{i}: {reg:#x},")?;
         }
         writeln!(f, "    usp: {:#x},", self.usp)?;
         writeln!(f, "    elr: {:#x},", self.elr)?;
@@ -74,7 +74,7 @@ pub struct FpState {
     pub fpsr: u32,
 }
 
-#[cfg(feature = "fp_simd")]
+#[cfg(feature = "fp-simd")]
 impl FpState {
     fn switch_to(&mut self, next_fpstate: &FpState) {
         unsafe { fpstate_switch(self, next_fpstate) }
@@ -113,7 +113,7 @@ pub struct TaskContext {
     /// The `ttbr0_el1` register value, i.e., the page table root.
     #[cfg(feature = "uspace")]
     pub ttbr0_el1: memory_addr::PhysAddr,
-    #[cfg(feature = "fp_simd")]
+    #[cfg(feature = "fp-simd")]
     pub fp_state: FpState,
 }
 
@@ -152,7 +152,7 @@ impl TaskContext {
     /// It first saves the current task's context from CPU to this place, and then
     /// restores the next task's context from `next_ctx` to CPU.
     pub fn switch_to(&mut self, next_ctx: &Self) {
-        #[cfg(feature = "fp_simd")]
+        #[cfg(feature = "fp-simd")]
         self.fp_state.switch_to(&next_ctx.fp_state);
         #[cfg(feature = "uspace")]
         if self.ttbr0_el1 != next_ctx.ttbr0_el1 {
@@ -194,10 +194,10 @@ unsafe extern "C" fn context_switch(_current_task: &mut TaskContext, _next_task:
 }
 
 #[unsafe(naked)]
-#[cfg(feature = "fp_simd")]
+#[cfg(feature = "fp-simd")]
 unsafe extern "C" fn fpstate_switch(_current_fpstate: &mut FpState, _next_fpstate: &FpState) {
     naked_asm!(
-        "
+        ".arch armv8
         // save fp/neon context
         mrs     x9, fpcr
         mrs     x10, fpsr

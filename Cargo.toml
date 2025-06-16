@@ -22,7 +22,7 @@ rust-version = "1.89.0"
 
 [features]
 default = []
-fp_simd = []
+fp-simd = []
 tls = []
 uspace = []
 
@@ -55,4 +55,4 @@ page_table_multiarch = "0.5"
 new_without_default = "allow"
 
 [package.metadata.docs.rs]
-targets = ["x86_64-unknown-none", "aarch64-unknown-none", "riscv64gc-unknown-none-elf", "loongarch64-unknown-none"]
+targets = ["x86_64-unknown-none", "aarch64-unknown-none-softfloat", "riscv64gc-unknown-none-elf", "loongarch64-unknown-none-softfloat"]

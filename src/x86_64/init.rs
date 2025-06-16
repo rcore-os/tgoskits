@@ -6,22 +6,18 @@ pub use super::idt::init_idt;
 #[cfg(feature = "uspace")]
 pub use super::syscall::init_syscall;
 
-/// Initializes CPU states on the current CPU.
-///
-/// `cpu_id` indicates the CPU ID of the current CPU.
+/// Initializes trap handling on the current CPU.
 ///
 /// In detail, it initializes the GDT, IDT on x86_64 platforms ([`init_gdt`] and
 /// [`init_idt`]). If the `uspace` feature is enabled, it also initializes
 /// relevant model-specific registers to configure the handler for `syscall`
 /// instruction ([`init_syscall`]).
 ///
-/// It also calls the initialization function of the [`percpu`] crate to use the
-/// per-CPU data.
-pub fn init_cpu(cpu_id: usize) {
-    // it's safe to call this function multiple times, the `percpu` crate
-    // guarantees the actual initialization is only done once.
-    percpu::init();
-    percpu::init_percpu_reg(cpu_id);
+/// # Notes
+/// Before calling this function, the initialization function of the [`percpu`] crate
+/// should have been invoked to ensure that the per-CPU data structures are set up
+/// correctly.
+pub fn init_trap() {
     init_gdt();
     init_idt();
     #[cfg(feature = "uspace")]

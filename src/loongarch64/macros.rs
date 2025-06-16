@@ -77,7 +77,7 @@ macro_rules! include_asm_macros {
     };
 }
 
-#[cfg(feature = "fp_simd")]
+#[cfg(feature = "fp-simd")]
 macro_rules! include_fp_asm_macros {
     () => {
         r#"

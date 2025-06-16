@@ -94,13 +94,11 @@ pub unsafe fn init_mmu(root_paddr: PhysAddr) {
     barrier::isb(barrier::SY);
 }
 
-/// Initializes CPU states on the current CPU.
-///
-/// `cpu_id` indicates the CPU ID of the current CPU.
+/// Initializes trap handling on the current CPU.
 ///
 /// In detail, it initializes the exception vector, and sets `TTBR0_EL1` to 0 to
 /// block low address access.
-pub fn init_cpu(_cpu_id: usize) {
+pub fn init_trap() {
     unsafe extern "C" {
         fn exception_vector_base();
     }
