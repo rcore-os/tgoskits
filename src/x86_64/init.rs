@@ -17,6 +17,8 @@ pub use super::syscall::init_syscall;
 /// Before calling this function, the initialization function of the [`percpu`] crate
 /// should have been invoked to ensure that the per-CPU data structures are set up
 /// correctly.
+///
+/// [`percpu`]: https://docs.rs/percpu/latest/percpu/index.html
 pub fn init_trap() {
     init_gdt();
     init_idt();

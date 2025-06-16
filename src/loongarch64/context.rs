@@ -43,10 +43,9 @@ pub struct GeneralRegisters {
 }
 
 /// Floating-point registers of LoongArch64
-#[cfg(feature = "fp-simd")]
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy)]
-pub struct FpStatus {
+pub struct FpuState {
     /// Floating-point registers (f0-f31)
     pub fp: [u64; 32],
     /// Floating-point Condition Code register
@@ -56,7 +55,7 @@ pub struct FpStatus {
 }
 
 #[cfg(feature = "fp-simd")]
-impl FpStatus {
+impl FpuState {
     #[inline]
     pub unsafe fn save(&mut self) {
         save_fp_registers(self);
@@ -138,8 +137,8 @@ pub struct TaskContext {
     /// user page table root
     pub pgdl: usize,
     #[cfg(feature = "fp-simd")]
-    /// Floating Point Status
-    pub fp_status: FpStatus,
+    /// Floating Point Unit states
+    pub fpu: FpuState,
 }
 
 impl TaskContext {
@@ -185,8 +184,8 @@ impl TaskContext {
         }
         #[cfg(feature = "fp-simd")]
         unsafe {
-            self.fp_status.save();
-            next_ctx.fp_status.restore();
+            self.fpu.save();
+            next_ctx.fpu.restore();
         }
         unsafe { context_switch(self, next_ctx) }
     }
@@ -194,7 +193,7 @@ impl TaskContext {
 
 #[cfg(feature = "fp-simd")]
 #[unsafe(naked)]
-unsafe extern "C" fn save_fp_registers(fp_status: &mut FpStatus) {
+unsafe extern "C" fn save_fp_registers(fpu: &mut FpuState) {
     naked_asm!(
         include_fp_asm_macros!(),
         "
@@ -204,14 +203,14 @@ unsafe extern "C" fn save_fp_registers(fp_status: &mut FpStatus) {
         addi.d $t8, $a0, {fcsr_offset}
         SAVE_FCSR $t8
         ret",
-        fcc_offset = const offset_of!(FpStatus, fcc),
-        fcsr_offset = const offset_of!(FpStatus, fcsr),
+        fcc_offset = const offset_of!(FpuState, fcc),
+        fcsr_offset = const offset_of!(FpuState, fcsr),
     )
 }
 
 #[cfg(feature = "fp-simd")]
 #[unsafe(naked)]
-unsafe extern "C" fn restore_fp_registers(fp_status: &FpStatus) {
+unsafe extern "C" fn restore_fp_registers(fpu: &FpuState) {
     naked_asm!(
         include_fp_asm_macros!(),
         "
@@ -221,8 +220,8 @@ unsafe extern "C" fn restore_fp_registers(fp_status: &FpStatus) {
         addi.d $t8, $a0, {fcsr_offset}
         RESTORE_FCSR $t8
         ret",
-        fcc_offset = const offset_of!(FpStatus, fcc),
-        fcsr_offset = const offset_of!(FpStatus, fcsr),
+        fcc_offset = const offset_of!(FpuState, fcc),
+        fcsr_offset = const offset_of!(FpuState, fcsr),
     )
 }
 
