@@ -131,11 +131,13 @@ pub trait IdAllocator: BaseAllocator {
 }
 
 #[inline]
+#[allow(dead_code)]
 const fn align_down(pos: usize, align: usize) -> usize {
     pos & !(align - 1)
 }
 
 #[inline]
+#[allow(dead_code)]
 const fn align_up(pos: usize, align: usize) -> usize {
     (pos + align - 1) & !(align - 1)
 }
@@ -144,6 +146,7 @@ const fn align_up(pos: usize, align: usize) -> usize {
 ///
 /// Equivalent to `addr % align == 0`, but the alignment must be a power of two.
 #[inline]
+#[allow(dead_code)]
 const fn is_aligned(base_addr: usize, align: usize) -> bool {
     base_addr & (align - 1) == 0
 }
