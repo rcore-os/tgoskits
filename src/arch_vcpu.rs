@@ -41,4 +41,7 @@ pub trait AxArchVCpu: Sized {
 
     /// Set the value of a general-purpose register according to the given index.
     fn set_gpr(&mut self, reg: usize, val: usize);
+
+    /// Set return value of the vcpu.
+    fn set_return_value(&mut self, val: usize);
 }
