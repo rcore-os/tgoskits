@@ -7,11 +7,15 @@ extern crate alloc;
 extern crate log;
 
 mod consts;
-mod lvt;
+mod hal;
 mod regs;
+mod timer;
+mod utils;
 mod vlapic;
 
 use alloc::boxed::Box;
+use core::cell::UnsafeCell;
+use hal::AxVMHal;
 
 use axerrno::AxResult;
 use memory_addr::{AddrRange, PAGE_SIZE_4K};
@@ -30,20 +34,28 @@ struct APICAccessPage([u8; PAGE_SIZE_4K]);
 static VIRTUAL_APIC_ACCESS_PAGE: APICAccessPage = APICAccessPage([0; PAGE_SIZE_4K]);
 
 /// A emulated local APIC device.
-pub struct EmulatedLocalApic<H: AxMmHal> {
-    vlapic_regs: VirtualApicRegs<H>,
+pub struct EmulatedLocalApic<H: AxMmHal, VM: AxVMHal> {
+    vlapic_regs: UnsafeCell<VirtualApicRegs<H, VM>>,
 }
 
-impl<H: AxMmHal> EmulatedLocalApic<H> {
+impl<H: AxMmHal, VM: AxVMHal> EmulatedLocalApic<H, VM> {
     /// Create a new `EmulatedLocalApic`.
-    pub fn new() -> Self {
+    pub fn new(vcpu_id: u32) -> Self {
         EmulatedLocalApic {
-            vlapic_regs: VirtualApicRegs::new(),
+            vlapic_regs: UnsafeCell::new(VirtualApicRegs::new(vcpu_id)),
         }
+    }
+
+    fn get_vlapic_regs(&self) -> &VirtualApicRegs<H, VM> {
+        unsafe { &*self.vlapic_regs.get() }
+    }
+
+    fn get_mut_vlapic_regs(&self) -> &mut VirtualApicRegs<H, VM> {
+        unsafe { &mut *self.vlapic_regs.get() }
     }
 }
 
-impl<H: AxMmHal> EmulatedLocalApic<H> {
+impl<H: AxMmHal, VM: AxVMHal> EmulatedLocalApic<H, VM> {
     /// APIC-access address (64 bits).
     /// This field contains the physical address of the 4-KByte APIC-access page.
     /// If the “virtualize APIC accesses” VM-execution control is 1,
@@ -60,11 +72,11 @@ impl<H: AxMmHal> EmulatedLocalApic<H> {
     /// The processor uses the virtual-APIC page to virtualize certain accesses to APIC registers and to manage virtual interrupts;
     /// see Chapter 30.
     pub fn virtual_apic_page_addr(&self) -> HostPhysAddr {
-        self.vlapic_regs.virtual_apic_page_addr()
+        self.get_vlapic_regs().virtual_apic_page_addr()
     }
 }
 
-impl<H: AxMmHal> BaseDeviceOps<AddrRange<GuestPhysAddr>> for EmulatedLocalApic<H> {
+impl<H: AxMmHal, VM: AxVMHal> BaseDeviceOps<AddrRange<GuestPhysAddr>> for EmulatedLocalApic<H, VM> {
     fn emu_type(&self) -> EmuDeviceType {
         EmuDeviceType::EmuDeviceTInterruptController
     }
@@ -88,7 +100,7 @@ impl<H: AxMmHal> BaseDeviceOps<AddrRange<GuestPhysAddr>> for EmulatedLocalApic<H
             addr, width, context.vcpu_id
         );
         let reg_off = xapic_mmio_access_reg_offset(addr);
-        self.vlapic_regs.handle_read(reg_off, width, context)
+        self.get_vlapic_regs().handle_read(reg_off, width, context)
     }
 
     fn handle_write(
@@ -103,7 +115,8 @@ impl<H: AxMmHal> BaseDeviceOps<AddrRange<GuestPhysAddr>> for EmulatedLocalApic<H
             addr, width, val, context.vcpu_id
         );
         let reg_off = xapic_mmio_access_reg_offset(addr);
-        self.vlapic_regs.handle_write(reg_off, width, context)
+        self.get_mut_vlapic_regs()
+            .handle_write(reg_off, val, width, context)
     }
 
     fn set_interrupt_injector(&mut self, _injector: Box<InterruptInjector>) {
@@ -111,7 +124,7 @@ impl<H: AxMmHal> BaseDeviceOps<AddrRange<GuestPhysAddr>> for EmulatedLocalApic<H
     }
 }
 
-impl<H: AxMmHal> BaseDeviceOps<SysRegAddrRange> for EmulatedLocalApic<H> {
+impl<H: AxMmHal, VM: AxVMHal> BaseDeviceOps<SysRegAddrRange> for EmulatedLocalApic<H, VM> {
     fn emu_type(&self) -> EmuDeviceType {
         EmuDeviceType::EmuDeviceTInterruptController
     }
@@ -135,7 +148,7 @@ impl<H: AxMmHal> BaseDeviceOps<SysRegAddrRange> for EmulatedLocalApic<H> {
             addr, width, context.vcpu_id
         );
         let reg_off = x2apic_msr_access_reg(addr);
-        self.vlapic_regs.handle_read(reg_off, width, context)
+        self.get_vlapic_regs().handle_read(reg_off, width, context)
     }
 
     fn handle_write(
@@ -150,7 +163,8 @@ impl<H: AxMmHal> BaseDeviceOps<SysRegAddrRange> for EmulatedLocalApic<H> {
             addr, width, val, context.vcpu_id
         );
         let reg_off = x2apic_msr_access_reg(addr);
-        self.vlapic_regs.handle_write(reg_off, width, context)
+        self.get_mut_vlapic_regs()
+            .handle_write(reg_off, val, width, context)
     }
 
     fn set_interrupt_injector(&mut self, _injector: Box<InterruptInjector>) {

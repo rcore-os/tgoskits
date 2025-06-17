@@ -57,7 +57,7 @@ define_index_enum!(ISRIndex);
 define_index_enum!(TMRIndex);
 define_index_enum!(IRRIndex);
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApicRegOffset {
     /// ID register 0x2.
     ID,
@@ -111,6 +111,9 @@ pub enum ApicRegOffset {
     TimerCurCount,
     /// Divide Configuration register (for Timer) 0x3E.
     TimerDivConf,
+    /// Self IPI register 0x3F.
+    /// Available only in x2APIC mode.
+    SelfIPI,
 }
 
 impl ApicRegOffset {
@@ -142,6 +145,7 @@ impl ApicRegOffset {
             0x38 => ApicRegOffset::TimerInitCount,
             0x39 => ApicRegOffset::TimerCurCount,
             0x3E => ApicRegOffset::TimerDivConf,
+            0x3F => ApicRegOffset::SelfIPI,
             _ => panic!("Invalid APIC register offset"),
         }
     }
@@ -176,18 +180,26 @@ impl core::fmt::Display for ApicRegOffset {
             ApicRegOffset::TimerInitCount => write!(f, "TimerInitCount"),
             ApicRegOffset::TimerCurCount => write!(f, "TimerCurCount"),
             ApicRegOffset::TimerDivConf => write!(f, "TimerDivConf"),
+            ApicRegOffset::SelfIPI => write!(f, "SelfIPI"),
         }
     }
 }
 
+pub const APIC_LVT_M: u32 = 0x00010000;
+pub const APIC_LVT_DS: u32 = 0x00001000;
+pub const APIC_LVT_VECTOR: u32 = 0x000000ff;
+
 /// 11.5.1 Local Vector Table
 /// Figure 11-8. Local Vector Table (LVT)
 /// - Value After Reset: 0001 0000H
-pub const RESET_LVT_REG: u32 = 0x0001_0000;
+pub const RESET_LVT_REG: u32 = APIC_LVT_M;
 /// 11.9 SPURIOUS INTERRUPT
 /// - Address: FEE0 00F0H
 /// - Value after reset: 0000 00FFH
 pub const RESET_SPURIOUS_INTERRUPT_VECTOR: u32 = 0x0000_00FF;
+
+pub const LAPIC_TRIG_LEVEL: bool = true;
+pub const LAPIC_TRIG_EDGE: bool = false;
 
 pub mod xapic {
     use axaddrspace::GuestPhysAddr;
@@ -196,6 +208,8 @@ pub mod xapic {
 
     pub const DEFAULT_APIC_BASE: usize = 0xFEE0_0000;
     pub const APIC_MMIO_SIZE: usize = 0x1000;
+
+    pub const XAPIC_BROADCAST_DEST_ID: u32 = 0xFF;
 
     pub(crate) const fn xapic_mmio_access_reg_offset(addr: GuestPhysAddr) -> ApicRegOffset {
         ApicRegOffset::from((addr.as_usize() & (APIC_MMIO_SIZE - 1)) >> 4)
@@ -209,6 +223,10 @@ pub mod x2apic {
 
     pub const X2APIC_MSE_REG_BASE: usize = 0x800;
     pub const X2APIC_MSE_REG_SIZE: usize = 0x100;
+
+    /// A destination ID value of FFFF_FFFFH is used for broadcast of interrupts
+    /// in both logical destination and physical destination modes.
+    pub const X2APIC_BROADCAST_DEST_ID: u32 = 0xFFFF_FFFF;
 
     pub(crate) const fn x2apic_msr_access_reg(addr: SysRegAddr) -> ApicRegOffset {
         ApicRegOffset::from(addr.addr() - X2APIC_MSE_REG_BASE)

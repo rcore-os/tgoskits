@@ -1,5 +1,16 @@
 pub mod lvt;
+pub mod timer;
+
+mod apic_base;
+mod dfr;
+mod esr;
+mod icr;
 mod svr;
+
+pub use apic_base::*;
+pub use dfr::*;
+pub use esr::*;
+pub use icr::*;
 pub use svr::*;
 
 use tock_registers::register_structs;
@@ -9,6 +20,7 @@ use lvt::{
     LvtCmciRegisterMmio, LvtErrorRegisterMmio, LvtLint0RegisterMmio, LvtLint1RegisterMmio,
     LvtPerformanceCounterRegisterMmio, LvtThermalMonitorRegisterMmio, LvtTimerRegisterMmio,
 };
+use timer::DivideConfigurationRegisterMmio;
 
 register_structs! {
     #[allow(non_snake_case)]
@@ -27,7 +39,7 @@ register_structs! {
         (0x90 => pub APR: ReadOnly<u32>),
         (0x94 => _reserved4),
         /// Virtual processor-priority register (VPPR): the 32-bit field located at offset 0A0H on the virtual-APIC page.
-        (0xA0 => pub PPR: ReadOnly<u32>),
+        (0xA0 => pub PPR: ReadWrite<u32>),
         (0xA4 => _reserved5),
         /// Virtual end-of-interrupt register (VEOI): the 32-bit field located at offset 0B0H on the virtual-APIC page.
         (0xB0 => pub EOI: WriteOnly<u32>),
@@ -39,7 +51,7 @@ register_structs! {
         (0xD0 => pub LDR: ReadWrite<u32>),
         (0xD4 => _reserved8),
         /// Virtual Destination Format Register (DFR): the 32-bit field located at offset 0E0H on the virtual-APIC page.
-        (0xE0 => pub DFR: ReadWrite<u32>),
+        (0xE0 => pub DFR: DestinationFormatRegisterMmio),
         (0xE4 => _reserved9),
         /// Virtual Spurious Interrupt Vector Register (SVR): the 32-bit field located at offset 0F0H on the virtual-APIC page.
         (0xF0 => pub SVR: SpuriousInterruptVectorRegisterMmio),
@@ -47,7 +59,7 @@ register_structs! {
         /// Virtual interrupt-service register (VISR):
         /// the 256-bit value comprising eight non-contiguous 32-bit fields at offsets
         /// 100H, 110H, 120H, 130H, 140H, 150H, 160H, and 170H on the virtual-APIC page.
-        (0x100 => pub ISR: [ReadOnly<u128>; 8]),
+        (0x100 => pub ISR: [ReadWrite<u128>; 8]),
         /// Virtual trigger-mode register (VTMR):
         /// the 256-bit value comprising eight non-contiguous 32-bit fields at offsets
         /// 180H, 190H, 1A0H, 1B0H, 1C0H, 1D0H, 1E0H, and 1F0H on the virtual-APIC page.
@@ -59,15 +71,15 @@ register_structs! {
         /// The processor uses only the low 4 bytes of each of the 16-Byte fields at offsets 200H, 210H, 220H, 230H, 240H, 250H, 260H, and 270H.
         (0x200 => pub IRR: [ReadOnly<u128>; 8]),
         /// Virtual error-status register (VESR): the 32-bit field located at offset 280H on the virtual-APIC page.
-        (0x280 => pub ESR: ReadWrite<u32>),
+        (0x280 => pub ESR: ErrorStatusRegisterMmio),
         (0x284 => _reserved11),
         /// Virtual LVT Corrected Machine Check Interrupt (CMCI) Register
         (0x2F0 => pub LVT_CMCI: LvtCmciRegisterMmio),
         (0x2F4 => _reserved12),
         /// Virtual Interrupt Command Register (ICR): the 64-bit field located at offset 300H on the virtual-APIC page.
-        (0x300 => pub ICR_LO: ReadWrite<u32>),
+        (0x300 => pub ICR_LO: InterruptCommandRegisterLowMmio),
         (0x304 => _reserved13),
-        (0x310 => pub ICR_HI: ReadWrite<u32>),
+        (0x310 => pub ICR_HI: InterruptCommandRegisterHighMmio),
         (0x314 => _reserved14),
         /// Virtual LVT Timer Register: the 32-bit field located at offset 320H on the virtual-APIC page.
         (0x320 => pub LVT_TIMER: LvtTimerRegisterMmio),
@@ -94,9 +106,10 @@ register_structs! {
         (0x390 => pub CCR_TIMER: ReadOnly<u32>),
         (0x394 => _reserved22),
         /// Virtual Divide Configuration Register (for Timer): the 32-bit field located at offset 3E0H on the virtual-APIC page.
-        (0x3E0 => pub DCR_TIMER: ReadWrite<u32>),
+        (0x3E0 => pub DCR_TIMER: DivideConfigurationRegisterMmio),
         (0x3E4 => _reserved23),
         /// Virtual SELF IPI Register: the 32-bit field located at offset 3F0H on the virtual-APIC page.
+        /// Available only in x2APIC mode.
         (0x3F0 => pub SELF_IPI: WriteOnly<u32>),
         (0x3F4 => _reserved24),
         (0x1000 => @END),
