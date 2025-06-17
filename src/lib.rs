@@ -111,14 +111,50 @@ pub use axvisor_api_proc::{api_mod, api_mod_impl};
 pub mod memory {
     pub use memory_addr::{PhysAddr, VirtAddr};
 
+    // API interfaces
+
     /// Allocate a frame.
     extern fn alloc_frame() -> Option<PhysAddr>;
+    /// Allocate a number of contiguous frames, with a specified alignment.
+    extern fn alloc_contiguous_frames(
+        num_frames: usize,
+        frame_align_pow2: usize,
+    ) -> Option<PhysAddr>;
     /// Deallocate a frame.
     extern fn dealloc_frame(addr: PhysAddr);
+    /// Deallocate a number of contiguous frames.
+    extern fn dealloc_contiguous_frames(first_addr: PhysAddr, num_frames: usize);
     /// Convert a physical address to a virtual address.
     extern fn phys_to_virt(addr: PhysAddr) -> VirtAddr;
     /// Convert a virtual address to a physical address.
     extern fn virt_to_phys(addr: VirtAddr) -> PhysAddr;
+
+    // Re-exports
+    // TODO: determine whether it's proper and acceptable to place this definition here in this mod.
+    /// [`AxMmHal`](axaddrspace::AxMmHal) implementation by axvisor_api.
+    #[doc(hidden)]
+    pub struct AxMmHalApiImpl;
+
+    impl axaddrspace::AxMmHal for AxMmHalApiImpl {
+        fn alloc_frame() -> Option<PhysAddr> {
+            alloc_frame()
+        }
+
+        fn dealloc_frame(addr: PhysAddr) {
+            dealloc_frame(addr)
+        }
+
+        fn phys_to_virt(addr: PhysAddr) -> VirtAddr {
+            phys_to_virt(addr)
+        }
+
+        fn virt_to_phys(addr: VirtAddr) -> PhysAddr {
+            virt_to_phys(addr)
+        }
+    }
+
+    /// A physical frame which will be automatically deallocated when dropped.
+    pub type PhysFrame = axaddrspace::PhysFrame<AxMmHalApiImpl>;
 }
 
 #[api_mod]
@@ -203,6 +239,35 @@ pub mod vmm {
     ///
     /// TODO: determine whether we can skip this function.
     extern fn notify_vcpu_timer_expired(vm_id: VMId, vcpu_id: VCpuId);
+}
+
+#[api_mod]
+pub mod host {
+    /// Get the total number of cpus in the host system.
+    extern fn get_host_cpu_num() -> usize;
+}
+
+#[api_mod]
+pub mod arch {
+    use super::vmm::InterruptVector;
+
+    #[cfg(target_arch = "aarch64")]
+    /// AArch64-specific API. Inject a virtual interrupt to the current virtual CPU using gich.
+    extern fn hardware_inject_virtual_interrupt(vector: InterruptVector);
+
+    #[cfg(target_arch = "aarch64")]
+    /// AArch64-specific API. Get the TYPER register of the GIC distributor. Used in virtual GIC initialization.
+    extern fn read_vgicd_typer() -> u32;
+    #[cfg(target_arch = "aarch64")]
+    /// AArch64-specific API. Get the IIDR register of the GIC distributor. Used in virtual GIC initialization.
+    extern fn read_vgicd_iidr() -> u32;
+
+    #[cfg(target_arch = "aarch64")]
+    /// AArch64-specific API. Get the base address of the GIC distributor in the host system.
+    extern fn get_host_gicd_base() -> crate::memory::PhysAddr;
+    #[cfg(target_arch = "aarch64")]
+    /// AArch64-specific API. Get the base address of the GIC redistributor in the host system.
+    extern fn get_host_gicr_base() -> crate::memory::PhysAddr;
 }
 
 #[doc(hidden)]
