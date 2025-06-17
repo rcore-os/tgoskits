@@ -44,7 +44,7 @@ axfs-ng-vfs = { git = "https://github.com/Mivik/axfs-ng-vfs", rev = "517cd09" }
 axerrno = "0.1"
 bitflags = "2.6"
 cfg-if = "1.0"
-linkme = "0.3"
+linkme = "0.3.33"
 linux-raw-sys = { version = "0.9.3", default-features = false, features = [
     "no_std",
     "general",

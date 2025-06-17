@@ -14,6 +14,7 @@ use linux_raw_sys::ctypes::{c_long, c_ushort};
 use linux_raw_sys::general::*;
 use memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use page_table_entry::MappingFlags;
+use page_table_multiarch::PageSize;
 
 use crate::imp::ipc::{BiBTreeMap, IPCID_ALLOCATOR};
 use crate::ptr::{UserPtr, nullable};
@@ -388,12 +389,14 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> LinuxResult<isize> {
             VirtAddr::from(start_aligned),
             length,
             VirtAddrRange::new(aspace.base(), aspace.end()),
+            PageSize::Size4K,
         )
         .or_else(|| {
             aspace.find_free_area(
                 aspace.base(),
                 length,
                 VirtAddrRange::new(aspace.base(), aspace.end()),
+                PageSize::Size4K,
             )
         })
         .ok_or(LinuxError::ENOMEM)?;
@@ -413,10 +416,16 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> LinuxResult<isize> {
     // map the virtual address range to the physical address
     if let Some(phys_pages) = shm_inner.phys_pages.clone() {
         // Another proccess has attached the shared memory
-        aspace.map_shared(start_addr, length, mapping_flags, Some(phys_pages))?;
+        aspace.map_shared(
+            start_addr,
+            length,
+            mapping_flags,
+            Some(phys_pages),
+            PageSize::Size4K,
+        )?;
     } else {
         // This is the first process to attach the shared memory
-        let result = aspace.map_shared(start_addr, length, mapping_flags, None);
+        let result = aspace.map_shared(start_addr, length, mapping_flags, None, PageSize::Size4K);
 
         match result {
             Ok(pages) => {

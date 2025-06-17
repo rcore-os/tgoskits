@@ -24,7 +24,7 @@ fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> 
 
     let page_start = start.align_down_4k();
     let page_end = (start + layout.size()).align_up_4k();
-    aspace.populate_area(page_start, page_end - page_start)?;
+    aspace.populate_area(page_start, page_end - page_start, access_flags)?;
 
     Ok(())
 }
