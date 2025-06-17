@@ -123,6 +123,7 @@ impl Signo {
 #[derive(Default, Debug, Clone, Copy, Not, BitOr, BitOrAssign, BitAnd, BitAndAssign)]
 #[repr(transparent)]
 pub struct SignalSet(u64);
+
 impl SignalSet {
     fn signo_bit(signo: Signo) -> u64 {
         1 << (signo as u8 - 1)
@@ -168,16 +169,14 @@ impl SignalSet {
     /// Write ctype representation.
     pub fn to_ctype(&self, dest: &mut kernel_sigset_t) {
         // SAFETY: `kernel_sigset_t` always has the same layout as `[c_ulong; 1]`.
-        unsafe {
-            *mem::transmute::<_, &mut u64>(dest) = self.0;
-        }
+        *dest = unsafe { mem::transmute::<u64, kernel_sigset_t>(self.0) };
     }
 }
 
 impl From<kernel_sigset_t> for SignalSet {
     fn from(value: kernel_sigset_t) -> Self {
         // SAFETY: `kernel_sigset_t` always has the same layout as `[c_ulong; 1]`.
-        unsafe { Self(*mem::transmute::<_, &u64>(&value)) }
+        Self(unsafe { mem::transmute::<kernel_sigset_t, u64>(value) })
     }
 }
 
@@ -222,6 +221,7 @@ pub struct SignalStack {
     pub flags: u32,
     pub size: usize,
 }
+
 impl Default for SignalStack {
     fn default() -> Self {
         Self {

@@ -12,6 +12,7 @@ use super::WaitQueue;
 
 /// Signal actions for a process.
 pub struct SignalActions(pub(crate) [SignalAction; 64]);
+
 impl Default for SignalActions {
     fn default() -> Self {
         Self(array::from_fn(|_| SignalAction::default()))
@@ -46,11 +47,12 @@ pub struct ProcessSignalManager<M, WQ> {
     /// The default restorer function.
     pub(crate) default_restorer: usize,
 }
+
 impl<M: RawMutex, WQ: WaitQueue> ProcessSignalManager<M, WQ> {
     /// Creates a new process signal manager.
     pub fn new(actions: Arc<Mutex<M, SignalActions>>, default_restorer: usize) -> Self {
         Self {
-            pending: Mutex::new(PendingSignals::new()),
+            pending: Mutex::new(PendingSignals::default()),
             actions,
             wq: WQ::default(),
             default_restorer,

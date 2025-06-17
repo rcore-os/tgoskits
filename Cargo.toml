@@ -2,16 +2,17 @@
 name = "axsignal"
 version = "0.1.0"
 edition = "2024"
+authors = [
+    "Mivik <mivikq@gmail.com>",
+    "Asakura Mizu <asakuramizu111@gmail.com>",
+]
+repository = "https://github.com/Starry-OS/axsignal"
 
 [dependencies]
 axerrno = "0.1"
 bitflags = "2.6"
 
-axconfig = { git = "https://github.com/oscomp/arceos.git" }
 axhal = { git = "https://github.com/oscomp/arceos.git", features = ["uspace"] }
-axtask = { git = "https://github.com/oscomp/arceos.git", features = [
-    "multitask",
-] }
 
 cfg-if = "1.0.0"
 linux-raw-sys = { version = "0.9.3", default-features = false, features = [

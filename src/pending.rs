@@ -19,15 +19,18 @@ pub struct PendingSignals {
     /// Signal info queue for real-time signals.
     info_rt: [VecDeque<SignalInfo>; 33],
 }
-impl PendingSignals {
-    pub fn new() -> Self {
+
+impl Default for PendingSignals {
+    fn default() -> Self {
         Self {
             set: SignalSet::default(),
             info_std: Default::default(),
             info_rt: array::from_fn(|_| VecDeque::new()),
         }
     }
+}
 
+impl PendingSignals {
     /// Puts a signal into the pending queue.
     ///
     /// Returns `true` if the signal was added, `false` if the signal is
