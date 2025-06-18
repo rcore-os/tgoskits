@@ -76,6 +76,25 @@ jobs:
     - name: Build
       run: cargo build --target ${{ matrix.platform.target }} -p ${{ matrix.platform.name }} --all-features
 
+  examples:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rust-toolchain: [nightly]
+        arch: [x86_64, aarch64, riscv64, loongarch64]
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@nightly
+      with:
+        toolchain: ${{ matrix.rust-toolchain }}
+        components: rust-src, clippy
+        targets: x86_64-unknown-none, riscv64gc-unknown-none-elf, aarch64-unknown-none-softfloat, loongarch64-unknown-none-softfloat
+    - name: Clippy
+      run: cd examples/hello-kernel && make ARCH=${{ matrix.arch }} clippy
+    - name: Build
+      run: cd examples/hello-kernel && make ARCH=${{ matrix.arch }}
+
   doc:
     runs-on: ubuntu-latest
     strategy:

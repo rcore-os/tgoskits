@@ -1,0 +1,26 @@
+[package]
+name = "hello-kernel"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+repository.workspace = true
+
+[dependencies]
+cfg-if = "1.0"
+axplat = { workspace = true }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+axcpu = "0.1"
+axplat-x86-pc = { path = "../../platforms/axplat-x86-pc" }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+axplat-aarch64-qemu-virt = { path = "../../platforms/axplat-aarch64-qemu-virt" }
+
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+axplat-riscv64-qemu-virt = { path = "../../platforms/axplat-riscv64-qemu-virt" }
+
+[target.'cfg(target_arch = "loongarch64")'.dependencies]
+axplat-loongarch64-qemu-virt = { path = "../../platforms/axplat-loongarch64-qemu-virt" }

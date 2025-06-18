@@ -5,6 +5,7 @@ members = [
     "axplat",
     "axplat-macros",
     "cargo-axplat",
+
     "platforms/axplat-x86-pc",
     "platforms/axplat-aarch64-common",
     "platforms/axplat-aarch64-qemu-virt",
@@ -13,6 +14,8 @@ members = [
     "platforms/axplat-aarch64-phytium-pi",
     "platforms/axplat-riscv64-qemu-virt",
     "platforms/axplat-loongarch64-qemu-virt",
+
+    "examples/hello-kernel",
 ]
 
 [workspace.package]
