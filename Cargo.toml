@@ -10,3 +10,4 @@ memory_addr = "0.3.1"
 percpu = "0.2.0"
 
 axaddrspace = { git = "https://github.com/arceos-hypervisor/axaddrspace.git" }
+axvisor_api = { git = "https://github.com/arceos-hypervisor/axvisor_api.git" }

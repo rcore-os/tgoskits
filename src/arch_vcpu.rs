@@ -1,5 +1,6 @@
 use axaddrspace::{GuestPhysAddr, HostPhysAddr};
 use axerrno::AxResult;
+use axvisor_api::vmm::{VCpuId, VMId};
 
 use crate::exit::AxVCpuExitReason;
 
@@ -13,7 +14,7 @@ pub trait AxArchVCpu: Sized {
     type SetupConfig;
 
     /// Create a new `AxArchVCpu`.
-    fn new(config: Self::CreateConfig) -> AxResult<Self>;
+    fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> AxResult<Self>;
 
     /// Set the entry point of the vcpu.
     ///

@@ -2,13 +2,16 @@ use core::cell::{RefCell, UnsafeCell};
 
 use axaddrspace::{GuestPhysAddr, HostPhysAddr};
 use axerrno::{AxResult, ax_err};
+use axvisor_api::vmm::{VCpuId, VMId};
 
 use super::{AxArchVCpu, AxVCpuExitReason};
 
 /// The constant part of `AxVCpu`.
 struct AxVCpuInnerConst {
+    /// The id of the VM this vcpu belongs to.
+    vm_id: VMId,
     /// The id of the vcpu.
-    id: usize,
+    vcpu_id: VCpuId,
     /// The id of the physical CPU who has the priority to run this vcpu.
     favor_phys_cpu: usize,
     /// The set of physical CPUs who can run this vcpu.
@@ -65,21 +68,23 @@ pub struct AxVCpu<A: AxArchVCpu> {
 impl<A: AxArchVCpu> AxVCpu<A> {
     /// Create a new [`AxVCpu`].
     pub fn new(
-        id: usize,
+        vm_id: VMId,
+        vcpu_id: VCpuId,
         favor_phys_cpu: usize,
         phys_cpu_set: Option<usize>,
         arch_config: A::CreateConfig,
     ) -> AxResult<Self> {
         Ok(Self {
             inner_const: AxVCpuInnerConst {
-                id,
+                vm_id,
+                vcpu_id,
                 favor_phys_cpu,
                 phys_cpu_set,
             },
             inner_mut: RefCell::new(AxVCpuInnerMut {
                 state: VCpuState::Created,
             }),
-            arch_vcpu: UnsafeCell::new(A::new(arch_config)?),
+            arch_vcpu: UnsafeCell::new(A::new(vm_id, vcpu_id, arch_config)?),
         })
     }
 
@@ -99,8 +104,8 @@ impl<A: AxArchVCpu> AxVCpu<A> {
     }
 
     /// Get the id of the vcpu.
-    pub const fn id(&self) -> usize {
-        self.inner_const.id
+    pub const fn id(&self) -> VCpuId {
+        self.inner_const.vcpu_id
     }
 
     /// Get the id of the physical CPU who has the priority to run this vcpu.
@@ -117,7 +122,7 @@ impl<A: AxArchVCpu> AxVCpu<A> {
 
     /// Get whether the vcpu is the BSP. We always assume the first vcpu (vcpu with id #0) is the BSP.
     pub const fn is_bsp(&self) -> bool {
-        self.inner_const.id == 0
+        self.inner_const.vcpu_id == 0
     }
 
     /// Get the state of the vcpu.
