@@ -1,3 +1,5 @@
+use axaddrspace::GuestPhysAddr;
+
 #[derive(Debug, Default, Clone)]
 #[repr(C)]
 pub struct GeneralPurposeRegisters([usize; 32]);
@@ -153,6 +155,26 @@ pub struct GuestVsCsrs {
     pub vstimecmp: usize,
 }
 
+impl GuestVsCsrs {
+    // Load the VS-level CSRs from hardware into this structure.
+    pub fn load_from_hw(&mut self) {
+        use riscv::register::{
+            htimedelta, vsatp, vscause, vsepc, vsie, vsscratch, vsstatus, vstval, vstvec,
+        };
+
+        self.htimedelta = htimedelta::read();
+        self.vsstatus = vsstatus::read().bits();
+        self.vsie = vsie::read().bits();
+        self.vstvec = vstvec::read().bits();
+        self.vsscratch = vsscratch::read();
+        self.vsepc = vsepc::read();
+        self.vscause = vscause::read().bits();
+        self.vstval = vstval::read();
+        self.vsatp = vsatp::read().bits();
+        // vstimecmp is not a CSR but a memory-mapped register.
+    }
+}
+
 /// Virtualized HS-level CSRs that are used to emulate (part of) the hypervisor extension for the
 /// guest.
 #[derive(Debug, Default, Clone)]
@@ -161,6 +183,17 @@ pub struct GuestVirtualHsCsrs {
     pub hie: usize,
     pub hgeie: usize,
     pub hgatp: usize,
+}
+
+impl GuestVirtualHsCsrs {
+    /// Load the virtualized HS-level CSRs from hardware into this structure.
+    pub fn load_from_hw(&mut self) {
+        use riscv::register::{hgatp, hgeie, hie};
+
+        self.hie = hie::read().bits();
+        self.hgeie = hgeie::read();
+        self.hgatp = hgatp::read().bits();
+    }
 }
 
 /// CSRs written on an exit from virtualization that are used by the hypervisor to determine the cause
@@ -174,6 +207,26 @@ pub struct VmCpuTrapState {
     pub htinst: usize,
 }
 
+impl VmCpuTrapState {
+    /// Reads the trap-related CSRs from hardware and stores them in this structure.
+    pub fn load_from_hw(&mut self) {
+        use riscv::register::{htinst, htval, scause, stval};
+
+        self.scause = scause::read().bits();
+        self.stval = stval::read();
+        self.htval = htval::read();
+        self.htinst = htinst::read();
+    }
+
+    /// Returns the guest physical address that caused a guest page fault.
+    ///
+    /// Make sure [`Self::load_from_hw`] has been called before using this method.
+    pub fn gpt_page_fault_addr(&self) -> GuestPhysAddr {
+        let pfa = (self.htval << 2) | (self.stval & 0b11);
+        pfa.into()
+    }
+}
+
 /// (v)CPU register state that must be saved or restored when entering/exiting a VM or switching
 /// between VMs.
 #[derive(Debug, Default, Clone)]
@@ -184,13 +237,15 @@ pub struct VmCpuRegisters {
     pub hyp_regs: HypervisorCpuState,
     pub guest_regs: GuestCpuState,
 
-    // CPU state that only applies when V=1, e.g. the VS-level CSRs. Saved/restored on activation of
-    // the vCPU.
+    /// CPU state that only applies when V=1, e.g. the VS-level CSRs. Saved/restored on activation of
+    /// the vCPU. This field IS NOT automatically saved/restored on VM entry/exit, users must do it
+    /// manually.
     pub vs_csrs: GuestVsCsrs,
 
-    // Virtualized HS-level CPU state.
+    /// Virtualized HS-level CPU state. This field IS NOT automatically saved/restored on VM
+    /// entry/exit, users must do it manually.
     pub virtual_hs_csrs: GuestVirtualHsCsrs,
 
-    // Read on VM exit.
+    /// Trap-related CSRs, automatically saved/restored on VM entry/exit.
     pub trap_csrs: VmCpuTrapState,
 }

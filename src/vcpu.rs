@@ -1,12 +1,17 @@
+use core::ops::{Shl, Shr};
+
 use crate::sbi_console::*;
+use axaddrspace::device::AccessWidth;
 use riscv::register::hstatus;
-use riscv::register::{htinst, htval, hvip, scause, sie, sstatus, stval};
+use riscv::register::{hvip, scause, sie, sstatus};
+use riscv_decode::Instruction;
+use riscv_decode::types::{IType, SType};
 use rustsbi::{Forward, RustSBI};
 use sbi_spec::{hsm, legacy};
 
 use crate::regs::*;
-use crate::{EID_HVC, RISCVVCpuCreateConfig, mem_extables};
-use axaddrspace::{GuestPhysAddr, HostPhysAddr, MappingFlags};
+use crate::{EID_HVC, RISCVVCpuCreateConfig, guest_mem};
+use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, MappingFlags};
 use axerrno::AxResult;
 use axvcpu::{AxVCpuExitReason, AxVCpuHal};
 
@@ -44,7 +49,7 @@ impl<H: AxVCpuHal> axvcpu::AxArchVCpu for RISCVVCpu<H> {
 
     type SetupConfig = ();
 
-    fn new(config: Self::CreateConfig) -> AxResult<Self> {
+    fn new(vm_id: usize, vcpu_id: usize, config: Self::CreateConfig) -> AxResult<Self> {
         let mut regs = VmCpuRegisters::default();
         // Setup the guest's general purpose registers.
         // `a0` is the hartid
@@ -139,6 +144,14 @@ impl<H: AxVCpuHal> axvcpu::AxArchVCpu for RISCVVCpu<H> {
             }
         }
     }
+
+    fn inject_interrupt(&mut self, vector: usize) -> AxResult {
+        unimplemented!("RISCVVCpu::inject_interrupt is not implemented yet");
+    }
+
+    fn set_return_value(&mut self, val: usize) {
+        self.set_gpr_from_gpr_index(GprIndex::A0, val);
+    }
 }
 
 impl<H: AxVCpuHal> RISCVVCpu<H> {
@@ -165,10 +178,7 @@ impl<H: AxVCpuHal> RISCVVCpu<H> {
 
 impl<H: AxVCpuHal> RISCVVCpu<H> {
     fn vmexit_handler(&mut self) -> AxResult<AxVCpuExitReason> {
-        self.regs.trap_csrs.scause = scause::read().bits();
-        self.regs.trap_csrs.stval = stval::read();
-        self.regs.trap_csrs.htval = htval::read();
-        self.regs.trap_csrs.htinst = htinst::read();
+        self.regs.trap_csrs.load_from_hw();
 
         let scause = scause::read();
         use scause::{Exception, Interrupt, Trap};
@@ -278,7 +288,10 @@ impl<H: AxVCpuHal> RISCVVCpu<H> {
                             }
 
                             let mut buf = alloc::vec![0u8; num_bytes as usize];
-                            let copied = mem_extables::copy_from_guest(&mut *buf, gpa as usize);
+                            let copied = guest_mem::copy_from_guest(
+                                &mut *buf,
+                                GuestPhysAddr::from(gpa as usize),
+                            );
 
                             if copied == buf.len() {
                                 let ret = console_write(&buf);
@@ -303,8 +316,10 @@ impl<H: AxVCpuHal> RISCVVCpu<H> {
                             let ret = console_read(&mut buf);
 
                             if ret.is_ok() && ret.value <= buf.len() {
-                                let copied =
-                                    mem_extables::copy_to_guest(&buf[..ret.value], gpa as usize);
+                                let copied = guest_mem::copy_to_guest(
+                                    &buf[..ret.value],
+                                    GuestPhysAddr::from(gpa as usize),
+                                );
                                 if copied == ret.value {
                                     self.sbi_return(RET_SUCCESS, ret.value);
                                 } else {
@@ -357,16 +372,16 @@ impl<H: AxVCpuHal> RISCVVCpu<H> {
                 Ok(AxVCpuExitReason::Nothing)
             }
             Trap::Interrupt(Interrupt::SupervisorExternal) => {
-                Ok(AxVCpuExitReason::ExternalInterrupt { vector: 0 })
+                // 9 == Interrupt::SupervisorExternal
+                //
+                // It's a great fault in the `riscv` crate that `Interrupt` and `Exception` are not
+                // explicitly numbered, and they provide no way to convert them to a number. Also,
+                // `as usize` will give use a wrong value.
+                Ok(AxVCpuExitReason::ExternalInterrupt { vector: 9 })
             }
-            Trap::Exception(Exception::LoadGuestPageFault)
-            | Trap::Exception(Exception::StoreGuestPageFault) => {
-                let fault_addr = self.regs.trap_csrs.htval << 2 | self.regs.trap_csrs.stval & 0x3;
-                Ok(AxVCpuExitReason::NestedPageFault {
-                    addr: GuestPhysAddr::from(fault_addr),
-                    access_flags: MappingFlags::empty(),
-                })
-            }
+            Trap::Exception(
+                gpf @ (Exception::LoadGuestPageFault | Exception::StoreGuestPageFault),
+            ) => self.handle_guest_page_fault(gpf == Exception::StoreGuestPageFault),
             _ => {
                 panic!(
                     "Unhandled trap: {:?}, sepc: {:#x}, stval: {:#x}",
@@ -383,6 +398,143 @@ impl<H: AxVCpuHal> RISCVVCpu<H> {
         self.set_gpr_from_gpr_index(GprIndex::A0, a0);
         self.set_gpr_from_gpr_index(GprIndex::A1, a1);
         self.advance_pc(4);
+    }
+
+    /// Decode the instruction at the given virtual address. Return the decoded instruction and its
+    /// length in bytes.
+    fn decode_instr_at(&self, vaddr: GuestVirtAddr) -> AxResult<(Instruction, usize)> {
+        // The htinst CSR contains "transformed instruction" that caused the page fault. We
+        // can use it but we use the sepc to fetch the original instruction instead for now.
+        let instr = guest_mem::fetch_guest_instruction(vaddr);
+        let instr_len = riscv_decode::instruction_length(instr as u16);
+        let instr = match instr_len {
+            2 => instr & 0xffff,
+            4 => instr,
+            _ => unreachable!("Unsupported instruction length: {}", instr_len),
+        };
+
+        riscv_decode::decode(instr as u32)
+            .map_err(|_| {
+                axerrno::ax_err_type!(
+                    Unsupported,
+                    "risc-v vcpu guest pf handler decoding instruction failed"
+                )
+            })
+            .map(|instr| (instr, instr_len))
+    }
+
+    /// Handle a guest page fault. Return an exit reason.
+    fn handle_guest_page_fault(&mut self, writing: bool) -> AxResult<AxVCpuExitReason> {
+        let fault_addr = self.regs.trap_csrs.gpt_page_fault_addr();
+        let sepc = self.regs.guest_regs.sepc;
+        let sepc_vaddr = GuestVirtAddr::from(sepc);
+
+        /// Temporary enum to represent the decoded operation.
+        enum DecodedOp {
+            Read {
+                i: IType,
+                width: AccessWidth,
+                signed_ext: bool,
+            },
+            Write {
+                s: SType,
+                width: AccessWidth,
+            },
+        }
+
+        use DecodedOp::*;
+
+        let (decoded_instr, instr_len) = self.decode_instr_at(sepc_vaddr)?;
+        let op = match decoded_instr {
+            Instruction::Lb(i) => Read {
+                i,
+                width: AccessWidth::Byte,
+                signed_ext: true,
+            },
+            Instruction::Lh(i) => Read {
+                i,
+                width: AccessWidth::Word,
+                signed_ext: true,
+            },
+            Instruction::Lw(i) => Read {
+                i,
+                width: AccessWidth::Dword,
+                signed_ext: true,
+            },
+            Instruction::Ld(i) => Read {
+                i,
+                width: AccessWidth::Qword,
+                signed_ext: true,
+            },
+            Instruction::Lbu(i) => Read {
+                i,
+                width: AccessWidth::Byte,
+                signed_ext: false,
+            },
+            Instruction::Lhu(i) => Read {
+                i,
+                width: AccessWidth::Word,
+                signed_ext: false,
+            },
+            Instruction::Lwu(i) => Read {
+                i,
+                width: AccessWidth::Dword,
+                signed_ext: false,
+            },
+            Instruction::Sb(s) => Write {
+                s,
+                width: AccessWidth::Byte,
+            },
+            Instruction::Sh(s) => Write {
+                s,
+                width: AccessWidth::Word,
+            },
+            Instruction::Sw(s) => Write {
+                s,
+                width: AccessWidth::Dword,
+            },
+            Instruction::Sd(s) => Write {
+                s,
+                width: AccessWidth::Qword,
+            },
+            _ => {
+                // Not a load or store instruction, so we cannot handle it here, return a nested page fault.
+                return Ok(AxVCpuExitReason::NestedPageFault {
+                    addr: fault_addr,
+                    access_flags: MappingFlags::empty(),
+                });
+            }
+        };
+
+        // WARN: This is a temporary place to add the instruction length to the guest's sepc.
+        self.advance_pc(instr_len);
+
+        Ok(match op {
+            Read {
+                i,
+                width,
+                signed_ext,
+            } => AxVCpuExitReason::MmioRead {
+                addr: fault_addr,
+                width,
+                reg: i.rd() as _,
+                reg_width: AccessWidth::Qword,
+                signed_ext,
+            },
+            Write { s, width } => {
+                let source_reg = s.rs2();
+                let value = self.get_gpr(unsafe {
+                    // SAFETY: `source_reg` is guaranteed to be in [0, 31]
+                    GprIndex::from_raw(source_reg).unwrap_unchecked()
+                });
+
+                AxVCpuExitReason::MmioWrite {
+                    addr: fault_addr,
+                    width,
+                    data: value as _,
+                }
+            }
+        })
     }
 }
 
