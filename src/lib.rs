@@ -7,22 +7,25 @@ extern crate alloc;
 extern crate log;
 
 mod consts;
-mod hal;
 mod regs;
 mod timer;
 mod utils;
 mod vlapic;
 
-use alloc::boxed::Box;
 use core::cell::UnsafeCell;
-use hal::AxVMHal;
 
 use axerrno::AxResult;
+use axvisor_api::{
+    memory,
+    vmm::{VCpuId, VMId},
+};
 use memory_addr::{AddrRange, PAGE_SIZE_4K};
 
-use axaddrspace::device::{AccessWidth, SysRegAddr, SysRegAddrRange};
-use axaddrspace::{AxMmHal, GuestPhysAddr, HostPhysAddr, HostVirtAddr};
-use axdevice_base::{BaseDeviceOps, DeviceRWContext, EmuDeviceType, InterruptInjector};
+use axaddrspace::{
+    GuestPhysAddr, HostPhysAddr, HostVirtAddr,
+    device::{AccessWidth, SysRegAddr, SysRegAddrRange},
+};
+use axdevice_base::{BaseDeviceOps, EmuDeviceType};
 
 use crate::consts::x2apic::x2apic_msr_access_reg;
 use crate::consts::xapic::xapic_mmio_access_reg_offset;
@@ -34,35 +37,36 @@ struct APICAccessPage([u8; PAGE_SIZE_4K]);
 static VIRTUAL_APIC_ACCESS_PAGE: APICAccessPage = APICAccessPage([0; PAGE_SIZE_4K]);
 
 /// A emulated local APIC device.
-pub struct EmulatedLocalApic<H: AxMmHal, VM: AxVMHal> {
-    vlapic_regs: UnsafeCell<VirtualApicRegs<H, VM>>,
+pub struct EmulatedLocalApic {
+    vlapic_regs: UnsafeCell<VirtualApicRegs>,
 }
 
-impl<H: AxMmHal, VM: AxVMHal> EmulatedLocalApic<H, VM> {
+impl EmulatedLocalApic {
     /// Create a new `EmulatedLocalApic`.
-    pub fn new(vcpu_id: u32) -> Self {
+    pub fn new(vm_id: VMId, vcpu_id: VCpuId) -> Self {
         EmulatedLocalApic {
-            vlapic_regs: UnsafeCell::new(VirtualApicRegs::new(vcpu_id)),
+            vlapic_regs: UnsafeCell::new(VirtualApicRegs::new(vm_id, vcpu_id)),
         }
     }
 
-    fn get_vlapic_regs(&self) -> &VirtualApicRegs<H, VM> {
+    fn get_vlapic_regs(&self) -> &VirtualApicRegs {
         unsafe { &*self.vlapic_regs.get() }
     }
 
-    fn get_mut_vlapic_regs(&self) -> &mut VirtualApicRegs<H, VM> {
+    #[allow(clippy::mut_from_ref)] // SAFETY: get_mut_vlapic_regs is never called concurrently.
+    fn get_mut_vlapic_regs(&self) -> &mut VirtualApicRegs {
         unsafe { &mut *self.vlapic_regs.get() }
     }
 }
 
-impl<H: AxMmHal, VM: AxVMHal> EmulatedLocalApic<H, VM> {
+impl EmulatedLocalApic {
     /// APIC-access address (64 bits).
     /// This field contains the physical address of the 4-KByte APIC-access page.
     /// If the “virtualize APIC accesses” VM-execution control is 1,
     /// access to this page may cause VM exits or be virtualized by the processor.
     /// See Section 30.4.
     pub fn virtual_apic_access_addr() -> HostPhysAddr {
-        H::virt_to_phys(HostVirtAddr::from_usize(
+        memory::virt_to_phys(HostVirtAddr::from_usize(
             VIRTUAL_APIC_ACCESS_PAGE.0.as_ptr() as usize,
         ))
     }
@@ -76,7 +80,7 @@ impl<H: AxMmHal, VM: AxVMHal> EmulatedLocalApic<H, VM> {
     }
 }
 
-impl<H: AxMmHal, VM: AxVMHal> BaseDeviceOps<AddrRange<GuestPhysAddr>> for EmulatedLocalApic<H, VM> {
+impl BaseDeviceOps<AddrRange<GuestPhysAddr>> for EmulatedLocalApic {
     fn emu_type(&self) -> EmuDeviceType {
         EmuDeviceType::EmuDeviceTInterruptController
     }
@@ -89,42 +93,26 @@ impl<H: AxMmHal, VM: AxVMHal> BaseDeviceOps<AddrRange<GuestPhysAddr>> for Emulat
         )
     }
 
-    fn handle_read(
-        &self,
-        addr: GuestPhysAddr,
-        width: AccessWidth,
-        context: DeviceRWContext,
-    ) -> AxResult<usize> {
+    fn handle_read(&self, addr: GuestPhysAddr, width: AccessWidth) -> AxResult<usize> {
         debug!(
-            "EmulatedLocalApic::handle_read: addr={:?}, width={:?}, context={:?}",
-            addr, width, context.vcpu_id
+            "EmulatedLocalApic::handle_read: addr={:?}, width={:?}",
+            addr, width,
         );
         let reg_off = xapic_mmio_access_reg_offset(addr);
-        self.get_vlapic_regs().handle_read(reg_off, width, context)
+        self.get_vlapic_regs().handle_read(reg_off, width)
     }
 
-    fn handle_write(
-        &self,
-        addr: GuestPhysAddr,
-        width: AccessWidth,
-        val: usize,
-        context: DeviceRWContext,
-    ) -> AxResult {
+    fn handle_write(&self, addr: GuestPhysAddr, width: AccessWidth, val: usize) -> AxResult {
         debug!(
-            "EmulatedLocalApic::handle_write: addr={:?}, width={:?}, val={:#x}, context={:?}",
-            addr, width, val, context.vcpu_id
+            "EmulatedLocalApic::handle_write: addr={:?}, width={:?}, val={:#x}",
+            addr, width, val,
         );
         let reg_off = xapic_mmio_access_reg_offset(addr);
-        self.get_mut_vlapic_regs()
-            .handle_write(reg_off, val, width, context)
-    }
-
-    fn set_interrupt_injector(&mut self, _injector: Box<InterruptInjector>) {
-        todo!()
+        self.get_mut_vlapic_regs().handle_write(reg_off, val, width)
     }
 }
 
-impl<H: AxMmHal, VM: AxVMHal> BaseDeviceOps<SysRegAddrRange> for EmulatedLocalApic<H, VM> {
+impl BaseDeviceOps<SysRegAddrRange> for EmulatedLocalApic {
     fn emu_type(&self) -> EmuDeviceType {
         EmuDeviceType::EmuDeviceTInterruptController
     }
@@ -137,37 +125,21 @@ impl<H: AxMmHal, VM: AxVMHal> BaseDeviceOps<SysRegAddrRange> for EmulatedLocalAp
         )
     }
 
-    fn handle_read(
-        &self,
-        addr: SysRegAddr,
-        width: AccessWidth,
-        context: DeviceRWContext,
-    ) -> AxResult<usize> {
+    fn handle_read(&self, addr: SysRegAddr, width: AccessWidth) -> AxResult<usize> {
         debug!(
-            "EmulatedLocalApic::handle_read: addr={:?}, width={:?}, context={:?}",
-            addr, width, context.vcpu_id
+            "EmulatedLocalApic::handle_read: addr={:?}, width={:?}",
+            addr, width,
         );
         let reg_off = x2apic_msr_access_reg(addr);
-        self.get_vlapic_regs().handle_read(reg_off, width, context)
+        self.get_vlapic_regs().handle_read(reg_off, width)
     }
 
-    fn handle_write(
-        &self,
-        addr: SysRegAddr,
-        width: AccessWidth,
-        val: usize,
-        context: DeviceRWContext,
-    ) -> AxResult {
+    fn handle_write(&self, addr: SysRegAddr, width: AccessWidth, val: usize) -> AxResult {
         debug!(
-            "EmulatedLocalApic::handle_write: addr={:?}, width={:?}, val={:#x}, context={:?}",
-            addr, width, val, context.vcpu_id
+            "EmulatedLocalApic::handle_write: addr={:?}, width={:?}, val={:#x}",
+            addr, width, val
         );
         let reg_off = x2apic_msr_access_reg(addr);
-        self.get_mut_vlapic_regs()
-            .handle_write(reg_off, val, width, context)
-    }
-
-    fn set_interrupt_injector(&mut self, _injector: Box<InterruptInjector>) {
-        todo!()
+        self.get_mut_vlapic_regs().handle_write(reg_off, val, width)
     }
 }

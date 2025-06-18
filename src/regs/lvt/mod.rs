@@ -16,7 +16,7 @@ pub use perfmon::*;
 pub use thermal::*;
 pub use timer::*;
 
-use crate::consts::RESET_LVT_REG;
+pub use crate::consts::RESET_LVT_REG;
 
 /// A read-write copy of LVT registers.
 pub struct LocalVectorTable {

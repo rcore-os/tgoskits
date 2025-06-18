@@ -13,11 +13,7 @@ bit = "0.1.1"
 memory_addr = "0.3"
 axerrno = "0.1.0"
 
-axaddrspace = { git = "https://github.com/arceos-hypervisor/axaddrspace.git", branch = "inject_interrupt" }
-axdevice_base = { git = "https://github.com/arceos-hypervisor/axdevice_crates.git", branch = "inject_interrupt"}
+axaddrspace = { git = "https://github.com/arceos-hypervisor/axaddrspace.git" }
+axdevice_base = { git = "https://github.com/arceos-hypervisor/axdevice_crates.git" }
 
-# [patch."https://github.com/arceos-hypervisor/axaddrspace.git"]
-# axaddrspace = { path = "../axaddrspace" }
-
-# [patch."https://github.com/arceos-hypervisor/axdevice_crates.git"]
-# axdevice_base = { path = "../axdevice_crates/axdevice_base" }
+axvisor_api = { git = "https://github.com/arceos-hypervisor/axvisor_api.git" }
