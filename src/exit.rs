@@ -28,6 +28,8 @@ pub enum AxVCpuExitReason {
         reg: usize,
         /// The width of the reg to be read
         reg_width: AccessWidth,
+        /// Sign-extend the read value if true.
+        signed_ext: bool,
     },
     /// The instruction executed by the vcpu performs a MMIO write operation.
     MmioWrite {
