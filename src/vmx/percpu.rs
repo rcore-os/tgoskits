@@ -25,7 +25,7 @@ pub struct VmxPerCpuState<H: AxVCpuHal> {
     ///
     /// This region typically contains the VMCS and other state information
     /// required for managing virtual machines on this particular CPU.
-    vmx_region: VmxRegion<H>,
+    vmx_region: VmxRegion<H::MmHal>,
 }
 
 impl<H: AxVCpuHal> AxArchPerCpu for VmxPerCpuState<H> {

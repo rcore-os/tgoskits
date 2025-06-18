@@ -581,6 +581,56 @@ pub struct CrAccessInfo {
     pub lmsw_source_data: u8,
 }
 
+/// Type of APIC-access, used in Exit Qualification for APIC Accesses. (SDM Vol. 3C, Section 28.2.2, Table 28-6)
+#[derive(Debug)]
+pub enum ApicAccessExitType {
+    /// Linear access for data read.
+    LinearDataRead = 0,
+    /// Linear access for data write.
+    LinearDataWrite = 1,
+    /// Linear access for instruction fetch.
+    LinearInstructionFetch = 2,
+    /// Linear access for event delivery.
+    LinearEventDelivery = 3,
+    /// Linear access for monitoring.
+    LinearMonitoring = 4,
+    /// Guest-physical access for event delivery.
+    GuestPhysicalEventDelivery = 10,
+    /// Guest-physical access for monitoring.
+    GuestPhysicalMonitoring = 11,
+    /// Guest-physical access for instruction fetch, data read, or data write.
+    GuestPhysicalInstructionFetchReadWrite = 15,
+}
+
+impl TryFrom<u8> for ApicAccessExitType {
+    type Error = ();
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::LinearDataRead),
+            1 => Ok(Self::LinearDataWrite),
+            2 => Ok(Self::LinearInstructionFetch),
+            3 => Ok(Self::LinearEventDelivery),
+            4 => Ok(Self::LinearMonitoring),
+            10 => Ok(Self::GuestPhysicalEventDelivery),
+            11 => Ok(Self::GuestPhysicalMonitoring),
+            15 => Ok(Self::GuestPhysicalInstructionFetchReadWrite),
+            _ => Err(()),
+        }
+    }
+}
+
+/// Exit Qualification for APIC Accesses. (SDM Vol. 3C, Section 28.2.2, Table 28-6)
+#[derive(Debug)]
+pub struct ApicAccessExitInfo {
+    /// Offset within the APIC-access page. Not defined if `access_type` is 10, 11, or 15.
+    pub offset: u16,
+    /// Access type.
+    pub access_type: ApicAccessExitType,
+    /// Actually not used by us, see SDM for details.
+    pub non_event_delivery_asynchronous: bool,
+}
+
 pub mod controls {
     pub use x86::vmx::vmcs::control::{EntryControls, ExitControls};
     pub use x86::vmx::vmcs::control::{PinbasedControls, PrimaryControls, SecondaryControls};
@@ -770,5 +820,16 @@ pub fn cr_access_info() -> AxResult<CrAccessInfo> {
         lmsw_op_type: qualification.get_bits(6..7) as u8,
         gpr: qualification.get_bits(8..12) as u8,
         lmsw_source_data: qualification.get_bits(16..32) as u8,
+    })
+}
+
+pub fn apic_access_exit_info() -> AxResult<ApicAccessExitInfo> {
+    let qualification = VmcsReadOnlyNW::EXIT_QUALIFICATION.read()?;
+    // debug!("apic_access_info qualification {:#x}", qualification);
+
+    Ok(ApicAccessExitInfo {
+        offset: qualification.get_bits(0..12) as u16,
+        access_type: ApicAccessExitType::try_from(qualification.get_bits(12..16) as u8).unwrap(),
+        non_event_delivery_asynchronous: qualification.get_bit(16),
     })
 }

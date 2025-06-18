@@ -13,7 +13,6 @@ pub(crate) mod msr;
 #[macro_use]
 pub(crate) mod regs;
 mod ept;
-mod frame;
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "vmx")] {

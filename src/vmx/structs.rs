@@ -3,20 +3,18 @@ use bitflags::bitflags;
 
 use memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
 
-use axaddrspace::HostPhysAddr;
+use axaddrspace::{AxMmHal, HostPhysAddr, PhysFrame};
 use axerrno::AxResult;
-use axvcpu::AxVCpuHal;
 
-use crate::frame::PhysFrame;
 use crate::msr::{Msr, MsrReadWrite};
 
 /// VMCS/VMXON region in 4K size. (SDM Vol. 3C, Section 24.2)
 #[derive(Debug)]
-pub struct VmxRegion<H: AxVCpuHal> {
+pub struct VmxRegion<H: AxMmHal> {
     frame: PhysFrame<H>,
 }
 
-impl<H: AxVCpuHal> VmxRegion<H> {
+impl<H: AxMmHal> VmxRegion<H> {
     pub const unsafe fn uninit() -> Self {
         Self {
             frame: unsafe { PhysFrame::uninit() },
@@ -43,12 +41,12 @@ impl<H: AxVCpuHal> VmxRegion<H> {
 // I/O bitmap A contains one bit for each I/O port in the range 0000H through 7FFFH;
 // I/O bitmap B contains bits for ports in the range 8000H through FFFFH.
 #[derive(Debug)]
-pub struct IOBitmap<H: AxVCpuHal> {
+pub struct IOBitmap<H: AxMmHal> {
     io_bitmap_a_frame: PhysFrame<H>,
     io_bitmap_b_frame: PhysFrame<H>,
 }
 
-impl<H: AxVCpuHal> IOBitmap<H> {
+impl<H: AxMmHal> IOBitmap<H> {
     pub fn passthrough_all() -> AxResult<Self> {
         Ok(Self {
             io_bitmap_a_frame: PhysFrame::alloc_zero()?,
@@ -103,11 +101,11 @@ impl<H: AxVCpuHal> IOBitmap<H> {
 }
 
 #[derive(Debug)]
-pub struct MsrBitmap<H: AxVCpuHal> {
+pub struct MsrBitmap<H: AxMmHal> {
     frame: PhysFrame<H>,
 }
 
-impl<H: AxVCpuHal> MsrBitmap<H> {
+impl<H: AxMmHal> MsrBitmap<H> {
     pub fn passthrough_all() -> AxResult<Self> {
         Ok(Self {
             frame: PhysFrame::alloc_zero()?,
