@@ -34,7 +34,7 @@ fn enable_fp_simd() {
     // FP/SIMD needs to be enabled early, as the compiler may generate SIMD
     // instructions in the bootstrapping code to speed up the operations
     // like `memset` and `memcpy`.
-    #[cfg(feature = "fp_simd")]
+    #[cfg(feature = "fp-simd")]
     {
         axcpu::asm::enable_fp();
         axcpu::asm::enable_lsx();

@@ -9,7 +9,7 @@ documentation.workspace = true
 repository.workspace = true
 
 [features]
-fp_simd = ["axcpu/fp_simd"]
+fp-simd = ["axcpu/fp-simd"]
 irq = []
 rtc = ["dep:chrono"]
 smp = []
