@@ -1,4 +1,4 @@
-//! Macros to define and access a per-CPU data structure.
+#![doc = include_str!("../README.md")]
 
 use proc_macro::TokenStream;
 use proc_macro2::Span;

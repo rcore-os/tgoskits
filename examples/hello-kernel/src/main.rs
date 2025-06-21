@@ -16,14 +16,14 @@ cfg_if::cfg_if! {
 }
 
 fn init_kernel(cpu_id: usize, arg: usize) {
-    // x86_64 requires the `percpu` crate to be initialized first
+    // x86_64 requires the `percpu` crate to be initialized first.
     #[cfg(target_arch = "x86_64")]
     axcpu::init::init_percpu(cpu_id);
 
     // Initialize trap, console, time.
     axplat::init::init_early(cpu_id, arg);
 
-    // Initialize platform devices (not used in this example).
+    // Initialize platform peripherals (not used in this example).
     axplat::init::init_later(cpu_id, arg);
 }
 

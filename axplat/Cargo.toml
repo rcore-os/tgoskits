@@ -1,7 +1,7 @@
 [package]
 name = "axplat"
 version = "0.1.0"
-description = "This crate defines unified interfaces for various hardware platforms."
+description = "This crate provides a unified abstraction layer for diverse hardware platforms."
 documentation = "https://docs.rs/axplat"
 keywords = ["arceos", "hal", "hardware-abstraction-layer"]
 categories = ["embedded", "no-std", "hardware-support", "os"]

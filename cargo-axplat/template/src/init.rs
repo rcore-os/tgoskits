@@ -62,7 +62,7 @@ impl InitIf for InitIfImpl {
     ///
     /// * Interrupt controller is initialized (if applicable).
     /// * Timer interrupts are enabled (if applicable).
-    /// * Other platform devices are initialized.
+    /// * Other essential peripherals are initialized.
     fn init_later(cpu_id: usize, arg: usize) {
         todo!()
     }
