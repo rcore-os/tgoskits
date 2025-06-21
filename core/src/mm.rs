@@ -2,7 +2,7 @@
 
 use core::ffi::CStr;
 
-use alloc::{borrow::ToOwned, string::String, vec, vec::Vec};
+use alloc::{borrow::ToOwned, string::String, vec::Vec};
 use axerrno::{AxError, AxResult, LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
 use axhal::{
@@ -10,7 +10,7 @@ use axhal::{
     paging::{MappingFlags, PageSize},
 };
 use axmm::{AddrSpace, kernel_aspace};
-use kernel_elf_parser::{AuxvEntry, ELFParser, app_stack_region};
+use kernel_elf_parser::{ELFParser, app_stack_region};
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use xmas_elf::{ElfFile, program::SegmentData};
 
@@ -55,15 +55,8 @@ pub fn map_trampoline(aspace: &mut AddrSpace) -> AxResult {
 ///
 /// # Returns
 /// - The entry point of the user app.
-fn map_elf(uspace: &mut AddrSpace, elf: &ElfFile) -> AxResult<(VirtAddr, [AuxvEntry; 17])> {
-    let uspace_base = uspace.base().as_usize();
-    let elf_parser = ELFParser::new(
-        elf,
-        axconfig::plat::USER_INTERP_BASE,
-        Some(uspace_base as isize),
-        uspace_base,
-    )
-    .map_err(|_| AxError::InvalidData)?;
+fn map_elf<'a>(uspace: &mut AddrSpace, base: usize, elf: &'a ElfFile) -> AxResult<ELFParser<'a>> {
+    let elf_parser = ELFParser::new(elf, base).map_err(|_| AxError::InvalidData)?;
 
     for segement in elf_parser.ph_load() {
         debug!(
@@ -92,10 +85,7 @@ fn map_elf(uspace: &mut AddrSpace, elf: &ElfFile) -> AxResult<(VirtAddr, [AuxvEn
         // TDOO: flush the I-cache
     }
 
-    Ok((
-        elf_parser.entry().into(),
-        elf_parser.auxv_vector(PAGE_SIZE_4K),
-    ))
+    Ok(elf_parser)
 }
 
 /// Load the user app to the user address space.
@@ -134,38 +124,35 @@ pub fn load_user_app(
 
     let elf = ElfFile::new(&file_data).map_err(|_| AxError::InvalidData)?;
 
-    if let Some(interp) = elf
+    let ldso_entry_and_base = if let Some(header) = elf
         .program_iter()
         .find(|ph| ph.get_type() == Ok(xmas_elf::program::Type::Interp))
     {
-        let interp = match interp.get_data(&elf) {
+        let ldso = match header.get_data(&elf) {
             Ok(SegmentData::Undefined(data)) => data,
             _ => panic!("Invalid data in Interp Elf Program Header"),
         };
-
-        let interp_path = FS_CONTEXT
-            .lock()
-            .current_dir()
-            .absolute_path()?
-            .join(
-                CStr::from_bytes_with_nul(interp)
-                    .ok()
-                    .and_then(|it| it.to_str().ok())
-                    .ok_or(LinuxError::EINVAL)?,
-            )
-            .normalize()
+        let ldso = CStr::from_bytes_with_nul(ldso)
+            .ok()
+            .and_then(|it| it.to_str().ok())
             .ok_or(LinuxError::EINVAL)?;
-        let interp_path = interp_path.as_str();
+        debug!("Loading dynamic linker: {}", ldso);
+        let ldso_data = FS_CONTEXT.lock().read(ldso)?;
+        let ldso_elf = ElfFile::new(&ldso_data).map_err(|_| AxError::InvalidData)?;
+        let ldso_parser = map_elf(uspace, axconfig::plat::USER_INTERP_BASE, &ldso_elf)?;
+        Some((ldso_parser.entry(), ldso_parser.base()))
+    } else {
+        None
+    };
 
-        debug!("Loading interpreter: {}", interp_path);
+    let elf_parser = map_elf(uspace, uspace.base().as_usize(), &elf)?;
+    let entry = ldso_entry_and_base
+        .map(|it| it.0)
+        .unwrap_or_else(|| elf_parser.entry());
+    let auxv = elf_parser
+        .aux_vector(PAGE_SIZE_4K, ldso_entry_and_base.map(|it| it.1))
+        .collect::<Vec<_>>();
 
-        // Set the first argument to the path of the user app.
-        let mut new_args = vec![interp_path.to_owned()];
-        new_args.extend_from_slice(args);
-        return load_user_app(uspace, None, &new_args, envs);
-    }
-
-    let (entry, mut auxv) = map_elf(uspace, &elf)?;
     // The user stack is divided into two parts:
     // `ustack_start` -> `ustack_pointer`: It is the stack space that users actually read and write.
     // `ustack_pointer` -> `ustack_end`: It is the space that contains the arguments, environment variables and auxv passed to the app.
@@ -178,7 +165,7 @@ pub fn load_user_app(
         ustack_start, ustack_end
     );
 
-    let stack_data = app_stack_region(args, envs, &mut auxv, ustack_start, ustack_size);
+    let stack_data = app_stack_region(args, envs, &auxv, ustack_start, ustack_size);
     uspace.map_alloc(
         ustack_start,
         ustack_size,
@@ -204,7 +191,7 @@ pub fn load_user_app(
 
     uspace.write(user_sp, PageSize::Size4K, stack_data.as_slice())?;
 
-    Ok((entry, user_sp))
+    Ok((VirtAddr::from(entry), user_sp))
 }
 
 #[percpu::def_percpu]

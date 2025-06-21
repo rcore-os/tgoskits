@@ -16,45 +16,44 @@ ln -v -s busybox env
 ln -v -s busybox mkdir
 
 mkdir -v /lib
-# cp -v /glibc/lib/* /lib
+cp -v /glibc/lib/* /lib
 if [[ $ARCH == loongarch64 ]]; then
     ln -v -s /musl/lib/libc.so /lib/ld-musl-loongarch-lp64d.so.1
 else
     ln -v -s /musl/lib/libc.so /lib/ld-musl-$ARCH.so.1
 fi
+ln -v -s /musl/lib/libc.so /lib/ld-musl-riscv64-sf.so.1
+ln -v /glibc/lib/libc.so /lib/libc.so.6
 ln -v -s /lib /lib64
+
+# For loongarch glibc iozone
+mkdir /usr
+ln -v -s /lib /usr/lib64
 
 export LD_LIBRARY_PATH=.
 
-echo @@@@@@@@@@ files @@@@@@@@@@
-ls -lhAR /
+# echo @@@@@@@@@@ files @@@@@@@@@@
+# ls -lhAR /
+ls -lhAR /lib
 echo @@@@@@@@@@ env @@@@@@@@@@
 env
 echo
 
 echo @@@@@@@@@@ musl @@@@@@@@@@
 cd /musl
-echo "#### OS COMP TEST GROUP START basic-glibc ####"
 ./basic_testcode.sh
-echo "#### OS COMP TEST GROUP END basic-glibc ####"
-echo "#### OS COMP TEST GROUP START lua-glibc ####"
 ./lua_testcode.sh
-echo "#### OS COMP TEST GROUP END lua-glibc ####"
-echo "#### OS COMP TEST GROUP START libctest-glibc ####"
 ./libctest_testcode.sh
-echo "#### OS COMP TEST GROUP END libctest-glibc ####"
-echo "#### OS COMP TEST GROUP START busybox-glibc ####"
 ./busybox_testcode.sh
-echo "#### OS COMP TEST GROUP END busybox-glibc ####"
-echo "#### OS COMP TEST GROUP START iozone-glibc ####"
 ./iozone_testcode.sh
-echo "#### OS COMP TEST GROUP END iozone-glibc ####"
+./libcbench_testcode.sh
 
 # FIXME: real glibc test
-# echo @@@@@@@@@@ glibc @@@@@@@@@@
-# cd /glibc
-# ./basic_testcode.sh
-# ./lua_testcode.sh
-# ./libctest_testcode.sh
-# ./busybox_testcode.sh
-# ./iozone_testcode.sh
+echo @@@@@@@@@@ glibc @@@@@@@@@@
+cd /glibc
+./basic_testcode.sh
+./lua_testcode.sh
+./libctest_testcode.sh
+./busybox_testcode.sh
+./iozone_testcode.sh
+./libcbench_testcode.sh

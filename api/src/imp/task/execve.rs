@@ -47,8 +47,8 @@ pub fn sys_execve(
     axhal::arch::flush_tlb(None);
 
     let (entry_point, user_stack_base) = load_user_app(&mut aspace, Some(&path), &args, &envs)
-        .map_err(|_| {
-            error!("Failed to load app {}", path);
+        .map_err(|err| {
+            error!("Failed to load app {path}: {err:?}");
             LinuxError::ENOENT
         })?;
     drop(aspace);

@@ -900,8 +900,6 @@ dependencies = [
 [[package]]
 name = "kernel-elf-parser"
 version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "899ed6b4dd0d22b7f1a9cd23ec9f55ea2d96112132d398ef5eb7df520c288009"
 dependencies = [
  "axerrno",
  "cfg-if",
@@ -909,6 +907,7 @@ dependencies = [
  "memory_addr",
  "page_table_entry",
  "xmas-elf",
+ "zerocopy 0.8.26",
 ]
 
 [[package]]
@@ -1043,15 +1042,15 @@ checksum = "78ca9ab1a0babb1e7d5695e3530886289c18cf2f87ec19a575a0abdce112e3a3"
 
 [[package]]
 name = "memory_addr"
-version = "0.3.2"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5438b8df0f13e16e1f46140de247695a95952a5a4479e47197a8711bf1063373"
+checksum = "3d4054cba279515fa87761b101d857333ce06391dbe8f18a11347204a7111416"
 
 [[package]]
 name = "memory_set"
-version = "0.3.2"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4552d02c866c57e8b06b919ea8c2f8f398cad245b8f6aac726657bc972d663d"
+checksum = "e7d47cbc25a4d00427f9070fd768eaf907f19c903fb72b547b19db2d56b9408e"
 dependencies = [
  "memory_addr",
 ]
@@ -1122,7 +1121,7 @@ checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 [[package]]
 name = "page_table_entry"
 version = "0.5.3"
-source = "git+https://github.com/Mivik/page_table_multiarch.git?rev=2659e3b#2659e3baa820989862fc00f876fc7a9a4dbce41b"
+source = "git+https://github.com/Mivik/page_table_multiarch.git?rev=e33b1e5#e33b1e5a9974dbfd4fc5f74321f00f5e95cc9336"
 dependencies = [
  "aarch64-cpu",
  "bitflags 2.9.0",
@@ -1133,7 +1132,7 @@ dependencies = [
 [[package]]
 name = "page_table_multiarch"
 version = "0.5.3"
-source = "git+https://github.com/Mivik/page_table_multiarch.git?rev=2659e3b#2659e3baa820989862fc00f876fc7a9a4dbce41b"
+source = "git+https://github.com/Mivik/page_table_multiarch.git?rev=e33b1e5#e33b1e5a9974dbfd4fc5f74321f00f5e95cc9336"
 dependencies = [
  "log",
  "memory_addr",
@@ -1679,7 +1678,7 @@ checksum = "aa40e09453618c7a927c08c5a990497a2954da7c2aaa6c65e0d4f0fc975f6114"
 dependencies = [
  "bitflags 2.9.0",
  "log",
- "zerocopy",
+ "zerocopy 0.7.35",
 ]
 
 [[package]]
@@ -1855,7 +1854,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b9b4fd18abc82b8136838da5d50bae7bdea537c574d8dc1a34ed098d6c166f0"
 dependencies = [
  "byteorder",
- "zerocopy-derive",
+ "zerocopy-derive 0.7.35",
+]
+
+[[package]]
+name = "zerocopy"
+version = "0.8.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1039dd0d3c310cf05de012d8a39ff557cb0d23087fd44cad61df08fc31907a2f"
+dependencies = [
+ "zerocopy-derive 0.8.26",
 ]
 
 [[package]]
@@ -1863,6 +1871,17 @@ name = "zerocopy-derive"
 version = "0.7.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fa4f8080344d4671fb4e831a13ad1e68092748387dfc4f55e356242fae12ce3e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.100",
+]
+
+[[package]]
+name = "zerocopy-derive"
+version = "0.8.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ecf5b4cc5364572d7f4c329661bcc82724222973f2cab6f050a4e5c22f75181"
 dependencies = [
  "proc-macro2",
  "quote",
