@@ -13,7 +13,7 @@ cfg-if = "1.0"
 axplat = { workspace = true }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-axcpu = "0.1"
+axcpu = { workspace = true }
 axplat-x86-pc = { path = "../../platforms/axplat-x86-pc" }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
