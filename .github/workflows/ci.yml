@@ -1,0 +1,39 @@
+on: push
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: "recursive"
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-01-18
+          components: rust-src, llvm-tools
+          targets: x86_64-unknown-none, riscv64gc-unknown-none-elf, aarch64-unknown-none, aarch64-unknown-none-softfloat, loongarch64-unknown-none
+
+      - name: Vendor dependencies
+        run: |
+          cargo install cargo-vendor-filterer
+          cargo vendor-filterer >> cargo_config.toml
+
+      - name: Download binaries
+        run: |
+          cargo install --root . axconfig-gen
+
+      - name: Try build
+        run: CARGO_NET_OFFLINE=true make
+
+      - name: Push to oscomp repo
+        run: |
+          git config --unset-all http."https://github.com/".extraheader
+          git config --global user.name ${{ secrets.OSCOMP_USER_NAME }}
+          git config --global user.email ${{ secrets.OSCOMP_USER_EMAIL }}
+          git remote add oscomp ${{ secrets.OSCOMP_REPO }}
+
+          git add bin cargo_config.toml vendor
+          git commit -m "update"
+          git push oscomp HEAD:sync --force

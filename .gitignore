@@ -8,4 +8,5 @@
 *.img
 /kernel-rv
 /kernel-la
+/.cargo
 /vendor

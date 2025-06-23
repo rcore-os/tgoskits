@@ -1,5 +1,5 @@
 export ARCH := riscv64
-export LOG := off
+export LOG := warn
 
 export A = $(PWD)
 export NO_AXSTD = y
@@ -10,9 +10,12 @@ export NET = y
 DIR := $(shell basename $(PWD))
 
 oscomp_build:
-	RUSTUP_TOOLCHAIN=nightly-2025-01-18 $(MAKE) ARCH=riscv64 BUS=mmio build
+	mkdir .cargo
+	cp cargo_config.toml .cargo/config.toml
+	cp bin/* ~/.cargo/bin
+	RUSTUP_TOOLCHAIN=nightly-2025-01-18 $(MAKE) ARCH=riscv64 BUS=mmio LOG=off build
 	cp $(DIR)_riscv64-qemu-virt.bin kernel-rv
-	RUSTUP_TOOLCHAIN=nightly-2025-01-18 $(MAKE) ARCH=loongarch64 build
+	RUSTUP_TOOLCHAIN=nightly-2025-01-18 $(MAKE) ARCH=loongarch64 LOG=off build
 	cp $(DIR)_loongarch64-qemu-virt.elf kernel-la
 
 IMG_URL = https://github.com/oscomp/testsuits-for-oskernel/releases/download/pre-20250615/

@@ -15,6 +15,7 @@ repository = "https://github.com/arceos-org/starry-next"
 
 [workspace.dependencies]
 axfeat = { git = "https://github.com/oscomp/arceos.git", features = [
+    "alloc-slab",
     "fs",
     "fp_simd",
     "irq",
@@ -117,3 +118,6 @@ axns = { path = "arceos/modules/axns" }
 axruntime = { path = "arceos/modules/axruntime" }
 axsync = { path = "arceos/modules/axsync" }
 axtask = { path = "arceos/modules/axtask" }
+
+[package.metadata.vendor-filter]
+platforms = ["riscv64gc-unknown-none-elf", "loongarch64-unknown-none"]
