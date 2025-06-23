@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["api", "core"]
-exclude = [".arceos", "apps"]
+members = ["api", "config", "core"]
+exclude = ["arceos"]
 
 [workspace.package]
 version = "0.1.0"
@@ -16,7 +16,9 @@ repository = "https://github.com/arceos-org/starry-next"
 [workspace.dependencies]
 axfeat = { git = "https://github.com/oscomp/arceos.git", features = [
     "fs",
+    "fp_simd",
     "irq",
+    "lwext4_rs",
     "multitask",
     "net",
     "smp",
@@ -24,7 +26,10 @@ axfeat = { git = "https://github.com/oscomp/arceos.git", features = [
 
 axconfig = { git = "https://github.com/oscomp/arceos.git" }
 axfs = { git = "https://github.com/oscomp/arceos.git" }
-axhal = { git = "https://github.com/oscomp/arceos.git", features = ["uspace", "rtc"] }
+axhal = { git = "https://github.com/oscomp/arceos.git", features = [
+    "uspace",
+    "rtc",
+] }
 axlog = { git = "https://github.com/oscomp/arceos.git" }
 axmm = { git = "https://github.com/oscomp/arceos.git" }
 axnet = { git = "https://github.com/oscomp/arceos.git" }
@@ -55,6 +60,7 @@ linux-raw-sys = { version = "0.9.3", default-features = false, features = [
 memory_addr = "0.4"
 spin = "0.9"
 
+starry-config = { path = "./config" }
 starry-core = { path = "./core" }
 starry-api = { path = "./api" }
 
@@ -87,6 +93,7 @@ axerrno.workspace = true
 linkme.workspace = true
 linux-raw-sys.workspace = true
 
+starry-config.workspace = true
 starry-core.workspace = true
 starry-api.workspace = true
 
@@ -96,3 +103,17 @@ syscalls = { git = "https://github.com/jasonwhite/syscalls.git", rev = "92624de"
 [patch.crates-io]
 page_table_multiarch = { git = "https://github.com/Mivik/page_table_multiarch.git", rev = "e33b1e5" }
 page_table_entry = { git = "https://github.com/Mivik/page_table_multiarch.git", rev = "e33b1e5" }
+
+[patch.'https://github.com/oscomp/arceos.git']
+axfeat = { path = "arceos/api/axfeat" }
+
+axconfig = { path = "arceos/modules/axconfig" }
+axfs-ng = { path = "arceos/modules/axfs-ng" }
+axhal = { path = "arceos/modules/axhal" }
+axlog = { path = "arceos/modules/axlog" }
+axmm = { path = "arceos/modules/axmm" }
+axnet = { path = "arceos/modules/axnet" }
+axns = { path = "arceos/modules/axns" }
+axruntime = { path = "arceos/modules/axruntime" }
+axsync = { path = "arceos/modules/axsync" }
+axtask = { path = "arceos/modules/axtask" }

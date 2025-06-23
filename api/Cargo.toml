@@ -31,6 +31,7 @@ linux-raw-sys = { workspace = true, features = ["ioctl"] }
 memory_addr.workspace = true
 spin.workspace = true
 
+starry-config.workspace = true
 starry-core.workspace = true
 
 axio = "0.1.1"

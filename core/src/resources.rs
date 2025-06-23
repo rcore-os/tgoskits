@@ -39,7 +39,7 @@ pub struct Rlimits([Rlimit; RLIM_NLIMITS as usize]);
 impl Default for Rlimits {
     fn default() -> Self {
         let mut result = Self(Default::default());
-        result[RLIMIT_STACK] = (axconfig::plat::USER_STACK_SIZE as u64).into();
+        result[RLIMIT_STACK] = (starry_config::USER_STACK_SIZE as u64).into();
         result[RLIMIT_NOFILE] = (AX_FILE_LIMIT as u64).into();
         result
     }

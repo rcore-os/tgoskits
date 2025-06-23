@@ -20,13 +20,13 @@ fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags, is_user: bool)
     }
 
     let curr = current();
-    if (axconfig::plat::USER_STACK_TOP - axconfig::plat::USER_STACK_SIZE
-        ..axconfig::plat::USER_STACK_TOP)
+    if (starry_config::USER_STACK_TOP - starry_config::USER_STACK_SIZE
+        ..starry_config::USER_STACK_TOP)
         .contains(&vaddr.as_usize())
     {
         // Stack extension, check rlimit
         let rlim = &curr.task_ext().process_data().rlim.read()[RLIMIT_STACK];
-        let size = axconfig::plat::USER_STACK_TOP - vaddr.as_usize();
+        let size = starry_config::USER_STACK_TOP - vaddr.as_usize();
         if size as u64 > rlim.current {
             send_signal_process(
                 curr.task_ext().thread.process(),

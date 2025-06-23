@@ -900,6 +900,7 @@ dependencies = [
 [[package]]
 name = "kernel-elf-parser"
 version = "0.3.3"
+source = "git+https://github.com/Mivik/kernel_elf_parser.git?rev=3b99715#3b997151767e2ea32f25c1d8179bfbf9c97d6e52"
 dependencies = [
  "axerrno",
  "cfg-if",
@@ -1443,6 +1444,7 @@ dependencies = [
  "linux-raw-sys",
  "shlex",
  "starry-api",
+ "starry-config",
  "starry-core",
  "syscalls",
 ]
@@ -1479,8 +1481,16 @@ dependencies = [
  "page_table_entry",
  "page_table_multiarch",
  "spin 0.9.8",
+ "starry-config",
  "starry-core",
  "x86",
+]
+
+[[package]]
+name = "starry-config"
+version = "0.1.0"
+dependencies = [
+ "cfg-if",
 ]
 
 [[package]]
@@ -1510,6 +1520,7 @@ dependencies = [
  "rand",
  "slab",
  "spin 0.9.8",
+ "starry-config",
  "weak-map",
  "xmas-elf",
 ]
