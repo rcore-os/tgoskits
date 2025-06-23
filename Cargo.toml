@@ -18,7 +18,7 @@ repository = "https://github.com/arceos-org/axcpu"
 documentation = "https://docs.rs/axcpu"
 keywords = ["arceos", "cpu", "architecture", "hal"]
 categories = ["embedded", "no-std", "hardware-support", "os"]
-rust-version = "1.89.0"
+rust-version = "1.88.0"
 
 [features]
 default = []
@@ -28,9 +28,9 @@ uspace = []
 
 [dependencies]
 linkme = "0.3"
-log = "=0.4.21"
+log = "0.4"
 cfg-if = "1.0"
-memory_addr = "0.3"
+memory_addr = "0.4"
 page_table_entry = "0.5"
 static_assertions = "1.1.0"
 
@@ -45,7 +45,7 @@ aarch64-cpu = "10.0"
 tock-registers = "0.9"
 
 [target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64"))'.dependencies]
-riscv = "0.13"
+riscv = "0.14"
 
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
 loongArch64 = "0.2.4"
