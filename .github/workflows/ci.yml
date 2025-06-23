@@ -31,6 +31,7 @@ jobs:
         run: |
           cargo install cargo-vendor-filterer
           cargo vendor-filterer > cargo_config.toml
+          tar -czvf vendor.tar.gz vendor
 
       - name: Download binaries
         run: |
@@ -53,8 +54,7 @@ jobs:
           rm -r .git/modules/arceos
           mv arceos-backup arceos
 
-          tar -czvf vendor.tar.gz vendor
           git add arceos bin cargo_config.toml vendor.tar.gz
 
-          git commit -m "update"
+          git commit -m ${{ github.head_ref }}.${{ github.sha }}
           git push oscomp HEAD:main --force
