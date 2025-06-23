@@ -27,7 +27,7 @@ memory_addr.workspace = true
 spin.workspace = true
 
 crate_interface = "0.1"
-kernel-elf-parser = { path = "/home/mivik/Projects/kernel_elf_parser" }
+kernel-elf-parser = { git = "https://github.com/Mivik/kernel_elf_parser.git", rev = "3b99715" }
 numeric-enum-macro = "0.2"
 percpu = "0.2.0"
 xmas-elf = "0.9"
