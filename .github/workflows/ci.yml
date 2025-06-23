@@ -37,7 +37,7 @@ jobs:
           cargo install --root . axconfig-gen
 
       - name: Try build
-        run: CARGO_NET_OFFLINE=true make
+        run: CARGO_NET_OFFLINE=true make all
 
       - name: Push to oscomp repo
         run: |

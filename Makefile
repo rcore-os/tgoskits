@@ -9,7 +9,7 @@ export NET = y
 
 DIR := $(shell basename $(PWD))
 
-oscomp_build:
+all:
 	mkdir .cargo
 	cp cargo_config.toml .cargo/config.toml
 	cp bin/* ~/.cargo/bin
