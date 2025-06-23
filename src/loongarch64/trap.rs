@@ -13,7 +13,7 @@ core::arch::global_asm!(
 );
 
 fn handle_breakpoint(era: &mut usize) {
-    debug!("Exception(Breakpoint) @ {:#x} ", era);
+    debug!("Exception(Breakpoint) @ {era:#x} ");
     *era += 4;
 }
 

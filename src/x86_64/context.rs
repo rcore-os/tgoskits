@@ -114,17 +114,20 @@ pub struct ExtendedState {
 
 #[cfg(feature = "fp-simd")]
 impl ExtendedState {
+    /// Saves the current extended states from CPU to this structure.
     #[inline]
-    fn save(&mut self) {
+    pub fn save(&mut self) {
         unsafe { core::arch::x86_64::_fxsave64(&mut self.fxsave_area as *mut _ as *mut u8) }
     }
 
+    /// Restores the extended states from this structure to CPU.
     #[inline]
-    fn restore(&self) {
+    pub fn restore(&self) {
         unsafe { core::arch::x86_64::_fxrstor64(&self.fxsave_area as *const _ as *const u8) }
     }
 
-    const fn default() -> Self {
+    /// Returns the extended state with initialized values.
+    pub const fn default() -> Self {
         let mut area: FxsaveArea = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
         area.fcw = 0x37f;
         area.ftw = 0xffff;

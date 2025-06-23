@@ -27,7 +27,7 @@ dependencies = [
  "linkme",
  "log",
  "loongArch64",
- "memory_addr 0.4.0",
+ "memory_addr",
  "page_table_entry",
  "page_table_multiarch",
  "percpu",
@@ -133,12 +133,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5438b8df0f13e16e1f46140de247695a95952a5a4479e47197a8711bf1063373"
 
 [[package]]
-name = "memory_addr"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d4054cba279515fa87761b101d857333ce06391dbe8f18a11347204a7111416"
-
-[[package]]
 name = "page_table_entry"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -146,7 +140,7 @@ checksum = "c097d641745a066856a26eed6e486d4430bb3e32c94f1203ea09c63239b360a0"
 dependencies = [
  "aarch64-cpu",
  "bitflags 2.9.1",
- "memory_addr 0.3.2",
+ "memory_addr",
  "x86_64",
 ]
 
@@ -157,7 +151,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4647889585d29762d747be0916d6d28db72967a697d142be86f187a6b496832a"
 dependencies = [
  "log",
- "memory_addr 0.3.2",
+ "memory_addr",
  "page_table_entry",
  "riscv 0.12.1",
  "x86",

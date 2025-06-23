@@ -56,13 +56,16 @@ pub struct FpuState {
 
 #[cfg(feature = "fp-simd")]
 impl FpuState {
+    /// Save the current FPU states from CPU to this structure.
     #[inline]
-    pub unsafe fn save(&mut self) {
-        save_fp_registers(self);
+    pub fn save(&mut self) {
+        unsafe { save_fp_registers(self) }
     }
+
+    /// Restore FPU states from this structure to CPU.
     #[inline]
-    pub unsafe fn restore(&self) {
-        restore_fp_registers(self);
+    pub fn restore(&self) {
+        unsafe { restore_fp_registers(self) }
     }
 }
 
@@ -183,7 +186,7 @@ impl TaskContext {
             }
         }
         #[cfg(feature = "fp-simd")]
-        unsafe {
+        {
             self.fpu.save();
             next_ctx.fpu.restore();
         }

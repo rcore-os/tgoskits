@@ -76,8 +76,14 @@ pub struct FpState {
 
 #[cfg(feature = "fp-simd")]
 impl FpState {
-    fn switch_to(&mut self, next_fpstate: &FpState) {
-        unsafe { fpstate_switch(self, next_fpstate) }
+    /// Saves the current FP/SIMD states from CPU to this structure.
+    pub fn save(&mut self) {
+        unsafe { fpstate_save(self) }
+    }
+
+    /// Restores the FP/SIMD states from this structure to CPU.
+    pub fn restore(&self) {
+        unsafe { fpstate_restore(self) }
     }
 }
 
@@ -153,7 +159,10 @@ impl TaskContext {
     /// restores the next task's context from `next_ctx` to CPU.
     pub fn switch_to(&mut self, next_ctx: &Self) {
         #[cfg(feature = "fp-simd")]
-        self.fp_state.switch_to(&next_ctx.fp_state);
+        {
+            self.fp_state.save();
+            next_ctx.fp_state.restore();
+        }
         #[cfg(feature = "uspace")]
         if self.ttbr0_el1 != next_ctx.ttbr0_el1 {
             unsafe { crate::asm::write_user_page_table(next_ctx.ttbr0_el1) };
@@ -195,7 +204,7 @@ unsafe extern "C" fn context_switch(_current_task: &mut TaskContext, _next_task:
 
 #[unsafe(naked)]
 #[cfg(feature = "fp-simd")]
-unsafe extern "C" fn fpstate_switch(_current_fpstate: &mut FpState, _next_fpstate: &FpState) {
+unsafe extern "C" fn fpstate_save(state: &mut FpState) {
     naked_asm!(
         ".arch armv8
         // save fp/neon context
@@ -220,29 +229,39 @@ unsafe extern "C" fn fpstate_switch(_current_fpstate: &mut FpState, _next_fpstat
         str     x9, [x0, 64 *  8]
         str     x10, [x0, 65 * 8]
 
+        isb
+        ret"
+    )
+}
+
+#[unsafe(naked)]
+#[cfg(feature = "fp-simd")]
+unsafe extern "C" fn fpstate_restore(state: &FpState) {
+    naked_asm!(
+        ".arch armv8
         // restore fp/neon context
-        ldp     q0, q1, [x1, 0 * 16]
-        ldp     q2, q3, [x1, 2 * 16]
-        ldp     q4, q5, [x1, 4 * 16]
-        ldp     q6, q7, [x1, 6 * 16]
-        ldp     q8, q9, [x1, 8 * 16]
-        ldp     q10, q11, [x1, 10 * 16]
-        ldp     q12, q13, [x1, 12 * 16]
-        ldp     q14, q15, [x1, 14 * 16]
-        ldp     q16, q17, [x1, 16 * 16]
-        ldp     q18, q19, [x1, 18 * 16]
-        ldp     q20, q21, [x1, 20 * 16]
-        ldp     q22, q23, [x1, 22 * 16]
-        ldp     q24, q25, [x1, 24 * 16]
-        ldp     q26, q27, [x1, 26 * 16]
-        ldp     q28, q29, [x1, 28 * 16]
-        ldp     q30, q31, [x1, 30 * 16]
-        ldr     x9, [x1, 64 * 8]
-        ldr     x10, [x1, 65 * 8]
+        ldp     q0, q1, [x0, 0 * 16]
+        ldp     q2, q3, [x0, 2 * 16]
+        ldp     q4, q5, [x0, 4 * 16]
+        ldp     q6, q7, [x0, 6 * 16]
+        ldp     q8, q9, [x0, 8 * 16]
+        ldp     q10, q11, [x0, 10 * 16]
+        ldp     q12, q13, [x0, 12 * 16]
+        ldp     q14, q15, [x0, 14 * 16]
+        ldp     q16, q17, [x0, 16 * 16]
+        ldp     q18, q19, [x0, 18 * 16]
+        ldp     q20, q21, [x0, 20 * 16]
+        ldp     q22, q23, [x0, 22 * 16]
+        ldp     q24, q25, [x0, 24 * 16]
+        ldp     q26, q27, [x0, 26 * 16]
+        ldp     q28, q29, [x0, 28 * 16]
+        ldp     q30, q31, [x0, 30 * 16]
+        ldr     x9, [x0, 64 * 8]
+        ldr     x10, [x0, 65 * 8]
         msr     fpcr, x9
         msr     fpsr, x10
 
         isb
-        ret",
+        ret"
     )
 }
