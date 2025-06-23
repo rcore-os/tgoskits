@@ -1,5 +1,6 @@
 //! Physical memory information.
 
+use core::ops::{Deref, DerefMut};
 use core::{fmt, ops::Range};
 
 use memory_addr::{PhysAddr, VirtAddr};
@@ -49,6 +50,31 @@ pub const DEFAULT_MMIO_FLAGS: MemRegionFlags = MemRegionFlags::READ
 
 /// The raw memory range with start and size.
 pub type RawRange = (usize, usize);
+
+/// A wrapper type for aligning a value to 4K bytes.
+#[repr(align(4096))]
+pub struct Aligned4K<T: Sized>(T);
+
+impl<T: Sized> Aligned4K<T> {
+    /// Creates a new [`Aligned4K`] instance with the given value.
+    pub const fn new(value: T) -> Self {
+        Self(value)
+    }
+}
+
+impl<T> Deref for Aligned4K<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> DerefMut for Aligned4K<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 /// A physical memory region.
 #[derive(Debug, Clone, Copy)]

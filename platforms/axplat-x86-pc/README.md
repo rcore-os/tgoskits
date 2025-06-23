@@ -59,8 +59,6 @@ SECTIONS
     }
 
     .data : ALIGN(4K) {
-        *(.data.boot_page_table)    /* This section is required */
-        . = ALIGN(4K);
         *(.data .data.*)
     }
 
@@ -96,7 +94,6 @@ Some symbols and sections are required to be defined in the linker script, liste
 - `_edata`: End of data section.
 - `_ebss`: End of BSS section.
 - `.text.boot`: Kernel boot code.
-- `.data.boot_page_table`: Page table for kernel booting.
 - `.bss.stack`: Stack for kernel booting.
 - `.percpu` section and related symbols: CPU-local data managed by the [percpu](https://crates.io/crates/percpu) crate.
 

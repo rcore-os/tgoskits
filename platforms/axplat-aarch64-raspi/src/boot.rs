@@ -1,3 +1,4 @@
+use axplat::mem::Aligned4K;
 use page_table_entry::{GenericPTE, MappingFlags, aarch64::A64PTE};
 
 use crate::config::plat::{BOOT_STACK_SIZE, PHYS_VIRT_OFFSET};
@@ -5,11 +6,11 @@ use crate::config::plat::{BOOT_STACK_SIZE, PHYS_VIRT_OFFSET};
 #[unsafe(link_section = ".bss.stack")]
 static mut BOOT_STACK: [u8; BOOT_STACK_SIZE] = [0; BOOT_STACK_SIZE];
 
-#[unsafe(link_section = ".data.boot_page_table")]
-static mut BOOT_PT_L0: [A64PTE; 512] = [A64PTE::empty(); 512];
+#[unsafe(link_section = ".data")]
+static mut BOOT_PT_L0: Aligned4K<[A64PTE; 512]> = Aligned4K::new([A64PTE::empty(); 512]);
 
-#[unsafe(link_section = ".data.boot_page_table")]
-static mut BOOT_PT_L1: [A64PTE; 512] = [A64PTE::empty(); 512];
+#[unsafe(link_section = ".data")]
+static mut BOOT_PT_L1: Aligned4K<[A64PTE; 512]> = Aligned4K::new([A64PTE::empty(); 512]);
 
 unsafe fn init_boot_page_table() {
     unsafe {

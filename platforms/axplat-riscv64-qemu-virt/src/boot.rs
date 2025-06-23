@@ -1,10 +1,11 @@
 use crate::config::plat::{BOOT_STACK_SIZE, PHYS_VIRT_OFFSET};
+use axplat::mem::Aligned4K;
 
 #[unsafe(link_section = ".bss.stack")]
 static mut BOOT_STACK: [u8; BOOT_STACK_SIZE] = [0; BOOT_STACK_SIZE];
 
-#[unsafe(link_section = ".data.boot_page_table")]
-static mut BOOT_PT_SV39: [u64; 512] = [0; 512];
+#[unsafe(link_section = ".data")]
+static mut BOOT_PT_SV39: Aligned4K<[u64; 512]> = Aligned4K::new([0; 512]);
 
 #[allow(clippy::identity_op)] // (0x0 << 10) here makes sense because it's an address
 unsafe fn init_boot_page_table() {

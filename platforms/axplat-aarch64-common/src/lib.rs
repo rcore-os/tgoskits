@@ -1,4 +1,4 @@
-//! Common platform device drivers for AArch64 platforms.
+//! Common peripheral drivers for AArch64 platforms.
 //!
 //! It includes:
 //!

@@ -56,8 +56,6 @@ SECTIONS
     }
 
     .data : ALIGN(4K) {
-        *(.data.boot_page_table)    /* This section is required */
-        . = ALIGN(4K);
         *(.data .data.*)
     }
 
@@ -79,7 +77,6 @@ SECTIONS
 Some symbols and sections are required to be defined in the linker script, listed as below:
 - `_ekernel`: End of kernel image.
 - `.text.boot`: Kernel boot code.
-- `.data.boot_page_table`: Page table for kernel booting.
 - `.bss.stack`: Stack for kernel booting.
 
 [hello-kernel](https://github.com/arceos-org/axplat_crates/tree/main/examples/hello-kernel) is a complete example of a minimal kernel implemented using [axplat](https://github.com/arceos-org/axplat_crates/tree/main/axplat) and related platform packages.
