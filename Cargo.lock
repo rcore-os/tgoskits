@@ -264,7 +264,7 @@ dependencies = [
 [[package]]
 name = "axfs-ng-vfs"
 version = "0.1.0"
-source = "git+https://github.com/Mivik/axfs-ng-vfs?rev=f488cdf#f488cdf74c4fb257eadb2a833060ed95a24c0245"
+source = "git+https://github.com/Starry-Mix-THU/axfs-ng-vfs?rev=f488cdf#f488cdf74c4fb257eadb2a833060ed95a24c0245"
 dependencies = [
  "axerrno",
  "bitflags 2.9.0",
@@ -907,7 +907,7 @@ dependencies = [
 [[package]]
 name = "kernel-elf-parser"
 version = "0.3.3"
-source = "git+https://github.com/Mivik/kernel_elf_parser.git?rev=3b99715#3b997151767e2ea32f25c1d8179bfbf9c97d6e52"
+source = "git+https://github.com/Starry-Mix-THU/kernel_elf_parser.git?rev=3b99715#3b997151767e2ea32f25c1d8179bfbf9c97d6e52"
 dependencies = [
  "axerrno",
  "cfg-if",
@@ -1129,7 +1129,7 @@ checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 [[package]]
 name = "page_table_entry"
 version = "0.5.3"
-source = "git+https://github.com/Mivik/page_table_multiarch.git?rev=e33b1e5#e33b1e5a9974dbfd4fc5f74321f00f5e95cc9336"
+source = "git+https://github.com/Starry-Mix-THU/page_table_multiarch.git?rev=e33b1e5#e33b1e5a9974dbfd4fc5f74321f00f5e95cc9336"
 dependencies = [
  "aarch64-cpu",
  "bitflags 2.9.0",
@@ -1140,7 +1140,7 @@ dependencies = [
 [[package]]
 name = "page_table_multiarch"
 version = "0.5.3"
-source = "git+https://github.com/Mivik/page_table_multiarch.git?rev=e33b1e5#e33b1e5a9974dbfd4fc5f74321f00f5e95cc9336"
+source = "git+https://github.com/Starry-Mix-THU/page_table_multiarch.git?rev=e33b1e5#e33b1e5a9974dbfd4fc5f74321f00f5e95cc9336"
 dependencies = [
  "log",
  "memory_addr",

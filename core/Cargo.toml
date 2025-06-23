@@ -29,7 +29,7 @@ spin.workspace = true
 starry-config.workspace = true
 
 crate_interface = "0.1"
-kernel-elf-parser = { git = "https://github.com/Mivik/kernel_elf_parser.git", rev = "3b99715" }
+kernel-elf-parser = { git = "https://github.com/Starry-Mix-THU/kernel_elf_parser.git", rev = "3b99715" }
 numeric-enum-macro = "0.2"
 percpu = "0.2.0"
 xmas-elf = "0.9"

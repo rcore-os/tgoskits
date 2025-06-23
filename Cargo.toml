@@ -45,7 +45,7 @@ axprocess = { git = "https://github.com/Starry-OS/axprocess.git" }
 axsignal = { git = "https://github.com/Starry-OS/axsignal.git", rev = "b5b6089" }
 
 axfs-ng = { git = "https://github.com/oscomp/arceos.git" }
-axfs-ng-vfs = { git = "https://github.com/Mivik/axfs-ng-vfs", rev = "f488cdf" }
+axfs-ng-vfs = { git = "https://github.com/Starry-Mix-THU/axfs-ng-vfs", rev = "f488cdf" }
 
 axerrno = "0.1"
 bitflags = "2.6"
@@ -102,8 +102,8 @@ shlex = { version = "1.3.0", default-features = false }
 syscalls = { git = "https://github.com/jasonwhite/syscalls.git", rev = "92624de", default-features = false }
 
 [patch.crates-io]
-page_table_multiarch = { git = "https://github.com/Mivik/page_table_multiarch.git", rev = "e33b1e5" }
-page_table_entry = { git = "https://github.com/Mivik/page_table_multiarch.git", rev = "e33b1e5" }
+page_table_multiarch = { git = "https://github.com/Starry-Mix-THU/page_table_multiarch.git", rev = "e33b1e5" }
+page_table_entry = { git = "https://github.com/Starry-Mix-THU/page_table_multiarch.git", rev = "e33b1e5" }
 
 [patch.'https://github.com/oscomp/arceos.git']
 axfeat = { path = "arceos/api/axfeat" }
