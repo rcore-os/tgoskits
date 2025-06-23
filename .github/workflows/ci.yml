@@ -14,6 +14,17 @@ jobs:
           toolchain: nightly-2025-01-18
           components: rust-src, llvm-tools
           targets: x86_64-unknown-none, riscv64gc-unknown-none-elf, aarch64-unknown-none, aarch64-unknown-none-softfloat, loongarch64-unknown-none
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
+          cache-on-failure: true
+      - run: cargo install cargo-binutils
+      - uses: arceos-org/setup-musl@v1
+        with:
+          arch: riscv64
+      - uses: arceos-org/setup-musl@v1
+        with:
+          arch: loongarch64
 
       - name: Vendor dependencies
         run: |
@@ -32,8 +43,8 @@ jobs:
           git config --unset-all http."https://github.com/".extraheader
           git config --global user.name ${{ secrets.OSCOMP_USER_NAME }}
           git config --global user.email ${{ secrets.OSCOMP_USER_EMAIL }}
-          git remote add oscomp ${{ secrets.OSCOMP_REPO }}
+          git remote add oscomp "${{ secrets.OSCOMP_REPO }}"
 
-          git add bin cargo_config.toml vendor
+          git add -f bin cargo_config.toml vendor
           git commit -m "update"
           git push oscomp HEAD:sync --force
