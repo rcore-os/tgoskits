@@ -14,7 +14,7 @@ use lock_api::{Mutex, RawMutex};
 
 use crate::{
     DirEntry, DirEntrySink, Filesystem, FilesystemOps, Metadata, MetadataUpdate, NodePermission,
-    NodeType, ReferenceKey, VfsError, VfsResult,
+    NodeType, OpenOptions, ReferenceKey, VfsError, VfsResult,
     path::{DOT, DOTDOT, PathBuf},
 };
 
@@ -236,17 +236,10 @@ impl<M: RawMutex> Location<M> {
         self.entry.as_dir()?.unlink(name, is_dir)
     }
 
-    pub fn open_file_or_create(
-        &self,
-        name: &str,
-        create: bool,
-        create_new: bool,
-        permission: NodePermission,
-        user: Option<(u32, u32)>,
-    ) -> VfsResult<Location<M>> {
+    pub fn open_file(&self, name: &str, options: &OpenOptions) -> VfsResult<Location<M>> {
         self.entry
             .as_dir()?
-            .open_file_or_create(name, create, create_new, permission, user)
+            .open_file(name, options)
             .map(|entry| self.wrap(entry).resolve_mountpoint())
     }
 

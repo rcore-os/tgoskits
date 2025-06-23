@@ -74,6 +74,17 @@ pub trait DirNodeOps<M: RawMutex>: NodeOps<M> {
     fn rename(&self, src_name: &str, dst_dir: &DirNode<M>, dst_name: &str) -> VfsResult<()>;
 }
 
+/// Options for opening (or creating) a directory entry.
+///
+/// See [`DirNode::open_file`] for more details.
+#[derive(Default, Debug, Clone)]
+pub struct OpenOptions {
+    pub create: bool,
+    pub create_new: bool,
+    pub permission: NodePermission,
+    pub user: Option<(u32, u32)>, // (uid, gid)
+}
+
 pub struct DirNode<M> {
     ops: Arc<dyn DirNodeOps<M>>,
     cache: Mutex<M, BTreeMap<String, DirEntry<M>>>,
@@ -255,33 +266,30 @@ impl<M: RawMutex> DirNode<M> {
         })
     }
 
-    /// Opens a file in the directory, optionally creating it if it doesn't
-    /// exist.
-    pub fn open_file_or_create(
-        &self,
-        name: &str,
-        create: bool,
-        create_new: bool,
-        permission: NodePermission,
-        user: Option<(u32, u32)>,
-    ) -> VfsResult<DirEntry<M>> {
+    /// Opens (or creates) a file in the directory.
+    pub fn open_file(&self, name: &str, options: &OpenOptions) -> VfsResult<DirEntry<M>> {
         verify_entry_name(name)?;
 
         let mut children = self.cache.lock();
         match self.lookup_locked(name, &mut children) {
             Ok(val) => {
-                if create_new {
+                if options.create_new {
                     return Err(VfsError::EEXIST);
                 }
                 return Ok(val);
             }
-            Err(err) if err == VfsError::ENOENT && create => {}
+            Err(err) if err == VfsError::ENOENT && options.create => {}
             Err(err) => return Err(err),
         }
-        let entry = self.create_locked(name, NodeType::RegularFile, permission, &mut children)?;
-        if user.is_some() {
+        let entry = self.create_locked(
+            name,
+            NodeType::RegularFile,
+            options.permission,
+            &mut children,
+        )?;
+        if options.user.is_some() {
             entry.update_metadata(MetadataUpdate {
-                owner: user,
+                owner: options.user,
                 ..Default::default()
             })?;
         }
