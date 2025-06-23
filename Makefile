@@ -13,7 +13,7 @@ all:
 	mkdir .cargo
 	cp cargo_config.toml .cargo/config.toml
 	cp bin/* ~/.cargo/bin
-	tar -xf vendor.tar.gz
+	tar -xf deps.tar.gz
 	RUSTUP_TOOLCHAIN=nightly-2025-01-18 $(MAKE) ARCH=riscv64 BUS=mmio LOG=off build
 	cp $(DIR)_riscv64-qemu-virt.bin kernel-rv
 	RUSTUP_TOOLCHAIN=nightly-2025-01-18 $(MAKE) ARCH=loongarch64 LOG=off build
