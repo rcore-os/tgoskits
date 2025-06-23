@@ -107,6 +107,12 @@ pub fn load_user_app(
     let path = path
         .or_else(|| args.first().map(String::as_str))
         .ok_or(AxError::InvalidInput)?;
+    if path.ends_with(".sh") {
+        let new_args: Vec<String> = core::iter::once("/bin/sh".to_owned())
+            .chain(args.iter().cloned())
+            .collect();
+        return load_user_app(uspace, None, &new_args, envs);
+    }
     let file_data = FS_CONTEXT.lock().read(path)?;
     if file_data.starts_with(b"#!") {
         let head = &file_data[2..file_data.len().min(256)];
