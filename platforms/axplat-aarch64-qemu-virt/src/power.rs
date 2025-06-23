@@ -14,7 +14,11 @@ impl PowerIf for PowerImpl {
         {
             let entry_paddr =
                 axplat::mem::virt_to_phys(va!(crate::boot::_start_secondary as usize));
-            axplat_aarch64_common::psci::cpu_on(cpu_id, entry_paddr.as_usize(), stack_top_paddr);
+            axplat_aarch64_peripherals::psci::cpu_on(
+                cpu_id,
+                entry_paddr.as_usize(),
+                stack_top_paddr,
+            );
         }
         #[cfg(not(feature = "smp"))]
         {
@@ -28,6 +32,6 @@ impl PowerIf for PowerImpl {
 
     /// Shutdown the whole system.
     fn system_off() -> ! {
-        axplat_aarch64_common::psci::system_off()
+        axplat_aarch64_peripherals::psci::system_off()
     }
 }

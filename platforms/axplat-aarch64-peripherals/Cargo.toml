@@ -1,6 +1,7 @@
 [package]
-name = "axplat-aarch64-common"
+name = "axplat-aarch64-peripherals"
 version = "0.1.0"
+description = "ARM64 common peripheral drivers with `axplat` compatibility"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -10,14 +11,14 @@ repository.workspace = true
 
 [dependencies]
 kspin = "0.1"
-log = "=0.4.21"
+log = "0.4"
 int_ratio = "0.1"
 lazyinit = "0.2"
 memory_addr = "0.3"
 page_table_entry = "0.5"
 aarch64-cpu = "10.0"
 arm_pl011 = "0.1"
-arm_gicv2 = { version = "0.1" }
-arm_pl031 = { version = "0.2" }
+arm_gicv2 = "0.1"
+arm_pl031 = "0.2"
 axcpu = { workspace = true }
 axplat = { workspace = true }

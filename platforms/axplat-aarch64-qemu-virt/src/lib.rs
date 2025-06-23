@@ -20,8 +20,8 @@ mod config {
     );
 }
 
-axplat_aarch64_common::console_if_impl!(ConsoleIfImpl);
-axplat_aarch64_common::time_if_impl!(TimeIfImpl);
+axplat_aarch64_peripherals::console_if_impl!(ConsoleIfImpl);
+axplat_aarch64_peripherals::time_if_impl!(TimeIfImpl);
 
 #[cfg(feature = "irq")]
-axplat_aarch64_common::irq_if_impl!(IrqIfImpl);
+axplat_aarch64_peripherals::irq_if_impl!(IrqIfImpl);

@@ -16,7 +16,7 @@ smp = []
 
 [dependencies]
 kspin = "0.1"
-log = "=0.4.21"
+log = "0.4"
 lazyinit = "0.2"
 memory_addr = "0.3"
 loongArch64 = "0.2.4"

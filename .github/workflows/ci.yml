@@ -51,7 +51,7 @@ jobs:
         platform:
           - name: axplat-x86-pc
             target: x86_64-unknown-none
-          - name: axplat-aarch64-common
+          - name: axplat-aarch64-peripherals
             target: aarch64-unknown-none
           - name: axplat-aarch64-qemu-virt
             target: aarch64-unknown-none
@@ -110,7 +110,7 @@ jobs:
     - name: Build docs
       continue-on-error: ${{ github.ref != env.default-branch && github.event_name != 'pull_request' }}
       run: |
-        cargo doc --no-deps --all-features -p axplat -p axplat-macros -p axplat-aarch64-common
+        cargo doc --no-deps --all-features -p axplat -p axplat-macros -p axplat-aarch64-peripherals
     - name: Deploy to Github Pages
       if: ${{ github.ref == env.default-branch }}
       uses: JamesIves/github-pages-deploy-action@v4

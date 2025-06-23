@@ -15,9 +15,9 @@ rtc = ["riscv_goldfish"]
 smp = []
 
 [dependencies]
-log = "=0.4.21"
+log = "0.4"
 memory_addr = "0.3"
-riscv = "0.13"
+riscv = "0.14"
 sbi-rt = { version = "0.0.3", features = ["legacy"] }
 riscv_goldfish = { version = "0.1", optional = true }
 

@@ -7,7 +7,7 @@ members = [
     "cargo-axplat",
 
     "platforms/axplat-x86-pc",
-    "platforms/axplat-aarch64-common",
+    "platforms/axplat-aarch64-peripherals",
     "platforms/axplat-aarch64-qemu-virt",
     "platforms/axplat-aarch64-raspi",
     "platforms/axplat-aarch64-bsta1000b",

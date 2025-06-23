@@ -158,7 +158,7 @@ dependencies = [
  "axconfig-macros",
  "axcpu",
  "axplat",
- "axplat-aarch64-common",
+ "axplat-aarch64-peripherals",
  "dw_apb_uart",
  "kspin",
  "log",
@@ -167,7 +167,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "axplat-aarch64-common"
+name = "axplat-aarch64-peripherals"
 version = "0.1.0"
 dependencies = [
  "aarch64-cpu",
@@ -191,7 +191,7 @@ dependencies = [
  "axconfig-macros",
  "axcpu",
  "axplat",
- "axplat-aarch64-common",
+ "axplat-aarch64-peripherals",
  "log",
  "memory_addr",
  "page_table_entry",
@@ -204,7 +204,7 @@ dependencies = [
  "axconfig-macros",
  "axcpu",
  "axplat",
- "axplat-aarch64-common",
+ "axplat-aarch64-peripherals",
  "log",
  "memory_addr",
  "page_table_entry",
@@ -218,7 +218,7 @@ dependencies = [
  "axconfig-macros",
  "axcpu",
  "axplat",
- "axplat-aarch64-common",
+ "axplat-aarch64-peripherals",
  "log",
  "memory_addr",
  "page_table_entry",
@@ -260,7 +260,7 @@ dependencies = [
  "axplat",
  "log",
  "memory_addr",
- "riscv 0.13.0",
+ "riscv 0.14.0",
  "riscv_goldfish",
  "sbi-rt",
 ]
@@ -969,6 +969,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "riscv"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f1671c79a01a149fe000af2429ce9ccc8e58cdecda72672355d50e5536b363c"
+dependencies = [
+ "critical-section",
+ "embedded-hal",
+ "paste",
+ "riscv-macros",
+ "riscv-pac",
+]
+
+[[package]]
 name = "riscv-macros"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1130,9 +1143,9 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "syn"
-version = "2.0.103"
+version = "2.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4307e30089d6fd6aff212f2da3a1f9e32f3223b1f010fb09b7c95f90f3ca1e8"
+checksum = "17b6f705963418cdb9927482fa304bc562ece2fdd4f616084c50b7023b435a40"
 dependencies = [
  "proc-macro2",
  "quote",

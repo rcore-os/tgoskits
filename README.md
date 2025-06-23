@@ -2,10 +2,11 @@
 
 Reusable crates used for [ArceOS](https://github.com/arceos-org/arceos) Hardware Abstraction Layer (HAL).
 
-## Common crates
+## Library crates
 
 * [axplat](./axplat)
 * [axplat-macros](./axplat-macros)
+* [axplat-aarch64-peripherals](./platforms/axplat-aarch64-peripherals)
 
 ## Platform-specific crates
 
