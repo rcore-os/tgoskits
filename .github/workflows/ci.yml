@@ -30,7 +30,7 @@ jobs:
       - name: Vendor dependencies
         run: |
           cargo install cargo-vendor-filterer
-          cargo vendor-filterer >> cargo_config.toml
+          cargo vendor-filterer > cargo_config.toml
 
       - name: Download binaries
         run: |
@@ -46,6 +46,15 @@ jobs:
           git config --global user.email ${{ secrets.OSCOMP_USER_EMAIL }}
           git remote add oscomp "${{ secrets.OSCOMP_REPO }}"
 
-          git add -f bin cargo_config.toml vendor
+          rm -r arceos/.git
+          mv arceos arceos-backup
+          git rm --cached -r arceos
+          rm .gitmodules
+          rm -r .git/modules/arceos
+          mv arceos-backup arceos
+
+          tar -czvf vendor.tar.gz vendor
+          git add arceos bin cargo_config.toml vendor.tar.gz
+
           git commit -m "update"
-          git push oscomp HEAD:sync --force
+          git push oscomp HEAD:main --force
