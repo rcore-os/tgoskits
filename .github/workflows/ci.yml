@@ -1,24 +1,18 @@
 on: push
 
 jobs:
-  sync:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: "recursive"
-          fetch-depth: 0
 
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2025-01-18
-          components: rust-src, llvm-tools
-          targets: x86_64-unknown-none, riscv64gc-unknown-none-elf, aarch64-unknown-none, aarch64-unknown-none-softfloat, loongarch64-unknown-none
       - uses: Swatinem/rust-cache@v2
         with:
           cache-targets: false
-          cache-on-failure: true
+
       - run: cargo install cargo-binutils
       - uses: arceos-org/setup-musl@v1
         with:
@@ -27,26 +21,44 @@ jobs:
         with:
           arch: loongarch64
 
-      - name: Vendor dependencies
+      - name: Build
+        run: make all
+
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source repository
+        uses: actions/checkout@v4
+        with:
+          path: source
+          submodules: recursive
+
+      - name: Checkout oscomp repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.OSCOMP_REPO }}
+          path: oscomp
+          fetch-depth: 0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
+
+      - name: Prepare dependencies
         run: |
+          cd ./source
           cargo install cargo-vendor-filterer
           cargo vendor-filterer > cargo_config.toml
-          tar -czvf deps.tar.gz arceos vendor
-
-      - name: Download binaries
-        run: |
           cargo install --root . axconfig-gen
-
-      - name: Try build
-        run: CARGO_NET_OFFLINE=true make all
 
       - name: Push to oscomp repo
         run: |
-          git config --unset-all http."https://github.com/".extraheader
-          git config --global user.name ${{ secrets.OSCOMP_USER_NAME }}
-          git config --global user.email ${{ secrets.OSCOMP_USER_EMAIL }}
-          git remote add oscomp "${{ secrets.OSCOMP_REPO }}"
+          rsync -a --exclude='.git' --delete ./source/ ./oscomp/
 
-          git add bin cargo_config.toml deps.tar.gz
-          git commit -m ${{ github.ref_name }}.${{ github.sha }}
-          git push oscomp HEAD:main --force
+          cd ./oscomp
+          git config --unset-all http."https://github.com/".extraheader
+          git config user.name ${{ secrets.OSCOMP_USER_NAME }}
+          git config user.email ${{ secrets.OSCOMP_USER_EMAIL }}
+
+          git commit -am ${{ github.ref_name }}.${{ github.sha }}
+          git push

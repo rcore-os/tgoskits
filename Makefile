@@ -10,10 +10,13 @@ export NET = y
 DIR := $(shell basename $(PWD))
 
 all:
-	mkdir .cargo
-	cp cargo_config.toml .cargo/config.toml
-	cp bin/* ~/.cargo/bin
-	tar -xf deps.tar.gz
+	@if [ -f cargo_config.toml ]; then \
+		mkdir .cargo; \
+		cp cargo_config.toml .cargo/config.toml; \
+	fi
+	@if [ -d bin ]; then \
+		cp bin/* ~/.cargo/bin; \
+	fi
 	RUSTUP_TOOLCHAIN=nightly-2025-01-18 $(MAKE) ARCH=riscv64 BUS=mmio LOG=off build
 	cp $(DIR)_riscv64-qemu-virt.bin kernel-rv
 	RUSTUP_TOOLCHAIN=nightly-2025-01-18 $(MAKE) ARCH=loongarch64 LOG=off build

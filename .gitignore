@@ -9,4 +9,4 @@
 /kernel-rv
 /kernel-la
 /.cargo
-/vendor
+/.crates*
