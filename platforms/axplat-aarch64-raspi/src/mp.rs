@@ -1,4 +1,4 @@
-use crate::mem::{phys_to_virt, virt_to_phys};
+use axplat::mem::{phys_to_virt, virt_to_phys};
 use memory_addr::PhysAddr;
 
 static mut SECONDARY_STACK_TOP: usize = 0;

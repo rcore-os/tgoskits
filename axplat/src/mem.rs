@@ -2,7 +2,7 @@
 
 use core::{fmt, ops::Range};
 
-use memory_addr::PhysAddr;
+use memory_addr::{PhysAddr, VirtAddr};
 
 bitflags::bitflags! {
     /// The flags of a physical memory region.
@@ -115,6 +115,12 @@ pub trait MemIf {
 
     /// Returns all device memory (MMIO) ranges on the platform.
     fn mmio_ranges() -> &'static [RawRange];
+
+    /// Translates a physical address to a virtual address.
+    fn phys_to_virt(paddr: PhysAddr) -> VirtAddr;
+
+    /// Translates a virtual address to a physical address.
+    fn virt_to_phys(vaddr: VirtAddr) -> PhysAddr;
 }
 
 /// Returns the total size of physical memory (RAM) on the platform.

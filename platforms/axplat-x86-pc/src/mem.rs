@@ -13,10 +13,6 @@ const MAX_REGIONS: usize = 16;
 
 static RAM_REGIONS: LazyInit<Vec<RawRange, MAX_REGIONS>> = LazyInit::new();
 
-pub const fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
-    va!(paddr.as_usize() + PHYS_VIRT_OFFSET)
-}
-
 pub fn init(multiboot_info_ptr: usize) {
     let mut mm = MemIfImpl;
     let info = unsafe { Multiboot::from_ptr(multiboot_info_ptr as _, &mut mm).unwrap() };
@@ -36,7 +32,7 @@ struct MemIfImpl;
 
 impl MemoryManagement for MemIfImpl {
     unsafe fn paddr_to_slice(&self, addr: PAddr, size: usize) -> Option<&'static [u8]> {
-        let ptr = phys_to_virt(pa!(addr as usize)).as_ptr();
+        let ptr = Self::phys_to_virt(pa!(addr as usize)).as_ptr();
         Some(unsafe { core::slice::from_raw_parts(ptr, size) })
     }
 
@@ -64,5 +60,15 @@ impl MemIf for MemIfImpl {
     /// Returns all device memory (MMIO) ranges on the platform.
     fn mmio_ranges() -> &'static [RawRange] {
         &MMIO_RANGES
+    }
+
+    /// Translates a physical address to a virtual address.
+    fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
+        va!(paddr.as_usize() + PHYS_VIRT_OFFSET)
+    }
+
+    /// Translates a virtual address to a physical address.
+    fn virt_to_phys(vaddr: VirtAddr) -> PhysAddr {
+        pa!(vaddr.as_usize() - PHYS_VIRT_OFFSET)
     }
 }

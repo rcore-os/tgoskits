@@ -12,7 +12,8 @@ impl PowerIf for PowerImpl {
     fn cpu_boot(cpu_id: usize, stack_top_paddr: usize) {
         #[cfg(feature = "smp")]
         {
-            let entry_paddr = crate::mem::virt_to_phys(va!(crate::boot::_start_secondary as usize));
+            let entry_paddr =
+                axplat::mem::virt_to_phys(va!(crate::boot::_start_secondary as usize));
             axplat_aarch64_common::psci::cpu_on(cpu_id, entry_paddr.as_usize(), stack_top_paddr);
         }
         #[cfg(not(feature = "smp"))]

@@ -2,6 +2,7 @@
 
 use core::{cell::SyncUnsafeCell, mem::MaybeUninit};
 
+use axplat::mem::phys_to_virt;
 use kspin::SpinNoIrq;
 use lazyinit::LazyInit;
 use memory_addr::PhysAddr;
@@ -10,7 +11,6 @@ use x2apic::lapic::{LocalApic, LocalApicBuilder, xapic_base};
 use x86_64::instructions::port::Port;
 
 use self::vectors::*;
-use crate::mem::phys_to_virt;
 
 pub(super) mod vectors {
     pub const APIC_TIMER_VECTOR: u8 = 0xf0;

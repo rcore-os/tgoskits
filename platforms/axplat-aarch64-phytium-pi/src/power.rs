@@ -13,7 +13,7 @@ impl PowerIf for PowerImpl {
         #[cfg(feature = "smp")]
         {
             use crate::config::plat::CPU_ID_LIST;
-            use crate::mem::virt_to_phys;
+            use axplat::mem::virt_to_phys;
 
             let entry = virt_to_phys(va!(crate::boot::_start_secondary as usize));
             axplat_aarch64_common::psci::cpu_on(

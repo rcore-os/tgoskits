@@ -3,7 +3,7 @@ use axplat::init::InitIf;
 #[allow(unused_imports)]
 use crate::config::devices::{GICC_PADDR, GICD_PADDR, RTC_PADDR, TIMER_IRQ, UART_IRQ, UART_PADDR};
 use crate::config::plat::PSCI_METHOD;
-use crate::mem::phys_to_virt;
+use axplat::mem::phys_to_virt;
 
 struct InitIfImpl;
 
@@ -36,7 +36,6 @@ impl InitIf for InitIfImpl {
     fn init_later(_cpu_id: usize, _dtb: usize) {
         #[cfg(feature = "irq")]
         {
-            use crate::mem::phys_to_virt;
             axplat_aarch64_common::gic::init_gicd(
                 phys_to_virt(pa!(GICD_PADDR)),
                 phys_to_virt(pa!(GICC_PADDR)),

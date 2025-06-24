@@ -19,7 +19,7 @@ unsafe fn setup_startup_page(stack_top: PhysAddr) {
     }
     const U64_PER_PAGE: usize = PAGE_SIZE_4K / 8;
 
-    let start_page_ptr = crate::mem::phys_to_virt(START_PAGE_PADDR).as_mut_ptr() as *mut u64;
+    let start_page_ptr = axplat::mem::phys_to_virt(START_PAGE_PADDR).as_mut_ptr() as *mut u64;
     let start_page = unsafe { core::slice::from_raw_parts_mut(start_page_ptr, U64_PER_PAGE) };
     unsafe {
         core::ptr::copy_nonoverlapping(

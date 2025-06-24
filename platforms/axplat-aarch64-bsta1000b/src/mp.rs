@@ -1,5 +1,5 @@
 use crate::config::plat::CPU_ID_LIST;
-use crate::mem::virt_to_phys;
+use axplat::mem::virt_to_phys;
 use memory_addr::PhysAddr;
 
 /// Starts the given secondary CPU with its boot stack.
