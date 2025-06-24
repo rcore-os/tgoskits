@@ -62,7 +62,7 @@ jobs:
 
       - name: Push to oscomp repo
         run: |
-          if git -C oscomp rev-parse --verify ${{ github.ref_name }}; then
+          if git -C oscomp rev-parse --verify origin/${{ github.ref_name }}; then
             git -C oscomp checkout ${{ github.ref_name }}
           else
             export SOURCE_PARENT=$(git -C source rev-parse HEAD^)
