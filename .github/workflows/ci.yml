@@ -40,11 +40,19 @@ jobs:
           git config user.name ${{ secrets.OSCOMP_USER_NAME }}
           git config user.email ${{ secrets.OSCOMP_USER_EMAIL }}
 
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-01-18
+          components: rust-src, llvm-tools
+          targets: riscv64gc-unknown-none-elf, loongarch64-unknown-none
+
       - uses: Swatinem/rust-cache@v2
         with:
           cache-targets: false
 
       - name: Prepare dependencies
+        env:
+          RUSTUP_TOOLCHAIN: nightly-2025-01-18
         run: |
           cd source
           cargo install cargo-vendor-filterer
@@ -55,5 +63,6 @@ jobs:
         run: |
           rsync -a --exclude='.git' --delete source/ oscomp/
           cd oscomp
-          git commit -am ${{ github.ref_name }}.${{ github.sha }}
+          git add -A
+          git commit -m ${{ github.ref_name }}.${{ github.sha }}
           git push
