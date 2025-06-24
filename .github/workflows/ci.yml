@@ -32,6 +32,7 @@ jobs:
         with:
           path: source
           submodules: recursive
+          fetch-depth: 2
 
       - name: Checkout oscomp repository
         run: |
@@ -61,8 +62,26 @@ jobs:
 
       - name: Push to oscomp repo
         run: |
+          if git -C oscomp rev-parse --verify ${{ github.ref_name }}; then
+            git -C oscomp checkout ${{ github.ref_name }}
+          else
+            export SOURCE_PARENT=$(git -C source rev-parse HEAD^)
+            export OSCOMP_PARENT=$(git -C oscomp log --pretty='%H' --grep "${SOURCE_PARENT}")
+            if [ -z "$OSCOMP_PARENT" ]; then
+              echo "No previous commit found for source parent $SOURCE_PARENT"
+              exit 1
+            fi
+            if [ "$(echo "$OSCOMP_PARENT" | wc -l)" -gt 1 ]; then
+              echo "Multiple commits found for source parent $SOURCE_PARENT"
+              echo "$OSCOMP_PARENT"
+              exit 1
+            fi
+            git -C oscomp checkout $OSCOMP_PARENT
+            git -C oscomp checkout -b ${{ github.ref_name }}
+          fi
+
           rsync -a --exclude='.git' --delete source/ oscomp/
           cd oscomp
           git add -A
           git commit -m ${{ github.ref_name }}.${{ github.sha }}
-          git push
+          git push --set-upstream origin ${{ github.ref_name }}
