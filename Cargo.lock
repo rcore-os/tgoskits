@@ -459,9 +459,9 @@ checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
 
 [[package]]
 name = "bindgen"
-version = "0.71.1"
+version = "0.72.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f58bf3d7db68cfbac37cfc485a8d711e87e064c3d0fe0435b92f7a407f9d6b3"
+checksum = "4f72209734318d0b619a5e0f5129918b848c416e122a3c4ce054e03cb87b726f"
 dependencies = [
  "bitflags 2.9.0",
  "cexpr",
@@ -1027,7 +1027,7 @@ dependencies = [
 [[package]]
 name = "lwext4_rust"
 version = "0.2.0"
-source = "git+https://github.com/Starry-Mix-THU/lwext4_rust?rev=ebd38f6#ebd38f6f8f9f098ab84081ec0f4a8cc25adcdb0c"
+source = "git+https://github.com/Starry-Mix-THU/lwext4_rust?rev=5c2c386#5c2c386df24ce63f5684dd93614ccab7269ea18a"
 dependencies = [
  "bindgen",
  "lock_api",
