@@ -34,11 +34,11 @@ jobs:
           submodules: recursive
 
       - name: Checkout oscomp repository
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ secrets.OSCOMP_REPO }}
-          path: oscomp
-          fetch-depth: 0
+        run: |
+          git clone "${{ secrets.OSCOMP_REPO }}" oscomp
+          cd oscomp
+          git config user.name ${{ secrets.OSCOMP_USER_NAME }}
+          git config user.email ${{ secrets.OSCOMP_USER_EMAIL }}
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -46,19 +46,14 @@ jobs:
 
       - name: Prepare dependencies
         run: |
-          cd ./source
+          cd source
           cargo install cargo-vendor-filterer
           cargo vendor-filterer > cargo_config.toml
           cargo install --root . axconfig-gen
 
       - name: Push to oscomp repo
         run: |
-          rsync -a --exclude='.git' --delete ./source/ ./oscomp/
-
-          cd ./oscomp
-          git config --unset-all http."https://github.com/".extraheader
-          git config user.name ${{ secrets.OSCOMP_USER_NAME }}
-          git config user.email ${{ secrets.OSCOMP_USER_EMAIL }}
-
+          rsync -a --exclude='.git' --delete source/ oscomp/
+          cd oscomp
           git commit -am ${{ github.ref_name }}.${{ github.sha }}
           git push
