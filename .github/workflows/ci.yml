@@ -52,7 +52,7 @@ jobs:
 
       - name: Prepare dependencies
         env:
-          RUSTUP_TOOLCHAIN: nightly-2025-01-18
+          RUSTUP_TOOLCHAIN: nightly-2025-05-20 # prevent toolchain update
         run: |
           cd source
           cargo install cargo-vendor-filterer

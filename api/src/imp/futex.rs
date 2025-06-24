@@ -152,7 +152,7 @@ pub fn exit_robust_list(head: &mut robust_list_head) -> LinuxResult<()> {
     let offset = head.futex_offset;
     let pending = head.list_op_pending;
 
-    while entry != &mut head.list as *mut _ {
+    while !core::ptr::eq(entry, &head.list) {
         let next_entry = UserPtr::from(entry).get_as_mut()?.next;
         if entry != pending {
             handle_futex_death(entry, offset)?;

@@ -38,10 +38,10 @@ pub fn do_exit(exit_code: i32, group_exit: bool) -> ! {
         .robust_list_head
         .load(Ordering::SeqCst)
         .into();
-    if let Ok(Some(head)) = nullable!(head.get_as_mut()) {
-        if let Err(err) = exit_robust_list(head) {
-            warn!("exit robust list failed: {:?}", err);
-        }
+    if let Ok(Some(head)) = nullable!(head.get_as_mut())
+        && let Err(err) = exit_robust_list(head)
+    {
+        warn!("exit robust list failed: {:?}", err);
     }
 
     let process = thread.process();
