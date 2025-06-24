@@ -789,7 +789,7 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 [[package]]
 name = "fatfs"
 version = "0.4.0"
-source = "git+https://github.com/Mivik/rust-fatfs?rev=2685439#2685439e679cc832a67fd21340258b7c018c0f33"
+source = "git+https://github.com/Starry-Mix-THU/rust-fatfs?rev=2685439#2685439e679cc832a67fd21340258b7c018c0f33"
 dependencies = [
  "bitflags 2.9.0",
  "log",
@@ -1027,7 +1027,7 @@ dependencies = [
 [[package]]
 name = "lwext4_rust"
 version = "0.2.0"
-source = "git+https://github.com/Mivik/lwext4_rust?rev=ebd38f6#ebd38f6f8f9f098ab84081ec0f4a8cc25adcdb0c"
+source = "git+https://github.com/Starry-Mix-THU/lwext4_rust?rev=ebd38f6#ebd38f6f8f9f098ab84081ec0f4a8cc25adcdb0c"
 dependencies = [
  "bindgen",
  "lock_api",
