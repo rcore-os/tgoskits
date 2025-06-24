@@ -16,6 +16,7 @@ members = [
     "platforms/axplat-loongarch64-qemu-virt",
 
     "examples/hello-kernel",
+    "examples/irq-kernel",
 ]
 
 [workspace.package]

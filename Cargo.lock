@@ -698,6 +698,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6045ea39e8d2862506c0dff6c65d068da362335df698bb1634033492740d2170"
 
 [[package]]
+name = "irq-kernel"
+version = "0.1.0"
+dependencies = [
+ "axconfig-macros",
+ "axcpu",
+ "axplat",
+ "axplat-aarch64-qemu-virt",
+ "axplat-loongarch64-qemu-virt",
+ "axplat-riscv64-qemu-virt",
+ "axplat-x86-pc",
+ "cfg-if",
+ "linkme",
+]
+
+[[package]]
 name = "is_terminal_polyfill"
 version = "1.70.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
