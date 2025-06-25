@@ -16,6 +16,7 @@ repository = "https://github.com/arceos-org/starry-next"
 [workspace.dependencies]
 axfeat = { git = "https://github.com/oscomp/arceos.git", features = [
     "alloc-slab",
+    "page-alloc-4g",
     "fs",
     "fp_simd",
     "irq",

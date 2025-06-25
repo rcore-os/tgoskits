@@ -254,6 +254,7 @@ fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
         ),
         Sysno::munmap => sys_munmap(tf.arg0(), tf.arg1() as _),
         Sysno::mprotect => sys_mprotect(tf.arg0(), tf.arg1() as _, tf.arg2() as _),
+        Sysno::madvise => Ok(0),
 
         // task info
         Sysno::getpid => sys_getpid(),
@@ -263,6 +264,7 @@ fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
         // task sched
         Sysno::sched_yield => sys_sched_yield(),
         Sysno::nanosleep => sys_nanosleep(tf.arg0().into(), tf.arg1().into()),
+        Sysno::clock_nanosleep => sys_nanosleep(tf.arg2().into(), tf.arg3().into()),
         Sysno::sched_getaffinity => {
             sys_sched_getaffinity(tf.arg0() as _, tf.arg1() as _, tf.arg2().into())
         }

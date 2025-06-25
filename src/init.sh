@@ -41,14 +41,19 @@ echo @@@@@@@@@@ env @@@@@@@@@@
 env
 echo
 
+# ln -v -s /bin/busybox /tmp/busybox
+
 echo @@@@@@@@@@ musl @@@@@@@@@@
 cd /musl
 ./basic_testcode.sh
 ./lua_testcode.sh
 ./libctest_testcode.sh
 ./busybox_testcode.sh
+./libcbench_testcode.sh
+
+# cp iozone iozone_testcode.sh /tmp
+# cd /tmp
 ./iozone_testcode.sh
-# ./libcbench_testcode.sh
 
 echo @@@@@@@@@@ glibc @@@@@@@@@@
 cd /glibc
@@ -56,5 +61,8 @@ cd /glibc
 ./lua_testcode.sh
 ./libctest_testcode.sh
 ./busybox_testcode.sh
+./libcbench_testcode.sh
+
+# cp iozone iozone_testcode.sh /tmp
+# cd /tmp
 ./iozone_testcode.sh
-# ./libcbench_testcode.sh
