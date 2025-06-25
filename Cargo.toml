@@ -1,15 +1,16 @@
 [package]
-name = "axns"
+name = "scope-local"
 version = "0.1.0"
 edition = "2024"
+description = "Scope local storage"
+authors = ["Asakura Mizu <asakuramizu111@gmail.com>"]
+keywords = ["arceos"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Starry-Mix-THU/scope-local"
 
 [dependencies]
+percpu = "0.2"
 spin = { version = "0.9", default-features = false, features = ["lazy"] }
 
-extern-trait = { version = "0.1.1", optional = true }
-
 [dev-dependencies]
-parking_lot = { version = "0.12.3", features = ["arc_lock"] }
-
-[features]
-thread-local = ["dep:extern-trait"]
+ctor = "0.4.2"
