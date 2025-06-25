@@ -17,6 +17,7 @@ members = [
 
     "examples/hello-kernel",
     "examples/irq-kernel",
+    "examples/smp-kernel",
 ]
 
 [workspace.package]

@@ -45,9 +45,10 @@ pub fn init_irq() {
 }
 
 pub fn test_irq() {
-    axplat::console_println!("Waiting for timer IRQs for 5 seconds...",);
+    let interval = 5;
+    axplat::console_println!("Waiting for timer IRQs for {} seconds...", interval);
 
-    for _ in 0..5 {
+    for _ in 0..interval {
         axplat::time::busy_wait(axplat::time::TimeValue::from_secs(1));
         axplat::console_println!(
             "{:?} elapsed. {} Timer IRQ processed.",
@@ -60,7 +61,7 @@ pub fn test_irq() {
     axplat::console_println!("Timer IRQ count: {irq_count}");
 
     // A lower bound for the number of IRQs expected in the given interval.
-    let irq_min_count = TICKS_PER_SEC * 5;
+    let irq_min_count = TICKS_PER_SEC * interval;
 
     if irq_count < irq_min_count {
         panic!(

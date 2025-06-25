@@ -23,6 +23,9 @@ impl Write for EarlyConsole {
     }
 }
 
+/// Lock for console operations to prevent mixed output from concurrent execution
+pub static CONSOLE_LOCK: kspin::SpinNoIrq<()> = kspin::SpinNoIrq::new(());
+
 /// Simple console print operation.
 #[macro_export]
 macro_rules! console_print {
@@ -42,5 +45,7 @@ macro_rules! console_println {
 
 #[doc(hidden)]
 pub fn __simple_print(fmt: Arguments) {
+    let _guard = CONSOLE_LOCK.lock();
     EarlyConsole.write_fmt(fmt).unwrap();
+    drop(_guard);
 }

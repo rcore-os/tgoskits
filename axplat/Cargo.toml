@@ -18,3 +18,4 @@ crate_interface = "0.1"
 handler_table = "0.1.2"
 const-str = "0.6.2"
 axplat-macros = { workspace = true }
+kspin = "0.1"

@@ -94,10 +94,12 @@ jobs:
       run: | 
         make -C examples/hello-kernel ARCH=${{ matrix.arch }} clippy
         make -C examples/irq-kernel ARCH=${{ matrix.arch }} clippy
+        make -C examples/smp-kernel ARCH=${{ matrix.arch }} clippy
     - name: Build
       run: |
         make -C examples/hello-kernel ARCH=${{ matrix.arch }}
         make -C examples/irq-kernel ARCH=${{ matrix.arch }}
+        make -C examples/smp-kernel ARCH=${{ matrix.arch }} SMP=4
 
   doc:
     runs-on: ubuntu-latest

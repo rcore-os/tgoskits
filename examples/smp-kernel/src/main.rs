@@ -17,30 +17,43 @@ cfg_if::cfg_if! {
 
 pub use axplat_crate::config as axplat_config;
 
+mod init;
 mod irq;
+mod mp;
+
+use init::*;
 use irq::*;
+use mp::start_secondary_cpus;
 
-fn init_kernel(cpu_id: usize, arg: usize) {
-    // x86_64 requires the `percpu` crate to be initialized first.
-    #[cfg(target_arch = "x86_64")]
-    axcpu::init::init_percpu(cpu_id);
+use core::sync::atomic::Ordering::Release;
 
-    // Initialize trap, console, time.
-    axplat::init::init_early(cpu_id, arg);
-
-    // Initialize platform peripherals, such as IRQ handlers.
-    axplat::init::init_later(cpu_id, arg);
-}
+const CPU_NUM: usize = match option_env!("AX_CPU_NUM") {
+    Some(val) => const_str::parse!(val, usize),
+    None => axplat_config::plat::CPU_NUM,
+};
 
 #[axplat::main]
 fn main(cpu_id: usize, arg: usize) -> ! {
     init_kernel(cpu_id, arg);
 
     axplat::console_println!("Hello, ArceOS!");
-    axplat::console_println!("cpu_id = {cpu_id}, arg = {arg:#x}");
+    axplat::console_println!("Primary CPU {cpu_id} started.");
+
+    start_secondary_cpus(cpu_id);
 
     init_irq();
-    test_irq();
+
+    INITED_CPUS.fetch_add(1, Release);
+
+    axplat::console_println!("Primary CPU {cpu_id} init OK.");
+
+    while !init_smp_ok() {
+        core::hint::spin_loop();
+    }
+
+    axplat::time::busy_wait(axplat::time::TimeValue::from_secs(2));
+
+    axplat::console_println!("Primary CPU {cpu_id} finished. Shutting down...",);
 
     axplat::power::system_off();
 }

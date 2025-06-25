@@ -1,0 +1,60 @@
+ENTRY(_start)
+SECTIONS
+{
+    . = %KERNEL_BASE%;
+    _skernel = .;
+
+    .text : ALIGN(4K) {
+        _stext = .;
+        *(.text.boot)
+        *(.text .text.*)
+        _etext = .;
+    }
+
+    .rodata : ALIGN(4K) {
+        _srodata = .;
+        *(.rodata .rodata.*)
+        _erodata = .;
+    }
+
+    .data : ALIGN(4K) {
+        _sdata = .;
+        *(.data .data.*)
+        *(.got .got.*)
+    }
+
+    . = ALIGN(4K);
+    _percpu_start = .;
+    _percpu_end = _percpu_start + SIZEOF(.percpu);
+    .percpu 0x0 : AT(_percpu_start) {
+        _percpu_load_start = .;
+        *(.percpu .percpu.*)
+        _percpu_load_end = .;
+        . = _percpu_load_start + ALIGN(64) * %CPU_NUM%;
+    }
+    . = _percpu_end;
+    _edata = .;
+
+    .bss : AT(.) ALIGN(4K) {
+        *(.bss.stack)
+        . = ALIGN(4K);
+        _sbss = .;
+        *(.bss .bss.*)
+        *(COMMON)
+        _ebss = .;
+    }
+
+    _ekernel = .;
+
+    /DISCARD/ : {
+        *(.comment)
+    }
+}
+
+SECTIONS {
+    linkme_IRQ : { *(linkme_IRQ) }
+    linkm2_IRQ : { *(linkm2_IRQ) }    
+    linkme_PAGE_FAULT : { *(linkme_PAGE_FAULT) }
+    linkm2_PAGE_FAULT : { *(linkm2_PAGE_FAULT) }
+}
+INSERT AFTER .data;

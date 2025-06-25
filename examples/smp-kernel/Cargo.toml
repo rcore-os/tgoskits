@@ -1,0 +1,32 @@
+[package]
+name = "smp-kernel"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+repository.workspace = true
+
+[dependencies]
+axconfig-macros = "0.2"
+cfg-if = "1.0"
+linkme = "0.3.33"
+percpu = "0.2"
+const-str = "0.6.2"
+memory_addr = "0.3"
+axcpu = { workspace = true }
+axplat = { workspace = true }
+kspin = { version = "0.1", features = ["smp"] }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+axplat-x86-pc = { path = "../../platforms/axplat-x86-pc", features = ["irq", "smp"] }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+axplat-aarch64-qemu-virt = { path = "../../platforms/axplat-aarch64-qemu-virt", features = ["irq", "smp"] }
+
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+axplat-riscv64-qemu-virt = { path = "../../platforms/axplat-riscv64-qemu-virt", features = ["irq", "smp"] }
+
+[target.'cfg(target_arch = "loongarch64")'.dependencies]
+axplat-loongarch64-qemu-virt = { path = "../../platforms/axplat-loongarch64-qemu-virt", features = ["irq", "smp"] }

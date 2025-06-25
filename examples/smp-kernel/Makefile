@@ -1,6 +1,6 @@
 ARCH ?= x86_64
-APP := irq-kernel
-
+APP := smp-kernel
+SMP ?= 1
 OBJDUMP ?= rust-objdump -d --print-imm-hex --x86-asm-syntax=intel
 OBJCOPY ?= rust-objcopy --binary-architecture=$(ARCH)
 
@@ -19,6 +19,8 @@ else ifeq ($(ARCH), loongarch64)
 else
   $(error "ARCH" must be one of "x86_64", "riscv64", "aarch64" or "loongarch64")
 endif
+
+export AX_CPU_NUM=$(SMP)
 
 OUT_ELF := $(CURDIR)/../../target/$(TARGET)/release/$(APP)
 OUT_BIN := $(OUT_ELF).bin
@@ -42,6 +44,8 @@ qemu_args-loongarch64 := \
   -m 1G \
   -kernel $(OUT_ELF)
 
+qemu_args-y := -smp $(SMP) $(qemu_args-$(ARCH))
+
 all: build
 
 build:
@@ -51,7 +55,7 @@ $(OUT_BIN): build
 	$(OBJCOPY) --strip-all -O binary $(OUT_ELF) $(OUT_BIN)
 
 run: $(OUT_BIN)
-	qemu-system-$(ARCH) $(qemu_args-$(ARCH)) -nographic
+	qemu-system-$(ARCH) $(qemu_args-y) -nographic
 
 disasm:
 	$(OBJDUMP) $(OUT_ELF) | less
