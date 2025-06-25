@@ -30,7 +30,7 @@ PLAT_CONFIG := $(shell cargo axplat info -c $(PLAT_PACKAGE) 2>/dev/null)
 
 export AX_CONFIG_PATH := $(PLAT_CONFIG)
 
-OUT_ELF := $(PWD)/../../target/$(TARGET)/release/$(APP)
+OUT_ELF := $(CURDIR)/../../target/$(TARGET)/release/$(APP)
 OUT_BIN := $(OUT_ELF).bin
 
 qemu_args-x86_64 := \

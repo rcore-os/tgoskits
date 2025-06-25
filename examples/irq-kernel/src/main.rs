@@ -4,22 +4,22 @@
 cfg_if::cfg_if! {
     if #[cfg(target_arch = "x86_64")] {
         extern crate axplat_x86_pc;
+        use axplat_x86_pc::config as axplat_config;
     } else if #[cfg(target_arch = "aarch64")] {
         extern crate axplat_aarch64_qemu_virt;
+        use axplat_aarch64_qemu_virt::config as axplat_config;
     } else if #[cfg(target_arch = "riscv64")] {
         extern crate axplat_riscv64_qemu_virt;
+        use axplat_riscv64_qemu_virt::config as axplat_config;
     } else if #[cfg(target_arch = "loongarch64")] {
         extern crate axplat_loongarch64_qemu_virt;
+        use axplat_loongarch64_qemu_virt::config as axplat_config;
     } else {
         compile_error!("Unsupported target architecture");
     }
 }
 
 mod irq;
-mod config {
-    axconfig_macros::include_configs!(path_env = "AX_CONFIG_PATH", fallback = "axconfig.toml");
-}
-
 use irq::*;
 
 fn init_kernel(cpu_id: usize, arg: usize) {

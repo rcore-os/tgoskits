@@ -1,11 +1,10 @@
 # irq-kernel
 
-A minimal example of a kernel that supports IRQ handling using [axplat](../../axplat) and related [platform crates](../../platforms).
+A minimal example of a kernel with timer interrupt support using [axplat](../../axplat) and related [platform crates](../../platforms).
 
 # Build & Run
 
 ```bash
-cargo install cargo-axplat
 make ARCH=<arch> run
 ```
 

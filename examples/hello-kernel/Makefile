@@ -16,7 +16,7 @@ else
   $(error "ARCH" must be one of "x86_64", "riscv64", "aarch64" or "loongarch64")
 endif
 
-OUT_ELF := $(PWD)/../../target/$(TARGET)/release/$(APP)
+OUT_ELF := $(CURDIR)/../../target/$(TARGET)/release/$(APP)
 OUT_BIN := $(OUT_ELF).bin
 
 qemu_args-x86_64 := \
