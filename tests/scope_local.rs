@@ -10,7 +10,7 @@ fn init() {
     unsafe { percpu::write_percpu_reg(percpu::percpu_area_base(0)) };
 
     let base = percpu::read_percpu_reg();
-    println!("per-CPU area base = {:#x}", base);
+    println!("per-CPU area base = {base:#x}");
     println!("per-CPU area size = {}", percpu::percpu_area_size());
 }
 
