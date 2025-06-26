@@ -35,6 +35,7 @@ starry-config.workspace = true
 starry-core.workspace = true
 
 axio = "0.1.1"
+bitmaps = { version = "3.2.1", default-features = false }
 chrono = { version = "0.4.41", default-features = false }
 flatten_objects = { git = "https://github.com/Starry-Mix-THU/flatten_objects.git", rev = "e08873e" }
 lazy_static = { version = "1.5", features = ["spin_no_std"] }
