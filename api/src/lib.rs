@@ -8,7 +8,7 @@ extern crate alloc;
 pub mod file;
 pub mod ptr;
 pub mod signal;
-pub mod sockaddr;
+pub mod socket;
 pub mod time;
 
 mod imp;
