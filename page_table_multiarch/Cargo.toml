@@ -12,10 +12,15 @@ keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+copy-from = ["dep:bitmaps"]
+
 [dependencies]
 log = "0.4"
 memory_addr.workspace = true
 page_table_entry = { path = "../page_table_entry", version = "0.5.2" }
+bitmaps = { version = "3.2", default-features = false, optional = true }
 
 [target.'cfg(any(target_arch = "x86_64", doc))'.dependencies]
 x86 = "0.52"

@@ -27,6 +27,8 @@ const fn p1_index(vaddr: usize) -> usize {
 /// When the [`PageTable64`] itself is dropped.
 pub struct PageTable64<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> {
     root_paddr: PhysAddr,
+    #[cfg(feature = "copy-from")]
+    borrowed_entries: bitmaps::Bitmap<ENTRY_COUNT>,
     _phantom: PhantomData<(M, PTE, H)>,
 }
 
@@ -38,6 +40,8 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
         let root_paddr = Self::alloc_table()?;
         Ok(Self {
             root_paddr,
+            #[cfg(feature = "copy-from")]
+            borrowed_entries: bitmaps::Bitmap::new(),
             _phantom: PhantomData,
         })
     }
@@ -325,6 +329,7 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
     }
 
     /// Copy entries from another page table within the given virtual memory range.
+    #[cfg(feature = "copy-from")]
     pub fn copy_from(&mut self, other: &Self, start: M::VirtAddr, size: usize) {
         if size == 0 {
             return;
@@ -342,7 +347,13 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
         let end_idx = index_fn(start.into() + size - 1) + 1;
         assert!(start_idx < ENTRY_COUNT);
         assert!(end_idx <= ENTRY_COUNT);
-        dst_table[start_idx..end_idx].copy_from_slice(&src_table[start_idx..end_idx]);
+        for i in start_idx..end_idx {
+            let entry = &mut dst_table[i];
+            if !self.borrowed_entries.set(i, true) {
+                self.dealloc_tree(entry, 1);
+            }
+            *entry = src_table[i];
+        }
     }
 }
 
@@ -520,20 +531,31 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
         }
         Ok(())
     }
+
+    fn dealloc_tree(&self, entry: &PTE, level: usize) {
+        // don't free the entries in last level, they are not array.
+        if level < M::LEVELS - 1 {
+            if let Ok(table) = self.next_table(entry) {
+                for entry in table {
+                    self.dealloc_tree(entry, level + 1);
+                }
+                H::dealloc_frame(entry.paddr());
+            }
+        }
+    }
 }
 
 impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> Drop for PageTable64<M, PTE, H> {
     fn drop(&mut self) {
-        // don't free the entries in last level, they are not array.
-        let _ = self.walk(
-            usize::MAX,
-            None,
-            Some(&|level, _index, _vaddr, entry: &PTE| {
-                if level < M::LEVELS - 1 && entry.is_present() && !entry.is_huge() {
-                    H::dealloc_frame(entry.paddr());
-                }
-            }),
-        );
+        let root = self.table_of(self.root_paddr);
+        #[allow(unused_variables)]
+        for (i, entry) in root.iter().enumerate() {
+            #[cfg(feature = "copy-from")]
+            if self.borrowed_entries.get(i) {
+                continue;
+            }
+            self.dealloc_tree(entry, 1);
+        }
         H::dealloc_frame(self.root_paddr());
     }
 }
