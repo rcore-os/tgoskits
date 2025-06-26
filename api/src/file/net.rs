@@ -1,4 +1,7 @@
-use core::net::{Ipv4Addr, SocketAddr};
+use core::{
+    ffi::c_int,
+    net::{Ipv4Addr, SocketAddr},
+};
 
 use alloc::sync::Arc;
 use axerrno::{LinuxError, LinuxResult};
@@ -6,6 +9,8 @@ use axio::PollState;
 use axnet::{TcpSocket, UdpSocket};
 use axsync::Mutex;
 use linux_raw_sys::general::S_IFSOCK;
+
+use crate::file::get_file_like;
 
 use super::{FileLike, Kstat};
 
@@ -111,11 +116,28 @@ impl FileLike for Socket {
         self.poll()
     }
 
-    fn set_nonblocking(&self, nonblock: bool) -> LinuxResult {
+    fn is_nonblocking(&self) -> bool {
         match self {
-            Socket::Udp(udpsocket) => udpsocket.lock().set_nonblocking(nonblock),
-            Socket::Tcp(tcpsocket) => tcpsocket.lock().set_nonblocking(nonblock),
+            Socket::Udp(udpsocket) => udpsocket.lock().is_nonblocking(),
+            Socket::Tcp(tcpsocket) => tcpsocket.lock().is_nonblocking(),
+        }
+    }
+
+    fn set_nonblocking(&self, nonblocking: bool) -> LinuxResult {
+        match self {
+            Socket::Udp(udpsocket) => udpsocket.lock().set_nonblocking(nonblocking),
+            Socket::Tcp(tcpsocket) => tcpsocket.lock().set_nonblocking(nonblocking),
         }
         Ok(())
+    }
+
+    fn from_fd(fd: c_int) -> LinuxResult<Arc<Self>>
+    where
+        Self: Sized + 'static,
+    {
+        get_file_like(fd)?
+            .into_any()
+            .downcast::<Self>()
+            .map_err(|_| LinuxError::ENOTSOCK)
     }
 }

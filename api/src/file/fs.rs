@@ -133,8 +133,14 @@ impl FileLike for File {
         })
     }
 
-    fn set_nonblocking(&self, _nonblocking: bool) -> LinuxResult {
-        Ok(())
+    fn from_fd(fd: c_int) -> LinuxResult<Arc<Self>>
+    where
+        Self: Sized + 'static,
+    {
+        get_file_like(fd)?
+            .into_any()
+            .downcast::<Self>()
+            .map_err(|_| LinuxError::ESPIPE)
     }
 }
 
@@ -180,10 +186,6 @@ impl FileLike for Directory {
             readable: true,
             writable: false,
         })
-    }
-
-    fn set_nonblocking(&self, _nonblocking: bool) -> LinuxResult {
-        Ok(())
     }
 
     fn from_fd(fd: c_int) -> LinuxResult<Arc<Self>> {

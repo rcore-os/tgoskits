@@ -131,10 +131,6 @@ impl super::FileLike for Stdin {
             writable: true,
         })
     }
-
-    fn set_nonblocking(&self, _nonblocking: bool) -> LinuxResult {
-        Ok(())
-    }
 }
 
 impl super::FileLike for Stdout {
@@ -162,9 +158,5 @@ impl super::FileLike for Stdout {
             readable: true,
             writable: true,
         })
-    }
-
-    fn set_nonblocking(&self, _nonblocking: bool) -> LinuxResult {
-        Ok(())
     }
 }

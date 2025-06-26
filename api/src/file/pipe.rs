@@ -199,8 +199,4 @@ impl FileLike for Pipe {
             }),
         }
     }
-
-    fn set_nonblocking(&self, _nonblocking: bool) -> LinuxResult {
-        Ok(())
-    }
 }

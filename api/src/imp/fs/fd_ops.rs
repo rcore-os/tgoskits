@@ -5,11 +5,12 @@ use core::{
 
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::{OpenOptions, OpenResult};
+use axfs_ng_vfs::NodePermission;
 use axsync::RawMutex;
 use linux_raw_sys::general::{
-    __kernel_mode_t, AT_FDCWD, F_DUPFD, F_DUPFD_CLOEXEC, F_GETFD, F_GETFL, F_SETFL, FD_CLOEXEC,
-    O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_NONBLOCK, O_PATH, O_RDONLY, O_TRUNC,
-    O_WRONLY,
+    __kernel_mode_t, AT_FDCWD, F_DUPFD, F_DUPFD_CLOEXEC, F_GETFD, F_GETFL, F_SETFD, F_SETFL,
+    FD_CLOEXEC, O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_NONBLOCK, O_PATH, O_RDONLY,
+    O_RDWR, O_TRUNC, O_WRONLY,
 };
 
 use crate::{
@@ -144,19 +145,35 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> LinuxResult<isize> {
             dup_fd(fd)
         }
         F_SETFL => {
-            if fd == 0 || fd == 1 || fd == 2 {
-                return Ok(0);
-            }
             get_file_like(fd)?.set_nonblocking(arg & (O_NONBLOCK as usize) > 0)?;
             Ok(0)
         }
+        F_GETFL => {
+            let f = get_file_like(fd)?;
+
+            let mut ret = 0;
+            if f.is_nonblocking() {
+                ret |= O_NONBLOCK;
+            }
+
+            let perm = NodePermission::from_bits_truncate(f.stat()?.mode as _);
+            if perm.contains(NodePermission::OWNER_WRITE) {
+                if perm.contains(NodePermission::OWNER_READ) {
+                    ret |= O_RDWR;
+                } else {
+                    ret |= O_WRONLY;
+                }
+            }
+
+            Ok(ret as _)
+        }
         F_GETFD => {
-            warn!("unsupported fcntl parameters: F_GETFD, returning FD_CLOEXEC");
+            debug!("unsupported fcntl parameters: F_GETFD, returning FD_CLOEXEC");
             Ok(FD_CLOEXEC as _)
         }
-        F_GETFL => {
-            warn!("unsupported fcntl parameters: F_GETFL, returning O_NONBLOCK");
-            Ok(O_NONBLOCK as _)
+        F_SETFD => {
+            debug!("unsupported fcntl parameters: F_SETFD, ignoring");
+            Ok(0)
         }
         _ => {
             warn!("unsupported fcntl parameters: cmd: {}", cmd);

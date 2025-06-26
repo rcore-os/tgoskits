@@ -9,11 +9,9 @@ use linux_raw_sys::general::{
 };
 
 use crate::{
-    file::resolve_at,
+    file::{File, FileLike, resolve_at},
     ptr::{UserConstPtr, UserPtr, nullable},
 };
-
-use super::get_as_fs_file;
 
 /// Get the file metadata by `path` and write into `statbuf`.
 ///
@@ -171,6 +169,6 @@ pub fn sys_statfs(path: UserConstPtr<c_char>, buf: UserPtr<statfs>) -> LinuxResu
 }
 
 pub fn sys_fstatfs(fd: i32, buf: UserPtr<statfs>) -> LinuxResult<isize> {
-    statfs(get_as_fs_file(fd)?.inner().inner(), buf)?;
+    statfs(File::from_fd(fd)?.inner().inner(), buf)?;
     Ok(0)
 }

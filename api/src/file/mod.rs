@@ -125,7 +125,14 @@ pub trait FileLike: Send + Sync {
     fn stat(&self) -> LinuxResult<Kstat>;
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync>;
     fn poll(&self) -> LinuxResult<PollState>;
-    fn set_nonblocking(&self, nonblocking: bool) -> LinuxResult;
+
+    fn is_nonblocking(&self) -> bool {
+        false
+    }
+
+    fn set_nonblocking(&self, _nonblocking: bool) -> LinuxResult {
+        Ok(())
+    }
 
     fn from_fd(fd: c_int) -> LinuxResult<Arc<Self>>
     where

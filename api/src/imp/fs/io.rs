@@ -1,6 +1,6 @@
 use core::ffi::c_int;
 
-use alloc::{sync::Arc, vec};
+use alloc::vec;
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FileFlags;
 use axio::{Seek, SeekFrom};
@@ -121,30 +121,23 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> LinuxResul
 
 pub fn sys_ftruncate(fd: c_int, length: __kernel_off_t) -> LinuxResult<isize> {
     debug!("sys_ftruncate <= {} {}", fd, length);
-    let f = get_as_fs_file(fd)?;
+    let f = File::from_fd(fd)?;
     f.inner().access(FileFlags::WRITE)?.set_len(length as _)?;
     Ok(0)
 }
 
 pub fn sys_fsync(fd: c_int) -> LinuxResult<isize> {
     debug!("sys_fsync <= {}", fd);
-    let f = get_as_fs_file(fd)?;
+    let f = File::from_fd(fd)?;
     f.inner().sync(false)?;
     Ok(0)
 }
 
 pub fn sys_fdatasync(fd: c_int) -> LinuxResult<isize> {
     debug!("sys_fdatasync <= {}", fd);
-    let f = get_as_fs_file(fd)?;
+    let f = File::from_fd(fd)?;
     f.inner().sync(true)?;
     Ok(0)
-}
-
-pub(crate) fn get_as_fs_file(fd: c_int) -> LinuxResult<Arc<File>> {
-    get_file_like(fd)?
-        .into_any()
-        .downcast::<File>()
-        .map_err(|_| LinuxError::EBADF)
 }
 
 pub fn sys_pread64(
@@ -154,7 +147,7 @@ pub fn sys_pread64(
     offset: __kernel_off_t,
 ) -> LinuxResult<isize> {
     let buf = buf.get_as_mut_slice(len)?;
-    let f = get_as_fs_file(fd)?;
+    let f = File::from_fd(fd)?;
     let read = f.inner().read_at(buf, offset as _)?;
     Ok(read as _)
 }
@@ -166,7 +159,7 @@ pub fn sys_pwrite64(
     offset: __kernel_off_t,
 ) -> LinuxResult<isize> {
     let buf = buf.get_as_slice(len)?;
-    let f = get_as_fs_file(fd)?;
+    let f = File::from_fd(fd)?;
     let write = f.inner().write_at(buf, offset as _)?;
     Ok(write as _)
 }
@@ -196,7 +189,7 @@ pub fn sys_preadv2(
     mut offset: __kernel_off_t,
     _flags: u32,
 ) -> LinuxResult<isize> {
-    let f = get_as_fs_file(fd)?;
+    let f = File::from_fd(fd)?;
     readv_impl(iov, iocnt, |buf| {
         let read = f.inner().read_at(buf, offset as _)?;
         offset += read as __kernel_off_t;
@@ -211,7 +204,7 @@ pub fn sys_pwritev2(
     mut offset: __kernel_off_t,
     _flags: u32,
 ) -> LinuxResult<isize> {
-    let f = get_as_fs_file(fd)?;
+    let f = File::from_fd(fd)?;
     writev_impl(iov, iocnt, |buf| {
         let write = f.inner().write_at(buf, offset as _)?;
         offset += write as __kernel_off_t;
