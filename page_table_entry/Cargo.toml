@@ -17,7 +17,7 @@ arm-el2 = []
 
 [dependencies]
 bitflags = "2.6"
-memory_addr = "0.3"
+memory_addr.workspace = true
 
 [target.'cfg(any(target_arch = "aarch64", doc))'.dependencies]
 aarch64-cpu = "10.0"
@@ -26,4 +26,4 @@ aarch64-cpu = "10.0"
 x86_64 = "0.15.2"
 
 [package.metadata.docs.rs]
-rustc-args = [ "--cfg" , "doc"]
+rustc-args = ["--cfg", "doc"]

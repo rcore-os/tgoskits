@@ -1,10 +1,7 @@
 [workspace]
 resolver = "2"
 
-members = [
-    "page_table_multiarch",
-    "page_table_entry",
-]
+members = ["page_table_multiarch", "page_table_entry"]
 
 [workspace.package]
 version = "0.5.3"
@@ -17,3 +14,6 @@ repository = "https://github.com/arceos-org/page_table_multiarch"
 keywords = ["arceos", "paging", "page-table", "virtual-memory"]
 categories = ["os", "hardware-support", "memory-management", "no-std"]
 rust-version = "1.85"
+
+[workspace.dependencies]
+memory_addr = "0.4"
