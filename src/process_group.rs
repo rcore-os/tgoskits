@@ -48,9 +48,11 @@ impl ProcessGroup {
 
 impl fmt::Debug for ProcessGroup {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ProcessGroup")
-            .field("pgid", &self.pgid)
-            .field("session", &self.session)
-            .finish()
+        write!(
+            f,
+            "ProcessGroup({}, session={})",
+            self.pgid,
+            self.session.sid()
+        )
     }
 }

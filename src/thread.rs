@@ -41,10 +41,7 @@ impl Thread {
 
 impl fmt::Debug for Thread {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Thread")
-            .field("tid", &self.tid)
-            .field("process", &self.process.pid())
-            .finish()
+        write!(f, "Thread({}, process={})", self.tid, self.process.pid())
     }
 }
 

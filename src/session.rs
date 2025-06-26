@@ -40,6 +40,6 @@ impl Session {
 
 impl fmt::Debug for Session {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Session").field("sid", &self.sid).finish()
+        write!(f, "Session({})", self.sid)
     }
 }
