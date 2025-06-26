@@ -532,14 +532,14 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
         Ok(())
     }
 
-    fn dealloc_tree(&self, entry: &PTE, level: usize) {
+    fn dealloc_tree(&self, table_entry: &PTE, level: usize) {
         // don't free the entries in last level, they are not array.
         if level < M::LEVELS - 1 {
-            if let Ok(table) = self.next_table(entry) {
+            if let Ok(table) = self.next_table(table_entry) {
                 for entry in table {
                     self.dealloc_tree(entry, level + 1);
                 }
-                H::dealloc_frame(entry.paddr());
+                H::dealloc_frame(table_entry.paddr());
             }
         }
     }
