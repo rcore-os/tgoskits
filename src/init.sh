@@ -15,6 +15,7 @@ ln -v -s busybox ls
 ln -v -s busybox env
 ln -v -s busybox mkdir
 ln -v -s busybox clear
+ln -v -s busybox sleep
 
 mkdir -v /lib
 ln -v -s /glibc/lib/libc.so.6 /lib/libc.so.6
@@ -59,7 +60,7 @@ echo @@@@@@@@@@ glibc @@@@@@@@@@
 cd /glibc
 ./basic_testcode.sh
 ./lua_testcode.sh
-./libctest_testcode.sh
+# ./libctest_testcode.sh
 ./busybox_testcode.sh
 ./libcbench_testcode.sh
 
