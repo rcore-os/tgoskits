@@ -1,3 +1,5 @@
+use axhal::time::{NANOS_PER_SEC, TimeValue};
+
 numeric_enum_macro::numeric_enum! {
     #[repr(i32)]
     #[allow(non_camel_case_types)]
@@ -52,8 +54,15 @@ impl TimeStat {
         }
     }
 
-    pub fn output(&self) -> (usize, usize) {
-        (self.utime_ns, self.stime_ns)
+    pub fn output(&self) -> (TimeValue, TimeValue) {
+        let utime_secs = self.utime_ns as u64 / NANOS_PER_SEC;
+        let utime_nsecs = self.utime_ns as u64 - utime_secs * NANOS_PER_SEC;
+        let stime_secs = self.stime_ns as u64 / NANOS_PER_SEC;
+        let stime_nsecs = self.stime_ns as u64 - stime_secs * NANOS_PER_SEC;
+        (
+            TimeValue::new(utime_secs, utime_nsecs as u32),
+            TimeValue::new(stime_secs, stime_nsecs as u32),
+        )
     }
 
     pub fn reset(&mut self, current_timestamp: usize) {

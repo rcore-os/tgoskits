@@ -1,10 +1,14 @@
 use axerrno::{LinuxError, LinuxResult};
-use axprocess::Pid;
+use axhal::time::TimeValue;
+use axprocess::{Pid, Thread};
 use axtask::{TaskExtRef, current};
-use linux_raw_sys::general::{RLIM_NLIMITS, rlimit64};
-use starry_core::task::{ProcessData, get_process};
+use linux_raw_sys::general::{__kernel_old_timeval, RLIM_NLIMITS, rlimit64, rusage};
+use starry_core::task::{ProcessData, ThreadData, get_process};
 
-use crate::ptr::{UserConstPtr, UserPtr, nullable};
+use crate::{
+    ptr::{UserConstPtr, UserPtr, nullable},
+    time::TimeValueLike,
+};
 
 pub fn sys_prlimit64(
     pid: Pid,
@@ -42,6 +46,67 @@ pub fn sys_prlimit64(
 
         limit.current = new_limit.rlim_cur;
     }
+
+    Ok(0)
+}
+
+#[derive(Default)]
+struct Rusage {
+    utime: TimeValue,
+    stime: TimeValue,
+}
+impl Rusage {
+    fn from_thread(thr: &Thread) -> Self {
+        let thr_data = thr.data::<ThreadData>().unwrap();
+        let (utime, stime) = thr_data.time.borrow().output();
+        Self { utime, stime }
+    }
+
+    fn collate(mut self, other: Rusage) -> Self {
+        self.utime += other.utime;
+        self.stime += other.stime;
+        self
+    }
+
+    fn to_ctype(&self, usage: &mut rusage) {
+        usage.ru_utime = __kernel_old_timeval::from_time_value(self.utime);
+        usage.ru_stime = __kernel_old_timeval::from_time_value(self.stime);
+    }
+}
+
+pub fn sys_getrusage(who: i32, usage: UserPtr<rusage>) -> LinuxResult<isize> {
+    const RUSAGE_SELF: i32 = linux_raw_sys::general::RUSAGE_SELF as i32;
+    const RUSAGE_CHILDREN: i32 = linux_raw_sys::general::RUSAGE_CHILDREN as i32;
+    const RUSAGE_THREAD: i32 = linux_raw_sys::general::RUSAGE_THREAD as i32;
+
+    let curr = current();
+    let curr_ext = curr.task_ext();
+
+    let result = match who {
+        RUSAGE_SELF => curr_ext
+            .thread
+            .process()
+            .threads()
+            .iter()
+            .fold(Rusage::default(), |acc, child| {
+                acc.collate(Rusage::from_thread(&child))
+            }),
+        RUSAGE_CHILDREN => {
+            let tid = curr_ext.thread.tid();
+            curr_ext
+                .thread
+                .process()
+                .threads()
+                .iter()
+                .filter(|child| child.tid() != tid)
+                .fold(Rusage::default(), |acc, child| {
+                    acc.collate(Rusage::from_thread(&child))
+                })
+        }
+        RUSAGE_THREAD => Rusage::from_thread(&curr_ext.thread),
+        _ => return Err(LinuxError::EINVAL),
+    };
+    result.to_ctype(usage.get_as_mut()?);
 
     Ok(0)
 }

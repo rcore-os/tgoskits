@@ -3,6 +3,7 @@
 use core::{
     alloc::Layout,
     cell::RefCell,
+    ops::Deref,
     sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
 };
@@ -13,10 +14,7 @@ use alloc::{
     vec::Vec,
 };
 use axerrno::{LinuxError, LinuxResult};
-use axhal::{
-    arch::UspaceContext,
-    time::{NANOS_PER_MICROS, NANOS_PER_SEC, monotonic_time_nanos},
-};
+use axhal::{arch::UspaceContext, time::monotonic_time_nanos};
 use axmm::{AddrSpace, kernel_aspace};
 use axns::{AxNamespace, AxNamespaceIf};
 use axprocess::{Pid, Process, ProcessGroup, Session, Thread};
@@ -61,8 +59,6 @@ pub fn new_user_task(
 
 /// Task extended data for the monolithic kernel.
 pub struct TaskExt {
-    /// The time statistics
-    pub time: RefCell<TimeStat>,
     /// The thread
     pub thread: Arc<Thread>,
 }
@@ -70,22 +66,21 @@ pub struct TaskExt {
 impl TaskExt {
     /// Create a new [`TaskExt`].
     pub fn new(thread: Arc<Thread>) -> Self {
-        Self {
-            time: RefCell::new(TimeStat::new()),
-            thread,
-        }
+        Self { thread }
     }
 
     pub(crate) fn time_stat_from_kernel_to_user(&self, current_tick: usize) {
-        self.time.borrow_mut().switch_into_user_mode(current_tick);
+        self.thread_data()
+            .time
+            .borrow_mut()
+            .switch_into_user_mode(current_tick);
     }
 
     pub(crate) fn time_stat_from_user_to_kernel(&self, current_tick: usize) {
-        self.time.borrow_mut().switch_into_kernel_mode(current_tick);
-    }
-
-    pub(crate) fn time_stat_output(&self) -> (usize, usize) {
-        self.time.borrow().output()
+        self.thread_data()
+            .time
+            .borrow_mut()
+            .switch_into_kernel_mode(current_tick);
     }
 
     /// Get the [`ThreadData`] associated with this task.
@@ -117,18 +112,6 @@ pub fn time_stat_from_user_to_kernel() {
         .time_stat_from_user_to_kernel(monotonic_time_nanos() as usize);
 }
 
-/// Get the time statistics for the current task.
-pub fn time_stat_output() -> (usize, usize, usize, usize) {
-    let curr_task = current();
-    let (utime_ns, stime_ns) = curr_task.task_ext().time_stat_output();
-    (
-        utime_ns / NANOS_PER_SEC as usize,
-        utime_ns / NANOS_PER_MICROS as usize,
-        stime_ns / NANOS_PER_SEC as usize,
-        stime_ns / NANOS_PER_MICROS as usize,
-    )
-}
-
 #[doc(hidden)]
 pub struct WaitQueueWrapper(WaitQueue);
 impl Default for WaitQueueWrapper {
@@ -151,6 +134,18 @@ impl axsignal::api::WaitQueue for WaitQueueWrapper {
     }
 }
 
+///  A wrapper type that assumes the inner type is `Sync`.
+#[repr(transparent)]
+pub struct AssumeSync<T>(T);
+unsafe impl<T> Sync for AssumeSync<T> {}
+impl<T> Deref for AssumeSync<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 /// Extended data for [`Thread`].
 pub struct ThreadData {
     /// The clear thread tid field
@@ -165,6 +160,12 @@ pub struct ThreadData {
 
     /// The thread-level signal manager
     pub signal: ThreadSignalManager<RawMutex, WaitQueueWrapper>,
+
+    /// Time statistics
+    ///
+    /// This is assumed to be `Sync` because it's only borrowed mutably during
+    /// context switches, which is exclusive to the current thread.
+    pub time: AssumeSync<RefCell<TimeStat>>,
 }
 
 impl ThreadData {
@@ -176,6 +177,8 @@ impl ThreadData {
             robust_list_head: AtomicUsize::new(0),
 
             signal: ThreadSignalManager::new(proc.signal.clone()),
+
+            time: AssumeSync(RefCell::new(TimeStat::new())),
         }
     }
 

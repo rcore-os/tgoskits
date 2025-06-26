@@ -1,9 +1,9 @@
 use axerrno::{LinuxError, LinuxResult};
 use axhal::time::{monotonic_time, monotonic_time_nanos, nanos_to_ticks, wall_time};
+use axtask::{TaskExtRef, current};
 use linux_raw_sys::general::{
     __kernel_clockid_t, CLOCK_MONOTONIC, CLOCK_REALTIME, timespec, timeval,
 };
-use starry_core::task::time_stat_output;
 
 use crate::{ptr::UserPtr, time::TimeValueLike};
 
@@ -44,12 +44,14 @@ pub struct Tms {
 }
 
 pub fn sys_times(tms: UserPtr<Tms>) -> LinuxResult<isize> {
-    let (_, utime_us, _, stime_us) = time_stat_output();
+    let (utime, stime) = current().task_ext().thread_data().time.borrow().output();
+    let utime = utime.as_micros() as usize;
+    let stime = stime.as_micros() as usize;
     *tms.get_as_mut()? = Tms {
-        tms_utime: utime_us,
-        tms_stime: stime_us,
-        tms_cutime: utime_us,
-        tms_cstime: stime_us,
+        tms_utime: utime,
+        tms_stime: stime,
+        tms_cutime: utime,
+        tms_cstime: stime,
     };
     Ok(nanos_to_ticks(monotonic_time_nanos()) as _)
 }
