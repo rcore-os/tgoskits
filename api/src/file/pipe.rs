@@ -6,6 +6,8 @@ use axio::PollState;
 use axsync::Mutex;
 use linux_raw_sys::general::S_IFIFO;
 
+use crate::signal::yield_with_interrupt;
+
 use super::{FileLike, Kstat};
 
 #[derive(Copy, Clone, PartialEq)]
@@ -15,7 +17,7 @@ enum RingBufferStatus {
     Normal,
 }
 
-const RING_BUFFER_SIZE: usize = 256;
+const RING_BUFFER_SIZE: usize = 65536; // 64 KiB
 
 struct PipeRingBuffer {
     arr: [u8; RING_BUFFER_SIZE],
@@ -124,7 +126,7 @@ impl FileLike for Pipe {
                 }
                 drop(ring_buffer);
                 // Data not ready, wait for write end
-                axtask::yield_now(); // TODO: use synconize primitive
+                yield_with_interrupt()?;
                 continue;
             }
             for c in buf.iter_mut().take(read_size) {

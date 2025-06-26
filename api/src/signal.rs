@@ -42,6 +42,25 @@ pub fn check_signals(tf: &mut TrapFrame, restore_blocked: Option<SignalSet>) -> 
     true
 }
 
+// FIXME: deal with syscall restart properly
+pub fn yield_with_interrupt() -> LinuxResult {
+    let tf = unsafe {
+        current()
+            .kernel_stack_top()
+            .unwrap()
+            .as_mut_ptr_of::<TrapFrame>()
+            .sub(1)
+            .as_mut()
+            .unwrap()
+    };
+
+    if check_signals(tf, None) {
+        return Err(LinuxError::EINTR);
+    }
+
+    Ok(())
+}
+
 #[register_trap_handler(POST_TRAP)]
 fn post_trap_callback(tf: &mut TrapFrame, from_user: bool) {
     if !from_user {

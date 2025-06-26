@@ -423,6 +423,6 @@ fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
     };
     let ans = result.unwrap_or_else(|err| -err.code() as _);
     time_stat_from_kernel_to_user();
-    trace!("Syscall {:?} return {}", sysno, ans);
+    debug!("Syscall {:?} return {}", sysno, ans);
     ans
 }
