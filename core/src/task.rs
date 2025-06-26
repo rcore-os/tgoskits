@@ -3,7 +3,7 @@
 use core::{
     cell::RefCell,
     ops::Deref,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicU32, AtomicUsize, Ordering},
     time::Duration,
 };
 
@@ -179,6 +179,9 @@ pub struct ThreadData {
     /// This is assumed to be `Sync` because it's only borrowed mutably during
     /// context switches, which is exclusive to the current thread.
     pub time: AssumeSync<RefCell<TimeStat>>,
+
+    /// The bitset used for futex operations (FUTEX_{WAIT,WAKE}_BITSET).
+    pub futex_bitset: AtomicU32,
 }
 
 impl ThreadData {
@@ -192,6 +195,8 @@ impl ThreadData {
             signal: ThreadSignalManager::new(proc.signal.clone()),
 
             time: AssumeSync(RefCell::new(TimeStat::new())),
+
+            futex_bitset: AtomicU32::new(0),
         }
     }
 
