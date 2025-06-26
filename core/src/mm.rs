@@ -25,7 +25,8 @@ pub fn new_user_aspace_empty() -> AxResult<AddrSpace> {
 /// If the target architecture requires it, the kernel portion of the address
 /// space will be copied to the user address space.
 pub fn copy_from_kernel(aspace: &mut AddrSpace) -> AxResult {
-    if !cfg!(target_arch = "aarch64") && !cfg!(target_arch = "loongarch64") {
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "loongarch64")))]
+    {
         // ARMv8 (aarch64) and LoongArch64 use separate page tables for user space
         // (aarch64: TTBR0_EL1, LoongArch64: PGDL), so there is no need to copy the
         // kernel portion to the user page table.
