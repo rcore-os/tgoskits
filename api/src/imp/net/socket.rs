@@ -3,8 +3,9 @@ use core::net::SocketAddr;
 use axerrno::{LinuxError, LinuxResult};
 use axnet::{TcpSocket, UdpSocket};
 use axsync::Mutex;
-use linux_raw_sys::net::{
-    AF_INET, IPPROTO_TCP, IPPROTO_UDP, SOCK_DGRAM, SOCK_STREAM, sockaddr, socklen_t,
+use linux_raw_sys::{
+    general::O_NONBLOCK,
+    net::{AF_INET, IPPROTO_TCP, IPPROTO_UDP, SOCK_DGRAM, SOCK_STREAM, sockaddr, socklen_t},
 };
 
 use crate::{
@@ -13,13 +14,12 @@ use crate::{
     socket::SocketAddrExt,
 };
 
-pub fn sys_socket(domain: u32, ty: u32, proto: u32) -> LinuxResult<isize> {
-    let ty = ty & 0xFF;
-
+pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> LinuxResult<isize> {
     debug!(
         "sys_socket <= domain: {}, ty: {}, proto: {}",
-        domain, ty, proto
+        domain, raw_ty, proto
     );
+    let ty = raw_ty & 0xFF;
 
     if domain != AF_INET {
         return Err(LinuxError::EAFNOSUPPORT);
@@ -40,6 +40,9 @@ pub fn sys_socket(domain: u32, ty: u32, proto: u32) -> LinuxResult<isize> {
         }
         _ => return Err(LinuxError::ESOCKTNOSUPPORT),
     };
+    if raw_ty & O_NONBLOCK != 0 {
+        socket.set_nonblocking(true)?;
+    }
 
     socket.add_to_fd_table().map(|fd| fd as isize)
 }
@@ -57,7 +60,13 @@ pub fn sys_connect(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> Linux
     let addr = SocketAddr::read_from_user(addr, addrlen)?;
     debug!("sys_connect <= fd: {}, addr: {:?}", fd, addr);
 
-    Socket::from_fd(fd)?.connect(addr)?;
+    Socket::from_fd(fd)?.connect(addr).map_err(|e| {
+        if e == LinuxError::EAGAIN {
+            LinuxError::EINPROGRESS
+        } else {
+            e
+        }
+    })?;
 
     Ok(0)
 }
