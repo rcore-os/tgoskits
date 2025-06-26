@@ -12,19 +12,9 @@ impl PowerIf for PowerImpl {
     ///
     /// Where `cpu_id` is the logical CPU ID (0, 1, ..., N-1, N is the number of
     /// CPU cores on the platform).
+    #[cfg(feature = "smp")]
     fn cpu_boot(cpu_id: usize, stack_top_paddr: usize) {
-        match () {
-            #[cfg(feature = "smp")]
-            () => crate::mp::start_secondary_cpu(cpu_id, pa!(stack_top_paddr)),
-            #[cfg(not(feature = "smp"))]
-            () => {
-                let _ = (cpu_id, stack_top_paddr);
-                warn!(
-                    "feature `smp` is not enabled for crate `{}`!",
-                    env!("CARGO_CRATE_NAME")
-                );
-            }
-        }
+        crate::mp::start_secondary_cpu(cpu_id, pa!(stack_top_paddr))
     }
 
     /// Shutdown the whole system (in QEMU).

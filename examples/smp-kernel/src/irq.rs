@@ -32,10 +32,9 @@ pub fn init_irq() {
     }
 
     // Register the timer IRQ handler.
-    axplat::irq::register(crate::axplat_config::devices::TIMER_IRQ, update_timer);
+    axplat::irq::register(axplat_crate::config::devices::TIMER_IRQ, update_timer);
     axplat::console_println!("Timer IRQ handler registered.");
 
     // Enable the timer IRQ.
-    axplat::irq::set_enable(crate::axplat_config::devices::TIMER_IRQ, true);
     axcpu::asm::enable_irqs();
 }

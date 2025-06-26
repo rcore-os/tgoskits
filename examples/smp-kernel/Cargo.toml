@@ -17,7 +17,6 @@ const-str = "0.6.2"
 memory_addr = "0.3"
 axcpu = { workspace = true }
 axplat = { workspace = true }
-kspin = { version = "0.1", features = ["smp"] }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 axplat-x86-pc = { path = "../../platforms/axplat-x86-pc", features = ["irq", "smp"] }

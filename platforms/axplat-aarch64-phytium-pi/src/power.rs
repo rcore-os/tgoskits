@@ -9,19 +9,17 @@ impl PowerIf for PowerImpl {
     ///
     /// Where `cpu_id` is the logical CPU ID (0, 1, ..., N-1, N is the number of
     /// CPU cores on the platform).
-    fn cpu_boot(_cpu_id: usize, _stack_top_paddr: usize) {
-        #[cfg(feature = "smp")]
-        {
-            use crate::config::plat::CPU_ID_LIST;
-            use axplat::mem::virt_to_phys;
+    #[cfg(feature = "smp")]
+    fn cpu_boot(cpu_id: usize, stack_top_paddr: usize) {
+        use crate::config::plat::CPU_ID_LIST;
+        use axplat::mem::virt_to_phys;
 
-            let entry = virt_to_phys(va!(crate::boot::_start_secondary as usize));
-            axplat_aarch64_peripherals::psci::cpu_on(
-                CPU_ID_LIST[_cpu_id],
-                entry.as_usize(),
-                _stack_top_paddr,
-            );
-        }
+        let entry = virt_to_phys(va!(crate::boot::_start_secondary as usize));
+        axplat_aarch64_peripherals::psci::cpu_on(
+            CPU_ID_LIST[cpu_id],
+            entry.as_usize(),
+            stack_top_paddr,
+        );
     }
 
     /// Shutdown the whole system.

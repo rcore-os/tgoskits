@@ -15,8 +15,6 @@ cfg_if::cfg_if! {
     }
 }
 
-pub use axplat_crate::config as axplat_config;
-
 mod irq;
 use irq::*;
 

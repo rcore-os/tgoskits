@@ -39,6 +39,7 @@ pub trait TimeIf {
     ///
     /// A timer interrupt will be triggered at the specified monotonic time
     /// deadline (in nanoseconds).
+    #[cfg(feature = "irq")]
     fn set_oneshot_timer(deadline_ns: u64);
 }
 

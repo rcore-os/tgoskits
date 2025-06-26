@@ -116,16 +116,14 @@ impl TimeIf for TimeIfImpl {
     /// A timer interrupt will be triggered at the specified monotonic time deadline (in nanoseconds).
     ///
     /// LoongArch64 TCFG CSR: <https://loongson.github.io/LoongArch-Documentation/LoongArch-Vol1-EN.html#timer-configuration>
-    fn set_oneshot_timer(_deadline_ns: u64) {
-        #[cfg(feature = "irq")]
-        {
-            use loongArch64::register::tcfg;
+    #[cfg(feature = "irq")]
+    fn set_oneshot_timer(deadline_ns: u64) {
+        use loongArch64::register::tcfg;
 
-            let ticks_now = Self::current_ticks();
-            let ticks_deadline = Self::nanos_to_ticks(_deadline_ns);
-            let init_value = ticks_deadline - ticks_now;
-            tcfg::set_init_val(init_value as _);
-            tcfg::set_en(true);
-        }
+        let ticks_now = Self::current_ticks();
+        let ticks_deadline = Self::nanos_to_ticks(deadline_ns);
+        let init_value = ticks_deadline - ticks_now;
+        tcfg::set_init_val(init_value as _);
+        tcfg::set_en(true);
     }
 }

@@ -6,16 +6,12 @@ OBJCOPY ?= rust-objcopy --binary-architecture=$(ARCH)
 
 ifeq ($(ARCH), x86_64)
   TARGET := x86_64-unknown-none
-  PLAT_PACKAGE := axplat-x86-pc
 else ifeq ($(ARCH), aarch64)
   TARGET := aarch64-unknown-none-softfloat
-  PLAT_PACKAGE := axplat-aarch64-qemu-virt
 else ifeq ($(ARCH), riscv64)
   TARGET := riscv64gc-unknown-none-elf
-  PLAT_PACKAGE := axplat-riscv64-qemu-virt
 else ifeq ($(ARCH), loongarch64)
   TARGET := loongarch64-unknown-none-softfloat
-  PLAT_PACKAGE := axplat-loongarch64-qemu-virt
 else
   $(error "ARCH" must be one of "x86_64", "riscv64", "aarch64" or "loongarch64")
 endif

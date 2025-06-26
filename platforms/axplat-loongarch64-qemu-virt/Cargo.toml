@@ -10,9 +10,9 @@ repository.workspace = true
 
 [features]
 fp-simd = ["axcpu/fp-simd"]
-irq = []
+irq = ["axplat/irq"]
 rtc = ["dep:chrono"]
-smp = []
+smp = ["axplat/smp", "kspin/smp"]
 
 [dependencies]
 kspin = "0.1"

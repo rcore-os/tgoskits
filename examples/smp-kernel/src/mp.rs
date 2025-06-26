@@ -1,19 +1,12 @@
-use core::sync::atomic::{
-    AtomicUsize,
-    Ordering::{Acquire, Release},
-};
+use core::sync::atomic::Ordering::{Acquire, Release};
 use memory_addr::VirtAddr;
 
-use crate::{
-    CPU_NUM, INITED_CPUS, axplat_config::plat::BOOT_STACK_SIZE, init::init_cpu_id,
-    init_kernel_secondary,
-};
+use crate::{CPU_NUM, INITED_CPUS, init_kernel_secondary};
+use axplat_crate::config::plat::BOOT_STACK_SIZE;
 
 #[unsafe(link_section = ".bss.stack")]
 static mut SECONDARY_BOOT_STACK: [[u8; BOOT_STACK_SIZE]; CPU_NUM - 1] =
     [[0; BOOT_STACK_SIZE]; CPU_NUM - 1];
-
-static ENTERED_CPUS: AtomicUsize = AtomicUsize::new(1);
 
 #[allow(clippy::absurd_extreme_comparisons)]
 pub fn start_secondary_cpus(primary_cpu_id: usize) {
@@ -28,7 +21,7 @@ pub fn start_secondary_cpus(primary_cpu_id: usize) {
 
             logic_cpu_id += 1;
 
-            while ENTERED_CPUS.load(Acquire) <= logic_cpu_id {
+            while INITED_CPUS.load(Acquire) + 1 <= logic_cpu_id {
                 core::hint::spin_loop();
             }
         }
@@ -38,10 +31,7 @@ pub fn start_secondary_cpus(primary_cpu_id: usize) {
 #[axplat::secondary_main]
 fn secondary_main(cpu_id: usize) -> ! {
     init_kernel_secondary(cpu_id);
-    ENTERED_CPUS.fetch_add(1, Release);
-    axplat::console_println!("Secondary CPU {cpu_id} started.");
 
-    init_cpu_id(cpu_id);
     INITED_CPUS.fetch_add(1, Release);
 
     axplat::console_println!("Secondary CPU {cpu_id} init OK.");
@@ -52,9 +42,7 @@ fn secondary_main(cpu_id: usize) -> ! {
 
     axcpu::asm::enable_irqs();
 
-    axplat::time::busy_wait(axplat::time::TimeValue::from_secs(2));
-    axplat::console_println!("Secondary CPU {cpu_id} finished.");
-
+    // Infinite loop to receive and handle timer interrupts
     loop {
         core::hint::spin_loop();
     }

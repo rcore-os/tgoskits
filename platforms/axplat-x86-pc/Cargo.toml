@@ -10,9 +10,9 @@ repository.workspace = true
 
 [features]
 fp-simd = ["axcpu/fp-simd"]
-irq = []
+irq = ["axplat/irq"]
 rtc = ["x86_rtc"]
-smp = []
+smp = ["axplat/smp", "kspin/smp"]
 reboot-on-system-off = []
 
 [dependencies]

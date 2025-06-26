@@ -63,8 +63,8 @@ impl TimeIf for TimeIfImpl {
     /// Set a one-shot timer.
     ///
     /// A timer interrupt will be triggered at the specified monotonic time deadline (in nanoseconds).
-    fn set_oneshot_timer(_deadline_ns: u64) {
-        #[cfg(feature = "irq")]
-        sbi_rt::set_timer(Self::nanos_to_ticks(_deadline_ns));
+    #[cfg(feature = "irq")]
+    fn set_oneshot_timer(deadline_ns: u64) {
+        sbi_rt::set_timer(Self::nanos_to_ticks(deadline_ns));
     }
 }

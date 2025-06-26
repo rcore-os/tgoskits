@@ -29,7 +29,4 @@ fn main() {
     println!("cargo:rustc-link-arg=-no-pie");
 
     println!("cargo:rerun-if-env-changed=AX_CPU_NUM");
-    if let Ok(cpu_num) = std::env::var("AX_CPU_NUM") {
-        println!("cargo:rerun-if-changed={cpu_num}");
-    }
 }

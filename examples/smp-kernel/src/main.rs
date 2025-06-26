@@ -15,8 +15,6 @@ cfg_if::cfg_if! {
     }
 }
 
-pub use axplat_crate::config as axplat_config;
-
 mod init;
 mod irq;
 mod mp;
@@ -29,7 +27,7 @@ use core::sync::atomic::Ordering::Release;
 
 const CPU_NUM: usize = match option_env!("AX_CPU_NUM") {
     Some(val) => const_str::parse!(val, usize),
-    None => axplat_config::plat::CPU_NUM,
+    None => axplat_crate::config::plat::CPU_NUM,
 };
 
 #[axplat::main]
@@ -51,9 +49,9 @@ fn main(cpu_id: usize, arg: usize) -> ! {
         core::hint::spin_loop();
     }
 
-    axplat::time::busy_wait(axplat::time::TimeValue::from_secs(2));
+    axplat::time::busy_wait(axplat::time::TimeValue::from_secs(5));
 
-    axplat::console_println!("Primary CPU {cpu_id} finished. Shutting down...",);
+    axplat::console_println!("Primary CPU {cpu_id} finished. Shutting down...");
 
     axplat::power::system_off();
 }

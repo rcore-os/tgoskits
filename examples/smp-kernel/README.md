@@ -1,4 +1,4 @@
-# irq-kernel
+# smp-kernel
 
 A minimal example of a kernel with multi-core and timer interrupt support using [axplat](../../axplat) and related [platform crates](../../platforms).
 
@@ -33,21 +33,23 @@ In this case, the output will be similar to:
 ```
 Hello, ArceOS!
 Primary CPU 0 started.
-Secondary CPU 1 started.
 Secondary CPU 1 init OK.
-Timer IRQ handler registered.
-Secondary CPU 2 started.
 Secondary CPU 2 init OK.
-Secondary CPU 3 started.
 Secondary CPU 3 init OK.
-4.279632ms elapsed. Timer IRQ processed on CPU 0.
+Timer IRQ handler registered.
+43.6855ms elapsed. Timer IRQ processed on CPU 0.
 Primary CPU 0 init OK.
-5.316896ms elapsed. Timer IRQ processed on CPU 3.
-5.303712ms elapsed. Timer IRQ processed on CPU 2.
-5.341888ms elapsed. Timer IRQ processed on CPU 1.
-1.006153408s elapsed. Timer IRQ processed on CPU 0.
-1.006171952s elapsed. Timer IRQ processed on CPU 1.
-1.006174288s elapsed. Timer IRQ processed on CPU 3.
-1.006165648s elapsed. Timer IRQ processed on CPU 2.
+44.741ms elapsed. Timer IRQ processed on CPU 1.
+44.775ms elapsed. Timer IRQ processed on CPU 3.
+44.7756ms elapsed. Timer IRQ processed on CPU 2.
+1.0462813s elapsed. Timer IRQ processed on CPU 3.
+1.0464641s elapsed. Timer IRQ processed on CPU 1.
+1.046386s elapsed. Timer IRQ processed on CPU 2.
+1.0463975s elapsed. Timer IRQ processed on CPU 0.
+...
+4.0457381s elapsed. Timer IRQ processed on CPU 1.
+4.0457352s elapsed. Timer IRQ processed on CPU 0.
+4.045778s elapsed. Timer IRQ processed on CPU 2.
+4.0457964s elapsed. Timer IRQ processed on CPU 3.
 Primary CPU 0 finished. Shutting down...
 ```

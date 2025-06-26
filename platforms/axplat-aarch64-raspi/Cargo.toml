@@ -10,9 +10,9 @@ repository.workspace = true
 
 [features]
 fp-simd = ["axcpu/fp-simd"]
-irq = []
+irq = ["axplat/irq"]
 rtc = [] # Not implemented, currently no effect
-smp = []
+smp = ["axplat/smp"]
 
 [dependencies]
 log = "0.4"
