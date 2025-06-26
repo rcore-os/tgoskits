@@ -380,6 +380,11 @@ pub trait RxToken {
     fn meta(&self) -> PacketMeta {
         PacketMeta::default()
     }
+
+    /// Preprocess the incomming packet before it is passed to the stack.
+    ///
+    /// e.g., prepare TCP sockets when received a SYN packet.
+    fn preprocess(&self, _sockets: &mut crate::iface::SocketSet<'_>) {}
 }
 
 /// A token to transmit a single network packet.
