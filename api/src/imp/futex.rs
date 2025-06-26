@@ -64,7 +64,7 @@ pub fn sys_futex(
                         false
                     } else {
                         let wake = if command == FUTEX_WAKE_BITSET {
-                            let bitset = StarryTaskExt::of(&task)
+                            let bitset = StarryTaskExt::of(task)
                                 .thread_data()
                                 .futex_bitset
                                 .load(Ordering::SeqCst);
