@@ -10,7 +10,7 @@ use syscalls::Sysno;
 #[register_trap_handler(SYSCALL)]
 fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
     let sysno = Sysno::from(syscall_num as u32);
-    info!("Syscall {}", sysno);
+    trace!("Syscall {}", sysno);
     time_stat_from_user_to_kernel();
     let result = match sysno {
         // fs ctl
@@ -421,6 +421,6 @@ fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
     };
     let ans = result.unwrap_or_else(|err| -err.code() as _);
     time_stat_from_kernel_to_user();
-    info!("Syscall {:?} return {}", sysno, ans);
+    trace!("Syscall {:?} return {}", sysno, ans);
     ans
 }
