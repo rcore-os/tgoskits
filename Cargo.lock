@@ -368,7 +368,7 @@ dependencies = [
 [[package]]
 name = "axprocess"
 version = "0.1.0"
-source = "git+https://github.com/Starry-OS/axprocess.git?rev=d483f7b#d483f7bf714cd3df1195a23c0d2b1e34576ea217"
+source = "git+https://github.com/Starry-Mix-THU/axprocess.git?rev=1666809#16668091f34fcc7224bbc2544a6012f2d6f3a6a6"
 dependencies = [
  "kspin",
  "lazyinit",
@@ -399,7 +399,7 @@ dependencies = [
 [[package]]
 name = "axsignal"
 version = "0.1.0"
-source = "git+https://github.com/Starry-OS/axsignal.git?rev=9d82a33#9d82a33431aad547f305bf29e630a1acdd0780bf"
+source = "git+https://github.com/Starry-Mix-THU/axsignal.git?rev=9d82a33#9d82a33431aad547f305bf29e630a1acdd0780bf"
 dependencies = [
  "axerrno",
  "axhal",

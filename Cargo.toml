@@ -39,8 +39,8 @@ axsync = { path = "arceos/modules/axsync" }
 axtask = { path = "arceos/modules/axtask", features = ["task-ext"] }
 
 axfs-ng-vfs = { git = "https://github.com/Starry-Mix-THU/axfs-ng-vfs", rev = "f488cdf" }
-axprocess = { git = "https://github.com/Starry-OS/axprocess.git", rev = "d483f7b" }
-axsignal = { git = "https://github.com/Starry-OS/axsignal.git", rev = "9d82a33" }
+axprocess = { git = "https://github.com/Starry-Mix-THU/axprocess.git", rev = "1666809" }
+axsignal = { git = "https://github.com/Starry-Mix-THU/axsignal.git", rev = "9d82a33" }
 
 axerrno = "0.1"
 bitflags = "2.6"
