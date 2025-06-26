@@ -130,7 +130,7 @@ pub fn load_user_app(
         return load_user_app(uspace, None, &new_args, envs);
     }
 
-    let elf = ElfFile::new(&file_data).map_err(|_| AxError::InvalidData)?;
+    let elf = ElfFile::new(&file_data).map_err(|_| LinuxError::ENOEXEC)?;
 
     let ldso_entry_and_base = if let Some(header) = elf
         .program_iter()
@@ -146,7 +146,7 @@ pub fn load_user_app(
             .ok_or(LinuxError::EINVAL)?;
         debug!("Loading dynamic linker: {}", ldso);
         let ldso_data = FS_CONTEXT.lock().read(ldso)?;
-        let ldso_elf = ElfFile::new(&ldso_data).map_err(|_| AxError::InvalidData)?;
+        let ldso_elf = ElfFile::new(&ldso_data).map_err(|_| LinuxError::ENOEXEC)?;
         let ldso_parser = map_elf(uspace, starry_config::USER_INTERP_BASE, &ldso_elf)?;
         Some((ldso_parser.entry(), ldso_parser.base()))
     } else {
