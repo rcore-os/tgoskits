@@ -189,3 +189,20 @@ pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> LinuxResult<isize>
 
     Ok(0)
 }
+
+pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> LinuxResult<isize> {
+    debug!(
+        "sys_madvise <= addr: {:#x}, length: {:x}, advice: {:#x}",
+        addr, length, advice
+    );
+    Ok(0)
+}
+
+pub fn sys_msync(addr: usize, length: usize, flags: u32) -> LinuxResult<isize> {
+    debug!(
+        "sys_msync <= addr: {:#x}, length: {:x}, flags: {:#x}",
+        addr, length, flags
+    );
+
+    Ok(0)
+}
