@@ -363,6 +363,7 @@ fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
         Sysno::uname => sys_uname(tf.arg0().into()),
         Sysno::sysinfo => sys_sysinfo(tf.arg0().into()),
         Sysno::syslog => sys_syslog(tf.arg0() as _, tf.arg1().into(), tf.arg2() as _),
+        Sysno::getrandom => sys_getrandom(tf.arg0().into(), tf.arg1() as _, tf.arg2() as _),
 
         // time
         Sysno::gettimeofday => sys_gettimeofday(tf.arg0().into()),

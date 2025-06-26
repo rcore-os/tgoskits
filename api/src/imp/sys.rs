@@ -1,7 +1,11 @@
 use core::ffi::c_char;
 
 use axerrno::LinuxResult;
-use linux_raw_sys::system::{new_utsname, sysinfo};
+use axfs_ng::FS_CONTEXT;
+use linux_raw_sys::{
+    general::{GRND_INSECURE, GRND_NONBLOCK, GRND_RANDOM},
+    system::{new_utsname, sysinfo},
+};
 use starry_core::task::processes;
 
 use crate::ptr::UserPtr;
@@ -65,4 +69,37 @@ pub fn sys_sysinfo(info: UserPtr<sysinfo>) -> LinuxResult<isize> {
 
 pub fn sys_syslog(_type: i32, _buf: UserPtr<c_char>, _len: usize) -> LinuxResult<isize> {
     Ok(0)
+}
+
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub struct GetRandomFlags: u32 {
+        const NONBLOCK = GRND_NONBLOCK;
+        const RANDOM = GRND_RANDOM;
+        const INSECURE = GRND_INSECURE;
+    }
+}
+
+pub fn sys_getrandom(buf: UserPtr<u8>, len: usize, flags: u32) -> LinuxResult<isize> {
+    if len == 0 {
+        return Ok(0);
+    }
+    let buf = buf.get_as_mut_slice(len)?;
+    let flags = GetRandomFlags::from_bits_retain(flags);
+
+    debug!(
+        "sys_getrandom <= buf: {:p}, len: {}, flags: {:?}",
+        buf, len, flags
+    );
+
+    let path = if flags.contains(GetRandomFlags::RANDOM) {
+        "/dev/random"
+    } else {
+        "/dev/urandom"
+    };
+
+    let mut f = axfs_ng::File::open(&FS_CONTEXT.lock(), path)?;
+    let len = f.read_at(buf, 0)?;
+
+    Ok(len as _)
 }
