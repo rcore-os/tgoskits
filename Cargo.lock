@@ -376,7 +376,7 @@ dependencies = [
 [[package]]
 name = "axprocess"
 version = "0.1.0"
-source = "git+https://github.com/Starry-OS/axprocess.git#f6f0d08f202be9310ec2b72d73915b5017fac631"
+source = "git+https://github.com/Starry-OS/axprocess.git?rev=57d4480#57d448062c992613dc34d877fc6cada9d4d23909"
 dependencies = [
  "kspin",
  "lazyinit",
@@ -408,12 +408,10 @@ dependencies = [
 [[package]]
 name = "axsignal"
 version = "0.1.0"
-source = "git+https://github.com/Starry-OS/axsignal.git?rev=b5b6089#b5b6089c40a989ff8ae434ec32ea388b7a9d7a11"
+source = "git+https://github.com/Starry-OS/axsignal.git?rev=9d82a33#9d82a33431aad547f305bf29e630a1acdd0780bf"
 dependencies = [
- "axconfig",
  "axerrno",
  "axhal",
- "axtask",
  "bitflags 2.9.0",
  "cfg-if",
  "derive_more",
@@ -1522,6 +1520,7 @@ dependencies = [
 name = "starry-core"
 version = "0.1.0"
 dependencies = [
+ "axalloc",
  "axconfig",
  "axerrno",
  "axfs-ng",

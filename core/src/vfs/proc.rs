@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::{format, sync::Arc};
 use axfs_ng_vfs::Filesystem;
 use axsync::RawMutex;
 
@@ -80,5 +80,19 @@ fn builder(fs: Arc<DynamicFs>) -> DirMaker {
         ),
     );
     root.add("meminfo", SimpleFile::new(fs.clone(), || DUMMY_MEMINFO));
+    root.add(
+        "meminfo2",
+        SimpleFile::new(fs.clone(), || {
+            let allocator = axalloc::global_allocator();
+            format!(
+                "Used Pages: {}\nAvailable Pages: {}\nUsed Memory: {} bytes\nAvailable Memory: {} bytes\n{:?}\n",
+                allocator.used_pages(),
+                allocator.available_pages(),
+                allocator.used_bytes(),
+                allocator.available_bytes(),
+                allocator.usage_stats()
+            )
+        }),
+    );
     root.build()
 }
