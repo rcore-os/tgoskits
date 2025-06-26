@@ -14,7 +14,7 @@ use alloc::{
 };
 use axerrno::{LinuxError, LinuxResult};
 use axhal::{arch::UspaceContext, time::monotonic_time_nanos};
-use axmm::{AddrSpace, kernel_aspace};
+use axmm::AddrSpace;
 use axprocess::{Pid, Process, ProcessGroup, Session, Thread};
 use axsignal::{
     Signo,
@@ -23,7 +23,6 @@ use axsignal::{
 use axsync::{Mutex, RawMutex};
 use axtask::{TaskExt, TaskInner, WaitQueue, current};
 use extern_trait::extern_trait;
-use memory_addr::VirtAddrRange;
 use scope_local::{ActiveScope, Scope};
 use spin::RwLock;
 use weak_map::WeakMap;
@@ -293,18 +292,6 @@ impl ProcessData {
     /// signal other than SIGCHLD to its parent upon termination.
     pub fn is_clone_child(&self) -> bool {
         self.exit_signal != Some(Signo::SIGCHLD)
-    }
-}
-
-impl Drop for ProcessData {
-    fn drop(&mut self) {
-        if !cfg!(target_arch = "aarch64") && !cfg!(target_arch = "loongarch64") {
-            // See [`crate::new_user_aspace`]
-            let kernel = kernel_aspace().lock();
-            self.aspace
-                .lock()
-                .clear_mappings(VirtAddrRange::from_start_size(kernel.base(), kernel.size()));
-        }
     }
 }
 

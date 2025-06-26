@@ -41,3 +41,6 @@ rand = { version = "0.9.1", default-features = false, features = [
 slab = { version = "0.4.9", default-features = false }
 weak-map = "0.1"
 xmas-elf = "0.9"
+
+[target.'cfg(not(any(target_arch = "aarch64", target_arch = "loongarch64")))'.dependencies]
+axmm = { workspace = true, features = ["copy-from"] }

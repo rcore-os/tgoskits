@@ -345,6 +345,7 @@ dependencies = [
  "log",
  "memory_addr",
  "memory_set",
+ "page_table_multiarch",
 ]
 
 [[package]]
@@ -1107,7 +1108,7 @@ checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 [[package]]
 name = "page_table_entry"
 version = "0.5.3"
-source = "git+https://github.com/Starry-Mix-THU/page_table_multiarch.git?rev=e33b1e5#e33b1e5a9974dbfd4fc5f74321f00f5e95cc9336"
+source = "git+https://github.com/arceos-org/page_table_multiarch.git?rev=9d76d22#9d76d228a20e0fccddde9c884bf9d2b841323698"
 dependencies = [
  "aarch64-cpu",
  "bitflags 2.9.0",
@@ -1118,8 +1119,9 @@ dependencies = [
 [[package]]
 name = "page_table_multiarch"
 version = "0.5.3"
-source = "git+https://github.com/Starry-Mix-THU/page_table_multiarch.git?rev=e33b1e5#e33b1e5a9974dbfd4fc5f74321f00f5e95cc9336"
+source = "git+https://github.com/arceos-org/page_table_multiarch.git?rev=9d76d22#9d76d228a20e0fccddde9c884bf9d2b841323698"
 dependencies = [
+ "bitmaps",
  "log",
  "memory_addr",
  "page_table_entry",
