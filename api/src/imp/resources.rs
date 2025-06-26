@@ -1,9 +1,9 @@
 use axerrno::{LinuxError, LinuxResult};
 use axhal::time::TimeValue;
 use axprocess::{Pid, Thread};
-use axtask::{TaskExtRef, current};
+use axtask::current;
 use linux_raw_sys::general::{__kernel_old_timeval, RLIM_NLIMITS, rlimit64, rusage};
-use starry_core::task::{ProcessData, ThreadData, get_process};
+use starry_core::task::{ProcessData, StarryTaskExt, ThreadData, get_process};
 
 use crate::{
     ptr::{UserConstPtr, UserPtr, nullable},
@@ -21,7 +21,7 @@ pub fn sys_prlimit64(
     }
 
     let proc = if pid == 0 {
-        current().task_ext().thread.process().clone()
+        StarryTaskExt::of(&current()).thread.process().clone()
     } else {
         get_process(pid)?
     };
@@ -76,11 +76,11 @@ impl Rusage {
 
 pub fn sys_getrusage(who: i32, usage: UserPtr<rusage>) -> LinuxResult<isize> {
     const RUSAGE_SELF: i32 = linux_raw_sys::general::RUSAGE_SELF as i32;
-    const RUSAGE_CHILDREN: i32 = linux_raw_sys::general::RUSAGE_CHILDREN as i32;
+    const RUSAGE_CHILDREN: i32 = linux_raw_sys::general::RUSAGE_CHILDREN;
     const RUSAGE_THREAD: i32 = linux_raw_sys::general::RUSAGE_THREAD as i32;
 
     let curr = current();
-    let curr_ext = curr.task_ext();
+    let curr_ext = StarryTaskExt::of(&curr);
 
     let result = match who {
         RUSAGE_SELF => curr_ext
@@ -89,7 +89,7 @@ pub fn sys_getrusage(who: i32, usage: UserPtr<rusage>) -> LinuxResult<isize> {
             .threads()
             .iter()
             .fold(Rusage::default(), |acc, child| {
-                acc.collate(Rusage::from_thread(&child))
+                acc.collate(Rusage::from_thread(child))
             }),
         RUSAGE_CHILDREN => {
             let tid = curr_ext.thread.tid();
@@ -100,7 +100,7 @@ pub fn sys_getrusage(who: i32, usage: UserPtr<rusage>) -> LinuxResult<isize> {
                 .iter()
                 .filter(|child| child.tid() != tid)
                 .fold(Rusage::default(), |acc, child| {
-                    acc.collate(Rusage::from_thread(&child))
+                    acc.collate(Rusage::from_thread(child))
                 })
         }
         RUSAGE_THREAD => Rusage::from_thread(&curr_ext.thread),

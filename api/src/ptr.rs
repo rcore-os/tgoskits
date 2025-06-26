@@ -2,9 +2,9 @@ use core::{alloc::Layout, ffi::c_char, mem::transmute, ptr, slice, str};
 
 use axerrno::{LinuxError, LinuxResult};
 use axhal::paging::MappingFlags;
-use axtask::{TaskExtRef, current};
+use axtask::current;
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
-use starry_core::mm::access_user_memory;
+use starry_core::{mm::access_user_memory, task::StarryTaskExt};
 
 fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> LinuxResult<()> {
     let align = layout.align();
@@ -12,8 +12,8 @@ fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> 
         return Err(LinuxError::EFAULT);
     }
 
-    let task = current();
-    let mut aspace = task.task_ext().process_data().aspace.lock();
+    let current = current();
+    let mut aspace = StarryTaskExt::of(&current).process_data().aspace.lock();
 
     if !aspace.check_region_access(
         VirtAddrRange::from_start_size(start, layout.size()),
@@ -58,8 +58,8 @@ fn check_null_terminated<T: PartialEq + Default>(
                 // TODO: this is inefficient, but we have to do this instead of
                 // querying the page table since the page might has not been
                 // allocated yet.
-                let task = current();
-                let aspace = task.task_ext().process_data().aspace.lock();
+                let current = current();
+                let aspace = StarryTaskExt::of(&current).process_data().aspace.lock();
                 if !aspace.check_region_access(
                     VirtAddrRange::from_start_size(page, PAGE_SIZE_4K),
                     access_flags,

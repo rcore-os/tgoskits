@@ -4,10 +4,10 @@ use axhal::{
     trap::{PAGE_FAULT, register_trap_handler},
 };
 use axsignal::{SignalInfo, Signo};
-use axtask::{TaskExtRef, current};
+use axtask::current;
 use linux_raw_sys::general::{RLIMIT_STACK, SI_KERNEL, SIGSEGV};
 use starry_api::{do_exit, signal::send_signal_process};
-use starry_core::mm::is_accessing_user_memory;
+use starry_core::{mm::is_accessing_user_memory, task::StarryTaskExt};
 
 #[register_trap_handler(PAGE_FAULT)]
 fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags, is_user: bool) -> bool {
@@ -20,23 +20,23 @@ fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags, is_user: bool)
     }
 
     let curr = current();
+    let ext = StarryTaskExt::of(&curr);
     if (starry_config::USER_STACK_TOP - starry_config::USER_STACK_SIZE
         ..starry_config::USER_STACK_TOP)
         .contains(&vaddr.as_usize())
     {
         // Stack extension, check rlimit
-        let rlim = &curr.task_ext().process_data().rlim.read()[RLIMIT_STACK];
+        let rlim = &ext.process_data().rlim.read()[RLIMIT_STACK];
         let size = starry_config::USER_STACK_TOP - vaddr.as_usize();
         if size as u64 > rlim.current {
             send_signal_process(
-                curr.task_ext().thread.process(),
+                ext.thread.process(),
                 SignalInfo::new(Signo::SIGSEGV, SI_KERNEL as _),
             )
             .expect("Failed to send SIGSEGV");
         }
     }
-    if !curr
-        .task_ext()
+    if !ext
         .process_data()
         .aspace
         .lock()
@@ -45,7 +45,7 @@ fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags, is_user: bool)
         warn!(
             "{} ({:?}): segmentation fault at {:#x}, exit!",
             curr.id_name(),
-            curr.task_ext().thread,
+            ext.thread,
             vaddr
         );
         do_exit(SIGSEGV as _, true);

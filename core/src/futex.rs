@@ -4,7 +4,9 @@ use core::{ops::Deref, sync::atomic::AtomicBool};
 
 use alloc::{collections::btree_map::BTreeMap, sync::Arc};
 use axsync::Mutex;
-use axtask::{TaskExtRef, WaitQueue, current};
+use axtask::{WaitQueue, current};
+
+use crate::task::StarryTaskExt;
 
 /// The futex entry structure
 pub struct FutexEntry {
@@ -70,7 +72,7 @@ impl Deref for FutexGuard {
 impl Drop for FutexGuard {
     fn drop(&mut self) {
         let curr = current();
-        let mut table = curr.task_ext().process_data().futex_table.0.lock();
+        let mut table = StarryTaskExt::of(&curr).process_data().futex_table.0.lock();
         if Arc::strong_count(&self.inner) == 1 && self.inner.wq.is_empty() {
             table.remove(&self.key);
         }

@@ -33,18 +33,18 @@ axhal = { path = "arceos/modules/axhal", features = ["uspace", "rtc"] }
 axlog = { path = "arceos/modules/axlog" }
 axmm = { path = "arceos/modules/axmm" }
 axnet = { path = "arceos/modules/axnet" }
-axns = { path = "arceos/modules/axns", features = ["thread-local"] }
 axruntime = { path = "arceos/modules/axruntime" }
 axsync = { path = "arceos/modules/axsync" }
-axtask = { path = "arceos/modules/axtask" }
+axtask = { path = "arceos/modules/axtask", features = ["task-ext"] }
 
 axfs-ng-vfs = { git = "https://github.com/Starry-Mix-THU/axfs-ng-vfs", rev = "f488cdf" }
-axprocess = { git = "https://github.com/Starry-OS/axprocess.git", rev = "57d4480" }
+axprocess = { git = "https://github.com/Starry-OS/axprocess.git", rev = "d483f7b" }
 axsignal = { git = "https://github.com/Starry-OS/axsignal.git", rev = "9d82a33" }
 
 axerrno = "0.1"
 bitflags = "2.6"
 cfg-if = "1.0"
+extern-trait = "0.2"
 linkme = "0.3.33"
 linux-raw-sys = { version = "0.9.3", default-features = false, features = [
     "no_std",
@@ -54,6 +54,7 @@ linux-raw-sys = { version = "0.9.3", default-features = false, features = [
     "system",
 ] }
 memory_addr = "0.4"
+scope-local = "0.1"
 spin = "0.9"
 
 starry-config = { path = "./config" }

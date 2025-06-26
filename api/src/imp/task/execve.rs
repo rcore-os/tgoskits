@@ -3,8 +3,11 @@ use core::ffi::c_char;
 use alloc::{string::ToString, vec::Vec};
 use axerrno::{LinuxError, LinuxResult};
 use axhal::arch::TrapFrame;
-use axtask::{TaskExtRef, current};
-use starry_core::mm::{load_user_app, map_trampoline};
+use axtask::current;
+use starry_core::{
+    mm::{load_user_app, map_trampoline},
+    task::StarryTaskExt,
+};
 
 use crate::ptr::UserConstPtr;
 
@@ -33,15 +36,15 @@ pub fn sys_execve(
     );
 
     let curr = current();
-    let curr_ext = curr.task_ext();
+    let ext = StarryTaskExt::of(&curr);
 
-    if curr_ext.thread.process().threads().len() > 1 {
+    if ext.thread.process().threads().len() > 1 {
         // TODO: handle multi-thread case
         error!("sys_execve: multi-thread not supported");
         return Err(LinuxError::EAGAIN);
     }
 
-    let mut aspace = curr_ext.process_data().aspace.lock();
+    let mut aspace = ext.process_data().aspace.lock();
     aspace.unmap_user_areas()?;
     map_trampoline(&mut aspace)?;
     axhal::arch::flush_tlb(None);
@@ -57,7 +60,7 @@ pub fn sys_execve(
         .rsplit_once('/')
         .map_or(path.as_str(), |(_, name)| name);
     curr.set_name(name);
-    *curr_ext.process_data().exe_path.write() = path;
+    *ext.process_data().exe_path.write() = path;
 
     // TODO: fd close-on-exec
 

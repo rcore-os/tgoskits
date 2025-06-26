@@ -5,16 +5,15 @@ mod stdio;
 
 use core::{any::Any, ffi::c_int, time::Duration};
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::sync::Arc;
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng_vfs::DeviceId;
 use axio::PollState;
-use axns::{ResArc, def_resource};
-use axtask::{TaskExtRef, current};
+use axtask::current;
 use flatten_objects::FlattenObjects;
 use linux_raw_sys::general::{RLIMIT_NOFILE, stat, statx, statx_timestamp};
 use spin::RwLock;
-use starry_core::resources::AX_FILE_LIMIT;
+use starry_core::{resources::AX_FILE_LIMIT, task::StarryTaskExt};
 
 pub use self::{
     fs::{Directory, File, ResolveAtResult, metadata_to_kstat, resolve_at, with_fs},
@@ -146,28 +145,22 @@ pub trait FileLike: Send + Sync {
     }
 }
 
-def_resource! {
-    pub static FD_TABLE: ResArc<RwLock<FlattenObjects<Arc<dyn FileLike>, AX_FILE_LIMIT>>> = ResArc::new();
-}
-
-impl FD_TABLE {
-    /// Return a copy of the inner table.
-    pub fn copy_inner(&self) -> RwLock<FlattenObjects<Arc<dyn FileLike>, AX_FILE_LIMIT>> {
-        let table = self.read();
-        let mut new_table = FlattenObjects::new();
-        for id in table.ids() {
-            let _ = new_table.add_at(id, table.get(id).unwrap().clone());
-        }
-        RwLock::new(new_table)
-    }
-
-    pub fn clear(&self) {
-        let mut table = self.write();
-        let ids = table.ids().collect::<Vec<_>>();
-        for id in ids {
-            let _ = table.remove(id);
-        }
-    }
+scope_local::scope_local! {
+    /// The current file descriptor table.
+    pub static FD_TABLE: Arc<RwLock<FlattenObjects<Arc<dyn FileLike>, AX_FILE_LIMIT>>> =
+        Arc::new(RwLock::new({
+            let mut fd_table = FlattenObjects::new();
+            fd_table
+                .add_at(0, Arc::new(stdio::stdin()) as _)
+                .unwrap_or_else(|_| panic!()); // stdin
+            fd_table
+                .add_at(1, Arc::new(stdio::stdout()) as _)
+                .unwrap_or_else(|_| panic!()); // stdout
+            fd_table
+                .add_at(2, Arc::new(stdio::stdout()) as _)
+                .unwrap_or_else(|_| panic!()); // stderr
+            fd_table
+        }));
 }
 
 /// Get a file-like object by `fd`.
@@ -181,7 +174,8 @@ pub fn get_file_like(fd: c_int) -> LinuxResult<Arc<dyn FileLike>> {
 
 /// Add a file to the file descriptor table.
 pub fn add_file_like(f: Arc<dyn FileLike>) -> LinuxResult<c_int> {
-    let max_nofile = current().task_ext().process_data().rlim.read()[RLIMIT_NOFILE].current;
+    let max_nofile =
+        StarryTaskExt::of(&current()).process_data().rlim.read()[RLIMIT_NOFILE].current;
     let mut table = FD_TABLE.write();
     if table.count() as u64 >= max_nofile {
         return Err(LinuxError::EMFILE);
@@ -197,19 +191,4 @@ pub fn close_file_like(fd: c_int) -> LinuxResult {
         .ok_or(LinuxError::EBADF)?;
     debug!("close_file_like <= count: {}", Arc::strong_count(&f));
     Ok(())
-}
-
-#[ctor_bare::register_ctor]
-fn init_stdio() {
-    let mut fd_table = flatten_objects::FlattenObjects::new();
-    fd_table
-        .add_at(0, Arc::new(stdio::stdin()) as _)
-        .unwrap_or_else(|_| panic!()); // stdin
-    fd_table
-        .add_at(1, Arc::new(stdio::stdout()) as _)
-        .unwrap_or_else(|_| panic!()); // stdout
-    fd_table
-        .add_at(2, Arc::new(stdio::stdout()) as _)
-        .unwrap_or_else(|_| panic!()); // stderr
-    FD_TABLE.init_new(spin::RwLock::new(fd_table));
 }

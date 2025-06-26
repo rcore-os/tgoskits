@@ -4,11 +4,10 @@ use axhal::arch::UspaceContext;
 use axprocess::{Pid, init_proc};
 use axsignal::Signo;
 use axsync::Mutex;
-use linux_raw_sys::general::AT_FDCWD;
-use starry_api::file::{FD_TABLE, with_fs};
+use axtask::TaskExtProxy;
 use starry_core::{
     mm::{copy_from_kernel, load_user_app, map_trampoline, new_user_aspace_empty},
-    task::{ProcessData, TaskExt, ThreadData, add_thread_to_table, new_user_task},
+    task::{ProcessData, StarryTaskExt, ThreadData, add_thread_to_table, new_user_task},
 };
 
 pub fn run_user_app(args: &[String], envs: &[String]) -> Option<i32> {
@@ -21,13 +20,11 @@ pub fn run_user_app(args: &[String], envs: &[String]) -> Option<i32> {
         .expect("Failed to create user address space");
 
     let exe_path = &args[0];
-    let name = with_fs(AT_FDCWD, |fs| {
-        let loc = fs.resolve(exe_path)?;
-        let name = loc.name().to_owned();
-        fs.set_current_dir(loc.parent().unwrap())?;
-        Ok(name)
-    })
-    .expect("Failed to resolve executable path");
+    let loc = FS_CONTEXT
+        .lock()
+        .resolve(exe_path)
+        .expect("Failed to resolve executable path");
+    let name = loc.name().to_owned();
 
     let (entry_vaddr, ustack_top) = load_user_app(&mut uspace, None, args, envs)
         .unwrap_or_else(|e| panic!("Failed to load user app: {}", e));
@@ -43,13 +40,11 @@ pub fn run_user_app(args: &[String], envs: &[String]) -> Option<i32> {
         Arc::default(),
         Some(Signo::SIGCHLD),
     );
-
-    FD_TABLE
-        .deref_from(&process_data.ns)
-        .init_new(FD_TABLE.copy_inner());
     FS_CONTEXT
-        .deref_from(&process_data.ns)
-        .init_new(FS_CONTEXT.copy_inner());
+        .scope_mut(&mut process_data.scope.write())
+        .lock()
+        .set_current_dir(loc.parent().unwrap())
+        .expect("Failed to set current directory");
 
     let tid = task.id().as_u64() as Pid;
     let process = init_proc().fork(tid).data(process_data).build();
@@ -60,7 +55,7 @@ pub fn run_user_app(args: &[String], envs: &[String]) -> Option<i32> {
         .build();
     add_thread_to_table(&thread);
 
-    task.init_task_ext(TaskExt::new(thread));
+    *task.task_ext_mut() = Some(unsafe { TaskExtProxy::from_impl(StarryTaskExt::new(thread)) });
 
     let task = axtask::spawn_task(task);
 

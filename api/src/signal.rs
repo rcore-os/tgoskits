@@ -5,14 +5,13 @@ use axhal::{
 };
 use axprocess::{Process, ProcessGroup, Thread};
 use axsignal::{SignalInfo, SignalOSAction, SignalSet};
-use axtask::{TaskExtRef, current};
-use starry_core::task::{ProcessData, ThreadData};
+use axtask::current;
+use starry_core::task::{ProcessData, StarryTaskExt, ThreadData};
 
 use crate::do_exit;
 
 pub fn check_signals(tf: &mut TrapFrame, restore_blocked: Option<SignalSet>) -> bool {
-    let Some((sig, os_action)) = current()
-        .task_ext()
+    let Some((sig, os_action)) = StarryTaskExt::of(&current())
         .thread_data()
         .signal
         .check_signals(tf, restore_blocked)

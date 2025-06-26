@@ -1,12 +1,12 @@
 use alloc::{sync::Arc, vec::Vec};
 use axerrno::{LinuxError, LinuxResult};
 use axprocess::{Pid, Process};
-use axtask::{TaskExtRef, current};
+use axtask::current;
 use bitflags::bitflags;
 use linux_raw_sys::general::{
     __WALL, __WCLONE, __WNOTHREAD, WCONTINUED, WEXITED, WNOHANG, WNOWAIT, WUNTRACED,
 };
-use starry_core::task::ProcessData;
+use starry_core::task::{ProcessData, StarryTaskExt};
 
 use crate::ptr::{UserPtr, nullable};
 
@@ -60,8 +60,9 @@ pub fn sys_waitpid(pid: i32, exit_code_ptr: UserPtr<i32>, options: u32) -> Linux
     info!("sys_waitpid <= pid: {:?}, options: {:?}", pid, options);
 
     let curr = current();
-    let proc_data = curr.task_ext().process_data();
-    let process = curr.task_ext().thread.process();
+    let ext = StarryTaskExt::of(&curr);
+    let process = ext.thread.process();
+    let process_data = ext.process_data();
 
     let pid = if pid == -1 {
         WaitPid::Any
@@ -100,7 +101,7 @@ pub fn sys_waitpid(pid: i32, exit_code_ptr: UserPtr<i32>, options: u32) -> Linux
         } else if options.contains(WaitOptions::WNOHANG) {
             return Ok(0);
         } else {
-            proc_data.child_exit_wq.wait();
+            process_data.child_exit_wq.wait();
         }
     }
 }

@@ -14,7 +14,6 @@ axfs-ng-vfs.workspace = true
 axhal.workspace = true
 axlog.workspace = true
 axmm.workspace = true
-axns.workspace = true
 axsync.workspace = true
 axtask.workspace = true
 
@@ -22,23 +21,23 @@ axprocess.workspace = true
 axsignal.workspace = true
 
 axerrno.workspace = true
+extern-trait.workspace = true
 linkme.workspace = true
 linux-raw-sys.workspace = true
 memory_addr.workspace = true
+scope-local.workspace = true
 spin.workspace = true
 
 starry-config.workspace = true
 
-crate_interface = "0.1"
+inherit-methods-macro = "0.1.0"
 kernel-elf-parser = { git = "https://github.com/Starry-Mix-THU/kernel_elf_parser.git", rev = "3b99715" }
 numeric-enum-macro = "0.2"
 percpu = "0.2.0"
-xmas-elf = "0.9"
-
 rand = { version = "0.9.1", default-features = false, features = [
     "alloc",
     "small_rng",
 ] }
 slab = { version = "0.4.9", default-features = false }
-weak-map = { git = "https://github.com/Starry-OS/weak-map.git" }
-inherit-methods-macro = "0.1.0"
+weak-map = "0.1"
+xmas-elf = "0.9"

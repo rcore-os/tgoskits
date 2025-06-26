@@ -2,29 +2,28 @@ use core::sync::atomic::Ordering;
 
 use axprocess::Pid;
 use axsignal::{SignalInfo, Signo};
-use axtask::{TaskExtRef, current};
+use axtask::current;
 use linux_raw_sys::general::{SI_KERNEL, robust_list_head};
-use starry_core::task::ProcessData;
+use starry_core::task::{ProcessData, StarryTaskExt};
 
 use crate::{
     clear_proc_shm, exit_robust_list,
-    file::FD_TABLE,
     ptr::{UserPtr, nullable},
     signal::{send_signal_process, send_signal_thread},
 };
 
 pub fn do_exit(exit_code: i32, group_exit: bool) -> ! {
     let curr = current();
-    let curr_ext = curr.task_ext();
+    let ext = StarryTaskExt::of(&curr);
 
-    let thread = &curr_ext.thread;
+    let thread = &ext.thread;
     info!("{:?} exit with code: {}", thread, exit_code);
 
-    let clear_child_tid = UserPtr::<Pid>::from(curr_ext.thread_data().clear_child_tid());
+    let clear_child_tid = UserPtr::<Pid>::from(ext.thread_data().clear_child_tid());
     if let Ok(clear_tid) = clear_child_tid.get_as_mut() {
         *clear_tid = 0;
 
-        let guard = curr_ext
+        let guard = ext
             .process_data()
             .futex_table
             .get(clear_tid as *const _ as usize);
@@ -33,7 +32,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) -> ! {
         }
         axtask::yield_now();
     }
-    let head: UserPtr<robust_list_head> = curr_ext
+    let head: UserPtr<robust_list_head> = ext
         .thread_data()
         .robust_list_head
         .load(Ordering::SeqCst)
@@ -58,9 +57,6 @@ pub fn do_exit(exit_code: i32, group_exit: bool) -> ! {
 
         clear_proc_shm(process.pid());
         process.exit();
-        // TODO: clear namespace resources
-        // FIXME: axns should drop all the resources
-        FD_TABLE.clear();
     }
     if group_exit && !process.is_group_exited() {
         process.group_exit();

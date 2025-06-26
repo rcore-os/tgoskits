@@ -1,7 +1,6 @@
 //! User task management.
 
 use core::{
-    alloc::Layout,
     cell::RefCell,
     ops::Deref,
     sync::atomic::{AtomicUsize, Ordering},
@@ -16,16 +15,17 @@ use alloc::{
 use axerrno::{LinuxError, LinuxResult};
 use axhal::{arch::UspaceContext, time::monotonic_time_nanos};
 use axmm::{AddrSpace, kernel_aspace};
-use axns::{AxNamespace, AxNamespaceIf};
 use axprocess::{Pid, Process, ProcessGroup, Session, Thread};
 use axsignal::{
     Signo,
     api::{ProcessSignalManager, SignalActions, ThreadSignalManager},
 };
 use axsync::{Mutex, RawMutex};
-use axtask::{TaskExtRef, TaskInner, WaitQueue, current};
+use axtask::{TaskExt, TaskInner, WaitQueue, current};
+use extern_trait::extern_trait;
 use memory_addr::VirtAddrRange;
-use spin::{Once, RwLock};
+use scope_local::{ActiveScope, Scope};
+use spin::RwLock;
 use weak_map::WeakMap;
 
 use crate::{futex::FutexTable, resources::Rlimits, time::TimeStat};
@@ -58,13 +58,27 @@ pub fn new_user_task(
 }
 
 /// Task extended data for the monolithic kernel.
-pub struct TaskExt {
-    /// The thread
+pub struct StarryTaskExt {
+    /// The thread associated with this task.
     pub thread: Arc<Thread>,
 }
 
-impl TaskExt {
-    /// Create a new [`TaskExt`].
+#[extern_trait]
+unsafe impl TaskExt for StarryTaskExt {
+    fn on_enter(&self) {
+        let scope = self.process_data().scope.read();
+        unsafe { ActiveScope::set(&scope) };
+        core::mem::forget(scope);
+    }
+
+    fn on_leave(&self) {
+        ActiveScope::set_global();
+        unsafe { self.process_data().scope.force_read_decrement() };
+    }
+}
+
+impl StarryTaskExt {
+    /// Create a new [`StarryTaskExt`].
     pub fn new(thread: Arc<Thread>) -> Self {
         Self { thread }
     }
@@ -83,6 +97,13 @@ impl TaskExt {
             .switch_into_kernel_mode(current_tick);
     }
 
+    /// Convenience function for getting the extended data for a task.
+    /// # Panics
+    /// Panics if the current task is a kernel task.
+    pub fn of(task: &TaskInner) -> &Self {
+        unsafe { task.task_ext().unwrap().downcast_ref() }
+    }
+
     /// Get the [`ThreadData`] associated with this task.
     pub fn thread_data(&self) -> &ThreadData {
         self.thread.data().unwrap()
@@ -94,22 +115,14 @@ impl TaskExt {
     }
 }
 
-axtask::def_task_ext!(TaskExt);
-
 /// Update the time statistics to reflect a switch from kernel mode to user mode.
 pub fn time_stat_from_kernel_to_user() {
-    let curr_task = current();
-    curr_task
-        .task_ext()
-        .time_stat_from_kernel_to_user(monotonic_time_nanos() as usize);
+    StarryTaskExt::of(&current()).time_stat_from_kernel_to_user(monotonic_time_nanos() as usize);
 }
 
 /// Update the time statistics to reflect a switch from user mode to kernel mode.
 pub fn time_stat_from_user_to_kernel() {
-    let curr_task = current();
-    curr_task
-        .task_ext()
-        .time_stat_from_user_to_kernel(monotonic_time_nanos() as usize);
+    StarryTaskExt::of(&current()).time_stat_from_user_to_kernel(monotonic_time_nanos() as usize);
 }
 
 #[doc(hidden)]
@@ -200,8 +213,8 @@ pub struct ProcessData {
     pub exe_path: RwLock<String>,
     /// The virtual memory address space.
     pub aspace: Arc<Mutex<AddrSpace>>,
-    /// The resource namespace
-    pub ns: AxNamespace,
+    /// The resource scope
+    pub scope: RwLock<Scope>,
     /// The user heap bottom
     heap_bottom: AtomicUsize,
     /// The user heap top
@@ -233,7 +246,7 @@ impl ProcessData {
         Self {
             exe_path: RwLock::new(exe_path),
             aspace,
-            ns: AxNamespace::new_thread_local(),
+            scope: RwLock::new(Scope::new()),
             heap_bottom: AtomicUsize::new(starry_config::USER_HEAP_BASE),
             heap_top: AtomicUsize::new(starry_config::USER_HEAP_BASE),
 
@@ -287,29 +300,6 @@ impl Drop for ProcessData {
                 .lock()
                 .clear_mappings(VirtAddrRange::from_start_size(kernel.base(), kernel.size()));
         }
-    }
-}
-
-struct AxNamespaceImpl;
-#[crate_interface::impl_interface]
-impl AxNamespaceIf for AxNamespaceImpl {
-    fn current_namespace_base() -> *mut u8 {
-        // Namespace for kernel task
-        static KERNEL_NS_BASE: Once<usize> = Once::new();
-        let current = axtask::current();
-        // Safety: We only check whether the task extended data is null and do not access it.
-        if unsafe { current.task_ext_ptr() }.is_null() {
-            return *(KERNEL_NS_BASE.call_once(|| {
-                let global_ns = AxNamespace::global();
-                let layout = Layout::from_size_align(global_ns.size(), 64).unwrap();
-                // Safety: The global namespace is a static readonly variable and will not be dropped.
-                let dst = unsafe { alloc::alloc::alloc(layout) };
-                let src = global_ns.base();
-                unsafe { core::ptr::copy_nonoverlapping(src, dst, global_ns.size()) };
-                dst as usize
-            })) as *mut u8;
-        }
-        current.task_ext().process_data().ns.base()
     }
 }
 

@@ -7,7 +7,7 @@ use axhal::time::monotonic_time_nanos;
 use axmm::SharedPages;
 use axprocess::Pid;
 use axsync::Mutex;
-use axtask::{TaskExtRef, current};
+use axtask::current;
 
 use lazy_static::lazy_static;
 use linux_raw_sys::ctypes::{c_long, c_ushort};
@@ -15,6 +15,7 @@ use linux_raw_sys::general::*;
 use memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use page_table_entry::MappingFlags;
 use page_table_multiarch::PageSize;
+use starry_core::task::StarryTaskExt;
 
 use crate::imp::ipc::{BiBTreeMap, IPCID_ALLOCATOR};
 use crate::ptr::{UserPtr, nullable};
@@ -329,7 +330,7 @@ pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> LinuxResult<isize> {
         mapping_flags.insert(MappingFlags::EXECUTE);
     }
 
-    let cur_pid = current().task_ext().thread.process().pid();
+    let cur_pid = StarryTaskExt::of(&current()).thread.process().pid();
     let mut shm_manager = SHM_MANAGER.lock();
 
     if key != IPC_PRIVATE {
@@ -375,15 +376,16 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> LinuxResult<isize> {
     // TODO: solve shmflg: SHM_RND and SHM_REMAP
 
     let curr = current();
-    let cur_pid = curr.task_ext().thread.process().pid();
-    let process_data = curr.task_ext().process_data();
+    let ext = StarryTaskExt::of(&curr);
+    let pid = ext.thread.process().pid();
+    let process_data = ext.process_data();
     let mut aspace = process_data.aspace.lock();
 
     let start_aligned = memory_addr::align_down_4k(addr);
     let length = shm_inner.page_num * PAGE_SIZE_4K;
 
     // alloc the virtual address range
-    assert!(shm_inner.get_addr_range(cur_pid).is_none());
+    assert!(shm_inner.get_addr_range(pid).is_none());
     let start_addr = aspace
         .find_free_area(
             VirtAddr::from(start_aligned),
@@ -404,10 +406,10 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> LinuxResult<isize> {
     let va_range = VirtAddrRange::new(start_addr, end_addr);
 
     let mut shm_manager = SHM_MANAGER.lock();
-    shm_manager.insert_shmid_vaddr(cur_pid, shm_inner.shmid, start_addr);
+    shm_manager.insert_shmid_vaddr(pid, shm_inner.shmid, start_addr);
     info!(
         "Process {} alloc shm virt addr start: {:#x}, size: {}, mapping_flags: {:#x?}",
-        cur_pid,
+        pid,
         start_addr.as_usize(),
         length,
         mapping_flags
@@ -431,7 +433,7 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> LinuxResult<isize> {
             Ok(pages) => {
                 info!(
                     "proc {} map shm addr: {:#x}, size: {}",
-                    cur_pid,
+                    pid,
                     start_addr.as_usize(),
                     length
                 );
@@ -440,7 +442,7 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> LinuxResult<isize> {
             Err(e) => {
                 error!(
                     "proc {} map shm addr: {:#x}, size: {}, error: {:?}",
-                    cur_pid,
+                    pid,
                     start_addr.as_usize(),
                     length,
                     e
@@ -450,7 +452,7 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> LinuxResult<isize> {
         }
     }
 
-    shm_inner.attach_process(cur_pid, va_range);
+    shm_inner.attach_process(pid, va_range);
     Ok(start_addr.as_usize() as isize)
 }
 
@@ -481,10 +483,11 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> LinuxResult<is
 
 pub fn sys_shmdt(shmaddr: usize) -> LinuxResult<isize> {
     let shmaddr = VirtAddr::from(shmaddr);
-    let pid = {
-        let curr = current();
-        curr.task_ext().thread.process().pid()
-    };
+
+    let curr = current();
+    let ext = StarryTaskExt::of(&curr);
+
+    let pid = ext.thread.process().pid();
     let shmid = {
         let shm_manager = SHM_MANAGER.lock();
         shm_manager
@@ -501,8 +504,7 @@ pub fn sys_shmdt(shmaddr: usize) -> LinuxResult<isize> {
     let mut shm_inner = shm_inner.lock();
     let va_range = shm_inner.get_addr_range(pid).ok_or(LinuxError::EINVAL)?;
 
-    let curr = current();
-    let mut aspace = curr.task_ext().process_data().aspace.lock();
+    let mut aspace = ext.process_data().aspace.lock();
     aspace.unmap(va_range.start, va_range.size())?;
     axhal::arch::flush_tlb(None);
 

@@ -16,7 +16,6 @@ axhal.workspace = true
 axlog.workspace = true
 axmm.workspace = true
 axnet.workspace = true
-axns.workspace = true
 axsync.workspace = true
 axtask.workspace = true
 
@@ -29,6 +28,7 @@ cfg-if.workspace = true
 linkme.workspace = true
 linux-raw-sys = { workspace = true, features = ["ioctl"] }
 memory_addr.workspace = true
+scope-local.workspace = true
 spin.workspace = true
 
 starry-config.workspace = true
@@ -36,11 +36,9 @@ starry-core.workspace = true
 
 axio = "0.1.1"
 chrono = { version = "0.4.41", default-features = false }
-ctor_bare = "0.2.1"
-flatten_objects = "0.2.3"
-num_enum = { version = "0.7", default-features = false }
-
+flatten_objects = { git = "https://github.com/Starry-Mix-THU/flatten_objects.git", rev = "e08873e" }
 lazy_static = { version = "1.5", features = ["spin_no_std"] }
+num_enum = { version = "0.7", default-features = false }
 page_table_multiarch = "0.5"
 page_table_entry = "0.5"
 

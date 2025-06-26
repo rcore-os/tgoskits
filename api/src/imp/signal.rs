@@ -5,12 +5,12 @@ use axerrno::{LinuxError, LinuxResult};
 use axhal::arch::TrapFrame;
 use axprocess::{Pid, Thread};
 use axsignal::{SignalInfo, SignalSet, SignalStack, Signo};
-use axtask::{TaskExtRef, current};
+use axtask::current;
 use linux_raw_sys::general::{
     MINSIGSTKSZ, SI_TKILL, SI_USER, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK, kernel_sigaction, siginfo,
     timespec,
 };
-use starry_core::task::{get_process, get_process_group, get_thread, processes};
+use starry_core::task::{StarryTaskExt, get_process, get_process_group, get_thread, processes};
 
 use crate::{
     ptr::{UserConstPtr, UserPtr, nullable},
@@ -37,8 +37,7 @@ pub fn sys_rt_sigprocmask(
 ) -> LinuxResult<isize> {
     check_sigset_size(sigsetsize)?;
 
-    current()
-        .task_ext()
+    StarryTaskExt::of(&current())
         .thread_data()
         .signal
         .with_blocked_mut::<LinuxResult<_>>(|blocked| {
@@ -74,7 +73,11 @@ pub fn sys_rt_sigaction(
     }
 
     let curr = current();
-    let mut actions = curr.task_ext().process_data().signal.actions.lock();
+    let mut actions = StarryTaskExt::of(&curr)
+        .process_data()
+        .signal
+        .actions
+        .lock();
     if let Some(oldact) = nullable!(oldact.get_as_mut())? {
         actions[signo].to_ctype(oldact);
     }
@@ -86,7 +89,7 @@ pub fn sys_rt_sigaction(
 
 pub fn sys_rt_sigpending(set: UserPtr<SignalSet>, sigsetsize: usize) -> LinuxResult<isize> {
     check_sigset_size(sigsetsize)?;
-    *set.get_as_mut()? = current().task_ext().thread_data().signal.pending();
+    *set.get_as_mut()? = StarryTaskExt::of(&current()).thread_data().signal.pending();
     Ok(0)
 }
 
@@ -104,14 +107,13 @@ pub fn sys_kill(pid: i32, signo: u32) -> LinuxResult<isize> {
         return Ok(0);
     };
 
-    let curr = current();
     match pid {
         1.. => {
             let proc = get_process(pid as Pid)?;
             send_signal_process(&proc, sig)?;
         }
         0 => {
-            let pg = curr.task_ext().thread.process().group();
+            let pg = StarryTaskExt::of(&current()).thread.process().group();
             send_signal_process_group(&pg, sig)?;
         }
         -1 => {
@@ -168,7 +170,7 @@ fn make_queue_signal_info(
     let signo = parse_signo(signo)?;
     let mut sig = sig.get_as_ref()?.clone();
     sig.set_signo(signo);
-    if current().task_ext().thread.process().pid() != tgid
+    if StarryTaskExt::of(&current()).thread.process().pid() != tgid
         && (sig.code() >= 0 || sig.code() == SI_TKILL)
     {
         return Err(LinuxError::EPERM);
@@ -204,8 +206,10 @@ pub fn sys_rt_tgsigqueueinfo(
 }
 
 pub fn sys_rt_sigreturn(tf: &mut TrapFrame) -> LinuxResult<isize> {
-    let curr = current();
-    curr.task_ext().thread_data().signal.restore(tf);
+    StarryTaskExt::of(&current())
+        .thread_data()
+        .signal
+        .restore(tf);
     Ok(tf.retval() as isize)
 }
 
@@ -220,8 +224,7 @@ pub fn sys_rt_sigtimedwait(
     let set = *set.get_as_ref()?;
     let timeout: Option<Duration> = nullable!(timeout.get_as_ref())?.map(|ts| ts.to_time_value());
 
-    let Some(sig) = current()
-        .task_ext()
+    let Some(sig) = StarryTaskExt::of(&current())
         .thread_data()
         .signal
         .wait_timeout(set, timeout)
@@ -244,13 +247,14 @@ pub fn sys_rt_sigsuspend(
     check_sigset_size(sigsetsize)?;
 
     let curr = current();
-    let thr_data = curr.task_ext().thread_data();
+    let ext = StarryTaskExt::of(&curr);
     let mut set = *set.get_as_ref()?;
 
     set.remove(Signo::SIGKILL);
     set.remove(Signo::SIGSTOP);
 
-    let old_blocked = thr_data
+    let old_blocked = ext
+        .thread_data()
         .signal
         .with_blocked_mut(|blocked| mem::replace(blocked, set));
 
@@ -260,7 +264,7 @@ pub fn sys_rt_sigsuspend(
         if check_signals(tf, Some(old_blocked)) {
             break;
         }
-        curr.task_ext().process_data().signal.wait_signal();
+        ext.process_data().signal.wait_signal();
     }
 
     Ok(0)
@@ -270,8 +274,7 @@ pub fn sys_sigaltstack(
     ss: UserConstPtr<SignalStack>,
     old_ss: UserPtr<SignalStack>,
 ) -> LinuxResult<isize> {
-    current()
-        .task_ext()
+    StarryTaskExt::of(&current())
         .thread_data()
         .signal
         .with_stack_mut(|stack| {
