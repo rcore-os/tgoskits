@@ -1140,6 +1140,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "01e56c0c558952222967b592899f98765b48590e7bd7403bfd7075f73afc6ed6"
 dependencies = [
  "cfg-if",
+ "kernel_guard",
  "percpu_macros",
  "spin",
  "x86",
