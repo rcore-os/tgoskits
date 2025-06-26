@@ -300,6 +300,8 @@ fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
         Sysno::exit_group => sys_exit_group(tf.arg0() as _),
         Sysno::wait4 => sys_waitpid(tf.arg0() as _, tf.arg1().into(), tf.arg2() as _),
         Sysno::setsid => sys_setsid(),
+        Sysno::getpgid => sys_getpgid(tf.arg0() as _),
+        Sysno::setpgid => sys_setpgid(tf.arg0() as _, tf.arg1() as _),
 
         // signal
         Sysno::rt_sigprocmask => sys_rt_sigprocmask(
