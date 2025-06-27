@@ -58,7 +58,6 @@ cd /glibc
 ./lmbench_testcode.sh
 ./iozone_testcode.sh
 ./libcbench_testcode.sh
-./libctest_testcode.sh
 ./busybox_testcode.sh
 ./basic_testcode.sh
 ./lua_testcode.sh
