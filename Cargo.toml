@@ -4,9 +4,10 @@ version = "0.1.1"
 edition = "2021"
 authors = [
     "Yuekai Jia <equation618@gmail.com>",
-    "yfblock <321353225@qq.com>",
     "Youjie Zheng <Azure_stars@126.com>",
+    "yfblock <321353225@qq.com>",
     "yanjuguang <coolyanjg@163.com>",
+    "Grow Zheng <hhmcn@outlook.com>",
     "Su Mingxian <aarkegz@gmail.com>",
     "hky1999 <keyang.hu@qq.com>",
     "RobertYuan <634954435@qq.com>",
@@ -31,7 +32,7 @@ arm-el2 = []
 linkme = "0.3"
 log = "0.4"
 cfg-if = "1.0"
-memory_addr = "0.3"
+memory_addr = "0.4"
 page_table_entry = "0.5"
 static_assertions = "1.1.0"
 

@@ -17,7 +17,7 @@ pub static PAGE_FAULT: [fn(VirtAddr, PageFaultFlags, bool) -> bool];
 
 /// A slice of syscall handler functions.
 #[cfg(feature = "uspace")]
-#[doc(cfg(feature = "uspace"))]
+#[cfg_attr(docsrs, doc(cfg(feature = "uspace")))]
 #[def_trap_handler]
 pub static SYSCALL: [fn(&TrapFrame, usize) -> isize];
 
