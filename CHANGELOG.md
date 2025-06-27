@@ -1,8 +1,16 @@
 # Changelog
 
-## 0.5.2
+## 0.5.4
 
-### Minor Changes
+## New Features
+
+- [Fix invalid query result](https://github.com/arceos-org/page_table_multiarch/pull/17).
+- [Fix incorrect TLB flush VA bits on aarch64](https://github.com/arceos-org/page_table_multiarch/pull/21).
+- [Introduce feature `copy-from` and fix page table drop after `copy-from`](https://github.com/arceos-org/page_table_multiarch/pull/20).
+
+## 0.5.3
+
+### New Features
 
 - Add `empty` method to page table entries for all architectures.
 
@@ -10,15 +18,15 @@
 
 ### Minor Changes
 
-- Make LoongArch64's page table default to 4 levels (https://github.com/arceos-org/page_table_multiarch/pull/12).
-- Do not link to alloc crate (https://github.com/arceos-org/page_table_multiarch/pull/13).
-- Implement `Clone` and `Copy` for `PagingError` (https://github.com/arceos-org/page_table_multiarch/pull/14).
+- [Make LoongArch64's page table default to 4 levels](https://github.com/arceos-org/page_table_multiarch/pull/12).
+- [Do not link to alloc crate](https://github.com/arceos-org/page_table_multiarch/pull/13).
+- [Implement `Clone` and `Copy` for `PagingError`](https://github.com/arceos-org/page_table_multiarch/pull/14).
 
 ## 0.5.1
 
 ### LoongArch64
 
-- Add LoongArch64 support (https://github.com/arceos-org/page_table_multiarch/pull/11).
+- [Add LoongArch64 support](https://github.com/arceos-org/page_table_multiarch/pull/11).
 
 ## 0.5.0
 

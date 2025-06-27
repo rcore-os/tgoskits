@@ -16,7 +16,7 @@ rust-version.workspace = true
 arm-el2 = []
 
 [dependencies]
-bitflags = "2.6"
+bitflags = "2.9"
 memory_addr.workspace = true
 
 [target.'cfg(any(target_arch = "aarch64", doc))'.dependencies]

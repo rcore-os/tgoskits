@@ -19,14 +19,14 @@ copy-from = ["dep:bitmaps"]
 [dependencies]
 log = "0.4"
 memory_addr.workspace = true
-page_table_entry = { path = "../page_table_entry", version = "0.5.2" }
+page_table_entry.workspace = true
 bitmaps = { version = "3.2", default-features = false, optional = true }
 
 [target.'cfg(any(target_arch = "x86_64", doc))'.dependencies]
 x86 = "0.52"
 
 [target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64", doc))'.dependencies]
-riscv = { version = "0.12", default-features = false }
+riscv = { version = "0.14", default-features = false }
 
 [package.metadata.docs.rs]
 rustc-args = ["--cfg", "doc"]
