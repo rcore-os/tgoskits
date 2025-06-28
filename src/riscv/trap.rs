@@ -1,5 +1,7 @@
 use riscv::interrupt::supervisor::{Exception as E, Interrupt as I};
 use riscv::interrupt::Trap;
+#[cfg(feature = "fp-simd")]
+use riscv::register::sstatus;
 use riscv::register::{scause, stval};
 
 use super::TrapFrame;
@@ -68,4 +70,9 @@ fn riscv_trap_handler(tf: &mut TrapFrame, from_user: bool) {
             tf
         );
     }
+
+    // Update tf.sstatus to preserve current hardware FS state
+    // This replaces the assembly-level FS handling workaround
+    #[cfg(feature = "fp-simd")]
+    tf.sstatus.set_fs(sstatus::read().fs());
 }

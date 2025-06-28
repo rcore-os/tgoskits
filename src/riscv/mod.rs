@@ -10,4 +10,4 @@ pub mod init;
 #[cfg(feature = "uspace")]
 pub mod uspace;
 
-pub use self::context::{GeneralRegisters, TaskContext, TrapFrame};
+pub use self::context::{FpState, GeneralRegisters, TaskContext, TrapFrame};

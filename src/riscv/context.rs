@@ -1,5 +1,6 @@
 use core::arch::naked_asm;
 use memory_addr::VirtAddr;
+use riscv::register::sstatus::{self, FS};
 
 /// General registers of RISC-V.
 #[allow(missing_docs)]
@@ -39,16 +40,90 @@ pub struct GeneralRegisters {
     pub t6: usize,
 }
 
+/// Floating-point registers of RISC-V.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct FpState {
+    /// the state of the RISC-V Floating-Point Unit (FPU)
+    pub fp: [u64; 32],
+    pub fcsr: usize,
+    pub fs: FS,
+}
+
+impl Default for FpState {
+    fn default() -> Self {
+        Self {
+            fs: FS::Initial,
+            fp: [0; 32],
+            fcsr: 0,
+        }
+    }
+}
+
+#[cfg(feature = "fp-simd")]
+impl FpState {
+    /// Restores the floating-point registers from this FP state
+    #[inline]
+    pub fn restore(&self) {
+        unsafe { restore_fp_registers(self) }
+    }
+
+    /// Saves the current floating-point registers to this FP state
+    #[inline]
+    pub fn save(&mut self) {
+        unsafe { save_fp_registers(self) }
+    }
+
+    /// Clears all floating-point registers to zero
+    #[inline]
+    pub fn clear() {
+        unsafe { clear_fp_registers() }
+    }
+
+    /// Handles floating-point state context switching
+    ///
+    /// Saves the current task's FP state (if needed) and restores the next task's FP state
+    pub fn switch_to(&mut self, next_fp_state: &FpState) {
+        // get the real FP state of the current task
+        let current_fs = sstatus::read().fs();
+        // save the current task's FP state
+        if current_fs == FS::Dirty {
+            // we need to save the current task's FP state
+            self.save();
+            // after saving, we set the FP state to clean
+            self.fs = FS::Clean;
+        }
+        // restore the next task's FP state
+        match next_fp_state.fs {
+            FS::Clean => next_fp_state.restore(), // the next task's FP state is clean, we should restore it
+            FS::Initial => FpState::clear(),      // restore the FP state as constant values(all 0)
+            FS::Off => {}                         // do nothing
+            FS::Dirty => unreachable!("FP state of the next task should not be dirty"),
+        }
+        unsafe { sstatus::set_fs(next_fp_state.fs) }; // set the FP state to the next task's FP state
+    }
+}
+
 /// Saved registers when a trap (interrupt or exception) occurs.
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct TrapFrame {
     /// All general registers.
     pub regs: GeneralRegisters,
     /// Supervisor Exception Program Counter.
     pub sepc: usize,
     /// Supervisor Status Register.
-    pub sstatus: usize,
+    pub sstatus: sstatus::Sstatus,
+}
+
+impl Default for TrapFrame {
+    fn default() -> Self {
+        Self {
+            regs: GeneralRegisters::default(),
+            sepc: 0,
+            sstatus: sstatus::Sstatus::from_bits(0),
+        }
+    }
 }
 
 impl TrapFrame {
@@ -119,7 +194,8 @@ pub struct TaskContext {
     /// The `satp` register value, i.e., the page table root.
     #[cfg(feature = "uspace")]
     pub satp: memory_addr::PhysAddr,
-    // TODO: FP states
+    #[cfg(feature = "fp-simd")]
+    pub fp_state: FpState,
 }
 
 impl TaskContext {
@@ -170,11 +246,50 @@ impl TaskContext {
             unsafe { crate::asm::write_user_page_table(next_ctx.satp) };
             crate::asm::flush_tlb(None); // currently flush the entire TLB
         }
-        unsafe {
-            // TODO: switch FP states
-            context_switch(self, next_ctx)
+        #[cfg(feature = "fp-simd")]
+        {
+            self.fp_state.switch_to(&next_ctx.fp_state);
         }
+
+        unsafe { context_switch(self, next_ctx) }
     }
+}
+
+#[cfg(feature = "fp-simd")]
+#[unsafe(naked)]
+unsafe extern "C" fn save_fp_registers(fp_state: &mut FpState) {
+    naked_asm!(
+        include_fp_asm_macros!(),
+        "
+        PUSH_FLOAT_REGS a0
+        frcsr t0
+        STR t0, a0, 32
+        ret"
+    )
+}
+
+#[cfg(feature = "fp-simd")]
+#[unsafe(naked)]
+unsafe extern "C" fn restore_fp_registers(fp_state: &FpState) {
+    naked_asm!(
+        include_fp_asm_macros!(),
+        "
+        POP_FLOAT_REGS a0
+        LDR t0, a0, 32
+        fscsr x0, t0
+        ret"
+    )
+}
+
+#[cfg(feature = "fp-simd")]
+#[unsafe(naked)]
+unsafe extern "C" fn clear_fp_registers() {
+    naked_asm!(
+        include_fp_asm_macros!(),
+        "
+        CLEAR_FLOAT_REGS
+        ret"
+    )
 }
 
 #[unsafe(naked)]
