@@ -227,7 +227,7 @@ pub fn ranges_difference<F>(
 where
     F: FnMut(RawRange),
 {
-    check_sorted_ranges_overlap(from.iter().cloned())?;
+    check_sorted_ranges_overlap(exclude.iter().cloned())?;
 
     for &(start, size) in from {
         let mut start = start;
