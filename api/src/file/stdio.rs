@@ -8,42 +8,35 @@ use linux_raw_sys::general::S_IFCHR;
 
 use super::Kstat;
 
-fn console_read_bytes(buf: &mut [u8]) -> AxResult<usize> {
-    let len = axhal::console::read_bytes(buf);
-    for c in &mut buf[..len] {
-        if *c == b'\r' {
-            *c = b'\n';
-        }
-    }
-    Ok(len)
-}
-
-fn console_write_bytes(buf: &[u8]) -> AxResult<usize> {
-    axhal::console::write_bytes(buf);
-    Ok(buf.len())
-}
-
 struct StdinRaw;
-struct StdoutRaw;
 
 impl Read for StdinRaw {
     // Non-blocking read, returns number of bytes read.
     fn read(&mut self, buf: &mut [u8]) -> AxResult<usize> {
         let mut read_len = 0;
         while read_len < buf.len() {
-            let len = console_read_bytes(buf[read_len..].as_mut())?;
+            let len = axhal::console::read_bytes(&mut buf[read_len..]);
             if len == 0 {
                 break;
             }
             read_len += len;
+
+            for c in &mut buf[..len] {
+                if *c == b'\r' {
+                    *c = b'\n';
+                }
+            }
         }
         Ok(read_len)
     }
 }
 
+struct StdoutRaw;
+
 impl Write for StdoutRaw {
     fn write(&mut self, buf: &[u8]) -> AxResult<usize> {
-        console_write_bytes(buf)
+        axhal::console::write_bytes(buf);
+        Ok(buf.len())
     }
 
     fn flush(&mut self) -> AxResult {
