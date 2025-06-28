@@ -30,6 +30,7 @@ pub struct CommandNew {
 
 fn apply_cargo_toml_template(orig: &mut DocumentMut, new: &DocumentMut) {
     orig["dependencies"] = new["dependencies"].clone();
+    orig["features"] = new["features"].clone();
 }
 
 fn apply_template(path: &str, arch: &str) -> io::Result<()> {
@@ -38,7 +39,7 @@ fn apply_template(path: &str, arch: &str) -> io::Result<()> {
     let cargo_toml = std::fs::read_to_string(path.join("Cargo.toml"))?;
     let mut orig_table = cargo_toml.parse::<DocumentMut>().unwrap();
     let package = orig_table["package"].as_table().unwrap();
-    let plat_name = String::from(package["name"].as_str().unwrap());
+    let package_name = String::from(package["name"].as_str().unwrap());
 
     for (name, content) in crate::template::TEMPLATE {
         let dst = path.join(name);
@@ -51,7 +52,7 @@ fn apply_template(path: &str, arch: &str) -> io::Result<()> {
             "axconfig.toml" => {
                 let content = content
                     .replace("<ARCH>", arch)
-                    .replace("<PLATFORM>", &plat_name);
+                    .replace("<PACKAGE>", &package_name);
                 std::fs::write(dst, content)?;
             }
             _ => std::fs::write(dst, content)?,
