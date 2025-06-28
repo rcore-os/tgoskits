@@ -1,6 +1,5 @@
 use crate::config::plat::CPU_ID_LIST;
-use axplat::mem::virt_to_phys;
-use memory_addr::PhysAddr;
+use axplat::mem::{PhysAddr, va, virt_to_phys};
 
 /// Starts the given secondary CPU with its boot stack.
 pub fn start_secondary_cpu(cpu_id: usize, stack_top: PhysAddr) {

@@ -4,8 +4,6 @@
 #[macro_use]
 extern crate log;
 #[macro_use]
-extern crate memory_addr;
-#[macro_use]
 extern crate axplat;
 
 mod apic;

@@ -16,7 +16,6 @@ smp = ["axplat/smp"]
 
 [dependencies]
 log = "0.4"
-memory_addr = "0.3"
 page_table_entry = "0.5"
 axconfig-macros = "0.2"
 axplat-aarch64-peripherals = { version = "0.1", path = "../axplat-aarch64-peripherals" }

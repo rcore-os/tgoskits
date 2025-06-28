@@ -1,6 +1,4 @@
-use memory_addr::VirtAddr;
-
-use axplat::mem::virt_to_phys;
+use axplat::mem::{VirtAddr, virt_to_phys};
 
 /// The maximum number of bytes that can be read at once.
 const MAX_RW_SIZE: usize = 256;

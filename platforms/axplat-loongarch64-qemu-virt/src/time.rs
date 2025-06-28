@@ -29,8 +29,8 @@ pub(super) fn init_percpu() {
 #[cfg(feature = "rtc")]
 fn init_rtc() {
     use crate::mem::phys_to_virt;
+    use axplat::mem::{PhysAddr, pa};
     use chrono::{TimeZone, Timelike, Utc};
-    use memory_addr::PhysAddr;
 
     const SYS_TOY_READ0: usize = 0x2C;
     const SYS_TOY_READ1: usize = 0x30;

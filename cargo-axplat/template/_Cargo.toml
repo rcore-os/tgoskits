@@ -3,6 +3,10 @@ name = "axplat-example" # to be overwritten
 version = "0.1.0"       # to be overwritten
 edition = "2021"        # to be overwritten
 
+[features]
+irq = ["axplat/irq"]
+smp = ["axplat/smp"]
+
 [dependencies]
 axconfig-macros = "0.2"
 axplat = { git = "https://github.com/arceos-org/axplat_crates" }

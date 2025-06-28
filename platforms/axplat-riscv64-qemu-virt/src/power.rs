@@ -11,6 +11,7 @@ impl PowerIf for PowerImpl {
     /// CPU cores on the platform).
     #[cfg(feature = "smp")]
     fn cpu_boot(cpu_id: usize, stack_top_paddr: usize) {
+        use axplat::mem::{va, virt_to_phys};
         unsafe extern "C" {
             fn _start_secondary();
         }
@@ -18,7 +19,7 @@ impl PowerIf for PowerImpl {
             warn!("HSM SBI extension is not supported for current SEE.");
             return;
         }
-        let entry = axplat::mem::virt_to_phys(va!(_start_secondary as usize));
+        let entry = virt_to_phys(va!(_start_secondary as usize));
         sbi_rt::hart_start(cpu_id, entry.as_usize(), stack_top_paddr);
     }
 

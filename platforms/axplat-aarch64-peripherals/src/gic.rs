@@ -2,9 +2,9 @@
 
 use arm_gicv2::{GicCpuInterface, GicDistributor};
 use axplat::irq::{HandlerTable, IrqHandler};
+use axplat::mem::VirtAddr;
 use kspin::SpinNoIrq;
 use lazyinit::LazyInit;
-use memory_addr::VirtAddr;
 
 /// The maximum number of IRQs.
 const MAX_IRQ_COUNT: usize = 1024;

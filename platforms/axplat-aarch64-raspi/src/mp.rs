@@ -1,5 +1,4 @@
-use axplat::mem::{phys_to_virt, virt_to_phys};
-use memory_addr::PhysAddr;
+use axplat::mem::{PhysAddr, pa, phys_to_virt, va, virt_to_phys};
 
 static mut SECONDARY_STACK_TOP: usize = 0;
 

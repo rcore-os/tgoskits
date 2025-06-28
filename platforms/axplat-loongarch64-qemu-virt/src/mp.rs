@@ -1,5 +1,5 @@
+use axplat::mem::PhysAddr;
 use loongArch64::ipi::{csr_mail_send, send_ipi_single};
-use memory_addr::PhysAddr;
 
 use crate::mem::phys_to_virt;
 

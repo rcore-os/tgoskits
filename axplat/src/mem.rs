@@ -3,7 +3,7 @@
 use core::ops::{Deref, DerefMut};
 use core::{fmt, ops::Range};
 
-use memory_addr::{PhysAddr, VirtAddr};
+pub use memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr, pa, va};
 
 bitflags::bitflags! {
     /// The flags of a physical memory region.

@@ -1,9 +1,9 @@
 # Architecture identifier.
-arch = "<ARCH>" # str
+arch = "<ARCH>"                                 # str
 # Platform identifier.
-platform = "<PLATFORM>" # str
+platform = "<PLATFORM>"                         # str
 # Platform package.
-package = "<PACKAGE>" # str
+package = "<PACKAGE>"                           # str
 
 #
 # Platform configs
@@ -29,6 +29,8 @@ phys-bus-offset = 0                             # uint
 kernel-aspace-base = "0xffff_8000_0000_0000"    # uint
 # Kernel address space size.
 kernel-aspace-size = "0x0000_7fff_ffff_f000"    # uint
+# Stack size on bootstrapping.
+boot-stack-size = 0                             # uint
 
 #
 # Device specifications

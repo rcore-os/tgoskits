@@ -14,6 +14,7 @@ impl PowerIf for PowerImpl {
     /// CPU cores on the platform).
     #[cfg(feature = "smp")]
     fn cpu_boot(cpu_id: usize, stack_top_paddr: usize) {
+        use axplat::mem::pa;
         crate::mp::start_secondary_cpu(cpu_id, pa!(stack_top_paddr))
     }
 

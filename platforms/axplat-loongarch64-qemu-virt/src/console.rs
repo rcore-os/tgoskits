@@ -1,6 +1,6 @@
 use crate::mem::phys_to_virt;
+use axplat::mem::{PhysAddr, pa};
 use kspin::SpinNoIrq;
-use memory_addr::PhysAddr;
 use ns16550a::Uart;
 
 const UART_BASE: PhysAddr = pa!(crate::config::devices::UART_PADDR);

@@ -1,9 +1,8 @@
 //! Physical memory information.
 
-use axplat::mem::{MemIf, RawRange};
+use axplat::mem::{MemIf, PhysAddr, RawRange, VirtAddr, pa, va};
 use heapless::Vec;
 use lazyinit::LazyInit;
-use memory_addr::{PhysAddr, VirtAddr};
 use multiboot::information::{MemoryManagement, MemoryType, Multiboot, PAddr};
 
 use crate::config::devices::MMIO_RANGES;

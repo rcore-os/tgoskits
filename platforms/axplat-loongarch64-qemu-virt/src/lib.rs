@@ -4,8 +4,6 @@
 extern crate log;
 #[macro_use]
 extern crate axplat;
-#[macro_use]
-extern crate memory_addr;
 
 pub mod config {
     //! Platform configuration module.

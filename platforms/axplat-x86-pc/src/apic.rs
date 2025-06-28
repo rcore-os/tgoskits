@@ -2,10 +2,9 @@
 
 use core::{cell::SyncUnsafeCell, mem::MaybeUninit};
 
-use axplat::mem::phys_to_virt;
+use axplat::mem::{PhysAddr, pa, phys_to_virt};
 use kspin::SpinNoIrq;
 use lazyinit::LazyInit;
-use memory_addr::PhysAddr;
 use x2apic::ioapic::IoApic;
 use x2apic::lapic::{LocalApic, LocalApicBuilder, xapic_base};
 use x86_64::instructions::port::Port;

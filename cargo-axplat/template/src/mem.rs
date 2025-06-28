@@ -1,4 +1,4 @@
-use axplat::mem::{MemIf, RawRange};
+use axplat::mem::{MemIf, PhysAddr, RawRange, VirtAddr};
 
 struct MemIfImpl;
 
@@ -25,6 +25,24 @@ impl MemIf for MemIfImpl {
 
     /// Returns all device memory (MMIO) ranges on the platform.
     fn mmio_ranges() -> &'static [RawRange] {
+        todo!()
+    }
+
+    /// Translates a physical address to a virtual address.
+    ///
+    /// It is just an easy way to access physical memory when virtual memory
+    /// is enabled. The mapping may not be unique, there can be multiple `vaddr`s
+    /// mapped to that `paddr`.
+    fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
+        todo!()
+    }
+
+    /// Translates a virtual address to a physical address.
+    ///
+    /// It is a reverse operation of [`phys_to_virt`]. It requires that the
+    /// `vaddr` must be available through the [`phys_to_virt`] translation.
+    /// It **cannot** be used to translate arbitrary virtual addresses.
+    fn virt_to_phys(vaddr: VirtAddr) -> PhysAddr {
         todo!()
     }
 }

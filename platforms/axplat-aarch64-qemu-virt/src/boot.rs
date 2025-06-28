@@ -1,4 +1,4 @@
-use axplat::mem::Aligned4K;
+use axplat::mem::{Aligned4K, pa};
 use page_table_entry::{GenericPTE, MappingFlags, aarch64::A64PTE};
 
 use crate::config::plat::{BOOT_STACK_SIZE, PHYS_VIRT_OFFSET};

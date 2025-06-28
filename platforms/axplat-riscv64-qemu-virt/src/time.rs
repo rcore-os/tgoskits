@@ -14,8 +14,8 @@ pub(super) fn init_early() {
 
     #[cfg(feature = "rtc")]
     if RTC_PADDR != 0 {
-        use axplat::mem::phys_to_virt;
-        use memory_addr::PhysAddr;
+        use axplat::mem::{PhysAddr, pa, phys_to_virt};
+
         use riscv_goldfish::Rtc;
 
         const GOLDFISH_BASE: PhysAddr = pa!(RTC_PADDR);

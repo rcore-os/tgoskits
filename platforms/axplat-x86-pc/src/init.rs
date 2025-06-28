@@ -17,6 +17,7 @@ impl InitIf for InitIfImpl {
     }
 
     /// Initializes the platform at the early stage for secondary cores.
+    #[cfg(feature = "smp")]
     fn init_early_secondary(_cpu_id: usize) {
         axcpu::init::init_trap();
     }
@@ -32,11 +33,9 @@ impl InitIf for InitIfImpl {
     }
 
     /// Initializes the platform at the later stage for secondary cores.
+    #[cfg(feature = "smp")]
     fn init_later_secondary(_cpu_id: usize) {
-        #[cfg(feature = "smp")]
-        {
-            crate::apic::init_secondary();
-            crate::time::init_secondary();
-        }
+        crate::apic::init_secondary();
+        crate::time::init_secondary();
     }
 }

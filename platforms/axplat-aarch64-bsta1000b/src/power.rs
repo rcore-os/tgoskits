@@ -1,3 +1,4 @@
+use axplat::mem::pa;
 use axplat::power::PowerIf;
 
 struct PowerImpl;

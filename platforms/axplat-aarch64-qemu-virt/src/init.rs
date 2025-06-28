@@ -3,7 +3,7 @@ use axplat::init::InitIf;
 #[allow(unused_imports)]
 use crate::config::devices::{GICC_PADDR, GICD_PADDR, RTC_PADDR, TIMER_IRQ, UART_IRQ, UART_PADDR};
 use crate::config::plat::PSCI_METHOD;
-use axplat::mem::phys_to_virt;
+use axplat::mem::{pa, phys_to_virt};
 
 struct InitIfImpl;
 
@@ -24,6 +24,7 @@ impl InitIf for InitIfImpl {
     }
 
     /// Initializes the platform at the early stage for secondary cores.
+    #[cfg(feature = "smp")]
     fn init_early_secondary(_cpu_id: usize) {
         axcpu::init::init_trap();
     }
@@ -49,8 +50,9 @@ impl InitIf for InitIfImpl {
     }
 
     /// Initializes the platform at the later stage for secondary cores.
+    #[cfg(feature = "smp")]
     fn init_later_secondary(_cpu_id: usize) {
-        #[cfg(all(feature = "smp", feature = "irq"))]
+        #[cfg(feature = "irq")]
         {
             axplat_aarch64_peripherals::gic::init_gicc();
             axplat_aarch64_peripherals::generic_timer::enable_irqs(TIMER_IRQ);

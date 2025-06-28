@@ -1,11 +1,10 @@
 //! snps,dw-apb-uart serial driver
 
-use axplat::console::ConsoleIf;
-
 use crate::mem::phys_to_virt;
+use axplat::console::ConsoleIf;
+use axplat::mem::{PhysAddr, pa};
 use dw_apb_uart::DW8250;
 use kspin::SpinNoIrq;
-use memory_addr::PhysAddr;
 
 const UART_BASE: PhysAddr = pa!(crate::config::devices::UART_PADDR);
 

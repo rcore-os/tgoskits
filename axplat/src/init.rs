@@ -32,6 +32,7 @@ pub trait InitIf {
     /// Initializes the platform at the early stage for secondary cores.
     ///
     /// See [`init_early`] for details.
+    #[cfg(feature = "smp")]
     fn init_early_secondary(cpu_id: usize);
 
     /// Initializes the platform at the later stage for the primary core.
@@ -63,5 +64,6 @@ pub trait InitIf {
     /// Initializes the platform at the later stage for secondary cores.
     ///
     /// See [`init_later`] for details.
+    #[cfg(feature = "smp")]
     fn init_later_secondary(cpu_id: usize);
 }

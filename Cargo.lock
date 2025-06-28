@@ -163,7 +163,6 @@ dependencies = [
  "dw_apb_uart",
  "kspin",
  "log",
- "memory_addr",
  "page_table_entry",
 ]
 
@@ -181,7 +180,6 @@ dependencies = [
  "kspin",
  "lazyinit",
  "log",
- "memory_addr",
  "page_table_entry",
 ]
 
@@ -194,7 +192,6 @@ dependencies = [
  "axplat",
  "axplat-aarch64-peripherals",
  "log",
- "memory_addr",
  "page_table_entry",
 ]
 
@@ -207,7 +204,6 @@ dependencies = [
  "axplat",
  "axplat-aarch64-peripherals",
  "log",
- "memory_addr",
  "page_table_entry",
 ]
 
@@ -221,7 +217,6 @@ dependencies = [
  "axplat",
  "axplat-aarch64-peripherals",
  "log",
- "memory_addr",
  "page_table_entry",
 ]
 
@@ -237,7 +232,6 @@ dependencies = [
  "lazyinit",
  "log",
  "loongArch64",
- "memory_addr",
  "ns16550a",
  "page_table_entry",
 ]
@@ -260,7 +254,6 @@ dependencies = [
  "axcpu",
  "axplat",
  "log",
- "memory_addr",
  "riscv 0.14.0",
  "riscv_goldfish",
  "sbi-rt",
@@ -279,7 +272,6 @@ dependencies = [
  "kspin",
  "lazyinit",
  "log",
- "memory_addr",
  "multiboot",
  "percpu",
  "raw-cpuid 11.5.0",

@@ -3,9 +3,6 @@
 #[macro_use]
 extern crate axplat;
 
-#[macro_use]
-extern crate memory_addr;
-
 mod boot;
 mod init;
 mod mem;

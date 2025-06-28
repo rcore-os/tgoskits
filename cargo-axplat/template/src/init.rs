@@ -35,6 +35,7 @@ impl InitIf for InitIfImpl {
     /// Initializes the platform at the early stage for secondary cores.
     ///
     /// See [`init_early`] for details.
+    #[cfg(feature = "smp")]
     fn init_early_secondary(cpu_id: usize) {
         todo!()
     }
@@ -70,6 +71,7 @@ impl InitIf for InitIfImpl {
     /// Initializes the platform at the later stage for secondary cores.
     ///
     /// See [`init_later`] for details.
+    #[cfg(feature = "smp")]
     fn init_later_secondary(cpu_id: usize) {
         todo!()
     }
