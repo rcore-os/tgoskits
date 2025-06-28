@@ -400,7 +400,7 @@ dependencies = [
 [[package]]
 name = "axsignal"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axsignal.git?rev=9d82a33#9d82a33431aad547f305bf29e630a1acdd0780bf"
+source = "git+https://github.com/Starry-Mix-THU/axsignal.git?rev=65d2c6e#65d2c6e8935f9337225870fa65c21eecc6db5f12"
 dependencies = [
  "axerrno",
  "axhal",

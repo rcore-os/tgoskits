@@ -6,7 +6,7 @@ use axio::PollState;
 use axsync::Mutex;
 use linux_raw_sys::general::S_IFIFO;
 
-use crate::signal::yield_check_signals;
+use crate::signal::have_signals;
 
 use super::{FileLike, Kstat};
 
@@ -126,7 +126,10 @@ impl FileLike for Pipe {
                 }
                 drop(ring_buffer);
                 // Data not ready, wait for write end
-                yield_check_signals()?;
+                if have_signals() {
+                    return Err(LinuxError::EINTR);
+                }
+                axtask::yield_now(); // TODO: use synchronize primitive
                 continue;
             }
             for c in buf.iter_mut().take(read_size) {
@@ -158,6 +161,9 @@ impl FileLike for Pipe {
                 }
                 drop(ring_buffer);
                 // Buffer is full, wait for read end to consume
+                if have_signals() {
+                    return Err(LinuxError::EINTR);
+                }
                 axtask::yield_now(); // TODO: use synconize primitive
                 continue;
             }

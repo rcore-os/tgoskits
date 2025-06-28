@@ -4,6 +4,7 @@ use linux_raw_sys::general::timespec;
 
 use crate::{
     ptr::{UserConstPtr, UserPtr, nullable},
+    signal::have_signals,
     time::TimeValueLike,
 };
 
@@ -27,7 +28,12 @@ pub fn sys_nanosleep(req: UserConstPtr<timespec>, rem: UserPtr<timespec>) -> Lin
 
     let now = axhal::time::monotonic_time();
 
-    axtask::sleep(dur);
+    while axhal::time::monotonic_time() < now + dur {
+        if have_signals() {
+            break;
+        }
+        axtask::yield_now();
+    }
 
     let after = axhal::time::monotonic_time();
     let actual = after - now;

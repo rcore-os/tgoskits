@@ -30,21 +30,32 @@ echo @@@@@@@@@@ env @@@@@@@@@@
 env
 echo
 
-echo @@@@@@@@@@ musl @@@@@@@@@@
 cd /musl
-./lmbench_testcode.sh
-./iozone_testcode.sh
-./libcbench_testcode.sh
-./libctest_testcode.sh
-./busybox_testcode.sh
-./basic_testcode.sh
-./lua_testcode.sh
+timeout 20 ./basic_testcode.sh
+timeout 20 ./lua_testcode.sh
+timeout 30 ./busybox_testcode.sh
 
-echo @@@@@@@@@@ glibc @@@@@@@@@@
 cd /glibc
-./lmbench_testcode.sh
-./iozone_testcode.sh
-./libcbench_testcode.sh
-./busybox_testcode.sh
-./basic_testcode.sh
-./lua_testcode.sh
+timeout 20 ./basic_testcode.sh
+timeout 20 ./lua_testcode.sh
+timeout 30 ./busybox_testcode.sh
+
+cd /musl
+timeout 60 ./libctest_testcode.sh
+timeout 60 ./libcbench_testcode.sh
+
+cd /glibc
+timeout 60 ./libcbench_testcode.sh
+
+ln -v -s /musl/busybox /tmp/busybox
+cd /tmp
+cp /musl/iozone_testcode.sh /musl/iozone .
+timeout 300 ./iozone_testcode.sh
+cp /glibc/iozone_testcode.sh /glibc/iozone .
+timeout 300 ./iozone_testcode.sh
+
+cd /musl
+timeout 300 ./lmbench_testcode.sh
+
+cd /glibc
+timeout 300 ./lmbench_testcode.sh

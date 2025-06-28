@@ -42,25 +42,12 @@ pub fn check_signals(tf: &mut TrapFrame, restore_blocked: Option<SignalSet>) -> 
     true
 }
 
-// FIXME: deal with syscall restart properly
-pub fn yield_check_signals() -> LinuxResult {
-    axtask::yield_now();
-
-    let tf = unsafe {
-        current()
-            .kernel_stack_top()
-            .unwrap()
-            .as_mut_ptr_of::<TrapFrame>()
-            .sub(1)
-            .as_mut()
-            .unwrap()
-    };
-
-    if check_signals(tf, None) {
-        return Err(LinuxError::EINTR);
-    }
-
-    Ok(())
+pub fn have_signals() -> bool {
+    !StarryTaskExt::of(&current())
+        .thread_data()
+        .signal
+        .pending()
+        .is_empty()
 }
 
 #[register_trap_handler(POST_TRAP)]
