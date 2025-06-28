@@ -1,21 +1,8 @@
 echo @@@@@@@@@@ setup @@@@@@@@@@
 
-./busybox mkdir -v /bin
-./busybox ln -v -s /musl/busybox /bin/busybox
-cd /bin
+/musl/busybox mkdir -v /bin
+/musl/busybox --install -s /bin
 export PATH=/bin
-busybox ln -v -s busybox ln
-ln -v -s busybox cp
-ln -v -s busybox mv
-ln -v -s busybox rm
-ln -v -s busybox cat
-ln -v -s busybox touch
-ln -v -s busybox sh
-ln -v -s busybox ls
-ln -v -s busybox env
-ln -v -s busybox mkdir
-ln -v -s busybox clear
-ln -v -s busybox sleep
 
 mkdir -v /lib
 ln -v -s /glibc/lib/libc.so.6 /lib/libc.so.6

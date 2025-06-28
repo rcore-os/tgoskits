@@ -20,11 +20,12 @@ pub fn run_user_app(args: &[String], envs: &[String]) -> Option<i32> {
         .expect("Failed to create user address space");
 
     let exe_path = &args[0];
-    let loc = FS_CONTEXT
+    let name = FS_CONTEXT
         .lock()
         .resolve(exe_path)
-        .expect("Failed to resolve executable path");
-    let name = loc.name().to_owned();
+        .expect("Failed to resolve executable path")
+        .name()
+        .to_owned();
 
     let (entry_vaddr, ustack_top) = load_user_app(&mut uspace, None, args, envs)
         .unwrap_or_else(|e| panic!("Failed to load user app: {}", e));
@@ -40,11 +41,6 @@ pub fn run_user_app(args: &[String], envs: &[String]) -> Option<i32> {
         Arc::default(),
         Some(Signo::SIGCHLD),
     );
-    FS_CONTEXT
-        .scope_mut(&mut process_data.scope.write())
-        .lock()
-        .set_current_dir(loc.parent().unwrap())
-        .expect("Failed to set current directory");
 
     let tid = task.id().as_u64() as Pid;
     let process = init_proc().fork(tid).data(process_data).build();
