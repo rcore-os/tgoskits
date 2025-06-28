@@ -43,7 +43,9 @@ pub fn check_signals(tf: &mut TrapFrame, restore_blocked: Option<SignalSet>) -> 
 }
 
 // FIXME: deal with syscall restart properly
-pub fn yield_with_interrupt() -> LinuxResult {
+pub fn yield_check_signals() -> LinuxResult {
+    axtask::yield_now();
+
     let tf = unsafe {
         current()
             .kernel_stack_top()

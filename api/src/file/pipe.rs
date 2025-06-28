@@ -6,7 +6,7 @@ use axio::PollState;
 use axsync::Mutex;
 use linux_raw_sys::general::S_IFIFO;
 
-use crate::signal::yield_with_interrupt;
+use crate::signal::yield_check_signals;
 
 use super::{FileLike, Kstat};
 
@@ -126,7 +126,7 @@ impl FileLike for Pipe {
                 }
                 drop(ring_buffer);
                 // Data not ready, wait for write end
-                yield_with_interrupt()?;
+                yield_check_signals()?;
                 continue;
             }
             for c in buf.iter_mut().take(read_size) {

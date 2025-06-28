@@ -165,11 +165,11 @@ fn do_select(
             return Ok(res as _);
         }
 
+        axtask::yield_now();
+
         if deadline.is_some_and(|d| wall_time() >= d) {
             return Ok(0);
         }
-
-        axtask::yield_now();
     }
 }
 
