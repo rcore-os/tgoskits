@@ -1,10 +1,8 @@
 use alloc::{
-    boxed::Box,
     sync::{Arc, Weak},
     vec::Vec,
 };
 use core::{
-    any::Any,
     fmt,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -13,7 +11,7 @@ use kspin::SpinNoIrq;
 use lazyinit::LazyInit;
 use weak_map::{StrongMap, WeakMap};
 
-use crate::{Pid, ProcessGroup, Session, Thread, ThreadBuilder};
+use crate::{Pid, ProcessGroup, Session, Thread};
 
 pub(crate) struct ThreadGroup {
     pub(crate) threads: WeakMap<Pid, Weak<Thread>>,
@@ -37,8 +35,6 @@ pub struct Process {
     is_zombie: AtomicBool,
     pub(crate) tg: SpinNoIrq<ThreadGroup>,
 
-    data: Box<dyn Any + Send + Sync>,
-
     // TODO: child subreaper
     children: SpinNoIrq<StrongMap<Pid, Arc<Process>>>,
     parent: SpinNoIrq<Weak<Process>>,
@@ -50,11 +46,6 @@ impl Process {
     /// The [`Process`] ID.
     pub fn pid(&self) -> Pid {
         self.pid
-    }
-
-    /// The data associated with the [`Process`].
-    pub fn data<T: Any + Send + Sync>(&self) -> Option<&T> {
-        self.data.downcast_ref::<T>()
     }
 
     /// Returns `true` if the [`Process`] is the init process.
@@ -166,8 +157,13 @@ impl Process {
 /// Threads
 impl Process {
     /// Creates a new [`Thread`] in this [`Process`].
-    pub fn new_thread(self: &Arc<Self>, tid: Pid) -> ThreadBuilder {
-        ThreadBuilder::new(tid, self.clone())
+    pub fn new_thread(self: &Arc<Self>, tid: Pid) -> Arc<Thread> {
+        let thread = Arc::new(Thread {
+            tid,
+            process: self.clone(),
+        });
+        self.tg.lock().threads.insert(tid, &thread);
+        thread
     }
 
     /// The [`Thread`]s in this [`Process`].
@@ -259,48 +255,7 @@ impl fmt::Debug for Process {
 
 /// Builder
 impl Process {
-    /// Creates a init [`Process`].
-    ///
-    /// This function can be called multiple times, but
-    /// [`ProcessBuilder::build`] on the the result must be called only once.
-    pub fn new_init(pid: Pid) -> ProcessBuilder {
-        ProcessBuilder {
-            pid,
-            parent: None,
-            data: Box::new(()),
-        }
-    }
-
-    /// Creates a child [`Process`].
-    pub fn fork(self: &Arc<Process>, pid: Pid) -> ProcessBuilder {
-        ProcessBuilder {
-            pid,
-            parent: Some(self.clone()),
-            data: Box::new(()),
-        }
-    }
-}
-
-/// A builder for creating a new [`Process`].
-pub struct ProcessBuilder {
-    pid: Pid,
-    parent: Option<Arc<Process>>,
-    data: Box<dyn Any + Send + Sync>,
-}
-
-impl ProcessBuilder {
-    /// Sets the data associated with the [`Process`].
-    pub fn data<T: Any + Send + Sync>(self, data: T) -> Self {
-        Self {
-            data: Box::new(data),
-            ..self
-        }
-    }
-
-    /// Finishes the builder and returns a new [`Process`].
-    pub fn build(self) -> Arc<Process> {
-        let Self { pid, parent, data } = self;
-
+    fn new(pid: Pid, parent: Option<Arc<Process>>) -> Arc<Process> {
         let group = parent.as_ref().map_or_else(
             || {
                 let session = Session::new(pid);
@@ -313,7 +268,6 @@ impl ProcessBuilder {
             pid,
             is_zombie: AtomicBool::new(false),
             tg: SpinNoIrq::new(ThreadGroup::default()),
-            data,
             children: SpinNoIrq::new(StrongMap::new()),
             parent: SpinNoIrq::new(parent.as_ref().map(Arc::downgrade).unwrap_or_default()),
             group: SpinNoIrq::new(group.clone()),
@@ -328,6 +282,19 @@ impl ProcessBuilder {
         }
 
         process
+    }
+
+    /// Creates a init [`Process`].
+    ///
+    /// This function can be called multiple times, but
+    /// [`ProcessBuilder::build`] on the the result must be called only once.
+    pub fn new_init(pid: Pid) -> Arc<Process> {
+        Self::new(pid, None)
+    }
+
+    /// Creates a child [`Process`].
+    pub fn fork(self: &Arc<Process>, pid: Pid) -> Arc<Process> {
+        Self::new(pid, Some(self.clone()))
     }
 }
 

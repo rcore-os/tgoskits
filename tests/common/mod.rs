@@ -14,7 +14,7 @@ fn alloc_pid() -> u32 {
 
 #[ctor]
 fn init() {
-    Process::new_init(alloc_pid()).build();
+    Process::new_init(alloc_pid());
 }
 
 pub trait ProcessExt {
@@ -23,6 +23,6 @@ pub trait ProcessExt {
 
 impl ProcessExt for Arc<Process> {
     fn new_child(&self) -> Self {
-        self.fork(alloc_pid()).build()
+        self.fork(alloc_pid())
     }
 }

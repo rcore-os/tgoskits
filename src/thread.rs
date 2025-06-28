@@ -1,13 +1,12 @@
-use alloc::{boxed::Box, sync::Arc};
-use core::{any::Any, fmt};
+use alloc::sync::Arc;
+use core::fmt;
 
 use crate::{Pid, Process};
 
 /// A thread.
 pub struct Thread {
-    tid: Pid,
-    process: Arc<Process>,
-    data: Box<dyn Any + Send + Sync>,
+    pub(crate) tid: Pid,
+    pub(crate) process: Arc<Process>,
 }
 
 impl Thread {
@@ -19,11 +18,6 @@ impl Thread {
     /// The [`Process`] this thread belongs to.
     pub fn process(&self) -> &Arc<Process> {
         &self.process
-    }
-
-    /// The data associated with the [`Thread`].
-    pub fn data<T: Any + Send + Sync>(&self) -> Option<&T> {
-        self.data.downcast_ref::<T>()
     }
 
     /// Exits the thread.
@@ -42,44 +36,5 @@ impl Thread {
 impl fmt::Debug for Thread {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Thread({}, process={})", self.tid, self.process.pid())
-    }
-}
-
-/// A builder for creating a new [`Thread`].
-pub struct ThreadBuilder {
-    tid: Pid,
-    process: Arc<Process>,
-    data: Box<dyn Any + Send + Sync>,
-}
-
-impl ThreadBuilder {
-    pub(crate) fn new(tid: Pid, process: Arc<Process>) -> Self {
-        Self {
-            tid,
-            process,
-            data: Box::new(()),
-        }
-    }
-
-    /// Sets the data associated with the [`Thread`].
-    pub fn data<T: Any + Send + Sync>(self, data: T) -> Self {
-        Self {
-            data: Box::new(data),
-            ..self
-        }
-    }
-
-    /// Builds the [`Thread`].
-    pub fn build(self) -> Arc<Thread> {
-        let Self { tid, process, data } = self;
-
-        let thread = Arc::new(Thread {
-            tid,
-            process: process.clone(),
-            data,
-        });
-        process.tg.lock().threads.insert(tid, &thread);
-
-        thread
     }
 }
