@@ -154,6 +154,11 @@ impl SignalSet {
         (self.0 & Self::signo_bit(signal)) != 0
     }
 
+    /// Returns `true` if the set is empty.
+    pub fn is_empty(&self) -> bool {
+        self.0 == 0
+    }
+
     /// Dequeues the a signal in `mask` from this set, if any.
     pub fn dequeue(&mut self, mask: &SignalSet) -> Option<Signo> {
         let bits = self.0 & mask.0;
