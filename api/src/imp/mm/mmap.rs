@@ -12,7 +12,7 @@ bitflags::bitflags! {
     /// `PROT_*` flags for use with [`sys_mmap`].
     ///
     /// For `PROT_NONE`, use `ProtFlags::empty()`.
-    #[derive(Debug)]
+    #[derive(Debug, Clone, Copy)]
     struct MmapProt: u32 {
         /// Page can be read.
         const READ = PROT_READ;
@@ -47,14 +47,19 @@ bitflags::bitflags! {
     /// flags for sys_mmap
     ///
     /// See <https://github.com/bminor/glibc/blob/master/bits/mman.h>
-    #[derive(Debug)]
+    #[derive(Debug, PartialEq, Eq)]
     struct MmapFlags: u32 {
         /// Share changes
         const SHARED = MAP_SHARED;
+        /// Share changes, but fail if mapping flags contain unknown
+        const SHARED_VALIDATE = MAP_SHARED_VALIDATE;
         /// Changes private; copy pages on write.
         const PRIVATE = MAP_PRIVATE;
         /// Map address must be exactly as requested, no matter whether it is available.
         const FIXED = MAP_FIXED;
+        /// Same as `FIXED`, but if the requested address overlaps an existing
+        /// mapping, the call fails instead of replacing the existing mapping.
+        const FIXED_NOREPLACE = MAP_FIXED_NOREPLACE;
         /// Don't use a file.
         const ANONYMOUS = MAP_ANONYMOUS;
         /// Don't check for reservations.
@@ -65,6 +70,9 @@ bitflags::bitflags! {
         const HUGE = MAP_HUGETLB;
         /// Huge page 1g size
         const HUGE_1GB = MAP_HUGETLB | MAP_HUGE_1GB;
+
+        /// Mask for type of mapping
+        const TYPE = MAP_TYPE;
     }
 }
 
@@ -76,6 +84,10 @@ pub fn sys_mmap(
     fd: i32,
     offset: isize,
 ) -> LinuxResult<isize> {
+    if length == 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
     let curr = current();
     let mut aspace = StarryTaskExt::of(&curr).process_data().aspace.lock();
     let permission_flags = MmapProt::from_bits_truncate(prot);
@@ -107,12 +119,11 @@ pub fn sys_mmap(
         start, end, aligned_length
     );
 
-    let start_addr = if map_flags.contains(MmapFlags::FIXED) {
-        if start == 0 {
-            return Err(LinuxError::EINVAL);
-        }
+    let start_addr = if map_flags.contains(MmapFlags::FIXED | MmapFlags::FIXED_NOREPLACE) {
         let dst_addr = VirtAddr::from(start);
-        aspace.unmap(dst_addr, aligned_length)?;
+        if !map_flags.contains(MmapFlags::FIXED_NOREPLACE) {
+            aspace.unmap(dst_addr, aligned_length)?;
+        }
         dst_addr
     } else {
         aspace
@@ -131,21 +142,34 @@ pub fn sys_mmap(
             .ok_or(LinuxError::ENOMEM)?
     };
 
-    let populate = if fd == -1 {
-        false
-    } else {
-        !map_flags.contains(MmapFlags::ANONYMOUS)
-    };
+    let populate = fd > 0 && !map_flags.contains(MmapFlags::ANONYMOUS);
 
-    aspace.map_alloc(
-        start_addr,
-        aligned_length,
-        permission_flags.into(),
-        populate,
-        page_size,
-    )?;
+    match map_flags & MmapFlags::TYPE {
+        MmapFlags::SHARED | MmapFlags::SHARED_VALIDATE => {
+            aspace.map_shared(
+                start_addr,
+                aligned_length,
+                permission_flags.into(),
+                None,
+                page_size,
+            )?;
+        }
+        MmapFlags::PRIVATE => {
+            aspace.map_alloc(
+                start_addr,
+                aligned_length,
+                permission_flags.into(),
+                populate,
+                page_size,
+            )?;
+        }
+        _ => return Err(LinuxError::EINVAL),
+    }
 
     if populate {
+        if permission_flags.contains(MmapProt::WRITE) {
+            warn!("sys_mmap: PROT_WRITE for a file mapping is not supported yet");
+        }
         let file = File::from_fd(fd)?;
         let mut file = file.inner();
         let file_size = file.inner().len()? as usize;
