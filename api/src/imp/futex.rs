@@ -32,9 +32,30 @@ pub fn sys_futex(
     let command = futex_op & (FUTEX_CMD_MASK as u32);
     match command {
         FUTEX_WAIT | FUTEX_WAIT_BITSET => {
-            if *uaddr.get_as_ref()? != value {
+            let uaddr_ref = uaddr.get_as_ref()?;
+
+            // Fast path
+            if *uaddr_ref != value {
                 return Err(LinuxError::EAGAIN);
             }
+
+            // This function is called with the lock to run queue being held by
+            // us, and thus we need to check FOR ONCE if the value has changed.
+            // If so, we shall skip waiting and return EAGAIN; otherwise, we
+            // return false to start waiting and return true for subsequent
+            // calls.
+            let mut first_call = true;
+            let mut mismatches = false;
+            let condition = || {
+                if first_call {
+                    mismatches = *uaddr_ref != value;
+                    first_call = false;
+                    mismatches
+                } else {
+                    true
+                }
+            };
+
             let futex = futex_table.get_or_insert(addr);
 
             if command == FUTEX_WAIT_BITSET {
@@ -45,10 +66,16 @@ pub fn sys_futex(
             }
 
             if let Some(timeout) = nullable!(timeout.get_as_ref())? {
-                futex.wq.wait_timeout(timeout.to_time_value());
+                futex
+                    .wq
+                    .wait_timeout_until(timeout.to_time_value(), condition);
             } else {
-                futex.wq.wait();
+                futex.wq.wait_until(condition);
             }
+            if !mismatches {
+                return Err(LinuxError::EAGAIN);
+            }
+
             if futex.owner_dead.swap(false, Ordering::SeqCst) {
                 Err(LinuxError::EOWNERDEAD)
             } else {
