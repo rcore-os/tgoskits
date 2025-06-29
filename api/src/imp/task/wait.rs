@@ -99,6 +99,7 @@ pub fn sys_waitpid(pid: i32, exit_code_ptr: UserPtr<i32>, options: u32) -> Linux
             }
             return Ok(child.pid() as _);
         } else if options.contains(WaitOptions::WNOHANG) {
+            axtask::yield_now();
             return Ok(0);
         } else {
             process_data.child_exit_wq.wait();
