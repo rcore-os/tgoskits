@@ -136,7 +136,7 @@ impl SparseFile {
             let end = (end - chunk_start).min(SPARSE_CHUNK_SIZE) as usize;
             let (write, rest) = data.split_at(end - offset);
             data = rest;
-            chunk[offset..end].copy_from_slice(&write);
+            chunk[offset..end].copy_from_slice(write);
             offset = 0;
             ptr += SPARSE_CHUNK_SIZE;
         }

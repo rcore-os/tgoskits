@@ -33,7 +33,7 @@ fn handle_user_page_fault(
 
 #[register_trap_handler(PAGE_FAULT)]
 fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags, is_user: bool) -> bool {
-    info!(
+    debug!(
         "Page fault at {:#x}, access_flags: {:#x?}",
         vaddr, access_flags
     );
