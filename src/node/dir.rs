@@ -152,7 +152,9 @@ impl<M: RawMutex> DirNode<M> {
             Entry::Occupied(e) => Ok(e.get().clone()),
             Entry::Vacant(e) => {
                 let node = self.ops.lookup(name)?;
-                e.insert(node.clone());
+                if self.ops.is_cacheable() {
+                    e.insert(node.clone());
+                }
                 Ok(node)
             }
         }
@@ -160,6 +162,7 @@ impl<M: RawMutex> DirNode<M> {
 
     /// Looks up a directory entry by name.
     pub fn lookup(&self, name: &str) -> VfsResult<DirEntry<M>> {
+        // Fast path
         if self.ops.is_cacheable() {
             self.lookup_locked(name, &mut self.cache.lock())
         } else {
