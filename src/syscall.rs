@@ -322,6 +322,7 @@ fn handle_syscall_impl(tf: &mut TrapFrame, sysno: Sysno) -> LinuxResult<isize> {
         Sysno::exit => sys_exit(tf.arg0() as _),
         Sysno::exit_group => sys_exit_group(tf.arg0() as _),
         Sysno::wait4 => sys_waitpid(tf.arg0() as _, tf.arg1().into(), tf.arg2() as _),
+        Sysno::getsid => sys_getsid(tf.arg0() as _),
         Sysno::setsid => sys_setsid(),
         Sysno::getpgid => sys_getpgid(tf.arg0() as _),
         Sysno::setpgid => sys_setpgid(tf.arg0() as _, tf.arg1() as _),

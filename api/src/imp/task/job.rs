@@ -3,6 +3,16 @@ use axprocess::Pid;
 use axtask::current;
 use starry_core::task::{StarryTaskExt, get_process, get_process_group};
 
+pub fn sys_getsid(pid: Pid) -> LinuxResult<isize> {
+    Ok(if pid == 0 {
+        StarryTaskExt::of(&current()).thread.process().group()
+    } else {
+        get_process(pid)?.group()
+    }
+    .session()
+    .sid() as _)
+}
+
 pub fn sys_setsid() -> LinuxResult<isize> {
     let curr = current();
     let process = StarryTaskExt::of(&curr).thread.process();
