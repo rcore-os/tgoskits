@@ -158,6 +158,14 @@ fn handle_syscall_impl(tf: &mut TrapFrame, sysno: Sysno) -> LinuxResult<isize> {
             tf.arg2().into(),
             tf.arg3() as _,
         ),
+        Sysno::splice => sys_splice(
+            tf.arg0() as _,
+            tf.arg1().into(),
+            tf.arg2() as _,
+            tf.arg3().into(),
+            tf.arg4() as _,
+            tf.arg5() as _,
+        ),
 
         // io mpx
         #[cfg(target_arch = "x86_64")]

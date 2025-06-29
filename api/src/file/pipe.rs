@@ -111,7 +111,7 @@ impl Pipe {
 impl FileLike for Pipe {
     fn read(&self, buf: &mut [u8]) -> LinuxResult<usize> {
         if !self.readable() {
-            return Err(LinuxError::EPERM);
+            return Err(LinuxError::EBADF);
         }
         if buf.is_empty() {
             return Ok(0);
@@ -141,7 +141,7 @@ impl FileLike for Pipe {
 
     fn write(&self, buf: &[u8]) -> LinuxResult<usize> {
         if !self.writable() {
-            return Err(LinuxError::EPERM);
+            return Err(LinuxError::EBADF);
         }
         if self.closed() {
             return Err(LinuxError::EPIPE);

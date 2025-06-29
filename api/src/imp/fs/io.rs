@@ -1,13 +1,13 @@
 use core::ffi::c_int;
 
-use alloc::vec;
+use alloc::{sync::Arc, vec};
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FileFlags;
 use axio::{Seek, SeekFrom};
 use linux_raw_sys::general::{__kernel_off_t, iovec};
 
 use crate::{
-    file::{File, FileLike, get_file_like},
+    file::{File, FileLike, Pipe, get_file_like},
     ptr::{UserConstPtr, UserPtr, nullable},
 };
 
@@ -226,24 +226,54 @@ pub fn sys_pwritev2(
     })
 }
 
-fn do_sendfile<F, D>(mut read: F, dest: &D) -> LinuxResult<usize>
-where
-    F: FnMut(&mut [u8]) -> LinuxResult<usize>,
-    D: FileLike + ?Sized,
-{
+enum SendFile<'a> {
+    Direct(Arc<dyn FileLike>),
+    Offset(Arc<File>, &'a mut u64),
+}
+
+impl<'a> SendFile<'a> {
+    fn read(&mut self, buf: &mut [u8]) -> LinuxResult<usize> {
+        match self {
+            SendFile::Direct(file) => file.read(buf),
+            SendFile::Offset(file, offset) => {
+                let bytes_read = file.inner().read_at(buf, **offset)?;
+                **offset += bytes_read as u64;
+                Ok(bytes_read)
+            }
+        }
+    }
+
+    fn write(&mut self, buf: &[u8]) -> LinuxResult<usize> {
+        match self {
+            SendFile::Direct(file) => file.write(buf),
+            SendFile::Offset(file, offset) => {
+                let bytes_written = file.inner().write_at(buf, **offset)?;
+                **offset += bytes_written as u64;
+                Ok(bytes_written)
+            }
+        }
+    }
+}
+
+fn do_send(mut src: SendFile<'_>, mut dst: SendFile<'_>, len: usize) -> LinuxResult<usize> {
     let mut buf = vec![0; 0x4000];
     let mut total_written = 0;
-    loop {
-        let bytes_read = read(&mut buf)?;
+    let mut remaining = len;
+
+    while remaining > 0 {
+        let to_read = buf.len().min(remaining);
+        let bytes_read = src.read(&mut buf[..to_read])?;
         if bytes_read == 0 {
             break;
         }
 
-        let bytes_written = dest.write(&buf[..bytes_read])?;
+        let bytes_written = dst.write(&buf[..bytes_read])?;
         if bytes_written < bytes_read {
             break;
         }
+
         total_written += bytes_written;
+        remaining -= bytes_written;
     }
 
     Ok(total_written)
@@ -263,26 +293,66 @@ pub fn sys_sendfile(
         len
     );
 
-    let src = get_file_like(in_fd)?;
-    let dest = get_file_like(out_fd)?;
     let offset = nullable!(offset.get_as_mut())?;
-
-    if let Some(offset) = offset {
-        let src = src
-            .into_any()
-            .downcast::<File>()
-            .map_err(|_| LinuxError::ESPIPE)?;
-
-        do_sendfile(
-            |buf| {
-                let bytes_read = src.inner().read_at(buf, *offset)?;
-                *offset += bytes_read as u64;
-                Ok(bytes_read)
-            },
-            dest.as_ref(),
-        )
+    let src = if let Some(offset) = offset {
+        SendFile::Offset(File::from_fd(in_fd)?, offset)
     } else {
-        do_sendfile(|buf| src.read(buf), dest.as_ref())
+        SendFile::Direct(get_file_like(in_fd)?)
+    };
+
+    let dst = SendFile::Direct(get_file_like(out_fd)?);
+
+    do_send(src, dst, len).map(|n| n as _)
+}
+
+pub fn sys_splice(
+    fd_in: c_int,
+    off_in: UserPtr<u64>,
+    fd_out: c_int,
+    off_out: UserPtr<u64>,
+    len: usize,
+    _flags: u32,
+) -> LinuxResult<isize> {
+    debug!(
+        "sys_splice <= fd_in: {}, off_in: {}, fd_out: {}, off_out: {}, len: {}, flags: {}",
+        fd_in,
+        !off_in.is_null(),
+        fd_out,
+        !off_out.is_null(),
+        len,
+        _flags
+    );
+
+    if !(Pipe::from_fd(fd_in).is_ok() || Pipe::from_fd(fd_out).is_ok()) {
+        return Err(LinuxError::EINVAL);
     }
-    .map(|n| n as _)
+
+    let off_in = nullable!(off_in.get_as_mut())?;
+    let src = if let Some(off_in) = off_in {
+        SendFile::Offset(File::from_fd(fd_in)?, off_in)
+    } else {
+        if let Ok(src) = Pipe::from_fd(fd_in) {
+            if !src.readable() {
+                return Err(LinuxError::EBADF);
+            }
+            if !src.poll()?.readable {
+                return Err(LinuxError::EINVAL);
+            }
+        }
+        SendFile::Direct(get_file_like(fd_in)?)
+    };
+
+    let off_out = nullable!(off_out.get_as_mut())?;
+    let dst = if let Some(off_out) = off_out {
+        SendFile::Offset(File::from_fd(fd_out)?, off_out)
+    } else {
+        if let Ok(src) = Pipe::from_fd(fd_in)
+            && !src.writable()
+        {
+            return Err(LinuxError::EBADF);
+        }
+        SendFile::Direct(get_file_like(fd_out)?)
+    };
+
+    do_send(src, dst, len).map(|n| n as _)
 }
