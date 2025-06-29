@@ -361,6 +361,8 @@ fn handle_syscall_impl(tf: &mut TrapFrame, sysno: Sysno) -> LinuxResult<isize> {
         Sysno::sysinfo => sys_sysinfo(tf.arg0().into()),
         Sysno::syslog => sys_syslog(tf.arg0() as _, tf.arg1().into(), tf.arg2() as _),
         Sysno::getrandom => sys_getrandom(tf.arg0().into(), tf.arg1() as _, tf.arg2() as _),
+        Sysno::capget => sys_capget(tf.arg0().into(), tf.arg1().into()),
+        Sysno::capset => sys_capset(tf.arg0().into(), tf.arg1().into()),
 
         // time
         Sysno::gettimeofday => sys_gettimeofday(tf.arg0().into()),

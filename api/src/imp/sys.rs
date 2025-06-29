@@ -1,12 +1,14 @@
 use core::ffi::c_char;
 
-use axerrno::LinuxResult;
+use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
 use linux_raw_sys::{
-    general::{GRND_INSECURE, GRND_NONBLOCK, GRND_RANDOM},
+    general::{
+        __user_cap_data_struct, __user_cap_header_struct, GRND_INSECURE, GRND_NONBLOCK, GRND_RANDOM,
+    },
     system::{new_utsname, sysinfo},
 };
-use starry_core::task::processes;
+use starry_core::task::{get_process, processes};
 
 use crate::ptr::UserPtr;
 
@@ -102,4 +104,38 @@ pub fn sys_getrandom(buf: UserPtr<u8>, len: usize, flags: u32) -> LinuxResult<is
     let len = f.read_at(buf, 0)?;
 
     Ok(len as _)
+}
+
+fn validate_cap_header(header: &mut __user_cap_header_struct) -> LinuxResult<()> {
+    if header.version != 0x20080522 {
+        header.version = 0x20080522;
+        return Err(LinuxError::EINVAL);
+    }
+    let _ = get_process(header.pid as u32)?;
+    Ok(())
+}
+
+pub fn sys_capget(
+    header: UserPtr<__user_cap_header_struct>,
+    data: UserPtr<__user_cap_data_struct>,
+) -> LinuxResult<isize> {
+    let header = header.get_as_mut()?;
+    validate_cap_header(header)?;
+
+    *data.get_as_mut()? = __user_cap_data_struct {
+        effective: u32::MAX,
+        permitted: u32::MAX,
+        inheritable: u32::MAX,
+    };
+    Ok(0)
+}
+
+pub fn sys_capset(
+    header: UserPtr<__user_cap_header_struct>,
+    _data: UserPtr<__user_cap_data_struct>,
+) -> LinuxResult<isize> {
+    let header = header.get_as_mut()?;
+    validate_cap_header(header)?;
+
+    Ok(0)
 }
