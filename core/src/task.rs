@@ -197,6 +197,9 @@ pub struct ThreadData {
 
     /// The bitset used for futex operations (FUTEX_{WAIT,WAKE}_BITSET).
     pub futex_bitset: AtomicU32,
+
+    /// The OOM score adjustment value.
+    pub oom_score_adj: AtomicI32,
 }
 
 impl ThreadData {
@@ -214,6 +217,8 @@ impl ThreadData {
             time: AssumeSync(RefCell::new(TimeManager::new())),
 
             futex_bitset: AtomicU32::new(0),
+
+            oom_score_adj: AtomicI32::new(200),
         }
     }
 
@@ -268,9 +273,6 @@ pub struct ProcessData {
 
     /// The futex table.
     futex_table: FutexTable,
-
-    /// The OOM score adjustment value.
-    pub oom_score_adj: AtomicI32,
 }
 
 impl ProcessData {
@@ -299,8 +301,6 @@ impl ProcessData {
             )),
 
             futex_table: FutexTable::new(),
-
-            oom_score_adj: AtomicI32::new(200),
         }
     }
 

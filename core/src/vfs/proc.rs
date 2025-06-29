@@ -13,7 +13,7 @@ use axsync::RawMutex;
 use axtask::current;
 
 use crate::{
-    task::{ProcessData, StarryTaskExt, TaskStat, get_thread, processes},
+    task::{StarryTaskExt, TaskStat, ThreadData, get_thread, processes},
     vfs::simple::{
         DirMaker, DirMapping, NodeOpsMux, RwFile, SimpleDir, SimpleDirOps, SimpleFile,
         SimpleFileOperation, SimpleFs,
@@ -147,12 +147,12 @@ impl SimpleDirOps<RawMutex> for ThreadDir {
             "oom_score_adj" => SimpleFile::new(
                 fs,
                 RwFile::new(move |req| {
-                    let Some(proc_data) = thread.data::<ProcessData>() else {
+                    let Some(thr_data) = thread.data::<ThreadData>() else {
                         return Err(VfsError::EBADF);
                     };
                     match req {
                         SimpleFileOperation::Read => Ok(Some(
-                            proc_data
+                            thr_data
                                 .oom_score_adj
                                 .load(Ordering::SeqCst)
                                 .to_string()
@@ -164,7 +164,7 @@ impl SimpleDirOps<RawMutex> for ThreadDir {
                                     .ok()
                                     .and_then(|it| it.parse::<i32>().ok())
                                     .ok_or(VfsError::EINVAL)?;
-                                proc_data.oom_score_adj.store(value, Ordering::SeqCst);
+                                thr_data.oom_score_adj.store(value, Ordering::SeqCst);
                             }
                             Ok(None)
                         }
