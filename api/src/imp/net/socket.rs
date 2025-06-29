@@ -5,7 +5,9 @@ use axnet::{TcpSocket, UdpSocket};
 use axsync::Mutex;
 use linux_raw_sys::{
     general::O_NONBLOCK,
-    net::{AF_INET, IPPROTO_TCP, IPPROTO_UDP, SOCK_DGRAM, SOCK_STREAM, sockaddr, socklen_t},
+    net::{
+        AF_INET, AF_UNIX, IPPROTO_TCP, IPPROTO_UDP, SOCK_DGRAM, SOCK_STREAM, sockaddr, socklen_t,
+    },
 };
 
 use crate::{
@@ -21,7 +23,8 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> LinuxResult<isize> {
     );
     let ty = raw_ty & 0xFF;
 
-    if domain != AF_INET {
+    // FIXME: unix domain socket
+    if domain != AF_INET && domain != AF_UNIX {
         return Err(LinuxError::EAFNOSUPPORT);
     }
 
