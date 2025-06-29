@@ -6,7 +6,10 @@ use linux_raw_sys::general::{
     FUTEX_CMD_MASK, FUTEX_CMP_REQUEUE, FUTEX_REQUEUE, FUTEX_WAIT, FUTEX_WAIT_BITSET, FUTEX_WAKE,
     FUTEX_WAKE_BITSET, robust_list, robust_list_head, timespec,
 };
-use starry_core::task::{StarryTaskExt, ThreadData, get_thread};
+use starry_core::{
+    futex::FutexKey,
+    task::{StarryTaskExt, ThreadData, get_thread},
+};
 
 use crate::{
     ptr::{UserConstPtr, UserPtr, nullable},
@@ -32,12 +35,12 @@ pub fn sys_futex(
     value3: u32,
 ) -> LinuxResult<isize> {
     info!("futex {:?} {} {}", uaddr.address(), futex_op, value);
-    assert_unsigned(value)?;
 
     let curr = current();
-    let futex_table = &StarryTaskExt::of(&curr).process_data().futex_table;
 
-    let addr = uaddr.address().as_usize();
+    let key = FutexKey::new_current(uaddr.address().as_usize());
+    let proc_data = StarryTaskExt::of(&curr).process_data();
+    let futex_table = proc_data.futex_table_for(&key);
     let command = futex_op & (FUTEX_CMD_MASK as u32);
     match command {
         FUTEX_WAIT | FUTEX_WAIT_BITSET => {
@@ -69,7 +72,7 @@ pub fn sys_futex(
                 }
             };
 
-            let futex = futex_table.get_or_insert(addr);
+            let futex = futex_table.get_or_insert(&key);
 
             if command == FUTEX_WAIT_BITSET {
                 StarryTaskExt::of(&curr)
@@ -85,7 +88,7 @@ pub fn sys_futex(
             } else {
                 futex.wq.wait_until(condition);
             }
-            if !mismatches {
+            if mismatches {
                 return Err(LinuxError::EAGAIN);
             }
 
@@ -96,7 +99,7 @@ pub fn sys_futex(
             }
         }
         FUTEX_WAKE | FUTEX_WAKE_BITSET => {
-            let futex = futex_table.get(addr);
+            let futex = futex_table.get(&key);
             let mut count = 0;
             if let Some(futex) = futex {
                 futex.wq.notify_all_if(false, |task| {
@@ -121,13 +124,15 @@ pub fn sys_futex(
             Ok(count as isize)
         }
         FUTEX_REQUEUE | FUTEX_CMP_REQUEUE => {
+            assert_unsigned(value)?;
             if command == FUTEX_CMP_REQUEUE && *uaddr.get_as_ref()? != value3 {
                 return Err(LinuxError::EAGAIN);
             }
             let value2 = assert_unsigned(timeout.address().as_usize() as u32)?;
 
-            let futex = futex_table.get(addr);
-            let futex2 = futex_table.get_or_insert(uaddr2.address().as_usize());
+            let futex = futex_table.get(&key);
+            let key2 = FutexKey::new_current(uaddr2.address().as_usize());
+            let futex2 = proc_data.futex_table_for(&key2).get_or_insert(&key2);
 
             let mut count = 0;
             if let Some(futex) = futex {
@@ -188,11 +193,14 @@ fn handle_futex_death(entry: *mut robust_list, offset: i64) -> LinuxResult<()> {
         .checked_add_signed(offset)
         .ok_or(LinuxError::EINVAL)?;
     let address: usize = address.try_into().map_err(|_| LinuxError::EINVAL)?;
+    let key = FutexKey::new_current(address);
 
     let curr = current();
-    let futex_table = &StarryTaskExt::of(&curr).process_data().futex_table;
+    let futex_table = &StarryTaskExt::of(&curr)
+        .process_data()
+        .futex_table_for(&key);
 
-    let Some(futex) = futex_table.get(address) else {
+    let Some(futex) = futex_table.get(&key) else {
         return Ok(());
     };
     futex.owner_dead.store(true, Ordering::SeqCst);

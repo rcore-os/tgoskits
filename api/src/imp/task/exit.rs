@@ -4,7 +4,10 @@ use axprocess::Pid;
 use axsignal::{SignalInfo, Signo};
 use axtask::current;
 use linux_raw_sys::general::{SI_KERNEL, robust_list_head};
-use starry_core::task::{ProcessData, StarryTaskExt};
+use starry_core::{
+    futex::FutexKey,
+    task::{ProcessData, StarryTaskExt},
+};
 
 use crate::{
     clear_proc_shm, exit_robust_list,
@@ -23,10 +26,8 @@ pub fn do_exit(exit_code: i32, group_exit: bool) -> ! {
     if let Ok(clear_tid) = clear_child_tid.get_as_mut() {
         *clear_tid = 0;
 
-        let guard = ext
-            .process_data()
-            .futex_table
-            .get(clear_tid as *const _ as usize);
+        let key = FutexKey::new_current(clear_tid as *const _ as usize);
+        let guard = ext.process_data().futex_table_for(&key).get(&key);
         if let Some(futex) = guard {
             futex.wq.notify_one(false);
         }

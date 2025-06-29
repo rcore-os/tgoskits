@@ -2,11 +2,63 @@
 
 use core::{ops::Deref, sync::atomic::AtomicBool};
 
-use alloc::{collections::btree_map::BTreeMap, sync::Arc};
+use alloc::{
+    collections::btree_map::BTreeMap,
+    sync::{Arc, Weak},
+};
+use axmm::{AddrSpace, Backend, SharedPages};
 use axsync::Mutex;
 use axtask::{WaitQueue, current};
+use memory_addr::VirtAddr;
 
 use crate::task::StarryTaskExt;
+
+/// A key that uniquely identifies a futex in the system.
+pub enum FutexKey {
+    /// A futex that is private to the current process.
+    Private {
+        /// The memory address of the futex.
+        address: usize,
+    },
+
+    /// A futex in a shared memory region.
+    Shared {
+        /// The offset of the futex within the shared memory region.
+        offset: usize,
+        /// The shared memory region, represented as a weak reference to the
+        /// shared pages.
+        region: Weak<SharedPages>,
+    },
+}
+impl FutexKey {
+    /// Creates a new `FutexKey`.
+    pub fn new(aspace: &AddrSpace, address: usize) -> Self {
+        if let Some(area) = aspace.find_area(VirtAddr::from_usize(address)) {
+            if let Backend::Shared { pages } = area.backend() {
+                return Self::Shared {
+                    offset: address - area.start().as_usize(),
+                    region: Arc::downgrade(pages),
+                };
+            }
+        }
+        Self::Private { address }
+    }
+
+    /// Shortcut to create a `FutexKey` for the current task's address space.
+    pub fn new_current(address: usize) -> Self {
+        Self::new(
+            &StarryTaskExt::of(&current()).process_data().aspace.lock(),
+            address,
+        )
+    }
+
+    fn as_usize(&self) -> usize {
+        match self {
+            FutexKey::Private { address } => *address,
+            FutexKey::Shared { offset, .. } => *offset,
+        }
+    }
+}
 
 /// The futex entry structure
 pub struct FutexEntry {
@@ -30,51 +82,54 @@ pub struct FutexTable(Mutex<BTreeMap<usize, Arc<FutexEntry>>>);
 impl FutexTable {
     /// Creates a new `FutexTable`.
     #[allow(clippy::new_without_default)]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self(Mutex::new(BTreeMap::new()))
     }
 
     /// Gets the wait queue associated with the given address.
-    pub fn get(&self, addr: usize) -> Option<FutexGuard> {
-        let entry = self.0.lock().get(&addr).cloned()?;
+    pub fn get(&self, key: &FutexKey) -> Option<FutexGuard> {
+        let key = key.as_usize();
+        let entry = self.0.lock().get(&key).cloned()?;
         Some(FutexGuard {
-            key: addr,
+            table: self,
+            key,
             inner: entry,
         })
     }
 
     /// Gets the wait queue associated with the given address, or inserts a a
     /// new one if it doesn't exist.
-    pub fn get_or_insert(&self, addr: usize) -> FutexGuard {
+    pub fn get_or_insert(&self, key: &FutexKey) -> FutexGuard {
+        let key = key.as_usize();
         let mut table = self.0.lock();
         let entry = table
-            .entry(addr)
+            .entry(key)
             .or_insert_with(|| Arc::new(FutexEntry::new()));
         FutexGuard {
-            key: addr,
+            table: self,
+            key,
             inner: entry.clone(),
         }
     }
 }
 
 #[doc(hidden)]
-pub struct FutexGuard {
+pub struct FutexGuard<'a> {
+    table: &'a FutexTable,
     key: usize,
     inner: Arc<FutexEntry>,
 }
-impl Deref for FutexGuard {
+impl Deref for FutexGuard<'_> {
     type Target = Arc<FutexEntry>;
 
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
-impl Drop for FutexGuard {
+impl Drop for FutexGuard<'_> {
     fn drop(&mut self) {
-        let curr = current();
-        let mut table = StarryTaskExt::of(&curr).process_data().futex_table.0.lock();
-        if Arc::strong_count(&self.inner) == 1 && self.inner.wq.is_empty() {
-            table.remove(&self.key);
+        if Arc::strong_count(&self.inner) <= 2 && self.inner.wq.is_empty() {
+            self.table.0.lock().remove(&self.key);
         }
     }
 }

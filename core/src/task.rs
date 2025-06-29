@@ -30,7 +30,11 @@ use scope_local::{ActiveScope, Scope};
 use spin::{Once, RwLock};
 use weak_map::WeakMap;
 
-use crate::{futex::FutexTable, resources::Rlimits, time::TimeManager};
+use crate::{
+    futex::{FutexKey, FutexTable},
+    resources::Rlimits,
+    time::TimeManager,
+};
 
 pub use stat::ProcessStat;
 
@@ -263,7 +267,7 @@ pub struct ProcessData {
     pub signal: Arc<ProcessSignalManager<RawMutex, WaitQueueWrapper>>,
 
     /// The futex table.
-    pub futex_table: FutexTable,
+    futex_table: FutexTable,
 
     /// The OOM score adjustment value.
     pub oom_score_adj: AtomicI32,
@@ -325,7 +329,17 @@ impl ProcessData {
     pub fn is_clone_child(&self) -> bool {
         self.exit_signal != Some(Signo::SIGCHLD)
     }
+
+    /// Returns the futex table for the given key.
+    pub fn futex_table_for(&self, key: &FutexKey) -> &FutexTable {
+        match key {
+            FutexKey::Private { .. } => &self.futex_table,
+            FutexKey::Shared { .. } => &SHARED_FUTEX_TABLE,
+        }
+    }
 }
+
+static SHARED_FUTEX_TABLE: FutexTable = FutexTable::new();
 
 static THREAD_TABLE: RwLock<WeakMap<Pid, Weak<Thread>>> = RwLock::new(WeakMap::new());
 static PROCESS_TABLE: RwLock<WeakMap<Pid, Weak<Process>>> = RwLock::new(WeakMap::new());
