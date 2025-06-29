@@ -1,5 +1,5 @@
 use axerrno::{LinuxError, LinuxResult};
-use axhal::time::{monotonic_time, monotonic_time_nanos, nanos_to_ticks, wall_time};
+use axhal::time::{TimeValue, monotonic_time, monotonic_time_nanos, nanos_to_ticks, wall_time};
 use axtask::current;
 use linux_raw_sys::general::{
     __kernel_clockid_t, CLOCK_MONOTONIC, CLOCK_REALTIME, itimerval, timespec, timeval,
@@ -23,7 +23,8 @@ pub fn sys_clock_gettime(
                 "Called sys_clock_gettime for unsupported clock {}",
                 clock_id
             );
-            return Err(LinuxError::EINVAL);
+            wall_time()
+            // return Err(LinuxError::EINVAL);
         }
     };
     *ts.get_as_mut()? = timespec::from_time_value(now);
@@ -32,6 +33,19 @@ pub fn sys_clock_gettime(
 
 pub fn sys_gettimeofday(ts: UserPtr<timeval>) -> LinuxResult<isize> {
     *ts.get_as_mut()? = timeval::from_time_value(wall_time());
+    Ok(0)
+}
+
+pub fn sys_clock_getres(
+    clock_id: __kernel_clockid_t,
+    res: UserPtr<timespec>,
+) -> LinuxResult<isize> {
+    if clock_id as u32 != CLOCK_MONOTONIC && clock_id as u32 != CLOCK_REALTIME {
+        warn!("Called sys_clock_getres for unsupported clock {}", clock_id);
+    }
+    if let Some(res) = nullable!(res.get_as_mut())? {
+        *res = timespec::from_time_value(TimeValue::from_micros(1));
+    }
     Ok(0)
 }
 
@@ -89,8 +103,8 @@ pub fn sys_setitimer(
 
     let (interval, remained) = match nullable!(new_value.get_as_ref())? {
         Some(new_value) => (
-            new_value.it_interval.to_time_value().as_nanos() as usize,
-            new_value.it_value.to_time_value().as_nanos() as usize,
+            new_value.it_interval.try_into_time_value()?.as_nanos() as usize,
+            new_value.it_value.try_into_time_value()?.as_nanos() as usize,
         ),
         None => (0, 0),
     };

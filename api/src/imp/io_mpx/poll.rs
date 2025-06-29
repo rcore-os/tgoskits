@@ -73,7 +73,9 @@ pub fn sys_ppoll(
     _sigmask: UserConstPtr<sigset_t>,
 ) -> LinuxResult<isize> {
     let fds = fds.get_as_mut_slice(nfds as usize)?;
-    let timeout = nullable!(timeout.get_as_ref())?.map(|ts| ts.to_time_value());
+    let timeout = nullable!(timeout.get_as_ref())?
+        .map(|ts| ts.try_into_time_value())
+        .transpose()?;
     // TODO: handle signal
     do_poll(fds, timeout)
 }

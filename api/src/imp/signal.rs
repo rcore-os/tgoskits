@@ -1,4 +1,4 @@
-use core::{mem, time::Duration};
+use core::mem;
 
 use alloc::sync::Arc;
 use axerrno::{LinuxError, LinuxResult};
@@ -222,7 +222,9 @@ pub fn sys_rt_sigtimedwait(
     check_sigset_size(sigsetsize)?;
 
     let set = *set.get_as_ref()?;
-    let timeout: Option<Duration> = nullable!(timeout.get_as_ref())?.map(|ts| ts.to_time_value());
+    let timeout = nullable!(timeout.get_as_ref())?
+        .map(|ts| ts.try_into_time_value())
+        .transpose()?;
 
     let Some(sig) = StarryTaskExt::of(&current())
         .thread_data()

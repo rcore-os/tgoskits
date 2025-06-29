@@ -426,16 +426,19 @@ pub fn sys_utimensat(
     if path.is_null() {
         flags |= AT_EMPTY_PATH;
     }
-    fn utime_to_duration(time: &timespec) -> Option<Duration> {
+    fn utime_to_duration(time: &timespec) -> Option<LinuxResult<Duration>> {
         match time.tv_nsec {
             val if val == UTIME_OMIT as _ => None,
-            val if val == UTIME_NOW as _ => Some(wall_time()),
-            _ => Some(time.to_time_value()),
+            val if val == UTIME_NOW as _ => Some(Ok(wall_time())),
+            _ => Some(time.try_into_time_value()),
         }
     }
     let times = nullable!(times.get_as_slice(2))?;
     let (atime, mtime) = match times {
-        Some([atime, mtime]) => (utime_to_duration(atime), utime_to_duration(mtime)),
+        Some([atime, mtime]) => (
+            utime_to_duration(atime).transpose()?,
+            utime_to_duration(mtime).transpose()?,
+        ),
         None => (Some(wall_time()), Some(wall_time())),
         _ => unreachable!(),
     };

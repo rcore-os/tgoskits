@@ -1,6 +1,9 @@
 use axerrno::{LinuxError, LinuxResult};
+use axhal::time::TimeValue;
 use axtask::{AxCpuMask, current};
-use linux_raw_sys::general::timespec;
+use linux_raw_sys::general::{
+    __kernel_clockid_t, CLOCK_MONOTONIC, CLOCK_REALTIME, TIMER_ABSTIME, timespec,
+};
 
 use crate::{
     ptr::{UserConstPtr, UserPtr, nullable},
@@ -13,32 +16,71 @@ pub fn sys_sched_yield() -> LinuxResult<isize> {
     Ok(0)
 }
 
-/// Sleep some nanoseconds
-///
-/// TODO: should be woken by signals, and set errno
-pub fn sys_nanosleep(req: UserConstPtr<timespec>, rem: UserPtr<timespec>) -> LinuxResult<isize> {
-    let req = req.get_as_ref()?;
+fn sleep_impl(clock: impl Fn() -> TimeValue, dur: TimeValue) -> TimeValue {
+    debug!("sleep_impl <= {:?}", dur);
+    let start = clock();
 
-    if req.tv_nsec < 0 || req.tv_nsec > 999_999_999 || req.tv_sec < 0 {
-        return Err(LinuxError::EINVAL);
-    }
-
-    let dur = req.to_time_value();
-    debug!("sys_nanosleep <= {:?}", dur);
-
-    let now = axhal::time::monotonic_time();
-
-    while axhal::time::monotonic_time() < now + dur {
+    while clock() < start + dur {
         if have_signals() {
             break;
         }
         axtask::yield_now();
     }
 
-    let after = axhal::time::monotonic_time();
-    let actual = after - now;
+    clock() - start
+}
+
+/// Sleep some nanoseconds
+pub fn sys_nanosleep(req: UserConstPtr<timespec>, rem: UserPtr<timespec>) -> LinuxResult<isize> {
+    let req = req.get_as_ref()?;
+
+    let dur = req.try_into_time_value()?;
+    debug!("sys_nanosleep <= req: {:?}", dur);
+
+    let actual = sleep_impl(axhal::time::monotonic_time, dur);
 
     if let Some(diff) = dur.checked_sub(actual) {
+        debug!("sys_nanosleep => rem: {:?}", diff);
+        if let Some(rem) = nullable!(rem.get_as_mut())? {
+            *rem = timespec::from_time_value(diff);
+        }
+        Err(LinuxError::EINTR)
+    } else {
+        Ok(0)
+    }
+}
+
+pub fn sys_clock_nanosleep(
+    clock_id: __kernel_clockid_t,
+    flags: u32,
+    req: UserConstPtr<timespec>,
+    rem: UserPtr<timespec>,
+) -> LinuxResult<isize> {
+    let clock = match clock_id as u32 {
+        CLOCK_REALTIME => axhal::time::wall_time,
+        CLOCK_MONOTONIC => axhal::time::monotonic_time,
+        _ => {
+            warn!("Unsupported clock_id: {}", clock_id);
+            return Err(LinuxError::EINVAL);
+        }
+    };
+
+    let req = req.get_as_ref()?.try_into_time_value()?;
+    debug!(
+        "sys_clock_nanosleep <= clock_id: {}, flags: {}, req: {:?}",
+        clock_id, flags, req
+    );
+
+    let dur = if flags & TIMER_ABSTIME != 0 {
+        req.saturating_sub(clock())
+    } else {
+        req
+    };
+
+    let actual = sleep_impl(clock, dur);
+
+    if let Some(diff) = dur.checked_sub(actual) {
+        debug!("sys_clock_nanosleep => rem: {:?}", diff);
         if let Some(rem) = nullable!(rem.get_as_mut())? {
             *rem = timespec::from_time_value(diff);
         }

@@ -1,3 +1,4 @@
+use alloc::string::ToString;
 use axerrno::{LinuxError, LinuxResult};
 use axhal::{
     arch::TrapFrame,
@@ -270,7 +271,12 @@ fn handle_syscall_impl(tf: &mut TrapFrame, sysno: Sysno) -> LinuxResult<isize> {
         // task sched
         Sysno::sched_yield => sys_sched_yield(),
         Sysno::nanosleep => sys_nanosleep(tf.arg0().into(), tf.arg1().into()),
-        Sysno::clock_nanosleep => sys_nanosleep(tf.arg2().into(), tf.arg3().into()),
+        Sysno::clock_nanosleep => sys_clock_nanosleep(
+            tf.arg0() as _,
+            tf.arg1() as _,
+            tf.arg2().into(),
+            tf.arg3().into(),
+        ),
         Sysno::sched_getaffinity => {
             sys_sched_getaffinity(tf.arg0() as _, tf.arg1() as _, tf.arg2().into())
         }
@@ -376,6 +382,7 @@ fn handle_syscall_impl(tf: &mut TrapFrame, sysno: Sysno) -> LinuxResult<isize> {
         Sysno::gettimeofday => sys_gettimeofday(tf.arg0().into()),
         Sysno::times => sys_times(tf.arg0().into()),
         Sysno::clock_gettime => sys_clock_gettime(tf.arg0() as _, tf.arg1().into()),
+        Sysno::clock_getres => sys_clock_getres(tf.arg0() as _, tf.arg1().into()),
         Sysno::getitimer => sys_getitimer(tf.arg0() as _, tf.arg1().into()),
         Sysno::setitimer => sys_setitimer(tf.arg0() as _, tf.arg1().into(), tf.arg2().into()),
 
@@ -441,7 +448,11 @@ fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
     let result = sysno
         .ok_or(LinuxError::ENOSYS)
         .and_then(|sysno| handle_syscall_impl(tf, sysno));
-    debug!("Syscall {:?} return {:?}", sysno, result);
+    debug!(
+        "Syscall {} return {:?}",
+        sysno.map_or("(invalid)".to_string(), |s| s.to_string()),
+        result
+    );
 
     time_stat_from_kernel_to_user();
     result.unwrap_or_else(|err| -err.code() as _)

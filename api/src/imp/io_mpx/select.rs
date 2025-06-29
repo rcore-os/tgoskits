@@ -185,7 +185,9 @@ pub fn sys_select(
         readfds,
         writefds,
         exceptfds,
-        nullable!(timeout.get_as_ref())?.map(|it| it.to_time_value()),
+        nullable!(timeout.get_as_ref())?
+            .map(|it| it.try_into_time_value())
+            .transpose()?,
     )
 }
 
@@ -210,6 +212,8 @@ pub fn sys_pselect6(
         readfds,
         writefds,
         exceptfds,
-        nullable!(timeout.get_as_ref())?.map(|ts| ts.to_time_value()),
+        nullable!(timeout.get_as_ref())?
+            .map(|ts| ts.try_into_time_value())
+            .transpose()?,
     )
 }

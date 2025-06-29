@@ -48,6 +48,10 @@ pub fn sys_futex(
                 return Err(LinuxError::EAGAIN);
             }
 
+            let timeout = nullable!(timeout.get_as_ref())?
+                .map(|ts| ts.try_into_time_value())
+                .transpose()?;
+
             // This function is called with the lock to run queue being held by
             // us, and thus we need to check FOR ONCE if the value has changed.
             // If so, we shall skip waiting and return EAGAIN; otherwise, we
@@ -74,11 +78,8 @@ pub fn sys_futex(
                     .store(value3, Ordering::SeqCst);
             }
 
-            if let Some(timeout) = nullable!(timeout.get_as_ref())? {
-                if futex
-                    .wq
-                    .wait_timeout_until(timeout.to_time_value(), condition)
-                {
+            if let Some(timeout) = timeout {
+                if futex.wq.wait_timeout_until(timeout, condition) {
                     return Err(LinuxError::ETIMEDOUT);
                 }
             } else {
