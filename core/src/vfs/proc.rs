@@ -8,12 +8,12 @@ use alloc::{
     sync::{Arc, Weak},
 };
 use axfs_ng_vfs::{Filesystem, VfsError, VfsResult};
-use axprocess::Process;
+use axprocess::Thread;
 use axsync::RawMutex;
 use axtask::current;
 
 use crate::{
-    task::{ProcessData, ProcessStat, StarryTaskExt, get_process, processes},
+    task::{ProcessData, ProcessStat, StarryTaskExt, get_thread, processes},
     vfs::simple::{
         DirMaker, DirMapping, NodeOpsMux, RwFile, SimpleDir, SimpleDirOps, SimpleFile,
         SimpleFileOperation, SimpleFs,
@@ -86,7 +86,7 @@ pub fn new_procfs() -> Filesystem<RawMutex> {
 /// The /proc/[pid] directory
 struct ProcessDir {
     fs: Arc<SimpleFs>,
-    process: Weak<Process>,
+    thread: Weak<Thread>,
 }
 impl SimpleDirOps<RawMutex> for ProcessDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
@@ -95,16 +95,16 @@ impl SimpleDirOps<RawMutex> for ProcessDir {
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux<RawMutex>> {
         let fs = self.fs.clone();
-        let process = self.process.upgrade().ok_or(VfsError::ENOENT)?;
+        let thread = self.thread.upgrade().ok_or(VfsError::ENOENT)?;
         Ok(match name {
             "stat" => SimpleFile::new(fs, move || {
-                Ok(format!("{}", ProcessStat::from_process(&process)?).into_bytes())
+                Ok(format!("{}", ProcessStat::from_process(&thread.process())?).into_bytes())
             })
             .into(),
             "oom_score_adj" => SimpleFile::new(
                 fs,
                 RwFile::new(move |req| {
-                    let Some(proc_data) = process.data::<ProcessData>() else {
+                    let Some(proc_data) = thread.data::<ProcessData>() else {
                         return Err(VfsError::EBADF);
                     };
                     match req {
@@ -151,17 +151,17 @@ impl SimpleDirOps<RawMutex> for ProcFsHandler {
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux<RawMutex>> {
-        let process = if name == "self" {
-            StarryTaskExt::of(&current()).thread.process().clone()
+        let thread = if name == "self" {
+            StarryTaskExt::of(&current()).thread.clone()
         } else {
-            let pid = name.parse::<u32>().map_err(|_| VfsError::ENOENT)?;
-            get_process(pid).map_err(|_| VfsError::ENOENT)?
+            let tid = name.parse::<u32>().map_err(|_| VfsError::ENOENT)?;
+            get_thread(tid).map_err(|_| VfsError::ENOENT)?
         };
         let node = NodeOpsMux::Dir(SimpleDir::new_maker(
             self.0.clone(),
             Arc::new(ProcessDir {
                 fs: self.0.clone(),
-                process: Arc::downgrade(&process),
+                thread: Arc::downgrade(&thread),
             }),
         ));
         Ok(node)
