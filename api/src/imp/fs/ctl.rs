@@ -108,11 +108,17 @@ pub fn sys_chdir(path: UserConstPtr<c_char>) -> LinuxResult<isize> {
     let path = path.get_as_str()?;
     debug!("sys_chdir <= path: {}", path);
 
-    with_fs(AT_FDCWD, |fs| {
-        let entry = fs.resolve(path)?;
-        fs.set_current_dir(entry)?;
-        Ok(0)
-    })
+    let mut fs = FS_CONTEXT.lock();
+    let entry = fs.resolve(path)?;
+    fs.set_current_dir(entry)?;
+    Ok(0)
+}
+pub fn sys_fchdir(dirfd: i32) -> LinuxResult<isize> {
+    debug!("sys_fchdir <= dirfd: {}", dirfd);
+
+    let entry = with_fs(dirfd, |fs| Ok(fs.current_dir().clone()))?;
+    FS_CONTEXT.lock().set_current_dir(entry)?;
+    Ok(0)
 }
 
 #[cfg(target_arch = "x86_64")]
