@@ -74,8 +74,9 @@ impl DeviceOps for Random {
 
 struct Full;
 impl DeviceOps for Full {
-    fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
-        Err(LinuxError::ENOSPC)
+    fn read_at(&self, buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
+        buf.fill(0);
+        Ok(buf.len())
     }
     fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
         Err(LinuxError::ENOSPC)
