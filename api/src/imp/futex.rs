@@ -15,6 +15,14 @@ use crate::{
 
 pub const ROBUST_LIST_LIMIT: usize = 2048;
 
+fn assert_unsigned(value: u32) -> LinuxResult<u32> {
+    if (value as i32) < 0 {
+        Err(LinuxError::EINVAL)
+    } else {
+        Ok(value)
+    }
+}
+
 pub fn sys_futex(
     uaddr: UserConstPtr<u32>,
     futex_op: u32,
@@ -24,6 +32,7 @@ pub fn sys_futex(
     value3: u32,
 ) -> LinuxResult<isize> {
     info!("futex {:?} {} {}", uaddr.address(), futex_op, value);
+    assert_unsigned(value)?;
 
     let curr = current();
     let futex_table = &StarryTaskExt::of(&curr).process_data().futex_table;
@@ -66,9 +75,12 @@ pub fn sys_futex(
             }
 
             if let Some(timeout) = nullable!(timeout.get_as_ref())? {
-                futex
+                if futex
                     .wq
-                    .wait_timeout_until(timeout.to_time_value(), condition);
+                    .wait_timeout_until(timeout.to_time_value(), condition)
+                {
+                    return Err(LinuxError::ETIMEDOUT);
+                }
             } else {
                 futex.wq.wait_until(condition);
             }
@@ -111,7 +123,7 @@ pub fn sys_futex(
             if command == FUTEX_CMP_REQUEUE && *uaddr.get_as_ref()? != value3 {
                 return Err(LinuxError::EAGAIN);
             }
-            let value2 = timeout.address().as_usize() as u32;
+            let value2 = assert_unsigned(timeout.address().as_usize() as u32)?;
 
             let futex = futex_table.get(addr);
             let futex2 = futex_table.get_or_insert(uaddr2.address().as_usize());
