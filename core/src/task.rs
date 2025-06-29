@@ -5,7 +5,7 @@ mod stat;
 use core::{
     cell::RefCell,
     ops::Deref,
-    sync::atomic::{AtomicU32, AtomicUsize, Ordering},
+    sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering},
     time::Duration,
 };
 
@@ -259,6 +259,9 @@ pub struct ProcessData {
 
     /// The futex table.
     pub futex_table: FutexTable,
+
+    /// The OOM score adjustment value.
+    pub oom_score_adj: AtomicI32,
 }
 
 impl ProcessData {
@@ -287,6 +290,8 @@ impl ProcessData {
             )),
 
             futex_table: FutexTable::new(),
+
+            oom_score_adj: AtomicI32::new(200),
         }
     }
 

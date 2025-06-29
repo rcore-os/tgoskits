@@ -15,6 +15,35 @@ pub trait SimpleFileOps: Send + Sync {
     fn write_all(&self, data: &[u8]) -> VfsResult<()>;
 }
 
+pub enum SimpleFileOperation<'a> {
+    Read,
+    Write(&'a [u8]),
+}
+
+pub struct RwFile<F>(F);
+impl<F, R> RwFile<F>
+where
+    F: Fn(SimpleFileOperation) -> VfsResult<Option<R>> + Send + Sync,
+    R: Into<Vec<u8>>,
+{
+    pub fn new(imp: F) -> Self {
+        Self(imp)
+    }
+}
+impl<F, R> SimpleFileOps for RwFile<F>
+where
+    F: Fn(SimpleFileOperation) -> VfsResult<Option<R>> + Send + Sync,
+    R: Into<Vec<u8>>,
+{
+    fn read_all(&self) -> VfsResult<Cow<[u8]>> {
+        (self.0)(SimpleFileOperation::Read).map(|it| Cow::Owned(it.unwrap().into()))
+    }
+
+    fn write_all(&self, data: &[u8]) -> VfsResult<()> {
+        (self.0)(SimpleFileOperation::Write(data)).map(|_| ())
+    }
+}
+
 impl<F, R> SimpleFileOps for F
 where
     F: Fn() -> VfsResult<R> + Send + Sync + 'static,
@@ -82,7 +111,8 @@ impl<M: RawMutex + Send + Sync + 'static> FileNodeOps<M> for SimpleFile<M> {
         if end_pos > data.len() as u64 {
             data.resize(end_pos as usize, 0);
         }
-        data[offset as usize..].copy_from_slice(buf);
+        data[offset as usize..end_pos as usize].copy_from_slice(buf);
+        self.ops.write_all(&data)?;
         Ok(buf.len())
     }
 
@@ -107,6 +137,7 @@ impl<M: RawMutex + Send + Sync + 'static> FileNodeOps<M> for SimpleFile<M> {
     }
 
     fn set_symlink(&self, target: &str) -> VfsResult<()> {
+        warn!("SET SYMLINK????");
         self.ops.write_all(target.as_bytes())
     }
 }

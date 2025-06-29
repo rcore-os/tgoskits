@@ -1,3 +1,5 @@
+use core::sync::atomic::Ordering;
+
 use alloc::{
     borrow::Cow,
     boxed::Box,
@@ -11,9 +13,10 @@ use axsync::RawMutex;
 use axtask::current;
 
 use crate::{
-    task::{ProcessStat, StarryTaskExt, get_process, processes},
+    task::{ProcessData, ProcessStat, StarryTaskExt, get_process, processes},
     vfs::simple::{
-        DirMaker, DirMapping, NodeOpsMux, SimpleDir, SimpleDirOps, SimpleFile, SimpleFs,
+        DirMaker, DirMapping, NodeOpsMux, RwFile, SimpleDir, SimpleDirOps, SimpleFile,
+        SimpleFileOperation, SimpleFs,
     },
 };
 
@@ -87,7 +90,7 @@ struct ProcessDir {
 }
 impl SimpleDirOps<RawMutex> for ProcessDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
-        Box::new(["stat"].into_iter().map(Cow::Borrowed))
+        Box::new(["stat", "oom_score_adj"].into_iter().map(Cow::Borrowed))
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux<RawMutex>> {
@@ -97,6 +100,34 @@ impl SimpleDirOps<RawMutex> for ProcessDir {
             "stat" => SimpleFile::new(fs, move || {
                 Ok(format!("{}", ProcessStat::from_process(&process)?).into_bytes())
             })
+            .into(),
+            "oom_score_adj" => SimpleFile::new(
+                fs,
+                RwFile::new(move |req| {
+                    let Some(proc_data) = process.data::<ProcessData>() else {
+                        return Err(VfsError::EBADF);
+                    };
+                    match req {
+                        SimpleFileOperation::Read => Ok(Some(
+                            proc_data
+                                .oom_score_adj
+                                .load(Ordering::SeqCst)
+                                .to_string()
+                                .into_bytes(),
+                        )),
+                        SimpleFileOperation::Write(data) => {
+                            if !data.is_empty() {
+                                let value = str::from_utf8(data)
+                                    .ok()
+                                    .and_then(|it| it.parse::<i32>().ok())
+                                    .ok_or(VfsError::EINVAL)?;
+                                proc_data.oom_score_adj.store(value, Ordering::SeqCst);
+                            }
+                            Ok(None)
+                        }
+                    }
+                }),
+            )
             .into(),
             _ => return Err(VfsError::ENOENT),
         })
