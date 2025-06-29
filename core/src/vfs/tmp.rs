@@ -92,7 +92,7 @@ fn release_inode(fs: &MemoryFs, inode: &Arc<Inode>, nlink: u64) {
     let mut inodes = fs.inodes.lock();
     let mut metadata = inode.metadata.lock();
     metadata.nlink -= nlink;
-    if metadata.nlink == 0 {
+    if metadata.nlink == 0 && Arc::strong_count(inode) == 2 {
         inodes.remove(metadata.inode as usize - 1);
     }
 }
@@ -507,13 +507,9 @@ impl DirNodeOps<RawMutex> for MemoryNode {
 }
 impl Drop for MemoryNode {
     fn drop(&mut self) {
-        match &self.inode.content {
-            NodeContent::File(_) => {
-                release_inode(&self.fs, &self.inode, 1);
-            }
-            NodeContent::Dir(dir) => {
-                dir.entries.lock().clear();
-            }
+        if let NodeContent::Dir(dir) = &self.inode.content {
+            dir.entries.lock().clear();
         }
+        release_inode(&self.fs, &self.inode, 0);
     }
 }
