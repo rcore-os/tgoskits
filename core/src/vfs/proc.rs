@@ -196,6 +196,20 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         }),
     );
 
+    root.add("sys", {
+        let mut sys = DirMapping::new();
+
+        sys.add("kernel", {
+            let mut kernel = DirMapping::new();
+
+            kernel.add("pid_max", SimpleFile::new(fs.clone(), || Ok("32768\n")));
+
+            SimpleDir::new_maker(fs.clone(), Arc::new(kernel))
+        });
+
+        SimpleDir::new_maker(fs.clone(), Arc::new(sys))
+    });
+
     let proc_dir = ProcFsHandler(fs.clone());
     SimpleDir::new_maker(fs, Arc::new(proc_dir.chain(root)))
 }
