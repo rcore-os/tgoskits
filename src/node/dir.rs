@@ -44,6 +44,20 @@ pub trait DirNodeOps<M: RawMutex>: NodeOps<M> {
     /// Lookups a directory entry by name.
     fn lookup(&self, name: &str) -> VfsResult<DirEntry<M>>;
 
+    /// Returns whether directory entries can be cached.
+    ///
+    /// Some filesystems (like '/proc') may not support caching directory
+    /// entries, as they may change frequently or not be backed by persistent
+    /// storage.
+    ///
+    /// If this returns `false`, the directory will not be cached in dentry and
+    /// each call to [`DirNode::lookup`] will end up calling [`lookup`].
+    /// Implementations should take care to handle cases where [`lookup`] is
+    /// called multiple times for the same name.
+    fn is_cacheable(&self) -> bool {
+        true
+    }
+
     /// Creates a directory entry.
     fn create(
         &self,
@@ -146,16 +160,28 @@ impl<M: RawMutex> DirNode<M> {
 
     /// Looks up a directory entry by name.
     pub fn lookup(&self, name: &str) -> VfsResult<DirEntry<M>> {
-        self.lookup_locked(name, &mut self.cache.lock())
+        if self.ops.is_cacheable() {
+            self.lookup_locked(name, &mut self.cache.lock())
+        } else {
+            self.ops.lookup(name)
+        }
     }
 
     /// Looks up a directory entry by name in cache.
     pub fn lookup_cache(&self, name: &str) -> Option<DirEntry<M>> {
-        self.cache.lock().get(name).cloned()
+        if self.ops.is_cacheable() {
+            self.cache.lock().get(name).cloned()
+        } else {
+            None
+        }
     }
     /// Inserts a directory entry into the cache.
     pub fn insert_cache(&self, name: String, entry: DirEntry<M>) -> Option<DirEntry<M>> {
-        self.cache.lock().insert(name, entry)
+        if self.ops.is_cacheable() {
+            self.cache.lock().insert(name, entry)
+        } else {
+            None
+        }
     }
 
     pub fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
