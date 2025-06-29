@@ -273,6 +273,9 @@ pub struct ProcessData {
 
     /// The futex table.
     futex_table: FutexTable,
+
+    /// The default mask for file permissions.
+    pub umask: AtomicU32,
 }
 
 impl ProcessData {
@@ -301,6 +304,8 @@ impl ProcessData {
             )),
 
             futex_table: FutexTable::new(),
+
+            umask: AtomicU32::new(0o022),
         }
     }
 
@@ -397,4 +402,12 @@ pub fn get_process_group(pgid: Pid) -> LinuxResult<Arc<ProcessGroup>> {
 /// Finds the session with the given SID.
 pub fn get_session(sid: Pid) -> LinuxResult<Arc<Session>> {
     SESSION_TABLE.read().get(&sid).ok_or(LinuxError::ESRCH)
+}
+
+/// Returns umask of the current process.
+pub fn current_umask() -> u32 {
+    StarryTaskExt::of(&current())
+        .process_data()
+        .umask
+        .load(Ordering::SeqCst)
 }

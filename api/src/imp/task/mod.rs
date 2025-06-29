@@ -1,4 +1,5 @@
 mod clone;
+mod ctl;
 mod execve;
 mod exit;
 mod job;
@@ -7,6 +8,7 @@ mod thread;
 mod wait;
 
 pub use self::clone::*;
+pub use self::ctl::*;
 pub use self::execve::*;
 pub use self::exit::*;
 pub use self::job::*;

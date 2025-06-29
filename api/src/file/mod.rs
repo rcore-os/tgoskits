@@ -14,11 +14,7 @@ use axtask::current;
 use flatten_objects::FlattenObjects;
 use linux_raw_sys::general::{RLIMIT_NOFILE, stat, statx, statx_timestamp};
 use spin::RwLock;
-use starry_core::{
-    resources::AX_FILE_LIMIT,
-    task::StarryTaskExt,
-    vfs::{Device, DeviceOps},
-};
+use starry_core::{resources::AX_FILE_LIMIT, task::StarryTaskExt, vfs::Device};
 
 pub use self::{
     fs::{Directory, File, ResolveAtResult, metadata_to_kstat, resolve_at, with_fs},

@@ -1,3 +1,5 @@
+use core::sync::atomic::{AtomicU32, Ordering};
+
 use alloc::sync::Arc;
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
@@ -161,12 +163,13 @@ pub fn sys_clone(
         } else {
             Arc::default()
         };
-        let process_data = ProcessData::new(
+        let mut process_data = ProcessData::new(
             ext.process_data().exe_path.read().clone(),
             aspace,
             signal_actions,
             exit_signal,
         );
+        process_data.umask = AtomicU32::new(ext.process_data().umask.load(Ordering::SeqCst));
 
         {
             let mut scope = process_data.scope.write();

@@ -9,6 +9,7 @@ use linux_raw_sys::general::{
     FD_CLOEXEC, O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_NONBLOCK, O_PATH, O_RDONLY,
     O_RDWR, O_TRUNC, O_WRONLY,
 };
+use starry_core::task::current_umask;
 
 use crate::{
     file::{
@@ -78,6 +79,8 @@ pub fn sys_openat(
         "sys_openat <= {} {:?} {:#o} {:#o}",
         dirfd, path, flags, mode
     );
+
+    let mode = mode & !current_umask();
 
     let options = flags_to_options(flags, mode, (sys_geteuid()? as _, sys_getegid()? as _));
     with_fs(dirfd, |fs| options.open(fs, path))
