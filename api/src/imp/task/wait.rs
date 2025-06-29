@@ -1,4 +1,4 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::vec::Vec;
 use axerrno::{LinuxError, LinuxResult};
 use axprocess::{Pid, Process};
 use axtask::current;
@@ -46,7 +46,7 @@ enum WaitPid {
 }
 
 impl WaitPid {
-    fn apply(&self, child: &Arc<Process>) -> bool {
+    fn apply(&self, child: &Process) -> bool {
         match self {
             WaitPid::Any => true,
             WaitPid::Pid(pid) => child.pid() == *pid,
