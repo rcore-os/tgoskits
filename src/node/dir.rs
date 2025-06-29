@@ -7,8 +7,7 @@ use alloc::{borrow::ToOwned, collections::btree_map::BTreeMap, string::String, s
 use lock_api::{Mutex, MutexGuard, RawMutex};
 
 use crate::{
-    MetadataUpdate, Mountpoint, NodeOps, NodePermission, NodeType, VfsError, VfsResult,
-    path::{DOT, DOTDOT, verify_entry_name},
+    path::{verify_entry_name, DOT, DOTDOT, MAX_NAME_LEN}, MetadataUpdate, Mountpoint, NodeOps, NodePermission, NodeType, VfsError, VfsResult
 };
 
 use super::DirEntry;
@@ -162,6 +161,9 @@ impl<M: RawMutex> DirNode<M> {
 
     /// Looks up a directory entry by name.
     pub fn lookup(&self, name: &str) -> VfsResult<DirEntry<M>> {
+        if name.len() > MAX_NAME_LEN {
+            return Err(VfsError::ENAMETOOLONG);
+        }
         // Fast path
         if self.ops.is_cacheable() {
             self.lookup_locked(name, &mut self.cache.lock())
