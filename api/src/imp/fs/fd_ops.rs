@@ -1,7 +1,4 @@
-use core::{
-    ffi::{c_char, c_int},
-    panic,
-};
+use core::ffi::{c_char, c_int};
 
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::{OpenOptions, OpenResult};
@@ -125,14 +122,36 @@ pub fn sys_dup2(old_fd: c_int, new_fd: c_int) -> LinuxResult<isize> {
         .cloned()
         .ok_or(LinuxError::EBADF)?;
 
-    if old_fd != new_fd {
-        fd_table.remove(new_fd as _);
-        fd_table
-            .add_at(new_fd as _, f)
-            .unwrap_or_else(|_| panic!("new_fd should be valid"));
-    }
+    fd_table.remove(new_fd as _);
+    fd_table
+        .add_at(new_fd as _, f)
+        .map_err(|_| LinuxError::EBADF)?;
 
     Ok(new_fd as _)
+}
+
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct Dup3Flags: c_int {
+        const FD_CLOEXEC = FD_CLOEXEC as _; // Close on exec
+    }
+}
+
+pub fn sys_dup3(old_fd: c_int, new_fd: c_int, flags: c_int) -> LinuxResult<isize> {
+    let Some(flags) = Dup3Flags::from_bits(flags) else {
+        return Err(LinuxError::EINVAL);
+    };
+
+    debug!(
+        "sys_dup3 <= old_fd: {}, new_fd: {}, flags: {:?}",
+        old_fd, new_fd, flags
+    );
+
+    if old_fd == new_fd {
+        return Err(LinuxError::EINVAL);
+    }
+
+    sys_dup2(old_fd, new_fd)
 }
 
 pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> LinuxResult<isize> {
