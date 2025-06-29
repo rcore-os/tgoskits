@@ -20,7 +20,10 @@ use linux_raw_sys::{
 use starry_core::{task::current_umask, vfs::dev};
 
 use crate::{
-    file::{Directory, FileLike, cast_file_like_to_device, get_file_like, resolve_at, with_fs},
+    file::{
+        Directory, FileLike, Stdin, Stdout, cast_file_like_to_device, get_file_like, resolve_at,
+        with_fs,
+    },
     ptr::{UserConstPtr, UserPtr, nullable},
     time::TimeValueLike,
 };
@@ -49,6 +52,11 @@ struct rtc_time {
 /// * `argp` - The argument to the request. It is a pointer to a memory location
 pub fn sys_ioctl(fd: i32, op: usize, argp: UserPtr<c_void>) -> LinuxResult<isize> {
     let f = get_file_like(fd)?;
+
+    if f.clone().into_any().is::<Stdin>() || f.clone().into_any().is::<Stdout>() {
+        return Ok(0);
+    }
+
     let device = cast_file_like_to_device(f).ok_or(LinuxError::ENOTTY)?;
     let ops = device.inner().as_any();
 

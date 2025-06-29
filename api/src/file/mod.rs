@@ -20,6 +20,7 @@ pub use self::{
     fs::{Directory, File, ResolveAtResult, metadata_to_kstat, resolve_at, with_fs},
     net::Socket,
     pipe::Pipe,
+    stdio::{Stdin, Stdout},
 };
 
 #[derive(Debug, Clone, Copy)]
