@@ -1,6 +1,6 @@
 use alloc::{borrow::ToOwned, fmt, string::String};
-use axerrno::{LinuxError, LinuxResult};
-use axprocess::Process;
+use axerrno::LinuxResult;
+use axprocess::Thread;
 use axsignal::Signo;
 use axtask::TaskState;
 
@@ -11,7 +11,7 @@ use crate::task::{ProcessData, ThreadData};
 /// See ['https://man7.org/linux/man-pages/man5/proc_pid_stat.5.html'] for details.
 #[allow(missing_docs)]
 #[derive(Default)]
-pub struct ProcessStat {
+pub struct TaskStat {
     pub pid: u32,
     pub comm: String,
     pub state: char,
@@ -65,17 +65,11 @@ pub struct ProcessStat {
     pub env_end: u64,
     pub exit_code: i32,
 }
-impl ProcessStat {
-    /// Create a new `ProcessStat` from a [`Process`].
-    pub fn from_process(process: &Process) -> LinuxResult<Self> {
-        let Some(thr) = process
-            .threads()
-            .into_iter()
-            .find(|it| it.tid() == process.pid())
-        else {
-            return Err(LinuxError::ESRCH);
-        };
-        let task = thr.data::<ThreadData>().unwrap().get_task()?;
+impl TaskStat {
+    /// Create a new `TaskStat` from a [`Thread`].
+    pub fn from_thread(thread: &Thread) -> LinuxResult<Self> {
+        let process = thread.process();
+        let task = thread.data::<ThreadData>().unwrap().get_task()?;
         let proc_data = process.data::<ProcessData>().unwrap();
 
         let pid = process.pid();
@@ -104,7 +98,7 @@ impl ProcessStat {
     }
 }
 
-impl fmt::Display for ProcessStat {
+impl fmt::Display for TaskStat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self {
             pid,

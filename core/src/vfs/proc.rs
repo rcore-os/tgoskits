@@ -1,4 +1,4 @@
-use core::sync::atomic::Ordering;
+use core::{iter, sync::atomic::Ordering};
 
 use alloc::{
     borrow::Cow,
@@ -8,12 +8,12 @@ use alloc::{
     sync::{Arc, Weak},
 };
 use axfs_ng_vfs::{Filesystem, VfsError, VfsResult};
-use axprocess::Thread;
+use axprocess::{Process, Thread};
 use axsync::RawMutex;
 use axtask::current;
 
 use crate::{
-    task::{ProcessData, ProcessStat, StarryTaskExt, get_thread, processes},
+    task::{ProcessData, StarryTaskExt, TaskStat, get_thread, processes},
     vfs::simple::{
         DirMaker, DirMapping, NodeOpsMux, RwFile, SimpleDir, SimpleDirOps, SimpleFile,
         SimpleFileOperation, SimpleFs,
@@ -83,14 +83,57 @@ pub fn new_procfs() -> Filesystem<RawMutex> {
     SimpleFs::new_with("proc".into(), 0x9fa0, builder)
 }
 
+struct ProcessTaskDir {
+    fs: Arc<SimpleFs>,
+    process: Weak<Process>,
+}
+impl SimpleDirOps<RawMutex> for ProcessTaskDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        let Some(process) = self.process.upgrade() else {
+            return Box::new(iter::empty());
+        };
+        Box::new(
+            process
+                .threads()
+                .into_iter()
+                .map(|it| it.tid().to_string().into()),
+        )
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux<RawMutex>> {
+        let process = self.process.upgrade().ok_or(VfsError::ENOENT)?;
+        let tid = name.parse::<u32>().map_err(|_| VfsError::ENOENT)?;
+        let thread = get_thread(tid).map_err(|_| VfsError::ENOENT)?;
+        if thread.process().pid() != process.pid() {
+            return Err(VfsError::ENOENT);
+        }
+
+        Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
+            self.fs.clone(),
+            Arc::new(ThreadDir {
+                fs: self.fs.clone(),
+                thread: Arc::downgrade(&thread),
+            }),
+        )))
+    }
+
+    fn is_cacheable(&self) -> bool {
+        false
+    }
+}
+
 /// The /proc/[pid] directory
-struct ProcessDir {
+struct ThreadDir {
     fs: Arc<SimpleFs>,
     thread: Weak<Thread>,
 }
-impl SimpleDirOps<RawMutex> for ProcessDir {
+impl SimpleDirOps<RawMutex> for ThreadDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
-        Box::new(["stat", "oom_score_adj"].into_iter().map(Cow::Borrowed))
+        Box::new(
+            ["stat", "oom_score_adj", "task"]
+                .into_iter()
+                .map(Cow::Borrowed),
+        )
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux<RawMutex>> {
@@ -98,7 +141,7 @@ impl SimpleDirOps<RawMutex> for ProcessDir {
         let thread = self.thread.upgrade().ok_or(VfsError::ENOENT)?;
         Ok(match name {
             "stat" => SimpleFile::new(fs, move || {
-                Ok(format!("{}", ProcessStat::from_process(&thread.process())?).into_bytes())
+                Ok(format!("{}", TaskStat::from_thread(&thread)?).into_bytes())
             })
             .into(),
             "oom_score_adj" => SimpleFile::new(
@@ -126,6 +169,14 @@ impl SimpleDirOps<RawMutex> for ProcessDir {
                             Ok(None)
                         }
                     }
+                }),
+            )
+            .into(),
+            "task" => SimpleDir::new_maker(
+                fs.clone(),
+                Arc::new(ProcessTaskDir {
+                    fs,
+                    process: Arc::downgrade(&thread.process()),
                 }),
             )
             .into(),
@@ -159,7 +210,7 @@ impl SimpleDirOps<RawMutex> for ProcFsHandler {
         };
         let node = NodeOpsMux::Dir(SimpleDir::new_maker(
             self.0.clone(),
-            Arc::new(ProcessDir {
+            Arc::new(ThreadDir {
                 fs: self.0.clone(),
                 thread: Arc::downgrade(&thread),
             }),

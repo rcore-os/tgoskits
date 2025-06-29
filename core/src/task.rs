@@ -36,7 +36,7 @@ use crate::{
     time::TimeManager,
 };
 
-pub use stat::ProcessStat;
+pub use stat::TaskStat;
 
 /// Create a new user task.
 pub fn new_user_task(
