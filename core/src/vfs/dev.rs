@@ -1,5 +1,5 @@
 use alloc::sync::Arc;
-use axerrno::LinuxResult;
+use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FsContext;
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeType, VfsResult};
 use axsync::{Mutex, RawMutex};
@@ -75,6 +75,16 @@ impl DeviceOps for Random {
     }
 }
 
+struct Full;
+impl DeviceOps for Full {
+    fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
+        Err(LinuxError::ENOSPC)
+    }
+    fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
+        Err(LinuxError::ENOSPC)
+    }
+}
+
 fn builder(fs: Arc<DynamicFs>) -> DirMaker {
     let mut root = DynamicDir::builder(fs.clone());
     root.add(
@@ -93,6 +103,15 @@ fn builder(fs: Arc<DynamicFs>) -> DirMaker {
             NodeType::CharacterDevice,
             DeviceId::new(1, 5),
             Zero,
+        ),
+    );
+    root.add(
+        "full",
+        Device::new(
+            fs.clone(),
+            NodeType::CharacterDevice,
+            DeviceId::new(1, 7),
+            Full,
         ),
     );
     root.add(
