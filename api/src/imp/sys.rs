@@ -17,7 +17,7 @@ pub fn sys_getuid() -> LinuxResult<isize> {
 }
 
 pub fn sys_geteuid() -> LinuxResult<isize> {
-    Ok(1)
+    Ok(0)
 }
 
 pub fn sys_getgid() -> LinuxResult<isize> {
@@ -25,7 +25,7 @@ pub fn sys_getgid() -> LinuxResult<isize> {
 }
 
 pub fn sys_getegid() -> LinuxResult<isize> {
-    Ok(1)
+    Ok(0)
 }
 
 const fn pad_str(info: &str) -> [c_char; 65] {
