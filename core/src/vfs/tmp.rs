@@ -1,8 +1,6 @@
 use core::{any::Any, borrow::Borrow, cmp::Ordering, time::Duration};
 
-use alloc::{
-    borrow::ToOwned, collections::btree_map::BTreeMap, string::String, sync::Arc, vec::Vec,
-};
+use alloc::{borrow::ToOwned, collections::btree_map::BTreeMap, string::String, sync::Arc};
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
     FilesystemOps, Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, StatFs,
@@ -92,14 +90,95 @@ fn release_inode(fs: &MemoryFs, inode: &Arc<Inode>, nlink: u64) {
     let mut inodes = fs.inodes.lock();
     let mut metadata = inode.metadata.lock();
     metadata.nlink -= nlink;
-    if metadata.nlink == 0 && Arc::strong_count(inode) == 2 {
+    if metadata.nlink == 0 {
         inodes.remove(metadata.inode as usize - 1);
+    }
+}
+
+const SPARSE_CHUNK_SIZE: u64 = 4096;
+
+#[derive(Default)]
+struct SparseFile {
+    chunks: BTreeMap<u64, [u8; SPARSE_CHUNK_SIZE as usize]>,
+    length: u64,
+}
+impl SparseFile {
+    fn set_len(&mut self, len: u64) {
+        if len >= self.length {
+            self.length = len;
+            return;
+        }
+        while self.chunks.last_key_value().is_some_and(|it| *it.0 >= len) {
+            self.chunks.pop_last();
+        }
+        self.length = len;
+    }
+
+    fn write_at(&mut self, mut data: &[u8], offset: u64) {
+        let end = offset + data.len() as u64;
+        self.length = self.length.max(end);
+
+        let mut ptr = offset / SPARSE_CHUNK_SIZE * SPARSE_CHUNK_SIZE;
+        let mut offset = (offset % SPARSE_CHUNK_SIZE) as usize;
+        let mut iter = self.chunks.range_mut(ptr..);
+        while !data.is_empty() {
+            let (chunk_start, chunk) = if let Some((chunk_start, chunk)) = iter.next()
+                && *chunk_start == ptr
+            {
+                (chunk_start, chunk)
+            } else {
+                self.chunks.insert(ptr, [0; SPARSE_CHUNK_SIZE as usize]);
+                iter = self.chunks.range_mut(ptr..);
+                iter.next().unwrap()
+            };
+            let end = (end - chunk_start).min(SPARSE_CHUNK_SIZE) as usize;
+            let (write, rest) = data.split_at(end - offset);
+            data = rest;
+            chunk[offset..end].copy_from_slice(&write);
+            offset = 0;
+            ptr += SPARSE_CHUNK_SIZE;
+        }
+    }
+
+    fn read_at(&self, mut buf: &mut [u8], mut offset: u64) -> usize {
+        if offset >= self.length {
+            return 0;
+        }
+        let end = (offset + buf.len() as u64).min(self.length);
+        buf = &mut buf[..(end - offset) as usize];
+        if buf.is_empty() {
+            return 0;
+        }
+        let read_len = buf.len();
+
+        let mut iter = self
+            .chunks
+            .range((offset / SPARSE_CHUNK_SIZE * SPARSE_CHUNK_SIZE)..);
+
+        while !buf.is_empty() {
+            let Some((chunk_start, chunk)) = iter.next() else {
+                buf.fill(0);
+                break;
+            };
+            if *chunk_start > offset {
+                let (zero, rest) = buf.split_at_mut((*chunk_start - offset) as usize);
+                zero.fill(0);
+                buf = rest;
+                offset = *chunk_start;
+            }
+            let (read, rest) = buf.split_at_mut(buf.len().min(chunk.len()));
+            read.copy_from_slice(&chunk[..read.len()]);
+            buf = rest;
+            offset += read.len() as u64;
+        }
+
+        read_len
     }
 }
 
 #[derive(Default)]
 struct FileContent {
-    content: Mutex<Vec<u8>>,
+    content: Mutex<SparseFile>,
 }
 #[derive(Default)]
 struct DirContent {
@@ -246,7 +325,7 @@ impl NodeOps<RawMutex> for MemoryNode {
         let mut metadata = self.inode.metadata.lock().clone();
         match &self.inode.content {
             NodeContent::File(content) => {
-                metadata.size = content.content.lock().len() as u64;
+                metadata.size = content.content.lock().length;
             }
             NodeContent::Dir(dir) => {
                 metadata.size = dir.entries.lock().len() as u64;
@@ -287,46 +366,30 @@ impl NodeOps<RawMutex> for MemoryNode {
 }
 impl FileNodeOps<RawMutex> for MemoryNode {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
-        let content = self.inode.as_file()?.content.lock();
-        if offset >= content.len() as u64 {
-            return Ok(0);
-        }
-        let content = &content[offset as usize..];
-        let read = buf.len().min(content.len());
-        buf[..read].copy_from_slice(&content[..read]);
-        Ok(read)
+        Ok(self.inode.as_file()?.content.lock().read_at(buf, offset))
     }
 
     fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize> {
-        let mut content = self.inode.as_file()?.content.lock();
-        let end_pos = offset as usize + buf.len();
-        if end_pos > content.len() {
-            content.resize(end_pos, 0);
-        }
-        let content = &mut content[offset as usize..];
-        let write = content.len().min(buf.len());
-        content[..write].copy_from_slice(&buf[..write]);
-        Ok(write)
+        self.inode.as_file()?.content.lock().write_at(buf, offset);
+        Ok(buf.len())
     }
 
     fn append(&self, buf: &[u8]) -> VfsResult<(usize, u64)> {
         let mut content = self.inode.as_file()?.content.lock();
-        content.extend_from_slice(buf);
-        Ok((buf.len(), buf.len() as u64))
+        let length = content.length;
+        content.write_at(buf, length);
+        Ok((buf.len(), content.length))
     }
 
     fn set_len(&self, len: u64) -> VfsResult<()> {
-        let mut content = self.inode.as_file()?.content.lock();
-        if len > content.len() as u64 {
-            content.resize(len as usize, 0);
-        } else {
-            content.truncate(len as usize);
-        }
+        self.inode.as_file()?.content.lock().set_len(len);
         Ok(())
     }
 
     fn set_symlink(&self, target: &str) -> VfsResult<()> {
-        *self.inode.as_file()?.content.lock() = target.as_bytes().to_vec();
+        let mut content = self.inode.as_file()?.content.lock();
+        content.set_len(target.len() as u64);
+        content.write_at(target.as_bytes(), 0);
         Ok(())
     }
 }
@@ -442,6 +505,13 @@ impl DirNodeOps<RawMutex> for MemoryNode {
 }
 impl Drop for MemoryNode {
     fn drop(&mut self) {
-        release_inode(&self.fs, &self.inode, 0);
+        match &self.inode.content {
+            NodeContent::File(_) => {
+                release_inode(&self.fs, &self.inode, 1);
+            }
+            NodeContent::Dir(dir) => {
+                dir.entries.lock().clear();
+            }
+        }
     }
 }

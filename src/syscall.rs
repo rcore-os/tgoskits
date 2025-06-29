@@ -113,6 +113,12 @@ fn handle_syscall_impl(tf: &mut TrapFrame, sysno: Sysno) -> LinuxResult<isize> {
         Sysno::writev => sys_writev(tf.arg0() as _, tf.arg1().into(), tf.arg2() as _),
         Sysno::lseek => sys_lseek(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
         Sysno::ftruncate => sys_ftruncate(tf.arg0() as _, tf.arg1() as _),
+        Sysno::fallocate => sys_fallocate(
+            tf.arg0() as _,
+            tf.arg1() as _,
+            tf.arg2() as _,
+            tf.arg3() as _,
+        ),
         Sysno::fsync => sys_fsync(tf.arg0() as _),
         Sysno::fdatasync => sys_fdatasync(tf.arg0() as _),
         Sysno::pread64 => sys_pread64(

@@ -132,6 +132,26 @@ pub fn sys_ftruncate(fd: c_int, length: __kernel_off_t) -> LinuxResult<isize> {
     Ok(0)
 }
 
+pub fn sys_fallocate(
+    fd: c_int,
+    mode: u32,
+    offset: __kernel_off_t,
+    len: __kernel_off_t,
+) -> LinuxResult<isize> {
+    debug!(
+        "sys_fallocate <= fd: {}, mode: {}, offset: {}, len: {}",
+        fd, mode, offset, len
+    );
+    if mode != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+    let f = File::from_fd(fd)?;
+    let inner = f.inner();
+    let file = inner.access(FileFlags::WRITE)?;
+    file.set_len(file.len()?.max(offset as u64 + len as u64))?;
+    Ok(0)
+}
+
 pub fn sys_fsync(fd: c_int) -> LinuxResult<isize> {
     debug!("sys_fsync <= {}", fd);
     let f = File::from_fd(fd)?;
