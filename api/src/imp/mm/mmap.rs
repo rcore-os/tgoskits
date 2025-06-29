@@ -119,7 +119,7 @@ pub fn sys_mmap(
         start, end, aligned_length
     );
 
-    let start_addr = if map_flags.contains(MmapFlags::FIXED | MmapFlags::FIXED_NOREPLACE) {
+    let start_addr = if map_flags.intersects(MmapFlags::FIXED | MmapFlags::FIXED_NOREPLACE) {
         let dst_addr = VirtAddr::from(start);
         if !map_flags.contains(MmapFlags::FIXED_NOREPLACE) {
             aspace.unmap(dst_addr, aligned_length)?;
