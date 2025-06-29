@@ -199,7 +199,10 @@ pub fn sys_clone(
     let thread = process.new_thread(tid).data(thread_data).build();
     add_thread_to_table(&thread);
     *new_task.task_ext_mut() = Some(unsafe { TaskExtProxy::from_impl(StarryTaskExt::new(thread)) });
-    axtask::spawn_task(new_task);
+    let task = axtask::spawn_task(new_task);
+    StarryTaskExt::of(&task)
+        .thread_data()
+        .init_task(|| Arc::downgrade(&task));
 
     Ok(tid as _)
 }

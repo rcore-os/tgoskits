@@ -11,7 +11,7 @@ use axfs_ng_vfs::{
 use axsync::{Mutex, RawMutex};
 use slab::Slab;
 
-use super::dynamic::dummy_stat_fs;
+use crate::vfs::simple::dummy_stat_fs;
 
 #[derive(PartialEq, Eq, Clone)]
 struct FileName(String);

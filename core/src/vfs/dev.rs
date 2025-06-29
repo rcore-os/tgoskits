@@ -5,10 +5,7 @@ use axfs_ng_vfs::{DeviceId, Filesystem, NodeType, VfsResult};
 use axsync::{Mutex, RawMutex};
 use rand::{RngCore, SeedableRng, rngs::SmallRng};
 
-use super::{
-    dynamic::{DirMaker, DynamicDir, DynamicFs},
-    file::{Device, DeviceOps},
-};
+use crate::vfs::simple::{Device, DeviceOps, DirMaker, DirMapping, SimpleDir, SimpleFs};
 
 /// The device ID for /dev/rtc0
 pub const RTC0_DEVICE_ID: DeviceId = DeviceId::new(250, 0);
@@ -16,7 +13,7 @@ pub const RTC0_DEVICE_ID: DeviceId = DeviceId::new(250, 0);
 const RANDOM_SEED: &[u8; 32] = b"0123456789abcdef0123456789abcdef";
 
 pub fn new_devfs() -> LinuxResult<Filesystem<RawMutex>> {
-    let fs = DynamicFs::new_with("devdevtmpfs".into(), 0x01021994, builder);
+    let fs = SimpleFs::new_with("devdevtmpfs".into(), 0x01021994, builder);
     let mp = axfs_ng_vfs::Mountpoint::new_root(&fs);
     FsContext::new(mp.root_location())
         .resolve("/shm")?
@@ -85,8 +82,8 @@ impl DeviceOps for Full {
     }
 }
 
-fn builder(fs: Arc<DynamicFs>) -> DirMaker {
-    let mut root = DynamicDir::builder(fs.clone());
+fn builder(fs: Arc<SimpleFs>) -> DirMaker {
+    let mut root = DirMapping::new();
     root.add(
         "null",
         Device::new(
@@ -137,8 +134,11 @@ fn builder(fs: Arc<DynamicFs>) -> DirMaker {
         Device::new(fs.clone(), NodeType::CharacterDevice, RTC0_DEVICE_ID, Rtc),
     );
 
-    root.add("shm", DynamicDir::builder(fs.clone()).build());
+    // This is mounted to a tmpfs in `new_procfs`
+    root.add(
+        "shm",
+        SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
+    );
 
-    let builder = root.build();
-    Arc::new(move |this| builder(this))
+    SimpleDir::new_maker(fs, Arc::new(root))
 }

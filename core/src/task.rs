@@ -1,5 +1,7 @@
 //! User task management.
 
+mod stat;
+
 use core::{
     cell::RefCell,
     ops::Deref,
@@ -21,13 +23,15 @@ use axsignal::{
     api::{ProcessSignalManager, SignalActions, ThreadSignalManager},
 };
 use axsync::{Mutex, RawMutex};
-use axtask::{TaskExt, TaskInner, WaitQueue, current};
+use axtask::{AxTaskRef, TaskExt, TaskInner, WaitQueue, WeakAxTaskRef, current};
 use extern_trait::extern_trait;
 use scope_local::{ActiveScope, Scope};
-use spin::RwLock;
+use spin::{Once, RwLock};
 use weak_map::WeakMap;
 
 use crate::{futex::FutexTable, resources::Rlimits, time::TimeStat};
+
+pub use stat::ProcessStat;
 
 /// Create a new user task.
 pub fn new_user_task(
@@ -160,6 +164,9 @@ impl<T> Deref for AssumeSync<T> {
 
 /// Extended data for [`Thread`].
 pub struct ThreadData {
+    /// Weak reference to the associated task.
+    task: Arc<Once<WeakAxTaskRef>>,
+
     /// The clear thread tid field
     ///
     /// See <https://manpages.debian.org/unstable/manpages-dev/set_tid_address.2.en.html#clear_child_tid>
@@ -188,6 +195,8 @@ impl ThreadData {
     #[allow(clippy::new_without_default)]
     pub fn new(proc: &ProcessData) -> Self {
         Self {
+            task: Arc::new(Once::new()),
+
             clear_child_tid: AtomicUsize::new(0),
             robust_list_head: AtomicUsize::new(0),
 
@@ -208,6 +217,19 @@ impl ThreadData {
     pub fn set_clear_child_tid(&self, clear_child_tid: usize) {
         self.clear_child_tid
             .store(clear_child_tid, Ordering::Relaxed);
+    }
+
+    /// Initialize the task reference.
+    pub fn init_task(&self, f: impl FnOnce() -> WeakAxTaskRef) {
+        self.task.call_once(f);
+    }
+
+    /// Get the task reference.
+    pub fn get_task(&self) -> LinuxResult<AxTaskRef> {
+        self.task
+            .get()
+            .and_then(Weak::upgrade)
+            .ok_or(LinuxError::ESRCH)
     }
 }
 

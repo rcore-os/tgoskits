@@ -1,10 +1,20 @@
-use alloc::{format, sync::Arc};
-use axfs_ng_vfs::Filesystem;
+use alloc::{
+    borrow::Cow,
+    boxed::Box,
+    format,
+    string::ToString,
+    sync::{Arc, Weak},
+};
+use axfs_ng_vfs::{Filesystem, VfsError, VfsResult};
+use axprocess::Process;
 use axsync::RawMutex;
+use axtask::current;
 
-use super::{
-    dynamic::{DirMaker, DynamicDir, DynamicFs},
-    file::SimpleFile,
+use crate::{
+    task::{ProcessStat, StarryTaskExt, get_process, processes},
+    vfs::simple::{
+        DirMaker, DirMapping, NodeOpsMux, SimpleDir, SimpleDirOps, SimpleFile, SimpleFs,
+    },
 };
 
 const DUMMY_MEMINFO: &str = "MemTotal:       32536204 kB
@@ -67,32 +77,94 @@ DirectMap1G:     1048576 kB
 ";
 
 pub fn new_procfs() -> Filesystem<RawMutex> {
-    DynamicFs::new_with("proc".into(), 0x9fa0, builder)
+    SimpleFs::new_with("proc".into(), 0x9fa0, builder)
 }
 
-fn builder(fs: Arc<DynamicFs>) -> DirMaker {
-    let mut root = DynamicDir::builder(fs.clone());
+/// The /proc/[pid] directory
+struct ProcessDir {
+    fs: Arc<SimpleFs>,
+    process: Weak<Process>,
+}
+impl SimpleDirOps<RawMutex> for ProcessDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(["stat"].into_iter().map(Cow::Borrowed))
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux<RawMutex>> {
+        let fs = self.fs.clone();
+        let process = self.process.upgrade().ok_or(VfsError::ENOENT)?;
+        Ok(match name {
+            "stat" => SimpleFile::new(fs, move || {
+                Ok(format!("{}", ProcessStat::from_process(&process)?).into_bytes())
+            })
+            .into(),
+            _ => return Err(VfsError::ENOENT),
+        })
+    }
+
+    fn is_cacheable(&self) -> bool {
+        false
+    }
+}
+
+/// Handles /proc/[pid] & /proc/self
+struct ProcFsHandler(Arc<SimpleFs>);
+impl SimpleDirOps<RawMutex> for ProcFsHandler {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(
+            processes()
+                .into_iter()
+                .map(|it| it.pid().to_string().into())
+                .chain([Cow::Borrowed("self")]),
+        )
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux<RawMutex>> {
+        let process = if name == "self" {
+            StarryTaskExt::of(&current()).thread.process().clone()
+        } else {
+            let pid = name.parse::<u32>().map_err(|_| VfsError::ENOENT)?;
+            get_process(pid).map_err(|_| VfsError::ENOENT)?
+        };
+        let node = NodeOpsMux::Dir(SimpleDir::new_maker(
+            self.0.clone(),
+            Arc::new(ProcessDir {
+                fs: self.0.clone(),
+                process: Arc::downgrade(&process),
+            }),
+        ));
+        Ok(node)
+    }
+
+    fn is_cacheable(&self) -> bool {
+        false
+    }
+}
+
+fn builder(fs: Arc<SimpleFs>) -> DirMaker {
+    let mut root = DirMapping::new();
     root.add(
         "mounts",
-        SimpleFile::new(
-            fs.clone(),
-            || "proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n",
-        ),
+        SimpleFile::new(fs.clone(), || {
+            Ok("proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n")
+        }),
     );
-    root.add("meminfo", SimpleFile::new(fs.clone(), || DUMMY_MEMINFO));
+    root.add("meminfo", SimpleFile::new(fs.clone(), || Ok(DUMMY_MEMINFO)));
     root.add(
         "meminfo2",
         SimpleFile::new(fs.clone(), || {
             let allocator = axalloc::global_allocator();
-            format!(
+            Ok(format!(
                 "Used Pages: {}\nAvailable Pages: {}\nUsed Memory: {} bytes\nAvailable Memory: {} bytes\n{:?}\n",
                 allocator.used_pages(),
                 allocator.available_pages(),
                 allocator.used_bytes(),
                 allocator.available_bytes(),
                 allocator.usage_stats()
-            )
+            ))
         }),
     );
-    root.build()
+
+    let proc_dir = ProcFsHandler(fs.clone());
+    SimpleDir::new_maker(fs, Arc::new(proc_dir.chain(root)))
 }

@@ -54,6 +54,9 @@ pub fn run_user_app(args: &[String], envs: &[String]) -> Option<i32> {
     *task.task_ext_mut() = Some(unsafe { TaskExtProxy::from_impl(StarryTaskExt::new(thread)) });
 
     let task = axtask::spawn_task(task);
+    StarryTaskExt::of(&task)
+        .thread_data()
+        .init_task(|| Arc::downgrade(&task));
 
     // TODO: we need a way to wait on the process but not only the main task
     task.join()

@@ -1,9 +1,8 @@
 //! Virtual filesystems
 
 mod dev;
-mod dynamic;
-mod file;
 mod proc;
+mod simple;
 mod tmp;
 
 use axerrno::LinuxResult;
