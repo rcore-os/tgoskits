@@ -52,7 +52,7 @@ pub fn sys_ioctl(fd: i32, op: usize, argp: UserPtr<c_void>) -> LinuxResult<isize
     let device = cast_file_like_to_device(f).ok_or(LinuxError::ENOTTY)?;
     let ops = device.inner().as_any();
 
-    if let Some(_) = ops.downcast_ref::<dev::Rtc>() {
+    if ops.downcast_ref::<dev::Rtc>().is_some() {
         let wall = chrono::DateTime::from_timestamp_nanos(axhal::time::wall_time_nanos() as _);
         *argp.cast::<rtc_time>().get_as_mut()? = rtc_time {
             tm_sec: wall.second() as _,
@@ -113,6 +113,7 @@ pub fn sys_chdir(path: UserConstPtr<c_char>) -> LinuxResult<isize> {
     fs.set_current_dir(entry)?;
     Ok(0)
 }
+
 pub fn sys_fchdir(dirfd: i32) -> LinuxResult<isize> {
     debug!("sys_fchdir <= dirfd: {}", dirfd);
 
@@ -197,14 +198,22 @@ pub fn sys_getdents64(fd: i32, buf: UserPtr<u8>, len: usize) -> LinuxResult<isiz
     let dir = Directory::from_fd(fd)?;
     let mut dir_offset = dir.offset.lock();
 
+    let mut has_remaining = false;
+
     dir.inner()
         .read_dir(*dir_offset, &mut |name: &str, ino, node_type, offset| {
+            has_remaining = true;
             if !buffer.write_entry(ino, offset as _, node_type, name.as_bytes()) {
                 return false;
             }
             *dir_offset = offset;
             true
         })?;
+
+    if has_remaining && buffer.offset == 0 {
+        return Err(LinuxError::EINVAL);
+    }
+
     Ok(buffer.offset as _)
 }
 

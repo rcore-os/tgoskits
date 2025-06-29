@@ -113,6 +113,7 @@ fn handle_syscall_impl(tf: &mut TrapFrame, sysno: Sysno) -> LinuxResult<isize> {
         Sysno::write => sys_write(tf.arg0() as _, tf.arg1().into(), tf.arg2() as _),
         Sysno::writev => sys_writev(tf.arg0() as _, tf.arg1().into(), tf.arg2() as _),
         Sysno::lseek => sys_lseek(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
+        Sysno::truncate => sys_truncate(tf.arg0().into(), tf.arg1() as _),
         Sysno::ftruncate => sys_ftruncate(tf.arg0() as _, tf.arg1() as _),
         Sysno::fallocate => sys_fallocate(
             tf.arg0() as _,
@@ -290,6 +291,7 @@ fn handle_syscall_impl(tf: &mut TrapFrame, sysno: Sysno) -> LinuxResult<isize> {
         Sysno::sched_setaffinity => {
             sys_sched_setaffinity(tf.arg0() as _, tf.arg1() as _, tf.arg2().into())
         }
+        Sysno::getpriority => sys_getpriority(tf.arg0() as _, tf.arg1() as _),
 
         // task ops
         Sysno::execve => sys_execve(tf, tf.arg0().into(), tf.arg1().into(), tf.arg2().into()),
@@ -305,6 +307,7 @@ fn handle_syscall_impl(tf: &mut TrapFrame, sysno: Sysno) -> LinuxResult<isize> {
         Sysno::capget => sys_capget(tf.arg0().into(), tf.arg1().into()),
         Sysno::capset => sys_capset(tf.arg0().into(), tf.arg1().into()),
         Sysno::umask => sys_umask(tf.arg0() as _),
+        Sysno::setreuid => sys_setreuid(tf.arg0() as _, tf.arg1() as _),
         Sysno::setresuid => sys_setresuid(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
         Sysno::setresgid => sys_setresgid(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
 
@@ -384,6 +387,7 @@ fn handle_syscall_impl(tf: &mut TrapFrame, sysno: Sysno) -> LinuxResult<isize> {
         Sysno::geteuid => sys_geteuid(),
         Sysno::getgid => sys_getgid(),
         Sysno::getegid => sys_getegid(),
+        Sysno::setuid => sys_setuid(tf.arg0() as _),
         Sysno::uname => sys_uname(tf.arg0().into()),
         Sysno::sysinfo => sys_sysinfo(tf.arg0().into()),
         Sysno::syslog => sys_syslog(tf.arg0() as _, tf.arg1().into(), tf.arg2() as _),

@@ -144,6 +144,14 @@ impl SimpleDirOps<RawMutex> for ThreadDir {
                 Ok(format!("{}", TaskStat::from_thread(&thread)?).into_bytes())
             })
             .into(),
+            "status" => SimpleFile::new(fs, move || {
+                Ok(format!(
+                    "Tgid: {}\nPid: {}\nUid: 0 0 0 0\nGid: 0 0 0 0",
+                    thread.process().pid(),
+                    thread.tid()
+                ))
+            })
+            .into(),
             "oom_score_adj" => SimpleFile::new(
                 fs,
                 RwFile::new(move |req| {
@@ -176,9 +184,16 @@ impl SimpleDirOps<RawMutex> for ThreadDir {
                 fs.clone(),
                 Arc::new(ProcessTaskDir {
                     fs,
-                    process: Arc::downgrade(&thread.process()),
+                    process: Arc::downgrade(thread.process()),
                 }),
             )
+            .into(),
+            "maps" => SimpleFile::new(fs, move || {
+                Ok("7f000000-7f001000 r--p 00000000 00:00 0          [vdso]\n\
+                    7f001000-7f003000 r-xp 00001000 00:00 0          [vdso]\n\
+                    7f003000-7f005000 r--p 00003000 00:00 0          [vdso]\n\
+                    7f005000-7f007000 rw-p 00005000 00:00 0          [vdso]\n")
+            })
             .into(),
             _ => return Err(VfsError::ENOENT),
         })
@@ -236,14 +251,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         "meminfo2",
         SimpleFile::new(fs.clone(), || {
             let allocator = axalloc::global_allocator();
-            Ok(format!(
-                "Used Pages: {}\nAvailable Pages: {}\nUsed Memory: {} bytes\nAvailable Memory: {} bytes\n{:?}\n",
-                allocator.used_pages(),
-                allocator.available_pages(),
-                allocator.used_bytes(),
-                allocator.available_bytes(),
-                allocator.usage_stats()
-            ))
+            Ok(format!("{:?}\n", allocator.usage_stats()))
         }),
     );
 

@@ -141,10 +141,15 @@ impl FileLike for File {
     where
         Self: Sized + 'static,
     {
-        get_file_like(fd)?
-            .into_any()
-            .downcast::<Self>()
-            .map_err(|_| LinuxError::ESPIPE)
+        let any = get_file_like(fd)?.into_any();
+
+        any.downcast::<Self>().map_err(|any| {
+            if any.is::<Directory>() {
+                LinuxError::EISDIR
+            } else {
+                LinuxError::ESPIPE
+            }
+        })
     }
 }
 

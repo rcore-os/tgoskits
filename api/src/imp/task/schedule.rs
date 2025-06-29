@@ -2,8 +2,10 @@ use axerrno::{LinuxError, LinuxResult};
 use axhal::time::TimeValue;
 use axtask::{AxCpuMask, current};
 use linux_raw_sys::general::{
-    __kernel_clockid_t, CLOCK_MONOTONIC, CLOCK_REALTIME, TIMER_ABSTIME, timespec,
+    __kernel_clockid_t, CLOCK_MONOTONIC, CLOCK_REALTIME, PRIO_PGRP, PRIO_PROCESS, PRIO_USER,
+    TIMER_ABSTIME, timespec,
 };
+use starry_core::task::{get_process, get_process_group};
 
 use crate::{
     ptr::{UserConstPtr, UserPtr, nullable},
@@ -135,4 +137,31 @@ pub fn sys_sched_setaffinity(
     axtask::set_current_affinity(cpu_mask);
 
     Ok(0)
+}
+
+pub fn sys_getpriority(which: u32, who: u32) -> LinuxResult<isize> {
+    debug!("sys_getpriority <= which: {}, who: {}", which, who);
+
+    match which {
+        PRIO_PROCESS => {
+            if who != 0 {
+                let _proc = get_process(who)?;
+            }
+            Ok(20)
+        }
+        PRIO_PGRP => {
+            if who != 0 {
+                let _pg = get_process_group(who)?;
+            }
+            Ok(20)
+        }
+        PRIO_USER => {
+            if who == 0 {
+                Ok(20)
+            } else {
+                Err(LinuxError::ESRCH)
+            }
+        }
+        _ => Err(LinuxError::EINVAL),
+    }
 }

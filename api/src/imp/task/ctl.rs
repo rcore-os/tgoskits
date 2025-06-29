@@ -48,6 +48,10 @@ pub fn sys_umask(mask: u32) -> LinuxResult<isize> {
     Ok(old as isize)
 }
 
+pub fn sys_setreuid(_ruid: u32, _euid: u32) -> LinuxResult<isize> {
+    Ok(0)
+}
+
 pub fn sys_setresuid(_ruid: u32, _euid: u32, _suid: u32) -> LinuxResult<isize> {
     Ok(0)
 }

@@ -1,8 +1,8 @@
-use core::ffi::c_int;
+use core::ffi::{c_char, c_int};
 
-use alloc::{sync::Arc, vec};
+use alloc::{sync::Arc, vec, vec::Vec};
 use axerrno::{LinuxError, LinuxResult};
-use axfs_ng::FileFlags;
+use axfs_ng::{FS_CONTEXT, FileFlags, OpenOptions};
 use axio::{Seek, SeekFrom};
 use linux_raw_sys::general::{__kernel_off_t, iovec};
 
@@ -39,7 +39,7 @@ fn readv_impl(
     let iovs = iov.get_as_mut_slice(iovcnt)?;
     let mut ret = 0;
     for iov in iovs {
-        if iov.iov_len == 0 {
+        if iov.iov_len as i64 <= 0 {
             continue;
         }
         let buf = UserPtr::<u8>::from(iov.iov_base as usize);
@@ -68,14 +68,21 @@ fn writev_impl(
     }
 
     let iovs = iov.get_as_slice(iovcnt)?;
-    let mut ret = 0;
-    for iov in iovs {
-        if iov.iov_len == 0 {
-            continue;
-        }
-        let buf = UserConstPtr::<u8>::from(iov.iov_base as usize);
-        let buf = buf.get_as_slice(iov.iov_len as _)?;
 
+    let bufs = iovs
+        .iter()
+        .filter_map(|iov| {
+            if iov.iov_len == 0 {
+                None
+            } else {
+                let buf = UserConstPtr::<u8>::from(iov.iov_base as usize);
+                Some(buf.get_as_slice(iov.iov_len as _))
+            }
+        })
+        .collect::<LinuxResult<Vec<_>>>()?;
+
+    let mut ret = 0;
+    for buf in bufs {
         let write = f(buf)?;
         ret += write;
 
@@ -123,6 +130,21 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> LinuxResul
     };
     let off = File::from_fd(fd)?.inner().seek(pos)?;
     Ok(off as _)
+}
+
+pub fn sys_truncate(path: UserConstPtr<c_char>, length: __kernel_off_t) -> LinuxResult<isize> {
+    let path = path.get_as_str()?;
+    debug!("sys_truncate <= {:?} {}", path, length);
+    if length < 0 {
+        return Err(LinuxError::EINVAL);
+    }
+    OpenOptions::new()
+        .write(true)
+        .open(&FS_CONTEXT.lock(), path)?
+        .into_file()?
+        .access(FileFlags::WRITE)?
+        .set_len(length as _)?;
+    Ok(0)
 }
 
 pub fn sys_ftruncate(fd: c_int, length: __kernel_off_t) -> LinuxResult<isize> {
@@ -174,6 +196,9 @@ pub fn sys_pread64(
 ) -> LinuxResult<isize> {
     let buf = buf.get_as_mut_slice(len)?;
     let f = File::from_fd(fd)?;
+    if offset < 0 {
+        return Err(LinuxError::EINVAL);
+    }
     let read = f.inner().read_at(buf, offset as _)?;
     Ok(read as _)
 }
@@ -184,6 +209,9 @@ pub fn sys_pwrite64(
     len: usize,
     offset: __kernel_off_t,
 ) -> LinuxResult<isize> {
+    if len == 0 {
+        return Ok(0);
+    }
     let buf = buf.get_as_slice(len)?;
     let f = File::from_fd(fd)?;
     let write = f.inner().write_at(buf, offset as _)?;
@@ -315,6 +343,9 @@ pub fn sys_sendfile(
 
     let offset = nullable!(offset.get_as_mut())?;
     let src = if let Some(offset) = offset {
+        if *offset > u32::MAX as u64 {
+            return Err(LinuxError::EINVAL);
+        }
         SendFile::Offset(File::from_fd(in_fd)?, offset)
     } else {
         SendFile::Direct(get_file_like(in_fd)?)
