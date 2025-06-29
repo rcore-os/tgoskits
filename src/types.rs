@@ -32,6 +32,13 @@ bitflags::bitflags! {
     /// Inode permission mode.
     #[derive(Debug, Clone, Copy)]
     pub struct NodePermission: u16 {
+        /// Set user ID on execution.
+        const SET_UID = 0o4000;
+        /// Set group ID on execution.
+        const SET_GID = 0o2000;
+        /// Sticky bit.
+        const STICKY = 0o1000;
+
         /// Owner has read permission.
         const OWNER_READ = 0o400;
         /// Owner has write permission.
