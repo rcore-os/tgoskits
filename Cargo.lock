@@ -1446,6 +1446,7 @@ name = "starry-api"
 version = "0.1.0"
 dependencies = [
  "axconfig",
+ "axdriver",
  "axerrno",
  "axfeat",
  "axfs-ng",

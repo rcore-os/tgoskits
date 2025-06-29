@@ -29,6 +29,7 @@ axfeat = { path = "arceos/api/axfeat", features = [
 
 axalloc = { path = "arceos/modules/axalloc" }
 axconfig = { path = "arceos/modules/axconfig" }
+axdriver = { path = "arceos/modules/axdriver" }
 axfs-ng = { path = "arceos/modules/axfs-ng" }
 axhal = { path = "arceos/modules/axhal", features = ["uspace", "rtc"] }
 axlog = { path = "arceos/modules/axlog" }

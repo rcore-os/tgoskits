@@ -7,13 +7,18 @@ use core::{any::Any, ffi::c_int, time::Duration};
 
 use alloc::sync::Arc;
 use axerrno::{LinuxError, LinuxResult};
-use axfs_ng_vfs::DeviceId;
+use axfs_ng_vfs::{DeviceId, FileNodeOps};
 use axio::PollState;
+use axsync::RawMutex;
 use axtask::current;
 use flatten_objects::FlattenObjects;
 use linux_raw_sys::general::{RLIMIT_NOFILE, stat, statx, statx_timestamp};
 use spin::RwLock;
-use starry_core::{resources::AX_FILE_LIMIT, task::StarryTaskExt};
+use starry_core::{
+    resources::AX_FILE_LIMIT,
+    task::StarryTaskExt,
+    vfs::{Device, DeviceOps},
+};
 
 pub use self::{
     fs::{Directory, File, ResolveAtResult, metadata_to_kstat, resolve_at, with_fs},
@@ -198,4 +203,16 @@ pub fn close_file_like(fd: c_int) -> LinuxResult {
         .ok_or(LinuxError::EBADF)?;
     debug!("close_file_like <= count: {}", Arc::strong_count(&f));
     Ok(())
+}
+
+pub fn cast_file_like_to_file<T>(file_like: Arc<dyn FileLike>) -> Option<Arc<T>>
+where
+    T: FileNodeOps<RawMutex> + 'static,
+{
+    let file = file_like.into_any().downcast::<File>().ok()?;
+    let file_ops = file.inner().inner().entry().as_file().ok()?.inner().clone();
+    file_ops.into_any().downcast::<T>().ok()
+}
+pub fn cast_file_like_to_device(file_like: Arc<dyn FileLike>) -> Option<Arc<Device<RawMutex>>> {
+    cast_file_like_to_file::<Device<RawMutex>>(file_like)
 }

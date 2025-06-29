@@ -1,6 +1,7 @@
 //! Virtual filesystems
 
-mod dev;
+/// Special devices
+pub mod dev;
 mod proc;
 mod simple;
 mod tmp;
@@ -10,7 +11,8 @@ use axfs_ng::FS_CONTEXT;
 use axfs_ng_vfs::{Filesystem, NodePermission};
 use axsync::RawMutex;
 
-pub use dev::RTC0_DEVICE_ID;
+pub use simple::{Device, DeviceOps};
+pub use tmp::MemoryFs;
 
 fn mount_at(path: &str, mount_fs: Filesystem<RawMutex>) -> LinuxResult<()> {
     let fs = FS_CONTEXT.lock();

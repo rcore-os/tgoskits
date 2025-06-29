@@ -10,9 +10,15 @@ use lock_api::RawMutex;
 
 use crate::vfs::simple::{SimpleFs, SimpleFsNode};
 
+/// Trait for device operations.
 pub trait DeviceOps: Send + Sync {
+    /// Reads data from the device at the specified offset.
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize>;
+    /// Writes data to the device at the specified offset.
     fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize>;
+
+    /// Casts the device operations to a dynamic type.
+    fn as_any(&self) -> &dyn Any;
 }
 impl<F> DeviceOps for F
 where
@@ -25,14 +31,19 @@ where
     fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
         Err(VfsError::EBADF)
     }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
+/// A device node in the filesystem.
 pub struct Device<M: RawMutex> {
     node: SimpleFsNode<M>,
     ops: Arc<dyn DeviceOps>,
 }
 impl<M: RawMutex + Send + Sync + 'static> Device<M> {
-    pub fn new(
+    pub(crate) fn new(
         fs: Arc<SimpleFs<M>>,
         node_type: NodeType,
         device_id: DeviceId,
@@ -44,6 +55,11 @@ impl<M: RawMutex + Send + Sync + 'static> Device<M> {
             node,
             ops: Arc::new(ops),
         })
+    }
+
+    /// Returns the inner device operations.
+    pub fn inner(&self) -> &Arc<dyn DeviceOps> {
+        &self.ops
     }
 }
 
@@ -77,7 +93,12 @@ impl<M: RawMutex + Send + Sync + 'static> FileNodeOps<M> for Device<M> {
     }
 
     fn set_len(&self, _len: u64) -> VfsResult<()> {
-        Err(VfsError::EBADF)
+        // If can write...
+        if self.write_at(b"", 0).is_ok() {
+            Ok(())
+        } else {
+            Err(VfsError::EBADF)
+        }
     }
 
     fn set_symlink(&self, _target: &str) -> VfsResult<()> {

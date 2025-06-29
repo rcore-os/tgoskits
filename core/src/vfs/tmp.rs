@@ -44,11 +44,13 @@ impl Borrow<str> for FileName {
     }
 }
 
+/// A simple in-memory filesystem that supports basic file operations.
 pub struct MemoryFs {
     inodes: Mutex<Slab<Arc<Inode>>>,
     root: Mutex<Option<DirEntry<RawMutex>>>,
 }
 impl MemoryFs {
+    /// Creates a new empty memory filesystem.
     #[allow(clippy::new_ret_no_self)]
     pub fn new() -> Filesystem<RawMutex> {
         let fs = Arc::new(Self {

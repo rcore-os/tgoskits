@@ -10,6 +10,7 @@ repository.workspace = true
 axfeat.workspace = true
 
 axconfig.workspace = true
+axdriver.workspace = true
 axfs-ng.workspace = true
 axfs-ng-vfs.workspace = true
 axhal.workspace = true
@@ -26,7 +27,7 @@ axerrno.workspace = true
 bitflags.workspace = true
 cfg-if.workspace = true
 linkme.workspace = true
-linux-raw-sys = { workspace = true, features = ["ioctl"] }
+linux-raw-sys = { workspace = true, features = ["ioctl", "loop_device"] }
 memory_addr.workspace = true
 scope-local.workspace = true
 spin.workspace = true

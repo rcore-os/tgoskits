@@ -9,18 +9,20 @@ use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
 use axfs_ng_vfs::{MetadataUpdate, NodePermission, NodeType, path::Path};
 use axhal::time::wall_time;
+use axsync::RawMutex;
 use chrono::{Datelike, Timelike};
 use linux_raw_sys::{
     general::{
         AT_EMPTY_PATH, AT_FDCWD, AT_REMOVEDIR, UTIME_NOW, UTIME_OMIT, linux_dirent64, timespec,
     },
-    ioctl::RTC_RD_TIME,
+    ioctl::BLKGETSIZE64,
+    loop_device::{LOOP_CLR_FD, LOOP_GET_STATUS, LOOP_SET_FD, LOOP_SET_STATUS},
 };
-use starry_core::vfs::RTC0_DEVICE_ID;
+use starry_core::vfs::{Device, dev};
 
 use crate::{
-    file::{Directory, FileLike, get_file_like, resolve_at, with_fs},
-    ptr::{UserConstPtr, UserPtr, nullable},
+    file::{cast_file_like_to_device, get_file_like, resolve_at, with_fs, Directory, FileLike},
+    ptr::{nullable, UserConstPtr, UserPtr},
     time::TimeValueLike,
 };
 
@@ -48,8 +50,10 @@ struct rtc_time {
 /// * `argp` - The argument to the request. It is a pointer to a memory location
 pub fn sys_ioctl(fd: i32, op: usize, argp: UserPtr<c_void>) -> LinuxResult<isize> {
     let f = get_file_like(fd)?;
-    let stat = f.stat()?;
-    if op == RTC_RD_TIME as _ && stat.rdev == RTC0_DEVICE_ID {
+    let device = cast_file_like_to_device(f).ok_or(LinuxError::ENOTTY)?;
+    let ops = device.inner().as_any();
+
+    if let Some(_) = ops.downcast_ref::<dev::Rtc>() {
         let wall = chrono::DateTime::from_timestamp_nanos(axhal::time::wall_time_nanos() as _);
         *argp.cast::<rtc_time>().get_as_mut()? = rtc_time {
             tm_sec: wall.second() as _,
@@ -62,7 +66,42 @@ pub fn sys_ioctl(fd: i32, op: usize, argp: UserPtr<c_void>) -> LinuxResult<isize
             tm_yday: 0,
             tm_isdst: 0,
         };
+    } else if let Some(device) = ops.downcast_ref::<dev::LoopDevice>() {
+        match op as u32 {
+            LOOP_SET_FD => {
+                let fd = argp.address().as_usize() as i32;
+                if fd < 0 {
+                    return Err(LinuxError::EBADF);
+                }
+                let f = get_file_like(fd)?;
+                let Ok(file) = f.into_any().downcast::<crate::file::File>() else {
+                    return Err(LinuxError::EINVAL);
+                };
+                let mut guard = device.file.lock();
+                if guard.is_some() {
+                    return Err(LinuxError::EBUSY);
+                }
+                *guard = Some(file.clone_inner());
+            }
+            LOOP_CLR_FD => {
+                *device.file.lock() = None;
+            }
+            LOOP_GET_STATUS => {
+                device.get_info(argp.cast().get_as_mut()?)?;
+            }
+            LOOP_SET_STATUS => {
+                device.set_info(argp.cast().get_as_mut()?)?;
+            }
+            BLKGETSIZE64 => {
+                *argp.cast::<u32>().get_as_mut()? = 1024;
+            }
+            _ => {
+                warn!("unknown ioctl for loop device: {op}");
+                return Err(LinuxError::ENOTTY);
+            }
+        }
     }
+
     Ok(0)
 }
 
