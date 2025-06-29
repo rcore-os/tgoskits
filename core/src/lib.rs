@@ -14,3 +14,5 @@ pub mod resources;
 pub mod task;
 mod time;
 pub mod vfs;
+
+pub use time::ITimerType;

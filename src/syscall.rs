@@ -368,6 +368,8 @@ fn handle_syscall_impl(tf: &mut TrapFrame, sysno: Sysno) -> LinuxResult<isize> {
         Sysno::gettimeofday => sys_gettimeofday(tf.arg0().into()),
         Sysno::times => sys_times(tf.arg0().into()),
         Sysno::clock_gettime => sys_clock_gettime(tf.arg0() as _, tf.arg1().into()),
+        Sysno::getitimer => sys_getitimer(tf.arg0() as _, tf.arg1().into()),
+        Sysno::setitimer => sys_setitimer(tf.arg0() as _, tf.arg1().into(), tf.arg2().into()),
 
         // shm
         Sysno::shmget => sys_shmget(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),

@@ -33,13 +33,13 @@ starry-config.workspace = true
 inherit-methods-macro = "0.1.0"
 kernel-elf-parser = { git = "https://github.com/Starry-Mix-THU/kernel_elf_parser.git", rev = "3b99715" }
 lock_api = "0.4.13"
-numeric-enum-macro = "0.2"
 percpu = "0.2.0"
 rand = { version = "0.9.1", default-features = false, features = [
     "alloc",
     "small_rng",
 ] }
 slab = { version = "0.4.9", default-features = false }
+strum = { version = "0.27.1", default-features = false, features = ["derive"] }
 weak-map = "0.1"
 xmas-elf = "0.9"
 

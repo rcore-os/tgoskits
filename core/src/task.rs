@@ -19,17 +19,18 @@ use axhal::{arch::UspaceContext, time::monotonic_time_nanos};
 use axmm::AddrSpace;
 use axprocess::{Pid, Process, ProcessGroup, Session, Thread};
 use axsignal::{
-    Signo,
+    SignalInfo, Signo,
     api::{ProcessSignalManager, SignalActions, ThreadSignalManager},
 };
 use axsync::{Mutex, RawMutex};
 use axtask::{AxTaskRef, TaskExt, TaskInner, WaitQueue, WeakAxTaskRef, current};
 use extern_trait::extern_trait;
+use linux_raw_sys::general::SI_KERNEL;
 use scope_local::{ActiveScope, Scope};
 use spin::{Once, RwLock};
 use weak_map::WeakMap;
 
-use crate::{futex::FutexTable, resources::Rlimits, time::TimeStat};
+use crate::{futex::FutexTable, resources::Rlimits, time::TimeManager};
 
 pub use stat::ProcessStat;
 
@@ -86,20 +87,6 @@ impl StarryTaskExt {
         Self { thread }
     }
 
-    pub(crate) fn time_stat_from_kernel_to_user(&self, current_tick: usize) {
-        self.thread_data()
-            .time
-            .borrow_mut()
-            .switch_into_user_mode(current_tick);
-    }
-
-    pub(crate) fn time_stat_from_user_to_kernel(&self, current_tick: usize) {
-        self.thread_data()
-            .time
-            .borrow_mut()
-            .switch_into_kernel_mode(current_tick);
-    }
-
     /// Convenience function for getting the extended data for a task.
     /// # Panics
     /// Panics if the current task is a kernel task.
@@ -120,12 +107,30 @@ impl StarryTaskExt {
 
 /// Update the time statistics to reflect a switch from kernel mode to user mode.
 pub fn time_stat_from_kernel_to_user() {
-    StarryTaskExt::of(&current()).time_stat_from_kernel_to_user(monotonic_time_nanos() as usize);
+    let curr = current();
+    let thr_data = StarryTaskExt::of(&curr).thread_data();
+    thr_data
+        .time
+        .borrow_mut()
+        .switch_into_user_mode(monotonic_time_nanos() as usize, |signo| {
+            thr_data
+                .signal
+                .send_signal(SignalInfo::new(signo, SI_KERNEL as _))
+        });
 }
 
 /// Update the time statistics to reflect a switch from user mode to kernel mode.
 pub fn time_stat_from_user_to_kernel() {
-    StarryTaskExt::of(&current()).time_stat_from_user_to_kernel(monotonic_time_nanos() as usize);
+    let curr = current();
+    let thr_data = StarryTaskExt::of(&curr).thread_data();
+    thr_data
+        .time
+        .borrow_mut()
+        .switch_from_old_task(monotonic_time_nanos() as usize, |signo| {
+            thr_data
+                .signal
+                .send_signal(SignalInfo::new(signo, SI_KERNEL as _))
+        });
 }
 
 #[doc(hidden)]
@@ -180,11 +185,11 @@ pub struct ThreadData {
     /// The thread-level signal manager
     pub signal: ThreadSignalManager<RawMutex, WaitQueueWrapper>,
 
-    /// Time statistics
+    /// Time manager
     ///
     /// This is assumed to be `Sync` because it's only borrowed mutably during
     /// context switches, which is exclusive to the current thread.
-    pub time: AssumeSync<RefCell<TimeStat>>,
+    pub time: AssumeSync<RefCell<TimeManager>>,
 
     /// The bitset used for futex operations (FUTEX_{WAIT,WAKE}_BITSET).
     pub futex_bitset: AtomicU32,
@@ -202,7 +207,7 @@ impl ThreadData {
 
             signal: ThreadSignalManager::new(proc.signal.clone()),
 
-            time: AssumeSync(RefCell::new(TimeStat::new())),
+            time: AssumeSync(RefCell::new(TimeManager::new())),
 
             futex_bitset: AtomicU32::new(0),
         }
