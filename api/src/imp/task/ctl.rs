@@ -47,3 +47,10 @@ pub fn sys_umask(mask: u32) -> LinuxResult<isize> {
     let old = ptr.swap(mask, Ordering::SeqCst);
     Ok(old as isize)
 }
+
+pub fn sys_setresuid(_ruid: u32, _euid: u32, _suid: u32) -> LinuxResult<isize> {
+    Ok(0)
+}
+pub fn sys_setresgid(_rgid: u32, _egid: u32, _sgid: u32) -> LinuxResult<isize> {
+    Ok(0)
+}

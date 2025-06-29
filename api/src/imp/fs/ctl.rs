@@ -113,9 +113,6 @@ pub fn sys_chdir(path: UserConstPtr<c_char>) -> LinuxResult<isize> {
         fs.set_current_dir(entry)?;
         Ok(0)
     })
-    .inspect_err(|err| {
-        warn!("Failed to change directory: {err:?}");
-    })
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -132,9 +129,6 @@ pub fn sys_mkdirat(dirfd: i32, path: UserConstPtr<c_char>, mode: u32) -> LinuxRe
     with_fs(dirfd, |fs| {
         fs.create_dir(path, mode)?;
         Ok(0)
-    })
-    .inspect_err(|err| {
-        warn!("Failed to create directory {path}: {err:?}");
     })
 }
 
