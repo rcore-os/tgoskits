@@ -130,7 +130,7 @@ struct ThreadDir {
 impl SimpleDirOps<RawMutex> for ThreadDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         Box::new(
-            ["stat", "oom_score_adj", "task"]
+            ["stat", "status", "oom_score_adj", "task", "maps", "mounts"]
                 .into_iter()
                 .map(Cow::Borrowed),
         )
@@ -193,6 +193,10 @@ impl SimpleDirOps<RawMutex> for ThreadDir {
                     7f001000-7f003000 r-xp 00001000 00:00 0          [vdso]\n\
                     7f003000-7f005000 r--p 00003000 00:00 0          [vdso]\n\
                     7f005000-7f007000 rw-p 00005000 00:00 0          [vdso]\n")
+            })
+            .into(),
+            "mounts" => SimpleFile::new(fs, move || {
+                Ok("proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n")
             })
             .into(),
             _ => return Err(VfsError::ENOENT),
