@@ -1,4 +1,4 @@
-use core::mem;
+use core::{mem, sync::atomic::Ordering};
 
 use alloc::sync::Arc;
 use axerrno::{LinuxError, LinuxResult};
@@ -14,7 +14,10 @@ use starry_core::task::{StarryTaskExt, get_process, get_process_group, get_threa
 
 use crate::{
     ptr::{UserConstPtr, UserPtr, nullable},
-    signal::{check_signals, send_signal_process, send_signal_process_group, send_signal_thread},
+    signal::{
+        BLOCK_NEXT_SIGNAL_CHECK, check_signals, send_signal_process, send_signal_process_group,
+        send_signal_thread,
+    },
     time::TimeValueLike,
 };
 
@@ -206,6 +209,7 @@ pub fn sys_rt_tgsigqueueinfo(
 }
 
 pub fn sys_rt_sigreturn(tf: &mut TrapFrame) -> LinuxResult<isize> {
+    BLOCK_NEXT_SIGNAL_CHECK.store(true, Ordering::SeqCst);
     StarryTaskExt::of(&current())
         .thread_data()
         .signal

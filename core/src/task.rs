@@ -130,7 +130,7 @@ pub fn time_stat_from_user_to_kernel() {
     thr_data
         .time
         .borrow_mut()
-        .switch_from_old_task(monotonic_time_nanos() as usize, |signo| {
+        .switch_into_kernel_mode(monotonic_time_nanos() as usize, |signo| {
             thr_data
                 .signal
                 .send_signal(SignalInfo::new(signo, SI_KERNEL as _))

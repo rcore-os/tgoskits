@@ -1,3 +1,5 @@
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use axerrno::{LinuxError, LinuxResult};
 use axhal::{
     arch::TrapFrame,
@@ -50,9 +52,14 @@ pub fn have_signals() -> bool {
         .is_empty()
 }
 
+pub static BLOCK_NEXT_SIGNAL_CHECK: AtomicBool = AtomicBool::new(false);
+
 #[register_trap_handler(POST_TRAP)]
 fn post_trap_callback(tf: &mut TrapFrame, from_user: bool) {
     if !from_user {
+        return;
+    }
+    if BLOCK_NEXT_SIGNAL_CHECK.swap(false, Ordering::SeqCst) {
         return;
     }
 
