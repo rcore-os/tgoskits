@@ -47,10 +47,12 @@ timeout 60 ./libcbench_testcode.sh
 cd /glibc
 timeout 60 ./libcbench_testcode.sh
 
-cd /musl
-timeout 300 ./iozone_testcode.sh
-cd /glibc
-timeout 300 ./iozone_testcode.sh
+cd /tmp
+ln -v -s /musl/busybox busybox
+ln -v -s /musl/iozone iozone
+timeout 300 /musl/iozone_testcode.sh
+ln -v -s /glibc/iozone iozone
+timeout 300 /glibc/iozone_testcode.sh
 
 cd /musl
 timeout 300 ./lmbench_testcode.sh
