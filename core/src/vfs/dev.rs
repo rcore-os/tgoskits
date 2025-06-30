@@ -1,4 +1,7 @@
-use core::any::Any;
+use core::{
+    any::Any,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use alloc::{format, sync::Arc};
 use axerrno::{LinuxError, LinuxResult};
@@ -108,6 +111,8 @@ pub struct LoopDevice {
     dev_id: DeviceId,
     /// Underlying file for the loop device, if any.
     pub file: Mutex<Option<Arc<Mutex<File<RawMutex>>>>>,
+    /// Read-only flag for the loop device.
+    pub ro: AtomicBool,
 }
 impl LoopDevice {
     fn new(number: u32, dev_id: DeviceId) -> Self {
@@ -115,6 +120,7 @@ impl LoopDevice {
             number,
             dev_id,
             file: Mutex::new(None),
+            ro: AtomicBool::new(false),
         }
     }
 
@@ -145,6 +151,9 @@ impl DeviceOps for LoopDevice {
         file.ok_or(LinuxError::EPERM)?.lock().read_at(buf, offset)
     }
     fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize> {
+        if self.ro.load(Ordering::Relaxed) {
+            return Err(LinuxError::EROFS);
+        }
         let file = self.file.lock().clone();
         file.ok_or(LinuxError::EPERM)?.lock().write_at(buf, offset)
     }

@@ -1,6 +1,7 @@
 use core::{
     ffi::{c_char, c_int, c_void},
     mem::offset_of,
+    sync::atomic::Ordering,
     time::Duration,
 };
 
@@ -14,7 +15,7 @@ use linux_raw_sys::{
     general::{
         AT_EMPTY_PATH, AT_FDCWD, AT_REMOVEDIR, UTIME_NOW, UTIME_OMIT, linux_dirent64, timespec,
     },
-    ioctl::BLKGETSIZE64,
+    ioctl::{BLKGETSIZE, BLKGETSIZE64, BLKROGET, BLKROSET},
     loop_device::{LOOP_CLR_FD, LOOP_GET_STATUS, LOOP_SET_FD, LOOP_SET_STATUS},
 };
 use starry_core::{task::current_umask, vfs::dev};
@@ -99,8 +100,25 @@ pub fn sys_ioctl(fd: i32, op: usize, argp: UserPtr<c_void>) -> LinuxResult<isize
             LOOP_SET_STATUS => {
                 device.set_info(argp.cast().get_as_mut()?)?;
             }
-            BLKGETSIZE64 => {
-                *argp.cast::<u32>().get_as_mut()? = 1024;
+            // TODO: the following should apply to any block devices
+            BLKGETSIZE | BLKGETSIZE64 => {
+                let file = device.clone_file()?;
+                let sectors = file.lock().inner().len()? / 512;
+                if op as u32 == BLKGETSIZE {
+                    *argp.cast::<u32>().get_as_mut()? = sectors as u32;
+                } else {
+                    *argp.cast::<u64>().get_as_mut()? = sectors * 512;
+                }
+            }
+            BLKROGET => {
+                *argp.cast::<u32>().get_as_mut()? = device.ro.load(Ordering::Relaxed) as u32;
+            }
+            BLKROSET => {
+                let ro = *argp.cast::<u32>().get_as_mut()?;
+                if ro != 0 && ro != 1 {
+                    return Err(LinuxError::EINVAL);
+                }
+                device.ro.store(ro != 0, Ordering::Relaxed);
             }
             _ => {
                 warn!("unknown ioctl for loop device: {op}");
