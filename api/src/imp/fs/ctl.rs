@@ -329,7 +329,8 @@ pub fn sys_unlink(path: UserConstPtr<c_char>) -> LinuxResult<isize> {
     sys_unlinkat(AT_FDCWD, path, 0)
 }
 
-pub fn sys_getcwd(buf: UserPtr<u8>, size: usize) -> LinuxResult<isize> {
+pub fn sys_getcwd(buf: UserPtr<u8>, size: isize) -> LinuxResult<isize> {
+    let size: usize = size.try_into().map_err(|_| LinuxError::EFAULT)?;
     let buf = nullable!(buf.get_as_mut_slice(size))?;
 
     let Some(buf) = buf else {

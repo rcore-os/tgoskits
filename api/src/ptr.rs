@@ -15,10 +15,9 @@ fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> 
     let current = current();
     let mut aspace = StarryTaskExt::of(&current).process_data().aspace.lock();
 
-    if !aspace.check_region_access(
-        VirtAddrRange::from_start_size(start, layout.size()),
-        access_flags,
-    ) {
+    let range =
+        VirtAddrRange::try_from_start_size(start, layout.size()).ok_or(LinuxError::EFAULT)?;
+    if !aspace.check_region_access(range, access_flags) {
         return Err(LinuxError::EFAULT);
     }
 
