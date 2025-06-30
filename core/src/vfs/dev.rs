@@ -1,6 +1,6 @@
 use core::{
     any::Any,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
 use alloc::{format, sync::Arc};
@@ -113,6 +113,8 @@ pub struct LoopDevice {
     pub file: Mutex<Option<Arc<Mutex<File<RawMutex>>>>>,
     /// Read-only flag for the loop device.
     pub ro: AtomicBool,
+    /// Read-ahead size for the loop device, in bytes.
+    pub ra: AtomicU32,
 }
 impl LoopDevice {
     fn new(number: u32, dev_id: DeviceId) -> Self {
@@ -121,6 +123,7 @@ impl LoopDevice {
             dev_id,
             file: Mutex::new(None),
             ro: AtomicBool::new(false),
+            ra: AtomicU32::new(512),
         }
     }
 

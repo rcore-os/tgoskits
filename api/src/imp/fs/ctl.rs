@@ -15,7 +15,7 @@ use linux_raw_sys::{
     general::{
         AT_EMPTY_PATH, AT_FDCWD, AT_REMOVEDIR, UTIME_NOW, UTIME_OMIT, linux_dirent64, timespec,
     },
-    ioctl::{BLKGETSIZE, BLKGETSIZE64, BLKROGET, BLKROSET},
+    ioctl::{BLKGETSIZE, BLKGETSIZE64, BLKRAGET, BLKRASET, BLKROGET, BLKROSET},
     loop_device::{LOOP_CLR_FD, LOOP_GET_STATUS, LOOP_SET_FD, LOOP_SET_STATUS},
 };
 use starry_core::{task::current_umask, vfs::dev};
@@ -92,7 +92,11 @@ pub fn sys_ioctl(fd: i32, op: usize, argp: UserPtr<c_void>) -> LinuxResult<isize
                 *guard = Some(file.clone_inner());
             }
             LOOP_CLR_FD => {
-                *device.file.lock() = None;
+                let mut guard = device.file.lock();
+                if guard.is_none() {
+                    return Err(LinuxError::ENXIO);
+                }
+                *guard = None;
             }
             LOOP_GET_STATUS => {
                 device.get_info(argp.cast().get_as_mut()?)?;
@@ -119,6 +123,14 @@ pub fn sys_ioctl(fd: i32, op: usize, argp: UserPtr<c_void>) -> LinuxResult<isize
                     return Err(LinuxError::EINVAL);
                 }
                 device.ro.store(ro != 0, Ordering::Relaxed);
+            }
+            BLKRAGET => {
+                *argp.cast::<u32>().get_as_mut()? = device.ra.load(Ordering::Relaxed);
+            }
+            BLKRASET => {
+                device
+                    .ra
+                    .store(argp.address().as_usize() as _, Ordering::Relaxed);
             }
             _ => {
                 warn!("unknown ioctl for loop device: {op}");
