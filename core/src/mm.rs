@@ -136,8 +136,8 @@ pub fn load_user_app(
         return load_user_app(uspace, None, &new_args, envs);
     }
 
-    let loc = FS_CONTEXT.lock().resolve(path)?;
-    let elf_owner = match CACHED_ELF.read().get(&loc.entry().as_ptr()) {
+    let ptr = FS_CONTEXT.lock().resolve(path)?.entry().as_ptr();
+    let elf_owner = match CACHED_ELF.read().get(&ptr) {
         Some((elf, _)) => Ok(elf.clone()),
         None => {
             let file_data = FS_CONTEXT.lock().read(path)?;
@@ -179,10 +179,19 @@ pub fn load_user_app(
             .and_then(|it| it.to_str().ok())
             .ok_or(LinuxError::EINVAL)?;
         debug!("Loading dynamic linker: {}", ldso);
-        let ldso_data = FS_CONTEXT.lock().read(ldso)?;
-        let ldso_elf = ElfFile::new(&ldso_data).map_err(|_| LinuxError::ENOEXEC)?;
-        let ldso_parser = map_elf(uspace, starry_config::USER_INTERP_BASE, &ldso_elf)?;
-        Some((ldso_parser.entry(), ldso_parser.base()))
+        let mut loader = |elf: &ElfFile| -> LinuxResult<Option<(usize, usize)>> {
+            let ldso_parser = map_elf(uspace, starry_config::USER_INTERP_BASE, elf)?;
+            Ok(Some((ldso_parser.entry(), ldso_parser.base())))
+        };
+        let ptr = FS_CONTEXT.lock().resolve(ldso)?.entry().as_ptr();
+        match CACHED_ELF.read().get(&ptr) {
+            Some((elf, _)) => loader(&elf)?,
+            None => {
+                let file_data = FS_CONTEXT.lock().read(ldso)?;
+                let ldso_elf = ElfFile::new(&file_data).map_err(|_| LinuxError::ENOEXEC)?;
+                loader(&ldso_elf)?
+            }
+        }
     } else {
         None
     };

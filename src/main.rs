@@ -14,6 +14,13 @@ mod entry;
 mod mm;
 mod syscall;
 
+const CACHED_ELFS: &[&str] = &[
+    "/musl/busybox",
+    "/glibc/busybox",
+    "/musl/lib/libc.so",
+    "/glibc/lib/ld-linux-riscv64-lp64d.so.1",
+];
+
 #[unsafe(no_mangle)]
 fn main() {
     // Create a init process
@@ -24,8 +31,9 @@ fn main() {
 
     let init = include_str!("init.sh");
 
-    insert_elf_cache("/musl/busybox").unwrap();
-    insert_elf_cache("/glibc/busybox").unwrap();
+    for elf in CACHED_ELFS {
+        insert_elf_cache(elf).expect("failed to insert ELF cache");
+    }
 
     info!("Running init script");
     let args = ["/musl/busybox", "sh", "-c", init]
