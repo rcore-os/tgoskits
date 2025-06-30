@@ -1,6 +1,8 @@
 use core::{any::Any, borrow::Borrow, cmp::Ordering, time::Duration};
 
-use alloc::{borrow::ToOwned, collections::btree_map::BTreeMap, string::String, sync::Arc};
+use alloc::{
+    borrow::ToOwned, collections::btree_map::BTreeMap, string::String, sync::Arc, vec::Vec,
+};
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
     FilesystemOps, Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, StatFs,
@@ -105,6 +107,10 @@ struct SparseFile {
     length: u64,
 }
 impl SparseFile {
+    fn len(&self) -> u64 {
+        self.length
+    }
+
     fn set_len(&mut self, len: u64) {
         if len >= self.length {
             self.length = len;
@@ -163,15 +169,26 @@ impl SparseFile {
                 break;
             };
             if *chunk_start > offset {
-                let (zero, rest) = buf.split_at_mut((*chunk_start - offset) as usize);
+                let gap_size = (*chunk_start - offset) as usize;
+                let gap_size = gap_size.min(buf.len());
+                let (zero, rest) = buf.split_at_mut(gap_size);
                 zero.fill(0);
                 buf = rest;
                 offset = *chunk_start;
+                if buf.is_empty() {
+                    break;
+                }
             }
-            let (read, rest) = buf.split_at_mut(buf.len().min(chunk.len()));
-            read.copy_from_slice(&chunk[..read.len()]);
+
+            // Calculate the offset within the chunk
+            let chunk_offset = (offset - *chunk_start) as usize;
+            let available_in_chunk = SPARSE_CHUNK_SIZE as usize - chunk_offset;
+            let to_read = buf.len().min(available_in_chunk);
+
+            let (read, rest) = buf.split_at_mut(to_read);
+            read.copy_from_slice(&chunk[chunk_offset..chunk_offset + to_read]);
             buf = rest;
-            offset += read.len() as u64;
+            offset += to_read as u64;
         }
 
         read_len
@@ -179,8 +196,107 @@ impl SparseFile {
 }
 
 #[derive(Default)]
+struct DenseFile {
+    content: Vec<u8>,
+}
+impl DenseFile {
+    fn len(&self) -> u64 {
+        self.content.len() as u64
+    }
+
+    fn set_len(&mut self, len: u64) {
+        if len > self.content.len() as u64 {
+            self.content.resize(len as usize, 0);
+        } else {
+            self.content.truncate(len as usize);
+        }
+    }
+
+    fn write_at(&mut self, data: &[u8], offset: u64) {
+        let end = offset + data.len() as u64;
+        if end > self.content.len() as u64 {
+            self.content.resize(end as usize, 0);
+        }
+        self.content[offset as usize..end as usize].copy_from_slice(data);
+    }
+
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> usize {
+        let end = (offset + buf.len() as u64).min(self.content.len() as u64);
+        if end <= offset || buf.is_empty() {
+            return 0;
+        }
+        let read_len = (end - offset) as usize;
+        buf[..read_len].copy_from_slice(&self.content[offset as usize..end as usize]);
+        read_len
+    }
+}
+
+enum DynamicFile {
+    Dense(DenseFile),
+    Sparse(SparseFile),
+}
+impl Default for DynamicFile {
+    fn default() -> Self {
+        Self::Dense(DenseFile::default())
+    }
+}
+impl DynamicFile {
+    fn len(&self) -> u64 {
+        match self {
+            DynamicFile::Sparse(file) => file.len(),
+            DynamicFile::Dense(file) => file.len(),
+        }
+    }
+
+    fn turn_to_sparse(dense: &mut DenseFile, pos: u64) -> Option<SparseFile> {
+        if pos >= dense.len() + 4 * 1024 * 1024 {
+            let mut sparse = SparseFile::default();
+            sparse.write_at(&dense.content, 0);
+            Some(sparse)
+        } else {
+            None
+        }
+    }
+
+    fn set_len(&mut self, len: u64) {
+        match self {
+            DynamicFile::Sparse(file) => file.set_len(len),
+            DynamicFile::Dense(file) => {
+                if let Some(mut sparse) = Self::turn_to_sparse(file, len) {
+                    sparse.set_len(len);
+                    *self = Self::Sparse(sparse);
+                } else {
+                    file.set_len(len);
+                }
+            }
+        }
+    }
+
+    fn write_at(&mut self, data: &[u8], offset: u64) {
+        match self {
+            DynamicFile::Sparse(file) => file.write_at(data, offset),
+            DynamicFile::Dense(file) => {
+                if let Some(mut sparse) = Self::turn_to_sparse(file, offset) {
+                    sparse.write_at(data, offset);
+                    *self = Self::Sparse(sparse);
+                } else {
+                    file.write_at(data, offset);
+                }
+            }
+        }
+    }
+
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> usize {
+        match self {
+            DynamicFile::Sparse(file) => file.read_at(buf, offset),
+            DynamicFile::Dense(file) => file.read_at(buf, offset),
+        }
+    }
+}
+
+#[derive(Default)]
 struct FileContent {
-    content: Mutex<SparseFile>,
+    content: Mutex<DynamicFile>,
 }
 #[derive(Default)]
 struct DirContent {
@@ -327,7 +443,7 @@ impl NodeOps<RawMutex> for MemoryNode {
         let mut metadata = self.inode.metadata.lock().clone();
         match &self.inode.content {
             NodeContent::File(content) => {
-                metadata.size = content.content.lock().length;
+                metadata.size = content.content.lock().len();
             }
             NodeContent::Dir(dir) => {
                 metadata.size = dir.entries.lock().len() as u64;
@@ -378,9 +494,9 @@ impl FileNodeOps<RawMutex> for MemoryNode {
 
     fn append(&self, buf: &[u8]) -> VfsResult<(usize, u64)> {
         let mut content = self.inode.as_file()?.content.lock();
-        let length = content.length;
+        let length = content.len();
         content.write_at(buf, length);
-        Ok((buf.len(), content.length))
+        Ok((buf.len(), content.len()))
     }
 
     fn set_len(&self, len: u64) -> VfsResult<()> {
