@@ -8,6 +8,7 @@ extern crate alloc;
 extern crate axruntime;
 
 use alloc::{format, string::ToString};
+use starry_core::mm::insert_elf_cache;
 
 mod entry;
 mod mm;
@@ -22,6 +23,9 @@ fn main() {
     let envs = [format!("ARCH={}", option_env!("ARCH").unwrap_or("unknown"))];
 
     let init = include_str!("init.sh");
+
+    insert_elf_cache("/musl/busybox").unwrap();
+    insert_elf_cache("/glibc/busybox").unwrap();
 
     info!("Running init script");
     let args = ["/musl/busybox", "sh", "-c", init]

@@ -2,16 +2,21 @@
 
 use core::ffi::CStr;
 
-use alloc::{borrow::ToOwned, string::String, vec::Vec};
+use alloc::{
+    borrow::ToOwned, collections::btree_map::BTreeMap, string::String, sync::Arc, vec::Vec,
+};
 use axerrno::{AxError, AxResult, LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
+use axfs_ng_vfs::DirEntry;
 use axhal::{
     mem::virt_to_phys,
     paging::{MappingFlags, PageSize},
 };
 use axmm::AddrSpace;
+use axsync::RawMutex;
 use kernel_elf_parser::{ELFParser, app_stack_region};
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
+use spin::lock_api::RwLock;
 use xmas_elf::{ElfFile, program::SegmentData};
 
 /// Creates a new empty user address space.
@@ -89,6 +94,21 @@ fn map_elf<'a>(uspace: &mut AddrSpace, base: usize, elf: &'a ElfFile) -> AxResul
     Ok(elf_parser)
 }
 
+static CACHED_ELF: RwLock<BTreeMap<usize, (Arc<ElfFile>, DirEntry<RawMutex>)>> =
+    RwLock::new(BTreeMap::new());
+
+/// Inserts an ELF file into the cache.
+pub fn insert_elf_cache(path: &str) -> LinuxResult<()> {
+    let fs = FS_CONTEXT.lock();
+    let loc = fs.resolve(path)?;
+    let file_data = fs.read(path)?.leak();
+    let elf = ElfFile::new(file_data).map_err(|_| LinuxError::ENOEXEC)?;
+    CACHED_ELF
+        .write()
+        .insert(loc.entry().as_ptr(), (Arc::new(elf), loc.entry().clone()));
+    Ok(())
+}
+
 /// Load the user app to the user address space.
 ///
 /// # Arguments
@@ -116,22 +136,35 @@ pub fn load_user_app(
         return load_user_app(uspace, None, &new_args, envs);
     }
 
-    let file_data = FS_CONTEXT.lock().read(path)?;
-    if file_data.starts_with(b"#!") {
-        let head = &file_data[2..file_data.len().min(256)];
-        let pos = head.iter().position(|c| *c == b'\n').unwrap_or(head.len());
-        let line = core::str::from_utf8(&head[..pos]).map_err(|_| AxError::InvalidData)?;
+    let loc = FS_CONTEXT.lock().resolve(path)?;
+    let elf_owner = match CACHED_ELF.read().get(&loc.entry().as_ptr()) {
+        Some((elf, _)) => Ok(elf.clone()),
+        None => {
+            let file_data = FS_CONTEXT.lock().read(path)?;
+            if file_data.starts_with(b"#!") {
+                let head = &file_data[2..file_data.len().min(256)];
+                let pos = head.iter().position(|c| *c == b'\n').unwrap_or(head.len());
+                let line = core::str::from_utf8(&head[..pos]).map_err(|_| AxError::InvalidData)?;
 
-        let new_args: Vec<String> = line
-            .trim()
-            .splitn(2, |c: char| c.is_ascii_whitespace())
-            .map(|s| s.trim_ascii().to_owned())
-            .chain(args.iter().cloned())
-            .collect();
-        return load_user_app(uspace, None, &new_args, envs);
-    }
-
-    let elf = ElfFile::new(&file_data).map_err(|_| LinuxError::ENOEXEC)?;
+                let new_args: Vec<String> = line
+                    .trim()
+                    .splitn(2, |c: char| c.is_ascii_whitespace())
+                    .map(|s| s.trim_ascii().to_owned())
+                    .chain(args.iter().cloned())
+                    .collect();
+                return load_user_app(uspace, None, &new_args, envs);
+            }
+            Err(file_data)
+        }
+    };
+    let elf_object = match &elf_owner {
+        Ok(elf) => Ok(elf.as_ref()),
+        Err(file_data) => Err(ElfFile::new(&file_data).map_err(|_| LinuxError::ENOEXEC)?),
+    };
+    let elf = match &elf_object {
+        Ok(elf) => *elf,
+        Err(elf) => &elf,
+    };
 
     let ldso_entry_and_base = if let Some(header) = elf
         .program_iter()
