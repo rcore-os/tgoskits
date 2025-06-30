@@ -251,6 +251,9 @@ impl<M: RawMutex> DirEntry<M> {
     pub fn ptr_eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
+    pub fn as_ptr(&self) -> usize {
+        Arc::as_ptr(&self.0) as usize
+    }
 
     pub fn read_link(&self) -> VfsResult<String> {
         if self.node_type() != NodeType::Symlink {
