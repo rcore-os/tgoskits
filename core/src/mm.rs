@@ -7,13 +7,11 @@ use alloc::{
 };
 use axerrno::{AxError, AxResult, LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
-use axfs_ng_vfs::DirEntry;
 use axhal::{
     mem::virt_to_phys,
     paging::{MappingFlags, PageSize},
 };
 use axmm::AddrSpace;
-use axsync::RawMutex;
 use kernel_elf_parser::{ELFParser, app_stack_region};
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use spin::lock_api::RwLock;
@@ -94,8 +92,7 @@ fn map_elf<'a>(uspace: &mut AddrSpace, base: usize, elf: &'a ElfFile) -> AxResul
     Ok(elf_parser)
 }
 
-static CACHED_ELF: RwLock<BTreeMap<usize, (Arc<ElfFile>, DirEntry<RawMutex>)>> =
-    RwLock::new(BTreeMap::new());
+static CACHED_ELF: RwLock<BTreeMap<usize, Arc<ElfFile>>> = RwLock::new(BTreeMap::new());
 
 /// Inserts an ELF file into the cache.
 pub fn insert_elf_cache(path: &str) -> LinuxResult<()> {
@@ -105,7 +102,7 @@ pub fn insert_elf_cache(path: &str) -> LinuxResult<()> {
     let elf = ElfFile::new(file_data).map_err(|_| LinuxError::ENOEXEC)?;
     CACHED_ELF
         .write()
-        .insert(loc.entry().as_ptr(), (Arc::new(elf), loc.entry().clone()));
+        .insert(loc.entry().as_ptr(), Arc::new(elf));
     Ok(())
 }
 
@@ -138,7 +135,7 @@ pub fn load_user_app(
 
     let ptr = FS_CONTEXT.lock().resolve(path)?.entry().as_ptr();
     let elf_owner = match CACHED_ELF.read().get(&ptr) {
-        Some((elf, _)) => Ok(elf.clone()),
+        Some(elf) => Ok(elf.clone()),
         None => {
             let file_data = FS_CONTEXT.lock().read(path)?;
             if file_data.starts_with(b"#!") {
@@ -159,18 +156,18 @@ pub fn load_user_app(
     };
     let elf_object = match &elf_owner {
         Ok(elf) => Ok(elf.as_ref()),
-        Err(file_data) => Err(ElfFile::new(&file_data).map_err(|_| LinuxError::ENOEXEC)?),
+        Err(file_data) => Err(ElfFile::new(file_data).map_err(|_| LinuxError::ENOEXEC)?),
     };
     let elf = match &elf_object {
         Ok(elf) => *elf,
-        Err(elf) => &elf,
+        Err(elf) => elf,
     };
 
     let ldso_entry_and_base = if let Some(header) = elf
         .program_iter()
         .find(|ph| ph.get_type() == Ok(xmas_elf::program::Type::Interp))
     {
-        let ldso = match header.get_data(&elf) {
+        let ldso = match header.get_data(elf) {
             Ok(SegmentData::Undefined(data)) => data,
             _ => panic!("Invalid data in Interp Elf Program Header"),
         };
@@ -185,7 +182,7 @@ pub fn load_user_app(
         };
         let ptr = FS_CONTEXT.lock().resolve(ldso)?.entry().as_ptr();
         match CACHED_ELF.read().get(&ptr) {
-            Some((elf, _)) => loader(&elf)?,
+            Some(elf) => loader(elf)?,
             None => {
                 let file_data = FS_CONTEXT.lock().read(ldso)?;
                 let ldso_elf = ElfFile::new(&file_data).map_err(|_| LinuxError::ENOEXEC)?;
@@ -196,7 +193,7 @@ pub fn load_user_app(
         None
     };
 
-    let elf_parser = map_elf(uspace, uspace.base().as_usize(), &elf)?;
+    let elf_parser = map_elf(uspace, uspace.base().as_usize(), elf)?;
     let entry = ldso_entry_and_base
         .map(|it| it.0)
         .unwrap_or_else(|| elf_parser.entry());
