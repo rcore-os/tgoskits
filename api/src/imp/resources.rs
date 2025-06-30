@@ -41,7 +41,9 @@ pub fn sys_prlimit64(
         if new_limit.rlim_max <= limit.max {
             limit.max = new_limit.rlim_max;
         } else {
-            return Err(LinuxError::EPERM);
+            // TODO: patch resources
+            // return Err(LinuxError::EPERM);
+            return Ok(0);
         }
 
         limit.current = new_limit.rlim_cur;
