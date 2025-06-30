@@ -262,19 +262,15 @@ impl<M: RawMutex> Location<M> {
     }
 
     pub fn unmount(&self) -> VfsResult<()> {
-        let Some(mountpoint) = self.entry.as_dir()?.mountpoint.lock().take() else {
-            return Err(VfsError::EINVAL);
-        };
-        mountpoint.root.as_dir()?.forget();
-        if self
-            .mountpoint
-            .children
-            .lock()
-            .remove(&self.entry.key())
-            .is_none()
-        {
+        if !self.is_root_of_mount() {
             return Err(VfsError::EINVAL);
         }
+        let Some(parent_loc) = &self.mountpoint.location else {
+            return Err(VfsError::EINVAL);
+        };
+        assert!(self.entry.ptr_eq(&self.mountpoint.root));
+        self.entry.as_dir()?.forget();
+        *parent_loc.entry.as_dir()?.mountpoint.lock() = None;
         Ok(())
     }
 }
