@@ -69,7 +69,9 @@ impl<M: RawMutex + Send + Sync + 'static> NodeOps<M> for Device<M> {
     fn metadata(&self) -> VfsResult<Metadata>;
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
     fn filesystem(&self) -> &dyn FilesystemOps<M>;
-    fn sync(&self, data_only: bool) -> VfsResult<()>;
+    fn sync(&self, _data_only: bool) -> VfsResult<()> {
+        Err(VfsError::EINVAL)
+    }
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
         self
     }
