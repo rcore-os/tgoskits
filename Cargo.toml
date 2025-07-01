@@ -25,6 +25,7 @@ default = []
 fp-simd = []
 tls = []
 uspace = []
+arm-el2 = []
 
 [dependencies]
 linkme = "0.3"
