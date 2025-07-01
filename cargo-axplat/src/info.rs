@@ -13,6 +13,10 @@ pub struct CommandInfo {
     #[arg(required = true, value_name = "PLATFORM")]
     package: String,
 
+    /// Path to Cargo.toml
+    #[arg(long = "manifest-path", help_heading = "Manifest Options")]
+    manifest_path: String,
+
     /// Display the platform name
     #[arg(short = 'p', long = "platform")]
     plat: bool,
@@ -28,10 +32,6 @@ pub struct CommandInfo {
     /// Display the source of the platform package
     #[arg(short = 's', long = "source")]
     source: bool,
-
-    /// Display the path to Cargo.toml of the platform package
-    #[arg(short = 'm', long = "manifest-path")]
-    manifest_path: bool,
 
     /// Display the path to the platform configuration file
     #[arg(short = 'c', long = "config-path")]
@@ -58,20 +58,19 @@ struct PlatformInfo {
     arch: String,
     version: String,
     source: String,
-    manifest_path: String,
     config_path: String,
 }
 
 impl PlatformInfo {
     fn new(package: &Package) -> Result<Self, PlatformInfoErr> {
         let version = package.version.to_string();
-        let manifest_path = package.manifest_path.to_string();
         let source = if let Some(src) = &package.source {
             src.to_string()
         } else {
             package.id.to_string()
         };
 
+        let manifest_path = package.manifest_path.to_string();
         let root_dir = manifest_path.strip_suffix("/Cargo.toml").unwrap();
         let config_path = format!("{root_dir}/axconfig.toml");
         let (platform, arch) = parse_config(&config_path)?;
@@ -80,16 +79,18 @@ impl PlatformInfo {
             arch,
             version,
             source,
-            manifest_path,
             config_path,
         })
     }
 
-    fn from(package_name: &str) -> Result<Self, PlatformInfoErr> {
-        let metadata = MetadataCommand::new()
+    fn from(package_name: &str, manifest_path: &str) -> Result<Self, PlatformInfoErr> {
+        let mut metadata_handler = MetadataCommand::new()
             .features(CargoOpt::AllFeatures)
-            .exec()
-            .map_err(PlatformInfoErr::Metadata)?;
+            .clone();
+        if !manifest_path.is_empty() {
+            metadata_handler.manifest_path(manifest_path);
+        }
+        let metadata = metadata_handler.exec().map_err(PlatformInfoErr::Metadata)?;
         for p in metadata.packages {
             if p.name.as_str() == package_name {
                 return Self::new(&p);
@@ -111,9 +112,6 @@ impl PlatformInfo {
         if args.source {
             println!("{}", self.source);
         }
-        if args.manifest_path {
-            println!("{}", self.manifest_path);
-        }
         if args.config_path {
             println!("{}", self.config_path);
         }
@@ -124,7 +122,6 @@ impl PlatformInfo {
         println!("arch: {}", self.arch);
         println!("version: {}", self.version);
         println!("source: {}", self.source);
-        println!("manifest_path: {}", self.manifest_path);
         println!("config_path: {}", self.config_path);
     }
 }
@@ -142,15 +139,9 @@ fn parse_config(config_path: &str) -> Result<(String, String), PlatformInfoErr> 
 }
 
 pub fn platform_info(args: CommandInfo) {
-    match PlatformInfo::from(&args.package) {
+    match PlatformInfo::from(&args.package, &args.manifest_path) {
         Ok(info) => {
-            if args.plat
-                || args.arch
-                || args.version
-                || args.source
-                || args.manifest_path
-                || args.config_path
-            {
+            if args.plat || args.arch || args.version || args.source || args.config_path {
                 info.display(&args);
             } else {
                 info.display_all();
