@@ -28,6 +28,7 @@ axfeat = { path = "arceos/api/axfeat", features = [
 ] }
 
 axalloc = { path = "arceos/modules/axalloc" }
+axbacktrace = { path = "arceos/modules/axbacktrace" }
 axconfig = { path = "arceos/modules/axconfig" }
 axdriver = { path = "arceos/modules/axdriver" }
 axfs-ng = { path = "arceos/modules/axfs-ng" }
@@ -71,12 +72,10 @@ authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
-[features]
-lwext4_rs = ["axfeat/lwext4_rs"]
-
 [dependencies]
 axfeat.workspace = true
 
+axbacktrace.workspace = true
 axconfig.workspace = true
 axfs-ng.workspace = true
 axhal.workspace = true
@@ -104,3 +103,6 @@ axhal = { path = "arceos/modules/axhal" }
 
 [package.metadata.vendor-filter]
 platforms = ["riscv64gc-unknown-none-elf", "loongarch64-unknown-none"]
+
+[profile.release]
+debug = true

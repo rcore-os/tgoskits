@@ -127,6 +127,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "axbacktrace"
+version = "0.1.0"
+dependencies = [
+ "cfg-if",
+ "log",
+]
+
+[[package]]
 name = "axconfig"
 version = "0.1.0"
 dependencies = [
@@ -229,6 +237,7 @@ name = "axfeat"
 version = "0.1.0"
 dependencies = [
  "axalloc",
+ "axbacktrace",
  "axdriver",
  "axfs-ng",
  "axhal",
@@ -530,9 +539,9 @@ dependencies = [
 
 [[package]]
 name = "cfg-if"
-version = "1.0.0"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
+checksum = "9555578bc9e57714c812a1f84e4fc5b4d21fcb063490c624de019f7464c91268"
 
 [[package]]
 name = "chrono"
@@ -1421,6 +1430,7 @@ checksum = "a8f112729512f8e442d81f95a8a7ddf2b7c6b8a1a6f509a95864142b30cab2d3"
 name = "starry"
 version = "0.1.0"
 dependencies = [
+ "axbacktrace",
  "axconfig",
  "axerrno",
  "axfeat",
