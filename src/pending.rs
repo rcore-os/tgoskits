@@ -1,6 +1,6 @@
 use core::array;
 
-use alloc::collections::vec_deque::VecDeque;
+use alloc::{boxed::Box, collections::vec_deque::VecDeque};
 
 use crate::{SignalInfo, SignalSet};
 
@@ -15,7 +15,7 @@ pub struct PendingSignals {
     pub set: SignalSet,
 
     /// Signal info of standard signals (1-31).
-    info_std: [Option<SignalInfo>; 32],
+    info_std: [Option<Box<SignalInfo>>; 32],
     /// Signal info queue for real-time signals.
     info_rt: [VecDeque<SignalInfo>; 33],
 }
@@ -46,7 +46,7 @@ impl PendingSignals {
                 // At most one standard signal can be pending.
                 return false;
             }
-            self.info_std[signo as usize] = Some(sig);
+            self.info_std[signo as usize] = Some(Box::new(sig));
         }
         true
     }
@@ -62,7 +62,7 @@ impl PendingSignals {
                 }
                 result
             } else {
-                self.info_std[signo as usize].take()
+                self.info_std[signo as usize].take().map(|boxed| *boxed)
             }
         })
     }
