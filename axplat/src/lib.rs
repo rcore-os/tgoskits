@@ -1,5 +1,6 @@
 #![cfg_attr(not(test), no_std)]
 #![doc = include_str!("../README.md")]
+#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
 #[macro_use]
 extern crate axplat_macros;

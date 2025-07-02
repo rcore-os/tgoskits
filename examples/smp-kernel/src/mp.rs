@@ -21,7 +21,7 @@ pub fn start_secondary_cpus(primary_cpu_id: usize) {
 
             logic_cpu_id += 1;
 
-            while INITED_CPUS.load(Acquire) + 1 <= logic_cpu_id {
+            while INITED_CPUS.load(Acquire) < logic_cpu_id {
                 core::hint::spin_loop();
             }
         }

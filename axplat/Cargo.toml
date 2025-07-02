@@ -16,7 +16,7 @@ smp = ["kspin/smp"]
 irq = ["dep:handler_table"]
 
 [dependencies]
-memory_addr = "0.3"
+memory_addr = "0.4"
 bitflags = "2.6"
 crate_interface = "0.1"
 handler_table = { version = "0.1.2", optional = true }
