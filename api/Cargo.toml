@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 axfeat.workspace = true
 
+axbacktrace.workspace = true
 axconfig.workspace = true
 axdriver.workspace = true
 axfs-ng.workspace = true

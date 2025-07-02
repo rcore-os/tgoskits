@@ -123,6 +123,9 @@ impl DeviceOps for MemTrack {
                     info!("Memory allocation generation stamped: {}", generation);
                 }
                 b"end\n" => {
+                    // Wait for gc
+                    axtask::yield_now();
+
                     let from = STAMPED_GENERATION.load(Ordering::SeqCst);
                     let to = axalloc::current_generation();
 
@@ -145,7 +148,13 @@ impl DeviceOps for MemTrack {
                         warn!("===========================");
                         warn!("Memory leak detected:");
                         for (backtrace, layouts, total_size) in allocations {
-                            warn!(" {}\t bytes, {} allocations, {}", total_size, layouts.len(), backtrace);
+                            warn!(
+                                " {}\t bytes, {} allocations, {:?}, {}",
+                                total_size,
+                                layouts.len(),
+                                layouts[0],
+                                backtrace
+                            );
                         }
                         warn!("==========================");
                     }
