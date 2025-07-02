@@ -29,3 +29,6 @@ chrono = { version = "0.4", default-features = false, optional = true }
 axconfig-macros = "0.2"
 axcpu = { workspace = true }
 axplat = { workspace = true }
+
+[package.metadata.docs.rs]
+targets = ["loongarch64-unknown-none"]

@@ -25,3 +25,6 @@ axconfig-macros = "0.2"
 axplat-aarch64-peripherals = { version = "0.1", path = "../axplat-aarch64-peripherals" }
 axcpu = { workspace = true }
 axplat = { workspace = true }
+
+[package.metadata.docs.rs]
+targets = ["aarch64-unknown-none"]

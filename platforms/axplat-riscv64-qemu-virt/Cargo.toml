@@ -26,3 +26,6 @@ riscv_goldfish = { version = "0.1", optional = true }
 axconfig-macros = "0.2"
 axcpu = { workspace = true }
 axplat = { workspace = true }
+
+[package.metadata.docs.rs]
+targets = ["riscv64gc-unknown-none-elf"]

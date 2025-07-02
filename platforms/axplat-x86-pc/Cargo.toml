@@ -37,3 +37,6 @@ multiboot = "0.8"
 raw-cpuid = "11.5"
 uart_16550 = "0.3"
 x86_rtc = { version = "0.1", optional = true }
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-none"]
