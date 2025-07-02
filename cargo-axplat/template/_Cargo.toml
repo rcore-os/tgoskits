@@ -9,4 +9,4 @@ smp = ["axplat/smp"]
 
 [dependencies]
 axconfig-macros = "0.2"
-axplat = { git = "https://github.com/arceos-org/axplat_crates" }
+axplat = "0.1"
