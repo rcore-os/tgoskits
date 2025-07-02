@@ -119,11 +119,13 @@ name = "axalloc"
 version = "0.1.0"
 dependencies = [
  "allocator",
+ "axbacktrace",
  "axerrno",
  "cfg-if",
  "kspin",
  "log",
  "memory_addr",
+ "percpu",
 ]
 
 [[package]]
@@ -131,7 +133,7 @@ name = "axbacktrace"
 version = "0.1.0"
 dependencies = [
  "cfg-if",
- "log",
+ "kspin",
 ]
 
 [[package]]
@@ -346,6 +348,7 @@ name = "axmm"
 version = "0.1.0"
 dependencies = [
  "axalloc",
+ "axbacktrace",
  "axconfig",
  "axerrno",
  "axhal",
@@ -390,6 +393,7 @@ name = "axruntime"
 version = "0.1.0"
 dependencies = [
  "axalloc",
+ "axbacktrace",
  "axconfig",
  "axdriver",
  "axfs-ng",
@@ -1430,6 +1434,7 @@ checksum = "a8f112729512f8e442d81f95a8a7ddf2b7c6b8a1a6f509a95864142b30cab2d3"
 name = "starry"
 version = "0.1.0"
 dependencies = [
+ "axalloc",
  "axbacktrace",
  "axconfig",
  "axerrno",
