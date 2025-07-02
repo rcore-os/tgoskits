@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 axalloc.workspace = true
+axbacktrace.workspace = true
 axconfig.workspace = true
 axfs-ng.workspace = true
 axfs-ng-vfs.workspace = true
@@ -42,6 +43,7 @@ slab = { version = "0.4.9", default-features = false }
 strum = { version = "0.27.1", default-features = false, features = ["derive"] }
 weak-map = "0.1.1"
 xmas-elf = "0.9"
+gimli = { version = "*", default-features = false }
 
 [target.'cfg(not(any(target_arch = "aarch64", target_arch = "loongarch64")))'.dependencies]
 axmm = { workspace = true, features = ["copy-from"] }

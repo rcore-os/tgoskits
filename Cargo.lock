@@ -1152,7 +1152,7 @@ checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 [[package]]
 name = "page_table_entry"
 version = "0.5.4"
-source = "git+https://github.com/Starry-Mix-THU/page_table_multiarch.git?rev=e86454e#e86454e794aa521af946d91a393c89b94f7953fe"
+source = "git+https://github.com/Starry-Mix-THU/page_table_multiarch.git?rev=55683f9#55683f97258ca73589155de67a540373f061d8eb"
 dependencies = [
  "aarch64-cpu",
  "bitflags 2.9.0",
@@ -1163,7 +1163,7 @@ dependencies = [
 [[package]]
 name = "page_table_multiarch"
 version = "0.5.4"
-source = "git+https://github.com/Starry-Mix-THU/page_table_multiarch.git?rev=e86454e#e86454e794aa521af946d91a393c89b94f7953fe"
+source = "git+https://github.com/Starry-Mix-THU/page_table_multiarch.git?rev=55683f9#55683f97258ca73589155de67a540373f061d8eb"
 dependencies = [
  "bitmaps",
  "log",
@@ -1560,6 +1560,7 @@ name = "starry-core"
 version = "0.1.0"
 dependencies = [
  "axalloc",
+ "axbacktrace",
  "axconfig",
  "axerrno",
  "axfs-ng",
@@ -1572,6 +1573,7 @@ dependencies = [
  "axsync",
  "axtask",
  "extern-trait",
+ "gimli",
  "inherit-methods-macro",
  "kernel-elf-parser",
  "linkme",

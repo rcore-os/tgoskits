@@ -103,8 +103,8 @@ axalloc.workspace = true
 axhal = { path = "arceos/modules/axhal" }
 
 [patch.crates-io]
-page_table_entry = { git = "https://github.com/Starry-Mix-THU/page_table_multiarch.git", rev = "e86454e" }
-page_table_multiarch = { git = "https://github.com/Starry-Mix-THU/page_table_multiarch.git", rev = "e86454e" }
+page_table_entry = { git = "https://github.com/Starry-Mix-THU/page_table_multiarch.git", rev = "55683f9" }
+page_table_multiarch = { git = "https://github.com/Starry-Mix-THU/page_table_multiarch.git", rev = "55683f9" }
 
 [package.metadata.vendor-filter]
 platforms = ["riscv64gc-unknown-none-elf", "loongarch64-unknown-none"]
