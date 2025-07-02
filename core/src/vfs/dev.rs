@@ -1,9 +1,11 @@
 use core::{
+    alloc::Layout,
     any::Any,
-    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+    cmp,
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
 };
 
-use alloc::{format, sync::Arc};
+use alloc::{collections::btree_map::BTreeMap, format, sync::Arc, vec::Vec};
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::{File, FsContext};
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeType, VfsResult};
@@ -99,6 +101,61 @@ impl DeviceOps for Full {
     }
     fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
         Err(LinuxError::ENOSPC)
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+static STAMPED_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+struct MemTrack;
+impl DeviceOps for MemTrack {
+    fn read_at(&self, buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
+        Ok(buf.len())
+    }
+    fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize> {
+        if offset == 0 {
+            match buf {
+                b"start\n" => {
+                    let generation = axalloc::current_generation();
+                    STAMPED_GENERATION.store(generation, Ordering::SeqCst);
+                    info!("Memory allocation generation stamped: {}", generation);
+                }
+                b"end\n" => {
+                    let from = STAMPED_GENERATION.load(Ordering::SeqCst);
+                    let to = axalloc::current_generation();
+
+                    let mut allocations: BTreeMap<_, Vec<Layout>> = BTreeMap::new();
+                    axalloc::allocations_in(from..to, |info| {
+                        allocations
+                            .entry(info.backtrace.clone())
+                            .or_default()
+                            .push(info.layout);
+                    });
+                    let mut allocations = allocations
+                        .into_iter()
+                        .map(|(bt, layouts)| {
+                            let total_size = layouts.iter().map(|l| l.size()).sum::<usize>();
+                            (bt, layouts, total_size)
+                        })
+                        .collect::<Vec<_>>();
+                    allocations.sort_by_key(|it| cmp::Reverse(it.2));
+                    if !allocations.is_empty() {
+                        warn!("===========================");
+                        warn!("Memory leak detected:");
+                        for (backtrace, layouts, total_size) in allocations {
+                            warn!(" {}\t bytes, {} allocations, {}", total_size, layouts.len(), backtrace);
+                        }
+                        warn!("==========================");
+                    }
+                }
+                _ => {
+                    warn!("Unknown command: {:?}", buf);
+                }
+            }
+        }
+        Ok(buf.len())
     }
     fn as_any(&self) -> &dyn Any {
         self
@@ -215,6 +272,15 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     root.add(
         "rtc0",
         Device::new(fs.clone(), NodeType::CharacterDevice, RTC0_DEVICE_ID, Rtc),
+    );
+    root.add(
+        "memtrack",
+        Device::new(
+            fs.clone(),
+            NodeType::CharacterDevice,
+            DeviceId::new(114, 514),
+            MemTrack,
+        ),
     );
 
     // This is mounted to a tmpfs in `new_procfs`
