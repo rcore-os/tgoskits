@@ -31,7 +31,6 @@ authors = [
 ]
 license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
 homepage = "https://github.com/arceos-org/arceos"
-documentation = "https://arceos-org.github.io/axplat_crates"
 repository = "https://github.com/arceos-org/axplat_crates"
 
 [workspace.dependencies]

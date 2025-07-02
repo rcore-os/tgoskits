@@ -168,7 +168,7 @@ dependencies = [
 
 [[package]]
 name = "axplat-aarch64-peripherals"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aarch64-cpu",
  "arm_gicv2",

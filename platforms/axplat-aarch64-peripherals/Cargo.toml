@@ -1,14 +1,14 @@
 [package]
 name = "axplat-aarch64-peripherals"
-version = "0.1.0"
+version = "0.1.1"
 description = "ARM64 common peripheral drivers with `axplat` compatibility"
+documentation = "https://docs.rs/axplat-aarch64-peripherals"
 keywords = ["arceos", "os", "hal", "peripheral", "aarch64"]
 categories = ["embedded", "no-std", "hardware-support", "os"]
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 homepage.workspace = true
-documentation.workspace = true
 repository.workspace = true
 
 [dependencies]
@@ -25,4 +25,4 @@ axcpu = { workspace = true }
 axplat = { workspace = true, features = ["irq"] }
 
 [package.metadata.docs.rs]
-target = ["aarch64-unknown-none"]
+targets = ["aarch64-unknown-none"]

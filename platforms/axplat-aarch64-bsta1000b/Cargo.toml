@@ -2,13 +2,13 @@
 name = "axplat-aarch64-bsta1000b"
 version = "0.1.0"
 description = "Implementation of `axplat` hardware abstraction layer for Black Sesame Technology A1000b SoC."
+documentation = "https://docs.rs/axplat-aarch64-bsta1000b"
 keywords = ["arceos", "os", "hal", "embedded", "aarch64"]
 categories = ["embedded", "no-std", "hardware-support", "os"]
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 homepage.workspace = true
-documentation.workspace = true
 repository.workspace = true
 
 [features]

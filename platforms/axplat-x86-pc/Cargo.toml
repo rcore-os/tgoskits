@@ -2,13 +2,13 @@
 name = "axplat-x86-pc"
 version = "0.1.0"
 description = "Implementation of `axplat` hardware abstraction layer for x86 Standard PC machine."
+documentation = "https://docs.rs/axplat-x86-pc"
 keywords = ["arceos", "os", "hal", "x86"]
 categories = ["no-std", "hardware-support", "os"]
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 homepage.workspace = true
-documentation.workspace = true
 repository.workspace = true
 
 [features]
