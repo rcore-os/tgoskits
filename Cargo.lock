@@ -809,11 +809,11 @@ dependencies = [
 
 [[package]]
 name = "flatten_objects"
-version = "0.2.3"
-source = "git+https://github.com/Starry-Mix-THU/flatten_objects.git?rev=e2ae77c#e2ae77ccf686a28663b8501990832968ef4398d4"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f7719d63de27ac93e7cd2c8e0c03083f8b0ff7f842fdb6280b8cdcac21b4baf"
 dependencies = [
  "bitmaps",
- "log",
 ]
 
 [[package]]
