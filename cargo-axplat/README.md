@@ -66,6 +66,5 @@ platform: axplat-aarch64-my-plat
 arch: aarch64
 version: 0.1.0
 source: path+file:///home/user/axplat-aarch64-my-plat#0.1.0
-manifest_path: /home/user/axplat-aarch64-my-plat/Cargo.toml
 config_path: /home/user/axplat-aarch64-my-plat/axconfig.toml
 ```

@@ -15,7 +15,7 @@ pub struct CommandInfo {
 
     /// Path to Cargo.toml
     #[arg(long = "manifest-path", help_heading = "Manifest Options")]
-    manifest_path: String,
+    manifest_path: Option<String>,
 
     /// Display the platform name
     #[arg(short = 'p', long = "platform")]
@@ -83,11 +83,12 @@ impl PlatformInfo {
         })
     }
 
-    fn from(package_name: &str, manifest_path: &str) -> Result<Self, PlatformInfoErr> {
+    fn from(package_name: &str, manifest_path: &Option<String>) -> Result<Self, PlatformInfoErr> {
         let mut metadata_handler = MetadataCommand::new()
             .features(CargoOpt::AllFeatures)
             .clone();
-        if !manifest_path.is_empty() {
+
+        if let Some(manifest_path) = manifest_path {
             metadata_handler.manifest_path(manifest_path);
         }
         let metadata = metadata_handler.exec().map_err(PlatformInfoErr::Metadata)?;
