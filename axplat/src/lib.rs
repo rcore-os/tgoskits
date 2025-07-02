@@ -1,6 +1,6 @@
 #![cfg_attr(not(test), no_std)]
+#![cfg_attr(docsrs, feature(doc_auto_cfg))]
 #![doc = include_str!("../README.md")]
-#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
 #[macro_use]
 extern crate axplat_macros;
@@ -13,8 +13,11 @@ pub mod mem;
 pub mod power;
 pub mod time;
 
-pub use axplat_macros::{main, secondary_main};
+pub use axplat_macros::main;
 pub use crate_interface::impl_interface as impl_plat_interface;
+
+#[cfg(feature = "smp")]
+pub use axplat_macros::secondary_main;
 
 #[doc(hidden)]
 pub mod __priv {
@@ -63,6 +66,7 @@ pub fn call_main(cpu_id: usize, arg: usize) -> ! {
 /// Call the function decorated by [`axplat::secondary_main`][secondary_main] for secondary cores.
 ///
 /// This function should only be called by the platform implementer, not the kernel.
+#[cfg(feature = "smp")]
 pub fn call_secondary_main(cpu_id: usize) -> ! {
     unsafe { __axplat_secondary_main(cpu_id) }
 }

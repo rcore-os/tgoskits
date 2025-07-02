@@ -3,7 +3,7 @@ name = "axplat"
 version = "0.1.0"
 description = "This crate provides a unified abstraction layer for diverse hardware platforms."
 documentation = "https://docs.rs/axplat"
-keywords = ["arceos", "hal", "hardware-abstraction-layer"]
+keywords = ["arceos", "os", "hal", "embedded"]
 categories = ["embedded", "no-std", "hardware-support", "os"]
 edition.workspace = true
 authors.workspace = true
@@ -23,3 +23,6 @@ handler_table = { version = "0.1.2", optional = true }
 const-str = "0.6.2"
 axplat-macros = { workspace = true }
 kspin = "0.1"
+
+[package.metadata.docs.rs]
+all-features = true

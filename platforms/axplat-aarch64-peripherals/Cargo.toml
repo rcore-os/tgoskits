@@ -21,3 +21,6 @@ arm_gicv2 = "0.1"
 arm_pl031 = "0.2"
 axcpu = { workspace = true }
 axplat = { workspace = true, features = ["irq"] }
+
+[package.metadata.docs.rs]
+target = ["aarch64-unknown-none"]
