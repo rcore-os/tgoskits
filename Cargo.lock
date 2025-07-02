@@ -1773,9 +1773,9 @@ checksum = "442887c63f2c839b346c192d047a7c87e73d0689c9157b00b53dcc27dd5ea793"
 
 [[package]]
 name = "weak-map"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e0145d21fd9cfd6d36a82babf246d36e74e1a76ee59aab1c14cda35db373f00"
+checksum = "209bc3ff6d982801239e57fa3b8b3505d4fc41102d1d162cca38b325297fe77b"
 
 [[package]]
 name = "windows-sys"

@@ -13,7 +13,10 @@ use axsync::{Mutex, RawMutex};
 use linux_raw_sys::loop_device::loop_info;
 use rand::{RngCore, SeedableRng, rngs::SmallRng};
 
-use crate::vfs::simple::{Device, DeviceOps, DirMaker, DirMapping, SimpleDir, SimpleFs};
+use crate::{
+    task::cleanup_task_tables,
+    vfs::simple::{Device, DeviceOps, DirMaker, DirMapping, SimpleDir, SimpleFs},
+};
 
 /// The device ID for /dev/rtc0
 const RTC0_DEVICE_ID: DeviceId = DeviceId::new(250, 0);
@@ -125,6 +128,7 @@ impl DeviceOps for MemTrack {
                 b"end\n" => {
                     // Wait for gc
                     axtask::yield_now();
+                    cleanup_task_tables();
 
                     let from = STAMPED_GENERATION.load(Ordering::SeqCst);
                     let to = axalloc::current_generation();

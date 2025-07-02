@@ -351,6 +351,17 @@ static PROCESS_TABLE: RwLock<WeakMap<Pid, Weak<Process>>> = RwLock::new(WeakMap:
 static PROCESS_GROUP_TABLE: RwLock<WeakMap<Pid, Weak<ProcessGroup>>> = RwLock::new(WeakMap::new());
 static SESSION_TABLE: RwLock<WeakMap<Pid, Weak<Session>>> = RwLock::new(WeakMap::new());
 
+/// Cleanup expired entries in the task tables.
+///
+/// This function is intended to be used during memory leak analysis to remove
+/// possible noise caused by expired entries in the [`WeakMap`].
+pub(crate) fn cleanup_task_tables() {
+    THREAD_TABLE.write().cleanup();
+    PROCESS_TABLE.write().cleanup();
+    PROCESS_GROUP_TABLE.write().cleanup();
+    SESSION_TABLE.write().cleanup();
+}
+
 /// Add the thread and possibly its process, process group and session to the
 /// corresponding tables.
 pub fn add_thread_to_table(thread: &Arc<Thread>) {
