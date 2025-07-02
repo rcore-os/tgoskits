@@ -810,9 +810,10 @@ dependencies = [
 [[package]]
 name = "flatten_objects"
 version = "0.2.3"
-source = "git+https://github.com/Starry-Mix-THU/flatten_objects.git?rev=e08873e#e08873e6ca3e0e515fc3c59c1d8b17f95f296d27"
+source = "git+https://github.com/Starry-Mix-THU/flatten_objects.git?rev=e2ae77c#e2ae77ccf686a28663b8501990832968ef4398d4"
 dependencies = [
  "bitmaps",
+ "log",
 ]
 
 [[package]]

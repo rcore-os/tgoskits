@@ -39,7 +39,7 @@ starry-core.workspace = true
 axio = "0.1.1"
 bitmaps = { version = "3.2.1", default-features = false }
 chrono = { version = "0.4.41", default-features = false }
-flatten_objects = { git = "https://github.com/Starry-Mix-THU/flatten_objects.git", rev = "e08873e" }
+flatten_objects = { git = "https://github.com/Starry-Mix-THU/flatten_objects.git", rev = "e2ae77c" }
 lazy_static = { version = "1.5", features = ["spin_no_std"] }
 num_enum = { version = "0.7", default-features = false }
 page_table_multiarch = "0.5"
