@@ -350,7 +350,7 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
         for i in start_idx..end_idx {
             let entry = &mut dst_table[i];
             if !self.borrowed_entries.set(i, true) {
-                self.dealloc_tree(entry, 1);
+                self.dealloc_tree(entry, 0);
             }
             *entry = src_table[i];
         }
@@ -554,7 +554,7 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> Drop for PageTable64<
             if self.borrowed_entries.get(i) {
                 continue;
             }
-            self.dealloc_tree(entry, 1);
+            self.dealloc_tree(entry, 0);
         }
         H::dealloc_frame(self.root_paddr());
     }
