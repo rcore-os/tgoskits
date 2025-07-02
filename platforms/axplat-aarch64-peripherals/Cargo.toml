@@ -2,6 +2,8 @@
 name = "axplat-aarch64-peripherals"
 version = "0.1.0"
 description = "ARM64 common peripheral drivers with `axplat` compatibility"
+keywords = ["arceos", "os", "hal", "peripheral", "aarch64"]
+categories = ["embedded", "no-std", "hardware-support", "os"]
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
