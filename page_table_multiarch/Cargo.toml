@@ -30,3 +30,6 @@ riscv = { version = "0.14", default-features = false }
 
 [package.metadata.docs.rs]
 rustc-args = ["--cfg", "doc"]
+
+[dev-dependencies]
+rand = { version = "0.9.1", default-features = false, features = ["small_rng"] }
