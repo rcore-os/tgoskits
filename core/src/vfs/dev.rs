@@ -1,12 +1,9 @@
 use core::{
-    alloc::Layout,
     any::Any,
-    cmp, fmt,
-    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
-use alloc::{collections::btree_map::BTreeMap, format, sync::Arc, vec::Vec};
-use axbacktrace::Backtrace;
+use alloc::{format, sync::Arc};
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::{File, FsContext};
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeType, VfsResult};
@@ -14,10 +11,7 @@ use axsync::{Mutex, RawMutex};
 use linux_raw_sys::loop_device::loop_info;
 use rand::{RngCore, SeedableRng, rngs::SmallRng};
 
-use crate::{
-    task::cleanup_task_tables,
-    vfs::simple::{Device, DeviceOps, DirMaker, DirMapping, SimpleDir, SimpleFs},
-};
+use crate::vfs::simple::{Device, DeviceOps, DirMaker, DirMapping, SimpleDir, SimpleFs};
 
 /// The device ID for /dev/rtc0
 const RTC0_DEVICE_ID: DeviceId = DeviceId::new(250, 0);
@@ -105,130 +99,6 @@ impl DeviceOps for Full {
     }
     fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
         Err(LinuxError::ENOSPC)
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
-static STAMPED_GENERATION: AtomicU64 = AtomicU64::new(0);
-
-fn run_memory_leak_analysis() {
-    // Wait for gc
-    axtask::yield_now();
-    cleanup_task_tables();
-
-    let from = STAMPED_GENERATION.load(Ordering::SeqCst);
-    let to = axalloc::current_generation();
-
-    #[derive(PartialEq, Eq, PartialOrd, Ord)]
-    enum MemoryCategory {
-        Known(&'static str),
-        Unknown(Backtrace),
-    }
-    impl MemoryCategory {
-        fn new(backtrace: &Backtrace) -> Self {
-            match Self::category(backtrace) {
-                Some(category) => Self::Known(category),
-                None => Self::Unknown(backtrace.clone()),
-            }
-        }
-
-        fn category(backtrace: &Backtrace) -> Option<&'static str> {
-            let Some(mut frames) = backtrace.frames() else {
-                return None;
-            };
-            while let Some(batch) = frames.next_batch() {
-                let Ok(mut batch) = batch else {
-                    continue;
-                };
-                while let Ok(Some(frame)) = batch.next() {
-                    let Some(func) = frame.function else {
-                        continue;
-                    };
-                    if func.language != Some(gimli::DW_LANG_Rust) {
-                        continue;
-                    }
-                    let Ok(name) = func.demangle() else {
-                        continue;
-                    };
-                    match name.as_ref() {
-                        "axfs_ng_vfs::node::dir::DirNode<M>::lookup_locked" => {
-                            return Some("dentry");
-                        }
-                        "ext4_user_malloc" => {
-                            return Some("ext4");
-                        }
-                        "axprocess::process::ProcessBuilder::build" => {
-                            return Some("process");
-                        }
-                        _ => continue,
-                    }
-                }
-            }
-
-            None
-        }
-    }
-    impl fmt::Display for MemoryCategory {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            match self {
-                MemoryCategory::Known(name) => write!(f, "[{name}]"),
-                MemoryCategory::Unknown(backtrace) => write!(f, "{backtrace}"),
-            }
-        }
-    }
-
-    let mut allocations: BTreeMap<MemoryCategory, Vec<Layout>> = BTreeMap::new();
-    axalloc::allocations_in(from..to, |info| {
-        let category = MemoryCategory::new(&info.backtrace);
-        allocations.entry(category).or_default().push(info.layout);
-    });
-    let mut allocations = allocations
-        .into_iter()
-        .map(|(category, layouts)| {
-            let total_size = layouts.iter().map(|l| l.size()).sum::<usize>();
-            (category, layouts, total_size)
-        })
-        .collect::<Vec<_>>();
-    allocations.sort_by_key(|it| cmp::Reverse(it.2));
-    if !allocations.is_empty() {
-        warn!("===========================");
-        warn!("Memory leak detected:");
-        for (category, layouts, total_size) in allocations {
-            warn!(
-                " {} bytes, {} allocations, {:?}, {category}",
-                total_size,
-                layouts.len(),
-                layouts[0],
-            );
-        }
-        warn!("==========================");
-    }
-}
-
-struct MemTrack;
-impl DeviceOps for MemTrack {
-    fn read_at(&self, buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
-        Ok(buf.len())
-    }
-    fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize> {
-        if offset == 0 {
-            match buf {
-                b"start\n" => {
-                    let generation = axalloc::current_generation();
-                    STAMPED_GENERATION.store(generation, Ordering::SeqCst);
-                    info!("Memory allocation generation stamped: {}", generation);
-                }
-                b"end\n" => {
-                    run_memory_leak_analysis();
-                }
-                _ => {
-                    warn!("Unknown command: {:?}", buf);
-                }
-            }
-        }
-        Ok(buf.len())
     }
     fn as_any(&self) -> &dyn Any {
         self
@@ -346,13 +216,14 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         "rtc0",
         Device::new(fs.clone(), NodeType::CharacterDevice, RTC0_DEVICE_ID, Rtc),
     );
+    #[cfg(feature = "track")]
     root.add(
         "memtrack",
         Device::new(
             fs.clone(),
             NodeType::CharacterDevice,
             DeviceId::new(114, 514),
-            MemTrack,
+            memtrack::MemTrack,
         ),
     );
 
@@ -377,3 +248,6 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
 
     SimpleDir::new_maker(fs, Arc::new(root))
 }
+
+#[cfg(feature = "track")]
+mod memtrack;

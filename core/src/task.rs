@@ -355,6 +355,7 @@ static SESSION_TABLE: RwLock<WeakMap<Pid, Weak<Session>>> = RwLock::new(WeakMap:
 ///
 /// This function is intended to be used during memory leak analysis to remove
 /// possible noise caused by expired entries in the [`WeakMap`].
+#[cfg(feature = "track")]
 pub(crate) fn cleanup_task_tables() {
     THREAD_TABLE.write().cleanup();
     PROCESS_TABLE.write().cleanup();

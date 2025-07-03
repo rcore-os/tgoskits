@@ -6,7 +6,11 @@ authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
+[features]
+track = ["axfeat/backtrace", "axalloc/tracking"]
+
 [dependencies]
+axfeat.workspace = true
 axalloc.workspace = true
 axbacktrace.workspace = true
 axconfig.workspace = true

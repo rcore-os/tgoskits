@@ -145,6 +145,7 @@ name = "axbacktrace"
 version = "0.1.0"
 dependencies = [
  "addr2line",
+ "axconfig",
  "cfg-if",
  "gimli",
  "kspin",
@@ -424,6 +425,7 @@ dependencies = [
  "chrono",
  "crate_interface",
  "kernel_guard",
+ "object",
  "percpu",
 ]
 
@@ -1563,6 +1565,7 @@ dependencies = [
  "axbacktrace",
  "axconfig",
  "axerrno",
+ "axfeat",
  "axfs-ng",
  "axfs-ng-vfs",
  "axhal",
