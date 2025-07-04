@@ -5,7 +5,7 @@ use core::ffi::CStr;
 use alloc::{
     borrow::ToOwned, collections::btree_map::BTreeMap, string::String, sync::Arc, vec::Vec,
 };
-use axerrno::{AxError, AxResult, LinuxError, LinuxResult};
+use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
 use axhal::{
     mem::virt_to_phys,
@@ -18,7 +18,7 @@ use spin::lock_api::RwLock;
 use xmas_elf::{ElfFile, program::SegmentData};
 
 /// Creates a new empty user address space.
-pub fn new_user_aspace_empty() -> AxResult<AddrSpace> {
+pub fn new_user_aspace_empty() -> LinuxResult<AddrSpace> {
     AddrSpace::new_empty(
         VirtAddr::from_usize(starry_config::USER_SPACE_BASE),
         starry_config::USER_SPACE_SIZE,
@@ -27,7 +27,7 @@ pub fn new_user_aspace_empty() -> AxResult<AddrSpace> {
 
 /// If the target architecture requires it, the kernel portion of the address
 /// space will be copied to the user address space.
-pub fn copy_from_kernel(_aspace: &mut AddrSpace) -> AxResult {
+pub fn copy_from_kernel(_aspace: &mut AddrSpace) -> LinuxResult {
     #[cfg(not(any(target_arch = "aarch64", target_arch = "loongarch64")))]
     {
         // ARMv8 (aarch64) and LoongArch64 use separate page tables for user space
@@ -39,7 +39,7 @@ pub fn copy_from_kernel(_aspace: &mut AddrSpace) -> AxResult {
 }
 
 /// Map the signal trampoline to the user address space.
-pub fn map_trampoline(aspace: &mut AddrSpace) -> AxResult {
+pub fn map_trampoline(aspace: &mut AddrSpace) -> LinuxResult {
     let signal_trampoline_paddr = virt_to_phys(axsignal::arch::signal_trampoline_address().into());
     aspace.map_linear(
         starry_config::SIGNAL_TRAMPOLINE.into(),
@@ -59,8 +59,12 @@ pub fn map_trampoline(aspace: &mut AddrSpace) -> AxResult {
 ///
 /// # Returns
 /// - The entry point of the user app.
-fn map_elf<'a>(uspace: &mut AddrSpace, base: usize, elf: &'a ElfFile) -> AxResult<ELFParser<'a>> {
-    let elf_parser = ELFParser::new(elf, base).map_err(|_| AxError::InvalidData)?;
+fn map_elf<'a>(
+    uspace: &mut AddrSpace,
+    base: usize,
+    elf: &'a ElfFile,
+) -> LinuxResult<ELFParser<'a>> {
+    let elf_parser = ELFParser::new(elf, base).map_err(|_| LinuxError::EINVAL)?;
 
     for segement in elf_parser.ph_load() {
         debug!(
@@ -84,7 +88,7 @@ fn map_elf<'a>(uspace: &mut AddrSpace, base: usize, elf: &'a ElfFile) -> AxResul
         let seg_data = elf
             .input
             .get(segement.offset..segement.offset + segement.filesz as usize)
-            .ok_or(AxError::InvalidData)?;
+            .ok_or(LinuxError::EINVAL)?;
         uspace.write(segement.vaddr, PageSize::Size4K, seg_data)?;
         // TDOO: flush the I-cache
     }
@@ -124,7 +128,7 @@ pub fn load_user_app(
 ) -> LinuxResult<(VirtAddr, VirtAddr)> {
     let path = path
         .or_else(|| args.first().map(String::as_str))
-        .ok_or(AxError::InvalidInput)?;
+        .ok_or(LinuxError::EINVAL)?;
     // FIXME: impl `/proc/self/exe` to let busybox retry running
     if path.ends_with(".sh") {
         let new_args: Vec<String> = core::iter::once("/bin/sh".to_owned())
@@ -141,7 +145,7 @@ pub fn load_user_app(
             if file_data.starts_with(b"#!") {
                 let head = &file_data[2..file_data.len().min(256)];
                 let pos = head.iter().position(|c| *c == b'\n').unwrap_or(head.len());
-                let line = core::str::from_utf8(&head[..pos]).map_err(|_| AxError::InvalidData)?;
+                let line = core::str::from_utf8(&head[..pos]).map_err(|_| LinuxError::EINVAL)?;
 
                 let new_args: Vec<String> = line
                     .trim()

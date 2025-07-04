@@ -1,7 +1,7 @@
 use core::any::Any;
 
 use alloc::sync::Arc;
-use axerrno::{AxResult, LinuxError, LinuxResult};
+use axerrno::{LinuxError, LinuxResult};
 use axio::{BufReader, PollState, prelude::*};
 use axsync::Mutex;
 use linux_raw_sys::general::S_IFCHR;
@@ -12,7 +12,7 @@ struct StdinRaw;
 
 impl Read for StdinRaw {
     // Non-blocking read, returns number of bytes read.
-    fn read(&mut self, buf: &mut [u8]) -> AxResult<usize> {
+    fn read(&mut self, buf: &mut [u8]) -> LinuxResult<usize> {
         let mut read_len = 0;
         while read_len < buf.len() {
             let len = axhal::console::read_bytes(&mut buf[read_len..]);
@@ -34,12 +34,12 @@ impl Read for StdinRaw {
 struct StdoutRaw;
 
 impl Write for StdoutRaw {
-    fn write(&mut self, buf: &[u8]) -> AxResult<usize> {
+    fn write(&mut self, buf: &[u8]) -> LinuxResult<usize> {
         axhal::console::write_bytes(buf);
         Ok(buf.len())
     }
 
-    fn flush(&mut self) -> AxResult {
+    fn flush(&mut self) -> LinuxResult {
         Ok(())
     }
 }
@@ -50,7 +50,7 @@ pub struct Stdin {
 
 impl Stdin {
     // Block until at least one byte is read.
-    fn read_blocked(&self, buf: &mut [u8]) -> AxResult<usize> {
+    fn read_blocked(&self, buf: &mut [u8]) -> LinuxResult<usize> {
         let read_len = self.inner.lock().read(buf)?;
         if buf.is_empty() || read_len > 0 {
             return Ok(read_len);
@@ -67,7 +67,7 @@ impl Stdin {
 }
 
 impl Read for Stdin {
-    fn read(&mut self, buf: &mut [u8]) -> AxResult<usize> {
+    fn read(&mut self, buf: &mut [u8]) -> LinuxResult<usize> {
         self.read_blocked(buf)
     }
 }
@@ -77,11 +77,11 @@ pub struct Stdout {
 }
 
 impl Write for Stdout {
-    fn write(&mut self, buf: &[u8]) -> AxResult<usize> {
+    fn write(&mut self, buf: &[u8]) -> LinuxResult<usize> {
         self.inner.lock().write(buf)
     }
 
-    fn flush(&mut self) -> AxResult {
+    fn flush(&mut self) -> LinuxResult {
         self.inner.lock().flush()
     }
 }

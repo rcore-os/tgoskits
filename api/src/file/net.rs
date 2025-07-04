@@ -23,8 +23,8 @@ macro_rules! impl_socket {
     ($pub:vis fn $name:ident(&self $(,$arg:ident: $arg_ty:ty)*) -> $ret:ty) => {
         $pub fn $name(&self, $($arg: $arg_ty),*) -> $ret {
             match self {
-                Socket::Udp(udpsocket) => Ok(udpsocket.lock().$name($($arg),*)?),
-                Socket::Tcp(tcpsocket) => Ok(tcpsocket.lock().$name($($arg),*)?),
+                Socket::Udp(udpsocket) => udpsocket.lock().$name($($arg),*),
+                Socket::Tcp(tcpsocket) => tcpsocket.lock().$name($($arg),*),
             }
         }
     };
@@ -33,8 +33,8 @@ macro_rules! impl_socket {
 impl Socket {
     pub fn recv(&self, buf: &mut [u8]) -> LinuxResult<usize> {
         match self {
-            Socket::Udp(udpsocket) => Ok(udpsocket.lock().recv_from(buf).map(|e| e.0)?),
-            Socket::Tcp(tcpsocket) => Ok(tcpsocket.lock().recv(buf)?),
+            Socket::Udp(udpsocket) => udpsocket.lock().recv(buf),
+            Socket::Tcp(tcpsocket) => tcpsocket.lock().recv(buf, None),
         }
     }
 
@@ -46,7 +46,7 @@ impl Socket {
                 inner
                     .bind(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))
                     .ok();
-                Ok(inner.send_to(buf, addr)?)
+                inner.send_to(buf, addr)
             }
             Socket::Tcp(_) => Err(LinuxError::EISCONN),
         }
@@ -55,11 +55,13 @@ impl Socket {
     pub fn recvfrom(&self, buf: &mut [u8]) -> LinuxResult<(usize, Option<SocketAddr>)> {
         match self {
             // diff: must bind before recvfrom
-            Socket::Udp(udpsocket) => Ok(udpsocket
+            Socket::Udp(udpsocket) => udpsocket
                 .lock()
-                .recv_from(buf)
-                .map(|res| (res.0, Some(res.1)))?),
-            Socket::Tcp(tcpsocket) => Ok(tcpsocket.lock().recv(buf).map(|res| (res, None))?),
+                .recv_from(buf, None)
+                .map(|res| (res.0, Some(res.1))),
+            Socket::Tcp(tcpsocket) => {
+                Ok(tcpsocket.lock().recv(buf, None).map(|res| (res, None))?)
+            }
         }
     }
 

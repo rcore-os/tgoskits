@@ -14,6 +14,7 @@ axconfig.workspace = true
 axdriver.workspace = true
 axfs-ng.workspace = true
 axfs-ng-vfs.workspace = true
+axio.workspace = true
 axhal.workspace = true
 axlog.workspace = true
 axmm.workspace = true
@@ -36,7 +37,6 @@ spin.workspace = true
 starry-config.workspace = true
 starry-core.workspace = true
 
-axio = "0.1.1"
 bitmaps = { version = "3.2.1", default-features = false }
 chrono = { version = "0.4.41", default-features = false }
 flatten_objects = "0.2.4"

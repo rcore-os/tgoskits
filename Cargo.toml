@@ -43,8 +43,9 @@ axtask = { path = "arceos/modules/axtask", features = ["task-ext"] }
 axfs-ng-vfs = { git = "https://github.com/Starry-Mix-THU/axfs-ng-vfs", rev = "0247038" }
 axprocess = { git = "https://github.com/Starry-Mix-THU/axprocess.git", rev = "1666809" }
 axsignal = { git = "https://github.com/Starry-Mix-THU/axsignal.git", rev = "5092211" }
+axerrno = { git = "https://github.com/Starry-Mix-THU/axerrno.git", rev = "f5d8f86" }
+axio = { git = "https://github.com/Starry-Mix-THU/axio.git", rev = "e662ff6" }
 
-axerrno = "0.1"
 bitflags = "2.6"
 cfg-if = "1.0"
 extern-trait = "0.2"
@@ -103,6 +104,7 @@ axalloc.workspace = true
 axhal = { path = "arceos/modules/axhal" }
 
 [patch.crates-io]
+axerrno = { git = "https://github.com/Starry-Mix-THU/axerrno.git", rev = "f5d8f86" }
 page_table_entry = { git = "https://github.com/Starry-Mix-THU/page_table_multiarch.git", rev = "55683f9" }
 page_table_multiarch = { git = "https://github.com/Starry-Mix-THU/page_table_multiarch.git", rev = "55683f9" }
 
