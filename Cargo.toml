@@ -24,6 +24,7 @@ members = [
 edition = "2024"
 authors = [
     "Yuekai Jia <equation618@gmail.com>",
+    "Youjie Zheng <Azure_stars@126.com>",
     "yanjuguang <coolyanjg@163.com>",
     "Su Mingxian <aarkegz@gmail.com>",
     "RobertYuan <634954435@qq.com>",
