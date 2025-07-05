@@ -21,10 +21,14 @@ jobs:
         with:
           arch: loongarch64
 
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
       - name: Build
         run: make all
 
   sync:
+    if: false
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source repository

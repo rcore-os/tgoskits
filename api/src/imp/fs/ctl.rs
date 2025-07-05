@@ -499,8 +499,14 @@ pub fn sys_utimes(
     times: UserConstPtr<linux_raw_sys::general::timeval>,
 ) -> LinuxResult<isize> {
     let times = nullable!(times.get_as_slice(2))?;
-    let atime = times.map_or_else(wall_time, |it| it[0].to_time_value());
-    let mtime = times.map_or_else(wall_time, |it| it[1].to_time_value());
+    let atime = times
+        .map(|it| it[0].try_into_time_value())
+        .transpose()?
+        .unwrap_or_else(wall_time);
+    let mtime = times
+        .map(|it| it[1].try_into_time_value())
+        .transpose()?
+        .unwrap_or_else(wall_time);
     update_times(AT_FDCWD, path, Some(atime), Some(mtime), 0)?;
     Ok(0)
 }

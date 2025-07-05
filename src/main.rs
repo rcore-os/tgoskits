@@ -30,6 +30,9 @@ const CACHED_ELFS: &[&str] = &[
     "/glibc/lib/ld-linux-loongarch-lp64d.so.1",
 ];
 
+#[cfg(not(any(target_arch = "riscv64", target_arch = "loongarch64")))]
+const CACHED_ELFS: &[&str] = &[];
+
 #[unsafe(no_mangle)]
 fn main() {
     // Create a init process

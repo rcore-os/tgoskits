@@ -100,7 +100,7 @@ pub fn stdout() -> Stdout {
 
 impl super::FileLike for Stdin {
     fn read(&self, buf: &mut [u8]) -> LinuxResult<usize> {
-        Ok(self.read_blocked(buf)?)
+        self.read_blocked(buf)
     }
 
     fn write(&self, _buf: &[u8]) -> LinuxResult<usize> {
@@ -132,7 +132,7 @@ impl super::FileLike for Stdout {
     }
 
     fn write(&self, buf: &[u8]) -> LinuxResult<usize> {
-        Ok(self.inner.lock().write(buf)?)
+        self.inner.lock().write(buf)
     }
 
     fn stat(&self) -> LinuxResult<Kstat> {
