@@ -349,8 +349,8 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
         assert!(end_idx <= ENTRY_COUNT);
         for i in start_idx..end_idx {
             let entry = &mut dst_table[i];
-            if !self.borrowed_entries.set(i, true) {
-                self.dealloc_tree(entry, 1);
+            if !self.borrowed_entries.set(i, true) && self.next_table(entry).is_ok() {
+                self.dealloc_tree(entry.paddr(), 1);
             }
             *entry = src_table[i];
         }
@@ -532,16 +532,16 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
         Ok(())
     }
 
-    fn dealloc_tree(&self, table_entry: &PTE, level: usize) {
+    fn dealloc_tree(&self, table_paddr: PhysAddr, level: usize) {
         // don't free the entries in last level, they are not array.
         if level < M::LEVELS - 1 {
-            if let Ok(table) = self.next_table(table_entry) {
-                for entry in table {
-                    self.dealloc_tree(entry, level + 1);
+            for entry in self.table_of(table_paddr) {
+                if self.next_table(entry).is_ok() {
+                    self.dealloc_tree(entry.paddr(), level + 1);
                 }
-                H::dealloc_frame(table_entry.paddr());
             }
         }
+        H::dealloc_frame(table_paddr);
     }
 }
 
@@ -554,7 +554,9 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> Drop for PageTable64<
             if self.borrowed_entries.get(i) {
                 continue;
             }
-            self.dealloc_tree(entry, 1);
+            if self.next_table(entry).is_ok() {
+                self.dealloc_tree(entry.paddr(), 1);
+            }
         }
         H::dealloc_frame(self.root_paddr());
     }
