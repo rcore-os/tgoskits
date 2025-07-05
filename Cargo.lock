@@ -146,12 +146,10 @@ version = "0.1.0"
 dependencies = [
  "addr2line",
  "axconfig",
+ "axlog",
  "cfg-if",
  "gimli",
- "kspin",
- "object",
- "stable_deref_trait",
- "thiserror",
+ "paste",
 ]
 
 [[package]]
@@ -423,7 +421,6 @@ dependencies = [
  "chrono",
  "crate_interface",
  "kernel_guard",
- "object",
  "percpu",
 ]
 
@@ -1131,16 +1128,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.100",
-]
-
-[[package]]
-name = "object"
-version = "0.37.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03fd943161069e1768b4b3d050890ba48730e590f57e56d4aa04e7e090e61b4a"
-dependencies = [
- "memchr",
- "rustc-std-workspace-alloc",
 ]
 
 [[package]]
