@@ -15,7 +15,7 @@ pub struct CommandNew {
     #[arg(long, default_value = "x86_64")]
     arch: String,
 
-    /// Set the platform name, defaults to the directory name
+    /// Set the package name, defaults to the directory name
     #[arg(long)]
     name: Option<String>,
 

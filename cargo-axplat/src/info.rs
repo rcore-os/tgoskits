@@ -13,8 +13,16 @@ pub struct CommandInfo {
     #[arg(required = true, value_name = "PLATFORM")]
     package: String,
 
+    /// The drectory to run `cargo axplat`.
+    #[arg(short = 'C')]
+    directory: Option<String>,
+
     /// Path to Cargo.toml
-    #[arg(long = "manifest-path", help_heading = "Manifest Options")]
+    #[arg(
+        long = "manifest-path",
+        value_name = "PATH",
+        help_heading = "Manifest Options"
+    )]
     manifest_path: Option<String>,
 
     /// Display the platform name
@@ -83,21 +91,25 @@ impl PlatformInfo {
         })
     }
 
-    fn from(package_name: &str, manifest_path: &Option<String>) -> Result<Self, PlatformInfoErr> {
+    fn from(args: &CommandInfo) -> Result<Self, PlatformInfoErr> {
         let mut metadata_handler = MetadataCommand::new()
             .features(CargoOpt::AllFeatures)
+            .verbose(true)
             .clone();
 
-        if let Some(manifest_path) = manifest_path {
+        if let Some(dir) = &args.directory {
+            metadata_handler.current_dir(dir);
+        }
+        if let Some(manifest_path) = &args.manifest_path {
             metadata_handler.manifest_path(manifest_path);
         }
         let metadata = metadata_handler.exec().map_err(PlatformInfoErr::Metadata)?;
         for p in metadata.packages {
-            if p.name.as_str() == package_name {
+            if p.name.as_str() == args.package {
                 return Self::new(&p);
             }
         }
-        Err(PlatformInfoErr::PackageNotFound(package_name.into()))
+        Err(PlatformInfoErr::PackageNotFound(args.package.clone()))
     }
 
     fn display(&self, args: &CommandInfo) {
@@ -140,7 +152,7 @@ fn parse_config(config_path: &str) -> Result<(String, String), PlatformInfoErr> 
 }
 
 pub fn platform_info(args: CommandInfo) {
-    match PlatformInfo::from(&args.package, &args.manifest_path) {
+    match PlatformInfo::from(&args) {
         Ok(info) => {
             if args.plat || args.arch || args.version || args.source || args.config_path {
                 info.display(&args);
