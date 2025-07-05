@@ -61,7 +61,7 @@ checksum = "3d4054cba279515fa87761b101d857333ce06391dbe8f18a11347204a7111416"
 
 [[package]]
 name = "page_table_entry"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "aarch64-cpu",
  "bitflags 2.9.1",
@@ -71,7 +71,7 @@ dependencies = [
 
 [[package]]
 name = "page_table_multiarch"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "bitmaps",
  "log",
@@ -132,9 +132,9 @@ checksum = "8188909339ccc0c68cfb5a04648313f09621e8b87dc03095454f1a11f6c5d436"
 
 [[package]]
 name = "rustversion"
-version = "1.0.19"
+version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f7c45b9784283f1b2e7fb61b42047c2fd678ef0960d4f6f1eba131594cc369d4"
+checksum = "8a0d197bd2c9dc6e53b84da9556a69ba4cdfab8619eb41a8bd1cc2027a0f6b1d"
 
 [[package]]
 name = "tock-registers"

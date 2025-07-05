@@ -5,12 +5,10 @@ use page_table_entry::riscv::Rv64PTE;
 
 #[inline]
 fn riscv_flush_tlb(vaddr: Option<memory_addr::VirtAddr>) {
-    unsafe {
-        if let Some(vaddr) = vaddr {
-            riscv::asm::sfence_vma(0, vaddr.as_usize())
-        } else {
-            riscv::asm::sfence_vma_all();
-        }
+    if let Some(vaddr) = vaddr {
+        riscv::asm::sfence_vma(0, vaddr.as_usize())
+    } else {
+        riscv::asm::sfence_vma_all();
     }
 }
 

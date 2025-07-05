@@ -1,8 +1,14 @@
 # Changelog
 
+## 0.5.5
+
+### Bug Fixes
+
+- [Fix memory leak in `PageTable64::dealloc_tree`](https://github.com/arceos-org/page_table_multiarch/pull/22).
+
 ## 0.5.4
 
-## New Features
+### New Features
 
 - [Fix invalid query result](https://github.com/arceos-org/page_table_multiarch/pull/17).
 - [Fix incorrect TLB flush VA bits on aarch64](https://github.com/arceos-org/page_table_multiarch/pull/21).

@@ -15,7 +15,9 @@ const PAGE_LAYOUT: Layout = unsafe { Layout::from_size_align_unchecked(4096, 409
 thread_local! {
     static ALLOCATED: RefCell<HashSet<usize>> = RefCell::default();
 }
+
 struct TrackPagingHandler<M: PagingMetaData>(PhantomData<M>);
+
 impl<M: PagingMetaData> PagingHandler for TrackPagingHandler<M> {
     fn alloc_frame() -> Option<PhysAddr> {
         let ptr = unsafe { alloc::alloc(PAGE_LAYOUT) } as usize;
@@ -38,9 +40,7 @@ impl<M: PagingMetaData> PagingHandler for TrackPagingHandler<M> {
     }
 
     fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
-        if paddr.as_usize() == 0 {
-            panic!();
-        }
+        assert!(paddr.as_usize() > 0);
         VirtAddr::from_usize(paddr.as_usize())
     }
 }
@@ -91,36 +91,41 @@ fn run_test_for<M: PagingMetaData<VirtAddr = VirtAddr>, PTE: GenericPTE>() -> Pa
 }
 
 #[test]
-fn test_dealloc() -> PagingResult<()> {
-    #[cfg(target_arch = "x86_64")]
+fn test_dealloc_x86() -> PagingResult<()> {
     run_test_for::<
         page_table_multiarch::x86_64::X64PagingMetaData,
         page_table_entry::x86_64::X64PTE,
     >()?;
+    Ok(())
+}
 
-    #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
-    {
-        run_test_for::<
-            page_table_multiarch::riscv::Sv39MetaData<VirtAddr>,
-            page_table_entry::riscv::Rv64PTE,
-        >()?;
-        run_test_for::<
-            page_table_multiarch::riscv::Sv48MetaData<VirtAddr>,
-            page_table_entry::riscv::Rv64PTE,
-        >()?;
-    }
+#[test]
+fn test_dealloc_riscv() -> PagingResult<()> {
+    run_test_for::<
+        page_table_multiarch::riscv::Sv39MetaData<VirtAddr>,
+        page_table_entry::riscv::Rv64PTE,
+    >()?;
+    run_test_for::<
+        page_table_multiarch::riscv::Sv48MetaData<VirtAddr>,
+        page_table_entry::riscv::Rv64PTE,
+    >()?;
+    Ok(())
+}
 
-    #[cfg(target_arch = "aarch64")]
+#[test]
+fn test_dealloc_aarch64() -> PagingResult<()> {
     run_test_for::<
         page_table_multiarch::aarch64::A64PagingMetaData,
         page_table_entry::aarch64::A64PTE,
     >()?;
+    Ok(())
+}
 
-    #[cfg(target_arch = "loongarch64")]
+#[test]
+fn test_dealloc_loongarch64() -> PagingResult<()> {
     run_test_for::<
         page_table_multiarch::loongarch64::LA64MetaData,
         page_table_entry::loongarch64::LA64PTE,
     >()?;
-
     Ok(())
 }

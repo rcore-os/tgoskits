@@ -200,10 +200,7 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
                 PageSize::Size4K
             };
             let tlb = self.map(vaddr, paddr, page_size, flags).inspect_err(|e| {
-                error!(
-                    "failed to map page: {:#x?}({:?}) -> {:#x?}, {:?}",
-                    vaddr_usize, page_size, paddr, e
-                )
+                error!("failed to map page: {vaddr_usize:#x?}({page_size:?}) -> {paddr:#x?}, {e:?}")
             })?;
             if flush_tlb_by_page {
                 M::flush_tlb(Some(vaddr));
@@ -245,7 +242,7 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
             let vaddr = vaddr_usize.into();
             let (_, page_size, tlb) = self
                 .unmap(vaddr)
-                .inspect_err(|e| error!("failed to unmap page: {:#x?}, {:?}", vaddr_usize, e))?;
+                .inspect_err(|e| error!("failed to unmap page: {vaddr_usize:#x?}, {e:?}"))?;
             if flush_tlb_by_page {
                 tlb.flush();
             } else {
@@ -287,7 +284,7 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
             let vaddr = vaddr_usize.into();
             let (page_size, tlb) = self
                 .protect(vaddr, flags)
-                .inspect_err(|e| error!("failed to protect page: {:#x?}, {:?}", vaddr_usize, e))?;
+                .inspect_err(|e| error!("failed to protect page: {vaddr_usize:#x?}, {e:?}"))?;
             if flush_tlb_by_page {
                 tlb.flush();
             } else {
