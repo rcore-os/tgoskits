@@ -1,6 +1,6 @@
+use alloc::{borrow::Cow, sync::Arc, vec::Vec};
 use core::{any::Any, cmp::Ordering};
 
-use alloc::{borrow::Cow, sync::Arc, vec::Vec};
 use axfs_ng_vfs::{
     FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType,
     VfsError, VfsResult,
@@ -75,10 +75,15 @@ impl<M: RawMutex + Send + Sync + 'static> SimpleFile<M> {
 #[inherit_methods(from = "self.node")]
 impl<M: RawMutex + Send + Sync + 'static> NodeOps<M> for SimpleFile<M> {
     fn inode(&self) -> u64;
+
     fn metadata(&self) -> VfsResult<Metadata>;
+
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
+
     fn filesystem(&self) -> &dyn FilesystemOps<M>;
+
     fn sync(&self, data_only: bool) -> VfsResult<()>;
+
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
         self
     }

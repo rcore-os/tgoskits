@@ -1,3 +1,4 @@
+use alloc::ffi::CString;
 use core::{
     ffi::{c_char, c_int, c_void},
     mem::offset_of,
@@ -5,7 +6,6 @@ use core::{
     time::Duration,
 };
 
-use alloc::ffi::CString;
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
 use axfs_ng_vfs::{MetadataUpdate, NodePermission, NodeType, path::Path};
@@ -48,8 +48,8 @@ struct rtc_time {
 ///
 /// # Arguments
 /// * `fd` - The file descriptor
-/// * `op` - The request code. It is of type unsigned long in glibc and BSD,
-///   and of type int in musl and other UNIX systems.
+/// * `op` - The request code. It is of type unsigned long in glibc and BSD, and
+///   of type int in musl and other UNIX systems.
 /// * `argp` - The argument to the request. It is a pointer to a memory location
 pub fn sys_ioctl(fd: i32, op: usize, argp: UserPtr<c_void>) -> LinuxResult<isize> {
     let f = get_file_like(fd)?;

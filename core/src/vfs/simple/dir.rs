@@ -1,5 +1,3 @@
-use core::any::Any;
-
 use alloc::{
     borrow::{Cow, ToOwned},
     boxed::Box,
@@ -7,6 +5,8 @@ use alloc::{
     string::String,
     sync::Arc,
 };
+use core::any::Any;
+
 use axfs_ng_vfs::{
     DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FilesystemOps, Metadata, MetadataUpdate,
     NodeOps, NodePermission, NodeType, Reference, VfsError, VfsResult, WeakDirEntry,
@@ -104,10 +104,15 @@ impl<M: RawMutex + Send + Sync + 'static, O: SimpleDirOps<M> + 'static> NodeOps<
     for SimpleDir<M, O>
 {
     fn inode(&self) -> u64;
+
     fn metadata(&self) -> VfsResult<Metadata>;
+
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
+
     fn filesystem(&self) -> &dyn FilesystemOps<M>;
+
     fn sync(&self, data_only: bool) -> VfsResult<()>;
+
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
         self
     }

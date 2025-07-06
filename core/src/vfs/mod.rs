@@ -9,7 +9,6 @@ use axerrno::LinuxResult;
 use axfs_ng::FS_CONTEXT;
 use axfs_ng_vfs::{Filesystem, NodePermission};
 use axsync::RawMutex;
-
 pub use simple::{Device, DeviceOps};
 pub use tmp::MemoryFs;
 

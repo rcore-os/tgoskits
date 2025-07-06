@@ -1,6 +1,6 @@
+use alloc::sync::Arc;
 use core::{mem, sync::atomic::Ordering};
 
-use alloc::sync::Arc;
 use axerrno::{LinuxError, LinuxResult};
 use axhal::arch::TrapFrame;
 use axprocess::{Pid, Thread};

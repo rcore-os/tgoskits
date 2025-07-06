@@ -1,6 +1,6 @@
+use alloc::sync::Arc;
 use core::any::Any;
 
-use alloc::sync::Arc;
 use axerrno::{LinuxError, LinuxResult};
 use axio::{BufReader, PollState, prelude::*};
 use axsync::Mutex;

@@ -1,6 +1,6 @@
+use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use alloc::sync::Arc;
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
 use axhal::arch::{TrapFrame, UspaceContext};
@@ -94,7 +94,8 @@ pub fn sys_clone(
     let flags = CloneFlags::from_bits_truncate(flags & !FLAG_MASK);
 
     info!(
-        "sys_clone <= flags: {:?}, exit_signal: {}, stack: {:#x}, ptid: {:#x}, ctid: {:#x}, tls: {:#x}",
+        "sys_clone <= flags: {:?}, exit_signal: {}, stack: {:#x}, ptid: {:#x}, ctid: {:#x}, tls: \
+         {:#x}",
         flags, exit_signal, stack, parent_tid, child_tid, tls
     );
 

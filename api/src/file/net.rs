@@ -1,6 +1,6 @@
+use alloc::sync::Arc;
 use core::{ffi::c_int, ops::Deref};
 
-use alloc::sync::Arc;
 use axerrno::{LinuxError, LinuxResult};
 use axio::PollState;
 use axnet::{
@@ -9,9 +9,8 @@ use axnet::{
 };
 use linux_raw_sys::general::S_IFSOCK;
 
-use crate::file::get_file_like;
-
 use super::{FileLike, Kstat};
+use crate::file::get_file_like;
 
 pub struct Socket(pub axnet::Socket);
 impl Deref for Socket {

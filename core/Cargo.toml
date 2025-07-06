@@ -35,6 +35,8 @@ spin.workspace = true
 
 starry-config.workspace = true
 
+gimli = { version = "*", default-features = false }
+indoc = "2"
 inherit-methods-macro = "0.1.0"
 kernel-elf-parser = { git = "https://github.com/Starry-Mix-THU/kernel_elf_parser.git", rev = "3b99715" }
 lock_api = "0.4.13"
@@ -47,7 +49,6 @@ slab = { version = "0.4.9", default-features = false }
 strum = { version = "0.27.1", default-features = false, features = ["derive"] }
 weak-map = "0.1.1"
 xmas-elf = "0.9"
-gimli = { version = "*", default-features = false }
 
 [target.'cfg(not(any(target_arch = "aarch64", target_arch = "loongarch64")))'.dependencies]
 axmm = { workspace = true, features = ["copy-from"] }

@@ -1,6 +1,6 @@
+use alloc::{string::String, sync::Arc};
 use core::{any::Any, time::Duration};
 
-use alloc::{string::String, sync::Arc};
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirNode, Filesystem, FilesystemOps, Metadata, MetadataUpdate, NodeOps,
     NodePermission, NodeType, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
@@ -61,6 +61,7 @@ impl<M: RawMutex> SimpleFs<M> {
     pub fn alloc_inode(&self) -> u64 {
         self.inodes.lock().insert(()) as u64 + 1
     }
+
     pub fn release_inode(&self, ino: u64) {
         self.inodes.lock().remove(ino as usize - 1);
     }

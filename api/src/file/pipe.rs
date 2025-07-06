@@ -1,14 +1,13 @@
+use alloc::sync::Arc;
 use core::any::Any;
 
-use alloc::sync::Arc;
 use axerrno::{LinuxError, LinuxResult};
 use axio::PollState;
 use axsync::Mutex;
 use linux_raw_sys::general::S_IFIFO;
 
-use crate::signal::have_signals;
-
 use super::{FileLike, Kstat};
+use crate::signal::have_signals;
 
 #[derive(Copy, Clone, PartialEq)]
 enum RingBufferStatus {

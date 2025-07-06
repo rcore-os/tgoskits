@@ -1,11 +1,11 @@
 //! Special devices
 
+use alloc::{format, sync::Arc};
 use core::{
     any::Any,
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
-use alloc::{format, sync::Arc};
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::{File, FsContext};
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeType, VfsResult};
@@ -34,9 +34,11 @@ impl DeviceOps for Null {
     fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
         Ok(0)
     }
+
     fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
         Ok(buf.len())
     }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -48,9 +50,11 @@ impl DeviceOps for Zero {
         buf.fill(0);
         Ok(buf.len())
     }
+
     fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
         Ok(0)
     }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -62,9 +66,11 @@ impl DeviceOps for Rtc {
     fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
         Ok(0)
     }
+
     fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
         Ok(0)
     }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -85,9 +91,11 @@ impl DeviceOps for Random {
         self.rng.lock().fill_bytes(buf);
         Ok(buf.len())
     }
+
     fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
         Ok(buf.len())
     }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -99,9 +107,11 @@ impl DeviceOps for Full {
         buf.fill(0);
         Ok(buf.len())
     }
+
     fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
         Err(LinuxError::ENOSPC)
     }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -155,6 +165,7 @@ impl DeviceOps for LoopDevice {
         let file = self.file.lock().clone();
         file.ok_or(LinuxError::EPERM)?.lock().read_at(buf, offset)
     }
+
     fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize> {
         if self.ro.load(Ordering::Relaxed) {
             return Err(LinuxError::EROFS);
@@ -162,6 +173,7 @@ impl DeviceOps for LoopDevice {
         let file = self.file.lock().clone();
         file.ok_or(LinuxError::EPERM)?.lock().write_at(buf, offset)
     }
+
     fn as_any(&self) -> &dyn Any {
         self
     }

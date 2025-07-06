@@ -28,16 +28,17 @@ pub fn sys_gettid() -> LinuxResult<isize> {
 #[repr(i32)]
 enum ArchPrctlCode {
     /// Set the GS segment base
-    SetGs = 0x1001,
+    SetGs    = 0x1001,
     /// Set the FS segment base
-    SetFs = 0x1002,
+    SetFs    = 0x1002,
     /// Get the FS segment base
-    GetFs = 0x1003,
+    GetFs    = 0x1003,
     /// Get the GS segment base
-    GetGs = 0x1004,
+    GetGs    = 0x1004,
     /// The setting of the flag manipulated by ARCH_SET_CPUID
     GetCpuid = 0x1011,
-    /// Enable (addr != 0) or disable (addr == 0) the cpuid instruction for the calling thread.
+    /// Enable (addr != 0) or disable (addr == 0) the cpuid instruction for the
+    /// calling thread.
     SetCpuid = 0x1012,
 }
 

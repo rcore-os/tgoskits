@@ -1,18 +1,21 @@
-//! Wrapper for [`sockaddr`]. Using trait to convert between [`SocketAddr`] and [`sockaddr`] types.
+//! Wrapper for [`sockaddr`]. Using trait to convert between [`SocketAddr`] and
+//! [`sockaddr`] types.
 
-use crate::ptr::{UserConstPtr, UserPtr};
-use axerrno::{LinuxError, LinuxResult};
 use core::{
     mem::{MaybeUninit, size_of},
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
 };
+
+use axerrno::{LinuxError, LinuxResult};
 use linux_raw_sys::net::{
     __kernel_sa_family_t, AF_INET, AF_INET6, in_addr, in6_addr, sockaddr, sockaddr_in,
     sockaddr_in6, socklen_t,
 };
 
-/// Trait to extend [`SocketAddr`] and its variants with methods for reading from and writing to user space.
-///
+use crate::ptr::{UserConstPtr, UserPtr};
+
+/// Trait to extend [`SocketAddr`] and its variants with methods for reading
+/// from and writing to user space.
 pub trait SocketAddrExt: Sized {
     /// This method attempts to interpret the data pointed to by `addr` with the
     /// given `addrlen` as a valid socket address of the implementing type.
@@ -33,7 +36,6 @@ pub trait SocketAddrExt: Sized {
 ///
 /// This function reads `addrlen` bytes from the user-space pointer `addr` and
 /// copies them into a `MaybeUninit<sockaddr>` in kernel memory.
-///
 #[inline]
 fn copy_sockaddr_from_user(
     addr: UserConstPtr<sockaddr>,
@@ -54,10 +56,11 @@ fn copy_sockaddr_from_user(
 impl SocketAddrExt for SocketAddr {
     /// Reads a [`SocketAddr`] from user space.
     ///
-    /// This implementation first performs basic length validation. Then, it copies
-    /// the raw [`sockaddr`] data from user space into a temporary kernel buffer.
-    /// Based on the address family ([`AF_INET`] or [`AF_INET6`]) extracted from the
-    /// copied data, it delegates the actual parsing to [`SocketAddrV4::read_from_user`]
+    /// This implementation first performs basic length validation. Then, it
+    /// copies the raw [`sockaddr`] data from user space into a temporary
+    /// kernel buffer. Based on the address family ([`AF_INET`] or
+    /// [`AF_INET6`]) extracted from the copied data, it delegates the
+    /// actual parsing to [`SocketAddrV4::read_from_user`]
     /// or [`SocketAddrV6::read_from_user`].
     fn read_from_user(addr: UserConstPtr<sockaddr>, addrlen: socklen_t) -> LinuxResult<Self> {
         if size_of::<__kernel_sa_family_t>() > addrlen as usize
@@ -82,9 +85,10 @@ impl SocketAddrExt for SocketAddr {
 
     /// Writes the [`SocketAddr`] to user space.
     ///
-    /// This implementation checks for a null user-space pointer. Then, it delegates
-    /// the actual writing to the specific [`SocketAddrV4`] or [`SocketAddrV6`]
-    /// `write_to_user` implementation based on the variant of `self`.
+    /// This implementation checks for a null user-space pointer. Then, it
+    /// delegates the actual writing to the specific [`SocketAddrV4`] or
+    /// [`SocketAddrV6`] `write_to_user` implementation based on the variant
+    /// of `self`.
     fn write_to_user(&self, addr: UserPtr<sockaddr>) -> LinuxResult<socklen_t> {
         if addr.is_null() {
             return Err(LinuxError::EINVAL);
@@ -109,7 +113,8 @@ impl SocketAddrExt for SocketAddr {
     /// Gets the encoded length of the [`SocketAddr`] instance.
     ///
     /// Returns the size in bytes that this [`SocketAddr`] would occupy when
-    /// encoded as a [`sockaddr_in`] (for IPv4) or [`sockaddr_in6`] (for IPv6) structure.
+    /// encoded as a [`sockaddr_in`] (for IPv4) or [`sockaddr_in6`] (for IPv6)
+    /// structure.
     fn addr_len(&self) -> socklen_t {
         match self {
             SocketAddr::V4(v4) => v4.addr_len(),
@@ -192,6 +197,7 @@ impl SocketAddrExt for SocketAddrV6 {
             addr_in6.sin6_scope_id,
         ))
     }
+
     /// Writes the `SocketAddrV6` to user space.
     fn write_to_user(&self, addr: UserPtr<sockaddr>) -> LinuxResult<socklen_t> {
         if addr.is_null() {

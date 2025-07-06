@@ -1,4 +1,5 @@
 use alloc::{borrow::ToOwned, fmt, string::String};
+
 use axerrno::LinuxResult;
 use axprocess::Thread;
 use axsignal::Signo;
@@ -156,7 +157,13 @@ impl fmt::Display for TaskStat {
         } = self;
         writeln!(
             f,
-            "{pid} ({comm}) {state} {ppid} {pgrp} {session} {tty_nr} {tpgid} {flags} {minflt} {cminflt} {majflt} {cmajflt} {utime} {stime} {cutime} {cstime} {priority} {nice} {num_threads} {itrealvalue} {starttime} {vsize} {rss} {rsslim} {start_code} {end_code} {start_stack} {kstk_esp} {kstk_eip} {signal} {blocked} {sigignore} {sigcatch} {wchan} {nswap} {cnswap} {exit_signal} {processor} {rt_priority} {policy} {delayacct_blkio_ticks} {guest_time} {cguest_time} {start_data} {end_data} {start_brk} {arg_start} {arg_end} {env_start} {env_end} {exit_code}",
+            "{pid} ({comm}) {state} {ppid} {pgrp} {session} {tty_nr} {tpgid} {flags} {minflt} \
+             {cminflt} {majflt} {cmajflt} {utime} {stime} {cutime} {cstime} {priority} {nice} \
+             {num_threads} {itrealvalue} {starttime} {vsize} {rss} {rsslim} {start_code} \
+             {end_code} {start_stack} {kstk_esp} {kstk_eip} {signal} {blocked} {sigignore} \
+             {sigcatch} {wchan} {nswap} {cnswap} {exit_signal} {processor} {rt_priority} {policy} \
+             {delayacct_blkio_ticks} {guest_time} {cguest_time} {start_data} {end_data} \
+             {start_brk} {arg_start} {arg_end} {env_start} {env_end} {exit_code}",
         )
     }
 }

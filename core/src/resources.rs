@@ -47,6 +47,7 @@ impl Default for Rlimits {
 
 impl Index<u32> for Rlimits {
     type Output = Rlimit;
+
     fn index(&self, index: u32) -> &Self::Output {
         &self.0[index as usize]
     }

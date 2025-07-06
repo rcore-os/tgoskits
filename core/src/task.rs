@@ -2,6 +2,11 @@
 
 mod stat;
 
+use alloc::{
+    string::String,
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 use core::{
     cell::RefCell,
     ops::Deref,
@@ -9,11 +14,6 @@ use core::{
     time::Duration,
 };
 
-use alloc::{
-    string::String,
-    sync::{Arc, Weak},
-    vec::Vec,
-};
 use axerrno::{LinuxError, LinuxResult};
 use axhal::{arch::UspaceContext, time::monotonic_time_nanos};
 use axmm::AddrSpace;
@@ -28,6 +28,7 @@ use extern_trait::extern_trait;
 use linux_raw_sys::general::SI_KERNEL;
 use scope_local::{ActiveScope, Scope};
 use spin::{Once, RwLock};
+pub use stat::TaskStat;
 use weak_map::WeakMap;
 
 use crate::{
@@ -35,8 +36,6 @@ use crate::{
     resources::Rlimits,
     time::TimeManager,
 };
-
-pub use stat::TaskStat;
 
 /// Create a new user task.
 pub fn new_user_task(
@@ -109,7 +108,8 @@ impl StarryTaskExt {
     }
 }
 
-/// Update the time statistics to reflect a switch from kernel mode to user mode.
+/// Update the time statistics to reflect a switch from kernel mode to user
+/// mode.
 pub fn time_stat_from_kernel_to_user() {
     let curr = current();
     let thr_data = StarryTaskExt::of(&curr).thread_data();
@@ -123,7 +123,8 @@ pub fn time_stat_from_kernel_to_user() {
         });
 }
 
-/// Update the time statistics to reflect a switch from user mode to kernel mode.
+/// Update the time statistics to reflect a switch from user mode to kernel
+/// mode.
 pub fn time_stat_from_user_to_kernel() {
     let curr = current();
     let thr_data = StarryTaskExt::of(&curr).thread_data();
@@ -180,7 +181,8 @@ pub struct ThreadData {
     ///
     /// See <https://manpages.debian.org/unstable/manpages-dev/set_tid_address.2.en.html#clear_child_tid>
     ///
-    /// When the thread exits, the kernel clears the word at this address if it is not NULL.
+    /// When the thread exits, the kernel clears the word at this address if it
+    /// is not NULL.
     pub clear_child_tid: AtomicUsize,
 
     /// The head of the robust list

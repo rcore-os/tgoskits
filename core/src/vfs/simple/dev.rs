@@ -1,6 +1,6 @@
+use alloc::sync::Arc;
 use core::any::Any;
 
-use alloc::sync::Arc;
 use axfs_ng_vfs::{
     DeviceId, FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeOps, NodePermission,
     NodeType, VfsError, VfsResult,
@@ -66,12 +66,17 @@ impl<M: RawMutex + Send + Sync + 'static> Device<M> {
 #[inherit_methods(from = "self.node")]
 impl<M: RawMutex + Send + Sync + 'static> NodeOps<M> for Device<M> {
     fn inode(&self) -> u64;
+
     fn metadata(&self) -> VfsResult<Metadata>;
+
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
+
     fn filesystem(&self) -> &dyn FilesystemOps<M>;
+
     fn sync(&self, _data_only: bool) -> VfsResult<()> {
         Err(VfsError::EINVAL)
     }
+
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
         self
     }

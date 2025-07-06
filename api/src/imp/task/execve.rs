@@ -1,6 +1,6 @@
+use alloc::{string::ToString, vec::Vec};
 use core::ffi::c_char;
 
-use alloc::{string::ToString, vec::Vec};
 use axerrno::{LinuxError, LinuxResult};
 use axhal::arch::TrapFrame;
 use axtask::current;

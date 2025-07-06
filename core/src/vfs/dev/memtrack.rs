@@ -1,3 +1,4 @@
+use alloc::{collections::btree_map::BTreeMap, vec::Vec};
 use core::{
     alloc::Layout,
     any::Any,
@@ -5,7 +6,6 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use alloc::{collections::btree_map::BTreeMap, vec::Vec};
 use axbacktrace::Backtrace;
 use axfs_ng_vfs::VfsResult;
 
@@ -105,6 +105,7 @@ impl DeviceOps for MemTrack {
     fn read_at(&self, buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
         Ok(buf.len())
     }
+
     fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize> {
         if offset == 0 {
             match buf {
@@ -123,6 +124,7 @@ impl DeviceOps for MemTrack {
         }
         Ok(buf.len())
     }
+
     fn as_any(&self) -> &dyn Any {
         self
     }

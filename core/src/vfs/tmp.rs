@@ -1,8 +1,8 @@
-use core::{any::Any, borrow::Borrow, cmp::Ordering, time::Duration};
-
 use alloc::{
     borrow::ToOwned, collections::btree_map::BTreeMap, string::String, sync::Arc, vec::Vec,
 };
+use core::{any::Any, borrow::Borrow, cmp::Ordering, time::Duration};
+
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
     FilesystemOps, Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, StatFs,
@@ -366,6 +366,7 @@ impl Inode {
             _ => Err(VfsError::EISDIR),
         }
     }
+
     fn as_dir(&self) -> VfsResult<&DirContent> {
         match self.content {
             NodeContent::Dir(ref content) => Ok(content),

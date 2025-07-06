@@ -21,6 +21,7 @@ mod conv {
         pub fn sys_to_rust(val: i32) -> LinuxResult<T> {
             T::try_from(val).map_err(|_| LinuxError::EINVAL)
         }
+
         pub fn rust_to_sys(val: T) -> LinuxResult<i32> {
             val.try_into().map_err(|_| LinuxError::EINVAL)
         }
@@ -31,6 +32,7 @@ mod conv {
         pub fn sys_to_rust(val: i32) -> LinuxResult<bool> {
             Ok(val != 0)
         }
+
         pub fn rust_to_sys(val: bool) -> LinuxResult<i32> {
             Ok(val as _)
         }
@@ -41,6 +43,7 @@ mod conv {
         pub fn sys_to_rust(val: timeval) -> LinuxResult<core::time::Duration> {
             val.try_into_time_value()
         }
+
         pub fn rust_to_sys(val: core::time::Duration) -> LinuxResult<timeval> {
             Ok(timeval::from_time_value(val))
         }

@@ -114,7 +114,10 @@ pub fn sys_faccessat2(
     flags: u32,
 ) -> LinuxResult<isize> {
     let path = nullable!(path.get_as_str())?;
-    info!("sys_faccessat2 <= dirfd: {}, path: {:?}, mode: {}, flags: {}", dirfd, path, mode, flags);
+    info!(
+        "sys_faccessat2 <= dirfd: {}, path: {:?}, mode: {}, flags: {}",
+        dirfd, path, mode, flags
+    );
 
     let file = resolve_at(dirfd, path, flags)?;
 

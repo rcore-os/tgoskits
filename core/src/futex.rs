@@ -1,11 +1,11 @@
 //! Futex implementation.
 
-use core::{ops::Deref, sync::atomic::AtomicBool};
-
 use alloc::{
     collections::btree_map::BTreeMap,
     sync::{Arc, Weak},
 };
+use core::{ops::Deref, sync::atomic::AtomicBool};
+
 use axmm::{AddrSpace, Backend, SharedPages};
 use axsync::Mutex;
 use axtask::{WaitQueue, current};

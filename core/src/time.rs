@@ -16,11 +16,11 @@ fn time_value_from_nanos(nanos: usize) -> TimeValue {
 /// The type of interval timer.
 pub enum ITimerType {
     /// 统计系统实际运行时间
-    Real = 0,
+    Real    = 0,
     /// 统计用户态运行时间
     Virtual = 1,
     /// 统计进程的所有用户态/内核态运行时间
-    Prof = 2,
+    Prof    = 2,
 }
 impl ITimerType {
     /// Returns the signal number associated with this timer type.

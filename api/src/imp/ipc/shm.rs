@@ -1,24 +1,25 @@
-use alloc::collections::btree_map::BTreeMap;
-use alloc::vec::Vec;
+use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 
-use alloc::sync::Arc;
 use axerrno::{LinuxError, LinuxResult};
 use axhal::time::monotonic_time_nanos;
 use axmm::SharedPages;
 use axprocess::Pid;
 use axsync::Mutex;
 use axtask::current;
-
 use lazy_static::lazy_static;
-use linux_raw_sys::ctypes::{c_long, c_ushort};
-use linux_raw_sys::general::*;
+use linux_raw_sys::{
+    ctypes::{c_long, c_ushort},
+    general::*,
+};
 use memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use page_table_entry::MappingFlags;
 use page_table_multiarch::PageSize;
 use starry_core::task::StarryTaskExt;
 
-use crate::imp::ipc::{BiBTreeMap, IPCID_ALLOCATOR};
-use crate::ptr::{UserPtr, nullable};
+use crate::{
+    imp::ipc::{BiBTreeMap, IPCID_ALLOCATOR},
+    ptr::{UserPtr, nullable},
+};
 
 bitflags::bitflags! {
     /// flags for sys_shmat
@@ -59,14 +60,14 @@ pub struct IpcPerm {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ShmidDs {
-    pub shm_perm: IpcPerm,          /* operation permission struct */
-    pub shm_segsz: __kernel_size_t, /* size of segment in bytes */
-    pub shm_atime: __kernel_time_t, /* time of last shmat() */
-    pub shm_dtime: __kernel_time_t, /* time of last shmdt() */
-    pub shm_ctime: __kernel_time_t, /* time of last change by shmctl() */
-    pub shm_cpid: __kernel_pid_t,   /* pid of creator */
-    pub shm_lpid: __kernel_pid_t,   /* pid of last shmop */
-    pub shm_nattch: c_ushort,       /* number of current attaches */
+    pub shm_perm: IpcPerm,          // operation permission struct
+    pub shm_segsz: __kernel_size_t, // size of segment in bytes
+    pub shm_atime: __kernel_time_t, // time of last shmat()
+    pub shm_dtime: __kernel_time_t, // time of last shmdt()
+    pub shm_ctime: __kernel_time_t, // time of last change by shmctl()
+    pub shm_cpid: __kernel_pid_t,   // pid of creator
+    pub shm_lpid: __kernel_pid_t,   // pid of last shmop
+    pub shm_nattch: c_ushort,       // number of current attaches
 }
 
 impl ShmidDs {
@@ -95,15 +96,14 @@ impl ShmidDs {
     }
 }
 
-/**
- * This struct is used to maintain the shmem in kernel.
- */
+/// This struct is used to maintain the shmem in kernel.
 struct ShmInner {
     pub shmid: i32,
     pub page_num: usize,
-    pub va_range: BTreeMap<Pid, VirtAddrRange>, // In each process, this shm is mapped into different virt addr range
-    pub phys_pages: Option<Arc<SharedPages>>,   // shm page num -> physical page
-    pub rmid: bool,                             // whether remove on last detach, see shm_ctl
+    pub va_range: BTreeMap<Pid, VirtAddrRange>, /* In each process, this shm is mapped into
+                                                 * different virt addr range */
+    pub phys_pages: Option<Arc<SharedPages>>, // shm page num -> physical page
+    pub rmid: bool,                           // whether remove on last detach, see shm_ctl
     pub mapping_flags: MappingFlags,
     pub shmid_ds: ShmidDs, // c type struct, used in shm_ctl
 }
@@ -172,14 +172,14 @@ impl ShmInner {
     }
 }
 
-/**
- * This struct is used to manage the relationship between the shmem and processes.
- * note: this struct do not modify the struct ShmInner, but only manage the mapping.
- */
+/// This struct is used to manage the relationship between the shmem and
+/// processes. note: this struct do not modify the struct ShmInner, but only
+/// manage the mapping.
 struct ShmManager {
     key_shmid: BiBTreeMap<i32, i32>,                  // key <-> shm_id
     shmid_inner: BTreeMap<i32, Arc<Mutex<ShmInner>>>, // shm_id -> shm_inner
-    pid_shmid_vaddr: BTreeMap<Pid, BiBTreeMap<i32, VirtAddr>>, // in specific process, shm_id <-> shm_start_addr
+    pid_shmid_vaddr: BTreeMap<Pid, BiBTreeMap<i32, VirtAddr>>, /* in specific process, shm_id <->
+                                                       * shm_start_addr */
 }
 
 impl ShmManager {
@@ -246,25 +246,20 @@ impl ShmManager {
             .insert(shmid, vaddr);
     }
 
-    /*
-     * Garbage collection for shared memory:
-     * 1. when the process call sys_shmdt, delete everything related to shmaddr,
-     *   including map 'shmid_vaddr';
-     * 2. when the last process detach the shared memory and this shared memory
-     *   was specified with IPC_RMID, delete everything related to this shared memory,
-     *   including all the 3 maps;
-     * 3. when a process exit, delete everything related to this process, including 2
-     *   maps: 'shmid_vaddr' and 'shmid_inner';
-     *
-     *
-     * The attach between the process and the shared memory occurs in sys_shmat,
-     *  and the detach occurs in sys_shmdt, or when the process exits.
-     */
+    // Garbage collection for shared memory:
+    // 1. when the process call sys_shmdt, delete everything related to shmaddr,
+    //    including map 'shmid_vaddr';
+    // 2. when the last process detach the shared memory and this shared memory was
+    //    specified with IPC_RMID, delete everything related to this shared memory,
+    //    including all the 3 maps;
+    // 3. when a process exit, delete everything related to this process, including
+    //    2 maps: 'shmid_vaddr' and 'shmid_inner';
+    //
+    // The attach between the process and the shared memory occurs in sys_shmat,
+    //  and the detach occurs in sys_shmdt, or when the process exits.
 
-    /*
-     * Note: all the below delete functions only delete the mapping between the shm_id and the shm_inner,
-     *   but the shm_inner is not deleted or modifyed!
-     */
+    // Note: all the below delete functions only delete the mapping between the
+    // shm_id and the shm_inner,   but the shm_inner is not deleted or modifyed!
 
     // called by shmdt
     pub fn remove_shmaddr(&mut self, pid: Pid, shmaddr: VirtAddr) {

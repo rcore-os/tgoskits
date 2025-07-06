@@ -1,4 +1,5 @@
 use alloc::vec;
+
 use axerrno::{LinuxError, LinuxResult};
 use axhal::paging::{MappingFlags, PageSize};
 use axtask::current;
@@ -92,7 +93,8 @@ pub fn sys_mmap(
     let mut aspace = StarryTaskExt::of(&curr).process_data().aspace.lock();
     let permission_flags = MmapProt::from_bits_truncate(prot);
     // TODO: check illegal flags for mmap
-    // An example is the flags contained none of MAP_PRIVATE, MAP_SHARED, or MAP_SHARED_VALIDATE.
+    // An example is the flags contained none of MAP_PRIVATE, MAP_SHARED, or
+    // MAP_SHARED_VALIDATE.
     let map_flags = MmapFlags::from_bits_truncate(flags);
     if map_flags.contains(MmapFlags::PRIVATE | MmapFlags::SHARED) {
         return Err(LinuxError::EINVAL);

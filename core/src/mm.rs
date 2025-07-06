@@ -1,10 +1,10 @@
 //! User address space management.
 
-use core::ffi::CStr;
-
 use alloc::{
     borrow::ToOwned, collections::btree_map::BTreeMap, string::String, sync::Arc, vec::Vec,
 };
+use core::ffi::CStr;
+
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
 use axhal::{
@@ -114,7 +114,8 @@ pub fn insert_elf_cache(path: &str) -> LinuxResult<()> {
 ///
 /// # Arguments
 /// - `uspace`: The address space of the user app.
-/// - `args`: The arguments of the user app. The first argument is the path of the user app.
+/// - `args`: The arguments of the user app. The first argument is the path of
+///   the user app.
 /// - `envs`: The environment variables of the user app.
 ///
 /// # Returns
@@ -206,8 +207,9 @@ pub fn load_user_app(
         .collect::<Vec<_>>();
 
     // The user stack is divided into two parts:
-    // `ustack_start` -> `ustack_pointer`: It is the stack space that users actually read and write.
-    // `ustack_pointer` -> `ustack_end`: It is the space that contains the arguments, environment variables and auxv passed to the app.
+    // `ustack_start` -> `ustack_pointer`: It is the stack space that users actually
+    // read and write. `ustack_pointer` -> `ustack_end`: It is the space that
+    // contains the arguments, environment variables and auxv passed to the app.
     //  When the app starts running, the stack pointer points to `ustack_pointer`.
     let ustack_end = VirtAddr::from_usize(starry_config::USER_STACK_TOP);
     let ustack_size = starry_config::USER_STACK_SIZE;

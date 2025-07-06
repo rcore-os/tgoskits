@@ -3,9 +3,9 @@ mod net;
 mod pipe;
 mod stdio;
 
+use alloc::sync::Arc;
 use core::{any::Any, ffi::c_int, time::Duration};
 
-use alloc::sync::Arc;
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng_vfs::{DeviceId, FileNodeOps};
 use axio::PollState;
