@@ -1,8 +1,7 @@
 use core::net::SocketAddr;
 
 use axerrno::{LinuxError, LinuxResult};
-use axnet::{TcpSocket, UdpSocket};
-use axsync::Mutex;
+use axnet::{SocketOps, TcpSocket, UdpSocket};
 use linux_raw_sys::{
     general::O_NONBLOCK,
     net::{
@@ -33,13 +32,13 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> LinuxResult<isize> {
             if proto != 0 && proto != IPPROTO_TCP as _ {
                 return Err(LinuxError::EPROTONOSUPPORT);
             }
-            Socket::Tcp(Mutex::new(TcpSocket::new()))
+            Socket(axnet::Socket::Tcp(TcpSocket::new()))
         }
         SOCK_DGRAM => {
             if proto != 0 && proto != IPPROTO_UDP as _ {
                 return Err(LinuxError::EPROTONOSUPPORT);
             }
-            Socket::Udp(Mutex::new(UdpSocket::new()))
+            Socket(axnet::Socket::Udp(UdpSocket::new()))
         }
         _ => return Err(LinuxError::ESOCKTNOSUPPORT),
     };
@@ -94,7 +93,7 @@ pub fn sys_accept(
     debug!("sys_accept <= fd: {}", fd);
 
     let socket = Socket::from_fd(fd)?;
-    let socket = socket.accept()?;
+    let socket = Socket(socket.accept()?);
 
     let remote_addr = socket.local_addr()?;
     let fd = socket.add_to_fd_table().map(|fd| fd as isize)?;

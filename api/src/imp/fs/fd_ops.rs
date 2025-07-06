@@ -174,7 +174,7 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> LinuxResult<isize> {
             let f = get_file_like(fd)?;
 
             let mut ret = 0;
-            if f.is_nonblocking() {
+            if f.nonblocking() {
                 ret |= O_NONBLOCK;
             }
 

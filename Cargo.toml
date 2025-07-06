@@ -23,7 +23,8 @@ axfeat = { path = "arceos/api/axfeat", features = [
     "lwext4_rs",
     "multitask",
     "net",
-    "sched_fifo",
+    # "sched_fifo",
+    "sched_rr",
     "smp",
 ] }
 

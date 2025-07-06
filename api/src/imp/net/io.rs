@@ -1,7 +1,8 @@
-use core::net::SocketAddr;
+use core::net::{Ipv4Addr, SocketAddr};
 
 use axerrno::LinuxResult;
-use linux_raw_sys::net::{sockaddr, socklen_t};
+use axnet::{RecvFlags, SendFlags, SocketOps};
+use linux_raw_sys::net::{MSG_PEEK, MSG_TRUNC, sockaddr, socklen_t};
 
 use crate::{
     file::{FileLike, Socket},
@@ -30,12 +31,7 @@ pub fn sys_sendto(
 
     let bytes = buf.get_as_slice(len)?;
     let socket = Socket::from_fd(fd)?;
-
-    let sent = if let Some(addr) = addr {
-        socket.sendto(bytes, addr)?
-    } else {
-        socket.send(bytes)?
-    };
+    let sent = socket.send(bytes, addr, SendFlags::empty())?;
 
     Ok(sent as isize)
 }
@@ -52,11 +48,18 @@ pub fn sys_recvfrom(
 
     let socket = Socket::from_fd(fd)?;
     let buf = buf.get_as_mut_slice(len)?;
-    let (recv, remote_addr) = socket.recvfrom(buf)?;
+    let mut recv_flags = RecvFlags::empty();
+    if flags & MSG_PEEK != 0 {
+        recv_flags |= RecvFlags::PEEK;
+    }
+    if flags & MSG_TRUNC != 0 {
+        recv_flags |= RecvFlags::TRUNCATE;
+    }
 
-    if let Some(remote_addr) = remote_addr
-        && !addr.is_null()
-    {
+    let mut remote_addr = (!addr.is_null()).then(|| (Ipv4Addr::UNSPECIFIED, 0).into());
+    let recv = socket.recv(buf, remote_addr.as_mut(), recv_flags)?;
+
+    if let Some(remote_addr) = remote_addr {
         let len = remote_addr.write_to_user(addr)?;
         if let Some(addrlen) = nullable!(addrlen.get_as_mut())? {
             *addrlen = len;

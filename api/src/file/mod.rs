@@ -128,7 +128,7 @@ pub trait FileLike: Send + Sync {
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync>;
     fn poll(&self) -> LinuxResult<PollState>;
 
-    fn is_nonblocking(&self) -> bool {
+    fn nonblocking(&self) -> bool {
         false
     }
 

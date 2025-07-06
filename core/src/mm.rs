@@ -239,10 +239,6 @@ pub fn load_user_app(
         PageSize::Size4K,
     )?;
 
-    let user_sp = ustack_end - stack_data.len();
-
-    uspace.write(user_sp, PageSize::Size4K, stack_data.as_slice())?;
-
     Ok((VirtAddr::from(entry), user_sp))
 }
 

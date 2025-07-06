@@ -436,7 +436,7 @@ fn handle_syscall_impl(tf: &mut TrapFrame, sysno: Sysno) -> LinuxResult<isize> {
             tf.arg1() as _,
             tf.arg2() as _,
             tf.arg3().into(),
-            tf.arg4() as _,
+            tf.arg4().into(),
         ),
         Sysno::setsockopt => sys_setsockopt(
             tf.arg0() as _,

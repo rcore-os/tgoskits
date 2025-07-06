@@ -103,13 +103,14 @@ pub fn sys_mmap(
         addr, length, permission_flags, map_flags, fd, offset
     );
 
-    let page_size = if map_flags.contains(MmapFlags::HUGE_1GB) {
-        PageSize::Size1G
-    } else if map_flags.contains(MmapFlags::HUGE) {
-        PageSize::Size2M
-    } else {
-        PageSize::Size4K
-    };
+    // let page_size = if map_flags.contains(MmapFlags::HUGE_1GB) {
+    //     PageSize::Size1G
+    // } else if map_flags.contains(MmapFlags::HUGE) {
+    //     PageSize::Size2M
+    // } else {
+    //     PageSize::Size4K
+    // };
+    let page_size = PageSize::Size4K;
 
     let start = addr.align_down(page_size);
     let end = (addr + length).align_up(page_size);
