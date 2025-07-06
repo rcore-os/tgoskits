@@ -30,6 +30,7 @@ pub(crate) fn new_devfs() -> LinuxResult<Filesystem<RawMutex>> {
 }
 
 struct Null;
+
 impl DeviceOps for Null {
     fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
         Ok(0)
@@ -45,6 +46,7 @@ impl DeviceOps for Null {
 }
 
 struct Zero;
+
 impl DeviceOps for Zero {
     fn read_at(&self, buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
         buf.fill(0);
@@ -62,6 +64,7 @@ impl DeviceOps for Zero {
 
 /// RTC device
 pub struct Rtc;
+
 impl DeviceOps for Rtc {
     fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
         Ok(0)
@@ -79,6 +82,7 @@ impl DeviceOps for Rtc {
 struct Random {
     rng: Mutex<SmallRng>,
 }
+
 impl Random {
     pub fn new() -> Self {
         Self {
@@ -86,6 +90,7 @@ impl Random {
         }
     }
 }
+
 impl DeviceOps for Random {
     fn read_at(&self, buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
         self.rng.lock().fill_bytes(buf);
@@ -102,6 +107,7 @@ impl DeviceOps for Random {
 }
 
 struct Full;
+
 impl DeviceOps for Full {
     fn read_at(&self, buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
         buf.fill(0);
@@ -128,6 +134,7 @@ pub struct LoopDevice {
     /// Read-ahead size for the loop device, in bytes.
     pub ra: AtomicU32,
 }
+
 impl LoopDevice {
     fn new(number: u32, dev_id: DeviceId) -> Self {
         Self {
@@ -160,6 +167,7 @@ impl LoopDevice {
         file.ok_or(LinuxError::ENXIO)
     }
 }
+
 impl DeviceOps for LoopDevice {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
         let file = self.file.lock().clone();

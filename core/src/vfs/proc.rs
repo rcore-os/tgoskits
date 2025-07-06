@@ -89,6 +89,7 @@ struct ProcessTaskDir {
     fs: Arc<SimpleFs>,
     process: Weak<Process>,
 }
+
 impl SimpleDirOps<RawMutex> for ProcessTaskDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         let Some(process) = self.process.upgrade() else {
@@ -129,6 +130,7 @@ struct ThreadDir {
     fs: Arc<SimpleFs>,
     thread: Weak<Thread>,
 }
+
 impl SimpleDirOps<RawMutex> for ThreadDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         Box::new(
@@ -214,6 +216,7 @@ impl SimpleDirOps<RawMutex> for ThreadDir {
 
 /// Handles /proc/[pid] & /proc/self
 struct ProcFsHandler(Arc<SimpleFs>);
+
 impl SimpleDirOps<RawMutex> for ProcFsHandler {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         Box::new(

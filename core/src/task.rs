@@ -140,11 +140,13 @@ pub fn time_stat_from_user_to_kernel() {
 
 #[doc(hidden)]
 pub struct WaitQueueWrapper(WaitQueue);
+
 impl Default for WaitQueueWrapper {
     fn default() -> Self {
         Self(WaitQueue::new())
     }
 }
+
 impl axsignal::api::WaitQueue for WaitQueueWrapper {
     fn wait_timeout(&self, timeout: Option<Duration>) -> bool {
         if let Some(timeout) = timeout {
@@ -163,7 +165,9 @@ impl axsignal::api::WaitQueue for WaitQueueWrapper {
 ///  A wrapper type that assumes the inner type is `Sync`.
 #[repr(transparent)]
 pub struct AssumeSync<T>(T);
+
 unsafe impl<T> Sync for AssumeSync<T> {}
+
 impl<T> Deref for AssumeSync<T> {
     type Target = T;
 
@@ -349,8 +353,11 @@ impl ProcessData {
 static SHARED_FUTEX_TABLE: FutexTable = FutexTable::new();
 
 static THREAD_TABLE: RwLock<WeakMap<Pid, Weak<Thread>>> = RwLock::new(WeakMap::new());
+
 static PROCESS_TABLE: RwLock<WeakMap<Pid, Weak<Process>>> = RwLock::new(WeakMap::new());
+
 static PROCESS_GROUP_TABLE: RwLock<WeakMap<Pid, Weak<ProcessGroup>>> = RwLock::new(WeakMap::new());
+
 static SESSION_TABLE: RwLock<WeakMap<Pid, Weak<Session>>> = RwLock::new(WeakMap::new());
 
 /// Cleanup expired entries in the task tables.
@@ -402,10 +409,12 @@ pub fn processes() -> Vec<Arc<Process>> {
 pub fn get_thread(tid: Pid) -> LinuxResult<Arc<Thread>> {
     THREAD_TABLE.read().get(&tid).ok_or(LinuxError::ESRCH)
 }
+
 /// Finds the process with the given PID.
 pub fn get_process(pid: Pid) -> LinuxResult<Arc<Process>> {
     PROCESS_TABLE.read().get(&pid).ok_or(LinuxError::ESRCH)
 }
+
 /// Finds the process group with the given PGID.
 pub fn get_process_group(pgid: Pid) -> LinuxResult<Arc<ProcessGroup>> {
     PROCESS_GROUP_TABLE
@@ -413,6 +422,7 @@ pub fn get_process_group(pgid: Pid) -> LinuxResult<Arc<ProcessGroup>> {
         .get(&pgid)
         .ok_or(LinuxError::ESRCH)
 }
+
 /// Finds the session with the given SID.
 pub fn get_session(sid: Pid) -> LinuxResult<Arc<Session>> {
     SESSION_TABLE.read().get(&sid).ok_or(LinuxError::ESRCH)

@@ -4,9 +4,10 @@
 #![no_std]
 #![warn(missing_docs)]
 
+extern crate alloc;
+
 #[macro_use]
 extern crate axlog;
-extern crate alloc;
 
 pub mod futex;
 pub mod mm;

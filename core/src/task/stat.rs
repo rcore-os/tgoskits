@@ -66,6 +66,7 @@ pub struct TaskStat {
     pub env_end: u64,
     pub exit_code: i32,
 }
+
 impl TaskStat {
     /// Create a new `TaskStat` from a [`Thread`].
     pub fn from_thread(thread: &Thread) -> LinuxResult<Self> {

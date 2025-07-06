@@ -21,6 +21,7 @@ pub enum SimpleFileOperation<'a> {
 }
 
 pub struct RwFile<F>(F);
+
 impl<F, R> RwFile<F>
 where
     F: Fn(SimpleFileOperation) -> VfsResult<Option<R>> + Send + Sync,
@@ -30,6 +31,7 @@ where
         Self(imp)
     }
 }
+
 impl<F, R> SimpleFileOps for RwFile<F>
 where
     F: Fn(SimpleFileOperation) -> VfsResult<Option<R>> + Send + Sync,
@@ -62,6 +64,7 @@ pub struct SimpleFile<M: RawMutex> {
     node: SimpleFsNode<M>,
     ops: Arc<dyn SimpleFileOps>,
 }
+
 impl<M: RawMutex + Send + Sync + 'static> SimpleFile<M> {
     pub fn new(fs: Arc<SimpleFs<M>>, ops: impl SimpleFileOps + 'static) -> Arc<Self> {
         let node = SimpleFsNode::new(fs, NodeType::RegularFile, NodePermission::default());

@@ -32,6 +32,7 @@ pub trait SimpleDirOps<M>: Send + Sync {
         ChainedDirOps(self, other)
     }
 }
+
 impl<M: RawMutex> SimpleDirOps<M> for DirMapping<M> {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         Box::new(self.0.keys().map(|s| s.as_str().into()))
@@ -43,6 +44,7 @@ impl<M: RawMutex> SimpleDirOps<M> for DirMapping<M> {
 }
 
 pub struct DirMapping<M>(BTreeMap<String, NodeOpsMux<M>>);
+
 impl<M: RawMutex> DirMapping<M> {
     pub fn new() -> Self {
         Self(BTreeMap::new())
@@ -54,6 +56,7 @@ impl<M: RawMutex> DirMapping<M> {
 }
 
 pub struct ChainedDirOps<A, B>(A, B);
+
 impl<M: RawMutex, A: SimpleDirOps<M>, B: SimpleDirOps<M>> SimpleDirOps<M> for ChainedDirOps<A, B> {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         Box::new(self.0.child_names().chain(self.1.child_names()))
@@ -79,6 +82,7 @@ pub struct SimpleDir<M: RawMutex, O> {
     this: WeakDirEntry<M>,
     ops: Arc<O>,
 }
+
 impl<M: RawMutex + Send + Sync + 'static, O: SimpleDirOps<M> + 'static> SimpleDir<M, O> {
     fn new(node: SimpleFsNode<M>, ops: Arc<O>, this: WeakDirEntry<M>) -> Arc<Self> {
         Arc::new(Self { node, this, ops })

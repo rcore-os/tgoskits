@@ -16,3 +16,6 @@ use_field_init_shorthand = true
 format_strings = true
 format_code_in_doc_comments = true
 format_macro_matchers = true
+
+# blank_lines_lower_bound = 1
+# blank_lines_upper_bound = 1

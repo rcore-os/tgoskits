@@ -22,6 +22,7 @@ pub enum ITimerType {
     /// 统计进程的所有用户态/内核态运行时间
     Prof    = 2,
 }
+
 impl ITimerType {
     /// Returns the signal number associated with this timer type.
     pub fn signo(&self) -> Signo {
@@ -38,6 +39,7 @@ struct ITimer {
     interval_ns: usize,
     remained_ns: usize,
 }
+
 impl ITimer {
     pub fn update(&mut self, delta: usize) -> bool {
         if self.remained_ns == 0 {

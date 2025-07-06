@@ -15,6 +15,7 @@ pub struct Rlimit {
     /// The maximum limit for the resource (hard)
     pub max: u64,
 }
+
 impl Rlimit {
     /// Creates a new `Rlimit` with the specified soft and hard limits.
     pub fn new(soft: u64, hard: u64) -> Self {
@@ -36,6 +37,7 @@ impl From<u64> for Rlimit {
 
 /// Process resource limits
 pub struct Rlimits([Rlimit; RLIM_NLIMITS as usize]);
+
 impl Default for Rlimits {
     fn default() -> Self {
         let mut result = Self(Default::default());
@@ -52,6 +54,7 @@ impl Index<u32> for Rlimits {
         &self.0[index as usize]
     }
 }
+
 impl IndexMut<u32> for Rlimits {
     fn index_mut(&mut self, index: u32) -> &mut Self::Output {
         &mut self.0[index as usize]

@@ -33,6 +33,7 @@ pub struct SimpleFs<M = axsync::RawMutex> {
     inodes: Mutex<M, Slab<()>>,
     root: Mutex<M, Option<DirEntry<M>>>,
 }
+
 impl<M: RawMutex + Send + Sync + 'static> SimpleFs<M> {
     pub fn new_with(
         name: String,
@@ -57,6 +58,7 @@ impl<M: RawMutex + Send + Sync + 'static> SimpleFs<M> {
         *self.root.lock() = Some(root);
     }
 }
+
 impl<M: RawMutex> SimpleFs<M> {
     pub fn alloc_inode(&self) -> u64 {
         self.inodes.lock().insert(()) as u64 + 1
@@ -86,6 +88,7 @@ pub struct SimpleFsNode<M: RawMutex> {
     ino: u64,
     pub(crate) metadata: Mutex<M, Metadata>,
 }
+
 impl<M: RawMutex + Send + Sync + 'static> SimpleFsNode<M> {
     pub fn new(fs: Arc<SimpleFs<M>>, node_type: NodeType, mode: NodePermission) -> Self {
         let ino = fs.alloc_inode();

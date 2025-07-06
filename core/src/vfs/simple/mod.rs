@@ -18,6 +18,7 @@ pub enum NodeOpsMux<M> {
     Dir(DirMaker<M>),
     File(Arc<dyn FileNodeOps<M>>),
 }
+
 impl<M> Clone for NodeOpsMux<M> {
     fn clone(&self) -> Self {
         match self {
@@ -26,11 +27,13 @@ impl<M> Clone for NodeOpsMux<M> {
         }
     }
 }
+
 impl<M> From<DirMaker<M>> for NodeOpsMux<M> {
     fn from(maker: DirMaker<M>) -> Self {
         Self::Dir(maker)
     }
 }
+
 impl<M, T: FileNodeOps<M> + 'static> From<Arc<T>> for NodeOpsMux<M> {
     fn from(ops: Arc<T>) -> Self {
         Self::File(ops)

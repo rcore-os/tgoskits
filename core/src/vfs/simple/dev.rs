@@ -20,6 +20,7 @@ pub trait DeviceOps: Send + Sync {
     /// Casts the device operations to a dynamic type.
     fn as_any(&self) -> &dyn Any;
 }
+
 impl<F> DeviceOps for F
 where
     F: Fn(&mut [u8], u64) -> VfsResult<usize> + Send + Sync + 'static,
@@ -42,6 +43,7 @@ pub struct Device<M: RawMutex> {
     node: SimpleFsNode<M>,
     ops: Arc<dyn DeviceOps>,
 }
+
 impl<M: RawMutex + Send + Sync + 'static> Device<M> {
     pub(crate) fn new(
         fs: Arc<SimpleFs<M>>,

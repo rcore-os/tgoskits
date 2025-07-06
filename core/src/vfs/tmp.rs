@@ -15,11 +15,13 @@ use crate::vfs::simple::dummy_stat_fs;
 
 #[derive(PartialEq, Eq, Clone)]
 struct FileName(String);
+
 impl PartialOrd for FileName {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
+
 impl Ord for FileName {
     fn cmp(&self, other: &Self) -> Ordering {
         fn index(s: &str) -> u8 {
@@ -32,6 +34,7 @@ impl Ord for FileName {
         (index(&self.0), &self.0).cmp(&(index(&other.0), &other.0))
     }
 }
+
 impl<T> From<T> for FileName
 where
     T: Into<String>,
@@ -40,6 +43,7 @@ where
         Self(name.into())
     }
 }
+
 impl Borrow<str> for FileName {
     fn borrow(&self) -> &str {
         &self.0
@@ -51,6 +55,7 @@ pub struct MemoryFs {
     inodes: Mutex<Slab<Arc<Inode>>>,
     root: Mutex<Option<DirEntry<RawMutex>>>,
 }
+
 impl MemoryFs {
     /// Creates a new empty memory filesystem.
     #[allow(clippy::new_ret_no_self)]
@@ -76,6 +81,7 @@ impl MemoryFs {
         self.inodes.lock()[ino as usize - 1].clone()
     }
 }
+
 impl FilesystemOps<RawMutex> for MemoryFs {
     fn name(&self) -> &str {
         "tmpfs"
@@ -106,6 +112,7 @@ struct SparseFile {
     chunks: BTreeMap<u64, [u8; SPARSE_CHUNK_SIZE as usize]>,
     length: u64,
 }
+
 impl SparseFile {
     fn len(&self) -> u64 {
         self.length
@@ -199,6 +206,7 @@ impl SparseFile {
 struct DenseFile {
     content: Vec<u8>,
 }
+
 impl DenseFile {
     fn len(&self) -> u64 {
         self.content.len() as u64
@@ -235,11 +243,13 @@ enum DynamicFile {
     Dense(DenseFile),
     Sparse(SparseFile),
 }
+
 impl Default for DynamicFile {
     fn default() -> Self {
         Self::Dense(DenseFile::default())
     }
 }
+
 impl DynamicFile {
     fn len(&self) -> u64 {
         match self {
@@ -298,6 +308,7 @@ impl DynamicFile {
 struct FileContent {
     content: Mutex<DynamicFile>,
 }
+
 #[derive(Default)]
 struct DirContent {
     entries: Mutex<BTreeMap<FileName, InodeRef>>,
@@ -307,11 +318,13 @@ enum NodeContent {
     File(FileContent),
     Dir(DirContent),
 }
+
 struct Inode {
     ino: u64,
     metadata: Mutex<Metadata>,
     content: NodeContent,
 }
+
 impl Inode {
     pub fn new(
         fs: &Arc<MemoryFs>,
@@ -379,6 +392,7 @@ struct InodeRef {
     fs: Arc<MemoryFs>,
     ino: u64,
 }
+
 impl InodeRef {
     pub fn new(fs: Arc<MemoryFs>, ino: u64) -> Self {
         fs.get(ino).metadata.lock().nlink += 1;
@@ -389,6 +403,7 @@ impl InodeRef {
         self.fs.get(self.ino)
     }
 }
+
 impl Drop for InodeRef {
     fn drop(&mut self) {
         release_inode(&self.fs, &self.get(), 1);
@@ -400,6 +415,7 @@ struct MemoryNode {
     inode: Arc<Inode>,
     this: Option<WeakDirEntry<RawMutex>>,
 }
+
 impl MemoryNode {
     pub fn new(
         fs: Arc<MemoryFs>,
@@ -483,6 +499,7 @@ impl NodeOps<RawMutex> for MemoryNode {
         self
     }
 }
+
 impl FileNodeOps<RawMutex> for MemoryNode {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
         Ok(self.inode.as_file()?.content.lock().read_at(buf, offset))
@@ -512,6 +529,7 @@ impl FileNodeOps<RawMutex> for MemoryNode {
         Ok(())
     }
 }
+
 impl DirNodeOps<RawMutex> for MemoryNode {
     fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
         let mut count = 0;
@@ -622,6 +640,7 @@ impl DirNodeOps<RawMutex> for MemoryNode {
         Ok(())
     }
 }
+
 impl Drop for MemoryNode {
     fn drop(&mut self) {
         if let NodeContent::Dir(dir) = &self.inode.content {

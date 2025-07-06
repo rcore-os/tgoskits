@@ -18,6 +18,7 @@ enum MemoryCategory {
     Known(&'static str),
     Unknown(Backtrace),
 }
+
 impl MemoryCategory {
     fn new(backtrace: &Backtrace) -> Self {
         match Self::category(backtrace) {
@@ -54,6 +55,7 @@ impl MemoryCategory {
         None
     }
 }
+
 impl fmt::Display for MemoryCategory {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

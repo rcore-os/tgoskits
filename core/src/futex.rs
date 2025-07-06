@@ -30,6 +30,7 @@ pub enum FutexKey {
         region: Weak<SharedPages>,
     },
 }
+
 impl FutexKey {
     /// Creates a new `FutexKey`.
     pub fn new(aspace: &AddrSpace, address: usize) -> Self {
@@ -68,6 +69,7 @@ pub struct FutexEntry {
     /// Used by robust list, indicates if the owner of this futex is dead.
     pub owner_dead: AtomicBool,
 }
+
 impl FutexEntry {
     fn new() -> Self {
         Self {
@@ -79,6 +81,7 @@ impl FutexEntry {
 
 /// A table mapping memory addresses to futex wait queues.
 pub struct FutexTable(Mutex<BTreeMap<usize, Arc<FutexEntry>>>);
+
 impl FutexTable {
     /// Creates a new `FutexTable`.
     #[allow(clippy::new_without_default)]
@@ -119,6 +122,7 @@ pub struct FutexGuard<'a> {
     key: usize,
     inner: Arc<FutexEntry>,
 }
+
 impl Deref for FutexGuard<'_> {
     type Target = Arc<FutexEntry>;
 
@@ -126,6 +130,7 @@ impl Deref for FutexGuard<'_> {
         &self.inner
     }
 }
+
 impl Drop for FutexGuard<'_> {
     fn drop(&mut self) {
         if Arc::strong_count(&self.inner) <= 2 && self.inner.wq.is_empty() {
