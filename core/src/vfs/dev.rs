@@ -1,3 +1,5 @@
+//! Special devices
+
 use core::{
     any::Any,
     sync::atomic::{AtomicBool, AtomicU32, Ordering},

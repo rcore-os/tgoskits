@@ -22,7 +22,7 @@ jobs:
           arch: loongarch64
 
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --target riscv64gc-unknown-none-elf --target riscv64gc-unknown-none-elf --all-features -- -D warnings
 
       - name: Build
         run: make all

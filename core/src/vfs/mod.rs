@@ -1,8 +1,6 @@
 //! Virtual filesystems
 
-/// Special devices
 pub mod dev;
-mod etc;
 mod proc;
 mod simple;
 mod tmp;
@@ -28,7 +26,5 @@ pub fn mount_all() -> LinuxResult<()> {
     mount_at("/dev", dev::new_devfs()?)?;
     mount_at("/tmp", tmp::MemoryFs::new())?;
     mount_at("/proc", proc::new_procfs())?;
-    mount_at("/etc", tmp::MemoryFs::new())?;
-    etc::init_etc()?;
     Ok(())
 }

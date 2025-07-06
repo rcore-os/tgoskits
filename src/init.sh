@@ -24,9 +24,9 @@ ln -v -s /lib /usr/lib64
 
 mkdir -v -p /var/tmp
 
-mkdir -v /etc/
-echo "root:x:0:0:root:/root:/bin/bash" >/etc/passwd
-echo "nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin" >/etc/passwd
+mkdir -v /etc
+echo "root:x:0:0:root:/root:/bin/sh" >>/etc/passwd
+echo "nobody:x:65534:65534:nobody:/:/bin/sh" >>/etc/passwd
 
 echo @@@@@@@@@@ files @@@@@@@@@@
 ls -lhAR /lib
