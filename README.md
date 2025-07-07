@@ -12,9 +12,9 @@ Currently supported algorithms:
 - [`RRScheduler`]: Round-robin scheduler (preemptive).
 - [`CFScheduler`]: Completely Fair Scheduler (preemptive).
 
-[`FifoScheduler`]: https://docs.rs/axsched/latest/axcpu/struct.FifoScheduler.html
-[`RRScheduler`]: https://docs.rs/axsched/latest/axcpu/struct.RRScheduler.html
-[`CFScheduler`]: https://docs.rs/axsched/latest/axcpu/struct.CFS
+[`FifoScheduler`]: https://docs.rs/axsched/latest/axsched/struct.FifoScheduler.html
+[`RRScheduler`]: https://docs.rs/axsched/latest/axsched/struct.RRScheduler.html
+[`CFScheduler`]: https://docs.rs/axsched/latest/axsched/struct.CFScheduler.html
 
 ## Example
 
