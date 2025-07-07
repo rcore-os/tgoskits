@@ -191,3 +191,9 @@ impl<T> BaseScheduler for CFScheduler<T> {
         }
     }
 }
+
+impl<T> Default for CFScheduler<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}

@@ -66,3 +66,9 @@ impl<T> BaseScheduler for FifoScheduler<T> {
         false
     }
 }
+
+impl<T> Default for FifoScheduler<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}

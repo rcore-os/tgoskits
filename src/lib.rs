@@ -1,12 +1,5 @@
-//! Various scheduler algorithms in a unified interface.
-//!
-//! Currently supported algorithms:
-//!
-//! - [`FifoScheduler`]: FIFO (First-In-First-Out) scheduler (cooperative).
-//! - [`RRScheduler`]: Round-robin scheduler (preemptive).
-//! - [`CFScheduler`]: Completely Fair Scheduler (preemptive).
-
 #![cfg_attr(not(test), no_std)]
+#![doc = include_str!("../README.md")]
 
 mod cfs;
 mod fifo;

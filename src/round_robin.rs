@@ -111,3 +111,9 @@ impl<T, const S: usize> BaseScheduler for RRScheduler<T, S> {
         false
     }
 }
+
+impl<T, const S: usize> Default for RRScheduler<T, S> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
