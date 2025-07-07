@@ -91,16 +91,16 @@ impl UspaceContext {
                 "
                 mv      sp, {tf}
 
-                STR     gp, {kernel_trap_addr}, 2
-                LDR     gp, sp, 2
+                STR     gp, {kernel_trap_addr}, 3
+                LDR     gp, sp, 3
 
-                STR     tp, {kernel_trap_addr}, 3
-                LDR     tp, sp, 3
+                STR     tp, {kernel_trap_addr}, 4
+                LDR     tp, sp, 4
 
-                LDR     t0, sp, 32
+                LDR     t0, sp, 33
                 csrw    sstatus, t0
                 POP_GENERAL_REGS
-                LDR     sp, sp, 1
+                LDR     sp, sp, 2
                 sret",
                 tf = in(reg) &(self.0),
                 kernel_trap_addr = in(reg) kernel_trap_addr,

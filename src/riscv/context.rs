@@ -7,6 +7,7 @@ use riscv::register::sstatus::{self, FS};
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct GeneralRegisters {
+    pub zero: usize,
     pub ra: usize,
     pub sp: usize,
     pub gp: usize, // only valid for user traps
