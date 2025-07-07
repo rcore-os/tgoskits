@@ -1,6 +1,6 @@
 [package]
 name = "axsignal"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = [
     "Mivik <mivikq@gmail.com>",
@@ -9,23 +9,21 @@ authors = [
 repository = "https://github.com/Starry-OS/axsignal"
 
 [dependencies]
+axcpu = "0.2"
 axerrno = "0.1"
+axplat = "0.1"
 bitflags = "2.6"
-
-axhal = { git = "https://github.com/oscomp/arceos.git", features = ["uspace"] }
-
 cfg-if = "1.0.0"
+derive_more = { version = "2.0.1", default-features = false, features = [
+    "full",
+] }
 linux-raw-sys = { version = "0.9.3", default-features = false, features = [
     "general",
     "no_std",
 ] }
+lock_api = "0.4.12"
 log = "0.4"
 strum_macros = "0.27.1"
-lock_api = "0.4.12"
-derive_more = { version = "2.0.1", default-features = false, features = [
-    "full",
-] }
 
 [patch.crates-io]
-page_table_multiarch = { git = "https://github.com/Mivik/page_table_multiarch.git", rev = "19ededd" }
-page_table_entry = { git = "https://github.com/Mivik/page_table_multiarch.git", rev = "19ededd" }
+axcpu = { git = "https://github.com/Starry-Mix-THU/axcpu.git" }

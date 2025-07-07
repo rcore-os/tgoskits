@@ -1,7 +1,7 @@
 use core::{alloc::Layout, time::Duration};
 
 use alloc::sync::Arc;
-use axhal::arch::TrapFrame;
+use axcpu::TrapFrame;
 use lock_api::{Mutex, RawMutex};
 
 use crate::{
@@ -205,13 +205,13 @@ impl<M: RawMutex, WQ: WaitQueue> ThreadSignalManager<M, WQ> {
         }
 
         let wq = &self.proc.wq;
-        let deadline = timeout.map(|dur| axhal::time::wall_time() + dur);
+        let deadline = timeout.map(|dur| axplat::time::wall_time() + dur);
 
         // There might be false wakeups, so we need a loop
         loop {
             match &deadline {
                 Some(deadline) => {
-                    match deadline.checked_sub(axhal::time::wall_time()) {
+                    match deadline.checked_sub(axplat::time::wall_time()) {
                         Some(dur) => {
                             if wq.wait_timeout(Some(dur)) {
                                 // timed out

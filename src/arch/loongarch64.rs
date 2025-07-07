@@ -1,6 +1,4 @@
-use core::mem;
-
-use axhal::arch::TrapFrame;
+use axcpu::{GeneralRegisters, TrapFrame};
 
 use crate::{SignalSet, SignalStack};
 
@@ -21,7 +19,7 @@ signal_trampoline:
 #[derive(Clone)]
 pub struct MContext {
     sc_pc: u64,
-    sc_regs: [u64; 32],
+    sc_regs: GeneralRegisters,
     sc_flags: u32,
 }
 
@@ -29,16 +27,14 @@ impl MContext {
     pub fn new(tf: &TrapFrame) -> Self {
         Self {
             sc_pc: tf.era as _,
-            sc_regs: unsafe { mem::transmute::<_, [u64; 32]>(tf.regs) },
+            sc_regs: tf.regs,
             sc_flags: 0,
         }
     }
 
     pub fn restore(&self, tf: &mut TrapFrame) {
         tf.era = self.sc_pc as _;
-        unsafe {
-            tf.regs = mem::transmute::<[u64; 32], _>(self.sc_regs);
-        }
+        tf.regs = self.sc_regs;
     }
 }
 
