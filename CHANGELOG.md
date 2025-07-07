@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1
+
+* [Pad TrapFrame to multiple of 16 bytes for riscv64](https://github.com/arceos-org/axcpu/pull/12).
+
 ## 0.2.0
 
 ### Breaking changes

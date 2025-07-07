@@ -19,7 +19,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "axcpu"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aarch64-cpu",
  "cfg-if",
@@ -134,9 +134,9 @@ checksum = "3d4054cba279515fa87761b101d857333ce06391dbe8f18a11347204a7111416"
 
 [[package]]
 name = "page_table_entry"
-version = "0.5.4"
+version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64fa3fe054790f010fff07d6f2fb862f3cf859c1236939c4883becf0cbe26a49"
+checksum = "ba811ef8ca8fb33d776e128624cb4fe25c9804cab96f83b822d4322431e6dd5a"
 dependencies = [
  "aarch64-cpu",
  "bitflags 2.9.1",
@@ -146,9 +146,9 @@ dependencies = [
 
 [[package]]
 name = "page_table_multiarch"
-version = "0.5.4"
+version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b1cf99d0b15854d486e45ad4af3c1fb7c2f28a7c5aa6b049f33060184bdc4e0"
+checksum = "98cb76e21ce462270afd83b331599d5b83f876c2a98c0a70382b20d73e1da6be"
 dependencies = [
  "log",
  "memory_addr",
