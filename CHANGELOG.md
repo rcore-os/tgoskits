@@ -1,12 +1,20 @@
 # Changelog
 
+## 0.2.2
+
+### Fixes
+
+* [Fix compile error on riscv when enable `uspace` feature](https://github.com/arceos-org/axcpu/pull/12).
+
 ## 0.2.1
 
-* [Pad TrapFrame to multiple of 16 bytes for riscv64](https://github.com/arceos-org/axcpu/pull/12).
+### Fixes
+
+* [Pad TrapFrame to multiple of 16 bytes for riscv64](https://github.com/arceos-org/axcpu/pull/11).
 
 ## 0.2.0
 
-### Breaking changes
+### Breaking Changes
 
 * Upgrade `memory_addr` to v0.4.
 
