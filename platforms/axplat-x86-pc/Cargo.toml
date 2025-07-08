@@ -32,7 +32,7 @@ axplat = { workspace = true }
 
 x86 = "0.52"
 x86_64 = "0.15.2"
-x2apic = "0.4"
+x2apic = "0.5"
 multiboot = "0.8"
 raw-cpuid = "11.5"
 uart_16550 = "0.3"

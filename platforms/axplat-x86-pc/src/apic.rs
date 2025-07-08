@@ -1,6 +1,6 @@
 //! Advanced Programmable Interrupt Controller (APIC) support.
 
-use core::{cell::SyncUnsafeCell, mem::MaybeUninit};
+use core::mem::MaybeUninit;
 
 use axplat::mem::{PhysAddr, pa, phys_to_virt};
 use kspin::SpinNoIrq;
@@ -19,8 +19,7 @@ pub(super) mod vectors {
 
 const IO_APIC_BASE: PhysAddr = pa!(0xFEC0_0000);
 
-static LOCAL_APIC: SyncUnsafeCell<MaybeUninit<LocalApic>> =
-    SyncUnsafeCell::new(MaybeUninit::uninit());
+static mut LOCAL_APIC: MaybeUninit<LocalApic> = MaybeUninit::uninit();
 static mut IS_X2APIC: bool = false;
 static IO_APIC: LazyInit<SpinNoIrq<IoApic>> = LazyInit::new();
 
@@ -40,9 +39,10 @@ pub fn set_enable(vector: usize, enabled: bool) {
 }
 
 #[cfg(any(feature = "smp", feature = "irq"))]
+#[allow(static_mut_refs)]
 pub fn local_apic<'a>() -> &'a mut LocalApic {
     // It's safe as `LOCAL_APIC` is initialized in `init_primary`.
-    unsafe { LOCAL_APIC.get().as_mut().unwrap().assume_init_mut() }
+    unsafe { LOCAL_APIC.assume_init_mut() }
 }
 
 #[cfg(feature = "smp")]
@@ -88,7 +88,8 @@ pub fn init_primary() {
     let mut lapic = builder.build().unwrap();
     unsafe {
         lapic.enable();
-        LOCAL_APIC.get().as_mut().unwrap().write(lapic);
+        #[allow(static_mut_refs)]
+        LOCAL_APIC.write(lapic);
     }
 
     info!("Initialize IO APIC...");
@@ -149,7 +150,7 @@ mod irq_impl {
         fn handle(vector: usize) {
             trace!("IRQ {}", vector);
             if !IRQ_HANDLER_TABLE.handle(vector) {
-                warn!("Unhandled IRQ {}", vector);
+                warn!("Unhandled IRQ {vector}");
             }
             unsafe { super::local_apic().end_of_interrupt() };
         }

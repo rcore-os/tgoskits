@@ -1,5 +1,4 @@
 #![no_std]
-#![feature(sync_unsafe_cell)]
 
 #[macro_use]
 extern crate log;
