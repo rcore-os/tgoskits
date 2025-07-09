@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["api", "config", "core"]
+members = ["api", "core"]
 exclude = ["arceos"]
 
 [workspace.package]
@@ -62,7 +62,6 @@ memory_addr = "0.4"
 scope-local = "0.1"
 spin = "0.9"
 
-starry-config = { path = "./config" }
 starry-core = { path = "./core" }
 starry-api = { path = "./api" }
 
@@ -93,7 +92,6 @@ axerrno.workspace = true
 linkme.workspace = true
 linux-raw-sys.workspace = true
 
-starry-config.workspace = true
 starry-core.workspace = true
 starry-api.workspace = true
 

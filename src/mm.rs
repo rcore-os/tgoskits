@@ -14,13 +14,13 @@ fn handle_user_page_fault(
     vaddr: VirtAddr,
     access_flags: MappingFlags,
 ) -> bool {
-    if (starry_config::USER_STACK_TOP - starry_config::USER_STACK_SIZE
-        ..starry_config::USER_STACK_TOP)
+    if (starry_core::config::USER_STACK_TOP - starry_core::config::USER_STACK_SIZE
+        ..starry_core::config::USER_STACK_TOP)
         .contains(&vaddr.as_usize())
     {
         // Stack extension, check rlimit
         let rlim = &ext.process_data().rlim.read()[RLIMIT_STACK];
-        let size = starry_config::USER_STACK_TOP - vaddr.as_usize();
+        let size = starry_core::config::USER_STACK_TOP - vaddr.as_usize();
         if size as u64 > rlim.current {
             return false;
         }

@@ -26,14 +26,13 @@ axprocess.workspace = true
 axsignal.workspace = true
 
 axerrno.workspace = true
+cfg-if.workspace = true
 extern-trait.workspace = true
 linkme.workspace = true
 linux-raw-sys.workspace = true
 memory_addr.workspace = true
 scope-local.workspace = true
 spin.workspace = true
-
-starry-config.workspace = true
 
 gimli = { version = "*", default-features = false }
 indoc = "2"

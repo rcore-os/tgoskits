@@ -34,7 +34,6 @@ memory_addr.workspace = true
 scope-local.workspace = true
 spin.workspace = true
 
-starry-config.workspace = true
 starry-core.workspace = true
 
 bitmaps = { version = "3.2.1", default-features = false }

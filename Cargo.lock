@@ -1525,7 +1525,6 @@ dependencies = [
  "linux-raw-sys",
  "shlex",
  "starry-api",
- "starry-config",
  "starry-core",
  "syscalls",
 ]
@@ -1564,16 +1563,8 @@ dependencies = [
  "page_table_multiarch",
  "scope-local",
  "spin",
- "starry-config",
  "starry-core",
  "x86",
-]
-
-[[package]]
-name = "starry-config"
-version = "0.1.0"
-dependencies = [
- "cfg-if",
 ]
 
 [[package]]
@@ -1594,6 +1585,7 @@ dependencies = [
  "axsignal",
  "axsync",
  "axtask",
+ "cfg-if",
  "extern-trait",
  "gimli",
  "indoc",
@@ -1608,7 +1600,6 @@ dependencies = [
  "scope-local",
  "slab",
  "spin",
- "starry-config",
  "strum",
  "weak-map",
  "xmas-elf",

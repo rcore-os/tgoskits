@@ -60,7 +60,7 @@ pub fn new_user_task(
             unsafe { uctx.enter_uspace(kstack_top) }
         },
         name.into(),
-        starry_config::KERNEL_STACK_SIZE,
+        crate::config::KERNEL_STACK_SIZE,
     )
 }
 
@@ -296,8 +296,8 @@ impl ProcessData {
             exe_path: RwLock::new(exe_path),
             aspace,
             scope: RwLock::new(Scope::new()),
-            heap_bottom: AtomicUsize::new(starry_config::USER_HEAP_BASE),
-            heap_top: AtomicUsize::new(starry_config::USER_HEAP_BASE),
+            heap_bottom: AtomicUsize::new(crate::config::USER_HEAP_BASE),
+            heap_top: AtomicUsize::new(crate::config::USER_HEAP_BASE),
 
             rlim: RwLock::default(),
 
@@ -306,7 +306,7 @@ impl ProcessData {
 
             signal: Arc::new(ProcessSignalManager::new(
                 signal_actions,
-                starry_config::SIGNAL_TRAMPOLINE,
+                crate::config::SIGNAL_TRAMPOLINE,
             )),
 
             futex_table: FutexTable::new(),

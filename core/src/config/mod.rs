@@ -1,4 +1,4 @@
-#![no_std]
+//! Architecture-specific configurations.
 
 cfg_if::cfg_if! {
     if #[cfg(target_arch = "riscv64")] {

@@ -20,8 +20,8 @@ use xmas_elf::{ElfFile, program::SegmentData};
 /// Creates a new empty user address space.
 pub fn new_user_aspace_empty() -> LinuxResult<AddrSpace> {
     AddrSpace::new_empty(
-        VirtAddr::from_usize(starry_config::USER_SPACE_BASE),
-        starry_config::USER_SPACE_SIZE,
+        VirtAddr::from_usize(crate::config::USER_SPACE_BASE),
+        crate::config::USER_SPACE_SIZE,
     )
 }
 
@@ -42,7 +42,7 @@ pub fn copy_from_kernel(_aspace: &mut AddrSpace) -> LinuxResult {
 pub fn map_trampoline(aspace: &mut AddrSpace) -> LinuxResult {
     let signal_trampoline_paddr = virt_to_phys(axsignal::arch::signal_trampoline_address().into());
     aspace.map_linear(
-        starry_config::SIGNAL_TRAMPOLINE.into(),
+        crate::config::SIGNAL_TRAMPOLINE.into(),
         signal_trampoline_paddr,
         PAGE_SIZE_4K,
         MappingFlags::READ | MappingFlags::EXECUTE | MappingFlags::USER,
@@ -182,7 +182,7 @@ pub fn load_user_app(
             .ok_or(LinuxError::EINVAL)?;
         debug!("Loading dynamic linker: {}", ldso);
         let mut loader = |elf: &ElfFile| -> LinuxResult<Option<(usize, usize)>> {
-            let ldso_parser = map_elf(uspace, starry_config::USER_INTERP_BASE, elf)?;
+            let ldso_parser = map_elf(uspace, crate::config::USER_INTERP_BASE, elf)?;
             Ok(Some((ldso_parser.entry(), ldso_parser.base())))
         };
         let ptr = FS_CONTEXT.lock().resolve(ldso)?.entry().as_ptr();
@@ -211,8 +211,8 @@ pub fn load_user_app(
     // read and write. `ustack_pointer` -> `ustack_end`: It is the space that
     // contains the arguments, environment variables and auxv passed to the app.
     //  When the app starts running, the stack pointer points to `ustack_pointer`.
-    let ustack_end = VirtAddr::from_usize(starry_config::USER_STACK_TOP);
-    let ustack_size = starry_config::USER_STACK_SIZE;
+    let ustack_end = VirtAddr::from_usize(crate::config::USER_STACK_TOP);
+    let ustack_size = crate::config::USER_STACK_SIZE;
     let ustack_start = ustack_end - ustack_size;
     debug!(
         "Mapping user stack: {:#x?} -> {:#x?}",
@@ -231,8 +231,8 @@ pub fn load_user_app(
     let user_sp = ustack_end - stack_data.len();
     uspace.write(user_sp, PageSize::Size4K, stack_data.as_slice())?;
 
-    let heap_start = VirtAddr::from_usize(starry_config::USER_HEAP_BASE);
-    let heap_size = starry_config::USER_HEAP_SIZE;
+    let heap_start = VirtAddr::from_usize(crate::config::USER_HEAP_BASE);
+    let heap_size = crate::config::USER_HEAP_SIZE;
     uspace.map_alloc(
         heap_start,
         heap_size,
