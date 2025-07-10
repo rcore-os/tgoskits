@@ -265,6 +265,19 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             Ok(format!("{:?}\n", allocator.usage_stats()))
         }),
     );
+    root.add(
+        "instret",
+        SimpleFile::new(fs.clone(), || {
+            #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+            {
+                Ok(format!("{}\n", riscv::register::instret::read64()))
+            }
+            #[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
+            {
+                Ok("0\n".to_string())
+            }
+        }),
+    );
 
     root.add("sys", {
         let mut sys = DirMapping::new();

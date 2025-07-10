@@ -27,6 +27,7 @@ axsignal.workspace = true
 
 axerrno.workspace = true
 cfg-if.workspace = true
+event-listener.workspace = true
 extern-trait.workspace = true
 linkme.workspace = true
 linux-raw-sys.workspace = true
@@ -51,3 +52,6 @@ xmas-elf = "0.9"
 
 [target.'cfg(not(any(target_arch = "aarch64", target_arch = "loongarch64")))'.dependencies]
 axmm = { workspace = true, features = ["copy-from"] }
+
+[target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64"))'.dependencies]
+riscv = "0.14"
