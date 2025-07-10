@@ -49,6 +49,7 @@ axio = { git = "https://github.com/Starry-Mix-THU/axio.git", rev = "e662ff6" }
 
 bitflags = "2.6"
 cfg-if = "1.0"
+event-listener = { version = "5.4.0", default-features = false }
 extern-trait = "0.2"
 linkme = "0.3.33"
 linux-raw-sys = { version = "0.9.3", default-features = false, features = [

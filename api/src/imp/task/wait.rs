@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 
 use axerrno::{LinuxError, LinuxResult};
 use axprocess::{Pid, Process};
-use axtask::current;
+use axtask::{current, future::block_on};
 use bitflags::bitflags;
 use linux_raw_sys::general::{
     __WALL, __WCLONE, __WNOTHREAD, WCONTINUED, WEXITED, WNOHANG, WNOWAIT, WUNTRACED,
@@ -103,7 +103,7 @@ pub fn sys_waitpid(pid: i32, exit_code_ptr: UserPtr<i32>, options: u32) -> Linux
             axtask::yield_now();
             return Ok(0);
         } else {
-            process_data.child_exit_wq.wait();
+            block_on(process_data.child_exit_event.listen());
         }
     }
 }

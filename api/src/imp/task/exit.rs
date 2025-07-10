@@ -52,7 +52,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) -> ! {
                 let _ = send_signal_process(&parent, SignalInfo::new(signo, SI_KERNEL as _));
             }
             if let Some(data) = parent.data::<ProcessData>() {
-                data.child_exit_wq.notify_all(false)
+                data.child_exit_event.notify(usize::MAX);
             }
         }
 
