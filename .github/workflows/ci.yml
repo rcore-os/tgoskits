@@ -28,7 +28,6 @@ jobs:
         run: make all
 
   sync:
-    if: false
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source repository
