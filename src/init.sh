@@ -438,6 +438,11 @@ timeout 60 ./libcbench_testcode.sh
 cd /glibc
 timeout 60 ./libcbench_testcode.sh
 
+cd /musl
+timeout 60 ./iperf_testcode.sh
+cd /glibc
+timeout 60 ./iperf_testcode.sh
+
 cd /tmp
 ln -v -s /musl/busybox busybox
 ln -v -s /musl/iozone iozone
