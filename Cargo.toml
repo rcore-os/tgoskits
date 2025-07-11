@@ -6,8 +6,9 @@ edition = "2024"
 [features]
 
 [dependencies]
-log = "0.4"
+log = "=0.4.21"
 cfg-if = "1.0"
+spin = "0.9"
 
 # System independent crates provided by ArceOS.
 axerrno = "0.1.0"
@@ -16,3 +17,7 @@ memory_addr = "0.3"
 axvmconfig = { git = "https://github.com/arceos-hypervisor/axvmconfig.git", default-features = false }
 axaddrspace = { git = "https://github.com/arceos-hypervisor/axaddrspace.git" }
 axdevice_base = { git = "https://github.com/arceos-hypervisor/axdevice_crates.git" }
+range-alloc = { git = "https://github.com/arceos-hypervisor/range-alloc.git" }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+arm_vgic = { git = "https://github.com/arceos-hypervisor/arm_vgic.git" }

@@ -17,3 +17,4 @@ mod device;
 
 pub use config::AxVmDeviceConfig;
 pub use device::AxVmDevices;
+// pub use virtio_dev::*;
