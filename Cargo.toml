@@ -21,5 +21,5 @@ license.workspace = true
 axvisor_api_proc = { path = "axvisor_api_proc", version = "*"}
 
 crate_interface = "0.1"
-memory_addr = "0.3"
+memory_addr = "0.4"
 axaddrspace = { git = "https://github.com/arceos-hypervisor/axaddrspace" }
