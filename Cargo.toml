@@ -110,3 +110,4 @@ page_table_multiarch = { git = "https://github.com/Starry-Mix-THU/page_table_mul
 
 [package.metadata.vendor-filter]
 platforms = ["riscv64gc-unknown-none-elf", "loongarch64-unknown-none"]
+all-features = true
