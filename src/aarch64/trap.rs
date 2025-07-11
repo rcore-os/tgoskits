@@ -4,7 +4,10 @@ use tock_registers::interfaces::Readable;
 use super::TrapFrame;
 use crate::trap::PageFaultFlags;
 
-core::arch::global_asm!(include_str!("trap.S"));
+core::arch::global_asm!(
+    include_str!("trap.S"),
+    trapframe_size = const core::mem::size_of::<TrapFrame>()
+);
 
 #[repr(u8)]
 #[derive(Debug)]

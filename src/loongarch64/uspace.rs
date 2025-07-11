@@ -31,31 +31,6 @@ impl UspaceContext {
         Self(*trap_frame)
     }
 
-    /// Gets the instruction pointer.
-    pub const fn get_ip(&self) -> usize {
-        self.0.era
-    }
-
-    /// Gets the stack pointer.
-    pub const fn get_sp(&self) -> usize {
-        self.0.regs.sp
-    }
-
-    /// Sets the instruction pointer.
-    pub const fn set_ip(&mut self, pc: usize) {
-        self.0.era = pc;
-    }
-
-    /// Sets the stack pointer.
-    pub const fn set_sp(&mut self, sp: usize) {
-        self.0.regs.sp = sp;
-    }
-
-    /// Sets the return value register.
-    pub const fn set_retval(&mut self, a0: usize) {
-        self.0.regs.a0 = a0;
-    }
-
     /// Enters user space.
     ///
     /// It restores the user registers and jumps to the user entry point
@@ -71,7 +46,7 @@ impl UspaceContext {
 
         crate::asm::disable_irqs();
         crate::asm::write_kernel_sp(kstack_top.as_usize());
-        era::set_pc(self.get_ip());
+        era::set_pc(self.ip());
 
         unsafe {
             core::arch::asm!(
@@ -93,5 +68,19 @@ impl UspaceContext {
                 options(noreturn),
             )
         }
+    }
+}
+
+impl core::ops::Deref for UspaceContext {
+    type Target = TrapFrame;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl core::ops::DerefMut for UspaceContext {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
 }

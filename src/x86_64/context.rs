@@ -22,6 +22,10 @@ pub struct TrapFrame {
     pub r14: u64,
     pub r15: u64,
 
+    // Set by `tls.rs`
+    pub fs_base: u64,
+    pub __pad: u64,
+
     // Pushed by `trap.S`
     pub vector: u64,
     pub error_code: u64,
@@ -40,9 +44,19 @@ impl TrapFrame {
         self.rdi as _
     }
 
+    /// Sets the 0th syscall argument.
+    pub const fn set_arg0(&mut self, rdi: usize) {
+        self.rdi = rdi as _;
+    }
+
     /// Gets the 1st syscall argument.
     pub const fn arg1(&self) -> usize {
         self.rsi as _
+    }
+
+    /// Sets the 1st syscall argument.
+    pub const fn set_arg1(&mut self, rsi: usize) {
+        self.rsi = rsi as _;
     }
 
     /// Gets the 2nd syscall argument.
@@ -50,9 +64,19 @@ impl TrapFrame {
         self.rdx as _
     }
 
+    /// Sets the 2nd syscall argument.
+    pub const fn set_arg2(&mut self, rdx: usize) {
+        self.rdx = rdx as _;
+    }
+
     /// Gets the 3rd syscall argument.
     pub const fn arg3(&self) -> usize {
         self.r10 as _
+    }
+
+    /// Sets the 3rd syscall argument.
+    pub const fn set_arg3(&mut self, r10: usize) {
+        self.r10 = r10 as _;
     }
 
     /// Gets the 4th syscall argument.
@@ -60,14 +84,76 @@ impl TrapFrame {
         self.r8 as _
     }
 
+    /// Sets the 4th syscall argument.
+    pub const fn set_arg4(&mut self, r8: usize) {
+        self.r8 = r8 as _;
+    }
+
     /// Gets the 5th syscall argument.
     pub const fn arg5(&self) -> usize {
         self.r9 as _
     }
 
+    /// Sets the 5th syscall argument.
+    pub const fn set_arg5(&mut self, r9: usize) {
+        self.r9 = r9 as _;
+    }
+
     /// Whether the trap is from userspace.
     pub const fn is_user(&self) -> bool {
         self.cs & 0b11 == 3
+    }
+
+    /// Gets the instruction pointer.
+    pub const fn ip(&self) -> usize {
+        self.rip as _
+    }
+
+    /// Sets the instruction pointer.
+    pub const fn set_ip(&mut self, rip: usize) {
+        self.rip = rip as _;
+    }
+
+    /// Gets the stack pointer.
+    pub const fn sp(&self) -> usize {
+        self.rsp as _
+    }
+
+    /// Sets the stack pointer.
+    pub const fn set_sp(&mut self, rsp: usize) {
+        self.rsp = rsp as _;
+    }
+
+    /// Gets the return value register.
+    pub const fn retval(&self) -> usize {
+        self.rax as _
+    }
+
+    /// Sets the return value register.
+    pub const fn set_retval(&mut self, rax: usize) {
+        self.rax = rax as _;
+    }
+
+    /// Push the return address.
+    ///
+    /// On x86_64, return address is stored in stack, so we need to modify the
+    /// stack in order to change the return address. This function uses a
+    /// separate name (rather than `set_ra`) to avoid confusion and misuse.
+    pub fn push_ra(&mut self, addr: usize) {
+        self.rsp -= 8;
+        unsafe {
+            core::ptr::write(self.rsp as *mut usize, addr);
+        }
+    }
+
+    /// Gets the TLS area.
+    pub const fn tls(&self) -> usize {
+        self.fs_base as _
+    }
+
+    /// Sets the TLS area.
+    pub const fn set_tls(&mut self, tls_area: usize) {
+        self.fs_base = tls_area as _;
     }
 }
 
@@ -150,7 +236,7 @@ impl fmt::Debug for ExtendedState {
 ///
 /// - Callee-saved registers
 /// - Stack pointer register
-/// - Thread pointer register (for thread-local storage, currently unsupported)
+/// - Thread pointer register (for kernel-space thread-local storage)
 /// - FP/SIMD registers
 ///
 /// On context switch, current task saves its context from CPU to memory,
@@ -169,9 +255,11 @@ pub struct TaskContext {
     pub kstack_top: VirtAddr,
     /// `RSP` after all callee-saved registers are pushed.
     pub rsp: u64,
-    /// Thread Local Storage (TLS).
+    /// Thread pointer (FS segment base address)
     pub fs_base: usize,
-    /// The `gs_base` register value.
+    /// User space Thread pointer (GS segment base address)
+    ///
+    /// During task switching, it is written to `KernelGSBase` MSR.
     #[cfg(feature = "uspace")]
     pub gs_base: usize,
     /// Extended states, i.e., FP/SIMD states.
@@ -245,7 +333,7 @@ impl TaskContext {
             self.ext_state.save();
             next_ctx.ext_state.restore();
         }
-        #[cfg(any(feature = "tls", feature = "uspace"))]
+        #[cfg(feature = "tls")]
         unsafe {
             self.fs_base = crate::asm::read_thread_pointer();
             crate::asm::write_thread_pointer(next_ctx.fs_base);

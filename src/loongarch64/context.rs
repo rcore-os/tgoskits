@@ -84,32 +84,107 @@ pub struct TrapFrame {
 impl TrapFrame {
     /// Gets the 0th syscall argument.
     pub const fn arg0(&self) -> usize {
-        self.regs.a0 as _
+        self.regs.a0
+    }
+
+    /// Sets the 0th syscall argument.
+    pub const fn set_arg0(&mut self, a0: usize) {
+        self.regs.a0 = a0;
     }
 
     /// Gets the 1st syscall argument.
     pub const fn arg1(&self) -> usize {
-        self.regs.a1 as _
+        self.regs.a1
+    }
+
+    /// Sets the 1st syscall argument.
+    pub const fn set_arg1(&mut self, a1: usize) {
+        self.regs.a1 = a1;
     }
 
     /// Gets the 2nd syscall argument.
     pub const fn arg2(&self) -> usize {
-        self.regs.a2 as _
+        self.regs.a2
+    }
+
+    /// Sets the 2nd syscall argument.
+    pub const fn set_arg2(&mut self, a2: usize) {
+        self.regs.a2 = a2;
     }
 
     /// Gets the 3rd syscall argument.
     pub const fn arg3(&self) -> usize {
-        self.regs.a3 as _
+        self.regs.a3
+    }
+
+    /// Sets the 3rd syscall argument.
+    pub const fn set_arg3(&mut self, a3: usize) {
+        self.regs.a3 = a3;
     }
 
     /// Gets the 4th syscall argument.
     pub const fn arg4(&self) -> usize {
-        self.regs.a4 as _
+        self.regs.a4
+    }
+
+    /// Sets the 4th syscall argument.
+    pub const fn set_arg4(&mut self, a4: usize) {
+        self.regs.a4 = a4;
     }
 
     /// Gets the 5th syscall argument.
     pub const fn arg5(&self) -> usize {
-        self.regs.a5 as _
+        self.regs.a5
+    }
+
+    /// Sets the 5th syscall argument.
+    pub const fn set_arg5(&mut self, a5: usize) {
+        self.regs.a5 = a5;
+    }
+
+    /// Gets the instruction pointer.
+    pub const fn ip(&self) -> usize {
+        self.era
+    }
+
+    /// Sets the instruction pointer.
+    pub const fn set_ip(&mut self, pc: usize) {
+        self.era = pc;
+    }
+
+    /// Gets the stack pointer.
+    pub const fn sp(&self) -> usize {
+        self.regs.sp
+    }
+
+    /// Sets the stack pointer.
+    pub const fn set_sp(&mut self, sp: usize) {
+        self.regs.sp = sp;
+    }
+
+    /// Gets the return value register.
+    pub const fn retval(&self) -> usize {
+        self.regs.a0
+    }
+
+    /// Sets the return value register.
+    pub const fn set_retval(&mut self, a0: usize) {
+        self.regs.a0 = a0;
+    }
+
+    /// Sets the return address.
+    pub const fn set_ra(&mut self, ra: usize) {
+        self.regs.ra = ra;
+    }
+
+    /// Gets the TLS area.
+    pub const fn tls(&self) -> usize {
+        self.regs.tp
+    }
+
+    /// Sets the TLS area.
+    pub const fn set_tls(&mut self, tls_area: usize) {
+        self.regs.tp = tls_area;
     }
 }
 
@@ -119,7 +194,7 @@ impl TrapFrame {
 ///
 /// - Callee-saved registers
 /// - Stack pointer register
-/// - Thread pointer register (for thread-local storage, currently unsupported)
+/// - Thread pointer register (for kernel-space thread-local storage)
 /// - FP/SIMD registers
 ///
 /// On context switch, current task saves its context from CPU to memory,

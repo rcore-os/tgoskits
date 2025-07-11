@@ -19,7 +19,7 @@ pub static PAGE_FAULT: [fn(VirtAddr, PageFaultFlags, bool) -> bool];
 #[cfg(feature = "uspace")]
 #[cfg_attr(docsrs, doc(cfg(feature = "uspace")))]
 #[def_trap_handler]
-pub static SYSCALL: [fn(&TrapFrame, usize) -> isize];
+pub static SYSCALL: [fn(&mut TrapFrame, usize) -> isize];
 
 #[allow(unused_macros)]
 macro_rules! handle_trap {
@@ -39,6 +39,6 @@ macro_rules! handle_trap {
 
 /// Call the external syscall handler.
 #[cfg(feature = "uspace")]
-pub(crate) fn handle_syscall(tf: &TrapFrame, syscall_num: usize) -> isize {
+pub(crate) fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
     SYSCALL[0](tf, syscall_num)
 }
