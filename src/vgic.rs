@@ -1,133 +1,89 @@
-extern crate alloc;
-use alloc::vec::Vec;
+use crate::interrupt::VgicInt;
+use crate::registers::GicRegister;
+use crate::vgicd::Vgicd;
 use axerrno::AxResult;
-
-pub use arm_gicv2::GicInterface;
-
-use log::*;
+use axvisor_api::vmm::{current_vcpu_id, current_vm_vcpu_num};
 use spin::Mutex;
 
-use crate::consts::*;
-use crate::vgicc::Vgicc;
-// use crate_interface::call_interface;
-// pub use vcpu_if::*;
-
-struct VgicInner {
-    used_irq: [u32; SPI_ID_MAX / 32],
-    ptov: [u32; SPI_ID_MAX],
-    vtop: [u32; SPI_ID_MAX],
-    gicc: Vec<Vgicc>,
-
-    ctrlr: u32,
-    typer: u32,
-    iidr: u32,
-
-    gicd_igroupr: [u32; SPI_ID_MAX / 32],
-    gicd_isenabler: [u32; SPI_ID_MAX / 32],
-    gicd_ipriorityr: [u8; SPI_ID_MAX],
-    gicd_itargetsr: [u8; SPI_ID_MAX],
-    gicd_icfgr: [u32; SPI_ID_MAX / 16],
-}
-
+// 实现 Vgic
 pub struct Vgic {
-    inner: Mutex<VgicInner>,
+    vgicd: Mutex<Vgicd>,
 }
 
 impl Vgic {
     pub fn new() -> Vgic {
         Vgic {
-            inner: Mutex::new(VgicInner {
-                gicc: Vec::new(),
-                ctrlr: 0,
-                typer: 0,
-                iidr: 0,
-                used_irq: [0; SPI_ID_MAX / 32],
-                ptov: [0; SPI_ID_MAX],
-                vtop: [0; SPI_ID_MAX],
-                gicd_igroupr: [0; SPI_ID_MAX / 32],
-                gicd_isenabler: [0; SPI_ID_MAX / 32],
-                gicd_ipriorityr: [0; SPI_ID_MAX],
-                gicd_itargetsr: [0; SPI_ID_MAX],
-                gicd_icfgr: [0; SPI_ID_MAX / 16],
-            }),
+            vgicd: Mutex::new(Vgicd::new()),
         }
     }
-
-    pub(crate) fn handle_read8(&self, _addr: usize) -> AxResult<usize> {
-        Ok(0)
+    pub(crate) fn handle_read8(&self, addr: usize) -> AxResult<usize> {
+        let value = self.handle_read32(addr)?;
+        return Ok((value >> (8 * (addr & 0x3))) & 0xff);
     }
 
-    pub(crate) fn handle_read16(&self, _addr: usize) -> AxResult<usize> {
-        Ok(0)
+    pub(crate) fn handle_read16(&self, addr: usize) -> AxResult<usize> {
+        let value = self.handle_read32(addr)?;
+        return Ok((value >> (8 * (addr & 0x3))) & 0xffff);
     }
 
-    pub(crate) fn handle_read32(&self, _addr: usize) -> AxResult<usize> {
-        Ok(0)
-    }
-
-    pub(crate) fn handle_write8(&self, addr: usize, val: usize) {
-        match addr {
-            VGICD_CTLR => {
-                error!("ctrl emu");
-                // let curr_vcpu_id = call_interface!(VcpuIf::current_vcpu_id());
-                // error!("current vcpu id: {}", curr_vcpu_id);
-
-                // 这里只关心写入的最后两位，也就是 grp0 grp1
-                let mut vgic_inner = self.inner.lock();
-                vgic_inner.ctrlr = (val & 0b11) as u32;
-
-                if vgic_inner.ctrlr > 0 {
-                    for i in SGI_ID_MAX..SPI_ID_MAX {
-                        if vgic_inner.used_irq[i / 32] & (1 << (i % 32)) != 0 {
-                            GicInterface::set_enable(i, true);
-                            // 设置优先级为0
-                            GicInterface::set_priority(i, 0);
-                        }
-                    }
-                } else {
-                    for i in SGI_ID_MAX..SPI_ID_MAX {
-                        if vgic_inner.used_irq[i / 32] & (1 << (i % 32)) != 0 {
-                            GicInterface::set_enable(i, false);
-                        }
-                    }
+    pub fn handle_read32(&self, addr: usize) -> AxResult<usize> {
+        match GicRegister::from_addr(addr as u32) {
+            Some(reg) => match reg {
+                GicRegister::GicdCtlr => Ok(self.vgicd.lock().ctrlr as usize),
+                GicRegister::GicdTyper => Ok(self.vgicd.lock().typer as usize),
+                GicRegister::GicdIidr => Ok(self.vgicd.lock().iidr as usize),
+                // // GicRegister::GicdStatusr => self.read_statusr(),
+                // // GicRegister::GicdIgroupr(idx) => self.read_igroupr(idx),
+                GicRegister::GicdIsenabler(idx) => Ok(self.vgicd.lock().vgicd_isenabler_read(idx)),
+                // GicRegister::GicdIcenabler(idx) => self.read_icenabler(idx),
+                // GicRegister::GicdIspendr(idx) => self.read_ispendr(idx),
+                _ => {
+                    // error!("Read register address: {:#x}", addr);
+                    Ok(0)
                 }
-                // TODO: 告知其它PE开启或关闭相应中断
             },
-            VGICD_ISENABLER_SGI_PPI..=VGICD_ISENABLER_SPI => {
-                self.handle_write32(addr, val);
-            },
-            VGICD_ISENABLER_SPI..=VGICD_ICENABLER_SGI_PPI => {
-                
-            },
-            _ => {
-                error!("Unkonwn addr: {:#x}", addr);
+            None => {
+                //error!("Invalid read register address: {addr:#x}");
+                Ok(0)
             }
         }
     }
 
-    pub(crate) fn handle_write16(&self, addr: usize, val: usize) {
-        match addr {
-            VGICD_CTLR => self.handle_write8(addr, val),
-            VGICD_ISENABLER_SGI_PPI..=VGICD_ISENABLER_SPI => {
-                self.handle_write32(addr, val);
-            },
-            _ => {
-                error!("Unkonwn addr: {:#x}", addr);
-            },
-            
+    pub fn handle_write8(&self, addr: usize, value: usize) {
+        self.handle_write32(addr, value);
+    }
+
+    pub fn handle_write16(&self, addr: usize, value: usize) {
+        self.handle_write32(addr, value);
+    }
+
+    pub fn handle_write32(&self, addr: usize, value: usize) {
+        let vcpu_id = current_vcpu_id();
+        match GicRegister::from_addr(addr as u32) {
+            Some(reg) => {
+                match reg {
+                    GicRegister::GicdCtlr => self.vgicd.lock().vgicd_ctrlr_write(value),
+                    // GicRegister::GicdIsenabler(idx) => self.write_isenabler(idx, value),
+                    GicRegister::GicdIsenabler(idx) => {
+                        self.vgicd.lock().vgicd_isenabler_write(idx, value)
+                    }
+                    _ => {
+                        //error!("Write register address: {:#x}", addr);
+                    }
+                }
+            }
+            None => {} //error!("Invalid write register address: {addr:#x}"),
         }
     }
 
-    pub(crate) fn handle_write32(&self, addr: usize, val: usize) {
-        match addr {
-            VGICD_CTLR => self.handle_write8(addr, val),
-            VGICD_ISENABLER_SGI_PPI..=VGICD_ISENABLER_SPI => {
-                error!("enabler emu");
-            },
-            _ => {
-                error!("Unkonwn addr: {:#x}", addr);
-            },
-            
-        }
+    // Removed, interrupt injection in arm_vcpu
+    // pub fn inject_irq(&self, irq: u32) {
+    //     self.vgicd.lock().inject_irq(irq);
+    // }
+
+    pub fn fetch_irq(&self, irq: u32) -> VgicInt {
+        self.vgicd.lock().fetch_irq(irq)
     }
+
+    pub fn nothing(&self, _value: u32) {}
 }
