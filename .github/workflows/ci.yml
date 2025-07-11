@@ -28,29 +28,29 @@ jobs:
       continue-on-error: ${{ matrix.rust-toolchain == 'nightly' }}
       run: cargo build --target ${{ matrix.targets }} --all-features
 
-  doc:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-    permissions:
-      contents: write
-    env:
-      default-branch: ${{ format('refs/heads/{0}', github.event.repository.default_branch) }}
-      RUSTDOCFLAGS: -D rustdoc::broken_intra_doc_links -D missing-docs
-    steps:
-    - uses: actions/checkout@v4
-    - uses: dtolnay/rust-toolchain@nightly
-      with:
-        toolchain: nightly-2024-12-25
-    - name: Build docs
-      continue-on-error: ${{ github.ref != env.default-branch && github.event_name != 'pull_request' }}
-      run: |
-        cargo doc --no-deps --all-features
-        printf '<meta http-equiv="refresh" content="0;url=%s/index.html">' $(cargo tree | head -1 | cut -d' ' -f1) > target/doc/index.html
-    - name: Deploy to Github Pages
-      if: ${{ github.ref == env.default-branch }}
-      uses: JamesIves/github-pages-deploy-action@v4
-      with:
-        single-commit: true
-        branch: gh-pages
-        folder: target/doc
+  # doc:
+  #   runs-on: ubuntu-latest
+  #   strategy:
+  #     fail-fast: false
+  #   permissions:
+  #     contents: write
+  #   env:
+  #     default-branch: ${{ format('refs/heads/{0}', github.event.repository.default_branch) }}
+  #     RUSTDOCFLAGS: -D rustdoc::broken_intra_doc_links -D missing-docs
+  #   steps:
+  #   - uses: actions/checkout@v4
+  #   - uses: dtolnay/rust-toolchain@nightly
+  #     with:
+  #       toolchain: nightly-2024-12-25
+  #   - name: Build docs
+  #     continue-on-error: ${{ github.ref != env.default-branch && github.event_name != 'pull_request' }}
+  #     run: |
+  #       cargo doc --no-deps --all-features
+  #       printf '<meta http-equiv="refresh" content="0;url=%s/index.html">' $(cargo tree | head -1 | cut -d' ' -f1) > target/doc/index.html
+  #   - name: Deploy to Github Pages
+  #     if: ${{ github.ref == env.default-branch }}
+  #     uses: JamesIves/github-pages-deploy-action@v4
+  #     with:
+  #       single-commit: true
+  #       branch: gh-pages
+  #       folder: target/doc

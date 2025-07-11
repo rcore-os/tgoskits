@@ -1,5 +1,4 @@
 #![no_std]
-#![feature(concat_idents)]
 #![feature(unbounded_shifts)]
 
 mod devops_impl;
