@@ -1,16 +1,16 @@
+use alloc::{borrow::ToOwned, collections::btree_map::BTreeMap, string::String, sync::Arc};
 use core::{
     mem,
     ops::{Deref, DerefMut},
 };
 
-use alloc::{borrow::ToOwned, collections::btree_map::BTreeMap, string::String, sync::Arc};
 use lock_api::{Mutex, MutexGuard, RawMutex};
 
-use crate::{
-    path::{verify_entry_name, DOT, DOTDOT, MAX_NAME_LEN}, MetadataUpdate, Mountpoint, NodeOps, NodePermission, NodeType, VfsError, VfsResult
-};
-
 use super::DirEntry;
+use crate::{
+    MetadataUpdate, Mountpoint, NodeOps, NodePermission, NodeType, VfsError, VfsResult,
+    path::{DOT, DOTDOT, MAX_NAME_LEN, verify_entry_name},
+};
 
 /// A trait for a sink that can receive directory entries.
 pub trait DirEntrySink {
@@ -23,6 +23,7 @@ pub trait DirEntrySink {
     /// directory, and operating on the node may cause deadlock.
     fn accept(&mut self, name: &str, ino: u64, node_type: NodeType, offset: u64) -> bool;
 }
+
 impl<F: FnMut(&str, u64, NodeType, u64) -> bool> DirEntrySink for F {
     fn accept(&mut self, name: &str, ino: u64, node_type: NodeType, offset: u64) -> bool {
         self(name, ino, node_type, offset)
@@ -70,7 +71,8 @@ pub trait DirNodeOps<M: RawMutex>: NodeOps<M> {
 
     /// Unlinks a directory entry by name.
     ///
-    /// If the entry is a non-empty directory, it should return `ENOTEMPTY` error.
+    /// If the entry is a non-empty directory, it should return `ENOTEMPTY`
+    /// error.
     fn unlink(&self, name: &str) -> VfsResult<()>;
 
     /// Renames a directory entry, replacing the original entry (dst) if it
@@ -103,6 +105,7 @@ pub struct DirNode<M> {
     cache: Mutex<M, BTreeMap<String, DirEntry<M>>>,
     pub(crate) mountpoint: Mutex<M, Option<Arc<Mountpoint<M>>>>,
 }
+
 impl<M> Deref for DirNode<M> {
     type Target = dyn NodeOps<M>;
 
@@ -110,6 +113,7 @@ impl<M> Deref for DirNode<M> {
         &*self.ops
     }
 }
+
 impl<M> From<DirNode<M>> for Arc<dyn NodeOps<M>> {
     fn from(node: DirNode<M>) -> Self {
         node.ops.clone()
@@ -138,10 +142,10 @@ impl<M: RawMutex> DirNode<M> {
     }
 
     fn forget_entry(children: &mut DirChildren<M>, name: &str) {
-        if let Some(entry) = children.remove(name) {
-            if let Ok(dir) = entry.as_dir() {
-                dir.forget();
-            }
+        if let Some(entry) = children.remove(name)
+            && let Ok(dir) = entry.as_dir()
+        {
+            dir.forget();
         }
     }
 
@@ -180,6 +184,7 @@ impl<M: RawMutex> DirNode<M> {
             None
         }
     }
+
     /// Inserts a directory entry into the cache.
     pub fn insert_cache(&self, name: String, entry: DirEntry<M>) -> Option<DirEntry<M>> {
         if self.ops.is_cacheable() {
@@ -262,7 +267,7 @@ impl<M: RawMutex> DirNode<M> {
         verify_entry_name(dst_name)?;
 
         let mut src_children = self.cache.lock();
-        let mut dst_children = if self as *const _ == dst_dir as *const _ {
+        let mut dst_children = if core::ptr::eq(self, dst_dir) {
             None
         } else {
             Some(dst_dir.cache.lock())
@@ -276,10 +281,10 @@ impl<M: RawMutex> DirNode<M> {
                 .map_or_else(|| src_children.deref_mut(), MutexGuard::deref_mut),
         ) {
             if src.node_type() == NodeType::Directory {
-                if let Ok(dir) = dst.as_dir() {
-                    if dir.has_children()? {
-                        return Err(VfsError::ENOTEMPTY);
-                    }
+                if let Ok(dir) = dst.as_dir()
+                    && dir.has_children()?
+                {
+                    return Err(VfsError::ENOTEMPTY);
                 }
             } else if dst.node_type() == NodeType::Directory {
                 return Err(VfsError::EISDIR);
@@ -330,6 +335,7 @@ impl<M: RawMutex> DirNode<M> {
     pub fn mountpoint(&self) -> Option<Arc<Mountpoint<M>>> {
         self.mountpoint.lock().clone()
     }
+
     pub fn is_mountpoint(&self) -> bool {
         self.mountpoint.lock().is_some()
     }

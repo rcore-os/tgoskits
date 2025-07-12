@@ -1,6 +1,5 @@
-use core::{borrow::Borrow, fmt, ops::Deref};
-
 use alloc::{borrow::ToOwned, string::String, sync::Arc};
+use core::{borrow::Borrow, fmt, ops::Deref};
 
 use crate::{VfsError, VfsResult};
 
@@ -158,6 +157,7 @@ impl Path {
     pub fn as_str(&self) -> &str {
         &self.inner
     }
+
     pub fn as_bytes(&self) -> &[u8] {
         self.inner.as_bytes()
     }
@@ -279,19 +279,20 @@ macro_rules! impl_as_ref {
         })+
     };
 }
+
 impl_as_ref!(str, String);
 
 /// An owned, mutable [`Path`] (akin to [`String`]).
 ///
 /// Different from [`std::path::PathBuf`], this type is always
 /// UTF-8 encoded.
-#[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Default, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PathBuf {
     inner: String,
 }
 
 impl PathBuf {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             inner: String::new(),
         }
@@ -310,6 +311,7 @@ impl PathBuf {
     pub fn push(&mut self, path: impl AsRef<Path>) {
         self._push(path.as_ref());
     }
+
     fn _push(&mut self, path: &Path) {
         if path.as_str().is_empty() {
             return;
@@ -341,6 +343,7 @@ impl Borrow<Path> for PathBuf {
 
 impl Deref for PathBuf {
     type Target = Path;
+
     #[inline]
     fn deref(&self) -> &Path {
         Path::new(&self.inner)

@@ -1,11 +1,6 @@
 mod dir;
 mod file;
 
-use core::{iter, ops::Deref};
-
-pub use dir::*;
-pub use file::*;
-
 use alloc::{
     borrow::ToOwned,
     string::String,
@@ -13,6 +8,10 @@ use alloc::{
     vec,
     vec::Vec,
 };
+use core::{iter, ops::Deref};
+
+pub use dir::*;
+pub use file::*;
 use inherit_methods_macro::inherit_methods;
 use lock_api::RawMutex;
 
@@ -21,6 +20,7 @@ use crate::{
 };
 
 /// Filesystem node operationss
+#[allow(clippy::len_without_is_empty)]
 pub trait NodeOps<M>: Send + Sync {
     /// Gets the inode number of the node.
     fn inode(&self) -> u64;
@@ -50,6 +50,7 @@ enum Node<M> {
     File(FileNode<M>),
     Dir(DirNode<M>),
 }
+
 impl<M: RawMutex> Node<M> {
     pub fn clone_inner(&self) -> Arc<dyn NodeOps<M>> {
         match self {
@@ -58,6 +59,7 @@ impl<M: RawMutex> Node<M> {
         }
     }
 }
+
 impl<M> Deref for Node<M> {
     type Target = dyn NodeOps<M>;
 
@@ -75,6 +77,7 @@ pub struct Reference<M> {
     parent: Option<DirEntry<M>>,
     name: String,
 }
+
 impl<M> Reference<M> {
     pub fn new(parent: Option<DirEntry<M>>, name: String) -> Self {
         Self { parent, name }
@@ -98,7 +101,9 @@ struct Inner<M> {
     node_type: NodeType,
     reference: Reference<M>,
 }
+
 pub struct DirEntry<M>(Arc<Inner<M>>);
+
 impl<M> Clone for DirEntry<M> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
@@ -106,11 +111,13 @@ impl<M> Clone for DirEntry<M> {
 }
 
 pub struct WeakDirEntry<M>(Weak<Inner<M>>);
+
 impl<M> Clone for WeakDirEntry<M> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
+
 impl<M> WeakDirEntry<M> {
     pub fn upgrade(&self) -> Option<DirEntry<M>> {
         self.0.upgrade().map(DirEntry)
@@ -129,9 +136,14 @@ impl<M> From<Node<M>> for Arc<dyn NodeOps<M>> {
 #[inherit_methods(from = "self.0.node")]
 impl<M: RawMutex> DirEntry<M> {
     pub fn inode(&self) -> u64;
+
     pub fn filesystem(&self) -> &dyn FilesystemOps<M>;
+
     pub fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
+
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> VfsResult<u64>;
+
     pub fn sync(&self, data_only: bool) -> VfsResult<()>;
 }
 
@@ -143,6 +155,7 @@ impl<M: RawMutex> DirEntry<M> {
             reference,
         }))
     }
+
     pub fn new_dir(
         node_fn: impl FnOnce(WeakDirEntry<M>) -> DirNode<M>,
         reference: Reference<M>,
@@ -181,9 +194,11 @@ impl<M: RawMutex> DirEntry<M> {
     pub fn node_type(&self) -> NodeType {
         self.0.node_type
     }
+
     pub fn parent(&self) -> Option<Self> {
         self.0.reference.parent.clone()
     }
+
     pub fn name(&self) -> &str {
         &self.0.reference.name
     }
@@ -231,6 +246,7 @@ impl<M: RawMutex> DirEntry<M> {
     pub fn is_file(&self) -> bool {
         matches!(self.0.node, Node::File(_))
     }
+
     pub fn is_dir(&self) -> bool {
         matches!(self.0.node, Node::Dir(_))
     }
@@ -241,6 +257,7 @@ impl<M: RawMutex> DirEntry<M> {
             _ => Err(VfsError::EISDIR),
         }
     }
+
     pub fn as_dir(&self) -> VfsResult<&DirNode<M>> {
         match &self.0.node {
             Node::Dir(dir) => Ok(dir),
@@ -251,6 +268,7 @@ impl<M: RawMutex> DirEntry<M> {
     pub fn ptr_eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
+
     pub fn as_ptr(&self) -> usize {
         Arc::as_ptr(&self.0) as usize
     }

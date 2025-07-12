@@ -1,14 +1,14 @@
-use core::{
-    iter,
-    sync::atomic::{AtomicU64, Ordering},
-};
-
 use alloc::{
     collections::btree_map::BTreeMap,
     string::String,
     sync::{Arc, Weak},
     vec,
 };
+use core::{
+    iter,
+    sync::atomic::{AtomicU64, Ordering},
+};
+
 use inherit_methods_macro::inherit_methods;
 use lock_api::{Mutex, RawMutex};
 
@@ -28,6 +28,7 @@ pub struct Mountpoint<M> {
     /// Device ID
     device: u64,
 }
+
 impl<M: RawMutex> Mountpoint<M> {
     pub fn new(fs: &Filesystem<M>, location_in_parent: Option<Location<M>>) -> Arc<Self> {
         static DEVICE_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -40,6 +41,7 @@ impl<M: RawMutex> Mountpoint<M> {
             device: DEVICE_COUNTER.fetch_add(1, Ordering::Relaxed),
         })
     }
+
     pub fn new_root(fs: &Filesystem<M>) -> Arc<Self> {
         Self::new(fs, None)
     }
@@ -80,6 +82,7 @@ pub struct Location<M> {
     mountpoint: Arc<Mountpoint<M>>,
     entry: DirEntry<M>,
 }
+
 impl<M> Clone for Location<M> {
     fn clone(&self) -> Self {
         Self {
@@ -92,15 +95,22 @@ impl<M> Clone for Location<M> {
 #[inherit_methods(from = "self.entry")]
 impl<M: RawMutex> Location<M> {
     pub fn inode(&self) -> u64;
+
     pub fn filesystem(&self) -> &dyn FilesystemOps<M>;
+
     pub fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
+
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> VfsResult<u64>;
+
     pub fn sync(&self, data_only: bool) -> VfsResult<()>;
 
     pub fn is_file(&self) -> bool;
+
     pub fn is_dir(&self) -> bool;
 
     pub fn node_type(&self) -> NodeType;
+
     pub fn is_root_of_mount(&self) -> bool;
 
     pub fn read_link(&self) -> VfsResult<String>;
@@ -118,6 +128,7 @@ impl<M: RawMutex> Location<M> {
     pub fn mountpoint(&self) -> &Arc<Mountpoint<M>> {
         &self.mountpoint
     }
+
     pub fn entry(&self) -> &DirEntry<M> {
         &self.entry
     }
@@ -144,6 +155,7 @@ impl<M: RawMutex> Location<M> {
     pub fn check_is_dir(&self) -> VfsResult<()> {
         self.entry.as_dir().map(|_| ())
     }
+
     pub fn check_is_file(&self) -> VfsResult<()> {
         self.entry.as_file().map(|_| ())
     }
@@ -174,7 +186,7 @@ impl<M: RawMutex> Location<M> {
     }
 
     pub fn is_mountpoint(&self) -> bool {
-        self.entry.as_dir().map_or(false, |it| it.is_mountpoint())
+        self.entry.as_dir().is_ok_and(|it| it.is_mountpoint())
     }
 
     /// See [`Mountpoint::effective_mountpoint`].
@@ -224,7 +236,7 @@ impl<M: RawMutex> Location<M> {
         if !Arc::ptr_eq(&self.mountpoint, &dst_dir.mountpoint) {
             return Err(VfsError::EXDEV);
         }
-        if !self.ptr_eq(&dst_dir) && self.entry.is_ancestor_of(&dst_dir.entry)? {
+        if !self.ptr_eq(dst_dir) && self.entry.is_ancestor_of(&dst_dir.entry)? {
             return Err(VfsError::EINVAL);
         }
         self.entry
@@ -252,7 +264,7 @@ impl<M: RawMutex> Location<M> {
         if mountpoint.is_some() {
             return Err(VfsError::EBUSY);
         }
-        let result = Mountpoint::new(&fs, Some(self.clone()));
+        let result = Mountpoint::new(fs, Some(self.clone()));
         *mountpoint = Some(result.clone());
         self.mountpoint
             .children

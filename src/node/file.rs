@@ -1,10 +1,8 @@
+use alloc::sync::Arc;
 use core::ops::Deref;
 
-use alloc::sync::Arc;
-
-use crate::{VfsError, VfsResult};
-
 use super::NodeOps;
+use crate::{VfsError, VfsResult};
 
 pub trait FileNodeOps<M>: NodeOps<M> {
     /// Reads a number of bytes starting from a given offset.
@@ -28,6 +26,7 @@ pub trait FileNodeOps<M>: NodeOps<M> {
 
 #[repr(transparent)]
 pub struct FileNode<M>(Arc<dyn FileNodeOps<M>>);
+
 impl<M> Deref for FileNode<M> {
     type Target = dyn FileNodeOps<M>;
 
@@ -35,6 +34,7 @@ impl<M> Deref for FileNode<M> {
         &*self.0
     }
 }
+
 impl<M> From<FileNode<M>> for Arc<dyn NodeOps<M>> {
     fn from(node: FileNode<M>) -> Self {
         node.0.clone()

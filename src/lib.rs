@@ -1,5 +1,4 @@
 #![no_std]
-#![feature(trait_upcasting)]
 
 extern crate alloc;
 

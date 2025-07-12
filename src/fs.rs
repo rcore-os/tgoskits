@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+
 use inherit_methods_macro::inherit_methods;
 use lock_api::RawMutex;
 
@@ -29,6 +30,7 @@ pub trait FilesystemOps<M>: Send + Sync {
 pub struct Filesystem<M> {
     ops: Arc<dyn FilesystemOps<M>>,
 }
+
 impl<M> Clone for Filesystem<M> {
     fn clone(&self) -> Self {
         Self {
@@ -40,7 +42,9 @@ impl<M> Clone for Filesystem<M> {
 #[inherit_methods(from = "self.ops")]
 impl<M: RawMutex> Filesystem<M> {
     pub fn name(&self) -> &str;
+
     pub fn root_dir(&self) -> DirEntry<M>;
+
     pub fn stat(&self) -> VfsResult<StatFs>;
 }
 
