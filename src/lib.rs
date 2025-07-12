@@ -156,8 +156,8 @@ impl Backtrace {
         }
     }
 
-    /// Capture the stack backtrace from a given [`Frame`].
-    pub fn capture_of(frame: Frame) -> Self {
+    /// Capture the stack backtrace from a given `fp` and `ip`.
+    pub fn capture_of(fp: usize, ip: usize) -> Self {
         #[cfg(not(feature = "dwarf"))]
         {
             return Self {
@@ -166,8 +166,11 @@ impl Backtrace {
         }
         #[cfg(feature = "dwarf")]
         {
-            let mut frames = vec![frame];
-            frames.extend(unwind_stack(frame.fp));
+            let mut frames = vec![Frame {
+                fp,
+                ip: ip.wrapping_add(1),
+            }];
+            frames.extend(unwind_stack(fp));
 
             Self {
                 inner: Inner::Captured(frames),
