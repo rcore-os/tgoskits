@@ -16,7 +16,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for Vgic {
     /// # Returns
     /// - Returns an instance of the `EmuDeviceType` enum, representing the specific type of the emulator device.
     fn emu_type(&self) -> EmuDeviceType {
-        EmuDeviceType::EmuDeviceTInterruptController
+        EmuDeviceType::InterruptController
     }
 
     /// Returns the address range for the device.

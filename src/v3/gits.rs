@@ -81,7 +81,7 @@ impl Gits {
 impl BaseDeviceOps<GuestPhysAddrRange> for Gits {
     fn emu_type(&self) -> axdevice_base::EmuDeviceType {
         // todo: determine the correct type
-        axdevice_base::EmuDeviceType::EmuDeviceTGPPT
+        axdevice_base::EmuDeviceType::GPPTITS
     }
 
     fn address_range(&self) -> GuestPhysAddrRange {

@@ -63,7 +63,7 @@ impl VGicR {
 
 impl BaseDeviceOps<GuestPhysAddrRange> for VGicR {
     fn emu_type(&self) -> axdevice_base::EmuDeviceType {
-        axdevice_base::EmuDeviceType::EmuDeviceTInterruptController
+        axdevice_base::EmuDeviceType::GPPTRedistributor
     }
 
     fn address_range(&self) -> GuestPhysAddrRange {
