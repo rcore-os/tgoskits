@@ -15,5 +15,5 @@ serde = { version = "1.0.204", default-features = false, features = ["derive"] }
 serde_repr = "0.1"
 toml = { git = "https://github.com/arceos-hypervisor/toml.git", branch = "no_std" }
 axerrno = "0.1.0"
-
+enumerable = "1.1"
 clap = { version = "4.5.23", optional = true, features = ["derive"]}

@@ -1,4 +1,5 @@
-//! [ArceOS-Hypervisor](https://github.com/arceos-hypervisor/arceos-umhv) [VM](https://github.com/arceos-hypervisor/axvm) config module.
+//! [ArceOS-Hypervisor](https://github.com/arceos-hypervisor/arceos-umhv)
+//! [VM](https://github.com/arceos-hypervisor/axvm) config module.
 //! [`AxVMCrateConfig`]: the configuration structure for the VM.
 //! It is generated from toml file, and then converted to `AxVMConfig` for the VM creation.
 #![cfg_attr(not(feature = "std"), no_std)]
@@ -10,6 +11,8 @@ extern crate log;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::{Display, Formatter};
+use enumerable::Enumerable;
+use serde_repr::{Deserialize_repr, Serialize_repr};
 
 use axerrno::AxResult;
 
@@ -76,41 +79,64 @@ pub struct VmMemConfig {
 }
 
 /// The type of Emulated Device.
-#[derive(Debug, Clone, PartialEq, Eq, serde_repr::Serialize_repr, serde_repr::Deserialize_repr)]
+///
+/// Allocation scheme:
+/// - 0x00 - 0x1F: Special devices, and abstract device types that does not specify a concrete
+/// interface or implementation. The device objects created from these types depend on the target
+/// architecture and the specific implementation of the hypervisor.
+/// - 0x20 - 0x7F: Concrete emulated device types.
+///   - 0x20 - 0x2F: Interrupt controller devices.
+///   - 0x30 - 0x3F: Reserved for future use.
+/// - 0x80 - 0xDF: Reserved for future use.
+/// - 0xE0 - 0xEF: Virtio devices.
+/// - 0xF0 - 0xFF: Reserved for future use.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize_repr, Deserialize_repr, Enumerable)]
 #[repr(u8)]
 pub enum EmulatedDeviceType {
-    /// Console device.
-    EmuDeviceTConsole = 0,
+    // Special devices and abstract device types.
+    /// Dummy device type.
+    Dummy = 0x0,
     /// Interrupt controller device, e.g. vGICv2 in aarch64, vLAPIC in x86.
-    EmuDeviceTInterruptController = 1,
-    /// Partial passthrough interrupt controller device.
-    EmuDeviceTGPPT = 2,
-    /// Virtio block device.
-    EmuDeviceTVirtioBlk = 3,
-    /// Virtio net device.
-    EmuDeviceTVirtioNet = 4,
-    /// Virtio console device.
-    EmuDeviceTVirtioConsole = 5,
-    /// IOMMU device.
-    EmuDeviceTIOMMU = 6,
-    /// Interrupt ICC SRE device.
-    EmuDeviceTICCSRE = 7,
-    /// Interrupt ICC SGIR device.
-    EmuDeviceTSGIR = 8,
-    /// Interrupt controller GICR device.
-    EmuDeviceTGICR = 9,
+    InterruptController = 0x1,
+    /// Console (serial) device.
+    Console = 0x2,
     /// An emulated device that provides Inter-VM Communication (IVC) channel.
+    ///
     /// This device is used for communication between different VMs,
     /// the corresponding memory region of this device should be marked as `Reserved` in
     /// device tree or ACPI table.
-    EmuDeviceTIVCChannel = 10,
-    /// Meta device.
-    EmuDeviceTMeta = 11,
+    IVCChannel = 0xA,
+
+    // Arch-specific interrupt controller devices.
+    // 0x20 - 0x22: GPPT (GIC Partial Passthrough) devices.
+    /// ARM GIC Partial Passthrough Redistributor device.
+    GPPTRedistributor = 0x20,
+    /// ARM GIC Partial Passthrough Distributor device.
+    GPPTDistributor = 0x21,
+    /// ARM GIC Partial Passthrough Interrupt Translation Service device.
+    GPPTITS = 0x22,
+
+    // Virtio devices.
+    /// Virtio block device.
+    VirtioBlk = 0xE1,
+    /// Virtio net device.
+    VirtioNet = 0xE2,
+    /// Virtio console device.
+    VirtioConsole = 0xE3,
+    // Following are some other emulated devices that are not currently used and removed from the enum temporarily.
+    // /// IOMMU device.
+    // IOMMU = 0x6,
+    // /// Interrupt ICC SRE device.
+    // ICCSRE = 0x7,
+    // /// Interrupt ICC SGIR device.
+    // SGIR = 0x8,
+    // /// Interrupt controller GICR device.
+    // GICR = 0x9,
 }
 
 impl Default for EmulatedDeviceType {
     fn default() -> Self {
-        Self::EmuDeviceTMeta
+        Self::Dummy
     }
 }
 
@@ -118,20 +144,22 @@ impl Display for EmulatedDeviceType {
     // Implementation of the Display trait for EmulatedDeviceType.
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         match self {
-            EmulatedDeviceType::EmuDeviceTConsole => write!(f, "console"),
-            EmulatedDeviceType::EmuDeviceTInterruptController => write!(f, "interrupt controller"),
-            EmulatedDeviceType::EmuDeviceTGPPT => {
-                write!(f, "partial passthrough interrupt controller")
+            EmulatedDeviceType::Console => write!(f, "console"),
+            EmulatedDeviceType::InterruptController => write!(f, "interrupt controller"),
+            EmulatedDeviceType::GPPTRedistributor => {
+                write!(f, "gic partial passthrough redistributor")
             }
-            EmulatedDeviceType::EmuDeviceTVirtioBlk => write!(f, "virtio block"),
-            EmulatedDeviceType::EmuDeviceTVirtioNet => write!(f, "virtio net"),
-            EmulatedDeviceType::EmuDeviceTVirtioConsole => write!(f, "virtio console"),
-            EmulatedDeviceType::EmuDeviceTIOMMU => write!(f, "iommu"),
-            EmulatedDeviceType::EmuDeviceTICCSRE => write!(f, "interrupt icc sre"),
-            EmulatedDeviceType::EmuDeviceTSGIR => write!(f, "interrupt icc sgir"),
-            EmulatedDeviceType::EmuDeviceTGICR => write!(f, "interrupt controller gicr"),
-            EmulatedDeviceType::EmuDeviceTIVCChannel => write!(f, "ivc channel"),
-            EmulatedDeviceType::EmuDeviceTMeta => write!(f, "meta device"),
+            EmulatedDeviceType::GPPTDistributor => write!(f, "gic partial passthrough distributor"),
+            EmulatedDeviceType::GPPTITS => write!(f, "gic partial passthrough its"),
+            // EmulatedDeviceType::IOMMU => write!(f, "iommu"),
+            // EmulatedDeviceType::ICCSRE => write!(f, "interrupt icc sre"),
+            // EmulatedDeviceType::SGIR => write!(f, "interrupt icc sgir"),
+            // EmulatedDeviceType::GICR => write!(f, "interrupt controller gicr"),
+            EmulatedDeviceType::IVCChannel => write!(f, "ivc channel"),
+            EmulatedDeviceType::Dummy => write!(f, "meta device"),
+            EmulatedDeviceType::VirtioBlk => write!(f, "virtio block"),
+            EmulatedDeviceType::VirtioNet => write!(f, "virtio net"),
+            EmulatedDeviceType::VirtioConsole => write!(f, "virtio console"),
         }
     }
 }
@@ -142,33 +170,56 @@ impl EmulatedDeviceType {
     pub fn removable(&self) -> bool {
         matches!(
             *self,
-            EmulatedDeviceType::EmuDeviceTInterruptController
-                | EmulatedDeviceType::EmuDeviceTSGIR
-                | EmulatedDeviceType::EmuDeviceTICCSRE
-                | EmulatedDeviceType::EmuDeviceTGPPT
-                | EmulatedDeviceType::EmuDeviceTVirtioBlk
-                | EmulatedDeviceType::EmuDeviceTVirtioNet
-                | EmulatedDeviceType::EmuDeviceTGICR
-                | EmulatedDeviceType::EmuDeviceTVirtioConsole
+            EmulatedDeviceType::InterruptController
+                // | EmulatedDeviceType::SGIR
+                // | EmulatedDeviceType::ICCSRE
+                | EmulatedDeviceType::GPPTRedistributor
+                | EmulatedDeviceType::VirtioBlk
+                | EmulatedDeviceType::VirtioNet
+                // | EmulatedDeviceType::GICR
+                | EmulatedDeviceType::VirtioConsole
         )
     }
 
     /// Converts a usize value to an EmulatedDeviceType.
     pub fn from_usize(value: usize) -> EmulatedDeviceType {
         match value {
-            0 => EmulatedDeviceType::EmuDeviceTConsole,
-            1 => EmulatedDeviceType::EmuDeviceTInterruptController,
-            2 => EmulatedDeviceType::EmuDeviceTGPPT,
-            3 => EmulatedDeviceType::EmuDeviceTVirtioBlk,
-            4 => EmulatedDeviceType::EmuDeviceTVirtioNet,
-            5 => EmulatedDeviceType::EmuDeviceTVirtioConsole,
-            6 => EmulatedDeviceType::EmuDeviceTIOMMU,
-            7 => EmulatedDeviceType::EmuDeviceTICCSRE,
-            8 => EmulatedDeviceType::EmuDeviceTSGIR,
-            9 => EmulatedDeviceType::EmuDeviceTGICR,
-            10 => EmulatedDeviceType::EmuDeviceTIVCChannel,
-            11 => EmulatedDeviceType::EmuDeviceTMeta,
-            _ => panic!("Unknown EmulatedDeviceType value: {}", value),
+            0x0 => EmulatedDeviceType::Dummy,
+            0x1 => EmulatedDeviceType::InterruptController,
+            0x2 => EmulatedDeviceType::Console,
+            0xA => EmulatedDeviceType::IVCChannel,
+            0x20 => EmulatedDeviceType::GPPTRedistributor,
+            0x21 => EmulatedDeviceType::GPPTDistributor,
+            0x22 => EmulatedDeviceType::GPPTITS,
+            0xE1 => EmulatedDeviceType::VirtioBlk,
+            0xE2 => EmulatedDeviceType::VirtioNet,
+            0xE3 => EmulatedDeviceType::VirtioConsole,
+            // 0x6 => EmulatedDeviceType::IOMMU,
+            // 0x7 => EmulatedDeviceType::ICCSRE,
+            // 0x8 => EmulatedDeviceType::SGIR,
+            // 0x9 => EmulatedDeviceType::GICR,
+            _ => {
+                warn!("Unknown emulated device type value: {value}, default to Meta");
+                EmulatedDeviceType::Dummy
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod emu_dev_type_test {
+    use super::EmulatedDeviceType;
+    use enumerable::Enumerable;
+
+    #[test]
+    fn test_emu_dev_type_from_usize() {
+        for emu_dev_type in EmulatedDeviceType::enumerator() {
+            let converted = EmulatedDeviceType::from_usize(emu_dev_type as usize);
+            assert_eq!(
+                converted, emu_dev_type,
+                "Value mismatch after bidirectional conversion: {:?} -> {:?}",
+                emu_dev_type, converted
+            );
         }
     }
 }
