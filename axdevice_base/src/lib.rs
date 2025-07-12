@@ -6,8 +6,9 @@
 //! This crate provides basic traits and structures for emulated devices of ArceOS hypervisor.
 //!
 //! This crate contains:
-//! [`BaseDeviceOps`] trait: The trait that all emulated devices must implement.
-//! [`EmuDeviceType`] enum: Enumeration representing the type of emulator devices.
+//! - [`BaseDeviceOps`] trait: The trait that all emulated devices must implement.
+//! - [`EmuDeviceType`] enum: Enumeration representing the type of emulator devices.
+//!   (Already moved to `axvmconfig` crate.)
 
 extern crate alloc;
 
@@ -18,9 +19,7 @@ use axaddrspace::{
 };
 use axerrno::AxResult;
 
-mod emu_type;
-
-pub use emu_type::EmuDeviceType;
+pub use axvmconfig::EmulatedDeviceType as EmuDeviceType;
 
 /// Represents the configuration of an emulated device for a virtual machine.
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
