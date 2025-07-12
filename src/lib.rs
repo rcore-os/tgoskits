@@ -9,7 +9,6 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use axcpu::TrapFrame;
 use log::error;
 use spin::Once;
 
@@ -157,8 +156,8 @@ impl Backtrace {
         }
     }
 
-    /// Capture the stack backtrace from a trap frame.
-    pub fn capture_from_trap_frame(tf: &TrapFrame) -> Self {
+    /// Capture the stack backtrace from a given [`Frame`].
+    pub fn capture_of(frame: Frame) -> Self {
         #[cfg(not(feature = "dwarf"))]
         {
             return Self {
@@ -167,28 +166,8 @@ impl Backtrace {
         }
         #[cfg(feature = "dwarf")]
         {
-            cfg_if::cfg_if! {
-                if #[cfg(target_arch = "x86_64")] {
-                    let fp = tf.rbp as _;
-                    let ip = tf.rip as _;
-                } else if #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))] {
-                    let fp = tf.regs.s0 as _;
-                    let ip = tf.sepc as _;
-                } else if #[cfg(target_arch = "aarch64")] {
-                    let fp = tf.r[29] as _;
-                    let ip = tf.elr as _;
-                } else if #[cfg(target_arch = "loongarch64")] {
-                    let fp = tf.regs.fp as _;
-                    let ip = tf.era as _;
-                } else {
-                    return Self {
-                        inner: Inner::Unsupported,
-                    };
-                }
-            };
-
-            let mut frames = vec![Frame { fp, ip }];
-            frames.extend(unwind_stack(fp));
+            let mut frames = vec![frame];
+            frames.extend(unwind_stack(frame.fp));
 
             Self {
                 inner: Inner::Captured(frames),

@@ -17,10 +17,10 @@ log = "0.4"
 spin = { version = "0.9", default-features = false, features = ["once"] }
 
 addr2line = { version = "0.25", default-features = false, optional = true, features = [
-    "rustc-demangle",
     "alloc",
+    "cpp_demangle",
+    "rustc-demangle",
 ] }
-axcpu = "0.2"
 gimli = { version = "0.32", default-features = false, optional = true, features = [
     "read-core",
     "endian-reader",
