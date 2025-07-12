@@ -16,7 +16,7 @@ numeric-enum-macro = "0.2"
 
 axerrno = "0.1.0"
 page_table_entry = "0.5"
-memory_addr = "0.3.1"
+memory_addr = "0.4"
 crate_interface = "0.1"
 
 axaddrspace = { git = "https://github.com/arceos-hypervisor/axaddrspace.git" }
