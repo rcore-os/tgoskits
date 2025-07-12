@@ -1,11 +1,12 @@
 use core::net::SocketAddr;
 
 use axerrno::{LinuxError, LinuxResult};
-use axnet::{SocketOps, TcpSocket, UdpSocket};
+use axnet::{Shutdown, SocketOps, TcpSocket, UdpSocket};
 use linux_raw_sys::{
     general::O_NONBLOCK,
     net::{
-        AF_INET, AF_UNIX, IPPROTO_TCP, IPPROTO_UDP, SOCK_DGRAM, SOCK_STREAM, sockaddr, socklen_t,
+        AF_INET, AF_UNIX, IPPROTO_TCP, IPPROTO_UDP, SHUT_RD, SHUT_RDWR, SHUT_WR, SOCK_DGRAM,
+        SOCK_STREAM, sockaddr, socklen_t,
     },
 };
 
@@ -90,7 +91,16 @@ pub fn sys_accept(
     addr: UserPtr<sockaddr>,
     addrlen: UserPtr<socklen_t>,
 ) -> LinuxResult<isize> {
-    debug!("sys_accept <= fd: {}", fd);
+    sys_accept4(fd, addr, addrlen, 0)
+}
+
+pub fn sys_accept4(
+    fd: i32,
+    addr: UserPtr<sockaddr>,
+    addrlen: UserPtr<socklen_t>,
+    flags: i32,
+) -> LinuxResult<isize> {
+    debug!("sys_accept <= fd: {}, flags: {}", fd, flags);
 
     let socket = Socket::from_fd(fd)?;
     let socket = Socket(socket.accept()?);
@@ -107,4 +117,17 @@ pub fn sys_accept(
     }
 
     Ok(fd)
+}
+
+pub fn sys_shutdown(fd: i32, how: u32) -> LinuxResult<isize> {
+    debug!("sys_shutdown <= fd: {}, how: {:?}", fd, how);
+
+    let socket = Socket::from_fd(fd)?;
+    let how = match how {
+        SHUT_RD => Shutdown::Read,
+        SHUT_WR => Shutdown::Write,
+        SHUT_RDWR => Shutdown::Both,
+        _ => return Err(LinuxError::EINVAL),
+    };
+    socket.shutdown(how).map(|_| 0)
 }

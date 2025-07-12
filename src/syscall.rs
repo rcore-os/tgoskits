@@ -416,6 +416,13 @@ fn handle_syscall_impl(tf: &mut TrapFrame, sysno: Sysno) -> LinuxResult<isize> {
         Sysno::getpeername => sys_getpeername(tf.arg0() as _, tf.arg1().into(), tf.arg2().into()),
         Sysno::listen => sys_listen(tf.arg0() as _, tf.arg1() as _),
         Sysno::accept => sys_accept(tf.arg0() as _, tf.arg1().into(), tf.arg2().into()),
+        Sysno::accept4 => sys_accept4(
+            tf.arg0() as _,
+            tf.arg1().into(),
+            tf.arg2().into(),
+            tf.arg3() as _,
+        ),
+        Sysno::shutdown => sys_shutdown(tf.arg0() as _, tf.arg1() as _),
         Sysno::sendto => sys_sendto(
             tf.arg0() as _,
             tf.arg1().into(),

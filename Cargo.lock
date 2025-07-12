@@ -378,6 +378,7 @@ dependencies = [
 name = "axnet"
 version = "0.1.0"
 dependencies = [
+ "axconfig",
  "axdriver",
  "axdriver_net",
  "axerrno",
@@ -388,6 +389,7 @@ dependencies = [
  "bitflags 2.9.1",
  "cfg-if",
  "enum_dispatch",
+ "futures",
  "lazyinit",
  "log",
  "smoltcp",
