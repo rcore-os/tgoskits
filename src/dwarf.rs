@@ -12,30 +12,27 @@ static mut CONTEXT: Option<Context<DwarfReader>> = None;
 macro_rules! generate_sections {
     ($($name:ident),*) => {
         unsafe extern "C" {
-            safe static _debug_start: [u8; 0];
             paste! {
                 $(
-                    safe static [<_ $name _end>]: [u8; 0];
+                    safe static [<__start_ $name>]: [u8; 0];
+                    safe static [<__stop_ $name>]: [u8; 0];
                 )*
             }
         }
 
-        let current = _debug_start.as_ptr();
         paste! {
             $(
                 let $name = DwarfReader::new(
                     unsafe {
                         core::slice::from_raw_parts(
-                            current,
-                            [<_ $name _end>]
+                            [<__start_ $name>].as_ptr(),
+                            [<__stop_ $name>]
                                 .as_ptr()
-                                .offset_from_unsigned(current),
+                                .offset_from_unsigned([<__start_ $name>].as_ptr()),
                         )
                     },
                     gimli::RunTimeEndian::default(),
                 );
-                #[allow(unused_variables)]
-                let current = [<_ $name _end>].as_ptr();
             )*
         }
     };
