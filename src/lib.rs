@@ -82,7 +82,7 @@ impl EmulatedLocalApic {
 
 impl BaseDeviceOps<AddrRange<GuestPhysAddr>> for EmulatedLocalApic {
     fn emu_type(&self) -> EmuDeviceType {
-        EmuDeviceType::EmuDeviceTInterruptController
+        EmuDeviceType::InterruptController
     }
 
     fn address_range(&self) -> AddrRange<GuestPhysAddr> {
@@ -114,7 +114,7 @@ impl BaseDeviceOps<AddrRange<GuestPhysAddr>> for EmulatedLocalApic {
 
 impl BaseDeviceOps<SysRegAddrRange> for EmulatedLocalApic {
     fn emu_type(&self) -> EmuDeviceType {
-        EmuDeviceType::EmuDeviceTInterruptController
+        EmuDeviceType::InterruptController
     }
 
     fn address_range(&self) -> SysRegAddrRange {
