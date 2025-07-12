@@ -1,0 +1,28 @@
+[package]
+name = "axbacktrace"
+version = "0.1.0"
+edition = "2024"
+authors = [
+    "Mivik <mivikq@gmail.com>",
+    "Asakura Mizu <asakuramizu111@gmail.com>",
+]
+
+[features]
+default = []
+dwarf = ["dep:addr2line", "dep:gimli", "dep:paste"]
+
+[dependencies]
+cfg-if = "1"
+log = "0.4"
+spin = { version = "0.9", default-features = false, features = ["once"] }
+
+addr2line = { version = "0.25", default-features = false, optional = true, features = [
+    "rustc-demangle",
+    "alloc",
+] }
+axcpu = "0.2"
+gimli = { version = "0.32", default-features = false, optional = true, features = [
+    "read-core",
+    "endian-reader",
+] }
+paste = { version = "1", optional = true }
