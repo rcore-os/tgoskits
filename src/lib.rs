@@ -9,6 +9,7 @@ extern crate log;
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::fmt::{Display, Formatter};
 
 use axerrno::AxResult;
 
@@ -74,6 +75,104 @@ pub struct VmMemConfig {
     pub map_type: VmMemMappingType,
 }
 
+/// The type of Emulated Device.
+#[derive(Debug, Clone, PartialEq, Eq, serde_repr::Serialize_repr, serde_repr::Deserialize_repr)]
+#[repr(u8)]
+pub enum EmulatedDeviceType {
+    /// Console device.
+    EmuDeviceTConsole = 0,
+    /// Interrupt controller device, e.g. vGICv2 in aarch64, vLAPIC in x86.
+    EmuDeviceTInterruptController = 1,
+    /// Partial passthrough interrupt controller device.
+    EmuDeviceTGPPT = 2,
+    /// Virtio block device.
+    EmuDeviceTVirtioBlk = 3,
+    /// Virtio net device.
+    EmuDeviceTVirtioNet = 4,
+    /// Virtio console device.
+    EmuDeviceTVirtioConsole = 5,
+    /// IOMMU device.
+    EmuDeviceTIOMMU = 6,
+    /// Interrupt ICC SRE device.
+    EmuDeviceTICCSRE = 7,
+    /// Interrupt ICC SGIR device.
+    EmuDeviceTSGIR = 8,
+    /// Interrupt controller GICR device.
+    EmuDeviceTGICR = 9,
+    /// An emulated device that provides Inter-VM Communication (IVC) channel.
+    /// This device is used for communication between different VMs,
+    /// the corresponding memory region of this device should be marked as `Reserved` in
+    /// device tree or ACPI table.
+    EmuDeviceTIVCChannel = 10,
+    /// Meta device.
+    EmuDeviceTMeta = 11,
+}
+
+impl Default for EmulatedDeviceType {
+    fn default() -> Self {
+        Self::EmuDeviceTMeta
+    }
+}
+
+impl Display for EmulatedDeviceType {
+    // Implementation of the Display trait for EmulatedDeviceType.
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        match self {
+            EmulatedDeviceType::EmuDeviceTConsole => write!(f, "console"),
+            EmulatedDeviceType::EmuDeviceTInterruptController => write!(f, "interrupt controller"),
+            EmulatedDeviceType::EmuDeviceTGPPT => {
+                write!(f, "partial passthrough interrupt controller")
+            }
+            EmulatedDeviceType::EmuDeviceTVirtioBlk => write!(f, "virtio block"),
+            EmulatedDeviceType::EmuDeviceTVirtioNet => write!(f, "virtio net"),
+            EmulatedDeviceType::EmuDeviceTVirtioConsole => write!(f, "virtio console"),
+            EmulatedDeviceType::EmuDeviceTIOMMU => write!(f, "iommu"),
+            EmulatedDeviceType::EmuDeviceTICCSRE => write!(f, "interrupt icc sre"),
+            EmulatedDeviceType::EmuDeviceTSGIR => write!(f, "interrupt icc sgir"),
+            EmulatedDeviceType::EmuDeviceTGICR => write!(f, "interrupt controller gicr"),
+            EmulatedDeviceType::EmuDeviceTIVCChannel => write!(f, "ivc channel"),
+            EmulatedDeviceType::EmuDeviceTMeta => write!(f, "meta device"),
+        }
+    }
+}
+
+/// Implementation of methods for EmulatedDeviceType.
+impl EmulatedDeviceType {
+    /// Returns true if the device is removable.
+    pub fn removable(&self) -> bool {
+        matches!(
+            *self,
+            EmulatedDeviceType::EmuDeviceTInterruptController
+                | EmulatedDeviceType::EmuDeviceTSGIR
+                | EmulatedDeviceType::EmuDeviceTICCSRE
+                | EmulatedDeviceType::EmuDeviceTGPPT
+                | EmulatedDeviceType::EmuDeviceTVirtioBlk
+                | EmulatedDeviceType::EmuDeviceTVirtioNet
+                | EmulatedDeviceType::EmuDeviceTGICR
+                | EmulatedDeviceType::EmuDeviceTVirtioConsole
+        )
+    }
+
+    /// Converts a usize value to an EmulatedDeviceType.
+    pub fn from_usize(value: usize) -> EmulatedDeviceType {
+        match value {
+            0 => EmulatedDeviceType::EmuDeviceTConsole,
+            1 => EmulatedDeviceType::EmuDeviceTInterruptController,
+            2 => EmulatedDeviceType::EmuDeviceTGPPT,
+            3 => EmulatedDeviceType::EmuDeviceTVirtioBlk,
+            4 => EmulatedDeviceType::EmuDeviceTVirtioNet,
+            5 => EmulatedDeviceType::EmuDeviceTVirtioConsole,
+            6 => EmulatedDeviceType::EmuDeviceTIOMMU,
+            7 => EmulatedDeviceType::EmuDeviceTICCSRE,
+            8 => EmulatedDeviceType::EmuDeviceTSGIR,
+            9 => EmulatedDeviceType::EmuDeviceTGICR,
+            10 => EmulatedDeviceType::EmuDeviceTIVCChannel,
+            11 => EmulatedDeviceType::EmuDeviceTMeta,
+            _ => panic!("Unknown EmulatedDeviceType value: {}", value),
+        }
+    }
+}
+
 /// A part of `AxVMConfig`, which represents the configuration of an emulated device for a virtual machine.
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EmulatedDeviceConfig {
@@ -86,7 +185,7 @@ pub struct EmulatedDeviceConfig {
     /// The IRQ (Interrupt Request) ID of the device.
     pub irq_id: usize,
     /// The type of emulated device.
-    pub emu_type: usize,
+    pub emu_type: EmulatedDeviceType,
     /// The config_list of the device
     pub cfg_list: Vec<usize>,
 }
