@@ -61,13 +61,14 @@ fn handle_instruction_abort(tf: &TrapFrame, iss: u64, is_user: bool) {
         || !handle_trap!(PAGE_FAULT, vaddr, access_flags, is_user)
     {
         panic!(
-            "Unhandled {} Instruction Abort @ {:#x}, fault_vaddr={:#x}, ESR={:#x} ({:?}):\n{:#x?}",
+            "Unhandled {} Instruction Abort @ {:#x}, fault_vaddr={:#x}, ESR={:#x} ({:?}):\n{:#x?}\n{}",
             if is_user { "EL0" } else { "EL1" },
             tf.elr,
             vaddr,
             ESR_EL1.get(),
             access_flags,
             tf,
+            tf.backtrace()
         );
     }
 }
@@ -90,13 +91,14 @@ fn handle_data_abort(tf: &TrapFrame, iss: u64, is_user: bool) {
         || !handle_trap!(PAGE_FAULT, vaddr, access_flags, is_user)
     {
         panic!(
-            "Unhandled {} Data Abort @ {:#x}, fault_vaddr={:#x}, ESR={:#x} ({:?}):\n{:#x?}",
+            "Unhandled {} Data Abort @ {:#x}, fault_vaddr={:#x}, ESR={:#x} ({:?}):\n{:#x?}\n{}",
             if is_user { "EL0" } else { "EL1" },
             tf.elr,
             vaddr,
             ESR_EL1.get(),
             access_flags,
             tf,
+            tf.backtrace()
         );
     }
 }
@@ -120,11 +122,12 @@ fn handle_sync_exception(tf: &mut TrapFrame, source: TrapSource) {
         }
         _ => {
             panic!(
-                "Unhandled synchronous exception @ {:#x}: ESR={:#x} (EC {:#08b}, ISS {:#x})",
+                "Unhandled synchronous exception @ {:#x}: ESR={:#x} (EC {:#08b}, ISS {:#x})\n{}",
                 tf.elr,
                 esr.get(),
                 esr.read(ESR_EL1::EC),
                 esr.read(ESR_EL1::ISS),
+                tf.backtrace()
             );
         }
     }

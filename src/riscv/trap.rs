@@ -25,12 +25,13 @@ fn handle_page_fault(tf: &TrapFrame, mut access_flags: PageFaultFlags, is_user: 
     let vaddr = va!(stval::read());
     if !handle_trap!(PAGE_FAULT, vaddr, access_flags, is_user) {
         panic!(
-            "Unhandled {} Page Fault @ {:#x}, fault_vaddr={:#x} ({:?}):\n{:#x?}",
+            "Unhandled {} Page Fault @ {:#x}, fault_vaddr={:#x} ({:?}):\n{:#x?}\n{}",
             if is_user { "User" } else { "Supervisor" },
             tf.sepc,
             vaddr,
             access_flags,
             tf,
+            tf.backtrace()
         );
     }
 }
@@ -59,16 +60,24 @@ fn riscv_trap_handler(tf: &mut TrapFrame, from_user: bool) {
                 handle_trap!(IRQ, scause.bits());
             }
             _ => {
-                panic!("Unhandled trap {:?} @ {:#x}:\n{:#x?}", cause, tf.sepc, tf);
+                panic!(
+                    "Unhandled trap {:?} @ {:#x}, stval={:#x}:\n{:#x?}\n{}",
+                    cause,
+                    tf.sepc,
+                    stval::read(),
+                    tf,
+                    tf.backtrace()
+                );
             }
         }
         crate::trap::post_trap_callback(tf, from_user);
     } else {
         panic!(
-            "Unknown trap {:#x?} @ {:#x}:\n{:#x?}",
+            "Unknown trap {:#x?} @ {:#x}:\n{:#x?}\n{}",
             scause.cause(),
             tf.sepc,
-            tf
+            tf,
+            tf.backtrace()
         );
     }
 

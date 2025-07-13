@@ -138,6 +138,11 @@ impl TrapFrame {
     pub const fn set_tls(&mut self, tls: usize) {
         self.tpidr = tls as _;
     }
+
+    /// Unwind the stack and get the backtrace.
+    pub fn backtrace(&self) -> axbacktrace::Backtrace {
+        axbacktrace::Backtrace::capture_of(self.r[29] as _, self.elr as _)
+    }
 }
 
 /// FP & SIMD registers.

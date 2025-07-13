@@ -29,6 +29,7 @@ uspace = []
 arm-el2 = []
 
 [dependencies]
+axbacktrace = { git = "https://github.com/Starry-Mix-THU/axbacktrace.git", rev = "05cef40" }
 linkme = "0.3"
 log = "0.4"
 cfg-if = "1.0"

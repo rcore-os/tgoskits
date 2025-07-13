@@ -18,13 +18,14 @@ fn handle_page_fault(tf: &TrapFrame) {
     let vaddr = va!(unsafe { cr2() });
     if !handle_trap!(PAGE_FAULT, vaddr, access_flags, tf.is_user()) {
         panic!(
-            "Unhandled {} #PF @ {:#x}, fault_vaddr={:#x}, error_code={:#x} ({:?}):\n{:#x?}",
+            "Unhandled {} #PF @ {:#x}, fault_vaddr={:#x}, error_code={:#x} ({:?}):\n{:#x?}\n{}",
             if tf.is_user() { "user" } else { "kernel" },
             tf.rip,
             vaddr,
             tf.error_code,
             access_flags,
             tf,
+            tf.backtrace()
         );
     }
 }
@@ -38,8 +39,11 @@ fn x86_trap_handler(tf: &mut TrapFrame) {
         BREAKPOINT_VECTOR => debug!("#BP @ {:#x} ", tf.rip),
         GENERAL_PROTECTION_FAULT_VECTOR => {
             panic!(
-                "#GP @ {:#x}, error_code={:#x}:\n{:#x?}",
-                tf.rip, tf.error_code, tf
+                "#GP @ {:#x}, error_code={:#x}:\n{:#x?}\n{}",
+                tf.rip,
+                tf.error_code,
+                tf,
+                tf.backtrace()
             );
         }
         #[cfg(feature = "uspace")]
@@ -49,12 +53,13 @@ fn x86_trap_handler(tf: &mut TrapFrame) {
         }
         _ => {
             panic!(
-                "Unhandled exception {} ({}, error_code={:#x}) @ {:#x}:\n{:#x?}",
+                "Unhandled exception {} ({}, error_code={:#x}) @ {:#x}:\n{:#x?}\n{}",
                 tf.vector,
                 vec_to_str(tf.vector),
                 tf.error_code,
                 tf.rip,
-                tf
+                tf,
+                tf.backtrace()
             );
         }
     }

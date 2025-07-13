@@ -24,12 +24,13 @@ fn handle_page_fault(tf: &TrapFrame, mut access_flags: PageFaultFlags, is_user: 
     let vaddr = va!(badv::read().raw());
     if !handle_trap!(PAGE_FAULT, vaddr, access_flags, is_user) {
         panic!(
-            "Unhandled {} Page Fault @ {:#x}, fault_vaddr={:#x} ({:?}):\n{:#x?}",
+            "Unhandled {} Page Fault @ {:#x}, fault_vaddr={:#x} ({:?}):\n{:#x?}\n{}",
             if is_user { "PLV3" } else { "PLV0" },
             tf.era,
             vaddr,
             access_flags,
             tf,
+            tf.backtrace()
         );
     }
 }
@@ -63,10 +64,12 @@ fn loongarch64_trap_handler(tf: &mut TrapFrame, from_user: bool) {
         }
         _ => {
             panic!(
-                "Unhandled trap {:?} @ {:#x}:\n{:#x?}",
+                "Unhandled trap {:?} @ {:#x}, badv={:#x}:\n{:#x?}\n{}",
                 estat.cause(),
                 tf.era,
-                tf
+                badv::read().raw(),
+                tf,
+                tf.backtrace()
             );
         }
     }

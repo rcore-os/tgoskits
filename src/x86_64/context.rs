@@ -155,6 +155,11 @@ impl TrapFrame {
     pub const fn set_tls(&mut self, tls_area: usize) {
         self.fs_base = tls_area as _;
     }
+
+    /// Unwind the stack and get the backtrace.
+    pub fn backtrace(&self) -> axbacktrace::Backtrace {
+        axbacktrace::Backtrace::capture_of(self.rbp as _, self.rip as _)
+    }
 }
 
 #[repr(C)]
