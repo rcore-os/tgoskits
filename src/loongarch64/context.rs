@@ -259,7 +259,6 @@ impl TaskContext {
         }
         #[cfg(feature = "uspace")]
         {
-            crate::asm::write_kernel_sp(next_ctx.sp);
             if self.pgdl != next_ctx.pgdl {
                 unsafe { crate::asm::write_user_page_table(pa!(next_ctx.pgdl)) };
                 crate::asm::flush_tlb(None); // currently flush the entire TLB

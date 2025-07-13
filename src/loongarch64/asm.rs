@@ -185,15 +185,3 @@ pub fn enable_fp() {
 pub fn enable_lsx() {
     loongArch64::register::euen::set_sxe(true);
 }
-
-/// Writes the kernel stack pointer into the custom `KSAVE_KSP` CSR.
-#[cfg(feature = "uspace")]
-pub(crate) fn write_kernel_sp(kernel_sp: usize) {
-    unsafe {
-        asm!(
-            include_asm_macros!(),
-            "csrwr {}, KSAVE_KSP",
-            in(reg) kernel_sp
-        )
-    }
-}

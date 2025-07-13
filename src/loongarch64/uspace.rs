@@ -45,7 +45,6 @@ impl UspaceContext {
         use loongArch64::register::era;
 
         crate::asm::disable_irqs();
-        crate::asm::write_kernel_sp(kstack_top.as_usize());
         era::set_pc(self.ip());
 
         unsafe {
@@ -57,6 +56,7 @@ impl UspaceContext {
                 csrwr     $r21, KSAVE_R21
                 LDD       $tp,  $sp, 32
                 csrwr     $tp,  LA_CSR_PRMD
+                csrwr     {kstack_top}, KSAVE_KSP // save ksp into SAVE0 CSR
 
                 POP_GENERAL_REGS
 
@@ -65,6 +65,7 @@ impl UspaceContext {
                 LDD      $sp,   $sp, 3       // user sp
                 ertn",
                 tf = in (reg) &self.0,
+                kstack_top = in(reg) kstack_top.as_usize(),
                 options(noreturn),
             )
         }
