@@ -92,7 +92,7 @@ pub fn unwind_stack(mut fp: usize) -> Vec<Frame> {
     frames
 }
 
-static MAX_DEPTH: AtomicUsize = AtomicUsize::new(16);
+static MAX_DEPTH: AtomicUsize = AtomicUsize::new(32);
 
 /// Sets the maximum depth for stack unwinding.
 pub fn set_max_depth(depth: usize) {
