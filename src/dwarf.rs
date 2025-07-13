@@ -85,36 +85,37 @@ pub fn init() {
 ///
 /// [`Backtrace::frames`]: crate::Backtrace::frames
 pub struct FrameIter<'a> {
-    raw: slice::Iter<'a, crate::Frame>,
-    inner: Option<addr2line::FrameIter<'static, DwarfReader>>,
+    src: slice::Iter<'a, crate::Frame>,
+    inner: Option<(crate::Frame, addr2line::FrameIter<'static, DwarfReader>)>,
 }
 
 impl<'a> FrameIter<'a> {
     pub(crate) fn new(frames: &'a [crate::Frame]) -> Self {
-        let raw = frames.iter();
-        Self { raw, inner: None }
+        let src = frames.iter();
+        Self { src, inner: None }
     }
 }
 
 impl Iterator for FrameIter<'_> {
-    type Item = addr2line::Frame<'static, DwarfReader>;
+    type Item = (crate::Frame, addr2line::Frame<'static, DwarfReader>);
 
     fn next(&mut self) -> Option<Self::Item> {
         #[allow(static_mut_refs)]
         let ctx = unsafe { CONTEXT.as_ref()? };
 
         loop {
-            if let Some(inner) = &mut self.inner
+            if let Some((raw, inner)) = &mut self.inner
                 && let Ok(Some(frame)) = inner.next()
             {
-                return Some(frame);
+                return Some((*raw, frame));
             }
 
-            let frame = self.raw.next()?;
+            let raw = self.src.next()?;
             self.inner = ctx
-                .find_frames(frame.adjust_ip() as _)
+                .find_frames(raw.adjust_ip() as _)
                 .skip_all_loads()
-                .ok();
+                .ok()
+                .map(|x| (*raw, x));
         }
     }
 }
@@ -156,10 +157,10 @@ pub(crate) fn fmt_frames(f: &mut fmt::Formatter<'_>, frames: &[crate::Frame]) ->
     if unsafe { CONTEXT.is_none() } {
         return write!(f, "Backtracing is not initialized.");
     }
-    for (i, frame) in FrameIter::new(frames).enumerate() {
+    for (i, (raw, frame)) in FrameIter::new(frames).enumerate() {
         write!(f, "{i:>4}")?;
         fmt_frame(f, &frame)?;
-        writeln!(f)?;
+        writeln!(f, " with {raw}")?;
     }
 
     Ok(())

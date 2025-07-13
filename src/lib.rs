@@ -46,6 +46,12 @@ impl Frame {
     }
 }
 
+impl fmt::Display for Frame {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "fp={:#x}, ip={:#x}", self.fp, self.ip)
+    }
+}
+
 /// Unwind the stack from the given frame pointer.
 pub fn unwind_stack(mut fp: usize) -> Vec<Frame> {
     let offset = if cfg!(target_arch = "x86_64") || cfg!(target_arch = "aarch64") {
