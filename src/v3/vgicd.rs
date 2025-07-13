@@ -47,7 +47,7 @@ impl VGicD {
             addr,
             size,
             assigned_irqs: UnsafeCell::new(Bitmap::new()),
-            host_gicd_addr: axvisor_api::arch::get_host_gicd_base(),
+            host_gicd_addr: crate::api_reexp::get_host_gicd_base(),
         }
     }
 

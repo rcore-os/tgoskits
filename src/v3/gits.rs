@@ -63,8 +63,8 @@ impl Gits {
         // ensure cmdq and lpi prop table is initialized before VMs are up
         let _ = get_cmdq(host_gits_base);
         let _ = get_lpt(
-            axvisor_api::arch::read_vgicd_typer(),
-            axvisor_api::arch::get_host_gicr_base(),
+            crate::api_reexp::read_vgicd_typer(),
+            crate::api_reexp::get_host_gicr_base(),
             None, // Use default size
         );
 

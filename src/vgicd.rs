@@ -15,8 +15,8 @@ impl Vgicd {
         for (idx, item) in gic_int.iter_mut().enumerate() {
             *item = VgicInt::new(idx as u32, 0);
         }
-        let typer = axvisor_api::arch::read_vgicd_typer();
-        let iidr = axvisor_api::arch::read_vgicd_iidr();
+        let typer = crate::api_reexp::read_vgicd_typer();
+        let iidr = crate::api_reexp::read_vgicd_iidr();
         Self {
             ctrlr: 0,
             typer,

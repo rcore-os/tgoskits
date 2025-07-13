@@ -49,7 +49,7 @@ impl VGicR {
 
     pub fn new(addr: GuestPhysAddr, size: Option<usize>, cpu_id: usize) -> Self {
         let size = size.unwrap_or(DEFAULT_SIZE_PER_GICR);
-        let host_gicr_base_this_cpu = axvisor_api::arch::get_host_gicr_base() + cpu_id * size;
+        let host_gicr_base_this_cpu = crate::api_reexp::get_host_gicr_base() + cpu_id * size;
 
         Self {
             addr,
@@ -290,8 +290,8 @@ pub fn get_lpt(
 
 pub fn enable_one_lpi(lpi: usize) {
     let lpt = get_lpt(
-        axvisor_api::arch::read_vgicd_typer(),
-        axvisor_api::arch::get_host_gicr_base(),
+        crate::api_reexp::read_vgicd_typer(),
+        crate::api_reexp::get_host_gicr_base(),
         None, // Use default size
     );
     let lpt = lpt.lock();
