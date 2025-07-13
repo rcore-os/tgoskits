@@ -215,11 +215,11 @@ impl fmt::Debug for A64PTEHV {
 pub struct A64HVPagingMetaData;
 
 impl PagingMetaData for A64HVPagingMetaData {
-    const LEVELS: usize = 3;
+    const LEVELS: usize = 4;
     // In Armv8.0-A, the maximum size for a physical address is 48 bits.
     const PA_MAX_BITS: usize = 48;
     // The size of the IPA space can be configured in the same way as the
-    const VA_MAX_BITS: usize = 40; //  virtual address space. VTCR_EL2.T0SZ controls the size.
+    const VA_MAX_BITS: usize = 48; //  virtual address space. VTCR_EL2.T0SZ controls the size.
 
     type VirtAddr = GuestPhysAddr;
 
