@@ -1,5 +1,9 @@
 #![no_std]
 #![feature(trait_alias)]
+// trait_upcasting has been stabilized in Rust 1.86, but we still need a while to update the minimum
+// Rust version of Axvisor.
+#![allow(stable_features)]
+#![feature(trait_upcasting)]
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
 
@@ -12,7 +16,9 @@
 
 extern crate alloc;
 
-use alloc::{string::String, vec::Vec};
+use alloc::{string::String, sync::Arc, vec::Vec};
+use core::any::Any;
+
 use axaddrspace::{
     GuestPhysAddrRange,
     device::{AccessWidth, DeviceAddrRange, PortRange, SysRegAddrRange},
@@ -39,7 +45,7 @@ pub struct EmulatedDeviceConfig {
 }
 
 /// [`BaseDeviceOps`] is the trait that all emulated devices must implement.
-pub trait BaseDeviceOps<R: DeviceAddrRange> {
+pub trait BaseDeviceOps<R: DeviceAddrRange>: Any {
     /// Returns the type of the emulated device.
     fn emu_type(&self) -> EmuDeviceType;
     /// Returns the address range of the emulated device.
@@ -48,6 +54,17 @@ pub trait BaseDeviceOps<R: DeviceAddrRange> {
     fn handle_read(&self, addr: R::Addr, width: AccessWidth) -> AxResult<usize>;
     /// Handles a write operation on the emulated device.
     fn handle_write(&self, addr: R::Addr, width: AccessWidth, val: usize) -> AxResult;
+}
+
+/// Determines whether the given device is of type `T` and calls the provided function `f` with a
+/// reference to the device if it is.
+pub fn map_device_of_type<T: BaseDeviceOps<R>, R: DeviceAddrRange, U, F: FnOnce(&T) -> U>(
+    device: &Arc<dyn BaseDeviceOps<R>>,
+    f: F,
+) -> Option<U> {
+    let any_arc: Arc<dyn Any> = device.clone();
+
+    any_arc.downcast_ref::<T>().map(f)
 }
 
 // trait aliases are limited yet: https://github.com/rust-lang/rfcs/pull/3437
@@ -60,3 +77,6 @@ pub trait BaseSysRegDeviceOps = BaseDeviceOps<SysRegAddrRange>;
 /// [`BasePortDeviceOps`] is the trait that all emulated port devices must implement.
 /// It is a trait alias of [`BaseDeviceOps`] with [`PortRange`] as the address range.
 pub trait BasePortDeviceOps = BaseDeviceOps<PortRange>;
+
+#[cfg(test)]
+mod test;
