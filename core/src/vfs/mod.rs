@@ -14,7 +14,9 @@ pub use tmp::MemoryFs;
 
 fn mount_at(path: &str, mount_fs: Filesystem<RawMutex>) -> LinuxResult<()> {
     let fs = FS_CONTEXT.lock();
-    fs.create_dir(path, NodePermission::from_bits_truncate(0o755))?;
+    if fs.resolve(path).is_err() {
+        fs.create_dir(path, NodePermission::from_bits_truncate(0o755))?;
+    }
     fs.resolve(path)?.mount(&mount_fs)?;
     info!("Mounted {} at {}", mount_fs.name(), path);
     Ok(())
