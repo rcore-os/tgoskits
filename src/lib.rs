@@ -12,6 +12,7 @@ mod interrupt;
 mod list_register;
 mod registers;
 mod vgicd;
+pub mod vtimer;
 
 #[cfg(feature = "vgicv3")]
 pub mod v3;
