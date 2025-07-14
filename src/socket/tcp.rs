@@ -480,6 +480,8 @@ pub struct Socket<'a> {
     /// Address passed to listen(). Listen address is set when listen() is called and
     /// used every time the socket is reset back to the LISTEN state.
     listen_endpoint: IpListenEndpoint,
+    /// Address passed to bind(). Record the binding address of the socket.
+    bound_endpoint: IpListenEndpoint,
     /// Current 4-tuple (local and remote endpoints).
     tuple: Option<Tuple>,
     /// The sequence number corresponding to the beginning of the transmit buffer.
@@ -579,6 +581,7 @@ impl<'a> Socket<'a> {
             keep_alive: None,
             hop_limit: None,
             listen_endpoint: IpListenEndpoint::default(),
+            bound_endpoint: IpListenEndpoint::default(),
             tuple: None,
             local_seq_no: TcpSeqNumber::default(),
             remote_seq_no: TcpSeqNumber::default(),
@@ -860,6 +863,18 @@ impl<'a> Socket<'a> {
     #[inline]
     pub fn remote_endpoint(&self) -> Option<IpEndpoint> {
         Some(self.tuple?.remote)
+    }
+
+    /// get bound endpoint.
+    #[inline]
+    pub fn get_bound_endpoint(&self) -> IpListenEndpoint {
+        self.bound_endpoint
+    }
+
+    /// set bound endpoint.
+    #[inline]
+    pub fn set_bound_endpoint(&mut self, bound_endpoint: IpListenEndpoint) {
+        self.bound_endpoint = bound_endpoint
     }
 
     /// Return the connection state, in terms of the TCP state machine.
