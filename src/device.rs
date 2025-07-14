@@ -14,7 +14,7 @@ use axdevice_base::{
 };
 use axerrno::{AxResult, ax_err};
 use axvmconfig::EmulatedDeviceConfig;
-use memory_addr::is_aligned_4k;
+use memory_addr::{PhysAddr, is_aligned_4k};
 
 use crate::AxVmDeviceConfig;
 
@@ -26,7 +26,7 @@ pub struct AxEmuDevices<R: DeviceAddrRange> {
     emu_devices: Vec<Arc<dyn BaseDeviceOps<R>>>,
 }
 
-impl<R: DeviceAddrRange> AxEmuDevices<R> {
+impl<R: DeviceAddrRange + 'static> AxEmuDevices<R> {
     /// Creates a new [`AxEmuDevices`] instance.
     pub fn new() -> Self {
         Self {
@@ -126,8 +126,8 @@ impl AxVmDevices {
     /// According the emu_configs to init every  specific device
     fn init(this: &mut Self, emu_configs: &Vec<EmulatedDeviceConfig>) {
         for config in emu_configs {
-            match EmuDeviceType::from_usize(config.emu_type) {
-                EmuDeviceType::EmuDeviceTInterruptController => {
+            match config.emu_type {
+                EmuDeviceType::InterruptController => {
                     #[cfg(target_arch = "aarch64")]
                     {
                         this.add_mmio_dev(Arc::new(Vgic::new()));
@@ -140,7 +140,103 @@ impl AxVmDevices {
                         );
                     }
                 }
-                EmuDeviceType::EmuDeviceTIVCChannel => {
+                EmuDeviceType::GPPTRedistributor => {
+                    #[cfg(target_arch = "aarch64")]
+                    {
+                        const GPPT_GICR_ARG_ERR_MSG: &'static str =
+                            "expect 3 args for gppt redistributor (cpu_num, stride, pcpu_id)";
+
+                        let cpu_num = config
+                            .cfg_list
+                            .get(0)
+                            .copied()
+                            .expect(GPPT_GICR_ARG_ERR_MSG);
+                        let stride = config
+                            .cfg_list
+                            .get(1)
+                            .copied()
+                            .expect(GPPT_GICR_ARG_ERR_MSG);
+                        let pcpu_id = config
+                            .cfg_list
+                            .get(2)
+                            .copied()
+                            .expect(GPPT_GICR_ARG_ERR_MSG);
+
+                        for i in 0..cpu_num {
+                            let addr = config.base_gpa + i * stride;
+                            let size = config.length;
+                            this.add_mmio_dev(Arc::new(arm_vgic::v3::vgicr::VGicR::new(
+                                addr.into(),
+                                Some(size),
+                                pcpu_id + i,
+                            )));
+
+                            info!(
+                                "GPPT Redistributor initialized for vCPU {} with base GPA {:#x} and length {:#x}",
+                                i, addr, size
+                            );
+                        }
+                    }
+                    #[cfg(not(target_arch = "aarch64"))]
+                    {
+                        warn!(
+                            "emu type: {} is not supported on this platform",
+                            config.emu_type
+                        );
+                    }
+                }
+                EmuDeviceType::GPPTDistributor => {
+                    #[cfg(target_arch = "aarch64")]
+                    {
+                        this.add_mmio_dev(Arc::new(arm_vgic::v3::vgicd::VGicD::new(
+                            config.base_gpa.into(),
+                            Some(config.length),
+                        )));
+
+                        info!(
+                            "GPPT Distributor initialized with base GPA {:#x} and length {:#x}",
+                            config.base_gpa, config.length
+                        );
+                    }
+                    #[cfg(not(target_arch = "aarch64"))]
+                    {
+                        warn!(
+                            "emu type: {} is not supported on this platform",
+                            config.emu_type
+                        );
+                    }
+                }
+                EmuDeviceType::GPPTITS => {
+                    #[cfg(target_arch = "aarch64")]
+                    {
+                        let host_gits_base = config
+                            .cfg_list
+                            .get(0)
+                            .copied()
+                            .map(PhysAddr::from_usize)
+                            .expect("expect 1 arg for gppt its (host_gits_base)");
+
+                        this.add_mmio_dev(Arc::new(arm_vgic::v3::gits::Gits::new(
+                            config.base_gpa.into(),
+                            Some(config.length),
+                            host_gits_base,
+                            false,
+                        )));
+
+                        info!(
+                            "GPPT ITS initialized with base GPA {:#x} and length {:#x}, host GITS base {:#x}",
+                            config.base_gpa, config.length, host_gits_base
+                        );
+                    }
+                    #[cfg(not(target_arch = "aarch64"))]
+                    {
+                        warn!(
+                            "emu type: {} is not supported on this platform",
+                            config.emu_type
+                        );
+                    }
+                }
+                EmuDeviceType::IVCChannel => {
                     if this.ivc_channel.is_none() {
                         // Initialize the IVC channel range allocator
                         this.ivc_channel = Some(Mutex::new(RangeAllocator::new(Range {

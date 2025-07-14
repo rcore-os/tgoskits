@@ -20,4 +20,4 @@ axdevice_base = { git = "https://github.com/arceos-hypervisor/axdevice_crates.gi
 range-alloc = { git = "https://github.com/arceos-hypervisor/range-alloc.git" }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
-arm_vgic = { git = "https://github.com/arceos-hypervisor/arm_vgic.git" }
+arm_vgic = { git = "https://github.com/arceos-hypervisor/arm_vgic.git", features = ["vgicv3"] }
