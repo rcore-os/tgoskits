@@ -27,6 +27,7 @@ mkdir -v -p /var/tmp
 mkdir -v /etc
 echo "root:x:0:0:root:/root:/bin/sh" >>/etc/passwd
 echo "nobody:x:65534:65534:nobody:/:/bin/sh" >>/etc/passwd
+echo "nameserver 8.8.8.8" > /etc/resolv.conf
 
 echo @@@@@@@@@@ files @@@@@@@@@@
 ls -lhAR /lib
