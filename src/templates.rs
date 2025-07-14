@@ -38,6 +38,7 @@ pub fn get_vm_config_template(
         devices: VMDevicesConfig {
             emu_devices: vec![],
             passthrough_devices: vec![],
+            interrupt_mode: Default::default(),
         },
     }
 }
