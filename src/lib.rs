@@ -15,7 +15,7 @@ mod smc;
 mod vcpu;
 
 pub use self::pcpu::Aarch64PerCpu;
-pub use self::vcpu::{Aarch64VCpu, Aarch64VCpuCreateConfig};
+pub use self::vcpu::{Aarch64VCpu, Aarch64VCpuCreateConfig, Aarch64VCpuSetupConfig};
 
 /// context frame for aarch64
 pub type TrapFrame = context_frame::Aarch64ContextFrame;

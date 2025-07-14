@@ -1,10 +1,9 @@
 use core::{cell::OnceCell, marker::PhantomData};
 
 use aarch64_cpu::registers::*;
-use tock_registers::interfaces::ReadWriteable;
-
 use axerrno::AxResult;
 use axvcpu::{AxArchPerCpu, AxVCpuHal};
+use tock_registers::interfaces::ReadWriteable;
 
 /// Per-CPU data. A pointer to this struct is loaded into TP when a CPU starts. This structure
 #[repr(C)]
@@ -63,6 +62,19 @@ impl<H: AxVCpuHal> AxArchPerCpu for Aarch64PerCpu<H> {
                 + HCR_EL2::FMO::EnableVirtualFIQ
                 + HCR_EL2::TSC::EnableTrapEl1SmcToEl2,
         );
+
+        // Note that `ICH_HCR_EL2` is not the same as `HCR_EL2`.
+        //
+        // `ICH_HCR_EL2[0]` controls the virtual CPU interface operation.
+        //
+        // We leave it for the virtual GIC implementations to decide whether to enable it or not.
+        //
+        // unsafe {
+        //     core::arch::asm! {
+        //         "msr ich_hcr_el2, {value:x}",
+        //         value = in(reg) 0,
+        //     }
+        // }
 
         Ok(())
     }

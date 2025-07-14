@@ -1,5 +1,4 @@
-use core::arch::asm;
-use core::fmt::Formatter;
+use core::{arch::asm, fmt::Formatter};
 
 use aarch64_cpu::registers::*;
 
@@ -156,6 +155,7 @@ pub struct GuestSystemRegisters {
     cntv_ctl_el0: u32,
     cntp_tval_el0: u32,
     cntv_tval_el0: u32,
+    pub cnthctl_el2: u64,
 
     // vpidr and vmpidr
     vpidr_el2: u32,
@@ -220,6 +220,7 @@ impl GuestSystemRegisters {
             asm!("mrs {0:x}, CNTP_TVAL_EL0", out(reg) self.cntp_tval_el0);
             asm!("mrs {0:x}, CNTV_TVAL_EL0", out(reg) self.cntv_tval_el0);
             asm!("mrs {0}, CNTVCT_EL0", out(reg) self.cntvct_el0);
+            asm!("mrs {0}, CNTHCTL_EL2", out(reg) self.cnthctl_el2);
             // MRS!("self.vpidr_el2, VPIDR_EL2, "x");
             asm!("mrs {0}, VMPIDR_EL2", out(reg) self.vmpidr_el2);
 
@@ -265,6 +266,7 @@ impl GuestSystemRegisters {
             asm!("msr CNTV_CVAL_EL0, {0}", in(reg) self.cntv_cval_el0);
             asm!("msr CNTKCTL_EL1, {0:x}", in (reg) self.cntkctl_el1);
             asm!("msr CNTV_CTL_EL0, {0:x}", in (reg) self.cntv_ctl_el0);
+            asm!("msr CNTHCTL_EL2, {0}", in(reg) self.cnthctl_el2);
             // The restoration of SP_EL0 is done in `exception_return_el2`,
             // which move the value from `self.ctx.sp_el0` to `SP_EL0`.
             // asm!("msr SP_EL0, {0}", in(reg) self.sp_el0);

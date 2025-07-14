@@ -1,11 +1,10 @@
 use core::marker::PhantomData;
 
 use aarch64_cpu::registers::{CNTHCTL_EL2, HCR_EL2, SP_EL0, SPSR_EL1, VTCR_EL2};
-use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
-
-use axaddrspace::{GuestPhysAddr, HostPhysAddr};
+use axaddrspace::{GuestPhysAddr, HostPhysAddr, device::SysRegAddr};
 use axerrno::AxResult;
-use axvcpu::{AxVCpuExitReason, AxVCpuHal};
+use axvcpu::{AxArchVCpu, AxVCpuExitReason, AxVCpuHal};
+use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
 use crate::TrapFrame;
 use crate::context_frame::GuestSystemRegisters;
@@ -56,17 +55,27 @@ pub struct Aarch64VCpuCreateConfig {
     /// The MPIDR_EL1 value for the new vCPU,
     /// which is used to identify the CPU in a multiprocessor system.
     /// Note: mind CPU cluster.
+    // FIXME: Handle its interaction with the virtual GIC.
     pub mpidr_el1: u64,
     /// The address of the device tree blob.
     pub dtb_addr: usize,
 }
 
+/// Configuration for setting up a new `Aarch64VCpu`
+#[derive(Clone, Debug, Default)]
+pub struct Aarch64VCpuSetupConfig {
+    /// Should the hypervisor passthrough interrupts to the guest?
+    pub passthrough_interrupt: bool,
+    /// Should the hypervisor passthrough timers to the guest?
+    pub passthrough_timer: bool,
+}
+
 impl<H: AxVCpuHal> axvcpu::AxArchVCpu for Aarch64VCpu<H> {
     type CreateConfig = Aarch64VCpuCreateConfig;
 
-    type SetupConfig = ();
+    type SetupConfig = Aarch64VCpuSetupConfig;
 
-    fn new(config: Self::CreateConfig) -> AxResult<Self> {
+    fn new(vm_id: usize, vcpu_id: usize, config: Self::CreateConfig) -> AxResult<Self> {
         let mut ctx = TrapFrame::default();
         ctx.set_argument(config.dtb_addr);
 
@@ -79,8 +88,8 @@ impl<H: AxVCpuHal> axvcpu::AxArchVCpu for Aarch64VCpu<H> {
         })
     }
 
-    fn setup(&mut self, _config: Self::SetupConfig) -> AxResult {
-        self.init_hv();
+    fn setup(&mut self, config: Self::SetupConfig) -> AxResult {
+        self.init_hv(config);
         Ok(())
     }
 
@@ -121,41 +130,86 @@ impl<H: AxVCpuHal> axvcpu::AxArchVCpu for Aarch64VCpu<H> {
     fn set_gpr(&mut self, idx: usize, val: usize) {
         self.ctx.set_gpr(idx, val);
     }
+
+    fn inject_interrupt(&mut self, vector: usize) -> AxResult {
+        axvisor_api::arch::hardware_inject_virtual_interrupt(vector as u8);
+        Ok(())
+    }
+
+    fn set_return_value(&mut self, val: usize) {
+        // Return value is stored in x0.
+        self.ctx.set_argument(val);
+    }
 }
 
 // Private function
 impl<H: AxVCpuHal> Aarch64VCpu<H> {
-    fn init_hv(&mut self) {
+    fn init_hv(&mut self, config: Aarch64VCpuSetupConfig) {
         self.ctx.spsr = (SPSR_EL1::M::EL1h
             + SPSR_EL1::I::Masked
             + SPSR_EL1::F::Masked
             + SPSR_EL1::A::Masked
             + SPSR_EL1::D::Masked)
             .value;
-        self.init_vm_context();
+        self.init_vm_context(config);
     }
 
     /// Init guest context. Also set some el2 register value.
-    fn init_vm_context(&mut self) {
-        CNTHCTL_EL2.modify(CNTHCTL_EL2::EL1PCEN::SET + CNTHCTL_EL2::EL1PCTEN::SET);
+    fn init_vm_context(&mut self, config: Aarch64VCpuSetupConfig) {
+        // CNTHCTL_EL2.modify(CNTHCTL_EL2::EL1PCEN::SET + CNTHCTL_EL2::EL1PCTEN::SET);
         self.guest_system_regs.cntvoff_el2 = 0;
         self.guest_system_regs.cntkctl_el1 = 0;
+        self.guest_system_regs.cnthctl_el2 = if config.passthrough_timer {
+            (CNTHCTL_EL2::EL1PCEN::SET + CNTHCTL_EL2::EL1PCTEN::SET).into()
+        } else {
+            (CNTHCTL_EL2::EL1PCEN::CLEAR + CNTHCTL_EL2::EL1PCTEN::CLEAR).into()
+        };
 
         self.guest_system_regs.sctlr_el1 = 0x30C50830;
         self.guest_system_regs.pmcr_el0 = 0;
-        self.guest_system_regs.vtcr_el2 = (VTCR_EL2::PS::PA_40B_1TB
+
+        // use 3 level ept paging
+        // - 4KiB granule (TG0)
+        // - 39-bit address space (T0_SZ)
+        // - start at level 1 (SL0)
+        // self.guest_system_regs.vtcr_el2 = (VTCR_EL2::PS::PA_40B_1TB
+        //     + VTCR_EL2::TG0::Granule4KB
+        //     + VTCR_EL2::SH0::Inner
+        //     + VTCR_EL2::ORGN0::NormalWBRAWA
+        //     + VTCR_EL2::IRGN0::NormalWBRAWA
+        //     + VTCR_EL2::SL0.val(0b01)
+        //     + VTCR_EL2::T0SZ.val(64 - 39))
+        // .into();
+
+        // use 4 level ept paging
+        // - 4KiB granule (TG0)
+        // - 48-bit address space (T0_SZ)
+        // - start at level 0 (SL0)
+        self.guest_system_regs.vtcr_el2 = (VTCR_EL2::PS::PA_48B_256TB
             + VTCR_EL2::TG0::Granule4KB
             + VTCR_EL2::SH0::Inner
             + VTCR_EL2::ORGN0::NormalWBRAWA
             + VTCR_EL2::IRGN0::NormalWBRAWA
-            + VTCR_EL2::SL0.val(0b01)
-            + VTCR_EL2::T0SZ.val(64 - 39))
+            + VTCR_EL2::SL0.val(0b10) // 0b10 means start at level 0
+            + VTCR_EL2::T0SZ.val(64 - 48))
         .into();
-        self.guest_system_regs.hcr_el2 =
-            (HCR_EL2::VM::Enable + HCR_EL2::RW::EL1IsAarch64 + HCR_EL2::TSC::EnableTrapEl1SmcToEl2)
-                .into();
-        // self.system_regs.hcr_el2 |= 1<<27;
-        // + HCR_EL2::IMO::EnableVirtualIRQ).into();
+
+        let mut hcr_el2 = HCR_EL2::VM::Enable
+            + HCR_EL2::RW::EL1IsAarch64
+            + HCR_EL2::FMO::EnableVirtualFIQ
+            + HCR_EL2::TSC::EnableTrapEl1SmcToEl2
+            + HCR_EL2::RW::EL1IsAarch64;
+
+        if !config.passthrough_interrupt {
+            // Set HCR_EL2.IMO will trap IRQs to EL2 while enabling virtual IRQs.
+            //
+            // We must choose one of the two:
+            // - Enable virtual IRQs and trap physical IRQs to EL2.
+            // - Disable virtual IRQs and pass through physical IRQs to EL1.
+            hcr_el2 += HCR_EL2::IMO::EnableVirtualIRQ;
+        }
+
+        self.guest_system_regs.hcr_el2 = hcr_el2.into();
 
         // Set VMPIDR_EL2, which provides the value of the Virtualization Multiprocessor ID.
         // This is the value returned by Non-secure EL1 reads of MPIDR.
@@ -272,12 +326,99 @@ impl<H: AxVCpuHal> Aarch64VCpu<H> {
             restore_host_sp_el0();
         }
 
-        match exit_reason {
+        let result = match exit_reason {
             TrapKind::Synchronous => handle_exception_sync(&mut self.ctx),
             TrapKind::Irq => Ok(AxVCpuExitReason::ExternalInterrupt {
                 vector: H::irq_fetch() as _,
             }),
             _ => panic!("Unhandled exception {:?}", exit_reason),
+        };
+
+        match result {
+            Ok(AxVCpuExitReason::SysRegRead { addr, reg }) => {
+                if let Some(exit_reason) =
+                    self.builtin_sysreg_access_handler(addr, false, 0, reg)?
+                {
+                    return Ok(exit_reason);
+                }
+
+                return result;
+            }
+            Ok(AxVCpuExitReason::SysRegWrite { addr, value }) => {
+                if let Some(exit_reason) =
+                    self.builtin_sysreg_access_handler(addr, true, value, 0)?
+                {
+                    return Ok(exit_reason);
+                }
+
+                return result;
+            }
+            r => return r,
+        }
+    }
+
+    /// Handle system register access that can and should be handled by the VCpu itself.
+    ///
+    /// Return `Ok(None)` if the system register access is not handled by the VCpu itself,
+    fn builtin_sysreg_access_handler(
+        &mut self,
+        addr: SysRegAddr,
+        write: bool,
+        value: u64,
+        reg: usize,
+    ) -> AxResult<Option<AxVCpuExitReason>> {
+        const SYSREG_ICC_SGI1R_EL1: SysRegAddr = SysRegAddr::new(0x3A_3016); // ICC_SGI1R_EL1
+
+        match (addr, write) {
+            (SYSREG_ICC_SGI1R_EL1, true) => {
+                debug!("arm_vcpu ICC_SGI1R_EL1 write: {:#x}", value);
+
+                // TODO: support RangeSelector
+
+                let intid = (value >> 24) & 0b1111;
+                let irm = ((value >> 40) & 0b1) != 0;
+
+                // IRM == 1 => send to all except self
+                if irm {
+                    debug!("arm_vcpu ICC_SGI1R_EL1 write: irm == 1, send to all except self");
+
+                    return Ok(Some(AxVCpuExitReason::SendIPI {
+                        target_cpu: 0,
+                        target_cpu_aux: 0,
+                        send_to_all: true,
+                        send_to_self: false,
+                        vector: intid,
+                    }));
+                }
+
+                let aff3 = (value >> 48) & 0xff;
+                let aff2 = (value >> 32) & 0xff;
+                let aff1 = (value >> 16) & 0xff;
+                let target_list = value & 0xffff;
+
+                debug!(
+                    "arm_vcpu ICC_SGI1R_EL1 write: aff3:{:#x} aff2:{:#x} aff1:{:#x} intid:{:#x} target_list:{:#x}",
+                    aff3, aff2, aff1, intid, target_list
+                );
+
+                Ok(Some(AxVCpuExitReason::SendIPI {
+                    target_cpu: (aff3 << 24) | (aff2 << 16) | (aff1 << 8),
+                    target_cpu_aux: target_list,
+                    send_to_all: false,
+                    send_to_self: false,
+                    vector: intid,
+                }))
+            }
+            (SYSREG_ICC_SGI1R_EL1, false) => {
+                // ICC_SGI1R_EL1 is WO, we take it as RAZ.
+                self.set_gpr(reg, 0);
+                Ok(Some(AxVCpuExitReason::Nothing))
+            }
+            _ => {
+                // If the system register access is not handled by the VCpu itself,
+                // we return None to let the hypervisor handle it.
+                Ok(None)
+            }
         }
     }
 }
