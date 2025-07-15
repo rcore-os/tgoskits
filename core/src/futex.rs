@@ -35,11 +35,11 @@ impl FutexKey {
     /// Creates a new `FutexKey`.
     pub fn new(aspace: &AddrSpace, address: usize) -> Self {
         if let Some(area) = aspace.find_area(VirtAddr::from_usize(address))
-            && let Backend::Shared { pages } = area.backend()
+            && let Backend::Shared(backend) = area.backend()
         {
             return Self::Shared {
                 offset: address - area.start().as_usize(),
-                region: Arc::downgrade(pages),
+                region: Arc::downgrade(backend.pages()),
             };
         }
         Self::Private { address }

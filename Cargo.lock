@@ -361,11 +361,13 @@ dependencies = [
 name = "axmm"
 version = "0.1.0"
 dependencies = [
+ "allocator",
  "axalloc",
  "axbacktrace",
  "axconfig",
  "axerrno",
  "axhal",
+ "enum_dispatch",
  "kspin",
  "lazyinit",
  "log",
