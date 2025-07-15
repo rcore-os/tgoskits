@@ -269,6 +269,7 @@ fn handle_syscall_impl(tf: &mut TrapFrame, sysno: Sysno) -> LinuxResult<isize> {
         ),
         Sysno::munmap => sys_munmap(tf.arg0(), tf.arg1() as _),
         Sysno::mprotect => sys_mprotect(tf.arg0(), tf.arg1() as _, tf.arg2() as _),
+        Sysno::mremap => sys_mremap(tf.arg0(), tf.arg1() as _, tf.arg2() as _, tf.arg3() as _),
         Sysno::madvise => sys_madvise(tf.arg0(), tf.arg1() as _, tf.arg2() as _),
         Sysno::msync => sys_msync(tf.arg0(), tf.arg1() as _, tf.arg2() as _),
 

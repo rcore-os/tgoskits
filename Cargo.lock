@@ -1161,7 +1161,7 @@ dependencies = [
 [[package]]
 name = "lwext4_rust"
 version = "0.2.0"
-source = "git+https://github.com/Starry-Mix-THU/lwext4_rust?rev=5c2c386#5c2c386df24ce63f5684dd93614ccab7269ea18a"
+source = "git+https://github.com/Starry-Mix-THU/lwext4_rust?rev=9d40ad9#9d40ad92db9730a125314b2b4c73de6473c4c588"
 dependencies = [
  "bindgen",
  "lock_api",

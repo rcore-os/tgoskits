@@ -7,7 +7,10 @@ use linux_raw_sys::general::*;
 use memory_addr::{MemoryAddr, VirtAddr, VirtAddrRange, align_up_4k};
 use starry_core::task::StarryTaskExt;
 
-use crate::file::{File, FileLike};
+use crate::{
+    file::{File, FileLike},
+    ptr::{UserConstPtr, UserPtr},
+};
 
 bitflags::bitflags! {
     /// `PROT_*` flags for use with [`sys_mmap`].
@@ -189,6 +192,7 @@ pub fn sys_mmap(
 }
 
 pub fn sys_munmap(addr: usize, length: usize) -> LinuxResult<isize> {
+    debug!("sys_munmap <= addr: {:#x}, length: {:x}", addr, length);
     let curr = current();
     let mut aspace = StarryTaskExt::of(&curr).process_data().aspace.lock();
     let length = align_up_4k(length);
@@ -215,6 +219,45 @@ pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> LinuxResult<isize>
     aspace.protect(start_addr, length, permission_flags.into())?;
 
     Ok(0)
+}
+
+pub fn sys_mremap(addr: usize, old_size: usize, new_size: usize, flags: u32) -> LinuxResult<isize> {
+    debug!(
+        "sys_mremap <= addr: {:#x}, old_size: {:x}, new_size: {:x}, flags: {:#x}",
+        addr, old_size, new_size, flags
+    );
+
+    // TODO: full implementation
+
+    if addr % PageSize::Size4K as usize != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+    let addr = VirtAddr::from(addr);
+
+    let curr = current();
+    let aspace = StarryTaskExt::of(&curr).process_data().aspace.lock();
+    let old_size = align_up_4k(old_size);
+    let new_size = align_up_4k(new_size);
+
+    let flags = aspace.find_area(addr).ok_or(LinuxError::EFAULT)?.flags();
+    drop(aspace);
+    let new_addr = sys_mmap(
+        addr.as_usize(),
+        new_size,
+        flags.bits() as _,
+        MmapFlags::PRIVATE.bits(),
+        -1,
+        0,
+    )? as usize;
+
+    let copy_len = new_size.min(old_size);
+    UserPtr::<u8>::from(new_addr)
+        .get_as_mut_slice(copy_len)?
+        .copy_from_slice(UserConstPtr::<u8>::from(addr.as_usize()).get_as_slice(copy_len)?);
+
+    sys_munmap(addr.as_usize(), old_size)?;
+
+    Ok(new_addr as isize)
 }
 
 pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> LinuxResult<isize> {
