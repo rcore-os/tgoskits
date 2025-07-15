@@ -7,8 +7,9 @@ extern crate axlog;
 extern crate alloc;
 extern crate axruntime;
 
-use alloc::{format, string::ToString};
+use alloc::{borrow::ToOwned, format, vec::Vec};
 
+use axerrno::LinuxError;
 use starry_core::mm::insert_elf_cache;
 
 mod entry;
@@ -34,24 +35,24 @@ const CACHED_ELFS: &[&str] = &[
 #[cfg(not(any(target_arch = "riscv64", target_arch = "loongarch64")))]
 const CACHED_ELFS: &[&str] = &[];
 
+const ENTRY: &[&str] = &["/musl/busybox", "sh", "-c", include_str!("init.sh")];
+// const ENTRY: &[&str] = &["/bin/sh"];
+
 #[unsafe(no_mangle)]
 fn main() {
     // Create a init process
     axprocess::Process::new_init(axtask::current().id().as_u64() as _).build();
     starry_core::vfs::mount_all().expect("Failed to mount vfs");
 
-    let envs = [format!("ARCH={}", option_env!("ARCH").unwrap_or("unknown"))];
-
-    let init = include_str!("init.sh");
-
     for elf in CACHED_ELFS {
-        insert_elf_cache(elf).expect("failed to insert ELF cache");
+        match insert_elf_cache(elf) {
+            Ok(_) | Err(LinuxError::ENOENT) => {}
+            Err(err) => error!("Failed to insert ELF cache for {}: {}", elf, err),
+        }
     }
 
-    info!("Running init script");
-    let args = ["/musl/busybox", "sh", "-c", init]
-        .map(|s| s.to_string())
-        .to_vec();
+    let args = ENTRY.iter().copied().map(str::to_owned).collect::<Vec<_>>();
+    let envs = [format!("ARCH={}", option_env!("ARCH").unwrap_or("unknown"))];
     let exit_code = entry::run_user_app(&args, &envs);
     info!("Init script exited with code: {:?}", exit_code);
 }
