@@ -34,7 +34,9 @@ impl<'a> IoVectorBuf<'a> {
         }
         let iovs = iov.get_as_mut_slice(iovcnt)?;
         for iov in iovs.iter_mut() {
-            UserPtr::<u8>::from(iov.iov_base as *mut _).get_as_mut_slice(iov.iov_len as _)?;
+            if iov.iov_len as i64 > 0 {
+                UserPtr::<u8>::from(iov.iov_base as *mut _).get_as_mut_slice(iov.iov_len as _)?;
+            }
         }
         Ok(Self::new(iovs))
     }
@@ -47,7 +49,10 @@ impl<'a> IoVectorBuf<'a> {
         }
         let iovs = iov.get_as_slice(iovcnt)?;
         for iov in iovs {
-            UserConstPtr::<u8>::from(iov.iov_base as *const _).get_as_slice(iov.iov_len as _)?;
+            if iov.iov_len as i64 > 0 {
+                UserConstPtr::<u8>::from(iov.iov_base as *const _)
+                    .get_as_slice(iov.iov_len as _)?;
+            }
         }
         Ok(Self::new(iovs))
     }
