@@ -203,3 +203,9 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> LinuxResult<isize> {
         }
     }
 }
+
+pub fn sys_flock(fd: c_int, operation: c_int) -> LinuxResult<isize> {
+    debug!("flock <= fd: {}, operation: {}", fd, operation);
+    // TODO: flock
+    Ok(0)
+}

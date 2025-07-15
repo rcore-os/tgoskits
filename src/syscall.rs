@@ -107,6 +107,7 @@ fn handle_syscall_impl(tf: &mut TrapFrame, sysno: Sysno) -> LinuxResult<isize> {
         Sysno::dup2 => sys_dup2(tf.arg0() as _, tf.arg1() as _),
         Sysno::dup3 => sys_dup3(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
         Sysno::fcntl => sys_fcntl(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
+        Sysno::flock => sys_flock(tf.arg0() as _, tf.arg1() as _),
 
         // io
         Sysno::read => sys_read(tf.arg0() as _, tf.arg1().into(), tf.arg2() as _),
