@@ -290,7 +290,7 @@ dependencies = [
 [[package]]
 name = "axfs-ng-vfs"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axfs-ng-vfs?rev=0247038#0247038deef8e6c8a466a67689bcad66ca7a28e0"
+source = "git+https://github.com/Starry-Mix-THU/axfs-ng-vfs?rev=bb1710c#bb1710cbbb6b207b039a5f83706a194fe8c2096e"
 dependencies = [
  "axerrno",
  "bitflags 2.9.1",
