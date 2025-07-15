@@ -54,8 +54,8 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
     /// Maps a virtual page to a physical frame with the given `page_size`
     /// and mapping `flags`.
     ///
-    /// The virtual page starts with `vaddr`, amd the physical frame starts with
-    /// `target`. If the addresses is not aligned to the page size, they will be
+    /// The virtual page starts with `vaddr`, and the physical frame starts with
+    /// `target`. If the `target` is not aligned to the `page_size`, it will be
     /// aligned down automatically.
     ///
     /// Returns [`Err(PagingError::AlreadyMapped)`](PagingError::AlreadyMapped)
@@ -67,6 +67,8 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
         page_size: PageSize,
         flags: MappingFlags,
     ) -> PagingResult<TlbFlush<M>> {
+        // `vaddr` does not need to be page-aligned here; `get_entry_mut_or_create`
+        // internally maps `vaddr` to its corresponding page table entry (PTE).
         let entry = self.get_entry_mut_or_create(vaddr, page_size)?;
         if !entry.is_unused() {
             return Err(PagingError::AlreadyMapped);
