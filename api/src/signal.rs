@@ -3,12 +3,15 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use axerrno::{LinuxError, LinuxResult};
 use axhal::{
     arch::TrapFrame,
-    trap::{POST_TRAP, register_trap_handler},
+    trap::{POST_TRAP, PRE_TRAP, register_trap_handler},
 };
 use axprocess::{Process, ProcessGroup, Thread};
 use axsignal::{SignalInfo, SignalOSAction, SignalSet};
 use axtask::current;
-use starry_core::task::{ProcessData, StarryTaskExt, ThreadData};
+use starry_core::{
+    task::{ProcessData, StarryTaskExt, ThreadData},
+    time::TimerState,
+};
 
 use crate::do_exit;
 
@@ -54,16 +57,30 @@ pub fn have_signals() -> bool {
 
 pub static BLOCK_NEXT_SIGNAL_CHECK: AtomicBool = AtomicBool::new(false);
 
+#[register_trap_handler(PRE_TRAP)]
+fn pre_trap_callback(_tf: &mut TrapFrame, from_user: bool) {
+    if from_user && let Some(ext) = StarryTaskExt::try_of(&current()) {
+        ext.thread_data().set_timer_state(TimerState::Kernel);
+    }
+}
+
 #[register_trap_handler(POST_TRAP)]
 fn post_trap_callback(tf: &mut TrapFrame, from_user: bool) {
     if !from_user {
-        return;
-    }
-    if BLOCK_NEXT_SIGNAL_CHECK.swap(false, Ordering::SeqCst) {
+        if let Some(ext) = StarryTaskExt::try_of(&current()) {
+            ext.thread_data().poll_timer();
+        }
         return;
     }
 
-    check_signals(tf, None);
+    if !BLOCK_NEXT_SIGNAL_CHECK.swap(false, Ordering::SeqCst) {
+        check_signals(tf, None);
+    }
+    let curr = current();
+    if let Some(ext) = StarryTaskExt::try_of(&curr) {
+        ext.thread_data().set_timer_state(TimerState::User);
+    }
+    curr.set_interrupted(false);
 }
 
 pub fn send_signal_thread(thr: &Thread, sig: SignalInfo) -> LinuxResult<()> {

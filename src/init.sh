@@ -23,6 +23,7 @@ mkdir -v /usr
 ln -v -s /lib /usr/lib64
 
 mkdir -v -p /var/tmp
+mkdir -v -p /var/log
 
 mkdir -v /etc
 echo "root:x:0:0:root:/root:/bin/sh" >>/etc/passwd
@@ -443,6 +444,11 @@ cd /musl
 timeout 60 ./iperf_testcode.sh
 cd /glibc
 timeout 60 ./iperf_testcode.sh
+
+cd /musl
+timeout 60 ./netperf_testcode.sh
+cd /glibc
+timeout 60 ./netperf_testcode.sh
 
 cd /tmp
 ln -v -s /musl/busybox busybox

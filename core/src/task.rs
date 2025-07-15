@@ -7,7 +7,6 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use event_listener::Event;
 use core::{
     cell::RefCell,
     ops::Deref,
@@ -16,7 +15,7 @@ use core::{
 };
 
 use axerrno::{LinuxError, LinuxResult};
-use axhal::{arch::UspaceContext, time::monotonic_time_nanos};
+use axhal::arch::UspaceContext;
 use axmm::AddrSpace;
 use axprocess::{Pid, Process, ProcessGroup, Session, Thread};
 use axsignal::{
@@ -25,6 +24,7 @@ use axsignal::{
 };
 use axsync::{Mutex, RawMutex};
 use axtask::{AxTaskRef, TaskExt, TaskInner, WaitQueue, WeakAxTaskRef, current};
+use event_listener::Event;
 use extern_trait::extern_trait;
 use linux_raw_sys::general::SI_KERNEL;
 use scope_local::{ActiveScope, Scope};
@@ -35,7 +35,7 @@ use weak_map::WeakMap;
 use crate::{
     futex::{FutexKey, FutexTable},
     resources::Rlimits,
-    time::TimeManager,
+    time::{TimeManager, TimerState},
 };
 
 /// Create a new user task.
@@ -95,7 +95,12 @@ impl StarryTaskExt {
     /// # Panics
     /// Panics if the current task is a kernel task.
     pub fn of(task: &TaskInner) -> &Self {
-        unsafe { task.task_ext().unwrap().downcast_ref() }
+        Self::try_of(task).unwrap()
+    }
+
+    /// Convenience function for trying to get the extended data for a task.
+    pub fn try_of(task: &TaskInner) -> Option<&Self> {
+        task.task_ext().map(|ext| unsafe { ext.downcast_ref() })
     }
 
     /// Get the [`ThreadData`] associated with this task.
@@ -107,36 +112,6 @@ impl StarryTaskExt {
     pub fn process_data(&self) -> &ProcessData {
         self.thread.process().data().unwrap()
     }
-}
-
-/// Update the time statistics to reflect a switch from kernel mode to user
-/// mode.
-pub fn time_stat_from_kernel_to_user() {
-    let curr = current();
-    let thr_data = StarryTaskExt::of(&curr).thread_data();
-    thr_data
-        .time
-        .borrow_mut()
-        .switch_into_user_mode(monotonic_time_nanos() as usize, |signo| {
-            thr_data
-                .signal
-                .send_signal(SignalInfo::new(signo, SI_KERNEL as _))
-        });
-}
-
-/// Update the time statistics to reflect a switch from user mode to kernel
-/// mode.
-pub fn time_stat_from_user_to_kernel() {
-    let curr = current();
-    let thr_data = StarryTaskExt::of(&curr).thread_data();
-    thr_data
-        .time
-        .borrow_mut()
-        .switch_into_kernel_mode(monotonic_time_nanos() as usize, |signo| {
-            thr_data
-                .signal
-                .send_signal(SignalInfo::new(signo, SI_KERNEL as _))
-        });
 }
 
 #[doc(hidden)]
@@ -251,6 +226,33 @@ impl ThreadData {
             .get()
             .and_then(Weak::upgrade)
             .ok_or(LinuxError::ESRCH)
+    }
+
+    /// Poll the timer for this thread.
+    pub fn poll_timer(&self) {
+        let Ok(mut time) = self.time.try_borrow_mut() else {
+            // reentrant borrow, likely IRQ
+            return;
+        };
+        time.poll(|signo| {
+            self.signal
+                .send_signal(SignalInfo::new(signo, SI_KERNEL as _));
+            // TODO(mivik):  correct interruption handling
+            current().set_interrupted(true);
+        });
+    }
+
+    /// Update the timer state for this thread.
+    pub fn set_timer_state(&self, state: TimerState) {
+        let Ok(mut time) = self.time.try_borrow_mut() else {
+            return;
+        };
+        time.poll(|signo| {
+            self.signal
+                .send_signal(SignalInfo::new(signo, SI_KERNEL as _));
+            current().set_interrupted(true);
+        });
+        time.set_state(state);
     }
 }
 

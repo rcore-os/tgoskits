@@ -66,7 +66,7 @@ fn recv_impl(
         }
     }
 
-    debug!("recv_impl => fd: {}, recv: {}", fd, recv);
+    debug!("sys_recv => fd: {}, recv: {}", fd, recv);
     Ok(recv as isize)
 }
 

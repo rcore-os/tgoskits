@@ -1,6 +1,8 @@
+//! Time management module.
+
 use core::mem;
 
-use axhal::time::{NANOS_PER_SEC, TimeValue};
+use axhal::time::{NANOS_PER_SEC, TimeValue, monotonic_time_nanos};
 use axsignal::Signo;
 use strum::FromRepr;
 
@@ -10,10 +12,10 @@ fn time_value_from_nanos(nanos: usize) -> TimeValue {
     TimeValue::new(secs, nsecs as u32)
 }
 
+/// The type of interval timer.
 #[repr(i32)]
 #[allow(non_camel_case_types)]
 #[derive(Eq, PartialEq, Debug, Clone, Copy, FromRepr)]
-/// The type of interval timer.
 pub enum ITimerType {
     /// 统计系统实际运行时间
     Real    = 0,
@@ -55,11 +57,24 @@ impl ITimer {
     }
 }
 
+/// Represents the state of the timer.
+#[derive(Debug)]
+pub enum TimerState {
+    /// Fallback state.
+    None,
+    /// The timer is running in user space.
+    User,
+    /// The timer is running in kernel space.
+    Kernel,
+}
+
+// TODO(mivik): preempting does not change the timer state currently
+/// A manager for time-related operations.
 pub struct TimeManager {
     utime_ns: usize,
     stime_ns: usize,
-    user_timestamp: usize,
-    kernel_timestamp: usize,
+    last_wall_ns: usize,
+    state: TimerState,
     itimers: [ITimer; 3],
 }
 
@@ -70,66 +85,52 @@ impl Default for TimeManager {
 }
 
 impl TimeManager {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             utime_ns: 0,
             stime_ns: 0,
-            user_timestamp: 0,
-            kernel_timestamp: 0,
+            last_wall_ns: 0,
+            state: TimerState::None,
             itimers: Default::default(),
         }
     }
 
+    /// Returns the current user time and system time as a tuple of `TimeValue`.
     pub fn output(&self) -> (TimeValue, TimeValue) {
         let utime = time_value_from_nanos(self.utime_ns);
         let stime = time_value_from_nanos(self.stime_ns);
         (utime, stime)
     }
 
-    pub fn reset(&mut self, current_timestamp: usize) {
-        self.utime_ns = 0;
-        self.stime_ns = 0;
-        self.user_timestamp = 0;
-        self.kernel_timestamp = current_timestamp;
-    }
-
-    pub fn switch_into_kernel_mode(&mut self, current_timestamp: usize, emitter: impl Fn(Signo)) {
-        let now_time_ns = current_timestamp;
-        let delta = now_time_ns - self.kernel_timestamp;
-        self.utime_ns += delta;
-        self.kernel_timestamp = now_time_ns;
+    /// Polls the time manager to update the timers and emit signals if
+    /// necessary.
+    pub fn poll(&mut self, emitter: impl Fn(Signo)) {
+        let now_ns = monotonic_time_nanos() as usize;
+        let delta = now_ns - self.last_wall_ns;
+        match self.state {
+            TimerState::User => {
+                self.utime_ns += delta;
+                self.update_itimer(ITimerType::Virtual, delta, &emitter);
+                self.update_itimer(ITimerType::Prof, delta, &emitter);
+            }
+            TimerState::Kernel => {
+                self.stime_ns += delta;
+                self.update_itimer(ITimerType::Prof, delta, &emitter);
+            }
+            TimerState::None => {}
+        }
         self.update_itimer(ITimerType::Real, delta, &emitter);
-        self.update_itimer(ITimerType::Virtual, delta, &emitter);
-        self.update_itimer(ITimerType::Prof, delta, &emitter);
+
+        self.last_wall_ns = now_ns;
     }
 
-    pub fn switch_into_user_mode(&mut self, current_timestamp: usize, emitter: impl Fn(Signo)) {
-        let now_time_ns = current_timestamp;
-        let delta = now_time_ns - self.kernel_timestamp;
-        self.stime_ns += delta;
-        self.user_timestamp = now_time_ns;
-        self.update_itimer(ITimerType::Real, delta, &emitter);
-        self.update_itimer(ITimerType::Prof, delta, &emitter);
+    /// Updates the timer state.
+    pub fn set_state(&mut self, state: TimerState) {
+        self.state = state;
     }
 
-    // TODO: why nobody calls this?
-    pub fn switch_from_old_task(&mut self, current_timestamp: usize, emitter: impl Fn(Signo)) {
-        let now_time_ns = current_timestamp;
-        let delta = now_time_ns - self.kernel_timestamp;
-        self.stime_ns += delta;
-        self.kernel_timestamp = now_time_ns;
-        self.update_itimer(ITimerType::Real, delta, &emitter);
-        self.update_itimer(ITimerType::Prof, delta, &emitter);
-    }
-
-    // TODO: why nobody calls this?
-    pub fn switch_to_new_task(&mut self, current_timestamp: usize, emitter: impl Fn(Signo)) {
-        let now_time_ns = current_timestamp;
-        let delta = now_time_ns - self.kernel_timestamp;
-        self.kernel_timestamp = now_time_ns;
-        self.update_itimer(ITimerType::Real, delta, &emitter);
-    }
-
+    /// Sets the interval timer of the specified type with the given interval
+    /// and remaining time.
     pub fn set_itimer(
         &mut self,
         ty: ITimerType,
@@ -149,6 +150,7 @@ impl TimeManager {
         )
     }
 
+    /// Gets the current interval and remaining time.
     pub fn get_itimer(&self, ty: ITimerType) -> (TimeValue, TimeValue) {
         let itimer = &self.itimers[ty as usize];
         (

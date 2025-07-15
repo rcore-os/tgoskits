@@ -67,6 +67,8 @@ macro_rules! call_dispatch {
             (SOL_SOCKET, SO_SNDTIMEO) => SendTimeout as Duration,
 
             (PROTO_TCP, TCP_NODELAY) => NoDelay as IntBool,
+            (PROTO_TCP, TCP_MAXSEG) => MaxSegment as Int<usize>,
+            (PROTO_TCP, TCP_INFO) => TcpInfo,
 
             (PROTO_IP, IP_TTL) => Ttl as Int<u8>,
         }

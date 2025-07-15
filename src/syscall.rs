@@ -6,7 +6,6 @@ use axhal::{
     trap::{SYSCALL, register_trap_handler},
 };
 use starry_api::*;
-use starry_core::task::{time_stat_from_kernel_to_user, time_stat_from_user_to_kernel};
 use syscalls::Sysno;
 
 fn handle_syscall_impl(tf: &mut TrapFrame, sysno: Sysno) -> LinuxResult<isize> {
@@ -469,8 +468,6 @@ fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
     let sysno = Sysno::new(syscall_num);
     trace!("Syscall {:?}", sysno);
 
-    time_stat_from_user_to_kernel();
-
     let result = sysno
         .ok_or(LinuxError::ENOSYS)
         .and_then(|sysno| handle_syscall_impl(tf, sysno));
@@ -480,6 +477,5 @@ fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
         result
     );
 
-    time_stat_from_kernel_to_user();
     result.unwrap_or_else(|err| -err.code() as _)
 }

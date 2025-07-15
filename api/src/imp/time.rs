@@ -4,7 +4,7 @@ use axtask::current;
 use linux_raw_sys::general::{
     __kernel_clockid_t, CLOCK_MONOTONIC, CLOCK_REALTIME, itimerval, timespec, timeval,
 };
-use starry_core::{ITimerType, task::StarryTaskExt};
+use starry_core::{task::StarryTaskExt, time::ITimerType};
 
 use crate::{
     ptr::{UserConstPtr, UserPtr, nullable},
