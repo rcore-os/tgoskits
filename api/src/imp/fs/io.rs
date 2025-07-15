@@ -1,15 +1,112 @@
-use alloc::{sync::Arc, vec, vec::Vec};
+use alloc::{sync::Arc, vec};
 use core::ffi::{c_char, c_int};
 
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::{FS_CONTEXT, FileFlags, OpenOptions};
-use axio::{Seek, SeekFrom};
+use axio::{
+    Seek, SeekFrom,
+    buf::{Buf, BufMut},
+};
 use linux_raw_sys::general::{__kernel_off_t, iovec};
 
 use crate::{
     file::{File, FileLike, Pipe, get_file_like},
     ptr::{UserConstPtr, UserPtr, nullable},
 };
+
+#[derive(Default)]
+pub struct IoVectorBuf<'a> {
+    iovs: &'a [iovec],
+    offset: usize,
+}
+impl<'a> IoVectorBuf<'a> {
+    fn new(iovs: &'a [iovec]) -> Self {
+        let mut result = Self { iovs, offset: 0 };
+        result.skip_empty();
+        result
+    }
+
+    pub fn new_mut(iov: UserPtr<iovec>, iovcnt: usize) -> LinuxResult<Self> {
+        if iovcnt == 0 {
+            return Ok(Self::default());
+        } else if iovcnt > 1024 {
+            return Err(LinuxError::EINVAL);
+        }
+        let iovs = iov.get_as_mut_slice(iovcnt)?;
+        for iov in iovs.iter_mut() {
+            UserPtr::<u8>::from(iov.iov_base as *mut _).get_as_mut_slice(iov.iov_len as _)?;
+        }
+        Ok(Self::new(iovs))
+    }
+
+    pub fn new_const(iov: UserConstPtr<iovec>, iovcnt: usize) -> LinuxResult<Self> {
+        if iovcnt == 0 {
+            return Ok(Self::default());
+        } else if iovcnt > 1024 {
+            return Err(LinuxError::EINVAL);
+        }
+        let iovs = iov.get_as_slice(iovcnt)?;
+        for iov in iovs {
+            UserConstPtr::<u8>::from(iov.iov_base as *const _).get_as_slice(iov.iov_len as _)?;
+        }
+        Ok(Self::new(iovs))
+    }
+
+    fn skip_empty(&mut self) {
+        while self
+            .iovs
+            .first()
+            .is_some_and(|it| it.iov_len as i64 <= self.offset as i64)
+        {
+            self.iovs = &self.iovs[1..];
+            self.offset = 0;
+        }
+    }
+}
+impl Buf for IoVectorBuf<'_> {
+    fn remaining(&self) -> usize {
+        self.iovs
+            .iter()
+            .filter_map(|iov| {
+                if iov.iov_len as i64 > 0 {
+                    Some(iov.iov_len as usize)
+                } else {
+                    None
+                }
+            })
+            .sum::<usize>()
+            - self.offset
+    }
+
+    fn chunk(&self) -> &[u8] {
+        let Some(iov) = self.iovs.first() else {
+            return &[];
+        };
+        let chunk =
+            unsafe { core::slice::from_raw_parts(iov.iov_base as *const u8, iov.iov_len as usize) };
+        &chunk[self.offset..]
+    }
+
+    fn advance(&mut self, mut n: usize) {
+        while n > 0 {
+            let Some(iov) = self.iovs.first() else {
+                break;
+            };
+            let adv = n.min(iov.iov_len as usize - self.offset);
+            n -= adv;
+            self.offset += adv;
+            self.skip_empty();
+        }
+    }
+}
+impl BufMut for IoVectorBuf<'_> {
+    fn chunk_mut(&mut self) -> &mut [u8] {
+        let Some(iov) = self.iovs.first() else {
+            return &mut [];
+        };
+        unsafe { core::slice::from_raw_parts_mut(iov.iov_base as *mut u8, iov.iov_len as usize) }
+    }
+}
 
 /// Read data from the file indicated by `fd`.
 ///
@@ -25,79 +122,12 @@ pub fn sys_read(fd: i32, buf: UserPtr<u8>, len: usize) -> LinuxResult<isize> {
     Ok(get_file_like(fd)?.read(buf)? as _)
 }
 
-fn readv_impl(
-    iov: UserPtr<iovec>,
-    iovcnt: usize,
-    mut f: impl FnMut(&mut [u8]) -> LinuxResult<usize>,
-) -> LinuxResult<isize> {
-    if iovcnt == 0 {
-        return Ok(0);
-    } else if iovcnt > 1024 {
-        return Err(LinuxError::EINVAL);
-    }
-
-    let iovs = iov.get_as_mut_slice(iovcnt)?;
-    let mut ret = 0;
-    for iov in iovs {
-        if iov.iov_len as i64 <= 0 {
-            continue;
-        }
-        let buf = UserPtr::<u8>::from(iov.iov_base as usize);
-        let buf = buf.get_as_mut_slice(iov.iov_len as _)?;
-
-        let read = f(buf)?;
-        ret += read;
-
-        if read < buf.len() {
-            break;
-        }
-    }
-
-    Ok(ret as isize)
-}
-
-fn writev_impl(
-    iov: UserConstPtr<iovec>,
-    iovcnt: usize,
-    mut f: impl FnMut(&[u8]) -> LinuxResult<usize>,
-) -> LinuxResult<isize> {
-    if iovcnt == 0 {
-        return Ok(0);
-    } else if iovcnt > 1024 {
-        return Err(LinuxError::EINVAL);
-    }
-
-    let iovs = iov.get_as_slice(iovcnt)?;
-
-    let bufs = iovs
-        .iter()
-        .filter_map(|iov| {
-            if iov.iov_len == 0 {
-                None
-            } else {
-                let buf = UserConstPtr::<u8>::from(iov.iov_base as usize);
-                Some(buf.get_as_slice(iov.iov_len as _))
-            }
-        })
-        .collect::<LinuxResult<Vec<_>>>()?;
-
-    let mut ret = 0;
-    for buf in bufs {
-        let write = f(buf)?;
-        ret += write;
-
-        if write < buf.len() {
-            break;
-        }
-    }
-
-    Ok(ret as isize)
-}
-
 pub fn sys_readv(fd: i32, iov: UserPtr<iovec>, iovcnt: usize) -> LinuxResult<isize> {
     debug!("sys_readv <= fd: {}, iovcnt: {}", fd, iovcnt);
     let f = get_file_like(fd)?;
-    readv_impl(iov, iovcnt, |buf| f.read(buf))
+    IoVectorBuf::new_mut(iov, iovcnt)?
+        .fill_with(|buf| f.read(buf))
+        .map(|n| n as _)
 }
 
 /// Write data to the file indicated by `fd`.
@@ -117,7 +147,9 @@ pub fn sys_write(fd: i32, buf: UserConstPtr<u8>, len: usize) -> LinuxResult<isiz
 pub fn sys_writev(fd: i32, iov: UserConstPtr<iovec>, iovcnt: usize) -> LinuxResult<isize> {
     debug!("sys_writev <= fd: {}, iovcnt: {}", fd, iovcnt);
     let f = get_file_like(fd)?;
-    writev_impl(iov, iovcnt, |buf| f.write(buf))
+    IoVectorBuf::new_const(iov, iovcnt)?
+        .read_with(|buf| f.write(buf))
+        .map(|n| n as _)
 }
 
 pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> LinuxResult<isize> {
@@ -248,11 +280,13 @@ pub fn sys_preadv2(
         fd, iovcnt, offset, _flags
     );
     let f = File::from_fd(fd)?;
-    readv_impl(iov, iovcnt, |buf| {
-        let read = f.inner().read_at(buf, offset as _)?;
-        offset += read as __kernel_off_t;
-        Ok(read)
-    })
+    IoVectorBuf::new_mut(iov, iovcnt)?
+        .fill_with(|buf| {
+            let read = f.inner().read_at(buf, offset as _)?;
+            offset += read as __kernel_off_t;
+            Ok(read)
+        })
+        .map(|n| n as _)
 }
 
 pub fn sys_pwritev2(
@@ -267,11 +301,13 @@ pub fn sys_pwritev2(
         fd, iovcnt, offset, _flags
     );
     let f = File::from_fd(fd)?;
-    writev_impl(iov, iovcnt, |buf| {
-        let write = f.inner().write_at(buf, offset as _)?;
-        offset += write as __kernel_off_t;
-        Ok(write)
-    })
+    IoVectorBuf::new_const(iov, iovcnt)?
+        .read_with(|buf| {
+            let write = f.inner().write_at(buf, offset as _)?;
+            offset += write as __kernel_off_t;
+            Ok(write)
+        })
+        .map(|n| n as _)
 }
 
 enum SendFile<'a> {

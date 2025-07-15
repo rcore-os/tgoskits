@@ -22,12 +22,12 @@ impl Deref for Socket {
 }
 
 impl FileLike for Socket {
-    fn read(&self, buf: &mut [u8]) -> LinuxResult<usize> {
-        self.recv(buf, None, axnet::RecvFlags::empty())
+    fn read(&self, mut buf: &mut [u8]) -> LinuxResult<usize> {
+        self.recv(&mut buf, None, axnet::RecvFlags::empty())
     }
 
-    fn write(&self, buf: &[u8]) -> LinuxResult<usize> {
-        self.send(buf, None, axnet::SendFlags::empty())
+    fn write(&self, mut buf: &[u8]) -> LinuxResult<usize> {
+        self.send(&mut buf, None, axnet::SendFlags::empty())
     }
 
     fn stat(&self) -> LinuxResult<Kstat> {
