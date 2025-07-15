@@ -3,12 +3,13 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::ops::Range;
 
 use axaddrspace::GuestPhysAddr;
 
 pub use axvmconfig::{
-    AxVMCrateConfig, EmulatedDeviceConfig, PassThroughDeviceConfig, VMType, VmMemConfig,
-    VmMemMappingType,
+    AxVMCrateConfig, EmulatedDeviceConfig, PassThroughDeviceConfig, VMInterruptMode, VMType,
+    VmMemConfig, VmMemMappingType,
 };
 
 /// A part of `AxVCpuConfig`, which represents an architecture-dependent `VCpu`.
@@ -58,6 +59,9 @@ pub struct AxVMConfig {
     memory_regions: Vec<VmMemConfig>,
     emu_devices: Vec<EmulatedDeviceConfig>,
     pass_through_devices: Vec<PassThroughDeviceConfig>,
+    // TODO: improve interrupt passthrough
+    spi_list: Vec<u32>,
+    interrupt_mode: VMInterruptMode,
 }
 
 impl From<AxVMCrateConfig> for AxVMConfig {
@@ -82,6 +86,8 @@ impl From<AxVMCrateConfig> for AxVMConfig {
             memory_regions: cfg.kernel.memory_regions,
             emu_devices: cfg.devices.emu_devices,
             pass_through_devices: cfg.devices.passthrough_devices,
+            spi_list: Vec::new(),
+            interrupt_mode: cfg.devices.interrupt_mode,
         }
     }
 }
@@ -145,6 +151,18 @@ impl AxVMConfig {
         &self.memory_regions
     }
 
+    /// Adds a new memory region to the VM configuration.
+    pub fn add_memory_region(&mut self, region: VmMemConfig) {
+        self.memory_regions.push(region);
+    }
+
+    /// Checks if the VM memory regions contain a specific range.
+    pub fn contains_memory_range(&self, range: &Range<usize>) -> bool {
+        self.memory_regions
+            .iter()
+            .any(|region| region.gpa <= range.start && region.gpa + region.size >= range.end)
+    }
+
     /// Returns configurations related to VM emulated devices.
     pub fn emu_devices(&self) -> &Vec<EmulatedDeviceConfig> {
         &self.emu_devices
@@ -153,5 +171,25 @@ impl AxVMConfig {
     /// Returns configurations related to VM passthrough devices.
     pub fn pass_through_devices(&self) -> &Vec<PassThroughDeviceConfig> {
         &self.pass_through_devices
+    }
+
+    /// Adds a new passthrough device to the VM configuration.
+    pub fn add_pass_through_device(&mut self, device: PassThroughDeviceConfig) {
+        self.pass_through_devices.push(device);
+    }
+
+    /// Adds a passthrough SPI to the VM configuration.
+    pub fn add_pass_through_spi(&mut self, spi: u32) {
+        self.spi_list.push(spi);
+    }
+
+    /// Returns the list of passthrough SPIs.
+    pub fn pass_through_spis(&self) -> &Vec<u32> {
+        &self.spi_list
+    }
+
+    /// Returns the interrupt mode of the VM.
+    pub fn interrupt_mode(&self) -> VMInterruptMode {
+        self.interrupt_mode
     }
 }

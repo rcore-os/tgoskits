@@ -2,18 +2,24 @@ use alloc::boxed::Box;
 use alloc::format;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use axvmconfig::VMInterruptMode;
 use core::sync::atomic::{AtomicBool, Ordering};
+use memory_addr::{align_down_4k, align_up_4k};
 
 use axerrno::{AxResult, ax_err, ax_err_type};
 use spin::Mutex;
 
-use axaddrspace::{AddrSpace, GuestPhysAddr, HostPhysAddr, MappingFlags};
+use axaddrspace::{AddrSpace, GuestPhysAddr, HostPhysAddr, MappingFlags, device::AccessWidth};
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
 use axvcpu::{AxArchVCpu, AxVCpu, AxVCpuExitReason, AxVCpuHal};
+use cpumask::CpuMask;
 
 use crate::config::{AxVMConfig, VmMemMappingType};
 use crate::vcpu::{AxArchVCpuImpl, AxVCpuCreateConfig};
 use crate::{AxVMHal, has_hardware_support};
+
+#[cfg(target_arch = "aarch64")]
+use crate::vcpu::get_sysreg_device;
 
 const VM_ASPACE_BASE: usize = 0x0;
 const VM_ASPACE_SIZE: usize = 0x7fff_ffff_f000;
@@ -44,6 +50,8 @@ struct AxVMInnerMut<H: AxVMHal> {
     _marker: core::marker::PhantomData<H>,
 }
 
+const TEMP_MAX_VCPU_NUM: usize = 64;
+
 /// A Virtual Machine.
 pub struct AxVM<H: AxVMHal, U: AxVCpuHal> {
     running: AtomicBool,
@@ -57,164 +65,248 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
     /// Returns an error if the configuration is invalid.
     /// The VM is not started until `boot` is called.
     pub fn new(config: AxVMConfig) -> AxResult<AxVMRef<H, U>> {
-        let result = Arc::new({
-            let vcpu_id_pcpu_sets = config.get_vcpu_affinities_pcpu_ids();
+        let vcpu_id_pcpu_sets = config.get_vcpu_affinities_pcpu_ids();
 
-            // Create VCpus.
-            let mut vcpu_list = Vec::with_capacity(vcpu_id_pcpu_sets.len());
+        debug!(
+            "id: {}, VCpuIdPCpuSets: {:#x?}",
+            config.id(),
+            vcpu_id_pcpu_sets
+        );
 
-            for (vcpu_id, phys_cpu_set, _pcpu_id) in vcpu_id_pcpu_sets {
-                #[cfg(target_arch = "aarch64")]
-                let arch_config = AxVCpuCreateConfig {
-                    mpidr_el1: _pcpu_id as _,
-                    dtb_addr: config
-                        .image_config()
-                        .dtb_load_gpa
-                        .unwrap_or_default()
-                        .as_usize(),
-                };
-                #[cfg(target_arch = "riscv64")]
-                let arch_config = AxVCpuCreateConfig {
-                    hart_id: vcpu_id as _,
-                    dtb_addr: config
-                        .image_config()
-                        .dtb_load_gpa
-                        .unwrap_or(GuestPhysAddr::from_usize(0x9000_0000)),
-                };
-                #[cfg(target_arch = "x86_64")]
-                let arch_config = AxVCpuCreateConfig::default();
+        let mut vcpu_list = Vec::with_capacity(vcpu_id_pcpu_sets.len());
+        for (vcpu_id, phys_cpu_set, _pcpu_id) in vcpu_id_pcpu_sets {
+            #[cfg(target_arch = "aarch64")]
+            let arch_config = AxVCpuCreateConfig {
+                mpidr_el1: _pcpu_id as _,
+                dtb_addr: config
+                    .image_config()
+                    .dtb_load_gpa
+                    .unwrap_or_default()
+                    .as_usize(),
+            };
+            #[cfg(target_arch = "riscv64")]
+            let arch_config = AxVCpuCreateConfig {
+                hart_id: vcpu_id as _,
+                dtb_addr: config
+                    .image_config()
+                    .dtb_load_gpa
+                    .unwrap_or(GuestPhysAddr::from_usize(0x9000_0000)),
+            };
+            #[cfg(target_arch = "x86_64")]
+            let arch_config = AxVCpuCreateConfig::default();
 
-                vcpu_list.push(Arc::new(VCpu::new(
-                    vcpu_id,
-                    0, // Currently not used.
-                    phys_cpu_set,
-                    arch_config,
-                )?));
+            vcpu_list.push(Arc::new(VCpu::new(
+                config.id(),
+                vcpu_id,
+                0, // Currently not used.
+                phys_cpu_set,
+                arch_config,
+            )?));
+        }
+        let mut address_space =
+            AddrSpace::new_empty(GuestPhysAddr::from(VM_ASPACE_BASE), VM_ASPACE_SIZE)?;
+
+        for mem_region in config.memory_regions() {
+            let mapping_flags = MappingFlags::from_bits(mem_region.flags).ok_or_else(|| {
+                ax_err_type!(
+                    InvalidInput,
+                    format!("Illegal flags {:?}", mem_region.flags)
+                )
+            })?;
+
+            // Check mapping flags.
+            if mapping_flags.contains(MappingFlags::DEVICE) {
+                warn!(
+                    "Do not include DEVICE flag in memory region flags, it should be configured in pass_through_devices"
+                );
+                continue;
             }
 
-            // Set up Memory regions.
-            let mut address_space =
-                AddrSpace::new_empty(GuestPhysAddr::from(VM_ASPACE_BASE), VM_ASPACE_SIZE)?;
-            for mem_region in config.memory_regions() {
-                let mapping_flags = MappingFlags::from_bits(mem_region.flags).ok_or_else(|| {
-                    ax_err_type!(
-                        InvalidInput,
-                        format!("Illegal flags {:?}", mem_region.flags)
-                    )
-                })?;
+            info!(
+                "Setting up memory region: [{:#x}~{:#x}] {:?}",
+                mem_region.gpa,
+                mem_region.gpa + mem_region.size,
+                mapping_flags
+            );
 
-                // Check mapping flags.
-                if mapping_flags.contains(MappingFlags::DEVICE) {
-                    warn!(
-                        "Do not include DEVICE flag in memory region flags, it should be configured in pass_through_devices"
-                    );
-                    continue;
-                }
-
-                info!(
-                    "Setting up memory region: [{:#x}~{:#x}] {:?}",
-                    mem_region.gpa,
-                    mem_region.gpa + mem_region.size,
-                    mapping_flags
-                );
-
-                // Handle ram region.
-                match mem_region.map_type {
-                    VmMemMappingType::MapIentical => {
-                        if !H::alloc_memory_region_at(
-                            HostPhysAddr::from(mem_region.gpa),
-                            mem_region.size,
-                        ) {
-                            warn!(
-                                "Failed to allocate memory region at {:#x} for VM [{}]",
-                                mem_region.gpa,
-                                config.id()
-                            );
-                            warn!(
-                                "This is possibly due to that the physical memory assigned to the VM[{}] is not managed by the hypervisor.",
-                                config.id()
-                            );
-                            warn!(
-                                "Memory region: [{:#x}~{:#x}] will be mapped to the VM, but the memory region may not be accessible to the VM, and may cause a panic when accessed.",
-                                mem_region.gpa,
-                                mem_region.gpa + mem_region.size
-                            );
-                        }
-
+            // Handle ram region.
+            match mem_region.map_type {
+                VmMemMappingType::MapIdentical => {
+                    if H::alloc_memory_region_at(
+                        HostPhysAddr::from(mem_region.gpa),
+                        mem_region.size,
+                    ) {
+                    } else {
                         address_space.map_linear(
                             GuestPhysAddr::from(mem_region.gpa),
                             HostPhysAddr::from(mem_region.gpa),
                             mem_region.size,
                             mapping_flags,
                         )?;
+                        warn!(
+                            "Failed to allocate memory region at {:#x} for VM [{}]",
+                            mem_region.gpa,
+                            config.id()
+                        );
                     }
-                    VmMemMappingType::MapAlloc => {
-                        // Note: currently we use `map_alloc`,
-                        // which allocates real physical memory in units of physical page frames,
-                        // which may not be contiguous!!!
-                        address_space.map_alloc(
-                            GuestPhysAddr::from(mem_region.gpa),
-                            mem_region.size,
-                            mapping_flags,
-                            true,
-                        )?;
-                    }
+
+                    address_space.map_linear(
+                        GuestPhysAddr::from(mem_region.gpa),
+                        HostPhysAddr::from(mem_region.gpa),
+                        mem_region.size,
+                        mapping_flags,
+                    )?;
+                }
+                VmMemMappingType::MapAlloc => {
+                    // Note: currently we use `map_alloc`,
+                    // which allocates real physical memory in units of physical page frames,
+                    // which may not be contiguous!!!
+                    address_space.map_alloc(
+                        GuestPhysAddr::from(mem_region.gpa),
+                        mem_region.size,
+                        mapping_flags,
+                        true,
+                    )?;
                 }
             }
+        }
 
-            for pt_device in config.pass_through_devices() {
-                info!(
-                    "Setting up passthrough device memory region: [{:#x}~{:#x}] -> [{:#x}~{:#x}]",
-                    pt_device.base_gpa,
-                    pt_device.base_gpa + pt_device.length,
-                    pt_device.base_hpa,
-                    pt_device.base_hpa + pt_device.length
-                );
+        let mut pt_dev_region = Vec::new();
+        for pt_device in config.pass_through_devices() {
+            trace!(
+                "PT dev {:?} region: [{:#x}~{:#x}] -> [{:#x}~{:#x}]",
+                pt_device.name,
+                pt_device.base_gpa,
+                pt_device.base_gpa + pt_device.length,
+                pt_device.base_hpa,
+                pt_device.base_hpa + pt_device.length
+            );
+            // Align the base address and length to 4K boundaries.
+            pt_dev_region.push((
+                align_down_4k(pt_device.base_gpa),
+                align_up_4k(pt_device.length),
+            ));
+        }
 
-                address_space.map_linear(
-                    GuestPhysAddr::from(pt_device.base_gpa),
-                    HostPhysAddr::from(pt_device.base_hpa),
-                    pt_device.length,
-                    MappingFlags::DEVICE | MappingFlags::READ | MappingFlags::WRITE,
-                )?;
-            }
+        pt_dev_region.sort_by_key(|(gpa, _)| *gpa);
 
-            let devices = axdevice::AxVmDevices::new(AxVmDeviceConfig {
-                emu_configs: config.emu_devices().to_vec(),
-            });
+        // Merge overlapping regions.
+        let pt_dev_region =
+            pt_dev_region
+                .into_iter()
+                .fold(Vec::<(usize, usize)>::new(), |mut acc, (gpa, len)| {
+                    if let Some(last) = acc.last_mut() {
+                        if last.0 + last.1 >= gpa {
+                            // Merge with the last region.
+                            last.1 = (last.0 + last.1).max(gpa + len) - last.0;
+                        } else {
+                            acc.push((gpa, len));
+                        }
+                    } else {
+                        acc.push((gpa, len));
+                    }
+                    acc
+                });
 
-            Self {
-                running: AtomicBool::new(false),
-                shutting_down: AtomicBool::new(false),
-                inner_const: AxVMInnerConst {
-                    id: config.id(),
-                    config,
-                    vcpu_list: vcpu_list.into_boxed_slice(),
-                    devices,
-                },
-                inner_mut: AxVMInnerMut {
-                    address_space: Mutex::new(address_space),
-                    _marker: core::marker::PhantomData,
-                },
-            }
+        for (gpa, len) in &pt_dev_region {
+            address_space.map_linear(
+                GuestPhysAddr::from(*gpa),
+                HostPhysAddr::from(*gpa),
+                *len,
+                MappingFlags::DEVICE
+                    | MappingFlags::READ
+                    | MappingFlags::WRITE
+                    | MappingFlags::USER,
+            )?;
+        }
+
+        let mut devices = axdevice::AxVmDevices::new(AxVmDeviceConfig {
+            emu_configs: config.emu_devices().to_vec(),
         });
 
-        info!("VM[{}] created", result.id());
+        let passthrough = config.interrupt_mode() == VMInterruptMode::Passthrough;
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            if passthrough {
+                let spis = config.pass_through_spis();
+                let cpu_id = config.id() - 1; // FIXME: get the real CPU id.
+                let mut gicd_found = false;
+
+                for device in devices.iter_mmio_dev() {
+                    if let Some(result) = axdevice_base::map_device_of_type(
+                        device,
+                        |gicd: &arm_vgic::v3::vgicd::VGicD| {
+                            debug!("VGicD found, assigning SPIs...");
+
+                            for spi in spis {
+                                gicd.assign_irq(*spi + 32, cpu_id, (0, 0, 0, cpu_id as _))
+                            }
+
+                            Ok(())
+                        },
+                    ) {
+                        result?;
+                        gicd_found = true;
+                        break;
+                    }
+                }
+
+                if !gicd_found {
+                    warn!("Failed to assign SPIs: No VGicD found in device list");
+                }
+            } else {
+                // non-passthrough mode, we need to set up the virtual timer.
+                //
+                // FIXME: maybe let `axdevice` handle this automatically?
+                // how to let `axdevice` know whether the VM is in passthrough mode or not?
+                for dev in get_sysreg_device() {
+                    devices.add_sys_reg_dev(dev);
+                }
+            }
+        }
+
+        let result = Arc::new(Self {
+            running: AtomicBool::new(false),
+            shutting_down: AtomicBool::new(false),
+            inner_const: AxVMInnerConst {
+                id: config.id(),
+                config,
+                vcpu_list: vcpu_list.into_boxed_slice(),
+                devices,
+            },
+            inner_mut: AxVMInnerMut {
+                address_space: Mutex::new(address_space),
+                _marker: core::marker::PhantomData,
+            },
+        });
+
+        info!("VM created: id={}", result.id());
 
         // Setup VCpus.
         for vcpu in result.vcpu_list() {
+            let setup_config = {
+                #[cfg(target_arch = "aarch64")]
+                {
+                    crate::vcpu::AxVCpuSetupConfig {
+                        passthrough_interrupt: passthrough,
+                        passthrough_timer: passthrough,
+                    }
+                }
+                #[cfg(not(target_arch = "aarch64"))]
+                {
+                    <AxArchVCpuImpl<U> as AxArchVCpu>::SetupConfig::default()
+                }
+            };
+
             let entry = if vcpu.id() == 0 {
                 result.inner_const.config.bsp_entry()
             } else {
                 result.inner_const.config.ap_entry()
             };
-            vcpu.setup(
-                entry,
-                result.ept_root(),
-                <AxArchVCpuImpl<U> as AxArchVCpu>::SetupConfig::default(),
-            )?;
+            vcpu.setup(entry, result.ept_root(), setup_config)?;
         }
-        info!("VM[{}] vcpus set up", result.id());
+        info!("VM setup: id={}", result.id());
 
         Ok(result)
     }
@@ -341,6 +433,7 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
                     width,
                     reg,
                     reg_width: _,
+                    signed_ext: _,
                 } => {
                     let val = self
                         .get_devices()
@@ -350,15 +443,38 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
                 }
                 AxVCpuExitReason::MmioWrite { addr, width, data } => {
                     self.get_devices()
-                        .handle_mmio_write(*addr, (*width).into(), *data as usize);
+                        .handle_mmio_write(*addr, (*width).into(), *data as usize)?;
                     true
                 }
-                AxVCpuExitReason::IoRead { port: _, width: _ } => true,
-                AxVCpuExitReason::IoWrite {
-                    port: _,
-                    width: _,
-                    data: _,
-                } => true,
+                AxVCpuExitReason::IoRead { port, width } => {
+                    let val = self.get_devices().handle_port_read(*port, *width)?;
+                    vcpu.set_gpr(0, val); // The target is always eax/ax/al, todo: handle access_width correctly
+
+                    true
+                }
+                AxVCpuExitReason::IoWrite { port, width, data } => {
+                    self.get_devices()
+                        .handle_port_write(*port, *width, *data as usize)?;
+                    true
+                }
+                AxVCpuExitReason::SysRegRead { addr, reg } => {
+                    let val = self.get_devices().handle_sys_reg_read(
+                        *addr,
+                        // Generally speaking, the width of system register is fixed and needless to be specified.
+                        // AccessWidth::Qword here is just a placeholder, may be changed in the future.
+                        AccessWidth::Qword,
+                    )?;
+                    vcpu.set_gpr(*reg, val);
+                    true
+                }
+                AxVCpuExitReason::SysRegWrite { addr, value } => {
+                    self.get_devices().handle_sys_reg_write(
+                        *addr,
+                        AccessWidth::Qword,
+                        *value as usize,
+                    )?;
+                    true
+                }
                 AxVCpuExitReason::NestedPageFault { addr, access_flags } => self
                     .inner_mut
                     .address_space
@@ -375,8 +491,137 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
         Ok(exit_reason)
     }
 
+    /// Injects an interrupt to the vCPU.
+    pub fn inject_interrupt_to_vcpu(
+        &self,
+        targets: CpuMask<TEMP_MAX_VCPU_NUM>,
+        irq: usize,
+    ) -> AxResult {
+        let vm_id = self.id();
+        // Check if the current running vm is self.
+        //
+        // It is not supported to inject interrupt to a vcpu in another VM yet.
+        //
+        // It may be supported in the future, as a essential feature for cross-VM communication.
+        if H::current_vm_id() != self.id() {
+            panic!("Injecting interrupt to a vcpu in another VM is not supported");
+        }
+
+        for target_vcpu in &targets {
+            H::inject_irq_to_vcpu(vm_id, target_vcpu, irq)?;
+        }
+
+        Ok(())
+    }
+
     /// Returns a reference to the VM's configuration.
     pub fn config(&self) -> &AxVMConfig {
         &self.inner_const.config
+    }
+
+    /// Maps a region of host physical memory to guest physical memory.
+    pub fn map_region(
+        &self,
+        gpa: GuestPhysAddr,
+        hpa: HostPhysAddr,
+        size: usize,
+        flags: MappingFlags,
+    ) -> AxResult<()> {
+        self.inner_mut
+            .address_space
+            .lock()
+            .map_linear(gpa, hpa, size, flags)
+    }
+
+    /// Unmaps a region of guest physical memory.
+    pub fn unmap_region(&self, gpa: GuestPhysAddr, size: usize) -> AxResult<()> {
+        self.inner_mut.address_space.lock().unmap(gpa, size)
+    }
+
+    /// Reads an object of type `T` from the guest physical address.
+    pub fn read_from_guest_of<T>(&self, gpa_ptr: GuestPhysAddr) -> AxResult<T> {
+        let size = core::mem::size_of::<T>();
+
+        // Ensure the address is properly aligned for the type.
+        if gpa_ptr.as_usize() % core::mem::align_of::<T>() != 0 {
+            return ax_err!(InvalidInput, "Unaligned guest physical address");
+        }
+
+        let addr_space = self.inner_mut.address_space.lock();
+        match addr_space.translated_byte_buffer(gpa_ptr, size) {
+            Some(buffers) => {
+                let mut data_bytes = Vec::with_capacity(size);
+                for chunk in buffers {
+                    let remaining = size - data_bytes.len();
+                    let chunk_size = remaining.min(chunk.len());
+                    data_bytes.extend_from_slice(&chunk[..chunk_size]);
+                    if data_bytes.len() >= size {
+                        break;
+                    }
+                }
+                if data_bytes.len() < size {
+                    return ax_err!(
+                        InvalidInput,
+                        "Insufficient data in guest memory to read the requested object"
+                    );
+                }
+                let data: T = unsafe {
+                    // Use `ptr::read_unaligned` for safety in case of unaligned memory.
+                    core::ptr::read_unaligned(data_bytes.as_ptr() as *const T)
+                };
+                Ok(data)
+            }
+            None => ax_err!(
+                InvalidInput,
+                "Failed to translate guest physical address or insufficient buffer size"
+            ),
+        }
+    }
+
+    /// Writes an object of type `T` to the guest physical address.
+    pub fn write_to_guest_of<T>(&self, gpa_ptr: GuestPhysAddr, data: &T) -> AxResult {
+        let addr_space = self.inner_mut.address_space.lock();
+
+        match addr_space.translated_byte_buffer(gpa_ptr, core::mem::size_of::<T>()) {
+            Some(mut buffer) => {
+                let bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        data as *const T as *const u8,
+                        core::mem::size_of::<T>(),
+                    )
+                };
+                let mut copied_bytes = 0;
+                for (_i, chunk) in buffer.iter_mut().enumerate() {
+                    let end = copied_bytes + chunk.len();
+                    chunk.copy_from_slice(&bytes[copied_bytes..end]);
+                    copied_bytes += chunk.len();
+                }
+                Ok(())
+            }
+            None => ax_err!(InvalidInput, "Failed to translate guest physical address"),
+        }
+    }
+
+    /// Allocates an IVC channel for inter-VM communication region.
+    ///
+    /// ## Arguments
+    /// * `expected_size` - The expected size of the IVC channel in bytes.
+    /// ## Returns
+    /// * `AxResult<(GuestPhysAddr, usize)>` - A tuple containing the guest physical address of the allocated IVC channel and its actual size.
+    pub fn alloc_ivc_channel(&self, expected_size: usize) -> AxResult<(GuestPhysAddr, usize)> {
+        // Ensure the expected size is aligned to 4K.
+        let size = align_up_4k(expected_size);
+        let gpa = self.inner_const.devices.alloc_ivc_channel(size)?;
+        Ok((gpa, size))
+    }
+
+    /// Releases an IVC channel for inter-VM communication region.
+    /// ## Arguments
+    /// * `gpa` - The guest physical address of the IVC channel to release.
+    /// * `size` - The size of the IVC channel in bytes.
+    /// ## Returns
+    /// * `AxResult<()>` - An empty result indicating success or failure.
+    pub fn release_ivc_channel(&self, gpa: GuestPhysAddr, size: usize) -> AxResult {
+        self.inner_const.devices.release_ivc_channel(gpa, size)
     }
 }

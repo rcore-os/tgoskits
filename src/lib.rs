@@ -1,4 +1,5 @@
 #![no_std]
+#![feature(new_range_api)]
 // #![feature(concat_idents)]
 // #![feature(naked_functions)]
 // #![feature(const_trait_impl)]
