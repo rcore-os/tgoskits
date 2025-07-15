@@ -261,17 +261,28 @@ impl<M: RawMutex> DirNode<M> {
         self.create_locked(name, node_type, permission, &mut self.cache.lock())
     }
 
+    fn lock_both_cache<'a>(
+        &'a self,
+        other: &'a Self,
+    ) -> (
+        MutexGuard<'a, M, DirChildren<M>>,
+        Option<MutexGuard<'a, M, DirChildren<M>>>,
+    ) {
+        let src_children = self.cache.lock();
+        let dst_children = if core::ptr::eq(self, other) {
+            None
+        } else {
+            Some(other.cache.lock())
+        };
+        (src_children, dst_children)
+    }
+
     /// Renames a directory entry.
     pub fn rename(&self, src_name: &str, dst_dir: &Self, dst_name: &str) -> VfsResult<()> {
         verify_entry_name(src_name)?;
         verify_entry_name(dst_name)?;
 
-        let mut src_children = self.cache.lock();
-        let mut dst_children = if core::ptr::eq(self, dst_dir) {
-            None
-        } else {
-            Some(dst_dir.cache.lock())
-        };
+        let (mut src_children, mut dst_children) = self.lock_both_cache(dst_dir);
 
         let src = self.lookup_locked(src_name, &mut src_children)?;
         if let Ok(dst) = dst_dir.lookup_locked(
@@ -290,8 +301,11 @@ impl<M: RawMutex> DirNode<M> {
                 return Err(VfsError::EISDIR);
             }
         }
+        drop(src_children);
+        drop(dst_children);
 
         self.ops.rename(src_name, dst_dir, dst_name).inspect(|_| {
+            let (mut src_children, mut dst_children) = self.lock_both_cache(dst_dir);
             Self::forget_entry(&mut src_children, src_name);
             Self::forget_entry(
                 dst_children

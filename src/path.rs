@@ -163,7 +163,7 @@ impl Path {
     }
 
     /// Produces an iterator over the [`Components`] of the path.
-    pub fn components(&self) -> Components {
+    pub fn components(&self) -> Components<'_> {
         Components {
             path: &self.inner,
             at_start: true,
