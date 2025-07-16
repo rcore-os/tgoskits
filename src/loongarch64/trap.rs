@@ -39,6 +39,7 @@ fn handle_page_fault(tf: &TrapFrame, mut access_flags: PageFaultFlags, is_user: 
 fn loongarch64_trap_handler(tf: &mut TrapFrame, from_user: bool) {
     let estat = estat::read();
 
+    crate::trap::pre_trap_callback(tf, from_user);
     match estat.cause() {
         #[cfg(feature = "uspace")]
         Trap::Exception(Exception::Syscall) => {

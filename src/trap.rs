@@ -21,6 +21,10 @@ pub static PAGE_FAULT: [fn(VirtAddr, PageFaultFlags, bool) -> bool];
 #[def_trap_handler]
 pub static SYSCALL: [fn(&mut TrapFrame, usize) -> isize];
 
+/// A slice of callbacks to be invoked before a trap.
+#[linkme::distributed_slice]
+pub static PRE_TRAP: [fn(&mut TrapFrame, bool)];
+
 /// A slice of callbacks to be invoked after a trap.
 #[linkme::distributed_slice]
 pub static POST_TRAP: [fn(&mut TrapFrame, bool)];
@@ -39,6 +43,13 @@ macro_rules! handle_trap {
             false
         }
     }}
+}
+
+#[unsafe(no_mangle)]
+pub(crate) fn pre_trap_callback(tf: &mut TrapFrame, from_user: bool) {
+    for cb in crate::trap::PRE_TRAP.iter() {
+        cb(tf, from_user);
+    }
 }
 
 #[unsafe(no_mangle)]

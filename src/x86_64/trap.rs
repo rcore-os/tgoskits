@@ -34,6 +34,7 @@ fn handle_page_fault(tf: &TrapFrame) {
 fn x86_trap_handler(tf: &mut TrapFrame) {
     #[cfg(feature = "uspace")]
     super::uspace::switch_to_kernel_fs_base(tf);
+    crate::trap::pre_trap_callback(tf, tf.is_user());
     match tf.vector as u8 {
         PAGE_FAULT_VECTOR => handle_page_fault(tf),
         BREAKPOINT_VECTOR => debug!("#BP @ {:#x} ", tf.rip),

@@ -45,6 +45,7 @@ fn invalid_exception(tf: &TrapFrame, kind: TrapKind, source: TrapSource) {
 
 #[unsafe(no_mangle)]
 fn handle_irq_exception(tf: &mut TrapFrame, source: TrapSource) {
+    crate::trap::pre_trap_callback(tf, source.is_from_user());
     handle_trap!(IRQ, 0);
     crate::trap::post_trap_callback(tf, source.is_from_user());
 }
@@ -107,6 +108,7 @@ fn handle_data_abort(tf: &TrapFrame, iss: u64, is_user: bool) {
 fn handle_sync_exception(tf: &mut TrapFrame, source: TrapSource) {
     let esr = ESR_EL1.extract();
     let iss = esr.read(ESR_EL1::ISS);
+    crate::trap::pre_trap_callback(tf, source.is_from_user());
     match esr.read_as_enum(ESR_EL1::EC) {
         #[cfg(feature = "uspace")]
         Some(ESR_EL1::EC::Value::SVC64) => {

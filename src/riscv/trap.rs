@@ -40,6 +40,7 @@ fn handle_page_fault(tf: &TrapFrame, mut access_flags: PageFaultFlags, is_user: 
 fn riscv_trap_handler(tf: &mut TrapFrame, from_user: bool) {
     let scause = scause::read();
     if let Ok(cause) = scause.cause().try_into::<I, E>() {
+        crate::trap::pre_trap_callback(tf, from_user);
         match cause {
             #[cfg(feature = "uspace")]
             Trap::Exception(E::UserEnvCall) => {
