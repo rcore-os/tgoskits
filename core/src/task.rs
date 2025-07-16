@@ -34,6 +34,7 @@ use weak_map::WeakMap;
 
 use crate::{
     futex::{FutexKey, FutexTable},
+    mm::access_user_memory,
     resources::Rlimits,
     time::{TimeManager, TimerState},
 };
@@ -47,9 +48,11 @@ pub fn new_user_task(
     TaskInner::new(
         move || {
             let curr = axtask::current();
-            if let Some(tid) = set_child_tid {
-                *tid = curr.id().as_u64() as Pid;
-            }
+            access_user_memory(|| {
+                if let Some(tid) = set_child_tid {
+                    *tid = curr.id().as_u64() as Pid;
+                }
+            });
 
             let kstack_top = curr.kernel_stack_top().unwrap();
             info!(

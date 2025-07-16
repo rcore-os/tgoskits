@@ -3,6 +3,7 @@ use core::{fmt, time::Duration};
 use axerrno::{LinuxError, LinuxResult};
 use axhal::time::wall_time;
 use axsignal::SignalSet;
+use axtask::current;
 use bitmaps::Bitmap;
 use linux_raw_sys::{
     general::{__FD_SETSIZE, __kernel_fd_set, timespec, timeval},
@@ -150,6 +151,10 @@ fn do_select(
     let deadline = timeout.map(|t| wall_time() + t);
 
     loop {
+        if current().is_interrupted() {
+            return Ok(0);
+        }
+
         axnet::poll_interfaces();
 
         let res = sets.poll(

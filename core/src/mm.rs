@@ -251,9 +251,13 @@ static mut ACCESSING_USER_MEM: bool = false;
 /// kernel.
 pub fn access_user_memory<R>(f: impl FnOnce() -> R) -> R {
     ACCESSING_USER_MEM.with_current(|v| {
-        *v = true;
+        unsafe {
+            core::ptr::write_volatile(v, true);
+        }
         let result = f();
-        *v = false;
+        unsafe {
+            core::ptr::write_volatile(v, false);
+        }
         result
     })
 }

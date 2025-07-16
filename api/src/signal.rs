@@ -9,6 +9,7 @@ use axprocess::{Process, ProcessGroup, Thread};
 use axsignal::{SignalInfo, SignalOSAction, SignalSet};
 use axtask::current;
 use starry_core::{
+    mm::access_user_memory,
     task::{ProcessData, StarryTaskExt, ThreadData},
     time::TimerState,
 };
@@ -16,11 +17,14 @@ use starry_core::{
 use crate::do_exit;
 
 pub fn check_signals(tf: &mut TrapFrame, restore_blocked: Option<SignalSet>) -> bool {
-    let Some((sig, os_action)) = StarryTaskExt::of(&current())
-        .thread_data()
-        .signal
-        .check_signals(tf, restore_blocked)
-    else {
+    // axsignal may access user memory internally
+    let result = access_user_memory(|| {
+        StarryTaskExt::of(&current())
+            .thread_data()
+            .signal
+            .check_signals(tf, restore_blocked)
+    });
+    let Some((sig, os_action)) = result else {
         return false;
     };
 
@@ -85,19 +89,28 @@ fn post_trap_callback(tf: &mut TrapFrame, from_user: bool) {
 
 pub fn send_signal_thread(thr: &Thread, sig: SignalInfo) -> LinuxResult<()> {
     info!("Send signal {:?} to thread {}", sig.signo(), thr.tid());
-    let Some(thr) = thr.data::<ThreadData>() else {
+    let Some(thr_data) = thr.data::<ThreadData>() else {
         return Err(LinuxError::EPERM);
     };
-    thr.signal.send_signal(sig);
+    thr_data.signal.send_signal(sig);
+    // TODO(mivik): correct task handling
+    if let Ok(task) = thr_data.get_task() {
+        task.set_interrupted(true);
+    }
     Ok(())
 }
 
 pub fn send_signal_process(proc: &Process, sig: SignalInfo) -> LinuxResult<()> {
-    info!("Send signal {:?} to process {}", sig.signo(), proc.pid());
-    let Some(proc) = proc.data::<ProcessData>() else {
+    debug!("Send signal {:?} to process {}", sig.signo(), proc.pid());
+    let Some(proc_data) = proc.data::<ProcessData>() else {
         return Err(LinuxError::EPERM);
     };
-    proc.signal.send_signal(sig);
+    proc_data.signal.send_signal(sig);
+    for thr in proc.threads() {
+        if let Ok(task) = thr.data::<ThreadData>().unwrap().get_task() {
+            task.set_interrupted(true);
+        }
+    }
     Ok(())
 }
 

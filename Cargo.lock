@@ -369,6 +369,7 @@ dependencies = [
  "axhal",
  "enum_dispatch",
  "kspin",
+ "lazy_static",
  "lazyinit",
  "log",
  "memory_addr",
@@ -433,7 +434,7 @@ dependencies = [
 [[package]]
 name = "axsignal"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axsignal.git?rev=5092211#50922113550979783328560e5d69c0a4c5302fa0"
+source = "git+https://github.com/Starry-Mix-THU/axsignal.git?rev=2556701#2556701d3c593d08e7f8416300e9e91f10281214"
 dependencies = [
  "axerrno",
  "axhal",

@@ -105,32 +105,38 @@ fn make_siginfo(signo: u32, code: i32) -> LinuxResult<Option<SignalInfo>> {
 }
 
 pub fn sys_kill(pid: i32, signo: u32) -> LinuxResult<isize> {
-    let Some(sig) = make_siginfo(signo, SI_USER as _)? else {
-        // TODO: should also check permissions
-        return Ok(0);
-    };
+    warn!("sys_kill: pid = {}, signo = {}", pid, signo);
+    let sig = make_siginfo(signo, SI_USER as _)?;
 
     match pid {
         1.. => {
             let proc = get_process(pid as Pid)?;
-            send_signal_process(&proc, sig)?;
+            if let Some(sig) = sig {
+                send_signal_process(&proc, sig)?;
+            }
         }
         0 => {
             let pg = StarryTaskExt::of(&current()).thread.process().group();
-            send_signal_process_group(&pg, sig)?;
+            if let Some(sig) = sig {
+                send_signal_process_group(&pg, sig)?;
+            }
         }
         -1 => {
-            for proc in processes() {
-                if proc.is_init() {
-                    // init process
-                    continue;
+            if let Some(sig) = sig {
+                for proc in processes() {
+                    if proc.is_init() {
+                        // init process
+                        continue;
+                    }
+                    send_signal_process(&proc, sig.clone())?;
                 }
-                send_signal_process(&proc, sig.clone())?;
             }
         }
         ..-1 => {
             let pg = get_process_group((-pid) as Pid)?;
-            send_signal_process_group(&pg, sig)?;
+            if let Some(sig) = sig {
+                send_signal_process_group(&pg, sig)?;
+            }
         }
     }
     Ok(0)

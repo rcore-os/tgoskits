@@ -10,7 +10,7 @@ extern crate axruntime;
 use alloc::{borrow::ToOwned, format, vec::Vec};
 
 use axerrno::LinuxError;
-use starry_core::{mm::insert_elf_cache, task::StarryTaskExt};
+use starry_core::mm::insert_elf_cache;
 
 mod entry;
 mod mm;
