@@ -15,7 +15,7 @@ use core::{
 };
 
 use axerrno::{LinuxError, LinuxResult};
-use axhal::arch::UspaceContext;
+use axhal::context::UspaceContext;
 use axmm::AddrSpace;
 use axprocess::{Pid, Process, ProcessGroup, Session, Thread};
 use axsignal::{
@@ -404,6 +404,11 @@ pub fn add_thread_to_table(thread: &Arc<Thread>) {
         return;
     }
     session_table.insert(session.sid(), &session);
+}
+
+/// Lists all threads.
+pub fn threads() -> Vec<Arc<Thread>> {
+    THREAD_TABLE.read().values().collect()
 }
 
 /// Lists all processes.

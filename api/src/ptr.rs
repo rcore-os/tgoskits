@@ -3,7 +3,7 @@ use core::{alloc::Layout, ffi::c_char, mem::transmute, ptr, slice, str};
 use axerrno::{LinuxError, LinuxResult};
 use axhal::paging::MappingFlags;
 use axtask::current;
-use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
+use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use starry_core::{mm::access_user_memory, task::StarryTaskExt};
 
 fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> LinuxResult<()> {
@@ -15,15 +15,13 @@ fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> 
     let current = current();
     let mut aspace = StarryTaskExt::of(&current).process_data().aspace.lock();
 
-    let range =
-        VirtAddrRange::try_from_start_size(start, layout.size()).ok_or(LinuxError::EFAULT)?;
-    if !aspace.check_region_access(range, access_flags) {
+    if !aspace.can_access_range(start, layout.size(), access_flags) {
         return Err(LinuxError::EFAULT);
     }
 
     let page_start = start.align_down_4k();
     let page_end = (start + layout.size()).align_up_4k();
-    aspace.populate_area(page_start, page_end - page_start, access_flags)?;
+    aspace.populate_area(page_start, page_end - page_start)?;
 
     Ok(())
 }
@@ -59,10 +57,7 @@ fn check_null_terminated<T: PartialEq + Default>(
                 // allocated yet.
                 let current = current();
                 let aspace = StarryTaskExt::of(&current).process_data().aspace.lock();
-                if !aspace.check_region_access(
-                    VirtAddrRange::from_start_size(page, PAGE_SIZE_4K),
-                    access_flags,
-                ) {
+                if !aspace.can_access_range(page, PAGE_SIZE_4K, access_flags) {
                     return Err(LinuxError::EFAULT);
                 }
 

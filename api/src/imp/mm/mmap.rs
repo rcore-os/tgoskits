@@ -137,13 +137,11 @@ pub fn sys_mmap(
                 VirtAddr::from(start),
                 aligned_length,
                 VirtAddrRange::new(aspace.base(), aspace.end()),
-                page_size,
             )
             .or(aspace.find_free_area(
                 aspace.base(),
                 aligned_length,
                 VirtAddrRange::new(aspace.base(), aspace.end()),
-                page_size,
             ))
             .ok_or(LinuxError::ENOMEM)?
     };
@@ -152,13 +150,7 @@ pub fn sys_mmap(
 
     match map_flags & MmapFlags::TYPE {
         MmapFlags::SHARED | MmapFlags::SHARED_VALIDATE => {
-            aspace.map_shared(
-                start_addr,
-                aligned_length,
-                permission_flags.into(),
-                None,
-                page_size,
-            )?;
+            aspace.map_shared(start_addr, aligned_length, permission_flags.into(), None)?;
         }
         MmapFlags::PRIVATE => {
             aspace.map_alloc(
@@ -166,7 +158,6 @@ pub fn sys_mmap(
                 aligned_length,
                 permission_flags.into(),
                 populate,
-                page_size,
             )?;
         }
         _ => return Err(LinuxError::EINVAL),
@@ -186,7 +177,7 @@ pub fn sys_mmap(
         let length = core::cmp::min(length, file_size - offset);
         let mut buf = vec![0u8; length];
         file.read_at(&mut buf, offset as u64)?;
-        aspace.write(start_addr, page_size, &buf)?;
+        aspace.write(start_addr, &buf)?;
     }
     Ok(start_addr.as_usize() as _)
 }
@@ -198,7 +189,6 @@ pub fn sys_munmap(addr: usize, length: usize) -> LinuxResult<isize> {
     let length = align_up_4k(length);
     let start_addr = VirtAddr::from(addr);
     aspace.unmap(start_addr, length)?;
-    axhal::arch::flush_tlb(None);
     Ok(0)
 }
 

@@ -1,7 +1,7 @@
 use alloc::{borrow::ToOwned, string::String, sync::Arc};
 
 use axfs_ng::FS_CONTEXT;
-use axhal::arch::UspaceContext;
+use axhal::context::UspaceContext;
 use axprocess::{Pid, init_proc};
 use axsignal::Signo;
 use axsync::Mutex;

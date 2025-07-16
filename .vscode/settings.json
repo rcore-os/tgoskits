@@ -3,5 +3,6 @@
     "AX_CONFIG_PATH": "${workspaceFolder}/.axconfig.toml"
   },
   "rust-analyzer.cargo.target": "riscv64gc-unknown-none-elf",
-  "rust-analyzer.cargo.allTargets": false
+  "rust-analyzer.cargo.allTargets": false,
+  "rust-analyzer.cargo.features": "all"
 }

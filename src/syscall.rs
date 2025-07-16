@@ -2,7 +2,7 @@ use alloc::string::ToString;
 
 use axerrno::{LinuxError, LinuxResult};
 use axhal::{
-    arch::TrapFrame,
+    context::TrapFrame,
     trap::{SYSCALL, register_trap_handler},
 };
 use starry_api::*;
@@ -468,6 +468,8 @@ fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
     let sysno = Sysno::new(syscall_num);
     trace!("Syscall {:?}", sysno);
 
+    axhal::asm::enable_irqs();
+
     let result = sysno
         .ok_or(LinuxError::ENOSYS)
         .and_then(|sysno| handle_syscall_impl(tf, sysno));
@@ -476,6 +478,8 @@ fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
         sysno.map_or("(invalid)".to_string(), |s| s.to_string()),
         result
     );
+
+    axhal::asm::disable_irqs();
 
     result.unwrap_or_else(|err| -err.code() as _)
 }

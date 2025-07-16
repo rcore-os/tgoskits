@@ -13,7 +13,6 @@ track = ["axfeat/backtrace", "axalloc/tracking"]
 axfeat.workspace = true
 axalloc.workspace = true
 axbacktrace.workspace = true
-axconfig.workspace = true
 axfs-ng.workspace = true
 axfs-ng-vfs.workspace = true
 axhal.workspace = true
@@ -38,7 +37,7 @@ spin.workspace = true
 gimli = { version = "*", default-features = false }
 indoc = "2"
 inherit-methods-macro = "0.1.0"
-kernel-elf-parser = { git = "https://github.com/Starry-Mix-THU/kernel_elf_parser.git", rev = "3b99715" }
+kernel-elf-parser = { git = "https://github.com/Starry-Mix-THU/kernel_elf_parser.git", rev = "5e2160b" }
 lock_api = "0.4.13"
 percpu = "0.2.0"
 rand = { version = "0.9.1", default-features = false, features = [
@@ -51,7 +50,7 @@ weak-map = "0.1.1"
 xmas-elf = "0.9"
 
 [target.'cfg(not(any(target_arch = "aarch64", target_arch = "loongarch64")))'.dependencies]
-axmm = { workspace = true, features = ["copy-from"] }
+axmm = { workspace = true, features = ["copy"] }
 
 [target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64"))'.dependencies]
 riscv = "0.14"

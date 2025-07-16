@@ -6,7 +6,7 @@ use alloc::{
 };
 use core::{ops::Deref, sync::atomic::AtomicBool};
 
-use axmm::{AddrSpace, Backend, SharedPages};
+use axmm::{AddrSpace, SharedPages};
 use axsync::Mutex;
 use axtask::{WaitQueue, current};
 use memory_addr::VirtAddr;
@@ -35,11 +35,11 @@ impl FutexKey {
     /// Creates a new `FutexKey`.
     pub fn new(aspace: &AddrSpace, address: usize) -> Self {
         if let Some(area) = aspace.find_area(VirtAddr::from_usize(address))
-            && let Backend::Shared(backend) = area.backend()
+            && let Some(pages) = area.backend().pages()
         {
             return Self::Shared {
                 offset: address - area.start().as_usize(),
-                region: Arc::downgrade(backend.pages()),
+                region: Arc::downgrade(&pages),
             };
         }
         Self::Private { address }

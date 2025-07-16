@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 use core::{mem, sync::atomic::Ordering};
 
 use axerrno::{LinuxError, LinuxResult};
-use axhal::arch::TrapFrame;
+use axhal::context::TrapFrame;
 use axprocess::{Pid, Thread};
 use axsignal::{SignalInfo, SignalSet, SignalStack, Signo};
 use axtask::current;
@@ -85,7 +85,7 @@ pub fn sys_rt_sigaction(
         actions[signo].to_ctype(oldact);
     }
     if let Some(act) = nullable!(act.get_as_ref())? {
-        actions[signo] = (*act).try_into()?;
+        actions[signo] = (*act).into();
     }
     Ok(0)
 }
@@ -105,7 +105,7 @@ fn make_siginfo(signo: u32, code: i32) -> LinuxResult<Option<SignalInfo>> {
 }
 
 pub fn sys_kill(pid: i32, signo: u32) -> LinuxResult<isize> {
-    warn!("sys_kill: pid = {}, signo = {}", pid, signo);
+    debug!("sys_kill: pid = {}, signo = {}", pid, signo);
     let sig = make_siginfo(signo, SI_USER as _)?;
 
     match pid {

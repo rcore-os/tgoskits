@@ -7,10 +7,7 @@ use core::ffi::CStr;
 
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
-use axhal::{
-    mem::virt_to_phys,
-    paging::{MappingFlags, PageSize},
-};
+use axhal::{mem::virt_to_phys, paging::MappingFlags};
 use axmm::AddrSpace;
 use kernel_elf_parser::{ELFParser, app_stack_region};
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
@@ -46,9 +43,22 @@ pub fn map_trampoline(aspace: &mut AddrSpace) -> LinuxResult {
         signal_trampoline_paddr,
         PAGE_SIZE_4K,
         MappingFlags::READ | MappingFlags::EXECUTE | MappingFlags::USER,
-        PageSize::Size4K,
     )?;
     Ok(())
+}
+
+fn mapping_flags(flags: xmas_elf::program::Flags) -> MappingFlags {
+    let mut mapping_flags = MappingFlags::USER;
+    if flags.is_read() {
+        mapping_flags |= MappingFlags::READ;
+    }
+    if flags.is_write() {
+        mapping_flags |= MappingFlags::WRITE;
+    }
+    if flags.is_execute() {
+        mapping_flags |= MappingFlags::EXECUTE;
+    }
+    mapping_flags
 }
 
 /// Map the elf file to the user address space.
@@ -68,7 +78,7 @@ fn map_elf<'a>(
 
     for segement in elf_parser.ph_load() {
         debug!(
-            "Mapping ELF segment: [{:#x?}, {:#x?}) flags: {:#x?}",
+            "Mapping ELF segment: [{:#x?}, {:#x?}) flags: {}",
             segement.vaddr,
             segement.vaddr + segement.memsz as usize,
             segement.flags
@@ -79,17 +89,16 @@ fn map_elf<'a>(
         let seg_align_size =
             (segement.memsz as usize + seg_pad + PAGE_SIZE_4K - 1) & !(PAGE_SIZE_4K - 1);
         uspace.map_alloc(
-            segement.vaddr.align_down_4k(),
+            VirtAddr::from_usize(segement.vaddr).align_down_4k(),
             seg_align_size,
-            segement.flags,
+            mapping_flags(segement.flags),
             true,
-            PageSize::Size4K,
         )?;
         let seg_data = elf
             .input
             .get(segement.offset..segement.offset + segement.filesz as usize)
             .ok_or(LinuxError::EINVAL)?;
-        uspace.write(segement.vaddr, PageSize::Size4K, seg_data)?;
+        uspace.write(segement.vaddr.into(), seg_data)?;
         // TDOO: flush the I-cache
     }
 
@@ -219,17 +228,16 @@ pub fn load_user_app(
         ustack_start, ustack_end
     );
 
-    let stack_data = app_stack_region(args, envs, &auxv, ustack_start, ustack_size);
+    let stack_data = app_stack_region(args, envs, &auxv, ustack_end.into());
     uspace.map_alloc(
         ustack_start,
         ustack_size,
         MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
         true,
-        PageSize::Size4K,
     )?;
 
     let user_sp = ustack_end - stack_data.len();
-    uspace.write(user_sp, PageSize::Size4K, stack_data.as_slice())?;
+    uspace.write(user_sp, stack_data.as_slice())?;
 
     let heap_start = VirtAddr::from_usize(crate::config::USER_HEAP_BASE);
     let heap_size = crate::config::USER_HEAP_SIZE;
@@ -238,7 +246,6 @@ pub fn load_user_app(
         heap_size,
         MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
         true,
-        PageSize::Size4K,
     )?;
 
     Ok((VirtAddr::from(entry), user_sp))

@@ -2,7 +2,7 @@ use alloc::{string::ToString, vec::Vec};
 use core::ffi::c_char;
 
 use axerrno::{LinuxError, LinuxResult};
-use axhal::arch::TrapFrame;
+use axhal::context::TrapFrame;
 use axtask::current;
 use starry_core::{
     mm::{load_user_app, map_trampoline},
@@ -45,15 +45,10 @@ pub fn sys_execve(
     }
 
     let mut aspace = ext.process_data().aspace.lock();
-    aspace.unmap_user_areas()?;
+    aspace.clear();
     map_trampoline(&mut aspace)?;
-    axhal::arch::flush_tlb(None);
 
-    let (entry_point, user_stack_base) = load_user_app(&mut aspace, Some(&path), &args, &envs)
-        .map_err(|err| {
-            error!("Failed to load app {path}: {err:?}");
-            LinuxError::ENOENT
-        })?;
+    let (entry_point, user_stack_base) = load_user_app(&mut aspace, Some(&path), &args, &envs)?;
     drop(aspace);
 
     let name = path

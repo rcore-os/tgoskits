@@ -9,9 +9,7 @@ repository.workspace = true
 [dependencies]
 axfeat.workspace = true
 
-axbacktrace.workspace = true
 axconfig.workspace = true
-axdriver.workspace = true
 axfs-ng.workspace = true
 axfs-ng-vfs.workspace = true
 axio.workspace = true
@@ -41,8 +39,6 @@ chrono = { version = "0.4.41", default-features = false }
 flatten_objects = "0.2.4"
 lazy_static = { version = "1.5", features = ["spin_no_std"] }
 num_enum = { version = "0.7", default-features = false }
-page_table_multiarch = "0.5"
-page_table_entry = "0.5"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"

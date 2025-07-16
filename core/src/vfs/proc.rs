@@ -14,7 +14,7 @@ use axtask::current;
 use indoc::indoc;
 
 use crate::{
-    task::{StarryTaskExt, TaskStat, ThreadData, get_thread, processes},
+    task::{StarryTaskExt, TaskStat, ThreadData, get_thread, threads},
     vfs::simple::{
         DirMaker, DirMapping, NodeOpsMux, RwFile, SimpleDir, SimpleDirOps, SimpleFile,
         SimpleFileOperation, SimpleFs,
@@ -220,9 +220,9 @@ struct ProcFsHandler(Arc<SimpleFs>);
 impl SimpleDirOps<RawMutex> for ProcFsHandler {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         Box::new(
-            processes()
+            threads()
                 .into_iter()
-                .map(|it| it.pid().to_string().into())
+                .map(|it| it.tid().to_string().into())
                 .chain([Cow::Borrowed("self")]),
         )
     }

@@ -97,7 +97,7 @@ pub fn sys_sched_getaffinity(
     cpusetsize: usize,
     user_mask: UserPtr<u8>,
 ) -> LinuxResult<isize> {
-    if cpusetsize * 8 < axconfig::SMP {
+    if cpusetsize * 8 < axconfig::plat::CPU_NUM {
         return Err(LinuxError::EINVAL);
     }
 
@@ -120,11 +120,11 @@ pub fn sys_sched_setaffinity(
     cpusetsize: usize,
     user_mask: UserConstPtr<u8>,
 ) -> LinuxResult<isize> {
-    let size = cpusetsize.min(axconfig::SMP.div_ceil(8));
+    let size = cpusetsize.min(axconfig::plat::CPU_NUM.div_ceil(8));
     let user_mask = user_mask.get_as_slice(size)?;
     let mut cpu_mask = AxCpuMask::new();
 
-    for i in 0..(size * 8).min(axconfig::SMP) {
+    for i in 0..(size * 8).min(axconfig::plat::CPU_NUM) {
         if user_mask[i / 8] & (1 << (i % 8)) != 0 {
             cpu_mask.set(i, true);
         }

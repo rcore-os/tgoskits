@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
-use axhal::arch::{TrapFrame, UspaceContext};
+use axhal::context::{TrapFrame, UspaceContext};
 use axprocess::Pid;
 use axsignal::Signo;
 use axsync::Mutex;
@@ -124,7 +124,7 @@ pub fn sys_clone(
 
     let curr = current();
     let ext = StarryTaskExt::of(&curr);
-    let mut new_task = new_user_task(curr.name(), new_uctx, set_child_tid);
+    let mut new_task = new_user_task(&curr.name(), new_uctx, set_child_tid);
 
     let tid = new_task.id().as_u64() as Pid;
     if flags.contains(CloneFlags::PARENT_SETTID) {

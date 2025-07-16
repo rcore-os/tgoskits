@@ -28,7 +28,7 @@ impl MemoryCategory {
     }
 
     fn category(backtrace: &Backtrace) -> Option<&'static str> {
-        for frame in backtrace.frames()? {
+        for (_, frame) in backtrace.frames()? {
             let Some(func) = frame.function else {
                 continue;
             };

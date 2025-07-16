@@ -1,7 +1,7 @@
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 
 use axerrno::{LinuxError, LinuxResult};
-use axhal::time::monotonic_time_nanos;
+use axhal::{paging::MappingFlags, time::monotonic_time_nanos};
 use axmm::SharedPages;
 use axprocess::Pid;
 use axsync::Mutex;
@@ -12,8 +12,6 @@ use linux_raw_sys::{
     general::*,
 };
 use memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
-use page_table_entry::MappingFlags;
-use page_table_multiarch::PageSize;
 use starry_core::task::StarryTaskExt;
 
 use crate::{
@@ -386,14 +384,12 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> LinuxResult<isize> {
             VirtAddr::from(start_aligned),
             length,
             VirtAddrRange::new(aspace.base(), aspace.end()),
-            PageSize::Size4K,
         )
         .or_else(|| {
             aspace.find_free_area(
                 aspace.base(),
                 length,
                 VirtAddrRange::new(aspace.base(), aspace.end()),
-                PageSize::Size4K,
             )
         })
         .ok_or(LinuxError::ENOMEM)?;
@@ -413,16 +409,10 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> LinuxResult<isize> {
     // map the virtual address range to the physical address
     if let Some(phys_pages) = shm_inner.phys_pages.clone() {
         // Another proccess has attached the shared memory
-        aspace.map_shared(
-            start_addr,
-            length,
-            mapping_flags,
-            Some(phys_pages),
-            PageSize::Size4K,
-        )?;
+        aspace.map_shared(start_addr, length, mapping_flags, Some(phys_pages))?;
     } else {
         // This is the first process to attach the shared memory
-        let result = aspace.map_shared(start_addr, length, mapping_flags, None, PageSize::Size4K);
+        let result = aspace.map_shared(start_addr, length, mapping_flags, None);
 
         match result {
             Ok(pages) => {
@@ -501,7 +491,6 @@ pub fn sys_shmdt(shmaddr: usize) -> LinuxResult<isize> {
 
     let mut aspace = ext.process_data().aspace.lock();
     aspace.unmap(va_range.start, va_range.size())?;
-    axhal::arch::flush_tlb(None);
 
     let mut shm_manager = SHM_MANAGER.lock();
     shm_manager.remove_shmaddr(pid, shmaddr);

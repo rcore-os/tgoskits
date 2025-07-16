@@ -6,6 +6,7 @@ export NO_AXSTD = y
 export AX_LIB = axfeat
 export BLK = y
 export NET = y
+export MEM = 1G
 
 export BACKTRACE ?= y
 
@@ -39,7 +40,7 @@ oscomp_run:
 		wget $(IMG_URL)/$(IMG).xz; \
 		xz -d $(IMG).xz; \
 	fi
-	# cp $(IMG) arceos/disk.img
+	cp $(IMG) arceos/disk.img
 	$(MAKE) run
 
 rv:
