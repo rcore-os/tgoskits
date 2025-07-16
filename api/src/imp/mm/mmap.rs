@@ -104,7 +104,7 @@ pub fn sys_mmap(
     }
 
     info!(
-        "sys_mmap: addr: {:x?}, length: {:x?}, prot: {:?}, flags: {:?}, fd: {:?}, offset: {:?}",
+        "sys_mmap: addr: {:#x?}, length: {:#x?}, prot: {:?}, flags: {:?}, fd: {:?}, offset: {:?}",
         addr, length, permission_flags, map_flags, fd, offset
     );
 
@@ -121,7 +121,7 @@ pub fn sys_mmap(
     let end = (addr + length).align_up(page_size);
     let aligned_length = end - start;
     debug!(
-        "start: {:x?}, end: {:x?}, aligned_length: {:x?}",
+        "start: {:#x?}, end: {:#x?}, aligned_length: {:#x?}",
         start, end, aligned_length
     );
 

@@ -587,7 +587,6 @@ dependencies = [
  "cfg-if",
  "cpumask",
  "crate_interface",
- "event-listener",
  "extern-trait",
  "futures",
  "kernel_guard",
