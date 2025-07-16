@@ -62,7 +62,7 @@ pub fn unwind_stack(mut fp: usize) -> Vec<Frame> {
 
     let mut frames = vec![];
 
-    let (Some(ip_range), Some(fp_range)) = (IP_RANGE.get(), FP_RANGE.get()) else {
+    let Some(fp_range) = FP_RANGE.get() else {
         // We cannot panic here!
         error!("Backtrace not initialized. Call `axbacktrace::init` first.");
         return frames;
@@ -73,10 +73,6 @@ pub fn unwind_stack(mut fp: usize) -> Vec<Frame> {
 
     while fp > 0 && fp % align_of::<usize>() == 0 && fp_range.contains(&fp) && depth < max_depth {
         let frame: &Frame = unsafe { &*(fp as *const Frame).sub(offset) };
-
-        if !ip_range.contains(&frame.ip) {
-            break;
-        }
         frames.push(*frame);
 
         if let Some(large_stack_end) = fp.checked_add(8 * 1024 * 1024)
@@ -130,9 +126,9 @@ impl Backtrace {
     pub fn capture() -> Self {
         #[cfg(not(feature = "dwarf"))]
         {
-            return Self {
+            Self {
                 inner: Inner::Disabled,
-            };
+            }
         }
         #[cfg(feature = "dwarf")]
         {
@@ -162,21 +158,32 @@ impl Backtrace {
         }
     }
 
-    /// Capture the stack backtrace from a given `fp` and `ip`.
-    pub fn capture_of(fp: usize, ip: usize) -> Self {
+    /// Capture the stack backtrace from a trap.
+    #[allow(unused_variables)]
+    pub fn capture_trap(fp: usize, ip: usize, ra: usize) -> Self {
         #[cfg(not(feature = "dwarf"))]
         {
-            return Self {
+            Self {
                 inner: Inner::Disabled,
-            };
+            }
         }
         #[cfg(feature = "dwarf")]
         {
-            let mut frames = vec![Frame {
-                fp,
-                ip: ip.wrapping_add(1),
-            }];
-            frames.extend(unwind_stack(fp));
+            let mut frames = unwind_stack(fp);
+            if let Some(first) = frames.first_mut()
+                && let Some(ip_range) = IP_RANGE.get()
+                && !ip_range.contains(&first.ip)
+            {
+                first.ip = ra;
+            }
+
+            frames.insert(
+                0,
+                Frame {
+                    fp,
+                    ip: ip.wrapping_add(1),
+                },
+            );
 
             Self {
                 inner: Inner::Captured(frames),
