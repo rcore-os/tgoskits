@@ -29,7 +29,7 @@ uspace = []
 arm-el2 = []
 
 [dependencies]
-axbacktrace = { git = "https://github.com/Starry-Mix-THU/axbacktrace.git", rev = "05cef40" }
+axbacktrace = { git = "https://github.com/Starry-Mix-THU/axbacktrace.git", rev = "322f6da" }
 linkme = "0.3"
 log = "0.4"
 cfg-if = "1.0"
@@ -59,4 +59,9 @@ new_without_default = "allow"
 
 [package.metadata.docs.rs]
 all-features = true
-targets = ["x86_64-unknown-none", "aarch64-unknown-none-softfloat", "riscv64gc-unknown-none-elf", "loongarch64-unknown-none-softfloat"]
+targets = [
+    "x86_64-unknown-none",
+    "aarch64-unknown-none-softfloat",
+    "riscv64gc-unknown-none-elf",
+    "loongarch64-unknown-none-softfloat",
+]
