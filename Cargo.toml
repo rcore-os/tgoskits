@@ -10,7 +10,6 @@ repository = "https://github.com/Starry-OS/axsignal"
 
 [dependencies]
 axcpu = "0.2"
-axerrno = "0.1"
 axplat = "0.1"
 bitflags = "2.6"
 cfg-if = "1.0.0"

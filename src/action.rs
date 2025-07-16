@@ -1,6 +1,5 @@
 use core::ffi::c_ulong;
 
-use axerrno::LinuxError;
 use bitflags::bitflags;
 use linux_raw_sys::{
     general::{
@@ -113,14 +112,9 @@ impl SignalAction {
     }
 }
 
-impl TryFrom<kernel_sigaction> for SignalAction {
-    type Error = LinuxError;
-
-    fn try_from(value: kernel_sigaction) -> Result<Self, Self::Error> {
-        let Some(flags) = SignalActionFlags::from_bits(value.sa_flags) else {
-            warn!("unrecognized signal flags: {}", value.sa_flags);
-            return Err(LinuxError::EINVAL);
-        };
+impl From<kernel_sigaction> for SignalAction {
+    fn from(value: kernel_sigaction) -> Self {
+        let flags = SignalActionFlags::from_bits_truncate(value.sa_flags);
         let disposition = {
             match value.sa_handler_kernel {
                 None => {
@@ -147,11 +141,11 @@ impl TryFrom<kernel_sigaction> for SignalAction {
         #[cfg(not(sa_restorer))]
         let restorer = None;
 
-        Ok(SignalAction {
+        SignalAction {
             flags,
             mask: value.sa_mask.into(),
             disposition,
             restorer,
-        })
+        }
     }
 }
