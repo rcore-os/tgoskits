@@ -1,4 +1,5 @@
-use alloc::{borrow::ToOwned, collections::btree_map::BTreeMap, string::String, sync::Arc};
+use alloc::{borrow::ToOwned, string::String, sync::Arc};
+use hashbrown::HashMap;
 use core::{
     mem,
     ops::{Deref, DerefMut},
@@ -30,7 +31,7 @@ impl<F: FnMut(&str, u64, NodeType, u64) -> bool> DirEntrySink for F {
     }
 }
 
-type DirChildren<M> = BTreeMap<String, DirEntry<M>>;
+type DirChildren<M> = HashMap<String, DirEntry<M>>;
 
 pub trait DirNodeOps<M: RawMutex>: NodeOps<M> {
     /// Reads directory entries.
@@ -102,7 +103,7 @@ pub struct OpenOptions {
 
 pub struct DirNode<M> {
     ops: Arc<dyn DirNodeOps<M>>,
-    cache: Mutex<M, BTreeMap<String, DirEntry<M>>>,
+    cache: Mutex<M, HashMap<String, DirEntry<M>>>,
     pub(crate) mountpoint: Mutex<M, Option<Arc<Mountpoint<M>>>>,
 }
 
@@ -124,7 +125,7 @@ impl<M: RawMutex> DirNode<M> {
     pub fn new(ops: Arc<dyn DirNodeOps<M>>) -> Self {
         Self {
             ops,
-            cache: Mutex::new(BTreeMap::new()),
+            cache: Mutex::new(HashMap::new()),
             mountpoint: Mutex::new(None),
         }
     }
@@ -150,7 +151,7 @@ impl<M: RawMutex> DirNode<M> {
     }
 
     fn lookup_locked(&self, name: &str, children: &mut DirChildren<M>) -> VfsResult<DirEntry<M>> {
-        use alloc::collections::btree_map::Entry;
+        use hashbrown::hash_map::Entry;
         match children.entry(name.to_owned()) {
             Entry::Occupied(e) => Ok(e.get().clone()),
             Entry::Vacant(e) => {

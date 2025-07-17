@@ -1,5 +1,4 @@
 use alloc::{
-    collections::btree_map::BTreeMap,
     string::String,
     sync::{Arc, Weak},
     vec,
@@ -8,6 +7,7 @@ use core::{
     iter,
     sync::atomic::{AtomicU64, Ordering},
 };
+use hashbrown::HashMap;
 
 use inherit_methods_macro::inherit_methods;
 use lock_api::{Mutex, RawMutex};
@@ -24,7 +24,7 @@ pub struct Mountpoint<M> {
     /// Location in the parent mountpoint.
     location: Option<Location<M>>,
     /// Children of the mountpoint.
-    children: Mutex<M, BTreeMap<ReferenceKey, Weak<Self>>>,
+    children: Mutex<M, HashMap<ReferenceKey, Weak<Self>>>,
     /// Device ID
     device: u64,
 }
