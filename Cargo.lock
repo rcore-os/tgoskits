@@ -370,11 +370,14 @@ dependencies = [
 name = "axmm"
 version = "0.1.0"
 dependencies = [
+ "allocator",
  "axalloc",
  "axconfig",
  "axerrno",
  "axhal",
+ "enum_dispatch",
  "kspin",
+ "lazy_static",
  "lazyinit",
  "log",
  "memory_addr",
@@ -1396,7 +1399,7 @@ checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 [[package]]
 name = "page_table_entry"
 version = "0.5.5"
-source = "git+https://github.com/Starry-Mix-THU/page_table_multiarch.git?rev=438e930#438e930f01dc35e580fbb1fbb63dee9428f07651"
+source = "git+https://github.com/Starry-Mix-THU/page_table_multiarch.git?rev=85a85f1#85a85f15df484d13077d60f9dedf456ca41c1458"
 dependencies = [
  "aarch64-cpu",
  "bitflags 2.9.1",
@@ -1407,7 +1410,7 @@ dependencies = [
 [[package]]
 name = "page_table_multiarch"
 version = "0.5.5"
-source = "git+https://github.com/Starry-Mix-THU/page_table_multiarch.git?rev=438e930#438e930f01dc35e580fbb1fbb63dee9428f07651"
+source = "git+https://github.com/Starry-Mix-THU/page_table_multiarch.git?rev=85a85f1#85a85f15df484d13077d60f9dedf456ca41c1458"
 dependencies = [
  "bitmaps",
  "log",

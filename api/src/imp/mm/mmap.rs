@@ -108,14 +108,13 @@ pub fn sys_mmap(
         addr, length, permission_flags, map_flags, fd, offset
     );
 
-    // let page_size = if map_flags.contains(MmapFlags::HUGE_1GB) {
-    //     PageSize::Size1G
-    // } else if map_flags.contains(MmapFlags::HUGE) {
-    //     PageSize::Size2M
-    // } else {
-    //     PageSize::Size4K
-    // };
-    let page_size = PageSize::Size4K;
+    let page_size = if map_flags.contains(MmapFlags::HUGE_1GB) {
+        PageSize::Size1G
+    } else if map_flags.contains(MmapFlags::HUGE) {
+        PageSize::Size2M
+    } else {
+        PageSize::Size4K
+    };
 
     let start = addr.align_down(page_size);
     let end = (addr + length).align_up(page_size);
@@ -150,7 +149,13 @@ pub fn sys_mmap(
 
     match map_flags & MmapFlags::TYPE {
         MmapFlags::SHARED | MmapFlags::SHARED_VALIDATE => {
-            aspace.map_shared(start_addr, aligned_length, permission_flags.into(), None)?;
+            aspace.map_shared(
+                start_addr,
+                aligned_length,
+                permission_flags.into(),
+                None,
+                page_size,
+            )?;
         }
         MmapFlags::PRIVATE => {
             aspace.map_alloc(
@@ -158,6 +163,7 @@ pub fn sys_mmap(
                 aligned_length,
                 permission_flags.into(),
                 populate,
+                page_size,
             )?;
         }
         _ => return Err(LinuxError::EINVAL),

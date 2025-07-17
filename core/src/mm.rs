@@ -7,7 +7,10 @@ use core::ffi::CStr;
 
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
-use axhal::{mem::virt_to_phys, paging::MappingFlags};
+use axhal::{
+    mem::virt_to_phys,
+    paging::{MappingFlags, PageSize},
+};
 use axmm::AddrSpace;
 use kernel_elf_parser::{ELFParser, app_stack_region};
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
@@ -93,6 +96,7 @@ fn map_elf<'a>(
             seg_align_size,
             mapping_flags(segement.flags),
             true,
+            PageSize::Size4K,
         )?;
         let seg_data = elf
             .input
@@ -234,6 +238,7 @@ pub fn load_user_app(
         ustack_size,
         MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
         true,
+        PageSize::Size4K,
     )?;
 
     let user_sp = ustack_end - stack_data.len();
@@ -246,6 +251,7 @@ pub fn load_user_app(
         heap_size,
         MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
         true,
+        PageSize::Size4K,
     )?;
 
     Ok((VirtAddr::from(entry), user_sp))

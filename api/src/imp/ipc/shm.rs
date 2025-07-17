@@ -1,7 +1,7 @@
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 
 use axerrno::{LinuxError, LinuxResult};
-use axhal::{paging::MappingFlags, time::monotonic_time_nanos};
+use axhal::{paging::{MappingFlags, PageSize}, time::monotonic_time_nanos};
 use axmm::SharedPages;
 use axprocess::Pid;
 use axsync::Mutex;
@@ -409,10 +409,11 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> LinuxResult<isize> {
     // map the virtual address range to the physical address
     if let Some(phys_pages) = shm_inner.phys_pages.clone() {
         // Another proccess has attached the shared memory
-        aspace.map_shared(start_addr, length, mapping_flags, Some(phys_pages))?;
+        // TODO(mivik): shm page size
+        aspace.map_shared(start_addr, length, mapping_flags, Some(phys_pages), PageSize::Size4K)?;
     } else {
         // This is the first process to attach the shared memory
-        let result = aspace.map_shared(start_addr, length, mapping_flags, None);
+        let result = aspace.map_shared(start_addr, length, mapping_flags, None, PageSize::Size4K);
 
         match result {
             Ok(pages) => {
