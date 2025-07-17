@@ -566,7 +566,7 @@ dependencies = [
 [[package]]
 name = "axsignal"
 version = "0.2.0"
-source = "git+https://github.com/Starry-Mix-THU/axsignal.git?rev=b600858#b6008583b5496fed7e7fdab5a016b3fad283b081"
+source = "git+https://github.com/Starry-Mix-THU/axsignal.git?rev=a0c1591#a0c15917c455776af01c62a4e88a99b79d1bc161"
 dependencies = [
  "axcpu",
  "bitflags 2.9.1",
