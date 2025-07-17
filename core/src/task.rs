@@ -240,7 +240,7 @@ impl ThreadData {
         time.poll(|signo| {
             self.signal
                 .send_signal(SignalInfo::new(signo, SI_KERNEL as _));
-            // TODO(mivik):  correct interruption handling
+            // TODO(mivik): correct interruption handling
             current().set_interrupted(true);
         });
     }
