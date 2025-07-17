@@ -8,7 +8,8 @@ use alloc::{
     vec::Vec,
 };
 use core::{
-    cell::RefCell,
+    cell::{RefCell, UnsafeCell},
+    mem,
     ops::Deref,
     sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering},
     time::Duration,
@@ -22,7 +23,10 @@ use axsignal::{
     SignalInfo, Signo,
     api::{ProcessSignalManager, SignalActions, ThreadSignalManager},
 };
-use axsync::{Mutex, RawMutex};
+use axsync::{
+    Mutex, RawMutex,
+    spin::{SpinNoIrq, SpinNoIrqGuard},
+};
 use axtask::{AxTaskRef, TaskExt, TaskInner, WaitQueue, WeakAxTaskRef, current};
 use event_listener::Event;
 use extern_trait::extern_trait;
@@ -155,6 +159,51 @@ impl<T> Deref for AssumeSync<T> {
     }
 }
 
+/// [`SpinNoIrq`] wrapper implementing [`lock_api::RawMutex`].
+pub struct SpinNoIrqRawMutex {
+    inner: SpinNoIrq<()>,
+    guard: UnsafeCell<Option<SpinNoIrqGuard<'static, ()>>>,
+}
+unsafe impl Send for SpinNoIrqRawMutex {}
+unsafe impl Sync for SpinNoIrqRawMutex {}
+unsafe impl lock_api::RawMutex for SpinNoIrqRawMutex {
+    type GuardMarker = lock_api::GuardSend;
+
+    const INIT: Self = Self {
+        inner: SpinNoIrq::new(()),
+        guard: UnsafeCell::new(None),
+    };
+
+    fn lock(&self) {
+        let guard = self.inner.lock();
+        unsafe {
+            *self.guard.get() = Some(mem::transmute(guard));
+        }
+    }
+
+    fn try_lock(&self) -> bool {
+        let guard = self.inner.try_lock();
+        if guard.is_some() {
+            unsafe {
+                *self.guard.get() = Some(mem::transmute(guard.unwrap()));
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    unsafe fn unlock(&self) {
+        unsafe {
+            *self.guard.get() = None;
+        }
+    }
+
+    fn is_locked(&self) -> bool {
+        self.inner.is_locked()
+    }
+}
+
 /// Extended data for [`Thread`].
 pub struct ThreadData {
     /// Weak reference to the associated task.
@@ -172,7 +221,7 @@ pub struct ThreadData {
     pub robust_list_head: AtomicUsize,
 
     /// The thread-level signal manager
-    pub signal: ThreadSignalManager<RawMutex, WaitQueueWrapper>,
+    pub signal: ThreadSignalManager<SpinNoIrqRawMutex, WaitQueueWrapper>,
 
     /// Time manager
     ///
@@ -231,18 +280,22 @@ impl ThreadData {
             .ok_or(LinuxError::ESRCH)
     }
 
+    /// Send a signal to the thread.
+    pub fn send_signal(&self, sig: SignalInfo) {
+        self.signal.send_signal(sig);
+        // TODO(mivik): correct task handling
+        if let Ok(task) = self.get_task() {
+            task.set_interrupted(true);
+        }
+    }
+
     /// Poll the timer for this thread.
     pub fn poll_timer(&self) {
         let Ok(mut time) = self.time.try_borrow_mut() else {
             // reentrant borrow, likely IRQ
             return;
         };
-        time.poll(|signo| {
-            self.signal
-                .send_signal(SignalInfo::new(signo, SI_KERNEL as _));
-            // TODO(mivik): correct interruption handling
-            current().set_interrupted(true);
-        });
+        time.poll(|signo| self.send_signal(SignalInfo::new(signo, SI_KERNEL as _)));
     }
 
     /// Update the timer state for this thread.
@@ -250,11 +303,7 @@ impl ThreadData {
         let Ok(mut time) = self.time.try_borrow_mut() else {
             return;
         };
-        time.poll(|signo| {
-            self.signal
-                .send_signal(SignalInfo::new(signo, SI_KERNEL as _));
-            current().set_interrupted(true);
-        });
+        time.poll(|signo| self.send_signal(SignalInfo::new(signo, SI_KERNEL as _)));
         time.set_state(state);
     }
 }
@@ -281,7 +330,10 @@ pub struct ProcessData {
     pub exit_signal: Option<Signo>,
 
     /// The process signal manager
-    pub signal: Arc<ProcessSignalManager<RawMutex, WaitQueueWrapper>>,
+    ///
+    /// Reasons for using [`SpinNoIrqRawMutex`]: we may send signal during IRQs,
+    /// and thus we need to prevent IRQ from happening when the lock is held.
+    pub signal: Arc<ProcessSignalManager<SpinNoIrqRawMutex, WaitQueueWrapper>>,
 
     /// The futex table.
     futex_table: FutexTable,
@@ -295,7 +347,7 @@ impl ProcessData {
     pub fn new(
         exe_path: String,
         aspace: Arc<Mutex<AddrSpace>>,
-        signal_actions: Arc<Mutex<SignalActions>>,
+        signal_actions: Arc<lock_api::Mutex<SpinNoIrqRawMutex, SignalActions>>,
         exit_signal: Option<Signo>,
     ) -> Self {
         Self {
@@ -352,6 +404,17 @@ impl ProcessData {
         match key {
             FutexKey::Private { .. } => &self.futex_table,
             FutexKey::Shared { .. } => &SHARED_FUTEX_TABLE,
+        }
+    }
+
+    /// Send a signal to the process.
+    pub fn send_signal(&self, sig: SignalInfo, threads: &[Arc<Thread>]) {
+        self.signal.send_signal(sig);
+        // TODO(mivik): correct task handling
+        for thread in threads {
+            if let Ok(task) = thread.data::<ThreadData>().unwrap().get_task() {
+                task.set_interrupted(true);
+            }
         }
     }
 }

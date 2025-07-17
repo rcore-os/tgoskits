@@ -92,11 +92,7 @@ pub fn send_signal_thread(thr: &Thread, sig: SignalInfo) -> LinuxResult<()> {
     let Some(thr_data) = thr.data::<ThreadData>() else {
         return Err(LinuxError::EPERM);
     };
-    thr_data.signal.send_signal(sig);
-    // TODO(mivik): correct task handling
-    if let Ok(task) = thr_data.get_task() {
-        task.set_interrupted(true);
-    }
+    thr_data.send_signal(sig);
     Ok(())
 }
 
@@ -105,12 +101,7 @@ pub fn send_signal_process(proc: &Process, sig: SignalInfo) -> LinuxResult<()> {
     let Some(proc_data) = proc.data::<ProcessData>() else {
         return Err(LinuxError::EPERM);
     };
-    proc_data.signal.send_signal(sig);
-    for thr in proc.threads() {
-        if let Ok(task) = thr.data::<ThreadData>().unwrap().get_task() {
-            task.set_interrupted(true);
-        }
-    }
+    proc_data.send_signal(sig, &proc.threads());
     Ok(())
 }
 
