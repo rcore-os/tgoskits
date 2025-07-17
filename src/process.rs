@@ -1,4 +1,5 @@
 use alloc::{
+    collections::btree_set::BTreeSet,
     sync::{Arc, Weak},
     vec::Vec,
 };
@@ -9,24 +10,15 @@ use core::{
 
 use kspin::SpinNoIrq;
 use lazyinit::LazyInit;
-use weak_map::{StrongMap, WeakMap};
+use weak_map::StrongMap;
 
-use crate::{Pid, ProcessGroup, Session, Thread};
+use crate::{Pid, ProcessGroup, Session};
 
+#[derive(Default)]
 pub(crate) struct ThreadGroup {
-    pub(crate) threads: WeakMap<Pid, Weak<Thread>>,
+    pub(crate) threads: BTreeSet<Pid>,
     pub(crate) exit_code: i32,
     pub(crate) group_exited: bool,
-}
-
-impl Default for ThreadGroup {
-    fn default() -> Self {
-        Self {
-            threads: WeakMap::new(),
-            exit_code: 0,
-            group_exited: false,
-        }
-    }
 }
 
 /// A process.
@@ -35,7 +27,7 @@ pub struct Process {
     is_zombie: AtomicBool,
     pub(crate) tg: SpinNoIrq<ThreadGroup>,
 
-    // TODO: child subreaper
+    // TODO: child subreaper9
     children: SpinNoIrq<StrongMap<Pid, Arc<Process>>>,
     parent: SpinNoIrq<Weak<Process>>,
 
@@ -156,19 +148,27 @@ impl Process {
 
 /// Threads
 impl Process {
-    /// Creates a new [`Thread`] in this [`Process`].
-    pub fn new_thread(self: &Arc<Self>, tid: Pid) -> Arc<Thread> {
-        let thread = Arc::new(Thread {
-            tid,
-            process: self.clone(),
-        });
-        self.tg.lock().threads.insert(tid, &thread);
-        thread
+    /// Adds a thread to this [`Process`] with the given thread ID.
+    pub fn add_thread(self: &Arc<Self>, tid: Pid) {
+        self.tg.lock().threads.insert(tid);
     }
 
-    /// The [`Thread`]s in this [`Process`].
-    pub fn threads(&self) -> Vec<Arc<Thread>> {
-        self.tg.lock().threads.values().collect()
+    /// Removes a thread from this [`Process`] and sets the exit code if the
+    /// group has not exited.
+    ///
+    /// Returns `true` if this was the last thread in the process.
+    pub fn exit_thread(self: &Arc<Self>, tid: Pid, exit_code: i32) -> bool {
+        let mut tg = self.tg.lock();
+        if !tg.group_exited {
+            tg.exit_code = exit_code;
+        }
+        tg.threads.remove(&tid);
+        tg.threads.is_empty()
+    }
+
+    /// Get all threads in this [`Process`].
+    pub fn threads(&self) -> Vec<Pid> {
+        self.tg.lock().threads.iter().cloned().collect()
     }
 
     /// Returns `true` if the [`Process`] is group exited.
