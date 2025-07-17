@@ -4,7 +4,7 @@ use core::{
 };
 
 use alloc::sync::Arc;
-use lock_api::{Mutex, RawMutex};
+use kspin::SpinNoIrq;
 
 use crate::{PendingSignals, SignalAction, SignalInfo, SignalSet, Signo};
 
@@ -18,12 +18,14 @@ impl Default for SignalActions {
         Self(array::from_fn(|_| SignalAction::default()))
     }
 }
+
 impl Index<Signo> for SignalActions {
     type Output = SignalAction;
     fn index(&self, signo: Signo) -> &SignalAction {
         &self.0[signo as usize - 1]
     }
 }
+
 impl IndexMut<Signo> for SignalActions {
     fn index_mut(&mut self, signo: Signo) -> &mut SignalAction {
         &mut self.0[signo as usize - 1]
@@ -31,12 +33,12 @@ impl IndexMut<Signo> for SignalActions {
 }
 
 /// Process-level signal manager.
-pub struct ProcessSignalManager<M, WQ> {
+pub struct ProcessSignalManager<WQ> {
     /// The process-level shared pending signals
-    pending: Mutex<M, PendingSignals>,
+    pending: SpinNoIrq<PendingSignals>,
 
     /// The signal actions
-    pub actions: Arc<Mutex<M, SignalActions>>,
+    pub actions: Arc<SpinNoIrq<SignalActions>>,
 
     /// The wait queue for signal. Used by `rt_sigtimedwait`, etc.
     ///
@@ -48,11 +50,11 @@ pub struct ProcessSignalManager<M, WQ> {
     pub(crate) default_restorer: usize,
 }
 
-impl<M: RawMutex, WQ: WaitQueue> ProcessSignalManager<M, WQ> {
+impl<WQ: WaitQueue> ProcessSignalManager<WQ> {
     /// Creates a new process signal manager.
-    pub fn new(actions: Arc<Mutex<M, SignalActions>>, default_restorer: usize) -> Self {
+    pub fn new(actions: Arc<SpinNoIrq<SignalActions>>, default_restorer: usize) -> Self {
         Self {
-            pending: Mutex::new(PendingSignals::default()),
+            pending: SpinNoIrq::new(PendingSignals::default()),
             actions,
             wq: WQ::default(),
             default_restorer,

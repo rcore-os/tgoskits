@@ -2,7 +2,7 @@ use core::{alloc::Layout, time::Duration};
 
 use alloc::sync::Arc;
 use axcpu::TrapFrame;
-use lock_api::{Mutex, RawMutex};
+use kspin::SpinNoIrq;
 
 use crate::{
     DefaultSignalAction, PendingSignals, SignalAction, SignalActionFlags, SignalDisposition,
@@ -18,25 +18,25 @@ struct SignalFrame {
 }
 
 /// Thread-level signal manager.
-pub struct ThreadSignalManager<M, WQ> {
+pub struct ThreadSignalManager<WQ> {
     /// The process-level signal manager
-    proc: Arc<ProcessSignalManager<M, WQ>>,
+    proc: Arc<ProcessSignalManager<WQ>>,
 
     /// The pending signals
-    pending: Mutex<M, PendingSignals>,
+    pending: SpinNoIrq<PendingSignals>,
     /// The set of signals currently blocked from delivery.
-    blocked: Mutex<M, SignalSet>,
+    blocked: SpinNoIrq<SignalSet>,
     /// The stack used by signal handlers
-    stack: Mutex<M, SignalStack>,
+    stack: SpinNoIrq<SignalStack>,
 }
 
-impl<M: RawMutex, WQ: WaitQueue> ThreadSignalManager<M, WQ> {
-    pub fn new(proc: Arc<ProcessSignalManager<M, WQ>>) -> Self {
+impl<WQ: WaitQueue> ThreadSignalManager<WQ> {
+    pub fn new(proc: Arc<ProcessSignalManager<WQ>>) -> Self {
         Self {
             proc,
-            pending: Mutex::new(PendingSignals::default()),
-            blocked: Mutex::new(SignalSet::default()),
-            stack: Mutex::new(SignalStack::default()),
+            pending: SpinNoIrq::new(PendingSignals::default()),
+            blocked: SpinNoIrq::new(SignalSet::default()),
+            stack: SpinNoIrq::new(SignalStack::default()),
         }
     }
 
