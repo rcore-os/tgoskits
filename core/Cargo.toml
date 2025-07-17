@@ -35,9 +35,11 @@ scope-local.workspace = true
 spin.workspace = true
 
 gimli = { version = "*", default-features = false }
+hashbrown = { workspace = true }
 indoc = "2"
 inherit-methods-macro = "0.1.0"
 kernel-elf-parser = { git = "https://github.com/Starry-Mix-THU/kernel_elf_parser.git", rev = "5e2160b" }
+lazy_static = { workspace = true }
 lock_api = "0.4.13"
 percpu = "0.2.0"
 rand = { version = "0.9.1", default-features = false, features = [

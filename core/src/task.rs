@@ -24,12 +24,13 @@ use axsignal::{
     api::{ProcessSignalManager, SignalActions, ThreadSignalManager},
 };
 use axsync::{
-    Mutex, RawMutex,
+    Mutex,
     spin::{SpinNoIrq, SpinNoIrqGuard},
 };
 use axtask::{AxTaskRef, TaskExt, TaskInner, WaitQueue, WeakAxTaskRef, current};
 use event_listener::Event;
 use extern_trait::extern_trait;
+use lazy_static::lazy_static;
 use linux_raw_sys::general::SI_KERNEL;
 use scope_local::{ActiveScope, Scope};
 use spin::{Once, RwLock};
@@ -419,7 +420,9 @@ impl ProcessData {
     }
 }
 
-static SHARED_FUTEX_TABLE: FutexTable = FutexTable::new();
+lazy_static! {
+    static ref SHARED_FUTEX_TABLE: FutexTable = FutexTable::new();
+}
 
 static THREAD_TABLE: RwLock<WeakMap<Pid, Weak<Thread>>> = RwLock::new(WeakMap::new());
 

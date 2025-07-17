@@ -1,14 +1,12 @@
 //! Futex implementation.
 
-use alloc::{
-    collections::btree_map::BTreeMap,
-    sync::{Arc, Weak},
-};
+use alloc::sync::{Arc, Weak};
 use core::{ops::Deref, sync::atomic::AtomicBool};
 
 use axmm::{AddrSpace, Backend, SharedPages};
 use axsync::Mutex;
 use axtask::{WaitQueue, current};
+use hashbrown::HashMap;
 use memory_addr::VirtAddr;
 
 use crate::task::StarryTaskExt;
@@ -80,13 +78,13 @@ impl FutexEntry {
 }
 
 /// A table mapping memory addresses to futex wait queues.
-pub struct FutexTable(Mutex<BTreeMap<usize, Arc<FutexEntry>>>);
+pub struct FutexTable(Mutex<HashMap<usize, Arc<FutexEntry>>>);
 
 impl FutexTable {
     /// Creates a new `FutexTable`.
     #[allow(clippy::new_without_default)]
-    pub const fn new() -> Self {
-        Self(Mutex::new(BTreeMap::new()))
+    pub fn new() -> Self {
+        Self(Mutex::new(HashMap::new()))
     }
 
     /// Gets the wait queue associated with the given address.

@@ -1,6 +1,7 @@
 use alloc::{
     borrow::ToOwned, collections::btree_map::BTreeMap, string::String, sync::Arc, vec::Vec,
 };
+use hashbrown::HashMap;
 use core::{any::Any, borrow::Borrow, cmp::Ordering, time::Duration};
 
 use axfs_ng_vfs::{
@@ -13,7 +14,7 @@ use slab::Slab;
 
 use crate::vfs::simple::dummy_stat_fs;
 
-#[derive(PartialEq, Eq, Clone)]
+#[derive(PartialEq, Eq, Hash, Clone)]
 struct FileName(String);
 
 impl PartialOrd for FileName {
@@ -311,7 +312,7 @@ struct FileContent {
 
 #[derive(Default)]
 struct DirContent {
-    entries: Mutex<BTreeMap<FileName, InodeRef>>,
+    entries: Mutex<HashMap<FileName, InodeRef>>,
 }
 
 enum NodeContent {
