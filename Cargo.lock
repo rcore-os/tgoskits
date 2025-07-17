@@ -566,15 +566,15 @@ dependencies = [
 [[package]]
 name = "axsignal"
 version = "0.2.0"
-source = "git+https://github.com/Starry-Mix-THU/axsignal.git?rev=6cacfb9#6cacfb91a0b9363c39233cd9f0d2ec3a55a28f80"
+source = "git+https://github.com/Starry-Mix-THU/axsignal.git?rev=b600858#b6008583b5496fed7e7fdab5a016b3fad283b081"
 dependencies = [
  "axcpu",
- "axplat",
  "bitflags 2.9.1",
  "cfg-if",
  "derive_more",
+ "event-listener",
+ "kspin",
  "linux-raw-sys",
- "lock_api",
  "log",
  "strum_macros",
 ]

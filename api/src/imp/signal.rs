@@ -5,7 +5,10 @@ use axerrno::{LinuxError, LinuxResult};
 use axhal::context::TrapFrame;
 use axprocess::{Pid, Thread};
 use axsignal::{SignalInfo, SignalSet, SignalStack, Signo};
-use axtask::current;
+use axtask::{
+    current,
+    future::{self, block_on},
+};
 use linux_raw_sys::general::{
     MINSIGSTKSZ, SI_TKILL, SI_USER, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK, kernel_sigaction, siginfo,
     timespec,
@@ -40,15 +43,18 @@ pub fn sys_rt_sigprocmask(
 ) -> LinuxResult<isize> {
     check_sigset_size(sigsetsize)?;
 
+    let oldset = nullable!(oldset.get_as_mut())?;
+    let set = nullable!(set.get_as_ref())?;
+
     StarryTaskExt::of(&current())
         .thread_data()
         .signal
         .with_blocked_mut::<LinuxResult<_>>(|blocked| {
-            if let Some(oldset) = nullable!(oldset.get_as_mut())? {
+            if let Some(oldset) = oldset {
                 *oldset = *blocked;
             }
 
-            if let Some(set) = nullable!(set.get_as_ref())? {
+            if let Some(set) = set {
                 match how as u32 {
                     SIG_BLOCK => *blocked |= *set,
                     SIG_UNBLOCK => *blocked &= !*set,
@@ -236,13 +242,23 @@ pub fn sys_rt_sigtimedwait(
         .map(|ts| ts.try_into_time_value())
         .transpose()?;
 
-    let Some(sig) = StarryTaskExt::of(&current())
-        .thread_data()
-        .signal
-        .wait_timeout(set, timeout)
-    else {
-        return Err(LinuxError::EAGAIN);
-    };
+    debug!(
+        "sys_rt_sigtimedwait => set = {:?}, timeout = {:?}",
+        set, timeout
+    );
+
+    let curr = current();
+    let fut = StarryTaskExt::of(&curr).thread_data().signal.wait(set);
+
+    let sig = block_on(async {
+        if let Some(timeout) = timeout {
+            future::timeout(fut, timeout)
+                .await
+                .ok_or(LinuxError::EAGAIN)
+        } else {
+            Ok(fut.await)
+        }
+    })?;
 
     if let Some(info) = nullable!(info.get_as_mut())? {
         *info = sig.0;
@@ -272,12 +288,14 @@ pub fn sys_rt_sigsuspend(
 
     tf.set_retval(-LinuxError::EINTR.code() as usize);
 
-    loop {
-        if check_signals(tf, Some(old_blocked)) {
-            break;
+    block_on(async move {
+        loop {
+            if check_signals(tf, Some(old_blocked)) {
+                return;
+            }
+            ext.process_data().signal.wait().await;
         }
-        ext.process_data().signal.wait_signal();
-    }
+    });
 
     Ok(0)
 }

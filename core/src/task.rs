@@ -8,11 +8,9 @@ use alloc::{
     vec::Vec,
 };
 use core::{
-    cell::{RefCell, UnsafeCell},
-    mem,
+    cell::RefCell,
     ops::Deref,
     sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering},
-    time::Duration,
 };
 
 use axerrno::{LinuxError, LinuxResult};
@@ -23,11 +21,8 @@ use axsignal::{
     SignalInfo, Signo,
     api::{ProcessSignalManager, SignalActions, ThreadSignalManager},
 };
-use axsync::{
-    Mutex,
-    spin::{SpinNoIrq, SpinNoIrqGuard},
-};
-use axtask::{AxTaskRef, TaskExt, TaskInner, WaitQueue, WeakAxTaskRef, current};
+use axsync::{Mutex, spin::SpinNoIrq};
+use axtask::{AxTaskRef, TaskExt, TaskInner, WeakAxTaskRef, current};
 use event_listener::Event;
 use extern_trait::extern_trait;
 use lazy_static::lazy_static;
@@ -122,30 +117,6 @@ impl StarryTaskExt {
     }
 }
 
-#[doc(hidden)]
-pub struct WaitQueueWrapper(WaitQueue);
-
-impl Default for WaitQueueWrapper {
-    fn default() -> Self {
-        Self(WaitQueue::new())
-    }
-}
-
-impl axsignal::api::WaitQueue for WaitQueueWrapper {
-    fn wait_timeout(&self, timeout: Option<Duration>) -> bool {
-        if let Some(timeout) = timeout {
-            self.0.wait_timeout(timeout)
-        } else {
-            self.0.wait();
-            true
-        }
-    }
-
-    fn notify_one(&self) -> bool {
-        self.0.notify_one(false)
-    }
-}
-
 ///  A wrapper type that assumes the inner type is `Sync`.
 #[repr(transparent)]
 pub struct AssumeSync<T>(T);
@@ -157,51 +128,6 @@ impl<T> Deref for AssumeSync<T> {
 
     fn deref(&self) -> &Self::Target {
         &self.0
-    }
-}
-
-/// [`SpinNoIrq`] wrapper implementing [`lock_api::RawMutex`].
-pub struct SpinNoIrqRawMutex {
-    inner: SpinNoIrq<()>,
-    guard: UnsafeCell<Option<SpinNoIrqGuard<'static, ()>>>,
-}
-unsafe impl Send for SpinNoIrqRawMutex {}
-unsafe impl Sync for SpinNoIrqRawMutex {}
-unsafe impl lock_api::RawMutex for SpinNoIrqRawMutex {
-    type GuardMarker = lock_api::GuardSend;
-
-    const INIT: Self = Self {
-        inner: SpinNoIrq::new(()),
-        guard: UnsafeCell::new(None),
-    };
-
-    fn lock(&self) {
-        let guard = self.inner.lock();
-        unsafe {
-            *self.guard.get() = Some(mem::transmute(guard));
-        }
-    }
-
-    fn try_lock(&self) -> bool {
-        let guard = self.inner.try_lock();
-        if guard.is_some() {
-            unsafe {
-                *self.guard.get() = Some(mem::transmute(guard.unwrap()));
-            }
-            true
-        } else {
-            false
-        }
-    }
-
-    unsafe fn unlock(&self) {
-        unsafe {
-            *self.guard.get() = None;
-        }
-    }
-
-    fn is_locked(&self) -> bool {
-        self.inner.is_locked()
     }
 }
 
@@ -222,7 +148,7 @@ pub struct ThreadData {
     pub robust_list_head: AtomicUsize,
 
     /// The thread-level signal manager
-    pub signal: ThreadSignalManager<SpinNoIrqRawMutex, WaitQueueWrapper>,
+    pub signal: ThreadSignalManager,
 
     /// Time manager
     ///
@@ -334,7 +260,7 @@ pub struct ProcessData {
     ///
     /// Reasons for using [`SpinNoIrqRawMutex`]: we may send signal during IRQs,
     /// and thus we need to prevent IRQ from happening when the lock is held.
-    pub signal: Arc<ProcessSignalManager<SpinNoIrqRawMutex, WaitQueueWrapper>>,
+    pub signal: Arc<ProcessSignalManager>,
 
     /// The futex table.
     futex_table: FutexTable,
@@ -348,7 +274,7 @@ impl ProcessData {
     pub fn new(
         exe_path: String,
         aspace: Arc<Mutex<AddrSpace>>,
-        signal_actions: Arc<lock_api::Mutex<SpinNoIrqRawMutex, SignalActions>>,
+        signal_actions: Arc<SpinNoIrq<SignalActions>>,
         exit_signal: Option<Signo>,
     ) -> Self {
         Self {
