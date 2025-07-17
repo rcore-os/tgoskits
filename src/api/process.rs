@@ -4,11 +4,10 @@ use core::{
 };
 
 use alloc::sync::Arc;
+use event_listener::Event;
 use kspin::SpinNoIrq;
 
 use crate::{PendingSignals, SignalAction, SignalInfo, SignalSet, Signo};
-
-use super::WaitQueue;
 
 /// Signal actions for a process.
 pub struct SignalActions(pub(crate) [SignalAction; 64]);
@@ -33,30 +32,26 @@ impl IndexMut<Signo> for SignalActions {
 }
 
 /// Process-level signal manager.
-pub struct ProcessSignalManager<WQ> {
+pub struct ProcessSignalManager {
     /// The process-level shared pending signals
     pending: SpinNoIrq<PendingSignals>,
 
     /// The signal actions
     pub actions: Arc<SpinNoIrq<SignalActions>>,
 
-    /// The wait queue for signal. Used by `rt_sigtimedwait`, etc.
-    ///
-    /// Note that this is shared by all threads in the process, so false wakeups
-    /// may occur.
-    pub(crate) wq: WQ,
+    pub(crate) event: Event,
 
     /// The default restorer function.
     pub(crate) default_restorer: usize,
 }
 
-impl<WQ: WaitQueue> ProcessSignalManager<WQ> {
+impl ProcessSignalManager {
     /// Creates a new process signal manager.
     pub fn new(actions: Arc<SpinNoIrq<SignalActions>>, default_restorer: usize) -> Self {
         Self {
             pending: SpinNoIrq::new(PendingSignals::default()),
             actions,
-            wq: WQ::default(),
+            event: Event::new(),
             default_restorer,
         }
     }
@@ -70,7 +65,7 @@ impl<WQ: WaitQueue> ProcessSignalManager<WQ> {
     /// See [`ThreadSignalManager::send_signal`] for the thread-level version.
     pub fn send_signal(&self, sig: SignalInfo) {
         self.pending.lock().put_signal(sig);
-        self.wq.notify_one();
+        self.event.notify(1);
     }
 
     /// Gets currently pending signals.
@@ -78,9 +73,8 @@ impl<WQ: WaitQueue> ProcessSignalManager<WQ> {
         self.pending.lock().set
     }
 
-    /// Suspends current task until a signal is delivered. Note that this could
-    /// return early if a signal is delivered to another thread in this process.
-    pub fn wait_signal(&self) {
-        self.wq.wait();
+    /// Wait until a signal is delivered to this process.
+    pub async fn wait(&self) {
+        self.event.listen().await
     }
 }

@@ -1,4 +1,4 @@
-use core::{alloc::Layout, time::Duration};
+use core::alloc::Layout;
 
 use alloc::sync::Arc;
 use axcpu::TrapFrame;
@@ -9,7 +9,7 @@ use crate::{
     SignalInfo, SignalOSAction, SignalSet, SignalStack, arch::UContext,
 };
 
-use super::{ProcessSignalManager, WaitQueue};
+use super::ProcessSignalManager;
 
 struct SignalFrame {
     ucontext: UContext,
@@ -18,9 +18,9 @@ struct SignalFrame {
 }
 
 /// Thread-level signal manager.
-pub struct ThreadSignalManager<WQ> {
+pub struct ThreadSignalManager {
     /// The process-level signal manager
-    proc: Arc<ProcessSignalManager<WQ>>,
+    proc: Arc<ProcessSignalManager>,
 
     /// The pending signals
     pending: SpinNoIrq<PendingSignals>,
@@ -30,8 +30,8 @@ pub struct ThreadSignalManager<WQ> {
     stack: SpinNoIrq<SignalStack>,
 }
 
-impl<WQ: WaitQueue> ThreadSignalManager<WQ> {
-    pub fn new(proc: Arc<ProcessSignalManager<WQ>>) -> Self {
+impl ThreadSignalManager {
+    pub fn new(proc: Arc<ProcessSignalManager>) -> Self {
         Self {
             proc,
             pending: SpinNoIrq::new(PendingSignals::default()),
@@ -140,7 +140,7 @@ impl<WQ: WaitQueue> ThreadSignalManager<WQ> {
         }
     }
 
-    /// Restores the signal frame. Called by `sigreutrn`.
+    /// Restores the signal frame. Called by `sigreturn`.
     pub fn restore(&self, tf: &mut TrapFrame) {
         let frame_ptr = tf.sp() as *const SignalFrame;
         // SAFETY: pointer is valid
@@ -157,7 +157,7 @@ impl<WQ: WaitQueue> ThreadSignalManager<WQ> {
     /// See [`ProcessSignalManager::send_signal`] for the process-level version.
     pub fn send_signal(&self, sig: SignalInfo) {
         self.pending.lock().put_signal(sig);
-        self.proc.wq.notify_all();
+        self.proc.event.notify(1);
     }
 
     /// Gets the blocked signals.
@@ -185,54 +185,22 @@ impl<WQ: WaitQueue> ThreadSignalManager<WQ> {
         self.pending.lock().set | self.proc.pending()
     }
 
-    /// Suspends execution of the calling thread until one of the signals in
-    /// `set` is pending.
+    /// Wait until one of the signals in `set` is pending.
     ///
     /// If one of the signals in set is already pending for the calling thread,
     /// this will return immediately.
     ///
-    /// Returns the signal that was received, or `None` if the timeout expired.
-    pub fn wait_timeout(
-        &self,
-        mut set: SignalSet,
-        timeout: Option<Duration>,
-    ) -> Option<SignalInfo> {
+    /// Returns the signal that was received.
+    pub async fn wait(&self, mut set: SignalSet) -> SignalInfo {
         // Non-blocked signals cannot be waited
         set &= self.blocked();
 
-        if let Some(sig) = self.dequeue_signal(&set) {
-            return Some(sig);
-        }
-
-        let wq = &self.proc.wq;
-        let deadline = timeout.map(|dur| axplat::time::wall_time() + dur);
-
-        // There might be false wakeups, so we need a loop
         loop {
-            match &deadline {
-                Some(deadline) => {
-                    match deadline.checked_sub(axplat::time::wall_time()) {
-                        Some(dur) => {
-                            if wq.wait_timeout(Some(dur)) {
-                                // timed out
-                                break;
-                            }
-                        }
-                        None => {
-                            // deadline passed
-                            break;
-                        }
-                    }
-                }
-                _ => wq.wait(),
-            }
-
             if let Some(sig) = self.dequeue_signal(&set) {
-                return Some(sig);
+                return sig;
             }
-        }
 
-        // TODO: EINTR
-        None
+            self.proc.event.listen().await;
+        }
     }
 }
