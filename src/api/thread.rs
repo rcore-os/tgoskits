@@ -2,6 +2,7 @@ use core::alloc::Layout;
 
 use alloc::sync::Arc;
 use axcpu::TrapFrame;
+use event_listener::listener;
 use kspin::SpinNoIrq;
 
 use crate::{
@@ -200,7 +201,13 @@ impl ThreadSignalManager {
                 return sig;
             }
 
-            self.proc.event.listen().await;
+            listener!(self.proc.event => listener);
+
+            if let Some(sig) = self.dequeue_signal(&set) {
+                return sig;
+            }
+
+            listener.await;
         }
     }
 }

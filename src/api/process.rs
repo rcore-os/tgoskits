@@ -4,7 +4,7 @@ use core::{
 };
 
 use alloc::sync::Arc;
-use event_listener::Event;
+use event_listener::{Event, listener};
 use kspin::SpinNoIrq;
 
 use crate::{PendingSignals, SignalAction, SignalInfo, SignalSet, Signo};
@@ -75,6 +75,7 @@ impl ProcessSignalManager {
 
     /// Wait until a signal is delivered to this process.
     pub async fn wait(&self) {
-        self.event.listen().await
+        listener!(self.event => listener);
+        listener.await
     }
 }
