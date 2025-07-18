@@ -207,7 +207,15 @@ where
     T: FileNodeOps<RawMutex> + 'static,
 {
     let file = file_like.into_any().downcast::<File>().ok()?;
-    let file_ops = file.inner().inner().entry().as_file().ok()?.inner().clone();
+    let file_ops = file
+        .inner()
+        .backend()
+        .location()
+        .entry()
+        .as_file()
+        .ok()?
+        .inner()
+        .clone();
     file_ops.into_any().downcast::<T>().ok()
 }
 pub fn cast_file_like_to_device(file_like: Arc<dyn FileLike>) -> Option<Arc<Device<RawMutex>>> {

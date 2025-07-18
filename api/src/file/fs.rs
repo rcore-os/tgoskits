@@ -4,7 +4,7 @@ use core::{any::Any, ffi::c_int};
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::{FS_CONTEXT, FsContext};
 use axfs_ng_vfs::{Location, Metadata};
-use axio::{PollState, Read};
+use axio::{PollState, Read, Write};
 use axsync::{Mutex, MutexGuard, RawMutex};
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW};
 
@@ -52,7 +52,7 @@ pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> LinuxResult<R
             let file_like = get_file_like(dirfd)?;
             let f = file_like.clone().into_any();
             Ok(if let Some(file) = f.downcast_ref::<File>() {
-                ResolveAtResult::File(file.inner().inner().clone())
+                ResolveAtResult::File(file.inner.lock().backend().location().clone())
             } else if let Some(dir) = f.downcast_ref::<Directory>() {
                 ResolveAtResult::File(dir.inner().clone())
             } else {
@@ -103,13 +103,8 @@ impl File {
         }
     }
 
-    /// Get the inner node of the file.
-    pub fn inner(&self) -> MutexGuard<axfs_ng::File<RawMutex>> {
+    pub fn inner(&self) -> MutexGuard<'_, axfs_ng::File<RawMutex>> {
         self.inner.lock()
-    }
-
-    pub fn clone_inner(&self) -> Arc<Mutex<axfs_ng::File<RawMutex>>> {
-        self.inner.clone()
     }
 }
 
@@ -123,7 +118,9 @@ impl FileLike for File {
     }
 
     fn stat(&self) -> LinuxResult<Kstat> {
-        Ok(metadata_to_kstat(&self.inner().metadata()?))
+        Ok(metadata_to_kstat(
+            &self.inner().backend().location().metadata()?,
+        ))
     }
 
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {

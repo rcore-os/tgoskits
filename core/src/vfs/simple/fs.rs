@@ -78,6 +78,10 @@ impl<M: RawMutex + Send + Sync> FilesystemOps<M> for SimpleFs<M> {
         self.root.lock().clone().unwrap()
     }
 
+    fn is_cacheable(&self) -> bool {
+        false
+    }
+
     fn stat(&self) -> VfsResult<StatFs> {
         Ok(dummy_stat_fs(self.fs_type))
     }

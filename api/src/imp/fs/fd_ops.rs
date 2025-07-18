@@ -5,9 +5,7 @@ use axfs_ng::{OpenOptions, OpenResult};
 use axfs_ng_vfs::NodePermission;
 use axsync::RawMutex;
 use linux_raw_sys::general::{
-    __kernel_mode_t, AT_FDCWD, F_DUPFD, F_DUPFD_CLOEXEC, F_GETFD, F_GETFL, F_SETFD, F_SETFL,
-    FD_CLOEXEC, O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_NONBLOCK, O_PATH, O_RDONLY,
-    O_RDWR, O_TRUNC, O_WRONLY,
+    __kernel_mode_t, AT_FDCWD, FD_CLOEXEC, F_DUPFD, F_DUPFD_CLOEXEC, F_GETFD, F_GETFL, F_SETFD, F_SETFL, O_APPEND, O_CREAT, O_DIRECT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_NONBLOCK, O_PATH, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY
 };
 use starry_core::task::current_umask;
 
@@ -51,6 +49,9 @@ fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32))
     }
     if flags & O_NOFOLLOW != 0 {
         options.no_follow(true);
+    }
+    if flags & O_DIRECT != 0 {
+        options.direct(true);
     }
     options
 }

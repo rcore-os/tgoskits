@@ -207,7 +207,7 @@ pub fn sys_fallocate(
     let f = File::from_fd(fd)?;
     let inner = f.inner();
     let file = inner.access(FileFlags::WRITE)?;
-    file.set_len(file.len()?.max(offset as u64 + len as u64))?;
+    file.set_len(file.location().len()?.max(offset as u64 + len as u64))?;
     Ok(0)
 }
 

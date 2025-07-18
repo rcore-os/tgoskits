@@ -92,6 +92,10 @@ impl FilesystemOps<RawMutex> for MemoryFs {
         self.root.lock().clone().unwrap()
     }
 
+    fn is_cacheable(&self) -> bool {
+        false
+    }
+
     fn stat(&self) -> VfsResult<StatFs> {
         Ok(dummy_stat_fs(0x01021994))
     }

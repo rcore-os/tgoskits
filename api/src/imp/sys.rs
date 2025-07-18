@@ -103,8 +103,8 @@ pub fn sys_getrandom(buf: UserPtr<u8>, len: usize, flags: u32) -> LinuxResult<is
         "/dev/urandom"
     };
 
-    let mut f = axfs_ng::File::open(&FS_CONTEXT.lock(), path)?;
-    let len = f.read_at(buf, 0)?;
+    let f = FS_CONTEXT.lock().resolve(path)?;
+    let len = f.entry().as_file()?.read_at(buf, 0)?;
 
     Ok(len as _)
 }

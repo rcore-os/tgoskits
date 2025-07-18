@@ -7,7 +7,7 @@ use core::{
 };
 
 use axerrno::{LinuxError, LinuxResult};
-use axfs_ng::{File, FsContext};
+use axfs_ng::{FileBackend, FsContext};
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeType, VfsResult};
 use axsync::{Mutex, RawMutex};
 use linux_raw_sys::loop_device::loop_info;
@@ -128,7 +128,7 @@ pub struct LoopDevice {
     number: u32,
     dev_id: DeviceId,
     /// Underlying file for the loop device, if any.
-    pub file: Mutex<Option<Arc<Mutex<File<RawMutex>>>>>,
+    pub file: Mutex<Option<FileBackend<RawMutex>>>,
     /// Read-only flag for the loop device.
     pub ro: AtomicBool,
     /// Read-ahead size for the loop device, in bytes.
@@ -162,7 +162,7 @@ impl LoopDevice {
     }
 
     /// Clone the underlying file of the loop device.
-    pub fn clone_file(&self) -> VfsResult<Arc<Mutex<File<RawMutex>>>> {
+    pub fn clone_file(&self) -> VfsResult<FileBackend<RawMutex>> {
         let file = self.file.lock().clone();
         file.ok_or(LinuxError::ENXIO)
     }
@@ -171,7 +171,7 @@ impl LoopDevice {
 impl DeviceOps for LoopDevice {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
         let file = self.file.lock().clone();
-        file.ok_or(LinuxError::EPERM)?.lock().read_at(buf, offset)
+        file.ok_or(LinuxError::EPERM)?.read_at(buf, offset)
     }
 
     fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize> {
@@ -179,7 +179,7 @@ impl DeviceOps for LoopDevice {
             return Err(LinuxError::EROFS);
         }
         let file = self.file.lock().clone();
-        file.ok_or(LinuxError::EPERM)?.lock().write_at(buf, offset)
+        file.ok_or(LinuxError::EPERM)?.write_at(buf, offset)
     }
 
     fn as_any(&self) -> &dyn Any {

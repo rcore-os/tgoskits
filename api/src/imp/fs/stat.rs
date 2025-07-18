@@ -175,6 +175,6 @@ pub fn sys_statfs(path: UserConstPtr<c_char>, buf: UserPtr<statfs>) -> LinuxResu
 }
 
 pub fn sys_fstatfs(fd: i32, buf: UserPtr<statfs>) -> LinuxResult<isize> {
-    statfs(File::from_fd(fd)?.inner().inner(), buf)?;
+    statfs(File::from_fd(fd)?.inner().backend().location(), buf)?;
     Ok(0)
 }

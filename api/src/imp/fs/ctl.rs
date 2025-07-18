@@ -89,7 +89,7 @@ pub fn sys_ioctl(fd: i32, op: usize, argp: UserPtr<c_void>) -> LinuxResult<isize
                 if guard.is_some() {
                     return Err(LinuxError::EBUSY);
                 }
-                *guard = Some(file.clone_inner());
+                *guard = Some(file.inner().backend().clone());
             }
             LOOP_CLR_FD => {
                 let mut guard = device.file.lock();
@@ -107,7 +107,7 @@ pub fn sys_ioctl(fd: i32, op: usize, argp: UserPtr<c_void>) -> LinuxResult<isize
             // TODO: the following should apply to any block devices
             BLKGETSIZE | BLKGETSIZE64 => {
                 let file = device.clone_file()?;
-                let sectors = file.lock().inner().len()? / 512;
+                let sectors = file.location().len()? / 512;
                 if op as u32 == BLKGETSIZE {
                     *argp.cast::<u32>().get_as_mut()? = sectors as u32;
                 } else {
