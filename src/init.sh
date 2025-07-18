@@ -454,7 +454,7 @@ cd /tmp
 ln -v -s /musl/busybox busybox
 ln -v -s /musl/iozone iozone
 timeout 300 /musl/iozone_testcode.sh
-ln -v -s /glibc/iozone iozone
+ln -v -s -f /glibc/iozone iozone
 timeout 300 /glibc/iozone_testcode.sh
 
 cd /musl
