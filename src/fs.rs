@@ -22,8 +22,20 @@ pub struct StatFs {
 
 /// Trait for filesystem operations
 pub trait FilesystemOps<M>: Send + Sync {
+    /// Gets the name of the filesystem
     fn name(&self) -> &str;
+
+    /// Gets the root directory entry of the filesystem
     fn root_dir(&self) -> DirEntry<M>;
+
+    /// Returns whether the filesystem is cacheable
+    ///
+    /// Special filesystems like `procfs` or `sysfs` are not cacheable. This
+    /// flag serves as a mere hint for upper layers and does not enforce any
+    /// behavior.
+    fn is_cacheable(&self) -> bool;
+
+    /// Returns statistics about the filesystem
     fn stat(&self) -> VfsResult<StatFs>;
 }
 
