@@ -7,7 +7,7 @@ use bitflags::bitflags;
 use linux_raw_sys::general::{
     __WALL, __WCLONE, __WNOTHREAD, WCONTINUED, WEXITED, WNOHANG, WNOWAIT, WUNTRACED,
 };
-use starry_core::task::{ProcessData, StarryTaskExt};
+use starry_core::task::AsThread;
 
 use crate::ptr::{UserPtr, nullable};
 
@@ -61,29 +61,25 @@ pub fn sys_waitpid(pid: i32, exit_code_ptr: UserPtr<i32>, options: u32) -> Linux
     info!("sys_waitpid <= pid: {:?}, options: {:?}", pid, options);
 
     let curr = current();
-    let ext = StarryTaskExt::of(&curr);
-    let process = ext.thread.process();
-    let process_data = ext.process_data();
+    let proc_data = &curr.as_thread().proc_data;
+    let proc = &proc_data.proc;
 
     let pid = if pid == -1 {
         WaitPid::Any
     } else if pid == 0 {
-        WaitPid::Pgid(process.group().pgid())
+        WaitPid::Pgid(proc.group().pgid())
     } else if pid > 0 {
         WaitPid::Pid(pid as _)
     } else {
         WaitPid::Pgid(-pid as _)
     };
 
-    let children = process
+    // FIXME: add back support for WALL & WCLONE, since ProcessData may drop before
+    // Process now.
+    let children = proc
         .children()
         .into_iter()
         .filter(|child| pid.apply(child))
-        .filter(|child| {
-            options.contains(WaitOptions::WALL)
-                || (options.contains(WaitOptions::WCLONE)
-                    == child.data::<ProcessData>().unwrap().is_clone_child())
-        })
         .collect::<Vec<_>>();
     if children.is_empty() {
         return Err(LinuxError::ECHILD);
@@ -103,7 +99,7 @@ pub fn sys_waitpid(pid: i32, exit_code_ptr: UserPtr<i32>, options: u32) -> Linux
             axtask::yield_now();
             return Ok(0);
         } else {
-            block_on(process_data.child_exit_event.listen());
+            block_on(proc_data.child_exit_event.listen());
         }
     }
 }

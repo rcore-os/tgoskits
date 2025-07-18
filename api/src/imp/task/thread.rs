@@ -1,19 +1,20 @@
-use axerrno::LinuxResult;
+use axerrno::{LinuxError, LinuxResult};
 use axtask::current;
 use num_enum::TryFromPrimitive;
-use starry_core::task::StarryTaskExt;
+use starry_core::task::AsThread;
 
 pub fn sys_getpid() -> LinuxResult<isize> {
-    Ok(StarryTaskExt::of(&current()).thread.process().pid() as _)
+    Ok(current().as_thread().proc_data.proc.pid() as _)
 }
 
 pub fn sys_getppid() -> LinuxResult<isize> {
-    Ok(StarryTaskExt::of(&current())
-        .thread
-        .process()
+    current()
+        .as_thread()
+        .proc_data
+        .proc
         .parent()
-        .unwrap()
-        .pid() as _)
+        .ok_or(LinuxError::ESRCH)
+        .map(|p| p.pid() as _)
 }
 
 pub fn sys_gettid() -> LinuxResult<isize> {
@@ -47,9 +48,7 @@ enum ArchPrctlCode {
 /// The set_tid_address() always succeeds
 pub fn sys_set_tid_address(clear_child_tid: usize) -> LinuxResult<isize> {
     let curr = current();
-    StarryTaskExt::of(&curr)
-        .thread_data()
-        .set_clear_child_tid(clear_child_tid);
+    curr.as_thread().set_clear_child_tid(clear_child_tid);
     Ok(curr.id().as_u64() as isize)
 }
 

@@ -5,7 +5,7 @@ use linux_raw_sys::general::{
     __kernel_clockid_t, CLOCK_MONOTONIC, CLOCK_REALTIME, PRIO_PGRP, PRIO_PROCESS, PRIO_USER,
     TIMER_ABSTIME, timespec,
 };
-use starry_core::task::{get_process, get_process_group};
+use starry_core::task::{get_process_data, get_process_group};
 
 use crate::{
     ptr::{UserConstPtr, UserPtr, nullable},
@@ -145,7 +145,7 @@ pub fn sys_getpriority(which: u32, who: u32) -> LinuxResult<isize> {
     match which {
         PRIO_PROCESS => {
             if who != 0 {
-                let _proc = get_process(who)?;
+                let _proc = get_process_data(who)?;
             }
             Ok(20)
         }

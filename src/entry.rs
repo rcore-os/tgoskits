@@ -2,16 +2,15 @@ use alloc::{borrow::ToOwned, string::String, sync::Arc};
 
 use axfs_ng::FS_CONTEXT;
 use axhal::context::UspaceContext;
-use axprocess::{Pid, init_proc};
-use axsignal::Signo;
+use axprocess::{Pid, Process};
 use axsync::Mutex;
-use axtask::TaskExtProxy;
+use axtask::{TaskExtProxy, spawn_task};
 use starry_core::{
     mm::{copy_from_kernel, load_user_app, map_trampoline, new_user_aspace_empty},
-    task::{ProcessData, StarryTaskExt, ThreadData, add_thread_to_table, new_user_task},
+    task::{ProcessData, Thread, add_task_to_table, new_user_task},
 };
 
-pub fn run_user_app(args: &[String], envs: &[String]) -> Option<i32> {
+pub fn run_initproc(args: &[String], envs: &[String]) -> i32 {
     let mut uspace = new_user_aspace_empty()
         .and_then(|mut it| {
             copy_from_kernel(&mut it)?;
@@ -36,29 +35,24 @@ pub fn run_user_app(args: &[String], envs: &[String]) -> Option<i32> {
     let mut task = new_user_task(&name, uctx, None);
     task.ctx_mut().set_page_table_root(uspace.page_table_root());
 
-    let process_data = ProcessData::new(
+    let pid = task.id().as_u64() as Pid;
+    let proc = Process::new_init(pid);
+    proc.add_thread(pid);
+
+    let proc_data = ProcessData::new(
+        proc,
         exe_path.clone(),
         Arc::new(Mutex::new(uspace)),
         Arc::default(),
-        Some(Signo::SIGCHLD),
+        None,
     );
+    let thr = Thread::new(proc_data);
 
-    let tid = task.id().as_u64() as Pid;
-    let process = init_proc().fork(tid).data(process_data).build();
+    *task.task_ext_mut() = Some(unsafe { TaskExtProxy::from_impl(thr) });
 
-    let thread = process
-        .new_thread(tid)
-        .data(ThreadData::new(process.data().unwrap()))
-        .build();
-    add_thread_to_table(&thread);
+    let task = spawn_task(task);
+    add_task_to_table(&task);
 
-    *task.task_ext_mut() = Some(unsafe { TaskExtProxy::from_impl(StarryTaskExt::new(thread)) });
-
-    let task = axtask::spawn_task(task);
-    StarryTaskExt::of(&task)
-        .thread_data()
-        .init_task(|| Arc::downgrade(&task));
-
-    // TODO: we need a way to wait on the process but not only the main task
+    // TODO: wait for all processes to finish
     task.join()
 }

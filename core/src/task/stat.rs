@@ -1,11 +1,10 @@
 use alloc::{borrow::ToOwned, fmt, string::String};
 
 use axerrno::LinuxResult;
-use axprocess::Thread;
 use axsignal::Signo;
-use axtask::TaskState;
+use axtask::{TaskInner, TaskState};
 
-use crate::task::{ProcessData, ThreadData};
+use crate::task::AsThread;
 
 /// Represents the `/proc/[pid]/stat` file.
 ///
@@ -68,13 +67,13 @@ pub struct TaskStat {
 }
 
 impl TaskStat {
-    /// Create a new `TaskStat` from a [`Thread`].
-    pub fn from_thread(thread: &Thread) -> LinuxResult<Self> {
-        let process = thread.process();
-        let task = thread.data::<ThreadData>().unwrap().get_task()?;
-        let proc_data = process.data::<ProcessData>().unwrap();
+    /// Create a new [`TaskStat`] from a [`AxTaskRef`].
+    pub fn from_thread(task: &TaskInner) -> LinuxResult<Self> {
+        let thread = task.as_thread();
+        let proc_data = &thread.proc_data;
+        let proc = &proc_data.proc;
 
-        let pid = process.pid();
+        let pid = proc.pid();
         let comm = task.name();
         let comm = comm[..comm.len().min(16)].to_owned();
         let state = match task.state() {
@@ -82,9 +81,9 @@ impl TaskStat {
             TaskState::Blocked => 'S',
             TaskState::Exited => 'Z',
         };
-        let ppid = process.parent().map_or(0, |p| p.pid());
-        let pgrp = process.group().pgid();
-        let session = process.group().session().sid();
+        let ppid = proc.parent().map_or(0, |p| p.pid());
+        let pgrp = proc.group().pgid();
+        let session = proc.group().session().sid();
         Ok(Self {
             pid,
             comm: comm.to_owned(),
@@ -92,9 +91,9 @@ impl TaskStat {
             ppid,
             pgrp,
             session,
-            num_threads: process.threads().len() as u32,
+            num_threads: proc.threads().len() as u32,
             exit_signal: proc_data.exit_signal.unwrap_or(Signo::SIGCHLD) as u8,
-            exit_code: process.exit_code(),
+            exit_code: proc.exit_code(),
             ..Default::default()
         })
     }

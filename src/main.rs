@@ -40,8 +40,6 @@ const ENTRY: &[&str] = &["/musl/busybox", "sh", "-c", include_str!("init.sh")];
 
 #[unsafe(no_mangle)]
 fn main() {
-    // Create a init process
-    axprocess::Process::new_init(axtask::current().id().as_u64() as _).build();
     starry_core::vfs::mount_all().expect("Failed to mount vfs");
 
     for elf in CACHED_ELFS {
@@ -53,6 +51,6 @@ fn main() {
 
     let args = ENTRY.iter().copied().map(str::to_owned).collect::<Vec<_>>();
     let envs = [format!("ARCH={}", option_env!("ARCH").unwrap_or("unknown"))];
-    let exit_code = entry::run_user_app(&args, &envs);
-    info!("Init script exited with code: {:?}", exit_code);
+    let exit_code = entry::run_initproc(&args, &envs);
+    info!("Init process exited with code: {:?}", exit_code);
 }

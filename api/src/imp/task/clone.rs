@@ -1,5 +1,4 @@
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU32, Ordering};
 
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
@@ -7,12 +6,12 @@ use axhal::context::{TrapFrame, UspaceContext};
 use axprocess::Pid;
 use axsignal::Signo;
 use axsync::Mutex;
-use axtask::{TaskExtProxy, current};
+use axtask::{TaskExtProxy, current, spawn_task};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 use starry_core::{
     mm::copy_from_kernel,
-    task::{ProcessData, StarryTaskExt, ThreadData, add_thread_to_table, new_user_task},
+    task::{AsThread, ProcessData, Thread, add_task_to_table, new_user_task},
 };
 
 use crate::{file::FD_TABLE, ptr::UserPtr};
@@ -123,7 +122,8 @@ pub fn sys_clone(
     };
 
     let curr = current();
-    let ext = StarryTaskExt::of(&curr);
+    let old_proc_data = &curr.as_thread().proc_data;
+
     let mut new_task = new_user_task(&curr.name(), new_uctx, set_child_tid);
 
     let tid = new_task.id().as_u64() as Pid;
@@ -131,24 +131,23 @@ pub fn sys_clone(
         *UserPtr::<Pid>::from(parent_tid).get_as_mut()? = tid;
     }
 
-    let process = if flags.contains(CloneFlags::THREAD) {
+    let new_proc_data = if flags.contains(CloneFlags::THREAD) {
         new_task
             .ctx_mut()
-            .set_page_table_root(ext.process_data().aspace.lock().page_table_root());
-
-        ext.thread.process()
+            .set_page_table_root(old_proc_data.aspace.lock().page_table_root());
+        old_proc_data.clone()
     } else {
-        let parent = if flags.contains(CloneFlags::PARENT) {
-            ext.thread.process().parent().ok_or(LinuxError::EINVAL)?
+        let proc = if flags.contains(CloneFlags::PARENT) {
+            old_proc_data.proc.parent().ok_or(LinuxError::EINVAL)?
         } else {
-            ext.thread.process().clone()
-        };
-        let builder = parent.fork(tid);
+            old_proc_data.proc.clone()
+        }
+        .fork(tid);
 
         let aspace = if flags.contains(CloneFlags::VM) {
-            ext.process_data().aspace.clone()
+            old_proc_data.aspace.clone()
         } else {
-            let mut aspace = ext.process_data().aspace.lock();
+            let mut aspace = old_proc_data.aspace.lock();
             let mut aspace = aspace.try_clone()?;
             copy_from_kernel(&mut aspace)?;
             Arc::new(Mutex::new(aspace))
@@ -158,22 +157,21 @@ pub fn sys_clone(
             .set_page_table_root(aspace.lock().page_table_root());
 
         let signal_actions = if flags.contains(CloneFlags::SIGHAND) {
-            parent
-                .data::<ProcessData>()
-                .map_or_else(Arc::default, |it| it.signal.actions.clone())
+            old_proc_data.signal.actions.clone()
         } else {
             Arc::default()
         };
-        let mut process_data = ProcessData::new(
-            ext.process_data().exe_path.read().clone(),
+        let proc_data = ProcessData::new(
+            proc,
+            old_proc_data.exe_path.read().clone(),
             aspace,
             signal_actions,
             exit_signal,
         );
-        process_data.umask = AtomicU32::new(ext.process_data().umask.load(Ordering::SeqCst));
+        proc_data.set_umask(old_proc_data.umask());
 
         {
-            let mut scope = process_data.scope.write();
+            let mut scope = proc_data.scope.write();
             if flags.contains(CloneFlags::FILES) {
                 FD_TABLE.scope_mut(&mut scope).clone_from(&FD_TABLE);
             } else {
@@ -192,21 +190,20 @@ pub fn sys_clone(
                     .clone_from(&FS_CONTEXT.lock());
             }
         }
-        &builder.data(process_data).build()
+
+        proc_data
     };
 
-    let thread_data = ThreadData::new(process.data().unwrap());
-    if flags.contains(CloneFlags::CHILD_CLEARTID) {
-        thread_data.set_clear_child_tid(child_tid);
-    }
+    new_proc_data.proc.add_thread(tid);
 
-    let thread = process.new_thread(tid).data(thread_data).build();
-    add_thread_to_table(&thread);
-    *new_task.task_ext_mut() = Some(unsafe { TaskExtProxy::from_impl(StarryTaskExt::new(thread)) });
-    let task = axtask::spawn_task(new_task);
-    StarryTaskExt::of(&task)
-        .thread_data()
-        .init_task(|| Arc::downgrade(&task));
+    let thr = Thread::new(new_proc_data);
+    if flags.contains(CloneFlags::CHILD_CLEARTID) {
+        thr.set_clear_child_tid(child_tid);
+    }
+    *new_task.task_ext_mut() = Some(unsafe { TaskExtProxy::from_impl(thr) });
+
+    let task = spawn_task(new_task);
+    add_task_to_table(&task);
 
     Ok(tid as _)
 }

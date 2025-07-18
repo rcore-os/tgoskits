@@ -4,10 +4,11 @@ use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::{OpenOptions, OpenResult};
 use axfs_ng_vfs::NodePermission;
 use axsync::RawMutex;
+use axtask::current;
 use linux_raw_sys::general::{
     __kernel_mode_t, AT_FDCWD, FD_CLOEXEC, F_DUPFD, F_DUPFD_CLOEXEC, F_GETFD, F_GETFL, F_SETFD, F_SETFL, O_APPEND, O_CREAT, O_DIRECT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_NONBLOCK, O_PATH, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY
 };
-use starry_core::task::current_umask;
+use starry_core::task::AsThread;
 
 use crate::{
     file::{
@@ -81,7 +82,7 @@ pub fn sys_openat(
         dirfd, path, flags, mode
     );
 
-    let mode = mode & !current_umask();
+    let mode = mode & !current().as_thread().proc_data.umask();
 
     let options = flags_to_options(flags, mode, (sys_geteuid()? as _, sys_getegid()? as _));
     with_fs(dirfd, |fs| options.open(fs, path))

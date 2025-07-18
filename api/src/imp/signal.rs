@@ -1,9 +1,8 @@
-use alloc::sync::Arc;
 use core::{mem, sync::atomic::Ordering};
 
 use axerrno::{LinuxError, LinuxResult};
 use axhal::context::TrapFrame;
-use axprocess::{Pid, Thread};
+use axprocess::Pid;
 use axsignal::{SignalInfo, SignalSet, SignalStack, Signo};
 use axtask::{
     current,
@@ -13,13 +12,13 @@ use linux_raw_sys::general::{
     MINSIGSTKSZ, SI_TKILL, SI_USER, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK, kernel_sigaction, siginfo,
     timespec,
 };
-use starry_core::task::{StarryTaskExt, get_process, get_process_group, get_thread, processes};
+use starry_core::task::{AsThread, processes};
 
 use crate::{
     ptr::{UserConstPtr, UserPtr, nullable},
     signal::{
-        BLOCK_NEXT_SIGNAL_CHECK, check_signals, send_signal_process, send_signal_process_group,
-        send_signal_thread,
+        BLOCK_NEXT_SIGNAL_CHECK, check_signals, send_signal_to_process,
+        send_signal_to_process_group, send_signal_to_thread,
     },
     time::TimeValueLike,
 };
@@ -46,8 +45,8 @@ pub fn sys_rt_sigprocmask(
     let oldset = nullable!(oldset.get_as_mut())?;
     let set = nullable!(set.get_as_ref())?;
 
-    StarryTaskExt::of(&current())
-        .thread_data()
+    current()
+        .as_thread()
         .signal
         .with_blocked_mut::<LinuxResult<_>>(|blocked| {
             if let Some(oldset) = oldset {
@@ -82,11 +81,7 @@ pub fn sys_rt_sigaction(
     }
 
     let curr = current();
-    let mut actions = StarryTaskExt::of(&curr)
-        .process_data()
-        .signal
-        .actions
-        .lock();
+    let mut actions = curr.as_thread().proc_data.signal.actions.lock();
     if let Some(oldact) = nullable!(oldact.get_as_mut())? {
         actions[signo].to_ctype(oldact);
     }
@@ -98,7 +93,7 @@ pub fn sys_rt_sigaction(
 
 pub fn sys_rt_sigpending(set: UserPtr<SignalSet>, sigsetsize: usize) -> LinuxResult<isize> {
     check_sigset_size(sigsetsize)?;
-    *set.get_as_mut()? = StarryTaskExt::of(&current()).thread_data().signal.pending();
+    *set.get_as_mut()? = current().as_thread().proc_data.signal.pending();
     Ok(0)
 }
 
@@ -116,81 +111,60 @@ pub fn sys_kill(pid: i32, signo: u32) -> LinuxResult<isize> {
 
     match pid {
         1.. => {
-            let proc = get_process(pid as Pid)?;
-            if let Some(sig) = sig {
-                send_signal_process(&proc, sig)?;
-            }
+            send_signal_to_process(pid as _, sig)?;
         }
         0 => {
-            let pg = StarryTaskExt::of(&current()).thread.process().group();
-            if let Some(sig) = sig {
-                send_signal_process_group(&pg, sig)?;
-            }
+            let pgid = current().as_thread().proc_data.proc.group().pgid();
+            send_signal_to_process_group(pgid, sig)?;
         }
         -1 => {
             if let Some(sig) = sig {
-                for proc in processes() {
-                    if proc.is_init() {
+                for proc_data in processes() {
+                    if proc_data.proc.is_init() {
                         // init process
                         continue;
                     }
-                    send_signal_process(&proc, sig.clone())?;
+                    let _ = send_signal_to_process(proc_data.proc.pid(), Some(sig.clone()));
                 }
             }
         }
         ..-1 => {
-            let pg = get_process_group((-pid) as Pid)?;
-            if let Some(sig) = sig {
-                send_signal_process_group(&pg, sig)?;
-            }
+            send_signal_to_process_group((-pid) as Pid, sig)?;
         }
     }
     Ok(0)
 }
 
 pub fn sys_tkill(tid: Pid, signo: u32) -> LinuxResult<isize> {
-    let Some(sig) = make_siginfo(signo, SI_TKILL)? else {
-        // TODO: should also check permissions
-        return Ok(0);
-    };
-
-    let thr = get_thread(tid)?;
-    send_signal_thread(&thr, sig)?;
+    let sig = make_siginfo(signo, SI_TKILL)?;
+    send_signal_to_thread(None, tid, sig)?;
     Ok(0)
 }
 
 pub fn sys_tgkill(tgid: Pid, tid: Pid, signo: u32) -> LinuxResult<isize> {
-    let Some(sig) = make_siginfo(signo, SI_TKILL)? else {
-        // TODO: should also check permissions
-        return Ok(0);
-    };
-
-    send_signal_thread(find_thread_in_group(tgid, tid)?.as_ref(), sig)?;
+    let sig = make_siginfo(signo, SI_TKILL)?;
+    send_signal_to_thread(Some(tgid), tid, sig)?;
     Ok(0)
-}
-
-fn find_thread_in_group(tgid: Pid, tid: Pid) -> LinuxResult<Arc<Thread>> {
-    let thr = get_thread(tid)?;
-    if thr.process().pid() != tgid {
-        return Err(LinuxError::ESRCH);
-    }
-    Ok(thr)
 }
 
 fn make_queue_signal_info(
     tgid: Pid,
     signo: u32,
     sig: UserConstPtr<SignalInfo>,
-) -> LinuxResult<SignalInfo> {
+) -> LinuxResult<Option<SignalInfo>> {
+    if signo == 0 {
+        return Ok(None);
+    }
+
     let signo = parse_signo(signo)?;
     let mut sig = sig.get_as_ref()?.clone();
     sig.set_signo(signo);
-    if StarryTaskExt::of(&current()).thread.process().pid() != tgid
+    if current().as_thread().proc_data.proc.pid() != tgid
         && (sig.code() >= 0 || sig.code() == SI_TKILL)
     {
         return Err(LinuxError::EPERM);
     }
-    Ok(sig)
+    Ok(Some(sig))
 }
 
 pub fn sys_rt_sigqueueinfo(
@@ -202,7 +176,7 @@ pub fn sys_rt_sigqueueinfo(
     check_sigset_size(sigsetsize)?;
 
     let sig = make_queue_signal_info(tgid, signo, sig)?;
-    send_signal_process(get_process(tgid)?.as_ref(), sig)?;
+    send_signal_to_process(tgid, sig)?;
     Ok(0)
 }
 
@@ -216,16 +190,13 @@ pub fn sys_rt_tgsigqueueinfo(
     check_sigset_size(sigsetsize)?;
 
     let sig = make_queue_signal_info(tgid, signo, sig)?;
-    send_signal_thread(find_thread_in_group(tgid, tid)?.as_ref(), sig)?;
+    send_signal_to_thread(Some(tgid), tid, sig)?;
     Ok(0)
 }
 
 pub fn sys_rt_sigreturn(tf: &mut TrapFrame) -> LinuxResult<isize> {
     BLOCK_NEXT_SIGNAL_CHECK.store(true, Ordering::SeqCst);
-    StarryTaskExt::of(&current())
-        .thread_data()
-        .signal
-        .restore(tf);
+    current().as_thread().signal.restore(tf);
     Ok(tf.retval() as isize)
 }
 
@@ -248,7 +219,7 @@ pub fn sys_rt_sigtimedwait(
     );
 
     let curr = current();
-    let fut = StarryTaskExt::of(&curr).thread_data().signal.wait(set);
+    let fut = curr.as_thread().signal.wait(set);
 
     let sig = block_on(async {
         if let Some(timeout) = timeout {
@@ -275,14 +246,13 @@ pub fn sys_rt_sigsuspend(
     check_sigset_size(sigsetsize)?;
 
     let curr = current();
-    let ext = StarryTaskExt::of(&curr);
+    let thr = curr.as_thread();
     let mut set = *set.get_as_ref()?;
 
     set.remove(Signo::SIGKILL);
     set.remove(Signo::SIGSTOP);
 
-    let old_blocked = ext
-        .thread_data()
+    let old_blocked = thr
         .signal
         .with_blocked_mut(|blocked| mem::replace(blocked, set));
 
@@ -293,7 +263,7 @@ pub fn sys_rt_sigsuspend(
             if check_signals(tf, Some(old_blocked)) {
                 return;
             }
-            ext.process_data().signal.wait().await;
+            thr.proc_data.signal.wait().await;
         }
     });
 
@@ -304,22 +274,19 @@ pub fn sys_sigaltstack(
     ss: UserConstPtr<SignalStack>,
     old_ss: UserPtr<SignalStack>,
 ) -> LinuxResult<isize> {
-    StarryTaskExt::of(&current())
-        .thread_data()
-        .signal
-        .with_stack_mut(|stack| {
-            if let Some(old_ss) = nullable!(old_ss.get_as_mut())? {
-                *old_ss = stack.clone();
+    current().as_thread().signal.with_stack_mut(|stack| {
+        if let Some(old_ss) = nullable!(old_ss.get_as_mut())? {
+            *old_ss = stack.clone();
+        }
+        if let Some(ss) = nullable!(ss.get_as_ref())? {
+            if ss.size <= MINSIGSTKSZ as usize {
+                return Err(LinuxError::ENOMEM);
             }
-            if let Some(ss) = nullable!(ss.get_as_ref())? {
-                if ss.size <= MINSIGSTKSZ as usize {
-                    return Err(LinuxError::ENOMEM);
-                }
-                let stack_ptr: UserConstPtr<u8> = ss.sp.into();
-                let _ = stack_ptr.get_as_slice(ss.size)?;
+            let stack_ptr: UserConstPtr<u8> = ss.sp.into();
+            let _ = stack_ptr.get_as_slice(ss.size)?;
 
-                *stack = ss.clone();
-            }
-            Ok(0)
-        })
+            *stack = ss.clone();
+        }
+        Ok(0)
+    })
 }

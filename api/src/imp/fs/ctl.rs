@@ -10,6 +10,7 @@ use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
 use axfs_ng_vfs::{MetadataUpdate, NodePermission, NodeType, path::Path};
 use axhal::time::wall_time;
+use axtask::current;
 use chrono::{Datelike, Timelike};
 use linux_raw_sys::{
     general::{
@@ -18,7 +19,7 @@ use linux_raw_sys::{
     ioctl::{BLKGETSIZE, BLKGETSIZE64, BLKRAGET, BLKRASET, BLKROGET, BLKROSET},
     loop_device::{LOOP_CLR_FD, LOOP_GET_STATUS, LOOP_SET_FD, LOOP_SET_STATUS},
 };
-use starry_core::{task::current_umask, vfs::dev};
+use starry_core::{task::AsThread, vfs::dev};
 
 use crate::{
     file::{
@@ -166,7 +167,7 @@ pub fn sys_mkdir(path: UserConstPtr<c_char>, mode: u32) -> LinuxResult<isize> {
 }
 
 pub fn sys_mkdirat(dirfd: i32, path: UserConstPtr<c_char>, mode: u32) -> LinuxResult<isize> {
-    let mode = mode & !current_umask();
+    let mode = mode & !current().as_thread().proc_data.umask();
 
     let path = path.get_as_str()?;
     let mode = NodePermission::from_bits(mode as u16).ok_or(LinuxError::EINVAL)?;

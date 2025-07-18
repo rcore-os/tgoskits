@@ -14,7 +14,7 @@ use axtask::current;
 use flatten_objects::FlattenObjects;
 use linux_raw_sys::general::{RLIMIT_NOFILE, stat, statx, statx_timestamp};
 use spin::RwLock;
-use starry_core::{resources::AX_FILE_LIMIT, task::StarryTaskExt, vfs::Device};
+use starry_core::{resources::AX_FILE_LIMIT, task::AsThread, vfs::Device};
 
 pub use self::{
     fs::{Directory, File, ResolveAtResult, metadata_to_kstat, resolve_at, with_fs},
@@ -183,8 +183,7 @@ pub fn get_file_like(fd: c_int) -> LinuxResult<Arc<dyn FileLike>> {
 
 /// Add a file to the file descriptor table.
 pub fn add_file_like(f: Arc<dyn FileLike>) -> LinuxResult<c_int> {
-    let max_nofile =
-        StarryTaskExt::of(&current()).process_data().rlim.read()[RLIMIT_NOFILE].current;
+    let max_nofile = current().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current;
     let mut table = FD_TABLE.write();
     if table.count() as u64 >= max_nofile {
         return Err(LinuxError::EMFILE);

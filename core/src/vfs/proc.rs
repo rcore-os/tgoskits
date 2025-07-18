@@ -5,16 +5,16 @@ use alloc::{
     string::ToString,
     sync::{Arc, Weak},
 };
-use core::{iter, sync::atomic::Ordering};
+use core::iter;
 
 use axfs_ng_vfs::{Filesystem, VfsError, VfsResult};
-use axprocess::{Process, Thread};
+use axprocess::Process;
 use axsync::RawMutex;
-use axtask::current;
+use axtask::{WeakAxTaskRef, current};
 use indoc::indoc;
 
 use crate::{
-    task::{StarryTaskExt, TaskStat, ThreadData, get_thread, threads},
+    task::{AsThread, TaskStat, get_task, tasks},
     vfs::simple::{
         DirMaker, DirMapping, NodeOpsMux, RwFile, SimpleDir, SimpleDirOps, SimpleFile,
         SimpleFileOperation, SimpleFs,
@@ -99,15 +99,15 @@ impl SimpleDirOps<RawMutex> for ProcessTaskDir {
             process
                 .threads()
                 .into_iter()
-                .map(|it| it.tid().to_string().into()),
+                .map(|tid| tid.to_string().into()),
         )
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux<RawMutex>> {
         let process = self.process.upgrade().ok_or(VfsError::ENOENT)?;
         let tid = name.parse::<u32>().map_err(|_| VfsError::ENOENT)?;
-        let thread = get_thread(tid).map_err(|_| VfsError::ENOENT)?;
-        if thread.process().pid() != process.pid() {
+        let task = get_task(tid).map_err(|_| VfsError::ENOENT)?;
+        if task.as_thread().proc_data.proc.pid() != process.pid() {
             return Err(VfsError::ENOENT);
         }
 
@@ -115,7 +115,7 @@ impl SimpleDirOps<RawMutex> for ProcessTaskDir {
             self.fs.clone(),
             Arc::new(ThreadDir {
                 fs: self.fs.clone(),
-                thread: Arc::downgrade(&thread),
+                task: Arc::downgrade(&task),
             }),
         )))
     }
@@ -128,7 +128,7 @@ impl SimpleDirOps<RawMutex> for ProcessTaskDir {
 /// The /proc/[pid] directory
 struct ThreadDir {
     fs: Arc<SimpleFs>,
-    thread: Weak<Thread>,
+    task: WeakAxTaskRef,
 }
 
 impl SimpleDirOps<RawMutex> for ThreadDir {
@@ -142,44 +142,35 @@ impl SimpleDirOps<RawMutex> for ThreadDir {
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux<RawMutex>> {
         let fs = self.fs.clone();
-        let thread = self.thread.upgrade().ok_or(VfsError::ENOENT)?;
+        let task = self.task.upgrade().ok_or(VfsError::ENOENT)?;
         Ok(match name {
             "stat" => SimpleFile::new(fs, move || {
-                Ok(format!("{}", TaskStat::from_thread(&thread)?).into_bytes())
+                Ok(format!("{}", TaskStat::from_thread(&task)?).into_bytes())
             })
             .into(),
             "status" => SimpleFile::new(fs, move || {
                 Ok(format!(
                     "Tgid: {}\nPid: {}\nUid: 0 0 0 0\nGid: 0 0 0 0",
-                    thread.process().pid(),
-                    thread.tid()
+                    task.as_thread().proc_data.proc.pid(),
+                    task.id().as_u64()
                 ))
             })
             .into(),
             "oom_score_adj" => SimpleFile::new(
                 fs,
-                RwFile::new(move |req| {
-                    let Some(thr_data) = thread.data::<ThreadData>() else {
-                        return Err(VfsError::EBADF);
-                    };
-                    match req {
-                        SimpleFileOperation::Read => Ok(Some(
-                            thr_data
-                                .oom_score_adj
-                                .load(Ordering::SeqCst)
-                                .to_string()
-                                .into_bytes(),
-                        )),
-                        SimpleFileOperation::Write(data) => {
-                            if !data.is_empty() {
-                                let value = str::from_utf8(data)
-                                    .ok()
-                                    .and_then(|it| it.parse::<i32>().ok())
-                                    .ok_or(VfsError::EINVAL)?;
-                                thr_data.oom_score_adj.store(value, Ordering::SeqCst);
-                            }
-                            Ok(None)
+                RwFile::new(move |req| match req {
+                    SimpleFileOperation::Read => Ok(Some(
+                        task.as_thread().oom_score_adj().to_string().into_bytes(),
+                    )),
+                    SimpleFileOperation::Write(data) => {
+                        if !data.is_empty() {
+                            let value = str::from_utf8(data)
+                                .ok()
+                                .and_then(|it| it.parse::<i32>().ok())
+                                .ok_or(VfsError::EINVAL)?;
+                            task.as_thread().set_oom_score_adj(value);
                         }
+                        Ok(None)
                     }
                 }),
             )
@@ -188,7 +179,7 @@ impl SimpleDirOps<RawMutex> for ThreadDir {
                 fs.clone(),
                 Arc::new(ProcessTaskDir {
                     fs,
-                    process: Arc::downgrade(thread.process()),
+                    process: Arc::downgrade(&task.as_thread().proc_data.proc),
                 }),
             )
             .into(),
@@ -220,25 +211,25 @@ struct ProcFsHandler(Arc<SimpleFs>);
 impl SimpleDirOps<RawMutex> for ProcFsHandler {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         Box::new(
-            threads()
+            tasks()
                 .into_iter()
-                .map(|it| it.tid().to_string().into())
+                .map(|task| task.id().as_u64().to_string().into())
                 .chain([Cow::Borrowed("self")]),
         )
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux<RawMutex>> {
-        let thread = if name == "self" {
-            StarryTaskExt::of(&current()).thread.clone()
+        let task = if name == "self" {
+            current().clone()
         } else {
             let tid = name.parse::<u32>().map_err(|_| VfsError::ENOENT)?;
-            get_thread(tid).map_err(|_| VfsError::ENOENT)?
+            get_task(tid).map_err(|_| VfsError::ENOENT)?
         };
         let node = NodeOpsMux::Dir(SimpleDir::new_maker(
             self.0.clone(),
             Arc::new(ThreadDir {
                 fs: self.0.clone(),
-                thread: Arc::downgrade(&thread),
+                task: Arc::downgrade(&task),
             }),
         ));
         Ok(node)

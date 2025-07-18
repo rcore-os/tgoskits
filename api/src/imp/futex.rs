@@ -8,7 +8,7 @@ use linux_raw_sys::general::{
 };
 use starry_core::{
     futex::FutexKey,
-    task::{StarryTaskExt, ThreadData, get_thread},
+    task::{AsThread, get_task},
 };
 
 use crate::{
@@ -36,11 +36,13 @@ pub fn sys_futex(
 ) -> LinuxResult<isize> {
     info!("futex {:?} {} {}", uaddr.address(), futex_op, value);
 
-    let curr = current();
-
     let key = FutexKey::new_current(uaddr.address().as_usize());
-    let proc_data = StarryTaskExt::of(&curr).process_data();
+
+    let curr = current();
+    let thr = curr.as_thread();
+    let proc_data = &thr.proc_data;
     let futex_table = proc_data.futex_table_for(&key);
+
     let command = futex_op & (FUTEX_CMD_MASK as u32);
     match command {
         FUTEX_WAIT | FUTEX_WAIT_BITSET => {
@@ -75,10 +77,7 @@ pub fn sys_futex(
             let futex = futex_table.get_or_insert(&key);
 
             if command == FUTEX_WAIT_BITSET {
-                StarryTaskExt::of(&curr)
-                    .thread_data()
-                    .futex_bitset
-                    .store(value3, Ordering::SeqCst);
+                thr.set_futex_bitset(value3);
             }
 
             if let Some(timeout) = timeout {
@@ -107,10 +106,7 @@ pub fn sys_futex(
                         false
                     } else {
                         let wake = if command == FUTEX_WAKE_BITSET {
-                            let bitset = StarryTaskExt::of(task)
-                                .thread_data()
-                                .futex_bitset
-                                .load(Ordering::SeqCst);
+                            let bitset = task.as_thread().futex_bitset();
                             (bitset & value3) != 0
                         } else {
                             true
@@ -157,17 +153,8 @@ pub fn sys_get_robust_list(
     head: UserPtr<UserConstPtr<robust_list_head>>,
     size: UserPtr<usize>,
 ) -> LinuxResult<isize> {
-    let thr = if tid == 0 {
-        StarryTaskExt::of(&current()).thread.clone()
-    } else {
-        get_thread(tid)?
-    };
-    *head.get_as_mut()? = thr
-        .data::<ThreadData>()
-        .unwrap()
-        .robust_list_head
-        .load(Ordering::SeqCst)
-        .into();
+    let task = get_task(tid)?;
+    *head.get_as_mut()? = task.as_thread().robust_list_head().into();
     *size.get_as_mut()? = size_of::<robust_list_head>();
 
     Ok(0)
@@ -180,10 +167,9 @@ pub fn sys_set_robust_list(
     if size != size_of::<robust_list_head>() {
         return Err(LinuxError::EINVAL);
     }
-    StarryTaskExt::of(&current())
-        .thread_data()
-        .robust_list_head
-        .store(head.address().as_usize(), Ordering::SeqCst);
+    current()
+        .as_thread()
+        .set_robust_list_head(head.address().as_usize());
 
     Ok(0)
 }
@@ -196,9 +182,7 @@ fn handle_futex_death(entry: *mut robust_list, offset: i64) -> LinuxResult<()> {
     let key = FutexKey::new_current(address);
 
     let curr = current();
-    let futex_table = &StarryTaskExt::of(&curr)
-        .process_data()
-        .futex_table_for(&key);
+    let futex_table = curr.as_thread().proc_data.futex_table_for(&key);
 
     let Some(futex) = futex_table.get(&key) else {
         return Ok(());

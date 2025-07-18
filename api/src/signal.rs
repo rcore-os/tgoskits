@@ -5,12 +5,12 @@ use axhal::{
     context::TrapFrame,
     trap::{POST_TRAP, PRE_TRAP, register_trap_handler},
 };
-use axprocess::{Process, ProcessGroup, Thread};
+use axprocess::Pid;
 use axsignal::{SignalInfo, SignalOSAction, SignalSet};
 use axtask::current;
 use starry_core::{
     mm::access_user_memory,
-    task::{ProcessData, StarryTaskExt, ThreadData},
+    task::{AsThread, get_process_data, get_process_group, get_task, poll_timer, set_timer_state},
     time::TimerState,
 };
 
@@ -19,8 +19,8 @@ use crate::do_exit;
 pub fn check_signals(tf: &mut TrapFrame, restore_blocked: Option<SignalSet>) -> bool {
     // axsignal may access user memory internally
     let result = access_user_memory(|| {
-        StarryTaskExt::of(&current())
-            .thread_data()
+        current()
+            .as_thread()
             .signal
             .check_signals(tf, restore_blocked)
     });
@@ -52,28 +52,22 @@ pub fn check_signals(tf: &mut TrapFrame, restore_blocked: Option<SignalSet>) -> 
 }
 
 pub fn have_signals() -> bool {
-    !StarryTaskExt::of(&current())
-        .thread_data()
-        .signal
-        .pending()
-        .is_empty()
+    !current().as_thread().signal.pending().is_empty()
 }
 
 pub static BLOCK_NEXT_SIGNAL_CHECK: AtomicBool = AtomicBool::new(false);
 
 #[register_trap_handler(PRE_TRAP)]
 fn pre_trap_callback(_tf: &mut TrapFrame, from_user: bool) {
-    if from_user && let Some(ext) = StarryTaskExt::try_of(&current()) {
-        ext.thread_data().set_timer_state(TimerState::Kernel);
+    if from_user {
+        set_timer_state(&current(), TimerState::Kernel);
     }
 }
 
 #[register_trap_handler(POST_TRAP)]
 fn post_trap_callback(tf: &mut TrapFrame, from_user: bool) {
     if !from_user {
-        if let Some(ext) = StarryTaskExt::try_of(&current()) {
-            ext.thread_data().poll_timer();
-        }
+        poll_timer(&current());
         return;
     }
 
@@ -81,38 +75,58 @@ fn post_trap_callback(tf: &mut TrapFrame, from_user: bool) {
         check_signals(tf, None);
     }
     let curr = current();
-    if let Some(ext) = StarryTaskExt::try_of(&curr) {
-        ext.thread_data().set_timer_state(TimerState::User);
-    }
+    set_timer_state(&curr, TimerState::User);
     curr.set_interrupted(false);
 }
 
-pub fn send_signal_thread(thr: &Thread, sig: SignalInfo) -> LinuxResult<()> {
-    info!("Send signal {:?} to thread {}", sig.signo(), thr.tid());
-    let Some(thr_data) = thr.data::<ThreadData>() else {
-        return Err(LinuxError::EPERM);
-    };
-    thr_data.send_signal(sig);
-    Ok(())
-}
-
-pub fn send_signal_process(proc: &Process, sig: SignalInfo) -> LinuxResult<()> {
-    debug!("Send signal {:?} to process {}", sig.signo(), proc.pid());
-    let Some(proc_data) = proc.data::<ProcessData>() else {
-        return Err(LinuxError::EPERM);
-    };
-    proc_data.send_signal(sig, &proc.threads());
-    Ok(())
-}
-
-pub fn send_signal_process_group(pg: &ProcessGroup, sig: SignalInfo) -> LinuxResult<()> {
-    info!(
-        "Send signal {:?} to process group {}",
-        sig.signo(),
-        pg.pgid()
-    );
-    for proc in pg.processes() {
-        send_signal_process(&proc, sig.clone())?;
+/// Sends a signal to a thread.
+pub fn send_signal_to_thread(
+    tgid: Option<Pid>,
+    tid: Pid,
+    sig: Option<SignalInfo>,
+) -> LinuxResult<()> {
+    let task = get_task(tid)?;
+    let thread = task.try_as_thread().ok_or(LinuxError::EPERM)?;
+    if tgid.is_some_and(|tgid| thread.proc_data.proc.pid() != tgid) {
+        return Err(LinuxError::ESRCH);
     }
+
+    if let Some(sig) = sig {
+        info!("Send signal {:?} to thread {}", sig.signo(), tid);
+        thread.signal.send_signal(sig);
+        task.set_interrupted(true);
+    }
+
+    Ok(())
+}
+
+/// Sends a signal to a process.
+pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> LinuxResult<()> {
+    let proc_data = get_process_data(pid)?;
+
+    if let Some(sig) = sig {
+        info!("Send signal {:?} to process {}", sig.signo(), pid);
+        proc_data.signal.send_signal(sig);
+        for tid in proc_data.proc.threads() {
+            if let Ok(task) = get_task(tid) {
+                task.set_interrupted(true);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Sends a signal to a process group.
+pub fn send_signal_to_process_group(pgid: Pid, sig: Option<SignalInfo>) -> LinuxResult<()> {
+    let pg = get_process_group(pgid)?;
+
+    if let Some(sig) = sig {
+        info!("Send signal {:?} to process group {}", sig.signo(), pgid);
+        for proc in pg.processes() {
+            send_signal_to_process(proc.pid(), Some(sig.clone()))?;
+        }
+    }
+
     Ok(())
 }

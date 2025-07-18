@@ -9,7 +9,7 @@ use axtask::{WaitQueue, current};
 use hashbrown::HashMap;
 use memory_addr::VirtAddr;
 
-use crate::task::StarryTaskExt;
+use crate::task::AsThread;
 
 /// A key that uniquely identifies a futex in the system.
 pub enum FutexKey {
@@ -45,10 +45,7 @@ impl FutexKey {
 
     /// Shortcut to create a `FutexKey` for the current task's address space.
     pub fn new_current(address: usize) -> Self {
-        Self::new(
-            &StarryTaskExt::of(&current()).process_data().aspace.lock(),
-            address,
-        )
+        Self::new(&current().as_thread().proc_data.aspace.lock(), address)
     }
 
     fn as_usize(&self) -> usize {

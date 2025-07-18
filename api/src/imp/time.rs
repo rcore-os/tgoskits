@@ -4,7 +4,7 @@ use axtask::current;
 use linux_raw_sys::general::{
     __kernel_clockid_t, CLOCK_MONOTONIC, CLOCK_REALTIME, itimerval, timespec, timeval,
 };
-use starry_core::{task::StarryTaskExt, time::ITimerType};
+use starry_core::{task::AsThread, time::ITimerType};
 
 use crate::{
     ptr::{UserConstPtr, UserPtr, nullable},
@@ -62,11 +62,7 @@ pub struct Tms {
 }
 
 pub fn sys_times(tms: UserPtr<Tms>) -> LinuxResult<isize> {
-    let (utime, stime) = StarryTaskExt::of(&current())
-        .thread_data()
-        .time
-        .borrow()
-        .output();
+    let (utime, stime) = current().as_thread().time.borrow().output();
     let utime = utime.as_micros() as usize;
     let stime = stime.as_micros() as usize;
     *tms.get_as_mut()? = Tms {
@@ -80,11 +76,7 @@ pub fn sys_times(tms: UserPtr<Tms>) -> LinuxResult<isize> {
 
 pub fn sys_getitimer(which: i32, value: UserPtr<itimerval>) -> LinuxResult<isize> {
     let ty = ITimerType::from_repr(which).ok_or(LinuxError::EINVAL)?;
-    let (it_interval, it_value) = StarryTaskExt::of(&current())
-        .thread_data()
-        .time
-        .borrow()
-        .get_itimer(ty);
+    let (it_interval, it_value) = current().as_thread().time.borrow().get_itimer(ty);
 
     *value.get_as_mut()? = itimerval {
         it_interval: timeval::from_time_value(it_interval),
@@ -108,8 +100,8 @@ pub fn sys_setitimer(
         ),
         None => (0, 0),
     };
-    let old = StarryTaskExt::of(&curr)
-        .thread_data()
+    let old = curr
+        .as_thread()
         .time
         .borrow_mut()
         .set_itimer(ty, interval, remained);

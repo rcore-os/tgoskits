@@ -1,7 +1,10 @@
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 
 use axerrno::{LinuxError, LinuxResult};
-use axhal::{paging::{MappingFlags, PageSize}, time::monotonic_time_nanos};
+use axhal::{
+    paging::{MappingFlags, PageSize},
+    time::monotonic_time_nanos,
+};
 use axmm::SharedPages;
 use axprocess::Pid;
 use axsync::Mutex;
@@ -12,7 +15,7 @@ use linux_raw_sys::{
     general::*,
 };
 use memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
-use starry_core::task::StarryTaskExt;
+use starry_core::task::AsThread;
 
 use crate::{
     imp::ipc::{BiBTreeMap, IPCID_ALLOCATOR},
@@ -323,7 +326,7 @@ pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> LinuxResult<isize> {
         mapping_flags.insert(MappingFlags::EXECUTE);
     }
 
-    let cur_pid = StarryTaskExt::of(&current()).thread.process().pid();
+    let cur_pid = current().as_thread().proc_data.proc.pid();
     let mut shm_manager = SHM_MANAGER.lock();
 
     if key != IPC_PRIVATE {
@@ -369,10 +372,9 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> LinuxResult<isize> {
     // TODO: solve shmflg: SHM_RND and SHM_REMAP
 
     let curr = current();
-    let ext = StarryTaskExt::of(&curr);
-    let pid = ext.thread.process().pid();
-    let process_data = ext.process_data();
-    let mut aspace = process_data.aspace.lock();
+    let proc_data = &curr.as_thread().proc_data;
+    let pid = proc_data.proc.pid();
+    let mut aspace = proc_data.aspace.lock();
 
     let start_aligned = memory_addr::align_down_4k(addr);
     let length = shm_inner.page_num * PAGE_SIZE_4K;
@@ -410,7 +412,13 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> LinuxResult<isize> {
     if let Some(phys_pages) = shm_inner.phys_pages.clone() {
         // Another proccess has attached the shared memory
         // TODO(mivik): shm page size
-        aspace.map_shared(start_addr, length, mapping_flags, Some(phys_pages), PageSize::Size4K)?;
+        aspace.map_shared(
+            start_addr,
+            length,
+            mapping_flags,
+            Some(phys_pages),
+            PageSize::Size4K,
+        )?;
     } else {
         // This is the first process to attach the shared memory
         let result = aspace.map_shared(start_addr, length, mapping_flags, None, PageSize::Size4K);
@@ -471,9 +479,9 @@ pub fn sys_shmdt(shmaddr: usize) -> LinuxResult<isize> {
     let shmaddr = VirtAddr::from(shmaddr);
 
     let curr = current();
-    let ext = StarryTaskExt::of(&curr);
+    let proc_data = &curr.as_thread().proc_data;
 
-    let pid = ext.thread.process().pid();
+    let pid = proc_data.proc.pid();
     let shmid = {
         let shm_manager = SHM_MANAGER.lock();
         shm_manager
@@ -490,7 +498,7 @@ pub fn sys_shmdt(shmaddr: usize) -> LinuxResult<isize> {
     let mut shm_inner = shm_inner.lock();
     let va_range = shm_inner.get_addr_range(pid).ok_or(LinuxError::EINVAL)?;
 
-    let mut aspace = ext.process_data().aspace.lock();
+    let mut aspace = proc_data.aspace.lock();
     aspace.unmap(va_range.start, va_range.size())?;
 
     let mut shm_manager = SHM_MANAGER.lock();

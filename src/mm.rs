@@ -6,11 +6,14 @@ use axhal::{
 use axsignal::{SignalInfo, Signo};
 use axtask::current;
 use linux_raw_sys::general::{RLIMIT_STACK, SI_KERNEL};
-use starry_api::signal::send_signal_process;
-use starry_core::{mm::is_accessing_user_memory, task::StarryTaskExt};
+use starry_api::signal::send_signal_to_process;
+use starry_core::{
+    mm::is_accessing_user_memory,
+    task::{AsThread, ProcessData},
+};
 
 fn handle_user_page_fault(
-    ext: &StarryTaskExt,
+    proc_data: &ProcessData,
     vaddr: VirtAddr,
     access_flags: MappingFlags,
 ) -> bool {
@@ -19,13 +22,13 @@ fn handle_user_page_fault(
         .contains(&vaddr.as_usize())
     {
         // Stack extension, check rlimit
-        let rlim = &ext.process_data().rlim.read()[RLIMIT_STACK];
+        let rlim = &proc_data.rlim.read()[RLIMIT_STACK];
         let size = starry_core::config::USER_STACK_TOP - vaddr.as_usize();
         if size as u64 > rlim.current {
             return false;
         }
     }
-    ext.process_data()
+    proc_data
         .aspace
         .lock()
         .handle_page_fault(vaddr, access_flags)
@@ -42,18 +45,15 @@ fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags, is_user: bool)
     }
 
     let curr = current();
-    let ext = StarryTaskExt::of(&curr);
+    let Some(thr) = curr.try_as_thread() else {
+        return false;
+    };
 
-    if !handle_user_page_fault(ext, vaddr, access_flags) {
-        warn!(
-            "{} ({:?}): segmentation fault at {:#x}",
-            curr.id_name(),
-            ext.thread,
-            vaddr
-        );
-        send_signal_process(
-            ext.thread.process(),
-            SignalInfo::new(Signo::SIGSEGV, SI_KERNEL as _),
+    if !handle_user_page_fault(&thr.proc_data, vaddr, access_flags) {
+        warn!("{}: segmentation fault at {:#x}", curr.id_name(), vaddr);
+        send_signal_to_process(
+            thr.proc_data.proc.pid(),
+            Some(SignalInfo::new(Signo::SIGSEGV, SI_KERNEL as _)),
         )
         .expect("Failed to send SIGSEGV");
     }

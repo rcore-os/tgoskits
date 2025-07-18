@@ -5,7 +5,7 @@ use axhal::paging::{MappingFlags, PageSize};
 use axtask::current;
 use linux_raw_sys::general::*;
 use memory_addr::{MemoryAddr, VirtAddr, VirtAddrRange, align_up_4k};
-use starry_core::task::StarryTaskExt;
+use starry_core::task::AsThread;
 
 use crate::{
     file::{File, FileLike},
@@ -93,7 +93,7 @@ pub fn sys_mmap(
     }
 
     let curr = current();
-    let mut aspace = StarryTaskExt::of(&curr).process_data().aspace.lock();
+    let mut aspace = curr.as_thread().proc_data.aspace.lock();
     let permission_flags = MmapProt::from_bits_truncate(prot);
     // TODO: check illegal flags for mmap
     // An example is the flags contained none of MAP_PRIVATE, MAP_SHARED, or
@@ -191,7 +191,7 @@ pub fn sys_mmap(
 pub fn sys_munmap(addr: usize, length: usize) -> LinuxResult<isize> {
     debug!("sys_munmap <= addr: {:#x}, length: {:x}", addr, length);
     let curr = current();
-    let mut aspace = StarryTaskExt::of(&curr).process_data().aspace.lock();
+    let mut aspace = curr.as_thread().proc_data.aspace.lock();
     let length = align_up_4k(length);
     let start_addr = VirtAddr::from(addr);
     aspace.unmap(start_addr, length)?;
@@ -208,7 +208,7 @@ pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> LinuxResult<isize>
     }
 
     let curr = current();
-    let mut aspace = StarryTaskExt::of(&curr).process_data().aspace.lock();
+    let mut aspace = curr.as_thread().proc_data.aspace.lock();
     let length = align_up_4k(length);
     let start_addr = VirtAddr::from(addr);
     // TODO: is 4k right here?
@@ -231,7 +231,7 @@ pub fn sys_mremap(addr: usize, old_size: usize, new_size: usize, flags: u32) -> 
     let addr = VirtAddr::from(addr);
 
     let curr = current();
-    let aspace = StarryTaskExt::of(&curr).process_data().aspace.lock();
+    let aspace = curr.as_thread().proc_data.aspace.lock();
     let old_size = align_up_4k(old_size);
     let new_size = align_up_4k(new_size);
 

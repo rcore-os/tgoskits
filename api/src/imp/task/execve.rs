@@ -6,7 +6,7 @@ use axhal::context::TrapFrame;
 use axtask::current;
 use starry_core::{
     mm::{load_user_app, map_trampoline},
-    task::StarryTaskExt,
+    task::AsThread,
 };
 
 use crate::ptr::UserConstPtr;
@@ -36,15 +36,15 @@ pub fn sys_execve(
     );
 
     let curr = current();
-    let ext = StarryTaskExt::of(&curr);
+    let proc_data = &curr.as_thread().proc_data;
 
-    if ext.thread.process().threads().len() > 1 {
+    if proc_data.proc.threads().len() > 1 {
         // TODO: handle multi-thread case
         error!("sys_execve: multi-thread not supported");
         return Err(LinuxError::EAGAIN);
     }
 
-    let mut aspace = ext.process_data().aspace.lock();
+    let mut aspace = proc_data.aspace.lock();
     aspace.clear();
     map_trampoline(&mut aspace)?;
 
@@ -55,7 +55,7 @@ pub fn sys_execve(
         .rsplit_once('/')
         .map_or(path.as_str(), |(_, name)| name);
     curr.set_name(name);
-    *ext.process_data().exe_path.write() = path;
+    *proc_data.exe_path.write() = path;
 
     // TODO: fd close-on-exec
 

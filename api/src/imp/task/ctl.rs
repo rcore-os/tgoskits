@@ -1,9 +1,7 @@
-use core::sync::atomic::Ordering;
-
 use axerrno::{LinuxError, LinuxResult};
 use axtask::current;
 use linux_raw_sys::general::{__user_cap_data_struct, __user_cap_header_struct};
-use starry_core::task::{StarryTaskExt, get_process};
+use starry_core::task::{AsThread, get_process_data};
 
 use crate::ptr::UserPtr;
 
@@ -12,7 +10,7 @@ fn validate_cap_header(header: &mut __user_cap_header_struct) -> LinuxResult<()>
         header.version = 0x20080522;
         return Err(LinuxError::EINVAL);
     }
-    let _ = get_process(header.pid as u32)?;
+    let _ = get_process_data(header.pid as u32)?;
     Ok(())
 }
 
@@ -43,8 +41,7 @@ pub fn sys_capset(
 
 pub fn sys_umask(mask: u32) -> LinuxResult<isize> {
     let curr = current();
-    let ptr = &StarryTaskExt::of(&curr).process_data().umask;
-    let old = ptr.swap(mask, Ordering::SeqCst);
+    let old = curr.as_thread().proc_data.replace_umask(mask);
     Ok(old as isize)
 }
 
