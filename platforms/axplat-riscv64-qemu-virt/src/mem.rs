@@ -1,7 +1,9 @@
 use axplat::mem::{MemIf, PhysAddr, RawRange, VirtAddr, pa, va};
 
 use crate::config::devices::MMIO_RANGES;
-use crate::config::plat::{KERNEL_BASE_PADDR, PHYS_MEMORY_SIZE, PHYS_VIRT_OFFSET};
+use crate::config::plat::{
+    KERNEL_BASE_PADDR, PHYS_MEMORY_BASE, PHYS_MEMORY_SIZE, PHYS_VIRT_OFFSET,
+};
 
 struct MemIfImpl;
 
@@ -14,7 +16,10 @@ impl MemIf for MemIfImpl {
     fn phys_ram_ranges() -> &'static [RawRange] {
         // TODO: paser dtb to get the available memory ranges
         // We can't directly use `PHYS_MEMORY_BASE` here, because it may has been used by sbi.
-        &[(KERNEL_BASE_PADDR, PHYS_MEMORY_SIZE)]
+        &[(
+            KERNEL_BASE_PADDR,
+            PHYS_MEMORY_BASE + PHYS_MEMORY_SIZE - KERNEL_BASE_PADDR,
+        )]
     }
 
     /// Returns all reserved physical memory ranges on the platform.
