@@ -46,7 +46,7 @@ axbacktrace = { git = "https://github.com/Starry-Mix-THU/axbacktrace.git", rev =
 axerrno = { git = "https://github.com/Starry-Mix-THU/axerrno.git", rev = "f5d8f86" }
 axfs-ng-vfs = { git = "https://github.com/Starry-Mix-THU/axfs-ng-vfs.git", rev = "134977a" }
 axio = { git = "https://github.com/Starry-Mix-THU/axio.git", rev = "b9dbe7c" }
-axprocess = { git = "https://github.com/Starry-Mix-THU/axprocess.git", rev = "f0e8c79" }
+axprocess = { git = "https://github.com/Starry-Mix-THU/axprocess.git", rev = "3cbe037" }
 axsignal = { git = "https://github.com/Starry-Mix-THU/axsignal.git", rev = "a0c1591" }
 
 bitflags = "2.6"
