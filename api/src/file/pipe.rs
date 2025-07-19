@@ -1,5 +1,8 @@
 use alloc::sync::Arc;
-use core::any::Any;
+use core::{
+    any::Any,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use axerrno::{LinuxError, LinuxResult};
 use axio::PollState;
@@ -76,30 +79,33 @@ impl PipeRingBuffer {
 }
 
 pub struct Pipe {
-    readable: bool,
+    read_side: bool,
     buffer: Arc<Mutex<PipeRingBuffer>>,
+    non_blocking: AtomicBool,
 }
 
 impl Pipe {
     pub fn new() -> (Pipe, Pipe) {
         let buffer = Arc::new(Mutex::new(PipeRingBuffer::new()));
         let read_end = Pipe {
-            readable: true,
+            read_side: true,
             buffer: buffer.clone(),
+            non_blocking: AtomicBool::new(false),
         };
         let write_end = Pipe {
-            readable: false,
+            read_side: false,
             buffer,
+            non_blocking: AtomicBool::new(false),
         };
         (read_end, write_end)
     }
 
-    pub const fn readable(&self) -> bool {
-        self.readable
+    pub const fn is_read(&self) -> bool {
+        self.read_side
     }
 
-    pub const fn writable(&self) -> bool {
-        !self.readable
+    pub const fn is_write(&self) -> bool {
+        !self.read_side
     }
 
     pub fn closed(&self) -> bool {
@@ -109,13 +115,14 @@ impl Pipe {
 
 impl FileLike for Pipe {
     fn read(&self, buf: &mut [u8]) -> LinuxResult<usize> {
-        if !self.readable() {
+        if !self.is_read() {
             return Err(LinuxError::EBADF);
         }
         if buf.is_empty() {
             return Ok(0);
         }
 
+        let non_blocking = self.nonblocking();
         loop {
             let mut ring_buffer = self.buffer.lock();
             let read_size = ring_buffer.available_read().min(buf.len());
@@ -128,6 +135,9 @@ impl FileLike for Pipe {
                 if have_signals() {
                     return Err(LinuxError::EINTR);
                 }
+                if non_blocking {
+                    return Err(LinuxError::EAGAIN);
+                }
                 axtask::yield_now(); // TODO: use synchronize primitive
                 continue;
             }
@@ -139,7 +149,7 @@ impl FileLike for Pipe {
     }
 
     fn write(&self, buf: &[u8]) -> LinuxResult<usize> {
-        if !self.writable() {
+        if !self.is_write() {
             return Err(LinuxError::EBADF);
         }
         if self.closed() {
@@ -151,6 +161,7 @@ impl FileLike for Pipe {
 
         let mut write_size = 0usize;
         let total_len = buf.len();
+        let non_blocking = self.nonblocking();
         loop {
             let mut ring_buffer = self.buffer.lock();
             let loop_write = ring_buffer.available_write();
@@ -162,6 +173,9 @@ impl FileLike for Pipe {
                 // Buffer is full, wait for read end to consume
                 if have_signals() {
                     return Err(LinuxError::EINTR);
+                }
+                if non_blocking {
+                    return Err(LinuxError::EAGAIN);
                 }
                 axtask::yield_now(); // TODO: use synconize primitive
                 continue;
@@ -187,10 +201,19 @@ impl FileLike for Pipe {
         self
     }
 
+    fn set_nonblocking(&self, nonblocking: bool) -> LinuxResult {
+        self.non_blocking.store(nonblocking, Ordering::Release);
+        Ok(())
+    }
+
+    fn nonblocking(&self) -> bool {
+        self.non_blocking.load(Ordering::Acquire)
+    }
+
     fn poll(&self) -> LinuxResult<PollState> {
         let buf = self.buffer.lock();
 
-        match self.readable {
+        match self.read_side {
             true => {
                 if buf.available_read() == 0 && self.closed() {
                     return Err(LinuxError::EPIPE);

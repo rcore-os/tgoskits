@@ -1,4 +1,3 @@
-use alloc::sync::Arc;
 use core::ffi::{c_char, c_int};
 
 use axerrno::{LinuxError, LinuxResult};
@@ -14,7 +13,9 @@ use linux_raw_sys::general::{
 use starry_core::task::AsThread;
 
 use crate::{
-    file::{Directory, FD_TABLE, File, add_file_like, close_file_like, get_file_like, with_fs},
+    file::{
+        Directory, FD_TABLE, File, FileLike, add_file_like, close_file_like, get_file_like, with_fs,
+    },
     ptr::UserConstPtr,
     sys_getegid, sys_geteuid,
 };
@@ -60,8 +61,8 @@ fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32))
 
 fn add_to_fd(result: OpenResult<RawMutex>, cloexec: bool) -> LinuxResult<i32> {
     match result {
-        OpenResult::File(file) => add_file_like(Arc::new(File::new(file)), cloexec),
-        OpenResult::Dir(dir) => add_file_like(Arc::new(Directory::new(dir)), cloexec),
+        OpenResult::File(file) => File::new(file).add_to_fd_table(cloexec),
+        OpenResult::Dir(dir) => Directory::new(dir).add_to_fd_table(cloexec),
     }
 }
 

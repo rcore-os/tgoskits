@@ -66,7 +66,7 @@ impl FileLike for EventFd {
             return Err(LinuxError::EINVAL);
         }
 
-        let non_blocking = self.non_blocking.load(Ordering::Acquire);
+        let non_blocking = self.nonblocking();
         let mut failed = false;
         self.wq.wait_until(|| {
             // SAFETY: condition is evaluated under the lock of the wait queue,

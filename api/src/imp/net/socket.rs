@@ -47,7 +47,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> LinuxResult<isize> {
         socket.set_nonblocking(true)?;
     }
 
-    socket.add_to_fd_table().map(|fd| fd as isize)
+    socket.add_to_fd_table(false).map(|fd| fd as isize)
 }
 
 pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> LinuxResult<isize> {
@@ -106,7 +106,7 @@ pub fn sys_accept4(
     let socket = Socket(socket.accept()?);
 
     let remote_addr = socket.local_addr()?;
-    let fd = socket.add_to_fd_table().map(|fd| fd as isize)?;
+    let fd = socket.add_to_fd_table(false).map(|fd| fd as isize)?;
     debug!("sys_accept => fd: {}, addr: {:?}", fd, remote_addr);
 
     if !addr.is_null() {

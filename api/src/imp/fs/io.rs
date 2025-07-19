@@ -424,7 +424,7 @@ pub fn sys_splice(
         SendFile::Offset(File::from_fd(fd_in)?, off_in)
     } else {
         if let Ok(src) = Pipe::from_fd(fd_in) {
-            if !src.readable() {
+            if !src.is_read() {
                 return Err(LinuxError::EBADF);
             }
             if !src.poll()?.readable {
@@ -439,7 +439,7 @@ pub fn sys_splice(
         SendFile::Offset(File::from_fd(fd_out)?, off_out)
     } else {
         if let Ok(src) = Pipe::from_fd(fd_in)
-            && !src.writable()
+            && !src.is_write()
         {
             return Err(LinuxError::EBADF);
         }
