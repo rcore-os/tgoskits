@@ -201,10 +201,6 @@ impl Process {
     ///
     /// This method panics if the [`Process`] is the init process.
     pub fn exit(self: &Arc<Self>) {
-        if self.is_init() {
-            panic!("init process cannot exit");
-        }
-
         // TODO: child subreaper
         let reaper = INIT_PROC.get().unwrap();
 
