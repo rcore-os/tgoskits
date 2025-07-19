@@ -121,6 +121,10 @@ pub fn sys_dup(old_fd: c_int) -> LinuxResult<isize> {
 }
 
 pub fn sys_dup2(old_fd: c_int, new_fd: c_int) -> LinuxResult<isize> {
+    if old_fd == new_fd {
+        get_file_like(new_fd)?;
+        return Ok(new_fd as _);
+    }
     sys_dup3(old_fd, new_fd, 0)
 }
 
@@ -154,7 +158,7 @@ pub fn sys_dup3(old_fd: c_int, new_fd: c_int, flags: c_int) -> LinuxResult<isize
         .add_at(new_fd as _, f)
         .map_err(|_| LinuxError::EBADF)?;
 
-    Ok(0)
+    Ok(new_fd as _)
 }
 
 pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> LinuxResult<isize> {
