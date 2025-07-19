@@ -138,6 +138,10 @@ pub fn sys_dup3(old_fd: c_int, new_fd: c_int, flags: c_int) -> LinuxResult<isize
         old_fd, new_fd, flags
     );
 
+    if old_fd == new_fd {
+        return Err(LinuxError::EINVAL);
+    }
+
     let mut fd_table = FD_TABLE.write();
     let mut f = fd_table
         .get(old_fd as _)
