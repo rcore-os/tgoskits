@@ -29,12 +29,6 @@ fn free_not_zombie() {
 }
 
 #[test]
-#[should_panic]
-fn init_proc_exit() {
-    init_proc().exit();
-}
-
-#[test]
 fn free() {
     let parent = init_proc().new_child();
     let child = parent.new_child();

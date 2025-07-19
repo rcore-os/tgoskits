@@ -204,6 +204,10 @@ impl Process {
         // TODO: child subreaper
         let reaper = INIT_PROC.get().unwrap();
 
+        if Arc::ptr_eq(self, reaper) {
+            return;
+        }
+
         let mut children = self.children.lock(); // Acquire the lock first
         self.is_zombie.store(true, Ordering::Release);
 
