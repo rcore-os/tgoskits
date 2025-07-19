@@ -10,7 +10,7 @@ extern crate axruntime;
 use alloc::{borrow::ToOwned, format, vec::Vec};
 
 use axerrno::LinuxError;
-use starry_core::mm::insert_elf_cache;
+use starry_core::{mm::insert_elf_cache, task::poll_timer};
 
 mod entry;
 mod mm;
@@ -48,6 +48,10 @@ fn main() {
             Err(err) => error!("Failed to insert ELF cache for {}: {}", elf, err),
         }
     }
+
+    axtask::register_timer_callback(|_| {
+        poll_timer(&axtask::current());
+    });
 
     let args = ENTRY.iter().copied().map(str::to_owned).collect::<Vec<_>>();
     let envs = [format!("ARCH={}", option_env!("ARCH").unwrap_or("unknown"))];

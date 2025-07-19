@@ -10,7 +10,7 @@ use axsignal::{SignalInfo, SignalOSAction, SignalSet};
 use axtask::current;
 use starry_core::{
     mm::access_user_memory,
-    task::{AsThread, get_process_data, get_process_group, get_task, poll_timer, set_timer_state},
+    task::{AsThread, get_process_data, get_process_group, get_task, set_timer_state},
     time::TimerState,
 };
 
@@ -67,7 +67,7 @@ fn pre_trap_callback(_tf: &mut TrapFrame, from_user: bool) {
 #[register_trap_handler(POST_TRAP)]
 fn post_trap_callback(tf: &mut TrapFrame, from_user: bool) {
     if !from_user {
-        poll_timer(&current());
+        // poll_timer(&current());
         return;
     }
 
