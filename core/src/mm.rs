@@ -168,7 +168,7 @@ pub fn load_user_app(
                     .splitn(2, |c: char| c.is_ascii_whitespace())
                     .map(|s| s.trim_ascii().to_owned())
                     .chain(iter::once(path.to_owned()))
-                    .chain(args.iter().cloned().skip(1))
+                    .chain(args.iter().skip(1).cloned())
                     .collect();
                 return load_user_app(uspace, None, &new_args, envs);
             }

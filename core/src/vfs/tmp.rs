@@ -268,7 +268,7 @@ impl NodeOps<RawMutex> for MemoryNode {
         let mut metadata = self.inode.metadata.lock().clone();
         match &self.inode.content {
             NodeContent::File(content) => {
-                metadata.size = content.length.lock().clone();
+                metadata.size = *content.length.lock();
             }
             NodeContent::Dir(dir) => {
                 metadata.size = dir.entries.lock().len() as u64;
