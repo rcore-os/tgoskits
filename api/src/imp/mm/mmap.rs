@@ -1,7 +1,8 @@
-use alloc::vec;
+use alloc::sync::Arc;
 
 use axerrno::{LinuxError, LinuxResult};
 use axhal::paging::{MappingFlags, PageSize};
+use axmm::{Backend, SharedPages};
 use axtask::current;
 use linux_raw_sys::general::*;
 use memory_addr::{MemoryAddr, VirtAddr, VirtAddrRange, align_up_4k};
@@ -51,7 +52,7 @@ bitflags::bitflags! {
     /// flags for sys_mmap
     ///
     /// See <https://github.com/bminor/glibc/blob/master/bits/mman.h>
-    #[derive(Debug, PartialEq, Eq)]
+    #[derive(Debug, PartialEq, Eq, Clone, Copy)]
     struct MmapFlags: u32 {
         /// Share changes
         const SHARED = MAP_SHARED;
@@ -66,6 +67,8 @@ bitflags::bitflags! {
         const FIXED_NOREPLACE = MAP_FIXED_NOREPLACE;
         /// Don't use a file.
         const ANONYMOUS = MAP_ANONYMOUS;
+        /// Populate the mapping.
+        const POPULATE = MAP_POPULATE;
         /// Don't check for reservations.
         const NORESERVE = MAP_NORESERVE;
         /// Allocation is for a stack.
@@ -96,10 +99,22 @@ pub fn sys_mmap(
     let mut aspace = curr.as_thread().proc_data.aspace.lock();
     let permission_flags = MmapProt::from_bits_truncate(prot);
     // TODO: check illegal flags for mmap
-    // An example is the flags contained none of MAP_PRIVATE, MAP_SHARED, or
-    // MAP_SHARED_VALIDATE.
     let map_flags = MmapFlags::from_bits_truncate(flags);
-    if map_flags.contains(MmapFlags::PRIVATE | MmapFlags::SHARED) {
+    let map_type = map_flags & MmapFlags::TYPE;
+    if !matches!(
+        map_type,
+        MmapFlags::PRIVATE | MmapFlags::SHARED | MmapFlags::SHARED_VALIDATE
+    ) {
+        return Err(LinuxError::EINVAL);
+    }
+    if map_flags.contains(MmapFlags::ANONYMOUS) != (fd <= 0) {
+        return Err(LinuxError::EINVAL);
+    }
+    if fd <= 0 && offset != 0 {
+        return Err(LinuxError::EINVAL);
+    }
+    let offset: usize = offset.try_into().map_err(|_| LinuxError::EINVAL)?;
+    if !PageSize::Size4K.is_aligned(offset) {
         return Err(LinuxError::EINVAL);
     }
 
@@ -118,74 +133,67 @@ pub fn sys_mmap(
 
     let start = addr.align_down(page_size);
     let end = (addr + length).align_up(page_size);
-    let aligned_length = end - start;
-    debug!(
-        "start: {:#x?}, end: {:#x?}, aligned_length: {:#x?}",
-        start, end, aligned_length
-    );
+    let length = end - start;
 
-    let start_addr = if map_flags.intersects(MmapFlags::FIXED | MmapFlags::FIXED_NOREPLACE) {
+    let start = if map_flags.intersects(MmapFlags::FIXED | MmapFlags::FIXED_NOREPLACE) {
         let dst_addr = VirtAddr::from(start);
         if !map_flags.contains(MmapFlags::FIXED_NOREPLACE) {
-            aspace.unmap(dst_addr, aligned_length)?;
+            aspace.unmap(dst_addr, length)?;
         }
         dst_addr
     } else {
         aspace
             .find_free_area(
                 VirtAddr::from(start),
-                aligned_length,
+                length,
                 VirtAddrRange::new(aspace.base(), aspace.end()),
             )
             .or(aspace.find_free_area(
                 aspace.base(),
-                aligned_length,
+                length,
                 VirtAddrRange::new(aspace.base(), aspace.end()),
             ))
             .ok_or(LinuxError::ENOMEM)?
     };
 
-    let populate = fd > 0 && !map_flags.contains(MmapFlags::ANONYMOUS);
-
-    match map_flags & MmapFlags::TYPE {
+    let backend = match map_type {
         MmapFlags::SHARED | MmapFlags::SHARED_VALIDATE => {
-            aspace.map_shared(
-                start_addr,
-                aligned_length,
-                permission_flags.into(),
-                None,
-                page_size,
-            )?;
+            // TODO(mivik): shared validate
+            if fd > 0 {
+                let file = File::from_fd(fd)?;
+                let file = file.inner();
+                let Some(cache) = file.backend().clone().into_cached() else {
+                    return Err(LinuxError::EINVAL);
+                };
+                // TODO(mivik): file mmap page size
+                Backend::new_file(
+                    start,
+                    cache,
+                    file.flags(),
+                    offset,
+                    curr.as_thread().proc_data.aspace.clone(),
+                )
+            } else {
+                Backend::new_shared(start, Arc::new(SharedPages::new(length, PageSize::Size4K)?))
+            }
         }
         MmapFlags::PRIVATE => {
-            aspace.map_alloc(
-                start_addr,
-                aligned_length,
-                permission_flags.into(),
-                populate,
-                page_size,
-            )?;
+            if fd > 0 {
+                // Private mapping from a file
+                let file = File::from_fd(fd)?;
+                let loc = file.inner().backend().location().clone();
+                Backend::new_cow(start, page_size, Some((loc, offset)))
+            } else {
+                Backend::new_alloc(start, page_size)
+            }
         }
         _ => return Err(LinuxError::EINVAL),
-    }
+    };
 
-    if populate {
-        if permission_flags.contains(MmapProt::WRITE) {
-            warn!("sys_mmap: PROT_WRITE for a file mapping is not supported yet");
-        }
-        let file = File::from_fd(fd)?;
-        let mut file = file.inner();
-        let file_size = file.backend().location().len()? as usize;
-        if offset < 0 || offset as usize >= file_size {
-            return Err(LinuxError::EINVAL);
-        }
-        let offset = offset as usize;
-        let length = core::cmp::min(length, file_size - offset);
-        let mut buf = vec![0u8; length];
-        file.read_at(&mut buf, offset as u64)?;
-        aspace.write(start_addr, &buf)?;
-    }
-    Ok(start_addr.as_usize() as _)
+    let populate = map_flags.contains(MmapFlags::POPULATE);
+    aspace.map(start, length, permission_flags.into(), populate, backend)?;
+
+    Ok(start.as_usize() as _)
 }
 
 pub fn sys_munmap(addr: usize, length: usize) -> LinuxResult<isize> {

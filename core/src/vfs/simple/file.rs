@@ -145,7 +145,6 @@ impl<M: RawMutex + Send + Sync + 'static> FileNodeOps<M> for SimpleFile<M> {
     }
 
     fn set_symlink(&self, target: &str) -> VfsResult<()> {
-        warn!("SET SYMLINK????");
         self.ops.write_all(target.as_bytes())
     }
 }

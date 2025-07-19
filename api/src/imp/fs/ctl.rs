@@ -170,7 +170,7 @@ pub fn sys_mkdirat(dirfd: i32, path: UserConstPtr<c_char>, mode: u32) -> LinuxRe
     let mode = mode & !current().as_thread().proc_data.umask();
 
     let path = path.get_as_str()?;
-    let mode = NodePermission::from_bits(mode as u16).ok_or(LinuxError::EINVAL)?;
+    let mode = NodePermission::from_bits_truncate(mode as u16);
 
     with_fs(dirfd, |fs| {
         fs.create_dir(path, mode)?;
@@ -367,6 +367,10 @@ pub fn sys_symlinkat(
 ) -> LinuxResult<isize> {
     let target = target.get_as_str()?;
     let linkpath = linkpath.get_as_str()?;
+    debug!(
+        "sys_symlinkat <= target: {:?}, new_dirfd: {}, linkpath: {:?}",
+        target, new_dirfd, linkpath
+    );
 
     with_fs(new_dirfd, |fs| {
         fs.symlink(target, linkpath)?;

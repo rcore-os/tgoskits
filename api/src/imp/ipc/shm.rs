@@ -5,7 +5,7 @@ use axhal::{
     paging::{MappingFlags, PageSize},
     time::monotonic_time_nanos,
 };
-use axmm::SharedPages;
+use axmm::{Backend, SharedPages};
 use axprocess::Pid;
 use axsync::Mutex;
 use axtask::current;
@@ -412,38 +412,15 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> LinuxResult<isize> {
     if let Some(phys_pages) = shm_inner.phys_pages.clone() {
         // Another proccess has attached the shared memory
         // TODO(mivik): shm page size
-        aspace.map_shared(
-            start_addr,
-            length,
-            mapping_flags,
-            Some(phys_pages),
-            PageSize::Size4K,
-        )?;
+        let backend = Backend::new_shared(start_addr, phys_pages);
+        aspace.map(start_addr, length, mapping_flags, false, backend)?;
     } else {
         // This is the first process to attach the shared memory
-        let result = aspace.map_shared(start_addr, length, mapping_flags, None, PageSize::Size4K);
+        let pages = Arc::new(SharedPages::new(length, PageSize::Size4K)?);
+        let backend = Backend::new_shared(start_addr, pages.clone());
+        aspace.map(start_addr, length, mapping_flags, false, backend)?;
 
-        match result {
-            Ok(pages) => {
-                info!(
-                    "proc {} map shm addr: {:#x}, size: {}",
-                    pid,
-                    start_addr.as_usize(),
-                    length
-                );
-                shm_inner.map_to_phys(pages);
-            }
-            Err(e) => {
-                error!(
-                    "proc {} map shm addr: {:#x}, size: {}, error: {:?}",
-                    pid,
-                    start_addr.as_usize(),
-                    length,
-                    e
-                );
-                return Err(LinuxError::ENOMEM);
-            }
-        }
+        shm_inner.map_to_phys(pages);
     }
 
     shm_inner.attach_process(pid, va_range);

@@ -302,15 +302,19 @@ dependencies = [
 name = "axfs-ng"
 version = "0.1.0"
 dependencies = [
+ "allocator",
+ "axalloc",
  "axdriver",
  "axerrno",
  "axfs-ng-vfs",
+ "axhal",
  "axio",
  "axsync",
  "bitflags 2.9.1",
  "cfg-if",
  "chrono",
  "fatfs",
+ "intrusive-collections",
  "lock_api",
  "log",
  "lru",
@@ -385,7 +389,10 @@ dependencies = [
  "axalloc",
  "axconfig",
  "axerrno",
+ "axfs-ng",
+ "axfs-ng-vfs",
  "axhal",
+ "axsync",
  "enum_dispatch",
  "kspin",
  "lazy_static",
@@ -1431,7 +1438,7 @@ checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 [[package]]
 name = "page_table_entry"
 version = "0.5.5"
-source = "git+https://github.com/Starry-Mix-THU/page_table_multiarch.git?rev=5f4c484#5f4c484d21d8258cb17f1d9223e8f7abe065dc33"
+source = "git+https://github.com/Starry-Mix-THU/page_table_multiarch.git?rev=e5c69f9#e5c69f9e101adf4776ff9d74e2e3cae89ab83270"
 dependencies = [
  "aarch64-cpu",
  "bitflags 2.9.1",
@@ -1442,7 +1449,7 @@ dependencies = [
 [[package]]
 name = "page_table_multiarch"
 version = "0.5.5"
-source = "git+https://github.com/Starry-Mix-THU/page_table_multiarch.git?rev=5f4c484#5f4c484d21d8258cb17f1d9223e8f7abe065dc33"
+source = "git+https://github.com/Starry-Mix-THU/page_table_multiarch.git?rev=e5c69f9#e5c69f9e101adf4776ff9d74e2e3cae89ab83270"
 dependencies = [
  "bitmaps",
  "log",
