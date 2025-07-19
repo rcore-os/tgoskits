@@ -90,7 +90,10 @@ pub fn sys_clone(
 ) -> LinuxResult<isize> {
     const FLAG_MASK: u32 = 0xff;
     let exit_signal = flags & FLAG_MASK;
-    let flags = CloneFlags::from_bits_truncate(flags & !FLAG_MASK);
+    let mut flags = CloneFlags::from_bits_truncate(flags & !FLAG_MASK);
+    if flags.contains(CloneFlags::VFORK) {
+        flags.remove(CloneFlags::VM);
+    }
 
     info!(
         "sys_clone <= flags: {:?}, exit_signal: {}, stack: {:#x}, ptid: {:#x}, ctid: {:#x}, tls: \
