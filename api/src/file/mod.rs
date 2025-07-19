@@ -150,23 +150,37 @@ pub trait FileLike: Send + Sync {
     where
         Self: Sized + 'static,
     {
-        add_file_like(Arc::new(self))
+        add_file_like(Arc::new(self), false)
+    }
+}
+
+#[derive(Clone)]
+pub struct FileDescriptor {
+    inner: Arc<dyn FileLike>,
+    pub cloexec: bool,
+}
+impl FileDescriptor {
+    fn new(inner: Arc<dyn FileLike>) -> Self {
+        Self {
+            inner,
+            cloexec: false,
+        }
     }
 }
 
 scope_local::scope_local! {
     /// The current file descriptor table.
-    pub static FD_TABLE: Arc<RwLock<FlattenObjects<Arc<dyn FileLike>, AX_FILE_LIMIT>>> =
+    pub static FD_TABLE: Arc<RwLock<FlattenObjects<FileDescriptor, AX_FILE_LIMIT>>> =
         Arc::new(RwLock::new({
             let mut fd_table = FlattenObjects::new();
             fd_table
-                .add_at(0, Arc::new(stdio::stdin()) as _)
+                .add_at(0, FileDescriptor::new(Arc::new(stdio::stdin())))
                 .unwrap_or_else(|_| panic!()); // stdin
             fd_table
-                .add_at(1, Arc::new(stdio::stdout()) as _)
+                .add_at(1, FileDescriptor::new(Arc::new(stdio::stdout())))
                 .unwrap_or_else(|_| panic!()); // stdout
             fd_table
-                .add_at(2, Arc::new(stdio::stdout()) as _)
+                .add_at(2, FileDescriptor::new(Arc::new(stdio::stdout())))
                 .unwrap_or_else(|_| panic!()); // stderr
             fd_table
         }));
@@ -177,18 +191,19 @@ pub fn get_file_like(fd: c_int) -> LinuxResult<Arc<dyn FileLike>> {
     FD_TABLE
         .read()
         .get(fd as usize)
-        .cloned()
+        .map(|fd| fd.inner.clone())
         .ok_or(LinuxError::EBADF)
 }
 
 /// Add a file to the file descriptor table.
-pub fn add_file_like(f: Arc<dyn FileLike>) -> LinuxResult<c_int> {
+pub fn add_file_like(f: Arc<dyn FileLike>, cloexec: bool) -> LinuxResult<c_int> {
     let max_nofile = current().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current;
     let mut table = FD_TABLE.write();
     if table.count() as u64 >= max_nofile {
         return Err(LinuxError::EMFILE);
     }
-    Ok(table.add(f).map_err(|_| LinuxError::EMFILE)? as c_int)
+    let fd = FileDescriptor { inner: f, cloexec };
+    Ok(table.add(fd).map_err(|_| LinuxError::EMFILE)? as c_int)
 }
 
 /// Close a file by `fd`.
@@ -197,7 +212,7 @@ pub fn close_file_like(fd: c_int) -> LinuxResult {
         .write()
         .remove(fd as usize)
         .ok_or(LinuxError::EBADF)?;
-    debug!("close_file_like <= count: {}", Arc::strong_count(&f));
+    debug!("close_file_like <= count: {}", Arc::strong_count(&f.inner));
     Ok(())
 }
 

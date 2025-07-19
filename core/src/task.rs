@@ -246,9 +246,6 @@ pub struct ProcessData {
     pub exit_signal: Option<Signo>,
 
     /// The process signal manager
-    ///
-    /// Reasons for using [`SpinNoIrqRawMutex`]: we may send signal during IRQs,
-    /// and thus we need to prevent IRQ from happening when the lock is held.
     pub signal: Arc<ProcessSignalManager>,
 
     /// The futex table.

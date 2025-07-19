@@ -1,3 +1,4 @@
+use alloc::sync::Arc;
 use core::ffi::{c_char, c_int};
 
 use axerrno::{LinuxError, LinuxResult};
@@ -6,7 +7,9 @@ use axfs_ng_vfs::NodePermission;
 use axsync::RawMutex;
 use axtask::current;
 use linux_raw_sys::general::{
-    __kernel_mode_t, AT_FDCWD, FD_CLOEXEC, F_DUPFD, F_DUPFD_CLOEXEC, F_GETFD, F_GETFL, F_SETFD, F_SETFL, O_APPEND, O_CREAT, O_DIRECT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_NONBLOCK, O_PATH, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY
+    __kernel_mode_t, AT_FDCWD, F_DUPFD, F_DUPFD_CLOEXEC, F_GETFD, F_GETFL, F_SETFD, F_SETFL,
+    FD_CLOEXEC, O_APPEND, O_CLOEXEC, O_CREAT, O_DIRECT, O_DIRECTORY, O_EXCL, O_NOFOLLOW,
+    O_NONBLOCK, O_PATH, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY,
 };
 use starry_core::task::AsThread;
 
@@ -57,10 +60,10 @@ fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32))
     options
 }
 
-fn add_to_fd(result: OpenResult<RawMutex>) -> LinuxResult<i32> {
+fn add_to_fd(result: OpenResult<RawMutex>, cloexec: bool) -> LinuxResult<i32> {
     match result {
-        OpenResult::File(file) => File::new(file).add_to_fd_table(),
-        OpenResult::Dir(dir) => Directory::new(dir).add_to_fd_table(),
+        OpenResult::File(file) => add_file_like(Arc::new(File::new(file)), cloexec),
+        OpenResult::Dir(dir) => add_file_like(Arc::new(Directory::new(dir)), cloexec),
     }
 }
 
@@ -86,7 +89,7 @@ pub fn sys_openat(
 
     let options = flags_to_options(flags, mode, (sys_geteuid()? as _, sys_getegid()? as _));
     with_fs(dirfd, |fs| options.open(fs, path))
-        .and_then(add_to_fd)
+        .and_then(|it| add_to_fd(it, (flags as u32) & O_CLOEXEC != 0))
         .map(|fd| fd as isize)
 }
 
@@ -108,15 +111,15 @@ pub fn sys_close(fd: c_int) -> LinuxResult<isize> {
     Ok(0)
 }
 
-fn dup_fd(old_fd: c_int) -> LinuxResult<isize> {
+fn dup_fd(old_fd: c_int, cloexec: bool) -> LinuxResult<isize> {
     let f = get_file_like(old_fd)?;
-    let new_fd = add_file_like(f)?;
+    let new_fd = add_file_like(f, cloexec)?;
     Ok(new_fd as _)
 }
 
 pub fn sys_dup(old_fd: c_int) -> LinuxResult<isize> {
     debug!("sys_dup <= {}", old_fd);
-    dup_fd(old_fd)
+    dup_fd(old_fd, false)
 }
 
 pub fn sys_dup2(old_fd: c_int, new_fd: c_int) -> LinuxResult<isize> {
@@ -163,11 +166,8 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> LinuxResult<isize> {
     debug!("sys_fcntl <= fd: {} cmd: {} arg: {}", fd, cmd, arg);
 
     match cmd as u32 {
-        F_DUPFD => dup_fd(fd),
-        F_DUPFD_CLOEXEC => {
-            warn!("sys_fcntl: treat F_DUPFD_CLOEXEC as F_DUPFD");
-            dup_fd(fd)
-        }
+        F_DUPFD => dup_fd(fd, false),
+        F_DUPFD_CLOEXEC => dup_fd(fd, true),
         F_SETFL => {
             get_file_like(fd)?.set_nonblocking(arg & (O_NONBLOCK as usize) > 0)?;
             Ok(0)
@@ -192,11 +192,20 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> LinuxResult<isize> {
             Ok(ret as _)
         }
         F_GETFD => {
-            debug!("unsupported fcntl parameters: F_GETFD, returning FD_CLOEXEC");
-            Ok(FD_CLOEXEC as _)
+            let cloexec = FD_TABLE
+                .read()
+                .get(fd as _)
+                .ok_or(LinuxError::EBADF)?
+                .cloexec;
+            Ok(if cloexec { FD_CLOEXEC as _ } else { 0 })
         }
         F_SETFD => {
-            debug!("unsupported fcntl parameters: F_SETFD, ignoring");
+            let cloexec = arg & FD_CLOEXEC as usize != 0;
+            FD_TABLE
+                .write()
+                .get_mut(fd as _)
+                .ok_or(LinuxError::EBADF)?
+                .cloexec = cloexec;
             Ok(0)
         }
         _ => {

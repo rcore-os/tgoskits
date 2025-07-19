@@ -9,7 +9,7 @@ use starry_core::{
     task::AsThread,
 };
 
-use crate::ptr::UserConstPtr;
+use crate::{file::FD_TABLE, ptr::UserConstPtr};
 
 pub fn sys_execve(
     tf: &mut TrapFrame,
@@ -57,7 +57,16 @@ pub fn sys_execve(
     curr.set_name(name);
     *proc_data.exe_path.write() = path;
 
-    // TODO: fd close-on-exec
+    // Close CLOEXEC file descriptors
+    let mut fd_table = FD_TABLE.write();
+    let cloexec_fds = fd_table
+        .ids()
+        .filter(|it| fd_table.get(*it).unwrap().cloexec)
+        .collect::<Vec<_>>();
+    for fd in cloexec_fds {
+        fd_table.remove(fd);
+    }
+    drop(fd_table);
 
     tf.set_ip(entry_point.as_usize());
     tf.set_sp(user_stack_base.as_usize());
