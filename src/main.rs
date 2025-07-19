@@ -54,7 +54,12 @@ fn main() {
     });
 
     let args = ENTRY.iter().copied().map(str::to_owned).collect::<Vec<_>>();
-    let envs = [format!("ARCH={}", option_env!("ARCH").unwrap_or("unknown"))];
+    let envs = [
+        format!("ARCH={}", option_env!("ARCH").unwrap_or("unknown")),
+        "HOSTNAME=starry".to_owned(),
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_owned(),
+        "HOME=/root".to_owned(),
+    ];
     let exit_code = entry::run_initproc(&args, &envs);
     info!("Init process exited with code: {:?}", exit_code);
 }
