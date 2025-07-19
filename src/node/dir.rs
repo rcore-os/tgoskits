@@ -1,9 +1,9 @@
 use alloc::{borrow::ToOwned, string::String, sync::Arc};
-use hashbrown::HashMap;
 use core::{
     mem,
     ops::{Deref, DerefMut},
 };
+use hashbrown::HashMap;
 
 use lock_api::{Mutex, MutexGuard, RawMutex};
 

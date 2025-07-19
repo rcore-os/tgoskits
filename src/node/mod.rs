@@ -3,17 +3,18 @@ mod file;
 
 use alloc::{
     borrow::ToOwned,
+    boxed::Box,
     string::String,
     sync::{Arc, Weak},
     vec,
     vec::Vec,
 };
-use core::{iter, ops::Deref};
+use core::{any::Any, iter, ops::Deref};
 
 pub use dir::*;
 pub use file::*;
 use inherit_methods_macro::inherit_methods;
-use lock_api::RawMutex;
+use lock_api::{Mutex, MutexGuard, RawMutex};
 
 use crate::{
     FilesystemOps, Metadata, MetadataUpdate, NodeType, VfsError, VfsResult, path::PathBuf,
@@ -100,6 +101,7 @@ struct Inner<M> {
     node: Node<M>,
     node_type: NodeType,
     reference: Reference<M>,
+    user_data: Mutex<M, Option<Box<dyn Any + Send + Sync>>>,
 }
 
 pub struct DirEntry<M>(Arc<Inner<M>>);
@@ -153,6 +155,7 @@ impl<M: RawMutex> DirEntry<M> {
             node: Node::File(node),
             node_type,
             reference,
+            user_data: Mutex::new(None),
         }))
     }
 
@@ -164,6 +167,7 @@ impl<M: RawMutex> DirEntry<M> {
             node: Node::Dir(node_fn(WeakDirEntry(this.clone()))),
             node_type: NodeType::Directory,
             reference,
+            user_data: Mutex::new(None),
         }))
     }
 
@@ -281,5 +285,9 @@ impl<M: RawMutex> DirEntry<M> {
         let mut buf = vec![0; file.len()? as usize];
         file.read_at(&mut buf, 0)?;
         String::from_utf8(buf).map_err(|_| VfsError::EINVAL)
+    }
+
+    pub fn user_data(&self) -> MutexGuard<'_, M, Option<Box<dyn Any + Send + Sync>>> {
+        self.0.user_data.lock()
     }
 }

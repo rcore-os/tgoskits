@@ -1,16 +1,18 @@
 use alloc::{
+    boxed::Box,
     string::String,
     sync::{Arc, Weak},
     vec,
 };
 use core::{
+    any::Any,
     iter,
     sync::atomic::{AtomicU64, Ordering},
 };
 use hashbrown::HashMap;
 
 use inherit_methods_macro::inherit_methods;
-use lock_api::{Mutex, RawMutex};
+use lock_api::{Mutex, MutexGuard, RawMutex};
 
 use crate::{
     DirEntry, DirEntrySink, Filesystem, FilesystemOps, Metadata, MetadataUpdate, NodePermission,
@@ -114,6 +116,8 @@ impl<M: RawMutex> Location<M> {
     pub fn is_root_of_mount(&self) -> bool;
 
     pub fn read_link(&self) -> VfsResult<String>;
+
+    pub fn user_data(&self) -> MutexGuard<'_, M, Option<Box<dyn Any + Send + Sync>>>;
 }
 
 impl<M: RawMutex> Location<M> {
