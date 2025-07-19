@@ -3,7 +3,7 @@
 use alloc::{
     borrow::ToOwned, collections::btree_map::BTreeMap, string::String, sync::Arc, vec::Vec,
 };
-use core::ffi::CStr;
+use core::{ffi::CStr, iter};
 
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
@@ -167,7 +167,8 @@ pub fn load_user_app(
                     .trim()
                     .splitn(2, |c: char| c.is_ascii_whitespace())
                     .map(|s| s.trim_ascii().to_owned())
-                    .chain(args.iter().cloned())
+                    .chain(iter::once(path.to_owned()))
+                    .chain(args.iter().cloned().skip(1))
                     .collect();
                 return load_user_app(uspace, None, &new_args, envs);
             }
