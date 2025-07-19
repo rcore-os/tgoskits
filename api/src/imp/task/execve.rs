@@ -31,7 +31,7 @@ pub fn sys_execve(
         .collect::<Result<Vec<_>, _>>()?;
 
     info!(
-        "sys_execve: path: {:?}, args: {:?}, envs: {:?}",
+        "sys_execve <= path: {:?}, args: {:?}, envs: {:?}",
         path, args, envs
     );
 

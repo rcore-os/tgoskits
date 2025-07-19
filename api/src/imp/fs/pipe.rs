@@ -45,6 +45,6 @@ pub fn sys_pipe2(fds: UserPtr<[c_int; 2]>, flags: u32) -> LinuxResult<isize> {
     fds[0] = read_fd;
     fds[1] = write_fd;
 
-    info!("sys_pipe2 <= fds: {:?}", fds);
+    debug!("sys_pipe2 <= fds: {:?}, flags: {:?}", fds, flags);
     Ok(0)
 }
