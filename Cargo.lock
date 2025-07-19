@@ -322,13 +322,12 @@ dependencies = [
  "scope-local",
  "slab",
  "spin",
- "weak-map",
 ]
 
 [[package]]
 name = "axfs-ng-vfs"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axfs-ng-vfs.git?rev=134977a#134977ae6c700ebe220bb28726f46614c491c0c3"
+source = "git+https://github.com/Starry-Mix-THU/axfs-ng-vfs.git?rev=839602d#839602df0d6fa07af1bdf9fa32010b7c0be4f2fb"
 dependencies = [
  "axerrno",
  "bitflags 2.9.1",
