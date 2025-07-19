@@ -218,6 +218,9 @@ fn handle_syscall_impl(tf: &mut TrapFrame, sysno: Sysno) -> LinuxResult<isize> {
         #[cfg(target_arch = "x86_64")]
         Sysno::pipe => sys_pipe2(tf.arg0().into(), 0),
 
+        // event
+        Sysno::eventfd2 => sys_eventfd2(tf.arg0() as _, tf.arg1() as _),
+
         // fs stat
         #[cfg(target_arch = "x86_64")]
         Sysno::stat => sys_stat(tf.arg0().into(), tf.arg1().into()),

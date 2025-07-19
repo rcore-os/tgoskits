@@ -71,7 +71,7 @@ pub fn new_user_task(
 
 ///  A wrapper type that assumes the inner type is `Sync`.
 #[repr(transparent)]
-pub struct AssumeSync<T>(T);
+pub struct AssumeSync<T>(pub T);
 
 unsafe impl<T> Sync for AssumeSync<T> {}
 
