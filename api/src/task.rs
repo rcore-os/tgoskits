@@ -90,7 +90,7 @@ pub fn exit_robust_list(head: &mut robust_list_head) -> LinuxResult<()> {
     Ok(())
 }
 
-pub fn do_exit(exit_code: i32, group_exit: bool) -> ! {
+pub fn do_exit(exit_code: i32, group_exit: bool) {
     let curr = current();
     let thr = curr.as_thread();
 
@@ -138,5 +138,5 @@ pub fn do_exit(exit_code: i32, group_exit: bool) -> ! {
             let _ = send_signal_to_thread(None, tid, Some(sig.clone()));
         }
     }
-    axtask::exit(exit_code)
+    thr.set_exit();
 }

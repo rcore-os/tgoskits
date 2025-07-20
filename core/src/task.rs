@@ -11,7 +11,7 @@ use alloc::{
 use core::{
     cell::RefCell,
     ops::Deref,
-    sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering},
 };
 
 use axerrno::{LinuxError, LinuxResult};
@@ -82,6 +82,9 @@ pub struct ThreadInner {
 
     /// The OOM score adjustment value.
     oom_score_adj: AtomicI32,
+
+    /// Ready to exit
+    exit: AtomicBool,
 }
 
 impl ThreadInner {
@@ -95,6 +98,7 @@ impl ThreadInner {
             time: AssumeSync(RefCell::new(TimeManager::new())),
             futex_bitset: AtomicU32::new(0),
             oom_score_adj: AtomicI32::new(200),
+            exit: AtomicBool::new(false),
         }
     }
 
@@ -138,6 +142,16 @@ impl ThreadInner {
     /// Set the oom score adjustment value.
     pub fn set_oom_score_adj(&self, value: i32) {
         self.oom_score_adj.store(value, Ordering::SeqCst);
+    }
+
+    /// Check if the thread is ready to exit.
+    pub fn pending_exit(&self) -> bool {
+        self.exit.load(Ordering::SeqCst)
+    }
+
+    /// Set the thread to exit.
+    pub fn set_exit(&self) {
+        self.exit.store(true, Ordering::SeqCst);
     }
 }
 

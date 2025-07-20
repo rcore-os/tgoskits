@@ -17,6 +17,8 @@ use axhal::{
     context::TrapFrame,
     trap::{SYSCALL, register_trap_handler},
 };
+use axtask::current;
+use starry_core::task::AsThread;
 use syscalls::Sysno;
 
 use self::{
@@ -497,6 +499,10 @@ pub fn handle_syscall(tf: &mut TrapFrame, syscall_num: usize) -> isize {
         sysno.map_or("(invalid)".to_string(), |s| s.to_string()),
         result
     );
+
+    if current().as_thread().pending_exit() {
+        axtask::exit(0);
+    }
 
     axhal::asm::disable_irqs();
 

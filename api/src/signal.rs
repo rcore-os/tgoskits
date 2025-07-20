@@ -66,7 +66,6 @@ fn pre_trap_callback(_tf: &mut TrapFrame, from_user: bool) {
 #[register_trap_handler(POST_TRAP)]
 fn post_trap_callback(tf: &mut TrapFrame, from_user: bool) {
     if !from_user {
-        // poll_timer(&current());
         return;
     }
 
@@ -76,6 +75,10 @@ fn post_trap_callback(tf: &mut TrapFrame, from_user: bool) {
     let curr = current();
     set_timer_state(&curr, TimerState::User);
     curr.set_interrupted(false);
+
+    if curr.as_thread().pending_exit() {
+        axtask::exit(0);
+    }
 }
 
 /// Sends a signal to a thread.
