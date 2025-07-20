@@ -2,6 +2,19 @@
 edition = "2024"
 name = "arm_vcpu"
 version = "0.1.0"
+authors = [
+    "KeYang Hu <keyang.hu@qq.com>",
+    "Mingxian Su <aarkegz@gmail.com>",
+    "ShiMei Tang <shimei820@gmail.com>",
+    "DeBin Luo <luodeb@outlook.com>",
+    "周睿 <zrufo747@outlook.com>"
+]
+description = "Aarch64 VCPU implementation for Arceos Hypervisor"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/arceos-hypervisor/arm_vcpu"
+categories = ["embedded", "no-std"]
+keywords = ["hypervisor", "aarch64", "vcpu"]
+
 
 [dependencies]
 log = "0.4"
