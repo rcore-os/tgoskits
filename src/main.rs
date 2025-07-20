@@ -13,8 +13,6 @@ use axerrno::LinuxError;
 use starry_core::{mm::insert_elf_cache, task::poll_timer};
 
 mod entry;
-mod mm;
-mod syscall;
 
 #[cfg(target_arch = "riscv64")]
 const CACHED_ELFS: &[&str] = &[

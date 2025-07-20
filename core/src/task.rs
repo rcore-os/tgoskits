@@ -15,7 +15,6 @@ use core::{
 };
 
 use axerrno::{LinuxError, LinuxResult};
-use axhal::context::UspaceContext;
 use axmm::AddrSpace;
 use axprocess::{Pid, Process, ProcessGroup, Session};
 use axsignal::{
@@ -35,39 +34,9 @@ use weak_map::WeakMap;
 pub use self::stat::TaskStat;
 use crate::{
     futex::{FutexKey, FutexTable},
-    mm::access_user_memory,
     resources::Rlimits,
     time::{TimeManager, TimerState},
 };
-
-/// Create a new user task.
-pub fn new_user_task(
-    name: &str,
-    uctx: UspaceContext,
-    set_child_tid: Option<&'static mut Pid>,
-) -> TaskInner {
-    TaskInner::new(
-        move || {
-            let curr = axtask::current();
-            access_user_memory(|| {
-                if let Some(tid) = set_child_tid {
-                    *tid = curr.id().as_u64() as Pid;
-                }
-            });
-
-            let kstack_top = curr.kernel_stack_top().unwrap();
-            info!(
-                "Enter user space: entry={:#x}, ustack={:#x}, kstack={:#x}",
-                uctx.ip(),
-                uctx.sp(),
-                kstack_top,
-            );
-            unsafe { uctx.enter_uspace(kstack_top) }
-        },
-        name.into(),
-        crate::config::KERNEL_STACK_SIZE,
-    )
-}
 
 ///  A wrapper type that assumes the inner type is `Sync`.
 #[repr(transparent)]

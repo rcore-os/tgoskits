@@ -12,7 +12,7 @@ use linux_raw_sys::net::{
     sockaddr_in6, socklen_t,
 };
 
-use crate::ptr::{UserConstPtr, UserPtr};
+use crate::mm::{UserConstPtr, UserPtr};
 
 /// Trait to extend [`SocketAddr`] and its variants with methods for reading
 /// from and writing to user space.

@@ -1815,7 +1815,6 @@ dependencies = [
  "shlex",
  "starry-api",
  "starry-core",
- "syscalls",
 ]
 
 [[package]]
@@ -1841,14 +1840,15 @@ dependencies = [
  "cfg-if",
  "chrono",
  "flatten_objects",
- "lazy_static",
  "linkme",
  "linux-raw-sys",
  "memory_addr",
  "num_enum",
+ "percpu",
  "scope-local",
  "spin",
  "starry-core",
+ "syscalls",
  "x86",
 ]
 
@@ -1869,6 +1869,7 @@ dependencies = [
  "axsignal",
  "axsync",
  "axtask",
+ "bitflags 2.9.1",
  "cfg-if",
  "event-listener",
  "extern-trait",
@@ -1883,7 +1884,6 @@ dependencies = [
  "lock_api",
  "lru",
  "memory_addr",
- "percpu",
  "rand",
  "riscv",
  "scope-local",

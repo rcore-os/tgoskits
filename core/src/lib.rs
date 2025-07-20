@@ -13,6 +13,7 @@ pub mod config;
 pub mod futex;
 pub mod mm;
 pub mod resources;
+pub mod shm;
 pub mod task;
 pub mod time;
 pub mod vfs;

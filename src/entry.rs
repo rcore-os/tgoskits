@@ -5,9 +5,10 @@ use axhal::context::UspaceContext;
 use axprocess::{Pid, Process};
 use axsync::Mutex;
 use axtask::{TaskExtProxy, spawn_task};
+use starry_api::task::new_user_task;
 use starry_core::{
     mm::{copy_from_kernel, load_user_app, map_trampoline, new_user_aspace_empty},
-    task::{ProcessData, Thread, add_task_to_table, new_user_task},
+    task::{ProcessData, Thread, add_task_to_table},
 };
 
 pub fn run_initproc(args: &[String], envs: &[String]) -> i32 {

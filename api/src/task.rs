@@ -1,0 +1,142 @@
+use core::sync::atomic::Ordering;
+
+use axerrno::{LinuxError, LinuxResult};
+use axhal::context::UspaceContext;
+use axprocess::Pid;
+use axsignal::{SignalInfo, Signo};
+use axtask::{TaskInner, current};
+use linux_raw_sys::general::{ROBUST_LIST_LIMIT, SI_KERNEL, robust_list, robust_list_head};
+use starry_core::{
+    futex::FutexKey,
+    shm::SHM_MANAGER,
+    task::{AsThread, get_process_data},
+};
+
+use crate::{
+    mm::{UserPtr, access_user_memory, nullable},
+    signal::{send_signal_to_process, send_signal_to_thread},
+};
+
+/// Create a new user task.
+pub fn new_user_task(
+    name: &str,
+    uctx: UspaceContext,
+    set_child_tid: Option<&'static mut Pid>,
+) -> TaskInner {
+    TaskInner::new(
+        move || {
+            let curr = axtask::current();
+            access_user_memory(|| {
+                if let Some(tid) = set_child_tid {
+                    *tid = curr.id().as_u64() as Pid;
+                }
+            });
+
+            let kstack_top = curr.kernel_stack_top().unwrap();
+            info!(
+                "Enter user space: entry={:#x}, ustack={:#x}, kstack={:#x}",
+                uctx.ip(),
+                uctx.sp(),
+                kstack_top,
+            );
+            unsafe { uctx.enter_uspace(kstack_top) }
+        },
+        name.into(),
+        starry_core::config::KERNEL_STACK_SIZE,
+    )
+}
+
+fn handle_futex_death(entry: *mut robust_list, offset: i64) -> LinuxResult<()> {
+    let address = (entry as u64)
+        .checked_add_signed(offset)
+        .ok_or(LinuxError::EINVAL)?;
+    let address: usize = address.try_into().map_err(|_| LinuxError::EINVAL)?;
+    let key = FutexKey::new_current(address);
+
+    let curr = current();
+    let futex_table = curr.as_thread().proc_data.futex_table_for(&key);
+
+    let Some(futex) = futex_table.get(&key) else {
+        return Ok(());
+    };
+    futex.owner_dead.store(true, Ordering::SeqCst);
+    futex.wq.notify_one(false);
+    Ok(())
+}
+
+pub fn exit_robust_list(head: &mut robust_list_head) -> LinuxResult<()> {
+    // Reference: https://elixir.bootlin.com/linux/v6.13.6/source/kernel/futex/core.c#L777
+
+    let mut limit = ROBUST_LIST_LIMIT;
+
+    let mut entry = head.list.next;
+    let offset = head.futex_offset;
+    let pending = head.list_op_pending;
+
+    while !core::ptr::eq(entry, &head.list) {
+        let next_entry = UserPtr::from(entry).get_as_mut()?.next;
+        if entry != pending {
+            handle_futex_death(entry, offset)?;
+        }
+        entry = next_entry;
+
+        limit -= 1;
+        if limit == 0 {
+            return Err(LinuxError::ELOOP);
+        }
+        axtask::yield_now();
+    }
+
+    Ok(())
+}
+
+pub fn do_exit(exit_code: i32, group_exit: bool) -> ! {
+    let curr = current();
+    let thr = curr.as_thread();
+
+    info!("{:?} exit with code: {}", curr.id_name(), exit_code);
+
+    let clear_child_tid = UserPtr::<Pid>::from(thr.clear_child_tid());
+    if let Ok(clear_tid) = clear_child_tid.get_as_mut() {
+        *clear_tid = 0;
+
+        let key = FutexKey::new_current(clear_tid as *const _ as usize);
+        let guard = thr.proc_data.futex_table_for(&key).get(&key);
+        if let Some(futex) = guard {
+            futex.wq.notify_one(false);
+        }
+        axtask::yield_now();
+    }
+    let head: UserPtr<robust_list_head> = thr.robust_list_head().into();
+    if let Ok(Some(head)) = nullable!(head.get_as_mut())
+        && let Err(err) = exit_robust_list(head)
+    {
+        warn!("exit robust list failed: {:?}", err);
+    }
+
+    let process = &thr.proc_data.proc;
+    if process.exit_thread(curr.id().as_u64() as Pid, exit_code) {
+        process.exit();
+        if let Some(parent) = process.parent() {
+            if let Some(signo) = thr.proc_data.exit_signal {
+                let _ = send_signal_to_process(
+                    parent.pid(),
+                    Some(SignalInfo::new(signo, SI_KERNEL as _)),
+                );
+            }
+            if let Ok(data) = get_process_data(parent.pid()) {
+                data.child_exit_event.notify(usize::MAX);
+            }
+        }
+
+        SHM_MANAGER.lock().clear_proc_shm(process.pid());
+    }
+    if group_exit && !process.is_group_exited() {
+        process.group_exit();
+        let sig = SignalInfo::new(Signo::SIGKILL, SI_KERNEL as _);
+        for tid in process.threads() {
+            let _ = send_signal_to_thread(None, tid, Some(sig.clone()));
+        }
+    }
+    axtask::exit(exit_code)
+}
