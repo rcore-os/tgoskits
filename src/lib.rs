@@ -33,7 +33,7 @@ pub struct NestedPageFaultInfo {
 }
 
 fn mapping_err_to_ax_err(err: MappingError) -> AxError {
-    warn!("Mapping error: {:?}", err);
+    warn!("Mapping error: {err:?}");
     match err {
         MappingError::InvalidParam => AxError::InvalidInput,
         MappingError::AlreadyExists => AxError::AlreadyExists,

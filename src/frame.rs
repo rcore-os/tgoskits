@@ -68,7 +68,7 @@ impl<H: AxMmHal> Drop for PhysFrame<H> {
     fn drop(&mut self) {
         if let Some(start_paddr) = self.start_paddr {
             H::dealloc_frame(start_paddr);
-            debug!("[AxVM] deallocated PhysFrame({:#x})", start_paddr);
+            debug!("[AxVM] deallocated PhysFrame({start_paddr:#x})");
         }
     }
 }
