@@ -115,6 +115,7 @@ struct FileContent {
     /// We only need to store the length here because we delegate the actual
     /// content management to page cache.
     length: Mutex<u64>,
+    symlink: Mutex<Option<String>>,
 }
 
 #[derive(Default)]
@@ -309,7 +310,14 @@ impl NodeOps<RawMutex> for MemoryNode {
 }
 
 impl FileNodeOps<RawMutex> for MemoryNode {
-    fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
+        let file = self.inode.as_file()?;
+        if let Some(symlink) = file.symlink.lock().as_ref() {
+            assert_eq!(offset, 0);
+            let len = buf.len().min(symlink.len());
+            buf[..len].copy_from_slice(&symlink.as_bytes()[..len]);
+            return Ok(len);
+        }
         unreachable!("page cache should handle reading");
     }
 
@@ -327,8 +335,9 @@ impl FileNodeOps<RawMutex> for MemoryNode {
     }
 
     fn set_symlink(&self, target: &str) -> VfsResult<()> {
-        // TODO(mivik): handle symlink in tmpfs fuck im tired
-        *self.inode.as_file()?.length.lock() = target.len() as u64;
+        let file = self.inode.as_file()?;
+        *file.length.lock() = target.len() as u64;
+        *file.symlink.lock() = Some(target.to_owned());
         Ok(())
     }
 }
