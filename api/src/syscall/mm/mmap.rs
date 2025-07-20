@@ -181,8 +181,8 @@ pub fn sys_mmap(
             if fd > 0 {
                 // Private mapping from a file
                 let file = File::from_fd(fd)?;
-                let loc = file.inner().backend().location().clone();
-                Backend::new_cow(start, page_size, Some((loc, offset)))
+                let backend = file.inner().backend().clone();
+                Backend::new_cow(start, page_size, Some((backend, offset)))
             } else {
                 Backend::new_alloc(start, page_size)
             }
