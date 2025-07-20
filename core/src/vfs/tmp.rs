@@ -309,24 +309,16 @@ impl NodeOps<RawMutex> for MemoryNode {
 }
 
 impl FileNodeOps<RawMutex> for MemoryNode {
-    fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
-        let length = *self.inode.as_file()?.length.lock();
-        let end = (offset + buf.len() as u64).min(length);
-        let read = end.saturating_sub(offset) as usize;
-        buf[..read].fill(0);
-        Ok(read)
+    fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
+        unreachable!("page cache should handle reading");
     }
 
-    fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize> {
-        let mut length = self.inode.as_file()?.length.lock();
-        *length = (*length).max(offset + buf.len() as u64);
-        Ok(buf.len())
+    fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
+        unreachable!("page cache should handle writing");
     }
 
-    fn append(&self, buf: &[u8]) -> VfsResult<(usize, u64)> {
-        let mut length = self.inode.as_file()?.length.lock();
-        *length += buf.len() as u64;
-        Ok((buf.len(), *length))
+    fn append(&self, _buf: &[u8]) -> VfsResult<(usize, u64)> {
+        unreachable!("page cache should handle writing");
     }
 
     fn set_len(&self, len: u64) -> VfsResult<()> {
