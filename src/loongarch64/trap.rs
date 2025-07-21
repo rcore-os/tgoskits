@@ -17,15 +17,11 @@ fn handle_breakpoint(era: &mut usize) {
     *era += 4;
 }
 
-fn handle_page_fault(tf: &TrapFrame, mut access_flags: PageFaultFlags, is_user: bool) {
-    if is_user {
-        access_flags |= PageFaultFlags::USER;
-    }
-    let vaddr = va!(badv::read().raw());
-    if !handle_trap!(PAGE_FAULT, vaddr, access_flags, is_user) {
+fn handle_page_fault(tf: &TrapFrame, access_flags: PageFaultFlags) {
+    let vaddr = va!(badv::read().vaddr());
+    if !handle_trap!(PAGE_FAULT, vaddr, access_flags) {
         panic!(
-            "Unhandled {} Page Fault @ {:#x}, fault_vaddr={:#x} ({:?}):\n{:#x?}\n{}",
-            if is_user { "PLV3" } else { "PLV0" },
+            "Unhandled PLV0 Page Fault @ {:#x}, fault_vaddr={:#x} ({:?}):\n{:#x?}\n{}",
             tf.era,
             vaddr,
             access_flags,
@@ -36,44 +32,35 @@ fn handle_page_fault(tf: &TrapFrame, mut access_flags: PageFaultFlags, is_user: 
 }
 
 #[unsafe(no_mangle)]
-fn loongarch64_trap_handler(tf: &mut TrapFrame, from_user: bool) {
+fn loongarch64_trap_handler(tf: &mut TrapFrame) {
     let estat = estat::read();
 
-    crate::trap::pre_trap_callback(tf, from_user);
     match estat.cause() {
-        #[cfg(feature = "uspace")]
-        Trap::Exception(Exception::Syscall) => {
-            tf.era += 4;
-            tf.regs.a0 = crate::trap::handle_syscall(tf, tf.regs.a7) as usize;
-        }
         Trap::Exception(Exception::LoadPageFault)
         | Trap::Exception(Exception::PageNonReadableFault) => {
-            handle_page_fault(tf, PageFaultFlags::READ, from_user)
+            handle_page_fault(tf, PageFaultFlags::READ)
         }
         Trap::Exception(Exception::StorePageFault)
         | Trap::Exception(Exception::PageModifyFault) => {
-            handle_page_fault(tf, PageFaultFlags::WRITE, from_user)
+            handle_page_fault(tf, PageFaultFlags::WRITE)
         }
         Trap::Exception(Exception::FetchPageFault)
         | Trap::Exception(Exception::PageNonExecutableFault) => {
-            handle_page_fault(tf, PageFaultFlags::EXECUTE, from_user);
+            handle_page_fault(tf, PageFaultFlags::EXECUTE);
         }
         Trap::Exception(Exception::Breakpoint) => handle_breakpoint(&mut tf.era),
         Trap::Interrupt(_) => {
             let irq_num: usize = estat.is().trailing_zeros() as usize;
             handle_trap!(IRQ, irq_num);
         }
-        _ => {
+        trap => {
             panic!(
-                "Unhandled trap {:?} @ {:#x}, badv={:#x}:\n{:#x?}\n{}",
-                estat.cause(),
+                "Unhandled trap {:?} @ {:#x}:\n{:#x?}\n{}",
+                trap,
                 tf.era,
-                badv::read().raw(),
                 tf,
                 tf.backtrace()
             );
         }
     }
-
-    crate::trap::post_trap_callback(tf, from_user);
 }

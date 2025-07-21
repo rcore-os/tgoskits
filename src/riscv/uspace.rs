@@ -1,16 +1,27 @@
 //! Structures and functions for user space.
 
+use core::ops::{Deref, DerefMut};
+
 use memory_addr::VirtAddr;
-use riscv::register::sstatus::Sstatus;
 #[cfg(feature = "fp-simd")]
 use riscv::register::sstatus::FS;
+use riscv::register::{scause, sstatus::Sstatus};
+use riscv::{
+    interrupt::{
+        supervisor::{Exception as E, Interrupt as I},
+        Trap,
+    },
+    register::stval,
+};
 
-use crate::{GeneralRegisters, TrapFrame};
+use super::{GeneralRegisters, TrapFrame};
+use crate::trap::{PageFaultFlags, ReturnReason};
 
 /// Context to enter user space.
-pub struct UspaceContext(TrapFrame);
+#[derive(Debug, Clone)]
+pub struct UserContext(TrapFrame);
 
-impl UspaceContext {
+impl UserContext {
     /// Creates an empty context with all registers set to zero.
     pub const fn empty() -> Self {
         unsafe { core::mem::MaybeUninit::zeroed().assume_init() }
@@ -23,9 +34,7 @@ impl UspaceContext {
         sstatus.set_spie(true); // enable interrupts
         sstatus.set_sum(true); // enable user memory access in supervisor mode
         #[cfg(feature = "fp-simd")]
-        {
-            sstatus.set_fs(FS::Initial); // set the FPU to initial state
-        }
+        sstatus.set_fs(FS::Initial); // set the FPU to initial state
 
         Self(TrapFrame {
             regs: GeneralRegisters {
@@ -38,55 +47,55 @@ impl UspaceContext {
         })
     }
 
-    /// Creates a new context from the given [`TrapFrame`].
-    pub const fn from(trap_frame: &TrapFrame) -> Self {
-        Self(*trap_frame)
-    }
-
-    /// Enters user space.
+    /// Enter user space.
     ///
     /// It restores the user registers and jumps to the user entry point
     /// (saved in `sepc`).
-    /// When an exception or syscall occurs, the kernel stack pointer is
-    /// switched to `kstack_top`.
     ///
-    /// # Safety
-    ///
-    /// This function is unsafe because it changes processor mode and the stack.
-    pub unsafe fn enter_uspace(&self, kstack_top: VirtAddr) -> ! {
-        use riscv::register::{sepc, sscratch};
+    /// This function returns when an exception or syscall occurs.
+    pub fn run(&mut self) -> ReturnReason {
+        extern "C" {
+            fn enter_user(tf: &mut TrapFrame);
+        }
 
         crate::asm::disable_irqs();
-        // Address of the top of the kernel stack after saving the trap frame.
-        let kernel_trap_addr = kstack_top.as_usize() - core::mem::size_of::<TrapFrame>();
-        unsafe {
-            sscratch::write(kstack_top.as_usize());
-            sepc::write(self.0.sepc);
-            core::arch::asm!(
-                include_asm_macros!(),
-                "
-                mv      sp, {tf}
+        unsafe { enter_user(&mut self.0) };
 
-                STR     gp, {kernel_trap_addr}, 3
-                LDR     gp, sp, 3
+        let scause = scause::read();
+        let ret = if let Ok(cause) = scause.cause().try_into::<I, E>() {
+            let stval = stval::read();
+            match cause {
+                Trap::Interrupt(_) => {
+                    handle_trap!(IRQ, scause.bits());
+                    ReturnReason::Interrupt
+                }
+                Trap::Exception(E::UserEnvCall) => {
+                    self.sepc += 4;
+                    ReturnReason::Syscall
+                }
+                Trap::Exception(E::LoadPageFault) => {
+                    ReturnReason::PageFault(va!(stval), PageFaultFlags::READ | PageFaultFlags::USER)
+                }
+                Trap::Exception(E::StorePageFault) => ReturnReason::PageFault(
+                    va!(stval),
+                    PageFaultFlags::WRITE | PageFaultFlags::USER,
+                ),
+                Trap::Exception(E::InstructionPageFault) => ReturnReason::PageFault(
+                    va!(stval),
+                    PageFaultFlags::EXECUTE | PageFaultFlags::USER,
+                ),
+                Trap::Exception(e) => ReturnReason::Exception(ExceptionInfo { e, stval }),
+            }
+        } else {
+            ReturnReason::Unknown
+        };
 
-                STR     tp, {kernel_trap_addr}, 4
-                LDR     tp, sp, 4
-
-                LDR     t0, sp, 33
-                csrw    sstatus, t0
-                POP_GENERAL_REGS
-                LDR     sp, sp, 2
-                sret",
-                tf = in(reg) &(self.0),
-                kernel_trap_addr = in(reg) kernel_trap_addr,
-                options(noreturn),
-            )
-        }
+        crate::asm::enable_irqs();
+        ret
     }
 }
 
-impl core::ops::Deref for UspaceContext {
+impl Deref for UserContext {
     type Target = TrapFrame;
 
     fn deref(&self) -> &Self::Target {
@@ -94,8 +103,20 @@ impl core::ops::Deref for UspaceContext {
     }
 }
 
-impl core::ops::DerefMut for UspaceContext {
+impl DerefMut for UserContext {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
+}
+
+impl From<TrapFrame> for UserContext {
+    fn from(tf: TrapFrame) -> Self {
+        Self(tf)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ExceptionInfo {
+    pub e: E,
+    pub stval: usize,
 }

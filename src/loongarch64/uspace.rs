@@ -1,13 +1,23 @@
 //! Structures and functions for user space.
 
+use core::ops::{Deref, DerefMut};
+
+use loongArch64::register::{
+    badi, badv,
+    estat::{self, Exception, Trap},
+};
 use memory_addr::VirtAddr;
 
-use crate::TrapFrame;
+use crate::{
+    trap::{PageFaultFlags, ReturnReason},
+    TrapFrame,
+};
 
 /// Context to enter user space.
-pub struct UspaceContext(TrapFrame);
+#[derive(Debug, Clone)]
+pub struct UserContext(TrapFrame);
 
-impl UspaceContext {
+impl UserContext {
     /// Creates an empty context with all registers set to zero.
     pub fn empty() -> Self {
         Self(Default::default())
@@ -26,53 +36,56 @@ impl UspaceContext {
         Self(trap_frame)
     }
 
-    /// Creates a new context from the given [`TrapFrame`].
-    pub const fn from(trap_frame: &TrapFrame) -> Self {
-        Self(*trap_frame)
-    }
-
-    /// Enters user space.
+    /// Enter user space.
     ///
     /// It restores the user registers and jumps to the user entry point
-    /// (saved in `era`).
-    /// When an exception or syscall occurs, the kernel stack pointer is
-    /// switched to `kstack_top`.
+    /// (saved in `sepc`).
     ///
-    /// # Safety
-    ///
-    /// This function is unsafe because it changes processor mode and the stack.
-    pub unsafe fn enter_uspace(&self, kstack_top: VirtAddr) -> ! {
-        use loongArch64::register::era;
+    /// This function returns when an exception or syscall occurs.
+    pub fn run(&mut self) -> ReturnReason {
+        extern "C" {
+            fn enter_user(tf: &mut TrapFrame);
+        }
 
         crate::asm::disable_irqs();
-        era::set_pc(self.ip());
+        unsafe { enter_user(&mut self.0) };
 
-        unsafe {
-            core::arch::asm!(
-                include_asm_macros!(),
-                "
-                move      $sp, {tf}
-                csrwr     $tp,  KSAVE_TP
-                csrwr     $r21, KSAVE_R21
-                LDD       $tp,  $sp, 32
-                csrwr     $tp,  LA_CSR_PRMD
-                csrwr     {kstack_top}, KSAVE_KSP // save ksp into SAVE0 CSR
+        let estat = estat::read();
+        let badv = badv::read().vaddr();
+        let badi = badi::read().inst();
 
-                POP_GENERAL_REGS
+        let ret = match estat.cause() {
+            Trap::Interrupt(_) => {
+                let irq_num: usize = estat.is().trailing_zeros() as usize;
+                handle_trap!(IRQ, irq_num);
+                ReturnReason::Interrupt
+            }
+            Trap::Exception(Exception::Syscall) => {
+                self.era += 4;
+                ReturnReason::Syscall
+            }
+            Trap::Exception(Exception::LoadPageFault)
+            | Trap::Exception(Exception::PageNonReadableFault) => {
+                ReturnReason::PageFault(va!(badv), PageFaultFlags::READ | PageFaultFlags::USER)
+            }
+            Trap::Exception(Exception::StorePageFault)
+            | Trap::Exception(Exception::PageModifyFault) => {
+                ReturnReason::PageFault(va!(badv), PageFaultFlags::WRITE | PageFaultFlags::USER)
+            }
+            Trap::Exception(Exception::FetchPageFault)
+            | Trap::Exception(Exception::PageNonExecutableFault) => {
+                ReturnReason::PageFault(va!(badv), PageFaultFlags::EXECUTE | PageFaultFlags::USER)
+            }
+            Trap::Exception(e) => ReturnReason::Exception(ExceptionInfo { e, badv, badi }),
+            _ => ReturnReason::Unknown,
+        };
 
-                LDD      $tp,   $sp, 2
-                LDD      $r21,  $sp, 21
-                LDD      $sp,   $sp, 3       // user sp
-                ertn",
-                tf = in (reg) &self.0,
-                kstack_top = in(reg) kstack_top.as_usize(),
-                options(noreturn),
-            )
-        }
+        crate::asm::enable_irqs();
+        ret
     }
 }
 
-impl core::ops::Deref for UspaceContext {
+impl Deref for UserContext {
     type Target = TrapFrame;
 
     fn deref(&self) -> &Self::Target {
@@ -80,8 +93,21 @@ impl core::ops::Deref for UspaceContext {
     }
 }
 
-impl core::ops::DerefMut for UspaceContext {
+impl DerefMut for UserContext {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
+}
+
+impl From<TrapFrame> for UserContext {
+    fn from(tf: TrapFrame) -> Self {
+        Self(tf)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ExceptionInfo {
+    pub e: Exception,
+    pub badv: usize,
+    pub badi: u32,
 }

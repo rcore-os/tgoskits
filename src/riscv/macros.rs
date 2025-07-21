@@ -138,6 +138,8 @@ macro_rules! include_asm_macros {
 
             .macro PUSH_POP_GENERAL_REGS, op
                 \op ra, sp, 1
+                \op gp, sp, 3
+                \op tp, sp, 4
                 \op t0, sp, 5
                 \op t1, sp, 6
                 \op t2, sp, 7

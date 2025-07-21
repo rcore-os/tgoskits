@@ -10,8 +10,8 @@ pub struct GeneralRegisters {
     pub zero: usize,
     pub ra: usize,
     pub sp: usize,
-    pub gp: usize, // only valid for user traps
-    pub tp: usize, // only valid for user traps
+    pub gp: usize,
+    pub tp: usize,
     pub t0: usize,
     pub t1: usize,
     pub t2: usize,
@@ -186,6 +186,16 @@ impl TrapFrame {
     /// Sets the 5th syscall argument.
     pub const fn set_arg5(&mut self, a5: usize) {
         self.regs.a5 = a5;
+    }
+
+    /// Gets the syscall number.
+    pub const fn sysno(&self) -> usize {
+        self.regs.a7
+    }
+
+    /// Sets the syscall number.
+    pub const fn set_sysno(&mut self, a7: usize) {
+        self.regs.a7 = a7;
     }
 
     /// Gets the instruction pointer.

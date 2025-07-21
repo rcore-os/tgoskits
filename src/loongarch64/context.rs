@@ -142,6 +142,16 @@ impl TrapFrame {
         self.regs.a5 = a5;
     }
 
+    /// Get the syscall number.
+    pub const fn sysno(&self) -> usize {
+        self.regs.a7
+    }
+
+    /// Sets the syscall number.
+    pub const fn set_sysno(&mut self, a7: usize) {
+        self.regs.a7 = a7;
+    }
+
     /// Gets the instruction pointer.
     pub const fn ip(&self) -> usize {
         self.era
