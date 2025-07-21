@@ -39,7 +39,7 @@ pub fn new_user_task(
             let thr = curr.as_thread();
             while !thr.pending_exit() {
                 let reason = uctx.run();
-                info!("User task returned: {:?}", reason);
+                trace!("User task returned: {:?}", reason);
 
                 set_timer_state(&curr, TimerState::Kernel);
 
@@ -51,7 +51,7 @@ pub fn new_user_task(
                     ReturnReason::Interrupt => {}
                     r => {
                         warn!("Unexpected return reason: {:?}", r);
-                        // TODO: exit
+                        thr.set_exit();
                     }
                 }
 
