@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
-use axhal::context::{TrapFrame, UspaceContext};
+use axhal::{context::TrapFrame, uspace::UserContext};
 use axprocess::Pid;
 use axsignal::Signo;
 use axtask::{TaskExtProxy, current, spawn_task};
@@ -108,7 +108,7 @@ pub fn sys_clone(
     }
     let exit_signal = Signo::from_repr(exit_signal as u8);
 
-    let mut new_uctx = UspaceContext::from(tf);
+    let mut new_uctx = UserContext::from(*tf);
     if stack != 0 {
         new_uctx.set_sp(stack);
     }

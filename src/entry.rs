@@ -1,7 +1,7 @@
 use alloc::{borrow::ToOwned, string::String, sync::Arc};
 
 use axfs_ng::FS_CONTEXT;
-use axhal::context::UspaceContext;
+use axhal::uspace::UserContext;
 use axprocess::{Pid, Process};
 use axsync::Mutex;
 use axtask::{TaskExtProxy, spawn_task};
@@ -31,7 +31,7 @@ pub fn run_initproc(args: &[String], envs: &[String]) -> i32 {
     let (entry_vaddr, ustack_top) = load_user_app(&mut uspace, None, args, envs)
         .unwrap_or_else(|e| panic!("Failed to load user app: {}", e));
 
-    let uctx = UspaceContext::new(entry_vaddr.into(), ustack_top, 2333);
+    let uctx = UserContext::new(entry_vaddr.into(), ustack_top, 0);
 
     let mut task = new_user_task(&name, uctx, None);
     task.ctx_mut().set_page_table_root(uspace.page_table_root());

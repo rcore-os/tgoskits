@@ -1,28 +1,17 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use axerrno::{LinuxError, LinuxResult};
-use axhal::{
-    context::TrapFrame,
-    trap::{POST_TRAP, PRE_TRAP, register_trap_handler},
-};
+use axhal::context::TrapFrame;
 use axprocess::Pid;
 use axsignal::{SignalInfo, SignalOSAction, SignalSet};
 use axtask::current;
-use starry_core::{
-    task::{AsThread, get_process_data, get_process_group, get_task, set_timer_state},
-    time::TimerState,
-};
+use starry_core::task::{AsThread, Thread, get_process_data, get_process_group, get_task};
 
 use crate::{mm::access_user_memory, task::do_exit};
 
-pub fn check_signals(tf: &mut TrapFrame, restore_blocked: Option<SignalSet>) -> bool {
+pub fn check_signals(thr: &Thread, tf: &mut TrapFrame, restore_blocked: Option<SignalSet>) -> bool {
     // axsignal may access user memory internally
-    let result = access_user_memory(|| {
-        current()
-            .as_thread()
-            .signal
-            .check_signals(tf, restore_blocked)
-    });
+    let result = access_user_memory(|| thr.signal.check_signals(tf, restore_blocked));
     let Some((sig, os_action)) = result else {
         return false;
     };
@@ -54,31 +43,14 @@ pub fn have_signals() -> bool {
     !current().as_thread().signal.pending().is_empty()
 }
 
-pub static BLOCK_NEXT_SIGNAL_CHECK: AtomicBool = AtomicBool::new(false);
+static BLOCK_NEXT_SIGNAL_CHECK: AtomicBool = AtomicBool::new(false);
 
-#[register_trap_handler(PRE_TRAP)]
-fn pre_trap_callback(_tf: &mut TrapFrame, from_user: bool) {
-    if from_user {
-        set_timer_state(&current(), TimerState::Kernel);
-    }
+pub fn block_next_signal() {
+    BLOCK_NEXT_SIGNAL_CHECK.store(true, Ordering::SeqCst);
 }
 
-#[register_trap_handler(POST_TRAP)]
-fn post_trap_callback(tf: &mut TrapFrame, from_user: bool) {
-    if !from_user {
-        return;
-    }
-
-    if !BLOCK_NEXT_SIGNAL_CHECK.swap(false, Ordering::SeqCst) {
-        check_signals(tf, None);
-    }
-    let curr = current();
-    set_timer_state(&curr, TimerState::User);
-    curr.set_interrupted(false);
-
-    if curr.as_thread().pending_exit() {
-        axtask::exit(0);
-    }
+pub fn unblock_next_signal() -> bool {
+    BLOCK_NEXT_SIGNAL_CHECK.swap(false, Ordering::SeqCst)
 }
 
 /// Sends a signal to a thread.

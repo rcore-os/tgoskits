@@ -1,4 +1,4 @@
-use core::{mem, sync::atomic::Ordering};
+use core::mem;
 
 use axerrno::{LinuxError, LinuxResult};
 use axhal::context::TrapFrame;
@@ -17,8 +17,8 @@ use starry_core::task::{AsThread, processes};
 use crate::{
     mm::{UserConstPtr, UserPtr, nullable},
     signal::{
-        BLOCK_NEXT_SIGNAL_CHECK, check_signals, send_signal_to_process,
-        send_signal_to_process_group, send_signal_to_thread,
+        block_next_signal, check_signals, send_signal_to_process, send_signal_to_process_group,
+        send_signal_to_thread,
     },
     time::TimeValueLike,
 };
@@ -195,7 +195,7 @@ pub fn sys_rt_tgsigqueueinfo(
 }
 
 pub fn sys_rt_sigreturn(tf: &mut TrapFrame) -> LinuxResult<isize> {
-    BLOCK_NEXT_SIGNAL_CHECK.store(true, Ordering::SeqCst);
+    block_next_signal();
     current().as_thread().signal.restore(tf);
     Ok(tf.retval() as isize)
 }
@@ -260,7 +260,7 @@ pub fn sys_rt_sigsuspend(
 
     block_on(async move {
         loop {
-            if check_signals(tf, Some(old_blocked)) {
+            if check_signals(thr, tf, Some(old_blocked)) {
                 return;
             }
             thr.proc_data.signal.wait().await;

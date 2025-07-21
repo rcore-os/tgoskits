@@ -1,7 +1,7 @@
 use core::sync::atomic::Ordering;
 
 use axerrno::{LinuxError, LinuxResult};
-use axhal::context::UspaceContext;
+use axhal::uspace::{ReturnReason, UserContext};
 use axprocess::Pid;
 use axsignal::{SignalInfo, Signo};
 use axtask::{TaskInner, current};
@@ -9,18 +9,20 @@ use linux_raw_sys::general::{ROBUST_LIST_LIMIT, SI_KERNEL, robust_list, robust_l
 use starry_core::{
     futex::FutexKey,
     shm::SHM_MANAGER,
-    task::{AsThread, get_process_data},
+    task::{AsThread, get_process_data, set_timer_state},
+    time::TimerState,
 };
 
 use crate::{
-    mm::{UserPtr, access_user_memory, nullable},
-    signal::{send_signal_to_process, send_signal_to_thread},
+    mm::{UserPtr, access_user_memory, handle_user_page_fault, nullable},
+    signal::{check_signals, send_signal_to_process, send_signal_to_thread, unblock_next_signal},
+    syscall::handle_syscall,
 };
 
 /// Create a new user task.
 pub fn new_user_task(
     name: &str,
-    uctx: UspaceContext,
+    mut uctx: UserContext,
     set_child_tid: Option<&'static mut Pid>,
 ) -> TaskInner {
     TaskInner::new(
@@ -32,14 +34,38 @@ pub fn new_user_task(
                 }
             });
 
-            let kstack_top = curr.kernel_stack_top().unwrap();
-            info!(
-                "Enter user space: entry={:#x}, ustack={:#x}, kstack={:#x}",
-                uctx.ip(),
-                uctx.sp(),
-                kstack_top,
-            );
-            unsafe { uctx.enter_uspace(kstack_top) }
+            info!("Enter user space: ip={:#x}, sp={:#x}", uctx.ip(), uctx.sp());
+
+            let thr = curr.as_thread();
+            while !thr.pending_exit() {
+                let reason = uctx.run();
+                info!("User task returned: {:?}", reason);
+
+                set_timer_state(&curr, TimerState::Kernel);
+
+                match reason {
+                    ReturnReason::Syscall => handle_syscall(&mut uctx),
+                    ReturnReason::PageFault(addr, flags) => {
+                        handle_user_page_fault(&thr.proc_data, addr, flags)
+                    }
+                    ReturnReason::Interrupt => {}
+                    r => {
+                        warn!("Unexpected return reason: {:?}", r);
+                        // TODO: exit
+                    }
+                }
+
+                if !unblock_next_signal() {
+                    check_signals(thr, &mut uctx, None);
+                }
+
+                set_timer_state(&curr, TimerState::User);
+                curr.set_interrupted(false);
+
+                if thr.pending_exit() {
+                    break;
+                }
+            }
         },
         name.into(),
         starry_core::config::KERNEL_STACK_SIZE,

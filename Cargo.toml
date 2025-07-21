@@ -99,7 +99,7 @@ linux-raw-sys.workspace = true
 shlex = { version = "1.3.0", default-features = false }
 
 [patch.crates-io]
-axcpu = { git = "https://github.com/Starry-Mix-THU/axcpu.git", rev = "bf39540" }
+axcpu = { git = "https://github.com/Starry-Mix-THU/axcpu.git", rev = "e62544b" }
 axplat-riscv64-qemu-virt = { git = "https://github.com/Starry-Mix-THU/axplat_crates.git", rev = "58ba2d3" }
 # enable this for the fixed QEMU
 # axplat-loongarch64-qemu-virt = { git = "https://github.com/Starry-Mix-THU/axplat_crates.git", rev = "58ba2d3" }
