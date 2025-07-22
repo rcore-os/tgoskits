@@ -1,86 +1,38 @@
-use core::{mem::MaybeUninit, ptr::NonNull};
+use core::{mem::MaybeUninit, ptr::NonNull, slice};
 
-use axerrno::AxResult;
+use bytemuck::AnyBitPattern;
 
-use crate::{UserMutSlicePtr, UserSlicePtr};
+use crate::{VmResult, vm_read_slice, vm_write_slice};
 
-/// A pointer to a value in the user-space virtual memory.
-pub trait UserPtr: Copy {
+/// A virtual memory pointer.
+pub trait VmPtr: Copy {
     /// The type of data that the pointer points to.
     type Target;
 
     #[doc(hidden)]
     fn as_ptr(self) -> *const Self::Target;
 
-    /// Returns a shared reference to the value with user space accessibility
-    /// check. In contrast to [`UserPtr::as_ref_user`], this does not
-    /// require that the value has to be initialized.
-    ///
-    /// Compared with [`as_uninit_ref`], this function does not check if the
-    /// pointer is null. Null is treated as an error.
-    ///
-    /// [`as_uninit_ref`]: https://doc.rust-lang.org/std/primitive.pointer.html#method.as_uninit_ref
-    fn as_uninit_ref_user<'a>(self) -> AxResult<&'a MaybeUninit<Self::Target>> {
-        let ptr = self.as_ptr();
-        crate::check_access(ptr, false)?;
-        // SAFETY: We have checked it.
-        Ok(unsafe { &*ptr.cast() })
+    /// Reads the value from this virtual memory pointer. In contrast to
+    /// [`VmPtr::vm_read`], this does not require that the value has to be
+    /// initialized.
+    fn vm_read_uninit(self) -> VmResult<MaybeUninit<Self::Target>> {
+        let mut uninit = MaybeUninit::<Self::Target>::uninit();
+        vm_read_slice(self.as_ptr(), slice::from_mut(&mut uninit))?;
+        Ok(uninit)
     }
 
-    /// Returns a shared reference to the value with user space accessibility
-    /// check. If the value may be uninitialized,
-    /// [`UserPtr::as_uninit_ref_user`] must be used instead.
-    ///
-    /// Compared with [`as_ref`], this function does not check if the pointer is
-    /// null. Null is treated as an error.
-    ///
-    /// # Safety
-    /// The pointer must point to a [valid value] of type T.
-    ///
-    /// [`as_ref`]: https://doc.rust-lang.org/std/primitive.pointer.html#method.as_ref
-    /// [valid value]: https://doc.rust-lang.org/nightly/reference/behavior-considered-undefined.html#invalid-values
-    unsafe fn as_ref_user<'a>(self) -> AxResult<&'a Self::Target> {
-        let uninit = self.as_uninit_ref_user()?;
-        // SAFETY: The caller guarantees that the memory is initialized.
-        Ok(unsafe { uninit.assume_init_ref() })
-    }
-
-    /// A shortcut for [`core::ptr::slice_from_raw_parts`] and then
-    /// [`UserSlicePtr::as_uninit_slice_user`].
-    ///
-    /// This function is equivalent to:
-    /// ```ignore
-    /// let ptr = core::ptr::slice_from_raw_parts(ptr, len);
-    /// // Or:
-    /// let ptr = NonNull::slice_from_raw_parts(ptr, len);
-    /// let value = ptr.as_uninit_slice_user()?;
-    /// ```
-    fn as_uninit_slice_user<'a>(self, len: usize) -> AxResult<&'a [MaybeUninit<Self::Target>]> {
-        let ptr = core::ptr::slice_from_raw_parts(self.as_ptr(), len);
-        ptr.as_uninit_slice_user()
-    }
-
-    /// A shortcut for [`core::ptr::slice_from_raw_parts`] and then
-    /// [`UserSlicePtr::as_slice_user`].
-    ///
-    /// This function is equivalent to:
-    /// ```ignore
-    /// let ptr = core::ptr::slice_from_raw_parts(ptr, len);
-    /// // Or:
-    /// let ptr = NonNull::slice_from_raw_parts(ptr, len);
-    /// let value = ptr.as_slice_user()?;
-    /// ```
-    ///
-    /// # Safety
-    /// See [`UserSlicePtr::as_slice_user`].
-    unsafe fn as_slice_user<'a>(self, len: usize) -> AxResult<&'a [Self::Target]> {
-        let uninit = self.as_uninit_slice_user(len)?;
-        // SAFETY: The caller guarantees that the memory is initialized.
-        Ok(unsafe { uninit.assume_init_ref() })
+    /// Reads the value from this virtual memory pointer.
+    fn vm_read(self) -> VmResult<Self::Target>
+    where
+        Self::Target: AnyBitPattern,
+    {
+        let uninit = self.vm_read_uninit()?;
+        // SAFETY: `AnyBitPattern`
+        Ok(unsafe { uninit.assume_init() })
     }
 }
 
-impl<T> UserPtr for *const T {
+impl<T> VmPtr for *const T {
     type Target = T;
 
     fn as_ptr(self) -> *const T {
@@ -88,7 +40,7 @@ impl<T> UserPtr for *const T {
     }
 }
 
-impl<T> UserPtr for *mut T {
+impl<T> VmPtr for *mut T {
     type Target = T;
 
     fn as_ptr(self) -> *const T {
@@ -96,7 +48,7 @@ impl<T> UserPtr for *mut T {
     }
 }
 
-impl<T> UserPtr for NonNull<T> {
+impl<T> VmPtr for NonNull<T> {
     type Target = T;
 
     fn as_ptr(self) -> *const T {
@@ -104,84 +56,14 @@ impl<T> UserPtr for NonNull<T> {
     }
 }
 
-/// A pointer to a mutable value in the user-space virtual memory.
-pub trait UserMutPtr: UserPtr {
-    #[doc(hidden)]
-    fn as_mut_ptr(self) -> *mut Self::Target {
-        self.as_ptr().cast_mut()
-    }
-
-    /// Returns a mutable reference to the value with user space accessibility
-    /// check. In contrast to [`UserPtrMut::as_mut_user`], this does not require
-    /// that the value has to be initialized.
-    ///
-    /// Compared with [`as_uninit_mut`], this function does not check if the
-    /// pointer is null. Null is treated as an error.
-    ///
-    /// [`as_uninit_mut`]: https://doc.rust-lang.org/std/primitive.pointer.html#method.as_uninit_mut
-    fn as_uninit_mut_user<'a>(self) -> AxResult<&'a mut MaybeUninit<Self::Target>> {
-        let ptr = self.as_mut_ptr();
-        crate::check_access(ptr, true)?;
-        // SAFETY: We have checked it.
-        Ok(unsafe { &mut *ptr.cast() })
-    }
-
-    /// Returns a mutable reference to the value with user space accessibility
-    /// check. If the value may be uninitialized,
-    /// [`UserPtrMut::as_uninit_mut_user`] must be used instead.
-    ///
-    /// Compared with [`as_mut`], this function does not check if the pointer is
-    /// null. Null is treated as an error.
-    ///
-    /// # Safety
-    /// The pointer must point to a [valid value] of type T.
-    ///
-    /// [`as_mut`]: https://doc.rust-lang.org/std/primitive.pointer.html#method.as_mut
-    /// [valid value]: https://doc.rust-lang.org/nightly/reference/behavior-considered-undefined.html#invalid-values
-    unsafe fn as_mut_user<'a>(self) -> AxResult<&'a mut Self::Target> {
-        let uninit = self.as_uninit_mut_user()?;
-        // SAFETY: The caller guarantees that the memory is initialized.
-        Ok(unsafe { uninit.assume_init_mut() })
-    }
-
-    /// A shortcut for [`core::ptr::slice_from_raw_parts_mut`] and then
-    /// [`UserMutSlicePtr::as_uninit_slice_mut_user`].
-    ///
-    /// This function is equivalent to:
-    /// ```ignore
-    /// let ptr = core::ptr::slice_from_raw_parts_mut(ptr, len);
-    /// // Or:
-    /// let ptr = NonNull::slice_from_raw_parts(ptr, len);
-    /// let value = ptr.as_uninit_slice_mut_user()?;
-    /// ```
-    fn as_uninit_slice_mut_user<'a>(
-        self,
-        len: usize,
-    ) -> AxResult<&'a mut [MaybeUninit<Self::Target>]> {
-        let ptr = core::ptr::slice_from_raw_parts_mut(self.as_mut_ptr(), len);
-        ptr.as_uninit_slice_mut_user()
-    }
-
-    /// A shortcut for [`core::ptr::slice_from_raw_parts_mut`] and then
-    /// [`UserMutSlicePtr::as_mut_slice_user`].
-    ///
-    /// This function is equivalent to:
-    /// ```ignore
-    /// let ptr = core::ptr::slice_from_raw_parts_mut(ptr, len);
-    /// // Or:
-    /// let ptr = NonNull::slice_from_raw_parts(ptr, len);
-    /// let value = ptr.as_mut_slice_user()?;
-    /// ```
-    ///
-    /// # Safety
-    /// See [`UserMutSlicePtr::as_mut_slice_user`].
-    unsafe fn as_mut_slice_user<'a>(self, len: usize) -> AxResult<&'a mut [Self::Target]> {
-        let uninit = self.as_uninit_slice_mut_user(len)?;
-        // SAFETY: The caller guarantees that the memory is initialized.
-        Ok(unsafe { uninit.assume_init_mut() })
+/// A mutable virtual memory pointer.
+pub trait VmMutPtr: VmPtr {
+    /// Overwrites a virtual memory location with the given value.
+    fn vm_write(self, value: Self::Target) -> VmResult {
+        vm_write_slice(self.as_ptr().cast_mut(), slice::from_ref(&value))
     }
 }
 
-impl<T> UserMutPtr for *mut T {}
+impl<T> VmMutPtr for *mut T {}
 
-impl<T> UserMutPtr for NonNull<T> {}
+impl<T> VmMutPtr for NonNull<T> {}

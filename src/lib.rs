@@ -1,68 +1,70 @@
-//! Utilities for working with user-space pointers.
+//! Virtual memory utilities.
 #![no_std]
-#![feature(layout_for_ptr)]
+#![feature(maybe_uninit_as_bytes)]
 #![feature(maybe_uninit_slice)]
-#![feature(pointer_is_aligned_to)]
-#![feature(ptr_as_uninit)]
-#![feature(ptr_sub_ptr)]
+#![warn(missing_docs)]
 
-use core::{alloc::Layout, ptr::NonNull};
+use core::{mem::MaybeUninit, slice};
 
-use axerrno::{AxError, AxResult};
-use crate_interface::def_interface;
-use memory_addr::VirtAddrRange;
+use extern_trait::extern_trait;
 
-/// The interface for checking user memory access.
-#[def_interface]
-pub trait AxPtrIf {
-    /// Acquires a guard for checking user memory access.
-    fn acquire_guard() -> NonNull<()>;
+/// Errors that can occur during virtual memory operations.
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum VmError {
+    /// The address is invalid, e.g., not aligned to the required boundary,
+    /// out of bounds (including null).
+    BadAddress,
+    /// The operation is not allowed, e.g., trying to write to read-only memory.
+    AccessDenied,
+}
 
-    /// Tries to access a specific range of user memory.
+/// A result type for virtual memory operations.
+pub type VmResult<T = ()> = Result<T, VmError>;
+
+/// The interface for accessing virtual memory.
+///
+/// # Safety
+///
+/// - Satisfy the restrictions of [`extern_trait`].
+#[extern_trait(VmImpl)]
+pub unsafe trait VmIo {
+    /// Creates an instance of [`VmIo`].
     ///
-    /// This function should also populate the memory area.
-    ///
-    /// Returns `Ok(())` if the access is allowed and the memory area can be
-    /// populated.
-    fn access_range(guard: NonNull<()>, range: VirtAddrRange, write: bool) -> AxResult;
+    /// This is used for implementations which might need to store some state or
+    /// data to perform the operations. Implementators may leave this empty
+    /// if no state is needed.
+    fn new() -> Self;
 
-    /// Frees the guard returned by [`AxPtrIf::acquire_guard`].
-    fn free_guard(guard: NonNull<()>);
+    /// Reads data from the virtual memory starting at `start` into `buf`.
+    fn read(&mut self, start: usize, buf: &mut [MaybeUninit<u8>]) -> VmResult;
+
+    /// Writes data to the virtual memory starting at `start` from `buf`.
+    fn write(&mut self, start: usize, buf: &[u8]) -> VmResult;
 }
 
-struct Guard(NonNull<()>);
-
-impl Guard {
-    fn new() -> Self {
-        Self(crate_interface::call_interface!(AxPtrIf::acquire_guard))
+/// Reads a slice from the virtual memory.
+pub fn vm_read_slice<T>(ptr: *const T, buf: &mut [MaybeUninit<T>]) -> VmResult {
+    if !ptr.is_aligned() {
+        return Err(VmError::BadAddress);
     }
-
-    fn access_range(&self, range: VirtAddrRange, write: bool) -> AxResult {
-        crate_interface::call_interface!(AxPtrIf::access_range(self.0, range, write))
-    }
+    VmImpl::new().read(ptr.addr(), buf.as_bytes_mut())
 }
 
-impl Drop for Guard {
-    fn drop(&mut self) {
-        crate_interface::call_interface!(AxPtrIf::free_guard(self.0));
+/// Writes data to the virtual memory.
+pub fn vm_write_slice<T>(ptr: *mut T, buf: &[T]) -> VmResult {
+    if !ptr.is_aligned() {
+        return Err(VmError::BadAddress);
     }
-}
-
-fn check_access<T: ?Sized>(ptr: *const T, write: bool) -> AxResult {
-    let layout = unsafe { Layout::for_value_raw(ptr) };
-    if !ptr.is_aligned_to(layout.align()) {
-        return Err(AxError::BadAddress);
-    }
-
-    let range = VirtAddrRange::from_start_size(ptr.addr().into(), layout.size());
-    Guard::new().access_range(range, write)?;
-    Ok(())
+    // SAFETY: we don't care about validity, since these bytes are only used for
+    // writing to the virtual memory.
+    let bytes = unsafe { slice::from_raw_parts(buf.as_ptr().cast::<u8>(), size_of_val(buf)) };
+    VmImpl::new().write(ptr.addr(), bytes)
 }
 
 mod thin;
-pub use thin::{UserMutPtr, UserPtr};
+pub use thin::{VmMutPtr, VmPtr};
 
-mod slice;
-pub use slice::{
-    UserMutSlicePtr, UserSlicePtr, cstr_until_nul, slice_until_nul, slice_until_nul_mut,
-};
+#[cfg(feature = "alloc")]
+mod vec;
+#[cfg(feature = "alloc")]
+pub use vec::{vm_load, vm_load_any, vm_load_until_nul};

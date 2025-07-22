@@ -1,10 +1,23 @@
 [package]
-name = "axptr"
+name = "starry-vm"
 version = "0.1.0"
 edition = "2024"
-authors = ["Mivik <mivikq@gmail.com>"]
+authors = [
+    "Mivik <mivikq@gmail.com>",
+    "Asakura Mizu <asakuramizu111@gmail.com>",
+]
+
+[features]
+default = ["alloc"]
+alloc = []
 
 [dependencies]
-axerrno = "0.1"
-crate_interface = "0.1"
-memory_addr = "0.3"
+bytemuck = { version = "1.23", features = [
+    "align_offset",
+    "const_zeroed",
+    "zeroable_maybe_uninit",
+] }
+extern-trait = "0.1"
+
+[dev-dependencies]
+bytemuck = { version = "1.23", features = ["derive"] }
