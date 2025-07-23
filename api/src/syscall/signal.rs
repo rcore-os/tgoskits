@@ -3,7 +3,6 @@ use core::mem;
 use axerrno::{LinuxError, LinuxResult};
 use axhal::context::TrapFrame;
 use axprocess::Pid;
-use axsignal::{SignalInfo, SignalSet, SignalStack, Signo};
 use axtask::{
     current,
     future::{self, block_on},
@@ -13,6 +12,7 @@ use linux_raw_sys::general::{
     timespec,
 };
 use starry_core::task::{AsThread, processes};
+use starry_signal::{SignalInfo, SignalSet, SignalStack, Signo};
 
 use crate::{
     mm::{UserConstPtr, UserPtr, nullable},

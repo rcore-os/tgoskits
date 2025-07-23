@@ -3,7 +3,7 @@
 use alloc::{
     borrow::ToOwned, collections::btree_map::BTreeMap, string::String, sync::Arc, vec::Vec,
 };
-use core::{ffi::CStr, iter};
+use core::{ffi::CStr, iter, mem::MaybeUninit};
 
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
@@ -12,10 +12,17 @@ use axhal::{
     paging::{MappingFlags, PageSize},
 };
 use axmm::{AddrSpace, Backend};
+use axsync::RawMutex;
+use axtask::current;
+use extern_trait::extern_trait;
 use kernel_elf_parser::{ELFParser, app_stack_region};
+use lock_api::ArcMutexGuard;
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use spin::lock_api::RwLock;
+use starry_vm::{VmError, VmIo, VmResult};
 use xmas_elf::{ElfFile, program::SegmentData};
+
+use crate::task::AsThread;
 
 /// Creates a new empty user address space.
 pub fn new_user_aspace_empty() -> LinuxResult<AddrSpace> {
@@ -40,7 +47,8 @@ pub fn copy_from_kernel(_aspace: &mut AddrSpace) -> LinuxResult {
 
 /// Map the signal trampoline to the user address space.
 pub fn map_trampoline(aspace: &mut AddrSpace) -> LinuxResult {
-    let signal_trampoline_paddr = virt_to_phys(axsignal::arch::signal_trampoline_address().into());
+    let signal_trampoline_paddr =
+        virt_to_phys(starry_signal::arch::signal_trampoline_address().into());
     aspace.map_linear(
         crate::config::SIGNAL_TRAMPOLINE.into(),
         signal_trampoline_paddr,
@@ -258,4 +266,51 @@ pub fn load_user_app(
     )?;
 
     Ok((VirtAddr::from(entry), user_sp))
+}
+
+struct Vm(ArcMutexGuard<RawMutex, AddrSpace>);
+
+impl Vm {
+    fn check(&mut self, start: usize, len: usize, flags: MappingFlags) -> VmResult {
+        let start = VirtAddr::from_usize(start);
+        self.0
+            .can_access_range(start, len, flags)
+            .then_some(())
+            .ok_or(VmError::AccessDenied)?;
+
+        let page_start = start.align_down_4k();
+        let page_end = (start + len).align_up_4k();
+        self.0
+            .populate_area(page_start, page_end - page_start, flags)
+            .map_err(|_| VmError::AccessDenied)?;
+
+        Ok(())
+    }
+}
+
+#[extern_trait]
+unsafe impl VmIo for Vm {
+    fn new() -> Self {
+        Self(current().as_thread().proc_data.aspace.lock_arc())
+    }
+
+    fn read(&mut self, start: usize, buf: &mut [MaybeUninit<u8>]) -> VmResult {
+        self.check(start, buf.len(), MappingFlags::READ | MappingFlags::USER)?;
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                start as *const MaybeUninit<u8>,
+                buf.as_mut_ptr(),
+                buf.len(),
+            );
+        }
+        Ok(())
+    }
+
+    fn write(&mut self, start: usize, buf: &[u8]) -> VmResult {
+        self.check(start, buf.len(), MappingFlags::WRITE | MappingFlags::USER)?;
+        unsafe {
+            core::ptr::copy_nonoverlapping(buf.as_ptr(), start as *mut u8, buf.len());
+        }
+        Ok(())
+    }
 }

@@ -17,10 +17,6 @@ use core::{
 use axerrno::{LinuxError, LinuxResult};
 use axmm::AddrSpace;
 use axprocess::{Pid, Process, ProcessGroup, Session};
-use axsignal::{
-    SignalInfo, Signo,
-    api::{ProcessSignalManager, SignalActions, ThreadSignalManager},
-};
 use axsync::{Mutex, spin::SpinNoIrq};
 use axtask::{AxTaskRef, TaskExt, TaskInner, WeakAxTaskRef, current};
 use event_listener::Event;
@@ -29,6 +25,10 @@ use lazy_static::lazy_static;
 use linux_raw_sys::general::SI_KERNEL;
 use scope_local::{ActiveScope, Scope};
 use spin::RwLock;
+use starry_signal::{
+    SignalInfo, Signo,
+    api::{ProcessSignalManager, SignalActions, ThreadSignalManager},
+};
 use weak_map::WeakMap;
 
 pub use self::stat::TaskStat;

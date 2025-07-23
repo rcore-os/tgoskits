@@ -2,13 +2,13 @@ use core::{fmt, time::Duration};
 
 use axerrno::{LinuxError, LinuxResult};
 use axhal::time::wall_time;
-use axsignal::SignalSet;
 use axtask::current;
 use bitmaps::Bitmap;
 use linux_raw_sys::{
     general::*,
     select_macros::{FD_ISSET, FD_SET, FD_ZERO},
 };
+use starry_signal::SignalSet;
 
 use crate::{
     file::get_file_like,

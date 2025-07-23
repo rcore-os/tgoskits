@@ -23,7 +23,6 @@ axtask.workspace = true
 
 axerrno.workspace = true
 axprocess.workspace = true
-axsignal.workspace = true
 bitflags.workspace = true
 cfg-if.workspace = true
 event-listener.workspace = true
@@ -36,7 +35,7 @@ kernel-elf-parser = { git = "https://github.com/Starry-Mix-THU/kernel_elf_parser
 lazy_static = { workspace = true }
 linkme.workspace = true
 linux-raw-sys.workspace = true
-lock_api = "0.4.13"
+lock_api = { version = "0.4.13", features = ["arc_lock"] }
 lru = "0.16.0"
 memory_addr.workspace = true
 rand = { version = "0.9.1", default-features = false, features = [
@@ -46,6 +45,8 @@ rand = { version = "0.9.1", default-features = false, features = [
 scope-local.workspace = true
 slab = { version = "0.4.9", default-features = false }
 spin.workspace = true
+starry-signal.workspace = true
+starry-vm.workspace = true
 strum = { version = "0.27.1", default-features = false, features = ["derive"] }
 weak-map = "0.1.1"
 xmas-elf = "0.9"

@@ -5,11 +5,11 @@ use axhal::{
     paging::MappingFlags,
     trap::{PAGE_FAULT, register_trap_handler},
 };
-use axsignal::{SignalInfo, Signo};
 use axtask::current;
 use linux_raw_sys::general::SI_KERNEL;
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use starry_core::task::{AsThread, ProcessData};
+use starry_signal::{SignalInfo, Signo};
 
 fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> LinuxResult<()> {
     let align = layout.align();

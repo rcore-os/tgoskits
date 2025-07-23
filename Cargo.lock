@@ -574,22 +574,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "axsignal"
-version = "0.2.0"
-source = "git+https://github.com/Starry-Mix-THU/axsignal.git?rev=a0c1591#a0c15917c455776af01c62a4e88a99b79d1bc161"
-dependencies = [
- "axcpu",
- "bitflags 2.9.1",
- "cfg-if",
- "derive_more",
- "event-listener",
- "kspin",
- "linux-raw-sys",
- "log",
- "strum_macros",
-]
-
-[[package]]
 name = "axsync"
 version = "0.1.0"
 dependencies = [
@@ -608,7 +592,7 @@ dependencies = [
  "cfg-if",
  "cpumask",
  "crate_interface",
- "extern-trait",
+ "extern-trait 0.2.0",
  "futures",
  "kernel_guard",
  "kspin",
@@ -691,6 +675,12 @@ name = "buddy_system_allocator"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a7913f22349ffcfc6ca0ca9a656ec26cfbba538ed49c31a273dff2c5d1ea83d9"
+
+[[package]]
+name = "bytemuck"
+version = "1.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c76a5792e44e4abe34d3abf15636779261d45a7450612059293d1d2cfc63422"
 
 [[package]]
 name = "byteorder"
@@ -977,6 +967,17 @@ checksum = "3492acde4c3fc54c845eaab3eed8bd00c7a7d881f78bfc801e43a93dec1331ae"
 dependencies = [
  "concurrent-queue",
  "pin-project-lite",
+]
+
+[[package]]
+name = "extern-trait"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce0ed68d501561822bd225ab2ec7e67ea2c141258b382a9541c2257eec2e5d10"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.100",
 ]
 
 [[package]]
@@ -1807,7 +1808,6 @@ dependencies = [
  "axlog",
  "axprocess",
  "axruntime",
- "axsignal",
  "axsync",
  "axtask",
  "linkme",
@@ -1815,6 +1815,7 @@ dependencies = [
  "shlex",
  "starry-api",
  "starry-core",
+ "starry-signal",
 ]
 
 [[package]]
@@ -1832,7 +1833,6 @@ dependencies = [
  "axmm",
  "axnet",
  "axprocess",
- "axsignal",
  "axsync",
  "axtask",
  "bitflags 2.9.1",
@@ -1848,6 +1848,7 @@ dependencies = [
  "scope-local",
  "spin",
  "starry-core",
+ "starry-signal",
  "syscalls",
  "x86",
 ]
@@ -1866,13 +1867,12 @@ dependencies = [
  "axlog",
  "axmm",
  "axprocess",
- "axsignal",
  "axsync",
  "axtask",
  "bitflags 2.9.1",
  "cfg-if",
  "event-listener",
- "extern-trait",
+ "extern-trait 0.2.0",
  "gimli",
  "hashbrown",
  "indoc",
@@ -1889,9 +1889,37 @@ dependencies = [
  "scope-local",
  "slab",
  "spin",
+ "starry-signal",
+ "starry-vm",
  "strum",
  "weak-map",
  "xmas-elf",
+]
+
+[[package]]
+name = "starry-signal"
+version = "0.2.0"
+source = "git+https://github.com/Starry-Mix-THU/starry-signal.git?rev=da398ac#da398acda309910d2e88ccada1688b3f1e767634"
+dependencies = [
+ "axcpu",
+ "bitflags 2.9.1",
+ "cfg-if",
+ "derive_more",
+ "event-listener",
+ "kspin",
+ "linux-raw-sys",
+ "log",
+ "starry-vm",
+ "strum_macros",
+]
+
+[[package]]
+name = "starry-vm"
+version = "0.1.0"
+source = "git+https://github.com/Starry-Mix-THU/starry-vm.git?rev=57e3faa#57e3faab6d7e1906ebaaa87b72c5418e097fecbb"
+dependencies = [
+ "bytemuck",
+ "extern-trait 0.1.1",
 ]
 
 [[package]]

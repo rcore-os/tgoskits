@@ -3,7 +3,7 @@
 use core::mem;
 
 use axhal::time::{NANOS_PER_SEC, TimeValue, monotonic_time_nanos};
-use axsignal::Signo;
+use starry_signal::Signo;
 use strum::FromRepr;
 
 fn time_value_from_nanos(nanos: usize) -> TimeValue {

@@ -3,16 +3,14 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use axerrno::{LinuxError, LinuxResult};
 use axhal::context::TrapFrame;
 use axprocess::Pid;
-use axsignal::{SignalInfo, SignalOSAction, SignalSet};
 use axtask::current;
 use starry_core::task::{AsThread, Thread, get_process_data, get_process_group, get_task};
+use starry_signal::{SignalInfo, SignalOSAction, SignalSet};
 
-use crate::{mm::access_user_memory, task::do_exit};
+use crate::task::do_exit;
 
 pub fn check_signals(thr: &Thread, tf: &mut TrapFrame, restore_blocked: Option<SignalSet>) -> bool {
-    // axsignal may access user memory internally
-    let result = access_user_memory(|| thr.signal.check_signals(tf, restore_blocked));
-    let Some((sig, os_action)) = result else {
+    let Some((sig, os_action)) = thr.signal.check_signals(tf, restore_blocked) else {
         return false;
     };
 

@@ -47,7 +47,8 @@ axerrno = { git = "https://github.com/Starry-Mix-THU/axerrno.git", rev = "f5d8f8
 axfs-ng-vfs = { git = "https://github.com/Starry-Mix-THU/axfs-ng-vfs.git", rev = "be0573b" }
 axio = { git = "https://github.com/Starry-Mix-THU/axio.git", rev = "b9dbe7c" }
 axprocess = { git = "https://github.com/Starry-Mix-THU/axprocess.git", rev = "3cbe037" }
-axsignal = { git = "https://github.com/Starry-Mix-THU/axsignal.git", rev = "a0c1591" }
+starry-signal = { git = "https://github.com/Starry-Mix-THU/starry-signal.git", rev = "da398ac" }
+starry-vm = { git = "https://github.com/Starry-Mix-THU/starry-vm.git", rev = "57e3faa" }
 
 bitflags = "2.6"
 cfg-if = "1.0"
@@ -93,10 +94,10 @@ starry-api.workspace = true
 
 axerrno.workspace = true
 axprocess.workspace = true
-axsignal.workspace = true
 linkme.workspace = true
 linux-raw-sys.workspace = true
 shlex = { version = "1.3.0", default-features = false }
+starry-signal.workspace = true
 
 [patch.crates-io]
 axcpu = { git = "https://github.com/Starry-Mix-THU/axcpu.git", rev = "e62544b" }
