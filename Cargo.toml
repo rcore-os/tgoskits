@@ -1,12 +1,12 @@
 [package]
-name = "axsignal"
+name = "starry-signal"
 version = "0.2.0"
 edition = "2024"
 authors = [
     "Mivik <mivikq@gmail.com>",
     "Asakura Mizu <asakuramizu111@gmail.com>",
 ]
-repository = "https://github.com/Starry-OS/axsignal"
+repository = "https://github.com/Starry-Mix-THU/starry-signal"
 
 [dependencies]
 axcpu = "0.2"
@@ -22,7 +22,7 @@ linux-raw-sys = { version = "0.9.3", default-features = false, features = [
     "no_std",
 ] }
 log = "0.4"
-starry-vm = { git = "https://github.com/Starry-Mix-THU/starry-vm.git" }
+starry-vm = { git = "https://github.com/Starry-Mix-THU/starry-vm.git", rev = "57e3faa" }
 strum_macros = "0.27.1"
 
 [patch.crates-io]
