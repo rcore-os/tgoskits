@@ -49,6 +49,9 @@ rv:
 la:
 	$(MAKE) ARCH=loongarch64 oscomp_run
 
+alpine:
+	$(MAKE) ARCH=riscv64 TEST=alpine run
+
 build run justrun debug disasm: defconfig
 	@make -C arceos $@
 

@@ -1,0 +1,12 @@
+#![allow(unexpected_cfgs)]
+
+cfg_if::cfg_if! {
+    if #[cfg(test = "oscomp_pre")] {
+        pub const CMDLINE: &[&str] = &["/musl/busybox", "sh", "-c", include_str!("pre.sh")];
+    } else if #[cfg(test = "alpine")] {
+        pub const CMDLINE: &[&str] = &["/bin/sh", "-c", include_str!("alpine.sh")];
+    } else {
+        pub const CMDLINE: &[&str] = &[];
+        compile_error!("unknown test");
+    }
+}

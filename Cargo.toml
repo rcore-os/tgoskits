@@ -94,9 +94,9 @@ starry-api.workspace = true
 
 axerrno.workspace = true
 axprocess.workspace = true
+cfg-if.workspace = true
 linkme.workspace = true
 linux-raw-sys.workspace = true
-shlex = { version = "1.3.0", default-features = false }
 starry-signal.workspace = true
 
 [patch.crates-io]
