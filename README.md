@@ -2,7 +2,8 @@
 fxmac ethernet driver in Rust on PhytiumPi board.
 
 ## Quick Start
-For instance, [fxmac_rs ethernet driver in Rust on ArceOS]([https://github.com/elliott10/arceos/blob/net-e1000/crates/driver_net/src/e1000.rs](https://github.com/arceos-org/arceos/blob/7e52baa8bed7a9dbfc59acfb9e07d3f71551d651/modules/axdriver/src/drivers.rs#L133))
+
+For instance, [fxmac_rs ethernet driver in Rust on ArceOS](https://github.com/arceos-org/arceos/blob/7e52baa8bed7a9dbfc59acfb9e07d3f71551d651/modules/axdriver/src/drivers.rs#L133)
 
 ![fxmac_rs on arceos](doc/PhytiumPi-ethernet-arceos.jpg)
 
