@@ -1,9 +1,10 @@
-use core::alloc::Layout;
+use core::{alloc::Layout, mem::offset_of};
 
 use alloc::sync::Arc;
 use axcpu::TrapFrame;
 use event_listener::listener;
 use kspin::SpinNoIrq;
+use starry_vm::VmMutPtr;
 
 use crate::{
     DefaultSignalAction, PendingSignals, SignalAction, SignalActionFlags, SignalDisposition,
@@ -56,7 +57,7 @@ impl ThreadSignalManager {
         action: &SignalAction,
     ) -> Option<SignalOSAction> {
         let signo = sig.signo();
-        info!("Handle signal: {:?}", signo);
+        debug!("Handle signal: {signo:?}");
         match action.disposition {
             SignalDisposition::Default => match signo.default_action() {
                 DefaultSignalAction::Terminate => Some(SignalOSAction::Terminate),
@@ -76,28 +77,30 @@ impl ThreadSignalManager {
                 };
                 drop(stack);
 
-                // TODO: check if stack is large enough
                 let aligned_sp = (sp - layout.size()) & !(layout.align() - 1);
 
                 let frame_ptr = aligned_sp as *mut SignalFrame;
-                // SAFETY: pointer is valid
-                let frame = unsafe { &mut *frame_ptr };
-
-                *frame = SignalFrame {
-                    ucontext: UContext::new(tf, restore_blocked),
-                    siginfo: sig.clone(),
-                    tf: *tf,
-                };
+                if frame_ptr
+                    .vm_write(SignalFrame {
+                        ucontext: UContext::new(tf, restore_blocked),
+                        siginfo: sig.clone(),
+                        tf: *tf,
+                    })
+                    .is_err()
+                {
+                    return Some(SignalOSAction::CoreDump);
+                }
 
                 tf.set_ip(handler as usize);
                 tf.set_sp(aligned_sp);
                 tf.set_arg0(signo as _);
-                tf.set_arg1(&frame.siginfo as *const _ as _);
-                tf.set_arg2(&frame.ucontext as *const _ as _);
+                tf.set_arg1(aligned_sp + offset_of!(SignalFrame, siginfo));
+                tf.set_arg2(aligned_sp + offset_of!(SignalFrame, ucontext));
 
                 let restorer = action
                     .restorer
                     .map_or(self.proc.default_restorer, |f| f as _);
+                // FIXME: fix x86_64 RA handling
                 #[cfg(target_arch = "x86_64")]
                 tf.push_ra(restorer);
                 #[cfg(not(target_arch = "x86_64"))]
