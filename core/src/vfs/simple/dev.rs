@@ -16,6 +16,10 @@ pub trait DeviceOps: Send + Sync {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize>;
     /// Writes data to the device at the specified offset.
     fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize>;
+    /// Manipulates the underlying device parameters of special files.
+    fn ioctl(&self, _cmd: u32, _arg: usize) -> VfsResult<usize> {
+        Err(VfsError::ENOTTY)
+    }
 
     /// Casts the device operations to a dynamic type.
     fn as_any(&self) -> &dyn Any;
@@ -45,18 +49,16 @@ pub struct Device<M: RawMutex> {
 }
 
 impl<M: RawMutex + Send + Sync + 'static> Device<M> {
-    pub(crate) fn new(
+    /// Creates a new device.
+    pub fn new(
         fs: Arc<SimpleFs<M>>,
         node_type: NodeType,
         device_id: DeviceId,
-        ops: impl DeviceOps + 'static,
+        ops: Arc<dyn DeviceOps>,
     ) -> Arc<Self> {
         let node = SimpleFsNode::new(fs, node_type, NodePermission::default());
         node.metadata.lock().rdev = device_id;
-        Arc::new(Self {
-            node,
-            ops: Arc::new(ops),
-        })
+        Arc::new(Self { node, ops })
     }
 
     /// Returns the inner device operations.
@@ -112,5 +114,9 @@ impl<M: RawMutex + Send + Sync + 'static> FileNodeOps<M> for Device<M> {
 
     fn set_symlink(&self, _target: &str) -> VfsResult<()> {
         Err(VfsError::EBADF)
+    }
+
+    fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
+        self.ops.ioctl(cmd, arg)
     }
 }

@@ -1,0 +1,146 @@
+use core::{
+    any::Any,
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+};
+
+use axerrno::{LinuxError, LinuxResult};
+use axfs_ng::FileBackend;
+use axfs_ng_vfs::{DeviceId, VfsResult};
+use axsync::{Mutex, RawMutex};
+use linux_raw_sys::{
+    ioctl::{BLKGETSIZE, BLKGETSIZE64, BLKRAGET, BLKRASET, BLKROGET, BLKROSET},
+    loop_device::{LOOP_CLR_FD, LOOP_GET_STATUS, LOOP_SET_FD, LOOP_SET_STATUS, loop_info},
+};
+use starry_core::vfs::DeviceOps;
+
+use crate::{file::get_file_like, mm::UserPtr};
+
+/// /dev/loopX devices
+pub struct LoopDevice {
+    number: u32,
+    dev_id: DeviceId,
+    /// Underlying file for the loop device, if any.
+    pub file: Mutex<Option<FileBackend<RawMutex>>>,
+    /// Read-only flag for the loop device.
+    pub ro: AtomicBool,
+    /// Read-ahead size for the loop device, in bytes.
+    pub ra: AtomicU32,
+}
+
+impl LoopDevice {
+    pub(crate) fn new(number: u32, dev_id: DeviceId) -> Self {
+        Self {
+            number,
+            dev_id,
+            file: Mutex::new(None),
+            ro: AtomicBool::new(false),
+            ra: AtomicU32::new(512),
+        }
+    }
+
+    /// Get information about the loop device.
+    pub fn get_info(&self, dest: &mut loop_info) -> LinuxResult<()> {
+        if self.file.lock().is_none() {
+            return Err(LinuxError::ENXIO);
+        }
+        dest.lo_number = self.number as _;
+        dest.lo_rdevice = self.dev_id.0 as _;
+        Ok(())
+    }
+
+    /// Set information for the loop device.
+    pub fn set_info(&self, _src: &loop_info) -> LinuxResult<()> {
+        Ok(())
+    }
+
+    /// Clone the underlying file of the loop device.
+    pub fn clone_file(&self) -> VfsResult<FileBackend<RawMutex>> {
+        let file = self.file.lock().clone();
+        file.ok_or(LinuxError::ENXIO)
+    }
+}
+
+impl DeviceOps for LoopDevice {
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
+        let file = self.file.lock().clone();
+        file.ok_or(LinuxError::EPERM)?.read_at(buf, offset)
+    }
+
+    fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize> {
+        if self.ro.load(Ordering::Relaxed) {
+            return Err(LinuxError::EROFS);
+        }
+        let file = self.file.lock().clone();
+        file.ok_or(LinuxError::EPERM)?.write_at(buf, offset)
+    }
+
+    fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
+        let argp: UserPtr<()> = arg.into();
+        match cmd {
+            LOOP_SET_FD => {
+                let fd = arg as i32;
+                if fd < 0 {
+                    return Err(LinuxError::EBADF);
+                }
+                let f = get_file_like(fd)?;
+                let Ok(file) = f.into_any().downcast::<crate::file::File>() else {
+                    return Err(LinuxError::EINVAL);
+                };
+                let mut guard = self.file.lock();
+                if guard.is_some() {
+                    return Err(LinuxError::EBUSY);
+                }
+                *guard = Some(file.inner().backend().clone());
+            }
+            LOOP_CLR_FD => {
+                let mut guard = self.file.lock();
+                if guard.is_none() {
+                    return Err(LinuxError::ENXIO);
+                }
+                *guard = None;
+            }
+            LOOP_GET_STATUS => {
+                self.get_info(argp.cast().get_as_mut()?)?;
+            }
+            LOOP_SET_STATUS => {
+                self.set_info(argp.cast().get_as_mut()?)?;
+            }
+            // TODO: the following should apply to any block devices
+            BLKGETSIZE | BLKGETSIZE64 => {
+                let file = self.clone_file()?;
+                let sectors = file.location().len()? / 512;
+                if cmd as u32 == BLKGETSIZE {
+                    *argp.cast::<u32>().get_as_mut()? = sectors as _;
+                } else {
+                    *argp.cast::<u64>().get_as_mut()? = sectors * 512;
+                }
+            }
+            BLKROGET => {
+                *argp.cast::<u32>().get_as_mut()? = self.ro.load(Ordering::Relaxed) as u32;
+            }
+            BLKROSET => {
+                let ro = *argp.cast::<u32>().get_as_mut()?;
+                if ro != 0 && ro != 1 {
+                    return Err(LinuxError::EINVAL);
+                }
+                self.ro.store(ro != 0, Ordering::Relaxed);
+            }
+            BLKRAGET => {
+                *argp.cast::<u32>().get_as_mut()? = self.ra.load(Ordering::Relaxed);
+            }
+            BLKRASET => {
+                self.ra
+                    .store(argp.address().as_usize() as _, Ordering::Relaxed);
+            }
+            _ => {
+                warn!("unknown ioctl for loop device: {cmd}");
+                return Err(LinuxError::ENOTTY);
+            }
+        }
+        Ok(0)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}

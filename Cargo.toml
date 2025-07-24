@@ -44,11 +44,12 @@ axtask = { path = "arceos/modules/axtask", features = ["task-ext"] }
 
 axbacktrace = { git = "https://github.com/Starry-Mix-THU/axbacktrace.git", rev = "322f6da" }
 axerrno = { git = "https://github.com/Starry-Mix-THU/axerrno.git", rev = "f5d8f86" }
-axfs-ng-vfs = { git = "https://github.com/Starry-Mix-THU/axfs-ng-vfs.git", rev = "be0573b" }
+axfs-ng-vfs = { git = "https://github.com/Starry-Mix-THU/axfs-ng-vfs.git", rev = "34fee7a" }
 axio = { git = "https://github.com/Starry-Mix-THU/axio.git", rev = "b9dbe7c" }
-axprocess = { git = "https://github.com/Starry-Mix-THU/axprocess.git", rev = "3cbe037" }
-starry-signal = { git = "https://github.com/Starry-Mix-THU/starry-signal.git", rev = "da398ac" }
-starry-vm = { git = "https://github.com/Starry-Mix-THU/starry-vm.git", rev = "57e3faa" }
+# axprocess = { git = "https://github.com/Starry-Mix-THU/axprocess.git", rev = "3cbe037" }
+axprocess = { path = "/home/mivik/tmp/axprocess" }
+starry-signal = { git = "https://github.com/Starry-Mix-THU/starry-signal.git", rev = "669c463" }
+starry-vm = { git = "https://github.com/Starry-Mix-THU/starry-vm.git", rev = "f89fdbd" }
 
 bitflags = "2.6"
 cfg-if = "1.0"
@@ -101,6 +102,7 @@ starry-signal.workspace = true
 
 [patch.crates-io]
 axcpu = { git = "https://github.com/Starry-Mix-THU/axcpu.git", rev = "e62544b" }
+axerrno = { git = "https://github.com/Starry-Mix-THU/axerrno.git", rev = "f5d8f86" }
 axplat-riscv64-qemu-virt = { git = "https://github.com/Starry-Mix-THU/axplat_crates.git", rev = "58ba2d3" }
 # enable this for the fixed QEMU
 # axplat-loongarch64-qemu-virt = { git = "https://github.com/Starry-Mix-THU/axplat_crates.git", rev = "58ba2d3" }

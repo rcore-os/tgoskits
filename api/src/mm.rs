@@ -8,7 +8,7 @@ use axhal::{
 use axtask::current;
 use linux_raw_sys::general::SI_KERNEL;
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
-use starry_core::task::{AsThread, ProcessData};
+use starry_core::task::{AsThread, ProcessData, send_signal_to_process};
 use starry_signal::{SignalInfo, Signo};
 
 fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> LinuxResult<()> {
@@ -223,8 +223,6 @@ macro_rules! nullable {
     };
 }
 pub(crate) use nullable;
-
-use crate::signal::send_signal_to_process;
 
 #[percpu::def_percpu]
 static mut ACCESSING_USER_MEM: bool = false;

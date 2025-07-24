@@ -1,11 +1,9 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use axerrno::{LinuxError, LinuxResult};
 use axhal::context::TrapFrame;
-use axprocess::Pid;
 use axtask::current;
-use starry_core::task::{AsThread, Thread, get_process_data, get_process_group, get_task};
-use starry_signal::{SignalInfo, SignalOSAction, SignalSet};
+use starry_core::task::{AsThread, Thread};
+use starry_signal::{SignalOSAction, SignalSet};
 
 use crate::task::do_exit;
 
@@ -49,56 +47,4 @@ pub fn block_next_signal() {
 
 pub fn unblock_next_signal() -> bool {
     BLOCK_NEXT_SIGNAL_CHECK.swap(false, Ordering::SeqCst)
-}
-
-/// Sends a signal to a thread.
-pub fn send_signal_to_thread(
-    tgid: Option<Pid>,
-    tid: Pid,
-    sig: Option<SignalInfo>,
-) -> LinuxResult<()> {
-    let task = get_task(tid)?;
-    let thread = task.try_as_thread().ok_or(LinuxError::EPERM)?;
-    if tgid.is_some_and(|tgid| thread.proc_data.proc.pid() != tgid) {
-        return Err(LinuxError::ESRCH);
-    }
-
-    if let Some(sig) = sig {
-        info!("Send signal {:?} to thread {}", sig.signo(), tid);
-        thread.signal.send_signal(sig);
-        task.set_interrupted(true);
-    }
-
-    Ok(())
-}
-
-/// Sends a signal to a process.
-pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> LinuxResult<()> {
-    let proc_data = get_process_data(pid)?;
-
-    if let Some(sig) = sig {
-        info!("Send signal {:?} to process {}", sig.signo(), pid);
-        proc_data.signal.send_signal(sig);
-        for tid in proc_data.proc.threads() {
-            if let Ok(task) = get_task(tid) {
-                task.set_interrupted(true);
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Sends a signal to a process group.
-pub fn send_signal_to_process_group(pgid: Pid, sig: Option<SignalInfo>) -> LinuxResult<()> {
-    let pg = get_process_group(pgid)?;
-
-    if let Some(sig) = sig {
-        info!("Send signal {:?} to process group {}", sig.signo(), pgid);
-        for proc in pg.processes() {
-            send_signal_to_process(proc.pid(), Some(sig.clone()))?;
-        }
-    }
-
-    Ok(())
 }

@@ -43,13 +43,16 @@ impl<M: RawMutex> SimpleDirOps<M> for DirMapping<M> {
     }
 }
 
+/// A mapping of directory names to entries.
 pub struct DirMapping<M>(BTreeMap<String, NodeOpsMux<M>>);
 
 impl<M: RawMutex> DirMapping<M> {
+    /// Create a new empty directory mapping.
     pub fn new() -> Self {
         Self(BTreeMap::new())
     }
 
+    /// Add a new entry to the directory mapping.
     pub fn add(&mut self, name: impl Into<String>, ops: impl Into<NodeOpsMux<M>>) {
         self.0.insert(name.into(), ops.into());
     }

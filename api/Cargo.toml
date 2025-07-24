@@ -22,12 +22,12 @@ axtask.workspace = true
 
 starry-core.workspace = true
 
+axbacktrace.workspace = true
 axerrno.workspace = true
 axprocess.workspace = true
 bitflags.workspace = true
 bitmaps = { version = "3.2.1", default-features = false }
 cfg-if.workspace = true
-chrono = { version = "0.4.41", default-features = false }
 flatten_objects = "0.2.4"
 linkme.workspace = true
 linux-raw-sys = { workspace = true, features = ["ioctl", "loop_device"] }

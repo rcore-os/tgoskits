@@ -14,7 +14,7 @@ mod test;
 
 #[unsafe(no_mangle)]
 fn main() {
-    starry_core::init();
+    starry_core::init(starry_api::file::devfs_extra);
 
     let args = test::CMDLINE
         .iter()

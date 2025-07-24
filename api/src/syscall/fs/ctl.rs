@@ -1,8 +1,7 @@
 use alloc::ffi::CString;
 use core::{
-    ffi::{c_char, c_int, c_void},
+    ffi::{c_char, c_int},
     mem::offset_of,
-    sync::atomic::Ordering,
     time::Duration,
 };
 
@@ -11,134 +10,31 @@ use axfs_ng::FS_CONTEXT;
 use axfs_ng_vfs::{MetadataUpdate, NodePermission, NodeType, path::Path};
 use axhal::time::wall_time;
 use axtask::current;
-use chrono::{Datelike, Timelike};
-use linux_raw_sys::{
-    general::*,
-    ioctl::{BLKGETSIZE, BLKGETSIZE64, BLKRAGET, BLKRASET, BLKROGET, BLKROSET},
-    loop_device::{LOOP_CLR_FD, LOOP_GET_STATUS, LOOP_SET_FD, LOOP_SET_STATUS},
-};
-use starry_core::{task::AsThread, vfs::dev};
+use linux_raw_sys::general::*;
+use starry_core::task::AsThread;
 
 use crate::{
-    file::{
-        Directory, FileLike, Stdin, Stdout, cast_file_like_to_device, get_file_like, resolve_at,
-        with_fs,
-    },
+    file::{Directory, FileLike, cast_to_axfs_file, get_file_like, resolve_at, with_fs},
     mm::{UserConstPtr, UserPtr, nullable},
     time::TimeValueLike,
 };
 
-#[repr(C)]
-#[allow(non_camel_case_types, dead_code)]
-struct rtc_time {
-    tm_sec: c_int,
-    tm_min: c_int,
-    tm_hour: c_int,
-    tm_mday: c_int,
-    tm_mon: c_int,
-    tm_year: c_int,
-    tm_wday: c_int,
-    tm_yday: c_int,
-    tm_isdst: c_int,
-}
-
 /// The ioctl() system call manipulates the underlying device parameters
 /// of special files.
-///
-/// # Arguments
-/// * `fd` - The file descriptor
-/// * `op` - The request code. It is of type unsigned long in glibc and BSD, and
-///   of type int in musl and other UNIX systems.
-/// * `argp` - The argument to the request. It is a pointer to a memory location
-pub fn sys_ioctl(fd: i32, op: usize, argp: UserPtr<c_void>) -> LinuxResult<isize> {
+pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> LinuxResult<isize> {
+    debug!("sys_ioctl <= fd: {}, cmd: {}, arg: {}", fd, cmd, arg);
     let f = get_file_like(fd)?;
-
-    if f.clone().into_any().is::<Stdin>() || f.clone().into_any().is::<Stdout>() {
-        return Ok(0);
-    }
-
-    let device = cast_file_like_to_device(f).ok_or(LinuxError::ENOTTY)?;
-    let ops = device.inner().as_any();
-
-    if ops.downcast_ref::<dev::Rtc>().is_some() {
-        let wall = chrono::DateTime::from_timestamp_nanos(axhal::time::wall_time_nanos() as _);
-        *argp.cast::<rtc_time>().get_as_mut()? = rtc_time {
-            tm_sec: wall.second() as _,
-            tm_min: wall.minute() as _,
-            tm_hour: wall.hour() as _,
-            tm_mday: wall.day() as _,
-            tm_mon: wall.month0() as _,
-            tm_year: (wall.year() - 1900) as _,
-            tm_wday: 0,
-            tm_yday: 0,
-            tm_isdst: 0,
-        };
-    } else if let Some(device) = ops.downcast_ref::<dev::LoopDevice>() {
-        match op as u32 {
-            LOOP_SET_FD => {
-                let fd = argp.address().as_usize() as i32;
-                if fd < 0 {
-                    return Err(LinuxError::EBADF);
-                }
-                let f = get_file_like(fd)?;
-                let Ok(file) = f.into_any().downcast::<crate::file::File>() else {
-                    return Err(LinuxError::EINVAL);
-                };
-                let mut guard = device.file.lock();
-                if guard.is_some() {
-                    return Err(LinuxError::EBUSY);
-                }
-                *guard = Some(file.inner().backend().clone());
+    let file = cast_to_axfs_file(f).ok_or(LinuxError::ENOTTY)?;
+    file.inner()
+        .backend()
+        .location()
+        .ioctl(cmd, arg)
+        .map(|result| result as isize)
+        .inspect_err(|err| {
+            if *err == LinuxError::ENOTTY {
+                warn!("Unsupported ioctl command: {cmd} for fd: {fd}",);
             }
-            LOOP_CLR_FD => {
-                let mut guard = device.file.lock();
-                if guard.is_none() {
-                    return Err(LinuxError::ENXIO);
-                }
-                *guard = None;
-            }
-            LOOP_GET_STATUS => {
-                device.get_info(argp.cast().get_as_mut()?)?;
-            }
-            LOOP_SET_STATUS => {
-                device.set_info(argp.cast().get_as_mut()?)?;
-            }
-            // TODO: the following should apply to any block devices
-            BLKGETSIZE | BLKGETSIZE64 => {
-                let file = device.clone_file()?;
-                let sectors = file.location().len()? / 512;
-                if op as u32 == BLKGETSIZE {
-                    *argp.cast::<u32>().get_as_mut()? = sectors as u32;
-                } else {
-                    *argp.cast::<u64>().get_as_mut()? = sectors * 512;
-                }
-            }
-            BLKROGET => {
-                *argp.cast::<u32>().get_as_mut()? = device.ro.load(Ordering::Relaxed) as u32;
-            }
-            BLKROSET => {
-                let ro = *argp.cast::<u32>().get_as_mut()?;
-                if ro != 0 && ro != 1 {
-                    return Err(LinuxError::EINVAL);
-                }
-                device.ro.store(ro != 0, Ordering::Relaxed);
-            }
-            BLKRAGET => {
-                *argp.cast::<u32>().get_as_mut()? = device.ra.load(Ordering::Relaxed);
-            }
-            BLKRASET => {
-                device
-                    .ra
-                    .store(argp.address().as_usize() as _, Ordering::Relaxed);
-            }
-            _ => {
-                warn!("unknown ioctl for loop device: {op}");
-                return Err(LinuxError::ENOTTY);
-            }
-        }
-    }
-
-    Ok(0)
+        })
 }
 
 pub fn sys_chdir(path: UserConstPtr<c_char>) -> LinuxResult<isize> {

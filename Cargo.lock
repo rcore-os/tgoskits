@@ -339,7 +339,7 @@ dependencies = [
 [[package]]
 name = "axfs-ng-vfs"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axfs-ng-vfs.git?rev=be0573b#be0573b4c56bc989a2c0a2de49d90f621b9c781c"
+source = "git+https://github.com/Starry-Mix-THU/axfs-ng-vfs.git?rev=34fee7a#34fee7a9d0cd3cf0d1e9d7363d013832a4a6a069"
 dependencies = [
  "axerrno",
  "bitflags 2.9.1",
@@ -555,7 +555,6 @@ dependencies = [
 [[package]]
 name = "axprocess"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axprocess.git?rev=3cbe037#3cbe037c4cf030671845a626892e1fa33c0707b3"
 dependencies = [
  "kspin",
  "lazyinit",
@@ -693,6 +692,20 @@ name = "bytemuck"
 version = "1.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c76a5792e44e4abe34d3abf15636779261d45a7450612059293d1d2cfc63422"
+dependencies = [
+ "bytemuck_derive",
+]
+
+[[package]]
+name = "bytemuck_derive"
+version = "1.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "441473f2b4b0459a68628c744bc61d23e730fb00128b841d30fa4bb3972257e4"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.100",
+]
 
 [[package]]
 name = "byteorder"
@@ -1877,6 +1890,7 @@ dependencies = [
 name = "starry-api"
 version = "0.1.0"
 dependencies = [
+ "axbacktrace",
  "axconfig",
  "axerrno",
  "axfeat",
@@ -1893,7 +1907,6 @@ dependencies = [
  "bitflags 2.9.1",
  "bitmaps",
  "cfg-if",
- "chrono",
  "flatten_objects",
  "linkme",
  "linux-raw-sys",
@@ -1926,7 +1939,9 @@ dependencies = [
  "axsync",
  "axtask",
  "bitflags 2.9.1",
+ "bytemuck",
  "cfg-if",
+ "chrono",
  "event-listener",
  "extern-trait 0.2.0",
  "gimli",
@@ -1956,7 +1971,7 @@ dependencies = [
 [[package]]
 name = "starry-signal"
 version = "0.2.0"
-source = "git+https://github.com/Starry-Mix-THU/starry-signal.git?rev=da398ac#da398acda309910d2e88ccada1688b3f1e767634"
+source = "git+https://github.com/Starry-Mix-THU/starry-signal.git?rev=669c463#669c463259529adea57b20af41249d480a50e592"
 dependencies = [
  "axcpu",
  "bitflags 2.9.1",
@@ -1973,8 +1988,9 @@ dependencies = [
 [[package]]
 name = "starry-vm"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/starry-vm.git?rev=57e3faa#57e3faab6d7e1906ebaaa87b72c5418e097fecbb"
+source = "git+https://github.com/Starry-Mix-THU/starry-vm.git?rev=f89fdbd#f89fdbd71120561579e64390a5eec614287440e0"
 dependencies = [
+ "axerrno",
  "bytemuck",
  "extern-trait 0.1.1",
 ]

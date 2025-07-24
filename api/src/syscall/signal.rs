@@ -11,15 +11,15 @@ use linux_raw_sys::general::{
     MINSIGSTKSZ, SI_TKILL, SI_USER, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK, kernel_sigaction, siginfo,
     timespec,
 };
-use starry_core::task::{AsThread, processes};
+use starry_core::task::{
+    AsThread, processes, send_signal_to_process, send_signal_to_process_group,
+    send_signal_to_thread,
+};
 use starry_signal::{SignalInfo, SignalSet, SignalStack, Signo};
 
 use crate::{
     mm::{UserConstPtr, UserPtr, nullable},
-    signal::{
-        block_next_signal, check_signals, send_signal_to_process, send_signal_to_process_group,
-        send_signal_to_thread,
-    },
+    signal::{block_next_signal, check_signals},
     time::TimeValueLike,
 };
 

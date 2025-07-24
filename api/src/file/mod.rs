@@ -1,29 +1,34 @@
 mod event;
 mod fs;
+mod loop_device;
 mod net;
 mod pipe;
-mod stdio;
 
-use alloc::sync::Arc;
+use alloc::{format, sync::Arc};
 use core::{any::Any, ffi::c_int, time::Duration};
 
 use axerrno::{LinuxError, LinuxResult};
-use axfs_ng_vfs::{DeviceId, FileNodeOps};
+use axfs_ng::{FS_CONTEXT, OpenOptions};
+use axfs_ng_vfs::{DeviceId, NodeType};
 use axio::PollState;
 use axsync::RawMutex;
 use axtask::current;
 use flatten_objects::FlattenObjects;
 use linux_raw_sys::general::{RLIMIT_NOFILE, stat, statx, statx_timestamp};
 use spin::RwLock;
-use starry_core::{resources::AX_FILE_LIMIT, task::AsThread, vfs::Device};
+use starry_core::{
+    resources::AX_FILE_LIMIT,
+    task::AsThread,
+    vfs::{Device, DirMapping, SimpleFs},
+};
 
 pub use self::{
     event::EventFd,
     fs::{Directory, File, ResolveAtResult, metadata_to_kstat, resolve_at, with_fs},
     net::Socket,
     pipe::Pipe,
-    stdio::{Stdin, Stdout},
 };
+use crate::file::loop_device::LoopDevice;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Kstat {
@@ -161,31 +166,10 @@ pub struct FileDescriptor {
     inner: Arc<dyn FileLike>,
     pub cloexec: bool,
 }
-impl FileDescriptor {
-    fn new(inner: Arc<dyn FileLike>) -> Self {
-        Self {
-            inner,
-            cloexec: false,
-        }
-    }
-}
 
 scope_local::scope_local! {
     /// The current file descriptor table.
-    pub static FD_TABLE: Arc<RwLock<FlattenObjects<FileDescriptor, AX_FILE_LIMIT>>> =
-        Arc::new(RwLock::new({
-            let mut fd_table = FlattenObjects::new();
-            fd_table
-                .add_at(0, FileDescriptor::new(Arc::new(stdio::stdin())))
-                .unwrap_or_else(|_| panic!()); // stdin
-            fd_table
-                .add_at(1, FileDescriptor::new(Arc::new(stdio::stdout())))
-                .unwrap_or_else(|_| panic!()); // stdout
-            fd_table
-                .add_at(2, FileDescriptor::new(Arc::new(stdio::stdout())))
-                .unwrap_or_else(|_| panic!()); // stderr
-            fd_table
-        }));
+    pub static FD_TABLE: Arc<RwLock<FlattenObjects<FileDescriptor, AX_FILE_LIMIT>>> = Arc::default();
 }
 
 /// Get a file-like object by `fd`.
@@ -218,22 +202,54 @@ pub fn close_file_like(fd: c_int) -> LinuxResult {
     Ok(())
 }
 
-pub fn cast_file_like_to_file<T>(file_like: Arc<dyn FileLike>) -> Option<Arc<T>>
-where
-    T: FileNodeOps<RawMutex> + 'static,
-{
-    let file = file_like.into_any().downcast::<File>().ok()?;
-    let file_ops = file
-        .inner()
-        .backend()
-        .location()
-        .entry()
-        .as_file()
-        .ok()?
-        .inner()
-        .clone();
-    file_ops.into_any().downcast::<T>().ok()
+pub fn cast_to_axfs_file(file_like: Arc<dyn FileLike>) -> Option<Arc<File>> {
+    file_like.into_any().downcast::<File>().ok()
 }
-pub fn cast_file_like_to_device(file_like: Arc<dyn FileLike>) -> Option<Arc<Device<RawMutex>>> {
-    cast_file_like_to_file::<Device<RawMutex>>(file_like)
+
+pub fn devfs_extra(fs: &Arc<SimpleFs>, root: &mut DirMapping<RawMutex>) {
+    for i in 0..16 {
+        let dev_id = DeviceId::new(7, 0);
+        root.add(
+            format!("loop{i}"),
+            Device::new(
+                fs.clone(),
+                NodeType::BlockDevice,
+                dev_id,
+                Arc::new(LoopDevice::new(i, dev_id)),
+            ),
+        );
+    }
+}
+
+pub fn add_stdio(fd_table: &mut FlattenObjects<FileDescriptor, AX_FILE_LIMIT>) -> LinuxResult<()> {
+    assert_eq!(fd_table.count(), 0);
+    let cx = FS_CONTEXT.lock();
+    let open = |options: &mut OpenOptions| {
+        LinuxResult::Ok(Arc::new(File::new(
+            options.open(&cx, "/dev/console")?.into_file()?,
+        )))
+    };
+
+    let tty_in = open(OpenOptions::new().read(true).write(false))?;
+    let tty_out = open(OpenOptions::new().read(false).write(true))?;
+    fd_table
+        .add(FileDescriptor {
+            inner: tty_in,
+            cloexec: false,
+        })
+        .map_err(|_| LinuxError::EMFILE)?;
+    fd_table
+        .add(FileDescriptor {
+            inner: tty_out.clone(),
+            cloexec: false,
+        })
+        .map_err(|_| LinuxError::EMFILE)?;
+    fd_table
+        .add(FileDescriptor {
+            inner: tty_out,
+            cloexec: false,
+        })
+        .map_err(|_| LinuxError::EMFILE)?;
+
+    Ok(())
 }

@@ -27,6 +27,7 @@ pub fn dummy_stat_fs(fs_type: u32) -> StatFs {
     }
 }
 
+/// A simple filesystem implementation that uses a slab allocator for inodes.
 pub struct SimpleFs<M = axsync::RawMutex> {
     name: String,
     fs_type: u32,
@@ -35,7 +36,7 @@ pub struct SimpleFs<M = axsync::RawMutex> {
 }
 
 impl<M: RawMutex + Send + Sync + 'static> SimpleFs<M> {
-    pub fn new_with(
+    pub(crate) fn new_with(
         name: String,
         fs_type: u32,
         root: impl FnOnce(Arc<Self>) -> DirMaker<M>,
@@ -54,17 +55,17 @@ impl<M: RawMutex + Send + Sync + 'static> SimpleFs<M> {
         Filesystem::new(fs)
     }
 
-    pub fn set_root(&self, root: DirEntry<M>) {
+    fn set_root(&self, root: DirEntry<M>) {
         *self.root.lock() = Some(root);
     }
 }
 
 impl<M: RawMutex> SimpleFs<M> {
-    pub fn alloc_inode(&self) -> u64 {
+    fn alloc_inode(&self) -> u64 {
         self.inodes.lock().insert(()) as u64 + 1
     }
 
-    pub fn release_inode(&self, ino: u64) {
+    fn release_inode(&self, ino: u64) {
         self.inodes.lock().remove(ino as usize - 1);
     }
 }

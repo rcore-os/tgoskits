@@ -5,10 +5,11 @@ use axhal::uspace::UserContext;
 use axprocess::{Pid, Process};
 use axsync::Mutex;
 use axtask::{TaskExtProxy, spawn_task};
-use starry_api::task::new_user_task;
+use starry_api::{file::FD_TABLE, task::new_user_task};
 use starry_core::{
     mm::{copy_from_kernel, load_user_app, map_trampoline, new_user_aspace_empty},
     task::{ProcessData, Thread, add_task_to_table},
+    vfs::dev::N_TTY,
 };
 
 pub fn run_initproc(args: &[String], envs: &[String]) -> i32 {
@@ -40,6 +41,8 @@ pub fn run_initproc(args: &[String], envs: &[String]) -> i32 {
     let proc = Process::new_init(pid);
     proc.add_thread(pid);
 
+    N_TTY.bind_to(&proc);
+
     let proc_data = ProcessData::new(
         proc,
         exe_path.clone(),
@@ -47,6 +50,11 @@ pub fn run_initproc(args: &[String], envs: &[String]) -> i32 {
         Arc::default(),
         None,
     );
+    {
+        let mut scope = proc_data.scope.write();
+        starry_api::file::add_stdio(&mut FD_TABLE.scope_mut(&mut scope).write())
+            .expect("Failed to add stdio");
+    }
     let thr = Thread::new(proc_data);
 
     *task.task_ext_mut() = Some(unsafe { TaskExtProxy::from_impl(thr) });
