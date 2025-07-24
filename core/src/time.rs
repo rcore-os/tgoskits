@@ -1,6 +1,9 @@
 //! Time management module.
 
-use core::mem;
+use core::{
+    mem,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use axhal::time::{NANOS_PER_SEC, TimeValue, monotonic_time_nanos};
 use starry_signal::Signo;
@@ -164,4 +167,14 @@ impl TimeManager {
             emitter(ty.signo());
         }
     }
+}
+
+static IRQ_CNT: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn inc_irq_cnt() {
+    IRQ_CNT.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn irq_cnt() -> usize {
+    IRQ_CNT.load(Ordering::Relaxed)
 }

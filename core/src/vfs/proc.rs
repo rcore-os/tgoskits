@@ -269,6 +269,10 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             }
         }),
     );
+    root.add(
+        "interrupts",
+        SimpleFile::new(fs.clone(), || Ok(format!("0: {}", crate::time::irq_cnt()))),
+    );
 
     root.add("sys", {
         let mut sys = DirMapping::new();

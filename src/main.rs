@@ -9,18 +9,12 @@ extern crate axruntime;
 
 use alloc::{borrow::ToOwned, format, vec::Vec};
 
-use starry_core::task::poll_timer;
-
 mod entry;
 mod test;
 
 #[unsafe(no_mangle)]
 fn main() {
-    starry_core::vfs::mount_all().expect("Failed to mount vfs");
-
-    axtask::register_timer_callback(|_| {
-        poll_timer(&axtask::current());
-    });
+    starry_core::init();
 
     let args = test::CMDLINE
         .iter()
