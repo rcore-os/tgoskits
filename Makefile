@@ -9,6 +9,7 @@ export NET = y
 export MEM = 1G
 
 export BACKTRACE ?= y
+export TEST ?= pre
 
 DIR := $(shell basename $(PWD))
 
@@ -25,34 +26,30 @@ all:
 	RUSTUP_TOOLCHAIN=nightly-2025-05-20 $(MAKE) ARCH=loongarch64 LOG=off BACKTRACE=n build
 	cp $(DIR)_loongarch64-qemu-virt.elf kernel-la
 
-IMG_URL = https://github.com/oscomp/testsuits-for-oskernel/releases/download/pre-20250615/
-
+IMG :=
 ifeq ($(ARCH), riscv64)
-	IMG := sdcard-rv.img
+	IMG := sdcard-rv-$(TEST).img
 else ifeq ($(ARCH), loongarch64)
-	IMG := sdcard-la.img
-else
-	$(error Unsupported architecture: $(ARCH))
+	IMG := sdcard-la-$(TEST).img
 endif
 
-oscomp_run:
-	@if [ ! -f $(PWD)/$(IMG) ]; then \
-		wget $(IMG_URL)/$(IMG).xz; \
-		xz -d $(IMG).xz; \
+run: defconfig
+	@if [ -f "$(IMG)" ]; then \
+		cp $(IMG) arceos/disk.img; \
 	fi
-	cp $(IMG) arceos/disk.img
-	$(MAKE) run
+	@make -C arceos run
 
+# Aliases
 rv:
-	$(MAKE) ARCH=riscv64 oscomp_run
+	$(MAKE) ARCH=riscv64 run
 
 la:
-	$(MAKE) ARCH=loongarch64 oscomp_run
+	$(MAKE) ARCH=loongarch64 run
 
 alpine:
-	$(MAKE) ARCH=riscv64 TEST=alpine run
+	$(MAKE) TEST=alpine rv
 
-build run justrun debug disasm: defconfig
+justrun debug disasm: defconfig
 	@make -C arceos $@
 
 defconfig:
