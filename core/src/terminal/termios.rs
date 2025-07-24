@@ -18,6 +18,7 @@ pub struct Termios {
     c_ispeed: speed_t,
     c_ospeed: speed_t,
 }
+
 impl Termios {
     pub fn new() -> Self {
         let mut result = Self {

@@ -52,6 +52,7 @@ struct Rusage {
     utime: TimeValue,
     stime: TimeValue,
 }
+
 impl Rusage {
     fn from_thread(thread: &Thread) -> Self {
         let (utime, stime) = thread.time.borrow().output();

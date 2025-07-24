@@ -22,6 +22,7 @@ pub struct LineDiscipline {
     line_buf: Vec<u8>,
     line_read: Option<usize>,
 }
+
 impl LineDiscipline {
     pub fn new(job_control: Arc<JobControl>) -> Self {
         Self {
@@ -162,7 +163,7 @@ impl LineDiscipline {
             ch if ch == self.termios.special_char(VERASE) => write_bytes(b"\x08 \x08"),
             ch if ch.is_ascii_graphic() => write_bytes(&[ch]),
             ch if ch.is_ascii_control() && self.termios.has_lflag(ECHOCTL) => {
-                write_bytes(&[b'^', (ch + 0x40) as u8]);
+                write_bytes(&[b'^', (ch + 0x40)]);
             }
             other => {
                 warn!("Ignored char: {:#x}", other);

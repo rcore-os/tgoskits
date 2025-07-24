@@ -8,15 +8,18 @@ use crate::{
 };
 
 const PROTO_TCP: u32 = linux_raw_sys::net::IPPROTO_TCP as u32;
+
 const PROTO_IP: u32 = linux_raw_sys::net::IPPROTO_IP as u32;
 
 mod conv {
+
     use axerrno::{LinuxError, LinuxResult};
     use linux_raw_sys::general::timeval;
 
     use crate::time::TimeValueLike;
 
     pub struct Int<T>(T);
+
     impl<T: TryFrom<i32> + TryInto<i32>> Int<T> {
         pub fn sys_to_rust(val: i32) -> LinuxResult<T> {
             T::try_from(val).map_err(|_| LinuxError::EINVAL)
@@ -28,6 +31,7 @@ mod conv {
     }
 
     pub struct IntBool;
+
     impl IntBool {
         pub fn sys_to_rust(val: i32) -> LinuxResult<bool> {
             Ok(val != 0)
@@ -39,6 +43,7 @@ mod conv {
     }
 
     pub struct Duration;
+
     impl Duration {
         pub fn sys_to_rust(val: timeval) -> LinuxResult<core::time::Duration> {
             val.try_into_time_value()

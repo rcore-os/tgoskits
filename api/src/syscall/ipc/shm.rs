@@ -33,8 +33,11 @@ bitflags::bitflags! {
 
 /// flags for sys_shmget, sys_msgget, sys_semget
 const IPC_PRIVATE: i32 = 0;
+
 const IPC_RMID: u32 = 0;
+
 const IPC_SET: u32 = 1;
+
 const IPC_STAT: u32 = 2;
 
 pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> LinuxResult<isize> {

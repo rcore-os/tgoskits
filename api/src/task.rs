@@ -8,7 +8,9 @@ use linux_raw_sys::general::{ROBUST_LIST_LIMIT, SI_KERNEL, robust_list, robust_l
 use starry_core::{
     futex::FutexKey,
     shm::SHM_MANAGER,
-    task::{get_process_data, send_signal_to_process, send_signal_to_thread, set_timer_state, AsThread},
+    task::{
+        AsThread, get_process_data, send_signal_to_process, send_signal_to_thread, set_timer_state,
+    },
     time::TimerState,
 };
 use starry_signal::{SignalInfo, Signo};

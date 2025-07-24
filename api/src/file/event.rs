@@ -18,6 +18,7 @@ pub struct EventFd {
     semaphore: bool,
     non_blocking: AtomicBool,
 }
+
 impl EventFd {
     pub fn new(initval: u64, semaphore: bool) -> Arc<Self> {
         Arc::new(Self {

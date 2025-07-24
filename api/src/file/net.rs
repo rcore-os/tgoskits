@@ -13,6 +13,7 @@ use super::{FileLike, Kstat};
 use crate::file::get_file_like;
 
 pub struct Socket(pub axnet::Socket);
+
 impl Deref for Socket {
     type Target = axnet::Socket;
 

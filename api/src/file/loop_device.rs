@@ -109,7 +109,7 @@ impl DeviceOps for LoopDevice {
             BLKGETSIZE | BLKGETSIZE64 => {
                 let file = self.clone_file()?;
                 let sectors = file.location().len()? / 512;
-                if cmd as u32 == BLKGETSIZE {
+                if cmd == BLKGETSIZE {
                     *argp.cast::<u32>().get_as_mut()? = sectors as _;
                 } else {
                     *argp.cast::<u64>().get_as_mut()? = sectors * 512;

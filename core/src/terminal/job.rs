@@ -12,6 +12,7 @@ pub struct JobControl {
     session: SpinNoIrq<Weak<Session>>,
     wait_queue: WaitQueue,
 }
+
 impl JobControl {
     pub fn new() -> Self {
         Self {
@@ -22,9 +23,10 @@ impl JobControl {
     }
 
     pub fn current_in_foreground(&self) -> bool {
-        self.foreground.lock().upgrade().map_or(true, |pg| {
-            Arc::ptr_eq(&current().as_thread().proc_data.proc.group(), &pg)
-        })
+        self.foreground
+            .lock()
+            .upgrade()
+            .is_none_or(|pg| Arc::ptr_eq(&current().as_thread().proc_data.proc.group(), &pg))
     }
 
     pub fn wait_until_foreground(&self) {

@@ -52,6 +52,7 @@ pub fn sys_setreuid(_ruid: u32, _euid: u32) -> LinuxResult<isize> {
 pub fn sys_setresuid(_ruid: u32, _euid: u32, _suid: u32) -> LinuxResult<isize> {
     Ok(0)
 }
+
 pub fn sys_setresgid(_rgid: u32, _egid: u32, _sgid: u32) -> LinuxResult<isize> {
     Ok(0)
 }

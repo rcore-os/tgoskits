@@ -30,6 +30,7 @@ pub struct Tty {
     ldisc: Mutex<LineDiscipline>,
     window_size: Mutex<WindowSize>,
 }
+
 impl Tty {
     fn new() -> Self {
         let job_control = Arc::new(JobControl::new());
@@ -78,7 +79,7 @@ impl DeviceOps for Tty {
         use linux_raw_sys::ioctl::*;
         match cmd {
             TCGETS => {
-                (arg as *mut Termios).vm_write(self.ldisc.lock().termios.clone())?;
+                (arg as *mut Termios).vm_write(self.ldisc.lock().termios)?;
             }
             TCSETS => {
                 self.ldisc.lock().termios = (arg as *const Termios).vm_read()?;
@@ -93,7 +94,7 @@ impl DeviceOps for Tty {
                     .set_foreground(&curr.as_thread().proc_data.proc.group())?;
             }
             TIOCGWINSZ => {
-                (arg as *mut WindowSize).vm_write(self.window_size.lock().clone())?;
+                (arg as *mut WindowSize).vm_write(*self.window_size.lock())?;
             }
             TIOCSWINSZ => {
                 *self.window_size.lock() = (arg as *const WindowSize).vm_read()?;

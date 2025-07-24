@@ -27,6 +27,7 @@ pub enum ResolveAtResult {
     File(Location<RawMutex>),
     Other(Arc<dyn FileLike>),
 }
+
 impl ResolveAtResult {
     pub fn into_file(self) -> Option<Location<RawMutex>> {
         match self {

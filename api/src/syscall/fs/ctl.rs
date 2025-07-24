@@ -305,6 +305,7 @@ pub fn sys_readlinkat(
 pub fn sys_chown(path: UserConstPtr<c_char>, uid: u32, gid: u32) -> LinuxResult<isize> {
     sys_fchownat(AT_FDCWD, path, uid, gid, 0)
 }
+
 #[cfg(target_arch = "x86_64")]
 pub fn sys_lchown(path: UserConstPtr<c_char>, uid: u32, gid: u32) -> LinuxResult<isize> {
     use linux_raw_sys::general::AT_SYMLINK_NOFOLLOW;
@@ -460,6 +461,7 @@ pub fn sys_renameat(
 ) -> LinuxResult<isize> {
     sys_renameat2(old_dirfd, old_path, new_dirfd, new_path, 0)
 }
+
 pub fn sys_renameat2(
     old_dirfd: i32,
     old_path: UserConstPtr<c_char>,
@@ -485,6 +487,7 @@ pub fn sys_sync() -> LinuxResult<isize> {
     info!("Dummy sys_sync called");
     Ok(0)
 }
+
 pub fn sys_syncfs(_fd: i32) -> LinuxResult<isize> {
     info!("Dummy sys_syncfs called");
     Ok(0)
