@@ -6,6 +6,7 @@
 
 use core::{mem::MaybeUninit, slice};
 
+use axerrno::LinuxError;
 use extern_trait::extern_trait;
 
 /// Errors that can occur during virtual memory operations.
@@ -16,6 +17,14 @@ pub enum VmError {
     BadAddress,
     /// The operation is not allowed, e.g., trying to write to read-only memory.
     AccessDenied,
+}
+
+impl From<VmError> for LinuxError {
+    fn from(err: VmError) -> Self {
+        match err {
+            VmError::BadAddress | VmError::AccessDenied => LinuxError::EFAULT,
+        }
+    }
 }
 
 /// A result type for virtual memory operations.
