@@ -1,5 +1,9 @@
 on: push
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -37,13 +41,6 @@ jobs:
           submodules: recursive
           fetch-depth: 2
 
-      - name: Checkout oscomp repository
-        run: |
-          git clone "${{ secrets.OSCOMP_REPO }}" oscomp
-          cd oscomp
-          git config user.name ${{ secrets.OSCOMP_USER_NAME }}
-          git config user.email ${{ secrets.OSCOMP_USER_EMAIL }}
-
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2025-01-18
@@ -65,11 +62,17 @@ jobs:
 
       - name: Push to oscomp repo
         run: |
-          if git -C oscomp rev-parse --verify origin/${{ github.ref_name }}; then
-            git -C oscomp checkout ${{ github.ref_name }}
+          git clone "${{ secrets.OSCOMP_REPO }}" oscomp
+          cd oscomp
+
+          git config user.name ${{ secrets.OSCOMP_USER_NAME }}
+          git config user.email ${{ secrets.OSCOMP_USER_EMAIL }}
+
+          if git rev-parse --verify origin/${{ github.ref_name }}; then
+            git checkout ${{ github.ref_name }}
           else
-            export SOURCE_PARENT=$(git -C source rev-parse HEAD^)
-            export OSCOMP_PARENT=$(git -C oscomp log --pretty='%H' --grep "${SOURCE_PARENT}")
+            export SOURCE_PARENT=$(git -C ../source rev-parse HEAD^)
+            export OSCOMP_PARENT=$(git log --pretty='%H' --grep "${SOURCE_PARENT}")
             if [ -z "$OSCOMP_PARENT" ]; then
               echo "No previous commit found for source parent $SOURCE_PARENT"
               exit 1
@@ -79,12 +82,12 @@ jobs:
               echo "$OSCOMP_PARENT"
               exit 1
             fi
-            git -C oscomp checkout $OSCOMP_PARENT
-            git -C oscomp checkout -b ${{ github.ref_name }}
+            git checkout $OSCOMP_PARENT
+            git checkout -b ${{ github.ref_name }}
           fi
 
-          rsync -a --exclude='.git' --delete source/ oscomp/
-          cd oscomp
+          rsync -a --exclude='.git' --delete ../source/ ./
+
           git add -A
           git commit -m ${{ github.ref_name }}.${{ github.sha }}
           git push --set-upstream origin ${{ github.ref_name }}
