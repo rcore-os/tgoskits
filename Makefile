@@ -15,7 +15,7 @@ DIR := $(shell basename $(PWD))
 
 all:
 	@if [ -f cargo_config.toml ]; then \
-		mkdir .cargo; \
+		mkdir -p .cargo; \
 		cp cargo_config.toml .cargo/config.toml; \
 	fi
 	@if [ -d bin ]; then \
@@ -49,7 +49,7 @@ la:
 alpine:
 	$(MAKE) TEST=alpine rv
 
-justrun debug disasm: defconfig
+build justrun debug disasm: defconfig
 	@make -C arceos $@
 
 defconfig:
