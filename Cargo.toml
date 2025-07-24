@@ -22,7 +22,7 @@ linux-raw-sys = { version = "0.9.3", default-features = false, features = [
     "no_std",
 ] }
 log = "0.4"
-starry-vm = { git = "https://github.com/Starry-Mix-THU/starry-vm.git", rev = "57e3faa" }
+starry-vm = { git = "https://github.com/Starry-Mix-THU/starry-vm.git", rev = "f89fdbd" }
 strum_macros = "0.27.1"
 
 [patch.crates-io]
