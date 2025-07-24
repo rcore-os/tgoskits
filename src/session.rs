@@ -2,7 +2,7 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use core::fmt;
+use core::{any::Any, fmt};
 
 use kspin::SpinNoIrq;
 use weak_map::WeakMap;
@@ -13,7 +13,7 @@ use crate::{Pid, ProcessGroup};
 pub struct Session {
     sid: Pid,
     pub(crate) process_groups: SpinNoIrq<WeakMap<Pid, Weak<ProcessGroup>>>,
-    // TODO: shell job control
+    terminal: SpinNoIrq<Option<Arc<dyn Any + Send + Sync>>>,
 }
 
 impl Session {
@@ -22,6 +22,7 @@ impl Session {
         Arc::new(Self {
             sid,
             process_groups: SpinNoIrq::new(WeakMap::new()),
+            terminal: SpinNoIrq::new(None),
         })
     }
 }
@@ -35,6 +36,21 @@ impl Session {
     /// The [`ProcessGroup`]s that belong to this [`Session`].
     pub fn process_groups(&self) -> Vec<Arc<ProcessGroup>> {
         self.process_groups.lock().values().collect()
+    }
+
+    /// Sets the terminal for this session.
+    pub fn set_terminal_with(&self, terminal: impl FnOnce() -> Arc<dyn Any + Send + Sync>) -> bool {
+        let mut guard = self.terminal.lock();
+        if guard.is_some() {
+            return false;
+        }
+        *guard = Some(terminal());
+        true
+    }
+
+    /// Unsets the terminal for this session, returning the previous terminal if it existed.
+    pub fn unset_terminal(&self) -> Option<Arc<dyn Any + Send + Sync>> {
+        self.terminal.lock().take()
     }
 }
 
