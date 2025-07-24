@@ -8,11 +8,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        rust-toolchain: [nightly-2025-05-20]
+        rust-toolchain: [nightly-2025-05-20, nightly]
         targets: [x86_64-unknown-linux-gnu, x86_64-unknown-none, riscv64gc-unknown-none-elf, aarch64-unknown-none-softfloat]
     steps:
     - uses: actions/checkout@v4
-    - uses: dtolnay/rust-toolchain@nightly-2025-05-20
+    - uses: dtolnay/rust-toolchain@nightly
       with:
         toolchain: ${{ matrix.rust-toolchain }}
         components: rust-src, clippy, rustfmt
@@ -40,7 +40,9 @@ jobs:
       RUSTDOCFLAGS: -D rustdoc::broken_intra_doc_links -D missing-docs
     steps:
     - uses: actions/checkout@v4
-    - uses: dtolnay/rust-toolchain@nightly-2025-05-20
+    - uses: dtolnay/rust-toolchain@nightly
+      with:
+        toolchain: nightly-2025-05-20
     - name: Build docs
       continue-on-error: ${{ github.ref != env.default-branch && github.event_name != 'pull_request' }}
       run: |
