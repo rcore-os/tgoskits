@@ -1,9 +1,14 @@
 [package]
 name = "axvisor_api_proc"
 version = "0.1.0"
+description = "Procedural macros for the `axvisor_api` crate"
+keywords = ["axvisor", "api", "embedded", "macros"]
+categories = ["development-tools::procedural-macro-helpers"]
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+
 
 [lib]
 proc-macro = true

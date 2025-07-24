@@ -5,20 +5,24 @@ members = [
 ]
 
 [workspace.package]
-authors = ["aarkegz <aarkegz@gmail.com>"]
+authors = ["Su Mingxian <aarkegz@gmail.com>"]
 edition = "2024"
 license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
+repository = "https://github.com/arceos-hypervisor/axvisor_api"
 
 [package]
 name = "axvisor_api"
 description = "Basic API for components of the Hypervisor on ArceOS"
 version = "0.1.0"
+keywords = ["axvisor", "api", "embedded"]
+categories = ["embedded", "no-std"]
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
-axvisor_api_proc = { path = "axvisor_api_proc", version = "*"}
+axvisor_api_proc = { path = "axvisor_api_proc", version = "0.1.0"}
 
 crate_interface = "0.1"
 memory_addr = "0.4"
