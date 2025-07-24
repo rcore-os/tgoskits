@@ -299,6 +299,56 @@ pub fn sys_sendfile(
     do_send(src, dst, len).map(|n| n as _)
 }
 
+pub fn sys_copy_file_range(
+    fd_in: c_int,
+    off_in: UserPtr<u64>,
+    fd_out: c_int,
+    off_out: UserPtr<u64>,
+    len: usize,
+    _flags: u32,
+) -> LinuxResult<isize> {
+    debug!(
+        "sys_copy_file_range <= fd_in: {}, off_in: {}, fd_out: {}, off_out: {}, len: {}, flags: {}",
+        fd_in,
+        !off_in.is_null(),
+        fd_out,
+        !off_out.is_null(),
+        len,
+        _flags
+    );
+
+    // TODO: check flags
+    // TODO: check both regular files
+    // TODO: check same file and overlap
+
+    let off_in = nullable!(off_in.get_as_mut())?;
+    let src = if let Some(off_in) = off_in {
+        SendFile::Offset(File::from_fd(fd_in)?, off_in)
+    } else {
+        SendFile::Direct(get_file_like(fd_in)?)
+    };
+
+    let off_out = nullable!(off_out.get_as_mut())?;
+    let dst = if let Some(off_out) = off_out {
+        SendFile::Offset(File::from_fd(fd_out)?, off_out)
+    } else {
+        SendFile::Direct(get_file_like(fd_out)?)
+    };
+
+    let mut buf = [0; 6];
+    let of = File::from_fd(fd_out)?;
+
+    of.inner().read_at(&mut buf, 0)?;
+    debug!("sys_copy_file_range <= read first 6 bytes: {:?}", &buf);
+
+    let r = do_send(src, dst, len).map(|n| n as _);
+
+    of.inner().read_at(&mut buf, 0)?;
+    debug!("sys_copy_file_range => read first 6 bytes: {:?}", &buf);
+
+    r
+}
+
 pub fn sys_splice(
     fd_in: c_int,
     off_in: UserPtr<u64>,

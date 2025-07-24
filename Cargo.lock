@@ -555,6 +555,7 @@ dependencies = [
 [[package]]
 name = "axprocess"
 version = "0.1.0"
+source = "git+https://github.com/Starry-Mix-THU/axprocess.git?rev=676c6c1#676c6c15a107386711c932a53434ad56c7e1f274"
 dependencies = [
  "kspin",
  "lazyinit",
