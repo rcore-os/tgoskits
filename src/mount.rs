@@ -117,6 +117,8 @@ impl<M: RawMutex> Location<M> {
 
     pub fn read_link(&self) -> VfsResult<String>;
 
+    pub fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize>;
+
     pub fn user_data(&self) -> MutexGuard<'_, M, Option<Box<dyn Any + Send + Sync>>>;
 }
 

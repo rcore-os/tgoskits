@@ -287,6 +287,13 @@ impl<M: RawMutex> DirEntry<M> {
         String::from_utf8(buf).map_err(|_| VfsError::EINVAL)
     }
 
+    pub fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
+        match &self.0.node {
+            Node::File(file) => file.ioctl(cmd, arg),
+            Node::Dir(_) => Err(VfsError::ENOTTY),
+        }
+    }
+
     pub fn user_data(&self) -> MutexGuard<'_, M, Option<Box<dyn Any + Send + Sync>>> {
         self.0.user_data.lock()
     }
