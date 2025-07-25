@@ -31,3 +31,9 @@ memory_addr = "0.4"
 memory_set = "0.4"
 page_table_entry = "0.5"
 page_table_multiarch = "0.5"
+
+[dev-dependencies]
+lazy_static = "1.5"
+spin = "0.10"
+assert_matches = "1.5.0"
+axin = "0.1.0"

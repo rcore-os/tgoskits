@@ -40,3 +40,6 @@ fn mapping_err_to_ax_err(err: MappingError) -> AxError {
         MappingError::BadState => AxError::BadState,
     }
 }
+
+#[cfg(test)]
+pub(crate) mod test_utils;
