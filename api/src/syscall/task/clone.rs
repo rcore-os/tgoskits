@@ -3,7 +3,6 @@ use alloc::sync::Arc;
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
 use axhal::{context::TrapFrame, uspace::UserContext};
-use axprocess::Pid;
 use axtask::{TaskExtProxy, current, spawn_task};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
@@ -11,6 +10,7 @@ use starry_core::{
     mm::copy_from_kernel,
     task::{AsThread, ProcessData, Thread, add_task_to_table},
 };
+use starry_process::Pid;
 use starry_signal::Signo;
 
 use crate::{file::FD_TABLE, mm::UserPtr, task::new_user_task};

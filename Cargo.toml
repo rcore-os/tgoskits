@@ -46,7 +46,7 @@ axbacktrace = { git = "https://github.com/Starry-Mix-THU/axbacktrace.git", rev =
 axerrno = { git = "https://github.com/Starry-Mix-THU/axerrno.git", rev = "f5d8f86" }
 axfs-ng-vfs = { git = "https://github.com/Starry-Mix-THU/axfs-ng-vfs.git", rev = "34fee7a" }
 axio = { git = "https://github.com/Starry-Mix-THU/axio.git", rev = "b9dbe7c" }
-axprocess = { git = "https://github.com/Starry-Mix-THU/axprocess.git", rev = "676c6c1" }
+starry-process = { git = "https://github.com/Starry-Mix-THU/starry-process.git", rev = "7e78f22" }
 starry-signal = { git = "https://github.com/Starry-Mix-THU/starry-signal.git", rev = "669c463" }
 starry-vm = { git = "https://github.com/Starry-Mix-THU/starry-vm.git", rev = "f89fdbd" }
 
@@ -93,10 +93,10 @@ starry-core.workspace = true
 starry-api.workspace = true
 
 axerrno.workspace = true
-axprocess.workspace = true
 cfg-if.workspace = true
 linkme.workspace = true
 linux-raw-sys.workspace = true
+starry-process.workspace = true
 starry-signal.workspace = true
 
 [patch.crates-io]

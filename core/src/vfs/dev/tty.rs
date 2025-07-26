@@ -2,11 +2,11 @@ use alloc::sync::Arc;
 use core::any::Any;
 
 use axerrno::{LinuxError, LinuxResult};
-use axprocess::Process;
 use axsync::Mutex;
 use axtask::current;
 use bytemuck::AnyBitPattern;
 use lazy_static::lazy_static;
+use starry_process::Process;
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{

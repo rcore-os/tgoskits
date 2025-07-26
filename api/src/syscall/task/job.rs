@@ -1,7 +1,7 @@
 use axerrno::{LinuxError, LinuxResult};
-use axprocess::Pid;
 use axtask::current;
 use starry_core::task::{AsThread, get_process_data, get_process_group};
+use starry_process::Pid;
 
 pub fn sys_getsid(pid: Pid) -> LinuxResult<isize> {
     Ok(get_process_data(pid)?.proc.group().session().sid() as _)

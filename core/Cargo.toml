@@ -23,7 +23,6 @@ axtask.workspace = true
 
 axerrno.workspace = true
 axio.workspace = true
-axprocess.workspace = true
 bitflags.workspace = true
 cfg-if.workspace = true
 chrono = { version = "0.4.41", default-features = false }
@@ -46,6 +45,7 @@ rand = { version = "0.9.1", default-features = false, features = [
 scope-local.workspace = true
 slab = { version = "0.4.9", default-features = false }
 spin.workspace = true
+starry-process.workspace = true
 starry-signal.workspace = true
 starry-vm.workspace = true
 strum = { version = "0.27.1", default-features = false, features = ["derive"] }

@@ -2,7 +2,6 @@ use alloc::{borrow::ToOwned, string::String, sync::Arc};
 
 use axfs_ng::FS_CONTEXT;
 use axhal::uspace::UserContext;
-use axprocess::{Pid, Process};
 use axsync::Mutex;
 use axtask::{TaskExtProxy, spawn_task};
 use starry_api::{file::FD_TABLE, task::new_user_task};
@@ -11,6 +10,7 @@ use starry_core::{
     task::{ProcessData, Thread, add_task_to_table},
     vfs::dev::N_TTY,
 };
+use starry_process::{Pid, Process};
 
 pub fn run_initproc(args: &[String], envs: &[String]) -> i32 {
     let mut uspace = new_user_aspace_empty()

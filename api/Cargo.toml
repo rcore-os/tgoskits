@@ -24,7 +24,6 @@ starry-core.workspace = true
 
 axbacktrace.workspace = true
 axerrno.workspace = true
-axprocess.workspace = true
 bitflags.workspace = true
 bitmaps = { version = "3.2.1", default-features = false }
 cfg-if.workspace = true
@@ -36,6 +35,7 @@ num_enum = { version = "0.7", default-features = false }
 percpu = "0.2.0"
 scope-local.workspace = true
 spin.workspace = true
+starry-process.workspace = true
 starry-signal.workspace = true
 syscalls = { git = "https://github.com/jasonwhite/syscalls.git", rev = "92624de", default-features = false }
 

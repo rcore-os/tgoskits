@@ -1,9 +1,9 @@
 use axerrno::{LinuxError, LinuxResult};
 use axhal::time::TimeValue;
-use axprocess::Pid;
 use axtask::current;
 use linux_raw_sys::general::{__kernel_old_timeval, RLIM_NLIMITS, rlimit64, rusage};
 use starry_core::task::{AsThread, Thread, get_process_data, get_task};
+use starry_process::Pid;
 
 use crate::{
     mm::{UserConstPtr, UserPtr, nullable},

@@ -2,7 +2,6 @@ use core::mem;
 
 use axerrno::{LinuxError, LinuxResult};
 use axhal::context::TrapFrame;
-use axprocess::Pid;
 use axtask::{
     current,
     future::{self, block_on},
@@ -15,6 +14,7 @@ use starry_core::task::{
     AsThread, processes, send_signal_to_process, send_signal_to_process_group,
     send_signal_to_thread,
 };
+use starry_process::Pid;
 use starry_signal::{SignalInfo, SignalSet, SignalStack, Signo};
 
 use crate::{

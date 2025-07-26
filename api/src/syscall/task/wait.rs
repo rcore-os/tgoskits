@@ -1,13 +1,13 @@
 use alloc::vec::Vec;
 
 use axerrno::{LinuxError, LinuxResult};
-use axprocess::{Pid, Process};
 use axtask::{current, future::block_on};
 use bitflags::bitflags;
 use linux_raw_sys::general::{
     __WALL, __WCLONE, __WNOTHREAD, WCONTINUED, WEXITED, WNOHANG, WNOWAIT, WUNTRACED,
 };
 use starry_core::task::AsThread;
+use starry_process::{Pid, Process};
 
 use crate::mm::{UserPtr, nullable};
 

@@ -1,9 +1,9 @@
 use alloc::sync::{Arc, Weak};
 
 use axerrno::{LinuxResult, bail};
-use axprocess::{ProcessGroup, Session};
 use axsync::spin::SpinNoIrq;
 use axtask::{WaitQueue, current};
+use starry_process::{ProcessGroup, Session};
 
 use crate::task::AsThread;
 

@@ -2,7 +2,6 @@ use core::sync::atomic::Ordering;
 
 use axerrno::{LinuxError, LinuxResult};
 use axhal::uspace::{ReturnReason, UserContext};
-use axprocess::Pid;
 use axtask::{TaskInner, current};
 use linux_raw_sys::general::{ROBUST_LIST_LIMIT, SI_KERNEL, robust_list, robust_list_head};
 use starry_core::{
@@ -13,6 +12,7 @@ use starry_core::{
     },
     time::TimerState,
 };
+use starry_process::Pid;
 use starry_signal::{SignalInfo, Signo};
 
 use crate::{

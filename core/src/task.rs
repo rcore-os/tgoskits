@@ -16,7 +16,6 @@ use core::{
 
 use axerrno::{LinuxError, LinuxResult};
 use axmm::AddrSpace;
-use axprocess::{Pid, Process, ProcessGroup, Session};
 use axsync::{Mutex, spin::SpinNoIrq};
 use axtask::{AxTaskRef, TaskExt, TaskInner, WeakAxTaskRef, current};
 use event_listener::Event;
@@ -25,6 +24,7 @@ use lazy_static::lazy_static;
 use linux_raw_sys::general::SI_KERNEL;
 use scope_local::{ActiveScope, Scope};
 use spin::RwLock;
+use starry_process::{Pid, Process, ProcessGroup, Session};
 use starry_signal::{
     SignalInfo, Signo,
     api::{ProcessSignalManager, SignalActions, ThreadSignalManager},

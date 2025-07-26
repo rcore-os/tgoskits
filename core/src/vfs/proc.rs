@@ -8,10 +8,10 @@ use alloc::{
 use core::iter;
 
 use axfs_ng_vfs::{Filesystem, VfsError, VfsResult};
-use axprocess::Process;
 use axsync::RawMutex;
 use axtask::{WeakAxTaskRef, current};
 use indoc::indoc;
+use starry_process::Process;
 
 use crate::{
     task::{AsThread, TaskStat, get_task, tasks},

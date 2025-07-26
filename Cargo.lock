@@ -553,16 +553,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "axprocess"
-version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axprocess.git?rev=676c6c1#676c6c15a107386711c932a53434ad56c7e1f274"
-dependencies = [
- "kspin",
- "lazyinit",
- "weak-map",
-]
-
-[[package]]
 name = "axruntime"
 version = "0.1.0"
 dependencies = [
@@ -1875,7 +1865,6 @@ dependencies = [
  "axfs-ng",
  "axhal",
  "axlog",
- "axprocess",
  "axruntime",
  "axsync",
  "axtask",
@@ -1884,6 +1873,7 @@ dependencies = [
  "linux-raw-sys",
  "starry-api",
  "starry-core",
+ "starry-process",
  "starry-signal",
 ]
 
@@ -1902,7 +1892,6 @@ dependencies = [
  "axlog",
  "axmm",
  "axnet",
- "axprocess",
  "axsync",
  "axtask",
  "bitflags 2.9.1",
@@ -1917,6 +1906,7 @@ dependencies = [
  "scope-local",
  "spin",
  "starry-core",
+ "starry-process",
  "starry-signal",
  "syscalls",
  "x86",
@@ -1936,7 +1926,6 @@ dependencies = [
  "axio",
  "axlog",
  "axmm",
- "axprocess",
  "axsync",
  "axtask",
  "bitflags 2.9.1",
@@ -1961,12 +1950,23 @@ dependencies = [
  "scope-local",
  "slab",
  "spin",
+ "starry-process",
  "starry-signal",
  "starry-vm",
  "strum",
  "uluru",
  "weak-map",
  "xmas-elf",
+]
+
+[[package]]
+name = "starry-process"
+version = "0.2.0"
+source = "git+https://github.com/Starry-Mix-THU/starry-process.git?rev=7e78f22#7e78f22a2c27cfd639193bb0eab206b8895b1f36"
+dependencies = [
+ "kspin",
+ "lazyinit",
+ "weak-map",
 ]
 
 [[package]]
