@@ -8,7 +8,7 @@ use axfs_ng_vfs::{
 use inherit_methods_macro::inherit_methods;
 use lock_api::RawMutex;
 
-use crate::vfs::simple::fs::{SimpleFs, SimpleFsNode};
+use super::fs::{SimpleFs, SimpleFsNode};
 
 pub trait SimpleFileOps: Send + Sync {
     fn read_all(&self) -> VfsResult<Cow<[u8]>>;

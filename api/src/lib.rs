@@ -14,3 +14,14 @@ pub mod socket;
 pub mod syscall;
 pub mod task;
 pub mod time;
+pub mod vfs;
+
+/// Initialize.
+pub fn init() {
+    vfs::mount_all().expect("Failed to mount vfs");
+
+    axtask::register_timer_callback(|_| {
+        time::inc_irq_cnt();
+        starry_core::task::poll_timer(&axtask::current());
+    });
+}

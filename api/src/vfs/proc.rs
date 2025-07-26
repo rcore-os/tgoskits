@@ -11,15 +11,14 @@ use axfs_ng_vfs::{Filesystem, VfsError, VfsResult};
 use axsync::RawMutex;
 use axtask::{WeakAxTaskRef, current};
 use indoc::indoc;
-use starry_process::Process;
-
-use crate::{
+use starry_core::{
     task::{AsThread, TaskStat, get_task, tasks},
-    vfs::simple::{
+    vfs::{
         DirMaker, DirMapping, NodeOpsMux, RwFile, SimpleDir, SimpleDirOps, SimpleFile,
         SimpleFileOperation, SimpleFs,
     },
 };
+use starry_process::Process;
 
 const DUMMY_MEMINFO: &str = indoc! {"
     MemTotal:       32536204 kB

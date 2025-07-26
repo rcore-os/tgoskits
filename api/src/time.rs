@@ -1,3 +1,5 @@
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 use axerrno::{LinuxError, LinuxResult};
 use axhal::time::TimeValue;
 use linux_raw_sys::general::{
@@ -127,4 +129,14 @@ impl TimeValueLike for __kernel_sock_timeval {
             self.tv_usec as u32 * 1000,
         ))
     }
+}
+
+static IRQ_CNT: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn inc_irq_cnt() {
+    IRQ_CNT.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn irq_cnt() -> usize {
+    IRQ_CNT.load(Ordering::Relaxed)
 }

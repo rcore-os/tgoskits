@@ -6,14 +6,14 @@ use axsync::Mutex;
 use axtask::current;
 use bytemuck::AnyBitPattern;
 use lazy_static::lazy_static;
+use starry_core::{
+    task::AsThread,
+    terminal::{job::JobControl, ldisc::LineDiscipline, termios::Termios},
+};
 use starry_process::Process;
 use starry_vm::{VmMutPtr, VmPtr};
 
-use crate::{
-    task::AsThread,
-    terminal::{job::JobControl, ldisc::LineDiscipline, termios::Termios},
-    vfs::DeviceOps,
-};
+use crate::vfs::DeviceOps;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, AnyBitPattern)]

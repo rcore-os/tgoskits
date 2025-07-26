@@ -9,8 +9,7 @@ use axfs_ng_vfs::{
 use axsync::{Mutex, RawMutex};
 use hashbrown::HashMap;
 use slab::Slab;
-
-use crate::vfs::simple::dummy_stat_fs;
+use starry_core::vfs::dummy_stat_fs;
 
 #[derive(PartialEq, Eq, Hash, Clone)]
 struct FileName(String);

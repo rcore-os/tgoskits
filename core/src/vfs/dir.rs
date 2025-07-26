@@ -15,7 +15,7 @@ use axfs_ng_vfs::{
 use inherit_methods_macro::inherit_methods;
 use lock_api::RawMutex;
 
-use crate::vfs::simple::{DirMaker, NodeOpsMux, SimpleFs, SimpleFsNode};
+use super::{DirMaker, NodeOpsMux, SimpleFs, SimpleFsNode};
 
 pub trait SimpleDirOps<M>: Send + Sync {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a>;

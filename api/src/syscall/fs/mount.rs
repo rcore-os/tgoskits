@@ -2,9 +2,8 @@ use core::ffi::{c_char, c_void};
 
 use axerrno::LinuxResult;
 use axfs_ng::FS_CONTEXT;
-use starry_core::vfs::MemoryFs;
 
-use crate::mm::UserConstPtr;
+use crate::{mm::UserConstPtr, vfs::MemoryFs};
 
 pub fn sys_mount(
     source: UserConstPtr<c_char>,

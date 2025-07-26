@@ -8,8 +8,9 @@ use core::{
 
 use axbacktrace::Backtrace;
 use axfs_ng_vfs::VfsResult;
+use starry_core::task::cleanup_task_tables;
 
-use crate::{task::cleanup_task_tables, vfs::DeviceOps};
+use crate::vfs::DeviceOps;
 
 static STAMPED_GENERATION: AtomicU64 = AtomicU64::new(0);
 

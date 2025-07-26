@@ -6,12 +6,8 @@ authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
-[features]
-track = ["axfeat/backtrace", "axalloc/tracking"]
-
 [dependencies]
 axfeat.workspace = true
-axalloc.workspace = true
 axbacktrace.workspace = true
 axfs-ng.workspace = true
 axfs-ng-vfs.workspace = true
@@ -24,13 +20,11 @@ axtask.workspace = true
 axerrno.workspace = true
 axio.workspace = true
 bitflags.workspace = true
+bytemuck = { workspace = true, features = ["derive"] }
 cfg-if.workspace = true
-chrono = { version = "0.4.41", default-features = false }
 event-listener.workspace = true
 extern-trait.workspace = true
-gimli = { version = "*", default-features = false }
 hashbrown = { workspace = true }
-indoc = "2"
 inherit-methods-macro = "0.1.0"
 kernel-elf-parser = { git = "https://github.com/Starry-Mix-THU/kernel_elf_parser.git", rev = "5e2160b" }
 lazy_static = { workspace = true }
@@ -38,10 +32,7 @@ linkme.workspace = true
 linux-raw-sys.workspace = true
 lock_api = { version = "0.4.13", features = ["arc_lock"] }
 memory_addr.workspace = true
-rand = { version = "0.9.1", default-features = false, features = [
-    "alloc",
-    "small_rng",
-] }
+ouroboros = { version = "0.18.5", default-features = false }
 scope-local.workspace = true
 slab = { version = "0.4.9", default-features = false }
 spin.workspace = true
@@ -52,11 +43,6 @@ strum = { version = "0.27.1", default-features = false, features = ["derive"] }
 uluru = "3.1.0"
 weak-map = "0.1.1"
 xmas-elf = "0.9"
-ouroboros = { version = "0.18.5", default-features = false }
-bytemuck = { version = "1.23.1", features = ["derive"] }
 
 [target.'cfg(not(any(target_arch = "aarch64", target_arch = "loongarch64")))'.dependencies]
 axmm = { workspace = true, features = ["copy"] }
-
-[target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64"))'.dependencies]
-riscv = "0.14"

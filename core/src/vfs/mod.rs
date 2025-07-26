@@ -1,35 +1,41 @@
-//! Virtual filesystems
-
-pub mod dev;
-mod proc;
-mod simple;
-mod tmp;
+mod dev;
+mod dir;
+mod file;
+mod fs;
 
 use alloc::sync::Arc;
 
-use axerrno::LinuxResult;
-use axfs_ng::FS_CONTEXT;
-use axfs_ng_vfs::{Filesystem, NodePermission};
-use axsync::RawMutex;
-pub use simple::{Device, DeviceOps, DirMapping, SimpleFs};
-pub use tmp::MemoryFs;
+use axfs_ng_vfs::{DirNodeOps, FileNodeOps, WeakDirEntry};
+pub use dev::*;
+pub use dir::*;
+pub use file::*;
+pub use fs::*;
 
-fn mount_at(path: &str, mount_fs: Filesystem<RawMutex>) -> LinuxResult<()> {
-    let fs = FS_CONTEXT.lock();
-    if fs.resolve(path).is_err() {
-        fs.create_dir(path, NodePermission::from_bits_truncate(0o755))?;
-    }
-    fs.resolve(path)?.mount(&mount_fs)?;
-    info!("Mounted {} at {}", mount_fs.name(), path);
-    Ok(())
+pub type DirMaker<M = axsync::RawMutex> =
+    Arc<dyn Fn(WeakDirEntry<M>) -> Arc<dyn DirNodeOps<M>> + Send + Sync>;
+
+pub enum NodeOpsMux<M> {
+    Dir(DirMaker<M>),
+    File(Arc<dyn FileNodeOps<M>>),
 }
 
-/// Mount all filesystems
-pub fn mount_all(
-    extra_dev: impl FnOnce(&Arc<SimpleFs>, &mut DirMapping<RawMutex>),
-) -> LinuxResult<()> {
-    mount_at("/dev", dev::new_devfs(extra_dev)?)?;
-    mount_at("/tmp", tmp::MemoryFs::new())?;
-    mount_at("/proc", proc::new_procfs())?;
-    Ok(())
+impl<M> Clone for NodeOpsMux<M> {
+    fn clone(&self) -> Self {
+        match self {
+            NodeOpsMux::Dir(maker) => NodeOpsMux::Dir(maker.clone()),
+            NodeOpsMux::File(ops) => NodeOpsMux::File(ops.clone()),
+        }
+    }
+}
+
+impl<M> From<DirMaker<M>> for NodeOpsMux<M> {
+    fn from(maker: DirMaker<M>) -> Self {
+        Self::Dir(maker)
+    }
+}
+
+impl<M, T: FileNodeOps<M> + 'static> From<Arc<T>> for NodeOpsMux<M> {
+    fn from(ops: Arc<T>) -> Self {
+        Self::File(ops)
+    }
 }

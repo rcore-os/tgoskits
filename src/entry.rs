@@ -4,11 +4,10 @@ use axfs_ng::FS_CONTEXT;
 use axhal::uspace::UserContext;
 use axsync::Mutex;
 use axtask::{TaskExtProxy, spawn_task};
-use starry_api::{file::FD_TABLE, task::new_user_task};
+use starry_api::{file::FD_TABLE, task::new_user_task, vfs::dev::N_TTY};
 use starry_core::{
     mm::{copy_from_kernel, load_user_app, map_trampoline, new_user_aspace_empty},
     task::{ProcessData, Thread, add_task_to_table},
-    vfs::dev::N_TTY,
 };
 use starry_process::{Pid, Process};
 

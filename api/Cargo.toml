@@ -6,9 +6,13 @@ authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
+[features]
+track = ["axfeat/backtrace", "axalloc/tracking", "dep:gimli"]
+
 [dependencies]
 axfeat.workspace = true
 
+axalloc.workspace = true
 axconfig.workspace = true
 axfs-ng.workspace = true
 axfs-ng-vfs.workspace = true
@@ -26,18 +30,33 @@ axbacktrace.workspace = true
 axerrno.workspace = true
 bitflags.workspace = true
 bitmaps = { version = "3.2.1", default-features = false }
+bytemuck.workspace = true
 cfg-if.workspace = true
+chrono = { version = "0.4.41", default-features = false }
 flatten_objects = "0.2.4"
+gimli = { version = "*", default-features = false, optional = true }
+hashbrown = { workspace = true }
+indoc = "2"
+lazy_static = { workspace = true }
 linkme.workspace = true
 linux-raw-sys = { workspace = true, features = ["ioctl", "loop_device"] }
 memory_addr.workspace = true
 num_enum = { version = "0.7", default-features = false }
 percpu = "0.2.0"
+rand = { version = "0.9.1", default-features = false, features = [
+    "alloc",
+    "small_rng",
+] }
 scope-local.workspace = true
+slab = { version = "0.4.9", default-features = false }
 spin.workspace = true
 starry-process.workspace = true
 starry-signal.workspace = true
+starry-vm.workspace = true
 syscalls = { git = "https://github.com/jasonwhite/syscalls.git", rev = "92624de", default-features = false }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"
+
+[target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64"))'.dependencies]
+riscv = "0.14"

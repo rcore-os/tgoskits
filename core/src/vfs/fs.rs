@@ -8,7 +8,7 @@ use axfs_ng_vfs::{
 use lock_api::{Mutex, RawMutex};
 use slab::Slab;
 
-use crate::vfs::simple::DirMaker;
+use super::DirMaker;
 
 pub fn dummy_stat_fs(fs_type: u32) -> StatFs {
     StatFs {
@@ -36,7 +36,7 @@ pub struct SimpleFs<M = axsync::RawMutex> {
 }
 
 impl<M: RawMutex + Send + Sync + 'static> SimpleFs<M> {
-    pub(crate) fn new_with(
+    pub fn new_with(
         name: String,
         fs_type: u32,
         root: impl FnOnce(Arc<Self>) -> DirMaker<M>,

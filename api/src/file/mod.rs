@@ -1,26 +1,20 @@
 mod event;
 mod fs;
-mod loop_device;
 mod net;
 mod pipe;
 
-use alloc::{format, sync::Arc};
+use alloc::sync::Arc;
 use core::{any::Any, ffi::c_int, time::Duration};
 
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::{FS_CONTEXT, OpenOptions};
-use axfs_ng_vfs::{DeviceId, NodeType};
+use axfs_ng_vfs::DeviceId;
 use axio::PollState;
-use axsync::RawMutex;
 use axtask::current;
 use flatten_objects::FlattenObjects;
 use linux_raw_sys::general::{RLIMIT_NOFILE, stat, statx, statx_timestamp};
 use spin::RwLock;
-use starry_core::{
-    resources::AX_FILE_LIMIT,
-    task::AsThread,
-    vfs::{Device, DirMapping, SimpleFs},
-};
+use starry_core::{resources::AX_FILE_LIMIT, task::AsThread};
 
 pub use self::{
     event::EventFd,
@@ -28,7 +22,6 @@ pub use self::{
     net::Socket,
     pipe::Pipe,
 };
-use crate::file::loop_device::LoopDevice;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Kstat {
@@ -204,21 +197,6 @@ pub fn close_file_like(fd: c_int) -> LinuxResult {
 
 pub fn cast_to_axfs_file(file_like: Arc<dyn FileLike>) -> Option<Arc<File>> {
     file_like.into_any().downcast::<File>().ok()
-}
-
-pub fn devfs_extra(fs: &Arc<SimpleFs>, root: &mut DirMapping<RawMutex>) {
-    for i in 0..16 {
-        let dev_id = DeviceId::new(7, 0);
-        root.add(
-            format!("loop{i}"),
-            Device::new(
-                fs.clone(),
-                NodeType::BlockDevice,
-                dev_id,
-                Arc::new(LoopDevice::new(i, dev_id)),
-            ),
-        );
-    }
 }
 
 pub fn add_stdio(fd_table: &mut FlattenObjects<FileDescriptor, AX_FILE_LIMIT>) -> LinuxResult<()> {
