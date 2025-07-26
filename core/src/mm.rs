@@ -250,7 +250,7 @@ pub fn load_user_app(
         return load_user_app(uspace, None, &new_args, envs);
     }
 
-    let (entry, auxv) = match ELF_LOADER.lock().load(uspace, path)? {
+    let (entry, auxv) = match { ELF_LOADER.lock().load(uspace, path)? } {
         Ok((entry, auxv)) => (entry, auxv),
         Err(data) => {
             if data.starts_with(b"#!") {
