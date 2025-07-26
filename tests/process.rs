@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axprocess::init_proc;
+use starry_process::init_proc;
 
 mod common;
 use common::ProcessExt;

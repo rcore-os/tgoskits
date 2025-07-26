@@ -3,8 +3,8 @@ use std::sync::{
     atomic::{AtomicU32, Ordering},
 };
 
-use axprocess::Process;
 use ctor::ctor;
+use starry_process::Process;
 
 static PID: AtomicU32 = AtomicU32::new(0);
 
