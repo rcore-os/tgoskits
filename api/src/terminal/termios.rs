@@ -18,6 +18,7 @@ pub struct Termios {
     c_line: u8,
     c_cc: [u8; 19usize],
 }
+
 impl Default for Termios {
     fn default() -> Self {
         let mut result = Self {
@@ -51,6 +52,7 @@ impl Default for Termios {
         result
     }
 }
+
 impl Termios {
     pub fn special_char(&self, index: u32) -> u8 {
         self.c_cc[index as usize]
@@ -112,6 +114,7 @@ pub struct Termios2 {
     c_ispeed: speed_t,
     c_ospeed: speed_t,
 }
+
 impl Default for Termios2 {
     fn default() -> Self {
         let termios = Termios::default();
@@ -130,6 +133,7 @@ impl Deref for Termios2 {
         &self.termios
     }
 }
+
 impl DerefMut for Termios2 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.termios

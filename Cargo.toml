@@ -67,6 +67,7 @@ linux-raw-sys = { version = "0.9.3", default-features = false, features = [
 ] }
 memory_addr = "0.4"
 scope-local = "0.1"
+slab = { version = "0.4.9", default-features = false }
 spin = "0.9"
 
 starry-core = { path = "./core" }

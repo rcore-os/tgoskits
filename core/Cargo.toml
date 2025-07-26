@@ -34,7 +34,7 @@ lock_api = { version = "0.4.13", features = ["arc_lock"] }
 memory_addr.workspace = true
 ouroboros = { version = "0.18.5", default-features = false }
 scope-local.workspace = true
-slab = { version = "0.4.9", default-features = false }
+slab.workspace = true
 spin.workspace = true
 starry-process.workspace = true
 starry-signal.workspace = true
