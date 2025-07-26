@@ -111,6 +111,14 @@ impl Pipe {
     pub fn closed(&self) -> bool {
         Arc::strong_count(&self.buffer) == 1
     }
+
+    pub fn clone_nonblocking(&self) -> Self {
+        Self {
+            read_side: self.read_side,
+            buffer: self.buffer.clone(),
+            non_blocking: AtomicBool::new(true),
+        }
+    }
 }
 
 impl FileLike for Pipe {

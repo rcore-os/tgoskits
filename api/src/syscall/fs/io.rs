@@ -253,7 +253,11 @@ fn do_send(mut src: SendFile<'_>, mut dst: SendFile<'_>, len: usize) -> LinuxRes
 
     while remaining > 0 {
         let to_read = buf.len().min(remaining);
-        let bytes_read = src.read(&mut buf[..to_read])?;
+        let bytes_read = match src.read(&mut buf[..to_read]) {
+            Ok(n) => n,
+            Err(LinuxError::EAGAIN) if total_written > 0 => break,
+            Err(e) => return Err(e),
+        };
         if bytes_read == 0 {
             break;
         }
@@ -351,9 +355,9 @@ pub fn sys_copy_file_range(
 
 pub fn sys_splice(
     fd_in: c_int,
-    off_in: UserPtr<u64>,
+    off_in: UserPtr<i64>,
     fd_out: c_int,
-    off_out: UserPtr<u64>,
+    off_out: UserPtr<i64>,
     len: usize,
     _flags: u32,
 ) -> LinuxResult<isize> {
@@ -371,9 +375,11 @@ pub fn sys_splice(
         return Err(LinuxError::EINVAL);
     }
 
-    let off_in = nullable!(off_in.get_as_mut())?;
-    let src = if let Some(off_in) = off_in {
-        SendFile::Offset(File::from_fd(fd_in)?, off_in)
+    let src = if let Some(off) = nullable!(off_in.get_as_mut())? {
+        if *off < 0 {
+            return Err(LinuxError::EINVAL);
+        }
+        SendFile::Offset(File::from_fd(fd_in)?, off_in.cast().get_as_mut()?)
     } else {
         if let Ok(src) = Pipe::from_fd(fd_in) {
             if !src.is_read() {
@@ -382,13 +388,17 @@ pub fn sys_splice(
             if !src.poll()?.readable {
                 return Err(LinuxError::EINVAL);
             }
+            SendFile::Direct(Arc::new(src.clone_nonblocking()))
+        } else {
+            SendFile::Direct(get_file_like(fd_in)?)
         }
-        SendFile::Direct(get_file_like(fd_in)?)
     };
 
-    let off_out = nullable!(off_out.get_as_mut())?;
-    let dst = if let Some(off_out) = off_out {
-        SendFile::Offset(File::from_fd(fd_out)?, off_out)
+    let dst = if let Some(off) = nullable!(off_out.get_as_mut())? {
+        if *off < 0 {
+            return Err(LinuxError::EINVAL);
+        }
+        SendFile::Offset(File::from_fd(fd_out)?, off_out.cast().get_as_mut()?)
     } else {
         if let Ok(src) = Pipe::from_fd(fd_in)
             && !src.is_write()
