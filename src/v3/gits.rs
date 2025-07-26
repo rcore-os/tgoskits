@@ -4,18 +4,15 @@ use core::{cell::UnsafeCell, ptr};
 
 use axaddrspace::{GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr};
 use axdevice_base::BaseDeviceOps;
-use axvisor_api::memory::{phys_to_virt, PhysFrame};
-use log::{debug, trace, warn};
+use axvisor_api::memory::phys_to_virt;
+use log::{debug, trace};
 use memory_addr::PhysAddr;
 use spin::{Mutex, Once};
 
 use crate::v3::vgicr::get_lpt;
 
 use super::{
-    registers::{
-        GITS_BASER, GITS_CBASER, GITS_COLLECTION_BASER, GITS_CREADR, GITS_CTRL, GITS_CT_BASER,
-        GITS_CWRITER, GITS_DT_BASER, GITS_TYPER,
-    },
+    registers::*,
     utils::{enable_one_lpi, perform_mmio_read, perform_mmio_write},
 };
 
@@ -229,7 +226,7 @@ pub const QWORD_PER_CMD: usize = BYTES_PER_CMD >> 3; // 8 bytes per qword
 impl Cmdq {
     fn new(host_gits_base: HostPhysAddr) -> Self {
         let phy_addr = axvisor_api::memory::alloc_contiguous_frames(16, 0).unwrap();
-        trace!("Cmdq alloc 16 frames: {:?}", phy_addr);
+        trace!("Cmdq alloc 16 frames: {phy_addr:?}");
         let mut r = Self {
             phy_addr,
             readr: 0,
@@ -254,11 +251,11 @@ impl Cmdq {
 
         unsafe {
             let origin_ctrl = ptr::read_volatile(ctlr_ptr);
-            debug!("origin_ctrl: {:#x}", origin_ctrl);
+            debug!("origin_ctrl: {origin_ctrl:#x}");
             ptr::write_volatile(ctlr_ptr, origin_ctrl & 0xfffffffffffffffeu64); // turn off, vm will turn on this ctrl
 
             ptr::write_volatile(cbaser_ptr, cbaser_val as u64);
-            ptr::write_volatile(cwriter_ptr, 0 as u64); // init cwriter
+            ptr::write_volatile(cwriter_ptr, 0); // init cwriter
 
             self.init_dummy_dt_ct_baser();
 
@@ -284,23 +281,22 @@ impl Cmdq {
             let dt_baser = dt_baser
                 | (dt_addr.as_usize() as u64 & 0x0000_ffff_ffff_f000)
                 | (1 << 63)     // set valid bit
-                | (0 << 62)     // not indirect table
+                // | (0 << 62)     // not indirect table
                 | (0b111 << 59) // inner cache: 0b111
                 | (0b01 << 10)  // inner shareable
-                | (0b00 << 8)   // 4-KiB page size
+                // | (0b00 << 8)   // 4-KiB page size
                 | (16 - 1)      // 16 frames, 64 KiB
                 ;
             let ct_baser = ct_baser
                 | (ct_addr.as_usize() as u64 & 0x0000_ffff_ffff_f000)
                 | (1 << 63)     // set valid bit
-                | (0 << 62)     // not indirect table
+                // | (0 << 62)     // not indirect table
                 | (0b111 << 59) // inner cache: 0b111
                 | (0b01 << 10)  // inner shareable
-                | (0b00 << 8)   // 4-KiB page size
+                // | (0b00 << 8)   // 4-KiB page size
                 | (16 - 1); // 16 frames, 64 KiB
             debug!(
-                "setting dt_baser: {:#x}, ct_baser: {:#x}, dt_addr: {:?}, ct_addr: {:?}",
-                dt_baser, ct_baser, dt_addr, ct_addr
+                "setting dt_baser: {dt_baser:#x}, ct_baser: {ct_baser:#x}, dt_addr: {dt_addr:?}, ct_addr: {ct_addr:?}"
             );
             ptr::write_volatile(dt_baser_ptr, dt_baser);
             ptr::write_volatile(ct_baser_ptr, ct_baser);
@@ -351,7 +347,7 @@ impl Cmdq {
             0x09 => {
                 let icid = value[2] & 0xffff;
                 let rd_base = (value[2] >> 16) & 0x7ffffffff;
-                debug!("MAPC cmd, icid {:#x} -> redist {:#x}", icid, rd_base);
+                debug!("MAPC cmd, icid {icid:#x} -> redist {rd_base:#x}");
             }
             0x05 => {
                 debug!("SYNC cmd");
@@ -372,7 +368,7 @@ impl Cmdq {
                 debug!("INVALL cmd");
             }
             _ => {
-                debug!("other cmd, code: 0x{:x}", code);
+                debug!("other cmd, code: 0x{code:x}");
             }
         }
     }
@@ -388,13 +384,9 @@ impl Cmdq {
         let cmd_num = cmd_size / BYTES_PER_CMD;
 
         trace!(
-            "vm_cbaser: {:#x}, vm_creadr: {:#x}, vm_writer: {:#x}, vm_addr: {:#x}",
-            vm_cbaser,
-            vm_creadr,
-            vm_writer,
-            vm_addr
+            "vm_cbaser: {vm_cbaser:#x}, vm_creadr: {vm_creadr:#x}, vm_writer: {vm_writer:#x}, vm_addr: {vm_addr:#x}"
         );
-        debug!("cmd size: {:#x}, cmd num: {:#x}", cmd_size, cmd_num);
+        debug!("cmd size: {cmd_size:#x}, cmd num: {cmd_num:#x}");
 
         let mut vm_cmdq_addr = PhysAddr::from_usize(vm_addr + origin_vm_readr);
         let mut real_cmdq_addr = self.phy_addr + self.readr;
@@ -405,10 +397,10 @@ impl Cmdq {
 
             unsafe {
                 let v = ptr::read_volatile(vm_cmdq_ptr);
-                self.analyze_cmd(v.clone());
+                self.analyze_cmd(v);
 
-                for i in 0..QWORD_PER_CMD {
-                    ptr::write_volatile(real_cmdq_ptr, v[i] as u64);
+                for &one in v.iter().take(QWORD_PER_CMD) {
+                    ptr::write_volatile(real_cmdq_ptr, one);
                     real_cmdq_addr += 8;
                     real_cmdq_ptr = real_cmdq_ptr.add(1);
                 }
@@ -441,7 +433,7 @@ impl Cmdq {
             }
         }
 
-        return vm_writer;
+        vm_writer
     }
 }
 

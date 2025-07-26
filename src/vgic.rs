@@ -2,12 +2,18 @@ use crate::interrupt::VgicInt;
 use crate::registers::GicRegister;
 use crate::vgicd::Vgicd;
 use axerrno::AxResult;
-use axvisor_api::vmm::{current_vcpu_id, current_vm_vcpu_num};
+use axvisor_api::vmm::current_vcpu_id;
 use spin::Mutex;
 
 // 实现 Vgic
 pub struct Vgic {
     vgicd: Mutex<Vgicd>,
+}
+
+impl Default for Vgic {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Vgic {
@@ -18,12 +24,12 @@ impl Vgic {
     }
     pub(crate) fn handle_read8(&self, addr: usize) -> AxResult<usize> {
         let value = self.handle_read32(addr)?;
-        return Ok((value >> (8 * (addr & 0x3))) & 0xff);
+        Ok((value >> (8 * (addr & 0x3))) & 0xff)
     }
 
     pub(crate) fn handle_read16(&self, addr: usize) -> AxResult<usize> {
         let value = self.handle_read32(addr)?;
-        return Ok((value >> (8 * (addr & 0x3))) & 0xffff);
+        Ok((value >> (8 * (addr & 0x3))) & 0xffff)
     }
 
     pub fn handle_read32(&self, addr: usize) -> AxResult<usize> {
@@ -58,21 +64,18 @@ impl Vgic {
     }
 
     pub fn handle_write32(&self, addr: usize, value: usize) {
-        let vcpu_id = current_vcpu_id();
-        match GicRegister::from_addr(addr as u32) {
-            Some(reg) => {
-                match reg {
-                    GicRegister::GicdCtlr => self.vgicd.lock().vgicd_ctrlr_write(value),
-                    // GicRegister::GicdIsenabler(idx) => self.write_isenabler(idx, value),
-                    GicRegister::GicdIsenabler(idx) => {
-                        self.vgicd.lock().vgicd_isenabler_write(idx, value)
-                    }
-                    _ => {
-                        //error!("Write register address: {:#x}", addr);
-                    }
+        let _vcpu_id = current_vcpu_id();
+        if let Some(reg) = GicRegister::from_addr(addr as u32) {
+            match reg {
+                GicRegister::GicdCtlr => self.vgicd.lock().vgicd_ctrlr_write(value),
+                // GicRegister::GicdIsenabler(idx) => self.write_isenabler(idx, value),
+                GicRegister::GicdIsenabler(idx) => {
+                    self.vgicd.lock().vgicd_isenabler_write(idx, value)
+                }
+                _ => {
+                    //error!("Write register address: {:#x}", addr);
                 }
             }
-            None => {} //error!("Invalid write register address: {addr:#x}"),
         }
     }
 

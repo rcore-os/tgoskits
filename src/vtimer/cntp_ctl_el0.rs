@@ -30,11 +30,12 @@ impl BaseDeviceOps<SysRegAddrRange> for SysCntpCtlEl0 {
         _width: AccessWidth,
         val: usize,
     ) -> AxResult {
-        info!("Write to emulator register: {:?}, value: {}", addr, val);
+        info!("Write to emulator register: {addr:?}, value: {val}");
         Ok(())
     }
 }
 
+#[derive(Default)]
 pub struct SysCntpCtlEl0 {
     // Fields
 }

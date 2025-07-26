@@ -8,14 +8,7 @@ use memory_addr::PhysAddr;
 use spin::{Mutex, Once};
 
 use super::{
-    registers::{
-        GICD_TYPER, GICR_CLRLPIR, GICR_CTLR, GICR_ICACTIVER, GICR_ICENABLER, GICR_ICFGR,
-        GICR_ICFGR_RANGE, GICR_ICPENDR, GICR_IGROUPR, GICR_IGRPMODR, GICR_IIDR,
-        GICR_IMPL_DEF_IDENT_REGS_END, GICR_IMPL_DEF_IDENT_REGS_START, GICR_INVALLR, GICR_INVLPIR,
-        GICR_IPRIORITYR, GICR_IPRIORITYR_RANGE, GICR_ISACTIVER, GICR_ISENABLER, GICR_ISPENDR,
-        GICR_PENDBASER, GICR_PROPBASER, GICR_SETLPIR, GICR_SGI_BASE, GICR_STATUSR, GICR_SYNCR,
-        GICR_TYPER, GICR_TYPER_LAST, GICR_WAKER, MAINTENACE_INTERRUPT,
-    },
+    registers::*,
     utils::{perform_mmio_read, perform_mmio_write},
 };
 
@@ -207,7 +200,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicR {
 pub struct LpiPropTable {
     frame: PhysAddr,
     frame_pages: usize,
-    host_gicr_base: HostPhysAddr,
+    _host_gicr_base: HostPhysAddr,
 }
 
 impl Drop for LpiPropTable {
@@ -229,8 +222,7 @@ impl LpiPropTable {
         let page_num: usize = ((1 << (id_bits + 1)) - 8192) / memory_addr::PAGE_SIZE_4K;
 
         debug!(
-            "Creating LPI prop table: id_bits: {}, page_num: {}, size_per_gicr: {}",
-            id_bits, page_num, size_per_gicr
+            "Creating LPI prop table: id_bits: {id_bits}, page_num: {page_num}, size_per_gicr: {size_per_gicr}"
         );
 
         let f = axvisor_api::memory::alloc_contiguous_frames(page_num, 0)
@@ -239,10 +231,7 @@ impl LpiPropTable {
         for id in 0..cpu_num {
             let propbaser = host_gicr_base + id * size_per_gicr + GICR_PROPBASER;
             let propbaser = phys_to_virt(propbaser);
-            debug!(
-                "Setting propbaser for CPU {}: {:#x} -> {:#x}",
-                id, propbaser, propreg
-            );
+            debug!("Setting propbaser for CPU {id}: {propbaser:#x} -> {propreg:#x}");
             unsafe {
                 ptr::write_volatile(propbaser.as_mut_ptr_of::<u64>(), propreg as _);
             }
@@ -250,12 +239,12 @@ impl LpiPropTable {
         Self {
             frame: f,
             frame_pages: page_num,
-            host_gicr_base,
+            _host_gicr_base: host_gicr_base,
         }
     }
 
     fn enable_one_lpi(&self, lpi: usize) {
-        debug!("Enabling one LPI: {}", lpi);
+        debug!("Enabling one LPI: {lpi}");
         let addr = self.frame + lpi;
         let val = 0b1;
 

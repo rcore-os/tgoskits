@@ -5,17 +5,10 @@ use axdevice_base::{BaseDeviceOps, EmuDeviceType};
 use axerrno::AxResult;
 use axvisor_api::memory::phys_to_virt;
 use bitmaps::Bitmap;
-use log::{debug, warn};
+use log::debug;
 
 use super::{
-    registers::{
-        GICDV3_CIDR0_RANGE, GICDV3_PIDR0_RANGE, GICDV3_PIDR4_RANGE, GICD_CTLR,
-        GICD_ICACTIVER_RANGE, GICD_ICENABLER_RANGE, GICD_ICFGR_RANGE, GICD_ICPENDR_RANGE,
-        GICD_IGROUPR_RANGE, GICD_IGRPMODR, GICD_IGRPMODR_RANGE, GICD_IIDR, GICD_IPRIORITYR_RANGE,
-        GICD_IROUTER, GICD_IROUTER_RANGE, GICD_ISACTIVER_RANGE, GICD_ISENABLER_RANGE,
-        GICD_ISPENDR_RANGE, GICD_ITARGETSR, GICD_ITARGETSR_RANGE, GICD_TYPER, GICD_TYPER2,
-        MAX_IRQ_V3,
-    },
+    registers::*,
     utils::{perform_mmio_read, perform_mmio_write},
 };
 
@@ -53,15 +46,14 @@ impl VGicD {
 
     pub fn assign_irq(&self, irq: u32, cpu_phys_id: usize, target_cpu_affinity: (u8, u8, u8, u8)) {
         debug!(
-            "Physically assigning IRQ {} to CPU {} with affinity {:?}",
-            irq, cpu_phys_id, target_cpu_affinity
+            "Physically assigning IRQ {irq} to CPU {cpu_phys_id} with affinity {target_cpu_affinity:?}"
         );
 
         if irq >= MAX_IRQ_V3 as u32 {
             panic!("IRQ {} is out of range for VGicD", irq);
         }
         unsafe {
-            (&mut *self.assigned_irqs.get()).set(irq as usize, true);
+            (*self.assigned_irqs.get()).set(irq as usize, true);
         }
 
         // TODO: update host GICD_ITARGETSR and GICD_IROUTER registers
@@ -106,7 +98,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicD {
         let gicd_base = self.host_gicd_addr;
         let reg = addr - self.addr;
 
-        debug!("vGICD read reg {:#x} width {:?}", reg, width);
+        debug!("vGICD read reg {reg:#x} width {width:?}");
 
         match reg {
             reg if GICD_IROUTER_RANGE.contains(&reg) => {
@@ -177,10 +169,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicD {
         let gicd_base = self.host_gicd_addr;
         let reg = addr - self.addr;
 
-        debug!(
-            "vGICD write reg {:#x} width {:?} val {:#x}",
-            reg, width, val
-        );
+        debug!("vGICD write reg {reg:#x} width {width:?} val {val:#x}");
 
         match reg {
             reg if GICD_IROUTER_RANGE.contains(&reg) => {
@@ -245,7 +234,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicD {
 
 impl VGicD {
     pub fn is_irq_assigned(&self, irq: u32) -> bool {
-        unsafe { (&mut *self.assigned_irqs.get()).get(irq as usize) }
+        unsafe { (*self.assigned_irqs.get()).get(irq as usize) }
     }
 
     pub fn is_irq_sgi(&self, irq: u32) -> bool {
@@ -255,7 +244,7 @@ impl VGicD {
 
     pub fn is_irq_spi(&self, irq: u32) -> bool {
         // Check if the IRQ is a Shared Peripheral Interrupt (SPI)
-        irq >= 16 && irq < 1020
+        (16..1020).contains(&irq)
     }
 
     /// Returns the mask of bits for the irqs assigned to this VGicD, in a bit-field reg.

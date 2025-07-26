@@ -1,5 +1,5 @@
 extern crate alloc;
-use crate::consts::{PPI_ID_MAX, SGI_ID_MAX, SPI_ID_MAX};
+use crate::consts::*;
 use crate::interrupt::VgicInt;
 
 pub struct Vgicd {

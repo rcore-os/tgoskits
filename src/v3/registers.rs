@@ -1,3 +1,4 @@
+#![allow(unused)]
 //! TODO: merge this with `src/registers.rs`
 
 /// Maximum number of IRQs supported by GICv3. We count special interrupt numbers from 1020 to 1023,

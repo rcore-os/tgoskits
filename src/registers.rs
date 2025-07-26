@@ -17,6 +17,7 @@ macro_rules! generate_gic_registers {
             ),* $(,)?
         }
     ) => {
+        #[allow(clippy::enum_variant_names)]
         #[derive(Debug, Clone, Copy, PartialEq)]
         pub enum GicRegister {
             // Generate single register variants
@@ -40,7 +41,7 @@ macro_rules! generate_gic_registers {
                     )*
                     // Match range registers
                     $(
-                        addr if addr >= $range_offset && addr < $range_offset + ($range_size * 4) => {
+                        addr if ($range_offset..$range_offset + ($range_size * 4)).contains(&addr)   => {
                             let idx = (addr - $range_offset) / 4; // Calculate index
                             if idx < $range_size {
                                 Some(Self::$range_name(idx)) // Range register match

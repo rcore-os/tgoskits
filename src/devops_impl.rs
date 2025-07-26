@@ -54,15 +54,15 @@ impl BaseDeviceOps<GuestPhysAddrRange> for Vgic {
         match width {
             AccessWidth::Byte => {
                 // Handle 1-byte read
-                return self.handle_read8(addr);
+                self.handle_read8(addr)
             }
             AccessWidth::Word => {
                 // Handle 2-byte read
-                return self.handle_read16(addr);
+                self.handle_read16(addr)
             }
             AccessWidth::Dword => {
                 // Handle 4-byte read
-                return self.handle_read32(addr);
+                self.handle_read32(addr)
             }
             // Return success for unsupported widths without performing any operation
             _ => Ok(0),

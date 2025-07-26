@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use crate::consts::{PPI_ID_MAX, SGI_ID_MAX, SPI_ID_MAX};
 use log::debug;
 
@@ -8,6 +10,7 @@ pub enum TriggerMode {
     Level = 1,
 }
 
+#[allow(clippy::upper_case_acronyms)]
 /// Different types of interrupt that the GIC handles.
 #[derive(Debug, Clone, Copy)]
 pub enum InterruptType {
@@ -17,7 +20,7 @@ pub enum InterruptType {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum InterruptStatus {
+pub enum InterruptStatus {
     Inactive,
     Pending,
     Active,

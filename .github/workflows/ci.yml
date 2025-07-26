@@ -8,7 +8,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        rust-toolchain: [nightly-2024-12-25, nightly]
+        rust-toolchain: [nightly-2025-05-20, nightly]
         targets: [aarch64-unknown-none-softfloat]
     steps:
     - uses: actions/checkout@v4
@@ -27,6 +27,8 @@ jobs:
     - name: Build
       continue-on-error: ${{ matrix.rust-toolchain == 'nightly' }}
       run: cargo build --target ${{ matrix.targets }} --all-features
+    - name: Test
+      run: cargo test
 
   # doc:
   #   runs-on: ubuntu-latest

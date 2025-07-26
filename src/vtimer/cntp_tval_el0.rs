@@ -36,19 +36,20 @@ impl BaseDeviceOps<SysRegAddrRange> for SysCntpTvalEl0 {
         _width: AccessWidth,
         val: usize,
     ) -> AxResult {
-        info!("Write to emulator register: {:?}, value: {}", addr, val);
+        info!("Write to emulator register: {addr:?}, value: {val}");
         let now = current_time_nanos();
         info!("Current time: {}, deadline: {}", now, now + val as u64);
         register_timer(
             Duration::from_nanos(now + val as u64),
             Box::new(|_| {
-                axvisor_api::arch::hardware_inject_virtual_interrupt(30);
+                crate::api_reexp::hardware_inject_virtual_interrupt(30);
             }),
         );
         Ok(())
     }
 }
 
+#[derive(Default)]
 pub struct SysCntpTvalEl0 {
     // Fields
 }

@@ -1,5 +1,4 @@
-#![no_std]
-#![feature(unbounded_shifts)]
+#![cfg_attr(not(test), no_std)]
 
 mod devops_impl;
 
@@ -7,9 +6,8 @@ pub mod vgic;
 pub use vgic::Vgic;
 
 mod consts;
-// mod vgicc;
 mod interrupt;
-mod list_register;
+// mod list_register;
 mod registers;
 mod vgicd;
 pub mod vtimer;
@@ -20,12 +18,14 @@ pub mod v3;
 #[cfg(target_arch = "aarch64")]
 /// Re-export arch specific APIs for VGIC to avoid doc build errors
 mod api_reexp {
+    #[allow(unused_imports)]
     pub use axvisor_api::arch::{
         get_host_gicd_base, get_host_gicr_base, hardware_inject_virtual_interrupt, read_vgicd_iidr,
         read_vgicd_typer,
     };
 }
 
+#[allow(dead_code)]
 #[cfg(not(target_arch = "aarch64"))]
 mod api_reexp {
     use memory_addr::{pa, PhysAddr};
@@ -46,5 +46,5 @@ mod api_reexp {
         pa!(0)
     }
 
-    pub fn hardware_inject_virtual_interrupt(vector: axvisor_api::vmm::InterruptVector) {}
+    pub fn hardware_inject_virtual_interrupt(_vector: axvisor_api::vmm::InterruptVector) {}
 }
