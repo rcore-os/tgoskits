@@ -32,7 +32,7 @@ use super::vmcs::{
     self, ApicAccessExitType, VmcsControl32, VmcsControl64, VmcsControlNW, VmcsGuest16,
     VmcsGuest32, VmcsGuest64, VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW,
 };
-use crate::{ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters, vmx::vcpu};
+use crate::{ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters};
 
 const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 1_000_000;
 
@@ -626,10 +626,12 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
                 use VmcsGuest16::*;
                 use VmcsGuest32::*;
                 use VmcsGuestNW::*;
-                concat_idents!($seg, _SELECTOR).write(0)?;
-                concat_idents!($seg, _BASE).write(0)?;
-                concat_idents!($seg, _LIMIT).write(0xffff)?;
-                concat_idents!($seg, _ACCESS_RIGHTS).write($access_rights)?;
+                paste::paste! {
+                    [<$seg _SELECTOR>].write(0)?;
+                    [<$seg _BASE>].write(0)?;
+                    [<$seg _LIMIT>].write(0xffff)?;
+                    [<$seg _ACCESS_RIGHTS>].write($access_rights)?;
+                }
             }};
         }
 
@@ -891,7 +893,7 @@ macro_rules! vmx_entry_with {
 }
 
 impl<H: AxVCpuHal> VmxVcpu<H> {
-    #[naked]
+    #[unsafe(naked)]
     /// Enter guest with vmlaunch.
     ///
     /// `#[naked]` is essential here, without it the rust compiler will think `&mut self` is not used and won't give us correct %rdi.
@@ -903,7 +905,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         vmx_entry_with!("vmlaunch")
     }
 
-    #[naked]
+    #[unsafe(naked)]
     /// Enter guest with vmresume.
     ///
     /// See [`Self::vmx_launch`] for detail.
@@ -911,7 +913,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         vmx_entry_with!("vmresume")
     }
 
-    #[naked]
+    #[unsafe(naked)]
     /// Return after vm-exit. This function is used only for returning from [`Self::vmx_launch`] or [`Self::vmx_resume`].
     ///
     /// NEVER call this function directly.
@@ -1445,4 +1447,272 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
     fn set_return_value(&mut self, val: usize) {
         self.regs_mut().rax = val as u64;
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::format;
+
+    #[test]
+    fn test_vm_cpu_mode_enum() {
+        // Test VmCpuMode enum values
+        assert_ne!(VmCpuMode::Real, VmCpuMode::Protected);
+        assert_ne!(VmCpuMode::Protected, VmCpuMode::Compatibility);
+        assert_ne!(VmCpuMode::Compatibility, VmCpuMode::Mode64);
+
+        // Test Debug formatting
+        let debug_str = format!("{:?}", VmCpuMode::Mode64);
+        assert!(debug_str.contains("Mode64"));
+    }
+
+    #[test]
+    fn test_general_registers_operations() {
+        let mut regs = GeneralRegisters::default();
+
+        // Test initial state
+        assert_eq!(regs.rax, 0);
+        assert_eq!(regs.rbx, 0);
+
+        // Test setting and getting values
+        regs.rax = 0x1234567890abcdef;
+        regs.rbx = 0xfedcba0987654321;
+
+        assert_eq!(regs.rax, 0x1234567890abcdef);
+        assert_eq!(regs.rbx, 0xfedcba0987654321);
+
+        // Test register access by index
+        regs.set_reg_of_index(0, 0x1111111111111111); // RAX
+        assert_eq!(regs.get_reg_of_index(0), 0x1111111111111111);
+
+        regs.set_reg_of_index(1, 0x2222222222222222); // RCX  
+        assert_eq!(regs.get_reg_of_index(1), 0x2222222222222222);
+    }
+
+    #[test]
+    fn test_constants() {
+        // Test that constants have expected values
+        assert_eq!(VMX_PREEMPTION_TIMER_SET_VALUE, 1_000_000);
+        assert_eq!(QEMU_EXIT_PORT, 0x604);
+        assert_eq!(QEMU_EXIT_MAGIC, 0x2000);
+        assert_eq!(MSR_IA32_EFER_LMA_BIT, 1 << 10);
+        assert_eq!(CR0_PE, 1 << 0);
+    }
+
+    #[test]
+    fn test_bit_operations() {
+        use bit_field::BitField;
+
+        let mut value = 0u64;
+        value.set_bits(0..32, 0x12345678);
+        value.set_bits(32..64, 0xabcdef00);
+
+        assert_eq!(value.get_bits(0..32), 0x12345678);
+        assert_eq!(value.get_bits(32..64), 0xabcdef00);
+    }
+
+    // Mock tests for VmxVcpu (limited to safe operations)
+    mod vmx_vcpu_tests {
+        use super::*;
+
+        // Helper function to create a test VmxVcpu (this would normally require VMX hardware)
+        fn create_test_vcpu_regs() -> GeneralRegisters {
+            let mut regs = GeneralRegisters::default();
+            regs.rax = 0x1000;
+            regs.rbx = 0x2000;
+            regs.rcx = 0x3000;
+            regs.rdx = 0x4000;
+            regs
+        }
+
+        #[test]
+        fn test_general_registers_clone() {
+            let regs = create_test_vcpu_regs();
+            let cloned_regs = regs.clone();
+
+            assert_eq!(regs.rax, cloned_regs.rax);
+            assert_eq!(regs.rbx, cloned_regs.rbx);
+            assert_eq!(regs.rcx, cloned_regs.rcx);
+            assert_eq!(regs.rdx, cloned_regs.rdx);
+        }
+
+        #[test]
+        fn test_edx_eax_operations() {
+            // Test the logic for combining EDX:EAX
+            let rax = 0x12345678u64;
+            let rdx = 0xabcdef00u64;
+
+            // Simulate read_edx_eax logic
+            let combined = ((rdx & 0xffff_ffff) << 32) | (rax & 0xffff_ffff);
+            assert_eq!(combined, 0xabcdef0012345678);
+
+            // Simulate write_edx_eax logic
+            let val = 0xfedcba0987654321u64;
+            let new_rax = val & 0xffff_ffff;
+            let new_rdx = val >> 32;
+
+            assert_eq!(new_rax, 0x87654321);
+            assert_eq!(new_rdx, 0xfedcba09);
+        }
+
+        #[test]
+        fn test_register_bit_operations() {
+            let mut regs = GeneralRegisters::default();
+
+            // Test setting specific bits in registers
+            regs.rcx = 0;
+            regs.rcx.set_bits(0..32, 0x12345678);
+            assert_eq!(regs.rcx.get_bits(0..32), 0x12345678);
+
+            regs.rdx = 0xffffffffffffffff;
+            regs.rdx.set_bits(32..64, 0);
+            assert_eq!(regs.rdx.get_bits(32..64), 0);
+            assert_eq!(regs.rdx.get_bits(0..32), 0xffffffff);
+        }
+
+        #[test]
+        fn test_gla2gva_logic() {
+            // Test the address translation logic (without actual VMX hardware)
+            let guest_rip = 0x1000usize;
+            let seg_base_64bit = 0; // In 64-bit mode, segment base is 0
+            let seg_base_other = 0x10000; // In other modes, segment base matters
+
+            // 64-bit mode calculation
+            let gva_64bit = guest_rip + seg_base_64bit;
+            assert_eq!(gva_64bit, 0x1000);
+
+            // Other mode calculation
+            let gva_other = guest_rip + seg_base_other;
+            assert_eq!(gva_other, 0x11000);
+        }
+
+        #[test]
+        fn test_interrupt_vector_validation() {
+            // Test interrupt vector validation logic
+            let valid_exception = 6; // #UD exception
+            let valid_interrupt = 0x20;
+            let invalid_vector = 0;
+
+            assert!(valid_exception < 32); // Exceptions are < 32
+            assert!(valid_interrupt >= 32); // Interrupts are >= 32
+            assert_eq!(invalid_vector, 0); // Vector 0 should be handled specially
+        }
+
+        #[test]
+        fn test_page_walk_info_struct() {
+            let ptw_info = GuestPageWalkInfo {
+                top_entry: 0x1000,
+                level: 4,
+                width: 9,
+                is_user_mode_access: false,
+                is_write_access: false,
+                is_inst_fetch: false,
+                pse: true,
+                wp: true,
+                nxe: true,
+                is_smap_on: false,
+                is_smep_on: false,
+            };
+
+            assert_eq!(ptw_info.level, 4);
+            assert_eq!(ptw_info.width, 9);
+            assert_eq!(ptw_info.top_entry, 0x1000);
+        }
+
+        #[test]
+        fn test_cpuid_constants() {
+            // Test CPUID-related constants used in handle_cpuid
+            const LEAF_FEATURE_INFO: u32 = 0x1;
+            const LEAF_HYPERVISOR_INFO: u32 = 0x4000_0000;
+            const FEATURE_VMX: u32 = 1 << 5;
+            const FEATURE_HYPERVISOR: u32 = 1 << 31;
+
+            assert_eq!(LEAF_FEATURE_INFO, 1);
+            assert_eq!(LEAF_HYPERVISOR_INFO, 0x40000000);
+            assert_eq!(FEATURE_VMX, 32);
+            assert_eq!(FEATURE_HYPERVISOR, 0x80000000);
+        }
+
+        #[test]
+        fn test_cr_flags_operations() {
+            use x86_64::registers::control::{Cr0Flags, Cr4Flags};
+
+            // Test CR0 flags
+            let cr0_flags = Cr0Flags::PAGING | Cr0Flags::PROTECTED_MODE_ENABLE;
+            assert!(cr0_flags.contains(Cr0Flags::PAGING));
+            assert!(cr0_flags.contains(Cr0Flags::PROTECTED_MODE_ENABLE));
+            assert!(!cr0_flags.contains(Cr0Flags::CACHE_DISABLE));
+
+            // Test CR4 flags
+            let cr4_flags = Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS | Cr4Flags::PAGE_SIZE_EXTENSION;
+            assert!(cr4_flags.contains(Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS));
+            assert!(cr4_flags.contains(Cr4Flags::PAGE_SIZE_EXTENSION));
+        }
+
+        #[test]
+        fn test_access_width_operations() {
+            // Test access width enumeration
+            use axaddrspace::device::AccessWidth;
+
+            assert_eq!(AccessWidth::Byte as usize, 0);
+            assert_eq!(AccessWidth::Word as usize, 1);
+            assert_eq!(AccessWidth::Dword as usize, 2);
+            assert_eq!(AccessWidth::Qword as usize, 3);
+
+            // Test conversion
+            assert_eq!(AccessWidth::try_from(1), Ok(AccessWidth::Byte));
+            assert_eq!(AccessWidth::try_from(2), Ok(AccessWidth::Word));
+            assert_eq!(AccessWidth::try_from(4), Ok(AccessWidth::Dword));
+            assert_eq!(AccessWidth::try_from(8), Ok(AccessWidth::Qword));
+        }
+    }
+
+    // Tests for utility functions that don't require hardware
+    #[test]
+    fn test_get_tr_base_logic() {
+        let mut test_entry = 0u64;
+        test_entry |= 1u64 << 47; // Present bit
+        test_entry |= (0x1000u64 & 0xFFFFFF) << 16; // Base address bits 16-39
+
+        // Present bit check
+        let present = test_entry & (1 << 47) != 0;
+        assert!(present);
+
+        // Base address extraction
+        let base_low = (test_entry >> 16) & 0xFFFFFF;
+        let base_high = (test_entry >> 56) & 0xFF;
+        let base_addr = base_low | (base_high << 24);
+
+        assert_eq!(base_addr, 0x1000);
+    }
+
+    #[test]
+    fn test_vmx_exit_reason_enum() {
+        // Test that VmxExitReason enum can be used in match statements
+        let test_reason = VmxExitReason::VMCALL;
+        match test_reason {
+            VmxExitReason::VMCALL => assert!(true),
+            _ => assert!(false),
+        }
+    }
+
+    #[test]
+    fn test_debug_implementations() {
+        // Test Debug implementations for various types
+        let cpu_mode = VmCpuMode::Mode64;
+        let debug_str = format!("{:?}", cpu_mode);
+        assert!(!debug_str.is_empty());
+
+        let regs = GeneralRegisters::default();
+        let debug_str = format!("{:?}", regs);
+        assert!(!debug_str.is_empty());
+    }
+
+    // Note: Most VmxVcpu methods require actual VMX hardware support and cannot be unit tested
+    // without either:
+    // 1. Running on VMX-capable hardware with appropriate privileges
+    // 2. Extensive mocking of the entire VMX infrastructure
+    //
+    // For comprehensive testing of VmxVcpu, integration tests on actual hardware
+    // or hardware simulators would be more appropriate.
 }

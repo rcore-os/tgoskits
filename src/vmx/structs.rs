@@ -204,6 +204,7 @@ impl VmxBasic {
 
 bitflags! {
     /// IA32_FEATURE_CONTROL flags.
+    #[derive(Debug)]
     pub struct FeatureControlFlags: u64 {
        /// Lock bit: when set, locks this MSR from being written. when clear,
        /// VMXON causes a #GP.
@@ -239,6 +240,7 @@ impl FeatureControl {
 
 bitflags! {
     /// Extended-Page-Table Pointer. (SDM Vol. 3C, Section 24.6.11)
+    #[derive(Debug)]
     pub struct EPTPointer: u64 {
         /// EPT paging-structure memory type: Uncacheable (UC).
         #[allow(clippy::identity_op)]
@@ -264,5 +266,205 @@ impl EPTPointer {
         let aligned_addr = pml4_paddr.as_usize() & !(PAGE_SIZE - 1);
         let flags = Self::from_bits_retain(aligned_addr as u64);
         flags | Self::MEM_TYPE_WB | Self::WALK_LENGTH_4 | Self::ENABLE_ACCESSED_DIRTY
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::mock::MockMmHal;
+    use alloc::format;
+
+    #[test]
+    fn test_vmx_region_uninit() {
+        let region = unsafe { VmxRegion::<MockMmHal>::uninit() };
+
+        // Test that we can create an uninitialized region
+        // Can't test much more without allocating memory
+        let debug_str = format!("{:?}", region);
+        assert!(!debug_str.is_empty());
+    }
+
+    #[test]
+    fn test_vmx_region_new() {
+        // Reset allocator for consistent testing
+        MockMmHal::reset();
+
+        // Test VmxRegion::new with valid parameters
+        let region = VmxRegion::<MockMmHal>::new(0x12345, false);
+        assert!(region.is_ok());
+
+        let region = region.unwrap();
+        let addr = region.phys_addr();
+        assert_ne!(addr.as_usize(), 0);
+        // Should be page-aligned
+        assert_eq!(addr.as_usize() % 0x1000, 0);
+    }
+
+    #[test]
+    fn test_vmx_region_new_with_shadow() {
+        // Reset allocator for consistent testing
+        MockMmHal::reset();
+
+        // Test VmxRegion::new with different shadow indicator values
+        let region_no_shadow = VmxRegion::<MockMmHal>::new(0x12345, false);
+        assert!(region_no_shadow.is_ok());
+
+        let region_with_shadow = VmxRegion::<MockMmHal>::new(0x12345, true);
+        assert!(region_with_shadow.is_ok());
+
+        // Test that both regions have valid physical addresses
+        let region1 = region_no_shadow.unwrap();
+        let region2 = region_with_shadow.unwrap();
+
+        let addr1 = region1.phys_addr();
+        let addr2 = region2.phys_addr();
+
+        assert_ne!(addr1.as_usize(), 0);
+        assert_ne!(addr2.as_usize(), 0);
+        assert_ne!(addr1.as_usize(), addr2.as_usize());
+        assert_eq!(addr1.as_usize() % 0x1000, 0);
+        assert_eq!(addr2.as_usize() % 0x1000, 0);
+    }
+
+    #[test]
+    fn test_io_bitmap_creation() {
+        // Test IOBitmap creation methods
+        MockMmHal::reset();
+
+        // Test passthrough_all creation
+        let passthrough_bitmap = IOBitmap::<MockMmHal>::passthrough_all();
+        assert!(passthrough_bitmap.is_ok());
+
+        // Test intercept_all creation
+        let intercept_bitmap = IOBitmap::<MockMmHal>::intercept_all();
+        assert!(intercept_bitmap.is_ok());
+
+        // Test that phys_addr returns valid addresses
+        let bitmap = passthrough_bitmap.unwrap();
+        let (addr_a, addr_b) = bitmap.phys_addr();
+        assert_ne!(addr_a.as_usize(), 0);
+        assert_ne!(addr_b.as_usize(), 0);
+        assert_ne!(addr_a.as_usize(), addr_b.as_usize());
+    }
+
+    #[test]
+    fn test_msr_bitmap_creation() {
+        // Test MsrBitmap creation methods
+        MockMmHal::reset();
+
+        // Test passthrough_all creation
+        let passthrough_bitmap = MsrBitmap::<MockMmHal>::passthrough_all();
+        assert!(passthrough_bitmap.is_ok());
+
+        // Test intercept_all creation
+        let intercept_bitmap = MsrBitmap::<MockMmHal>::intercept_all();
+        assert!(intercept_bitmap.is_ok());
+
+        // Test that phys_addr returns valid addresses
+        let bitmap = passthrough_bitmap.unwrap();
+        let addr = bitmap.phys_addr();
+        assert_ne!(addr.as_usize(), 0);
+        assert_eq!(addr.as_usize() % 0x1000, 0);
+    }
+
+    #[test]
+    fn test_ept_pointer_creation() {
+        // Test EPTPointer creation with from_table_phys method
+        let ept_ptr1 = EPTPointer::from_table_phys(memory_addr::PhysAddr::from(0x1000));
+        let ept_ptr2 = EPTPointer::from_table_phys(memory_addr::PhysAddr::from(0x2000));
+
+        // Verify the EPT pointers were created successfully
+        assert_ne!(ept_ptr1.0, ept_ptr2.0);
+    }
+
+    #[test]
+    fn test_ept_pointer_getters() {
+        let phys_addr = memory_addr::PhysAddr::from(0x3000);
+        let ept_ptr = EPTPointer::from_table_phys(phys_addr);
+
+        // Test that we can create EPT pointer and it has expected flags
+        let bits = ept_ptr.bits();
+        assert_ne!(bits, 0);
+
+        // Should have the expected flags set
+        let expected_flags =
+            EPTPointer::MEM_TYPE_WB | EPTPointer::WALK_LENGTH_4 | EPTPointer::ENABLE_ACCESSED_DIRTY;
+        assert_eq!(bits & expected_flags.bits(), expected_flags.bits());
+    }
+
+    #[test]
+    fn test_vmx_basic_constants() {
+        assert_eq!(VmxBasic::VMX_MEMORY_TYPE_WRITE_BACK, 6);
+    }
+
+    #[test]
+    fn test_feature_control_flags() {
+        let flags = FeatureControlFlags::LOCKED | FeatureControlFlags::VMXON_ENABLED_OUTSIDE_SMX;
+
+        assert!(flags.contains(FeatureControlFlags::LOCKED));
+        assert!(flags.contains(FeatureControlFlags::VMXON_ENABLED_OUTSIDE_SMX));
+        assert!(!flags.contains(FeatureControlFlags::VMXON_ENABLED_INSIDE_SMX));
+    }
+
+    #[test]
+    fn test_ept_pointer_flags() {
+        use EPTPointer as EPT;
+
+        // Test individual flags
+        assert_eq!(EPT::MEM_TYPE_UC.bits(), 0);
+        assert_eq!(EPT::MEM_TYPE_WB.bits(), 6);
+        assert_eq!(EPT::WALK_LENGTH_4.bits(), 3 << 3);
+
+        // Test flag combination
+        let combined = EPT::MEM_TYPE_WB | EPT::WALK_LENGTH_4 | EPT::ENABLE_ACCESSED_DIRTY;
+        assert!(combined.contains(EPT::MEM_TYPE_WB));
+        assert!(combined.contains(EPT::WALK_LENGTH_4));
+        assert!(combined.contains(EPT::ENABLE_ACCESSED_DIRTY));
+    }
+
+    #[test]
+    fn test_ept_pointer_from_table_phys() {
+        let pml4_addr = HostPhysAddr::from(0x12345000_usize); // Page-aligned address
+        let ept_ptr = EPTPointer::from_table_phys(pml4_addr);
+
+        // Should have the correct flags set
+        assert!(ept_ptr.contains(EPTPointer::MEM_TYPE_WB));
+        assert!(ept_ptr.contains(EPTPointer::WALK_LENGTH_4));
+        assert!(ept_ptr.contains(EPTPointer::ENABLE_ACCESSED_DIRTY));
+
+        // Address should be preserved (and aligned)
+        let addr_part = ept_ptr.bits() & !0xfff;
+        assert_eq!(addr_part, 0x12345000);
+    }
+
+    #[test]
+    fn test_ept_pointer_from_unaligned_addr() {
+        let unaligned_addr = HostPhysAddr::from(0x12345678_usize); // Not page-aligned
+        let ept_ptr = EPTPointer::from_table_phys(unaligned_addr);
+
+        // Address should be aligned down
+        let addr_part = ept_ptr.bits() & !0xfff;
+        // Should be aligned to 4K boundary
+        assert_eq!(addr_part, 0x12345000);
+    }
+
+    #[test]
+    fn test_debug_implementations() {
+        // Test that all our structs implement Debug properly
+        let vmx_region = unsafe { VmxRegion::<MockMmHal>::uninit() };
+        let _debug_str = format!("{:?}", vmx_region);
+
+        let io_bitmap = IOBitmap::<MockMmHal>::passthrough_all().unwrap();
+        let _debug_str = format!("{:?}", io_bitmap);
+
+        let msr_bitmap = MsrBitmap::<MockMmHal>::passthrough_all().unwrap();
+        let _debug_str = format!("{:?}", msr_bitmap);
+
+        let flags = FeatureControlFlags::LOCKED;
+        let _debug_str = format!("{:?}", flags);
+
+        let ept_flags = EPTPointer::MEM_TYPE_WB;
+        let _debug_str = format!("{:?}", ept_flags);
     }
 }

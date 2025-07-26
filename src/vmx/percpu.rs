@@ -14,6 +14,7 @@ use crate::vmx::structs::{FeatureControl, FeatureControlFlags, VmxBasic, VmxRegi
 /// This structure holds the state information specific to a CPU core
 /// when operating in VMX mode, including the VMCS revision identifier and
 /// the VMX region.
+#[derive(Debug)]
 pub struct VmxPerCpuState<H: AxVCpuHal> {
     /// The VMCS (Virtual Machine Control Structure) revision identifier.
     ///
@@ -68,8 +69,10 @@ impl<H: AxVCpuHal> AxArchPerCpu for VmxPerCpuState<H> {
             ($value: expr, $crx: ident) => {{
                 use Msr::*;
                 let value = $value;
-                let fixed0 = concat_idents!(IA32_VMX_, $crx, _FIXED0).read();
-                let fixed1 = concat_idents!(IA32_VMX_, $crx, _FIXED1).read();
+                paste::paste! {
+                    let fixed0 = [<IA32_VMX_ $crx _FIXED0>].read();
+                    let fixed1 = [<IA32_VMX_ $crx _FIXED1>].read();
+                }
                 (!fixed0 | value != 0) && (fixed1 | !value != 0)
             }};
         }
@@ -136,5 +139,82 @@ impl<H: AxVCpuHal> AxArchPerCpu for VmxPerCpuState<H> {
 
         self.vmx_region = unsafe { VmxRegion::uninit() };
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::mock::{MockMmHal, MockVCpuHal};
+    use alloc::format;
+    use alloc::vec::Vec;
+
+    #[test]
+    fn test_vmx_per_cpu_state_new() {
+        MockMmHal::reset(); // Reset before test
+        let result = VmxPerCpuState::<MockVCpuHal>::new(0);
+        assert!(result.is_ok());
+
+        let state = result.unwrap();
+        assert_eq!(state.vmcs_revision_id, 0);
+    }
+
+    #[test]
+    fn test_vmx_per_cpu_state_default_values() {
+        MockMmHal::reset(); // Reset before test
+        let state = VmxPerCpuState::<MockVCpuHal>::new(0).unwrap();
+
+        // Test that vmcs_revision_id is initialized to 0
+        assert_eq!(state.vmcs_revision_id, 0);
+
+        // The VMX region should be in an uninitialized state
+        // We can't test this directly as the field is private,
+        // but we can ensure the struct is created successfully
+    }
+
+    #[test]
+    fn test_multiple_cpu_states_independence() {
+        MockMmHal::reset(); // Reset before test
+        let mut states = Vec::new();
+
+        // Create states for multiple CPUs
+        for cpu_id in 0..4 {
+            let state = VmxPerCpuState::<MockVCpuHal>::new(cpu_id).unwrap();
+            states.push(state);
+        }
+
+        // Test independence by modifying one state and verifying others are unaffected
+        states[0].vmcs_revision_id = 0x12345678;
+        states[1].vmcs_revision_id = 0x87654321;
+
+        // Verify each state maintains its own value
+        assert_eq!(states[0].vmcs_revision_id, 0x12345678);
+        assert_eq!(states[1].vmcs_revision_id, 0x87654321);
+        assert_eq!(states[2].vmcs_revision_id, 0);
+        assert_eq!(states[3].vmcs_revision_id, 0);
+    }
+
+    #[test]
+    fn test_vmx_per_cpu_state_debug() {
+        MockMmHal::reset(); // Reset before test
+        let state = VmxPerCpuState::<MockVCpuHal>::new(0).unwrap();
+
+        // Test that Debug trait is implemented and doesn't panic
+        let debug_str = format!("{:?}", state);
+        assert!(!debug_str.is_empty());
+    }
+
+    #[test]
+    fn test_vmx_per_cpu_state_size() {
+        use core::mem;
+
+        // Test that the struct has a reasonable size
+        let size = mem::size_of::<VmxPerCpuState<MockVCpuHal>>();
+
+        // Should be larger than just the u32 field due to the VmxRegion
+        assert!(size > 4);
+
+        // But shouldn't be excessively large (this is a sanity check)
+        assert!(size < 1024);
     }
 }

@@ -2,6 +2,15 @@
 name = "x86_vcpu"
 version = "0.1.0"
 edition = "2024"
+authors = [
+    "Mingxian Su <aarkegz@gmail.com>",
+    "Keyang Hu <keyang.hu@qq.com>"
+]
+categories = ["embedded", "no-std"]
+description = "x86 Virtual CPU implementation for the Arceos Hypervisor"
+repository = "https://github.com/arceos-hypervisor/x86_vcpu"
+keywords = ["x86", "vcpu", "hypervisor", "arceos"]
+license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPubL-2.0 OR MulanPSL2"
 
 [dependencies]
 log = "0.4.19"
@@ -25,8 +34,10 @@ x86_vlapic = { git = "https://github.com/arceos-hypervisor/x86_vlapic.git" }
 axdevice_base = { git = "https://github.com/arceos-hypervisor/axdevice_crates.git" }
 axvisor_api = { git = "https://github.com/arceos-hypervisor/axvisor_api.git" }
 
+spin = { version = "0.9", default-features = false }
+
 [features]
 default = ["vmx"]
 tracing = []
 vmx = []
-amd = []
+svm = []
