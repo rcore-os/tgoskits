@@ -1,3 +1,5 @@
+use core::ops::{Deref, DerefMut};
+
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::{
     B38400, CREAD, CS8, ECHO, ECHOCTL, ECHOE, ECHOK, ECHOKE, ICANON, ICRNL, IEXTEN, ISIG, IXON,
@@ -15,10 +17,7 @@ pub struct Termios {
     c_lflag: tcflag_t,
     c_line: u8,
     c_cc: [u8; 19usize],
-    c_ispeed: speed_t,
-    c_ospeed: speed_t,
 }
-
 impl Termios {
     pub fn new() -> Self {
         let mut result = Self {
@@ -28,8 +27,6 @@ impl Termios {
             c_lflag: ICANON | ECHO | ISIG | ECHOE | ECHOK | ECHOCTL | ECHOKE | IEXTEN,
             c_line: 0,
             c_cc: [0; 19],
-            c_ispeed: 0,
-            c_ospeed: 0,
         };
 
         fn ctl(ch: u8) -> u8 {
@@ -104,5 +101,37 @@ impl Termios {
             ch if ch == self.special_char(VQUIT) => Signo::SIGQUIT,
             _ => return None,
         })
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, AnyBitPattern)]
+pub struct Termios2 {
+    termios: Termios,
+    c_ispeed: speed_t,
+    c_ospeed: speed_t,
+}
+
+impl Termios2 {
+    pub fn new() -> Self {
+        let termios = Termios::new();
+        Self {
+            termios,
+            c_ispeed: B38400,
+            c_ospeed: B38400,
+        }
+    }
+}
+
+impl Deref for Termios2 {
+    type Target = Termios;
+
+    fn deref(&self) -> &Self::Target {
+        &self.termios
+    }
+}
+impl DerefMut for Termios2 {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.termios
     }
 }

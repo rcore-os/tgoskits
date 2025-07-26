@@ -1,5 +1,8 @@
 use alloc::sync::Arc;
-use core::any::Any;
+use core::{
+    any::Any,
+    ops::{Deref, DerefMut},
+};
 
 use axerrno::{LinuxError, LinuxResult};
 use axsync::Mutex;
@@ -8,7 +11,11 @@ use bytemuck::AnyBitPattern;
 use lazy_static::lazy_static;
 use starry_core::{
     task::AsThread,
-    terminal::{job::JobControl, ldisc::LineDiscipline, termios::Termios},
+    terminal::{
+        job::JobControl,
+        ldisc::LineDiscipline,
+        termios::{Termios, Termios2},
+    },
 };
 use starry_process::Process;
 use starry_vm::{VmMutPtr, VmPtr};
@@ -79,10 +86,16 @@ impl DeviceOps for Tty {
         use linux_raw_sys::ioctl::*;
         match cmd {
             TCGETS => {
-                (arg as *mut Termios).vm_write(self.ldisc.lock().termios)?;
+                (arg as *mut Termios).vm_write(*self.ldisc.lock().termios.deref())?;
+            }
+            TCGETS2 => {
+                (arg as *mut Termios2).vm_write(self.ldisc.lock().termios)?;
             }
             TCSETS => {
-                self.ldisc.lock().termios = (arg as *const Termios).vm_read()?;
+                *self.ldisc.lock().termios.deref_mut() = (arg as *const Termios).vm_read()?;
+            }
+            TCSETS2 => {
+                self.ldisc.lock().termios = (arg as *const Termios2).vm_read()?;
             }
             TIOCGPGRP => {
                 let foreground = self.job_control.foreground().ok_or(LinuxError::ESRCH)?;

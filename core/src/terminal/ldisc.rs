@@ -9,11 +9,11 @@ use starry_signal::SignalInfo;
 
 use crate::{
     task::send_signal_to_process_group,
-    terminal::{job::JobControl, termios::Termios},
+    terminal::{job::JobControl, termios::Termios2},
 };
 
 pub struct LineDiscipline {
-    pub termios: Termios,
+    pub termios: Termios2,
     job_control: Arc<JobControl>,
 
     read_buf: [u8; 32],
@@ -26,7 +26,7 @@ pub struct LineDiscipline {
 impl LineDiscipline {
     pub fn new(job_control: Arc<JobControl>) -> Self {
         Self {
-            termios: Termios::new(),
+            termios: Termios2::new(),
             job_control,
             read_buf: [0; 32],
             read_range: 0..0,
