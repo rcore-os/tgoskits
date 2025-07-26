@@ -19,6 +19,7 @@ pub struct Termios {
     c_ospeed: speed_t,
 }
 
+#[allow(unused)]
 impl Termios {
     pub fn new() -> Self {
         let mut result = Self {

@@ -30,7 +30,7 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
 
     let result = match sysno {
         // fs ctl
-        Sysno::ioctl => sys_ioctl(tf.arg0() as _, tf.arg1() as _, tf.arg2().into()),
+        Sysno::ioctl => sys_ioctl(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
         Sysno::chdir => sys_chdir(tf.arg0().into()),
         Sysno::fchdir => sys_fchdir(tf.arg0() as _),
         #[cfg(target_arch = "x86_64")]
