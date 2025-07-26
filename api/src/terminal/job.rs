@@ -11,7 +11,11 @@ pub struct JobControl {
     session: SpinNoIrq<Weak<Session>>,
     wait_queue: WaitQueue,
 }
-
+impl Default for JobControl {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl JobControl {
     pub fn new() -> Self {
         Self {
