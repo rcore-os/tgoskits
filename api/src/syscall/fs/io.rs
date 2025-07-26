@@ -380,18 +380,16 @@ pub fn sys_splice(
             return Err(LinuxError::EINVAL);
         }
         SendFile::Offset(File::from_fd(fd_in)?, off_in.cast().get_as_mut()?)
-    } else {
-        if let Ok(src) = Pipe::from_fd(fd_in) {
-            if !src.is_read() {
-                return Err(LinuxError::EBADF);
-            }
-            if !src.poll()?.readable {
-                return Err(LinuxError::EINVAL);
-            }
-            SendFile::Direct(Arc::new(src.clone_nonblocking()))
-        } else {
-            SendFile::Direct(get_file_like(fd_in)?)
+    } else if let Ok(src) = Pipe::from_fd(fd_in) {
+        if !src.is_read() {
+            return Err(LinuxError::EBADF);
         }
+        if !src.poll()?.readable {
+            return Err(LinuxError::EINVAL);
+        }
+        SendFile::Direct(Arc::new(src.clone_nonblocking()))
+    } else {
+        SendFile::Direct(get_file_like(fd_in)?)
     };
 
     let dst = if let Some(off) = nullable!(off_out.get_as_mut())? {
