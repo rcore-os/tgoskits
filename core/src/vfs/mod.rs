@@ -1,3 +1,5 @@
+//! Basic virtual filesystem support
+
 mod dev;
 mod dir;
 mod file;
@@ -11,11 +13,17 @@ pub use dir::*;
 pub use file::*;
 pub use fs::*;
 
+/// A callback that builds a `Arc<dyn DirNodeOps<M>>` for a given
+/// `WeakDirEntry<M>`.
 pub type DirMaker<M = axsync::RawMutex> =
     Arc<dyn Fn(WeakDirEntry<M>) -> Arc<dyn DirNodeOps<M>> + Send + Sync>;
 
+/// An enum containing either a directory ([`DirMaker`]) or a file (`Arc<dyn
+/// FileNodeOps<M>>`).
 pub enum NodeOpsMux<M> {
+    /// A directory node.
     Dir(DirMaker<M>),
+    /// A file node.
     File(Arc<dyn FileNodeOps<M>>),
 }
 

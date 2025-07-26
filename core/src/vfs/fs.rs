@@ -10,6 +10,7 @@ use slab::Slab;
 
 use super::DirMaker;
 
+/// Returns a dummy filesystem statistics.
 pub fn dummy_stat_fs(fs_type: u32) -> StatFs {
     StatFs {
         fs_type,
@@ -36,6 +37,7 @@ pub struct SimpleFs<M = axsync::RawMutex> {
 }
 
 impl<M: RawMutex + Send + Sync + 'static> SimpleFs<M> {
+    /// Creates a new simple filesystem.
     pub fn new_with(
         name: String,
         fs_type: u32,
@@ -88,6 +90,7 @@ impl<M: RawMutex + Send + Sync> FilesystemOps<M> for SimpleFs<M> {
     }
 }
 
+/// Filesystem node for [`SimpleFs`].
 pub struct SimpleFsNode<M: RawMutex> {
     fs: Arc<SimpleFs<M>>,
     ino: u64,
@@ -95,6 +98,7 @@ pub struct SimpleFsNode<M: RawMutex> {
 }
 
 impl<M: RawMutex + Send + Sync + 'static> SimpleFsNode<M> {
+    /// Creates a new filesystem node.
     pub fn new(fs: Arc<SimpleFs<M>>, node_type: NodeType, mode: NodePermission) -> Self {
         let ino = fs.alloc_inode();
         let metadata = Metadata {

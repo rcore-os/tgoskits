@@ -3,9 +3,8 @@ use alloc::sync::{Arc, Weak};
 use axerrno::{LinuxResult, bail};
 use axsync::spin::SpinNoIrq;
 use axtask::{WaitQueue, current};
+use starry_core::task::AsThread;
 use starry_process::{ProcessGroup, Session};
-
-use crate::task::AsThread;
 
 pub struct JobControl {
     foreground: SpinNoIrq<Weak<ProcessGroup>>,

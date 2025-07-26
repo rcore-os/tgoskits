@@ -5,12 +5,10 @@ use axerrno::{LinuxError, LinuxResult};
 use linux_raw_sys::general::{
     ECHOCTL, ECHOK, ICRNL, IGNCR, ISIG, SI_KERNEL, VEOF, VERASE, VKILL, VMIN, VTIME,
 };
+use starry_core::task::send_signal_to_process_group;
 use starry_signal::SignalInfo;
 
-use crate::{
-    task::send_signal_to_process_group,
-    terminal::{job::JobControl, termios::Termios2},
-};
+use crate::terminal::{job::JobControl, termios::Termios2};
 
 pub struct LineDiscipline {
     pub termios: Termios2,
@@ -26,7 +24,7 @@ pub struct LineDiscipline {
 impl LineDiscipline {
     pub fn new(job_control: Arc<JobControl>) -> Self {
         Self {
-            termios: Termios2::new(),
+            termios: Termios2::default(),
             job_control,
             read_buf: [0; 32],
             read_range: 0..0,

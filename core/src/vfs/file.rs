@@ -10,16 +10,24 @@ use lock_api::RawMutex;
 
 use super::fs::{SimpleFs, SimpleFsNode};
 
+/// Operations for a simple file.
 pub trait SimpleFileOps: Send + Sync {
+    /// Reads all content in the file.
     fn read_all(&self) -> VfsResult<Cow<[u8]>>;
+    /// Replaces the file's content with `data`.
     fn write_all(&self, data: &[u8]) -> VfsResult<()>;
 }
 
+/// Type representing operation applied to a simple file.
 pub enum SimpleFileOperation<'a> {
+    /// Reading the file's content
     Read,
+    /// Replacing the file's content
     Write(&'a [u8]),
 }
 
+/// A wrapper that implements [`SimpleFileOps`] for `Fn(SimpleFileOperation) ->
+/// VfsResult<Option<impl Into<Vec<u8>>>>`.
 pub struct RwFile<F>(F);
 
 impl<F, R> RwFile<F>
@@ -27,6 +35,7 @@ where
     F: Fn(SimpleFileOperation) -> VfsResult<Option<R>> + Send + Sync,
     R: Into<Vec<u8>>,
 {
+    /// Creates a new `RwFile`.
     pub fn new(imp: F) -> Self {
         Self(imp)
     }
@@ -60,12 +69,14 @@ where
     }
 }
 
+/// A simple file.
 pub struct SimpleFile<M: RawMutex> {
     node: SimpleFsNode<M>,
     ops: Arc<dyn SimpleFileOps>,
 }
 
 impl<M: RawMutex + Send + Sync + 'static> SimpleFile<M> {
+    /// Creates a simple file from given file operations.
     pub fn new(fs: Arc<SimpleFs<M>>, ops: impl SimpleFileOps + 'static) -> Arc<Self> {
         let node = SimpleFsNode::new(fs, NodeType::RegularFile, NodePermission::default());
         Arc::new(Self {

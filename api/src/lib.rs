@@ -13,6 +13,7 @@ pub mod signal;
 pub mod socket;
 pub mod syscall;
 pub mod task;
+pub mod terminal;
 pub mod time;
 pub mod vfs;
 

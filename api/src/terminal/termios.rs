@@ -18,8 +18,8 @@ pub struct Termios {
     c_line: u8,
     c_cc: [u8; 19usize],
 }
-impl Termios {
-    pub fn new() -> Self {
+impl Default for Termios {
+    fn default() -> Self {
         let mut result = Self {
             c_iflag: ICRNL | IXON,
             c_oflag: OPOST | ONLCR,
@@ -50,7 +50,8 @@ impl Termios {
 
         result
     }
-
+}
+impl Termios {
     pub fn special_char(&self, index: u32) -> u8 {
         self.c_cc[index as usize]
     }
@@ -111,10 +112,9 @@ pub struct Termios2 {
     c_ispeed: speed_t,
     c_ospeed: speed_t,
 }
-
-impl Termios2 {
-    pub fn new() -> Self {
-        let termios = Termios::new();
+impl Default for Termios2 {
+    fn default() -> Self {
+        let termios = Termios::default();
         Self {
             termios,
             c_ispeed: B38400,

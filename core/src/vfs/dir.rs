@@ -17,14 +17,21 @@ use lock_api::RawMutex;
 
 use super::{DirMaker, NodeOpsMux, SimpleFs, SimpleFsNode};
 
+/// Operations for a simple directory.
 pub trait SimpleDirOps<M>: Send + Sync {
+    /// Get the names of all children in the directory.
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a>;
+    /// Look up a child directory or file by name.
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux<M>>;
 
+    /// Check if the directory is cacheable.
+    ///
+    /// See [`DirNodeOps::is_cacheable`].
     fn is_cacheable(&self) -> bool {
         true
     }
 
+    /// Combines two directories into one.
     fn chain<N: SimpleDirOps<M>>(self, other: N) -> ChainedDirOps<Self, N>
     where
         Self: Sized,
@@ -64,6 +71,7 @@ impl<M> Default for DirMapping<M> {
     }
 }
 
+/// Directory created by [`SimpleDirOps::chain`].
 pub struct ChainedDirOps<A, B>(A, B);
 
 impl<M: RawMutex, A: SimpleDirOps<M>, B: SimpleDirOps<M>> SimpleDirOps<M> for ChainedDirOps<A, B> {
@@ -86,6 +94,7 @@ impl<M: RawMutex, A: SimpleDirOps<M>, B: SimpleDirOps<M>> SimpleDirOps<M> for Ch
     }
 }
 
+/// Simple directory.
 pub struct SimpleDir<M: RawMutex, O> {
     node: SimpleFsNode<M>,
     this: WeakDirEntry<M>,
@@ -97,6 +106,7 @@ impl<M: RawMutex + Send + Sync + 'static, O: SimpleDirOps<M> + 'static> SimpleDi
         Arc::new(Self { node, this, ops })
     }
 
+    /// Create a [`DirMaker`] from given directory operations.
     pub fn new_maker(fs: Arc<SimpleFs<M>>, ops: Arc<O>) -> DirMaker<M> {
         Arc::new(move |this| {
             SimpleDir::new(
