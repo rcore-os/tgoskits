@@ -1,7 +1,7 @@
 use core::mem;
 
 use derive_more::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Not};
-use linux_raw_sys::general::{SS_DISABLE, kernel_sigset_t, siginfo_t};
+use linux_raw_sys::general::{SI_KERNEL, SI_USER, SS_DISABLE, kernel_sigset_t, siginfo_t};
 use strum_macros::FromRepr;
 
 use crate::DefaultSignalAction;
@@ -191,10 +191,23 @@ impl From<kernel_sigset_t> for SignalSet {
 pub struct SignalInfo(pub siginfo_t);
 
 impl SignalInfo {
-    pub fn new(signo: Signo, code: i32) -> Self {
+    pub fn new_kernel(signo: Signo) -> Self {
+        let mut result: Self = unsafe { mem::zeroed() };
+        result.set_signo(signo);
+        result.set_code(SI_KERNEL as _);
+        result
+    }
+    pub fn new_user(signo: Signo, code: i32, pid: u32) -> Self {
         let mut result: Self = unsafe { mem::zeroed() };
         result.set_signo(signo);
         result.set_code(code);
+        result
+            .0
+            .__bindgen_anon_1
+            .__bindgen_anon_1
+            ._sifields
+            ._sigchld
+            ._pid = pid as _;
         result
     }
 

@@ -32,6 +32,7 @@ pub enum DefaultSignalAction {
 /// Signal action that should be properly handled by the OS.
 ///
 /// See [`SignalManager::check_signals`] for details.
+#[derive(Debug)]
 pub enum SignalOSAction {
     /// Terminate the process.
     Terminate,
@@ -47,7 +48,7 @@ pub enum SignalOSAction {
 }
 
 bitflags! {
-    #[derive(Default, Debug)]
+    #[derive(Clone, Copy, Default, Debug)]
     pub struct SignalActionFlags: c_ulong {
         const SIGINFO = SA_SIGINFO as _;
         const NODEFER = SA_NODEFER as _;
@@ -69,7 +70,7 @@ pub struct k_sigaction {
     pub mask: SignalSet,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub enum SignalDisposition {
     #[default]
     /// Use the default signal action.
@@ -81,7 +82,7 @@ pub enum SignalDisposition {
 }
 
 /// Signal action. Corresponds to `struct sigaction` in libc.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct SignalAction {
     pub flags: SignalActionFlags,
     pub mask: SignalSet,

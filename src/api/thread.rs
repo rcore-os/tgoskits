@@ -2,13 +2,12 @@ use core::{alloc::Layout, mem::offset_of};
 
 use alloc::sync::Arc;
 use axcpu::TrapFrame;
-use event_listener::listener;
 use kspin::SpinNoIrq;
 use starry_vm::VmMutPtr;
 
 use crate::{
     DefaultSignalAction, PendingSignals, SignalAction, SignalActionFlags, SignalDisposition,
-    SignalInfo, SignalOSAction, SignalSet, SignalStack, arch::UContext,
+    SignalInfo, SignalOSAction, SignalSet, SignalStack, Signo, arch::UContext,
 };
 
 use super::ProcessSignalManager;
@@ -33,23 +32,32 @@ pub struct ThreadSignalManager {
 }
 
 impl ThreadSignalManager {
-    pub fn new(proc: Arc<ProcessSignalManager>) -> Self {
-        Self {
-            proc,
+    pub fn new(tid: u32, proc: Arc<ProcessSignalManager>) -> Arc<Self> {
+        let this = Arc::new(Self {
+            proc: proc.clone(),
+
             pending: SpinNoIrq::new(PendingSignals::default()),
             blocked: SpinNoIrq::new(SignalSet::default()),
             stack: SpinNoIrq::new(SignalStack::default()),
-        }
+        });
+        proc.children.lock().push((tid, Arc::downgrade(&this)));
+        this
     }
 
-    fn dequeue_signal(&self, mask: &SignalSet) -> Option<SignalInfo> {
+    /// Dequeues a signal from the thread's pending signals.
+    #[must_use]
+    pub fn dequeue_signal(&self, mask: &SignalSet) -> Option<SignalInfo> {
         self.pending
             .lock()
             .dequeue_signal(mask)
             .or_else(|| self.proc.dequeue_signal(mask))
     }
 
-    fn handle_signal(
+    pub fn process(&self) -> &Arc<ProcessSignalManager> {
+        &self.proc
+    }
+
+    pub fn handle_signal(
         &self,
         tf: &mut TrapFrame,
         restore_blocked: SignalSet,
@@ -158,10 +166,19 @@ impl ThreadSignalManager {
 
     /// Sends a signal to the thread.
     ///
+    /// Returns `true` if the task was woken up by the signal (i.e. the signal
+    /// was not blocked and not ignored).
+    ///
     /// See [`ProcessSignalManager::send_signal`] for the process-level version.
-    pub fn send_signal(&self, sig: SignalInfo) {
+    #[must_use]
+    pub fn send_signal(&self, sig: SignalInfo) -> bool {
+        let signo = sig.signo();
+        if self.proc.signal_ignored(signo) {
+            return false;
+        }
+
         self.pending.lock().put_signal(sig);
-        self.proc.event.notify(1);
+        !self.signal_blocked(signo)
     }
 
     /// Gets the blocked signals.
@@ -172,6 +189,11 @@ impl ThreadSignalManager {
     /// Applies a function to the blocked signals.
     pub fn with_blocked_mut<R>(&self, f: impl FnOnce(&mut SignalSet) -> R) -> R {
         f(&mut self.blocked.lock())
+    }
+
+    /// Checks if a signal is blocked.
+    pub fn signal_blocked(&self, signo: Signo) -> bool {
+        self.blocked.lock().has(signo)
     }
 
     /// Gets the signal stack.
@@ -187,30 +209,5 @@ impl ThreadSignalManager {
     /// Gets current pending signals.
     pub fn pending(&self) -> SignalSet {
         self.pending.lock().set | self.proc.pending()
-    }
-
-    /// Wait until one of the signals in `set` is pending.
-    ///
-    /// If one of the signals in set is already pending for the calling thread,
-    /// this will return immediately.
-    ///
-    /// Returns the signal that was received.
-    pub async fn wait(&self, mut set: SignalSet) -> SignalInfo {
-        // Non-blocked signals cannot be waited
-        set &= self.blocked();
-
-        loop {
-            if let Some(sig) = self.dequeue_signal(&set) {
-                return sig;
-            }
-
-            listener!(self.proc.event => listener);
-
-            if let Some(sig) = self.dequeue_signal(&set) {
-                return sig;
-            }
-
-            listener.await;
-        }
     }
 }

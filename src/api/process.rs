@@ -3,13 +3,19 @@ use core::{
     ops::{Index, IndexMut},
 };
 
-use alloc::sync::Arc;
-use event_listener::{Event, listener};
+use alloc::{
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 use kspin::SpinNoIrq;
 
-use crate::{PendingSignals, SignalAction, SignalInfo, SignalSet, Signo};
+use crate::{
+    DefaultSignalAction, PendingSignals, SignalAction, SignalActionFlags, SignalDisposition,
+    SignalInfo, SignalSet, Signo, api::ThreadSignalManager,
+};
 
 /// Signal actions for a process.
+#[derive(Clone)]
 pub struct SignalActions(pub(crate) [SignalAction; 64]);
 
 impl Default for SignalActions {
@@ -39,10 +45,11 @@ pub struct ProcessSignalManager {
     /// The signal actions
     pub actions: Arc<SpinNoIrq<SignalActions>>,
 
-    pub(crate) event: Event,
-
     /// The default restorer function.
     pub(crate) default_restorer: usize,
+
+    /// Thread-level signal managers.
+    pub(crate) children: SpinNoIrq<Vec<(u32, Weak<ThreadSignalManager>)>>,
 }
 
 impl ProcessSignalManager {
@@ -51,8 +58,8 @@ impl ProcessSignalManager {
         Self {
             pending: SpinNoIrq::new(PendingSignals::default()),
             actions,
-            event: Event::new(),
             default_restorer,
+            children: SpinNoIrq::new(Vec::new()),
         }
     }
 
@@ -60,22 +67,53 @@ impl ProcessSignalManager {
         self.pending.lock().dequeue_signal(mask)
     }
 
+    /// Checks if a signal is ignored by the process.
+    pub fn signal_ignored(&self, signo: Signo) -> bool {
+        match &self.actions.lock()[signo].disposition {
+            SignalDisposition::Ignore => true,
+            SignalDisposition::Default => {
+                matches!(signo.default_action(), DefaultSignalAction::Ignore)
+            }
+            _ => false,
+        }
+    }
+
+    /// Checks if syscalls interrupted by the given signal can be restarted.
+    pub fn can_restart(&self, signo: Signo) -> bool {
+        self.actions.lock()[signo]
+            .flags
+            .contains(SignalActionFlags::RESTART)
+    }
+
     /// Sends a signal to the process.
     ///
+    /// Returns `Some(tid)` if the signal wakes up a thread.
+    ///
     /// See [`ThreadSignalManager::send_signal`] for the thread-level version.
-    pub fn send_signal(&self, sig: SignalInfo) {
+    #[must_use]
+    pub fn send_signal(&self, sig: SignalInfo) -> Option<u32> {
+        let signo = sig.signo();
+        if self.signal_ignored(signo) {
+            return None;
+        }
+
         self.pending.lock().put_signal(sig);
-        self.event.notify(1);
+        let mut result = None;
+        self.children.lock().retain(|(tid, thread)| {
+            if let Some(thread) = thread.upgrade() {
+                if result.is_none() && !thread.signal_blocked(signo) {
+                    result = Some(*tid);
+                }
+                true
+            } else {
+                false
+            }
+        });
+        result
     }
 
     /// Gets currently pending signals.
     pub fn pending(&self) -> SignalSet {
         self.pending.lock().set
-    }
-
-    /// Wait until a signal is delivered to this process.
-    pub async fn wait(&self) {
-        listener!(self.event => listener);
-        listener.await
     }
 }
