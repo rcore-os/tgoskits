@@ -3,7 +3,7 @@ use core::ops::Range;
 
 use axerrno::{LinuxError, LinuxResult};
 use linux_raw_sys::general::{
-    ECHOCTL, ECHOK, ICRNL, IGNCR, ISIG, SI_KERNEL, VEOF, VERASE, VKILL, VMIN, VTIME,
+    ECHOCTL, ECHOK, ICRNL, IGNCR, ISIG, VEOF, VERASE, VKILL, VMIN, VTIME,
 };
 use starry_core::task::send_signal_to_process_group;
 use starry_signal::SignalInfo;
