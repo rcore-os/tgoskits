@@ -339,6 +339,7 @@ run_ltp() {
     signal04
     signal05
     sigpending02
+    sigprocmask01
     socket01
     socket02
     splice01
@@ -405,6 +406,9 @@ run_ltp() {
     write06
     writev07
     "
+    if [ "$1" = "glibc" ]; then
+        all_testcases="$all_testcases sigtimedwait01 sigwaitinfo01"
+    fi
 
     cd ltp/testcases/bin
     for f in $all_testcases; do
