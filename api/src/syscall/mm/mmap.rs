@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 
 use axerrno::{LinuxError, LinuxResult};
 use axhal::paging::{MappingFlags, PageSize};
-use axmm::{Backend, SharedPages};
+use axmm::backend::{Backend, SharedPages};
 use axtask::current;
 use linux_raw_sys::general::*;
 use memory_addr::{MemoryAddr, VirtAddr, VirtAddrRange, align_up_4k};

@@ -8,7 +8,7 @@ use core::{
 use axerrno::{LinuxError, LinuxResult};
 use axio::PollState;
 use axsync::Mutex;
-use axtask::future::try_block_on;
+use axtask::{current, future::try_block_on};
 use event_listener::{Event, listener};
 use linux_raw_sys::general::S_IFIFO;
 use memory_addr::PAGE_SIZE_4K;
@@ -16,6 +16,8 @@ use ringbuf::{
     HeapRb,
     traits::{Consumer, Observer, Producer},
 };
+use starry_core::task::{AsThread, send_signal_to_process};
+use starry_signal::{SignalInfo, Signo};
 
 use super::{FileLike, Kstat};
 
@@ -36,8 +38,9 @@ pub struct Pipe {
 impl Drop for Pipe {
     fn drop(&mut self) {
         if self.read_side {
-            self.shared.read_avail.notify(usize::MAX);
             self.shared.write_avail.notify(usize::MAX);
+        } else {
+            self.shared.read_avail.notify(usize::MAX);
         }
     }
 }
@@ -96,6 +99,15 @@ impl Pipe {
     }
 }
 
+fn raise_pipe() {
+    let curr = current();
+    send_signal_to_process(
+        curr.as_thread().proc_data.proc.pid(),
+        Some(SignalInfo::new_kernel(Signo::SIGPIPE)),
+    )
+    .expect("Failed to send SIGPIPE");
+}
+
 impl FileLike for Pipe {
     fn read(&self, buf: &mut [u8]) -> LinuxResult<usize> {
         if !self.is_read() {
@@ -140,6 +152,7 @@ impl FileLike for Pipe {
             return Err(LinuxError::EBADF);
         }
         if self.closed() {
+            raise_pipe();
             return Err(LinuxError::EPIPE);
         }
         if buf.is_empty() {
@@ -157,6 +170,10 @@ impl FileLike for Pipe {
                     break;
                 }
             } else if self.closed() {
+                if total_written == 0 {
+                    raise_pipe();
+                    return Err(LinuxError::EPIPE);
+                }
                 break;
             }
 
@@ -172,7 +189,9 @@ impl FileLike for Pipe {
                 if self.closed() {
                     return Ok(());
                 }
+                warn!("WAIT.");
                 listener.await;
+                warn!("WAKE!");
                 Ok(())
             })?;
         }

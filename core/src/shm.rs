@@ -4,7 +4,7 @@ use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 
 use axerrno::{LinuxError, LinuxResult};
 use axhal::{paging::MappingFlags, time::monotonic_time_nanos};
-use axmm::SharedPages;
+use axmm::backend::SharedPages;
 use axsync::Mutex;
 use linux_raw_sys::{
     ctypes::{c_long, c_ushort},

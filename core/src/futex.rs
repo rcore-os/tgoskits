@@ -3,7 +3,10 @@
 use alloc::sync::{Arc, Weak};
 use core::{ops::Deref, sync::atomic::AtomicBool};
 
-use axmm::{AddrSpace, Backend, SharedPages};
+use axmm::{
+    AddrSpace,
+    backend::{Backend, SharedPages},
+};
 use axsync::Mutex;
 use axtask::{WaitQueue, current};
 use hashbrown::HashMap;
@@ -23,22 +26,30 @@ pub enum FutexKey {
     Shared {
         /// The offset of the futex within the shared memory region.
         offset: usize,
-        /// The shared memory region, represented as a weak reference to the
-        /// shared pages.
-        region: Weak<SharedPages>,
+        /// The shared memory region.
+        region: Result<Weak<SharedPages>, Weak<()>>,
     },
 }
 
 impl FutexKey {
     /// Creates a new `FutexKey`.
     pub fn new(aspace: &AddrSpace, address: usize) -> Self {
-        if let Some(area) = aspace.find_area(VirtAddr::from_usize(address))
-            && let Backend::Shared(backend) = area.backend()
-        {
-            return Self::Shared {
-                offset: address - area.start().as_usize(),
-                region: Arc::downgrade(backend.pages()),
-            };
+        if let Some(area) = aspace.find_area(VirtAddr::from_usize(address)) {
+            match area.backend() {
+                Backend::Shared(backend) => {
+                    return Self::Shared {
+                        offset: address - area.start().as_usize(),
+                        region: Ok(Arc::downgrade(backend.pages())),
+                    };
+                }
+                Backend::File(file) => {
+                    return Self::Shared {
+                        offset: address - area.start().as_usize(),
+                        region: Err(file.futex_handle()),
+                    };
+                }
+                _ => {}
+            }
         }
         Self::Private { address }
     }
@@ -82,6 +93,11 @@ impl FutexTable {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self(Mutex::new(HashMap::new()))
+    }
+
+    /// Checks if the futex table is empty.
+    pub fn is_empty(&self) -> bool {
+        self.0.lock().is_empty()
     }
 
     /// Gets the wait queue associated with the given address.

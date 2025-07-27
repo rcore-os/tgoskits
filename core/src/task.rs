@@ -20,6 +20,7 @@ use axsync::{Mutex, spin::SpinNoIrq};
 use axtask::{AxTaskRef, TaskExt, TaskInner, WeakAxTaskRef, current};
 use event_listener::Event;
 use extern_trait::extern_trait;
+use hashbrown::HashMap;
 use lazy_static::lazy_static;
 use scope_local::{ActiveScope, Scope};
 use spin::RwLock;
@@ -231,7 +232,7 @@ pub struct ProcessData {
     pub signal: Arc<ProcessSignalManager>,
 
     /// The futex table.
-    futex_table: FutexTable,
+    futex_table: Arc<FutexTable>,
 
     /// The default mask for file permissions.
     umask: AtomicU32,
@@ -264,7 +265,7 @@ impl ProcessData {
                 crate::config::SIGNAL_TRAMPOLINE,
             )),
 
-            futex_table: FutexTable::new(),
+            futex_table: Arc::new(FutexTable::new()),
 
             umask: AtomicU32::new(0o022),
         })
@@ -297,10 +298,16 @@ impl ProcessData {
     }
 
     /// Returns the futex table for the given key.
-    pub fn futex_table_for(&self, key: &FutexKey) -> &FutexTable {
+    pub fn futex_table_for(&self, key: &FutexKey) -> Arc<FutexTable> {
         match key {
-            FutexKey::Private { .. } => &self.futex_table,
-            FutexKey::Shared { .. } => &SHARED_FUTEX_TABLE,
+            FutexKey::Private { .. } => self.futex_table.clone(),
+            FutexKey::Shared { region, .. } => {
+                let ptr = match region {
+                    Ok(pages) => Weak::as_ptr(pages) as usize,
+                    Err(key) => Weak::as_ptr(key) as usize,
+                };
+                SHARED_FUTEX_TABLES.lock().get_or_insert(ptr)
+            }
         }
     }
 
@@ -320,8 +327,34 @@ impl ProcessData {
     }
 }
 
+struct FutexTables {
+    map: HashMap<usize, Arc<FutexTable>>,
+    operations: usize,
+}
+impl FutexTables {
+    fn new() -> Self {
+        Self {
+            map: HashMap::new(),
+            operations: 0,
+        }
+    }
+
+    fn get_or_insert(&mut self, key: usize) -> Arc<FutexTable> {
+        self.operations += 1;
+        if self.operations == 100 {
+            self.operations = 0;
+            self.map
+                .retain(|_, table| Arc::strong_count(table) > 1 || !table.is_empty());
+        }
+        self.map
+            .entry(key)
+            .or_insert_with(|| Arc::new(FutexTable::new()))
+            .clone()
+    }
+}
+
 lazy_static! {
-    static ref SHARED_FUTEX_TABLE: FutexTable = FutexTable::new();
+    static ref SHARED_FUTEX_TABLES: Mutex<FutexTables> = Mutex::new(FutexTables::new());
 }
 
 static TASK_TABLE: RwLock<WeakMap<Pid, WeakAxTaskRef>> = RwLock::new(WeakMap::new());

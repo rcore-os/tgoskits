@@ -5,7 +5,7 @@ use axhal::{
     paging::{MappingFlags, PageSize},
     time::monotonic_time_nanos,
 };
-use axmm::{Backend, SharedPages};
+use axmm::backend::{Backend, SharedPages};
 use axsync::Mutex;
 use axtask::current;
 use linux_raw_sys::general::*;

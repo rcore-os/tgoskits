@@ -11,7 +11,7 @@ use axhal::{
     paging::{MappingFlags, PageSize},
 };
 use axio::Read;
-use axmm::{AddrSpace, Backend};
+use axmm::{AddrSpace, backend::Backend};
 use axsync::{Mutex, RawMutex};
 use axtask::current;
 use extern_trait::extern_trait;

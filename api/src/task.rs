@@ -130,7 +130,8 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         *clear_tid = 0;
 
         let key = FutexKey::new_current(clear_tid as *const _ as usize);
-        let guard = thr.proc_data.futex_table_for(&key).get(&key);
+        let table = thr.proc_data.futex_table_for(&key);
+        let guard = table.get(&key);
         if let Some(futex) = guard {
             futex.wq.notify_one(false);
         }

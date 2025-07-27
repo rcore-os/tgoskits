@@ -126,7 +126,8 @@ pub fn sys_futex(
 
             let futex = futex_table.get(&key);
             let key2 = FutexKey::new_current(uaddr2.address().as_usize());
-            let futex2 = proc_data.futex_table_for(&key2).get_or_insert(&key2);
+            let table2 = proc_data.futex_table_for(&key2);
+            let futex2 = table2.get_or_insert(&key2);
 
             let mut count = 0;
             if let Some(futex) = futex {
