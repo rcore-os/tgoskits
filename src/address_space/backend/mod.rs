@@ -79,13 +79,17 @@ impl<H: PagingHandler> MappingBackend for Backend<H> {
 
     fn protect(
         &self,
-        _start: GuestPhysAddr,
-        _size: usize,
-        _new_flags: MappingFlags,
-        _page_table: &mut PageTable<H>,
+        start: GuestPhysAddr,
+        size: usize,
+        new_flags: MappingFlags,
+        page_table: &mut PageTable<H>,
     ) -> bool {
-        // a stub here
-        true
+        page_table
+            .protect_region(start, size, new_flags, true)
+            // If the TLB is refreshed immediately every time, there might be performance issues.
+            // The TLB refresh is managed uniformly at a higher level.
+            .map(|tlb| tlb.ignore())
+            .is_ok()
     }
 }
 

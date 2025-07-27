@@ -174,8 +174,15 @@ impl PagingMetaData for ExtendedPageTableMetadata {
 
     type VirtAddr = GuestPhysAddr;
 
-    fn flush_tlb(_vaddr: Option<GuestPhysAddr>) {
-        todo!()
+    // Under the x86 architecture, the flush_tlb operation will invoke the ring0 instruction,
+    // causing the test to trigger a SIGSEGV exception.
+    fn flush_tlb(vaddr: Option<GuestPhysAddr>) {
+        #[cfg(not(test))]
+        if let Some(vaddr) = vaddr {
+            unsafe { x86::tlb::flush(vaddr.into()) }
+        } else {
+            unsafe { x86::tlb::flush_all() }
+        }
     }
 }
 
