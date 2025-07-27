@@ -4,7 +4,7 @@ use axerrno::{LinuxError, LinuxResult};
 use axhal::context::TrapFrame;
 use axtask::{
     current,
-    future::{self, block_on},
+    future::{block_on, timeout_opt},
 };
 use linux_raw_sys::general::{
     MINSIGSTKSZ, SI_TKILL, SI_USER, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK, kernel_sigaction, siginfo,
@@ -254,13 +254,7 @@ pub fn sys_rt_sigtimedwait(
         }
     });
 
-    let Some(sig) = block_on(async {
-        if let Some(timeout) = timeout {
-            future::timeout(fut, timeout).await
-        } else {
-            Some(fut.await)
-        }
-    }) else {
+    let Some(sig) = block_on(timeout_opt(fut, timeout)) else {
         // Timeout
         signal.with_blocked_mut(|blocked| {
             *blocked = old_blocked;

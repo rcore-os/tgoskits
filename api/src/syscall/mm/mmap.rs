@@ -162,7 +162,7 @@ pub fn sys_mmap(
             if fd > 0 {
                 let file = File::from_fd(fd)?;
                 let file = file.inner();
-                let Some(cache) = file.backend().clone().into_cached() else {
+                let Some(cache) = file.backend()?.clone().into_cached() else {
                     return Err(LinuxError::EINVAL);
                 };
                 // TODO(mivik): file mmap page size
@@ -181,7 +181,7 @@ pub fn sys_mmap(
             if fd > 0 {
                 // Private mapping from a file
                 let file = File::from_fd(fd)?;
-                let backend = file.inner().backend().clone();
+                let backend = file.inner().backend()?.clone();
                 Backend::new_cow(start, page_size, Some((backend, offset)))
             } else {
                 Backend::new_alloc(start, page_size)

@@ -487,6 +487,23 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
             tf.arg4() as _,
         ),
 
+        // dummy fds
+        Sysno::epoll_create1
+        | Sysno::signalfd4
+        | Sysno::timerfd_create
+        | Sysno::pidfd_open
+        | Sysno::fanotify_init
+        | Sysno::inotify_init1
+        | Sysno::userfaultfd
+        | Sysno::perf_event_open
+        | Sysno::io_uring_setup
+        | Sysno::bpf
+        | Sysno::fsopen
+        | Sysno::fspick
+        | Sysno::open_tree
+        | Sysno::memfd_create
+        | Sysno::memfd_secret => sys_dummy_fd(),
+
         _ => {
             warn!("Unimplemented syscall: {}", sysno);
             Err(LinuxError::ENOSYS)

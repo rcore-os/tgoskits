@@ -90,7 +90,8 @@ impl DeviceOps for LoopDevice {
                 if guard.is_some() {
                     return Err(LinuxError::EBUSY);
                 }
-                *guard = Some(file.inner().backend().clone());
+
+                *guard = Some(file.inner().backend()?.clone());
             }
             LOOP_CLR_FD => {
                 let mut guard = self.file.lock();

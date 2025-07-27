@@ -53,7 +53,7 @@ pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> LinuxResult<R
             let file_like = get_file_like(dirfd)?;
             let f = file_like.clone().into_any();
             Ok(if let Some(file) = f.downcast_ref::<File>() {
-                ResolveAtResult::File(file.inner.lock().backend().location().clone())
+                ResolveAtResult::File(file.inner.lock().backend()?.location().clone())
             } else if let Some(dir) = f.downcast_ref::<Directory>() {
                 ResolveAtResult::File(dir.inner().clone())
             } else {
@@ -119,9 +119,7 @@ impl FileLike for File {
     }
 
     fn stat(&self) -> LinuxResult<Kstat> {
-        Ok(metadata_to_kstat(
-            &self.inner().backend().location().metadata()?,
-        ))
+        Ok(metadata_to_kstat(&self.inner().location().metadata()?))
     }
 
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {

@@ -15,6 +15,33 @@ use crate::{
     mm::{UserConstPtr, UserPtr, nullable},
 };
 
+struct DummyFd;
+impl FileLike for DummyFd {
+    fn read(&self, _buf: &mut [u8]) -> LinuxResult<usize> {
+        unimplemented!()
+    }
+
+    fn write(&self, _buf: &[u8]) -> LinuxResult<usize> {
+        unimplemented!()
+    }
+
+    fn stat(&self) -> LinuxResult<crate::file::Kstat> {
+        unimplemented!()
+    }
+
+    fn into_any(self: Arc<Self>) -> Arc<dyn core::any::Any + Send + Sync> {
+        self
+    }
+
+    fn poll(&self) -> LinuxResult<axio::PollState> {
+        unimplemented!()
+    }
+}
+
+pub fn sys_dummy_fd() -> LinuxResult<isize> {
+    DummyFd.add_to_fd_table(false).map(|fd| fd as isize)
+}
+
 /// Read data from the file indicated by `fd`.
 ///
 /// Return the read size if success.
@@ -77,12 +104,11 @@ pub fn sys_truncate(path: UserConstPtr<c_char>, length: __kernel_off_t) -> Linux
     if length < 0 {
         return Err(LinuxError::EINVAL);
     }
-    OpenOptions::new()
+    let file = OpenOptions::new()
         .write(true)
         .open(&FS_CONTEXT.lock(), path)?
-        .into_file()?
-        .access(FileFlags::WRITE)?
-        .set_len(length as _)?;
+        .into_file()?;
+    file.access(FileFlags::WRITE)?.set_len(length as _)?;
     Ok(0)
 }
 
@@ -339,18 +365,7 @@ pub fn sys_copy_file_range(
         SendFile::Direct(get_file_like(fd_out)?)
     };
 
-    let mut buf = [0; 6];
-    let of = File::from_fd(fd_out)?;
-
-    of.inner().read_at(&mut buf, 0)?;
-    debug!("sys_copy_file_range <= read first 6 bytes: {:?}", &buf);
-
-    let r = do_send(src, dst, len).map(|n| n as _);
-
-    of.inner().read_at(&mut buf, 0)?;
-    debug!("sys_copy_file_range => read first 6 bytes: {:?}", &buf);
-
-    r
+    do_send(src, dst, len).map(|n| n as _)
 }
 
 pub fn sys_splice(
@@ -375,20 +390,29 @@ pub fn sys_splice(
         return Err(LinuxError::EINVAL);
     }
 
+    let mut has_pipe = false;
+
+    if DummyFd::from_fd(fd_in).is_ok() || DummyFd::from_fd(fd_out).is_ok() {
+        return Err(LinuxError::EBADF);
+    }
+
     let src = if let Some(off) = nullable!(off_in.get_as_mut())? {
         if *off < 0 {
             return Err(LinuxError::EINVAL);
         }
         SendFile::Offset(File::from_fd(fd_in)?, off_in.cast().get_as_mut()?)
-    } else if let Ok(src) = Pipe::from_fd(fd_in) {
-        if !src.is_read() {
-            return Err(LinuxError::EBADF);
+    } else {
+        if let Ok(src) = Pipe::from_fd(fd_in) {
+            if !src.is_read() {
+                return Err(LinuxError::EBADF);
+            }
+            has_pipe = true;
         }
-        if !src.poll()?.readable {
+        if let Ok(file) = File::from_fd(fd_in)
+            && file.inner().is_path()
+        {
             return Err(LinuxError::EINVAL);
         }
-        SendFile::Direct(Arc::new(src.clone_nonblocking()))
-    } else {
         SendFile::Direct(get_file_like(fd_in)?)
     };
 
@@ -398,13 +422,25 @@ pub fn sys_splice(
         }
         SendFile::Offset(File::from_fd(fd_out)?, off_out.cast().get_as_mut()?)
     } else {
-        if let Ok(src) = Pipe::from_fd(fd_in)
-            && !src.is_write()
-        {
-            return Err(LinuxError::EBADF);
+        if let Ok(dst) = Pipe::from_fd(fd_out) {
+            if !dst.is_write() {
+                return Err(LinuxError::EBADF);
+            }
+            has_pipe = true;
         }
-        SendFile::Direct(get_file_like(fd_out)?)
+        if let Ok(file) = File::from_fd(fd_out)
+            && file.inner().access(FileFlags::APPEND).is_ok()
+        {
+            return Err(LinuxError::EINVAL);
+        }
+        let f = get_file_like(fd_out)?;
+        f.write(b"")?;
+        SendFile::Direct(f)
     };
+
+    if !has_pipe {
+        return Err(LinuxError::EINVAL);
+    }
 
     do_send(src, dst, len).map(|n| n as _)
 }

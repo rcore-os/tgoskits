@@ -10,13 +10,12 @@ use starry_core::task::AsThread;
 
 use crate::{
     file::{
-        Directory, FD_TABLE, File, FileLike, add_file_like, close_file_like, get_file_like, with_fs,
+        Directory, FD_TABLE, File, FileLike, Pipe, add_file_like, close_file_like, get_file_like,
+        with_fs,
     },
     mm::UserConstPtr,
     syscall::sys::{sys_getegid, sys_geteuid},
 };
-
-const O_EXEC: u32 = O_PATH;
 
 /// Convert open flags to [`OpenOptions`].
 fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32)) -> OpenOptions {
@@ -37,8 +36,8 @@ fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32))
     if flags & O_CREAT != 0 {
         options.create(true);
     }
-    if flags & O_EXEC != 0 {
-        options.execute(true);
+    if flags & O_PATH != 0 {
+        options.path(true);
     }
     if flags & O_EXCL != 0 {
         options.create_new(true);
@@ -204,6 +203,15 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> LinuxResult<isize> {
                 .get_mut(fd as _)
                 .ok_or(LinuxError::EBADF)?
                 .cloexec = cloexec;
+            Ok(0)
+        }
+        F_GETPIPE_SZ => {
+            let pipe = Pipe::from_fd(fd)?;
+            Ok(pipe.capacity() as _)
+        }
+        F_SETPIPE_SZ => {
+            let pipe = Pipe::from_fd(fd)?;
+            pipe.resize(arg)?;
             Ok(0)
         }
         _ => {

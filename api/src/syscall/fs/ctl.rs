@@ -26,7 +26,7 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> LinuxResult<isize> {
     let f = get_file_like(fd)?;
     let file = cast_to_axfs_file(f).ok_or(LinuxError::ENOTTY)?;
     file.inner()
-        .backend()
+        .backend()?
         .location()
         .ioctl(cmd, arg)
         .map(|result| result as isize)

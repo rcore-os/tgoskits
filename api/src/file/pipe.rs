@@ -1,100 +1,62 @@
 use alloc::sync::Arc;
 use core::{
     any::Any,
+    mem,
     sync::atomic::{AtomicBool, Ordering},
 };
 
 use axerrno::{LinuxError, LinuxResult};
 use axio::PollState;
 use axsync::Mutex;
+use axtask::future::try_block_on;
+use event_listener::{Event, listener};
 use linux_raw_sys::general::S_IFIFO;
+use memory_addr::PAGE_SIZE_4K;
+use ringbuf::{
+    HeapRb,
+    traits::{Consumer, Observer, Producer},
+};
 
 use super::{FileLike, Kstat};
-use crate::signal::have_signals;
 
-#[derive(Copy, Clone, PartialEq)]
-enum RingBufferStatus {
-    Full,
-    Empty,
-    Normal,
-}
+const RING_BUFFER_INIT_SIZE: usize = 65536; // 64 KiB
 
-const RING_BUFFER_SIZE: usize = 65536; // 64 KiB
-
-struct PipeRingBuffer {
-    arr: [u8; RING_BUFFER_SIZE],
-    head: usize,
-    tail: usize,
-    status: RingBufferStatus,
-}
-
-impl PipeRingBuffer {
-    const fn new() -> Self {
-        Self {
-            arr: [0; RING_BUFFER_SIZE],
-            head: 0,
-            tail: 0,
-            status: RingBufferStatus::Empty,
-        }
-    }
-
-    fn write_byte(&mut self, byte: u8) {
-        self.status = RingBufferStatus::Normal;
-        self.arr[self.tail] = byte;
-        self.tail = (self.tail + 1) % RING_BUFFER_SIZE;
-        if self.tail == self.head {
-            self.status = RingBufferStatus::Full;
-        }
-    }
-
-    fn read_byte(&mut self) -> u8 {
-        self.status = RingBufferStatus::Normal;
-        let c = self.arr[self.head];
-        self.head = (self.head + 1) % RING_BUFFER_SIZE;
-        if self.head == self.tail {
-            self.status = RingBufferStatus::Empty;
-        }
-        c
-    }
-
-    /// Get the length of remaining data in the buffer
-    const fn available_read(&self) -> usize {
-        if matches!(self.status, RingBufferStatus::Empty) {
-            0
-        } else if self.tail > self.head {
-            self.tail - self.head
-        } else {
-            self.tail + RING_BUFFER_SIZE - self.head
-        }
-    }
-
-    /// Get the length of remaining space in the buffer
-    const fn available_write(&self) -> usize {
-        if matches!(self.status, RingBufferStatus::Full) {
-            0
-        } else {
-            RING_BUFFER_SIZE - self.available_read()
-        }
-    }
+struct Shared {
+    buffer: Mutex<HeapRb<u8>>,
+    // TODO: better poll
+    read_avail: Event,
+    write_avail: Event,
 }
 
 pub struct Pipe {
     read_side: bool,
-    buffer: Arc<Mutex<PipeRingBuffer>>,
+    shared: Arc<Shared>,
     non_blocking: AtomicBool,
+}
+impl Drop for Pipe {
+    fn drop(&mut self) {
+        if self.read_side {
+            self.shared.read_avail.notify(usize::MAX);
+            self.shared.write_avail.notify(usize::MAX);
+        }
+    }
 }
 
 impl Pipe {
     pub fn new() -> (Pipe, Pipe) {
-        let buffer = Arc::new(Mutex::new(PipeRingBuffer::new()));
+        let shared = Arc::new(Shared {
+            buffer: Mutex::new(HeapRb::new(RING_BUFFER_INIT_SIZE)),
+            read_avail: Event::new(),
+            write_avail: Event::new(),
+        });
         let read_end = Pipe {
             read_side: true,
-            buffer: buffer.clone(),
+            shared: shared.clone(),
             non_blocking: AtomicBool::new(false),
         };
         let write_end = Pipe {
             read_side: false,
-            buffer,
+            shared,
             non_blocking: AtomicBool::new(false),
         };
         (read_end, write_end)
@@ -109,15 +71,28 @@ impl Pipe {
     }
 
     pub fn closed(&self) -> bool {
-        Arc::strong_count(&self.buffer) == 1
+        Arc::strong_count(&self.shared) == 1
     }
 
-    pub fn clone_nonblocking(&self) -> Self {
-        Self {
-            read_side: self.read_side,
-            buffer: self.buffer.clone(),
-            non_blocking: AtomicBool::new(true),
+    pub fn capacity(&self) -> usize {
+        self.shared.buffer.lock().capacity().get()
+    }
+
+    pub fn resize(&self, new_size: usize) -> LinuxResult<()> {
+        let new_size = new_size.div_ceil(PAGE_SIZE_4K).max(1) * PAGE_SIZE_4K;
+
+        let mut buffer = self.shared.buffer.lock();
+        if new_size == buffer.capacity().get() {
+            return Ok(());
         }
+        if new_size < buffer.occupied_len() {
+            return Err(LinuxError::EBUSY);
+        }
+        let old_buffer = mem::replace(&mut *buffer, HeapRb::new(new_size));
+        let (left, right) = old_buffer.as_slices();
+        buffer.push_slice(left);
+        buffer.push_slice(right);
+        Ok(())
     }
 }
 
@@ -132,27 +107,31 @@ impl FileLike for Pipe {
 
         let non_blocking = self.nonblocking();
         loop {
-            let mut ring_buffer = self.buffer.lock();
-            let read_size = ring_buffer.available_read().min(buf.len());
-            if read_size == 0 {
+            let read = self.shared.buffer.lock().pop_slice(buf);
+            if read > 0 {
+                self.shared.write_avail.notify(usize::MAX);
+                return Ok(read);
+            } else if self.closed() {
+                return Ok(0);
+            }
+
+            if non_blocking {
+                return Err(LinuxError::EAGAIN);
+            }
+
+            try_block_on(async {
                 if self.closed() {
-                    return Ok(0);
+                    return Ok(());
                 }
-                drop(ring_buffer);
-                // Data not ready, wait for write end
-                if have_signals() {
-                    return Err(LinuxError::EINTR);
+                listener!(self.shared.read_avail => listener);
+                if self.closed() {
+                    return Ok(());
                 }
-                if non_blocking {
-                    return Err(LinuxError::EAGAIN);
-                }
-                axtask::yield_now(); // TODO: use synchronize primitive
-                continue;
-            }
-            for c in buf.iter_mut().take(read_size) {
-                *c = ring_buffer.read_byte();
-            }
-            return Ok(read_size);
+                listener.await;
+                Ok(())
+            })?;
+
+            // For restart and listener wake up, continue reading
         }
     }
 
@@ -167,40 +146,43 @@ impl FileLike for Pipe {
             return Ok(0);
         }
 
-        let mut write_size = 0usize;
-        let total_len = buf.len();
+        let mut total_written = 0;
         let non_blocking = self.nonblocking();
         loop {
-            let mut ring_buffer = self.buffer.lock();
-            let loop_write = ring_buffer.available_write();
-            if loop_write == 0 {
+            let written = self.shared.buffer.lock().push_slice(&buf[total_written..]);
+            if written > 0 {
+                self.shared.read_avail.notify(usize::MAX);
+                total_written += written;
+                if total_written == buf.len() || non_blocking {
+                    break;
+                }
+            } else if self.closed() {
+                break;
+            }
+
+            if non_blocking {
+                return Err(LinuxError::EAGAIN);
+            }
+
+            try_block_on(async {
                 if self.closed() {
-                    return Ok(write_size);
+                    return Ok(());
                 }
-                drop(ring_buffer);
-                // Buffer is full, wait for read end to consume
-                if have_signals() {
-                    return Err(LinuxError::EINTR);
+                listener!(self.shared.write_avail => listener);
+                if self.closed() {
+                    return Ok(());
                 }
-                if non_blocking {
-                    return Err(LinuxError::EAGAIN);
-                }
-                axtask::yield_now(); // TODO: use synconize primitive
-                continue;
-            }
-            for _ in 0..loop_write {
-                if write_size == total_len {
-                    return Ok(write_size);
-                }
-                ring_buffer.write_byte(buf[write_size]);
-                write_size += 1;
-            }
+                listener.await;
+                Ok(())
+            })?;
         }
+
+        Ok(total_written)
     }
 
     fn stat(&self) -> LinuxResult<Kstat> {
         Ok(Kstat {
-            mode: S_IFIFO | 0o600u32, // rw-------
+            mode: S_IFIFO | if self.is_read() { 0o444 } else { 0o222 },
             ..Default::default()
         })
     }
@@ -219,21 +201,21 @@ impl FileLike for Pipe {
     }
 
     fn poll(&self) -> LinuxResult<PollState> {
-        let buf = self.buffer.lock();
+        let buf = self.shared.buffer.lock();
 
         match self.read_side {
             true => {
-                if buf.available_read() == 0 && self.closed() {
+                if buf.is_empty() && self.closed() {
                     return Err(LinuxError::EPIPE);
                 }
                 Ok(PollState {
-                    readable: buf.available_read() > 0,
+                    readable: buf.occupied_len() > 0,
                     writable: false,
                 })
             }
             false => Ok(PollState {
                 readable: false,
-                writable: buf.available_write() > 0,
+                writable: buf.vacant_len() > 0,
             }),
         }
     }
