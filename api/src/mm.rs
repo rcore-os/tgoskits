@@ -6,7 +6,6 @@ use axhal::{
     trap::{PAGE_FAULT, register_trap_handler},
 };
 use axtask::current;
-use linux_raw_sys::general::SI_KERNEL;
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use starry_core::task::{AsThread, ProcessData, send_signal_to_process};
 use starry_signal::{SignalInfo, Signo};
@@ -263,7 +262,7 @@ pub fn handle_user_page_fault(
         info!("{:?}: segmentation fault at {:#x}", proc_data.proc, vaddr);
         send_signal_to_process(
             proc_data.proc.pid(),
-            Some(SignalInfo::new(Signo::SIGSEGV, SI_KERNEL as _)),
+            Some(SignalInfo::new_kernel(Signo::SIGSEGV)),
         )
         .expect("Failed to send SIGSEGV");
     }

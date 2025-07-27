@@ -54,7 +54,7 @@ pub fn run_initproc(args: &[String], envs: &[String]) -> i32 {
         starry_api::file::add_stdio(&mut FD_TABLE.scope_mut(&mut scope).write())
             .expect("Failed to add stdio");
     }
-    let thr = Thread::new(proc_data);
+    let thr = Thread::new(pid, proc_data);
 
     *task.task_ext_mut() = Some(unsafe { TaskExtProxy::from_impl(thr) });
 

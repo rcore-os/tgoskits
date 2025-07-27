@@ -21,7 +21,6 @@ use axtask::{AxTaskRef, TaskExt, TaskInner, WeakAxTaskRef, current};
 use event_listener::Event;
 use extern_trait::extern_trait;
 use lazy_static::lazy_static;
-use linux_raw_sys::general::SI_KERNEL;
 use scope_local::{ActiveScope, Scope};
 use spin::RwLock;
 use starry_process::{Pid, Process, ProcessGroup, Session};
@@ -69,7 +68,7 @@ pub struct ThreadInner {
     robust_list_head: AtomicUsize,
 
     /// The thread-level signal manager
-    pub signal: ThreadSignalManager,
+    pub signal: Arc<ThreadSignalManager>,
 
     /// Time manager
     ///
@@ -89,9 +88,9 @@ pub struct ThreadInner {
 
 impl ThreadInner {
     /// Create a new [`ThreadInner`].
-    pub fn new(proc_data: Arc<ProcessData>) -> Self {
+    pub fn new(tid: u32, proc_data: Arc<ProcessData>) -> Self {
         ThreadInner {
-            signal: ThreadSignalManager::new(proc_data.signal.clone()),
+            signal: ThreadSignalManager::new(tid, proc_data.signal.clone()),
             proc_data,
             clear_child_tid: AtomicUsize::new(0),
             robust_list_head: AtomicUsize::new(0),
@@ -199,8 +198,8 @@ impl AsThread for TaskInner {
 
 impl Thread {
     /// Create a new [`Thread`].
-    pub fn new(proc_data: Arc<ProcessData>) -> Self {
-        Self(Box::new(ThreadInner::new(proc_data)))
+    pub fn new(tid: u32, proc_data: Arc<ProcessData>) -> Self {
+        Self(Box::new(ThreadInner::new(tid, proc_data)))
     }
 }
 
@@ -425,9 +424,7 @@ pub fn poll_timer(task: &TaskInner) {
         return;
     };
     time.poll(|signo| {
-        thr.signal
-            .send_signal(SignalInfo::new(signo, SI_KERNEL as _));
-        task.set_interrupted(true);
+        send_signal_thread_inner(task, thr, SignalInfo::new_kernel(signo));
     });
 }
 
@@ -441,11 +438,16 @@ pub fn set_timer_state(task: &TaskInner, state: TimerState) {
         return;
     };
     time.poll(|signo| {
-        thr.signal
-            .send_signal(SignalInfo::new(signo, SI_KERNEL as _));
-        task.set_interrupted(true);
+        send_signal_thread_inner(task, thr, SignalInfo::new_kernel(signo));
     });
     time.set_state(state);
+}
+
+fn send_signal_thread_inner(task: &TaskInner, thr: &Thread, sig: SignalInfo) {
+    let signo = sig.signo();
+    if thr.signal.send_signal(sig) {
+        task.interrupt(thr.proc_data.signal.can_restart(signo));
+    }
 }
 
 /// Sends a signal to a thread.
@@ -462,8 +464,7 @@ pub fn send_signal_to_thread(
 
     if let Some(sig) = sig {
         info!("Send signal {:?} to thread {}", sig.signo(), tid);
-        thread.signal.send_signal(sig);
-        task.set_interrupted(true);
+        send_signal_thread_inner(&task, thread, sig);
     }
 
     Ok(())
@@ -474,12 +475,12 @@ pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> LinuxResult<
     let proc_data = get_process_data(pid)?;
 
     if let Some(sig) = sig {
-        info!("Send signal {:?} to process {}", sig.signo(), pid);
-        proc_data.signal.send_signal(sig);
-        for tid in proc_data.proc.threads() {
-            if let Ok(task) = get_task(tid) {
-                task.set_interrupted(true);
-            }
+        let signo = sig.signo();
+        info!("Send signal {:?} to process {}", signo, pid);
+        if let Some(tid) = proc_data.signal.send_signal(sig)
+            && let Ok(task) = get_task(tid)
+        {
+            task.interrupt(proc_data.signal.can_restart(signo));
         }
     }
 

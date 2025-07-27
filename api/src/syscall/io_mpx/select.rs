@@ -151,8 +151,8 @@ fn do_select(
     let deadline = timeout.map(|t| wall_time() + t);
 
     loop {
-        if current().is_interrupted() {
-            return Ok(0);
+        if current().interrupt_state().is_some() {
+            return Err(LinuxError::EINTR);
         }
 
         axnet::poll_interfaces();

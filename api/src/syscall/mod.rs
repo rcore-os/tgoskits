@@ -378,6 +378,7 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
         Sysno::rt_sigpending => sys_rt_sigpending(tf.arg0().into(), tf.arg1() as _),
         Sysno::rt_sigreturn => sys_rt_sigreturn(tf),
         Sysno::rt_sigtimedwait => sys_rt_sigtimedwait(
+            tf,
             tf.arg0().into(),
             tf.arg1().into(),
             tf.arg2().into(),

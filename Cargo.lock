@@ -590,6 +590,7 @@ name = "axtask"
 version = "0.1.0"
 dependencies = [
  "axconfig",
+ "axerrno",
  "axhal",
  "cfg-if",
  "cpumask",
@@ -1977,7 +1978,7 @@ dependencies = [
 [[package]]
 name = "starry-signal"
 version = "0.2.0"
-source = "git+https://github.com/Starry-Mix-THU/starry-signal.git?rev=669c463#669c463259529adea57b20af41249d480a50e592"
+source = "git+https://github.com/Starry-Mix-THU/starry-signal.git?rev=f3fb100#f3fb1005a1d47272073b1c2c8d911d28c4bfa315"
 dependencies = [
  "axcpu",
  "bitflags 2.9.1",

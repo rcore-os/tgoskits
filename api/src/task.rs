@@ -3,7 +3,7 @@ use core::sync::atomic::Ordering;
 use axerrno::{LinuxError, LinuxResult};
 use axhal::uspace::{ReturnReason, UserContext};
 use axtask::{TaskInner, current};
-use linux_raw_sys::general::{ROBUST_LIST_LIMIT, SI_KERNEL, robust_list, robust_list_head};
+use linux_raw_sys::general::{ROBUST_LIST_LIMIT, robust_list, robust_list_head};
 use starry_core::{
     futex::FutexKey,
     shm::SHM_MANAGER,
@@ -58,11 +58,12 @@ pub fn new_user_task(
                 }
 
                 if !unblock_next_signal() {
-                    check_signals(thr, &mut uctx, None);
+                    while check_signals(thr, &mut uctx, None) {}
                 }
 
                 set_timer_state(&curr, TimerState::User);
-                curr.set_interrupted(false);
+                // Clear interrupt state
+                let _ = curr.interrupt_state();
 
                 if thr.pending_exit() {
                     break;
@@ -147,10 +148,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         process.exit();
         if let Some(parent) = process.parent() {
             if let Some(signo) = thr.proc_data.exit_signal {
-                let _ = send_signal_to_process(
-                    parent.pid(),
-                    Some(SignalInfo::new(signo, SI_KERNEL as _)),
-                );
+                let _ = send_signal_to_process(parent.pid(), Some(SignalInfo::new_kernel(signo)));
             }
             if let Ok(data) = get_process_data(parent.pid()) {
                 data.child_exit_event.notify(usize::MAX);
@@ -161,7 +159,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     }
     if group_exit && !process.is_group_exited() {
         process.group_exit();
-        let sig = SignalInfo::new(Signo::SIGKILL, SI_KERNEL as _);
+        let sig = SignalInfo::new_kernel(Signo::SIGKILL);
         for tid in process.threads() {
             let _ = send_signal_to_thread(None, tid, Some(sig.clone()));
         }

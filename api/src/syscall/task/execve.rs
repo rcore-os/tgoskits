@@ -57,6 +57,8 @@ pub fn sys_execve(
     curr.set_name(name);
     *proc_data.exe_path.write() = path;
 
+    *proc_data.signal.actions.lock() = Default::default();
+
     // Close CLOEXEC file descriptors
     let mut fd_table = FD_TABLE.write();
     let cloexec_fds = fd_table

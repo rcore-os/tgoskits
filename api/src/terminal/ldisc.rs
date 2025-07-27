@@ -146,7 +146,7 @@ impl LineDiscipline {
         if let Some(signo) = self.termios.signo_for(ch)
             && let Some(pg) = self.job_control.foreground()
         {
-            let sig = SignalInfo::new(signo, SI_KERNEL as _);
+            let sig = SignalInfo::new_kernel(signo);
             send_signal_to_process_group(pg.pgid(), Some(sig))?;
         }
 

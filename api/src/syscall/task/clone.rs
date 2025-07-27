@@ -3,6 +3,7 @@ use alloc::sync::Arc;
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
 use axhal::{context::TrapFrame, uspace::UserContext};
+use axsync::spin::SpinNoIrq;
 use axtask::{TaskExtProxy, current, spawn_task};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
@@ -161,7 +162,7 @@ pub fn sys_clone(
         let signal_actions = if flags.contains(CloneFlags::SIGHAND) {
             old_proc_data.signal.actions.clone()
         } else {
-            Arc::default()
+            Arc::new(SpinNoIrq::new(old_proc_data.signal.actions.lock().clone()))
         };
         let proc_data = ProcessData::new(
             proc,
@@ -198,7 +199,7 @@ pub fn sys_clone(
 
     new_proc_data.proc.add_thread(tid);
 
-    let thr = Thread::new(new_proc_data);
+    let thr = Thread::new(tid, new_proc_data);
     if flags.contains(CloneFlags::CHILD_CLEARTID) {
         thr.set_clear_child_tid(child_tid);
     }

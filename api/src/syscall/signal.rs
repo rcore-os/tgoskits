@@ -1,4 +1,4 @@
-use core::mem;
+use core::{future::poll_fn, mem, task::Poll};
 
 use axerrno::{LinuxError, LinuxResult};
 use axhal::context::TrapFrame;
@@ -93,7 +93,7 @@ pub fn sys_rt_sigaction(
 
 pub fn sys_rt_sigpending(set: UserPtr<SignalSet>, sigsetsize: usize) -> LinuxResult<isize> {
     check_sigset_size(sigsetsize)?;
-    *set.get_as_mut()? = current().as_thread().proc_data.signal.pending();
+    *set.get_as_mut()? = current().as_thread().signal.pending();
     Ok(0)
 }
 
@@ -102,7 +102,11 @@ fn make_siginfo(signo: u32, code: i32) -> LinuxResult<Option<SignalInfo>> {
         return Ok(None);
     }
     let signo = parse_signo(signo)?;
-    Ok(Some(SignalInfo::new(signo, code)))
+    Ok(Some(SignalInfo::new_user(
+        signo,
+        code,
+        current().as_thread().proc_data.proc.pid(),
+    )))
 }
 
 pub fn sys_kill(pid: i32, signo: u32) -> LinuxResult<isize> {
@@ -118,10 +122,15 @@ pub fn sys_kill(pid: i32, signo: u32) -> LinuxResult<isize> {
             send_signal_to_process_group(pgid, sig)?;
         }
         -1 => {
+            let curr_pid = current().as_thread().proc_data.proc.pid();
             if let Some(sig) = sig {
                 for proc_data in processes() {
-                    if proc_data.proc.is_init() {
-                        // init process
+                    // POSIX.1 requires that kill(-1,sig) send sig to all processes that
+                    //    the calling process may send signals to, except possibly for some
+                    //    implementation-defined system processes.  Linux allows a process
+                    //    to signal itself, but on Linux the call kill(-1,sig) does not
+                    //    signal the calling process.
+                    if proc_data.proc.is_init() || proc_data.proc.pid() == curr_pid {
                         continue;
                     }
                     let _ = send_signal_to_process(proc_data.proc.pid(), Some(sig.clone()));
@@ -201,6 +210,7 @@ pub fn sys_rt_sigreturn(tf: &mut TrapFrame) -> LinuxResult<isize> {
 }
 
 pub fn sys_rt_sigtimedwait(
+    tf: &mut TrapFrame,
     set: UserConstPtr<SignalSet>,
     info: UserPtr<siginfo>,
     timeout: UserConstPtr<timespec>,
@@ -208,7 +218,10 @@ pub fn sys_rt_sigtimedwait(
 ) -> LinuxResult<isize> {
     check_sigset_size(sigsetsize)?;
 
-    let set = *set.get_as_ref()?;
+    let mut set = *set.get_as_ref()?;
+    set.remove(Signo::SIGKILL);
+    set.remove(Signo::SIGSTOP);
+
     let timeout = nullable!(timeout.get_as_ref())?
         .map(|ts| ts.try_into_time_value())
         .transpose()?;
@@ -219,23 +232,51 @@ pub fn sys_rt_sigtimedwait(
     );
 
     let curr = current();
-    let fut = curr.as_thread().signal.wait(set);
-
-    let sig = block_on(async {
-        if let Some(timeout) = timeout {
-            future::timeout(fut, timeout)
-                .await
-                .ok_or(LinuxError::EAGAIN)
+    let thr = curr.as_thread();
+    let signal = &thr.signal;
+    let old_blocked = signal.with_blocked_mut(|blocked| {
+        let old = *blocked;
+        *blocked &= !set;
+        old
+    });
+    tf.set_retval(-LinuxError::EINTR.code() as usize);
+    let fut = poll_fn(|context| {
+        if let Some(sig) = signal.dequeue_signal(&set) {
+            signal.with_blocked_mut(|blocked| {
+                *blocked = old_blocked;
+            });
+            Poll::Ready(Some(sig))
+        } else if check_signals(thr, tf, Some(old_blocked)) {
+            Poll::Ready(None)
         } else {
-            Ok(fut.await)
+            curr.register_interrupt_waker(context.waker());
+            Poll::Pending
         }
-    })?;
+    });
+
+    let Some(sig) = block_on(async {
+        if let Some(timeout) = timeout {
+            future::timeout(fut, timeout).await
+        } else {
+            Some(fut.await)
+        }
+    }) else {
+        // Timeout
+        signal.with_blocked_mut(|blocked| {
+            *blocked = old_blocked;
+        });
+        return Err(LinuxError::EAGAIN);
+    };
+    let Some(sig) = sig else {
+        // Interrupted
+        return Ok(0);
+    };
 
     if let Some(info) = nullable!(info.get_as_mut())? {
         *info = sig.0;
     }
 
-    Ok(0)
+    Ok(sig.signo() as _)
 }
 
 pub fn sys_rt_sigsuspend(
@@ -247,8 +288,8 @@ pub fn sys_rt_sigsuspend(
 
     let curr = current();
     let thr = curr.as_thread();
-    let mut set = *set.get_as_ref()?;
 
+    let mut set = *set.get_as_ref()?;
     set.remove(Signo::SIGKILL);
     set.remove(Signo::SIGSTOP);
 
@@ -258,14 +299,13 @@ pub fn sys_rt_sigsuspend(
 
     tf.set_retval(-LinuxError::EINTR.code() as usize);
 
-    block_on(async move {
-        loop {
-            if check_signals(thr, tf, Some(old_blocked)) {
-                return;
-            }
-            thr.proc_data.signal.wait().await;
+    block_on(poll_fn(|context| {
+        if check_signals(thr, tf, Some(old_blocked)) {
+            return Poll::Ready(());
         }
-    });
+        curr.register_interrupt_waker(context.waker());
+        Poll::Pending
+    }));
 
     Ok(0)
 }
