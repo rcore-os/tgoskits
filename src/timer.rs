@@ -282,3 +282,112 @@ impl ApicTimer {
     //     }
     // }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::regs::lvt::LVT_TIMER::TimerMode::Value as TimerMode;
+    use crate::timer::ApicTimer;
+    use axvisor_api::vmm::{VCpuId, VMId};
+
+    #[test]
+    fn test_apic_timer_creation() {
+        let vm_id = VMId::from(1 as usize);
+        let vcpu_id = VCpuId::from(0 as usize);
+        let timer = ApicTimer::new(vm_id, vcpu_id);
+        // Initial state should be stopped
+        assert!(!timer.is_started());
+        assert_eq!(timer.read_icr(), 0);
+        assert_eq!(timer.read_dcr(), 0);
+        // assert_eq!(timer.read_ccr(), 0);
+        assert!(timer.is_masked());
+        assert_eq!(timer.timer_mode(), TimerMode::OneShot);
+        assert_eq!(timer.vector(), 0);
+    }
+
+    #[test]
+    fn test_lvt_register_operations() {
+        let vm_id = VMId::from(1 as usize);
+        let vcpu_id = VCpuId::from(0 as usize);
+        let mut timer = ApicTimer::new(vm_id, vcpu_id);
+
+        // Test LVT write with valid bits
+        assert!(timer.write_lvt(0x000710FF).is_ok());
+        assert_eq!(timer.read_lvt() & 0x000710FF, 0x000710FF);
+
+        // Test LVT write with invalid bits (should be masked)
+        assert!(timer.write_lvt(0xFFFFFFFF).is_ok());
+        assert_eq!(timer.read_lvt() & !0x000710FF, 0);
+
+        // Test vector number
+        assert!(timer.write_lvt(0x50).is_ok()); // vector 0x50
+        assert_eq!(timer.vector(), 0x50);
+    }
+
+    #[test]
+    fn test_divide_configuration_register() {
+        let vm_id = VMId::from(1 as usize);
+        let vcpu_id = VCpuId::from(0 as usize);
+        let mut timer = ApicTimer::new(vm_id, vcpu_id);
+
+        // Test different divide values
+        timer.write_dcr(0b0000); // divide by 2
+        assert_eq!(timer.read_dcr(), 0b0000);
+
+        timer.write_dcr(0b0001); // divide by 4
+        assert_eq!(timer.read_dcr(), 0b0001);
+
+        timer.write_dcr(0b1011); // divide by 1
+        assert_eq!(timer.read_dcr(), 0b1011);
+
+        // Test invalid bits are masked
+        timer.write_dcr(0xFFFFFFFF);
+        assert_eq!(timer.read_dcr() & !0b1011, 0);
+    }
+
+    #[test]
+    fn test_timer_mode() {
+        let vm_id = VMId::from(1 as usize);
+        let vcpu_id = VCpuId::from(0 as usize);
+        let mut timer = ApicTimer::new(vm_id, vcpu_id);
+
+        // Default should be one-shot
+        assert_eq!(timer.timer_mode(), TimerMode::OneShot);
+        assert!(!timer.is_periodic());
+
+        // Set periodic mode (bit 17 = 1)
+        assert!(timer.write_lvt(0x20000).is_ok());
+        assert_eq!(timer.timer_mode(), TimerMode::Periodic);
+        assert!(timer.is_periodic());
+    }
+
+    #[test]
+    fn test_timer_mask() {
+        let vm_id = VMId::from(1 as usize);
+        let vcpu_id = VCpuId::from(0 as usize);
+        let mut timer = ApicTimer::new(vm_id, vcpu_id);
+
+        // Default should be masked
+        assert!(timer.is_masked());
+
+        // Unmask timer (bit 16 = 0)
+        assert!(timer.write_lvt(0x50).is_ok()); // vector 0x50, not masked
+        assert!(!timer.is_masked());
+
+        // Mask timer (bit 16 = 1)
+        assert!(timer.write_lvt(0x10050).is_ok()); // vector 0x50, masked
+        assert!(timer.is_masked());
+    }
+
+    #[test]
+    fn test_multiple_timers() {
+        let vm_id = VMId::from(1 as usize);
+        let timer1 = ApicTimer::new(vm_id, VCpuId::from(0 as usize));
+        let timer2 = ApicTimer::new(vm_id, VCpuId::from(1 as usize));
+
+        // Both timers should be independent
+        assert!(!timer1.is_started());
+        assert!(!timer2.is_started());
+        assert_eq!(timer1.read_icr(), timer2.read_icr());
+        assert_eq!(timer1.read_dcr(), timer2.read_dcr());
+    }
+}

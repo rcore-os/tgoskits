@@ -3,6 +3,9 @@ name = "x86_vlapic"
 version = "0.1.0"
 edition = "2024"
 description = "x86 Virtual Local APIC"
+authors = ["Keyang Hu <keyang.hu@qq.com>", "Mingxian Su <aarkegz@gmail.com>"]
+license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPubL-2.0 OR MulanPSL2"
+
 
 [dependencies]
 log = "0.4.19"
