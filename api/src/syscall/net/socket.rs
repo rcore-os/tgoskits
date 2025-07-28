@@ -1,7 +1,5 @@
-use core::net::SocketAddr;
-
 use axerrno::{LinuxError, LinuxResult};
-use axnet::{Shutdown, SocketOps, TcpSocket, UdpSocket};
+use axnet::{Shutdown, SocketAddrEx, SocketOps, tcp::TcpSocket, udp::UdpSocket};
 use linux_raw_sys::{
     general::O_NONBLOCK,
     net::{
@@ -12,7 +10,7 @@ use linux_raw_sys::{
 
 use crate::{
     file::{FileLike, Socket},
-    mm::{UserConstPtr, UserPtr, nullable},
+    mm::{UserConstPtr, UserPtr},
     socket::SocketAddrExt,
 };
 
@@ -51,7 +49,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> LinuxResult<isize> {
 }
 
 pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> LinuxResult<isize> {
-    let addr = SocketAddr::read_from_user(addr, addrlen)?;
+    let addr = SocketAddrEx::read_from_user(addr, addrlen)?;
     debug!("sys_bind <= fd: {}, addr: {:?}", fd, addr);
 
     Socket::from_fd(fd)?.bind(addr)?;
@@ -60,7 +58,7 @@ pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> LinuxRes
 }
 
 pub fn sys_connect(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> LinuxResult<isize> {
-    let addr = SocketAddr::read_from_user(addr, addrlen)?;
+    let addr = SocketAddrEx::read_from_user(addr, addrlen)?;
     debug!("sys_connect <= fd: {}, addr: {:?}", fd, addr);
 
     Socket::from_fd(fd)?.connect(addr).map_err(|e| {
@@ -110,10 +108,7 @@ pub fn sys_accept4(
     debug!("sys_accept => fd: {}, addr: {:?}", fd, remote_addr);
 
     if !addr.is_null() {
-        let len = remote_addr.write_to_user(addr)?;
-        if let Some(addrlen) = nullable!(addrlen.get_as_mut())? {
-            *addrlen = len;
-        }
+        remote_addr.write_to_user(addr, addrlen.get_as_mut()?)?;
     }
 
     Ok(fd)

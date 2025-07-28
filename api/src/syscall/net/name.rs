@@ -17,7 +17,7 @@ pub fn sys_getsockname(
     let local_addr = socket.local_addr()?;
     debug!("sys_getsockname <= fd: {}, addr: {:?}", fd, local_addr);
 
-    *addrlen.get_as_mut()? = local_addr.write_to_user(addr)?;
+    local_addr.write_to_user(addr, addrlen.get_as_mut()?)?;
     Ok(0)
 }
 
@@ -30,7 +30,6 @@ pub fn sys_getpeername(
     let peer_addr = socket.peer_addr()?;
     debug!("sys_getpeername <= fd: {}, addr: {:?}", fd, peer_addr);
 
-    *addrlen.get_as_mut()? = peer_addr.write_to_user(addr)?;
-
+    peer_addr.write_to_user(addr, addrlen.get_as_mut()?)?;
     Ok(0)
 }

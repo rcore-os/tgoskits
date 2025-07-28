@@ -1,14 +1,17 @@
 //! Wrapper for [`sockaddr`]. Using trait to convert between [`SocketAddr`] and
 //! [`sockaddr`] types.
 
+use alloc::vec::Vec;
 use core::{
+    ffi::CStr,
     mem::size_of,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
 };
 
 use axerrno::{LinuxError, LinuxResult};
+use axnet::{SocketAddrEx, unix::UnixSocketAddr};
 use linux_raw_sys::net::{
-    __kernel_sa_family_t, AF_INET, AF_INET6, in_addr, in6_addr, sockaddr, sockaddr_in,
+    __kernel_sa_family_t, AF_INET, AF_INET6, AF_UNIX, in_addr, in6_addr, sockaddr, sockaddr_in,
     sockaddr_in6, socklen_t,
 };
 
@@ -23,80 +26,56 @@ pub trait SocketAddrExt: Sized {
 
     /// This method serializes the current socket address instance into the
     /// [`sockaddr`] structure pointed to by `addr` in user space.
-    fn write_to_user(&self, addr: UserPtr<sockaddr>) -> LinuxResult<socklen_t>;
+    fn write_to_user(&self, addr: UserPtr<sockaddr>, addrlen: &mut socklen_t) -> LinuxResult<()>;
 
     /// Gets the address family of the socket address.
     fn family(&self) -> u16;
+}
 
-    /// Gets the encoded length of the socket address.
-    fn addr_len(&self) -> socklen_t;
+fn read_family(addr: UserConstPtr<sockaddr>, addrlen: socklen_t) -> LinuxResult<u16> {
+    if size_of::<__kernel_sa_family_t>() > addrlen as usize {
+        return Err(LinuxError::EINVAL);
+    }
+    let family = *addr.cast::<__kernel_sa_family_t>().get_as_ref()?;
+    Ok(family)
+}
+unsafe fn cast_to_slice<T>(value: &T) -> &[u8] {
+    unsafe { core::slice::from_raw_parts(value as *const T as *const u8, size_of::<T>()) }
+}
+fn fill_addr(addr: UserPtr<sockaddr>, addrlen: &mut socklen_t, data: &[u8]) -> LinuxResult<()> {
+    let len = (*addrlen as usize).min(data.len());
+    addr.cast::<u8>()
+        .get_as_mut_slice(len)?
+        .copy_from_slice(&data[..len]);
+    *addrlen = data.len() as _;
+    Ok(())
 }
 
 impl SocketAddrExt for SocketAddr {
-    /// Reads a [`SocketAddr`] from user space.
-    ///
-    /// This implementation first performs basic length validation. Then, it
-    /// copies the raw [`sockaddr`] data from user space into a temporary
-    /// kernel buffer. Based on the address family ([`AF_INET`] or
-    /// [`AF_INET6`]) extracted from the copied data, it delegates the
-    /// actual parsing to [`SocketAddrV4::read_from_user`]
-    /// or [`SocketAddrV6::read_from_user`].
     fn read_from_user(addr: UserConstPtr<sockaddr>, addrlen: socklen_t) -> LinuxResult<Self> {
-        if size_of::<__kernel_sa_family_t>() > addrlen as usize
-            || addrlen as usize > size_of::<sockaddr>()
-        {
-            return Err(LinuxError::EINVAL);
-        }
-        let family = *addr.cast::<__kernel_sa_family_t>().get_as_ref()? as u32;
-        match family {
-            AF_INET => SocketAddrV4::read_from_user(addr, addrlen).map(SocketAddr::V4),
-            AF_INET6 => SocketAddrV6::read_from_user(addr, addrlen).map(SocketAddr::V6),
+        match read_family(addr, addrlen)? as u32 {
+            AF_INET => SocketAddrV4::read_from_user(addr, addrlen).map(Self::V4),
+            AF_INET6 => SocketAddrV6::read_from_user(addr, addrlen).map(Self::V6),
             _ => Err(LinuxError::EAFNOSUPPORT),
         }
     }
 
-    /// Writes the [`SocketAddr`] to user space.
-    ///
-    /// This implementation checks for a null user-space pointer. Then, it
-    /// delegates the actual writing to the specific [`SocketAddrV4`] or
-    /// [`SocketAddrV6`] `write_to_user` implementation based on the variant
-    /// of `self`.
-    fn write_to_user(&self, addr: UserPtr<sockaddr>) -> LinuxResult<socklen_t> {
-        if addr.is_null() {
-            return Err(LinuxError::EINVAL);
-        }
-
+    fn write_to_user(&self, addr: UserPtr<sockaddr>, addrlen: &mut socklen_t) -> LinuxResult<()> {
         match self {
-            SocketAddr::V4(v4) => v4.write_to_user(addr),
-            SocketAddr::V6(v6) => v6.write_to_user(addr),
+            SocketAddr::V4(v4) => v4.write_to_user(addr, addrlen),
+            SocketAddr::V6(v6) => v6.write_to_user(addr, addrlen),
         }
     }
 
-    /// Gets the address family of the [`SocketAddr`].
-    ///
-    /// Returns `AF_INET` for IPv4 addresses or `AF_INET6` for IPv6 addresses.
     fn family(&self) -> u16 {
         match self {
             SocketAddr::V4(v4) => v4.family(),
             SocketAddr::V6(v6) => v6.family(),
         }
     }
-
-    /// Gets the encoded length of the [`SocketAddr`] instance.
-    ///
-    /// Returns the size in bytes that this [`SocketAddr`] would occupy when
-    /// encoded as a [`sockaddr_in`] (for IPv4) or [`sockaddr_in6`] (for IPv6)
-    /// structure.
-    fn addr_len(&self) -> socklen_t {
-        match self {
-            SocketAddr::V4(v4) => v4.addr_len(),
-            SocketAddr::V6(v6) => v6.addr_len(),
-        }
-    }
 }
 
 impl SocketAddrExt for SocketAddrV4 {
-    /// Reads an [`SocketAddrV4`] from user space.
     fn read_from_user(addr: UserConstPtr<sockaddr>, addrlen: socklen_t) -> LinuxResult<Self> {
         if addrlen != size_of::<sockaddr_in>() as socklen_t {
             return Err(LinuxError::EINVAL);
@@ -112,13 +91,7 @@ impl SocketAddrExt for SocketAddrV4 {
         ))
     }
 
-    /// Writes the `SocketAddrV4` to user space.
-    fn write_to_user(&self, addr: UserPtr<sockaddr>) -> LinuxResult<socklen_t> {
-        if addr.is_null() {
-            return Err(LinuxError::EINVAL);
-        }
-        let dst_addr = addr.get_as_mut()?;
-        let len = size_of::<sockaddr_in>() as socklen_t;
+    fn write_to_user(&self, addr: UserPtr<sockaddr>, addrlen: &mut socklen_t) -> LinuxResult<()> {
         let sockin_addr = sockaddr_in {
             sin_family: AF_INET as _,
             sin_port: self.port().to_be(),
@@ -127,30 +100,15 @@ impl SocketAddrExt for SocketAddrV4 {
             },
             __pad: [0_u8; 8],
         };
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                &sockin_addr as *const sockaddr_in as *const u8,
-                dst_addr as *mut sockaddr as *mut u8,
-                len as usize,
-            )
-        };
-
-        Ok(len)
+        fill_addr(addr, addrlen, unsafe { cast_to_slice(&sockin_addr) })
     }
 
-    /// Gets the address family for [`SocketAddrV4`].
     fn family(&self) -> u16 {
         AF_INET as u16
-    }
-
-    /// Gets the encoded length of [`SocketAddrV4`].
-    fn addr_len(&self) -> socklen_t {
-        size_of::<sockaddr_in>() as socklen_t
     }
 }
 
 impl SocketAddrExt for SocketAddrV6 {
-    /// Reads an [`SocketAddrV6`] from user space.
     fn read_from_user(addr: UserConstPtr<sockaddr>, addrlen: socklen_t) -> LinuxResult<Self> {
         if addrlen != size_of::<sockaddr_in6>() as socklen_t {
             return Err(LinuxError::EINVAL);
@@ -168,13 +126,7 @@ impl SocketAddrExt for SocketAddrV6 {
         ))
     }
 
-    /// Writes the `SocketAddrV6` to user space.
-    fn write_to_user(&self, addr: UserPtr<sockaddr>) -> LinuxResult<socklen_t> {
-        if addr.is_null() {
-            return Err(LinuxError::EINVAL);
-        }
-        let dst_addr = addr.get_as_mut()?;
-        let len = size_of::<sockaddr_in6>() as socklen_t;
+    fn write_to_user(&self, addr: UserPtr<sockaddr>, addrlen: &mut socklen_t) -> LinuxResult<()> {
         let sockin_addr = sockaddr_in6 {
             sin6_family: AF_INET6 as _,
             sin6_port: self.port().to_be(),
@@ -186,25 +138,82 @@ impl SocketAddrExt for SocketAddrV6 {
             },
             sin6_scope_id: self.scope_id(),
         };
-
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                &sockin_addr as *const sockaddr_in6 as *const u8,
-                dst_addr as *mut sockaddr as *mut u8,
-                len as usize,
-            )
-        };
-
-        Ok(len)
+        fill_addr(addr, addrlen, unsafe { cast_to_slice(&sockin_addr) })
     }
 
-    /// Gets the address family for [`SocketAddrV6`].
     fn family(&self) -> u16 {
         AF_INET6 as u16
     }
+}
 
-    /// Gets the encoded length of [`SocketAddrV6`].
-    fn addr_len(&self) -> socklen_t {
-        size_of::<sockaddr_in6>() as socklen_t
+impl SocketAddrExt for UnixSocketAddr {
+    fn read_from_user(addr: UserConstPtr<sockaddr>, addrlen: socklen_t) -> LinuxResult<Self> {
+        if read_family(addr, addrlen)? as u32 != AF_UNIX {
+            return Err(LinuxError::EAFNOSUPPORT);
+        }
+        let offset = size_of::<__kernel_sa_family_t>();
+        let ptr = UserConstPtr::<u8>::from(addr.address().as_usize() + offset);
+        let data = ptr.get_as_slice(addrlen as usize - offset)?;
+        Ok(if data.is_empty() {
+            Self::Unnamed
+        } else if data[0] == 0 {
+            Self::Abstract(data[1..].into())
+        } else {
+            Self::Path(
+                CStr::from_bytes_with_nul(data)
+                    .map_err(|_| LinuxError::EINVAL)?
+                    .to_str()
+                    .map_err(|_| LinuxError::EINVAL)?
+                    .into(),
+            )
+        })
+    }
+
+    fn write_to_user(&self, addr: UserPtr<sockaddr>, addrlen: &mut socklen_t) -> LinuxResult<()> {
+        let data_len = match self {
+            UnixSocketAddr::Unnamed => 0,
+            UnixSocketAddr::Abstract(name) => name.len() + 1,
+            UnixSocketAddr::Path(path) => 1 + path.len(),
+        };
+        let mut buf = Vec::with_capacity(size_of::<__kernel_sa_family_t>() + data_len);
+        buf.extend_from_slice(&AF_UNIX.to_ne_bytes());
+        match self {
+            UnixSocketAddr::Unnamed => {}
+            UnixSocketAddr::Abstract(name) => {
+                buf.push(0);
+                buf.extend_from_slice(name);
+            }
+            UnixSocketAddr::Path(path) => {
+                buf.extend_from_slice(path.as_bytes());
+                buf.push(0);
+            }
+        }
+
+        fill_addr(addr, addrlen, &buf)
+    }
+
+    fn family(&self) -> u16 {
+        AF_UNIX as u16
+    }
+}
+
+impl SocketAddrExt for SocketAddrEx {
+    fn read_from_user(addr: UserConstPtr<sockaddr>, addrlen: socklen_t) -> LinuxResult<Self> {
+        match read_family(addr, addrlen)? as u32 {
+            AF_INET | AF_INET6 => SocketAddr::read_from_user(addr, addrlen).map(Self::Ip),
+            AF_UNIX => UnixSocketAddr::read_from_user(addr, addrlen).map(Self::Unix),
+            _ => Err(LinuxError::EAFNOSUPPORT),
+        }
+    }
+
+    fn write_to_user(&self, addr: UserPtr<sockaddr>, addrlen: &mut socklen_t) -> LinuxResult<()> {
+        match self {
+            SocketAddrEx::Ip(ip_addr) => ip_addr.write_to_user(addr, addrlen),
+            SocketAddrEx::Unix(unix_addr) => unix_addr.write_to_user(addr, addrlen),
+        }
+    }
+
+    fn family(&self) -> u16 {
+        AF_INET as u16
     }
 }
