@@ -1,5 +1,3 @@
-use core::ops::{Shl, Shr};
-
 use crate::sbi_console::*;
 use axaddrspace::device::AccessWidth;
 use riscv::register::hstatus;
@@ -49,7 +47,7 @@ impl<H: AxVCpuHal> axvcpu::AxArchVCpu for RISCVVCpu<H> {
 
     type SetupConfig = ();
 
-    fn new(vm_id: usize, vcpu_id: usize, config: Self::CreateConfig) -> AxResult<Self> {
+    fn new(_vm_id: usize, _vcpu_id: usize, config: Self::CreateConfig) -> AxResult<Self> {
         let mut regs = VmCpuRegisters::default();
         // Setup the guest's general purpose registers.
         // `a0` is the hartid
@@ -145,7 +143,7 @@ impl<H: AxVCpuHal> axvcpu::AxArchVCpu for RISCVVCpu<H> {
         }
     }
 
-    fn inject_interrupt(&mut self, vector: usize) -> AxResult {
+    fn inject_interrupt(&mut self, _vector: usize) -> AxResult {
         unimplemented!("RISCVVCpu::inject_interrupt is not implemented yet");
     }
 
@@ -424,7 +422,7 @@ impl<H: AxVCpuHal> RISCVVCpu<H> {
     }
 
     /// Handle a guest page fault. Return an exit reason.
-    fn handle_guest_page_fault(&mut self, writing: bool) -> AxResult<AxVCpuExitReason> {
+    fn handle_guest_page_fault(&mut self, _writing: bool) -> AxResult<AxVCpuExitReason> {
         let fault_addr = self.regs.trap_csrs.gpt_page_fault_addr();
         let sepc = self.regs.guest_regs.sepc;
         let sepc_vaddr = GuestVirtAddr::from(sepc);

@@ -2,9 +2,20 @@
 name = "riscv_vcpu"
 version = "0.1.0"
 edition = "2024"
+authors = [
+    "KeYang Hu <keyang.hu@qq.com>",
+    "Mingxian Su <aarkegz@gmail.com>",
+    "Peizhong Qiu <15608652022@163.com>",
+    "周睿 <zrufo747@outlook.com>"
+]
+description = "ArceOS-Hypervisor riscv vcpu module"
+license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPubL-2.0 OR MulanPSL2"
+repository = "https://github.com/arceos-hypervisor/riscv_vcpu"
+categories = ["embedded", "no-std"]
+keywords = ["hypervisor", "riscv", "vcpu"]
 
 [dependencies]
-log = "0.4.19"
+log = "0.4"
 cfg-if = "1.0"
 bitflags = "2.2"
 bit_field = "0.10"

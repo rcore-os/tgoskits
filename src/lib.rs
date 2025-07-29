@@ -1,6 +1,5 @@
 #![no_std]
 #![feature(doc_cfg)]
-#![feature(naked_functions)]
 #![feature(riscv_ext_intrinsics)]
 #![doc = include_str!("../README.md")]
 
