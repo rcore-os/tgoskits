@@ -1,5 +1,10 @@
 use axerrno::{LinuxError, LinuxResult};
-use axnet::{Shutdown, SocketAddrEx, SocketOps, tcp::TcpSocket, udp::UdpSocket};
+use axnet::{
+    Shutdown, SocketAddrEx, SocketOps,
+    tcp::TcpSocket,
+    udp::UdpSocket,
+    unix::{DgramTransport, StreamTransport, Transport, UnixSocket},
+};
 use linux_raw_sys::{
     general::O_NONBLOCK,
     net::{
@@ -21,26 +26,30 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> LinuxResult<isize> {
     );
     let ty = raw_ty & 0xFF;
 
-    // FIXME: unix domain socket
-    if domain != AF_INET && domain != AF_UNIX {
-        return Err(LinuxError::EAFNOSUPPORT);
-    }
-
-    let socket = match ty {
-        SOCK_STREAM => {
+    let socket = match (domain, ty) {
+        (AF_INET, SOCK_STREAM) => {
             if proto != 0 && proto != IPPROTO_TCP as _ {
                 return Err(LinuxError::EPROTONOSUPPORT);
             }
-            Socket(axnet::Socket::Tcp(TcpSocket::new()))
+            axnet::Socket::Tcp(TcpSocket::new())
         }
-        SOCK_DGRAM => {
+        (AF_INET, SOCK_DGRAM) => {
             if proto != 0 && proto != IPPROTO_UDP as _ {
                 return Err(LinuxError::EPROTONOSUPPORT);
             }
-            Socket(axnet::Socket::Udp(UdpSocket::new()))
+            axnet::Socket::Udp(UdpSocket::new())
         }
-        _ => return Err(LinuxError::ESOCKTNOSUPPORT),
+        (AF_UNIX, SOCK_STREAM) => axnet::Socket::Unix(UnixSocket::new(StreamTransport::new())),
+        (AF_UNIX, SOCK_DGRAM) => axnet::Socket::Unix(UnixSocket::new(DgramTransport::new())),
+        (AF_INET, _) | (AF_UNIX, _) => {
+            return Err(LinuxError::ESOCKTNOSUPPORT);
+        }
+        _ => {
+            return Err(LinuxError::EAFNOSUPPORT);
+        }
     };
+    let socket = Socket(socket);
+
     if raw_ty & O_NONBLOCK != 0 {
         socket.set_nonblocking(true)?;
     }
@@ -75,7 +84,7 @@ pub fn sys_connect(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> Linux
 pub fn sys_listen(fd: i32, backlog: i32) -> LinuxResult<isize> {
     debug!("sys_listen <= fd: {}, backlog: {}", fd, backlog);
 
-    if backlog < 0 {
+    if backlog < 0 && backlog != -1 {
         return Err(LinuxError::EINVAL);
     }
 
@@ -125,4 +134,45 @@ pub fn sys_shutdown(fd: i32, how: u32) -> LinuxResult<isize> {
         _ => return Err(LinuxError::EINVAL),
     };
     socket.shutdown(how).map(|_| 0)
+}
+
+pub fn sys_socketpair(
+    domain: u32,
+    raw_ty: u32,
+    proto: u32,
+    fds: UserPtr<[i32; 2]>,
+) -> LinuxResult<isize> {
+    debug!(
+        "sys_socketpair <= domain: {}, ty: {}, proto: {}",
+        domain, raw_ty, proto
+    );
+    let ty = raw_ty & 0xFF;
+
+    if domain != AF_UNIX {
+        return Err(LinuxError::EAFNOSUPPORT);
+    }
+
+    let (sock1, sock2) = match ty {
+        SOCK_STREAM => {
+            let (sock1, sock2) = StreamTransport::make_pair()?;
+            (UnixSocket::new(sock1), UnixSocket::new(sock2))
+        }
+        SOCK_DGRAM => {
+            let (sock1, sock2) = DgramTransport::make_pair()?;
+            (UnixSocket::new(sock1), UnixSocket::new(sock2))
+        }
+        _ => {
+            return Err(LinuxError::ESOCKTNOSUPPORT);
+        }
+    };
+    let sock1 = Socket(axnet::Socket::Unix(sock1));
+    let sock2 = Socket(axnet::Socket::Unix(sock2));
+
+    if raw_ty & O_NONBLOCK != 0 {
+        sock1.set_nonblocking(true)?;
+        sock2.set_nonblocking(true)?;
+    }
+
+    *fds.get_as_mut()? = [sock1.add_to_fd_table(false)?, sock2.add_to_fd_table(false)?];
+    Ok(0)
 }

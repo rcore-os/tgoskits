@@ -4,8 +4,7 @@ use core::ffi::{c_char, c_int};
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::{FS_CONTEXT, FileFlags, OpenOptions};
 use axio::{
-    Seek, SeekFrom,
-    buf::{Buf, BufMut},
+    buf::{BufExt, BufMutExt}, Seek, SeekFrom
 };
 use linux_raw_sys::general::{__kernel_off_t, iovec};
 
