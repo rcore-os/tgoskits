@@ -156,7 +156,7 @@ pub fn sys_tgkill(tgid: Pid, tid: Pid, signo: u32) -> LinuxResult<isize> {
     Ok(0)
 }
 
-fn make_queue_signal_info(
+pub(crate) fn make_queue_signal_info(
     tgid: Pid,
     signo: u32,
     sig: UserConstPtr<SignalInfo>,

@@ -14,7 +14,11 @@ use starry_core::{
 use starry_process::Pid;
 use starry_signal::Signo;
 
-use crate::{file::FD_TABLE, mm::UserPtr, task::new_user_task};
+use crate::{
+    file::{FileLike, PidFd, FD_TABLE},
+    mm::UserPtr,
+    task::new_user_task,
+};
 
 bitflags! {
     /// Options for use with [`sys_clone`].
@@ -32,6 +36,8 @@ bitflags! {
         /// The calling process and the child process share the same table
         /// of signal handlers.
         const SIGHAND = CLONE_SIGHAND;
+        /// Sets pidfd to the child process's PID file descriptor.
+        const PIDFD = CLONE_PIDFD;
         /// If the calling process is being traced, then trace the child
         /// also.
         const PTRACE = CLONE_PTRACE;
@@ -105,6 +111,9 @@ pub fn sys_clone(
         return Err(LinuxError::EINVAL);
     }
     if flags.contains(CloneFlags::THREAD) && !flags.contains(CloneFlags::VM | CloneFlags::SIGHAND) {
+        return Err(LinuxError::EINVAL);
+    }
+    if flags.contains(CloneFlags::PIDFD | CloneFlags::PARENT_SETTID) {
         return Err(LinuxError::EINVAL);
     }
     let exit_signal = Signo::from_repr(exit_signal as u8);
@@ -198,6 +207,11 @@ pub fn sys_clone(
     };
 
     new_proc_data.proc.add_thread(tid);
+
+    if flags.contains(CloneFlags::PIDFD) {
+        let pidfd = PidFd::new(&new_proc_data);
+        *UserPtr::<i32>::from(parent_tid).get_as_mut()? = pidfd.add_to_fd_table(true)?;
+    }
 
     let thr = Thread::new(tid, new_proc_data);
     if flags.contains(CloneFlags::CHILD_CLEARTID) {

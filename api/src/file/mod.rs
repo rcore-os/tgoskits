@@ -1,6 +1,7 @@
 mod event;
 mod fs;
 mod net;
+mod pidfd;
 mod pipe;
 
 use alloc::sync::Arc;
@@ -20,6 +21,7 @@ pub use self::{
     event::EventFd,
     fs::{Directory, File, ResolveAtResult, metadata_to_kstat, resolve_at, with_fs},
     net::Socket,
+    pidfd::PidFd,
     pipe::Pipe,
 };
 
@@ -156,7 +158,7 @@ pub trait FileLike: Send + Sync {
 
 #[derive(Clone)]
 pub struct FileDescriptor {
-    inner: Arc<dyn FileLike>,
+    pub inner: Arc<dyn FileLike>,
     pub cloexec: bool,
 }
 

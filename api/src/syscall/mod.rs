@@ -248,6 +248,16 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
         // event
         Sysno::eventfd2 => sys_eventfd2(tf.arg0() as _, tf.arg1() as _),
 
+        // pidfd
+        Sysno::pidfd_open => sys_pidfd_open(tf.arg0() as _, tf.arg1() as _),
+        Sysno::pidfd_getfd => sys_pidfd_getfd(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
+        Sysno::pidfd_send_signal => sys_pidfd_send_signal(
+            tf.arg0() as _,
+            tf.arg1() as _,
+            tf.arg2().into(),
+            tf.arg3() as _,
+        ),
+
         // fs stat
         #[cfg(target_arch = "x86_64")]
         Sysno::stat => sys_stat(tf.arg0().into(), tf.arg1().into()),
@@ -498,7 +508,6 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
         Sysno::epoll_create1
         | Sysno::signalfd4
         | Sysno::timerfd_create
-        | Sysno::pidfd_open
         | Sysno::fanotify_init
         | Sysno::inotify_init1
         | Sysno::userfaultfd
