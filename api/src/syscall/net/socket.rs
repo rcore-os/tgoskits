@@ -6,7 +6,7 @@ use axnet::{
     unix::{DgramTransport, StreamTransport, Transport, UnixSocket},
 };
 use linux_raw_sys::{
-    general::O_NONBLOCK,
+    general::{O_CLOEXEC, O_NONBLOCK},
     net::{
         AF_INET, AF_UNIX, IPPROTO_TCP, IPPROTO_UDP, SHUT_RD, SHUT_RDWR, SHUT_WR, SOCK_DGRAM,
         SOCK_SEQPACKET, SOCK_STREAM, sockaddr, socklen_t,
@@ -54,8 +54,9 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> LinuxResult<isize> {
     if raw_ty & O_NONBLOCK != 0 {
         socket.set_nonblocking(true)?;
     }
+    let cloexec = raw_ty & O_CLOEXEC != 0;
 
-    socket.add_to_fd_table(false).map(|fd| fd as isize)
+    socket.add_to_fd_table(cloexec).map(|fd| fd as isize)
 }
 
 pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> LinuxResult<isize> {
@@ -106,15 +107,17 @@ pub fn sys_accept4(
     fd: i32,
     addr: UserPtr<sockaddr>,
     addrlen: UserPtr<socklen_t>,
-    flags: i32,
+    flags: u32,
 ) -> LinuxResult<isize> {
     debug!("sys_accept <= fd: {}, flags: {}", fd, flags);
+
+    let cloexec = flags & O_CLOEXEC != 0;
 
     let socket = Socket::from_fd(fd)?;
     let socket = Socket(socket.accept()?);
 
     let remote_addr = socket.local_addr()?;
-    let fd = socket.add_to_fd_table(false).map(|fd| fd as isize)?;
+    let fd = socket.add_to_fd_table(cloexec).map(|fd| fd as isize)?;
     debug!("sys_accept => fd: {}, addr: {:?}", fd, remote_addr);
 
     if !addr.is_null() {
@@ -174,7 +177,11 @@ pub fn sys_socketpair(
         sock1.set_nonblocking(true)?;
         sock2.set_nonblocking(true)?;
     }
+    let cloexec = raw_ty & O_CLOEXEC != 0;
 
-    *fds.get_as_mut()? = [sock1.add_to_fd_table(false)?, sock2.add_to_fd_table(false)?];
+    *fds.get_as_mut()? = [
+        sock1.add_to_fd_table(cloexec)?,
+        sock2.add_to_fd_table(cloexec)?,
+    ];
     Ok(0)
 }
