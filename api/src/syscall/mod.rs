@@ -477,6 +477,7 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
             tf.arg4().into(),
             tf.arg5().into(),
         ),
+        Sysno::sendmsg => sys_sendmsg(tf.arg0() as _, tf.arg1().into(), tf.arg2() as _),
         Sysno::recvmsg => sys_recvmsg(tf.arg0() as _, tf.arg1().into(), tf.arg2() as _),
         Sysno::getsockopt => sys_getsockopt(
             tf.arg0() as _,

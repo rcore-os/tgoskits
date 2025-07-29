@@ -2,8 +2,8 @@ use axerrno::{LinuxError, LinuxResult};
 use axhal::time::{TimeValue, monotonic_time, monotonic_time_nanos, nanos_to_ticks, wall_time};
 use axtask::current;
 use linux_raw_sys::general::{
-    __kernel_clockid_t, CLOCK_MONOTONIC, CLOCK_MONOTONIC_RAW, CLOCK_REALTIME, itimerval, timespec,
-    timeval,
+    __kernel_clockid_t, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE, CLOCK_MONOTONIC_RAW,
+    CLOCK_REALTIME, CLOCK_REALTIME_COARSE, itimerval, timespec, timeval,
 };
 use starry_core::{task::AsThread, time::ITimerType};
 
@@ -17,8 +17,8 @@ pub fn sys_clock_gettime(
     ts: UserPtr<timespec>,
 ) -> LinuxResult<isize> {
     let now = match clock_id as u32 {
-        CLOCK_REALTIME => wall_time(),
-        CLOCK_MONOTONIC | CLOCK_MONOTONIC_RAW => monotonic_time(),
+        CLOCK_REALTIME | CLOCK_REALTIME_COARSE => wall_time(),
+        CLOCK_MONOTONIC | CLOCK_MONOTONIC_RAW | CLOCK_MONOTONIC_COARSE => monotonic_time(),
         _ => {
             warn!(
                 "Called sys_clock_gettime for unsupported clock {}",

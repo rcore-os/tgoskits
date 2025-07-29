@@ -1,27 +1,29 @@
+use alloc::{boxed::Box, vec::Vec};
 use core::net::Ipv4Addr;
 
 use axerrno::LinuxResult;
-use axio::buf::BufMut;
-use axnet::{RecvFlags, SendFlags, SocketAddrEx, SocketOps};
+use axio::buf::{Buf, BufMut};
+use axnet::{CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddrEx, SocketOps};
 use linux_raw_sys::{
     general::iovec,
-    net::{MSG_PEEK, MSG_TRUNC, msghdr, sockaddr, socklen_t},
+    net::{MSG_PEEK, MSG_TRUNC, SCM_RIGHTS, SOL_SOCKET, cmsghdr, msghdr, sockaddr, socklen_t},
 };
 
 use crate::{
-    file::{FileLike, Socket},
+    file::{FileLike, Socket, add_file_like},
     io::IoVectorBuf,
     mm::{UserConstPtr, UserPtr},
     socket::SocketAddrExt,
+    syscall::net::{CMsg, CMsgBuilder},
 };
 
-pub fn sys_sendto(
+fn send_impl(
     fd: i32,
-    buf: UserConstPtr<u8>,
-    len: usize,
+    mut src: impl Buf,
     flags: u32,
     addr: UserConstPtr<sockaddr>,
-    addrlen: u32,
+    addrlen: socklen_t,
+    cmsg: Vec<CMsgData>,
 ) -> LinuxResult<isize> {
     let addr = if addr.is_null() || addrlen == 0 {
         None
@@ -30,15 +32,60 @@ pub fn sys_sendto(
     };
 
     debug!(
-        "sys_sendto <= fd: {}, len: {}, flags: {}, addr: {:?}",
-        fd, len, flags, addr
+        "sys_sendto <= fd: {}, flags: {}, addr: {:?}",
+        fd, flags, addr
     );
 
-    let bytes = buf.get_as_slice(len)?;
     let socket = Socket::from_fd(fd)?;
-    let sent = socket.send(&mut &*bytes, addr, SendFlags::empty())?;
+    let sent = socket.send(
+        &mut src,
+        SendOptions {
+            to: addr,
+            flags: SendFlags::default(),
+            cmsg,
+        },
+    )?;
 
     Ok(sent as isize)
+}
+
+pub fn sys_sendto(
+    fd: i32,
+    buf: UserConstPtr<u8>,
+    len: usize,
+    flags: u32,
+    addr: UserConstPtr<sockaddr>,
+    addrlen: socklen_t,
+) -> LinuxResult<isize> {
+    send_impl(fd, buf.get_as_slice(len)?, flags, addr, addrlen, Vec::new())
+}
+
+pub fn sys_sendmsg(fd: i32, msg: UserConstPtr<msghdr>, flags: u32) -> LinuxResult<isize> {
+    let msg = msg.get_as_ref()?;
+    let mut cmsg = Vec::new();
+    if !msg.msg_control.is_null() {
+        let mut ptr = msg.msg_control as usize;
+        let ptr_end = ptr + msg.msg_controllen;
+        while ptr + size_of::<cmsghdr>() <= ptr_end {
+            let hdr = UserConstPtr::<cmsghdr>::from(ptr).get_as_ref()?;
+            if ptr_end - ptr < hdr.cmsg_len {
+                return Err(axerrno::LinuxError::EINVAL);
+            }
+            cmsg.push(Box::new(CMsg::parse(hdr)?) as CMsgData);
+            ptr += hdr.cmsg_len;
+        }
+    }
+    send_impl(
+        fd,
+        IoVectorBuf::new_const(
+            UserConstPtr::from(msg.msg_iov as *const iovec),
+            msg.msg_iovlen,
+        )?,
+        flags,
+        UserConstPtr::from(msg.msg_name as usize),
+        msg.msg_namelen as socklen_t,
+        cmsg,
+    )
 }
 
 fn recv_impl(
@@ -47,6 +94,7 @@ fn recv_impl(
     flags: u32,
     addr: UserPtr<sockaddr>,
     addrlen: UserPtr<socklen_t>,
+    cmsg_builder: Option<CMsgBuilder>,
 ) -> LinuxResult<isize> {
     debug!("sys_recv <= fd: {}, flags: {}", fd, flags);
 
@@ -59,12 +107,49 @@ fn recv_impl(
         recv_flags |= RecvFlags::TRUNCATE;
     }
 
+    let mut cmsg = Vec::new();
+
     let mut remote_addr =
         (!addr.is_null()).then(|| SocketAddrEx::Ip((Ipv4Addr::UNSPECIFIED, 0).into()));
-    let recv = socket.recv(&mut dst, remote_addr.as_mut(), recv_flags)?;
+    let recv = socket.recv(
+        &mut dst,
+        RecvOptions {
+            from: remote_addr.as_mut(),
+            flags: recv_flags,
+            cmsg: Some(&mut cmsg),
+        },
+    )?;
 
     if let Some(remote_addr) = remote_addr {
         remote_addr.write_to_user(addr, addrlen.get_as_mut()?)?;
+    }
+
+    if let Some(mut builder) = cmsg_builder {
+        for cmsg in cmsg {
+            let Ok(cmsg) = cmsg.downcast::<CMsg>() else {
+                warn!("received unexpected cmsg");
+                continue;
+            };
+
+            let pushed = match *cmsg {
+                CMsg::Rights { fds } => {
+                    builder.push(SOL_SOCKET, SCM_RIGHTS, |data| {
+                        let mut written = 0;
+                        for (f, chunk) in
+                            fds.into_iter().zip(data.chunks_exact_mut(size_of::<i32>()))
+                        {
+                            let fd = add_file_like(f, false)?;
+                            chunk.copy_from_slice(&fd.to_ne_bytes());
+                            written += size_of::<i32>();
+                        }
+                        Ok(written)
+                    })?
+                }
+            };
+            if !pushed {
+                break;
+            }
+        }
     }
 
     debug!("sys_recv => fd: {}, recv: {}", fd, recv);
@@ -79,7 +164,7 @@ pub fn sys_recvfrom(
     addr: UserPtr<sockaddr>,
     addrlen: UserPtr<socklen_t>,
 ) -> LinuxResult<isize> {
-    recv_impl(fd, buf.get_as_mut_slice(len)?, flags, addr, addrlen)
+    recv_impl(fd, buf.get_as_mut_slice(len)?, flags, addr, addrlen, None)
 }
 
 pub fn sys_recvmsg(fd: i32, msg: UserPtr<msghdr>, flags: u32) -> LinuxResult<isize> {
@@ -90,5 +175,11 @@ pub fn sys_recvmsg(fd: i32, msg: UserPtr<msghdr>, flags: u32) -> LinuxResult<isi
         flags,
         UserPtr::from(msg.msg_name as usize),
         UserPtr::from(&mut msg.msg_namelen as *mut _ as *mut socklen_t),
+        (!msg.msg_control.is_null()).then(|| {
+            CMsgBuilder::new(
+                UserPtr::from(msg.msg_control as *mut cmsghdr),
+                &mut msg.msg_controllen,
+            )
+        }),
     )
 }

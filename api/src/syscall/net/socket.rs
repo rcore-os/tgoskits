@@ -9,7 +9,7 @@ use linux_raw_sys::{
     general::O_NONBLOCK,
     net::{
         AF_INET, AF_UNIX, IPPROTO_TCP, IPPROTO_UDP, SHUT_RD, SHUT_RDWR, SHUT_WR, SOCK_DGRAM,
-        SOCK_STREAM, sockaddr, socklen_t,
+        SOCK_SEQPACKET, SOCK_STREAM, sockaddr, socklen_t,
     },
 };
 
@@ -42,6 +42,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> LinuxResult<isize> {
         (AF_UNIX, SOCK_STREAM) => axnet::Socket::Unix(UnixSocket::new(StreamTransport::new())),
         (AF_UNIX, SOCK_DGRAM) => axnet::Socket::Unix(UnixSocket::new(DgramTransport::new())),
         (AF_INET, _) | (AF_UNIX, _) => {
+            warn!("Unsupported socket type: domain: {}, ty: {}", domain, ty);
             return Err(LinuxError::ESOCKTNOSUPPORT);
         }
         _ => {
@@ -157,11 +158,12 @@ pub fn sys_socketpair(
             let (sock1, sock2) = StreamTransport::make_pair()?;
             (UnixSocket::new(sock1), UnixSocket::new(sock2))
         }
-        SOCK_DGRAM => {
+        SOCK_DGRAM | SOCK_SEQPACKET => {
             let (sock1, sock2) = DgramTransport::make_pair()?;
             (UnixSocket::new(sock1), UnixSocket::new(sock2))
         }
         _ => {
+            warn!("Unsupported socketpair type: {}", ty);
             return Err(LinuxError::ESOCKTNOSUPPORT);
         }
     };
