@@ -93,12 +93,24 @@ pub trait DirNodeOps<M: RawMutex>: NodeOps<M> {
 /// Options for opening (or creating) a directory entry.
 ///
 /// See [`DirNode::open_file`] for more details.
-#[derive(Default, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct OpenOptions {
     pub create: bool,
     pub create_new: bool,
+    pub node_type: NodeType,
     pub permission: NodePermission,
     pub user: Option<(u32, u32)>, // (uid, gid)
+}
+impl Default for OpenOptions {
+    fn default() -> Self {
+        Self {
+            create: false,
+            create_new: false,
+            node_type: NodeType::RegularFile,
+            permission: NodePermission::default(),
+            user: None,
+        }
+    }
 }
 
 pub struct DirNode<M> {
@@ -332,12 +344,8 @@ impl<M: RawMutex> DirNode<M> {
             Err(err) if err == VfsError::ENOENT && options.create => {}
             Err(err) => return Err(err),
         }
-        let entry = self.create_locked(
-            name,
-            NodeType::RegularFile,
-            options.permission,
-            &mut children,
-        )?;
+        let entry =
+            self.create_locked(name, options.node_type, options.permission, &mut children)?;
         if options.user.is_some() {
             entry.update_metadata(MetadataUpdate {
                 owner: options.user,
