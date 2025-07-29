@@ -4,10 +4,7 @@ use core::ffi::c_char;
 use axerrno::{LinuxError, LinuxResult};
 use axhal::context::TrapFrame;
 use axtask::current;
-use starry_core::{
-    mm::{load_user_app, map_trampoline},
-    task::AsThread,
-};
+use starry_core::{mm::load_user_app, task::AsThread};
 
 use crate::{file::FD_TABLE, mm::UserConstPtr};
 
@@ -45,9 +42,6 @@ pub fn sys_execve(
     }
 
     let mut aspace = proc_data.aspace.lock();
-    aspace.clear();
-    map_trampoline(&mut aspace)?;
-
     let (entry_point, user_stack_base) = load_user_app(&mut aspace, Some(&path), &args, &envs)?;
     drop(aspace);
 

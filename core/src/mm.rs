@@ -168,6 +168,9 @@ impl ElfLoader {
             }
         }
 
+        uspace.clear();
+        map_trampoline(uspace)?;
+
         let elf = self.0.front().unwrap().borrow_elf();
         let ldso = if let Some(header) = elf
             .program_iter()
