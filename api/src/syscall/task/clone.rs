@@ -15,7 +15,7 @@ use starry_process::Pid;
 use starry_signal::Signo;
 
 use crate::{
-    file::{FileLike, PidFd, FD_TABLE},
+    file::{FD_TABLE, FileLike, PidFd},
     mm::UserPtr,
     task::new_user_task,
 };
@@ -98,6 +98,7 @@ pub fn sys_clone(
     let exit_signal = flags & FLAG_MASK;
     let mut flags = CloneFlags::from_bits_truncate(flags & !FLAG_MASK);
     if flags.contains(CloneFlags::VFORK) {
+        warn!("sys_clone: CLONE_VFORK is not supported");
         flags.remove(CloneFlags::VM);
     }
 

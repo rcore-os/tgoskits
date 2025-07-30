@@ -32,7 +32,7 @@ fn send_impl(
     };
 
     debug!(
-        "sys_sendto <= fd: {}, flags: {}, addr: {:?}",
+        "sys_send <= fd: {}, flags: {}, addr: {:?}",
         fd, flags, addr
     );
 
