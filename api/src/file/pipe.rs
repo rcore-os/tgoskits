@@ -189,9 +189,7 @@ impl FileLike for Pipe {
                 if self.closed() {
                     return Ok(());
                 }
-                warn!("WAIT.");
                 listener.await;
-                warn!("WAKE!");
                 Ok(())
             })?;
         }
@@ -225,6 +223,8 @@ impl FileLike for Pipe {
         match self.read_side {
             true => {
                 if buf.is_empty() && self.closed() {
+                    // TODO(mivik): This is incorrect and is currently
+                    // interpreted as POLLHUP. See `do_poll`.
                     return Err(LinuxError::EPIPE);
                 }
                 Ok(PollState {

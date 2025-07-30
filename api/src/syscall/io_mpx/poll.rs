@@ -1,6 +1,8 @@
-use axerrno::LinuxResult;
+use axerrno::{LinuxError, LinuxResult};
 use axhal::time::{TimeValue, wall_time};
-use linux_raw_sys::general::{POLLERR, POLLIN, POLLNVAL, POLLOUT, pollfd, sigset_t, timespec};
+use linux_raw_sys::general::{
+    POLLERR, POLLHUP, POLLIN, POLLNVAL, POLLOUT, pollfd, sigset_t, timespec,
+};
 
 use crate::{
     file::get_file_like,
@@ -28,6 +30,9 @@ fn do_poll(fds: &mut [pollfd], timeout: Option<TimeValue>) -> LinuxResult<isize>
                         if (fd.events & POLLOUT as i16) != 0 && state.writable {
                             revents |= POLLOUT;
                         }
+                    }
+                    Err(LinuxError::EPIPE) => {
+                        revents = POLLHUP;
                     }
                     Err(e) => {
                         debug!("poll fd={} error: {:?}", fd.fd, e);
