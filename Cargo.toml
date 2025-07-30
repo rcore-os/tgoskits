@@ -7,7 +7,7 @@ members = [
 [workspace.package]
 authors = ["Su Mingxian <aarkegz@gmail.com>"]
 edition = "2024"
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPubL-2.0 OR MulanPSL2"
+license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0" # MulanPubL2 is not included in SPDX
 repository = "https://github.com/arceos-hypervisor/axvisor_api"
 
 [package]
