@@ -10,7 +10,7 @@ use axfs_ng::FS_CONTEXT;
 use axfs_ng_vfs::{MetadataUpdate, NodePermission, NodeType, path::Path};
 use axhal::time::wall_time;
 use axtask::current;
-use linux_raw_sys::general::*;
+use linux_raw_sys::{general::*, ioctl::{FIONBIO, TIOCGWINSZ}};
 use starry_core::task::AsThread;
 
 use crate::{
@@ -24,6 +24,14 @@ use crate::{
 pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> LinuxResult<isize> {
     debug!("sys_ioctl <= fd: {}, cmd: {}, arg: {}", fd, cmd, arg);
     let f = get_file_like(fd)?;
+    if cmd == FIONBIO {
+        let val = *UserConstPtr::<u32>::from(arg).get_as_ref()?;
+        if val != 0 && val != 1 {
+            return Err(LinuxError::EINVAL);
+        }
+        f.set_nonblocking(val != 0)?;
+        return Ok(0);
+    }
     let file = cast_to_axfs_file(f).ok_or(LinuxError::ENOTTY)?;
     file.inner()
         .backend()?
@@ -32,7 +40,12 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> LinuxResult<isize> {
         .map(|result| result as isize)
         .inspect_err(|err| {
             if *err == LinuxError::ENOTTY {
-                warn!("Unsupported ioctl command: {cmd} for fd: {fd}",);
+                // glibc likes to call TIOCGWINSZ on non-terminal files, just
+                // ignore it
+                if cmd == TIOCGWINSZ {
+                    return;
+                }
+                warn!("Unsupported ioctl command: {cmd} for fd: {fd}");
             }
         })
 }
