@@ -26,4 +26,4 @@ axvisor_api_proc = { path = "axvisor_api_proc", version = "0.1.0"}
 
 crate_interface = "0.1"
 memory_addr = "0.4"
-axaddrspace = { git = "https://github.com/arceos-hypervisor/axaddrspace" }
+axaddrspace = "0.1.0"
