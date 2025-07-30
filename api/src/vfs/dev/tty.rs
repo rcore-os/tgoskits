@@ -91,11 +91,21 @@ impl DeviceOps for Tty {
             TCGETS2 => {
                 (arg as *mut Termios2).vm_write(self.ldisc.lock().termios)?;
             }
-            TCSETS => {
-                *self.ldisc.lock().termios.deref_mut() = (arg as *const Termios).vm_read()?;
+            TCSETS | TCSETSF | TCSETSW => {
+                // TODO: drain output?
+                let mut ldisc = self.ldisc.lock();
+                *ldisc.termios.deref_mut() = (arg as *const Termios).vm_read()?;
+                if cmd == TCSETSF {
+                    ldisc.drain_input();
+                }
             }
-            TCSETS2 => {
-                self.ldisc.lock().termios = (arg as *const Termios2).vm_read()?;
+            TCSETS2 | TCSETSF2 | TCSETSW2 => {
+                // TODO: drain output?
+                let mut ldisc = self.ldisc.lock();
+                ldisc.termios = (arg as *const Termios2).vm_read()?;
+                if cmd == TCSETSF2 {
+                    ldisc.drain_input();
+                }
             }
             TIOCGPGRP => {
                 let foreground = self.job_control.foreground().ok_or(LinuxError::ESRCH)?;

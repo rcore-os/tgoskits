@@ -14,7 +14,7 @@ pub struct LineDiscipline {
     pub termios: Termios2,
     job_control: Arc<JobControl>,
 
-    read_buf: [u8; 32],
+    read_buf: [u8; 80],
     read_range: Range<usize>,
 
     line_buf: Vec<u8>,
@@ -26,11 +26,17 @@ impl LineDiscipline {
         Self {
             termios: Termios2::default(),
             job_control,
-            read_buf: [0; 32],
+            read_buf: [0; 80],
             read_range: 0..0,
             line_buf: Vec::new(),
             line_read: None,
         }
+    }
+
+    pub fn drain_input(&mut self) {
+        self.read_range = 0..0;
+        self.line_buf.clear();
+        self.line_read = None;
     }
 
     pub fn read(&mut self, buf: &mut [u8]) -> LinuxResult<usize> {
@@ -70,7 +76,7 @@ impl LineDiscipline {
             if let Some(start) = &mut self.line_read {
                 let dest = &mut buf[read..];
                 let len = dest.len().min(self.line_buf.len() - *start);
-                dest[..len].copy_from_slice(&self.line_buf[*start..]);
+                dest[..len].copy_from_slice(&self.line_buf[*start..*start + len]);
                 read += len;
                 *start += len;
                 if *start == self.line_buf.len() {
@@ -164,7 +170,7 @@ impl LineDiscipline {
                 write_bytes(&[b'^', (ch + 0x40)]);
             }
             other => {
-                warn!("Ignored char: {:#x}", other);
+                warn!("Ignored echo char: {:#x}", other);
             }
         }
     }
