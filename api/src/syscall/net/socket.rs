@@ -3,7 +3,7 @@ use axnet::{
     Shutdown, SocketAddrEx, SocketOps,
     tcp::TcpSocket,
     udp::UdpSocket,
-    unix::{DgramTransport, StreamTransport, Transport, UnixSocket},
+    unix::{DgramTransport, StreamTransport, UnixSocket},
 };
 use linux_raw_sys::{
     general::{O_CLOEXEC, O_NONBLOCK},
@@ -158,11 +158,11 @@ pub fn sys_socketpair(
 
     let (sock1, sock2) = match ty {
         SOCK_STREAM => {
-            let (sock1, sock2) = StreamTransport::make_pair()?;
+            let (sock1, sock2) = StreamTransport::new_pair();
             (UnixSocket::new(sock1), UnixSocket::new(sock2))
         }
         SOCK_DGRAM | SOCK_SEQPACKET => {
-            let (sock1, sock2) = DgramTransport::make_pair()?;
+            let (sock1, sock2) = DgramTransport::new_pair();
             (UnixSocket::new(sock1), UnixSocket::new(sock2))
         }
         _ => {
