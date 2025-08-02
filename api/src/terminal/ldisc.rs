@@ -69,8 +69,21 @@ impl LineDiscipline {
         }
     }
 
+    pub fn can_read(&mut self) -> bool {
+        if self.line_read.is_some() {
+            return true;
+        }
+        if self.read_range.is_empty() {
+            let read = axhal::console::read_bytes(&mut self.read_buf);
+            if read == 0 {
+                return false;
+            }
+            self.read_range = 0..read;
+        }
+        true
+    }
+
     pub fn poll_read(&mut self, buf: &mut [u8]) -> LinuxResult<usize> {
-        let term = &self.termios;
         let mut read = 0;
         while read < buf.len() {
             if let Some(start) = &mut self.line_read {
@@ -85,13 +98,10 @@ impl LineDiscipline {
                 }
                 continue;
             }
-            if self.read_range.is_empty() {
-                let read = axhal::console::read_bytes(&mut self.read_buf);
-                if read == 0 {
-                    break;
-                }
-                self.read_range = 0..read;
+            if !self.can_read() {
+                break;
             }
+            let term = &self.termios;
 
             let mut ch = self.read_buf[self.read_range.start];
             self.read_range.start += 1;

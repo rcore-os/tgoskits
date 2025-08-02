@@ -2,9 +2,11 @@ use alloc::sync::Arc;
 use core::{
     any::Any,
     ops::{Deref, DerefMut},
+    task::Context,
 };
 
 use axerrno::{LinuxError, LinuxResult};
+use axio::{IoEvents, Pollable};
 use axsync::Mutex;
 use axtask::current;
 use bytemuck::AnyBitPattern;
@@ -127,8 +129,26 @@ impl DeviceOps for Tty {
         Ok(0)
     }
 
+    fn as_pollable(&self) -> Option<&dyn Pollable> {
+        Some(self)
+    }
+
     /// Casts the device operations to a dynamic type.
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+impl Pollable for Tty {
+    fn poll(&self) -> IoEvents {
+        let mut events = IoEvents::OUT;
+        events.set(IoEvents::IN, self.ldisc.lock().can_read());
+        events
+    }
+
+    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        if events.contains(IoEvents::IN) {
+            context.waker().wake_by_ref();
+        }
     }
 }
