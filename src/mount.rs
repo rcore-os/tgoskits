@@ -4,10 +4,11 @@ use alloc::{
     sync::{Arc, Weak},
     vec,
 };
+use axio::{IoEvents, Pollable};
 use core::{
     any::Any,
     iter,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicU64, Ordering}, task::Context,
 };
 use hashbrown::HashMap;
 
@@ -290,5 +291,15 @@ impl<M: RawMutex> Location<M> {
         self.entry.as_dir()?.forget();
         *parent_loc.entry.as_dir()?.mountpoint.lock() = None;
         Ok(())
+    }
+}
+
+impl<M: RawMutex> Pollable for Location<M> {
+    fn poll(&self) -> IoEvents {
+        self.entry.poll()
+    }
+
+    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        self.entry.register(context, events)
     }
 }

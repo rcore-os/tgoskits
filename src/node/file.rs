@@ -1,10 +1,12 @@
 use alloc::sync::Arc;
 use core::ops::Deref;
 
+use axio::Pollable;
+
 use super::NodeOps;
 use crate::{VfsError, VfsResult};
 
-pub trait FileNodeOps<M>: NodeOps<M> {
+pub trait FileNodeOps<M>: NodeOps<M> + Pollable {
     /// Reads a number of bytes starting from a given offset.
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize>;
 

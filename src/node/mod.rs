@@ -9,7 +9,8 @@ use alloc::{
     vec,
     vec::Vec,
 };
-use core::{any::Any, iter, ops::Deref};
+use axio::{IoEvents, Pollable};
+use core::{any::Any, iter, ops::Deref, task::Context};
 
 pub use dir::*;
 pub use file::*;
@@ -296,5 +297,21 @@ impl<M: RawMutex> DirEntry<M> {
 
     pub fn user_data(&self) -> MutexGuard<'_, M, Option<Box<dyn Any + Send + Sync>>> {
         self.0.user_data.lock()
+    }
+}
+
+impl<M: RawMutex> Pollable for DirEntry<M> {
+    fn poll(&self) -> IoEvents {
+        match &self.0.node {
+            Node::File(file) => file.poll(),
+            Node::Dir(_dir) => IoEvents::IN | IoEvents::OUT,
+        }
+    }
+
+    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        match &self.0.node {
+            Node::File(file) => file.register(context, events),
+            Node::Dir(_) => {}
+        }
     }
 }
