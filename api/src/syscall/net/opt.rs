@@ -12,7 +12,6 @@ const PROTO_TCP: u32 = linux_raw_sys::net::IPPROTO_TCP as u32;
 const PROTO_IP: u32 = linux_raw_sys::net::IPPROTO_IP as u32;
 
 mod conv {
-
     use axerrno::{LinuxError, LinuxResult};
     use linux_raw_sys::general::timeval;
 

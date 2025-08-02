@@ -1,15 +1,19 @@
+# Build Options
 export ARCH := riscv64
 export LOG := warn
+export BACKTRACE := y
 
-export A = $(PWD)
-export NO_AXSTD = y
-export AX_LIB = axfeat
-export BLK = y
-export NET = y
-export MEM = 1G
+# QEMU Options
+export BLK := y
+export NET := y
+export MEM := 1G
+export TEST := pre
 
-export BACKTRACE ?= y
-export TEST ?= pre
+# Generated Options
+export A := $(PWD)
+export NO_AXSTD := y
+export AX_LIB := axfeat
+export APP_FEATURES := qemu
 
 DIR := $(shell basename $(PWD))
 
@@ -48,6 +52,9 @@ la:
 
 alpine:
 	$(MAKE) TEST=alpine rv
+
+vf2:
+	$(MAKE) ARCH=riscv64 APP_FEATURES=vf2 MYPLAT=axplat-riscv64-visionfive2 BUS=dummy build
 
 build justrun debug disasm: defconfig
 	@make -C arceos $@

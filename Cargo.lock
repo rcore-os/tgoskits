@@ -257,7 +257,6 @@ dependencies = [
  "axdriver_base",
  "axdriver_block",
  "axdriver_net",
- "axdriver_pci",
  "axdriver_virtio",
  "axhal",
  "cfg-if",
@@ -268,12 +267,12 @@ dependencies = [
 [[package]]
 name = "axdriver_base"
 version = "0.1.2"
-source = "git+https://github.com/arceos-org/axdriver_crates.git?tag=v0.1.2#84eb2170f865e6fa29b78995a86f4fcdcede63df"
+source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=6168df5#6168df500eae7def141d4310668be78e9c7256cf"
 
 [[package]]
 name = "axdriver_block"
 version = "0.1.2"
-source = "git+https://github.com/arceos-org/axdriver_crates.git?tag=v0.1.2#84eb2170f865e6fa29b78995a86f4fcdcede63df"
+source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=6168df5#6168df500eae7def141d4310668be78e9c7256cf"
 dependencies = [
  "axdriver_base",
  "log",
@@ -282,7 +281,7 @@ dependencies = [
 [[package]]
 name = "axdriver_net"
 version = "0.1.2"
-source = "git+https://github.com/arceos-org/axdriver_crates.git?tag=v0.1.2#84eb2170f865e6fa29b78995a86f4fcdcede63df"
+source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=6168df5#6168df500eae7def141d4310668be78e9c7256cf"
 dependencies = [
  "axdriver_base",
  "log",
@@ -290,17 +289,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "axdriver_pci"
-version = "0.1.2"
-source = "git+https://github.com/arceos-org/axdriver_crates.git?tag=v0.1.2#84eb2170f865e6fa29b78995a86f4fcdcede63df"
-dependencies = [
- "virtio-drivers",
-]
-
-[[package]]
 name = "axdriver_virtio"
 version = "0.1.2"
-source = "git+https://github.com/arceos-org/axdriver_crates.git?tag=v0.1.2#84eb2170f865e6fa29b78995a86f4fcdcede63df"
+source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=6168df5#6168df500eae7def141d4310668be78e9c7256cf"
 dependencies = [
  "axdriver_base",
  "axdriver_block",
@@ -330,7 +321,6 @@ dependencies = [
  "axruntime",
  "axsync",
  "axtask",
- "kspin",
 ]
 
 [[package]]
@@ -445,7 +435,6 @@ dependencies = [
  "async-channel",
  "async-trait",
  "axdriver",
- "axdriver_net",
  "axerrno",
  "axfs-ng",
  "axfs-ng-vfs",
@@ -554,6 +543,19 @@ dependencies = [
  "log",
  "riscv",
  "riscv_goldfish",
+ "sbi-rt",
+]
+
+[[package]]
+name = "axplat-riscv64-visionfive2"
+version = "0.1.0"
+source = "git+https://github.com/Starry-Mix-THU/axplat-riscv64-visionfive2.git?rev=4b5bd86#4b5bd86f2c7096bbed736fcac302983a9216b761"
+dependencies = [
+ "axconfig-macros",
+ "axcpu",
+ "axplat",
+ "log",
+ "riscv",
  "sbi-rt",
 ]
 
@@ -1259,9 +1261,9 @@ checksum = "7943c866cc5cd64cbc25b2e01621d07fa8eb2a1a23160ee81ce38704e97b8ecf"
 
 [[package]]
 name = "itertools"
-version = "0.12.1"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba291022dbbd398a455acf126c1e341954079855bc60dfdda641363bd6922569"
+checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
 dependencies = [
  "either",
 ]
@@ -1318,9 +1320,9 @@ checksum = "c19937216e9d3aa9956d9bb8dfc0b0c8beb6058fc4f7a4dc4d850edf86a237d6"
 
 [[package]]
 name = "libloading"
-version = "0.8.7"
+version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a793df0d7afeac54f95b471d3af7f0d4fb975699f972341a4b76988d49cdf0c"
+checksum = "07033963ba89ebaf1584d767badaa2e8fcec21aedea6b8c0346d487d49c28667"
 dependencies = [
  "cfg-if",
  "windows-targets",
@@ -1526,7 +1528,7 @@ dependencies = [
 [[package]]
 name = "page_table_entry"
 version = "0.5.5"
-source = "git+https://github.com/Starry-Mix-THU/page_table_multiarch.git?rev=e5c69f9#e5c69f9e101adf4776ff9d74e2e3cae89ab83270"
+source = "git+https://github.com/Starry-Mix-THU/page_table_multiarch.git?rev=58483ba#58483ba2ed52e4a7b3cfa910d9722da0708c3725"
 dependencies = [
  "aarch64-cpu",
  "bitflags 2.9.1",
@@ -1537,7 +1539,7 @@ dependencies = [
 [[package]]
 name = "page_table_multiarch"
 version = "0.5.5"
-source = "git+https://github.com/Starry-Mix-THU/page_table_multiarch.git?rev=e5c69f9#e5c69f9e101adf4776ff9d74e2e3cae89ab83270"
+source = "git+https://github.com/Starry-Mix-THU/page_table_multiarch.git?rev=58483ba#58483ba2ed52e4a7b3cfa910d9722da0708c3725"
 dependencies = [
  "bitmaps",
  "log",
@@ -1626,9 +1628,9 @@ dependencies = [
 
 [[package]]
 name = "prettyplease"
-version = "0.2.31"
+version = "0.2.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5316f57387668042f561aae71480de936257848f9c43ce528e311d89a07cadeb"
+checksum = "6837b9e10d61f45f987d50808f83d1ee3d206c66acf650c3e4ae2e1f6ddedf55"
 dependencies = [
  "proc-macro2",
  "syn 2.0.100",
@@ -1926,11 +1928,13 @@ checksum = "a8f112729512f8e442d81f95a8a7ddf2b7c6b8a1a6f509a95864142b30cab2d3"
 name = "starry"
 version = "0.1.0"
 dependencies = [
+ "axdriver",
  "axerrno",
  "axfeat",
  "axfs-ng",
  "axhal",
  "axlog",
+ "axplat-riscv64-visionfive2",
  "axruntime",
  "axsync",
  "axtask",

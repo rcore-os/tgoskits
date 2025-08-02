@@ -30,3 +30,9 @@ fn main() {
     let exit_code = entry::run_initproc(&args, &envs);
     info!("Init process exited with code: {:?}", exit_code);
 }
+
+#[cfg(feature = "vf2")]
+extern crate axplat_riscv64_visionfive2;
+
+#[cfg(feature = "vf2")]
+axdriver::include_initrd!("vf2.img");
