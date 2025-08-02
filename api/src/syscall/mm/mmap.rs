@@ -99,7 +99,16 @@ pub fn sys_mmap(
     let mut aspace = curr.as_thread().proc_data.aspace.lock();
     let permission_flags = MmapProt::from_bits_truncate(prot);
     // TODO: check illegal flags for mmap
-    let map_flags = MmapFlags::from_bits_truncate(flags);
+    let map_flags = match MmapFlags::from_bits(flags) {
+        Some(flags) => flags,
+        None => {
+            warn!("unknown mmap flags: {flags}");
+            if (flags & MmapFlags::SHARED_VALIDATE.bits()) != 0 {
+                return Err(LinuxError::EOPNOTSUPP);
+            }
+            MmapFlags::from_bits_truncate(flags)
+        }
+    };
     let map_type = map_flags & MmapFlags::TYPE;
     if !matches!(
         map_type,

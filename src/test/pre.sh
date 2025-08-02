@@ -233,12 +233,19 @@ run_ltp() {
     memset01
     mkdir05
     mkdirat02
+    mmap01
     mmap02
+    mmap03
     mmap05
-    mmap06
+    mmap07
     mmap09
+    mmap10
+    mmap11
+    mmap15
+    mmap16
     mmap17
     mmap19
+    mmap20
     mprotect01
     mprotect02
     mprotect03
