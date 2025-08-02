@@ -420,6 +420,11 @@ run_ltp() {
     write04
     write05
     write06
+    writev01
+    writev02
+    writev03
+    writev05
+    writev06
     writev07
     "
     if [ "$1" = "glibc" ]; then
@@ -439,6 +444,7 @@ run_ltp() {
 
 cd /musl
 run_ltp musl
+exit
 
 cd /glibc
 run_ltp glibc
