@@ -23,6 +23,7 @@ pub fn init() {
 
     axtask::register_timer_callback(|_| {
         time::inc_irq_cnt();
-        starry_core::task::poll_timer(&axtask::current());
     });
+
+    starry_core::time::spawn_alarm_task();
 }

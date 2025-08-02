@@ -101,6 +101,12 @@ pub fn sys_setitimer(
         ),
         None => (0, 0),
     };
+
+    debug!(
+        "sys_setitimer <= type: {:?}, interval: {:?}, remained: {:?}",
+        ty, interval, remained
+    );
+
     let old = curr
         .as_thread()
         .time

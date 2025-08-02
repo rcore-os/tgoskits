@@ -1,15 +1,51 @@
 //! Time management module.
 
-use core::mem;
+use alloc::{borrow::ToOwned, collections::binary_heap::BinaryHeap, sync::Arc};
+use core::{mem, time::Duration};
 
-use axhal::time::{NANOS_PER_SEC, TimeValue, monotonic_time_nanos};
+use axhal::time::{NANOS_PER_SEC, TimeValue, monotonic_time_nanos, wall_time};
+use axtask::{
+    WeakAxTaskRef, current,
+    future::{block_on, timeout_at},
+};
+use event_listener::{Event, listener};
+use lazy_static::lazy_static;
+use spin::Mutex;
 use starry_signal::Signo;
 use strum::FromRepr;
+
+use crate::task::poll_timer;
 
 fn time_value_from_nanos(nanos: usize) -> TimeValue {
     let secs = nanos as u64 / NANOS_PER_SEC;
     let nsecs = nanos as u64 - secs * NANOS_PER_SEC;
     TimeValue::new(secs, nsecs as u32)
+}
+
+struct Entry {
+    deadline: Duration,
+    task: WeakAxTaskRef,
+}
+impl PartialEq for Entry {
+    fn eq(&self, other: &Self) -> bool {
+        self.deadline == other.deadline
+    }
+}
+impl Eq for Entry {}
+impl PartialOrd for Entry {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.deadline.cmp(&other.deadline))
+    }
+}
+impl Ord for Entry {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.deadline.cmp(&other.deadline)
+    }
+}
+
+lazy_static! {
+    static ref ALARM_LIST: Mutex<BinaryHeap<Entry>> = Mutex::new(BinaryHeap::new());
+    static ref EVENT_NEW_TIMER: Event = Event::new();
 }
 
 /// The type of interval timer.
@@ -43,6 +79,15 @@ struct ITimer {
 }
 
 impl ITimer {
+    pub fn new(interval_ns: usize, remained_ns: usize) -> Self {
+        let result = Self {
+            interval_ns,
+            remained_ns,
+        };
+        result.renew_timer();
+        result
+    }
+
     pub fn update(&mut self, delta: usize) -> bool {
         if self.remained_ns == 0 {
             return false;
@@ -52,7 +97,24 @@ impl ITimer {
             false
         } else {
             self.remained_ns = self.interval_ns;
+            self.renew_timer();
             true
+        }
+    }
+
+    pub fn renew_timer(&self) {
+        if self.remained_ns > 0 {
+            let deadline = wall_time() + Duration::from_nanos(self.remained_ns as u64);
+            let mut guard = ALARM_LIST.lock();
+            let should_wake = guard.peek().is_none_or(|it| it.deadline > deadline);
+            guard.push(Entry {
+                deadline,
+                task: Arc::downgrade(current().as_task_ref()),
+            });
+            drop(guard);
+            if should_wake {
+                EVENT_NEW_TIMER.notify(1);
+            }
         }
     }
 }
@@ -139,10 +201,7 @@ impl TimeManager {
     ) -> (TimeValue, TimeValue) {
         let old = mem::replace(
             &mut self.itimers[ty as usize],
-            ITimer {
-                interval_ns,
-                remained_ns,
-            },
+            ITimer::new(interval_ns, remained_ns),
         );
         (
             time_value_from_nanos(old.interval_ns),
@@ -164,4 +223,50 @@ impl TimeManager {
             emitter(ty.signo());
         }
     }
+}
+
+async fn alarm_task() {
+    loop {
+        let mut guard = ALARM_LIST.lock();
+        let Some(entry) = guard.peek() else {
+            drop(guard);
+            listener!(EVENT_NEW_TIMER => listener);
+
+            if !ALARM_LIST.lock().is_empty() {
+                continue;
+            }
+            listener.await;
+
+            continue;
+        };
+
+        let now = wall_time();
+        if entry.deadline <= now {
+            if let Some(task) = entry.task.upgrade() {
+                poll_timer(&task);
+            }
+            guard.pop();
+        } else {
+            let deadline = entry.deadline;
+            drop(guard);
+            listener!(EVENT_NEW_TIMER => listener);
+            if ALARM_LIST
+                .lock()
+                .peek()
+                .is_none_or(|it| it.deadline != deadline)
+            {
+                continue;
+            }
+            timeout_at(listener, deadline).await;
+        }
+    }
+}
+
+/// Spawns the alarm task.
+pub fn spawn_alarm_task() {
+    axtask::spawn_raw(
+        || block_on(alarm_task()),
+        "alarm_task".to_owned(),
+        axconfig::TASK_STACK_SIZE,
+    );
 }
