@@ -242,7 +242,7 @@ pub fn sys_mremap(addr: usize, old_size: usize, new_size: usize, flags: u32) -> 
     let old_size = align_up_4k(old_size);
     let new_size = align_up_4k(new_size);
 
-    let flags = aspace.find_area(addr).ok_or(LinuxError::EFAULT)?.flags();
+    let flags = aspace.find_area(addr).ok_or(LinuxError::ENOMEM)?.flags();
     drop(aspace);
     let new_addr = sys_mmap(
         addr.as_usize(),

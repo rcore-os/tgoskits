@@ -28,7 +28,7 @@ mkdir -v -p /var/log
 mkdir -v /etc
 echo "root:x:0:0:root:/root:/bin/sh" >>/etc/passwd
 echo "nobody:x:65534:65534:nobody:/:/bin/sh" >>/etc/passwd
-echo "nameserver 8.8.8.8" > /etc/resolv.conf
+echo "nameserver 8.8.8.8" >/etc/resolv.conf
 
 mkdir -vp /lib/modules/10.0.0/build
 echo "CONFIG_EVENTFD=y" >>/lib/modules/10.0.0/build/.config
@@ -239,6 +239,11 @@ run_ltp() {
     mmap09
     mmap17
     mmap19
+    mprotect01
+    mprotect02
+    mprotect03
+    mprotect04
+    mprotect05
     nanosleep04
     open01
     open02
