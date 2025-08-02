@@ -1,10 +1,13 @@
 use alloc::{sync::Arc, vec};
-use core::ffi::{c_char, c_int};
+use core::{
+    ffi::{c_char, c_int},
+    task::Context,
+};
 
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::{FS_CONTEXT, FileFlags, OpenOptions};
 use axio::{
-    Seek, SeekFrom,
+    IoEvents, Pollable, Seek, SeekFrom,
     buf::{BufExt, BufMutExt},
 };
 use linux_raw_sys::general::{__kernel_off_t, iovec};
@@ -32,10 +35,13 @@ impl FileLike for DummyFd {
     fn into_any(self: Arc<Self>) -> Arc<dyn core::any::Any + Send + Sync> {
         self
     }
-
-    fn poll(&self) -> LinuxResult<axio::PollState> {
-        unimplemented!()
+}
+impl Pollable for DummyFd {
+    fn poll(&self) -> IoEvents {
+        IoEvents::empty()
     }
+
+    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
 }
 
 pub fn sys_dummy_fd() -> LinuxResult<isize> {

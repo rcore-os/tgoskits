@@ -8,6 +8,7 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
+use axio::PollSet;
 use core::{
     cell::RefCell,
     ops::Deref,
@@ -225,8 +226,8 @@ pub struct ProcessData {
 
     /// The child exit wait event
     pub child_exit_event: Event,
-    /// Self exit event
-    pub exit_event: Arc<Event>,
+    /// Self exit eventm
+    pub exit_event: Arc<PollSet>,
     /// The exit signal of the thread
     pub exit_signal: Option<Signo>,
 
@@ -260,7 +261,7 @@ impl ProcessData {
             rlim: RwLock::default(),
 
             child_exit_event: Event::new(),
-            exit_event: Arc::new(Event::new()),
+            exit_event: Arc::default(),
             exit_signal,
 
             signal: Arc::new(ProcessSignalManager::new(

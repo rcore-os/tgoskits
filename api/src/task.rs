@@ -155,7 +155,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
                 data.child_exit_event.notify(usize::MAX);
             }
         }
-        thr.proc_data.exit_event.notify(usize::MAX);
+        thr.proc_data.exit_event.wake();
 
         SHM_MANAGER.lock().clear_proc_shm(process.pid());
     }

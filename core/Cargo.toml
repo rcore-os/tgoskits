@@ -17,6 +17,7 @@ axmm.workspace = true
 axsync.workspace = true
 axtask.workspace = true
 
+axconfig.workspace = true
 axerrno.workspace = true
 axio.workspace = true
 bitflags.workspace = true

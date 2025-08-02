@@ -1,11 +1,11 @@
 mod fs;
-mod futex;
 mod io_mpx;
 mod ipc;
 mod mm;
 mod net;
 mod resources;
 mod signal;
+mod sync;
 mod sys;
 mod task;
 mod time;
@@ -15,7 +15,7 @@ use axhal::context::TrapFrame;
 use syscalls::Sysno;
 
 use self::{
-    fs::*, futex::*, io_mpx::*, ipc::*, mm::*, net::*, resources::*, signal::*, sys::*, task::*,
+    fs::*, io_mpx::*, ipc::*, mm::*, net::*, resources::*, signal::*, sync::*, sys::*, task::*,
     time::*,
 };
 
@@ -435,6 +435,9 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
         Sysno::sysinfo => sys_sysinfo(tf.arg0().into()),
         Sysno::syslog => sys_syslog(tf.arg0() as _, tf.arg1().into(), tf.arg2() as _),
         Sysno::getrandom => sys_getrandom(tf.arg0().into(), tf.arg1() as _, tf.arg2() as _),
+
+        // sync
+        Sysno::membarrier => sys_membarrier(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
 
         // time
         Sysno::gettimeofday => sys_gettimeofday(tf.arg0().into()),

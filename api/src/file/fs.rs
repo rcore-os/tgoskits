@@ -1,10 +1,10 @@
 use alloc::sync::Arc;
-use core::{any::Any, ffi::c_int};
+use core::{any::Any, ffi::c_int, task::Context};
 
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::{FS_CONTEXT, FsContext};
 use axfs_ng_vfs::{Location, Metadata};
-use axio::{PollState, Read, Write};
+use axio::{IoEvents, Pollable, Read, Write};
 use axsync::{Mutex, MutexGuard, RawMutex};
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW};
 
@@ -126,11 +126,8 @@ impl FileLike for File {
         self
     }
 
-    fn poll(&self) -> LinuxResult<PollState> {
-        Ok(PollState {
-            readable: true,
-            writable: true,
-        })
+    fn ioctl(&self, cmd: u32, arg: usize) -> LinuxResult<usize> {
+        self.inner().backend()?.location().ioctl(cmd, arg)
     }
 
     fn from_fd(fd: c_int) -> LinuxResult<Arc<Self>>
@@ -146,6 +143,15 @@ impl FileLike for File {
                 LinuxError::ESPIPE
             }
         })
+    }
+}
+impl Pollable for File {
+    fn poll(&self) -> IoEvents {
+        self.inner().location().poll()
+    }
+
+    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        self.inner().location().register(context, events);
     }
 }
 
@@ -186,17 +192,17 @@ impl FileLike for Directory {
         self
     }
 
-    fn poll(&self) -> LinuxResult<PollState> {
-        Ok(PollState {
-            readable: true,
-            writable: false,
-        })
-    }
-
     fn from_fd(fd: c_int) -> LinuxResult<Arc<Self>> {
         get_file_like(fd)?
             .into_any()
             .downcast::<Self>()
             .map_err(|_| LinuxError::ENOTDIR)
     }
+}
+impl Pollable for Directory {
+    fn poll(&self) -> IoEvents {
+        IoEvents::IN | IoEvents::OUT
+    }
+
+    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
 }

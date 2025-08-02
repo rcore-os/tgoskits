@@ -1,10 +1,11 @@
 use alloc::sync::Arc;
-use core::any::Any;
+use core::{any::Any, task::Context};
 
 use axfs_ng_vfs::{
     DeviceId, FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeOps, NodePermission,
     NodeType, VfsError, VfsResult,
 };
+use axio::{IoEvents, Pollable};
 use inherit_methods_macro::inherit_methods;
 use lock_api::RawMutex;
 
@@ -23,6 +24,11 @@ pub trait DeviceOps: Send + Sync {
 
     /// Casts the device operations to a dynamic type.
     fn as_any(&self) -> &dyn Any;
+
+    /// Casts the device operations to a [`Pollable`].
+    fn as_pollable(&self) -> Option<&dyn Pollable> {
+        None
+    }
 }
 
 impl<F> DeviceOps for F
@@ -118,5 +124,20 @@ impl<M: RawMutex + Send + Sync + 'static> FileNodeOps<M> for Device<M> {
 
     fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
         self.ops.ioctl(cmd, arg)
+    }
+}
+impl<M: RawMutex + Send + Sync + 'static> Pollable for Device<M> {
+    fn poll(&self) -> IoEvents {
+        if let Some(pollable) = self.ops.as_pollable() {
+            pollable.poll()
+        } else {
+            IoEvents::IN | IoEvents::OUT
+        }
+    }
+
+    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        if let Some(pollable) = self.ops.as_pollable() {
+            pollable.register(context, events);
+        }
     }
 }

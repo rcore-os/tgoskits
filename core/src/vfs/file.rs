@@ -1,10 +1,11 @@
 use alloc::{borrow::Cow, sync::Arc, vec::Vec};
-use core::{any::Any, cmp::Ordering};
+use core::{any::Any, cmp::Ordering, task::Context};
 
 use axfs_ng_vfs::{
     FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType,
     VfsError, VfsResult,
 };
+use axio::{IoEvents, Pollable};
 use inherit_methods_macro::inherit_methods;
 use lock_api::RawMutex;
 
@@ -158,4 +159,11 @@ impl<M: RawMutex + Send + Sync + 'static> FileNodeOps<M> for SimpleFile<M> {
     fn set_symlink(&self, target: &str) -> VfsResult<()> {
         self.ops.write_all(target.as_bytes())
     }
+}
+impl<M: RawMutex + Send + Sync + 'static> Pollable for SimpleFile<M> {
+    fn poll(&self) -> IoEvents {
+        IoEvents::IN | IoEvents::OUT
+    }
+
+    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
 }

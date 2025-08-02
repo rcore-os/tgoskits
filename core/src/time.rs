@@ -34,12 +34,12 @@ impl PartialEq for Entry {
 impl Eq for Entry {}
 impl PartialOrd for Entry {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        Some(self.deadline.cmp(&other.deadline))
+        Some(other.deadline.cmp(&self.deadline))
     }
 }
 impl Ord for Entry {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        self.deadline.cmp(&other.deadline)
+        other.deadline.cmp(&self.deadline)
     }
 }
 
@@ -227,7 +227,7 @@ impl TimeManager {
 
 async fn alarm_task() {
     loop {
-        let mut guard = ALARM_LIST.lock();
+        let guard = ALARM_LIST.lock();
         let Some(entry) = guard.peek() else {
             drop(guard);
             listener!(EVENT_NEW_TIMER => listener);
@@ -242,10 +242,15 @@ async fn alarm_task() {
 
         let now = wall_time();
         if entry.deadline <= now {
+            let entry_deadline = entry.deadline;
             if let Some(task) = entry.task.upgrade() {
+                drop(guard);
                 poll_timer(&task);
+            } else {
+                drop(guard);
             }
-            guard.pop();
+            let mut guard = ALARM_LIST.lock();
+            assert!(guard.pop().is_some_and(|it| it.deadline == entry_deadline));
         } else {
             let deadline = entry.deadline;
             drop(guard);

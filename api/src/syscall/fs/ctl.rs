@@ -10,11 +10,14 @@ use axfs_ng::FS_CONTEXT;
 use axfs_ng_vfs::{MetadataUpdate, NodePermission, NodeType, path::Path};
 use axhal::time::wall_time;
 use axtask::current;
-use linux_raw_sys::{general::*, ioctl::{FIONBIO, TIOCGWINSZ}};
+use linux_raw_sys::{
+    general::*,
+    ioctl::{FIONBIO, TIOCGWINSZ},
+};
 use starry_core::task::AsThread;
 
 use crate::{
-    file::{Directory, FileLike, cast_to_axfs_file, get_file_like, resolve_at, with_fs},
+    file::{Directory, FileLike, get_file_like, resolve_at, with_fs},
     mm::{UserConstPtr, UserPtr, nullable},
     time::TimeValueLike,
 };
@@ -32,11 +35,7 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> LinuxResult<isize> {
         f.set_nonblocking(val != 0)?;
         return Ok(0);
     }
-    let file = cast_to_axfs_file(f).ok_or(LinuxError::ENOTTY)?;
-    file.inner()
-        .backend()?
-        .location()
-        .ioctl(cmd, arg)
+    f.ioctl(cmd, arg)
         .map(|result| result as isize)
         .inspect_err(|err| {
             if *err == LinuxError::ENOTTY {

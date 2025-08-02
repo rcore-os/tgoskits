@@ -30,6 +30,9 @@ echo "root:x:0:0:root:/root:/bin/sh" >>/etc/passwd
 echo "nobody:x:65534:65534:nobody:/:/bin/sh" >>/etc/passwd
 echo "nameserver 8.8.8.8" > /etc/resolv.conf
 
+mkdir -vp /lib/modules/10.0.0/build
+echo "CONFIG_EVENTFD=y" >>/lib/modules/10.0.0/build/.config
+
 echo @@@@@@@@@@ files @@@@@@@@@@
 ls -lhAR /lib
 echo @@@@@@@@@@ env @@@@@@@@@@
@@ -85,6 +88,14 @@ run_ltp() {
     dup207
     dup3_01
     dup3_02
+    eventfd01
+    eventfd02
+    eventfd03
+    eventfd04
+    eventfd05
+    eventfd2_01
+    eventfd2_02
+    eventfd2_03
     execve03
     exit_group01
     exit02
@@ -143,6 +154,7 @@ run_ltp() {
     futex_cmp_requeue02
     futex_wait01
     futex_wait02
+    futex_wait03
     futex_wait04
     futex_wake01
     futex_wake02
@@ -244,15 +256,19 @@ run_ltp() {
     pipe01
     pipe02
     pipe03
+    pipe04
+    pipe05
     pipe06
-    pipe07
     pipe08
+    pipe09
     pipe10
     pipe11
     pipe12
+    pipe13
     pipe14
-    pipe15
     pipe2_01
+    pipe2_02
+    pipe2_02_child
     pipe2_04
     poll01
     ppoll01

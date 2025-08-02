@@ -32,7 +32,14 @@ pub fn sys_futex(
     uaddr2: UserPtr<u32>,
     value3: u32,
 ) -> LinuxResult<isize> {
-    info!("futex {:?} {} {}", uaddr.address(), futex_op, value);
+    debug!(
+        "sys_futex <= uaddr: {:?}, futex_op: {}, value: {}, uaddr2: {:?}, value3: {}",
+        uaddr.address(),
+        futex_op,
+        value,
+        uaddr2.address(),
+        value3,
+    );
 
     let key = FutexKey::new_current(uaddr.address().as_usize());
 

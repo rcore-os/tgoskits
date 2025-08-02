@@ -1,16 +1,15 @@
 use alloc::sync::{Arc, Weak};
+use core::task::Context;
 
 use axerrno::{LinuxError, LinuxResult};
-use axio::PollState;
-use axtask::future::block_on_interruptible;
-use event_listener::{Event, listener};
+use axio::{IoEvents, PollSet, Pollable};
 use starry_core::task::ProcessData;
 
 use crate::file::{FileLike, Kstat};
 
 pub struct PidFd {
     proc_data: Weak<ProcessData>,
-    exit_event: Arc<Event>,
+    exit_event: Arc<PollSet>,
 }
 impl PidFd {
     pub fn new(proc_data: &Arc<ProcessData>) -> Self {
@@ -40,32 +39,18 @@ impl FileLike for PidFd {
     fn into_any(self: Arc<Self>) -> Arc<dyn core::any::Any + Send + Sync> {
         self
     }
+}
 
-    fn poll(&self) -> LinuxResult<PollState> {
-        if self.proc_data.upgrade().is_none() {
-            return Ok(PollState {
-                readable: true,
-                writable: false,
-            });
+impl Pollable for PidFd {
+    fn poll(&self) -> IoEvents {
+        let mut events = IoEvents::empty();
+        events.set(IoEvents::IN, self.proc_data.strong_count() > 0);
+        events
+    }
+
+    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        if events.contains(IoEvents::IN) {
+            self.exit_event.register(context.waker());
         }
-
-        listener!(self.exit_event => listener);
-
-        if self.proc_data.upgrade().is_none() {
-            return Ok(PollState {
-                readable: true,
-                writable: false,
-            });
-        }
-
-        block_on_interruptible(async {
-            listener.await;
-            Ok(())
-        })?;
-
-        Ok(PollState {
-            readable: true,
-            writable: false,
-        })
     }
 }

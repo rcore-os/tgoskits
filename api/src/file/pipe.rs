@@ -3,14 +3,14 @@ use core::{
     any::Any,
     mem,
     sync::atomic::{AtomicBool, Ordering},
+    task::Context,
 };
 
 use axerrno::{LinuxError, LinuxResult};
-use axio::PollState;
+use axio::{IoEvents, PollSet, Pollable};
 use axsync::Mutex;
-use axtask::{current, future::try_block_on};
-use event_listener::{Event, listener};
-use linux_raw_sys::general::S_IFIFO;
+use axtask::{current, future::Poller};
+use linux_raw_sys::{general::S_IFIFO, ioctl::FIONREAD};
 use memory_addr::PAGE_SIZE_4K;
 use ringbuf::{
     HeapRb,
@@ -20,14 +20,15 @@ use starry_core::task::{AsThread, send_signal_to_process};
 use starry_signal::{SignalInfo, Signo};
 
 use super::{FileLike, Kstat};
+use crate::mm::UserPtr;
 
 const RING_BUFFER_INIT_SIZE: usize = 65536; // 64 KiB
 
 struct Shared {
     buffer: Mutex<HeapRb<u8>>,
-    // TODO: better poll
-    read_avail: Event,
-    write_avail: Event,
+    poll_rx: PollSet,
+    poll_tx: PollSet,
+    poll_close: PollSet,
 }
 
 pub struct Pipe {
@@ -37,11 +38,7 @@ pub struct Pipe {
 }
 impl Drop for Pipe {
     fn drop(&mut self) {
-        if self.read_side {
-            self.shared.write_avail.notify(usize::MAX);
-        } else {
-            self.shared.read_avail.notify(usize::MAX);
-        }
+        self.shared.poll_close.wake();
     }
 }
 
@@ -49,8 +46,9 @@ impl Pipe {
     pub fn new() -> (Pipe, Pipe) {
         let shared = Arc::new(Shared {
             buffer: Mutex::new(HeapRb::new(RING_BUFFER_INIT_SIZE)),
-            read_avail: Event::new(),
-            write_avail: Event::new(),
+            poll_rx: PollSet::new(),
+            poll_tx: PollSet::new(),
+            poll_close: PollSet::new(),
         });
         let read_end = Pipe {
             read_side: true,
@@ -117,43 +115,24 @@ impl FileLike for Pipe {
             return Ok(0);
         }
 
-        let non_blocking = self.nonblocking();
-        loop {
-            let read = self.shared.buffer.lock().pop_slice(buf);
-            if read > 0 {
-                self.shared.write_avail.notify(usize::MAX);
-                return Ok(read);
-            } else if self.closed() {
-                return Ok(0);
-            }
-
-            if non_blocking {
-                return Err(LinuxError::EAGAIN);
-            }
-
-            try_block_on(async {
-                if self.closed() {
-                    return Ok(());
+        Poller::new(self, IoEvents::IN)
+            .non_blocking(self.nonblocking())
+            .poll(|| {
+                let read = self.shared.buffer.lock().pop_slice(buf);
+                if read > 0 {
+                    self.shared.poll_tx.wake();
+                    Ok(read)
+                } else if self.closed() {
+                    Ok(0)
+                } else {
+                    Err(LinuxError::EAGAIN)
                 }
-                listener!(self.shared.read_avail => listener);
-                if self.closed() {
-                    return Ok(());
-                }
-                listener.await;
-                Ok(())
-            })?;
-
-            // For restart and listener wake up, continue reading
-        }
+            })
     }
 
     fn write(&self, buf: &[u8]) -> LinuxResult<usize> {
         if !self.is_write() {
             return Err(LinuxError::EBADF);
-        }
-        if self.closed() {
-            raise_pipe();
-            return Err(LinuxError::EPIPE);
         }
         if buf.is_empty() {
             return Ok(0);
@@ -161,40 +140,24 @@ impl FileLike for Pipe {
 
         let mut total_written = 0;
         let non_blocking = self.nonblocking();
-        loop {
-            let written = self.shared.buffer.lock().push_slice(&buf[total_written..]);
-            if written > 0 {
-                self.shared.read_avail.notify(usize::MAX);
-                total_written += written;
-                if total_written == buf.len() || non_blocking {
-                    break;
-                }
-            } else if self.closed() {
-                if total_written == 0 {
+        Poller::new(self, IoEvents::OUT)
+            .non_blocking(non_blocking)
+            .poll(|| {
+                if self.closed() {
                     raise_pipe();
                     return Err(LinuxError::EPIPE);
                 }
-                break;
-            }
 
-            if non_blocking {
-                return Err(LinuxError::EAGAIN);
-            }
-
-            try_block_on(async {
-                if self.closed() {
-                    return Ok(());
+                let written = self.shared.buffer.lock().push_slice(&buf[total_written..]);
+                if written > 0 {
+                    self.shared.poll_rx.wake();
+                    total_written += written;
+                    if total_written == buf.len() || non_blocking {
+                        return Ok(total_written);
+                    }
                 }
-                listener!(self.shared.write_avail => listener);
-                if self.closed() {
-                    return Ok(());
-                }
-                listener.await;
-                Ok(())
-            })?;
-        }
-
-        Ok(total_written)
+                Err(LinuxError::EAGAIN)
+            })
     }
 
     fn stat(&self) -> LinuxResult<Kstat> {
@@ -217,25 +180,38 @@ impl FileLike for Pipe {
         self.non_blocking.load(Ordering::Acquire)
     }
 
-    fn poll(&self) -> LinuxResult<PollState> {
-        let buf = self.shared.buffer.lock();
-
-        match self.read_side {
-            true => {
-                if buf.is_empty() && self.closed() {
-                    // TODO(mivik): This is incorrect and is currently
-                    // interpreted as POLLHUP. See `do_poll`.
-                    return Err(LinuxError::EPIPE);
-                }
-                Ok(PollState {
-                    readable: buf.occupied_len() > 0,
-                    writable: false,
-                })
+    fn ioctl(&self, cmd: u32, arg: usize) -> LinuxResult<usize> {
+        match cmd {
+            FIONREAD => {
+                *UserPtr::<u32>::from(arg).get_as_mut()? =
+                    self.shared.buffer.lock().occupied_len() as _;
+                Ok(0)
             }
-            false => Ok(PollState {
-                readable: false,
-                writable: buf.vacant_len() > 0,
-            }),
+            _ => Err(LinuxError::ENOTTY),
         }
+    }
+}
+
+impl Pollable for Pipe {
+    fn poll(&self) -> IoEvents {
+        let mut events = IoEvents::empty();
+        let buf = self.shared.buffer.lock();
+        if self.read_side {
+            events.set(IoEvents::IN, buf.occupied_len() > 0);
+            events.set(IoEvents::HUP, self.closed());
+        } else {
+            events.set(IoEvents::OUT, buf.vacant_len() > 0);
+        }
+        events
+    }
+
+    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        if events.contains(IoEvents::IN) {
+            self.shared.poll_rx.register(context.waker());
+        }
+        if events.contains(IoEvents::OUT) {
+            self.shared.poll_tx.register(context.waker());
+        }
+        self.shared.poll_close.register(context.waker());
     }
 }

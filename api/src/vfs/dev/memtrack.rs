@@ -8,7 +8,7 @@ use core::{
 
 use axbacktrace::Backtrace;
 use axfs_ng_vfs::VfsResult;
-use starry_core::task::cleanup_task_tables;
+use starry_core::task::{cleanup_task_tables, tasks};
 
 use crate::vfs::DeviceOps;
 
@@ -49,6 +49,12 @@ impl MemoryCategory {
                 "axprocess::process::ProcessBuilder::build" => {
                     return Some("process");
                 }
+                "starry_core::mm::ElfLoader::load" => {
+                    return Some("elf cache");
+                }
+                "axfs_ng::highlevel::file::FileBackend<axsync::mutex::RawMutex>::new_cached" => {
+                    return Some("cached file");
+                }
                 _ => continue,
             }
         }
@@ -70,6 +76,11 @@ fn run_memory_leak_analysis() {
     // Wait for gc
     axtask::yield_now();
     cleanup_task_tables();
+
+    warn!(
+        "Alive tasks: {:?}",
+        tasks().iter().map(|it| it.id_name()).collect::<Vec<_>>()
+    );
 
     let from = STAMPED_GENERATION.load(Ordering::SeqCst);
     let to = axalloc::current_generation();

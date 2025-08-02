@@ -1,63 +1,78 @@
-use axerrno::{LinuxError, LinuxResult};
-use axhal::time::{TimeValue, wall_time};
-use linux_raw_sys::general::{
-    POLLERR, POLLHUP, POLLIN, POLLNVAL, POLLOUT, pollfd, sigset_t, timespec,
-};
+use alloc::vec::Vec;
 
+use axerrno::{LinuxError, LinuxResult};
+use axhal::time::TimeValue;
+use axio::IoEvents;
+use axtask::future::Poller;
+use linux_raw_sys::general::{POLLNVAL, pollfd, sigset_t, timespec};
+
+use super::FdPollSet;
 use crate::{
     file::get_file_like,
     mm::{UserConstPtr, UserPtr, nullable},
     time::TimeValueLike,
 };
 
-fn do_poll(fds: &mut [pollfd], timeout: Option<TimeValue>) -> LinuxResult<isize> {
-    debug!("do_poll fds={:?} timeout={:?}", fds, timeout);
+fn do_poll(poll_fds: &mut [pollfd], timeout: Option<TimeValue>) -> LinuxResult<isize> {
+    debug!("do_poll fds={:?} timeout={:?}", poll_fds, timeout);
 
-    let deadline = timeout.map(|t| wall_time() + t);
-
-    loop {
-        axnet::poll_interfaces();
-
-        let mut res = 0usize;
-        for fd in &mut *fds {
-            let mut revents = 0;
-            match get_file_like(fd.fd) {
-                Ok(f) => match f.poll() {
-                    Ok(state) => {
-                        if (fd.events & POLLIN as i16) != 0 && state.readable {
-                            revents |= POLLIN;
-                        }
-                        if (fd.events & POLLOUT as i16) != 0 && state.writable {
-                            revents |= POLLOUT;
-                        }
-                    }
-                    Err(LinuxError::EPIPE) => {
-                        revents = POLLHUP;
-                    }
-                    Err(e) => {
-                        debug!("poll fd={} error: {:?}", fd.fd, e);
-                        revents = POLLERR;
-                    }
-                },
-                Err(_) => {
-                    revents = POLLNVAL;
-                }
+    let mut res = 0isize;
+    let mut fds = Vec::with_capacity(poll_fds.len());
+    let mut revents = Vec::with_capacity(poll_fds.len());
+    for fd in poll_fds.iter_mut() {
+        if fd.fd == -1 {
+            // Skip -1
+            continue;
+        }
+        match get_file_like(fd.fd) {
+            Ok(f) => {
+                fds.push((
+                    f,
+                    IoEvents::from_bits(fd.events as _).ok_or(LinuxError::EINVAL)?
+                        | IoEvents::ALWAYS_POLL,
+                ));
+                revents.push(&mut fd.revents);
             }
-            fd.revents = revents as _;
-            if revents != 0 {
+            Err(_) => {
+                // If the fd is invalid, set revents to POLLNVAL
+                fd.revents = POLLNVAL as _;
                 res += 1;
             }
         }
+    }
+    if res > 0 {
+        return Ok(res);
+    }
+    let fds = FdPollSet(fds);
 
-        if res > 0 {
-            return Ok(res as _);
-        }
+    let result = Poller::new(&fds, IoEvents::empty())
+        .timeout(timeout)
+        .poll(|| {
+            let mut res = 0usize;
+            for ((fd, events), revents) in fds.0.iter().zip(revents.iter_mut()) {
+                let mut result = fd.poll();
+                if result.contains(IoEvents::IN) {
+                    result |= IoEvents::RDNORM;
+                }
+                if result.contains(IoEvents::OUT) {
+                    result |= IoEvents::WRNORM;
+                }
+                result &= *events;
 
-        if deadline.is_some_and(|d| wall_time() >= d) {
-            return Ok(0);
-        }
-
-        axtask::yield_now();
+                **revents = result.bits() as _;
+                if **revents != 0 {
+                    res += 1;
+                }
+            }
+            if res > 0 {
+                Ok(res as _)
+            } else {
+                Err(LinuxError::EAGAIN)
+            }
+        });
+    match result {
+        Err(LinuxError::ETIMEDOUT) => Ok(0),
+        other => other,
     }
 }
 

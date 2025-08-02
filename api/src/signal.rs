@@ -1,8 +1,7 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use axhal::context::TrapFrame;
-use axtask::current;
-use starry_core::task::{AsThread, Thread};
+use starry_core::task::Thread;
 use starry_signal::{SignalOSAction, SignalSet};
 
 use crate::task::do_exit;
@@ -15,7 +14,7 @@ pub fn check_signals(thr: &Thread, tf: &mut TrapFrame, restore_blocked: Option<S
     let signo = sig.signo();
     match os_action {
         SignalOSAction::Terminate => {
-            do_exit(128 + signo as i32, true);
+            do_exit(signo as i32, true);
         }
         SignalOSAction::CoreDump => {
             // TODO: implement core dump
@@ -33,10 +32,6 @@ pub fn check_signals(thr: &Thread, tf: &mut TrapFrame, restore_blocked: Option<S
         }
     }
     true
-}
-
-pub fn have_signals() -> bool {
-    !current().as_thread().signal.pending().is_empty()
 }
 
 static BLOCK_NEXT_SIGNAL_CHECK: AtomicBool = AtomicBool::new(false);

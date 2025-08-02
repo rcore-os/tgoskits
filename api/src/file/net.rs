@@ -1,8 +1,8 @@
 use alloc::sync::Arc;
-use core::{ffi::c_int, ops::Deref};
+use core::{ffi::c_int, ops::Deref, task::Context};
 
 use axerrno::{LinuxError, LinuxResult};
-use axio::PollState;
+use axio::{IoEvents, Pollable};
 use axnet::{
     SocketOps,
     options::{Configurable, GetSocketOption, SetSocketOption},
@@ -44,10 +44,6 @@ impl FileLike for Socket {
         self
     }
 
-    fn poll(&self) -> LinuxResult<PollState> {
-        self.0.poll()
-    }
-
     fn nonblocking(&self) -> bool {
         let mut result = false;
         self.get_option(GetSocketOption::NonBlocking(&mut result))
@@ -68,5 +64,14 @@ impl FileLike for Socket {
             .into_any()
             .downcast::<Self>()
             .map_err(|_| LinuxError::ENOTSOCK)
+    }
+}
+impl Pollable for Socket {
+    fn poll(&self) -> IoEvents {
+        self.0.poll()
+    }
+
+    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        self.0.register(context, events);
     }
 }

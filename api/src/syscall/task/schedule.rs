@@ -1,6 +1,9 @@
 use axerrno::{LinuxError, LinuxResult};
 use axhal::time::TimeValue;
-use axtask::{AxCpuMask, current};
+use axtask::{
+    AxCpuMask, current,
+    future::{block_on_interruptible, sleep},
+};
 use linux_raw_sys::general::{
     __kernel_clockid_t, CLOCK_MONOTONIC, CLOCK_REALTIME, PRIO_PGRP, PRIO_PROCESS, PRIO_USER,
     TIMER_ABSTIME, timespec,
@@ -9,7 +12,6 @@ use starry_core::task::{get_process_data, get_process_group};
 
 use crate::{
     mm::{UserConstPtr, UserPtr, nullable},
-    signal::have_signals,
     time::TimeValueLike,
 };
 
@@ -20,14 +22,15 @@ pub fn sys_sched_yield() -> LinuxResult<isize> {
 
 fn sleep_impl(clock: impl Fn() -> TimeValue, dur: TimeValue) -> TimeValue {
     debug!("sleep_impl <= {:?}", dur);
+
     let start = clock();
 
-    while clock() < start + dur {
-        if have_signals() {
-            break;
-        }
-        axtask::yield_now();
-    }
+    // TODO: currently ignoring concrete clock type
+    // We detect EINTR manually if the slept time is not enough.
+    let _ = block_on_interruptible(async {
+        sleep(dur).await;
+        Ok(())
+    });
 
     clock() - start
 }

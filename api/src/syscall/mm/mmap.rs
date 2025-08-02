@@ -171,7 +171,7 @@ pub fn sys_mmap(
                     cache,
                     file.flags(),
                     offset,
-                    curr.as_thread().proc_data.aspace.clone(),
+                    &curr.as_thread().proc_data.aspace,
                 )
             } else {
                 Backend::new_shared(start, Arc::new(SharedPages::new(length, PageSize::Size4K)?))
@@ -219,7 +219,6 @@ pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> LinuxResult<isize>
     let mut aspace = curr.as_thread().proc_data.aspace.lock();
     let length = align_up_4k(length);
     let start_addr = VirtAddr::from(addr);
-    // TODO: is 4k right here?
     aspace.protect(start_addr, length, permission_flags.into())?;
 
     Ok(0)

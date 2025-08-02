@@ -1,8 +1,9 @@
+use alloc::vec::Vec;
 use core::{fmt, time::Duration};
 
 use axerrno::{LinuxError, LinuxResult};
-use axhal::time::wall_time;
-use axtask::current;
+use axio::IoEvents;
+use axtask::future::Poller;
 use bitmaps::Bitmap;
 use linux_raw_sys::{
     general::*,
@@ -10,8 +11,9 @@ use linux_raw_sys::{
 };
 use starry_signal::SignalSet;
 
+use super::FdPollSet;
 use crate::{
-    file::get_file_like,
+    file::FD_TABLE,
     mm::{UserConstPtr, UserPtr, nullable},
     time::TimeValueLike,
 };
@@ -38,89 +40,6 @@ impl fmt::Debug for FdSet {
     }
 }
 
-#[derive(Debug)]
-struct FdSets {
-    nfds: usize,
-    read: FdSet,
-    write: FdSet,
-    except: FdSet,
-}
-
-impl FdSets {
-    fn new(
-        nfds: usize,
-        readfds: Option<&__kernel_fd_set>,
-        writefds: Option<&__kernel_fd_set>,
-        exceptfds: Option<&__kernel_fd_set>,
-    ) -> Self {
-        Self {
-            nfds,
-            read: FdSet::new(nfds, readfds),
-            write: FdSet::new(nfds, writefds),
-            except: FdSet::new(nfds, exceptfds),
-        }
-    }
-
-    // TODO: unity select and poll implementation like asterinas:
-    // https://github.com/asterinas/asterinas/blob/main/kernel/src/syscall/poll.rs
-    fn poll(
-        &self,
-        mut readfds: Option<&mut __kernel_fd_set>,
-        mut writefds: Option<&mut __kernel_fd_set>,
-        mut exceptfds: Option<&mut __kernel_fd_set>,
-    ) -> LinuxResult<usize> {
-        unsafe {
-            if let Some(readfds) = readfds.as_deref_mut() {
-                FD_ZERO(readfds);
-            }
-            if let Some(writefds) = writefds.as_deref_mut() {
-                FD_ZERO(writefds);
-            }
-            if let Some(exceptfds) = exceptfds.as_deref_mut() {
-                FD_ZERO(exceptfds);
-            }
-        }
-
-        let mut res = 0usize;
-        for fd in &(self.read.0 | self.write.0 | self.except.0) {
-            if fd >= self.nfds {
-                break;
-            }
-
-            let f = get_file_like(fd as _)?;
-            match f.poll() {
-                Ok(state) => {
-                    if state.readable
-                        && self.read.0.get(fd)
-                        && let Some(readfds) = readfds.as_deref_mut()
-                    {
-                        res += 1;
-                        unsafe { FD_SET(fd as _, readfds) };
-                    }
-                    if state.writable
-                        && self.write.0.get(fd)
-                        && let Some(writefds) = writefds.as_deref_mut()
-                    {
-                        res += 1;
-                        unsafe { FD_SET(fd as _, writefds) };
-                    }
-                }
-                Err(e) => {
-                    debug!("poll fd={} error: {:?}", fd, e);
-                    if self.except.0.get(fd)
-                        && let Some(exceptfds) = exceptfds.as_deref_mut()
-                    {
-                        res += 1;
-                        unsafe { FD_SET(fd as _, exceptfds) };
-                    }
-                }
-            }
-        }
-
-        Ok(res)
-    }
-}
-
 fn do_select(
     nfds: u32,
     readfds: UserPtr<__kernel_fd_set>,
@@ -136,46 +55,75 @@ fn do_select(
     let mut writefds = nullable!(writefds.get_as_mut())?;
     let mut exceptfds = nullable!(exceptfds.get_as_mut())?;
 
-    let sets = FdSets::new(
-        nfds as usize,
-        readfds.as_deref(),
-        writefds.as_deref(),
-        exceptfds.as_deref(),
-    );
+    let read_set = FdSet::new(nfds as _, readfds.as_deref());
+    let write_set = FdSet::new(nfds as _, writefds.as_deref());
+    let except_set = FdSet::new(nfds as _, exceptfds.as_deref());
 
     debug!(
-        "sys_select <= nfds: {} sets: {:?} timeout: {:?}",
-        nfds, sets, timeout
+        "sys_select <= nfds: {} sets: [read: {:?}, write: {:?}, except: {:?}] timeout: {:?}",
+        nfds, read_set, write_set, except_set, timeout
     );
 
-    let deadline = timeout.map(|t| wall_time() + t);
-
-    loop {
-        if current().interrupt_state().is_some() {
-            return Err(LinuxError::EINTR);
-        }
-
-        axnet::poll_interfaces();
-
-        let res = sets.poll(
-            readfds.as_deref_mut(),
-            writefds.as_deref_mut(),
-            exceptfds.as_deref_mut(),
-        )?;
-        if res > 0 {
-            return Ok(res as _);
-        }
-
-        if res > 0 {
-            return Ok(res as _);
-        }
-
-        axtask::yield_now();
-
-        if deadline.is_some_and(|d| wall_time() >= d) {
-            return Ok(0);
+    let fd_table = FD_TABLE.read();
+    let fd_bitmap = read_set.0 | write_set.0 | except_set.0;
+    let fd_count = fd_bitmap.len();
+    let mut fds = Vec::with_capacity(fd_count);
+    let mut fd_indices = Vec::with_capacity(fd_count);
+    for fd in fd_bitmap.into_iter() {
+        let f = fd_table.get(fd).ok_or(LinuxError::EBADF)?.inner.clone();
+        let mut events = IoEvents::empty();
+        events.set(IoEvents::IN, read_set.0.get(fd));
+        events.set(IoEvents::OUT, write_set.0.get(fd));
+        events.set(IoEvents::ERR, except_set.0.get(fd));
+        if !events.is_empty() {
+            fds.push((f, events));
+            fd_indices.push(fd);
         }
     }
+
+    drop(fd_table);
+    let fds = FdPollSet(fds);
+
+    if let Some(readfds) = readfds.as_deref_mut() {
+        unsafe { FD_ZERO(readfds) };
+    }
+    if let Some(writefds) = writefds.as_deref_mut() {
+        unsafe { FD_ZERO(writefds) };
+    }
+    if let Some(exceptfds) = exceptfds.as_deref_mut() {
+        unsafe { FD_ZERO(exceptfds) };
+    }
+    Poller::new(&fds, IoEvents::empty())
+        .timeout(timeout)
+        .poll(|| {
+            let mut res = 0usize;
+            for ((fd, interested), index) in fds.0.iter().zip(fd_indices.iter().copied()) {
+                let events = fd.poll() & *interested;
+                if events.contains(IoEvents::IN)
+                    && let Some(set) = readfds.as_deref_mut()
+                {
+                    res += 1;
+                    unsafe { FD_SET(index as _, set) };
+                }
+                if events.contains(IoEvents::OUT)
+                    && let Some(set) = writefds.as_deref_mut()
+                {
+                    res += 1;
+                    unsafe { FD_SET(index as _, set) };
+                }
+                if events.contains(IoEvents::ERR)
+                    && let Some(set) = exceptfds.as_deref_mut()
+                {
+                    res += 1;
+                    unsafe { FD_SET(index as _, set) };
+                }
+            }
+            if res > 0 {
+                return Ok(res as _);
+            }
+
+            Err(LinuxError::EAGAIN)
+        })
 }
 
 #[cfg(target_arch = "x86_64")]

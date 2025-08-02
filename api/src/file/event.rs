@@ -1,31 +1,34 @@
 use alloc::sync::Arc;
 use core::{
     any::Any,
-    cell::UnsafeCell,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    task::Context,
 };
 
 use axerrno::LinuxError;
-use axio::PollState;
-use axtask::WaitQueue;
-use starry_core::task::AssumeSync;
+use axio::{IoEvents, PollSet, Pollable};
+use axtask::future::Poller;
 
 use crate::file::{FileLike, Kstat};
 
 pub struct EventFd {
-    wq: WaitQueue,
-    count: AssumeSync<UnsafeCell<u64>>,
+    count: AtomicU64,
     semaphore: bool,
     non_blocking: AtomicBool,
+
+    poll_rx: PollSet,
+    poll_tx: PollSet,
 }
 
 impl EventFd {
     pub fn new(initval: u64, semaphore: bool) -> Arc<Self> {
         Arc::new(Self {
-            wq: WaitQueue::new(),
-            count: AssumeSync(UnsafeCell::new(initval)),
+            count: AtomicU64::new(initval),
             semaphore,
             non_blocking: AtomicBool::new(false),
+
+            poll_rx: PollSet::new(),
+            poll_tx: PollSet::new(),
         })
     }
 }
@@ -36,25 +39,29 @@ impl FileLike for EventFd {
             return Err(LinuxError::EINVAL);
         }
 
-        let mut result = 0;
-        self.wq.wait_until(|| {
-            // SAFETY: condition is evaluated under the lock of the wait queue,
-            // so it is safe to access the count.
-            let count = unsafe { &mut *self.count.get() };
-            if *count > 0 {
-                result = if self.semaphore { 1 } else { *count };
-                *count -= result;
-                true
-            } else {
-                false
-            }
-        });
-        // TODO: better way?
-        self.wq.notify_all(false);
-
-        let data = result.to_ne_bytes();
-        buf.copy_from_slice(&data);
-        Ok(data.len())
+        Poller::new(self, IoEvents::IN)
+            .non_blocking(self.nonblocking())
+            .poll(|| {
+                let result =
+                    self.count
+                        .fetch_update(Ordering::Release, Ordering::Acquire, |count| {
+                            if count > 0 {
+                                let dec = if self.semaphore { 1 } else { count };
+                                Some(count - dec)
+                            } else {
+                                None
+                            }
+                        });
+                match result {
+                    Ok(count) => {
+                        let data = count.to_ne_bytes();
+                        buf.copy_from_slice(&data);
+                        self.poll_tx.wake();
+                        Ok(data.len())
+                    }
+                    Err(_) => Err(LinuxError::EAGAIN),
+                }
+            })
     }
 
     fn write(&self, buf: &[u8]) -> axio::Result<usize> {
@@ -67,27 +74,26 @@ impl FileLike for EventFd {
             return Err(LinuxError::EINVAL);
         }
 
-        let non_blocking = self.nonblocking();
-        let mut failed = false;
-        self.wq.wait_until(|| {
-            // SAFETY: condition is evaluated under the lock of the wait queue,
-            // so it is safe to access the count.
-            let count = unsafe { &mut *self.count.get() };
-            if u64::MAX - *count > value {
-                *count += value;
-                true
-            } else if non_blocking {
-                failed = true;
-                true
-            } else {
-                false
-            }
-        });
-        if failed {
-            return Err(LinuxError::EAGAIN);
-        }
-
-        Ok(size_of::<u64>())
+        Poller::new(self, IoEvents::OUT)
+            .non_blocking(self.nonblocking())
+            .poll(|| {
+                let result =
+                    self.count
+                        .fetch_update(Ordering::Release, Ordering::Acquire, |count| {
+                            if u64::MAX - count > value {
+                                Some(count + value)
+                            } else {
+                                None
+                            }
+                        });
+                match result {
+                    Ok(_) => {
+                        self.poll_rx.wake();
+                        Ok(size_of::<u64>())
+                    }
+                    Err(_) => Err(LinuxError::EAGAIN),
+                }
+            })
     }
 
     fn stat(&self) -> axio::Result<Kstat> {
@@ -106,13 +112,23 @@ impl FileLike for EventFd {
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
         self
     }
+}
 
-    fn poll(&self) -> axio::Result<PollState> {
-        // SAFETY: We just read once
-        let count = unsafe { *self.count.get() };
-        Ok(PollState {
-            readable: count > 0,
-            writable: u64::MAX - 1 > count,
-        })
+impl Pollable for EventFd {
+    fn poll(&self) -> IoEvents {
+        let mut events = IoEvents::empty();
+        let count = self.count.load(Ordering::Acquire);
+        events.set(IoEvents::IN, count > 0);
+        events.set(IoEvents::OUT, u64::MAX - 1 > count);
+        events
+    }
+
+    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        if events.contains(IoEvents::IN) {
+            self.poll_rx.register(context.waker());
+        }
+        if events.contains(IoEvents::OUT) {
+            self.poll_tx.register(context.waker());
+        }
     }
 }

@@ -1,5 +1,6 @@
 use alloc::{borrow::ToOwned, string::String, sync::Arc};
-use core::{any::Any, borrow::Borrow, cmp::Ordering, time::Duration};
+use axio::{IoEvents, Pollable};
+use core::{any::Any, borrow::Borrow, cmp::Ordering, task::Context, time::Duration};
 
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
@@ -339,6 +340,13 @@ impl FileNodeOps<RawMutex> for MemoryNode {
         *file.symlink.lock() = Some(target.to_owned());
         Ok(())
     }
+}
+impl Pollable for MemoryNode {
+    fn poll(&self) -> IoEvents {
+        IoEvents::IN | IoEvents::OUT
+    }
+
+    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
 }
 
 impl DirNodeOps<RawMutex> for MemoryNode {

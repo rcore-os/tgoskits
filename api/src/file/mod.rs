@@ -10,7 +10,7 @@ use core::{any::Any, ffi::c_int, time::Duration};
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::{FS_CONTEXT, OpenOptions};
 use axfs_ng_vfs::DeviceId;
-use axio::PollState;
+use axio::Pollable;
 use axtask::current;
 use flatten_objects::FlattenObjects;
 use linux_raw_sys::general::{RLIMIT_NOFILE, stat, statx, statx_timestamp};
@@ -123,12 +123,14 @@ impl From<Kstat> for statx {
 }
 
 #[allow(dead_code)]
-pub trait FileLike: Send + Sync {
+pub trait FileLike: Pollable + Send + Sync {
     fn read(&self, buf: &mut [u8]) -> LinuxResult<usize>;
     fn write(&self, buf: &[u8]) -> LinuxResult<usize>;
     fn stat(&self) -> LinuxResult<Kstat>;
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync>;
-    fn poll(&self) -> LinuxResult<PollState>;
+    fn ioctl(&self, _cmd: u32, _arg: usize) -> LinuxResult<usize> {
+        Err(LinuxError::ENOTTY)
+    }
 
     fn nonblocking(&self) -> bool {
         false
@@ -195,10 +197,6 @@ pub fn close_file_like(fd: c_int) -> LinuxResult {
         .ok_or(LinuxError::EBADF)?;
     debug!("close_file_like <= count: {}", Arc::strong_count(&f.inner));
     Ok(())
-}
-
-pub fn cast_to_axfs_file(file_like: Arc<dyn FileLike>) -> Option<Arc<File>> {
-    file_like.into_any().downcast::<File>().ok()
 }
 
 pub fn add_stdio(fd_table: &mut FlattenObjects<FileDescriptor, AX_FILE_LIMIT>) -> LinuxResult<()> {

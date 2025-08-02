@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 use axerrno::{LinuxError, LinuxResult};
-use axtask::{current, future::block_on};
+use axtask::{current, future::block_on_interruptible};
 use bitflags::bitflags;
 use linux_raw_sys::general::{
     __WALL, __WCLONE, __WNOTHREAD, WCONTINUED, WEXITED, WNOHANG, WNOWAIT, WUNTRACED,
@@ -96,10 +96,12 @@ pub fn sys_waitpid(pid: i32, exit_code_ptr: UserPtr<i32>, options: u32) -> Linux
             }
             return Ok(child.pid() as _);
         } else if options.contains(WaitOptions::WNOHANG) {
-            axtask::yield_now();
             return Ok(0);
         } else {
-            block_on(proc_data.child_exit_event.listen());
+            let _ = block_on_interruptible(async {
+                proc_data.child_exit_event.listen().await;
+                Ok(())
+            });
         }
     }
 }
