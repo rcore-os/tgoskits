@@ -179,7 +179,7 @@ impl<M: RawMutex> DirEntry<M> {
         })
     }
 
-    pub fn downcast<T: Send + Sync + 'static>(&self) -> VfsResult<Arc<T>> {
+    pub fn downcast<T: NodeOps<M> + Send + Sync + 'static>(&self) -> VfsResult<Arc<T>> {
         self.0
             .node
             .clone_inner()

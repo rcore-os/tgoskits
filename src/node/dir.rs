@@ -146,7 +146,7 @@ impl<M: RawMutex> DirNode<M> {
         &self.ops
     }
 
-    pub fn downcast<T: Send + Sync + 'static>(&self) -> VfsResult<Arc<T>> {
+    pub fn downcast<T: DirNodeOps<M> + Send + Sync + 'static>(&self) -> VfsResult<Arc<T>> {
         self.ops
             .clone()
             .into_any()
