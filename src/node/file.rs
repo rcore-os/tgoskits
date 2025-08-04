@@ -6,7 +6,7 @@ use axio::Pollable;
 use super::NodeOps;
 use crate::{VfsError, VfsResult};
 
-pub trait FileNodeOps<M>: NodeOps<M> + Pollable {
+pub trait FileNodeOps: NodeOps + Pollable {
     /// Reads a number of bytes starting from a given offset.
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize>;
 
@@ -32,34 +32,32 @@ pub trait FileNodeOps<M>: NodeOps<M> + Pollable {
 }
 
 #[repr(transparent)]
-pub struct FileNode<M>(Arc<dyn FileNodeOps<M>>);
+pub struct FileNode(Arc<dyn FileNodeOps>);
 
-impl<M> Deref for FileNode<M> {
-    type Target = dyn FileNodeOps<M>;
+impl Deref for FileNode {
+    type Target = dyn FileNodeOps;
 
     fn deref(&self) -> &Self::Target {
         &*self.0
     }
 }
 
-impl<M> From<FileNode<M>> for Arc<dyn NodeOps<M>> {
-    fn from(node: FileNode<M>) -> Self {
+impl From<FileNode> for Arc<dyn NodeOps> {
+    fn from(node: FileNode) -> Self {
         node.0.clone()
     }
 }
 
-impl<M> FileNode<M> {
-    pub fn new(ops: Arc<dyn FileNodeOps<M>>) -> Self {
+impl FileNode {
+    pub fn new(ops: Arc<dyn FileNodeOps>) -> Self {
         Self(ops)
     }
 
-    pub fn inner(&self) -> &Arc<dyn FileNodeOps<M>> {
+    pub fn inner(&self) -> &Arc<dyn FileNodeOps> {
         &self.0
     }
 
-    pub fn downcast<T: FileNodeOps<M> + Send + Sync + 'static>(
-        self: &Arc<Self>,
-    ) -> VfsResult<Arc<T>> {
+    pub fn downcast<T: FileNodeOps + Send + Sync + 'static>(self: &Arc<Self>) -> VfsResult<Arc<T>> {
         self.0
             .clone()
             .into_any()

@@ -11,11 +11,11 @@ use alloc::{
 };
 use axio::{IoEvents, Pollable};
 use core::{any::Any, iter, ops::Deref, task::Context};
+use spin::{Mutex, MutexGuard};
 
 pub use dir::*;
 pub use file::*;
 use inherit_methods_macro::inherit_methods;
-use lock_api::{Mutex, MutexGuard, RawMutex};
 
 use crate::{
     FilesystemOps, Metadata, MetadataUpdate, NodeType, VfsError, VfsResult, path::PathBuf,
@@ -23,7 +23,7 @@ use crate::{
 
 /// Filesystem node operationss
 #[allow(clippy::len_without_is_empty)]
-pub trait NodeOps<M>: Send + Sync {
+pub trait NodeOps: Send + Sync {
     /// Gets the inode number of the node.
     fn inode(&self) -> u64;
 
@@ -34,7 +34,7 @@ pub trait NodeOps<M>: Send + Sync {
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
 
     /// Gets the filesystem
-    fn filesystem(&self) -> &dyn FilesystemOps<M>;
+    fn filesystem(&self) -> &dyn FilesystemOps;
 
     /// Gets the size of the node.
     fn len(&self) -> VfsResult<u64> {
@@ -45,16 +45,16 @@ pub trait NodeOps<M>: Send + Sync {
     fn sync(&self, data_only: bool) -> VfsResult<()>;
 
     /// Casts the node to a `&dyn core::any::Any`.
-    fn into_any(self: Arc<Self>) -> Arc<dyn core::any::Any + Send + Sync>;
+    fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync>;
 }
 
-enum Node<M> {
-    File(FileNode<M>),
-    Dir(DirNode<M>),
+enum Node {
+    File(FileNode),
+    Dir(DirNode),
 }
 
-impl<M: RawMutex> Node<M> {
-    pub fn clone_inner(&self) -> Arc<dyn NodeOps<M>> {
+impl Node {
+    pub fn clone_inner(&self) -> Arc<dyn NodeOps> {
         match self {
             Node::File(file) => file.inner().clone(),
             Node::Dir(dir) => dir.inner().clone(),
@@ -62,8 +62,8 @@ impl<M: RawMutex> Node<M> {
     }
 }
 
-impl<M> Deref for Node<M> {
-    type Target = dyn NodeOps<M>;
+impl Deref for Node {
+    type Target = dyn NodeOps;
 
     fn deref(&self) -> &Self::Target {
         match &self {
@@ -75,13 +75,13 @@ impl<M> Deref for Node<M> {
 
 pub type ReferenceKey = (usize, String);
 
-pub struct Reference<M> {
-    parent: Option<DirEntry<M>>,
+pub struct Reference {
+    parent: Option<DirEntry>,
     name: String,
 }
 
-impl<M> Reference<M> {
-    pub fn new(parent: Option<DirEntry<M>>, name: String) -> Self {
+impl Reference {
+    pub fn new(parent: Option<DirEntry>, name: String) -> Self {
         Self { parent, name }
     }
 
@@ -98,37 +98,37 @@ impl<M> Reference<M> {
     }
 }
 
-struct Inner<M> {
-    node: Node<M>,
+struct Inner {
+    node: Node,
     node_type: NodeType,
-    reference: Reference<M>,
-    user_data: Mutex<M, Option<Box<dyn Any + Send + Sync>>>,
+    reference: Reference,
+    user_data: Mutex<Option<Box<dyn Any + Send + Sync>>>,
 }
 
-pub struct DirEntry<M>(Arc<Inner<M>>);
+pub struct DirEntry(Arc<Inner>);
 
-impl<M> Clone for DirEntry<M> {
+impl Clone for DirEntry {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
 
-pub struct WeakDirEntry<M>(Weak<Inner<M>>);
+pub struct WeakDirEntry(Weak<Inner>);
 
-impl<M> Clone for WeakDirEntry<M> {
+impl Clone for WeakDirEntry {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
 
-impl<M> WeakDirEntry<M> {
-    pub fn upgrade(&self) -> Option<DirEntry<M>> {
+impl WeakDirEntry {
+    pub fn upgrade(&self) -> Option<DirEntry> {
         self.0.upgrade().map(DirEntry)
     }
 }
 
-impl<M> From<Node<M>> for Arc<dyn NodeOps<M>> {
-    fn from(node: Node<M>) -> Self {
+impl From<Node> for Arc<dyn NodeOps> {
+    fn from(node: Node) -> Self {
         match node {
             Node::File(file) => file.into(),
             Node::Dir(dir) => dir.into(),
@@ -137,10 +137,10 @@ impl<M> From<Node<M>> for Arc<dyn NodeOps<M>> {
 }
 
 #[inherit_methods(from = "self.0.node")]
-impl<M: RawMutex> DirEntry<M> {
+impl DirEntry {
     pub fn inode(&self) -> u64;
 
-    pub fn filesystem(&self) -> &dyn FilesystemOps<M>;
+    pub fn filesystem(&self) -> &dyn FilesystemOps;
 
     pub fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
 
@@ -150,25 +150,22 @@ impl<M: RawMutex> DirEntry<M> {
     pub fn sync(&self, data_only: bool) -> VfsResult<()>;
 }
 
-impl<M: RawMutex> DirEntry<M> {
-    pub fn new_file(node: FileNode<M>, node_type: NodeType, reference: Reference<M>) -> Self {
+impl DirEntry {
+    pub fn new_file(node: FileNode, node_type: NodeType, reference: Reference) -> Self {
         Self(Arc::new(Inner {
             node: Node::File(node),
             node_type,
             reference,
-            user_data: Mutex::new(None),
+            user_data: Mutex::default(),
         }))
     }
 
-    pub fn new_dir(
-        node_fn: impl FnOnce(WeakDirEntry<M>) -> DirNode<M>,
-        reference: Reference<M>,
-    ) -> Self {
+    pub fn new_dir(node_fn: impl FnOnce(WeakDirEntry) -> DirNode, reference: Reference) -> Self {
         Self(Arc::new_cyclic(|this| Inner {
             node: Node::Dir(node_fn(WeakDirEntry(this.clone()))),
             node_type: NodeType::Directory,
             reference,
-            user_data: Mutex::new(None),
+            user_data: Mutex::default(),
         }))
     }
 
@@ -179,7 +176,7 @@ impl<M: RawMutex> DirEntry<M> {
         })
     }
 
-    pub fn downcast<T: NodeOps<M> + Send + Sync + 'static>(&self) -> VfsResult<Arc<T>> {
+    pub fn downcast<T: NodeOps + Send + Sync + 'static>(&self) -> VfsResult<Arc<T>> {
         self.0
             .node
             .clone_inner()
@@ -188,7 +185,7 @@ impl<M: RawMutex> DirEntry<M> {
             .map_err(|_| VfsError::EINVAL)
     }
 
-    pub fn downgrade(&self) -> WeakDirEntry<M> {
+    pub fn downgrade(&self) -> WeakDirEntry {
         WeakDirEntry(Arc::downgrade(&self.0))
     }
 
@@ -256,14 +253,14 @@ impl<M: RawMutex> DirEntry<M> {
         matches!(self.0.node, Node::Dir(_))
     }
 
-    pub fn as_file(&self) -> VfsResult<&FileNode<M>> {
+    pub fn as_file(&self) -> VfsResult<&FileNode> {
         match &self.0.node {
             Node::File(file) => Ok(file),
             _ => Err(VfsError::EISDIR),
         }
     }
 
-    pub fn as_dir(&self) -> VfsResult<&DirNode<M>> {
+    pub fn as_dir(&self) -> VfsResult<&DirNode> {
         match &self.0.node {
             Node::Dir(dir) => Ok(dir),
             _ => Err(VfsError::ENOTDIR),
@@ -295,12 +292,12 @@ impl<M: RawMutex> DirEntry<M> {
         }
     }
 
-    pub fn user_data(&self) -> MutexGuard<'_, M, Option<Box<dyn Any + Send + Sync>>> {
+    pub fn user_data(&self) -> MutexGuard<'_, Option<Box<dyn Any + Send + Sync>>> {
         self.0.user_data.lock()
     }
 }
 
-impl<M: RawMutex> Pollable for DirEntry<M> {
+impl Pollable for DirEntry {
     fn poll(&self) -> IoEvents {
         match &self.0.node {
             Node::File(file) => file.poll(),

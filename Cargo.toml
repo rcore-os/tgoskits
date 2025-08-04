@@ -12,5 +12,5 @@ axio = { git = "https://github.com/Starry-Mix-THU/axio.git", rev = "a069a3d" }
 bitflags = "2.9.0"
 hashbrown = "0.15.4"
 inherit-methods-macro = "0.1.0"
-lock_api = "0.4.12"
 log = "=0.4.21"
+spin = { version = "0.9", default-features = false, features = ["spin_mutex"] }

@@ -4,8 +4,7 @@ use core::{
     ops::{Deref, DerefMut},
 };
 use hashbrown::HashMap;
-
-use lock_api::{Mutex, MutexGuard, RawMutex};
+use spin::{Mutex, MutexGuard};
 
 use super::DirEntry;
 use crate::{
@@ -31,9 +30,9 @@ impl<F: FnMut(&str, u64, NodeType, u64) -> bool> DirEntrySink for F {
     }
 }
 
-type DirChildren<M> = HashMap<String, DirEntry<M>>;
+type DirChildren = HashMap<String, DirEntry>;
 
-pub trait DirNodeOps<M: RawMutex>: NodeOps<M> {
+pub trait DirNodeOps: NodeOps {
     /// Reads directory entries.
     ///
     /// Returns the number of entries read.
@@ -43,7 +42,7 @@ pub trait DirNodeOps<M: RawMutex>: NodeOps<M> {
     fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize>;
 
     /// Lookups a directory entry by name.
-    fn lookup(&self, name: &str) -> VfsResult<DirEntry<M>>;
+    fn lookup(&self, name: &str) -> VfsResult<DirEntry>;
 
     /// Returns whether directory entries can be cached.
     ///
@@ -65,10 +64,10 @@ pub trait DirNodeOps<M: RawMutex>: NodeOps<M> {
         name: &str,
         node_type: NodeType,
         permission: NodePermission,
-    ) -> VfsResult<DirEntry<M>>;
+    ) -> VfsResult<DirEntry>;
 
     /// Creates a link to a node.
-    fn link(&self, name: &str, node: &DirEntry<M>) -> VfsResult<DirEntry<M>>;
+    fn link(&self, name: &str, node: &DirEntry) -> VfsResult<DirEntry>;
 
     /// Unlinks a directory entry by name.
     ///
@@ -87,7 +86,7 @@ pub trait DirNodeOps<M: RawMutex>: NodeOps<M> {
     ///   directory.
     /// - If `src` is not a directory, `dst` must not exist or not be a
     ///   directory.
-    fn rename(&self, src_name: &str, dst_dir: &DirNode<M>, dst_name: &str) -> VfsResult<()>;
+    fn rename(&self, src_name: &str, dst_dir: &DirNode, dst_name: &str) -> VfsResult<()>;
 }
 
 /// Options for opening (or creating) a directory entry.
@@ -113,40 +112,40 @@ impl Default for OpenOptions {
     }
 }
 
-pub struct DirNode<M> {
-    ops: Arc<dyn DirNodeOps<M>>,
-    cache: Mutex<M, HashMap<String, DirEntry<M>>>,
-    pub(crate) mountpoint: Mutex<M, Option<Arc<Mountpoint<M>>>>,
+pub struct DirNode {
+    ops: Arc<dyn DirNodeOps>,
+    cache: Mutex<HashMap<String, DirEntry>>,
+    pub(crate) mountpoint: Mutex<Option<Arc<Mountpoint>>>,
 }
 
-impl<M> Deref for DirNode<M> {
-    type Target = dyn NodeOps<M>;
+impl Deref for DirNode {
+    type Target = dyn NodeOps;
 
     fn deref(&self) -> &Self::Target {
         &*self.ops
     }
 }
 
-impl<M> From<DirNode<M>> for Arc<dyn NodeOps<M>> {
-    fn from(node: DirNode<M>) -> Self {
+impl From<DirNode> for Arc<dyn NodeOps> {
+    fn from(node: DirNode) -> Self {
         node.ops.clone()
     }
 }
 
-impl<M: RawMutex> DirNode<M> {
-    pub fn new(ops: Arc<dyn DirNodeOps<M>>) -> Self {
+impl DirNode {
+    pub fn new(ops: Arc<dyn DirNodeOps>) -> Self {
         Self {
             ops,
-            cache: Mutex::new(HashMap::new()),
-            mountpoint: Mutex::new(None),
+            cache: Mutex::default(),
+            mountpoint: Mutex::default(),
         }
     }
 
-    pub fn inner(&self) -> &Arc<dyn DirNodeOps<M>> {
+    pub fn inner(&self) -> &Arc<dyn DirNodeOps> {
         &self.ops
     }
 
-    pub fn downcast<T: DirNodeOps<M> + Send + Sync + 'static>(&self) -> VfsResult<Arc<T>> {
+    pub fn downcast<T: DirNodeOps + Send + Sync + 'static>(&self) -> VfsResult<Arc<T>> {
         self.ops
             .clone()
             .into_any()
@@ -154,7 +153,7 @@ impl<M: RawMutex> DirNode<M> {
             .map_err(|_| VfsError::EINVAL)
     }
 
-    fn forget_entry(children: &mut DirChildren<M>, name: &str) {
+    fn forget_entry(children: &mut DirChildren, name: &str) {
         if let Some(entry) = children.remove(name)
             && let Ok(dir) = entry.as_dir()
         {
@@ -162,7 +161,7 @@ impl<M: RawMutex> DirNode<M> {
         }
     }
 
-    fn lookup_locked(&self, name: &str, children: &mut DirChildren<M>) -> VfsResult<DirEntry<M>> {
+    fn lookup_locked(&self, name: &str, children: &mut DirChildren) -> VfsResult<DirEntry> {
         use hashbrown::hash_map::Entry;
         match children.entry(name.to_owned()) {
             Entry::Occupied(e) => Ok(e.get().clone()),
@@ -177,7 +176,7 @@ impl<M: RawMutex> DirNode<M> {
     }
 
     /// Looks up a directory entry by name.
-    pub fn lookup(&self, name: &str) -> VfsResult<DirEntry<M>> {
+    pub fn lookup(&self, name: &str) -> VfsResult<DirEntry> {
         if name.len() > MAX_NAME_LEN {
             return Err(VfsError::ENAMETOOLONG);
         }
@@ -190,7 +189,7 @@ impl<M: RawMutex> DirNode<M> {
     }
 
     /// Looks up a directory entry by name in cache.
-    pub fn lookup_cache(&self, name: &str) -> Option<DirEntry<M>> {
+    pub fn lookup_cache(&self, name: &str) -> Option<DirEntry> {
         if self.ops.is_cacheable() {
             self.cache.lock().get(name).cloned()
         } else {
@@ -199,7 +198,7 @@ impl<M: RawMutex> DirNode<M> {
     }
 
     /// Inserts a directory entry into the cache.
-    pub fn insert_cache(&self, name: String, entry: DirEntry<M>) -> Option<DirEntry<M>> {
+    pub fn insert_cache(&self, name: String, entry: DirEntry) -> Option<DirEntry> {
         if self.ops.is_cacheable() {
             self.cache.lock().insert(name, entry)
         } else {
@@ -212,7 +211,7 @@ impl<M: RawMutex> DirNode<M> {
     }
 
     /// Creates a link to a node.
-    pub fn link(&self, name: &str, node: &DirEntry<M>) -> VfsResult<DirEntry<M>> {
+    pub fn link(&self, name: &str, node: &DirEntry) -> VfsResult<DirEntry> {
         verify_entry_name(name)?;
 
         self.ops.link(name, node).inspect(|entry| {
@@ -256,8 +255,8 @@ impl<M: RawMutex> DirNode<M> {
         name: &str,
         node_type: NodeType,
         permission: NodePermission,
-        children: &mut DirChildren<M>,
-    ) -> VfsResult<DirEntry<M>> {
+        children: &mut DirChildren,
+    ) -> VfsResult<DirEntry> {
         let entry = self.ops.create(name, node_type, permission)?;
         children.insert(name.to_owned(), entry.clone());
         Ok(entry)
@@ -269,7 +268,7 @@ impl<M: RawMutex> DirNode<M> {
         name: &str,
         node_type: NodeType,
         permission: NodePermission,
-    ) -> VfsResult<DirEntry<M>> {
+    ) -> VfsResult<DirEntry> {
         verify_entry_name(name)?;
         self.create_locked(name, node_type, permission, &mut self.cache.lock())
     }
@@ -278,8 +277,8 @@ impl<M: RawMutex> DirNode<M> {
         &'a self,
         other: &'a Self,
     ) -> (
-        MutexGuard<'a, M, DirChildren<M>>,
-        Option<MutexGuard<'a, M, DirChildren<M>>>,
+        MutexGuard<'a, DirChildren>,
+        Option<MutexGuard<'a, DirChildren>>,
     ) {
         let src_children = self.cache.lock();
         let dst_children = if core::ptr::eq(self, other) {
@@ -302,7 +301,7 @@ impl<M: RawMutex> DirNode<M> {
             dst_name,
             dst_children
                 .as_mut()
-                .map_or_else(|| src_children.deref_mut(), MutexGuard::deref_mut),
+                .map_or_else(|| src_children.deref_mut(), DerefMut::deref_mut),
         ) {
             if src.node_type() == NodeType::Directory {
                 if let Ok(dir) = dst.as_dir()
@@ -323,14 +322,14 @@ impl<M: RawMutex> DirNode<M> {
             Self::forget_entry(
                 dst_children
                     .as_mut()
-                    .map_or_else(|| src_children.deref_mut(), MutexGuard::deref_mut),
+                    .map_or_else(|| src_children.deref_mut(), DerefMut::deref_mut),
                 dst_name,
             );
         })
     }
 
     /// Opens (or creates) a file in the directory.
-    pub fn open_file(&self, name: &str, options: &OpenOptions) -> VfsResult<DirEntry<M>> {
+    pub fn open_file(&self, name: &str, options: &OpenOptions) -> VfsResult<DirEntry> {
         verify_entry_name(name)?;
 
         let mut children = self.cache.lock();
@@ -355,7 +354,7 @@ impl<M: RawMutex> DirNode<M> {
         Ok(entry)
     }
 
-    pub fn mountpoint(&self) -> Option<Arc<Mountpoint<M>>> {
+    pub fn mountpoint(&self) -> Option<Arc<Mountpoint>> {
         self.mountpoint.lock().clone()
     }
 

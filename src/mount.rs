@@ -8,12 +8,13 @@ use axio::{IoEvents, Pollable};
 use core::{
     any::Any,
     iter,
-    sync::atomic::{AtomicU64, Ordering}, task::Context,
+    sync::atomic::{AtomicU64, Ordering},
+    task::Context,
 };
 use hashbrown::HashMap;
+use spin::{Mutex, MutexGuard};
 
 use inherit_methods_macro::inherit_methods;
-use lock_api::{Mutex, MutexGuard, RawMutex};
 
 use crate::{
     DirEntry, DirEntrySink, Filesystem, FilesystemOps, Metadata, MetadataUpdate, NodePermission,
@@ -21,19 +22,19 @@ use crate::{
     path::{DOT, DOTDOT, PathBuf},
 };
 
-pub struct Mountpoint<M> {
+pub struct Mountpoint {
     /// Root dir entry in the mountpoint.
-    root: DirEntry<M>,
+    root: DirEntry,
     /// Location in the parent mountpoint.
-    location: Option<Location<M>>,
+    location: Option<Location>,
     /// Children of the mountpoint.
-    children: Mutex<M, HashMap<ReferenceKey, Weak<Self>>>,
+    children: Mutex<HashMap<ReferenceKey, Weak<Self>>>,
     /// Device ID
     device: u64,
 }
 
-impl<M: RawMutex> Mountpoint<M> {
-    pub fn new(fs: &Filesystem<M>, location_in_parent: Option<Location<M>>) -> Arc<Self> {
+impl Mountpoint {
+    pub fn new(fs: &Filesystem, location_in_parent: Option<Location>) -> Arc<Self> {
         static DEVICE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
         let root = fs.root_dir();
@@ -45,16 +46,16 @@ impl<M: RawMutex> Mountpoint<M> {
         })
     }
 
-    pub fn new_root(fs: &Filesystem<M>) -> Arc<Self> {
+    pub fn new_root(fs: &Filesystem) -> Arc<Self> {
         Self::new(fs, None)
     }
 
-    pub fn root_location(self: &Arc<Self>) -> Location<M> {
+    pub fn root_location(self: &Arc<Self>) -> Location {
         Location::new(self.clone(), self.root.clone())
     }
 
     /// Returns the location in the parent mountpoint.
-    pub fn location(&self) -> Option<Location<M>> {
+    pub fn location(&self) -> Option<Location> {
         self.location.clone()
     }
 
@@ -68,7 +69,7 @@ impl<M: RawMutex> Mountpoint<M> {
     /// /mnt`. After the second mount is completed, the content of the first
     /// mount will be overridden (root mount -> mnt1 -> mnt2). We need to
     /// return `mnt2` for `mnt1.effective_mountpoint()`.
-    pub(crate) fn effective_mountpoint(self: &Arc<Self>) -> Arc<Mountpoint<M>> {
+    pub(crate) fn effective_mountpoint(self: &Arc<Self>) -> Arc<Mountpoint> {
         let mut mountpoint = self.clone();
         while let Some(mount) = mountpoint.root.as_dir().unwrap().mountpoint() {
             mountpoint = mount;
@@ -81,12 +82,12 @@ impl<M: RawMutex> Mountpoint<M> {
     }
 }
 
-pub struct Location<M> {
-    mountpoint: Arc<Mountpoint<M>>,
-    entry: DirEntry<M>,
+pub struct Location {
+    mountpoint: Arc<Mountpoint>,
+    entry: DirEntry,
 }
 
-impl<M> Clone for Location<M> {
+impl Clone for Location {
     fn clone(&self) -> Self {
         Self {
             mountpoint: self.mountpoint.clone(),
@@ -96,10 +97,10 @@ impl<M> Clone for Location<M> {
 }
 
 #[inherit_methods(from = "self.entry")]
-impl<M: RawMutex> Location<M> {
+impl Location {
     pub fn inode(&self) -> u64;
 
-    pub fn filesystem(&self) -> &dyn FilesystemOps<M>;
+    pub fn filesystem(&self) -> &dyn FilesystemOps;
 
     pub fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
 
@@ -120,23 +121,23 @@ impl<M: RawMutex> Location<M> {
 
     pub fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize>;
 
-    pub fn user_data(&self) -> MutexGuard<'_, M, Option<Box<dyn Any + Send + Sync>>>;
+    pub fn user_data(&self) -> MutexGuard<'_, Option<Box<dyn Any + Send + Sync>>>;
 }
 
-impl<M: RawMutex> Location<M> {
-    pub fn new(mountpoint: Arc<Mountpoint<M>>, entry: DirEntry<M>) -> Self {
+impl Location {
+    pub fn new(mountpoint: Arc<Mountpoint>, entry: DirEntry) -> Self {
         Self { mountpoint, entry }
     }
 
-    fn wrap(&self, entry: DirEntry<M>) -> Self {
+    fn wrap(&self, entry: DirEntry) -> Self {
         Self::new(self.mountpoint.clone(), entry)
     }
 
-    pub fn mountpoint(&self) -> &Arc<Mountpoint<M>> {
+    pub fn mountpoint(&self) -> &Arc<Mountpoint> {
         &self.mountpoint
     }
 
-    pub fn entry(&self) -> &DirEntry<M> {
+    pub fn entry(&self) -> &DirEntry {
         &self.entry
     }
 
@@ -255,7 +256,7 @@ impl<M: RawMutex> Location<M> {
         self.entry.as_dir()?.unlink(name, is_dir)
     }
 
-    pub fn open_file(&self, name: &str, options: &OpenOptions) -> VfsResult<Location<M>> {
+    pub fn open_file(&self, name: &str, options: &OpenOptions) -> VfsResult<Location> {
         self.entry
             .as_dir()?
             .open_file(name, options)
@@ -266,7 +267,7 @@ impl<M: RawMutex> Location<M> {
         self.entry.as_dir()?.read_dir(offset, sink)
     }
 
-    pub fn mount(&self, fs: &Filesystem<M>) -> VfsResult<Arc<Mountpoint<M>>> {
+    pub fn mount(&self, fs: &Filesystem) -> VfsResult<Arc<Mountpoint>> {
         let mut mountpoint = self.entry.as_dir()?.mountpoint.lock();
         if mountpoint.is_some() {
             return Err(VfsError::EBUSY);
@@ -294,7 +295,7 @@ impl<M: RawMutex> Location<M> {
     }
 }
 
-impl<M: RawMutex> Pollable for Location<M> {
+impl Pollable for Location {
     fn poll(&self) -> IoEvents {
         self.entry.poll()
     }

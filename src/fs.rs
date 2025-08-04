@@ -1,7 +1,6 @@
 use alloc::sync::Arc;
 
 use inherit_methods_macro::inherit_methods;
-use lock_api::RawMutex;
 
 use crate::{DirEntry, VfsResult};
 
@@ -21,12 +20,12 @@ pub struct StatFs {
 }
 
 /// Trait for filesystem operations
-pub trait FilesystemOps<M>: Send + Sync {
+pub trait FilesystemOps: Send + Sync {
     /// Gets the name of the filesystem
     fn name(&self) -> &str;
 
     /// Gets the root directory entry of the filesystem
-    fn root_dir(&self) -> DirEntry<M>;
+    fn root_dir(&self) -> DirEntry;
 
     /// Returns whether the filesystem is cacheable
     ///
@@ -39,11 +38,11 @@ pub trait FilesystemOps<M>: Send + Sync {
     fn stat(&self) -> VfsResult<StatFs>;
 }
 
-pub struct Filesystem<M> {
-    ops: Arc<dyn FilesystemOps<M>>,
+pub struct Filesystem {
+    ops: Arc<dyn FilesystemOps>,
 }
 
-impl<M> Clone for Filesystem<M> {
+impl Clone for Filesystem {
     fn clone(&self) -> Self {
         Self {
             ops: self.ops.clone(),
@@ -52,16 +51,16 @@ impl<M> Clone for Filesystem<M> {
 }
 
 #[inherit_methods(from = "self.ops")]
-impl<M: RawMutex> Filesystem<M> {
+impl Filesystem {
     pub fn name(&self) -> &str;
 
-    pub fn root_dir(&self) -> DirEntry<M>;
+    pub fn root_dir(&self) -> DirEntry;
 
     pub fn stat(&self) -> VfsResult<StatFs>;
 }
 
-impl<M: RawMutex> Filesystem<M> {
-    pub fn new(ops: Arc<dyn FilesystemOps<M>>) -> Self {
+impl Filesystem {
+    pub fn new(ops: Arc<dyn FilesystemOps>) -> Self {
         Self { ops }
     }
 }
