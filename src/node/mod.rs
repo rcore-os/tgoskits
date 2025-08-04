@@ -11,19 +11,19 @@ use alloc::{
 };
 use axio::{IoEvents, Pollable};
 use core::{any::Any, iter, ops::Deref, task::Context};
-use spin::{Mutex, MutexGuard};
 
 pub use dir::*;
 pub use file::*;
 use inherit_methods_macro::inherit_methods;
 
 use crate::{
-    FilesystemOps, Metadata, MetadataUpdate, NodeType, VfsError, VfsResult, path::PathBuf,
+    FilesystemOps, Metadata, MetadataUpdate, Mutex, MutexGuard, NodeType, VfsError, VfsResult,
+    path::PathBuf,
 };
 
 /// Filesystem node operationss
 #[allow(clippy::len_without_is_empty)]
-pub trait NodeOps: Send + Sync {
+pub trait NodeOps: Send + Sync + 'static {
     /// Gets the inode number of the node.
     fn inode(&self) -> u64;
 
@@ -176,7 +176,7 @@ impl DirEntry {
         })
     }
 
-    pub fn downcast<T: NodeOps + Send + Sync + 'static>(&self) -> VfsResult<Arc<T>> {
+    pub fn downcast<T: NodeOps>(&self) -> VfsResult<Arc<T>> {
         self.0
             .node
             .clone_inner()

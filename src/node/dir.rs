@@ -4,11 +4,11 @@ use core::{
     ops::{Deref, DerefMut},
 };
 use hashbrown::HashMap;
-use spin::{Mutex, MutexGuard};
 
 use super::DirEntry;
 use crate::{
-    MetadataUpdate, Mountpoint, NodeOps, NodePermission, NodeType, VfsError, VfsResult,
+    MetadataUpdate, Mountpoint, Mutex, MutexGuard, NodeOps, NodePermission, NodeType, VfsError,
+    VfsResult,
     path::{DOT, DOTDOT, MAX_NAME_LEN, verify_entry_name},
 };
 
@@ -114,7 +114,7 @@ impl Default for OpenOptions {
 
 pub struct DirNode {
     ops: Arc<dyn DirNodeOps>,
-    cache: Mutex<HashMap<String, DirEntry>>,
+    cache: Mutex<DirChildren>,
     pub(crate) mountpoint: Mutex<Option<Arc<Mountpoint>>>,
 }
 
@@ -145,7 +145,7 @@ impl DirNode {
         &self.ops
     }
 
-    pub fn downcast<T: DirNodeOps + Send + Sync + 'static>(&self) -> VfsResult<Arc<T>> {
+    pub fn downcast<T: DirNodeOps>(&self) -> VfsResult<Arc<T>> {
         self.ops
             .clone()
             .into_any()

@@ -15,3 +15,6 @@ pub use types::*;
 
 pub type VfsError = axerrno::LinuxError;
 pub type VfsResult<T> = Result<T, VfsError>;
+
+// VFS operations should be atomic.
+use kspin::{SpinNoPreempt as Mutex, SpinNoPreemptGuard as MutexGuard};

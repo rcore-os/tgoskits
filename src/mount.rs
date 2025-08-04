@@ -12,13 +12,12 @@ use core::{
     task::Context,
 };
 use hashbrown::HashMap;
-use spin::{Mutex, MutexGuard};
 
 use inherit_methods_macro::inherit_methods;
 
 use crate::{
-    DirEntry, DirEntrySink, Filesystem, FilesystemOps, Metadata, MetadataUpdate, NodePermission,
-    NodeType, OpenOptions, ReferenceKey, VfsError, VfsResult,
+    DirEntry, DirEntrySink, Filesystem, FilesystemOps, Metadata, MetadataUpdate, Mutex, MutexGuard,
+    NodePermission, NodeType, OpenOptions, ReferenceKey, VfsError, VfsResult,
     path::{DOT, DOTDOT, PathBuf},
 };
 

@@ -57,7 +57,7 @@ impl FileNode {
         &self.0
     }
 
-    pub fn downcast<T: FileNodeOps + Send + Sync + 'static>(self: &Arc<Self>) -> VfsResult<Arc<T>> {
+    pub fn downcast<T: FileNodeOps>(self: &Arc<Self>) -> VfsResult<Arc<T>> {
         self.0
             .clone()
             .into_any()
