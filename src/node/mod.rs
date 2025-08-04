@@ -9,7 +9,7 @@ use alloc::{
     vec,
     vec::Vec,
 };
-use core::{any::Any, iter, ops::Deref, task::Context};
+use core::{any::Any, fmt, iter, ops::Deref, task::Context};
 
 use axio::{IoEvents, Pollable};
 pub use dir::*;
@@ -73,8 +73,18 @@ impl Deref for Node {
     }
 }
 
+impl fmt::Debug for Node {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Node::File(file) => write!(f, "FileNode({})", file.inode()),
+            Node::Dir(dir) => write!(f, "DirNode({})", dir.inode()),
+        }
+    }
+}
+
 pub type ReferenceKey = (usize, String);
 
+#[derive(Debug)]
 pub struct Reference {
     parent: Option<DirEntry>,
     name: String,
@@ -98,6 +108,7 @@ impl Reference {
     }
 }
 
+#[derive(Debug)]
 struct Inner {
     node: Node,
     node_type: NodeType,
@@ -105,21 +116,11 @@ struct Inner {
     user_data: Mutex<Option<Box<dyn Any + Send + Sync>>>,
 }
 
+#[derive(Debug, Clone)]
 pub struct DirEntry(Arc<Inner>);
 
-impl Clone for DirEntry {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
+#[derive(Debug, Clone)]
 pub struct WeakDirEntry(Weak<Inner>);
-
-impl Clone for WeakDirEntry {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
 
 impl WeakDirEntry {
     pub fn upgrade(&self) -> Option<DirEntry> {

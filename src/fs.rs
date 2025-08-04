@@ -38,16 +38,9 @@ pub trait FilesystemOps: Send + Sync {
     fn stat(&self) -> VfsResult<StatFs>;
 }
 
+#[derive(Clone)]
 pub struct Filesystem {
     ops: Arc<dyn FilesystemOps>,
-}
-
-impl Clone for Filesystem {
-    fn clone(&self) -> Self {
-        Self {
-            ops: self.ops.clone(),
-        }
-    }
 }
 
 #[inherit_methods(from = "self.ops")]

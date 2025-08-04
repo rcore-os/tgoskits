@@ -21,6 +21,7 @@ use crate::{
     path::{DOT, DOTDOT, PathBuf},
 };
 
+#[derive(Debug)]
 pub struct Mountpoint {
     /// Root dir entry in the mountpoint.
     root: DirEntry,
@@ -81,18 +82,10 @@ impl Mountpoint {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Location {
     mountpoint: Arc<Mountpoint>,
     entry: DirEntry,
-}
-
-impl Clone for Location {
-    fn clone(&self) -> Self {
-        Self {
-            mountpoint: self.mountpoint.clone(),
-            entry: self.entry.clone(),
-        }
-    }
 }
 
 #[inherit_methods(from = "self.entry")]
@@ -294,12 +287,9 @@ impl Location {
     }
 }
 
+#[inherit_methods(from = "self.entry")]
 impl Pollable for Location {
-    fn poll(&self) -> IoEvents {
-        self.entry.poll()
-    }
+    fn poll(&self) -> IoEvents;
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        self.entry.register(context, events)
-    }
+    fn register(&self, context: &mut Context<'_>, events: IoEvents);
 }
