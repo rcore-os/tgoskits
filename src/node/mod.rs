@@ -9,9 +9,9 @@ use alloc::{
     vec,
     vec::Vec,
 };
-use axio::{IoEvents, Pollable};
 use core::{any::Any, iter, ops::Deref, task::Context};
 
+use axio::{IoEvents, Pollable};
 pub use dir::*;
 pub use file::*;
 use inherit_methods_macro::inherit_methods;

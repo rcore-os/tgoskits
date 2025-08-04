@@ -3,6 +3,7 @@ use core::{
     mem,
     ops::{Deref, DerefMut},
 };
+
 use hashbrown::HashMap;
 
 use super::DirEntry;
@@ -100,6 +101,7 @@ pub struct OpenOptions {
     pub permission: NodePermission,
     pub user: Option<(u32, u32)>, // (uid, gid)
 }
+
 impl Default for OpenOptions {
     fn default() -> Self {
         Self {

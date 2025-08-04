@@ -4,15 +4,15 @@ use alloc::{
     sync::{Arc, Weak},
     vec,
 };
-use axio::{IoEvents, Pollable};
 use core::{
     any::Any,
     iter,
     sync::atomic::{AtomicU64, Ordering},
     task::Context,
 };
-use hashbrown::HashMap;
 
+use axio::{IoEvents, Pollable};
+use hashbrown::HashMap;
 use inherit_methods_macro::inherit_methods;
 
 use crate::{
