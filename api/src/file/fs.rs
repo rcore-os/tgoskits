@@ -5,14 +5,14 @@ use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::{FS_CONTEXT, FsContext};
 use axfs_ng_vfs::{Location, Metadata};
 use axio::{IoEvents, Pollable, Read, Write};
-use axsync::{Mutex, MutexGuard, RawMutex};
+use axsync::{Mutex, MutexGuard};
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW};
 
 use super::{FileLike, Kstat, get_file_like};
 
 pub fn with_fs<R>(
     dirfd: c_int,
-    f: impl FnOnce(&mut FsContext<RawMutex>) -> LinuxResult<R>,
+    f: impl FnOnce(&mut FsContext) -> LinuxResult<R>,
 ) -> LinuxResult<R> {
     let mut fs = FS_CONTEXT.lock();
     if dirfd == AT_FDCWD {
@@ -24,12 +24,12 @@ pub fn with_fs<R>(
 }
 
 pub enum ResolveAtResult {
-    File(Location<RawMutex>),
+    File(Location),
     Other(Arc<dyn FileLike>),
 }
 
 impl ResolveAtResult {
-    pub fn into_file(self) -> Option<Location<RawMutex>> {
+    pub fn into_file(self) -> Option<Location> {
         match self {
             Self::File(file) => Some(file),
             Self::Other(_) => None,
@@ -94,17 +94,17 @@ pub fn metadata_to_kstat(metadata: &Metadata) -> Kstat {
 
 /// File wrapper for `axfs::fops::File`.
 pub struct File {
-    inner: Arc<Mutex<axfs_ng::File<RawMutex>>>,
+    inner: Arc<Mutex<axfs_ng::File>>,
 }
 
 impl File {
-    pub fn new(inner: axfs_ng::File<RawMutex>) -> Self {
+    pub fn new(inner: axfs_ng::File) -> Self {
         Self {
             inner: Arc::new(Mutex::new(inner)),
         }
     }
 
-    pub fn inner(&self) -> MutexGuard<'_, axfs_ng::File<RawMutex>> {
+    pub fn inner(&self) -> MutexGuard<'_, axfs_ng::File> {
         self.inner.lock()
     }
 }
@@ -157,12 +157,12 @@ impl Pollable for File {
 
 /// Directory wrapper for `axfs::fops::Directory`.
 pub struct Directory {
-    inner: Location<RawMutex>,
+    inner: Location,
     pub offset: Mutex<u64>,
 }
 
 impl Directory {
-    pub fn new(inner: Location<RawMutex>) -> Self {
+    pub fn new(inner: Location) -> Self {
         Self {
             inner,
             offset: Mutex::new(0),
@@ -170,7 +170,7 @@ impl Directory {
     }
 
     /// Get the inner node of the directory.
-    pub fn inner(&self) -> &Location<RawMutex> {
+    pub fn inner(&self) -> &Location {
         &self.inner
     }
 }

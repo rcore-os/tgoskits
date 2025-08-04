@@ -5,7 +5,7 @@ use axfs_ng_vfs::{
     DeviceId, DirEntry, DirNode, Filesystem, FilesystemOps, Metadata, MetadataUpdate, NodeOps,
     NodePermission, NodeType, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
 };
-use lock_api::{Mutex, RawMutex};
+use axsync::Mutex;
 use slab::Slab;
 
 use super::DirMaker;
@@ -29,25 +29,25 @@ pub fn dummy_stat_fs(fs_type: u32) -> StatFs {
 }
 
 /// A simple filesystem implementation that uses a slab allocator for inodes.
-pub struct SimpleFs<M = axsync::RawMutex> {
+pub struct SimpleFs {
     name: String,
     fs_type: u32,
-    inodes: Mutex<M, Slab<()>>,
-    root: Mutex<M, Option<DirEntry<M>>>,
+    inodes: Mutex<Slab<()>>,
+    root: Mutex<Option<DirEntry>>,
 }
 
-impl<M: RawMutex + Send + Sync + 'static> SimpleFs<M> {
+impl SimpleFs {
     /// Creates a new simple filesystem.
     pub fn new_with(
         name: String,
         fs_type: u32,
-        root: impl FnOnce(Arc<Self>) -> DirMaker<M>,
-    ) -> Filesystem<M> {
+        root: impl FnOnce(Arc<Self>) -> DirMaker,
+    ) -> Filesystem {
         let fs = Arc::new(Self {
             name,
             fs_type,
-            inodes: Mutex::default(),
-            root: Mutex::default(),
+            inodes: Mutex::new(Slab::new()),
+            root: Mutex::new(None),
         });
         let root = root(fs.clone());
         fs.set_root(DirEntry::new_dir(
@@ -57,12 +57,10 @@ impl<M: RawMutex + Send + Sync + 'static> SimpleFs<M> {
         Filesystem::new(fs)
     }
 
-    fn set_root(&self, root: DirEntry<M>) {
+    fn set_root(&self, root: DirEntry) {
         *self.root.lock() = Some(root);
     }
-}
 
-impl<M: RawMutex> SimpleFs<M> {
     fn alloc_inode(&self) -> u64 {
         self.inodes.lock().insert(()) as u64 + 1
     }
@@ -72,12 +70,12 @@ impl<M: RawMutex> SimpleFs<M> {
     }
 }
 
-impl<M: RawMutex + Send + Sync> FilesystemOps<M> for SimpleFs<M> {
+impl FilesystemOps for SimpleFs {
     fn name(&self) -> &str {
         &self.name
     }
 
-    fn root_dir(&self) -> DirEntry<M> {
+    fn root_dir(&self) -> DirEntry {
         self.root.lock().clone().unwrap()
     }
 
@@ -91,15 +89,15 @@ impl<M: RawMutex + Send + Sync> FilesystemOps<M> for SimpleFs<M> {
 }
 
 /// Filesystem node for [`SimpleFs`].
-pub struct SimpleFsNode<M: RawMutex> {
-    fs: Arc<SimpleFs<M>>,
+pub struct SimpleFsNode {
+    fs: Arc<SimpleFs>,
     ino: u64,
-    pub(crate) metadata: Mutex<M, Metadata>,
+    pub(crate) metadata: Mutex<Metadata>,
 }
 
-impl<M: RawMutex + Send + Sync + 'static> SimpleFsNode<M> {
+impl SimpleFsNode {
     /// Creates a new filesystem node.
-    pub fn new(fs: Arc<SimpleFs<M>>, node_type: NodeType, mode: NodePermission) -> Self {
+    pub fn new(fs: Arc<SimpleFs>, node_type: NodeType, mode: NodePermission) -> Self {
         let ino = fs.alloc_inode();
         let metadata = Metadata {
             device: 0,
@@ -125,13 +123,13 @@ impl<M: RawMutex + Send + Sync + 'static> SimpleFsNode<M> {
     }
 }
 
-impl<M: RawMutex> Drop for SimpleFsNode<M> {
+impl Drop for SimpleFsNode {
     fn drop(&mut self) {
         self.fs.release_inode(self.ino);
     }
 }
 
-impl<M: RawMutex + Send + Sync + 'static> NodeOps<M> for SimpleFsNode<M> {
+impl NodeOps for SimpleFsNode {
     fn inode(&self) -> u64 {
         self.ino
     }
@@ -164,7 +162,7 @@ impl<M: RawMutex + Send + Sync + 'static> NodeOps<M> for SimpleFsNode<M> {
         Ok(())
     }
 
-    fn filesystem(&self) -> &dyn FilesystemOps<M> {
+    fn filesystem(&self) -> &dyn FilesystemOps {
         self.fs.as_ref()
     }
 

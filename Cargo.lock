@@ -340,7 +340,7 @@ dependencies = [
  "chrono",
  "fatfs",
  "intrusive-collections",
- "lock_api",
+ "kspin",
  "log",
  "lru",
  "lwext4_rust",
@@ -352,14 +352,15 @@ dependencies = [
 [[package]]
 name = "axfs-ng-vfs"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axfs-ng-vfs.git?rev=fac4f98#fac4f98f17b3d817f47c06c0b09f09e0b68ccd06"
+source = "git+https://github.com/Starry-Mix-THU/axfs-ng-vfs.git?rev=e7cf4fd#e7cf4fddddd29eb0a518aee3f6212549f89a37f5"
 dependencies = [
  "axerrno",
  "axio",
  "bitflags 2.9.1",
+ "cfg-if",
  "hashbrown",
  "inherit-methods-macro",
- "lock_api",
+ "kspin",
  "log",
 ]
 
@@ -1396,10 +1397,9 @@ dependencies = [
 [[package]]
 name = "lwext4_rust"
 version = "0.2.0"
-source = "git+https://github.com/Starry-Mix-THU/lwext4_rust?rev=252bb5f#252bb5f7638002f7b2f22068fd02b640158f2de5"
+source = "git+https://github.com/Starry-Mix-THU/lwext4_rust?rev=7088e08#7088e0891f144180b94a937dd0ed01153df14475"
 dependencies = [
  "bindgen",
- "lock_api",
  "log",
 ]
 
@@ -1979,6 +1979,7 @@ dependencies = [
  "gimli",
  "hashbrown",
  "indoc",
+ "kspin",
  "lazy_static",
  "linkme",
  "linux-raw-sys",
@@ -2023,6 +2024,7 @@ dependencies = [
  "hashbrown",
  "inherit-methods-macro",
  "kernel-elf-parser",
+ "kspin",
  "lazy_static",
  "linkme",
  "linux-raw-sys",

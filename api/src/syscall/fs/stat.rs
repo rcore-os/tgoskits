@@ -3,7 +3,6 @@ use core::ffi::{c_char, c_int};
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
 use axfs_ng_vfs::{Location, NodePermission};
-use axsync::RawMutex;
 use linux_raw_sys::general::{
     __kernel_fsid_t, AT_EMPTY_PATH, R_OK, W_OK, X_OK, stat, statfs, statx,
 };
@@ -142,7 +141,7 @@ pub fn sys_faccessat2(
     Ok(0)
 }
 
-fn statfs(loc: &Location<RawMutex>, buf: UserPtr<statfs>) -> LinuxResult<()> {
+fn statfs(loc: &Location, buf: UserPtr<statfs>) -> LinuxResult<()> {
     let stat = loc.filesystem().stat()?;
     let dest = buf.get_as_mut()?;
     dest.f_type = stat.fs_type as _;

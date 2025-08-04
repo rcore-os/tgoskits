@@ -1,5 +1,4 @@
 use alloc::{borrow::ToOwned, string::String, sync::Arc};
-use axio::{IoEvents, Pollable};
 use core::{any::Any, borrow::Borrow, cmp::Ordering, task::Context, time::Duration};
 
 use axfs_ng_vfs::{
@@ -7,7 +6,8 @@ use axfs_ng_vfs::{
     FilesystemOps, Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, StatFs,
     VfsError, VfsResult, WeakDirEntry,
 };
-use axsync::{Mutex, RawMutex};
+use axio::{IoEvents, Pollable};
+use axsync::Mutex;
 use hashbrown::HashMap;
 use slab::Slab;
 use starry_core::vfs::dummy_stat_fs;
@@ -52,13 +52,13 @@ impl Borrow<str> for FileName {
 /// A simple in-memory filesystem that supports basic file operations.
 pub struct MemoryFs {
     inodes: Mutex<Slab<Arc<Inode>>>,
-    root: Mutex<Option<DirEntry<RawMutex>>>,
+    root: Mutex<Option<DirEntry>>,
 }
 
 impl MemoryFs {
     /// Creates a new empty memory filesystem.
     #[allow(clippy::new_ret_no_self)]
-    pub fn new() -> Filesystem<RawMutex> {
+    pub fn new() -> Filesystem {
         let fs = Arc::new(Self {
             inodes: Mutex::new(Slab::new()),
             root: Mutex::default(),
@@ -81,12 +81,12 @@ impl MemoryFs {
     }
 }
 
-impl FilesystemOps<RawMutex> for MemoryFs {
+impl FilesystemOps for MemoryFs {
     fn name(&self) -> &str {
         "tmpfs"
     }
 
-    fn root_dir(&self) -> DirEntry<RawMutex> {
+    fn root_dir(&self) -> DirEntry {
         self.root.lock().clone().unwrap()
     }
 
@@ -222,24 +222,15 @@ impl Drop for InodeRef {
 struct MemoryNode {
     fs: Arc<MemoryFs>,
     inode: Arc<Inode>,
-    this: Option<WeakDirEntry<RawMutex>>,
+    this: Option<WeakDirEntry>,
 }
 
 impl MemoryNode {
-    pub fn new(
-        fs: Arc<MemoryFs>,
-        inode: Arc<Inode>,
-        this: Option<WeakDirEntry<RawMutex>>,
-    ) -> Arc<Self> {
+    pub fn new(fs: Arc<MemoryFs>, inode: Arc<Inode>, this: Option<WeakDirEntry>) -> Arc<Self> {
         Arc::new(Self { fs, inode, this })
     }
 
-    fn new_entry(
-        &self,
-        name: &str,
-        node_type: NodeType,
-        inode: Arc<Inode>,
-    ) -> VfsResult<DirEntry<RawMutex>> {
+    fn new_entry(&self, name: &str, node_type: NodeType, inode: Arc<Inode>) -> VfsResult<DirEntry> {
         let fs = self.fs.clone();
         let reference = Reference::new(
             self.this.as_ref().and_then(WeakDirEntry::upgrade),
@@ -260,7 +251,7 @@ impl MemoryNode {
     }
 }
 
-impl NodeOps<RawMutex> for MemoryNode {
+impl NodeOps for MemoryNode {
     fn inode(&self) -> u64 {
         self.inode.ino
     }
@@ -296,7 +287,7 @@ impl NodeOps<RawMutex> for MemoryNode {
         Ok(())
     }
 
-    fn filesystem(&self) -> &dyn FilesystemOps<RawMutex> {
+    fn filesystem(&self) -> &dyn FilesystemOps {
         self.fs.as_ref()
     }
 
@@ -309,7 +300,7 @@ impl NodeOps<RawMutex> for MemoryNode {
     }
 }
 
-impl FileNodeOps<RawMutex> for MemoryNode {
+impl FileNodeOps for MemoryNode {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
         let file = self.inode.as_file()?;
         if let Some(symlink) = file.symlink.lock().as_ref() {
@@ -349,7 +340,7 @@ impl Pollable for MemoryNode {
     fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
 }
 
-impl DirNodeOps<RawMutex> for MemoryNode {
+impl DirNodeOps for MemoryNode {
     fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
         let mut count = 0;
         for (i, (name, entry)) in self
@@ -374,7 +365,7 @@ impl DirNodeOps<RawMutex> for MemoryNode {
         Ok(count)
     }
 
-    fn lookup(&self, name: &str) -> VfsResult<DirEntry<RawMutex>> {
+    fn lookup(&self, name: &str) -> VfsResult<DirEntry> {
         let dir = self.inode.as_dir()?;
         let entries = dir.entries.lock();
 
@@ -389,7 +380,7 @@ impl DirNodeOps<RawMutex> for MemoryNode {
         name: &str,
         node_type: NodeType,
         permission: NodePermission,
-    ) -> VfsResult<DirEntry<RawMutex>> {
+    ) -> VfsResult<DirEntry> {
         let dir = self.inode.as_dir()?;
         let mut entries = dir.entries.lock();
 
@@ -401,7 +392,7 @@ impl DirNodeOps<RawMutex> for MemoryNode {
         self.new_entry(name, node_type, inode)
     }
 
-    fn link(&self, name: &str, target: &DirEntry<RawMutex>) -> VfsResult<DirEntry<RawMutex>> {
+    fn link(&self, name: &str, target: &DirEntry) -> VfsResult<DirEntry> {
         let dir = self.inode.as_dir()?;
         let mut entries = dir.entries.lock();
 
@@ -434,7 +425,7 @@ impl DirNodeOps<RawMutex> for MemoryNode {
     }
 
     // TODO: atomicity
-    fn rename(&self, src_name: &str, dst_dir: &DirNode<RawMutex>, dst_name: &str) -> VfsResult<()> {
+    fn rename(&self, src_name: &str, dst_dir: &DirNode, dst_name: &str) -> VfsResult<()> {
         let dst_node = dst_dir.downcast::<Self>()?;
         if let Ok(entry) = dst_dir.lookup(dst_name) {
             let src_entry = self.lookup(src_name)?;

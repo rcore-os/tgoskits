@@ -13,36 +13,27 @@ pub use dir::*;
 pub use file::*;
 pub use fs::*;
 
-/// A callback that builds a `Arc<dyn DirNodeOps<M>>` for a given
-/// `WeakDirEntry<M>`.
-pub type DirMaker<M = axsync::RawMutex> =
-    Arc<dyn Fn(WeakDirEntry<M>) -> Arc<dyn DirNodeOps<M>> + Send + Sync>;
+/// A callback that builds a `Arc<dyn DirNodeOps>` for a given
+/// `WeakDirEntry`.
+pub type DirMaker = Arc<dyn Fn(WeakDirEntry) -> Arc<dyn DirNodeOps> + Send + Sync>;
 
 /// An enum containing either a directory ([`DirMaker`]) or a file (`Arc<dyn
-/// FileNodeOps<M>>`).
-pub enum NodeOpsMux<M> {
+/// FileNodeOps>`).
+#[derive(Clone)]
+pub enum NodeOpsMux {
     /// A directory node.
-    Dir(DirMaker<M>),
+    Dir(DirMaker),
     /// A file node.
-    File(Arc<dyn FileNodeOps<M>>),
+    File(Arc<dyn FileNodeOps>),
 }
 
-impl<M> Clone for NodeOpsMux<M> {
-    fn clone(&self) -> Self {
-        match self {
-            NodeOpsMux::Dir(maker) => NodeOpsMux::Dir(maker.clone()),
-            NodeOpsMux::File(ops) => NodeOpsMux::File(ops.clone()),
-        }
-    }
-}
-
-impl<M> From<DirMaker<M>> for NodeOpsMux<M> {
-    fn from(maker: DirMaker<M>) -> Self {
+impl From<DirMaker> for NodeOpsMux {
+    fn from(maker: DirMaker) -> Self {
         Self::Dir(maker)
     }
 }
 
-impl<M, T: FileNodeOps<M> + 'static> From<Arc<T>> for NodeOpsMux<M> {
+impl<T: FileNodeOps> From<Arc<T>> for NodeOpsMux {
     fn from(ops: Arc<T>) -> Self {
         Self::File(ops)
     }

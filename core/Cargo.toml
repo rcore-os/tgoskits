@@ -28,6 +28,7 @@ extern-trait.workspace = true
 hashbrown = { workspace = true }
 inherit-methods-macro = "0.1.0"
 kernel-elf-parser = { git = "https://github.com/Starry-Mix-THU/kernel_elf_parser.git", rev = "5e2160b" }
+kspin.workspace = true
 lazy_static = { workspace = true }
 linkme.workspace = true
 linux-raw-sys.workspace = true

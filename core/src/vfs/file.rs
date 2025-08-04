@@ -7,12 +7,11 @@ use axfs_ng_vfs::{
 };
 use axio::{IoEvents, Pollable};
 use inherit_methods_macro::inherit_methods;
-use lock_api::RawMutex;
 
 use super::fs::{SimpleFs, SimpleFsNode};
 
 /// Operations for a simple file.
-pub trait SimpleFileOps: Send + Sync {
+pub trait SimpleFileOps: Send + Sync + 'static {
     /// Reads all content in the file.
     fn read_all(&self) -> VfsResult<Cow<[u8]>>;
     /// Replaces the file's content with `data`.
@@ -44,7 +43,7 @@ where
 
 impl<F, R> SimpleFileOps for RwFile<F>
 where
-    F: Fn(SimpleFileOperation) -> VfsResult<Option<R>> + Send + Sync,
+    F: Fn(SimpleFileOperation) -> VfsResult<Option<R>> + Send + Sync + 'static,
     R: Into<Vec<u8>>,
 {
     fn read_all(&self) -> VfsResult<Cow<[u8]>> {
@@ -71,14 +70,14 @@ where
 }
 
 /// A simple file.
-pub struct SimpleFile<M: RawMutex> {
-    node: SimpleFsNode<M>,
+pub struct SimpleFile {
+    node: SimpleFsNode,
     ops: Arc<dyn SimpleFileOps>,
 }
 
-impl<M: RawMutex + Send + Sync + 'static> SimpleFile<M> {
+impl SimpleFile {
     /// Creates a simple file from given file operations.
-    pub fn new(fs: Arc<SimpleFs<M>>, ops: impl SimpleFileOps + 'static) -> Arc<Self> {
+    pub fn new(fs: Arc<SimpleFs>, ops: impl SimpleFileOps) -> Arc<Self> {
         let node = SimpleFsNode::new(fs, NodeType::RegularFile, NodePermission::default());
         Arc::new(Self {
             node,
@@ -88,14 +87,14 @@ impl<M: RawMutex + Send + Sync + 'static> SimpleFile<M> {
 }
 
 #[inherit_methods(from = "self.node")]
-impl<M: RawMutex + Send + Sync + 'static> NodeOps<M> for SimpleFile<M> {
+impl NodeOps for SimpleFile {
     fn inode(&self) -> u64;
 
     fn metadata(&self) -> VfsResult<Metadata>;
 
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
 
-    fn filesystem(&self) -> &dyn FilesystemOps<M>;
+    fn filesystem(&self) -> &dyn FilesystemOps;
 
     fn sync(&self, data_only: bool) -> VfsResult<()>;
 
@@ -108,7 +107,7 @@ impl<M: RawMutex + Send + Sync + 'static> NodeOps<M> for SimpleFile<M> {
     }
 }
 
-impl<M: RawMutex + Send + Sync + 'static> FileNodeOps<M> for SimpleFile<M> {
+impl FileNodeOps for SimpleFile {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
         let data = self.ops.read_all()?;
         if offset >= data.len() as u64 {
@@ -160,7 +159,8 @@ impl<M: RawMutex + Send + Sync + 'static> FileNodeOps<M> for SimpleFile<M> {
         self.ops.write_all(target.as_bytes())
     }
 }
-impl<M: RawMutex + Send + Sync + 'static> Pollable for SimpleFile<M> {
+
+impl Pollable for SimpleFile {
     fn poll(&self) -> IoEvents {
         IoEvents::IN | IoEvents::OUT
     }

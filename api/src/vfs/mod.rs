@@ -7,11 +7,10 @@ mod tmp;
 use axerrno::LinuxResult;
 use axfs_ng::FS_CONTEXT;
 use axfs_ng_vfs::{Filesystem, NodePermission};
-use axsync::RawMutex;
 pub use starry_core::vfs::{Device, DeviceOps, DirMapping, SimpleFs};
 pub use tmp::MemoryFs;
 
-fn mount_at(path: &str, mount_fs: Filesystem<RawMutex>) -> LinuxResult<()> {
+fn mount_at(path: &str, mount_fs: Filesystem) -> LinuxResult<()> {
     let fs = FS_CONTEXT.lock();
     if fs.resolve(path).is_err() {
         fs.create_dir(path, NodePermission::from_bits_truncate(0o755))?;

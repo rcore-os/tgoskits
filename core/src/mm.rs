@@ -122,7 +122,7 @@ fn map_elf<'a>(
 
 #[self_referencing]
 struct ElfCacheEntry {
-    ent: DirEntry<RawMutex>,
+    ent: DirEntry,
     data: Vec<u8>,
     #[borrows(data)]
     #[covariant]
@@ -130,7 +130,7 @@ struct ElfCacheEntry {
 }
 
 impl ElfCacheEntry {
-    fn load(loc: Location<RawMutex>) -> LinuxResult<Result<Self, Vec<u8>>> {
+    fn load(loc: Location) -> LinuxResult<Result<Self, Vec<u8>>> {
         let ent = loc.entry().clone();
         let mut data = Vec::new();
         OpenOptions::new()

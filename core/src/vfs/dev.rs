@@ -7,7 +7,6 @@ use axfs_ng_vfs::{
 };
 use axio::{IoEvents, Pollable};
 use inherit_methods_macro::inherit_methods;
-use lock_api::RawMutex;
 
 use super::{SimpleFs, SimpleFsNode};
 
@@ -49,15 +48,15 @@ where
 }
 
 /// A device node in the filesystem.
-pub struct Device<M: RawMutex> {
-    node: SimpleFsNode<M>,
+pub struct Device {
+    node: SimpleFsNode,
     ops: Arc<dyn DeviceOps>,
 }
 
-impl<M: RawMutex + Send + Sync + 'static> Device<M> {
+impl Device {
     /// Creates a new device.
     pub fn new(
-        fs: Arc<SimpleFs<M>>,
+        fs: Arc<SimpleFs>,
         node_type: NodeType,
         device_id: DeviceId,
         ops: Arc<dyn DeviceOps>,
@@ -74,14 +73,14 @@ impl<M: RawMutex + Send + Sync + 'static> Device<M> {
 }
 
 #[inherit_methods(from = "self.node")]
-impl<M: RawMutex + Send + Sync + 'static> NodeOps<M> for Device<M> {
+impl NodeOps for Device {
     fn inode(&self) -> u64;
 
     fn metadata(&self) -> VfsResult<Metadata>;
 
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
 
-    fn filesystem(&self) -> &dyn FilesystemOps<M>;
+    fn filesystem(&self) -> &dyn FilesystemOps;
 
     fn sync(&self, _data_only: bool) -> VfsResult<()> {
         Err(VfsError::EINVAL)
@@ -96,7 +95,7 @@ impl<M: RawMutex + Send + Sync + 'static> NodeOps<M> for Device<M> {
     }
 }
 
-impl<M: RawMutex + Send + Sync + 'static> FileNodeOps<M> for Device<M> {
+impl FileNodeOps for Device {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
         self.ops.read_at(buf, offset)
     }
@@ -126,7 +125,8 @@ impl<M: RawMutex + Send + Sync + 'static> FileNodeOps<M> for Device<M> {
         self.ops.ioctl(cmd, arg)
     }
 }
-impl<M: RawMutex + Send + Sync + 'static> Pollable for Device<M> {
+
+impl Pollable for Device {
     fn poll(&self) -> IoEvents {
         if let Some(pollable) = self.ops.as_pollable() {
             pollable.poll()

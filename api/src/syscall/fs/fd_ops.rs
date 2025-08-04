@@ -3,7 +3,6 @@ use core::ffi::{c_char, c_int};
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::{OpenOptions, OpenResult};
 use axfs_ng_vfs::NodePermission;
-use axsync::RawMutex;
 use axtask::current;
 use linux_raw_sys::general::*;
 use starry_core::task::AsThread;
@@ -54,7 +53,7 @@ fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32))
     options
 }
 
-fn add_to_fd(result: OpenResult<RawMutex>, cloexec: bool) -> LinuxResult<i32> {
+fn add_to_fd(result: OpenResult, cloexec: bool) -> LinuxResult<i32> {
     match result {
         OpenResult::File(file) => File::new(file).add_to_fd_table(cloexec),
         OpenResult::Dir(dir) => Directory::new(dir).add_to_fd_table(cloexec),

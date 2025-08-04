@@ -10,14 +10,14 @@ use core::any::Any;
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FsContext;
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeType, VfsResult};
-use axsync::{Mutex, RawMutex};
+use axsync::Mutex;
 use rand::{RngCore, SeedableRng, rngs::SmallRng};
 use starry_core::vfs::{Device, DeviceOps, DirMaker, DirMapping, SimpleDir, SimpleFs};
 pub use tty::N_TTY;
 
 const RANDOM_SEED: &[u8; 32] = b"0123456789abcdef0123456789abcdef";
 
-pub(crate) fn new_devfs() -> LinuxResult<Filesystem<RawMutex>> {
+pub(crate) fn new_devfs() -> LinuxResult<Filesystem> {
     let fs = SimpleFs::new_with("devfs".into(), 0x01021994, |fs| builder(fs));
     let mp = axfs_ng_vfs::Mountpoint::new_root(&fs);
     FsContext::new(mp.root_location())

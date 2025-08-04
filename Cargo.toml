@@ -42,7 +42,7 @@ axtask = { path = "arceos/modules/axtask", features = ["task-ext"] }
 
 axbacktrace = { git = "https://github.com/Starry-Mix-THU/axbacktrace.git", rev = "322f6da" }
 axerrno = { git = "https://github.com/Starry-Mix-THU/axerrno.git", rev = "f5d8f86" }
-axfs-ng-vfs = { git = "https://github.com/Starry-Mix-THU/axfs-ng-vfs.git", rev = "fac4f98" }
+axfs-ng-vfs = { git = "https://github.com/Starry-Mix-THU/axfs-ng-vfs.git", rev = "e7cf4fd" }
 axio = { git = "https://github.com/Starry-Mix-THU/axio.git", rev = "a069a3d" }
 starry-process = { git = "https://github.com/Starry-Mix-THU/starry-process.git", rev = "7e78f22" }
 starry-signal = { git = "https://github.com/Starry-Mix-THU/starry-signal.git", rev = "f3fb100" }
@@ -54,6 +54,7 @@ cfg-if = "1.0"
 event-listener = { version = "5.4.0", default-features = false }
 extern-trait = "0.2"
 hashbrown = "0.15.4"
+kspin = "0.1"
 lazy_static = { version = "1.5", features = ["spin_no_std"] }
 linkme = "0.3.33"
 linux-raw-sys = { version = "0.9.3", default-features = false, features = [

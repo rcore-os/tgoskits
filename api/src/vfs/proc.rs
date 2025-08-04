@@ -8,7 +8,6 @@ use alloc::{
 use core::iter;
 
 use axfs_ng_vfs::{Filesystem, VfsError, VfsResult};
-use axsync::RawMutex;
 use axtask::{WeakAxTaskRef, current};
 use indoc::indoc;
 use starry_core::{
@@ -80,7 +79,7 @@ const DUMMY_MEMINFO: &str = indoc! {"
     DirectMap1G:     1048576 kB
 "};
 
-pub fn new_procfs() -> Filesystem<RawMutex> {
+pub fn new_procfs() -> Filesystem {
     SimpleFs::new_with("proc".into(), 0x9fa0, builder)
 }
 
@@ -89,7 +88,7 @@ struct ProcessTaskDir {
     process: Weak<Process>,
 }
 
-impl SimpleDirOps<RawMutex> for ProcessTaskDir {
+impl SimpleDirOps for ProcessTaskDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         let Some(process) = self.process.upgrade() else {
             return Box::new(iter::empty());
@@ -102,7 +101,7 @@ impl SimpleDirOps<RawMutex> for ProcessTaskDir {
         )
     }
 
-    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux<RawMutex>> {
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let process = self.process.upgrade().ok_or(VfsError::ENOENT)?;
         let tid = name.parse::<u32>().map_err(|_| VfsError::ENOENT)?;
         let task = get_task(tid).map_err(|_| VfsError::ENOENT)?;
@@ -130,7 +129,7 @@ struct ThreadDir {
     task: WeakAxTaskRef,
 }
 
-impl SimpleDirOps<RawMutex> for ThreadDir {
+impl SimpleDirOps for ThreadDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         Box::new(
             ["stat", "status", "oom_score_adj", "task", "maps", "mounts"]
@@ -139,7 +138,7 @@ impl SimpleDirOps<RawMutex> for ThreadDir {
         )
     }
 
-    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux<RawMutex>> {
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let fs = self.fs.clone();
         let task = self.task.upgrade().ok_or(VfsError::ENOENT)?;
         Ok(match name {
@@ -207,7 +206,7 @@ impl SimpleDirOps<RawMutex> for ThreadDir {
 /// Handles /proc/[pid] & /proc/self
 struct ProcFsHandler(Arc<SimpleFs>);
 
-impl SimpleDirOps<RawMutex> for ProcFsHandler {
+impl SimpleDirOps for ProcFsHandler {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         Box::new(
             tasks()
@@ -217,7 +216,7 @@ impl SimpleDirOps<RawMutex> for ProcFsHandler {
         )
     }
 
-    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux<RawMutex>> {
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let task = if name == "self" {
             current().clone()
         } else {

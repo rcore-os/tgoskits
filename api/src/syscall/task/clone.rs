@@ -3,9 +3,9 @@ use alloc::sync::Arc;
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
 use axhal::{context::TrapFrame, uspace::UserContext};
-use axsync::spin::SpinNoIrq;
 use axtask::{TaskExtProxy, current, spawn_task};
 use bitflags::bitflags;
+use kspin::SpinNoIrq;
 use linux_raw_sys::general::*;
 use starry_core::{
     mm::copy_from_kernel,
