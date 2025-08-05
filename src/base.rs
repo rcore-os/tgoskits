@@ -144,6 +144,7 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
                 lock: &self.lock,
             })
         } else {
+            G::release(irq_state);
             None
         }
     }
@@ -228,11 +229,32 @@ impl<G: BaseGuard, T: ?Sized> Drop for BaseSpinLockGuard<'_, G, T> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc::channel;
     use std::sync::Arc;
     use std::thread;
 
+    struct TestGuardIrq;
+
+    static mut IRQ_CNT: u32 = 0;
+    impl BaseGuard for TestGuardIrq {
+        type State = u32;
+        fn acquire() -> Self::State {
+            unsafe {
+                IRQ_CNT += 1;
+                IRQ_CNT
+            }
+        }
+
+        fn release(_: Self::State) {
+            unsafe {
+                IRQ_CNT -= 1;
+            }
+        }
+    }
+
+    type TestSpinIrq<T> = BaseSpinLock<TestGuardIrq, T>;
     type SpinMutex<T> = crate::SpinRaw<T>;
 
     #[derive(Eq, PartialEq, Debug)]
@@ -305,6 +327,27 @@ mod tests {
         ::core::mem::drop(a);
         let c = mutex.try_lock();
         assert_eq!(c.as_ref().map(|r| **r), Some(42));
+    }
+
+    #[test]
+    fn test_irq_lock_restored() {
+        let m = TestSpinIrq::new(());
+        let _a = m.lock();
+        assert_eq!(unsafe { IRQ_CNT }, 1);
+        ::core::mem::drop(_a);
+        assert_eq!(unsafe { IRQ_CNT }, 0);
+    }
+
+    #[test]
+    #[cfg(feature = "smp")]
+    fn test_irq_try_lock_failed() {
+        let m = TestSpinIrq::new(());
+        let _a = m.lock();
+        assert_eq!(unsafe { IRQ_CNT }, 1);
+        let b = m.try_lock();
+        assert!(b.is_none());
+        assert_eq!(unsafe { IRQ_CNT }, 1);
+        drop(_a);
     }
 
     #[test]
