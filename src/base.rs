@@ -74,7 +74,7 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
     /// The returned value may be dereferenced for data access
     /// and the lock will be dropped when the guard falls out of scope.
     #[inline(always)]
-    pub fn lock(&self) -> BaseSpinLockGuard<G, T> {
+    pub fn lock(&self) -> BaseSpinLockGuard<'_, G, T> {
         let irq_state = G::acquire();
         #[cfg(feature = "smp")]
         {
@@ -119,7 +119,7 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
 
     /// Try to lock this [`BaseSpinLock`], returning a lock guard if successful.
     #[inline(always)]
-    pub fn try_lock(&self) -> Option<BaseSpinLockGuard<G, T>> {
+    pub fn try_lock(&self) -> Option<BaseSpinLockGuard<'_, G, T>> {
         let irq_state = G::acquire();
 
         cfg_if::cfg_if! {
