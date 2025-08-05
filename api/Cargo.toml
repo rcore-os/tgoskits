@@ -14,6 +14,8 @@ axfeat.workspace = true
 
 axalloc.workspace = true
 axconfig.workspace = true
+axdisplay.workspace = true
+axdriver.workspace = true
 axfs-ng.workspace = true
 axfs-ng-vfs.workspace = true
 axio.workspace = true

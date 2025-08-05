@@ -11,7 +11,7 @@ use linux_raw_sys::{
     ioctl::{BLKGETSIZE, BLKGETSIZE64, BLKRAGET, BLKRASET, BLKROGET, BLKROSET},
     loop_device::{LOOP_CLR_FD, LOOP_GET_STATUS, LOOP_SET_FD, LOOP_SET_STATUS, loop_info},
 };
-use starry_core::vfs::DeviceOps;
+use starry_core::vfs::{DeviceMmap, DeviceOps};
 
 use crate::{file::get_file_like, mm::UserPtr};
 
@@ -143,5 +143,13 @@ impl DeviceOps for LoopDevice {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    fn mmap(&self) -> DeviceMmap {
+        if let Some(FileBackend::Cached(cache)) = self.file.lock().as_ref() {
+            DeviceMmap::Cache(cache.clone())
+        } else {
+            DeviceMmap::None
+        }
     }
 }

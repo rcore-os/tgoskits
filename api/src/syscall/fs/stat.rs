@@ -48,6 +48,11 @@ pub fn sys_fstatat(
     let path = nullable!(path.get_as_str())?;
     let statbuf = statbuf.get_as_mut()?;
 
+    debug!(
+        "sys_fstatat <= dirfd: {}, path: {:?}, flags: {}",
+        dirfd, path, flags
+    );
+
     *statbuf = resolve_at(dirfd, path, flags)?.stat()?.into();
 
     Ok(0)

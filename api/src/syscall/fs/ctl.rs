@@ -304,6 +304,8 @@ pub fn sys_readlinkat(
     let path = path.get_as_str()?;
     let buf = buf.get_as_mut_slice(size)?;
 
+    debug!("sys_readlinkat <= dirfd: {}, path: {:?}", dirfd, path);
+
     with_fs(dirfd, |fs| {
         let entry = fs.resolve_no_follow(path)?;
         let link = entry.read_link()?;

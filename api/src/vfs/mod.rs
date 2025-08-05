@@ -2,6 +2,7 @@
 
 pub mod dev;
 mod proc;
+mod sys;
 mod tmp;
 
 use axerrno::LinuxResult;
@@ -25,5 +26,6 @@ pub fn mount_all() -> LinuxResult<()> {
     mount_at("/dev", dev::new_devfs()?)?;
     mount_at("/tmp", tmp::MemoryFs::new())?;
     mount_at("/proc", proc::new_procfs())?;
+    mount_at("/sys", sys::new_sysfs())?;
     Ok(())
 }

@@ -1,12 +1,16 @@
 use alloc::sync::Arc;
 
 use axerrno::{LinuxError, LinuxResult};
+use axfs_ng::FileBackend;
 use axhal::paging::{MappingFlags, PageSize};
 use axmm::backend::{Backend, SharedPages};
 use axtask::current;
 use linux_raw_sys::general::*;
 use memory_addr::{MemoryAddr, VirtAddr, VirtAddrRange, align_up_4k};
-use starry_core::task::AsThread;
+use starry_core::{
+    task::AsThread,
+    vfs::{Device, DeviceMmap},
+};
 
 use crate::{
     file::{File, FileLike},
@@ -142,7 +146,7 @@ pub fn sys_mmap(
 
     let start = addr.align_down(page_size);
     let end = (addr + length).align_up(page_size);
-    let length = end - start;
+    let mut length = end - start;
 
     let start = if map_flags.intersects(MmapFlags::FIXED | MmapFlags::FIXED_NOREPLACE) {
         let dst_addr = VirtAddr::from(start);
@@ -165,31 +169,68 @@ pub fn sys_mmap(
             .ok_or(LinuxError::ENOMEM)?
     };
 
+    let file = if fd > 0 {
+        Some(File::from_fd(fd)?)
+    } else {
+        None
+    };
+
     let backend = match map_type {
         MmapFlags::SHARED | MmapFlags::SHARED_VALIDATE => {
-            // TODO(mivik): shared validate
-            if fd > 0 {
-                let file = File::from_fd(fd)?;
+            if let Some(file) = file {
                 let file = file.inner();
-                let Some(cache) = file.backend()?.clone().into_cached() else {
-                    return Err(LinuxError::EINVAL);
-                };
-                // TODO(mivik): file mmap page size
-                Backend::new_file(
-                    start,
-                    cache,
-                    file.flags(),
-                    offset,
-                    &curr.as_thread().proc_data.aspace,
-                )
+                let backend = file.backend()?.clone();
+                match file.backend()?.clone() {
+                    FileBackend::Cached(cache) => {
+                        // TODO(mivik): file mmap page size
+                        Backend::new_file(
+                            start,
+                            cache,
+                            file.flags(),
+                            offset,
+                            &curr.as_thread().proc_data.aspace,
+                        )
+                    }
+                    FileBackend::Direct(loc) => {
+                        let device = loc
+                            .entry()
+                            .downcast::<Device>()
+                            .map_err(|_| LinuxError::ENODEV)?;
+
+                        match device.mmap() {
+                            DeviceMmap::None => {
+                                return Err(LinuxError::ENODEV);
+                            }
+                            DeviceMmap::ReadOnly => {
+                                Backend::new_cow(start, page_size, Some((backend, offset)))
+                            }
+                            DeviceMmap::Physical(mut range) => {
+                                range.start += offset;
+                                if range.is_empty() {
+                                    return Err(LinuxError::EINVAL);
+                                }
+                                length = length.min(range.size().align_down(page_size));
+                                Backend::new_linear(
+                                    start.as_usize() as isize - range.start.as_usize() as isize,
+                                )
+                            }
+                            DeviceMmap::Cache(cache) => Backend::new_file(
+                                start,
+                                cache,
+                                file.flags(),
+                                offset,
+                                &curr.as_thread().proc_data.aspace,
+                            ),
+                        }
+                    }
+                }
             } else {
                 Backend::new_shared(start, Arc::new(SharedPages::new(length, PageSize::Size4K)?))
             }
         }
         MmapFlags::PRIVATE => {
-            if fd > 0 {
+            if let Some(file) = file {
                 // Private mapping from a file
-                let file = File::from_fd(fd)?;
                 let backend = file.inner().backend()?.clone();
                 Backend::new_cow(start, page_size, Some((backend, offset)))
             } else {

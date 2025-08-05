@@ -1,14 +1,28 @@
 use alloc::sync::Arc;
 use core::{any::Any, task::Context};
 
+use axfs_ng::CachedFile;
 use axfs_ng_vfs::{
     DeviceId, FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeOps, NodePermission,
     NodeType, VfsError, VfsResult,
 };
 use axio::{IoEvents, Pollable};
 use inherit_methods_macro::inherit_methods;
+use memory_addr::PhysAddrRange;
 
 use super::{SimpleFs, SimpleFsNode};
+
+/// Mmap behavior for devices.
+pub enum DeviceMmap {
+    /// The device is not mappable.
+    None,
+    /// Maps to a physical address range.
+    Physical(PhysAddrRange),
+    /// The device is read-only and will be mapped as CoW.
+    ReadOnly,
+    /// Maps to a cached file.
+    Cache(CachedFile),
+}
 
 /// Trait for device operations.
 pub trait DeviceOps: Send + Sync {
@@ -28,22 +42,10 @@ pub trait DeviceOps: Send + Sync {
     fn as_pollable(&self) -> Option<&dyn Pollable> {
         None
     }
-}
 
-impl<F> DeviceOps for F
-where
-    F: Fn(&mut [u8], u64) -> VfsResult<usize> + Send + Sync + 'static,
-{
-    fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
-        (self)(buf, offset)
-    }
-
-    fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
-        Err(VfsError::EBADF)
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
+    /// Returns the memory mapping behavior of the device.
+    fn mmap(&self) -> DeviceMmap {
+        DeviceMmap::None
     }
 }
 
@@ -69,6 +71,11 @@ impl Device {
     /// Returns the inner device operations.
     pub fn inner(&self) -> &Arc<dyn DeviceOps> {
         &self.ops
+    }
+
+    /// Returns the memory mapping behavior of the device.
+    pub fn mmap(&self) -> DeviceMmap {
+        self.ops.mmap()
     }
 }
 

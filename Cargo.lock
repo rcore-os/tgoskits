@@ -249,6 +249,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "axdisplay"
+version = "0.1.0"
+dependencies = [
+ "axdriver",
+ "axdriver_display",
+ "axsync",
+ "lazyinit",
+ "log",
+]
+
+[[package]]
 name = "axdriver"
 version = "0.1.0"
 dependencies = [
@@ -256,6 +267,7 @@ dependencies = [
  "axconfig",
  "axdriver_base",
  "axdriver_block",
+ "axdriver_display",
  "axdriver_net",
  "axdriver_virtio",
  "axhal",
@@ -279,6 +291,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "axdriver_display"
+version = "0.1.2"
+source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=6168df5#6168df500eae7def141d4310668be78e9c7256cf"
+dependencies = [
+ "axdriver_base",
+]
+
+[[package]]
 name = "axdriver_net"
 version = "0.1.2"
 source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=6168df5#6168df500eae7def141d4310668be78e9c7256cf"
@@ -295,6 +315,7 @@ source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=6168df5#
 dependencies = [
  "axdriver_base",
  "axdriver_block",
+ "axdriver_display",
  "axdriver_net",
  "virtio-drivers",
 ]
@@ -313,6 +334,7 @@ version = "0.1.0"
 dependencies = [
  "axalloc",
  "axbacktrace",
+ "axdisplay",
  "axdriver",
  "axfs-ng",
  "axhal",
@@ -595,6 +617,7 @@ dependencies = [
  "axalloc",
  "axbacktrace",
  "axconfig",
+ "axdisplay",
  "axdriver",
  "axfs-ng",
  "axfs-ng-vfs",
@@ -1958,6 +1981,8 @@ dependencies = [
  "axalloc",
  "axbacktrace",
  "axconfig",
+ "axdisplay",
+ "axdriver",
  "axerrno",
  "axfeat",
  "axfs-ng",

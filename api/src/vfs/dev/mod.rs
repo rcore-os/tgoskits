@@ -1,5 +1,6 @@
 //! Special devices
 
+mod fb;
 mod r#loop;
 mod rtc;
 mod tty;
@@ -12,13 +13,13 @@ use axfs_ng::FsContext;
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeType, VfsResult};
 use axsync::Mutex;
 use rand::{RngCore, SeedableRng, rngs::SmallRng};
-use starry_core::vfs::{Device, DeviceOps, DirMaker, DirMapping, SimpleDir, SimpleFs};
+use starry_core::vfs::{Device, DeviceMmap, DeviceOps, DirMaker, DirMapping, SimpleDir, SimpleFs};
 pub use tty::N_TTY;
 
 const RANDOM_SEED: &[u8; 32] = b"0123456789abcdef0123456789abcdef";
 
 pub(crate) fn new_devfs() -> LinuxResult<Filesystem> {
-    let fs = SimpleFs::new_with("devfs".into(), 0x01021994, |fs| builder(fs));
+    let fs = SimpleFs::new_with("devfs".into(), 0x01021994, builder);
     let mp = axfs_ng_vfs::Mountpoint::new_root(&fs);
     FsContext::new(mp.root_location())
         .resolve("/shm")?
@@ -56,6 +57,10 @@ impl DeviceOps for Zero {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    fn mmap(&self) -> DeviceMmap {
+        DeviceMmap::ReadOnly
     }
 }
 
@@ -159,6 +164,17 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             Arc::new(rtc::Rtc),
         ),
     );
+    if axdisplay::has_display() {
+        root.add(
+            "fb0",
+            Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                DeviceId::new(29, 0),
+                Arc::new(fb::FrameBuffer::new()),
+            ),
+        );
+    }
 
     let tty = Device::new(
         fs.clone(),

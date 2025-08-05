@@ -30,6 +30,7 @@ axfeat = { path = "arceos/api/axfeat", features = [
 
 axalloc = { path = "arceos/modules/axalloc" }
 axconfig = { path = "arceos/modules/axconfig" }
+axdisplay = { path = "arceos/modules/axdisplay" }
 axdriver = { path = "arceos/modules/axdriver" }
 axfs-ng = { path = "arceos/modules/axfs-ng" }
 axhal = { path = "arceos/modules/axhal", features = ["uspace"] }
@@ -85,6 +86,8 @@ default = []
 qemu = [
     "axfeat/driver-virtio-blk",
     "axfeat/driver-virtio-net",
+    "axfeat/driver-virtio-gpu",
+    "axfeat/display",
     "axfeat/defplat",           # make rust-analyzer happy
 ]
 vf2 = ["axplat-riscv64-visionfive2", "axfeat/driver-ramdisk"]

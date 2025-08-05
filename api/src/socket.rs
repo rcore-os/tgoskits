@@ -3,7 +3,6 @@
 
 use alloc::vec::Vec;
 use core::{
-    ffi::CStr,
     mem::size_of,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
 };
@@ -159,10 +158,9 @@ impl SocketAddrExt for UnixSocketAddr {
         } else if data[0] == 0 {
             Self::Abstract(data[1..].into())
         } else {
+            let end = data.iter().position(|&c| c == 0).unwrap_or(data.len());
             Self::Path(
-                CStr::from_bytes_with_nul(data)
-                    .map_err(|_| LinuxError::EINVAL)?
-                    .to_str()
+                str::from_utf8(&data[..end])
                     .map_err(|_| LinuxError::EINVAL)?
                     .into(),
             )

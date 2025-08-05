@@ -507,9 +507,10 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
             tf.arg4() as _,
         ),
 
+        Sysno::epoll_create1 => Err(LinuxError::ENOSYS),
+
         // dummy fds
-        Sysno::epoll_create1
-        | Sysno::signalfd4
+        Sysno::signalfd4
         | Sysno::timerfd_create
         | Sysno::fanotify_init
         | Sysno::inotify_init1
