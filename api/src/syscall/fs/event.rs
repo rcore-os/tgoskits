@@ -2,7 +2,7 @@ use axerrno::{LinuxError, LinuxResult};
 use bitflags::bitflags;
 use linux_raw_sys::general::{EFD_CLOEXEC, EFD_NONBLOCK, EFD_SEMAPHORE};
 
-use crate::file::{EventFd, FileLike, add_file_like};
+use crate::file::{FileLike, add_file_like, event::EventFd};
 
 bitflags! {
     /// Flags for the `eventfd2` syscall.

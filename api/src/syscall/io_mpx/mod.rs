@@ -1,3 +1,4 @@
+mod epoll;
 mod poll;
 mod select;
 
@@ -6,7 +7,7 @@ use core::task::Context;
 
 use axio::{IoEvents, Pollable};
 
-pub use self::{poll::*, select::*};
+pub use self::{epoll::*, poll::*, select::*};
 use crate::file::FileLike;
 
 struct FdPollSet(pub Vec<(Arc<dyn FileLike>, IoEvents)>);

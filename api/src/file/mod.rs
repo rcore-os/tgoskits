@@ -1,4 +1,5 @@
-mod event;
+pub mod epoll;
+pub mod event;
 mod fs;
 mod net;
 mod pidfd;
@@ -18,7 +19,6 @@ use spin::RwLock;
 use starry_core::{resources::AX_FILE_LIMIT, task::AsThread};
 
 pub use self::{
-    event::EventFd,
     fs::{Directory, File, ResolveAtResult, metadata_to_kstat, resolve_at, with_fs},
     net::Socket,
     pidfd::PidFd,

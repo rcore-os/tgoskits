@@ -88,6 +88,15 @@ run_ltp() {
     dup207
     dup3_01
     dup3_02
+    epoll_create01
+    epoll_create02
+    epoll_create1_01
+    epoll_create1_02
+    epoll_ctl01
+    epoll_ctl02
+    epoll_ctl03
+    epoll_ctl04
+    epoll_ctl05
     eventfd01
     eventfd02
     eventfd03

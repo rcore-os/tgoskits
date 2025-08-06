@@ -229,6 +229,29 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
             tf.arg4().into(),
             tf.arg5().into(),
         ),
+        Sysno::epoll_create1 => sys_epoll_create1(tf.arg0() as _),
+        Sysno::epoll_ctl => sys_epoll_ctl(
+            tf.arg0() as _,
+            tf.arg1() as _,
+            tf.arg2() as _,
+            tf.arg3().into(),
+        ),
+        Sysno::epoll_pwait => sys_epoll_pwait(
+            tf.arg0() as _,
+            tf.arg1().into(),
+            tf.arg2() as _,
+            tf.arg3() as _,
+            tf.arg4().into(),
+            tf.arg5() as _,
+        ),
+        Sysno::epoll_pwait2 => sys_epoll_pwait2(
+            tf.arg0() as _,
+            tf.arg1().into(),
+            tf.arg2() as _,
+            tf.arg3().into(),
+            tf.arg4().into(),
+            tf.arg5() as _,
+        ),
 
         // fs mount
         Sysno::mount => sys_mount(
@@ -506,8 +529,6 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
             tf.arg3().into(),
             tf.arg4() as _,
         ),
-
-        Sysno::epoll_create1 => Err(LinuxError::ENOSYS),
 
         // dummy fds
         Sysno::signalfd4
