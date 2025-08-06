@@ -40,7 +40,7 @@ pub fn mount_all() -> LinuxResult<()> {
         }
     }
     path.push("subsystem");
-    fs.symlink("/sys/bus/pci", &path)?;
+    fs.symlink("whatever", &path)?;
 
     Ok(())
 }
