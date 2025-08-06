@@ -454,6 +454,7 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
         Sysno::getgid => sys_getgid(),
         Sysno::getegid => sys_getegid(),
         Sysno::setuid => sys_setuid(tf.arg0() as _),
+        Sysno::setgid => sys_setgid(tf.arg0() as _),
         Sysno::uname => sys_uname(tf.arg0().into()),
         Sysno::sysinfo => sys_sysinfo(tf.arg0().into()),
         Sysno::syslog => sys_syslog(tf.arg0() as _, tf.arg1().into(), tf.arg2() as _),
