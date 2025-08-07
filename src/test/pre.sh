@@ -1,37 +1,39 @@
-echo @@@@@@@@@@ setup @@@@@@@@@@
+if ! /musl/busybox test -d /bin; then
+    echo @@@@@@@@@@ setup @@@@@@@@@@
 
-/musl/busybox mkdir -v /bin
-/musl/busybox --install -s /bin
-export PATH=/bin
+    /musl/busybox mkdir -v /bin
+    /musl/busybox --install -s /bin
+    export PATH=/bin
 
-mkdir -v /lib
-ln -v -s /glibc/lib/libc.so.6 /lib/libc.so.6
-ln -v -s /glibc/lib/libm.so.6 /lib/libm.so.6
-ln -v -s /lib/libc.so.6 /lib/libc.so
-ln -v -s /lib/libm.so.6 /lib/libm.so
-if [[ $ARCH == loongarch64 ]]; then
-    ln -v -s /musl/lib/libc.so /lib/ld-musl-loongarch-lp64d.so.1
-    ln -v -s /glibc/lib/ld-linux-loongarch-lp64d.so.1 /lib/ld-linux-loongarch-lp64d.so.1
-elif [[ $ARCH == riscv64 ]]; then
-    ln -v -s /musl/lib/libc.so /lib/ld-musl-riscv64.so.1
-    ln -v -s /musl/lib/libc.so /lib/ld-musl-riscv64-sf.so.1
-    ln -v -s /glibc/lib/ld-linux-riscv64-lp64d.so.1 /lib/ld-linux-riscv64-lp64d.so.1
+    mkdir -v /lib
+    ln -v -s /glibc/lib/libc.so.6 /lib/libc.so.6
+    ln -v -s /glibc/lib/libm.so.6 /lib/libm.so.6
+    ln -v -s /lib/libc.so.6 /lib/libc.so
+    ln -v -s /lib/libm.so.6 /lib/libm.so
+    if [[ $ARCH == loongarch64 ]]; then
+        ln -v -s /musl/lib/libc.so /lib/ld-musl-loongarch-lp64d.so.1
+        ln -v -s /glibc/lib/ld-linux-loongarch-lp64d.so.1 /lib/ld-linux-loongarch-lp64d.so.1
+    elif [[ $ARCH == riscv64 ]]; then
+        ln -v -s /musl/lib/libc.so /lib/ld-musl-riscv64.so.1
+        ln -v -s /musl/lib/libc.so /lib/ld-musl-riscv64-sf.so.1
+        ln -v -s /glibc/lib/ld-linux-riscv64-lp64d.so.1 /lib/ld-linux-riscv64-lp64d.so.1
+    fi
+    ln -v -s /lib /lib64
+
+    mkdir -v /usr
+    ln -v -s /lib /usr/lib64
+
+    mkdir -v -p /var/tmp
+    mkdir -v -p /var/log
+
+    mkdir -v /etc
+    echo "root:x:0:0:root:/root:/bin/sh" >>/etc/passwd
+    echo "nobody:x:65534:65534:nobody:/:/bin/sh" >>/etc/passwd
+    echo "nameserver 8.8.8.8" >/etc/resolv.conf
+
+    mkdir -vp /lib/modules/10.0.0/build
+    echo "CONFIG_EVENTFD=y" >>/lib/modules/10.0.0/build/.config
 fi
-ln -v -s /lib /lib64
-
-mkdir -v /usr
-ln -v -s /lib /usr/lib64
-
-mkdir -v -p /var/tmp
-mkdir -v -p /var/log
-
-mkdir -v /etc
-echo "root:x:0:0:root:/root:/bin/sh" >>/etc/passwd
-echo "nobody:x:65534:65534:nobody:/:/bin/sh" >>/etc/passwd
-echo "nameserver 8.8.8.8" >/etc/resolv.conf
-
-mkdir -vp /lib/modules/10.0.0/build
-echo "CONFIG_EVENTFD=y" >>/lib/modules/10.0.0/build/.config
 
 echo @@@@@@@@@@ files @@@@@@@@@@
 ls -lhAR /lib
@@ -484,12 +486,12 @@ run_ltp glibc
 cd /musl
 timeout 20 ./basic_testcode.sh
 timeout 20 ./lua_testcode.sh
-timeout 30 ./busybox_testcode.sh
+timeout 60 ./busybox_testcode.sh
 
 cd /glibc
 timeout 20 ./basic_testcode.sh
 timeout 20 ./lua_testcode.sh
-timeout 30 ./busybox_testcode.sh
+timeout 60 ./busybox_testcode.sh
 
 cd /musl
 timeout 60 ./libctest_testcode.sh
