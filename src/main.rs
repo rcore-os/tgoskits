@@ -33,6 +33,3 @@ fn main() {
 
 #[cfg(feature = "vf2")]
 extern crate axplat_riscv64_visionfive2;
-
-#[cfg(feature = "vf2")]
-axdriver::include_initrd!("vf2.img");

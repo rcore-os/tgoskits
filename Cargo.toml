@@ -90,7 +90,7 @@ qemu = [
     "axfeat/display",
     "axfeat/defplat",           # make rust-analyzer happy
 ]
-vf2 = ["axplat-riscv64-visionfive2", "axfeat/driver-ramdisk"]
+vf2 = ["axplat-riscv64-visionfive2", "axfeat/driver-sdmmc-gpt"]
 
 [dependencies]
 axfeat.workspace = true
