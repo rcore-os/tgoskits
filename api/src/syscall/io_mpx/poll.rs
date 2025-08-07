@@ -4,16 +4,23 @@ use axerrno::{LinuxError, LinuxResult};
 use axhal::time::TimeValue;
 use axio::IoEvents;
 use axtask::future::Poller;
-use linux_raw_sys::general::{POLLNVAL, pollfd, sigset_t, timespec};
+use linux_raw_sys::general::{POLLNVAL, pollfd, timespec};
+use starry_signal::SignalSet;
 
 use super::FdPollSet;
 use crate::{
     file::get_file_like,
     mm::{UserConstPtr, UserPtr, nullable},
+    signal::with_replacen_blocked,
+    syscall::signal::check_sigset_size,
     time::TimeValueLike,
 };
 
-fn do_poll(poll_fds: &mut [pollfd], timeout: Option<TimeValue>) -> LinuxResult<isize> {
+fn do_poll(
+    poll_fds: &mut [pollfd],
+    timeout: Option<TimeValue>,
+    sigmask: Option<SignalSet>,
+) -> LinuxResult<isize> {
     debug!("do_poll fds={:?} timeout={:?}", poll_fds, timeout);
 
     let mut res = 0isize;
@@ -45,35 +52,36 @@ fn do_poll(poll_fds: &mut [pollfd], timeout: Option<TimeValue>) -> LinuxResult<i
     }
     let fds = FdPollSet(fds);
 
-    let result = Poller::new(&fds, IoEvents::empty())
-        .timeout(timeout)
-        .poll(|| {
-            let mut res = 0usize;
-            for ((fd, events), revents) in fds.0.iter().zip(revents.iter_mut()) {
-                let mut result = fd.poll();
-                if result.contains(IoEvents::IN) {
-                    result |= IoEvents::RDNORM;
-                }
-                if result.contains(IoEvents::OUT) {
-                    result |= IoEvents::WRNORM;
-                }
-                result &= *events;
+    with_replacen_blocked(sigmask, || {
+        match Poller::new(&fds, IoEvents::empty())
+            .timeout(timeout)
+            .poll(|| {
+                let mut res = 0usize;
+                for ((fd, events), revents) in fds.0.iter().zip(revents.iter_mut()) {
+                    let mut result = fd.poll();
+                    if result.contains(IoEvents::IN) {
+                        result |= IoEvents::RDNORM;
+                    }
+                    if result.contains(IoEvents::OUT) {
+                        result |= IoEvents::WRNORM;
+                    }
+                    result &= *events;
 
-                **revents = result.bits() as _;
-                if **revents != 0 {
-                    res += 1;
+                    **revents = result.bits() as _;
+                    if **revents != 0 {
+                        res += 1;
+                    }
                 }
-            }
-            if res > 0 {
-                Ok(res as _)
-            } else {
-                Err(LinuxError::EAGAIN)
-            }
-        });
-    match result {
-        Err(LinuxError::ETIMEDOUT) => Ok(0),
-        other => other,
-    }
+                if res > 0 {
+                    Ok(res as _)
+                } else {
+                    Err(LinuxError::EAGAIN)
+                }
+            }) {
+            Err(LinuxError::ETIMEDOUT) => Ok(0),
+            other => other,
+        }
+    })
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -84,19 +92,21 @@ pub fn sys_poll(fds: UserPtr<pollfd>, nfds: u32, timeout: i32) -> LinuxResult<is
     } else {
         Some(TimeValue::from_millis(timeout as u64))
     };
-    do_poll(fds, timeout)
+    do_poll(fds, timeout, None)
 }
 
 pub fn sys_ppoll(
     fds: UserPtr<pollfd>,
-    nfds: u32,
+    nfds: i32,
     timeout: UserConstPtr<timespec>,
-    _sigmask: UserConstPtr<sigset_t>,
+    sigmask: UserConstPtr<SignalSet>,
+    sigsetsize: usize,
 ) -> LinuxResult<isize> {
-    let fds = fds.get_as_mut_slice(nfds as usize)?;
+    check_sigset_size(sigsetsize)?;
+    let fds = fds.get_as_mut_slice(nfds.try_into().map_err(|_| LinuxError::EINVAL)?)?;
     let timeout = nullable!(timeout.get_as_ref())?
         .map(|ts| ts.try_into_time_value())
         .transpose()?;
     // TODO: handle signal
-    do_poll(fds, timeout)
+    do_poll(fds, timeout, nullable!(sigmask.get_as_ref())?.copied())
 }

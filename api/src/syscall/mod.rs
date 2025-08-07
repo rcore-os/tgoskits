@@ -212,6 +212,7 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
             tf.arg1() as _,
             tf.arg2().into(),
             tf.arg3().into(),
+            tf.arg4() as _,
         ),
         #[cfg(target_arch = "x86_64")]
         Sysno::select => sys_select(

@@ -15,6 +15,8 @@ use crate::{
         epoll::{Epoll, EpollEvent, EpollFlags},
     },
     mm::{UserConstPtr, UserPtr, nullable},
+    signal::with_replacen_blocked,
+    syscall::signal::check_sigset_size,
     time::TimeValueLike,
 };
 
@@ -78,10 +80,10 @@ fn do_epoll_wait(
     events: UserPtr<epoll_event>,
     maxevents: i32,
     timeout: Option<Duration>,
-    _sigset: UserConstPtr<SignalSet>,
-    _sigsetsize: usize,
+    sigmask: UserConstPtr<SignalSet>,
+    sigsetsize: usize,
 ) -> LinuxResult<isize> {
-    // TODO: handle sigset
+    check_sigset_size(sigsetsize)?;
     debug!(
         "sys_epoll_wait <= epfd: {}, maxevents: {}, timeout: {:?}",
         epfd, maxevents, timeout
@@ -94,14 +96,17 @@ fn do_epoll_wait(
     }
     let events = events.get_as_mut_slice(maxevents as usize)?;
 
-    match Poller::new(epoll.as_ref(), IoEvents::IN)
-        .timeout(timeout)
-        .poll(|| epoll.poll_events(events))
-    {
-        Ok(n) => Ok(n as isize),
-        Err(LinuxError::ETIMEDOUT) => Ok(0),
-        Err(e) => Err(e),
-    }
+    with_replacen_blocked(
+        nullable!(sigmask.get_as_ref())?.copied(),
+        || match Poller::new(epoll.as_ref(), IoEvents::IN)
+            .timeout(timeout)
+            .poll(|| epoll.poll_events(events))
+        {
+            Ok(n) => Ok(n as isize),
+            Err(LinuxError::ETIMEDOUT) => Ok(0),
+            Err(e) => Err(e),
+        },
+    )
 }
 
 pub fn sys_epoll_pwait(
@@ -109,7 +114,7 @@ pub fn sys_epoll_pwait(
     events: UserPtr<epoll_event>,
     maxevents: i32,
     timeout: i32,
-    sigset: UserConstPtr<SignalSet>,
+    sigmask: UserConstPtr<SignalSet>,
     sigsetsize: usize,
 ) -> LinuxResult<isize> {
     let timeout = match timeout {
@@ -117,7 +122,7 @@ pub fn sys_epoll_pwait(
         t if t >= 0 => Some(Duration::from_millis(t as u64)),
         _ => return Err(LinuxError::EINVAL),
     };
-    do_epoll_wait(epfd, events, maxevents, timeout, sigset, sigsetsize)
+    do_epoll_wait(epfd, events, maxevents, timeout, sigmask, sigsetsize)
 }
 
 pub fn sys_epoll_pwait2(
@@ -125,11 +130,11 @@ pub fn sys_epoll_pwait2(
     events: UserPtr<epoll_event>,
     maxevents: i32,
     timeout: UserConstPtr<timespec>,
-    sigset: UserConstPtr<SignalSet>,
+    sigmask: UserConstPtr<SignalSet>,
     sigsetsize: usize,
 ) -> LinuxResult<isize> {
     let timeout = nullable!(timeout.get_as_ref())?
         .map(|ts| ts.try_into_time_value())
         .transpose()?;
-    do_epoll_wait(epfd, events, maxevents, timeout, sigset, sigsetsize)
+    do_epoll_wait(epfd, events, maxevents, timeout, sigmask, sigsetsize)
 }

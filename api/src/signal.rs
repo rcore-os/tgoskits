@@ -1,8 +1,13 @@
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::{
+    mem,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
+use axerrno::LinuxResult;
 use axhal::context::TrapFrame;
-use starry_core::task::Thread;
-use starry_signal::{SignalOSAction, SignalSet};
+use axtask::current;
+use starry_core::task::{AsThread, Thread};
+use starry_signal::{SignalOSAction, SignalSet, Signo};
 
 use crate::task::do_exit;
 
@@ -42,4 +47,23 @@ pub fn block_next_signal() {
 
 pub fn unblock_next_signal() -> bool {
     BLOCK_NEXT_SIGNAL_CHECK.swap(false, Ordering::SeqCst)
+}
+
+pub fn with_replacen_blocked<R>(
+    blocked: Option<SignalSet>,
+    f: impl FnOnce() -> LinuxResult<R>,
+) -> LinuxResult<R> {
+    let curr = current();
+    let old_blocked = blocked.map(|mut set| {
+        set.remove(Signo::SIGKILL);
+        set.remove(Signo::SIGSTOP);
+        curr.as_thread()
+            .signal
+            .with_blocked_mut(|b| mem::replace(b, set))
+    });
+    f().inspect(|_| {
+        if let Some(old) = old_blocked {
+            current().as_thread().signal.with_blocked_mut(|b| *b = old);
+        }
+    })
 }

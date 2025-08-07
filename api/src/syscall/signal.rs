@@ -23,7 +23,7 @@ use crate::{
     time::TimeValueLike,
 };
 
-fn check_sigset_size(size: usize) -> LinuxResult<()> {
+pub(crate) fn check_sigset_size(size: usize) -> LinuxResult<()> {
     if size != size_of::<SignalSet>() {
         return Err(LinuxError::EINVAL);
     }

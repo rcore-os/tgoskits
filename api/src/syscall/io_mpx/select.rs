@@ -15,6 +15,8 @@ use super::FdPollSet;
 use crate::{
     file::FD_TABLE,
     mm::{UserConstPtr, UserPtr, nullable},
+    signal::with_replacen_blocked,
+    syscall::signal::check_sigset_size,
     time::TimeValueLike,
 };
 
@@ -46,10 +48,18 @@ fn do_select(
     writefds: UserPtr<__kernel_fd_set>,
     exceptfds: UserPtr<__kernel_fd_set>,
     timeout: Option<Duration>,
+    sigmask: UserConstPtr<SignalSetWithSize>,
 ) -> LinuxResult<isize> {
     if nfds > __FD_SETSIZE {
         return Err(LinuxError::EINVAL);
     }
+    let sigmask = if let Some(sigmask) = nullable!(sigmask.get_as_ref())? {
+        check_sigset_size(sigmask.sigsetsize)?;
+        let set = sigmask.set;
+        nullable!(set.get_as_ref())?
+    } else {
+        None
+    };
 
     let mut readfds = nullable!(readfds.get_as_mut())?;
     let mut writefds = nullable!(writefds.get_as_mut())?;
@@ -93,37 +103,42 @@ fn do_select(
     if let Some(exceptfds) = exceptfds.as_deref_mut() {
         unsafe { FD_ZERO(exceptfds) };
     }
-    Poller::new(&fds, IoEvents::empty())
-        .timeout(timeout)
-        .poll(|| {
-            let mut res = 0usize;
-            for ((fd, interested), index) in fds.0.iter().zip(fd_indices.iter().copied()) {
-                let events = fd.poll() & *interested;
-                if events.contains(IoEvents::IN)
-                    && let Some(set) = readfds.as_deref_mut()
-                {
-                    res += 1;
-                    unsafe { FD_SET(index as _, set) };
+    with_replacen_blocked(sigmask.copied(), || {
+        match Poller::new(&fds, IoEvents::empty())
+            .timeout(timeout)
+            .poll(|| {
+                let mut res = 0usize;
+                for ((fd, interested), index) in fds.0.iter().zip(fd_indices.iter().copied()) {
+                    let events = fd.poll() & *interested;
+                    if events.contains(IoEvents::IN)
+                        && let Some(set) = readfds.as_deref_mut()
+                    {
+                        res += 1;
+                        unsafe { FD_SET(index as _, set) };
+                    }
+                    if events.contains(IoEvents::OUT)
+                        && let Some(set) = writefds.as_deref_mut()
+                    {
+                        res += 1;
+                        unsafe { FD_SET(index as _, set) };
+                    }
+                    if events.contains(IoEvents::ERR)
+                        && let Some(set) = exceptfds.as_deref_mut()
+                    {
+                        res += 1;
+                        unsafe { FD_SET(index as _, set) };
+                    }
                 }
-                if events.contains(IoEvents::OUT)
-                    && let Some(set) = writefds.as_deref_mut()
-                {
-                    res += 1;
-                    unsafe { FD_SET(index as _, set) };
+                if res > 0 {
+                    return Ok(res as _);
                 }
-                if events.contains(IoEvents::ERR)
-                    && let Some(set) = exceptfds.as_deref_mut()
-                {
-                    res += 1;
-                    unsafe { FD_SET(index as _, set) };
-                }
-            }
-            if res > 0 {
-                return Ok(res as _);
-            }
 
-            Err(LinuxError::EAGAIN)
-        })
+                Err(LinuxError::EAGAIN)
+            }) {
+            Err(LinuxError::ETIMEDOUT) => Ok(0),
+            other => other,
+        }
+    })
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -142,6 +157,7 @@ pub fn sys_select(
         nullable!(timeout.get_as_ref())?
             .map(|it| it.try_into_time_value())
             .transpose()?,
+        0.into(),
     )
 }
 
@@ -158,9 +174,8 @@ pub fn sys_pselect6(
     writefds: UserPtr<__kernel_fd_set>,
     exceptfds: UserPtr<__kernel_fd_set>,
     timeout: UserConstPtr<timespec>,
-    _sigmask: UserConstPtr<SignalSetWithSize>,
+    sigmask: UserConstPtr<SignalSetWithSize>,
 ) -> LinuxResult<isize> {
-    // FIXME: process sigmask
     do_select(
         nfds,
         readfds,
@@ -169,5 +184,6 @@ pub fn sys_pselect6(
         nullable!(timeout.get_as_ref())?
             .map(|ts| ts.try_into_time_value())
             .transpose()?,
+        sigmask,
     )
 }

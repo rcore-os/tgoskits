@@ -97,6 +97,18 @@ run_ltp() {
     epoll_ctl03
     epoll_ctl04
     epoll_ctl05
+    epoll_wait01
+    epoll_wait02
+    epoll_wait03
+    epoll_wait04
+    epoll_wait05
+    epoll_wait06
+    epoll_wait07
+    epoll_pwait01
+    epoll_pwait02
+    epoll_pwait03
+    epoll_pwait04
+    epoll_pwait05
     eventfd01
     eventfd02
     eventfd03
