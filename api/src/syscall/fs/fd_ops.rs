@@ -1,9 +1,14 @@
-use core::ffi::{c_char, c_int};
+use core::{
+    ffi::{c_char, c_int},
+    mem,
+    ops::{Deref, DerefMut},
+};
 
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::{OpenOptions, OpenResult};
 use axfs_ng_vfs::NodePermission;
 use axtask::current;
+use bitflags::bitflags;
 use linux_raw_sys::general::*;
 use starry_core::task::AsThread;
 
@@ -102,6 +107,49 @@ pub fn sys_open(
 pub fn sys_close(fd: c_int) -> LinuxResult<isize> {
     debug!("sys_close <= {}", fd);
     close_file_like(fd)?;
+    Ok(0)
+}
+
+bitflags! {
+    #[derive(Debug, Clone, Copy)]
+    struct CloseRangeFlags: u32 {
+        const UNSHARE = 1 << 1;
+        const CLOEXEC = 1 << 2;
+    }
+}
+
+pub fn sys_close_range(first: i32, last: i32, flags: u32) -> LinuxResult<isize> {
+    if first < 0 || last < first {
+        return Err(LinuxError::EINVAL);
+    }
+    let flags = CloseRangeFlags::from_bits(flags).ok_or(LinuxError::EINVAL)?;
+    debug!(
+        "sys_close_range <= fds: [{}, {}], flags: {:?}",
+        first, last, flags
+    );
+    if flags.contains(CloseRangeFlags::UNSHARE) {
+        // TODO: optimize
+        let curr = current();
+        let mut scope = curr.as_thread().proc_data.scope.write();
+        let mut guard = FD_TABLE.scope_mut(&mut scope);
+        let old_files = mem::take(guard.deref_mut());
+        old_files.write().clone_from(old_files.read().deref());
+    }
+
+    if flags.contains(CloseRangeFlags::CLOEXEC) {
+        let mut fd_table = FD_TABLE.write();
+        for fd in first..=last {
+            if let Some(f) = fd_table.get_mut(fd as _) {
+                f.cloexec = true;
+            }
+        }
+    } else {
+        let mut fd_table = FD_TABLE.write();
+        for fd in first..=last {
+            fd_table.remove(fd as _);
+        }
+    }
+
     Ok(0)
 }
 

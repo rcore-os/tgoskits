@@ -120,6 +120,7 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
             tf.arg3() as _,
         ),
         Sysno::close => sys_close(tf.arg0() as _),
+        Sysno::close_range => sys_close_range(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
         Sysno::dup => sys_dup(tf.arg0() as _),
         #[cfg(target_arch = "x86_64")]
         Sysno::dup2 => sys_dup2(tf.arg0() as _, tf.arg1() as _),
