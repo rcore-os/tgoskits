@@ -28,6 +28,7 @@ bitflags! {
 
 pub fn sys_epoll_create1(flags: u32) -> LinuxResult<isize> {
     let flags = EpollCreateFlags::from_bits(flags).ok_or(LinuxError::EINVAL)?;
+    debug!("sys_epoll_create1 <= flags: {:?}", flags);
     Epoll::new()
         .add_to_fd_table(flags.contains(EpollCreateFlags::CLOEXEC))
         .map(|fd| fd as isize)
@@ -40,6 +41,7 @@ pub fn sys_epoll_ctl(
     event: UserConstPtr<epoll_event>,
 ) -> LinuxResult<isize> {
     let epoll = Epoll::from_fd(epfd)?;
+    debug!("sys_epoll_ctl <= epfd: {}, op: {}, fd: {}", epfd, op, fd);
 
     let parse_event = || -> LinuxResult<(EpollEvent, EpollFlags)> {
         let event = event.get_as_ref()?;
@@ -80,6 +82,10 @@ fn do_epoll_wait(
     _sigsetsize: usize,
 ) -> LinuxResult<isize> {
     // TODO: handle sigset
+    debug!(
+        "sys_epoll_wait <= epfd: {}, maxevents: {}, timeout: {:?}",
+        epfd, maxevents, timeout
+    );
 
     let epoll = Epoll::from_fd(epfd)?;
 
@@ -88,10 +94,14 @@ fn do_epoll_wait(
     }
     let events = events.get_as_mut_slice(maxevents as usize)?;
 
-    Poller::new(epoll.as_ref(), IoEvents::IN)
+    match Poller::new(epoll.as_ref(), IoEvents::IN)
         .timeout(timeout)
         .poll(|| epoll.poll_events(events))
-        .map(|n| n as isize)
+    {
+        Ok(n) => Ok(n as isize),
+        Err(LinuxError::ETIMEDOUT) => Ok(0),
+        Err(e) => Err(e),
+    }
 }
 
 pub fn sys_epoll_pwait(

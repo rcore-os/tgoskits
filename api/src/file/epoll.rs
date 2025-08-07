@@ -225,6 +225,10 @@ impl Epoll {
                     data: event.user_data,
                 };
                 result += 1;
+                if interest.flags.contains(EpollFlags::ONESHOT) {
+                    interest.enabled.store(false, Ordering::Release);
+                    continue;
+                }
             }
             if still_ready {
                 ready.push_back(Arc::downgrade(&interest));
