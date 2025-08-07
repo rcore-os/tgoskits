@@ -77,12 +77,23 @@ struct FixScreenInfo {
     pub reserved: [u16; 2], // Reserved for future compatibility
 }
 
+async fn refresh_task() {
+    let delay = core::time::Duration::from_secs_f32(1. / 60.);
+    loop {
+        if let Err(err) = axdisplay::main_display().flush() {
+            warn!("Failed to refresh framebuffer: {err:?}");
+        }
+        axtask::future::sleep(delay).await;
+    }
+}
+
 pub struct FrameBuffer {
     base: VirtAddr,
     size: usize,
 }
 impl FrameBuffer {
     pub fn new() -> Self {
+        axtask::spawn(|| axtask::future::block_on(refresh_task()));
         let info = axdisplay::main_display().info();
         Self {
             base: VirtAddr::from(info.fb_base_vaddr),
@@ -112,9 +123,6 @@ impl DeviceOps for FrameBuffer {
         }
         let len = buf.len().min(slice.len() - offset as usize);
         slice[..len].copy_from_slice(&buf[..len]);
-        if let Err(err) = axdisplay::main_display().flush() {
-            warn!("Failed to flush framebuffer: {err:?}");
-        }
         Ok(len)
     }
 
@@ -202,6 +210,10 @@ impl DeviceOps for FrameBuffer {
             0x4604 => Ok(0),
             // FBIOPUTCMAP
             0x4605 => Ok(0),
+            // FBIOPAN_DISPLAY
+            0x4606 => Err(LinuxError::EINVAL),
+            // FBIOBLANK
+            0x4611 => Err(LinuxError::EINVAL),
             _ => Err(LinuxError::ENOTTY),
         }
     }
