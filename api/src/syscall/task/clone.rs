@@ -177,6 +177,7 @@ pub fn sys_clone(
         let proc_data = ProcessData::new(
             proc,
             old_proc_data.exe_path.read().clone(),
+            old_proc_data.cmdline.read().clone(),
             aspace,
             signal_actions,
             exit_signal,

@@ -4,6 +4,7 @@ use alloc::{
     format,
     string::ToString,
     sync::{Arc, Weak},
+    vec::Vec,
 };
 use core::iter;
 
@@ -132,9 +133,17 @@ struct ThreadDir {
 impl SimpleDirOps for ThreadDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         Box::new(
-            ["stat", "status", "oom_score_adj", "task", "maps", "mounts"]
-                .into_iter()
-                .map(Cow::Borrowed),
+            [
+                "stat",
+                "status",
+                "oom_score_adj",
+                "task",
+                "maps",
+                "mounts",
+                "cmdline",
+            ]
+            .into_iter()
+            .map(Cow::Borrowed),
         )
     }
 
@@ -192,6 +201,16 @@ impl SimpleDirOps for ThreadDir {
             .into(),
             "mounts" => SimpleFile::new(fs, move || {
                 Ok("proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n")
+            })
+            .into(),
+            "cmdline" => SimpleFile::new(fs, move || {
+                let cmdline = task.as_thread().proc_data.cmdline.read();
+                let mut buf = Vec::new();
+                for arg in cmdline.iter() {
+                    buf.extend_from_slice(arg.as_bytes());
+                    buf.push(0);
+                }
+                Ok(buf)
             })
             .into(),
             _ => return Err(VfsError::ENOENT),

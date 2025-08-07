@@ -44,6 +44,7 @@ pub fn run_initproc(args: &[String], envs: &[String]) -> i32 {
     let proc_data = ProcessData::new(
         proc,
         exe_path.clone(),
+        Arc::new(args.to_vec()),
         Arc::new(Mutex::new(uspace)),
         Arc::default(),
         None,

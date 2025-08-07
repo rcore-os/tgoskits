@@ -1,4 +1,4 @@
-use alloc::{string::ToString, vec::Vec};
+use alloc::{string::ToString, sync::Arc, vec::Vec};
 use core::ffi::c_char;
 
 use axerrno::{LinuxError, LinuxResult};
@@ -50,6 +50,7 @@ pub fn sys_execve(
         .map_or(path.as_str(), |(_, name)| name);
     curr.set_name(name);
     *proc_data.exe_path.write() = path;
+    *proc_data.cmdline.write() = Arc::new(args);
 
     *proc_data.signal.actions.lock() = Default::default();
 

@@ -8,7 +8,6 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use axio::PollSet;
 use core::{
     cell::RefCell,
     ops::Deref,
@@ -16,6 +15,7 @@ use core::{
 };
 
 use axerrno::{LinuxError, LinuxResult};
+use axio::PollSet;
 use axmm::AddrSpace;
 use axsync::{Mutex, spin::SpinNoIrq};
 use axtask::{AxTaskRef, TaskExt, TaskInner, WeakAxTaskRef, current};
@@ -211,6 +211,8 @@ pub struct ProcessData {
     pub proc: Arc<Process>,
     /// The executable path
     pub exe_path: RwLock<String>,
+    /// The command line arguments
+    pub cmdline: RwLock<Arc<Vec<String>>>,
     /// The virtual memory address space.
     // TODO: scopify
     pub aspace: Arc<Mutex<AddrSpace>>,
@@ -246,6 +248,7 @@ impl ProcessData {
     pub fn new(
         proc: Arc<Process>,
         exe_path: String,
+        cmdline: Arc<Vec<String>>,
         aspace: Arc<Mutex<AddrSpace>>,
         signal_actions: Arc<SpinNoIrq<SignalActions>>,
         exit_signal: Option<Signo>,
@@ -253,6 +256,7 @@ impl ProcessData {
         Arc::new(Self {
             proc,
             exe_path: RwLock::new(exe_path),
+            cmdline: RwLock::new(cmdline),
             aspace,
             scope: RwLock::new(Scope::new()),
             heap_bottom: AtomicUsize::new(crate::config::USER_HEAP_BASE),
