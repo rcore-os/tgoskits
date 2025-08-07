@@ -13,7 +13,8 @@ const PROTO_IP: u32 = linux_raw_sys::net::IPPROTO_IP as u32;
 
 mod conv {
     use axerrno::{LinuxError, LinuxResult};
-    use linux_raw_sys::general::timeval;
+    use axnet::options::UnixCredentials;
+    use linux_raw_sys::{general::timeval, net::ucred};
 
     use crate::time::TimeValueLike;
 
@@ -52,6 +53,26 @@ mod conv {
             Ok(timeval::from_time_value(val))
         }
     }
+
+    pub struct Ucred;
+
+    impl Ucred {
+        pub fn sys_to_rust(val: ucred) -> LinuxResult<UnixCredentials> {
+            Ok(UnixCredentials {
+                pid: val.pid,
+                uid: val.uid,
+                gid: val.gid,
+            })
+        }
+
+        pub fn rust_to_sys(val: UnixCredentials) -> LinuxResult<ucred> {
+            Ok(ucred {
+                pid: val.pid,
+                uid: val.uid,
+                gid: val.gid,
+            })
+        }
+    }
 }
 
 macro_rules! call_dispatch {
@@ -69,6 +90,8 @@ macro_rules! call_dispatch {
             (SOL_SOCKET, SO_KEEPALIVE) => KeepAlive as IntBool,
             (SOL_SOCKET, SO_RCVTIMEO) => ReceiveTimeout as Duration,
             (SOL_SOCKET, SO_SNDTIMEO) => SendTimeout as Duration,
+            (SOL_SOCKET, SO_PASSCRED) => PassCredentials as IntBool,
+            (SOL_SOCKET, SO_PEERCRED) => PeerCredentials as Ucred,
 
             (PROTO_TCP, TCP_NODELAY) => NoDelay as IntBool,
             (PROTO_TCP, TCP_MAXSEG) => MaxSegment as Int<usize>,

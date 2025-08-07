@@ -5,6 +5,7 @@ use axnet::{
     udp::UdpSocket,
     unix::{DgramTransport, StreamTransport, UnixSocket},
 };
+use axtask::current;
 use linux_raw_sys::{
     general::{O_CLOEXEC, O_NONBLOCK},
     net::{
@@ -12,6 +13,7 @@ use linux_raw_sys::{
         SOCK_SEQPACKET, SOCK_STREAM, sockaddr, socklen_t,
     },
 };
+use starry_core::task::AsThread;
 
 use crate::{
     file::{FileLike, Socket},
@@ -26,6 +28,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> LinuxResult<isize> {
     );
     let ty = raw_ty & 0xFF;
 
+    let pid = current().as_thread().proc_data.proc.pid();
     let socket = match (domain, ty) {
         (AF_INET, SOCK_STREAM) => {
             if proto != 0 && proto != IPPROTO_TCP as _ {
@@ -39,8 +42,8 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> LinuxResult<isize> {
             }
             axnet::Socket::Udp(UdpSocket::new())
         }
-        (AF_UNIX, SOCK_STREAM) => axnet::Socket::Unix(UnixSocket::new(StreamTransport::new())),
-        (AF_UNIX, SOCK_DGRAM) => axnet::Socket::Unix(UnixSocket::new(DgramTransport::new())),
+        (AF_UNIX, SOCK_STREAM) => axnet::Socket::Unix(UnixSocket::new(StreamTransport::new(pid))),
+        (AF_UNIX, SOCK_DGRAM) => axnet::Socket::Unix(UnixSocket::new(DgramTransport::new(pid))),
         (AF_INET, _) | (AF_UNIX, _) => {
             warn!("Unsupported socket type: domain: {}, ty: {}", domain, ty);
             return Err(LinuxError::ESOCKTNOSUPPORT);
@@ -156,13 +159,14 @@ pub fn sys_socketpair(
         return Err(LinuxError::EAFNOSUPPORT);
     }
 
+    let pid = current().as_thread().proc_data.proc.pid();
     let (sock1, sock2) = match ty {
         SOCK_STREAM => {
-            let (sock1, sock2) = StreamTransport::new_pair();
+            let (sock1, sock2) = StreamTransport::new_pair(pid);
             (UnixSocket::new(sock1), UnixSocket::new(sock2))
         }
         SOCK_DGRAM | SOCK_SEQPACKET => {
-            let (sock1, sock2) = DgramTransport::new_pair();
+            let (sock1, sock2) = DgramTransport::new_pair(pid);
             (UnixSocket::new(sock1), UnixSocket::new(sock2))
         }
         _ => {
