@@ -121,14 +121,16 @@ impl DeviceOps for MemTrack {
     }
 
     fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize> {
-        if offset == 0 {
+        if offset == 0 && !buf.is_empty() {
             match buf {
                 b"start\n" => {
                     let generation = axalloc::current_generation();
                     STAMPED_GENERATION.store(generation, Ordering::SeqCst);
                     info!("Memory allocation generation stamped: {}", generation);
+                    axalloc::enable_tracking();
                 }
                 b"end\n" => {
+                    axalloc::disable_tracking();
                     run_memory_leak_analysis();
                 }
                 _ => {
