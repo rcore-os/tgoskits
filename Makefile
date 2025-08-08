@@ -27,9 +27,12 @@ all:
 	@if [ -d bin ]; then \
 		cp bin/* ~/.cargo/bin; \
 	fi
-	RUSTUP_TOOLCHAIN=nightly-2025-05-20 $(MAKE) ARCH=riscv64 BUS=mmio LOG=off BACKTRACE=n build
+	export RUSTUP_TOOLCHAIN=nightly-2025-05-20 && \
+		export CARGO_PROFILE_RELEASE_LTO=true && \
+		export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 && \
+		$(MAKE) ARCH=riscv64 BUS=mmio LOG=off BACKTRACE=n build && \
+		$(MAKE) ARCH=loongarch64 LOG=off BACKTRACE=n build
 	cp $(DIR)_riscv64-qemu-virt.bin kernel-rv
-	RUSTUP_TOOLCHAIN=nightly-2025-05-20 $(MAKE) ARCH=loongarch64 LOG=off BACKTRACE=n build
 	cp $(DIR)_loongarch64-qemu-virt.elf kernel-la
 
 IMG :=
