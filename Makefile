@@ -15,6 +15,8 @@ export NO_AXSTD := y
 export AX_LIB := axfeat
 export APP_FEATURES := qemu
 
+export ICOUNT := n
+
 DIR := $(shell basename $(PWD))
 
 all:
