@@ -64,10 +64,6 @@ pub fn new_user_task(
                 set_timer_state(&curr, TimerState::User);
                 // Clear interrupt state
                 let _ = curr.interrupt_state();
-
-                if thr.pending_exit() {
-                    break;
-                }
             }
         },
         name.into(),
