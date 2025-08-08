@@ -1,4 +1,8 @@
-use core::{alloc::Layout, mem::offset_of};
+use core::{
+    alloc::Layout,
+    mem::offset_of,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use alloc::sync::Arc;
 use axcpu::TrapFrame;
@@ -29,6 +33,8 @@ pub struct ThreadSignalManager {
     blocked: SpinNoIrq<SignalSet>,
     /// The stack used by signal handlers
     stack: SpinNoIrq<SignalStack>,
+
+    possibly_has_signal: AtomicBool,
 }
 
 impl ThreadSignalManager {
@@ -39,6 +45,8 @@ impl ThreadSignalManager {
             pending: SpinNoIrq::new(PendingSignals::default()),
             blocked: SpinNoIrq::new(SignalSet::default()),
             stack: SpinNoIrq::new(SignalStack::default()),
+
+            possibly_has_signal: AtomicBool::new(false),
         });
         proc.children.lock().push((tid, Arc::downgrade(&this)));
         this
@@ -47,10 +55,21 @@ impl ThreadSignalManager {
     /// Dequeues a signal from the thread's pending signals.
     #[must_use]
     pub fn dequeue_signal(&self, mask: &SignalSet) -> Option<SignalInfo> {
-        self.pending
-            .lock()
-            .dequeue_signal(mask)
-            .or_else(|| self.proc.dequeue_signal(mask))
+        match self.pending.lock().dequeue_signal(mask) {
+            Some(sig) => return Some(sig),
+            None => {
+                self.possibly_has_signal.store(false, Ordering::Release);
+            }
+        }
+        match self.proc.dequeue_signal(mask) {
+            Some(sig) => Some(sig),
+            None => {
+                self.proc
+                    .possibly_has_signal
+                    .store(false, Ordering::Release);
+                None
+            }
+        }
     }
 
     pub fn process(&self) -> &Arc<ProcessSignalManager> {
@@ -136,6 +155,14 @@ impl ThreadSignalManager {
         tf: &mut TrapFrame,
         restore_blocked: Option<SignalSet>,
     ) -> Option<(SignalInfo, SignalOSAction)> {
+        // Fast path
+        if core::hint::likely(
+            !self.possibly_has_signal.load(Ordering::Acquire)
+                && !self.proc.possibly_has_signal.load(Ordering::Acquire),
+        ) {
+            return None;
+        }
+
         let actions = self.proc.actions.lock();
 
         let blocked = self.blocked.lock();
@@ -162,6 +189,7 @@ impl ThreadSignalManager {
         frame.ucontext.mcontext.restore(tf);
 
         *self.blocked.lock() = frame.ucontext.sigmask;
+        self.possibly_has_signal.store(true, Ordering::Release);
     }
 
     /// Sends a signal to the thread.
@@ -177,7 +205,9 @@ impl ThreadSignalManager {
             return false;
         }
 
-        self.pending.lock().put_signal(sig);
+        if self.pending.lock().put_signal(sig) {
+            self.possibly_has_signal.store(true, Ordering::Release);
+        }
         !self.signal_blocked(signo)
     }
 
@@ -188,6 +218,7 @@ impl ThreadSignalManager {
 
     /// Applies a function to the blocked signals.
     pub fn with_blocked_mut<R>(&self, f: impl FnOnce(&mut SignalSet) -> R) -> R {
+        self.possibly_has_signal.store(true, Ordering::Release);
         f(&mut self.blocked.lock())
     }
 

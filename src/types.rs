@@ -1,7 +1,7 @@
 use core::mem;
 
 use derive_more::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Not};
-use linux_raw_sys::general::{SI_KERNEL, SI_USER, SS_DISABLE, kernel_sigset_t, siginfo_t};
+use linux_raw_sys::general::{SI_KERNEL, SS_DISABLE, kernel_sigset_t, siginfo_t};
 use strum_macros::FromRepr;
 
 use crate::DefaultSignalAction;

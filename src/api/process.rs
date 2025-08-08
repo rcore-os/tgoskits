@@ -1,6 +1,7 @@
 use core::{
     array,
     ops::{Index, IndexMut},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use alloc::{
@@ -50,6 +51,8 @@ pub struct ProcessSignalManager {
 
     /// Thread-level signal managers.
     pub(crate) children: SpinNoIrq<Vec<(u32, Weak<ThreadSignalManager>)>>,
+
+    pub(crate) possibly_has_signal: AtomicBool,
 }
 
 impl ProcessSignalManager {
@@ -60,6 +63,7 @@ impl ProcessSignalManager {
             actions,
             default_restorer,
             children: SpinNoIrq::new(Vec::new()),
+            possibly_has_signal: AtomicBool::new(false),
         }
     }
 
@@ -97,7 +101,9 @@ impl ProcessSignalManager {
             return None;
         }
 
-        self.pending.lock().put_signal(sig);
+        if self.pending.lock().put_signal(sig) {
+            self.possibly_has_signal.store(true, Ordering::Release);
+        }
         let mut result = None;
         self.children.lock().retain(|(tid, thread)| {
             if let Some(thread) = thread.upgrade() {

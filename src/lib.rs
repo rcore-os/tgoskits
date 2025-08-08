@@ -1,4 +1,5 @@
 #![no_std]
+#![feature(likely_unlikely)]
 
 #[macro_use]
 extern crate log;
