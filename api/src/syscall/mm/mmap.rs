@@ -202,7 +202,7 @@ pub fn sys_mmap(
                                 return Err(LinuxError::ENODEV);
                             }
                             DeviceMmap::ReadOnly => {
-                                Backend::new_cow(start, page_size, Some((backend, offset)))
+                                Backend::new_cow(start, page_size, Some((backend, offset as u64, None)), false)
                             }
                             DeviceMmap::Physical(mut range) => {
                                 range.start += offset;
@@ -232,7 +232,7 @@ pub fn sys_mmap(
             if let Some(file) = file {
                 // Private mapping from a file
                 let backend = file.inner().backend()?.clone();
-                Backend::new_cow(start, page_size, Some((backend, offset)))
+                Backend::new_cow(start, page_size, Some((backend, offset as u64, None)), false)
             } else {
                 Backend::new_alloc(start, page_size)
             }

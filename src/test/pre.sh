@@ -477,7 +477,6 @@ run_ltp() {
 
 cd /musl
 run_ltp musl
-exit
 
 cd /glibc
 run_ltp glibc

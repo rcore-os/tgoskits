@@ -1,27 +1,25 @@
 //! User address space management.
 
-use alloc::{borrow::ToOwned, string::String, vec::Vec};
+use alloc::{borrow::ToOwned, string::String, vec, vec::Vec};
 use core::{ffi::CStr, iter, mem::MaybeUninit};
 
 use axerrno::{LinuxError, LinuxResult};
-use axfs_ng::{FS_CONTEXT, OpenOptions};
-use axfs_ng_vfs::{DirEntry, Location};
+use axfs_ng::{CachedFile, FS_CONTEXT, FileBackend};
+use axfs_ng_vfs::Location;
 use axhal::{
     mem::virt_to_phys,
     paging::{MappingFlags, PageSize},
 };
-use axio::Read;
 use axmm::{AddrSpace, backend::Backend};
 use axsync::{Mutex, RawMutex};
 use axtask::current;
 use extern_trait::extern_trait;
-use kernel_elf_parser::{AuxEntry, ELFParser, app_stack_region};
+use kernel_elf_parser::{AuxEntry, ELFHeaders, ELFHeadersBuilder, ELFParser, app_stack_region};
 use lock_api::ArcMutexGuard;
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ouroboros::self_referencing;
 use starry_vm::{VmError, VmIo, VmResult};
 use uluru::LRUCache;
-use xmas_elf::{ElfFile, program::SegmentData};
 
 use crate::task::AsThread;
 
@@ -84,61 +82,90 @@ fn mapping_flags(flags: xmas_elf::program::Flags) -> MappingFlags {
 fn map_elf<'a>(
     uspace: &mut AddrSpace,
     base: usize,
-    elf: &'a ElfFile,
+    entry: &'a ElfCacheEntry,
 ) -> LinuxResult<ELFParser<'a>> {
-    let elf_parser = ELFParser::new(elf, base).map_err(|_| LinuxError::EINVAL)?;
+    let elf_parser = ELFParser::new(entry.borrow_elf(), base).map_err(|_| LinuxError::EINVAL)?;
+    let cache = entry.borrow_cache();
 
-    for segment in elf_parser.ph_load() {
+    for ph in elf_parser
+        .headers()
+        .ph
+        .iter()
+        .filter(|ph| ph.get_type() == Ok(xmas_elf::program::Type::Load))
+    {
+        let vaddr = ph.virtual_addr as usize + elf_parser.base();
         debug!(
             "Mapping ELF segment: [{:#x?}, {:#x?}) flags: {}",
-            segment.vaddr,
-            segment.vaddr + segment.memsz as usize,
-            segment.flags
+            vaddr,
+            vaddr + ph.mem_size as usize,
+            ph.flags
         );
-        let seg_pad = segment.vaddr.align_offset_4k();
-        assert_eq!(seg_pad, segment.offset % PAGE_SIZE_4K);
+        let seg_pad = vaddr.align_offset_4k();
+        assert_eq!(seg_pad, ph.offset as usize % PAGE_SIZE_4K);
 
         let seg_align_size =
-            (segment.memsz as usize + seg_pad + PAGE_SIZE_4K - 1) & !(PAGE_SIZE_4K - 1);
-        let seg_start = VirtAddr::from_usize(segment.vaddr).align_down_4k();
-        uspace.map(
+            (ph.mem_size as usize + seg_pad + PAGE_SIZE_4K - 1) & !(PAGE_SIZE_4K - 1);
+        let seg_start = VirtAddr::from_usize(vaddr);
+
+        // Note that `offset` might not be aligned to 4K here, and it's
+        // backend's responsibility to properly handle it.
+        let backend = Backend::new_cow(
             seg_start,
+            PageSize::Size4K,
+            Some((
+                FileBackend::Cached(cache.clone()),
+                ph.offset,
+                Some(ph.offset + ph.file_size),
+            )),
+            !ph.flags.is_write(),
+        );
+        uspace.map(
+            seg_start.align_down_4k(),
             seg_align_size,
-            mapping_flags(segment.flags),
-            true,
-            Backend::new_alloc(seg_start, PageSize::Size4K),
+            mapping_flags(ph.flags),
+            false,
+            backend,
         )?;
 
-        let seg_data = elf
-            .input
-            .get(segment.offset..segment.offset + segment.filesz as usize)
-            .ok_or(LinuxError::EINVAL)?;
-        uspace.write(segment.vaddr.into(), seg_data)?;
         // TDOO: flush the I-cache
     }
 
     Ok(elf_parser)
 }
 
+fn map_elf_error(err: &'static str) -> LinuxError {
+    warn!("Failed to parse ELF file: {err}");
+    LinuxError::ENOEXEC
+}
+
 #[self_referencing]
 struct ElfCacheEntry {
-    ent: DirEntry,
+    cache: CachedFile,
     data: Vec<u8>,
     #[borrows(data)]
     #[covariant]
-    elf: ElfFile<'this>,
+    elf: ELFHeaders<'this>,
 }
 
 impl ElfCacheEntry {
     fn load(loc: Location) -> LinuxResult<Result<Self, Vec<u8>>> {
-        let ent = loc.entry().clone();
-        let mut data = Vec::new();
-        OpenOptions::new()
-            .read(true)
-            .open_loc(loc)?
-            .into_file()?
-            .read_to_end(&mut data)?;
-        match ElfCacheEntry::try_new_or_recover(ent, data, |data| ElfFile::new(data)) {
+        let cache = CachedFile::get_or_create(loc);
+
+        let mut data = vec![0; 4096];
+        let read = cache.read_at(&mut data, 0)?;
+        data.truncate(read);
+        match ElfCacheEntry::try_new_or_recover::<LinuxError>(cache.clone(), data, |data| {
+            let builder = ELFHeadersBuilder::new(data).map_err(map_elf_error)?;
+            let range = builder.ph_range();
+            if range.end as usize <= data.len() {
+                builder.build(&data[range.start as usize..range.end as usize])
+            } else {
+                let mut buf = vec![0; (range.end - range.start) as usize];
+                cache.read_at(&mut buf, range.start)?;
+                builder.build(&buf)
+            }
+            .map_err(map_elf_error)
+        }) {
             Ok(e) => Ok(Ok(e)),
             Err((_, heads)) => Ok(Err(heads.data)),
         }
@@ -157,7 +184,7 @@ impl ElfLoader {
     fn load(&mut self, uspace: &mut AddrSpace, path: &str) -> LinuxResult<LoadResult> {
         let loc = FS_CONTEXT.lock().resolve(path)?;
 
-        if !self.0.touch(|e| e.borrow_ent().ptr_eq(loc.entry())) {
+        if !self.0.touch(|e| e.borrow_cache().location().ptr_eq(&loc)) {
             match ElfCacheEntry::load(loc)? {
                 Ok(e) => {
                     self.0.insert(e);
@@ -171,38 +198,41 @@ impl ElfLoader {
         uspace.clear();
         map_trampoline(uspace)?;
 
-        let elf = self.0.front().unwrap().borrow_elf();
-        let ldso = if let Some(header) = elf
-            .program_iter()
+        let entry = self.0.front().unwrap();
+        let ldso = if let Some(header) = entry
+            .borrow_elf()
+            .ph
+            .iter()
             .find(|ph| ph.get_type() == Ok(xmas_elf::program::Type::Interp))
         {
-            let Ok(SegmentData::Undefined(ldso)) = header.get_data(elf) else {
-                debug!("Invalid data in Interp elf program header");
-                return Err(LinuxError::EINVAL);
-            };
-            let ldso = CStr::from_bytes_with_nul(ldso)
+            let cache = entry.borrow_cache();
+            let mut data = vec![0; header.file_size as usize];
+            let read = cache.read_at(&mut data, header.offset)?;
+            assert_eq!(data.len(), read);
+
+            let ldso = CStr::from_bytes_with_nul(&data)
                 .ok()
                 .and_then(|cstr| cstr.to_str().ok())
                 .ok_or(LinuxError::EINVAL)?;
             debug!("Loading dynamic linker: {}", ldso);
-            Some(ldso)
+            Some(ldso.to_owned())
         } else {
             None
         };
 
         let (elf, ldso) = if let Some(ldso) = ldso {
             let loc = FS_CONTEXT.lock().resolve(ldso)?;
-            if !self.0.touch(|e| e.borrow_ent().ptr_eq(loc.entry())) {
+            if !self.0.touch(|e| e.borrow_cache().location().ptr_eq(&loc)) {
                 let e = ElfCacheEntry::load(loc)?.map_err(|_| LinuxError::EINVAL)?;
                 self.0.insert(e);
             }
 
             let mut iter = self.0.iter();
-            let ldso = iter.next().unwrap().borrow_elf();
-            let elf = iter.next().unwrap().borrow_elf();
+            let ldso = iter.next().unwrap();
+            let elf = iter.next().unwrap();
             (elf, Some(ldso))
         } else {
-            (elf, None)
+            (entry, None)
         };
 
         let elf = map_elf(uspace, crate::config::USER_SPACE_BASE, elf)?;
@@ -286,12 +316,18 @@ pub fn load_user_app(
         ustack_start,
         ustack_size,
         MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
-        true,
+        false,
         Backend::new_alloc(ustack_start, PageSize::Size4K),
     )?;
 
     let stack_data = app_stack_region(args, envs, &auxv, ustack_top.into());
     let user_sp = ustack_top - stack_data.len();
+    let user_sp_aligned = user_sp.align_down_4k();
+    uspace.populate_area(
+        user_sp_aligned,
+        (ustack_top - user_sp_aligned).align_up_4k(),
+        MappingFlags::READ | MappingFlags::WRITE,
+    )?;
     uspace.write(user_sp, stack_data.as_slice())?;
 
     let heap_start = VirtAddr::from_usize(crate::config::USER_HEAP_BASE);

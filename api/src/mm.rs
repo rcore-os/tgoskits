@@ -259,7 +259,10 @@ pub fn handle_user_page_fault(
         .lock()
         .handle_page_fault(vaddr, access_flags)
     {
-        info!("{:?}: segmentation fault at {:#x}", proc_data.proc, vaddr);
+        info!(
+            "{:?}: segmentation fault at {:#x} {:?}",
+            proc_data.proc, vaddr, access_flags
+        );
         send_signal_to_process(
             proc_data.proc.pid(),
             Some(SignalInfo::new_kernel(Signo::SIGSEGV)),

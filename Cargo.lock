@@ -1348,9 +1348,10 @@ dependencies = [
 [[package]]
 name = "kernel-elf-parser"
 version = "0.3.3"
-source = "git+https://github.com/Starry-Mix-THU/kernel_elf_parser.git?rev=5e2160b#5e2160b1ca764f95a0a6191c3e9214c455c0e1b8"
+source = "git+https://github.com/Starry-Mix-THU/kernel_elf_parser.git?rev=fdcce74#fdcce740d718031224bdb8a77ff593b38e03cea7"
 dependencies = [
  "xmas-elf",
+ "zero",
  "zerocopy 0.8.26",
 ]
 
