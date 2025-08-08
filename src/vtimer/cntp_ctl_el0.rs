@@ -21,7 +21,7 @@ impl BaseDeviceOps<SysRegAddrRange> for SysCntpCtlEl0 {
         _addr: <SysRegAddrRange as DeviceAddrRange>::Addr,
         _width: AccessWidth,
     ) -> AxResult<usize> {
-        todo!()
+        Ok(0)
     }
 
     fn handle_write(
