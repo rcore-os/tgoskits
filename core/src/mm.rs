@@ -172,7 +172,7 @@ impl ElfCacheEntry {
     }
 }
 
-struct ElfLoader(LRUCache<ElfCacheEntry, 16>);
+struct ElfLoader(LRUCache<ElfCacheEntry, 32>);
 
 type LoadResult = Result<(VirtAddr, Vec<AuxEntry>), Vec<u8>>;
 
