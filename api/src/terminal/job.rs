@@ -1,7 +1,8 @@
 use alloc::sync::{Arc, Weak};
 
 use axerrno::{LinuxResult, bail};
-use axtask::{WaitQueue, current};
+use axtask::{current, future::block_on};
+use event_listener::{Event, listener};
 use kspin::SpinNoIrq;
 use starry_core::task::AsThread;
 use starry_process::{ProcessGroup, Session};
@@ -9,7 +10,7 @@ use starry_process::{ProcessGroup, Session};
 pub struct JobControl {
     foreground: SpinNoIrq<Weak<ProcessGroup>>,
     session: SpinNoIrq<Weak<Session>>,
-    wait_queue: WaitQueue,
+    fg_event: Event,
 }
 
 impl Default for JobControl {
@@ -23,7 +24,7 @@ impl JobControl {
         Self {
             foreground: SpinNoIrq::new(Weak::new()),
             session: SpinNoIrq::new(Weak::new()),
-            wait_queue: WaitQueue::new(),
+            fg_event: Event::new(),
         }
     }
 
@@ -35,7 +36,12 @@ impl JobControl {
     }
 
     pub fn wait_until_foreground(&self) {
-        self.wait_queue.wait_until(|| self.current_in_foreground())
+        block_on(async {
+            while !self.current_in_foreground() {
+                listener!(self.fg_event => listener);
+                listener.await;
+            }
+        })
     }
 
     pub fn foreground(&self) -> Option<Arc<ProcessGroup>> {
@@ -58,7 +64,7 @@ impl JobControl {
 
         *guard = weak;
         drop(guard);
-        self.wait_queue.notify_all(false);
+        self.fg_event.notify(usize::MAX);
         Ok(())
     }
 
