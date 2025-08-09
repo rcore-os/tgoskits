@@ -81,6 +81,8 @@ bitflags::bitflags! {
         const HUGE = MAP_HUGETLB;
         /// Huge page 1g size
         const HUGE_1GB = MAP_HUGETLB | MAP_HUGE_1GB;
+        /// Deprecated flag
+        const DENYWRITE = MAP_DENYWRITE;
 
         /// Mask for type of mapping
         const TYPE = MAP_TYPE;
@@ -107,7 +109,7 @@ pub fn sys_mmap(
         Some(flags) => flags,
         None => {
             warn!("unknown mmap flags: {flags}");
-            if (flags & MmapFlags::SHARED_VALIDATE.bits()) != 0 {
+            if (flags & MmapFlags::TYPE.bits()) == MmapFlags::SHARED_VALIDATE.bits() {
                 return Err(LinuxError::EOPNOTSUPP);
             }
             MmapFlags::from_bits_truncate(flags)
@@ -201,9 +203,12 @@ pub fn sys_mmap(
                             DeviceMmap::None => {
                                 return Err(LinuxError::ENODEV);
                             }
-                            DeviceMmap::ReadOnly => {
-                                Backend::new_cow(start, page_size, Some((backend, offset as u64, None)), false)
-                            }
+                            DeviceMmap::ReadOnly => Backend::new_cow(
+                                start,
+                                page_size,
+                                Some((backend, offset as u64, None)),
+                                false,
+                            ),
                             DeviceMmap::Physical(mut range) => {
                                 range.start += offset;
                                 if range.is_empty() {
@@ -232,7 +237,12 @@ pub fn sys_mmap(
             if let Some(file) = file {
                 // Private mapping from a file
                 let backend = file.inner().backend()?.clone();
-                Backend::new_cow(start, page_size, Some((backend, offset as u64, None)), false)
+                Backend::new_cow(
+                    start,
+                    page_size,
+                    Some((backend, offset as u64, None)),
+                    false,
+                )
             } else {
                 Backend::new_alloc(start, page_size)
             }
