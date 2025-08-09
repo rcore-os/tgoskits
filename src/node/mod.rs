@@ -9,6 +9,7 @@ use alloc::{
     vec,
     vec::Vec,
 };
+use bitflags::bitflags;
 use core::{any::Any, fmt, iter, ops::Deref, task::Context};
 
 use axio::{IoEvents, Pollable};
@@ -20,6 +21,30 @@ use crate::{
     FilesystemOps, Metadata, MetadataUpdate, Mutex, MutexGuard, NodeType, VfsError, VfsResult,
     path::PathBuf,
 };
+
+bitflags! {
+    #[derive(Debug, Clone, Copy)]
+    pub struct NodeFlags: u32 {
+        /// Indicates that this file behaves like a stream.
+        ///
+        /// Presence of this flag could inform the higher layers to omit
+        /// maintaining a position for this file. `read_at` and `write_at` would
+        /// be called with zero offset instead.
+        const STREAM = 0x0001;
+
+        /// Indicates that this file should not be cached.
+        ///
+        /// For instance, files in `/proc` or `/sys` may contain dynamic data
+        /// that should not be cached.
+        const NON_CACHEABLE = 0x0002;
+
+        /// Indicates that this file should always be cached.
+        ///
+        /// For instance, files in tmpfs relies on page caching and do not have
+        /// a backing device.
+        const ALWAYS_CACHE = 0x0004;
+    }
+}
 
 /// Filesystem node operationss
 #[allow(clippy::len_without_is_empty)]
@@ -46,6 +71,11 @@ pub trait NodeOps: Send + Sync + 'static {
 
     /// Casts the node to a `&dyn core::any::Any`.
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync>;
+
+    /// Returns the flags of the node.
+    fn flags(&self) -> NodeFlags {
+        NodeFlags::empty()
+    }
 }
 
 enum Node {
@@ -147,6 +177,8 @@ impl DirEntry {
 
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> VfsResult<u64>;
+
+    pub fn flags(&self) -> NodeFlags;
 
     pub fn sync(&self, data_only: bool) -> VfsResult<()>;
 }

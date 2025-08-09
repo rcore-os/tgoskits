@@ -17,7 +17,7 @@ use inherit_methods_macro::inherit_methods;
 
 use crate::{
     DirEntry, DirEntrySink, Filesystem, FilesystemOps, Metadata, MetadataUpdate, Mutex, MutexGuard,
-    NodePermission, NodeType, OpenOptions, ReferenceKey, VfsError, VfsResult,
+    NodeFlags, NodePermission, NodeType, OpenOptions, ReferenceKey, VfsError, VfsResult,
     path::{DOT, DOTDOT, PathBuf},
 };
 
@@ -112,6 +112,8 @@ impl Location {
     pub fn read_link(&self) -> VfsResult<String>;
 
     pub fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize>;
+
+    pub fn flags(&self) -> NodeFlags;
 
     pub fn user_data(&self) -> MutexGuard<'_, Option<Box<dyn Any + Send + Sync>>>;
 }
