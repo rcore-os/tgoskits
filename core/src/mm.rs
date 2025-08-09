@@ -134,7 +134,7 @@ fn map_elf<'a>(
 }
 
 fn map_elf_error(err: &'static str) -> LinuxError {
-    warn!("Failed to parse ELF file: {err}");
+    debug!("Failed to parse ELF file: {err}");
     LinuxError::ENOEXEC
 }
 
