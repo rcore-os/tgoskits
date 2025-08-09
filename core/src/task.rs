@@ -147,12 +147,12 @@ impl ThreadInner {
 
     /// Check if the thread is ready to exit.
     pub fn pending_exit(&self) -> bool {
-        self.exit.load(Ordering::SeqCst)
+        self.exit.load(Ordering::Acquire)
     }
 
     /// Set the thread to exit.
     pub fn set_exit(&self) {
-        self.exit.store(true, Ordering::SeqCst);
+        self.exit.store(true, Ordering::Release);
     }
 }
 

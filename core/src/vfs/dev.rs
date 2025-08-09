@@ -3,8 +3,7 @@ use core::{any::Any, task::Context};
 
 use axfs_ng::CachedFile;
 use axfs_ng_vfs::{
-    DeviceId, FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeOps, NodePermission,
-    NodeType, VfsError, VfsResult,
+    DeviceId, FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, VfsError, VfsResult
 };
 use axio::{IoEvents, Pollable};
 use inherit_methods_macro::inherit_methods;
@@ -46,6 +45,11 @@ pub trait DeviceOps: Send + Sync {
     /// Returns the memory mapping behavior of the device.
     fn mmap(&self) -> DeviceMmap {
         DeviceMmap::None
+    }
+
+    /// Returns the flags for the device node.
+    fn flags(&self) -> NodeFlags {
+        NodeFlags::empty()
     }
 }
 
@@ -99,6 +103,10 @@ impl NodeOps for Device {
 
     fn len(&self) -> VfsResult<u64> {
         Ok(0)
+    }
+
+    fn flags(&self) -> NodeFlags {
+        self.ops.flags()
     }
 }
 

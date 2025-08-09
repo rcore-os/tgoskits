@@ -79,10 +79,6 @@ impl FilesystemOps for SimpleFs {
         self.root.lock().clone().unwrap()
     }
 
-    fn is_cacheable(&self) -> bool {
-        false
-    }
-
     fn stat(&self) -> VfsResult<StatFs> {
         Ok(dummy_stat_fs(self.fs_type))
     }

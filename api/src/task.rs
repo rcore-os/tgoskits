@@ -41,7 +41,6 @@ pub fn new_user_task(
             let thr = curr.as_thread();
             while !thr.pending_exit() {
                 let reason = uctx.run();
-                trace!("User task returned: {:?}", reason);
 
                 set_timer_state(&curr, TimerState::Kernel);
 

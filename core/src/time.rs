@@ -182,7 +182,6 @@ impl TimeManager {
             TimerState::None => {}
         }
         self.update_itimer(ITimerType::Real, delta, &emitter);
-
         self.last_wall_ns = now_ns;
     }
 

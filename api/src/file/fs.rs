@@ -5,7 +5,7 @@ use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::{FS_CONTEXT, FsContext};
 use axfs_ng_vfs::{Location, Metadata};
 use axio::{IoEvents, Pollable, Read, Write};
-use axsync::{Mutex, MutexGuard};
+use axsync::Mutex;
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW};
 
 use super::{FileLike, Kstat, get_file_like};
@@ -53,7 +53,7 @@ pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> LinuxResult<R
             let file_like = get_file_like(dirfd)?;
             let f = file_like.clone().into_any();
             Ok(if let Some(file) = f.downcast_ref::<File>() {
-                ResolveAtResult::File(file.inner.lock().backend()?.location().clone())
+                ResolveAtResult::File(file.inner().backend()?.location().clone())
             } else if let Some(dir) = f.downcast_ref::<Directory>() {
                 ResolveAtResult::File(dir.inner().clone())
             } else {
@@ -93,19 +93,18 @@ pub fn metadata_to_kstat(metadata: &Metadata) -> Kstat {
 }
 
 /// File wrapper for `axfs::fops::File`.
+#[repr(transparent)]
 pub struct File {
-    inner: Arc<Mutex<axfs_ng::File>>,
+    inner: axfs_ng::File,
 }
 
 impl File {
     pub fn new(inner: axfs_ng::File) -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(inner)),
-        }
+        Self { inner }
     }
 
-    pub fn inner(&self) -> MutexGuard<'_, axfs_ng::File> {
-        self.inner.lock()
+    pub fn inner(&self) -> &axfs_ng::File {
+        &self.inner
     }
 }
 

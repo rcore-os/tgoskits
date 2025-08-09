@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use axfs_ng_vfs::NodeFlags;
 use core::{
     any::Any,
     ops::{Deref, DerefMut},
@@ -136,6 +137,10 @@ impl DeviceOps for Tty {
     /// Casts the device operations to a dynamic type.
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    fn flags(&self) -> NodeFlags {
+        NodeFlags::NON_CACHEABLE | NodeFlags::STREAM
     }
 }
 

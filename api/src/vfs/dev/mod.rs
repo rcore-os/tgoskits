@@ -10,7 +10,7 @@ use core::any::Any;
 
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FsContext;
-use axfs_ng_vfs::{DeviceId, Filesystem, NodeType, VfsResult};
+use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsResult};
 use axsync::Mutex;
 use rand::{RngCore, SeedableRng, rngs::SmallRng};
 use starry_core::vfs::{Device, DeviceMmap, DeviceOps, DirMaker, DirMapping, SimpleDir, SimpleFs};
@@ -41,6 +41,10 @@ impl DeviceOps for Null {
     fn as_any(&self) -> &dyn Any {
         self
     }
+
+    fn flags(&self) -> NodeFlags {
+        NodeFlags::NON_CACHEABLE | NodeFlags::STREAM
+    }
 }
 
 struct Zero;
@@ -61,6 +65,10 @@ impl DeviceOps for Zero {
 
     fn mmap(&self) -> DeviceMmap {
         DeviceMmap::ReadOnly
+    }
+
+    fn flags(&self) -> NodeFlags {
+        NodeFlags::NON_CACHEABLE | NodeFlags::STREAM
     }
 }
 
@@ -89,6 +97,10 @@ impl DeviceOps for Random {
     fn as_any(&self) -> &dyn Any {
         self
     }
+
+    fn flags(&self) -> NodeFlags {
+        NodeFlags::NON_CACHEABLE | NodeFlags::STREAM
+    }
 }
 
 struct Full;
@@ -105,6 +117,10 @@ impl DeviceOps for Full {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    fn flags(&self) -> NodeFlags {
+        NodeFlags::NON_CACHEABLE | NodeFlags::STREAM
     }
 }
 

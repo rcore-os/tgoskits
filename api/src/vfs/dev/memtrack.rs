@@ -7,7 +7,7 @@ use core::{
 };
 
 use axbacktrace::Backtrace;
-use axfs_ng_vfs::VfsResult;
+use axfs_ng_vfs::{NodeFlags, VfsResult};
 use starry_core::task::{cleanup_task_tables, tasks};
 
 use crate::vfs::DeviceOps;
@@ -143,5 +143,9 @@ impl DeviceOps for MemTrack {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    fn flags(&self) -> NodeFlags {
+        NodeFlags::NON_CACHEABLE
     }
 }

@@ -5,7 +5,7 @@ use core::{
 
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FileBackend;
-use axfs_ng_vfs::{DeviceId, VfsResult};
+use axfs_ng_vfs::{DeviceId, NodeFlags, VfsResult};
 use axsync::Mutex;
 use linux_raw_sys::{
     ioctl::{BLKGETSIZE, BLKGETSIZE64, BLKRAGET, BLKRASET, BLKROGET, BLKROSET},
@@ -151,5 +151,9 @@ impl DeviceOps for LoopDevice {
         } else {
             DeviceMmap::None
         }
+    }
+
+    fn flags(&self) -> NodeFlags {
+        NodeFlags::NON_CACHEABLE
     }
 }

@@ -2,7 +2,7 @@ use core::{any::Any, slice};
 
 use axdriver::prelude::*;
 use axerrno::LinuxError;
-use axfs_ng_vfs::{VfsError, VfsResult};
+use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
 use axhal::mem::virt_to_phys;
 use memory_addr::{PhysAddrRange, VirtAddr};
 use starry_core::vfs::{DeviceMmap, DeviceOps};
@@ -227,5 +227,9 @@ impl DeviceOps for FrameBuffer {
             virt_to_phys(self.base),
             self.size,
         ))
+    }
+
+    fn flags(&self) -> NodeFlags {
+        NodeFlags::NON_CACHEABLE
     }
 }

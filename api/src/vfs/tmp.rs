@@ -2,9 +2,7 @@ use alloc::{borrow::ToOwned, string::String, sync::Arc};
 use core::{any::Any, borrow::Borrow, cmp::Ordering, task::Context, time::Duration};
 
 use axfs_ng_vfs::{
-    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
-    FilesystemOps, Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, StatFs,
-    VfsError, VfsResult, WeakDirEntry,
+    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, Reference, StatFs, VfsError, VfsResult, WeakDirEntry
 };
 use axio::{IoEvents, Pollable};
 use axsync::Mutex;
@@ -88,10 +86,6 @@ impl FilesystemOps for MemoryFs {
 
     fn root_dir(&self) -> DirEntry {
         self.root.lock().clone().unwrap()
-    }
-
-    fn is_cacheable(&self) -> bool {
-        true
     }
 
     fn stat(&self) -> VfsResult<StatFs> {
@@ -297,6 +291,10 @@ impl NodeOps for MemoryNode {
 
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
         self
+    }
+
+    fn flags(&self) -> NodeFlags {
+        NodeFlags::ALWAYS_CACHE
     }
 }
 

@@ -2,8 +2,8 @@ use alloc::{borrow::Cow, sync::Arc, vec::Vec};
 use core::{any::Any, cmp::Ordering, task::Context};
 
 use axfs_ng_vfs::{
-    FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType,
-    VfsError, VfsResult,
+    FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission,
+    NodeType, VfsError, VfsResult,
 };
 use axio::{IoEvents, Pollable};
 use inherit_methods_macro::inherit_methods;
@@ -104,6 +104,10 @@ impl NodeOps for SimpleFile {
 
     fn len(&self) -> VfsResult<u64> {
         Ok(self.ops.read_all()?.len() as u64)
+    }
+
+    fn flags(&self) -> NodeFlags {
+        NodeFlags::NON_CACHEABLE
     }
 }
 
