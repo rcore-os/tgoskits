@@ -109,7 +109,7 @@ impl ITimer {
             let should_wake = guard.peek().is_none_or(|it| it.deadline > deadline);
             guard.push(Entry {
                 deadline,
-                task: Arc::downgrade(current().as_task_ref()),
+                task: Arc::downgrade(&current()),
             });
             drop(guard);
             if should_wake {
