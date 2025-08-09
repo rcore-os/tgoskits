@@ -8,7 +8,10 @@ use core::{
 
 use axbacktrace::Backtrace;
 use axfs_ng_vfs::{NodeFlags, VfsResult};
-use starry_core::task::{cleanup_task_tables, tasks};
+use starry_core::{
+    mm::clear_elf_cache,
+    task::{cleanup_task_tables, tasks},
+};
 
 use crate::vfs::DeviceOps;
 
@@ -40,20 +43,34 @@ impl MemoryCategory {
                 continue;
             };
             match name.as_ref() {
-                "axfs_ng_vfs::node::dir::DirNode<M>::lookup_locked" => {
-                    return Some("dentry");
-                }
-                "ext4_user_malloc" => {
-                    return Some("ext4");
-                }
-                "axprocess::process::ProcessBuilder::build" => {
-                    return Some("process");
-                }
                 "starry_core::mm::ElfLoader::load" => {
                     return Some("elf cache");
                 }
-                "axfs_ng::highlevel::file::FileBackend<axsync::mutex::RawMutex>::new_cached" => {
+                "starry_core::task::ProcessData::new" => {
+                    return Some("process data");
+                }
+                "starry_process::process::Process::new" => {
+                    return Some("process");
+                }
+                "starry_process::process_group::ProcessGroup::new" => {
+                    return Some("process group");
+                }
+                "axfs_ng::fs::ext4::inode::Inode::new" => {
+                    return Some("ext4 inode");
+                }
+                "axfs_ng::highlevel::file::CachedFile::get_or_create"
+                | "axfs_ng::highlevel::file::CachedFile::page_or_insert" => {
                     return Some("cached file");
+                }
+                "axtask::timers::set_alarm_wakeup" => {
+                    return Some("timer");
+                }
+                "axfs_ng_vfs::node::dir::DirNode::lookup_locked"
+                | "axfs_ng_vfs::node::dir::DirNode::create_locked" => {
+                    return Some("dentry");
+                }
+                "ext4_user_malloc" => {
+                    return Some("lwext4");
                 }
                 _ => continue,
             }
@@ -72,12 +89,13 @@ impl fmt::Display for MemoryCategory {
     }
 }
 
-fn run_memory_leak_analysis() {
+fn run_memory_analysis() {
     // Wait for gc
     axtask::yield_now();
     cleanup_task_tables();
+    clear_elf_cache();
 
-    warn!(
+    ax_println!(
         "Alive tasks: {:?}",
         tasks().iter().map(|it| it.id_name()).collect::<Vec<_>>()
     );
@@ -99,17 +117,17 @@ fn run_memory_leak_analysis() {
         .collect::<Vec<_>>();
     allocations.sort_by_key(|it| cmp::Reverse(it.2));
     if !allocations.is_empty() {
-        warn!("===========================");
-        warn!("Memory leak detected:");
+        ax_println!("===========================");
+        ax_println!("Memory usage:");
         for (category, layouts, total_size) in allocations {
-            warn!(
+            ax_println!(
                 " {} bytes, {} allocations, {:?}, {category}",
                 total_size,
                 layouts.len(),
                 layouts[0],
             );
         }
-        warn!("==========================");
+        ax_println!("==========================");
     }
 }
 
@@ -130,8 +148,8 @@ impl DeviceOps for MemTrack {
                     axalloc::enable_tracking();
                 }
                 b"end\n" => {
+                    run_memory_analysis();
                     axalloc::disable_tracking();
-                    run_memory_leak_analysis();
                 }
                 _ => {
                     warn!("Unknown command: {:?}", buf);

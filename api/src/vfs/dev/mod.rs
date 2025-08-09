@@ -201,7 +201,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     root.add("tty", tty.clone());
     root.add("console", tty.clone());
 
-    #[cfg(feature = "track")]
+    #[cfg(feature = "memtrack")]
     root.add(
         "memtrack",
         Device::new(
@@ -234,5 +234,5 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     SimpleDir::new_maker(fs, Arc::new(root))
 }
 
-#[cfg(feature = "track")]
+#[cfg(feature = "memtrack")]
 mod memtrack;

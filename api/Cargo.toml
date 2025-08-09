@@ -7,7 +7,7 @@ homepage.workspace = true
 repository.workspace = true
 
 [features]
-track = ["axfeat/backtrace", "axalloc/tracking", "dep:gimli"]
+memtrack = ["axfeat/backtrace", "axalloc/tracking", "dep:gimli"]
 
 [dependencies]
 axfeat.workspace = true

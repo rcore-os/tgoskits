@@ -2,6 +2,7 @@
 export ARCH := riscv64
 export LOG := warn
 export BACKTRACE := y
+export MEMTRACK := n
 
 # QEMU Options
 export BLK := y
@@ -14,6 +15,10 @@ export A := $(PWD)
 export NO_AXSTD := y
 export AX_LIB := axfeat
 export APP_FEATURES := qemu
+
+ifeq ($(MEMTRACK), y)
+	APP_FEATURES += starry-api/memtrack
+endif
 
 export ICOUNT := n
 

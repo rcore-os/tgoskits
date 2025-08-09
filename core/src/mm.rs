@@ -254,6 +254,13 @@ impl ElfLoader {
 
 static ELF_LOADER: Mutex<ElfLoader> = Mutex::new(ElfLoader::new());
 
+/// Clear the ELF cache.
+///
+/// Useful for removing noises during memory leak detect.
+pub fn clear_elf_cache() {
+    ELF_LOADER.lock().0.clear();
+}
+
 /// Load the user app to the user address space.
 ///
 /// # Arguments
