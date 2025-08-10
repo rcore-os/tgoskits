@@ -61,15 +61,7 @@ impl ThreadSignalManager {
                 self.possibly_has_signal.store(false, Ordering::Release);
             }
         }
-        match self.proc.dequeue_signal(mask) {
-            Some(sig) => Some(sig),
-            None => {
-                self.proc
-                    .possibly_has_signal
-                    .store(false, Ordering::Release);
-                None
-            }
-        }
+        self.proc.dequeue_signal(mask)
     }
 
     pub fn process(&self) -> &Arc<ProcessSignalManager> {

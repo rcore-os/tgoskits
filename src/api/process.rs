@@ -68,7 +68,12 @@ impl ProcessSignalManager {
     }
 
     pub(crate) fn dequeue_signal(&self, mask: &SignalSet) -> Option<SignalInfo> {
-        self.pending.lock().dequeue_signal(mask)
+        let mut guard = self.pending.lock();
+        let result = guard.dequeue_signal(mask);
+        if guard.set.is_empty() {
+            self.possibly_has_signal.store(false, Ordering::Release);
+        }
+        result
     }
 
     /// Checks if a signal is ignored by the process.
