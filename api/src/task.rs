@@ -52,7 +52,11 @@ pub fn new_user_task(
                     ReturnReason::Interrupt => {}
                     r => {
                         warn!("Unexpected return reason: {:?}", r);
-                        thr.set_exit();
+                        send_signal_to_process(
+                            thr.proc_data.proc.pid(),
+                            Some(SignalInfo::new_kernel(Signo::SIGSEGV)),
+                        )
+                        .expect("Failed to send SIGSEGV");
                     }
                 }
 

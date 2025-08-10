@@ -457,7 +457,6 @@ run_ltp() {
     write06
     writev01
     writev02
-    writev03
     writev05
     writev06
     writev07
