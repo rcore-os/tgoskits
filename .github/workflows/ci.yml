@@ -58,7 +58,7 @@ jobs:
           cd source
           cargo install cargo-vendor-filterer
           cargo vendor-filterer > cargo_config.toml
-          cargo install --root . axconfig-gen
+          cargo install --root . axconfig-gen cargo-axplat
 
       - name: Push to oscomp repo
         run: |
