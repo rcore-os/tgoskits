@@ -29,9 +29,6 @@ all:
 		mkdir -p .cargo; \
 		cp cargo_config.toml .cargo/config.toml; \
 	fi
-	@if [ -d bin ]; then \
-		cp bin/* ~/.cargo/bin; \
-	fi
 	RUSTUP_TOOLCHAIN=nightly-2025-05-20 CARGO_PROFILE_RELEASE_LTO=true CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 $(MAKE) oscomp
 
 oscomp:
