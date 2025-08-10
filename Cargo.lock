@@ -531,8 +531,7 @@ dependencies = [
 [[package]]
 name = "axplat-loongarch64-qemu-virt"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "edb82011898513ca97dce6861b68a97eb56608ddb974a727cd761083c2bd8836"
+source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=1b9388#1b9388c3d4c919e035e28611a6e5f9ac6deb04fe"
 dependencies = [
  "axconfig-macros",
  "axcpu",
@@ -560,7 +559,7 @@ dependencies = [
 [[package]]
 name = "axplat-riscv64-qemu-virt"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=58ba2d3#58ba2d343046a2536902424463c84ca527dddf01"
+source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=1b9388#1b9388c3d4c919e035e28611a6e5f9ac6deb04fe"
 dependencies = [
  "axconfig-macros",
  "axcpu",

@@ -122,9 +122,8 @@ optional = true
 [patch.crates-io]
 axcpu = { git = "https://github.com/Starry-Mix-THU/axcpu.git", rev = "e62544b" }
 axerrno = { git = "https://github.com/Starry-Mix-THU/axerrno.git", rev = "f5d8f86" }
-axplat-riscv64-qemu-virt = { git = "https://github.com/Starry-Mix-THU/axplat_crates.git", rev = "58ba2d3" }
-# enable this for the fixed QEMU
-# axplat-loongarch64-qemu-virt = { git = "https://github.com/Starry-Mix-THU/axplat_crates.git", rev = "58ba2d3" }
+axplat-riscv64-qemu-virt = { git = "https://github.com/Starry-Mix-THU/axplat_crates.git", rev = "1b9388" }
+axplat-loongarch64-qemu-virt = { git = "https://github.com/Starry-Mix-THU/axplat_crates.git", rev = "1b9388" }
 page_table_entry = { git = "https://github.com/Starry-Mix-THU/page_table_multiarch.git", rev = "4edb821" }
 page_table_multiarch = { git = "https://github.com/Starry-Mix-THU/page_table_multiarch.git", rev = "4edb821" }
 
