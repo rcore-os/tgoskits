@@ -92,6 +92,10 @@ qemu = [
 ]
 vf2 = ["axplat-riscv64-visionfive2", "axfeat/driver-sdmmc-gpt"]
 
+# Stubs
+pci = ["axfeat/bus-pci"]
+mmio = ["axfeat/bus-mmio"]
+
 [dependencies]
 axfeat.workspace = true
 
@@ -128,5 +132,5 @@ page_table_entry = { git = "https://github.com/Starry-Mix-THU/page_table_multiar
 page_table_multiarch = { git = "https://github.com/Starry-Mix-THU/page_table_multiarch.git", rev = "4edb821" }
 
 [package.metadata.vendor-filter]
-platforms = ["riscv64gc-unknown-none-elf", "loongarch64-unknown-none"]
+platforms = ["riscv64gc-unknown-none-elf", "loongarch64-unknown-none-softfloat"]
 all-features = true

@@ -26,7 +26,7 @@ jobs:
           arch: loongarch64
 
       - name: Clippy
-        run: cargo clippy --target riscv64gc-unknown-none-elf --target riscv64gc-unknown-none-elf --all-features -- -D warnings
+        run: cargo clippy --target riscv64gc-unknown-none-elf --target loongarch64-unknown-none-softfloat --all-features -- -D warnings
 
       - name: Build
         run: make all
@@ -45,7 +45,7 @@ jobs:
         with:
           toolchain: nightly-2025-01-18
           components: rust-src, llvm-tools
-          targets: riscv64gc-unknown-none-elf, loongarch64-unknown-none
+          targets: riscv64gc-unknown-none-elf, loongarch64-unknown-none-softfloat
 
       - uses: Swatinem/rust-cache@v2
         with:

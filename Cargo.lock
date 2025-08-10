@@ -266,6 +266,7 @@ dependencies = [
  "axdriver_block",
  "axdriver_display",
  "axdriver_net",
+ "axdriver_pci",
  "axdriver_virtio",
  "axhal",
  "cfg-if",
@@ -305,6 +306,14 @@ dependencies = [
  "axdriver_base",
  "log",
  "spin",
+]
+
+[[package]]
+name = "axdriver_pci"
+version = "0.1.2"
+source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=afaf002#afaf002c0dbe6f51d40d32dc3fe13fb9c1ef3398"
+dependencies = [
+ "virtio-drivers",
 ]
 
 [[package]]
