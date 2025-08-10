@@ -46,7 +46,7 @@ axerrno = { git = "https://github.com/Starry-Mix-THU/axerrno.git", rev = "f5d8f8
 axfs-ng-vfs = { git = "https://github.com/Starry-Mix-THU/axfs-ng-vfs.git", rev = "29a7ad4" }
 axio = { git = "https://github.com/Starry-Mix-THU/axio.git", rev = "a069a3d" }
 starry-process = { git = "https://github.com/Starry-Mix-THU/starry-process.git", rev = "7e78f22" }
-starry-signal = { git = "https://github.com/Starry-Mix-THU/starry-signal.git", rev = "694b573" }
+starry-signal = { git = "https://github.com/Starry-Mix-THU/starry-signal.git", rev = "504ad00" }
 starry-vm = { git = "https://github.com/Starry-Mix-THU/starry-vm.git", rev = "f89fdbd" }
 
 bitflags = "2.6"
