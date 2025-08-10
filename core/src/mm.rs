@@ -112,12 +112,9 @@ fn map_elf<'a>(
         let backend = Backend::new_cow(
             seg_start,
             PageSize::Size4K,
-            Some((
-                FileBackend::Cached(cache.clone()),
-                ph.offset,
-                Some(ph.offset + ph.file_size),
-            )),
-            !ph.flags.is_write(),
+            FileBackend::Cached(cache.clone()),
+            ph.offset,
+            Some(ph.offset + ph.file_size),
         );
         uspace.map(
             seg_start.align_down_4k(),

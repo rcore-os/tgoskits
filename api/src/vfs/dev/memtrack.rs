@@ -144,16 +144,14 @@ impl DeviceOps for MemTrack {
                 b"start\n" => {
                     let generation = axalloc::current_generation();
                     STAMPED_GENERATION.store(generation, Ordering::SeqCst);
-                    info!("Memory allocation generation stamped: {}", generation);
+                    ax_println!("Memory allocation generation stamped: {}", generation);
                     axalloc::enable_tracking();
                 }
                 b"end\n" => {
                     run_memory_analysis();
                     axalloc::disable_tracking();
                 }
-                _ => {
-                    warn!("Unknown command: {:?}", buf);
-                }
+                _ => {}
             }
         }
         Ok(buf.len())
