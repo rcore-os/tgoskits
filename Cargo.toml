@@ -34,6 +34,7 @@ axdisplay = { path = "arceos/modules/axdisplay" }
 axdriver = { path = "arceos/modules/axdriver" }
 axfs-ng = { path = "arceos/modules/axfs-ng" }
 axhal = { path = "arceos/modules/axhal", features = ["uspace"] }
+axinput = { path = "arceos/modules/axinput" }
 axlog = { path = "arceos/modules/axlog" }
 axmm = { path = "arceos/modules/axmm" }
 axnet = { path = "arceos/modules/axnet" }
@@ -43,7 +44,7 @@ axtask = { path = "arceos/modules/axtask", features = ["task-ext"] }
 
 axbacktrace = { git = "https://github.com/Starry-Mix-THU/axbacktrace.git", rev = "322f6da" }
 axerrno = { git = "https://github.com/Starry-Mix-THU/axerrno.git", rev = "f5d8f86" }
-axfs-ng-vfs = { git = "https://github.com/Starry-Mix-THU/axfs-ng-vfs.git", rev = "29a7ad4" }
+axfs-ng-vfs = { git = "https://github.com/Starry-Mix-THU/axfs-ng-vfs.git", rev = "dd08e16" }
 axio = { git = "https://github.com/Starry-Mix-THU/axio.git", rev = "a069a3d" }
 starry-process = { git = "https://github.com/Starry-Mix-THU/starry-process.git", rev = "7e78f22" }
 starry-signal = { git = "https://github.com/Starry-Mix-THU/starry-signal.git", rev = "504ad00" }
@@ -87,7 +88,10 @@ qemu = [
     "axfeat/driver-virtio-blk",
     "axfeat/driver-virtio-net",
     "axfeat/driver-virtio-gpu",
+    "axfeat/driver-virtio-input",
     "axfeat/display",
+    "axfeat/input",
+    "axdriver/dyn",
     "axfeat/defplat",           # make rust-analyzer happy
 ]
 vf2 = ["axplat-riscv64-visionfive2", "axfeat/driver-sdmmc-gpt"]

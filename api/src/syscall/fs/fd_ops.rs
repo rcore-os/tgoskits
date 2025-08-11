@@ -1,3 +1,4 @@
+use alloc::sync::Arc;
 use core::{
     ffi::{c_char, c_int},
     mem,
@@ -58,11 +59,15 @@ fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32))
     options
 }
 
-fn add_to_fd(result: OpenResult, cloexec: bool) -> LinuxResult<i32> {
-    match result {
-        OpenResult::File(file) => File::new(file).add_to_fd_table(cloexec),
-        OpenResult::Dir(dir) => Directory::new(dir).add_to_fd_table(cloexec),
+fn add_to_fd(result: OpenResult, flags: u32) -> LinuxResult<i32> {
+    let f: Arc<dyn FileLike> = match result {
+        OpenResult::File(file) => Arc::new(File::new(file)),
+        OpenResult::Dir(dir) => Arc::new(Directory::new(dir)),
+    };
+    if flags & O_NONBLOCK != 0 {
+        f.set_nonblocking(true)?;
     }
+    add_file_like(f, flags & O_CLOEXEC != 0)
 }
 
 /// Open or create a file.
@@ -87,7 +92,7 @@ pub fn sys_openat(
 
     let options = flags_to_options(flags, mode, (sys_geteuid()? as _, sys_getegid()? as _));
     with_fs(dirfd, |fs| options.open(fs, path))
-        .and_then(|it| add_to_fd(it, (flags as u32) & O_CLOEXEC != 0))
+        .and_then(|it| add_to_fd(it, flags as _))
         .map(|fd| fd as isize)
 }
 

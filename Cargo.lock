@@ -265,6 +265,7 @@ dependencies = [
  "axdriver_base",
  "axdriver_block",
  "axdriver_display",
+ "axdriver_input",
  "axdriver_net",
  "axdriver_pci",
  "axdriver_virtio",
@@ -277,12 +278,12 @@ dependencies = [
 [[package]]
 name = "axdriver_base"
 version = "0.1.2"
-source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=afaf002#afaf002c0dbe6f51d40d32dc3fe13fb9c1ef3398"
+source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=cfb3455#cfb3455593d1db1c132d3de4ad74d71707d1b461"
 
 [[package]]
 name = "axdriver_block"
 version = "0.1.2"
-source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=afaf002#afaf002c0dbe6f51d40d32dc3fe13fb9c1ef3398"
+source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=cfb3455#cfb3455593d1db1c132d3de4ad74d71707d1b461"
 dependencies = [
  "axdriver_base",
  "gpt_disk_io",
@@ -293,15 +294,24 @@ dependencies = [
 [[package]]
 name = "axdriver_display"
 version = "0.1.2"
-source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=afaf002#afaf002c0dbe6f51d40d32dc3fe13fb9c1ef3398"
+source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=cfb3455#cfb3455593d1db1c132d3de4ad74d71707d1b461"
 dependencies = [
  "axdriver_base",
 ]
 
 [[package]]
+name = "axdriver_input"
+version = "0.1.2"
+source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=cfb3455#cfb3455593d1db1c132d3de4ad74d71707d1b461"
+dependencies = [
+ "axdriver_base",
+ "strum",
+]
+
+[[package]]
 name = "axdriver_net"
 version = "0.1.2"
-source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=afaf002#afaf002c0dbe6f51d40d32dc3fe13fb9c1ef3398"
+source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=cfb3455#cfb3455593d1db1c132d3de4ad74d71707d1b461"
 dependencies = [
  "axdriver_base",
  "log",
@@ -311,7 +321,7 @@ dependencies = [
 [[package]]
 name = "axdriver_pci"
 version = "0.1.2"
-source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=afaf002#afaf002c0dbe6f51d40d32dc3fe13fb9c1ef3398"
+source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=cfb3455#cfb3455593d1db1c132d3de4ad74d71707d1b461"
 dependencies = [
  "virtio-drivers",
 ]
@@ -319,12 +329,14 @@ dependencies = [
 [[package]]
 name = "axdriver_virtio"
 version = "0.1.2"
-source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=afaf002#afaf002c0dbe6f51d40d32dc3fe13fb9c1ef3398"
+source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=cfb3455#cfb3455593d1db1c132d3de4ad74d71707d1b461"
 dependencies = [
  "axdriver_base",
  "axdriver_block",
  "axdriver_display",
+ "axdriver_input",
  "axdriver_net",
+ "log",
  "virtio-drivers",
 ]
 
@@ -382,7 +394,7 @@ dependencies = [
 [[package]]
 name = "axfs-ng-vfs"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axfs-ng-vfs.git?rev=29a7ad4#29a7ad49ef9934123754b9dba5e1f4f72e89aa50"
+source = "git+https://github.com/Starry-Mix-THU/axfs-ng-vfs.git?rev=dd08e16#dd08e16d2a618a9a80a543405a10860127433260"
 dependencies = [
  "axerrno",
  "axio",
@@ -417,6 +429,16 @@ dependencies = [
  "memory_addr",
  "page_table_multiarch",
  "percpu",
+]
+
+[[package]]
+name = "axinput"
+version = "0.1.0"
+dependencies = [
+ "axdriver",
+ "axsync",
+ "lazyinit",
+ "log",
 ]
 
 [[package]]
@@ -628,6 +650,7 @@ dependencies = [
  "axfs-ng",
  "axfs-ng-vfs",
  "axhal",
+ "axinput",
  "axlog",
  "axmm",
  "axnet",
@@ -2060,6 +2083,7 @@ dependencies = [
  "axalloc",
  "axbacktrace",
  "axconfig",
+ "axcpu",
  "axdisplay",
  "axdriver",
  "axerrno",
@@ -2067,6 +2091,7 @@ dependencies = [
  "axfs-ng",
  "axfs-ng-vfs",
  "axhal",
+ "axinput",
  "axio",
  "axlog",
  "axmm",
@@ -2103,6 +2128,7 @@ dependencies = [
  "starry-vm",
  "syscalls",
  "x86",
+ "zerocopy 0.8.26",
 ]
 
 [[package]]
@@ -2205,9 +2231,9 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "strum"
-version = "0.27.1"
+version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f64def088c51c9510a8579e3c5d67c65349dcf755e5479ad3d010aa6454e2c32"
+checksum = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
 dependencies = [
  "strum_macros",
 ]

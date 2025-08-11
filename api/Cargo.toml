@@ -16,10 +16,11 @@ axalloc.workspace = true
 axconfig.workspace = true
 axdisplay.workspace = true
 axdriver.workspace = true
-axfs-ng.workspace = true
 axfs-ng-vfs.workspace = true
-axio.workspace = true
+axfs-ng.workspace = true
 axhal.workspace = true
+axinput.workspace = true
+axio.workspace = true
 axlog.workspace = true
 axmm.workspace = true
 axnet.workspace = true
@@ -29,6 +30,7 @@ axtask.workspace = true
 starry-core.workspace = true
 
 axbacktrace.workspace = true
+axcpu = "0.2"
 axerrno.workspace = true
 bitflags.workspace = true
 bitmaps = { version = "3.2.1", default-features = false }
@@ -60,6 +62,7 @@ starry-signal.workspace = true
 starry-vm.workspace = true
 syscalls = { git = "https://github.com/jasonwhite/syscalls.git", rev = "92624de", default-features = false }
 ringbuf = { version = "0.4.8", default-features = false, features = ["alloc"] }
+zerocopy = { version = "0.8.26", features = ["derive"] }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"

@@ -1,5 +1,6 @@
 use core::sync::atomic::Ordering;
 
+use axcpu::uspace::ExceptionInfo;
 use axerrno::{LinuxError, LinuxResult};
 use axhal::uspace::{ReturnReason, UserContext};
 use axtask::{TaskInner, current};
@@ -50,6 +51,14 @@ pub fn new_user_task(
                         handle_user_page_fault(&thr.proc_data, addr, flags)
                     }
                     ReturnReason::Interrupt => {}
+                    ReturnReason::Exception(ExceptionInfo { .. }) => {
+                        // TODO: detailed handling
+                        send_signal_to_process(
+                            thr.proc_data.proc.pid(),
+                            Some(SignalInfo::new_kernel(Signo::SIGTRAP)),
+                        )
+                        .expect("Failed to send SIGTRAP");
+                    }
                     r => {
                         warn!("Unexpected return reason: {:?}", r);
                         send_signal_to_process(

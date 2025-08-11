@@ -1,5 +1,6 @@
 //! Special devices
 
+mod event;
 mod fb;
 mod r#loop;
 mod rtc;
@@ -8,6 +9,7 @@ mod tty;
 use alloc::{format, sync::Arc};
 use core::any::Any;
 
+use axdriver::prelude::EventType;
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FsContext;
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsResult};
@@ -218,6 +220,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
     );
 
+    // Loop devices
     for i in 0..16 {
         let dev_id = DeviceId::new(7, 0);
         root.add(
@@ -230,6 +233,32 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             ),
         );
     }
+
+    // Input devices
+    let mut inputs = DirMapping::new();
+    let mut input_id = 0;
+    let input_devices = axinput::take_inputs();
+    let mut keys = [0; 0x300usize.div_ceil(8)];
+    for (i, mut device) in input_devices.into_iter().enumerate() {
+        assert!(device.get_event_bits(EventType::Key, &mut keys).unwrap());
+
+        let dev = Device::new(
+            fs.clone(),
+            NodeType::CharacterDevice,
+            DeviceId::new(13, (i + 1) as _),
+            Arc::new(event::EventDev::new(device)),
+        );
+
+        const BTN_MOUSE: usize = 0x110;
+        if keys[BTN_MOUSE / 8] & (1 << (BTN_MOUSE % 8)) != 0 {
+            // Mouse
+            inputs.add("mice", dev);
+        } else {
+            inputs.add(format!("event{input_id}"), dev);
+            input_id += 1;
+        }
+    }
+    root.add("input", SimpleDir::new_maker(fs.clone(), Arc::new(inputs)));
 
     SimpleDir::new_maker(fs, Arc::new(root))
 }

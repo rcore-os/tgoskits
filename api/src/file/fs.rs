@@ -1,11 +1,18 @@
 use alloc::sync::Arc;
-use core::{any::Any, ffi::c_int, task::Context};
+use core::{
+    any::Any,
+    ffi::c_int,
+    hint::likely,
+    sync::atomic::{AtomicBool, Ordering},
+    task::Context,
+};
 
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::{FS_CONTEXT, FsContext};
-use axfs_ng_vfs::{Location, Metadata};
+use axfs_ng_vfs::{Location, Metadata, NodeFlags};
 use axio::{IoEvents, Pollable, Read, Write};
 use axsync::Mutex;
+use axtask::future::Poller;
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW};
 
 use super::{FileLike, Kstat, get_file_like};
@@ -93,28 +100,49 @@ pub fn metadata_to_kstat(metadata: &Metadata) -> Kstat {
 }
 
 /// File wrapper for `axfs::fops::File`.
-#[repr(transparent)]
 pub struct File {
     inner: axfs_ng::File,
+    nonblock: AtomicBool,
 }
 
 impl File {
     pub fn new(inner: axfs_ng::File) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            nonblock: AtomicBool::new(false),
+        }
     }
 
     pub fn inner(&self) -> &axfs_ng::File {
         &self.inner
     }
+
+    fn is_blocking(&self) -> bool {
+        self.inner.location().flags().contains(NodeFlags::BLOCKING)
+    }
 }
 
 impl FileLike for File {
     fn read(&self, buf: &mut [u8]) -> LinuxResult<usize> {
-        self.inner().read(buf)
+        let mut inner = self.inner();
+        if likely(self.is_blocking()) {
+            inner.read(buf)
+        } else {
+            Poller::new(self, IoEvents::IN)
+                .non_blocking(self.nonblocking())
+                .poll(|| inner.read(buf))
+        }
     }
 
     fn write(&self, buf: &[u8]) -> LinuxResult<usize> {
-        self.inner().write(buf)
+        let mut inner = self.inner();
+        if likely(self.is_blocking()) {
+            inner.write(buf)
+        } else {
+            Poller::new(self, IoEvents::OUT)
+                .non_blocking(self.nonblocking())
+                .poll(|| inner.write(buf))
+        }
     }
 
     fn stat(&self) -> LinuxResult<Kstat> {
@@ -127,6 +155,15 @@ impl FileLike for File {
 
     fn ioctl(&self, cmd: u32, arg: usize) -> LinuxResult<usize> {
         self.inner().backend()?.location().ioctl(cmd, arg)
+    }
+
+    fn set_nonblocking(&self, flag: bool) -> LinuxResult {
+        self.nonblock.store(flag, Ordering::Release);
+        Ok(())
+    }
+
+    fn nonblocking(&self) -> bool {
+        self.nonblock.load(Ordering::Acquire)
     }
 
     fn from_fd(fd: c_int) -> LinuxResult<Arc<Self>>

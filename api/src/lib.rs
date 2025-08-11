@@ -1,4 +1,5 @@
 #![no_std]
+#![feature(likely_unlikely)]
 #![allow(missing_docs)]
 
 #[macro_use]
