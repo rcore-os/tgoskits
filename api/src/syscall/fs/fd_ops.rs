@@ -141,17 +141,17 @@ pub fn sys_close_range(first: i32, last: i32, flags: u32) -> LinuxResult<isize> 
         old_files.write().clone_from(old_files.read().deref());
     }
 
-    if flags.contains(CloseRangeFlags::CLOEXEC) {
-        let mut fd_table = FD_TABLE.write();
-        for fd in first..=last {
-            if let Some(f) = fd_table.get_mut(fd as _) {
-                f.cloexec = true;
+    let cloexec = flags.contains(CloseRangeFlags::CLOEXEC);
+    let mut fd_table = FD_TABLE.write();
+    if let Some(max_index) = fd_table.ids().next_back() {
+        for fd in first..=last.min(max_index as i32) {
+            if cloexec {
+                if let Some(f) = fd_table.get_mut(fd as _) {
+                    f.cloexec = true;
+                }
+            } else {
+                fd_table.remove(fd as _);
             }
-        }
-    } else {
-        let mut fd_table = FD_TABLE.write();
-        for fd in first..=last {
-            fd_table.remove(fd as _);
         }
     }
 
