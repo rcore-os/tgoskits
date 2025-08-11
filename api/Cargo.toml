@@ -7,6 +7,7 @@ homepage.workspace = true
 repository.workspace = true
 
 [features]
+input = ["dep:axinput"]
 memtrack = ["axfeat/backtrace", "axalloc/tracking", "dep:gimli"]
 
 [dependencies]
@@ -19,7 +20,7 @@ axdriver.workspace = true
 axfs-ng-vfs.workspace = true
 axfs-ng.workspace = true
 axhal.workspace = true
-axinput.workspace = true
+axinput = { workspace = true, optional = true }
 axio.workspace = true
 axlog.workspace = true
 axmm.workspace = true

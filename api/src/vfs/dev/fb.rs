@@ -1,5 +1,7 @@
 use core::{any::Any, slice};
 
+#[allow(unused_imports)]
+use axdriver::prelude::DisplayDriverOps;
 use axerrno::LinuxError;
 use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
 use axhal::mem::virt_to_phys;

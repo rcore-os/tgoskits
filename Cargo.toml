@@ -87,12 +87,16 @@ default = []
 qemu = [
     "axfeat/driver-virtio-blk",
     "axfeat/driver-virtio-net",
+
     "axfeat/driver-virtio-gpu",
-    "axfeat/driver-virtio-input",
     "axfeat/display",
+
+    "axfeat/driver-virtio-input",
     "axfeat/input",
-    "axdriver/dyn",
-    "axfeat/defplat",           # make rust-analyzer happy
+    # "axdriver/dyn",
+    "starry-api/input",
+
+    "axfeat/defplat",
 ]
 vf2 = ["axplat-riscv64-visionfive2", "axfeat/driver-sdmmc-gpt"]
 

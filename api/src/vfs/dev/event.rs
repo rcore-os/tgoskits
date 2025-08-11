@@ -1,8 +1,12 @@
+use alloc::{format, sync::Arc};
 use core::{any::Any, task::Context, time::Duration};
 
-use axdriver::prelude::{AxInputDevice, DevError, Event, EventType, InputDeviceId};
+#[allow(unused_imports)]
+use axdriver::prelude::{
+    AxInputDevice, BaseDriverOps, DevError, Event, EventType, InputDeviceId, InputDriverOps,
+};
 use axerrno::{LinuxError, LinuxResult};
-use axfs_ng_vfs::{NodeFlags, VfsResult};
+use axfs_ng_vfs::{DeviceId, NodeFlags, NodeType, VfsResult};
 use axhal::time::wall_time;
 use axio::{IoEvents, Pollable};
 use axsync::Mutex;
@@ -11,7 +15,7 @@ use linux_raw_sys::{
     general::{__kernel_old_time_t, __kernel_suseconds_t},
     ioctl::{EVIOCGID, EVIOCGRAB, EVIOCGVERSION},
 };
-use starry_core::vfs::DeviceOps;
+use starry_core::vfs::{Device, DeviceOps, DirMapping, SimpleFs};
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::mm::UserPtr;
@@ -314,4 +318,31 @@ impl Pollable for EventDev {
             context.waker().wake_by_ref();
         }
     }
+}
+
+pub fn input_devices(fs: Arc<SimpleFs>) -> DirMapping {
+    let mut inputs = DirMapping::new();
+    let mut input_id = 0;
+    let input_devices = axinput::take_inputs();
+    let mut keys = [0; 0x300usize.div_ceil(8)];
+    for (i, mut device) in input_devices.into_iter().enumerate() {
+        assert!(device.get_event_bits(EventType::Key, &mut keys).unwrap());
+
+        let dev = Device::new(
+            fs.clone(),
+            NodeType::CharacterDevice,
+            DeviceId::new(13, (i + 1) as _),
+            Arc::new(EventDev::new(device)),
+        );
+
+        const BTN_MOUSE: usize = 0x110;
+        if keys[BTN_MOUSE / 8] & (1 << (BTN_MOUSE % 8)) != 0 {
+            // Mouse
+            inputs.add("mice", dev);
+        } else {
+            inputs.add(format!("event{input_id}"), dev);
+            input_id += 1;
+        }
+    }
+    inputs
 }
