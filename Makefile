@@ -29,7 +29,10 @@ all:
 		mkdir -p .cargo; \
 		cp cargo_config.toml .cargo/config.toml; \
 	fi
-	RUSTUP_TOOLCHAIN=nightly-2025-05-20 CARGO_PROFILE_RELEASE_LTO=true CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 $(MAKE) oscomp
+	RUSTUP_TOOLCHAIN=nightly-2025-05-20 \
+	CARGO_PROFILE_RELEASE_LTO=true \
+	CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
+	$(MAKE) oscomp LOG=off BACKTRACE=n
 
 oscomp:
 	$(MAKE) ARCH=riscv64 BUS=mmio build
