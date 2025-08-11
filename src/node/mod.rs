@@ -43,6 +43,12 @@ bitflags! {
         /// For instance, files in tmpfs relies on page caching and do not have
         /// a backing device.
         const ALWAYS_CACHE = 0x0004;
+
+        /// Indicates that operations on this file are always blocking.
+        ///
+        /// This could prevent higher layers from attempting to add unnecessary
+        /// non-blocking handling.
+        const BLOCKING = 0x0008;
     }
 }
 
