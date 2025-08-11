@@ -26,7 +26,9 @@ jobs:
           arch: loongarch64
 
       - name: Clippy
-        run: cargo clippy --target riscv64gc-unknown-none-elf --target loongarch64-unknown-none-softfloat --all-features -- -D warnings
+        run: |
+          cargo clippy --target riscv64gc-unknown-none-elf --all-features -- -D warnings
+          cargo clippy --target loongarch64-unknown-none-softfloat -F qemu -- -D warnings
 
       - name: Build
         run: make all
