@@ -331,3 +331,11 @@ pub fn sys_msync(addr: usize, length: usize, flags: u32) -> LinuxResult<isize> {
 
     Ok(0)
 }
+
+pub fn sys_mlock(addr: usize, length: usize) -> LinuxResult<isize> {
+    sys_mlock2(addr, length, 0)
+}
+
+pub fn sys_mlock2(_addr: usize, _length: usize, _flags: u32) -> LinuxResult<isize> {
+    Ok(0)
+}

@@ -56,3 +56,14 @@ pub fn sys_setresuid(_ruid: u32, _euid: u32, _suid: u32) -> LinuxResult<isize> {
 pub fn sys_setresgid(_rgid: u32, _egid: u32, _sgid: u32) -> LinuxResult<isize> {
     Ok(0)
 }
+
+pub fn sys_get_mempolicy(
+    _policy: UserPtr<i32>,
+    _nodemask: UserPtr<usize>,
+    _maxnode: usize,
+    _addr: usize,
+    _flags: usize,
+) -> LinuxResult<isize> {
+    warn!("Dummy get_mempolicy called");
+    Ok(0)
+}

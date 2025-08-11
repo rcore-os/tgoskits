@@ -6,7 +6,7 @@ use axtask::{
 };
 use linux_raw_sys::general::{
     __kernel_clockid_t, CLOCK_MONOTONIC, CLOCK_REALTIME, PRIO_PGRP, PRIO_PROCESS, PRIO_USER,
-    TIMER_ABSTIME, timespec,
+    SCHED_RR, TIMER_ABSTIME, timespec,
 };
 use starry_core::task::{get_process_data, get_process_group};
 
@@ -115,11 +115,11 @@ pub fn sys_sched_getaffinity(
         .get_as_mut_slice(mask_bytes.len())?
         .copy_from_slice(mask_bytes);
 
-    Ok(0)
+    Ok(mask_bytes.len() as _)
 }
 
 pub fn sys_sched_setaffinity(
-    pid: i32,
+    _pid: i32,
     cpusetsize: usize,
     user_mask: UserConstPtr<u8>,
 ) -> LinuxResult<isize> {
@@ -134,11 +134,24 @@ pub fn sys_sched_setaffinity(
     }
 
     // TODO: support other threads
-    if pid != 0 {
-        return Err(LinuxError::EPERM);
-    }
     axtask::set_current_affinity(cpu_mask);
 
+    Ok(0)
+}
+
+pub fn sys_sched_getscheduler(_pid: i32) -> LinuxResult<isize> {
+    Ok(SCHED_RR as _)
+}
+
+pub fn sys_sched_setscheduler(
+    _pid: i32,
+    _policy: i32,
+    _param: UserConstPtr<()>,
+) -> LinuxResult<isize> {
+    Ok(0)
+}
+
+pub fn sys_sched_getparam(_pid: i32, _param: UserPtr<()>) -> LinuxResult<isize> {
     Ok(0)
 }
 

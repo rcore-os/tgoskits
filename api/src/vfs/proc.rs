@@ -2,14 +2,14 @@ use alloc::{
     borrow::Cow,
     boxed::Box,
     format,
-    string::ToString,
+    string::{String, ToString},
     sync::{Arc, Weak},
     vec::Vec,
 };
 use core::iter;
 
 use axfs_ng_vfs::{Filesystem, VfsError, VfsResult};
-use axtask::{WeakAxTaskRef, current};
+use axtask::{AxTaskRef, WeakAxTaskRef, current};
 use indoc::indoc;
 use starry_core::{
     task::{AsThread, TaskStat, get_task, tasks},
@@ -124,6 +124,22 @@ impl SimpleDirOps for ProcessTaskDir {
     }
 }
 
+#[rustfmt::skip]
+fn task_status(task: &AxTaskRef) -> String {
+    format!(
+        "Tgid:\t{}\n\
+        Pid:\t{}\n\
+        Uid:\t0 0 0 0\n\
+        Gid:\t0 0 0 0\n\
+        Cpus_allowed:\t1\n\
+        Cpus_allowed_list:\t0\n\
+        Mems_allowed:\t1\n\
+        Mems_allowed_list:\t0",
+        task.as_thread().proc_data.proc.pid(),
+        task.id().as_u64()
+    )
+}
+
 /// The /proc/[pid] directory
 struct ThreadDir {
     fs: Arc<SimpleFs>,
@@ -155,14 +171,7 @@ impl SimpleDirOps for ThreadDir {
                 Ok(format!("{}", TaskStat::from_thread(&task)?).into_bytes())
             })
             .into(),
-            "status" => SimpleFile::new(fs, move || {
-                Ok(format!(
-                    "Tgid: {}\nPid: {}\nUid: 0 0 0 0\nGid: 0 0 0 0",
-                    task.as_thread().proc_data.proc.pid(),
-                    task.id().as_u64()
-                ))
-            })
-            .into(),
+            "status" => SimpleFile::new(fs, move || Ok(task_status(&task))).into(),
             "oom_score_adj" => SimpleFile::new(
                 fs,
                 RwFile::new(move |req| match req {

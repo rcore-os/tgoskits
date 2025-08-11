@@ -126,6 +126,26 @@ impl DeviceOps for Full {
     }
 }
 
+struct CpuDmaLatency;
+
+impl DeviceOps for CpuDmaLatency {
+    fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
+        Err(LinuxError::EINVAL)
+    }
+
+    fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
+        Ok(buf.len())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn flags(&self) -> NodeFlags {
+        NodeFlags::NON_CACHEABLE
+    }
+}
+
 fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     let mut root = DirMapping::new();
     root.add(
@@ -211,6 +231,16 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             NodeType::CharacterDevice,
             DeviceId::new(114, 514),
             Arc::new(memtrack::MemTrack),
+        ),
+    );
+
+    root.add(
+        "cpu_dma_latency",
+        Device::new(
+            fs.clone(),
+            NodeType::CharacterDevice,
+            DeviceId::new(10, 1024),
+            Arc::new(CpuDmaLatency),
         ),
     );
 

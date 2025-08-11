@@ -336,6 +336,8 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
         Sysno::mremap => sys_mremap(tf.arg0(), tf.arg1() as _, tf.arg2() as _, tf.arg3() as _),
         Sysno::madvise => sys_madvise(tf.arg0(), tf.arg1() as _, tf.arg2() as _),
         Sysno::msync => sys_msync(tf.arg0(), tf.arg1() as _, tf.arg2() as _),
+        Sysno::mlock => sys_mlock(tf.arg0(), tf.arg1() as _),
+        Sysno::mlock2 => sys_mlock2(tf.arg0(), tf.arg1() as _, tf.arg2() as _),
 
         // task info
         Sysno::getpid => sys_getpid(),
@@ -358,6 +360,11 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
         Sysno::sched_setaffinity => {
             sys_sched_setaffinity(tf.arg0() as _, tf.arg1() as _, tf.arg2().into())
         }
+        Sysno::sched_getscheduler => sys_sched_getscheduler(tf.arg0() as _),
+        Sysno::sched_setscheduler => {
+            sys_sched_setscheduler(tf.arg0() as _, tf.arg1() as _, tf.arg2().into())
+        }
+        Sysno::sched_getparam => sys_sched_getparam(tf.arg0() as _, tf.arg1().into()),
         Sysno::getpriority => sys_getpriority(tf.arg0() as _, tf.arg1() as _),
 
         // task ops
@@ -377,6 +384,13 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
         Sysno::setreuid => sys_setreuid(tf.arg0() as _, tf.arg1() as _),
         Sysno::setresuid => sys_setresuid(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
         Sysno::setresgid => sys_setresgid(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
+        Sysno::get_mempolicy => sys_get_mempolicy(
+            tf.arg0().into(),
+            tf.arg1().into(),
+            tf.arg2() as _,
+            tf.arg3() as _,
+            tf.arg4() as _,
+        ),
 
         // task management
         Sysno::clone => sys_clone(
