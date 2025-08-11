@@ -3,14 +3,19 @@ mod file;
 
 use alloc::{
     borrow::ToOwned,
-    boxed::Box,
     string::String,
     sync::{Arc, Weak},
     vec,
     vec::Vec,
 };
 use bitflags::bitflags;
-use core::{any::Any, fmt, iter, ops::Deref, task::Context};
+use core::{
+    any::{Any, TypeId},
+    fmt, iter,
+    ops::Deref,
+    task::Context,
+};
+use smallvec::SmallVec;
 
 use axio::{IoEvents, Pollable};
 pub use dir::*;
@@ -144,12 +149,56 @@ impl Reference {
     }
 }
 
-#[derive(Debug)]
+#[derive(Default)]
+pub struct TypeMap(SmallVec<[(TypeId, Arc<dyn Any + Send + Sync>); 2]>);
+impl TypeMap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert<T: Any + Send + Sync>(&mut self, value: T) {
+        self.0.push((TypeId::of::<T>(), Arc::new(value)));
+    }
+
+    pub fn get<T: Any + Send + Sync>(&self) -> Option<Arc<T>> {
+        self.0
+            .iter()
+            .find_map(|(id, value)| {
+                if id == &TypeId::of::<T>() {
+                    Some(value.clone())
+                } else {
+                    None
+                }
+            })
+            .and_then(|value| value.downcast().ok())
+    }
+
+    pub fn get_or_insert_with<T: Any + Send + Sync>(&mut self, f: impl FnOnce() -> T) -> Arc<T> {
+        if let Some(value) = self.get::<T>() {
+            value
+        } else {
+            let value = f();
+            self.insert(value);
+            self.get::<T>().unwrap()
+        }
+    }
+}
+
 struct Inner {
     node: Node,
     node_type: NodeType,
     reference: Reference,
-    user_data: Mutex<Option<Box<dyn Any + Send + Sync>>>,
+    user_data: Mutex<TypeMap>,
+}
+
+impl fmt::Debug for Inner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Inner")
+            .field("node", &self.node)
+            .field("node_type", &self.node_type)
+            .field("reference", &self.reference)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -331,7 +380,7 @@ impl DirEntry {
         }
     }
 
-    pub fn user_data(&self) -> MutexGuard<'_, Option<Box<dyn Any + Send + Sync>>> {
+    pub fn user_data(&self) -> MutexGuard<'_, TypeMap> {
         self.0.user_data.lock()
     }
 }

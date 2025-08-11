@@ -1,11 +1,9 @@
 use alloc::{
-    boxed::Box,
     string::String,
     sync::{Arc, Weak},
     vec,
 };
 use core::{
-    any::Any,
     iter,
     sync::atomic::{AtomicU64, Ordering},
     task::Context,
@@ -17,7 +15,7 @@ use inherit_methods_macro::inherit_methods;
 
 use crate::{
     DirEntry, DirEntrySink, Filesystem, FilesystemOps, Metadata, MetadataUpdate, Mutex, MutexGuard,
-    NodeFlags, NodePermission, NodeType, OpenOptions, ReferenceKey, VfsError, VfsResult,
+    NodeFlags, NodePermission, NodeType, OpenOptions, ReferenceKey, TypeMap, VfsError, VfsResult,
     path::{DOT, DOTDOT, PathBuf},
 };
 
@@ -115,7 +113,7 @@ impl Location {
 
     pub fn flags(&self) -> NodeFlags;
 
-    pub fn user_data(&self) -> MutexGuard<'_, Option<Box<dyn Any + Send + Sync>>>;
+    pub fn user_data(&self) -> MutexGuard<'_, TypeMap>;
 }
 
 impl Location {
