@@ -47,11 +47,11 @@ const fn pad_str(info: &str) -> [c_char; 65] {
 }
 
 const UTSNAME: new_utsname = new_utsname {
-    sysname: pad_str("Starry"),
+    sysname: pad_str("Linux"),
     nodename: pad_str("starry"),
     release: pad_str("10.0.0"),
     version: pad_str("10.0.0"),
-    machine: pad_str("10.0.0"),
+    machine: pad_str("riscv64"),
     domainname: pad_str("https://github.com/oscomp/starry-next"),
 };
 
