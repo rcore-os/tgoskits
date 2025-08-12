@@ -394,7 +394,7 @@ dependencies = [
 [[package]]
 name = "axfs-ng-vfs"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axfs-ng-vfs.git?rev=7889c9e#7889c9e71d733124bc2696ca9e79dd0ededfa1c5"
+source = "git+https://github.com/Starry-Mix-THU/axfs-ng-vfs.git?rev=1b63bc7#1b63bc734e769baec93373d14c0d41344dc53ad1"
 dependencies = [
  "axerrno",
  "axio",
@@ -1501,7 +1501,7 @@ dependencies = [
 [[package]]
 name = "lwext4_rust"
 version = "0.2.0"
-source = "git+https://github.com/Starry-Mix-THU/lwext4_rust?rev=1f3faa0#1f3faa053a3ea5f43b5db0e3013a30e917fbd5a7"
+source = "git+https://github.com/Starry-Mix-THU/lwext4_rust?rev=564bc64#564bc641f70129bd3a46e247603a5bc84e77f4d6"
 dependencies = [
  "bindgen",
  "log",

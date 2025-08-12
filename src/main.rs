@@ -10,6 +10,8 @@ extern crate axruntime;
 
 use alloc::{borrow::ToOwned, format, vec::Vec};
 
+use axfs_ng::FS_CONTEXT;
+
 mod entry;
 mod test;
 
@@ -29,6 +31,15 @@ fn main() {
     ];
     let exit_code = entry::run_initproc(&args, &envs);
     info!("Init process exited with code: {:?}", exit_code);
+
+    let cx = FS_CONTEXT.lock();
+    cx.root_dir()
+        .unmount_all()
+        .expect("Failed to unmount all filesystems");
+    cx.root_dir()
+        .filesystem()
+        .flush()
+        .expect("Failed to flush rootfs");
 }
 
 #[cfg(feature = "vf2")]
