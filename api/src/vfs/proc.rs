@@ -9,7 +9,7 @@ use alloc::{
 };
 use core::{ffi::CStr, iter};
 
-use axfs_ng_vfs::{Filesystem, VfsError, VfsResult};
+use axfs_ng_vfs::{Filesystem, NodeType, VfsError, VfsResult};
 use axtask::{AxTaskRef, WeakAxTaskRef, current};
 use indoc::indoc;
 use starry_core::{
@@ -159,6 +159,7 @@ impl SimpleDirOps for ThreadDir {
                 "mounts",
                 "cmdline",
                 "comm",
+                "exe",
             ]
             .into_iter()
             .map(Cow::Borrowed),
@@ -169,12 +170,12 @@ impl SimpleDirOps for ThreadDir {
         let fs = self.fs.clone();
         let task = self.task.upgrade().ok_or(VfsError::ENOENT)?;
         Ok(match name {
-            "stat" => SimpleFile::new(fs, move || {
+            "stat" => SimpleFile::new_regular(fs, move || {
                 Ok(format!("{}", TaskStat::from_thread(&task)?).into_bytes())
             })
             .into(),
-            "status" => SimpleFile::new(fs, move || Ok(task_status(&task))).into(),
-            "oom_score_adj" => SimpleFile::new(
+            "status" => SimpleFile::new_regular(fs, move || Ok(task_status(&task))).into(),
+            "oom_score_adj" => SimpleFile::new_regular(
                 fs,
                 RwFile::new(move |req| match req {
                     SimpleFileOperation::Read => Ok(Some(
@@ -201,7 +202,7 @@ impl SimpleDirOps for ThreadDir {
                 }),
             )
             .into(),
-            "maps" => SimpleFile::new(fs, move || {
+            "maps" => SimpleFile::new_regular(fs, move || {
                 Ok(indoc! {"
                     7f000000-7f001000 r--p 00000000 00:00 0          [vdso]
                     7f001000-7f003000 r-xp 00001000 00:00 0          [vdso]
@@ -210,11 +211,11 @@ impl SimpleDirOps for ThreadDir {
                 "})
             })
             .into(),
-            "mounts" => SimpleFile::new(fs, move || {
+            "mounts" => SimpleFile::new_regular(fs, move || {
                 Ok("proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n")
             })
             .into(),
-            "cmdline" => SimpleFile::new(fs, move || {
+            "cmdline" => SimpleFile::new_regular(fs, move || {
                 let cmdline = task.as_thread().proc_data.cmdline.read();
                 let mut buf = Vec::new();
                 for arg in cmdline.iter() {
@@ -224,7 +225,7 @@ impl SimpleDirOps for ThreadDir {
                 Ok(buf)
             })
             .into(),
-            "comm" => SimpleFile::new(
+            "comm" => SimpleFile::new_regular(
                 fs,
                 RwFile::new(move |req| match req {
                     SimpleFileOperation::Read => {
@@ -251,6 +252,10 @@ impl SimpleDirOps for ThreadDir {
                     }
                 }),
             )
+            .into(),
+            "exe" => SimpleFile::new(fs, NodeType::Symlink, move || {
+                Ok(task.as_thread().proc_data.exe_path.read().clone())
+            })
             .into(),
             _ => return Err(VfsError::ENOENT),
         })
@@ -300,21 +305,24 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     let mut root = DirMapping::new();
     root.add(
         "mounts",
-        SimpleFile::new(fs.clone(), || {
+        SimpleFile::new_regular(fs.clone(), || {
             Ok("proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n")
         }),
     );
-    root.add("meminfo", SimpleFile::new(fs.clone(), || Ok(DUMMY_MEMINFO)));
+    root.add(
+        "meminfo",
+        SimpleFile::new_regular(fs.clone(), || Ok(DUMMY_MEMINFO)),
+    );
     root.add(
         "meminfo2",
-        SimpleFile::new(fs.clone(), || {
+        SimpleFile::new_regular(fs.clone(), || {
             let allocator = axalloc::global_allocator();
             Ok(format!("{:?}\n", allocator.usage_stats()))
         }),
     );
     root.add(
         "instret",
-        SimpleFile::new(fs.clone(), || {
+        SimpleFile::new_regular(fs.clone(), || {
             #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
             {
                 Ok(format!("{}\n", riscv::register::instret::read64()))
@@ -327,7 +335,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     );
     root.add(
         "interrupts",
-        SimpleFile::new(fs.clone(), || Ok(format!("0: {}", crate::time::irq_cnt()))),
+        SimpleFile::new_regular(fs.clone(), || Ok(format!("0: {}", crate::time::irq_cnt()))),
     );
 
     root.add("sys", {
@@ -336,7 +344,10 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         sys.add("kernel", {
             let mut kernel = DirMapping::new();
 
-            kernel.add("pid_max", SimpleFile::new(fs.clone(), || Ok("32768\n")));
+            kernel.add(
+                "pid_max",
+                SimpleFile::new_regular(fs.clone(), || Ok("32768\n")),
+            );
 
             SimpleDir::new_maker(fs.clone(), Arc::new(kernel))
         });
