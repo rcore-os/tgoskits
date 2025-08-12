@@ -364,7 +364,8 @@ impl DirNode {
         self.mountpoint.lock().is_some()
     }
 
-    /// Clears the cache of directory entries, allowing them to be released.
+    /// Clears the cache of directory entries & user data, allowing them to be
+    /// released.
     pub(crate) fn forget(&self) {
         for (_, child) in mem::take(self.cache.lock().deref_mut()) {
             if let Ok(dir) = child.as_dir() {

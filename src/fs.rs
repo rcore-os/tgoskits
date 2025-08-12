@@ -29,6 +29,11 @@ pub trait FilesystemOps: Send + Sync {
 
     /// Returns statistics about the filesystem
     fn stat(&self) -> VfsResult<StatFs>;
+
+    /// Flushes the filesystem, ensuring all data is written to disk
+    fn flush(&self) -> VfsResult<()> {
+        Ok(())
+    }
 }
 
 #[derive(Clone)]

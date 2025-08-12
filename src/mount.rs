@@ -4,7 +4,7 @@ use alloc::{
     vec,
 };
 use core::{
-    iter,
+    iter, mem,
     sync::atomic::{AtomicU64, Ordering},
     task::Context,
 };
@@ -277,13 +277,28 @@ impl Location {
         if !self.is_root_of_mount() {
             return Err(VfsError::EINVAL);
         }
-        let Some(parent_loc) = &self.mountpoint.location else {
-            return Err(VfsError::EINVAL);
-        };
+        if !self.mountpoint.children.lock().is_empty() {
+            return Err(VfsError::ENOTEMPTY);
+        }
         assert!(self.entry.ptr_eq(&self.mountpoint.root));
         self.entry.as_dir()?.forget();
-        *parent_loc.entry.as_dir()?.mountpoint.lock() = None;
+        if let Some(parent_loc) = &self.mountpoint.location {
+            *parent_loc.entry.as_dir()?.mountpoint.lock() = None;
+        }
         Ok(())
+    }
+
+    pub fn unmount_all(&self) -> VfsResult<()> {
+        if !self.is_root_of_mount() {
+            return Err(VfsError::EINVAL);
+        }
+        let children = mem::take(&mut *self.mountpoint.children.lock());
+        for (_, child) in children {
+            if let Some(child) = child.upgrade() {
+                child.root_location().unmount_all()?;
+            }
+        }
+        self.unmount()
     }
 }
 
