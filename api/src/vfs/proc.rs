@@ -4,9 +4,10 @@ use alloc::{
     format,
     string::{String, ToString},
     sync::{Arc, Weak},
+    vec,
     vec::Vec,
 };
-use core::iter;
+use core::{ffi::CStr, iter};
 
 use axfs_ng_vfs::{Filesystem, VfsError, VfsResult};
 use axtask::{AxTaskRef, WeakAxTaskRef, current};
@@ -157,6 +158,7 @@ impl SimpleDirOps for ThreadDir {
                 "maps",
                 "mounts",
                 "cmdline",
+                "comm",
             ]
             .into_iter()
             .map(Cow::Borrowed),
@@ -221,6 +223,34 @@ impl SimpleDirOps for ThreadDir {
                 }
                 Ok(buf)
             })
+            .into(),
+            "comm" => SimpleFile::new(
+                fs,
+                RwFile::new(move |req| match req {
+                    SimpleFileOperation::Read => {
+                        let mut bytes = vec![0; 16];
+                        let name = task.name();
+                        let copy_len = name.len().min(15);
+                        bytes[..copy_len].copy_from_slice(&name.as_bytes()[..copy_len]);
+                        bytes[copy_len] = b'\n';
+                        Ok(Some(bytes))
+                    }
+                    SimpleFileOperation::Write(data) => {
+                        if !data.is_empty() {
+                            let mut input = [0; 16];
+                            let copy_len = data.len().min(15);
+                            input[..copy_len].copy_from_slice(&data[..copy_len]);
+                            task.set_name(
+                                CStr::from_bytes_until_nul(&input)
+                                    .map_err(|_| VfsError::EINVAL)?
+                                    .to_str()
+                                    .map_err(|_| VfsError::EINVAL)?,
+                            );
+                        }
+                        Ok(None)
+                    }
+                }),
+            )
             .into(),
             _ => return Err(VfsError::ENOENT),
         })

@@ -1,9 +1,14 @@
+use core::ffi::c_char;
+
 use axerrno::{LinuxError, LinuxResult};
 use axtask::current;
-use linux_raw_sys::general::{__user_cap_data_struct, __user_cap_header_struct};
+use linux_raw_sys::{
+    general::{__user_cap_data_struct, __user_cap_header_struct},
+    prctl::{PR_GET_NAME, PR_SET_NAME},
+};
 use starry_core::task::{AsThread, get_process_data};
 
-use crate::mm::UserPtr;
+use crate::mm::{UserConstPtr, UserPtr};
 
 fn validate_cap_header(header: &mut __user_cap_header_struct) -> LinuxResult<()> {
     if header.version != 0x20080522 {
@@ -65,5 +70,38 @@ pub fn sys_get_mempolicy(
     _flags: usize,
 ) -> LinuxResult<isize> {
     warn!("Dummy get_mempolicy called");
+    Ok(0)
+}
+
+pub fn sys_prctl(
+    option: u32,
+    arg2: usize,
+    arg3: usize,
+    arg4: usize,
+    arg5: usize,
+) -> LinuxResult<isize> {
+    debug!(
+        "sys_prctl <= option: {}, args: {}, {}, {}, {}",
+        option, arg2, arg3, arg4, arg5
+    );
+
+    match option {
+        PR_SET_NAME => {
+            let s = UserConstPtr::<c_char>::from(arg2).get_as_str()?;
+            current().set_name(s);
+        }
+        PR_GET_NAME => {
+            let name = current().name();
+            let dst = UserPtr::<c_char>::from(arg2).get_as_mut_slice(16)?;
+            let copy_len = name.len().min(15);
+            dst[..copy_len].copy_from_slice(&name.as_bytes()[..copy_len]);
+            dst[copy_len] = 0;
+        }
+        _ => {
+            warn!("sys_prctl: unsupported option {}", option);
+            return Err(LinuxError::EINVAL);
+        }
+    }
+
     Ok(0)
 }

@@ -217,6 +217,7 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> LinuxResult<isize> {
     match cmd as u32 {
         F_DUPFD => dup_fd(fd, false),
         F_DUPFD_CLOEXEC => dup_fd(fd, true),
+        F_SETLK | F_SETLKW | F_GETLK => Ok(0),
         F_SETFL => {
             get_file_like(fd)?.set_nonblocking(arg & (O_NONBLOCK as usize) > 0)?;
             Ok(0)

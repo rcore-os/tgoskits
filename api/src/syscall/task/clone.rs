@@ -98,7 +98,7 @@ pub fn sys_clone(
     let exit_signal = flags & FLAG_MASK;
     let mut flags = CloneFlags::from_bits_truncate(flags & !FLAG_MASK);
     if flags.contains(CloneFlags::VFORK) {
-        warn!("sys_clone: CLONE_VFORK is not supported");
+        info!("sys_clone: CLONE_VFORK slow path");
         flags.remove(CloneFlags::VM);
     }
 
