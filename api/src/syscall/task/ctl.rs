@@ -92,7 +92,7 @@ pub fn sys_prctl(
         }
         PR_GET_NAME => {
             let name = current().name();
-            let dst = UserPtr::<c_char>::from(arg2).get_as_mut_slice(16)?;
+            let dst = UserPtr::<u8>::from(arg2).get_as_mut_slice(16)?;
             let copy_len = name.len().min(15);
             dst[..copy_len].copy_from_slice(&name.as_bytes()[..copy_len]);
             dst[copy_len] = 0;
