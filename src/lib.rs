@@ -17,12 +17,20 @@ pub enum VmError {
     BadAddress,
     /// The operation is not allowed, e.g., trying to write to read-only memory.
     AccessDenied,
+    /// The C-style string or array is too long.
+    ///
+    /// This error is returned by [`vm_load_c_string`] and [`vm_load_until_nul`]
+    /// when the null terminator is not found within a predefined search limit.
+    #[cfg(feature = "alloc")]
+    TooLong,
 }
 
 impl From<VmError> for LinuxError {
     fn from(err: VmError) -> Self {
         match err {
             VmError::BadAddress | VmError::AccessDenied => LinuxError::EFAULT,
+            #[cfg(feature = "alloc")]
+            VmError::TooLong => LinuxError::E2BIG,
         }
     }
 }
@@ -74,6 +82,6 @@ mod thin;
 pub use thin::{VmMutPtr, VmPtr};
 
 #[cfg(feature = "alloc")]
-mod vec;
+mod alloc;
 #[cfg(feature = "alloc")]
-pub use vec::{vm_load, vm_load_any, vm_load_until_nul};
+pub use alloc::{vm_load, vm_load_any, vm_load_c_string, vm_load_until_nul};

@@ -1,6 +1,6 @@
 extern crate alloc;
 
-use alloc::vec::Vec;
+use alloc::{ffi::CString, vec::Vec};
 
 use bytemuck::{AnyBitPattern, Pod, bytes_of, zeroed};
 
@@ -32,6 +32,8 @@ fn is_zero<T: Pod>(value: &T) -> bool {
     bytes_of(value) == bytes_of(&zeroed::<T>())
 }
 
+const MAX_BYTES: usize = 131072;
+
 /// Loads elements from the given pointer until a zero element is found.
 pub fn vm_load_until_nul<T: Pod>(ptr: *const T) -> VmResult<Vec<T>> {
     if !ptr.is_aligned() {
@@ -58,6 +60,10 @@ pub fn vm_load_until_nul<T: Pod>(ptr: *const T) -> VmResult<Vec<T>> {
         let pos = buf.iter().position(is_zero);
 
         unsafe { result.set_len(result.len() + pos.unwrap_or(len)) };
+        if result.len() >= MAX_BYTES / size {
+            return Err(VmError::TooLong);
+        }
+
         if pos.is_some() {
             break;
         }
@@ -65,4 +71,11 @@ pub fn vm_load_until_nul<T: Pod>(ptr: *const T) -> VmResult<Vec<T>> {
 
     result.shrink_to_fit();
     Ok(result)
+}
+
+/// Loads a null-terminated C string from the virtual memory.
+pub fn vm_load_c_string(ptr: *const u8) -> VmResult<CString> {
+    let bytes = vm_load_until_nul(ptr)?;
+    // SAFETY: vm_load_until_nul guarantees no interior 0 byte.
+    Ok(unsafe { CString::from_vec_unchecked(bytes) })
 }
