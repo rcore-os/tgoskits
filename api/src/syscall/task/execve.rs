@@ -3,6 +3,7 @@ use core::ffi::c_char;
 
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
+use axfs_ng_vfs::path::Path;
 use axhal::context::TrapFrame;
 use axtask::current;
 use starry_core::{mm::load_user_app, task::AsThread};
@@ -42,18 +43,15 @@ pub fn sys_execve(
         return Err(LinuxError::EAGAIN);
     }
 
-    let loc = FS_CONTEXT.lock().resolve(path)?;
-    let path = loc.absolute_path()?;
-    let name = loc.name();
-
     let mut aspace = proc_data.aspace.lock();
     let (entry_point, user_stack_base) =
         load_user_app(&mut aspace, Some(path.as_str()), &args, &envs)?;
     drop(aspace);
 
-    curr.set_name(name);
+    let loc = FS_CONTEXT.lock().resolve(&path)?;
+    curr.set_name(loc.name());
 
-    *proc_data.exe_path.write() = path.to_string();
+    *proc_data.exe_path.write() = loc.absolute_path()?.to_string();
     *proc_data.cmdline.write() = Arc::new(args);
 
     *proc_data.signal.actions.lock() = Default::default();
