@@ -170,11 +170,12 @@ impl SignalSet {
             Signo::from_repr((signal + 1) as u8)
         }
     }
+}
 
-    /// Write ctype representation.
-    pub fn to_ctype(&self, dest: &mut kernel_sigset_t) {
+impl From<SignalSet> for kernel_sigset_t {
+    fn from(value: SignalSet) -> Self {
         // SAFETY: `kernel_sigset_t` always has the same layout as `[c_ulong; 1]`.
-        *dest = unsafe { mem::transmute::<u64, kernel_sigset_t>(self.0) };
+        unsafe { mem::transmute::<u64, kernel_sigset_t>(value.0) }
     }
 }
 
@@ -192,12 +193,14 @@ pub struct SignalInfo(pub siginfo_t);
 
 impl SignalInfo {
     pub fn new_kernel(signo: Signo) -> Self {
+        // FIXME: Zeroable
         let mut result: Self = unsafe { mem::zeroed() };
         result.set_signo(signo);
         result.set_code(SI_KERNEL as _);
         result
     }
     pub fn new_user(signo: Signo, code: i32, pid: u32) -> Self {
+        // FIXME: Zeroable
         let mut result: Self = unsafe { mem::zeroed() };
         result.set_signo(signo);
         result.set_code(code);

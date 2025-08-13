@@ -208,10 +208,13 @@ impl ThreadSignalManager {
         *self.blocked.lock()
     }
 
-    /// Applies a function to the blocked signals.
-    pub fn with_blocked_mut<R>(&self, f: impl FnOnce(&mut SignalSet) -> R) -> R {
+    /// Sets the blocked signals. Return the old value.
+    pub fn set_blocked(&self, set: SignalSet) -> SignalSet {
         self.possibly_has_signal.store(true, Ordering::Release);
-        f(&mut self.blocked.lock())
+        let mut guard = self.blocked.lock();
+        let old = *guard;
+        *guard = set;
+        old
     }
 
     /// Checks if a signal is blocked.
@@ -224,9 +227,9 @@ impl ThreadSignalManager {
         self.stack.lock().clone()
     }
 
-    /// Applies a function to the signal stack.
-    pub fn with_stack_mut<R>(&self, f: impl FnOnce(&mut SignalStack) -> R) -> R {
-        f(&mut self.stack.lock())
+    /// Sets the signal stack.
+    pub fn set_stack(&self, stack: SignalStack) {
+        *self.stack.lock() = stack;
     }
 
     /// Gets current pending signals.

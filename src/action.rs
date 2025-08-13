@@ -90,26 +90,30 @@ pub struct SignalAction {
     pub restorer: __sigrestore_t,
 }
 
-impl SignalAction {
-    /// Write ctype representation.
-    pub fn to_ctype(&self, dest: &mut kernel_sigaction) {
-        dest.sa_flags = self.flags.bits() as _;
-        self.mask.to_ctype(&mut dest.sa_mask);
-        match &self.disposition {
+impl From<SignalAction> for kernel_sigaction {
+    fn from(value: SignalAction) -> Self {
+        // FIXME: Zeroable
+        let mut result: kernel_sigaction = unsafe { core::mem::zeroed() };
+
+        result.sa_flags = value.flags.bits() as _;
+        result.sa_mask = value.mask.into();
+        match &value.disposition {
             SignalDisposition::Default => {
-                dest.sa_handler_kernel = None;
+                result.sa_handler_kernel = None;
             }
             SignalDisposition::Ignore => {
-                dest.sa_handler_kernel = sig_ign();
+                result.sa_handler_kernel = sig_ign();
             }
             SignalDisposition::Handler(handler) => {
-                dest.sa_handler_kernel = Some(*handler);
+                result.sa_handler_kernel = Some(*handler);
             }
         }
         #[cfg(sa_restorer)]
         {
-            dest.sa_restorer = self.restorer;
+            result.sa_restorer = self.restorer;
         }
+
+        result
     }
 }
 
