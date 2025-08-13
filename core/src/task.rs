@@ -15,7 +15,6 @@ use core::{
 };
 
 use axerrno::{LinuxError, LinuxResult};
-use axfs_ng_vfs::path::Path;
 use axio::PollSet;
 use axmm::AddrSpace;
 use axsync::{Mutex, spin::SpinNoIrq};
@@ -92,15 +91,6 @@ pub struct ThreadInner {
 impl ThreadInner {
     /// Create a new [`ThreadInner`].
     pub fn new(tid: u32, proc_data: Arc<ProcessData>) -> Self {
-        let exe_path = proc_data.exe_path.read();
-        let comm = Path::new(exe_path.as_str())
-            .file_name()
-            .unwrap_or("unknown");
-        let mut comm_bytes = [0; 16];
-        let copy_len = comm.len().min(15);
-        comm_bytes[..copy_len].copy_from_slice(&comm.as_bytes()[..copy_len]);
-        drop(exe_path);
-
         ThreadInner {
             signal: ThreadSignalManager::new(tid, proc_data.signal.clone()),
             proc_data,
