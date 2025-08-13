@@ -3,7 +3,6 @@ use core::ffi::c_char;
 
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
-use axfs_ng_vfs::path::Path;
 use axhal::context::TrapFrame;
 use axtask::current;
 use starry_core::{mm::load_user_app, task::AsThread};
