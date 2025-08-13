@@ -3,7 +3,8 @@ use axhal::time::{TimeValue, monotonic_time, monotonic_time_nanos, nanos_to_tick
 use axtask::current;
 use linux_raw_sys::general::{
     __kernel_clockid_t, CLOCK_BOOTTIME, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE,
-    CLOCK_MONOTONIC_RAW, CLOCK_REALTIME, CLOCK_REALTIME_COARSE, itimerval, timespec, timeval,
+    CLOCK_MONOTONIC_RAW, CLOCK_PROCESS_CPUTIME_ID, CLOCK_REALTIME, CLOCK_REALTIME_COARSE,
+    CLOCK_THREAD_CPUTIME_ID, itimerval, timespec, timeval,
 };
 use starry_core::{task::AsThread, time::ITimerType};
 
@@ -20,6 +21,10 @@ pub fn sys_clock_gettime(
         CLOCK_REALTIME | CLOCK_REALTIME_COARSE => wall_time(),
         CLOCK_MONOTONIC | CLOCK_MONOTONIC_RAW | CLOCK_MONOTONIC_COARSE | CLOCK_BOOTTIME => {
             monotonic_time()
+        }
+        CLOCK_PROCESS_CPUTIME_ID | CLOCK_THREAD_CPUTIME_ID => {
+            let (utime, stime) = current().as_thread().time.borrow().output();
+            utime + stime
         }
         _ => {
             warn!(
