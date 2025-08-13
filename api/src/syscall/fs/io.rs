@@ -392,24 +392,28 @@ pub fn sys_splice(
         _flags
     );
 
-    if DummyFd::from_fd(fd_in).is_ok() || DummyFd::from_fd(fd_out).is_ok() {
-        return Err(LinuxError::EBADF);
+    if !(Pipe::from_fd(fd_in).is_ok() || Pipe::from_fd(fd_out).is_ok()) {
+        return Err(LinuxError::EINVAL);
     }
 
     let mut has_pipe = false;
+
+    if DummyFd::from_fd(fd_in).is_ok() || DummyFd::from_fd(fd_out).is_ok() {
+        return Err(LinuxError::EBADF);
+    }
 
     let src = if let Some(off) = nullable!(off_in.get_as_mut())? {
         if *off < 0 {
             return Err(LinuxError::EINVAL);
         }
         SendFile::Offset(File::from_fd(fd_in)?, off_in.cast().get_as_mut()?)
-    } else if let Ok(src) = Pipe::from_fd(fd_in) {
-        if !src.is_read() {
-            return Err(LinuxError::EBADF);
-        }
-        has_pipe = true;
-        SendFile::Direct(Arc::new(src.clone_nonblocking()))
     } else {
+        if let Ok(src) = Pipe::from_fd(fd_in) {
+            if !src.is_read() {
+                return Err(LinuxError::EBADF);
+            }
+            has_pipe = true;
+        }
         if let Ok(file) = File::from_fd(fd_in)
             && file.inner().is_path()
         {

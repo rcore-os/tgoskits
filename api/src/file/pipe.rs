@@ -95,14 +95,6 @@ impl Pipe {
         buffer.push_slice(right);
         Ok(())
     }
-
-    pub fn clone_nonblocking(&self) -> Self {
-        Self {
-            read_side: self.read_side,
-            shared: self.shared.clone(),
-            non_blocking: AtomicBool::new(true),
-        }
-    }
 }
 
 fn raise_pipe() {
