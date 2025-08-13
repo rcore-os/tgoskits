@@ -17,7 +17,7 @@ use axfs_ng::FsContext;
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsResult};
 use axsync::Mutex;
 use rand::{RngCore, SeedableRng, rngs::SmallRng};
-use starry_core::vfs::{Device, DeviceMmap, DeviceOps, DirMaker, DirMapping, SimpleDir, SimpleFs};
+use starry_core::vfs::{Device, DeviceOps, DirMaker, DirMapping, SimpleDir, SimpleFs};
 pub use tty::N_TTY;
 
 const RANDOM_SEED: &[u8; 32] = b"0123456789abcdef0123456789abcdef";
@@ -59,16 +59,12 @@ impl DeviceOps for Zero {
         Ok(buf.len())
     }
 
-    fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
-        Ok(0)
+    fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
+        Ok(buf.len())
     }
 
     fn as_any(&self) -> &dyn Any {
         self
-    }
-
-    fn mmap(&self) -> DeviceMmap {
-        DeviceMmap::ReadOnly
     }
 
     fn flags(&self) -> NodeFlags {
