@@ -255,6 +255,14 @@ enum SendFile<'a> {
 }
 
 impl<'a> SendFile<'a> {
+    fn has_data(&self) -> bool {
+        match self {
+            SendFile::Direct(file) => file.poll(),
+            SendFile::Offset(file, _) => file.poll(),
+        }
+        .contains(IoEvents::IN)
+    }
+
     fn read(&mut self, buf: &mut [u8]) -> LinuxResult<usize> {
         match self {
             SendFile::Direct(file) => file.read(buf),
@@ -284,6 +292,9 @@ fn do_send(mut src: SendFile<'_>, mut dst: SendFile<'_>, len: usize) -> LinuxRes
     let mut remaining = len;
 
     while remaining > 0 {
+        if total_written > 0 && !src.has_data() {
+            break;
+        }
         let to_read = buf.len().min(remaining);
         let bytes_read = match src.read(&mut buf[..to_read]) {
             Ok(n) => n,
