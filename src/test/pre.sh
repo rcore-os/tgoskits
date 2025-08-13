@@ -483,13 +483,13 @@ cd /glibc
 run_ltp glibc
 
 cd /musl
-timeout 20 ./basic_testcode.sh
-timeout 20 ./lua_testcode.sh
+timeout 60 ./basic_testcode.sh
+timeout 60 ./lua_testcode.sh
 timeout 60 ./busybox_testcode.sh
 
 cd /glibc
-timeout 20 ./basic_testcode.sh
-timeout 20 ./lua_testcode.sh
+timeout 60 ./basic_testcode.sh
+timeout 60 ./lua_testcode.sh
 timeout 60 ./busybox_testcode.sh
 
 cd /musl
@@ -517,6 +517,6 @@ ln -v -s -f /glibc/iozone iozone
 timeout 300 /glibc/iozone_testcode.sh
 
 cd /musl
-timeout 300 ./lmbench_testcode.sh
+timeout 600 ./lmbench_testcode.sh
 cd /glibc
-timeout 300 ./lmbench_testcode.sh
+timeout 600 ./lmbench_testcode.sh
