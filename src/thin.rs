@@ -12,6 +12,15 @@ pub trait VmPtr: Copy {
     #[doc(hidden)]
     fn as_ptr(self) -> *const Self::Target;
 
+    /// Returns `None` if the pointer is null, otherwise returns `Some(self)`.
+    fn nullable(self) -> Option<Self> {
+        if self.as_ptr().is_null() {
+            None
+        } else {
+            Some(self)
+        }
+    }
+
     /// Reads the value from this virtual memory pointer. In contrast to
     /// [`VmPtr::vm_read`], this does not require that the value has to be
     /// initialized.
