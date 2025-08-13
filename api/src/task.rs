@@ -131,7 +131,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     let curr = current();
     let thr = curr.as_thread();
 
-    info!("{:?} exit with code: {}", curr.id_name(), exit_code);
+    info!("{} exit with code: {}", curr.id_name(), exit_code);
 
     let clear_child_tid = UserPtr::<Pid>::from(thr.clear_child_tid());
     if let Ok(clear_tid) = clear_child_tid.get_as_mut() {
