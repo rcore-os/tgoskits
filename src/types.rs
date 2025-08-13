@@ -1,14 +1,14 @@
-use core::mem;
+use core::{fmt, mem};
 
 use derive_more::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Not};
 use linux_raw_sys::general::{SI_KERNEL, SS_DISABLE, kernel_sigset_t, siginfo_t};
-use strum_macros::FromRepr;
+use strum::{EnumIter, FromRepr, IntoEnumIterator};
 
 use crate::DefaultSignalAction;
 
 /// Signal number.
 #[repr(u8)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, FromRepr)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, FromRepr, EnumIter)]
 pub enum Signo {
     SIGHUP = 1,
     SIGINT = 2,
@@ -120,7 +120,7 @@ impl Signo {
 }
 
 /// Signal set. Compatible with `struct sigset_t` in libc.
-#[derive(Default, Debug, Clone, Copy, Not, BitOr, BitOrAssign, BitAnd, BitAndAssign)]
+#[derive(Default, Clone, Copy, Not, BitOr, BitOrAssign, BitAnd, BitAndAssign)]
 #[repr(transparent)]
 pub struct SignalSet(u64);
 
@@ -186,6 +186,18 @@ impl From<kernel_sigset_t> for SignalSet {
     }
 }
 
+impl fmt::Debug for SignalSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut debug = f.debug_set();
+        for signo in Signo::iter() {
+            if self.has(signo) {
+                debug.entry(&signo);
+            }
+        }
+        debug.finish()
+    }
+}
+
 /// Signal information. Compatible with `struct siginfo` in libc.
 #[derive(Clone)]
 #[repr(transparent)]
@@ -233,6 +245,15 @@ impl SignalInfo {
 
 unsafe impl Send for SignalInfo {}
 unsafe impl Sync for SignalInfo {}
+
+impl fmt::Debug for SignalInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SignalInfo")
+            .field("signo", &self.signo())
+            .field("code", &self.code())
+            .finish()
+    }
+}
 
 /// Signal stack. Compatible with `struct sigaltstack` in libc.
 #[repr(C)]

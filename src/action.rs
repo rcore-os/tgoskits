@@ -48,7 +48,7 @@ pub enum SignalOSAction {
 }
 
 bitflags! {
-    #[derive(Clone, Copy, Default, Debug)]
+    #[derive(Default, Debug, Clone, Copy)]
     pub struct SignalActionFlags: c_ulong {
         const SIGINFO = SA_SIGINFO as _;
         const NODEFER = SA_NODEFER as _;
@@ -60,7 +60,7 @@ bitflags! {
 }
 
 // FIXME: replace with `kernel_sigaction` after finishing above "TODO"s for `SignalSet`
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
 #[allow(non_camel_case_types)]
 pub struct k_sigaction {
@@ -70,7 +70,7 @@ pub struct k_sigaction {
     pub mask: SignalSet,
 }
 
-#[derive(Clone, Default)]
+#[derive(Debug, Default, Clone)]
 pub enum SignalDisposition {
     #[default]
     /// Use the default signal action.
@@ -82,7 +82,7 @@ pub enum SignalDisposition {
 }
 
 /// Signal action. Corresponds to `struct sigaction` in libc.
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct SignalAction {
     pub flags: SignalActionFlags,
     pub mask: SignalSet,
