@@ -7,26 +7,26 @@ use axfs_ng_vfs::path::Path;
 use axhal::context::TrapFrame;
 use axtask::current;
 use starry_core::{mm::load_user_app, task::AsThread};
+use starry_vm::vm_load_until_nul;
 
-use crate::{file::FD_TABLE, mm::UserConstPtr};
+use crate::{file::FD_TABLE, mm::vm_load_string};
 
 pub fn sys_execve(
     tf: &mut TrapFrame,
-    path: UserConstPtr<c_char>,
-    argv: UserConstPtr<UserConstPtr<c_char>>,
-    envp: UserConstPtr<UserConstPtr<c_char>>,
+    path: *const c_char,
+    argv: *const *const c_char,
+    envp: *const *const c_char,
 ) -> LinuxResult<isize> {
-    let path = path.get_as_str()?.to_string();
+    let path = vm_load_string(path)?;
 
-    let args = argv
-        .get_as_null_terminated()?
-        .iter()
-        .map(|arg| arg.get_as_str().map(Into::into))
+    let args = vm_load_until_nul(argv)?
+        .into_iter()
+        .map(vm_load_string)
         .collect::<Result<Vec<_>, _>>()?;
-    let envs = envp
-        .get_as_null_terminated()?
-        .iter()
-        .map(|env| env.get_as_str().map(Into::into))
+
+    let envs = vm_load_until_nul(envp)?
+        .into_iter()
+        .map(vm_load_string)
         .collect::<Result<Vec<_>, _>>()?;
 
     info!(

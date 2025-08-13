@@ -1,4 +1,4 @@
-use alloc::ffi::CString;
+use alloc::{ffi::CString, vec, vec::Vec};
 use core::{
     ffi::{c_char, c_int},
     mem::offset_of,
@@ -15,10 +15,11 @@ use linux_raw_sys::{
     ioctl::{FIONBIO, TIOCGWINSZ},
 };
 use starry_core::task::AsThread;
+use starry_vm::{VmPtr, vm_write_slice};
 
 use crate::{
     file::{Directory, FileLike, get_file_like, resolve_at, with_fs},
-    mm::{UserConstPtr, UserPtr, nullable},
+    mm::vm_load_string,
     time::TimeValueLike,
 };
 
@@ -28,7 +29,7 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> LinuxResult<isize> {
     debug!("sys_ioctl <= fd: {}, cmd: {}, arg: {}", fd, cmd, arg);
     let f = get_file_like(fd)?;
     if cmd == FIONBIO {
-        let val = *UserConstPtr::<u32>::from(arg).get_as_ref()?;
+        let val = (arg as *const u8).vm_read()?;
         if val != 0 && val != 1 {
             return Err(LinuxError::EINVAL);
         }
@@ -49,8 +50,8 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> LinuxResult<isize> {
         })
 }
 
-pub fn sys_chdir(path: UserConstPtr<c_char>) -> LinuxResult<isize> {
-    let path = path.get_as_str()?;
+pub fn sys_chdir(path: *const c_char) -> LinuxResult<isize> {
+    let path = vm_load_string(path)?;
     debug!("sys_chdir <= path: {}", path);
 
     let mut fs = FS_CONTEXT.lock();
@@ -68,14 +69,18 @@ pub fn sys_fchdir(dirfd: i32) -> LinuxResult<isize> {
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_mkdir(path: UserConstPtr<c_char>, mode: u32) -> LinuxResult<isize> {
+pub fn sys_mkdir(path: *const c_char, mode: u32) -> LinuxResult<isize> {
     sys_mkdirat(AT_FDCWD, path, mode)
 }
 
-pub fn sys_mkdirat(dirfd: i32, path: UserConstPtr<c_char>, mode: u32) -> LinuxResult<isize> {
-    let mode = mode & !current().as_thread().proc_data.umask();
+pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> LinuxResult<isize> {
+    let path = vm_load_string(path)?;
+    debug!(
+        "sys_mkdirat <= dirfd: {}, path: {}, mode: {}",
+        dirfd, path, mode
+    );
 
-    let path = path.get_as_str()?;
+    let mode = mode & !current().as_thread().proc_data.umask();
     let mode = NodePermission::from_bits_truncate(mode as u16);
 
     with_fs(dirfd, |fs| {
@@ -85,14 +90,17 @@ pub fn sys_mkdirat(dirfd: i32, path: UserConstPtr<c_char>, mode: u32) -> LinuxRe
 }
 
 // Directory buffer for getdents64 syscall
-struct DirBuffer<'a> {
-    buf: &'a mut [u8],
+struct DirBuffer {
+    buf: Vec<u8>,
     offset: usize,
 }
 
-impl<'a> DirBuffer<'a> {
-    fn new(buf: &'a mut [u8]) -> Self {
-        Self { buf, offset: 0 }
+impl DirBuffer {
+    fn new(len: usize) -> Self {
+        Self {
+            buf: vec![0; len],
+            offset: 0,
+        }
     }
 
     fn remaining_space(&self) -> usize {
@@ -109,6 +117,7 @@ impl<'a> DirBuffer<'a> {
             return false;
         }
 
+        // FIXME: safety
         unsafe {
             let entry_ptr = self.buf.as_mut_ptr().add(self.offset);
             entry_ptr.cast::<linux_dirent64>().write(linux_dirent64 {
@@ -129,16 +138,10 @@ impl<'a> DirBuffer<'a> {
     }
 }
 
-pub fn sys_getdents64(fd: i32, buf: UserPtr<u8>, len: usize) -> LinuxResult<isize> {
-    let buf = buf.get_as_mut_slice(len)?;
-    debug!(
-        "sys_getdents64 <= fd: {}, buf: {:p}, len: {}",
-        fd,
-        buf.as_ptr(),
-        buf.len()
-    );
+pub fn sys_getdents64(fd: i32, buf: *mut u8, len: usize) -> LinuxResult<isize> {
+    debug!("sys_getdents64 <= fd: {}, buf: {:?}, len: {}", fd, buf, len);
 
-    let mut buffer = DirBuffer::new(buf);
+    let mut buffer = DirBuffer::new(len);
 
     let dir = Directory::from_fd(fd)?;
     let mut dir_offset = dir.offset.lock();
@@ -159,6 +162,8 @@ pub fn sys_getdents64(fd: i32, buf: UserPtr<u8>, len: usize) -> LinuxResult<isiz
         return Err(LinuxError::EINVAL);
     }
 
+    vm_write_slice(buf, &buffer.buf)?;
+
     Ok(buffer.offset as _)
 }
 
@@ -169,13 +174,13 @@ pub fn sys_getdents64(fd: i32, buf: UserPtr<u8>, len: usize) -> LinuxResult<isiz
 /// return value: return 0 when success, else return -1.
 pub fn sys_linkat(
     old_dirfd: c_int,
-    old_path: UserConstPtr<c_char>,
+    old_path: *const c_char,
     new_dirfd: c_int,
-    new_path: UserConstPtr<c_char>,
+    new_path: *const c_char,
     flags: u32,
 ) -> LinuxResult<isize> {
-    let old_path = nullable!(old_path.get_as_str())?;
-    let new_path = new_path.get_as_str()?;
+    let old_path = old_path.nullable().map(vm_load_string).transpose()?;
+    let new_path = vm_load_string(new_path)?;
     debug!(
         "sys_linkat <= old_dirfd: {}, old_path: {:?}, new_dirfd: {}, new_path: {}, flags: {}",
         old_dirfd, old_path, new_dirfd, new_path, flags
@@ -185,23 +190,21 @@ pub fn sys_linkat(
         warn!("Unsupported flags: {flags}");
     }
 
-    let old = resolve_at(old_dirfd, old_path, flags)?
+    let old = resolve_at(old_dirfd, old_path.as_deref(), flags)?
         .into_file()
         .ok_or(LinuxError::EBADF)?;
     if old.is_dir() {
         return Err(LinuxError::EPERM);
     }
-    let (new_dir, new_name) = with_fs(new_dirfd, |fs| fs.resolve_nonexistent(new_path.into()))?;
+    let (new_dir, new_name) =
+        with_fs(new_dirfd, |fs| fs.resolve_nonexistent(Path::new(&new_path)))?;
 
     new_dir.link(new_name, &old)?;
     Ok(0)
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_link(
-    old_path: UserConstPtr<c_char>,
-    new_path: UserConstPtr<c_char>,
-) -> LinuxResult<isize> {
+pub fn sys_link(old_path: *const c_char, new_path: *const c_char) -> LinuxResult<isize> {
     sys_linkat(AT_FDCWD, old_path, AT_FDCWD, new_path, 0)
 }
 
@@ -210,8 +213,8 @@ pub fn sys_link(
 /// path: the name of link to be removed
 /// flags: can be 0 or AT_REMOVEDIR
 /// return 0 when success, else return -1
-pub fn sys_unlinkat(dirfd: i32, path: UserConstPtr<c_char>, flags: usize) -> LinuxResult<isize> {
-    let path = path.get_as_str()?;
+pub fn sys_unlinkat(dirfd: i32, path: *const c_char, flags: usize) -> LinuxResult<isize> {
+    let path = vm_load_string(path)?;
 
     debug!(
         "sys_unlinkat <= dirfd: {}, path: {:?}, flags: {}",
@@ -229,22 +232,20 @@ pub fn sys_unlinkat(dirfd: i32, path: UserConstPtr<c_char>, flags: usize) -> Lin
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_rmdir(path: UserConstPtr<c_char>) -> LinuxResult<isize> {
+pub fn sys_rmdir(path: *const c_char) -> LinuxResult<isize> {
     sys_unlinkat(AT_FDCWD, path, AT_REMOVEDIR as _)
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_unlink(path: UserConstPtr<c_char>) -> LinuxResult<isize> {
+pub fn sys_unlink(path: *const c_char) -> LinuxResult<isize> {
     sys_unlinkat(AT_FDCWD, path, 0)
 }
 
-pub fn sys_getcwd(buf: UserPtr<u8>, size: isize) -> LinuxResult<isize> {
+pub fn sys_getcwd(buf: *mut u8, size: isize) -> LinuxResult<isize> {
     let size: usize = size.try_into().map_err(|_| LinuxError::EFAULT)?;
-    let buf = nullable!(buf.get_as_mut_slice(size))?;
-
-    let Some(buf) = buf else {
+    if buf.is_null() {
         return Ok(0);
-    };
+    }
 
     let cwd = FS_CONTEXT.lock().current_dir().absolute_path()?;
     debug!("sys_getcwd => cwd: {}", cwd);
@@ -252,8 +253,9 @@ pub fn sys_getcwd(buf: UserPtr<u8>, size: isize) -> LinuxResult<isize> {
     let cwd = CString::new(cwd.as_str()).map_err(|_| LinuxError::EINVAL)?;
     let cwd = cwd.as_bytes_with_nul();
 
-    if cwd.len() <= buf.len() {
-        buf[..cwd.len()].copy_from_slice(cwd);
+    if cwd.len() <= size {
+        vm_write_slice(buf, cwd)?;
+        // FIXME: it is said that this should return 0
         Ok(buf.as_ptr() as _)
     } else {
         Err(LinuxError::ERANGE)
@@ -261,20 +263,17 @@ pub fn sys_getcwd(buf: UserPtr<u8>, size: isize) -> LinuxResult<isize> {
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_symlink(
-    target: UserConstPtr<c_char>,
-    linkpath: UserConstPtr<c_char>,
-) -> LinuxResult<isize> {
+pub fn sys_symlink(target: *const c_char, linkpath: *const c_char) -> LinuxResult<isize> {
     sys_symlinkat(target, AT_FDCWD, linkpath)
 }
 
 pub fn sys_symlinkat(
-    target: UserConstPtr<c_char>,
+    target: *const c_char,
     new_dirfd: i32,
-    linkpath: UserConstPtr<c_char>,
+    linkpath: *const c_char,
 ) -> LinuxResult<isize> {
-    let target = target.get_as_str()?;
-    let linkpath = linkpath.get_as_str()?;
+    let target = vm_load_string(target)?;
+    let linkpath = vm_load_string(linkpath)?;
     debug!(
         "sys_symlinkat <= target: {:?}, new_dirfd: {}, linkpath: {:?}",
         target, new_dirfd, linkpath
@@ -287,22 +286,17 @@ pub fn sys_symlinkat(
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_readlink(
-    path: UserConstPtr<c_char>,
-    buf: UserPtr<u8>,
-    size: usize,
-) -> LinuxResult<isize> {
+pub fn sys_readlink(path: *const c_char, buf: *mut u8, size: usize) -> LinuxResult<isize> {
     sys_readlinkat(AT_FDCWD, path, buf, size)
 }
 
 pub fn sys_readlinkat(
     dirfd: i32,
-    path: UserConstPtr<c_char>,
-    buf: UserPtr<u8>,
+    path: *const c_char,
+    buf: *mut u8,
     size: usize,
 ) -> LinuxResult<isize> {
-    let path = path.get_as_str()?;
-    let buf = buf.get_as_mut_slice(size)?;
+    let path = vm_load_string(path)?;
 
     debug!("sys_readlinkat <= dirfd: {}, path: {:?}", dirfd, path);
 
@@ -310,35 +304,35 @@ pub fn sys_readlinkat(
         let entry = fs.resolve_no_follow(path)?;
         let link = entry.read_link()?;
         let read = size.min(link.len());
-        buf[..read].copy_from_slice(&link.as_bytes()[..read]);
+        vm_write_slice(buf, &link.as_bytes()[..read])?;
         Ok(read as isize)
     })
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_chown(path: UserConstPtr<c_char>, uid: u32, gid: u32) -> LinuxResult<isize> {
+pub fn sys_chown(path: *const c_char, uid: u32, gid: u32) -> LinuxResult<isize> {
     sys_fchownat(AT_FDCWD, path, uid, gid, 0)
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_lchown(path: UserConstPtr<c_char>, uid: u32, gid: u32) -> LinuxResult<isize> {
+pub fn sys_lchown(path: *const c_char, uid: u32, gid: u32) -> LinuxResult<isize> {
     use linux_raw_sys::general::AT_SYMLINK_NOFOLLOW;
     sys_fchownat(AT_FDCWD, path, uid, gid, AT_SYMLINK_NOFOLLOW)
 }
 
 pub fn sys_fchown(fd: i32, uid: u32, gid: u32) -> LinuxResult<isize> {
-    sys_fchownat(fd, 0.into(), uid, gid, AT_EMPTY_PATH)
+    sys_fchownat(fd, core::ptr::null(), uid, gid, AT_EMPTY_PATH)
 }
 
 pub fn sys_fchownat(
     dirfd: i32,
-    path: UserConstPtr<c_char>,
+    path: *const c_char,
     uid: u32,
     gid: u32,
     flags: u32,
 ) -> LinuxResult<isize> {
-    let path = nullable!(path.get_as_str())?;
-    resolve_at(dirfd, path, flags)?
+    let path = path.nullable().map(vm_load_string).transpose()?;
+    resolve_at(dirfd, path.as_deref(), flags)?
         .into_file()
         .ok_or(LinuxError::EBADF)?
         .update_metadata(MetadataUpdate {
@@ -349,22 +343,17 @@ pub fn sys_fchownat(
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_chmod(path: UserConstPtr<c_char>, mode: u32) -> LinuxResult<isize> {
+pub fn sys_chmod(path: *const c_char, mode: u32) -> LinuxResult<isize> {
     sys_fchmodat(AT_FDCWD, path, mode, 0)
 }
 
 pub fn sys_fchmod(fd: i32, mode: u32) -> LinuxResult<isize> {
-    sys_fchmodat(fd, 0.into(), mode, AT_EMPTY_PATH)
+    sys_fchmodat(fd, core::ptr::null(), mode, AT_EMPTY_PATH)
 }
 
-pub fn sys_fchmodat(
-    dirfd: i32,
-    path: UserConstPtr<c_char>,
-    mode: u32,
-    flags: u32,
-) -> LinuxResult<isize> {
-    let path = nullable!(path.get_as_str())?;
-    resolve_at(dirfd, path, flags)?
+pub fn sys_fchmodat(dirfd: i32, path: *const c_char, mode: u32, flags: u32) -> LinuxResult<isize> {
+    let path = path.nullable().map(vm_load_string).transpose()?;
+    resolve_at(dirfd, path.as_deref(), flags)?
         .into_file()
         .ok_or(LinuxError::EBADF)?
         .update_metadata(MetadataUpdate {
@@ -374,22 +363,15 @@ pub fn sys_fchmodat(
     Ok(0)
 }
 
-#[cfg(target_arch = "x86_64")]
-#[allow(non_camel_case_types)]
-pub struct utimbuf {
-    actime: linux_raw_sys::general::__kernel_old_time_t,
-    modtime: linux_raw_sys::general::__kernel_old_time_t,
-}
-
 fn update_times(
     dirfd: i32,
-    path: UserConstPtr<c_char>,
+    path: *const c_char,
     atime: Option<Duration>,
     mtime: Option<Duration>,
     flags: u32,
 ) -> LinuxResult<()> {
-    let path = nullable!(path.get_as_str())?;
-    resolve_at(dirfd, path, flags)?
+    let path = path.nullable().map(vm_load_string).transpose()?;
+    resolve_at(dirfd, path.as_deref(), flags)?
         .into_file()
         .ok_or(LinuxError::EBADF)?
         .update_metadata(MetadataUpdate {
@@ -401,36 +383,51 @@ fn update_times(
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_utime(path: UserConstPtr<c_char>, times: UserConstPtr<utimbuf>) -> LinuxResult<isize> {
-    let times = nullable!(times.get_as_ref())?;
-    let atime = times.map_or_else(wall_time, |it| Duration::from_secs(it.actime as _));
-    let mtime = times.map_or_else(wall_time, |it| Duration::from_secs(it.modtime as _));
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct utimbuf {
+    actime: linux_raw_sys::general::__kernel_old_time_t,
+    modtime: linux_raw_sys::general::__kernel_old_time_t,
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn sys_utime(path: *const c_char, times: *const utimbuf) -> LinuxResult<isize> {
+    let (atime, mtime) = if let Some(times) = times.nullable() {
+        // FIXME: AnyBitPattern
+        let times = unsafe { times.vm_read_uninit()?.assume_init() };
+        (
+            Duration::from_secs(times.actime as _),
+            Duration::from_secs(times.modtime as _),
+        )
+    } else {
+        let time = wall_time();
+        (time, time)
+    };
     update_times(AT_FDCWD, path, Some(atime), Some(mtime), 0)?;
     Ok(0)
 }
 
 #[cfg(target_arch = "x86_64")]
 pub fn sys_utimes(
-    path: UserConstPtr<c_char>,
-    times: UserConstPtr<linux_raw_sys::general::timeval>,
+    path: *const c_char,
+    times: *const [linux_raw_sys::general::timeval; 2],
 ) -> LinuxResult<isize> {
-    let times = nullable!(times.get_as_slice(2))?;
-    let atime = times
-        .map(|it| it[0].try_into_time_value())
-        .transpose()?
-        .unwrap_or_else(wall_time);
-    let mtime = times
-        .map(|it| it[1].try_into_time_value())
-        .transpose()?
-        .unwrap_or_else(wall_time);
+    let (atime, mtime) = if let Some(times) = times.nullable() {
+        // FIXME: AnyBitPattern
+        let [atime, mtime] = unsafe { times.vm_read_uninit()?.assume_init() };
+        (atime.try_into_time_value()?, mtime.try_into_time_value()?)
+    } else {
+        let time = wall_time();
+        (time, time)
+    };
     update_times(AT_FDCWD, path, Some(atime), Some(mtime), 0)?;
     Ok(0)
 }
 
 pub fn sys_utimensat(
     dirfd: i32,
-    path: UserConstPtr<c_char>,
-    times: UserConstPtr<timespec>,
+    path: *const c_char,
+    times: *const [timespec; 2],
     mut flags: u32,
 ) -> LinuxResult<isize> {
     if path.is_null() {
@@ -443,55 +440,57 @@ pub fn sys_utimensat(
             _ => Some(time.try_into_time_value()),
         }
     }
-    let times = nullable!(times.get_as_slice(2))?;
-    let (atime, mtime) = match times {
-        Some([atime, mtime]) => (
-            utime_to_duration(atime).transpose()?,
-            utime_to_duration(mtime).transpose()?,
-        ),
-        None => (Some(wall_time()), Some(wall_time())),
-        _ => unreachable!(),
+
+    let (atime, mtime) = if let Some(times) = times.nullable() {
+        // FIXME: AnyBitPattern
+        let [atime, mtime] = unsafe { times.vm_read_uninit()?.assume_init() };
+        (
+            utime_to_duration(&atime).transpose()?,
+            utime_to_duration(&mtime).transpose()?,
+        )
+    } else {
+        let time = wall_time();
+        (Some(time), Some(time))
     };
     if atime.is_none() && mtime.is_none() {
         return Ok(0);
     }
+
     update_times(dirfd, path, atime, mtime, flags)?;
     Ok(0)
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_rename(
-    old_path: UserConstPtr<c_char>,
-    new_path: UserConstPtr<c_char>,
-) -> LinuxResult<isize> {
+pub fn sys_rename(old_path: *const c_char, new_path: *const c_char) -> LinuxResult<isize> {
     sys_renameat(AT_FDCWD, old_path, AT_FDCWD, new_path)
 }
 
 pub fn sys_renameat(
     old_dirfd: i32,
-    old_path: UserConstPtr<c_char>,
+    old_path: *const c_char,
     new_dirfd: i32,
-    new_path: UserConstPtr<c_char>,
+    new_path: *const c_char,
 ) -> LinuxResult<isize> {
     sys_renameat2(old_dirfd, old_path, new_dirfd, new_path, 0)
 }
 
 pub fn sys_renameat2(
     old_dirfd: i32,
-    old_path: UserConstPtr<c_char>,
+    old_path: *const c_char,
     new_dirfd: i32,
-    new_path: UserConstPtr<c_char>,
+    new_path: *const c_char,
     flags: u32,
 ) -> LinuxResult<isize> {
-    let old_path = old_path.get_as_str()?;
-    let new_path = new_path.get_as_str()?;
+    let old_path = vm_load_string(old_path)?;
+    let new_path = vm_load_string(new_path)?;
     debug!(
         "sys_renameat2 <= old_dirfd: {}, old_path: {:?}, new_dirfd: {}, new_path: {}, flags: {}",
         old_dirfd, old_path, new_dirfd, new_path, flags
     );
 
-    let (old_dir, old_name) = with_fs(old_dirfd, |fs| fs.resolve_parent(Path::new(old_path)))?;
-    let (new_dir, new_name) = with_fs(new_dirfd, |fs| fs.resolve_nonexistent(new_path.into()))?;
+    let (old_dir, old_name) = with_fs(old_dirfd, |fs| fs.resolve_parent(Path::new(&old_path)))?;
+    let (new_dir, new_name) =
+        with_fs(new_dirfd, |fs| fs.resolve_nonexistent(Path::new(&new_path)))?;
 
     old_dir.rename(&old_name, &new_dir, new_name)?;
     Ok(0)

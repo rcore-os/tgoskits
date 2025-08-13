@@ -4,7 +4,6 @@ use starry_signal::SignalInfo;
 
 use crate::{
     file::{FD_TABLE, FileLike, PidFd, add_file_like},
-    mm::UserConstPtr,
     syscall::signal::make_queue_signal_info,
 };
 
@@ -43,7 +42,7 @@ pub fn sys_pidfd_getfd(pidfd: i32, target_fd: i32, flags: u32) -> LinuxResult<is
 pub fn sys_pidfd_send_signal(
     pidfd: i32,
     signo: u32,
-    sig: UserConstPtr<SignalInfo>,
+    sig: *mut SignalInfo,
     flags: u32,
 ) -> LinuxResult<isize> {
     if flags != 0 {

@@ -3,11 +3,9 @@ use core::ffi::c_int;
 use axerrno::LinuxResult;
 use bitflags::bitflags;
 use linux_raw_sys::general::{O_CLOEXEC, O_NONBLOCK};
+use starry_vm::VmMutPtr;
 
-use crate::{
-    file::{FileLike, Pipe, close_file_like},
-    mm::UserPtr,
-};
+use crate::file::{FileLike, Pipe, close_file_like};
 
 bitflags! {
     /// Flags for the `pipe2` syscall.
@@ -20,7 +18,7 @@ bitflags! {
     }
 }
 
-pub fn sys_pipe2(fds: UserPtr<[c_int; 2]>, flags: u32) -> LinuxResult<isize> {
+pub fn sys_pipe2(fds: *mut [c_int; 2], flags: u32) -> LinuxResult<isize> {
     let flags = {
         let new_flags = PipeFlags::from_bits_truncate(flags);
         if new_flags.bits() != flags {
@@ -28,8 +26,6 @@ pub fn sys_pipe2(fds: UserPtr<[c_int; 2]>, flags: u32) -> LinuxResult<isize> {
         }
         new_flags
     };
-
-    let fds = fds.get_as_mut()?;
 
     let cloexec = flags.contains(PipeFlags::CLOEXEC);
     let (read_end, write_end) = Pipe::new();
@@ -42,9 +38,12 @@ pub fn sys_pipe2(fds: UserPtr<[c_int; 2]>, flags: u32) -> LinuxResult<isize> {
         .add_to_fd_table(cloexec)
         .inspect_err(|_| close_file_like(read_fd).unwrap())?;
 
-    fds[0] = read_fd;
-    fds[1] = write_fd;
+    fds.vm_write([read_fd, write_fd])?;
 
-    debug!("sys_pipe2 <= fds: {:?}, flags: {:?}", fds, flags);
+    debug!(
+        "sys_pipe2 <= fds: {:?}, flags: {:?}",
+        [read_fd, write_fd],
+        flags
+    );
     Ok(0)
 }

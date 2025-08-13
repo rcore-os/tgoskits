@@ -18,9 +18,9 @@ use ringbuf::{
 };
 use starry_core::task::{AsThread, send_signal_to_process};
 use starry_signal::{SignalInfo, Signo};
+use starry_vm::VmMutPtr;
 
 use super::{FileLike, Kstat};
-use crate::mm::UserPtr;
 
 const RING_BUFFER_INIT_SIZE: usize = 65536; // 64 KiB
 
@@ -183,8 +183,7 @@ impl FileLike for Pipe {
     fn ioctl(&self, cmd: u32, arg: usize) -> LinuxResult<usize> {
         match cmd {
             FIONREAD => {
-                *UserPtr::<u32>::from(arg).get_as_mut()? =
-                    self.shared.buffer.lock().occupied_len() as _;
+                (arg as *mut u32).vm_write(self.shared.buffer.lock().occupied_len() as u32)?;
                 Ok(0)
             }
             _ => Err(LinuxError::ENOTTY),

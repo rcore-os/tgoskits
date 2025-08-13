@@ -1,3 +1,4 @@
+use alloc::vec;
 use core::ffi::c_char;
 
 use axerrno::LinuxResult;
@@ -7,8 +8,7 @@ use linux_raw_sys::{
     system::{new_utsname, sysinfo},
 };
 use starry_core::task::processes;
-
-use crate::mm::UserPtr;
+use starry_vm::{VmMutPtr, vm_write_slice};
 
 pub fn sys_getuid() -> LinuxResult<isize> {
     Ok(0)
@@ -52,32 +52,24 @@ const UTSNAME: new_utsname = new_utsname {
     release: pad_str("10.0.0"),
     version: pad_str("10.0.0"),
     machine: pad_str("riscv64"),
-    domainname: pad_str("https://github.com/oscomp/starry-next"),
+    domainname: pad_str("https://github.com/Starry-Mix-THU/starry-mix"),
 };
 
-pub fn sys_uname(name: UserPtr<new_utsname>) -> LinuxResult<isize> {
-    *name.get_as_mut()? = UTSNAME;
+pub fn sys_uname(name: *mut new_utsname) -> LinuxResult<isize> {
+    name.vm_write(UTSNAME)?;
     Ok(0)
 }
 
-pub fn sys_sysinfo(info: UserPtr<sysinfo>) -> LinuxResult<isize> {
-    let info = info.get_as_mut()?;
-    info.uptime = 0;
-    info.loads = [0, 0, 0];
-    info.totalram = 0;
-    info.freeram = 0;
-    info.sharedram = 0;
-    info.bufferram = 0;
-    info.totalswap = 0;
-    info.freeswap = 0;
-    info.procs = processes().len() as _;
-    info.totalhigh = 0;
-    info.freehigh = 0;
-    info.mem_unit = 1;
+pub fn sys_sysinfo(info: *mut sysinfo) -> LinuxResult<isize> {
+    // FIXME: Zeroable
+    let mut kinfo: sysinfo = unsafe { core::mem::zeroed() };
+    kinfo.procs = processes().len() as _;
+    kinfo.mem_unit = 1;
+    info.vm_write(kinfo)?;
     Ok(0)
 }
 
-pub fn sys_syslog(_type: i32, _buf: UserPtr<c_char>, _len: usize) -> LinuxResult<isize> {
+pub fn sys_syslog(_type: i32, _buf: *mut c_char, _len: usize) -> LinuxResult<isize> {
     Ok(0)
 }
 
@@ -90,11 +82,10 @@ bitflags::bitflags! {
     }
 }
 
-pub fn sys_getrandom(buf: UserPtr<u8>, len: usize, flags: u32) -> LinuxResult<isize> {
+pub fn sys_getrandom(buf: *mut u8, len: usize, flags: u32) -> LinuxResult<isize> {
     if len == 0 {
         return Ok(0);
     }
-    let buf = buf.get_as_mut_slice(len)?;
     let flags = GetRandomFlags::from_bits_retain(flags);
 
     debug!(
@@ -109,7 +100,10 @@ pub fn sys_getrandom(buf: UserPtr<u8>, len: usize, flags: u32) -> LinuxResult<is
     };
 
     let f = FS_CONTEXT.lock().resolve(path)?;
-    let len = f.entry().as_file()?.read_at(buf, 0)?;
+    let mut kbuf = vec![0; len];
+    let len = f.entry().as_file()?.read_at(&mut kbuf, 0)?;
+
+    vm_write_slice(buf, &kbuf)?;
 
     Ok(len as _)
 }

@@ -7,8 +7,7 @@ use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
 use axhal::mem::virt_to_phys;
 use memory_addr::{PhysAddrRange, VirtAddr};
 use starry_core::vfs::{DeviceMmap, DeviceOps};
-
-use crate::mm::UserPtr;
+use starry_vm::VmMutPtr;
 
 // Types from https://github.com/Tangzh33/asterinas
 
@@ -134,7 +133,7 @@ impl DeviceOps for FrameBuffer {
                 let info = axdisplay::main_display().info();
                 let line_length = (info.fb_size / info.height as usize) as u32;
                 let bpp = line_length / info.width;
-                *UserPtr::<VarScreenInfo>::from(arg).get_as_mut()? = VarScreenInfo {
+                (arg as *mut VarScreenInfo).vm_write(VarScreenInfo {
                     xres: info.width,
                     yres: info.height,
                     xres_virtual: info.width,
@@ -180,7 +179,7 @@ impl DeviceOps for FrameBuffer {
                     rotate: 0,
                     colorspace: 0,
                     reserved: [0; 4],
-                };
+                })?;
                 Ok(0)
             }
             // FBIOPUT_VSCREENINFO
@@ -188,7 +187,7 @@ impl DeviceOps for FrameBuffer {
             // FBIOGET_FSCREENINFO
             0x4602 => {
                 let info = axdisplay::main_display().info();
-                *UserPtr::<FixScreenInfo>::from(arg).get_as_mut()? = FixScreenInfo {
+                (arg as *mut FixScreenInfo).vm_write(FixScreenInfo {
                     id: *b"Virtio Framebuf\0",
                     smem_start: info.fb_base_vaddr as u64,
                     smem_len: info.fb_size as u32,
@@ -204,7 +203,7 @@ impl DeviceOps for FrameBuffer {
                     accel: 0,
                     capabilities: 0,
                     reserved: [0; 2],
-                };
+                })?;
                 Ok(0)
             }
             // FBIOGETCMAP

@@ -54,11 +54,11 @@ pub fn sys_set_tid_address(clear_child_tid: usize) -> LinuxResult<isize> {
 
 #[cfg(target_arch = "x86_64")]
 pub fn sys_arch_prctl(
-    tf: &mut axhal::arch::TrapFrame,
+    tf: &mut axhal::context::TrapFrame,
     code: i32,
     addr: usize,
 ) -> LinuxResult<isize> {
-    use crate::mm::UserPtr;
+    use starry_vm::VmMutPtr;
 
     let code = ArchPrctlCode::try_from(code).map_err(|_| axerrno::LinuxError::EINVAL)?;
     debug!("sys_arch_prctl: code = {:?}, addr = {:#x}", code, addr);
@@ -67,7 +67,7 @@ pub fn sys_arch_prctl(
         // According to Linux implementation, SetFs & SetGs does not return
         // error at all
         ArchPrctlCode::GetFs => {
-            *UserPtr::from(addr).get_as_mut()? = tf.tls();
+            (addr as *mut usize).vm_write(tf.tls())?;
             Ok(0)
         }
         ArchPrctlCode::SetFs => {
@@ -75,8 +75,8 @@ pub fn sys_arch_prctl(
             Ok(0)
         }
         ArchPrctlCode::GetGs => {
-            *UserPtr::from(addr).get_as_mut()? =
-                unsafe { x86::msr::rdmsr(x86::msr::IA32_KERNEL_GSBASE) };
+            (addr as *mut usize)
+                .vm_write(unsafe { x86::msr::rdmsr(x86::msr::IA32_KERNEL_GSBASE) })?;
             Ok(0)
         }
         ArchPrctlCode::SetGs => {

@@ -11,11 +11,9 @@ use starry_core::{
     task::AsThread,
     vfs::{Device, DeviceMmap},
 };
+use starry_vm::{vm_load, vm_write_slice};
 
-use crate::{
-    file::{File, FileLike},
-    mm::{UserConstPtr, UserPtr},
-};
+use crate::file::{File, FileLike};
 
 bitflags::bitflags! {
     /// `PROT_*` flags for use with [`sys_mmap`].
@@ -306,9 +304,8 @@ pub fn sys_mremap(addr: usize, old_size: usize, new_size: usize, flags: u32) -> 
     )? as usize;
 
     let copy_len = new_size.min(old_size);
-    UserPtr::<u8>::from(new_addr)
-        .get_as_mut_slice(copy_len)?
-        .copy_from_slice(UserConstPtr::<u8>::from(addr.as_usize()).get_as_slice(copy_len)?);
+    let data = vm_load(addr.as_ptr(), copy_len)?;
+    vm_write_slice(new_addr as *mut u8, &data)?;
 
     sys_munmap(addr.as_usize(), old_size)?;
 

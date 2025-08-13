@@ -12,8 +12,9 @@ use linux_raw_sys::{
     loop_device::{LOOP_CLR_FD, LOOP_GET_STATUS, LOOP_SET_FD, LOOP_SET_STATUS, loop_info},
 };
 use starry_core::vfs::{DeviceMmap, DeviceOps};
+use starry_vm::{VmMutPtr, VmPtr};
 
-use crate::{file::get_file_like, mm::UserPtr};
+use crate::file::get_file_like;
 
 /// /dev/loopX devices
 pub struct LoopDevice {
@@ -39,17 +40,18 @@ impl LoopDevice {
     }
 
     /// Get information about the loop device.
-    pub fn get_info(&self, dest: &mut loop_info) -> LinuxResult<()> {
+    pub fn get_info(&self) -> LinuxResult<loop_info> {
         if self.file.lock().is_none() {
             return Err(LinuxError::ENXIO);
         }
-        dest.lo_number = self.number as _;
-        dest.lo_rdevice = self.dev_id.0 as _;
-        Ok(())
+        let mut res: loop_info = unsafe { core::mem::zeroed() };
+        res.lo_number = self.number as _;
+        res.lo_rdevice = self.dev_id.0 as _;
+        Ok(res)
     }
 
     /// Set information for the loop device.
-    pub fn set_info(&self, _src: &loop_info) -> LinuxResult<()> {
+    pub fn set_info(&self, _src: loop_info) -> LinuxResult<()> {
         Ok(())
     }
 
@@ -75,7 +77,6 @@ impl DeviceOps for LoopDevice {
     }
 
     fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
-        let argp: UserPtr<()> = arg.into();
         match cmd {
             LOOP_SET_FD => {
                 let fd = arg as i32;
@@ -101,37 +102,39 @@ impl DeviceOps for LoopDevice {
                 *guard = None;
             }
             LOOP_GET_STATUS => {
-                self.get_info(argp.cast().get_as_mut()?)?;
+                (arg as *mut loop_info).vm_write(self.get_info()?)?;
             }
             LOOP_SET_STATUS => {
-                self.set_info(argp.cast().get_as_mut()?)?;
+                // FIXME: AnyBitPattern
+                let info = unsafe { (arg as *const loop_info).vm_read_uninit()?.assume_init() };
+                self.set_info(info)?;
             }
             // TODO: the following should apply to any block devices
             BLKGETSIZE | BLKGETSIZE64 => {
                 let file = self.clone_file()?;
                 let sectors = file.location().len()? / 512;
                 if cmd == BLKGETSIZE {
-                    *argp.cast::<u32>().get_as_mut()? = sectors as _;
+                    (arg as *mut u32).vm_write(sectors as _)?;
                 } else {
-                    *argp.cast::<u64>().get_as_mut()? = sectors * 512;
+                    (arg as *mut u64).vm_write(sectors * 512)?;
                 }
             }
             BLKROGET => {
-                *argp.cast::<u32>().get_as_mut()? = self.ro.load(Ordering::Relaxed) as u32;
+                (arg as *mut u32).vm_write(self.ro.load(Ordering::Relaxed) as u32)?;
             }
             BLKROSET => {
-                let ro = *argp.cast::<u32>().get_as_mut()?;
+                let ro = (arg as *const u32).vm_read()?;
                 if ro != 0 && ro != 1 {
                     return Err(LinuxError::EINVAL);
                 }
                 self.ro.store(ro != 0, Ordering::Relaxed);
             }
             BLKRAGET => {
-                *argp.cast::<u32>().get_as_mut()? = self.ra.load(Ordering::Relaxed);
+                (arg as *mut u32).vm_write(self.ra.load(Ordering::Relaxed))?;
             }
             BLKRASET => {
                 self.ra
-                    .store(argp.address().as_usize() as _, Ordering::Relaxed);
+                    .store((arg as *const u32).vm_read()? as _, Ordering::Relaxed);
             }
             _ => {
                 warn!("unknown ioctl for loop device: {cmd}");

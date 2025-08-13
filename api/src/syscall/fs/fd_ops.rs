@@ -18,7 +18,7 @@ use crate::{
         Directory, FD_TABLE, File, FileLike, Pipe, add_file_like, close_file_like, get_file_like,
         with_fs,
     },
-    mm::UserConstPtr,
+    mm::vm_load_string,
     syscall::sys::{sys_getegid, sys_geteuid},
 };
 
@@ -78,11 +78,11 @@ fn add_to_fd(result: OpenResult, flags: u32) -> LinuxResult<i32> {
 /// return new file descriptor if succeed, or return -1.
 pub fn sys_openat(
     dirfd: c_int,
-    path: UserConstPtr<c_char>,
+    path: *const c_char,
     flags: i32,
     mode: __kernel_mode_t,
 ) -> LinuxResult<isize> {
-    let path = path.get_as_str()?;
+    let path = vm_load_string(path)?;
     debug!(
         "sys_openat <= {} {:?} {:#o} {:#o}",
         dirfd, path, flags, mode
@@ -101,11 +101,7 @@ pub fn sys_openat(
 /// Return its index in the file table (`fd`). Return `EMFILE` if it already
 /// has the maximum number of files open.
 #[cfg(target_arch = "x86_64")]
-pub fn sys_open(
-    path: UserConstPtr<c_char>,
-    flags: i32,
-    mode: __kernel_mode_t,
-) -> LinuxResult<isize> {
+pub fn sys_open(path: *const c_char, flags: i32, mode: __kernel_mode_t) -> LinuxResult<isize> {
     sys_openat(AT_FDCWD as _, path, flags, mode)
 }
 

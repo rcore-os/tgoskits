@@ -352,16 +352,19 @@ struct Vm(ArcMutexGuard<RawMutex, AddrSpace>);
 impl Vm {
     fn check(&mut self, start: usize, len: usize, flags: MappingFlags) -> VmResult {
         let start = VirtAddr::from_usize(start);
-        self.0
-            .can_access_range(start, len, flags)
-            .then_some(())
-            .ok_or(VmError::AccessDenied)?;
+        if !self.0.can_access_range(start, len, flags) {
+            return Err(VmError::AccessDenied);
+        }
 
         let page_start = start.align_down_4k();
         let page_end = (start + len).align_up_4k();
-        self.0
+        if self
+            .0
             .populate_area(page_start, page_end - page_start, flags)
-            .map_err(|_| VmError::AccessDenied)?;
+            .is_err()
+        {
+            return Err(VmError::AccessDenied);
+        }
 
         Ok(())
     }

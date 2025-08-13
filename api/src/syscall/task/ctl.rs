@@ -7,12 +7,18 @@ use linux_raw_sys::{
     prctl::{PR_GET_NAME, PR_SET_NAME},
 };
 use starry_core::task::{AsThread, get_process_data};
+use starry_vm::{VmMutPtr, VmPtr, vm_write_slice};
 
-use crate::mm::{UserConstPtr, UserPtr};
+use crate::mm::vm_load_string;
 
-fn validate_cap_header(header: &mut __user_cap_header_struct) -> LinuxResult<()> {
-    if header.version != 0x20080522 {
-        header.version = 0x20080522;
+const CAPABILITY_VERSION_3: u32 = 0x20080522;
+
+fn validate_cap_header(header_ptr: *mut __user_cap_header_struct) -> LinuxResult<()> {
+    // FIXME: AnyBitPattern
+    let mut header = unsafe { header_ptr.vm_read_uninit()?.assume_init() };
+    if header.version != CAPABILITY_VERSION_3 {
+        header.version = CAPABILITY_VERSION_3;
+        header_ptr.vm_write(header)?;
         return Err(LinuxError::EINVAL);
     }
     let _ = get_process_data(header.pid as u32)?;
@@ -20,25 +26,23 @@ fn validate_cap_header(header: &mut __user_cap_header_struct) -> LinuxResult<()>
 }
 
 pub fn sys_capget(
-    header: UserPtr<__user_cap_header_struct>,
-    data: UserPtr<__user_cap_data_struct>,
+    header: *mut __user_cap_header_struct,
+    data: *mut __user_cap_data_struct,
 ) -> LinuxResult<isize> {
-    let header = header.get_as_mut()?;
     validate_cap_header(header)?;
 
-    *data.get_as_mut()? = __user_cap_data_struct {
+    data.vm_write(__user_cap_data_struct {
         effective: u32::MAX,
         permitted: u32::MAX,
         inheritable: u32::MAX,
-    };
+    })?;
     Ok(0)
 }
 
 pub fn sys_capset(
-    header: UserPtr<__user_cap_header_struct>,
-    _data: UserPtr<__user_cap_data_struct>,
+    header: *mut __user_cap_header_struct,
+    _data: *mut __user_cap_data_struct,
 ) -> LinuxResult<isize> {
-    let header = header.get_as_mut()?;
     validate_cap_header(header)?;
 
     Ok(0)
@@ -63,8 +67,8 @@ pub fn sys_setresgid(_rgid: u32, _egid: u32, _sgid: u32) -> LinuxResult<isize> {
 }
 
 pub fn sys_get_mempolicy(
-    _policy: UserPtr<i32>,
-    _nodemask: UserPtr<usize>,
+    _policy: *mut i32,
+    _nodemask: *mut usize,
     _maxnode: usize,
     _addr: usize,
     _flags: usize,
@@ -87,15 +91,15 @@ pub fn sys_prctl(
 
     match option {
         PR_SET_NAME => {
-            let s = UserConstPtr::<c_char>::from(arg2).get_as_str()?;
-            current().set_name(s);
+            let s = vm_load_string(arg2 as *const c_char)?;
+            current().set_name(&s);
         }
         PR_GET_NAME => {
             let name = current().name();
-            let dst = UserPtr::<u8>::from(arg2).get_as_mut_slice(16)?;
-            let copy_len = name.len().min(15);
-            dst[..copy_len].copy_from_slice(&name.as_bytes()[..copy_len]);
-            dst[copy_len] = 0;
+            let len = name.len().min(15);
+            let mut buf = [0; 16];
+            buf[..len].copy_from_slice(&name.as_bytes()[..len]);
+            vm_write_slice(arg2 as _, &buf)?;
         }
         _ => {
             warn!("sys_prctl: unsupported option {}", option);

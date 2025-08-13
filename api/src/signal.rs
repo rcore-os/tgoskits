@@ -1,7 +1,4 @@
-use core::{
-    mem,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use axerrno::LinuxResult;
 use axhal::context::TrapFrame;
@@ -54,16 +51,16 @@ pub fn with_replacen_blocked<R>(
     f: impl FnOnce() -> LinuxResult<R>,
 ) -> LinuxResult<R> {
     let curr = current();
+    let sig = &curr.as_thread().signal;
+
     let old_blocked = blocked.map(|mut set| {
         set.remove(Signo::SIGKILL);
         set.remove(Signo::SIGSTOP);
-        curr.as_thread()
-            .signal
-            .with_blocked_mut(|b| mem::replace(b, set))
+        sig.set_blocked(set)
     });
     f().inspect(|_| {
         if let Some(old) = old_blocked {
-            current().as_thread().signal.with_blocked_mut(|b| *b = old);
+            sig.set_blocked(old);
         }
     })
 }

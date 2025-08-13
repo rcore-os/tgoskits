@@ -47,11 +47,11 @@ axerrno = { git = "https://github.com/Starry-Mix-THU/axerrno.git", rev = "f5d8f8
 axfs-ng-vfs = { git = "https://github.com/Starry-Mix-THU/axfs-ng-vfs.git", rev = "8a549b7" }
 axio = { git = "https://github.com/Starry-Mix-THU/axio.git", rev = "098eb64" }
 starry-process = { git = "https://github.com/Starry-Mix-THU/starry-process.git", rev = "7e78f22" }
-starry-signal = { git = "https://github.com/Starry-Mix-THU/starry-signal.git", rev = "504ad00" }
-starry-vm = { git = "https://github.com/Starry-Mix-THU/starry-vm.git", rev = "f89fdbd" }
+starry-signal = { git = "https://github.com/Starry-Mix-THU/starry-signal.git", rev = "f7ff62f" }
+starry-vm = { git = "https://github.com/Starry-Mix-THU/starry-vm.git", rev = "e86cbc0" }
 
 bitflags = "2.6"
-bytemuck = "1.23"
+bytemuck = { version = "1.23", features = ["unsound_ptr_pod_impl"] }
 cfg-if = "1.0"
 event-listener = { version = "5.4.0", default-features = false }
 extern-trait = "0.2"

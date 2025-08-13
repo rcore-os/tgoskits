@@ -1,4 +1,4 @@
-use core::{future::poll_fn, mem, task::Poll};
+use core::{future::poll_fn, task::Poll};
 
 use axerrno::{LinuxError, LinuxResult};
 use axhal::context::TrapFrame;
@@ -16,9 +16,9 @@ use starry_core::task::{
 };
 use starry_process::Pid;
 use starry_signal::{SignalInfo, SignalSet, SignalStack, Signo};
+use starry_vm::{VmMutPtr, VmPtr, vm_load};
 
 use crate::{
-    mm::{UserConstPtr, UserPtr, nullable},
     signal::{block_next_signal, check_signals},
     time::TimeValueLike,
 };
@@ -36,41 +36,41 @@ fn parse_signo(signo: u32) -> LinuxResult<Signo> {
 
 pub fn sys_rt_sigprocmask(
     how: i32,
-    set: UserConstPtr<SignalSet>,
-    oldset: UserPtr<SignalSet>,
+    set: *const SignalSet,
+    oldset: *mut SignalSet,
     sigsetsize: usize,
 ) -> LinuxResult<isize> {
     check_sigset_size(sigsetsize)?;
 
-    let oldset = nullable!(oldset.get_as_mut())?;
-    let set = nullable!(set.get_as_ref())?;
+    let curr = current();
+    let sig = &curr.as_thread().signal;
+    let old = sig.blocked();
 
-    current()
-        .as_thread()
-        .signal
-        .with_blocked_mut::<LinuxResult<_>>(|blocked| {
-            if let Some(oldset) = oldset {
-                *oldset = *blocked;
-            }
+    if let Some(oldset) = oldset.nullable() {
+        oldset.vm_write(old)?;
+    }
 
-            if let Some(set) = set {
-                match how as u32 {
-                    SIG_BLOCK => *blocked |= *set,
-                    SIG_UNBLOCK => *blocked &= !*set,
-                    SIG_SETMASK => *blocked = *set,
-                    _ => return Err(LinuxError::EINVAL),
-                }
-            }
-            Ok(())
-        })?;
+    if let Some(set) = set.nullable() {
+        let set = unsafe { set.vm_read_uninit()?.assume_init() };
+
+        let set = match how as u32 {
+            SIG_BLOCK => old | set,
+            SIG_UNBLOCK => old & !set,
+            SIG_SETMASK => set,
+            _ => return Err(LinuxError::EINVAL),
+        };
+
+        debug!("sys_rt_sigprocmask <= {:?}", set);
+        sig.set_blocked(set);
+    }
 
     Ok(0)
 }
 
 pub fn sys_rt_sigaction(
     signo: u32,
-    act: UserConstPtr<kernel_sigaction>,
-    oldact: UserPtr<kernel_sigaction>,
+    act: *const kernel_sigaction,
+    oldact: *mut kernel_sigaction,
     sigsetsize: usize,
 ) -> LinuxResult<isize> {
     check_sigset_size(sigsetsize)?;
@@ -82,18 +82,20 @@ pub fn sys_rt_sigaction(
 
     let curr = current();
     let mut actions = curr.as_thread().proc_data.signal.actions.lock();
-    if let Some(oldact) = nullable!(oldact.get_as_mut())? {
-        actions[signo].to_ctype(oldact);
+    if let Some(oldact) = oldact.nullable() {
+        oldact.vm_write(actions[signo].clone().into())?;
     }
-    if let Some(act) = nullable!(act.get_as_ref())? {
-        actions[signo] = (*act).into();
+    if let Some(act) = act.nullable() {
+        let act = unsafe { act.vm_read_uninit()?.assume_init() }.into();
+        debug!("sys_rt_sigaction <= signo: {:?}, act: {:?}", signo, act);
+        actions[signo] = act;
     }
     Ok(0)
 }
 
-pub fn sys_rt_sigpending(set: UserPtr<SignalSet>, sigsetsize: usize) -> LinuxResult<isize> {
+pub fn sys_rt_sigpending(set: *mut SignalSet, sigsetsize: usize) -> LinuxResult<isize> {
     check_sigset_size(sigsetsize)?;
-    *set.get_as_mut()? = current().as_thread().signal.pending();
+    set.vm_write(current().as_thread().signal.pending())?;
     Ok(0)
 }
 
@@ -159,14 +161,14 @@ pub fn sys_tgkill(tgid: Pid, tid: Pid, signo: u32) -> LinuxResult<isize> {
 pub(crate) fn make_queue_signal_info(
     tgid: Pid,
     signo: u32,
-    sig: UserConstPtr<SignalInfo>,
+    sig: *const SignalInfo,
 ) -> LinuxResult<Option<SignalInfo>> {
     if signo == 0 {
         return Ok(None);
     }
 
     let signo = parse_signo(signo)?;
-    let mut sig = sig.get_as_ref()?.clone();
+    let mut sig = unsafe { sig.vm_read_uninit()?.assume_init() };
     sig.set_signo(signo);
     if current().as_thread().proc_data.proc.pid() != tgid
         && (sig.code() >= 0 || sig.code() == SI_TKILL)
@@ -179,7 +181,7 @@ pub(crate) fn make_queue_signal_info(
 pub fn sys_rt_sigqueueinfo(
     tgid: Pid,
     signo: u32,
-    sig: UserConstPtr<SignalInfo>,
+    sig: *const SignalInfo,
     sigsetsize: usize,
 ) -> LinuxResult<isize> {
     check_sigset_size(sigsetsize)?;
@@ -193,7 +195,7 @@ pub fn sys_rt_tgsigqueueinfo(
     tgid: Pid,
     tid: Pid,
     signo: u32,
-    sig: UserConstPtr<SignalInfo>,
+    sig: *const SignalInfo,
     sigsetsize: usize,
 ) -> LinuxResult<isize> {
     check_sigset_size(sigsetsize)?;
@@ -211,20 +213,23 @@ pub fn sys_rt_sigreturn(tf: &mut TrapFrame) -> LinuxResult<isize> {
 
 pub fn sys_rt_sigtimedwait(
     tf: &mut TrapFrame,
-    set: UserConstPtr<SignalSet>,
-    info: UserPtr<siginfo>,
-    timeout: UserConstPtr<timespec>,
+    set: *const SignalSet,
+    info: *mut siginfo,
+    timeout: *const timespec,
     sigsetsize: usize,
 ) -> LinuxResult<isize> {
     check_sigset_size(sigsetsize)?;
 
-    let mut set = *set.get_as_ref()?;
+    let mut set = unsafe { set.vm_read_uninit()?.assume_init() };
     set.remove(Signo::SIGKILL);
     set.remove(Signo::SIGSTOP);
 
-    let timeout = nullable!(timeout.get_as_ref())?
-        .map(|ts| ts.try_into_time_value())
-        .transpose()?;
+    let timeout = if let Some(ts) = timeout.nullable() {
+        let ts = unsafe { ts.vm_read_uninit()?.assume_init() };
+        Some(ts.try_into_time_value()?)
+    } else {
+        None
+    };
 
     debug!(
         "sys_rt_sigtimedwait => set = {:?}, timeout = {:?}",
@@ -234,17 +239,14 @@ pub fn sys_rt_sigtimedwait(
     let curr = current();
     let thr = curr.as_thread();
     let signal = &thr.signal;
-    let old_blocked = signal.with_blocked_mut(|blocked| {
-        let old = *blocked;
-        *blocked &= !set;
-        old
-    });
+
+    let old_blocked = signal.blocked();
+    signal.set_blocked(old_blocked & !set);
+
     tf.set_retval(-LinuxError::EINTR.code() as usize);
     let fut = poll_fn(|context| {
         if let Some(sig) = signal.dequeue_signal(&set) {
-            signal.with_blocked_mut(|blocked| {
-                *blocked = old_blocked;
-            });
+            signal.set_blocked(old_blocked);
             Poll::Ready(Some(sig))
         } else if check_signals(thr, tf, Some(old_blocked)) {
             Poll::Ready(None)
@@ -256,9 +258,7 @@ pub fn sys_rt_sigtimedwait(
 
     let Some(sig) = block_on(timeout_opt(fut, timeout)) else {
         // Timeout
-        signal.with_blocked_mut(|blocked| {
-            *blocked = old_blocked;
-        });
+        signal.set_blocked(old_blocked);
         return Err(LinuxError::EAGAIN);
     };
     let Some(sig) = sig else {
@@ -266,8 +266,8 @@ pub fn sys_rt_sigtimedwait(
         return Ok(0);
     };
 
-    if let Some(info) = nullable!(info.get_as_mut())? {
-        *info = sig.0;
+    if let Some(info) = info.nullable() {
+        info.vm_write(sig.0)?;
     }
 
     Ok(sig.signo() as _)
@@ -275,7 +275,7 @@ pub fn sys_rt_sigtimedwait(
 
 pub fn sys_rt_sigsuspend(
     tf: &mut TrapFrame,
-    set: UserConstPtr<SignalSet>,
+    set: *const SignalSet,
     sigsetsize: usize,
 ) -> LinuxResult<isize> {
     check_sigset_size(sigsetsize)?;
@@ -283,13 +283,11 @@ pub fn sys_rt_sigsuspend(
     let curr = current();
     let thr = curr.as_thread();
 
-    let mut set = *set.get_as_ref()?;
+    let mut set = unsafe { set.vm_read_uninit()?.assume_init() };
     set.remove(Signo::SIGKILL);
     set.remove(Signo::SIGSTOP);
 
-    let old_blocked = thr
-        .signal
-        .with_blocked_mut(|blocked| mem::replace(blocked, set));
+    let old_blocked = thr.signal.set_blocked(set);
 
     tf.set_retval(-LinuxError::EINTR.code() as usize);
 
@@ -304,23 +302,21 @@ pub fn sys_rt_sigsuspend(
     Ok(0)
 }
 
-pub fn sys_sigaltstack(
-    ss: UserConstPtr<SignalStack>,
-    old_ss: UserPtr<SignalStack>,
-) -> LinuxResult<isize> {
-    current().as_thread().signal.with_stack_mut(|stack| {
-        if let Some(old_ss) = nullable!(old_ss.get_as_mut())? {
-            *old_ss = stack.clone();
-        }
-        if let Some(ss) = nullable!(ss.get_as_ref())? {
-            if ss.size <= MINSIGSTKSZ as usize {
-                return Err(LinuxError::ENOMEM);
-            }
-            let stack_ptr: UserConstPtr<u8> = ss.sp.into();
-            let _ = stack_ptr.get_as_slice(ss.size)?;
+pub fn sys_sigaltstack(ss: *const SignalStack, old_ss: *mut SignalStack) -> LinuxResult<isize> {
+    let curr = current();
+    let sig = &curr.as_thread().signal;
 
-            *stack = ss.clone();
+    if let Some(old_ss) = old_ss.nullable() {
+        old_ss.vm_write(sig.stack())?;
+    }
+
+    if let Some(ss) = ss.nullable() {
+        let ss = unsafe { ss.vm_read_uninit()?.assume_init() };
+        if ss.size <= MINSIGSTKSZ as usize {
+            return Err(LinuxError::ENOMEM);
         }
-        Ok(0)
-    })
+        vm_load(ss.sp as *const u8, ss.size)?;
+        sig.set_stack(ss);
+    }
+    Ok(0)
 }

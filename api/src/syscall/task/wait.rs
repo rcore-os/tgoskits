@@ -8,8 +8,7 @@ use linux_raw_sys::general::{
 };
 use starry_core::task::AsThread;
 use starry_process::{Pid, Process};
-
-use crate::mm::{UserPtr, nullable};
+use starry_vm::{VmMutPtr, VmPtr};
 
 bitflags! {
     #[derive(Debug)]
@@ -56,7 +55,7 @@ impl WaitPid {
     }
 }
 
-pub fn sys_waitpid(pid: i32, exit_code_ptr: UserPtr<i32>, options: u32) -> LinuxResult<isize> {
+pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> LinuxResult<isize> {
     let options = WaitOptions::from_bits_truncate(options);
     info!("sys_waitpid <= pid: {:?}, options: {:?}", pid, options);
 
@@ -85,14 +84,13 @@ pub fn sys_waitpid(pid: i32, exit_code_ptr: UserPtr<i32>, options: u32) -> Linux
         return Err(LinuxError::ECHILD);
     }
 
-    let exit_code = nullable!(exit_code_ptr.get_as_mut())?;
     loop {
         if let Some(child) = children.iter().find(|child| child.is_zombie()) {
             if !options.contains(WaitOptions::WNOWAIT) {
                 child.free();
             }
-            if let Some(exit_code) = exit_code {
-                *exit_code = child.exit_code();
+            if let Some(exit_code) = exit_code.nullable() {
+                exit_code.vm_write(child.exit_code())?;
             }
             return Ok(child.pid() as _);
         } else if options.contains(WaitOptions::WNOHANG) {

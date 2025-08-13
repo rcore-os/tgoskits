@@ -1,3 +1,4 @@
+use alloc::string::String;
 use core::{alloc::Layout, ffi::c_char, mem::transmute, ptr, slice, str};
 
 use axerrno::{LinuxError, LinuxResult};
@@ -9,6 +10,7 @@ use axtask::current;
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use starry_core::task::{AsThread, ProcessData, send_signal_to_process};
 use starry_signal::{SignalInfo, Signo};
+use starry_vm::vm_load_c_string;
 
 fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> LinuxResult<()> {
     let align = layout.align();
@@ -290,4 +292,9 @@ fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
     handle_user_page_fault(&thr.proc_data, vaddr, access_flags);
 
     true
+}
+
+pub fn vm_load_string(ptr: *const c_char) -> LinuxResult<String> {
+    let bytes = vm_load_c_string(ptr)?;
+    bytes.into_string().map_err(|_| LinuxError::EILSEQ)
 }

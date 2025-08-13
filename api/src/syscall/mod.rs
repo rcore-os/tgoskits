@@ -31,43 +31,43 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
     let result = match sysno {
         // fs ctl
         Sysno::ioctl => sys_ioctl(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
-        Sysno::chdir => sys_chdir(tf.arg0().into()),
+        Sysno::chdir => sys_chdir(tf.arg0() as _),
         Sysno::fchdir => sys_fchdir(tf.arg0() as _),
         #[cfg(target_arch = "x86_64")]
-        Sysno::mkdir => sys_mkdir(tf.arg0().into(), tf.arg1() as _),
-        Sysno::mkdirat => sys_mkdirat(tf.arg0() as _, tf.arg1().into(), tf.arg2() as _),
-        Sysno::getdents64 => sys_getdents64(tf.arg0() as _, tf.arg1().into(), tf.arg2() as _),
+        Sysno::mkdir => sys_mkdir(tf.arg0() as _, tf.arg1() as _),
+        Sysno::mkdirat => sys_mkdirat(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
+        Sysno::getdents64 => sys_getdents64(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
         #[cfg(target_arch = "x86_64")]
-        Sysno::link => sys_link(tf.arg0().into(), tf.arg1().into()),
+        Sysno::link => sys_link(tf.arg0() as _, tf.arg1() as _),
         Sysno::linkat => sys_linkat(
             tf.arg0() as _,
-            tf.arg1().into(),
+            tf.arg1() as _,
             tf.arg2() as _,
-            tf.arg3().into(),
+            tf.arg3() as _,
             tf.arg4() as _,
         ),
         #[cfg(target_arch = "x86_64")]
-        Sysno::rmdir => sys_rmdir(tf.arg0().into()),
+        Sysno::rmdir => sys_rmdir(tf.arg0() as _),
         #[cfg(target_arch = "x86_64")]
-        Sysno::unlink => sys_unlink(tf.arg0().into()),
-        Sysno::unlinkat => sys_unlinkat(tf.arg0() as _, tf.arg1().into(), tf.arg2() as _),
-        Sysno::getcwd => sys_getcwd(tf.arg0().into(), tf.arg1() as _),
+        Sysno::unlink => sys_unlink(tf.arg0() as _),
+        Sysno::unlinkat => sys_unlinkat(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
+        Sysno::getcwd => sys_getcwd(tf.arg0() as _, tf.arg1() as _),
         #[cfg(target_arch = "x86_64")]
-        Sysno::symlink => sys_symlink(tf.arg0().into(), tf.arg1().into()),
-        Sysno::symlinkat => sys_symlinkat(tf.arg0().into(), tf.arg1() as _, tf.arg2().into()),
+        Sysno::symlink => sys_symlink(tf.arg0() as _, tf.arg1() as _),
+        Sysno::symlinkat => sys_symlinkat(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
         #[cfg(target_arch = "x86_64")]
-        Sysno::rename => sys_rename(tf.arg0().into(), tf.arg1().into()),
+        Sysno::rename => sys_rename(tf.arg0() as _, tf.arg1() as _),
         Sysno::renameat => sys_renameat(
             tf.arg0() as _,
-            tf.arg1().into(),
+            tf.arg1() as _,
             tf.arg2() as _,
-            tf.arg3().into(),
+            tf.arg3() as _,
         ),
         Sysno::renameat2 => sys_renameat2(
             tf.arg0() as _,
-            tf.arg1().into(),
+            tf.arg1() as _,
             tf.arg2() as _,
-            tf.arg3().into(),
+            tf.arg3() as _,
             tf.arg4() as _,
         ),
         Sysno::sync => sys_sync(),
@@ -77,45 +77,45 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
         Sysno::fchown => sys_fchown(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
         Sysno::fchownat => sys_fchownat(
             tf.arg0() as _,
-            tf.arg1().into(),
+            tf.arg1() as _,
             tf.arg2() as _,
             tf.arg3() as _,
             tf.arg4() as _,
         ),
         #[cfg(target_arch = "x86_64")]
-        Sysno::chmod => sys_chmod(tf.arg0().into(), tf.arg1() as _),
+        Sysno::chmod => sys_chmod(tf.arg0() as _, tf.arg1() as _),
         Sysno::fchmod => sys_fchmod(tf.arg0() as _, tf.arg1() as _),
         Sysno::fchmodat | Sysno::fchmodat2 => sys_fchmodat(
             tf.arg0() as _,
-            tf.arg1().into(),
+            tf.arg1() as _,
             tf.arg2() as _,
             tf.arg3() as _,
         ),
         #[cfg(target_arch = "x86_64")]
-        Sysno::readlink => sys_readlink(tf.arg0().into(), tf.arg1().into(), tf.arg2() as _),
+        Sysno::readlink => sys_readlink(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
         Sysno::readlinkat => sys_readlinkat(
             tf.arg0() as _,
-            tf.arg1().into(),
-            tf.arg2().into(),
+            tf.arg1() as _,
+            tf.arg2() as _,
             tf.arg3() as _,
         ),
         #[cfg(target_arch = "x86_64")]
-        Sysno::utime => sys_utime(tf.arg0().into(), tf.arg1().into()),
+        Sysno::utime => sys_utime(tf.arg0() as _, tf.arg1() as _),
         #[cfg(target_arch = "x86_64")]
-        Sysno::utimes => sys_utimes(tf.arg0().into(), tf.arg1().into()),
+        Sysno::utimes => sys_utimes(tf.arg0() as _, tf.arg1() as _),
         Sysno::utimensat => sys_utimensat(
             tf.arg0() as _,
-            tf.arg1().into(),
-            tf.arg2().into(),
+            tf.arg1() as _,
+            tf.arg2() as _,
             tf.arg3() as _,
         ),
 
         // fd ops
         #[cfg(target_arch = "x86_64")]
-        Sysno::open => sys_open(tf.arg0().into(), tf.arg1() as _, tf.arg2() as _),
+        Sysno::open => sys_open(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
         Sysno::openat => sys_openat(
             tf.arg0() as _,
-            tf.arg1().into(),
+            tf.arg1() as _,
             tf.arg2() as _,
             tf.arg3() as _,
         ),
@@ -257,18 +257,18 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
 
         // fs mount
         Sysno::mount => sys_mount(
-            tf.arg0().into(),
-            tf.arg1().into(),
-            tf.arg2().into(),
+            tf.arg0() as _,
+            tf.arg1() as _,
+            tf.arg2() as _,
             tf.arg3() as _,
-            tf.arg4().into(),
+            tf.arg4() as _,
         ) as _,
-        Sysno::umount2 => sys_umount2(tf.arg0().into(), tf.arg1() as _) as _,
+        Sysno::umount2 => sys_umount2(tf.arg0() as _, tf.arg1() as _) as _,
 
         // pipe
-        Sysno::pipe2 => sys_pipe2(tf.arg0().into(), tf.arg1() as _),
+        Sysno::pipe2 => sys_pipe2(tf.arg0() as _, tf.arg1() as _),
         #[cfg(target_arch = "x86_64")]
-        Sysno::pipe => sys_pipe2(tf.arg0().into(), 0),
+        Sysno::pipe => sys_pipe2(tf.arg0() as _, 0),
 
         // event
         Sysno::eventfd2 => sys_eventfd2(tf.arg0() as _, tf.arg1() as _),
@@ -279,47 +279,47 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
         Sysno::pidfd_send_signal => sys_pidfd_send_signal(
             tf.arg0() as _,
             tf.arg1() as _,
-            tf.arg2().into(),
+            tf.arg2() as _,
             tf.arg3() as _,
         ),
 
         // fs stat
         #[cfg(target_arch = "x86_64")]
-        Sysno::stat => sys_stat(tf.arg0().into(), tf.arg1().into()),
-        Sysno::fstat => sys_fstat(tf.arg0() as _, tf.arg1().into()),
+        Sysno::stat => sys_stat(tf.arg0() as _, tf.arg1() as _),
+        Sysno::fstat => sys_fstat(tf.arg0() as _, tf.arg1() as _),
         #[cfg(target_arch = "x86_64")]
-        Sysno::lstat => sys_lstat(tf.arg0().into(), tf.arg1().into()),
+        Sysno::lstat => sys_lstat(tf.arg0() as _, tf.arg1() as _),
         #[cfg(target_arch = "x86_64")]
         Sysno::newfstatat => sys_fstatat(
             tf.arg0() as _,
-            tf.arg1().into(),
-            tf.arg2().into(),
+            tf.arg1() as _,
+            tf.arg2() as _,
             tf.arg3() as _,
         ),
         #[cfg(not(target_arch = "x86_64"))]
         Sysno::fstatat => sys_fstatat(
             tf.arg0() as _,
-            tf.arg1().into(),
-            tf.arg2().into(),
+            tf.arg1() as _,
+            tf.arg2() as _,
             tf.arg3() as _,
         ),
         Sysno::statx => sys_statx(
             tf.arg0() as _,
-            tf.arg1().into(),
+            tf.arg1() as _,
             tf.arg2() as _,
             tf.arg3() as _,
-            tf.arg4().into(),
+            tf.arg4() as _,
         ),
         #[cfg(target_arch = "x86_64")]
-        Sysno::access => sys_access(tf.arg0().into(), tf.arg1() as _),
+        Sysno::access => sys_access(tf.arg0() as _, tf.arg1() as _),
         Sysno::faccessat | Sysno::faccessat2 => sys_faccessat2(
             tf.arg0() as _,
-            tf.arg1().into(),
+            tf.arg1() as _,
             tf.arg2() as _,
             tf.arg3() as _,
         ),
-        Sysno::statfs => sys_statfs(tf.arg0().into(), tf.arg1().into()),
-        Sysno::fstatfs => sys_fstatfs(tf.arg0() as _, tf.arg1().into()),
+        Sysno::statfs => sys_statfs(tf.arg0() as _, tf.arg1() as _),
+        Sysno::fstatfs => sys_fstatfs(tf.arg0() as _, tf.arg1() as _),
 
         // mm
         Sysno::brk => sys_brk(tf.arg0() as _),
@@ -343,32 +343,32 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
         Sysno::getpid => sys_getpid(),
         Sysno::getppid => sys_getppid(),
         Sysno::gettid => sys_gettid(),
-        Sysno::getrusage => sys_getrusage(tf.arg0() as _, tf.arg1().into()),
+        Sysno::getrusage => sys_getrusage(tf.arg0() as _, tf.arg1() as _),
 
         // task sched
         Sysno::sched_yield => sys_sched_yield(),
-        Sysno::nanosleep => sys_nanosleep(tf.arg0().into(), tf.arg1().into()),
+        Sysno::nanosleep => sys_nanosleep(tf.arg0() as _, tf.arg1() as _),
         Sysno::clock_nanosleep => sys_clock_nanosleep(
             tf.arg0() as _,
             tf.arg1() as _,
-            tf.arg2().into(),
-            tf.arg3().into(),
+            tf.arg2() as _,
+            tf.arg3() as _,
         ),
         Sysno::sched_getaffinity => {
-            sys_sched_getaffinity(tf.arg0() as _, tf.arg1() as _, tf.arg2().into())
+            sys_sched_getaffinity(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _)
         }
         Sysno::sched_setaffinity => {
-            sys_sched_setaffinity(tf.arg0() as _, tf.arg1() as _, tf.arg2().into())
+            sys_sched_setaffinity(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _)
         }
         Sysno::sched_getscheduler => sys_sched_getscheduler(tf.arg0() as _),
         Sysno::sched_setscheduler => {
-            sys_sched_setscheduler(tf.arg0() as _, tf.arg1() as _, tf.arg2().into())
+            sys_sched_setscheduler(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _)
         }
-        Sysno::sched_getparam => sys_sched_getparam(tf.arg0() as _, tf.arg1().into()),
+        Sysno::sched_getparam => sys_sched_getparam(tf.arg0() as _, tf.arg1() as _),
         Sysno::getpriority => sys_getpriority(tf.arg0() as _, tf.arg1() as _),
 
         // task ops
-        Sysno::execve => sys_execve(tf, tf.arg0().into(), tf.arg1().into(), tf.arg2().into()),
+        Sysno::execve => sys_execve(tf, tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
         Sysno::set_tid_address => sys_set_tid_address(tf.arg0()),
         #[cfg(target_arch = "x86_64")]
         Sysno::arch_prctl => sys_arch_prctl(tf, tf.arg0() as _, tf.arg1() as _),
@@ -382,18 +382,18 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
         Sysno::prlimit64 => sys_prlimit64(
             tf.arg0() as _,
             tf.arg1() as _,
-            tf.arg2().into(),
-            tf.arg3().into(),
+            tf.arg2() as _,
+            tf.arg3() as _,
         ),
-        Sysno::capget => sys_capget(tf.arg0().into(), tf.arg1().into()),
-        Sysno::capset => sys_capset(tf.arg0().into(), tf.arg1().into()),
+        Sysno::capget => sys_capget(tf.arg0() as _, tf.arg1() as _),
+        Sysno::capset => sys_capset(tf.arg0() as _, tf.arg1() as _),
         Sysno::umask => sys_umask(tf.arg0() as _),
         Sysno::setreuid => sys_setreuid(tf.arg0() as _, tf.arg1() as _),
         Sysno::setresuid => sys_setresuid(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
         Sysno::setresgid => sys_setresgid(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
         Sysno::get_mempolicy => sys_get_mempolicy(
-            tf.arg0().into(),
-            tf.arg1().into(),
+            tf.arg0() as _,
+            tf.arg1() as _,
             tf.arg2() as _,
             tf.arg3() as _,
             tf.arg4() as _,
@@ -412,7 +412,7 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
         Sysno::fork => sys_fork(tf),
         Sysno::exit => sys_exit(tf.arg0() as _),
         Sysno::exit_group => sys_exit_group(tf.arg0() as _),
-        Sysno::wait4 => sys_waitpid(tf.arg0() as _, tf.arg1().into(), tf.arg2() as _),
+        Sysno::wait4 => sys_waitpid(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
         Sysno::getsid => sys_getsid(tf.arg0() as _),
         Sysno::setsid => sys_setsid(),
         Sysno::getpgid => sys_getpgid(tf.arg0() as _),
@@ -421,55 +421,55 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
         // signal
         Sysno::rt_sigprocmask => sys_rt_sigprocmask(
             tf.arg0() as _,
-            tf.arg1().into(),
-            tf.arg2().into(),
+            tf.arg1() as _,
+            tf.arg2() as _,
             tf.arg3() as _,
         ),
         Sysno::rt_sigaction => sys_rt_sigaction(
             tf.arg0() as _,
-            tf.arg1().into(),
-            tf.arg2().into(),
+            tf.arg1() as _,
+            tf.arg2() as _,
             tf.arg3() as _,
         ),
-        Sysno::rt_sigpending => sys_rt_sigpending(tf.arg0().into(), tf.arg1() as _),
+        Sysno::rt_sigpending => sys_rt_sigpending(tf.arg0() as _, tf.arg1() as _),
         Sysno::rt_sigreturn => sys_rt_sigreturn(tf),
         Sysno::rt_sigtimedwait => sys_rt_sigtimedwait(
             tf,
-            tf.arg0().into(),
-            tf.arg1().into(),
-            tf.arg2().into(),
+            tf.arg0() as _,
+            tf.arg1() as _,
+            tf.arg2() as _,
             tf.arg3() as _,
         ),
-        Sysno::rt_sigsuspend => sys_rt_sigsuspend(tf, tf.arg0().into(), tf.arg1() as _),
+        Sysno::rt_sigsuspend => sys_rt_sigsuspend(tf, tf.arg0() as _, tf.arg1() as _),
         Sysno::kill => sys_kill(tf.arg0() as _, tf.arg1() as _),
         Sysno::tkill => sys_tkill(tf.arg0() as _, tf.arg1() as _),
         Sysno::tgkill => sys_tgkill(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
         Sysno::rt_sigqueueinfo => sys_rt_sigqueueinfo(
             tf.arg0() as _,
             tf.arg1() as _,
-            tf.arg2().into(),
+            tf.arg2() as _,
             tf.arg3() as _,
         ),
         Sysno::rt_tgsigqueueinfo => sys_rt_tgsigqueueinfo(
             tf.arg0() as _,
             tf.arg1() as _,
             tf.arg2() as _,
-            tf.arg3().into(),
+            tf.arg3() as _,
             tf.arg4() as _,
         ),
-        Sysno::sigaltstack => sys_sigaltstack(tf.arg0().into(), tf.arg1().into()),
+        Sysno::sigaltstack => sys_sigaltstack(tf.arg0() as _, tf.arg1() as _),
         Sysno::futex => sys_futex(
-            tf.arg0().into(),
+            tf.arg0() as _,
             tf.arg1() as _,
             tf.arg2() as _,
-            tf.arg3().into(),
-            tf.arg4().into(),
+            tf.arg3() as _,
+            tf.arg4() as _,
             tf.arg5() as _,
         ),
         Sysno::get_robust_list => {
-            sys_get_robust_list(tf.arg0() as _, tf.arg1().into(), tf.arg2().into())
+            sys_get_robust_list(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _)
         }
-        Sysno::set_robust_list => sys_set_robust_list(tf.arg0().into(), tf.arg1() as _),
+        Sysno::set_robust_list => sys_set_robust_list(tf.arg0() as _, tf.arg1() as _),
 
         // sys
         Sysno::getuid => sys_getuid(),
@@ -478,21 +478,21 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
         Sysno::getegid => sys_getegid(),
         Sysno::setuid => sys_setuid(tf.arg0() as _),
         Sysno::setgid => sys_setgid(tf.arg0() as _),
-        Sysno::uname => sys_uname(tf.arg0().into()),
-        Sysno::sysinfo => sys_sysinfo(tf.arg0().into()),
-        Sysno::syslog => sys_syslog(tf.arg0() as _, tf.arg1().into(), tf.arg2() as _),
-        Sysno::getrandom => sys_getrandom(tf.arg0().into(), tf.arg1() as _, tf.arg2() as _),
+        Sysno::uname => sys_uname(tf.arg0() as _),
+        Sysno::sysinfo => sys_sysinfo(tf.arg0() as _),
+        Sysno::syslog => sys_syslog(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
+        Sysno::getrandom => sys_getrandom(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
 
         // sync
         Sysno::membarrier => sys_membarrier(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
 
         // time
-        Sysno::gettimeofday => sys_gettimeofday(tf.arg0().into()),
-        Sysno::times => sys_times(tf.arg0().into()),
-        Sysno::clock_gettime => sys_clock_gettime(tf.arg0() as _, tf.arg1().into()),
-        Sysno::clock_getres => sys_clock_getres(tf.arg0() as _, tf.arg1().into()),
-        Sysno::getitimer => sys_getitimer(tf.arg0() as _, tf.arg1().into()),
-        Sysno::setitimer => sys_setitimer(tf.arg0() as _, tf.arg1().into(), tf.arg2().into()),
+        Sysno::gettimeofday => sys_gettimeofday(tf.arg0() as _),
+        Sysno::times => sys_times(tf.arg0() as _),
+        Sysno::clock_gettime => sys_clock_gettime(tf.arg0() as _, tf.arg1() as _),
+        Sysno::clock_getres => sys_clock_getres(tf.arg0() as _, tf.arg1() as _),
+        Sysno::getitimer => sys_getitimer(tf.arg0() as _, tf.arg1() as _),
+        Sysno::setitimer => sys_setitimer(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
 
         // shm
         Sysno::shmget => sys_shmget(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),

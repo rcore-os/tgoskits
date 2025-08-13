@@ -19,7 +19,6 @@ use starry_core::vfs::{Device, DeviceOps, DirMapping, SimpleFs};
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::mm::UserPtr;
-
 const KEY_CNT: usize = EventType::Key.bits_count();
 
 struct Inner {

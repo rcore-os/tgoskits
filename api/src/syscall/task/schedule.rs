@@ -9,11 +9,9 @@ use linux_raw_sys::general::{
     SCHED_RR, TIMER_ABSTIME, timespec,
 };
 use starry_core::task::{get_process_data, get_process_group};
+use starry_vm::{VmMutPtr, VmPtr, vm_load, vm_write_slice};
 
-use crate::{
-    mm::{UserConstPtr, UserPtr, nullable},
-    time::TimeValueLike,
-};
+use crate::time::TimeValueLike;
 
 pub fn sys_sched_yield() -> LinuxResult<isize> {
     axtask::yield_now();
@@ -36,18 +34,17 @@ fn sleep_impl(clock: impl Fn() -> TimeValue, dur: TimeValue) -> TimeValue {
 }
 
 /// Sleep some nanoseconds
-pub fn sys_nanosleep(req: UserConstPtr<timespec>, rem: UserPtr<timespec>) -> LinuxResult<isize> {
-    let req = req.get_as_ref()?;
+pub fn sys_nanosleep(req: *const timespec, rem: *mut timespec) -> LinuxResult<isize> {
+    // FIXME: AnyBitPattern
+    let req = unsafe { req.vm_read_uninit()?.assume_init() }.try_into_time_value()?;
+    debug!("sys_nanosleep <= req: {:?}", req);
 
-    let dur = req.try_into_time_value()?;
-    debug!("sys_nanosleep <= req: {:?}", dur);
+    let actual = sleep_impl(axhal::time::monotonic_time, req);
 
-    let actual = sleep_impl(axhal::time::monotonic_time, dur);
-
-    if let Some(diff) = dur.checked_sub(actual) {
+    if let Some(diff) = req.checked_sub(actual) {
         debug!("sys_nanosleep => rem: {:?}", diff);
-        if let Some(rem) = nullable!(rem.get_as_mut())? {
-            *rem = timespec::from_time_value(diff);
+        if let Some(rem) = rem.nullable() {
+            rem.vm_write(timespec::from_time_value(diff))?;
         }
         Err(LinuxError::EINTR)
     } else {
@@ -58,8 +55,8 @@ pub fn sys_nanosleep(req: UserConstPtr<timespec>, rem: UserPtr<timespec>) -> Lin
 pub fn sys_clock_nanosleep(
     clock_id: __kernel_clockid_t,
     flags: u32,
-    req: UserConstPtr<timespec>,
-    rem: UserPtr<timespec>,
+    req: *const timespec,
+    rem: *mut timespec,
 ) -> LinuxResult<isize> {
     let clock = match clock_id as u32 {
         CLOCK_REALTIME => axhal::time::wall_time,
@@ -70,7 +67,7 @@ pub fn sys_clock_nanosleep(
         }
     };
 
-    let req = req.get_as_ref()?.try_into_time_value()?;
+    let req = unsafe { req.vm_read_uninit()?.assume_init() }.try_into_time_value()?;
     debug!(
         "sys_clock_nanosleep <= clock_id: {}, flags: {}, req: {:?}",
         clock_id, flags, req
@@ -86,8 +83,8 @@ pub fn sys_clock_nanosleep(
 
     if let Some(diff) = dur.checked_sub(actual) {
         debug!("sys_clock_nanosleep => rem: {:?}", diff);
-        if let Some(rem) = nullable!(rem.get_as_mut())? {
-            *rem = timespec::from_time_value(diff);
+        if let Some(rem) = rem.nullable() {
+            rem.vm_write(timespec::from_time_value(diff))?;
         }
         Err(LinuxError::EINTR)
     } else {
@@ -98,7 +95,7 @@ pub fn sys_clock_nanosleep(
 pub fn sys_sched_getaffinity(
     pid: i32,
     cpusetsize: usize,
-    user_mask: UserPtr<u8>,
+    user_mask: *mut u8,
 ) -> LinuxResult<isize> {
     if cpusetsize * 8 < axconfig::plat::CPU_NUM {
         return Err(LinuxError::EINVAL);
@@ -111,9 +108,8 @@ pub fn sys_sched_getaffinity(
 
     let mask = current().cpumask();
     let mask_bytes = mask.as_bytes();
-    user_mask
-        .get_as_mut_slice(mask_bytes.len())?
-        .copy_from_slice(mask_bytes);
+
+    vm_write_slice(user_mask, mask_bytes)?;
 
     Ok(mask_bytes.len() as _)
 }
@@ -121,10 +117,10 @@ pub fn sys_sched_getaffinity(
 pub fn sys_sched_setaffinity(
     _pid: i32,
     cpusetsize: usize,
-    user_mask: UserConstPtr<u8>,
+    user_mask: *const u8,
 ) -> LinuxResult<isize> {
     let size = cpusetsize.min(axconfig::plat::CPU_NUM.div_ceil(8));
-    let user_mask = user_mask.get_as_slice(size)?;
+    let user_mask = vm_load(user_mask, size)?;
     let mut cpu_mask = AxCpuMask::new();
 
     for i in 0..(size * 8).min(axconfig::plat::CPU_NUM) {
@@ -143,15 +139,11 @@ pub fn sys_sched_getscheduler(_pid: i32) -> LinuxResult<isize> {
     Ok(SCHED_RR as _)
 }
 
-pub fn sys_sched_setscheduler(
-    _pid: i32,
-    _policy: i32,
-    _param: UserConstPtr<()>,
-) -> LinuxResult<isize> {
+pub fn sys_sched_setscheduler(_pid: i32, _policy: i32, _param: *const ()) -> LinuxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_sched_getparam(_pid: i32, _param: UserPtr<()>) -> LinuxResult<isize> {
+pub fn sys_sched_getparam(_pid: i32, _param: *mut ()) -> LinuxResult<isize> {
     Ok(0)
 }
 
