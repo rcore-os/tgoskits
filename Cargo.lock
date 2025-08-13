@@ -278,12 +278,12 @@ dependencies = [
 [[package]]
 name = "axdriver_base"
 version = "0.1.2"
-source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=cfb3455#cfb3455593d1db1c132d3de4ad74d71707d1b461"
+source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=229dffb#229dffb2e9ec4db1b1a47110a6352a212f2ee52c"
 
 [[package]]
 name = "axdriver_block"
 version = "0.1.2"
-source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=cfb3455#cfb3455593d1db1c132d3de4ad74d71707d1b461"
+source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=229dffb#229dffb2e9ec4db1b1a47110a6352a212f2ee52c"
 dependencies = [
  "axdriver_base",
  "gpt_disk_io",
@@ -294,7 +294,7 @@ dependencies = [
 [[package]]
 name = "axdriver_display"
 version = "0.1.2"
-source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=cfb3455#cfb3455593d1db1c132d3de4ad74d71707d1b461"
+source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=229dffb#229dffb2e9ec4db1b1a47110a6352a212f2ee52c"
 dependencies = [
  "axdriver_base",
 ]
@@ -302,7 +302,7 @@ dependencies = [
 [[package]]
 name = "axdriver_input"
 version = "0.1.2"
-source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=cfb3455#cfb3455593d1db1c132d3de4ad74d71707d1b461"
+source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=229dffb#229dffb2e9ec4db1b1a47110a6352a212f2ee52c"
 dependencies = [
  "axdriver_base",
  "strum",
@@ -311,7 +311,7 @@ dependencies = [
 [[package]]
 name = "axdriver_net"
 version = "0.1.2"
-source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=cfb3455#cfb3455593d1db1c132d3de4ad74d71707d1b461"
+source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=229dffb#229dffb2e9ec4db1b1a47110a6352a212f2ee52c"
 dependencies = [
  "axdriver_base",
  "log",
@@ -321,7 +321,7 @@ dependencies = [
 [[package]]
 name = "axdriver_pci"
 version = "0.1.2"
-source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=cfb3455#cfb3455593d1db1c132d3de4ad74d71707d1b461"
+source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=229dffb#229dffb2e9ec4db1b1a47110a6352a212f2ee52c"
 dependencies = [
  "virtio-drivers",
 ]
@@ -329,7 +329,7 @@ dependencies = [
 [[package]]
 name = "axdriver_virtio"
 version = "0.1.2"
-source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=cfb3455#cfb3455593d1db1c132d3de4ad74d71707d1b461"
+source = "git+https://github.com/Starry-Mix-THU/axdriver_crates.git?rev=229dffb#229dffb2e9ec4db1b1a47110a6352a212f2ee52c"
 dependencies = [
  "axdriver_base",
  "axdriver_block",
@@ -394,7 +394,7 @@ dependencies = [
 [[package]]
 name = "axfs-ng-vfs"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axfs-ng-vfs.git?rev=1b63bc7#1b63bc734e769baec93373d14c0d41344dc53ad1"
+source = "git+https://github.com/Starry-Mix-THU/axfs-ng-vfs.git?rev=8a549b7#8a549b73c6e97e658f2fe77b102d2ccc40d71fb8"
 dependencies = [
  "axerrno",
  "axio",
@@ -415,6 +415,7 @@ dependencies = [
  "axalloc",
  "axconfig",
  "axcpu",
+ "axio",
  "axlog",
  "axplat",
  "axplat-aarch64-qemu-virt",
@@ -424,6 +425,7 @@ dependencies = [
  "cfg-if",
  "heapless",
  "kernel_guard",
+ "kspin",
  "lazyinit",
  "linkme",
  "log",
@@ -445,7 +447,7 @@ dependencies = [
 [[package]]
 name = "axio"
 version = "0.1.1"
-source = "git+https://github.com/Starry-Mix-THU/axio.git?rev=a069a3d#a069a3d4b0b7e2daa7d13908d9238958699b1a31"
+source = "git+https://github.com/Starry-Mix-THU/axio.git?rev=098eb64#098eb64d19979e64a36281cb0f26a07caef1728c"
 dependencies = [
  "axerrno",
  "bitflags 2.9.1",
@@ -514,14 +516,12 @@ dependencies = [
 [[package]]
 name = "axplat"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c86cdb48cf1fbd432f4326ab0852b696ac49442b0ea0aed3401cb0bbe370a19f"
+source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=799fb62#799fb628bddc1ff0a50341ef9d8d4262f6eb7e52"
 dependencies = [
  "axplat-macros",
  "bitflags 2.9.1",
  "const-str",
  "crate_interface",
- "handler_table",
  "kspin",
  "memory_addr",
 ]
@@ -562,7 +562,7 @@ dependencies = [
 [[package]]
 name = "axplat-loongarch64-qemu-virt"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=1b9388#1b9388c3d4c919e035e28611a6e5f9ac6deb04fe"
+source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=799fb62#799fb628bddc1ff0a50341ef9d8d4262f6eb7e52"
 dependencies = [
  "axconfig-macros",
  "axcpu",
@@ -590,12 +590,14 @@ dependencies = [
 [[package]]
 name = "axplat-riscv64-qemu-virt"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=1b9388#1b9388c3d4c919e035e28611a6e5f9ac6deb04fe"
+source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=799fb62#799fb628bddc1ff0a50341ef9d8d4262f6eb7e52"
 dependencies = [
  "axconfig-macros",
  "axcpu",
  "axplat",
+ "lazyinit",
  "log",
+ "plic",
  "riscv",
  "riscv_goldfish",
  "sbi-rt",
@@ -604,12 +606,14 @@ dependencies = [
 [[package]]
 name = "axplat-riscv64-visionfive2"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axplat-riscv64-visionfive2.git?rev=4b5bd86#4b5bd86f2c7096bbed736fcac302983a9216b761"
+source = "git+https://github.com/Starry-Mix-THU/axplat-riscv64-visionfive2.git?rev=785a139#785a139c7b3fc04d5ac43628649359652c04a4a6"
 dependencies = [
  "axconfig-macros",
  "axcpu",
  "axplat",
+ "lazyinit",
  "log",
+ "plic",
  "riscv",
  "sbi-rt",
 ]
@@ -1265,12 +1269,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "handler_table"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "702cb690200d6303c1e1992bc648f3f3bf9c1d6a27fcf50551c513d61f339c99"
-
-[[package]]
 name = "hash32"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1719,6 +1717,11 @@ name = "pin-utils"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
+
+[[package]]
+name = "plic"
+version = "0.1.0"
+source = "git+https://github.com/os-module/plic?rev=1a71425#1a714257a15595612ba74b83062481ef31c68c34"
 
 [[package]]
 name = "portable-atomic"

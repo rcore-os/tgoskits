@@ -44,8 +44,8 @@ axtask = { path = "arceos/modules/axtask", features = ["task-ext"] }
 
 axbacktrace = { git = "https://github.com/Starry-Mix-THU/axbacktrace.git", rev = "322f6da" }
 axerrno = { git = "https://github.com/Starry-Mix-THU/axerrno.git", rev = "f5d8f86" }
-axfs-ng-vfs = { git = "https://github.com/Starry-Mix-THU/axfs-ng-vfs.git", rev = "1b63bc7" }
-axio = { git = "https://github.com/Starry-Mix-THU/axio.git", rev = "a069a3d" }
+axfs-ng-vfs = { git = "https://github.com/Starry-Mix-THU/axfs-ng-vfs.git", rev = "8a549b7" }
+axio = { git = "https://github.com/Starry-Mix-THU/axio.git", rev = "098eb64" }
 starry-process = { git = "https://github.com/Starry-Mix-THU/starry-process.git", rev = "7e78f22" }
 starry-signal = { git = "https://github.com/Starry-Mix-THU/starry-signal.git", rev = "504ad00" }
 starry-vm = { git = "https://github.com/Starry-Mix-THU/starry-vm.git", rev = "f89fdbd" }
@@ -127,15 +127,16 @@ starry-signal.workspace = true
 
 [dependencies.axplat-riscv64-visionfive2]
 git = "https://github.com/Starry-Mix-THU/axplat-riscv64-visionfive2.git"
-rev = "4b5bd86"
+rev = "785a139"
 features = ["irq"]
 optional = true
 
 [patch.crates-io]
 axcpu = { git = "https://github.com/Starry-Mix-THU/axcpu.git", rev = "e62544b" }
 axerrno = { git = "https://github.com/Starry-Mix-THU/axerrno.git", rev = "f5d8f86" }
-axplat-riscv64-qemu-virt = { git = "https://github.com/Starry-Mix-THU/axplat_crates.git", rev = "1b9388" }
-axplat-loongarch64-qemu-virt = { git = "https://github.com/Starry-Mix-THU/axplat_crates.git", rev = "1b9388" }
+axplat = { git = "https://github.com/Starry-Mix-THU/axplat_crates.git", rev = "799fb62" }
+axplat-riscv64-qemu-virt = { git = "https://github.com/Starry-Mix-THU/axplat_crates.git", rev = "799fb62" }
+axplat-loongarch64-qemu-virt = { git = "https://github.com/Starry-Mix-THU/axplat_crates.git", rev = "799fb62" }
 page_table_entry = { git = "https://github.com/Starry-Mix-THU/page_table_multiarch.git", rev = "4edb821" }
 page_table_multiarch = { git = "https://github.com/Starry-Mix-THU/page_table_multiarch.git", rev = "4edb821" }
 
