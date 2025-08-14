@@ -4,7 +4,7 @@ use axerrno::{LinuxError, LinuxResult};
 use axtask::current;
 use linux_raw_sys::{
     general::{__user_cap_data_struct, __user_cap_header_struct},
-    prctl::{PR_GET_NAME, PR_SET_NAME},
+    prctl::{PR_GET_NAME, PR_MCE_KILL, PR_SET_NAME, PR_SET_SECCOMP},
 };
 use starry_core::task::{AsThread, get_process_data};
 use starry_vm::{VmMutPtr, VmPtr, vm_write_slice};
@@ -101,6 +101,8 @@ pub fn sys_prctl(
             buf[..len].copy_from_slice(&name.as_bytes()[..len]);
             vm_write_slice(arg2 as _, &buf)?;
         }
+        PR_SET_SECCOMP => {}
+        PR_MCE_KILL => {}
         _ => {
             warn!("sys_prctl: unsupported option {}", option);
             return Err(LinuxError::EINVAL);
