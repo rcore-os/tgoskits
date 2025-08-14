@@ -133,7 +133,7 @@ optional = true
 
 [patch.crates-io]
 axbacktrace = { git = "https://github.com/Starry-Mix-THU/axbacktrace.git", rev = "322f6da" }
-axcpu = { git = "https://github.com/Starry-Mix-THU/axcpu.git", rev = "bc08547" }
+axcpu = { git = "https://github.com/Starry-Mix-THU/axcpu.git", rev = "7357d66" }
 axerrno = { git = "https://github.com/Starry-Mix-THU/axerrno.git", rev = "f5d8f86" }
 axplat = { git = "https://github.com/Starry-Mix-THU/axplat_crates.git", rev = "93dfeb6" }
 axplat-riscv64-qemu-virt = { git = "https://github.com/Starry-Mix-THU/axplat_crates.git", rev = "93dfeb6" }

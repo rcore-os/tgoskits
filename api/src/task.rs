@@ -51,7 +51,14 @@ pub fn new_user_task(
                         handle_user_page_fault(&thr.proc_data, addr, flags)
                     }
                     ReturnReason::Interrupt => {}
-                    ReturnReason::Exception(ExceptionInfo { .. }) => {
+                    ReturnReason::IllegalInstruction => {
+                        send_signal_to_process(
+                            thr.proc_data.proc.pid(),
+                            Some(SignalInfo::new_kernel(Signo::SIGILL)),
+                        )
+                        .expect("Failed to send SIGILL");
+                    }
+                    ReturnReason::Breakpoint | ReturnReason::Exception(ExceptionInfo { .. }) => {
                         // TODO: detailed handling
                         send_signal_to_process(
                             thr.proc_data.proc.pid(),
