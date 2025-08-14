@@ -6,171 +6,254 @@ use axaddrspace::{
 #[allow(unused_imports)] // used in doc
 use super::AxArchVCpu;
 
-/// The result of [`AxArchVCpu::run`].
-/// Can we reference or directly reuse content from [kvm-ioctls](https://github.com/rust-vmm/kvm-ioctls/blob/main/src/ioctls/vcpu.rs) ?
+/// Reasons for VM-Exits returned by [AxArchVCpu::run].
+///
+/// When a guest virtual CPU executes, various conditions can cause control to be
+/// transferred back to the hypervisor. This enum represents all possible exit reasons
+/// that can occur during VCpu execution.
+///
+/// # VM Exit Categories
+///
+/// - **I/O Operations**: MMIO reads/writes, port I/O, system register access
+/// - **System Events**: Hypercalls, interrupts, nested page faults
+/// - **Power Management**: CPU power state changes, system shutdown
+/// - **Multiprocessing**: IPI sending, secondary CPU bring-up
+/// - **Error Conditions**: Entry failures, invalid states
+///
+/// # Compatibility Note
+///
+/// This enum draws inspiration from [kvm-ioctls](https://github.com/rust-vmm/kvm-ioctls/blob/main/src/ioctls/vcpu.rs)
+/// for consistency with existing virtualization frameworks.
 #[non_exhaustive]
 #[derive(Debug)]
 pub enum AxVCpuExitReason {
-    /// The instruction executed by the vcpu performs a hypercall.
+    /// A guest instruction triggered a hypercall to the hypervisor.
+    ///
+    /// Hypercalls are a mechanism for the guest OS to request services from
+    /// the hypervisor, similar to system calls in a traditional OS.
     Hypercall {
-        /// The hypercall number.
+        /// The hypercall number identifying the requested service
         nr: u64,
-        /// The arguments for the hypercall.
+        /// Arguments passed to the hypercall (up to 6 parameters)
         args: [u64; 6],
     },
-    /// The instruction executed by the vcpu performs a MMIO read operation.
+
+    /// The guest performed a Memory-Mapped I/O (MMIO) read operation.
+    ///
+    /// MMIO reads occur when the guest accesses device registers or other
+    /// hardware-mapped memory regions that require hypervisor emulation.
     MmioRead {
-        /// The physical address of the MMIO read.
+        /// Guest physical address being read from
         addr: GuestPhysAddr,
-        /// The width of the MMIO read.
+        /// Width/size of the memory access (8, 16, 32, or 64 bits)
         width: AccessWidth,
-        /// The index of reg to be read
+        /// Index of the guest register that will receive the read value
         reg: usize,
-        /// The width of the reg to be read
+        /// Width of the destination register  
         reg_width: AccessWidth,
-        /// Sign-extend the read value if true.
+        /// Whether to sign-extend the read value to fill the register
         signed_ext: bool,
     },
-    /// The instruction executed by the vcpu performs a MMIO write operation.
+
+    /// The guest performed a Memory-Mapped I/O (MMIO) write operation.
+    ///
+    /// MMIO writes occur when the guest writes to device registers or other
+    /// hardware-mapped memory regions that require hypervisor emulation.
     MmioWrite {
-        /// The physical address of the MMIO write.
+        /// Guest physical address being written to
         addr: GuestPhysAddr,
-        /// The width of the MMIO write.
+        /// Width/size of the memory access (8, 16, 32, or 64 bits)
         width: AccessWidth,
-        /// The data to be written.
+        /// Data being written to the memory location
         data: u64,
     },
-    /// The instruction executed by the vcpu performs a system register read operation.
+
+    /// The guest performed a system register read operation.
     ///
-    /// System register here refers `MSR`s in x86, `CSR`s in RISC-V, and `System registers` in Aarch64.
+    /// System registers are architecture-specific control and status registers:
+    /// - **x86_64**: Model-Specific Registers (MSRs)
+    /// - **RISC-V**: Control and Status Registers (CSRs)
+    /// - **AArch64**: System registers accessible via MRS instruction
     SysRegRead {
-        /// The address of the system register to be read.
+        /// Address/identifier of the system register being read
         ///
-        /// Under x86_64 and RISC-V, this field is the address.
-        ///
-        /// Under Aarch64, this field follows the ESR_EL2.ISS format: `<op0><op2><op1><CRn>00000<CRm>0`,
-        /// which is consistent with the numbering scheme in the `aarch64_sysreg` crate.
+        /// - **x86_64/RISC-V**: Direct register address
+        /// - **AArch64**: ESR_EL2.ISS format (`<op0><op2><op1><CRn>00000<CRm>0`)
+        ///   compatible with the `aarch64_sysreg` crate numbering scheme
         addr: SysRegAddr,
-        /// The index of the GPR (general purpose register) where the value should be stored.
+        /// Index of the guest register that will receive the read value
         ///
-        /// Note that in x86_64, the destination register is always `[edx:eax]`, so this field is unused.
+        /// **Note**: Unused on x86_64 where the result is always stored in `[edx:eax]`
         reg: usize,
     },
-    /// The instruction executed by the vcpu performs a system register write operation.
+
+    /// The guest performed a system register write operation.
     ///
-    /// System register here refers `MSR`s in x86, `CSR`s in RISC-V, and `System registers` in Aarch64.
+    /// System registers are architecture-specific control and status registers:
+    /// - **x86_64**: Model-Specific Registers (MSRs)
+    /// - **RISC-V**: Control and Status Registers (CSRs)
+    /// - **AArch64**: System registers accessible via MSR instruction  
     SysRegWrite {
-        /// The address of the system register to be written.
+        /// Address/identifier of the system register being written
         ///
-        /// Under x86_64 and RISC-V, this field is the address.
-        ///
-        /// Under Aarch64, this field follows the ESR_EL2.ISS format: `<op0><op2><op1><CRn>00000<CRm>0`,
-        /// which is consistent with the numbering scheme in the `aarch64_sysreg` crate.
+        /// - **x86_64/RISC-V**: Direct register address
+        /// - **AArch64**: ESR_EL2.ISS format (`<op0><op2><op1><CRn>00000<CRm>0`)
+        ///   compatible with the `aarch64_sysreg` crate numbering scheme
         addr: SysRegAddr,
-        /// Data to be written.
+        /// Data being written to the system register
         value: u64,
     },
-    /// The instruction executed by the vcpu performs a I/O read operation.
+
+    /// The guest performed a port-based I/O read operation.
     ///
-    /// It's unnecessary to specify the destination register because it's always `al`, `ax`, or `eax` (as port-I/O exists only in x86).
+    /// **Architecture**: x86-specific (other architectures don't have port I/O)
+    ///
+    /// The destination register is implicitly `al`/`ax`/`eax` based on the access width.
     IoRead {
-        /// The port number of the I/O read.
+        /// I/O port number being read from
         port: Port,
-        /// The width of the I/O read.
+        /// Width of the I/O access (8, 16, or 32 bits)
         width: AccessWidth,
     },
-    /// The instruction executed by the vcpu performs a I/O write operation.
+
+    /// The guest performed a port-based I/O write operation.
     ///
-    /// It's unnecessary to specify the source register because it's always `al`, `ax`, or `eax` (as port-I/O exists only in x86).
+    /// **Architecture**: x86-specific (other architectures don't have port I/O)
+    ///
+    /// The source register is implicitly `al`/`ax`/`eax` based on the access width.
     IoWrite {
-        /// The port number of the I/O write.
+        /// I/O port number being written to
         port: Port,
-        /// The width of the I/O write.
+        /// Width of the I/O access (8, 16, or 32 bits)
         width: AccessWidth,
-        /// The data to be written.
+        /// Data being written to the I/O port
         data: u64,
     },
-    /// An external interrupt happened.
+
+    /// An external interrupt was delivered to the VCpu.
     ///
-    /// Note that fields may be added in the future, use `..` to handle them.
+    /// This represents hardware interrupts from external devices that need
+    /// to be processed by the guest or hypervisor.
+    ///
+    /// **Note**: This enum may be extended with additional fields in the future.
+    /// Use `..` in pattern matching to ensure forward compatibility.
     ExternalInterrupt {
-        /// The interrupt vector.
+        /// Hardware interrupt vector number
         vector: u64,
     },
-    /// A nested page fault happened. (EPT violation in x86)
+
+    /// A nested page fault occurred during guest memory access.
     ///
-    /// Note that fields may be added in the future, use `..` to handle them.
+    /// Also known as EPT violations on x86. These faults occur when:
+    /// - Guest accesses unmapped memory regions
+    /// - Access permissions are violated (e.g., writing to read-only pages)
+    /// - Page table entries need to be populated or updated
+    ///
+    /// **Note**: This enum may be extended with additional fields in the future.
+    /// Use `..` in pattern matching to ensure forward compatibility.
     NestedPageFault {
-        /// The guest physical address of the fault.
+        /// Guest physical address that caused the fault
         addr: GuestPhysAddr,
-        /// The access flags of the fault.
+        /// Type of access that was attempted (read/write/execute)
         access_flags: MappingFlags,
     },
-    /// The vcpu is halted.
-    Halt,
-    /// Try to bring up a secondary CPU.
+
+    /// The guest VCpu has executed a halt instruction and is now idle.
     ///
-    /// This is used to notify the hypervisor that the target vcpu
-    /// is powered on and ready to run, generally used in the boot process
-    /// of a multi-core VM.
-    /// This VM exit reason is architecture-specific, may be triggered by
-    /// * a PSCI call in ARM
-    /// * a SIPI in x86
-    /// * a sbi call in RISC-V
+    /// This typically occurs when the guest OS has no work to do and is
+    /// waiting for interrupts or other events to wake it up.
+    Halt,
+
+    /// Request to bring up a secondary CPU core.
+    ///
+    /// This exit reason is used during the multi-core VM boot process when
+    /// the primary CPU requests that a secondary CPU be started. The specific
+    /// mechanism varies by architecture:
+    ///
+    /// - **ARM**: PSCI (Power State Coordination Interface) calls
+    /// - **x86**: SIPI (Startup Inter-Processor Interrupt)
+    /// - **RISC-V**: SBI (Supervisor Binary Interface) calls
     CpuUp {
-        /// The target vcpu id that is to be started.
-        /// * for aarch64, it contains the affinity fields of the MPIDR register,
-        /// * for x86_64, it contains the APIC ID of the secondary CPU,
-        /// * for RISC-V, it contains the hartid of the secondary CPU.
+        /// Target CPU identifier to be started
+        ///
+        /// Format varies by architecture:
+        /// - **AArch64**: MPIDR register affinity fields  
+        /// - **x86_64**: APIC ID of the target CPU
+        /// - **RISC-V**: Hart ID of the target CPU
         target_cpu: u64,
-        /// Runtime-specified physical address of the secondary CPU's entry point, where the vcpu can start executing.
+        /// Guest physical address where the secondary CPU should begin execution
         entry_point: GuestPhysAddr,
-        /// This argument passed as the first argument to the secondary CPU's.
-        /// * for aarch64, it is the `arg` value that will be set in the `x0` register when the vcpu starts executing at `entry_point`.
-        /// * for RISC-V, it will be set in the `a1` register when the hart starts executing at `entry_point`, and the `a0` register will be set to the hartid.
-        /// * for x86_64, it is currently unused.
+        /// Argument to pass to the secondary CPU
+        ///
+        /// - **AArch64**: Value to set in `x0` register at startup
+        /// - **RISC-V**: Value to set in `a1` register (`a0` gets the hartid)
+        /// - **x86_64**: Currently unused
         arg: u64,
     },
-    /// The vcpu is powered off.
+
+    /// The guest VCpu has been powered down.
     ///
-    /// This vcpu may be resumed later.
+    /// This indicates the VCpu has executed a power-down instruction or
+    /// hypercall and should be suspended. The VCpu may be resumed later.
     CpuDown {
-        /// Currently unused.
-        /// Maybe used for `PSCI_POWER_STATE` in the future.
+        /// Power state information (currently unused)
+        ///
+        /// Reserved for future use with PSCI_POWER_STATE or similar mechanisms
         _state: u64,
     },
-    /// The system should be powered off.
+
+    /// The guest has requested system-wide shutdown.
     ///
-    /// This is used to notify the hypervisor that the whole system should be powered off.
+    /// This indicates the entire virtual machine should be powered off,
+    /// not just the current VCpu.
     SystemDown,
-    /// Nothing special happened, the vcpu has handled the exit itself.
+
+    /// No special handling required - the VCpu handled the exit internally.
     ///
-    /// This exists to allow the caller to have a chance to check virtual devices/physical devices/virtual interrupts.
+    /// This provides an opportunity for the hypervisor to:
+    /// - Check virtual device states
+    /// - Process pending interrupts  
+    /// - Handle background tasks
+    /// - Perform scheduling decisions
+    ///
+    /// The VCpu can typically be resumed immediately after these checks.
     Nothing,
-    /// Something bad happened during VM entry, the vcpu could not be run due to unknown reasons.
-    /// Further architecture-specific information is available in hardware_entry_failure_reason.
-    /// Corresponds to `KVM_EXIT_FAIL_ENTRY`.
+
+    /// VM entry failed due to invalid VCpu state or configuration.
+    ///
+    /// This corresponds to `KVM_EXIT_FAIL_ENTRY` in KVM and indicates that
+    /// the hardware virtualization layer could not successfully enter the guest.
+    ///
+    /// The failure reason contains architecture-specific diagnostic information.
     FailEntry {
-        /// Architecture related VM entry failure reasons.
+        /// Hardware-specific failure reason code
+        ///
+        /// Interpretation depends on the underlying virtualization technology
+        /// and CPU architecture. Consult architecture documentation for details.
         hardware_entry_failure_reason: u64,
     },
-    /// The vcpu is trying to send an Inter-Processor Interrupt (IPI) to another CPU.
+
+    /// The guest is attempting to send an Inter-Processor Interrupt (IPI).
     ///
-    /// This does not include SIPI, which is handled by [`AxVCpuExitReason::CpuUp`].
+    /// IPIs are used for inter-CPU communication in multi-core systems.
+    /// This does **not** include Startup IPIs (SIPI), which are handled
+    /// by the [`AxVCpuExitReason::CpuUp`] variant.
     SendIPI {
-        /// The target CPU to send the IPI to. Invalid if any of `send_to_all` or `send_to_self` is
-        /// true.
-        target_cpu: u64,
-        /// The auxiliary field for the target CPU list. Used currently only in aarch64.
+        /// Target CPU identifier to receive the IPI
         ///
-        /// In aarch64, `target_cpu` contains Aff3.Aff2.Aff1.0, while this field contains a bitmask
-        /// specifying the Aff0 values of the target CPUs.
+        /// This field is invalid if `send_to_all` or `send_to_self` is true.
+        target_cpu: u64,
+        /// Auxiliary field for complex target CPU specifications
+        ///
+        /// Currently used only on AArch64 where:
+        /// - `target_cpu` contains `Aff3.Aff2.Aff1.0`
+        /// - `target_cpu_aux` contains a bitmask for `Aff0` values
         target_cpu_aux: u64,
-        /// Specifies whether the IPI should be sent to all CPUs except the current one.
+        /// Whether to broadcast the IPI to all CPUs except the sender
         send_to_all: bool,
-        /// Specifies whether the IPI should be sent to the current CPU.
+        /// Whether to send the IPI to the current CPU (self-IPI)
         send_to_self: bool,
-        /// The IPI vector to be sent.
+        /// IPI vector/interrupt number to deliver
         vector: u64,
     },
 }

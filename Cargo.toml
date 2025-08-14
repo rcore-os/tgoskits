@@ -3,11 +3,16 @@ name = "axvcpu"
 authors = ["aarkegz <aarkegz@gmail.com>"]
 version = "0.1.0"
 edition = "2024"
+categories = ["Virtualization", "no-std"]
+description = "Virtual CPU abstraction for ArceOS hypervisor"
+repository = "https://github.com/arceos-hypervisor/axvcpu"
+keywords = ["vcpu", "hypervisor", "arceos"]
+license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0" # MulanPubL2 is not included in SPDX
 
 [dependencies]
 axerrno = "0.1.0"
 memory_addr = "0.4"
 percpu = "0.2.0"
 
-axaddrspace = { git = "https://github.com/arceos-hypervisor/axaddrspace.git" }
-axvisor_api = { git = "https://github.com/arceos-hypervisor/axvisor_api.git" }
+axaddrspace = "=0.1.0"
+axvisor_api = "=0.1.0"
