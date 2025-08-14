@@ -55,13 +55,10 @@ impl ThreadSignalManager {
     /// Dequeues a signal from the thread's pending signals.
     #[must_use]
     pub fn dequeue_signal(&self, mask: &SignalSet) -> Option<SignalInfo> {
-        match self.pending.lock().dequeue_signal(mask) {
-            Some(sig) => return Some(sig),
-            None => {
-                self.possibly_has_signal.store(false, Ordering::Release);
-            }
-        }
-        self.proc.dequeue_signal(mask)
+        self.pending
+            .lock()
+            .dequeue_signal(mask)
+            .or_else(|| self.proc.dequeue_signal(mask))
     }
 
     pub fn process(&self) -> &Arc<ProcessSignalManager> {
@@ -163,7 +160,13 @@ impl ThreadSignalManager {
         drop(blocked);
 
         loop {
-            let sig = self.dequeue_signal(&mask)?;
+            let sig = match self.pending.lock().dequeue_signal(&mask) {
+                Some(sig) => Some(sig),
+                None => {
+                    self.possibly_has_signal.store(false, Ordering::Release);
+                    self.proc.dequeue_signal(&mask)
+                }
+            }?;
             let action = &actions[sig.signo()];
             if let Some(os_action) = self.handle_signal(tf, restore_blocked, &sig, action) {
                 break Some((sig, os_action));
