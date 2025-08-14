@@ -261,6 +261,11 @@ pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> LinuxResult<isize>
     let Some(permission_flags) = MmapProt::from_bits(prot) else {
         return Err(LinuxError::EINVAL);
     };
+    debug!(
+        "sys_mprotect <= addr: {:#x}, length: {:x}, prot: {:?}",
+        addr, length, permission_flags
+    );
+
     if permission_flags.contains(MmapProt::GROWDOWN | MmapProt::GROWSUP) {
         return Err(LinuxError::EINVAL);
     }
