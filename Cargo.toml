@@ -22,8 +22,9 @@ linux-raw-sys = { version = "0.9.3", default-features = false, features = [
     "no_std",
 ] }
 log = "0.4"
-starry-vm = { git = "https://github.com/Starry-Mix-THU/starry-vm.git", rev = "e86cbc0" }
+starry-vm = "0.1"
 strum = { version = "0.27.1", default-features = false, features = ["derive"] }
 
 [patch.crates-io]
 axcpu = { git = "https://github.com/Starry-Mix-THU/axcpu.git" }
+starry-vm = { git = "https://github.com/Starry-Mix-THU/starry-vm.git" }
