@@ -16,7 +16,7 @@ use starry_core::task::{
 };
 use starry_process::Pid;
 use starry_signal::{SignalInfo, SignalSet, SignalStack, Signo};
-use starry_vm::{VmMutPtr, VmPtr, vm_load};
+use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
     signal::{block_next_signal, check_signals},
