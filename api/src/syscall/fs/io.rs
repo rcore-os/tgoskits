@@ -1,4 +1,6 @@
 use alloc::{sync::Arc, vec};
+use axtask::current;
+use syscalls::Sysno;
 use core::{
     ffi::{c_char, c_int},
     task::Context,
@@ -44,8 +46,13 @@ impl Pollable for DummyFd {
     fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
 }
 
-pub fn sys_dummy_fd() -> LinuxResult<isize> {
-    warn!("Dummy fd created");
+pub fn sys_dummy_fd(sysno: Sysno) -> LinuxResult<isize> {
+    if current().name().starts_with("qemu-") {
+        // We need to be honest to qemu, since it can automatically fallback to
+        // other strategies.
+        return Err(LinuxError::ENOSYS);
+    }
+    warn!("Dummy fd created: {sysno}");
     DummyFd.add_to_fd_table(false).map(|fd| fd as isize)
 }
 

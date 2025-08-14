@@ -570,7 +570,7 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
         | Sysno::bpf
         | Sysno::fsopen
         | Sysno::fspick
-        | Sysno::open_tree => sys_dummy_fd(),
+        | Sysno::open_tree => sys_dummy_fd(sysno),
 
         _ => {
             warn!("Unimplemented syscall: {}", sysno);
