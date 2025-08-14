@@ -310,7 +310,6 @@ pub fn sys_sigaltstack(ss: *const SignalStack, old_ss: *mut SignalStack) -> Linu
         if ss.size <= MINSIGSTKSZ as usize {
             return Err(LinuxError::ENOMEM);
         }
-        vm_load(ss.sp as *const u8, ss.size)?;
         sig.set_stack(ss);
     }
     Ok(0)
