@@ -78,9 +78,6 @@ pub struct ThreadInner {
     /// context switches, which is exclusive to the current thread.
     pub time: AssumeSync<RefCell<TimeManager>>,
 
-    /// The bitset used for futex operations (FUTEX_{WAIT,WAKE}_BITSET).
-    futex_bitset: AtomicU32,
-
     /// The OOM score adjustment value.
     oom_score_adj: AtomicI32,
 
@@ -97,7 +94,6 @@ impl ThreadInner {
             clear_child_tid: AtomicUsize::new(0),
             robust_list_head: AtomicUsize::new(0),
             time: AssumeSync(RefCell::new(TimeManager::new())),
-            futex_bitset: AtomicU32::new(0),
             oom_score_adj: AtomicI32::new(200),
             exit: AtomicBool::new(false),
         }
@@ -123,16 +119,6 @@ impl ThreadInner {
     pub fn set_robust_list_head(&self, robust_list_head: usize) {
         self.robust_list_head
             .store(robust_list_head, Ordering::SeqCst);
-    }
-
-    /// Get the futex bitset.
-    pub fn futex_bitset(&self) -> u32 {
-        self.futex_bitset.load(Ordering::SeqCst)
-    }
-
-    /// Set the futex bitset.
-    pub fn set_futex_bitset(&self, bitset: u32) {
-        self.futex_bitset.store(bitset, Ordering::SeqCst);
     }
 
     /// Get the oom score adjustment value.

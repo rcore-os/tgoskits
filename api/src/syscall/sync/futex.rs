@@ -45,10 +45,8 @@ pub fn sys_futex(
     let command = futex_op & (FUTEX_CMD_MASK as u32);
     match command {
         FUTEX_WAIT | FUTEX_WAIT_BITSET => {
-            let uvalue = uaddr.vm_read()?;
-
             // Fast path
-            if uvalue != value {
+            if uaddr.vm_read()? != value {
                 return Err(LinuxError::EAGAIN);
             }
 
@@ -60,37 +58,18 @@ pub fn sys_futex(
                 None
             };
 
-            // This function is called with the lock to run queue being held by
-            // us, and thus we need to check FOR ONCE if the value has changed.
-            // If so, we shall skip waiting and return EAGAIN; otherwise, we
-            // return false to start waiting and return true for subsequent
-            // calls.
-            let mut first_call = true;
-            let mut mismatches = false;
-            let condition = || {
-                if first_call {
-                    mismatches = uvalue != value;
-                    first_call = false;
-                    mismatches
-                } else {
-                    true
-                }
-            };
-
             let futex = futex_table.get_or_insert(&key);
 
-            if command == FUTEX_WAIT_BITSET {
-                thr.set_futex_bitset(value3);
-            }
-
-            if let Some(timeout) = timeout {
-                if futex.wq.wait_timeout_until(timeout, condition) {
-                    return Err(LinuxError::ETIMEDOUT);
-                }
+            let bitset = if command == FUTEX_WAIT_BITSET {
+                value3
             } else {
-                futex.wq.wait_until(condition);
-            }
-            if mismatches {
+                u32::MAX
+            };
+
+            if !futex
+                .wq
+                .wait_if(bitset, timeout, || uaddr.vm_read() == Ok(value))?
+            {
                 return Err(LinuxError::EAGAIN);
             }
 
@@ -104,23 +83,15 @@ pub fn sys_futex(
             let futex = futex_table.get(&key);
             let mut count = 0;
             if let Some(futex) = futex {
-                futex.wq.notify_all_if(false, |task| {
-                    if count >= value {
-                        false
-                    } else {
-                        let wake = if command == FUTEX_WAKE_BITSET {
-                            let bitset = task.as_thread().futex_bitset();
-                            (bitset & value3) != 0
-                        } else {
-                            true
-                        };
-                        count += wake as u32;
-                        wake
-                    }
-                });
+                let bitset = if command == FUTEX_WAKE_BITSET {
+                    value3
+                } else {
+                    u32::MAX
+                };
+                count = futex.wq.wake(value as _, bitset);
             }
             axtask::yield_now();
-            Ok(count as isize)
+            Ok(count as _)
         }
         FUTEX_REQUEUE | FUTEX_CMP_REQUEUE => {
             assert_unsigned(value)?;
@@ -136,17 +107,12 @@ pub fn sys_futex(
 
             let mut count = 0;
             if let Some(futex) = futex {
-                for _ in 0..value {
-                    if !futex.wq.notify_one(false) {
-                        break;
-                    }
-                    count += 1;
-                }
-                if count == value as isize {
-                    count += futex.wq.requeue(value2 as usize, &futex2.wq) as isize;
+                count = futex.wq.wake(value as _, u32::MAX);
+                if count == value as usize {
+                    count += futex.wq.requeue(value2 as _, &futex2.wq) as usize;
                 }
             }
-            Ok(count)
+            Ok(count as _)
         }
         _ => Err(LinuxError::ENOSYS),
     }

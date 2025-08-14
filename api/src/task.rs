@@ -103,7 +103,7 @@ fn handle_futex_death(entry: *mut robust_list, offset: i64) -> LinuxResult<()> {
         return Ok(());
     };
     futex.owner_dead.store(true, Ordering::SeqCst);
-    futex.wq.notify_one(false);
+    futex.wq.wake(1, u32::MAX);
     Ok(())
 }
 
@@ -147,7 +147,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         let table = thr.proc_data.futex_table_for(&key);
         let guard = table.get(&key);
         if let Some(futex) = guard {
-            futex.wq.notify_one(false);
+            futex.wq.wake(1, u32::MAX);
         }
         axtask::yield_now();
     }
@@ -161,7 +161,6 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     let process = &thr.proc_data.proc;
     if process.exit_thread(curr.id().as_u64() as Pid, exit_code) {
         process.exit();
-        warn!("PROC EXIT");
         if let Some(parent) = process.parent() {
             if let Some(signo) = thr.proc_data.exit_signal {
                 let _ = send_signal_to_process(parent.pid(), Some(SignalInfo::new_kernel(signo)));
@@ -173,8 +172,6 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         thr.proc_data.exit_event.wake();
 
         SHM_MANAGER.lock().clear_proc_shm(process.pid());
-    } else {
-        warn!("LEFT THREADS {:?}", process.threads());
     }
     if group_exit && !process.is_group_exited() {
         process.group_exit();

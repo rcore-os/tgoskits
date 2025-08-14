@@ -1,18 +1,113 @@
 //! Futex implementation.
 
-use alloc::sync::{Arc, Weak};
-use core::{ops::Deref, sync::atomic::AtomicBool};
+use alloc::{
+    collections::vec_deque::VecDeque,
+    sync::{Arc, Weak},
+    vec::Vec,
+};
+use core::{
+    future::poll_fn,
+    ops::Deref,
+    sync::atomic::AtomicBool,
+    task::{Poll, Waker},
+    time::Duration,
+};
 
+use axerrno::{LinuxError, LinuxResult};
 use axmm::{
     AddrSpace,
     backend::{Backend, SharedPages},
 };
 use axsync::Mutex;
-use axtask::{WaitQueue, current};
+use axtask::{
+    current,
+    future::{block_on_interruptible, timeout_opt},
+};
+use futures::FutureExt;
 use hashbrown::HashMap;
+use kspin::SpinNoIrq;
 use memory_addr::VirtAddr;
 
 use crate::task::AsThread;
+
+/// Wait queue used by futex.
+#[derive(Default)]
+pub struct WaitQueue {
+    queue: SpinNoIrq<VecDeque<(Waker, u32)>>,
+}
+impl WaitQueue {
+    /// Creates a new `WaitQueue`.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Waits if the given condition is met.
+    ///
+    /// Returns `false` if the condition is not met and no actual waiting
+    /// occurs.
+    pub fn wait_if(
+        &self,
+        bitset: u32,
+        timeout: Option<Duration>,
+        condition: impl FnOnce() -> bool,
+    ) -> LinuxResult<bool> {
+        let mut condition = Some(condition);
+        block_on_interruptible(
+            timeout_opt(
+                poll_fn(|cx| {
+                    if let Some(cond) = condition.take() {
+                        let mut queue = self.queue.lock();
+                        if !cond() {
+                            Poll::Ready(Ok(false))
+                        } else {
+                            queue.push_back((cx.waker().clone(), bitset));
+                            Poll::Pending
+                        }
+                    } else {
+                        Poll::Ready(Ok(true))
+                    }
+                }),
+                timeout,
+            )
+            .map(|opt| opt.ok_or(LinuxError::ETIMEDOUT)?),
+        )
+    }
+
+    /// Wakes up at most `count` tasks whose bitset intersects with the given
+    /// bitmask.
+    pub fn wake(&self, count: usize, mask: u32) -> usize {
+        let mut woke = 0;
+        self.queue.lock().retain(|(waker, bitset)| {
+            if woke >= count || (bitset & mask) == 0 {
+                true
+            } else {
+                waker.wake_by_ref();
+                woke += 1;
+                false
+            }
+        });
+        woke
+    }
+
+    /// Checks if the wait queue is empty.
+    pub fn is_empty(&self) -> bool {
+        self.queue.lock().is_empty()
+    }
+
+    /// Requeue at most `count` tasks to the target wait queue.
+    pub fn requeue(&self, mut count: usize, target: &WaitQueue) -> usize {
+        let tasks: Vec<_> = {
+            let mut wq = self.queue.lock();
+            count = count.min(wq.len());
+            wq.drain(..count).collect()
+        };
+        if !tasks.is_empty() {
+            let mut wq = target.queue.lock();
+            wq.extend(tasks);
+        }
+        count
+    }
+}
 
 /// A key that uniquely identifies a futex in the system.
 pub enum FutexKey {
