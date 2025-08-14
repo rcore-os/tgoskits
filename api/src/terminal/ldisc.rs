@@ -1,6 +1,7 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::{
     future::poll_fn,
+    ops::Range,
     sync::atomic::{AtomicBool, Ordering},
     task::{Context, Poll, Waker},
 };
@@ -32,8 +33,10 @@ struct InputReader {
 
     buf_tx: CachingProd<ReadBuf>,
     read_buf: [u8; BUF_SIZE],
+    read_range: Range<usize>,
 
     line_buf: Vec<u8>,
+    line_read: Option<usize>,
     clear_line_buf: Arc<AtomicBool>,
 }
 impl InputReader {
@@ -41,11 +44,31 @@ impl InputReader {
         if self.clear_line_buf.swap(false, Ordering::Relaxed) {
             self.line_buf.clear();
         }
-        let max_read = self.buf_tx.vacant_len().min(BUF_SIZE);
-        let read = axhal::console::read_bytes(&mut self.read_buf[..max_read]);
+        if self.read_range.is_empty() {
+            let read = axhal::console::read_bytes(&mut self.read_buf);
+            self.read_range = 0..read;
+        }
         let term = self.termios.lock().clone();
         let mut sent = 0;
-        for mut ch in self.read_buf[..read].iter().copied() {
+        loop {
+            if let Some(offset) = &mut self.line_read {
+                let read = self.buf_tx.push_slice(&self.line_buf[*offset..]);
+                if read == 0 {
+                    break;
+                }
+                sent += read;
+                *offset += read;
+                if *offset == self.line_buf.len() {
+                    self.line_read = None;
+                }
+                continue;
+            }
+            if self.buf_tx.is_full() || self.read_range.is_empty() {
+                break;
+            }
+            let mut ch = self.read_buf[self.read_range.start];
+            self.read_range.start += 1;
+
             if ch == b'\r' {
                 if term.has_iflag(IGNCR) {
                     continue;
@@ -80,10 +103,9 @@ impl InputReader {
                 if ch != term.special_char(VEOF) {
                     self.line_buf.push(ch);
                 }
-                let len = self.buf_tx.push_slice(&self.line_buf);
-                assert_eq!(len, self.line_buf.len());
-                sent += len;
-                self.line_buf.clear();
+                if !self.line_buf.is_empty() {
+                    self.line_read = Some(0);
+                }
                 continue;
             }
 
@@ -168,8 +190,10 @@ impl LineDiscipline {
 
             buf_tx,
             read_buf: [0; BUF_SIZE],
+            read_range: 0..0,
 
             line_buf: Vec::new(),
+            line_read: None,
             clear_line_buf: clear_line_buf.clone(),
         };
         let reader = if let Some(irq) = axhal::console::enable_rx_interrupt() {
