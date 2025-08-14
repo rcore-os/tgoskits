@@ -417,7 +417,7 @@ dependencies = [
  "axcpu",
  "axio",
  "axlog",
- "axplat",
+ "axplat 0.1.0 (git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=93dfeb6)",
  "axplat-aarch64-qemu-virt",
  "axplat-loongarch64-qemu-virt",
  "axplat-riscv64-qemu-virt",
@@ -527,6 +527,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "axplat"
+version = "0.1.0"
+source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=93dfeb6#93dfeb61d848fa902b12e2cc20e9cd0d14710cf9"
+dependencies = [
+ "axplat-macros",
+ "bitflags 2.9.1",
+ "const-str",
+ "crate_interface",
+ "kspin",
+ "memory_addr",
+]
+
+[[package]]
 name = "axplat-aarch64-peripherals"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -537,7 +550,7 @@ dependencies = [
  "arm_pl011",
  "arm_pl031",
  "axcpu",
- "axplat",
+ "axplat 0.1.0 (git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=93dfeb6)",
  "int_ratio",
  "kspin",
  "lazyinit",
@@ -553,7 +566,7 @@ checksum = "6d5d75b950e70a6548b8537aecded7ccafdd3ec639057c4c7c7d6d05b09d0e4d"
 dependencies = [
  "axconfig-macros",
  "axcpu",
- "axplat",
+ "axplat 0.1.0 (git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=93dfeb6)",
  "axplat-aarch64-peripherals",
  "log",
  "page_table_entry",
@@ -562,11 +575,11 @@ dependencies = [
 [[package]]
 name = "axplat-loongarch64-qemu-virt"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=799fb62#799fb628bddc1ff0a50341ef9d8d4262f6eb7e52"
+source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=93dfeb6#93dfeb61d848fa902b12e2cc20e9cd0d14710cf9"
 dependencies = [
  "axconfig-macros",
  "axcpu",
- "axplat",
+ "axplat 0.1.0 (git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=93dfeb6)",
  "chrono",
  "kspin",
  "lazyinit",
@@ -590,13 +603,15 @@ dependencies = [
 [[package]]
 name = "axplat-riscv64-qemu-virt"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=799fb62#799fb628bddc1ff0a50341ef9d8d4262f6eb7e52"
+source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=93dfeb6#93dfeb61d848fa902b12e2cc20e9cd0d14710cf9"
 dependencies = [
  "axconfig-macros",
  "axcpu",
- "axplat",
+ "axplat 0.1.0 (git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=93dfeb6)",
+ "kspin",
  "lazyinit",
  "log",
+ "ns16550a",
  "plic",
  "riscv",
  "riscv_goldfish",
@@ -610,7 +625,7 @@ source = "git+https://github.com/Starry-Mix-THU/axplat-riscv64-visionfive2.git?r
 dependencies = [
  "axconfig-macros",
  "axcpu",
- "axplat",
+ "axplat 0.1.0 (git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=799fb62)",
  "lazyinit",
  "log",
  "plic",
@@ -626,7 +641,7 @@ checksum = "05b1b3bee47e2965347b943c86adb1a65555d90e4d5e6271fe99489957520590"
 dependencies = [
  "axconfig-macros",
  "axcpu",
- "axplat",
+ "axplat 0.1.0 (git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=93dfeb6)",
  "bitflags 2.9.1",
  "heapless",
  "int_ratio",
@@ -659,7 +674,7 @@ dependencies = [
  "axlog",
  "axmm",
  "axnet",
- "axplat",
+ "axplat 0.1.0 (git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=93dfeb6)",
  "axsync",
  "axtask",
  "chrono",

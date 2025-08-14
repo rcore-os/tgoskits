@@ -1,8 +1,9 @@
 use alloc::sync::{Arc, Weak};
+use core::task::Context;
 
 use axerrno::{LinuxResult, bail};
-use axtask::{current, future::block_on};
-use event_listener::{Event, listener};
+use axio::{IoEvents, PollSet, Pollable};
+use axtask::current;
 use kspin::SpinNoIrq;
 use starry_core::task::AsThread;
 use starry_process::{ProcessGroup, Session};
@@ -10,7 +11,7 @@ use starry_process::{ProcessGroup, Session};
 pub struct JobControl {
     foreground: SpinNoIrq<Weak<ProcessGroup>>,
     session: SpinNoIrq<Weak<Session>>,
-    fg_event: Event,
+    poll_fg: PollSet,
 }
 
 impl Default for JobControl {
@@ -24,7 +25,7 @@ impl JobControl {
         Self {
             foreground: SpinNoIrq::new(Weak::new()),
             session: SpinNoIrq::new(Weak::new()),
-            fg_event: Event::new(),
+            poll_fg: PollSet::new(),
         }
     }
 
@@ -33,15 +34,6 @@ impl JobControl {
             .lock()
             .upgrade()
             .is_none_or(|pg| Arc::ptr_eq(&current().as_thread().proc_data.proc.group(), &pg))
-    }
-
-    pub fn wait_until_foreground(&self) {
-        block_on(async {
-            while !self.current_in_foreground() {
-                listener!(self.fg_event => listener);
-                listener.await;
-            }
-        })
     }
 
     pub fn foreground(&self) -> Option<Arc<ProcessGroup>> {
@@ -64,7 +56,7 @@ impl JobControl {
 
         *guard = weak;
         drop(guard);
-        self.fg_event.notify(usize::MAX);
+        self.poll_fg.wake();
         Ok(())
     }
 
@@ -72,5 +64,19 @@ impl JobControl {
         let mut guard = self.session.lock();
         assert!(guard.upgrade().is_none());
         *guard = Arc::downgrade(session);
+    }
+}
+
+impl Pollable for JobControl {
+    fn poll(&self) -> IoEvents {
+        let mut events = IoEvents::empty();
+        events.set(IoEvents::IN, self.current_in_foreground());
+        events
+    }
+
+    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        if events.contains(IoEvents::IN) {
+            self.poll_fg.register(context.waker());
+        }
     }
 }

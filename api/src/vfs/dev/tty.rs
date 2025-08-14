@@ -1,15 +1,11 @@
 use alloc::sync::Arc;
-use axfs_ng_vfs::NodeFlags;
-use core::{
-    any::Any,
-    ops::{Deref, DerefMut},
-    task::Context,
-};
+use core::{any::Any, ops::Deref, task::Context};
 
 use axerrno::{LinuxError, LinuxResult};
+use axfs_ng_vfs::NodeFlags;
 use axio::{IoEvents, Pollable};
 use axsync::Mutex;
-use axtask::current;
+use axtask::{current, future::Poller};
 use bytemuck::AnyBitPattern;
 use lazy_static::lazy_static;
 use starry_core::task::AsThread;
@@ -76,8 +72,13 @@ lazy_static! {
 
 impl DeviceOps for Tty {
     fn read_at(&self, buf: &mut [u8], _offset: u64) -> LinuxResult<usize> {
-        self.job_control.wait_until_foreground();
-        self.ldisc.lock().read(buf)
+        Poller::new(self.job_control.as_ref(), IoEvents::IN).poll(|| {
+            if self.job_control.current_in_foreground() {
+                self.ldisc.lock().read(buf)
+            } else {
+                Err(LinuxError::EAGAIN)
+            }
+        })
     }
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> LinuxResult<usize> {
@@ -89,15 +90,16 @@ impl DeviceOps for Tty {
         use linux_raw_sys::ioctl::*;
         match cmd {
             TCGETS => {
-                (arg as *mut Termios).vm_write(*self.ldisc.lock().termios.deref())?;
+                (arg as *mut Termios)
+                    .vm_write(*self.ldisc.lock().termios.lock().as_ref().deref())?;
             }
             TCGETS2 => {
-                (arg as *mut Termios2).vm_write(self.ldisc.lock().termios)?;
+                (arg as *mut Termios2).vm_write(*self.ldisc.lock().termios.lock().as_ref())?;
             }
             TCSETS | TCSETSF | TCSETSW => {
                 // TODO: drain output?
                 let mut ldisc = self.ldisc.lock();
-                *ldisc.termios.deref_mut() = (arg as *const Termios).vm_read()?;
+                *ldisc.termios.lock() = Arc::new(Termios2::new((arg as *const Termios).vm_read()?));
                 if cmd == TCSETSF {
                     ldisc.drain_input();
                 }
@@ -105,7 +107,7 @@ impl DeviceOps for Tty {
             TCSETS2 | TCSETSF2 | TCSETSW2 => {
                 // TODO: drain output?
                 let mut ldisc = self.ldisc.lock();
-                ldisc.termios = (arg as *const Termios2).vm_read()?;
+                *ldisc.termios.lock() = Arc::new((arg as *const Termios2).vm_read()?);
                 if cmd == TCSETSF2 {
                     ldisc.drain_input();
                 }
@@ -146,14 +148,17 @@ impl DeviceOps for Tty {
 
 impl Pollable for Tty {
     fn poll(&self) -> IoEvents {
-        let mut events = IoEvents::OUT;
-        events.set(IoEvents::IN, self.ldisc.lock().can_read());
+        let mut events = IoEvents::OUT | self.job_control.poll();
+        if events.contains(IoEvents::IN) {
+            events.set(IoEvents::IN, self.ldisc.lock().poll_read());
+        }
         events
     }
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        self.job_control.register(context, events);
         if events.contains(IoEvents::IN) {
-            context.waker().wake_by_ref();
+            self.ldisc.lock().register_rx_waker(context.waker());
         }
     }
 }

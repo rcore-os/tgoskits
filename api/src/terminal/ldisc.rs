@@ -1,111 +1,42 @@
 use alloc::{sync::Arc, vec::Vec};
-use core::ops::Range;
+use core::{
+    future::poll_fn,
+    task::{Context, Poll, Waker},
+};
 
 use axerrno::{LinuxError, LinuxResult};
+use axhal::irq::register_irq_waker;
+use axio::{IoEvents, PollSet, Pollable};
+use axtask::future::{Poller, block_on};
+use kspin::SpinNoPreempt;
 use linux_raw_sys::general::{
     ECHOCTL, ECHOK, ICRNL, IGNCR, ISIG, VEOF, VERASE, VKILL, VMIN, VTIME,
+};
+use ringbuf::{
+    CachingCons, CachingProd,
+    traits::{Consumer, Observer, Producer, Split},
 };
 use starry_core::task::send_signal_to_process_group;
 use starry_signal::SignalInfo;
 
 use crate::terminal::{job::JobControl, termios::Termios2};
 
-pub struct LineDiscipline {
-    pub termios: Termios2,
+type ReadBuf = Arc<ringbuf::StaticRb<u8, 80>>;
+
+struct InputReader {
+    termios: Arc<SpinNoPreempt<Arc<Termios2>>>,
     job_control: Arc<JobControl>,
 
-    read_buf: [u8; 80],
-    read_range: Range<usize>,
+    buf_tx: CachingProd<ReadBuf>,
 
     line_buf: Vec<u8>,
-    line_read: Option<usize>,
 }
-
-impl LineDiscipline {
-    pub fn new(job_control: Arc<JobControl>) -> Self {
-        Self {
-            termios: Termios2::default(),
-            job_control,
-            read_buf: [0; 80],
-            read_range: 0..0,
-            line_buf: Vec::new(),
-            line_read: None,
-        }
-    }
-
-    pub fn drain_input(&mut self) {
-        self.read_range = 0..0;
-        self.line_buf.clear();
-        self.line_read = None;
-    }
-
-    pub fn read(&mut self, buf: &mut [u8]) -> LinuxResult<usize> {
-        if self.termios.canonical() {
-            loop {
-                let read = self.poll_read(buf)?;
-                if read > 0 {
-                    return Ok(read);
-                }
-                axtask::yield_now();
-            }
-        }
-        let vmin = self.termios.special_char(VMIN);
-        let vtime = self.termios.special_char(VTIME);
-        if vtime > 0 {
-            todo!();
-        }
-
-        if buf.len() < vmin as usize {
-            return Err(LinuxError::EAGAIN);
-        }
-        let mut total_read = 0;
-        loop {
-            let read = self.poll_read(&mut buf[total_read..])?;
-            total_read += read;
-            if total_read >= vmin as usize {
-                return Ok(total_read);
-            }
-            axtask::yield_now();
-        }
-    }
-
-    pub fn can_read(&mut self) -> bool {
-        if self.line_read.is_some() {
-            return true;
-        }
-        if self.read_range.is_empty() {
-            let read = axhal::console::read_bytes(&mut self.read_buf);
-            if read == 0 {
-                return false;
-            }
-            self.read_range = 0..read;
-        }
-        true
-    }
-
-    pub fn poll_read(&mut self, buf: &mut [u8]) -> LinuxResult<usize> {
-        let mut read = 0;
-        while read < buf.len() {
-            if let Some(start) = &mut self.line_read {
-                let dest = &mut buf[read..];
-                let len = dest.len().min(self.line_buf.len() - *start);
-                dest[..len].copy_from_slice(&self.line_buf[*start..*start + len]);
-                read += len;
-                *start += len;
-                if *start == self.line_buf.len() {
-                    self.line_read = None;
-                    self.line_buf.clear();
-                }
-                continue;
-            }
-            if !self.can_read() {
-                break;
-            }
-            let term = &self.termios;
-
-            let mut ch = self.read_buf[self.read_range.start];
-            self.read_range.start += 1;
-
+impl InputReader {
+    pub fn poll(&mut self) -> bool {
+        let mut buf = [0; 16];
+        let read = axhal::console::read_bytes(&mut buf);
+        let term = self.termios.lock().clone();
+        for mut ch in buf[..read].iter().copied() {
             if ch == b'\r' {
                 if term.has_iflag(IGNCR) {
                     continue;
@@ -115,14 +46,13 @@ impl LineDiscipline {
                 }
             }
 
-            self.check_send_signal(ch)?;
+            self.check_send_signal(&term, ch);
 
             if term.echo() {
-                self.output_char(ch);
+                self.output_char(&term, ch);
             }
             if !term.canonical() {
-                buf[read] = ch;
-                read += 1;
+                let _ = self.buf_tx.try_push(ch);
                 continue;
             }
 
@@ -140,7 +70,8 @@ impl LineDiscipline {
                 if ch != term.special_char(VEOF) {
                     self.line_buf.push(ch);
                 }
-                self.line_read = Some(0);
+                self.buf_tx.push_slice(&self.line_buf);
+                self.line_buf.clear();
                 continue;
             }
 
@@ -148,40 +79,157 @@ impl LineDiscipline {
                 self.line_buf.push(ch);
                 continue;
             }
-
-            warn!("Ignored char: {:#x}", ch);
         }
 
-        Ok(read)
+        !self.buf_tx.is_empty()
     }
 
-    fn check_send_signal(&self, ch: u8) -> LinuxResult<()> {
-        if !self.termios.canonical() || !self.termios.has_lflag(ISIG) {
-            return Ok(());
+    fn check_send_signal(&self, term: &Termios2, ch: u8) {
+        if !term.canonical() || !term.has_lflag(ISIG) {
+            return;
         }
-        if let Some(signo) = self.termios.signo_for(ch)
+        if let Some(signo) = term.signo_for(ch)
             && let Some(pg) = self.job_control.foreground()
         {
             let sig = SignalInfo::new_kernel(signo);
-            send_signal_to_process_group(pg.pgid(), Some(sig))?;
+            if let Err(err) = send_signal_to_process_group(pg.pgid(), Some(sig)) {
+                warn!("Failed to send signal: {err:?}");
+            }
         }
-
-        Ok(())
     }
 
-    fn output_char(&self, ch: u8) {
+    fn output_char(&self, term: &Termios2, ch: u8) {
         use axhal::console::write_bytes;
         match ch {
             b'\n' => write_bytes(b"\n"),
             b'\r' => write_bytes(b"\r\n"),
-            ch if ch == self.termios.special_char(VERASE) => write_bytes(b"\x08 \x08"),
+            ch if ch == term.special_char(VERASE) => write_bytes(b"\x08 \x08"),
             ch if ch.is_ascii_graphic() => write_bytes(&[ch]),
-            ch if ch.is_ascii_control() && self.termios.has_lflag(ECHOCTL) => {
+            ch if ch.is_ascii_control() && term.has_lflag(ECHOCTL) => {
                 write_bytes(&[b'^', (ch + 0x40)]);
             }
             other => {
                 warn!("Ignored echo char: {:#x}", other);
             }
         }
+    }
+}
+
+pub struct LineDiscipline {
+    pub termios: Arc<SpinNoPreempt<Arc<Termios2>>>,
+    buf_rx: CachingCons<ReadBuf>,
+    /// The read part of the line discipline.
+    ///
+    /// This could either be:
+    /// - `Ok(reader)`: The input is driven by polling
+    /// - `Err(poll)`: The input is driven by external interrupt
+    reader: Result<InputReader, Arc<PollSet>>,
+}
+
+struct WaitPollable<'a>(Option<&'a Arc<PollSet>>);
+impl Pollable for WaitPollable<'_> {
+    fn poll(&self) -> IoEvents {
+        unreachable!()
+    }
+
+    fn register(&self, context: &mut Context<'_>, _events: IoEvents) {
+        if let Some(set) = self.0 {
+            set.register(context.waker());
+        } else {
+            context.waker().wake_by_ref();
+        }
+    }
+}
+
+impl LineDiscipline {
+    pub fn new(job_control: Arc<JobControl>) -> Self {
+        let termios = Arc::<SpinNoPreempt<Arc<Termios2>>>::default();
+        let (buf_tx, buf_rx) = ReadBuf::default().split();
+
+        let mut reader = InputReader {
+            termios: termios.clone(),
+            job_control: job_control.clone(),
+            buf_tx,
+            line_buf: Vec::new(),
+        };
+        let reader = if let Some(irq) = axhal::console::enable_rx_interrupt() {
+            let poll_rx = Arc::new(PollSet::new());
+            axtask::spawn({
+                let poll_rx = poll_rx.clone();
+                move || {
+                    block_on(poll_fn(|cx| {
+                        while reader.poll() {
+                            poll_rx.wake();
+                        }
+                        register_irq_waker(irq as _, cx.waker());
+                        while reader.poll() {
+                            poll_rx.wake();
+                        }
+                        Poll::Pending
+                    }))
+                }
+            });
+            Err(poll_rx)
+        } else {
+            Ok(reader)
+        };
+        Self {
+            termios,
+            buf_rx,
+            reader,
+        }
+    }
+
+    pub fn drain_input(&mut self) {
+        self.buf_rx.clear();
+        // TODO: drain line_buf as well
+    }
+
+    pub fn poll_read(&mut self) -> bool {
+        if let Ok(reader) = &mut self.reader {
+            reader.poll();
+        }
+        !self.buf_rx.is_empty()
+    }
+
+    pub fn register_rx_waker(&self, waker: &Waker) {
+        match &self.reader {
+            Ok(_) => {
+                waker.wake_by_ref();
+            }
+            Err(set) => {
+                set.register(waker);
+            }
+        }
+    }
+
+    pub fn read(&mut self, buf: &mut [u8]) -> LinuxResult<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        let term = self.termios.lock().clone();
+        let vmin = if term.canonical() {
+            1
+        } else {
+            let vtime = term.special_char(VTIME);
+            if vtime > 0 {
+                todo!();
+            }
+            term.special_char(VMIN) as usize
+        };
+
+        if buf.len() < vmin as usize {
+            return Err(LinuxError::EAGAIN);
+        }
+
+        let mut total_read = 0;
+        let pollable = WaitPollable(self.reader.as_ref().err());
+        Poller::new(&pollable, IoEvents::IN).poll(|| {
+            total_read += self.buf_rx.pop_slice(&mut buf[total_read..]);
+            (total_read >= vmin)
+                .then_some(total_read)
+                .ok_or(LinuxError::EAGAIN)
+        })
     }
 }

@@ -2,9 +2,7 @@ use core::ops::{Deref, DerefMut};
 
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::{
-    B38400, CREAD, CS8, ECHO, ECHOCTL, ECHOE, ECHOK, ECHOKE, ICANON, ICRNL, IEXTEN, ISIG, IXON,
-    ONLCR, OPOST, VDISCARD, VEOF, VEOL, VEOL2, VERASE, VINTR, VKILL, VLNEXT, VQUIT, VREPRINT,
-    VWERASE, speed_t, tcflag_t,
+    speed_t, tcflag_t, B38400, CREAD, CS8, ECHO, ECHOCTL, ECHOE, ECHOK, ECHOKE, ICANON, ICRNL, IEXTEN, ISIG, IXON, ONLCR, OPOST, VDISCARD, VEOF, VEOL, VEOL2, VERASE, VINTR, VKILL, VLNEXT, VQUIT, VREPRINT, VWERASE
 };
 use starry_signal::Signo;
 
@@ -117,7 +115,11 @@ pub struct Termios2 {
 
 impl Default for Termios2 {
     fn default() -> Self {
-        let termios = Termios::default();
+        Self::new(Termios::default())
+    }
+}
+impl Termios2 {
+    pub fn new(termios: Termios) -> Self {
         Self {
             termios,
             c_ispeed: B38400,
