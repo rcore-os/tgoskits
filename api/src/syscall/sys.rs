@@ -10,6 +10,8 @@ use linux_raw_sys::{
 use starry_core::task::processes;
 use starry_vm::{VmMutPtr, vm_write_slice};
 
+use crate::mm::UserPtr;
+
 pub fn sys_getuid() -> LinuxResult<isize> {
     Ok(0)
 }
@@ -106,4 +108,9 @@ pub fn sys_getrandom(buf: *mut u8, len: usize, flags: u32) -> LinuxResult<isize>
     vm_write_slice(buf, &kbuf)?;
 
     Ok(len as _)
+}
+
+pub fn sys_seccomp(_op: u32, _flags: u32, _args: UserPtr<()>) -> LinuxResult<isize> {
+    info!("Dummy sys_seccomp called");
+    Ok(0)
 }

@@ -45,6 +45,7 @@ impl Pollable for DummyFd {
 }
 
 pub fn sys_dummy_fd() -> LinuxResult<isize> {
+    warn!("Dummy fd created");
     DummyFd.add_to_fd_table(false).map(|fd| fd as isize)
 }
 
