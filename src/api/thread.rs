@@ -209,7 +209,9 @@ impl ThreadSignalManager {
     }
 
     /// Sets the blocked signals. Return the old value.
-    pub fn set_blocked(&self, set: SignalSet) -> SignalSet {
+    pub fn set_blocked(&self, mut set: SignalSet) -> SignalSet {
+        set.remove(Signo::SIGKILL);
+        set.remove(Signo::SIGSTOP);
         self.possibly_has_signal.store(true, Ordering::Release);
         let mut guard = self.blocked.lock();
         let old = *guard;
