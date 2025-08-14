@@ -295,6 +295,6 @@ fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
 }
 
 pub fn vm_load_string(ptr: *const c_char) -> LinuxResult<String> {
-    let bytes = vm_load_c_string(ptr)?;
+    let bytes = vm_load_c_string(ptr.cast())?;
     bytes.into_string().map_err(|_| LinuxError::EILSEQ)
 }
