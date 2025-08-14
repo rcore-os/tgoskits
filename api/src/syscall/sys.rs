@@ -114,3 +114,9 @@ pub fn sys_seccomp(_op: u32, _flags: u32, _args: UserPtr<()>) -> LinuxResult<isi
     info!("Dummy sys_seccomp called");
     Ok(0)
 }
+
+#[cfg(target_arch = "riscv64")]
+pub fn sys_riscv_flush_icache() -> LinuxResult<isize> {
+    riscv::asm::fence_i();
+    Ok(0)
+}
