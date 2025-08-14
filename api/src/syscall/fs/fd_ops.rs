@@ -15,10 +15,9 @@ use starry_core::task::AsThread;
 
 use crate::{
     file::{
-        Directory, FD_TABLE, File, FileLike, Pipe, add_file_like, close_file_like, get_file_like,
-        with_fs,
+        add_file_like, close_file_like, get_file_like, with_fs, Directory, File, FileLike, Pipe, FD_TABLE
     },
-    mm::vm_load_string,
+    mm::{vm_load_string, UserPtr},
     syscall::sys::{sys_getegid, sys_geteuid},
 };
 
@@ -213,7 +212,13 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> LinuxResult<isize> {
     match cmd as u32 {
         F_DUPFD => dup_fd(fd, false),
         F_DUPFD_CLOEXEC => dup_fd(fd, true),
-        F_SETLK | F_SETLKW | F_GETLK => Ok(0),
+        F_SETLK | F_SETLKW  => Ok(0),
+        F_OFD_SETLK | F_OFD_SETLKW  => Ok(0),
+        F_GETLK | F_OFD_GETLK => {
+            let arg = UserPtr::<flock64>::from(arg);
+            arg.get_as_mut()?.l_type = F_UNLCK as _;
+            Ok(0)
+        }
         F_SETFL => {
             get_file_like(fd)?.set_nonblocking(arg & (O_NONBLOCK as usize) > 0)?;
             Ok(0)
