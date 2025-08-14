@@ -110,7 +110,7 @@ impl From<SignalAction> for kernel_sigaction {
         }
         #[cfg(sa_restorer)]
         {
-            result.sa_restorer = self.restorer;
+            result.sa_restorer = value.restorer;
         }
 
         result
