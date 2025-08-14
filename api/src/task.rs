@@ -1,6 +1,6 @@
 use core::sync::atomic::Ordering;
 
-use axcpu::uspace::ExceptionInfo;
+use axcpu::trap::{ExceptionInfoExt, ExceptionKind};
 use axerrno::{LinuxError, LinuxResult};
 use axhal::uspace::{ReturnReason, UserContext};
 use axtask::{TaskInner, current};
@@ -51,18 +51,17 @@ pub fn new_user_task(
                         handle_user_page_fault(&thr.proc_data, addr, flags)
                     }
                     ReturnReason::Interrupt => {}
-                    ReturnReason::IllegalInstruction => {
-                        send_signal_to_process(
-                            thr.proc_data.proc.pid(),
-                            Some(SignalInfo::new_kernel(Signo::SIGILL)),
-                        )
-                        .expect("Failed to send SIGILL");
-                    }
-                    ReturnReason::Breakpoint | ReturnReason::Exception(ExceptionInfo { .. }) => {
+                    ReturnReason::Exception(exc_info) => {
                         // TODO: detailed handling
+                        let signo = match exc_info.kind() {
+                            ExceptionKind::Breakpoint => Signo::SIGTRAP,
+                            ExceptionKind::IllegalInstruction => Signo::SIGILL,
+                            ExceptionKind::Misaligned => Signo::SIGBUS,
+                            _ => Signo::SIGTRAP,
+                        };
                         send_signal_to_process(
                             thr.proc_data.proc.pid(),
-                            Some(SignalInfo::new_kernel(Signo::SIGTRAP)),
+                            Some(SignalInfo::new_kernel(signo)),
                         )
                         .expect("Failed to send SIGTRAP");
                     }
@@ -162,6 +161,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     let process = &thr.proc_data.proc;
     if process.exit_thread(curr.id().as_u64() as Pid, exit_code) {
         process.exit();
+        warn!("PROC EXIT");
         if let Some(parent) = process.parent() {
             if let Some(signo) = thr.proc_data.exit_signal {
                 let _ = send_signal_to_process(parent.pid(), Some(SignalInfo::new_kernel(signo)));
@@ -173,6 +173,8 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         thr.proc_data.exit_event.wake();
 
         SHM_MANAGER.lock().clear_proc_shm(process.pid());
+    } else {
+        warn!("LEFT THREADS {:?}", process.threads());
     }
     if group_exit && !process.is_group_exited() {
         process.group_exit();

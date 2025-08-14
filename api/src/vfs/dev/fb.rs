@@ -93,7 +93,10 @@ pub struct FrameBuffer {
 }
 impl FrameBuffer {
     pub fn new() -> Self {
-        axtask::spawn(|| axtask::future::block_on(refresh_task()));
+        axtask::spawn(
+            || axtask::future::block_on(refresh_task()),
+            "fb-refresh".into(),
+        );
         let info = axdisplay::main_display().info();
         Self {
             base: VirtAddr::from(info.fb_base_vaddr),

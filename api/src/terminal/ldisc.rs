@@ -44,6 +44,7 @@ impl InputReader {
         let max_read = self.buf_tx.vacant_len().min(BUF_SIZE);
         let read = axhal::console::read_bytes(&mut self.read_buf[..max_read]);
         let term = self.termios.lock().clone();
+        let mut sent = 0;
         for mut ch in self.read_buf[..read].iter().copied() {
             if ch == b'\r' {
                 if term.has_iflag(IGNCR) {
@@ -61,6 +62,7 @@ impl InputReader {
             }
             if !term.canonical() {
                 self.buf_tx.try_push(ch).unwrap();
+                sent += 1;
                 continue;
             }
 
@@ -80,6 +82,7 @@ impl InputReader {
                 }
                 let len = self.buf_tx.push_slice(&self.line_buf);
                 assert_eq!(len, self.line_buf.len());
+                sent += len;
                 self.line_buf.clear();
                 continue;
             }
@@ -90,7 +93,7 @@ impl InputReader {
             }
         }
 
-        !self.buf_tx.is_empty()
+        sent > 0
     }
 
     fn check_send_signal(&self, term: &Termios2, ch: u8) {
@@ -171,23 +174,26 @@ impl LineDiscipline {
         };
         let reader = if let Some(irq) = axhal::console::enable_rx_interrupt() {
             let poll_rx = Arc::new(PollSet::new());
-            axtask::spawn({
-                let poll_rx = poll_rx.clone();
-                let poll_tx = poll_tx.clone();
-                move || {
-                    block_on(poll_fn(|cx| {
-                        while reader.poll() {
-                            poll_rx.wake();
-                        }
-                        poll_tx.register(cx.waker());
-                        register_irq_waker(irq as _, cx.waker());
-                        while reader.poll() {
-                            poll_rx.wake();
-                        }
-                        Poll::Pending
-                    }))
-                }
-            });
+            axtask::spawn(
+                {
+                    let poll_rx = poll_rx.clone();
+                    let poll_tx = poll_tx.clone();
+                    move || {
+                        block_on(poll_fn(|cx| {
+                            while reader.poll() {
+                                poll_rx.wake();
+                            }
+                            poll_tx.register(cx.waker());
+                            register_irq_waker(irq as _, cx.waker());
+                            while reader.poll() {
+                                poll_rx.wake();
+                            }
+                            Poll::Pending
+                        }))
+                    }
+                },
+                "tty-reader".into(),
+            );
             Err(poll_rx)
         } else {
             Ok(reader)
