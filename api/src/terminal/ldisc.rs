@@ -1,6 +1,7 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::{
     future::poll_fn,
+    sync::atomic::{AtomicBool, Ordering},
     task::{Context, Poll, Waker},
 };
 
@@ -30,9 +31,13 @@ struct InputReader {
     buf_tx: CachingProd<ReadBuf>,
 
     line_buf: Vec<u8>,
+    clear_line_buf: Arc<AtomicBool>,
 }
 impl InputReader {
     pub fn poll(&mut self) -> bool {
+        if self.clear_line_buf.swap(false, Ordering::Relaxed) {
+            self.line_buf.clear();
+        }
         let mut buf = [0; 16];
         let read = axhal::console::read_bytes(&mut buf);
         let term = self.termios.lock().clone();
@@ -118,6 +123,7 @@ impl InputReader {
 pub struct LineDiscipline {
     pub termios: Arc<SpinNoPreempt<Arc<Termios2>>>,
     buf_rx: CachingCons<ReadBuf>,
+    clear_line_buf: Arc<AtomicBool>,
     /// The read part of the line discipline.
     ///
     /// This could either be:
@@ -146,11 +152,13 @@ impl LineDiscipline {
         let termios = Arc::<SpinNoPreempt<Arc<Termios2>>>::default();
         let (buf_tx, buf_rx) = ReadBuf::default().split();
 
+        let clear_line_buf = Arc::new(AtomicBool::new(false));
         let mut reader = InputReader {
             termios: termios.clone(),
             job_control: job_control.clone(),
             buf_tx,
             line_buf: Vec::new(),
+            clear_line_buf: clear_line_buf.clone(),
         };
         let reader = if let Some(irq) = axhal::console::enable_rx_interrupt() {
             let poll_rx = Arc::new(PollSet::new());
@@ -176,13 +184,14 @@ impl LineDiscipline {
         Self {
             termios,
             buf_rx,
+            clear_line_buf,
             reader,
         }
     }
 
     pub fn drain_input(&mut self) {
         self.buf_rx.clear();
-        // TODO: drain line_buf as well
+        self.clear_line_buf.store(true, Ordering::Relaxed);
     }
 
     pub fn poll_read(&mut self) -> bool {

@@ -48,9 +48,9 @@ else ifeq ($(ARCH), loongarch64)
 endif
 
 run: defconfig
-	@if [ -f "$(IMG)" ]; then \
-		cp $(IMG) arceos/disk.img; \
-	fi
+# 	@if [ -f "$(IMG)" ]; then \
+# 		cp $(IMG) arceos/disk.img; \
+# 	fi
 	@make -C arceos run
 
 # Aliases
