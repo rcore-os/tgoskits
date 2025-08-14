@@ -140,3 +140,169 @@ emu_devices = []
     test_deser("no", VMInterruptMode::NoIrq);
     test_deser("none", VMInterruptMode::NoIrq);
 }
+
+#[test]
+fn test_vmtype_enum() {
+    use crate::VMType;
+
+    assert_eq!(VMType::default(), VMType::VMTRTOS);
+
+    assert_eq!(VMType::from(0), VMType::VMTHostVM);
+    assert_eq!(VMType::from(1), VMType::VMTRTOS);
+    assert_eq!(VMType::from(2), VMType::VMTLinux);
+    assert_eq!(VMType::from(999), VMType::VMTRTOS);
+
+    assert_eq!(usize::from(VMType::VMTHostVM), 0);
+    assert_eq!(usize::from(VMType::VMTRTOS), 1);
+    assert_eq!(usize::from(VMType::VMTLinux), 2);
+}
+
+#[test]
+fn test_vm_mem_mapping_type() {
+    use crate::VmMemMappingType;
+
+    assert_eq!(VmMemMappingType::default(), VmMemMappingType::MapAlloc);
+
+    let alloc_type = VmMemMappingType::MapAlloc;
+    let identical_type = VmMemMappingType::MapIdentical;
+
+    assert_eq!(alloc_type as u8, 0);
+    assert_eq!(identical_type as u8, 1);
+}
+
+#[test]
+fn test_emulated_device_type_removable() {
+    use crate::EmulatedDeviceType;
+
+    assert!(EmulatedDeviceType::InterruptController.removable());
+    assert!(EmulatedDeviceType::GPPTRedistributor.removable());
+    assert!(EmulatedDeviceType::VirtioBlk.removable());
+    assert!(EmulatedDeviceType::VirtioNet.removable());
+    assert!(EmulatedDeviceType::VirtioConsole.removable());
+
+    assert!(!EmulatedDeviceType::Dummy.removable());
+    assert!(!EmulatedDeviceType::Console.removable());
+    assert!(!EmulatedDeviceType::IVCChannel.removable());
+    assert!(!EmulatedDeviceType::GPPTDistributor.removable());
+    assert!(!EmulatedDeviceType::GPPTITS.removable());
+}
+
+#[test]
+fn test_emulated_device_type_display() {
+    use crate::EmulatedDeviceType;
+    use alloc::format;
+
+    assert_eq!(format!("{}", EmulatedDeviceType::Dummy), "meta device");
+    assert_eq!(
+        format!("{}", EmulatedDeviceType::InterruptController),
+        "interrupt controller"
+    );
+    assert_eq!(format!("{}", EmulatedDeviceType::Console), "console");
+    assert_eq!(format!("{}", EmulatedDeviceType::IVCChannel), "ivc channel");
+    assert_eq!(
+        format!("{}", EmulatedDeviceType::GPPTRedistributor),
+        "gic partial passthrough redistributor"
+    );
+    assert_eq!(
+        format!("{}", EmulatedDeviceType::GPPTDistributor),
+        "gic partial passthrough distributor"
+    );
+    assert_eq!(
+        format!("{}", EmulatedDeviceType::GPPTITS),
+        "gic partial passthrough its"
+    );
+    assert_eq!(format!("{}", EmulatedDeviceType::VirtioBlk), "virtio block");
+    assert_eq!(format!("{}", EmulatedDeviceType::VirtioNet), "virtio net");
+    assert_eq!(
+        format!("{}", EmulatedDeviceType::VirtioConsole),
+        "virtio console"
+    );
+}
+
+#[test]
+fn test_config_from_toml_error_handling() {
+    use crate::AxVMCrateConfig;
+
+    let invalid_toml = r#"
+[base
+id = "invalid"
+    "#;
+
+    let result = AxVMCrateConfig::from_toml(invalid_toml);
+    assert!(result.is_err());
+
+    let invalid_data_type = r#"
+[base]
+id = "not_a_number"
+name = "test"
+vm_type = 1
+cpu_num = 1
+    "#;
+
+    let result = AxVMCrateConfig::from_toml(invalid_data_type);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_default_implementations() {
+    use crate::*;
+
+    assert_eq!(VMType::default(), VMType::VMTRTOS);
+    assert_eq!(VmMemMappingType::default(), VmMemMappingType::MapAlloc);
+    assert_eq!(EmulatedDeviceType::default(), EmulatedDeviceType::Dummy);
+    assert_eq!(VMInterruptMode::default(), VMInterruptMode::NoIrq);
+
+    let vm_mem_config = VmMemConfig::default();
+    assert_eq!(vm_mem_config.gpa, 0);
+    assert_eq!(vm_mem_config.size, 0);
+    assert_eq!(vm_mem_config.flags, 0);
+    assert_eq!(vm_mem_config.map_type, VmMemMappingType::MapAlloc);
+
+    let emu_device_config = EmulatedDeviceConfig::default();
+    assert_eq!(emu_device_config.name, "");
+    assert_eq!(emu_device_config.base_gpa, 0);
+    assert_eq!(emu_device_config.length, 0);
+    assert_eq!(emu_device_config.irq_id, 0);
+    assert_eq!(emu_device_config.emu_type, EmulatedDeviceType::Dummy);
+    assert!(emu_device_config.cfg_list.is_empty());
+
+    let passthrough_device_config = PassThroughDeviceConfig::default();
+    assert_eq!(passthrough_device_config.name, "");
+    assert_eq!(passthrough_device_config.base_gpa, 0);
+    assert_eq!(passthrough_device_config.base_hpa, 0);
+    assert_eq!(passthrough_device_config.length, 0);
+    assert_eq!(passthrough_device_config.irq_id, 0);
+
+    let vm_base_config = VMBaseConfig::default();
+    assert_eq!(vm_base_config.id, 0);
+    assert_eq!(vm_base_config.name, "");
+    assert_eq!(vm_base_config.vm_type, 0);
+    assert_eq!(vm_base_config.cpu_num, 0);
+    assert!(vm_base_config.phys_cpu_ids.is_none());
+    assert!(vm_base_config.phys_cpu_sets.is_none());
+
+    let vm_kernel_config = VMKernelConfig::default();
+    assert_eq!(vm_kernel_config.entry_point, 0);
+    assert_eq!(vm_kernel_config.kernel_path, "");
+    assert_eq!(vm_kernel_config.kernel_load_addr, 0);
+    assert!(vm_kernel_config.bios_path.is_none());
+    assert!(vm_kernel_config.bios_load_addr.is_none());
+    assert!(vm_kernel_config.dtb_path.is_none());
+    assert!(vm_kernel_config.dtb_load_addr.is_none());
+    assert!(vm_kernel_config.ramdisk_path.is_none());
+    assert!(vm_kernel_config.ramdisk_load_addr.is_none());
+    assert!(vm_kernel_config.image_location.is_none());
+    assert!(vm_kernel_config.cmdline.is_none());
+    assert!(vm_kernel_config.disk_path.is_none());
+    assert!(vm_kernel_config.memory_regions.is_empty());
+
+    let vm_devices_config = VMDevicesConfig::default();
+    assert!(vm_devices_config.emu_devices.is_empty());
+    assert!(vm_devices_config.passthrough_devices.is_empty());
+    assert_eq!(vm_devices_config.interrupt_mode, VMInterruptMode::NoIrq);
+
+    let axvm_crate_config = AxVMCrateConfig::default();
+    assert_eq!(axvm_crate_config.base.id, 0);
+    assert_eq!(axvm_crate_config.kernel.entry_point, 0);
+    assert!(axvm_crate_config.devices.emu_devices.is_empty());
+}

@@ -2,18 +2,33 @@
 name = "axvmconfig"
 version = "0.1.0"
 edition = "2021"
+authors = [
+    "Keyang Hu <keyang.hu@qq.com>",
+    "Mingxian Su <aarkegz@gmail.com>",
+]
+keywords = ["axvisor", "config", "toml"]
+homepage = "https://github.com/arceos-hypervisor/axvmconfig"
 description = "A simple VM configuration tool for ArceOS-Hypervisor."
+license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0" # MulanPubL2 is not included in SPDX
 
 [features]
 default = ["std"]
 std = ["dep:clap", "dep:env_logger"]
+
+[lib]
+name = "axvmconfig"
+path = "src/lib.rs"
+
+[[bin]]
+name = "axvmconfig"
+path = "src/main.rs"
 
 [dependencies]
 env_logger = { version = "0.11.3", optional = true }
 log = "0.4.21"
 serde = { version = "1.0.204", default-features = false, features = ["derive"] }
 serde_repr = "0.1"
-toml = { git = "https://github.com/arceos-hypervisor/toml.git", branch = "no_std" }
+toml = { version = "0.9.5", default-features = false, features = ["serde", "parse", "display"] }
 axerrno = "0.1.0"
 enumerable = { version = "1.2", default-features = false }
 clap = { version = "4.5.23", optional = true, features = ["derive"]}

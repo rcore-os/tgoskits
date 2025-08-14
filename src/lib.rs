@@ -48,7 +48,10 @@ impl From<VMType> for usize {
     }
 }
 
-/// The type of memory mapping.
+/// The type of memory mapping used for VM memory regions.
+///
+/// Defines how virtual machine memory regions are mapped to host physical memory.
+/// This affects memory allocation and management strategies in the hypervisor.
 #[derive(Debug, Clone, PartialEq, Eq, serde_repr::Serialize_repr, serde_repr::Deserialize_repr)]
 #[repr(u8)]
 pub enum VmMemMappingType {
@@ -65,16 +68,22 @@ impl Default for VmMemMappingType {
     }
 }
 
-/// A part of `AxVMConfig`, which represents a memory region.
+/// Configuration for a virtual machine memory region.
+///
+/// Represents a contiguous memory region within the guest's physical address space.
+/// Each region has specific properties including address, size, access permissions,
+/// and mapping type that determine how it's handled by the hypervisor.
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VmMemConfig {
-    /// The start address of the memory region in GPA.
+    /// The start address of the memory region in GPA (Guest Physical Address).
     pub gpa: usize,
-    /// The size of the memory region.
+    /// The size of the memory region in bytes.
     pub size: usize,
     /// The mappings flags of the memory region, refers to `MappingFlags` provided by `axaddrspace`.
+    /// Defines access permissions (read, write, execute) and caching behavior.
     pub flags: usize,
     /// The type of memory mapping.
+    /// Determines whether memory is allocated dynamically or mapped identically.
     pub map_type: VmMemMappingType,
 }
 

@@ -1,3 +1,7 @@
+//! ArceOS-Hypervisor VM configuration tool
+//!
+//! This module provides a command-line interface for managing VM configurations,
+//! including validation of existing configurations and generation of new templates.
 use std::env;
 use std::error::Error;
 use std::fs;
@@ -8,6 +12,11 @@ use clap::{Args, Parser, Subcommand};
 use crate::templates::get_vm_config_template;
 use crate::AxVMCrateConfig;
 
+/// Main CLI structure for the axvmconfig tool
+///
+/// This structure defines the top-level command interface using clap.
+/// It supports subcommands for checking existing configurations and
+/// generating new configuration templates.
 #[derive(Parser)]
 #[command(name = "axvmconfig")]
 #[command(about = "A simple VM configuration tool for ArceOS-Hypervisor.", long_about = None)]
@@ -18,6 +27,11 @@ pub struct CLI {
     pub subcmd: CLISubCmd,
 }
 
+/// Available subcommands for the CLI tool
+///
+/// Currently supports two main operations:
+/// - Check: Validate existing TOML configuration files
+/// - Generate: Create new configuration templates from command-line parameters
 #[derive(Subcommand)]
 #[command(args_conflicts_with_subcommands = true)]
 #[command(flatten_help = true)]
@@ -28,12 +42,20 @@ pub enum CLISubCmd {
     Generate(TemplateArgs),
 }
 
+/// Arguments for the 'check' subcommand
+///
+/// Used to validate existing TOML configuration files for correctness.
 #[derive(Debug, Args)]
 pub struct CheckArgs {
+    /// Path to the TOML configuration file to validate
     #[arg(short, long)]
     config_path: String,
 }
 
+/// Arguments for the 'generate' subcommand
+///
+/// Used to create new VM configuration templates with customizable parameters.
+/// All the essential VM settings can be specified through command-line arguments.
 #[derive(Debug, Args)]
 pub struct TemplateArgs {
     /// The architecture of the VM, currently only support "riscv64", "aarch64" and "x86_64".
@@ -73,27 +95,49 @@ pub struct TemplateArgs {
     output: Option<std::path::PathBuf>,
 }
 
-/// Parse a single key-value pair
+/// Parse numeric values from command line arguments
+///
+/// Supports multiple number formats:
+/// - Hexadecimal (0x prefix): e.g., 0x80200000
+/// - Binary (0b prefix): e.g., 0b10101010  
+/// - Decimal: e.g., 123456
+///
+/// # Arguments
+/// * `s` - String slice containing the number to parse
+///
+/// # Returns
+/// * `Result<usize, Box<dyn Error + Send + Sync + 'static>>` - Parsed number or error
 fn parse_usize(s: &str) -> Result<usize, Box<dyn Error + Send + Sync + 'static>> {
     if s.starts_with("0x") {
+        // Parse hexadecimal number
         Ok(usize::from_str_radix(&s[2..], 16)?)
     } else if s.starts_with("0b") {
+        // Parse binary number
         Ok(usize::from_str_radix(&s[2..], 2)?)
     } else {
+        // Parse decimal number
         Ok(s.parse()?)
     }
 }
 
+/// Main entry point for the CLI tool
+///
+/// Parses command line arguments and dispatches to appropriate handlers
+/// for either configuration validation or template generation.
 pub fn run() {
     let cli = CLI::parse();
     match cli.subcmd {
+        // Handle configuration file validation
         CLISubCmd::Check(args) => {
             let file_path = &args.config_path;
-            // Check if the file exists.
+
+            // Check if the specified file exists
             if !Path::new(file_path).exists() {
                 eprintln!("Error: File '{}' does not exist.", file_path);
                 std::process::exit(1);
             }
+
+            // Read the configuration file content
             let file_content = match fs::read_to_string(file_path) {
                 Ok(content) => content,
                 Err(err) => {
@@ -102,6 +146,7 @@ pub fn run() {
                 }
             };
 
+            // Parse and validate the TOML configuration
             match AxVMCrateConfig::from_toml(&file_content) {
                 Ok(config) => {
                     println!("Config file '{}' is valid.", file_path);
@@ -113,7 +158,10 @@ pub fn run() {
                 }
             }
         }
+        // Handle template generation
         CLISubCmd::Generate(args) => {
+            // Determine the kernel path based on image location
+            // For memory-based images, use absolute path; for fs-based, use relative path
             let kernel_path = if args.image_location == "memory" {
                 Path::new(&args.kernel_path)
                     .canonicalize()
@@ -125,6 +173,7 @@ pub fn run() {
                 args.kernel_path.clone()
             };
 
+            // Generate the VM configuration template with provided parameters
             let template = get_vm_config_template(
                 args.id,
                 args.name + "-" + args.arch.as_str(),
@@ -137,13 +186,16 @@ pub fn run() {
                 args.cmdline,
             );
 
+            // Convert the configuration template to TOML format
             let template_toml = toml::to_string(&template).unwrap();
 
+            // Determine output file path (use provided path or default to current directory)
             let target_path = match args.output {
                 Some(relative_path) => relative_path,
                 None => env::current_dir().unwrap().join("template.toml"),
             };
 
+            // Write the generated template to file
             match fs::write(&target_path, template_toml) {
                 Ok(_) => {
                     println!("Template file '{:?}' has been generated.", target_path);
