@@ -22,13 +22,16 @@ use starry_signal::SignalInfo;
 
 use crate::terminal::{job::JobControl, termios::Termios2};
 
-type ReadBuf = Arc<ringbuf::StaticRb<u8, 80>>;
+const BUF_SIZE: usize = 80;
+
+type ReadBuf = Arc<ringbuf::StaticRb<u8, BUF_SIZE>>;
 
 struct InputReader {
     termios: Arc<SpinNoPreempt<Arc<Termios2>>>,
     job_control: Arc<JobControl>,
 
     buf_tx: CachingProd<ReadBuf>,
+    read_buf: [u8; BUF_SIZE],
 
     line_buf: Vec<u8>,
     clear_line_buf: Arc<AtomicBool>,
@@ -38,10 +41,10 @@ impl InputReader {
         if self.clear_line_buf.swap(false, Ordering::Relaxed) {
             self.line_buf.clear();
         }
-        let mut buf = [0; 16];
-        let read = axhal::console::read_bytes(&mut buf);
+        let max_read = self.buf_tx.vacant_len().min(BUF_SIZE);
+        let read = axhal::console::read_bytes(&mut self.read_buf[..max_read]);
         let term = self.termios.lock().clone();
-        for mut ch in buf[..read].iter().copied() {
+        for mut ch in self.read_buf[..read].iter().copied() {
             if ch == b'\r' {
                 if term.has_iflag(IGNCR) {
                     continue;
@@ -57,7 +60,7 @@ impl InputReader {
                 self.output_char(&term, ch);
             }
             if !term.canonical() {
-                let _ = self.buf_tx.try_push(ch);
+                self.buf_tx.try_push(ch).unwrap();
                 continue;
             }
 
@@ -75,7 +78,8 @@ impl InputReader {
                 if ch != term.special_char(VEOF) {
                     self.line_buf.push(ch);
                 }
-                self.buf_tx.push_slice(&self.line_buf);
+                let len = self.buf_tx.push_slice(&self.line_buf);
+                assert_eq!(len, self.line_buf.len());
                 self.line_buf.clear();
                 continue;
             }
@@ -123,6 +127,7 @@ impl InputReader {
 pub struct LineDiscipline {
     pub termios: Arc<SpinNoPreempt<Arc<Termios2>>>,
     buf_rx: CachingCons<ReadBuf>,
+    poll_tx: Arc<PollSet>,
     clear_line_buf: Arc<AtomicBool>,
     /// The read part of the line discipline.
     ///
@@ -151,12 +156,16 @@ impl LineDiscipline {
     pub fn new(job_control: Arc<JobControl>) -> Self {
         let termios = Arc::<SpinNoPreempt<Arc<Termios2>>>::default();
         let (buf_tx, buf_rx) = ReadBuf::default().split();
+        let poll_tx = Arc::new(PollSet::new());
 
         let clear_line_buf = Arc::new(AtomicBool::new(false));
         let mut reader = InputReader {
             termios: termios.clone(),
             job_control: job_control.clone(),
+
             buf_tx,
+            read_buf: [0; BUF_SIZE],
+
             line_buf: Vec::new(),
             clear_line_buf: clear_line_buf.clone(),
         };
@@ -164,11 +173,13 @@ impl LineDiscipline {
             let poll_rx = Arc::new(PollSet::new());
             axtask::spawn({
                 let poll_rx = poll_rx.clone();
+                let poll_tx = poll_tx.clone();
                 move || {
                     block_on(poll_fn(|cx| {
                         while reader.poll() {
                             poll_rx.wake();
                         }
+                        poll_tx.register(cx.waker());
                         register_irq_waker(irq as _, cx.waker());
                         while reader.poll() {
                             poll_rx.wake();
@@ -184,6 +195,7 @@ impl LineDiscipline {
         Self {
             termios,
             buf_rx,
+            poll_tx,
             clear_line_buf,
             reader,
         }
@@ -236,6 +248,7 @@ impl LineDiscipline {
         let pollable = WaitPollable(self.reader.as_ref().err());
         Poller::new(&pollable, IoEvents::IN).poll(|| {
             total_read += self.buf_rx.pop_slice(&mut buf[total_read..]);
+            self.poll_tx.wake();
             (total_read >= vmin)
                 .then_some(total_read)
                 .ok_or(LinuxError::EAGAIN)
