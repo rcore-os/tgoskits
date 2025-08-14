@@ -15,7 +15,7 @@ use riscv::{
 };
 
 use super::{GeneralRegisters, TrapFrame};
-use crate::trap::{PageFaultFlags, ReturnReason};
+use crate::trap::{ExceptionInfoExt, ExceptionKind, PageFaultFlags, ReturnReason};
 
 /// Context to enter user space.
 #[derive(Debug, Clone)]
@@ -80,8 +80,6 @@ impl UserContext {
                     va!(stval),
                     PageFaultFlags::WRITE | PageFaultFlags::USER,
                 ),
-                Trap::Exception(E::Breakpoint) => ReturnReason::Breakpoint,
-                Trap::Exception(E::IllegalInstruction) => ReturnReason::IllegalInstruction,
                 Trap::Exception(E::InstructionPageFault) => ReturnReason::PageFault(
                     va!(stval),
                     PageFaultFlags::EXECUTE | PageFaultFlags::USER,
@@ -121,4 +119,17 @@ impl From<TrapFrame> for UserContext {
 pub struct ExceptionInfo {
     pub e: E,
     pub stval: usize,
+}
+
+impl ExceptionInfoExt for ExceptionInfo {
+    fn kind(&self) -> ExceptionKind {
+        match self.e {
+            E::Breakpoint => ExceptionKind::Breakpoint,
+            E::IllegalInstruction => ExceptionKind::IllegalInstruction,
+            E::InstructionMisaligned | E::LoadMisaligned | E::StoreMisaligned => {
+                ExceptionKind::Misaligned
+            }
+            _ => ExceptionKind::Other,
+        }
+    }
 }

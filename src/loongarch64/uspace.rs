@@ -9,7 +9,7 @@ use loongArch64::register::{
 use memory_addr::VirtAddr;
 
 use crate::{
-    trap::{PageFaultFlags, ReturnReason},
+    trap::{ExceptionInfoExt, ExceptionKind, PageFaultFlags, ReturnReason},
     TrapFrame,
 };
 
@@ -77,7 +77,9 @@ impl UserContext {
                 ReturnReason::PageFault(va!(badv), PageFaultFlags::EXECUTE | PageFaultFlags::USER)
             }
             Trap::Exception(Exception::Breakpoint) => ReturnReason::Breakpoint,
-            Trap::Exception(Exception::InstructionNotExist | Exception::InstructionPrivilegeIllegal) => ReturnReason::IllegalInstruction,
+            Trap::Exception(
+                Exception::InstructionNotExist | Exception::InstructionPrivilegeIllegal,
+            ) => ReturnReason::IllegalInstruction,
             Trap::Exception(e) => ReturnReason::Exception(ExceptionInfo { e, badv, badi }),
             _ => ReturnReason::Unknown,
         };
@@ -112,4 +114,14 @@ pub struct ExceptionInfo {
     pub e: Exception,
     pub badv: usize,
     pub badi: u32,
+}
+
+impl ExceptionInfoExt for ExceptionInfo {
+    fn kind(&self) -> ExceptionKind {
+        match self.e {
+            Exception::Breakpoint => ExceptionKind::Breakpoint,
+            Exception::InstructionNotExist | Exception::InstructionPrivilegeIllegal => ExceptionKind::IllegalInstruction,
+            _ => ExceptionKind::Other,
+        }
+    }
 }
