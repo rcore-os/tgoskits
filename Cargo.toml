@@ -127,7 +127,7 @@ starry-signal.workspace = true
 
 [dependencies.axplat-riscv64-visionfive2]
 git = "https://github.com/Starry-Mix-THU/axplat-riscv64-visionfive2.git"
-rev = "785a139"
+rev = "3ed7126"
 features = ["irq"]
 optional = true
 
