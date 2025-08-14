@@ -487,6 +487,7 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
         Sysno::syslog => sys_syslog(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
         Sysno::getrandom => sys_getrandom(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
         Sysno::seccomp => sys_seccomp(tf.arg0() as _, tf.arg1() as _, tf.arg2().into()),
+        #[cfg(target_arch = "riscv64")]
         Sysno::riscv_flush_icache => sys_riscv_flush_icache(),
 
         // sync
