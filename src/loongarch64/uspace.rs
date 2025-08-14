@@ -76,10 +76,6 @@ impl UserContext {
             | Trap::Exception(Exception::PageNonExecutableFault) => {
                 ReturnReason::PageFault(va!(badv), PageFaultFlags::EXECUTE | PageFaultFlags::USER)
             }
-            Trap::Exception(Exception::Breakpoint) => ReturnReason::Breakpoint,
-            Trap::Exception(
-                Exception::InstructionNotExist | Exception::InstructionPrivilegeIllegal,
-            ) => ReturnReason::IllegalInstruction,
             Trap::Exception(e) => ReturnReason::Exception(ExceptionInfo { e, badv, badi }),
             _ => ReturnReason::Unknown,
         };
@@ -120,7 +116,10 @@ impl ExceptionInfoExt for ExceptionInfo {
     fn kind(&self) -> ExceptionKind {
         match self.e {
             Exception::Breakpoint => ExceptionKind::Breakpoint,
-            Exception::InstructionNotExist | Exception::InstructionPrivilegeIllegal => ExceptionKind::IllegalInstruction,
+            Exception::InstructionNotExist | Exception::InstructionPrivilegeIllegal => {
+                ExceptionKind::IllegalInstruction
+            }
+            Exception::AddressNotAligned => ExceptionKind::Misaligned,
             _ => ExceptionKind::Other,
         }
     }
