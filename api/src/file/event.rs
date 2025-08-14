@@ -55,7 +55,7 @@ impl FileLike for EventFd {
                 match result {
                     Ok(count) => {
                         let data = count.to_ne_bytes();
-                        buf.copy_from_slice(&data);
+                        buf[..data.len()].copy_from_slice(&data);
                         self.poll_tx.wake();
                         Ok(data.len())
                     }
