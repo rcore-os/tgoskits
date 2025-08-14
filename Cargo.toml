@@ -42,13 +42,13 @@ axruntime = { path = "arceos/modules/axruntime" }
 axsync = { path = "arceos/modules/axsync" }
 axtask = { path = "arceos/modules/axtask", features = ["task-ext"] }
 
-axbacktrace = { git = "https://github.com/Starry-Mix-THU/axbacktrace.git", rev = "322f6da" }
+axbacktrace = "0.1"
 axerrno = { git = "https://github.com/Starry-Mix-THU/axerrno.git", rev = "f5d8f86" }
 axfs-ng-vfs = { git = "https://github.com/Starry-Mix-THU/axfs-ng-vfs.git", rev = "8a549b7" }
 axio = { git = "https://github.com/Starry-Mix-THU/axio.git", rev = "098eb64" }
-starry-process = { git = "https://github.com/Starry-Mix-THU/starry-process.git", rev = "7e78f22" }
-starry-signal = { git = "https://github.com/Starry-Mix-THU/starry-signal.git", rev = "f7ff62f" }
-starry-vm = { git = "https://github.com/Starry-Mix-THU/starry-vm.git", rev = "e86cbc0" }
+starry-process = "0.2"
+starry-signal = "0.2"
+starry-vm = "0.1"
 
 bitflags = "2.6"
 bytemuck = { version = "1.23", features = ["unsound_ptr_pod_impl"] }
@@ -132,13 +132,17 @@ features = ["irq"]
 optional = true
 
 [patch.crates-io]
-axcpu = { git = "https://github.com/Starry-Mix-THU/axcpu.git", rev = "e62544b" }
+axbacktrace = { git = "https://github.com/Starry-Mix-THU/axbacktrace.git", rev = "322f6da" }
+axcpu = { git = "https://github.com/Starry-Mix-THU/axcpu.git", rev = "bc08547" }
 axerrno = { git = "https://github.com/Starry-Mix-THU/axerrno.git", rev = "f5d8f86" }
 axplat = { git = "https://github.com/Starry-Mix-THU/axplat_crates.git", rev = "93dfeb6" }
 axplat-riscv64-qemu-virt = { git = "https://github.com/Starry-Mix-THU/axplat_crates.git", rev = "93dfeb6" }
 axplat-loongarch64-qemu-virt = { git = "https://github.com/Starry-Mix-THU/axplat_crates.git", rev = "93dfeb6" }
 page_table_entry = { git = "https://github.com/Starry-Mix-THU/page_table_multiarch.git", rev = "4edb821" }
 page_table_multiarch = { git = "https://github.com/Starry-Mix-THU/page_table_multiarch.git", rev = "4edb821" }
+starry-process = { git = "https://github.com/Starry-Mix-THU/starry-process.git", rev = "7e78f22" }
+starry-signal = { git = "https://github.com/Starry-Mix-THU/starry-signal.git", rev = "65a5774" }
+starry-vm = { git = "https://github.com/Starry-Mix-THU/starry-vm.git", rev = "e86cbc0" }
 
 [package.metadata.vendor-filter]
 platforms = ["riscv64gc-unknown-none-elf", "loongarch64-unknown-none-softfloat"]

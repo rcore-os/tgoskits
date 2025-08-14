@@ -226,7 +226,7 @@ dependencies = [
 [[package]]
 name = "axcpu"
 version = "0.2.2"
-source = "git+https://github.com/Starry-Mix-THU/axcpu.git?rev=e62544b#e62544b239aa760bccd7da401410420a1642f82b"
+source = "git+https://github.com/Starry-Mix-THU/axcpu.git?rev=bc08547#bc085471818c5e853b22b61793c0ccb531e9b62a"
 dependencies = [
  "aarch64-cpu",
  "axbacktrace",
@@ -2212,7 +2212,7 @@ dependencies = [
 [[package]]
 name = "starry-signal"
 version = "0.2.2"
-source = "git+https://github.com/Starry-Mix-THU/starry-signal.git?rev=f7ff62f#f7ff62f9bc6e8c60a706817d59415e9c1b11370d"
+source = "git+https://github.com/Starry-Mix-THU/starry-signal.git?rev=65a5774#65a57749d8c24104af6790110488412729ecf5de"
 dependencies = [
  "axcpu",
  "bitflags 2.9.1",
