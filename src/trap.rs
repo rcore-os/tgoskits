@@ -38,5 +38,7 @@ pub enum ReturnReason {
     Interrupt,
     Syscall,
     PageFault(VirtAddr, PageFaultFlags),
+    Breakpoint,
+    IllegalInstruction,
     Exception(crate::uspace::ExceptionInfo),
 }

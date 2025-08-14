@@ -76,6 +76,8 @@ impl UserContext {
             | Trap::Exception(Exception::PageNonExecutableFault) => {
                 ReturnReason::PageFault(va!(badv), PageFaultFlags::EXECUTE | PageFaultFlags::USER)
             }
+            Trap::Exception(Exception::Breakpoint) => ReturnReason::Breakpoint,
+            Trap::Exception(Exception::InstructionNotExist | Exception::InstructionPrivilegeIllegal) => ReturnReason::IllegalInstruction,
             Trap::Exception(e) => ReturnReason::Exception(ExceptionInfo { e, badv, badi }),
             _ => ReturnReason::Unknown,
         };

@@ -80,6 +80,8 @@ impl UserContext {
                     va!(stval),
                     PageFaultFlags::WRITE | PageFaultFlags::USER,
                 ),
+                Trap::Exception(E::Breakpoint) => ReturnReason::Breakpoint,
+                Trap::Exception(E::IllegalInstruction) => ReturnReason::IllegalInstruction,
                 Trap::Exception(E::InstructionPageFault) => ReturnReason::PageFault(
                     va!(stval),
                     PageFaultFlags::EXECUTE | PageFaultFlags::USER,
