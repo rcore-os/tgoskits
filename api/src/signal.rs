@@ -53,11 +53,7 @@ pub fn with_replacen_blocked<R>(
     let curr = current();
     let sig = &curr.as_thread().signal;
 
-    let old_blocked = blocked.map(|mut set| {
-        set.remove(Signo::SIGKILL);
-        set.remove(Signo::SIGSTOP);
-        sig.set_blocked(set)
-    });
+    let old_blocked = blocked.map(|mut set| sig.set_blocked(set));
     f().inspect(|_| {
         if let Some(old) = old_blocked {
             sig.set_blocked(old);

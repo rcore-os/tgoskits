@@ -220,9 +220,7 @@ pub fn sys_rt_sigtimedwait(
 ) -> LinuxResult<isize> {
     check_sigset_size(sigsetsize)?;
 
-    let mut set = unsafe { set.vm_read_uninit()?.assume_init() };
-    set.remove(Signo::SIGKILL);
-    set.remove(Signo::SIGSTOP);
+    let set = unsafe { set.vm_read_uninit()?.assume_init() };
 
     let timeout = if let Some(ts) = timeout.nullable() {
         let ts = unsafe { ts.vm_read_uninit()?.assume_init() };
@@ -283,10 +281,7 @@ pub fn sys_rt_sigsuspend(
     let curr = current();
     let thr = curr.as_thread();
 
-    let mut set = unsafe { set.vm_read_uninit()?.assume_init() };
-    set.remove(Signo::SIGKILL);
-    set.remove(Signo::SIGSTOP);
-
+    let set = unsafe { set.vm_read_uninit()?.assume_init() };
     let old_blocked = thr.signal.set_blocked(set);
 
     tf.set_retval(-LinuxError::EINTR.code() as usize);
