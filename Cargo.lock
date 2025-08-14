@@ -34,7 +34,7 @@ dependencies = [
 [[package]]
 name = "axio"
 version = "0.1.1"
-source = "git+https://github.com/Starry-Mix-THU/axio.git?rev=098eb64#098eb64d19979e64a36281cb0f26a07caef1728c"
+source = "git+https://github.com/Starry-Mix-THU/axio.git?rev=7c1ac3a#7c1ac3adda0dc6651e763e74ee4f4e89abea05e6"
 dependencies = [
  "axerrno",
  "bitflags",

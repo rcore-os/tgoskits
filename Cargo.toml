@@ -6,7 +6,7 @@ authors = ["Mivik <mivikq@gmail.com>"]
 
 [dependencies]
 axerrno = { git = "https://github.com/Starry-Mix-THU/axerrno.git", rev = "f5d8f86" }
-axio = { git = "https://github.com/Starry-Mix-THU/axio.git", rev = "098eb64" }
+axio = { git = "https://github.com/Starry-Mix-THU/axio.git", rev = "7c1ac3a" }
 bitflags = "2.9.0"
 cfg-if = "1.0.1"
 hashbrown = "0.15.4"
