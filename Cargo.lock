@@ -516,7 +516,7 @@ dependencies = [
 [[package]]
 name = "axplat"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=93dfeb6#93dfeb61d848fa902b12e2cc20e9cd0d14710cf9"
+source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=1a42cb0#1a42cb064d340d7e00e7f83f6a172144c8c60a7a"
 dependencies = [
  "axplat-macros",
  "bitflags 2.9.1",
@@ -562,7 +562,7 @@ dependencies = [
 [[package]]
 name = "axplat-loongarch64-qemu-virt"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=93dfeb6#93dfeb61d848fa902b12e2cc20e9cd0d14710cf9"
+source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=1a42cb0#1a42cb064d340d7e00e7f83f6a172144c8c60a7a"
 dependencies = [
  "axconfig-macros",
  "axcpu",
@@ -572,8 +572,8 @@ dependencies = [
  "lazyinit",
  "log",
  "loongArch64",
- "ns16550a",
  "page_table_entry",
+ "uart_16550 0.4.0",
 ]
 
 [[package]]
@@ -590,7 +590,7 @@ dependencies = [
 [[package]]
 name = "axplat-riscv64-qemu-virt"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=93dfeb6#93dfeb61d848fa902b12e2cc20e9cd0d14710cf9"
+source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=1a42cb0#1a42cb064d340d7e00e7f83f6a172144c8c60a7a"
 dependencies = [
  "axconfig-macros",
  "axcpu",
@@ -598,26 +598,29 @@ dependencies = [
  "kspin",
  "lazyinit",
  "log",
- "ns16550a",
  "plic",
  "riscv",
  "riscv_goldfish",
  "sbi-rt",
+ "uart_16550 0.4.0",
 ]
 
 [[package]]
 name = "axplat-riscv64-visionfive2"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axplat-riscv64-visionfive2.git?rev=3ed7126#3ed7126b10f325693487c35581f30daaab6d768b"
+source = "git+https://github.com/Starry-Mix-THU/axplat-riscv64-visionfive2.git?rev=de8d0b3#de8d0b330b9044f3827d9c75dc0f6028454cdfca"
 dependencies = [
  "axconfig-macros",
  "axcpu",
  "axplat",
+ "kspin",
  "lazyinit",
  "log",
  "plic",
  "riscv",
+ "riscv_goldfish",
  "sbi-rt",
+ "uart_16550 0.4.0",
 ]
 
 [[package]]
@@ -638,7 +641,7 @@ dependencies = [
  "multiboot",
  "percpu",
  "raw-cpuid 11.5.0",
- "uart_16550",
+ "uart_16550 0.3.2",
  "x2apic",
  "x86",
  "x86_64",
@@ -1569,12 +1572,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ns16550a"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3cd8abe9e54bce27659507b94f355c9334378ab15da332b6986b3583ebf7228"
-
-[[package]]
 name = "num-traits"
 version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1723,7 +1720,7 @@ checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 [[package]]
 name = "plic"
 version = "0.1.0"
-source = "git+https://github.com/os-module/plic?rev=1a71425#1a714257a15595612ba74b83062481ef31c68c34"
+source = "git+https://github.com/Starry-Mix-THU/plic.git?rev=ee40f86#ee40f86b888280f291af815874e5f3cee9ee3b94"
 
 [[package]]
 name = "portable-atomic"
@@ -2358,6 +2355,17 @@ name = "uart_16550"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e492212ac378a5e00da953718dafb1340d9fbaf4f27d6f3c5cab03d931d1c049"
+dependencies = [
+ "bitflags 2.9.1",
+ "rustversion",
+ "x86",
+]
+
+[[package]]
+name = "uart_16550"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94d293f51425981fdb1b766beae254dbb711a17e8c4b549dc69b9b7ee0d478d5"
 dependencies = [
  "bitflags 2.9.1",
  "rustversion",

@@ -196,7 +196,7 @@ impl LineDiscipline {
             line_read: None,
             clear_line_buf: clear_line_buf.clone(),
         };
-        let reader = if let Some(irq) = axhal::console::enable_rx_interrupt() {
+        let reader = if let Some(irq) = axhal::console::get_console_irq() {
             let poll_rx = Arc::new(PollSet::new());
             axtask::spawn(
                 {
