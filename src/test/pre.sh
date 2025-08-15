@@ -49,20 +49,34 @@ run_ltp() {
     export LTP_SINGLE_FS_TYPE=tmpfs
 
     all_testcases="
+    abort01
     accept01
     accept03
+    accept4_01
     access01
+    access02
+    access03
     alarm02
     alarm03
     alarm05
     alarm06
     alarm07
     bind01
+    bind03
     bind05
+    brk01
+    brk02
     chdir01
     chdir04
     chmod01
+    chmod03
     chown01
+    chown02
+    chown03
+    chown05
+    chroot01
+    chroot02
+    chroot03
     clock_getres01
     clock_gettime02
     clock_nanosleep01

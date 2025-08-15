@@ -6,7 +6,7 @@ use core::{
 };
 
 use axerrno::{LinuxError, LinuxResult};
-use axfs_ng::FS_CONTEXT;
+use axfs_ng::{FS_CONTEXT, FsContext};
 use axfs_ng_vfs::{MetadataUpdate, NodePermission, NodeType, path::Path};
 use axhal::time::wall_time;
 use axtask::current;
@@ -71,6 +71,19 @@ pub fn sys_fchdir(dirfd: i32) -> LinuxResult<isize> {
 #[cfg(target_arch = "x86_64")]
 pub fn sys_mkdir(path: *const c_char, mode: u32) -> LinuxResult<isize> {
     sys_mkdirat(AT_FDCWD, path, mode)
+}
+
+pub fn sys_chroot(path: *const c_char) -> LinuxResult<isize> {
+    let path = vm_load_string(path)?;
+    debug!("sys_chroot <= path: {}", path);
+
+    let mut fs = FS_CONTEXT.lock();
+    let loc = fs.resolve(path)?;
+    if loc.node_type() != NodeType::Directory {
+        return Err(LinuxError::ENOTDIR);
+    }
+    *fs = FsContext::new(loc);
+    Ok(0)
 }
 
 pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> LinuxResult<isize> {
@@ -320,25 +333,38 @@ pub fn sys_lchown(path: *const c_char, uid: u32, gid: u32) -> LinuxResult<isize>
     sys_fchownat(AT_FDCWD, path, uid, gid, AT_SYMLINK_NOFOLLOW)
 }
 
-pub fn sys_fchown(fd: i32, uid: u32, gid: u32) -> LinuxResult<isize> {
+pub fn sys_fchown(fd: i32, uid: i32, gid: i32) -> LinuxResult<isize> {
     sys_fchownat(fd, core::ptr::null(), uid, gid, AT_EMPTY_PATH)
 }
 
 pub fn sys_fchownat(
     dirfd: i32,
     path: *const c_char,
-    uid: u32,
-    gid: u32,
+    uid: i32,
+    gid: i32,
     flags: u32,
 ) -> LinuxResult<isize> {
     let path = path.nullable().map(vm_load_string).transpose()?;
-    resolve_at(dirfd, path.as_deref(), flags)?
+    let loc = resolve_at(dirfd, path.as_deref(), flags)?
         .into_file()
-        .ok_or(LinuxError::EBADF)?
-        .update_metadata(MetadataUpdate {
-            owner: Some((uid, gid)),
-            ..Default::default()
-        })?;
+        .ok_or(LinuxError::EBADF)?;
+    let meta = loc.metadata()?;
+
+    let mut mode = meta.mode;
+    // chown always clears the setuid bits
+    mode.remove(NodePermission::SET_UID);
+    // chown also removes the setgid bits if group-executable
+    if mode.contains(NodePermission::GROUP_EXEC) {
+        mode.remove(NodePermission::SET_GID);
+    }
+
+    let uid = if uid == -1 { meta.uid } else { uid as _ };
+    let gid = if gid == -1 { meta.gid } else { gid as _ };
+    loc.update_metadata(MetadataUpdate {
+        owner: Some((uid, gid)),
+        mode: Some(mode),
+        ..Default::default()
+    })?;
     Ok(0)
 }
 
@@ -357,7 +383,7 @@ pub fn sys_fchmodat(dirfd: i32, path: *const c_char, mode: u32, flags: u32) -> L
         .into_file()
         .ok_or(LinuxError::EBADF)?
         .update_metadata(MetadataUpdate {
-            mode: Some(NodePermission::from_bits(mode as u16).ok_or(LinuxError::EINVAL)?),
+            mode: Some(NodePermission::from_bits_truncate(mode as u16)),
             ..Default::default()
         })?;
     Ok(0)

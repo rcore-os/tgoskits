@@ -33,6 +33,7 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
         Sysno::ioctl => sys_ioctl(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
         Sysno::chdir => sys_chdir(tf.arg0() as _),
         Sysno::fchdir => sys_fchdir(tf.arg0() as _),
+        Sysno::chroot => sys_chroot(tf.arg0() as _),
         #[cfg(target_arch = "x86_64")]
         Sysno::mkdir => sys_mkdir(tf.arg0() as _, tf.arg1() as _),
         Sysno::mkdirat => sys_mkdirat(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),

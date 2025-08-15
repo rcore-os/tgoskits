@@ -118,6 +118,9 @@ pub fn sys_accept4(
 
     let socket = Socket::from_fd(fd)?;
     let socket = Socket(socket.accept()?);
+    if flags & O_NONBLOCK != 0 {
+        socket.set_nonblocking(true)?;
+    }
 
     let remote_addr = socket.local_addr()?;
     let fd = socket.add_to_fd_table(cloexec).map(|fd| fd as isize)?;
