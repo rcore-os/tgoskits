@@ -1,3 +1,11 @@
+//! Basic traits and structures for emulated devices in ArceOS hypervisor.
+//!
+//! This crate contains:
+//! - [`BaseDeviceOps`] trait: The trait that all emulated devices must implement.
+//! - [`EmuDeviceType`] enum: Enumeration representing the type of emulator devices.
+//!   (Already moved to `axvmconfig` crate.)
+//! - [`EmulatedDeviceConfig`]: Configuration structure for device initialization.
+
 #![no_std]
 #![feature(trait_alias)]
 // trait_upcasting has been stabilized in Rust 1.86, but we still need a while to update the minimum
@@ -6,13 +14,6 @@
 #![feature(trait_upcasting)]
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
-
-//! This crate provides basic traits and structures for emulated devices of ArceOS hypervisor.
-//!
-//! This crate contains:
-//! - [`BaseDeviceOps`] trait: The trait that all emulated devices must implement.
-//! - [`EmuDeviceType`] enum: Enumeration representing the type of emulator devices.
-//!   (Already moved to `axvmconfig` crate.)
 
 extern crate alloc;
 
