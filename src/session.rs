@@ -48,9 +48,20 @@ impl Session {
         true
     }
 
-    /// Unsets the terminal for this session, returning the previous terminal if it existed.
-    pub fn unset_terminal(&self) -> Option<Arc<dyn Any + Send + Sync>> {
-        self.terminal.lock().take()
+    /// Unsets the terminal for this session if it is the given terminal.
+    pub fn unset_terminal(&self, term: &Arc<dyn Any + Send + Sync>) -> bool {
+        let mut guard = self.terminal.lock();
+        if guard.as_ref().is_some_and(|it| Arc::ptr_eq(it, term)) {
+            *guard = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Gets the terminal for this session, if it exists.
+    pub fn terminal(&self) -> Option<Arc<dyn Any + Send + Sync>> {
+        self.terminal.lock().clone()
     }
 }
 
