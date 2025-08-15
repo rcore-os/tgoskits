@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::{borrow::Cow, string::ToString, sync::Arc};
 use core::{
     any::Any,
     ffi::c_int,
@@ -122,6 +122,11 @@ impl File {
     }
 }
 
+fn path_for(loc: &Location) -> Cow<'static, str> {
+    loc.absolute_path()
+        .map_or_else(|_| "<error>".into(), |f| Cow::Owned(f.to_string()))
+}
+
 impl FileLike for File {
     fn read(&self, buf: &mut [u8]) -> LinuxResult<usize> {
         let mut inner = self.inner();
@@ -164,6 +169,10 @@ impl FileLike for File {
 
     fn nonblocking(&self) -> bool {
         self.nonblock.load(Ordering::Acquire)
+    }
+
+    fn path(&self) -> Cow<str> {
+        path_for(self.inner.location())
     }
 
     fn from_fd(fd: c_int) -> LinuxResult<Arc<Self>>
@@ -222,6 +231,10 @@ impl FileLike for Directory {
 
     fn stat(&self) -> LinuxResult<Kstat> {
         Ok(metadata_to_kstat(&self.inner.metadata()?))
+    }
+
+    fn path(&self) -> Cow<str> {
+         path_for(&self.inner)
     }
 
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {

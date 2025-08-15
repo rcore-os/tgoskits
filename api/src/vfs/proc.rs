@@ -152,7 +152,7 @@ struct ThreadFdDir {
 impl SimpleDirOps for ThreadFdDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         let Some(task) = self.task.upgrade() else {
-          return Box::new(iter::empty());
+            return Box::new(iter::empty());
         };
         let ids = FD_TABLE
             .scope(&task.as_thread().proc_data.scope.read())
@@ -167,12 +167,15 @@ impl SimpleDirOps for ThreadFdDir {
         let fs = self.fs.clone();
         let task = self.task.upgrade().ok_or(VfsError::ENOENT)?;
         let fd = name.parse::<u32>().map_err(|_| VfsError::ENOENT)?;
-        let _ = FD_TABLE
+        let path = FD_TABLE
             .scope(&task.as_thread().proc_data.scope.read())
             .read()
             .get(fd as _)
-            .ok_or(VfsError::ENOENT)?;
-        Ok(SimpleFile::new_regular(fs, move || Ok("nothing haha")).into())
+            .ok_or(VfsError::ENOENT)?
+            .inner
+            .path()
+            .into_owned();
+        Ok(SimpleFile::new(fs, NodeType::Symlink, move || Ok(path.clone())).into())
     }
 
     fn is_cacheable(&self) -> bool {

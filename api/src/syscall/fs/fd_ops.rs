@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::{format, string::ToString, sync::Arc};
 use core::{
     ffi::{c_char, c_int},
     mem,
@@ -6,19 +6,21 @@ use core::{
 };
 
 use axerrno::{LinuxError, LinuxResult};
-use axfs_ng::{OpenOptions, OpenResult};
-use axfs_ng_vfs::NodePermission;
+use axfs_ng::{FS_CONTEXT, FileBackend, OpenOptions, OpenResult};
+use axfs_ng_vfs::{DirEntry, FileNode, Location, NodePermission, NodeType, Reference};
 use axtask::current;
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
-use starry_core::task::AsThread;
+use starry_core::{task::AsThread, vfs::Device};
 
 use crate::{
     file::{
-        add_file_like, close_file_like, get_file_like, with_fs, Directory, File, FileLike, Pipe, FD_TABLE
+        Directory, FD_TABLE, File, FileLike, Pipe, add_file_like, close_file_like, get_file_like,
+        with_fs,
     },
-    mm::{vm_load_string, UserPtr},
+    mm::{UserPtr, vm_load_string},
     syscall::sys::{sys_getegid, sys_geteuid},
+    vfs::dev::tty,
 };
 
 /// Convert open flags to [`OpenOptions`].
@@ -60,7 +62,44 @@ fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32))
 
 fn add_to_fd(result: OpenResult, flags: u32) -> LinuxResult<i32> {
     let f: Arc<dyn FileLike> = match result {
-        OpenResult::File(file) => Arc::new(File::new(file)),
+        OpenResult::File(mut file) => {
+            // /dev/xx handling
+            if let Ok(device) = file.location().entry().downcast::<Device>() {
+                let inner = device.inner().as_any();
+                if let Some(ptmx) = inner.downcast_ref::<tty::Ptmx>() {
+                    // Opening /dev/ptmx creates a new pseudo-terminal
+                    let (master, pty_number) = ptmx.create_pty()?;
+                    // TODO: this is cursed
+                    let pts = FS_CONTEXT.lock().resolve("/dev/pts")?;
+                    let entry = DirEntry::new_file(
+                        FileNode::new(master),
+                        NodeType::CharacterDevice,
+                        Reference::new(Some(pts.entry().clone()), pty_number.to_string()),
+                    );
+                    let loc = Location::new(file.location().mountpoint().clone(), entry);
+                    file = axfs_ng::File::new(FileBackend::Direct(loc), file.flags());
+                } else if inner.is::<tty::CurrentTty>() {
+                    let term = current()
+                        .as_thread()
+                        .proc_data
+                        .proc
+                        .group()
+                        .session()
+                        .terminal()
+                        .ok_or(LinuxError::ENOENT)?;
+                    let path = if term.is::<tty::NTtyDriver>() {
+                        "/dev/console".to_string()
+                    } else if let Some(pts) = term.downcast_ref::<tty::PtyDriver>() {
+                        format!("/dev/pts/{}", pts.pty_number())
+                    } else {
+                        panic!("unknown terminal type")
+                    };
+                    let loc = FS_CONTEXT.lock().resolve(&path)?;
+                    file = axfs_ng::File::new(FileBackend::Direct(loc), file.flags());
+                }
+            }
+            Arc::new(File::new(file))
+        }
         OpenResult::Dir(dir) => Arc::new(Directory::new(dir)),
     };
     if flags & O_NONBLOCK != 0 {
@@ -212,8 +251,8 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> LinuxResult<isize> {
     match cmd as u32 {
         F_DUPFD => dup_fd(fd, false),
         F_DUPFD_CLOEXEC => dup_fd(fd, true),
-        F_SETLK | F_SETLKW  => Ok(0),
-        F_OFD_SETLK | F_OFD_SETLKW  => Ok(0),
+        F_SETLK | F_SETLKW => Ok(0),
+        F_OFD_SETLK | F_OFD_SETLKW => Ok(0),
         F_GETLK | F_OFD_GETLK => {
             let arg = UserPtr::<flock64>::from(arg);
             arg.get_as_mut()?.l_type = F_UNLCK as _;

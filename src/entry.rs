@@ -7,7 +7,7 @@ use axfs_ng::FS_CONTEXT;
 use axhal::uspace::UserContext;
 use axsync::Mutex;
 use axtask::{TaskExtProxy, spawn_task};
-use starry_api::{file::FD_TABLE, task::new_user_task, vfs::dev::N_TTY};
+use starry_api::{file::FD_TABLE, task::new_user_task, vfs::dev::tty::N_TTY};
 use starry_core::{
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty},
     task::{ProcessData, Thread, add_task_to_table},
@@ -43,7 +43,7 @@ pub fn run_initproc(args: &[String], envs: &[String]) -> i32 {
     let proc = Process::new_init(pid);
     proc.add_thread(pid);
 
-    N_TTY.bind_to(&proc);
+    N_TTY.bind_to(&proc).expect("Failed to bind ntty");
 
     let proc_data = ProcessData::new(
         proc,

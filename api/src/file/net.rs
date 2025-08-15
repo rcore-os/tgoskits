@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::{borrow::Cow, format, sync::Arc};
 use core::{ffi::c_int, ops::Deref, task::Context};
 
 use axerrno::{LinuxError, LinuxResult};
@@ -54,6 +54,10 @@ impl FileLike for Socket {
     fn set_nonblocking(&self, nonblocking: bool) -> LinuxResult<()> {
         self.0
             .set_option(SetSocketOption::NonBlocking(&nonblocking))
+    }
+
+    fn path(&self) -> Cow<str> {
+        format!("socket:[{}]", self as *const _ as usize).into()
     }
 
     fn from_fd(fd: c_int) -> LinuxResult<Arc<Self>>

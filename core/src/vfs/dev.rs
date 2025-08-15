@@ -77,6 +77,11 @@ impl Device {
         &self.ops
     }
 
+    /// Updates the device ID.
+    pub fn set_device_id(&self, device_id: DeviceId) {
+        self.node.metadata.lock().rdev = device_id;
+    }
+
     /// Returns the memory mapping behavior of the device.
     pub fn mmap(&self) -> DeviceMmap {
         self.ops.mmap()

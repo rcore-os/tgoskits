@@ -1,4 +1,4 @@
-use alloc::sync::{Arc, Weak};
+use alloc::{borrow::Cow, sync::{Arc, Weak}};
 use core::task::Context;
 
 use axerrno::{LinuxError, LinuxResult};
@@ -34,6 +34,10 @@ impl FileLike for PidFd {
 
     fn stat(&self) -> LinuxResult<Kstat> {
         Ok(Kstat::default())
+    }
+
+    fn path(&self) -> Cow<str> {
+        "anon_inode:[pidfd]".into()
     }
 
     fn into_any(self: Arc<Self>) -> Arc<dyn core::any::Any + Send + Sync> {

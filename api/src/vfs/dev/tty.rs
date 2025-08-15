@@ -1,79 +1,88 @@
-use alloc::sync::Arc;
-use core::{any::Any, ops::Deref, task::Context};
+use alloc::sync::{Arc, Weak};
+use core::{any::Any, ops::Deref, sync::atomic::Ordering, task::Context};
 
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng_vfs::NodeFlags;
 use axio::{IoEvents, Pollable};
 use axsync::Mutex;
 use axtask::{current, future::Poller};
-use bytemuck::AnyBitPattern;
-use lazy_static::lazy_static;
-use starry_core::task::AsThread;
+use starry_core::{task::AsThread, vfs::SimpleFs};
 use starry_process::Process;
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
     terminal::{
-        job::JobControl,
-        ldisc::LineDiscipline,
+        Terminal, WindowSize,
+        ldisc::{LineDiscipline, ProcessMode, TtyConfig, TtyRead, TtyWrite},
         termios::{Termios, Termios2},
     },
     vfs::DeviceOps,
 };
 
-#[repr(C)]
-#[derive(Debug, Copy, Clone, AnyBitPattern)]
-pub struct WindowSize {
-    pub ws_row: u16,
-    pub ws_col: u16,
-    pub ws_xpixel: u16,
-    pub ws_ypixel: u16,
+mod ntty;
+mod ptm;
+mod pts;
+mod pty;
+
+pub use ntty::{N_TTY, NTtyDriver};
+pub use ptm::Ptmx;
+pub use pts::PtsDir;
+pub use pty::PtyDriver;
+
+pub fn create_pty_master(fs: Arc<SimpleFs>) -> LinuxResult<Arc<PtyDriver>> {
+    let (master, slave) = pty::create_pty_pair();
+    pts::add_slave(fs, slave)?;
+    Ok(master)
 }
 
 /// Tty device
-pub struct Tty {
-    job_control: Arc<JobControl>,
-    ldisc: Mutex<LineDiscipline>,
-    window_size: Mutex<WindowSize>,
+pub struct Tty<R, W> {
+    this: Weak<Self>,
+    terminal: Arc<Terminal>,
+    ldisc: Mutex<LineDiscipline<R, W>>,
+    writer: W,
+    is_ptm: bool,
 }
 
-impl Tty {
-    fn new() -> Self {
-        let job_control = Arc::new(JobControl::new());
-        let ldisc = Mutex::new(LineDiscipline::new(job_control.clone()));
-        let window_size = Mutex::new(WindowSize {
-            ws_row: 28,
-            ws_col: 110,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
-        });
-        Self {
-            job_control,
+impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
+    fn new(terminal: Arc<Terminal>, config: TtyConfig<R, W>) -> Arc<Self> {
+        let writer = config.writer.clone();
+        let is_ptm = matches!(&config.process_mode, ProcessMode::None(_));
+        let ldisc = Mutex::new(LineDiscipline::new(terminal.clone(), config));
+        Arc::new_cyclic(|this| Self {
+            this: this.clone(),
+            terminal,
             ldisc,
-            window_size,
-        }
+            writer,
+            is_ptm,
+        })
     }
+}
 
-    pub fn bind_to(self: &Arc<Self>, proc: &Process) {
+impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
+    pub fn bind_to(self: &Arc<Self>, proc: &Process) -> LinuxResult<()> {
         let pg = proc.group();
+        if pg.session().sid() != proc.pid() {
+            return Err(LinuxError::EPERM);
+        }
         assert!(pg.session().set_terminal_with(|| {
-            self.job_control.set_session(&pg.session());
+            self.terminal.job_control.set_session(&pg.session());
             self.clone()
         }));
 
-        self.job_control.set_foreground(&pg).unwrap();
+        self.terminal.job_control.set_foreground(&pg).unwrap();
+        Ok(())
+    }
+
+    pub fn pty_number(&self) -> u32 {
+        self.terminal.pty_number.load(Ordering::Acquire)
     }
 }
 
-lazy_static! {
-    /// The default TTY device.
-    pub static ref N_TTY: Arc<Tty> = Arc::new(Tty::new());
-}
-
-impl DeviceOps for Tty {
+impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
     fn read_at(&self, buf: &mut [u8], _offset: u64) -> LinuxResult<usize> {
-        Poller::new(self.job_control.as_ref(), IoEvents::IN).poll(|| {
-            if self.job_control.current_in_foreground() {
+        Poller::new(&self.terminal.job_control, IoEvents::IN).poll(|| {
+            if self.is_ptm || self.terminal.job_control.current_in_foreground() {
                 self.ldisc.lock().read(buf)
             } else {
                 Err(LinuxError::EAGAIN)
@@ -82,7 +91,7 @@ impl DeviceOps for Tty {
     }
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> LinuxResult<usize> {
-        axhal::console::write_bytes(buf);
+        self.writer.write(buf);
         Ok(buf.len())
     }
 
@@ -90,42 +99,72 @@ impl DeviceOps for Tty {
         use linux_raw_sys::ioctl::*;
         match cmd {
             TCGETS => {
-                (arg as *mut Termios)
-                    .vm_write(*self.ldisc.lock().termios.lock().as_ref().deref())?;
+                (arg as *mut Termios).vm_write(*self.terminal.termios.lock().as_ref().deref())?;
             }
             TCGETS2 => {
-                (arg as *mut Termios2).vm_write(*self.ldisc.lock().termios.lock().as_ref())?;
+                (arg as *mut Termios2).vm_write(*self.terminal.termios.lock().as_ref())?;
             }
             TCSETS | TCSETSF | TCSETSW => {
                 // TODO: drain output?
-                let mut ldisc = self.ldisc.lock();
-                *ldisc.termios.lock() = Arc::new(Termios2::new((arg as *const Termios).vm_read()?));
+                *self.terminal.termios.lock() =
+                    Arc::new(Termios2::new((arg as *const Termios).vm_read()?));
                 if cmd == TCSETSF {
-                    ldisc.drain_input();
+                    self.ldisc.lock().drain_input();
                 }
             }
             TCSETS2 | TCSETSF2 | TCSETSW2 => {
                 // TODO: drain output?
-                let mut ldisc = self.ldisc.lock();
-                *ldisc.termios.lock() = Arc::new((arg as *const Termios2).vm_read()?);
+                *self.terminal.termios.lock() = Arc::new((arg as *const Termios2).vm_read()?);
                 if cmd == TCSETSF2 {
-                    ldisc.drain_input();
+                    self.ldisc.lock().drain_input();
                 }
             }
             TIOCGPGRP => {
-                let foreground = self.job_control.foreground().ok_or(LinuxError::ESRCH)?;
+                let foreground = self
+                    .terminal
+                    .job_control
+                    .foreground()
+                    .ok_or(LinuxError::ESRCH)?;
                 (arg as *mut u32).vm_write(foreground.pgid())?;
             }
             TIOCSPGRP => {
                 let curr = current();
-                self.job_control
+                self.terminal
+                    .job_control
                     .set_foreground(&curr.as_thread().proc_data.proc.group())?;
             }
             TIOCGWINSZ => {
-                (arg as *mut WindowSize).vm_write(*self.window_size.lock())?;
+                (arg as *mut WindowSize).vm_write(*self.terminal.window_size.lock())?;
             }
             TIOCSWINSZ => {
-                *self.window_size.lock() = (arg as *const WindowSize).vm_read()?;
+                *self.terminal.window_size.lock() = (arg as *const WindowSize).vm_read()?;
+            }
+            TIOCSPTLCK => {}
+            TIOCGPTN => {
+                (arg as *mut u32).vm_write(self.pty_number())?;
+            }
+            TIOCSCTTY => {
+                self.this
+                    .upgrade()
+                    .unwrap()
+                    .bind_to(&current().as_thread().proc_data.proc)?;
+            }
+            TIOCNOTTY => {
+                if current()
+                    .as_thread()
+                    .proc_data
+                    .proc
+                    .group()
+                    .session()
+                    .unset_terminal(&(self.this.upgrade().unwrap() as _))
+                {
+                    // TODO: If the process was session leader, send SIGHUP and
+                    // SIGCONT to the foreground process group and all processes
+                    // in the current session lose their
+                    // controlling terminal.
+                } else {
+                    warn!("Failed to unset terminal");
+                }
             }
             _ => return Err(LinuxError::ENOTTY),
         }
@@ -146,19 +185,40 @@ impl DeviceOps for Tty {
     }
 }
 
-impl Pollable for Tty {
+impl<R: TtyRead, W: TtyWrite> Pollable for Tty<R, W> {
     fn poll(&self) -> IoEvents {
-        let mut events = IoEvents::OUT | self.job_control.poll();
-        if events.contains(IoEvents::IN) {
+        let mut events = IoEvents::OUT | self.terminal.job_control.poll();
+        if self.is_ptm || events.contains(IoEvents::IN) {
             events.set(IoEvents::IN, self.ldisc.lock().poll_read());
         }
         events
     }
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        self.job_control.register(context, events);
+        if !self.is_ptm {
+            self.terminal.job_control.register(context, events);
+        }
         if events.contains(IoEvents::IN) {
             self.ldisc.lock().register_rx_waker(context.waker());
         }
+    }
+}
+
+pub struct CurrentTty;
+impl DeviceOps for CurrentTty {
+    fn read_at(&self, _buf: &mut [u8], _offset: u64) -> LinuxResult<usize> {
+        unreachable!()
+    }
+
+    fn write_at(&self, _buf: &[u8], _offset: u64) -> LinuxResult<usize> {
+        unreachable!()
+    }
+
+    fn ioctl(&self, _cmd: u32, _arg: usize) -> LinuxResult<usize> {
+        unreachable!()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }

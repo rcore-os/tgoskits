@@ -5,7 +5,7 @@ mod net;
 mod pidfd;
 mod pipe;
 
-use alloc::sync::Arc;
+use alloc::{borrow::Cow, sync::Arc};
 use core::{any::Any, ffi::c_int, time::Duration};
 
 use axerrno::{LinuxError, LinuxResult};
@@ -128,6 +128,7 @@ pub trait FileLike: Pollable + Send + Sync {
     fn write(&self, buf: &[u8]) -> LinuxResult<usize>;
     fn stat(&self) -> LinuxResult<Kstat>;
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync>;
+    fn path(&self) -> Cow<str>;
     fn ioctl(&self, _cmd: u32, _arg: usize) -> LinuxResult<usize> {
         Err(LinuxError::ENOTTY)
     }

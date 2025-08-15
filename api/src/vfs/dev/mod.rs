@@ -7,7 +7,7 @@ mod r#loop;
 #[cfg(feature = "memtrack")]
 mod memtrack;
 mod rtc;
-mod tty;
+pub mod tty;
 
 use alloc::{format, sync::Arc};
 use core::any::Any;
@@ -17,7 +17,6 @@ use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsResult};
 use axsync::Mutex;
 use rand::{RngCore, SeedableRng, rngs::SmallRng};
 use starry_core::vfs::{Device, DeviceOps, DirMaker, DirMapping, SimpleDir, SimpleFs};
-pub use tty::N_TTY;
 
 const RANDOM_SEED: &[u8; 32] = b"0123456789abcdef0123456789abcdef";
 
@@ -206,14 +205,38 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         );
     }
 
-    let tty = Device::new(
-        fs.clone(),
-        NodeType::CharacterDevice,
-        DeviceId::new(5, 0),
-        N_TTY.clone(),
+    root.add(
+        "tty",
+        Device::new(
+            fs.clone(),
+            NodeType::CharacterDevice,
+            DeviceId::new(5, 0),
+            Arc::new(tty::CurrentTty),
+        ),
     );
-    root.add("tty", tty.clone());
-    root.add("console", tty.clone());
+    root.add(
+        "console",
+        Device::new(
+            fs.clone(),
+            NodeType::CharacterDevice,
+            DeviceId::new(5, 1),
+            tty::N_TTY.clone(),
+        ),
+    );
+
+    root.add(
+        "ptmx",
+        Device::new(
+            fs.clone(),
+            NodeType::CharacterDevice,
+            DeviceId::new(5, 2),
+            Arc::new(tty::Ptmx(fs.clone())),
+        ),
+    );
+    root.add(
+        "pts",
+        SimpleDir::new_maker(fs.clone(), Arc::new(tty::PtsDir)),
+    );
 
     #[cfg(feature = "memtrack")]
     root.add(

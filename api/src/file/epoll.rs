@@ -1,7 +1,5 @@
 use alloc::{
-    collections::vec_deque::VecDeque,
-    sync::{Arc, Weak},
-    task::Wake,
+    borrow::Cow, collections::vec_deque::VecDeque, sync::{Arc, Weak}, task::Wake
 };
 use core::{
     any::Any,
@@ -257,6 +255,10 @@ impl FileLike for Epoll {
 
     fn stat(&self) -> LinuxResult<Kstat> {
         Ok(Kstat::default())
+    }
+
+    fn path(&self) -> Cow<str> {
+        "anon_inode:[eventpoll]".into()
     }
 
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {

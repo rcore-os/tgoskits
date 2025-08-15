@@ -1,4 +1,4 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{
     future::poll_fn,
     ops::Range,
@@ -7,10 +7,8 @@ use core::{
 };
 
 use axerrno::{LinuxError, LinuxResult};
-use axhal::irq::register_irq_waker;
 use axio::{IoEvents, PollSet, Pollable};
 use axtask::future::{Poller, block_on};
-use kspin::SpinNoPreempt;
 use linux_raw_sys::general::{
     ECHOCTL, ECHOK, ICRNL, IGNCR, ISIG, VEOF, VERASE, VKILL, VMIN, VTIME,
 };
@@ -21,15 +19,52 @@ use ringbuf::{
 use starry_core::task::send_signal_to_process_group;
 use starry_signal::SignalInfo;
 
-use crate::terminal::{job::JobControl, termios::Termios2};
+use crate::terminal::{Terminal, termios::Termios2};
 
 const BUF_SIZE: usize = 80;
 
 type ReadBuf = Arc<ringbuf::StaticRb<u8, BUF_SIZE>>;
 
-struct InputReader {
-    termios: Arc<SpinNoPreempt<Arc<Termios2>>>,
-    job_control: Arc<JobControl>,
+/// How should we process inputs?
+pub enum ProcessMode {
+    /// Process inputs only on call to `read`
+    ///
+    /// This is the fallback strategy and is rather limited. For instance, you
+    /// can't interrupt a running program by Ctrl+C unless it's not blocked on a
+    /// `read` call to the terminal, since the signal is emitted only when
+    /// inputs are being processed.
+    Manual,
+    /// Spawns task for processing inputs, relying on external events to wake
+    /// up.
+    ///
+    /// In this mode a dedicated task is spawned to handle inputs. When there's
+    /// nothing to read the argument is invoked to register rx waker.
+    External(Box<dyn Fn(Waker) + Send + Sync>),
+    /// Do not process inputs.
+    ///
+    /// This is only used by the master side of pseudo tty. The argument is the
+    /// [`PollSet`] for incoming data.
+    None(Arc<PollSet>),
+}
+
+pub struct TtyConfig<R, W> {
+    pub reader: R,
+    pub writer: W,
+    pub process_mode: ProcessMode,
+}
+
+pub trait TtyRead: Send + Sync + 'static {
+    fn read(&mut self, buf: &mut [u8]) -> usize;
+}
+pub trait TtyWrite: Send + Sync + 'static {
+    fn write(&self, buf: &[u8]);
+}
+
+struct InputReader<R, W> {
+    terminal: Arc<Terminal>,
+
+    reader: R,
+    writer: W,
 
     buf_tx: CachingProd<ReadBuf>,
     read_buf: [u8; BUF_SIZE],
@@ -39,16 +74,16 @@ struct InputReader {
     line_read: Option<usize>,
     clear_line_buf: Arc<AtomicBool>,
 }
-impl InputReader {
+impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
     pub fn poll(&mut self) -> bool {
         if self.clear_line_buf.swap(false, Ordering::Relaxed) {
             self.line_buf.clear();
         }
         if self.read_range.is_empty() {
-            let read = axhal::console::read_bytes(&mut self.read_buf);
+            let read = self.reader.read(&mut self.read_buf);
             self.read_range = 0..read;
         }
-        let term = self.termios.lock().clone();
+        let term = self.terminal.load_termios();
         let mut sent = 0;
         loop {
             if let Some(offset) = &mut self.line_read {
@@ -123,7 +158,7 @@ impl InputReader {
             return;
         }
         if let Some(signo) = term.signo_for(ch)
-            && let Some(pg) = self.job_control.foreground()
+            && let Some(pg) = self.terminal.job_control.foreground()
         {
             let sig = SignalInfo::new_kernel(signo);
             if let Err(err) = send_signal_to_process_group(pg.pgid(), Some(sig)) {
@@ -133,14 +168,13 @@ impl InputReader {
     }
 
     fn output_char(&self, term: &Termios2, ch: u8) {
-        use axhal::console::write_bytes;
         match ch {
-            b'\n' => write_bytes(b"\n"),
-            b'\r' => write_bytes(b"\r\n"),
-            ch if ch == term.special_char(VERASE) => write_bytes(b"\x08 \x08"),
-            ch if ch.is_ascii_graphic() => write_bytes(&[ch]),
+            b'\n' => self.writer.write(b"\n"),
+            b'\r' => self.writer.write(b"\r\n"),
+            ch if ch == term.special_char(VERASE) => self.writer.write(b"\x08 \x08"),
+            ch if ch == b' ' || ch.is_ascii_graphic() => self.writer.write(&[ch]),
             ch if ch.is_ascii_control() && term.has_lflag(ECHOCTL) => {
-                write_bytes(&[b'^', (ch + 0x40)]);
+                self.writer.write(&[b'^', (ch + 0x40)]);
             }
             other => {
                 warn!("Ignored echo char: {:#x}", other);
@@ -149,17 +183,35 @@ impl InputReader {
     }
 }
 
-pub struct LineDiscipline {
-    pub termios: Arc<SpinNoPreempt<Arc<Termios2>>>,
+struct SimpleReader<R> {
+    reader: R,
+    read_buf: [u8; BUF_SIZE],
+    buf_tx: CachingProd<ReadBuf>,
+}
+impl<R: TtyRead> SimpleReader<R> {
+    pub fn poll(&mut self) {
+        let read = self.reader.read(&mut self.read_buf);
+        for ch in &self.read_buf[..read] {
+            if *ch == b'\n' {
+                let _ = self.buf_tx.try_push(b'\r');
+            }
+            let _ = self.buf_tx.try_push(*ch);
+        }
+    }
+}
+
+enum Processor<R, W> {
+    Manual(InputReader<R, W>),
+    External(Arc<PollSet>),
+    None(SimpleReader<R>, Arc<PollSet>),
+}
+
+pub struct LineDiscipline<R, W> {
+    terminal: Arc<Terminal>,
     buf_rx: CachingCons<ReadBuf>,
     poll_tx: Arc<PollSet>,
     clear_line_buf: Arc<AtomicBool>,
-    /// The read part of the line discipline.
-    ///
-    /// This could either be:
-    /// - `Ok(reader)`: The input is driven by polling
-    /// - `Err(poll)`: The input is driven by external interrupt
-    reader: Result<InputReader, Arc<PollSet>>,
+    processor: Processor<R, W>,
 }
 
 struct WaitPollable<'a>(Option<&'a Arc<PollSet>>);
@@ -177,16 +229,16 @@ impl Pollable for WaitPollable<'_> {
     }
 }
 
-impl LineDiscipline {
-    pub fn new(job_control: Arc<JobControl>) -> Self {
-        let termios = Arc::<SpinNoPreempt<Arc<Termios2>>>::default();
+impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
+    pub fn new(terminal: Arc<Terminal>, config: TtyConfig<R, W>) -> Self {
         let (buf_tx, buf_rx) = ReadBuf::default().split();
-        let poll_tx = Arc::new(PollSet::new());
 
         let clear_line_buf = Arc::new(AtomicBool::new(false));
         let mut reader = InputReader {
-            termios: termios.clone(),
-            job_control: job_control.clone(),
+            terminal: terminal.clone(),
+
+            reader: config.reader,
+            writer: config.writer,
 
             buf_tx,
             read_buf: [0; BUF_SIZE],
@@ -196,38 +248,52 @@ impl LineDiscipline {
             line_read: None,
             clear_line_buf: clear_line_buf.clone(),
         };
-        let reader = if let Some(irq) = axhal::console::get_console_irq() {
-            let poll_rx = Arc::new(PollSet::new());
-            axtask::spawn(
-                {
-                    let poll_rx = poll_rx.clone();
-                    let poll_tx = poll_tx.clone();
-                    move || {
-                        block_on(poll_fn(|cx| {
-                            while reader.poll() {
-                                poll_rx.wake();
-                            }
-                            poll_tx.register(cx.waker());
-                            register_irq_waker(irq as _, cx.waker());
-                            while reader.poll() {
-                                poll_rx.wake();
-                            }
-                            Poll::Pending
-                        }))
-                    }
-                },
-                "tty-reader".into(),
-            );
-            Err(poll_rx)
-        } else {
-            Ok(reader)
+
+        let poll_tx = Arc::new(PollSet::new());
+        let processor = match config.process_mode {
+            ProcessMode::Manual => Processor::Manual(reader),
+            ProcessMode::External(register) => {
+                let poll_rx = Arc::new(PollSet::new());
+                axtask::spawn(
+                    {
+                        let poll_rx = poll_rx.clone();
+                        let poll_tx = poll_tx.clone();
+                        move || {
+                            block_on(poll_fn(|cx| {
+                                while reader.poll() {
+                                    poll_rx.wake();
+                                }
+                                poll_tx.register(cx.waker());
+                                register(cx.waker().clone());
+                                while reader.poll() {
+                                    poll_rx.wake();
+                                }
+                                Poll::Pending
+                            }))
+                        }
+                    },
+                    "tty-reader".into(),
+                );
+                Processor::External(poll_rx)
+            }
+            ProcessMode::None(poll_rx) => {
+                // Destruct the reader here
+                Processor::None(
+                    SimpleReader {
+                        reader: reader.reader,
+                        read_buf: [0; BUF_SIZE],
+                        buf_tx: reader.buf_tx,
+                    },
+                    poll_rx,
+                )
+            }
         };
         Self {
-            termios,
+            terminal,
             buf_rx,
             poll_tx,
             clear_line_buf,
-            reader,
+            processor,
         }
     }
 
@@ -237,18 +303,22 @@ impl LineDiscipline {
     }
 
     pub fn poll_read(&mut self) -> bool {
-        if let Ok(reader) = &mut self.reader {
-            reader.poll();
+        match &mut self.processor {
+            Processor::Manual(reader) => {
+                reader.poll();
+            }
+            Processor::None(reader, _) => reader.poll(),
+            _ => {}
         }
         !self.buf_rx.is_empty()
     }
 
     pub fn register_rx_waker(&self, waker: &Waker) {
-        match &self.reader {
-            Ok(_) => {
+        match &self.processor {
+            Processor::Manual(_) => {
                 waker.wake_by_ref();
             }
-            Err(set) => {
+            Processor::External(set) | Processor::None(_, set) => {
                 set.register(waker);
             }
         }
@@ -258,8 +328,16 @@ impl LineDiscipline {
         if buf.is_empty() {
             return Ok(0);
         }
+        if matches!(self.processor, Processor::None(_, _)) {
+            let read = self.buf_rx.pop_slice(buf);
+            return if read == 0 {
+                Err(LinuxError::EAGAIN)
+            } else {
+                Ok(read)
+            };
+        }
 
-        let term = self.termios.lock().clone();
+        let term = self.terminal.termios.lock().clone();
         let vmin = if term.canonical() {
             1
         } else {
@@ -275,7 +353,12 @@ impl LineDiscipline {
         }
 
         let mut total_read = 0;
-        let pollable = WaitPollable(self.reader.as_ref().err());
+        let set = match &self.processor {
+            Processor::Manual(_) => None,
+            Processor::External(set) => Some(set),
+            _ => unreachable!(),
+        };
+        let pollable = WaitPollable(set);
         Poller::new(&pollable, IoEvents::IN).poll(|| {
             total_read += self.buf_rx.pop_slice(&mut buf[total_read..]);
             self.poll_tx.wake();

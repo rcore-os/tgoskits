@@ -516,7 +516,7 @@ dependencies = [
 [[package]]
 name = "axplat"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=1a42cb0#1a42cb064d340d7e00e7f83f6a172144c8c60a7a"
+source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=c5fbda5#c5fbda59691b0956c4522be048d0e587626962a1"
 dependencies = [
  "axplat-macros",
  "bitflags 2.9.1",
@@ -562,7 +562,7 @@ dependencies = [
 [[package]]
 name = "axplat-loongarch64-qemu-virt"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=1a42cb0#1a42cb064d340d7e00e7f83f6a172144c8c60a7a"
+source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=c5fbda5#c5fbda59691b0956c4522be048d0e587626962a1"
 dependencies = [
  "axconfig-macros",
  "axcpu",
@@ -590,7 +590,7 @@ dependencies = [
 [[package]]
 name = "axplat-riscv64-qemu-virt"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=1a42cb0#1a42cb064d340d7e00e7f83f6a172144c8c60a7a"
+source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=c5fbda5#c5fbda59691b0956c4522be048d0e587626962a1"
 dependencies = [
  "axconfig-macros",
  "axcpu",
@@ -2187,7 +2187,7 @@ dependencies = [
 [[package]]
 name = "starry-process"
 version = "0.2.0"
-source = "git+https://github.com/Starry-Mix-THU/starry-process.git?rev=7e78f22#7e78f22a2c27cfd639193bb0eab206b8895b1f36"
+source = "git+https://github.com/Starry-Mix-THU/starry-process.git?rev=6327455#63274556bddcf111dec9d7f03362f7008c90a6da"
 dependencies = [
  "kspin",
  "lazyinit",

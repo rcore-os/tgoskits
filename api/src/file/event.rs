@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::{borrow::Cow, sync::Arc};
 use core::{
     any::Any,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
@@ -107,6 +107,10 @@ impl FileLike for EventFd {
     fn set_nonblocking(&self, non_blocking: bool) -> axio::Result {
         self.non_blocking.store(non_blocking, Ordering::Release);
         Ok(())
+    }
+
+    fn path(&self) -> Cow<str> {
+        "anon_inode:[eventfd]".into()
     }
 
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {

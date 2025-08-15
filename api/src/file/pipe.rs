@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::{borrow::Cow, format, sync::Arc};
 use core::{
     any::Any,
     mem,
@@ -165,6 +165,10 @@ impl FileLike for Pipe {
             mode: S_IFIFO | if self.is_read() { 0o444 } else { 0o222 },
             ..Default::default()
         })
+    }
+
+    fn path(&self) -> Cow<str> {
+        format!("pipe:[{}]", self as *const _ as usize).into()
     }
 
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
