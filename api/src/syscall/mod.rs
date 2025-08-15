@@ -489,11 +489,13 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
         Sysno::getegid => sys_getegid(),
         Sysno::setuid => sys_setuid(tf.arg0() as _),
         Sysno::setgid => sys_setgid(tf.arg0() as _),
+        Sysno::getgroups => sys_getgroups(tf.arg0() as _, tf.arg1() as _),
+        Sysno::setgroups => sys_setgroups(tf.arg0() as _, tf.arg1() as _),
         Sysno::uname => sys_uname(tf.arg0() as _),
         Sysno::sysinfo => sys_sysinfo(tf.arg0() as _),
         Sysno::syslog => sys_syslog(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
         Sysno::getrandom => sys_getrandom(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
-        Sysno::seccomp => sys_seccomp(tf.arg0() as _, tf.arg1() as _, tf.arg2().into()),
+        Sysno::seccomp => sys_seccomp(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
         #[cfg(target_arch = "riscv64")]
         Sysno::riscv_flush_icache => sys_riscv_flush_icache(),
 

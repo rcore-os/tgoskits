@@ -1,7 +1,7 @@
 use alloc::vec;
 use core::ffi::c_char;
 
-use axerrno::LinuxResult;
+use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::FS_CONTEXT;
 use linux_raw_sys::{
     general::{GRND_INSECURE, GRND_NONBLOCK, GRND_RANDOM},
@@ -9,8 +9,6 @@ use linux_raw_sys::{
 };
 use starry_core::task::processes;
 use starry_vm::{VmMutPtr, vm_write_slice};
-
-use crate::mm::UserPtr;
 
 pub fn sys_getuid() -> LinuxResult<isize> {
     Ok(0)
@@ -35,6 +33,19 @@ pub fn sys_setuid(_uid: u32) -> LinuxResult<isize> {
 
 pub fn sys_setgid(_gid: u32) -> LinuxResult<isize> {
     debug!("sys_setgid <= gid: {}", _gid);
+    Ok(0)
+}
+
+pub fn sys_getgroups(size: usize, list: *mut u32) -> LinuxResult<isize> {
+    debug!("sys_getgroups <= size: {}", size);
+    if size < 1 {
+        return Err(LinuxError::EINVAL);
+    }
+    vm_write_slice(list, &[0])?;
+    Ok(1)
+}
+
+pub fn sys_setgroups(_size: usize, _list: *const u32) -> LinuxResult<isize> {
     Ok(0)
 }
 
@@ -110,7 +121,7 @@ pub fn sys_getrandom(buf: *mut u8, len: usize, flags: u32) -> LinuxResult<isize>
     Ok(len as _)
 }
 
-pub fn sys_seccomp(_op: u32, _flags: u32, _args: UserPtr<()>) -> LinuxResult<isize> {
+pub fn sys_seccomp(_op: u32, _flags: u32, _args: *const ()) -> LinuxResult<isize> {
     info!("Dummy sys_seccomp called");
     Ok(0)
 }

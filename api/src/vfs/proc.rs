@@ -21,6 +21,8 @@ use starry_core::{
 };
 use starry_process::Process;
 
+use crate::file::FD_TABLE;
+
 const DUMMY_MEMINFO: &str = indoc! {"
     MemTotal:       32536204 kB
     MemFree:         5506524 kB
@@ -141,6 +143,43 @@ fn task_status(task: &AxTaskRef) -> String {
     )
 }
 
+/// The /proc/[pid]/fd directory
+struct ThreadFdDir {
+    fs: Arc<SimpleFs>,
+    task: WeakAxTaskRef,
+}
+
+impl SimpleDirOps for ThreadFdDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        let Some(task) = self.task.upgrade() else {
+          return Box::new(iter::empty());
+        };
+        let ids = FD_TABLE
+            .scope(&task.as_thread().proc_data.scope.read())
+            .read()
+            .ids()
+            .map(|id| Cow::Owned(id.to_string()))
+            .collect::<Vec<_>>();
+        Box::new(ids.into_iter())
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        let fs = self.fs.clone();
+        let task = self.task.upgrade().ok_or(VfsError::ENOENT)?;
+        let fd = name.parse::<u32>().map_err(|_| VfsError::ENOENT)?;
+        let _ = FD_TABLE
+            .scope(&task.as_thread().proc_data.scope.read())
+            .read()
+            .get(fd as _)
+            .ok_or(VfsError::ENOENT)?;
+        Ok(SimpleFile::new_regular(fs, move || Ok("nothing haha")).into())
+    }
+
+    fn is_cacheable(&self) -> bool {
+        false
+    }
+}
+
 /// The /proc/[pid] directory
 struct ThreadDir {
     fs: Arc<SimpleFs>,
@@ -160,6 +199,7 @@ impl SimpleDirOps for ThreadDir {
                 "cmdline",
                 "comm",
                 "exe",
+                "fd",
             ]
             .into_iter()
             .map(Cow::Borrowed),
@@ -256,6 +296,14 @@ impl SimpleDirOps for ThreadDir {
             "exe" => SimpleFile::new(fs, NodeType::Symlink, move || {
                 Ok(task.as_thread().proc_data.exe_path.read().clone())
             })
+            .into(),
+            "fd" => SimpleDir::new_maker(
+                fs.clone(),
+                Arc::new(ThreadFdDir {
+                    fs,
+                    task: Arc::downgrade(&task),
+                }),
+            )
             .into(),
             _ => return Err(VfsError::ENOENT),
         })
