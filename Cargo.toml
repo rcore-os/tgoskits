@@ -141,7 +141,7 @@ axplat-loongarch64-qemu-virt = { git = "https://github.com/Starry-Mix-THU/axplat
 page_table_entry = { git = "https://github.com/Starry-Mix-THU/page_table_multiarch.git", rev = "4edb821" }
 page_table_multiarch = { git = "https://github.com/Starry-Mix-THU/page_table_multiarch.git", rev = "4edb821" }
 starry-process = { git = "https://github.com/Starry-Mix-THU/starry-process.git", rev = "7e78f22" }
-starry-signal = { git = "https://github.com/Starry-Mix-THU/starry-signal.git", rev = "e49f234" }
+starry-signal = { git = "https://github.com/Starry-Mix-THU/starry-signal.git", rev = "f45379a" }
 starry-vm = { git = "https://github.com/Starry-Mix-THU/starry-vm.git", rev = "e86cbc0" }
 
 [package.metadata.vendor-filter]
