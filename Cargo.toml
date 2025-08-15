@@ -93,6 +93,7 @@ qemu = [
 
     "axfeat/driver-virtio-input",
     "axfeat/input",
+    "axfeat/fs-times",
     # "axdriver/dyn",
     "starry-api/input",
 
