@@ -20,11 +20,14 @@ pub mod vfs;
 
 /// Initialize.
 pub fn init() {
+    info!("Initialize VFS...");
     vfs::mount_all().expect("Failed to mount vfs");
 
+    info!("Initialize /proc/interrupts...");
     axtask::register_timer_callback(|_| {
         time::inc_irq_cnt();
     });
 
+    info!("Initialize alarm...");
     starry_core::time::spawn_alarm_task();
 }

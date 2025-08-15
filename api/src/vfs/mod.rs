@@ -27,7 +27,8 @@ fn mount_at(fs: &FsContext, path: &str, mount_fs: Filesystem) -> LinuxResult<()>
 /// Mount all filesystems
 pub fn mount_all() -> LinuxResult<()> {
     let fs = FS_CONTEXT.lock();
-    mount_at(&fs, "/dev", dev::new_devfs()?)?;
+    mount_at(&fs, "/dev", dev::new_devfs())?;
+    mount_at(&fs, "/dev/shm", tmp::MemoryFs::new())?;
     mount_at(&fs, "/tmp", tmp::MemoryFs::new())?;
     mount_at(&fs, "/proc", proc::new_procfs())?;
 

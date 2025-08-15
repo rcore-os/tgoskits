@@ -12,8 +12,7 @@ mod tty;
 use alloc::{format, sync::Arc};
 use core::any::Any;
 
-use axerrno::{LinuxError, LinuxResult};
-use axfs_ng::FsContext;
+use axerrno::LinuxError;
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsResult};
 use axsync::Mutex;
 use rand::{RngCore, SeedableRng, rngs::SmallRng};
@@ -22,13 +21,8 @@ pub use tty::N_TTY;
 
 const RANDOM_SEED: &[u8; 32] = b"0123456789abcdef0123456789abcdef";
 
-pub(crate) fn new_devfs() -> LinuxResult<Filesystem> {
-    let fs = SimpleFs::new_with("devfs".into(), 0x01021994, builder);
-    let mp = axfs_ng_vfs::Mountpoint::new_root(&fs);
-    FsContext::new(mp.root_location())
-        .resolve("/shm")?
-        .mount(&super::tmp::MemoryFs::new())?;
-    Ok(fs)
+pub(crate) fn new_devfs() -> Filesystem {
+    SimpleFs::new_with("devfs".into(), 0x01021994, builder)
 }
 
 struct Null;
