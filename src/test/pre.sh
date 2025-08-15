@@ -49,6 +49,7 @@ run_ltp() {
     export LTP_SINGLE_FS_TYPE=tmpfs
 
     all_testcases="
+    rt_sigsuspend01
     abort01
     accept01
     accept03
@@ -421,7 +422,10 @@ run_ltp() {
     rt_sigprocmask02
     sbrk01
     sbrk02
+    sched_getaffinity01
+    sched_getscheduler01
     select03
+    select04
     sendfile02
     sendfile02_64
     sendfile04
@@ -432,13 +436,26 @@ run_ltp() {
     sendfile06_64
     sendfile08
     sendfile08_64
+    sendmmsg02
+    sendto02
+    setgid01
+    setgid03
     setitimer01
     setitimer02
+    setpgid02
     setpgrp02
+    setresuid04
+    setresuid05
+    setreuid01
+    setreuid03
+    setreuid04
+    setreuid05
+    setreuid07
     setrlimit02
     setrlimit03
     setrlimit04
     setrlimit05
+    setsockopt01
     setsockopt03
     setsockopt04
     setuid01
@@ -467,8 +484,11 @@ run_ltp() {
     signal05
     sigpending02
     sigprocmask01
+    sigwait01
     socket01
     socket02
+    socketpair01
+    socketpair02
     splice01
     splice02
     splice03
@@ -483,8 +503,11 @@ run_ltp() {
     stat02_64
     stat03
     stat03_64
+    statfs01
+    statfs01_64
     statfs02
     statfs02_64
+    statvfs01
     statvfs02
     statx01
     statx02
@@ -493,10 +516,18 @@ run_ltp() {
     symlink04
     syscall01
     tgkill03
+    thp01
+    time01
+    times01
+    times03
     tkill01
     tkill02
     truncate02
     truncate02_64
+    truncate03
+    truncate03_64
+    ulimit01
+    umask01
     uname01
     uname02
     uname04
@@ -505,6 +536,11 @@ run_ltp() {
     unlink08
     unlink09
     unlinkat01
+    utime01
+    utime02
+    utime03
+    utime04
+    utime05
     utime06
     utime07
     utimes01
@@ -515,12 +551,16 @@ run_ltp() {
     wait401
     wait402
     wait403
+    waitid04
+    waitid05
+    waitid06
     waitpid01
     waitpid03
     waitpid04
     waitpid06
     waitpid07
     waitpid08
+    waitpid09
     waitpid10
     waitpid11
     waitpid12
