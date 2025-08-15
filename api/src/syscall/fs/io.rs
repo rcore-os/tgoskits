@@ -167,6 +167,25 @@ pub fn sys_fdatasync(fd: c_int) -> LinuxResult<isize> {
     Ok(0)
 }
 
+pub fn sys_fadvise64(
+    fd: c_int,
+    offset: __kernel_off_t,
+    len: __kernel_off_t,
+    advice: u32,
+) -> LinuxResult<isize> {
+    debug!(
+        "sys_fadvise64 <= fd: {}, offset: {}, len: {}, advice: {}",
+        fd, offset, len, advice
+    );
+    if Pipe::from_fd(fd).is_ok() {
+        return Err(LinuxError::ESPIPE);
+    }
+    if advice > 5 {
+        return Err(LinuxError::EINVAL);
+    }
+    Ok(0)
+}
+
 pub fn sys_pread64(
     fd: c_int,
     buf: UserPtr<u8>,

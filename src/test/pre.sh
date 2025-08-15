@@ -82,18 +82,24 @@ run_ltp() {
     clock_nanosleep01
     clock_nanosleep04
     clone01
+    clone02
     clone03
     clone06
+    clone07
     close01
     close02
     confstr01
+    copy_file_range01
     creat01
+    creat03
     creat05
+    creat08
     dirtypipe
     dup01
     dup02
     dup03
     dup04
+    dup06
     dup07
     dup201
     dup202
@@ -113,6 +119,11 @@ run_ltp() {
     epoll_ctl03
     epoll_ctl04
     epoll_ctl05
+    epoll_pwait01
+    epoll_pwait02
+    epoll_pwait03
+    epoll_pwait04
+    epoll_pwait05
     epoll_wait01
     epoll_wait02
     epoll_wait03
@@ -120,11 +131,6 @@ run_ltp() {
     epoll_wait05
     epoll_wait06
     epoll_wait07
-    epoll_pwait01
-    epoll_pwait02
-    epoll_pwait03
-    epoll_pwait04
-    epoll_pwait05
     eventfd01
     eventfd02
     eventfd03
@@ -133,13 +139,21 @@ run_ltp() {
     eventfd2_01
     eventfd2_02
     eventfd2_03
+    execl01
+    execle01
+    execlp01
+    execv01
+    execve01
     execve03
+    execve05
+    execvp01
     exit_group01
     exit02
     faccessat01
     faccessat02
     faccessat201
     faccessat202
+    fallocate03
     fchdir01
     fchdir02
     fchmod01
@@ -171,8 +185,11 @@ run_ltp() {
     fcntl29_64
     fdatasync01
     fdatasync02
+    flock06
+    fork_procs
     fork01
     fork03
+    fork04
     fork07
     fork08
     fork10
@@ -204,8 +221,11 @@ run_ltp() {
     getdomainname01
     getegid01
     getegid01_16
+    getegid02
+    getegid02_16
     geteuid01
     geteuid02
+    getgid03
     gethostname01
     getitimer01
     getitimer02
@@ -230,11 +250,16 @@ run_ltp() {
     getrusage02
     getsid01
     getsid02
+    getsockname01
+    getsockopt01
+    getsockopt02
     gettid01
     gettid02
     gettimeofday01
     getuid01
     getuid03
+    in6_01
+    ioctl_ns07
     ioctl04
     ioctl05
     ioctl06
@@ -243,10 +268,12 @@ run_ltp() {
     kill07
     kill08
     kill09
+    kill11
     link02
     link04
     link05
     link08
+    listen01
     llseek01
     llseek02
     llseek03
@@ -268,19 +295,29 @@ run_ltp() {
     memcmp01
     memcpy01
     memset01
+    mkdir02
+    mkdir04
     mkdir05
+    mkdir09
     mkdirat02
+    mlock01
+    mlock03
+    mlock04
     mmap01
     mmap02
     mmap03
     mmap05
+    mmap06
     mmap07
     mmap09
     mmap10
     mmap11
+    mmap12
+    mmap13
     mmap15
     mmap16
     mmap17
+    mmap18
     mmap19
     mmap20
     mprotect01
@@ -288,6 +325,7 @@ run_ltp() {
     mprotect03
     mprotect04
     mprotect05
+    nanosleep02
     nanosleep04
     open01
     open02
@@ -320,6 +358,14 @@ run_ltp() {
     pipe2_02_child
     pipe2_04
     poll01
+    posix_fadvise01
+    posix_fadvise01_64
+    posix_fadvise02
+    posix_fadvise02_64
+    posix_fadvise03
+    posix_fadvise03_64
+    posix_fadvise04
+    posix_fadvise04_64
     ppoll01
     pread01
     pread01_64
@@ -327,6 +373,12 @@ run_ltp() {
     pread02_64
     preadv01
     preadv01_64
+    preadv02
+    preadv02_64
+    preadv201
+    preadv201_64
+    preadv202
+    preadv202_64
     pselect02
     pselect02_64
     pselect03
@@ -341,16 +393,26 @@ run_ltp() {
     pwrite04_64
     pwritev01
     pwritev01_64
+    pwritev201
+    pwritev201_64
     read01
     read02
     read03
     read04
     readdir01
     readlink01
+    readlink03
     readlinkat01
     readlinkat02
     readv01
     readv02
+    realpath01
+    recvmsg01
+    rename01
+    rename03
+    rename08
+    rename09
+    rename10
     rmdir01
     rmdir02
     rmdir03
