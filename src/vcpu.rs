@@ -137,6 +137,11 @@ impl<A: AxArchVCpu> AxVCpu<A> {
         self.inner_const.vcpu_id
     }
 
+    /// Get the id of the VM this vcpu belongs to.
+    pub const fn vm_id(&self) -> VMId {
+        self.inner_const.vm_id
+    }
+
     /// Returns the preferred physical CPU for this VCpu.
     ///
     /// This is used for CPU affinity optimization - the scheduler should

@@ -13,6 +13,5 @@ license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0" # MulanPubL2 is not i
 axerrno = "0.1.0"
 memory_addr = "0.4"
 percpu = "0.2.0"
-
 axaddrspace = "=0.1.0"
 axvisor_api = "=0.1.0"
