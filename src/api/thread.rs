@@ -89,7 +89,7 @@ impl ThreadSignalManager {
                 let sp = if stack.disabled() || !action.flags.contains(SignalActionFlags::ONSTACK) {
                     tf.sp()
                 } else {
-                    stack.sp
+                    stack.sp + stack.size
                 };
                 drop(stack);
 
