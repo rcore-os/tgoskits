@@ -611,9 +611,11 @@ timeout 60 ./busybox_testcode.sh
 cd /musl
 timeout 60 ./libctest_testcode.sh
 timeout 60 ./libcbench_testcode.sh
+timeout 120 ./cyclictest_testcode.sh
 
 cd /glibc
 timeout 60 ./libcbench_testcode.sh
+timeout 120 ./cyclictest_testcode.sh
 
 cd /musl
 timeout 60 ./iperf_testcode.sh
