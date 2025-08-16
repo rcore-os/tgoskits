@@ -44,3 +44,9 @@ fn main() {
 
 #[cfg(feature = "vf2")]
 extern crate axplat_riscv64_visionfive2;
+
+#[cfg(feature = "2k1000la")]
+extern crate axplat_loongarch64_2k1000la;
+
+#[cfg(feature = "2k1000la")]
+axdriver::include_initrd!("initrd.img");

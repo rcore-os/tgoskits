@@ -273,7 +273,6 @@ pub fn handle_user_page_fault(
     }
 }
 
-// FIXME: remove this
 #[register_trap_handler(PAGE_FAULT)]
 fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
     debug!(

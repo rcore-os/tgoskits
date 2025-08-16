@@ -51,12 +51,19 @@ pub fn new_user_task(
                         handle_user_page_fault(&thr.proc_data, addr, flags)
                     }
                     ReturnReason::Interrupt => {}
-                    ReturnReason::Exception(exc_info) => {
+                    #[allow(unused_labels)]
+                    ReturnReason::Exception(exc_info) => 'exc: {
                         // TODO: detailed handling
                         let signo = match exc_info.kind() {
+                            ExceptionKind::Misaligned => {
+                                #[cfg(target_arch = "loongarch64")]
+                                if unsafe { uctx.emulate_unaligned() }.is_ok() {
+                                    break 'exc;
+                                }
+                                Signo::SIGBUS
+                            }
                             ExceptionKind::Breakpoint => Signo::SIGTRAP,
                             ExceptionKind::IllegalInstruction => Signo::SIGILL,
-                            ExceptionKind::Misaligned => Signo::SIGBUS,
                             _ => Signo::SIGTRAP,
                         };
                         send_signal_to_process(

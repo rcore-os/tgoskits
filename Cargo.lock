@@ -226,7 +226,7 @@ dependencies = [
 [[package]]
 name = "axcpu"
 version = "0.2.2"
-source = "git+https://github.com/Starry-Mix-THU/axcpu.git?rev=e706e23#e706e236bf8c4c4e00345c37a6cc4187a285496f"
+source = "git+https://github.com/Starry-Mix-THU/axcpu.git?rev=504eba1#504eba15a3f1e62ab370845e92aa6407707ca61c"
 dependencies = [
  "aarch64-cpu",
  "axbacktrace",
@@ -516,7 +516,7 @@ dependencies = [
 [[package]]
 name = "axplat"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=c5fbda5#c5fbda59691b0956c4522be048d0e587626962a1"
+source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=27662a5#27662a581698a90cd6bdc31f541af0205a3b4d0d"
 dependencies = [
  "axplat-macros",
  "bitflags 2.9.1",
@@ -560,9 +560,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "axplat-loongarch64-2k1000la"
+version = "0.1.0"
+dependencies = [
+ "axconfig-macros",
+ "axcpu",
+ "axplat",
+ "chrono",
+ "kspin",
+ "lazyinit",
+ "log",
+ "loongArch64",
+ "page_table_entry",
+ "uart_16550 0.4.0",
+]
+
+[[package]]
 name = "axplat-loongarch64-qemu-virt"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=c5fbda5#c5fbda59691b0956c4522be048d0e587626962a1"
+source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=27662a5#27662a581698a90cd6bdc31f541af0205a3b4d0d"
 dependencies = [
  "axconfig-macros",
  "axcpu",
@@ -590,7 +606,7 @@ dependencies = [
 [[package]]
 name = "axplat-riscv64-qemu-virt"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=c5fbda5#c5fbda59691b0956c4522be048d0e587626962a1"
+source = "git+https://github.com/Starry-Mix-THU/axplat_crates.git?rev=27662a5#27662a581698a90cd6bdc31f541af0205a3b4d0d"
 dependencies = [
  "axconfig-macros",
  "axcpu",
@@ -1633,7 +1649,7 @@ dependencies = [
 [[package]]
 name = "page_table_entry"
 version = "0.5.5"
-source = "git+https://github.com/Starry-Mix-THU/page_table_multiarch.git?rev=4edb821#4edb8217a12dd033409d8ac48f7adae5a89babfa"
+source = "git+https://github.com/Starry-Mix-THU/page_table_multiarch.git?rev=ca1f871#ca1f8716c8faa2a37d87f65e0af6d97e93cd445f"
 dependencies = [
  "aarch64-cpu",
  "bitflags 2.9.1",
@@ -1644,7 +1660,7 @@ dependencies = [
 [[package]]
 name = "page_table_multiarch"
 version = "0.5.5"
-source = "git+https://github.com/Starry-Mix-THU/page_table_multiarch.git?rev=4edb821#4edb8217a12dd033409d8ac48f7adae5a89babfa"
+source = "git+https://github.com/Starry-Mix-THU/page_table_multiarch.git?rev=ca1f871#ca1f8716c8faa2a37d87f65e0af6d97e93cd445f"
 dependencies = [
  "arrayvec",
  "bitmaps",
@@ -2072,6 +2088,7 @@ dependencies = [
  "axfs-ng",
  "axhal",
  "axlog",
+ "axplat-loongarch64-2k1000la",
  "axplat-riscv64-visionfive2",
  "axruntime",
  "axsync",

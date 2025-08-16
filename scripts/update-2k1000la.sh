@@ -13,5 +13,5 @@ fi
 set -e
 
 mount $DEV mnt
-cp starry-mix_visionfive2.bin mnt/kernel
+cp starry-mix_loongarch64-2k1000la.bin mnt/kernel
 umount mnt

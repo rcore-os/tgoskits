@@ -66,6 +66,9 @@ alpine:
 vf2:
 	$(MAKE) ARCH=riscv64 APP_FEATURES=vf2 MYPLAT=axplat-riscv64-visionfive2 BUS=dummy build
 
+2k1000la:
+	$(MAKE) ARCH=loongarch64 APP_FEATURES=2k1000la MYPLAT=axplat-loongarch64-2k1000la BUS=dummy build
+
 build justrun debug disasm: defconfig
 	@make -C arceos $@
 
