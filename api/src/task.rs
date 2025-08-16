@@ -7,6 +7,7 @@ use axtask::{TaskInner, current};
 use linux_raw_sys::general::{ROBUST_LIST_LIMIT, robust_list, robust_list_head};
 use starry_core::{
     futex::FutexKey,
+    mm::access_user_memory,
     shm::SHM_MANAGER,
     task::{
         AsThread, get_process_data, send_signal_to_process, send_signal_to_thread, set_timer_state,
@@ -17,7 +18,7 @@ use starry_process::Pid;
 use starry_signal::{SignalInfo, Signo};
 
 use crate::{
-    mm::{UserPtr, access_user_memory, handle_user_page_fault, nullable},
+    mm::{UserPtr, nullable},
     signal::{check_signals, unblock_next_signal},
     syscall::handle_syscall,
 };
@@ -48,7 +49,17 @@ pub fn new_user_task(
                 match reason {
                     ReturnReason::Syscall => handle_syscall(&mut uctx),
                     ReturnReason::PageFault(addr, flags) => {
-                        handle_user_page_fault(&thr.proc_data, addr, flags)
+                        if !thr.proc_data.aspace.lock().handle_page_fault(addr, flags) {
+                            info!(
+                                "{:?}: segmentation fault at {:#x} {:?}",
+                                thr.proc_data.proc, addr, flags
+                            );
+                            send_signal_to_process(
+                                thr.proc_data.proc.pid(),
+                                Some(SignalInfo::new_kernel(Signo::SIGSEGV)),
+                            )
+                            .expect("Failed to send SIGSEGV");
+                        }
                     }
                     ReturnReason::Interrupt => {}
                     #[allow(unused_labels)]

@@ -51,7 +51,6 @@ linkme.workspace = true
 linux-raw-sys = { workspace = true, features = ["ioctl", "loop_device"] }
 memory_addr.workspace = true
 num_enum = { version = "0.7", default-features = false }
-percpu = "0.2.0"
 rand = { version = "0.9.1", default-features = false, features = [
     "alloc",
     "small_rng",

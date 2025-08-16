@@ -36,6 +36,7 @@ linux-raw-sys.workspace = true
 lock_api = { version = "0.4.13", features = ["arc_lock"] }
 memory_addr.workspace = true
 ouroboros = { version = "0.18.5", default-features = false }
+percpu = "0.2.0"
 scope-local.workspace = true
 slab.workspace = true
 spin.workspace = true

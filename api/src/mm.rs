@@ -1,5 +1,5 @@
 use alloc::string::String;
-use core::{alloc::Layout, ffi::c_char, mem::transmute, ptr, slice, str};
+use core::{alloc::Layout, ffi::c_char, hint::unlikely, mem::transmute, ptr, slice, str};
 
 use axerrno::{LinuxError, LinuxResult};
 use axhal::{
@@ -8,8 +8,7 @@ use axhal::{
 };
 use axtask::current;
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
-use starry_core::task::{AsThread, ProcessData, send_signal_to_process};
-use starry_signal::{SignalInfo, Signo};
+use starry_core::{mm::{access_user_memory, is_accessing_user_memory}, task::AsThread};
 use starry_vm::vm_load_c_string;
 
 fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> LinuxResult<()> {
@@ -228,58 +227,14 @@ macro_rules! nullable {
 
 pub(crate) use nullable;
 
-#[percpu::def_percpu]
-static mut ACCESSING_USER_MEM: bool = false;
-
-/// Enables scoped access into user memory, allowing page faults to occur inside
-/// kernel.
-pub fn access_user_memory<R>(f: impl FnOnce() -> R) -> R {
-    ACCESSING_USER_MEM.with_current(|v| {
-        unsafe {
-            core::ptr::write_volatile(v, true);
-        }
-        let result = f();
-        unsafe {
-            core::ptr::write_volatile(v, false);
-        }
-        result
-    })
-}
-
-/// Check if the current thread is accessing user memory.
-pub fn is_accessing_user_memory() -> bool {
-    ACCESSING_USER_MEM.read_current()
-}
-
-pub fn handle_user_page_fault(
-    proc_data: &ProcessData,
-    vaddr: VirtAddr,
-    access_flags: MappingFlags,
-) {
-    if !proc_data
-        .aspace
-        .lock()
-        .handle_page_fault(vaddr, access_flags)
-    {
-        info!(
-            "{:?}: segmentation fault at {:#x} {:?}",
-            proc_data.proc, vaddr, access_flags
-        );
-        send_signal_to_process(
-            proc_data.proc.pid(),
-            Some(SignalInfo::new_kernel(Signo::SIGSEGV)),
-        )
-        .expect("Failed to send SIGSEGV");
-    }
-}
-
+// FIXME: remove this
 #[register_trap_handler(PAGE_FAULT)]
 fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
     debug!(
         "Page fault at {:#x}, access_flags: {:#x?}",
         vaddr, access_flags
     );
-    if !is_accessing_user_memory() {
+    if unlikely(!is_accessing_user_memory()) {
         return false;
     }
 
@@ -288,9 +243,10 @@ fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
         return false;
     };
 
-    handle_user_page_fault(&thr.proc_data, vaddr, access_flags);
-
-    true
+    thr.proc_data
+        .aspace
+        .lock()
+        .handle_page_fault(vaddr, access_flags)
 }
 
 pub fn vm_load_string(ptr: *const c_char) -> LinuxResult<String> {

@@ -2,6 +2,7 @@
 //! programs and managing processes.
 
 #![no_std]
+#![feature(likely_unlikely)]
 #![warn(missing_docs)]
 
 extern crate alloc;

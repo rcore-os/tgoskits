@@ -226,7 +226,7 @@ dependencies = [
 [[package]]
 name = "axcpu"
 version = "0.2.2"
-source = "git+https://github.com/Starry-Mix-THU/axcpu.git?rev=0420e8b#0420e8bbbe9eb981217308592e39e8d368ac0bde"
+source = "git+https://github.com/Starry-Mix-THU/axcpu.git?rev=060ba5e#060ba5eed54fb853b3193a3fc8583047e9a047e6"
 dependencies = [
  "aarch64-cpu",
  "axbacktrace",
@@ -2142,7 +2142,6 @@ dependencies = [
  "linux-raw-sys",
  "memory_addr",
  "num_enum",
- "percpu",
  "rand",
  "ringbuf",
  "riscv",
@@ -2190,6 +2189,7 @@ dependencies = [
  "lock_api",
  "memory_addr",
  "ouroboros",
+ "percpu",
  "scope-local",
  "slab",
  "spin",

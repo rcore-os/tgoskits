@@ -1,27 +1,26 @@
 //! User address space management.
 
 use alloc::{borrow::ToOwned, string::String, vec, vec::Vec};
-use core::{ffi::CStr, iter, mem::MaybeUninit};
+use core::{ffi::CStr, hint::unlikely, iter, mem::MaybeUninit};
 
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::{CachedFile, FS_CONTEXT, FileBackend};
 use axfs_ng_vfs::Location;
 use axhal::{
+    asm::user_copy,
     mem::virt_to_phys,
     paging::{MappingFlags, PageSize},
 };
 use axmm::{AddrSpace, backend::Backend};
-use axsync::{Mutex, RawMutex};
-use axtask::current;
+use axsync::Mutex;
 use extern_trait::extern_trait;
 use kernel_elf_parser::{AuxEntry, ELFHeaders, ELFHeadersBuilder, ELFParser, app_stack_region};
-use lock_api::ArcMutexGuard;
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ouroboros::self_referencing;
 use starry_vm::{VmError, VmIo, VmResult};
 use uluru::LRUCache;
 
-use crate::task::AsThread;
+use crate::config::{USER_SPACE_BASE, USER_SPACE_SIZE};
 
 /// Creates a new empty user address space.
 pub fn new_user_aspace_empty() -> LinuxResult<AddrSpace> {
@@ -347,25 +346,38 @@ pub fn load_user_app(
     Ok((entry, user_sp))
 }
 
-struct Vm(ArcMutexGuard<RawMutex, AddrSpace>);
+#[percpu::def_percpu]
+static mut ACCESSING_USER_MEM: bool = false;
 
-impl Vm {
-    fn check(&mut self, start: usize, len: usize, flags: MappingFlags) -> VmResult {
-        let start = VirtAddr::from_usize(start);
-        if !self.0.can_access_range(start, len, flags) {
-            return Err(VmError::AccessDenied);
+/// Enables scoped access into user memory, allowing page faults to occur inside
+/// kernel.
+pub fn access_user_memory<R>(f: impl FnOnce() -> R) -> R {
+    ACCESSING_USER_MEM.with_current(|v| {
+        unsafe {
+            core::ptr::write_volatile(v, true);
         }
-
-        let page_start = start.align_down_4k();
-        let page_end = (start + len).align_up_4k();
-        if self
-            .0
-            .populate_area(page_start, page_end - page_start, flags)
-            .is_err()
-        {
-            return Err(VmError::AccessDenied);
+        let result = f();
+        unsafe {
+            core::ptr::write_volatile(v, false);
         }
+        result
+    })
+}
 
+/// Check if the current thread is accessing user memory.
+pub fn is_accessing_user_memory() -> bool {
+    ACCESSING_USER_MEM.read_current()
+}
+
+struct Vm;
+
+/// Briefly checks if the given memory region is valid user memory.
+pub fn check_access(start: usize, len: usize) -> VmResult {
+    const USER_SPACE_END: usize = USER_SPACE_BASE + USER_SPACE_SIZE;
+    let ok = (USER_SPACE_BASE..USER_SPACE_END).contains(&start) && (USER_SPACE_END - start) >= len;
+    if unlikely(!ok) {
+        Err(VmError::AccessDenied)
+    } else {
         Ok(())
     }
 }
@@ -373,26 +385,30 @@ impl Vm {
 #[extern_trait]
 unsafe impl VmIo for Vm {
     fn new() -> Self {
-        Self(current().as_thread().proc_data.aspace.lock_arc())
+        Self
     }
 
     fn read(&mut self, start: usize, buf: &mut [MaybeUninit<u8>]) -> VmResult {
-        self.check(start, buf.len(), MappingFlags::READ | MappingFlags::USER)?;
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                start as *const MaybeUninit<u8>,
-                buf.as_mut_ptr(),
-                buf.len(),
-            );
+        check_access(start, buf.len())?;
+        let failed_at = access_user_memory(|| unsafe {
+            user_copy(buf.as_mut_ptr() as *mut _, start as _, buf.len())
+        });
+        if unlikely(failed_at != 0) {
+            Err(VmError::AccessDenied)
+        } else {
+            Ok(())
         }
-        Ok(())
     }
 
     fn write(&mut self, start: usize, buf: &[u8]) -> VmResult {
-        self.check(start, buf.len(), MappingFlags::WRITE | MappingFlags::USER)?;
-        unsafe {
-            core::ptr::copy_nonoverlapping(buf.as_ptr(), start as *mut u8, buf.len());
+        check_access(start, buf.len())?;
+        let failed_at = access_user_memory(|| unsafe {
+            user_copy(start as _, buf.as_ptr() as *const _, buf.len())
+        });
+        if unlikely(failed_at != 0) {
+            Err(VmError::AccessDenied)
+        } else {
+            Ok(())
         }
-        Ok(())
     }
 }
