@@ -5,6 +5,8 @@ cfg_if::cfg_if! {
         pub const CMDLINE: &[&str] = &["/musl/busybox", "sh", "-c", include_str!("pre.sh")];
     } else if #[cfg(test = "final")] {
         pub const CMDLINE: &[&str] = &["/musl/busybox", "sh", "-c", include_str!("final.sh")];
+    } else if #[cfg(test = "on-site")] {
+        pub const CMDLINE: &[&str] = &["/musl/busybox", "sh", "-c", include_str!("on-site.sh")];
     } else if #[cfg(test = "alpine")] {
         pub const CMDLINE: &[&str] = &["/bin/busybox", "sh", "--login"];
     } else {
