@@ -85,13 +85,9 @@ handle_tlb_refill:
 
     lddir   $t0, $t0, 3
     beqz    $t0, .Ltlb_invalid
-    srli.d  $t0, $t0, 12
-    slli.d  $t0, $t0, 12
 
     lddir   $t0, $t0, 1
     beqz    $t0, .Ltlb_invalid
-    srli.d  $t0, $t0, 12
-    slli.d  $t0, $t0, 12
 
     ldpte   $t0, 0
     ldpte   $t0, 1
