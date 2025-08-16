@@ -17,9 +17,9 @@ default = []
 vgicv3 = []
 
 [dependencies]
-axaddrspace = {git = "https://github.com/arceos-hypervisor/axaddrspace.git"}
-axdevice_base = {git = "https://github.com/arceos-hypervisor/axdevice_crates.git"}
-axvisor_api = {git = "https://github.com/arceos-hypervisor/axvisor_api.git"}
+axaddrspace = "0.1"
+axdevice_base = "0.1"
+axvisor_api = "0.1"
 
 aarch64-cpu = "10.0"
 aarch64_sysreg = "0.1.1"
