@@ -434,10 +434,6 @@ pub fn sys_splice(
         _flags
     );
 
-    if !(Pipe::from_fd(fd_in).is_ok() || Pipe::from_fd(fd_out).is_ok()) {
-        return Err(LinuxError::EINVAL);
-    }
-
     let mut has_pipe = false;
 
     if DummyFd::from_fd(fd_in).is_ok() || DummyFd::from_fd(fd_out).is_ok() {

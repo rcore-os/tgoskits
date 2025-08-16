@@ -13,10 +13,6 @@ use crate::{
 // TODO: correct memfd implementation
 
 pub fn sys_memfd_create(_name: UserConstPtr<c_char>, flags: u32) -> LinuxResult<isize> {
-    sys_memfd_secret(flags)
-}
-
-pub fn sys_memfd_secret(flags: u32) -> LinuxResult<isize> {
     // This is cursed
     for id in 0..0xffff {
         let name = format!("/tmp/memfd-{id:04x}");

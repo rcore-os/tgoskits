@@ -292,7 +292,6 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
 
         // memfd
         Sysno::memfd_create => sys_memfd_create(tf.arg0().into(), tf.arg1() as _),
-        Sysno::memfd_secret => sys_memfd_secret(tf.arg0() as _),
 
         // fs stat
         #[cfg(target_arch = "x86_64")]
@@ -581,7 +580,8 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
         | Sysno::bpf
         | Sysno::fsopen
         | Sysno::fspick
-        | Sysno::open_tree => sys_dummy_fd(sysno),
+        | Sysno::open_tree
+        | Sysno::memfd_secret => sys_dummy_fd(sysno),
 
         _ => {
             warn!("Unimplemented syscall: {}", sysno);
