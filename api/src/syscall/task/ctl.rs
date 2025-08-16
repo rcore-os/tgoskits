@@ -2,10 +2,7 @@ use core::ffi::c_char;
 
 use axerrno::{LinuxError, LinuxResult};
 use axtask::current;
-use linux_raw_sys::{
-    general::{__user_cap_data_struct, __user_cap_header_struct},
-    prctl::{PR_GET_NAME, PR_MCE_KILL, PR_SET_NAME, PR_SET_SECCOMP},
-};
+use linux_raw_sys::general::{__user_cap_data_struct, __user_cap_header_struct};
 use starry_core::task::{AsThread, get_process_data};
 use starry_vm::{VmMutPtr, VmPtr, vm_write_slice};
 
@@ -84,6 +81,8 @@ pub fn sys_prctl(
     arg4: usize,
     arg5: usize,
 ) -> LinuxResult<isize> {
+    use linux_raw_sys::prctl::*;
+
     debug!(
         "sys_prctl <= option: {}, args: {}, {}, {}, {}",
         option, arg2, arg3, arg4, arg5
@@ -103,6 +102,12 @@ pub fn sys_prctl(
         }
         PR_SET_SECCOMP => {}
         PR_MCE_KILL => {}
+        PR_SET_MM_START_CODE
+        | PR_SET_MM_END_CODE
+        | PR_SET_MM_START_DATA
+        | PR_SET_MM_END_DATA
+        | PR_SET_MM_START_BRK
+        | PR_SET_MM_START_STACK => {}
         _ => {
             warn!("sys_prctl: unsupported option {}", option);
             return Err(LinuxError::EINVAL);
