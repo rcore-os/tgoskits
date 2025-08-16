@@ -27,7 +27,7 @@ tock-registers = "0.9"
 axerrno = "0.1.0"
 percpu = {version = "0.2.0", features = ["arm-el2"]}
 
-axaddrspace = {git = "https://github.com/arceos-hypervisor/axaddrspace.git"}
-axdevice_base = {git = "https://github.com/arceos-hypervisor/axdevice_crates.git"}
-axvcpu = {git = "https://github.com/arceos-hypervisor/axvcpu.git"}
-axvisor_api = {git = "https://github.com/arceos-hypervisor/axvisor_api.git"}
+axaddrspace = "0.1.0"
+axdevice_base = "0.1.0"
+axvcpu = "0.1.0"
+axvisor_api = "0.1.0"
