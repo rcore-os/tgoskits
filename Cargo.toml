@@ -1,4 +1,5 @@
 [package]
+version = "0.1.0"
 authors = [
   "Mingxian Su <aarkegz@gmail.com>",
   "DeBin Luo <luodeb@outlook.com>",
@@ -9,6 +10,7 @@ keywords = ["hypervisor", "kernel", "vgic"]
 license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
 name = "arm_vgic"
 repository = "https://github.com/arceos-hypervisor/arm_vgic"
+description = "ARM Virtual Generic Interrupt Controller (VGIC) implementation."
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
