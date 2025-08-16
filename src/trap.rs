@@ -1,5 +1,8 @@
 //! Trap handling.
 
+use core::cmp::Ordering;
+use core::fmt::Debug;
+
 use memory_addr::VirtAddr;
 
 pub use crate::TrapFrame;
@@ -50,4 +53,45 @@ pub enum ReturnReason {
     Syscall,
     PageFault(VirtAddr, PageFaultFlags),
     Exception(crate::uspace::ExceptionInfo),
+}
+
+#[repr(C)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ExceptionTableEntry {
+    from: usize,
+    to: usize,
+}
+
+pub fn fixup_exception(tf: &mut TrapFrame) -> bool {
+    let ip = tf.ip();
+    let entries = unsafe {
+        core::slice::from_raw_parts(
+            _ex_table_start as *const ExceptionTableEntry,
+            (_ex_table_end as usize - _ex_table_start as usize)
+                / core::mem::size_of::<ExceptionTableEntry>(),
+        )
+    };
+    match entries.binary_search_by(|e| e.from.cmp(&ip)) {
+        Ok(entry) => {
+            tf.set_ip(entries[entry].to);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+pub(crate) fn init_exception_table() {
+    // Sort exception table
+    let ex_table = unsafe {
+        core::slice::from_raw_parts_mut(
+            _ex_table_start as *mut ExceptionTableEntry,
+            (_ex_table_end as usize - _ex_table_start as usize) / size_of::<ExceptionTableEntry>(),
+        )
+    };
+    ex_table.sort();
+}
+
+unsafe extern "C" {
+    fn _ex_table_start();
+    fn _ex_table_end();
 }

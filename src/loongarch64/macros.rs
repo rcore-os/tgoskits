@@ -1,6 +1,6 @@
 macro_rules! include_asm_macros {
     () => {
-        r"
+        r#"
         .ifndef REGS_MACROS_FLAG
         .equ REGS_MACROS_FLAG, 1
 
@@ -72,7 +72,15 @@ macro_rules! include_asm_macros {
             PUSH_POP_GENERAL_REGS LDD
         .endm
 
-        .endif"
+        .macro _asm_extable, from, to
+            .pushsection __ex_table, "a"
+            .balign 8
+            .quad   \from
+            .quad   \to
+            .popsection
+        .endm
+
+        .endif"#
     };
 }
 

@@ -1,7 +1,7 @@
 #[cfg(target_arch = "riscv32")]
 macro_rules! __asm_macros {
     () => {
-        r"
+        r#"
         .ifndef XLENB
         .equ XLENB, 4
 
@@ -12,14 +12,29 @@ macro_rules! __asm_macros {
             sw \rs2, \off*XLENB(\rs1)
         .endm
 
-        .endif"
+        .macro REG_L rd, rs
+            lw \rd, \rs
+        .endm
+        .macro REG_S rs2, rs1
+            sw \rs2, \rs1
+        .endm
+
+        .macro _asm_extable, from, to
+            .pushsection __ex_table, "a"
+            .balign 4
+            .word   \from
+            .word   \to
+            .popsection
+        .endm
+
+        .endif"#
     };
 }
 
 #[cfg(target_arch = "riscv64")]
 macro_rules! __asm_macros {
     () => {
-        r"
+        r#"
         .ifndef XLENB
         .equ XLENB, 8
 
@@ -30,7 +45,22 @@ macro_rules! __asm_macros {
             sd \rs2, \off*XLENB(\rs1)
         .endm
 
-        .endif"
+        .macro REG_L rd, rs
+            ld \rd, \rs
+        .endm
+        .macro REG_S rs2, rs1
+            sd \rs2, \rs1
+        .endm
+
+        .macro _asm_extable, from, to
+            .pushsection __ex_table, "a"
+            .balign 8
+            .quad   \from
+            .quad   \to
+            .popsection
+        .endm
+
+        .endif"#
     };
 }
 
@@ -132,7 +162,7 @@ macro_rules! include_asm_macros {
     () => {
         concat!(
             __asm_macros!(),
-            r"
+            r#"
             .ifndef REGS_MACROS_FLAG
             .equ REGS_MACROS_FLAG, 1
 
@@ -176,7 +206,7 @@ macro_rules! include_asm_macros {
                 PUSH_POP_GENERAL_REGS LDR
             .endm
 
-            .endif"
+            .endif"#
         )
     };
 }

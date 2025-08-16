@@ -18,9 +18,12 @@ fn handle_breakpoint(sepc: &mut usize) {
     *sepc += 2
 }
 
-fn handle_page_fault(tf: &TrapFrame, access_flags: PageFaultFlags) {
+fn handle_page_fault(tf: &mut TrapFrame, access_flags: PageFaultFlags) {
     let vaddr = va!(stval::read());
-    if !handle_trap!(PAGE_FAULT, vaddr, access_flags) {
+    if core::hint::likely(handle_trap!(PAGE_FAULT, vaddr, access_flags)) {
+        return;
+    }
+    if !crate::trap::fixup_exception(tf) {
         panic!(
             "Unhandled Supervisor Page Fault @ {:#x}, fault_vaddr={:#x} ({:?}):\n{:#x?}\n{}",
             tf.sepc,

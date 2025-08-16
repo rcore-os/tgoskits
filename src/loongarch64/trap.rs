@@ -17,9 +17,12 @@ fn handle_breakpoint(era: &mut usize) {
     *era += 4;
 }
 
-fn handle_page_fault(tf: &TrapFrame, access_flags: PageFaultFlags) {
+fn handle_page_fault(tf: &mut TrapFrame, access_flags: PageFaultFlags) {
     let vaddr = va!(badv::read().vaddr());
-    if !handle_trap!(PAGE_FAULT, vaddr, access_flags) {
+     if core::hint::likely(handle_trap!(PAGE_FAULT, vaddr, access_flags)) {
+        return;
+    }
+    if !crate::trap::fixup_exception(tf) {
         panic!(
             "Unhandled PLV0 Page Fault @ {:#x}, fault_vaddr={:#x} ({:?}):\n{:#x?}\n{}",
             tf.era,

@@ -40,6 +40,7 @@ pub fn init_mmu(root_paddr: PhysAddr, phys_virt_offset: usize) {
 ///
 /// In detail, it initializes the exception vector on LoongArch64 platforms.
 pub fn init_trap() {
+    crate::trap::init_exception_table();
     unsafe {
         extern "C" {
             fn exception_entry_base();
