@@ -40,10 +40,11 @@ pub fn init_mmu(root_paddr: PhysAddr, phys_virt_offset: usize) {
 ///
 /// In detail, it initializes the exception vector on LoongArch64 platforms.
 pub fn init_trap() {
-    unsafe extern "C" {
-        fn exception_entry_base();
-    }
     unsafe {
+        extern "C" {
+            fn exception_entry_base();
+        }
+        core::arch::asm!(include_asm_macros!(), "csrwr $r0, KSAVE_KSP");
         crate::asm::write_exception_entry_base(exception_entry_base as usize);
     }
 }

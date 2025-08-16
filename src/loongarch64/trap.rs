@@ -49,6 +49,9 @@ fn loongarch64_trap_handler(tf: &mut TrapFrame) {
             handle_page_fault(tf, PageFaultFlags::EXECUTE);
         }
         Trap::Exception(Exception::Breakpoint) => handle_breakpoint(&mut tf.era),
+        Trap::Exception(Exception::AddressNotAligned) => unsafe {
+            tf.emulate_unaligned().unwrap();
+        },
         Trap::Interrupt(_) => {
             let irq_num: usize = estat.is().trailing_zeros() as usize;
             handle_trap!(IRQ, irq_num);
