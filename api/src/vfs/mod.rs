@@ -42,6 +42,10 @@ pub fn mount_all() -> LinuxResult<()> {
     }
     path.push("subsystem");
     fs.symlink("whatever", &path)?;
+    drop(fs);
+
+    #[cfg(feature = "dev-log")]
+    dev::bind_dev_log().expect("Failed to bind /dev/log");
 
     Ok(())
 }

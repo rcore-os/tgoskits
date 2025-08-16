@@ -93,11 +93,14 @@ qemu = [
 
     "axfeat/driver-virtio-input",
     "axfeat/input",
-    "axfeat/fs-times",
     # "axdriver/dyn",
     "starry-api/input",
 
     "axfeat/defplat",
+
+    # auxilary features
+    "axfeat/fs-times",
+    "starry-api/dev-log",
 ]
 vf2 = ["axplat-riscv64-visionfive2", "axfeat/driver-sdmmc-gpt"]
 

@@ -3,6 +3,8 @@
 #[cfg(feature = "input")]
 mod event;
 mod fb;
+#[cfg(feature = "dev-log")]
+mod log;
 mod r#loop;
 #[cfg(feature = "memtrack")]
 mod memtrack;
@@ -15,6 +17,8 @@ use core::any::Any;
 use axerrno::LinuxError;
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsResult};
 use axsync::Mutex;
+#[cfg(feature = "dev-log")]
+pub use log::bind_dev_log;
 use rand::{RngCore, SeedableRng, rngs::SmallRng};
 use starry_core::vfs::{Device, DeviceOps, DirMaker, DirMapping, SimpleDir, SimpleFs};
 
@@ -236,6 +240,11 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     root.add(
         "pts",
         SimpleDir::new_maker(fs.clone(), Arc::new(tty::PtsDir)),
+    );
+    #[cfg(feature = "dev-log")]
+    root.add(
+        "log",
+        starry_core::vfs::SimpleFile::new(fs.clone(), NodeType::Socket, || Ok(b"")),
     );
 
     #[cfg(feature = "memtrack")]
