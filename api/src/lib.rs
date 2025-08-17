@@ -21,6 +21,9 @@ pub mod vfs;
 
 /// Initialize.
 pub fn init() {
+    if axconfig::plat::CPU_NUM > 1 {
+        panic!("SMP is not supported");
+    }
     info!("Initialize VFS...");
     vfs::mount_all().expect("Failed to mount vfs");
 

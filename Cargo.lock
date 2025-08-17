@@ -2232,7 +2232,7 @@ dependencies = [
 [[package]]
 name = "starry-vm"
 version = "0.1.1"
-source = "git+https://github.com/Starry-Mix-THU/starry-vm.git?rev=e86cbc0#e86cbc0c7485de35dad50cd1732786d1d10a2b38"
+source = "git+https://github.com/Starry-Mix-THU/starry-vm.git?rev=3a0bf9d#3a0bf9da95aa54200dc55786e0e92afc6e8be9fe"
 dependencies = [
  "axerrno",
  "bytemuck",

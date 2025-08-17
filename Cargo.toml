@@ -153,7 +153,7 @@ page_table_entry = { git = "https://github.com/Starry-Mix-THU/page_table_multiar
 page_table_multiarch = { git = "https://github.com/Starry-Mix-THU/page_table_multiarch.git", rev = "ca1f871" }
 starry-process = { git = "https://github.com/Starry-Mix-THU/starry-process.git", rev = "6327455" }
 starry-signal = { git = "https://github.com/Starry-Mix-THU/starry-signal.git", rev = "f45379a" }
-starry-vm = { git = "https://github.com/Starry-Mix-THU/starry-vm.git", rev = "e86cbc0" }
+starry-vm = { git = "https://github.com/Starry-Mix-THU/starry-vm.git", rev = "3a0bf9d" }
 
 [package.metadata.vendor-filter]
 platforms = ["riscv64gc-unknown-none-elf", "loongarch64-unknown-none-softfloat"]

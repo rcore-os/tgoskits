@@ -8,8 +8,11 @@ use axhal::{
 };
 use axtask::current;
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
-use starry_core::{mm::{access_user_memory, is_accessing_user_memory}, task::AsThread};
-use starry_vm::vm_load_c_string;
+use starry_core::{
+    mm::{access_user_memory, is_accessing_user_memory},
+    task::AsThread,
+};
+use starry_vm::vm_load_until_nul;
 
 fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> LinuxResult<()> {
     let align = layout.align();
@@ -227,7 +230,6 @@ macro_rules! nullable {
 
 pub(crate) use nullable;
 
-// FIXME: remove this
 #[register_trap_handler(PAGE_FAULT)]
 fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
     debug!(
@@ -250,6 +252,7 @@ fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
 }
 
 pub fn vm_load_string(ptr: *const c_char) -> LinuxResult<String> {
-    let bytes = vm_load_c_string(ptr.cast())?;
-    bytes.into_string().map_err(|_| LinuxError::EILSEQ)
+    #[allow(clippy::unnecessary_cast)]
+    let bytes = vm_load_until_nul(ptr as *const u8)?;
+    String::from_utf8(bytes).map_err(|_| LinuxError::EILSEQ)
 }

@@ -1,7 +1,13 @@
 //! User address space management.
 
 use alloc::{borrow::ToOwned, string::String, vec, vec::Vec};
-use core::{ffi::CStr, hint::unlikely, iter, mem::MaybeUninit};
+use core::{
+    ffi::CStr,
+    hint::unlikely,
+    iter,
+    mem::MaybeUninit,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::{CachedFile, FS_CONTEXT, FileBackend};
@@ -346,27 +352,20 @@ pub fn load_user_app(
     Ok((entry, user_sp))
 }
 
-#[percpu::def_percpu]
-static mut ACCESSING_USER_MEM: bool = false;
+static ACCESSING_USER_MEM: AtomicBool = AtomicBool::new(false);
 
 /// Enables scoped access into user memory, allowing page faults to occur inside
 /// kernel.
 pub fn access_user_memory<R>(f: impl FnOnce() -> R) -> R {
-    ACCESSING_USER_MEM.with_current(|v| {
-        unsafe {
-            core::ptr::write_volatile(v, true);
-        }
-        let result = f();
-        unsafe {
-            core::ptr::write_volatile(v, false);
-        }
-        result
-    })
+    ACCESSING_USER_MEM.store(true, Ordering::Release);
+    let result = f();
+    ACCESSING_USER_MEM.store(false, Ordering::Release);
+    result
 }
 
 /// Check if the current thread is accessing user memory.
 pub fn is_accessing_user_memory() -> bool {
-    ACCESSING_USER_MEM.read_current()
+    ACCESSING_USER_MEM.load(Ordering::Acquire)
 }
 
 struct Vm;
