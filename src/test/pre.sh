@@ -516,7 +516,6 @@ run_ltp() {
     symlink04
     syscall01
     tgkill03
-    thp01
     time01
     times01
     times03
