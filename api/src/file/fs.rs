@@ -10,12 +10,13 @@ use core::{
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::{FS_CONTEXT, FsContext};
 use axfs_ng_vfs::{Location, Metadata, NodeFlags};
-use axio::{IoEvents, Pollable, Read, Write};
+use axio::{IoEvents, Pollable};
 use axsync::Mutex;
 use axtask::future::Poller;
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW};
 
 use super::{FileLike, Kstat, get_file_like};
+use crate::file::{SealedBuf, SealedBufMut};
 
 pub fn with_fs<R>(
     dirfd: c_int,
@@ -128,25 +129,25 @@ fn path_for(loc: &Location) -> Cow<'static, str> {
 }
 
 impl FileLike for File {
-    fn read(&self, buf: &mut [u8]) -> LinuxResult<usize> {
-        let mut inner = self.inner();
+    fn read(&self, dst: &mut SealedBufMut) -> LinuxResult<usize> {
+        let inner = self.inner();
         if likely(self.is_blocking()) {
-            inner.read(buf)
+            inner.read(dst)
         } else {
             Poller::new(self, IoEvents::IN)
                 .non_blocking(self.nonblocking())
-                .poll(|| inner.read(buf))
+                .poll(|| inner.read(dst))
         }
     }
 
-    fn write(&self, buf: &[u8]) -> LinuxResult<usize> {
-        let mut inner = self.inner();
+    fn write(&self, src: &mut SealedBuf) -> LinuxResult<usize> {
+        let inner = self.inner();
         if likely(self.is_blocking()) {
-            inner.write(buf)
+            inner.write(src)
         } else {
             Poller::new(self, IoEvents::OUT)
                 .non_blocking(self.nonblocking())
-                .poll(|| inner.write(buf))
+                .poll(|| inner.write(src))
         }
     }
 
@@ -221,11 +222,11 @@ impl Directory {
 }
 
 impl FileLike for Directory {
-    fn read(&self, _buf: &mut [u8]) -> LinuxResult<usize> {
+    fn read(&self, _dst: &mut SealedBufMut) -> LinuxResult<usize> {
         Err(LinuxError::EBADF)
     }
 
-    fn write(&self, _buf: &[u8]) -> LinuxResult<usize> {
+    fn write(&self, _src: &mut SealedBuf) -> LinuxResult<usize> {
         Err(LinuxError::EBADF)
     }
 
@@ -234,7 +235,7 @@ impl FileLike for Directory {
     }
 
     fn path(&self) -> Cow<str> {
-         path_for(&self.inner)
+        path_for(&self.inner)
     }
 
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {

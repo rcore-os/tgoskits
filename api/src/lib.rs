@@ -1,6 +1,7 @@
 #![no_std]
 #![feature(likely_unlikely)]
 #![feature(bstr)]
+#![feature(maybe_uninit_slice)]
 #![allow(missing_docs)]
 
 #[macro_use]

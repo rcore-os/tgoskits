@@ -2,16 +2,16 @@ use alloc::{boxed::Box, vec::Vec};
 use core::net::Ipv4Addr;
 
 use axerrno::LinuxResult;
-use axio::buf::{Buf, BufMut};
+use axio::{Buf, BufMut};
 use axnet::{CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddrEx, SocketOps};
-use linux_raw_sys::{
-    general::iovec,
-    net::{MSG_PEEK, MSG_TRUNC, SCM_RIGHTS, SOL_SOCKET, cmsghdr, msghdr, sockaddr, socklen_t},
+use linux_raw_sys::net::{
+    MSG_PEEK, MSG_TRUNC, SCM_RIGHTS, SOL_SOCKET, cmsghdr, msghdr, sockaddr, socklen_t,
 };
+use starry_vm::{VmBytes, VmBytesMut};
 
 use crate::{
     file::{FileLike, Socket, add_file_like},
-    io::IoVectorBuf,
+    io::{IoVec, IoVectorBuf},
     mm::{UserConstPtr, UserPtr},
     socket::SocketAddrExt,
     syscall::net::{CMsg, CMsgBuilder},
@@ -31,10 +31,7 @@ fn send_impl(
         Some(SocketAddrEx::read_from_user(addr, addrlen)?)
     };
 
-    debug!(
-        "sys_send <= fd: {}, flags: {}, addr: {:?}",
-        fd, flags, addr
-    );
+    debug!("sys_send <= fd: {}, flags: {}, addr: {:?}", fd, flags, addr);
 
     let socket = Socket::from_fd(fd)?;
     let sent = socket.send(
@@ -51,13 +48,13 @@ fn send_impl(
 
 pub fn sys_sendto(
     fd: i32,
-    buf: UserConstPtr<u8>,
+    buf: *const u8,
     len: usize,
     flags: u32,
     addr: UserConstPtr<sockaddr>,
     addrlen: socklen_t,
 ) -> LinuxResult<isize> {
-    send_impl(fd, buf.get_as_slice(len)?, flags, addr, addrlen, Vec::new())
+    send_impl(fd, VmBytes::new(buf, len), flags, addr, addrlen, Vec::new())
 }
 
 pub fn sys_sendmsg(fd: i32, msg: UserConstPtr<msghdr>, flags: u32) -> LinuxResult<isize> {
@@ -77,10 +74,7 @@ pub fn sys_sendmsg(fd: i32, msg: UserConstPtr<msghdr>, flags: u32) -> LinuxResul
     }
     send_impl(
         fd,
-        IoVectorBuf::new_const(
-            UserConstPtr::from(msg.msg_iov as *const iovec),
-            msg.msg_iovlen,
-        )?,
+        IoVectorBuf::new(msg.msg_iov as *const IoVec, msg.msg_iovlen)?.into_io(),
         flags,
         UserConstPtr::from(msg.msg_name as usize),
         msg.msg_namelen as socklen_t,
@@ -132,19 +126,15 @@ fn recv_impl(
             };
 
             let pushed = match *cmsg {
-                CMsg::Rights { fds } => {
-                    builder.push(SOL_SOCKET, SCM_RIGHTS, |data| {
-                        let mut written = 0;
-                        for (f, chunk) in
-                            fds.into_iter().zip(data.chunks_exact_mut(size_of::<i32>()))
-                        {
-                            let fd = add_file_like(f, false)?;
-                            chunk.copy_from_slice(&fd.to_ne_bytes());
-                            written += size_of::<i32>();
-                        }
-                        Ok(written)
-                    })?
-                }
+                CMsg::Rights { fds } => builder.push(SOL_SOCKET, SCM_RIGHTS, |data| {
+                    let mut written = 0;
+                    for (f, chunk) in fds.into_iter().zip(data.chunks_exact_mut(size_of::<i32>())) {
+                        let fd = add_file_like(f, false)?;
+                        chunk.copy_from_slice(&fd.to_ne_bytes());
+                        written += size_of::<i32>();
+                    }
+                    Ok(written)
+                })?,
             };
             if !pushed {
                 break;
@@ -158,20 +148,20 @@ fn recv_impl(
 
 pub fn sys_recvfrom(
     fd: i32,
-    buf: UserPtr<u8>,
+    buf: *mut u8,
     len: usize,
     flags: u32,
     addr: UserPtr<sockaddr>,
     addrlen: UserPtr<socklen_t>,
 ) -> LinuxResult<isize> {
-    recv_impl(fd, buf.get_as_mut_slice(len)?, flags, addr, addrlen, None)
+    recv_impl(fd, VmBytesMut::new(buf, len), flags, addr, addrlen, None)
 }
 
 pub fn sys_recvmsg(fd: i32, msg: UserPtr<msghdr>, flags: u32) -> LinuxResult<isize> {
     let msg = msg.get_as_mut()?;
     recv_impl(
         fd,
-        IoVectorBuf::new_mut(UserPtr::from(msg.msg_iov as *mut iovec), msg.msg_iovlen)?,
+        IoVectorBuf::new(msg.msg_iov as *mut IoVec, msg.msg_iovlen)?.into_io(),
         flags,
         UserPtr::from(msg.msg_name as usize),
         UserPtr::from(&mut msg.msg_namelen as *mut _ as *mut socklen_t),

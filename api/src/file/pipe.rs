@@ -7,7 +7,7 @@ use core::{
 };
 
 use axerrno::{LinuxError, LinuxResult};
-use axio::{IoEvents, PollSet, Pollable};
+use axio::{Buf, BufMut, IoEvents, PollSet, Pollable, Read, Write};
 use axsync::Mutex;
 use axtask::{current, future::Poller};
 use linux_raw_sys::{general::S_IFIFO, ioctl::FIONREAD};
@@ -21,6 +21,7 @@ use starry_signal::{SignalInfo, Signo};
 use starry_vm::VmMutPtr;
 
 use super::{FileLike, Kstat};
+use crate::file::{SealedBuf, SealedBufMut};
 
 const RING_BUFFER_INIT_SIZE: usize = 65536; // 64 KiB
 
@@ -107,18 +108,27 @@ fn raise_pipe() {
 }
 
 impl FileLike for Pipe {
-    fn read(&self, buf: &mut [u8]) -> LinuxResult<usize> {
+    fn read(&self, dst: &mut SealedBufMut) -> LinuxResult<usize> {
         if !self.is_read() {
             return Err(LinuxError::EBADF);
         }
-        if buf.is_empty() {
+        if dst.remaining_mut() == 0 {
             return Ok(0);
         }
 
         Poller::new(self, IoEvents::IN)
             .non_blocking(self.nonblocking())
             .poll(|| {
-                let read = self.shared.buffer.lock().pop_slice(buf);
+                let read = {
+                    let cons = self.shared.buffer.lock();
+                    let (left, right) = cons.as_slices();
+                    let mut count = dst.write(left)?;
+                    if count >= left.len() {
+                        count += dst.write(right)?;
+                    }
+                    unsafe { cons.advance_read_index(count) };
+                    count
+                };
                 if read > 0 {
                     self.shared.poll_tx.wake();
                     Ok(read)
@@ -130,11 +140,12 @@ impl FileLike for Pipe {
             })
     }
 
-    fn write(&self, buf: &[u8]) -> LinuxResult<usize> {
+    fn write(&self, src: &mut SealedBuf) -> LinuxResult<usize> {
         if !self.is_write() {
             return Err(LinuxError::EBADF);
         }
-        if buf.is_empty() {
+        let size = src.remaining();
+        if size == 0 {
             return Ok(0);
         }
 
@@ -148,11 +159,20 @@ impl FileLike for Pipe {
                     return Err(LinuxError::EPIPE);
                 }
 
-                let written = self.shared.buffer.lock().push_slice(&buf[total_written..]);
+                let written = {
+                    let mut prod = self.shared.buffer.lock();
+                    let (left, right) = prod.vacant_slices_mut();
+                    let mut count = src.read(unsafe { left.assume_init_mut() })?;
+                    if count >= left.len() {
+                        count += src.read(unsafe { right.assume_init_mut() })?;
+                    }
+                    unsafe { prod.advance_write_index(count) };
+                    count
+                };
                 if written > 0 {
                     self.shared.poll_rx.wake();
                     total_written += written;
-                    if total_written == buf.len() || non_blocking {
+                    if total_written == size || non_blocking {
                         return Ok(total_written);
                     }
                 }

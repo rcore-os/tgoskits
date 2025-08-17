@@ -1,4 +1,4 @@
-use core::{ffi::c_long, mem::offset_of, sync::atomic::Ordering};
+use core::{ffi::c_long, sync::atomic::Ordering};
 
 use axcpu::trap::{ExceptionInfoExt, ExceptionKind};
 use axerrno::{LinuxError, LinuxResult};
@@ -145,7 +145,7 @@ pub fn exit_robust_list(head: *const RobustListHead) -> LinuxResult<()> {
 
     let mut limit = ROBUST_LIST_LIMIT;
 
-    let end_ptr = (head as usize + offset_of!(RobustListHead, list)) as *const RobustList;
+    let end_ptr = unsafe { &raw const (*head).list };
     let head = head.vm_read()?;
     let mut entry = head.list.next;
     let offset = head.futex_offset;

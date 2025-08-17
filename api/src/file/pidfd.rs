@@ -1,11 +1,14 @@
-use alloc::{borrow::Cow, sync::{Arc, Weak}};
+use alloc::{
+    borrow::Cow,
+    sync::{Arc, Weak},
+};
 use core::task::Context;
 
 use axerrno::{LinuxError, LinuxResult};
 use axio::{IoEvents, PollSet, Pollable};
 use starry_core::task::ProcessData;
 
-use crate::file::{FileLike, Kstat};
+use crate::file::{FileLike, Kstat, SealedBuf, SealedBufMut};
 
 pub struct PidFd {
     proc_data: Weak<ProcessData>,
@@ -24,11 +27,11 @@ impl PidFd {
     }
 }
 impl FileLike for PidFd {
-    fn read(&self, _buf: &mut [u8]) -> LinuxResult<usize> {
+    fn read(&self, _dst: &mut SealedBufMut) -> LinuxResult<usize> {
         Err(LinuxError::EINVAL)
     }
 
-    fn write(&self, _buf: &[u8]) -> LinuxResult<usize> {
+    fn write(&self, _src: &mut SealedBuf) -> LinuxResult<usize> {
         Err(LinuxError::EINVAL)
     }
 

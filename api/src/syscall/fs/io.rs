@@ -6,28 +6,25 @@ use core::{
 
 use axerrno::{LinuxError, LinuxResult};
 use axfs_ng::{FS_CONTEXT, FileFlags, OpenOptions};
-use axio::{
-    IoEvents, Pollable, Seek, SeekFrom,
-    buf::{BufExt, BufMutExt},
-};
+use axio::{IoEvents, Pollable, Seek, SeekFrom};
 use axtask::current;
-use linux_raw_sys::general::{__kernel_off_t, iovec};
-use starry_vm::{VmMutPtr, VmPtr};
+use linux_raw_sys::general::__kernel_off_t;
+use starry_vm::{VmBytes, VmBytesMut, VmMutPtr, VmPtr};
 use syscalls::Sysno;
 
 use crate::{
-    file::{File, FileLike, Pipe, get_file_like},
-    io::IoVectorBuf,
-    mm::{UserConstPtr, UserPtr},
+    file::{File, FileLike, Pipe, SealedBuf, SealedBufMut, get_file_like},
+    io::{IoVec, IoVectorBuf},
+    mm::UserConstPtr,
 };
 
 struct DummyFd;
 impl FileLike for DummyFd {
-    fn read(&self, _buf: &mut [u8]) -> LinuxResult<usize> {
+    fn read(&self, _dst: &mut SealedBufMut) -> LinuxResult<usize> {
         unimplemented!()
     }
 
-    fn write(&self, _buf: &[u8]) -> LinuxResult<usize> {
+    fn write(&self, _src: &mut SealedBuf) -> LinuxResult<usize> {
         unimplemented!()
     }
 
@@ -64,44 +61,30 @@ pub fn sys_dummy_fd(sysno: Sysno) -> LinuxResult<isize> {
 /// Read data from the file indicated by `fd`.
 ///
 /// Return the read size if success.
-pub fn sys_read(fd: i32, buf: UserPtr<u8>, len: usize) -> LinuxResult<isize> {
-    let buf = buf.get_as_mut_slice(len)?;
-    debug!(
-        "sys_read <= fd: {}, buf: {:p}, len: {}",
-        fd,
-        buf.as_ptr(),
-        buf.len()
-    );
-    Ok(get_file_like(fd)?.read(buf)? as _)
+pub fn sys_read(fd: i32, buf: *mut u8, len: usize) -> LinuxResult<isize> {
+    debug!("sys_read <= fd: {}, buf: {:p}, len: {}", fd, buf, len);
+    Ok(get_file_like(fd)?.read(&mut VmBytesMut::new(buf, len).into())? as _)
 }
 
-pub fn sys_readv(fd: i32, iov: UserPtr<iovec>, iovcnt: usize) -> LinuxResult<isize> {
+pub fn sys_readv(fd: i32, iov: *const IoVec, iovcnt: usize) -> LinuxResult<isize> {
     debug!("sys_readv <= fd: {}, iovcnt: {}", fd, iovcnt);
     let f = get_file_like(fd)?;
-    IoVectorBuf::new_mut(iov, iovcnt)?
-        .fill_with(|buf| f.read(buf))
+    f.read(&mut IoVectorBuf::new(iov, iovcnt)?.into_io().into())
         .map(|n| n as _)
 }
 
 /// Write data to the file indicated by `fd`.
 ///
 /// Return the written size if success.
-pub fn sys_write(fd: i32, buf: UserConstPtr<u8>, len: usize) -> LinuxResult<isize> {
-    let buf = buf.get_as_slice(len)?;
-    debug!(
-        "sys_write <= fd: {}, buf: {:p}, len: {}",
-        fd,
-        buf.as_ptr(),
-        buf.len(),
-    );
-    Ok(get_file_like(fd)?.write(buf)? as _)
+pub fn sys_write(fd: i32, buf: *mut u8, len: usize) -> LinuxResult<isize> {
+    debug!("sys_write <= fd: {}, buf: {:p}, len: {}", fd, buf, len);
+    Ok(get_file_like(fd)?.write(&mut VmBytes::new(buf, len).into())? as _)
 }
 
-pub fn sys_writev(fd: i32, iov: UserConstPtr<iovec>, iovcnt: usize) -> LinuxResult<isize> {
+pub fn sys_writev(fd: i32, iov: *const IoVec, iovcnt: usize) -> LinuxResult<isize> {
     debug!("sys_writev <= fd: {}, iovcnt: {}", fd, iovcnt);
     let f = get_file_like(fd)?;
-    IoVectorBuf::new_const(iov, iovcnt)?
-        .read_with(|buf| f.write(buf))
+    f.write(&mut IoVectorBuf::new(iov, iovcnt)?.into_io().into())
         .map(|n| n as _)
 }
 
@@ -193,37 +176,39 @@ pub fn sys_fadvise64(
 
 pub fn sys_pread64(
     fd: c_int,
-    buf: UserPtr<u8>,
+    buf: *mut u8,
     len: usize,
     offset: __kernel_off_t,
 ) -> LinuxResult<isize> {
-    let buf = buf.get_as_mut_slice(len)?;
     let f = File::from_fd(fd)?;
     if offset < 0 {
         return Err(LinuxError::EINVAL);
     }
-    let read = f.inner().read_at(buf, offset as _)?;
+    let read = f
+        .inner()
+        .read_at(&mut VmBytesMut::new(buf, len), offset as _)?;
     Ok(read as _)
 }
 
 pub fn sys_pwrite64(
     fd: c_int,
-    buf: UserConstPtr<u8>,
+    buf: *const u8,
     len: usize,
     offset: __kernel_off_t,
 ) -> LinuxResult<isize> {
     if len == 0 {
         return Ok(0);
     }
-    let buf = buf.get_as_slice(len)?;
     let f = File::from_fd(fd)?;
-    let write = f.inner().write_at(buf, offset as _)?;
+    let write = f
+        .inner()
+        .write_at(&mut VmBytes::new(buf, len), offset as _)?;
     Ok(write as _)
 }
 
 pub fn sys_preadv(
     fd: c_int,
-    iov: UserPtr<iovec>,
+    iov: *const IoVec,
     iovcnt: usize,
     offset: __kernel_off_t,
 ) -> LinuxResult<isize> {
@@ -232,7 +217,7 @@ pub fn sys_preadv(
 
 pub fn sys_pwritev(
     fd: c_int,
-    iov: UserConstPtr<iovec>,
+    iov: *const IoVec,
     iovcnt: usize,
     offset: __kernel_off_t,
 ) -> LinuxResult<isize> {
@@ -241,9 +226,9 @@ pub fn sys_pwritev(
 
 pub fn sys_preadv2(
     fd: c_int,
-    iov: UserPtr<iovec>,
+    iov: *const IoVec,
     iovcnt: usize,
-    mut offset: __kernel_off_t,
+    offset: __kernel_off_t,
     _flags: u32,
 ) -> LinuxResult<isize> {
     debug!(
@@ -251,20 +236,16 @@ pub fn sys_preadv2(
         fd, iovcnt, offset, _flags
     );
     let f = File::from_fd(fd)?;
-    IoVectorBuf::new_mut(iov, iovcnt)?
-        .fill_with(|buf| {
-            let read = f.inner().read_at(buf, offset as _)?;
-            offset += read as __kernel_off_t;
-            Ok(read)
-        })
+    f.inner()
+        .read_at(&mut IoVectorBuf::new(iov, iovcnt)?.into_io(), offset as _)
         .map(|n| n as _)
 }
 
 pub fn sys_pwritev2(
     fd: c_int,
-    iov: UserConstPtr<iovec>,
+    iov: *const IoVec,
     iovcnt: usize,
-    mut offset: __kernel_off_t,
+    offset: __kernel_off_t,
     _flags: u32,
 ) -> LinuxResult<isize> {
     debug!(
@@ -272,12 +253,8 @@ pub fn sys_pwritev2(
         fd, iovcnt, offset, _flags
     );
     let f = File::from_fd(fd)?;
-    IoVectorBuf::new_const(iov, iovcnt)?
-        .read_with(|buf| {
-            let write = f.inner().write_at(buf, offset as _)?;
-            offset += write as __kernel_off_t;
-            Ok(write)
-        })
+    f.inner()
+        .read_at(&mut IoVectorBuf::new(iov, iovcnt)?.into_io(), offset as _)
         .map(|n| n as _)
 }
 
@@ -295,24 +272,24 @@ impl SendFile {
         .contains(IoEvents::IN)
     }
 
-    fn read(&mut self, buf: &mut [u8]) -> LinuxResult<usize> {
+    fn read(&mut self, mut buf: &mut [u8]) -> LinuxResult<usize> {
         match self {
-            SendFile::Direct(file) => file.read(buf),
+            SendFile::Direct(file) => file.read(&mut buf.into()),
             SendFile::Offset(file, offset) => {
                 let off = offset.vm_read()?;
-                let bytes_read = file.inner().read_at(buf, off)?;
+                let bytes_read = file.inner().read_at(&mut buf, off)?;
                 offset.vm_write(off + bytes_read as u64)?;
                 Ok(bytes_read)
             }
         }
     }
 
-    fn write(&mut self, buf: &[u8]) -> LinuxResult<usize> {
+    fn write(&mut self, mut buf: &[u8]) -> LinuxResult<usize> {
         match self {
-            SendFile::Direct(file) => file.write(buf),
+            SendFile::Direct(file) => file.write(&mut buf.into()),
             SendFile::Offset(file, offset) => {
                 let off = offset.vm_read()?;
-                let bytes_written = file.inner().write_at(buf, off)?;
+                let bytes_written = file.inner().write_at(&mut buf, off)?;
                 offset.vm_write(off + bytes_written as u64)?;
                 Ok(bytes_written)
             }
@@ -321,7 +298,7 @@ impl SendFile {
 }
 
 fn do_send(mut src: SendFile, mut dst: SendFile, len: usize) -> LinuxResult<usize> {
-    let mut buf = vec![0; 0x4000];
+    let mut buf = vec![0; 0x1000];
     let mut total_written = 0;
     let mut remaining = len;
 
@@ -478,7 +455,7 @@ pub fn sys_splice(
             return Err(LinuxError::EINVAL);
         }
         let f = get_file_like(fd_out)?;
-        f.write(b"")?;
+        f.write(&mut b"".as_slice().into())?;
         SendFile::Direct(f)
     };
 

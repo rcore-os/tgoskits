@@ -6,10 +6,10 @@ use core::{
 };
 
 use axerrno::LinuxError;
-use axio::{IoEvents, PollSet, Pollable};
+use axio::{Buf, BufMut, IoEvents, PollSet, Pollable, Read, Write};
 use axtask::future::Poller;
 
-use crate::file::{FileLike, Kstat};
+use crate::file::{FileLike, Kstat, SealedBuf, SealedBufMut};
 
 pub struct EventFd {
     count: AtomicU64,
@@ -34,8 +34,8 @@ impl EventFd {
 }
 
 impl FileLike for EventFd {
-    fn read(&self, buf: &mut [u8]) -> axio::Result<usize> {
-        if buf.len() < size_of::<u64>() {
+    fn read(&self, dst: &mut SealedBufMut) -> axio::Result<usize> {
+        if dst.remaining_mut() < size_of::<u64>() {
             return Err(LinuxError::EINVAL);
         }
 
@@ -54,22 +54,23 @@ impl FileLike for EventFd {
                         });
                 match result {
                     Ok(count) => {
-                        let data = count.to_ne_bytes();
-                        buf[..data.len()].copy_from_slice(&data);
+                        dst.write(&count.to_ne_bytes())?;
                         self.poll_tx.wake();
-                        Ok(data.len())
+                        Ok(size_of::<u64>())
                     }
                     Err(_) => Err(LinuxError::EAGAIN),
                 }
             })
     }
 
-    fn write(&self, buf: &[u8]) -> axio::Result<usize> {
-        if buf.len() < size_of::<u64>() {
+    fn write(&self, src: &mut SealedBuf) -> axio::Result<usize> {
+        if src.remaining() < size_of::<u64>() {
             return Err(LinuxError::EINVAL);
         }
 
-        let value = u64::from_ne_bytes(buf[..size_of::<u64>()].try_into().unwrap());
+        let mut value = [0; size_of::<u64>()];
+        src.read(&mut value)?;
+        let value = u64::from_ne_bytes(value);
         if value == u64::MAX {
             return Err(LinuxError::EINVAL);
         }

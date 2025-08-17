@@ -1,115 +1,168 @@
-use axerrno::{LinuxError, LinuxResult};
-use axio::buf::{Buf, BufMut};
-use linux_raw_sys::general::iovec;
+use core::mem::{self, MaybeUninit};
 
-use crate::mm::{UserConstPtr, UserPtr};
+use axerrno::{LinuxError, LinuxResult};
+use axio::{Buf, BufMut, Read, Write};
+use bytemuck::AnyBitPattern;
+use starry_vm::{VmPtr, vm_read_slice, vm_write_slice};
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, AnyBitPattern)]
+pub struct IoVec {
+    pub iov_base: *mut u8,
+    pub iov_len: isize,
+}
 
 #[derive(Default)]
-pub struct IoVectorBuf<'a> {
-    iovs: &'a [iovec],
+pub struct IoVectorBuf {
+    iovs: *const IoVec,
+    iovcnt: usize,
+    len: usize,
+}
+
+impl IoVectorBuf {
+    pub fn new(iovs: *const IoVec, iovcnt: usize) -> LinuxResult<Self> {
+        if iovcnt > 1024 {
+            return Err(LinuxError::EINVAL);
+        }
+        let mut len = 0;
+        for i in 0..iovcnt {
+            let iov = iovs.wrapping_add(i).vm_read()?;
+            if iov.iov_len < 0 {
+                return Err(LinuxError::EINVAL);
+            }
+            len += iov.iov_len as usize;
+        }
+        Ok(Self { iovs, iovcnt, len })
+    }
+
+    pub fn read_with(
+        self,
+        mut f: impl FnMut(*const u8, usize) -> LinuxResult<usize>,
+    ) -> LinuxResult<usize> {
+        let mut count = 0;
+        for i in 0..self.iovcnt {
+            let iov = self.iovs.wrapping_add(i).vm_read()?;
+            if iov.iov_len == 0 {
+                continue;
+            }
+            let read = f(iov.iov_base, iov.iov_len as usize)?;
+            if read == 0 {
+                break;
+            }
+            count += read;
+        }
+        Ok(count)
+    }
+
+    pub fn fill_with(
+        self,
+        mut f: impl FnMut(*mut u8, usize) -> LinuxResult<usize>,
+    ) -> LinuxResult<usize> {
+        let mut count = 0;
+        for i in 0..self.iovcnt {
+            let iov = self.iovs.wrapping_add(i).vm_read()?;
+            if iov.iov_len == 0 {
+                continue;
+            }
+            let written = f(iov.iov_base, iov.iov_len as usize)?;
+            if written == 0 {
+                break;
+            }
+            count += written;
+        }
+        Ok(count)
+    }
+
+    pub fn into_io(self) -> IoVectorBufIo {
+        IoVectorBufIo {
+            inner: self,
+            start: 0,
+            offset: 0,
+        }
+    }
+}
+
+pub struct IoVectorBufIo {
+    inner: IoVectorBuf,
+    start: usize,
     offset: usize,
 }
 
-impl<'a> IoVectorBuf<'a> {
-    fn new(iovs: &'a [iovec]) -> Self {
-        let mut result = Self { iovs, offset: 0 };
-        result.skip_empty();
-        result
-    }
-
-    pub fn new_mut(iov: UserPtr<iovec>, iovcnt: usize) -> LinuxResult<Self> {
-        if iovcnt == 0 {
-            return Ok(Self::default());
-        } else if iovcnt > 1024 {
-            return Err(LinuxError::EINVAL);
-        }
-        let iovs = iov.get_as_mut_slice(iovcnt)?;
-        for iov in iovs.iter_mut() {
-            if (iov.iov_len as i64) < 0 {
-                return Err(LinuxError::EINVAL);
-            }
-            if iov.iov_len != 0 {
-                UserPtr::<u8>::from(iov.iov_base as *mut _).get_as_mut_slice(iov.iov_len as _)?;
-            }
-        }
-        Ok(Self::new(iovs))
-    }
-
-    pub fn new_const(iov: UserConstPtr<iovec>, iovcnt: usize) -> LinuxResult<Self> {
-        if iovcnt == 0 {
-            return Ok(Self::default());
-        } else if iovcnt > 1024 {
-            return Err(LinuxError::EINVAL);
-        }
-        let iovs = iov.get_as_slice(iovcnt)?;
-        for iov in iovs {
-            if (iov.iov_len as i64) < 0 {
-                return Err(LinuxError::EINVAL);
-            }
-            if iov.iov_len != 0 {
-                UserConstPtr::<u8>::from(iov.iov_base as *const _)
-                    .get_as_slice(iov.iov_len as _)?;
-            }
-        }
-        Ok(Self::new(iovs))
-    }
-
-    fn skip_empty(&mut self) {
-        while self
-            .iovs
-            .first()
-            .is_some_and(|it| it.iov_len as i64 <= self.offset as i64)
-        {
-            self.iovs = &self.iovs[1..];
-            self.offset = 0;
-        }
-    }
-}
-
-impl Buf for IoVectorBuf<'_> {
-    fn remaining(&self) -> usize {
-        self.iovs
-            .iter()
-            .filter_map(|iov| {
-                if iov.iov_len != 0 {
-                    Some(iov.iov_len as usize)
-                } else {
-                    None
-                }
-            })
-            .sum::<usize>()
-            - self.offset
-    }
-
-    fn chunk(&self) -> &[u8] {
-        let Some(iov) = self.iovs.first() else {
-            return &[];
-        };
-        let chunk =
-            unsafe { core::slice::from_raw_parts(iov.iov_base as *const u8, iov.iov_len as usize) };
-        &chunk[self.offset..]
-    }
-
-    fn advance(&mut self, mut n: usize) {
-        while n > 0 {
-            let Some(iov) = self.iovs.first() else {
+impl IoVectorBufIo {
+    fn skip_empty(&mut self) -> LinuxResult<()> {
+        while self.start < self.inner.iovcnt {
+            let iov = self.inner.iovs.wrapping_add(self.start).vm_read()?;
+            if iov.iov_len as usize > self.offset {
                 break;
-            };
-            let adv = n.min(iov.iov_len as usize - self.offset);
-            n -= adv;
-            self.offset += adv;
-            self.skip_empty();
+            }
+            self.offset = 0;
+            self.start += 1;
         }
+        Ok(())
     }
 }
 
-impl BufMut for IoVectorBuf<'_> {
-    fn chunk_mut(&mut self) -> &mut [u8] {
-        let Some(iov) = self.iovs.first() else {
-            return &mut [];
-        };
-        unsafe { core::slice::from_raw_parts_mut(iov.iov_base as *mut u8, iov.iov_len as usize) }
+impl Read for IoVectorBufIo {
+    fn read(&mut self, buf: &mut [u8]) -> LinuxResult<usize> {
+        let mut count = 0;
+        loop {
+            self.skip_empty()?;
+            if self.start >= self.inner.iovcnt {
+                break;
+            }
+            let iov = self.inner.iovs.wrapping_add(self.start).vm_read()?;
+            let len = (iov.iov_len as usize - self.offset).min(buf.len() - count);
+            if len == 0 {
+                break;
+            }
+            vm_read_slice(iov.iov_base.wrapping_add(self.offset), unsafe {
+                mem::transmute::<&mut [u8], &mut [MaybeUninit<u8>]>(&mut buf[count..count + len])
+            })?;
+            self.offset += len;
+            self.inner.len -= len;
+            count += len;
+        }
+        Ok(count)
     }
 }
 
-// TODO: make a generic poll implementation here
+impl Buf for IoVectorBufIo {
+    fn remaining(&self) -> usize {
+        self.inner.len
+    }
+}
+
+impl Write for IoVectorBufIo {
+    fn write(&mut self, buf: &[u8]) -> LinuxResult<usize> {
+        let mut count = 0;
+        loop {
+            self.skip_empty()?;
+            if self.start >= self.inner.iovcnt {
+                break;
+            }
+            let iov = self.inner.iovs.wrapping_add(self.start).vm_read()?;
+            let len = (iov.iov_len as usize - self.offset).min(buf.len() - count);
+            if len == 0 {
+                break;
+            }
+            vm_write_slice(
+                iov.iov_base.wrapping_add(self.offset),
+                &buf[count..count + len],
+            )?;
+            self.offset += len;
+            self.inner.len -= len;
+            count += len;
+        }
+        Ok(count)
+    }
+
+    fn flush(&mut self) -> LinuxResult {
+        Ok(())
+    }
+}
+
+impl BufMut for IoVectorBufIo {
+    fn remaining_mut(&self) -> usize {
+        self.inner.len
+    }
+}

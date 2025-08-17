@@ -63,17 +63,17 @@ impl LoopDevice {
 }
 
 impl DeviceOps for LoopDevice {
-    fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
+    fn read_at(&self, mut buf: &mut [u8], offset: u64) -> VfsResult<usize> {
         let file = self.file.lock().clone();
-        file.ok_or(LinuxError::EPERM)?.read_at(buf, offset)
+        file.ok_or(LinuxError::EPERM)?.read_at(&mut buf, offset)
     }
 
-    fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize> {
+    fn write_at(&self, mut buf: &[u8], offset: u64) -> VfsResult<usize> {
         if self.ro.load(Ordering::Relaxed) {
             return Err(LinuxError::EROFS);
         }
         let file = self.file.lock().clone();
-        file.ok_or(LinuxError::EPERM)?.write_at(buf, offset)
+        file.ok_or(LinuxError::EPERM)?.write_at(&mut buf, offset)
     }
 
     fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {

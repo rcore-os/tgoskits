@@ -31,6 +31,7 @@ axtask.workspace = true
 
 starry-core.workspace = true
 
+arrayvec = { version = "0.7.6", default-features = false }
 axbacktrace.workspace = true
 axcpu = "0.2"
 axerrno.workspace = true
@@ -60,7 +61,7 @@ slab.workspace = true
 spin.workspace = true
 starry-process.workspace = true
 starry-signal.workspace = true
-starry-vm.workspace = true
+starry-vm = { workspace = true, features = ["axio"] }
 syscalls = { git = "https://github.com/jasonwhite/syscalls.git", rev = "92624de", default-features = false }
 ringbuf = { version = "0.4.8", default-features = false, features = ["alloc"] }
 zerocopy = { version = "0.8.26", features = ["derive"] }

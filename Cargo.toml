@@ -44,8 +44,8 @@ axtask = { path = "arceos/modules/axtask", features = ["task-ext"] }
 
 axbacktrace = "0.1"
 axerrno = { git = "https://github.com/Starry-Mix-THU/axerrno.git", rev = "f5d8f86" }
-axfs-ng-vfs = { git = "https://github.com/Starry-Mix-THU/axfs-ng-vfs.git", rev = "b67d591" }
-axio = { git = "https://github.com/Starry-Mix-THU/axio.git", rev = "7c1ac3a" }
+axfs-ng-vfs = { git = "https://github.com/Starry-Mix-THU/axfs-ng-vfs.git", rev = "60491ba" }
+axio = { git = "https://github.com/Starry-Mix-THU/axio.git", rev = "4ececd3" }
 starry-process = "0.2"
 starry-signal = "0.2"
 starry-vm = "0.1"
@@ -153,7 +153,7 @@ page_table_entry = { git = "https://github.com/Starry-Mix-THU/page_table_multiar
 page_table_multiarch = { git = "https://github.com/Starry-Mix-THU/page_table_multiarch.git", rev = "ca1f871" }
 starry-process = { git = "https://github.com/Starry-Mix-THU/starry-process.git", rev = "6327455" }
 starry-signal = { git = "https://github.com/Starry-Mix-THU/starry-signal.git", rev = "f45379a" }
-starry-vm = { git = "https://github.com/Starry-Mix-THU/starry-vm.git", rev = "3a0bf9d" }
+starry-vm = { git = "https://github.com/Starry-Mix-THU/starry-vm.git", rev = "8b7dd37" }
 
 [package.metadata.vendor-filter]
 platforms = ["riscv64gc-unknown-none-elf", "loongarch64-unknown-none-softfloat"]

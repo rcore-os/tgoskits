@@ -1,5 +1,8 @@
 use alloc::{
-    borrow::Cow, collections::vec_deque::VecDeque, sync::{Arc, Weak}, task::Wake
+    borrow::Cow,
+    collections::vec_deque::VecDeque,
+    sync::{Arc, Weak},
+    task::Wake,
 };
 use core::{
     any::Any,
@@ -15,7 +18,7 @@ use hashbrown::HashMap;
 use kspin::SpinNoPreempt;
 use linux_raw_sys::general::{EPOLLET, EPOLLONESHOT, epoll_event};
 
-use crate::file::{FileLike, Kstat, get_file_like};
+use crate::file::{FileLike, Kstat, SealedBuf, SealedBufMut, get_file_like};
 
 type ReadyList = VecDeque<Weak<EpollInterest>>;
 
@@ -245,11 +248,11 @@ impl Epoll {
 }
 
 impl FileLike for Epoll {
-    fn read(&self, _buf: &mut [u8]) -> LinuxResult<usize> {
+    fn read(&self, _dst: &mut SealedBufMut) -> LinuxResult<usize> {
         Err(LinuxError::EINVAL)
     }
 
-    fn write(&self, _buf: &[u8]) -> LinuxResult<usize> {
+    fn write(&self, _src: &mut SealedBuf) -> LinuxResult<usize> {
         Err(LinuxError::EINVAL)
     }
 
