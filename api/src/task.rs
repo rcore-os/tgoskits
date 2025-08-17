@@ -1,10 +1,11 @@
-use core::sync::atomic::Ordering;
+use core::{ffi::c_long, mem::offset_of, sync::atomic::Ordering};
 
 use axcpu::trap::{ExceptionInfoExt, ExceptionKind};
 use axerrno::{LinuxError, LinuxResult};
 use axhal::uspace::{ReturnReason, UserContext};
 use axtask::{TaskInner, current};
-use linux_raw_sys::general::{ROBUST_LIST_LIMIT, robust_list, robust_list_head};
+use bytemuck::AnyBitPattern;
+use linux_raw_sys::general::ROBUST_LIST_LIMIT;
 use starry_core::{
     futex::FutexKey,
     mm::access_user_memory,
@@ -16,9 +17,9 @@ use starry_core::{
 };
 use starry_process::Pid;
 use starry_signal::{SignalInfo, Signo};
+use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
-    mm::{UserPtr, nullable},
     signal::{check_signals, unblock_next_signal},
     syscall::handle_syscall,
 };
@@ -107,7 +108,21 @@ pub fn new_user_task(
     )
 }
 
-fn handle_futex_death(entry: *mut robust_list, offset: i64) -> LinuxResult<()> {
+#[repr(C)]
+#[derive(Debug, Copy, Clone, AnyBitPattern)]
+pub struct RobustList {
+    pub next: *mut RobustList,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, AnyBitPattern)]
+pub struct RobustListHead {
+    pub list: RobustList,
+    pub futex_offset: c_long,
+    pub list_op_pending: *mut RobustList,
+}
+
+fn handle_futex_death(entry: *mut RobustList, offset: i64) -> LinuxResult<()> {
     let address = (entry as u64)
         .checked_add_signed(offset)
         .ok_or(LinuxError::EINVAL)?;
@@ -125,17 +140,19 @@ fn handle_futex_death(entry: *mut robust_list, offset: i64) -> LinuxResult<()> {
     Ok(())
 }
 
-pub fn exit_robust_list(head: &mut robust_list_head) -> LinuxResult<()> {
+pub fn exit_robust_list(head: *const RobustListHead) -> LinuxResult<()> {
     // Reference: https://elixir.bootlin.com/linux/v6.13.6/source/kernel/futex/core.c#L777
 
     let mut limit = ROBUST_LIST_LIMIT;
 
+    let end_ptr = (head as usize + offset_of!(RobustListHead, list)) as *const RobustList;
+    let head = head.vm_read()?;
     let mut entry = head.list.next;
     let offset = head.futex_offset;
     let pending = head.list_op_pending;
 
-    while !core::ptr::eq(entry, &head.list) {
-        let next_entry = UserPtr::from(entry).get_as_mut()?.next;
+    while !core::ptr::eq(entry, end_ptr) {
+        let next_entry = entry.vm_read()?.next;
         if entry != pending {
             handle_futex_death(entry, offset)?;
         }
@@ -157,11 +174,9 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 
     info!("{} exit with code: {}", curr.id_name(), exit_code);
 
-    let clear_child_tid = UserPtr::<Pid>::from(thr.clear_child_tid());
-    if let Ok(clear_tid) = clear_child_tid.get_as_mut() {
-        *clear_tid = 0;
-
-        let key = FutexKey::new_current(clear_tid as *const _ as usize);
+    let clear_child_tid = thr.clear_child_tid() as *mut u32;
+    if clear_child_tid.vm_write(0).is_ok() {
+        let key = FutexKey::new_current(clear_child_tid as usize);
         let table = thr.proc_data.futex_table_for(&key);
         let guard = table.get(&key);
         if let Some(futex) = guard {
@@ -169,8 +184,8 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         }
         axtask::yield_now();
     }
-    let head: UserPtr<robust_list_head> = thr.robust_list_head().into();
-    if let Ok(Some(head)) = nullable!(head.get_as_mut())
+    let head = thr.robust_list_head() as *const RobustListHead;
+    if !head.is_null()
         && let Err(err) = exit_robust_list(head)
     {
         warn!("exit robust list failed: {:?}", err);

@@ -12,12 +12,13 @@ use axio::{
 };
 use axtask::current;
 use linux_raw_sys::general::{__kernel_off_t, iovec};
+use starry_vm::{VmMutPtr, VmPtr};
 use syscalls::Sysno;
 
 use crate::{
     file::{File, FileLike, Pipe, get_file_like},
     io::IoVectorBuf,
-    mm::{UserConstPtr, UserPtr, nullable},
+    mm::{UserConstPtr, UserPtr},
 };
 
 struct DummyFd;
@@ -280,16 +281,16 @@ pub fn sys_pwritev2(
         .map(|n| n as _)
 }
 
-enum SendFile<'a> {
+enum SendFile {
     Direct(Arc<dyn FileLike>),
-    Offset(Arc<File>, &'a mut u64),
+    Offset(Arc<File>, *mut u64),
 }
 
-impl<'a> SendFile<'a> {
+impl SendFile {
     fn has_data(&self) -> bool {
         match self {
             SendFile::Direct(file) => file.poll(),
-            SendFile::Offset(file, _) => file.poll(),
+            SendFile::Offset(file, ..) => file.poll(),
         }
         .contains(IoEvents::IN)
     }
@@ -298,8 +299,9 @@ impl<'a> SendFile<'a> {
         match self {
             SendFile::Direct(file) => file.read(buf),
             SendFile::Offset(file, offset) => {
-                let bytes_read = file.inner().read_at(buf, **offset)?;
-                **offset += bytes_read as u64;
+                let off = offset.vm_read()?;
+                let bytes_read = file.inner().read_at(buf, off)?;
+                offset.vm_write(off + bytes_read as u64)?;
                 Ok(bytes_read)
             }
         }
@@ -309,15 +311,16 @@ impl<'a> SendFile<'a> {
         match self {
             SendFile::Direct(file) => file.write(buf),
             SendFile::Offset(file, offset) => {
-                let bytes_written = file.inner().write_at(buf, **offset)?;
-                **offset += bytes_written as u64;
+                let off = offset.vm_read()?;
+                let bytes_written = file.inner().write_at(buf, off)?;
+                offset.vm_write(off + bytes_written as u64)?;
                 Ok(bytes_written)
             }
         }
     }
 }
 
-fn do_send(mut src: SendFile<'_>, mut dst: SendFile<'_>, len: usize) -> LinuxResult<usize> {
+fn do_send(mut src: SendFile, mut dst: SendFile, len: usize) -> LinuxResult<usize> {
     let mut buf = vec![0; 0x4000];
     let mut total_written = 0;
     let mut remaining = len;
@@ -351,7 +354,7 @@ fn do_send(mut src: SendFile<'_>, mut dst: SendFile<'_>, len: usize) -> LinuxRes
 pub fn sys_sendfile(
     out_fd: c_int,
     in_fd: c_int,
-    offset: UserPtr<u64>,
+    offset: *mut u64,
     len: usize,
 ) -> LinuxResult<isize> {
     debug!(
@@ -362,9 +365,8 @@ pub fn sys_sendfile(
         len
     );
 
-    let offset = nullable!(offset.get_as_mut())?;
-    let src = if let Some(offset) = offset {
-        if *offset > u32::MAX as u64 {
+    let src = if !offset.is_null() {
+        if offset.vm_read()? > u32::MAX as u64 {
             return Err(LinuxError::EINVAL);
         }
         SendFile::Offset(File::from_fd(in_fd)?, offset)
@@ -379,9 +381,9 @@ pub fn sys_sendfile(
 
 pub fn sys_copy_file_range(
     fd_in: c_int,
-    off_in: UserPtr<u64>,
+    off_in: *mut u64,
     fd_out: c_int,
-    off_out: UserPtr<u64>,
+    off_out: *mut u64,
     len: usize,
     _flags: u32,
 ) -> LinuxResult<isize> {
@@ -399,15 +401,13 @@ pub fn sys_copy_file_range(
     // TODO: check both regular files
     // TODO: check same file and overlap
 
-    let off_in = nullable!(off_in.get_as_mut())?;
-    let src = if let Some(off_in) = off_in {
+    let src = if !off_in.is_null() {
         SendFile::Offset(File::from_fd(fd_in)?, off_in)
     } else {
         SendFile::Direct(get_file_like(fd_in)?)
     };
 
-    let off_out = nullable!(off_out.get_as_mut())?;
-    let dst = if let Some(off_out) = off_out {
+    let dst = if !off_out.is_null() {
         SendFile::Offset(File::from_fd(fd_out)?, off_out)
     } else {
         SendFile::Direct(get_file_like(fd_out)?)
@@ -418,9 +418,9 @@ pub fn sys_copy_file_range(
 
 pub fn sys_splice(
     fd_in: c_int,
-    off_in: UserPtr<i64>,
+    off_in: *mut i64,
     fd_out: c_int,
-    off_out: UserPtr<i64>,
+    off_out: *mut i64,
     len: usize,
     _flags: u32,
 ) -> LinuxResult<isize> {
@@ -440,11 +440,11 @@ pub fn sys_splice(
         return Err(LinuxError::EBADF);
     }
 
-    let src = if let Some(off) = nullable!(off_in.get_as_mut())? {
-        if *off < 0 {
+    let src = if !off_in.is_null() {
+        if off_in.vm_read()? < 0 {
             return Err(LinuxError::EINVAL);
         }
-        SendFile::Offset(File::from_fd(fd_in)?, off_in.cast().get_as_mut()?)
+        SendFile::Offset(File::from_fd(fd_in)?, off_in.cast())
     } else {
         if let Ok(src) = Pipe::from_fd(fd_in) {
             if !src.is_read() {
@@ -460,11 +460,11 @@ pub fn sys_splice(
         SendFile::Direct(get_file_like(fd_in)?)
     };
 
-    let dst = if let Some(off) = nullable!(off_out.get_as_mut())? {
-        if *off < 0 {
+    let dst = if !off_out.is_null() {
+        if off_out.vm_read()? < 0 {
             return Err(LinuxError::EINVAL);
         }
-        SendFile::Offset(File::from_fd(fd_out)?, off_out.cast().get_as_mut()?)
+        SendFile::Offset(File::from_fd(fd_out)?, off_out.cast())
     } else {
         if let Ok(dst) = Pipe::from_fd(fd_out) {
             if !dst.is_write() {
