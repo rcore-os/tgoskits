@@ -81,11 +81,8 @@ pub fn new_user_task(
                     }
                     r => {
                         warn!("Unexpected return reason: {:?}", r);
-                        send_signal_to_process(
-                            thr.proc_data.proc.pid(),
-                            Some(SignalInfo::new_kernel(Signo::SIGSEGV)),
-                        )
-                        .expect("Failed to send SIGSEGV");
+                        raise_signal_fatal(SignalInfo::new_kernel(Signo::SIGSEGV))
+                            .expect("Failed to send SIGSEGV");
                     }
                 }
 
