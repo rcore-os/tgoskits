@@ -625,7 +625,7 @@ dependencies = [
 [[package]]
 name = "axplat-riscv64-visionfive2"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axplat-riscv64-visionfive2.git?rev=de8d0b3#de8d0b330b9044f3827d9c75dc0f6028454cdfca"
+source = "git+https://github.com/Starry-Mix-THU/axplat-riscv64-visionfive2.git?rev=504675a#504675adcbcd853304311a3140b6f3ae5bbc9d76"
 dependencies = [
  "axconfig-macros",
  "axcpu",
