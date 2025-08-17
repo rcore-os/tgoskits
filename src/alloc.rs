@@ -1,6 +1,6 @@
 extern crate alloc;
 
-use alloc::{ffi::CString, vec::Vec};
+use alloc::vec::Vec;
 
 use bytemuck::{AnyBitPattern, Pod, bytes_of, zeroed};
 
@@ -45,7 +45,7 @@ pub fn vm_load_until_nul<T: Pod>(ptr: *const T) -> VmResult<Vec<T>> {
     let mut vm = VmImpl::new();
 
     loop {
-        const CHUNK_SIZE: usize = 4096; // 4 KiB
+        const CHUNK_SIZE: usize = 32;
 
         let start = ptr.addr() + result.len() * size;
         let end = (start + 1).next_multiple_of(CHUNK_SIZE);
@@ -69,13 +69,5 @@ pub fn vm_load_until_nul<T: Pod>(ptr: *const T) -> VmResult<Vec<T>> {
         }
     }
 
-    result.shrink_to_fit();
     Ok(result)
-}
-
-/// Loads a null-terminated C string from the virtual memory.
-pub fn vm_load_c_string(ptr: *const u8) -> VmResult<CString> {
-    let bytes = vm_load_until_nul(ptr)?;
-    // SAFETY: vm_load_until_nul guarantees no interior 0 byte.
-    Ok(unsafe { CString::from_vec_unchecked(bytes) })
 }
