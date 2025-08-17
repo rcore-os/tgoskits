@@ -85,3 +85,7 @@ pub use thin::{VmMutPtr, VmPtr};
 mod alloc;
 #[cfg(feature = "alloc")]
 pub use alloc::{vm_load, vm_load_any, vm_load_until_nul};
+#[cfg(feature = "axio")]
+mod bytes;
+#[cfg(feature = "axio")]
+pub use bytes::{VmBytes, VmBytesMut};
