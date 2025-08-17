@@ -2183,6 +2183,7 @@ dependencies = [
  "hashbrown",
  "inherit-methods-macro",
  "kernel-elf-parser",
+ "kernel_guard",
  "kspin",
  "lazy_static",
  "linkme",

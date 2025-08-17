@@ -1,6 +1,7 @@
 //! User address space management.
 
 use alloc::{borrow::ToOwned, string::String, vec, vec::Vec};
+use kernel_guard::{IrqSave, NoPreemptIrqSave};
 use core::{
     ffi::CStr,
     hint::unlikely,
@@ -368,7 +369,8 @@ pub fn is_accessing_user_memory() -> bool {
     ACCESSING_USER_MEM.load(Ordering::Acquire)
 }
 
-struct Vm;
+#[allow(dead_code)]
+struct Vm(IrqSave);
 
 /// Briefly checks if the given memory region is valid user memory.
 pub fn check_access(start: usize, len: usize) -> VmResult {
@@ -384,7 +386,7 @@ pub fn check_access(start: usize, len: usize) -> VmResult {
 #[extern_trait]
 unsafe impl VmIo for Vm {
     fn new() -> Self {
-        Self
+        Self(IrqSave::new())
     }
 
     fn read(&mut self, start: usize, buf: &mut [MaybeUninit<u8>]) -> VmResult {
