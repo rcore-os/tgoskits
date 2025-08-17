@@ -11,7 +11,8 @@ use starry_core::{
     mm::access_user_memory,
     shm::SHM_MANAGER,
     task::{
-        AsThread, get_process_data, send_signal_to_process, send_signal_to_thread, set_timer_state,
+        AsThread, get_process_data, get_task, send_signal_to_process, send_signal_to_thread,
+        set_timer_state,
     },
     time::TimerState,
 };
@@ -55,11 +56,8 @@ pub fn new_user_task(
                                 "{:?}: segmentation fault at {:#x} {:?}",
                                 thr.proc_data.proc, addr, flags
                             );
-                            send_signal_to_process(
-                                thr.proc_data.proc.pid(),
-                                Some(SignalInfo::new_kernel(Signo::SIGSEGV)),
-                            )
-                            .expect("Failed to send SIGSEGV");
+                            raise_signal_fatal(SignalInfo::new_kernel(Signo::SIGSEGV))
+                                .expect("Failed to send SIGSEGV");
                         }
                     }
                     ReturnReason::Interrupt => {}
@@ -78,11 +76,8 @@ pub fn new_user_task(
                             ExceptionKind::IllegalInstruction => Signo::SIGILL,
                             _ => Signo::SIGTRAP,
                         };
-                        send_signal_to_process(
-                            thr.proc_data.proc.pid(),
-                            Some(SignalInfo::new_kernel(signo)),
-                        )
-                        .expect("Failed to send SIGTRAP");
+                        raise_signal_fatal(SignalInfo::new_kernel(signo))
+                            .expect("Failed to send SIGTRAP");
                     }
                     r => {
                         warn!("Unexpected return reason: {:?}", r);
@@ -214,4 +209,23 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         }
     }
     thr.set_exit();
+}
+
+/// Sends a fatal signal to the current process.
+pub fn raise_signal_fatal(sig: SignalInfo) -> LinuxResult<()> {
+    let curr = current();
+    let proc_data = &curr.as_thread().proc_data;
+
+    let signo = sig.signo();
+    info!("Send fatal signal {:?} to the current process", signo);
+    if let Some(tid) = proc_data.signal.send_signal(sig)
+        && let Ok(task) = get_task(tid)
+    {
+        task.interrupt(proc_data.signal.can_restart(signo));
+    } else {
+        // No task wants to handle the signal, abort the task
+        do_exit(signo as i32, true);
+    }
+
+    Ok(())
 }

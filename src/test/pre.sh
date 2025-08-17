@@ -632,6 +632,7 @@ timeout 300 /musl/iozone_testcode.sh
 ln -v -s -f /glibc/iozone iozone
 timeout 300 /glibc/iozone_testcode.sh
 
+export ENOUGH=20000
 cd /musl
 timeout 600 ./lmbench_testcode.sh
 cd /glibc
