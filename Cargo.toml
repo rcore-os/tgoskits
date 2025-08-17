@@ -4,8 +4,10 @@ version = "0.1.0"
 edition = "2024"
 description = "x86 Virtual Local APIC"
 authors = ["Keyang Hu <keyang.hu@qq.com>", "Mingxian Su <aarkegz@gmail.com>"]
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPubL-2.0 OR MulanPSL2"
-
+license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0" # MulanPubL2 is not included in SPDX
+categories = ["virtualization"]
+repository = "https://github.com/arceos-hypervisor/x86_vlapic"
+keywords = ["x86", "hypervisor", "arceos"]
 
 [dependencies]
 log = "0.4.19"
@@ -16,7 +18,6 @@ bit = "0.1.1"
 memory_addr = "0.4"
 axerrno = "0.1.0"
 
-axaddrspace = { git = "https://github.com/arceos-hypervisor/axaddrspace.git" }
-axdevice_base = { git = "https://github.com/arceos-hypervisor/axdevice_crates.git" }
-
-axvisor_api = { git = "https://github.com/arceos-hypervisor/axvisor_api.git" }
+axaddrspace = "0.1.0"
+axdevice_base = "0.1.0"
+axvisor_api = "0.1.0"
