@@ -98,11 +98,11 @@ pub fn sys_clone(
     let exit_signal = flags & FLAG_MASK;
     let mut flags = CloneFlags::from_bits_truncate(flags & !FLAG_MASK);
     if flags.contains(CloneFlags::VFORK) {
-        info!("sys_clone: CLONE_VFORK slow path");
+        debug!("sys_clone: CLONE_VFORK slow path");
         flags.remove(CloneFlags::VM);
     }
 
-    info!(
+    debug!(
         "sys_clone <= flags: {:?}, exit_signal: {}, stack: {:#x}, ptid: {:#x}, ctid: {:#x}, tls: \
          {:#x}",
         flags, exit_signal, stack, parent_tid, child_tid, tls

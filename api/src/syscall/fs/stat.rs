@@ -118,7 +118,7 @@ pub fn sys_faccessat2(
     flags: u32,
 ) -> LinuxResult<isize> {
     let path = path.nullable().map(vm_load_string).transpose()?;
-    info!(
+    debug!(
         "sys_faccessat2 <= dirfd: {}, path: {:?}, mode: {}, flags: {}",
         dirfd, path, mode, flags
     );

@@ -28,7 +28,7 @@ pub fn sys_execve(
         .map(vm_load_string)
         .collect::<Result<Vec<_>, _>>()?;
 
-    info!(
+    debug!(
         "sys_execve <= path: {:?}, args: {:?}, envs: {:?}",
         path, args, envs
     );

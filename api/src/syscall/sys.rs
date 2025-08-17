@@ -122,7 +122,7 @@ pub fn sys_getrandom(buf: *mut u8, len: usize, flags: u32) -> LinuxResult<isize>
 }
 
 pub fn sys_seccomp(_op: u32, _flags: u32, _args: *const ()) -> LinuxResult<isize> {
-    info!("Dummy sys_seccomp called");
+    warn!("dummy sys_seccomp");
     Ok(0)
 }
 

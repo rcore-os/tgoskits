@@ -15,7 +15,7 @@ pub fn sys_mount(
     let source = vm_load_string(source)?;
     let target = vm_load_string(target)?;
     let fs_type = vm_load_string(fs_type)?;
-    info!(
+    debug!(
         "sys_mount <= source: {:?}, target: {:?}, fs_type: {:?}",
         source, target, fs_type
     );
@@ -34,7 +34,7 @@ pub fn sys_mount(
 
 pub fn sys_umount2(target: *const c_char, _flags: i32) -> LinuxResult<isize> {
     let target = vm_load_string(target)?;
-    info!("sys_umount2 <= target: {:?}", target);
+    debug!("sys_umount2 <= target: {:?}", target);
     let target = FS_CONTEXT.lock().resolve(target)?;
     target.unmount()?;
     Ok(0)
