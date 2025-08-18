@@ -19,7 +19,6 @@ use axio::PollSet;
 use axmm::AddrSpace;
 use axsync::{Mutex, spin::SpinNoIrq};
 use axtask::{AxTaskRef, TaskExt, TaskInner, WeakAxTaskRef, current};
-use event_listener::Event;
 use extern_trait::extern_trait;
 use hashbrown::HashMap;
 use lazy_static::lazy_static;
@@ -213,8 +212,8 @@ pub struct ProcessData {
     pub rlim: RwLock<Rlimits>,
 
     /// The child exit wait event
-    pub child_exit_event: Event,
-    /// Self exit eventm
+    pub child_exit_event: Arc<PollSet>,
+    /// Self exit event
     pub exit_event: Arc<PollSet>,
     /// The exit signal of the thread
     pub exit_signal: Option<Signo>,
@@ -250,7 +249,7 @@ impl ProcessData {
 
             rlim: RwLock::default(),
 
-            child_exit_event: Event::new(),
+            child_exit_event: Arc::default(),
             exit_event: Arc::default(),
             exit_signal,
 

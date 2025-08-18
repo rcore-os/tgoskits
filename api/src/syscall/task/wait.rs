@@ -1,7 +1,9 @@
 use alloc::vec::Vec;
+use core::task::Context;
 
 use axerrno::{LinuxError, LinuxResult};
-use axtask::{current, future::block_on_interruptible};
+use axio::{IoEvents, PollSet, Pollable};
+use axtask::{current, future::Poller};
 use bitflags::bitflags;
 use linux_raw_sys::general::{
     __WALL, __WCLONE, __WNOTHREAD, WCONTINUED, WEXITED, WNOHANG, WNOWAIT, WUNTRACED,
@@ -55,6 +57,17 @@ impl WaitPid {
     }
 }
 
+struct WaitPollable<'a>(&'a PollSet);
+impl Pollable for WaitPollable<'_> {
+    fn poll(&self) -> IoEvents {
+        unreachable!()
+    }
+
+    fn register(&self, context: &mut Context<'_>, _events: IoEvents) {
+        self.0.register(context.waker());
+    }
+}
+
 pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> LinuxResult<isize> {
     let options = WaitOptions::from_bits_truncate(options);
     info!("sys_waitpid <= pid: {:?}, options: {:?}", pid, options);
@@ -84,7 +97,9 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> LinuxResult<i
         return Err(LinuxError::ECHILD);
     }
 
-    loop {
+    let set = proc_data.child_exit_event.as_ref();
+
+    Poller::new(&WaitPollable(set), IoEvents::IN).poll(|| {
         if let Some(child) = children.iter().find(|child| child.is_zombie()) {
             if !options.contains(WaitOptions::WNOWAIT) {
                 child.free();
@@ -92,14 +107,11 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> LinuxResult<i
             if let Some(exit_code) = exit_code.nullable() {
                 exit_code.vm_write(child.exit_code())?;
             }
-            return Ok(child.pid() as _);
+            Ok(child.pid() as _)
         } else if options.contains(WaitOptions::WNOHANG) {
-            return Ok(0);
+            Ok(0)
         } else {
-            let _ = block_on_interruptible(async {
-                proc_data.child_exit_event.listen().await;
-                Ok(())
-            });
+            Err(LinuxError::EAGAIN)
         }
-    }
+    })
 }

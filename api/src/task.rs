@@ -191,7 +191,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
                 let _ = send_signal_to_process(parent.pid(), Some(SignalInfo::new_kernel(signo)));
             }
             if let Ok(data) = get_process_data(parent.pid()) {
-                data.child_exit_event.notify(usize::MAX);
+                data.child_exit_event.wake();
             }
         }
         thr.proc_data.exit_event.wake();
