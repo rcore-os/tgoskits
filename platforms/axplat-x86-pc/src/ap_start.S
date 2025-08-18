@@ -63,6 +63,7 @@ ap_start32:
     .quad 0x00cf93000000ffff    # 0x18: data segment (base=0, limit=0xfffff, type=32bit data read/write, DPL=0, 4k)
 .Lap_tmp_gdt_end:
 
+.code64
 # 0x7000
 .p2align 12
 .global ap_end
