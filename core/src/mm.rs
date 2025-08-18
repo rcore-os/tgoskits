@@ -1,7 +1,6 @@
 //! User address space management.
 
 use alloc::{borrow::ToOwned, string::String, vec, vec::Vec};
-use kernel_guard::{IrqSave, NoPreemptIrqSave};
 use core::{
     ffi::CStr,
     hint::unlikely,
@@ -22,6 +21,7 @@ use axmm::{AddrSpace, backend::Backend};
 use axsync::Mutex;
 use extern_trait::extern_trait;
 use kernel_elf_parser::{AuxEntry, ELFHeaders, ELFHeadersBuilder, ELFParser, app_stack_region};
+use kernel_guard::IrqSave;
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ouroboros::self_referencing;
 use starry_vm::{VmError, VmIo, VmResult};
