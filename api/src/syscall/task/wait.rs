@@ -1,9 +1,9 @@
 use alloc::vec::Vec;
-use core::task::Context;
+use core::{future::poll_fn, task::Poll};
 
+use axcpu::TrapFrame;
 use axerrno::{LinuxError, LinuxResult};
-use axio::{IoEvents, PollSet, Pollable};
-use axtask::{current, future::Poller};
+use axtask::{current, future::try_block_on};
 use bitflags::bitflags;
 use linux_raw_sys::general::{
     __WALL, __WCLONE, __WNOTHREAD, WCONTINUED, WEXITED, WNOHANG, WNOWAIT, WUNTRACED,
@@ -11,6 +11,8 @@ use linux_raw_sys::general::{
 use starry_core::task::AsThread;
 use starry_process::{Pid, Process};
 use starry_vm::{VmMutPtr, VmPtr};
+
+use crate::signal::check_signals;
 
 bitflags! {
     #[derive(Debug)]
@@ -57,18 +59,12 @@ impl WaitPid {
     }
 }
 
-struct WaitPollable<'a>(&'a PollSet);
-impl Pollable for WaitPollable<'_> {
-    fn poll(&self) -> IoEvents {
-        unreachable!()
-    }
-
-    fn register(&self, context: &mut Context<'_>, _events: IoEvents) {
-        self.0.register(context.waker());
-    }
-}
-
-pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> LinuxResult<isize> {
+pub fn sys_waitpid(
+    tf: &mut TrapFrame,
+    pid: i32,
+    exit_code: *mut i32,
+    options: u32,
+) -> LinuxResult<isize> {
     let options = WaitOptions::from_bits_truncate(options);
     info!("sys_waitpid <= pid: {:?}, options: {:?}", pid, options);
 
@@ -97,9 +93,7 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> LinuxResult<i
         return Err(LinuxError::ECHILD);
     }
 
-    let set = proc_data.child_exit_event.as_ref();
-
-    Poller::new(&WaitPollable(set), IoEvents::IN).poll(|| {
+    let check_children = || {
         if let Some(child) = children.iter().find(|child| child.is_zombie()) {
             if !options.contains(WaitOptions::WNOWAIT) {
                 child.free();
@@ -113,5 +107,28 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> LinuxResult<i
         } else {
             Err(LinuxError::EAGAIN)
         }
-    })
+    };
+
+    let result = try_block_on(poll_fn(|cx| match check_children() {
+        Ok(pid) => Poll::Ready(Ok(pid)),
+        Err(LinuxError::EAGAIN) => {
+            proc_data.child_exit_event.register(cx.waker());
+            match check_children() {
+                Ok(pid) => Poll::Ready(Ok(pid)),
+                Err(LinuxError::EAGAIN) => Poll::Pending,
+                other => Poll::Ready(other),
+            }
+        }
+        other => Poll::Ready(other),
+    }));
+    match result {
+        Ok(Some(result)) => Ok(result),
+        Ok(None) => {
+            // RESTART
+            tf.set_ip(tf.ip() - 4);
+            while check_signals(curr.as_thread(), tf, None) {}
+            Ok(0)
+        }
+        Err(err) => Err(err),
+    }
 }

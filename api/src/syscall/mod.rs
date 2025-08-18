@@ -422,7 +422,7 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
         Sysno::fork => sys_fork(tf),
         Sysno::exit => sys_exit(tf.arg0() as _),
         Sysno::exit_group => sys_exit_group(tf.arg0() as _),
-        Sysno::wait4 => sys_waitpid(tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
+        Sysno::wait4 => sys_waitpid(tf, tf.arg0() as _, tf.arg1() as _, tf.arg2() as _),
         Sysno::getsid => sys_getsid(tf.arg0() as _),
         Sysno::setsid => sys_setsid(),
         Sysno::getpgid => sys_getpgid(tf.arg0() as _),
