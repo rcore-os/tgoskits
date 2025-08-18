@@ -145,7 +145,8 @@ impl AxVmDevices {
                             "expect 3 args for gppt redistributor (cpu_num, stride, pcpu_id)";
 
                         let cpu_num = config
-                            .cfg_list.first()
+                            .cfg_list
+                            .first()
                             .copied()
                             .expect(GPPT_GICR_ARG_ERR_MSG);
                         let stride = config
@@ -207,7 +208,8 @@ impl AxVmDevices {
                     #[cfg(target_arch = "aarch64")]
                     {
                         let host_gits_base = config
-                            .cfg_list.first()
+                            .cfg_list
+                            .first()
                             .copied()
                             .map(PhysAddr::from_usize)
                             .expect("expect 1 arg for gppt its (host_gits_base)");
