@@ -9,11 +9,9 @@ use axaddrspace::{
     GuestPhysAddr, GuestPhysAddrRange,
     device::{AccessWidth, DeviceAddrRange, Port, PortRange, SysRegAddr, SysRegAddrRange},
 };
-use axdevice_base::{
-    BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps, EmuDeviceType,
-};
+use axdevice_base::{BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps};
 use axerrno::{AxResult, ax_err};
-use axvmconfig::EmulatedDeviceConfig;
+use axvmconfig::{EmulatedDeviceConfig, EmulatedDeviceType};
 use memory_addr::{PhysAddr, is_aligned_4k};
 
 use crate::AxVmDeviceConfig;
@@ -127,7 +125,7 @@ impl AxVmDevices {
     fn init(this: &mut Self, emu_configs: &Vec<EmulatedDeviceConfig>) {
         for config in emu_configs {
             match config.emu_type {
-                EmuDeviceType::InterruptController => {
+                EmulatedDeviceType::InterruptController => {
                     #[cfg(target_arch = "aarch64")]
                     {
                         this.add_mmio_dev(Arc::new(Vgic::new()));
@@ -140,7 +138,7 @@ impl AxVmDevices {
                         );
                     }
                 }
-                EmuDeviceType::GPPTRedistributor => {
+                EmulatedDeviceType::GPPTRedistributor => {
                     #[cfg(target_arch = "aarch64")]
                     {
                         const GPPT_GICR_ARG_ERR_MSG: &'static str =
@@ -185,7 +183,7 @@ impl AxVmDevices {
                         );
                     }
                 }
-                EmuDeviceType::GPPTDistributor => {
+                EmulatedDeviceType::GPPTDistributor => {
                     #[cfg(target_arch = "aarch64")]
                     {
                         this.add_mmio_dev(Arc::new(arm_vgic::v3::vgicd::VGicD::new(
@@ -206,7 +204,7 @@ impl AxVmDevices {
                         );
                     }
                 }
-                EmuDeviceType::GPPTITS => {
+                EmulatedDeviceType::GPPTITS => {
                     #[cfg(target_arch = "aarch64")]
                     {
                         let host_gits_base = config
@@ -236,7 +234,7 @@ impl AxVmDevices {
                         );
                     }
                 }
-                EmuDeviceType::IVCChannel => {
+                EmulatedDeviceType::IVCChannel => {
                     if this.ivc_channel.is_none() {
                         // Initialize the IVC channel range allocator
                         this.ivc_channel = Some(Mutex::new(RangeAllocator::new(Range {
