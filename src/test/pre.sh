@@ -592,6 +592,12 @@ run_ltp() {
 }
 
 cd /musl
+run_ltp musl
+
+cd /glibc
+run_ltp glibc
+
+cd /musl
 timeout 60 ./basic_testcode.sh
 timeout 60 ./lua_testcode.sh
 timeout 60 ./busybox_testcode.sh
@@ -630,9 +636,3 @@ cd /musl
 timeout 600 ./lmbench_testcode.sh
 cd /glibc
 timeout 600 ./lmbench_testcode.sh
-
-cd /musl
-run_ltp musl
-
-cd /glibc
-run_ltp glibc
