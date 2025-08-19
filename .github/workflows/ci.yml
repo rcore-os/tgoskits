@@ -27,8 +27,8 @@ jobs:
 
       - name: Clippy
         run: |
-          cargo clippy --target riscv64gc-unknown-none-elf -F qemu,vf2 -- -D warnings
-          cargo clippy --target loongarch64-unknown-none-softfloat -F qemu,2k1000la -- -D warnings
+          cargo clippy --target riscv64gc-unknown-none-elf -F qemu -- -D warnings
+          cargo clippy --target loongarch64-unknown-none-softfloat -F qemu -- -D warnings
 
       - name: Build
         run: make all
