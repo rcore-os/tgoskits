@@ -138,7 +138,7 @@ optional = true
 
 [dependencies.axplat-loongarch64-2k1000la]
 git = "https://github.com/Starry-Mix-THU/axplat-loongarch64-2k1000la.git"
-rev = "0de8b4e"
+rev = "792e170"
 features = ["fp-simd", "irq", "rtc"]
 optional = true
 
