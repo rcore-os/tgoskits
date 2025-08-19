@@ -19,15 +19,17 @@ exception_entry_base:
     STD     $t1, $sp, 32    // prmd
     STD     $t2, $sp, 33    // era
 
+    move    $a0, $sp
+
     andi    $t1, $t1, 0x3
     bnez    $t1, .Lexit_user
 
-    move    $a0, $sp
     la.abs  $ra, .Ltrap_return
     b       loongarch64_trap_handler
 
 .Lexit_user:
-    LDD     $sp, $sp, 0
+    LDD     $sp, $a0, 0
+    STD     $r0, $a0, 0
     LDD     $ra, $sp, 0
     LDD     $tp, $sp, 1
     LDD     $fp, $sp, 2
