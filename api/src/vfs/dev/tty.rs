@@ -211,7 +211,7 @@ impl DeviceOps for CurrentTty {
     }
 
     fn write_at(&self, _buf: &[u8], _offset: u64) -> LinuxResult<usize> {
-        unreachable!()
+        Ok(0)
     }
 
     fn ioctl(&self, _cmd: u32, _arg: usize) -> LinuxResult<usize> {
