@@ -138,19 +138,19 @@ optional = true
 
 [dependencies.axplat-loongarch64-2k1000la]
 git = "https://github.com/Starry-Mix-THU/axplat-loongarch64-2k1000la.git"
-rev = "42a9746"
+rev = "0de8b4e"
 features = ["fp-simd", "irq", "rtc"]
 optional = true
 
 [patch.crates-io]
 axbacktrace = { git = "https://github.com/Starry-Mix-THU/axbacktrace.git", rev = "322f6da" }
-axcpu = { git = "https://github.com/Starry-Mix-THU/axcpu.git", rev = "060ba5e" }
+axcpu = { git = "https://github.com/Starry-Mix-THU/axcpu.git", rev = "07ec980" }
 axerrno = { git = "https://github.com/Starry-Mix-THU/axerrno.git", rev = "f5d8f86" }
-axplat = { git = "https://github.com/Starry-Mix-THU/axplat_crates.git", rev = "c3150f4" }
-axplat-riscv64-qemu-virt = { git = "https://github.com/Starry-Mix-THU/axplat_crates.git", rev = "c3150f4" }
-axplat-loongarch64-qemu-virt = { git = "https://github.com/Starry-Mix-THU/axplat_crates.git", rev = "c3150f4" }
-page_table_entry = { git = "https://github.com/Starry-Mix-THU/page_table_multiarch.git", rev = "ca1f871" }
-page_table_multiarch = { git = "https://github.com/Starry-Mix-THU/page_table_multiarch.git", rev = "ca1f871" }
+axplat = { git = "https://github.com/Starry-Mix-THU/axplat_crates.git", rev = "e00adbb" }
+axplat-riscv64-qemu-virt = { git = "https://github.com/Starry-Mix-THU/axplat_crates.git", rev = "e00adbb" }
+axplat-loongarch64-qemu-virt = { git = "https://github.com/Starry-Mix-THU/axplat_crates.git", rev = "e00adbb" }
+page_table_entry = { git = "https://github.com/Starry-Mix-THU/page_table_multiarch.git", rev = "4edb821" }
+page_table_multiarch = { git = "https://github.com/Starry-Mix-THU/page_table_multiarch.git", rev = "4edb821" }
 starry-process = { git = "https://github.com/Starry-Mix-THU/starry-process.git", rev = "6327455" }
 starry-signal = { git = "https://github.com/Starry-Mix-THU/starry-signal.git", rev = "f45379a" }
 starry-vm = { git = "https://github.com/Starry-Mix-THU/starry-vm.git", rev = "8b7dd37" }

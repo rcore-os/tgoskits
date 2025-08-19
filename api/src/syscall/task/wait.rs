@@ -1,8 +1,8 @@
 use alloc::vec::Vec;
 use core::{future::poll_fn, task::Poll};
 
-use axcpu::TrapFrame;
 use axerrno::{LinuxError, LinuxResult};
+use axhal::context::TrapFrame;
 use axtask::{current, future::try_block_on};
 use bitflags::bitflags;
 use linux_raw_sys::general::{

@@ -33,7 +33,6 @@ starry-core.workspace = true
 
 arrayvec = { version = "0.7.6", default-features = false }
 axbacktrace.workspace = true
-axcpu = "0.2"
 axerrno.workspace = true
 bitflags.workspace = true
 bitmaps = { version = "3.2.1", default-features = false }

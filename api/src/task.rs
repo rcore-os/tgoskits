@@ -1,8 +1,7 @@
 use core::{ffi::c_long, sync::atomic::Ordering};
 
-use axcpu::trap::{ExceptionInfoExt, ExceptionKind};
 use axerrno::{LinuxError, LinuxResult};
-use axhal::uspace::{ReturnReason, UserContext};
+use axhal::uspace::{ExceptionKind, ReturnReason, UserContext};
 use axtask::{TaskInner, current};
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::ROBUST_LIST_LIMIT;
