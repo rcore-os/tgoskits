@@ -9,7 +9,7 @@ use loongArch64::register::{
 use memory_addr::VirtAddr;
 
 use crate::{
-    trap::{ExceptionInfoExt, ExceptionKind, PageFaultFlags, ReturnReason},
+    trap::{ExceptionKind, PageFaultFlags, ReturnReason},
     TrapFrame,
 };
 
@@ -112,8 +112,8 @@ pub struct ExceptionInfo {
     pub badi: u32,
 }
 
-impl ExceptionInfoExt for ExceptionInfo {
-    fn kind(&self) -> ExceptionKind {
+impl ExceptionInfo {
+    pub fn kind(&self) -> ExceptionKind {
         match self.e {
             Exception::Breakpoint => ExceptionKind::Breakpoint,
             Exception::InstructionNotExist | Exception::InstructionPrivilegeIllegal => {

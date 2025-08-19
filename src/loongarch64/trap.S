@@ -86,6 +86,9 @@ handle_tlb_refill:
     lddir   $t0, $t0, 3
     beqz    $t0, .Ltlb_invalid
 
+    lddir   $t0, $t0, 2
+    beqz    $t0, .Ltlb_invalid
+
     lddir   $t0, $t0, 1
     beqz    $t0, .Ltlb_invalid
 

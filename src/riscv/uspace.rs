@@ -15,7 +15,7 @@ use riscv::{
 };
 
 use super::{GeneralRegisters, TrapFrame};
-use crate::trap::{ExceptionInfoExt, ExceptionKind, PageFaultFlags, ReturnReason};
+use crate::trap::{ExceptionKind, PageFaultFlags, ReturnReason};
 
 /// Context to enter user space.
 #[derive(Debug, Clone)]
@@ -121,8 +121,8 @@ pub struct ExceptionInfo {
     pub stval: usize,
 }
 
-impl ExceptionInfoExt for ExceptionInfo {
-    fn kind(&self) -> ExceptionKind {
+impl ExceptionInfo {
+    pub fn kind(&self) -> ExceptionKind {
         match self.e {
             E::Breakpoint => ExceptionKind::Breakpoint,
             E::IllegalInstruction => ExceptionKind::IllegalInstruction,

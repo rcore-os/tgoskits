@@ -19,7 +19,7 @@ fn handle_breakpoint(era: &mut usize) {
 
 fn handle_page_fault(tf: &mut TrapFrame, access_flags: PageFaultFlags) {
     let vaddr = va!(badv::read().vaddr());
-     if core::hint::likely(handle_trap!(PAGE_FAULT, vaddr, access_flags)) {
+    if core::hint::likely(handle_trap!(PAGE_FAULT, vaddr, access_flags)) {
         return;
     }
     if !crate::trap::fixup_exception(tf) {

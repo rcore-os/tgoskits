@@ -1,6 +1,5 @@
 //! Trap handling.
 
-use core::cmp::Ordering;
 use core::fmt::Debug;
 
 use memory_addr::VirtAddr;
@@ -34,17 +33,6 @@ macro_rules! handle_trap {
     }}
 }
 
-pub enum ExceptionKind {
-    Other,
-    Breakpoint,
-    IllegalInstruction,
-    Misaligned,
-}
-
-pub trait ExceptionInfoExt {
-    fn kind(&self) -> ExceptionKind;
-}
-
 #[cfg(feature = "uspace")]
 #[derive(Debug, Clone, Copy)]
 pub enum ReturnReason {
@@ -53,6 +41,14 @@ pub enum ReturnReason {
     Syscall,
     PageFault(VirtAddr, PageFaultFlags),
     Exception(crate::uspace::ExceptionInfo),
+}
+
+#[cfg(feature = "uspace")]
+pub enum ExceptionKind {
+    Other,
+    Breakpoint,
+    IllegalInstruction,
+    Misaligned,
 }
 
 #[repr(C)]
