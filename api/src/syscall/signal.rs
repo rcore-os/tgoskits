@@ -24,7 +24,7 @@ use crate::{
 };
 
 pub(crate) fn check_sigset_size(size: usize) -> LinuxResult<()> {
-    if size != size_of::<SignalSet>() {
+    if size != size_of::<SignalSet>() && size != 0 {
         return Err(LinuxError::EINVAL);
     }
     Ok(())
