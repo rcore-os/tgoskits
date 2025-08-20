@@ -583,6 +583,8 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
         | Sysno::open_tree
         | Sysno::memfd_secret => sys_dummy_fd(sysno),
 
+        Sysno::timer_create | Sysno::timer_gettime | Sysno::timer_settime => Ok(0),
+
         _ => {
             warn!("Unimplemented syscall: {}", sysno);
             Err(LinuxError::ENOSYS)
