@@ -24,6 +24,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "ahci_driver"
+version = "0.1.0"
+source = "git+https://github.com/Starry-Mix-THU/ahci_driver.git?rev=beaa9c8#beaa9c8a183518da9f29363f3619dc53161450e4"
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -260,6 +265,7 @@ dependencies = [
 name = "axdriver"
 version = "0.1.0"
 dependencies = [
+ "ahci_driver",
  "axalloc",
  "axconfig",
  "axdriver_base",
@@ -273,6 +279,7 @@ dependencies = [
  "cfg-if",
  "crate_interface",
  "log",
+ "printf-compat",
 ]
 
 [[package]]
@@ -741,7 +748,7 @@ dependencies = [
  "bitflags 2.9.1",
  "cexpr",
  "clang-sys",
- "itertools",
+ "itertools 0.13.0",
  "log",
  "prettyplease",
  "proc-macro2",
@@ -1389,6 +1396,15 @@ checksum = "7943c866cc5cd64cbc25b2e01621d07fa8eb2a1a23160ee81ce38704e97b8ecf"
 
 [[package]]
 name = "itertools"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "284f18f85651fe11e8a991b2adb42cb078325c996ed026d994719efcfca1d54b"
+dependencies = [
+ "either",
+]
+
+[[package]]
+name = "itertools"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
@@ -1443,9 +1459,9 @@ checksum = "17f03abfebdaaf0fad16790237a0348baf84886d3ade460db13bae59e614a180"
 
 [[package]]
 name = "libc"
-version = "0.2.171"
+version = "0.2.175"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c19937216e9d3aa9956d9bb8dfc0b0c8beb6058fc4f7a4dc4d850edf86a237d6"
+checksum = "6a82ae493e598baaea5209805c49bbf2ea7de956d50d7da0da1164f9c6d28543"
 
 [[package]]
 name = "libloading"
@@ -1762,6 +1778,15 @@ checksum = "6837b9e10d61f45f987d50808f83d1ee3d206c66acf650c3e4ae2e1f6ddedf55"
 dependencies = [
  "proc-macro2",
  "syn 2.0.100",
+]
+
+[[package]]
+name = "printf-compat"
+version = "0.1.1"
+source = "git+https://github.com/lights0123/printf-compat.git?rev=5f5c9cc#5f5c9cc363f047411a0dccb37e0efb452ffb61d9"
+dependencies = [
+ "bitflags 1.3.2",
+ "itertools 0.9.0",
 ]
 
 [[package]]
@@ -2323,18 +2348,18 @@ source = "git+https://github.com/jasonwhite/syscalls.git?rev=92624de#92624de3dee
 
 [[package]]
 name = "thiserror"
-version = "2.0.12"
+version = "2.0.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "567b8a2dae586314f7be2a752ec7474332959c6460e02bde30d702a66d488708"
+checksum = "3467d614147380f2e4e374161426ff399c91084acd2363eaf549172b3d5e60c0"
 dependencies = [
  "thiserror-impl",
 ]
 
 [[package]]
 name = "thiserror-impl"
-version = "2.0.12"
+version = "2.0.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f7cf42b4507d8ea322120659672cf1b9dbb93f8f2d4ecfd6e51350ff5b17a1d"
+checksum = "6c5e1be1c48b9172ee610da68fd9cd2770e7a4056cb3fc98710ee6906f0c7960"
 dependencies = [
  "proc-macro2",
  "quote",
