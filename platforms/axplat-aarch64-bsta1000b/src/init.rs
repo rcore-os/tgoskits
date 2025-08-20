@@ -36,7 +36,7 @@ impl InitIf for InitIfImpl {
         {
             use crate::mem::phys_to_virt;
             use axplat::mem::pa;
-            axplat_aarch64_peripherals::gic::init_gicd(
+            axplat_aarch64_peripherals::gic::init_gic(
                 phys_to_virt(pa!(GICD_PADDR)),
                 phys_to_virt(pa!(GICC_PADDR)),
             );

@@ -51,6 +51,8 @@ uart-paddr = 0xFE20_1000        # uint
 uart-irq = 0x99                 # uint
 # Timer interrupt num (PPI, physical timer)
 timer-irq = 30                  # uint
+# IPI interrupt num
+ipi-irq = 1                     # uint
 
 # GIC CPU Interface base address
 gicc-paddr = 0xFF84_2000        # uint

@@ -1,4 +1,4 @@
-use axplat::irq::{IrqHandler, IrqIf};
+use axplat::irq::{IrqHandler, IrqIf, IpiTarget};
 
 struct IrqIfImpl;
 
@@ -31,6 +31,11 @@ impl IrqIf for IrqIfImpl {
     /// IRQ handler table and calls the corresponding handler. If necessary, it
     /// also acknowledges the interrupt controller after handling.
     fn handle(irq: usize) {
+        todo!()
+    }
+
+    /// Sends an inter-processor interrupt (IPI) to the specified target CPU or all CPUs.
+    fn send_ipi(irq_num: usize, target: IpiTarget) {
         todo!()
     }
 }

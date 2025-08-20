@@ -71,6 +71,8 @@ pci-ranges = [
 timer-frequency = 10_000_000        # uint
 # Timer interrupt num.
 timer-irq = "0x8000_0000_0000_0005" # uint
+# IPI interrupt num
+ipi-irq = "0x8000_0000_0000_0001"   # uint
 
 # rtc@101000 {
 #     interrupts = <0x0b>;

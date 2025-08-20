@@ -1,4 +1,4 @@
-use axplat::irq::{HandlerTable, IrqHandler, IrqIf};
+use axplat::irq::{HandlerTable, IpiTarget, IrqHandler, IrqIf};
 use loongArch64::register::{
     ecfg::{self, LineBasedInterrupt},
     ticlr,
@@ -57,5 +57,10 @@ impl IrqIf for IrqIfImpl {
         if !IRQ_HANDLER_TABLE.handle(irq) {
             warn!("Unhandled IRQ {}", irq);
         }
+    }
+
+    /// Sends an inter-processor interrupt (IPI) to the specified target CPU or all CPUs.
+    fn send_ipi(irq_num: usize, target: IpiTarget) {
+        todo!()
     }
 }

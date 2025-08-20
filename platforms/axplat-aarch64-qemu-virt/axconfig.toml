@@ -99,6 +99,8 @@ uart-paddr = 0x0900_0000        # uint
 uart-irq = 33                   # uint
 # Timer interrupt num (PPI, physical timer).
 timer-irq = 30                  # uint
+# IPI interrupt num
+ipi-irq = 1                     # uint
 
 # GIC CPU Interface base address
 gicc-paddr = 0x0801_0000        # uint
