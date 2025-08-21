@@ -60,7 +60,7 @@ impl IrqIf for IrqIfImpl {
     }
 
     /// Sends an inter-processor interrupt (IPI) to the specified target CPU or all CPUs.
-    fn send_ipi(irq_num: usize, target: IpiTarget) {
+    fn send_ipi(_irq_num: usize, _target: IpiTarget) {
         todo!()
     }
 }

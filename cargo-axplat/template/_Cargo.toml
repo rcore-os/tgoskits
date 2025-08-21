@@ -1,6 +1,6 @@
 [package]
 name = "axplat-example" # to be overwritten
-version = "0.1.0"       # to be overwritten
+version = "0.2.0"       # to be overwritten
 edition = "2021"        # to be overwritten
 
 [features]
@@ -9,4 +9,4 @@ smp = ["axplat/smp"]
 
 [dependencies]
 axconfig-macros = "0.2"
-axplat = "0.1"
+axplat = "0.2"

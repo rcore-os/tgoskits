@@ -1,6 +1,6 @@
 [package]
 name = "cargo-axplat"
-version = "0.2.2"
+version = "0.2.3"
 description = "Manages hardware platform packages using `axplat`"
 keywords = ["arceos", "hal", "hardware", "cargo-subcommand"]
 categories = ["development-tools", "development-tools::cargo-plugins", "embedded", "hardware-support", "os"]
@@ -12,7 +12,7 @@ repository.workspace = true
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-clap-cargo = "0.15"
-cargo_metadata = "0.20"
-toml_edit = "0.22"
+clap-cargo = "0.16"
+cargo_metadata = "0.22"
+toml_edit = "0.23"
 thiserror = "2.0"

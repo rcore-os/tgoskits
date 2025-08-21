@@ -1,6 +1,6 @@
 [package]
 name = "axplat-x86-pc"
-version = "0.1.1"
+version = "0.2.0"
 description = "Implementation of `axplat` hardware abstraction layer for x86 Standard PC machine."
 documentation = "https://docs.rs/axplat-x86-pc"
 keywords = ["arceos", "os", "hal", "x86"]
@@ -25,7 +25,7 @@ bitflags = "2.6"
 lazyinit = "0.2"
 int_ratio = "0.1"
 percpu = "0.2"
-heapless = "0.8"
+heapless = "0.9"
 axconfig-macros = "0.2"
 axcpu = { workspace = true }
 axplat = { workspace = true }
@@ -35,7 +35,7 @@ x86_64 = "0.15.2"
 x2apic = "0.5"
 multiboot = "0.8"
 raw-cpuid = "11.5"
-uart_16550 = "0.3"
+uart_16550 = "0.4"
 x86_rtc = { version = "0.1", optional = true }
 
 [package.metadata.docs.rs]
