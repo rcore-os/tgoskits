@@ -7,6 +7,14 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [riscv64, loongarch64]
+        include:
+          - arch: riscv64
+            target: riscv64gc-unknown-none-elf
+          - arch: loongarch64
+            target: loongarch64-unknown-none-softfloat
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -20,75 +28,11 @@ jobs:
       - run: cargo install cargo-binutils
       - uses: arceos-org/setup-musl@v1
         with:
-          arch: riscv64
-      - uses: arceos-org/setup-musl@v1
-        with:
-          arch: loongarch64
+          arch: ${{ matrix.arch }}
 
       - name: Clippy
         run: |
-          cargo clippy --target riscv64gc-unknown-none-elf -F qemu -- -D warnings
-          cargo clippy --target loongarch64-unknown-none-softfloat -F qemu -- -D warnings
+          cargo clippy --target ${{ matrix.target }} -F qemu -- -D warnings
 
       - name: Build
-        run: make all
-
-  sync:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout source repository
-        uses: actions/checkout@v4
-        with:
-          path: source
-          submodules: recursive
-          fetch-depth: 2
-
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2025-01-18
-          components: rust-src, llvm-tools
-          targets: riscv64gc-unknown-none-elf, loongarch64-unknown-none-softfloat
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-targets: false
-
-      - name: Prepare dependencies
-        env:
-          RUSTUP_TOOLCHAIN: nightly-2025-05-20 # prevent toolchain update
-        run: |
-          cd source
-          cargo install cargo-vendor-filterer
-          cargo vendor-filterer > cargo_config.toml
-
-      - name: Push to oscomp repo
-        run: |
-          git clone "${{ secrets.OSCOMP_REPO }}" oscomp
-          cd oscomp
-
-          git config user.name ${{ secrets.OSCOMP_USER_NAME }}
-          git config user.email ${{ secrets.OSCOMP_USER_EMAIL }}
-
-          if git rev-parse --verify origin/${{ github.ref_name }}; then
-            git checkout ${{ github.ref_name }}
-          else
-            export SOURCE_PARENT=$(git -C ../source rev-parse HEAD^)
-            export OSCOMP_PARENT=$(git log --pretty='%H' --grep "${SOURCE_PARENT}")
-            if [ -z "$OSCOMP_PARENT" ]; then
-              echo "No previous commit found for source parent $SOURCE_PARENT"
-              exit 1
-            fi
-            if [ "$(echo "$OSCOMP_PARENT" | wc -l)" -gt 1 ]; then
-              echo "Multiple commits found for source parent $SOURCE_PARENT"
-              echo "$OSCOMP_PARENT"
-              exit 1
-            fi
-            git checkout $OSCOMP_PARENT
-            git checkout -b ${{ github.ref_name }}
-          fi
-
-          rsync -a --exclude='.git' --delete ../source/ ./
-
-          git add -A
-          git commit -m ${{ github.ref_name }}.${{ github.sha }}
-          git push --set-upstream origin ${{ github.ref_name }}
+        run: make ARCH=${{ matrix.arch }} build

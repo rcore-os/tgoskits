@@ -13,13 +13,14 @@ use alloc::{borrow::ToOwned, format, vec::Vec};
 use axfs_ng::FS_CONTEXT;
 
 mod entry;
-mod test;
+
+pub const CMDLINE: &[&str] = &["/bin/busybox", "sh", "--login"];
 
 #[unsafe(no_mangle)]
 fn main() {
     starry_api::init();
 
-    let args = test::CMDLINE
+    let args = CMDLINE
         .iter()
         .copied()
         .map(str::to_owned)
