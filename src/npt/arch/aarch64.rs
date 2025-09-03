@@ -215,11 +215,20 @@ impl fmt::Debug for A64PTEHV {
 pub struct A64HVPagingMetaData;
 
 impl PagingMetaData for A64HVPagingMetaData {
+    // The levels of the page table.
+    #[cfg(not(feature = "4-level-ept"))]
+    const LEVELS: usize = 3;
+    #[cfg(feature = "4-level-ept")]
     const LEVELS: usize = 4;
+
+    // The size of the IPA space can be configured in the same way as the
+    #[cfg(not(feature = "4-level-ept"))]
+    const VA_MAX_BITS: usize = 40; //  virtual address space. VTCR_EL2.T0SZ controls the size.
+    #[cfg(feature = "4-level-ept")]
+    const VA_MAX_BITS: usize = 48;
+
     // In Armv8.0-A, the maximum size for a physical address is 48 bits.
     const PA_MAX_BITS: usize = 48;
-    // The size of the IPA space can be configured in the same way as the
-    const VA_MAX_BITS: usize = 48; //  virtual address space. VTCR_EL2.T0SZ controls the size.
 
     type VirtAddr = GuestPhysAddr;
 
