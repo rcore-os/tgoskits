@@ -171,27 +171,50 @@ impl<H: AxVCpuHal> Aarch64VCpu<H> {
         // - 4KiB granule (TG0)
         // - 39-bit address space (T0_SZ)
         // - start at level 1 (SL0)
-        // self.guest_system_regs.vtcr_el2 = (VTCR_EL2::PS::PA_40B_1TB
-        //     + VTCR_EL2::TG0::Granule4KB
-        //     + VTCR_EL2::SH0::Inner
-        //     + VTCR_EL2::ORGN0::NormalWBRAWA
-        //     + VTCR_EL2::IRGN0::NormalWBRAWA
-        //     + VTCR_EL2::SL0.val(0b01)
-        //     + VTCR_EL2::T0SZ.val(64 - 39))
-        // .into();
+        #[cfg(not(feature = "4-level-ept"))]
+        {
+            self.guest_system_regs.vtcr_el2 = (VTCR_EL2::PS::PA_40B_1TB
+                + VTCR_EL2::TG0::Granule4KB
+                + VTCR_EL2::SH0::Inner
+                + VTCR_EL2::ORGN0::NormalWBRAWA
+                + VTCR_EL2::IRGN0::NormalWBRAWA
+                + VTCR_EL2::SL0.val(0b01)
+                + VTCR_EL2::T0SZ.val(64 - 39))
+            .into();
+        }
 
         // use 4 level ept paging
         // - 4KiB granule (TG0)
         // - 48-bit address space (T0_SZ)
         // - start at level 0 (SL0)
-        self.guest_system_regs.vtcr_el2 = (VTCR_EL2::PS::PA_48B_256TB
+        #[cfg(feature = "4-level-ept")]
+        {
+            // read PARange (bits 3:0)
+            let parange = (ID_AA64MMFR0_EL1.get() & 0xF) as u8;
+            // ARM Definition: 0x5 indicates 48 bits PA, 0x4 indicates 44 bits PA, and so on.
+            if parange <= 0x5 {
+                panic!(
+                    "CPU only supports {}-bit PA (< 48), \
+                 cannot enable 4-level EPT paging!",
+                    match parange {
+                        0x0 => 32,
+                        0x1 => 36,
+                        0x2 => 40,
+                        0x3 => 42,
+                        0x4 => 44,
+                        _ => 48,
+                    }
+                );
+            }
+            self.guest_system_regs.vtcr_el2 = (VTCR_EL2::PS::PA_48B_256TB
             + VTCR_EL2::TG0::Granule4KB
             + VTCR_EL2::SH0::Inner
             + VTCR_EL2::ORGN0::NormalWBRAWA
             + VTCR_EL2::IRGN0::NormalWBRAWA
             + VTCR_EL2::SL0.val(0b10) // 0b10 means start at level 0
             + VTCR_EL2::T0SZ.val(64 - 48))
-        .into();
+            .into();
+        }
 
         let mut hcr_el2 = HCR_EL2::VM::Enable
             + HCR_EL2::RW::EL1IsAarch64
