@@ -6,10 +6,13 @@
 //! ref: <https://github.com/luojia65/zihai/blob/main/zihai/src/detect.rs>
 
 use core::arch::{asm, naked_asm};
-use riscv::register::{
-    scause::{Exception, Scause, Trap},
-    sstatus,
-    stvec::{self, Stvec, TrapMode},
+use riscv::{
+    interrupt::{Exception, Interrupt, Trap},
+    register::{
+        scause::Scause,
+        sstatus,
+        stvec::{self, Stvec, TrapMode},
+    },
 };
 
 /// Detect if hypervisor extension exists on current hart environment
@@ -43,8 +46,22 @@ extern "C" fn rust_detect_trap(trap_frame: &mut TrapFrame) {
     // store returned exception id value into tp register
     // specially: illegal instruction => 2
     trap_frame.tp = trap_frame.scause.bits();
+
+    let trap: Trap<Interrupt, Exception> = match trap_frame.scause.cause().try_into() {
+        Err(_) => {
+            // This instruction detection handler expects only known trap types.
+            // Unknown trap causes indicate either hardware issues or unsupported
+            // RISC-V extensions that this specialized handler cannot process.
+            panic!(
+                "Unknown trap cause in instruction detector: scause={:#x}",
+                trap_frame.scause.bits()
+            );
+        }
+        Ok(trap) => trap,
+    };
+
     // if illegal instruction, skip current instruction
-    match trap_frame.scause.cause() {
+    match trap {
         Trap::Exception(Exception::IllegalInstruction) => {
             let mut insn_bits = riscv_illegal_insn_bits((trap_frame.stval & 0xFFFF) as u16);
             if insn_bits == 0 {
@@ -91,8 +108,13 @@ unsafe fn init_detect_trap(param: usize) -> (bool, Stvec, usize) {
         trap_addr += 0b1;
     }
     let stored_tp: usize;
+
+    let mut stvec = Stvec::from_bits(0);
+    stvec.set_address(trap_addr);
+    stvec.set_trap_mode(TrapMode::Direct);
+
     unsafe {
-        stvec::write(trap_addr, TrapMode::Direct);
+        stvec::write(stvec);
         // store tp register. tp will be used to load parameter and store return value
         asm!("mv  {}, tp", "mv  tp, {}", out(reg) stored_tp, in(reg) param, options(nomem, nostack));
     }

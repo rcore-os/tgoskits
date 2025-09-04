@@ -1,16 +1,16 @@
-use crate::sbi_console::*;
-use axaddrspace::device::AccessWidth;
-use riscv::register::hstatus;
-use riscv::register::{hvip, scause, sie, sstatus};
-use riscv_decode::Instruction;
-use riscv_decode::types::{IType, SType};
+use riscv::register::{scause, sie, sstatus};
+use riscv_decode::{
+    Instruction,
+    types::{IType, SType},
+};
+use riscv_h::register::{hstatus, hvip};
 use rustsbi::{Forward, RustSBI};
 use sbi_spec::{hsm, legacy};
 
-use crate::regs::*;
-use crate::{EID_HVC, RISCVVCpuCreateConfig, guest_mem};
-use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, MappingFlags};
-use axerrno::AxResult;
+use crate::{EID_HVC, RISCVVCpuCreateConfig, guest_mem, regs::*, sbi_console::*};
+
+use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, MappingFlags, device::AccessWidth};
+use axerrno::{AxError::InvalidData, AxResult};
 use axvcpu::{AxVCpuExitReason, AxVCpuHal};
 
 unsafe extern "C" {
@@ -179,7 +179,7 @@ impl<H: AxVCpuHal> RISCVVCpu<H> {
         self.regs.trap_csrs.load_from_hw();
 
         let scause = scause::read();
-        use scause::{Exception, Interrupt, Trap};
+        use riscv::interrupt::{Exception, Interrupt, Trap};
 
         trace!(
             "vmexit_handler: {:?}, sepc: {:#x}, stval: {:#x}",
@@ -188,8 +188,14 @@ impl<H: AxVCpuHal> RISCVVCpu<H> {
             self.regs.trap_csrs.stval
         );
 
-        match scause.cause() {
-            Trap::Exception(Exception::VirtualSupervisorEnvCall) => {
+        // Try to convert the raw trap cause to a standard RISC-V trap cause.
+        let trap = scause.cause().try_into().map_err(|_| {
+            error!("Unknown trap cause: scause={:#x}", scause.bits());
+            InvalidData
+        })?;
+
+        match trap {
+            Trap::Exception(Exception::SupervisorEnvCall) => {
                 let a = self.regs.guest_regs.gprs.a_regs();
                 let param = [a[0], a[1], a[2], a[3], a[4], a[5]];
                 let extension_id = a[7];
@@ -377,9 +383,9 @@ impl<H: AxVCpuHal> RISCVVCpu<H> {
                 // `as usize` will give use a wrong value.
                 Ok(AxVCpuExitReason::ExternalInterrupt { vector: 9 })
             }
-            Trap::Exception(
-                gpf @ (Exception::LoadGuestPageFault | Exception::StoreGuestPageFault),
-            ) => self.handle_guest_page_fault(gpf == Exception::StoreGuestPageFault),
+            Trap::Exception(gpf @ (Exception::LoadPageFault | Exception::StorePageFault)) => {
+                self.handle_guest_page_fault(gpf == Exception::StorePageFault)
+            }
             _ => {
                 panic!(
                     "Unhandled trap: {:?}, sepc: {:#x}, stval: {:#x}",

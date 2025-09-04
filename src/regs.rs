@@ -158,7 +158,7 @@ pub struct GuestVsCsrs {
 impl GuestVsCsrs {
     // Load the VS-level CSRs from hardware into this structure.
     pub fn load_from_hw(&mut self) {
-        use riscv::register::{
+        use riscv_h::register::{
             htimedelta, vsatp, vscause, vsepc, vsie, vsscratch, vsstatus, vstval, vstvec,
         };
 
@@ -188,7 +188,7 @@ pub struct GuestVirtualHsCsrs {
 impl GuestVirtualHsCsrs {
     /// Load the virtualized HS-level CSRs from hardware into this structure.
     pub fn load_from_hw(&mut self) {
-        use riscv::register::{hgatp, hgeie, hie};
+        use riscv_h::register::{hgatp, hgeie, hie};
 
         self.hie = hie::read().bits();
         self.hgeie = hgeie::read();
@@ -210,7 +210,8 @@ pub struct VmCpuTrapState {
 impl VmCpuTrapState {
     /// Reads the trap-related CSRs from hardware and stores them in this structure.
     pub fn load_from_hw(&mut self) {
-        use riscv::register::{htinst, htval, scause, stval};
+        use riscv::register::{scause, stval};
+        use riscv_h::register::{htinst, htval};
 
         self.scause = scause::read().bits();
         self.stval = stval::read();

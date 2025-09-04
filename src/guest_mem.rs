@@ -1,6 +1,6 @@
 use axaddrspace::{GuestPhysAddr, GuestVirtAddr};
 use core::arch::riscv64::hfence_vvma_all;
-use riscv::register::vsatp::Vsatp;
+use riscv_h::register::vsatp::Vsatp;
 
 // Notes about this file:
 //
@@ -38,7 +38,7 @@ pub(crate) fn copy_to_guest_va(src: &[u8], gva: GuestVirtAddr) -> usize {
 /// Copies data from guest physical address to host memory.
 #[inline(always)]
 pub(crate) fn copy_from_guest(dst: &mut [u8], gpa: GuestPhysAddr) -> usize {
-    let old_vsatp = riscv::register::vsatp::read().bits();
+    let old_vsatp = riscv_h::register::vsatp::read().bits();
     unsafe {
         // Set vsatp to 0 to disable guest virtual address translation.
         Vsatp::from_bits(0).write();
@@ -55,7 +55,7 @@ pub(crate) fn copy_from_guest(dst: &mut [u8], gpa: GuestPhysAddr) -> usize {
 ///  Copies data from host memory to guest physical address.
 #[inline(always)]
 pub(crate) fn copy_to_guest(src: &[u8], gpa: GuestPhysAddr) -> usize {
-    let old_vsatp = riscv::register::vsatp::read().bits();
+    let old_vsatp = riscv_h::register::vsatp::read().bits();
     unsafe {
         // Set vsatp to 0 to disable guest virtual address translation.
         Vsatp::from_bits(0).write();

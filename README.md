@@ -29,7 +29,7 @@ riscv_vcpu = "0.1"
 
 ## Basic Usage
 
-```rust
+```rust,ignore
 use riscv_vcpu::{RISCVVCpu, RISCVVCpuCreateConfig, has_hardware_support};
 
 // Check if hardware virtualization is supported

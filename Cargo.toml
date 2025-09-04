@@ -9,7 +9,7 @@ authors = [
     "周睿 <zrufo747@outlook.com>"
 ]
 description = "ArceOS-Hypervisor riscv vcpu module"
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPubL-2.0 OR MulanPSL2"
+license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0" # MulanPubL2 is not included in SPDX
 repository = "https://github.com/arceos-hypervisor/riscv_vcpu"
 categories = ["embedded", "no-std"]
 keywords = ["hypervisor", "riscv", "vcpu"]
@@ -21,8 +21,10 @@ bitflags = "2.2"
 bit_field = "0.10"
 crate_interface = "0.1"
 
-riscv = { git = "https://github.com/rcore-os/riscv", features = ["inline-asm"] }
-riscv-decode = { git = "https://github.com/KuangjuX/riscv-decode.git" }
+riscv = "0.14.0"
+riscv-h = "0.1"
+
+riscv-decode = "0.2.3"
 rustsbi = { version = "0.4.0", features = ["forward"] }
 sbi-rt = { version = "0.0.3", features = ["integer-impls"] }
 sbi-spec = { version = "0.0.7", features = ["legacy"] }
@@ -33,6 +35,6 @@ axerrno = "0.1.0"
 page_table_entry = "0.5"
 memory_addr = "0.4"
 
-axaddrspace = { git = "https://github.com/arceos-hypervisor/axaddrspace.git" }
-axvcpu = { git = "https://github.com/arceos-hypervisor/axvcpu.git" }
-axvisor_api = { git = "https://github.com/arceos-hypervisor/axvisor_api.git"}
+axaddrspace = "0.1"
+axvcpu = "0.1"
+axvisor_api = "0.1"
