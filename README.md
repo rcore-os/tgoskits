@@ -2,7 +2,25 @@
 
 ## Quick Start for Beginners
 
-### 1. Clone repo
+### 1. Install System Dependencies
+
+This step may vary depending on your operating system. Here is an example based on Ubuntu 24.04:
+
+```bash
+$ sudo apt update
+$ sudo apt install -y --no-install-recommends build-essential cmake clang qemu-system qemu-system-misc
+```
+
+### 2. Install Musl Toolchain
+
+1. Download files from https://github.com/arceos-org/setup-musl/releases/tag/prebuilt
+2. Extract to some path, for example `/opt/riscv64-linux-musl-cross`
+3. Add bin folder to `PATH`, for example:
+   ```bash
+   $ export PATH=/opt/riscv64-linux-musl-cross/bin:$PATH
+   ```
+
+### 3. Clone repo
 
 ```bash
 $ git clone --recursive https://github.com/Starry-OS/StarryOS.git
@@ -16,7 +34,7 @@ $ cd StarryOS
 $ git submodule update --init --recursive
 ```
 
-### 2. Setup Rust toolchain
+### 4. Setup Rust toolchain
 
 ```bash
 # Install rustup from https://rustup.rs or using your system package manager
@@ -27,10 +45,9 @@ $ export RUSTUP_DIST_SERVER=
 # Automatically download components via rustup
 $ cd StarryOS
 $ rustup target list --installed
-
 ```
 
-### 3. Build
+### 5. Build
 
 ```bash
 # Default target: riscv64
@@ -42,7 +59,7 @@ $ make ARCH=loongarch64 build
 
 This should also download required binary dependencies like [cargo-binutils](https://github.com/rust-embedded/cargo-binutils).
 
-### 4. Prepare rootfs
+### 6. Prepare rootfs
 
 ```bash
 $ make img
@@ -52,7 +69,7 @@ $ make img ARCH=loongarch64
 
 This will download rootfs image from [GitHub Releases](https://github.com/Starry-OS/StarryOS/releases) and setup the disk file for running on QEMU.
 
-### 5. Run on QEMU
+### 7. Run on QEMU
 
 ```bash
 $ make run ARCH=riscv64
@@ -66,6 +83,7 @@ $ make la
 Note:
 1. You don't have to rerun the build step before running. `run` will automatically rebuild it.
 2. The disk file will **not** be reset between each run. As a result, if you want to switch to another architecture, you must run `make img` with the new architecture before running `make run`.
+3. Currently we need a specially patched version of QEMU to run on LoongArch64. We'll try to fix this issue soon.
 
 ## Options
 
