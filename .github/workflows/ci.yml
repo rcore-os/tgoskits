@@ -23,7 +23,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          cache-targets: false
+          key: ${{ matrix.arch }}
 
       - run: cargo install cargo-binutils
       - uses: arceos-org/setup-musl@v1

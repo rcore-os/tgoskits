@@ -20,8 +20,16 @@ ifeq ($(MEMTRACK), y)
 	APP_FEATURES += starry-api/memtrack
 endif
 
-DIR := $(shell basename $(PWD))
+IMG_URL = https://github.com/Starry-OS/StarryOS/releases/download/rootfs-250905/
 IMG = rootfs-$(ARCH).img
+
+img:
+	@if [ ! -f $(IMG) ]; then \
+		echo "Image not found, downloading..."; \
+		curl -f -L $(IMG_URL)/$(IMG).xz -O; \
+		xz -d $(IMG).xz; \
+	fi
+	@cp $(IMG) arceos/disk.img
 
 defconfig:
 	@make -C arceos $@

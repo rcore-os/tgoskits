@@ -14,7 +14,7 @@ use axfs_ng::FS_CONTEXT;
 
 mod entry;
 
-pub const CMDLINE: &[&str] = &["/bin/busybox", "sh", "--login"];
+pub const CMDLINE: &[&str] = &["/bin/sh", "-c", include_str!("init.sh")];
 
 #[unsafe(no_mangle)]
 fn main() {
