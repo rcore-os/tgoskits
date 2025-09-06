@@ -6,7 +6,7 @@ description = "Scope local storage"
 authors = ["Asakura Mizu <asakuramizu111@gmail.com>"]
 keywords = ["arceos"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/Starry-Mix-THU/scope-local"
+repository = "https://github.com/Starry-OS/scope-local"
 
 [dependencies]
 percpu = "0.2"
