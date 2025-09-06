@@ -219,7 +219,6 @@ pub fn raise_signal_fatal(sig: SignalInfo) -> LinuxResult<()> {
     {
         task.interrupt(proc_data.signal.can_restart(signo));
     } else {
-        warn!("Fatal exit {signo:?}");
         // No task wants to handle the signal, abort the task
         do_exit(signo as i32, true);
     }

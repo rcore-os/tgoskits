@@ -13,10 +13,6 @@ pub fn check_signals(thr: &Thread, tf: &mut TrapFrame, restore_blocked: Option<S
         return false;
     };
 
-    if thr.proc_data.proc.is_init() {
-        return true;
-    }
-
     let signo = sig.signo();
     match os_action {
         SignalOSAction::Terminate => {
