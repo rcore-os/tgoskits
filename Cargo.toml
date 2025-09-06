@@ -14,7 +14,7 @@ axio = ["dep:axio"]
 
 [dependencies]
 axerrno = "0.1.0"
-axio = { git = "https://github.com/Starry-Mix-THU/axio.git", rev = "4ececd3", optional = true }
+axio = { version = "0.1", optional = true }
 bytemuck = { version = "1.23", features = [
     "align_offset",
     "const_zeroed",
