@@ -11,7 +11,8 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 [[package]]
 name = "axerrno"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axerrno.git?rev=f5d8f86#f5d8f863ea70b85758ffe81be233629dcfe86ec6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "66ccd41dd4ef364e2385901a5c2a3adea974a41eccb2529c1f24e4c8bc93d834"
 dependencies = [
  "log",
 ]
@@ -34,7 +35,7 @@ dependencies = [
 [[package]]
 name = "axio"
 version = "0.1.1"
-source = "git+https://github.com/Starry-Mix-THU/axio.git?rev=4ececd3#4ececd3f344622d59c9b7f08f9dfc3112ffdc0b7"
+source = "git+https://github.com/Starry-OS/axio.git#2aa061b7e7d8a4296eaa164f2f96d6477c28ba7c"
 dependencies = [
  "axerrno",
  "bitflags",

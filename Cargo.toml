@@ -5,8 +5,8 @@ edition = "2024"
 authors = ["Mivik <mivikq@gmail.com>"]
 
 [dependencies]
-axerrno = { git = "https://github.com/Starry-Mix-THU/axerrno.git", rev = "f5d8f86" }
-axio = { git = "https://github.com/Starry-Mix-THU/axio.git", rev = "4ececd3" }
+axerrno = "0.1"
+axio = "0.1"
 bitflags = "2.9.0"
 cfg-if = "1.0.1"
 hashbrown = "0.15.4"
@@ -14,3 +14,6 @@ inherit-methods-macro = "0.1.0"
 kspin = "0.1.0"
 log = "=0.4.21"
 smallvec = "1.15.1"
+
+[patch.crates-io]
+axio = { git = "https://github.com/Starry-OS/axio.git" }
