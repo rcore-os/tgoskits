@@ -1,4 +1,4 @@
 [submodule "arceos"]
 	path = arceos
-	url = https://github.com/Starry-Mix-THU/arceos
+	url = https://github.com/Starry-OS/arceos
 	branch = main

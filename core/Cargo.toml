@@ -28,7 +28,7 @@ extern-trait.workspace = true
 futures = { version = "0.3.31", default-features = false }
 hashbrown = { workspace = true }
 inherit-methods-macro = "0.1.0"
-kernel-elf-parser = { git = "https://github.com/Starry-Mix-THU/kernel_elf_parser.git", rev = "fdcce74" }
+kernel-elf-parser = { git = "https://github.com/Starry-OS/kernel_elf_parser.git", rev = "fdcce74" }
 kernel_guard = "0.1"
 kspin.workspace = true
 lazy_static = { workspace = true }

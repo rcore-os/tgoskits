@@ -65,7 +65,7 @@ const UTSNAME: new_utsname = new_utsname {
     release: pad_str("10.0.0"),
     version: pad_str("10.0.0"),
     machine: pad_str("riscv64"),
-    domainname: pad_str("https://github.com/Starry-Mix-THU/starry-mix"),
+    domainname: pad_str("https://github.com/Starry-OS/StarryOS"),
 };
 
 pub fn sys_uname(name: *mut new_utsname) -> LinuxResult<isize> {
