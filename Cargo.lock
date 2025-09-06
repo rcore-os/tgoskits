@@ -20,7 +20,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 [[package]]
 name = "axbacktrace"
 version = "0.1.0"
-source = "git+https://github.com/Starry-Mix-THU/axbacktrace.git#322f6dab0e7e3f51f7d29731e7eeca6435e5028e"
+source = "git+https://github.com/Starry-OS/axbacktrace.git#322f6dab0e7e3f51f7d29731e7eeca6435e5028e"
 dependencies = [
  "cfg-if",
  "log",

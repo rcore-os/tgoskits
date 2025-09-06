@@ -67,4 +67,4 @@ targets = [
 ]
 
 [patch.crates-io]
-axbacktrace = { git = "https://github.com/Starry-Mix-THU/axbacktrace.git" }
+axbacktrace = { git = "https://github.com/Starry-OS/axbacktrace.git" }
