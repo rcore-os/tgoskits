@@ -58,14 +58,5 @@ jobs:
         run: |
           make ARCH=${{ inputs.arch }} img
 
-      - name: Test boot
-        env:
-          LOG: output.log
-        run: |
-          timeout 60s make ARCH=${{ inputs.arch }} justrun 2>&1 | tee $LOG
-          if grep -q "Starry OS" $LOG; then
-            echo "✔ Boot into BusyBox shell"
-          else
-            echo "❌ Boot failed"
-            exit 1
-          fi
+      - name: Test
+        run: scripts/ci-test.py ${{ inputs.arch }}
