@@ -4,12 +4,14 @@
 
 ### 1. Install System Dependencies
 
-This step may vary depending on your operating system. Here is an example based on Ubuntu 24.04:
+This step may vary depending on your operating system. Here is an example based on Debian:
 
 ```bash
 $ sudo apt update
-$ sudo apt install -y --no-install-recommends build-essential cmake clang qemu-system qemu-system-misc
+$ sudo apt install -y build-essential cmake clang qemu-system
 ```
+
+**Note:** Running on LoongArch64 requires QEMU 10. If the QEMU version in your Linux distribution is too old (e.g. Ubuntu), consider installing QEMU from [source](https://www.qemu.org/download/).
 
 ### 2. Install Musl Toolchain
 

@@ -1,0 +1,18 @@
+name: Build and Test
+
+on: [push, pull_request]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [riscv64, loongarch64]
+    uses: ./.github/workflows/test-template.yml
+    with:
+      arch: ${{ matrix.arch }}
+    secrets: inherit

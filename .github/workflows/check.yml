@@ -1,0 +1,36 @@
+name: Check
+
+on: [push, pull_request]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [riscv64, loongarch64]
+        include:
+          - arch: riscv64
+            target: riscv64gc-unknown-none-elf
+          - arch: loongarch64
+            target: loongarch64-unknown-none-softfloat
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: "recursive"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.arch }}
+
+      - uses: arceos-org/setup-musl@v1
+        with:
+          arch: ${{ matrix.arch }}
+
+      - name: Clippy
+        run: cargo clippy --target ${{ matrix.target }} -F qemu -- -D warnings

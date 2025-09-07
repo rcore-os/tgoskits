@@ -31,10 +31,10 @@ img:
 	fi
 	@cp $(IMG) arceos/disk.img
 
-defconfig:
+defconfig justrun clean:
 	@make -C arceos $@
 
-build run justrun debug disasm: defconfig
+build run debug disasm: defconfig
 	@make -C arceos $@
 
 # Aliases

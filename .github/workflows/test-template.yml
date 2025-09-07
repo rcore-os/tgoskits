@@ -1,0 +1,71 @@
+name: Test Template
+
+on:
+  workflow_call:
+    inputs:
+      arch:
+        type: string
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: "recursive"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ inputs.arch }}-test
+
+      - uses: arceos-org/setup-musl@v1
+        with:
+          arch: ${{ inputs.arch }}
+
+      - name: Build
+        run: make ARCH=${{ inputs.arch }} build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: starry-${{ inputs.arch }}
+          path: "*.bin"
+
+  test:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: "recursive"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ inputs.arch }}-test
+
+      - name: Setup QEMU
+        uses: arceos-org/setup-qemu@v1
+        with:
+          version: 10.1.0
+          arch_list: ${{ inputs.arch }}
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: starry-${{ inputs.arch }}
+
+      - name: Prepare rootfs
+        run: |
+          make ARCH=${{ inputs.arch }} img
+
+      - name: Test boot
+        env:
+          LOG: output.log
+        run: |
+          timeout 60s make ARCH=${{ inputs.arch }} justrun 2>&1 | tee $LOG
+          if grep -q "Starry OS" $LOG; then
+            echo "✔ Boot into BusyBox shell"
+          else
+            echo "❌ Boot failed"
+            exit 1
+          fi
