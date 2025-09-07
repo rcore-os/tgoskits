@@ -1,8 +1,14 @@
-on: push
+name: StarryOS CI
+
+on: [push, pull_request]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
+
+env:
+  qemu-version: 10.0.2
+  rust-toolchain: nightly-2025-05-20
 
 jobs:
   build:
@@ -36,3 +42,69 @@ jobs:
 
       - name: Build
         run: make ARCH=${{ matrix.arch }} build
+
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        arch: [riscv64]
+    env:
+      RUSTUP_TOOLCHAIN: nightly-2025-05-20
+    steps:
+    - uses: actions/checkout@v4
+    
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: ${{ env.rust-toolchain }}
+        components: rust-src, llvm-tools
+        targets: riscv64gc-unknown-none-elf
+    
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: cargo-bin-cache-${{ env.rust-toolchain }}
+        cache-targets: false
+    
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: "recursive"
+    
+    - name: setup musl
+      uses: arceos-org/setup-musl@v1
+      with:
+        arch: ${{ matrix.arch }}
+
+    - name: Setup QEMU
+      uses: arceos-org/setup-qemu@v1
+      with:
+        version: ${{ env.qemu-version }}
+        arch_list: riscv64
+    - name: build and run 
+      run: |
+        LOG=qemu-${{ matrix.arch }}.log
+        qemu-system-${{ matrix.arch }} --version
+        ${{ matrix.arch }}-linux-musl-gcc --version
+        wget https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/${{ matrix.arch }}/alpine-minirootfs-3.22.1-${{ matrix.arch }}.tar.gz
+        mkdir rootfs
+        sudo tar -C rootfs -xzf alpine-minirootfs-3.22.1-${{ matrix.arch }}.tar.gz
+        dd if=/dev/zero of=disk.img bs=1M count=256
+        mkfs.ext4 disk.img
+        mkdir mnt
+        sudo mount -o loop disk.img mnt
+        sudo cp -a rootfs/* mnt/
+        sudo umount mnt
+        sudo rm -rf rootfs mnt
+        cp disk.img arceos/disk.img
+        mv disk.img rootfs-${{ matrix.arch }}.img
+        make ARCH=${{ matrix.arch }} build
+        timeout 20s make ARCH=${{ matrix.arch }} run 2>&1 | tee $LOG
+        pkill qemu || true
+        if grep -qE 'starry:~#' $LOG; then
+          echo "✅ Kernel booted to BusyBox shell"
+        else
+          echo "❌ Boot failed, QEMU log:"
+           cat $LOG
+           exit 1
+        fi
