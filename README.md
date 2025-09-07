@@ -83,7 +83,6 @@ $ make la
 Note:
 1. You don't have to rerun the build step before running. `run` will automatically rebuild it.
 2. The disk file will **not** be reset between each run. As a result, if you want to switch to another architecture, you must run `make img` with the new architecture before running `make run`.
-3. Currently we need a specially patched version of QEMU to run on LoongArch64. We'll try to fix this issue soon.
 
 ## Options
 

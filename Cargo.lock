@@ -528,7 +528,7 @@ dependencies = [
 [[package]]
 name = "axplat"
 version = "0.2.0"
-source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=1771893#1771893a3713a34829987a904a6421cb169ef294"
+source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=9bf8648#9bf864808185a5985bc930ab529c5f3a338b438d"
 dependencies = [
  "axplat-macros",
  "bitflags 2.9.4",
@@ -592,7 +592,7 @@ dependencies = [
 [[package]]
 name = "axplat-loongarch64-qemu-virt"
 version = "0.2.0"
-source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=1771893#1771893a3713a34829987a904a6421cb169ef294"
+source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=9bf8648#9bf864808185a5985bc930ab529c5f3a338b438d"
 dependencies = [
  "axconfig-macros",
  "axcpu",
@@ -620,7 +620,7 @@ dependencies = [
 [[package]]
 name = "axplat-riscv64-qemu-virt"
 version = "0.2.0"
-source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=1771893#1771893a3713a34829987a904a6421cb169ef294"
+source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=9bf8648#9bf864808185a5985bc930ab529c5f3a338b438d"
 dependencies = [
  "axconfig-macros",
  "axcpu",

@@ -147,9 +147,9 @@ axbacktrace = { git = "https://github.com/Starry-OS/axbacktrace.git", rev = "322
 axcpu = { git = "https://github.com/Starry-OS/axcpu.git", rev = "dfaa046" }
 axerrno = { git = "https://github.com/Starry-OS/axerrno.git", rev = "f5d8f86" }
 axio = { git = "https://github.com/Starry-OS/axio.git", rev = "d1242e2" }
-axplat = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "1771893" }
-axplat-riscv64-qemu-virt = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "1771893" }
-axplat-loongarch64-qemu-virt = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "1771893" }
+axplat = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "9bf8648" }
+axplat-riscv64-qemu-virt = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "9bf8648" }
+axplat-loongarch64-qemu-virt = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "9bf8648" }
 page_table_entry = { git = "https://github.com/Starry-OS/page_table_multiarch.git", rev = "4edb821" }
 page_table_multiarch = { git = "https://github.com/Starry-OS/page_table_multiarch.git", rev = "4edb821" }
 starry-process = { git = "https://github.com/Starry-OS/starry-process.git", rev = "6327455" }
