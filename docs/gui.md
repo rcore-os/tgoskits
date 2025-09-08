@@ -8,7 +8,7 @@ StarryOS supports X11 for its graphical user interface.
 1. Make sure you run StarryOS with necessary flags:
 
 ```bash
-make run ARCH=riscv GRAPHIC=y INPUT=y
+make run ARCH=riscv64 GRAPHIC=y INPUT=y
 ```
 
 2. In StarryOS, install necessary dependencies:
