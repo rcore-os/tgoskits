@@ -1,6 +1,6 @@
 [package]
 name = "riscv_vcpu"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 authors = [
     "KeYang Hu <keyang.hu@qq.com>",
@@ -13,6 +13,10 @@ license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0" # MulanPubL2 is not i
 repository = "https://github.com/arceos-hypervisor/riscv_vcpu"
 categories = ["embedded", "no-std"]
 keywords = ["hypervisor", "riscv", "vcpu"]
+
+[package.metadata.docs.rs]
+default-target = "riscv64gc-unknown-none-elf"
+targets = ["riscv64gc-unknown-none-elf"]
 
 [dependencies]
 log = "0.4"
