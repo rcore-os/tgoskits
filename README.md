@@ -1,6 +1,6 @@
 # Starry OS
 
-## Quick Start for Beginners
+## Quick Start
 
 ### 1. Install System Dependencies
 
@@ -86,7 +86,11 @@ Note:
 1. You don't have to rerun the build step before running. `run` will automatically rebuild it.
 2. The disk file will **not** be reset between each run. As a result, if you want to switch to another architecture, you must run `make img` with the new architecture before running `make run`.
 
-## Options
+## What next?
+
+You can check out the [GUI guide](./gui.md) to set up a graphical environment, or explore other documentation in this folder.
+
+## Other Options
 
 TODO
 
