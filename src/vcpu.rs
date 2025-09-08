@@ -192,9 +192,9 @@ impl<H: AxVCpuHal> Aarch64VCpu<H> {
             // read PARange (bits 3:0)
             let parange = (ID_AA64MMFR0_EL1.get() & 0xF) as u8;
             // ARM Definition: 0x5 indicates 48 bits PA, 0x4 indicates 44 bits PA, and so on.
-            if parange <= 0x5 {
+            if parange <= 0x4 {
                 panic!(
-                    "CPU only supports {}-bit PA (< 48), \
+                    "CPU only supports {}-bit PA (< 44), \
                  cannot enable 4-level EPT paging!",
                     match parange {
                         0x0 => 32,
@@ -207,12 +207,12 @@ impl<H: AxVCpuHal> Aarch64VCpu<H> {
                 );
             }
             self.guest_system_regs.vtcr_el2 = (VTCR_EL2::PS::PA_48B_256TB
-            + VTCR_EL2::TG0::Granule4KB
-            + VTCR_EL2::SH0::Inner
-            + VTCR_EL2::ORGN0::NormalWBRAWA
-            + VTCR_EL2::IRGN0::NormalWBRAWA
-            + VTCR_EL2::SL0.val(0b10) // 0b10 means start at level 0
-            + VTCR_EL2::T0SZ.val(64 - 48))
+                + VTCR_EL2::TG0::Granule4KB
+                + VTCR_EL2::SH0::Inner
+                + VTCR_EL2::ORGN0::NormalWBRAWA
+                + VTCR_EL2::IRGN0::NormalWBRAWA
+                + VTCR_EL2::SL0.val(0b10) // 0b10 means start at level 0
+                + VTCR_EL2::T0SZ.val(64 - 48))
             .into();
         }
 

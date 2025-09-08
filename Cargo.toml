@@ -1,7 +1,7 @@
 [package]
 edition = "2024"
 name = "arm_vcpu"
-version = "0.1.0"
+version = "0.1.1"
 authors = [
     "KeYang Hu <keyang.hu@qq.com>",
     "Mingxian Su <aarkegz@gmail.com>",
@@ -29,7 +29,7 @@ tock-registers = "0.9"
 axerrno = "0.1.0"
 percpu = {version = "0.2.0", features = ["arm-el2"]}
 
-axaddrspace = "0.1.0"
+axaddrspace = "0.1"
 axdevice_base = "0.1.0"
 axvcpu = "0.1.0"
 axvisor_api = "0.1.0"
