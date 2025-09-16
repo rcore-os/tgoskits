@@ -1,3 +1,7 @@
+## 0.1.2
+
+- Add accessor module for memory access.
+
 ## 0.1.1
 
 - Support the new 4-level-ept feature. By default, level 3 ept is used. After enabling this feature, level 4 ept is used.

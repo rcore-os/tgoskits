@@ -106,7 +106,7 @@ pub(crate) fn test_dealloc_count(expected: usize) {
 
 impl MockHal {
     /// Simulates the allocation of a single physical frame.
-    fn mock_alloc_frame() -> Option<PhysAddr> {
+    pub(crate) fn mock_alloc_frame() -> Option<PhysAddr> {
         // Use a static mutable variable to control alloc_should_fail state
         if ALLOC_SHOULD_FAIL.load(Ordering::SeqCst) {
             return None;
@@ -121,14 +121,14 @@ impl MockHal {
     }
 
     /// Simulates the deallocation of a single physical frame.
-    fn mock_dealloc_frame(_paddr: PhysAddr) {
+    pub(crate) fn mock_dealloc_frame(_paddr: PhysAddr) {
         DEALLOC_COUNT.fetch_add(1, Ordering::SeqCst);
     }
 
     /// In this test mock, the "virtual address" is simply a direct pointer
     /// to the corresponding location within the `MEMORY` array.
     /// It simulates a physical-to-virtual memory mapping for test purposes.
-    fn mock_phys_to_virt(paddr: PhysAddr) -> VirtAddr {
+    pub(crate) fn mock_phys_to_virt(paddr: PhysAddr) -> VirtAddr {
         let paddr_usize = paddr.as_usize();
         assert!(
             paddr_usize >= BASE_PADDR && paddr_usize < BASE_PADDR + MEMORY_LEN,
@@ -140,7 +140,7 @@ impl MockHal {
     }
 
     /// Maps a virtual address (within the test process) back to a simulated physical address.
-    fn mock_virt_to_phys(vaddr: VirtAddr) -> PhysAddr {
+    pub(crate) fn mock_virt_to_phys(vaddr: VirtAddr) -> PhysAddr {
         let base_virt = MEMORY.lock().0.as_ptr() as usize;
         let vaddr_usize = vaddr.as_usize();
         assert!(
