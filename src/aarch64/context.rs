@@ -34,6 +34,11 @@ impl fmt::Debug for TrapFrame {
 }
 
 impl TrapFrame {
+    /// Creates an empty context with all registers set to zero.
+    pub const fn new() -> Self {
+        unsafe { core::mem::zeroed() }
+    }
+
     /// Gets the 0th syscall argument.
     pub const fn arg0(&self) -> usize {
         self.r[0] as _

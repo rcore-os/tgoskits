@@ -1,16 +1,22 @@
 //! Structures and functions for user space.
 
+use core::ops::{Deref, DerefMut};
+
+use aarch64_cpu::registers::ESR_EL1;
 use memory_addr::VirtAddr;
 
-use crate::TrapFrame;
+use crate::{
+    trap::{ExceptionKind, ReturnReason},
+    TrapFrame,
+};
 
 /// Context to enter user space.
-pub struct UspaceContext(TrapFrame);
+pub struct UserContext(TrapFrame);
 
-impl UspaceContext {
+impl UserContext {
     /// Creates an empty context with all registers set to zero.
     pub const fn empty() -> Self {
-        unsafe { core::mem::MaybeUninit::zeroed().assume_init() }
+        Self(TrapFrame::new())
     }
 
     /// Creates a new context with the given entry point, user stack pointer,
@@ -42,59 +48,15 @@ impl UspaceContext {
     ///
     /// It restores the user registers and jumps to the user entry point
     /// (saved in `elr`).
-    /// When an exception or syscall occurs, the kernel stack pointer is
-    /// switched to `kstack_top`.
     ///
-    /// # Safety
-    ///
-    /// This function is unsafe because it changes processor mode and the stack.
-    pub unsafe fn enter_uspace(&self, kstack_top: VirtAddr) -> ! {
-        crate::asm::disable_irqs();
-        // We do not handle traps that occur at the current exception level,
-        // so the kstack ptr(`sp_el1`) will not change during running in user space.
-        // Then we don't need to save the `sp_el1` to the taskctx.
-        unsafe {
-            core::arch::asm!(
-                "
-                mov     sp, x1
-                
-                // backup kernel tpidr_el0
-                mrs     x1, tpidr_el0
-                msr     tpidrro_el0, x1
-                
-                ldp     x11, x12, [x0, 33 * 8]
-                ldp     x9, x10, [x0, 31 * 8]
-                msr     sp_el0, x9
-                msr     tpidr_el0, x10
-                msr     elr_el1, x11
-                msr     spsr_el1, x12
-
-                ldr     x30, [x0, 30 * 8]
-                ldp     x28, x29, [x0, 28 * 8]
-                ldp     x26, x27, [x0, 26 * 8]
-                ldp     x24, x25, [x0, 24 * 8]
-                ldp     x22, x23, [x0, 22 * 8]
-                ldp     x20, x21, [x0, 20 * 8]
-                ldp     x18, x19, [x0, 18 * 8]
-                ldp     x16, x17, [x0, 16 * 8]
-                ldp     x14, x15, [x0, 14 * 8]
-                ldp     x12, x13, [x0, 12 * 8]
-                ldp     x10, x11, [x0, 10 * 8]
-                ldp     x8, x9, [x0, 8 * 8]
-                ldp     x6, x7, [x0, 6 * 8]
-                ldp     x4, x5, [x0, 4 * 8]
-                ldp     x2, x3, [x0, 2 * 8]
-                ldp     x0, x1, [x0]
-                eret",
-                in("x0") &self.0,
-                in("x1") kstack_top.as_usize() ,
-                options(noreturn),
-            )
-        }
+    /// This function returns when an exception or syscall occurs.
+    pub fn run(&mut self) -> ReturnReason {
+        // TODO: implement
+        ReturnReason::Unknown
     }
 }
 
-impl core::ops::Deref for UspaceContext {
+impl Deref for UserContext {
     type Target = TrapFrame;
 
     fn deref(&self) -> &Self::Target {
@@ -102,8 +64,28 @@ impl core::ops::Deref for UspaceContext {
     }
 }
 
-impl core::ops::DerefMut for UspaceContext {
+impl DerefMut for UserContext {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
+    }
+}
+
+impl From<TrapFrame> for UserContext {
+    fn from(tf: TrapFrame) -> Self {
+        Self(tf)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ExceptionInfo {
+    pub ec: ESR_EL1::EC::Value,
+    pub il: bool,
+    pub iss: u32,
+}
+
+impl ExceptionInfo {
+    pub fn kind(&self) -> ExceptionKind {
+        // TODO: implement
+        ExceptionKind::Other
     }
 }
