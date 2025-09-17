@@ -58,21 +58,22 @@ struct ExceptionTableEntry {
     to: usize,
 }
 
-pub fn fixup_exception(tf: &mut TrapFrame) -> bool {
-    let ip = tf.ip();
-    let entries = unsafe {
-        core::slice::from_raw_parts(
-            _ex_table_start as *const ExceptionTableEntry,
-            (_ex_table_end as usize - _ex_table_start as usize)
-                / core::mem::size_of::<ExceptionTableEntry>(),
-        )
-    };
-    match entries.binary_search_by(|e| e.from.cmp(&ip)) {
-        Ok(entry) => {
-            tf.set_ip(entries[entry].to);
-            true
+impl TrapFrame {
+    pub(crate) fn fixup_exception(&mut self) -> bool {
+        let entries = unsafe {
+            core::slice::from_raw_parts(
+                _ex_table_start as *const ExceptionTableEntry,
+                (_ex_table_end as usize - _ex_table_start as usize)
+                    / core::mem::size_of::<ExceptionTableEntry>(),
+            )
+        };
+        match entries.binary_search_by(|e| e.from.cmp(&self.ip())) {
+            Ok(entry) => {
+                self.set_ip(entries[entry].to);
+                true
+            }
+            Err(_) => false,
         }
-        Err(_) => false,
     }
 }
 
@@ -84,7 +85,7 @@ pub(crate) fn init_exception_table() {
             (_ex_table_end as usize - _ex_table_start as usize) / size_of::<ExceptionTableEntry>(),
         )
     };
-    ex_table.sort();
+    ex_table.sort_unstable();
 }
 
 unsafe extern "C" {

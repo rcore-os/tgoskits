@@ -22,7 +22,7 @@ fn handle_page_fault(tf: &mut TrapFrame, access_flags: PageFaultFlags) {
     if core::hint::likely(handle_trap!(PAGE_FAULT, vaddr, access_flags)) {
         return;
     }
-    if !crate::trap::fixup_exception(tf) {
+    if !tf.fixup_exception() {
         panic!(
             "Unhandled PLV0 Page Fault @ {:#x}, fault_vaddr={:#x} ({:?}):\n{:#x?}\n{}",
             tf.era,
