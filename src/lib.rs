@@ -41,6 +41,19 @@ pub struct Frame {
 }
 
 impl Frame {
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    const OFFSET: usize = 0;
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    const OFFSET: usize = 1;
+
+    fn read(fp: usize) -> Option<Self> {
+        if fp == 0 || fp % core::mem::align_of::<Frame>() != 0 {
+            return None;
+        }
+
+        Some(unsafe { (fp as *const Frame).sub(Self::OFFSET).read() })
+    }
+
     // See https://github.com/rust-lang/backtrace-rs/blob/b65ab935fb2e0d59dba8966ffca09c9cc5a5f57c/src/symbolize/mod.rs#L145
     pub fn adjust_ip(&self) -> usize {
         self.ip.wrapping_sub(1)
@@ -56,12 +69,6 @@ impl fmt::Display for Frame {
 /// Unwind the stack from the given frame pointer.
 #[cfg(feature = "alloc")]
 pub fn unwind_stack(mut fp: usize) -> Vec<Frame> {
-    let offset = if cfg!(target_arch = "x86_64") || cfg!(target_arch = "aarch64") {
-        0
-    } else {
-        1
-    };
-
     let mut frames = vec![];
 
     let Some(fp_range) = FP_RANGE.get() else {
@@ -73,9 +80,11 @@ pub fn unwind_stack(mut fp: usize) -> Vec<Frame> {
     let mut depth = 0;
     let max_depth = max_depth();
 
-    while fp > 0 && fp % align_of::<usize>() == 0 && fp_range.contains(&fp) && depth < max_depth {
-        let frame: &Frame = unsafe { &*(fp as *const Frame).sub(offset) };
-        frames.push(*frame);
+    while fp_range.contains(&fp)
+        && depth < max_depth
+        && let Some(frame) = Frame::read(fp)
+    {
+        frames.push(frame);
 
         if let Some(large_stack_end) = fp.checked_add(8 * 1024 * 1024)
             && frame.fp >= large_stack_end
@@ -154,6 +163,10 @@ impl Backtrace {
             }
 
             let frames = unwind_stack(fp);
+
+            // prevent this frame from being tail-call optimised away
+            core::hint::black_box(());
+
             Self {
                 inner: Inner::Captured(frames),
             }
