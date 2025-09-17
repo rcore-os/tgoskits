@@ -20,7 +20,7 @@ ifeq ($(MEMTRACK), y)
 	APP_FEATURES += starry-api/memtrack
 endif
 
-IMG_URL = https://github.com/Starry-OS/StarryOS/releases/download/rootfs-250905/
+IMG_URL = https://github.com/Starry-OS/rootfs/releases/download/20250917
 IMG = rootfs-$(ARCH).img
 
 img:

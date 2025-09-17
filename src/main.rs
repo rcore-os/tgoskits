@@ -8,7 +8,7 @@ extern crate axlog;
 extern crate alloc;
 extern crate axruntime;
 
-use alloc::{borrow::ToOwned, format, vec::Vec};
+use alloc::{borrow::ToOwned, vec::Vec};
 
 use axfs_ng::FS_CONTEXT;
 
@@ -25,11 +25,7 @@ fn main() {
         .copied()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let envs = [
-        format!("ARCH={}", option_env!("ARCH").unwrap_or("unknown")),
-        "HOSTNAME=starry".to_owned(),
-        "HOME=/root".to_owned(),
-    ];
+    let envs = [];
     let exit_code = entry::run_initproc(&args, &envs);
     info!("Init process exited with code: {:?}", exit_code);
 

@@ -1,5 +1,7 @@
 #!/bin/sh
 
+export HOME=/root
+
 echo -e "Welcome to \e[96m\e[1mStarry OS\e[0m!"
 env
 echo
