@@ -1,4 +1,5 @@
 use alloc::{boxed::Box, string::String, sync::Arc};
+use core::cell::Cell;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use core::{alloc::Layout, cell::UnsafeCell, fmt, ptr::NonNull};
@@ -42,7 +43,7 @@ pub struct TaskInner {
     is_idle: bool,
     is_init: bool,
 
-    entry: Option<*mut dyn FnOnce()>,
+    entry: Cell<Option<Box<dyn FnOnce()>>>,
     state: AtomicU8,
 
     /// CPU affinity mask.
@@ -122,7 +123,7 @@ impl TaskInner {
         #[cfg(not(feature = "tls"))]
         let tls = VirtAddr::from(0);
 
-        t.entry = Some(Box::into_raw(Box::new(entry)));
+        t.entry = Cell::new(Some(Box::new(entry)));
         t.ctx_mut().init(task_entry as usize, kstack.top(), tls);
         t.kstack = Some(kstack);
         if t.name == "idle" {
@@ -234,7 +235,7 @@ impl TaskInner {
             name,
             is_idle: false,
             is_init: false,
-            entry: None,
+            entry: Cell::new(None),
             state: AtomicU8::new(TaskState::Ready as u8),
             // By default, the task is allowed to run on all CPUs.
             cpumask: SpinNoIrq::new(cpumask),
@@ -555,8 +556,8 @@ extern "C" fn task_entry() -> ! {
     #[cfg(feature = "irq")]
     axhal::asm::enable_irqs();
     let task = crate::current();
-    if let Some(entry) = task.entry {
-        unsafe { Box::from_raw(entry)() };
+    if let Some(entry) = task.entry.take() {
+        entry()
     }
     crate::exit(0);
 }
