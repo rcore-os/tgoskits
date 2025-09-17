@@ -17,15 +17,13 @@ core::arch::global_asm!(
 
 #[unsafe(no_mangle)]
 pub(super) fn handle_syscall(tf: &mut TrapFrame) {
-    tf.rax = crate::trap::handle_syscall(tf, tf.rax as usize) as u64;
+    // tf.rax = crate::trap::handle_syscall(tf, tf.rax as usize) as u64;
 }
 
 #[unsafe(no_mangle)]
 fn x86_syscall_handler(tf: &mut TrapFrame) {
     super::uspace::switch_to_kernel_fs_base(tf);
-    crate::trap::pre_trap_callback(tf, true);
     handle_syscall(tf);
-    crate::trap::post_trap_callback(tf, true);
     super::uspace::switch_to_user_fs_base(tf);
 }
 

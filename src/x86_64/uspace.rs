@@ -1,14 +1,17 @@
 //! Structures and functions for user space.
 
+use core::ops::{Deref, DerefMut};
+
 use memory_addr::VirtAddr;
 
 use crate::asm::{read_thread_pointer, write_thread_pointer};
+use crate::trap::{ExceptionKind, ReturnReason};
 use crate::TrapFrame;
 
 /// Context to enter user space.
-pub struct UspaceContext(TrapFrame);
+pub struct UserContext(TrapFrame);
 
-impl UspaceContext {
+impl UserContext {
     /// Creates an empty context with all registers set to zero.
     pub const fn empty() -> Self {
         unsafe { core::mem::MaybeUninit::zeroed().assume_init() }
@@ -46,41 +49,11 @@ impl UspaceContext {
     ///
     /// It restores the user registers and jumps to the user entry point
     /// (saved in `rip`).
-    /// When an exception or syscall occurs, the kernel stack pointer is
-    /// switched to `kstack_top`.
     ///
-    /// # Safety
-    ///
-    /// This function is unsafe because it changes processor mode and the stack.
-    pub unsafe fn enter_uspace(&self, kstack_top: VirtAddr) -> ! {
-        crate::asm::disable_irqs();
-        assert_eq!(super::gdt::read_tss_rsp0(), kstack_top);
-        switch_to_user_fs_base(&self.0);
-        unsafe {
-            core::arch::asm!("
-                mov     rsp, {tf}
-                pop     rax
-                pop     rcx
-                pop     rdx
-                pop     rbx
-                pop     rbp
-                pop     rsi
-                pop     rdi
-                pop     r8
-                pop     r9
-                pop     r10
-                pop     r11
-                pop     r12
-                pop     r13
-                pop     r14
-                pop     r15
-                add     rsp, 32     // skip fs_base, vector, error_code
-                swapgs
-                iretq",
-                tf = in(reg) &self.0,
-                options(noreturn),
-            )
-        }
+    /// This function returns when an exception or syscall occurs.
+    pub fn run(&mut self) -> ReturnReason {
+        // TODO: implement
+        ReturnReason::Unknown
     }
 }
 
@@ -109,7 +82,7 @@ pub fn switch_to_user_fs_base(tf: &TrapFrame) {
     }
 }
 
-impl core::ops::Deref for UspaceContext {
+impl Deref for UserContext {
     type Target = TrapFrame;
 
     fn deref(&self) -> &Self::Target {
@@ -117,8 +90,18 @@ impl core::ops::Deref for UspaceContext {
     }
 }
 
-impl core::ops::DerefMut for UspaceContext {
+impl DerefMut for UserContext {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ExceptionInfo {}
+
+impl ExceptionInfo {
+    pub fn kind(&self) -> ExceptionKind {
+        // TODO: implement
+        ExceptionKind::Other
     }
 }

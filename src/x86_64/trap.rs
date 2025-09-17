@@ -16,7 +16,7 @@ fn handle_page_fault(tf: &TrapFrame) {
     let access_flags = err_code_to_flags(tf.error_code)
         .unwrap_or_else(|e| panic!("Invalid #PF error code: {:#x}", e));
     let vaddr = va!(unsafe { cr2() });
-    if !handle_trap!(PAGE_FAULT, vaddr, access_flags, tf.is_user()) {
+    if !handle_trap!(PAGE_FAULT, vaddr, access_flags) {
         panic!(
             "Unhandled {} #PF @ {:#x}, fault_vaddr={:#x}, error_code={:#x} ({:?}):\n{:#x?}\n{}",
             if tf.is_user() { "user" } else { "kernel" },
@@ -34,7 +34,6 @@ fn handle_page_fault(tf: &TrapFrame) {
 fn x86_trap_handler(tf: &mut TrapFrame) {
     #[cfg(feature = "uspace")]
     super::uspace::switch_to_kernel_fs_base(tf);
-    crate::trap::pre_trap_callback(tf, tf.is_user());
     match tf.vector as u8 {
         PAGE_FAULT_VECTOR => handle_page_fault(tf),
         BREAKPOINT_VECTOR => debug!("#BP @ {:#x} ", tf.rip),
@@ -64,7 +63,6 @@ fn x86_trap_handler(tf: &mut TrapFrame) {
             );
         }
     }
-    crate::trap::post_trap_callback(tf, tf.is_user());
     #[cfg(feature = "uspace")]
     super::uspace::switch_to_user_fs_base(tf);
 }
