@@ -6,7 +6,7 @@ use loongArch64::register::badv;
 
 use crate::{GeneralRegisters, TrapFrame};
 
-core::arch::global_asm!(include_str!("unaligned.S"));
+core::arch::global_asm!(include_asm_macros!(), include_str!("unaligned.S"));
 
 extern "C" {
     fn _unaligned_read(addr: u64, value: &mut u64, n: u64, symbol: bool) -> i32;
