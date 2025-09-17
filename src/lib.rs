@@ -1,7 +1,9 @@
 #![no_std]
 
+#[cfg(feature = "alloc")]
 extern crate alloc;
 
+#[cfg(feature = "alloc")]
 use alloc::{vec, vec::Vec};
 use core::{
     fmt,
@@ -9,7 +11,6 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use log::error;
 use spin::Once;
 
 #[cfg(feature = "dwarf")]
@@ -53,6 +54,7 @@ impl fmt::Display for Frame {
 }
 
 /// Unwind the stack from the given frame pointer.
+#[cfg(feature = "alloc")]
 pub fn unwind_stack(mut fp: usize) -> Vec<Frame> {
     let offset = if cfg!(target_arch = "x86_64") || cfg!(target_arch = "aarch64") {
         0
@@ -64,7 +66,7 @@ pub fn unwind_stack(mut fp: usize) -> Vec<Frame> {
 
     let Some(fp_range) = FP_RANGE.get() else {
         // We cannot panic here!
-        error!("Backtrace not initialized. Call `axbacktrace::init` first.");
+        log::error!("Backtrace not initialized. Call `axbacktrace::init` first.");
         return frames;
     };
 

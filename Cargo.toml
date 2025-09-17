@@ -13,8 +13,8 @@ keywords = ["DWARF", "debug", "backtrace", "unwinding"]
 categories = ["development-tools::debugging"]
 
 [features]
-default = []
-dwarf = ["dep:addr2line", "dep:gimli", "dep:paste"]
+alloc = []
+dwarf = ["dep:addr2line", "dep:gimli", "dep:paste", "alloc"]
 
 [dependencies]
 cfg-if = "1"
