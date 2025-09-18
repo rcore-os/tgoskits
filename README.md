@@ -88,7 +88,7 @@ Note:
 
 ## What next?
 
-You can check out the [GUI guide](./gui.md) to set up a graphical environment, or explore other documentation in this folder.
+You can check out the [GUI guide](./docs/gui.md) to set up a graphical environment, or explore other documentation in this folder.
 
 ## Other Options
 
