@@ -204,14 +204,13 @@ dependencies = [
  "axio",
  "axlog",
  "axnet",
- "axns",
  "axruntime",
  "axsync",
  "axtask",
  "bindgen",
- "ctor_bare",
  "flatten_objects",
  "lazy_static",
+ "scope-local",
  "spin 0.10.0",
 ]
 
@@ -546,7 +545,6 @@ dependencies = [
  "axfs_ramfs",
  "axfs_vfs",
  "axio",
- "axns",
  "axsync",
  "axtask",
  "cap_access",
@@ -555,6 +553,7 @@ dependencies = [
  "fatfs",
  "lazyinit",
  "log",
+ "scope-local",
 ]
 
 [[package]]
@@ -708,15 +707,6 @@ dependencies = [
  "log",
  "smoltcp 0.12.0",
  "spin 0.10.0",
-]
-
-[[package]]
-name = "axns"
-version = "0.2.0"
-dependencies = [
- "axns",
- "crate_interface",
- "lazyinit",
 ]
 
 [[package]]
@@ -2239,6 +2229,16 @@ name = "sbi-spec"
 version = "0.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e36312fb5ddc10d08ecdc65187402baba4ac34585cb9d1b78522ae2358d890"
+
+[[package]]
+name = "scope-local"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "231e441739fbe668e91acf8440a0b1ac83c73faec7a6d984190ee25354c2ec9a"
+dependencies = [
+ "percpu",
+ "spin 0.9.8",
+]
 
 [[package]]
 name = "scopeguard"

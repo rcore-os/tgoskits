@@ -23,13 +23,12 @@ smp = ["axfeat/smp"]
 irq = ["axfeat/irq"]
 alloc = ["dep:axalloc", "axfeat/alloc"]
 multitask = ["axtask/multitask", "axfeat/multitask", "axsync/multitask"]
-fd = ["alloc", "dep:axns"]
+fd = ["alloc", "dep:scope-local"]
 fs = ["dep:axfs", "axfeat/fs", "fd"]
 net = ["dep:axnet", "axfeat/net", "fd"]
 pipe = ["fd"]
 select = ["fd"]
 epoll = ["fd"]
-uspace = ["axns/thread-local"]
 
 [dependencies]
 # ArceOS modules
@@ -40,7 +39,6 @@ axfs = { workspace = true, optional = true }
 axhal.workspace = true
 axlog.workspace = true
 axnet = { workspace = true, optional = true }
-axns = { workspace = true, optional = true }
 axruntime.workspace = true
 axsync.workspace = true
 axtask = { workspace = true, optional = true }
@@ -48,9 +46,9 @@ axtask = { workspace = true, optional = true }
 # Other crates
 axerrno.workspace = true
 axio.workspace = true
-ctor_bare.workspace = true
 flatten_objects = "0.2"
 lazy_static.workspace = true
+scope-local = { workspace = true, optional = true }
 spin.workspace = true
 
 [build-dependencies]

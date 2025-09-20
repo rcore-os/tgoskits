@@ -106,6 +106,6 @@ SECTIONS {
     linkm2_IRQ : { *(linkm2_IRQ) }
     linkme_PAGE_FAULT : { *(linkme_PAGE_FAULT) }
     linkm2_PAGE_FAULT : { *(linkm2_PAGE_FAULT) }
-    axns_resource : { *(axns_resource) }
+    scope_local : { *(scope_local) }
 }
 INSERT AFTER .tbss;
