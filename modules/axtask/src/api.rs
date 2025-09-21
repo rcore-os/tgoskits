@@ -129,6 +129,16 @@ where
     spawn_task(TaskInner::new(f, name, stack_size))
 }
 
+/// Spawns a new task with the given name and the default stack size ([`axconfig::TASK_STACK_SIZE`]).
+///
+/// Returns the task reference.
+pub fn spawn_with_name<F>(f: F, name: String) -> AxTaskRef
+where
+    F: FnOnce() + Send + 'static,
+{
+    spawn_raw(f, name, axconfig::TASK_STACK_SIZE)
+}
+
 /// Spawns a new task with the default parameters.
 ///
 /// The default task name is an empty string. The default task stack size is
@@ -139,7 +149,7 @@ pub fn spawn<F>(f: F) -> AxTaskRef
 where
     F: FnOnce() + Send + 'static,
 {
-    spawn_raw(f, "".into(), axconfig::TASK_STACK_SIZE)
+    spawn_with_name(f, String::new())
 }
 
 /// Set the priority for current task.
