@@ -11,7 +11,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 [[package]]
 name = "axerrno"
 version = "0.1.0"
-source = "git+https://github.com/Starry-OS/axerrno.git?rev=58be232#58be2329defe833cd2684d54e3e19a6f077d3ed2"
+source = "git+https://github.com/Starry-OS/axerrno.git?rev=3713143#3713143115fac57d6a15f5390c7af03553c5c7ad"
 dependencies = [
  "log",
 ]
@@ -34,7 +34,7 @@ dependencies = [
 [[package]]
 name = "axio"
 version = "0.1.1"
-source = "git+https://github.com/Starry-OS/axio.git?rev=d6c8dc3#d6c8dc3d6221a507a018a5d9a128ecd6e7df5285"
+source = "git+https://github.com/Starry-OS/axio.git?rev=e11ca75#e11ca75f23189d3a8df7987eafd73015b95fb225"
 dependencies = [
  "axerrno",
  "bitflags",
