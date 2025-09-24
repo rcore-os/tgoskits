@@ -6,7 +6,7 @@
 
 use core::{mem::MaybeUninit, slice};
 
-use axerrno::LinuxError;
+use axerrno::AxError;
 use extern_trait::extern_trait;
 
 /// Errors that can occur during virtual memory operations.
@@ -25,12 +25,13 @@ pub enum VmError {
     TooLong,
 }
 
-impl From<VmError> for LinuxError {
+impl From<VmError> for AxError {
     fn from(err: VmError) -> Self {
         match err {
-            VmError::BadAddress | VmError::AccessDenied => LinuxError::EFAULT,
+            VmError::BadAddress => AxError::BadAddress,
+            VmError::AccessDenied => AxError::PermissionDenied,
             #[cfg(feature = "alloc")]
-            VmError::TooLong => LinuxError::E2BIG,
+            VmError::TooLong => AxError::TooBig,
         }
     }
 }
