@@ -26,4 +26,4 @@ extern-trait = "0.1"
 bytemuck = { version = "1.23", features = ["derive"] }
 
 [patch.crates-io]
-axerrno = { git = "https://github.com/Starry-OS/axerrno.git", rev = "58be232" }
+axerrno = { git = "https://github.com/Starry-OS/axerrno.git", rev = "3713143" }
