@@ -65,7 +65,7 @@ where
     }
 
     fn write_all(&self, _data: &[u8]) -> VfsResult<()> {
-        Err(VfsError::EBADF)
+        Err(VfsError::BadFileDescriptor)
     }
 }
 

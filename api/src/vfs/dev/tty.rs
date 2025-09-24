@@ -1,7 +1,7 @@
 use alloc::sync::{Arc, Weak};
 use core::{any::Any, ops::Deref, sync::atomic::Ordering, task::Context};
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axfs_ng_vfs::NodeFlags;
 use axio::{IoEvents, Pollable};
 use axsync::Mutex;
@@ -29,7 +29,7 @@ pub use ptm::Ptmx;
 pub use pts::PtsDir;
 pub use pty::PtyDriver;
 
-pub fn create_pty_master(fs: Arc<SimpleFs>) -> LinuxResult<Arc<PtyDriver>> {
+pub fn create_pty_master(fs: Arc<SimpleFs>) -> AxResult<Arc<PtyDriver>> {
     let (master, slave) = pty::create_pty_pair();
     pts::add_slave(fs, slave)?;
     Ok(master)
@@ -60,10 +60,10 @@ impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
 }
 
 impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
-    pub fn bind_to(self: &Arc<Self>, proc: &Process) -> LinuxResult<()> {
+    pub fn bind_to(self: &Arc<Self>, proc: &Process) -> AxResult<()> {
         let pg = proc.group();
         if pg.session().sid() != proc.pid() {
-            return Err(LinuxError::EPERM);
+            return Err(AxError::OperationNotPermitted);
         }
         assert!(pg.session().set_terminal_with(|| {
             self.terminal.job_control.set_session(&pg.session());
@@ -80,22 +80,22 @@ impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
 }
 
 impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
-    fn read_at(&self, buf: &mut [u8], _offset: u64) -> LinuxResult<usize> {
+    fn read_at(&self, buf: &mut [u8], _offset: u64) -> AxResult<usize> {
         Poller::new(&self.terminal.job_control, IoEvents::IN).poll(|| {
             if self.is_ptm || self.terminal.job_control.current_in_foreground() {
                 self.ldisc.lock().read(buf)
             } else {
-                Err(LinuxError::EAGAIN)
+                Err(AxError::WouldBlock)
             }
         })
     }
 
-    fn write_at(&self, buf: &[u8], _offset: u64) -> LinuxResult<usize> {
+    fn write_at(&self, buf: &[u8], _offset: u64) -> AxResult<usize> {
         self.writer.write(buf);
         Ok(buf.len())
     }
 
-    fn ioctl(&self, cmd: u32, arg: usize) -> LinuxResult<usize> {
+    fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
         use linux_raw_sys::ioctl::*;
         match cmd {
             TCGETS => {
@@ -124,7 +124,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                     .terminal
                     .job_control
                     .foreground()
-                    .ok_or(LinuxError::ESRCH)?;
+                    .ok_or(AxError::NoSuchProcess)?;
                 (arg as *mut u32).vm_write(foreground.pgid())?;
             }
             TIOCSPGRP => {
@@ -166,7 +166,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                     warn!("Failed to unset terminal");
                 }
             }
-            _ => return Err(LinuxError::ENOTTY),
+            _ => return Err(AxError::BadIoctl),
         }
         Ok(0)
     }
@@ -206,15 +206,15 @@ impl<R: TtyRead, W: TtyWrite> Pollable for Tty<R, W> {
 
 pub struct CurrentTty;
 impl DeviceOps for CurrentTty {
-    fn read_at(&self, _buf: &mut [u8], _offset: u64) -> LinuxResult<usize> {
+    fn read_at(&self, _buf: &mut [u8], _offset: u64) -> AxResult<usize> {
         unreachable!()
     }
 
-    fn write_at(&self, _buf: &[u8], _offset: u64) -> LinuxResult<usize> {
+    fn write_at(&self, _buf: &[u8], _offset: u64) -> AxResult<usize> {
         Ok(0)
     }
 
-    fn ioctl(&self, _cmd: u32, _arg: usize) -> LinuxResult<usize> {
+    fn ioctl(&self, _cmd: u32, _arg: usize) -> AxResult<usize> {
         unreachable!()
     }
 

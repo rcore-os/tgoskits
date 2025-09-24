@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axfs_ng::FileBackend;
 use axhal::paging::{MappingFlags, PageSize};
 use axmm::backend::{Backend, SharedPages};
@@ -94,9 +94,9 @@ pub fn sys_mmap(
     flags: u32,
     fd: i32,
     offset: isize,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     if length == 0 {
-        return Err(LinuxError::EINVAL);
+        return Err(AxError::InvalidInput);
     }
 
     let curr = current();
@@ -108,7 +108,7 @@ pub fn sys_mmap(
         None => {
             warn!("unknown mmap flags: {flags}");
             if (flags & MmapFlags::TYPE.bits()) == MmapFlags::SHARED_VALIDATE.bits() {
-                return Err(LinuxError::EOPNOTSUPP);
+                return Err(AxError::OperationNotSupported);
             }
             MmapFlags::from_bits_truncate(flags)
         }
@@ -118,17 +118,17 @@ pub fn sys_mmap(
         map_type,
         MmapFlags::PRIVATE | MmapFlags::SHARED | MmapFlags::SHARED_VALIDATE
     ) {
-        return Err(LinuxError::EINVAL);
+        return Err(AxError::InvalidInput);
     }
     if map_flags.contains(MmapFlags::ANONYMOUS) != (fd <= 0) {
-        return Err(LinuxError::EINVAL);
+        return Err(AxError::InvalidInput);
     }
     if fd <= 0 && offset != 0 {
-        return Err(LinuxError::EINVAL);
+        return Err(AxError::InvalidInput);
     }
-    let offset: usize = offset.try_into().map_err(|_| LinuxError::EINVAL)?;
+    let offset: usize = offset.try_into().map_err(|_| AxError::InvalidInput)?;
     if !PageSize::Size4K.is_aligned(offset) {
-        return Err(LinuxError::EINVAL);
+        return Err(AxError::InvalidInput);
     }
 
     debug!(
@@ -166,7 +166,7 @@ pub fn sys_mmap(
                 length,
                 VirtAddrRange::new(aspace.base(), aspace.end()),
             ))
-            .ok_or(LinuxError::ENOMEM)?
+            .ok_or(AxError::NoMemory)?
     };
 
     let file = if fd > 0 {
@@ -195,11 +195,11 @@ pub fn sys_mmap(
                         let device = loc
                             .entry()
                             .downcast::<Device>()
-                            .map_err(|_| LinuxError::ENODEV)?;
+                            .map_err(|_| AxError::NoSuchDevice)?;
 
                         match device.mmap() {
                             DeviceMmap::None => {
-                                return Err(LinuxError::ENODEV);
+                                return Err(AxError::NoSuchDevice);
                             }
                             DeviceMmap::ReadOnly => {
                                 Backend::new_cow(start, page_size, backend, offset as u64, None)
@@ -207,7 +207,7 @@ pub fn sys_mmap(
                             DeviceMmap::Physical(mut range) => {
                                 range.start += offset;
                                 if range.is_empty() {
-                                    return Err(LinuxError::EINVAL);
+                                    return Err(AxError::InvalidInput);
                                 }
                                 length = length.min(range.size().align_down(page_size));
                                 Backend::new_linear(
@@ -237,7 +237,7 @@ pub fn sys_mmap(
                 Backend::new_alloc(start, page_size)
             }
         }
-        _ => return Err(LinuxError::EINVAL),
+        _ => return Err(AxError::InvalidInput),
     };
 
     let populate = map_flags.contains(MmapFlags::POPULATE);
@@ -246,7 +246,7 @@ pub fn sys_mmap(
     Ok(start.as_usize() as _)
 }
 
-pub fn sys_munmap(addr: usize, length: usize) -> LinuxResult<isize> {
+pub fn sys_munmap(addr: usize, length: usize) -> AxResult<isize> {
     debug!("sys_munmap <= addr: {:#x}, length: {:x}", addr, length);
     let curr = current();
     let mut aspace = curr.as_thread().proc_data.aspace.lock();
@@ -256,10 +256,10 @@ pub fn sys_munmap(addr: usize, length: usize) -> LinuxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> LinuxResult<isize> {
+pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> AxResult<isize> {
     // TODO: implement PROT_GROWSUP & PROT_GROWSDOWN
     let Some(permission_flags) = MmapProt::from_bits(prot) else {
-        return Err(LinuxError::EINVAL);
+        return Err(AxError::InvalidInput);
     };
     debug!(
         "sys_mprotect <= addr: {:#x}, length: {:x}, prot: {:?}",
@@ -267,7 +267,7 @@ pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> LinuxResult<isize>
     );
 
     if permission_flags.contains(MmapProt::GROWDOWN | MmapProt::GROWSUP) {
-        return Err(LinuxError::EINVAL);
+        return Err(AxError::InvalidInput);
     }
 
     let curr = current();
@@ -279,7 +279,7 @@ pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> LinuxResult<isize>
     Ok(0)
 }
 
-pub fn sys_mremap(addr: usize, old_size: usize, new_size: usize, flags: u32) -> LinuxResult<isize> {
+pub fn sys_mremap(addr: usize, old_size: usize, new_size: usize, flags: u32) -> AxResult<isize> {
     debug!(
         "sys_mremap <= addr: {:#x}, old_size: {:x}, new_size: {:x}, flags: {:#x}",
         addr, old_size, new_size, flags
@@ -288,7 +288,7 @@ pub fn sys_mremap(addr: usize, old_size: usize, new_size: usize, flags: u32) -> 
     // TODO: full implementation
 
     if addr % PageSize::Size4K as usize != 0 {
-        return Err(LinuxError::EINVAL);
+        return Err(AxError::InvalidInput);
     }
     let addr = VirtAddr::from(addr);
 
@@ -297,7 +297,7 @@ pub fn sys_mremap(addr: usize, old_size: usize, new_size: usize, flags: u32) -> 
     let old_size = align_up_4k(old_size);
     let new_size = align_up_4k(new_size);
 
-    let flags = aspace.find_area(addr).ok_or(LinuxError::ENOMEM)?.flags();
+    let flags = aspace.find_area(addr).ok_or(AxError::NoMemory)?.flags();
     drop(aspace);
     let new_addr = sys_mmap(
         addr.as_usize(),
@@ -317,7 +317,7 @@ pub fn sys_mremap(addr: usize, old_size: usize, new_size: usize, flags: u32) -> 
     Ok(new_addr as isize)
 }
 
-pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> LinuxResult<isize> {
+pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> AxResult<isize> {
     debug!(
         "sys_madvise <= addr: {:#x}, length: {:x}, advice: {:#x}",
         addr, length, advice
@@ -325,7 +325,7 @@ pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> LinuxResult<isize
     Ok(0)
 }
 
-pub fn sys_msync(addr: usize, length: usize, flags: u32) -> LinuxResult<isize> {
+pub fn sys_msync(addr: usize, length: usize, flags: u32) -> AxResult<isize> {
     debug!(
         "sys_msync <= addr: {:#x}, length: {:x}, flags: {:#x}",
         addr, length, flags
@@ -334,10 +334,10 @@ pub fn sys_msync(addr: usize, length: usize, flags: u32) -> LinuxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_mlock(addr: usize, length: usize) -> LinuxResult<isize> {
+pub fn sys_mlock(addr: usize, length: usize) -> AxResult<isize> {
     sys_mlock2(addr, length, 0)
 }
 
-pub fn sys_mlock2(_addr: usize, _length: usize, _flags: u32) -> LinuxResult<isize> {
+pub fn sys_mlock2(_addr: usize, _length: usize, _flags: u32) -> AxResult<isize> {
     Ok(0)
 }

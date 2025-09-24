@@ -1,7 +1,7 @@
 use alloc::{string::ToString, sync::Arc, vec::Vec};
 use core::ffi::c_char;
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axfs_ng::FS_CONTEXT;
 use axhal::context::TrapFrame;
 use axtask::current;
@@ -15,7 +15,7 @@ pub fn sys_execve(
     path: *const c_char,
     argv: *const *const c_char,
     envp: *const *const c_char,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     let path = vm_load_string(path)?;
 
     let args = vm_load_until_nul(argv)?
@@ -39,7 +39,7 @@ pub fn sys_execve(
     if proc_data.proc.threads().len() > 1 {
         // TODO: handle multi-thread case
         error!("sys_execve: multi-thread not supported");
-        return Err(LinuxError::EAGAIN);
+        return Err(AxError::WouldBlock);
     }
 
     let mut aspace = proc_data.aspace.lock();

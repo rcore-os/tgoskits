@@ -45,7 +45,7 @@ impl SimpleDirOps for DirMapping {
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
-        self.0.get(name).cloned().ok_or(VfsError::ENOENT)
+        self.0.get(name).cloned().ok_or(VfsError::NotFound)
     }
 }
 
@@ -81,7 +81,7 @@ impl<A: SimpleDirOps, B: SimpleDirOps> SimpleDirOps for ChainedDirOps<A, B> {
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         match self.0.lookup_child(name) {
             Ok(ops) => Ok(ops),
-            Err(VfsError::ENOENT) => self.1.lookup_child(name),
+            Err(VfsError::NotFound) => self.1.lookup_child(name),
             Err(e) => Err(e),
         }
     }
@@ -193,18 +193,18 @@ impl<O: SimpleDirOps> DirNodeOps for SimpleDir<O> {
         _node_type: NodeType,
         _permission: NodePermission,
     ) -> VfsResult<DirEntry> {
-        Err(VfsError::EPERM)
+        Err(VfsError::OperationNotPermitted)
     }
 
     fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
-        Err(VfsError::EPERM)
+        Err(VfsError::OperationNotPermitted)
     }
 
     fn unlink(&self, _name: &str) -> VfsResult<()> {
-        Err(VfsError::EPERM)
+        Err(VfsError::OperationNotPermitted)
     }
 
     fn rename(&self, _src_name: &str, _dst_dir: &DirNode, _dst_name: &str) -> VfsResult<()> {
-        Err(VfsError::EPERM)
+        Err(VfsError::OperationNotPermitted)
     }
 }

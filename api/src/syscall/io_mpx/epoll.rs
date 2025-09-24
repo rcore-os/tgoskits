@@ -1,6 +1,6 @@
 use core::time::Duration;
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axio::IoEvents;
 use axtask::future::Poller;
 use bitflags::bitflags;
@@ -28,8 +28,8 @@ bitflags! {
     }
 }
 
-pub fn sys_epoll_create1(flags: u32) -> LinuxResult<isize> {
-    let flags = EpollCreateFlags::from_bits(flags).ok_or(LinuxError::EINVAL)?;
+pub fn sys_epoll_create1(flags: u32) -> AxResult<isize> {
+    let flags = EpollCreateFlags::from_bits(flags).ok_or(AxError::InvalidInput)?;
     debug!("sys_epoll_create1 <= flags: {:?}", flags);
     Epoll::new()
         .add_to_fd_table(flags.contains(EpollCreateFlags::CLOEXEC))
@@ -41,15 +41,15 @@ pub fn sys_epoll_ctl(
     op: u32,
     fd: i32,
     event: UserConstPtr<epoll_event>,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     let epoll = Epoll::from_fd(epfd)?;
     debug!("sys_epoll_ctl <= epfd: {}, op: {}, fd: {}", epfd, op, fd);
 
-    let parse_event = || -> LinuxResult<(EpollEvent, EpollFlags)> {
+    let parse_event = || -> AxResult<(EpollEvent, EpollFlags)> {
         let event = event.get_as_ref()?;
         let events = IoEvents::from_bits_truncate(event.events as u16);
         let flags = EpollFlags::from_bits(event.events & !(events.bits() as u32))
-            .ok_or(LinuxError::EINVAL)?;
+            .ok_or(AxError::InvalidInput)?;
         Ok((
             EpollEvent {
                 events,
@@ -70,7 +70,7 @@ pub fn sys_epoll_ctl(
         EPOLL_CTL_DEL => {
             epoll.delete(fd)?;
         }
-        _ => return Err(LinuxError::EINVAL),
+        _ => return Err(AxError::InvalidInput),
     }
     Ok(0)
 }
@@ -82,7 +82,7 @@ fn do_epoll_wait(
     timeout: Option<Duration>,
     sigmask: UserConstPtr<SignalSet>,
     sigsetsize: usize,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     check_sigset_size(sigsetsize)?;
     debug!(
         "sys_epoll_wait <= epfd: {}, maxevents: {}, timeout: {:?}",
@@ -92,7 +92,7 @@ fn do_epoll_wait(
     let epoll = Epoll::from_fd(epfd)?;
 
     if maxevents <= 0 {
-        return Err(LinuxError::EINVAL);
+        return Err(AxError::InvalidInput);
     }
     let events = events.get_as_mut_slice(maxevents as usize)?;
 
@@ -103,7 +103,7 @@ fn do_epoll_wait(
             .poll(|| epoll.poll_events(events))
         {
             Ok(n) => Ok(n as isize),
-            Err(LinuxError::ETIMEDOUT) => Ok(0),
+            Err(AxError::TimedOut) => Ok(0),
             Err(e) => Err(e),
         },
     )
@@ -116,11 +116,11 @@ pub fn sys_epoll_pwait(
     timeout: i32,
     sigmask: UserConstPtr<SignalSet>,
     sigsetsize: usize,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     let timeout = match timeout {
         -1 => None,
         t if t >= 0 => Some(Duration::from_millis(t as u64)),
-        _ => return Err(LinuxError::EINVAL),
+        _ => return Err(AxError::InvalidInput),
     };
     do_epoll_wait(epfd, events, maxevents, timeout, sigmask, sigsetsize)
 }
@@ -132,7 +132,7 @@ pub fn sys_epoll_pwait2(
     timeout: UserConstPtr<timespec>,
     sigmask: UserConstPtr<SignalSet>,
     sigsetsize: usize,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     let timeout = nullable!(timeout.get_as_ref())?
         .map(|ts| ts.try_into_time_value())
         .transpose()?;

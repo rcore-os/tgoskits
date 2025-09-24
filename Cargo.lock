@@ -355,7 +355,7 @@ dependencies = [
 [[package]]
 name = "axerrno"
 version = "0.1.0"
-source = "git+https://github.com/Starry-OS/axerrno.git?rev=f5d8f86#f5d8f863ea70b85758ffe81be233629dcfe86ec6"
+source = "git+https://github.com/Starry-OS/axerrno.git?rev=58be232#58be2329defe833cd2684d54e3e19a6f077d3ed2"
 dependencies = [
  "log",
 ]
@@ -406,7 +406,7 @@ dependencies = [
 [[package]]
 name = "axfs-ng-vfs"
 version = "0.1.0"
-source = "git+https://github.com/Starry-OS/axfs-ng-vfs.git?rev=efe5ed8#efe5ed8a4061eb8be5267c5b321963403240812c"
+source = "git+https://github.com/Starry-OS/axfs-ng-vfs.git?rev=e3e83d6#e3e83d621094f520602a17ad91223aa9e3ea243e"
 dependencies = [
  "axerrno",
  "axio",
@@ -459,7 +459,7 @@ dependencies = [
 [[package]]
 name = "axio"
 version = "0.1.1"
-source = "git+https://github.com/Starry-OS/axio.git?rev=d1242e2#d1242e2e19e94c19694ff879a22a025341ca1d38"
+source = "git+https://github.com/Starry-OS/axio.git?rev=e11ca75#e11ca75f23189d3a8df7987eafd73015b95fb225"
 dependencies = [
  "axerrno",
  "bitflags 2.9.4",
@@ -2295,7 +2295,7 @@ dependencies = [
 [[package]]
 name = "starry-vm"
 version = "0.1.1"
-source = "git+https://github.com/Starry-OS/starry-vm.git?rev=4177449#41774490a78546d9415bece4dfb720fb35449341"
+source = "git+https://github.com/Starry-OS/starry-vm.git?rev=80a312c#80a312c39bb175392aa7e054e545549c2e6e31ab"
 dependencies = [
  "axerrno",
  "axio",

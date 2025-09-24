@@ -1,6 +1,6 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axhal::time::TimeValue;
 use linux_raw_sys::general::{
     __kernel_old_timespec, __kernel_old_timeval, __kernel_sock_timeval, __kernel_timespec,
@@ -13,7 +13,7 @@ pub trait TimeValueLike {
     fn from_time_value(tv: TimeValue) -> Self;
 
     /// Tries to convert into `TimeValue`.
-    fn try_into_time_value(self) -> LinuxResult<TimeValue>;
+    fn try_into_time_value(self) -> AxResult<TimeValue>;
 }
 
 impl TimeValueLike for TimeValue {
@@ -21,7 +21,7 @@ impl TimeValueLike for TimeValue {
         tv
     }
 
-    fn try_into_time_value(self) -> LinuxResult<TimeValue> {
+    fn try_into_time_value(self) -> AxResult<TimeValue> {
         Ok(self)
     }
 }
@@ -34,9 +34,9 @@ impl TimeValueLike for timespec {
         }
     }
 
-    fn try_into_time_value(self) -> LinuxResult<TimeValue> {
+    fn try_into_time_value(self) -> AxResult<TimeValue> {
         if self.tv_nsec < 0 || self.tv_nsec > 999_999_999 || self.tv_sec < 0 {
-            return Err(LinuxError::EINVAL);
+            return Err(AxError::InvalidInput);
         }
         Ok(TimeValue::new(self.tv_sec as u64, self.tv_nsec as u32))
     }
@@ -50,9 +50,9 @@ impl TimeValueLike for __kernel_timespec {
         }
     }
 
-    fn try_into_time_value(self) -> LinuxResult<TimeValue> {
+    fn try_into_time_value(self) -> AxResult<TimeValue> {
         if self.tv_nsec < 0 || self.tv_nsec > 999_999_999 || self.tv_sec < 0 {
-            return Err(LinuxError::EINVAL);
+            return Err(AxError::InvalidInput);
         }
         Ok(TimeValue::new(self.tv_sec as u64, self.tv_nsec as u32))
     }
@@ -66,9 +66,9 @@ impl TimeValueLike for __kernel_old_timespec {
         }
     }
 
-    fn try_into_time_value(self) -> LinuxResult<TimeValue> {
+    fn try_into_time_value(self) -> AxResult<TimeValue> {
         if self.tv_nsec < 0 || self.tv_nsec > 999_999_999 || self.tv_sec < 0 {
-            return Err(LinuxError::EINVAL);
+            return Err(AxError::InvalidInput);
         }
         Ok(TimeValue::new(self.tv_sec as u64, self.tv_nsec as u32))
     }
@@ -82,9 +82,9 @@ impl TimeValueLike for timeval {
         }
     }
 
-    fn try_into_time_value(self) -> LinuxResult<TimeValue> {
+    fn try_into_time_value(self) -> AxResult<TimeValue> {
         if self.tv_usec < 0 || self.tv_usec > 999_999 || self.tv_sec < 0 {
-            return Err(LinuxError::EINVAL);
+            return Err(AxError::InvalidInput);
         }
         Ok(TimeValue::new(
             self.tv_sec as u64,
@@ -101,9 +101,9 @@ impl TimeValueLike for __kernel_old_timeval {
         }
     }
 
-    fn try_into_time_value(self) -> LinuxResult<TimeValue> {
+    fn try_into_time_value(self) -> AxResult<TimeValue> {
         if self.tv_usec < 0 || self.tv_usec > 999_999 || self.tv_sec < 0 {
-            return Err(LinuxError::EINVAL);
+            return Err(AxError::InvalidInput);
         }
         Ok(TimeValue::new(
             self.tv_sec as u64,
@@ -120,9 +120,9 @@ impl TimeValueLike for __kernel_sock_timeval {
         }
     }
 
-    fn try_into_time_value(self) -> LinuxResult<TimeValue> {
+    fn try_into_time_value(self) -> AxResult<TimeValue> {
         if self.tv_usec < 0 || self.tv_usec > 999_999 || self.tv_sec < 0 {
-            return Err(LinuxError::EINVAL);
+            return Err(AxError::InvalidInput);
         }
         Ok(TimeValue::new(
             self.tv_sec as u64,

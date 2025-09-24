@@ -5,7 +5,7 @@ use core::{
     time::Duration,
 };
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axfs_ng::{FS_CONTEXT, FsContext};
 use axfs_ng_vfs::{MetadataUpdate, NodePermission, NodeType, path::Path};
 use axhal::time::wall_time;
@@ -25,13 +25,13 @@ use crate::{
 
 /// The ioctl() system call manipulates the underlying device parameters
 /// of special files.
-pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> LinuxResult<isize> {
+pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
     debug!("sys_ioctl <= fd: {}, cmd: {}, arg: {}", fd, cmd, arg);
     let f = get_file_like(fd)?;
     if cmd == FIONBIO {
         let val = (arg as *const u8).vm_read()?;
         if val != 0 && val != 1 {
-            return Err(LinuxError::EINVAL);
+            return Err(AxError::InvalidInput);
         }
         f.set_nonblocking(val != 0)?;
         return Ok(0);
@@ -39,7 +39,7 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> LinuxResult<isize> {
     f.ioctl(cmd, arg)
         .map(|result| result as isize)
         .inspect_err(|err| {
-            if *err == LinuxError::ENOTTY {
+            if *err == AxError::BadIoctl {
                 // glibc likes to call TIOCGWINSZ on non-terminal files, just
                 // ignore it
                 if cmd == TIOCGWINSZ {
@@ -50,7 +50,7 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> LinuxResult<isize> {
         })
 }
 
-pub fn sys_chdir(path: *const c_char) -> LinuxResult<isize> {
+pub fn sys_chdir(path: *const c_char) -> AxResult<isize> {
     let path = vm_load_string(path)?;
     debug!("sys_chdir <= path: {}", path);
 
@@ -60,7 +60,7 @@ pub fn sys_chdir(path: *const c_char) -> LinuxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_fchdir(dirfd: i32) -> LinuxResult<isize> {
+pub fn sys_fchdir(dirfd: i32) -> AxResult<isize> {
     debug!("sys_fchdir <= dirfd: {}", dirfd);
 
     let entry = with_fs(dirfd, |fs| Ok(fs.current_dir().clone()))?;
@@ -69,24 +69,24 @@ pub fn sys_fchdir(dirfd: i32) -> LinuxResult<isize> {
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_mkdir(path: *const c_char, mode: u32) -> LinuxResult<isize> {
+pub fn sys_mkdir(path: *const c_char, mode: u32) -> AxResult<isize> {
     sys_mkdirat(AT_FDCWD, path, mode)
 }
 
-pub fn sys_chroot(path: *const c_char) -> LinuxResult<isize> {
+pub fn sys_chroot(path: *const c_char) -> AxResult<isize> {
     let path = vm_load_string(path)?;
     debug!("sys_chroot <= path: {}", path);
 
     let mut fs = FS_CONTEXT.lock();
     let loc = fs.resolve(path)?;
     if loc.node_type() != NodeType::Directory {
-        return Err(LinuxError::ENOTDIR);
+        return Err(AxError::NotADirectory);
     }
     *fs = FsContext::new(loc);
     Ok(0)
 }
 
-pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> LinuxResult<isize> {
+pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize> {
     let path = vm_load_string(path)?;
     debug!(
         "sys_mkdirat <= dirfd: {}, path: {}, mode: {}",
@@ -151,7 +151,7 @@ impl DirBuffer {
     }
 }
 
-pub fn sys_getdents64(fd: i32, buf: *mut u8, len: usize) -> LinuxResult<isize> {
+pub fn sys_getdents64(fd: i32, buf: *mut u8, len: usize) -> AxResult<isize> {
     debug!("sys_getdents64 <= fd: {}, buf: {:?}, len: {}", fd, buf, len);
 
     let mut buffer = DirBuffer::new(len);
@@ -172,7 +172,7 @@ pub fn sys_getdents64(fd: i32, buf: *mut u8, len: usize) -> LinuxResult<isize> {
         })?;
 
     if has_remaining && buffer.offset == 0 {
-        return Err(LinuxError::EINVAL);
+        return Err(AxError::InvalidInput);
     }
 
     vm_write_slice(buf, &buffer.buf)?;
@@ -191,7 +191,7 @@ pub fn sys_linkat(
     new_dirfd: c_int,
     new_path: *const c_char,
     flags: u32,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     let old_path = old_path.nullable().map(vm_load_string).transpose()?;
     let new_path = vm_load_string(new_path)?;
     debug!(
@@ -205,9 +205,9 @@ pub fn sys_linkat(
 
     let old = resolve_at(old_dirfd, old_path.as_deref(), flags)?
         .into_file()
-        .ok_or(LinuxError::EBADF)?;
+        .ok_or(AxError::BadFileDescriptor)?;
     if old.is_dir() {
-        return Err(LinuxError::EPERM);
+        return Err(AxError::OperationNotPermitted);
     }
     let (new_dir, new_name) =
         with_fs(new_dirfd, |fs| fs.resolve_nonexistent(Path::new(&new_path)))?;
@@ -217,7 +217,7 @@ pub fn sys_linkat(
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_link(old_path: *const c_char, new_path: *const c_char) -> LinuxResult<isize> {
+pub fn sys_link(old_path: *const c_char, new_path: *const c_char) -> AxResult<isize> {
     sys_linkat(AT_FDCWD, old_path, AT_FDCWD, new_path, 0)
 }
 
@@ -226,7 +226,7 @@ pub fn sys_link(old_path: *const c_char, new_path: *const c_char) -> LinuxResult
 /// path: the name of link to be removed
 /// flags: can be 0 or AT_REMOVEDIR
 /// return 0 when success, else return -1
-pub fn sys_unlinkat(dirfd: i32, path: *const c_char, flags: usize) -> LinuxResult<isize> {
+pub fn sys_unlinkat(dirfd: i32, path: *const c_char, flags: usize) -> AxResult<isize> {
     let path = vm_load_string(path)?;
 
     debug!(
@@ -245,17 +245,17 @@ pub fn sys_unlinkat(dirfd: i32, path: *const c_char, flags: usize) -> LinuxResul
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_rmdir(path: *const c_char) -> LinuxResult<isize> {
+pub fn sys_rmdir(path: *const c_char) -> AxResult<isize> {
     sys_unlinkat(AT_FDCWD, path, AT_REMOVEDIR as _)
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_unlink(path: *const c_char) -> LinuxResult<isize> {
+pub fn sys_unlink(path: *const c_char) -> AxResult<isize> {
     sys_unlinkat(AT_FDCWD, path, 0)
 }
 
-pub fn sys_getcwd(buf: *mut u8, size: isize) -> LinuxResult<isize> {
-    let size: usize = size.try_into().map_err(|_| LinuxError::EFAULT)?;
+pub fn sys_getcwd(buf: *mut u8, size: isize) -> AxResult<isize> {
+    let size: usize = size.try_into().map_err(|_| AxError::BadAddress)?;
     if buf.is_null() {
         return Ok(0);
     }
@@ -263,7 +263,7 @@ pub fn sys_getcwd(buf: *mut u8, size: isize) -> LinuxResult<isize> {
     let cwd = FS_CONTEXT.lock().current_dir().absolute_path()?;
     debug!("sys_getcwd => cwd: {}", cwd);
 
-    let cwd = CString::new(cwd.as_str()).map_err(|_| LinuxError::EINVAL)?;
+    let cwd = CString::new(cwd.as_str()).map_err(|_| AxError::InvalidInput)?;
     let cwd = cwd.as_bytes_with_nul();
 
     if cwd.len() <= size {
@@ -271,12 +271,12 @@ pub fn sys_getcwd(buf: *mut u8, size: isize) -> LinuxResult<isize> {
         // FIXME: it is said that this should return 0
         Ok(buf.as_ptr() as _)
     } else {
-        Err(LinuxError::ERANGE)
+        Err(AxError::OutOfRange)
     }
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_symlink(target: *const c_char, linkpath: *const c_char) -> LinuxResult<isize> {
+pub fn sys_symlink(target: *const c_char, linkpath: *const c_char) -> AxResult<isize> {
     sys_symlinkat(target, AT_FDCWD, linkpath)
 }
 
@@ -284,7 +284,7 @@ pub fn sys_symlinkat(
     target: *const c_char,
     new_dirfd: i32,
     linkpath: *const c_char,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     let target = vm_load_string(target)?;
     let linkpath = vm_load_string(linkpath)?;
     debug!(
@@ -299,7 +299,7 @@ pub fn sys_symlinkat(
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_readlink(path: *const c_char, buf: *mut u8, size: usize) -> LinuxResult<isize> {
+pub fn sys_readlink(path: *const c_char, buf: *mut u8, size: usize) -> AxResult<isize> {
     sys_readlinkat(AT_FDCWD, path, buf, size)
 }
 
@@ -308,7 +308,7 @@ pub fn sys_readlinkat(
     path: *const c_char,
     buf: *mut u8,
     size: usize,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     let path = vm_load_string(path)?;
 
     debug!("sys_readlinkat <= dirfd: {}, path: {:?}", dirfd, path);
@@ -323,17 +323,17 @@ pub fn sys_readlinkat(
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_chown(path: *const c_char, uid: u32, gid: u32) -> LinuxResult<isize> {
+pub fn sys_chown(path: *const c_char, uid: u32, gid: u32) -> AxResult<isize> {
     sys_fchownat(AT_FDCWD, path, uid, gid, 0)
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_lchown(path: *const c_char, uid: u32, gid: u32) -> LinuxResult<isize> {
+pub fn sys_lchown(path: *const c_char, uid: u32, gid: u32) -> AxResult<isize> {
     use linux_raw_sys::general::AT_SYMLINK_NOFOLLOW;
     sys_fchownat(AT_FDCWD, path, uid, gid, AT_SYMLINK_NOFOLLOW)
 }
 
-pub fn sys_fchown(fd: i32, uid: i32, gid: i32) -> LinuxResult<isize> {
+pub fn sys_fchown(fd: i32, uid: i32, gid: i32) -> AxResult<isize> {
     sys_fchownat(fd, core::ptr::null(), uid, gid, AT_EMPTY_PATH)
 }
 
@@ -343,11 +343,11 @@ pub fn sys_fchownat(
     uid: i32,
     gid: i32,
     flags: u32,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     let path = path.nullable().map(vm_load_string).transpose()?;
     let loc = resolve_at(dirfd, path.as_deref(), flags)?
         .into_file()
-        .ok_or(LinuxError::EBADF)?;
+        .ok_or(AxError::BadFileDescriptor)?;
     let meta = loc.metadata()?;
 
     let mut mode = meta.mode;
@@ -369,19 +369,19 @@ pub fn sys_fchownat(
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_chmod(path: *const c_char, mode: u32) -> LinuxResult<isize> {
+pub fn sys_chmod(path: *const c_char, mode: u32) -> AxResult<isize> {
     sys_fchmodat(AT_FDCWD, path, mode, 0)
 }
 
-pub fn sys_fchmod(fd: i32, mode: u32) -> LinuxResult<isize> {
+pub fn sys_fchmod(fd: i32, mode: u32) -> AxResult<isize> {
     sys_fchmodat(fd, core::ptr::null(), mode, AT_EMPTY_PATH)
 }
 
-pub fn sys_fchmodat(dirfd: i32, path: *const c_char, mode: u32, flags: u32) -> LinuxResult<isize> {
+pub fn sys_fchmodat(dirfd: i32, path: *const c_char, mode: u32, flags: u32) -> AxResult<isize> {
     let path = path.nullable().map(vm_load_string).transpose()?;
     resolve_at(dirfd, path.as_deref(), flags)?
         .into_file()
-        .ok_or(LinuxError::EBADF)?
+        .ok_or(AxError::BadFileDescriptor)?
         .update_metadata(MetadataUpdate {
             mode: Some(NodePermission::from_bits_truncate(mode as u16)),
             ..Default::default()
@@ -395,11 +395,11 @@ fn update_times(
     atime: Option<Duration>,
     mtime: Option<Duration>,
     flags: u32,
-) -> LinuxResult<()> {
+) -> AxResult<()> {
     let path = path.nullable().map(vm_load_string).transpose()?;
     resolve_at(dirfd, path.as_deref(), flags)?
         .into_file()
-        .ok_or(LinuxError::EBADF)?
+        .ok_or(AxError::BadFileDescriptor)?
         .update_metadata(MetadataUpdate {
             atime,
             mtime,
@@ -417,7 +417,7 @@ pub struct utimbuf {
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_utime(path: *const c_char, times: *const utimbuf) -> LinuxResult<isize> {
+pub fn sys_utime(path: *const c_char, times: *const utimbuf) -> AxResult<isize> {
     let (atime, mtime) = if let Some(times) = times.nullable() {
         // FIXME: AnyBitPattern
         let times = unsafe { times.vm_read_uninit()?.assume_init() };
@@ -437,7 +437,7 @@ pub fn sys_utime(path: *const c_char, times: *const utimbuf) -> LinuxResult<isiz
 pub fn sys_utimes(
     path: *const c_char,
     times: *const [linux_raw_sys::general::timeval; 2],
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     let (atime, mtime) = if let Some(times) = times.nullable() {
         // FIXME: AnyBitPattern
         let [atime, mtime] = unsafe { times.vm_read_uninit()?.assume_init() };
@@ -455,11 +455,11 @@ pub fn sys_utimensat(
     path: *const c_char,
     times: *const [timespec; 2],
     mut flags: u32,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     if path.is_null() {
         flags |= AT_EMPTY_PATH;
     }
-    fn utime_to_duration(time: &timespec) -> Option<LinuxResult<Duration>> {
+    fn utime_to_duration(time: &timespec) -> Option<AxResult<Duration>> {
         match time.tv_nsec {
             val if val == UTIME_OMIT as _ => None,
             val if val == UTIME_NOW as _ => Some(Ok(wall_time())),
@@ -487,7 +487,7 @@ pub fn sys_utimensat(
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_rename(old_path: *const c_char, new_path: *const c_char) -> LinuxResult<isize> {
+pub fn sys_rename(old_path: *const c_char, new_path: *const c_char) -> AxResult<isize> {
     sys_renameat(AT_FDCWD, old_path, AT_FDCWD, new_path)
 }
 
@@ -496,7 +496,7 @@ pub fn sys_renameat(
     old_path: *const c_char,
     new_dirfd: i32,
     new_path: *const c_char,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     sys_renameat2(old_dirfd, old_path, new_dirfd, new_path, 0)
 }
 
@@ -506,7 +506,7 @@ pub fn sys_renameat2(
     new_dirfd: i32,
     new_path: *const c_char,
     flags: u32,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     let old_path = vm_load_string(old_path)?;
     let new_path = vm_load_string(new_path)?;
     debug!(
@@ -522,12 +522,12 @@ pub fn sys_renameat2(
     Ok(0)
 }
 
-pub fn sys_sync() -> LinuxResult<isize> {
+pub fn sys_sync() -> AxResult<isize> {
     warn!("dummy sys_sync");
     Ok(0)
 }
 
-pub fn sys_syncfs(_fd: i32) -> LinuxResult<isize> {
+pub fn sys_syncfs(_fd: i32) -> AxResult<isize> {
     warn!("dummy sys_syncfs");
     Ok(0)
 }

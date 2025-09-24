@@ -6,7 +6,7 @@ use core::{
     task::{Context, Poll, Waker},
 };
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axio::{IoEvents, PollSet, Pollable};
 use axtask::future::{Poller, block_on};
 use linux_raw_sys::general::{
@@ -324,14 +324,14 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         }
     }
 
-    pub fn read(&mut self, buf: &mut [u8]) -> LinuxResult<usize> {
+    pub fn read(&mut self, buf: &mut [u8]) -> AxResult<usize> {
         if buf.is_empty() {
             return Ok(0);
         }
         if matches!(self.processor, Processor::None(_, _)) {
             let read = self.buf_rx.pop_slice(buf);
             return if read == 0 {
-                Err(LinuxError::EAGAIN)
+                Err(AxError::WouldBlock)
             } else {
                 Ok(read)
             };
@@ -349,7 +349,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         };
 
         if buf.len() < vmin as usize {
-            return Err(LinuxError::EAGAIN);
+            return Err(AxError::WouldBlock);
         }
 
         let mut total_read = 0;
@@ -364,7 +364,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             self.poll_tx.wake();
             (total_read >= vmin)
                 .then_some(total_read)
-                .ok_or(LinuxError::EAGAIN)
+                .ok_or(AxError::WouldBlock)
         })
     }
 }

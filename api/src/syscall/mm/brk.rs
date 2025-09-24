@@ -1,8 +1,8 @@
-use axerrno::LinuxResult;
+use axerrno::AxResult;
 use axtask::current;
 use starry_core::task::AsThread;
 
-pub fn sys_brk(addr: usize) -> LinuxResult<isize> {
+pub fn sys_brk(addr: usize) -> AxResult<isize> {
     let curr = current();
     let proc_data = &curr.as_thread().proc_data;
     let mut return_val: isize = proc_data.get_heap_top() as isize;

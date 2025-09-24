@@ -2,7 +2,7 @@
 
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axhal::{paging::MappingFlags, time::monotonic_time_nanos};
 use axmm::backend::SharedPages;
 use axsync::Mutex;
@@ -120,11 +120,11 @@ impl ShmInner {
         size: usize,
         mapping_flags: MappingFlags,
         pid: Pid,
-    ) -> LinuxResult<isize> {
+    ) -> AxResult<isize> {
         if size as __kernel_size_t != self.shmid_ds.shm_segsz
             || mapping_flags.bits() as __kernel_mode_t != self.shmid_ds.shm_perm.mode
         {
-            return Err(LinuxError::EINVAL);
+            return Err(AxError::InvalidInput);
         }
         self.shmid_ds.shm_lpid = pid as i32;
         Ok(self.shmid as isize)

@@ -5,7 +5,7 @@ use core::{any::Any, task::Context, time::Duration};
 use axdriver::prelude::{
     AxInputDevice, BaseDriverOps, DevError, Event, EventType, InputDeviceId, InputDriverOps,
 };
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axfs_ng_vfs::{DeviceId, NodeFlags, NodeType, VfsResult};
 use axhal::time::wall_time;
 use axio::{IoEvents, Pollable};
@@ -92,12 +92,12 @@ impl EventDev {
         }
     }
 
-    fn get_event_bits(&self, arg: usize, size: usize, ty: u8) -> LinuxResult<usize> {
+    fn get_event_bits(&self, arg: usize, size: usize, ty: u8) -> AxResult<usize> {
         let bits = UserPtr::<u8>::from(arg).get_as_mut_slice(size)?;
         if ty == 0 {
             Ok(copy_bytes(self.ev_bits.as_bytes(), bits))
         } else {
-            let ty = EventType::from_repr(ty).ok_or(LinuxError::EINVAL)?;
+            let ty = EventType::from_repr(ty).ok_or(AxError::InvalidInput)?;
             match self.inner.lock().device.get_event_bits(ty, bits) {
                 Ok(true) => {}
                 Ok(false) => {
@@ -118,11 +118,11 @@ fn copy_bytes(src: &[u8], dst: &mut [u8]) -> usize {
     len
 }
 
-fn return_str(arg: usize, size: usize, s: &str) -> LinuxResult<usize> {
+fn return_str(arg: usize, size: usize, s: &str) -> AxResult<usize> {
     let slice = UserPtr::<u8>::from(arg).get_as_mut_slice(size)?;
     Ok(copy_bytes(s.as_bytes(), slice))
 }
-fn return_zero_bits(arg: usize, size: usize, bits: usize) -> LinuxResult<usize> {
+fn return_zero_bits(arg: usize, size: usize, bits: usize) -> AxResult<usize> {
     let slice = UserPtr::<u8>::from(arg).get_as_mut_slice(size)?;
     let len = bits.div_ceil(8).min(slice.len());
     slice[..len].fill(0);
@@ -157,7 +157,7 @@ impl DeviceOps for EventDev {
             return Ok(0);
         }
         if buf.len() < size_of::<InputEvent>() {
-            return Err(LinuxError::EINVAL);
+            return Err(AxError::InvalidInput);
         }
         let mut read = 0;
         let mut inner = self.inner.lock();
@@ -181,14 +181,14 @@ impl DeviceOps for EventDev {
             read += out.len();
         }
         if read == 0 {
-            Err(LinuxError::EAGAIN)
+            Err(AxError::WouldBlock)
         } else {
             Ok(read)
         }
     }
 
     fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
-        Err(LinuxError::EINVAL)
+        Err(AxError::InvalidInput)
     }
 
     fn flags(&self) -> NodeFlags {
@@ -228,12 +228,12 @@ impl DeviceOps for EventDev {
 
                 if ty != b'E' {
                     warn!("unknown ioctl for evdev: {} {}", cmd, arg);
-                    return Err(LinuxError::EINVAL);
+                    return Err(AxError::InvalidInput);
                 }
 
                 match dir {
                     // IOC_WRITE
-                    1 => return Err(LinuxError::EINVAL),
+                    1 => return Err(AxError::InvalidInput),
                     // IOC_READ
                     2 => {
                         #[allow(clippy::single_match)]
@@ -294,12 +294,12 @@ impl DeviceOps for EventDev {
                             // TODO: abs info
                             return Ok(0);
                         }
-                        return Err(LinuxError::EINVAL);
+                        return Err(AxError::InvalidInput);
                     }
                     _ => {}
                 }
 
-                Err(LinuxError::EINVAL)
+                Err(AxError::InvalidInput)
             }
         }
     }

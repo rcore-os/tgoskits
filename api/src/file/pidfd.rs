@@ -4,7 +4,7 @@ use alloc::{
 };
 use core::task::Context;
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axio::{IoEvents, PollSet, Pollable};
 use starry_core::task::ProcessData;
 
@@ -22,20 +22,20 @@ impl PidFd {
         }
     }
 
-    pub fn process_data(&self) -> LinuxResult<Arc<ProcessData>> {
-        self.proc_data.upgrade().ok_or(LinuxError::ESRCH)
+    pub fn process_data(&self) -> AxResult<Arc<ProcessData>> {
+        self.proc_data.upgrade().ok_or(AxError::NoSuchProcess)
     }
 }
 impl FileLike for PidFd {
-    fn read(&self, _dst: &mut SealedBufMut) -> LinuxResult<usize> {
-        Err(LinuxError::EINVAL)
+    fn read(&self, _dst: &mut SealedBufMut) -> AxResult<usize> {
+        Err(AxError::InvalidInput)
     }
 
-    fn write(&self, _src: &mut SealedBuf) -> LinuxResult<usize> {
-        Err(LinuxError::EINVAL)
+    fn write(&self, _src: &mut SealedBuf) -> AxResult<usize> {
+        Err(AxError::InvalidInput)
     }
 
-    fn stat(&self) -> LinuxResult<Kstat> {
+    fn stat(&self) -> AxResult<Kstat> {
         Ok(Kstat::default())
     }
 

@@ -1,7 +1,7 @@
 use alloc::sync::{Arc, Weak};
 use core::task::Context;
 
-use axerrno::{LinuxResult, bail};
+use axerrno::{AxResult, ax_bail};
 use axio::{IoEvents, PollSet, Pollable};
 use axtask::current;
 use kspin::SpinNoIrq;
@@ -40,7 +40,7 @@ impl JobControl {
         self.foreground.lock().upgrade()
     }
 
-    pub fn set_foreground(&self, pg: &Arc<ProcessGroup>) -> LinuxResult<()> {
+    pub fn set_foreground(&self, pg: &Arc<ProcessGroup>) -> AxResult<()> {
         let mut guard = self.foreground.lock();
         let weak = Arc::downgrade(pg);
         if Weak::ptr_eq(&weak, &*guard) {
@@ -48,10 +48,10 @@ impl JobControl {
         }
 
         let Some(session) = self.session.lock().upgrade() else {
-            bail!(EPERM, "No session associated with job control");
+            ax_bail!(OperationNotPermitted, "No session associated with job control");
         };
         if !Arc::ptr_eq(&pg.session(), &session) {
-            bail!(EPERM, "Process group does not belong to the session");
+            ax_bail!(OperationNotPermitted, "Process group does not belong to the session");
         }
 
         *guard = weak;

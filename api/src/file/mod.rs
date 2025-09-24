@@ -8,7 +8,7 @@ mod pipe;
 use alloc::{borrow::Cow, sync::Arc};
 use core::{any::Any, ffi::c_int, time::Duration};
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axfs_ng::{FS_CONTEXT, OpenOptions};
 use axfs_ng_vfs::DeviceId;
 use axio::{Buf, BufMut, Pollable, Read, Write};
@@ -151,7 +151,7 @@ impl<'a> From<IoVectorBufIo> for SealedBuf<'a> {
 
 #[inherit_methods]
 impl Read for SealedBuf<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> LinuxResult<usize> {
+    fn read(&mut self, buf: &mut [u8]) -> AxResult<usize> {
         match self {
             SealedBuf::Slice(slice) => slice.read(buf),
             SealedBuf::Bytes(bytes) => bytes.read(buf),
@@ -169,7 +169,7 @@ impl Buf for SealedBuf<'_> {
         }
     }
 
-    fn consume(&mut self, f: impl FnMut(&[u8]) -> LinuxResult<usize>) -> LinuxResult<usize> {
+    fn consume(&mut self, f: impl FnMut(&[u8]) -> AxResult<usize>) -> AxResult<usize> {
         match self {
             SealedBuf::Slice(slice) => slice.consume(f),
             SealedBuf::Bytes(bytes) => bytes.consume(f),
@@ -203,7 +203,7 @@ impl<'a> From<IoVectorBufIo> for SealedBufMut<'a> {
 }
 
 impl Write for SealedBufMut<'_> {
-    fn write(&mut self, buf: &[u8]) -> LinuxResult<usize> {
+    fn write(&mut self, buf: &[u8]) -> AxResult<usize> {
         match self {
             SealedBufMut::Slice(slice) => slice.write(buf),
             SealedBufMut::Bytes(bytes) => bytes.write(buf),
@@ -211,7 +211,7 @@ impl Write for SealedBufMut<'_> {
         }
     }
 
-    fn flush(&mut self) -> LinuxResult<()> {
+    fn flush(&mut self) -> AxResult<()> {
         match self {
             SealedBufMut::Slice(slice) => slice.flush(),
             SealedBufMut::Bytes(bytes) => bytes.flush(),
@@ -229,7 +229,7 @@ impl BufMut for SealedBufMut<'_> {
         }
     }
 
-    fn fill(&mut self, f: impl FnMut(&mut [u8]) -> LinuxResult<usize>) -> LinuxResult<usize> {
+    fn fill(&mut self, f: impl FnMut(&mut [u8]) -> AxResult<usize>) -> AxResult<usize> {
         match self {
             SealedBufMut::Slice(slice) => slice.fill(f),
             SealedBufMut::Bytes(bytes) => bytes.fill(f),
@@ -240,34 +240,34 @@ impl BufMut for SealedBufMut<'_> {
 
 #[allow(dead_code)]
 pub trait FileLike: Pollable + Send + Sync {
-    fn read(&self, dst: &mut SealedBufMut) -> LinuxResult<usize>;
-    fn write(&self, src: &mut SealedBuf) -> LinuxResult<usize>;
-    fn stat(&self) -> LinuxResult<Kstat>;
+    fn read(&self, dst: &mut SealedBufMut) -> AxResult<usize>;
+    fn write(&self, src: &mut SealedBuf) -> AxResult<usize>;
+    fn stat(&self) -> AxResult<Kstat>;
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync>;
     fn path(&self) -> Cow<str>;
-    fn ioctl(&self, _cmd: u32, _arg: usize) -> LinuxResult<usize> {
-        Err(LinuxError::ENOTTY)
+    fn ioctl(&self, _cmd: u32, _arg: usize) -> AxResult<usize> {
+        Err(AxError::BadIoctl)
     }
 
     fn nonblocking(&self) -> bool {
         false
     }
 
-    fn set_nonblocking(&self, _nonblocking: bool) -> LinuxResult {
+    fn set_nonblocking(&self, _nonblocking: bool) -> AxResult {
         Ok(())
     }
 
-    fn from_fd(fd: c_int) -> LinuxResult<Arc<Self>>
+    fn from_fd(fd: c_int) -> AxResult<Arc<Self>>
     where
         Self: Sized + 'static,
     {
         get_file_like(fd)?
             .into_any()
             .downcast::<Self>()
-            .map_err(|_| LinuxError::EINVAL)
+            .map_err(|_| AxError::InvalidInput)
     }
 
-    fn add_to_fd_table(self, cloexec: bool) -> LinuxResult<c_int>
+    fn add_to_fd_table(self, cloexec: bool) -> AxResult<c_int>
     where
         Self: Sized + 'static,
     {
@@ -287,40 +287,40 @@ scope_local::scope_local! {
 }
 
 /// Get a file-like object by `fd`.
-pub fn get_file_like(fd: c_int) -> LinuxResult<Arc<dyn FileLike>> {
+pub fn get_file_like(fd: c_int) -> AxResult<Arc<dyn FileLike>> {
     FD_TABLE
         .read()
         .get(fd as usize)
         .map(|fd| fd.inner.clone())
-        .ok_or(LinuxError::EBADF)
+        .ok_or(AxError::BadFileDescriptor)
 }
 
 /// Add a file to the file descriptor table.
-pub fn add_file_like(f: Arc<dyn FileLike>, cloexec: bool) -> LinuxResult<c_int> {
+pub fn add_file_like(f: Arc<dyn FileLike>, cloexec: bool) -> AxResult<c_int> {
     let max_nofile = current().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current;
     let mut table = FD_TABLE.write();
     if table.count() as u64 >= max_nofile {
-        return Err(LinuxError::EMFILE);
+        return Err(AxError::TooManyOpenFiles);
     }
     let fd = FileDescriptor { inner: f, cloexec };
-    Ok(table.add(fd).map_err(|_| LinuxError::EMFILE)? as c_int)
+    Ok(table.add(fd).map_err(|_| AxError::TooManyOpenFiles)? as c_int)
 }
 
 /// Close a file by `fd`.
-pub fn close_file_like(fd: c_int) -> LinuxResult {
+pub fn close_file_like(fd: c_int) -> AxResult {
     let f = FD_TABLE
         .write()
         .remove(fd as usize)
-        .ok_or(LinuxError::EBADF)?;
+        .ok_or(AxError::BadFileDescriptor)?;
     debug!("close_file_like <= count: {}", Arc::strong_count(&f.inner));
     Ok(())
 }
 
-pub fn add_stdio(fd_table: &mut FlattenObjects<FileDescriptor, AX_FILE_LIMIT>) -> LinuxResult<()> {
+pub fn add_stdio(fd_table: &mut FlattenObjects<FileDescriptor, AX_FILE_LIMIT>) -> AxResult<()> {
     assert_eq!(fd_table.count(), 0);
     let cx = FS_CONTEXT.lock();
     let open = |options: &mut OpenOptions| {
-        LinuxResult::Ok(Arc::new(File::new(
+        AxResult::Ok(Arc::new(File::new(
             options.open(&cx, "/dev/console")?.into_file()?,
         )))
     };
@@ -332,19 +332,19 @@ pub fn add_stdio(fd_table: &mut FlattenObjects<FileDescriptor, AX_FILE_LIMIT>) -
             inner: tty_in,
             cloexec: false,
         })
-        .map_err(|_| LinuxError::EMFILE)?;
+        .map_err(|_| AxError::TooManyOpenFiles)?;
     fd_table
         .add(FileDescriptor {
             inner: tty_out.clone(),
             cloexec: false,
         })
-        .map_err(|_| LinuxError::EMFILE)?;
+        .map_err(|_| AxError::TooManyOpenFiles)?;
     fd_table
         .add(FileDescriptor {
             inner: tty_out,
             cloexec: false,
         })
-        .map_err(|_| LinuxError::EMFILE)?;
+        .map_err(|_| AxError::TooManyOpenFiles)?;
 
     Ok(())
 }

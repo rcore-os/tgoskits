@@ -53,7 +53,7 @@ impl DeviceOps for Rtc {
                     tm_isdst: 0,
                 })?;
             }
-            _ => return Err(VfsError::ENOTTY),
+            _ => return Err(VfsError::BadIoctl),
         }
         Ok(0)
     }

@@ -1,7 +1,7 @@
 use alloc::vec;
 use core::ffi::c_char;
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axfs_ng::FS_CONTEXT;
 use linux_raw_sys::{
     general::{GRND_INSECURE, GRND_NONBLOCK, GRND_RANDOM},
@@ -10,42 +10,42 @@ use linux_raw_sys::{
 use starry_core::task::processes;
 use starry_vm::{VmMutPtr, vm_write_slice};
 
-pub fn sys_getuid() -> LinuxResult<isize> {
+pub fn sys_getuid() -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_geteuid() -> LinuxResult<isize> {
+pub fn sys_geteuid() -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_getgid() -> LinuxResult<isize> {
+pub fn sys_getgid() -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_getegid() -> LinuxResult<isize> {
+pub fn sys_getegid() -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_setuid(_uid: u32) -> LinuxResult<isize> {
+pub fn sys_setuid(_uid: u32) -> AxResult<isize> {
     debug!("sys_setuid <= uid: {}", _uid);
     Ok(0)
 }
 
-pub fn sys_setgid(_gid: u32) -> LinuxResult<isize> {
+pub fn sys_setgid(_gid: u32) -> AxResult<isize> {
     debug!("sys_setgid <= gid: {}", _gid);
     Ok(0)
 }
 
-pub fn sys_getgroups(size: usize, list: *mut u32) -> LinuxResult<isize> {
+pub fn sys_getgroups(size: usize, list: *mut u32) -> AxResult<isize> {
     debug!("sys_getgroups <= size: {}", size);
     if size < 1 {
-        return Err(LinuxError::EINVAL);
+        return Err(AxError::InvalidInput);
     }
     vm_write_slice(list, &[0])?;
     Ok(1)
 }
 
-pub fn sys_setgroups(_size: usize, _list: *const u32) -> LinuxResult<isize> {
+pub fn sys_setgroups(_size: usize, _list: *const u32) -> AxResult<isize> {
     Ok(0)
 }
 
@@ -68,12 +68,12 @@ const UTSNAME: new_utsname = new_utsname {
     domainname: pad_str("https://github.com/Starry-OS/StarryOS"),
 };
 
-pub fn sys_uname(name: *mut new_utsname) -> LinuxResult<isize> {
+pub fn sys_uname(name: *mut new_utsname) -> AxResult<isize> {
     name.vm_write(UTSNAME)?;
     Ok(0)
 }
 
-pub fn sys_sysinfo(info: *mut sysinfo) -> LinuxResult<isize> {
+pub fn sys_sysinfo(info: *mut sysinfo) -> AxResult<isize> {
     // FIXME: Zeroable
     let mut kinfo: sysinfo = unsafe { core::mem::zeroed() };
     kinfo.procs = processes().len() as _;
@@ -82,7 +82,7 @@ pub fn sys_sysinfo(info: *mut sysinfo) -> LinuxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_syslog(_type: i32, _buf: *mut c_char, _len: usize) -> LinuxResult<isize> {
+pub fn sys_syslog(_type: i32, _buf: *mut c_char, _len: usize) -> AxResult<isize> {
     Ok(0)
 }
 
@@ -95,7 +95,7 @@ bitflags::bitflags! {
     }
 }
 
-pub fn sys_getrandom(buf: *mut u8, len: usize, flags: u32) -> LinuxResult<isize> {
+pub fn sys_getrandom(buf: *mut u8, len: usize, flags: u32) -> AxResult<isize> {
     if len == 0 {
         return Ok(0);
     }
@@ -121,13 +121,13 @@ pub fn sys_getrandom(buf: *mut u8, len: usize, flags: u32) -> LinuxResult<isize>
     Ok(len as _)
 }
 
-pub fn sys_seccomp(_op: u32, _flags: u32, _args: *const ()) -> LinuxResult<isize> {
+pub fn sys_seccomp(_op: u32, _flags: u32, _args: *const ()) -> AxResult<isize> {
     warn!("dummy sys_seccomp");
     Ok(0)
 }
 
 #[cfg(target_arch = "riscv64")]
-pub fn sys_riscv_flush_icache() -> LinuxResult<isize> {
+pub fn sys_riscv_flush_icache() -> AxResult<isize> {
     riscv::asm::fence_i();
     Ok(0)
 }

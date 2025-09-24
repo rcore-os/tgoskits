@@ -13,7 +13,7 @@ use core::{
     time::Duration,
 };
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axmm::{
     AddrSpace,
     backend::{Backend, SharedPages},
@@ -50,7 +50,7 @@ impl WaitQueue {
         bitset: u32,
         timeout: Option<Duration>,
         condition: impl FnOnce() -> bool,
-    ) -> LinuxResult<bool> {
+    ) -> AxResult<bool> {
         let mut condition = Some(condition);
         block_on_interruptible(
             timeout_opt(
@@ -69,7 +69,7 @@ impl WaitQueue {
                 }),
                 timeout,
             )
-            .map(|opt| opt.ok_or(LinuxError::ETIMEDOUT)?),
+            .map(|opt| opt.ok_or(AxError::TimedOut)?),
         )
     }
 

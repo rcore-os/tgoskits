@@ -5,7 +5,7 @@ use core::{
     ops::{Deref, DerefMut},
 };
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axfs_ng::{FS_CONTEXT, FileBackend, OpenOptions, OpenResult};
 use axfs_ng_vfs::{DirEntry, FileNode, Location, NodePermission, NodeType, Reference};
 use axtask::current;
@@ -60,7 +60,7 @@ fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32))
     options
 }
 
-fn add_to_fd(result: OpenResult, flags: u32) -> LinuxResult<i32> {
+fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
     let f: Arc<dyn FileLike> = match result {
         OpenResult::File(mut file) => {
             // /dev/xx handling
@@ -86,7 +86,7 @@ fn add_to_fd(result: OpenResult, flags: u32) -> LinuxResult<i32> {
                         .group()
                         .session()
                         .terminal()
-                        .ok_or(LinuxError::ENOENT)?;
+                        .ok_or(AxError::NotFound)?;
                     let path = if term.is::<tty::NTtyDriver>() {
                         "/dev/console".to_string()
                     } else if let Some(pts) = term.downcast_ref::<tty::PtyDriver>() {
@@ -119,7 +119,7 @@ pub fn sys_openat(
     path: *const c_char,
     flags: i32,
     mode: __kernel_mode_t,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     let path = vm_load_string(path)?;
     debug!(
         "sys_openat <= {} {:?} {:#o} {:#o}",
@@ -139,11 +139,11 @@ pub fn sys_openat(
 /// Return its index in the file table (`fd`). Return `EMFILE` if it already
 /// has the maximum number of files open.
 #[cfg(target_arch = "x86_64")]
-pub fn sys_open(path: *const c_char, flags: i32, mode: __kernel_mode_t) -> LinuxResult<isize> {
+pub fn sys_open(path: *const c_char, flags: i32, mode: __kernel_mode_t) -> AxResult<isize> {
     sys_openat(AT_FDCWD as _, path, flags, mode)
 }
 
-pub fn sys_close(fd: c_int) -> LinuxResult<isize> {
+pub fn sys_close(fd: c_int) -> AxResult<isize> {
     debug!("sys_close <= {}", fd);
     close_file_like(fd)?;
     Ok(0)
@@ -157,11 +157,11 @@ bitflags! {
     }
 }
 
-pub fn sys_close_range(first: i32, last: i32, flags: u32) -> LinuxResult<isize> {
+pub fn sys_close_range(first: i32, last: i32, flags: u32) -> AxResult<isize> {
     if first < 0 || last < first {
-        return Err(LinuxError::EINVAL);
+        return Err(AxError::InvalidInput);
     }
-    let flags = CloseRangeFlags::from_bits(flags).ok_or(LinuxError::EINVAL)?;
+    let flags = CloseRangeFlags::from_bits(flags).ok_or(AxError::InvalidInput)?;
     debug!(
         "sys_close_range <= fds: [{}, {}], flags: {:?}",
         first, last, flags
@@ -192,19 +192,19 @@ pub fn sys_close_range(first: i32, last: i32, flags: u32) -> LinuxResult<isize> 
     Ok(0)
 }
 
-fn dup_fd(old_fd: c_int, cloexec: bool) -> LinuxResult<isize> {
+fn dup_fd(old_fd: c_int, cloexec: bool) -> AxResult<isize> {
     let f = get_file_like(old_fd)?;
     let new_fd = add_file_like(f, cloexec)?;
     Ok(new_fd as _)
 }
 
-pub fn sys_dup(old_fd: c_int) -> LinuxResult<isize> {
+pub fn sys_dup(old_fd: c_int) -> AxResult<isize> {
     debug!("sys_dup <= {}", old_fd);
     dup_fd(old_fd, false)
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_dup2(old_fd: c_int, new_fd: c_int) -> LinuxResult<isize> {
+pub fn sys_dup2(old_fd: c_int, new_fd: c_int) -> AxResult<isize> {
     if old_fd == new_fd {
         get_file_like(new_fd)?;
         return Ok(new_fd as _);
@@ -219,33 +219,33 @@ bitflags::bitflags! {
     }
 }
 
-pub fn sys_dup3(old_fd: c_int, new_fd: c_int, flags: c_int) -> LinuxResult<isize> {
-    let flags = Dup3Flags::from_bits(flags).ok_or(LinuxError::EINVAL)?;
+pub fn sys_dup3(old_fd: c_int, new_fd: c_int, flags: c_int) -> AxResult<isize> {
+    let flags = Dup3Flags::from_bits(flags).ok_or(AxError::InvalidInput)?;
     debug!(
         "sys_dup3 <= old_fd: {}, new_fd: {}, flags: {:?}",
         old_fd, new_fd, flags
     );
 
     if old_fd == new_fd {
-        return Err(LinuxError::EINVAL);
+        return Err(AxError::InvalidInput);
     }
 
     let mut fd_table = FD_TABLE.write();
     let mut f = fd_table
         .get(old_fd as _)
         .cloned()
-        .ok_or(LinuxError::EBADF)?;
+        .ok_or(AxError::BadFileDescriptor)?;
     f.cloexec = flags.contains(Dup3Flags::O_CLOEXEC);
 
     fd_table.remove(new_fd as _);
     fd_table
         .add_at(new_fd as _, f)
-        .map_err(|_| LinuxError::EBADF)?;
+        .map_err(|_| AxError::BadFileDescriptor)?;
 
     Ok(new_fd as _)
 }
 
-pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> LinuxResult<isize> {
+pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
     debug!("sys_fcntl <= fd: {} cmd: {} arg: {}", fd, cmd, arg);
 
     match cmd as u32 {
@@ -285,7 +285,7 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> LinuxResult<isize> {
             let cloexec = FD_TABLE
                 .read()
                 .get(fd as _)
-                .ok_or(LinuxError::EBADF)?
+                .ok_or(AxError::BadFileDescriptor)?
                 .cloexec;
             Ok(if cloexec { FD_CLOEXEC as _ } else { 0 })
         }
@@ -294,7 +294,7 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> LinuxResult<isize> {
             FD_TABLE
                 .write()
                 .get_mut(fd as _)
-                .ok_or(LinuxError::EBADF)?
+                .ok_or(AxError::BadFileDescriptor)?
                 .cloexec = cloexec;
             Ok(0)
         }
@@ -314,7 +314,7 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> LinuxResult<isize> {
     }
 }
 
-pub fn sys_flock(fd: c_int, operation: c_int) -> LinuxResult<isize> {
+pub fn sys_flock(fd: c_int, operation: c_int) -> AxResult<isize> {
     debug!("flock <= fd: {}, operation: {}", fd, operation);
     // TODO: flock
     Ok(0)

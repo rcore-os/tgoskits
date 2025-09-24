@@ -1,7 +1,7 @@
 use alloc::string::String;
 use core::{alloc::Layout, ffi::c_char, hint::unlikely, mem::transmute, ptr, slice, str};
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axhal::{
     paging::MappingFlags,
     trap::{PAGE_FAULT, register_trap_handler},
@@ -14,17 +14,17 @@ use starry_core::{
 };
 use starry_vm::vm_load_until_nul;
 
-fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> LinuxResult<()> {
+fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> AxResult<()> {
     let align = layout.align();
     if start.as_usize() & (align - 1) != 0 {
-        return Err(LinuxError::EFAULT);
+        return Err(AxError::BadAddress);
     }
 
     let curr = current();
     let mut aspace = curr.as_thread().proc_data.aspace.lock();
 
     if !aspace.can_access_range(start, layout.size(), access_flags) {
-        return Err(LinuxError::EFAULT);
+        return Err(AxError::BadAddress);
     }
 
     let page_start = start.align_down_4k();
@@ -37,10 +37,10 @@ fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> 
 fn check_null_terminated<T: PartialEq + Default>(
     start: VirtAddr,
     access_flags: MappingFlags,
-) -> LinuxResult<usize> {
+) -> AxResult<usize> {
     let align = Layout::new::<T>().align();
     if start.as_usize() & (align - 1) != 0 {
-        return Err(LinuxError::EFAULT);
+        return Err(AxError::BadAddress);
     }
 
     let zero = T::default();
@@ -66,7 +66,7 @@ fn check_null_terminated<T: PartialEq + Default>(
                 let curr = current();
                 let aspace = curr.as_thread().proc_data.aspace.lock();
                 if !aspace.can_access_range(page, PAGE_SIZE_4K, access_flags) {
-                    return Err(LinuxError::EFAULT);
+                    return Err(AxError::BadAddress);
                 }
 
                 page += PAGE_SIZE_4K;
@@ -123,12 +123,12 @@ impl<T> UserPtr<T> {
         self.0.is_null()
     }
 
-    pub fn get_as_mut(self) -> LinuxResult<&'static mut T> {
+    pub fn get_as_mut(self) -> AxResult<&'static mut T> {
         check_region(self.address(), Layout::new::<T>(), Self::ACCESS_FLAGS)?;
         Ok(unsafe { &mut *self.0 })
     }
 
-    pub fn get_as_mut_slice(self, len: usize) -> LinuxResult<&'static mut [T]> {
+    pub fn get_as_mut_slice(self, len: usize) -> AxResult<&'static mut [T]> {
         check_region(
             self.address(),
             Layout::array::<T>(len).unwrap(),
@@ -137,7 +137,7 @@ impl<T> UserPtr<T> {
         Ok(unsafe { slice::from_raw_parts_mut(self.0, len) })
     }
 
-    pub fn get_as_mut_null_terminated(self) -> LinuxResult<&'static mut [T]>
+    pub fn get_as_mut_null_terminated(self) -> AxResult<&'static mut [T]>
     where
         T: PartialEq + Default,
     {
@@ -184,12 +184,12 @@ impl<T> UserConstPtr<T> {
         self.0.is_null()
     }
 
-    pub fn get_as_ref(self) -> LinuxResult<&'static T> {
+    pub fn get_as_ref(self) -> AxResult<&'static T> {
         check_region(self.address(), Layout::new::<T>(), Self::ACCESS_FLAGS)?;
         Ok(unsafe { &*self.0 })
     }
 
-    pub fn get_as_slice(self, len: usize) -> LinuxResult<&'static [T]> {
+    pub fn get_as_slice(self, len: usize) -> AxResult<&'static [T]> {
         check_region(
             self.address(),
             Layout::array::<T>(len).unwrap(),
@@ -198,7 +198,7 @@ impl<T> UserConstPtr<T> {
         Ok(unsafe { slice::from_raw_parts(self.0, len) })
     }
 
-    pub fn get_as_null_terminated(self) -> LinuxResult<&'static [T]>
+    pub fn get_as_null_terminated(self) -> AxResult<&'static [T]>
     where
         T: PartialEq + Default,
     {
@@ -209,12 +209,12 @@ impl<T> UserConstPtr<T> {
 
 impl UserConstPtr<c_char> {
     /// Get the pointer as `&str`, validating the memory region.
-    pub fn get_as_str(self) -> LinuxResult<&'static str> {
+    pub fn get_as_str(self) -> AxResult<&'static str> {
         let slice = self.get_as_null_terminated()?;
         // SAFETY: c_char is u8
         let slice = unsafe { transmute::<&[c_char], &[u8]>(slice) };
 
-        str::from_utf8(slice).map_err(|_| LinuxError::EILSEQ)
+        str::from_utf8(slice).map_err(|_| AxError::IllegalBytes)
     }
 }
 
@@ -251,8 +251,8 @@ fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
         .handle_page_fault(vaddr, access_flags)
 }
 
-pub fn vm_load_string(ptr: *const c_char) -> LinuxResult<String> {
+pub fn vm_load_string(ptr: *const c_char) -> AxResult<String> {
     #[allow(clippy::unnecessary_cast)]
     let bytes = vm_load_until_nul(ptr as *const u8)?;
-    String::from_utf8(bytes).map_err(|_| LinuxError::EILSEQ)
+    String::from_utf8(bytes).map_err(|_| AxError::IllegalBytes)
 }

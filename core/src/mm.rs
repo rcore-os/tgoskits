@@ -9,7 +9,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axfs_ng::{CachedFile, FS_CONTEXT, FileBackend};
 use axfs_ng_vfs::Location;
 use axhal::{
@@ -30,7 +30,7 @@ use uluru::LRUCache;
 use crate::config::{USER_SPACE_BASE, USER_SPACE_SIZE};
 
 /// Creates a new empty user address space.
-pub fn new_user_aspace_empty() -> LinuxResult<AddrSpace> {
+pub fn new_user_aspace_empty() -> AxResult<AddrSpace> {
     AddrSpace::new_empty(
         VirtAddr::from_usize(crate::config::USER_SPACE_BASE),
         crate::config::USER_SPACE_SIZE,
@@ -39,7 +39,7 @@ pub fn new_user_aspace_empty() -> LinuxResult<AddrSpace> {
 
 /// If the target architecture requires it, the kernel portion of the address
 /// space will be copied to the user address space.
-pub fn copy_from_kernel(_aspace: &mut AddrSpace) -> LinuxResult {
+pub fn copy_from_kernel(_aspace: &mut AddrSpace) -> AxResult {
     #[cfg(not(any(target_arch = "aarch64", target_arch = "loongarch64")))]
     {
         // ARMv8 (aarch64) and LoongArch64 use separate page tables for user space
@@ -51,7 +51,7 @@ pub fn copy_from_kernel(_aspace: &mut AddrSpace) -> LinuxResult {
 }
 
 /// Map the signal trampoline to the user address space.
-pub fn map_trampoline(aspace: &mut AddrSpace) -> LinuxResult {
+pub fn map_trampoline(aspace: &mut AddrSpace) -> AxResult {
     let signal_trampoline_paddr =
         virt_to_phys(starry_signal::arch::signal_trampoline_address().into());
     aspace.map_linear(
@@ -89,8 +89,8 @@ fn map_elf<'a>(
     uspace: &mut AddrSpace,
     base: usize,
     entry: &'a ElfCacheEntry,
-) -> LinuxResult<ELFParser<'a>> {
-    let elf_parser = ELFParser::new(entry.borrow_elf(), base).map_err(|_| LinuxError::EINVAL)?;
+) -> AxResult<ELFParser<'a>> {
+    let elf_parser = ELFParser::new(entry.borrow_elf(), base).map_err(|_| AxError::InvalidData)?;
     let cache = entry.borrow_cache();
 
     for ph in elf_parser
@@ -136,9 +136,9 @@ fn map_elf<'a>(
     Ok(elf_parser)
 }
 
-fn map_elf_error(err: &'static str) -> LinuxError {
+fn map_elf_error(err: &'static str) -> AxError {
     debug!("Failed to parse ELF file: {err}");
-    LinuxError::ENOEXEC
+    AxError::InvalidExecutable
 }
 
 #[self_referencing]
@@ -151,13 +151,13 @@ struct ElfCacheEntry {
 }
 
 impl ElfCacheEntry {
-    fn load(loc: Location) -> LinuxResult<Result<Self, Vec<u8>>> {
+    fn load(loc: Location) -> AxResult<Result<Self, Vec<u8>>> {
         let cache = CachedFile::get_or_create(loc);
 
         let mut data = vec![0; 4096];
         let read = cache.read_at(&mut data.as_mut_slice(), 0)?;
         data.truncate(read);
-        match ElfCacheEntry::try_new_or_recover::<LinuxError>(cache.clone(), data, |data| {
+        match ElfCacheEntry::try_new_or_recover::<AxError>(cache.clone(), data, |data| {
             let builder = ELFHeadersBuilder::new(data).map_err(map_elf_error)?;
             let range = builder.ph_range();
             if range.end as usize <= data.len() {
@@ -184,7 +184,7 @@ impl ElfLoader {
         Self(LRUCache::new())
     }
 
-    fn load(&mut self, uspace: &mut AddrSpace, path: &str) -> LinuxResult<LoadResult> {
+    fn load(&mut self, uspace: &mut AddrSpace, path: &str) -> AxResult<LoadResult> {
         let loc = FS_CONTEXT.lock().resolve(path)?;
 
         if !self.0.touch(|e| e.borrow_cache().location().ptr_eq(&loc)) {
@@ -216,7 +216,7 @@ impl ElfLoader {
             let ldso = CStr::from_bytes_with_nul(&data)
                 .ok()
                 .and_then(|cstr| cstr.to_str().ok())
-                .ok_or(LinuxError::EINVAL)?;
+                .ok_or(AxError::InvalidInput)?;
             debug!("Loading dynamic linker: {}", ldso);
             Some(ldso.to_owned())
         } else {
@@ -226,7 +226,7 @@ impl ElfLoader {
         let (elf, ldso) = if let Some(ldso) = ldso {
             let loc = FS_CONTEXT.lock().resolve(ldso)?;
             if !self.0.touch(|e| e.borrow_cache().location().ptr_eq(&loc)) {
-                let e = ElfCacheEntry::load(loc)?.map_err(|_| LinuxError::EINVAL)?;
+                let e = ElfCacheEntry::load(loc)?.map_err(|_| AxError::InvalidInput)?;
                 self.0.insert(e);
             }
 
@@ -280,10 +280,10 @@ pub fn load_user_app(
     path: Option<&str>,
     args: &[String],
     envs: &[String],
-) -> LinuxResult<(VirtAddr, VirtAddr)> {
+) -> AxResult<(VirtAddr, VirtAddr)> {
     let path = path
         .or_else(|| args.first().map(String::as_str))
-        .ok_or(LinuxError::EINVAL)?;
+        .ok_or(AxError::InvalidInput)?;
 
     // FIXME: impl `/proc/self/exe` to let busybox retry running
     if path.ends_with(".sh") {
@@ -299,7 +299,7 @@ pub fn load_user_app(
             if data.starts_with(b"#!") {
                 let head = &data[2..data.len().min(256)];
                 let pos = head.iter().position(|c| *c == b'\n').unwrap_or(head.len());
-                let line = core::str::from_utf8(&head[..pos]).map_err(|_| LinuxError::EINVAL)?;
+                let line = core::str::from_utf8(&head[..pos]).map_err(|_| AxError::InvalidInput)?;
 
                 let new_args: Vec<String> = line
                     .trim()
@@ -310,7 +310,7 @@ pub fn load_user_app(
                     .collect();
                 return load_user_app(uspace, None, &new_args, envs);
             }
-            return Err(LinuxError::ENOEXEC);
+            return Err(AxError::InvalidExecutable);
         }
     };
 

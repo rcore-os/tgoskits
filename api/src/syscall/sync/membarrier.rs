@@ -1,6 +1,6 @@
 use core::sync::atomic::{Ordering, compiler_fence};
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 
 /// Memory barrier commands
 const MEMBARRIER_CMD_QUERY: i32 = 0;
@@ -17,10 +17,10 @@ const SUPPORTED_COMMANDS: i32 = (1 << MEMBARRIER_CMD_GLOBAL)
     | (1 << MEMBARRIER_CMD_PRIVATE_EXPEDITED)
     | (1 << MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED);
 
-pub fn sys_membarrier(cmd: i32, flags: u32, _cpu_id: i32) -> LinuxResult<isize> {
+pub fn sys_membarrier(cmd: i32, flags: u32, _cpu_id: i32) -> AxResult<isize> {
     // 检查 flags 参数，目前应该为 0
     if flags != 0 {
-        return Err(LinuxError::EINVAL);
+        return Err(AxError::InvalidInput);
     }
 
     match cmd {

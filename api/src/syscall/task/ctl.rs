@@ -1,6 +1,6 @@
 use core::ffi::c_char;
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axtask::current;
 use linux_raw_sys::general::{__user_cap_data_struct, __user_cap_header_struct};
 use starry_core::task::{AsThread, get_process_data};
@@ -10,13 +10,13 @@ use crate::mm::vm_load_string;
 
 const CAPABILITY_VERSION_3: u32 = 0x20080522;
 
-fn validate_cap_header(header_ptr: *mut __user_cap_header_struct) -> LinuxResult<()> {
+fn validate_cap_header(header_ptr: *mut __user_cap_header_struct) -> AxResult<()> {
     // FIXME: AnyBitPattern
     let mut header = unsafe { header_ptr.vm_read_uninit()?.assume_init() };
     if header.version != CAPABILITY_VERSION_3 {
         header.version = CAPABILITY_VERSION_3;
         header_ptr.vm_write(header)?;
-        return Err(LinuxError::EINVAL);
+        return Err(AxError::InvalidInput);
     }
     let _ = get_process_data(header.pid as u32)?;
     Ok(())
@@ -25,7 +25,7 @@ fn validate_cap_header(header_ptr: *mut __user_cap_header_struct) -> LinuxResult
 pub fn sys_capget(
     header: *mut __user_cap_header_struct,
     data: *mut __user_cap_data_struct,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     validate_cap_header(header)?;
 
     data.vm_write(__user_cap_data_struct {
@@ -39,27 +39,27 @@ pub fn sys_capget(
 pub fn sys_capset(
     header: *mut __user_cap_header_struct,
     _data: *mut __user_cap_data_struct,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     validate_cap_header(header)?;
 
     Ok(0)
 }
 
-pub fn sys_umask(mask: u32) -> LinuxResult<isize> {
+pub fn sys_umask(mask: u32) -> AxResult<isize> {
     let curr = current();
     let old = curr.as_thread().proc_data.replace_umask(mask);
     Ok(old as isize)
 }
 
-pub fn sys_setreuid(_ruid: u32, _euid: u32) -> LinuxResult<isize> {
+pub fn sys_setreuid(_ruid: u32, _euid: u32) -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_setresuid(_ruid: u32, _euid: u32, _suid: u32) -> LinuxResult<isize> {
+pub fn sys_setresuid(_ruid: u32, _euid: u32, _suid: u32) -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_setresgid(_rgid: u32, _egid: u32, _sgid: u32) -> LinuxResult<isize> {
+pub fn sys_setresgid(_rgid: u32, _egid: u32, _sgid: u32) -> AxResult<isize> {
     Ok(0)
 }
 
@@ -69,7 +69,7 @@ pub fn sys_get_mempolicy(
     _maxnode: usize,
     _addr: usize,
     _flags: usize,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     warn!("Dummy get_mempolicy called");
     Ok(0)
 }
@@ -80,7 +80,7 @@ pub fn sys_prctl(
     arg3: usize,
     arg4: usize,
     arg5: usize,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     use linux_raw_sys::prctl::*;
 
     debug!(
@@ -110,7 +110,7 @@ pub fn sys_prctl(
         | PR_SET_MM_START_STACK => {}
         _ => {
             warn!("sys_prctl: unsupported option {}", option);
-            return Err(LinuxError::EINVAL);
+            return Err(AxError::InvalidInput);
         }
     }
 

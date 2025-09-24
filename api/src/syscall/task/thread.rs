@@ -1,23 +1,23 @@
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axtask::current;
 use num_enum::TryFromPrimitive;
 use starry_core::task::AsThread;
 
-pub fn sys_getpid() -> LinuxResult<isize> {
+pub fn sys_getpid() -> AxResult<isize> {
     Ok(current().as_thread().proc_data.proc.pid() as _)
 }
 
-pub fn sys_getppid() -> LinuxResult<isize> {
+pub fn sys_getppid() -> AxResult<isize> {
     current()
         .as_thread()
         .proc_data
         .proc
         .parent()
-        .ok_or(LinuxError::ESRCH)
+        .ok_or(AxError::NoSuchProcess)
         .map(|p| p.pid() as _)
 }
 
-pub fn sys_gettid() -> LinuxResult<isize> {
+pub fn sys_gettid() -> AxResult<isize> {
     Ok(current().id().as_u64() as _)
 }
 
@@ -46,7 +46,7 @@ enum ArchPrctlCode {
 /// To set the clear_child_tid field in the task extended data.
 ///
 /// The set_tid_address() always succeeds
-pub fn sys_set_tid_address(clear_child_tid: usize) -> LinuxResult<isize> {
+pub fn sys_set_tid_address(clear_child_tid: usize) -> AxResult<isize> {
     let curr = current();
     curr.as_thread().set_clear_child_tid(clear_child_tid);
     Ok(curr.id().as_u64() as isize)
@@ -57,10 +57,10 @@ pub fn sys_arch_prctl(
     tf: &mut axhal::context::TrapFrame,
     code: i32,
     addr: usize,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     use starry_vm::VmMutPtr;
 
-    let code = ArchPrctlCode::try_from(code).map_err(|_| axerrno::LinuxError::EINVAL)?;
+    let code = ArchPrctlCode::try_from(code).map_err(|_| axerrno::AxError::EINVAL)?;
     debug!("sys_arch_prctl: code = {:?}, addr = {:#x}", code, addr);
 
     match code {
@@ -86,6 +86,6 @@ pub fn sys_arch_prctl(
             Ok(0)
         }
         ArchPrctlCode::GetCpuid => Ok(0),
-        ArchPrctlCode::SetCpuid => Err(axerrno::LinuxError::ENODEV),
+        ArchPrctlCode::SetCpuid => Err(axerrno::AxError::ENODEV),
     }
 }

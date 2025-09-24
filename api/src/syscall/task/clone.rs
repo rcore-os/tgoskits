@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axfs_ng::FS_CONTEXT;
 use axhal::{context::TrapFrame, uspace::UserContext};
 use axtask::{TaskExtProxy, current, spawn_task};
@@ -93,7 +93,7 @@ pub fn sys_clone(
     #[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))] child_tid: usize,
     tls: usize,
     #[cfg(not(any(target_arch = "x86_64", target_arch = "loongarch64")))] child_tid: usize,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     const FLAG_MASK: u32 = 0xff;
     let exit_signal = flags & FLAG_MASK;
     let mut flags = CloneFlags::from_bits_truncate(flags & !FLAG_MASK);
@@ -109,13 +109,13 @@ pub fn sys_clone(
     );
 
     if exit_signal != 0 && flags.contains(CloneFlags::THREAD | CloneFlags::PARENT) {
-        return Err(LinuxError::EINVAL);
+        return Err(AxError::InvalidInput);
     }
     if flags.contains(CloneFlags::THREAD) && !flags.contains(CloneFlags::VM | CloneFlags::SIGHAND) {
-        return Err(LinuxError::EINVAL);
+        return Err(AxError::InvalidInput);
     }
     if flags.contains(CloneFlags::PIDFD | CloneFlags::PARENT_SETTID) {
-        return Err(LinuxError::EINVAL);
+        return Err(AxError::InvalidInput);
     }
     let exit_signal = Signo::from_repr(exit_signal as u8);
 
@@ -151,7 +151,7 @@ pub fn sys_clone(
         old_proc_data.clone()
     } else {
         let proc = if flags.contains(CloneFlags::PARENT) {
-            old_proc_data.proc.parent().ok_or(LinuxError::EINVAL)?
+            old_proc_data.proc.parent().ok_or(AxError::InvalidInput)?
         } else {
             old_proc_data.proc.clone()
         }
@@ -228,6 +228,6 @@ pub fn sys_clone(
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_fork(tf: &TrapFrame) -> LinuxResult<isize> {
+pub fn sys_fork(tf: &TrapFrame) -> AxResult<isize> {
     sys_clone(tf, SIGCHLD, 0, 0, 0, 0)
 }

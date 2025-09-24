@@ -7,7 +7,7 @@ use core::{
     task::Context,
 };
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axfs_ng::{FS_CONTEXT, FsContext};
 use axfs_ng_vfs::{Location, Metadata, NodeFlags};
 use axio::{IoEvents, Pollable};
@@ -20,8 +20,8 @@ use crate::file::{SealedBuf, SealedBufMut};
 
 pub fn with_fs<R>(
     dirfd: c_int,
-    f: impl FnOnce(&mut FsContext) -> LinuxResult<R>,
-) -> LinuxResult<R> {
+    f: impl FnOnce(&mut FsContext) -> AxResult<R>,
+) -> AxResult<R> {
     let mut fs = FS_CONTEXT.lock();
     if dirfd == AT_FDCWD {
         f(&mut fs)
@@ -44,7 +44,7 @@ impl ResolveAtResult {
         }
     }
 
-    pub fn stat(&self) -> LinuxResult<Kstat> {
+    pub fn stat(&self) -> AxResult<Kstat> {
         match self {
             Self::File(file) => file.metadata().map(|it| metadata_to_kstat(&it)),
             Self::Other(file_like) => file_like.stat(),
@@ -52,11 +52,11 @@ impl ResolveAtResult {
     }
 }
 
-pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> LinuxResult<ResolveAtResult> {
+pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> AxResult<ResolveAtResult> {
     match path {
         Some("") | None => {
             if flags & AT_EMPTY_PATH == 0 {
-                return Err(LinuxError::ENOENT);
+                return Err(AxError::NotFound);
             }
             let file_like = get_file_like(dirfd)?;
             let f = file_like.clone().into_any();
@@ -129,7 +129,7 @@ fn path_for(loc: &Location) -> Cow<'static, str> {
 }
 
 impl FileLike for File {
-    fn read(&self, dst: &mut SealedBufMut) -> LinuxResult<usize> {
+    fn read(&self, dst: &mut SealedBufMut) -> AxResult<usize> {
         let inner = self.inner();
         if likely(self.is_blocking()) {
             inner.read(dst)
@@ -140,7 +140,7 @@ impl FileLike for File {
         }
     }
 
-    fn write(&self, src: &mut SealedBuf) -> LinuxResult<usize> {
+    fn write(&self, src: &mut SealedBuf) -> AxResult<usize> {
         let inner = self.inner();
         if likely(self.is_blocking()) {
             inner.write(src)
@@ -151,7 +151,7 @@ impl FileLike for File {
         }
     }
 
-    fn stat(&self) -> LinuxResult<Kstat> {
+    fn stat(&self) -> AxResult<Kstat> {
         Ok(metadata_to_kstat(&self.inner().location().metadata()?))
     }
 
@@ -159,11 +159,11 @@ impl FileLike for File {
         self
     }
 
-    fn ioctl(&self, cmd: u32, arg: usize) -> LinuxResult<usize> {
+    fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
         self.inner().backend()?.location().ioctl(cmd, arg)
     }
 
-    fn set_nonblocking(&self, flag: bool) -> LinuxResult {
+    fn set_nonblocking(&self, flag: bool) -> AxResult {
         self.nonblock.store(flag, Ordering::Release);
         Ok(())
     }
@@ -176,7 +176,7 @@ impl FileLike for File {
         path_for(self.inner.location())
     }
 
-    fn from_fd(fd: c_int) -> LinuxResult<Arc<Self>>
+    fn from_fd(fd: c_int) -> AxResult<Arc<Self>>
     where
         Self: Sized + 'static,
     {
@@ -184,9 +184,9 @@ impl FileLike for File {
 
         any.downcast::<Self>().map_err(|any| {
             if any.is::<Directory>() {
-                LinuxError::EISDIR
+                AxError::IsADirectory
             } else {
-                LinuxError::ESPIPE
+                AxError::BrokenPipe
             }
         })
     }
@@ -222,15 +222,15 @@ impl Directory {
 }
 
 impl FileLike for Directory {
-    fn read(&self, _dst: &mut SealedBufMut) -> LinuxResult<usize> {
-        Err(LinuxError::EBADF)
+    fn read(&self, _dst: &mut SealedBufMut) -> AxResult<usize> {
+        Err(AxError::BadFileDescriptor)
     }
 
-    fn write(&self, _src: &mut SealedBuf) -> LinuxResult<usize> {
-        Err(LinuxError::EBADF)
+    fn write(&self, _src: &mut SealedBuf) -> AxResult<usize> {
+        Err(AxError::BadFileDescriptor)
     }
 
-    fn stat(&self) -> LinuxResult<Kstat> {
+    fn stat(&self) -> AxResult<Kstat> {
         Ok(metadata_to_kstat(&self.inner.metadata()?))
     }
 
@@ -242,11 +242,11 @@ impl FileLike for Directory {
         self
     }
 
-    fn from_fd(fd: c_int) -> LinuxResult<Arc<Self>> {
+    fn from_fd(fd: c_int) -> AxResult<Arc<Self>> {
         get_file_like(fd)?
             .into_any()
             .downcast::<Self>()
-            .map_err(|_| LinuxError::ENOTDIR)
+            .map_err(|_| AxError::NotADirectory)
     }
 }
 impl Pollable for Directory {

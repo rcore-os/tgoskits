@@ -1,7 +1,7 @@
 use alloc::{borrow::Cow, format, sync::Arc};
 use core::{ffi::c_int, ops::Deref, task::Context};
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axio::{IoEvents, Pollable};
 use axnet::{
     SocketOps,
@@ -23,15 +23,15 @@ impl Deref for Socket {
 }
 
 impl FileLike for Socket {
-    fn read(&self, dst: &mut SealedBufMut) -> LinuxResult<usize> {
+    fn read(&self, dst: &mut SealedBufMut) -> AxResult<usize> {
         self.recv(dst, axnet::RecvOptions::default())
     }
 
-    fn write(&self, src: &mut SealedBuf) -> LinuxResult<usize> {
+    fn write(&self, src: &mut SealedBuf) -> AxResult<usize> {
         self.send(src, axnet::SendOptions::default())
     }
 
-    fn stat(&self) -> LinuxResult<Kstat> {
+    fn stat(&self) -> AxResult<Kstat> {
         // TODO(mivik): implement stat for sockets
         Ok(Kstat {
             mode: S_IFSOCK | 0o777u32, // rwxrwxrwx
@@ -51,7 +51,7 @@ impl FileLike for Socket {
         result
     }
 
-    fn set_nonblocking(&self, nonblocking: bool) -> LinuxResult<()> {
+    fn set_nonblocking(&self, nonblocking: bool) -> AxResult<()> {
         self.0
             .set_option(SetSocketOption::NonBlocking(&nonblocking))
     }
@@ -60,14 +60,14 @@ impl FileLike for Socket {
         format!("socket:[{}]", self as *const _ as usize).into()
     }
 
-    fn from_fd(fd: c_int) -> LinuxResult<Arc<Self>>
+    fn from_fd(fd: c_int) -> AxResult<Arc<Self>>
     where
         Self: Sized + 'static,
     {
         get_file_like(fd)?
             .into_any()
             .downcast::<Self>()
-            .map_err(|_| LinuxError::ENOTSOCK)
+            .map_err(|_| AxError::NotASocket)
     }
 }
 impl Pollable for Socket {

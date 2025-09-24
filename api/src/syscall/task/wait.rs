@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use core::{future::poll_fn, task::Poll};
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult, LinuxError};
 use axhal::context::TrapFrame;
 use axtask::{current, future::try_block_on};
 use bitflags::bitflags;
@@ -64,7 +64,7 @@ pub fn sys_waitpid(
     pid: i32,
     exit_code: *mut i32,
     options: u32,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     let options = WaitOptions::from_bits_truncate(options);
     info!("sys_waitpid <= pid: {:?}, options: {:?}", pid, options);
 
@@ -90,7 +90,7 @@ pub fn sys_waitpid(
         .filter(|child| pid.apply(child))
         .collect::<Vec<_>>();
     if children.is_empty() {
-        return Err(LinuxError::ECHILD);
+        return Err(AxError::Other(LinuxError::ECHILD));
     }
 
     let check_children = || {
@@ -105,17 +105,17 @@ pub fn sys_waitpid(
         } else if options.contains(WaitOptions::WNOHANG) {
             Ok(0)
         } else {
-            Err(LinuxError::EAGAIN)
+            Err(AxError::WouldBlock)
         }
     };
 
     let result = try_block_on(poll_fn(|cx| match check_children() {
         Ok(pid) => Poll::Ready(Ok(pid)),
-        Err(LinuxError::EAGAIN) => {
+        Err(AxError::WouldBlock) => {
             proc_data.child_exit_event.register(cx.waker());
             match check_children() {
                 Ok(pid) => Poll::Ready(Ok(pid)),
-                Err(LinuxError::EAGAIN) => Poll::Pending,
+                Err(AxError::WouldBlock) => Poll::Pending,
                 other => Poll::Ready(other),
             }
         }

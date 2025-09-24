@@ -1,4 +1,4 @@
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axhal::time::TimeValue;
 use axtask::current;
 use linux_raw_sys::general::{__kernel_old_timeval, RLIM_NLIMITS, rlimit64, rusage};
@@ -13,9 +13,9 @@ pub fn sys_prlimit64(
     resource: u32,
     new_limit: *const rlimit64,
     old_limit: *mut rlimit64,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     if resource >= RLIM_NLIMITS {
-        return Err(LinuxError::EINVAL);
+        return Err(AxError::InvalidInput);
     }
 
     let proc_data = get_process_data(pid)?;
@@ -31,7 +31,7 @@ pub fn sys_prlimit64(
         // FIXME: AnyBitPattern
         let new_limit = unsafe { new_limit.vm_read_uninit()?.assume_init() };
         if new_limit.rlim_cur > new_limit.rlim_max {
-            return Err(LinuxError::EINVAL);
+            return Err(AxError::InvalidInput);
         }
 
         let limit = &mut proc_data.rlim.write()[resource];
@@ -39,7 +39,7 @@ pub fn sys_prlimit64(
             limit.max = new_limit.rlim_max;
         } else {
             // TODO: patch resources
-            // return Err(LinuxError::EPERM);
+            // return Err(AxError::OperationNotPermitted);
             return Ok(0);
         }
 
@@ -78,7 +78,7 @@ impl From<Rusage> for rusage {
     }
 }
 
-pub fn sys_getrusage(who: i32, usage: *mut rusage) -> LinuxResult<isize> {
+pub fn sys_getrusage(who: i32, usage: *mut rusage) -> AxResult<isize> {
     const RUSAGE_SELF: i32 = linux_raw_sys::general::RUSAGE_SELF as i32;
     const RUSAGE_CHILDREN: i32 = linux_raw_sys::general::RUSAGE_CHILDREN;
     const RUSAGE_THREAD: i32 = linux_raw_sys::general::RUSAGE_THREAD as i32;
@@ -116,7 +116,7 @@ pub fn sys_getrusage(who: i32, usage: *mut rusage) -> LinuxResult<isize> {
                 })
         }
         RUSAGE_THREAD => Rusage::from_thread(thr),
-        _ => return Err(LinuxError::EINVAL),
+        _ => return Err(AxError::InvalidInput),
     };
     usage.vm_write(result.into())?;
 

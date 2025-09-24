@@ -1,4 +1,4 @@
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult, LinuxError};
 use axnet::options::{Configurable, GetSocketOption, SetSocketOption};
 use linux_raw_sys::net::socklen_t;
 
@@ -12,7 +12,7 @@ const PROTO_TCP: u32 = linux_raw_sys::net::IPPROTO_TCP as u32;
 const PROTO_IP: u32 = linux_raw_sys::net::IPPROTO_IP as u32;
 
 mod conv {
-    use axerrno::{LinuxError, LinuxResult};
+    use axerrno::{AxError, AxResult};
     use axnet::options::UnixCredentials;
     use linux_raw_sys::{general::timeval, net::ucred};
 
@@ -21,23 +21,23 @@ mod conv {
     pub struct Int<T>(T);
 
     impl<T: TryFrom<i32> + TryInto<i32>> Int<T> {
-        pub fn sys_to_rust(val: i32) -> LinuxResult<T> {
-            T::try_from(val).map_err(|_| LinuxError::EINVAL)
+        pub fn sys_to_rust(val: i32) -> AxResult<T> {
+            T::try_from(val).map_err(|_| AxError::InvalidInput)
         }
 
-        pub fn rust_to_sys(val: T) -> LinuxResult<i32> {
-            val.try_into().map_err(|_| LinuxError::EINVAL)
+        pub fn rust_to_sys(val: T) -> AxResult<i32> {
+            val.try_into().map_err(|_| AxError::InvalidInput)
         }
     }
 
     pub struct IntBool;
 
     impl IntBool {
-        pub fn sys_to_rust(val: i32) -> LinuxResult<bool> {
+        pub fn sys_to_rust(val: i32) -> AxResult<bool> {
             Ok(val != 0)
         }
 
-        pub fn rust_to_sys(val: bool) -> LinuxResult<i32> {
+        pub fn rust_to_sys(val: bool) -> AxResult<i32> {
             Ok(val as _)
         }
     }
@@ -45,11 +45,11 @@ mod conv {
     pub struct Duration;
 
     impl Duration {
-        pub fn sys_to_rust(val: timeval) -> LinuxResult<core::time::Duration> {
+        pub fn sys_to_rust(val: timeval) -> AxResult<core::time::Duration> {
             val.try_into_time_value()
         }
 
-        pub fn rust_to_sys(val: core::time::Duration) -> LinuxResult<timeval> {
+        pub fn rust_to_sys(val: core::time::Duration) -> AxResult<timeval> {
             Ok(timeval::from_time_value(val))
         }
     }
@@ -57,7 +57,7 @@ mod conv {
     pub struct Ucred;
 
     impl Ucred {
-        pub fn sys_to_rust(val: ucred) -> LinuxResult<UnixCredentials> {
+        pub fn sys_to_rust(val: ucred) -> AxResult<UnixCredentials> {
             Ok(UnixCredentials {
                 pid: val.pid,
                 uid: val.uid,
@@ -65,7 +65,7 @@ mod conv {
             })
         }
 
-        pub fn rust_to_sys(val: UnixCredentials) -> LinuxResult<ucred> {
+        pub fn rust_to_sys(val: UnixCredentials) -> AxResult<ucred> {
             Ok(ucred {
                 pid: val.pid,
                 uid: val.uid,
@@ -107,7 +107,7 @@ macro_rules! call_dispatch {
                     dispatch!($which $(as $conv)?);
                 }
             )*
-            _ => return Err(LinuxError::ENOPROTOOPT),
+            _ => return Err(AxError::Other(LinuxError::ENOPROTOOPT)),
         }
     }
 }
@@ -118,7 +118,7 @@ pub fn sys_getsockopt(
     optname: u32,
     optval: UserPtr<u8>,
     optlen: UserPtr<socklen_t>,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     let optlen = optlen.get_as_mut()?;
     debug!(
         "sys_getsockopt <= fd: {}, level: {}, optname: {}, optval: {:?}, optlen: {}",
@@ -129,9 +129,9 @@ pub fn sys_getsockopt(
         optlen,
     );
 
-    fn get<'a, T: 'static>(val: UserPtr<u8>, len: &mut socklen_t) -> LinuxResult<&'a mut T> {
+    fn get<'a, T: 'static>(val: UserPtr<u8>, len: &mut socklen_t) -> AxResult<&'a mut T> {
         if (*len as usize) < size_of::<T>() {
-            return Err(LinuxError::EINVAL);
+            return Err(AxError::InvalidInput);
         }
         *len = size_of::<T>() as socklen_t;
         val.cast().get_as_mut()
@@ -159,7 +159,7 @@ pub fn sys_setsockopt(
     optname: u32,
     optval: UserConstPtr<u8>,
     optlen: socklen_t,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     debug!(
         "sys_setsockopt <= fd: {}, level: {}, optname: {}, optval: {:?}, optlen: {}",
         fd,
@@ -169,9 +169,9 @@ pub fn sys_setsockopt(
         optlen
     );
 
-    fn get<'a, T: 'static>(val: UserConstPtr<u8>, len: socklen_t) -> LinuxResult<&'a T> {
+    fn get<'a, T: 'static>(val: UserConstPtr<u8>, len: socklen_t) -> AxResult<&'a T> {
         if len as usize != size_of::<T>() {
-            return Err(LinuxError::EINVAL);
+            return Err(AxError::InvalidInput);
         }
         val.cast().get_as_ref()
     }

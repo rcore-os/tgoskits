@@ -1,6 +1,6 @@
 use alloc::{borrow::ToOwned, fmt, string::String};
 
-use axerrno::LinuxResult;
+use axerrno::AxResult;
 use axtask::{TaskInner, TaskState};
 use starry_signal::Signo;
 
@@ -68,7 +68,7 @@ pub struct TaskStat {
 
 impl TaskStat {
     /// Create a new [`TaskStat`] from a [`AxTaskRef`].
-    pub fn from_thread(task: &TaskInner) -> LinuxResult<Self> {
+    pub fn from_thread(task: &TaskInner) -> AxResult<Self> {
         let thread = task.as_thread();
         let proc_data = &thread.proc_data;
         let proc = &proc_data.proc;

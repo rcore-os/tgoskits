@@ -4,7 +4,7 @@ use core::{
     task::Context,
 };
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axfs_ng::{FS_CONTEXT, FileFlags, OpenOptions};
 use axio::{IoEvents, Pollable, Seek, SeekFrom};
 use axtask::current;
@@ -20,15 +20,15 @@ use crate::{
 
 struct DummyFd;
 impl FileLike for DummyFd {
-    fn read(&self, _dst: &mut SealedBufMut) -> LinuxResult<usize> {
+    fn read(&self, _dst: &mut SealedBufMut) -> AxResult<usize> {
         unimplemented!()
     }
 
-    fn write(&self, _src: &mut SealedBuf) -> LinuxResult<usize> {
+    fn write(&self, _src: &mut SealedBuf) -> AxResult<usize> {
         unimplemented!()
     }
 
-    fn stat(&self) -> LinuxResult<crate::file::Kstat> {
+    fn stat(&self) -> AxResult<crate::file::Kstat> {
         unimplemented!()
     }
 
@@ -48,11 +48,11 @@ impl Pollable for DummyFd {
     fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
 }
 
-pub fn sys_dummy_fd(sysno: Sysno) -> LinuxResult<isize> {
+pub fn sys_dummy_fd(sysno: Sysno) -> AxResult<isize> {
     if current().name().starts_with("qemu-") {
         // We need to be honest to qemu, since it can automatically fallback to
         // other strategies.
-        return Err(LinuxError::ENOSYS);
+        return Err(AxError::Unsupported);
     }
     warn!("Dummy fd created: {sysno}");
     DummyFd.add_to_fd_table(false).map(|fd| fd as isize)
@@ -61,12 +61,12 @@ pub fn sys_dummy_fd(sysno: Sysno) -> LinuxResult<isize> {
 /// Read data from the file indicated by `fd`.
 ///
 /// Return the read size if success.
-pub fn sys_read(fd: i32, buf: *mut u8, len: usize) -> LinuxResult<isize> {
+pub fn sys_read(fd: i32, buf: *mut u8, len: usize) -> AxResult<isize> {
     debug!("sys_read <= fd: {}, buf: {:p}, len: {}", fd, buf, len);
     Ok(get_file_like(fd)?.read(&mut VmBytesMut::new(buf, len).into())? as _)
 }
 
-pub fn sys_readv(fd: i32, iov: *const IoVec, iovcnt: usize) -> LinuxResult<isize> {
+pub fn sys_readv(fd: i32, iov: *const IoVec, iovcnt: usize) -> AxResult<isize> {
     debug!("sys_readv <= fd: {}, iovcnt: {}", fd, iovcnt);
     let f = get_file_like(fd)?;
     f.read(&mut IoVectorBuf::new(iov, iovcnt)?.into_io().into())
@@ -76,35 +76,35 @@ pub fn sys_readv(fd: i32, iov: *const IoVec, iovcnt: usize) -> LinuxResult<isize
 /// Write data to the file indicated by `fd`.
 ///
 /// Return the written size if success.
-pub fn sys_write(fd: i32, buf: *mut u8, len: usize) -> LinuxResult<isize> {
+pub fn sys_write(fd: i32, buf: *mut u8, len: usize) -> AxResult<isize> {
     debug!("sys_write <= fd: {}, buf: {:p}, len: {}", fd, buf, len);
     Ok(get_file_like(fd)?.write(&mut VmBytes::new(buf, len).into())? as _)
 }
 
-pub fn sys_writev(fd: i32, iov: *const IoVec, iovcnt: usize) -> LinuxResult<isize> {
+pub fn sys_writev(fd: i32, iov: *const IoVec, iovcnt: usize) -> AxResult<isize> {
     debug!("sys_writev <= fd: {}, iovcnt: {}", fd, iovcnt);
     let f = get_file_like(fd)?;
     f.write(&mut IoVectorBuf::new(iov, iovcnt)?.into_io().into())
         .map(|n| n as _)
 }
 
-pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> LinuxResult<isize> {
+pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<isize> {
     debug!("sys_lseek <= {} {} {}", fd, offset, whence);
     let pos = match whence {
         0 => SeekFrom::Start(offset as _),
         1 => SeekFrom::Current(offset as _),
         2 => SeekFrom::End(offset as _),
-        _ => return Err(LinuxError::EINVAL),
+        _ => return Err(AxError::InvalidInput),
     };
     let off = File::from_fd(fd)?.inner().seek(pos)?;
     Ok(off as _)
 }
 
-pub fn sys_truncate(path: UserConstPtr<c_char>, length: __kernel_off_t) -> LinuxResult<isize> {
+pub fn sys_truncate(path: UserConstPtr<c_char>, length: __kernel_off_t) -> AxResult<isize> {
     let path = path.get_as_str()?;
     debug!("sys_truncate <= {:?} {}", path, length);
     if length < 0 {
-        return Err(LinuxError::EINVAL);
+        return Err(AxError::InvalidInput);
     }
     let file = OpenOptions::new()
         .write(true)
@@ -114,7 +114,7 @@ pub fn sys_truncate(path: UserConstPtr<c_char>, length: __kernel_off_t) -> Linux
     Ok(0)
 }
 
-pub fn sys_ftruncate(fd: c_int, length: __kernel_off_t) -> LinuxResult<isize> {
+pub fn sys_ftruncate(fd: c_int, length: __kernel_off_t) -> AxResult<isize> {
     debug!("sys_ftruncate <= {} {}", fd, length);
     let f = File::from_fd(fd)?;
     f.inner().access(FileFlags::WRITE)?.set_len(length as _)?;
@@ -126,13 +126,13 @@ pub fn sys_fallocate(
     mode: u32,
     offset: __kernel_off_t,
     len: __kernel_off_t,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     debug!(
         "sys_fallocate <= fd: {}, mode: {}, offset: {}, len: {}",
         fd, mode, offset, len
     );
     if mode != 0 {
-        return Err(LinuxError::EINVAL);
+        return Err(AxError::InvalidInput);
     }
     let f = File::from_fd(fd)?;
     let inner = f.inner();
@@ -141,14 +141,14 @@ pub fn sys_fallocate(
     Ok(0)
 }
 
-pub fn sys_fsync(fd: c_int) -> LinuxResult<isize> {
+pub fn sys_fsync(fd: c_int) -> AxResult<isize> {
     debug!("sys_fsync <= {}", fd);
     let f = File::from_fd(fd)?;
     f.inner().sync(false)?;
     Ok(0)
 }
 
-pub fn sys_fdatasync(fd: c_int) -> LinuxResult<isize> {
+pub fn sys_fdatasync(fd: c_int) -> AxResult<isize> {
     debug!("sys_fdatasync <= {}", fd);
     let f = File::from_fd(fd)?;
     f.inner().sync(true)?;
@@ -160,29 +160,24 @@ pub fn sys_fadvise64(
     offset: __kernel_off_t,
     len: __kernel_off_t,
     advice: u32,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     debug!(
         "sys_fadvise64 <= fd: {}, offset: {}, len: {}, advice: {}",
         fd, offset, len, advice
     );
     if Pipe::from_fd(fd).is_ok() {
-        return Err(LinuxError::ESPIPE);
+        return Err(AxError::BrokenPipe);
     }
     if advice > 5 {
-        return Err(LinuxError::EINVAL);
+        return Err(AxError::InvalidInput);
     }
     Ok(0)
 }
 
-pub fn sys_pread64(
-    fd: c_int,
-    buf: *mut u8,
-    len: usize,
-    offset: __kernel_off_t,
-) -> LinuxResult<isize> {
+pub fn sys_pread64(fd: c_int, buf: *mut u8, len: usize, offset: __kernel_off_t) -> AxResult<isize> {
     let f = File::from_fd(fd)?;
     if offset < 0 {
-        return Err(LinuxError::EINVAL);
+        return Err(AxError::InvalidInput);
     }
     let read = f
         .inner()
@@ -195,7 +190,7 @@ pub fn sys_pwrite64(
     buf: *const u8,
     len: usize,
     offset: __kernel_off_t,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     if len == 0 {
         return Ok(0);
     }
@@ -211,7 +206,7 @@ pub fn sys_preadv(
     iov: *const IoVec,
     iovcnt: usize,
     offset: __kernel_off_t,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     sys_preadv2(fd, iov, iovcnt, offset, 0)
 }
 
@@ -220,7 +215,7 @@ pub fn sys_pwritev(
     iov: *const IoVec,
     iovcnt: usize,
     offset: __kernel_off_t,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     sys_pwritev2(fd, iov, iovcnt, offset, 0)
 }
 
@@ -230,7 +225,7 @@ pub fn sys_preadv2(
     iovcnt: usize,
     offset: __kernel_off_t,
     _flags: u32,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     debug!(
         "sys_preadv2 <= fd: {}, iovcnt: {}, offset: {}, flags: {}",
         fd, iovcnt, offset, _flags
@@ -247,7 +242,7 @@ pub fn sys_pwritev2(
     iovcnt: usize,
     offset: __kernel_off_t,
     _flags: u32,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     debug!(
         "sys_pwritev2 <= fd: {}, iovcnt: {}, offset: {}, flags: {}",
         fd, iovcnt, offset, _flags
@@ -272,7 +267,7 @@ impl SendFile {
         .contains(IoEvents::IN)
     }
 
-    fn read(&mut self, mut buf: &mut [u8]) -> LinuxResult<usize> {
+    fn read(&mut self, mut buf: &mut [u8]) -> AxResult<usize> {
         match self {
             SendFile::Direct(file) => file.read(&mut buf.into()),
             SendFile::Offset(file, offset) => {
@@ -284,7 +279,7 @@ impl SendFile {
         }
     }
 
-    fn write(&mut self, mut buf: &[u8]) -> LinuxResult<usize> {
+    fn write(&mut self, mut buf: &[u8]) -> AxResult<usize> {
         match self {
             SendFile::Direct(file) => file.write(&mut buf.into()),
             SendFile::Offset(file, offset) => {
@@ -297,7 +292,7 @@ impl SendFile {
     }
 }
 
-fn do_send(mut src: SendFile, mut dst: SendFile, len: usize) -> LinuxResult<usize> {
+fn do_send(mut src: SendFile, mut dst: SendFile, len: usize) -> AxResult<usize> {
     let mut buf = vec![0; 0x1000];
     let mut total_written = 0;
     let mut remaining = len;
@@ -309,7 +304,7 @@ fn do_send(mut src: SendFile, mut dst: SendFile, len: usize) -> LinuxResult<usiz
         let to_read = buf.len().min(remaining);
         let bytes_read = match src.read(&mut buf[..to_read]) {
             Ok(n) => n,
-            Err(LinuxError::EAGAIN) if total_written > 0 => break,
+            Err(AxError::WouldBlock) if total_written > 0 => break,
             Err(e) => return Err(e),
         };
         if bytes_read == 0 {
@@ -328,12 +323,7 @@ fn do_send(mut src: SendFile, mut dst: SendFile, len: usize) -> LinuxResult<usiz
     Ok(total_written)
 }
 
-pub fn sys_sendfile(
-    out_fd: c_int,
-    in_fd: c_int,
-    offset: *mut u64,
-    len: usize,
-) -> LinuxResult<isize> {
+pub fn sys_sendfile(out_fd: c_int, in_fd: c_int, offset: *mut u64, len: usize) -> AxResult<isize> {
     debug!(
         "sys_sendfile <= out_fd: {}, in_fd: {}, offset: {}, len: {}",
         out_fd,
@@ -344,7 +334,7 @@ pub fn sys_sendfile(
 
     let src = if !offset.is_null() {
         if offset.vm_read()? > u32::MAX as u64 {
-            return Err(LinuxError::EINVAL);
+            return Err(AxError::InvalidInput);
         }
         SendFile::Offset(File::from_fd(in_fd)?, offset)
     } else {
@@ -363,7 +353,7 @@ pub fn sys_copy_file_range(
     off_out: *mut u64,
     len: usize,
     _flags: u32,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     debug!(
         "sys_copy_file_range <= fd_in: {}, off_in: {}, fd_out: {}, off_out: {}, len: {}, flags: {}",
         fd_in,
@@ -400,7 +390,7 @@ pub fn sys_splice(
     off_out: *mut i64,
     len: usize,
     _flags: u32,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     debug!(
         "sys_splice <= fd_in: {}, off_in: {}, fd_out: {}, off_out: {}, len: {}, flags: {}",
         fd_in,
@@ -414,45 +404,45 @@ pub fn sys_splice(
     let mut has_pipe = false;
 
     if DummyFd::from_fd(fd_in).is_ok() || DummyFd::from_fd(fd_out).is_ok() {
-        return Err(LinuxError::EBADF);
+        return Err(AxError::BadFileDescriptor);
     }
 
     let src = if !off_in.is_null() {
         if off_in.vm_read()? < 0 {
-            return Err(LinuxError::EINVAL);
+            return Err(AxError::InvalidInput);
         }
         SendFile::Offset(File::from_fd(fd_in)?, off_in.cast())
     } else {
         if let Ok(src) = Pipe::from_fd(fd_in) {
             if !src.is_read() {
-                return Err(LinuxError::EBADF);
+                return Err(AxError::BadFileDescriptor);
             }
             has_pipe = true;
         }
         if let Ok(file) = File::from_fd(fd_in)
             && file.inner().is_path()
         {
-            return Err(LinuxError::EINVAL);
+            return Err(AxError::InvalidInput);
         }
         SendFile::Direct(get_file_like(fd_in)?)
     };
 
     let dst = if !off_out.is_null() {
         if off_out.vm_read()? < 0 {
-            return Err(LinuxError::EINVAL);
+            return Err(AxError::InvalidInput);
         }
         SendFile::Offset(File::from_fd(fd_out)?, off_out.cast())
     } else {
         if let Ok(dst) = Pipe::from_fd(fd_out) {
             if !dst.is_write() {
-                return Err(LinuxError::EBADF);
+                return Err(AxError::BadFileDescriptor);
             }
             has_pipe = true;
         }
         if let Ok(file) = File::from_fd(fd_out)
             && file.inner().access(FileFlags::APPEND).is_ok()
         {
-            return Err(LinuxError::EINVAL);
+            return Err(AxError::InvalidInput);
         }
         let f = get_file_like(fd_out)?;
         f.write(&mut b"".as_slice().into())?;
@@ -460,7 +450,7 @@ pub fn sys_splice(
     };
 
     if !has_pipe {
-        return Err(LinuxError::EINVAL);
+        return Err(AxError::InvalidInput);
     }
 
     do_send(src, dst, len).map(|n| n as _)

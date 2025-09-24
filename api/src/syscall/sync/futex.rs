@@ -1,6 +1,6 @@
 use core::sync::atomic::Ordering;
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult, LinuxError};
 use axtask::current;
 use linux_raw_sys::general::{
     FUTEX_CMD_MASK, FUTEX_CMP_REQUEUE, FUTEX_REQUEUE, FUTEX_WAIT, FUTEX_WAIT_BITSET, FUTEX_WAKE,
@@ -14,9 +14,9 @@ use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::time::TimeValueLike;
 
-fn assert_unsigned(value: u32) -> LinuxResult<u32> {
+fn assert_unsigned(value: u32) -> AxResult<u32> {
     if (value as i32) < 0 {
-        Err(LinuxError::EINVAL)
+        Err(AxError::InvalidInput)
     } else {
         Ok(value)
     }
@@ -29,7 +29,7 @@ pub fn sys_futex(
     timeout: *const timespec,
     uaddr2: *mut u32,
     value3: u32,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     debug!(
         "sys_futex <= uaddr: {:?}, futex_op: {}, value: {}, uaddr2: {:?}, value3: {}",
         uaddr, futex_op, value, uaddr2, value3,
@@ -47,7 +47,7 @@ pub fn sys_futex(
         FUTEX_WAIT | FUTEX_WAIT_BITSET => {
             // Fast path
             if uaddr.vm_read()? != value {
-                return Err(LinuxError::EAGAIN);
+                return Err(AxError::WouldBlock);
             }
 
             let timeout = if let Some(ts) = timeout.nullable() {
@@ -70,11 +70,11 @@ pub fn sys_futex(
                 .wq
                 .wait_if(bitset, timeout, || uaddr.vm_read() == Ok(value))?
             {
-                return Err(LinuxError::EAGAIN);
+                return Err(AxError::WouldBlock);
             }
 
             if futex.owner_dead.swap(false, Ordering::SeqCst) {
-                Err(LinuxError::EOWNERDEAD)
+                Err(AxError::Other(LinuxError::EOWNERDEAD))
             } else {
                 Ok(0)
             }
@@ -96,7 +96,7 @@ pub fn sys_futex(
         FUTEX_REQUEUE | FUTEX_CMP_REQUEUE => {
             assert_unsigned(value)?;
             if command == FUTEX_CMP_REQUEUE && uaddr.vm_read()? != value3 {
-                return Err(LinuxError::EAGAIN);
+                return Err(AxError::WouldBlock);
             }
             let value2 = assert_unsigned(timeout.addr() as u32)?;
 
@@ -114,7 +114,7 @@ pub fn sys_futex(
             }
             Ok(count as _)
         }
-        _ => Err(LinuxError::ENOSYS),
+        _ => Err(AxError::Unsupported),
     }
 }
 
@@ -122,7 +122,7 @@ pub fn sys_get_robust_list(
     tid: u32,
     head: *mut *const robust_list_head,
     size: *mut usize,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     let task = get_task(tid)?;
     head.vm_write(task.as_thread().robust_list_head() as _)?;
     size.vm_write(size_of::<robust_list_head>())?;
@@ -130,9 +130,9 @@ pub fn sys_get_robust_list(
     Ok(0)
 }
 
-pub fn sys_set_robust_list(head: *const robust_list_head, size: usize) -> LinuxResult<isize> {
+pub fn sys_set_robust_list(head: *const robust_list_head, size: usize) -> AxResult<isize> {
     if size != size_of::<robust_list_head>() {
-        return Err(LinuxError::EINVAL);
+        return Err(AxError::InvalidInput);
     }
     current().as_thread().set_robust_list_head(head.addr());
 

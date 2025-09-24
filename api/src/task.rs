@@ -1,6 +1,6 @@
 use core::{ffi::c_long, sync::atomic::Ordering};
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axhal::uspace::{ExceptionKind, ReturnReason, UserContext};
 use axtask::{TaskInner, current};
 use bytemuck::AnyBitPattern;
@@ -113,11 +113,11 @@ pub struct RobustListHead {
     pub list_op_pending: *mut RobustList,
 }
 
-fn handle_futex_death(entry: *mut RobustList, offset: i64) -> LinuxResult<()> {
+fn handle_futex_death(entry: *mut RobustList, offset: i64) -> AxResult<()> {
     let address = (entry as u64)
         .checked_add_signed(offset)
-        .ok_or(LinuxError::EINVAL)?;
-    let address: usize = address.try_into().map_err(|_| LinuxError::EINVAL)?;
+        .ok_or(AxError::InvalidInput)?;
+    let address: usize = address.try_into().map_err(|_| AxError::InvalidInput)?;
     let key = FutexKey::new_current(address);
 
     let curr = current();
@@ -131,7 +131,7 @@ fn handle_futex_death(entry: *mut RobustList, offset: i64) -> LinuxResult<()> {
     Ok(())
 }
 
-pub fn exit_robust_list(head: *const RobustListHead) -> LinuxResult<()> {
+pub fn exit_robust_list(head: *const RobustListHead) -> AxResult<()> {
     // Reference: https://elixir.bootlin.com/linux/v6.13.6/source/kernel/futex/core.c#L777
 
     let mut limit = ROBUST_LIST_LIMIT;
@@ -151,7 +151,7 @@ pub fn exit_robust_list(head: *const RobustListHead) -> LinuxResult<()> {
 
         limit -= 1;
         if limit == 0 {
-            return Err(LinuxError::ELOOP);
+            return Err(AxError::FilesystemLoop);
         }
         axtask::yield_now();
     }
@@ -208,7 +208,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 }
 
 /// Sends a fatal signal to the current process.
-pub fn raise_signal_fatal(sig: SignalInfo) -> LinuxResult<()> {
+pub fn raise_signal_fatal(sig: SignalInfo) -> AxResult<()> {
     let curr = current();
     let proc_data = &curr.as_thread().proc_data;
 

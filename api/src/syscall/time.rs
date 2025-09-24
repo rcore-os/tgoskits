@@ -1,4 +1,4 @@
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axhal::time::{TimeValue, monotonic_time, monotonic_time_nanos, nanos_to_ticks, wall_time};
 use axtask::current;
 use linux_raw_sys::general::{
@@ -11,7 +11,7 @@ use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::time::TimeValueLike;
 
-pub fn sys_clock_gettime(clock_id: __kernel_clockid_t, ts: *mut timespec) -> LinuxResult<isize> {
+pub fn sys_clock_gettime(clock_id: __kernel_clockid_t, ts: *mut timespec) -> AxResult<isize> {
     let now = match clock_id as u32 {
         CLOCK_REALTIME | CLOCK_REALTIME_COARSE => wall_time(),
         CLOCK_MONOTONIC | CLOCK_MONOTONIC_RAW | CLOCK_MONOTONIC_COARSE | CLOCK_BOOTTIME => {
@@ -27,19 +27,19 @@ pub fn sys_clock_gettime(clock_id: __kernel_clockid_t, ts: *mut timespec) -> Lin
                 clock_id
             );
             wall_time()
-            // return Err(LinuxError::EINVAL);
+            // return Err(AxError::EINVAL);
         }
     };
     ts.vm_write(timespec::from_time_value(now))?;
     Ok(0)
 }
 
-pub fn sys_gettimeofday(ts: *mut timeval) -> LinuxResult<isize> {
+pub fn sys_gettimeofday(ts: *mut timeval) -> AxResult<isize> {
     ts.vm_write(timeval::from_time_value(wall_time()))?;
     Ok(0)
 }
 
-pub fn sys_clock_getres(clock_id: __kernel_clockid_t, res: *mut timespec) -> LinuxResult<isize> {
+pub fn sys_clock_getres(clock_id: __kernel_clockid_t, res: *mut timespec) -> AxResult<isize> {
     if clock_id as u32 != CLOCK_MONOTONIC && clock_id as u32 != CLOCK_REALTIME {
         warn!("Called sys_clock_getres for unsupported clock {}", clock_id);
     }
@@ -61,7 +61,7 @@ pub struct Tms {
     tms_cstime: usize,
 }
 
-pub fn sys_times(tms: *mut Tms) -> LinuxResult<isize> {
+pub fn sys_times(tms: *mut Tms) -> AxResult<isize> {
     let (utime, stime) = current().as_thread().time.borrow().output();
     let utime = utime.as_micros() as usize;
     let stime = stime.as_micros() as usize;
@@ -74,8 +74,8 @@ pub fn sys_times(tms: *mut Tms) -> LinuxResult<isize> {
     Ok(nanos_to_ticks(monotonic_time_nanos()) as _)
 }
 
-pub fn sys_getitimer(which: i32, value: *mut itimerval) -> LinuxResult<isize> {
-    let ty = ITimerType::from_repr(which).ok_or(LinuxError::EINVAL)?;
+pub fn sys_getitimer(which: i32, value: *mut itimerval) -> AxResult<isize> {
+    let ty = ITimerType::from_repr(which).ok_or(AxError::InvalidInput)?;
     let (it_interval, it_value) = current().as_thread().time.borrow().get_itimer(ty);
 
     value.vm_write(itimerval {
@@ -89,8 +89,8 @@ pub fn sys_setitimer(
     which: i32,
     new_value: *const itimerval,
     old_value: *mut itimerval,
-) -> LinuxResult<isize> {
-    let ty = ITimerType::from_repr(which).ok_or(LinuxError::EINVAL)?;
+) -> AxResult<isize> {
+    let ty = ITimerType::from_repr(which).ok_or(AxError::InvalidInput)?;
     let curr = current();
 
     let (interval, remained) = match new_value.nullable() {

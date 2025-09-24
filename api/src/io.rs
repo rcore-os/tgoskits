@@ -1,6 +1,6 @@
 use core::mem::{self, MaybeUninit};
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axio::{Buf, BufMut, Read, Write};
 use bytemuck::AnyBitPattern;
 use starry_vm::{VmPtr, vm_read_slice, vm_write_slice};
@@ -20,15 +20,15 @@ pub struct IoVectorBuf {
 }
 
 impl IoVectorBuf {
-    pub fn new(iovs: *const IoVec, iovcnt: usize) -> LinuxResult<Self> {
+    pub fn new(iovs: *const IoVec, iovcnt: usize) -> AxResult<Self> {
         if iovcnt > 1024 {
-            return Err(LinuxError::EINVAL);
+            return Err(AxError::InvalidInput);
         }
         let mut len = 0;
         for i in 0..iovcnt {
             let iov = iovs.wrapping_add(i).vm_read()?;
             if iov.iov_len < 0 {
-                return Err(LinuxError::EINVAL);
+                return Err(AxError::InvalidInput);
             }
             len += iov.iov_len as usize;
         }
@@ -37,8 +37,8 @@ impl IoVectorBuf {
 
     pub fn read_with(
         self,
-        mut f: impl FnMut(*const u8, usize) -> LinuxResult<usize>,
-    ) -> LinuxResult<usize> {
+        mut f: impl FnMut(*const u8, usize) -> AxResult<usize>,
+    ) -> AxResult<usize> {
         let mut count = 0;
         for i in 0..self.iovcnt {
             let iov = self.iovs.wrapping_add(i).vm_read()?;
@@ -56,8 +56,8 @@ impl IoVectorBuf {
 
     pub fn fill_with(
         self,
-        mut f: impl FnMut(*mut u8, usize) -> LinuxResult<usize>,
-    ) -> LinuxResult<usize> {
+        mut f: impl FnMut(*mut u8, usize) -> AxResult<usize>,
+    ) -> AxResult<usize> {
         let mut count = 0;
         for i in 0..self.iovcnt {
             let iov = self.iovs.wrapping_add(i).vm_read()?;
@@ -89,7 +89,7 @@ pub struct IoVectorBufIo {
 }
 
 impl IoVectorBufIo {
-    fn skip_empty(&mut self) -> LinuxResult<()> {
+    fn skip_empty(&mut self) -> AxResult<()> {
         while self.start < self.inner.iovcnt {
             let iov = self.inner.iovs.wrapping_add(self.start).vm_read()?;
             if iov.iov_len as usize > self.offset {
@@ -103,7 +103,7 @@ impl IoVectorBufIo {
 }
 
 impl Read for IoVectorBufIo {
-    fn read(&mut self, buf: &mut [u8]) -> LinuxResult<usize> {
+    fn read(&mut self, buf: &mut [u8]) -> AxResult<usize> {
         let mut count = 0;
         loop {
             self.skip_empty()?;
@@ -133,7 +133,7 @@ impl Buf for IoVectorBufIo {
 }
 
 impl Write for IoVectorBufIo {
-    fn write(&mut self, buf: &[u8]) -> LinuxResult<usize> {
+    fn write(&mut self, buf: &[u8]) -> AxResult<usize> {
         let mut count = 0;
         loop {
             self.skip_empty()?;
@@ -156,7 +156,7 @@ impl Write for IoVectorBufIo {
         Ok(count)
     }
 
-    fn flush(&mut self) -> LinuxResult {
+    fn flush(&mut self) -> AxResult {
         Ok(())
     }
 }

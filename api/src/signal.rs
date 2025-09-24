@@ -1,6 +1,6 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use axerrno::LinuxResult;
+use axerrno::AxResult;
 use axhal::context::TrapFrame;
 use axtask::current;
 use starry_core::task::{AsThread, Thread};
@@ -48,8 +48,8 @@ pub fn unblock_next_signal() -> bool {
 
 pub fn with_replacen_blocked<R>(
     blocked: Option<SignalSet>,
-    f: impl FnOnce() -> LinuxResult<R>,
-) -> LinuxResult<R> {
+    f: impl FnOnce() -> AxResult<R>,
+) -> AxResult<R> {
     let curr = current();
     let sig = &curr.as_thread().signal;
 

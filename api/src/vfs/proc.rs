@@ -106,11 +106,11 @@ impl SimpleDirOps for ProcessTaskDir {
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
-        let process = self.process.upgrade().ok_or(VfsError::ENOENT)?;
-        let tid = name.parse::<u32>().map_err(|_| VfsError::ENOENT)?;
-        let task = get_task(tid).map_err(|_| VfsError::ENOENT)?;
+        let process = self.process.upgrade().ok_or(VfsError::NotFound)?;
+        let tid = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
+        let task = get_task(tid).map_err(|_| VfsError::NotFound)?;
         if task.as_thread().proc_data.proc.pid() != process.pid() {
-            return Err(VfsError::ENOENT);
+            return Err(VfsError::NotFound);
         }
 
         Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
@@ -165,13 +165,13 @@ impl SimpleDirOps for ThreadFdDir {
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let fs = self.fs.clone();
-        let task = self.task.upgrade().ok_or(VfsError::ENOENT)?;
-        let fd = name.parse::<u32>().map_err(|_| VfsError::ENOENT)?;
+        let task = self.task.upgrade().ok_or(VfsError::NotFound)?;
+        let fd = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
         let path = FD_TABLE
             .scope(&task.as_thread().proc_data.scope.read())
             .read()
             .get(fd as _)
-            .ok_or(VfsError::ENOENT)?
+            .ok_or(VfsError::NotFound)?
             .inner
             .path()
             .into_owned();
@@ -211,7 +211,7 @@ impl SimpleDirOps for ThreadDir {
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let fs = self.fs.clone();
-        let task = self.task.upgrade().ok_or(VfsError::ENOENT)?;
+        let task = self.task.upgrade().ok_or(VfsError::NotFound)?;
         Ok(match name {
             "stat" => SimpleFile::new_regular(fs, move || {
                 Ok(format!("{}", TaskStat::from_thread(&task)?).into_bytes())
@@ -229,7 +229,7 @@ impl SimpleDirOps for ThreadDir {
                             let value = str::from_utf8(data)
                                 .ok()
                                 .and_then(|it| it.parse::<i32>().ok())
-                                .ok_or(VfsError::EINVAL)?;
+                                .ok_or(VfsError::InvalidInput)?;
                             task.as_thread().set_oom_score_adj(value);
                         }
                         Ok(None)
@@ -286,9 +286,9 @@ impl SimpleDirOps for ThreadDir {
                             input[..copy_len].copy_from_slice(&data[..copy_len]);
                             task.set_name(
                                 CStr::from_bytes_until_nul(&input)
-                                    .map_err(|_| VfsError::EINVAL)?
+                                    .map_err(|_| VfsError::InvalidInput)?
                                     .to_str()
-                                    .map_err(|_| VfsError::EINVAL)?,
+                                    .map_err(|_| VfsError::InvalidInput)?,
                             );
                         }
                         Ok(None)
@@ -308,7 +308,7 @@ impl SimpleDirOps for ThreadDir {
                 }),
             )
             .into(),
-            _ => return Err(VfsError::ENOENT),
+            _ => return Err(VfsError::NotFound),
         })
     }
 
@@ -334,8 +334,8 @@ impl SimpleDirOps for ProcFsHandler {
         let task = if name == "self" {
             current().clone()
         } else {
-            let tid = name.parse::<u32>().map_err(|_| VfsError::ENOENT)?;
-            get_task(tid).map_err(|_| VfsError::ENOENT)?
+            let tid = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
+            get_task(tid).map_err(|_| VfsError::NotFound)?
         };
         let node = NodeOpsMux::Dir(SimpleDir::new_maker(
             self.0.clone(),

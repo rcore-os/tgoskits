@@ -2,7 +2,7 @@ use core::{any::Any, slice};
 
 #[allow(unused_imports)]
 use axdriver::prelude::DisplayDriverOps;
-use axerrno::LinuxError;
+use axerrno::AxError;
 use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
 use axhal::mem::virt_to_phys;
 use memory_addr::{PhysAddrRange, VirtAddr};
@@ -122,7 +122,7 @@ impl DeviceOps for FrameBuffer {
     fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize> {
         let slice = self.as_mut_slice();
         if offset >= slice.len() as u64 {
-            return Err(VfsError::ENOSPC);
+            return Err(VfsError::StorageFull);
         }
         let len = buf.len().min(slice.len() - offset as usize);
         slice[..len].copy_from_slice(&buf[..len]);
@@ -214,10 +214,10 @@ impl DeviceOps for FrameBuffer {
             // FBIOPUTCMAP
             0x4605 => Ok(0),
             // FBIOPAN_DISPLAY
-            0x4606 => Err(LinuxError::EINVAL),
+            0x4606 => Err(AxError::InvalidInput),
             // FBIOBLANK
-            0x4611 => Err(LinuxError::EINVAL),
-            _ => Err(LinuxError::ENOTTY),
+            0x4611 => Err(AxError::InvalidInput),
+            _ => Err(AxError::BadIoctl),
         }
     }
 

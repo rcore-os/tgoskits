@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axhal::time::TimeValue;
 use axio::IoEvents;
 use axtask::future::Poller;
@@ -20,7 +20,7 @@ fn do_poll(
     poll_fds: &mut [pollfd],
     timeout: Option<TimeValue>,
     sigmask: Option<SignalSet>,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     debug!("do_poll fds={:?} timeout={:?}", poll_fds, timeout);
 
     let mut res = 0isize;
@@ -35,7 +35,7 @@ fn do_poll(
             Ok(f) => {
                 fds.push((
                     f,
-                    IoEvents::from_bits(fd.events as _).ok_or(LinuxError::EINVAL)?
+                    IoEvents::from_bits(fd.events as _).ok_or(AxError::InvalidInput)?
                         | IoEvents::ALWAYS_POLL,
                 ));
                 revents.push(&mut fd.revents);
@@ -75,17 +75,17 @@ fn do_poll(
                 if res > 0 {
                     Ok(res as _)
                 } else {
-                    Err(LinuxError::EAGAIN)
+                    Err(AxError::WouldBlock)
                 }
             }) {
-            Err(LinuxError::ETIMEDOUT) => Ok(0),
+            Err(AxError::TimedOut) => Ok(0),
             other => other,
         }
     })
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_poll(fds: UserPtr<pollfd>, nfds: u32, timeout: i32) -> LinuxResult<isize> {
+pub fn sys_poll(fds: UserPtr<pollfd>, nfds: u32, timeout: i32) -> AxResult<isize> {
     let fds = fds.get_as_mut_slice(nfds as usize)?;
     let timeout = if timeout < 0 {
         None
@@ -101,9 +101,9 @@ pub fn sys_ppoll(
     timeout: UserConstPtr<timespec>,
     sigmask: UserConstPtr<SignalSet>,
     sigsetsize: usize,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     check_sigset_size(sigsetsize)?;
-    let fds = fds.get_as_mut_slice(nfds.try_into().map_err(|_| LinuxError::EINVAL)?)?;
+    let fds = fds.get_as_mut_slice(nfds.try_into().map_err(|_| AxError::InvalidInput)?)?;
     let timeout = nullable!(timeout.get_as_ref())?
         .map(|ts| ts.try_into_time_value())
         .transpose()?;

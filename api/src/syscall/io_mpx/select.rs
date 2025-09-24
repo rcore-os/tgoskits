@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use core::{fmt, time::Duration};
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axio::IoEvents;
 use axtask::future::Poller;
 use bitmaps::Bitmap;
@@ -49,9 +49,9 @@ fn do_select(
     exceptfds: UserPtr<__kernel_fd_set>,
     timeout: Option<Duration>,
     sigmask: UserConstPtr<SignalSetWithSize>,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     if nfds > __FD_SETSIZE {
-        return Err(LinuxError::EINVAL);
+        return Err(AxError::InvalidInput);
     }
     let sigmask = if let Some(sigmask) = nullable!(sigmask.get_as_ref())? {
         check_sigset_size(sigmask.sigsetsize)?;
@@ -80,7 +80,7 @@ fn do_select(
     let mut fds = Vec::with_capacity(fd_count);
     let mut fd_indices = Vec::with_capacity(fd_count);
     for fd in fd_bitmap.into_iter() {
-        let f = fd_table.get(fd).ok_or(LinuxError::EBADF)?.inner.clone();
+        let f = fd_table.get(fd).ok_or(AxError::BadFileDescriptor)?.inner.clone();
         let mut events = IoEvents::empty();
         events.set(IoEvents::IN, read_set.0.get(fd));
         events.set(IoEvents::OUT, write_set.0.get(fd));
@@ -133,9 +133,9 @@ fn do_select(
                     return Ok(res as _);
                 }
 
-                Err(LinuxError::EAGAIN)
+                Err(AxError::WouldBlock)
             }) {
-            Err(LinuxError::ETIMEDOUT) => Ok(0),
+            Err(AxError::TimedOut) => Ok(0),
             other => other,
         }
     })
@@ -148,7 +148,7 @@ pub fn sys_select(
     writefds: UserPtr<__kernel_fd_set>,
     exceptfds: UserPtr<__kernel_fd_set>,
     timeout: UserConstPtr<timeval>,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     do_select(
         nfds,
         readfds,
@@ -175,7 +175,7 @@ pub fn sys_pselect6(
     exceptfds: UserPtr<__kernel_fd_set>,
     timeout: UserConstPtr<timespec>,
     sigmask: UserConstPtr<SignalSetWithSize>,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     do_select(
         nfds,
         readfds,

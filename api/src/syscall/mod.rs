@@ -10,7 +10,7 @@ mod sys;
 mod task;
 mod time;
 
-use axerrno::LinuxError;
+use axerrno::{AxError, LinuxError};
 use axhal::context::TrapFrame;
 use syscalls::Sysno;
 
@@ -587,10 +587,10 @@ pub fn handle_syscall(tf: &mut TrapFrame) {
 
         _ => {
             warn!("Unimplemented syscall: {}", sysno);
-            Err(LinuxError::ENOSYS)
+            Err(AxError::Unsupported)
         }
     };
     debug!("Syscall {} return {:?}", sysno, result);
 
-    tf.set_retval(result.unwrap_or_else(|err| -err.code() as _) as _);
+    tf.set_retval(result.unwrap_or_else(|err| -LinuxError::from(err).code() as _) as _);
 }

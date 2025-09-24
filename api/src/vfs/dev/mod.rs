@@ -14,7 +14,7 @@ pub mod tty;
 use alloc::{format, sync::Arc};
 use core::any::Any;
 
-use axerrno::LinuxError;
+use axerrno::AxError;
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsResult};
 use axsync::Mutex;
 #[cfg(feature = "dev-log")]
@@ -109,7 +109,7 @@ impl DeviceOps for Full {
     }
 
     fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
-        Err(LinuxError::ENOSPC)
+        Err(AxError::StorageFull)
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -125,7 +125,7 @@ struct CpuDmaLatency;
 
 impl DeviceOps for CpuDmaLatency {
     fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
-        Err(LinuxError::EINVAL)
+        Err(AxError::InvalidInput)
     }
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {

@@ -1,6 +1,6 @@
 use core::ffi::{c_char, c_int};
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axfs_ng::FS_CONTEXT;
 use axfs_ng_vfs::{Location, NodePermission};
 use linux_raw_sys::general::{
@@ -17,7 +17,7 @@ use crate::{
 ///
 /// Return 0 if success.
 #[cfg(target_arch = "x86_64")]
-pub fn sys_stat(path: *const c_char, statbuf: *mut stat) -> LinuxResult<isize> {
+pub fn sys_stat(path: *const c_char, statbuf: *mut stat) -> AxResult<isize> {
     use linux_raw_sys::general::AT_FDCWD;
 
     sys_fstatat(AT_FDCWD, path, statbuf, 0)
@@ -26,7 +26,7 @@ pub fn sys_stat(path: *const c_char, statbuf: *mut stat) -> LinuxResult<isize> {
 /// Get file metadata by `fd` and write into `statbuf`.
 ///
 /// Return 0 if success.
-pub fn sys_fstat(fd: i32, statbuf: *mut stat) -> LinuxResult<isize> {
+pub fn sys_fstat(fd: i32, statbuf: *mut stat) -> AxResult<isize> {
     sys_fstatat(fd, core::ptr::null(), statbuf, AT_EMPTY_PATH)
 }
 
@@ -34,7 +34,7 @@ pub fn sys_fstat(fd: i32, statbuf: *mut stat) -> LinuxResult<isize> {
 ///
 /// Return 0 if success.
 #[cfg(target_arch = "x86_64")]
-pub fn sys_lstat(path: *const c_char, statbuf: UserPtr<stat>) -> LinuxResult<isize> {
+pub fn sys_lstat(path: *const c_char, statbuf: UserPtr<stat>) -> AxResult<isize> {
     use linux_raw_sys::general::{AT_FDCWD, AT_SYMLINK_FOLLOW};
 
     sys_fstatat(AT_FDCWD, path, statbuf, AT_SYMLINK_FOLLOW)
@@ -45,7 +45,7 @@ pub fn sys_fstatat(
     path: *const c_char,
     statbuf: *mut stat,
     flags: u32,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     let path = path.nullable().map(vm_load_string).transpose()?;
 
     debug!(
@@ -65,7 +65,7 @@ pub fn sys_statx(
     flags: u32,
     _mask: u32,
     statxbuf: *mut statx,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     // `statx()` uses pathname, dirfd, and flags to identify the target
     // file in one of the following ways:
 
@@ -105,18 +105,13 @@ pub fn sys_statx(
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_access(path: *const c_char, mode: u32) -> LinuxResult<isize> {
+pub fn sys_access(path: *const c_char, mode: u32) -> AxResult<isize> {
     use linux_raw_sys::general::AT_FDCWD;
 
     sys_faccessat2(AT_FDCWD, path, mode, 0)
 }
 
-pub fn sys_faccessat2(
-    dirfd: c_int,
-    path: *const c_char,
-    mode: u32,
-    flags: u32,
-) -> LinuxResult<isize> {
+pub fn sys_faccessat2(dirfd: c_int, path: *const c_char, mode: u32, flags: u32) -> AxResult<isize> {
     let path = path.nullable().map(vm_load_string).transpose()?;
     debug!(
         "sys_faccessat2 <= dirfd: {}, path: {:?}, mode: {}, flags: {}",
@@ -140,13 +135,13 @@ pub fn sys_faccessat2(
     }
     let required_mode = required_mode.bits();
     if (file.stat()?.mode as u16 & required_mode) != required_mode {
-        return Err(LinuxError::EACCES);
+        return Err(AxError::PermissionDenied);
     }
 
     Ok(0)
 }
 
-fn statfs(loc: &Location) -> LinuxResult<statfs> {
+fn statfs(loc: &Location) -> AxResult<statfs> {
     let stat = loc.filesystem().stat()?;
     // FIXME: Zeroable
     let mut result: statfs = unsafe { core::mem::zeroed() };
@@ -167,7 +162,7 @@ fn statfs(loc: &Location) -> LinuxResult<statfs> {
     Ok(result)
 }
 
-pub fn sys_statfs(path: *const c_char, buf: *mut statfs) -> LinuxResult<isize> {
+pub fn sys_statfs(path: *const c_char, buf: *mut statfs) -> AxResult<isize> {
     let path = vm_load_string(path)?;
     debug!("sys_statfs <= path: {:?}", path);
 
@@ -181,7 +176,7 @@ pub fn sys_statfs(path: *const c_char, buf: *mut statfs) -> LinuxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_fstatfs(fd: i32, buf: *mut statfs) -> LinuxResult<isize> {
+pub fn sys_fstatfs(fd: i32, buf: *mut statfs) -> AxResult<isize> {
     debug!("sys_fstatfs <= fd: {}", fd);
 
     buf.vm_write(statfs(File::from_fd(fd)?.inner().location())?)?;

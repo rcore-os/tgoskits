@@ -1,7 +1,7 @@
 use alloc::{borrow::Cow, boxed::Box, string::ToString, sync::Arc, vec::Vec};
 use core::sync::atomic::Ordering;
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axfs_ng_vfs::{DeviceId, NodeType, VfsResult};
 use flatten_objects::FlattenObjects;
 use kspin::SpinNoIrq;
@@ -12,7 +12,7 @@ use crate::vfs::dev::tty::pty::PtyDriver;
 static PTS_TABLE: SpinNoIrq<FlattenObjects<Arc<Device>, 16>> =
     SpinNoIrq::new(FlattenObjects::new());
 
-pub fn add_slave(fs: Arc<SimpleFs>, pty: Arc<PtyDriver>) -> LinuxResult<u32> {
+pub fn add_slave(fs: Arc<SimpleFs>, pty: Arc<PtyDriver>) -> AxResult<u32> {
     let terminal = pty.terminal.clone();
     let mut table = PTS_TABLE.lock();
     let pty_number = table
@@ -22,7 +22,7 @@ pub fn add_slave(fs: Arc<SimpleFs>, pty: Arc<PtyDriver>) -> LinuxResult<u32> {
             DeviceId::default(),
             pty,
         ))
-        .map_err(|_| LinuxError::EMFILE)? as u32;
+        .map_err(|_| AxError::TooManyOpenFiles)? as u32;
     terminal.pty_number.store(pty_number, Ordering::Release);
     table
         .get(pty_number as usize)
@@ -45,8 +45,8 @@ impl SimpleDirOps for PtsDir {
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
-        let id = name.parse::<usize>().map_err(|_| LinuxError::EINVAL)?;
-        let pty = PTS_TABLE.lock().get(id).ok_or(LinuxError::ENOENT)?.clone();
+        let id = name.parse::<usize>().map_err(|_| AxError::InvalidData)?;
+        let pty = PTS_TABLE.lock().get(id).ok_or(AxError::NotFound)?.clone();
         Ok(NodeOpsMux::File(pty))
     }
 }

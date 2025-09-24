@@ -3,7 +3,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult, LinuxError};
 use axfs_ng::FileBackend;
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsResult};
 use axsync::Mutex;
@@ -40,9 +40,9 @@ impl LoopDevice {
     }
 
     /// Get information about the loop device.
-    pub fn get_info(&self) -> LinuxResult<loop_info> {
+    pub fn get_info(&self) -> AxResult<loop_info> {
         if self.file.lock().is_none() {
-            return Err(LinuxError::ENXIO);
+            return Err(AxError::Other(LinuxError::ENXIO));
         }
         let mut res: loop_info = unsafe { core::mem::zeroed() };
         res.lo_number = self.number as _;
@@ -51,29 +51,31 @@ impl LoopDevice {
     }
 
     /// Set information for the loop device.
-    pub fn set_info(&self, _src: loop_info) -> LinuxResult<()> {
+    pub fn set_info(&self, _src: loop_info) -> AxResult<()> {
         Ok(())
     }
 
     /// Clone the underlying file of the loop device.
     pub fn clone_file(&self) -> VfsResult<FileBackend> {
         let file = self.file.lock().clone();
-        file.ok_or(LinuxError::ENXIO)
+        file.ok_or(AxError::Other(LinuxError::ENXIO))
     }
 }
 
 impl DeviceOps for LoopDevice {
     fn read_at(&self, mut buf: &mut [u8], offset: u64) -> VfsResult<usize> {
         let file = self.file.lock().clone();
-        file.ok_or(LinuxError::EPERM)?.read_at(&mut buf, offset)
+        file.ok_or(AxError::OperationNotPermitted)?
+            .read_at(&mut buf, offset)
     }
 
     fn write_at(&self, mut buf: &[u8], offset: u64) -> VfsResult<usize> {
         if self.ro.load(Ordering::Relaxed) {
-            return Err(LinuxError::EROFS);
+            return Err(AxError::ReadOnlyFilesystem);
         }
         let file = self.file.lock().clone();
-        file.ok_or(LinuxError::EPERM)?.write_at(&mut buf, offset)
+        file.ok_or(AxError::OperationNotPermitted)?
+            .write_at(&mut buf, offset)
     }
 
     fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
@@ -81,15 +83,15 @@ impl DeviceOps for LoopDevice {
             LOOP_SET_FD => {
                 let fd = arg as i32;
                 if fd < 0 {
-                    return Err(LinuxError::EBADF);
+                    return Err(AxError::BadFileDescriptor);
                 }
                 let f = get_file_like(fd)?;
                 let Ok(file) = f.into_any().downcast::<crate::file::File>() else {
-                    return Err(LinuxError::EINVAL);
+                    return Err(AxError::InvalidInput);
                 };
                 let mut guard = self.file.lock();
                 if guard.is_some() {
-                    return Err(LinuxError::EBUSY);
+                    return Err(AxError::ResourceBusy);
                 }
 
                 *guard = Some(file.inner().backend()?.clone());
@@ -97,7 +99,7 @@ impl DeviceOps for LoopDevice {
             LOOP_CLR_FD => {
                 let mut guard = self.file.lock();
                 if guard.is_none() {
-                    return Err(LinuxError::ENXIO);
+                    return Err(AxError::Other(LinuxError::ENXIO));
                 }
                 *guard = None;
             }
@@ -125,7 +127,7 @@ impl DeviceOps for LoopDevice {
             BLKROSET => {
                 let ro = (arg as *const u32).vm_read()?;
                 if ro != 0 && ro != 1 {
-                    return Err(LinuxError::EINVAL);
+                    return Err(AxError::InvalidInput);
                 }
                 self.ro.store(ro != 0, Ordering::Relaxed);
             }
@@ -138,7 +140,7 @@ impl DeviceOps for LoopDevice {
             }
             _ => {
                 warn!("unknown ioctl for loop device: {cmd}");
-                return Err(LinuxError::ENOTTY);
+                return Err(AxError::BadIoctl);
             }
         }
         Ok(0)

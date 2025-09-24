@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, vec::Vec};
 use core::net::Ipv4Addr;
 
-use axerrno::LinuxResult;
+use axerrno::{AxError, AxResult};
 use axio::{Buf, BufMut};
 use axnet::{CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddrEx, SocketOps};
 use linux_raw_sys::net::{
@@ -24,7 +24,7 @@ fn send_impl(
     addr: UserConstPtr<sockaddr>,
     addrlen: socklen_t,
     cmsg: Vec<CMsgData>,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     let addr = if addr.is_null() || addrlen == 0 {
         None
     } else {
@@ -53,11 +53,11 @@ pub fn sys_sendto(
     flags: u32,
     addr: UserConstPtr<sockaddr>,
     addrlen: socklen_t,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     send_impl(fd, VmBytes::new(buf, len), flags, addr, addrlen, Vec::new())
 }
 
-pub fn sys_sendmsg(fd: i32, msg: UserConstPtr<msghdr>, flags: u32) -> LinuxResult<isize> {
+pub fn sys_sendmsg(fd: i32, msg: UserConstPtr<msghdr>, flags: u32) -> AxResult<isize> {
     let msg = msg.get_as_ref()?;
     let mut cmsg = Vec::new();
     if !msg.msg_control.is_null() {
@@ -66,7 +66,7 @@ pub fn sys_sendmsg(fd: i32, msg: UserConstPtr<msghdr>, flags: u32) -> LinuxResul
         while ptr + size_of::<cmsghdr>() <= ptr_end {
             let hdr = UserConstPtr::<cmsghdr>::from(ptr).get_as_ref()?;
             if ptr_end - ptr < hdr.cmsg_len {
-                return Err(axerrno::LinuxError::EINVAL);
+                return Err(AxError::InvalidInput);
             }
             cmsg.push(Box::new(CMsg::parse(hdr)?) as CMsgData);
             ptr += hdr.cmsg_len;
@@ -89,7 +89,7 @@ fn recv_impl(
     addr: UserPtr<sockaddr>,
     addrlen: UserPtr<socklen_t>,
     cmsg_builder: Option<CMsgBuilder>,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     debug!("sys_recv <= fd: {}, flags: {}", fd, flags);
 
     let socket = Socket::from_fd(fd)?;
@@ -153,11 +153,11 @@ pub fn sys_recvfrom(
     flags: u32,
     addr: UserPtr<sockaddr>,
     addrlen: UserPtr<socklen_t>,
-) -> LinuxResult<isize> {
+) -> AxResult<isize> {
     recv_impl(fd, VmBytesMut::new(buf, len), flags, addr, addrlen, None)
 }
 
-pub fn sys_recvmsg(fd: i32, msg: UserPtr<msghdr>, flags: u32) -> LinuxResult<isize> {
+pub fn sys_recvmsg(fd: i32, msg: UserPtr<msghdr>, flags: u32) -> AxResult<isize> {
     let msg = msg.get_as_mut()?;
     recv_impl(
         fd,

@@ -2,7 +2,9 @@ use alloc::{borrow::ToOwned, string::String, sync::Arc};
 use core::{any::Any, borrow::Borrow, cmp::Ordering, task::Context, time::Duration};
 
 use axfs_ng_vfs::{
-    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, Reference, StatFs, VfsError, VfsResult, WeakDirEntry
+    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
+    FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType,
+    Reference, StatFs, VfsError, VfsResult, WeakDirEntry,
 };
 use axio::{IoEvents, Pollable};
 use axsync::Mutex;
@@ -179,14 +181,14 @@ impl Inode {
     fn as_file(&self) -> VfsResult<&FileContent> {
         match self.content {
             NodeContent::File(ref content) => Ok(content),
-            _ => Err(VfsError::EISDIR),
+            _ => Err(VfsError::IsADirectory),
         }
     }
 
     fn as_dir(&self) -> VfsResult<&DirContent> {
         match self.content {
             NodeContent::Dir(ref content) => Ok(content),
-            _ => Err(VfsError::ENOTDIR),
+            _ => Err(VfsError::NotADirectory),
         }
     }
 }
@@ -367,7 +369,7 @@ impl DirNodeOps for MemoryNode {
         let dir = self.inode.as_dir()?;
         let entries = dir.entries.lock();
 
-        let entry = entries.get(name).ok_or(VfsError::ENOENT)?;
+        let entry = entries.get(name).ok_or(VfsError::NotFound)?;
         let inode = entry.get();
         let node_type = inode.metadata.lock().node_type;
         self.new_entry(name, node_type, inode)
@@ -383,7 +385,7 @@ impl DirNodeOps for MemoryNode {
         let mut entries = dir.entries.lock();
 
         if entries.contains_key(name) {
-            return Err(VfsError::EEXIST);
+            return Err(VfsError::AlreadyExists);
         }
         let inode = Inode::new(&self.fs, Some(self.inode.ino), node_type, permission);
         entries.insert(name.into(), InodeRef::new(self.fs.clone(), inode.ino));
@@ -397,7 +399,7 @@ impl DirNodeOps for MemoryNode {
         let target = target.downcast::<Self>()?;
 
         if entries.contains_key(name) {
-            return Err(VfsError::EEXIST);
+            return Err(VfsError::AlreadyExists);
         }
         let inode = target.inode.clone();
         let node_type = target.metadata()?.node_type;
@@ -410,12 +412,12 @@ impl DirNodeOps for MemoryNode {
         let mut entries = dir.entries.lock();
 
         let Some(entry) = entries.get(name) else {
-            return Err(VfsError::ENOENT);
+            return Err(VfsError::NotFound);
         };
         if let NodeContent::Dir(DirContent { entries }) = &entry.get().content
             && entries.lock().len() > 2
         {
-            return Err(VfsError::ENOTEMPTY);
+            return Err(VfsError::DirectoryNotEmpty);
         }
         entries.remove(name);
 
@@ -438,7 +440,7 @@ impl DirNodeOps for MemoryNode {
             .entries
             .lock()
             .remove(src_name)
-            .ok_or(VfsError::ENOENT)?;
+            .ok_or(VfsError::NotFound)?;
         dst_node
             .inode
             .as_dir()?

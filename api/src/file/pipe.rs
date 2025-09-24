@@ -6,7 +6,7 @@ use core::{
     task::Context,
 };
 
-use axerrno::{LinuxError, LinuxResult};
+use axerrno::{AxError, AxResult};
 use axio::{Buf, BufMut, IoEvents, PollSet, Pollable, Read, Write};
 use axsync::Mutex;
 use axtask::{current, future::Poller};
@@ -80,7 +80,7 @@ impl Pipe {
         self.shared.buffer.lock().capacity().get()
     }
 
-    pub fn resize(&self, new_size: usize) -> LinuxResult<()> {
+    pub fn resize(&self, new_size: usize) -> AxResult<()> {
         let new_size = new_size.div_ceil(PAGE_SIZE_4K).max(1) * PAGE_SIZE_4K;
 
         let mut buffer = self.shared.buffer.lock();
@@ -88,7 +88,7 @@ impl Pipe {
             return Ok(());
         }
         if new_size < buffer.occupied_len() {
-            return Err(LinuxError::EBUSY);
+            return Err(AxError::ResourceBusy);
         }
         let old_buffer = mem::replace(&mut *buffer, HeapRb::new(new_size));
         let (left, right) = old_buffer.as_slices();
@@ -108,9 +108,9 @@ fn raise_pipe() {
 }
 
 impl FileLike for Pipe {
-    fn read(&self, dst: &mut SealedBufMut) -> LinuxResult<usize> {
+    fn read(&self, dst: &mut SealedBufMut) -> AxResult<usize> {
         if !self.is_read() {
-            return Err(LinuxError::EBADF);
+            return Err(AxError::BadFileDescriptor);
         }
         if dst.remaining_mut() == 0 {
             return Ok(0);
@@ -135,14 +135,14 @@ impl FileLike for Pipe {
                 } else if self.closed() {
                     Ok(0)
                 } else {
-                    Err(LinuxError::EAGAIN)
+                    Err(AxError::WouldBlock)
                 }
             })
     }
 
-    fn write(&self, src: &mut SealedBuf) -> LinuxResult<usize> {
+    fn write(&self, src: &mut SealedBuf) -> AxResult<usize> {
         if !self.is_write() {
-            return Err(LinuxError::EBADF);
+            return Err(AxError::BadFileDescriptor);
         }
         let size = src.remaining();
         if size == 0 {
@@ -156,7 +156,7 @@ impl FileLike for Pipe {
             .poll(|| {
                 if self.closed() {
                     raise_pipe();
-                    return Err(LinuxError::EPIPE);
+                    return Err(AxError::BrokenPipe);
                 }
 
                 let written = {
@@ -176,11 +176,11 @@ impl FileLike for Pipe {
                         return Ok(total_written);
                     }
                 }
-                Err(LinuxError::EAGAIN)
+                Err(AxError::WouldBlock)
             })
     }
 
-    fn stat(&self) -> LinuxResult<Kstat> {
+    fn stat(&self) -> AxResult<Kstat> {
         Ok(Kstat {
             mode: S_IFIFO | if self.is_read() { 0o444 } else { 0o222 },
             ..Default::default()
@@ -195,7 +195,7 @@ impl FileLike for Pipe {
         self
     }
 
-    fn set_nonblocking(&self, nonblocking: bool) -> LinuxResult {
+    fn set_nonblocking(&self, nonblocking: bool) -> AxResult {
         self.non_blocking.store(nonblocking, Ordering::Release);
         Ok(())
     }
@@ -204,13 +204,13 @@ impl FileLike for Pipe {
         self.non_blocking.load(Ordering::Acquire)
     }
 
-    fn ioctl(&self, cmd: u32, arg: usize) -> LinuxResult<usize> {
+    fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
         match cmd {
             FIONREAD => {
                 (arg as *mut u32).vm_write(self.shared.buffer.lock().occupied_len() as u32)?;
                 Ok(0)
             }
-            _ => Err(LinuxError::ENOTTY),
+            _ => Err(AxError::BadIoctl),
         }
     }
 }
