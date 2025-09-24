@@ -27,7 +27,7 @@ pub trait FileNodeOps: NodeOps + Pollable {
 
     /// Manipulates the underlying device parameters of special files.
     fn ioctl(&self, _cmd: u32, _arg: usize) -> VfsResult<usize> {
-        Err(VfsError::ENOTTY)
+        Err(VfsError::BadIoctl)
     }
 }
 
@@ -62,6 +62,6 @@ impl FileNode {
             .clone()
             .into_any()
             .downcast()
-            .map_err(|_| VfsError::EINVAL)
+            .map_err(|_| VfsError::InvalidInput)
     }
 }

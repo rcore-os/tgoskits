@@ -224,7 +224,7 @@ impl Location {
 
     pub fn link(&self, name: &str, node: &Self) -> VfsResult<Self> {
         if !Arc::ptr_eq(&self.mountpoint, &node.mountpoint) {
-            return Err(VfsError::EXDEV);
+            return Err(VfsError::CrossesDevices);
         }
         self.entry
             .as_dir()?
@@ -234,10 +234,10 @@ impl Location {
 
     pub fn rename(&self, src_name: &str, dst_dir: &Self, dst_name: &str) -> VfsResult<()> {
         if !Arc::ptr_eq(&self.mountpoint, &dst_dir.mountpoint) {
-            return Err(VfsError::EXDEV);
+            return Err(VfsError::CrossesDevices);
         }
         if !self.ptr_eq(dst_dir) && self.entry.is_ancestor_of(&dst_dir.entry)? {
-            return Err(VfsError::EINVAL);
+            return Err(VfsError::InvalidInput);
         }
         self.entry
             .as_dir()?
@@ -262,7 +262,7 @@ impl Location {
     pub fn mount(&self, fs: &Filesystem) -> VfsResult<Arc<Mountpoint>> {
         let mut mountpoint = self.entry.as_dir()?.mountpoint.lock();
         if mountpoint.is_some() {
-            return Err(VfsError::EBUSY);
+            return Err(VfsError::ResourceBusy);
         }
         let result = Mountpoint::new(fs, Some(self.clone()));
         *mountpoint = Some(result.clone());
@@ -275,10 +275,10 @@ impl Location {
 
     pub fn unmount(&self) -> VfsResult<()> {
         if !self.is_root_of_mount() {
-            return Err(VfsError::EINVAL);
+            return Err(VfsError::InvalidInput);
         }
         if !self.mountpoint.children.lock().is_empty() {
-            return Err(VfsError::ENOTEMPTY);
+            return Err(VfsError::ResourceBusy);
         }
         assert!(self.entry.ptr_eq(&self.mountpoint.root));
         self.entry.as_dir()?.forget();
@@ -290,7 +290,7 @@ impl Location {
 
     pub fn unmount_all(&self) -> VfsResult<()> {
         if !self.is_root_of_mount() {
-            return Err(VfsError::EINVAL);
+            return Err(VfsError::InvalidInput);
         }
         let children = mem::take(&mut *self.mountpoint.children.lock());
         for (_, child) in children {

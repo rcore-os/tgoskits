@@ -152,7 +152,7 @@ impl DirNode {
             .clone()
             .into_any()
             .downcast()
-            .map_err(|_| VfsError::EINVAL)
+            .map_err(|_| VfsError::InvalidInput)
     }
 
     fn forget_entry(children: &mut DirChildren, name: &str) {
@@ -180,7 +180,7 @@ impl DirNode {
     /// Looks up a directory entry by name.
     pub fn lookup(&self, name: &str) -> VfsResult<DirEntry> {
         if name.len() > MAX_NAME_LEN {
-            return Err(VfsError::ENAMETOOLONG);
+            return Err(VfsError::NameTooLong);
         }
         // Fast path
         if self.ops.is_cacheable() {
@@ -228,8 +228,8 @@ impl DirNode {
         let mut children = self.cache.lock();
         let entry = self.lookup_locked(name, &mut children)?;
         match (entry.is_dir(), is_dir) {
-            (true, false) => return Err(VfsError::EISDIR),
-            (false, true) => return Err(VfsError::ENOTDIR),
+            (true, false) => return Err(VfsError::IsADirectory),
+            (false, true) => return Err(VfsError::NotADirectory),
             _ => {}
         }
 
@@ -309,10 +309,10 @@ impl DirNode {
                 if let Ok(dir) = dst.as_dir()
                     && dir.has_children()?
                 {
-                    return Err(VfsError::ENOTEMPTY);
+                    return Err(VfsError::DirectoryNotEmpty);
                 }
             } else if dst.node_type() == NodeType::Directory {
-                return Err(VfsError::EISDIR);
+                return Err(VfsError::IsADirectory);
             }
         }
         drop(src_children);
@@ -338,11 +338,11 @@ impl DirNode {
         match self.lookup_locked(name, &mut children) {
             Ok(val) => {
                 if options.create_new {
-                    return Err(VfsError::EEXIST);
+                    return Err(VfsError::AlreadyExists);
                 }
                 return Ok(val);
             }
-            Err(err) if err == VfsError::ENOENT && options.create => {}
+            Err(err) if err == VfsError::NotFound && options.create => {}
             Err(err) => return Err(err),
         }
         let entry =

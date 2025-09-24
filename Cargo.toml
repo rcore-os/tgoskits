@@ -16,4 +16,5 @@ log = "=0.4.21"
 smallvec = "1.15.1"
 
 [patch.crates-io]
-axio = { git = "https://github.com/Starry-OS/axio.git" }
+axio = { git = "https://github.com/Starry-OS/axio.git", rev = "d6c8dc3" }
+axerrno = { git = "https://github.com/Starry-OS/axerrno.git", rev = "58be232" }

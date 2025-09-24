@@ -10,10 +10,10 @@ pub const MAX_NAME_LEN: usize = 255;
 
 pub(crate) fn verify_entry_name(name: &str) -> VfsResult<()> {
     if name == DOT || name == DOTDOT {
-        return Err(VfsError::EINVAL);
+        return Err(VfsError::InvalidInput);
     }
     if name.len() > MAX_NAME_LEN {
-        return Err(VfsError::ENAMETOOLONG);
+        return Err(VfsError::NameTooLong);
     }
     Ok(())
 }

@@ -270,7 +270,7 @@ impl DirEntry {
             .clone_inner()
             .into_any()
             .downcast()
-            .map_err(|_| VfsError::EINVAL)
+            .map_err(|_| VfsError::InvalidInput)
     }
 
     pub fn downgrade(&self) -> WeakDirEntry {
@@ -344,14 +344,14 @@ impl DirEntry {
     pub fn as_file(&self) -> VfsResult<&FileNode> {
         match &self.0.node {
             Node::File(file) => Ok(file),
-            _ => Err(VfsError::EISDIR),
+            _ => Err(VfsError::IsADirectory),
         }
     }
 
     pub fn as_dir(&self) -> VfsResult<&DirNode> {
         match &self.0.node {
             Node::Dir(dir) => Ok(dir),
-            _ => Err(VfsError::ENOTDIR),
+            _ => Err(VfsError::NotADirectory),
         }
     }
 
@@ -365,18 +365,18 @@ impl DirEntry {
 
     pub fn read_link(&self) -> VfsResult<String> {
         if self.node_type() != NodeType::Symlink {
-            return Err(VfsError::EINVAL);
+            return Err(VfsError::InvalidData);
         }
         let file = self.as_file()?;
         let mut buf = vec![0; file.len()? as usize];
         file.read_at(&mut buf, 0)?;
-        String::from_utf8(buf).map_err(|_| VfsError::EINVAL)
+        String::from_utf8(buf).map_err(|_| VfsError::InvalidData)
     }
 
     pub fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
         match &self.0.node {
             Node::File(file) => file.ioctl(cmd, arg),
-            Node::Dir(_) => Err(VfsError::ENOTTY),
+            Node::Dir(_) => Err(VfsError::BadIoctl),
         }
     }
 
