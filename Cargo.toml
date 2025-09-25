@@ -144,17 +144,17 @@ optional = true
 
 [patch.crates-io]
 axbacktrace = { git = "https://github.com/Starry-OS/axbacktrace.git", rev = "322f6da" }
-axcpu = { git = "https://github.com/Starry-OS/axcpu.git", rev = "dfaa046" }
+axcpu = { git = "https://github.com/Starry-OS/axcpu.git", rev = "e85eb24" }
 axerrno = { git = "https://github.com/Starry-OS/axerrno.git", rev = "58be232" }
 axio = { git = "https://github.com/Starry-OS/axio.git", rev = "e11ca75" }
 axplat = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "9bf8648" }
 axplat-riscv64-qemu-virt = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "9bf8648" }
 axplat-loongarch64-qemu-virt = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "9bf8648" }
-page_table_entry = { git = "https://github.com/Starry-OS/page_table_multiarch.git", rev = "4edb821" }
-page_table_multiarch = { git = "https://github.com/Starry-OS/page_table_multiarch.git", rev = "4edb821" }
+page_table_entry = { git = "https://github.com/Starry-OS/page_table_multiarch.git", rev = "3f697c8" }
+page_table_multiarch = { git = "https://github.com/Starry-OS/page_table_multiarch.git", rev = "3f697c8" }
 starry-process = { git = "https://github.com/Starry-OS/starry-process.git", rev = "6327455" }
 starry-signal = { git = "https://github.com/Starry-OS/starry-signal.git", rev = "93176af" }
-starry-vm = { git = "https://github.com/Starry-OS/starry-vm.git", rev = "80a312c" }
+starry-vm = { git = "https://github.com/Starry-OS/starry-vm.git", rev = "e2a50e7" }
 
 [package.metadata.vendor-filter]
 platforms = ["riscv64gc-unknown-none-elf", "loongarch64-unknown-none-softfloat"]
