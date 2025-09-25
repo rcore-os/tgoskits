@@ -31,7 +31,8 @@ pub fn init_percpu(cpu_id: usize) {
 ///
 /// [`percpu`]: https://docs.rs/percpu/latest/percpu/index.html
 pub fn init_trap() {
-    crate::trap::init_exception_table();
+    #[cfg(feature = "uspace")]
+    crate::uspace_common::init_exception_table();
     init_gdt();
     init_idt();
     #[cfg(feature = "uspace")]

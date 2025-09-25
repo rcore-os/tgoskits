@@ -1,9 +1,4 @@
-
 .section .text
-
-.L_fixup_handle_unaligned:
-	li.w	$a0, -1
-	jr	$ra
 
 /*
  * unsigned long unaligned_read(void *addr, void *value, unsigned long n, bool sign)
@@ -41,9 +36,9 @@ _unaligned_read:
 5:	li.w    $a0, -1
 	jr	$ra
 
-	_asm_extable 1b, .L_fixup_handle_unaligned
-	_asm_extable 2b, .L_fixup_handle_unaligned
-	_asm_extable 4b, .L_fixup_handle_unaligned
+	_asm_extable 1b, 5b
+	_asm_extable 2b, 5b
+	_asm_extable 4b, 5b
 
 /*
  * unsigned long unaligned_write(void *addr, unsigned long value, unsigned long n)
@@ -70,4 +65,4 @@ _unaligned_write:
 3:	li.w    $a0, -1
 	jr	$ra
 
-	_asm_extable 2b, .L_fixup_handle_unaligned
+	_asm_extable 2b, 3b

@@ -13,6 +13,7 @@ extern "C" {
     fn _unaligned_write(addr: u64, value: u64, n: u64) -> i32;
 }
 
+/// Error type for unaligned access operations.
 #[derive(Copy, Eq, PartialEq, Clone, Debug)]
 pub struct UnalignedError {
     addr: u64,
@@ -556,11 +557,6 @@ impl TrapFrame {
         let badv = badv::read().vaddr() as u64;
         let badi = core::ptr::read(self.era as *const u32);
         let rd = (badi & 0x1f) as usize;
-
-        // debug!(
-        //     "emulate unaligned access @ {:#x} badv={:#x}",
-        //     self.era, badv
-        // );
 
         let regs = unsafe {
             core::mem::transmute::<&mut GeneralRegisters, &mut [usize; 32]>(&mut self.regs)

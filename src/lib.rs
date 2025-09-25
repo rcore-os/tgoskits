@@ -1,6 +1,7 @@
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
-#![feature(likely_unlikely)]
+#![feature(cold_path)]
+#![deny(missing_docs)]
 #![doc = include_str!("../README.md")]
 
 #[macro_use]
@@ -11,6 +12,9 @@ extern crate memory_addr;
 
 #[macro_use]
 pub mod trap;
+
+#[cfg(feature = "uspace")]
+mod uspace_common;
 
 cfg_if::cfg_if! {
     if #[cfg(target_arch = "x86_64")] {

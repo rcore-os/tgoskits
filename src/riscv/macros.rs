@@ -12,13 +12,6 @@ macro_rules! __asm_macros {
             sw \rs2, \off*XLENB(\rs1)
         .endm
 
-        .macro REG_L rd, rs
-            lw \rd, \rs
-        .endm
-        .macro REG_S rs2, rs1
-            sw \rs2, \rs1
-        .endm
-
         .macro _asm_extable, from, to
             .pushsection __ex_table, "a"
             .balign 4
@@ -43,13 +36,6 @@ macro_rules! __asm_macros {
         .endm
         .macro STR rs2, rs1, off
             sd \rs2, \off*XLENB(\rs1)
-        .endm
-
-        .macro REG_L rd, rs
-            ld \rd, \rs
-        .endm
-        .macro REG_S rs2, rs1
-            sd \rs2, \rs1
         .endm
 
         .macro _asm_extable, from, to

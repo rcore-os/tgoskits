@@ -4,7 +4,8 @@
 ///
 /// In detail, it initializes the trap vector on RISC-V platforms.
 pub fn init_trap() {
-    crate::trap::init_exception_table();
+    #[cfg(feature = "uspace")]
+    crate::uspace_common::init_exception_table();
     unsafe extern "C" {
         fn trap_vector_base();
     }

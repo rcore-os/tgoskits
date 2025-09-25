@@ -1,7 +1,5 @@
 //! Trap handling.
 
-use core::fmt::Debug;
-
 use memory_addr::VirtAddr;
 
 pub use crate::TrapFrame;
@@ -31,64 +29,4 @@ macro_rules! handle_trap {
             false
         }
     }}
-}
-
-#[cfg(feature = "uspace")]
-#[derive(Debug, Clone, Copy)]
-pub enum ReturnReason {
-    Unknown,
-    Interrupt,
-    Syscall,
-    PageFault(VirtAddr, PageFaultFlags),
-    Exception(crate::uspace::ExceptionInfo),
-}
-
-#[cfg(feature = "uspace")]
-pub enum ExceptionKind {
-    Other,
-    Breakpoint,
-    IllegalInstruction,
-    Misaligned,
-}
-
-#[repr(C)]
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct ExceptionTableEntry {
-    from: usize,
-    to: usize,
-}
-
-impl TrapFrame {
-    pub(crate) fn fixup_exception(&mut self) -> bool {
-        let entries = unsafe {
-            core::slice::from_raw_parts(
-                _ex_table_start as *const ExceptionTableEntry,
-                (_ex_table_end as usize - _ex_table_start as usize)
-                    / core::mem::size_of::<ExceptionTableEntry>(),
-            )
-        };
-        match entries.binary_search_by(|e| e.from.cmp(&self.ip())) {
-            Ok(entry) => {
-                self.set_ip(entries[entry].to);
-                true
-            }
-            Err(_) => false,
-        }
-    }
-}
-
-pub(crate) fn init_exception_table() {
-    // Sort exception table
-    let ex_table = unsafe {
-        core::slice::from_raw_parts_mut(
-            _ex_table_start as *mut ExceptionTableEntry,
-            (_ex_table_end as usize - _ex_table_start as usize) / size_of::<ExceptionTableEntry>(),
-        )
-    };
-    ex_table.sort_unstable();
-}
-
-unsafe extern "C" {
-    fn _ex_table_start();
-    fn _ex_table_end();
 }

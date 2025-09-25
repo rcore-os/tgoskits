@@ -20,19 +20,22 @@ fn handle_breakpoint(sepc: &mut usize) {
 
 fn handle_page_fault(tf: &mut TrapFrame, access_flags: PageFaultFlags) {
     let vaddr = va!(stval::read());
-    if core::hint::likely(handle_trap!(PAGE_FAULT, vaddr, access_flags)) {
+    if handle_trap!(PAGE_FAULT, vaddr, access_flags) {
         return;
     }
-    if !tf.fixup_exception() {
-        panic!(
-            "Unhandled Supervisor Page Fault @ {:#x}, fault_vaddr={:#x} ({:?}):\n{:#x?}\n{}",
-            tf.sepc,
-            vaddr,
-            access_flags,
-            tf,
-            tf.backtrace()
-        );
+    #[cfg(feature = "uspace")]
+    if tf.fixup_exception() {
+        return;
     }
+    core::hint::cold_path();
+    panic!(
+        "Unhandled Supervisor Page Fault @ {:#x}, fault_vaddr={:#x} ({:?}):\n{:#x?}\n{}",
+        tf.sepc,
+        vaddr,
+        access_flags,
+        tf,
+        tf.backtrace()
+    );
 }
 
 #[unsafe(no_mangle)]

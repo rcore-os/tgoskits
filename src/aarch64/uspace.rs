@@ -5,10 +5,9 @@ use core::ops::{Deref, DerefMut};
 use aarch64_cpu::registers::ESR_EL1;
 use memory_addr::VirtAddr;
 
-use crate::{
-    trap::{ExceptionKind, ReturnReason},
-    TrapFrame,
-};
+use crate::TrapFrame;
+
+pub use crate::uspace_common::{ExceptionKind, ReturnReason};
 
 /// Context to enter user space.
 pub struct UserContext(TrapFrame);

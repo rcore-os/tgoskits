@@ -47,7 +47,9 @@ pub struct GeneralRegisters {
 pub struct FpState {
     /// the state of the RISC-V Floating-Point Unit (FPU)
     pub fp: [u64; 32],
+    /// the floating-point control and status register
     pub fcsr: usize,
+    /// the floating-point status (dirty, clean, off)
     pub fs: FS,
 }
 

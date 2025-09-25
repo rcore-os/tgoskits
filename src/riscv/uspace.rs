@@ -14,8 +14,9 @@ use riscv::{
     register::stval,
 };
 
-use super::{GeneralRegisters, TrapFrame};
-use crate::trap::{ExceptionKind, PageFaultFlags, ReturnReason};
+use crate::{trap::PageFaultFlags, GeneralRegisters, TrapFrame};
+
+pub use crate::uspace_common::{ExceptionKind, ReturnReason};
 
 /// Context to enter user space.
 #[derive(Debug, Clone)]
@@ -115,13 +116,17 @@ impl From<TrapFrame> for UserContext {
     }
 }
 
+/// Information about an exception that occurred in user space.
 #[derive(Debug, Clone, Copy)]
 pub struct ExceptionInfo {
+    /// The raw exception.
     pub e: E,
+    /// The faulting address (from `stval`).
     pub stval: usize,
 }
 
 impl ExceptionInfo {
+    /// Returns a generalized kind of this exception.
     pub fn kind(&self) -> ExceptionKind {
         match self.e {
             E::Breakpoint => ExceptionKind::Breakpoint,

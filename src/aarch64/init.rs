@@ -99,7 +99,8 @@ pub unsafe fn init_mmu(root_paddr: PhysAddr) {
 /// In detail, it initializes the exception vector, and sets `TTBR0_EL1` to 0 to
 /// block low address access.
 pub fn init_trap() {
-    crate::trap::init_exception_table();
+    #[cfg(feature = "uspace")]
+    crate::uspace_common::init_exception_table();
     unsafe extern "C" {
         fn exception_vector_base();
     }

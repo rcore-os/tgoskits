@@ -19,19 +19,22 @@ fn handle_breakpoint(era: &mut usize) {
 
 fn handle_page_fault(tf: &mut TrapFrame, access_flags: PageFaultFlags) {
     let vaddr = va!(badv::read().vaddr());
-    if core::hint::likely(handle_trap!(PAGE_FAULT, vaddr, access_flags)) {
+    if handle_trap!(PAGE_FAULT, vaddr, access_flags) {
         return;
     }
-    if !tf.fixup_exception() {
-        panic!(
-            "Unhandled PLV0 Page Fault @ {:#x}, fault_vaddr={:#x} ({:?}):\n{:#x?}\n{}",
-            tf.era,
-            vaddr,
-            access_flags,
-            tf,
-            tf.backtrace()
-        );
+    #[cfg(feature = "uspace")]
+    if tf.fixup_exception() {
+        return;
     }
+    core::hint::cold_path();
+    panic!(
+        "Unhandled PLV0 Page Fault @ {:#x}, fault_vaddr={:#x} ({:?}):\n{:#x?}\n{}",
+        tf.era,
+        vaddr,
+        access_flags,
+        tf,
+        tf.backtrace()
+    );
 }
 
 #[unsafe(no_mangle)]
