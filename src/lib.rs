@@ -28,8 +28,7 @@ pub enum VmError {
 impl From<VmError> for AxError {
     fn from(err: VmError) -> Self {
         match err {
-            VmError::BadAddress => AxError::BadAddress,
-            VmError::AccessDenied => AxError::PermissionDenied,
+            VmError::BadAddress | VmError::AccessDenied => AxError::BadAddress,
             #[cfg(feature = "alloc")]
             VmError::TooLong => AxError::TooBig,
         }
