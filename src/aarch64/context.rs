@@ -6,12 +6,8 @@ use memory_addr::VirtAddr;
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
 pub struct TrapFrame {
-    /// General-purpose registers (R0..R30).
-    pub r: [u64; 31],
-    /// User Stack Pointer (SP_EL0).
-    pub usp: u64,
-    /// Software Thread ID Register (TPIDR_EL0).
-    pub tpidr: u64,
+    /// General-purpose registers (X0..X30).
+    pub x: [u64; 31],
     /// Exception Link Register (ELR_EL1).
     pub elr: u64,
     /// Saved Process Status Register (SPSR_EL1).
@@ -21,11 +17,9 @@ pub struct TrapFrame {
 impl fmt::Debug for TrapFrame {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "TrapFrame: {{")?;
-        for (i, &reg) in self.r.iter().enumerate() {
-            writeln!(f, "    r{i}: {reg:#x},")?;
+        for (i, &reg) in self.x.iter().enumerate() {
+            writeln!(f, "    x{i}: {reg:#x},")?;
         }
-        writeln!(f, "    usp: {:#x},", self.usp)?;
-        writeln!(f, "    tpidr: {:#x},", self.tpidr)?;
         writeln!(f, "    elr: {:#x},", self.elr)?;
         writeln!(f, "    spsr: {:#x},", self.spsr)?;
         write!(f, "}}")?;
@@ -34,69 +28,64 @@ impl fmt::Debug for TrapFrame {
 }
 
 impl TrapFrame {
-    /// Creates an empty context with all registers set to zero.
-    pub const fn new() -> Self {
-        unsafe { core::mem::zeroed() }
-    }
-
     /// Gets the 0th syscall argument.
     pub const fn arg0(&self) -> usize {
-        self.r[0] as _
+        self.x[0] as _
     }
 
     /// Sets the 0th syscall argument.
     pub const fn set_arg0(&mut self, a0: usize) {
-        self.r[0] = a0 as _;
+        self.x[0] = a0 as _;
     }
 
     /// Gets the 1st syscall argument.
     pub const fn arg1(&self) -> usize {
-        self.r[1] as _
+        self.x[1] as _
     }
 
     /// Sets the 1st syscall argument.
     pub const fn set_arg1(&mut self, a1: usize) {
-        self.r[1] = a1 as _;
+        self.x[1] = a1 as _;
     }
 
     /// Gets the 2nd syscall argument.
     pub const fn arg2(&self) -> usize {
-        self.r[2] as _
+        self.x[2] as _
     }
 
     /// Sets the 2nd syscall argument.
     pub const fn set_arg2(&mut self, a2: usize) {
-        self.r[2] = a2 as _;
+        self.x[2] = a2 as _;
     }
 
     /// Gets the 3rd syscall argument.
     pub const fn arg3(&self) -> usize {
-        self.r[3] as _
+        self.x[3] as _
     }
 
     /// Sets the 3rd syscall argument.
     pub const fn set_arg3(&mut self, a3: usize) {
-        self.r[3] = a3 as _;
+        self.x[3] = a3 as _;
     }
 
     /// Gets the 4th syscall argument.
     pub const fn arg4(&self) -> usize {
-        self.r[4] as _
+        self.x[4] as _
     }
 
     /// Sets the 4th syscall argument.
     pub const fn set_arg4(&mut self, a4: usize) {
-        self.r[4] = a4 as _;
+        self.x[4] = a4 as _;
     }
 
     /// Gets the 5th syscall argument.
     pub const fn arg5(&self) -> usize {
-        self.r[5] as _
+        self.x[5] as _
     }
 
     /// Sets the 5th syscall argument.
     pub const fn set_arg5(&mut self, a5: usize) {
-        self.r[5] = a5 as _;
+        self.x[5] = a5 as _;
     }
 
     /// Gets the instruction pointer.
@@ -109,44 +98,34 @@ impl TrapFrame {
         self.elr = pc as _;
     }
 
-    /// Gets the stack pointer.
-    pub const fn sp(&self) -> usize {
-        self.usp as _
+    /// Get the syscall number.
+    pub const fn sysno(&self) -> usize {
+        self.x[8] as usize
     }
 
-    /// Sets the stack pointer.
-    pub const fn set_sp(&mut self, sp: usize) {
-        self.usp = sp as _;
+    /// Sets the syscall number.
+    pub const fn set_sysno(&mut self, sysno: usize) {
+        self.x[8] = sysno as _;
     }
 
     /// Gets the return value register.
     pub const fn retval(&self) -> usize {
-        self.r[0] as _
+        self.x[0] as _
     }
 
     /// Sets the return value register.
     pub const fn set_retval(&mut self, r0: usize) {
-        self.r[0] = r0 as _;
+        self.x[0] = r0 as _;
     }
 
     /// Sets the return address.
     pub const fn set_ra(&mut self, lr: usize) {
-        self.r[30] = lr as _;
-    }
-
-    /// Gets the TLS area.
-    pub const fn tls(&self) -> usize {
-        self.tpidr as _
-    }
-
-    /// Sets the TLS area.
-    pub const fn set_tls(&mut self, tls: usize) {
-        self.tpidr = tls as _;
+        self.x[30] = lr as _;
     }
 
     /// Unwind the stack and get the backtrace.
     pub fn backtrace(&self) -> axbacktrace::Backtrace {
-        axbacktrace::Backtrace::capture_trap(self.r[29] as _, self.elr as _, self.r[30] as _)
+        axbacktrace::Backtrace::capture_trap(self.x[29] as _, self.elr as _, self.x[30] as _)
     }
 }
 
@@ -229,7 +208,6 @@ impl TaskContext {
     pub fn init(&mut self, entry: usize, kstack_top: VirtAddr, tls_area: VirtAddr) {
         self.sp = kstack_top.as_usize() as u64;
         self.lr = entry as u64;
-        // When under `uspace` feature, kernel will not use this register.
         self.tpidr_el0 = tls_area.as_usize() as u64;
     }
 

@@ -19,15 +19,11 @@ use crate::{trap::PageFaultFlags, GeneralRegisters, TrapFrame};
 pub use crate::uspace_common::{ExceptionKind, ReturnReason};
 
 /// Context to enter user space.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
 pub struct UserContext(TrapFrame);
 
 impl UserContext {
-    /// Creates an empty context with all registers set to zero.
-    pub const fn empty() -> Self {
-        unsafe { core::mem::MaybeUninit::zeroed().assume_init() }
-    }
-
     /// Creates a new context with the given entry point, user stack pointer,
     /// and the argument.
     pub fn new(entry: usize, ustack_top: VirtAddr, arg0: usize) -> Self {
@@ -56,11 +52,11 @@ impl UserContext {
     /// This function returns when an exception or syscall occurs.
     pub fn run(&mut self) -> ReturnReason {
         extern "C" {
-            fn enter_user(tf: &mut TrapFrame);
+            fn enter_user(uctx: &mut UserContext);
         }
 
         crate::asm::disable_irqs();
-        unsafe { enter_user(&mut self.0) };
+        unsafe { enter_user(self) };
 
         let scause = scause::read();
         let ret = if let Ok(cause) = scause.cause().try_into::<I, E>() {
@@ -107,12 +103,6 @@ impl Deref for UserContext {
 impl DerefMut for UserContext {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
-    }
-}
-
-impl From<TrapFrame> for UserContext {
-    fn from(tf: TrapFrame) -> Self {
-        Self(tf)
     }
 }
 
