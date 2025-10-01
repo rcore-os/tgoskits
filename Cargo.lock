@@ -113,8 +113,7 @@ dependencies = [
 [[package]]
 name = "arm-gic-driver"
 version = "0.15.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f251a1a74133f802b55eaf5e340107b0024457aa9b2ac3c72074501bfa8509a5"
+source = "git+https://github.com/Starry-OS/arm-gic-driver.git?rev=2e33925#2e33925ef33a60ee5cbc4f951fa9e198b1243926"
 dependencies = [
  "aarch64-cpu",
  "bitflags 2.9.4",
@@ -194,7 +193,7 @@ dependencies = [
 [[package]]
 name = "axbacktrace"
 version = "0.1.0"
-source = "git+https://github.com/Starry-OS/axbacktrace.git?rev=322f6da#322f6dab0e7e3f51f7d29731e7eeca6435e5028e"
+source = "git+https://github.com/Starry-OS/axbacktrace.git?rev=09c22b6#09c22b6a969d27b39c5b1cdc3c31b35165059d12"
 dependencies = [
  "addr2line",
  "cfg-if",
@@ -236,7 +235,7 @@ dependencies = [
 [[package]]
 name = "axcpu"
 version = "0.2.2"
-source = "git+https://github.com/Starry-OS/axcpu.git?rev=e85eb24#e85eb2435394647a599f25ac38faaceb6a08c5f2"
+source = "git+https://github.com/Starry-OS/axcpu.git?rev=53455db#53455db3978450785e38b983e2da1a1fd1d2a685"
 dependencies = [
  "aarch64-cpu",
  "axbacktrace",
@@ -290,12 +289,12 @@ dependencies = [
 [[package]]
 name = "axdriver_base"
 version = "0.1.2"
-source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=6ddb55b#6ddb55b90f66b30c911334b99db8e47791f263a7"
+source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=b707728#b70772886bf92212accd9bab05a5517d778a685d"
 
 [[package]]
 name = "axdriver_block"
 version = "0.1.2"
-source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=6ddb55b#6ddb55b90f66b30c911334b99db8e47791f263a7"
+source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=b707728#b70772886bf92212accd9bab05a5517d778a685d"
 dependencies = [
  "axdriver_base",
  "gpt_disk_io",
@@ -306,7 +305,7 @@ dependencies = [
 [[package]]
 name = "axdriver_display"
 version = "0.1.2"
-source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=6ddb55b#6ddb55b90f66b30c911334b99db8e47791f263a7"
+source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=b707728#b70772886bf92212accd9bab05a5517d778a685d"
 dependencies = [
  "axdriver_base",
 ]
@@ -314,7 +313,7 @@ dependencies = [
 [[package]]
 name = "axdriver_input"
 version = "0.1.2"
-source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=6ddb55b#6ddb55b90f66b30c911334b99db8e47791f263a7"
+source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=b707728#b70772886bf92212accd9bab05a5517d778a685d"
 dependencies = [
  "axdriver_base",
  "strum",
@@ -323,7 +322,7 @@ dependencies = [
 [[package]]
 name = "axdriver_net"
 version = "0.1.2"
-source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=6ddb55b#6ddb55b90f66b30c911334b99db8e47791f263a7"
+source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=b707728#b70772886bf92212accd9bab05a5517d778a685d"
 dependencies = [
  "axdriver_base",
  "log",
@@ -333,7 +332,7 @@ dependencies = [
 [[package]]
 name = "axdriver_pci"
 version = "0.1.2"
-source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=6ddb55b#6ddb55b90f66b30c911334b99db8e47791f263a7"
+source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=b707728#b70772886bf92212accd9bab05a5517d778a685d"
 dependencies = [
  "virtio-drivers",
 ]
@@ -341,7 +340,7 @@ dependencies = [
 [[package]]
 name = "axdriver_virtio"
 version = "0.1.2"
-source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=6ddb55b#6ddb55b90f66b30c911334b99db8e47791f263a7"
+source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=b707728#b70772886bf92212accd9bab05a5517d778a685d"
 dependencies = [
  "axdriver_base",
  "axdriver_block",
@@ -459,10 +458,11 @@ dependencies = [
 [[package]]
 name = "axio"
 version = "0.1.1"
-source = "git+https://github.com/Starry-OS/axio.git?rev=e11ca75#e11ca75f23189d3a8df7987eafd73015b95fb225"
+source = "git+https://github.com/Starry-OS/axio.git?rev=f7a2dfe#f7a2dfe7999af74ac3c7dd1f48b7769f71baf12a"
 dependencies = [
  "axerrno",
  "bitflags 2.9.4",
+ "spin 0.10.0",
 ]
 
 [[package]]
@@ -528,7 +528,7 @@ dependencies = [
 [[package]]
 name = "axplat"
 version = "0.2.0"
-source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=9bf8648#9bf864808185a5985bc930ab529c5f3a338b438d"
+source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=7c739d6#7c739d61753dabd9263fb7817c2f7d9f132d81ea"
 dependencies = [
  "axplat-macros",
  "bitflags 2.9.4",
@@ -541,8 +541,7 @@ dependencies = [
 [[package]]
 name = "axplat-aarch64-peripherals"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a9a6548290a150059eb2ae015dc58d9b3d652461760327b95a490666129974c"
+source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=7c739d6#7c739d61753dabd9263fb7817c2f7d9f132d81ea"
 dependencies = [
  "aarch64-cpu",
  "arm-gic-driver",
@@ -561,8 +560,7 @@ dependencies = [
 [[package]]
 name = "axplat-aarch64-qemu-virt"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f03bfe81ebc5b2f567eecadcab221107b90f394485dd0da39334411a676d81a"
+source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=7c739d6#7c739d61753dabd9263fb7817c2f7d9f132d81ea"
 dependencies = [
  "axconfig-macros",
  "axcpu",
@@ -592,7 +590,7 @@ dependencies = [
 [[package]]
 name = "axplat-loongarch64-qemu-virt"
 version = "0.2.0"
-source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=9bf8648#9bf864808185a5985bc930ab529c5f3a338b438d"
+source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=7c739d6#7c739d61753dabd9263fb7817c2f7d9f132d81ea"
 dependencies = [
  "axconfig-macros",
  "axcpu",
@@ -620,7 +618,7 @@ dependencies = [
 [[package]]
 name = "axplat-riscv64-qemu-virt"
 version = "0.2.0"
-source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=9bf8648#9bf864808185a5985bc930ab529c5f3a338b438d"
+source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=7c739d6#7c739d61753dabd9263fb7817c2f7d9f132d81ea"
 dependencies = [
  "axconfig-macros",
  "axcpu",
@@ -2169,7 +2167,6 @@ dependencies = [
 name = "starry-api"
 version = "0.1.0"
 dependencies = [
- "arrayvec",
  "axalloc",
  "axbacktrace",
  "axconfig",
@@ -2278,7 +2275,7 @@ dependencies = [
 [[package]]
 name = "starry-signal"
 version = "0.2.2"
-source = "git+https://github.com/Starry-OS/starry-signal.git?rev=93176af#93176afd4cc1d747d49f6eade354f95d7d5f5ea7"
+source = "git+https://github.com/Starry-OS/starry-signal.git?rev=01aa4a0#01aa4a079791ffb0f84434ad348c932ebb7a5956"
 dependencies = [
  "axcpu",
  "bitflags 2.9.4",

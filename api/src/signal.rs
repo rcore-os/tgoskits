@@ -1,15 +1,19 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use axerrno::AxResult;
-use axhal::context::TrapFrame;
+use axhal::uspace::UserContext;
 use axtask::current;
 use starry_core::task::{AsThread, Thread};
 use starry_signal::{SignalOSAction, SignalSet};
 
 use crate::task::do_exit;
 
-pub fn check_signals(thr: &Thread, tf: &mut TrapFrame, restore_blocked: Option<SignalSet>) -> bool {
-    let Some((sig, os_action)) = thr.signal.check_signals(tf, restore_blocked) else {
+pub fn check_signals(
+    thr: &Thread,
+    uctx: &mut UserContext,
+    restore_blocked: Option<SignalSet>,
+) -> bool {
+    let Some((sig, os_action)) = thr.signal.check_signals(uctx, restore_blocked) else {
         return false;
     };
 

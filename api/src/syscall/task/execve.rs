@@ -3,7 +3,7 @@ use core::ffi::c_char;
 
 use axerrno::{AxError, AxResult};
 use axfs_ng::FS_CONTEXT;
-use axhal::context::TrapFrame;
+use axhal::uspace::UserContext;
 use axtask::current;
 use starry_core::{mm::load_user_app, task::AsThread};
 use starry_vm::vm_load_until_nul;
@@ -11,7 +11,7 @@ use starry_vm::vm_load_until_nul;
 use crate::{file::FD_TABLE, mm::vm_load_string};
 
 pub fn sys_execve(
-    tf: &mut TrapFrame,
+    uctx: &mut UserContext,
     path: *const c_char,
     argv: *const *const c_char,
     envp: *const *const c_char,
@@ -66,7 +66,7 @@ pub fn sys_execve(
     }
     drop(fd_table);
 
-    tf.set_ip(entry_point.as_usize());
-    tf.set_sp(user_stack_base.as_usize());
+    uctx.set_ip(entry_point.as_usize());
+    uctx.set_sp(user_stack_base.as_usize());
     Ok(0)
 }

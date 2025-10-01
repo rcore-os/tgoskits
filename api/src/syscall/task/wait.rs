@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 use core::{future::poll_fn, task::Poll};
 
 use axerrno::{AxError, AxResult, LinuxError};
-use axhal::context::TrapFrame;
+use axhal::uspace::UserContext;
 use axtask::{current, future::try_block_on};
 use bitflags::bitflags;
 use linux_raw_sys::general::{
@@ -60,7 +60,7 @@ impl WaitPid {
 }
 
 pub fn sys_waitpid(
-    tf: &mut TrapFrame,
+    uctx: &mut UserContext,
     pid: i32,
     exit_code: *mut i32,
     options: u32,
@@ -125,8 +125,9 @@ pub fn sys_waitpid(
         Ok(Some(result)) => Ok(result),
         Ok(None) => {
             // RESTART
-            tf.set_ip(tf.ip() - 4);
-            while check_signals(curr.as_thread(), tf, None) {}
+            let ip = uctx.ip() - 4;
+            uctx.set_ip(ip);
+            while check_signals(curr.as_thread(), uctx, None) {}
             Ok(0)
         }
         Err(err) => Err(err),

@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 
 use axerrno::{AxError, AxResult};
 use axfs_ng::FS_CONTEXT;
-use axhal::{context::TrapFrame, uspace::UserContext};
+use axhal::uspace::UserContext;
 use axtask::{TaskExtProxy, current, spawn_task};
 use bitflags::bitflags;
 use kspin::SpinNoIrq;
@@ -86,7 +86,7 @@ bitflags! {
 }
 
 pub fn sys_clone(
-    tf: &TrapFrame,
+    uctx: &UserContext,
     flags: u32,
     stack: usize,
     parent_tid: usize,
@@ -119,7 +119,7 @@ pub fn sys_clone(
     }
     let exit_signal = Signo::from_repr(exit_signal as u8);
 
-    let mut new_uctx = UserContext::from(*tf);
+    let mut new_uctx = *uctx;
     if stack != 0 {
         new_uctx.set_sp(stack);
     }
@@ -228,6 +228,6 @@ pub fn sys_clone(
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_fork(tf: &TrapFrame) -> AxResult<isize> {
-    sys_clone(tf, SIGCHLD, 0, 0, 0, 0)
+pub fn sys_fork(uctx: &UserContext) -> AxResult<isize> {
+    sys_clone(uctx, SIGCHLD, 0, 0, 0, 0)
 }

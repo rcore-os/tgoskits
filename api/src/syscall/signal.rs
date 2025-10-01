@@ -1,7 +1,7 @@
 use core::{future::poll_fn, task::Poll};
 
 use axerrno::{AxError, AxResult, LinuxError};
-use axhal::context::TrapFrame;
+use axhal::uspace::UserContext;
 use axtask::{
     current,
     future::{block_on, timeout_opt},
@@ -205,14 +205,14 @@ pub fn sys_rt_tgsigqueueinfo(
     Ok(0)
 }
 
-pub fn sys_rt_sigreturn(tf: &mut TrapFrame) -> AxResult<isize> {
+pub fn sys_rt_sigreturn(uctx: &mut UserContext) -> AxResult<isize> {
     block_next_signal();
-    current().as_thread().signal.restore(tf);
-    Ok(tf.retval() as isize)
+    current().as_thread().signal.restore(uctx);
+    Ok(uctx.retval() as isize)
 }
 
 pub fn sys_rt_sigtimedwait(
-    tf: &mut TrapFrame,
+    uctx: &mut UserContext,
     set: *const SignalSet,
     info: *mut siginfo,
     timeout: *const timespec,
@@ -241,12 +241,12 @@ pub fn sys_rt_sigtimedwait(
     let old_blocked = signal.blocked();
     signal.set_blocked(old_blocked & !set);
 
-    tf.set_retval(-LinuxError::EINTR.code() as usize);
+    uctx.set_retval(-LinuxError::EINTR.code() as usize);
     let fut = poll_fn(|context| {
         if let Some(sig) = signal.dequeue_signal(&set) {
             signal.set_blocked(old_blocked);
             Poll::Ready(Some(sig))
-        } else if check_signals(thr, tf, Some(old_blocked)) {
+        } else if check_signals(thr, uctx, Some(old_blocked)) {
             Poll::Ready(None)
         } else {
             curr.register_interrupt_waker(context.waker());
@@ -272,7 +272,7 @@ pub fn sys_rt_sigtimedwait(
 }
 
 pub fn sys_rt_sigsuspend(
-    tf: &mut TrapFrame,
+    uctx: &mut UserContext,
     set: *const SignalSet,
     sigsetsize: usize,
 ) -> AxResult<isize> {
@@ -284,10 +284,10 @@ pub fn sys_rt_sigsuspend(
     let set = unsafe { set.vm_read_uninit()?.assume_init() };
     let old_blocked = thr.signal.set_blocked(set);
 
-    tf.set_retval(-LinuxError::EINTR.code() as usize);
+    uctx.set_retval(-LinuxError::EINTR.code() as usize);
 
     block_on(poll_fn(|context| {
-        if check_signals(thr, tf, Some(old_blocked)) {
+        if check_signals(thr, uctx, Some(old_blocked)) {
             return Poll::Ready(());
         }
         curr.register_interrupt_waker(context.waker());

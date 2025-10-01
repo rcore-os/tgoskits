@@ -31,7 +31,6 @@ axtask.workspace = true
 
 starry-core.workspace = true
 
-arrayvec = { version = "0.7.6", default-features = false }
 axbacktrace.workspace = true
 axerrno.workspace = true
 bitflags.workspace = true
