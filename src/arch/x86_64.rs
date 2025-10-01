@@ -1,4 +1,4 @@
-use axcpu::TrapFrame;
+use axcpu::uspace::UserContext;
 
 use crate::{SignalSet, SignalStack};
 
@@ -50,32 +50,32 @@ pub struct MContext {
 }
 
 impl MContext {
-    pub fn new(tf: &TrapFrame) -> Self {
+    pub fn new(uctx: &UserContext) -> Self {
         Self {
-            r8: tf.r8 as _,
-            r9: tf.r9 as _,
-            r10: tf.r10 as _,
-            r11: tf.r11 as _,
-            r12: tf.r12 as _,
-            r13: tf.r13 as _,
-            r14: tf.r14 as _,
-            r15: tf.r15 as _,
-            rdi: tf.rdi as _,
-            rsi: tf.rsi as _,
-            rbp: tf.rbp as _,
-            rbx: tf.rbx as _,
-            rdx: tf.rdx as _,
-            rax: tf.rax as _,
-            rcx: tf.rcx as _,
-            rsp: tf.rsp as _,
-            rip: tf.rip as _,
-            eflags: tf.rflags as _,
-            cs: tf.cs as _,
+            r8: uctx.r8 as _,
+            r9: uctx.r9 as _,
+            r10: uctx.r10 as _,
+            r11: uctx.r11 as _,
+            r12: uctx.r12 as _,
+            r13: uctx.r13 as _,
+            r14: uctx.r14 as _,
+            r15: uctx.r15 as _,
+            rdi: uctx.rdi as _,
+            rsi: uctx.rsi as _,
+            rbp: uctx.rbp as _,
+            rbx: uctx.rbx as _,
+            rdx: uctx.rdx as _,
+            rax: uctx.rax as _,
+            rcx: uctx.rcx as _,
+            rsp: uctx.rsp as _,
+            rip: uctx.rip as _,
+            eflags: uctx.rflags as _,
+            cs: uctx.cs as _,
             gs: 0,
             fs: 0,
             _pad: 0,
-            err: tf.error_code as _,
-            trapno: tf.vector as _,
+            err: uctx.error_code as _,
+            trapno: uctx.vector as _,
             oldmask: 0,
             cr2: 0,
             fpstate: 0,
@@ -83,28 +83,28 @@ impl MContext {
         }
     }
 
-    pub fn restore(&self, tf: &mut TrapFrame) {
-        tf.r8 = self.r8 as _;
-        tf.r9 = self.r9 as _;
-        tf.r10 = self.r10 as _;
-        tf.r11 = self.r11 as _;
-        tf.r12 = self.r12 as _;
-        tf.r13 = self.r13 as _;
-        tf.r14 = self.r14 as _;
-        tf.r15 = self.r15 as _;
-        tf.rdi = self.rdi as _;
-        tf.rsi = self.rsi as _;
-        tf.rbp = self.rbp as _;
-        tf.rbx = self.rbx as _;
-        tf.rdx = self.rdx as _;
-        tf.rax = self.rax as _;
-        tf.rcx = self.rcx as _;
-        tf.rsp = self.rsp as _;
-        tf.rip = self.rip as _;
-        tf.rflags = self.eflags as _;
-        tf.cs = self.cs as _;
-        tf.error_code = self.err as _;
-        tf.vector = self.trapno as _;
+    pub fn restore(&self, uctx: &mut UserContext) {
+        uctx.r8 = self.r8 as _;
+        uctx.r9 = self.r9 as _;
+        uctx.r10 = self.r10 as _;
+        uctx.r11 = self.r11 as _;
+        uctx.r12 = self.r12 as _;
+        uctx.r13 = self.r13 as _;
+        uctx.r14 = self.r14 as _;
+        uctx.r15 = self.r15 as _;
+        uctx.rdi = self.rdi as _;
+        uctx.rsi = self.rsi as _;
+        uctx.rbp = self.rbp as _;
+        uctx.rbx = self.rbx as _;
+        uctx.rdx = self.rdx as _;
+        uctx.rax = self.rax as _;
+        uctx.rcx = self.rcx as _;
+        uctx.rsp = self.rsp as _;
+        uctx.rip = self.rip as _;
+        uctx.rflags = self.eflags as _;
+        uctx.cs = self.cs as _;
+        uctx.error_code = self.err as _;
+        uctx.vector = self.trapno as _;
     }
 }
 
@@ -119,12 +119,12 @@ pub struct UContext {
 }
 
 impl UContext {
-    pub fn new(tf: &TrapFrame, sigmask: SignalSet) -> Self {
+    pub fn new(uctx: &UserContext, sigmask: SignalSet) -> Self {
         Self {
             flags: 0,
             link: 0,
             stack: SignalStack::default(),
-            mcontext: MContext::new(tf),
+            mcontext: MContext::new(uctx),
             sigmask,
         }
     }

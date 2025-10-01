@@ -1,4 +1,4 @@
-use axcpu::TrapFrame;
+use axcpu::uspace::UserContext;
 
 use crate::{SignalSet, SignalStack};
 
@@ -31,22 +31,22 @@ pub struct MContext {
 }
 
 impl MContext {
-    pub fn new(tf: &TrapFrame) -> Self {
+    pub fn new(uctx: &UserContext) -> Self {
         Self {
             fault_address: 0,
-            regs: tf.r,
-            sp: tf.usp,
-            pc: tf.elr,
-            pstate: tf.spsr,
+            regs: uctx.x,
+            sp: uctx.sp,
+            pc: uctx.elr,
+            pstate: uctx.spsr,
             __reserved: MContextPadding([0; 4096]),
         }
     }
 
-    pub fn restore(&self, tf: &mut TrapFrame) {
-        tf.r = self.regs;
-        tf.usp = self.sp;
-        tf.elr = self.pc;
-        tf.spsr = self.pstate;
+    pub fn restore(&self, uctx: &mut UserContext) {
+        uctx.x = self.regs;
+        uctx.sp = self.sp;
+        uctx.elr = self.pc;
+        uctx.spsr = self.pstate;
     }
 }
 
@@ -62,14 +62,14 @@ pub struct UContext {
 }
 
 impl UContext {
-    pub fn new(tf: &TrapFrame, sigmask: SignalSet) -> Self {
+    pub fn new(uctx: &UserContext, sigmask: SignalSet) -> Self {
         Self {
             flags: 0,
             link: 0,
             stack: SignalStack::default(),
             sigmask,
             __unused: [0; 1024 / 8 - size_of::<SignalSet>()],
-            mcontext: MContext::new(tf),
+            mcontext: MContext::new(uctx),
         }
     }
 }

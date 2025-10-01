@@ -1,4 +1,4 @@
-use axcpu::{GeneralRegisters, TrapFrame};
+use axcpu::{GeneralRegisters, uspace::UserContext};
 
 use crate::{SignalSet, SignalStack};
 
@@ -24,17 +24,17 @@ pub struct MContext {
 }
 
 impl MContext {
-    pub fn new(tf: &TrapFrame) -> Self {
+    pub fn new(uctx: &UserContext) -> Self {
         Self {
-            sc_pc: tf.era as _,
-            sc_regs: tf.regs,
+            sc_pc: uctx.era as _,
+            sc_regs: uctx.regs,
             sc_flags: 0,
         }
     }
 
-    pub fn restore(&self, tf: &mut TrapFrame) {
-        tf.era = self.sc_pc as _;
-        tf.regs = self.sc_regs;
+    pub fn restore(&self, uctx: &mut UserContext) {
+        uctx.era = self.sc_pc as _;
+        uctx.regs = self.sc_regs;
     }
 }
 
@@ -50,14 +50,14 @@ pub struct UContext {
 }
 
 impl UContext {
-    pub fn new(tf: &TrapFrame, sigmask: SignalSet) -> Self {
+    pub fn new(uctx: &UserContext, sigmask: SignalSet) -> Self {
         Self {
             flags: 0,
             link: 0,
             stack: SignalStack::default(),
             sigmask,
             __unused: [0; 1024 / 8 - size_of::<SignalSet>()],
-            mcontext: MContext::new(tf),
+            mcontext: MContext::new(uctx),
         }
     }
 }

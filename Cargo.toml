@@ -9,7 +9,7 @@ authors = [
 repository = "https://github.com/Starry-OS/starry-signal"
 
 [dependencies]
-axcpu = "0.2"
+axcpu = { version = "0.2", features = ["uspace"] }
 bitflags = "2.6"
 cfg-if = "1.0.0"
 derive_more = { version = "2.0.1", default-features = false, features = [
@@ -28,4 +28,5 @@ strum = { version = "0.27.1", default-features = false, features = ["derive"] }
 [patch.crates-io]
 axbacktrace = { git = "https://github.com/Starry-OS/axbacktrace.git" }
 axcpu = { git = "https://github.com/Starry-OS/axcpu.git" }
+axerrno = { git = "https://github.com/Starry-OS/axerrno.git" }
 starry-vm = { git = "https://github.com/Starry-OS/starry-vm.git" }

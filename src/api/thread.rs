@@ -5,7 +5,7 @@ use core::{
 };
 
 use alloc::sync::Arc;
-use axcpu::TrapFrame;
+use axcpu::uspace::UserContext;
 use kspin::SpinNoIrq;
 use starry_vm::VmMutPtr;
 
@@ -19,7 +19,7 @@ use super::ProcessSignalManager;
 struct SignalFrame {
     ucontext: UContext,
     siginfo: SignalInfo,
-    tf: TrapFrame,
+    uctx: UserContext,
 }
 
 /// Thread-level signal manager.
@@ -67,7 +67,7 @@ impl ThreadSignalManager {
 
     pub fn handle_signal(
         &self,
-        tf: &mut TrapFrame,
+        uctx: &mut UserContext,
         restore_blocked: SignalSet,
         sig: &SignalInfo,
         action: &SignalAction,
@@ -87,7 +87,7 @@ impl ThreadSignalManager {
                 let layout = Layout::new::<SignalFrame>();
                 let stack = self.stack.lock();
                 let sp = if stack.disabled() || !action.flags.contains(SignalActionFlags::ONSTACK) {
-                    tf.sp()
+                    uctx.sp()
                 } else {
                     stack.sp + stack.size
                 };
@@ -98,29 +98,30 @@ impl ThreadSignalManager {
                 let frame_ptr = aligned_sp as *mut SignalFrame;
                 if frame_ptr
                     .vm_write(SignalFrame {
-                        ucontext: UContext::new(tf, restore_blocked),
+                        ucontext: UContext::new(uctx, restore_blocked),
                         siginfo: sig.clone(),
-                        tf: *tf,
+                        uctx: *uctx,
                     })
                     .is_err()
                 {
                     return Some(SignalOSAction::CoreDump);
                 }
 
-                tf.set_ip(handler as usize);
-                tf.set_sp(aligned_sp);
-                tf.set_arg0(signo as _);
-                tf.set_arg1(aligned_sp + offset_of!(SignalFrame, siginfo));
-                tf.set_arg2(aligned_sp + offset_of!(SignalFrame, ucontext));
+                uctx.set_ip(handler as usize);
+                uctx.set_sp(aligned_sp);
+                uctx.set_arg0(signo as _);
+                uctx.set_arg1(aligned_sp + offset_of!(SignalFrame, siginfo));
+                uctx.set_arg2(aligned_sp + offset_of!(SignalFrame, ucontext));
 
                 let restorer = action
                     .restorer
                     .map_or(self.proc.default_restorer, |f| f as _);
-                // FIXME: fix x86_64 RA handling
                 #[cfg(target_arch = "x86_64")]
-                tf.push_ra(restorer);
+                if (uctx.sp() as *mut usize).vm_write(restorer).is_err() {
+                    return Some(SignalOSAction::CoreDump);
+                }
                 #[cfg(not(target_arch = "x86_64"))]
-                tf.set_ra(restorer);
+                uctx.set_ra(restorer);
 
                 let mut add_blocked = action.mask;
                 if !action.flags.contains(SignalActionFlags::NODEFER) {
@@ -136,22 +137,12 @@ impl ThreadSignalManager {
         }
     }
 
-    /// Checks pending signals and handle them.
-    ///
-    /// Returns the signal number and the action the OS should take, if any.
-    pub fn check_signals(
+    #[cold]
+    fn check_signals_slow(
         &self,
-        tf: &mut TrapFrame,
+        uctx: &mut UserContext,
         restore_blocked: Option<SignalSet>,
     ) -> Option<(SignalInfo, SignalOSAction)> {
-        // Fast path
-        if core::hint::likely(
-            !self.possibly_has_signal.load(Ordering::Acquire)
-                && !self.proc.possibly_has_signal.load(Ordering::Acquire),
-        ) {
-            return None;
-        }
-
         let actions = self.proc.actions.lock();
 
         let blocked = self.blocked.lock();
@@ -168,20 +159,37 @@ impl ThreadSignalManager {
                 }
             }?;
             let action = &actions[sig.signo()];
-            if let Some(os_action) = self.handle_signal(tf, restore_blocked, &sig, action) {
+            if let Some(os_action) = self.handle_signal(uctx, restore_blocked, &sig, action) {
                 break Some((sig, os_action));
             }
         }
     }
 
+    /// Checks pending signals and handle them.
+    ///
+    /// Returns the signal number and the action the OS should take, if any.
+    pub fn check_signals(
+        &self,
+        uctx: &mut UserContext,
+        restore_blocked: Option<SignalSet>,
+    ) -> Option<(SignalInfo, SignalOSAction)> {
+        // Fast path
+        if !self.possibly_has_signal.load(Ordering::Acquire)
+            && !self.proc.possibly_has_signal.load(Ordering::Acquire)
+        {
+            return None;
+        }
+        self.check_signals_slow(uctx, restore_blocked)
+    }
+
     /// Restores the signal frame. Called by `sigreturn`.
-    pub fn restore(&self, tf: &mut TrapFrame) {
-        let frame_ptr = tf.sp() as *const SignalFrame;
+    pub fn restore(&self, uctx: &mut UserContext) {
+        let frame_ptr = uctx.sp() as *const SignalFrame;
         // SAFETY: pointer is valid
         let frame = unsafe { &*frame_ptr };
 
-        *tf = frame.tf;
-        frame.ucontext.mcontext.restore(tf);
+        *uctx = frame.uctx;
+        frame.ucontext.mcontext.restore(uctx);
 
         *self.blocked.lock() = frame.ucontext.sigmask;
         self.possibly_has_signal.store(true, Ordering::Release);
