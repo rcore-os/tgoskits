@@ -18,6 +18,8 @@ jobs:
             target: riscv64gc-unknown-none-elf
           - arch: loongarch64
             target: loongarch64-unknown-none-softfloat
+          - arch: aarch64
+            target: aarch64-unknown-none-softfloat
 
     steps:
       - uses: actions/checkout@v4
