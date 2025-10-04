@@ -528,7 +528,7 @@ dependencies = [
 [[package]]
 name = "axplat"
 version = "0.2.0"
-source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=7c739d6#7c739d61753dabd9263fb7817c2f7d9f132d81ea"
+source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=243fdc9#243fdc9265ba472cffffddc1cae9a47371caf8e3"
 dependencies = [
  "axplat-macros",
  "bitflags 2.9.4",
@@ -541,7 +541,7 @@ dependencies = [
 [[package]]
 name = "axplat-aarch64-peripherals"
 version = "0.2.0"
-source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=7c739d6#7c739d61753dabd9263fb7817c2f7d9f132d81ea"
+source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=243fdc9#243fdc9265ba472cffffddc1cae9a47371caf8e3"
 dependencies = [
  "aarch64-cpu",
  "arm-gic-driver",
@@ -560,7 +560,7 @@ dependencies = [
 [[package]]
 name = "axplat-aarch64-qemu-virt"
 version = "0.2.0"
-source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=7c739d6#7c739d61753dabd9263fb7817c2f7d9f132d81ea"
+source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=243fdc9#243fdc9265ba472cffffddc1cae9a47371caf8e3"
 dependencies = [
  "axconfig-macros",
  "axcpu",
@@ -590,7 +590,7 @@ dependencies = [
 [[package]]
 name = "axplat-loongarch64-qemu-virt"
 version = "0.2.0"
-source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=7c739d6#7c739d61753dabd9263fb7817c2f7d9f132d81ea"
+source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=243fdc9#243fdc9265ba472cffffddc1cae9a47371caf8e3"
 dependencies = [
  "axconfig-macros",
  "axcpu",
@@ -618,7 +618,7 @@ dependencies = [
 [[package]]
 name = "axplat-riscv64-qemu-virt"
 version = "0.2.0"
-source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=7c739d6#7c739d61753dabd9263fb7817c2f7d9f132d81ea"
+source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=243fdc9#243fdc9265ba472cffffddc1cae9a47371caf8e3"
 dependencies = [
  "axconfig-macros",
  "axcpu",
