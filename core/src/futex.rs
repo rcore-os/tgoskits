@@ -13,7 +13,7 @@ use core::{
     time::Duration,
 };
 
-use axerrno::{AxError, AxResult};
+use axerrno::AxResult;
 use axmm::{
     AddrSpace,
     backend::{Backend, SharedPages},
@@ -21,9 +21,8 @@ use axmm::{
 use axsync::Mutex;
 use axtask::{
     current,
-    future::{block_on_interruptible, timeout_opt},
+    future::{self, block_on, interruptible},
 };
-use futures::FutureExt;
 use hashbrown::HashMap;
 use kspin::SpinNoIrq;
 use memory_addr::VirtAddr;
@@ -52,25 +51,22 @@ impl WaitQueue {
         condition: impl FnOnce() -> bool,
     ) -> AxResult<bool> {
         let mut condition = Some(condition);
-        block_on_interruptible(
-            timeout_opt(
-                poll_fn(|cx| {
-                    if let Some(cond) = condition.take() {
-                        let mut queue = self.queue.lock();
-                        if !cond() {
-                            Poll::Ready(Ok(false))
-                        } else {
-                            queue.push_back((cx.waker().clone(), bitset));
-                            Poll::Pending
-                        }
+        block_on(interruptible(future::timeout(
+            timeout,
+            poll_fn(|cx| {
+                if let Some(cond) = condition.take() {
+                    let mut queue = self.queue.lock();
+                    if !cond() {
+                        Poll::Ready(Ok(false))
                     } else {
-                        Poll::Ready(Ok(true))
+                        queue.push_back((cx.waker().clone(), bitset));
+                        Poll::Pending
                     }
-                }),
-                timeout,
-            )
-            .map(|opt| opt.ok_or(AxError::TimedOut)?),
-        )
+                } else {
+                    Poll::Ready(Ok(true))
+                }
+            }),
+        )))??
     }
 
     /// Wakes up at most `count` tasks whose bitset intersects with the given

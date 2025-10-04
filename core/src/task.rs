@@ -470,18 +470,13 @@ pub fn set_timer_state(task: &TaskInner, state: TimerState) {
 }
 
 fn send_signal_thread_inner(task: &TaskInner, thr: &Thread, sig: SignalInfo) {
-    let signo = sig.signo();
     if thr.signal.send_signal(sig) {
-        task.interrupt(thr.proc_data.signal.can_restart(signo));
+        task.interrupt();
     }
 }
 
 /// Sends a signal to a thread.
-pub fn send_signal_to_thread(
-    tgid: Option<Pid>,
-    tid: Pid,
-    sig: Option<SignalInfo>,
-) -> AxResult<()> {
+pub fn send_signal_to_thread(tgid: Option<Pid>, tid: Pid, sig: Option<SignalInfo>) -> AxResult<()> {
     let task = get_task(tid)?;
     let thread = task.try_as_thread().ok_or(AxError::OperationNotPermitted)?;
     if tgid.is_some_and(|tgid| thread.proc_data.proc.pid() != tgid) {
@@ -506,7 +501,7 @@ pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> AxResult<()>
         if let Some(tid) = proc_data.signal.send_signal(sig)
             && let Ok(task) = get_task(tid)
         {
-            task.interrupt(proc_data.signal.can_restart(signo));
+            task.interrupt();
         }
     }
 

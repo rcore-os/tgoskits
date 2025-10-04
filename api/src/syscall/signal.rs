@@ -4,7 +4,7 @@ use axerrno::{AxError, AxResult, LinuxError};
 use axhal::uspace::UserContext;
 use axtask::{
     current,
-    future::{block_on, timeout_opt},
+    future::{self, block_on},
 };
 use linux_raw_sys::general::{
     MINSIGSTKSZ, SI_TKILL, SI_USER, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK, kernel_sigaction, siginfo,
@@ -249,12 +249,12 @@ pub fn sys_rt_sigtimedwait(
         } else if check_signals(thr, uctx, Some(old_blocked)) {
             Poll::Ready(None)
         } else {
-            curr.register_interrupt_waker(context.waker());
+            curr.on_interrupt(context.waker());
             Poll::Pending
         }
     });
 
-    let Some(sig) = block_on(timeout_opt(fut, timeout)) else {
+    let Ok(sig) = block_on(future::timeout(timeout, fut)) else {
         // Timeout
         signal.set_blocked(old_blocked);
         return Err(AxError::WouldBlock);
@@ -290,7 +290,7 @@ pub fn sys_rt_sigsuspend(
         if check_signals(thr, uctx, Some(old_blocked)) {
             return Poll::Ready(());
         }
-        curr.register_interrupt_waker(context.waker());
+        curr.on_interrupt(context.waker());
         Poll::Pending
     }));
 

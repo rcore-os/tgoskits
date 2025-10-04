@@ -731,7 +731,6 @@ dependencies = [
  "cpumask",
  "crate_interface",
  "extern-trait 0.2.0",
- "foldhash",
  "futures",
  "kernel_guard",
  "kspin",
@@ -740,8 +739,8 @@ dependencies = [
  "memory_addr",
  "percpu",
  "pin-project",
- "priority-queue",
  "spin 0.10.0",
+ "weak-map",
 ]
 
 [[package]]
@@ -1827,17 +1826,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "priority-queue"
-version = "2.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5676d703dda103cbb035b653a9f11448c0a7216c7926bd35fcb5865475d0c970"
-dependencies = [
- "autocfg",
- "equivalent",
- "indexmap",
-]
-
-[[package]]
 name = "proc-macro-error-attr2"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2548,9 +2536,9 @@ dependencies = [
 
 [[package]]
 name = "weak-map"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "209bc3ff6d982801239e57fa3b8b3505d4fc41102d1d162cca38b325297fe77b"
+checksum = "dba9c05687e501b2710833fbe2cc7ff8cc24411fb0d81967498ca44598942f88"
 
 [[package]]
 name = "windows-link"

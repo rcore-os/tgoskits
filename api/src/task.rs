@@ -91,7 +91,7 @@ pub fn new_user_task(
 
                 set_timer_state(&curr, TimerState::User);
                 // Clear interrupt state
-                let _ = curr.interrupt_state();
+                let _ = curr.interrupted();
             }
         },
         name.into(),
@@ -217,7 +217,7 @@ pub fn raise_signal_fatal(sig: SignalInfo) -> AxResult<()> {
     if let Some(tid) = proc_data.signal.send_signal(sig)
         && let Ok(task) = get_task(tid)
     {
-        task.interrupt(proc_data.signal.can_restart(signo));
+        task.interrupt();
     } else {
         // No task wants to handle the signal, abort the task
         do_exit(signo as i32, true);

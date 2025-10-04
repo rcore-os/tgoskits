@@ -3,7 +3,10 @@ use core::{future::poll_fn, task::Poll};
 
 use axerrno::{AxError, AxResult, LinuxError};
 use axhal::uspace::UserContext;
-use axtask::{current, future::try_block_on};
+use axtask::{
+    current,
+    future::{block_on, interruptible},
+};
 use bitflags::bitflags;
 use linux_raw_sys::general::{
     __WALL, __WCLONE, __WNOTHREAD, WCONTINUED, WEXITED, WNOHANG, WNOWAIT, WUNTRACED,
@@ -101,35 +104,31 @@ pub fn sys_waitpid(
             if let Some(exit_code) = exit_code.nullable() {
                 exit_code.vm_write(child.exit_code())?;
             }
-            Ok(child.pid() as _)
+            Ok(Some(child.pid() as _))
         } else if options.contains(WaitOptions::WNOHANG) {
-            Ok(0)
+            Ok(Some(0))
         } else {
-            Err(AxError::WouldBlock)
+            Ok(None)
         }
     };
 
-    let result = try_block_on(poll_fn(|cx| match check_children() {
-        Ok(pid) => Poll::Ready(Ok(pid)),
-        Err(AxError::WouldBlock) => {
-            proc_data.child_exit_event.register(cx.waker());
-            match check_children() {
-                Ok(pid) => Poll::Ready(Ok(pid)),
-                Err(AxError::WouldBlock) => Poll::Pending,
-                other => Poll::Ready(other),
+    let result = block_on(interruptible(poll_fn(|cx| {
+        match check_children().transpose() {
+            Some(res) => Poll::Ready(res),
+            None => {
+                proc_data.child_exit_event.register(cx.waker());
+                Poll::Pending
             }
         }
-        other => Poll::Ready(other),
-    }));
+    })));
     match result {
-        Ok(Some(result)) => Ok(result),
-        Ok(None) => {
-            // RESTART
+        Ok(r) => r,
+        Err(_) => {
+            // FIXME: more general syscall RESTART
             let ip = uctx.ip() - 4;
             uctx.set_ip(ip);
             while check_signals(curr.as_thread(), uctx, None) {}
             Ok(0)
         }
-        Err(err) => Err(err),
     }
 }

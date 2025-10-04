@@ -261,7 +261,7 @@ async fn alarm_task() {
             {
                 continue;
             }
-            timeout_at(listener, deadline).await;
+            let _ = timeout_at(Some(deadline), listener).await;
         }
     }
 }

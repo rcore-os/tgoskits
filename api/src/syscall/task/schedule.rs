@@ -2,7 +2,7 @@ use axerrno::{AxError, AxResult};
 use axhal::time::TimeValue;
 use axtask::{
     AxCpuMask, current,
-    future::{block_on_interruptible, sleep},
+    future::{block_on, interruptible, sleep},
 };
 use linux_raw_sys::general::{
     __kernel_clockid_t, CLOCK_MONOTONIC, CLOCK_REALTIME, PRIO_PGRP, PRIO_PROCESS, PRIO_USER,
@@ -25,10 +25,7 @@ fn sleep_impl(clock: impl Fn() -> TimeValue, dur: TimeValue) -> TimeValue {
 
     // TODO: currently ignoring concrete clock type
     // We detect EINTR manually if the slept time is not enough.
-    let _ = block_on_interruptible(async {
-        sleep(dur).await;
-        Ok(())
-    });
+    let _ = block_on(interruptible(sleep(dur)));
 
     clock() - start
 }
@@ -92,11 +89,7 @@ pub fn sys_clock_nanosleep(
     }
 }
 
-pub fn sys_sched_getaffinity(
-    pid: i32,
-    cpusetsize: usize,
-    user_mask: *mut u8,
-) -> AxResult<isize> {
+pub fn sys_sched_getaffinity(pid: i32, cpusetsize: usize, user_mask: *mut u8) -> AxResult<isize> {
     if cpusetsize * 8 < axconfig::plat::CPU_NUM {
         return Err(AxError::InvalidInput);
     }
