@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use core::ops::Deref;
 
-use axio::Pollable;
+use axpoll::Pollable;
 
 use super::NodeOps;
 use crate::{VfsError, VfsResult};

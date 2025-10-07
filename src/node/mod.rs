@@ -17,7 +17,7 @@ use core::{
 };
 use smallvec::SmallVec;
 
-use axio::{IoEvents, Pollable};
+use axpoll::{IoEvents, Pollable};
 pub use dir::*;
 pub use file::*;
 use inherit_methods_macro::inherit_methods;

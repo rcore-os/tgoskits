@@ -11,7 +11,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 [[package]]
 name = "axerrno"
 version = "0.1.0"
-source = "git+https://github.com/Starry-OS/axerrno.git?rev=3713143#3713143115fac57d6a15f5390c7af03553c5c7ad"
+source = "git+https://github.com/Starry-OS/axerrno.git#3713143115fac57d6a15f5390c7af03553c5c7ad"
 dependencies = [
  "log",
 ]
@@ -21,7 +21,7 @@ name = "axfs-ng-vfs"
 version = "0.1.0"
 dependencies = [
  "axerrno",
- "axio",
+ "axpoll",
  "bitflags",
  "cfg-if",
  "hashbrown",
@@ -32,12 +32,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "axio"
-version = "0.1.1"
-source = "git+https://github.com/Starry-OS/axio.git?rev=e11ca75#e11ca75f23189d3a8df7987eafd73015b95fb225"
+name = "axpoll"
+version = "0.1.0"
+source = "git+https://github.com/Starry-OS/axpoll.git#7e73f2d53f458fa867c9b4849bf87b66ee3ba48a"
 dependencies = [
- "axerrno",
  "bitflags",
+ "linux-raw-sys",
+ "spin",
 ]
 
 [[package]]
@@ -166,6 +167,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "linux-raw-sys"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df1d3c3b53da64cf5760482273a98e575c651a67eec7f77df96b5b642de8f039"
+
+[[package]]
 name = "log"
 version = "0.4.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -194,6 +201,12 @@ name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
+
+[[package]]
+name = "spin"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
 
 [[package]]
 name = "strsim"

@@ -9,7 +9,7 @@ use core::{
     task::Context,
 };
 
-use axio::{IoEvents, Pollable};
+use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
 use inherit_methods_macro::inherit_methods;
 
