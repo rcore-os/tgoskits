@@ -682,7 +682,7 @@ version = "0.1.0"
 source = "git+https://github.com/Starry-OS/axpoll.git?rev=258cb5f#258cb5f4b8eef9062118fbd9dd2935f04e611fec"
 dependencies = [
  "bitflags 2.9.4",
- "linux-raw-sys 0.11.0",
+ "linux-raw-sys",
  "spin 0.10.0",
 ]
 
@@ -1534,12 +1534,6 @@ dependencies = [
 
 [[package]]
 name = "linux-raw-sys"
-version = "0.9.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd945864f07fe9f5371a27ad7b52a172b4b499999f1d97574c9fa68373937e12"
-
-[[package]]
-name = "linux-raw-sys"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df1d3c3b53da64cf5760482273a98e575c651a67eec7f77df96b5b642de8f039"
@@ -2160,7 +2154,7 @@ dependencies = [
  "axtask",
  "cfg-if",
  "linkme",
- "linux-raw-sys 0.9.4",
+ "linux-raw-sys",
  "starry-api",
  "starry-core",
  "starry-process",
@@ -2203,7 +2197,7 @@ dependencies = [
  "kspin",
  "lazy_static",
  "linkme",
- "linux-raw-sys 0.9.4",
+ "linux-raw-sys",
  "memory_addr",
  "num_enum",
  "rand",
@@ -2211,7 +2205,7 @@ dependencies = [
  "riscv",
  "scope-local",
  "slab",
- "spin 0.9.8",
+ "spin 0.10.0",
  "starry-core",
  "starry-process",
  "starry-signal",
@@ -2243,7 +2237,6 @@ dependencies = [
  "cfg-if",
  "event-listener",
  "extern-trait 0.2.0",
- "futures",
  "hashbrown",
  "inherit-methods-macro",
  "kernel-elf-parser",
@@ -2251,14 +2244,14 @@ dependencies = [
  "kspin",
  "lazy_static",
  "linkme",
- "linux-raw-sys 0.9.4",
+ "linux-raw-sys",
  "lock_api",
  "memory_addr",
  "ouroboros",
  "percpu",
  "scope-local",
  "slab",
- "spin 0.9.8",
+ "spin 0.10.0",
  "starry-process",
  "starry-signal",
  "starry-vm",
@@ -2281,7 +2274,7 @@ dependencies = [
 [[package]]
 name = "starry-signal"
 version = "0.2.2"
-source = "git+https://github.com/Starry-OS/starry-signal.git?rev=01aa4a0#01aa4a079791ffb0f84434ad348c932ebb7a5956"
+source = "git+https://github.com/Starry-OS/starry-signal.git?rev=6cc32f2#6cc32f20615a347edef01edeb31a25540eb1e372"
 dependencies = [
  "axcpu",
  "bitflags 2.9.4",
@@ -2289,7 +2282,7 @@ dependencies = [
  "derive_more",
  "event-listener",
  "kspin",
- "linux-raw-sys 0.9.4",
+ "linux-raw-sys",
  "log",
  "starry-vm",
  "strum",

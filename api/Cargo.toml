@@ -12,12 +12,13 @@ memtrack = ["axfeat/backtrace", "axalloc/tracking", "dep:gimli"]
 dev-log = []
 
 [dependencies]
-axfeat.workspace = true
-
 axalloc.workspace = true
+axbacktrace.workspace = true
 axconfig.workspace = true
 axdisplay.workspace = true
 axdriver.workspace = true
+axerrno.workspace = true
+axfeat.workspace = true
 axfs-ng-vfs.workspace = true
 axfs-ng.workspace = true
 axhal.workspace = true
@@ -26,14 +27,9 @@ axio.workspace = true
 axlog.workspace = true
 axmm.workspace = true
 axnet.workspace = true
+axpoll.workspace = true
 axsync.workspace = true
 axtask.workspace = true
-axpoll.workspace = true
-
-starry-core.workspace = true
-
-axbacktrace.workspace = true
-axerrno.workspace = true
 bitflags.workspace = true
 bitmaps = { version = "3.2.1", default-features = false }
 bytemuck.workspace = true
@@ -55,6 +51,7 @@ rand = { version = "0.9.1", default-features = false, features = [
     "alloc",
     "small_rng",
 ] }
+ringbuf = { version = "0.4.8", default-features = false, features = ["alloc"] }
 scope-local.workspace = true
 slab.workspace = true
 spin.workspace = true
@@ -62,8 +59,9 @@ starry-process.workspace = true
 starry-signal.workspace = true
 starry-vm = { workspace = true, features = ["axio"] }
 syscalls = { git = "https://github.com/jasonwhite/syscalls.git", rev = "92624de", default-features = false }
-ringbuf = { version = "0.4.8", default-features = false, features = ["alloc"] }
 zerocopy = { version = "0.8.26", features = ["derive"] }
+
+starry-core.workspace = true
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"

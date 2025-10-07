@@ -7,30 +7,28 @@ homepage.workspace = true
 repository.workspace = true
 
 [dependencies]
-axfeat.workspace = true
 axbacktrace.workspace = true
-axfs-ng.workspace = true
-axfs-ng-vfs.workspace = true
-axhal.workspace = true
-axlog.workspace = true
-axmm.workspace = true
-axsync.workspace = true
-axtask.workspace = true
-
 axconfig.workspace = true
 axerrno.workspace = true
+axfeat.workspace = true
+axfs-ng-vfs.workspace = true
+axfs-ng.workspace = true
+axhal.workspace = true
 axio.workspace = true
+axlog.workspace = true
+axmm.workspace = true
 axpoll.workspace = true
+axsync.workspace = true
+axtask.workspace = true
 bitflags.workspace = true
 bytemuck = { workspace = true, features = ["derive"] }
 cfg-if.workspace = true
 event-listener.workspace = true
 extern-trait.workspace = true
-futures = { version = "0.3.31", default-features = false }
 hashbrown = { workspace = true }
 inherit-methods-macro = "0.1.0"
-kernel-elf-parser = { git = "https://github.com/Starry-OS/kernel_elf_parser.git", rev = "fdcce74" }
 kernel_guard = "0.1"
+kernel-elf-parser = { git = "https://github.com/Starry-OS/kernel_elf_parser.git", rev = "fdcce74" }
 kspin.workspace = true
 lazy_static = { workspace = true }
 linkme.workspace = true

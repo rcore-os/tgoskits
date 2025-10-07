@@ -47,10 +47,6 @@ axerrno = "0.1"
 axfs-ng-vfs = "0.1"
 axio = "0.1"
 axpoll = "0.1"
-starry-process = "0.2"
-starry-signal = "0.2"
-starry-vm = "0.1"
-
 bitflags = "2.6"
 bytemuck = { version = "1.23", features = ["unsound_ptr_pod_impl"] }
 cfg-if = "1.0"
@@ -60,7 +56,7 @@ hashbrown = "0.15.4"
 kspin = "0.1"
 lazy_static = { version = "1.5", features = ["spin_no_std"] }
 linkme = "0.3.33"
-linux-raw-sys = { version = "0.9.3", default-features = false, features = [
+linux-raw-sys = { version = "0.11", default-features = false, features = [
     "no_std",
     "general",
     "net",
@@ -70,7 +66,10 @@ linux-raw-sys = { version = "0.9.3", default-features = false, features = [
 memory_addr = "0.4"
 scope-local = "0.1"
 slab = { version = "0.4.9", default-features = false }
-spin = "0.9"
+spin = "0.10"
+starry-process = "0.2"
+starry-signal = "0.2"
+starry-vm = "0.1"
 
 starry-core = { path = "./core" }
 starry-api = { path = "./api" }
@@ -111,25 +110,23 @@ pci = ["axfeat/bus-pci"]
 mmio = ["axfeat/bus-mmio"]
 
 [dependencies]
-axfeat.workspace = true
-
 axdriver.workspace = true
+axerrno.workspace = true
+axfeat.workspace = true
 axfs-ng.workspace = true
 axhal.workspace = true
 axlog.workspace = true
 axruntime.workspace = true
 axsync.workspace = true
 axtask.workspace = true
-
-starry-core.workspace = true
-starry-api.workspace = true
-
-axerrno.workspace = true
 cfg-if.workspace = true
 linkme.workspace = true
 linux-raw-sys.workspace = true
 starry-process.workspace = true
 starry-signal.workspace = true
+
+starry-core.workspace = true
+starry-api.workspace = true
 
 [dependencies.axplat-riscv64-visionfive2]
 git = "https://github.com/Starry-OS/axplat-riscv64-visionfive2.git"
@@ -157,7 +154,7 @@ axpoll = { git = "https://github.com/Starry-OS/axpoll.git", rev = "258cb5f" }
 page_table_entry = { git = "https://github.com/Starry-OS/page_table_multiarch.git", rev = "3f697c8" }
 page_table_multiarch = { git = "https://github.com/Starry-OS/page_table_multiarch.git", rev = "3f697c8" }
 starry-process = { git = "https://github.com/Starry-OS/starry-process.git", rev = "6327455" }
-starry-signal = { git = "https://github.com/Starry-OS/starry-signal.git", rev = "01aa4a0" }
+starry-signal = { git = "https://github.com/Starry-OS/starry-signal.git", rev = "6cc32f2" }
 starry-vm = { git = "https://github.com/Starry-OS/starry-vm.git", rev = "e2a50e7" }
 
 [package.metadata.vendor-filter]
