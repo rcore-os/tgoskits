@@ -1,0 +1,22 @@
+[package]
+name = "axpoll"
+version = "0.1.0"
+edition = "2024"
+authors = [
+    "Mivik <mivikq@gmail.com>",
+    "Asakura Mizu <asakuramizu111@gmail.com>",
+]
+license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
+repository = "https://github.com/Starry-OS/axpoll"
+documentation = "https://docs.rs/axpoll"
+
+[features]
+alloc = []
+default = ["alloc"]
+
+[dependencies]
+bitflags = { version = "2.9.1", default-features = false }
+linux-raw-sys = { version = "0.11.0", default-features = false, features = ["no_std", "general"] }
+spin = { version = "0.10.0", default-features = false, features = [
+    "spin_mutex",
+] }
