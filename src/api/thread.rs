@@ -117,8 +117,12 @@ impl ThreadSignalManager {
                     .restorer
                     .map_or(self.proc.default_restorer, |f| f as _);
                 #[cfg(target_arch = "x86_64")]
-                if (uctx.sp() as *mut usize).vm_write(restorer).is_err() {
-                    return Some(SignalOSAction::CoreDump);
+                {
+                    let new_sp = uctx.sp() - 8;
+                    uctx.set_sp(new_sp);
+                    if (new_sp as *mut usize).vm_write(restorer).is_err() {
+                        return Some(SignalOSAction::CoreDump);
+                    }
                 }
                 #[cfg(not(target_arch = "x86_64"))]
                 uctx.set_ra(restorer);
