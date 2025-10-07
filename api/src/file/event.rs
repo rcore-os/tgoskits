@@ -6,7 +6,8 @@ use core::{
 };
 
 use axerrno::AxError;
-use axio::{Buf, BufMut, IoEvents, PollSet, Pollable, Read, Write};
+use axio::{Buf, BufMut, Read, Write};
+use axpoll::{IoEvents, PollSet, Pollable};
 use axtask::future::Poller;
 
 use crate::file::{FileLike, Kstat, SealedBuf, SealedBufMut};

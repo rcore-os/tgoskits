@@ -5,7 +5,7 @@ use alloc::{
 use core::task::Context;
 
 use axerrno::{AxError, AxResult};
-use axio::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, PollSet, Pollable};
 use starry_core::task::ProcessData;
 
 use crate::file::{FileLike, Kstat, SealedBuf, SealedBufMut};

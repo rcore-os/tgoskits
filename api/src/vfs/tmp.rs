@@ -6,7 +6,7 @@ use axfs_ng_vfs::{
     FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType,
     Reference, StatFs, VfsError, VfsResult, WeakDirEntry,
 };
-use axio::{IoEvents, Pollable};
+use axpoll::{IoEvents, Pollable};
 use axsync::Mutex;
 use hashbrown::HashMap;
 use slab::Slab;

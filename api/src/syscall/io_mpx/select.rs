@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 use core::{fmt, time::Duration};
 
 use axerrno::{AxError, AxResult};
-use axio::IoEvents;
+use axpoll::IoEvents;
 use axtask::future::Poller;
 use bitmaps::Bitmap;
 use linux_raw_sys::{
@@ -80,7 +80,11 @@ fn do_select(
     let mut fds = Vec::with_capacity(fd_count);
     let mut fd_indices = Vec::with_capacity(fd_count);
     for fd in fd_bitmap.into_iter() {
-        let f = fd_table.get(fd).ok_or(AxError::BadFileDescriptor)?.inner.clone();
+        let f = fd_table
+            .get(fd)
+            .ok_or(AxError::BadFileDescriptor)?
+            .inner
+            .clone();
         let mut events = IoEvents::empty();
         events.set(IoEvents::IN, read_set.0.get(fd));
         events.set(IoEvents::OUT, write_set.0.get(fd));

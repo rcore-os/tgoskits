@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 
 use axerrno::{AxError, AxResult};
 use axhal::time::TimeValue;
-use axio::IoEvents;
+use axpoll::IoEvents;
 use axtask::future::Poller;
 use linux_raw_sys::general::{POLLNVAL, pollfd, timespec};
 use starry_signal::SignalSet;

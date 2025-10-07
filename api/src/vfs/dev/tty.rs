@@ -3,7 +3,7 @@ use core::{any::Any, ops::Deref, sync::atomic::Ordering, task::Context};
 
 use axerrno::{AxError, AxResult};
 use axfs_ng_vfs::NodeFlags;
-use axio::{IoEvents, Pollable};
+use axpoll::{IoEvents, Pollable};
 use axsync::Mutex;
 use axtask::{current, future::Poller};
 use starry_core::{task::AsThread, vfs::SimpleFs};

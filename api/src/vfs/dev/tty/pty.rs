@@ -1,6 +1,6 @@
 use alloc::{boxed::Box, sync::Arc};
 
-use axio::PollSet;
+use axpoll::PollSet;
 use kspin::SpinNoPreempt;
 use ringbuf::{
     Cons, HeapRb, Prod,

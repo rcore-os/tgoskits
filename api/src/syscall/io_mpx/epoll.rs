@@ -1,7 +1,7 @@
 use core::time::Duration;
 
 use axerrno::{AxError, AxResult};
-use axio::IoEvents;
+use axpoll::IoEvents;
 use axtask::future::Poller;
 use bitflags::bitflags;
 use linux_raw_sys::general::{
@@ -47,9 +47,9 @@ pub fn sys_epoll_ctl(
 
     let parse_event = || -> AxResult<(EpollEvent, EpollFlags)> {
         let event = event.get_as_ref()?;
-        let events = IoEvents::from_bits_truncate(event.events as u16);
-        let flags = EpollFlags::from_bits(event.events & !(events.bits() as u32))
-            .ok_or(AxError::InvalidInput)?;
+        let events = IoEvents::from_bits_truncate(event.events);
+        let flags =
+            EpollFlags::from_bits(event.events & !events.bits()).ok_or(AxError::InvalidInput)?;
         Ok((
             EpollEvent {
                 events,

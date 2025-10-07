@@ -10,7 +10,7 @@ use core::{
 use axerrno::{AxError, AxResult};
 use axfs_ng::{FS_CONTEXT, FsContext};
 use axfs_ng_vfs::{Location, Metadata, NodeFlags};
-use axio::{IoEvents, Pollable};
+use axpoll::{IoEvents, Pollable};
 use axsync::Mutex;
 use axtask::future::Poller;
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW};
@@ -18,10 +18,7 @@ use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW};
 use super::{FileLike, Kstat, get_file_like};
 use crate::file::{SealedBuf, SealedBufMut};
 
-pub fn with_fs<R>(
-    dirfd: c_int,
-    f: impl FnOnce(&mut FsContext) -> AxResult<R>,
-) -> AxResult<R> {
+pub fn with_fs<R>(dirfd: c_int, f: impl FnOnce(&mut FsContext) -> AxResult<R>) -> AxResult<R> {
     let mut fs = FS_CONTEXT.lock();
     if dirfd == AT_FDCWD {
         f(&mut fs)

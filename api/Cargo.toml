@@ -28,6 +28,7 @@ axmm.workspace = true
 axnet.workspace = true
 axsync.workspace = true
 axtask.workspace = true
+axpoll.workspace = true
 
 starry-core.workspace = true
 

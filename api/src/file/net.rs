@@ -2,11 +2,11 @@ use alloc::{borrow::Cow, format, sync::Arc};
 use core::{ffi::c_int, ops::Deref, task::Context};
 
 use axerrno::{AxError, AxResult};
-use axio::{IoEvents, Pollable};
 use axnet::{
     SocketOps,
     options::{Configurable, GetSocketOption, SetSocketOption},
 };
+use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::S_IFSOCK;
 
 use super::{FileLike, Kstat};

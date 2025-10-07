@@ -2,7 +2,7 @@ use alloc::sync::{Arc, Weak};
 use core::task::Context;
 
 use axerrno::{AxResult, ax_bail};
-use axio::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, PollSet, Pollable};
 use axtask::current;
 use kspin::SpinNoIrq;
 use starry_core::task::AsThread;
@@ -48,10 +48,16 @@ impl JobControl {
         }
 
         let Some(session) = self.session.lock().upgrade() else {
-            ax_bail!(OperationNotPermitted, "No session associated with job control");
+            ax_bail!(
+                OperationNotPermitted,
+                "No session associated with job control"
+            );
         };
         if !Arc::ptr_eq(&pg.session(), &session) {
-            ax_bail!(OperationNotPermitted, "Process group does not belong to the session");
+            ax_bail!(
+                OperationNotPermitted,
+                "Process group does not belong to the session"
+            );
         }
 
         *guard = weak;

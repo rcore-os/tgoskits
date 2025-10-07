@@ -387,6 +387,7 @@ dependencies = [
  "axfs-ng-vfs",
  "axhal",
  "axio",
+ "axpoll",
  "axsync",
  "bitflags 2.9.4",
  "cfg-if",
@@ -405,10 +406,10 @@ dependencies = [
 [[package]]
 name = "axfs-ng-vfs"
 version = "0.1.0"
-source = "git+https://github.com/Starry-OS/axfs-ng-vfs.git?rev=e3e83d6#e3e83d621094f520602a17ad91223aa9e3ea243e"
+source = "git+https://github.com/Starry-OS/axfs-ng-vfs.git?rev=6cf8893#6cf8893cc28eeeb34e870cfa3186b7d14226c641"
 dependencies = [
  "axerrno",
- "axio",
+ "axpoll",
  "bitflags 2.9.4",
  "cfg-if",
  "hashbrown",
@@ -426,13 +427,13 @@ dependencies = [
  "axalloc",
  "axconfig",
  "axcpu",
- "axio",
  "axlog",
  "axplat",
  "axplat-aarch64-qemu-virt",
  "axplat-loongarch64-qemu-virt",
  "axplat-riscv64-qemu-virt",
  "axplat-x86-pc",
+ "axpoll",
  "cfg-if",
  "heapless 0.8.0",
  "kernel_guard",
@@ -458,11 +459,9 @@ dependencies = [
 [[package]]
 name = "axio"
 version = "0.1.1"
-source = "git+https://github.com/Starry-OS/axio.git?rev=f7a2dfe#f7a2dfe7999af74ac3c7dd1f48b7769f71baf12a"
+source = "git+https://github.com/Starry-OS/axio.git?rev=ebb0c6b#ebb0c6bb0c7d42d1f2d6f2cc703ddfe5b209a4d9"
 dependencies = [
  "axerrno",
- "bitflags 2.9.4",
- "spin 0.10.0",
 ]
 
 [[package]]
@@ -510,6 +509,7 @@ dependencies = [
  "axfs-ng-vfs",
  "axhal",
  "axio",
+ "axpoll",
  "axsync",
  "axtask",
  "bitflags 2.9.4",
@@ -677,6 +677,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "axpoll"
+version = "0.1.0"
+source = "git+https://github.com/Starry-OS/axpoll.git?rev=258cb5f#258cb5f4b8eef9062118fbd9dd2935f04e611fec"
+dependencies = [
+ "bitflags 2.9.4",
+ "linux-raw-sys 0.11.0",
+ "spin 0.10.0",
+]
+
+[[package]]
 name = "axruntime"
 version = "0.2.0"
 dependencies = [
@@ -725,7 +735,7 @@ dependencies = [
  "axconfig",
  "axerrno",
  "axhal",
- "axio",
+ "axpoll",
  "axsched",
  "cfg-if",
  "cpumask",
@@ -1529,6 +1539,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cd945864f07fe9f5371a27ad7b52a172b4b499999f1d97574c9fa68373937e12"
 
 [[package]]
+name = "linux-raw-sys"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df1d3c3b53da64cf5760482273a98e575c651a67eec7f77df96b5b642de8f039"
+
+[[package]]
 name = "lock_api"
 version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2144,7 +2160,7 @@ dependencies = [
  "axtask",
  "cfg-if",
  "linkme",
- "linux-raw-sys",
+ "linux-raw-sys 0.9.4",
  "starry-api",
  "starry-core",
  "starry-process",
@@ -2170,6 +2186,7 @@ dependencies = [
  "axlog",
  "axmm",
  "axnet",
+ "axpoll",
  "axsync",
  "axtask",
  "bitflags 2.9.4",
@@ -2186,7 +2203,7 @@ dependencies = [
  "kspin",
  "lazy_static",
  "linkme",
- "linux-raw-sys",
+ "linux-raw-sys 0.9.4",
  "memory_addr",
  "num_enum",
  "rand",
@@ -2218,6 +2235,7 @@ dependencies = [
  "axio",
  "axlog",
  "axmm",
+ "axpoll",
  "axsync",
  "axtask",
  "bitflags 2.9.4",
@@ -2233,7 +2251,7 @@ dependencies = [
  "kspin",
  "lazy_static",
  "linkme",
- "linux-raw-sys",
+ "linux-raw-sys 0.9.4",
  "lock_api",
  "memory_addr",
  "ouroboros",
@@ -2271,7 +2289,7 @@ dependencies = [
  "derive_more",
  "event-listener",
  "kspin",
- "linux-raw-sys",
+ "linux-raw-sys 0.9.4",
  "log",
  "starry-vm",
  "strum",

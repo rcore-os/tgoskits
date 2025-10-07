@@ -7,7 +7,8 @@ use core::{
 };
 
 use axerrno::{AxError, AxResult};
-use axio::{Buf, BufMut, IoEvents, PollSet, Pollable, Read, Write};
+use axio::{Buf, BufMut, Read, Write};
+use axpoll::{IoEvents, PollSet, Pollable};
 use axsync::Mutex;
 use axtask::{current, future::Poller};
 use linux_raw_sys::{general::S_IFIFO, ioctl::FIONREAD};

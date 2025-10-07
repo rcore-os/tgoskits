@@ -12,7 +12,7 @@ use core::{
 };
 
 use axerrno::{AxError, AxResult};
-use axio::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, PollSet, Pollable};
 use bitflags::bitflags;
 use hashbrown::HashMap;
 use kspin::SpinNoPreempt;
@@ -222,7 +222,7 @@ impl Epoll {
             let (event, still_ready) = interest.poll(file.as_ref());
             if let Some(event) = event {
                 *slot = epoll_event {
-                    events: event.events.bits() as u32,
+                    events: event.events.bits(),
                     data: event.user_data,
                 };
                 result += 1;

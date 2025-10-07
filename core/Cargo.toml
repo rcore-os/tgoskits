@@ -20,6 +20,7 @@ axtask.workspace = true
 axconfig.workspace = true
 axerrno.workspace = true
 axio.workspace = true
+axpoll.workspace = true
 bitflags.workspace = true
 bytemuck = { workspace = true, features = ["derive"] }
 cfg-if.workspace = true

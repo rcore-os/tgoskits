@@ -7,7 +7,7 @@ use core::{
 };
 
 use axerrno::{AxError, AxResult};
-use axio::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, PollSet, Pollable};
 use axtask::future::{Poller, block_on};
 use linux_raw_sys::general::{
     ECHOCTL, ECHOK, ICRNL, IGNCR, ISIG, VEOF, VERASE, VKILL, VMIN, VTIME,
