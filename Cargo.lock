@@ -740,7 +740,7 @@ dependencies = [
  "cfg-if",
  "cpumask",
  "crate_interface",
- "extern-trait 0.2.0",
+ "extern-trait",
  "futures",
  "kernel_guard",
  "kspin",
@@ -837,18 +837,18 @@ checksum = "a7913f22349ffcfc6ca0ca9a656ec26cfbba538ed49c31a273dff2c5d1ea83d9"
 
 [[package]]
 name = "bytemuck"
-version = "1.23.2"
+version = "1.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3995eaeebcdf32f91f980d360f78732ddc061097ab4e39991ae7a6ace9194677"
+checksum = "1fbdf580320f38b612e485521afda1ee26d10cc9884efaaa750d383e13e3c5f4"
 dependencies = [
  "bytemuck_derive",
 ]
 
 [[package]]
 name = "bytemuck_derive"
-version = "1.10.1"
+version = "1.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f154e572231cb6ba2bd1176980827e3d5dc04cc183a75dea38109fbdd672d29"
+checksum = "f9abbd1bc6865053c427f7198e6af43bfdedc55ab791faed4fbd361d789575ff"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1174,17 +1174,6 @@ checksum = "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93"
 dependencies = [
  "event-listener",
  "pin-project-lite",
-]
-
-[[package]]
-name = "extern-trait"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce0ed68d501561822bd225ab2ec7e67ea2c141258b382a9541c2257eec2e5d10"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.106",
 ]
 
 [[package]]
@@ -2236,7 +2225,7 @@ dependencies = [
  "bytemuck",
  "cfg-if",
  "event-listener",
- "extern-trait 0.2.0",
+ "extern-trait",
  "hashbrown",
  "inherit-methods-macro",
  "kernel-elf-parser",
@@ -2274,7 +2263,7 @@ dependencies = [
 [[package]]
 name = "starry-signal"
 version = "0.2.2"
-source = "git+https://github.com/Starry-OS/starry-signal.git?rev=6cc32f2#6cc32f20615a347edef01edeb31a25540eb1e372"
+source = "git+https://github.com/Starry-OS/starry-signal.git?rev=5b23dec#5b23dec9b652fade066df91d9d9c84e9b5f89709"
 dependencies = [
  "axcpu",
  "bitflags 2.9.4",
@@ -2290,13 +2279,12 @@ dependencies = [
 
 [[package]]
 name = "starry-vm"
-version = "0.1.1"
-source = "git+https://github.com/Starry-OS/starry-vm.git?rev=e2a50e7#e2a50e789021dd22523740a7a4f384ac429b8b05"
+version = "0.2.0"
+source = "git+https://github.com/Starry-OS/starry-vm.git?rev=4c91a6b#4c91a6bf7945dd04e68f6cf9b522e2152ad8d9b4"
 dependencies = [
  "axerrno",
- "axio",
  "bytemuck",
- "extern-trait 0.1.1",
+ "extern-trait",
 ]
 
 [[package]]

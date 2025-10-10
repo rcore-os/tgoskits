@@ -57,7 +57,7 @@ slab.workspace = true
 spin.workspace = true
 starry-process.workspace = true
 starry-signal.workspace = true
-starry-vm = { workspace = true, features = ["axio"] }
+starry-vm.workspace = true
 syscalls = { git = "https://github.com/jasonwhite/syscalls.git", rev = "92624de", default-features = false }
 zerocopy = { version = "0.8.26", features = ["derive"] }
 

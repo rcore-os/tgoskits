@@ -69,7 +69,7 @@ slab = { version = "0.4.9", default-features = false }
 spin = "0.10"
 starry-process = "0.2"
 starry-signal = "0.2"
-starry-vm = "0.1"
+starry-vm = "0.2"
 
 starry-core = { path = "./core" }
 starry-api = { path = "./api" }
@@ -154,8 +154,8 @@ axpoll = { git = "https://github.com/Starry-OS/axpoll.git", rev = "258cb5f" }
 page_table_entry = { git = "https://github.com/Starry-OS/page_table_multiarch.git", rev = "3f697c8" }
 page_table_multiarch = { git = "https://github.com/Starry-OS/page_table_multiarch.git", rev = "3f697c8" }
 starry-process = { git = "https://github.com/Starry-OS/starry-process.git", rev = "6327455" }
-starry-signal = { git = "https://github.com/Starry-OS/starry-signal.git", rev = "6cc32f2" }
-starry-vm = { git = "https://github.com/Starry-OS/starry-vm.git", rev = "e2a50e7" }
+starry-signal = { git = "https://github.com/Starry-OS/starry-signal.git", rev = "5b23dec" }
+starry-vm = { git = "https://github.com/Starry-OS/starry-vm.git", rev = "4c91a6b" }
 
 [package.metadata.vendor-filter]
 platforms = ["riscv64gc-unknown-none-elf", "loongarch64-unknown-none-softfloat"]

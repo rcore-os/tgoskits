@@ -7,12 +7,11 @@ use axnet::{CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddr
 use linux_raw_sys::net::{
     MSG_PEEK, MSG_TRUNC, SCM_RIGHTS, SOL_SOCKET, cmsghdr, msghdr, sockaddr, socklen_t,
 };
-use starry_vm::{VmBytes, VmBytesMut};
 
 use crate::{
     file::{FileLike, Socket, add_file_like},
     io::{IoVec, IoVectorBuf},
-    mm::{UserConstPtr, UserPtr},
+    mm::{UserConstPtr, UserPtr, VmBytes, VmBytesMut},
     socket::SocketAddrExt,
     syscall::net::{CMsg, CMsgBuilder},
 };

@@ -19,7 +19,6 @@ use inherit_methods_macro::inherit_methods;
 use linux_raw_sys::general::{RLIMIT_NOFILE, stat, statx, statx_timestamp};
 use spin::RwLock;
 use starry_core::{resources::AX_FILE_LIMIT, task::AsThread};
-use starry_vm::{VmBytes, VmBytesMut};
 
 pub use self::{
     fs::{Directory, File, ResolveAtResult, metadata_to_kstat, resolve_at, with_fs},
@@ -27,7 +26,10 @@ pub use self::{
     pidfd::PidFd,
     pipe::Pipe,
 };
-use crate::io::IoVectorBufIo;
+use crate::{
+    io::IoVectorBufIo,
+    mm::{VmBytes, VmBytesMut},
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Kstat {

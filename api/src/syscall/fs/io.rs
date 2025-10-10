@@ -10,13 +10,13 @@ use axio::{Seek, SeekFrom};
 use axpoll::{IoEvents, Pollable};
 use axtask::current;
 use linux_raw_sys::general::__kernel_off_t;
-use starry_vm::{VmBytes, VmBytesMut, VmMutPtr, VmPtr};
+use starry_vm::{VmMutPtr, VmPtr};
 use syscalls::Sysno;
 
 use crate::{
     file::{File, FileLike, Pipe, SealedBuf, SealedBufMut, get_file_like},
     io::{IoVec, IoVectorBuf},
-    mm::UserConstPtr,
+    mm::{UserConstPtr, VmBytes, VmBytesMut},
 };
 
 struct DummyFd;
