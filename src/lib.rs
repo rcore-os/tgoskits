@@ -19,8 +19,8 @@ pub enum VmError {
     AccessDenied,
     /// The C-style string or array is too long.
     ///
-    /// This error is returned by [`vm_load_c_string`] and [`vm_load_until_nul`]
-    /// when the null terminator is not found within a predefined search limit.
+    /// This error is returned by [`vm_load_until_nul`] when the null terminator
+    /// is not found within a predefined search limit.
     #[cfg(feature = "alloc")]
     TooLong,
 }
@@ -30,7 +30,7 @@ impl From<VmError> for AxError {
         match err {
             VmError::BadAddress | VmError::AccessDenied => AxError::BadAddress,
             #[cfg(feature = "alloc")]
-            VmError::TooLong => AxError::TooBig,
+            VmError::TooLong => AxError::NameTooLong,
         }
     }
 }
@@ -42,7 +42,9 @@ pub type VmResult<T = ()> = Result<T, VmError>;
 ///
 /// # Safety
 ///
-/// - Satisfy the restrictions of [`extern_trait`].
+/// - Satisfy the restrictions of [`mod@extern_trait`].
+/// - The implementation must ensure that the memory accesses are safe and do
+///   not violate any memory safety rules.
 #[extern_trait(VmImpl)]
 pub unsafe trait VmIo {
     /// Creates an instance of [`VmIo`].
@@ -85,7 +87,3 @@ pub use thin::{VmMutPtr, VmPtr};
 mod alloc;
 #[cfg(feature = "alloc")]
 pub use alloc::{vm_load, vm_load_any, vm_load_until_nul};
-#[cfg(feature = "axio")]
-mod bytes;
-#[cfg(feature = "axio")]
-pub use bytes::{VmBytes, VmBytesMut};

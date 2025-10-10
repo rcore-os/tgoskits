@@ -1,6 +1,6 @@
 [package]
 name = "starry-vm"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 authors = [
     "Mivik <mivikq@gmail.com>",
@@ -10,20 +10,21 @@ authors = [
 [features]
 default = ["alloc"]
 alloc = []
-axio = ["dep:axio"]
 
 [dependencies]
-axerrno = "0.1.0"
-axio = { version = "0.1", optional = true }
-bytemuck = { version = "1.23", features = [
+axerrno = "0.1"
+bytemuck = { version = "1.24", features = [
     "align_offset",
     "const_zeroed",
     "zeroable_maybe_uninit",
 ] }
-extern-trait = "0.1"
+extern-trait = "0.2"
 
 [dev-dependencies]
-bytemuck = { version = "1.23", features = ["derive"] }
+bytemuck = { version = "1.24", features = ["derive"] }
 
 [patch.crates-io]
 axerrno = { git = "https://github.com/Starry-OS/axerrno.git" }
+
+[package.metadata.docs.rs]
+all-features = true
