@@ -12,12 +12,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "autocfg"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
-
-[[package]]
 name = "axbacktrace"
 version = "0.1.0"
 source = "git+https://github.com/Starry-OS/axbacktrace.git#09c22b6a969d27b39c5b1cdc3c31b35165059d12"
@@ -78,9 +72,9 @@ checksum = "2261d10cca569e4643e526d8dc2e62e433cc8aba21ab764233731f8d369bf394"
 
 [[package]]
 name = "bytemuck"
-version = "1.23.2"
+version = "1.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3995eaeebcdf32f91f980d360f78732ddc061097ab4e39991ae7a6ace9194677"
+checksum = "1fbdf580320f38b612e485521afda1ee26d10cc9884efaaa750d383e13e3c5f4"
 
 [[package]]
 name = "cfg-if"
@@ -169,9 +163,9 @@ dependencies = [
 
 [[package]]
 name = "extern-trait"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce0ed68d501561822bd225ab2ec7e67ea2c141258b382a9541c2257eec2e5d10"
+checksum = "ba8f5038f5845165d06fe1453fe4130ad546d3314818bbda57e208e7b0cffe08"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -238,11 +232,10 @@ checksum = "df1d3c3b53da64cf5760482273a98e575c651a67eec7f77df96b5b642de8f039"
 
 [[package]]
 name = "lock_api"
-version = "0.4.13"
+version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96936507f153605bddfcda068dd804796c84324ed2510809e5b2a624c81da765"
+checksum = "224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965"
 dependencies = [
- "autocfg",
  "scopeguard",
 ]
 
@@ -424,8 +417,8 @@ dependencies = [
 
 [[package]]
 name = "starry-vm"
-version = "0.1.1"
-source = "git+https://github.com/Starry-OS/starry-vm.git#e2a50e789021dd22523740a7a4f384ac429b8b05"
+version = "0.2.0"
+source = "git+https://github.com/Starry-OS/starry-vm.git#4c91a6bf7945dd04e68f6cf9b522e2152ad8d9b4"
 dependencies = [
  "axerrno",
  "bytemuck",

@@ -119,10 +119,10 @@ impl ThreadSignalManager {
                 #[cfg(target_arch = "x86_64")]
                 {
                     let new_sp = uctx.sp() - 8;
-                    uctx.set_sp(new_sp);
                     if (new_sp as *mut usize).vm_write(restorer).is_err() {
                         return Some(SignalOSAction::CoreDump);
                     }
+                    uctx.set_sp(new_sp);
                 }
                 #[cfg(not(target_arch = "x86_64"))]
                 uctx.set_ra(restorer);
