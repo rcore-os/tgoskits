@@ -19,6 +19,8 @@ jobs:
             target: loongarch64-unknown-none-softfloat
           - arch: aarch64
             target: aarch64-unknown-none-softfloat
+          - arch: x86_64
+            target: x86_64-unknown-none
 
     steps:
       - uses: actions/checkout@v4

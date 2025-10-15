@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [riscv64, loongarch64, aarch64]
+        arch: [riscv64, loongarch64, aarch64, x86_64]
     uses: ./.github/workflows/test-template.yml
     with:
       arch: ${{ matrix.arch }}
