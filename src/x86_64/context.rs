@@ -1,4 +1,5 @@
 use core::{arch::naked_asm, fmt};
+
 use memory_addr::VirtAddr;
 
 /// Saved registers when a trap (interrupt or exception) occurs.
@@ -21,10 +22,6 @@ pub struct TrapFrame {
     pub r13: u64,
     pub r14: u64,
     pub r15: u64,
-
-    // Set by `tls.rs`
-    pub fs_base: u64,
-    pub __pad: u64,
 
     // Pushed by `trap.S`
     pub vector: u64,
@@ -99,11 +96,6 @@ impl TrapFrame {
         self.r9 = r9 as _;
     }
 
-    /// Whether the trap is from userspace.
-    pub const fn is_user(&self) -> bool {
-        self.cs & 0b11 == 3
-    }
-
     /// Gets the instruction pointer.
     pub const fn ip(&self) -> usize {
         self.rip as _
@@ -124,6 +116,16 @@ impl TrapFrame {
         self.rsp = rsp as _;
     }
 
+    /// Gets the syscall number.
+    pub const fn sysno(&self) -> usize {
+        self.rax as usize
+    }
+
+    /// Sets the syscall number.
+    pub const fn set_sysno(&mut self, rax: usize) {
+        self.rax = rax as _;
+    }
+
     /// Gets the return value register.
     pub const fn retval(&self) -> usize {
         self.rax as _
@@ -132,16 +134,6 @@ impl TrapFrame {
     /// Sets the return value register.
     pub const fn set_retval(&mut self, rax: usize) {
         self.rax = rax as _;
-    }
-
-    /// Gets the TLS area.
-    pub const fn tls(&self) -> usize {
-        self.fs_base as _
-    }
-
-    /// Sets the TLS area.
-    pub const fn set_tls(&mut self, tls_area: usize) {
-        self.fs_base = tls_area as _;
     }
 
     /// Unwind the stack and get the backtrace.
@@ -250,11 +242,6 @@ pub struct TaskContext {
     pub rsp: u64,
     /// Thread pointer (FS segment base address)
     pub fs_base: usize,
-    /// User space Thread pointer (GS segment base address)
-    ///
-    /// During task switching, it is written to `KernelGSBase` MSR.
-    #[cfg(feature = "uspace")]
-    pub gs_base: usize,
     /// Extended states, i.e., FP/SIMD states.
     #[cfg(feature = "fp-simd")]
     pub ext_state: ExtendedState,
@@ -280,8 +267,6 @@ impl TaskContext {
             cr3: crate::asm::read_kernel_page_table(),
             #[cfg(feature = "fp-simd")]
             ext_state: ExtendedState::default(),
-            #[cfg(feature = "uspace")]
-            gs_base: 0,
         }
     }
 
@@ -333,10 +318,6 @@ impl TaskContext {
         }
         #[cfg(feature = "uspace")]
         unsafe {
-            // Switch gs base for user space.
-            self.gs_base = x86::msr::rdmsr(x86::msr::IA32_KERNEL_GSBASE) as usize;
-            x86::msr::wrmsr(x86::msr::IA32_KERNEL_GSBASE, next_ctx.gs_base as u64);
-            super::gdt::write_tss_rsp0(next_ctx.kstack_top);
             if next_ctx.cr3 != self.cr3 {
                 crate::asm::write_user_page_table(next_ctx.cr3);
                 // writing to CR3 has flushed the TLB

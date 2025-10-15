@@ -38,10 +38,10 @@ page_table_entry = "0.5"
 static_assertions = "1.1.0"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
+lazyinit = "0.2"
+percpu = "0.2"
 x86 = "0.52"
 x86_64 = "0.15.2"
-percpu = "0.2"
-lazyinit = "0.2"
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 aarch64-cpu = "10.0"

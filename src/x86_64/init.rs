@@ -1,11 +1,5 @@
 //! Helper functions to initialize the CPU states on systems bootstrapping.
 
-pub use super::gdt::init_gdt;
-pub use super::idt::init_idt;
-
-#[cfg(feature = "uspace")]
-pub use super::syscall::init_syscall;
-
 /// Initializes the per-CPU data structures.
 ///
 /// It calls the initialization function of the [`percpu`] crate. It (or other
@@ -33,8 +27,8 @@ pub fn init_percpu(cpu_id: usize) {
 pub fn init_trap() {
     #[cfg(feature = "uspace")]
     crate::uspace_common::init_exception_table();
-    init_gdt();
-    init_idt();
+    super::gdt::init();
+    super::idt::init();
     #[cfg(feature = "uspace")]
-    init_syscall();
+    super::uspace::init_syscall();
 }
