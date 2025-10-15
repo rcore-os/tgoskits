@@ -323,12 +323,12 @@ pub fn sys_readlinkat(
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_chown(path: *const c_char, uid: u32, gid: u32) -> AxResult<isize> {
+pub fn sys_chown(path: *const c_char, uid: i32, gid: i32) -> AxResult<isize> {
     sys_fchownat(AT_FDCWD, path, uid, gid, 0)
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_lchown(path: *const c_char, uid: u32, gid: u32) -> AxResult<isize> {
+pub fn sys_lchown(path: *const c_char, uid: i32, gid: i32) -> AxResult<isize> {
     use linux_raw_sys::general::AT_SYMLINK_NOFOLLOW;
     sys_fchownat(AT_FDCWD, path, uid, gid, AT_SYMLINK_NOFOLLOW)
 }

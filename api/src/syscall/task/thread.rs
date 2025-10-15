@@ -54,38 +54,35 @@ pub fn sys_set_tid_address(clear_child_tid: usize) -> AxResult<isize> {
 
 #[cfg(target_arch = "x86_64")]
 pub fn sys_arch_prctl(
-    tf: &mut axhal::context::TrapFrame,
+    uctx: &mut axhal::uspace::UserContext,
     code: i32,
     addr: usize,
 ) -> AxResult<isize> {
     use starry_vm::VmMutPtr;
 
-    let code = ArchPrctlCode::try_from(code).map_err(|_| axerrno::AxError::EINVAL)?;
+    let code = ArchPrctlCode::try_from(code).map_err(|_| AxError::InvalidInput)?;
     debug!("sys_arch_prctl: code = {:?}, addr = {:#x}", code, addr);
 
     match code {
         // According to Linux implementation, SetFs & SetGs does not return
         // error at all
         ArchPrctlCode::GetFs => {
-            (addr as *mut usize).vm_write(tf.tls())?;
+            (addr as *mut usize).vm_write(uctx.tls())?;
             Ok(0)
         }
         ArchPrctlCode::SetFs => {
-            tf.set_tls(addr);
+            uctx.set_tls(addr);
             Ok(0)
         }
         ArchPrctlCode::GetGs => {
-            (addr as *mut usize)
-                .vm_write(unsafe { x86::msr::rdmsr(x86::msr::IA32_KERNEL_GSBASE) })?;
+            (addr as *mut usize).vm_write(uctx.gs_base as _)?;
             Ok(0)
         }
         ArchPrctlCode::SetGs => {
-            unsafe {
-                x86::msr::wrmsr(x86::msr::IA32_KERNEL_GSBASE, addr as _);
-            }
+            uctx.gs_base = addr as _;
             Ok(0)
         }
         ArchPrctlCode::GetCpuid => Ok(0),
-        ArchPrctlCode::SetCpuid => Err(axerrno::AxError::ENODEV),
+        ArchPrctlCode::SetCpuid => Err(axerrno::AxError::NoSuchDevice),
     }
 }

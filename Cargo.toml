@@ -142,11 +142,12 @@ optional = true
 
 [patch.crates-io]
 axbacktrace = { git = "https://github.com/Starry-OS/axbacktrace.git", rev = "09c22b6" }
-axcpu = { git = "https://github.com/Starry-OS/axcpu.git", rev = "53455db" }
+axcpu = { git = "https://github.com/Starry-OS/axcpu.git", rev = "3349bfd" }
 axerrno = { git = "https://github.com/Starry-OS/axerrno.git", rev = "58be232" }
 axfs-ng-vfs = { git = "https://github.com/Starry-OS/axfs-ng-vfs.git", rev = "6cf8893" }
 axio = { git = "https://github.com/Starry-OS/axio.git", rev = "ebb0c6b" }
 axplat = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "243fdc9" }
+axplat-x86-pc = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "243fdc9" }
 axplat-aarch64-qemu-virt = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "243fdc9" }
 axplat-riscv64-qemu-virt = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "243fdc9" }
 axplat-loongarch64-qemu-virt = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "243fdc9" }

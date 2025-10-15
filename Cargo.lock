@@ -235,7 +235,7 @@ dependencies = [
 [[package]]
 name = "axcpu"
 version = "0.2.2"
-source = "git+https://github.com/Starry-OS/axcpu.git?rev=53455db#53455db3978450785e38b983e2da1a1fd1d2a685"
+source = "git+https://github.com/Starry-OS/axcpu.git?rev=3349bfd#3349bfde4eee627777634431511e5e67076f1db9"
 dependencies = [
  "aarch64-cpu",
  "axbacktrace",
@@ -654,8 +654,7 @@ dependencies = [
 [[package]]
 name = "axplat-x86-pc"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4aef32b01b5b7e87e9f69933b64b704bc5d731adda2cdd24fc0a29cf0c359211"
+source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=243fdc9#243fdc9265ba472cffffddc1cae9a47371caf8e3"
 dependencies = [
  "axconfig-macros",
  "axcpu",

@@ -34,10 +34,10 @@ pub fn sys_fstat(fd: i32, statbuf: *mut stat) -> AxResult<isize> {
 ///
 /// Return 0 if success.
 #[cfg(target_arch = "x86_64")]
-pub fn sys_lstat(path: *const c_char, statbuf: UserPtr<stat>) -> AxResult<isize> {
-    use linux_raw_sys::general::{AT_FDCWD, AT_SYMLINK_FOLLOW};
+pub fn sys_lstat(path: *const c_char, statbuf: *mut stat) -> AxResult<isize> {
+    use linux_raw_sys::general::{AT_FDCWD, AT_SYMLINK_NOFOLLOW};
 
-    sys_fstatat(AT_FDCWD, path, statbuf, AT_SYMLINK_FOLLOW)
+    sys_fstatat(AT_FDCWD, path, statbuf, AT_SYMLINK_NOFOLLOW)
 }
 
 pub fn sys_fstatat(

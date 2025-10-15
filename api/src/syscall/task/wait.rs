@@ -2,7 +2,6 @@ use alloc::vec::Vec;
 use core::{future::poll_fn, task::Poll};
 
 use axerrno::{AxError, AxResult, LinuxError};
-use axhal::uspace::UserContext;
 use axtask::{
     current,
     future::{block_on, interruptible},
@@ -14,8 +13,6 @@ use linux_raw_sys::general::{
 use starry_core::task::AsThread;
 use starry_process::{Pid, Process};
 use starry_vm::{VmMutPtr, VmPtr};
-
-use crate::signal::check_signals;
 
 bitflags! {
     #[derive(Debug)]
@@ -62,12 +59,7 @@ impl WaitPid {
     }
 }
 
-pub fn sys_waitpid(
-    uctx: &mut UserContext,
-    pid: i32,
-    exit_code: *mut i32,
-    options: u32,
-) -> AxResult<isize> {
+pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isize> {
     let options = WaitOptions::from_bits_truncate(options);
     info!("sys_waitpid <= pid: {:?}, options: {:?}", pid, options);
 
@@ -112,7 +104,7 @@ pub fn sys_waitpid(
         }
     };
 
-    let result = block_on(interruptible(poll_fn(|cx| {
+    block_on(interruptible(poll_fn(|cx| {
         match check_children().transpose() {
             Some(res) => Poll::Ready(res),
             None => {
@@ -120,15 +112,5 @@ pub fn sys_waitpid(
                 Poll::Pending
             }
         }
-    })));
-    match result {
-        Ok(r) => r,
-        Err(_) => {
-            // FIXME: more general syscall RESTART
-            let ip = uctx.ip() - 4;
-            uctx.set_ip(ip);
-            while check_signals(curr.as_thread(), uctx, None) {}
-            Ok(0)
-        }
-    }
+    })))?
 }
