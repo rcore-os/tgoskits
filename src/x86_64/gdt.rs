@@ -10,7 +10,7 @@ use x86_64::{
 
 #[percpu::def_percpu]
 #[unsafe(no_mangle)]
-pub(super) static TSS: TaskStateSegment = TaskStateSegment::new();
+static TSS: TaskStateSegment = TaskStateSegment::new();
 
 #[percpu::def_percpu]
 static GDT: GlobalDescriptorTable = GlobalDescriptorTable::new();
@@ -26,7 +26,7 @@ pub const UCODE64: SegmentSelector = SegmentSelector::new(4, PrivilegeLevel::Rin
 
 /// Initializes the per-CPU TSS and GDT structures and loads them into the
 /// current CPU.
-pub(crate) fn init() {
+pub(super) fn init() {
     let gdt = unsafe { GDT.current_ref_mut_raw() };
     assert_eq!(gdt.append(Descriptor::kernel_code_segment()), KCODE64);
     assert_eq!(gdt.append(Descriptor::kernel_data_segment()), KDATA);

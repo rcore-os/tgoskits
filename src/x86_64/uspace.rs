@@ -151,7 +151,7 @@ impl ExceptionInfo {
 }
 
 /// Initializes syscall support and setups the syscall handler.
-pub fn init_syscall() {
+pub(super) fn init_syscall() {
     extern "C" {
         fn syscall_entry();
     }

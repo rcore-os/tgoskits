@@ -9,7 +9,7 @@ const NUM_INT: usize = 256;
 static IDT: LazyInit<InterruptDescriptorTable> = LazyInit::new();
 
 /// Initializes the global IDT and loads it into the current CPU.
-pub fn init() {
+pub(super) fn init() {
     IDT.call_once(|| {
         unsafe extern "C" {
             #[link_name = "trap_handler_table"]
