@@ -279,6 +279,7 @@ dependencies = [
  "axdriver_net",
  "axdriver_pci",
  "axdriver_virtio",
+ "axdriver_vsock",
  "axhal",
  "cfg-if",
  "crate_interface",
@@ -289,12 +290,12 @@ dependencies = [
 [[package]]
 name = "axdriver_base"
 version = "0.1.2"
-source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=a887828#a887828dbf5c7b5ffb7688dd0afc64259e1b4f4a"
+source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=a263470#a2634709194f2fd595a52b660d7d43df7c32570e"
 
 [[package]]
 name = "axdriver_block"
 version = "0.1.2"
-source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=a887828#a887828dbf5c7b5ffb7688dd0afc64259e1b4f4a"
+source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=a263470#a2634709194f2fd595a52b660d7d43df7c32570e"
 dependencies = [
  "axdriver_base",
  "gpt_disk_io",
@@ -305,7 +306,7 @@ dependencies = [
 [[package]]
 name = "axdriver_display"
 version = "0.1.2"
-source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=a887828#a887828dbf5c7b5ffb7688dd0afc64259e1b4f4a"
+source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=a263470#a2634709194f2fd595a52b660d7d43df7c32570e"
 dependencies = [
  "axdriver_base",
 ]
@@ -313,7 +314,7 @@ dependencies = [
 [[package]]
 name = "axdriver_input"
 version = "0.1.2"
-source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=a887828#a887828dbf5c7b5ffb7688dd0afc64259e1b4f4a"
+source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=a263470#a2634709194f2fd595a52b660d7d43df7c32570e"
 dependencies = [
  "axdriver_base",
  "strum",
@@ -322,7 +323,7 @@ dependencies = [
 [[package]]
 name = "axdriver_net"
 version = "0.1.2"
-source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=a887828#a887828dbf5c7b5ffb7688dd0afc64259e1b4f4a"
+source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=a263470#a2634709194f2fd595a52b660d7d43df7c32570e"
 dependencies = [
  "axdriver_base",
  "log",
@@ -332,7 +333,7 @@ dependencies = [
 [[package]]
 name = "axdriver_pci"
 version = "0.1.2"
-source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=a887828#a887828dbf5c7b5ffb7688dd0afc64259e1b4f4a"
+source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=a263470#a2634709194f2fd595a52b660d7d43df7c32570e"
 dependencies = [
  "virtio-drivers",
 ]
@@ -340,15 +341,25 @@ dependencies = [
 [[package]]
 name = "axdriver_virtio"
 version = "0.1.2"
-source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=a887828#a887828dbf5c7b5ffb7688dd0afc64259e1b4f4a"
+source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=a263470#a2634709194f2fd595a52b660d7d43df7c32570e"
 dependencies = [
  "axdriver_base",
  "axdriver_block",
  "axdriver_display",
  "axdriver_input",
  "axdriver_net",
+ "axdriver_vsock",
  "log",
  "virtio-drivers",
+]
+
+[[package]]
+name = "axdriver_vsock"
+version = "0.1.2"
+source = "git+https://github.com/Starry-OS/axdriver_crates.git?rev=a263470#a2634709194f2fd595a52b660d7d43df7c32570e"
+dependencies = [
+ "axdriver_base",
+ "log",
 ]
 
 [[package]]

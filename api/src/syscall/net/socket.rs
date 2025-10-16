@@ -4,13 +4,14 @@ use axnet::{
     tcp::TcpSocket,
     udp::UdpSocket,
     unix::{DgramTransport, StreamTransport, UnixSocket},
+    vsock::{VsockSocket, VsockStreamTransport},
 };
 use axtask::current;
 use linux_raw_sys::{
     general::{O_CLOEXEC, O_NONBLOCK},
     net::{
-        AF_INET, AF_UNIX, IPPROTO_TCP, IPPROTO_UDP, SHUT_RD, SHUT_RDWR, SHUT_WR, SOCK_DGRAM,
-        SOCK_SEQPACKET, SOCK_STREAM, sockaddr, socklen_t,
+        AF_INET, AF_UNIX, AF_VSOCK, IPPROTO_TCP, IPPROTO_UDP, SHUT_RD, SHUT_RDWR, SHUT_WR,
+        SOCK_DGRAM, SOCK_SEQPACKET, SOCK_STREAM, sockaddr, socklen_t,
     },
 };
 use starry_core::task::AsThread;
@@ -44,7 +45,10 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
         }
         (AF_UNIX, SOCK_STREAM) => axnet::Socket::Unix(UnixSocket::new(StreamTransport::new(pid))),
         (AF_UNIX, SOCK_DGRAM) => axnet::Socket::Unix(UnixSocket::new(DgramTransport::new(pid))),
-        (AF_INET, _) | (AF_UNIX, _) => {
+        (AF_VSOCK, SOCK_STREAM) => {
+            axnet::Socket::Vsock(VsockSocket::new(VsockStreamTransport::new()))
+        }
+        (AF_INET, _) | (AF_UNIX, _) | (AF_VSOCK, _) => {
             warn!("Unsupported socket type: domain: {}, ty: {}", domain, ty);
             return Err(AxError::Other(LinuxError::ESOCKTNOSUPPORT));
         }

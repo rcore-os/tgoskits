@@ -26,6 +26,7 @@ axfeat = { path = "arceos/api/axfeat", features = [
     "rtc",
     # "sched-fifo",
     "sched-rr",
+    "vsock",
 ] }
 
 axalloc = { path = "arceos/modules/axalloc" }
@@ -87,6 +88,7 @@ default = []
 qemu = [
     "axfeat/driver-virtio-blk",
     "axfeat/driver-virtio-net",
+    "axfeat/driver-virtio-socket",
 
     "axfeat/driver-virtio-gpu",
     "axfeat/display",
@@ -102,6 +104,7 @@ qemu = [
     "axfeat/fs-times",
     "starry-api/dev-log",
 ]
+
 vf2 = ["dep:axplat-riscv64-visionfive2", "axfeat/driver-sdmmc-gpt"]
 2k1000la = ["dep:axplat-loongarch64-2k1000la", "axfeat/driver-ahci-gpt"]
 
