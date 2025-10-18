@@ -24,11 +24,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ahci_driver"
-version = "0.1.0"
-source = "git+https://github.com/Starry-OS/ahci_driver.git?rev=beaa9c8#beaa9c8a183518da9f29363f3619dc53161450e4"
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -269,7 +264,6 @@ dependencies = [
 name = "axdriver"
 version = "0.2.0"
 dependencies = [
- "ahci_driver",
  "axalloc",
  "axconfig",
  "axdriver_base",
@@ -284,7 +278,6 @@ dependencies = [
  "cfg-if",
  "crate_interface",
  "log",
- "printf-compat",
 ]
 
 [[package]]
@@ -582,23 +575,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "axplat-loongarch64-2k1000la"
-version = "0.2.0"
-source = "git+https://github.com/Starry-OS/axplat-loongarch64-2k1000la.git?rev=b9b10d7#b9b10d7f2e38e158c302cb50387477ce04e4b42b"
-dependencies = [
- "axconfig-macros",
- "axcpu",
- "axplat",
- "chrono",
- "kspin",
- "lazyinit",
- "log",
- "loongArch64",
- "page_table_entry",
- "uart_16550",
-]
-
-[[package]]
 name = "axplat-loongarch64-qemu-virt"
 version = "0.2.0"
 source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=243fdc9#243fdc9265ba472cffffddc1cae9a47371caf8e3"
@@ -647,7 +623,7 @@ dependencies = [
 [[package]]
 name = "axplat-riscv64-visionfive2"
 version = "0.2.0"
-source = "git+https://github.com/Starry-OS/axplat-riscv64-visionfive2.git?rev=a4f99aa#a4f99aa5311f03fe50f8da53b2a7214dcf6876a4"
+source = "git+https://github.com/Starry-OS/axplat-riscv64-visionfive2.git?rev=5056c1d#5056c1dd80eeada9578535d9f66b4500884e85c8"
 dependencies = [
  "axconfig-macros",
  "axcpu",
@@ -778,7 +754,7 @@ dependencies = [
  "bitflags 2.9.4",
  "cexpr",
  "clang-sys",
- "itertools 0.13.0",
+ "itertools",
  "log",
  "prettyplease",
  "proc-macro2",
@@ -1434,15 +1410,6 @@ checksum = "7943c866cc5cd64cbc25b2e01621d07fa8eb2a1a23160ee81ce38704e97b8ecf"
 
 [[package]]
 name = "itertools"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "284f18f85651fe11e8a991b2adb42cb078325c996ed026d994719efcfca1d54b"
-dependencies = [
- "either",
-]
-
-[[package]]
-name = "itertools"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
@@ -1826,15 +1793,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "printf-compat"
-version = "0.1.1"
-source = "git+https://github.com/lights0123/printf-compat.git?rev=5f5c9cc#5f5c9cc363f047411a0dccb37e0efb452ffb61d9"
-dependencies = [
- "bitflags 1.3.2",
- "itertools 0.9.0",
-]
-
-[[package]]
 name = "proc-macro-error-attr2"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2146,7 +2104,6 @@ dependencies = [
  "axfs-ng",
  "axhal",
  "axlog",
- "axplat-loongarch64-2k1000la",
  "axplat-riscv64-visionfive2",
  "axruntime",
  "axsync",
