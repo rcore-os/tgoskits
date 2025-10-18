@@ -8,11 +8,10 @@ use core::{
 };
 
 use axerrno::{AxError, AxResult, LinuxError};
-use axnet::{SocketAddrEx, unix::UnixSocketAddr, vsock::VsockAddr};
-use linux_raw_sys::net::{
-    __kernel_sa_family_t, AF_INET, AF_INET6, AF_UNIX, AF_VSOCK, in_addr, in6_addr, sockaddr,
-    sockaddr_in, sockaddr_in6, socklen_t,
-};
+#[cfg(feature = "vsock")]
+use axnet::vsock::VsockAddr;
+use axnet::{SocketAddrEx, unix::UnixSocketAddr};
+use linux_raw_sys::net::*;
 
 use crate::mm::{UserConstPtr, UserPtr};
 
@@ -197,6 +196,7 @@ impl SocketAddrExt for UnixSocketAddr {
 
 // This type should be provided by linux_raw_sys but it's missing.
 // See https://github.com/sunfishcode/linux-raw-sys/issues/169
+#[cfg(feature = "vsock")]
 #[allow(non_camel_case_types)]
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -208,6 +208,7 @@ pub struct sockaddr_vm {
     pub svm_zero: [u8; 4],
 }
 
+#[cfg(feature = "vsock")]
 impl SocketAddrExt for VsockAddr {
     fn read_from_user(addr: UserConstPtr<sockaddr>, addrlen: socklen_t) -> AxResult<Self> {
         if addrlen != size_of::<sockaddr_vm>() as socklen_t {
@@ -245,6 +246,7 @@ impl SocketAddrExt for SocketAddrEx {
         match read_family(addr, addrlen)? as u32 {
             AF_INET | AF_INET6 => SocketAddr::read_from_user(addr, addrlen).map(Self::Ip),
             AF_UNIX => UnixSocketAddr::read_from_user(addr, addrlen).map(Self::Unix),
+            #[cfg(feature = "vsock")]
             AF_VSOCK => VsockAddr::read_from_user(addr, addrlen).map(Self::Vsock),
             _ => Err(AxError::Other(LinuxError::EAFNOSUPPORT)),
         }
@@ -254,6 +256,7 @@ impl SocketAddrExt for SocketAddrEx {
         match self {
             SocketAddrEx::Ip(ip_addr) => ip_addr.write_to_user(addr, addrlen),
             SocketAddrEx::Unix(unix_addr) => unix_addr.write_to_user(addr, addrlen),
+            #[cfg(feature = "vsock")]
             SocketAddrEx::Vsock(vsock_addr) => vsock_addr.write_to_user(addr, addrlen),
         }
     }

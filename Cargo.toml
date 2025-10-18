@@ -26,7 +26,6 @@ axfeat = { path = "arceos/api/axfeat", features = [
     "rtc",
     # "sched-fifo",
     "sched-rr",
-    "vsock",
 ] }
 
 axalloc = { path = "arceos/modules/axalloc" }
@@ -97,6 +96,9 @@ qemu = [
     "axfeat/input",
     # "axdriver/dyn",
     "starry-api/input",
+
+    "axfeat/vsock",
+    "starry-api/vsock",
 
     "axfeat/defplat",
 

@@ -1,10 +1,11 @@
 use axerrno::{AxError, AxResult, LinuxError};
+#[cfg(feature = "vsock")]
+use axnet::vsock::{VsockSocket, VsockStreamTransport};
 use axnet::{
     Shutdown, SocketAddrEx, SocketOps,
     tcp::TcpSocket,
     udp::UdpSocket,
     unix::{DgramTransport, StreamTransport, UnixSocket},
-    vsock::{VsockSocket, VsockStreamTransport},
 };
 use axtask::current;
 use linux_raw_sys::{
@@ -45,6 +46,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
         }
         (AF_UNIX, SOCK_STREAM) => axnet::Socket::Unix(UnixSocket::new(StreamTransport::new(pid))),
         (AF_UNIX, SOCK_DGRAM) => axnet::Socket::Unix(UnixSocket::new(DgramTransport::new(pid))),
+        #[cfg(feature = "vsock")]
         (AF_VSOCK, SOCK_STREAM) => {
             axnet::Socket::Vsock(VsockSocket::new(VsockStreamTransport::new()))
         }

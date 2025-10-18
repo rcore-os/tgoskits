@@ -9,6 +9,7 @@ repository.workspace = true
 [features]
 input = ["dep:axinput"]
 memtrack = ["axfeat/backtrace", "axalloc/tracking", "dep:gimli"]
+vsock = ["axnet/vsock"]
 dev-log = []
 
 [dependencies]
