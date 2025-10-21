@@ -12,6 +12,9 @@ pub struct TrapFrame {
     pub elr: u64,
     /// Saved Process Status Register (SPSR_EL1).
     pub spsr: u64,
+
+    /// make sure the size is 16 bytes aligned
+    pub __pad: [u8; 8],
 }
 
 impl fmt::Debug for TrapFrame {

@@ -104,12 +104,14 @@ fn aarch64_trap_handler(tf: &mut TrapFrame, kind: TrapKind, source: TrapSource) 
                     tf.elr += 4;
                 }
                 e => {
+                    let vaddr = va!(FAR_EL1.get() as usize);
                     panic!(
-                        "Unhandled synchronous exception {:?} @ {:#x}: ESR={:#x} (EC {:#08b}, ISS {:#x})\n{}",
+                        "Unhandled synchronous exception {:?} @ {:#x}: ESR={:#x} (EC {:#08b}, FAR: {:#x} ISS {:#x})\n{}",
                         e,
                         tf.elr,
                         esr.get(),
                         esr.read(ESR_EL1::EC),
+                        vaddr,
                         iss,
                         tf.backtrace()
                     );

@@ -139,7 +139,7 @@ pub fn flush_tlb(vaddr: Option<VirtAddr>) {
         #[cfg(not(feature = "arm-el2"))]
         unsafe {
             // TLB Invalidate by VMID, All at stage 1, EL1
-            asm!("tlbi vmalle1; dsb sy; isb")
+            asm!("dsb sy; isb; tlbi vmalle1; dsb sy; isb")
         }
         #[cfg(feature = "arm-el2")]
         unsafe {
