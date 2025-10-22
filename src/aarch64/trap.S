@@ -97,8 +97,8 @@ exception_vector_base:
 
     mrs     x8, sp_el0
     mrs     x9, tpidr_el0
-    ldp     x10, x11, [x1, 33 * 8]
-    stp     x8, x9, [x1, 33 * 8]
+    ldp     x10, x11, [x1, {trapframe_size}]
+    stp     x8, x9, [x1, {trapframe_size}]
     mov     sp, x10
     msr     tpidr_el0, x11
 
@@ -124,8 +124,8 @@ enter_user:
 
     mov     x10, sp
     mrs     x11, tpidr_el0
-    ldp     x8, x9, [x0, 33 * 8]
-    stp     x10, x11, [x0, 33 * 8]
+    ldp     x8, x9, [x0, {trapframe_size}]
+    stp     x10, x11, [x0,{trapframe_size}]
     msr     sp_el0, x8
     msr     tpidr_el0, x9
 

@@ -14,7 +14,7 @@ pub struct TrapFrame {
     pub spsr: u64,
 
     /// make sure the size is 16 bytes aligned
-    pub __pad: [u8; 8],
+    pub __pad: u64,
 }
 
 impl fmt::Debug for TrapFrame {

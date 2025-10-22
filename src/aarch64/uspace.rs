@@ -39,7 +39,7 @@ impl UserContext {
                     + SPSR_EL1::I::Unmasked
                     + SPSR_EL1::F::Masked)
                     .value,
-                __pad: [0; 8],
+                __pad: 0,
             },
             sp: ustack_top.as_usize() as _,
             tpidr: 0,
