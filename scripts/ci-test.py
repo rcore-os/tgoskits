@@ -16,6 +16,7 @@ p = subprocess.Popen(
     [
         "make",
         "ARCH=" + arch,
+        "ACCEL=n",
         "justrun",
         "QEMU_ARGS=-monitor none -serial tcp::4444,server=on",
     ],

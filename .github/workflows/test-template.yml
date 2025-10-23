@@ -58,9 +58,5 @@ jobs:
         run: |
           make ARCH=${{ inputs.arch }} img
 
-      - name: Fix KVM permission
-        if: ${{ inputs.arch == 'x86_64' }}
-        run: sudo usermod -aG kvm $USER
-
       - name: Test
         run: scripts/ci-test.py ${{ inputs.arch }}
