@@ -410,7 +410,7 @@ dependencies = [
 [[package]]
 name = "axfs-ng-vfs"
 version = "0.1.0"
-source = "git+https://github.com/Starry-OS/axfs-ng-vfs.git?rev=6cf8893#6cf8893cc28eeeb34e870cfa3186b7d14226c641"
+source = "git+https://github.com/Starry-OS/axfs-ng-vfs.git?rev=3926fb4#3926fb440c1a4136730904a7183046e1d3c02f61"
 dependencies = [
  "axerrno",
  "axpoll",
@@ -418,9 +418,9 @@ dependencies = [
  "cfg-if",
  "hashbrown",
  "inherit-methods-macro",
- "kspin",
  "log",
  "smallvec",
+ "spin 0.10.0",
 ]
 
 [[package]]
