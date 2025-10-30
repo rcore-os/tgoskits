@@ -147,8 +147,6 @@ impl ThreadSignalManager {
         uctx: &mut UserContext,
         restore_blocked: Option<SignalSet>,
     ) -> Option<(SignalInfo, SignalOSAction)> {
-        let actions = self.proc.actions.lock();
-
         let blocked = self.blocked.lock();
         let mask = !*blocked;
         let restore_blocked = restore_blocked.unwrap_or_else(|| *blocked);
@@ -162,8 +160,9 @@ impl ThreadSignalManager {
                     self.proc.dequeue_signal(&mask)
                 }
             }?;
-            let action = &actions[sig.signo()];
-            if let Some(os_action) = self.handle_signal(uctx, restore_blocked, &sig, action) {
+            let action = self.proc.actions.lock()[sig.signo()].clone();
+
+            if let Some(os_action) = self.handle_signal(uctx, restore_blocked, &sig, &action) {
                 break Some((sig, os_action));
             }
         }
