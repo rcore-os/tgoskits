@@ -6,7 +6,7 @@ authors = [
     "Mivik <mivikq@gmail.com>",
     "Asakura Mizu <asakuramizu111@gmail.com>",
 ]
-repository = "https://github.com/Starry-Mix-THU/axbacktrace"
+repository = "https://github.com/Starry-OS/axbacktrace"
 license = "MIT OR Apache-2.0"
 edition = "2024"
 keywords = ["DWARF", "debug", "backtrace", "unwinding"]
@@ -19,7 +19,7 @@ dwarf = ["dep:addr2line", "dep:gimli", "dep:paste", "alloc"]
 [dependencies]
 cfg-if = "1"
 log = "0.4"
-spin = { version = "0.9", default-features = false, features = ["once"] }
+spin = { version = "0.10", default-features = false, features = ["once"] }
 
 addr2line = { version = "0.25", default-features = false, optional = true, features = [
     "alloc",
