@@ -11,7 +11,9 @@ mod console;
 #[path = "arch/loongarch64/mod.rs"]
 pub mod arch;
 
+mod acpi;
 #[cfg(efi)]
 mod efi_stub;
 mod elf;
-mod acpi;
+
+mod mem;
