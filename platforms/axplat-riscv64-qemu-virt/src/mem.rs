@@ -47,4 +47,12 @@ impl MemIf for MemIfImpl {
     fn virt_to_phys(vaddr: VirtAddr) -> PhysAddr {
         pa!(vaddr.as_usize() - PHYS_VIRT_OFFSET)
     }
+
+    /// Returns the kernel address space base virtual address and size.
+    fn kernel_aspace() -> (VirtAddr, usize) {
+        (
+            va!(crate::config::plat::KERNEL_ASPACE_BASE),
+            crate::config::plat::KERNEL_ASPACE_SIZE,
+        )
+    }
 }

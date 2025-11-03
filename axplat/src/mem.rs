@@ -155,6 +155,9 @@ pub trait MemIf {
     /// `vaddr` must be available through the [`phys_to_virt`] translation.
     /// It **cannot** be used to translate arbitrary virtual addresses.
     fn virt_to_phys(vaddr: VirtAddr) -> PhysAddr;
+
+    /// Returns the kernel address space base virtual address and size.
+    fn kernel_aspace() -> (VirtAddr, usize);
 }
 
 /// Returns the total size of physical memory (RAM) on the platform.

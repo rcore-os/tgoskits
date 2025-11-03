@@ -45,4 +45,9 @@ impl MemIf for MemIfImpl {
     fn virt_to_phys(vaddr: VirtAddr) -> PhysAddr {
         todo!()
     }
+
+    /// Returns the kernel address space base virtual address and size.
+    fn kernel_aspace() -> (VirtAddr, usize) {
+        todo!()
+    }
 }
