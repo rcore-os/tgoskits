@@ -64,6 +64,7 @@ pub fn enable_irqs(timer_irq_num: usize) {
 /// Default implementation of [`axplat::time::TimeIf`] using the generic
 /// timer.
 #[macro_export]
+#[allow(clippy::crate_in_macro_def)]
 macro_rules! time_if_impl {
     ($name:ident) => {
         struct $name;
@@ -89,6 +90,12 @@ macro_rules! time_if_impl {
             /// clock start).
             fn epochoffset_nanos() -> u64 {
                 $crate::pl031::epochoffset_nanos()
+            }
+
+            /// Returns the IRQ number for the timer interrupt.
+            #[cfg(feature = "irq")]
+            fn irq_num() -> usize {
+                crate::config::devices::TIMER_IRQ
             }
 
             /// Set a one-shot timer.

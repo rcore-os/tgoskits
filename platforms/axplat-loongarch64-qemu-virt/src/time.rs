@@ -111,6 +111,12 @@ impl TimeIf for TimeIfImpl {
         nanos / *NANOS_PER_TICK
     }
 
+    /// Returns the IRQ number for the timer interrupt.
+    #[cfg(feature = "irq")]
+    fn irq_num() -> usize {
+        crate::config::devices::TIMER_IRQ
+    }
+
     /// Set a one-shot timer.
     ///
     /// A timer interrupt will be triggered at the specified monotonic time deadline (in nanoseconds).

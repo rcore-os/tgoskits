@@ -25,6 +25,12 @@ impl TimeIf for TimeIfImpl {
         todo!()
     }
 
+    /// Returns the IRQ number for the timer interrupt.
+    #[cfg(feature = "irq")]
+    fn irq_num() -> usize {
+        todo!()
+    }
+
     /// Set a one-shot timer.
     ///
     /// A timer interrupt will be triggered at the specified monotonic time
