@@ -12,7 +12,7 @@ use crate::{trap::PageFaultFlags, TrapFrame};
 pub use crate::uspace_common::{ExceptionKind, ReturnReason};
 
 /// Context to enter user space.
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Debug, Clone, Copy)]
 pub struct UserContext {
     tf: TrapFrame,
@@ -23,6 +23,7 @@ pub struct UserContext {
 }
 
 impl UserContext {
+    const PAD_MAGIC: u64 = 0x1234_5678_9abc_def0;
     /// Creates a new context with the given entry point, user stack pointer,
     /// and the argument.
     pub fn new(entry: usize, ustack_top: VirtAddr, arg0: usize) -> Self {
@@ -39,7 +40,7 @@ impl UserContext {
                     + SPSR_EL1::I::Unmasked
                     + SPSR_EL1::F::Masked)
                     .value,
-                __pad: 0,
+                __pad: Self::PAD_MAGIC,
             },
             sp: ustack_top.as_usize() as _,
             tpidr: 0,

@@ -25,6 +25,7 @@ impl fmt::Debug for TrapFrame {
         }
         writeln!(f, "    elr: {:#x},", self.elr)?;
         writeln!(f, "    spsr: {:#x},", self.spsr)?;
+        writeln!(f, "    pad: {:#x},", self.__pad)?;
         write!(f, "}}")?;
         Ok(())
     }
