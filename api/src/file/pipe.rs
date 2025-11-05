@@ -211,7 +211,7 @@ impl FileLike for Pipe {
                 (arg as *mut u32).vm_write(self.shared.buffer.lock().occupied_len() as u32)?;
                 Ok(0)
             }
-            _ => Err(AxError::BadIoctl),
+            _ => Err(AxError::NotATty),
         }
     }
 }

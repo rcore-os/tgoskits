@@ -32,7 +32,7 @@ pub trait DeviceOps: Send + Sync {
     fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize>;
     /// Manipulates the underlying device parameters of special files.
     fn ioctl(&self, _cmd: u32, _arg: usize) -> VfsResult<usize> {
-        Err(VfsError::BadIoctl)
+        Err(VfsError::NotATty)
     }
 
     /// Casts the device operations to a dynamic type.
@@ -126,7 +126,7 @@ impl FileNodeOps for Device {
     }
 
     fn append(&self, _buf: &[u8]) -> VfsResult<(usize, u64)> {
-        Err(VfsError::BadIoctl)
+        Err(VfsError::NotATty)
     }
 
     fn set_len(&self, _len: u64) -> VfsResult<()> {

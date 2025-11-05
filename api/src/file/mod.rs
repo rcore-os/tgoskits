@@ -249,7 +249,7 @@ pub trait FileLike: Pollable + Send + Sync {
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync>;
     fn path(&self) -> Cow<str>;
     fn ioctl(&self, _cmd: u32, _arg: usize) -> AxResult<usize> {
-        Err(AxError::BadIoctl)
+        Err(AxError::NotATty)
     }
 
     fn nonblocking(&self) -> bool {

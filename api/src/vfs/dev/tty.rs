@@ -166,7 +166,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                     warn!("Failed to unset terminal");
                 }
             }
-            _ => return Err(AxError::BadIoctl),
+            _ => return Err(AxError::NotATty),
         }
         Ok(0)
     }

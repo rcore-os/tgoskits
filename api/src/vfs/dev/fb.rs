@@ -217,7 +217,7 @@ impl DeviceOps for FrameBuffer {
             0x4606 => Err(AxError::InvalidInput),
             // FBIOBLANK
             0x4611 => Err(AxError::InvalidInput),
-            _ => Err(AxError::BadIoctl),
+            _ => Err(AxError::NotATty),
         }
     }
 

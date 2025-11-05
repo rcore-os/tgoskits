@@ -39,7 +39,7 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
     f.ioctl(cmd, arg)
         .map(|result| result as isize)
         .inspect_err(|err| {
-            if *err == AxError::BadIoctl {
+            if *err == AxError::NotATty {
                 // glibc likes to call TIOCGWINSZ on non-terminal files, just
                 // ignore it
                 if cmd == TIOCGWINSZ {

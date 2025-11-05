@@ -140,7 +140,7 @@ impl DeviceOps for LoopDevice {
             }
             _ => {
                 warn!("unknown ioctl for loop device: {cmd}");
-                return Err(AxError::BadIoctl);
+                return Err(AxError::NotATty);
             }
         }
         Ok(0)
