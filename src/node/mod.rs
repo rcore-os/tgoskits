@@ -376,7 +376,7 @@ impl DirEntry {
     pub fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
         match &self.0.node {
             Node::File(file) => file.ioctl(cmd, arg),
-            Node::Dir(_) => Err(VfsError::BadIoctl),
+            Node::Dir(_) => Err(VfsError::NotATty),
         }
     }
 

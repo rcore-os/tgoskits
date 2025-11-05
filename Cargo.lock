@@ -11,7 +11,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 [[package]]
 name = "axerrno"
 version = "0.1.0"
-source = "git+https://github.com/Starry-OS/axerrno.git#3713143115fac57d6a15f5390c7af03553c5c7ad"
+source = "git+https://github.com/Starry-OS/axerrno.git#f1e2bcac2c016fefb568c8af62b8c893aab9fba5"
 dependencies = [
  "log",
 ]
@@ -34,7 +34,8 @@ dependencies = [
 [[package]]
 name = "axpoll"
 version = "0.1.0"
-source = "git+https://github.com/Starry-OS/axpoll.git#7e73f2d53f458fa867c9b4849bf87b66ee3ba48a"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d06a0cf7cffe0e87c338f41d59bd0a05fa75cf9c4799b4107fa0fc6cf27d8d23"
 dependencies = [
  "bitflags",
  "linux-raw-sys",
@@ -43,9 +44,9 @@ dependencies = [
 
 [[package]]
 name = "bitflags"
-version = "2.9.1"
+version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b8e56985ec62d17e9c1001dc89c88ecd7dc08e47eba5ec7c29c7b5eeecde967"
+checksum = "812e12b5285cc515a9c72a5c1d3b6d46a19dac5acfef5265968c166106e31dd3"
 
 [[package]]
 name = "cfg-if"

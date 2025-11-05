@@ -7,14 +7,13 @@ authors = ["Mivik <mivikq@gmail.com>"]
 [dependencies]
 axerrno = "0.1"
 axpoll = "0.1"
-bitflags = "2.9"
+bitflags = "2.10"
 cfg-if = "1"
 hashbrown = "0.15"
 inherit-methods-macro = "0.1"
-log = "=0.4.21"
+log = "0.4"
 smallvec = "1.15"
 spin = { version = "0.10", default-features = false, features = ["mutex"] }
 
 [patch.crates-io]
 axerrno = { git = "https://github.com/Starry-OS/axerrno.git" }
-axpoll = { git = "https://github.com/Starry-OS/axpoll.git" }
