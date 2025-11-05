@@ -411,7 +411,7 @@ dependencies = [
 [[package]]
 name = "axfs-ng-vfs"
 version = "0.1.0"
-source = "git+https://github.com/Starry-OS/axfs-ng-vfs.git?rev=3926fb4#3926fb440c1a4136730904a7183046e1d3c02f61"
+source = "git+https://github.com/Starry-OS/axfs-ng-vfs.git?rev=d6f470f#d6f470f0c739395abe649534b87b28ca92195999"
 dependencies = [
  "axerrno",
  "axpoll",
@@ -1518,9 +1518,9 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.4.21"
+version = "0.4.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90ed8c1e510134f979dbc4f070f87d4313098b704861a105fe34231c70a3901c"
+checksum = "34080505efa8e45a4b816c349525ebe327ceaa8559756f0356cba97ef3bf7432"
 
 [[package]]
 name = "loongArch64"
