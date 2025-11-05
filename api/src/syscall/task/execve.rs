@@ -28,10 +28,7 @@ pub fn sys_execve(
         .map(vm_load_string)
         .collect::<Result<Vec<_>, _>>()?;
 
-    debug!(
-        "sys_execve <= path: {:?}, args: {:?}, envs: {:?}",
-        path, args, envs
-    );
+    debug!("sys_execve <= path: {path:?}, args: {args:?}, envs: {envs:?}");
 
     let curr = current();
     let proc_data = &curr.as_thread().proc_data;

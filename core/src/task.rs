@@ -497,7 +497,7 @@ pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> AxResult<()>
 
     if let Some(sig) = sig {
         let signo = sig.signo();
-        info!("Send signal {:?} to process {}", signo, pid);
+        info!("Send signal {signo:?} to process {pid}");
         if let Some(tid) = proc_data.signal.send_signal(sig)
             && let Ok(task) = get_task(tid)
         {

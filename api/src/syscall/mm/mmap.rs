@@ -132,8 +132,8 @@ pub fn sys_mmap(
     }
 
     debug!(
-        "sys_mmap <= addr: {:#x?}, length: {:#x?}, prot: {:?}, flags: {:?}, fd: {:?}, offset: {:?}",
-        addr, length, permission_flags, map_flags, fd, offset
+        "sys_mmap <= addr: {addr:#x?}, length: {length:#x?}, prot: {permission_flags:?}, flags: \
+         {map_flags:?}, fd: {fd:?}, offset: {offset:?}"
     );
 
     let page_size = if map_flags.contains(MmapFlags::HUGE_1GB) {
@@ -247,7 +247,7 @@ pub fn sys_mmap(
 }
 
 pub fn sys_munmap(addr: usize, length: usize) -> AxResult<isize> {
-    debug!("sys_munmap <= addr: {:#x}, length: {:x}", addr, length);
+    debug!("sys_munmap <= addr: {addr:#x}, length: {length:x}");
     let curr = current();
     let mut aspace = curr.as_thread().proc_data.aspace.lock();
     let length = align_up_4k(length);
@@ -261,10 +261,7 @@ pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> AxResult<isize> {
     let Some(permission_flags) = MmapProt::from_bits(prot) else {
         return Err(AxError::InvalidInput);
     };
-    debug!(
-        "sys_mprotect <= addr: {:#x}, length: {:x}, prot: {:?}",
-        addr, length, permission_flags
-    );
+    debug!("sys_mprotect <= addr: {addr:#x}, length: {length:x}, prot: {permission_flags:?}");
 
     if permission_flags.contains(MmapProt::GROWDOWN | MmapProt::GROWSUP) {
         return Err(AxError::InvalidInput);
@@ -281,8 +278,8 @@ pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> AxResult<isize> {
 
 pub fn sys_mremap(addr: usize, old_size: usize, new_size: usize, flags: u32) -> AxResult<isize> {
     debug!(
-        "sys_mremap <= addr: {:#x}, old_size: {:x}, new_size: {:x}, flags: {:#x}",
-        addr, old_size, new_size, flags
+        "sys_mremap <= addr: {addr:#x}, old_size: {old_size:x}, new_size: {new_size:x}, flags: \
+         {flags:#x}"
     );
 
     // TODO: full implementation
@@ -318,18 +315,12 @@ pub fn sys_mremap(addr: usize, old_size: usize, new_size: usize, flags: u32) -> 
 }
 
 pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> AxResult<isize> {
-    debug!(
-        "sys_madvise <= addr: {:#x}, length: {:x}, advice: {:#x}",
-        addr, length, advice
-    );
+    debug!("sys_madvise <= addr: {addr:#x}, length: {length:x}, advice: {advice:#x}");
     Ok(0)
 }
 
 pub fn sys_msync(addr: usize, length: usize, flags: u32) -> AxResult<isize> {
-    debug!(
-        "sys_msync <= addr: {:#x}, length: {:x}, flags: {:#x}",
-        addr, length, flags
-    );
+    debug!("sys_msync <= addr: {addr:#x}, length: {length:x}, flags: {flags:#x}");
 
     Ok(0)
 }

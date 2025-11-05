@@ -27,7 +27,7 @@ fn main() {
         .collect::<Vec<_>>();
     let envs = [];
     let exit_code = entry::run_initproc(&args, &envs);
-    info!("Init process exited with code: {:?}", exit_code);
+    info!("Init process exited with code: {exit_code:?}");
 
     let cx = FS_CONTEXT.lock();
     cx.root_dir()

@@ -83,10 +83,7 @@ pub fn sys_prctl(
 ) -> AxResult<isize> {
     use linux_raw_sys::prctl::*;
 
-    debug!(
-        "sys_prctl <= option: {}, args: {}, {}, {}, {}",
-        option, arg2, arg3, arg4, arg5
-    );
+    debug!("sys_prctl <= option: {option}, args: {arg2}, {arg3}, {arg4}, {arg5}");
 
     match option {
         PR_SET_NAME => {
@@ -109,7 +106,7 @@ pub fn sys_prctl(
         | PR_SET_MM_START_BRK
         | PR_SET_MM_START_STACK => {}
         _ => {
-            warn!("sys_prctl: unsupported option {}", option);
+            warn!("sys_prctl: unsupported option {option}");
             return Err(AxError::InvalidInput);
         }
     }

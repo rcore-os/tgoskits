@@ -60,7 +60,7 @@ pub fn sys_rt_sigprocmask(
             _ => return Err(AxError::InvalidInput),
         };
 
-        debug!("sys_rt_sigprocmask <= {:?}", set);
+        debug!("sys_rt_sigprocmask <= {set:?}");
         sig.set_blocked(set);
     }
 
@@ -87,7 +87,7 @@ pub fn sys_rt_sigaction(
     }
     if let Some(act) = act.nullable() {
         let act = unsafe { act.vm_read_uninit()?.assume_init() }.into();
-        debug!("sys_rt_sigaction <= signo: {:?}, act: {:?}", signo, act);
+        debug!("sys_rt_sigaction <= signo: {signo:?}, act: {act:?}");
         actions[signo] = act;
     }
     Ok(0)
@@ -112,7 +112,7 @@ fn make_siginfo(signo: u32, code: i32) -> AxResult<Option<SignalInfo>> {
 }
 
 pub fn sys_kill(pid: i32, signo: u32) -> AxResult<isize> {
-    debug!("sys_kill: pid = {}, signo = {}", pid, signo);
+    debug!("sys_kill: pid = {pid}, signo = {signo}");
     let sig = make_siginfo(signo, SI_USER as _)?;
 
     match pid {
@@ -229,10 +229,7 @@ pub fn sys_rt_sigtimedwait(
         None
     };
 
-    debug!(
-        "sys_rt_sigtimedwait => set = {:?}, timeout = {:?}",
-        set, timeout
-    );
+    debug!("sys_rt_sigtimedwait => set = {set:?}, timeout = {timeout:?}");
 
     let curr = current();
     let thr = curr.as_thread();

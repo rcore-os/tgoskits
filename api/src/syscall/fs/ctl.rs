@@ -26,7 +26,7 @@ use crate::{
 /// The ioctl() system call manipulates the underlying device parameters
 /// of special files.
 pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
-    debug!("sys_ioctl <= fd: {}, cmd: {}, arg: {}", fd, cmd, arg);
+    debug!("sys_ioctl <= fd: {fd}, cmd: {cmd}, arg: {arg}");
     let f = get_file_like(fd)?;
     if cmd == FIONBIO {
         let val = (arg as *const u8).vm_read()?;
@@ -52,7 +52,7 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
 
 pub fn sys_chdir(path: *const c_char) -> AxResult<isize> {
     let path = vm_load_string(path)?;
-    debug!("sys_chdir <= path: {}", path);
+    debug!("sys_chdir <= path: {path}");
 
     let mut fs = FS_CONTEXT.lock();
     let entry = fs.resolve(path)?;
@@ -61,7 +61,7 @@ pub fn sys_chdir(path: *const c_char) -> AxResult<isize> {
 }
 
 pub fn sys_fchdir(dirfd: i32) -> AxResult<isize> {
-    debug!("sys_fchdir <= dirfd: {}", dirfd);
+    debug!("sys_fchdir <= dirfd: {dirfd}");
 
     let entry = with_fs(dirfd, |fs| Ok(fs.current_dir().clone()))?;
     FS_CONTEXT.lock().set_current_dir(entry)?;
@@ -75,7 +75,7 @@ pub fn sys_mkdir(path: *const c_char, mode: u32) -> AxResult<isize> {
 
 pub fn sys_chroot(path: *const c_char) -> AxResult<isize> {
     let path = vm_load_string(path)?;
-    debug!("sys_chroot <= path: {}", path);
+    debug!("sys_chroot <= path: {path}");
 
     let mut fs = FS_CONTEXT.lock();
     let loc = fs.resolve(path)?;
@@ -88,10 +88,7 @@ pub fn sys_chroot(path: *const c_char) -> AxResult<isize> {
 
 pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize> {
     let path = vm_load_string(path)?;
-    debug!(
-        "sys_mkdirat <= dirfd: {}, path: {}, mode: {}",
-        dirfd, path, mode
-    );
+    debug!("sys_mkdirat <= dirfd: {dirfd}, path: {path}, mode: {mode}");
 
     let mode = mode & !current().as_thread().proc_data.umask();
     let mode = NodePermission::from_bits_truncate(mode as u16);
@@ -152,7 +149,7 @@ impl DirBuffer {
 }
 
 pub fn sys_getdents64(fd: i32, buf: *mut u8, len: usize) -> AxResult<isize> {
-    debug!("sys_getdents64 <= fd: {}, buf: {:?}, len: {}", fd, buf, len);
+    debug!("sys_getdents64 <= fd: {fd}, buf: {buf:?}, len: {len}");
 
     let mut buffer = DirBuffer::new(len);
 
@@ -195,8 +192,8 @@ pub fn sys_linkat(
     let old_path = old_path.nullable().map(vm_load_string).transpose()?;
     let new_path = vm_load_string(new_path)?;
     debug!(
-        "sys_linkat <= old_dirfd: {}, old_path: {:?}, new_dirfd: {}, new_path: {}, flags: {}",
-        old_dirfd, old_path, new_dirfd, new_path, flags
+        "sys_linkat <= old_dirfd: {old_dirfd}, old_path: {old_path:?}, new_dirfd: {new_dirfd}, \
+         new_path: {new_path}, flags: {flags}"
     );
 
     if flags != 0 {
@@ -229,10 +226,7 @@ pub fn sys_link(old_path: *const c_char, new_path: *const c_char) -> AxResult<is
 pub fn sys_unlinkat(dirfd: i32, path: *const c_char, flags: usize) -> AxResult<isize> {
     let path = vm_load_string(path)?;
 
-    debug!(
-        "sys_unlinkat <= dirfd: {}, path: {:?}, flags: {}",
-        dirfd, path, flags
-    );
+    debug!("sys_unlinkat <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
     with_fs(dirfd, |fs| {
         if flags == AT_REMOVEDIR as _ {
@@ -261,7 +255,7 @@ pub fn sys_getcwd(buf: *mut u8, size: isize) -> AxResult<isize> {
     }
 
     let cwd = FS_CONTEXT.lock().current_dir().absolute_path()?;
-    debug!("sys_getcwd => cwd: {}", cwd);
+    debug!("sys_getcwd => cwd: {cwd}");
 
     let cwd = CString::new(cwd.as_str()).map_err(|_| AxError::InvalidInput)?;
     let cwd = cwd.as_bytes_with_nul();
@@ -287,10 +281,7 @@ pub fn sys_symlinkat(
 ) -> AxResult<isize> {
     let target = vm_load_string(target)?;
     let linkpath = vm_load_string(linkpath)?;
-    debug!(
-        "sys_symlinkat <= target: {:?}, new_dirfd: {}, linkpath: {:?}",
-        target, new_dirfd, linkpath
-    );
+    debug!("sys_symlinkat <= target: {target:?}, new_dirfd: {new_dirfd}, linkpath: {linkpath:?}");
 
     with_fs(new_dirfd, |fs| {
         fs.symlink(target, linkpath)?;
@@ -311,7 +302,7 @@ pub fn sys_readlinkat(
 ) -> AxResult<isize> {
     let path = vm_load_string(path)?;
 
-    debug!("sys_readlinkat <= dirfd: {}, path: {:?}", dirfd, path);
+    debug!("sys_readlinkat <= dirfd: {dirfd}, path: {path:?}");
 
     with_fs(dirfd, |fs| {
         let entry = fs.resolve_no_follow(path)?;
@@ -510,8 +501,8 @@ pub fn sys_renameat2(
     let old_path = vm_load_string(old_path)?;
     let new_path = vm_load_string(new_path)?;
     debug!(
-        "sys_renameat2 <= old_dirfd: {}, old_path: {:?}, new_dirfd: {}, new_path: {}, flags: {}",
-        old_dirfd, old_path, new_dirfd, new_path, flags
+        "sys_renameat2 <= old_dirfd: {old_dirfd}, old_path: {old_path:?}, new_dirfd: {new_dirfd}, \
+         new_path: {new_path}, flags: {flags}"
     );
 
     let (old_dir, old_name) = with_fs(old_dirfd, |fs| fs.resolve_parent(Path::new(&old_path)))?;

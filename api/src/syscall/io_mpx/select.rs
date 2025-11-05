@@ -70,8 +70,8 @@ fn do_select(
     let except_set = FdSet::new(nfds as _, exceptfds.as_deref());
 
     debug!(
-        "sys_select <= nfds: {} sets: [read: {:?}, write: {:?}, except: {:?}] timeout: {:?}",
-        nfds, read_set, write_set, except_set, timeout
+        "sys_select <= nfds: {nfds} sets: [read: {read_set:?}, write: {write_set:?}, except: \
+         {except_set:?}] timeout: {timeout:?}"
     );
 
     let fd_table = FD_TABLE.read();

@@ -30,7 +30,7 @@ fn send_impl(
         Some(SocketAddrEx::read_from_user(addr, addrlen)?)
     };
 
-    debug!("sys_send <= fd: {}, flags: {}, addr: {:?}", fd, flags, addr);
+    debug!("sys_send <= fd: {fd}, flags: {flags}, addr: {addr:?}");
 
     let socket = Socket::from_fd(fd)?;
     let sent = socket.send(
@@ -89,7 +89,7 @@ fn recv_impl(
     addrlen: UserPtr<socklen_t>,
     cmsg_builder: Option<CMsgBuilder>,
 ) -> AxResult<isize> {
-    debug!("sys_recv <= fd: {}, flags: {}", fd, flags);
+    debug!("sys_recv <= fd: {fd}, flags: {flags}");
 
     let socket = Socket::from_fd(fd)?;
     let mut recv_flags = RecvFlags::empty();
@@ -141,7 +141,7 @@ fn recv_impl(
         }
     }
 
-    debug!("sys_recv => fd: {}, recv: {}", fd, recv);
+    debug!("sys_recv => fd: {fd}, recv: {recv}");
     Ok(recv as isize)
 }
 

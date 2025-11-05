@@ -217,7 +217,7 @@ impl ElfLoader {
                 .ok()
                 .and_then(|cstr| cstr.to_str().ok())
                 .ok_or(AxError::InvalidInput)?;
-            debug!("Loading dynamic linker: {}", ldso);
+            debug!("Loading dynamic linker: {ldso}");
             Some(ldso.to_owned())
         } else {
             None
@@ -317,10 +317,7 @@ pub fn load_user_app(
     let ustack_top = VirtAddr::from_usize(crate::config::USER_STACK_TOP);
     let ustack_size = crate::config::USER_STACK_SIZE;
     let ustack_start = ustack_top - ustack_size;
-    debug!(
-        "Mapping user stack: {:#x?} -> {:#x?}",
-        ustack_start, ustack_top
-    );
+    debug!("Mapping user stack: {ustack_start:#x?} -> {ustack_top:#x?}");
 
     uspace.map(
         ustack_start,

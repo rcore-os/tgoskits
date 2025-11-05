@@ -31,8 +31,8 @@ pub fn sys_futex(
     value3: u32,
 ) -> AxResult<isize> {
     debug!(
-        "sys_futex <= uaddr: {:?}, futex_op: {}, value: {}, uaddr2: {:?}, value3: {}",
-        uaddr, futex_op, value, uaddr2, value3,
+        "sys_futex <= uaddr: {uaddr:?}, futex_op: {futex_op}, value: {value}, uaddr2: {uaddr2:?}, \
+         value3: {value3}",
     );
 
     let key = FutexKey::new_current(uaddr.addr());

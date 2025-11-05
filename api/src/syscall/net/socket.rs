@@ -24,10 +24,7 @@ use crate::{
 };
 
 pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
-    debug!(
-        "sys_socket <= domain: {}, ty: {}, proto: {}",
-        domain, raw_ty, proto
-    );
+    debug!("sys_socket <= domain: {domain}, ty: {raw_ty}, proto: {proto}");
     let ty = raw_ty & 0xFF;
 
     let pid = current().as_thread().proc_data.proc.pid();
@@ -51,7 +48,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
             axnet::Socket::Vsock(VsockSocket::new(VsockStreamTransport::new()))
         }
         (AF_INET, _) | (AF_UNIX, _) | (AF_VSOCK, _) => {
-            warn!("Unsupported socket type: domain: {}, ty: {}", domain, ty);
+            warn!("Unsupported socket type: domain: {domain}, ty: {ty}");
             return Err(AxError::Other(LinuxError::ESOCKTNOSUPPORT));
         }
         _ => {
@@ -70,7 +67,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
 
 pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> AxResult<isize> {
     let addr = SocketAddrEx::read_from_user(addr, addrlen)?;
-    debug!("sys_bind <= fd: {}, addr: {:?}", fd, addr);
+    debug!("sys_bind <= fd: {fd}, addr: {addr:?}");
 
     Socket::from_fd(fd)?.bind(addr)?;
 
@@ -79,7 +76,7 @@ pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> AxResult
 
 pub fn sys_connect(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> AxResult<isize> {
     let addr = SocketAddrEx::read_from_user(addr, addrlen)?;
-    debug!("sys_connect <= fd: {}, addr: {:?}", fd, addr);
+    debug!("sys_connect <= fd: {fd}, addr: {addr:?}");
 
     Socket::from_fd(fd)?.connect(addr).map_err(|e| {
         if e == AxError::WouldBlock {
@@ -93,7 +90,7 @@ pub fn sys_connect(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> AxRes
 }
 
 pub fn sys_listen(fd: i32, backlog: i32) -> AxResult<isize> {
-    debug!("sys_listen <= fd: {}, backlog: {}", fd, backlog);
+    debug!("sys_listen <= fd: {fd}, backlog: {backlog}");
 
     if backlog < 0 && backlog != -1 {
         return Err(AxError::InvalidInput);
@@ -118,7 +115,7 @@ pub fn sys_accept4(
     addrlen: UserPtr<socklen_t>,
     flags: u32,
 ) -> AxResult<isize> {
-    debug!("sys_accept <= fd: {}, flags: {}", fd, flags);
+    debug!("sys_accept <= fd: {fd}, flags: {flags}");
 
     let cloexec = flags & O_CLOEXEC != 0;
 
@@ -130,7 +127,7 @@ pub fn sys_accept4(
 
     let remote_addr = socket.local_addr()?;
     let fd = socket.add_to_fd_table(cloexec).map(|fd| fd as isize)?;
-    debug!("sys_accept => fd: {}, addr: {:?}", fd, remote_addr);
+    debug!("sys_accept => fd: {fd}, addr: {remote_addr:?}");
 
     if !addr.is_null() {
         remote_addr.write_to_user(addr, addrlen.get_as_mut()?)?;
@@ -140,7 +137,7 @@ pub fn sys_accept4(
 }
 
 pub fn sys_shutdown(fd: i32, how: u32) -> AxResult<isize> {
-    debug!("sys_shutdown <= fd: {}, how: {:?}", fd, how);
+    debug!("sys_shutdown <= fd: {fd}, how: {how:?}");
 
     let socket = Socket::from_fd(fd)?;
     let how = match how {
@@ -158,10 +155,7 @@ pub fn sys_socketpair(
     proto: u32,
     fds: UserPtr<[i32; 2]>,
 ) -> AxResult<isize> {
-    debug!(
-        "sys_socketpair <= domain: {}, ty: {}, proto: {}",
-        domain, raw_ty, proto
-    );
+    debug!("sys_socketpair <= domain: {domain}, ty: {raw_ty}, proto: {proto}");
     let ty = raw_ty & 0xFF;
 
     if domain != AF_UNIX {
@@ -179,7 +173,7 @@ pub fn sys_socketpair(
             (UnixSocket::new(sock1), UnixSocket::new(sock2))
         }
         _ => {
-            warn!("Unsupported socketpair type: {}", ty);
+            warn!("Unsupported socketpair type: {ty}");
             return Err(AxError::Other(LinuxError::ESOCKTNOSUPPORT));
         }
     };

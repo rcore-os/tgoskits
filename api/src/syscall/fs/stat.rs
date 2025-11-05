@@ -48,10 +48,7 @@ pub fn sys_fstatat(
 ) -> AxResult<isize> {
     let path = path.nullable().map(vm_load_string).transpose()?;
 
-    debug!(
-        "sys_fstatat <= dirfd: {}, path: {:?}, flags: {}",
-        dirfd, path, flags
-    );
+    debug!("sys_fstatat <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
     let loc = resolve_at(dirfd, path.as_deref(), flags)?;
     statbuf.vm_write(loc.stat()?.into())?;
@@ -94,10 +91,7 @@ pub fn sys_statx(
     //        file descriptor dirfd.
 
     let path = path.nullable().map(vm_load_string).transpose()?;
-    debug!(
-        "sys_statx <= dirfd: {}, path: {:?}, flags: {}",
-        dirfd, path, flags
-    );
+    debug!("sys_statx <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
     statxbuf.vm_write(resolve_at(dirfd, path.as_deref(), flags)?.stat()?.into())?;
 
@@ -113,10 +107,7 @@ pub fn sys_access(path: *const c_char, mode: u32) -> AxResult<isize> {
 
 pub fn sys_faccessat2(dirfd: c_int, path: *const c_char, mode: u32, flags: u32) -> AxResult<isize> {
     let path = path.nullable().map(vm_load_string).transpose()?;
-    debug!(
-        "sys_faccessat2 <= dirfd: {}, path: {:?}, mode: {}, flags: {}",
-        dirfd, path, mode, flags
-    );
+    debug!("sys_faccessat2 <= dirfd: {dirfd}, path: {path:?}, mode: {mode}, flags: {flags}");
 
     let file = resolve_at(dirfd, path.as_deref(), flags)?;
 
@@ -164,7 +155,7 @@ fn statfs(loc: &Location) -> AxResult<statfs> {
 
 pub fn sys_statfs(path: *const c_char, buf: *mut statfs) -> AxResult<isize> {
     let path = vm_load_string(path)?;
-    debug!("sys_statfs <= path: {:?}", path);
+    debug!("sys_statfs <= path: {path:?}");
 
     buf.vm_write(statfs(
         &FS_CONTEXT
@@ -177,7 +168,7 @@ pub fn sys_statfs(path: *const c_char, buf: *mut statfs) -> AxResult<isize> {
 }
 
 pub fn sys_fstatfs(fd: i32, buf: *mut statfs) -> AxResult<isize> {
-    debug!("sys_fstatfs <= fd: {}", fd);
+    debug!("sys_fstatfs <= fd: {fd}");
 
     buf.vm_write(statfs(File::from_fd(fd)?.inner().location())?)?;
     Ok(0)

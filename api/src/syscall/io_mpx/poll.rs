@@ -21,7 +21,7 @@ fn do_poll(
     timeout: Option<TimeValue>,
     sigmask: Option<SignalSet>,
 ) -> AxResult<isize> {
-    debug!("do_poll fds={:?} timeout={:?}", poll_fds, timeout);
+    debug!("do_poll fds={poll_fds:?} timeout={timeout:?}");
 
     let mut res = 0isize;
     let mut fds = Vec::with_capacity(poll_fds.len());

@@ -177,7 +177,7 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
                 self.writer.write(&[b'^', (ch + 0x40)]);
             }
             other => {
-                warn!("Ignored echo char: {:#x}", other);
+                warn!("Ignored echo char: {other:#x}");
             }
         }
     }

@@ -121,10 +121,7 @@ pub fn sys_openat(
     mode: __kernel_mode_t,
 ) -> AxResult<isize> {
     let path = vm_load_string(path)?;
-    debug!(
-        "sys_openat <= {} {:?} {:#o} {:#o}",
-        dirfd, path, flags, mode
-    );
+    debug!("sys_openat <= {dirfd} {path:?} {flags:#o} {mode:#o}");
 
     let mode = mode & !current().as_thread().proc_data.umask();
 
@@ -144,7 +141,7 @@ pub fn sys_open(path: *const c_char, flags: i32, mode: __kernel_mode_t) -> AxRes
 }
 
 pub fn sys_close(fd: c_int) -> AxResult<isize> {
-    debug!("sys_close <= {}", fd);
+    debug!("sys_close <= {fd}");
     close_file_like(fd)?;
     Ok(0)
 }
@@ -162,10 +159,7 @@ pub fn sys_close_range(first: i32, last: i32, flags: u32) -> AxResult<isize> {
         return Err(AxError::InvalidInput);
     }
     let flags = CloseRangeFlags::from_bits(flags).ok_or(AxError::InvalidInput)?;
-    debug!(
-        "sys_close_range <= fds: [{}, {}], flags: {:?}",
-        first, last, flags
-    );
+    debug!("sys_close_range <= fds: [{first}, {last}], flags: {flags:?}");
     if flags.contains(CloseRangeFlags::UNSHARE) {
         // TODO: optimize
         let curr = current();
@@ -199,7 +193,7 @@ fn dup_fd(old_fd: c_int, cloexec: bool) -> AxResult<isize> {
 }
 
 pub fn sys_dup(old_fd: c_int) -> AxResult<isize> {
-    debug!("sys_dup <= {}", old_fd);
+    debug!("sys_dup <= {old_fd}");
     dup_fd(old_fd, false)
 }
 
@@ -221,10 +215,7 @@ bitflags::bitflags! {
 
 pub fn sys_dup3(old_fd: c_int, new_fd: c_int, flags: c_int) -> AxResult<isize> {
     let flags = Dup3Flags::from_bits(flags).ok_or(AxError::InvalidInput)?;
-    debug!(
-        "sys_dup3 <= old_fd: {}, new_fd: {}, flags: {:?}",
-        old_fd, new_fd, flags
-    );
+    debug!("sys_dup3 <= old_fd: {old_fd}, new_fd: {new_fd}, flags: {flags:?}");
 
     if old_fd == new_fd {
         return Err(AxError::InvalidInput);
@@ -246,7 +237,7 @@ pub fn sys_dup3(old_fd: c_int, new_fd: c_int, flags: c_int) -> AxResult<isize> {
 }
 
 pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
-    debug!("sys_fcntl <= fd: {} cmd: {} arg: {}", fd, cmd, arg);
+    debug!("sys_fcntl <= fd: {fd} cmd: {cmd} arg: {arg}");
 
     match cmd as u32 {
         F_DUPFD => dup_fd(fd, false),
@@ -308,14 +299,14 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
             Ok(0)
         }
         _ => {
-            warn!("unsupported fcntl parameters: cmd: {}", cmd);
+            warn!("unsupported fcntl parameters: cmd: {cmd}");
             Ok(0)
         }
     }
 }
 
 pub fn sys_flock(fd: c_int, operation: c_int) -> AxResult<isize> {
-    debug!("flock <= fd: {}, operation: {}", fd, operation);
+    debug!("flock <= fd: {fd}, operation: {operation}");
     // TODO: flock
     Ok(0)
 }

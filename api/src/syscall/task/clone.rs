@@ -103,9 +103,8 @@ pub fn sys_clone(
     }
 
     debug!(
-        "sys_clone <= flags: {:?}, exit_signal: {}, stack: {:#x}, ptid: {:#x}, ctid: {:#x}, tls: \
-         {:#x}",
-        flags, exit_signal, stack, parent_tid, child_tid, tls
+        "sys_clone <= flags: {flags:?}, exit_signal: {exit_signal}, stack: {stack:#x}, ptid: \
+         {parent_tid:#x}, ctid: {child_tid:#x}, tls: {tls:#x}"
     );
 
     if exit_signal != 0 && flags.contains(CloneFlags::THREAD | CloneFlags::PARENT) {

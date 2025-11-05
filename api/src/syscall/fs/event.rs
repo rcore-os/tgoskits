@@ -18,7 +18,7 @@ bitflags! {
 }
 
 pub fn sys_eventfd2(initval: u32, flags: u32) -> AxResult<isize> {
-    debug!("sys_eventfd2 <= initval: {}, flags: {}", initval, flags);
+    debug!("sys_eventfd2 <= initval: {initval}, flags: {flags}");
 
     let flags = EventFdFlags::from_bits(flags).ok_or(AxError::InvalidInput)?;
 

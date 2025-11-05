@@ -79,7 +79,7 @@ pub fn new_user_task(
                             .expect("Failed to send SIGTRAP");
                     }
                     r => {
-                        warn!("Unexpected return reason: {:?}", r);
+                        warn!("Unexpected return reason: {r:?}");
                         raise_signal_fatal(SignalInfo::new_kernel(Signo::SIGSEGV))
                             .expect("Failed to send SIGSEGV");
                     }
@@ -179,7 +179,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     if !head.is_null()
         && let Err(err) = exit_robust_list(head)
     {
-        warn!("exit robust list failed: {:?}", err);
+        warn!("exit robust list failed: {err:?}");
     }
 
     let process = &thr.proc_data.proc;
@@ -213,7 +213,7 @@ pub fn raise_signal_fatal(sig: SignalInfo) -> AxResult<()> {
     let proc_data = &curr.as_thread().proc_data;
 
     let signo = sig.signo();
-    info!("Send fatal signal {:?} to the current process", signo);
+    info!("Send fatal signal {signo:?} to the current process");
     if let Some(tid) = proc_data.signal.send_signal(sig)
         && let Ok(task) = get_task(tid)
     {

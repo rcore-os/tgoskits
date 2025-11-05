@@ -30,7 +30,7 @@ bitflags! {
 
 pub fn sys_epoll_create1(flags: u32) -> AxResult<isize> {
     let flags = EpollCreateFlags::from_bits(flags).ok_or(AxError::InvalidInput)?;
-    debug!("sys_epoll_create1 <= flags: {:?}", flags);
+    debug!("sys_epoll_create1 <= flags: {flags:?}");
     Epoll::new()
         .add_to_fd_table(flags.contains(EpollCreateFlags::CLOEXEC))
         .map(|fd| fd as isize)
@@ -43,7 +43,7 @@ pub fn sys_epoll_ctl(
     event: UserConstPtr<epoll_event>,
 ) -> AxResult<isize> {
     let epoll = Epoll::from_fd(epfd)?;
-    debug!("sys_epoll_ctl <= epfd: {}, op: {}, fd: {}", epfd, op, fd);
+    debug!("sys_epoll_ctl <= epfd: {epfd}, op: {op}, fd: {fd}");
 
     let parse_event = || -> AxResult<(EpollEvent, EpollFlags)> {
         let event = event.get_as_ref()?;
@@ -84,10 +84,7 @@ fn do_epoll_wait(
     sigsetsize: usize,
 ) -> AxResult<isize> {
     check_sigset_size(sigsetsize)?;
-    debug!(
-        "sys_epoll_wait <= epfd: {}, maxevents: {}, timeout: {:?}",
-        epfd, maxevents, timeout
-    );
+    debug!("sys_epoll_wait <= epfd: {epfd}, maxevents: {maxevents}, timeout: {timeout:?}");
 
     let epoll = Epoll::from_fd(epfd)?;
 

@@ -63,12 +63,12 @@ pub fn sys_dummy_fd(sysno: Sysno) -> AxResult<isize> {
 ///
 /// Return the read size if success.
 pub fn sys_read(fd: i32, buf: *mut u8, len: usize) -> AxResult<isize> {
-    debug!("sys_read <= fd: {}, buf: {:p}, len: {}", fd, buf, len);
+    debug!("sys_read <= fd: {fd}, buf: {buf:p}, len: {len}");
     Ok(get_file_like(fd)?.read(&mut VmBytesMut::new(buf, len).into())? as _)
 }
 
 pub fn sys_readv(fd: i32, iov: *const IoVec, iovcnt: usize) -> AxResult<isize> {
-    debug!("sys_readv <= fd: {}, iovcnt: {}", fd, iovcnt);
+    debug!("sys_readv <= fd: {fd}, iovcnt: {iovcnt}");
     let f = get_file_like(fd)?;
     f.read(&mut IoVectorBuf::new(iov, iovcnt)?.into_io().into())
         .map(|n| n as _)
@@ -78,19 +78,19 @@ pub fn sys_readv(fd: i32, iov: *const IoVec, iovcnt: usize) -> AxResult<isize> {
 ///
 /// Return the written size if success.
 pub fn sys_write(fd: i32, buf: *mut u8, len: usize) -> AxResult<isize> {
-    debug!("sys_write <= fd: {}, buf: {:p}, len: {}", fd, buf, len);
+    debug!("sys_write <= fd: {fd}, buf: {buf:p}, len: {len}");
     Ok(get_file_like(fd)?.write(&mut VmBytes::new(buf, len).into())? as _)
 }
 
 pub fn sys_writev(fd: i32, iov: *const IoVec, iovcnt: usize) -> AxResult<isize> {
-    debug!("sys_writev <= fd: {}, iovcnt: {}", fd, iovcnt);
+    debug!("sys_writev <= fd: {fd}, iovcnt: {iovcnt}");
     let f = get_file_like(fd)?;
     f.write(&mut IoVectorBuf::new(iov, iovcnt)?.into_io().into())
         .map(|n| n as _)
 }
 
 pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<isize> {
-    debug!("sys_lseek <= {} {} {}", fd, offset, whence);
+    debug!("sys_lseek <= {fd} {offset} {whence}");
     let pos = match whence {
         0 => SeekFrom::Start(offset as _),
         1 => SeekFrom::Current(offset as _),
@@ -103,7 +103,7 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<i
 
 pub fn sys_truncate(path: UserConstPtr<c_char>, length: __kernel_off_t) -> AxResult<isize> {
     let path = path.get_as_str()?;
-    debug!("sys_truncate <= {:?} {}", path, length);
+    debug!("sys_truncate <= {path:?} {length}");
     if length < 0 {
         return Err(AxError::InvalidInput);
     }
@@ -116,7 +116,7 @@ pub fn sys_truncate(path: UserConstPtr<c_char>, length: __kernel_off_t) -> AxRes
 }
 
 pub fn sys_ftruncate(fd: c_int, length: __kernel_off_t) -> AxResult<isize> {
-    debug!("sys_ftruncate <= {} {}", fd, length);
+    debug!("sys_ftruncate <= {fd} {length}");
     let f = File::from_fd(fd)?;
     f.inner().access(FileFlags::WRITE)?.set_len(length as _)?;
     Ok(0)
@@ -128,10 +128,7 @@ pub fn sys_fallocate(
     offset: __kernel_off_t,
     len: __kernel_off_t,
 ) -> AxResult<isize> {
-    debug!(
-        "sys_fallocate <= fd: {}, mode: {}, offset: {}, len: {}",
-        fd, mode, offset, len
-    );
+    debug!("sys_fallocate <= fd: {fd}, mode: {mode}, offset: {offset}, len: {len}");
     if mode != 0 {
         return Err(AxError::InvalidInput);
     }
@@ -143,14 +140,14 @@ pub fn sys_fallocate(
 }
 
 pub fn sys_fsync(fd: c_int) -> AxResult<isize> {
-    debug!("sys_fsync <= {}", fd);
+    debug!("sys_fsync <= {fd}");
     let f = File::from_fd(fd)?;
     f.inner().sync(false)?;
     Ok(0)
 }
 
 pub fn sys_fdatasync(fd: c_int) -> AxResult<isize> {
-    debug!("sys_fdatasync <= {}", fd);
+    debug!("sys_fdatasync <= {fd}");
     let f = File::from_fd(fd)?;
     f.inner().sync(true)?;
     Ok(0)
@@ -162,10 +159,7 @@ pub fn sys_fadvise64(
     len: __kernel_off_t,
     advice: u32,
 ) -> AxResult<isize> {
-    debug!(
-        "sys_fadvise64 <= fd: {}, offset: {}, len: {}, advice: {}",
-        fd, offset, len, advice
-    );
+    debug!("sys_fadvise64 <= fd: {fd}, offset: {offset}, len: {len}, advice: {advice}");
     if Pipe::from_fd(fd).is_ok() {
         return Err(AxError::BrokenPipe);
     }
@@ -227,10 +221,7 @@ pub fn sys_preadv2(
     offset: __kernel_off_t,
     _flags: u32,
 ) -> AxResult<isize> {
-    debug!(
-        "sys_preadv2 <= fd: {}, iovcnt: {}, offset: {}, flags: {}",
-        fd, iovcnt, offset, _flags
-    );
+    debug!("sys_preadv2 <= fd: {fd}, iovcnt: {iovcnt}, offset: {offset}, flags: {_flags}");
     let f = File::from_fd(fd)?;
     f.inner()
         .read_at(&mut IoVectorBuf::new(iov, iovcnt)?.into_io(), offset as _)
@@ -244,10 +235,7 @@ pub fn sys_pwritev2(
     offset: __kernel_off_t,
     _flags: u32,
 ) -> AxResult<isize> {
-    debug!(
-        "sys_pwritev2 <= fd: {}, iovcnt: {}, offset: {}, flags: {}",
-        fd, iovcnt, offset, _flags
-    );
+    debug!("sys_pwritev2 <= fd: {fd}, iovcnt: {iovcnt}, offset: {offset}, flags: {_flags}");
     let f = File::from_fd(fd)?;
     f.inner()
         .read_at(&mut IoVectorBuf::new(iov, iovcnt)?.into_io(), offset as _)

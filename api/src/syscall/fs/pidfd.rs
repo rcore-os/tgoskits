@@ -8,7 +8,7 @@ use crate::{
 };
 
 pub fn sys_pidfd_open(pid: u32, flags: u32) -> AxResult<isize> {
-    debug!("sys_pidfd_open <= pid: {}, flags: {}", pid, flags);
+    debug!("sys_pidfd_open <= pid: {pid}, flags: {flags}");
 
     if flags != 0 {
         return Err(AxError::InvalidInput);
@@ -21,10 +21,7 @@ pub fn sys_pidfd_open(pid: u32, flags: u32) -> AxResult<isize> {
 }
 
 pub fn sys_pidfd_getfd(pidfd: i32, target_fd: i32, flags: u32) -> AxResult<isize> {
-    debug!(
-        "sys_pidfd_getfd <= pidfd: {}, target_fd: {}, flags: {}",
-        pidfd, target_fd, flags
-    );
+    debug!("sys_pidfd_getfd <= pidfd: {pidfd}, target_fd: {target_fd}, flags: {flags}");
 
     let pidfd = PidFd::from_fd(pidfd)?;
     let proc_data = pidfd.process_data()?;

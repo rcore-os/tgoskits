@@ -19,7 +19,7 @@ pub fn sys_sched_yield() -> AxResult<isize> {
 }
 
 fn sleep_impl(clock: impl Fn() -> TimeValue, dur: TimeValue) -> TimeValue {
-    debug!("sleep_impl <= {:?}", dur);
+    debug!("sleep_impl <= {dur:?}");
 
     let start = clock();
 
@@ -34,12 +34,12 @@ fn sleep_impl(clock: impl Fn() -> TimeValue, dur: TimeValue) -> TimeValue {
 pub fn sys_nanosleep(req: *const timespec, rem: *mut timespec) -> AxResult<isize> {
     // FIXME: AnyBitPattern
     let req = unsafe { req.vm_read_uninit()?.assume_init() }.try_into_time_value()?;
-    debug!("sys_nanosleep <= req: {:?}", req);
+    debug!("sys_nanosleep <= req: {req:?}");
 
     let actual = sleep_impl(axhal::time::monotonic_time, req);
 
     if let Some(diff) = req.checked_sub(actual) {
-        debug!("sys_nanosleep => rem: {:?}", diff);
+        debug!("sys_nanosleep => rem: {diff:?}");
         if let Some(rem) = rem.nullable() {
             rem.vm_write(timespec::from_time_value(diff))?;
         }
@@ -59,16 +59,13 @@ pub fn sys_clock_nanosleep(
         CLOCK_REALTIME => axhal::time::wall_time,
         CLOCK_MONOTONIC => axhal::time::monotonic_time,
         _ => {
-            warn!("Unsupported clock_id: {}", clock_id);
+            warn!("Unsupported clock_id: {clock_id}");
             return Err(AxError::InvalidInput);
         }
     };
 
     let req = unsafe { req.vm_read_uninit()?.assume_init() }.try_into_time_value()?;
-    debug!(
-        "sys_clock_nanosleep <= clock_id: {}, flags: {}, req: {:?}",
-        clock_id, flags, req
-    );
+    debug!("sys_clock_nanosleep <= clock_id: {clock_id}, flags: {flags}, req: {req:?}");
 
     let dur = if flags & TIMER_ABSTIME != 0 {
         req.saturating_sub(clock())
@@ -79,7 +76,7 @@ pub fn sys_clock_nanosleep(
     let actual = sleep_impl(clock, dur);
 
     if let Some(diff) = dur.checked_sub(actual) {
-        debug!("sys_clock_nanosleep => rem: {:?}", diff);
+        debug!("sys_clock_nanosleep => rem: {diff:?}");
         if let Some(rem) = rem.nullable() {
             rem.vm_write(timespec::from_time_value(diff))?;
         }
@@ -141,7 +138,7 @@ pub fn sys_sched_getparam(_pid: i32, _param: *mut ()) -> AxResult<isize> {
 }
 
 pub fn sys_getpriority(which: u32, who: u32) -> AxResult<isize> {
-    debug!("sys_getpriority <= which: {}, who: {}", which, who);
+    debug!("sys_getpriority <= which: {which}, who: {who}");
 
     match which {
         PRIO_PROCESS => {
