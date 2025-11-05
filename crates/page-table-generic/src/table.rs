@@ -20,15 +20,8 @@ pub struct PageTable<T: TableGeneric, A: FramAllocator> {
 impl<T: TableGeneric, A: FramAllocator> PageTable<T, A> {
     /// 创建一个新的页表
     pub fn new(allocator: A) -> PagingResult<Self> {
-        let root = allocator.alloc_frame().ok_or(PagingError::NoMemory)?;
-
-        Ok(Self {
-            root: Frame {
-                paddr: root,
-                allocator,
-                _marker: core::marker::PhantomData,
-            },
-        })
+        let root = Frame::new(allocator)?;
+        Ok(Self { root })
     }
 
     pub fn map(&mut self, config: &MapConfig<T::P>) -> PagingResult {
