@@ -1680,7 +1680,7 @@ dependencies = [
 [[package]]
 name = "page_table_entry"
 version = "0.5.5"
-source = "git+https://github.com/Starry-OS/page_table_multiarch.git?rev=3f697c8#3f697c8c876432f42d5429a5b8d130889213ff6e"
+source = "git+https://github.com/Starry-OS/page_table_multiarch.git?rev=9df46c8#9df46c822da2487ebc8a78ac411e9132e1409353"
 dependencies = [
  "aarch64-cpu",
  "bitflags 2.10.0",
@@ -1691,9 +1691,10 @@ dependencies = [
 [[package]]
 name = "page_table_multiarch"
 version = "0.5.5"
-source = "git+https://github.com/Starry-OS/page_table_multiarch.git?rev=3f697c8#3f697c8c876432f42d5429a5b8d130889213ff6e"
+source = "git+https://github.com/Starry-OS/page_table_multiarch.git?rev=9df46c8#9df46c822da2487ebc8a78ac411e9132e1409353"
 dependencies = [
  "arrayvec",
+ "axerrno",
  "bitmaps",
  "log",
  "memory_addr",

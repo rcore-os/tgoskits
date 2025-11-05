@@ -148,8 +148,8 @@ axplat-x86-pc = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = 
 axplat-aarch64-qemu-virt = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "243fdc9" }
 axplat-riscv64-qemu-virt = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "243fdc9" }
 axplat-loongarch64-qemu-virt = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "243fdc9" }
-page_table_entry = { git = "https://github.com/Starry-OS/page_table_multiarch.git", rev = "3f697c8" }
-page_table_multiarch = { git = "https://github.com/Starry-OS/page_table_multiarch.git", rev = "3f697c8" }
+page_table_entry = { git = "https://github.com/Starry-OS/page_table_multiarch.git", rev = "9df46c8" }
+page_table_multiarch = { git = "https://github.com/Starry-OS/page_table_multiarch.git", rev = "9df46c8" }
 starry-process = { git = "https://github.com/Starry-OS/starry-process.git", rev = "6327455" }
 starry-signal = { git = "https://github.com/Starry-OS/starry-signal.git", rev = "5b23dec" }
 starry-vm = { git = "https://github.com/Starry-OS/starry-vm.git", rev = "4c91a6b" }
