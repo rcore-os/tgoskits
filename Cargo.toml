@@ -65,6 +65,3 @@ targets = [
     "riscv64gc-unknown-none-elf",
     "loongarch64-unknown-none-softfloat",
 ]
-
-[patch.crates-io]
-axbacktrace = { git = "https://github.com/Starry-OS/axbacktrace.git" }

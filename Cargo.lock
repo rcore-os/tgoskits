@@ -20,11 +20,12 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 [[package]]
 name = "axbacktrace"
 version = "0.1.0"
-source = "git+https://github.com/Starry-OS/axbacktrace.git#322f6dab0e7e3f51f7d29731e7eeca6435e5028e"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac82d77c48f98335e4f9b546ef69356d429ee7e9933560bb55696f498a1a26dc"
 dependencies = [
  "cfg-if",
  "log",
- "spin",
+ "spin 0.10.0",
 ]
 
 [[package]]
@@ -182,7 +183,7 @@ checksum = "01e56c0c558952222967b592899f98765b48590e7bd7403bfd7075f73afc6ed6"
 dependencies = [
  "cfg-if",
  "percpu_macros",
- "spin",
+ "spin 0.9.8",
  "x86",
 ]
 
@@ -274,6 +275,12 @@ checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
 dependencies = [
  "lock_api",
 ]
+
+[[package]]
+name = "spin"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
 
 [[package]]
 name = "static_assertions"
