@@ -47,7 +47,7 @@ axerrno = "0.1"
 axfs-ng-vfs = "0.1"
 axio = "0.1"
 axpoll = "0.1"
-bitflags = "2.6"
+bitflags = "2.10"
 bytemuck = { version = "1.23", features = ["unsound_ptr_pod_impl"] }
 cfg-if = "1.0"
 event-listener = { version = "5.4.0", default-features = false }
@@ -139,8 +139,7 @@ features = ["fp-simd", "irq", "rtc"]
 optional = true
 
 [patch.crates-io]
-axbacktrace = { git = "https://github.com/Starry-OS/axbacktrace.git", rev = "09c22b6" }
-axcpu = { git = "https://github.com/Starry-OS/axcpu.git", rev = "3349bfd" }
+axcpu = { git = "https://github.com/Starry-OS/axcpu.git", rev = "f1359df" }
 axerrno = { git = "https://github.com/Starry-OS/axerrno.git", rev = "58be232" }
 axfs-ng-vfs = { git = "https://github.com/Starry-OS/axfs-ng-vfs.git", rev = "3926fb4" }
 axio = { git = "https://github.com/Starry-OS/axio.git", rev = "ebb0c6b" }
@@ -149,7 +148,6 @@ axplat-x86-pc = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = 
 axplat-aarch64-qemu-virt = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "243fdc9" }
 axplat-riscv64-qemu-virt = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "243fdc9" }
 axplat-loongarch64-qemu-virt = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "243fdc9" }
-axpoll = { git = "https://github.com/Starry-OS/axpoll.git", rev = "258cb5f" }
 page_table_entry = { git = "https://github.com/Starry-OS/page_table_multiarch.git", rev = "3f697c8" }
 page_table_multiarch = { git = "https://github.com/Starry-OS/page_table_multiarch.git", rev = "3f697c8" }
 starry-process = { git = "https://github.com/Starry-OS/starry-process.git", rev = "6327455" }
