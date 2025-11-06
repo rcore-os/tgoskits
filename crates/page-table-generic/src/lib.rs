@@ -3,11 +3,13 @@
 use core::fmt::Debug;
 
 mod def;
+pub mod frame;
 mod map;
 mod table;
 mod walk;
 
 pub use def::*;
+pub use frame::Frame;
 pub use map::*;
 pub use table::*;
 pub use walk::*;

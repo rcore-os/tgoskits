@@ -1,6 +1,7 @@
 use crate::{
     FramAllocator, PageTableEntry, PagingError, PagingResult, TableGeneric, VirtAddr,
-    map::{Frame, MapConfig, MapRecursiveConfig},
+    frame::Frame,
+    map::{MapConfig, MapRecursiveConfig},
     walk::{PageTableWalker, WalkConfig},
 };
 

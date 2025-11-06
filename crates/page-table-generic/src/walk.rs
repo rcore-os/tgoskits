@@ -1,4 +1,4 @@
-use crate::{FramAllocator, PageTable, PageTableEntry, PhysAddr, TableGeneric, VirtAddr};
+use crate::{FramAllocator, PageTable, PageTableEntry, TableGeneric, VirtAddr, frame::Frame};
 
 use heapless::Vec;
 
@@ -47,50 +47,6 @@ struct WalkState<T: TableGeneric, A: FramAllocator> {
     base_vaddr: VirtAddr,
 }
 
-#[derive(Clone, Copy)]
-struct Frame<T: TableGeneric, A: FramAllocator> {
-    paddr: PhysAddr,
-    allocator: A,
-    _marker: core::marker::PhantomData<T>,
-}
-
-impl<T: TableGeneric, A: FramAllocator> core::fmt::Debug for Frame<T, A> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Frame")
-            .field("paddr", &format_args!("{:#x}", self.paddr.raw()))
-            .finish()
-    }
-}
-
-impl<T, A> Frame<T, A>
-where
-    T: TableGeneric,
-    A: FramAllocator,
-{
-    fn as_slice(&self) -> &[T::P] {
-        let vaddr = self.allocator.phys_to_virt(self.paddr);
-        unsafe { core::slice::from_raw_parts(vaddr as *const T::P, T::TABLE_LEN) }
-    }
-
-    /// 重建完整的虚拟地址
-    fn reconstruct_vaddr(index: usize, level: usize, base_vaddr: VirtAddr) -> VirtAddr {
-        // 每个级别的条目覆盖的地址空间大小
-        let entry_size = Self::level_size(level);
-        base_vaddr + index * entry_size
-    }
-
-    /// 计算指定级别对应的映射大小（通用版本）
-    fn level_size(level: usize) -> usize {
-        // 每个级别的条目覆盖的地址空间大小
-        // Level N: PAGE_SIZE << (INDEX_BITS * (N - 1))
-        // Level 4: PAGE_SIZE << (INDEX_BITS * 3) = 512GB
-        // Level 3: PAGE_SIZE << (INDEX_BITS * 2) = 1GB
-        // Level 2: PAGE_SIZE << (INDEX_BITS * 1) = 2MB
-        // Level 1: PAGE_SIZE << (INDEX_BITS * 0) = 4KB
-        T::PAGE_SIZE << (T::INDEX_BITS * (level - 1))
-    }
-}
-
 impl<'a, T: TableGeneric, A: FramAllocator> PageTableWalker<'a, T, A> {
     /// 创建新的页表遍历器
     pub fn new(_page_table: &'a PageTable<T, A>, config: WalkConfig) -> Self {
@@ -104,11 +60,7 @@ impl<'a, T: TableGeneric, A: FramAllocator> PageTableWalker<'a, T, A> {
         // 初始化栈，从根页表开始
         if !walker.config.start_vaddr.ge(&walker.config.end_vaddr) {
             let root_state = WalkState {
-                frame: Frame {
-                    paddr: _page_table.root.paddr,
-                    allocator: _page_table.root.allocator,
-                    _marker: core::marker::PhantomData,
-                },
+                frame: Frame::from_paddr(_page_table.root.paddr, _page_table.root.allocator),
                 level: T::LEVEL,
                 index: 0,
                 base_vaddr: VirtAddr::new(0),
@@ -169,11 +121,7 @@ impl<'a, T: TableGeneric, A: FramAllocator> PageTableWalker<'a, T, A> {
 
             // 如果是有效的子页表项（中间级别的页表指针），需要深入下一级
             if pte.valid() && !pte.is_huge() && state.level > 1 {
-                let child_frame = Frame {
-                    paddr: pte.paddr(),
-                    allocator: state.frame.allocator,
-                    _marker: core::marker::PhantomData,
-                };
+                let child_frame = Frame::from_paddr(pte.paddr(), state.frame.allocator);
 
                 // 计算子页表的基地址：当前条目的虚拟地址就是子页表覆盖的地址范围起点
                 let child_base_vaddr = current_vaddr;
