@@ -1,7 +1,9 @@
 use std::{
     alloc::{self, Layout},
+    collections::HashSet,
     fmt::Debug,
     mem,
+    sync::{Arc, Mutex},
 };
 
 use page_table_generic::*;
@@ -296,6 +298,115 @@ impl FramAllocator for Fram4k {
         let layout = Layout::from_size_align(4096, 4096).unwrap();
         unsafe {
             alloc::dealloc(frame.raw() as *mut u8, layout);
+        }
+    }
+
+    fn phys_to_virt(&self, paddr: PhysAddr) -> *mut u8 {
+        paddr.raw() as *mut u8
+    }
+}
+
+/// 跟踪分配器，用于测试内存泄漏
+#[derive(Debug, Clone, Copy)]
+pub struct TrackedFram4k {
+    allocated_frames: *const Mutex<HashSet<usize>>,
+}
+
+impl Default for TrackedFram4k {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TrackedFram4k {
+    /// 创建新的跟踪分配器
+    pub fn new() -> Self {
+        let frames = Arc::new(Mutex::new(HashSet::new()));
+        let ptr = Arc::into_raw(frames);
+        Self {
+            allocated_frames: ptr,
+        }
+    }
+
+    /// 获取当前分配的帧数量
+    pub fn allocated_count(&self) -> usize {
+        unsafe {
+            let frames = &*self.allocated_frames;
+            frames.lock().unwrap().len()
+        }
+    }
+
+    /// 获取所有已分配的帧地址
+    #[allow(dead_code)]
+    pub fn allocated_frames(&self) -> Vec<usize> {
+        unsafe {
+            let frames = &*self.allocated_frames;
+            frames.lock().unwrap().iter().copied().collect()
+        }
+    }
+
+    /// 检查是否有内存泄漏
+    pub fn has_leaks(&self) -> bool {
+        unsafe {
+            let frames = &*self.allocated_frames;
+            !frames.lock().unwrap().is_empty()
+        }
+    }
+
+    /// 打印分配统计信息
+    pub fn print_stats(&self) {
+        unsafe {
+            let frames = &*self.allocated_frames;
+            let frames = frames.lock().unwrap();
+            println!(
+                "分配器统计: {} 个帧已分配",
+                frames.len()
+            );
+            if !frames.is_empty() {
+                println!("未释放的帧地址:");
+                for addr in frames.iter() {
+                    println!("  - {:#x}", addr);
+                }
+            }
+        }
+    }
+}
+
+unsafe impl Send for TrackedFram4k {}
+unsafe impl Sync for TrackedFram4k {}
+
+impl FramAllocator for TrackedFram4k {
+    fn alloc_frame(&self) -> Option<PhysAddr> {
+        let layout = Layout::from_size_align(4096, 4096).unwrap();
+        let ptr = unsafe { alloc::alloc(layout) };
+        if ptr.is_null() {
+            None
+        } else {
+            let addr = ptr as usize;
+            // 记录分配的地址
+            unsafe {
+                let frames = &*self.allocated_frames;
+                frames.lock().unwrap().insert(addr);
+            }
+            Some(PhysAddr::new(addr))
+        }
+    }
+
+    fn dealloc_frame(&self, frame: PhysAddr) {
+        let addr = frame.raw();
+
+        // 从跟踪记录中移除
+        unsafe {
+            let frames = &*self.allocated_frames;
+            let removed = frames.lock().unwrap().remove(&addr);
+            if !removed {
+                panic!("尝试释放未跟踪的帧地址: {:#x}", addr);
+            }
+        }
+
+        let layout = Layout::from_size_align(4096, 4096).unwrap();
+        unsafe {
+            alloc::dealloc(addr as *mut u8, layout);
         }
     }
 

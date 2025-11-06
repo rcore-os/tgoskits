@@ -907,14 +907,16 @@ fn test_frame_recursive_deallocate() {
         .filter_level(log::LevelFilter::Trace)
         .try_init();
 
-    let allocator = Fram4k;
+    let allocator = TrackedFram4k::new();
 
     // 创建一个根帧
-    let mut root_frame = Frame::<T4kL4, Fram4k>::new(allocator).unwrap();
+    let mut root_frame = Frame::<T4kL4, TrackedFram4k>::new(allocator).unwrap();
 
     // 创建几个子帧并设置PTE
     let child1_paddr = allocator.alloc_frame().unwrap();
     let child2_paddr = allocator.alloc_frame().unwrap();
+
+    println!("初始分配的帧数量: {}", allocator.allocated_count());
 
     {
         let entries = root_frame.as_slice_mut();
@@ -934,6 +936,8 @@ fn test_frame_recursive_deallocate() {
         entries[2].set_is_huge(true);
     }
 
+    println!("设置PTE后的帧数量: {}", allocator.allocated_count());
+
     // 验证初始状态
     let entries_before = root_frame.as_slice();
     assert!(entries_before[0].valid() && !entries_before[0].is_huge());
@@ -942,6 +946,7 @@ fn test_frame_recursive_deallocate() {
 
     // 释放子帧
     root_frame.deallocate_children();
+    println!("递归释放子帧后的帧数量: {}", allocator.allocated_count());
 
     // 验证子页表项已被设为invalid，但大页项保持不变
     let entries_after = root_frame.as_slice();
@@ -952,10 +957,16 @@ fn test_frame_recursive_deallocate() {
     // 手动释放剩余的大页帧
     if entries_after[2].valid() {
         allocator.dealloc_frame(entries_after[2].paddr());
+        println!("释放大页帧后的帧数量: {}", allocator.allocated_count());
     }
 
     // 释放根帧
     allocator.dealloc_frame(root_frame.paddr);
+    println!("释放根帧后的帧数量: {}", allocator.allocated_count());
+
+    // 验证所有帧都已释放
+    assert!(!allocator.has_leaks(), "检测到内存泄漏");
+    allocator.print_stats();
 
     println!("✓ Frame递归释放测试通过");
 }
@@ -967,18 +978,21 @@ fn test_page_table_destroy() {
         .filter_level(log::LevelFilter::Trace)
         .try_init();
 
-    let allocator = Fram4k;
+    let allocator = TrackedFram4k::new();
 
     // 创建页表
-    let mut page_table = PageTable::<T4kL4, Fram4k>::new(allocator).unwrap();
+    let mut page_table = PageTable::<T4kL4, TrackedFram4k>::new(allocator).unwrap();
     let root_paddr_before = page_table.root_paddr();
 
     println!("页表创建成功，根地址: {:#x}", root_paddr_before.raw());
+    println!("创建页表后的分配数量: {}", allocator.allocated_count());
 
     // 先测试空的页表销毁
-    let empty_page_table = PageTable::<T4kL4, Fram4k>::new(allocator).unwrap();
+    let empty_page_table = PageTable::<T4kL4, TrackedFram4k>::new(allocator).unwrap();
+    println!("创建空页表后的分配数量: {}", allocator.allocated_count());
     println!("测试空页表销毁...");
     empty_page_table.destroy();
+    println!("销毁空页表后的分配数量: {}", allocator.allocated_count());
     println!("✓ 空页表销毁成功");
 
     // 添加一些映射来创建子页表
@@ -991,9 +1005,13 @@ fn test_page_table_destroy() {
         flush: false,
     };
 
+    println!("创建映射前分配数量: {}", allocator.allocated_count());
     println!("开始创建映射...");
     match page_table.map(&config) {
-        Ok(()) => println!("映射创建成功"),
+        Ok(()) => {
+            println!("映射创建成功");
+            println!("创建映射后分配数量: {}", allocator.allocated_count());
+        },
         Err(e) => {
             println!("映射创建失败: {:?}", e);
             return;
@@ -1008,6 +1026,11 @@ fn test_page_table_destroy() {
     // 销毁页表（这会释放所有帧）
     println!("开始销毁页表...");
     page_table.destroy();
+    println!("销毁页表后分配数量: {}", allocator.allocated_count());
+
+    // 验证所有帧都已释放
+    assert!(!allocator.has_leaks(), "检测到内存泄漏");
+    allocator.print_stats();
 
     println!("✓ PageTable销毁测试通过");
 }
@@ -1019,10 +1042,12 @@ fn test_deallocate_after_mapping() {
         .filter_level(log::LevelFilter::Trace)
         .try_init();
 
-    let allocator = Fram4k;
+    let allocator = TrackedFram4k::new();
 
     // 创建页表并进行映射
-    let mut page_table = PageTable::<T4kL3, Fram4k>::new(allocator).unwrap();
+    let mut page_table = PageTable::<T4kL3, TrackedFram4k>::new(allocator).unwrap();
+
+    println!("创建页表后分配数量: {}", allocator.allocated_count());
 
     // 创建多个映射
     let configs = vec![
@@ -1048,14 +1073,22 @@ fn test_deallocate_after_mapping() {
         page_table.map(config).unwrap();
     }
 
+    println!("创建映射后分配数量: {}", allocator.allocated_count());
+
     // 验证映射成功
     let valid_entries: usize = page_table.walk_valid().count();
     assert_eq!(valid_entries, 2, "应该有2个有效映射");
 
     println!("映射创建完成，开始释放...");
+    println!("释放前分配数量: {}", allocator.allocated_count());
 
     // 使用deallocate方法释放整个页表
     page_table.deallocate();
+    println!("释放后分配数量: {}", allocator.allocated_count());
+
+    // 验证所有帧都已释放
+    assert!(!allocator.has_leaks(), "检测到内存泄漏");
+    allocator.print_stats();
 
     println!("✓ 映射后释放测试通过");
 }
@@ -1067,13 +1100,16 @@ fn test_single_entry_deallocate() {
         .filter_level(log::LevelFilter::Trace)
         .try_init();
 
-    let allocator = Fram4k;
+    let allocator = TrackedFram4k::new();
 
     // 创建一个帧并添加子页表项
-    let mut root_frame = Frame::<T4kL3, Fram4k>::new(allocator).unwrap();
+    let mut root_frame = Frame::<T4kL3, TrackedFram4k>::new(allocator).unwrap();
+    println!("创建根帧后分配数量: {}", allocator.allocated_count());
 
     // 添加一个有效的子页表项
-    let child_frame = Frame::<T4kL3, Fram4k>::new(allocator).unwrap();
+    let child_frame = Frame::<T4kL3, TrackedFram4k>::new(allocator).unwrap();
+    println!("创建子帧后分配数量: {}", allocator.allocated_count());
+
     {
         let entries = root_frame.as_slice_mut();
         entries[5] = PteImpl::kernel_mode();
@@ -1088,6 +1124,7 @@ fn test_single_entry_deallocate() {
     // 测试单个条目释放
     let deallocated = root_frame.dealloc_entry_recursive(5);
     assert!(deallocated, "应该成功释放指定的条目");
+    println!("释放单个条目后分配数量: {}", allocator.allocated_count());
 
     // 验证条目已被设为invalid
     let entries_after = root_frame.as_slice();
@@ -1103,6 +1140,11 @@ fn test_single_entry_deallocate() {
 
     // 释放根帧
     allocator.dealloc_frame(root_frame.paddr);
+    println!("释放根帧后分配数量: {}", allocator.allocated_count());
+
+    // 验证所有帧都已释放
+    assert!(!allocator.has_leaks(), "检测到内存泄漏");
+    allocator.print_stats();
 
     println!("✓ 单个条目释放测试通过");
 }
@@ -1114,28 +1156,34 @@ fn test_deallocate_edge_cases() {
         .filter_level(log::LevelFilter::Trace)
         .try_init();
 
-    let allocator = Fram4k;
+    let allocator = TrackedFram4k::new();
+    println!("初始分配数量: {}", allocator.allocated_count());
 
     // 测试空帧的释放
     {
-        let mut empty_frame = Frame::<T4kL4, Fram4k>::new(allocator).unwrap();
+        let mut empty_frame = Frame::<T4kL4, TrackedFram4k>::new(allocator).unwrap();
+        println!("创建空帧后分配数量: {}", allocator.allocated_count());
         empty_frame.deallocate_children(); // 应该安全执行，不崩溃
         allocator.dealloc_frame(empty_frame.paddr);
+        println!("释放空帧后分配数量: {}", allocator.allocated_count());
     }
 
     // 测试只有大页的帧释放
     {
-        let mut huge_frame = Frame::<T4kL4, Fram4k>::new(allocator).unwrap();
+        let mut huge_frame = Frame::<T4kL4, TrackedFram4k>::new(allocator).unwrap();
         let entries = huge_frame.as_slice_mut();
+        println!("创建大页帧后分配数量: {}", allocator.allocated_count());
 
         // 只设置大页项
         entries[0] = PteImpl::device_memory();
         entries[0].set_paddr(allocator.alloc_frame().unwrap());
         entries[0].set_valid(true);
         entries[0].set_is_huge(true);
+        println!("设置大页项后分配数量: {}", allocator.allocated_count());
 
         // 释放子帧应该只释放子页表，不影响大页
         huge_frame.deallocate_children();
+        println!("释放子帧后分配数量: {}", allocator.allocated_count());
 
         // 大页项应该保持有效
         let entries_after = huge_frame.as_slice();
@@ -1144,11 +1192,13 @@ fn test_deallocate_edge_cases() {
         // 手动清理
         allocator.dealloc_frame(entries_after[0].paddr());
         allocator.dealloc_frame(huge_frame.paddr);
+        println!("清理大页帧后分配数量: {}", allocator.allocated_count());
     }
 
     // 测试deallocate_range的边界情况
     {
-        let mut page_table = PageTable::<T4kL4, Fram4k>::new(allocator).unwrap();
+        let mut page_table = PageTable::<T4kL4, TrackedFram4k>::new(allocator).unwrap();
+        println!("创建测试页表后分配数量: {}", allocator.allocated_count());
 
         // 测试无效范围
         let result = page_table.deallocate_range(
@@ -1159,7 +1209,12 @@ fn test_deallocate_edge_cases() {
 
         // 释放页表
         page_table.deallocate();
+        println!("释放测试页表后分配数量: {}", allocator.allocated_count());
     }
+
+    // 验证所有帧都已释放
+    assert!(!allocator.has_leaks(), "检测到内存泄漏");
+    allocator.print_stats();
 
     println!("✓ 边界情况测试通过");
 }
