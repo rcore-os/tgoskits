@@ -1,16 +1,59 @@
+use core::ops::{Deref, DerefMut};
+
 use crate::{
-    FramAllocator, PageTableEntry, PagingError, PagingResult, TableGeneric, VirtAddr,
+    FrameAllocator, PageTableEntry, PagingError, PagingResult, PhysAddr, TableGeneric, VirtAddr,
     frame::Frame,
     map::{MapConfig, MapRecursiveConfig},
     walk::{PageTableWalker, WalkConfig},
 };
 
-/// 页表结构
-pub struct PageTable<T: TableGeneric, A: FramAllocator> {
+pub struct PageTable<T: TableGeneric, A: FrameAllocator> {
+    inner: PageTableRef<T, A>,
+}
+
+impl<T: TableGeneric, A: FrameAllocator> PageTable<T, A> {
+    pub const VALID_BITS: usize = Frame::<T, A>::PT_VALID_BITS;
+
+    /// 创建一个新的页表
+    pub fn new(allocator: A) -> PagingResult<Self> {
+        let inner = unsafe { PageTableRef::new(allocator) }?;
+        Ok(Self { inner })
+    }
+
+    pub fn valid_bits(&self) -> usize {
+        Frame::<T, A>::PT_VALID_BITS
+    }
+}
+
+impl<T: TableGeneric, A: FrameAllocator> Drop for PageTable<T, A> {
+    fn drop(&mut self) {
+        unsafe {
+            // 释放所有页表帧，但不释放映射的物理页
+            self.deallocate();
+        }
+    }
+}
+
+impl<T: TableGeneric, A: FrameAllocator> Deref for PageTable<T, A> {
+    type Target = PageTableRef<T, A>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<T: TableGeneric, A: FrameAllocator> DerefMut for PageTable<T, A> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct PageTableRef<T: TableGeneric, A: FrameAllocator> {
     pub root: Frame<T, A>,
 }
 
-impl<T: TableGeneric, A: FramAllocator> core::fmt::Debug for PageTable<T, A>
+impl<T: TableGeneric, A: FrameAllocator> core::fmt::Debug for PageTableRef<T, A>
 where
     T::P: core::fmt::Debug,
 {
@@ -24,11 +67,16 @@ where
     }
 }
 
-impl<T: TableGeneric, A: FramAllocator> PageTable<T, A> {
+impl<T: TableGeneric, A: FrameAllocator> PageTableRef<T, A> {
     /// 创建一个新的页表
-    pub fn new(allocator: A) -> PagingResult<Self> {
+    pub unsafe fn new(allocator: A) -> PagingResult<Self> {
         let root = Frame::new(allocator)?;
         Ok(Self { root })
+    }
+
+    pub fn from_paddr(paddr: PhysAddr, allocator: A) -> Self {
+        let root = Frame::from_paddr(paddr, allocator);
+        Self { root }
     }
 
     /// 映射虚拟地址范围到物理地址范围
@@ -117,30 +165,35 @@ impl<T: TableGeneric, A: FramAllocator> PageTable<T, A> {
     /// 销毁整个页表结构
     ///
     /// 此方法会：
-    /// 1. 递归释放根帧及所有子帧
-    /// 2. 释放页表占用的所有内存
-    /// 3. 在释放前将所有PTE设为invalid
+    /// 1. 递归释放根帧及所有子页表帧
+    /// 2. 清除所有页表项（设为invalid）
+    /// 3. 不释放映射的物理页（数据页/大页）
     ///
     /// # Safety
     /// 调用者必须确保：
     /// - 没有其他代码在访问这个页表
     /// - 没有CPU正在使用这个页表进行地址翻译
     /// - 调用后不再使用这个PageTable实例
-    pub fn destroy(self) {
-        // 递归释放根帧及其所有子帧
-        self.root.deallocate_recursive();
+    pub unsafe fn destroy(mut self) {
+        self.root.deallocate_recursive(Frame::<T, A>::PT_LEVEL);
     }
 
-    /// 释放页表占用的所有帧
+    /// 释放页表占用的所有页表帧
     ///
     /// 与destroy()不同，这个方法保留PageTable结构，
-    /// 但释放所有关联的帧。调用后PageTable不再可用。
-    pub fn deallocate(self) {
-        // 递归释放根帧及其所有子帧
-        self.root.deallocate_recursive();
-
-        // 注意：self会在函数结束时被drop，但由于所有帧都已释放，
-        // 这不会导致双重释放
+    /// 但释放所有关联的页表帧。调用后PageTable不再可用。
+    ///
+    /// 释放行为：
+    /// - 释放所有页表帧
+    /// - 清除所有页表项（设为invalid）
+    /// - 不释放映射的物理页（数据页/大页）
+    ///
+    /// # Safety
+    /// 调用者必须确保：
+    /// - 没有其他代码在访问这个页表
+    /// - 没有CPU正在使用这个页表进行地址翻译
+    pub unsafe fn deallocate(&mut self) {
+        self.root.deallocate_recursive(Frame::<T, A>::PT_LEVEL);
     }
 
     /// 释放页表中的指定映射区域

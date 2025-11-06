@@ -1,16 +1,16 @@
 use crate::{
-    FramAllocator, PageTableEntry, PagingError, PagingResult, PhysAddr, TableGeneric, VirtAddr,
+    FrameAllocator, PageTableEntry, PagingError, PagingResult, PhysAddr, TableGeneric, VirtAddr,
 };
 
 /// 页表帧，代表一个物理页面上的页表
 #[derive(Clone, Copy)]
-pub struct Frame<T: TableGeneric, A: FramAllocator> {
+pub struct Frame<T: TableGeneric, A: FrameAllocator> {
     pub paddr: PhysAddr,
     pub allocator: A,
     _marker: core::marker::PhantomData<T>,
 }
 
-impl<T: TableGeneric, A: FramAllocator> core::fmt::Debug for Frame<T, A> {
+impl<T: TableGeneric, A: FrameAllocator> core::fmt::Debug for Frame<T, A> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Frame")
             .field("paddr", &format_args!("{:#x}", self.paddr.raw()))
@@ -21,7 +21,7 @@ impl<T: TableGeneric, A: FramAllocator> core::fmt::Debug for Frame<T, A> {
 impl<T, A> Frame<T, A>
 where
     T: TableGeneric,
-    A: FramAllocator,
+    A: FrameAllocator,
 {
     pub(crate) const PT_INDEX_SHIFT: usize = T::PAGE_SIZE.trailing_zeros() as usize;
     pub(crate) const PT_INDEX_BITS: usize = cal_index_bits::<T>();
@@ -133,26 +133,35 @@ where
     ///
     /// 此方法会：
     /// 1. 递归释放所有有效的子页表帧
-    /// 2. 释放当前帧
-    /// 3. 在释放前将所有相关的PTE设为invalid
+    /// 2. 清除所有页表项（设为invalid）
+    /// 3. 释放当前帧
+    ///
+    /// 注意：只释放页表帧，不释放映射的物理页（数据页/大页）
+    ///
+    /// # Parameters
+    /// - `level`: 当前帧所在的页表级别（1=叶子，数字越大级别越高）
     ///
     /// # Safety
     /// 调用者必须确保：
     /// - 没有其他代码在访问这些页表
     /// - 没有CPU正在使用这些页表进行地址翻译
-    pub fn deallocate_recursive(mut self) {
+    pub fn deallocate_recursive(&mut self, level: usize) {
         // 先递归释放所有子帧
-        self.deallocate_children();
+        self.deallocate_children(level);
 
         // 再释放当前帧
         self.allocator.dealloc_frame(self.paddr);
     }
 
-    /// 只释放子帧，保留当前帧
+    /// 只释放子页表帧，保留当前帧
     ///
-    /// 遍历当前帧中的所有页表项，递归释放有效的子页表帧
-    /// 在释放前将指向子页表的PTE设为invalid
-    pub fn deallocate_children(&mut self) {
+    /// 遍历当前帧中的所有页表项：
+    /// - 如果是大页或叶子级别的数据页：跳过（不释放物理页，也不清除映射）
+    /// - 如果是非叶子级别的页表指针：递归释放子页表帧，并清除PTE
+    ///
+    /// # Parameters
+    /// - `level`: 当前帧所在的页表级别（1=叶子，数字越大级别越高）
+    pub fn deallocate_children(&mut self, level: usize) {
         // 反向遍历以避免索引变化问题
         for i in (0..Self::LEN).rev() {
             // 先获取当前PTE的状态
@@ -168,13 +177,20 @@ where
 
             let (is_valid, is_huge, paddr) = entry_info;
 
-            // 检查是否是有效的子页表项（非叶子级别）
-            if is_valid && !is_huge {
-                // 递归释放子帧
-                let child_frame = Frame::<T, A>::from_paddr(paddr, self.allocator);
-                child_frame.deallocate_recursive();
+            if !is_valid {
+                continue;
+            }
 
-                // 将当前PTE设为invalid
+            // 如果是大页或叶子级别的数据页：跳过，保持映射不变
+            if is_huge || level == 1 {
+                continue;
+            }
+            // 否则是非叶子级别的页表指针，递归释放子页表帧
+            else {
+                let mut child_frame = Frame::<T, A>::from_paddr(paddr, self.allocator.clone());
+                child_frame.deallocate_recursive(level - 1);
+
+                // 子页表帧已释放，清除PTE
                 let entries_mut = self.as_slice_mut();
                 entries_mut[i].set_valid(false);
             }
@@ -185,8 +201,14 @@ where
     ///
     /// 如果该PTE指向有效的子页表，则递归释放该子页表及其所有子帧
     /// 在释放前将PTE设为invalid
-    pub fn dealloc_entry_recursive(&mut self, index: usize) -> bool {
-        if index >= Self::LEN {
+    ///
+    /// 注意：只释放页表帧，不释放映射的物理页
+    ///
+    /// # Parameters
+    /// - `index`: 要释放的PTE索引
+    /// - `level`: 当前帧所在的页表级别
+    pub fn dealloc_entry_recursive(&mut self, index: usize, level: usize) -> bool {
+        if index >= Self::LEN || level <= 1 {
             return false;
         }
 
@@ -194,9 +216,9 @@ where
         let entry = &entries[index];
 
         if entry.valid() && !entry.is_huge() {
-            // 递归释放子帧
-            let child_frame = Frame::<T, A>::from_pte(entry, self.allocator);
-            child_frame.deallocate_recursive();
+            // 递归释放子帧（子帧的级别是 level - 1）
+            let mut child_frame = Frame::<T, A>::from_pte(entry, self.allocator.clone());
+            child_frame.deallocate_recursive(level - 1);
 
             // 将当前PTE设为invalid
             let entries_mut = self.as_slice_mut();

@@ -16,7 +16,7 @@ pub use walk::*;
 
 pub type PagingResult<T = ()> = Result<T, PagingError>;
 
-pub trait FramAllocator: Clone + Copy + Sync + Send + 'static {
+pub trait FrameAllocator: Clone + Sync + Send + 'static {
     fn alloc_frame(&self) -> Option<PhysAddr>;
 
     fn dealloc_frame(&self, frame: PhysAddr);

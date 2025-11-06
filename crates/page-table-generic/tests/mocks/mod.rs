@@ -283,7 +283,7 @@ impl TableGeneric for T4kL5 {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Fram4k;
 
-impl FramAllocator for Fram4k {
+impl FrameAllocator for Fram4k {
     fn alloc_frame(&self) -> Option<PhysAddr> {
         let layout = Layout::from_size_align(4096, 4096).unwrap();
         let ptr = unsafe { alloc::alloc(layout) };
@@ -375,7 +375,7 @@ impl TrackedFram4k {
 unsafe impl Send for TrackedFram4k {}
 unsafe impl Sync for TrackedFram4k {}
 
-impl FramAllocator for TrackedFram4k {
+impl FrameAllocator for TrackedFram4k {
     fn alloc_frame(&self) -> Option<PhysAddr> {
         let layout = Layout::from_size_align(4096, 4096).unwrap();
         let ptr = unsafe { alloc::alloc(layout) };

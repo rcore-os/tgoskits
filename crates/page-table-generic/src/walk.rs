@@ -1,4 +1,4 @@
-use crate::{FramAllocator, PageTable, PageTableEntry, TableGeneric, VirtAddr, frame::Frame};
+use crate::{FrameAllocator, PageTableEntry, PageTableRef, TableGeneric, VirtAddr, frame::Frame};
 
 use heapless::Vec;
 
@@ -30,7 +30,7 @@ pub struct WalkConfig {
 }
 
 /// 页表遍历迭代器
-pub struct PageTableWalker<'a, T: TableGeneric, A: FramAllocator> {
+pub struct PageTableWalker<'a, T: TableGeneric, A: FrameAllocator> {
     _phantom: core::marker::PhantomData<&'a ()>,
     config: WalkConfig,
     // 内部状态管理 - 使用heapless::Vec
@@ -40,16 +40,16 @@ pub struct PageTableWalker<'a, T: TableGeneric, A: FramAllocator> {
 
 /// 遍历状态
 #[derive(Clone, Copy)]
-struct WalkState<T: TableGeneric, A: FramAllocator> {
+struct WalkState<T: TableGeneric, A: FrameAllocator> {
     frame: Frame<T, A>,
     level: usize,
     index: usize,
     base_vaddr: VirtAddr,
 }
 
-impl<'a, T: TableGeneric, A: FramAllocator> PageTableWalker<'a, T, A> {
+impl<'a, T: TableGeneric, A: FrameAllocator> PageTableWalker<'a, T, A> {
     /// 创建新的页表遍历器
-    pub fn new(_page_table: &'a PageTable<T, A>, config: WalkConfig) -> Self {
+    pub fn new(page_table: &'a PageTableRef<T, A>, config: WalkConfig) -> Self {
         let mut walker = Self {
             _phantom: core::marker::PhantomData,
             config,
@@ -60,7 +60,7 @@ impl<'a, T: TableGeneric, A: FramAllocator> PageTableWalker<'a, T, A> {
         // 初始化栈，从根页表开始
         if !walker.config.start_vaddr.ge(&walker.config.end_vaddr) {
             let root_state = WalkState {
-                frame: Frame::from_paddr(_page_table.root.paddr, _page_table.root.allocator),
+                frame: Frame::from_paddr(page_table.root.paddr, page_table.root.allocator.clone()),
                 level: Frame::<T, A>::PT_LEVEL,
                 index: 0,
                 base_vaddr: VirtAddr::new(0),
@@ -121,7 +121,7 @@ impl<'a, T: TableGeneric, A: FramAllocator> PageTableWalker<'a, T, A> {
 
             // 如果是有效的子页表项（中间级别的页表指针），需要深入下一级
             if pte.valid() && !pte.is_huge() && state.level > 1 {
-                let child_frame = Frame::from_paddr(pte.paddr(), state.frame.allocator);
+                let child_frame = Frame::from_paddr(pte.paddr(), state.frame.allocator.clone());
 
                 // 计算子页表的基地址：当前条目的虚拟地址就是子页表覆盖的地址范围起点
                 let child_base_vaddr = current_vaddr;
@@ -159,7 +159,7 @@ impl<'a, T: TableGeneric, A: FramAllocator> PageTableWalker<'a, T, A> {
     }
 }
 
-impl<'a, T: TableGeneric, A: FramAllocator> Iterator for PageTableWalker<'a, T, A> {
+impl<'a, T: TableGeneric, A: FrameAllocator> Iterator for PageTableWalker<'a, T, A> {
     type Item = PteInfo<T::P>;
 
     fn next(&mut self) -> Option<Self::Item> {

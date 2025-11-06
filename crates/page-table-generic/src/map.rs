@@ -1,5 +1,5 @@
 use crate::{
-    FramAllocator, PageTableEntry, PagingError, PagingResult, PhysAddr, TableGeneric, VirtAddr,
+    FrameAllocator, PageTableEntry, PagingError, PagingResult, PhysAddr, TableGeneric, VirtAddr,
     frame::Frame,
 };
 
@@ -45,7 +45,7 @@ impl<P: PageTableEntry> core::fmt::Debug for MapConfig<P> {
 impl<T, A> Frame<T, A>
 where
     T: TableGeneric,
-    A: FramAllocator,
+    A: FrameAllocator,
 {
     /// 递归映射的核心实现
     pub fn map_range_recursive(&mut self, config: MapRecursiveConfig<T::P>) -> PagingResult<()> {
@@ -102,7 +102,7 @@ where
             }
 
             // 检查当前页表项状态并决定如何处理
-            let allocator = self.allocator;
+            let allocator = self.allocator.clone();
             let current_pte = self.as_slice()[index];
 
             let child_frame = if current_pte.valid() {
