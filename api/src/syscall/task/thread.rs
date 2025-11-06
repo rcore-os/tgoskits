@@ -61,7 +61,7 @@ pub fn sys_arch_prctl(
     use starry_vm::VmMutPtr;
 
     let code = ArchPrctlCode::try_from(code).map_err(|_| AxError::InvalidInput)?;
-    debug!("sys_arch_prctl: code = {:?}, addr = {:#x}", code, addr);
+    debug!("sys_arch_prctl: code = {code:?}, addr = {addr:#x}");
 
     match code {
         // According to Linux implementation, SetFs & SetGs does not return
