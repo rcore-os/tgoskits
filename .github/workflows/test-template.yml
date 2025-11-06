@@ -29,7 +29,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: starry-${{ inputs.arch }}
-          path: "*.bin"
+          path: |
+            *.bin
+            *.elf
 
   test:
     runs-on: ubuntu-latest

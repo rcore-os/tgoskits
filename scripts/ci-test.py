@@ -45,16 +45,25 @@ try:
     if p.poll() is not None:
         raise Exception("QEMU exited prematurely")
 
+    PROMPT = "starry:~#"
+
     s = socket.create_connection(("localhost", 4444), timeout=5)
     buffer = ""
     while True:
-        b = s.recv(1024).decode("utf-8", errors="ignore")
+        try:
+            b = s.recv(1024).decode("utf-8", errors="ignore")
+        except ConnectionError as e:
+            print(e)
+            break
         if not b:
             break
         print(b, end="")
         buffer += b
-        if "starry:~#" in buffer:
-            s.sendall(b"exit\n")
+        if PROMPT in buffer:
+            s.sendall(b"exit\r\n")
+
+    if PROMPT not in buffer:
+        raise Exception("Did not reach BusyBox shell prompt")
 
     print()
     print("\x1b[32m✔ Boot into BusyBox shell\x1b[0m")
