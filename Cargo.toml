@@ -1,6 +1,6 @@
 [package]
 name = "axklib"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = ["周睿 <zrufo747@outlook.com>"]
 license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
