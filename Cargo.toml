@@ -9,6 +9,8 @@ edition = "2024"
 authors = [
     "Azure-stars <Azure_stars@126.com>",
     "Yuekai Jia <equation618@gmail.com>",
+    "朝倉水希 <asakuramizu111@gmail.com>",
+    "Mivik <mivikq@gmail.com>",
 ]
 homepage = "https://github.com/arceos-org/arceos"
 repository = "https://github.com/arceos-org/starry-next"
