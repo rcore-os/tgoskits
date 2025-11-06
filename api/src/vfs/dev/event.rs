@@ -42,7 +42,7 @@ impl Inner {
                 }
                 Err(DevError::Again) => {}
                 Err(err) => {
-                    warn!("Failed to read event: {:?}", err);
+                    warn!("Failed to read event: {err:?}");
                 }
             }
         }
@@ -227,7 +227,7 @@ impl DeviceOps for EventDev {
                 let dir = tmp & 0x3;
 
                 if ty != b'E' {
-                    warn!("unknown ioctl for evdev: {} {}", cmd, arg);
+                    warn!("unknown ioctl for evdev: {cmd} {arg}");
                     return Err(AxError::InvalidInput);
                 }
 
