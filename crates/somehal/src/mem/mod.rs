@@ -4,6 +4,13 @@ use core::{cell::UnsafeCell, ops::Deref};
 pub struct MemoryDescriptor {
     pub physical_start: usize,
     pub size_in_bytes: usize,
+    pub memory_type: MemoryType,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum MemoryType {
+    Usable,
+    Reserved,
 }
 
 #[unsafe(link_section = ".data")]

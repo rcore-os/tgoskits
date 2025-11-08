@@ -6,8 +6,7 @@ use super::switch_to_elx;
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel_entry(_fdt_addr: usize) -> ! {
     naked_asm!(
-        asm_sym_addr!(x8, "{fdt}"),
-        "str  x0, [x8]",
+        "mov  x9,  x0",
 
         // Clear BSS section from __bss_start to __bss_stop
         asm_sym_addr!(x0, "__bss_start"),
@@ -19,6 +18,9 @@ pub unsafe extern "C" fn kernel_entry(_fdt_addr: usize) -> ! {
         "str x2, [x0], #8",  // Store zero and advance by 8 bytes
         "b 1b",              // Loop back
         "2:",
+
+        asm_sym_addr!(x8, "{fdt}"),
+        "str  x9, [x8]",
 
         asm_sym_addr!(x8, "__cpu0_stack_top"),
         "mov sp, x8",

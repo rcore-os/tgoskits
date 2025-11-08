@@ -1,10 +1,14 @@
 use fdt_parser::base;
 
 mod earlycon;
+mod memory;
 
 pub use earlycon::setup_earlycon;
+pub use memory::setup_memory_map;
 
-#[unsafe(link_section = ".data")]
+use crate::mem::MemoryDescriptor;
+use heapless::Vec;
+
 pub static mut FDT_ADDR: usize = 0;
 
 fn fdt_base() -> Option<base::Fdt<'static>> {
