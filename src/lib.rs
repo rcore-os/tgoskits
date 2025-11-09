@@ -34,6 +34,9 @@ pub use tlsf::TlsfByteAllocator;
 use core::alloc::Layout;
 use core::ptr::NonNull;
 
+#[cfg(feature = "axerrno")]
+use axerrno::AxError;
+
 /// The error type used for allocation.
 #[derive(Debug)]
 pub enum AllocError {
@@ -45,6 +48,16 @@ pub enum AllocError {
     NoMemory,
     /// Deallocate an unallocated memory region.
     NotAllocated,
+}
+
+#[cfg(feature = "axerrno")]
+impl From<AllocError> for AxError {
+    fn from(value: AllocError) -> Self {
+        match value {
+            AllocError::NoMemory => AxError::NoMemory,
+            _ => AxError::InvalidInput,
+        }
+    }
 }
 
 /// A [`Result`] type with [`AllocError`] as the error type.

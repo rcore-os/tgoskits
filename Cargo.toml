@@ -26,7 +26,10 @@ page-alloc-64g = []
 page-alloc-4g = []
 page-alloc-256m = []
 
+axerrno = ["dep:axerrno"]
+
 [dependencies]
+axerrno = { version = "0.1", optional = true }
 cfg-if = "1.0"
 rlsf = { version = "0.2", optional = true }
 buddy_system_allocator = { version = "0.10", default-features = false, optional = true }
