@@ -173,6 +173,15 @@ macro_rules! ax_err {
     };
 }
 
+/// Throws an error of type [`AxError`] with the given error code, optionally
+/// with a message.
+#[macro_export]
+macro_rules! ax_bail {
+    ($($t:tt)*) => {
+        return $crate::ax_err!($($t)*);
+    };
+}
+
 impl AxError {
     /// Returns the error description.
     pub fn as_str(&self) -> &'static str {
