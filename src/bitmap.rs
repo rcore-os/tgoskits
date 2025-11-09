@@ -86,6 +86,9 @@ impl<const PAGE_SIZE: usize> PageAllocator for BitmapPageAllocator<PAGE_SIZE> {
         if !align_pow2.is_power_of_two() {
             return Err(AllocError::InvalidParam);
         }
+        if num_pages > self.available_pages() {
+            return Err(AllocError::NoMemory);
+        }
         let align_log2 = align_pow2.trailing_zeros() as usize;
         match num_pages.cmp(&1) {
             core::cmp::Ordering::Equal => self.inner.alloc().map(|idx| idx * PAGE_SIZE + self.base),
