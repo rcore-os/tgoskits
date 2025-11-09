@@ -1,8 +1,8 @@
 #![cfg_attr(not(test), no_std)]
-#![feature(variant_count)]
 #![doc = include_str!("../README.md")]
 
 use core::fmt;
+use strum::EnumCount;
 
 mod linux_errno {
     include!(concat!(env!("OUT_DIR"), "/linux_errno.rs"));
@@ -17,7 +17,7 @@ pub use linux_errno::LinuxError;
 /// [`std::io::ErrorKind`]: https://doc.rust-lang.org/std/io/enum.ErrorKind.html
 #[repr(i32)]
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, EnumCount)]
 pub enum AxError {
     /// A socket address could not be bound because the address is already in use elsewhere.
     AddrInUse = 1,
@@ -288,7 +288,7 @@ impl TryFrom<i32> for AxError {
 
     #[inline]
     fn try_from(value: i32) -> Result<Self, Self::Error> {
-        if value > 0 && value <= core::mem::variant_count::<AxError>() as i32 {
+        if value > 0 && value <= AxError::COUNT as i32 {
             Ok(unsafe { core::mem::transmute::<i32, AxError>(value) })
         } else {
             Err(value)
@@ -416,18 +416,20 @@ pub mod __priv {
 
 #[cfg(test)]
 mod tests {
+    use strum::EnumCount;
+
     use crate::{AxError, LinuxError};
 
     #[test]
     fn test_try_from() {
-        let max_code = core::mem::variant_count::<AxError>() as i32;
-        assert_eq!(max_code, 22);
-        assert_eq!(max_code, AxError::WriteZero.code());
+        let max_code = AxError::COUNT as i32;
+        assert_eq!(max_code, 43);
+        assert_eq!(max_code, AxError::ReadOnlyFilesystem.code());
 
         assert_eq!(AxError::AddrInUse.code(), 1);
         assert_eq!(Ok(AxError::AddrInUse), AxError::try_from(1));
         assert_eq!(Ok(AxError::AlreadyExists), AxError::try_from(2));
-        assert_eq!(Ok(AxError::WriteZero), AxError::try_from(max_code));
+        assert_eq!(Ok(AxError::ReadOnlyFilesystem), AxError::try_from(max_code));
         assert_eq!(Err(max_code + 1), AxError::try_from(max_code + 1));
         assert_eq!(Err(0), AxError::try_from(0));
         assert_eq!(Err(-1), AxError::try_from(-1));

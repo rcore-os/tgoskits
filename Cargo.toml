@@ -13,3 +13,4 @@ categories = ["no-std", "os"]
 
 [dependencies]
 log = "0.4"
+strum = { version = "0.27.2", default-features = false, features = ["derive"] }
