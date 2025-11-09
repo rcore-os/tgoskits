@@ -97,7 +97,7 @@ impl From<MappingFlags> for PTEFlags {
             ret |= Self::NR;
         }
         if f.contains(MappingFlags::WRITE) {
-            ret |= Self::W;
+            ret |= Self::W | Self::D;
         }
         if !f.contains(MappingFlags::EXECUTE) {
             ret |= Self::NX;
@@ -134,7 +134,7 @@ impl LA64PTE {
 
 impl GenericPTE for LA64PTE {
     fn new_page(paddr: PhysAddr, flags: MappingFlags, is_huge: bool) -> Self {
-        let mut flags = PTEFlags::from(flags) | PTEFlags::D;
+        let mut flags = PTEFlags::from(flags);
         if is_huge {
             flags |= PTEFlags::GH;
         }
@@ -153,7 +153,7 @@ impl GenericPTE for LA64PTE {
         self.0 = (self.0 & !Self::PHYS_ADDR_MASK) | (paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK)
     }
     fn set_flags(&mut self, flags: MappingFlags, is_huge: bool) {
-        let mut flags = PTEFlags::from(flags) | PTEFlags::D;
+        let mut flags = PTEFlags::from(flags);
         if is_huge {
             flags |= PTEFlags::GH;
         }
