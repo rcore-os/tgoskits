@@ -17,7 +17,7 @@ pub use linux_errno::LinuxError;
 /// [`std::io::ErrorKind`]: https://doc.rust-lang.org/std/io/enum.ErrorKind.html
 #[repr(i32)]
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum AxError {
     /// A socket address could not be bound because the address is already in use elsewhere.
     AddrInUse = 1,
@@ -75,6 +75,50 @@ pub enum AxError {
     /// An error returned when an operation could not be completed because a
     /// call to `write()` returned [`Ok(0)`](Ok).
     WriteZero,
+    /// Program argument list too long.
+    ArgumentListTooLong,
+    /// Cross-device or cross-filesystem (hard) link or rename.
+    CrossesDevices,
+    /// Not a typewriter.
+    NotATty,
+    /// Filename is too long.
+    NameTooLong,
+    /// Bad file descriptor.
+    BadFileDescriptor,
+    /// Loop in the filesystem or IO subsystem; often, too many levels of
+    /// symbolic links.
+    FilesystemLoop,
+    /// Operation not supported.
+    OperationNotSupported,
+    /// The operation was partially successful and needs to be checked later on
+    /// due to not blocking.
+    InProgress,
+    /// The socket is already connected.
+    AlreadyConnected,
+    /// This operation was interrupted.
+    Interrupted,
+    /// The I/O operation’s timeout expired, causing it to be canceled.
+    TimedOut,
+    /// The specified entity is not a socket.
+    NotASocket,
+    /// Broken pipe
+    BrokenPipe,
+    /// The process has too many files open.
+    TooManyOpenFiles,
+    /// No such process.
+    NoSuchProcess,
+    /// Illegal byte sequence.
+    IllegalBytes,
+    /// Operation not permitted.
+    OperationNotPermitted,
+    /// Result out of range.
+    OutOfRange,
+    /// Invalid executable format.
+    InvalidExecutable,
+    /// No such device.
+    NoSuchDevice,
+    /// The filesystem or storage medium is read-only, but a write operation was attempted.
+    ReadOnlyFilesystem,
 }
 
 /// A specialized [`Result`] type with [`AxError`] as the error type.
@@ -209,6 +253,27 @@ impl AxError {
             Unsupported => "Operation not supported",
             WouldBlock => "Operation would block",
             WriteZero => "Write zero",
+            ArgumentListTooLong => "Argument list too long",
+            CrossesDevices => "Cross-device link or rename",
+            NotATty => "Inappropriate ioctl for device",
+            NameTooLong => "Filename too long",
+            BadFileDescriptor => "Bad file descriptor",
+            FilesystemLoop => "Filesystem loop or indirection limit",
+            OperationNotSupported => "Operation not supported",
+            InProgress => "Operation in progress",
+            AlreadyConnected => "Already connected",
+            Interrupted => "Operation interrupted",
+            TimedOut => "Timed out",
+            NotASocket => "Not a socket",
+            BrokenPipe => "Broken pipe",
+            TooManyOpenFiles => "Too many open files",
+            NoSuchProcess => "No such process",
+            IllegalBytes => "Illegal byte sequence",
+            OperationNotPermitted => "Operation not permitted",
+            OutOfRange => "Result out of range",
+            InvalidExecutable => "Invalid executable format",
+            NoSuchDevice => "No such device",
+            ReadOnlyFilesystem => "Read-only filesystem",
         }
     }
 
@@ -260,7 +325,81 @@ impl From<AxError> for LinuxError {
             Unsupported => LinuxError::ENOSYS,
             UnexpectedEof | WriteZero => LinuxError::EIO,
             WouldBlock => LinuxError::EAGAIN,
+            ArgumentListTooLong => LinuxError::E2BIG,
+            CrossesDevices => LinuxError::EXDEV,
+            NotATty => LinuxError::ENOTTY,
+            NameTooLong => LinuxError::ENAMETOOLONG,
+            BadFileDescriptor => LinuxError::EBADF,
+            FilesystemLoop => LinuxError::ELOOP,
+            OperationNotSupported => LinuxError::EOPNOTSUPP,
+            InProgress => LinuxError::EINPROGRESS,
+            AlreadyConnected => LinuxError::EISCONN,
+            Interrupted => LinuxError::EINTR,
+            TimedOut => LinuxError::ETIMEDOUT,
+            NotASocket => LinuxError::ENOTSOCK,
+            BrokenPipe => LinuxError::EPIPE,
+            TooManyOpenFiles => LinuxError::EMFILE,
+            NoSuchProcess => LinuxError::ESRCH,
+            IllegalBytes => LinuxError::EILSEQ,
+            OperationNotPermitted => LinuxError::EPERM,
+            OutOfRange => LinuxError::ERANGE,
+            InvalidExecutable => LinuxError::ENOEXEC,
+            NoSuchDevice => LinuxError::ENODEV,
+            ReadOnlyFilesystem => LinuxError::EROFS,
         }
+    }
+}
+
+impl TryFrom<LinuxError> for AxError {
+    type Error = LinuxError;
+
+    fn try_from(e: LinuxError) -> Result<Self, Self::Error> {
+        use AxError::*;
+        use LinuxError::*;
+        Ok(match e {
+            EADDRINUSE => AddrInUse,
+            EEXIST => AlreadyExists,
+            EFAULT => BadAddress,
+            ECONNREFUSED => ConnectionRefused,
+            ECONNRESET => ConnectionReset,
+            ENOTEMPTY => DirectoryNotEmpty,
+            EINVAL => InvalidInput,
+            EIO => Io,
+            EISDIR => IsADirectory,
+            ENOMEM => NoMemory,
+            ENOTDIR => NotADirectory,
+            ENOTCONN => NotConnected,
+            ENOENT => NotFound,
+            EACCES => PermissionDenied,
+            EBUSY => ResourceBusy,
+            ENOSPC => StorageFull,
+            ENOSYS => Unsupported,
+            EAGAIN => WouldBlock,
+            E2BIG => ArgumentListTooLong,
+            EXDEV => CrossesDevices,
+            ENOTTY => NotATty,
+            ENAMETOOLONG => NameTooLong,
+            EBADF => BadFileDescriptor,
+            ELOOP => FilesystemLoop,
+            EOPNOTSUPP => OperationNotSupported,
+            EINPROGRESS => InProgress,
+            EISCONN => AlreadyConnected,
+            EINTR => Interrupted,
+            ETIMEDOUT => TimedOut,
+            ENOTSOCK => NotASocket,
+            EPIPE => BrokenPipe,
+            EMFILE => TooManyOpenFiles,
+            ESRCH => NoSuchProcess,
+            EILSEQ => IllegalBytes,
+            EPERM => OperationNotPermitted,
+            ERANGE => OutOfRange,
+            ENOEXEC => InvalidExecutable,
+            ENODEV => NoSuchDevice,
+            EROFS => ReadOnlyFilesystem,
+            _ => {
+                return Err(e);
+            }
+        })
     }
 }
 
@@ -277,7 +416,7 @@ pub mod __priv {
 
 #[cfg(test)]
 mod tests {
-    use crate::AxError;
+    use crate::{AxError, LinuxError};
 
     #[test]
     fn test_try_from() {
@@ -293,5 +432,18 @@ mod tests {
         assert_eq!(Err(0), AxError::try_from(0));
         assert_eq!(Err(-1), AxError::try_from(-1));
         assert_eq!(Err(i32::MAX), AxError::try_from(i32::MAX));
+    }
+
+    #[test]
+    fn test_conversion() {
+        for i in 1.. {
+            let Ok(err) = LinuxError::try_from(i) else {
+                break;
+            };
+            assert_eq!(err as i32, i);
+            if let Ok(ax_err) = AxError::try_from(err) {
+                assert_eq!(LinuxError::from(ax_err), err);
+            }
+        }
     }
 }
