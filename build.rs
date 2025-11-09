@@ -10,7 +10,7 @@ macro_rules! template {
 
 /// Linux specific error codes defined in `errno.h`.
 #[repr(i32)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum LinuxError {{
 {0}\
 }}
