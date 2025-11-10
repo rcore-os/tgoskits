@@ -32,8 +32,8 @@ impl<H: PagingHandler> Backend<H> {
             |va| PhysAddr::from(va.as_usize() - pa_va_offset),
             size,
             flags,
-            false,
-            false,
+            true,
+            true,
         )
         .is_ok()
     }
