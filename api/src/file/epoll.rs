@@ -20,7 +20,10 @@ use linux_raw_sys::general::{EPOLLET, EPOLLONESHOT, epoll_event};
 
 use crate::file::{FileLike, Kstat, SealedBuf, SealedBufMut, get_file_like};
 
-type ReadyList = VecDeque<Weak<EpollInterest>>;
+pub struct EpollEvent {
+    pub events: IoEvents,
+    pub user_data: u64,
+}
 
 bitflags! {
     /// Flags for the entries in the `epoll` instance.
@@ -31,9 +34,63 @@ bitflags! {
     }
 }
 
-pub struct EpollEvent {
-    pub events: IoEvents,
-    pub user_data: u64,
+/// Interest trigger mode
+#[derive(Debug, Clone, Copy)]
+enum TriggerMode {
+    /// Level-triggered: until the condition is cleared
+    Level,
+    /// Edge-triggered: only notify when the condition changes
+    Edge,
+    /// One-shot: notify only once
+    OneShot { fired: bool },
+}
+
+impl TriggerMode {
+    fn from_flags(flags: EpollFlags) -> Self {
+        if flags.contains(EpollFlags::ONESHOT) {
+            TriggerMode::OneShot { fired: false }
+        } else if flags.contains(EpollFlags::EDGE_TRIGGER) {
+            TriggerMode::Edge
+        } else {
+            TriggerMode::Level
+        }
+    }
+
+    // return should notify and new mode
+    fn should_notify(&self) -> (bool, Self) {
+        match self {
+            TriggerMode::Level => {
+                // LT: always notify
+                (true, *self)
+            }
+            // if we could wake, we need notify
+            TriggerMode::Edge => (true, TriggerMode::Edge),
+            TriggerMode::OneShot { fired } => {
+                // ONESHOT: 只触发一次
+                if *fired {
+                    (false, *self)
+                } else {
+                    (true, TriggerMode::OneShot { fired: true })
+                }
+            }
+        }
+    }
+
+    fn is_enabled(&self) -> bool {
+        match self {
+            TriggerMode::OneShot { fired } => !fired,
+            _ => true,
+        }
+    }
+}
+
+enum ConsumeResult {
+    // success and should keep in ready list
+    EventAndKeep(EpollEvent),
+    // success and hould remove ready list
+    EventAndRemove(EpollEvent),
+    // no event and should remove ready list
+    NoEvent,
 }
 
 #[derive(Clone)]
@@ -49,7 +106,13 @@ impl EntryKey {
             file: Arc::downgrade(&file),
         })
     }
+
+    #[inline]
+    fn get_file(&self) -> Option<Arc<dyn FileLike>> {
+        self.file.upgrade()
+    }
 }
+
 impl Hash for EntryKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
         (self.fd, self.file.as_ptr()).hash(state);
@@ -60,109 +123,186 @@ impl PartialEq for EntryKey {
         self.fd == other.fd && Weak::ptr_eq(&self.file, &other.file)
     }
 }
+
 impl Eq for EntryKey {}
-
-struct EntryWaker {
-    ready: Weak<SpinNoPreempt<ReadyList>>,
-    interest: Weak<EpollInterest>,
-    poll_ready: Weak<PollSet>,
-}
-impl Wake for EntryWaker {
-    fn wake(self: Arc<Self>) {
-        self.wake_by_ref();
-    }
-
-    fn wake_by_ref(self: &Arc<Self>) {
-        if let Some(ready) = self.ready.upgrade()
-            && let Some(interest) = self.interest.upgrade()
-        {
-            if interest.ready.swap(true, Ordering::AcqRel) {
-                // already in ready list
-                return;
-            }
-            ready.lock().push_back(Arc::downgrade(&interest));
-            if let Some(poll_ready) = self.poll_ready.upgrade() {
-                poll_ready.wake();
-            }
-        }
-    }
-}
 
 struct EpollInterest {
     key: EntryKey,
     event: EpollEvent,
-    flags: EpollFlags,
-    enabled: AtomicBool,
-    ready: AtomicBool,
+    mode: SpinNoPreempt<TriggerMode>,
+    in_ready_queue: AtomicBool,
 }
+
 impl EpollInterest {
     fn new(key: EntryKey, event: EpollEvent, flags: EpollFlags) -> Self {
         Self {
             key,
             event,
-            flags,
-            enabled: AtomicBool::new(true),
-            ready: AtomicBool::new(false),
+            mode: SpinNoPreempt::new(TriggerMode::from_flags(flags)),
+            in_ready_queue: AtomicBool::new(false),
         }
     }
 
+    #[inline]
     fn is_enabled(&self) -> bool {
-        self.enabled.load(Ordering::Acquire)
+        self.mode.lock().is_enabled()
     }
 
-    /// Returns (`EpollEvent`, `still_ready`).
-    fn poll(&self, file: &dyn FileLike) -> (Option<EpollEvent>, bool) {
-        let events = file.poll();
-        if events.intersects(self.event.events) {
-            (
-                Some(EpollEvent {
-                    events,
-                    user_data: self.event.user_data,
-                }),
-                !self
-                    .flags
-                    .intersects(EpollFlags::EDGE_TRIGGER | EpollFlags::ONESHOT),
-            )
-        } else {
-            (None, false)
+    #[inline]
+    fn is_in_queue(&self) -> bool {
+        self.in_ready_queue.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    fn try_mark_in_queue(&self) -> bool {
+        self.in_ready_queue
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    #[inline]
+    fn mark_not_in_queue(&self) {
+        self.in_ready_queue.store(false, Ordering::Release);
+    }
+
+    fn consume(&self, file: &dyn FileLike) -> ConsumeResult {
+        let current_events = file.poll();
+        let matched = current_events & self.event.events;
+
+        // not ready
+        if matched.is_empty() {
+            return ConsumeResult::NoEvent;
+        }
+
+        let mut mode = self.mode.lock();
+        let (should_notify, new_mode) = mode.should_notify();
+        *mode = new_mode;
+        trace!(
+            "consume fd: {} matches {:?} should notify: {} ",
+            self.key.fd, matched, should_notify
+        );
+
+        if !should_notify {
+            return ConsumeResult::NoEvent;
+        }
+
+        // create event
+        let event = EpollEvent {
+            events: matched,
+            user_data: self.event.user_data,
+        };
+
+        // shoud still keep in ready?
+        match *mode {
+            TriggerMode::Level => ConsumeResult::EventAndKeep(event),
+            TriggerMode::Edge | TriggerMode::OneShot { .. } => ConsumeResult::EventAndRemove(event),
+        }
+    }
+}
+
+struct InterestWaker {
+    epoll: Weak<EpollInner>,
+    interest: Weak<EpollInterest>,
+}
+
+impl Wake for InterestWaker {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        let Some(epoll) = self.epoll.upgrade() else {
+            return;
+        };
+
+        let Some(interest) = self.interest.upgrade() else {
+            return;
+        };
+
+        if interest.try_mark_in_queue() {
+            epoll
+                .ready_queue
+                .lock()
+                .push_back(Arc::downgrade(&interest));
+            trace!(
+                "Epoll: fd={} added to ready queue, events={:?} wake up poller",
+                interest.key.fd, interest.event.events
+            );
+            epoll.poll_ready.wake();
+        }
+    }
+}
+
+struct EpollInner {
+    interests: SpinNoPreempt<HashMap<EntryKey, Arc<EpollInterest>>>,
+    ready_queue: SpinNoPreempt<VecDeque<Weak<EpollInterest>>>,
+    poll_ready: PollSet,
+}
+
+impl Default for EpollInner {
+    fn default() -> Self {
+        Self {
+            interests: SpinNoPreempt::new(HashMap::new()),
+            ready_queue: SpinNoPreempt::new(VecDeque::new()),
+            poll_ready: PollSet::new(),
         }
     }
 }
 
 #[derive(Default)]
 pub struct Epoll {
-    interests: SpinNoPreempt<HashMap<EntryKey, Arc<EpollInterest>>>,
-    ready: Arc<SpinNoPreempt<ReadyList>>,
-    poll_ready: Arc<PollSet>,
+    inner: Arc<EpollInner>,
 }
+
 impl Epoll {
     pub fn new() -> Self {
         Self::default()
     }
 
-    fn repoll(&self, interest: &Arc<EpollInterest>) {
-        if !interest.is_enabled() {
-            return;
-        }
-        let Some(file) = interest.key.file.upgrade() else {
+    // only register waker, not add to ready queue
+    fn register_waker_only(&self, interest: &Arc<EpollInterest>) {
+        let Some(file) = interest.key.get_file() else {
             return;
         };
 
-        let waker = Waker::from(Arc::new(EntryWaker {
-            ready: Arc::downgrade(&self.ready),
+        if !interest.is_enabled() {
+            return;
+        }
+
+        let waker = Waker::from(Arc::new(InterestWaker {
+            epoll: Arc::downgrade(&self.inner),
             interest: Arc::downgrade(interest),
-            poll_ready: Arc::downgrade(&self.poll_ready),
         }));
 
-        let (event, _) = interest.poll(file.as_ref());
-        if event.is_some() {
+        let mut context = Context::from_waker(&waker);
+        file.register(&mut context, interest.event.events);
+    }
+
+    // for add/modify
+    fn check_and_register_waker(&self, interest: &Arc<EpollInterest>) {
+        let Some(file) = interest.key.get_file() else {
+            return;
+        };
+
+        if !interest.is_enabled() {
+            return;
+        }
+
+        let waker = Waker::from(Arc::new(InterestWaker {
+            epoll: Arc::downgrade(&self.inner),
+            interest: Arc::downgrade(interest),
+        }));
+
+        let current = file.poll() & interest.event.events;
+
+        if !current.is_empty() {
             waker.wake_by_ref();
         } else {
             let mut context = Context::from_waker(&waker);
             file.register(&mut context, interest.event.events);
-            // poll again after registering
-            let (event, _) = interest.poll(file.as_ref());
-            if event.is_some() {
+
+            let current = file.poll() & interest.event.events;
+            if !current.is_empty() {
                 waker.wake_by_ref();
             }
         }
@@ -170,79 +310,117 @@ impl Epoll {
 
     pub fn add(&self, fd: i32, event: EpollEvent, flags: EpollFlags) -> AxResult<()> {
         let key = EntryKey::new(fd)?;
-        let mut guard = self.interests.lock();
-        let interest = EpollInterest::new(key.clone(), event, flags);
-        let interest = guard
-            .try_insert(key.clone(), Arc::new(interest))
-            .map_err(|_| AxError::AlreadyExists)?;
-        self.repoll(interest);
+        let interest = Arc::new(EpollInterest::new(key.clone(), event, flags));
+        let mut guard = self.inner.interests.lock();
+        if guard.contains_key(&key) {
+            return Err(AxError::AlreadyExists);
+        }
+        guard.insert(key.clone(), Arc::clone(&interest));
+        drop(guard);
+        trace!("Epoll add fd: {} interest {:?} ", fd, interest.event.events);
+        self.check_and_register_waker(&interest);
         Ok(())
     }
 
     pub fn modify(&self, fd: i32, event: EpollEvent, flags: EpollFlags) -> AxResult<()> {
         let key = EntryKey::new(fd)?;
-        let mut guard = self.interests.lock();
-        let interest = guard.get_mut(&key).ok_or(AxError::NotFound)?;
-        *interest = Arc::new(EpollInterest::new(key, event, flags));
-        self.repoll(interest);
+        let interest = Arc::new(EpollInterest::new(key.clone(), event, flags));
+
+        let mut guard = self.inner.interests.lock();
+        let old = guard.get_mut(&key).ok_or(AxError::NotFound)?;
+
+        // update new interest if old already in ready queue
+        if old.is_in_queue() {
+            interest.in_ready_queue.store(true, Ordering::Release);
+        }
+        *old = Arc::clone(&interest);
+        drop(guard);
+        trace!(
+            "Epoll: modify fd={}, events={:?}",
+            fd, interest.event.events
+        );
+        // reset waker
+        self.check_and_register_waker(&interest);
         Ok(())
     }
 
     pub fn delete(&self, fd: i32) -> AxResult<()> {
         let key = EntryKey::new(fd)?;
-        self.interests
+        self.inner
+            .interests
             .lock()
             .remove(&key)
-            .map(|_| ())
-            .ok_or(AxError::NotFound)
+            .ok_or(AxError::NotFound)?;
+        trace!("Epoll: delete fd={fd}");
+        Ok(())
     }
 
     pub fn poll_events(&self, out: &mut [epoll_event]) -> AxResult<usize> {
-        let mut ready = self.ready.lock();
-        let mut result = 0;
-        let len = ready.len();
-        for _ in 0..len {
-            let Some(slot) = out.get_mut(result) else {
+        trace!("Epoll: poll_events called, out.len()={}", out.len());
+        let mut count = 0;
+        loop {
+            let weak_interest = {
+                let mut queue = self.inner.ready_queue.lock();
+                queue.pop_front()
+            };
+
+            let Some(weak_interest) = weak_interest else {
                 break;
             };
-            let Some(interest) = ready.pop_front() else {
+
+            if count >= out.len() {
+                self.inner.ready_queue.lock().push_front(weak_interest);
                 break;
-            };
-            let Some(interest) = interest.upgrade() else {
-                continue;
-            };
-            if !interest.is_enabled() {
-                continue;
             }
-            let Some(file) = interest.key.file.upgrade() else {
-                // Remove the interest if the file is gone
-                self.interests.lock().remove(&interest.key);
+
+            let Some(interest) = weak_interest.upgrade() else {
+                continue; // interest already removed
+            };
+
+            let Some(file) = interest.key.get_file() else {
+                // file already closed remove interests
+                self.inner.interests.lock().remove(&interest.key);
+                interest.mark_not_in_queue();
                 continue;
             };
-            let (event, still_ready) = interest.poll(file.as_ref());
-            if let Some(event) = event {
-                *slot = epoll_event {
-                    events: event.events.bits(),
-                    data: event.user_data,
-                };
-                result += 1;
-                if interest.flags.contains(EpollFlags::ONESHOT) {
-                    interest.enabled.store(false, Ordering::Release);
-                    continue;
+
+            trace!(
+                "Epoll: consuming ready interest for fd={}, events={:?}",
+                interest.key.fd, interest.event.events
+            );
+
+            match interest.consume(file.as_ref()) {
+                ConsumeResult::EventAndKeep(event) => {
+                    out[count] = epoll_event {
+                        events: event.events.bits(),
+                        data: event.user_data,
+                    };
+                    count += 1;
+                    self.inner
+                        .ready_queue
+                        .lock()
+                        .push_back(Arc::downgrade(&interest));
                 }
-            }
-            if still_ready {
-                ready.push_back(Arc::downgrade(&interest));
-            } else {
-                interest.ready.store(false, Ordering::Release);
-                self.repoll(&interest);
+                ConsumeResult::EventAndRemove(event) => {
+                    out[count] = epoll_event {
+                        events: event.events.bits(),
+                        data: event.user_data,
+                    };
+                    count += 1;
+                    interest.mark_not_in_queue();
+                    self.register_waker_only(&interest);
+                }
+                ConsumeResult::NoEvent => {
+                    interest.mark_not_in_queue();
+                    self.register_waker_only(&interest);
+                }
             }
         }
 
-        if result == 0 {
+        if count == 0 {
             Err(AxError::WouldBlock)
         } else {
-            Ok(result)
+            Ok(count)
         }
     }
 }
@@ -271,7 +449,7 @@ impl FileLike for Epoll {
 
 impl Pollable for Epoll {
     fn poll(&self) -> IoEvents {
-        if self.ready.lock().is_empty() {
+        if self.inner.ready_queue.lock().is_empty() {
             IoEvents::empty()
         } else {
             IoEvents::IN
@@ -280,7 +458,7 @@ impl Pollable for Epoll {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         if events.contains(IoEvents::IN) {
-            self.poll_ready.register(context.waker());
+            self.inner.poll_ready.register(context.waker());
         }
     }
 }
