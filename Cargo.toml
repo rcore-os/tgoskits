@@ -21,8 +21,7 @@ cfg-if = "1"
 log = "0.4"
 spin = { version = "0.10", default-features = false, features = ["once"] }
 
-addr2line = { version = "0.25", default-features = false, optional = true, features = [
-    "alloc",
+addr2line = { version = "0.25.1", default-features = false, optional = true, features = [
     "cpp_demangle",
     "rustc-demangle",
 ] }
