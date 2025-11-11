@@ -6,9 +6,12 @@ exclude = ["arceos"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
+
 authors = [
     "Azure-stars <Azure_stars@126.com>",
     "Yuekai Jia <equation618@gmail.com>",
+    "KylinSoft Co., Ltd. <https://www.kylinos.cn/>",
     "朝倉水希 <asakuramizu111@gmail.com>",
     "Mivik <mivikq@gmail.com>",
 ]
@@ -81,6 +84,7 @@ name = "starry"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
