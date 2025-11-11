@@ -232,7 +232,7 @@ dependencies = [
 [[package]]
 name = "axcpu"
 version = "0.2.2"
-source = "git+https://github.com/Starry-OS/axcpu.git?rev=f1359df#f1359dffda997d035f1dc971c2df2b19c01d4c7b"
+source = "git+https://github.com/Starry-OS/axcpu.git?rev=fdbf401#fdbf401a358b4088ff5b9e43d1de049827dab40b"
 dependencies = [
  "aarch64-cpu",
  "axbacktrace",
