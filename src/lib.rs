@@ -62,7 +62,7 @@ pub enum AxErrorKind {
     /// For example, a function that reads a file into a string will error with
     /// `InvalidData` if the file's contents are not valid UTF-8.
     ///
-    /// [`InvalidInput`]: AxError::InvalidInput
+    /// [`InvalidInput`]: AxErrorKind::InvalidInput
     InvalidData,
     /// Invalid executable format.
     InvalidExecutable,
@@ -409,52 +409,63 @@ impl fmt::Display for AxError {
     }
 }
 
-#[allow(non_upper_case_globals)]
-impl AxError {
-    pub const AddrInUse: Self = Self::new_ax(AxErrorKind::AddrInUse);
-    pub const AlreadyConnected: Self = Self::new_ax(AxErrorKind::AlreadyConnected);
-    pub const AlreadyExists: Self = Self::new_ax(AxErrorKind::AlreadyExists);
-    pub const ArgumentListTooLong: Self = Self::new_ax(AxErrorKind::ArgumentListTooLong);
-    pub const BadAddress: Self = Self::new_ax(AxErrorKind::BadAddress);
-    pub const BadFileDescriptor: Self = Self::new_ax(AxErrorKind::BadFileDescriptor);
-    pub const BadState: Self = Self::new_ax(AxErrorKind::BadState);
-    pub const BrokenPipe: Self = Self::new_ax(AxErrorKind::BrokenPipe);
-    pub const ConnectionRefused: Self = Self::new_ax(AxErrorKind::ConnectionRefused);
-    pub const ConnectionReset: Self = Self::new_ax(AxErrorKind::ConnectionReset);
-    pub const CrossesDevices: Self = Self::new_ax(AxErrorKind::CrossesDevices);
-    pub const DirectoryNotEmpty: Self = Self::new_ax(AxErrorKind::DirectoryNotEmpty);
-    pub const FilesystemLoop: Self = Self::new_ax(AxErrorKind::FilesystemLoop);
-    pub const IllegalBytes: Self = Self::new_ax(AxErrorKind::IllegalBytes);
-    pub const InProgress: Self = Self::new_ax(AxErrorKind::InProgress);
-    pub const Interrupted: Self = Self::new_ax(AxErrorKind::Interrupted);
-    pub const InvalidData: Self = Self::new_ax(AxErrorKind::InvalidData);
-    pub const InvalidExecutable: Self = Self::new_ax(AxErrorKind::InvalidExecutable);
-    pub const InvalidInput: Self = Self::new_ax(AxErrorKind::InvalidInput);
-    pub const Io: Self = Self::new_ax(AxErrorKind::Io);
-    pub const IsADirectory: Self = Self::new_ax(AxErrorKind::IsADirectory);
-    pub const NameTooLong: Self = Self::new_ax(AxErrorKind::NameTooLong);
-    pub const NoMemory: Self = Self::new_ax(AxErrorKind::NoMemory);
-    pub const NoSuchDevice: Self = Self::new_ax(AxErrorKind::NoSuchDevice);
-    pub const NoSuchProcess: Self = Self::new_ax(AxErrorKind::NoSuchProcess);
-    pub const NotADirectory: Self = Self::new_ax(AxErrorKind::NotADirectory);
-    pub const NotASocket: Self = Self::new_ax(AxErrorKind::NotASocket);
-    pub const NotATty: Self = Self::new_ax(AxErrorKind::NotATty);
-    pub const NotConnected: Self = Self::new_ax(AxErrorKind::NotConnected);
-    pub const NotFound: Self = Self::new_ax(AxErrorKind::NotFound);
-    pub const OperationNotPermitted: Self = Self::new_ax(AxErrorKind::OperationNotPermitted);
-    pub const OperationNotSupported: Self = Self::new_ax(AxErrorKind::OperationNotSupported);
-    pub const OutOfRange: Self = Self::new_ax(AxErrorKind::OutOfRange);
-    pub const PermissionDenied: Self = Self::new_ax(AxErrorKind::PermissionDenied);
-    pub const ReadOnlyFilesystem: Self = Self::new_ax(AxErrorKind::ReadOnlyFilesystem);
-    pub const ResourceBusy: Self = Self::new_ax(AxErrorKind::ResourceBusy);
-    pub const StorageFull: Self = Self::new_ax(AxErrorKind::StorageFull);
-    pub const TimedOut: Self = Self::new_ax(AxErrorKind::TimedOut);
-    pub const TooManyOpenFiles: Self = Self::new_ax(AxErrorKind::TooManyOpenFiles);
-    pub const UnexpectedEof: Self = Self::new_ax(AxErrorKind::UnexpectedEof);
-    pub const Unsupported: Self = Self::new_ax(AxErrorKind::Unsupported);
-    pub const WouldBlock: Self = Self::new_ax(AxErrorKind::WouldBlock);
-    pub const WriteZero: Self = Self::new_ax(AxErrorKind::WriteZero);
+macro_rules! axerror_consts {
+    ($($name:ident),*) => {
+        #[allow(non_upper_case_globals)]
+        impl AxError {
+            $(
+                #[doc = concat!("An [`AxError`] with kind [`AxErrorKind::", stringify!($name), "`].")]
+                pub const $name: Self = Self::new_ax(AxErrorKind::$name);
+            )*
+        }
+    };
 }
+
+axerror_consts!(
+    AddrInUse,
+    AlreadyConnected,
+    AlreadyExists,
+    ArgumentListTooLong,
+    BadAddress,
+    BadFileDescriptor,
+    BadState,
+    BrokenPipe,
+    ConnectionRefused,
+    ConnectionReset,
+    CrossesDevices,
+    DirectoryNotEmpty,
+    FilesystemLoop,
+    IllegalBytes,
+    InProgress,
+    Interrupted,
+    InvalidData,
+    InvalidExecutable,
+    InvalidInput,
+    Io,
+    IsADirectory,
+    NameTooLong,
+    NoMemory,
+    NoSuchDevice,
+    NoSuchProcess,
+    NotADirectory,
+    NotASocket,
+    NotATty,
+    NotConnected,
+    NotFound,
+    OperationNotPermitted,
+    OperationNotSupported,
+    OutOfRange,
+    PermissionDenied,
+    ReadOnlyFilesystem,
+    ResourceBusy,
+    StorageFull,
+    TimedOut,
+    TooManyOpenFiles,
+    UnexpectedEof,
+    Unsupported,
+    WouldBlock,
+    WriteZero
+);
 
 /// A specialized [`Result`] type with [`AxError`] as the error type.
 pub type AxResult<T = ()> = Result<T, AxError>;
