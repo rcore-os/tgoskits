@@ -1,11 +1,6 @@
-use buddy_system_allocator::LockedHeap;
 use os_helper::memory::MemoryDescriptor;
-use spin::Mutex;
 
-use crate::{
-    hal::memory,
-    os::mem::address::{PhysAddr, VirtAddr},
-};
+use crate::os::mem::address::{PhysAddr, VirtAddr};
 
 mod address;
 mod allocator;

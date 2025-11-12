@@ -11,6 +11,10 @@ pub fn _print(args: core::fmt::Arguments) {
     let _ = ConFmt {}.write_fmt(args);
 }
 
+pub fn _write_bytes(bytes: &[u8]) -> usize {
+    con().write_bytes(bytes)
+}
+
 #[macro_export]
 macro_rules! print {
     ($($arg:tt)*) => ($crate::console::_print(core::format_args!($($arg)*)));
@@ -61,12 +65,25 @@ fn con() -> &'static dyn Con {
 
 #[allow(dead_code)]
 pub(crate) trait Con: Send + Sync {
-    fn write_str(&self, s: &str);
+    fn write_bytes(&self, _bytes: &[u8]) -> usize {
+        0
+    }
+    fn write_str(&self, s: &str) {
+        let bytes = s.as_bytes();
+        let mut buff = bytes;
+        while !buff.is_empty() {
+            let n = self.write_bytes(buff);
+            buff = &buff[n..];
+        }
+    }
 }
 
 #[allow(dead_code)]
 struct NoCon;
 impl Con for NoCon {
+    fn write_bytes(&self, _bytes: &[u8]) -> usize {
+        _bytes.len()
+    }
     fn write_str(&self, _s: &str) {
         // Do nothing
     }
@@ -105,15 +122,13 @@ struct EarlyconSenderCell(UnsafeCell<Option<Sender>>);
 unsafe impl Sync for EarlyconSenderCell {}
 
 impl Con for EarlyconSenderCell {
-    fn write_str(&self, s: &str) {
+    fn write_bytes(&self, bytes: &[u8]) -> usize {
         unsafe {
             if let Some(ref mut sender) = *self.0.get() {
-                let bytes = s.as_bytes();
-                let mut buff = bytes;
-                while !buff.is_empty() {
-                    let n = sender.write_bytes(buff);
-                    buff = &buff[n..];
-                }
+                sender.write_bytes(bytes)
+            } else {
+                // No sender available, simply return the length of bytes to indicate all bytes "written"
+                bytes.len()
             }
         }
     }

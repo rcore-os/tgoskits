@@ -3,7 +3,6 @@
 
 extern crate somehal;
 
-pub use somehal::*;
 pub use sparreal_kernel::entry;
 pub use sparreal_kernel::*;
 

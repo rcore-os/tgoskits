@@ -5,6 +5,9 @@
 extern crate alloc;
 
 #[macro_use]
+extern crate log;
+
+#[macro_use]
 pub mod console;
 
 #[cfg(target_arch = "loongarch64")]
@@ -32,6 +35,7 @@ trait ArchTrait {
 }
 
 pub fn post_allocator() {
+    info!("alloc ok");
     arch::Arch::post_allocator();
 }
 

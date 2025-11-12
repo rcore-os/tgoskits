@@ -1,4 +1,4 @@
-use sparreal_kernel::{hal::*, impl_trait};
+use sparreal_kernel::{hal::al::*, impl_trait};
 
 struct MemoryImpl;
 
@@ -28,6 +28,20 @@ impl Cpu for CpuImpl {
 
     fn irq_set_enabled(enabled:bool) {
 
+    }
+}
+}
+
+struct ConsoleImpl;
+
+impl_trait! {
+impl Console for ConsoleImpl {
+    fn early_write(bytes: &[u8]) -> usize {
+        somehal::console::_write_bytes(bytes)
+    }
+
+    fn early_read() -> Option<u8> {
+        None
     }
 }
 }

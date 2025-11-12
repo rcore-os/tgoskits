@@ -1,5 +1,7 @@
 use core::{fmt::Debug, ops::Range, ptr::NonNull};
 
+use crate::hal::al;
+
 macro_rules! def_addr {
     ($name:ident, $t:ty) => {
         #[repr(transparent)]
@@ -162,14 +164,14 @@ pub type PhysAddr = Phys<u8>;
 
 impl<T> From<Virt<T>> for Phys<T> {
     fn from(value: Virt<T>) -> Self {
-        let phys_addr = unsafe { crate::hal::memory::virt_to_phys(value.raw() as _) };
+        let phys_addr = unsafe { al::memory::virt_to_phys(value.raw() as _) };
         Phys::new(phys_addr)
     }
 }
 
 impl<T> From<Phys<T>> for Virt<T> {
     fn from(value: Phys<T>) -> Self {
-        let virt_addr = crate::hal::memory::phys_to_virt(value.raw());
+        let virt_addr = al::memory::phys_to_virt(value.raw());
         Virt::new(virt_addr as _)
     }
 }

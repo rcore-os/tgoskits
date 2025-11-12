@@ -936,9 +936,11 @@ dependencies = [
 name = "sparreal-kernel"
 version = "0.13.0"
 dependencies = [
+ "ansi_rgb",
  "buddy_system_allocator",
  "log",
  "os-helper",
+ "rgb",
  "sparreal-macros",
  "spin 0.10.0",
  "trait-ffi",
