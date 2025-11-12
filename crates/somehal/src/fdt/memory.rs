@@ -2,7 +2,7 @@ use heapless::Vec;
 
 use crate::{
     kernel_code,
-    mem::{MemoryDescriptor, MemoryType, page_size},
+    mem::{MemoryDescriptor, MemoryType, page_size, virt_to_phys},
 };
 use os_helper::memory::merge_memories;
 
@@ -30,10 +30,12 @@ pub fn setup_memory_map() -> Option<()> {
 
     let mut rsv = Vec::<MemoryDescriptor, 32>::new();
     let _ = rsv.push(MemoryDescriptor {
-        physical_start: kernel_code().as_ptr() as usize,
+        physical_start: virt_to_phys(kernel_code().as_ptr()),
         size_in_bytes: kernel_code().len(),
         memory_type: MemoryType::Reserved,
     });
+
+    let _ = rsv.push(crate::mem::ram::to_rsvd_memory_descriptor());
 
     for reserved in fdt.memory_reservation_blocks() {
         if rsv
@@ -72,7 +74,13 @@ pub fn setup_memory_map() -> Option<()> {
     }
 
     for desc in crate::mem::get_memory_map() {
-        pr_range!("Memory Region", desc.physical_start, desc.size_in_bytes, " Type: {:?}", desc.memory_type);
+        pr_range!(
+            "Memory Region",
+            desc.physical_start,
+            desc.size_in_bytes,
+            " Type: {:?}",
+            desc.memory_type
+        );
     }
 
     Some(())

@@ -11,28 +11,29 @@ version = "0.5.0"
 
 [features]
 efi = []
+hv = []
 mmu = []
 uspace = ["mmu"]
-hv = []
 
 [dependencies]
 
 acpi = "6.0.1"
+aml = "0.16"
 ansi_rgb = "0.2"
+anyhow = {workspace = true, default-features = false}
 arrayvec = {version = "0.7", default-features = false}
+bitflags = "2.9"
 buddy_system_allocator = "0.11"
 fdt-parser = "0.5"
 heapless = "0.9"
 log = "0.4"
-numeric-enum-macro = "0.2"
 num-align = "0.1"
+numeric-enum-macro = "0.2"
+os-helper = {workspace = true}
+page-table-generic = {workspace = true}
 rgb = "0.8"
 some-serial = "0.3"
 spin = "0.10"
-aml = "0.16"
-os-helper = {workspace = true}
-page-table-generic = {workspace = true}
-bitflags = "2.9"
 
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
 uefi = {version = "0.36"}
@@ -43,8 +44,8 @@ uefi-raw = "0.12"
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 aarch64-cpu = "11"
 aarch64-cpu-ext = "0.1"
-some-serial = "0.3"
 kasm-aarch64 = {workspace = true}
+some-serial = "0.3"
 
 [build-dependencies]
 prettyplease = "0.2"

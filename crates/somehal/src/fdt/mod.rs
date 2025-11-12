@@ -6,14 +6,21 @@ mod memory;
 pub use earlycon::setup_earlycon;
 pub use memory::setup_memory_map;
 
+use crate::mem::phys_to_virt;
+
 pub static mut FDT_ADDR: usize = 0;
 
-fn fdt_base() -> Option<base::Fdt<'static>> {
+fn fdt_addr() -> Option<*mut u8> {
     let fdt_addr = unsafe { FDT_ADDR };
     if fdt_addr == 0 {
         return None;
     }
-    let fdt = unsafe { base::Fdt::from_ptr(fdt_addr as *mut u8).ok()? };
+    Some(phys_to_virt(fdt_addr))
+}
+
+fn fdt_base() -> Option<base::Fdt<'static>> {
+    let fdt_addr = fdt_addr()?;
+    let fdt = unsafe { base::Fdt::from_ptr(fdt_addr).ok()? };
     Some(fdt)
 }
 

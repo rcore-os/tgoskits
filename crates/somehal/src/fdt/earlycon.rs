@@ -2,7 +2,7 @@ use core::ptr::NonNull;
 
 use some_serial::*;
 
-use crate::console::DEBUG_BASE;
+use crate::{console::DEBUG_BASE, mem::phys_to_virt};
 
 pub fn setup_earlycon() -> Option<()> {
     let _ = super::set_cmdline();
@@ -24,7 +24,7 @@ fn set_by_stdout() -> Option<()> {
     let chosen = fdt.chosen().ok()?;
     let stdout = chosen.stdout().ok()?;
     let reg = stdout.reg().ok()?.next()?;
-    let addr = NonNull::new(reg.address as usize as *mut u8)?;
+    let addr = NonNull::new(phys_to_virt(reg.address as usize))?;
     let clock = stdout.clock_frequency().unwrap_or(0);
 
     for com in stdout.compatibles_flatten().ok()? {

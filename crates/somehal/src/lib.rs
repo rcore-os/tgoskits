@@ -26,12 +26,11 @@ mod mem;
 
 trait ArchTrait {
     fn kernel_code() -> &'static [u8];
-    fn pa_bits() -> usize;
     fn post_allocator();
 }
 
 pub fn post_allocator() {
-    // arch::Arch::post_allocator();
+    arch::Arch::post_allocator();
 }
 
 fn kernel_code() -> &'static [u8] {
@@ -40,6 +39,8 @@ fn kernel_code() -> &'static [u8] {
 
 fn prime_entry() -> ! {
     mem::set_mmu_enabled();
+    fdt::setup_earlycon();
+    fdt::setup_memory_map();
 
     println!("All tests passed!");
     loop {}

@@ -16,6 +16,7 @@ repository = "https://github.com/rcore-os/somehal"
 dma-api = {version = "0.5"}
 fdt-parser = "0.5"
 log = "0.4"
+anyhow = {version = "1.0", default-features = false}
 
 somehal = {path = "crates/somehal", version = "0.5"}
 sparreal-kernel = {path = "crates/sparreal-kernel", version = "0.13"}

@@ -20,12 +20,12 @@ pub(crate) fn set_mmu_enabled() {
     }
 }
 
-pub fn virt_to_phys(vaddr: usize) -> usize {
-    vaddr - unsafe { KERNEL_LINER_OFFSET_CURRENT }
+pub fn virt_to_phys(vaddr: *const u8) -> usize {
+    vaddr as usize - unsafe { KERNEL_LINER_OFFSET_CURRENT }
 }
 
-pub fn phys_to_virt(paddr: usize) -> usize {
-    paddr + unsafe { KERNEL_LINER_OFFSET_CURRENT }
+pub fn phys_to_virt(paddr: usize) -> *mut u8 {
+    (paddr + unsafe { KERNEL_LINER_OFFSET_CURRENT }) as *mut u8
 }
 
 pub(crate) fn early_init() {
