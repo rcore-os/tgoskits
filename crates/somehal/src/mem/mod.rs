@@ -2,33 +2,35 @@ use core::{cell::UnsafeCell, ops::Deref};
 
 pub use os_helper::memory::{MemoryDescriptor, MemoryType};
 
-use crate::{ArchTrait, consts::VMLINUX_LOAD_ADDRESS};
+use crate::ArchTrait;
 
 pub(crate) mod address;
 pub(crate) mod ram;
 
 static MEMORY_MAP: StaticCell<heapless::Vec<MemoryDescriptor, 64>> =
     StaticCell::new(Some(heapless::Vec::new()));
-static mut KERNEL_VCODE_OFFSET: usize = 0;
+
+static mut KERNEL_LINER_OFFSET_CURRENT: usize = 0;
 
 pub const MB: usize = 1024 * 1024;
 
-pub(crate) fn early_init() {
-    let load_at = crate::arch::Arch::kernel_code().as_ptr() as usize;
+pub(crate) fn set_mmu_enabled() {
     unsafe {
-        KERNEL_VCODE_OFFSET = VMLINUX_LOAD_ADDRESS - load_at;
+        KERNEL_LINER_OFFSET_CURRENT = crate::consts::KERNEL_LINER_OFFSET;
     }
-
-    println!(
-        "Kernel Load @{load_at:#x}, VAddr Offset {:#x}",
-        kernel_vcode_offset()
-    );
-    ram::init();
-    crate::fdt::save_fdt();
 }
 
-pub(crate) fn kernel_vcode_offset() -> usize {
-    unsafe { KERNEL_VCODE_OFFSET }
+pub fn virt_to_phys(vaddr: usize) -> usize {
+    vaddr - unsafe { KERNEL_LINER_OFFSET_CURRENT }
+}
+
+pub fn phys_to_virt(paddr: usize) -> usize {
+    paddr + unsafe { KERNEL_LINER_OFFSET_CURRENT }
+}
+
+pub(crate) fn early_init() {
+    ram::init();
+    crate::fdt::save_fdt();
 }
 
 pub(crate) fn kernel_range() -> core::ops::Range<usize> {

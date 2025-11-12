@@ -142,6 +142,7 @@ impl Pte {
         Self(flags.bits())
     }
 
+    #[allow(unused)]
     pub fn update_flags<F>(&mut self, f: F)
     where
         F: FnOnce(&mut PteFlags),

@@ -9,12 +9,12 @@ mod elx;
 #[path = "el1/mod.rs"]
 mod elx;
 
+mod context;
 mod entry;
 mod head;
 mod paging;
 mod relocate;
 mod trap;
-mod context;
 
 use elx::*;
 
@@ -30,8 +30,8 @@ impl ArchTrait for Arch {
             fn _head();
             fn __kernel_code_end();
         }
-        let start = sym_addr!(_head);
-        let end = sym_addr!(__kernel_code_end);
+        let start = _head as usize;
+        let end = __kernel_code_end as usize;
         unsafe { core::slice::from_raw_parts(start as *const u8, end - start) }
     }
 

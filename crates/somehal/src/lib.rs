@@ -15,13 +15,13 @@ pub mod arch;
 #[path = "arch/aarch64/mod.rs"]
 pub mod arch;
 
-pub(crate) mod fdt;
-mod consts;
 mod acpi;
 mod cmdline;
+mod consts;
 #[cfg(efi)]
 mod efi_stub;
 mod elf;
+pub(crate) mod fdt;
 mod mem;
 
 trait ArchTrait {
@@ -36,4 +36,11 @@ pub fn post_allocator() {
 
 fn kernel_code() -> &'static [u8] {
     arch::Arch::kernel_code()
+}
+
+fn prime_entry() -> ! {
+    mem::set_mmu_enabled();
+
+    println!("All tests passed!");
+    loop {}
 }

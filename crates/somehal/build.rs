@@ -72,13 +72,11 @@ impl Build {
 
         let ld_src = "src/arch/aarch64/link.ld";
 
-        self.kernel_vaddr = 0xF000_0020_0000;
         if self.hv {
             self.uspace = false;
         }
         if self.uspace {
             self.kernel_liner_offset = 0xFFFF_0000_0000_0000;
-            self.kernel_vaddr += self.kernel_liner_offset;
         }
 
         let kernel_vaddr = self.kernel_vaddr as usize;
@@ -96,7 +94,6 @@ impl Build {
         fs::write(ld_dst, ld).unwrap();
 
         let defines = quote::quote! {
-            pub const VMLINUX_LOAD_ADDRESS: usize = #kernel_vaddr;
             pub const KERNEL_LINER_OFFSET: usize = #kernel_liner_offset;
         };
         let syntax_tree = syn::parse2(defines).unwrap();

@@ -1,4 +1,4 @@
-use core::arch::{asm, naked_asm};
+use core::arch::naked_asm;
 
 use super::switch_to_elx;
 
@@ -42,42 +42,4 @@ pub fn el_entry() -> ! {
 
     crate::mem::early_init();
     crate::arch::paging::enable_mmu()
-    // crate::fdt::setup_memory_map();
-
-    // println!("Hello, Somehal on AArch64!");
-
-    // loop {}
-}
-
-pub fn mmu_entry() -> ! {
-    // Immediate check if we got here
-    println!("=== MMU_ENTRY REACHED ===");
-
-    let pc = unsafe {
-        let mut value: usize;
-        asm!("adr {0}, .", out(reg) value);
-        value
-    };
-
-    let sp = unsafe {
-        let mut value: usize;
-        asm!("mov {0}, sp", out(reg) value);
-        value
-    };
-
-    println!("Current PC: {pc:#x}");
-    println!("Current SP: {sp:#x}");
-
-    // Try to access some memory
-    let test_addr = 0x40200000 as *mut u64;
-    println!("Testing memory access at {:#x}", test_addr as usize);
-
-    unsafe {
-        let val = test_addr.read_volatile();
-        println!("Read value: {:#x}", val);
-    }
-
-    println!("All tests passed!");
-
-    loop {}
 }

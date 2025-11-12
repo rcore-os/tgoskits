@@ -3,7 +3,9 @@ args = [
     "-Z",
     "build-std=core,alloc",
 ]
-features = []
+features = [
+  "somehal/uspace"
+]
 package = "helloworld"
 post_build_cmds = []
 pre_build_cmds = []

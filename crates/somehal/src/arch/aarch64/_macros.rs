@@ -33,3 +33,20 @@ macro_rules! sym_addr {
         }
     }};
 }
+
+macro_rules! ext_sym_addr {
+    ($sym:expr) => {
+        {
+            #[allow(unused_unsafe)]
+            unsafe{
+                let out: usize;
+                core::arch::asm!(
+                    concat!("adrp {r}, ", stringify!($sym)),
+                    concat!("add  {r}, {r}, :lo12:", stringify!($sym)),
+                    r = out(reg) out,
+                );
+                out
+            }
+        }
+    };
+}

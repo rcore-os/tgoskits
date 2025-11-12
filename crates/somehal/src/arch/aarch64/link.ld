@@ -3,7 +3,6 @@
  * field of EFI application to 64K.
  */
 PECOFF_FILE_ALIGN = 0x200;
-VMLINUX_LOAD_ADDRESS = ${kernel_load_vaddr};
 
 PROVIDE(PAGE_SIZE = 0x1000);
 /* Provide default stack size if not defined */
@@ -18,7 +17,7 @@ PHDRS {
 
 SECTIONS
 {
-    . = VMLINUX_LOAD_ADDRESS;
+    . = 0;
     .head.text :  { 
         KEEP(*(.head.text)) 
     }
