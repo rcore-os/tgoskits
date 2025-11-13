@@ -64,4 +64,12 @@ impl ConsoleIf for ConsoleIfImpl {
         }
         read_len
     }
+
+    /// Returns the IRQ number for the console input interrupt.
+    ///
+    /// Returns `None` if input interrupt is not supported.
+    #[cfg(feature = "irq")]
+    fn irq_num() -> Option<usize> {
+        Some(crate::config::devices::UART_IRQ)
+    }
 }

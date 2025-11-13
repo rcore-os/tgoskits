@@ -8,14 +8,14 @@ This crate provides a unified abstraction layer for diverse hardware platforms. 
 
 Interfaces can be divided into the following categories:
 
-| Category | Trait | Description |
-|----------|-------|-------------|
-| init | `InitIf` | Platform initialization |
-| console | `ConsoleIf` | Console input and output |
-| power | `PowerIf` | Power management |
-| mem | `MemIf` | Physical memory information |
-| time | `TimeIf` | Time-related operations |
-| irq | `IrqIf` | Interrupt request handling |
+| Category | Trait       | Description                 |
+| -------- | ----------- | --------------------------- |
+| init     | `InitIf`    | Platform initialization     |
+| console  | `ConsoleIf` | Console input and output    |
+| power    | `PowerIf`   | Power management            |
+| mem      | `MemIf`     | Physical memory information |
+| time     | `TimeIf`    | Time-related operations     |
+| irq      | `IrqIf`     | Interrupt request handling  |
 
 Each category of interfaces provides a trait (e.g., `ConsoleIf`) for a platform package to implement. You can use the corresponding platform-related functions in your project directly from the [axplat](https://crates.io/crates/axplat) crate without importing the specific platform package.
 
@@ -68,6 +68,8 @@ struct ConsoleIfImpl;
 impl axplat::console::ConsoleIf for ConsoleIfImpl {
     fn write_bytes(bytes: &[u8]) { /* ... */ }
     fn read_bytes(bytes: &mut [u8]) -> usize { /* ... */ 0 }
+    #[cfg(feature = "irq")]
+    fn irq_num() -> Option<usize> { None }
 }
 
 // Implementation of other traits...

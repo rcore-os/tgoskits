@@ -67,6 +67,7 @@ pub fn irq_handler() {
 /// Default implementation of [`axplat::console::ConsoleIf`] using the
 /// PL011 UART.
 #[macro_export]
+#[allow(clippy::crate_in_macro_def)]
 macro_rules! console_if_impl {
     ($name:ident) => {
         struct $name;
@@ -83,6 +84,14 @@ macro_rules! console_if_impl {
             /// Returns the number of bytes read.
             fn read_bytes(bytes: &mut [u8]) -> usize {
                 $crate::pl011::read_bytes(bytes)
+            }
+
+            /// Returns the IRQ number for the console input interrupt.
+            ///
+            /// Returns `None` if input interrupt is not supported.
+            #[cfg(feature = "irq")]
+            fn irq_num() -> Option<usize> {
+                Some(crate::config::devices::UART_IRQ as _)
             }
         }
     };

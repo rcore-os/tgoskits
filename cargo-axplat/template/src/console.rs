@@ -15,4 +15,12 @@ impl ConsoleIf for ConsoleIfImpl {
     fn read_bytes(bytes: &mut [u8]) -> usize {
         todo!()
     }
+
+    /// Returns the IRQ number for the console input interrupt.
+    ///
+    /// Returns `None` if input interrupt is not supported.
+    #[cfg(feature = "irq")]
+    fn irq_num() -> Option<usize> {
+        None
+    }
 }
