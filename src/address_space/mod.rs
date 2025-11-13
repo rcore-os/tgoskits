@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use core::fmt;
 
-use axerrno::{AxError, AxResult, ax_err};
+use axerrno::ax_err;
 use memory_addr::{MemoryAddr, PhysAddr, is_aligned_4k};
 use memory_set::{MemoryArea, MemorySet};
 use page_table_multiarch::PagingHandler;
@@ -11,6 +11,7 @@ use crate::{GuestPhysAddr, GuestPhysAddrRange, mapping_err_to_ax_err};
 
 mod backend;
 
+pub use axerrno::{AxError, AxResult};
 pub use backend::Backend;
 pub use page_table_entry::MappingFlags;
 
@@ -43,7 +44,7 @@ impl<H: PagingHandler> AddrSpace<H> {
     }
 
     /// Returns the root physical address of the inner page table.
-    pub const fn page_table_root(&self) -> PhysAddr {
+    pub fn page_table_root(&self) -> PhysAddr {
         self.pt.root_paddr()
     }
 
@@ -53,12 +54,12 @@ impl<H: PagingHandler> AddrSpace<H> {
             .contains_range(GuestPhysAddrRange::from_start_size(start, size))
     }
 
-    /// Creates a new empty address space.
-    pub fn new_empty(base: GuestPhysAddr, size: usize) -> AxResult<Self> {
+    /// Creates a new empty address space with the architecture default page table level.
+    pub fn new_empty(level: usize, base: GuestPhysAddr, size: usize) -> AxResult<Self> {
         Ok(Self {
             va_range: GuestPhysAddrRange::from_start_size(base, size),
             areas: MemorySet::new(),
-            pt: PageTable::try_new().map_err(|_| AxError::NoMemory)?,
+            pt: PageTable::<H>::new(level)?,
         })
     }
 
@@ -276,7 +277,7 @@ mod tests {
     fn setup_test_addr_space() -> (AddrSpace<MockHal>, GuestPhysAddr, usize) {
         const BASE: GuestPhysAddr = GuestPhysAddr::from_usize(0x10000);
         const SIZE: usize = 0x10000;
-        let addr_space = AddrSpace::<MockHal>::new_empty(BASE, SIZE).unwrap();
+        let addr_space = AddrSpace::<MockHal>::new_empty(4, BASE, SIZE).unwrap();
         (addr_space, BASE, SIZE)
     }
 

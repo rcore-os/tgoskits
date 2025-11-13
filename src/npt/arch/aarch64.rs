@@ -210,23 +210,15 @@ impl fmt::Debug for A64PTEHV {
     }
 }
 
-/// Metadata of AArch64 hypervisor page tables (ipa to hpa).
+/// Metadata of AArch64 hypervisor page tables (ipa to hpa) - Level 3.
 #[derive(Copy, Clone)]
-pub struct A64HVPagingMetaData;
+pub struct A64HVPagingMetaDataL3;
 
-impl PagingMetaData for A64HVPagingMetaData {
-    // The levels of the page table.
-    #[cfg(not(feature = "4-level-ept"))]
+impl PagingMetaData for A64HVPagingMetaDataL3 {
+    // The levels of the page table for 3-level configuration.
     const LEVELS: usize = 3;
-    #[cfg(feature = "4-level-ept")]
-    const LEVELS: usize = 4;
-
-    // The size of the IPA space can be configured in the same way as the
-    #[cfg(not(feature = "4-level-ept"))]
-    const VA_MAX_BITS: usize = 40; //  virtual address space. VTCR_EL2.T0SZ controls the size.
-    #[cfg(feature = "4-level-ept")]
-    const VA_MAX_BITS: usize = 48;
-
+    // The size of the IPA space for 3-level configuration.
+    const VA_MAX_BITS: usize = 40;
     // In Armv8.0-A, the maximum size for a physical address is 48 bits.
     const PA_MAX_BITS: usize = 48;
 
@@ -257,5 +249,43 @@ impl PagingMetaData for A64HVPagingMetaData {
         }
     }
 }
-/// According to rust shyper, AArch64 translation table.
-pub type NestedPageTable<H> = PageTable64<A64HVPagingMetaData, A64PTEHV, H>;
+
+/// Metadata of AArch64 hypervisor page tables (ipa to hpa) - Level 4.
+#[derive(Copy, Clone)]
+pub struct A64HVPagingMetaDataL4;
+
+impl PagingMetaData for A64HVPagingMetaDataL4 {
+    // The levels of the page table for 4-level configuration.
+    const LEVELS: usize = 4;
+    // The size of the IPA space for 4-level configuration.
+    const VA_MAX_BITS: usize = 48;
+    // In Armv8.0-A, the maximum size for a physical address is 48 bits.
+    const PA_MAX_BITS: usize = 48;
+
+    type VirtAddr = GuestPhysAddr;
+
+    fn flush_tlb(vaddr: Option<Self::VirtAddr>) {
+        unsafe {
+            if let Some(vaddr) = vaddr {
+                #[cfg(not(feature = "arm-el2"))]
+                {
+                    asm!("tlbi vaae1is, {}; dsb sy; isb", in(reg) vaddr.as_usize())
+                }
+                #[cfg(feature = "arm-el2")]
+                {
+                    asm!("tlbi vae2is, {}; dsb sy; isb", in(reg) vaddr.as_usize())
+                }
+            } else {
+                // flush the entire TLB
+                #[cfg(not(feature = "arm-el2"))]
+                {
+                    asm!("tlbi vmalle1; dsb sy; isb")
+                }
+                #[cfg(feature = "arm-el2")]
+                {
+                    asm!("tlbi alle2is; dsb sy; isb")
+                }
+            }
+        }
+    }
+}

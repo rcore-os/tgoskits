@@ -62,7 +62,7 @@ impl<H: PagingHandler> Backend<H> {
     ) -> bool {
         debug!("unmap_alloc: [{:#x}, {:#x})", start, start + size);
         for addr in PageIter4K::new(start, start + size).unwrap() {
-            if let Ok((frame, page_size, _)) = pt.unmap(addr) {
+            if let Ok((frame, page_size)) = pt.unmap(addr) {
                 // Deallocate the physical frame if there is a mapping in the
                 // page table.
                 if page_size.is_huge() {
@@ -89,9 +89,10 @@ impl<H: PagingHandler> Backend<H> {
             // Allocate a physical frame lazily and map it to the fault address.
             // `vaddr` does not need to be aligned. It will be automatically
             // aligned during `pt.remap` regardless of the page size.
-            H::alloc_frame()
-                .and_then(|frame| pt.remap(vaddr, frame, orig_flags).ok())
-                .is_some()
+            let Some(frame) = H::alloc_frame() else {
+                return false;
+            };
+            pt.remap(vaddr, frame, orig_flags)
         }
     }
 }
