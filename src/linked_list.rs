@@ -245,7 +245,13 @@ impl<'a, G: GetLinksWrapped> CursorMut<'a, G> {
     }
 
     /// Returns the element the cursor is currently positioned on.
-    pub fn current(&mut self) -> Option<&mut G::EntryType> {
+    ///
+    /// # Safety
+    ///
+    /// For `Box` or `Arc` that has unique access to the data, the method is safe.
+    /// For `Arc` whose strong count is not 1, the method is not safe because it
+    /// violates the safety requirements of [`Arc`].
+    pub unsafe fn current(&mut self) -> Option<&mut G::EntryType> {
         self.cursor.current()
     }
 
@@ -260,12 +266,24 @@ impl<'a, G: GetLinksWrapped> CursorMut<'a, G> {
     }
 
     /// Returns the element immediately after the one the cursor is positioned on.
-    pub fn peek_next(&mut self) -> Option<&mut G::EntryType> {
+    ///
+    /// # Safety
+    ///
+    /// For `Box` or `Arc` that has unique access to the data behind, the method is safe.
+    /// For `Arc` whose strong count is not 1, the method is not safe because it
+    /// violates the safety requirements of [`Arc`].
+    pub unsafe fn peek_next(&mut self) -> Option<&mut G::EntryType> {
         self.cursor.peek_next()
     }
 
     /// Returns the element immediately before the one the cursor is positioned on.
-    pub fn peek_prev(&mut self) -> Option<&mut G::EntryType> {
+    ///
+    /// # Safety
+    ///
+    /// For `Box` or `Arc` that has unique access to the data behind, the method is safe.
+    /// For `Arc` whose strong count is not 1, the method is not safe because it
+    /// violates the safety requirements of [`Arc`].
+    pub unsafe fn peek_prev(&mut self) -> Option<&mut G::EntryType> {
         self.cursor.peek_prev()
     }
 

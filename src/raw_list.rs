@@ -383,7 +383,7 @@ impl<'a, G: GetLinks> CursorMut<'a, G> {
         }
     }
 
-    pub fn current(&mut self) -> Option<&mut G::EntryType> {
+    pub unsafe fn current(&mut self) -> Option<&mut G::EntryType> {
         let cur = self.cursor.cur?;
         // SAFETY: Objects must be kept alive while on the list.
         Some(unsafe { &mut *cur.as_ptr() })
@@ -399,14 +399,28 @@ impl<'a, G: GetLinks> CursorMut<'a, G> {
         Some(entry)
     }
 
-    pub fn peek_next(&mut self) -> Option<&mut G::EntryType> {
+    /// Returns the element immediately after the one the cursor is positioned on.
+    ///
+    /// # Safety
+    ///
+    /// For `Box` or `Arc` that has unique access to the data behind, the method is safe.
+    /// For `Arc` whose strong count is not 1, the method is not safe because it
+    /// violates the safety requirements of [`Arc`].
+    pub unsafe fn peek_next(&mut self) -> Option<&mut G::EntryType> {
         let mut new = CommonCursor::new(self.cursor.cur);
         new.move_next(self.list);
         // SAFETY: Objects must be kept alive while on the list.
         Some(unsafe { &mut *new.cur?.as_ptr() })
     }
 
-    pub fn peek_prev(&mut self) -> Option<&mut G::EntryType> {
+    /// Returns the element immediately before the one the cursor is positioned on.
+    ///
+    /// # Safety
+    ///
+    /// For `Box` or `Arc` that has unique access to the data behind, the method is safe.
+    /// For `Arc` whose strong count is not 1, the method is not safe because it
+    /// violates the safety requirements of [`Arc`].
+    pub unsafe fn peek_prev(&mut self) -> Option<&mut G::EntryType> {
         let mut new = CommonCursor::new(self.cursor.cur);
         new.move_prev(self.list);
         // SAFETY: Objects must be kept alive while on the list.
@@ -417,7 +431,6 @@ impl<'a, G: GetLinks> CursorMut<'a, G> {
         self.cursor.move_next(self.list);
     }
 
-    #[allow(dead_code)]
     pub fn move_prev(&mut self) {
         self.cursor.move_prev(self.list);
     }
