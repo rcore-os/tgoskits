@@ -10,7 +10,7 @@ mod linux_errno {
 
 pub use linux_errno::LinuxError;
 
-/// The error type used by ArceOS.
+/// The error kind type used by ArceOS.
 ///
 /// Similar to [`std::io::ErrorKind`].
 ///
@@ -18,7 +18,7 @@ pub use linux_errno::LinuxError;
 #[repr(i32)]
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, EnumCount)]
-pub enum AxError {
+pub enum AxErrorKind {
     /// A socket address could not be bound because the address is already in use elsewhere.
     AddrInUse = 1,
     /// The socket is already connected.
@@ -62,7 +62,7 @@ pub enum AxError {
     /// For example, a function that reads a file into a string will error with
     /// `InvalidData` if the file's contents are not valid UTF-8.
     ///
-    /// [`InvalidInput`]: AxError::InvalidInput
+    /// [`InvalidInput`]: AxErrorKind::InvalidInput
     InvalidData,
     /// Invalid executable format.
     InvalidExecutable,
@@ -121,11 +121,356 @@ pub enum AxError {
     WriteZero,
 }
 
+impl AxErrorKind {
+    /// Returns the error description.
+    pub fn as_str(&self) -> &'static str {
+        use AxErrorKind::*;
+        match *self {
+            AddrInUse => "Address in use",
+            AlreadyConnected => "Already connected",
+            AlreadyExists => "Entity already exists",
+            ArgumentListTooLong => "Argument list too long",
+            BadAddress => "Bad address",
+            BadFileDescriptor => "Bad file descriptor",
+            BadState => "Bad internal state",
+            BrokenPipe => "Broken pipe",
+            ConnectionRefused => "Connection refused",
+            ConnectionReset => "Connection reset",
+            CrossesDevices => "Cross-device link or rename",
+            DirectoryNotEmpty => "Directory not empty",
+            FilesystemLoop => "Filesystem loop or indirection limit",
+            IllegalBytes => "Illegal byte sequence",
+            InProgress => "Operation in progress",
+            Interrupted => "Operation interrupted",
+            InvalidData => "Invalid data",
+            InvalidExecutable => "Invalid executable format",
+            InvalidInput => "Invalid input parameter",
+            Io => "I/O error",
+            IsADirectory => "Is a directory",
+            NameTooLong => "Filename too long",
+            NoMemory => "Out of memory",
+            NoSuchDevice => "No such device",
+            NoSuchProcess => "No such process",
+            NotADirectory => "Not a directory",
+            NotASocket => "Not a socket",
+            NotATty => "Inappropriate ioctl for device",
+            NotConnected => "Not connected",
+            NotFound => "Entity not found",
+            OperationNotPermitted => "Operation not permitted",
+            OperationNotSupported => "Operation not supported",
+            OutOfRange => "Result out of range",
+            PermissionDenied => "Permission denied",
+            ReadOnlyFilesystem => "Read-only filesystem",
+            ResourceBusy => "Resource busy",
+            StorageFull => "No storage space",
+            TimedOut => "Timed out",
+            TooManyOpenFiles => "Too many open files",
+            UnexpectedEof => "Unexpected end of file",
+            Unsupported => "Operation not supported",
+            WouldBlock => "Operation would block",
+            WriteZero => "Write zero",
+        }
+    }
+
+    /// Returns the error code value in `i32`.
+    pub const fn code(self) -> i32 {
+        self as i32
+    }
+}
+
+impl TryFrom<i32> for AxErrorKind {
+    type Error = i32;
+
+    #[inline]
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        if value > 0 && value <= AxErrorKind::COUNT as i32 {
+            Ok(unsafe { core::mem::transmute::<i32, AxErrorKind>(value) })
+        } else {
+            Err(value)
+        }
+    }
+}
+
+impl fmt::Display for AxErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl From<AxErrorKind> for LinuxError {
+    fn from(e: AxErrorKind) -> Self {
+        use AxErrorKind::*;
+        use LinuxError::*;
+        match e {
+            AddrInUse => EADDRINUSE,
+            AlreadyConnected => EISCONN,
+            AlreadyExists => EEXIST,
+            ArgumentListTooLong => E2BIG,
+            BadAddress | BadState => EFAULT,
+            BadFileDescriptor => EBADF,
+            BrokenPipe => EPIPE,
+            ConnectionRefused => ECONNREFUSED,
+            ConnectionReset => ECONNRESET,
+            CrossesDevices => EXDEV,
+            DirectoryNotEmpty => ENOTEMPTY,
+            FilesystemLoop => ELOOP,
+            IllegalBytes => EILSEQ,
+            InProgress => EINPROGRESS,
+            Interrupted => EINTR,
+            InvalidExecutable => ENOEXEC,
+            InvalidInput | InvalidData => EINVAL,
+            Io => EIO,
+            IsADirectory => EISDIR,
+            NameTooLong => ENAMETOOLONG,
+            NoMemory => ENOMEM,
+            NoSuchDevice => ENODEV,
+            NoSuchProcess => ESRCH,
+            NotADirectory => ENOTDIR,
+            NotASocket => ENOTSOCK,
+            NotATty => ENOTTY,
+            NotConnected => ENOTCONN,
+            NotFound => ENOENT,
+            OperationNotPermitted => EPERM,
+            OperationNotSupported => EOPNOTSUPP,
+            OutOfRange => ERANGE,
+            PermissionDenied => EACCES,
+            ReadOnlyFilesystem => EROFS,
+            ResourceBusy => EBUSY,
+            StorageFull => ENOSPC,
+            TimedOut => ETIMEDOUT,
+            TooManyOpenFiles => EMFILE,
+            UnexpectedEof | WriteZero => EIO,
+            Unsupported => ENOSYS,
+            WouldBlock => EAGAIN,
+        }
+    }
+}
+
+impl TryFrom<LinuxError> for AxErrorKind {
+    type Error = LinuxError;
+
+    fn try_from(e: LinuxError) -> Result<Self, Self::Error> {
+        use AxErrorKind::*;
+        use LinuxError::*;
+        Ok(match e {
+            EADDRINUSE => AddrInUse,
+            EISCONN => AlreadyConnected,
+            EEXIST => AlreadyExists,
+            E2BIG => ArgumentListTooLong,
+            EFAULT => BadAddress,
+            EBADF => BadFileDescriptor,
+            EPIPE => BrokenPipe,
+            ECONNREFUSED => ConnectionRefused,
+            ECONNRESET => ConnectionReset,
+            EXDEV => CrossesDevices,
+            ENOTEMPTY => DirectoryNotEmpty,
+            ELOOP => FilesystemLoop,
+            EILSEQ => IllegalBytes,
+            EINPROGRESS => InProgress,
+            EINTR => Interrupted,
+            ENOEXEC => InvalidExecutable,
+            EINVAL => InvalidInput,
+            EIO => Io,
+            EISDIR => IsADirectory,
+            ENAMETOOLONG => NameTooLong,
+            ENOMEM => NoMemory,
+            ENODEV => NoSuchDevice,
+            ESRCH => NoSuchProcess,
+            ENOTDIR => NotADirectory,
+            ENOTSOCK => NotASocket,
+            ENOTTY => NotATty,
+            ENOTCONN => NotConnected,
+            ENOENT => NotFound,
+            EPERM => OperationNotPermitted,
+            EOPNOTSUPP => OperationNotSupported,
+            ERANGE => OutOfRange,
+            EACCES => PermissionDenied,
+            EROFS => ReadOnlyFilesystem,
+            EBUSY => ResourceBusy,
+            ENOSPC => StorageFull,
+            ETIMEDOUT => TimedOut,
+            EMFILE => TooManyOpenFiles,
+            ENOSYS => Unsupported,
+            EAGAIN => WouldBlock,
+            _ => {
+                return Err(e);
+            }
+        })
+    }
+}
+
+/// The error type used by ArceOS.
+#[repr(transparent)]
+#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct AxError(i32);
+
+enum AxErrorData {
+    Ax(AxErrorKind),
+    Linux(LinuxError),
+}
+
+impl AxError {
+    const fn new_ax(kind: AxErrorKind) -> Self {
+        AxError(kind.code())
+    }
+
+    const fn new_linux(kind: LinuxError) -> Self {
+        AxError(-kind.code())
+    }
+
+    const fn data(&self) -> AxErrorData {
+        if self.0 < 0 {
+            AxErrorData::Linux(unsafe { core::mem::transmute::<i32, LinuxError>(-self.0) })
+        } else {
+            AxErrorData::Ax(unsafe { core::mem::transmute::<i32, AxErrorKind>(self.0) })
+        }
+    }
+
+    /// Returns the error code value in `i32`.
+    pub const fn code(self) -> i32 {
+        self.0
+    }
+
+    /// Returns a canonicalized version of this error.
+    ///
+    /// This method tries to convert [`LinuxError`] variants into their
+    /// corresponding [`AxErrorKind`] variants if possible.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use axerrno::{AxError, AxErrorKind, LinuxError};
+    /// let linux_err = AxError::from(LinuxError::EACCES);
+    /// let canonical_err = linux_err.canonicalize();
+    /// assert_eq!(canonical_err, AxError::from(AxErrorKind::PermissionDenied));
+    /// ```
+    pub fn canonicalize(self) -> Self {
+        AxErrorKind::try_from(self).map_or_else(Into::into, Into::into)
+    }
+}
+
+impl From<AxErrorKind> for AxError {
+    fn from(e: AxErrorKind) -> Self {
+        AxError::new_ax(e)
+    }
+}
+
+impl From<LinuxError> for AxError {
+    fn from(e: LinuxError) -> Self {
+        AxError::new_linux(e)
+    }
+}
+
+impl From<AxError> for LinuxError {
+    fn from(e: AxError) -> Self {
+        match e.data() {
+            AxErrorData::Ax(kind) => LinuxError::from(kind),
+            AxErrorData::Linux(kind) => kind,
+        }
+    }
+}
+
+impl TryFrom<AxError> for AxErrorKind {
+    type Error = LinuxError;
+
+    fn try_from(e: AxError) -> Result<Self, Self::Error> {
+        match e.data() {
+            AxErrorData::Ax(kind) => Ok(kind),
+            AxErrorData::Linux(e) => e.try_into(),
+        }
+    }
+}
+
+impl TryFrom<i32> for AxError {
+    type Error = i32;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        if AxErrorKind::try_from(value).is_ok() || LinuxError::try_from(-value).is_ok() {
+            Ok(AxError(value))
+        } else {
+            Err(value)
+        }
+    }
+}
+
+impl fmt::Debug for AxError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.data() {
+            AxErrorData::Ax(kind) => write!(f, "AxErrorKind::{:?}", kind),
+            AxErrorData::Linux(kind) => write!(f, "LinuxError::{:?}", kind),
+        }
+    }
+}
+
+impl fmt::Display for AxError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.data() {
+            AxErrorData::Ax(kind) => write!(f, "{}", kind),
+            AxErrorData::Linux(kind) => write!(f, "{}", kind),
+        }
+    }
+}
+
+macro_rules! axerror_consts {
+    ($($name:ident),*) => {
+        #[allow(non_upper_case_globals)]
+        impl AxError {
+            $(
+                #[doc = concat!("An [`AxError`] with kind [`AxErrorKind::", stringify!($name), "`].")]
+                pub const $name: Self = Self::new_ax(AxErrorKind::$name);
+            )*
+        }
+    };
+}
+
+axerror_consts!(
+    AddrInUse,
+    AlreadyConnected,
+    AlreadyExists,
+    ArgumentListTooLong,
+    BadAddress,
+    BadFileDescriptor,
+    BadState,
+    BrokenPipe,
+    ConnectionRefused,
+    ConnectionReset,
+    CrossesDevices,
+    DirectoryNotEmpty,
+    FilesystemLoop,
+    IllegalBytes,
+    InProgress,
+    Interrupted,
+    InvalidData,
+    InvalidExecutable,
+    InvalidInput,
+    Io,
+    IsADirectory,
+    NameTooLong,
+    NoMemory,
+    NoSuchDevice,
+    NoSuchProcess,
+    NotADirectory,
+    NotASocket,
+    NotATty,
+    NotConnected,
+    NotFound,
+    OperationNotPermitted,
+    OperationNotSupported,
+    OutOfRange,
+    PermissionDenied,
+    ReadOnlyFilesystem,
+    ResourceBusy,
+    StorageFull,
+    TimedOut,
+    TooManyOpenFiles,
+    UnexpectedEof,
+    Unsupported,
+    WouldBlock,
+    WriteZero
+);
+
 /// A specialized [`Result`] type with [`AxError`] as the error type.
 pub type AxResult<T = ()> = Result<T, AxError>;
-
-/// A specialized [`Result`] type with [`LinuxError`] as the error type.
-pub type LinuxResult<T = ()> = Result<T, LinuxError>;
 
 /// Convenience method to construct an [`AxError`] type while printing a warning
 /// message.
@@ -151,14 +496,16 @@ pub type LinuxResult<T = ()> = Result<T, LinuxError>;
 #[macro_export]
 macro_rules! ax_err_type {
     ($err: ident) => {{
-        use $crate::AxError::*;
-        $crate::__priv::warn!("[AxError::{:?}]", $err);
-        $err
+        use $crate::AxErrorKind::*;
+        let err = $crate::AxError::from($err);
+        $crate::__priv::warn!("[{:?}]", err);
+        err
     }};
     ($err: ident, $msg: expr) => {{
-        use $crate::AxError::*;
-        $crate::__priv::warn!("[AxError::{:?}] {}", $err, $msg);
-        $err
+        use $crate::AxErrorKind::*;
+        let err = $crate::AxError::from($err);
+        $crate::__priv::warn!("[{:?}] {}", err, $msg);
+        err
     }};
 }
 
@@ -226,183 +573,8 @@ macro_rules! ax_bail {
     };
 }
 
-impl AxError {
-    /// Returns the error description.
-    pub fn as_str(&self) -> &'static str {
-        use AxError::*;
-        match *self {
-            AddrInUse => "Address in use",
-            AlreadyConnected => "Already connected",
-            AlreadyExists => "Entity already exists",
-            ArgumentListTooLong => "Argument list too long",
-            BadAddress => "Bad address",
-            BadFileDescriptor => "Bad file descriptor",
-            BadState => "Bad internal state",
-            BrokenPipe => "Broken pipe",
-            ConnectionRefused => "Connection refused",
-            ConnectionReset => "Connection reset",
-            CrossesDevices => "Cross-device link or rename",
-            DirectoryNotEmpty => "Directory not empty",
-            FilesystemLoop => "Filesystem loop or indirection limit",
-            IllegalBytes => "Illegal byte sequence",
-            InProgress => "Operation in progress",
-            Interrupted => "Operation interrupted",
-            InvalidData => "Invalid data",
-            InvalidExecutable => "Invalid executable format",
-            InvalidInput => "Invalid input parameter",
-            Io => "I/O error",
-            IsADirectory => "Is a directory",
-            NameTooLong => "Filename too long",
-            NoMemory => "Out of memory",
-            NoSuchDevice => "No such device",
-            NoSuchProcess => "No such process",
-            NotADirectory => "Not a directory",
-            NotASocket => "Not a socket",
-            NotATty => "Inappropriate ioctl for device",
-            NotConnected => "Not connected",
-            NotFound => "Entity not found",
-            OperationNotPermitted => "Operation not permitted",
-            OperationNotSupported => "Operation not supported",
-            OutOfRange => "Result out of range",
-            PermissionDenied => "Permission denied",
-            ReadOnlyFilesystem => "Read-only filesystem",
-            ResourceBusy => "Resource busy",
-            StorageFull => "No storage space",
-            TimedOut => "Timed out",
-            TooManyOpenFiles => "Too many open files",
-            UnexpectedEof => "Unexpected end of file",
-            Unsupported => "Operation not supported",
-            WouldBlock => "Operation would block",
-            WriteZero => "Write zero",
-        }
-    }
-
-    /// Returns the error code value in `i32`.
-    pub const fn code(self) -> i32 {
-        self as i32
-    }
-}
-
-impl TryFrom<i32> for AxError {
-    type Error = i32;
-
-    #[inline]
-    fn try_from(value: i32) -> Result<Self, Self::Error> {
-        if value > 0 && value <= AxError::COUNT as i32 {
-            Ok(unsafe { core::mem::transmute::<i32, AxError>(value) })
-        } else {
-            Err(value)
-        }
-    }
-}
-
-impl fmt::Display for AxError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
-impl From<AxError> for LinuxError {
-    fn from(e: AxError) -> Self {
-        use AxError::*;
-        use LinuxError::*;
-        match e {
-            AddrInUse => EADDRINUSE,
-            AlreadyConnected => EISCONN,
-            AlreadyExists => EEXIST,
-            ArgumentListTooLong => E2BIG,
-            BadAddress | BadState => EFAULT,
-            BadFileDescriptor => EBADF,
-            BrokenPipe => EPIPE,
-            ConnectionRefused => ECONNREFUSED,
-            ConnectionReset => ECONNRESET,
-            CrossesDevices => EXDEV,
-            DirectoryNotEmpty => ENOTEMPTY,
-            FilesystemLoop => ELOOP,
-            IllegalBytes => EILSEQ,
-            InProgress => EINPROGRESS,
-            Interrupted => EINTR,
-            InvalidExecutable => ENOEXEC,
-            InvalidInput | InvalidData => EINVAL,
-            Io => EIO,
-            IsADirectory => EISDIR,
-            NameTooLong => ENAMETOOLONG,
-            NoMemory => ENOMEM,
-            NoSuchDevice => ENODEV,
-            NoSuchProcess => ESRCH,
-            NotADirectory => ENOTDIR,
-            NotASocket => ENOTSOCK,
-            NotATty => ENOTTY,
-            NotConnected => ENOTCONN,
-            NotFound => ENOENT,
-            OperationNotPermitted => EPERM,
-            OperationNotSupported => EOPNOTSUPP,
-            OutOfRange => ERANGE,
-            PermissionDenied => EACCES,
-            ReadOnlyFilesystem => EROFS,
-            ResourceBusy => EBUSY,
-            StorageFull => ENOSPC,
-            TimedOut => ETIMEDOUT,
-            TooManyOpenFiles => EMFILE,
-            UnexpectedEof | WriteZero => EIO,
-            Unsupported => ENOSYS,
-            WouldBlock => EAGAIN,
-        }
-    }
-}
-
-impl TryFrom<LinuxError> for AxError {
-    type Error = LinuxError;
-
-    fn try_from(e: LinuxError) -> Result<Self, Self::Error> {
-        use AxError::*;
-        use LinuxError::*;
-        Ok(match e {
-            EADDRINUSE => AddrInUse,
-            EISCONN => AlreadyConnected,
-            EEXIST => AlreadyExists,
-            E2BIG => ArgumentListTooLong,
-            EFAULT => BadAddress,
-            EBADF => BadFileDescriptor,
-            EPIPE => BrokenPipe,
-            ECONNREFUSED => ConnectionRefused,
-            ECONNRESET => ConnectionReset,
-            EXDEV => CrossesDevices,
-            ENOTEMPTY => DirectoryNotEmpty,
-            ELOOP => FilesystemLoop,
-            EILSEQ => IllegalBytes,
-            EINPROGRESS => InProgress,
-            EINTR => Interrupted,
-            ENOEXEC => InvalidExecutable,
-            EINVAL => InvalidInput,
-            EIO => Io,
-            EISDIR => IsADirectory,
-            ENAMETOOLONG => NameTooLong,
-            ENOMEM => NoMemory,
-            ENODEV => NoSuchDevice,
-            ESRCH => NoSuchProcess,
-            ENOTDIR => NotADirectory,
-            ENOTSOCK => NotASocket,
-            ENOTTY => NotATty,
-            ENOTCONN => NotConnected,
-            ENOENT => NotFound,
-            EPERM => OperationNotPermitted,
-            EOPNOTSUPP => OperationNotSupported,
-            ERANGE => OutOfRange,
-            EACCES => PermissionDenied,
-            EROFS => ReadOnlyFilesystem,
-            EBUSY => ResourceBusy,
-            ENOSPC => StorageFull,
-            ETIMEDOUT => TimedOut,
-            EMFILE => TooManyOpenFiles,
-            ENOSYS => Unsupported,
-            EAGAIN => WouldBlock,
-            _ => {
-                return Err(e);
-            }
-        })
-    }
-}
+/// A specialized [`Result`] type with [`LinuxError`] as the error type.
+pub type LinuxResult<T = ()> = Result<T, LinuxError>;
 
 impl fmt::Display for LinuxError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -419,11 +591,11 @@ pub mod __priv {
 mod tests {
     use strum::EnumCount;
 
-    use crate::{AxError, LinuxError};
+    use crate::{AxError, AxErrorKind, LinuxError};
 
     #[test]
     fn test_try_from() {
-        let max_code = AxError::COUNT as i32;
+        let max_code = AxErrorKind::COUNT as i32;
         assert_eq!(max_code, 43);
         assert_eq!(max_code, AxError::WriteZero.code());
 
@@ -433,7 +605,6 @@ mod tests {
         assert_eq!(Ok(AxError::WriteZero), AxError::try_from(max_code));
         assert_eq!(Err(max_code + 1), AxError::try_from(max_code + 1));
         assert_eq!(Err(0), AxError::try_from(0));
-        assert_eq!(Err(-1), AxError::try_from(-1));
         assert_eq!(Err(i32::MAX), AxError::try_from(i32::MAX));
     }
 
@@ -444,9 +615,9 @@ mod tests {
                 break;
             };
             assert_eq!(err as i32, i);
-            if let Ok(ax_err) = AxError::try_from(err) {
-                assert_eq!(LinuxError::from(ax_err), err);
-            }
+            let e = AxError::from(err);
+            assert_eq!(e.code(), -i);
+            assert_eq!(LinuxError::from(e), err);
         }
     }
 }
