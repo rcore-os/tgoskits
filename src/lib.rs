@@ -310,13 +310,6 @@ enum AxErrorData {
 }
 
 impl AxError {
-    const fn new(data: AxErrorData) -> Self {
-        match data {
-            AxErrorData::Ax(kind) => Self::new_ax(kind),
-            AxErrorData::Linux(kind) => Self::new_linux(kind),
-        }
-    }
-
     const fn new_ax(kind: AxErrorKind) -> Self {
         AxError(kind.code())
     }
@@ -355,7 +348,7 @@ impl From<AxErrorKind> for AxError {
 
 impl From<LinuxError> for AxError {
     fn from(e: LinuxError) -> Self {
-        AxError::new(AxErrorData::Linux(e))
+        AxError::new_linux(e)
     }
 }
 
