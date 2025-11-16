@@ -311,9 +311,13 @@ impl<'a, G: GetLinksWrapped> CursorMut<'a, G> {
         self.cursor.current_ptr()
     }
 
+    /// Insert data after the current node.
+    ///
+    /// If there is no current node, the data will be dropped without insertion.
     pub fn insert_after(&mut self, data: G::Wrapped) -> bool {
         if let Some(cur) = self.current_ptr() {
             let new = data.into_pointer();
+            // SAFETY: the current pointer is valid from the list.
             return unsafe { self.cursor.list.insert_after(cur, new) };
         }
         false

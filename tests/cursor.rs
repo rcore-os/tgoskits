@@ -123,8 +123,5 @@ fn remove() {
 
     list.push_back(hello);
     list.push_back(world);
-    // let mut cursor = list.cursor_front_mut();
-    // cursor.insert_after(world);
-    // cursor.insert_after(hello);
     assert_eq!(&*v_list(list.iter()), ["hello", "world"]);
 }
