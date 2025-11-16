@@ -335,6 +335,15 @@ impl AxError {
     ///
     /// This method tries to convert [`LinuxError`] variants into their
     /// corresponding [`AxErrorKind`] variants if possible.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use axerrno::{AxError, AxErrorKind, LinuxError};
+    /// let linux_err = AxError::from(LinuxError::EACCES);
+    /// let canonical_err = linux_err.canonicalize();
+    /// assert_eq!(canonical_err, AxError::from(AxErrorKind::PermissionDenied));
+    /// ```
     pub fn canonicalize(self) -> Self {
         AxErrorKind::try_from(self).map_or_else(Into::into, Into::into)
     }
