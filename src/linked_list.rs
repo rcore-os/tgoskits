@@ -154,7 +154,7 @@ impl<G: GetLinksWrapped> List<G> {
         let ptr = data.into_pointer();
 
         // SAFETY: We took ownership of the entry, so it is safe to insert it.
-        if !unsafe { self.list.push_back(ptr.as_ref()) } {
+        if !unsafe { self.list.push_back(ptr) } {
             // If insertion failed, rebuild object so that it can be freed.
             // SAFETY: We just called `into_pointer` above.
             unsafe { G::Wrapped::from_pointer(ptr) };
@@ -169,7 +169,7 @@ impl<G: GetLinksWrapped> List<G> {
         let ptr = data.into_pointer();
 
         // SAFETY: We took ownership of the entry, so it is safe to insert it.
-        if !unsafe { self.list.push_front(ptr.as_ref()) } {
+        if !unsafe { self.list.push_front(ptr) } {
             // If insertion failed, rebuild object so that it can be freed.
             unsafe { G::Wrapped::from_pointer(ptr) };
         }

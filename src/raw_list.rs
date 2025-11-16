@@ -150,8 +150,9 @@ impl<G: GetLinks> RawList<G> {
         true
     }
 
-    fn push_back_internal(&mut self, new: &G::EntryType, front: bool) -> bool {
-        let links = G::get_links(new);
+    fn push_back_internal(&mut self, new: NonNull<G::EntryType>, front: bool) -> bool {
+        // SAFETY: We just get the valid EntryType ptr from the caller.
+        let links = unsafe { G::get_links(new.as_ref()) };
         if !links.acquire_for_insertion() {
             // Nothing to do if already inserted.
             return false;
@@ -159,7 +160,7 @@ impl<G: GetLinks> RawList<G> {
 
         // SAFETY: The links are now owned by the list, so it is safe to get a mutable reference.
         let new_entry = unsafe { &mut *links.entry.get() };
-        let new_ptr = Some(NonNull::from(new));
+        let new_ptr = Some(new);
         match self.back() {
             // SAFETY: `back` is valid as the list cannot change.
             Some(back) => {
@@ -183,7 +184,7 @@ impl<G: GetLinks> RawList<G> {
     /// Rawlist will save the reference as node ptr.
     /// The caller must ensure the validity of the reference while it is on
     /// the linked list.
-    pub unsafe fn push_back(&mut self, new: &G::EntryType) -> bool {
+    pub unsafe fn push_back(&mut self, new: NonNull<G::EntryType>) -> bool {
         self.push_back_internal(new, false)
     }
 
@@ -192,7 +193,7 @@ impl<G: GetLinks> RawList<G> {
     /// Rawlist will save the reference as node ptr.
     /// The caller must ensure the validity of the reference while it is on
     /// the linked list.
-    pub unsafe fn push_front(&mut self, new: &G::EntryType) -> bool {
+    pub unsafe fn push_front(&mut self, new: NonNull<G::EntryType>) -> bool {
         self.push_back_internal(new, true)
     }
 
@@ -467,6 +468,7 @@ impl<G: GetLinks> iter::DoubleEndedIterator for Iterator<'_, G> {
 mod tests {
     extern crate alloc;
     use alloc::{boxed::Box, vec::Vec};
+    use core::ptr::NonNull;
 
     struct Example {
         links: super::Links<Self>,
@@ -530,7 +532,7 @@ mod tests {
                 for j in 0..n {
                     // SAFETY: The entry was allocated above, it's not in any lists yet, is never
                     // moved, and outlives the list.
-                    unsafe { list.push_back(&v[j]) };
+                    unsafe { list.push_back(NonNull::from(&*v[j])) };
                 }
 
                 // Call the test case.
@@ -551,7 +553,7 @@ mod tests {
         for n in 1..=MAX {
             // SAFETY: The entry was allocated above, it's not in any lists yet, is never moved,
             // and outlives the list.
-            unsafe { list.push_back(&v[n - 1]) };
+            unsafe { list.push_back(NonNull::from(&*v[n - 1])) };
             assert_list_contents(&v[..n], &list);
         }
     }
@@ -566,7 +568,7 @@ mod tests {
             // SAFETY: The entry was allocated above, it's not in any lists yet, is never moved,
             // and outlives the list.
             println!("push front: {}", MAX - n);
-            unsafe { list.push_front(&v[MAX - n]) };
+            unsafe { list.push_front(NonNull::from(&*v[MAX - n])) };
             assert_list_contents(&v[MAX - n..MAX], &list);
         }
     }
