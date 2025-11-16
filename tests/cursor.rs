@@ -88,4 +88,27 @@ fn v_list<'a>(iter: impl IntoIterator<Item = &'a Node>) -> Box<[&'a str]> {
     iter.into_iter().map(|node| node.inner.as_str()).collect()
 }
 
+#[test]
+fn remove() {
+    let mut list = List::<Arc<Node>>::new();
+    let hello = Arc::new(Node::new("hello".to_owned()));
+    list.push_back(hello.clone());
+    let world = Arc::new(Node::new("world".to_owned()));
+    list.push_back(world);
+
+    unsafe {
+        assert_eq!(list.remove(&hello).unwrap().inner(), "hello");
+    }
+
+    let mut cursor = list.cursor_front_mut();
+    let world = cursor.remove_current().unwrap();
+
+    assert_eq!(cursor.current().map(|_| ()), None);
+
+    list.push_back(hello);
+    list.push_back(world);
+    // let mut cursor = list.cursor_front_mut();
+    // cursor.insert_after(world);
+    // cursor.insert_after(hello);
+    assert_eq!(&*v_list(list.iter()), ["hello", "world"]);
 }
