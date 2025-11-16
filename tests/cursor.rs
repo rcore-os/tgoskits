@@ -1,8 +1,24 @@
 use linked_list_r4l::*;
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 def_node! {
     struct Node(String);
+}
+
+impl PartialEq for Node {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner.eq(other.inner())
+    }
+}
+impl PartialEq<str> for Node {
+    fn eq(&self, other: &str) -> bool {
+        self.inner.eq(other)
+    }
+}
+impl fmt::Debug for Node {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Node").field("inner", &self.inner).finish()
+    }
 }
 
 #[test]
@@ -12,7 +28,7 @@ fn cursor_front_mut() {
     list.push_back(Box::new(Node::new("world".to_owned())));
 
     let mut cursor = list.cursor_front_mut();
-    assert_eq!(cursor.current().unwrap().inner(), "hello");
+    assert_eq!(cursor.current().unwrap(), "hello");
 
     // SAFETY: we have unique access through Box
     unsafe {
@@ -23,18 +39,18 @@ fn cursor_front_mut() {
 
     // SAFETY: we have unique access through Box
     unsafe {
-        assert_eq!(cursor.current_mut().unwrap().inner(), "world!");
+        assert_eq!(cursor.current_mut().unwrap(), "world!");
         cursor.peek_prev().unwrap().inner = "Hello".to_owned();
     }
 
     // `CommonCursor::move_next` stops at None when it reaches the end of list,
     // because `raw_list::Iterator` stops at None.
     cursor.move_next();
-    assert_eq!(cursor.current().map(|_| ()), None);
+    assert_eq!(cursor.current(), None);
 
     // Then restart from the head.
     cursor.move_next();
-    assert_eq!(cursor.current().unwrap().inner(), "Hello");
+    assert_eq!(cursor.current().unwrap(), "Hello");
 }
 
 #[test]
@@ -44,17 +60,17 @@ fn cursor_front() {
     list.push_back(Arc::new(Node::new("world".to_owned())));
 
     let mut cursor = list.cursor_front();
-    assert_eq!(cursor.peek_next().unwrap().inner(), "world");
-    assert_eq!(cursor.current().unwrap().inner(), "hello");
+    assert_eq!(cursor.peek_next().unwrap(), "world");
+    assert_eq!(cursor.current().unwrap(), "hello");
     cursor.move_next();
-    assert_eq!(cursor.current().unwrap().inner(), "world");
-    assert_eq!(cursor.peek_prev().unwrap().inner(), "hello");
+    assert_eq!(cursor.current().unwrap(), "world");
+    assert_eq!(cursor.peek_prev().unwrap(), "hello");
 
     cursor.move_next();
-    assert_eq!(cursor.current().map(|_| ()), None);
+    assert_eq!(cursor.current(), None);
 
     cursor.move_next();
-    assert_eq!(cursor.current().unwrap().inner(), "hello");
+    assert_eq!(cursor.current().unwrap(), "hello");
 }
 
 #[test]
@@ -79,7 +95,7 @@ fn insert_after() {
 
     cursor.move_next(); // "!"
     cursor.move_next(); // end
-    assert_eq!(cursor.current().map(|_| ()), None);
+    assert_eq!(cursor.current(), None);
 
     assert_eq!(&*v_list(list.iter()), ["Hello", ", ", "world", "!"]);
 }
@@ -97,13 +113,13 @@ fn remove() {
     list.push_back(world);
 
     unsafe {
-        assert_eq!(list.remove(&hello).unwrap().inner(), "hello");
+        assert_eq!(&*list.remove(&hello).unwrap(), "hello");
     }
 
     let mut cursor = list.cursor_front_mut();
     let world = cursor.remove_current().unwrap();
 
-    assert_eq!(cursor.current().map(|_| ()), None);
+    assert_eq!(cursor.current(), None);
 
     list.push_back(hello);
     list.push_back(world);
