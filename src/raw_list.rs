@@ -112,19 +112,19 @@ impl<G: GetLinks> RawList<G> {
 
     fn insert_after_priv(
         &mut self,
-        existing: &G::EntryType,
+        existing: NonNull<G::EntryType>,
         new_entry: &mut ListEntry<G::EntryType>,
         new_ptr: Option<NonNull<G::EntryType>>,
     ) {
         {
             // SAFETY: It's safe to get the previous entry of `existing` because the list cannot
             // change.
-            let existing_links = unsafe { &mut *G::get_links(existing).entry.get() };
+            let existing_links = unsafe { &mut *G::get_links(existing.as_ref()).entry.get() };
             new_entry.next = existing_links.next;
             existing_links.next = new_ptr;
         }
 
-        new_entry.prev = Some(NonNull::from(existing));
+        new_entry.prev = Some(existing);
 
         // SAFETY: It's safe to get the next entry of `existing` because the list cannot change.
         let next_links =
@@ -137,8 +137,13 @@ impl<G: GetLinks> RawList<G> {
     /// # Safety
     ///
     /// Callers must ensure that `existing` points to a valid entry that is on the list.
-    pub unsafe fn insert_after(&mut self, existing: &G::EntryType, new: &G::EntryType) -> bool {
-        let links = G::get_links(new);
+    pub unsafe fn insert_after(
+        &mut self,
+        existing: NonNull<G::EntryType>,
+        new: NonNull<G::EntryType>,
+    ) -> bool {
+        // SAFETY: the caller ensures new is valid.
+        let links = unsafe { G::get_links(new.as_ref()) };
         if !links.acquire_for_insertion() {
             // Nothing to do if already inserted.
             return false;
@@ -146,7 +151,7 @@ impl<G: GetLinks> RawList<G> {
 
         // SAFETY: The links are now owned by the list, so it is safe to get a mutable reference.
         let new_entry = unsafe { &mut *links.entry.get() };
-        self.insert_after_priv(existing, new_entry, Some(NonNull::from(new)));
+        self.insert_after_priv(existing, new_entry, Some(new));
         true
     }
 
@@ -164,7 +169,7 @@ impl<G: GetLinks> RawList<G> {
         match self.back() {
             // SAFETY: `back` is valid as the list cannot change.
             Some(back) => {
-                self.insert_after_priv(unsafe { back.as_ref() }, new_entry, new_ptr);
+                self.insert_after_priv(back, new_entry, new_ptr);
                 // if push front, update head
                 if front {
                     self.head = new_ptr;
@@ -620,7 +625,7 @@ mod tests {
             // SAFETY: The i-th element was added to the list above, and wasn't removed yet.
             // Additionally, the new element isn't in any list yet, isn't moved, and outlives
             // the list.
-            unsafe { list.insert_after(&*v[i], &*extra) };
+            unsafe { list.insert_after(v[i].as_ref().into(), extra.as_ref().into()) };
             v.insert(i + 1, extra);
         });
     }

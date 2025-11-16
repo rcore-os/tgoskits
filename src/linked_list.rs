@@ -183,10 +183,9 @@ impl<G: GetLinksWrapped> List<G> {
     /// # Safety
     ///
     /// Callers must ensure that `existing` points to a valid entry that is on the list.
-    pub unsafe fn insert_after(&mut self, existing: &G::Wrapped, data: G::Wrapped) {
+    pub unsafe fn insert_after(&mut self, existing: NonNull<G::EntryType>, data: G::Wrapped) {
         let ptr = data.into_pointer();
-        let entry = Wrapper::as_ref(existing);
-        if unsafe { !self.list.insert_after(entry, ptr.as_ref()) } {
+        if unsafe { !self.list.insert_after(existing, ptr) } {
             // If insertion failed, rebuild object so that it can be freed.
             unsafe { G::Wrapped::from_pointer(ptr) };
         }
