@@ -216,6 +216,11 @@ impl<G: GetLinksWrapped> List<G> {
         Some(unsafe { G::Wrapped::from_pointer(front) })
     }
 
+    /// Returns a immutable cursor starting on the first (front) element of the list.
+    pub fn cursor_front(&self) -> Cursor<'_, G> {
+        Cursor::new(self.list.cursor_front())
+    }
+
     /// Returns a mutable cursor starting on the first (front) element of the list.
     pub fn cursor_front_mut(&mut self) -> CursorMut<'_, G> {
         CursorMut::new(self.list.cursor_front_mut())
@@ -231,6 +236,37 @@ impl<G: GetLinksWrapped> Default for List<G> {
 impl<G: GetLinksWrapped> Drop for List<G> {
     fn drop(&mut self) {
         while self.pop_front().is_some() {}
+    }
+}
+
+/// A list cursor that allows traversing a linked list and inspecting elements.
+pub struct Cursor<'a, G: GetLinksWrapped> {
+    cursor: raw_list::Cursor<'a, G>,
+}
+
+impl<'a, G: GetLinksWrapped> Cursor<'a, G> {
+    const fn new(cursor: raw_list::Cursor<'a, G>) -> Self {
+        Self { cursor }
+    }
+
+    /// Returns the element the cursor is currently positioned on.
+    pub fn current(&self) -> Option<&G::EntryType> {
+        self.cursor.current()
+    }
+
+    /// Returns the element immediately after the one the cursor is positioned on.
+    pub fn peek_next(&self) -> Option<&G::EntryType> {
+        self.cursor.peek_next()
+    }
+
+    /// Returns the element immediately before the one the cursor is positioned on.
+    pub fn peek_prev(&mut self) -> Option<&G::EntryType> {
+        self.cursor.peek_prev()
+    }
+
+    /// Moves the cursor to the next element.
+    pub fn move_next(&mut self) {
+        self.cursor.move_next();
     }
 }
 

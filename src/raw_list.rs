@@ -363,8 +363,21 @@ impl<'a, G: GetLinks> Cursor<'a, G> {
         self.cursor.move_next(self.list);
     }
 
+    pub fn peek_next(&self) -> Option<&G::EntryType> {
+        let mut new = CommonCursor::new(self.cursor.cur);
+        new.move_next(self.list);
+        // SAFETY: Objects must be kept alive while on the list.
+        Some(unsafe { &*new.cur?.as_ptr() })
+    }
+
+    pub fn peek_prev(&self) -> Option<&G::EntryType> {
+        let mut new = CommonCursor::new(self.cursor.cur);
+        new.move_prev(self.list);
+        // SAFETY: Objects must be kept alive while on the list.
+        Some(unsafe { &*new.cur?.as_ptr() })
+    }
+
     /// Moves the cursor to the prev element.
-    #[allow(dead_code)]
     pub(crate) fn move_prev(&mut self) {
         self.cursor.move_prev(self.list);
     }
