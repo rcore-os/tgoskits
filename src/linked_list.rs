@@ -175,7 +175,7 @@ impl<G: GetLinksWrapped> List<G> {
         }
     }
 
-    /// Inserts the given object after `existing`.
+    /// Inserts the given object after `existing`. Returns true if it's successfully inserted.
     ///
     /// It is dropped if it's already on this (or another) list; this can happen for
     /// reference-counted objects, so dropping means decrementing the reference count.
@@ -183,12 +183,18 @@ impl<G: GetLinksWrapped> List<G> {
     /// # Safety
     ///
     /// Callers must ensure that `existing` points to a valid entry that is on the list.
-    pub unsafe fn insert_after(&mut self, existing: NonNull<G::EntryType>, data: G::Wrapped) {
+    pub unsafe fn insert_after(
+        &mut self,
+        existing: NonNull<G::EntryType>,
+        data: G::Wrapped,
+    ) -> bool {
         let ptr = data.into_pointer();
-        if unsafe { !self.list.insert_after(existing, ptr) } {
+        let inserted = unsafe { self.list.insert_after(existing, ptr) };
+        if !inserted {
             // If insertion failed, rebuild object so that it can be freed.
             unsafe { G::Wrapped::from_pointer(ptr) };
         }
+        inserted
     }
 
     /// Removes the given entry.
@@ -253,6 +259,11 @@ impl<'a, G: GetLinksWrapped> Cursor<'a, G> {
         self.cursor.current()
     }
 
+    /// Returns the element pointer the cursor is currently positioned on.
+    pub fn current_ptr(&self) -> Option<NonNull<G::EntryType>> {
+        self.cursor.current_ptr()
+    }
+
     /// Returns the element immediately after the one the cursor is positioned on.
     pub fn peek_next(&self) -> Option<&G::EntryType> {
         self.cursor.peek_next()
@@ -288,6 +299,19 @@ impl<'a, G: GetLinksWrapped> CursorMut<'a, G> {
     /// violates the safety requirements of [`Arc`].
     pub unsafe fn current(&mut self) -> Option<&mut G::EntryType> {
         self.cursor.current()
+    }
+
+    /// Returns the element pointer the cursor is currently positioned on.
+    pub fn current_ptr(&self) -> Option<NonNull<G::EntryType>> {
+        self.cursor.current_ptr()
+    }
+
+    pub fn insert_after(&mut self, data: G::Wrapped) -> bool {
+        if let Some(cur) = self.current_ptr() {
+            let new = data.into_pointer();
+            return unsafe { self.cursor.list.insert_after(cur, new) };
+        }
+        false
     }
 
     /// Removes the element the cursor is currently positioned on.

@@ -51,3 +51,31 @@ fn cursor_front() {
     cursor.move_next();
     assert_eq!(cursor.current().unwrap().inner(), "hello");
 }
+
+#[test]
+fn insert_after() {
+    let mut list = List::<Box<Node>>::new();
+    list.push_back(Box::new(Node::new("Hello".to_owned())));
+
+    let existing = list.cursor_front().current_ptr().unwrap();
+    let data = Box::new(Node::new("world".to_owned()));
+    unsafe {
+        assert!(list.insert_after(existing, data));
+    }
+
+    let mut cursor = list.cursor_front_mut();
+    let data = Box::new(Node::new(", ".to_owned()));
+    assert!(cursor.insert_after(data));
+
+    cursor.move_next(); // ", "
+    cursor.move_next(); // "world"
+    let data = Box::new(Node::new("!".to_owned()));
+    assert!(cursor.insert_after(data));
+
+    cursor.move_next(); // "!"
+    cursor.move_next(); // end
+    assert_eq!(cursor.current_ptr(), None);
+
+    let val: Box<[_]> = list.iter().map(|node| node.inner.as_str()).collect();
+    assert_eq!(&*val, ["Hello", ", ", "world", "!"]);
+}

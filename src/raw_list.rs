@@ -367,6 +367,11 @@ impl<'a, G: GetLinks> Cursor<'a, G> {
         Some(unsafe { &*cur.as_ptr() })
     }
 
+    /// Returns the element pointer the cursor is currently positioned on.
+    pub(crate) fn current_ptr(&self) -> Option<NonNull<G::EntryType>> {
+        self.cursor.cur
+    }
+
     /// Moves the cursor to the next element.
     pub(crate) fn move_next(&mut self) {
         self.cursor.move_next(self.list);
@@ -394,7 +399,7 @@ impl<'a, G: GetLinks> Cursor<'a, G> {
 
 pub struct CursorMut<'a, G: GetLinks> {
     cursor: CommonCursor<G>,
-    list: &'a mut RawList<G>,
+    pub(crate) list: &'a mut RawList<G>,
 }
 
 impl<'a, G: GetLinks> CursorMut<'a, G> {
@@ -409,6 +414,11 @@ impl<'a, G: GetLinks> CursorMut<'a, G> {
         let cur = self.cursor.cur?;
         // SAFETY: Objects must be kept alive while on the list.
         Some(unsafe { &mut *cur.as_ptr() })
+    }
+
+    /// Returns the element pointer the cursor is currently positioned on.
+    pub(crate) fn current_ptr(&self) -> Option<NonNull<G::EntryType>> {
+        self.cursor.cur
     }
 
     /// Removes the entry the cursor is pointing to and advances the cursor to the next entry. It
