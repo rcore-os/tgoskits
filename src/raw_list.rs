@@ -294,6 +294,10 @@ impl<G: GetLinks> CommonCursor<G> {
     }
 
     fn move_next(&mut self, list: &RawList<G>) {
+        // `move_next` stops at None when reaching the end of list,
+        // because `raw_list::Iterator` stops at None.
+        // But move to next a further step beyond the ending None,
+        // the cursor starts from the head again.
         match self.cur.take() {
             None => self.cur = list.head,
             Some(cur) => {
