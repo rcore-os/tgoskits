@@ -410,8 +410,14 @@ impl<'a, G: GetLinks> CursorMut<'a, G> {
         }
     }
 
-    pub unsafe fn current(&mut self) -> Option<&mut G::EntryType> {
+    pub unsafe fn current_mut(&mut self) -> Option<&mut G::EntryType> {
         let cur = self.cursor.cur?;
+        // SAFETY: Objects must be kept alive while on the list.
+        Some(unsafe { &mut *cur.as_ptr() })
+    }
+
+    pub fn current(&self) -> Option<&G::EntryType> {
+        let cur = self.current_ptr()?;
         // SAFETY: Objects must be kept alive while on the list.
         Some(unsafe { &mut *cur.as_ptr() })
     }

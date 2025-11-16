@@ -12,24 +12,29 @@ fn cursor_front_mut() {
     list.push_back(Box::new(Node::new("world".to_owned())));
 
     let mut cursor = list.cursor_front_mut();
+    assert_eq!(cursor.current().unwrap().inner(), "hello");
+
+    // SAFETY: we have unique access through Box
     unsafe {
-        assert_eq!(cursor.current().unwrap().inner(), "hello");
-
         cursor.peek_next().unwrap().inner.push('!');
-        cursor.move_next();
-        assert_eq!(cursor.current().unwrap().inner(), "world!");
-
-        cursor.peek_prev().unwrap().inner = "Hello".to_owned();
-
-        // `CommonCursor::move_next` stops at None when it reaches the end of list,
-        // because `raw_list::Iterator` stops at None.
-        cursor.move_next();
-        assert_eq!(cursor.current().map(|_| ()), None);
-
-        // Then restart from the head.
-        cursor.move_next();
-        assert_eq!(cursor.current().unwrap().inner(), "Hello");
     }
+
+    cursor.move_next();
+
+    // SAFETY: we have unique access through Box
+    unsafe {
+        assert_eq!(cursor.current_mut().unwrap().inner(), "world!");
+        cursor.peek_prev().unwrap().inner = "Hello".to_owned();
+    }
+
+    // `CommonCursor::move_next` stops at None when it reaches the end of list,
+    // because `raw_list::Iterator` stops at None.
+    cursor.move_next();
+    assert_eq!(cursor.current().map(|_| ()), None);
+
+    // Then restart from the head.
+    cursor.move_next();
+    assert_eq!(cursor.current().unwrap().inner(), "Hello");
 }
 
 #[test]
@@ -74,8 +79,13 @@ fn insert_after() {
 
     cursor.move_next(); // "!"
     cursor.move_next(); // end
-    assert_eq!(cursor.current_ptr(), None);
+    assert_eq!(cursor.current().map(|_| ()), None);
 
-    let val: Box<[_]> = list.iter().map(|node| node.inner.as_str()).collect();
-    assert_eq!(&*val, ["Hello", ", ", "world", "!"]);
+    assert_eq!(&*v_list(list.iter()), ["Hello", ", ", "world", "!"]);
+}
+
+fn v_list<'a>(iter: impl IntoIterator<Item = &'a Node>) -> Box<[&'a str]> {
+    iter.into_iter().map(|node| node.inner.as_str()).collect()
+}
+
 }

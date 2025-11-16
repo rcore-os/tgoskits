@@ -297,7 +297,12 @@ impl<'a, G: GetLinksWrapped> CursorMut<'a, G> {
     /// For `Box` or `Arc` that has unique access to the data, the method is safe.
     /// For `Arc` whose strong count is not 1, the method is not safe because it
     /// violates the safety requirements of [`Arc`].
-    pub unsafe fn current(&mut self) -> Option<&mut G::EntryType> {
+    pub unsafe fn current_mut(&mut self) -> Option<&mut G::EntryType> {
+        self.cursor.current_mut()
+    }
+
+    /// Returns the element the cursor is currently positioned on.
+    pub fn current(&self) -> Option<&G::EntryType> {
         self.cursor.current()
     }
 
