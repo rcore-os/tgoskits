@@ -95,6 +95,7 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
                 *offset += read;
                 if *offset == self.line_buf.len() {
                     self.line_read = None;
+                    self.line_buf.clear();
                 }
                 continue;
             }
