@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::any::Any;
 
 use starry_process::init_proc;
 
@@ -105,4 +106,27 @@ fn cleanup_groups() {
     drop(child);
 
     assert!(session.process_groups().is_empty());
+}
+
+#[test]
+fn terminal_set_unset() {
+    let init = init_proc();
+    let session = init.group().session();
+
+    let term: Arc<dyn Any + Send + Sync> = Arc::new(0u32);
+
+    let ok = session.set_terminal_with(|| term.clone());
+    assert!(ok);
+
+    let ok2 = session.set_terminal_with(|| Arc::new(1u32));
+    assert!(!ok2);
+
+    let got = session.terminal().unwrap();
+    assert!(Arc::ptr_eq(&got, &term));
+
+    let other: Arc<dyn Any + Send + Sync> = Arc::new(2u32);
+    assert!(!session.unset_terminal(&other));
+
+    assert!(session.unset_terminal(&term));
+    assert!(session.terminal().is_none());
 }

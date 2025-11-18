@@ -47,3 +47,27 @@ fn reap() {
     parent.exit();
     assert!(Arc::ptr_eq(&init, &child.parent().unwrap()));
 }
+
+#[test]
+fn thread_exit() {
+    let parent = init_proc();
+    let child = parent.new_child();
+
+    child.add_thread(101);
+    child.add_thread(102);
+
+    let mut threads = child.threads();
+    threads.sort();
+    assert_eq!(threads, vec![101, 102]);
+
+    let last = child.exit_thread(101, 7);
+    assert!(!last);
+    assert_eq!(child.exit_code(), 7);
+
+    child.group_exit();
+    assert!(child.is_group_exited());
+
+    let last2 = child.exit_thread(102, 3);
+    assert!(last2);
+    assert_eq!(child.exit_code(), 7);
+}
