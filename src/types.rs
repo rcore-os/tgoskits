@@ -241,6 +241,12 @@ impl SignalInfo {
     pub fn set_code(&mut self, code: i32) {
         self.0.__bindgen_anon_1.__bindgen_anon_1.si_code = code;
     }
+
+    pub fn errno(&self) -> i32 {
+        // SAFETY: The union layout matches Linux's siginfo_t definition. bindgen keeps this layout,
+        // so it is safe to read the errno field through the anonymous union.
+        unsafe { self.0.__bindgen_anon_1.__bindgen_anon_1.si_errno }
+    }
 }
 
 unsafe impl Send for SignalInfo {}
