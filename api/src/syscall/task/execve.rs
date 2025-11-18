@@ -18,15 +18,25 @@ pub fn sys_execve(
 ) -> AxResult<isize> {
     let path = vm_load_string(path)?;
 
-    let args = vm_load_until_nul(argv)?
-        .into_iter()
-        .map(vm_load_string)
-        .collect::<Result<Vec<_>, _>>()?;
+    let args = if argv.is_null() {
+        // Handle NULL argv (treat as empty array)
+        Vec::new()
+    } else {
+        vm_load_until_nul(argv)?
+            .into_iter()
+            .map(vm_load_string)
+            .collect::<Result<Vec<_>, _>>()?
+    };
 
-    let envs = vm_load_until_nul(envp)?
-        .into_iter()
-        .map(vm_load_string)
-        .collect::<Result<Vec<_>, _>>()?;
+    let envs = if envp.is_null() {
+        // Handle NULL envp (treat as empty array)
+        Vec::new()
+    } else {
+        vm_load_until_nul(envp)?
+            .into_iter()
+            .map(vm_load_string)
+            .collect::<Result<Vec<_>, _>>()?
+    };
 
     debug!("sys_execve <= path: {path:?}, args: {args:?}, envs: {envs:?}");
 
