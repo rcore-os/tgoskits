@@ -16,10 +16,10 @@ cfg_if::cfg_if! {
     }
 }
 
-unsafe extern "C" {
-    fn signal_trampoline();
-}
-
 pub fn signal_trampoline_address() -> usize {
-    signal_trampoline as usize
+    unsafe extern "C" {
+        safe static signal_trampoline: [u8; 0];
+    }
+
+    signal_trampoline.as_ptr() as usize
 }
