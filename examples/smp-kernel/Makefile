@@ -38,7 +38,7 @@ qemu_args-aarch64 := \
 qemu_args-loongarch64 := \
   -machine virt \
   -m 1G \
-  -kernel $(OUT_ELF)
+  -kernel $(OUT_BIN)
 
 qemu_args-y := -smp $(SMP) $(qemu_args-$(ARCH))
 

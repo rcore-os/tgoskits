@@ -12,25 +12,32 @@ package = "axplat-loongarch64-qemu-virt"        # str
 # Maximum number of CPUs. For platforms that do not support runtime CPU number
 # detection, it's also the number of CPUs to boot.
 max-cpu-num = 1                       # uint
-# Base address of the whole physical memory.
-phys-memory-base = 0x8000_0000        # uint
+# Base address of the low physical memory.
+low-memory-base = 0x0                   # uint
+# Size of the low physical memory. (256M)
+low-memory-size = 0x1000_0000           # uint
+# Base address of the high physical memory.
+high-memory-base = 0x8000_0000          # uint
 # Size of the whole physical memory. (128M)
-phys-memory-size = 0x800_0000         # uint
-# Base physical address of the kernel image.
-kernel-base-paddr = 0x8000_0000       # uint
+phys-memory-size = 0x800_0000           # uint
 
-# Base virtual address of the kernel image.
-kernel-base-vaddr = "0xffff_0000_8000_0000"     # uint
+# Linear mapping offset at boot time.
+phys-boot-offset = "0x9000_0000_0000_0000"      # uint
 # Linear mapping offset, for quick conversions between physical and virtual
 # addresses.
-phys-virt-offset = "0xffff_0000_0000_0000"      # uint
+phys-virt-offset = "0xffff_8000_0000_0000"      # uint
 # Offset of bus address and phys address. some boards, the bus address is
 # different from the physical address.
 phys-bus-offset = 0                             # uint
+
+# Base physical address of the kernel image.
+kernel-base-paddr = 0x0020_0000                 # uint
+# Base virtual address of the kernel image.
+kernel-base-vaddr = "0xffff_8000_0020_0000"     # uint
 # Kernel address space base.
-kernel-aspace-base = "0xffff_0000_0000_0000"    # uint
+kernel-aspace-base = "0xffff_8000_0000_0000"    # uint
 # Kernel address space size.
-kernel-aspace-size = "0x0000_ffff_ffff_f000"    # uint
+kernel-aspace-size = "0x0000_7fff_ffff_f000"    # uint
 # Stack size on bootstrapping. (256K)
 boot-stack-size = 0x40000                       # uint
 

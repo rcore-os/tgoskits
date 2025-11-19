@@ -239,8 +239,8 @@ dependencies = [
  "lazyinit",
  "log",
  "loongArch64",
- "ns16550a",
  "page_table_entry",
+ "uart_16550",
 ]
 
 [[package]]
@@ -837,12 +837,6 @@ checksum = "f87ad3b7b7bcf5da525c22221e3eb3a020cd68b2d55ae62f629c15e8bc3bd56e"
 dependencies = [
  "paste",
 ]
-
-[[package]]
-name = "ns16550a"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3cd8abe9e54bce27659507b94f355c9334378ab15da332b6986b3583ebf7228"
 
 [[package]]
 name = "num-traits"

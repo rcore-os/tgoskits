@@ -28,8 +28,7 @@ pub(super) fn init_percpu() {
 /// [2]: https://gitlab.com/qemu-project/qemu/-/blob/1cf9bc6eba7506ab6d9de635f224259225f63466/hw/rtc/ls7a_rtc.c
 #[cfg(feature = "rtc")]
 fn init_rtc() {
-    use crate::mem::phys_to_virt;
-    use axplat::mem::{PhysAddr, pa};
+    use axplat::mem::{PhysAddr, pa, phys_to_virt};
     use chrono::{TimeZone, Timelike, Utc};
 
     const SYS_TOY_READ0: usize = 0x2C;

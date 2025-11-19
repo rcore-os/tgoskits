@@ -9,6 +9,7 @@ impl InitIf for InitIfImpl {
     /// early console, clocking).
     fn init_early(_cpu_id: usize, _mbi: usize) {
         axcpu::init::init_trap();
+        crate::console::init_early();
         crate::time::init_early();
     }
 

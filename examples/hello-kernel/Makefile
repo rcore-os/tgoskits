@@ -36,7 +36,7 @@ qemu_args-aarch64 := \
 qemu_args-loongarch64 := \
   -machine virt \
   -m 1G \
-  -kernel $(OUT_ELF)
+  -kernel $(OUT_BIN)
 
 all: build
 

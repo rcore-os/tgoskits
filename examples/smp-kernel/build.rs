@@ -5,7 +5,7 @@ fn kernel_base(arch: &str) -> usize {
         "x86_64" => 0xffff_8000_0020_0000,
         "aarch64" => 0xffff_0000_4020_0000,
         "riscv64" => 0xffff_ffc0_8020_0000,
-        "loongarch64" => 0xffff_0000_8000_0000,
+        "loongarch64" => 0xffff_8000_0020_0000,
         _ => panic!("Unsupported target architecture"),
     }
 }
