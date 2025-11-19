@@ -4,6 +4,7 @@ mod fs;
 mod net;
 mod pidfd;
 mod pipe;
+pub mod signalfd;
 
 use alloc::{borrow::Cow, sync::Arc};
 use core::{any::Any, ffi::c_int, time::Duration};

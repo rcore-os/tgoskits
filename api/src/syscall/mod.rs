@@ -582,9 +582,16 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg4() as _,
         ),
 
+        // signal file descriptors
+        Sysno::signalfd4 => sys_signalfd4(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2(),
+            uctx.arg3() as _,
+        ),
+
         // dummy fds
-        Sysno::signalfd4
-        | Sysno::timerfd_create
+        Sysno::timerfd_create
         | Sysno::fanotify_init
         | Sysno::inotify_init1
         | Sysno::userfaultfd
