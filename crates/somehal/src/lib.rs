@@ -41,7 +41,7 @@ trait ArchTrait {
 }
 
 pub fn post_allocator() {
-    info!("alloc ok");
+    debug!("alloc ok");
     arch::Arch::post_allocator();
 }
 
