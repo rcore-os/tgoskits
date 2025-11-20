@@ -123,6 +123,7 @@ members = [
     "os/arceos/examples/httpclient",
     "os/arceos/examples/httpserver",
     "os/arceos/examples/shell",
+    "os/arceos/examples/std/helloworld",
     "os/arceos/modules/axalloc",
     "os/arceos/modules/axconfig",
     "os/arceos/modules/axdisplay",
