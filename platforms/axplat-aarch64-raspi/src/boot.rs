@@ -95,7 +95,6 @@ unsafe extern "C" fn _start() -> ! {
 /// The earliest entry point for the secondary CPUs.
 #[cfg(feature = "smp")]
 #[unsafe(naked)]
-#[unsafe(link_section = ".text.boot")]
 pub(crate) unsafe extern "C" fn _start_secondary() -> ! {
     // X0 = stack pointer
     core::arch::naked_asm!("

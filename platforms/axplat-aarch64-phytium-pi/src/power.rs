@@ -14,7 +14,7 @@ impl PowerIf for PowerImpl {
         use crate::config::plat::CPU_ID_LIST;
         use axplat::mem::{va, virt_to_phys};
 
-        let entry = virt_to_phys(va!(crate::boot::_start_secondary as usize));
+        let entry = virt_to_phys(va!(crate::boot::_start_secondary as *const () as usize));
         axplat_aarch64_peripherals::psci::cpu_on(
             CPU_ID_LIST[cpu_id],
             entry.as_usize(),

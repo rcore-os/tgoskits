@@ -8,7 +8,7 @@ pub fn start_secondary_cpu(cpu_id: usize, stack_top: PhysAddr) {
         return;
     }
 
-    let entry = virt_to_phys(va!(crate::boot::_start_secondary as usize));
+    let entry = virt_to_phys(va!(crate::boot::_start_secondary as *const () as usize));
     axplat_aarch64_peripherals::psci::cpu_on(
         CPU_ID_LIST[cpu_id],
         entry.as_usize(),

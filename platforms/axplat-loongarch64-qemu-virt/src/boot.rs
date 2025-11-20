@@ -92,7 +92,6 @@ unsafe extern "C" fn _start() -> ! {
 #[cfg(feature = "smp")]
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
-#[unsafe(link_section = ".text.boot")]
 unsafe extern "C" fn _start_secondary() -> ! {
     core::arch::naked_asm!("
         ori          $t0, $zero, 0x1     # CSR_DMW1_PLV0
