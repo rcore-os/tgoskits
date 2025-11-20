@@ -232,7 +232,7 @@ dependencies = [
 [[package]]
 name = "axcpu"
 version = "0.2.2"
-source = "git+https://github.com/Starry-OS/axcpu.git?rev=fdbf401#fdbf401a358b4088ff5b9e43d1de049827dab40b"
+source = "git+https://github.com/Starry-OS/axcpu.git?rev=9b94417#9b9441796ee31db44ddd9d60335266ba7e07f394"
 dependencies = [
  "aarch64-cpu",
  "axbacktrace",
@@ -380,6 +380,7 @@ dependencies = [
  "axruntime",
  "axsync",
  "axtask",
+ "kspin",
 ]
 
 [[package]]
@@ -532,7 +533,7 @@ dependencies = [
 [[package]]
 name = "axplat"
 version = "0.2.0"
-source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=243fdc9#243fdc9265ba472cffffddc1cae9a47371caf8e3"
+source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=7eb392e#7eb392e1bed6bd102ed917e2b0cbf00efe065a90"
 dependencies = [
  "axplat-macros",
  "bitflags 2.10.0",
@@ -540,12 +541,13 @@ dependencies = [
  "crate_interface",
  "kspin",
  "memory_addr",
+ "percpu",
 ]
 
 [[package]]
 name = "axplat-aarch64-peripherals"
 version = "0.2.0"
-source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=243fdc9#243fdc9265ba472cffffddc1cae9a47371caf8e3"
+source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=7eb392e#7eb392e1bed6bd102ed917e2b0cbf00efe065a90"
 dependencies = [
  "aarch64-cpu",
  "arm-gic-driver",
@@ -564,7 +566,7 @@ dependencies = [
 [[package]]
 name = "axplat-aarch64-qemu-virt"
 version = "0.2.0"
-source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=243fdc9#243fdc9265ba472cffffddc1cae9a47371caf8e3"
+source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=7eb392e#7eb392e1bed6bd102ed917e2b0cbf00efe065a90"
 dependencies = [
  "axconfig-macros",
  "axcpu",
@@ -577,7 +579,7 @@ dependencies = [
 [[package]]
 name = "axplat-loongarch64-qemu-virt"
 version = "0.2.0"
-source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=243fdc9#243fdc9265ba472cffffddc1cae9a47371caf8e3"
+source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=7eb392e#7eb392e1bed6bd102ed917e2b0cbf00efe065a90"
 dependencies = [
  "axconfig-macros",
  "axcpu",
@@ -605,7 +607,7 @@ dependencies = [
 [[package]]
 name = "axplat-riscv64-qemu-virt"
 version = "0.2.0"
-source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=243fdc9#243fdc9265ba472cffffddc1cae9a47371caf8e3"
+source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=7eb392e#7eb392e1bed6bd102ed917e2b0cbf00efe065a90"
 dependencies = [
  "axconfig-macros",
  "axcpu",
@@ -613,9 +615,9 @@ dependencies = [
  "kspin",
  "lazyinit",
  "log",
- "plic",
  "riscv",
  "riscv_goldfish",
+ "riscv_plic",
  "sbi-rt",
  "uart_16550",
 ]
@@ -641,7 +643,7 @@ dependencies = [
 [[package]]
 name = "axplat-x86-pc"
 version = "0.2.0"
-source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=243fdc9#243fdc9265ba472cffffddc1cae9a47371caf8e3"
+source = "git+https://github.com/Starry-OS/axplat_crates.git?rev=7eb392e#7eb392e1bed6bd102ed917e2b0cbf00efe065a90"
 dependencies = [
  "axconfig-macros",
  "axcpu",
@@ -1956,6 +1958,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07aac72f95e774476db82916d79f2d303191310393830573c1ab5c821b21660a"
 
 [[package]]
+name = "riscv_plic"
+version = "0.2.0"
+source = "git+https://github.com/Starry-OS/riscv_plic.git?tag=v0.2.0#be7776f3c790c2155718c610b437cce664b440e7"
+dependencies = [
+ "tock-registers 0.10.1",
+]
+
+[[package]]
 name = "rlsf"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2366,6 +2376,12 @@ name = "tock-registers"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b9e2fdb3a1e862c0661768b7ed25390811df1947a8acbfbefe09b47078d93c4"
+
+[[package]]
+name = "tock-registers"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d2d250f87fb3fb6f225c907cf54381509f47b40b74b1d1f12d2dccbc915bdfe"
 
 [[package]]
 name = "toml_datetime"

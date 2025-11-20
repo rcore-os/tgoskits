@@ -112,6 +112,7 @@ qemu = [
     "axfeat/fs-times",
     "starry-api/dev-log",
 ]
+smp = ["axfeat/smp", "axplat-riscv64-visionfive2?/smp"]
 
 vf2 = ["dep:axplat-riscv64-visionfive2", "axfeat/driver-sdmmc-gpt"]
 
@@ -145,15 +146,15 @@ features = ["fp-simd", "irq", "rtc"]
 optional = true
 
 [patch.crates-io]
-axcpu = { git = "https://github.com/Starry-OS/axcpu.git", rev = "fdbf401" }
+axcpu = { git = "https://github.com/Starry-OS/axcpu.git", rev = "9b94417" }
 axerrno = { git = "https://github.com/Starry-OS/axerrno.git", rev = "f1e2bca" }
 axfs-ng-vfs = { git = "https://github.com/Starry-OS/axfs-ng-vfs.git", rev = "d6f470f" }
 axio = { git = "https://github.com/Starry-OS/axio.git", rev = "ebb0c6b" }
-axplat = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "243fdc9" }
-axplat-x86-pc = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "243fdc9" }
-axplat-aarch64-qemu-virt = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "243fdc9" }
-axplat-riscv64-qemu-virt = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "243fdc9" }
-axplat-loongarch64-qemu-virt = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "243fdc9" }
+axplat = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "7eb392e" }
+axplat-x86-pc = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "7eb392e" }
+axplat-aarch64-qemu-virt = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "7eb392e" }
+axplat-riscv64-qemu-virt = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "7eb392e" }
+axplat-loongarch64-qemu-virt = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "7eb392e" }
 page_table_entry = { git = "https://github.com/Starry-OS/page_table_multiarch.git", rev = "9df46c8" }
 page_table_multiarch = { git = "https://github.com/Starry-OS/page_table_multiarch.git", rev = "9df46c8" }
 starry-process = { git = "https://github.com/Starry-OS/starry-process.git", rev = "6327455" }
