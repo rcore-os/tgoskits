@@ -47,6 +47,7 @@ boot-stack-size = 0x40000                       # uint
 [devices]
 # MMIO ranges with format (`base_paddr`, `size`).
 mmio-ranges = [
+    [0x1000_0000, 0x0000_0400],         # PIC
     [0x100D_0000, 0x0000_1000],         # RTC
     [0x100E_0000, 0x0000_1000],         # GED
     [0x1FE0_0000, 0x0000_1000],         # UART
@@ -84,6 +85,7 @@ ged-paddr  = 0x100E001C                 # uint
 #     compatible = "ns16550a";
 # };
 uart-paddr = 0x1FE001E0                 # uint
+uart-irq = 0x2                            # uint
 
 # Timer interrupt frequency in Hz.
 timer-frequency = 100_000_000           # uint
@@ -94,3 +96,26 @@ ipi-irq = 12                            # uint
 
 # RTC (ls7a) Address
 rtc-paddr = 0x100d_0100                 # uint
+
+# eiointc@1400 {
+#     reg = <0x00 0x1400 0x00 0x800>;
+#     interrupts = <0x03>;
+#     interrupt-parent = <0x8001>;
+#     #interrupt-cells = <0x01>;
+#     interrupt-controller;
+#     compatible = "loongson,ls2k2000-eiointc";
+#     phandle = <0x8002>;
+# };
+eiointc-paddr = 0x1400                  # uint
+eiointc-irq = 0x03                      # uint
+
+# platic@10000000 {
+#     loongson,pic-base-vec = <0x00>;
+#     interrupt-parent = <0x8002>;
+#     #interrupt-cells = <0x02>;
+#     interrupt-controller;
+#     reg = <0x00 0x10000000 0x00 0x400>;
+#     compatible = "loongson,pch-pic-1.0";
+#     phandle = <0x8003>;
+# };
+pch-pic-paddr = 0x10000000              # uint

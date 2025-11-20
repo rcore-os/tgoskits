@@ -7,7 +7,11 @@ use loongArch64::{
     },
 };
 
-use crate::config::devices::{IPI_IRQ, TIMER_IRQ};
+use crate::config::devices::{EIOINTC_IRQ, IPI_IRQ, TIMER_IRQ};
+
+// TODO: move these modules to a separate crate
+mod eiointc;
+mod pch_pic;
 
 /// The maximum number of IRQs.
 pub const MAX_IRQ_COUNT: usize = 13;
@@ -29,57 +33,91 @@ fn make_ipi_send_value(cpu_id: usize, vector: u32, blocking: bool) -> u32 {
     value
 }
 
-fn handle_ipi(irq: usize) {
-    let mut status = iocsr_read_w(IOCSR_IPI_STATUS);
-    if status == 0 {
-        return;
+static IRQ_HANDLER_TABLE: HandlerTable<MAX_IRQ_COUNT> = HandlerTable::new();
+
+pub(crate) fn init() {
+    eiointc::init();
+    pch_pic::init();
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IrqType {
+    Timer,
+    Ipi,
+    Io,
+    Ex(usize),
+}
+
+impl IrqType {
+    fn new(irq: usize) -> Self {
+        match irq {
+            TIMER_IRQ => Self::Timer,
+            IPI_IRQ => Self::Ipi,
+            EIOINTC_IRQ => Self::Io,
+            n => Self::Ex(n),
+        }
     }
-    iocsr_write_w(IOCSR_IPI_CLEAR, status);
-    trace!("IPI status = {:#x}", status);
-    while status != 0 {
-        let vector = status.trailing_zeros() as usize;
-        status &= !(1 << vector);
-        if !IRQ_HANDLER_TABLE.handle(irq) {
-            warn!("Unhandled IRQ {}", irq);
+
+    fn as_usize(&self) -> usize {
+        match self {
+            IrqType::Timer => TIMER_IRQ,
+            IrqType::Ipi => IPI_IRQ,
+            IrqType::Io => EIOINTC_IRQ,
+            IrqType::Ex(n) => *n,
+        }
+    }
+
+    fn as_line(&self) -> Option<LineBasedInterrupt> {
+        match self {
+            IrqType::Timer => Some(LineBasedInterrupt::TIMER),
+            IrqType::Ipi => Some(LineBasedInterrupt::IPI),
+            _ => None,
         }
     }
 }
-
-static IRQ_HANDLER_TABLE: HandlerTable<MAX_IRQ_COUNT> = HandlerTable::new();
 
 struct IrqIfImpl;
 
 #[impl_plat_interface]
 impl IrqIf for IrqIfImpl {
     /// Enables or disables the given IRQ.
-    fn set_enable(irq_num: usize, enabled: bool) {
-        let interrupt_bit = match irq_num {
-            TIMER_IRQ => LineBasedInterrupt::TIMER,
-            IPI_IRQ => {
+    fn set_enable(irq: usize, enabled: bool) {
+        let irq = IrqType::new(irq);
+
+        match irq {
+            IrqType::Ipi => {
                 let value = if enabled { u32::MAX } else { 0 };
                 iocsr_write_w(IOCSR_IPI_ENABLE, value);
-                LineBasedInterrupt::IPI
             }
-            _ => {
-                warn!("set_enable: unsupported irq {}", irq_num);
-                return;
+            IrqType::Ex(irq) => {
+                if enabled {
+                    eiointc::enable_irq(irq);
+                    pch_pic::enable_irq(irq);
+                } else {
+                    eiointc::disable_irq(irq);
+                    pch_pic::disable_irq(irq);
+                }
             }
-        };
-        let old_value = ecfg::read().lie();
-        let new_value = match enabled {
-            true => old_value | interrupt_bit,
-            false => old_value & !interrupt_bit,
-        };
-        ecfg::set_lie(new_value);
+            _ => {}
+        }
+
+        if let Some(line) = irq.as_line() {
+            let old_value = ecfg::read().lie();
+            let new_value = match enabled {
+                true => old_value | line,
+                false => old_value & !line,
+            };
+            ecfg::set_lie(new_value);
+        }
     }
 
     /// Registers an IRQ handler for the given IRQ.
-    fn register(irq_num: usize, handler: IrqHandler) -> bool {
-        if IRQ_HANDLER_TABLE.register_handler(irq_num, handler) {
-            Self::set_enable(irq_num, true);
+    fn register(irq: usize, handler: IrqHandler) -> bool {
+        if IRQ_HANDLER_TABLE.register_handler(irq, handler) {
+            Self::set_enable(irq, true);
             return true;
         }
-        warn!("register handler for IRQ {} failed", irq_num);
+        warn!("register handler for IRQ {} failed", irq);
         false
     }
 
@@ -88,8 +126,9 @@ impl IrqIf for IrqIfImpl {
     /// It also disables the IRQ if the unregistration succeeds. It returns the
     /// existing handler if it is registered, `None` otherwise.
     fn unregister(irq: usize) -> Option<IrqHandler> {
-        Self::set_enable(irq, false);
-        IRQ_HANDLER_TABLE.unregister_handler(irq)
+        IRQ_HANDLER_TABLE
+            .unregister_handler(irq)
+            .inspect(|_| Self::set_enable(irq, false))
     }
 
     /// Handles the IRQ.
@@ -98,19 +137,49 @@ impl IrqIf for IrqIfImpl {
     /// IRQ handler table and calls the corresponding handler. If necessary, it
     /// also acknowledges the interrupt controller after handling.
     fn handle(irq: usize) -> Option<usize> {
-        if irq == IPI_IRQ {
-            handle_ipi(irq);
-        } else {
-            if irq == TIMER_IRQ {
-                ticlr::clear_timer_interrupt();
+        let mut irq = IrqType::new(irq);
+
+        if matches!(irq, IrqType::Io) {
+            let Some(ex_irq) = eiointc::claim_irq() else {
+                debug!("Spurious external IRQ");
+                return None;
+            };
+            irq = IrqType::Ex(ex_irq);
+        }
+
+        trace!("IRQ {irq:?}");
+
+        if let IrqType::Ipi = irq {
+            let mut status = iocsr_read_w(IOCSR_IPI_STATUS);
+            if status != 0 {
+                iocsr_write_w(IOCSR_IPI_CLEAR, status);
+                trace!("IPI status = {:#x}", status);
+
+                while status != 0 {
+                    let vector = status.trailing_zeros() as usize;
+                    status &= !(1 << vector);
+                    if !IRQ_HANDLER_TABLE.handle(irq.as_usize()) {
+                        warn!("Unhandled IRQ {}", irq);
+                    }
+                }
             }
-            trace!("IRQ {}", irq);
-            if !IRQ_HANDLER_TABLE.handle(irq) {
-                warn!("Unhandled IRQ {}", irq);
+        } else {
+            if !IRQ_HANDLER_TABLE.handle(irq.as_usize()) {
+                debug!("Unhandled IRQ {irq:?}");
             }
         }
-        // TODO: handle EIOINTC and PCH-PIC
-        Some(irq)
+
+        match irq {
+            IrqType::Timer => {
+                ticlr::clear_timer_interrupt();
+            }
+            IrqType::Ex(irq) => {
+                eiointc::complete_irq(irq);
+            }
+            _ => {}
+        }
+
+        Some(irq.as_usize())
     }
 
     /// Sends an inter-processor interrupt (IPI) to the specified target CPU or all CPUs.
