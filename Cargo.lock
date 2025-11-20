@@ -61,7 +61,7 @@ checksum = "3d4054cba279515fa87761b101d857333ce06391dbe8f18a11347204a7111416"
 
 [[package]]
 name = "page_table_entry"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "aarch64-cpu",
  "bitflags 2.9.1",
@@ -71,7 +71,7 @@ dependencies = [
 
 [[package]]
 name = "page_table_multiarch"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bitmaps",
  "log",
