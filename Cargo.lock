@@ -2232,7 +2232,7 @@ dependencies = [
 [[package]]
 name = "starry-signal"
 version = "0.2.2"
-source = "git+https://github.com/Starry-OS/starry-signal.git?rev=5b23dec#5b23dec9b652fade066df91d9d9c84e9b5f89709"
+source = "git+https://github.com/Starry-OS/starry-signal.git?rev=acdb5e9#acdb5e9a76bc5e2244c04c4d5d842d9f3c0416a5"
 dependencies = [
  "axcpu",
  "bitflags 2.10.0",
