@@ -49,7 +49,12 @@ pub trait IrqIf {
     /// It is called by the common interrupt handler. It should look up in the
     /// IRQ handler table and calls the corresponding handler. If necessary, it
     /// also acknowledges the interrupt controller after handling.
-    fn handle(irq: usize);
+    ///
+    /// Returns the "real" IRQ number. On some platforms, this may differ from
+    /// the input `irq` number, for example on AArch64 the input `irq` is
+    /// ignored and the real IRQ number is obtained from the GIC. Returns
+    /// `None` if the IRQ is spurious.
+    fn handle(irq: usize) -> Option<usize>;
 
     /// Sends an inter-processor interrupt (IPI) to the specified target CPU or all CPUs.
     fn send_ipi(irq_num: usize, target: IpiTarget);

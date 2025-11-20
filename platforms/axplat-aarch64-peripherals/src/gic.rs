@@ -50,19 +50,21 @@ pub fn unregister_handler(irq: usize) -> Option<IrqHandler> {
 /// It is called by the common interrupt handler. It should look up in the
 /// IRQ handler table and calls the corresponding handler. If necessary, it
 /// also acknowledges the interrupt controller after handling.
-pub fn handle_irq(_irq: usize) {
+pub fn handle_irq(_irq: usize) -> Option<usize> {
     let ack = TRAP_OP.ack();
-    if ack.is_special() {
-        return;
-    }
 
-    trace!("IRQ: {ack:?}");
+    if ack.is_special() {
+        return None;
+    }
 
     let irq = match ack {
         Ack::Other(intid) => intid,
         Ack::SGI { intid, cpu_id: _ } => intid,
     }
     .to_u32() as usize;
+
+    trace!("IRQ: {ack:?}");
+
     if !IRQ_HANDLER_TABLE.handle(irq) {
         warn!("Unhandled IRQ {ack:?}");
     }
@@ -71,6 +73,8 @@ pub fn handle_irq(_irq: usize) {
     if TRAP_OP.eoi_mode_ns() {
         TRAP_OP.dir(ack);
     }
+
+    Some(irq)
 }
 
 /// Initializes GIC
@@ -155,7 +159,7 @@ macro_rules! irq_if_impl {
             /// It is called by the common interrupt handler. It should look up in the
             /// IRQ handler table and calls the corresponding handler. If necessary, it
             /// also acknowledges the interrupt controller after handling.
-            fn handle(irq: usize) {
+            fn handle(irq: usize) -> Option<usize> {
                 $crate::gic::handle_irq(irq)
             }
 

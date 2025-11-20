@@ -1,4 +1,4 @@
-use axplat::irq::{IrqHandler, IrqIf, IpiTarget};
+use axplat::irq::{IpiTarget, IrqHandler, IrqIf};
 
 struct IrqIfImpl;
 
@@ -30,7 +30,7 @@ impl IrqIf for IrqIfImpl {
     /// It is called by the common interrupt handler. It should look up in the
     /// IRQ handler table and calls the corresponding handler. If necessary, it
     /// also acknowledges the interrupt controller after handling.
-    fn handle(irq: usize) {
+    fn handle(irq: usize) -> Option<usize> {
         todo!()
     }
 

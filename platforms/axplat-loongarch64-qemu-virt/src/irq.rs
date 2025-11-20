@@ -97,7 +97,7 @@ impl IrqIf for IrqIfImpl {
     /// It is called by the common interrupt handler. It should look up in the
     /// IRQ handler table and calls the corresponding handler. If necessary, it
     /// also acknowledges the interrupt controller after handling.
-    fn handle(irq: usize) {
+    fn handle(irq: usize) -> Option<usize> {
         if irq == IPI_IRQ {
             handle_ipi(irq);
         } else {
@@ -109,6 +109,8 @@ impl IrqIf for IrqIfImpl {
                 warn!("Unhandled IRQ {}", irq);
             }
         }
+        // TODO: handle EIOINTC and PCH-PIC
+        Some(irq)
     }
 
     /// Sends an inter-processor interrupt (IPI) to the specified target CPU or all CPUs.

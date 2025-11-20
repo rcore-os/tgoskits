@@ -147,12 +147,13 @@ mod irq_impl {
         /// It is called by the common interrupt handler. It should look up in the
         /// IRQ handler table and calls the corresponding handler. If necessary, it
         /// also acknowledges the interrupt controller after handling.
-        fn handle(vector: usize) {
+        fn handle(vector: usize) -> Option<usize> {
             trace!("IRQ {}", vector);
             if !IRQ_HANDLER_TABLE.handle(vector) {
                 warn!("Unhandled IRQ {vector}");
             }
             unsafe { super::local_apic().end_of_interrupt() };
+            Some(vector)
         }
 
         /// Sends an inter-processor interrupt (IPI) to the specified target CPU or all CPUs.

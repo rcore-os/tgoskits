@@ -136,7 +136,7 @@ impl IrqIf for IrqIfImpl {
     /// It is called by the common interrupt handler. It should look up in the
     /// IRQ handler table and calls the corresponding handler. If necessary, it
     /// also acknowledges the interrupt controller after handling.
-    fn handle(irq: usize) {
+    fn handle(irq: usize) -> Option<usize> {
         with_cause!(
             irq,
             @S_TIMER => {
@@ -146,6 +146,7 @@ impl IrqIf for IrqIfImpl {
                     // SAFETY: The handler is guaranteed to be a valid function pointer.
                     unsafe { core::mem::transmute::<*mut (), IrqHandler>(handler)() };
                 }
+                Some(irq)
             },
             @S_SOFT => {
                 trace!("IRQ: IPI");
@@ -157,12 +158,14 @@ impl IrqIf for IrqIfImpl {
                 unsafe {
                     riscv::register::sip::clear_ssoft();
                 }
+                Some(irq)
             },
             @S_EXT => {
                 // TODO: get IRQ number from PLIC
                 if !IRQ_HANDLER_TABLE.handle(0) {
                     warn!("Unhandled IRQ {}", 0);
                 }
+                None
             },
             @EX_IRQ => {
                 unreachable!("Device-side IRQs should be handled by triggering the External Interrupt.");
