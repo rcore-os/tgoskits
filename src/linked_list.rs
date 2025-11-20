@@ -221,7 +221,7 @@ impl<G: GetLinksWrapped> List<G> {
         Some(unsafe { G::Wrapped::from_pointer(front) })
     }
 
-    /// Returns a immutable cursor starting on the first (front) element of the list.
+    /// Returns an immutable cursor starting on the first (front) element of the list.
     pub fn cursor_front(&self) -> Cursor<'_, G> {
         Cursor::new(self.list.cursor_front())
     }
@@ -270,7 +270,7 @@ impl<'a, G: GetLinksWrapped> Cursor<'a, G> {
     }
 
     /// Returns the element immediately before the one the cursor is positioned on.
-    pub fn peek_prev(&mut self) -> Option<&G::EntryType> {
+    pub fn peek_prev(&self) -> Option<&G::EntryType> {
         self.cursor.peek_prev()
     }
 
