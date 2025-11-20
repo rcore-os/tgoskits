@@ -13,15 +13,19 @@ repository.workspace = true
 
 [features]
 fp-simd = ["axcpu/fp-simd"]
-irq = ["axplat/irq"]
-rtc = ["riscv_goldfish"]
+irq = ["axplat/irq", "dep:riscv_plic"]
+rtc = ["dep:riscv_goldfish"]
 smp = ["axplat/smp"]
 
 [dependencies]
+kspin = "0.1"
+lazyinit = "0.2"
 log = "0.4"
 riscv = "0.14"
-sbi-rt = { version = "0.0.3", features = ["legacy"] }
 riscv_goldfish = { version = "0.1", optional = true }
+riscv_plic = { version = "0.2", optional = true }
+sbi-rt = { version = "0.0.3", features = ["legacy"] }
+uart_16550 = "0.4.0"
 
 axconfig-macros = "0.2"
 axcpu = { workspace = true }
