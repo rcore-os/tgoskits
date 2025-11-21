@@ -63,3 +63,70 @@ where
         }
     }
 }
+
+/// A page-by-page iterator with dynamic page size.
+///
+/// The address type is specified by the type parameter `A`.
+///
+/// # Examples
+///
+/// ```
+/// use memory_addr::DynPageIter;
+///
+/// let mut iter = DynPageIter::<usize>::new(0x1000, 0x3000, 0x1000).unwrap();
+/// assert_eq!(iter.next(), Some(0x1000));
+/// assert_eq!(iter.next(), Some(0x2000));
+/// assert_eq!(iter.next(), None);
+///
+/// assert!(DynPageIter::<usize>::new(0x1000, 0x3001, 0x1000).is_none());
+/// assert!(DynPageIter::<usize>::new(0x1000, 0x3000, 0x1001).is_none());
+/// ```
+pub struct DynPageIter<A>
+where
+    A: MemoryAddr,
+{
+    start: A,
+    end: A,
+    page_size: usize,
+}
+
+impl<A> DynPageIter<A>
+where
+    A: MemoryAddr,
+{
+    /// Creates a new [`DynPageIter`].
+    ///
+    /// Returns `None` if `page_size` is not a power of 2, or `start` or `end`
+    /// is not page-aligned.
+    pub fn new(start: A, end: A, page_size: usize) -> Option<Self> {
+        if !page_size.is_power_of_two()
+            || !start.is_aligned(page_size)
+            || !end.is_aligned(page_size)
+        {
+            None
+        } else {
+            Some(Self {
+                start,
+                end,
+                page_size,
+            })
+        }
+    }
+}
+
+impl<A> Iterator for DynPageIter<A>
+where
+    A: MemoryAddr,
+{
+    type Item = A;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.start < self.end {
+            let ret = self.start;
+            self.start = self.start.add(self.page_size);
+            Some(ret)
+        } else {
+            None
+        }
+    }
+}
