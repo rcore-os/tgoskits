@@ -342,7 +342,7 @@ impl DirNode {
                 }
                 return Ok(val);
             }
-            Err(err) if err == VfsError::NotFound && options.create => {}
+            Err(err) if err.canonicalize() == VfsError::NotFound && options.create => {}
             Err(err) => return Err(err),
         }
         let entry =
