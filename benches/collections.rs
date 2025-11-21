@@ -17,6 +17,7 @@ const POOL_SIZE: usize = 1024 * 1024 * 128;
 
 fn vec_push(n: usize, alloc: &(impl Allocator + Clone)) {
     let mut v: Vec<u32, _> = Vec::new_in(alloc.clone());
+    #[allow(clippy::same_item_push)]
     for _ in 0..n {
         v.push(0xdead_beef);
     }
