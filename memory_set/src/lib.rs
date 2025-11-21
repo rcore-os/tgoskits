@@ -25,5 +25,16 @@ pub enum MappingError {
     BadState,
 }
 
+#[cfg(feature = "axerrno")]
+impl From<MappingError> for axerrno::AxError {
+    fn from(err: MappingError) -> Self {
+        match err {
+            MappingError::InvalidParam => axerrno::AxError::InvalidInput,
+            MappingError::AlreadyExists => axerrno::AxError::AlreadyExists,
+            MappingError::BadState => axerrno::AxError::BadState,
+        }
+    }
+}
+
 /// A [`Result`] type with [`MappingError`] as the error type.
 pub type MappingResult<T = ()> = Result<T, MappingError>;
