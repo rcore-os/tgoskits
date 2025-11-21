@@ -349,9 +349,9 @@ impl AxError {
     }
 }
 
-impl From<AxErrorKind> for AxError {
-    fn from(e: AxErrorKind) -> Self {
-        AxError::new_ax(e)
+impl<E: Into<AxErrorKind>> From<E> for AxError {
+    fn from(e: E) -> Self {
+        AxError::new_ax(e.into())
     }
 }
 
