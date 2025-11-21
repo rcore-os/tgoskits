@@ -24,8 +24,8 @@ dependencies = [
 
 [[package]]
 name = "axcpu"
-version = "0.2.2"
-source = "git+https://github.com/Starry-OS/axcpu.git#9b9441796ee31db44ddd9d60335266ba7e07f394"
+version = "0.3.0"
+source = "git+https://github.com/arceos-org/axcpu.git?tag=dev-v03#1dc46de5d5a0b6befba9fa25a560386e5d9e19c6"
 dependencies = [
  "aarch64-cpu",
  "axbacktrace",
@@ -47,8 +47,9 @@ dependencies = [
 
 [[package]]
 name = "axerrno"
-version = "0.1.0"
-source = "git+https://github.com/Starry-OS/axerrno.git#839206076fb86d545d1d9ff778eac5ffc9690b00"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ed18d8dcfeb189b152533416e073fcadcde658ad3a49f58d76fa47072d06be0"
 dependencies = [
  "log",
  "strum",
@@ -409,7 +410,7 @@ checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
 
 [[package]]
 name = "starry-signal"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "axcpu",
  "bitflags 2.10.0",
@@ -426,7 +427,8 @@ dependencies = [
 [[package]]
 name = "starry-vm"
 version = "0.2.0"
-source = "git+https://github.com/Starry-OS/starry-vm.git#4c91a6bf7945dd04e68f6cf9b522e2152ad8d9b4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8a92583dcf89ba82f59714f082c3639eb3c66514f5381c1d729a077c5ce2c33"
 dependencies = [
  "axerrno",
  "bytemuck",

@@ -1,31 +1,26 @@
 [package]
 name = "starry-signal"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
-authors = [
-    "Mivik <mivikq@gmail.com>",
-    "Asakura Mizu <asakuramizu111@gmail.com>",
-]
+authors = ["Mivik <mivikq@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>"]
+description = "Signal management library for Starry OS"
+keywords = ["starry-os", "arceos", "signal", "ipc"]
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/Starry-OS/starry-signal"
 
 [dependencies]
-axcpu = { version = "0.2", features = ["uspace"] }
+axcpu = { version = "0.3", features = [
+    "uspace",
+], git = "https://github.com/arceos-org/axcpu.git", tag = "dev-v03" }
 bitflags = "2.6"
 cfg-if = "1"
-derive_more = { version = "2.0.1", default-features = false, features = [
-    "full",
-] }
-event-listener = { version = "5.4.0", default-features = false }
+derive_more = { version = "2.0", default-features = false, features = ["full"] }
+event-listener = { version = "5.4", default-features = false }
 kspin = "0.1"
-linux-raw-sys = { version = "0.11.0", default-features = false, features = [
+linux-raw-sys = { version = "0.11", default-features = false, features = [
     "general",
     "no_std",
 ] }
 log = "0.4"
 starry-vm = "0.2"
-strum = { version = "0.27.1", default-features = false, features = ["derive"] }
-
-[patch.crates-io]
-axcpu = { git = "https://github.com/Starry-OS/axcpu.git" }
-axerrno = { git = "https://github.com/Starry-OS/axerrno.git" }
-starry-vm = { git = "https://github.com/Starry-OS/starry-vm.git" }
+strum = { version = "0.27", default-features = false, features = ["derive"] }
