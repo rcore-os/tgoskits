@@ -2,8 +2,11 @@
 name = "starry-process"
 version = "0.2.0"
 edition = "2024"
-authors = ["Asakura Mizu <asakuramizu111@gmail.com>"]
-description = "Process management for ArceOS"
+authors = ["朝倉水希 <asakuramizu111@gmail.com>"]
+description = "Process management for Starry OS"
+keywords = ["starry-os"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Starry-OS/starry-process"
 
 [dependencies]
 kspin = "0.1"
