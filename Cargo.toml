@@ -1,13 +1,10 @@
 [workspace]
 resolver = "2"
 
-members = [
-    "memory_addr",
-    "memory_set",
-]
+members = ["memory_addr", "memory_set"]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 authors = ["Yuekai Jia <equation618@gmail.com>", "aarkegz <aarkegz@gmail.com>"]
 license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
