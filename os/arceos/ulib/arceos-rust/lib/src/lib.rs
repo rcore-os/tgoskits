@@ -4,8 +4,9 @@
 extern crate alloc;
 
 mod syscall;
+mod interface;
 
-use ax_api::modules::ax_log::{ax_println, debug, info};
+use ax_api::modules::ax_log::{debug, info};
 pub use ax_runtime;
 
 unsafe extern "C" {
