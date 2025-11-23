@@ -103,8 +103,8 @@ fn test_map_unmap() {
     }
     dump_memory_set(&set);
     assert_eq!(set.len(), 16);
-    for addr in 0..MAX_ADDR {
-        assert!(pt[addr] == 1 || pt[addr] == 2);
+    for &e in &pt[0..MAX_ADDR] {
+        assert!(e == 1 || e == 2);
     }
 
     // Found [0x4000, 0x5000), flags = 1.
@@ -137,8 +137,8 @@ fn test_map_unmap() {
     assert_eq!(area.start(), 0x4000.into());
     assert_eq!(area.end(), 0x8000.into());
     assert_eq!(area.flags(), 3);
-    for addr in 0x4000..0x8000 {
-        assert_eq!(pt[addr], 3);
+    for &e in &pt[0x4000..0x8000] {
+        assert_eq!(e, 3);
     }
 
     // Unmap areas in the middle.
@@ -147,8 +147,8 @@ fn test_map_unmap() {
     // Unmap the remaining areas, including the unmapped ranges.
     assert_ok!(set.unmap(0.into(), MAX_ADDR * 2, &mut pt));
     assert_eq!(set.len(), 0);
-    for addr in 0..MAX_ADDR {
-        assert_eq!(pt[addr], 0);
+    for &e in &pt[0..MAX_ADDR] {
+        assert_eq!(e, 0);
     }
 }
 
@@ -183,8 +183,8 @@ fn test_unmap_split() {
             assert_eq!(area.end().align_offset_4k(), 0xc00);
             assert_eq!(area.size(), 0x800);
         }
-        for addr in area.start().as_usize()..area.end().as_usize() {
-            assert_eq!(pt[addr], 1);
+        for &e in &pt[area.start().as_usize()..area.end().as_usize()] {
+            assert_eq!(e, 1);
         }
     }
 
@@ -207,15 +207,15 @@ fn test_unmap_split() {
         } else {
             unreachable!();
         }
-        for addr in area.start().as_usize()..area.end().as_usize() {
-            assert_eq!(pt[addr], 1);
+        for &e in &pt[area.start().as_usize()..area.end().as_usize()] {
+            assert_eq!(e, 1);
         }
     }
     let mut iter = set.iter();
     while let Some(area) = iter.next() {
         if let Some(next) = iter.next() {
-            for addr in area.end().as_usize()..next.start().as_usize() {
-                assert_eq!(pt[addr], 0);
+            for &e in &pt[area.end().as_usize()..next.start().as_usize()] {
+                assert_eq!(e, 0);
             }
         }
     }
@@ -224,8 +224,8 @@ fn test_unmap_split() {
     // Unmap all areas.
     assert_ok!(set.unmap(0.into(), MAX_ADDR, &mut pt));
     assert_eq!(set.len(), 0);
-    for addr in 0..MAX_ADDR {
-        assert_eq!(pt[addr], 0);
+    for &e in &pt[0..MAX_ADDR] {
+        assert_eq!(e, 0);
     }
 }
 
@@ -266,17 +266,15 @@ fn test_protect() {
         if area.start().as_usize() == 0 {
             assert_eq!(area.size(), 0xc00);
             assert_eq!(area.flags(), 0x7);
-        } else {
-            if off == 0 {
-                assert_eq!(area.size(), 0x400);
-                assert_eq!(area.flags(), 0x1);
-            } else if off == 0x400 {
-                assert_eq!(area.size(), 0x800);
-                assert_eq!(area.flags(), 0x7);
-            } else if off == 0xc00 {
-                assert_eq!(area.size(), 0x400);
-                assert_eq!(area.flags(), 0x1);
-            }
+        } else if off == 0 {
+            assert_eq!(area.size(), 0x400);
+            assert_eq!(area.flags(), 0x1);
+        } else if off == 0x400 {
+            assert_eq!(area.size(), 0x800);
+            assert_eq!(area.flags(), 0x7);
+        } else if off == 0xc00 {
+            assert_eq!(area.size(), 0x400);
+            assert_eq!(area.flags(), 0x1);
         }
     }
 
@@ -293,23 +291,21 @@ fn test_protect() {
         if area.start().as_usize() == 0 {
             assert_eq!(area.size(), 0x800);
             assert_eq!(area.flags(), 0x7);
-        } else {
-            if off == 0 {
-                assert_eq!(area.size(), 0x400);
-                assert_eq!(area.flags(), 0x1);
-            } else if off == 0x400 {
-                assert_eq!(area.size(), 0x400);
-                assert_eq!(area.flags(), 0x7);
-            } else if off == 0x800 {
-                assert_eq!(area.size(), 0x100);
-                assert_eq!(area.flags(), 0x3);
-            } else if off == 0x900 {
-                assert_eq!(area.size(), 0x300);
-                assert_eq!(area.flags(), 0x7);
-            } else if off == 0xc00 {
-                assert_eq!(area.size(), 0x400);
-                assert_eq!(area.flags(), 0x1);
-            }
+        } else if off == 0 {
+            assert_eq!(area.size(), 0x400);
+            assert_eq!(area.flags(), 0x1);
+        } else if off == 0x400 {
+            assert_eq!(area.size(), 0x400);
+            assert_eq!(area.flags(), 0x7);
+        } else if off == 0x800 {
+            assert_eq!(area.size(), 0x100);
+            assert_eq!(area.flags(), 0x3);
+        } else if off == 0x900 {
+            assert_eq!(area.size(), 0x300);
+            assert_eq!(area.flags(), 0x7);
+        } else if off == 0xc00 {
+            assert_eq!(area.size(), 0x400);
+            assert_eq!(area.flags(), 0x1);
         }
     }
 
@@ -322,8 +318,8 @@ fn test_protect() {
     // Unmap all areas.
     assert_ok!(set.unmap(0.into(), MAX_ADDR, &mut pt));
     assert_eq!(set.len(), 0);
-    for addr in 0..MAX_ADDR {
-        assert_eq!(pt[addr], 0);
+    for &e in &pt[0..MAX_ADDR] {
+        assert_eq!(e, 0);
     }
 }
 

@@ -276,6 +276,12 @@ impl<B: MappingBackend> MemorySet<B> {
     }
 }
 
+impl<B: MappingBackend> Default for MemorySet<B> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<B: MappingBackend> fmt::Debug for MemorySet<B>
 where
     B::Addr: fmt::Debug,

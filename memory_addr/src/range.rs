@@ -461,6 +461,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::reversed_empty_ranges)]
     fn test_range() {
         let start = va!(0x1000);
         let end = va!(0x2000);
