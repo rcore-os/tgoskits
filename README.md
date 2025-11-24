@@ -90,6 +90,8 @@ Note:
 
 You can check out the [GUI guide](./docs/gui.md) to set up a graphical environment, or explore other documentation in this folder.
 
+If you're interested in contributing to the project, please see our [Contributing Guide](./CONTRIBUTING.md).
+
 ## Other Options
 
 TODO
