@@ -1,7 +1,7 @@
 //! Common traits and types for network device (NIC) drivers.
 
 #![no_std]
-#![cfg_attr(doc, feature(doc_auto_cfg))]
+#![cfg_attr(doc, feature(doc_cfg))]
 
 #[cfg(feature = "fxmac")]
 /// fxmac driver for PhytiumPi

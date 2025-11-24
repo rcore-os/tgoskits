@@ -11,7 +11,7 @@
 //! [3]: https://docs.rs/virtio-drivers/latest/virtio_drivers/trait.Hal.html
 
 #![no_std]
-#![cfg_attr(doc, feature(doc_auto_cfg))]
+#![cfg_attr(doc, feature(doc_cfg))]
 
 #[cfg(feature = "block")]
 mod blk;
