@@ -34,6 +34,16 @@ pub enum PagingError {
     MappedToHugePage,
 }
 
+#[cfg(feature = "axerrno")]
+impl From<PagingError> for axerrno::AxError {
+    fn from(value: PagingError) -> Self {
+        match value {
+            PagingError::NoMemory => axerrno::AxError::NoMemory,
+            _ => axerrno::AxError::InvalidInput,
+        }
+    }
+}
+
 /// The specialized `Result` type for page table operations.
 pub type PagingResult<T = ()> = Result<T, PagingError>;
 
