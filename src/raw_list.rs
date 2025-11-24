@@ -112,19 +112,19 @@ impl<G: GetLinks> RawList<G> {
 
     fn insert_after_priv(
         &mut self,
-        existing: &G::EntryType,
+        existing: NonNull<G::EntryType>,
         new_entry: &mut ListEntry<G::EntryType>,
         new_ptr: Option<NonNull<G::EntryType>>,
     ) {
         {
             // SAFETY: It's safe to get the previous entry of `existing` because the list cannot
             // change.
-            let existing_links = unsafe { &mut *G::get_links(existing).entry.get() };
+            let existing_links = unsafe { &mut *G::get_links(existing.as_ref()).entry.get() };
             new_entry.next = existing_links.next;
             existing_links.next = new_ptr;
         }
 
-        new_entry.prev = Some(NonNull::from(existing));
+        new_entry.prev = Some(existing);
 
         // SAFETY: It's safe to get the next entry of `existing` because the list cannot change.
         let next_links =
@@ -137,8 +137,13 @@ impl<G: GetLinks> RawList<G> {
     /// # Safety
     ///
     /// Callers must ensure that `existing` points to a valid entry that is on the list.
-    pub unsafe fn insert_after(&mut self, existing: &G::EntryType, new: &G::EntryType) -> bool {
-        let links = G::get_links(new);
+    pub unsafe fn insert_after(
+        &mut self,
+        existing: NonNull<G::EntryType>,
+        new: NonNull<G::EntryType>,
+    ) -> bool {
+        // SAFETY: the caller ensures new is valid.
+        let links = unsafe { G::get_links(new.as_ref()) };
         if !links.acquire_for_insertion() {
             // Nothing to do if already inserted.
             return false;
@@ -146,7 +151,7 @@ impl<G: GetLinks> RawList<G> {
 
         // SAFETY: The links are now owned by the list, so it is safe to get a mutable reference.
         let new_entry = unsafe { &mut *links.entry.get() };
-        self.insert_after_priv(existing, new_entry, Some(NonNull::from(new)));
+        self.insert_after_priv(existing, new_entry, Some(new));
         true
     }
 
@@ -164,7 +169,7 @@ impl<G: GetLinks> RawList<G> {
         match self.back() {
             // SAFETY: `back` is valid as the list cannot change.
             Some(back) => {
-                self.insert_after_priv(unsafe { back.as_ref() }, new_entry, new_ptr);
+                self.insert_after_priv(back, new_entry, new_ptr);
                 // if push front, update head
                 if front {
                     self.head = new_ptr;
@@ -294,6 +299,10 @@ impl<G: GetLinks> CommonCursor<G> {
     }
 
     fn move_next(&mut self, list: &RawList<G>) {
+        // `move_next` stops at None when reaching the end of list,
+        // because `raw_list::Iterator` stops at None.
+        // But move to next a further step beyond the ending None,
+        // the cursor starts from the head again.
         match self.cur.take() {
             None => self.cur = list.head,
             Some(cur) => {
@@ -358,13 +367,31 @@ impl<'a, G: GetLinks> Cursor<'a, G> {
         Some(unsafe { &*cur.as_ptr() })
     }
 
+    /// Returns the element pointer the cursor is currently positioned on.
+    pub(crate) fn current_ptr(&self) -> Option<NonNull<G::EntryType>> {
+        self.cursor.cur
+    }
+
     /// Moves the cursor to the next element.
     pub(crate) fn move_next(&mut self) {
         self.cursor.move_next(self.list);
     }
 
+    pub fn peek_next(&self) -> Option<&G::EntryType> {
+        let mut new = CommonCursor::new(self.cursor.cur);
+        new.move_next(self.list);
+        // SAFETY: Objects must be kept alive while on the list.
+        Some(unsafe { &*new.cur?.as_ptr() })
+    }
+
+    pub fn peek_prev(&self) -> Option<&G::EntryType> {
+        let mut new = CommonCursor::new(self.cursor.cur);
+        new.move_prev(self.list);
+        // SAFETY: Objects must be kept alive while on the list.
+        Some(unsafe { &*new.cur?.as_ptr() })
+    }
+
     /// Moves the cursor to the prev element.
-    #[allow(dead_code)]
     pub(crate) fn move_prev(&mut self) {
         self.cursor.move_prev(self.list);
     }
@@ -372,7 +399,7 @@ impl<'a, G: GetLinks> Cursor<'a, G> {
 
 pub struct CursorMut<'a, G: GetLinks> {
     cursor: CommonCursor<G>,
-    list: &'a mut RawList<G>,
+    pub(crate) list: &'a mut RawList<G>,
 }
 
 impl<'a, G: GetLinks> CursorMut<'a, G> {
@@ -383,10 +410,21 @@ impl<'a, G: GetLinks> CursorMut<'a, G> {
         }
     }
 
-    pub fn current(&mut self) -> Option<&mut G::EntryType> {
+    pub unsafe fn current_mut(&mut self) -> Option<&mut G::EntryType> {
         let cur = self.cursor.cur?;
         // SAFETY: Objects must be kept alive while on the list.
         Some(unsafe { &mut *cur.as_ptr() })
+    }
+
+    pub fn current(&self) -> Option<&G::EntryType> {
+        let cur = self.current_ptr()?;
+        // SAFETY: Objects must be kept alive while on the list.
+        Some(unsafe { &mut *cur.as_ptr() })
+    }
+
+    /// Returns the element pointer the cursor is currently positioned on.
+    pub(crate) fn current_ptr(&self) -> Option<NonNull<G::EntryType>> {
+        self.cursor.cur
     }
 
     /// Removes the entry the cursor is pointing to and advances the cursor to the next entry. It
@@ -399,14 +437,28 @@ impl<'a, G: GetLinks> CursorMut<'a, G> {
         Some(entry)
     }
 
-    pub fn peek_next(&mut self) -> Option<&mut G::EntryType> {
+    /// Returns the element immediately after the one the cursor is positioned on.
+    ///
+    /// # Safety
+    ///
+    /// For `Box` or `Arc` that has unique access to the data behind, the method is safe.
+    /// For `Arc` whose strong count is not 1, the method is not safe because it
+    /// violates the safety requirements of [`Arc`].
+    pub unsafe fn peek_next(&mut self) -> Option<&mut G::EntryType> {
         let mut new = CommonCursor::new(self.cursor.cur);
         new.move_next(self.list);
         // SAFETY: Objects must be kept alive while on the list.
         Some(unsafe { &mut *new.cur?.as_ptr() })
     }
 
-    pub fn peek_prev(&mut self) -> Option<&mut G::EntryType> {
+    /// Returns the element immediately before the one the cursor is positioned on.
+    ///
+    /// # Safety
+    ///
+    /// For `Box` or `Arc` that has unique access to the data behind, the method is safe.
+    /// For `Arc` whose strong count is not 1, the method is not safe because it
+    /// violates the safety requirements of [`Arc`].
+    pub unsafe fn peek_prev(&mut self) -> Option<&mut G::EntryType> {
         let mut new = CommonCursor::new(self.cursor.cur);
         new.move_prev(self.list);
         // SAFETY: Objects must be kept alive while on the list.
@@ -417,7 +469,6 @@ impl<'a, G: GetLinks> CursorMut<'a, G> {
         self.cursor.move_next(self.list);
     }
 
-    #[allow(dead_code)]
     pub fn move_prev(&mut self) {
         self.cursor.move_prev(self.list);
     }
@@ -590,7 +641,7 @@ mod tests {
             // SAFETY: The i-th element was added to the list above, and wasn't removed yet.
             // Additionally, the new element isn't in any list yet, isn't moved, and outlives
             // the list.
-            unsafe { list.insert_after(&*v[i], &*extra) };
+            unsafe { list.insert_after(v[i].as_ref().into(), extra.as_ref().into()) };
             v.insert(i + 1, extra);
         });
     }

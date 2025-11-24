@@ -175,7 +175,7 @@ impl<G: GetLinksWrapped> List<G> {
         }
     }
 
-    /// Inserts the given object after `existing`.
+    /// Inserts the given object after `existing`. Returns true if it's successfully inserted.
     ///
     /// It is dropped if it's already on this (or another) list; this can happen for
     /// reference-counted objects, so dropping means decrementing the reference count.
@@ -183,13 +183,18 @@ impl<G: GetLinksWrapped> List<G> {
     /// # Safety
     ///
     /// Callers must ensure that `existing` points to a valid entry that is on the list.
-    pub unsafe fn insert_after(&mut self, existing: &G::Wrapped, data: G::Wrapped) {
+    pub unsafe fn insert_after(
+        &mut self,
+        existing: NonNull<G::EntryType>,
+        data: G::Wrapped,
+    ) -> bool {
         let ptr = data.into_pointer();
-        let entry = Wrapper::as_ref(existing);
-        if unsafe { !self.list.insert_after(entry, ptr.as_ref()) } {
+        let inserted = unsafe { self.list.insert_after(existing, ptr) };
+        if !inserted {
             // If insertion failed, rebuild object so that it can be freed.
             unsafe { G::Wrapped::from_pointer(ptr) };
         }
+        inserted
     }
 
     /// Removes the given entry.
@@ -216,6 +221,11 @@ impl<G: GetLinksWrapped> List<G> {
         Some(unsafe { G::Wrapped::from_pointer(front) })
     }
 
+    /// Returns an immutable cursor starting on the first (front) element of the list.
+    pub fn cursor_front(&self) -> Cursor<'_, G> {
+        Cursor::new(self.list.cursor_front())
+    }
+
     /// Returns a mutable cursor starting on the first (front) element of the list.
     pub fn cursor_front_mut(&mut self) -> CursorMut<'_, G> {
         CursorMut::new(self.list.cursor_front_mut())
@@ -234,6 +244,42 @@ impl<G: GetLinksWrapped> Drop for List<G> {
     }
 }
 
+/// A list cursor that allows traversing a linked list and inspecting elements.
+pub struct Cursor<'a, G: GetLinksWrapped> {
+    cursor: raw_list::Cursor<'a, G>,
+}
+
+impl<'a, G: GetLinksWrapped> Cursor<'a, G> {
+    const fn new(cursor: raw_list::Cursor<'a, G>) -> Self {
+        Self { cursor }
+    }
+
+    /// Returns the element the cursor is currently positioned on.
+    pub fn current(&self) -> Option<&G::EntryType> {
+        self.cursor.current()
+    }
+
+    /// Returns the element pointer the cursor is currently positioned on.
+    pub fn current_ptr(&self) -> Option<NonNull<G::EntryType>> {
+        self.cursor.current_ptr()
+    }
+
+    /// Returns the element immediately after the one the cursor is positioned on.
+    pub fn peek_next(&self) -> Option<&G::EntryType> {
+        self.cursor.peek_next()
+    }
+
+    /// Returns the element immediately before the one the cursor is positioned on.
+    pub fn peek_prev(&self) -> Option<&G::EntryType> {
+        self.cursor.peek_prev()
+    }
+
+    /// Moves the cursor to the next element.
+    pub fn move_next(&mut self) {
+        self.cursor.move_next();
+    }
+}
+
 /// A list cursor that allows traversing a linked list and inspecting & mutating elements.
 pub struct CursorMut<'a, G: GetLinksWrapped> {
     cursor: raw_list::CursorMut<'a, G>,
@@ -245,8 +291,36 @@ impl<'a, G: GetLinksWrapped> CursorMut<'a, G> {
     }
 
     /// Returns the element the cursor is currently positioned on.
-    pub fn current(&mut self) -> Option<&mut G::EntryType> {
+    ///
+    /// # Safety
+    ///
+    /// For `Box` or `Arc` that has unique access to the data, the method is safe.
+    /// For `Arc` whose strong count is not 1, the method is not safe because it
+    /// violates the safety requirements of [`Arc`].
+    pub unsafe fn current_mut(&mut self) -> Option<&mut G::EntryType> {
+        self.cursor.current_mut()
+    }
+
+    /// Returns the element the cursor is currently positioned on.
+    pub fn current(&self) -> Option<&G::EntryType> {
         self.cursor.current()
+    }
+
+    /// Returns the element pointer the cursor is currently positioned on.
+    pub fn current_ptr(&self) -> Option<NonNull<G::EntryType>> {
+        self.cursor.current_ptr()
+    }
+
+    /// Insert data after the current node.
+    ///
+    /// If there is no current node, the data will be dropped without insertion.
+    pub fn insert_after(&mut self, data: G::Wrapped) -> bool {
+        if let Some(cur) = self.current_ptr() {
+            let new = data.into_pointer();
+            // SAFETY: the current pointer is valid from the list.
+            return unsafe { self.cursor.list.insert_after(cur, new) };
+        }
+        false
     }
 
     /// Removes the element the cursor is currently positioned on.
@@ -260,12 +334,24 @@ impl<'a, G: GetLinksWrapped> CursorMut<'a, G> {
     }
 
     /// Returns the element immediately after the one the cursor is positioned on.
-    pub fn peek_next(&mut self) -> Option<&mut G::EntryType> {
+    ///
+    /// # Safety
+    ///
+    /// For `Box` or `Arc` that has unique access to the data behind, the method is safe.
+    /// For `Arc` whose strong count is not 1, the method is not safe because it
+    /// violates the safety requirements of [`Arc`].
+    pub unsafe fn peek_next(&mut self) -> Option<&mut G::EntryType> {
         self.cursor.peek_next()
     }
 
     /// Returns the element immediately before the one the cursor is positioned on.
-    pub fn peek_prev(&mut self) -> Option<&mut G::EntryType> {
+    ///
+    /// # Safety
+    ///
+    /// For `Box` or `Arc` that has unique access to the data behind, the method is safe.
+    /// For `Arc` whose strong count is not 1, the method is not safe because it
+    /// violates the safety requirements of [`Arc`].
+    pub unsafe fn peek_prev(&mut self) -> Option<&mut G::EntryType> {
         self.cursor.peek_prev()
     }
 
