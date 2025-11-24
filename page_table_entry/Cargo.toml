@@ -19,11 +19,12 @@ arm-el2 = []
 bitflags = "2.9"
 memory_addr.workspace = true
 
-[target.'cfg(any(target_arch = "aarch64", doc))'.dependencies]
+[target.'cfg(any(target_arch = "aarch64", doc, docsrs))'.dependencies]
 aarch64-cpu = "10.0"
 
-[target.'cfg(any(target_arch = "x86_64", doc))'.dependencies]
-x86_64 = "0.15.2"
+[target.'cfg(any(target_arch = "x86_64", doc, docsrs))'.dependencies]
+x86_64 = { version = "0.15", default-features = false }
 
 [package.metadata.docs.rs]
-rustc-args = ["--cfg", "doc"]
+rustc-args = ["--cfg", "docsrs"]
+all-features = true

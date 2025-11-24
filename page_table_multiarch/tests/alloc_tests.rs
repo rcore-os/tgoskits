@@ -91,6 +91,7 @@ fn run_test_for<M: PagingMetaData<VirtAddr = VirtAddr>, PTE: GenericPTE>() -> Pa
 }
 
 #[test]
+#[cfg(any(target_arch = "x86_64", docsrs))]
 fn test_dealloc_x86() -> PagingResult<()> {
     run_test_for::<
         page_table_multiarch::x86_64::X64PagingMetaData,
@@ -100,6 +101,7 @@ fn test_dealloc_x86() -> PagingResult<()> {
 }
 
 #[test]
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64", docsrs))]
 fn test_dealloc_riscv() -> PagingResult<()> {
     run_test_for::<
         page_table_multiarch::riscv::Sv39MetaData<VirtAddr>,
@@ -113,6 +115,7 @@ fn test_dealloc_riscv() -> PagingResult<()> {
 }
 
 #[test]
+#[cfg(any(target_arch = "aarch64", docsrs))]
 fn test_dealloc_aarch64() -> PagingResult<()> {
     run_test_for::<
         page_table_multiarch::aarch64::A64PagingMetaData,
@@ -122,6 +125,7 @@ fn test_dealloc_aarch64() -> PagingResult<()> {
 }
 
 #[test]
+#[cfg(any(target_arch = "loongarch64", docsrs))]
 fn test_dealloc_loongarch64() -> PagingResult<()> {
     run_test_for::<
         page_table_multiarch::loongarch64::LA64MetaData,

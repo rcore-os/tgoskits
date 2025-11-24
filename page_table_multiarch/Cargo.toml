@@ -22,14 +22,18 @@ memory_addr.workspace = true
 page_table_entry.workspace = true
 bitmaps = { version = "3.2", default-features = false, optional = true }
 
-[target.'cfg(any(target_arch = "x86_64", doc))'.dependencies]
+[target.'cfg(any(target_arch = "x86_64", doc, docsrs))'.dependencies]
 x86 = "0.52"
 
-[target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64", doc))'.dependencies]
+[target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64", doc, docsrs))'.dependencies]
 riscv = { version = "0.14", default-features = false }
 
 [package.metadata.docs.rs]
-rustc-args = ["--cfg", "doc"]
+rustc-args = ["--cfg", "docsrs"]
+all-features = true
 
 [dev-dependencies]
-rand = { version = "0.9.1", default-features = false, features = ["small_rng"] }
+# FIXME: use a released version when available
+rand = { version = "0.10.0-rc.5", default-features = false, features = [
+    "small_rng",
+] }
