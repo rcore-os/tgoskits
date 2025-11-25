@@ -50,6 +50,15 @@ impl RockchipPM {
         }
     }
 
+    pub fn get_power_dowain_by_name(&self, name: &str) -> Option<PowerDomain> {
+        for (domain, info) in &self.info.domains {
+            if info.name == name {
+                return Some(*domain);
+            }
+        }
+        None
+    }
+
     /// 开启指定电源域
     pub fn power_domain_on(&mut self, domain: PowerDomain) -> NpuResult<()> {
         self.set_power_domain(domain, true)

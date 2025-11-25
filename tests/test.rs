@@ -22,13 +22,13 @@ mod tests {
     };
     // RK3588 NPU 相关电源域 ID
 
-    /// NPU 主电源域
+    /// NPU 主电源域 (dt-binding 索引 8)
     pub const NPU: PowerDomain = PowerDomain(8);
-    /// NPU TOP 电源域  
+    /// NPU TOP 电源域 (索引 9)
     pub const NPUTOP: PowerDomain = PowerDomain(9);
-    /// NPU1 电源域
+    /// NPU1 电源域 (索引 10)
     pub const NPU1: PowerDomain = PowerDomain(10);
-    /// NPU2 电源域
+    /// NPU2 电源域 (索引 11)
     pub const NPU2: PowerDomain = PowerDomain(11);
 
     #[test]
