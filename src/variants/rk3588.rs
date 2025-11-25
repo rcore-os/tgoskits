@@ -80,7 +80,7 @@ pub fn pmu_info() -> RockchipPmuInfo {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn domain_info(
+fn domain(
     name: &'static str,
     pwr_offset: u32,
     pwr: i32,
@@ -110,36 +110,67 @@ fn domain_info(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
+fn domain_p(
+    name: &'static str,
+    pwr_offset: u32,
+    pwr: i32,
+    status: i32,
+    mem_offset: u32,
+    mem_status: i32,
+    repair_status: i32,
+    req_offset: u32,
+    req: i32,
+    idle: i32,
+    wakeup: bool,
+) -> RockchipDomainInfo {
+    domain_m_o_r(
+        name,
+        pwr_offset,
+        pwr,
+        status,
+        mem_offset,
+        mem_status,
+        repair_status,
+        req_offset,
+        req,
+        idle,
+        idle,
+        wakeup,
+        true,
+    )
+}
+
 fn domains() -> DomainMap {
     map! {
-        GPU     => domain_info("gpu",     0x0, bit!(0), 0,       0x0, 0,        bit!(1),  0x0, bit!(0), bit!(0), false),
-        NPU     => domain_info("npu",     0x0, bit!(1), bit!(1), 0x0, 0,        0,        0x0, 0,       0,       false),
-        VCODEC  => domain_info("vcodec",  0x0, bit!(2), bit!(2), 0x0, 0,        0,        0x0, 0,       0,       false),
-        NPUTOP  => domain_info("nputop",  0x0, bit!(3), 0,       0x0, bit!(11), bit!(2),  0x0, bit!(1), bit!(1), false),
-        NPU1    => domain_info("npu1",    0x0, bit!(4), 0,       0x0, bit!(12), bit!(3),  0x0, bit!(2), bit!(2), false),
-        NPU2    => domain_info("npu2",    0x0, bit!(5), 0,       0x0, bit!(13), bit!(4),  0x0, bit!(3), bit!(3), false),
-        VENC0   => domain_info("venc0",   0x0, bit!(6), 0,       0x0, bit!(14), bit!(5),  0x0, bit!(4), bit!(4), false),
-        VENC1   => domain_info("venc1",   0x0, bit!(7), 0,       0x0, bit!(15), bit!(6),  0x0, bit!(5), bit!(5), false),
-        RKVDEC0 => domain_info("rkvdec0", 0x0, bit!(8), 0,       0x0, bit!(16), bit!(7),  0x0, bit!(6), bit!(6), false),
-        RKVDEC1 => domain_info("rkvdec1", 0x0, bit!(9), 0,       0x0, bit!(17), bit!(8),  0x0, bit!(7), bit!(7), false),
-        VDPU    => domain_info("vdpu",    0x0, bit!(10),0,       0x0, bit!(18), bit!(9),  0x0, bit!(8), bit!(8), false),
-        RGA30   => domain_info("rga30",   0x0, bit!(11),0,       0x0, bit!(19), bit!(10), 0x0, 0,       0,       false),
-        AV1     => domain_info("av1",     0x0, bit!(12),0,       0x0, bit!(20), bit!(11), 0x0, bit!(9), bit!(9), false),
-        VI      => domain_info("vi",      0x0, bit!(13),0,       0x0, bit!(21), bit!(12), 0x0, bit!(10),bit!(10),false),
-        FEC     => domain_info("fec",     0x0, bit!(14),0,       0x0, bit!(22), bit!(13), 0x0, 0,       0,       false),
-        ISP1    => domain_info("isp1",    0x0, bit!(15),0,       0x0, bit!(23), bit!(14), 0x0, bit!(11),bit!(11),false),
-        RGA31   => domain_info("rga31",   0x4, bit!(0), 0,       0x0, bit!(24), bit!(15), 0x0, bit!(12),bit!(12),false),
-        VOP     => domain_info("vop",     0x4, bit!(1), 0,       0x0, bit!(25), bit!(16), 0x0, bit!(13)|bit!(14), bit!(13)|bit!(14), false),
-        VO0     => domain_info("vo0",     0x4, bit!(2), 0,       0x0, bit!(26), bit!(17), 0x0, bit!(15),bit!(15),false),
-        VO1     => domain_info("vo1",     0x4, bit!(3), 0,       0x0, bit!(27), bit!(18), 0x4, bit!(0), bit!(16),false),
-        AUDIO   => domain_info("audio",   0x4, bit!(4), 0,       0x0, bit!(28), bit!(19), 0x4, bit!(1), bit!(17),false),
-        PHP     => domain_info("php",     0x4, bit!(5), 0,       0x0, bit!(29), bit!(20), 0x4, bit!(5), bit!(21),false),
-        GMAC    => domain_info("gmac",    0x4, bit!(6), 0,       0x0, bit!(30), bit!(21), 0x0, 0,       0,       false),
-        PCIE    => domain_info("pcie",    0x4, bit!(7), 0,       0x0, bit!(31), bit!(22), 0x0, 0,       0,       true),
-        NVM     => domain_info("nvm",     0x4, bit!(8), bit!(24),0x4, 0,        0,        0x4, bit!(2), bit!(18),false),
-        NVM0    => domain_info("nvm0",    0x4, bit!(9), 0,       0x4, bit!(1),  bit!(23), 0x0, 0,       0,       false),
-        SDIO    => domain_info("sdio",    0x4, bit!(10),0,       0x4, bit!(2),  bit!(24), 0x4, bit!(3), bit!(19),false),
-        USB     => domain_info("usb",     0x4, bit!(11),0,       0x4, bit!(3),  bit!(25), 0x4, bit!(4), bit!(20),true),
-        SDMMC   => domain_info("sdmmc",   0x4, bit!(13),0,       0x4, bit!(5),  bit!(26), 0x0, 0,       0,       false),
+        GPU     => domain("gpu",     0x0, bit!(0), 0,       0x0, 0,        bit!(1),  0x0, bit!(0), bit!(0), false),
+        NPU     => domain("npu",     0x0, bit!(1), bit!(1), 0x0, 0,        0,        0x0, 0,       0,       false),
+        VCODEC  => domain("vcodec",  0x0, bit!(2), bit!(2), 0x0, 0,        0,        0x0, 0,       0,       false),
+        NPUTOP  => domain("nputop",  0x0, bit!(3), 0,       0x0, bit!(11), bit!(2),  0x0, bit!(1), bit!(1), false),
+        NPU1    => domain("npu1",    0x0, bit!(4), 0,       0x0, bit!(12), bit!(3),  0x0, bit!(2), bit!(2), false),
+        NPU2    => domain("npu2",    0x0, bit!(5), 0,       0x0, bit!(13), bit!(4),  0x0, bit!(3), bit!(3), false),
+        VENC0   => domain("venc0",   0x0, bit!(6), 0,       0x0, bit!(14), bit!(5),  0x0, bit!(4), bit!(4), false),
+        VENC1   => domain("venc1",   0x0, bit!(7), 0,       0x0, bit!(15), bit!(6),  0x0, bit!(5), bit!(5), false),
+        RKVDEC0 => domain("rkvdec0", 0x0, bit!(8), 0,       0x0, bit!(16), bit!(7),  0x0, bit!(6), bit!(6), false),
+        RKVDEC1 => domain("rkvdec1", 0x0, bit!(9), 0,       0x0, bit!(17), bit!(8),  0x0, bit!(7), bit!(7), false),
+        VDPU    => domain("vdpu",    0x0, bit!(10),0,       0x0, bit!(18), bit!(9),  0x0, bit!(8), bit!(8), false),
+        RGA30   => domain("rga30",   0x0, bit!(11),0,       0x0, bit!(19), bit!(10), 0x0, 0,       0,       false),
+        AV1     => domain("av1",     0x0, bit!(12),0,       0x0, bit!(20), bit!(11), 0x0, bit!(9), bit!(9), false),
+        VI      => domain("vi",      0x0, bit!(13),0,       0x0, bit!(21), bit!(12), 0x0, bit!(10),bit!(10),false),
+        FEC     => domain("fec",     0x0, bit!(14),0,       0x0, bit!(22), bit!(13), 0x0, 0,       0,       false),
+        ISP1    => domain("isp1",    0x0, bit!(15),0,       0x0, bit!(23), bit!(14), 0x0, bit!(11),bit!(11),false),
+        RGA31   => domain("rga31",   0x4, bit!(0), 0,       0x0, bit!(24), bit!(15), 0x0, bit!(12),bit!(12),false),
+        VOP     => domain_p("vop",   0x4, bit!(1), 0,       0x0, bit!(25), bit!(16), 0x0, bit!(13)|bit!(14), bit!(13)|bit!(14), false),
+        VO0     => domain_p("vo0",   0x4, bit!(2), 0,       0x0, bit!(26), bit!(17), 0x0, bit!(15),bit!(15),false),
+        VO1     => domain_p("vo1",   0x4, bit!(3), 0,       0x0, bit!(27), bit!(18), 0x4, bit!(0), bit!(16),false),
+        AUDIO   => domain("audio",   0x4, bit!(4), 0,       0x0, bit!(28), bit!(19), 0x4, bit!(1), bit!(17),false),
+        PHP     => domain("php",     0x4, bit!(5), 0,       0x0, bit!(29), bit!(20), 0x4, bit!(5), bit!(21),false),
+        GMAC    => domain("gmac",    0x4, bit!(6), 0,       0x0, bit!(30), bit!(21), 0x0, 0,       0,       false),
+        PCIE    => domain("pcie",    0x4, bit!(7), 0,       0x0, bit!(31), bit!(22), 0x0, 0,       0,       true),
+        NVM     => domain("nvm",     0x4, bit!(8), bit!(24),0x4, 0,        0,        0x4, bit!(2), bit!(18),false),
+        NVM0    => domain("nvm0",    0x4, bit!(9), 0,       0x4, bit!(1),  bit!(23), 0x0, 0,       0,       false),
+        SDIO    => domain("sdio",    0x4, bit!(10),0,       0x4, bit!(2),  bit!(24), 0x4, bit!(3), bit!(19),false),
+        USB     => domain("usb",     0x4, bit!(11),0,       0x4, bit!(3),  bit!(25), 0x4, bit!(4), bit!(20),true),
+        SDMMC   => domain("sdmmc",   0x4, bit!(13),0,       0x4, bit!(5),  bit!(26), 0x0, 0,       0,       false),
     }
 }

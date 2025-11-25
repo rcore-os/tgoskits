@@ -1,379 +1,294 @@
 # Rockchip Power Management Driver (rockchip-pm)
 
-A Rust library for Rockchip SoC power management, based on the Linux kernel driver `pm_domains.c`.
+一个用于 Rockchip SoC 的 Rust 电源管理驱动库，提供基础的电源域控制功能。
 
-## Features
+## 特性
 
-- 🔋 **Complete Power Domain Control**: Support for RK3568 and RK3588 power domains
-- 🚀 **Full-featured Implementation**: Memory power control, bus idle management, and complete power sequencing
-- 🛡️ **Memory Safe**: Leveraging Rust's type system for memory safety and thread safety
-- 📋 **No Standard Library**: `#![no_std]` design suitable for embedded environments
-- 🎯 **Hardware Accurate**: Direct translation from Linux kernel implementation
-- 🔌 **Multi-Chip Support**: Extensible architecture supporting multiple Rockchip SoC families
+- 🔋 **基础电源域控制**: 支持 RK3588 电源域的开关操作
+- 🛡️ **内存安全**: 利用 Rust 类型系统确保内存和线程安全
+- 📋 **无标准库**: `#![no_std]` 设计，适用于嵌入式环境
+- 🎯 **硬件准确**: 直接寄存器访问，无抽象开销
+- 🔌 **名称查找**: 支持通过名称查找电源域
+- 📦 **驱动框架**: 基于 rdif-base 驱动框架
 
-## Supported Power Domains
-
-## Usage Example
+## 快速开始
 
 ```rust
-use rockchip_pm::{RockchipPM, RkBoard, PowerDomain, RK3568, RK3588};
+use rockchip_pm::{RockchipPM, RkBoard, PowerDomain};
 use core::ptr::NonNull;
 
-// Initialize PMU for RK3588 (base address should be obtained from device tree)
+// 初始化 RK3588 PMU（基础地址通常来自设备树）
 let pmu_base = unsafe { NonNull::new_unchecked(0xfd8d8000 as *mut u8) };
-let mut pm_rk3588 = RockchipPM::new(pmu_base, RkBoard::Rk3588);
+let mut pm = RockchipPM::new(pmu_base, RkBoard::Rk3588);
 
-// Method 1: Use chip-specific constants (Recommended)
-pm_rk3588.power_domain_on(RK3588::NPU1)?;    // NPU core 1
+// 使用 ID 控制电源域
+let npu_domain = PowerDomain::new(8);  // NPU 主域
+pm.power_domain_on(npu_domain)?;
 
-// Method 2: Create PowerDomain directly with ID
-let NPU1 = PowerDomain::new(10);
-pm_rk3588.power_domain_on(NPU1)?;  // NPU1 (ID: 10)
+// 通过名称查找电源域
+if let Some(npu) = pm.get_power_dowain_by_name("npu") {
+    pm.power_domain_on(npu)?;
+}
+
+// 关闭电源域
+pm.power_domain_off(npu)?;
 ```
 
-### Choosing the Right Method
+## API 文档
 
-**Method 1 (Named Constants)** - Recommended for most use cases:
-- ✅ Clear and self-documenting code
-- ✅ Compile-time verification
-- ✅ IDE autocomplete support
-- ✅ Prevents using wrong IDs
+### 核心结构体
 
-**Method 2 (Direct ID)** - Use when:
-- Dynamic power domain selection is needed
-- Working with power domain IDs from configuration files
-- Interfacing with external systems that use raw IDs
-- Need to query power domain ID: `domain.id()`
+```rust
+pub struct RockchipPM {
+    // 私有字段：板型信息、寄存器接口、电源域配置
+}
 ```
 
-## Architecture
+### 板型支持
 
-The library implements a complete power management sequence:
+```rust
+pub enum RkBoard {
+    Rk3588,  // 已实现
+    Rk3568,  // 未实现（占位符）
+}
+```
 
-### Power-On Sequence
-1. **Memory Power**: Power on domain memory (if available)
-2. **Bus Idle Cancel**: Cancel bus idle requests
-3. **Main Power**: Power on the main domain
-4. **Repair Wait**: Wait for repair operations to complete
-5. **State Verification**: Verify power state is stable
+### 电源域类型
 
-### Power-Off Sequence  
-1. **Bus Idle Request**: Request bus to enter idle state
-2. **Main Power**: Power off the main domain
-3. **State Verification**: Verify power state is stable
-4. **Memory Power**: Power off domain memory (if available)
+```rust
+pub struct PowerDomain {
+    // 电源域 ID
+}
+impl PowerDomain {
+    pub fn new(id: u32) -> Self
+    pub fn id(&self) -> u32
+}
+```
 
-### Module Structure
+### 错误处理
+
+```rust
+pub enum NpuError {
+    DomainNotFound,  // 电源域不存在
+    Timeout,         // 操作超时
+    HardwareError,   // 硬件错误
+}
+
+pub type NpuResult<T> = Result<T, NpuError>;
+```
+
+### 主要方法
+
+```rust
+impl RockchipPM {
+    /// 创建新的电源管理器实例
+    pub fn new(base: NonNull<u8>, board: RkBoard) -> Self
+
+    /// 通过名称查找电源域
+    pub fn get_power_dowain_by_name(&self, name: &str) -> Option<PowerDomain>
+
+    /// 开启指定电源域
+    pub fn power_domain_on(&mut self, domain: PowerDomain) -> NpuResult<()>
+
+    /// 关闭指定电源域
+    pub fn power_domain_off(&mut self, domain: PowerDomain) -> NpuResult<()>
+}
+```
+
+## 支持的电源域 (RK3588)
+
+### 计算域
+- **NPU** (ID: 8) - 神经处理单元主域
+- **NPUTOP** (ID: 9) - NPU 顶层域
+- **NPU1** (ID: 10) - NPU 核心 1
+- **NPU2** (ID: 11) - NPU 核心 2
+
+### 图形域
+- **GPU** (ID: 0) - 图形处理单元
+- **VOP** (ID: 26) - 视频输出处理器
+- **VO0** (ID: 27) - 视频输出 0
+- **VO1** (ID: 28) - 视频输出 1
+
+### 视频域
+- **VCODEC** (ID: 4) - 视频编解码器主域
+- **VENC0** (ID: 5) - 视频编码器 0
+- **VENC1** (ID: 6) - 视频编码器 1
+- **RKVDEC0** (ID: 7) - Rockchip 视频解码器 0
+- **RKVDEC1** (ID: 12) - Rockchip 视频解码器 1
+- **AV1** (ID: 18) - AV1 解码器
+- **VDPU** (ID: 2) - 视频处理单元
+
+### 图像域
+- **VI** (ID: 29) - 视频输入
+- **ISP1** (ID: 30) - 图像信号处理器
+- **RGA30** (ID: 15) - 光栅图形加速器 30
+- **RGA31** (ID: 16) - 光栅图形加速器 31
+
+### 总线域
+- **PHP** (ID: 17) - PHP 控制器
+- **GMAC** (ID: 19) - 千兆以太网 MAC
+- **PCIE** (ID: 20) - PCIe 控制器
+- **SDIO** (ID: 21) - SDIO 控制器
+- **USB** (ID: 22) - USB 控制器
+- **SDMMC** (ID: 23) - SD/MMC 控制器
+
+### 其他域
+- **AUDIO** (ID: 1) - 音频子系统
+- **FEC** (ID: 24) - 前向纠错编码
+- **NVM** (ID: 25) - 非易失性存储器
+- **NVM0** (ID: 3) - NVM 域 0
+
+## 项目结构
 
 ```
 rockchip-pm/
 ├── src/
-│   ├── lib.rs              # Main API and RockchipPM struct
-│   ├── power_sequencer.rs  # Complete power control sequencing
-│   ├── memory_control.rs   # Memory power management
-│   ├── idle_control.rs     # Bus idle control
-│   ├── qos_control.rs      # QoS register save/restore
-│   ├── registers/          # Register definitions and access
-│   └── variants/           # Chip-specific implementations
-│       ├── mod.rs          # Common structures
-│       ├── _macros.rs      # Domain definition macros
-│       ├── rk3568.rs       # RK3568-specific domains
-│       └── rk3588.rs       # RK3588-specific domains
-└── tests/
-    └── test.rs             # Integration tests
+│   ├── lib.rs              # 主 API 和 RockchipPM 结构
+│   ├── registers/mod.rs    # 寄存器定义和访问抽象
+│   └── variants/           # 芯片特定实现
+│       ├── mod.rs          # PowerDomain 类型和通用结构
+│       ├── _macros.rs      # 电源域定义宏
+│       └── rk3588.rs       # RK3588 电源域定义
+├── tests/
+│   └── test.rs             # NPU 电源控制集成测试
+├── Cargo.toml              # 项目配置和依赖
+├── build.rs                # 构建脚本
+├── rust-toolchain.toml     # Rust 工具链配置
+└── README.md               # 项目文档
 ```
 
-## Advanced Features
+## 构建和测试
 
-### Dependency Management
+### 环境要求
 
-Power domains may have parent-child relationships that must be respected during power transitions:
+- Rust 1.75+ (nightly)
+- aarch64-unknown-none-softfloat 目标支持
 
-- **Parent Dependencies**: Child domains require their parent domain to be powered on first
-- **Child Dependencies**: Parent domains require all child domains to be powered off first
-- **Safe Sequencing**: Use `_with_deps` methods to enforce dependency checking
-
-#### Usage Example
-
-```rust
-use rockchip_pm::{RockchipPM, RkBoard, RK3588};
-
-let mut pm = RockchipPM::new(pmu_base, RkBoard::Rk3588);
-
-// Power on with dependency checking
-// Example: NPU1 requires NPUTOP to be powered on first
-pm.power_domain_on_with_deps(RK3588::NPUTOP)?;  // Power on parent first
-pm.power_domain_on_with_deps(RK3588::NPU1)?;    // Then power on child
-
-// Power off with dependency checking  
-// Child domains must be powered off before parent
-pm.power_domain_off_with_deps(RK3588::NPU1)?;   // Power off child first
-pm.power_domain_off_with_deps(RK3588::NPUTOP)?; // Then power off parent
-
-// Query currently active domains
-let active = pm.get_active_domains();
-for domain in active {
-    println!("Domain {} is active", domain.id());
-}
-```
-
-#### Dependency Error Handling
-
-If dependencies are not met, operations will fail with `PowerError::DependencyNotMet`:
-
-```rust
-// This will fail if NPUTOP is not powered on
-match pm.power_domain_on_with_deps(RK3588::NPU1) {
-    Ok(()) => println!("NPU1 powered on successfully"),
-    Err(PowerError::DependencyNotMet) => {
-        println!("Parent domain NPUTOP must be powered on first");
-        // Power on parent first
-        pm.power_domain_on_with_deps(RK3588::NPUTOP)?;
-        pm.power_domain_on_with_deps(RK3588::NPU1)?;
-    }
-    Err(e) => return Err(e),
-}
-```
-
-### QoS (Quality of Service) Management
-
-The library includes comprehensive QoS infrastructure for managing hardware QoS settings:
-
-- **Automatic QoS Preservation**: QoS settings (priority, mode, bandwidth, saturation, extcontrol) are saved before power domain shutdown
-- **Seamless Restoration**: QoS configuration is automatically restored when the domain powers back on
-- **Multi-port Support**: Each power domain can have multiple QoS ports (up to 8)
-- **Five Register Types**: 
-  - Priority (`0x08`): Bus access priority
-  - Mode (`0x0c`): QoS mode control
-  - Bandwidth (`0x10`): Bandwidth limitation
-  - Saturation (`0x14`): Saturation threshold
-  - ExtControl (`0x18`): Extended control
-
-#### Configured QoS Domains (RK3588)
-
-The following domains have QoS configuration:
-- **GPU**: 2 QoS ports @ 0xFDF35000
-- **NPU**: 4 QoS ports @ 0xFDF40000
-- **VCODEC**: 3 QoS ports @ 0xFDF78000
-- **VENC0**: 2 QoS ports @ 0xFDF50000
-- **RKVDEC0**: 2 QoS ports @ 0xFDF48000
-- **VOP**: 4 QoS ports @ 0xFDF60000
-- **VI**: 2 QoS ports @ 0xFDF70000
-
-#### QoS State Persistence
-
-QoS states are maintained across power cycles:
-
-```rust
-// Check if domain has saved QoS state
-if pm.has_qos_state(RK3588::GPU) {
-    println!("GPU has saved QoS configuration");
-}
-
-// Clear QoS state for a specific domain
-pm.clear_qos_state(RK3588::GPU);
-
-// Clear all QoS states
-pm.clear_all_qos_states();
-```
-
-#### QoS Integration
-
-QoS save/restore is automatically integrated into the power sequencing:
-
-```rust
-// Power off sequence includes QoS save
-pm.power_domain_off(RK3588::GPU)?;  // QoS automatically saved
-
-// Power on sequence includes QoS restore  
-pm.power_domain_on(RK3588::GPU)?;   // QoS automatically restored
-```
-
-**Note**: QoS operations are performed transparently during power transitions. No explicit QoS management is required from the user code. The integration ensures that performance-critical QoS settings are preserved across power cycles.
-
-### RK3588 Domain Dependencies
-
-The following parent-child relationships are configured:
-
-| Parent Domain | Child Domains                  | Description                            |
-| ------------- | ------------------------------ | -------------------------------------- |
-| **NPUTOP**    | NPU1, NPU2                     | Neural Processing Unit hierarchy       |
-| **VCODEC**    | VENC0, VENC1, RKVDEC0, RKVDEC1 | Video codec hierarchy                  |
-| **VOP**       | VO0, VO1                       | Video Output Processor hierarchy       |
-| **VI**        | ISP1                           | Video Input and Image Signal Processor |
-
-**Power-On Rule**: Parent must be powered on before any children  
-**Power-Off Rule**: All children must be powered off before parent
-
-## Memory Mapping Requirements
-
-To use this library, ensure:
-
-1. **Correct PMU Base Address**: 
-   - RK3588: Usually `0xfd8d8000` (verify from device tree)
-   - RK3568: Usually `0xfdd90000` (verify from device tree)
-2. **Memory Mapping Permissions**: Read/write access to PMU register region
-3. **Clock Configuration**: Ensure PMU clocks are properly configured
-
-## Important Notes
-
-⚠️ **CRITICAL**: This library directly manipulates hardware registers. Before use:
-
-- System PMU hardware must be properly initialized
-- No other drivers should control the same power domains concurrently
-- Perform thorough validation before testing on real hardware
-
-## Build and Test
-
-### Environment Setup
+### 构建步骤
 
 ```bash
-# Install required tools
-cargo install ostool
-
-# Add target architecture support
+# 添加目标架构支持
 rustup target add aarch64-unknown-none-softfloat
-```
 
-### Building
-
-```bash
-# Build library
+# 构建库
 cargo build
 
-# Build release version
+# 构建发布版本
 cargo build --release
 
-# Check for errors
+# 检查代码
 cargo check
 ```
 
-### Running Tests
+### 运行测试
 
-The test suite includes comprehensive unit and integration tests:
-
-**Test Categories:**
-- **Unit Tests**: DependencyManager functionality (4 tests)
-- **QoS State Tests**: QoS state management (1 test)
-- **Dependency Enforcement**: Parent-child power sequencing (4 tests)
-- **Complex Hierarchies**: Multi-level dependencies (2 tests)
-- **Edge Cases**: Error handling and invalid inputs (3 tests)
-- **Integration Tests**: Real hardware testing (3 tests)
-
-**Total: 17 comprehensive test cases**
+项目包含 1 个集成测试，验证 NPU 电源域控制功能：
 
 ```bash
-# Run on development board (requires U-Boot environment)
+# 在开发板上运行测试（需要 U-Boot 环境）
 cargo uboot
 ```
 
-**Test Coverage:**
-- ✅ DependencyManager state tracking
-- ✅ Parent-child power sequencing enforcement
-- ✅ Multi-level dependency hierarchies (VCODEC with 4 children)
-- ✅ QoS state persistence
-- ✅ Independent domain operations
-- ✅ Error handling for invalid domains
-- ✅ Active domain tracking
-- ✅ Real NPU hardware verification
+**测试内容：**
+- ✅ RK3588 NPU 相关电源域开关
+- ✅ 设备树电源域解析
+- ✅ 寄存器访问验证
 
-## Technical Features
+## 依赖项
 
-### 🔒 Safety
+### 核心依赖
 
-- **Memory Safety**: Compile-time guarantees prevent dangling pointers
-- **Type Safety**: Strong typing for power domains and states
-- **Thread Safety**: Built-in synchronization mechanisms
-- **Boundary Checks**: Automatic prevention of buffer overflows
+- **rdif-base** (v0.7): 设备驱动框架
+- **tock-registers** (v0.10): 类型安全的寄存器访问和位域操作
+- **mbarrier** (v0.1): 内存屏障原语，用于寄存器访问排序
+- **dma-api** (v0.5): DMA API 支持
+- **log** (v0.4): 日志记录
 
-### 🚀 Extensibility
+### 开发依赖
 
-- **Modular Design**: Trait-based register access abstraction
-- **Easy Extension**: Simple addition of new power domains
-- **Plugin Support**: Custom power policies and optimization algorithms
-- **Platform Adaptation**: Easy porting to other Rockchip series chips
+- **bare-test** (v0.7): 裸机测试框架
 
-### 📱 Embedded Friendly
+### 构建依赖
 
-- **no-std Support**: Suitable for bare-metal environments
-- **Small Memory Footprint**: Optimized memory usage
-- **Efficient Access**: Direct memory-mapped I/O with minimal overhead
-- **Real-time Response**: Low-latency power control
+- **bare-test-macros** (v0.2): 测试宏定义
 
-## Dependencies
+## 硬件兼容性
 
-### Core Dependencies
+### 支持的芯片
 
-- **rdif-base**: Device driver framework
-- **tock-registers**: Type-safe register access and bitfield operations
-- **mbarrier**: Memory barrier primitives for register access ordering
+- **RK3588**: ✅ 已完整实现
+- **RK3568**: ❌ 未实现（代码中为 `unimplemented!()` 占位符）
 
-### Development Dependencies
+### 开发板
 
-- **bare-test**: Bare-metal testing framework
-
-### System Requirements
-
-- **Rust Version**: 1.75.0 or higher
-- **Target Architecture**: aarch64-unknown-none-softfloat
-- **Development Environment**: Linux/macOS/Windows + Rust toolchain
-- **Deployment Environment**: RK3588/RK3588S development board
-
-## Hardware Compatibility
-
-### Supported Chips
-- **RK3568**: Quad-core ARM Cortex-A55 SoC with integrated NPU and GPU
-- **RK3588**: Octa-core ARM Cortex-A55/A76 flagship SoC
-- **RK3588S**: Cost-optimized variant of RK3588
-
-### Development Boards
-- **RK3568 Boards**:
-  - NanoPi R5S/R5C
-  - ROCK 3A/3B/3C
-  - Radxa E25
-  - Other RK3568-based boards
-- **RK3588 Boards**:
+- **RK3588 板型**:
   - Orange Pi 5/5 Plus/5B
   - Rock 5A/5B/5C
   - NanoPC-T6
-  - Other RK3588/RK3588S-based boards
+  - 其他基于 RK3588/RK3588S 的开发板
 
-### Hardware Features
-- **CPU Architecture**: ARM Cortex-A55/A76 heterogeneous cores
-- **GPU**: Mali-G52 (RK3568) / Mali-G610 MP4 (RK3588)
-- **NPU**: 1 TOPS (RK3568) / 6 TOPS (RK3588) AI accelerator
+### 内存映射要求
+
+使用本库需要确保：
+
+1. **正确的 PMU 基础地址**:
+   - RK3588: 通常为 `0xfd8d8000`（请从设备树验证）
+2. **内存映射权限**: PMU 寄存器区域的读写权限
+3. **时钟配置**: 确保 PMU 时钟正确配置
+
+## 工作原理
+
+### 电源开启流程
+
+1. 写入电源控制寄存器，开启电源域
+2. 轮询状态寄存器，等待电源域稳定（最多 10000 次循环）
+3. 验证电源状态是否成功开启
+
+### 电源关闭流程
+
+1. 写入电源控制寄存器，关闭电源域
+2. 轮询状态寄存器，等待电源域稳定（最多 10000 次循环）
+3. 验证电源状态是否成功关闭
+
+## 安全注意事项
+
+⚠️ **重要**: 本库直接操作硬件寄存器。使用前请确保：
+
+- 系统 PMU 硬件已正确初始化
+- 没有其他驱动同时控制相同电源域
+- 在真实硬件上使用前进行充分验证
 
 ## License
 
-This project is based on the same GPL-2.0 license as the Linux kernel.
+本项目采用 [MIT 许可证](LICENSE)。
 
-## Contributing
+## 贡献
 
-Contributions are welcome! Please submit Issues and Pull Requests.
+欢迎贡献！请提交 Issue 和 Pull Request。
 
-### Development Setup
+### 开发环境设置
 
 ```bash
-# Clone the project
-git clone <repository-url>
+# 克隆项目
+git clone https://github.com/drivercraft/rockchip-pm.git
 cd rockchip-pm
 
-# Install dependencies
+# 安装开发工具
 rustup component add rustfmt clippy
 
-# Format code
+# 格式化代码
 cargo fmt
 
-# Run linter
+# 运行代码检查
 cargo clippy
 ```
 
-## References
+## 参考资料
 
-- Linux Kernel `drivers/soc/rockchip/pm_domains.c`
-- RK3588 Technical Reference Manual
-- Device Tree Bindings for Rockchip Power Domains
+- Linux 内核 `drivers/soc/rockchip/pm_domains.c`
+- RK3588 技术参考手册
+- Rockchip 电源域设备树绑定文档
 
 ---
 
-**Note**: This driver is low-level system software. Ensure that hardware register operations comply with chip specifications. Perform thorough testing before use in production environments.
+**注意**: 本驱动是底层系统软件。确保硬件寄存器操作符合芯片规格。在生产环境中使用前请进行充分测试。
