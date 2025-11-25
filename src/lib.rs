@@ -50,6 +50,21 @@ impl RockchipPM {
         }
     }
 
+    pub fn new_with_compatible(base: NonNull<u8>, compatible: &str) -> Self {
+        let board = match compatible {
+            "rockchip,rk3568-power-controller" => RkBoard::Rk3568,
+            "rockchip,rk3588-power-controller" => RkBoard::Rk3588,
+            _ => panic!("Unsupported compatible string: {compatible}"),
+        };
+
+
+        Self {
+            _board: board,
+            info: RockchipPmuInfo::new(board),
+            reg: PmuRegs::new(base),
+        }
+    }
+
     pub fn get_power_dowain_by_name(&self, name: &str) -> Option<PowerDomain> {
         for (domain, info) in &self.info.domains {
             if info.name == name {
