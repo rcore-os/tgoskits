@@ -29,8 +29,6 @@ macro_rules! define_power_domains {
     };
 }
 
-
-
 macro_rules! bit {
     ($n:expr) => {
         (1 << $n)
