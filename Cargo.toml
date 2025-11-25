@@ -4,7 +4,7 @@ resolver = "2"
 members = ["page_table_multiarch", "page_table_entry"]
 
 [workspace.package]
-version = "0.5.6"
+version = "0.5.7"
 edition = "2024"
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
