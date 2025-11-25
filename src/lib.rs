@@ -1,74 +1,44 @@
-//! # RK3588 Power Management Driver
-//!
-//! This library provides power management functionality for RK3588 series SoCs,
-//! particularly for power domain control including NPU, GPU, VPU, and other domains.
-//!
 #![no_std]
+//! # RK3588 电源管理驱动
+//!
+//! 本库提供了针对 RK3588 系列 SoC 的电源管理功能，特别是 NPU 电源域的控制。
+//!
 
 extern crate alloc;
 
+use mbarrier::mb;
 use rdif_base::DriverGeneric;
 
-use crate::{power_sequencer::PowerSequencer, registers::PmuRegs, variants::RockchipPmuInfo};
+use crate::{registers::PmuRegs, variants::RockchipPmuInfo};
 use core::ptr::NonNull;
 
-// Make dependency_manager public for testing
-pub mod dependency_manager;
-mod idle_control;
-mod memory_control;
-mod power_sequencer;
-mod qos_control;
 mod registers;
 mod variants;
 
-// Re-export PowerDomain type
-pub use variants::PowerDomain;
-
-// Re-export chip-specific power domain constants as modules
-pub use variants::rk3568 as RK3568;
-pub use variants::rk3588 as RK3588;
+pub use variants::PD;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RkBoard {
-    Rk3568,
     Rk3588,
+    Rk3568,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PowerError {
-    /// Power domain not found
+pub enum NpuError {
+    /// 电源域不存在
     DomainNotFound,
-    /// Timeout error
+    /// 超时错误
     Timeout,
-    /// Hardware error
+    /// 硬件错误
     HardwareError,
-    /// Memory power timeout
-    MemoryPowerTimeout,
-    /// Idle request timeout
-    IdleRequestTimeout,
-    /// Idle acknowledgment timeout
-    IdleAckTimeout,
-    /// Repair timeout
-    RepairTimeout,
-    /// Invalid operation
-    InvalidOperation,
-    /// Dependency not met (parent not powered or child still active)
-    DependencyNotMet,
-    /// QoS save/restore error
-    QoSError,
-    /// Invalid QoS configuration
-    InvalidQoSConfig,
 }
 
-pub type PowerResult<T> = Result<T, PowerError>;
+pub type NpuResult<T> = Result<T, NpuError>;
 
 pub struct RockchipPM {
     _board: RkBoard,
     reg: PmuRegs,
     info: RockchipPmuInfo,
-    dep_manager: dependency_manager::DependencyManager,
-    /// QoS state storage for persistence across power cycles
-    qos_states: alloc::collections::BTreeMap<PowerDomain, qos_control::QoSControl>,
 }
 
 impl RockchipPM {
@@ -77,139 +47,100 @@ impl RockchipPM {
             _board: board,
             info: RockchipPmuInfo::new(board),
             reg: PmuRegs::new(base),
-            dep_manager: dependency_manager::DependencyManager::new(),
-            qos_states: alloc::collections::BTreeMap::new(),
         }
     }
 
-    /// Check if QoS state exists for a domain
-    ///
-    /// # Arguments
-    /// * `domain` - Power domain to check
-    ///
-    /// # Returns
-    /// true if QoS state has been saved for this domain
-    pub fn has_qos_state(&self, domain: PowerDomain) -> bool {
-        self.qos_states.contains_key(&domain)
+    /// 开启指定电源域
+    pub fn power_domain_on(&mut self, domain: PD) -> NpuResult<()> {
+        self.set_power_domain(domain, true)
     }
 
-    /// Clear QoS state for a domain
-    ///
-    /// # Arguments
-    /// * `domain` - Power domain to clear state for
-    pub fn clear_qos_state(&mut self, domain: PowerDomain) {
-        self.qos_states.remove(&domain);
+    /// 关闭指定电源域
+    pub fn power_domain_off(&mut self, domain: PD) -> NpuResult<()> {
+        self.set_power_domain(domain, false)
     }
 
-    /// Clear all QoS states
-    pub fn clear_all_qos_states(&mut self) {
-        self.qos_states.clear();
-    }
-
-    /// Power on the specified power domain
-    pub fn power_domain_on(&mut self, domain: PowerDomain) -> PowerResult<()> {
-        let mut sequencer = PowerSequencer::new(&mut self.reg, &self.info);
-        sequencer.power_on_sequence(domain)
-    }
-
-    /// Power off the specified power domain
-    pub fn power_domain_off(&mut self, domain: PowerDomain) -> PowerResult<()> {
-        let mut sequencer = PowerSequencer::new(&mut self.reg, &self.info);
-        sequencer.power_off_sequence(domain)
-    }
-
-    /// Power on domain with dependency checking
-    ///
-    /// This method checks that all parent dependencies are satisfied before
-    /// powering on the domain. If successful, the domain is marked as active.
-    ///
-    /// # Arguments
-    /// * `domain` - Power domain to enable
-    ///
-    /// # Returns
-    /// * `Ok(())` if successful
-    /// * `Err(PowerError::DependencyNotMet)` if parent dependencies not satisfied
-    /// * `Err(PowerError)` for other power-on failures
-    pub fn power_domain_on_with_deps(&mut self, domain: PowerDomain) -> PowerResult<()> {
+    /// 设置电源域状态（简化版本）
+    fn set_power_domain(&mut self, domain: PD, power_on: bool) -> NpuResult<()> {
         let domain_info = self
             .info
             .domains
             .get(&domain)
-            .ok_or(PowerError::DomainNotFound)?;
+            .ok_or(NpuError::DomainNotFound)?;
 
-        // Check dependencies
-        self.dep_manager.can_power_on(domain, domain_info)?;
+        if domain_info.pwr_mask == 0 {
+            return Ok(());
+        }
 
-        // Execute power on
-        let mut sequencer = PowerSequencer::new(&mut self.reg, &self.info);
-        sequencer.power_on_sequence(domain)?;
+        // 写入电源控制寄存器
+        self.write_power_control(&domain, power_on)?;
 
-        // Mark as active
-        self.dep_manager.mark_powered_on(domain);
-
-        Ok(())
-    }
-
-    /// Power off domain with dependency checking
-    ///
-    /// This method checks that all child dependencies are inactive before
-    /// powering off the domain. If successful, the domain is marked as inactive.
-    ///
-    /// # Arguments
-    /// * `domain` - Power domain to disable
-    ///
-    /// # Returns
-    /// * `Ok(())` if successful
-    /// * `Err(PowerError::DependencyNotMet)` if child dependencies still active
-    /// * `Err(PowerError)` for other power-off failures
-    pub fn power_domain_off_with_deps(&mut self, domain: PowerDomain) -> PowerResult<()> {
-        let domain_info = self
-            .info
-            .domains
-            .get(&domain)
-            .ok_or(PowerError::DomainNotFound)?;
-
-        // Check dependencies
-        self.dep_manager.can_power_off(domain, domain_info)?;
-
-        // Execute power off
-        let mut sequencer = PowerSequencer::new(&mut self.reg, &self.info);
-        sequencer.power_off_sequence(domain)?;
-
-        // Mark as inactive
-        self.dep_manager.mark_powered_off(domain);
+        // 等待电源域状态稳定
+        self.wait_power_domain_stable(&domain, power_on)?;
 
         Ok(())
     }
 
-    /// Get currently active power domains
-    ///
-    /// Returns a reference to the set of domains that are currently powered on
-    /// and tracked by the dependency manager.
-    ///
-    /// # Returns
-    /// Reference to set of active power domains
-    pub fn get_active_domains(&self) -> &alloc::collections::BTreeSet<PowerDomain> {
-        self.dep_manager.get_active_domains()
-    }
-
-    /// Check if power domain is on
-    pub fn is_domain_on(&self, domain: &PowerDomain) -> PowerResult<bool> {
+    /// 写入电源控制寄存器
+    fn write_power_control(&mut self, domain: &PD, power_on: bool) -> NpuResult<()> {
         let domain_info = self
             .info
             .domains
             .get(domain)
-            .ok_or(PowerError::DomainNotFound)?;
+            .ok_or(NpuError::DomainNotFound)?;
+        let pwr_offset = self.info.pwr_offset + domain_info.pwr_offset;
+
+        if domain_info.pwr_w_mask != 0 {
+            // 使用写使能掩码方式
+            let value = if power_on {
+                domain_info.pwr_w_mask
+            } else {
+                domain_info.pwr_mask | domain_info.pwr_w_mask
+            };
+            self.reg.write_u32(pwr_offset as usize, value as u32);
+        } else {
+            // 使用读改写方式
+            let current = self.reg.read_u32(pwr_offset as usize);
+            let new_value = if power_on {
+                current & !(domain_info.pwr_mask as u32)
+            } else {
+                current | (domain_info.pwr_mask as u32)
+            };
+            self.reg.write_u32(pwr_offset as usize, new_value);
+        }
+
+        mb();
+
+        Ok(())
+    }
+
+    /// 等待电源域状态稳定
+    fn wait_power_domain_stable(&self, domain: &PD, expected_on: bool) -> NpuResult<()> {
+        for _ in 0..10000 {
+            if self.is_domain_on(domain)? == expected_on {
+                return Ok(());
+            }
+        }
+        Err(NpuError::Timeout)
+    }
+
+    /// 检查电源域是否开启
+    fn is_domain_on(&self, domain: &PD) -> NpuResult<bool> {
+        let domain_info = self
+            .info
+            .domains
+            .get(domain)
+            .ok_or(NpuError::DomainNotFound)?;
 
         if domain_info.repair_status_mask != 0 {
-            // Use repair status register
+            // 使用修复状态寄存器
             let val = self.reg.read_u32(self.info.repair_status_offset as usize);
             // 1'b1: power on, 1'b0: power off
             return Ok((val & (domain_info.repair_status_mask as u32)) != 0);
         }
 
         if domain_info.status_mask == 0 {
-            // Check idle status only for domains without status mask
+            // 仅检查空闲状态的域
             return Ok(!self.is_domain_idle(domain)?);
         }
 
@@ -218,13 +149,13 @@ impl RockchipPM {
         Ok((val & (domain_info.status_mask as u32)) == 0)
     }
 
-    /// Check if power domain is idle
-    pub fn is_domain_idle(&self, domain: &PowerDomain) -> PowerResult<bool> {
+    /// 检查电源域是否空闲
+    fn is_domain_idle(&self, domain: &PD) -> NpuResult<bool> {
         let domain_info = self
             .info
             .domains
             .get(domain)
-            .ok_or(PowerError::DomainNotFound)?;
+            .ok_or(NpuError::DomainNotFound)?;
 
         let val = self.reg.read_u32(self.info.idle_offset as usize);
         Ok((val & (domain_info.idle_mask as u32)) == (domain_info.idle_mask as u32))

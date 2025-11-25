@@ -1,6 +1,6 @@
 use core::ptr::NonNull;
 
-use tock_registers::{register_bitfields, registers::*};
+use tock_registers::register_bitfields;
 
 // 定义位域（bitfields）
 register_bitfields! [
@@ -60,14 +60,13 @@ impl PmuRegs {
         Self { base_addr }
     }
 
-    fn reg<T>(&self, offset: usize) -> &T {
-        unsafe { &*(self.base_addr.as_ptr().add(offset) as *const T) }
-    }
+    // fn reg<T>(&self, offset: usize) -> &T {
+    //     unsafe { &*(self.base_addr.as_ptr().add(offset) as *const T) }
+    // }
 
-    #[allow(unused)]
-    pub fn pwr_con0(&self) -> &ReadWrite<u32, PMU_PWR_CON0::Register> {
-        self.reg(0x0)
-    }
+    // pub fn pwr_con0(&self) -> &ReadWrite<u32, PMU_PWR_CON0::Register> {
+    //     self.reg(0x0)
+    // }
 
     /// 读取32位寄存器值
     pub fn read_u32(&self, offset: usize) -> u32 {

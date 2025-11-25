@@ -5,25 +5,21 @@ use crate::RkBoard;
 #[macro_use]
 mod _macros;
 
-pub mod rk3568;
-pub mod rk3588;
+mod rk3588;
 
-pub type DomainMap = BTreeMap<PowerDomain, RockchipDomainInfo>;
+pub type DomainMap = BTreeMap<PD, RockchipDomainInfo>;
 
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PowerDomain(pub usize);
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PD(pub usize);
 
-impl PowerDomain {
-    pub const fn new(id: usize) -> Self {
-        PowerDomain(id)
-    }
-
-    pub const fn id(&self) -> usize {
-        self.0
+impl From<u32> for PD {
+    fn from(value: u32) -> Self {
+        PD(value as usize)
     }
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug, Default)]
 pub struct RockchipPmuInfo {
     pub pwr_offset: u32,
@@ -48,21 +44,13 @@ pub struct RockchipPmuInfo {
 impl RockchipPmuInfo {
     pub fn new(board: RkBoard) -> Self {
         match board {
-            RkBoard::Rk3568 => rk3568::pmu_info(),
             RkBoard::Rk3588 => rk3588::pmu_info(),
+            RkBoard::Rk3568 => unimplemented!(),
         }
     }
 }
 
-/// Domain dependency information
-#[derive(Debug, Clone, Default)]
-pub struct DomainDependency {
-    /// Parent domain that must be powered on first
-    pub parent: Option<PowerDomain>,
-    /// Child domains that must be powered off first
-    pub children: alloc::vec::Vec<PowerDomain>,
-}
-
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct RockchipDomainInfo {
     pub name: &'static str,
@@ -83,18 +71,5 @@ pub struct RockchipDomainInfo {
     pub always_on: bool,
     pub pwr_offset: u32,
     pub mem_offset: u32,
-    pub mem_mask: i32,
-    pub mem_w_mask: i32,
     pub req_offset: u32,
-    pub repair_offset: u32,
-    pub repair_mask: i32,
-
-    /// QoS configuration
-    /// Number of QoS ports for this domain
-    pub num_qos: usize,
-    /// QoS port base address offsets (relative to system bus base)
-    pub qos_offsets: &'static [u32],
-
-    /// Domain dependency information
-    pub dependency: Option<DomainDependency>,
 }

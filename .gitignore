@@ -1,3 +1,6 @@
 /target
 Cargo.lock
 .bare-test.toml
+
+*-schema.json
+.uboot*

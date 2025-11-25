@@ -1,14 +1,18 @@
 [package]
 edition = "2024"
 name = "rockchip-pm"
-version = "0.2.0"
+version = "0.3.0"
+
+exclude = [
+  "dtb/*",
+]
 
 [dependencies]
-mbarrier = "0.1"
-dma-api = { version = "0.5", features = ["alloc"] }
+dma-api = {version = "0.5", features = ["alloc"]}
 log = "0.4"
-tock-registers = "0.10"
+mbarrier = "0.1"
 rdif-base = "0.7"
+tock-registers = "0.10"
 
 [dev-dependencies]
 bare-test = "0.7"

@@ -263,14 +263,8 @@ The test suite includes comprehensive unit and integration tests:
 **Total: 17 comprehensive test cases**
 
 ```bash
-# Run all tests
-cargo test --test test -- tests --show-output
-
 # Run on development board (requires U-Boot environment)
-cargo test --test test -- tests --show-output --uboot
-
-# Run specific test
-cargo test --test test -- test_parent_child_dependency_power_on_order --show-output
+cargo uboot
 ```
 
 **Test Coverage:**
