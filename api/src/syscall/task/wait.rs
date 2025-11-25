@@ -85,7 +85,7 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
         .filter(|child| pid.apply(child))
         .collect::<Vec<_>>();
     if children.is_empty() {
-        return Err(AxError::Other(LinuxError::ECHILD));
+        return Err(AxError::from(LinuxError::ECHILD));
     }
 
     let check_children = || {

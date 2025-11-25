@@ -42,7 +42,7 @@ impl LoopDevice {
     /// Get information about the loop device.
     pub fn get_info(&self) -> AxResult<loop_info> {
         if self.file.lock().is_none() {
-            return Err(AxError::Other(LinuxError::ENXIO));
+            return Err(AxError::from(LinuxError::ENXIO));
         }
         let mut res: loop_info = unsafe { core::mem::zeroed() };
         res.lo_number = self.number as _;
@@ -58,7 +58,7 @@ impl LoopDevice {
     /// Clone the underlying file of the loop device.
     pub fn clone_file(&self) -> VfsResult<FileBackend> {
         let file = self.file.lock().clone();
-        file.ok_or(AxError::Other(LinuxError::ENXIO))
+        file.ok_or(AxError::from(LinuxError::ENXIO))
     }
 }
 
@@ -99,7 +99,7 @@ impl DeviceOps for LoopDevice {
             LOOP_CLR_FD => {
                 let mut guard = self.file.lock();
                 if guard.is_none() {
-                    return Err(AxError::Other(LinuxError::ENXIO));
+                    return Err(AxError::from(LinuxError::ENXIO));
                 }
                 *guard = None;
             }

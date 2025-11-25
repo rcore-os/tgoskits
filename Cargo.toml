@@ -48,9 +48,9 @@ axsync = { path = "arceos/modules/axsync" }
 axtask = { path = "arceos/modules/axtask", features = ["task-ext"] }
 
 axbacktrace = "0.1"
-axerrno = "0.1"
+axerrno = "0.2"
 axfs-ng-vfs = "0.1"
-axio = "0.1"
+axio = { version = "0.2", git = "https://github.com/arceos-org/axio.git", tag = "dev-v02" }
 axpoll = "0.1"
 bitflags = "2.10"
 bytemuck = { version = "1.23", features = ["unsound_ptr_pod_impl"] }
@@ -73,7 +73,7 @@ scope-local = "0.1"
 slab = { version = "0.4.9", default-features = false }
 spin = "0.10"
 starry-process = "0.2"
-starry-signal = "0.2"
+starry-signal = { version = "0.2", git = "https://github.com/Starry-OS/starry-signal.git", tag = "dev-v02" }
 starry-vm = "0.2"
 
 starry-core = { path = "./core" }
@@ -107,6 +107,7 @@ qemu = [
     "starry-api/vsock",
 
     "axfeat/defplat",
+    "axfeat/bus-pci",
 
     # auxilary features
     "axfeat/fs-times",
@@ -115,10 +116,6 @@ qemu = [
 smp = ["axfeat/smp", "axplat-riscv64-visionfive2?/smp"]
 
 vf2 = ["dep:axplat-riscv64-visionfive2", "axfeat/driver-sdmmc-gpt"]
-
-# Stubs
-pci = ["axfeat/bus-pci"]
-mmio = ["axfeat/bus-mmio"]
 
 [dependencies]
 axdriver.workspace = true
@@ -140,26 +137,11 @@ starry-core.workspace = true
 starry-api.workspace = true
 
 [dependencies.axplat-riscv64-visionfive2]
+version = "0.3"
 git = "https://github.com/Starry-OS/axplat-riscv64-visionfive2.git"
-rev = "5056c1d"
+tag = "dev-v03"
 features = ["fp-simd", "irq", "rtc"]
 optional = true
-
-[patch.crates-io]
-axcpu = { git = "https://github.com/Starry-OS/axcpu.git", rev = "9b94417" }
-axerrno = { git = "https://github.com/Starry-OS/axerrno.git", rev = "f1e2bca" }
-axfs-ng-vfs = { git = "https://github.com/Starry-OS/axfs-ng-vfs.git", rev = "d6f470f" }
-axio = { git = "https://github.com/Starry-OS/axio.git", rev = "ebb0c6b" }
-axplat = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "7eb392e" }
-axplat-x86-pc = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "7eb392e" }
-axplat-aarch64-qemu-virt = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "7eb392e" }
-axplat-riscv64-qemu-virt = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "7eb392e" }
-axplat-loongarch64-qemu-virt = { git = "https://github.com/Starry-OS/axplat_crates.git", rev = "7eb392e" }
-page_table_entry = { git = "https://github.com/Starry-OS/page_table_multiarch.git", rev = "9df46c8" }
-page_table_multiarch = { git = "https://github.com/Starry-OS/page_table_multiarch.git", rev = "9df46c8" }
-starry-process = { git = "https://github.com/Starry-OS/starry-process.git", rev = "6327455" }
-starry-signal = { git = "https://github.com/Starry-OS/starry-signal.git", rev = "acdb5e9" }
-starry-vm = { git = "https://github.com/Starry-OS/starry-vm.git", rev = "4c91a6b" }
 
 [package.metadata.vendor-filter]
 platforms = ["riscv64gc-unknown-none-elf", "loongarch64-unknown-none-softfloat"]

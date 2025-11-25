@@ -74,7 +74,7 @@ pub fn sys_futex(
             }
 
             if futex.owner_dead.swap(false, Ordering::SeqCst) {
-                Err(AxError::Other(LinuxError::EOWNERDEAD))
+                Err(AxError::from(LinuxError::EOWNERDEAD))
             } else {
                 Ok(0)
             }

@@ -54,7 +54,7 @@ impl SocketAddrExt for SocketAddr {
         match read_family(addr, addrlen)? as u32 {
             AF_INET => SocketAddrV4::read_from_user(addr, addrlen).map(Self::V4),
             AF_INET6 => SocketAddrV6::read_from_user(addr, addrlen).map(Self::V6),
-            _ => Err(AxError::Other(LinuxError::EAFNOSUPPORT)),
+            _ => Err(AxError::from(LinuxError::EAFNOSUPPORT)),
         }
     }
 
@@ -80,7 +80,7 @@ impl SocketAddrExt for SocketAddrV4 {
         }
         let addr_in = addr.cast::<sockaddr_in>().get_as_ref()?;
         if addr_in.sin_family as u32 != AF_INET {
-            return Err(AxError::Other(LinuxError::EAFNOSUPPORT));
+            return Err(AxError::from(LinuxError::EAFNOSUPPORT));
         }
 
         Ok(SocketAddrV4::new(
@@ -113,7 +113,7 @@ impl SocketAddrExt for SocketAddrV6 {
         }
         let addr_in6 = addr.cast::<sockaddr_in6>().get_as_ref()?;
         if addr_in6.sin6_family as u32 != AF_INET6 {
-            return Err(AxError::Other(LinuxError::EAFNOSUPPORT));
+            return Err(AxError::from(LinuxError::EAFNOSUPPORT));
         }
 
         Ok(SocketAddrV6::new(
@@ -147,7 +147,7 @@ impl SocketAddrExt for SocketAddrV6 {
 impl SocketAddrExt for UnixSocketAddr {
     fn read_from_user(addr: UserConstPtr<sockaddr>, addrlen: socklen_t) -> AxResult<Self> {
         if read_family(addr, addrlen)? as u32 != AF_UNIX {
-            return Err(AxError::Other(LinuxError::EAFNOSUPPORT));
+            return Err(AxError::from(LinuxError::EAFNOSUPPORT));
         }
         let offset = size_of::<__kernel_sa_family_t>();
         let ptr = UserConstPtr::<u8>::from(addr.address().as_usize() + offset);
@@ -217,7 +217,7 @@ impl SocketAddrExt for VsockAddr {
 
         let addr_vsock = addr.cast::<sockaddr_vm>().get_as_ref()?;
         if addr_vsock.svm_family as u32 != AF_VSOCK {
-            return Err(AxError::Other(LinuxError::EAFNOSUPPORT));
+            return Err(AxError::from(LinuxError::EAFNOSUPPORT));
         }
         Ok(VsockAddr {
             cid: addr_vsock.svm_cid,
@@ -248,7 +248,7 @@ impl SocketAddrExt for SocketAddrEx {
             AF_UNIX => UnixSocketAddr::read_from_user(addr, addrlen).map(Self::Unix),
             #[cfg(feature = "vsock")]
             AF_VSOCK => VsockAddr::read_from_user(addr, addrlen).map(Self::Vsock),
-            _ => Err(AxError::Other(LinuxError::EAFNOSUPPORT)),
+            _ => Err(AxError::from(LinuxError::EAFNOSUPPORT)),
         }
     }
 

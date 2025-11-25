@@ -31,13 +31,13 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
     let socket = match (domain, ty) {
         (AF_INET, SOCK_STREAM) => {
             if proto != 0 && proto != IPPROTO_TCP as _ {
-                return Err(AxError::Other(LinuxError::EPROTONOSUPPORT));
+                return Err(AxError::from(LinuxError::EPROTONOSUPPORT));
             }
             axnet::Socket::Tcp(TcpSocket::new())
         }
         (AF_INET, SOCK_DGRAM) => {
             if proto != 0 && proto != IPPROTO_UDP as _ {
-                return Err(AxError::Other(LinuxError::EPROTONOSUPPORT));
+                return Err(AxError::from(LinuxError::EPROTONOSUPPORT));
             }
             axnet::Socket::Udp(UdpSocket::new())
         }
@@ -49,10 +49,10 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
         }
         (AF_INET, _) | (AF_UNIX, _) | (AF_VSOCK, _) => {
             warn!("Unsupported socket type: domain: {domain}, ty: {ty}");
-            return Err(AxError::Other(LinuxError::ESOCKTNOSUPPORT));
+            return Err(AxError::from(LinuxError::ESOCKTNOSUPPORT));
         }
         _ => {
-            return Err(AxError::Other(LinuxError::EAFNOSUPPORT));
+            return Err(AxError::from(LinuxError::EAFNOSUPPORT));
         }
     };
     let socket = Socket(socket);
@@ -159,7 +159,7 @@ pub fn sys_socketpair(
     let ty = raw_ty & 0xFF;
 
     if domain != AF_UNIX {
-        return Err(AxError::Other(LinuxError::EAFNOSUPPORT));
+        return Err(AxError::from(LinuxError::EAFNOSUPPORT));
     }
 
     let pid = current().as_thread().proc_data.proc.pid();
@@ -174,7 +174,7 @@ pub fn sys_socketpair(
         }
         _ => {
             warn!("Unsupported socketpair type: {ty}");
-            return Err(AxError::Other(LinuxError::ESOCKTNOSUPPORT));
+            return Err(AxError::from(LinuxError::ESOCKTNOSUPPORT));
         }
     };
     let sock1 = Socket(axnet::Socket::Unix(sock1));

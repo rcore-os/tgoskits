@@ -107,7 +107,7 @@ macro_rules! call_dispatch {
                     dispatch!($which $(as $conv)?);
                 }
             )*
-            _ => return Err(AxError::Other(LinuxError::ENOPROTOOPT)),
+            _ => return Err(AxError::from(LinuxError::ENOPROTOOPT)),
         }
     }
 }

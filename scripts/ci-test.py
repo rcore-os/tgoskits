@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import datetime
 import socket
 import subprocess
 import sys
@@ -49,6 +50,9 @@ try:
 
     s = socket.create_connection(("localhost", 4444), timeout=5)
     buffer = ""
+    sent = False
+    start = datetime.datetime.now()
+
     while True:
         try:
             b = s.recv(1024).decode("utf-8", errors="ignore")
@@ -57,10 +61,16 @@ try:
             break
         if not b:
             break
+
         print(b, end="")
         buffer += b
-        if PROMPT in buffer:
+
+        if PROMPT in buffer and not sent:
             s.sendall(b"exit\r\n")
+            sent = True
+
+        if datetime.datetime.now() - start > datetime.timedelta(seconds=10):
+            raise Exception("Timeout waiting for exit")
 
     if PROMPT not in buffer:
         raise Exception("Did not reach BusyBox shell prompt")

@@ -2,5 +2,5 @@
   "rust-analyzer.cargo.target": "riscv64gc-unknown-none-elf",
   // "rust-analyzer.cargo.target": "loongarch64-unknown-none-softfloat",
   "rust-analyzer.cargo.allTargets": false,
-  "rust-analyzer.cargo.features": ["qemu", "pci"]
+  "rust-analyzer.cargo.features": ["qemu"]
 }
