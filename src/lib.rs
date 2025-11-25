@@ -15,7 +15,7 @@ use core::ptr::NonNull;
 mod registers;
 mod variants;
 
-pub use variants::PD;
+pub use variants::PowerDomain;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RkBoard {
@@ -51,17 +51,17 @@ impl RockchipPM {
     }
 
     /// 开启指定电源域
-    pub fn power_domain_on(&mut self, domain: PD) -> NpuResult<()> {
+    pub fn power_domain_on(&mut self, domain: PowerDomain) -> NpuResult<()> {
         self.set_power_domain(domain, true)
     }
 
     /// 关闭指定电源域
-    pub fn power_domain_off(&mut self, domain: PD) -> NpuResult<()> {
+    pub fn power_domain_off(&mut self, domain: PowerDomain) -> NpuResult<()> {
         self.set_power_domain(domain, false)
     }
 
     /// 设置电源域状态（简化版本）
-    fn set_power_domain(&mut self, domain: PD, power_on: bool) -> NpuResult<()> {
+    fn set_power_domain(&mut self, domain: PowerDomain, power_on: bool) -> NpuResult<()> {
         let domain_info = self
             .info
             .domains
@@ -82,7 +82,7 @@ impl RockchipPM {
     }
 
     /// 写入电源控制寄存器
-    fn write_power_control(&mut self, domain: &PD, power_on: bool) -> NpuResult<()> {
+    fn write_power_control(&mut self, domain: &PowerDomain, power_on: bool) -> NpuResult<()> {
         let domain_info = self
             .info
             .domains
@@ -115,7 +115,7 @@ impl RockchipPM {
     }
 
     /// 等待电源域状态稳定
-    fn wait_power_domain_stable(&self, domain: &PD, expected_on: bool) -> NpuResult<()> {
+    fn wait_power_domain_stable(&self, domain: &PowerDomain, expected_on: bool) -> NpuResult<()> {
         for _ in 0..10000 {
             if self.is_domain_on(domain)? == expected_on {
                 return Ok(());
@@ -125,7 +125,7 @@ impl RockchipPM {
     }
 
     /// 检查电源域是否开启
-    fn is_domain_on(&self, domain: &PD) -> NpuResult<bool> {
+    fn is_domain_on(&self, domain: &PowerDomain) -> NpuResult<bool> {
         let domain_info = self
             .info
             .domains
@@ -150,7 +150,7 @@ impl RockchipPM {
     }
 
     /// 检查电源域是否空闲
-    fn is_domain_idle(&self, domain: &PD) -> NpuResult<bool> {
+    fn is_domain_idle(&self, domain: &PowerDomain) -> NpuResult<bool> {
         let domain_info = self
             .info
             .domains

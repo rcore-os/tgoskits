@@ -23,13 +23,13 @@ mod tests {
     // RK3588 NPU 相关电源域 ID
 
     /// NPU 主电源域
-    pub const NPU: PD = PD(8);
+    pub const NPU: PowerDomain = PowerDomain(8);
     /// NPU TOP 电源域  
-    pub const NPUTOP: PD = PD(9);
+    pub const NPUTOP: PowerDomain = PowerDomain(9);
     /// NPU1 电源域
-    pub const NPU1: PD = PD(10);
+    pub const NPU1: PowerDomain = PowerDomain(10);
     /// NPU2 电源域
-    pub const NPU2: PD = PD(11);
+    pub const NPU2: PowerDomain = PowerDomain(11);
 
     #[test]
     fn test_pm() {
@@ -54,7 +54,7 @@ mod tests {
 
     struct NpuInfo {
         base: NonNull<u8>,
-        domains: Vec<PD>,
+        domains: Vec<PowerDomain>,
     }
 
     fn get_npu_info() -> NpuInfo {
@@ -85,7 +85,7 @@ mod tests {
         let pd_ls = pd_prop.u32_list().collect::<Vec<_>>();
         for pd in pd_ls.chunks(2) {
             let phandle = pd[0];
-            let pd = PD::from(pd[1]);
+            let pd = PowerDomain::from(pd[1]);
             let pm_node = node
                 .fdt()
                 .get_node_by_phandle(phandle.into())

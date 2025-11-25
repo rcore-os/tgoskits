@@ -7,15 +7,15 @@ mod _macros;
 
 mod rk3588;
 
-pub type DomainMap = BTreeMap<PD, RockchipDomainInfo>;
+pub type DomainMap = BTreeMap<PowerDomain, RockchipDomainInfo>;
 
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct PD(pub usize);
+pub struct PowerDomain(pub usize);
 
-impl From<u32> for PD {
+impl From<u32> for PowerDomain {
     fn from(value: u32) -> Self {
-        PD(value as usize)
+        PowerDomain(value as usize)
     }
 }
 

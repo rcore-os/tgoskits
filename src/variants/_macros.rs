@@ -14,11 +14,22 @@ macro_rules! map {
     }};
 }
 
-macro_rules! define_pd {
-    ($name:ident, $value:expr) => {
-        pub const $name: PD = PD($value);
+/// Define power domain constants with documentation
+macro_rules! define_power_domains {
+    (
+        $(
+            $(#[$meta:meta])*
+            $name:ident = $id:expr
+        ),* $(,)?
+    ) => {
+        $(
+            $(#[$meta])*
+            pub const $name: PowerDomain = PowerDomain($id);
+        )*
     };
 }
+
+
 
 macro_rules! bit {
     ($n:expr) => {

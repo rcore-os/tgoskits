@@ -1,9 +1,18 @@
-use crate::variants::{_macros::domain_m_o_r, DomainMap, PD, RockchipDomainInfo, RockchipPmuInfo};
+use crate::variants::{
+    _macros::domain_m_o_r, DomainMap, PowerDomain, RockchipDomainInfo, RockchipPmuInfo,
+};
 
-define_pd!(PD_NPU, 8);
-define_pd!(PD_NPUTOP, 9);
-define_pd!(PD_NPU1, 10);
-define_pd!(PD_NPU2, 11);
+define_power_domains! {
+    // VD_NPU
+    /// NPU (Neural Processing Unit) main domain
+    NPU = 8,
+    /// NPU top-level domain
+    NPUTOP = 9,
+    /// NPU core 1 domain
+    NPU1 = 10,
+    /// NPU core 2 domain
+    NPU2 = 11,
+}
 
 pub fn pmu_info() -> RockchipPmuInfo {
     RockchipPmuInfo {
@@ -54,9 +63,9 @@ fn domain_info(
 
 fn domains() -> DomainMap {
     map! {
-        PD_NPU    => domain_info("npu",    0x0, bit!(1), bit!(1), 0x0, 0,        0,       0x0, 0,       0,       false),
-        PD_NPUTOP => domain_info("nputop", 0x0, bit!(3), 0,       0x0, bit!(11), bit!(2), 0x0, bit!(1), bit!(1), false),
-        PD_NPU1   => domain_info("npu1",   0x0, bit!(4), 0,       0x0, bit!(12), bit!(3), 0x0, bit!(2), bit!(2), false),
-        PD_NPU2   => domain_info("npu2",   0x0, bit!(5), 0,       0x0, bit!(13), bit!(4), 0x0, bit!(3), bit!(3), false),
+        NPU    => domain_info("npu",    0x0, bit!(1), bit!(1), 0x0, 0,        0,       0x0, 0,       0,       false),
+        NPUTOP => domain_info("nputop", 0x0, bit!(3), 0,       0x0, bit!(11), bit!(2), 0x0, bit!(1), bit!(1), false),
+        NPU1   => domain_info("npu1",   0x0, bit!(4), 0,       0x0, bit!(12), bit!(3), 0x0, bit!(2), bit!(2), false),
+        NPU2   => domain_info("npu2",   0x0, bit!(5), 0,       0x0, bit!(13), bit!(4), 0x0, bit!(3), bit!(3), false),
     }
 }
