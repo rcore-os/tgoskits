@@ -24,7 +24,7 @@ pub enum RkBoard {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NpuError {
+pub enum PmError {
     /// 电源域不存在
     DomainNotFound,
     /// 超时错误
@@ -33,7 +33,7 @@ pub enum NpuError {
     HardwareError,
 }
 
-pub type NpuResult<T> = Result<T, NpuError>;
+pub type PmResult<T> = Result<T, PmError>;
 
 pub struct RockchipPM {
     _board: RkBoard,
@@ -57,7 +57,6 @@ impl RockchipPM {
             _ => panic!("Unsupported compatible string: {compatible}"),
         };
 
-
         Self {
             _board: board,
             info: RockchipPmuInfo::new(board),
@@ -75,22 +74,22 @@ impl RockchipPM {
     }
 
     /// 开启指定电源域
-    pub fn power_domain_on(&mut self, domain: PowerDomain) -> NpuResult<()> {
+    pub fn power_domain_on(&mut self, domain: PowerDomain) -> PmResult<()> {
         self.set_power_domain(domain, true)
     }
 
     /// 关闭指定电源域
-    pub fn power_domain_off(&mut self, domain: PowerDomain) -> NpuResult<()> {
+    pub fn power_domain_off(&mut self, domain: PowerDomain) -> PmResult<()> {
         self.set_power_domain(domain, false)
     }
 
     /// 设置电源域状态（简化版本）
-    fn set_power_domain(&mut self, domain: PowerDomain, power_on: bool) -> NpuResult<()> {
+    fn set_power_domain(&mut self, domain: PowerDomain, power_on: bool) -> PmResult<()> {
         let domain_info = self
             .info
             .domains
             .get(&domain)
-            .ok_or(NpuError::DomainNotFound)?;
+            .ok_or(PmError::DomainNotFound)?;
 
         if domain_info.pwr_mask == 0 {
             return Ok(());
@@ -106,12 +105,12 @@ impl RockchipPM {
     }
 
     /// 写入电源控制寄存器
-    fn write_power_control(&mut self, domain: &PowerDomain, power_on: bool) -> NpuResult<()> {
+    fn write_power_control(&mut self, domain: &PowerDomain, power_on: bool) -> PmResult<()> {
         let domain_info = self
             .info
             .domains
             .get(domain)
-            .ok_or(NpuError::DomainNotFound)?;
+            .ok_or(PmError::DomainNotFound)?;
         let pwr_offset = self.info.pwr_offset + domain_info.pwr_offset;
 
         if domain_info.pwr_w_mask != 0 {
@@ -139,22 +138,22 @@ impl RockchipPM {
     }
 
     /// 等待电源域状态稳定
-    fn wait_power_domain_stable(&self, domain: &PowerDomain, expected_on: bool) -> NpuResult<()> {
+    fn wait_power_domain_stable(&self, domain: &PowerDomain, expected_on: bool) -> PmResult<()> {
         for _ in 0..10000 {
             if self.is_domain_on(domain)? == expected_on {
                 return Ok(());
             }
         }
-        Err(NpuError::Timeout)
+        Err(PmError::Timeout)
     }
 
     /// 检查电源域是否开启
-    fn is_domain_on(&self, domain: &PowerDomain) -> NpuResult<bool> {
+    fn is_domain_on(&self, domain: &PowerDomain) -> PmResult<bool> {
         let domain_info = self
             .info
             .domains
             .get(domain)
-            .ok_or(NpuError::DomainNotFound)?;
+            .ok_or(PmError::DomainNotFound)?;
 
         if domain_info.repair_status_mask != 0 {
             // 使用修复状态寄存器
@@ -174,12 +173,12 @@ impl RockchipPM {
     }
 
     /// 检查电源域是否空闲
-    fn is_domain_idle(&self, domain: &PowerDomain) -> NpuResult<bool> {
+    fn is_domain_idle(&self, domain: &PowerDomain) -> PmResult<bool> {
         let domain_info = self
             .info
             .domains
             .get(domain)
-            .ok_or(NpuError::DomainNotFound)?;
+            .ok_or(PmError::DomainNotFound)?;
 
         let val = self.reg.read_u32(self.info.idle_offset as usize);
         Ok((val & (domain_info.idle_mask as u32)) == (domain_info.idle_mask as u32))
