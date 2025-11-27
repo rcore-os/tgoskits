@@ -1,0 +1,28 @@
+[package]
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+name = "driver"
+version.workspace = true
+
+[features]
+default = []
+rk3568-clk = ["dep:rk3568_clk"]
+rk3588-clk = ["dep:rk3588-clk"]
+sdmmc = ["dep:sdmmc"]
+rockchip-pm = ["dep:rockchip-pm"]
+phytium-blk = ["dep:phytium-mci"]
+
+[dependencies]
+axklib = {git = "https://github.com/arceos-hypervisor/axklib"}
+log.workspace = true
+rdif-block = "0.6.2"
+rdif-clk = "0.4"
+rdrive.workspace = true
+spin.workspace = true
+
+rk3568_clk = {git = "https://github.com/drivercraft/rk3568-clk.git", optional = true}
+sdmmc = {git = "https://github.com/drivercraft/sdmmc.git", default-features = false, features = ["pio"], optional = true}
+rk3588-clk = {git = "https://github.com/drivercraft/rk3588-clk", optional = true}
+rockchip-pm = {git = "https://github.com/drivercraft/rockchip-pm.git", optional = true}
+phytium-mci = { git = "https://github.com/YanQD/phytium-mci.git", rev = "99c9ee5", default-features = false, features = ["pio"], optional = true}

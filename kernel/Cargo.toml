@@ -1,0 +1,70 @@
+[package]
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+name = "axvisor"
+
+[features]
+ept-level-4 = ["axaddrspace/4-level-ept"]
+fs = ["axstd/fs", "axruntime/fs"]
+dyn-plat = ["axstd/myplat", "axstd/driver-dyn", "axruntime/driver-dyn"]
+
+[dependencies]
+bitflags.workspace = true
+cfg-if.workspace = true
+cpumask.workspace = true
+kernel_guard.workspace = true
+kspin = "0.1"
+lazy_static = {version = "1.5", default-features = false, features = ["spin_no_std"]}
+lazyinit = "0.2"
+log = "0.4"
+spin = "0.9"
+timer_list = "0.1.0"
+
+# System dependent modules provided by ArceOS.
+axstd = {workspace = true, features = [
+  "alloc-level-1",
+  "paging",
+  "irq",
+  "multitask",
+  "smp",
+]}
+
+# System dependent modules provided by ArceOS-Hypervisor.
+axaddrspace.workspace = true
+axhvc.workspace = true
+axruntime = {workspace = true, features = ["alloc", "irq", "paging", "smp", "multitask"]}
+axvcpu.workspace = true
+axvm.workspace = true
+
+# System independent crates provided by ArceOS, these crates could be imported by remote url. 
+axerrno.workspace = true
+byte-unit = {version = "5", default-features = false, features = ["byte"]}
+crate_interface.workspace = true
+fdt-parser = "0.4"
+memory_addr.workspace = true
+page_table_entry = {version = "0.5", features = ["arm-el2"]}
+page_table_multiarch = "0.5"
+percpu = {version = "0.2", features = ["arm-el2"]}
+rdif-intc = "0.12"
+rdrive = "0.18"
+
+vm-fdt = {workspace = true, default-features = false, features = ["alloc"]}
+
+axdevice.workspace = true
+axdevice_base = "0.1"
+axvisor_api = "0.1"
+driver.workspace = true
+
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+aarch64-cpu-ext = "0.1"
+arm-gic-driver = {version = "0.15.5", features = ["rdif"]}
+
+[build-dependencies]
+axconfig = {git = "https://github.com/arceos-hypervisor/arceos.git", branch = "vmm-dev"}
+prettyplease = "0.2"
+quote = "1.0"
+syn = "2.0"
+toml.workspace = true
+anyhow = "1.0"

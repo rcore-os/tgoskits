@@ -34,7 +34,9 @@ runs:
   steps:
   - name: Make temporary directory
     shell: bash
-    run: mkdir -p temp
+    run: |
+      sudo rm -rf temp
+      mkdir -p temp
   - name: Download NimbOS
     uses: dsaltares/fetch-gh-release-asset@1.1.2
     with:
@@ -59,7 +61,7 @@ runs:
   - name: Create Image
     shell: bash
     run: |
-      make DISK_IMG=${{ inputs.disk-path }} disk_img
+      ./axvisor.sh disk_img --image ${{ inputs.disk-path }}
       sudo mkdir -p img
       sudo chown root:root temp/*
       sudo mount ${{ inputs.disk-path }} img

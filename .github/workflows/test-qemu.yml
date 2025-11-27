@@ -1,0 +1,85 @@
+name: Test for QEMU
+
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  test-qemu:
+    name: "Test qemu: ${{ matrix.arch }} - ${{ matrix.vmconfigs_name }}"
+    strategy:
+      matrix:
+        include:
+          - arch: aarch64
+            vmconfigs: configs/vms/arceos-aarch64-qemu-smp1.toml
+            vmconfigs_name: ArceOS
+            vmimage_name: qemu_aarch64_arceos
+          # - arch: riscv64
+          #   vmconfigs: configs/vms/arceos-riscv64-qemu-smp1.toml
+          #   vmconfigs_name: ArceOS
+          #   vmimage_name: qemu_arceos_riscv64
+          - arch: x86_64
+            vmconfigs: configs/vms/nimbos-x86_64-qemu-smp1.toml
+            vmconfigs_name: NimbOS
+            vmimage_name: qemu_x86_64_nimbos
+      fail-fast: false
+    runs-on:
+      - self-hosted
+      - linux
+      - intel
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: cargo +stable install -f --git https://github.com/ZR233/ostool  ostool
+
+      - name: Download images and patch vm configs
+        run: |
+          IFS=',' read -ra CONFIGS <<< "${{ matrix.vmconfigs }}"
+          IFS=',' read -ra IMAGES <<< "${{ matrix.vmimage_name }}"
+          for i in "${!CONFIGS[@]}"; do
+            img="${IMAGES[$i]}"
+            img=$(echo "$img" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+            config="${CONFIGS[$i]}"
+            config=$(echo "$config" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+            cargo xtask image download $img
+            img_name="qemu-${{ matrix.arch }}"
+            image_location=$(sed -n 's/^image_location[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$config")
+
+            case "$image_location" in
+            "fs")
+              echo "Filesystem storage mode - no config update needed"
+              ;;
+            "memory")
+              sed -i 's|^kernel_path[[:space:]]*=.*|kernel_path = "/tmp/axvisor/'"$img"'/'"$img_name"'"|' "$config"
+              echo "Memory storage mode - updating kernel_path"
+              ;;
+            *)
+              echo "Unknown image_location: $image_location"
+              exit 1
+              ;;
+            esac
+
+            ROOTFS_IMG_PATH="/tmp/axvisor/$img/rootfs.img"
+
+            # Check if rootfs.img exists after extraction
+            if [ -f "${ROOTFS_IMG_PATH}" ]; then
+              echo "Found rootfs.img, patching qemu-aarch64.toml file..."
+              sed -i 's|file=${workspaceFolder}/tmp/rootfs.img|file='"${ROOTFS_IMG_PATH}"'|' ".github/workflows/qemu-${{ matrix.arch }}.toml"
+              echo "Rootfs setup completed"
+            else
+              echo "No rootfs.img found, removing rootfs device configuration from qemu-${{ matrix.arch }}.toml..."
+              sed -i '/-device/,/virtio-blk-device,drive=disk0/d' ".github/workflows/qemu-${{ matrix.arch }}.toml"
+              sed -i '/-drive/,/id=disk0,if=none,format=raw,file=${workspaceFolder}\/tmp\/rootfs.img/d' ".github/workflows/qemu-${{ matrix.arch }}.toml"
+              sed -i 's/root=\/dev\/vda rw //' ".github/workflows/qemu-${{ matrix.arch }}.toml"
+              echo "Rootfs device configuration removed"
+            fi
+          done
+
+      - name: Run tests
+        run: |
+          export RUST_LOG=debug
+          cargo xtask qemu \
+            --build-config configs/board/qemu-${{ matrix.arch }}.toml \
+            --qemu-config .github/workflows/qemu-${{ matrix.arch }}.toml \
+            --vmconfigs ${{ matrix.vmconfigs }}

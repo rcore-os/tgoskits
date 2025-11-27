@@ -1,0 +1,39 @@
+[package]
+edition = "2024"
+name = "axplat-x86-qemu-q35"
+version = "0.1.0"
+
+[features]
+default = [
+  "irq",
+  "smp",
+  "reboot-on-system-off",
+]
+fp-simd = []
+irq = ["axplat/irq"]
+reboot-on-system-off = []
+rtc = ["dep:x86_rtc"]
+smp = ["axplat/smp", "kspin/smp"]
+
+[dependencies]
+axconfig-macros = "0.2"
+axcpu = "0.2"
+axplat = {workspace = true}
+bitflags = "2.6"
+heapless = "0.9"
+int_ratio = "0.1"
+kspin = "0.1"
+lazyinit = "0.2"
+log = "0.4"
+percpu = "0.2"
+
+multiboot = "0.8"
+raw-cpuid = "11.5"
+uart_16550 = "0.4"
+x2apic = "0.5"
+x86 = "0.52"
+x86_64 = "0.15.2"
+x86_rtc = {version = "0.1", optional = true}
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-none"]

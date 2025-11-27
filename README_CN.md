@@ -6,7 +6,7 @@
 
 <h2 align="center">AxVisor</h1>
 
-<p align="center">一个基于 ArceOS 的统一模块化虚拟机管理程序</p>
+<p align="center">一个基于 ArceOS 的统一组件化虚拟机管理程序</p>
 
 <div align="center">
 
@@ -20,15 +20,15 @@
 
 # 简介
 
-AxVisor 是基于 ArceOS unikernel 框架实现的 Hypervisor。其目标是利用 ArceOS 提供的基础操作系统功能作为基础，实现一个统一的模块化 Hypervisor。
+AxVisor 是基于 ArceOS unikernel 框架实现的 Hypervisor。其目标是利用 ArceOS 提供的基础操作系统功能作为基础，实现一个统一的组件化 Hypervisor。
 
-“统一”指使用同一套代码同时支持 x86_64、Arm(aarch64) 和 RISC-V 三种架构，以最大化复用架构无关代码，简化代码开发和维护成本。
+**统一**是指使用同一套代码同时支持 x86_64、Arm(aarch64) 和 RISC-V 三种架构，以最大化复用架构无关代码，简化代码开发和维护成本。
 
-“模块化”指 Hypervisor 的功能被分解为多个模块，每个模块实现一个特定的功能，模块之间通过标准接口进行通信，以实现功能的解耦和复用。
+**组件化**是指 Hypervisor 的功能被分解为多个可独立使用的组件，每个组件实现一个特定的功能，组件之间通过标准接口进行通信，以实现功能的解耦和复用。
 
 ## 架构
 
-AxVisor 的软件架构分为如下图所示的五层，其中，每一个框都是一个独立的模块，模块之间通过标准接口进行通信。
+AxVisor 的软件架构分为如下图所示的五层，其中，每一个框都是一个独立的组件，组件之间通过标准接口进行通信。
 
 ![Architecture](https://arceos-hypervisor.github.io/doc/assets/arceos-hypervisor-architecture.png)
 
@@ -40,19 +40,16 @@ AxVisor 的软件架构分为如下图所示的五层，其中，每一个框都
 
 - [x] QEMU ARM64 virt (qemu-max)
 - [x] Rockchip RK3568 / RK3588
-- [x] 黑芝麻华山 A1000
+- [x] 飞腾派
 
 ## 客户机
 
 目前，AxVisor 已经在对如下系统作为客户机的情况进行了验证：
 
-* [ArceOS](https://github.com/arceos-org/arceos)
-* [Starry-OS](https://github.com/Starry-OS)
-* [NimbOS](https://github.com/equation314/nimbos)
-* Linux
-  * currently only Linux with passthrough device on aarch64 is tested.
-  * single core: [config.toml](configs/vms/linux-qemu-aarch64.toml) | [dts](configs/vms/linux-qemu.dts)
-  * smp: [config.toml](configs/vms/linux-qemu-aarch64-smp2.toml) | [dts](configs/vms/linux-qemu-smp2.dts)
+- [ArceOS](https://github.com/arceos-org/arceos)
+- [Starry-OS](https://github.com/Starry-OS)
+- [NimbOS](https://github.com/equation314/nimbos)
+- Linux
 
 # 构建及运行
 
@@ -63,54 +60,80 @@ AxVisor 启动之后会根据客户机配置文件中的信息加载并启动客
 AxVisor 是使用 Rust 编程语言编写的，因此，需要根据 Rust 官方网站的说明安装 Rust 开发环境。此外，还需要安装 [cargo-binutils](https://github.com/rust-embedded/cargo-binutils) 以便使用 `rust-objcopy` 和 `rust-objdump` 等工具
 
 ```console
-$ cargo install cargo-binutils
+cargo install cargo-binutils
 ```
 
 根据需要，可能还要安装 [musl-gcc](http://musl.cc/x86_64-linux-musl-cross.tgz) 来构建客户机应用程序
 
 ## 配置文件
 
-由于客户机配置是一个复杂的过程，AxVisor 选择使用 toml 文件来管理客户机的配置，其中包括虚拟机 ID、虚拟机名称、虚拟机类型、CPU 核心数量、内存大小、虚拟设备和直通设备等。在源码的 `./config/vms` 目录下是一些客户机配置的示例模板。
+由于客户机配置是一个复杂的过程，AxVisor 选择使用 toml 文件来管理客户机的配置，其中包括虚拟机 ID、虚拟机名称、虚拟机类型、CPU 核心数量、内存大小、虚拟设备和直通设备等。
 
-此外，也可以使用 [axvmconfig](https://github.com/arceos-hypervisor/axvmconfig) 工具来生成一个自定义配置文件。详细介绍参见 [axvmconfig](https://arceos-hypervisor.github.io/axvmconfig/axvmconfig/index.html)。
+- 在源码的 `./config/vms` 目录下是一些客户机配置的示例模板，配置文件命名格式为 `<os>-<arch>-board_or_cpu-smpx`，其中
+  - `<os>` 是客户机系统名字
+  - `<arch>` 是架构
+  - `board_or_cpu` 硬件开发板或者 CPU 的名字（以 `_` 拼接不同字符串）
+  - `smpx` 是指分配客户机的 CPU 数量 `x` 为具体数值
+  - 各项之间以 `-` 拼接为整体
+
+- 此外，也可以使用 [axvmconfig](https://github.com/arceos-hypervisor/axvmconfig) 工具来生成一个自定义配置文件。详细介绍参见 [axvmconfig](https://arceos-hypervisor.github.io/axvmconfig/axvmconfig/index.html)。
 
 ## 从文件系统加载运行
 
-1. 构建适用于自己架构的客户机镜像文件。以 ArceOS 主线代码为例，执行 `make PLATFORM=aarch64-qemu-virt SMP=1 A=examples/helloworld` 获取 `helloworld_aarch64-qemu-virt.bin`
+从文件系统加载是指将 AxVisor 镜像和 Linux 客户机镜像及其设备树独立部署在存储器上的文件系统中，AxVisor 启动后从文件系统中加载客户机镜像及其设备树进而启动客户机的方式。
 
-2. 制作一个磁盘镜像文件，并将客户机镜像放到文件系统中
+### NimbOS 作为客户机
 
-   1. 使用 `make disk_img` 命令生成一个空的 FAT32 磁盘镜像文件 `disk.img`
-   2. 手动挂载 `disk.img`，然后将自己的客户机镜像复制到该文件系统中
+1. 执行仓库内的脚本下载并准备 NimbOS 镜像：
 
-      ```bash
-      $ mkdir -p tmp
-      $ sudo mount disk.img tmp
-      $ sudo cp /PATH/TO/YOUR/GUEST/VM/IMAGE tmp/
-      $ sudo umount tmp
-      ```
+   ```bash
+   ./scripts/nimbos.sh --arch aarch64
+   ```
 
-3. 修改对应的 `./configs/vms/<ARCH_CONFIG>.toml` 文件中的配置项
-   - `image_location="fs"` 表示从文件系统加载
-   - `kernel_path` 指出内核镜像在文件系统中的路径
-   - `entry_point` 指出内核镜像的入口地址
-   - `kernel_load_addr` 指出内核镜像的加载地址
-   - 其他
+2. 执行 `./axvisor.sh run --plat aarch64-generic --features fs,ept-level-4 --arceos-args BUS=mmio,BLK=y,DISK_IMG=tmp/nimbos-aarch64.img,LOG=info --vmconfigs configs/vms/nimbos-aarch64-qemu-smp1.toml` 构建 AxVisor 并在 QEMU 中启动 NimbOS 客户机。
 
-4. 执行 `make ACCEL=n ARCH=aarch64 LOG=info VM_CONFIGS=configs/vms/arceos-aarch64.toml APP_FEATURES=fs run` 构建 AxVisor，并在 QEMU 中启动。
+3. 后续可直接执行 `./axvisor.sh run` 来启动，并可通过修改 `.hvconfig.toml` 来更改启动参数
+
+### 更多客户机
+
+   TODO
 
 ## 从内存加载运行
 
-1. 构建适用于自己架构的客户机镜像文件。以 ArceOS 主线代码为例，执行 `make PLATFORM=aarch64-qemu-virt SMP=1 A=examples/helloworld` 获取 `helloworld_aarch64-qemu-virt.bin`
+从内存加载是指在构建时已经将 AxVisor 镜像与客户机镜像及其设备树打包在了一起，而只需要将 AxVisor 本身部署在存储器上文件系统中，AxVisor 启动后从内存中加载客户机镜像及其设备树进而启动客户机的方式。
 
-2. 修改对应的 `./configs/vms/<ARCH_CONFIG>.toml` 中的配置项
-   - `image_location="memory"` 配置项
-   - `kernel_path` 指定内核镜像在工作空间中的相对/绝对路径
-   - `entry_point` 指出内核镜像的入口地址
-   - `kernel_load_addr` 指出内核镜像的加载地址
-   - 其他
+### Linux 作为客户机
 
-3. 执行 `make ACCEL=n ARCH=aarch64 LOG=info VM_CONFIGS=configs/vms/arceos-aarch64.toml run` 构建 AxVisor，并在 QEMU 中启动。
+1. 准备工作目录及相关文件
+   ```console
+   mkdir -p tmp
+   cp configs/vms/linux-aarch64-qemu-smp1.toml tmp/
+   cp configs/vms/linux-aarch64-qemu-smp1.dts tmp/
+   ```
+
+2. [参见 linux 构建帮助](https://github.com/arceos-hypervisor/guest-test-linux)获取客户机 Image 和 rootfs.img，然后复制到 `tmp` 目录中。
+
+3. 构建客户机设备树 `dtc -O dtb -I dts -o tmp/linux-aarch64-qemu-smp1.dtb tmp/linux-aarch64-qemu-smp1.dts`
+
+4. 执行 `./axvisor.sh defconfig`，然后编辑 `.hvconfig.toml` 文件，设置 `vmconfigs` 项为您的客户机配置文件路径，例如：
+
+   ```toml
+   arceos_args = [
+      "BUS=mmio",
+      "BLK=y",
+      "MEM=8g",
+      "LOG=debug",
+      "QEMU_ARGS=\"-machine gic-version=3  -cpu cortex-a72  \"",
+      "DISK_IMG=\"tmp/rootfs.img\"",
+   ]
+   vmconfigs = [ "tmp/linux-aarch64-qemu-smp1.toml"]
+   ```
+
+4. 执行 `./axvisor.sh run` 构建 AxVisor 并在 QEMU 中启动。
+
+### 更多客户机
+
+   TODO
 
 ## 启动示例
 
@@ -124,10 +147,6 @@ $ cargo install cargo-binutils
  d8888888888 888     Y88b.    Y8b.     Y88b. .d88P Y88b  d88P
 d88P     888 888      "Y8888P  "Y8888   "Y88888P"   "Y8888P"
 
-arch = aarch64
-platform = aarch64-qemu-virt-hv
-target = aarch64-unknown-none-softfloat
-build_mode = release
 log_level = info
 smp = 1
 
@@ -204,13 +223,29 @@ Hello, world!
 
 # 如何贡献
 
-欢迎 FORK 本仓库并提交 PR。
+欢迎 fork 本仓库并提交 pull request。
 
 您可以参考这些[讨论](https://github.com/arceos-hypervisor/axvisor/discussions)，以深入了解该项目的思路和未来发展方向。
 
 ## 开发
 
-AxVisor 作为组件化的虚拟机管理程序，很多组件是作为 Crate 来使用的，可以使用 `tool/dev_env.py` 命令将相关 Crate 本地化，方便开发调试。
+要为 AxVisor 做贡献，您可以按照以下步骤操作：
+
+1. 在 GitHub 上 fork 本仓库。
+2. 将您 fork 的仓库克隆到本地。
+3. 为您的功能或错误修复创建新分支。
+4. 进行更改并提交清晰的消息。
+5. 将更改推送到您 fork 的仓库。
+6. 对原始仓库的主分支提交 pull request。
+
+要开发 AxVisor 使用的 crate，您可以使用以下命令构建和运行项目：
+
+```bash
+cargo install cargo-lpatch
+cargo lpatch -n deps_crate_name
+```
+
+然后您可以修改 `crates/deps_crate_name` 目录中的代码，AxVisor 将自动使用这些代码。
 
 ## 贡献者
 
@@ -224,7 +259,7 @@ AxVisor 作为组件化的虚拟机管理程序，很多组件是作为 Crate �
 
 AxVisor 使用如下开源协议
 
- * Apache-2.0
- * MulanPubL-2.0
- * MulanPSL2
- * GPL-3.0-or-later
+- Apache-2.0
+- MulanPubL-2.0
+- MulanPSL2
+- GPL-3.0-or-later

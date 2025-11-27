@@ -1,0 +1,22 @@
+# [patch."https://github.com/arceos-hypervisor/axvm.git".axvm]
+# path = "crates/axvm"
+
+[target.aarch64-unknown-none-softfloat]
+rustflags = [
+    "-Clink-args=-no-pie",
+    "-Clink-args=-znostart-stop-gc",
+    "-Clink-args=-Tlink.x",
+]
+
+[target.'cfg(target_os = "none")']
+runner = "cargo osrun"
+
+[target.x86_64-unknown-none]
+rustflags = [
+    "-Clink-args=-no-pie",
+    "-Clink-args=-znostart-stop-gc",
+    "-Clink-args=-Tlink.x",
+]
+
+[alias]
+xtask = "run --package xtask --"

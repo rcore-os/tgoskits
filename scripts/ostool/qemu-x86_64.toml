@@ -1,0 +1,21 @@
+args = [
+  "-nographic",
+  "-cpu",
+  "host",
+  "-machine",
+  "q35",
+  "-smp",
+  "1",
+  "-accel",
+  "kvm",
+  "-device",
+  "virtio-blk-pci,drive=disk0",
+  "-drive",
+  "id=disk0,if=none,format=raw,file=${workspaceFolder}/tmp/rootfs.img",
+  "-m",
+  "128M",
+]
+fail_regex = []
+success_regex = []
+to_bin = true
+uefi = false

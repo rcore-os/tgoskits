@@ -1,53 +1,93 @@
+[workspace]
+members = [
+  "crates/*",
+  "modules/*",
+  "platform/*",
+  "xtask",
+  "kernel",
+]
+resolver = "3"
+
 [profile.release]
 lto = true
 
-[package]
-name = "axvisor"
-version = "0.1.0"
+[workspace.package]
+
+authors = ["Keyang Hu <keyang.hu@qq.com>", "周睿 <zrufo747@outlook.com>"]
 edition = "2024"
-authors = ["Keyang Hu <keyang.hu@qq.com>"]
-exclude = ["crates"]
 license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPubL-2.0 OR MulanPSL2"
+version = "0.1.0"
 
-[features]
-fs = ["axstd/fs"]
-
-[dependencies]
-log = "=0.4.21"
+[workspace.dependencies]
 bitflags = "2.2"
 cfg-if = "1.0"
-spin = "0.9"
+cpumask = "0.1.0"
+kernel_guard = "0.1"
 kspin = "0.1"
+lazy_static = {version = "1.5", default-features = false, features = ["spin_no_std"]}
 lazyinit = "0.2"
-timer_list = "0.1.0"
+log = "0.4"
+spin = "0.9"
+timer_list = "0.1"
+toml = "0.9"
 
 # System dependent modules provided by ArceOS.
-axstd = { git = "https://github.com/arceos-hypervisor/arceos.git", branch = "vmm", features = [
-    "alloc",
-    "paging",
-    # "fs",
-    "irq",
-    "hv",
-    "multitask",
-    # "sched_rr"
+axstd = {git = "https://github.com/arceos-hypervisor/arceos.git", tag = "hv-0.4.1", features = [
+  "alloc-level-1",
+  "paging",
+  "irq",
+  "multitask",
+  "smp", # "page-alloc-64g",
 ]}
 
+axalloc = {git = "https://github.com/arceos-hypervisor/arceos.git", tag = "hv-0.4.1"}
+axconfig = {git = "https://github.com/arceos-hypervisor/arceos.git", tag = "hv-0.4.1"}
+axdisplay = {git = "https://github.com/arceos-hypervisor/arceos.git", tag = "hv-0.4.1"}
+axdriver = {git = "https://github.com/arceos-hypervisor/arceos.git", tag = "hv-0.4.1"}
+axfs = {git = "https://github.com/arceos-hypervisor/arceos.git", tag = "hv-0.4.1"}
+axhal = {git = "https://github.com/arceos-hypervisor/arceos.git", tag = "hv-0.4.1"}
+axipi = {git = "https://github.com/arceos-hypervisor/arceos.git", tag = "hv-0.4.1"}
+axlog = {git = "https://github.com/arceos-hypervisor/arceos.git", tag = "hv-0.4.1"}
+axmm = {git = "https://github.com/arceos-hypervisor/arceos.git", tag = "hv-0.4.1"}
+axnet = {git = "https://github.com/arceos-hypervisor/arceos.git", tag = "hv-0.4.1"}
+axtask = {git = "https://github.com/arceos-hypervisor/arceos.git", tag = "hv-0.4.1"}
+
+axplat = {git = "https://github.com/arceos-hypervisor/axplat_crates.git", tag = "vmm-v0.3.0"}
+
 # System dependent modules provided by ArceOS-Hypervisor.
-axvm = { git = "https://github.com/arceos-hypervisor/axvm.git" }
-axvcpu = { git = "https://github.com/arceos-hypervisor/axvcpu.git" }
-axaddrspace = { git = "https://github.com/arceos-hypervisor/axaddrspace.git" }
+axaddrspace = "0.1.1"
+axhvc = {git = "https://github.com/arceos-hypervisor/axhvc.git"}
+axruntime = {path = "modules/axruntime"}
+axvcpu = "0.1"
+axvm = {git = "https://github.com/arceos-hypervisor/axvm.git", branch = "next"}
 
 # System independent crates provided by ArceOS, these crates could be imported by remote url. 
-crate_interface = "0.1"
 axerrno = "0.1.0"
-memory_addr = "0.3"
-page_table_entry = { version = "0.5", features = ["arm-el2"] }
+byte-unit = {version = "5", default-features = false, features = ["byte"]}
+crate_interface = "0.1"
+fdt-parser = "0.4"
+memory_addr = "0.4"
+page_table_entry = {version = "0.5", features = ["arm-el2"]}
 page_table_multiarch = "0.5"
-percpu = { version = "0.2.0", features = ["arm-el2"] }
+percpu = {version = "0.2", features = ["arm-el2"]}
+rdif-intc = "0.12"
+rdrive = "0.18"
 
-[build-dependencies]
-toml = { git = "https://github.com/arceos-hypervisor/toml.git", branch = "no_std" }
-axconfig = { git = "https://github.com/arceos-hypervisor/arceos.git", branch = "vmm" }
-prettyplease = "0.2"
-quote = "1.0"
-syn = "2.0"
+vm-fdt = {git = "https://github.com/bullhh/vm-fdt.git", default-features = false, features = ["alloc"]}
+
+axdevice = {git = "https://github.com/arceos-hypervisor/axdevice.git"}
+axdevice_base = "0.1"
+axvisor_api = "0.1"
+driver = {path = "modules/driver"}
+
+# platform
+axplat-x86-qemu-q35 = {path = "platform/x86-qemu-q35"}
+axvmconfig = {git = "https://github.com/arceos-hypervisor/axvmconfig.git", branch = "next"}
+
+[patch.crates-io]
+axvcpu = {git = "https://github.com/arceos-hypervisor/axvcpu.git", branch = "next"}
+axvmconfig = {git = "https://github.com/arceos-hypervisor/axvmconfig.git", branch = "next"}
+
+[patch."https://github.com/arceos-hypervisor/arceos"]
+axconfig = {path = "modules/axconfig"}
+axruntime = {path = "modules/axruntime"}

@@ -2,23 +2,71 @@
 /target
 /.vscode
 /tmp
+/.arceos
+
 .DS_Store
 *.asm
 *.img
 *.bin
 *.elf
 *.tmp_its
-*.dtb
 *guest.S
 actual.out
 qemu.log
 rusty-tags.vi
 
+# Python virtual environment
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
 /**/.axconfig.*
+/**/.hvconfig.*
+/**/.project.*
+/**/.board.*
 
 # dev env
-/crates
+/crates/*
+!/crates/nop/
+!/crates/nop/**
+
 /Cargo.toml.bk
 
 # tools should be downloaded from github
 tools/*
+
+# initramfs
+*.cpio.gz
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+*-schema.json
+.qemu*
+.build*
+.uboot*
+
+# AI tools
+.spec-workflow/
+.claude/
