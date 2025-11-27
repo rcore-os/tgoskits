@@ -29,7 +29,7 @@ define cargo_build
   $(call run_cmd,cargo -C $(1) build,$(build_args) --features "$(strip $(2))")
 endef
 
-clippy_args := -A clippy::new_without_default -A unsafe_op_in_unsafe_fn
+clippy_args := -A unsafe_op_in_unsafe_fn
 
 define cargo_clippy
   $(call run_cmd,cargo clippy,--all-features --workspace --exclude axlog $(1) $(verbose) -- $(clippy_args))
