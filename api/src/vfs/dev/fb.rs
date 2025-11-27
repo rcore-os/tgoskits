@@ -93,7 +93,7 @@ pub struct FrameBuffer {
 }
 impl FrameBuffer {
     pub fn new() -> Self {
-        axtask::spawn(
+        axtask::spawn_with_name(
             || axtask::future::block_on(refresh_task()),
             "fb-refresh".into(),
         );

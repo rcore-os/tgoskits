@@ -9,15 +9,19 @@ use core::{
 use axerrno::{AxError, AxResult};
 use axio::{BufMut, Write};
 use axpoll::{IoEvents, PollSet, Pollable};
-use axtask::{current, future::Poller};
+use axtask::{
+    current,
+    future::{block_on, poll_io},
+};
+use spin::RwLock;
 use starry_core::task::AsThread;
 use starry_signal::{SignalInfo, SignalSet};
-use spin::RwLock;
 use zerocopy::{Immutable, IntoBytes};
 
 use crate::file::{FileLike, Kstat, SealedBufMut};
 
-/// The size of signalfd_siginfo structure (128 bytes as per Linux specification)
+/// The size of signalfd_siginfo structure (128 bytes as per Linux
+/// specification)
 const SIGNALFD_SIGINFO_SIZE: usize = 128;
 
 /// signalfd_siginfo structure layout
@@ -25,24 +29,24 @@ const SIGNALFD_SIGINFO_SIZE: usize = 128;
 #[repr(C)]
 #[derive(Immutable, IntoBytes)]
 struct SignalfdSiginfo {
-    ssi_signo: u32,      // Signal number
-    ssi_errno: i32,      // Error number (unused)
-    ssi_code: i32,       // Signal code
-    ssi_pid: u32,        // PID of sender
-    ssi_uid: u32,        // Real UID of sender
-    ssi_fd: i32,         // File descriptor (SIGIO)
-    ssi_tid: u32,        // Kernel timer ID (POSIX timers)
-    ssi_band: u32,       // Band event (SIGIO)
-    ssi_overrun: u32,    // POSIX timer overrun count
-    ssi_trapno: u32,     // Trap number that caused signal
-    ssi_status: i32,     // Exit status or signal (SIGCHLD)
-    ssi_int: i32,        // Integer sent by sigqueue(2)
-    ssi_ptr: u64,        // Pointer sent by sigqueue(2)
-    ssi_utime: u64,      // User CPU time consumed (SIGCHLD)
-    ssi_stime: u64,      // System CPU time consumed (SIGCHLD)
-    ssi_addr: u64,       // Address that generated signal
-    ssi_addr_lsb: u16,   // Least significant bit of address
-    _pad: [u8; 46],      // Padding to make it 128 bytes
+    ssi_signo: u32,    // Signal number
+    ssi_errno: i32,    // Error number (unused)
+    ssi_code: i32,     // Signal code
+    ssi_pid: u32,      // PID of sender
+    ssi_uid: u32,      // Real UID of sender
+    ssi_fd: i32,       // File descriptor (SIGIO)
+    ssi_tid: u32,      // Kernel timer ID (POSIX timers)
+    ssi_band: u32,     // Band event (SIGIO)
+    ssi_overrun: u32,  // POSIX timer overrun count
+    ssi_trapno: u32,   // Trap number that caused signal
+    ssi_status: i32,   // Exit status or signal (SIGCHLD)
+    ssi_int: i32,      // Integer sent by sigqueue(2)
+    ssi_ptr: u64,      // Pointer sent by sigqueue(2)
+    ssi_utime: u64,    // User CPU time consumed (SIGCHLD)
+    ssi_stime: u64,    // System CPU time consumed (SIGCHLD)
+    ssi_addr: u64,     // Address that generated signal
+    ssi_addr_lsb: u16, // Least significant bit of address
+    _pad: [u8; 46],    // Padding to make it 128 bytes
 }
 
 const _: [(); SIGNALFD_SIGINFO_SIZE] = [(); mem::size_of::<SignalfdSiginfo>()];
@@ -123,27 +127,25 @@ impl FileLike for Signalfd {
             return Err(AxError::InvalidInput);
         }
 
-        Poller::new(self, IoEvents::IN)
-            .non_blocking(self.nonblocking())
-            .poll(|| {
-                if let Some(sig_info) = self.dequeue_signal() {
-                    // Convert SignalInfo to SignalfdSiginfo
-                    let sfd_info = SignalfdSiginfo::from_signal_info(&sig_info);
-                    
-                    // Write the structure to the destination buffer
-                    let bytes = sfd_info.as_bytes();
-                    dst.write(bytes)?;
-                    
-                    // Wake up other waiters if there are more signals pending
-                    if self.has_pending_signals() {
-                        self.poll_rx.wake();
-                    }
-                    
-                    Ok(SIGNALFD_SIGINFO_SIZE)
-                } else {
-                    Err(AxError::WouldBlock)
+        block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
+            if let Some(sig_info) = self.dequeue_signal() {
+                // Convert SignalInfo to SignalfdSiginfo
+                let sfd_info = SignalfdSiginfo::from_signal_info(&sig_info);
+
+                // Write the structure to the destination buffer
+                let bytes = sfd_info.as_bytes();
+                dst.write(bytes)?;
+
+                // Wake up other waiters if there are more signals pending
+                if self.has_pending_signals() {
+                    self.poll_rx.wake();
                 }
-            })
+
+                Ok(SIGNALFD_SIGINFO_SIZE)
+            } else {
+                Err(AxError::WouldBlock)
+            }
+        }))
     }
 
     fn write(&self, _src: &mut crate::file::SealedBuf) -> AxResult<usize> {

@@ -2,7 +2,7 @@ use core::time::Duration;
 
 use axerrno::{AxError, AxResult};
 use axpoll::IoEvents;
-use axtask::future::Poller;
+use axtask::future::{self, block_on, poll_io};
 use bitflags::bitflags;
 use linux_raw_sys::general::{
     EPOLL_CLOEXEC, EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLL_CTL_MOD, epoll_event, timespec,
@@ -95,13 +95,14 @@ fn do_epoll_wait(
 
     with_replacen_blocked(
         nullable!(sigmask.get_as_ref())?.copied(),
-        || match Poller::new(epoll.as_ref(), IoEvents::IN)
-            .timeout(timeout)
-            .poll(|| epoll.poll_events(events))
-        {
-            Ok(n) => Ok(n as isize),
-            Err(AxError::TimedOut) => Ok(0),
-            Err(e) => Err(e),
+        || match block_on(future::timeout(
+            timeout,
+            poll_io(epoll.as_ref(), IoEvents::IN, false, || {
+                epoll.poll_events(events)
+            }),
+        )) {
+            Ok(r) => r.map(|n| n as _),
+            Err(_) => Ok(0),
         },
     )
 }

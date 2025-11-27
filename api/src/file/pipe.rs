@@ -10,7 +10,10 @@ use axerrno::{AxError, AxResult};
 use axio::{Buf, BufMut, Read, Write};
 use axpoll::{IoEvents, PollSet, Pollable};
 use axsync::Mutex;
-use axtask::{current, future::Poller};
+use axtask::{
+    current,
+    future::{block_on, poll_io},
+};
 use linux_raw_sys::{general::S_IFIFO, ioctl::FIONREAD};
 use memory_addr::PAGE_SIZE_4K;
 use ringbuf::{
@@ -117,28 +120,26 @@ impl FileLike for Pipe {
             return Ok(0);
         }
 
-        Poller::new(self, IoEvents::IN)
-            .non_blocking(self.nonblocking())
-            .poll(|| {
-                let read = {
-                    let cons = self.shared.buffer.lock();
-                    let (left, right) = cons.as_slices();
-                    let mut count = dst.write(left)?;
-                    if count >= left.len() {
-                        count += dst.write(right)?;
-                    }
-                    unsafe { cons.advance_read_index(count) };
-                    count
-                };
-                if read > 0 {
-                    self.shared.poll_tx.wake();
-                    Ok(read)
-                } else if self.closed() {
-                    Ok(0)
-                } else {
-                    Err(AxError::WouldBlock)
+        block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
+            let read = {
+                let cons = self.shared.buffer.lock();
+                let (left, right) = cons.as_slices();
+                let mut count = dst.write(left)?;
+                if count >= left.len() {
+                    count += dst.write(right)?;
                 }
-            })
+                unsafe { cons.advance_read_index(count) };
+                count
+            };
+            if read > 0 {
+                self.shared.poll_tx.wake();
+                Ok(read)
+            } else if self.closed() {
+                Ok(0)
+            } else {
+                Err(AxError::WouldBlock)
+            }
+        }))
     }
 
     fn write(&self, src: &mut SealedBuf) -> AxResult<usize> {
@@ -151,34 +152,32 @@ impl FileLike for Pipe {
         }
 
         let mut total_written = 0;
-        let non_blocking = self.nonblocking();
-        Poller::new(self, IoEvents::OUT)
-            .non_blocking(non_blocking)
-            .poll(|| {
-                if self.closed() {
-                    raise_pipe();
-                    return Err(AxError::BrokenPipe);
-                }
 
-                let written = {
-                    let mut prod = self.shared.buffer.lock();
-                    let (left, right) = prod.vacant_slices_mut();
-                    let mut count = src.read(unsafe { left.assume_init_mut() })?;
-                    if count >= left.len() {
-                        count += src.read(unsafe { right.assume_init_mut() })?;
-                    }
-                    unsafe { prod.advance_write_index(count) };
-                    count
-                };
-                if written > 0 {
-                    self.shared.poll_rx.wake();
-                    total_written += written;
-                    if total_written == size || non_blocking {
-                        return Ok(total_written);
-                    }
+        block_on(poll_io(self, IoEvents::OUT, self.nonblocking(), || {
+            if self.closed() {
+                raise_pipe();
+                return Err(AxError::BrokenPipe);
+            }
+
+            let written = {
+                let mut prod = self.shared.buffer.lock();
+                let (left, right) = prod.vacant_slices_mut();
+                let mut count = src.read(unsafe { left.assume_init_mut() })?;
+                if count >= left.len() {
+                    count += src.read(unsafe { right.assume_init_mut() })?;
                 }
-                Err(AxError::WouldBlock)
-            })
+                unsafe { prod.advance_write_index(count) };
+                count
+            };
+            if written > 0 {
+                self.shared.poll_rx.wake();
+                total_written += written;
+                if total_written == size || self.nonblocking() {
+                    return Ok(total_written);
+                }
+            }
+            Err(AxError::WouldBlock)
+        }))
     }
 
     fn stat(&self) -> AxResult<Kstat> {

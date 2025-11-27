@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 use axerrno::{AxError, AxResult};
 use axfs_ng::FS_CONTEXT;
 use axhal::uspace::UserContext;
-use axtask::{TaskExtProxy, current, spawn_task};
+use axtask::{AxTaskExt, current, spawn_task};
 use bitflags::bitflags;
 use kspin::SpinNoIrq;
 use linux_raw_sys::general::*;
@@ -218,7 +218,7 @@ pub fn sys_clone(
     if flags.contains(CloneFlags::CHILD_CLEARTID) {
         thr.set_clear_child_tid(child_tid);
     }
-    *new_task.task_ext_mut() = Some(unsafe { TaskExtProxy::from_impl(thr) });
+    *new_task.task_ext_mut() = Some(unsafe { AxTaskExt::from_impl(thr) });
 
     let task = spawn_task(new_task);
     add_task_to_table(&task);

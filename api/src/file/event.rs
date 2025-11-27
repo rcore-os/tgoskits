@@ -8,7 +8,7 @@ use core::{
 use axerrno::AxError;
 use axio::{Buf, BufMut, Read, Write};
 use axpoll::{IoEvents, PollSet, Pollable};
-use axtask::future::Poller;
+use axtask::future::{block_on, poll_io};
 
 use crate::file::{FileLike, Kstat, SealedBuf, SealedBufMut};
 
@@ -40,28 +40,26 @@ impl FileLike for EventFd {
             return Err(AxError::InvalidInput);
         }
 
-        Poller::new(self, IoEvents::IN)
-            .non_blocking(self.nonblocking())
-            .poll(|| {
-                let result =
-                    self.count
-                        .fetch_update(Ordering::Release, Ordering::Acquire, |count| {
-                            if count > 0 {
-                                let dec = if self.semaphore { 1 } else { count };
-                                Some(count - dec)
-                            } else {
-                                None
-                            }
-                        });
-                match result {
-                    Ok(count) => {
-                        dst.write(&count.to_ne_bytes())?;
-                        self.poll_tx.wake();
-                        Ok(size_of::<u64>())
+        block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
+            let result = self
+                .count
+                .fetch_update(Ordering::Release, Ordering::Acquire, |count| {
+                    if count > 0 {
+                        let dec = if self.semaphore { 1 } else { count };
+                        Some(count - dec)
+                    } else {
+                        None
                     }
-                    Err(_) => Err(AxError::WouldBlock),
+                });
+            match result {
+                Ok(count) => {
+                    dst.write(&count.to_ne_bytes())?;
+                    self.poll_tx.wake();
+                    Ok(size_of::<u64>())
                 }
-            })
+                Err(_) => Err(AxError::WouldBlock),
+            }
+        }))
     }
 
     fn write(&self, src: &mut SealedBuf) -> axio::Result<usize> {
@@ -76,26 +74,24 @@ impl FileLike for EventFd {
             return Err(AxError::InvalidInput);
         }
 
-        Poller::new(self, IoEvents::OUT)
-            .non_blocking(self.nonblocking())
-            .poll(|| {
-                let result =
-                    self.count
-                        .fetch_update(Ordering::Release, Ordering::Acquire, |count| {
-                            if u64::MAX - count > value {
-                                Some(count + value)
-                            } else {
-                                None
-                            }
-                        });
-                match result {
-                    Ok(_) => {
-                        self.poll_rx.wake();
-                        Ok(size_of::<u64>())
+        block_on(poll_io(self, IoEvents::OUT, self.nonblocking(), || {
+            let result = self
+                .count
+                .fetch_update(Ordering::Release, Ordering::Acquire, |count| {
+                    if u64::MAX - count > value {
+                        Some(count + value)
+                    } else {
+                        None
                     }
-                    Err(_) => Err(AxError::WouldBlock),
+                });
+            match result {
+                Ok(_) => {
+                    self.poll_rx.wake();
+                    Ok(size_of::<u64>())
                 }
-            })
+                Err(_) => Err(AxError::WouldBlock),
+            }
+        }))
     }
 
     fn stat(&self) -> axio::Result<Kstat> {

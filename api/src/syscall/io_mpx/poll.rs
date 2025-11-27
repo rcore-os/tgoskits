@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use axerrno::{AxError, AxResult};
 use axhal::time::TimeValue;
 use axpoll::IoEvents;
-use axtask::future::Poller;
+use axtask::future::{self, block_on, poll_io};
 use linux_raw_sys::general::{POLLNVAL, pollfd, timespec};
 use starry_signal::SignalSet;
 
@@ -53,9 +53,9 @@ fn do_poll(
     let fds = FdPollSet(fds);
 
     with_replacen_blocked(sigmask, || {
-        match Poller::new(&fds, IoEvents::empty())
-            .timeout(timeout)
-            .poll(|| {
+        match block_on(future::timeout(
+            timeout,
+            poll_io(&fds, IoEvents::empty(), false, || {
                 let mut res = 0usize;
                 for ((fd, events), revents) in fds.0.iter().zip(revents.iter_mut()) {
                     let mut result = fd.poll();
@@ -77,9 +77,10 @@ fn do_poll(
                 } else {
                     Err(AxError::WouldBlock)
                 }
-            }) {
-            Err(AxError::TimedOut) => Ok(0),
-            other => other,
+            }),
+        )) {
+            Ok(r) => r,
+            Err(_) => Ok(0),
         }
     })
 }

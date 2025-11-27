@@ -12,7 +12,7 @@ use axfs_ng::{FS_CONTEXT, FsContext};
 use axfs_ng_vfs::{Location, Metadata, NodeFlags};
 use axpoll::{IoEvents, Pollable};
 use axsync::Mutex;
-use axtask::future::Poller;
+use axtask::future::{block_on, poll_io};
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW};
 
 use super::{FileLike, Kstat, get_file_like};
@@ -131,9 +131,9 @@ impl FileLike for File {
         if likely(self.is_blocking()) {
             inner.read(dst)
         } else {
-            Poller::new(self, IoEvents::IN)
-                .non_blocking(self.nonblocking())
-                .poll(|| inner.read(dst))
+            block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
+                inner.read(dst)
+            }))
         }
     }
 
@@ -142,9 +142,9 @@ impl FileLike for File {
         if likely(self.is_blocking()) {
             inner.write(src)
         } else {
-            Poller::new(self, IoEvents::OUT)
-                .non_blocking(self.nonblocking())
-                .poll(|| inner.write(src))
+            block_on(poll_io(self, IoEvents::OUT, self.nonblocking(), || {
+                inner.write(src)
+            }))
         }
     }
 

@@ -3,7 +3,7 @@ use core::{fmt, time::Duration};
 
 use axerrno::{AxError, AxResult};
 use axpoll::IoEvents;
-use axtask::future::Poller;
+use axtask::future::{self, block_on, poll_io};
 use bitmaps::Bitmap;
 use linux_raw_sys::{
     general::*,
@@ -108,9 +108,9 @@ fn do_select(
         unsafe { FD_ZERO(exceptfds) };
     }
     with_replacen_blocked(sigmask.copied(), || {
-        match Poller::new(&fds, IoEvents::empty())
-            .timeout(timeout)
-            .poll(|| {
+        match block_on(future::timeout(
+            timeout,
+            poll_io(&fds, IoEvents::empty(), false, || {
                 let mut res = 0usize;
                 for ((fd, interested), index) in fds.0.iter().zip(fd_indices.iter().copied()) {
                     let events = fd.poll() & *interested;
@@ -138,9 +138,10 @@ fn do_select(
                 }
 
                 Err(AxError::WouldBlock)
-            }) {
-            Err(AxError::TimedOut) => Ok(0),
-            other => other,
+            }),
+        )) {
+            Ok(r) => r,
+            Err(_) => Ok(0),
         }
     })
 }

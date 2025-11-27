@@ -1,5 +1,5 @@
 /// The size of the kernel stack.
-pub const KERNEL_STACK_SIZE: usize = 0x40000;
+pub const KERNEL_STACK_SIZE: usize = 0x4_0000;
 
 /// The base address of the user space.
 pub const USER_SPACE_BASE: usize = 0x1000;

@@ -8,7 +8,7 @@ use core::{
 
 use axerrno::{AxError, AxResult};
 use axpoll::{IoEvents, PollSet, Pollable};
-use axtask::future::{Poller, block_on};
+use axtask::future::{block_on, poll_io};
 use linux_raw_sys::general::{
     ECHOCTL, ECHOK, ICRNL, IGNCR, ISIG, VEOF, VERASE, VKILL, VMIN, VTIME,
 };
@@ -255,7 +255,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             ProcessMode::Manual => Processor::Manual(reader),
             ProcessMode::External(register) => {
                 let poll_rx = Arc::new(PollSet::new());
-                axtask::spawn(
+                axtask::spawn_with_name(
                     {
                         let poll_rx = poll_rx.clone();
                         let poll_tx = poll_tx.clone();
@@ -360,12 +360,12 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             _ => unreachable!(),
         };
         let pollable = WaitPollable(set);
-        Poller::new(&pollable, IoEvents::IN).poll(|| {
+        block_on(poll_io(&pollable, IoEvents::IN, false, || {
             total_read += self.buf_rx.pop_slice(&mut buf[total_read..]);
             self.poll_tx.wake();
             (total_read >= vmin)
                 .then_some(total_read)
                 .ok_or(AxError::WouldBlock)
-        })
+        }))
     }
 }
