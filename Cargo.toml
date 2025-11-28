@@ -63,7 +63,7 @@ axklib = {git = "https://github.com/arceos-hypervisor/axklib.git"}
 axruntime = {path = "modules/axruntime"}
 axfs = {path = "modules/axfs"}
 axvcpu = "0.1"
-axvm = {git = "https://github.com/arceos-hypervisor/axvm.git", branch = "next"}
+axvm = {git = "https://github.com/liulog/axvm.git", branch = "next"}
 
 # System independent crates provided by ArceOS, these crates could be imported by remote url. 
 axerrno = "0.2"
@@ -90,7 +90,7 @@ axplat-riscv64-qemu-virt = {path = "platform/riscv64-qemu-virt"}
 axvmconfig = {git = "https://github.com/arceos-hypervisor/axvmconfig.git", branch = "next"}
 
 [patch.crates-io]
-axvcpu = {git = "https://github.com/arceos-hypervisor/axvcpu.git", branch = "next"}
+axvcpu = {path="crates/axvcpu"}
 axvmconfig = {git = "https://github.com/arceos-hypervisor/axvmconfig.git", branch = "next"}
 
 [patch."https://github.com/arceos-org/arceos"]

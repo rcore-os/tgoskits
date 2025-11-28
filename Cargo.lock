@@ -1160,9 +1160,9 @@ dependencies = [
  "axhvc",
  "axruntime",
  "axstd",
- "axvcpu 0.1.2",
+ "axvcpu 0.1.1",
  "axvisor_api",
- "axvm 0.1.0 (git+https://github.com/arceos-hypervisor/axvm.git?branch=next)",
+ "axvm 0.1.0 (git+https://github.com/liulog/axvm.git?branch=next)",
  "bitflags 2.10.0",
  "byte-unit",
  "cfg-if",
@@ -1224,7 +1224,7 @@ dependencies = [
  "axdevice",
  "axdevice_base",
  "axerrno",
- "axvcpu 0.1.2",
+ "axvcpu 0.1.1",
  "axvmconfig",
  "cfg-if",
  "cpumask",
@@ -1233,7 +1233,7 @@ dependencies = [
  "page_table_entry",
  "page_table_multiarch",
  "percpu",
- "riscv_vcpu 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "riscv_vcpu 0.1.2 (git+https://github.com/liulog/riscv_vcpu.git?branch=master)",
  "spin 0.9.8",
  "x86_vcpu",
 ]
@@ -1241,7 +1241,7 @@ dependencies = [
 [[package]]
 name = "axvm"
 version = "0.1.0"
-source = "git+https://github.com/arceos-hypervisor/axvm.git?branch=next#0393f27dea948433e53285a400e356cdfd4c4fa3"
+source = "git+https://github.com/liulog/axvm.git?branch=next#22ca8ff823b1433c6f2f15bc99810fe0b4a2ccac"
 dependencies = [
  "arm_vcpu",
  "arm_vgic 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -1249,7 +1249,7 @@ dependencies = [
  "axdevice",
  "axdevice_base",
  "axerrno",
- "axvcpu 0.1.2",
+ "axvcpu 0.1.1",
  "axvmconfig",
  "cfg-if",
  "cpumask",
@@ -1258,7 +1258,7 @@ dependencies = [
  "page_table_entry",
  "page_table_multiarch",
  "percpu",
- "riscv_vcpu 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "riscv_vcpu 0.1.2 (git+https://github.com/liulog/riscv_vcpu.git?branch=master)",
  "spin 0.9.8",
  "x86_vcpu",
 ]
@@ -4623,7 +4623,7 @@ version = "0.1.2"
 dependencies = [
  "axaddrspace",
  "axerrno",
- "axvcpu 0.1.2",
+ "axvcpu 0.1.1",
  "axvisor_api",
  "bit_field",
  "bitflags 2.10.0",
@@ -4645,12 +4645,11 @@ dependencies = [
 [[package]]
 name = "riscv_vcpu"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13f38f28fe6c02bb3ced43087c9667b23d18adf729becdc5adf1253f7df83904"
+source = "git+https://github.com/liulog/riscv_vcpu.git?branch=master#6a82b377ce526d927e48ffde90f245c6a558a841"
 dependencies = [
  "axaddrspace",
  "axerrno",
- "axvcpu 0.1.2",
+ "axvcpu 0.1.1",
  "axvisor_api",
  "bit_field",
  "bitflags 2.10.0",
@@ -6664,7 +6663,7 @@ dependencies = [
  "axaddrspace",
  "axdevice_base",
  "axerrno",
- "axvcpu 0.1.2",
+ "axvcpu 0.1.1",
  "axvisor_api",
  "bit_field",
  "bitflags 2.10.0",
