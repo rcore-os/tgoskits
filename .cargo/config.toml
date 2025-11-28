@@ -5,6 +5,14 @@ rustflags = [
     "-Clink-args=-Tlink.x",
 ]
 
+[target.riscv64gc-unknown-none-elf]
+rustflags = [
+    "-Clink-args=-no-pie",
+    "-Clink-args=-znostart-stop-gc",
+    "-Clink-args=-Tlink.x",
+]
+
+
 [target.'cfg(target_os = "none")']
 runner = "cargo osrun"
 

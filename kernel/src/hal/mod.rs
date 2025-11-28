@@ -14,6 +14,7 @@ use axvm::{AxVMHal, AxVMPerCpu};
 
 #[cfg_attr(target_arch = "aarch64", path = "arch/aarch64/mod.rs")]
 #[cfg_attr(target_arch = "x86_64", path = "arch/x86_64/mod.rs")]
+#[cfg_attr(target_arch = "riscv64", path = "arch/riscv64/mod.rs")]
 pub mod arch;
 
 use crate::{hal::arch::hardware_check, task::AsVCpuTask, vmm};

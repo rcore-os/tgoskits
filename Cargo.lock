@@ -1006,6 +1006,7 @@ dependencies = [
  "axnet",
  "axplat 0.2.0 (git+https://github.com/arceos-hypervisor/axplat_crates?tag=vmm-v0.3.0)",
  "axplat-aarch64-dyn 0.3.0 (git+https://github.com/arceos-hypervisor/axplat-aarch64-dyn?tag=v0.3.3)",
+ "axplat-riscv64-qemu-virt 0.2.0",
  "axplat-x86-qemu-q35",
  "axtask",
  "cfg-if",
