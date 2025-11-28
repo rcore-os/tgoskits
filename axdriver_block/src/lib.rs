@@ -12,6 +12,9 @@ pub mod ramdisk;
 #[cfg(feature = "ramdisk-static")]
 pub mod ramdisk_static;
 
+#[cfg(feature = "sdmmc")]
+pub mod sdmmc;
+
 #[doc(no_inline)]
 pub use axdriver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
 
