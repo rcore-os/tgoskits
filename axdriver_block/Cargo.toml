@@ -12,9 +12,9 @@ repository.workspace = true
 categories.workspace = true
 
 [features]
-ramdisk = []
 bcm2835-sdhci = ["dep:bcm2835-sdhci"]
-default = []
+ramdisk = []
+ramdisk-static = []
 
 [dependencies]
 axdriver_base = { workspace = true }
