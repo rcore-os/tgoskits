@@ -4,9 +4,9 @@
 
 </div> -->
 
-<h2 align="center">AxVisor</h1>
+<h1 align="center">AxVisor</h1>
 
-<p align="center">A unified modular hypervisor based on ArceOS.</p>
+<p align="center">A unified modular Type I hypervisor</p>
 
 <div align="center">
 
@@ -20,156 +20,82 @@ English | [中文](README_CN.md)
 
 # Introduction
 
-AxVisor is a Hypervisor implemented based on the ArceOS unikernel framework. Its goal is to leverage the basic operating system functionalities provided by ArceOS as a foundation to build a unified and componentized Hypervisor.
+AxVisor is a Hypervisor implemented based on the ArceOS kernel. Its goal is to leverage the basic operating system functionalities provided by ArceOS as a foundation to implement a lightweight unified modular Hypervisor.
 
-**Unified** means using the same codebase to support three architectures—x86_64, Arm (aarch64), and RISC-V—maximizing the reuse of architecture-agnostic code and simplifying development and maintenance efforts.
+- **Unified** means using the same codebase to support three architectures—x86_64, Arm (aarch64), and RISC-V—maximizing the reuse of architecture-agnostic code and simplifying development and maintenance costs.
 
-**Componentized** means that the Hypervisor's functionalities are decomposed into multiple independently usable components. Each component implements a specific function, and components communicate through standardized interfaces to achieve decoupling and reusability.
+- **Modular** means that the Hypervisor's functionalities are decomposed into multiple independently usable components. Each component implements a specific function, and components communicate through standardized interfaces to achieve decoupling and reusability.
 
 ## Architecture
 
-The software architecture of AxVisor is divided into five layers as shown in the diagram below. Each box represents an independent module, and the modules communicate with each other through standard interfaces.
+The software architecture of AxVisor is divided into five layers as shown in the diagram below. Each box represents an independent component, and components communicate with each other through standard interfaces. The complete architecture description can be found in the [documentation](https://arceos-hypervisor.github.io/axvisorbook/docs/overview).
 
 ![Architecture](https://arceos-hypervisor.github.io/doc/assets/arceos-hypervisor-architecture.png)
 
-The complete architecture description can be found in the [documentation](https://arceos-hypervisor.github.io/doc/arch_cn.html).
+## Hardware Platforms
 
-## Hardwares
+AxVisor has been verified on multiple hardware platforms, covering extensive support from virtualization environments to actual physical devices. To facilitate rapid user deployment, we provide one-click build scripts for each platform in the [axvisor-guest](https://github.com/arceos-hypervisor/axvisor-guest) repository, which can automatically generate corresponding image files.
 
-Currently, AxVisor has been verified on the following platforms:
+| Platform Name | Architecture Support | Key Features |
+|---------------|---------------------|--------------|
+| QEMU | ARM64, x86_64 | Virtualization platform, supports multiple architectures, for development and testing |
+| Orange Pi 5 Plus | ARM64 | Development board based on Rockchip RK3588, high-performance ARM platform |
+| Phytium Pi | ARM64 | Development board based on Phytium E2000Q processor, domestic ARM platform |
+| ROC-RK3568-PC | ARM64 | Development board based on Rockchip RK3568, suitable for industrial applications |
+| EVM3588 | ARM64 | Evaluation board based on Rockchip RK3588, enterprise-level applications |
 
-- [x] QEMU ARM64 virt (qemu-max)
-- [x] Rockchip RK3568 / RK3588
-- [x] PhytiumPi
+## Guest Systems
 
-## Guest VMs
+AxVisor supports multiple operating systems as guests, with good compatibility from lightweight microkernels to mature macrokernel systems. To simplify the user deployment process, we provide one-click build scripts for different guest systems in the [axvisor-guest](https://github.com/arceos-hypervisor/axvisor-guest) repository, which can quickly generate adapted guest images.
 
-Currently, AxVisor has been verified in scenarios with the following systems as guests:
+| Guest System | System Type | Architecture Support | Feature Description |
+|--------------|-------------|---------------------|-------------------|
+| [ArceOS](https://github.com/arceos-org/arceos) | Unikernel | ARM64, x86_64, RISC-V | Rust-based componentized operating system, lightweight and high-performance |
+| [Starry-OS](https://github.com/Starry-OS) | Macrokernel OS | ARM64, x86_64 | Real-time operating system for embedded scenarios |
+| [NimbOS](https://github.com/equation314/nimbos) | RTOS System | ARM64, x86_64, RISC-V | Concise Unix-like system, supports POSIX interface |
+| Linux | Macrokernel OS | ARM64, x86_64, RISC-V | Mature and stable general-purpose operating system, rich software ecosystem |
 
-- [ArceOS](https://github.com/arceos-org/arceos)
-- [Starry-OS](https://github.com/Starry-OS)
-- [NimbOS](https://github.com/equation314/nimbos)
-- Linux
+# Build
 
-## Shell Management
-
-AxVisor provides an interactive shell interface for managing virtual machines and file operations.
-
-For detailed information about shell features, commands, and usage, see: [Shell模块介绍.md](doc/Shell模块介绍.md)
-
-# Build and Run
-
-After AxVisor starts, it loads and starts the guest based on the information in the guest configuration file. Currently, AxVisor supports loading guest images from a FAT32 file system and also supports binding guest images to the hypervisor image through static compilation (using include_bytes).
+AxVisor is built based on the Rust ecosystem, providing complete project build, configuration management, and debugging support through the extended xtask toolchain, offering developers a unified and efficient development experience.
 
 ## Build Environment
 
-AxVisor is written in the Rust programming language, so you need to install the Rust development environment following the instructions on the official Rust website. Additionally, you need to install cargo-binutils to use tools like rust-objcopy and rust-objdump.
+First, in a Linux environment, you need to install basic development tool packages such as `libssl-dev gcc libudev-dev pkg-config`.
 
-```console
-cargo install cargo-binutils
-```
+Second, AxVisor is written in the Rust programming language, so you need to install the Rust development environment according to the official Rust website instructions, and use the `cargo install cargo-binutils` command to install [cargo-binutils](https://github.com/rust-embedded/cargo-binutils) to use tools like `rust-objcopy` and `rust-objdump`.
 
-If necessary, you may also need to install [musl-gcc](http://musl.cc/x86_64-linux-musl-cross.tgz) to build guest applications.
+> If necessary, you may also need to install [musl-gcc](http://musl.cc/x86_64-linux-musl-cross.tgz) to build guest applications.
 
 ## Configuration Files
 
-Since guest configuration is a complex process, AxVisor chooses to use toml files to manage guest configurations, which include the virtual machine ID, virtual machine name, virtual machine type, number of CPU cores, memory size, virtual devices, and passthrough devices.
+AxVisor uses a layered configuration system, including hardware platform configuration and guest configuration, both in TOML format.
 
-- In the source code's `./config/vms` directory, there are some example templates for guest configurations. The configuration files are named in the format `<os>-<arch>-board_or_cpu-smpx`, where:
-  - `<os>` is the guest operating system name
-  - `<arch>` is the architecture
-  - `board_or_cpu` is the name of the hardware development board or CPU (different strings are concatenated with `_`)
-  - `smpx` refers to the number of CPUs allocated to the guest, where `x` is the specific value
-  - The different components are concatenated with `-` to form the whole name
+### Hardware Platform Configuration
 
-- Additionally, you can also use the [axvmconfig](https://github.com/arceos-hypervisor/axvmconfig) tool to generate a custom configuration file. For detailed information, please refer to [axvmconfig](https://arceos-hypervisor.github.io/axvmconfig/axvmconfig/index.html).
+Hardware platform configuration files are located in the `configs/board/` directory, with each configuration file corresponding to a development board (or QEMU platform architecture) that we have verified. They specify the target architecture, feature sets, driver support, log levels, and build options.
 
-## Load and run from file system
+> The guest configuration item `vm_configs` is not specified by default and needs to be specified in actual use!
 
-Loading from the filesystem refers to the method where the AxVisor image, Linux guest image, and its device tree are independently deployed in the filesystem on the storage. After AxVisor starts, it loads the guest image and its device tree from the filesystem to boot the guest.
+### Guest Configuration
 
-### NimbOS as guest 
+Guest configuration files are located in the `configs/vms/` directory, defining the runtime parameters of guests, including basic information, kernel configuration, memory regions, and device configuration details.
 
-1. Execute script to download and prepare NimbOS image.
+The configuration file naming format is `<os>-<arch>-board_or_cpu-smpx`, where `<os>` is the guest system name (such as `arceos`, `linux`, `nimbos`), `<arch>` is the architecture (such as `aarch64`, `x86_64`, `riscv64`), `board_or_cpu` is the hardware development board or CPU name, and `smpx` is the number of CPUs allocated to the guest.
 
-   ```shell
-   ./scripts/nimbos.sh --arch aarch64
-   ```
+## Compilation
 
-2. Execute `./axvisor.sh run --plat aarch64-generic --features fs,ept-level-4 --arceos-args BUS=mmio,BLK=y,DISK_IMG=tmp/nimbos-aarch64.img,LOG=info --vmconfigs configs/vms/nimbos-aarch64-qemu-smp1.toml` to build AxVisor and start it in QEMU.
+AxVisor uses the xtask tool for build management, supporting multiple hardware platforms and configuration options. For a quick build and run of AxVisor, please refer to the [Quick Start](https://arceos-hypervisor.github.io/axvisorbook/docs/category/quickstart) chapter in the configuration documentation.
 
-3. After that, you can directly run `./axvisor.sh run` to start it, and modify `.hvconfig.toml` to change the startup parameters.
+1. **Generate Configuration**: Use `cargo xtask defconfig <board_name>` to select the target hardware platform configuration from the `configs/board/` directory. This command copies the corresponding board-level configuration to `.build.toml` as the build configuration.
 
-### More guest
+2. **Modify Configuration**: Use `cargo xtask menuconfig` to launch the interactive configuration interface, where you can adjust the target architecture, feature sets, log levels, and other parameters.
 
-   TODO
-
-## Load and run from memory
-
-Loading from memory refers to a method where the AxVisor image, guest image, and its device tree are already packaged together during the build phase. Only AxVisor itself needs to be deployed in the file system on the storage device. After AxVisor starts, it loads the guest image and its device tree from memory to boot the guest.
-
-### linux as guest 
-
-1. Prepare working directory
-   ```console
-   mkdir -p tmp
-   cp configs/vms/linux-aarch64-qemu-smp1.toml tmp/
-   cp configs/vms/linux-aarch64-qemu-smp1.dts tmp/
-   ```
-
-2. [See Linux build help](https://github.com/arceos-hypervisor/guest-test-linux) to get the guest Image and rootfs.img, then copy them to the `tmp` directory.
-
-3. Execute `dtc -O dtb -I dts -o tmp/linux-aarch64-qemu-smp1.dtb tmp/linux-aarch64-qemu-smp1.dts` to build the guest device tree file
-
-4. Execute `./axvisor.sh defconfig`, then edit the `.hvconfig.toml` file, set the `vmconfigs` item to your guest machine configuration file path, with the following content:
-
-   ```toml
-   arceos_args = [
-      "BUS=mmio",
-      "BLK=y",
-      "MEM=8g",
-      "LOG=debug",
-      "QEMU_ARGS=\"-machine gic-version=3  -cpu cortex-a72  \"",
-      "DISK_IMG=\"tmp/rootfs.img\"",
-   ]
-   vmconfigs = [ "tmp/linux-aarch64-qemu-smp1.toml"]
-   ```
-
-4. Execute `./axvisor.sh run` to build AxVisor and start it in QEMU.
-
-### More guest
-
-   TODO
+3. **Execute Build**: Use `cargo xtask build` to compile the project according to the `.build.toml` configuration file, generating the target platform binary file.
 
 # Contributing
 
-Feel free to fork this repository and submit a pull request.
-
-You can refer to these [discussions]((https://github.com/arceos-hypervisor/axvisor/discussions)) to gain deeper insights into the project's ideas and future development direction.
-
-## Development
-
-To contribute to AxVisor, you can follow these steps:
-
-1. Fork the repository on GitHub.
-2. Clone your forked repository to your local machine.
-3. Create a new branch for your feature or bug fix.
-4. Make your changes and commit them with clear messages.
-5. Push your changes to your forked repository.
-6. Open a pull request against the main branch of the original repository.
-
-To develop crates used by AxVisor, you can use the following command to build and run the project:
-
-```bash
-cargo install cargo-lpatch
-cargo lpatch -n deps_crate_name
-```
-
-Then you can modify the code in the `crates/deps_crate_name` directory, and it will be automatically used by AxVisor.
-
-## Contributors
-
-This project exists thanks to all the people who contribute.
+Welcome to fork this repository and submit pull requests. The existence and development of this project is thanks to the support of all contributors.
 
 <a href="https://github.com/arceos-hypervisor/axvisor/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=arceos-hypervisor/axvisor" />
@@ -177,7 +103,7 @@ This project exists thanks to all the people who contribute.
 
 # License
 
-AxVisor uses the following open-source license:
+AxVisor uses the following open-source licenses:
 
 - Apache-2.0
 - MulanPubL-2.0
