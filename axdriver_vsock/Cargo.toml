@@ -1,0 +1,19 @@
+[package]
+name = "axdriver_vsock"
+edition.workspace = true
+description = "Common traits and types for vsock drivers"
+documentation = "https://arceos-org.github.io/axdriver_crates/axdriver_vsock"
+keywords = ["arceos", "driver", "vsock"]
+version.workspace = true
+authors = ["Weikang Guo <guoweikang@kylinos.cn>"]
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+axdriver_base = { workspace = true }
+log = "0.4"
