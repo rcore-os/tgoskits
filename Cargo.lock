@@ -287,15 +287,14 @@ dependencies = [
 [[package]]
 name = "axdriver_base"
 version = "0.1.2"
-source = "git+https://github.com/arceos-org/axdriver_crates.git?tag=dev-v01#cd0c5372cbf3964ffd8e9c398e0e6096b6bb909a"
+source = "git+https://github.com/arceos-org/axdriver_crates.git?tag=dev-v01#498df4ecde85b8acc2553d93102ad32d76339110"
 
 [[package]]
 name = "axdriver_block"
 version = "0.1.2"
-source = "git+https://github.com/arceos-org/axdriver_crates.git?tag=dev-v01#cd0c5372cbf3964ffd8e9c398e0e6096b6bb909a"
+source = "git+https://github.com/arceos-org/axdriver_crates.git?tag=dev-v01#498df4ecde85b8acc2553d93102ad32d76339110"
 dependencies = [
  "axdriver_base",
- "gpt_disk_io",
  "log",
  "simple-sdmmc",
 ]
@@ -303,7 +302,7 @@ dependencies = [
 [[package]]
 name = "axdriver_display"
 version = "0.1.2"
-source = "git+https://github.com/arceos-org/axdriver_crates.git?tag=dev-v01#cd0c5372cbf3964ffd8e9c398e0e6096b6bb909a"
+source = "git+https://github.com/arceos-org/axdriver_crates.git?tag=dev-v01#498df4ecde85b8acc2553d93102ad32d76339110"
 dependencies = [
  "axdriver_base",
 ]
@@ -311,7 +310,7 @@ dependencies = [
 [[package]]
 name = "axdriver_input"
 version = "0.1.2"
-source = "git+https://github.com/arceos-org/axdriver_crates.git?tag=dev-v01#cd0c5372cbf3964ffd8e9c398e0e6096b6bb909a"
+source = "git+https://github.com/arceos-org/axdriver_crates.git?tag=dev-v01#498df4ecde85b8acc2553d93102ad32d76339110"
 dependencies = [
  "axdriver_base",
  "strum",
@@ -320,7 +319,7 @@ dependencies = [
 [[package]]
 name = "axdriver_net"
 version = "0.1.2"
-source = "git+https://github.com/arceos-org/axdriver_crates.git?tag=dev-v01#cd0c5372cbf3964ffd8e9c398e0e6096b6bb909a"
+source = "git+https://github.com/arceos-org/axdriver_crates.git?tag=dev-v01#498df4ecde85b8acc2553d93102ad32d76339110"
 dependencies = [
  "axdriver_base",
  "log",
@@ -330,7 +329,7 @@ dependencies = [
 [[package]]
 name = "axdriver_pci"
 version = "0.1.2"
-source = "git+https://github.com/arceos-org/axdriver_crates.git?tag=dev-v01#cd0c5372cbf3964ffd8e9c398e0e6096b6bb909a"
+source = "git+https://github.com/arceos-org/axdriver_crates.git?tag=dev-v01#498df4ecde85b8acc2553d93102ad32d76339110"
 dependencies = [
  "virtio-drivers",
 ]
@@ -338,7 +337,7 @@ dependencies = [
 [[package]]
 name = "axdriver_virtio"
 version = "0.1.2"
-source = "git+https://github.com/arceos-org/axdriver_crates.git?tag=dev-v01#cd0c5372cbf3964ffd8e9c398e0e6096b6bb909a"
+source = "git+https://github.com/arceos-org/axdriver_crates.git?tag=dev-v01#498df4ecde85b8acc2553d93102ad32d76339110"
 dependencies = [
  "axdriver_base",
  "axdriver_block",
@@ -353,7 +352,7 @@ dependencies = [
 [[package]]
 name = "axdriver_vsock"
 version = "0.1.2"
-source = "git+https://github.com/arceos-org/axdriver_crates.git?tag=dev-v01#cd0c5372cbf3964ffd8e9c398e0e6096b6bb909a"
+source = "git+https://github.com/arceos-org/axdriver_crates.git?tag=dev-v01#498df4ecde85b8acc2553d93102ad32d76339110"
 dependencies = [
  "axdriver_base",
  "log",
@@ -1009,21 +1008,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "crc"
-version = "3.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9710d3b3739c2e349eb44fe848ad0b7c8cb1e42bd87ee49371df2f7acaf3e675"
-dependencies = [
- "crc-catalog",
-]
-
-[[package]]
-name = "crc-catalog"
-version = "2.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19d374276b40fb8bbdee95aef7c7fa6b5316ec764510eb64b8dd0e2ed0d7e7f5"
-
-[[package]]
 name = "critical-section"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1282,28 +1266,6 @@ name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
-
-[[package]]
-name = "gpt_disk_io"
-version = "0.16.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb194b955ba40423510e4342a077df49c70a599cf692cd0e30a86a32d8a9c7b1"
-dependencies = [
- "bytemuck",
- "gpt_disk_types",
-]
-
-[[package]]
-name = "gpt_disk_types"
-version = "0.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3972298dc4cef533492b66bdd75747133618917f44885a11dc8abd24c4e3f1f0"
-dependencies = [
- "bytemuck",
- "crc",
- "ucs2",
- "uguid",
-]
 
 [[package]]
 name = "handler_table"
@@ -2057,7 +2019,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 [[package]]
 name = "simple-sdmmc"
 version = "0.1.0"
-source = "git+https://github.com/Starry-OS/simple-sdmmc.git?rev=db64be9#db64be91d8b5b0cae5c33f8e13e41a010233a306"
+source = "git+https://github.com/Starry-OS/simple-sdmmc.git?rev=9e6420c#9e6420c3bcaa67d4c3a6ecd2b24a2e7ee9118f9b"
 dependencies = [
  "bitfield-struct",
  "log",
@@ -2434,24 +2396,6 @@ dependencies = [
  "bitflags 2.10.0",
  "rustversion",
  "x86",
-]
-
-[[package]]
-name = "ucs2"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df79298e11f316400c57ec268f3c2c29ac3c4d4777687955cd3d4f3a35ce7eba"
-dependencies = [
- "bit_field",
-]
-
-[[package]]
-name = "uguid"
-version = "2.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c8352f8c05e47892e7eaf13b34abd76a7f4aeaf817b716e88789381927f199c"
-dependencies = [
- "bytemuck",
 ]
 
 [[package]]

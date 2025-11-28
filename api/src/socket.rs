@@ -220,7 +220,7 @@ impl SocketAddrExt for VsockAddr {
             return Err(AxError::from(LinuxError::EAFNOSUPPORT));
         }
         Ok(VsockAddr {
-            cid: addr_vsock.svm_cid,
+            cid: addr_vsock.svm_cid as _,
             port: addr_vsock.svm_port,
         })
     }
@@ -230,7 +230,7 @@ impl SocketAddrExt for VsockAddr {
             svm_family: AF_VSOCK as _,
             svm_reserved1: 0,
             svm_port: self.port,
-            svm_cid: self.cid,
+            svm_cid: self.cid as _,
             svm_zero: [0_u8; 4],
         };
         fill_addr(addr, addrlen, unsafe { cast_to_slice(&sockvm_addr) })
