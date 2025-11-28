@@ -3,6 +3,7 @@
 
 use core::{sync::atomic::AtomicBool, time::Duration};
 
+use log::info;
 use sparreal_rt::os::time::one_shot_after;
 
 extern crate alloc;
@@ -11,7 +12,7 @@ extern crate sparreal_rt;
 
 #[sparreal_rt::entry]
 fn main() {
-    println!("Hello, world!");
+    info!("Hello, world!");
     // 测试 Page Fault: 访问一个未映射的地址
     println!("Testing page fault by accessing unmapped address 0x6000_0000_0000...");
     static TEST_IRQ: AtomicBool = AtomicBool::new(false);
