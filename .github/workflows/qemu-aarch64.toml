@@ -16,6 +16,9 @@ args = [
   "8g",
 ]
 fail_regex = []
-success_regex = ["Hello, world!"]
+success_regex = [
+    "Hello, world!",
+    "test pass!",
+]
 to_bin = true
 uefi = false

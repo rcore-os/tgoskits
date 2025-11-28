@@ -12,6 +12,10 @@ jobs:
             vmconfigs: configs/vms/arceos-aarch64-qemu-smp1.toml
             vmconfigs_name: ArceOS
             vmimage_name: qemu_aarch64_arceos
+          - arch: aarch64
+            vmconfigs: configs/vms/linux-aarch64-qemu-smp1.toml
+            vmconfigs_name: Linux
+            vmimage_name: qemu_aarch64_linux
           # - arch: riscv64
           #   vmconfigs: configs/vms/arceos-riscv64-qemu-smp1.toml
           #   vmconfigs_name: ArceOS

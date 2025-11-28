@@ -129,10 +129,6 @@ pub fn with_vm_and_vcpu_on_pcpu(
     // }))
 }
 
-pub fn get_running_vm_count() -> usize {
-    RUNNING_VM_COUNT.load(Ordering::Acquire)
-}
-
 pub fn add_running_vm_count(count: usize) {
     RUNNING_VM_COUNT.fetch_add(count, Ordering::Release);
 }

@@ -11,7 +11,7 @@ use std::fs::read_to_string;
 
 use crate::{
     shell::command::{CommandNode, FlagDef, OptionDef, ParsedCommand},
-    vmm::{add_running_vm_count, config::init_guest_vm, vcpus, vm_list, with_vm},
+    vmm::{add_running_vm_count, vcpus, vm_list, with_vm},
 };
 
 /// Check if a VM can transition to Running state.
@@ -124,6 +124,7 @@ fn vm_create(cmd: &ParsedCommand) {
     for config_path in args.iter() {
         println!("Creating VM from config: {}", config_path);
 
+        use crate::vmm::config::init_guest_vm;
         match read_to_string(config_path) {
             Ok(raw_cfg) => match init_guest_vm(&raw_cfg) {
                 Ok(vm_id) => {
@@ -767,6 +768,7 @@ fn delete_vm_by_id(vm_id: usize, keep_data: bool) {
     println!("✓ VM[{}] deletion completed", vm_id);
 }
 
+#[cfg(feature = "fs")]
 fn vm_list_simple() {
     let vms = vm_list::get_vm_list();
     println!("ID    NAME           STATE      VCPU   MEMORY");

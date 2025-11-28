@@ -19,6 +19,7 @@ macro_rules! print_err {
 }
 
 // Helper function: split whitespace
+#[cfg(feature = "fs")]
 fn split_whitespace(s: &str) -> (&str, &str) {
     let s = s.trim();
     if let Some(pos) = s.find(char::is_whitespace) {
@@ -587,6 +588,7 @@ fn file_type_to_char(ty: FileType) -> char {
 }
 
 #[rustfmt::skip]
+#[cfg(feature = "fs")]
 const fn file_perm_to_rwx(mode: u32) -> [u8; 9] {
     let mut perm = [b'-'; 9];
     macro_rules! set {
