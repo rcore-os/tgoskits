@@ -17,6 +17,7 @@ pub struct VirtIoNetDev<H: Hal, T: Transport, const QS: usize> {
     free_tx_bufs: Vec<NetBufBox>,
     buf_pool: Arc<NetBufPool>,
     inner: InnerDev<H, T, QS>,
+    irq: Option<usize>,
 }
 
 unsafe impl<H: Hal, T: Transport, const QS: usize> Send for VirtIoNetDev<H, T, QS> {}
@@ -25,7 +26,7 @@ unsafe impl<H: Hal, T: Transport, const QS: usize> Sync for VirtIoNetDev<H, T, Q
 impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
     /// Creates a new driver instance and initializes the device, or returns
     /// an error if any step fails.
-    pub fn try_new(transport: T) -> DevResult<Self> {
+    pub fn try_new(transport: T, irq: Option<usize>) -> DevResult<Self> {
         // 0. Create a new driver instance.
         const NONE_BUF: Option<NetBufBox> = None;
         let inner = InnerDev::new(transport).map_err(as_dev_err)?;
@@ -40,6 +41,7 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
             tx_buffers,
             free_tx_bufs,
             buf_pool,
+            irq,
         };
 
         // 1. Fill all rx buffers.
@@ -79,6 +81,10 @@ impl<H: Hal, T: Transport, const QS: usize> BaseDriverOps for VirtIoNetDev<H, T,
 
     fn device_type(&self) -> DeviceType {
         DeviceType::Net
+    }
+
+    fn irq_num(&self) -> Option<usize> {
+        self.irq
     }
 }
 
@@ -156,6 +162,7 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
     }
 
     fn receive(&mut self) -> DevResult<NetBufPtr> {
+        self.inner.ack_interrupt();
         if let Some(token) = self.inner.poll_receive() {
             let mut rx_buf = self.rx_buffers[token as usize]
                 .take()
