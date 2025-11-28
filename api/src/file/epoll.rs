@@ -3,7 +3,7 @@
 // Copyright (C) 2025 Azure-stars <Azure_stars@126.com>
 // Copyright (C) 2025 Yuekai Jia <equation618@gmail.com>
 // See LICENSES for license details.
-// 
+//
 // This file has been modified by KylinSoft on 2025.
 
 use alloc::{

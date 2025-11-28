@@ -116,12 +116,14 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> AxResult<isize> {
             VirtAddr::from(start_aligned),
             length,
             VirtAddrRange::new(aspace.base(), aspace.end()),
+            PAGE_SIZE_4K,
         )
         .or_else(|| {
             aspace.find_free_area(
                 aspace.base(),
                 length,
                 VirtAddrRange::new(aspace.base(), aspace.end()),
+                PAGE_SIZE_4K,
             )
         })
         .ok_or(AxError::NoMemory)?;
