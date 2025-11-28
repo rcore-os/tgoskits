@@ -49,6 +49,21 @@ pub enum DevError {
     Unsupported,
 }
 
+impl core::fmt::Display for DevError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            DevError::AlreadyExists => write!(f, "Entity already exists"),
+            DevError::Again => write!(f, "Try again"),
+            DevError::BadState => write!(f, "Bad state"),
+            DevError::InvalidParam => write!(f, "Invalid parameter"),
+            DevError::Io => write!(f, "Input/output error"),
+            DevError::NoMemory => write!(f, "Not enough memory"),
+            DevError::ResourceBusy => write!(f, "Resource is busy"),
+            DevError::Unsupported => write!(f, "Unsupported operation"),
+        }
+    }
+}
+
 /// A specialized `Result` type for device operations.
 pub type DevResult<T = ()> = Result<T, DevError>;
 
