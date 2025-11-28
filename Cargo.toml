@@ -24,6 +24,7 @@ categories = ["os", "no-std", "hardware-support"]
 axdriver_base = { path = "axdriver_base", version = "0.1" }
 axdriver_block = { path = "axdriver_block", version = "0.1" }
 axdriver_display = { path = "axdriver_display", version = "0.1" }
+axdriver_input = { path = "axdriver_input", version = "0.1" }
 axdriver_net = { path = "axdriver_net", version = "0.1" }
 axdriver_pci = { path = "axdriver_pci", version = "0.1" }
 axdriver_virtio = { path = "axdriver_virtio", version = "0.1" }

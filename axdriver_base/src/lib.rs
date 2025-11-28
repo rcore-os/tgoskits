@@ -26,6 +26,8 @@ pub enum DeviceType {
     Net,
     /// Graphic display device (e.g., GPU)
     Display,
+    /// Input device (e.g., keyboard, mouse).
+    Input,
 }
 
 /// The error type for device operation failures.

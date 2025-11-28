@@ -1,0 +1,16 @@
+[package]
+name = "axdriver_input"
+edition.workspace = true
+description = "Common traits and types for input device drivers"
+documentation = "https://arceos-org.github.io/axdriver_crates/axdriver_input"
+keywords = ["arceos", "driver", "input"]
+version.workspace = true
+authors = ["mivik <mivikq@gmail.com>"]
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+
+[dependencies]
+axdriver_base = { workspace = true }
+strum = { version = "0.27.2", default-features = false, features = ["derive"] }

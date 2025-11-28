@@ -26,6 +26,11 @@ mod gpu;
 #[cfg(feature = "gpu")]
 pub use self::gpu::VirtIoGpuDev;
 
+#[cfg(feature = "input")]
+mod input;
+#[cfg(feature = "input")]
+pub use self::input::VirtIoInputDev;
+
 #[cfg(feature = "net")]
 mod net;
 #[cfg(feature = "net")]
@@ -88,6 +93,7 @@ const fn as_dev_type(t: VirtIoDevType) -> Option<DeviceType> {
         Block => Some(DeviceType::Block),
         Network => Some(DeviceType::Net),
         GPU => Some(DeviceType::Display),
+        Input => Some(DeviceType::Input),
         _ => None,
     }
 }
