@@ -19,3 +19,7 @@ linux-raw-sys = { version = "0.11", default-features = false, features = [
     "general",
 ] }
 spin = { version = "0.10", default-features = false, features = ["spin_mutex"] }
+
+[dev-dependencies]
+tokio = { version = "1.37", features = ["rt-multi-thread", "macros", "time", "sync"] }
+futures = "0.3"
