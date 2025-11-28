@@ -12,7 +12,7 @@ core::arch::global_asm!(
 );
 
 unsafe fn setup_startup_page(stack_top: PhysAddr) {
-    unsafe extern "C" {
+    unsafe extern {
         fn ap_entry32();
         fn ap_start();
         fn ap_end();

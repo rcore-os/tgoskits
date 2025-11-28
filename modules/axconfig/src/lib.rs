@@ -34,7 +34,7 @@ pub mod devices {
     #[doc = " End PCI bus number."]
     pub const PCI_BUS_END: usize = 0xff;
     #[doc = " Base physical address of the PCIe ECAM space."]
-    pub const PCI_ECAM_BASE: usize = 0xb000_0000     ;
+    pub const PCI_ECAM_BASE: usize = 0xb000_0000;
     #[doc = " PCI device memory ranges."]
     pub const PCI_RANGES: &[(usize, usize)] = &[];
     #[doc = " Timer interrupt num (PPI, physical timer)."]
@@ -55,7 +55,7 @@ pub mod plat {
     #[doc = " Kernel address space size."]
     pub const KERNEL_ASPACE_SIZE: usize = 0x0000_7fff_ffff_f000;
     #[doc = " No need."]
-    pub const KERNEL_BASE_PADDR: usize = 0x20_0000   ;
+    pub const KERNEL_BASE_PADDR: usize = 0x20_0000;
     #[doc = " Base virtual address of the kernel image."]
     pub const KERNEL_BASE_VADDR: usize = 0xffff_8000_0020_0000;
     #[doc = " Offset of bus address and phys address. some boards, the bus address is"]

@@ -7,7 +7,7 @@ use crate::ctx::Context;
 impl Context {
     pub async fn run_qemu(&mut self, config_path: Option<PathBuf>) -> anyhow::Result<()> {
         let build_config = self.load_config()?;
-        
+
         let arch = if build_config.target.contains("aarch64") {
             Arch::Aarch64
         } else if build_config.target.contains("x86_64") {
@@ -18,7 +18,7 @@ impl Context {
                 build_config.target
             ));
         };
-        
+
         let config_path = if let Some(path) = config_path {
             path
         } else {

@@ -8,18 +8,16 @@ version = "0.1.0"
 anyhow = "1.0"
 cargo_metadata = "0.23"
 chrono = "0.4"
-clap = { version = "4.4", features = ["derive"] }
+clap = {version = "4.4", features = ["derive"]}
 colored = "3"
-ostool = "0.8"
 jkconfig = "0.1"
+ostool = "0.8"
 reqwest = "0.12"
-schemars = { version = "1", features = ["derive"] }
-serde = { version = "1.0", features = ["derive"] }
+schemars = {version = "1", features = ["derive"]}
+serde = {version = "1.0", features = ["derive"]}
 serde_json = "1"
 sha2 = "0.10"
-tokio = { version = "1", features = ["full"] }
+tokio = {version = "1", features = ["full"]}
 toml.workspace = true
 
-axvmconfig = { workspace = true, features = ["std"] }
-
-
+axvmconfig = {workspace = true, features = ["std"]}

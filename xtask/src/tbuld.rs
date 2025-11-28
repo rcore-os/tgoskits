@@ -79,7 +79,7 @@ impl Context {
 
         if !vm_config_paths.is_empty() {
             let value = std::env::join_paths(&vm_config_paths)
-                .map_err(|e| anyhow::anyhow!("Failed to join VM config paths: {}", e))?
+                .map_err(|e| anyhow::anyhow!("Failed to join VM config paths: {e}"))?
                 .to_string_lossy()
                 .into_owned();
             cargo.env.insert("AXVISOR_VM_CONFIGS".to_string(), value);

@@ -4,13 +4,14 @@
 
 use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 mod cargo;
 mod clippy;
 mod ctx;
+mod devspace;
 mod image;
 mod menuconfig;
 mod tbuld;
@@ -40,6 +41,8 @@ enum Commands {
     Menuconfig,
     /// Guest Image management
     Image(image::ImageArgs),
+    /// Manage local devspace dependencies
+    Devspace(DevspaceArgs),
 }
 
 #[derive(Parser)]
@@ -84,6 +87,18 @@ struct UbootArgs {
     vmconfigs: Vec<String>,
 }
 
+#[derive(Args)]
+struct DevspaceArgs {
+    #[command(subcommand)]
+    action: DevspaceCommand,
+}
+
+#[derive(Subcommand)]
+enum DevspaceCommand {
+    Start,
+    Stop,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -121,6 +136,10 @@ async fn main() -> Result<()> {
         Commands::Image(args) => {
             image::run_image(args).await?;
         }
+        Commands::Devspace(args) => match args.action {
+            DevspaceCommand::Start => devspace::start()?,
+            DevspaceCommand::Stop => devspace::stop()?,
+        },
     }
 
     Ok(())
