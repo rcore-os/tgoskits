@@ -1,6 +1,6 @@
 [package]
 name = "axdriver_pci"
-edition = "2021"
+edition.workspace = true
 description = "Structures and functions for PCI bus operations"
 documentation = "https://arceos-org.github.io/axdriver_crates/axdriver_pci"
 keywords = ["arceos", "driver", "pci"]

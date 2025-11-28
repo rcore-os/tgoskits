@@ -13,17 +13,21 @@
 #![no_std]
 #![cfg_attr(doc, feature(doc_cfg))]
 
-#[cfg(feature = "block")]
-mod blk;
-#[cfg(feature = "gpu")]
-mod gpu;
-#[cfg(feature = "net")]
-mod net;
+#[cfg(feature = "alloc")]
+extern crate alloc;
 
 #[cfg(feature = "block")]
+mod blk;
+#[cfg(feature = "block")]
 pub use self::blk::VirtIoBlkDev;
+
+#[cfg(feature = "gpu")]
+mod gpu;
 #[cfg(feature = "gpu")]
 pub use self::gpu::VirtIoGpuDev;
+
+#[cfg(feature = "net")]
+mod net;
 #[cfg(feature = "net")]
 pub use self::net::VirtIoNetDev;
 

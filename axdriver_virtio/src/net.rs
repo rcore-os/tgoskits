@@ -1,10 +1,10 @@
-use crate::as_dev_err;
 use alloc::{sync::Arc, vec::Vec};
+
 use axdriver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
 use axdriver_net::{EthernetAddress, NetBuf, NetBufBox, NetBufPool, NetBufPtr, NetDriverOps};
 use virtio_drivers::{device::net::VirtIONetRaw as InnerDev, transport::Transport, Hal};
 
-extern crate alloc;
+use crate::as_dev_err;
 
 const NET_BUF_LEN: usize = 1526;
 

@@ -1,14 +1,12 @@
-use core::convert::From;
-use core::{mem::ManuallyDrop, ptr::NonNull};
-
 use alloc::{collections::VecDeque, sync::Arc};
+use core::{convert::From, mem::ManuallyDrop, ptr::NonNull};
+
 use axdriver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
 use ixgbe_driver::{IxgbeDevice, IxgbeError, IxgbeNetBuf, MemPool, NicDevice};
 pub use ixgbe_driver::{IxgbeHal, PhysAddr, INTEL_82599, INTEL_VEND};
+use log::*;
 
 use crate::{EthernetAddress, NetBufPtr, NetDriverOps};
-
-extern crate alloc;
 
 const RECV_BATCH_SIZE: usize = 64;
 const RX_BUFFER_SIZE: usize = 1024;
@@ -34,7 +32,7 @@ impl<H: IxgbeHal, const QS: usize, const QN: u16> IxgbeNic<H, QS, QN> {
         let mem_pool = MemPool::allocate::<H>(MEM_POOL, MEM_POOL_ENTRY_SIZE)
             .map_err(|_| DevError::NoMemory)?;
         let inner = IxgbeDevice::<H, QS>::init(base, len, QN, QN, &mem_pool).map_err(|err| {
-            log::error!("Failed to initialize ixgbe device: {:?}", err);
+            error!("Failed to initialize ixgbe device: {err:?}");
             DevError::BadState
         })?;
 
@@ -157,6 +155,6 @@ impl From<IxgbeNetBuf> for NetBufPtr {
 
 // Converts a `NetBufPtr` to `IxgbeNetBuf`.
 fn ixgbe_ptr_to_buf(ptr: NetBufPtr, pool: &Arc<MemPool>) -> DevResult<IxgbeNetBuf> {
-    IxgbeNetBuf::construct(ptr.raw_ptr.as_ptr() as usize, pool, ptr.len)
+    IxgbeNetBuf::construct(ptr.raw_ptr::<()>().addr(), pool, ptr.packet_len())
         .map_err(|_| DevError::BadState)
 }

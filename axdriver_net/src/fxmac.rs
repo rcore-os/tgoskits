@@ -1,17 +1,12 @@
-use alloc::boxed::Box;
-use alloc::collections::VecDeque;
-use alloc::vec::Vec;
+use alloc::{boxed::Box, collections::VecDeque, vec};
 use core::ptr::NonNull;
 
 use axdriver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
+pub use fxmac_rs::KernelFunc;
 use fxmac_rs::{self, xmac_init, FXmac, FXmacGetMacAddress, FXmacLwipPortTx, FXmacRecvHandler};
 use log::*;
 
 use crate::{EthernetAddress, NetBufPtr, NetDriverOps};
-
-pub use fxmac_rs::KernelFunc;
-
-extern crate alloc;
 
 const QS: usize = 64;
 
@@ -28,12 +23,12 @@ unsafe impl Send for FXmacNic {}
 impl FXmacNic {
     /// initialize fxmac driver
     pub fn init(mapped_regs: usize) -> DevResult<Self> {
-        info!("FXmacNic init @ {:#x}", mapped_regs);
+        info!("FXmacNic init @ {mapped_regs:#x}");
         let rx_buffer_queue = VecDeque::with_capacity(QS);
 
         let mut hwaddr: [u8; 6] = [0; 6];
         FXmacGetMacAddress(&mut hwaddr, 0);
-        info!("Got FXmac HW address: {:x?}", hwaddr);
+        info!("Got FXmac HW address: {hwaddr:x?}");
 
         let inner = xmac_init(&hwaddr);
         let dev = Self {
@@ -80,7 +75,6 @@ impl NetDriverOps for FXmacNic {
         unsafe {
             drop(Box::from_raw(rx_buf.raw_ptr::<u8>()));
         }
-        drop(rx_buf);
         Ok(())
     }
 
@@ -100,7 +94,7 @@ impl NetDriverOps for FXmacNic {
                     for packet in packets {
                         debug!("received packet length {}", packet.len());
                         let mut buf = Box::new(packet);
-                        let buf_ptr = buf.as_mut_ptr() as *mut u8;
+                        let buf_ptr = buf.as_mut_ptr();
                         let buf_len = buf.len();
                         let rx_buf = NetBufPtr::new(
                             NonNull::new(Box::into_raw(buf) as *mut u8).unwrap(),
@@ -118,8 +112,7 @@ impl NetDriverOps for FXmacNic {
     }
 
     fn transmit(&mut self, tx_buf: NetBufPtr) -> DevResult {
-        let mut tx_vec = Vec::new();
-        tx_vec.push(tx_buf.packet().to_vec());
+        let tx_vec = vec![tx_buf.packet().to_vec()];
         let ret = FXmacLwipPortTx(self.inner, tx_vec);
         unsafe {
             drop(Box::from_raw(tx_buf.raw_ptr::<u8>()));

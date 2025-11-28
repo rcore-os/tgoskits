@@ -2,9 +2,10 @@
 
 extern crate alloc;
 
-use crate::BlockDriverOps;
 use alloc::{vec, vec::Vec};
 use axdriver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
+
+use crate::BlockDriverOps;
 
 const BLOCK_SIZE: usize = 512;
 
