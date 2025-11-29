@@ -9,3 +9,4 @@ log = "Info"
 target = "riscv64gc-unknown-none-elf"
 to_bin = true
 vm_configs = []
+smp = 4

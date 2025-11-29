@@ -28,3 +28,7 @@ pub mod config {
         "`PACKAGE` field in the configuration does not match the Package name. Please check your configuration file."
     );
 }
+
+pub fn cpu_count() -> usize {
+    config::plat::CPU_NUM
+}
