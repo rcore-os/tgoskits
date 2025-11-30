@@ -29,10 +29,11 @@
 use core::time::Duration;
 
 pub use axerrno::AxResult;
-pub use axplat::irq::IrqHandler;
 pub use memory_addr::{PhysAddr, VirtAddr};
 
 use trait_ffi::*;
+
+pub type IrqHandler = fn();
 
 /// The kernel helper trait that platform implementations must provide.
 #[def_extern_trait]

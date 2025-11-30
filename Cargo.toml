@@ -9,6 +9,5 @@ categories = ["os", "no-std"]
 
 [dependencies]
 axerrno = "0.1"
-axplat = { version = "0.2", features = ["irq"] }
 memory_addr = "0.4"
 trait-ffi = "0.2"
