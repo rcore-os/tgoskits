@@ -16,7 +16,7 @@ lazy_static::lazy_static! {
         let main_task = axtask::current();
         let main_tid = main_task.id().as_u64();
         let main_thread = Pthread {
-            inner: main_task.as_task_ref().clone(),
+            inner: main_task.clone(),
             retval: Arc::new(Packet {
                 result: UnsafeCell::new(core::ptr::null_mut()),
             }),

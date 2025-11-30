@@ -1,6 +1,4 @@
-use alloc::collections::VecDeque;
-use alloc::sync::Arc;
-use alloc::vec::Vec;
+use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 
 use kernel_guard::{NoOp, NoPreemptIrqSave};
 use kspin::{SpinNoIrq, SpinNoIrqGuard};
@@ -121,7 +119,7 @@ impl WaitQueue {
             curr.id_name(),
             deadline
         );
-        crate::timers::set_alarm_wakeup(deadline, curr.clone());
+        crate::timers::set_alarm_wakeup(deadline, &curr);
 
         rq.blocked_resched(self.queue.lock());
 
@@ -149,7 +147,7 @@ impl WaitQueue {
             curr.id_name(),
             deadline
         );
-        crate::timers::set_alarm_wakeup(deadline, curr.clone());
+        crate::timers::set_alarm_wakeup(deadline, &curr);
 
         let mut timeout = true;
         loop {

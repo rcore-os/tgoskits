@@ -1,5 +1,4 @@
-use alloc::collections::VecDeque;
-use alloc::sync::Arc;
+use alloc::{collections::VecDeque, sync::Arc};
 use core::mem::MaybeUninit;
 
 #[cfg(feature = "smp")]
@@ -12,9 +11,11 @@ use lazyinit::LazyInit;
 
 use axhal::percpu::this_cpu_id;
 
-use crate::task::{CurrentTask, TaskState};
-use crate::wait_queue::WaitQueueGuard;
-use crate::{AxCpuMask, AxTaskRef, Scheduler, TaskInner, WaitQueue};
+use crate::{
+    AxCpuMask, AxTaskRef, Scheduler, TaskInner, WaitQueue,
+    task::{CurrentTask, TaskState},
+    wait_queue::WaitQueueGuard,
+};
 
 macro_rules! percpu_static {
     ($(
@@ -273,7 +274,7 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
     #[cfg(feature = "irq")]
     pub fn scheduler_timer_tick(&mut self) {
         let curr = &self.current_task;
-        if !curr.is_idle() && self.inner.scheduler.lock().task_tick(curr.as_task_ref()) {
+        if !curr.is_idle() && self.inner.scheduler.lock().task_tick(curr) {
             #[cfg(feature = "preempt")]
             curr.set_preempt_pending(true);
         }
@@ -365,8 +366,6 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
             }
             axhal::power::system_off();
         } else {
-            curr.set_state(TaskState::Exited);
-
             // Notify the joiner task.
             curr.notify_exit(exit_code);
 
@@ -428,7 +427,7 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
 
         let now = axhal::time::wall_time();
         if now < deadline {
-            crate::timers::set_alarm_wakeup(deadline, curr.clone());
+            crate::timers::set_alarm_wakeup(deadline, curr);
             curr.set_state(TaskState::Blocked);
             self.inner.resched();
         }
@@ -438,7 +437,7 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
         self.inner
             .scheduler
             .lock()
-            .set_priority(self.current_task.as_task_ref(), prio)
+            .set_priority(&self.current_task, prio)
     }
 }
 
@@ -554,12 +553,12 @@ impl AxRunQueue {
             // Store the weak pointer of **prev_task** in percpu variable `PREV_TASK`.
             #[cfg(feature = "smp")]
             {
-                *PREV_TASK.current_ref_mut_raw() = Arc::downgrade(prev_task.as_task_ref());
+                *PREV_TASK.current_ref_mut_raw() = Arc::downgrade(&prev_task);
             }
 
             // The strong reference count of `prev_task` will be decremented by 1,
             // but won't be dropped until `gc_entry()` is called.
-            assert!(Arc::strong_count(prev_task.as_task_ref()) > 1);
+            assert!(Arc::strong_count(&prev_task) > 1);
             assert!(Arc::strong_count(&next_task) >= 1);
 
             CurrentTask::set_current(prev_task, next_task);

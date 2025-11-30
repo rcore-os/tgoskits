@@ -35,11 +35,17 @@ impl TimerEvent for TaskWakeupEvent {
     }
 }
 
-pub fn set_alarm_wakeup(deadline: TimeValue, task: AxTaskRef) {
+pub fn set_alarm_wakeup(deadline: TimeValue, task: &AxTaskRef) {
     TIMER_LIST.with_current(|timer_list| {
         let ticket_id = TIMER_TICKET_ID.fetch_add(1, Ordering::AcqRel);
         task.set_timer_ticket(ticket_id);
-        timer_list.set(deadline, TaskWakeupEvent { ticket_id, task });
+        timer_list.set(
+            deadline,
+            TaskWakeupEvent {
+                ticket_id,
+                task: task.clone(),
+            },
+        );
     })
 }
 
