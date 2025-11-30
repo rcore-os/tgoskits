@@ -18,6 +18,10 @@ pub use crate::{
     wait_queue::WaitQueue,
 };
 
+#[doc(cfg(all(feature = "multitask", feature = "irq")))]
+#[cfg(feature = "irq")]
+pub use crate::timers::register_timer_callback;
+
 /// The reference type of a task.
 pub type AxTaskRef = Arc<AxTask>;
 

@@ -1,6 +1,7 @@
+use alloc::{boxed::Box, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use kernel_guard::NoOp;
+use kernel_guard::{NoOp, NoPreemptIrqSave};
 use lazyinit::LazyInit;
 use timer_list::{TimeValue, TimerEvent, TimerList};
 
@@ -12,6 +13,7 @@ static TIMER_TICKET_ID: AtomicU64 = AtomicU64::new(1);
 
 percpu_static! {
     TIMER_LIST: LazyInit<TimerList<TaskWakeupEvent>> = LazyInit::new(),
+    TIMER_CALLBACKS: Vec<Box<dyn Fn(TimeValue) + Send + Sync>> = Vec::new(),
 }
 
 struct TaskWakeupEvent {
@@ -49,7 +51,24 @@ pub fn set_alarm_wakeup(deadline: TimeValue, task: &AxTaskRef) {
     })
 }
 
+/// Registers a callback function to be called on each timer tick.
+pub fn register_timer_callback<F>(callback: F)
+where
+    F: Fn(TimeValue) + Send + Sync + 'static,
+{
+    let _g = NoPreemptIrqSave::new();
+    unsafe {
+        TIMER_CALLBACKS
+            .current_ref_mut_raw()
+            .push(Box::new(callback))
+    };
+}
+
 pub fn check_events() {
+    for callback in unsafe { TIMER_CALLBACKS.current_ref_raw().iter() } {
+        callback(wall_time());
+    }
+
     loop {
         let now = wall_time();
         let event = unsafe {
