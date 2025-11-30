@@ -1,14 +1,16 @@
 use std::{fs, io::Write, path::PathBuf};
 
 fn main() {
-    if !std::env::var("TARGET").unwrap().contains("none") {
+    println!("cargo::rustc-check-cfg=cfg(efi)");
+
+    let target = std::env::var("TARGET").unwrap();
+
+    if target.contains("windows") || target.contains("linux") || target.contains("darwin") {
         return;
     }
 
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     println!("cargo:rustc-link-search={}", out_dir.display());
-
-    println!("cargo::rustc-check-cfg=cfg(efi)");
 
     if std::env::var("CARGO_FEATURE_EFI").is_ok() {
         println!("cargo:rustc-cfg=efi");

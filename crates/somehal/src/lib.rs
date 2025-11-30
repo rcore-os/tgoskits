@@ -2,6 +2,7 @@
 #![no_main]
 #![feature(iter_next_chunk)]
 
+#[allow(unused_imports)]
 #[macro_use]
 extern crate alloc;
 
@@ -73,10 +74,6 @@ trait ArchTrait {
 pub fn post_allocator() {
     debug!("Setup after allocator");
     arch::Arch::post_allocator();
-}
-
-fn kernel_code() -> &'static [u8] {
-    arch::Arch::kernel_code()
 }
 
 fn prime_entry() -> ! {
