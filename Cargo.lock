@@ -2323,7 +2323,7 @@ dependencies = [
 [[package]]
 name = "syscalls"
 version = "0.7.0"
-source = "git+https://github.com/Starry-OS/syscalls.git?rev=efac241add625e84379607e5da643bbe34b28190#efac241add625e84379607e5da643bbe34b28190"
+source = "git+https://github.com/Starry-OS/syscalls.git?rev=efac241#efac241add625e84379607e5da643bbe34b28190"
 
 [[package]]
 name = "thiserror"
