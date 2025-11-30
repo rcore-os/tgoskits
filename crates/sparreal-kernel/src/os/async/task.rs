@@ -25,6 +25,12 @@ impl TaskId {
     }
 }
 
+impl Default for TaskId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// 任务状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskState {
@@ -131,7 +137,7 @@ pub struct TaskRef {
 impl core::fmt::Debug for TaskRef {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let id = self.metadata.lock().id;
-        write!(f, "TaskRef({:?})", id)
+        write!(f, "TaskRef({id:?})")
     }
 }
 

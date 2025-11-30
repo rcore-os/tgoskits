@@ -157,7 +157,7 @@ impl SingleCpuExecutor {
         // 添加到任务队列
         self.add_task_to_queue(task_id);
 
-        log::debug!("Spawned task {:?}", task_id);
+        debug!("Spawned task {task_id:?}",);
         handle
     }
 
@@ -199,7 +199,7 @@ impl SingleCpuExecutor {
                 // 清理已完成的任务
                 let mut registry = self.task_registry.lock();
                 registry.remove(&task_id);
-                log::debug!("Task {:?} completed and cleaned up", task_id);
+                debug!("Task {task_id:?} completed and cleaned up");
                 return true;
             }
 
@@ -213,7 +213,7 @@ impl SingleCpuExecutor {
                 } else if metadata.is_expired(self.timeout_ms) {
                     // 超时的任务提升优先级并执行
                     metadata.mark_woken();
-                    log::debug!("Task {:?} expired, promoting priority", task_id);
+                    debug!("Task {task_id:?} expired, promoting priority");
                     true
                 } else {
                     // Pending 状态且未超时的任务，不执行
@@ -242,7 +242,7 @@ impl SingleCpuExecutor {
                 core::task::Poll::Pending => {
                     // 任务返回Pending，不需要重新排队
                     // 等待Waker被调用后再加入队列
-                    log::debug!("Task {:?} pending, waiting for wake", task_id);
+                    debug!("Task {task_id:?} pending, waiting for wake");
                     true
                 }
             }
