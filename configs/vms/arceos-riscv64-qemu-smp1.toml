@@ -1,0 +1,75 @@
+# Vm base info configs
+#
+[base]
+# Guest vm id.
+id = 1
+# Guest vm name.
+name = "arceos-qemu"
+# Virtualization type.
+vm_type = 1
+# The number of virtual CPUs.
+cpu_num = 1
+# Guest vm physical cpu ids.
+phys_cpu_ids = [0]
+
+#
+# Vm kernel configs
+#
+[kernel]
+# The entry point of the kernel image.
+entry_point = 0x8020_0000
+# The location of image: "memory" | "fs".
+# load from memory.
+image_location = "memory"
+# The file path of the kernel image.
+kernel_path = "path/arceos-riscv64-smp1.bin"
+# The load address of the kernel image.
+kernel_load_addr = 0x8020_0000
+# The file path of the device tree blob (DTB).
+#dtb_path = "path/aarch64-qemu-gicv3.dtb"
+# The load address of the device tree blob (DTB).
+dtb_load_addr = 0x8220_0000
+
+## The file path of the ramdisk image.
+# ramdisk_path = ""
+## The load address of the ramdisk image.
+# ramdisk_load_addr = 0
+## The path of the disk image.
+# disk_path = "disk.img"
+
+# Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
+# For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`.
+memory_regions = [
+  [0x8000_0000, 0x4000_0000, 0x7, 1], # System RAM 1G MAP_ALLOC
+]
+
+#
+# Device specifications
+#
+[devices]
+# Pass-through devices.
+passthrough_devices = [
+  ["/",],
+]
+
+# Passthrough addresses.
+# Base-GPA  Length.
+passthrough_addresses = [
+    #[0x28041000, 0x100_0000]
+]
+
+# Devices that are not desired to be passed through to the guest
+excluded_devices = [
+    ["/pci@30000000"],
+]
+
+# Emu_devices.
+# Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig.
+emu_devices = [
+  # ["gppt-gicd", 0x0800_0000, 0x1_0000, 0, 0x21, []],
+  # ["gppt-gicr", 0x080a_0000, 0x2_0000, 0, 0x20, [1, 0x2_0000, 0]], # 1 vcpu, stride 0x20000, starts with pcpu 0
+  # ["gppt-gits", 0x0808_0000, 0x2_0000, 0, 0x22, [0x0808_0000]], # host_gits_base
+]
+
+interrupt_mode = "passthrough"
+

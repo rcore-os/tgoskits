@@ -15,7 +15,7 @@ args = [
   "-append",
   "root=/dev/vda rw init=/init",
   "-m",
-  "8g",
+  "4g",
 ]
 fail_regex = []
 success_regex = []

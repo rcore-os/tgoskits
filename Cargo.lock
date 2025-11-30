@@ -389,7 +389,7 @@ dependencies = [
  "page_table_entry",
  "page_table_multiarch",
  "percpu",
- "riscv",
+ "riscv 0.14.0",
  "static_assertions",
  "tock-registers 0.9.0",
  "x86",
@@ -412,7 +412,7 @@ dependencies = [
  "page_table_entry",
  "page_table_multiarch",
  "percpu",
- "riscv",
+ "riscv 0.14.0",
  "static_assertions",
  "tock-registers 0.9.0",
  "x86",
@@ -925,7 +925,7 @@ dependencies = [
  "axcpu 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "axplat 0.2.0 (git+https://github.com/arceos-hypervisor/axplat_crates?tag=vmm-v0.3.0)",
  "log",
- "riscv",
+ "riscv 0.15.0",
  "riscv_goldfish",
  "sbi-rt",
 ]
@@ -939,7 +939,7 @@ dependencies = [
  "axcpu 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "axplat 0.2.0 (git+https://github.com/arceos-hypervisor/axplat_crates?tag=vmm-v0.3.0)",
  "log",
- "riscv",
+ "riscv 0.14.0",
  "sbi-rt",
 ]
 
@@ -3829,7 +3829,7 @@ dependencies = [
  "log",
  "memory_addr",
  "page_table_entry",
- "riscv",
+ "riscv 0.14.0",
  "x86",
 ]
 
@@ -4571,7 +4571,20 @@ dependencies = [
  "critical-section",
  "embedded-hal",
  "paste",
- "riscv-macros",
+ "riscv-macros 0.2.0",
+ "riscv-pac",
+]
+
+[[package]]
+name = "riscv"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b05cfa3f7b30c84536a9025150d44d26b8e1cc20ddf436448d74cd9591eefb25"
+dependencies = [
+ "critical-section",
+ "embedded-hal",
+ "paste",
+ "riscv-macros 0.3.0",
  "riscv-pac",
 ]
 
@@ -4591,7 +4604,7 @@ dependencies = [
  "bit_field",
  "bitflags 2.10.0",
  "log",
- "riscv",
+ "riscv 0.14.0",
 ]
 
 [[package]]
@@ -4599,6 +4612,17 @@ name = "riscv-macros"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8c4aa1ea1af6dcc83a61be12e8189f9b293c3ba5a487778a4cd89fb060fdbbc"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.110",
+]
+
+[[package]]
+name = "riscv-macros"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d323d13972c1b104aa036bc692cd08b822c8bbf23d79a27c526095856499799"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4633,7 +4657,7 @@ dependencies = [
  "memoffset",
  "memory_addr",
  "page_table_entry",
- "riscv",
+ "riscv 0.15.0",
  "riscv-decode",
  "riscv-h",
  "rustsbi",
@@ -4659,7 +4683,7 @@ dependencies = [
  "memoffset",
  "memory_addr",
  "page_table_entry",
- "riscv",
+ "riscv 0.14.0",
  "riscv-decode",
  "riscv-h",
  "rustsbi",

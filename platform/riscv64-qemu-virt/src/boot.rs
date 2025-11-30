@@ -12,12 +12,18 @@ unsafe fn init_boot_page_table() {
     unsafe {
         // 0x0000_0000..0x4000_0000, VRWX_GAD, 1G block
         BOOT_PT_SV39[0] = (0x0 << 10) | 0xef;
-        // 0x8000_0000..0xc000_0000, VRWX_GAD, 1G block
+        // 0x8000_0000..0xc000_0000, VRWX_GAD, 4G block
         BOOT_PT_SV39[2] = (0x80000 << 10) | 0xef;
+        BOOT_PT_SV39[3] = (0xC0000 << 10) | 0xef;
+        BOOT_PT_SV39[4] = (0x100000 << 10) | 0xef;
+        BOOT_PT_SV39[5] = (0x140000 << 10) | 0xef;
         // 0xffff_ffc0_0000_0000..0xffff_ffc0_4000_0000, VRWX_GAD, 1G block
         BOOT_PT_SV39[0x100] = (0x0 << 10) | 0xef;
         // 0xffff_ffc0_8000_0000..0xffff_ffc0_c000_0000, VRWX_GAD, 1G block
         BOOT_PT_SV39[0x102] = (0x80000 << 10) | 0xef;
+        BOOT_PT_SV39[0x103] = (0xC0000 << 10) | 0xef;
+        BOOT_PT_SV39[0x104] = (0x100000 << 10) | 0xef;
+        BOOT_PT_SV39[0x105] = (0x140000 << 10) | 0xef;
     }
 }
 
