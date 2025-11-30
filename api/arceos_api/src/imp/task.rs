@@ -76,7 +76,7 @@ cfg_task! {
         }
     }
 
-    pub fn ax_wait_for_exit(task: AxTaskHandle) -> Option<i32> {
+    pub fn ax_wait_for_exit(task: AxTaskHandle) -> i32 {
         task.inner.join()
     }
 

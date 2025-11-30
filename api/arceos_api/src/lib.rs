@@ -153,7 +153,7 @@ pub mod task {
         ) -> AxTaskHandle;
         /// Waits for the given task to exit, and returns its exit code (the
         /// argument of [`ax_exit`]).
-        pub fn ax_wait_for_exit(task: AxTaskHandle) -> Option<i32>;
+        pub fn ax_wait_for_exit(task: AxTaskHandle) -> i32;
         /// Sets the priority of the current task.
         pub fn ax_set_current_priority(prio: isize) -> crate::AxResult;
         /// Sets the cpu affinity of the current task.

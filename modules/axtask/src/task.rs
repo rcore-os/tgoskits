@@ -150,10 +150,10 @@ impl TaskInner {
     /// Wait for the task to exit, and return the exit code.
     ///
     /// It will return immediately if the task has already exited (but not dropped).
-    pub fn join(&self) -> Option<i32> {
+    pub fn join(&self) -> i32 {
         self.wait_for_exit
             .wait_until(|| self.state() == TaskState::Exited);
-        Some(self.exit_code.load(Ordering::Acquire))
+        self.exit_code.load(Ordering::Acquire)
     }
 
     /// Returns the pointer to the user-defined task extended data.
