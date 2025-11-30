@@ -546,6 +546,18 @@ impl AxRunQueue {
         #[cfg(feature = "smp")]
         next_task.set_on_cpu(true);
 
+        #[cfg(feature = "task-ext")]
+        {
+            use crate::TaskExt;
+
+            if let Some(ext) = prev_task.task_ext() {
+                ext.on_leave()
+            }
+            if let Some(ext) = next_task.task_ext() {
+                ext.on_enter()
+            }
+        }
+
         unsafe {
             let prev_ctx_ptr = prev_task.ctx_mut_ptr();
             let next_ctx_ptr = next_task.ctx_mut_ptr();

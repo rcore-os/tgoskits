@@ -24,6 +24,7 @@ multitask = [
     "dep:percpu",
     "dep:timer_list",
 ]
+task-ext = ["dep:extern-trait"]
 irq = []
 tls = ["axhal/tls"]
 preempt = ["irq", "percpu?/preempt", "kernel_guard/preempt"]
@@ -42,6 +43,7 @@ axsched = { version = "0.3", optional = true }
 cfg-if.workspace = true
 cpumask = { version = "0.1", optional = true }
 crate_interface = { workspace = true, optional = true }
+extern-trait = { version = "0.2", optional = true }
 kernel_guard = { workspace = true, optional = true }
 kspin = { workspace = true, optional = true }
 lazyinit = { workspace = true, optional = true }

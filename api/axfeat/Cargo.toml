@@ -45,6 +45,7 @@ multitask = [
     "axsync/multitask",
     "axruntime/multitask",
 ]
+task-ext = ["axtask/task-ext"]
 sched-fifo = ["axtask/sched-fifo"]
 sched-rr = ["axtask/sched-rr", "irq"]
 sched-cfs = ["axtask/sched-cfs", "irq"]

@@ -19,7 +19,7 @@ use axhal::context::TaskContext;
 #[cfg(feature = "tls")]
 use axhal::tls::TlsArea;
 
-use crate::{AxCpuMask, AxTask, AxTaskRef, WaitQueue, task_ext::AxTaskExt};
+use crate::{AxCpuMask, AxTask, AxTaskRef, WaitQueue};
 
 /// A unique identifier for a thread.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -38,6 +38,21 @@ pub enum TaskState {
     Blocked = 3,
     /// Task is exited and waiting for being dropped.
     Exited = 4,
+}
+
+/// User-defined task extended data.
+/// # Safety
+/// See [`extern_trait`].
+#[cfg(feature = "task-ext")]
+#[extern_trait::extern_trait(
+    /// The impl proxy type for [`TaskExt`].
+    pub AxTaskExt
+)]
+pub unsafe trait TaskExt {
+    /// Called when the task is switched in.
+    fn on_enter(&self) {}
+    /// Called when the task is switched out.
+    fn on_leave(&self) {}
 }
 
 /// The inner task structure.
@@ -78,7 +93,9 @@ pub struct TaskInner {
 
     kstack: Option<TaskStack>,
     ctx: UnsafeCell<TaskContext>,
-    task_ext: AxTaskExt,
+
+    #[cfg(feature = "task-ext")]
+    task_ext: Option<AxTaskExt>,
 
     #[cfg(feature = "tls")]
     tls: TlsArea,
@@ -165,29 +182,16 @@ impl TaskInner {
         self.exit_code.load(Ordering::Acquire)
     }
 
-    /// Returns the pointer to the user-defined task extended data.
-    ///
-    /// # Safety
-    ///
-    /// The caller should not access the pointer directly, use [`TaskExtRef::task_ext`]
-    /// or [`TaskExtMut::task_ext_mut`] instead.
-    ///
-    /// [`TaskExtRef::task_ext`]: crate::task_ext::TaskExtRef::task_ext
-    /// [`TaskExtMut::task_ext_mut`]: crate::task_ext::TaskExtMut::task_ext_mut
-    pub unsafe fn task_ext_ptr(&self) -> *mut u8 {
-        self.task_ext.as_ptr()
+    /// Returns a reference to the task extended data.
+    #[cfg(feature = "task-ext")]
+    pub fn task_ext(&self) -> Option<&AxTaskExt> {
+        self.task_ext.as_ref()
     }
 
-    /// Initialize the user-defined task extended data.
-    ///
-    /// Returns a reference to the task extended data if it has not been
-    /// initialized yet (empty), otherwise returns [`None`].
-    pub fn init_task_ext<T: Sized>(&mut self, data: T) -> Option<&T> {
-        if self.task_ext.is_empty() {
-            self.task_ext.write(data).map(|data| &*data)
-        } else {
-            None
-        }
+    /// Returns a mutable reference to the task extended data.
+    #[cfg(feature = "task-ext")]
+    pub fn task_ext_mut(&mut self) -> &mut Option<AxTaskExt> {
+        &mut self.task_ext
     }
 
     /// Returns a mutable reference to the task context.
@@ -262,7 +266,8 @@ impl TaskInner {
             wait_for_exit: WaitQueue::new(),
             kstack: None,
             ctx: UnsafeCell::new(TaskContext::new()),
-            task_ext: AxTaskExt::empty(),
+            #[cfg(feature = "task-ext")]
+            task_ext: None,
             #[cfg(feature = "tls")]
             tls: TlsArea::alloc(),
         }
