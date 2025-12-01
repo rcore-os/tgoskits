@@ -18,6 +18,8 @@ license.workspace = true
 [features]
 default = []
 
+use-hermit-types = []
+
 smp = ["ax-feat/smp"]
 irq = ["ax-feat/irq"]
 alloc = ["dep:ax-alloc", "ax-feat/alloc"]
