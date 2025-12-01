@@ -207,7 +207,7 @@ dependencies = [
  "axruntime",
  "axsync",
  "axtask",
- "bindgen",
+ "bindgen 0.72.1",
  "flatten_objects",
  "lazy_static",
  "scope-local",
@@ -553,6 +553,7 @@ dependencies = [
  "fatfs",
  "lazyinit",
  "log",
+ "lwext4_rust",
  "scope-local",
 ]
 
@@ -661,7 +662,7 @@ dependencies = [
  "axerrno 0.1.2",
  "axfeat",
  "axio",
- "bindgen",
+ "bindgen 0.72.1",
 ]
 
 [[package]]
@@ -986,6 +987,26 @@ dependencies = [
  "log",
  "tock-registers 0.8.1",
  "volatile 0.2.7",
+]
+
+[[package]]
+name = "bindgen"
+version = "0.71.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f58bf3d7db68cfbac37cfc485a8d711e87e064c3d0fe0435b92f7a407f9d6b3"
+dependencies = [
+ "bitflags 2.10.0",
+ "cexpr",
+ "clang-sys",
+ "itertools",
+ "log",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash",
+ "shlex",
+ "syn 2.0.111",
 ]
 
 [[package]]
@@ -1837,6 +1858,15 @@ checksum = "7c9f0d275c70310e2a9d2fc23250c5ac826a73fa828a5f256401f85c5c554283"
 dependencies = [
  "bit_field",
  "bitflags 2.10.0",
+]
+
+[[package]]
+name = "lwext4_rust"
+version = "0.2.0"
+source = "git+https://github.com/Josen-B/lwext4_rust.git?rev=99b3e5c#99b3e5c7262718db2002411fe55ea0362a23fdfc"
+dependencies = [
+ "bindgen 0.71.1",
+ "log",
 ]
 
 [[package]]

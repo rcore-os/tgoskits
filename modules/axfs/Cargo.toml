@@ -14,6 +14,7 @@ devfs = ["dep:axfs_devfs"]
 ramfs = ["dep:axfs_ramfs"]
 procfs = ["dep:axfs_ramfs"]
 sysfs = ["dep:axfs_ramfs"]
+ext4fs = ["dep:lwext4_rust"]
 fatfs = ["dep:fatfs"]
 myfs = ["dep:crate_interface"]
 use-ramdisk = []
@@ -47,6 +48,11 @@ features = [ # no std
     "log_level_trace",
     "unicode",
 ]
+
+[dependencies.lwext4_rust]
+git = "https://github.com/Josen-B/lwext4_rust.git"
+rev = "99b3e5c"
+optional = true
 
 [dev-dependencies]
 axdriver = { workspace = true, features = ["block", "ramdisk"] }
