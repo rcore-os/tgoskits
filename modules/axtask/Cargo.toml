@@ -14,6 +14,7 @@ default = []
 
 multitask = [
     "dep:axconfig",
+    "dep:axpoll",
     "dep:axsched",
     "dep:cpumask",
     "dep:crate_interface",
@@ -41,6 +42,7 @@ test = ["percpu?/sp-naive"]
 axconfig = { workspace = true, optional = true }
 axerrno.workspace = true
 axhal.workspace = true
+axpoll = { workspace = true, optional = true }
 axsched = { version = "0.3", optional = true }
 cfg-if.workspace = true
 cpumask = { version = "0.1", optional = true }

@@ -91,6 +91,7 @@ axplat-aarch64-raspi = { git = "https://github.com/arceos-org/axplat_crates.git"
 axplat-loongarch64-qemu-virt = { git = "https://github.com/arceos-org/axplat_crates.git", tag = "dev-v03" }
 axplat-riscv64-qemu-virt = { git = "https://github.com/arceos-org/axplat_crates.git", tag = "dev-v03" }
 axplat-x86-pc = { git = "https://github.com/arceos-org/axplat_crates.git", tag = "dev-v03" }
+axpoll = "0.1"
 bindgen = "0.72"
 cfg-if = "1.0"
 chrono = { version = "0.4", default-features = false }

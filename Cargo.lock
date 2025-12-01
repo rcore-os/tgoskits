@@ -868,6 +868,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "axpoll"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d06a0cf7cffe0e87c338f41d59bd0a05fa75cf9c4799b4107fa0fc6cf27d8d23"
+dependencies = [
+ "bitflags 2.10.0",
+ "linux-raw-sys",
+ "spin 0.10.0",
+]
+
+[[package]]
 name = "axruntime"
 version = "0.2.0"
 dependencies = [
@@ -932,6 +943,7 @@ dependencies = [
  "axconfig",
  "axerrno 0.1.2",
  "axhal",
+ "axpoll",
  "axsched",
  "axtask",
  "cfg-if",
@@ -1795,6 +1807,12 @@ dependencies = [
  "quote",
  "syn 2.0.111",
 ]
+
+[[package]]
+name = "linux-raw-sys"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df1d3c3b53da64cf5760482273a98e575c651a67eec7f77df96b5b642de8f039"
 
 [[package]]
 name = "lock_api"
