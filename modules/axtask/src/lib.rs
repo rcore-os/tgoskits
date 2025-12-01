@@ -48,6 +48,9 @@ cfg_if::cfg_if! {
         #[cfg(feature = "irq")]
         mod timers;
 
+        #[cfg(feature = "multitask")]
+        pub mod future;
+
         #[doc(cfg(feature = "multitask"))]
         pub use self::api::*;
         pub use self::api::{sleep, sleep_until, yield_now};

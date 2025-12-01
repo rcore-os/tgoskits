@@ -17,12 +17,13 @@ multitask = [
     "dep:axsched",
     "dep:cpumask",
     "dep:crate_interface",
+    "dep:event-listener",
+    "dep:futures-util",
     "dep:kernel_guard",
     "dep:kspin",
     "dep:lazyinit",
     "dep:memory_addr",
     "dep:percpu",
-    "dep:timer_list",
 ]
 task-ext = ["dep:extern-trait"]
 irq = []
@@ -38,19 +39,24 @@ test = ["percpu?/sp-naive"]
 
 [dependencies]
 axconfig = { workspace = true, optional = true }
+axerrno.workspace = true
 axhal.workspace = true
 axsched = { version = "0.3", optional = true }
 cfg-if.workspace = true
 cpumask = { version = "0.1", optional = true }
 crate_interface = { workspace = true, optional = true }
+event-listener = { workspace = true, optional = true }
 extern-trait = { version = "0.2", optional = true }
+futures-util = { version = "0.3", default-features = false, optional = true, features = [
+    "alloc",
+    "async-await-macro",
+] }
 kernel_guard = { workspace = true, optional = true }
 kspin = { workspace = true, optional = true }
 lazyinit = { workspace = true, optional = true }
 log.workspace = true
 memory_addr = { workspace = true, optional = true }
 percpu = { workspace = true, optional = true }
-timer_list = { version = "0.1", optional = true }
 
 [dev-dependencies]
 axhal = { workspace = true, features = ["fp-simd"] }

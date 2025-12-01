@@ -94,9 +94,8 @@ pub fn init_scheduler() {
 pub fn init_scheduler_with_cpu_num(cpu_num: usize) {
     info!("Initialize scheduling...");
     CPU_NUM.store(cpu_num, core::sync::atomic::Ordering::Relaxed);
+
     crate::run_queue::init();
-    #[cfg(feature = "irq")]
-    crate::timers::init();
 
     info!("  use {} scheduler.", Scheduler::scheduler_name());
 }
@@ -108,8 +107,6 @@ pub(crate) fn active_cpu_num() -> usize {
 /// Initializes the task scheduler for secondary CPUs.
 pub fn init_scheduler_secondary() {
     crate::run_queue::init_secondary();
-    #[cfg(feature = "irq")]
-    crate::timers::init();
 }
 
 /// Handles periodic timer ticks for the task manager.
@@ -233,7 +230,7 @@ pub fn sleep(dur: core::time::Duration) {
 /// If the feature `irq` is not enabled, it uses busy-wait instead.
 pub fn sleep_until(deadline: axhal::time::TimeValue) {
     #[cfg(feature = "irq")]
-    current_run_queue::<NoPreemptIrqSave>().sleep_until(deadline);
+    crate::future::block_on(crate::future::sleep_until(deadline));
     #[cfg(not(feature = "irq"))]
     axhal::time::busy_wait_until(deadline);
 }

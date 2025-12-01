@@ -3,11 +3,14 @@ use core::{
     alloc::Layout,
     cell::{Cell, UnsafeCell},
     fmt,
+    future::poll_fn,
     mem::ManuallyDrop,
     ops::Deref,
     ptr::NonNull,
     sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicU64, Ordering},
+    task::{Context, Poll},
 };
+use futures_util::task::AtomicWaker;
 
 #[cfg(feature = "preempt")]
 use core::sync::atomic::AtomicUsize;
@@ -19,7 +22,7 @@ use axhal::context::TaskContext;
 #[cfg(feature = "tls")]
 use axhal::tls::TlsArea;
 
-use crate::{AxCpuMask, AxTask, AxTaskRef, WaitQueue};
+use crate::{AxCpuMask, AxTask, AxTaskRef, future::block_on};
 
 /// A unique identifier for a thread.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -68,28 +71,22 @@ pub struct TaskInner {
     /// CPU affinity mask.
     cpumask: SpinNoIrq<AxCpuMask>,
 
-    /// Mark whether the task is in the wait queue.
-    in_wait_queue: AtomicBool,
-
     /// Used to indicate the CPU ID where the task is running or will run.
     cpu_id: AtomicU32,
     /// Used to indicate whether the task is running on a CPU.
     #[cfg(feature = "smp")]
     on_cpu: AtomicBool,
 
-    /// A ticket ID used to identify the timer event.
-    /// Set by `set_timer_ticket()` when creating a timer event in `set_alarm_wakeup()`,
-    /// expired by setting it as zero in `timer_ticket_expired()`, which is called by `cancel_events()`.
-    #[cfg(feature = "irq")]
-    timer_ticket_id: AtomicU64,
-
     #[cfg(feature = "preempt")]
     need_resched: AtomicBool,
     #[cfg(feature = "preempt")]
     preempt_disable_count: AtomicUsize,
 
+    interrupted: AtomicBool,
+    interrupt_waker: AtomicWaker,
+
     exit_code: AtomicI32,
-    wait_for_exit: WaitQueue,
+    wait_for_exit: AtomicWaker,
 
     kstack: Option<TaskStack>,
     ctx: UnsafeCell<TaskContext>,
@@ -177,9 +174,13 @@ impl TaskInner {
     ///
     /// It will return immediately if the task has already exited (but not dropped).
     pub fn join(&self) -> i32 {
-        self.wait_for_exit
-            .wait_until(|| self.state() == TaskState::Exited);
-        self.exit_code.load(Ordering::Acquire)
+        block_on(poll_fn(|cx| {
+            if self.state() == TaskState::Exited {
+                return Poll::Ready(self.exit_code.load(Ordering::Acquire));
+            }
+            self.wait_for_exit.register(cx.waker());
+            Poll::Pending
+        }))
     }
 
     /// Returns a reference to the task extended data.
@@ -233,6 +234,24 @@ impl TaskInner {
     pub fn set_cpumask(&self, cpumask: AxCpuMask) {
         *self.cpumask.lock() = cpumask
     }
+
+    /// Polls whether the task has been interrupted.
+    #[inline]
+    pub fn poll_interrupt(&self, cx: &Context) -> Poll<()> {
+        if self.interrupted.swap(false, Ordering::AcqRel) {
+            Poll::Ready(())
+        } else {
+            self.interrupt_waker.register(cx.waker());
+            Poll::Pending
+        }
+    }
+
+    /// Interrupts the task.
+    #[inline]
+    pub fn interrupt(&self) {
+        self.interrupted.store(true, Ordering::Release);
+        self.interrupt_waker.wake();
+    }
 }
 
 // private methods
@@ -252,9 +271,6 @@ impl TaskInner {
             state: AtomicU8::new(TaskState::Ready as u8),
             // By default, the task is allowed to run on all CPUs.
             cpumask: SpinNoIrq::new(cpumask),
-            in_wait_queue: AtomicBool::new(false),
-            #[cfg(feature = "irq")]
-            timer_ticket_id: AtomicU64::new(0),
             cpu_id: AtomicU32::new(0),
             #[cfg(feature = "smp")]
             on_cpu: AtomicBool::new(false),
@@ -262,8 +278,10 @@ impl TaskInner {
             need_resched: AtomicBool::new(false),
             #[cfg(feature = "preempt")]
             preempt_disable_count: AtomicUsize::new(0),
+            interrupted: AtomicBool::new(false),
+            interrupt_waker: AtomicWaker::new(),
             exit_code: AtomicI32::new(0),
-            wait_for_exit: WaitQueue::new(),
+            wait_for_exit: AtomicWaker::new(),
             kstack: None,
             ctx: UnsafeCell::new(TaskContext::new()),
             #[cfg(feature = "task-ext")]
@@ -343,42 +361,6 @@ impl TaskInner {
     }
 
     #[inline]
-    pub(crate) fn in_wait_queue(&self) -> bool {
-        self.in_wait_queue.load(Ordering::Acquire)
-    }
-
-    #[inline]
-    pub(crate) fn set_in_wait_queue(&self, in_wait_queue: bool) {
-        self.in_wait_queue.store(in_wait_queue, Ordering::Release);
-    }
-
-    /// Returns task's current timer ticket ID.
-    #[inline]
-    #[cfg(feature = "irq")]
-    pub(crate) fn timer_ticket(&self) -> u64 {
-        self.timer_ticket_id.load(Ordering::Acquire)
-    }
-
-    /// Set the timer ticket ID.
-    #[inline]
-    #[cfg(feature = "irq")]
-    pub(crate) fn set_timer_ticket(&self, timer_ticket_id: u64) {
-        // CAN NOT set timer_ticket_id to 0,
-        // because 0 is used to indicate the timer event is expired.
-        assert!(timer_ticket_id != 0);
-        self.timer_ticket_id
-            .store(timer_ticket_id, Ordering::Release);
-    }
-
-    /// Expire timer ticket ID by setting it to 0,
-    /// it can be used to identify one timer event is triggered or expired.
-    #[inline]
-    #[cfg(feature = "irq")]
-    pub(crate) fn timer_ticket_expired(&self) {
-        self.timer_ticket_id.store(0, Ordering::Release);
-    }
-
-    #[inline]
     #[cfg(feature = "preempt")]
     pub(crate) fn set_preempt_pending(&self, pending: bool) {
         self.need_resched.store(pending, Ordering::Release)
@@ -423,7 +405,7 @@ impl TaskInner {
     pub(crate) fn notify_exit(&self, exit_code: i32) {
         self.set_state(TaskState::Exited);
         self.exit_code.store(exit_code, Ordering::Release);
-        self.wait_for_exit.notify_all(false);
+        self.wait_for_exit.wake();
     }
 
     #[inline]
