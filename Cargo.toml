@@ -81,8 +81,7 @@ axdriver_virtio = { git = "https://github.com/arceos-org/axdriver_crates.git", t
 axdriver_vsock = { git = "https://github.com/arceos-org/axdriver_crates.git", tag = "dev-v01" }
 axerrno = "0.1"
 axio = "0.1"
-# FIXME: use arceos-hypervisor/axklib!
-axklib = { git = "https://github.com/AsakuraMizu/axklib.git", branch = "dev" }
+axklib = { git = "https://github.com/arceos-hypervisor/axklib.git" } # FIXME: pin to a specific commit or tag
 axplat = { git = "https://github.com/arceos-org/axplat_crates.git", tag = "dev-v03" }
 axplat-aarch64-bsta1000b = { git = "https://github.com/arceos-org/axplat_crates.git", tag = "dev-v03" }
 axplat-aarch64-phytium-pi = { git = "https://github.com/arceos-org/axplat_crates.git", tag = "dev-v03" }

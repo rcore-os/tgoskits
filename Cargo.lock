@@ -647,7 +647,7 @@ dependencies = [
 [[package]]
 name = "axklib"
 version = "0.2.0"
-source = "git+https://github.com/AsakuraMizu/axklib.git?branch=dev#3dcf2116531333e786df233359f101ea10b45187"
+source = "git+https://github.com/arceos-hypervisor/axklib.git#7c0fc0588f978f7d75bb94f4e07477776ed37887"
 dependencies = [
  "axerrno 0.1.2",
  "memory_addr",
