@@ -82,7 +82,7 @@ log-level-trace = []
 
 [dependencies]
 ax-feat = { workspace = true }
-ax-posix-api = { workspace = true }
+ax-posix-api = { workspace = true, features = ["use-hermit-types"] }
 ax-api = { workspace = true, features = ["alloc"] }
 ax-runtime = { workspace = true }
 ax-io = { workspace = true }
