@@ -42,6 +42,8 @@ cfg_task! {
     /// A mask to specify the CPU affinity.
     pub use axtask::AxCpuMask;
 
+    pub use axsync::RawMutex as AxRawMutex;
+
     /// A handle to a wait queue.
     ///
     /// A wait queue is used to store sleeping tasks waiting for a certain event

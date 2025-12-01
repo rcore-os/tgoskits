@@ -1,8 +1,9 @@
-//! A naïve sleeping mutex.
+//! A blocking mutex implementation.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use axtask::{WaitQueue, current};
+use axtask::{current, future::block_on, yield_now};
+use event_listener::{Event, listener};
 
 /// A [`lock_api::RawMutex`] implementation.
 ///
@@ -10,7 +11,7 @@ use axtask::{WaitQueue, current};
 /// wait queue. When the mutex is unlocked, all tasks waiting on the queue
 /// will be woken up.
 pub struct RawMutex {
-    wq: WaitQueue,
+    event: Event,
     owner_id: AtomicU64,
 }
 
@@ -19,7 +20,7 @@ impl RawMutex {
     #[inline(always)]
     pub const fn new() -> Self {
         Self {
-            wq: WaitQueue::new(),
+            event: Event::new(),
             owner_id: AtomicU64::new(0),
         }
     }
@@ -31,40 +32,78 @@ impl Default for RawMutex {
     }
 }
 
+struct Spin(u32);
+
+impl Spin {
+    #[inline]
+    fn spin(&mut self) -> bool {
+        if self.0 >= 10 {
+            return false;
+        }
+        self.0 += 1;
+        if self.0 <= 3 {
+            for _ in 0..(1 << self.0) {
+                core::hint::spin_loop();
+            }
+        } else {
+            yield_now();
+        }
+        true
+    }
+}
+
 unsafe impl lock_api::RawMutex for RawMutex {
+    type GuardMarker = lock_api::GuardSend;
+
     /// Initial value for an unlocked mutex.
     ///
-    /// A “non-constant” const item is a legacy way to supply an initialized value to downstream
-    /// static items. Can hopefully be replaced with `const fn new() -> Self` at some point.
+    /// A “non-constant” const item is a legacy way to supply an initialized
+    /// value to downstream static items. Can hopefully be replaced with
+    /// `const fn new() -> Self` at some point.
     #[allow(clippy::declare_interior_mutable_const)]
     const INIT: Self = RawMutex::new();
-
-    type GuardMarker = lock_api::GuardSend;
 
     #[inline(always)]
     fn lock(&self) {
         let current_id = current().id().as_u64();
+        let mut spin = Spin(0);
+        let mut owner_id = self.owner_id.load(Ordering::Relaxed);
+
         loop {
-            // Can fail to lock even if the spinlock is not locked. May be more efficient than `try_lock`
-            // when called in a loop.
-            match self.owner_id.compare_exchange_weak(
-                0,
+            assert_ne!(
+                owner_id,
                 current_id,
-                Ordering::Acquire,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(owner_id) => {
-                    assert_ne!(
-                        owner_id,
-                        current_id,
-                        "{} tried to acquire mutex it already owns.",
-                        current().id_name()
-                    );
-                    // Wait until the lock looks unlocked before retrying
-                    self.wq.wait_until(|| !self.is_locked());
+                "{} tried to acquire mutex it already owns.",
+                current().id_name()
+            );
+
+            if owner_id == 0 {
+                match self.owner_id.compare_exchange_weak(
+                    owner_id,
+                    current_id,
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(x) => owner_id = x,
                 }
+                continue;
             }
+
+            if spin.spin() {
+                owner_id = self.owner_id.load(Ordering::Relaxed);
+                continue;
+            }
+
+            listener!(self.event => listener);
+
+            owner_id = self.owner_id.load(Ordering::Relaxed);
+            if owner_id == 0 {
+                continue;
+            }
+
+            block_on(listener);
+            owner_id = self.owner_id.load(Ordering::Relaxed);
         }
     }
 
@@ -87,7 +126,7 @@ unsafe impl lock_api::RawMutex for RawMutex {
             "{} tried to release mutex it doesn't own",
             current().id_name()
         );
-        self.wq.notify_one(true);
+        self.event.notify(1);
     }
 
     #[inline(always)]
