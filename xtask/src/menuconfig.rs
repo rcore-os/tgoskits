@@ -6,12 +6,12 @@ use std::sync::Arc; // HashMap is unused
 impl Context {
     /// Main menuconfig runner function
     pub async fn run_menuconfig(&mut self) -> anyhow::Result<()> {
-        println!("配置运行参数");
+        println!("Configure runtime parameters");
         let config_path = self.ctx.workspace_folder.join(".build.toml");
         if config_path.exists() {
-            println!("\n当前 .build.toml 配置文件: {}", config_path.display());
+            println!("\nCurrent .build.toml configuration file: {}", config_path.display());
         } else {
-            println!("\n未找到 .build.toml 配置文件，将使用默认配置");
+            println!("\nNo .build.toml configuration file found, will use default configuration");
         }
 
         let Some(_c): Option<Config> =

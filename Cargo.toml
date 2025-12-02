@@ -59,7 +59,7 @@ axaddrspace = "0.1.1"
 axhvc = {git = "https://github.com/arceos-hypervisor/axhvc.git"}
 axruntime = {path = "modules/axruntime"}
 axvcpu = "0.1"
-axvm = {git = "https://github.com/arceos-hypervisor/axvm.git", branch = "next", ref = "0393f27"}
+axvm = {git = "https://github.com/arceos-hypervisor/axvm.git", branch = "next"}
 
 # System independent crates provided by ArceOS, these crates could be imported by remote url. 
 axerrno = "0.1.0"

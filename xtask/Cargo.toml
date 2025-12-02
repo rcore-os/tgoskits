@@ -22,3 +22,5 @@ toml.workspace = true
 zerocopy = "=0.8.28"
 # adapt nightly-2025-05-20
 axvmconfig = {workspace = true, features = ["std"]}
+tar = "0.4"
+flate2 = "1.0"

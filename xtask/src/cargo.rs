@@ -25,7 +25,7 @@ impl Context {
             PathBuf::from(format!(".qemu-{arch:?}.toml").to_lowercase())
         };
 
-        // 如果配置文件不存在，从默认位置复制
+        // If the configuration file does not exist, copy from the default location
         if !config_path.exists() {
             fs::copy(
                 PathBuf::from("scripts")

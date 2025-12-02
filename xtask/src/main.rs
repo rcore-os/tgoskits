@@ -29,15 +29,20 @@ struct Cli {
 enum Commands {
     /// Set default build configuration from board configs
     Defconfig {
-        /// Board configuration name (e.g., qemu-aarch64, orangepi-5-plus)
+        /// Board configuration name (e.g., qemu-aarch64, orangepi-5-plus, phytiumpi)
         board_name: String,
     },
+    /// Build the ArceOS project with current configuration
     Build,
     /// Run clippy checks across all targets and feature combinations
     Clippy(ClippyArgs),
+    /// Run ArceOS in QEMU emulation environment
     Qemu(QemuArgs),
+    /// Run ArceOS with U-Boot bootloader
     Uboot(UbootArgs),
+    /// Generate VM configuration schema
     Vmconfig,
+    /// Interactive menu-based configuration editor
     Menuconfig,
     /// Guest Image management
     Image(image::ImageArgs),
@@ -47,10 +52,15 @@ enum Commands {
 
 #[derive(Parser)]
 struct QemuArgs {
+    /// Path to custom build configuration file (TOML format)
     #[arg(long)]
     build_config: Option<PathBuf>,
+    
+    /// Path to custom QEMU configuration file
     #[arg(long)]
     qemu_config: Option<PathBuf>,
+    
+    /// Comma-separated list of VM configuration files
     #[arg(long)]
     vmconfigs: Vec<String>,
 }
@@ -60,18 +70,23 @@ struct ClippyArgs {
     /// Only check specific packages (comma separated)
     #[arg(long)]
     packages: Option<String>,
+    
     /// Only check specific targets (comma separated)
     #[arg(long)]
     targets: Option<String>,
+    
     /// Continue on error instead of exiting immediately
     #[arg(long)]
     continue_on_error: bool,
+    
     /// Dry run - show what would be checked without running clippy
     #[arg(long)]
     dry_run: bool,
+    
     /// Automatically fix clippy warnings where possible
     #[arg(long)]
     fix: bool,
+    
     /// Allow fixing when the working directory is dirty (has uncommitted changes)
     #[arg(long)]
     allow_dirty: bool,
@@ -79,10 +94,15 @@ struct ClippyArgs {
 
 #[derive(Parser)]
 struct UbootArgs {
+    /// Path to custom build configuration file (TOML format)
     #[arg(long)]
     build_config: Option<PathBuf>,
+    
+    /// Path to custom U-Boot configuration file
     #[arg(long)]
     uboot_config: Option<PathBuf>,
+    
+    /// Comma-separated list of VM configuration files
     #[arg(long)]
     vmconfigs: Vec<String>,
 }
@@ -95,7 +115,10 @@ struct DevspaceArgs {
 
 #[derive(Subcommand)]
 enum DevspaceCommand {
+    /// Start the development workspace
     Start,
+    
+    /// Stop the development workspace
     Stop,
 }
 

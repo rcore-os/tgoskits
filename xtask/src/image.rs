@@ -11,7 +11,7 @@
 //!! ```
 //! // List available images
 //! xtask image ls
-//! // Download a specific image and automatically extract it
+//! // Download a specific image and automatically extract it (default behavior)
 //! xtask image download evm3588_arceos --output-dir ./images
 //! // Download a specific image without extracting
 //! xtask image download evm3588_arceos --output-dir ./images --no-extract
@@ -21,12 +21,13 @@
 
 use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand};
+use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
 use std::env;
 use std::fs;
 use std::io::Read;
 use std::path::Path;
-use std::process::Command;
+use tar::Archive;
 use tokio::io::{AsyncWriteExt, BufWriter};
 
 /// Base URL for downloading images
@@ -43,23 +44,28 @@ pub struct ImageArgs {
 /// Image management commands
 #[derive(Subcommand)]
 pub enum ImageCommands {
-    /// List all available image
+    /// List all available images
     Ls,
+    
     /// Download the specified image and automatically extract it
-    #[command(alias = "pull")]
     Download {
+        /// Name of the image to download
         image_name: String,
+        
+        /// Output directory for the downloaded image
         #[arg(short, long)]
         output_dir: Option<String>,
-        #[arg(
-            short,
-            long,
-            help = "Automatically extract after download (default: true)"
-        )]
-        extract: Option<bool>,
+        
+        /// Do not extract after download
+        #[arg(long, help = "Do not extract after download")]
+        no_extract: bool,
     },
+    
     /// Remove the specified image from temp directory
-    Rm { image_name: String },
+    Rm {
+        /// Name of the image to remove
+        image_name: String
+    },
 }
 
 /// Representation of a guest image
@@ -315,8 +321,6 @@ fn image_list() -> Result<()> {
 /// ```
 /// // Download the evm3588_arceos image to the ./images directory and automatically extract it
 /// xtask image download evm3588_arceos --output-dir ./images
-/// // Or use the pull alias
-/// xtask image pull evm3588_arceos --output-dir ./images
 /// ```
 async fn image_download(image_name: &str, output_dir: Option<String>, extract: bool) -> Result<()> {
     let image = Image::find_by_name(image_name).ok_or_else(|| {
@@ -421,8 +425,6 @@ async fn image_download(image_name: &str, output_dir: Option<String>, extract: b
         .await
         .map_err(|e| anyhow!("Error flushing file: {e}"))?;
 
-    println!("\nDownload completed");
-
     // Verify downloaded file
     match image_verify_sha256(&output_path, image.sha256) {
         Ok(true) => {
@@ -431,12 +433,12 @@ async fn image_download(image_name: &str, output_dir: Option<String>, extract: b
         Ok(false) => {
             // Remove the invalid downloaded file
             let _ = fs::remove_file(&output_path);
-            return Err(anyhow!("Downloaded file SHA256 verification failed"));
+            return Err(anyhow!("Download completed but file SHA256 verification failed"));
         }
         Err(e) => {
             // Remove the potentially corrupted downloaded file
             let _ = fs::remove_file(&output_path);
-            return Err(anyhow!("Error verifying downloaded file: {e}"));
+            return Err(anyhow!("Download completed but error verifying downloaded file: {e}"));
         }
     }
 
@@ -453,18 +455,13 @@ async fn image_download(image_name: &str, output_dir: Option<String>, extract: b
         // Ensure extraction directory exists
         fs::create_dir_all(&extract_dir)?;
 
-        // Use tar command to extract file
-        let mut child = Command::new("tar")
-            .arg("-xzf")
-            .arg(&output_path)
-            .arg("-C")
-            .arg(&extract_dir)
-            .spawn()?;
+        // Open the compressed tar file
+        let tar_gz = fs::File::open(&output_path)?;
+        let decoder = GzDecoder::new(tar_gz);
+        let mut archive = Archive::new(decoder);
 
-        let status = child.wait()?;
-        if !status.success() {
-            return Err(anyhow!("Extraction failed, tar exit code: {status}"));
-        }
+        // Extract the archive
+        archive.unpack(&extract_dir)?;
 
         println!("Image extracted to: {}", extract_dir.display());
     }
@@ -529,8 +526,6 @@ fn image_remove(image_name: &str) -> Result<()> {
 /// // Run image management commands
 /// xtask image ls
 /// xtask image download evm3588_arceos --output-dir ./images
-/// // Or use the pull alias
-/// xtask image pull evm3588_arceos --output-dir ./images
 /// xtask image rm evm3588_arceos
 /// ```
 pub async fn run_image(args: ImageArgs) -> Result<()> {
@@ -541,9 +536,11 @@ pub async fn run_image(args: ImageArgs) -> Result<()> {
         ImageCommands::Download {
             image_name,
             output_dir,
-            extract,
+            no_extract,
         } => {
-            image_download(&image_name, output_dir, extract.unwrap_or(true)).await?;
+            // Determine if extraction should be performed
+            let should_extract = !no_extract;
+            image_download(&image_name, output_dir, should_extract).await?;
         }
         ImageCommands::Rm { image_name } => {
             image_remove(&image_name)?;
