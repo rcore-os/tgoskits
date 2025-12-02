@@ -14,7 +14,7 @@ rockchip-pm = ["dep:rockchip-pm"]
 phytium-blk = ["dep:phytium-mci"]
 
 [dependencies]
-axklib = {git = "https://github.com/arceos-hypervisor/axklib"}
+axklib.workspace = true
 log.workspace = true
 rdif-block = "0.6.2"
 rdif-clk = "0.4"

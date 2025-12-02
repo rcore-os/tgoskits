@@ -95,6 +95,6 @@ SECTIONS {
     linkm2_PAGE_FAULT : { *(linkm2_PAGE_FAULT) }
     linkme_SYSCALL : { *(linkme_SYSCALL) }
     linkm2_SYSCALL : { *(linkm2_SYSCALL) }
-    axns_resource : { *(axns_resource) }
+    scope_local : { *(scope_local) }
 }
 INSERT AFTER .tbss;

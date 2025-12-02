@@ -32,37 +32,41 @@ timer_list = "0.1"
 toml = "0.9"
 
 # System dependent modules provided by ArceOS.
-axstd = {git = "https://github.com/arceos-hypervisor/arceos.git", tag = "hv-0.4.1", features = [
+# FIXME: pin to a specific tag!
+axstd = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251202", features = [
   "alloc-level-1",
   "paging",
   "irq",
   "multitask",
+  "task-ext",
   "smp", # "page-alloc-64g",
 ]}
 
-axalloc = {git = "https://github.com/arceos-hypervisor/arceos.git", tag = "hv-0.4.1"}
-axconfig = {git = "https://github.com/arceos-hypervisor/arceos.git", tag = "hv-0.4.1"}
-axdisplay = {git = "https://github.com/arceos-hypervisor/arceos.git", tag = "hv-0.4.1"}
-axdriver = {git = "https://github.com/arceos-hypervisor/arceos.git", tag = "hv-0.4.1"}
-axfs = {git = "https://github.com/arceos-hypervisor/arceos.git", tag = "hv-0.4.1"}
-axhal = {git = "https://github.com/arceos-hypervisor/arceos.git", tag = "hv-0.4.1"}
-axipi = {git = "https://github.com/arceos-hypervisor/arceos.git", tag = "hv-0.4.1"}
-axlog = {git = "https://github.com/arceos-hypervisor/arceos.git", tag = "hv-0.4.1"}
-axmm = {git = "https://github.com/arceos-hypervisor/arceos.git", tag = "hv-0.4.1"}
-axnet = {git = "https://github.com/arceos-hypervisor/arceos.git", tag = "hv-0.4.1"}
-axtask = {git = "https://github.com/arceos-hypervisor/arceos.git", tag = "hv-0.4.1"}
+axalloc = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251202"}
+axconfig = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251202"}
+axdisplay = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251202"}
+axdriver = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251202"}
+axfs = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251202"}
+axhal = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251202"}
+axipi = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251202"}
+axlog = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251202"}
+axmm = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251202"}
+axnet = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251202"}
+axtask = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251202"}
 
-axplat = {git = "https://github.com/arceos-hypervisor/axplat_crates.git", tag = "vmm-v0.3.0"}
+axcpu = {git = "https://github.com/arceos-org/axcpu.git", tag = "dev-v03"}
+axplat = {git = "https://github.com/arceos-org/axplat_crates.git", tag = "dev-v03"}
 
 # System dependent modules provided by ArceOS-Hypervisor.
 axaddrspace = "0.1.1"
 axhvc = {git = "https://github.com/arceos-hypervisor/axhvc.git"}
+axklib = {git = "https://github.com/arceos-hypervisor/axklib.git"}
 axruntime = {path = "modules/axruntime"}
 axvcpu = "0.1"
 axvm = {git = "https://github.com/arceos-hypervisor/axvm.git", branch = "next"}
 
 # System independent crates provided by ArceOS, these crates could be imported by remote url. 
-axerrno = "0.1.0"
+axerrno = "0.2"
 byte-unit = {version = "5", default-features = false, features = ["byte"]}
 crate_interface = "0.1"
 fdt-parser = "0.4"
@@ -88,6 +92,6 @@ axvmconfig = {git = "https://github.com/arceos-hypervisor/axvmconfig.git", branc
 axvcpu = {git = "https://github.com/arceos-hypervisor/axvcpu.git", branch = "next"}
 axvmconfig = {git = "https://github.com/arceos-hypervisor/axvmconfig.git", branch = "next"}
 
-[patch."https://github.com/arceos-hypervisor/arceos"]
+[patch."https://github.com/arceos-org/arceos"]
 axconfig = {path = "modules/axconfig"}
 axruntime = {path = "modules/axruntime"}

@@ -1,9 +1,6 @@
 use std::os::arceos::{
     self,
-    modules::{
-        axhal::percpu::this_cpu_id,
-        axtask::{self, TaskExtRef},
-    },
+    modules::{axhal::percpu::this_cpu_id, axtask},
 };
 
 use axerrno::{AxResult, ax_err_type};
@@ -19,7 +16,7 @@ use axvm::{AxVMHal, AxVMPerCpu};
 #[cfg_attr(target_arch = "x86_64", path = "arch/x86_64/mod.rs")]
 pub mod arch;
 
-use crate::{hal::arch::hardware_check, vmm};
+use crate::{hal::arch::hardware_check, task::AsVCpuTask, vmm};
 
 #[allow(unused)]
 #[repr(C)]
@@ -48,11 +45,11 @@ impl AxVMHal for AxVMHalImpl {
     }
 
     fn current_vm_id() -> usize {
-        axtask::current().task_ext().vm().id()
+        axtask::current().as_vcpu_task().vm().id()
     }
 
     fn current_vcpu_id() -> usize {
-        axtask::current().task_ext().vcpu.id()
+        axtask::current().as_vcpu_task().vcpu.id()
     }
 
     fn current_pcpu_id() -> usize {
@@ -64,7 +61,7 @@ impl AxVMHal for AxVMHalImpl {
             .ok_or_else(|| ax_err_type!(NotFound))
     }
 
-    fn inject_irq_to_vcpu(vm_id: usize, vcpu_id: usize, irq: usize) -> axerrno::AxResult {
+    fn inject_irq_to_vcpu(vm_id: usize, vcpu_id: usize, irq: usize) -> AxResult {
         vmm::with_vm_and_vcpu_on_pcpu(vm_id, vcpu_id, move |_, vcpu| {
             vcpu.inject_interrupt(irq).unwrap();
         })

@@ -17,7 +17,7 @@ smp = ["axplat/smp", "kspin/smp"]
 
 [dependencies]
 axconfig-macros = "0.2"
-axcpu = "0.2"
+axcpu = {workspace = true}
 axplat = {workspace = true}
 bitflags = "2.6"
 heapless = "0.9"

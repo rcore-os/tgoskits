@@ -41,6 +41,7 @@ axvm.workspace = true
 axerrno.workspace = true
 byte-unit = {version = "5", default-features = false, features = ["byte"]}
 crate_interface.workspace = true
+extern-trait = "0.2"
 fdt-parser = "0.4"
 memory_addr.workspace = true
 page_table_entry = {version = "0.5", features = ["arm-el2"]}
@@ -62,7 +63,7 @@ aarch64-cpu-ext = "0.1"
 arm-gic-driver = {version = "0.15.5", features = ["rdif"]}
 
 [build-dependencies]
-axconfig = {git = "https://github.com/arceos-hypervisor/arceos.git", branch = "vmm-dev"}
+axconfig.workspace = true
 prettyplease = "0.2"
 quote = "1.0"
 syn = "2.0"

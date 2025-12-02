@@ -77,11 +77,6 @@ struct TimeIfImpl;
 
 #[impl_plat_interface]
 impl TimeIf for TimeIfImpl {
-    /// Returns the IRQ number for the timer interrupt.
-    fn irq_num() -> usize {
-        0xf0
-    }
-
     /// Returns the current clock time in hardware ticks.
     fn current_ticks() -> u64 {
         unsafe { core::arch::x86_64::_rdtsc() - INIT_TICK }
@@ -101,6 +96,12 @@ impl TimeIf for TimeIfImpl {
     /// clock start).
     fn epochoffset_nanos() -> u64 {
         unsafe { RTC_EPOCHOFFSET_NANOS }
+    }
+
+    /// Returns the IRQ number for the timer interrupt.
+    #[cfg(feature = "irq")]
+    fn irq_num() -> usize {
+        0xf0
     }
 
     /// Set a one-shot timer.

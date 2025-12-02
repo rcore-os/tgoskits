@@ -10,16 +10,19 @@ use std::os::arceos::{
     api::task::{AxCpuMask, ax_wait_queue_wake},
     modules::{
         axhal::{self, time::busy_wait},
-        axtask,
+        axtask::{self, AxTaskExt},
     },
 };
 
 use axaddrspace::GuestPhysAddr;
-use axtask::{AxTaskRef, TaskExtRef, TaskInner, WaitQueue};
+use axtask::{AxTaskRef, TaskInner, WaitQueue};
 use axvcpu::{AxVCpuExitReason, VCpuState};
 
-use crate::vmm::{VCpuRef, VMRef, sub_running_vm_count};
-use crate::{hal::arch::inject_interrupt, task::TaskExt};
+use crate::{hal::arch::inject_interrupt, task::VCpuTask};
+use crate::{
+    task::AsVCpuTask,
+    vmm::{VCpuRef, VMRef, sub_running_vm_count},
+};
 
 const KERNEL_STACK_SIZE: usize = 0x40000; // 256 KiB
 
@@ -139,7 +142,8 @@ impl VMVCpus {
 
     #[allow(dead_code)]
     fn notify_one(&mut self) {
-        info!("Current wait queue length: {}", self.wait_queue.len());
+        // FIXME: `WaitQueue::len` is removed
+        // info!("Current wait queue length: {}", self.wait_queue.len());
         self.wait_queue.notify_one(false);
     }
 
@@ -250,12 +254,11 @@ pub(crate) fn cleanup_vm_vcpus(vm_id: usize) {
                 idx,
                 task.id_name()
             );
-            if let Some(exit_code) = task.join() {
-                debug!(
-                    "VM[{}] VCpu task[{}] exited with code: {}",
-                    vm_id, idx, exit_code
-                );
-            }
+            let exit_code = task.join();
+            debug!(
+                "VM[{}] VCpu task[{}] exited with code: {}",
+                vm_id, idx, exit_code
+            );
         }
 
         info!(
@@ -318,7 +321,7 @@ fn vcpu_on(vm: VMRef, vcpu_id: usize, entry_point: GuestPhysAddr, arg: usize) {
         vcpu.set_gpr(1, arg);
     }
 
-    let vcpu_task = alloc_vcpu_task(vm.clone(), vcpu);
+    let vcpu_task = alloc_vcpu_task(&vm, vcpu);
 
     VM_VCPU_TASK_WAIT_QUEUE
         .get_mut(&vm.id())
@@ -342,7 +345,7 @@ pub fn setup_vm_primary_vcpu(vm: VMRef) {
     let primary_vcpu_id = 0;
 
     let primary_vcpu = vm.vcpu_list()[primary_vcpu_id].clone();
-    let primary_vcpu_task = alloc_vcpu_task(vm.clone(), primary_vcpu);
+    let primary_vcpu_task = alloc_vcpu_task(&vm, primary_vcpu);
     vm_vcpus.add_vcpu_task(primary_vcpu_task);
 
     VM_VCPU_TASK_WAIT_QUEUE.insert(vm_id, vm_vcpus);
@@ -383,7 +386,7 @@ pub fn with_vcpu_task<T, F: FnOnce(&AxTaskRef) -> T>(
 /// * The task associated with the VCpu is created with a kernel stack size of 256 KiB.
 /// * The task is created in blocked state and added to the wait queue directly,
 ///   instead of being added to the ready queue. It will be woken up by notify_primary_vcpu().
-fn alloc_vcpu_task(vm: VMRef, vcpu: VCpuRef) -> AxTaskRef {
+fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> AxTaskRef {
     info!("Spawning task for VM[{}] VCpu[{}]", vm.id(), vcpu.id());
     let mut vcpu_task = TaskInner::new(
         vcpu_run,
@@ -396,7 +399,8 @@ fn alloc_vcpu_task(vm: VMRef, vcpu: VCpuRef) -> AxTaskRef {
     }
 
     // Use Weak reference in TaskExt to avoid keeping VM alive
-    vcpu_task.init_task_ext(TaskExt::from_vm_ref(vm.clone(), vcpu));
+    let inner = VCpuTask::new(vm, vcpu);
+    *vcpu_task.task_ext_mut() = Some(unsafe { AxTaskExt::from_impl(inner) });
 
     info!(
         "VCpu task {} created {:?}",
@@ -414,8 +418,8 @@ fn alloc_vcpu_task(vm: VMRef, vcpu: VCpuRef) -> AxTaskRef {
 fn vcpu_run() {
     let curr = axtask::current();
 
-    let vm = curr.task_ext().vm();
-    let vcpu = curr.task_ext().vcpu.clone();
+    let vm = curr.as_vcpu_task().vm();
+    let vcpu = curr.as_vcpu_task().vcpu.clone();
     let vm_id = vm.id();
     let vcpu_id = vcpu.id();
 
