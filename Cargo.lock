@@ -412,6 +412,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-std-httpserver"
+version = "0.1.0"
+dependencies = [
+ "arceos-rust",
+]
+
+[[package]]
 name = "arceos-tls"
 version = "0.3.1"
 dependencies = [
