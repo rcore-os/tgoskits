@@ -1,9 +1,11 @@
+//! SD/MMC driver based on SDIO.
+
 use axdriver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
 use simple_sdmmc::SdMmc;
 
 use crate::BlockDriverOps;
 
-/// SD/MMC driver based on SDIO.
+/// A SD/MMC driver.
 pub struct SdMmcDriver(SdMmc);
 
 impl SdMmcDriver {
