@@ -67,7 +67,9 @@ trait ArchTrait {
     fn shutdown() -> !;
 
     fn systimer_enable();
-    fn systimer_disable();
+    fn systimer_irq_enable();
+    fn systimer_irq_disable();
+    fn systimer_irq_is_enabled() -> bool;
     /// Set the timer interval in ticks
     fn systimer_set_interval(ticks: usize);
     /// Acknowledge and clear the timer interrupt

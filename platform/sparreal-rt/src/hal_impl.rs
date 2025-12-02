@@ -117,8 +117,16 @@ impl Cpu for CpuImpl {
         somehal::timer::enable();
     }
 
-    fn systimer_disable() {
-        somehal::timer::disable();
+    fn systimer_irq_enable() {
+        somehal::timer::irq_enable();
+    }
+
+    fn systimer_irq_disable() {
+        somehal::timer::irq_disable();
+    }
+
+    fn systimer_irq_is_enabled() -> bool {
+        somehal::timer::irq_is_enabled()
     }
 
     fn systimer_set_next_event(interval: Duration) {

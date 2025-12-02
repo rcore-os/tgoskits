@@ -9,7 +9,11 @@ args = [
   # "-D",
   # "qemu.log"
 ]
-fail_regex = []
+fail_regex = [
+  "FAILED",
+  "Panicked:",
+  "thread 'main' has overflowed its stack"
+]
 success_regex = [
   "All tests passed!"
 ]

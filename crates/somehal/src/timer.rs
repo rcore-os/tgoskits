@@ -10,8 +10,16 @@ pub fn enable() {
 }
 
 /// Disable the platform system timer to stop timer IRQs.
-pub fn disable() {
-    crate::arch::Arch::systimer_disable();
+pub fn irq_disable() {
+    crate::arch::Arch::systimer_irq_disable();
+}
+
+pub fn irq_enable() {
+    crate::arch::Arch::systimer_irq_enable();
+}
+
+pub fn irq_is_enabled() -> bool {
+    crate::arch::Arch::systimer_irq_is_enabled()
 }
 
 /// Configure the system timer with the desired interval.

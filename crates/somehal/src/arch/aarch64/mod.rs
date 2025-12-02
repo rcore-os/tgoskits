@@ -73,8 +73,8 @@ impl ArchTrait for Arch {
         elx::systick_enable();
     }
 
-    fn systimer_disable() {
-        elx::systick_disable();
+    fn systimer_irq_disable() {
+        elx::systick_irq_disable();
     }
 
     fn systimer_set_interval(ticks: usize) {
@@ -142,5 +142,13 @@ impl ArchTrait for Arch {
 
     fn irq_set_enable(_irq: crate::irq::SoftIrqId, _enable: bool) {
         // For now, do nothing (can be extended with GIC support)
+    }
+
+    fn systimer_irq_enable() {
+        elx::systick_irq_enable();
+    }
+
+    fn systimer_irq_is_enabled() -> bool {
+        elx::systick_irq_is_enabled()
     }
 }

@@ -35,7 +35,9 @@ pub trait Cpu {
     fn irq_local_set_enable(enabled: bool);
     fn systimer_irq() -> IrqId;
     fn systimer_enable();
-    fn systimer_disable();
+    fn systimer_irq_enable();
+    fn systimer_irq_disable();
+    fn systimer_irq_is_enabled() -> bool;
     fn systimer_set_next_event(intval: Duration);
     fn systimer_ack();
     fn systimer_since_boot() -> Duration;

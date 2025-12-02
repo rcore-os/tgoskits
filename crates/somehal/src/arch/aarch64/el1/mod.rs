@@ -341,8 +341,16 @@ pub fn systick_enable() {
     CNTP_CTL_EL0.write(CNTP_CTL_EL0::ENABLE::SET);
 }
 
-pub fn systick_disable() {
+pub fn systick_irq_disable() {
     CNTP_CTL_EL0.modify(CNTP_CTL_EL0::IMASK::SET);
+}
+
+pub fn systick_irq_enable() {
+    CNTP_CTL_EL0.modify(CNTP_CTL_EL0::IMASK::CLEAR);
+}
+
+pub fn systick_irq_is_enabled() -> bool {
+    CNTP_CTL_EL0.is_set(CNTP_CTL_EL0::IMASK)
 }
 
 pub fn systick_set_interval(ticks: usize) {

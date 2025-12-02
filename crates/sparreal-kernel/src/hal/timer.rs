@@ -153,10 +153,10 @@ impl TimerManager {
             let delay = delay.max(Duration::from_micros(1));
 
             crate::hal::al::cpu::systimer_set_next_event(delay);
-            crate::hal::al::cpu::systimer_enable();
+            crate::hal::al::cpu::systimer_irq_enable();
         } else {
             // No pending timers, disable hardware timer
-            crate::hal::al::cpu::systimer_disable();
+            crate::hal::al::cpu::systimer_irq_disable();
         }
     }
 
@@ -190,6 +190,7 @@ impl TimerManager {
 }
 
 pub(crate) fn init() {
+    crate::hal::al::cpu::systimer_enable();
     {
         let mut guard = TIMER_MANAGER.lock();
         if guard.is_some() {
@@ -204,7 +205,7 @@ pub(crate) fn init() {
     crate::os::irq::register_handler(timer_irq, systimer_irq_handler);
 
     // Timer starts disabled, will be enabled when first timer is scheduled
-    crate::hal::al::cpu::systimer_disable();
+    crate::hal::al::cpu::systimer_irq_disable();
 }
 
 /// Schedule a one-shot timer after the provided delay.
