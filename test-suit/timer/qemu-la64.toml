@@ -1,5 +1,7 @@
 args = ["-nographic"]
-fail_regex = []
+fail_regex = [
+  "Panicked:"
+]
 success_regex = [
   "All tests passed!",
 ]

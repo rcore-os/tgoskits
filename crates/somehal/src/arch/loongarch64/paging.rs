@@ -846,11 +846,62 @@ impl PageTableEntry for Entry {
     }
 
     fn set_mem_config(&mut self, config: page_table_generic::MemConfig) {
-        todo!()
+        use page_table_generic::{AccessFlags, MemAttributes};
+
+        // 设置访问权限
+        let writable = config.access.contains(AccessFlags::WRITE);
+        let executable = config.access.contains(AccessFlags::EXECUTE);
+
+        self.set_writable(writable);
+        if writable {
+            self.set_dirty(true);
+        }
+        self.set_no_exec(!executable);
+
+        // 设置缓存属性
+        match config.attrs {
+            MemAttributes::Normal => {
+                // CC = Coherent Cached
+                self.set_cache_attr(1);
+            }
+            MemAttributes::Device => {
+                // SUC = Strongly-ordered UnCached
+                self.set_cache_attr(0);
+            }
+            MemAttributes::Uncached => {
+                // WUC = Weakly-ordered UnCached
+                self.set_cache_attr(2);
+            }
+        }
     }
 
     fn mem_config(&self) -> page_table_generic::MemConfig {
-        todo!()
+        use page_table_generic::{AccessFlags, MemAttributes};
+
+        let mut access = AccessFlags::READ;
+
+        if self.is_writable() {
+            access |= AccessFlags::WRITE;
+        }
+
+        if !self.is_no_exec() {
+            access |= AccessFlags::EXECUTE;
+        }
+
+        // 根据 PLV 判断是否为用户态页面
+        if self.plv() == 3 {
+            access |= AccessFlags::LOWER;
+        }
+
+        // 根据缓存属性确定内存类型
+        let attrs = match self.cache_attr() {
+            0 => MemAttributes::Device,   // SUC
+            1 => MemAttributes::Normal,   // CC
+            2 => MemAttributes::Uncached, // WUC
+            _ => MemAttributes::Normal,   // 默认为 Normal
+        };
+
+        page_table_generic::MemConfig { access, attrs }
     }
 }
 

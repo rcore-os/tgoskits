@@ -219,12 +219,88 @@ impl PageTableEntry for Pte {
         }
     }
 
-    fn set_mem_config(&mut self, _config: page_table_generic::MemConfig) {
-        todo!()
+    fn set_mem_config(&mut self, config: page_table_generic::MemConfig) {
+        use page_table_generic::{AccessFlags, MemAttributes};
+
+        // 设置访问权限
+        let writable = config.access.contains(AccessFlags::WRITE);
+        let executable = config.access.contains(AccessFlags::EXECUTE);
+        let user = config.access.contains(AccessFlags::LOWER);
+
+        // AP[2:1] 访问权限位
+        // AP_EL0 (bit 6) 和 AP_RO (bit 7)
+        let ap_bits = if writable {
+            if user {
+                // AP = 01: 用户态可读写 (AP_EL0=1, AP_RO=0)
+                PteFlags::AP_EL0.bits()
+            } else {
+                // AP = 00: 内核态可读写 (AP_EL0=0, AP_RO=0)
+                0
+            }
+        } else {
+            if user {
+                // AP = 11: 用户态只读 (AP_EL0=1, AP_RO=1)
+                (PteFlags::AP_EL0 | PteFlags::AP_RO).bits()
+            } else {
+                // AP = 10: 内核态只读 (AP_EL0=0, AP_RO=1)
+                PteFlags::AP_RO.bits()
+            }
+        };
+
+        // 清除旧的 AP 位并设置新的
+        self.0 &= !(PteFlags::AP_EL0.bits() | PteFlags::AP_RO.bits());
+        self.0 |= ap_bits;
+
+        // UXN/PXN 执行权限位
+        if !executable {
+            self.0 |= (PteFlags::UXN | PteFlags::PXN).bits();
+        } else {
+            self.0 &= !(PteFlags::UXN | PteFlags::PXN).bits();
+        }
+
+        // 设置内存属性索引
+        let attr_index = match config.attrs {
+            MemAttributes::Normal => 0,   // AttrIndx = 0: Normal memory (cached)
+            MemAttributes::Device => 1,   // AttrIndx = 1: Device memory
+            MemAttributes::Uncached => 2, // AttrIndx = 2: Normal memory (non-cacheable)
+        };
+
+        self.set_mair_idx(attr_index);
     }
 
     fn mem_config(&self) -> page_table_generic::MemConfig {
-        todo!()
+        use page_table_generic::{AccessFlags, MemAttributes};
+
+        let mut access = AccessFlags::READ;
+
+        // 检查 AP 位确定写权限
+        let ap = (self.0 >> 6) & 0x3;
+        if ap == 0 || ap == 1 {
+            // AP = 00 或 01 表示可写
+            access |= AccessFlags::WRITE;
+        }
+
+        // 检查 UXN/PXN 位确定执行权限
+        let no_exec = (self.0 & (PteFlags::UXN | PteFlags::PXN).bits()) != 0;
+        if !no_exec {
+            access |= AccessFlags::EXECUTE;
+        }
+
+        // 检查 AP_EL0 位确定是否为用户态
+        if (ap & 0x1) != 0 {
+            access |= AccessFlags::LOWER;
+        }
+
+        // 根据 AttrIndx 确定内存类型
+        let attr_index = (self.0 >> 2) & 0x7;
+        let attrs = match attr_index {
+            0 => MemAttributes::Normal,   // Normal cached
+            1 => MemAttributes::Device,   // Device
+            2 => MemAttributes::Uncached, // Normal uncached
+            _ => MemAttributes::Normal,   // 默认
+        };
+
+        page_table_generic::MemConfig { access, attrs }
     }
 }
 
