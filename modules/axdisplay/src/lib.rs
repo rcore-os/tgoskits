@@ -1,4 +1,4 @@
-//! [ArceOS](https://github.com/arceos-org/arceos) graphics module.
+//! [ArceOS](https://github.com/arceos-org/arceos) display module.
 //!
 //! Currently only supports direct writing to the framebuffer.
 
@@ -15,15 +15,15 @@ use lazyinit::LazyInit;
 
 static MAIN_DISPLAY: LazyInit<Mutex<AxDisplayDevice>> = LazyInit::new();
 
-/// Initializes the graphics subsystem by underlayer devices.
+/// Initializes the display subsystem by underlayer devices.
 pub fn init_display(mut display_devs: AxDeviceContainer<AxDisplayDevice>) {
-    info!("Initialize graphics subsystem...");
+    info!("Initialize display subsystem...");
 
     if let Some(dev) = display_devs.take_one() {
-        info!("  use graphics device 0: {:?}", dev.device_name());
+        info!("  use display device 0: {:?}", dev.device_name());
         MAIN_DISPLAY.init_once(Mutex::new(dev));
     } else {
-        warn!("  no graphics device found!");
+        warn!("  No display device found!");
     }
 }
 
