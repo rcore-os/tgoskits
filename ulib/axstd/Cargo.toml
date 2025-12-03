@@ -25,6 +25,9 @@ smp = ["axfeat/smp", "kspin/smp"]
 # Floating point/SIMD
 fp-simd = ["axfeat/fp-simd"]
 
+# User space support
+uspace = ["axfeat/uspace"]
+
 # Interrupts
 irq = ["arceos_api/irq", "axfeat/irq"]
 ipi = ["arceos_api/ipi", "axfeat/ipi"]

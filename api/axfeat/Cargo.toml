@@ -18,6 +18,9 @@ smp = ["axhal/smp", "axruntime/smp", "axtask?/smp", "kspin/smp"]
 # Floating point/SIMD
 fp-simd = ["axhal/fp-simd"]
 
+# User space support
+uspace = ["axhal/uspace"]
+
 # Interrupts
 irq = ["axhal/irq", "axruntime/irq", "axtask?/irq", "axdriver?/irq"]
 ipi = ["irq", "dep:axipi", "axhal/ipi", "axruntime/ipi"]
