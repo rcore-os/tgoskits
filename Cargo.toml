@@ -22,30 +22,30 @@ repository = "https://github.com/arceos-org/starry-next"
 axfeat = { path = "arceos/api/axfeat", features = [
     "alloc-slab",
     "fp-simd",
-    "ext4",
-    "fs",
+    "fs-ext4",
     "irq",
     "multitask",
     "net",
     "page-alloc-4g",
     "rtc",
-    # "sched-fifo",
     "sched-rr",
+    "task-ext",
+    "uspace",
 ] }
 
 axalloc = { path = "arceos/modules/axalloc" }
 axconfig = { path = "arceos/modules/axconfig" }
 axdisplay = { path = "arceos/modules/axdisplay" }
 axdriver = { path = "arceos/modules/axdriver" }
-axfs-ng = { path = "arceos/modules/axfs-ng" }
-axhal = { path = "arceos/modules/axhal", features = ["uspace"] }
+axfs = { path = "arceos/modules/axfs" }
+axhal = { path = "arceos/modules/axhal" }
 axinput = { path = "arceos/modules/axinput" }
 axlog = { path = "arceos/modules/axlog" }
 axmm = { path = "arceos/modules/axmm" }
 axnet = { path = "arceos/modules/axnet" }
 axruntime = { path = "arceos/modules/axruntime" }
 axsync = { path = "arceos/modules/axsync" }
-axtask = { path = "arceos/modules/axtask", features = ["task-ext"] }
+axtask = { path = "arceos/modules/axtask" }
 
 axbacktrace = "0.1"
 axerrno = "0.2"
@@ -57,7 +57,7 @@ bytemuck = { version = "1.23", features = ["unsound_ptr_pod_impl"] }
 cfg-if = "1.0"
 event-listener = { version = "5.4.0", default-features = false }
 extern-trait = "0.2"
-hashbrown = "0.15.4"
+hashbrown = "0.16"
 kspin = "0.1"
 lazy_static = { version = "1.5", features = ["spin_no_std"] }
 linkme = "0.3.33"
@@ -91,16 +91,8 @@ repository.workspace = true
 [features]
 default = []
 qemu = [
-    "axfeat/driver-virtio-blk",
-    "axfeat/driver-virtio-net",
-    "axfeat/driver-virtio-socket",
-
-    "axfeat/driver-virtio-gpu",
     "axfeat/display",
-
-    "axfeat/driver-virtio-input",
     "axfeat/input",
-    # "axdriver/dyn",
     "starry-api/input",
 
     "axfeat/vsock",
@@ -121,7 +113,7 @@ vf2 = ["dep:axplat-riscv64-visionfive2", "axfeat/driver-sdmmc"]
 axdriver.workspace = true
 axerrno.workspace = true
 axfeat.workspace = true
-axfs-ng.workspace = true
+axfs.workspace = true
 axhal.workspace = true
 axlog.workspace = true
 axruntime.workspace = true

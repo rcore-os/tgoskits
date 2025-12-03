@@ -185,6 +185,7 @@ dependencies = [
  "log",
  "memory_addr",
  "percpu",
+ "strum",
 ]
 
 [[package]]
@@ -386,8 +387,9 @@ dependencies = [
  "axbacktrace",
  "axdisplay",
  "axdriver",
- "axfs-ng",
+ "axfs",
  "axhal",
+ "axinput",
  "axlog",
  "axnet",
  "axruntime",
@@ -397,7 +399,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "axfs-ng"
+name = "axfs"
 version = "0.2.0"
 dependencies = [
  "axalloc",
@@ -442,20 +444,17 @@ dependencies = [
 name = "axhal"
 version = "0.2.0"
 dependencies = [
- "aarch64-cpu",
  "axalloc",
  "axconfig",
  "axcpu",
- "axlog",
  "axplat",
  "axplat-aarch64-qemu-virt",
  "axplat-loongarch64-qemu-virt",
  "axplat-riscv64-qemu-virt",
  "axplat-x86-pc",
  "cfg-if",
- "heapless 0.8.0",
+ "heapless 0.9.2",
  "kernel_guard",
- "kspin",
  "lazyinit",
  "linkme",
  "log",
@@ -499,7 +498,7 @@ dependencies = [
  "axalloc",
  "axconfig",
  "axerrno 0.2.2",
- "axfs-ng",
+ "axfs",
  "axfs-ng-vfs",
  "axhal",
  "axsync",
@@ -522,7 +521,7 @@ dependencies = [
  "axconfig",
  "axdriver",
  "axerrno 0.2.2",
- "axfs-ng",
+ "axfs",
  "axfs-ng-vfs",
  "axhal",
  "axio",
@@ -533,7 +532,7 @@ dependencies = [
  "cfg-if",
  "enum_dispatch",
  "event-listener",
- "hashbrown 0.15.5",
+ "hashbrown 0.16.1",
  "lazy_static",
  "lazyinit",
  "log",
@@ -696,7 +695,7 @@ dependencies = [
  "axconfig",
  "axdisplay",
  "axdriver",
- "axfs-ng",
+ "axfs",
  "axhal",
  "axinput",
  "axlog",
@@ -706,6 +705,7 @@ dependencies = [
  "axtask",
  "chrono",
  "crate_interface",
+ "ctor_bare",
  "indoc",
  "percpu",
 ]
@@ -750,7 +750,6 @@ dependencies = [
  "log",
  "memory_addr",
  "percpu",
- "weak-map",
 ]
 
 [[package]]
@@ -1018,6 +1017,26 @@ name = "crossbeam-utils"
 version = "0.8.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
+
+[[package]]
+name = "ctor_bare"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4e5ae3c454dc1efb0e5821dc17344539849391b2de18c89596ea563f1909f93"
+dependencies = [
+ "ctor_bare_macros",
+]
+
+[[package]]
+name = "ctor_bare_macros"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a49d5cd78b1c748184d41407b14a58af8403c13328ff2b9f49b0a418c24e3ff"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.111",
+]
 
 [[package]]
 name = "darling"
@@ -2091,7 +2110,7 @@ dependencies = [
  "axdriver",
  "axerrno 0.2.2",
  "axfeat",
- "axfs-ng",
+ "axfs",
  "axhal",
  "axlog",
  "axplat-riscv64-visionfive2",
@@ -2118,7 +2137,7 @@ dependencies = [
  "axdriver",
  "axerrno 0.2.2",
  "axfeat",
- "axfs-ng",
+ "axfs",
  "axfs-ng-vfs",
  "axhal",
  "axinput",
@@ -2137,7 +2156,7 @@ dependencies = [
  "event-listener",
  "flatten_objects",
  "gimli",
- "hashbrown 0.15.5",
+ "hashbrown 0.16.1",
  "indoc",
  "inherit-methods-macro",
  "kspin",
@@ -2169,7 +2188,7 @@ dependencies = [
  "axconfig",
  "axerrno 0.2.2",
  "axfeat",
- "axfs-ng",
+ "axfs",
  "axfs-ng-vfs",
  "axhal",
  "axio",
@@ -2183,7 +2202,7 @@ dependencies = [
  "cfg-if",
  "event-listener",
  "extern-trait",
- "hashbrown 0.15.5",
+ "hashbrown 0.16.1",
  "inherit-methods-macro",
  "kernel-elf-parser",
  "kernel_guard",

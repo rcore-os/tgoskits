@@ -239,14 +239,14 @@ pub fn sys_rt_sigtimedwait(
     signal.set_blocked(old_blocked & !set);
 
     uctx.set_retval(-LinuxError::EINTR.code() as usize);
-    let fut = poll_fn(|context| {
+    let fut = poll_fn(|cx| {
         if let Some(sig) = signal.dequeue_signal(&set) {
             signal.set_blocked(old_blocked);
             Poll::Ready(Some(sig))
         } else if check_signals(thr, uctx, Some(old_blocked)) {
             Poll::Ready(None)
         } else {
-            curr.on_interrupt(context.waker());
+            let _ = curr.poll_interrupt(cx);
             Poll::Pending
         }
     });
@@ -283,11 +283,11 @@ pub fn sys_rt_sigsuspend(
 
     uctx.set_retval(-LinuxError::EINTR.code() as usize);
 
-    block_on(poll_fn(|context| {
+    block_on(poll_fn(|cx| {
         if check_signals(thr, uctx, Some(old_blocked)) {
             return Poll::Ready(());
         }
-        curr.on_interrupt(context.waker());
+        let _ = curr.poll_interrupt(cx);
         Poll::Pending
     }));
 

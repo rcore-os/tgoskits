@@ -90,8 +90,7 @@ pub fn new_user_task(
                 }
 
                 set_timer_state(&curr, TimerState::User);
-                // Clear interrupt state
-                let _ = curr.interrupted();
+                curr.clear_interrupt();
             }
         },
         name.into(),

@@ -6,7 +6,6 @@ group_imports = "StdExternalCrate"
 imports_granularity = "Crate"
 
 normalize_comments = true
-wrap_comments = true
 
 reorder_impl_items = true
 condense_wildcard_suffixes = true

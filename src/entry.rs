@@ -3,7 +3,7 @@ use alloc::{
     sync::Arc,
 };
 
-use axfs_ng::FS_CONTEXT;
+use axfs::FS_CONTEXT;
 use axhal::uspace::UserContext;
 use axsync::Mutex;
 use axtask::{AxTaskExt, spawn_task};
@@ -66,5 +66,5 @@ pub fn run_initproc(args: &[String], envs: &[String]) -> i32 {
     add_task_to_table(&task);
 
     // TODO: wait for all processes to finish
-    task.join().unwrap()
+    task.join()
 }

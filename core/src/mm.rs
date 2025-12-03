@@ -10,7 +10,7 @@ use core::{
 };
 
 use axerrno::{AxError, AxResult};
-use axfs_ng::{CachedFile, FS_CONTEXT, FileBackend};
+use axfs::{CachedFile, FS_CONTEXT, FileBackend};
 use axfs_ng_vfs::Location;
 use axhal::{
     asm::user_copy,

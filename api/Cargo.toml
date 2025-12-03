@@ -9,7 +9,7 @@ repository.workspace = true
 
 [features]
 input = ["dep:axinput"]
-memtrack = ["axfeat/backtrace", "axalloc/tracking", "dep:gimli"]
+memtrack = ["axfeat/dwarf", "axalloc/tracking", "dep:gimli"]
 vsock = ["axnet/vsock"]
 dev-log = []
 
@@ -22,7 +22,7 @@ axdriver.workspace = true
 axerrno.workspace = true
 axfeat.workspace = true
 axfs-ng-vfs.workspace = true
-axfs-ng.workspace = true
+axfs.workspace = true
 axhal.workspace = true
 axinput = { workspace = true, optional = true }
 axio.workspace = true

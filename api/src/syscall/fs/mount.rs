@@ -1,7 +1,7 @@
 use core::ffi::{c_char, c_void};
 
 use axerrno::{AxError, AxResult};
-use axfs_ng::FS_CONTEXT;
+use axfs::FS_CONTEXT;
 
 use crate::{mm::vm_load_string, vfs::MemoryFs};
 

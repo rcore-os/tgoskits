@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use axerrno::{AxError, AxResult};
-use axfs_ng::FileBackend;
+use axfs::FileBackend;
 use axhal::paging::{MappingFlags, PageSize};
 use axmm::backend::{Backend, SharedPages};
 use axtask::current;

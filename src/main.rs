@@ -10,7 +10,7 @@ extern crate axruntime;
 
 use alloc::{borrow::ToOwned, vec::Vec};
 
-use axfs_ng::FS_CONTEXT;
+use axfs::FS_CONTEXT;
 
 mod entry;
 

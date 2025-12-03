@@ -8,7 +8,7 @@ use core::{
 };
 
 use axerrno::{AxError, AxResult};
-use axfs_ng::{FS_CONTEXT, FsContext};
+use axfs::{FS_CONTEXT, FsContext};
 use axfs_ng_vfs::{Location, Metadata, NodeFlags};
 use axpoll::{IoEvents, Pollable};
 use axsync::Mutex;
@@ -99,19 +99,19 @@ pub fn metadata_to_kstat(metadata: &Metadata) -> Kstat {
 
 /// File wrapper for `axfs::fops::File`.
 pub struct File {
-    inner: axfs_ng::File,
+    inner: axfs::File,
     nonblock: AtomicBool,
 }
 
 impl File {
-    pub fn new(inner: axfs_ng::File) -> Self {
+    pub fn new(inner: axfs::File) -> Self {
         Self {
             inner,
             nonblock: AtomicBool::new(false),
         }
     }
 
-    pub fn inner(&self) -> &axfs_ng::File {
+    pub fn inner(&self) -> &axfs::File {
         &self.inner
     }
 

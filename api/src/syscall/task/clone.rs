@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use axerrno::{AxError, AxResult};
-use axfs_ng::FS_CONTEXT;
+use axfs::FS_CONTEXT;
 use axhal::uspace::UserContext;
 use axtask::{AxTaskExt, current, spawn_task};
 use bitflags::bitflags;

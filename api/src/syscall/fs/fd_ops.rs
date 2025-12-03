@@ -6,7 +6,7 @@ use core::{
 };
 
 use axerrno::{AxError, AxResult};
-use axfs_ng::{FS_CONTEXT, FileBackend, OpenOptions, OpenResult};
+use axfs::{FS_CONTEXT, FileBackend, OpenOptions, OpenResult};
 use axfs_ng_vfs::{DirEntry, FileNode, Location, NodePermission, NodeType, Reference};
 use axtask::current;
 use bitflags::bitflags;
@@ -77,7 +77,7 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
                         Reference::new(Some(pts.entry().clone()), pty_number.to_string()),
                     );
                     let loc = Location::new(file.location().mountpoint().clone(), entry);
-                    file = axfs_ng::File::new(FileBackend::Direct(loc), file.flags());
+                    file = axfs::File::new(FileBackend::Direct(loc), file.flags());
                 } else if inner.is::<tty::CurrentTty>() {
                     let term = current()
                         .as_thread()
@@ -95,7 +95,7 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
                         panic!("unknown terminal type")
                     };
                     let loc = FS_CONTEXT.lock().resolve(&path)?;
-                    file = axfs_ng::File::new(FileBackend::Direct(loc), file.flags());
+                    file = axfs::File::new(FileBackend::Direct(loc), file.flags());
                 }
             }
             Arc::new(File::new(file))

@@ -80,7 +80,7 @@ struct FixScreenInfo {
 async fn refresh_task() {
     let delay = core::time::Duration::from_secs_f32(1. / 60.);
     loop {
-        if let Err(err) = axdisplay::main_display().flush() {
+        if let Err(err) = axdisplay::framebuffer_flush() {
             warn!("Failed to refresh framebuffer: {err:?}");
         }
         axtask::future::sleep(delay).await;
@@ -97,7 +97,7 @@ impl FrameBuffer {
             || axtask::future::block_on(refresh_task()),
             "fb-refresh".into(),
         );
-        let info = axdisplay::main_display().info();
+        let info = axdisplay::framebuffer_info();
         Self {
             base: VirtAddr::from(info.fb_base_vaddr),
             size: info.fb_size,
@@ -133,7 +133,7 @@ impl DeviceOps for FrameBuffer {
         match cmd {
             // FBIOGET_VSCREENINFO
             0x4600 => {
-                let info = axdisplay::main_display().info();
+                let info = axdisplay::framebuffer_info();
                 let line_length = (info.fb_size / info.height as usize) as u32;
                 let bpp = line_length / info.width;
                 (arg as *mut VarScreenInfo).vm_write(VarScreenInfo {
@@ -189,7 +189,7 @@ impl DeviceOps for FrameBuffer {
             0x4601 => Ok(0),
             // FBIOGET_FSCREENINFO
             0x4602 => {
-                let info = axdisplay::main_display().info();
+                let info = axdisplay::framebuffer_info();
                 (arg as *mut FixScreenInfo).vm_write(FixScreenInfo {
                     id: *b"Virtio Framebuf\0",
                     smem_start: info.fb_base_vaddr as u64,

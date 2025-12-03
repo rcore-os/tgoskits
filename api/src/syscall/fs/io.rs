@@ -5,7 +5,7 @@ use core::{
 };
 
 use axerrno::{AxError, AxResult};
-use axfs_ng::{FS_CONTEXT, FileFlags, OpenOptions};
+use axfs::{FS_CONTEXT, FileFlags, OpenOptions};
 use axio::{Seek, SeekFrom};
 use axpoll::{IoEvents, Pollable};
 use axtask::current;

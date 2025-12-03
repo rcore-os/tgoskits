@@ -2,7 +2,7 @@ use alloc::{string::ToString, sync::Arc, vec::Vec};
 use core::ffi::c_char;
 
 use axerrno::{AxError, AxResult};
-use axfs_ng::FS_CONTEXT;
+use axfs::FS_CONTEXT;
 use axhal::uspace::UserContext;
 use axtask::current;
 use starry_core::{mm::load_user_app, task::AsThread};

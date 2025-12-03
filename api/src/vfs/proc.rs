@@ -368,7 +368,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         "meminfo2",
         SimpleFile::new_regular(fs.clone(), || {
             let allocator = axalloc::global_allocator();
-            Ok(format!("{:?}\n", allocator.usage_stats()))
+            Ok(format!("{:?}\n", allocator.usages()))
         }),
     );
     root.add(

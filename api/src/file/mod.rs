@@ -10,7 +10,7 @@ use alloc::{borrow::Cow, sync::Arc};
 use core::{any::Any, ffi::c_int, time::Duration};
 
 use axerrno::{AxError, AxResult};
-use axfs_ng::{FS_CONTEXT, OpenOptions};
+use axfs::{FS_CONTEXT, OpenOptions};
 use axfs_ng_vfs::DeviceId;
 use axio::{Buf, BufMut, Read, Write};
 use axpoll::Pollable;
