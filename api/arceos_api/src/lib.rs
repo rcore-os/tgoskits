@@ -371,7 +371,7 @@ pub mod display {
         /// Gets the framebuffer information.
         pub fn ax_framebuffer_info() -> AxDisplayInfo;
         /// Flushes the framebuffer, i.e. show on the screen.
-        pub fn ax_framebuffer_flush();
+        pub fn ax_framebuffer_flush() -> bool;
     }
 }
 

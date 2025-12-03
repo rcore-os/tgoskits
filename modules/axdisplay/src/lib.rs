@@ -9,7 +9,6 @@ extern crate log;
 
 #[doc(no_inline)]
 pub use axdriver::prelude::DisplayInfo;
-
 use axdriver::{AxDeviceContainer, prelude::*};
 use axsync::Mutex;
 use lazyinit::LazyInit;
@@ -39,6 +38,6 @@ pub fn framebuffer_info() -> DisplayInfo {
 }
 
 /// Flushes the framebuffer, i.e. show on the screen.
-pub fn framebuffer_flush() {
-    MAIN_DISPLAY.lock().flush().unwrap();
+pub fn framebuffer_flush() -> bool {
+    MAIN_DISPLAY.lock().flush().is_ok()
 }
