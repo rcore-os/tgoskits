@@ -1,42 +1,44 @@
 ---
 name: Bug Report
-about: Report a bug
+about: Create a bug report to help us improve our operating system.
 title: "[bug] "
 labels: bug
-assignees: ""
 ---
 
-## Description
+<!-- Thank you for taking the time to report a bug. Your input is valuable to us.
+Please replace all the <angle brackets> below with your own information. -->
 
-A clear and concise description of the bug.
+### Describe the bug
 
-## Steps to Reproduce
+<!-- A clear and concise description of what the bug is. -->
 
-Steps to reproduce the behavior:
+### To Reproduce
 
-1. Execute '...'
-2. Call '...'
-3. See error
+<!-- Steps to reproduce the behavior. Example:
+1. Go to '...'
+2. Click on '....'
+3. Scroll down to '....'
+4. See error -->
 
-## Expected Behavior
+### Expected behavior
 
-A clear and concise description of what you expected to happen.
+<!-- A clear and concise description of what you expected to happen. -->
 
-## Actual Behavior
+### Screenshots
 
-A clear and concise description of what actually happened.
+<!-- If applicable, add screenshots to help explain your problem. -->
 
-## Environment
+### Environment
 
-- Architecture: [e.g., riscv64, loongarch64, x86_64, aarch64]
-- QEMU version (if applicable): [e.g., 8.0.0]
+<!-- Please fill out this information as completely as possible:
+- Hardware platform (e.g., Intel(R) Xeon(R) Gold 6342 CPU) -->
 
-## Logs/Error Messages
+### Additional context
 
-```
-Paste relevant logs or error messages here
-```
+<!-- Add any other context about the problem here. For example, did the issue start occurring recently or has it always been there? -->
 
-## Additional Context
+### Logs
 
-Add any other context about the problem here.
+<!-- If applicable, add log snippets or files to help explain and debug the problem. Please use code blocks (```) to format logs. -->
+
+<!-- Once again, thank you for helping us improve our project! -->

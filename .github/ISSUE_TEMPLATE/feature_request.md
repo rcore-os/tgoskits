@@ -1,31 +1,35 @@
 ---
 name: Feature Request
-about: Suggest a new feature
-title: "[feature] "
+about: Propose a new feature to add to this operating system
+title: "[feature request] "
 labels: enhancement
-assignees: ""
 ---
 
-## Feature Description
+<!-- Thank you for taking the time to suggest a feature for our operating system.
+Please help us understand your proposal by filling out the information below. -->
 
-A clear and concise description of the feature you want.
+### Feature Description
 
-## Motivation
+<!-- Clearly and concisely describe the feature you'd like to have added. What is it? How should it work? -->
 
-Please explain why this feature would be useful for the project. For example:
+### Problem or Need
 
-- What problem does it solve?
-- Who would benefit from it?
-- How does it relate to existing features?
+<!-- If this feature addresses a specific problem or need you have encountered, describe it. Why is the feature important or beneficial to you and potentially other users? -->
 
-## Proposed Solution
+### Suggested Implementation
 
-If you have ideas on how to implement this feature, please describe them here.
+<!-- If you have an idea of how this feature should be implemented, provide details here. This can include:
 
-## Alternatives
+- Technical details, design considerations, or architecture diagrams
+- Third-party libraries or services, if applicable
+- Pseudo-code, API method names, or sample code snippets -->
 
-Describe any alternative solutions or features you've considered.
+### Possible Alternatives
 
-## Additional Context
+<!-- If you've considered any alternative solutions or workarounds, please list those here. -->
 
-Add any other context, screenshots, or examples about the feature request here.
+### Additional Context and Screenshots
+
+<!-- Provide any additional context that could help us understand the feature request better. Screenshots, mockups, and diagrams are also welcomed. -->
+
+<!-- Again, we greatly appreciate your contribution to improving our operating system! -->

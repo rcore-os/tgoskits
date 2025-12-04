@@ -1,16 +1,32 @@
 # Contributing Guide
 
-Thank you for your interest in the StarryOS project! We welcome contributions of all kinds.
+Thanks for your help improving the project! We are so happy to have you! :tada:
 
-## Before You Start
+## Code of Conduct
 
-Before you start contributing, please make sure:
+We adhere to [Rust Code of Conduct](https://www.rust-lang.org/policies/code-of-conduct). Please maintain a respectful and professional communication style. We are committed to providing a friendly and inclusive environment for all contributors.
 
-1. You have read and understood the project's goals and architecture
-2. You are familiar with the Rust programming language
-3. You have set up your development environment (see [README.md](./README.md))
+## Getting Help
 
-## Development Workflow
+If you encounter problems while contributing:
+
+1. Check existing issues and discussions
+2. Ask questions in [Discussions](https://github.com/Starry-OS/StarryOS/discussions)
+3. Create an issue to seek help
+
+## Reporting Issues
+
+If you find a bug or have a feature suggestion, please:
+
+1. Check if there's already a related issue
+2. If not, create a new issue
+3. Use the issue template to provide detailed information
+
+## Submitting Pull Requests
+
+We welcome any code contributions. It's always welcome and recommended to open an issue to discuss on major changes before opening a PR.
+
+Here are the recommended workflow and guidelines for contributing code:
 
 ### 1. Fork and Clone the Repository
 
@@ -27,7 +43,9 @@ git submodule update --init --recursive
 # Create your feature branch from the latest main branch
 git checkout main
 git pull upstream main  # if you have upstream set up
-git checkout -b feature/your-feature-name
+git checkout -b feat/your-feature-name
+# or
+git checkout -b fix/your-bug-fix
 ```
 
 ### 3. Make Changes
@@ -54,7 +72,13 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt
 ```
 
-**Note**: Although code formatting is not currently checked in CI, please make sure to format your code. The project uses a custom `rustfmt.toml` configuration.
+The project uses a custom `rustfmt.toml` configuration.
+
+#### Comments
+
+- Add documentation comments for public APIs
+- Add explanatory comments for complex logic
+- Use English for all comments and documentation
 
 ### 5. Commit Changes
 
@@ -94,7 +118,7 @@ Closes #123
 
 #### Maintain Linear History
 
-- **Rebasing guidance**: When you need to sync your feature branch with the main branch's progress, use `rebase` instead of `merge` (see below). However, avoid repeatedly rebasing your feature branch during active development, as excessive rebasing can make history harder to follow. We will eventually use squash merge.
+- **Rebasing guidance**: When you need to sync your feature branch with the main branch's progress, use `rebase` instead of `merge` (see below). However, avoid repeatedly rebasing your PR branch during active development, as excessive rebasing can make history harder to follow. We will eventually use squash merge.
 
 ```bash
 git fetch upstream  # or origin
@@ -102,8 +126,6 @@ git rebase upstream/main
 ```
 
 ### 6. Create a Pull Request
-
-#### PR Size
 
 **Please keep PRs as small as possible** to make them easier to review and maintain. A PR should focus on one specific feature or fix.
 
@@ -115,56 +137,6 @@ When creating a PR, please:
 2. Link related Issues (if applicable)
 3. Describe the motivation and implementation approach
 4. Explain how to test these changes
-
-#### PR Checklist
-
-Before submitting a PR, please ensure:
-
-- [ ] Code passes `cargo clippy` checks
-- [ ] Code is formatted with `cargo fmt`
-- [ ] Commit messages follow Conventional Commits specification
-- [ ] PR is as small as possible for easier review
-- [ ] Updated relevant documentation (if applicable)
-- [ ] Added tests (if applicable)
-
-## Code Style
-
-### Rust Code Style
-
-- Follow the official Rust style guide
-- Format code using the project's `rustfmt.toml` configuration
-- Follow clippy suggestions
-
-### Naming Conventions
-
-- Use meaningful variable and function names
-- Follow Rust naming conventions (snake_case for functions and variables, PascalCase for types)
-
-### Comments
-
-- Add documentation comments for public APIs
-- Add explanatory comments for complex logic
-- You can use either Chinese or English comments, but please be consistent
-
-## Reporting Issues
-
-If you find a bug or have a feature suggestion, please:
-
-1. Check if there's already a related Issue
-2. If not, create a new Issue
-3. Use the Issue template to provide detailed information
-
-## Getting Help
-
-If you encounter problems while contributing:
-
-1. Check existing Issues and discussions
-2. Ask questions in [Discussions](https://github.com/Starry-OS/StarryOS/discussions)
-3. Create an Issue to seek help
-
-## Code of Conduct
-
-Please maintain a respectful and professional communication style. We are committed to providing a friendly and inclusive environment for all contributors.
 
 ## License
 
