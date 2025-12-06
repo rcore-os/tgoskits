@@ -5,7 +5,7 @@ use starry_signal::SignalSet;
 use starry_vm::VmPtr;
 
 use crate::{
-    file::{signalfd::Signalfd, add_file_like, FileLike},
+    file::{FileLike, add_file_like, signalfd::Signalfd},
     syscall::signal::check_sigset_size,
 };
 
@@ -25,12 +25,12 @@ bitflags! {
 }
 
 /// signalfd4 system call
-/// 
+///
 /// Creates a file descriptor that can be used to accept signals targeted at
 /// the caller. This provides an alternative to the use of a signal handler or
 /// sigwaitinfo(2), and has the advantage that the file descriptor may be
 /// monitored by select(2), poll(2), and epoll(7).
-/// 
+///
 /// # Arguments
 /// * `fd` - If `fd` is -1, then a new file descriptor is created. Otherwise,
 ///   `fd` must specify a valid existing signalfd file descriptor.
