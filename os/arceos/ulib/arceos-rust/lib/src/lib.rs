@@ -3,7 +3,6 @@
 
 extern crate alloc;
 
-mod syscall;
 mod interface;
 
 use ax_api::modules::ax_log::{debug, info};
