@@ -126,6 +126,7 @@ members = [
     "os/arceos/examples/std/helloworld",
     "os/arceos/examples/std/httpclient",
     "os/arceos/examples/std/httpserver",
+    "os/arceos/examples/std/thread_test",
     "os/arceos/modules/axalloc",
     "os/arceos/modules/axconfig",
     "os/arceos/modules/axdisplay",
