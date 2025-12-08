@@ -86,6 +86,12 @@ pub(crate) fn check_timer_events() {
     unsafe { TIMER_RUNTIME.current_ref_mut_raw() }.wake();
 }
 
+fn with_current<R>(f: impl FnOnce(&mut TimerRuntime) -> R) -> R {
+    // FIXME: optimize `percpu` crate! should disable irq and provide more apis
+    let _g = kernel_guard::NoPreemptIrqSave::new();
+    f(unsafe { TIMER_RUNTIME.current_ref_mut_raw() })
+}
+
 /// Future returned by `sleep` and `sleep_until`.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct TimerFuture(Option<TimerKey>);
@@ -97,7 +103,7 @@ impl Future for TimerFuture {
         let Some(key) = &self.0 else {
             return Poll::Ready(());
         };
-        let res = TIMER_RUNTIME.with_current(|r| r.poll(key, cx));
+        let res = with_current(|r| r.poll(key, cx));
         if res.is_ready() {
             self.get_mut().0 = None;
         }
@@ -114,7 +120,7 @@ impl FusedFuture for TimerFuture {
 impl Drop for TimerFuture {
     fn drop(&mut self) {
         if let Some(key) = &self.0 {
-            TIMER_RUNTIME.with_current(|r| r.cancel(key));
+            with_current(|r| r.cancel(key));
         }
     }
 }
@@ -126,7 +132,7 @@ pub fn sleep(duration: Duration) -> TimerFuture {
 
 /// Waits until `deadline` is reached.
 pub fn sleep_until(deadline: TimeValue) -> TimerFuture {
-    let key = TIMER_RUNTIME.with_current(|r| r.add(deadline));
+    let key = with_current(|r| r.add(deadline));
     TimerFuture(key)
 }
 
