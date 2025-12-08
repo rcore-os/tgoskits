@@ -1,9 +1,19 @@
-//! TODO: PLIC
+use core::{
+    num::NonZeroU32,
+    ptr::NonNull,
+    sync::atomic::{AtomicPtr, Ordering},
+};
 
-use axplat::irq::{HandlerTable, IpiTarget, IrqHandler, IrqIf};
-use core::sync::atomic::{AtomicPtr, Ordering};
+use axplat::{
+    irq::{HandlerTable, IpiTarget, IrqHandler, IrqIf},
+    percpu::this_cpu_id,
+};
+use kspin::SpinNoIrq;
 use riscv::register::sie;
+use riscv_plic::Plic;
 use sbi_rt::HartMask;
+
+use crate::config::{devices::PLIC_PADDR, plat::PHYS_VIRT_OFFSET};
 
 /// `Interrupt` bit in `scause`
 pub(super) const INTC_IRQ_BASE: usize = 1 << (usize::BITS - 1);
@@ -27,6 +37,25 @@ pub const MAX_IRQ_COUNT: usize = 1024;
 
 static IRQ_HANDLER_TABLE: HandlerTable<MAX_IRQ_COUNT> = HandlerTable::new();
 
+static PLIC: SpinNoIrq<Plic> = SpinNoIrq::new(unsafe {
+    Plic::new(NonNull::new((PHYS_VIRT_OFFSET + PLIC_PADDR) as *mut _).unwrap())
+});
+
+fn this_context() -> usize {
+    let hart_id = this_cpu_id();
+    hart_id * 2 + 1 // supervisor context
+}
+
+pub(super) fn init_percpu() {
+    // enable soft interrupts, timer interrupts, and external interrupts
+    unsafe {
+        sie::set_ssoft();
+        sie::set_stimer();
+        sie::set_sext();
+    }
+    PLIC.lock().init_by_context(this_context());
+}
+
 macro_rules! with_cause {
     ($cause: expr, @S_TIMER => $timer_op: expr, @S_SOFT => $ipi_op: expr, @S_EXT => $ext_op: expr, @EX_IRQ => $plic_op: expr $(,)?) => {
         match $cause {
@@ -39,20 +68,11 @@ macro_rules! with_cause {
                     $plic_op
                 } else {
                     // Other CPU-side interrupts
-                    panic!("Unknown IRQ cause: {}", other);
+                    panic!("Unknown IRQ cause: {other}");
                 }
             }
         }
     };
-}
-
-pub(super) fn init_percpu() {
-    // enable soft interrupts, timer interrupts, and external interrupts
-    unsafe {
-        sie::set_ssoft();
-        sie::set_stimer();
-        sie::set_sext();
-    }
 }
 
 struct IrqIfImpl;
@@ -60,9 +80,34 @@ struct IrqIfImpl;
 #[impl_plat_interface]
 impl IrqIf for IrqIfImpl {
     /// Enables or disables the given IRQ.
-    fn set_enable(irq: usize, _enabled: bool) {
-        // TODO: set enable in PLIC
-        warn!("set_enable is not implemented for IRQ {}", irq);
+    fn set_enable(irq: usize, enabled: bool) {
+        with_cause!(
+            irq,
+            @S_TIMER => {
+                unsafe {
+                    if enabled {
+                        sie::set_stimer();
+                    } else {
+                        sie::clear_stimer();
+                    }
+                }
+            },
+            @S_SOFT => {},
+            @S_EXT => {},
+            @EX_IRQ => {
+                let Some(irq) = NonZeroU32::new(irq as _) else {
+                    return;
+                };
+                trace!("PLIC set enable: {irq} {enabled}");
+                let mut plic = PLIC.lock();
+                if enabled {
+                    plic.set_priority(irq, 6);
+                    plic.enable(irq, this_context());
+                } else {
+                    plic.disable(irq, this_context());
+                }
+            }
+        );
     }
 
     /// Registers an IRQ handler for the given IRQ.
@@ -92,7 +137,7 @@ impl IrqIf for IrqIfImpl {
                     Self::set_enable(irq, true);
                     true
                 } else {
-                    warn!("register handler for External IRQ {} failed", irq);
+                    warn!("register handler for External IRQ {irq} failed");
                     false
                 }
             }
@@ -126,7 +171,7 @@ impl IrqIf for IrqIfImpl {
                 warn!("External IRQ should be got from PLIC, not scause");
                 None
             },
-            @EX_IRQ => IRQ_HANDLER_TABLE.unregister_handler(irq)
+            @EX_IRQ => IRQ_HANDLER_TABLE.unregister_handler(irq).inspect(|_| Self::set_enable(irq, false))
         )
     }
 
@@ -135,7 +180,7 @@ impl IrqIf for IrqIfImpl {
     /// It is called by the common interrupt handler. It should look up in the
     /// IRQ handler table and calls the corresponding handler. If necessary, it
     /// also acknowledges the interrupt controller after handling.
-    fn handle(irq: usize) {
+    fn handle(irq: usize) -> Option<usize> {
         with_cause!(
             irq,
             @S_TIMER => {
@@ -145,6 +190,7 @@ impl IrqIf for IrqIfImpl {
                     // SAFETY: The handler is guaranteed to be a valid function pointer.
                     unsafe { core::mem::transmute::<*mut (), IrqHandler>(handler)() };
                 }
+                Some(irq)
             },
             @S_SOFT => {
                 trace!("IRQ: IPI");
@@ -153,12 +199,18 @@ impl IrqIf for IrqIfImpl {
                     // SAFETY: The handler is guaranteed to be a valid function pointer.
                     unsafe { core::mem::transmute::<*mut (), IrqHandler>(handler)() };
                 }
+                Some(irq)
             },
             @S_EXT => {
-                // TODO: get IRQ number from PLIC
-                if !IRQ_HANDLER_TABLE.handle(0) {
-                    warn!("Unhandled IRQ {}", 0);
-                }
+                let mut plic = PLIC.lock();
+                let Some(irq) = plic.claim(this_context()) else {
+                    debug!("Spurious external IRQ");
+                    return None;
+                };
+                trace!("IRQ: external {irq}");
+                IRQ_HANDLER_TABLE.handle(irq.get() as usize);
+                plic.complete(this_context(), irq);
+                Some(irq.get() as usize)
             },
             @EX_IRQ => {
                 unreachable!("Device-side IRQs should be handled by triggering the External Interrupt.");
@@ -172,13 +224,13 @@ impl IrqIf for IrqIfImpl {
             IpiTarget::Current { cpu_id } => {
                 let res = sbi_rt::send_ipi(HartMask::from_mask_base(1 << cpu_id, 0));
                 if res.is_err() {
-                    warn!("send_ipi failed: {:?}", res);
+                    warn!("send_ipi failed: {res:?}");
                 }
             }
             IpiTarget::Other { cpu_id } => {
                 let res = sbi_rt::send_ipi(HartMask::from_mask_base(1 << cpu_id, 0));
                 if res.is_err() {
-                    warn!("send_ipi failed: {:?}", res);
+                    warn!("send_ipi failed: {res:?}");
                 }
             }
             IpiTarget::AllExceptCurrent { cpu_id, cpu_num } => {
@@ -186,7 +238,7 @@ impl IrqIf for IrqIfImpl {
                     if i != cpu_id {
                         let res = sbi_rt::send_ipi(HartMask::from_mask_base(1 << i, 0));
                         if res.is_err() {
-                            warn!("send_ipi_all_others failed: {:?}", res);
+                            warn!("send_ipi_all_others failed: {res:?}");
                         }
                     }
                 }

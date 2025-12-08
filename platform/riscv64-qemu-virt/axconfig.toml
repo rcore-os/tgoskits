@@ -82,3 +82,23 @@ ipi-irq = "0x8000_0000_0000_0001"   # uint
 # };
 # RTC (goldfish) Address
 rtc-paddr = 0x10_1000               # uint
+
+# plic@c000000 {
+#     phandle = <0x03>;
+#     riscv,ndev = <0x5f>;
+#     reg = <0x00 0xc000000 0x00 0x600000>;
+#     interrupts-extended = <0x02 0x0b 0x02 0x09>;
+#     interrupt-controller;
+#     compatible = "sifive,plic-1.0.0\0riscv,plic0";
+# };
+plic-paddr = 0x0c00_0000            # uint
+
+# serial@10000000 {
+#     interrupts = <0x0a>;
+#     interrupt-parent = <0x03>;
+#     clock-frequency = "\08@";
+#     reg = <0x00 0x10000000 0x00 0x100>;
+#     compatible = "ns16550a";
+# };
+uart-paddr = 0x1000_0000            # uint
+uart-irq = 0x0a                     # uint
