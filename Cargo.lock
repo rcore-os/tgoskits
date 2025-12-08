@@ -388,6 +388,7 @@ dependencies = [
  "ax-posix-api",
  "ax-runtime",
  "kspin",
+ "log",
  "rand 0.9.4",
 ]
 

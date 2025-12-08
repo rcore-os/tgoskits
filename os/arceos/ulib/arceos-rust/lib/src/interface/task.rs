@@ -1,8 +1,8 @@
 #[cfg(feature = "multitask")]
 use crate::interface::thread::take_task;
-use ax_api::modules::ax_log::info;
 use ax_api::sys::ax_terminate;
 use ax_api::task::ax_exit;
+use log::info;
 
 #[unsafe(no_mangle)]
 pub fn sys_abort() -> ! {

@@ -1,6 +1,6 @@
-use ax_api::modules::ax_log::info;
 use ax_posix_api::ctypes::{addrinfo, sockaddr, socklen_t};
 use core::ffi::{c_char, c_void};
+use log::info;
 
 #[unsafe(no_mangle)]
 pub fn sys_freeaddrinfo(addr_info: *mut addrinfo) {
