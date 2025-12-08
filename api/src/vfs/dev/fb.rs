@@ -80,8 +80,8 @@ struct FixScreenInfo {
 async fn refresh_task() {
     let delay = core::time::Duration::from_secs_f32(1. / 60.);
     loop {
-        if let Err(err) = axdisplay::framebuffer_flush() {
-            warn!("Failed to refresh framebuffer: {err:?}");
+        if !axdisplay::framebuffer_flush() {
+            warn!("Failed to refresh framebuffer");
         }
         axtask::future::sleep(delay).await;
     }
