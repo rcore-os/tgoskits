@@ -85,6 +85,7 @@ ax-feat = { workspace = true }
 ax-posix-api = { workspace = true, features = ["use-hermit-types"] }
 ax-api = { workspace = true, features = ["alloc"] }
 ax-runtime = { workspace = true }
+ax-errno = { workspace = true }
 ax-io = { workspace = true }
 kspin = "0.1"
 rand = { version = "0.9.2", default-features = false, features = ["small_rng"] }
