@@ -1,5 +1,5 @@
-use ax_api::modules::ax_log::info;
 use ax_posix_api::ctypes::iovec;
+use log::info;
 
 #[unsafe(no_mangle)]
 pub fn sys_write(fd: i32, buf: *const u8, count: usize) -> isize {
