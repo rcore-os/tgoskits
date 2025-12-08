@@ -3,7 +3,6 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use ax_api::modules::ax_sync::Mutex;
 use ax_api::modules::ax_task::WaitQueue;
-use ax_api::task::ax_yield_now;
 use ax_posix_api::ctypes::timespec;
 use ax_errno::LinuxError;
 use core::time::Duration;
@@ -74,13 +73,7 @@ pub fn sys_futex_wake(address: *mut u32, count: i32) -> i32 {
             None => return 0,
         }
     };
-    for woken_count in 0..count {
-        if !wait_queue.notify_one(true) {
-            trace!("futex woke {} threads", woken_count);
-            return woken_count;
-        }
-    }
-    trace!("futex woke {} threads", count);
-    ax_yield_now();
-    count
+    let woken_count = wait_queue.notify_many(count as _, false);
+    trace!("futex woke {} threads", woken_count);
+    woken_count as _
 }
