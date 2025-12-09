@@ -8,7 +8,7 @@ use core::{
 
 use axerrno::AxError;
 use axhal::time::{TimeValue, wall_time};
-use futures_util::{FutureExt, future::FusedFuture, select_biased};
+use futures_util::{FutureExt, select_biased};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct TimerKey {
@@ -94,46 +94,33 @@ fn with_current<R>(f: impl FnOnce(&mut TimerRuntime) -> R) -> R {
 
 /// Future returned by `sleep` and `sleep_until`.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct TimerFuture(Option<TimerKey>);
+pub struct TimerFuture(TimerKey);
 
 impl Future for TimerFuture {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let Some(key) = &self.0 else {
-            return Poll::Ready(());
-        };
-        let res = with_current(|r| r.poll(key, cx));
-        if res.is_ready() {
-            self.get_mut().0 = None;
-        }
-        res
-    }
-}
-
-impl FusedFuture for TimerFuture {
-    fn is_terminated(&self) -> bool {
-        self.0.is_none()
+        with_current(|r| r.poll(&self.0, cx))
     }
 }
 
 impl Drop for TimerFuture {
     fn drop(&mut self) {
-        if let Some(key) = &self.0 {
-            with_current(|r| r.cancel(key));
-        }
+        with_current(|r| r.cancel(&self.0));
     }
 }
 
 /// Waits until `duration` has elapsed.
-pub fn sleep(duration: Duration) -> TimerFuture {
-    sleep_until(wall_time() + duration)
+pub async fn sleep(duration: Duration) {
+    sleep_until(wall_time() + duration).await
 }
 
 /// Waits until `deadline` is reached.
-pub fn sleep_until(deadline: TimeValue) -> TimerFuture {
+pub async fn sleep_until(deadline: TimeValue) {
     let key = with_current(|r| r.add(deadline));
-    TimerFuture(key)
+    if let Some(key) = key {
+        TimerFuture(key).await;
+    }
 }
 
 /// Error returned by [`timeout`] and [`timeout_at`].
@@ -174,7 +161,7 @@ pub async fn timeout_at<F: IntoFuture>(
     if let Some(deadline) = deadline {
         select_biased! {
             res = f.into_future().fuse() => Ok(res),
-            _ = sleep_until(deadline) => Err(Elapsed(())),
+            _ = sleep_until(deadline).fuse() => Err(Elapsed(())),
         }
     } else {
         Ok(f.await)
