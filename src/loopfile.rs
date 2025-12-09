@@ -12,6 +12,7 @@ use crate::BlockDevError;
 use crate::endian::DiskFormat;
 use crate::disknode::{Ext4ExtentHeader, Ext4Extent};
 use crate::extents_tree::ExtentTree;
+use crate::hashtree::lookup_directory_entry;
 
 ///暂未实现多级exend索引
 /// 根据 inode 的逻辑块号解析到物理块号，支持 12 个直接块和 1/2/3 级间接块
@@ -235,34 +236,44 @@ pub fn get_file_inode<B: BlockDevice>(
         }
 
         let target = name.as_bytes();
-
-        // 根据目录 inode.size 计算逻辑块数，逐块搜索目录项
-        let total_size = current_inode.size() as usize;
-        let block_bytes = BLOCK_SIZE as usize;
-        let total_blocks = if total_size == 0 {
-            0
-        } else {
-            (total_size + block_bytes - 1) / block_bytes
-        };
-        info!("Directory inode size: {} bytes, blocks used: {}", &total_size, &total_blocks);
-
         let mut found_inode_num: Option<u64> = None;
 
-        for lbn in 0..total_blocks {
-            let phys = match resolve_inode_block(fs, block_dev, &mut current_inode, lbn as u32)? {
-                Some(b) => b,
-                None => continue,
-            };
-            info!("Logical block {} mapped to physical block {}", &lbn, &phys);
+        // 尝试使用哈希树查找
+        match lookup_directory_entry(fs, block_dev, &current_inode, target) {
+            Ok(result) => {
+                found_inode_num = Some(result.entry.inode as u64);
+            }
+            Err(_) => {
+                // 哈希树查找失败，回退到线性查找
+                info!("Hash tree lookup failed, falling back to linear search");
+                
+                // 根据目录 inode.size 计算逻辑块数，逐块搜索目录项
+                let total_size = current_inode.size() as usize;
+                let block_bytes = BLOCK_SIZE as usize;
+                let total_blocks = if total_size == 0 {
+                    0
+                } else {
+                    (total_size + block_bytes - 1) / block_bytes
+                };
+                info!("Directory inode size: {} bytes, blocks used: {}", &total_size, &total_blocks);
 
-            let cached_block = fs
-                .datablock_cache
-                .get_or_load(block_dev, phys as u64)?;
-            let block_data = &cached_block.data[..block_bytes];
+                for lbn in 0..total_blocks {
+                    let phys = match resolve_inode_block(fs, block_dev, &mut current_inode, lbn as u32)? {
+                        Some(b) => b,
+                        None => continue,
+                    };
+                    info!("Logical block {} mapped to physical block {}", &lbn, &phys);
 
-            if let Some(entry) = classic_dir::find_entry(block_data, target) {
-                found_inode_num = Some(entry.inode as u64);
-                break;
+                    let cached_block = fs
+                        .datablock_cache
+                        .get_or_load(block_dev, phys as u64)?;
+                    let block_data = &cached_block.data[..block_bytes];
+
+                    if let Some(entry) = classic_dir::find_entry(block_data, target) {
+                        found_inode_num = Some(entry.inode as u64);
+                        break;
+                    }
+                }
             }
         }
 

@@ -19,7 +19,7 @@ mod debug;
 mod tool;
 mod bmalloc;
 mod extents_tree;
-mod hashtree;
+pub mod hashtree;
 pub mod mkfile;
 pub mod api;
 mod jbd2;
