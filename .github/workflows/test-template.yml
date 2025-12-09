@@ -11,13 +11,14 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: "recursive"
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ${{ inputs.arch }}-test
+          shared-key: test
+          cache-targets: false
 
       - uses: arceos-org/setup-musl@v1
         with:
@@ -26,7 +27,7 @@ jobs:
       - name: Build
         run: make ARCH=${{ inputs.arch }} build
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: starry-${{ inputs.arch }}
           path: |
@@ -37,13 +38,14 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: "recursive"
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ${{ inputs.arch }}-test
+          shared-key: test
+          cache-targets: false
 
       - name: Setup QEMU
         uses: arceos-org/setup-qemu@v1
@@ -52,7 +54,7 @@ jobs:
           arch_list: ${{ inputs.arch }}
 
       - name: Download build artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           name: starry-${{ inputs.arch }}
 

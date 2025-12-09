@@ -47,7 +47,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.arch }}
+          cache-targets: false
 
       - uses: arceos-org/setup-musl@v1
         with:
