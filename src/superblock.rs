@@ -1,5 +1,5 @@
 use crate::config::RESERVED_GDT_BLOCKS;
-
+use crate::jbd2::jbdstruct::JOURNAL_FILE_INODE;
 /// Ext4 超级块结构
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -178,7 +178,7 @@ impl Default for Ext4Superblock {
             s_prealloc_dir_blocks: 0,
             s_reserved_gdt_blocks: RESERVED_GDT_BLOCKS as u16,  // 使用配置的预留GDT块数
             s_journal_uuid: [0; 16],
-            s_journal_inum: 0,
+            s_journal_inum: JOURNAL_FILE_INODE as u32,
             s_journal_dev: 0,
             s_last_orphan: 0,
             s_hash_seed: [0; 4],

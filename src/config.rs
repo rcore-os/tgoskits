@@ -64,8 +64,7 @@ pub const RESERVED_GDT_BLOCKS: u32 = 0;
 // ============================================================================
 
 /// 默认的兼容特性标志
-pub const DEFAULT_FEATURE_COMPAT: u32 = 0;
-
+pub const DEFAULT_FEATURE_COMPAT: u32 = Ext4Superblock::EXT4_FEATURE_COMPAT_HAS_JOURNAL;
 /// 默认的不兼容特性标志
 pub const DEFAULT_FEATURE_INCOMPAT: u32 =
     Ext4Superblock::EXT4_FEATURE_INCOMPAT_FILETYPE

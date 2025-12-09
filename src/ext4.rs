@@ -5,10 +5,11 @@
 use crate::blockdev::{BlockDev, BlockDevice, BlockDevError, BlockDevResult};
 use crate::datablock_cache::DataBlockCache;
 use crate::endian::DiskFormat;
+use crate::jbd2::jbd2::{create_journal_entry, dump_journal_inode};
 use crate::entries::Ext4DirEntry2;
 use crate::inodetable_cache::InodeCache;
 use crate::loopfile::get_file_inode;
-use crate::mkd::{create_lost_found_directory, create_root_directory_entry, mkdir};
+use crate::mkd::{create_lost_found_directory, create_root_directory_entry, get_inode_with_num, mkdir};
 use crate::mkfile::mkfile;
 use crate::superblock::Ext4Superblock;
 use crate::blockgroup_description::Ext4GroupDesc;
@@ -196,6 +197,7 @@ impl Ext4FileSystem {
         let datablock_cache = DataBlockCache::new(DATABLOCK_CACHE_MAX, BLOCK_SIZE);
         debug!("Data block cache initialized");
 
+
         // 构造文件系统实例
         let mut fs = Self {
             superblock,
@@ -209,6 +211,12 @@ impl Ext4FileSystem {
             group_count,
             mounted: true,
         };
+
+        //创建journal 注意，目前不能进行挂载，由于测试，journal的数据块只有1 经过测试内核会拒绝挂载!
+        create_journal_entry(&mut fs,block_dev);
+        //dump_journal_inode(&mut fs, block_dev);
+
+
          //详细debug输出
         debugSuperAndDesc(&fs.superblock, &fs);
 
@@ -646,6 +654,12 @@ impl Ext4FileSystem {
             block_groups: self.group_count,
         }
     }
+
+    ///创建最基本的file
+    pub fn make_base_dir(&self){
+        //root journal lost+found
+        
+    }
 }
 
 /// 文件系统统计信息
@@ -883,6 +897,8 @@ pub fn mkfs<B: BlockDevice>(block_dev: &mut BlockDev<B>) -> BlockDevResult<()> {
         Err(BlockDevError::Corrupted)
     }
 }
+
+
 
 /// 构建超级块 不管字节序
 fn build_superblock(

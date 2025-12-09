@@ -10,7 +10,7 @@ mod console;
 mod lang_items;
 
 use core::arch::asm;
-use RVlwext4::{BlockDev, ext4::*, mkd::mkdir, mkfile::{mkfile, read_file}};
+use RVlwext4::{BlockDev, api::{open_file, read_from_file}, ext4::*, mkd::mkdir, mkfile::{mkfile, read_file}};
 use alloc::string::String;
 use log::*;
 
@@ -70,6 +70,9 @@ fn test_base_io(fs:&mut Ext4FileSystem){
         mkfile(&mut block_Dev, fs, "//test_dir/testfile2", Some(&test_str));
         let data=read_file(&mut block_Dev, fs, "//test_dir/testfile2").unwrap().unwrap();
         let string = String::from_utf8(data).unwrap();
+        let mut file = open_file(&mut block_Dev, fs, "//test_dir/testfile2", false).unwrap();
+        let resu=read_from_file(&mut block_Dev, fs, &mut file, 10).unwrap();
+        error!("offset read:{:?}",String::from_utf8(resu));
         error!("read: {}",string);
     })
 }

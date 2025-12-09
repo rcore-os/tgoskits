@@ -46,9 +46,12 @@ pub fn split_paren_child_and_tranlatevalid(pat:&str)->String{
 
     result_s
 }
+
+pub fn allloc_and_map_long_area(){}
+
 /// 如果超级块启用 extents，则在 i_block 中写入 extent header + 一个叶子 extent；
 /// 否则使用传统的直接块指针（i_block[0] = data_block）。
-fn build_single_block_dir_mapping(fs: &Ext4FileSystem, data_block: u64) -> (u32, [u32; 15]) {
+pub fn build_single_block_dir_mapping(fs: &Ext4FileSystem, data_block: u64) -> (u32, [u32; 15]) {
     // 基础标志始终包含目录同步
     let mut flags = Ext4Inode::EXT4_DIRSYNC_FL;
     let mut iblock: [u32; 15] = [0; 15];
@@ -598,6 +601,8 @@ pub fn mkdir<B: BlockDevice>(device: &mut BlockDev<B>, fs: &mut Ext4FileSystem, 
     // 返回新目录的 inode
     get_file_inode(fs, device, path).ok().flatten()
 }
+
+
 
 /// 根目录创建实现
 pub fn create_root_directory_entry<B: BlockDevice>(
