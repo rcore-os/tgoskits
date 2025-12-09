@@ -228,51 +228,18 @@ dependencies = [
 [[package]]
 name = "arm_vcpu"
 version = "0.1.1"
-dependencies = [
- "aarch64-cpu",
- "axaddrspace 0.1.3",
- "axdevice_base",
- "axerrno 0.1.2",
- "axvcpu 0.1.2 (git+https://github.com/arceos-hypervisor/axvcpu.git?branch=next)",
- "axvisor_api",
- "log",
- "numeric-enum-macro",
- "percpu",
- "spin 0.10.0",
-]
-
-[[package]]
-name = "arm_vcpu"
-version = "0.1.1"
 source = "git+https://github.com/arceos-hypervisor/arm_vcpu?branch=next#b24cc3635c049302ab8d58d3b54007bb5a053a96"
 dependencies = [
  "aarch64-cpu",
- "axaddrspace 0.1.3",
+ "axaddrspace",
  "axdevice_base",
  "axerrno 0.1.2",
- "axvcpu 0.1.2 (git+https://github.com/arceos-hypervisor/axvcpu.git?branch=next)",
+ "axvcpu",
  "axvisor_api",
  "log",
  "numeric-enum-macro",
  "percpu",
  "spin 0.10.0",
-]
-
-[[package]]
-name = "arm_vgic"
-version = "0.1.0"
-dependencies = [
- "aarch64-cpu",
- "aarch64_sysreg",
- "axaddrspace 0.1.3",
- "axdevice_base",
- "axerrno 0.1.2",
- "axvisor_api",
- "bitmaps",
- "log",
- "memory_addr",
- "spin 0.9.8",
- "tock-registers 0.10.1",
 ]
 
 [[package]]
@@ -283,7 +250,7 @@ checksum = "80f576b11b486e2ca12373c8205c4a06473a85cf7a664845e5961c47948910c3"
 dependencies = [
  "aarch64-cpu",
  "aarch64_sysreg",
- "axaddrspace 0.1.3",
+ "axaddrspace",
  "axdevice_base",
  "axerrno 0.1.2",
  "axvisor_api",
@@ -301,7 +268,7 @@ source = "git+https://github.com/arceos-hypervisor/arm_vgic.git#81338d6dd8a9dab0
 dependencies = [
  "aarch64-cpu",
  "aarch64_sysreg",
- "axaddrspace 0.1.3",
+ "axaddrspace",
  "axdevice_base",
  "axerrno 0.1.2",
  "axvisor_api",
@@ -325,12 +292,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b0f477b951e452a0b6b4a10b53ccd569042d1d01729b519e02074a9c0958a063"
 
 [[package]]
-name = "assert_matches"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b34d609dfbaf33d6889b2b7106d3ca345eacad44200913df5ba02bfd31d2ba9"
-
-[[package]]
 name = "async-trait"
 version = "0.1.89"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -352,28 +313,6 @@ name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
-
-[[package]]
-name = "axaddrspace"
-version = "0.1.1"
-dependencies = [
- "assert_matches",
- "axerrno 0.1.2",
- "axin",
- "bit_field",
- "bitflags 2.10.0",
- "cfg-if",
- "lazy_static",
- "lazyinit",
- "log",
- "memory_addr",
- "memory_set",
- "numeric-enum-macro",
- "page_table_entry",
- "page_table_multiarch",
- "spin 0.10.0",
- "x86",
-]
 
 [[package]]
 name = "axaddrspace"
@@ -475,26 +414,10 @@ dependencies = [
 [[package]]
 name = "axdevice"
 version = "0.1.0"
-dependencies = [
- "arm_vgic 0.1.0 (git+https://github.com/arceos-hypervisor/arm_vgic.git)",
- "axaddrspace 0.1.3",
- "axdevice_base",
- "axerrno 0.1.2",
- "axvmconfig",
- "cfg-if",
- "log",
- "memory_addr",
- "range-alloc",
- "spin 0.9.8",
-]
-
-[[package]]
-name = "axdevice"
-version = "0.1.0"
 source = "git+https://github.com/arceos-hypervisor/axdevice.git#60558bb25214c2030651726beddae088d8a1cd8e"
 dependencies = [
  "arm_vgic 0.1.0 (git+https://github.com/arceos-hypervisor/arm_vgic.git)",
- "axaddrspace 0.1.3",
+ "axaddrspace",
  "axdevice_base",
  "axerrno 0.1.2",
  "axvmconfig",
@@ -511,7 +434,7 @@ version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67c43baf33ed4790ffd3365c4ca027a1e3d1c2b6058f4605b67bca04cadf48d5"
 dependencies = [
- "axaddrspace 0.1.3",
+ "axaddrspace",
  "axerrno 0.1.2",
  "axvmconfig",
  "cfg-if",
@@ -729,30 +652,10 @@ dependencies = [
 [[package]]
 name = "axhvc"
 version = "0.1.0"
-dependencies = [
- "axerrno 0.1.2",
- "numeric-enum-macro",
-]
-
-[[package]]
-name = "axhvc"
-version = "0.1.0"
 source = "git+https://github.com/arceos-hypervisor/axhvc.git#8b07150208803180bffc6187e6373b7ead013054"
 dependencies = [
  "axerrno 0.2.2",
  "numeric-enum-macro",
-]
-
-[[package]]
-name = "axin"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6db62cb7067e33d432df247b32ee450ae267cb16319c8c5de247381c3652a639"
-dependencies = [
- "proc-macro-crate",
- "proc-macro2",
- "quote",
- "syn 2.0.111",
 ]
 
 [[package]]
@@ -1147,20 +1050,9 @@ dependencies = [
 [[package]]
 name = "axvcpu"
 version = "0.1.2"
-dependencies = [
- "axaddrspace 0.1.3",
- "axerrno 0.1.2",
- "axvisor_api",
- "memory_addr",
- "percpu",
-]
-
-[[package]]
-name = "axvcpu"
-version = "0.1.2"
 source = "git+https://github.com/arceos-hypervisor/axvcpu.git?branch=next#343ec3ccf99a86fb9c67a7b0372e9b7a745f0640"
 dependencies = [
- "axaddrspace 0.1.3",
+ "axaddrspace",
  "axerrno 0.1.2",
  "axvisor_api",
  "memory_addr",
@@ -1174,17 +1066,17 @@ dependencies = [
  "aarch64-cpu-ext",
  "anyhow",
  "arm-gic-driver",
- "axaddrspace 0.1.3",
+ "axaddrspace",
  "axconfig",
- "axdevice 0.1.0 (git+https://github.com/arceos-hypervisor/axdevice.git)",
+ "axdevice",
  "axdevice_base",
  "axerrno 0.2.2",
- "axhvc 0.1.0 (git+https://github.com/arceos-hypervisor/axhvc.git)",
+ "axhvc",
  "axruntime",
  "axstd",
- "axvcpu 0.1.2 (git+https://github.com/arceos-hypervisor/axvcpu.git?branch=next)",
+ "axvcpu",
  "axvisor_api",
- "axvm 0.1.0 (git+https://github.com/arceos-hypervisor/axvm.git?branch=next)",
+ "axvm",
  "bitflags 2.10.0",
  "byte-unit",
  "cfg-if",
@@ -1219,7 +1111,7 @@ version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aa7233b2a1338dc06a80e2779b572b4df02007ea128ef7b235b66fc3eeac0ca6"
 dependencies = [
- "axaddrspace 0.1.3",
+ "axaddrspace",
  "axvisor_api_proc",
  "crate_interface",
  "memory_addr",
@@ -1240,39 +1132,15 @@ dependencies = [
 [[package]]
 name = "axvm"
 version = "0.1.0"
-dependencies = [
- "arm_vcpu 0.1.1 (git+https://github.com/arceos-hypervisor/arm_vcpu?branch=next)",
- "arm_vgic 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "axaddrspace 0.1.3",
- "axdevice 0.1.0 (git+https://github.com/arceos-hypervisor/axdevice.git)",
- "axdevice_base",
- "axerrno 0.1.2",
- "axvcpu 0.1.2 (git+https://github.com/arceos-hypervisor/axvcpu.git?branch=next)",
- "axvmconfig",
- "cfg-if",
- "cpumask",
- "log",
- "memory_addr",
- "page_table_entry",
- "page_table_multiarch",
- "percpu",
- "riscv_vcpu",
- "spin 0.9.8",
- "x86_vcpu 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "axvm"
-version = "0.1.0"
 source = "git+https://github.com/arceos-hypervisor/axvm.git?branch=next#e161233e58c0ef0c6ec115ffa5b0d17dadd298be"
 dependencies = [
- "arm_vcpu 0.1.1 (git+https://github.com/arceos-hypervisor/arm_vcpu?branch=next)",
+ "arm_vcpu",
  "arm_vgic 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "axaddrspace 0.1.3",
- "axdevice 0.1.0 (git+https://github.com/arceos-hypervisor/axdevice.git)",
+ "axaddrspace",
+ "axdevice",
  "axdevice_base",
  "axerrno 0.2.2",
- "axvcpu 0.1.2 (git+https://github.com/arceos-hypervisor/axvcpu.git?branch=next)",
+ "axvcpu",
  "axvmconfig",
  "cfg-if",
  "cpumask",
@@ -1283,7 +1151,7 @@ dependencies = [
  "percpu",
  "riscv_vcpu",
  "spin 0.9.8",
- "x86_vcpu 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "x86_vcpu",
 ]
 
 [[package]]
@@ -4679,9 +4547,9 @@ version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13f38f28fe6c02bb3ced43087c9667b23d18adf729becdc5adf1253f7df83904"
 dependencies = [
- "axaddrspace 0.1.3",
+ "axaddrspace",
  "axerrno 0.1.2",
- "axvcpu 0.1.2 (git+https://github.com/arceos-hypervisor/axvcpu.git?branch=next)",
+ "axvcpu",
  "axvisor_api",
  "bit_field",
  "bitflags 2.10.0",
@@ -6696,38 +6564,13 @@ dependencies = [
 [[package]]
 name = "x86_vcpu"
 version = "0.1.0"
-dependencies = [
- "axaddrspace 0.1.3",
- "axdevice_base",
- "axerrno 0.1.2",
- "axvcpu 0.1.2 (git+https://github.com/arceos-hypervisor/axvcpu.git?branch=next)",
- "axvisor_api",
- "bit_field",
- "bitflags 2.10.0",
- "cfg-if",
- "crate_interface",
- "log",
- "memory_addr",
- "numeric-enum-macro",
- "page_table_entry",
- "paste",
- "raw-cpuid 11.6.0",
- "spin 0.9.8",
- "x86",
- "x86_64",
- "x86_vlapic",
-]
-
-[[package]]
-name = "x86_vcpu"
-version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "873e097d52e94c31be3f0175a9f8d6f2edbc77d7e2f8e6995427df9c08b30a2b"
 dependencies = [
- "axaddrspace 0.1.3",
+ "axaddrspace",
  "axdevice_base",
  "axerrno 0.1.2",
- "axvcpu 0.1.2 (git+https://github.com/arceos-hypervisor/axvcpu.git?branch=next)",
+ "axvcpu",
  "axvisor_api",
  "bit_field",
  "bitflags 2.10.0",
@@ -6751,7 +6594,7 @@ version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2556c62649a277ccf1c3c34c740be87bbde5f8dab0b20fcdcf4c2cd7bb6e7302"
 dependencies = [
- "axaddrspace 0.1.3",
+ "axaddrspace",
  "axdevice_base",
  "axerrno 0.1.2",
  "axvisor_api",

@@ -17,5 +17,5 @@ args = [
 ]
 fail_regex = []
 success_regex = []
-to_bin = true
+to_bin = false
 uefi = false
