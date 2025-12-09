@@ -1,6 +1,7 @@
 use core::mem::transmute;
 
 use alloc::vec::Vec;
+use log::error;
 
 use crate::{BlockDevice, endian::*};
 
@@ -8,7 +9,7 @@ use crate::{BlockDevice, endian::*};
 /// Inode是文件系统中存储文件元数据的核心数据结构
 /// 每个文件和目录都有一个对应的inode
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy,Default)]
 pub struct Ext4Inode {
     // 0x00 - 基本文件属性
     pub i_mode: u16,                   // 文件模式（类型和权限）
@@ -57,6 +58,21 @@ pub struct Ext4Inode {
 
 impl Ext4Inode {
     
+    /// 写入初始extend header便捷函数
+    pub fn write_extend_header(&mut self){
+        let per_extent_header_offset = Ext4ExtentHeader::disk_size();
+        let current_offset = 0;
+        let mut extent_buffer :[u8;60]= [0;60];
+        let header = Ext4ExtentHeader::new();
+        //写入header
+        header.to_disk_bytes(&mut extent_buffer[current_offset..current_offset+per_extent_header_offset]);
+        //转换写回
+        
+        let new_slice:[u32;15] = unsafe {
+            transmute(extent_buffer)
+        };
+        self.i_block.copy_from_slice(&new_slice);
+    }
 
     /// 标准inode大小（128字节）
     pub const GOOD_OLD_INODE_SIZE: u16 = 128;
@@ -107,6 +123,19 @@ impl Ext4Inode {
     /// 检查是否使用extent树
     pub fn is_extent(&self) -> bool {
         self.i_flags & Self::EXT4_EXTENTS_FL != 0
+    }
+    ///检查是否有extend树的结构
+    pub fn have_extend_header(&self)->bool{
+        unsafe {
+           let header_ptr =  self.i_block.as_ptr() as *const _ as *const Ext4ExtentHeader;
+           if (*header_ptr).eh_magic==Ext4ExtentHeader::EXT4_EXT_MAGIC {
+               return true;
+           }else {
+            use log::info;
+               info!("No tree header!!!");
+               return false;
+           }
+        }
     }
 }
 
@@ -222,25 +251,7 @@ impl Default for Ext4Extent {
     }
 }
 impl Ext4Extent {
-    /// 写入iblock便捷函数
-    pub fn write_extend_to_iblock(buffer:&mut [u32;15],extent:Vec<&Self>,header:&Ext4ExtentHeader ){
-        let per_extent_header_offset = Ext4ExtentHeader::disk_size();
-        let mut current_offset = 0;
-        let mut extent_buffer :[u8;60]= [0;60];
-        //写入header
-        header.to_disk_bytes(&mut extent_buffer[current_offset..current_offset+per_extent_header_offset]);
-        current_offset+=12;
-        //写入extent
-        for et in extent {
-            et.to_disk_bytes(&mut extent_buffer[current_offset..current_offset+12]);
-            current_offset+=12;
-        }
-        //转换写回
-        let new_slice:[u32;15] = unsafe {
-            transmute(extent_buffer)
-        };
-        buffer.copy_from_slice(&new_slice);
-    }
+ 
 
 
     /// extent最大长度（已初始化）

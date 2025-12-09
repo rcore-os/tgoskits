@@ -5,9 +5,10 @@ use core::{error::Error};
 use alloc::string::String;
 use alloc::vec::Vec;
 use crate::BLOCK_SIZE;
-use crate::blockdev::{BlockDev, BlockDevice, BlockDevResult, BlockDevError};
+use crate::blockdev::{Jbd2Dev, BlockDevice, BlockDevResult, BlockDevError};
 use crate::ext4::find_file;
 use crate::loopfile::{resolve_inode_block, get_file_inode};
+use crate::mkfile::build_file_block_mapping;
 use crate::{
     disknode::Ext4Inode,
     entries::Ext4DirEntry2,
@@ -17,7 +18,7 @@ use crate::alloc::string::ToString;
 use log::{debug, error};
 use crate::endian::DiskFormat;
 use crate::disknode::{Ext4Extent, Ext4ExtentHeader};
-use crate::extents_tree::ExtentTree;
+use crate::extents_tree::{ExtentTree, ExtentNode};
 #[derive(Debug)]
 pub enum FileError {
     DirExist,
@@ -47,40 +48,11 @@ pub fn split_paren_child_and_tranlatevalid(pat:&str)->String{
     result_s
 }
 
-pub fn allloc_and_map_long_area(){}
-
-/// 如果超级块启用 extents，则在 i_block 中写入 extent header + 一个叶子 extent；
-/// 否则使用传统的直接块指针（i_block[0] = data_block）。
-pub fn build_single_block_dir_mapping(fs: &Ext4FileSystem, data_block: u64) -> (u32, [u32; 15]) {
-    // 基础标志始终包含目录同步
-    let mut flags = Ext4Inode::EXT4_DIRSYNC_FL;
-    let mut iblock: [u32; 15] = [0; 15];
-
-    if fs.superblock.has_extents() {
-        // 启用 extents：设置 extent 标志，并在 i_block 中写入一个 extent header + 1 个 extent
-        flags |= Ext4Inode::EXT4_EXTENTS_FL;
-
-        let mut header = Ext4ExtentHeader::new();
-        // 这里只放 1 个叶子 extent
-        header.eh_entries = 1;
-
-        let extent = Ext4Extent::new(0, data_block, 1);
-        let mut exts: Vec<&Ext4Extent> = Vec::new();
-        exts.push(&extent);
-
-        Ext4Extent::write_extend_to_iblock(&mut iblock, exts, &header);
-    } else {
-        // 传统模式：直接块指针
-        iblock[0] = data_block as u32;
-    }
-
-    (flags, iblock)
-}
 
 /// 路径解析，返回 (inode_num, inode)
 pub fn get_inode_with_num<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
-    device: &mut BlockDev<B>,
+    device: &mut Jbd2Dev<B>,
     path: &str,
 ) -> BlockDevResult<Option<(u32, Ext4Inode)>> {
     // 根目录特殊处理
@@ -174,7 +146,7 @@ pub fn get_inode_with_num<B: BlockDevice>(
 /// 若所有现有块都无法容纳，则自动为目录分配一个新数据块并扩展 inode 映射和大小。
 pub fn insert_dir_entry<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
-    device: &mut BlockDev<B>,
+    device: &mut Jbd2Dev<B>,
     parent_ino_num: u32,
     parent_inode: &mut Ext4Inode,
     child_ino: u32,
@@ -308,10 +280,7 @@ pub fn insert_dir_entry<B: BlockDevice>(
     }
 
     // 所有现有逻辑块都无法容纳新目录项：为目录分配一个新数据块，并扩展 inode 映射
-    let block_group = fs
-        .find_group_with_free_blocks()
-        .ok_or(BlockDevError::NoSpace)?;
-    let new_block = fs.alloc_block(device, block_group)?;
+    let new_block = fs.alloc_block(device)?;
 
     // 更新 parent_inode 的块映射（extent 或直接块）和大小统计
     let block_bytes = BLOCK_SIZE as usize;
@@ -325,7 +294,7 @@ pub fn insert_dir_entry<B: BlockDevice>(
     if fs.superblock.has_extents() && parent_inode.is_extent() {
         // extent 目录：通过 ExtentTree 追加一个长度为 1 的 extent
         let new_ext = Ext4Extent::new(new_lbn, new_block, 1);
-        let mut tree = ExtentTree::new(parent_ino_num as u64, parent_inode);
+        let mut tree = ExtentTree::new( parent_inode);
         tree.insert_extent(fs, new_ext, device)?;
     } else {
         // 传统直接块模式：仅支持追加到前 12 个直接块
@@ -385,8 +354,9 @@ pub fn insert_dir_entry<B: BlockDevice>(
     Ok(())
 }
 
+/// 默认开启hashtree查找
 /// 通用文件创建：支持多级路径、递归创建父目录
-pub fn mkdir<B: BlockDevice>(device: &mut BlockDev<B>, fs: &mut Ext4FileSystem, path: &str) -> Option<Ext4Inode> {
+pub fn mkdir<B: BlockDevice>(device: &mut Jbd2Dev<B>, fs: &mut Ext4FileSystem, path: &str) -> Option<Ext4Inode> {
     // 先对传入路径做规范化（去掉重复的 '/' 等）
     let norm_path = split_paren_child_and_tranlatevalid(path);
 
@@ -470,22 +440,14 @@ pub fn mkdir<B: BlockDevice>(device: &mut BlockDev<B>, fs: &mut Ext4FileSystem, 
         return fs.find_file(device, "/lost+found");
     }
 
-    // 为新目录分配 inode
-    let inode_group = match fs.find_group_with_free_inodes() {
-        Some(g) => g,
-        None => return None,
-    };
-    let new_dir_ino = match fs.alloc_inode(device, inode_group) {
+    // 为新目录分配 inode（内部自动选择块组）
+    let new_dir_ino = match fs.alloc_inode(device) {
         Ok(ino) => ino,
         Err(_) => return None,
     };
 
-    // 为新目录分配数据块
-    let block_group = match fs.find_group_with_free_blocks() {
-        Some(g) => g,
-        None => return None,
-    };
-    let data_block = match fs.alloc_block(device, block_group) {
+    // 为新目录分配数据块（内部自动选择块组）
+    let data_block = match fs.alloc_block(device) {
         Ok(b) => b,
         Err(_) => return None,
     };
@@ -541,26 +503,31 @@ pub fn mkdir<B: BlockDevice>(device: &mut BlockDev<B>, fs: &mut Ext4FileSystem, 
         BLOCK_SIZE,
     );
 
-    let (flags, iblock) = build_single_block_dir_mapping(fs, data_block);
+      //仅仅的视图，修改过后的
+    
+    let mut inode_pre= fs.get_inode_by_num(device, new_dir_ino).expect("Can't getinode");
+    build_file_block_mapping(fs,  &mut inode_pre, &[data_block],device);
+    if fs.modify_inode(
+            device,
+            new_dir_ino as u32,
+            |inode| {
+                inode.i_block = inode_pre.i_block;
+                inode.i_mode = Ext4Inode::S_IFDIR | 0o755;
+                inode.i_links_count = 2; // . 和 entires本身
+                inode.i_size_lo = BLOCK_SIZE as u32;
+                inode.i_size_high = 0;
+                inode.i_blocks_lo = (BLOCK_SIZE / 512) as u32;
+                inode.l_i_blocks_high = 0;
+                inode.i_flags |= inode_pre.i_flags | Ext4Inode::EXT4_EXTENTS_FL | Ext4Inode::EXT4_INDEX_FL
 
-    if fs.inodetable_cahce.modify(
-        device,
-        new_dir_ino as u64,
-        block_num,
-        offset,
-        |inode| {
-            inode.i_mode = Ext4Inode::S_IFDIR | 0o755;
-            inode.i_links_count = 2;//. 和 entires本身
-            inode.i_size_lo = BLOCK_SIZE as u32;
-            inode.i_size_high = 0;
-            inode.i_blocks_lo = (BLOCK_SIZE / 512) as u32;
-            inode.l_i_blocks_high = 0;
-            inode.i_flags |= flags;
-            inode.i_block = iblock;
-        },
-    ).is_err() {
+                //由于借用冲突，暂时先把mapping移步到外面
+            },
+        )
+        .is_err()
+    {
         return None;
     }
+  
     //更新父目录的i_links_count+1
     {
         let (p_group, _pidx) = fs.inode_allocator.global_to_group(parent_ino_num);
@@ -607,17 +574,14 @@ pub fn mkdir<B: BlockDevice>(device: &mut BlockDev<B>, fs: &mut Ext4FileSystem, 
 /// 根目录创建实现
 pub fn create_root_directory_entry<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
-    block_dev: &mut BlockDev<B>,
+    block_dev: &mut Jbd2Dev<B>,
 ) -> BlockDevResult<()> {
     debug!("Initializing root directory...");
     // 是否需要创建根目录由挂载流程基于 inode 内容判断，这里只负责真正的创建
 
-    //  为根目录分配一个数据块
+    //  为根目录分配一个数据块（内部自动选择块组）
     let root_inode_num = fs.root_inode;
-    let group_idx = fs
-        .find_group_with_free_blocks()
-        .ok_or(BlockDevError::NoSpace)?;
-    let data_block = fs.alloc_block(block_dev, group_idx)?;
+    let data_block = fs.alloc_block(block_dev)?;
 
     //  写入目录项 . 和 ..
     {
@@ -659,38 +623,28 @@ pub fn create_root_directory_entry<B: BlockDevice>(
         }
     }
 
-    //  初始化根目录 inode：inode 表起始块号从块组描述符读取
-    let inode_table_start = match fs.group_descs.get(0) {
-        Some(desc) => desc.inode_table() as u64,
-        None => return Err(BlockDevError::Corrupted),
-    };
-    let (block_num, offset, _group_idx) = fs.inodetable_cahce.calc_inode_location(
-        fs.root_inode,
-        fs.superblock.s_inodes_per_group,
-        inode_table_start,
-        BLOCK_SIZE,
-    );
+ 
+    //仅仅的视图，修改过后的
+    let root_inode_num = fs.root_inode;
+    let mut inode_pre= fs.get_inode_by_num(block_dev, root_inode_num).expect("Can't getinode");
+    build_file_block_mapping(fs,  &mut inode_pre, &[data_block],block_dev);
 
-    // 根据是否启用 extents 构建 i_flags 增量和 i_block 内容
-    let (flags, iblock) = build_single_block_dir_mapping(fs, data_block);
+    fs.modify_inode(
+            block_dev,
+            fs.root_inode,
+            |inode| {
+                inode.i_flags = inode_pre.i_flags | Ext4Inode::EXT4_INDEX_FL;
+                inode.i_block=inode_pre.i_block;
+                inode.i_mode = Ext4Inode::S_IFDIR | 0o755; // 目录 + 权限
+                inode.i_links_count = 2; // . 和 ..
+                inode.i_size_lo = BLOCK_SIZE as u32;
+                inode.i_size_high = 0;
+                // i_blocks 以 512 字节为单位
+                inode.i_blocks_lo = (BLOCK_SIZE / 512) as u32;
+                inode.l_i_blocks_high = 0;
+            },
+        )?;
 
-    fs.inodetable_cahce.modify(
-        block_dev,
-        fs.root_inode as u64,
-        block_num,
-        offset,
-        |inode| {
-            inode.i_mode = Ext4Inode::S_IFDIR | 0o755; // 目录 + 权限
-            inode.i_links_count = 2; // . 和 ..
-            inode.i_size_lo = BLOCK_SIZE as u32;
-            inode.i_size_high = 0;
-            // i_blocks 以 512 字节为单位
-            inode.i_blocks_lo = (BLOCK_SIZE / 512) as u32;
-            inode.l_i_blocks_high = 0;
-            inode.i_flags |= flags;
-            inode.i_block = iblock;
-        },
-    )?;
 
     //块组描述符更新 目录数
     if let Some(desc) = fs.get_group_desc_mut(0) {
@@ -706,7 +660,7 @@ pub fn create_root_directory_entry<B: BlockDevice>(
 /// 创建 /lost+found 目录，并将其挂到根目录下
 pub fn create_lost_found_directory<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
-    block_dev: &mut BlockDev<B>,
+    block_dev: &mut Jbd2Dev<B>,
 ) -> BlockDevResult<()> {
     // 如果已经存在则直接返回
     if file_entry_exisr(fs, block_dev, "/lost+found") {
@@ -715,18 +669,12 @@ pub fn create_lost_found_directory<B: BlockDevice>(
 
     let root_inode_num = fs.root_inode;
 
-    //  分配 inode
-    let inode_group = fs
-        .find_group_with_free_inodes()
-        .ok_or(BlockDevError::NoSpace)?;
-    let lost_ino = fs.alloc_inode(block_dev, inode_group)?;
+    //  分配 inode（内部自动选择块组）
+    let lost_ino = fs.alloc_inode(block_dev)?;
     debug!("lost+found inode: {}", lost_ino);
 
-    //  分配数据块
-    let block_group = fs
-        .find_group_with_free_blocks()
-        .ok_or(BlockDevError::NoSpace)?;
-    let data_block = fs.alloc_block(block_dev, block_group)?;
+    //  分配数据块（内部自动选择块组）
+    let data_block = fs.alloc_block(block_dev)?;
 
     //  初始化 lost+found 目录块（".", ".."）
     {
@@ -779,25 +727,26 @@ pub fn create_lost_found_directory<B: BlockDevice>(
         BLOCK_SIZE,
     );
 
+    //仅仅的视图，修改过后的
+    let mut inode_pre= fs.get_inode_by_num(block_dev, lost_ino).expect("Can't getinode");
+    build_file_block_mapping(fs,  &mut inode_pre, &[data_block],block_dev);
+    error!("When create lost+found inode iblock,:{:?} ,data_block:{:?}",inode_pre.i_block,data_block);
     // lost+found 的数据块映射与根目录保持一致：单块目录，按特性选择 extent 或直接块
-    let (flags, iblock) = build_single_block_dir_mapping(fs, data_block);
-
-    fs.inodetable_cahce.modify(
-        block_dev,
-        lost_ino as u64,
-        block_num,
-        offset,
-        |inode| {
-            inode.i_mode = Ext4Inode::S_IFDIR | 0o755;
-            inode.i_links_count = 2;
-            inode.i_size_lo = BLOCK_SIZE as u32;
-            inode.i_size_high = 0;
-            inode.i_blocks_lo = (BLOCK_SIZE / 512) as u32;
-            inode.l_i_blocks_high = 0;
-            inode.i_flags |= flags;
-            inode.i_block = iblock;
-        },
-    )?;
+    fs
+        .modify_inode(
+            block_dev,
+            lost_ino,
+            |inode| {
+                // 写回 build_block_dir_mapping 已经构建好的块映射和标志
+                inode.i_block = inode_pre.i_block;
+                inode.i_flags = inode_pre.i_flags | Ext4Inode::EXT4_INDEX_FL;
+                inode.i_mode = Ext4Inode::S_IFDIR | 0o755;
+                inode.i_links_count = 2;
+                inode.i_size_lo = BLOCK_SIZE as u32;
+                inode.i_blocks_lo = (BLOCK_SIZE / 512) as u32;
+            },
+        )?;
+ 
 
     if let Some(desc) = fs.get_group_desc_mut(lf_group) {
         let newc = desc.used_dirs_count().saturating_add(1);
@@ -810,8 +759,6 @@ pub fn create_lost_found_directory<B: BlockDevice>(
     //这里也需要根据extend来解析
     let mut root_inode = fs.get_root(block_dev)?;
     let mut root_block=resolve_inode_block(fs, block_dev, &mut root_inode, 0)?.expect("lost+found logical_block can't map to physical blcok!");
-
-
 
     if root_block == 0 {
         return Err(BlockDevError::Corrupted);

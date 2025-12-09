@@ -3,7 +3,7 @@
 //! Provides hash tree-based directory lookup functionality, replacing linear search to improve performance for large directories
 //! Supports Ext4 HTree index format, including multiple hash algorithms
 
-use crate::blockdev::{BlockDev, BlockDevice};
+use crate::blockdev::{Jbd2Dev, BlockDevice};
 use crate::config::BLOCK_SIZE;
 use crate::disknode::Ext4Inode;
 use crate::endian::{read_u16_le, read_u32_le};
@@ -80,7 +80,7 @@ impl HashTreeManager {
     pub fn lookup<B: BlockDevice>(
         &self,
         fs: &mut Ext4FileSystem,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         dir_inode: &Ext4Inode,
         target_name: &[u8],
     ) -> Result<HashTreeSearchResult, HashTreeError> {
@@ -118,7 +118,7 @@ impl HashTreeManager {
     fn get_root_block<B: BlockDevice>(
         &self,
         fs: &mut Ext4FileSystem,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         dir_inode: &Ext4Inode,
     ) -> Result<u32, HashTreeError> {
         // Root block is usually the first data block of the directory
@@ -133,7 +133,7 @@ impl HashTreeManager {
     fn read_block_data<B: BlockDevice>(
         &self,
         fs: &mut Ext4FileSystem,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         block_num: u32,
     ) -> Result<Vec<u8>, HashTreeError> {
         match fs.datablock_cache.get_or_load(block_dev, block_num as u64) {
@@ -200,7 +200,7 @@ impl HashTreeManager {
     fn search_in_hash_tree<B: BlockDevice>(
         &self,
         fs: &mut Ext4FileSystem,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         node: &HashTreeNode,
         target_hash: u32,
         target_name: &[u8],
@@ -222,7 +222,7 @@ impl HashTreeManager {
     fn search_in_entries<B: BlockDevice>(
         &self,
         fs: &mut Ext4FileSystem,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         entries: &[Ext4DxEntry],
         target_hash: u32,
         target_name: &[u8],
@@ -258,7 +258,7 @@ impl HashTreeManager {
     fn search_in_leaf_block<B: BlockDevice>(
         &self,
         fs: &mut Ext4FileSystem,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         block_num: u32,
         target_name: &[u8],
     ) -> Result<HashTreeSearchResult, HashTreeError> {
@@ -320,7 +320,7 @@ impl HashTreeManager {
     fn fallback_to_linear_search<B: BlockDevice>(
         &self,
         fs: &mut Ext4FileSystem,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         dir_inode: &Ext4Inode,
         target_name: &[u8],
     ) -> Result<HashTreeSearchResult, HashTreeError> {
@@ -423,7 +423,7 @@ pub fn create_hash_tree_manager(fs: &Ext4FileSystem) -> HashTreeManager {
 /// Convenient directory lookup function
 pub fn lookup_directory_entry<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
-    block_dev: &mut BlockDev<B>,
+    block_dev: &mut Jbd2Dev<B>,
     dir_inode: &Ext4Inode,
     target_name: &[u8],
 ) -> Result<HashTreeSearchResult, HashTreeError> {
@@ -435,7 +435,7 @@ pub fn lookup_directory_entry<B: BlockDevice>(
 mod tests {
     use super::*;
     use crate::bitmap_cache::BitmapCache;
-    use crate::blockdev::{BlockDev, BlockDevice};
+    use crate::blockdev::{Jbd2Dev, BlockDevice};
     use crate::bmalloc::{BlockAllocator, InodeAllocator};
     use crate::datablock_cache::DataBlockCache;
     use crate::disknode::Ext4Inode;
@@ -542,6 +542,7 @@ mod tests {
             root_inode: 2,
             group_count: 1,
             mounted: true,
+            journal_sb_block_start:None,
         }
     }
 
@@ -700,7 +701,7 @@ mod tests {
         // Create a mock block device
         let mut mock_device = MockBlockDevice::new(1024 * 1024);
         mock_device.open().unwrap();
-        let mut mock_dev = BlockDev::new(&mut mock_device);
+        let mut mock_dev = Jbd2Dev::initial_jbd2dev(0, &mut mock_device, false);
 
         let result = manager.fallback_to_linear_search(
             &mut fs,

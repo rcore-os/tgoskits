@@ -2,7 +2,8 @@
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use crate::blockdev::{BlockDev, BlockDevice, BlockDevResult};
+use crate::blockdev::{Jbd2Dev ,BlockDevice, BlockDevResult};
+use log::debug;
 
 /// 位图类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -90,7 +91,7 @@ impl BitmapCache {
     /// * `block_num` - 位图在磁盘上的块号
     pub fn get_or_load<B: BlockDevice>(
         &mut self,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         key: CacheKey,
         block_num: u64,
     ) -> BlockDevResult<&CachedBitmap> {
@@ -121,7 +122,7 @@ impl BitmapCache {
     /// 内部使用：获取可变引用（如果不存在则从磁盘加载）
     fn get_or_load_mut<B: BlockDevice>(
         &mut self,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         key: CacheKey,
         block_num: u64,
     ) -> BlockDevResult<&mut CachedBitmap> {
@@ -167,7 +168,7 @@ impl BitmapCache {
     /// 使用闭包修改指定位图，并自动标记为脏
     pub fn modify<B, F>(
         &mut self,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         key: CacheKey,
         block_num: u64,
         f: F,
@@ -177,15 +178,31 @@ impl BitmapCache {
         F: FnOnce(&mut [u8]),
     {
         let bitmap = self.get_or_load_mut(block_dev, key, block_num)?;
+
+        debug!(
+            "BitmapCache::modify: key=({}:{:?}) block_num={} before_dirty={} (will apply in-memory changes)",
+            key.group_id,
+            key.bitmap_type,
+            block_num,
+            bitmap.dirty
+        );
+
         f(&mut bitmap.data);
         bitmap.mark_dirty();
+
+        debug!(
+            "BitmapCache::modify: key=({}:{:?}) block_num={} marked_dirty=true (bitmap updated in cache, writeback deferred)",
+            key.group_id,
+            key.bitmap_type,
+            block_num
+        );
         Ok(())
     }
     
     /// LRU淘汰：找到最久未访问的并写回（如果脏）
     fn evict_lru<B: BlockDevice>(
         &mut self,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
     ) -> BlockDevResult<()> {
         let lru_key = self.cache
             .iter()
@@ -202,7 +219,7 @@ impl BitmapCache {
     /// 淘汰指定的位图
     pub fn evict<B: BlockDevice>(
         &mut self,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         key: &CacheKey,
     ) -> BlockDevResult<()> {
         if let Some(bitmap) = self.cache.remove(key) {
@@ -216,15 +233,27 @@ impl BitmapCache {
     /// 刷新所有脏位图到磁盘
     pub fn flush_all<B: BlockDevice>(
         &mut self,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
     ) -> BlockDevResult<()> {
-        let dirty_bitmaps: Vec<(u64, Vec<u8>)> = self.cache
+        let dirty_bitmaps: Vec<(CacheKey, u64, Vec<u8>)> = self.cache
             .iter()
             .filter(|(_, bitmap)| bitmap.dirty)
-            .map(|(_, bitmap)| (bitmap.block_num, bitmap.data.clone()))
+            .map(|(key, bitmap)| (*key, bitmap.block_num, bitmap.data.clone()))
             .collect();
-        
-        for (block_num, data) in dirty_bitmaps {
+
+        debug!(
+            "BitmapCache::flush_all: dirty_entries={} (will write all dirty bitmaps to disk)",
+            dirty_bitmaps.len()
+        );
+
+        for (key, block_num, data) in dirty_bitmaps {
+            debug!(
+                "BitmapCache::flush_all: writing bitmap key=({}:{:?}) block_num={} to disk",
+                key.group_id,
+                key.bitmap_type,
+                block_num
+            );
+
             Self::write_bitmap_static(block_dev, block_num, &data)?;
         }
         
@@ -238,7 +267,7 @@ impl BitmapCache {
     /// 刷新指定位图到磁盘
     pub fn flush<B: BlockDevice>(
         &mut self,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         key: &CacheKey,
     ) -> BlockDevResult<()> {
         if let Some(bitmap) = self.cache.get(key) {
@@ -260,14 +289,14 @@ impl BitmapCache {
     
     /// 静态方法：写位图到磁盘
     fn write_bitmap_static<B: BlockDevice>(
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         block_num: u64,
         data: &[u8],
     ) -> BlockDevResult<()> {
         block_dev.read_block(block_num as u32)?;
         let buffer = block_dev.buffer_mut();
         buffer[..data.len()].copy_from_slice(data);
-        block_dev.write_block(block_num as u32)?;
+        block_dev.write_block(block_num as u32,true)?;
         Ok(())
     }
     

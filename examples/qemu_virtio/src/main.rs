@@ -10,7 +10,7 @@ mod console;
 mod lang_items;
 
 use core::arch::asm;
-use RVlwext4::{BlockDev, api::{open_file, read_from_file}, ext4::*, mkd::mkdir, mkfile::{mkfile, read_file}};
+use RVlwext4::{Jbd2Dev, api::{open_file, read_from_file}, ext4::*, mkd::mkdir, mkfile::{mkfile, read_file}, BlockDevice};
 use alloc::string::String;
 use log::*;
 
@@ -30,28 +30,41 @@ pub extern "C" fn rust_main() -> ! {
     match virtio_blk::init_virtio_blk() {
         Ok(()) => {
             info!("VirtIO 块设备初始化成功!");
-            
-            // 测试块设备
+
+            // 可选的纯块设备测试
             if let Some(handle) = virtio_blk::get_block_device() {
-    //            test_block_device(handle);
+                // test_block_device(handle);
+                let _ = handle; // 避免未使用警告
             }
+
+            // 使用同一个 VirtIOBlockWrapper / Jbd2Dev 串行跑完整的 Ext4 流程
+            info!("\n=== 使用单一块设备跑 Ext4 测试流程 ===");
+            virtio_blk::with_block_device_mut(|device| {
+                // 1) 创建唯一的 Jbd2Dev，开启 journal
+                let mut jbd = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+                // 2) mkfs
+                info!("\n=== 测试 Ext4 mkfs ===");
+                test_ext4_mkfs(&mut jbd);
+
+                // 3) 挂载
+                info!("\n=== EXT4 挂载测试 ===");
+                let mut fs = test_mount(&mut jbd);
+
+                // 4) 文件查找 / 线性扫描
+                test_find_file_line(&mut jbd, &mut fs);
+
+                // 5) 基本 IO 测试
+                test_base_io(&mut jbd, &mut fs);
+
+                // 6) 卸载
+                test_unmount(&mut jbd, fs);
+            });
         }
         Err(e) => {
             error!("VirtIO 块设备初始化失败: {:?}", e);
         }
     }
-
-    //测试mkfs 和 mount
-    info!("\n=== 测试 Ext4 mkfs ===");
-    test_ext4_mkfs();
-    //测试挂载 mount
-    let mut fs = test_mount();
-    //测试文件查找-线性扫描
-    test_find_file_line(&mut fs);
-    //test base io
-    test_base_io(&mut fs);
-    //test umount
-    test_unmount(fs);
     
     
     println!("\n=== 测试完成 ===");
@@ -59,46 +72,34 @@ pub extern "C" fn rust_main() -> ! {
 }
 
 ///文件夹创建，文件写入修改读测试
-fn test_base_io(fs:&mut Ext4FileSystem){
-    virtio_blk::with_block_device_mut(|device|{
-        let mut block_Dev = BlockDev::new(device);
-        mkdir(&mut block_Dev, fs, "/test_dir/");
-        let mut tmp_buffer :[u8;9000]= [b'R';9000];
-        let test_str = "Hello ext4 rust!".as_bytes();
-        tmp_buffer[8999]=b'L';
-        mkfile(&mut block_Dev, fs, "//test_dir/testfile", Some(&tmp_buffer));
-        mkfile(&mut block_Dev, fs, "//test_dir/testfile2", Some(&test_str));
-        let data=read_file(&mut block_Dev, fs, "//test_dir/testfile2").unwrap().unwrap();
-        let string = String::from_utf8(data).unwrap();
-        let mut file = open_file(&mut block_Dev, fs, "//test_dir/testfile2", false).unwrap();
-        let resu=read_from_file(&mut block_Dev, fs, &mut file, 10).unwrap();
-        error!("offset read:{:?}",String::from_utf8(resu));
-        error!("read: {}",string);
-    })
+fn test_base_io<B: BlockDevice>(block_dev:&mut Jbd2Dev<B>, fs:&mut Ext4FileSystem){
+    mkdir(block_dev, fs, "/test_dir/");
+    let mut tmp_buffer :[u8;9000]= [b'R';9000];
+    let test_str = "Hello ext4 rust!".as_bytes();
+    tmp_buffer[8999]=b'L';
+    mkfile(block_dev, fs, "//test_dir/testfile", Some(&tmp_buffer));
+    mkfile(block_dev, fs, "//test_dir/testfile2", Some(&test_str));
+    let data=read_file(block_dev, fs, "//test_dir/testfile2").unwrap().unwrap();
+    let string = String::from_utf8(data).unwrap();
+    let mut file = open_file(block_dev, fs, "//test_dir/testfile2", false).unwrap();
+    let resu=read_from_file(block_dev, fs, &mut file, 10).unwrap();
+    error!("offset read:{:?}",String::from_utf8(resu));
+    error!("read: {}",string);
 }
 ///文件查找测试
-fn test_find_file_line(fs:&mut Ext4FileSystem){
-    virtio_blk::with_block_device_mut(|device|{
-        let mut block_dev =BlockDev::new(device);
-       find_file(fs, &mut block_dev, "/.////../.a");
-    })
+fn test_find_file_line<B: BlockDevice>(block_dev:&mut Jbd2Dev<B>,fs:&mut Ext4FileSystem){
+   find_file(fs, block_dev, "/.////../.a");
 }
 
 ///挂载测试
-fn test_mount()->Ext4FileSystem{
-    virtio_blk::with_block_device_mut(|device|{
-        debug!("EXT4挂载测试");
-        let mut block_dev =BlockDev::new(device);
-        mount(&mut block_dev).expect("Mount Error!")
-    })
+fn test_mount<B: BlockDevice>(block_dev:&mut Jbd2Dev<B>)->Ext4FileSystem{
+    debug!("EXT4挂载测试");
+    mount(block_dev).expect("Mount Error!")
 }
 //取消挂载测试
-fn test_unmount(fs:Ext4FileSystem){
-    virtio_blk::with_block_device_mut(|device|{
-        debug!("EXT4 umount 测试");
-        let mut block_dev =BlockDev::new(device);
-        umount(fs, &mut block_dev);
-    })
+fn test_unmount<B: BlockDevice>(block_dev:&mut Jbd2Dev<B>,fs:Ext4FileSystem){
+    debug!("EXT4 umount 测试");
+    umount(fs, block_dev);
 }
 
 
@@ -199,28 +200,20 @@ fn test_block_device(handle: virtio_blk::VirtIOBlockDeviceHandle) {
     info!("块设备测试完成!");
 }
 
-/// 测试 Ext4 格式化
-fn test_ext4_mkfs() {
-    use RVlwext4::{ext4, BlockDev};
-    
+/// 测试 Ext4 格式化（在已创建的 Jbd2Dev 上执行）
+fn test_ext4_mkfs<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) {
     info!("开始格式化 Ext4 文件系统...");
-    
-    virtio_blk::with_block_device_mut(|device| {
-        // 创建 BlockDev 包装器
-        let mut block_dev = BlockDev::new(device);
-        
-        info!("  设备容量: {} 块", block_dev.total_blocks());
-        
-        // 调用 mkfs
-        match ext4::mkfs(&mut block_dev) {
-            Ok(()) => {
-                info!("✓ Ext4 文件系统格式化成功!");
-            }
-            Err(e) => {
-                error!("✗ 格式化失败: {:?}", e);
-            }
+
+    info!("  设备容量: {} 块", block_dev.total_blocks());
+
+    match mkfs(block_dev) {
+        Ok(()) => {
+            info!("✓ Ext4 文件系统格式化成功!");
         }
-    });
+        Err(e) => {
+            error!("✗ 格式化失败: {:?}", e);
+        }
+    }
 }
 
 /// 清除 BSS 段

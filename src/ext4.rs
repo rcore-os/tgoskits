@@ -2,13 +2,14 @@
 //!
 //! 提供文件系统挂载、卸载、文件操作等高层接口
 
-use crate::blockdev::{BlockDev, BlockDevice, BlockDevError, BlockDevResult};
+use crate::blockdev::{Jbd2Dev,BlockDevice ,BlockDevError, BlockDevResult};
 use crate::datablock_cache::DataBlockCache;
 use crate::endian::DiskFormat;
 use crate::jbd2::jbd2::{create_journal_entry, dump_journal_inode};
 use crate::entries::Ext4DirEntry2;
 use crate::inodetable_cache::InodeCache;
-use crate::loopfile::get_file_inode;
+use crate::jbd2::jbdstruct::{JOURNAL_FILE_INODE, journal_superblock_s};
+use crate::loopfile::{get_file_inode, resolve_inode_block};
 use crate::mkd::{create_lost_found_directory, create_root_directory_entry, get_inode_with_num, mkdir};
 use crate::mkfile::mkfile;
 use crate::superblock::Ext4Superblock;
@@ -77,11 +78,13 @@ pub struct Ext4FileSystem {
     pub group_count: u32,
     /// 是否已挂载
     pub mounted: bool,
+    /// Journal 超级块 开始块号
+    pub journal_sb_block_start:Option<u32>,
 }
 
 impl Ext4FileSystem {
     //目录是否存在
-     pub fn file_entries_exist<B: BlockDevice>(&mut self,device:&mut BlockDev<B>,path:&str)->bool{
+     pub fn file_entries_exist<B: BlockDevice>(&mut self,device:&mut Jbd2Dev<B>,path:&str)->bool{
         let inode = get_file_inode(self, device, path).expect("no dir");
         match &inode {
             Some(inode)=>{
@@ -96,7 +99,7 @@ impl Ext4FileSystem {
     }
 
     ///遍历目录
-    pub fn find_file<B: BlockDevice>(&mut self,device:&mut BlockDev<B>,path:&str)->Option<Ext4Inode>{
+    pub fn find_file<B: BlockDevice>(&mut self,device:&mut Jbd2Dev<B>,path:&str)->Option<Ext4Inode>{
         let inode = get_file_inode(self, device, path).expect("no dir");
         match &inode {
             Some(inode)=>{
@@ -113,7 +116,7 @@ impl Ext4FileSystem {
 
     ///获取根目录
     ///上层api封装 获取根目录 inode为2
-    pub fn get_root<B: BlockDevice>(&mut self, block_dev: &mut BlockDev<B>) -> BlockDevResult<Ext4Inode> {
+    pub fn get_root<B: BlockDevice>(&mut self, block_dev: &mut Jbd2Dev<B>) -> BlockDevResult<Ext4Inode> {
         let root_inode_num = self.root_inode as u64;
         // 根目录位于块组0的 inode 表中，起始块号从块组描述符读取
         let inode_table_start = match self.group_descs.get(0) {
@@ -135,24 +138,27 @@ impl Ext4FileSystem {
     }
 
     ///创建lost+found
-    fn create_lost_found_dir<B: BlockDevice>(&mut self, block_dev: &mut BlockDev<B>) -> BlockDevResult<()> {
+    fn create_lost_found_dir<B: BlockDevice>(&mut self, block_dev: &mut Jbd2Dev<B>) -> BlockDevResult<()> {
         // 逻辑迁移到 mkd::create_root_directory_entry 中
         create_lost_found_directory(self, block_dev)
     }
     ///创建根目录
     ///文件系统初始化时调用
-    fn create_root_dir<B: BlockDevice>(&mut self, block_dev: &mut BlockDev<B>) -> BlockDevResult<()> {
+    fn create_root_dir<B: BlockDevice>(&mut self, block_dev: &mut Jbd2Dev<B>) -> BlockDevResult<()> {
         // 逻辑迁移到 mkd::create_root_directory_entry 中
         create_root_directory_entry(self, block_dev)
     }
 
     /// 挂载Ext4文件系统
-    pub fn mount<B: BlockDevice>(block_dev: &mut BlockDev<B>) -> Result<Self, MountError> {
+    pub fn mount<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) -> Result<Self, MountError> {
         debug!("Start mounting Ext4 filesystem...");
+
+
+           //在mount时应该重放一遍日志
+            block_dev.journal_replay();
         
         // 1. 读取超级块（按 ext4 标准偏移 1024 字节，大小 1024 字节）
         let superblock = read_superblock(block_dev).map_err(|_| MountError::IoError)?;
-        debug!("Superblock: {:?}", &superblock);
         
         // 2. 验证魔数
         if superblock.s_magic != EXT4_SUPER_MAGIC {
@@ -210,13 +216,8 @@ impl Ext4FileSystem {
             datablock_cache,
             group_count,
             mounted: true,
+            journal_sb_block_start:None,
         };
-
-        //创建journal 注意，目前不能进行挂载，由于测试，journal的数据块只有1 经过测试内核会拒绝挂载!
-        create_journal_entry(&mut fs,block_dev);
-        //dump_journal_inode(&mut fs, block_dev);
-
-
          //详细debug输出
         debugSuperAndDesc(&fs.superblock, &fs);
 
@@ -254,6 +255,57 @@ impl Ext4FileSystem {
                     create_lost_found_directory(&mut fs, block_dev).ok();
                 }
             }
+        }
+
+        // journal check
+        {
+            let mut jouranl_exist: bool = true;
+            fs.modify_inode(block_dev, JOURNAL_FILE_INODE as u32, |ji| {
+                if ji.i_mode == 0 {
+                    jouranl_exist = false;
+                } else {
+                    jouranl_exist = true;
+                }
+            }).expect("file system error panic!");
+
+            if fs.superblock.has_feature_compat(Ext4Superblock::EXT4_FEATURE_COMPAT_HAS_JOURNAL) && !jouranl_exist {
+                // 不存在但 superblock 声明有 journal，则创建一个新的 journal 文件
+                create_journal_entry(&mut fs, block_dev).expect("create journal entry failed");
+                //dump_journal_inode(&mut fs, block_dev);
+            }
+
+            // 到这里为止：journal inode 一定存在
+            // 初始化 jbd2：读入 journal 超级块并塞进 Jbd2Dev
+            let mut j_inode = fs
+                .get_inode_by_num(block_dev, JOURNAL_FILE_INODE as u32)
+                .expect("load journal inode failed");
+
+           
+            // 解析 journal inode 第 0 号逻辑块 -> 物理块
+            let journal_first_block = resolve_inode_block(&mut fs, block_dev, &mut j_inode, 0)
+                .and_then(|opt| opt.ok_or(BlockDevError::Corrupted))
+                .expect("resolve journal first block failed");
+
+            //写入fs
+            fs.journal_sb_block_start = Some(journal_first_block);
+
+
+            // 通过数据块缓存读出 journal superblock 内容
+            let journal_data = fs
+                .datablock_cache
+                .get_or_load(block_dev, journal_first_block as u64)
+                .expect("load journal superblock block failed")
+                .data
+                .clone();
+
+            let j_sb = journal_superblock_s::from_disk_bytes(&journal_data);
+
+            // 把 journal superblock 交给 Jbd2Dev，由它内部 lazy-init JBD2DEVSYSTEM
+            block_dev.set_journal_superblock(j_sb,fs.journal_sb_block_start.unwrap());
+            block_dev.set_journal_use(true);//开启journal
+
+         
+
         }
 
         //详细的Inode/DataBlock占用情况
@@ -331,7 +383,7 @@ impl Ext4FileSystem {
     
     /// 加载所有块组描述符 顺序性
     fn load_group_descriptors<B: BlockDevice>(
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         group_count: u32,
         desc_size: usize,
     ) -> Result<Vec<Ext4GroupDesc>, MountError> {
@@ -380,7 +432,7 @@ impl Ext4FileSystem {
     }
     
     /// 卸载文件系统 不写超级块备份
-    pub fn umount<B: BlockDevice>(&mut self, block_dev: &mut BlockDev<B>) -> BlockDevResult<()> {
+    pub fn umount<B: BlockDevice>(&mut self, block_dev: &mut Jbd2Dev<B>) -> BlockDevResult<()> {
         if !self.mounted {
             return Ok(());
         }
@@ -418,6 +470,10 @@ impl Ext4FileSystem {
         
         self.mounted = false;
         info!("Filesystem unmounted cleanly");
+
+
+        //block_dev.journal_replay();
+
         Ok(())
     }
     
@@ -426,7 +482,7 @@ impl Ext4FileSystem {
     /// GDT 字节流紧跟在超级块之后
     fn sync_group_descriptors<B: BlockDevice>(
         &self,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
     ) -> BlockDevResult<()> {
         let total_desc_count = self.group_descs.len();
         let desc_size = GROUP_DESC_SIZE as usize;
@@ -455,7 +511,7 @@ impl Ext4FileSystem {
             if current_block != Some(block_num) {
                 if let Some(prev_block) = current_block {
                     if Some(prev_block) == buffer_snapshot_block {
-                        block_dev.write_block(prev_block as u32)?;
+                        block_dev.write_block(prev_block as u32,true)?;
                     }
                 }
 
@@ -483,7 +539,7 @@ impl Ext4FileSystem {
         // 写回最后一个块
         if let Some(last_block) = current_block {
             if Some(last_block) == buffer_snapshot_block {
-                block_dev.write_block(last_block as u32)?;
+                block_dev.write_block(last_block as u32,true)?;
             }
         }
 
@@ -493,7 +549,7 @@ impl Ext4FileSystem {
 
     /// 同时修改所有需要冗余备份的块组
     /// 同步超级块到磁盘
-    fn sync_superblock<B: BlockDevice>(&self, block_dev: &mut BlockDev<B>) -> BlockDevResult<()> {
+    fn sync_superblock<B: BlockDevice>(&self, block_dev: &mut Jbd2Dev<B>) -> BlockDevResult<()> {
         write_superblock(block_dev, &self.superblock)
     }
     
@@ -507,120 +563,266 @@ impl Ext4FileSystem {
         self.group_descs.get_mut(group_idx as usize)
     }
     
-    /// 在指定块组分配一个块 应该管理GROUPDESC
-    /// 
-    /// # 参数
-    /// * `block_dev` - 块设备
-    /// * `group_idx` - 块组索引
-    /// 
-    /// # 返回
-    /// 成功返回全局块号
-    pub fn alloc_block<B: BlockDevice>(
+    /// 使用闭包修改指定 inode，内部自动计算 inode 在磁盘上的位置
+    pub fn modify_inode<B, F>(
         &mut self,
-        block_dev: &mut BlockDev<B>,
-        group_idx: u32,
-    ) -> BlockDevResult<u64> {
-        use crate::bmalloc::BlockAlloc;
-        
-        // 1. 预先复制group_desc（避免借用冲突）
-        let (bitmap_block, group_desc_copy) = {
-            let group_desc = self.get_group_desc(group_idx)
-                .ok_or(BlockDevError::Corrupted)?;
-            
-            if group_desc.free_blocks_count() == 0 {
-                return Err(BlockDevError::NoSpace);
-            }
-            
-            (group_desc.block_bitmap(), *group_desc)  // 复制整个结构体
-        };
-        
-        // 2. 使用位图缓存的 modify 接口分配块并标记脏页
-        let cache_key = CacheKey::new_block(group_idx);
-        let mut alloc_res: Result<BlockAlloc, BlockDevError> = Err(BlockDevError::NoSpace);
-        self.bitmap_cache
-            .modify(block_dev, cache_key, bitmap_block, |data| {
-                let r = self
-                    .block_allocator
-                    .alloc_block_in_group(data, group_idx, &group_desc_copy);
-                alloc_res = r.map_err(|_| BlockDevError::NoSpace);
-            })?;
+        block_dev: &mut Jbd2Dev<B>,
+        inode_num: u32,
+        f: F,
+    ) -> BlockDevResult<()>
+    where
+        B: BlockDevice,
+        F: FnOnce(&mut Ext4Inode),
+    {
+        // 通过全局 inode 号计算所属块组
+        let (group_idx, _idx_in_group) =
+            self.inode_allocator.global_to_group(inode_num);
 
-        let alloc = alloc_res?;
-        
-        // 5. 更新块组描述符
-        if let Some(desc) = self.get_group_desc_mut(group_idx) {
-            let new_count = desc.free_blocks_count().saturating_sub(1);
-            desc.bg_free_blocks_count_lo = (new_count & 0xFFFF) as u16;
-            desc.bg_free_blocks_count_hi = (new_count >> 16) as u16;
-        }
-        
-        // 6. 更新超级块
-        self.superblock.s_free_blocks_count_lo = 
-            self.superblock.s_free_blocks_count_lo.saturating_sub(1);
-        
-        debug!("Allocated block: group={}, block_in_group={}, global_block={} [delayed write]", 
-               alloc.group_idx, alloc.block_in_group, alloc.global_block);
-        
-        Ok(alloc.global_block)
+        let inode_table_start = self
+            .group_descs
+            .get(group_idx as usize)
+            .ok_or(BlockDevError::Corrupted)?
+            .inode_table() as u64;
+
+        let (block_num, offset, _g) = self.inodetable_cahce.calc_inode_location(
+            inode_num,
+            self.superblock.s_inodes_per_group,
+            inode_table_start,
+            BLOCK_SIZE,
+        );
+
+        self.inodetable_cahce
+            .modify(block_dev, inode_num as u64, block_num, offset, f)
     }
     
-    /// 在指定块组分配一个inode
-    /// 
-    /// # 参数
-    /// * `block_dev` - 块设备
-    /// * `group_idx` - 块组索引
-    /// 
-    /// # 返回
-    /// 成功返回全局inode号
-    pub fn alloc_inode<B: BlockDevice>(
+    /// 按 inode 号加载 inode（只读），内部自动计算在磁盘上的位置
+    pub fn get_inode_by_num<B: BlockDevice>(
         &mut self,
-        block_dev: &mut BlockDev<B>,
-        group_idx: u32,
-    ) -> BlockDevResult<u32> {
+        block_dev: &mut Jbd2Dev<B>,
+        inode_num: u32,
+    ) -> BlockDevResult<Ext4Inode> {
+        let (group_idx, _idx_in_group) =
+            self.inode_allocator.global_to_group(inode_num);
+
+        let inode_table_start = self
+            .group_descs
+            .get(group_idx as usize)
+            .ok_or(BlockDevError::Corrupted)?
+            .inode_table() as u64;
+
+        let (block_num, offset, _g) = self.inodetable_cahce.calc_inode_location(
+            inode_num,
+            self.superblock.s_inodes_per_group,
+            inode_table_start,
+            BLOCK_SIZE,
+        );
+
+        let cached = self
+            .inodetable_cahce
+            .get_or_load(block_dev, inode_num as u64, block_num, offset)?;
+        Ok(cached.inode)
+    }
+    
+    /// 在整个文件系统中分配指定数量的连续数据块
+    pub fn alloc_blocks<B: BlockDevice>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+        count: u32,
+    ) -> BlockDevResult<Vec<u64>> {
+        use crate::bmalloc::BlockAlloc;
+
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+
+        debug!(
+            "alloc_blocks: request count={} (will scan groups for free space)",
+            count
+        );
+
+        // 选择一个有足够空闲块的块组，并在该组内做连续分配
+        for (idx, desc) in self.group_descs.iter().enumerate() {
+            let group_idx = idx as u32;
+            let free = desc.free_blocks_count();
+
+            debug!(
+                "alloc_blocks: inspect group={} free_blocks={} need={}",
+                group_idx,
+                free,
+                count
+            );
+
+            if free < count {
+                continue;
+            }
+
+            let bitmap_block = desc.block_bitmap();
+            let cache_key = CacheKey::new_block(group_idx);
+            let mut alloc_res: Result<BlockAlloc, BlockDevError> = Err(BlockDevError::NoSpace);
+
+            debug!(
+                "alloc_blocks: candidate group={} bitmap_block={} starting contiguous allocation of {} blocks",
+                group_idx,
+                bitmap_block,
+                count
+            );
+
+            self.bitmap_cache
+                .modify(block_dev, cache_key, bitmap_block, |data| {
+                    // 这里只修改位图，不直接接触 group_desc / superblock 计数
+                    let r = self
+                        .block_allocator
+                        .alloc_contiguous_blocks(data, group_idx, count);
+                    alloc_res = r.map_err(|_| BlockDevError::NoSpace);
+                })?;
+
+            let alloc = alloc_res?;
+
+            // 更新块组描述符
+            if let Some(desc_mut) = self.get_group_desc_mut(group_idx) {
+                let before = desc_mut.free_blocks_count();
+                let new_count = before.saturating_sub(count);
+                desc_mut.bg_free_blocks_count_lo = (new_count & 0xFFFF) as u16;
+                desc_mut.bg_free_blocks_count_hi = (new_count >> 16) as u16;
+
+                debug!(
+                    "alloc_blocks: group={} free_blocks_count change {} -> {} (allocated {} blocks starting at global={})",
+                    group_idx,
+                    before,
+                    new_count,
+                    count,
+                    alloc.global_block
+                );
+            }
+
+            // 更新超级块
+            let sb_before = self.superblock.free_blocks_count();
+            self.superblock.s_free_blocks_count_lo = self
+                .superblock
+                .s_free_blocks_count_lo
+                .saturating_sub(count);
+            let sb_after = self.superblock.free_blocks_count();
+
+            debug!(
+                "alloc_blocks: superblock free_blocks_count change {} -> {} (delta=-{})",
+                sb_before,
+                sb_after,
+                count
+            );
+
+            let mut blocks = Vec::with_capacity(count as usize);
+            for off in 0..count {
+                blocks.push(alloc.global_block + off as u64);
+            }
+
+            debug!(
+                "Allocated blocks: group={}, first_block_in_group={}, first_global_block={}, count={} [bitmap updated, writeback deferred]",
+                alloc.group_idx,
+                alloc.block_in_group,
+                alloc.global_block,
+                count
+            );
+
+            return Ok(blocks);
+        }
+
+        debug!(
+            "alloc_blocks: no group has enough free blocks for request count={}",
+            count
+        );
+
+        Err(BlockDevError::NoSpace)
+    }
+
+    /// 在整个文件系统中分配一个数据块（兼容旧接口）
+    pub fn alloc_block<B: BlockDevice>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+    ) -> BlockDevResult<u64> {
+        let mut v = self.alloc_blocks(block_dev, 1)?;
+        Ok(v.pop().unwrap())
+    }
+
+    /// 在整个文件系统中分配指定数量的 inode
+    pub fn alloc_inodes<B: BlockDevice>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+        count: u32,
+    ) -> BlockDevResult<Vec<u32>> {
         use crate::bmalloc::InodeAlloc;
-        
-        // 1. 预先复制group_desc（避免借用冲突）
-        let (bitmap_block, group_desc_copy) = {
-            let group_desc = self.get_group_desc(group_idx)
-                .ok_or(BlockDevError::Corrupted)?;
-            
-            if group_desc.free_inodes_count() == 0 {
+
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+
+        // 目前按“同一块组内尽量连续”策略，从第一个有足够空闲 inode 的组开始分配
+        for (idx, desc) in self.group_descs.iter().enumerate() {
+            let group_idx = idx as u32;
+            let free = desc.free_inodes_count();
+            if free < count {
+                continue;
+            }
+
+            let bitmap_block = desc.inode_bitmap();
+            let cache_key = CacheKey::new_inode(group_idx);
+
+            let mut inodes: Vec<u32> = Vec::with_capacity(count as usize);
+
+            self.bitmap_cache
+                .modify(block_dev, cache_key, bitmap_block, |data| {
+                    // 简化实现：在同一块组中循环调用 alloc_inode_in_group，得到 count 个 inode
+                    for _ in 0..count {
+                        let r = self
+                            .inode_allocator
+                            .alloc_inode_in_group(data, group_idx, desc);
+                        match r {
+                            Ok(InodeAlloc { global_inode, .. }) => {
+                                inodes.push(global_inode);
+                            }
+                            Err(_) => {
+                                break;
+                            }
+                        }
+                    }
+                })?;
+
+            if inodes.len() as u32 != count {
                 return Err(BlockDevError::NoSpace);
             }
-            
-            (group_desc.inode_bitmap(), *group_desc)  // 复制整个结构体
-        };
-        
-        // 2. 使用位图缓存的 modify 接口分配 inode 并标记脏页
-        let cache_key = CacheKey::new_inode(group_idx);
-        let mut alloc_res: Result<crate::bmalloc::InodeAlloc, BlockDevError> =
-            Err(BlockDevError::NoSpace);
-        self.bitmap_cache
-            .modify(block_dev, cache_key, bitmap_block, |data| {
-                let r = self
-                    .inode_allocator
-                    .alloc_inode_in_group(data, group_idx, &group_desc_copy);
-                alloc_res = r.map_err(|_| BlockDevError::NoSpace);
-            })?;
 
-        let alloc = alloc_res?;
-        
-        // 6. 更新块组描述符
-        if let Some(desc) = self.get_group_desc_mut(group_idx) {
-            let new_count = desc.free_inodes_count().saturating_sub(1);
-            desc.bg_free_inodes_count_lo = (new_count & 0xFFFF) as u16;
-            desc.bg_free_inodes_count_hi = (new_count >> 16) as u16;
-            
+            // 更新块组描述符
+            if let Some(desc_mut) = self.get_group_desc_mut(group_idx) {
+                let new_count = desc_mut.free_inodes_count().saturating_sub(count);
+                desc_mut.bg_free_inodes_count_lo = (new_count & 0xFFFF) as u16;
+                desc_mut.bg_free_inodes_count_hi = (new_count >> 16) as u16;
+            }
+
+            // 更新超级块
+            self.superblock.s_free_inodes_count = self
+                .superblock
+                .s_free_inodes_count
+                .saturating_sub(count);
+
+            debug!(
+                "Allocated inodes: group={}, first_global_inode={}, count={} [delayed write]",
+                group_idx,
+                inodes[0],
+                count
+            );
+
+            return Ok(inodes);
         }
-        
-        // 7. 更新超级块
-        self.superblock.s_free_inodes_count = 
-            self.superblock.s_free_inodes_count.saturating_sub(1);
-        
-        debug!("Allocated inode: group={}, inode_in_group={}, global_inode={} [delayed write]", 
-               alloc.group_idx, alloc.inode_in_group, alloc.global_inode);
-        
-        Ok(alloc.global_inode)
+
+        Err(BlockDevError::NoSpace)
+    }
+
+    /// 在整个文件系统中分配一个 inode（兼容旧接口）
+    pub fn alloc_inode<B: BlockDevice>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+    ) -> BlockDevResult<u32> {
+        let mut v = self.alloc_inodes(block_dev, 1)?;
+        Ok(v.pop().unwrap())
     }
     
     /// 查找有空闲块的块组
@@ -679,16 +881,16 @@ pub struct FileSystemStats {
     pub block_groups: u32,
 }
 ///entries是否存在
-pub fn file_entry_exisr<B: BlockDevice>(fs:&mut Ext4FileSystem,device:&mut BlockDev<B>,path:&str)->bool{
+pub fn file_entry_exisr<B: BlockDevice>(fs:&mut Ext4FileSystem,device:&mut Jbd2Dev<B>,path:&str)->bool{
     fs.file_entries_exist(device, path)
 }
 /// 文件寻找函数-线性扫描
-pub fn find_file<B: BlockDevice>(fs:&mut Ext4FileSystem,device:&mut BlockDev<B>,path:&str)->Option<Ext4Inode>{
+pub fn find_file<B: BlockDevice>(fs:&mut Ext4FileSystem,device:&mut Jbd2Dev<B>,path:&str)->Option<Ext4Inode>{
     fs.find_file(device, path)
 }
 
 /// 简化的挂载函数（用于兼容旧代码）
-pub fn mount<B: BlockDevice>(block_dev: &mut BlockDev<B>) -> BlockDevResult<Ext4FileSystem> {
+pub fn mount<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) -> BlockDevResult<Ext4FileSystem> {
     match Ext4FileSystem::mount(block_dev) {
         Ok(_fs) => {
             info!("Ext4 filesystem mounted");
@@ -702,7 +904,7 @@ pub fn mount<B: BlockDevice>(block_dev: &mut BlockDev<B>) -> BlockDevResult<Ext4
 }
 
 ///取消挂载函数
-pub fn umount<B: BlockDevice>(fs:Ext4FileSystem,block_dev: &mut BlockDev<B>) -> BlockDevResult<()> {
+pub fn umount<B: BlockDevice>(fs:Ext4FileSystem,block_dev: &mut Jbd2Dev<B>) -> BlockDevResult<()> {
     let mut f= fs;
     f.umount(block_dev)?;
     Ok(())
@@ -835,9 +1037,11 @@ pub fn compute_fs_layout(total_blocks:u64)->FsLayoutInfo{
 
    
 
-pub fn mkfs<B: BlockDevice>(block_dev: &mut BlockDev<B>) -> BlockDevResult<()> {
+pub fn mkfs<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) -> BlockDevResult<()> {
     debug!("Start initializing Ext4 filesystem...");
-    
+    // mkfs 阶段先强制关闭日志，避免还未初始化 journal superblock 时触发 JBD2 逻辑
+    block_dev.set_journal_use(false);
+
     // 1. 计算布局参数
     let total_blocks = block_dev.total_blocks();
     let layout = compute_fs_layout(total_blocks);
@@ -880,15 +1084,19 @@ pub fn mkfs<B: BlockDevice>(block_dev: &mut BlockDev<B>) -> BlockDevResult<()> {
     initialize_other_groups_bitmaps(block_dev, &layout,&superblock)?;
 
     //通过一次挂载/卸载流程，让根目录在 mkfs 阶段就被真正创建并写回磁盘
+    // 注意：此时日志仍然关闭，等真正挂载时再开启 JBD2
     {
         let mut fs = Ext4FileSystem::mount(block_dev).expect("Mount Failed!");
-        // mount 内部如果发现 root inode 未初始化，会调用 create_root_dir
         fs.umount(block_dev)?;
     }
 
 
     //  验证：读回超级块检查魔数
     let verify_sb = read_superblock(block_dev)?;
+
+    // mkfs 结束前恢复日志开关（为后续真实挂载做准备）
+    block_dev.set_journal_use(true);
+
     if verify_sb.s_magic == EXT4_SUPER_MAGIC {
         debug!("Format completed, superblock magic verified: {:#x}", verify_sb.s_magic);
         Ok(())
@@ -1028,7 +1236,7 @@ fn build_uninit_group_desc(sb:&Ext4Superblock,group_id: u32, layout: &FsLayoutIn
 
 ///写备份超级块到所有组，从块组1开始
 fn write_superblock_redundant_backup<B: BlockDevice>(
-    block_dev: &mut BlockDev<B>,
+    block_dev: &mut Jbd2Dev<B>,
     sb: &Ext4Superblock,
     groups_count:u32,
     fs_layout:&FsLayoutInfo,
@@ -1048,7 +1256,7 @@ fn write_superblock_redundant_backup<B: BlockDevice>(
                 block_dev.read_block(super_blocks as u32);
                 let buffer = block_dev.buffer_mut();
                 sb.to_disk_bytes(&mut buffer[0..SUPERBLOCK_SIZE]);
-                block_dev.write_block(super_blocks as u32)?;
+                block_dev.write_block(super_blocks as u32,true)?;
             }
         }
     }
@@ -1059,7 +1267,7 @@ fn write_superblock_redundant_backup<B: BlockDevice>(
 
 /// 写入超级块到磁盘 管字节序 不写备份
 fn write_superblock<B: BlockDevice>(
-    block_dev: &mut BlockDev<B>,
+    block_dev: &mut Jbd2Dev<B>,
     sb: &Ext4Superblock,
 ) -> BlockDevResult<()> {
     // 超级块总是从分区偏移 1024 字节开始，占用 1024 字节
@@ -1067,14 +1275,14 @@ fn write_superblock<B: BlockDevice>(
         block_dev.read_block(1)?;
         let buffer = block_dev.buffer_mut();
         sb.to_disk_bytes(&mut buffer[0..SUPERBLOCK_SIZE]);
-        block_dev.write_block(1)?;
+        block_dev.write_block(1,true)?;
     } else {
         block_dev.read_block(0)?;
         let buffer = block_dev.buffer_mut();
         let offset = Ext4Superblock::SUPERBLOCK_OFFSET as usize; // 1024
         let end = offset + Ext4Superblock::SUPERBLOCK_SIZE;
         sb.to_disk_bytes(&mut buffer[offset..end]);
-        block_dev.write_block(0)?;
+        block_dev.write_block(0,true)?;
     }
 
 
@@ -1083,7 +1291,7 @@ fn write_superblock<B: BlockDevice>(
 
 /// 读取超级块 管字节序
 fn read_superblock<B: BlockDevice>(
-    block_dev: &mut BlockDev<B>,
+    block_dev: &mut Jbd2Dev<B>,
 ) -> BlockDevResult<Ext4Superblock> {
     // 超级块总是从分区偏移 1024 字节开始，占用 1024 字节
     // 这里通过按 BLOCK_SIZE 读块，再在块内做 1024 字节切片来解析
@@ -1104,7 +1312,7 @@ fn read_superblock<B: BlockDevice>(
 
 ///写入所有组的冗余备份中 自动判断特性
 fn write_gdt_redundant_backup<B: BlockDevice>(
-    block_dev: &mut BlockDev<B>,
+    block_dev: &mut Jbd2Dev<B>,
     descs: &VecDeque<Ext4GroupDesc>,
     sb: &Ext4Superblock,
     groups_count:u32,
@@ -1142,7 +1350,7 @@ fn write_gdt_redundant_backup<B: BlockDevice>(
                         }
                     }
                     //写回磁盘
-                    block_dev.write_block(gdt_block_id as u32)?;
+                    block_dev.write_block(gdt_block_id as u32,true)?;
                 }
             }
         }
@@ -1157,7 +1365,7 @@ fn write_gdt_redundant_backup<B: BlockDevice>(
 
 /// 写入块组0的描述符 管字节序
 fn write_group_desc<B: BlockDevice>(
-    block_dev: &mut BlockDev<B>,
+    block_dev: &mut Jbd2Dev<B>,
     group_id: u32,
     desc: &Ext4GroupDesc,
 ) -> BlockDevResult<()> {
@@ -1177,14 +1385,14 @@ fn write_group_desc<B: BlockDevice>(
         return Err(BlockDevError::Corrupted);
     }
     desc.to_disk_bytes(&mut buffer[in_block..end]);
-    block_dev.write_block(block_num as u32)?;
+    block_dev.write_block(block_num as u32,true)?;
 
     Ok(())
 }
 
 /// 初始化块组0
 fn initialize_group_0<B: BlockDevice>(
-    block_dev: &mut BlockDev<B>,
+    block_dev: &mut Jbd2Dev<B>,
     layout: &FsLayoutInfo,
 ) -> BlockDevResult<()> {
     // 计算块组0的布局
@@ -1204,7 +1412,7 @@ fn initialize_group_0<B: BlockDevice>(
             buffer[byte_idx] |= 1 << bit_idx;
         }
     }
-    block_dev.write_block(block_bitmap_blk)?;
+    block_dev.write_block(block_bitmap_blk,true)?;
     
     {
         let buffer = block_dev.buffer_mut();
@@ -1225,7 +1433,7 @@ fn initialize_group_0<B: BlockDevice>(
             buffer[byte_idx] |=1<<bit_idx;
         } 
     }
-    block_dev.write_block(inode_bitmap_blk)?;
+    block_dev.write_block(inode_bitmap_blk,true)?;
 
 
     
@@ -1235,7 +1443,7 @@ fn initialize_group_0<B: BlockDevice>(
         buffer.fill(0);
     }
     for i in 0..layout.inode_table_blocks {
-        block_dev.write_block(inode_table_blk + i)?;
+        block_dev.write_block(inode_table_blk + i,true)?;
     }
     
     //  更新块组0的描述符（清除UNINIT标志）
@@ -1257,7 +1465,7 @@ fn initialize_group_0<B: BlockDevice>(
 /// 初始化除块组0之外的所有块组的位图
 /// 对于未使用任何块/ inode 的块组，位图全部清零，free_counts 等于整组容量
 fn initialize_other_groups_bitmaps<B: BlockDevice>(
-    block_dev: &mut BlockDev<B>,
+    block_dev: &mut Jbd2Dev<B>,
     layout: &FsLayoutInfo,
     sb:&Ext4Superblock
 ) -> BlockDevResult<()> {
@@ -1290,7 +1498,7 @@ fn initialize_other_groups_bitmaps<B: BlockDevice>(
                 buffer[byte_idx] |= 1 << bit_idx;
             }
         }
-        block_dev.write_block(block_bitmap_blk)?;
+        block_dev.write_block(block_bitmap_blk,true)?;
 
         {
             //  初始化inode位图：全0 → 所有inode空闲
@@ -1306,7 +1514,7 @@ fn initialize_other_groups_bitmaps<B: BlockDevice>(
             } 
 
         }
-        block_dev.write_block(inode_bitmap_blk)?;
+        block_dev.write_block(inode_bitmap_blk,true)?;
 
     }
 

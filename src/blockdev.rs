@@ -1,4 +1,7 @@
-use crate::config::BLOCK_SIZE;
+use alloc::vec;
+use log::{error, warn};
+
+use crate::{config::BLOCK_SIZE, jbd2::jbdstruct::{JBD2_UPDATE, JBD2DEVSYSTEM, journal_superblock_s}};
 /// 块设备错误类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockDevError {
@@ -105,6 +108,10 @@ impl core::fmt::Display for BlockDevError {
 /// 块设备操作结果类型
 pub type BlockDevResult<T> = Result<T, BlockDevError>;
 
+///可以调用block write的函数标记 有序管理写,jbd2需要
+pub trait I_NEED_BLOCKDEV_TO_WRITE {
+}
+
 /// 外部需要实现的块设备trait
 pub trait BlockDevice {
     /// 写入数据到块设备
@@ -192,11 +199,127 @@ impl Default for BlockBuffer {
 
 /// 块设备封装
 /// 提供缓存和便捷的块设备操作接口
-pub struct BlockDev<'a, B: BlockDevice> {
+struct BlockDev<'a, B: BlockDevice> {
     dev: &'a mut B,
     buffer: BlockBuffer,
     is_dirty: bool,  // 缓冲区是否已修改
     cached_block: Option<u32>,  // 当前缓存的块号
+}
+pub enum JBD2_RUN_STATE {
+    Commit,
+    Replay
+}
+pub struct Jbd2Dev<'a,B:BlockDevice>{
+    mode:u8, //日志级别，默认ordered 0
+    inner:BlockDev<'a,B>,
+    journal_use:bool, //是否启用日志系统
+    state:JBD2_RUN_STATE,
+    systeam:Option<JBD2DEVSYSTEM>,
+}
+
+///jbd2代理blockdev 
+///只记录metadata
+/// 采用Jouranl超级快注入的思想，必须需要使用mount来给块设备注入超级块，之后才能使用日志。
+impl<'a,B:BlockDevice> Jbd2Dev<'a,B> {
+        ///你拿到我之后应该先把超级块给我传进来吧
+        pub fn initial_jbd2dev(mode:u8,block_dev:&'a mut B,use_journal:bool)->Self{
+            let block_dev = BlockDev::new(block_dev);
+            Self {mode, inner: block_dev,journal_use:use_journal,state:JBD2_RUN_STATE::Commit,
+            systeam:None }
+        }
+
+        ///外部重放journal日志入口 注意性能影响
+        pub fn journal_replay(&mut self){
+            if self.journal_use {
+                let dev =&mut self.inner.dev;
+                let jbd_sys = &mut self.systeam.as_mut().expect("jbd2dev are not initial,please initial the jbd2dev first!");
+                jbd_sys.replay(*dev);
+            }else {
+                warn!("Jouranl function not turn ,please turn on this function and retry!");
+            }
+        }
+
+        /// 运行时打开/关闭日志功能（例如 mkfs 阶段强制关闭，真正挂载再打开）
+        pub fn set_journal_use(&mut self, use_journal: bool) {
+            self.journal_use = use_journal;
+        }
+
+        /// 提前把 journal 超级块塞进来，后续第一次需要用到时再 lazy-init JBD2DEVSYSTEM
+        /// 初始化SYSTEAM
+        pub fn set_journal_superblock(&mut self, super_block: journal_superblock_s,jouranl_start_block:u32) {
+            let system =JBD2DEVSYSTEM{
+                start_block:jouranl_start_block as u32,
+                max_len:super_block.s_maxlen,
+                head:0,
+                sequence:super_block.s_sequence,
+                jbd2_super_block:super_block
+            };
+            self.systeam=Some(system);
+        }
+
+        pub fn write_block(&mut self, block_id: u32,is_metadata:bool) -> BlockDevResult<()> {
+
+            //error!("write block :{} ,use journal?:{} ismetadata:{}",block_id,self.journal_use,is_metadata);
+
+            // 1) 非元数据 或 未开启日志：直接写回到底层块设备
+            if !self.journal_use || !is_metadata {
+                // BlockDev 内部的 buffer 已经被上层写好，直接把当前 buffer 写到 block_id
+                return self.inner.write_block(block_id);
+            }
+
+            // 2) 元数据且启用日志：走 JBD2 事务
+            //    此时之前的普通数据块已经完成写入
+
+            // 从缓存里拷贝当前要写回的元数据块内容到本地 Vec，避免一直持有对 self.inner 的不可变借用
+            let meta_vec = self.inner.buffer().to_vec();
+            let updates = vec![JBD2_UPDATE(block_id as u64, meta_vec.as_slice())];
+
+            // 注意：在 mkfs/早期阶段可能还没设置 super_block，此时直接退化为普通写，避免阻塞格式化
+            if self.systeam.is_none() {
+                    // 日志标志已开但还没有 journal superblock，暂时按非日志写处理
+                    error!("Journal systeam uninitial,but journal has turned，this sentence must be once!!!");
+                    return self.inner.write_block(block_id);
+            }
+
+            let systeam =  self.systeam.as_mut().unwrap();
+
+            // 使用原始底层块设备提交事务
+            let raw_dev =self.inner.device_mut();
+            let _ = systeam.commit_transaction(raw_dev, updates);
+            
+            //此时再把metadata写到主fs，确保数据一致性，journal仅用于崩溃恢复
+            self.inner.write_block(block_id).expect("Write block failed!");
+           
+
+            Ok(())
+        }
+        pub fn read_block(&mut self, block_id: u32) -> BlockDevResult<()> {
+            self.inner.read_block(block_id)
+        }
+        pub fn buffer(&self) -> &[u8] {
+         self.inner.buffer()
+        }
+        pub fn buffer_mut(&mut self) -> &mut [u8] {
+            self.inner.buffer_mut()
+        }
+        pub fn read_blocks(&self, buf: &mut [u8], block_id: u32, count: u32) -> BlockDevResult<()> {
+            self.inner.read_blocks(buf, block_id, count)
+        }
+        pub fn write_blocks(&mut self, buf: &[u8], block_id: u32, count: u32) -> BlockDevResult<()> {
+            if !self.journal_use {
+               return  self.inner.write_blocks(buf, block_id, count)
+            }
+            Ok(())
+        }
+        pub fn flush(&mut self) -> BlockDevResult<()> {
+            if !self.journal_use {
+                return self.inner.flush()
+            }
+            Ok(())
+        }
+
+        pub fn total_blocks(&self) -> u64 { self.inner.total_blocks() }
+        pub fn block_size(&self)  -> u32 { self.inner.block_size() }
 }
 
 impl<'a, B: BlockDevice> BlockDev<'a, B> {
@@ -259,6 +382,7 @@ impl<'a, B: BlockDevice> BlockDev<'a, B> {
     }
     
     /// 写入内部缓冲区到指定块
+    /// 
     pub fn write_block(&mut self, block_id: u32) -> BlockDevResult<()> {
         if self.dev.is_readonly() {
             return Err(BlockDevError::ReadOnly);

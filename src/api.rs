@@ -1,7 +1,7 @@
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use crate::blockdev::{BlockDev, BlockDevice, BlockDevResult, BlockDevError};
+use crate::blockdev::{Jbd2Dev, BlockDevice, BlockDevResult, BlockDevError};
 use crate::disknode::Ext4Inode;
 use crate::ext4::Ext4FileSystem;
 use crate::ext4;
@@ -17,18 +17,18 @@ pub struct OpenFile {
 }
 
 ///挂载Ext4文件系统
-pub fn fs_mount<B: BlockDevice>(dev: &mut BlockDev<B>) -> BlockDevResult<Ext4FileSystem> {
+pub fn fs_mount<B: BlockDevice>(dev: &mut Jbd2Dev<B>) -> BlockDevResult<Ext4FileSystem> {
     ext4::mount(dev)
 }
 
 ///卸载Ext4文件系统
-pub fn fs_umount<B: BlockDevice>(fs: Ext4FileSystem, dev: &mut BlockDev<B>) -> BlockDevResult<()> {
+pub fn fs_umount<B: BlockDevice>(fs: Ext4FileSystem, dev: &mut Jbd2Dev<B>) -> BlockDevResult<()> {
     ext4::umount(fs, dev)
 }
 
 ///打开文件：可选自动创建
 pub fn open_file<B: BlockDevice>(
-    dev: &mut BlockDev<B>,
+    dev: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
     create: bool,
@@ -53,7 +53,7 @@ pub fn open_file<B: BlockDevice>(
 
 ///写入文件:基于当前offset追加写入
 pub fn write_to_file<B: BlockDevice>(
-    dev: &mut BlockDev<B>,
+    dev: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     file: &mut OpenFile,
     data: &[u8],
@@ -70,7 +70,7 @@ pub fn write_to_file<B: BlockDevice>(
 
 ///读取整个文件内容
 pub fn read_file_all<B: BlockDevice>(
-    dev: &mut BlockDev<B>,
+    dev: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
 ) -> BlockDevResult<Option<Vec<u8>>> {
@@ -79,7 +79,7 @@ pub fn read_file_all<B: BlockDevice>(
 
 ///基于当前offset读取指定长度
 pub fn read_from_file<B: BlockDevice>(
-    dev: &mut BlockDev<B>,
+    dev: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     file: &mut OpenFile,
     len: usize,

@@ -4,7 +4,7 @@
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use crate::blockdev::{BlockDev, BlockDevice, BlockDevResult, BlockDevError};
+use crate::blockdev::{Jbd2Dev, BlockDevice, BlockDevResult, BlockDevError};
 use crate::disknode::Ext4Inode;
 use crate::endian::DiskFormat;
 use crate::config::*;
@@ -125,7 +125,7 @@ impl InodeCache {
     /// 从磁盘加载inode
     fn load_inode<B: BlockDevice>(
         &self,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         inode_num: u64,
         block_num: u64,
         offset: usize,
@@ -149,7 +149,7 @@ impl InodeCache {
     /// * `offset` - 在块内的偏移
     pub fn get_or_load<B: BlockDevice>(
         &mut self,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         inode_num: u64,
         block_num: u64,
         offset: usize,
@@ -182,7 +182,7 @@ impl InodeCache {
     /// 获取可变引用（如果不存在则从磁盘加载）
     fn get_or_load_mut<B: BlockDevice>(
         &mut self,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         inode_num: u64,
         block_num: u64,
         offset: usize,
@@ -234,7 +234,7 @@ impl InodeCache {
     /// 使用闭包修改指定inode，并自动标记为脏
     pub fn modify<B, F>(
         &mut self,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         inode_num: u64,
         block_num: u64,
         offset: usize,
@@ -253,7 +253,7 @@ impl InodeCache {
     /// 使用句柄修改inode的便捷方法
     pub fn modify_by_handle<B, F>(
         &mut self,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         handle: InodeHandle,
         block_num: u64,
         offset: usize,
@@ -269,7 +269,7 @@ impl InodeCache {
     /// LRU淘汰
     fn evict_lru<B: BlockDevice>(
         &mut self,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
     ) -> BlockDevResult<()> {
         let lru_key = self.cache
             .iter()
@@ -286,7 +286,7 @@ impl InodeCache {
     /// 淘汰指定的inode
     pub fn evict<B: BlockDevice>(
         &mut self,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         inode_num: u64,
     ) -> BlockDevResult<()> {
         if let Some(cached) = self.cache.remove(&inode_num) {
@@ -306,7 +306,7 @@ impl InodeCache {
     /// 刷新所有脏inode到磁盘
     pub fn flush_all<B: BlockDevice>(
         &mut self,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
     ) -> BlockDevResult<()> {
         let dirty_inodes: Vec<(u64, usize, Vec<u8>)> = self.cache
             .iter()
@@ -332,7 +332,7 @@ impl InodeCache {
     /// 刷新指定inode到磁盘
     pub fn flush<B: BlockDevice>(
         &mut self,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         inode_num: u64,
     ) -> BlockDevResult<()> {
         if let Some(cached) = self.cache.get(&inode_num) {
@@ -354,7 +354,7 @@ impl InodeCache {
     
     /// 写inode到磁盘
     fn write_inode_static<B: BlockDevice>(
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         inode: &Ext4Inode,
         block_num: u64,
         offset: usize,
@@ -367,7 +367,7 @@ impl InodeCache {
     
     /// 写inode字节到磁盘
     fn write_inode_bytes_static<B: BlockDevice>(
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         block_num: u64,
         offset: usize,
         data: &[u8],
@@ -377,7 +377,7 @@ impl InodeCache {
         
         buffer[offset..offset + data.len()].copy_from_slice(data);
         
-        block_dev.write_block(block_num as u32)?;
+        block_dev.write_block(block_num as u32,true)?;//只供崩溃恢复用
         Ok(())
     }
     

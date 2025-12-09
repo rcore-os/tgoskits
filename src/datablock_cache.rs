@@ -4,7 +4,7 @@
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use crate::blockdev::{BlockDev, BlockDevice, BlockDevResult};
+use crate::blockdev::{Jbd2Dev, BlockDevice, BlockDevResult};
 use crate::BLOCK_SIZE;
 /// 数据块缓存键（全局块号）
 pub type BlockCacheKey = u64;
@@ -73,7 +73,7 @@ impl DataBlockCache {
     /// 从磁盘加载数据块
     fn load_block<B: BlockDevice>(
         &self,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         block_num: u64,
     ) -> BlockDevResult<Vec<u8>> {
         block_dev.read_block(block_num as u32)?;
@@ -88,7 +88,7 @@ impl DataBlockCache {
     /// * `block_num` - 块号
     pub fn get_or_load<B: BlockDevice>(
         &mut self,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         block_num: u64,
     ) -> BlockDevResult<&CachedBlock> {
         // 如果缓存中不存在，则加载
@@ -116,7 +116,7 @@ impl DataBlockCache {
     /// 内部使用：获取可变引用（如果不存在则从磁盘加载）
     fn get_or_load_mut<B: BlockDevice>(
         &mut self,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         block_num: u64,
     ) -> BlockDevResult<&mut CachedBlock> {
         if !self.cache.contains_key(&block_num) {
@@ -181,7 +181,7 @@ impl DataBlockCache {
     /// 使用闭包修改指定数据块，并自动标记为脏
     pub fn modify<B, F>(
         &mut self,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         block_num: u64,
         f: F,
     ) -> BlockDevResult<()>
@@ -208,7 +208,7 @@ impl DataBlockCache {
     /// LRU淘汰：找到最久未访问的并写回（如果脏）
     fn evict_lru<B: BlockDevice>(
         &mut self,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
     ) -> BlockDevResult<()> {
         // 找到最小的last_access
         let lru_key = self.cache
@@ -226,7 +226,7 @@ impl DataBlockCache {
     /// 淘汰指定的数据块
     pub fn evict<B: BlockDevice>(
         &mut self,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         block_num: u64,
     ) -> BlockDevResult<()> {
         if let Some(cached) = self.cache.remove(&block_num) {
@@ -241,7 +241,7 @@ impl DataBlockCache {
     /// 刷新所有脏数据块到磁盘
     pub fn flush_all<B: BlockDevice>(
         &mut self,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
     ) -> BlockDevResult<()> {
         // 收集需要写回的数据块信息
         let dirty_blocks: Vec<(u64, Vec<u8>)> = self.cache
@@ -266,7 +266,7 @@ impl DataBlockCache {
     /// 刷新指定数据块到磁盘
     pub fn flush<B: BlockDevice>(
         &mut self,
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         block_num: u64,
     ) -> BlockDevResult<()> {
         if let Some(cached) = self.cache.get(&block_num) {
@@ -284,14 +284,14 @@ impl DataBlockCache {
     
     /// 静态方法：写数据块到磁盘
     fn write_block_static<B: BlockDevice>(
-        block_dev: &mut BlockDev<B>,
+        block_dev: &mut Jbd2Dev<B>,
         block_num: u64,
         data: &[u8],
     ) -> BlockDevResult<()> {
         block_dev.read_block(block_num as u32)?;
         let buffer = block_dev.buffer_mut();
         buffer[..data.len()].copy_from_slice(data);
-        block_dev.write_block(block_num as u32)?;
+        block_dev.write_block(block_num as u32,false)?;
         Ok(())
     }
     

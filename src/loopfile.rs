@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 use log::{error, info};
 
-use crate::blockdev::{BlockDev, BlockDevice, BlockDevResult};
+use crate::blockdev::{Jbd2Dev, BlockDevice, BlockDevResult};
 use crate::config::BLOCK_SIZE;
 use crate::disknode::Ext4Inode;
 use crate::entries::classic_dir;
@@ -14,17 +14,16 @@ use crate::disknode::{Ext4ExtentHeader, Ext4Extent};
 use crate::extents_tree::ExtentTree;
 use crate::hashtree::lookup_directory_entry;
 
-///暂未实现多级exend索引
 /// 根据 inode 的逻辑块号解析到物理块号，支持 12 个直接块和 1/2/3 级间接块
 pub fn resolve_inode_block<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
-    block_dev: &mut BlockDev<B>,
+    block_dev: &mut Jbd2Dev<B>,
     inode: &mut Ext4Inode,
     logical_block: u32,
 ) -> BlockDevResult<Option<u32>> {
     // 优先走 extent 树（支持多层索引）；失败时再回退到传统多级指针逻辑
     if inode.is_extent() {
-        let mut tree = ExtentTree::new(0, inode);
+        let mut tree = ExtentTree::new(inode);
         if let Some(ext) = tree.find_extent(block_dev, logical_block)? {
             let mut len = ext.ee_len as u32;
             // 最高位表示 uninitialized 标志，长度使用低 15 位
@@ -191,7 +190,7 @@ pub fn resolve_inode_block<B: BlockDevice>(
 ///传入完整的路径信息线性扫描。
 pub fn get_file_inode<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
-    block_dev: &mut BlockDev<B>,
+    block_dev: &mut Jbd2Dev<B>,
     path: &str,
 ) -> BlockDevResult<Option<Ext4Inode>> {
     // 规范化路径：空串或"/" 视为根目录
@@ -245,7 +244,7 @@ pub fn get_file_inode<B: BlockDevice>(
             }
             Err(_) => {
                 // 哈希树查找失败，回退到线性查找
-                info!("Hash tree lookup failed, falling back to linear search");
+                error!("Hash tree lookup failed, falling back to linear search");
                 
                 // 根据目录 inode.size 计算逻辑块数，逐块搜索目录项
                 let total_size = current_inode.size() as usize;
