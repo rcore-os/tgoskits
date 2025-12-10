@@ -2,7 +2,7 @@
 
 mod test_common;
 
-use axdriver::AxDeviceContainer;
+use axdriver::{AxDeviceContainer, AxDeviceEnum};
 use axdriver_block::ramdisk::RamDisk;
 
 const IMG_PATH: &str = "resources/fat16.img";
@@ -21,7 +21,10 @@ fn test_fatfs() {
 
     let disk = make_disk().expect("failed to load disk image");
     axtask::init_scheduler(); // call this to use `axsync::Mutex`.
-    axfs::init_filesystems(AxDeviceContainer::from_one(disk));
+    let AxDeviceEnum::Block(dev) = AxDeviceEnum::from_block(disk) else {
+        unreachable!();
+    };
+    axfs::init_filesystems(AxDeviceContainer::from_one(dev));
 
     test_common::test_all();
 }
