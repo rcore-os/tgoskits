@@ -18,3 +18,4 @@ success_regex = [
 
 [net]
 interface = "${env:BOARD_COMM_NET_IFACE}"
+tftp_dir = "${env:TFTP_DIR}"

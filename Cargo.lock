@@ -3682,9 +3682,9 @@ dependencies = [
 
 [[package]]
 name = "ostool"
-version = "0.8.3"
+version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7c843408786c18af02d88ba7de7d25f4ff94a137b238a43ce1653c7eceb4b7b"
+checksum = "1bd45de0e8a93b3cec89fa5a9a948c8d99a8d67058a1188007b980777169881a"
 dependencies = [
  "anyhow",
  "byte-unit",

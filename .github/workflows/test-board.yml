@@ -40,7 +40,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: cargo +stable install -f --git https://github.com/ZR233/ostool  ostool
+        run: cargo +stable install ostool --version ^0.8
 
       - name: Download images and patch VM configs
         run: |
@@ -65,7 +65,8 @@ jobs:
           cargo xtask uboot \
             --build-config configs/board/${{ matrix.board }}.toml \
             --uboot-config .github/workflows/uboot.toml \
-            --vmconfigs ${{ matrix.vmconfigs }}
+            --vmconfigs ${{ matrix.vmconfigs }} \
+            --bin-dir /home/runner/tftp
           # cargo xtask uboot \
           #   --build-config configs/board/${{ matrix.board }}.toml \
           #   --uboot-config .github/workflows/uboot.toml

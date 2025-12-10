@@ -27,7 +27,7 @@ impl Context {
     pub fn load_config(&mut self) -> anyhow::Result<Cargo> {
         let json = schema_for!(Config);
 
-        let mut config_path = self.ctx.workspace_folder.join(".build.toml");
+        let mut config_path = self.ctx.paths.workspace.join(".build.toml");
         if let Some(c) = &self.build_config_path {
             config_path = c.clone();
         }
@@ -52,7 +52,7 @@ impl Context {
         for vm_config in &vm_configs {
             let mut vm_config = PathBuf::from(vm_config);
             if !vm_config.is_absolute() {
-                vm_config = self.ctx.workspace_folder.join(vm_config);
+                vm_config = self.ctx.paths.workspace.join(vm_config);
             }
             if !vm_config.exists() {
                 return Err(anyhow::anyhow!(
@@ -90,7 +90,7 @@ impl Context {
 
     pub async fn run_build(&mut self) -> anyhow::Result<()> {
         let config = self.load_config()?;
-        self.ctx.build_cargo(&config).await?;
+        self.ctx.cargo_build(&config).await?;
 
         Ok(())
     }

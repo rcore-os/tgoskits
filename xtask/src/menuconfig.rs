@@ -7,7 +7,8 @@ impl Context {
     /// Main menuconfig runner function
     pub async fn run_menuconfig(&mut self) -> anyhow::Result<()> {
         println!("Configure runtime parameters");
-        let config_path = self.ctx.workspace_folder.join(".build.toml");
+
+        let config_path = self.ctx.paths.workspace.join(".build.toml");
         if config_path.exists() {
             println!("\nCurrent .build.toml configuration file: {}", config_path.display());
         } else {
@@ -25,7 +26,8 @@ impl Context {
     pub fn default_package_feature_select(&self) -> ElemHock {
         let path = "features";
         let package_name = "axvisor".to_string();
-        let cargo_toml = self.ctx.workspace_folder.join("Cargo.toml");
+
+        let cargo_toml = self.ctx.paths.workspace.join("Cargo.toml");
         ElemHock {
             path: path.to_string(),
             callback: Arc::new(move |siv: &mut jkconfig::cursive::Cursive, _path: &str| {

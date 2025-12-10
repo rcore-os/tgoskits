@@ -33,7 +33,7 @@ enum Commands {
         board_name: String,
     },
     /// Build the ArceOS project with current configuration
-    Build,
+    Build(BuildArgs),
     /// Run clippy checks across all targets and feature combinations
     Clippy(ClippyArgs),
     /// Run ArceOS in QEMU emulation environment
@@ -63,6 +63,9 @@ struct QemuArgs {
     /// Comma-separated list of VM configuration files
     #[arg(long)]
     vmconfigs: Vec<String>,
+
+    #[command(flatten)]
+    build: BuildArgs,
 }
 
 #[derive(Parser)]
@@ -105,6 +108,17 @@ struct UbootArgs {
     /// Comma-separated list of VM configuration files
     #[arg(long)]
     vmconfigs: Vec<String>,
+
+    #[command(flatten)]
+    build: BuildArgs,
+}
+
+#[derive(Args)]
+struct BuildArgs {
+    #[arg(long)]
+    build_dir: Option<PathBuf>,
+    #[arg(long)]
+    bin_dir: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -117,7 +131,6 @@ struct DevspaceArgs {
 enum DevspaceCommand {
     /// Start the development workspace
     Start,
-    
     /// Stop the development workspace
     Stop,
 }
@@ -132,8 +145,9 @@ async fn main() -> Result<()> {
         Commands::Defconfig { board_name } => {
             defconfig_command(&board_name)?;
         }
-        Commands::Build => {
+        Commands::Build(args) => {
             println!("Building the project...");
+            ctx.apply_build_args(&args);
             ctx.run_build().await?;
             println!("Build completed successfully.");
         }
@@ -141,11 +155,13 @@ async fn main() -> Result<()> {
             clippy::run_clippy(args)?;
         }
         Commands::Qemu(args) => {
+            ctx.apply_build_args(&args.build);
             ctx.vmconfigs = args.vmconfigs;
             ctx.build_config_path = args.build_config;
             ctx.run_qemu(args.qemu_config).await?;
         }
         Commands::Uboot(args) => {
+            ctx.apply_build_args(&args.build);
             ctx.vmconfigs = args.vmconfigs;
             ctx.build_config_path = args.build_config;
             ctx.run_uboot(args.uboot_config).await?;

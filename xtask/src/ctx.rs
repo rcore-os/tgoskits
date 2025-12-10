@@ -1,4 +1,6 @@
-use ostool::ctx::AppContext;
+use ostool::ctx::{AppContext, PathConfig};
+
+use crate::BuildArgs;
 
 pub struct Context {
     pub ctx: AppContext,
@@ -11,14 +13,23 @@ impl Context {
         let workdir = std::env::current_dir().expect("Failed to get current working directory");
 
         let ctx = AppContext {
-            manifest_dir: workdir.clone(),
-            workspace_folder: workdir,
+            paths: PathConfig {
+                workspace: workdir.clone(),
+                manifest: workdir,
+                ..Default::default()
+            },
             ..Default::default()
         };
+
         Context {
             ctx,
             build_config_path: None,
             vmconfigs: vec![],
         }
+    }
+
+    pub fn apply_build_args(&mut self, args: &BuildArgs) {
+        self.ctx.paths.config.build_dir = args.build_dir.clone();
+        self.ctx.paths.config.bin_dir = args.bin_dir.clone();
     }
 }
