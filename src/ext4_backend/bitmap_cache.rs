@@ -2,7 +2,27 @@
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use crate::blockdev::{Jbd2Dev ,BlockDevice, BlockDevResult};
+use core::cell::RefCell;
+use crate::ext4_backend::jbd2::*;
+use crate::ext4_backend::config::*;
+use crate::ext4_backend::jbd2::jbdstruct::*;
+use crate::ext4_backend::endian::*;
+use crate::ext4_backend::superblock::*;
+use crate::ext4_backend::blockdev::*;
+use crate::ext4_backend::disknode::*;
+use crate::ext4_backend::loopfile::*;
+use crate::ext4_backend::entries::*;
+use crate::ext4_backend::mkfile::*;
+use crate::ext4_backend::*;
+use crate::ext4_backend::datablock_cache::*;
+use crate::ext4_backend::inodetable_cache::*;
+use crate::ext4_backend::blockgroup_description::*;
+use crate::ext4_backend::mkd::*;
+use crate::ext4_backend::tool::*;
+use crate::ext4_backend::jbd2::jbd2::*;
+use crate::ext4_backend::ext4::*;
+use crate::ext4_backend::bitmap::*;
+use crate::ext4_backend::bitmap_cache::BLOCK_SIZE;
 use log::debug;
 
 /// 位图类型
@@ -116,7 +136,7 @@ impl BitmapCache {
         self
             .cache
             .get(&key)
-            .ok_or(crate::blockdev::BlockDevError::Corrupted)
+            .ok_or(BlockDevError::Corrupted)
     }
 
     /// 内部使用：获取可变引用（如果不存在则从磁盘加载）
@@ -144,7 +164,7 @@ impl BitmapCache {
             bitmap.last_access = self.access_counter;
             Ok(bitmap)
         } else {
-            Err(crate::blockdev::BlockDevError::Corrupted)
+            Err(BlockDevError::Corrupted)
         }
     }
     
@@ -235,11 +255,19 @@ impl BitmapCache {
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
     ) -> BlockDevResult<()> {
-        let dirty_bitmaps: Vec<(CacheKey, u64, Vec<u8>)> = self.cache
+        let mut dirty_bitmaps: Vec<(CacheKey, u64, Vec<u8>)> = self
+            .cache
             .iter()
             .filter(|(_, bitmap)| bitmap.dirty)
             .map(|(key, bitmap)| (*key, bitmap.block_num, bitmap.data.clone()))
             .collect();
+
+        if dirty_bitmaps.is_empty() {
+            return Ok(());
+        }
+
+        // 按物理块号排序，尽量让写入顺序更顺滑
+        dirty_bitmaps.sort_by_key(|(_, block_num, _)| *block_num);
 
         debug!(
             "BitmapCache::flush_all: dirty_entries={} (will write all dirty bitmaps to disk)",
@@ -344,7 +372,7 @@ mod tests {
     
     #[test]
     fn test_cached_bitmap() {
-        let data = vec![0u8; crate::BLOCK_SIZE];
+        let data = vec![0u8; BLOCK_SIZE];
         let mut bitmap = CachedBitmap::new(data, 10);
         
         assert!(!bitmap.dirty);

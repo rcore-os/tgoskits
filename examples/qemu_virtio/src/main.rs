@@ -3,7 +3,7 @@
 #![feature(alloc_error_handler)]
 
 extern crate alloc;
-use alloc::format;
+use alloc::{format, vec::{ Vec}};
 mod allocator;
 mod virtio_blk;
 mod console;
@@ -13,7 +13,7 @@ use core::arch::asm;
 use RVlwext4::{Jbd2Dev, api::{open_file, read_from_file}, ext4::*, mkd::mkdir, mkfile::{mkfile, read_file}, BlockDevice};
 use alloc::{fmt::format, string::String};
 use log::*;
-
+use alloc::vec;
 use crate::virtio_blk::VirtIOBlockWrapper;
 use RVlwext4::BLOCK_SIZE;
 
@@ -77,18 +77,19 @@ fn test_base_io<B: BlockDevice>(block_dev:&mut Jbd2Dev<B>, fs:&mut Ext4FileSyste
     let mut tmp_buffer :[u8;9000]= [b'R';9000];
     let test_str = "Hello ext4 rust!".as_bytes();
     tmp_buffer[8999]=b'L';
-    mkfile(block_dev, fs, "//test_dir/testfile", Some(&tmp_buffer));
-    mkfile(block_dev, fs, "//test_dir/testfile2", Some(&test_str));
-    let data=read_file(block_dev, fs, "//test_dir/testfile2").unwrap().unwrap();
+    mkfile(block_dev, fs, "/test_dir/testfile", Some(&tmp_buffer));
+    mkfile(block_dev, fs, "/testfile2", Some(&test_str));
+    let data=read_file(block_dev, fs, "/testfile2").unwrap().unwrap();
     let string = String::from_utf8(data).unwrap();
-    let mut file = open_file(block_dev, fs, "//test_dir/testfile2", false).unwrap();
+    let mut file = open_file(block_dev, fs, "/testfile2", false).unwrap();
     let resu=read_from_file(block_dev, fs, &mut file, 10).unwrap();
     error!("offset read:{:?}",String::from_utf8(resu));
     error!("read: {}",string);
 
-    for i in 0..0 {
+    let mut test_big_file:Vec<u8> =vec![b'g';1024*1024*100];//if so large stack will flow,now i want use stack, if you  test larage file please use vec
+    for i in 0..1 {
         let file_name =format!("/test_dir/test_file:{}",i);
-        mkfile(block_dev, fs, &file_name,None);
+        mkfile(block_dev, fs, &file_name,Some(&test_big_file));
     }
 }
 ///文件查找测试

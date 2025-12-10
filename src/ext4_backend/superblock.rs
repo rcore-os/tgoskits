@@ -1,6 +1,7 @@
-use crate::config::RESERVED_GDT_BLOCKS;
-use crate::jbd2::jbdstruct::JOURNAL_FILE_INODE;
-
+use crate::ext4_backend::jbd2::*;
+use crate::ext4_backend::config::*;
+use crate::ext4_backend::jbd2::jbdstruct::*;
+use crate::ext4_backend::endian::*;
 ///UUID
 pub struct UUID(pub [u32;4]);
 
@@ -435,8 +436,7 @@ impl Ext4Superblock {
 }
 
 // 实现 DiskFormat trait，用于小端序列化/反序列化超级块
-use crate::endian::{DiskFormat, read_u16_le, read_u32_le, read_u64_le};
-use crate::endian::{write_u16_le, write_u32_le, write_u64_le};
+
 
 impl DiskFormat for Ext4Superblock {
     fn from_disk_bytes(bytes: &[u8]) -> Self {
@@ -828,7 +828,6 @@ impl DiskFormat for Ext4Superblock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::endian::DiskFormat;
 
     #[test]
     fn test_superblock_disk_format_roundtrip() {

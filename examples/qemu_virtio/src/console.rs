@@ -73,5 +73,5 @@ static LOGGER: SimpleLogger = SimpleLogger;
 /// 初始化控制台和日志
 pub fn init() {
     log::set_logger(&LOGGER).unwrap();
-    log::set_max_level(log::LevelFilter::Trace);
+    //log::set_max_level(log::LevelFilter::Error);
 }

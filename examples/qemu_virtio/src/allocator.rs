@@ -4,8 +4,8 @@
 use buddy_system_allocator::LockedHeap;
 use core::alloc::Layout;
 
-/// 堆大小：8MB
-const HEAP_SIZE: usize = 0x80_0000;
+/// 堆大小：700MB
+const HEAP_SIZE: usize = 1024*1024*400;
 
 /// 静态堆空间
 static mut HEAP_SPACE: [u8; HEAP_SIZE] = [0; HEAP_SIZE];

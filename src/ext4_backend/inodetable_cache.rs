@@ -4,10 +4,19 @@
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use crate::blockdev::{Jbd2Dev, BlockDevice, BlockDevResult, BlockDevError};
-use crate::disknode::Ext4Inode;
-use crate::endian::DiskFormat;
-use crate::config::*;
+use crate::ext4_backend::jbd2::*;
+use crate::ext4_backend::config::*;
+use crate::ext4_backend::jbd2::jbdstruct::*;
+use crate::ext4_backend::endian::*;
+use crate::ext4_backend::superblock::*;
+use crate::ext4_backend::ext4::*;
+use crate::ext4_backend::blockdev::*;
+use crate::ext4_backend::disknode::*;
+use crate::ext4_backend::extents_tree::*;
+use crate::ext4_backend::loopfile::*;
+use crate::ext4_backend::entries::*;
+use crate::ext4_backend::mkfile::*;
+
 
 /// Inode缓存键（全局inode号）
 pub type InodeCacheKey = u64;
@@ -308,24 +317,55 @@ impl InodeCache {
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
     ) -> BlockDevResult<()> {
-        let dirty_inodes: Vec<(u64, usize, Vec<u8>)> = self.cache
-            .iter()
-            .filter(|(_, cached)| cached.dirty)
-            .map(|(_, cached)| {
+        // 收集所有脏 inode，对应 (block_num, offset_in_block, encoded_bytes)
+        let mut dirty_inodes: Vec<(u64, usize, Vec<u8>)> = self
+            .cache
+            .values()
+            .filter(|cached| cached.dirty)
+            .map(|cached| {
                 let mut buffer = alloc::vec![0u8; self.inode_size];
                 cached.inode.to_disk_bytes(&mut buffer);
                 (cached.block_num, cached.offset_in_block, buffer)
             })
             .collect();
-        
-        for (block_num, offset, data) in dirty_inodes {
-            Self::write_inode_bytes_static(block_dev, block_num, offset, &data)?;
+
+        if dirty_inodes.is_empty() {
+            return Ok(());
         }
-        
+
+        // 先按 (block_num, offset) 排序，方便按块聚合写回
+        dirty_inodes.sort_by_key(|(block_num, offset, _)| (*block_num, *offset));
+
+        let mut idx = 0usize;
+        while idx < dirty_inodes.len() {
+            let (block_num, _, _) = dirty_inodes[idx];
+
+            // 读出当前 inode 表块到 Jbd2Dev 的 buffer
+            block_dev.read_block(block_num as u32)?;
+            {
+                let buffer = block_dev.buffer_mut();
+
+                // 将该块上所有脏 inode 的字节写入同一个 buffer 中
+                while idx < dirty_inodes.len() && dirty_inodes[idx].0 == block_num {
+                    let (_b, offset, ref data) = dirty_inodes[idx];
+                    let end = offset + data.len();
+                    if end > buffer.len() {
+                        return Err(BlockDevError::Corrupted);
+                    }
+                    buffer[offset..end].copy_from_slice(data);
+                    idx += 1;
+                }
+            }
+
+            // 该 inode 表块只调用一次 write_block，作为 metadata 走 JBD2
+            block_dev.write_block(block_num as u32, true)?;
+        }
+
+        // 清除所有脏标记
         for cached in self.cache.values_mut() {
             cached.dirty = false;
         }
-        
+
         Ok(())
     }
     

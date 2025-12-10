@@ -3,15 +3,26 @@
 //! Provides hash tree-based directory lookup functionality, replacing linear search to improve performance for large directories
 //! Supports Ext4 HTree index format, including multiple hash algorithms
 
-use crate::blockdev::{Jbd2Dev, BlockDevice};
-use crate::config::BLOCK_SIZE;
-use crate::disknode::Ext4Inode;
-use crate::endian::{read_u16_le, read_u32_le};
-use crate::entries::{
-    DirEntryIterator, Ext4DirEntry2, Ext4DirEntryInfo, Ext4DxCountlimit, Ext4DxEntry, Ext4DxNode,
-    Ext4DxRoot, Ext4DxRootInfo, htree_dir,
-};
-use crate::ext4::Ext4FileSystem;
+
+ 
+use crate::ext4_backend::jbd2::*;
+use crate::ext4_backend::config::*;
+use crate::ext4_backend::jbd2::jbdstruct::*;
+use crate::ext4_backend::endian::*;
+use crate::ext4_backend::superblock::*;
+use crate::ext4_backend::ext4::*;
+use crate::ext4_backend::blockdev::*;
+use crate::ext4_backend::disknode::*;
+use crate::ext4_backend::extents_tree::*;
+use crate::ext4_backend::loopfile::*;
+use crate::ext4_backend::entries::*;
+use crate::ext4_backend::mkfile::*;
+use crate::ext4_backend::*;
+use crate::ext4_backend::bmalloc::*;
+use crate::ext4_backend::bitmap_cache::*;
+use crate::ext4_backend::datablock_cache::*;
+use crate::ext4_backend::inodetable_cache::*;
+
 use alloc::vec::Vec;
 use log::{debug, info, warn};
 
@@ -122,7 +133,7 @@ impl HashTreeManager {
         dir_inode: &Ext4Inode,
     ) -> Result<u32, HashTreeError> {
         // Root block is usually the first data block of the directory
-        match crate::loopfile::resolve_inode_block(fs, block_dev, &mut dir_inode.clone(), 0) {
+        match resolve_inode_block(fs, block_dev, &mut dir_inode.clone(), 0) {
             Ok(Some(block)) => Ok(block),
             Ok(None) => Err(HashTreeError::InvalidHashTree),
             Err(_) => Err(HashTreeError::BlockOutOfRange),
@@ -335,7 +346,7 @@ impl HashTreeManager {
         };
 
         for lbn in 0..total_blocks {
-            let phys = match crate::loopfile::resolve_inode_block(
+            let phys = match resolve_inode_block(
                 fs,
                 block_dev,
                 &mut dir_inode.clone(),
@@ -353,7 +364,7 @@ impl HashTreeManager {
 
             let block_data = &cached_block.data[..block_bytes];
 
-            if let Some(entry) = crate::entries::classic_dir::find_entry(block_data, target_name) {
+            if let Some(entry) = classic_dir::find_entry(block_data, target_name) {
                 return Ok(HashTreeSearchResult {
                     entry: unsafe { core::mem::transmute(entry) },
                     block_num: phys,
@@ -434,14 +445,7 @@ pub fn lookup_directory_entry<B: BlockDevice>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bitmap_cache::BitmapCache;
-    use crate::blockdev::{Jbd2Dev, BlockDevice};
-    use crate::bmalloc::{BlockAllocator, InodeAllocator};
-    use crate::datablock_cache::DataBlockCache;
-    use crate::disknode::Ext4Inode;
-    use crate::entries::htree_dir;
-    use crate::inodetable_cache::InodeCache;
-    use crate::superblock::Ext4Superblock;
+
     use alloc::vec::Vec;
 
     // Mock block device
@@ -467,16 +471,16 @@ mod tests {
             buffer: &[u8],
             block_id: u32,
             count: u32,
-        ) -> Result<(), crate::blockdev::BlockDevError> {
+        ) -> Result<(), BlockDevError> {
             if !self.is_open {
-                return Err(crate::blockdev::BlockDevError::DeviceNotOpen);
+                return Err(BlockDevError::DeviceNotOpen);
             }
 
             let start = (block_id as usize) * 512;
             let end = start + (count as usize) * 512;
 
             if end > self.data.len() {
-                return Err(crate::blockdev::BlockDevError::BlockOutOfRange {
+                return Err(BlockDevError::BlockOutOfRange {
                     block_id,
                     max_blocks: (self.data.len() / 512) as u64,
                 });
@@ -491,16 +495,16 @@ mod tests {
             buffer: &mut [u8],
             block_id: u32,
             count: u32,
-        ) -> Result<(), crate::blockdev::BlockDevError> {
+        ) -> Result<(), BlockDevError> {
             if !self.is_open {
-                return Err(crate::blockdev::BlockDevError::DeviceNotOpen);
+                return Err(BlockDevError::DeviceNotOpen);
             }
 
             let start = (block_id as usize) * 512;
             let end = start + (count as usize) * 512;
 
             if end > self.data.len() {
-                return Err(crate::blockdev::BlockDevError::BlockOutOfRange {
+                return Err(BlockDevError::BlockOutOfRange {
                     block_id,
                     max_blocks: (self.data.len() / 512) as u64,
                 });
@@ -510,12 +514,12 @@ mod tests {
             Ok(())
         }
 
-        fn open(&mut self) -> Result<(), crate::blockdev::BlockDevError> {
+        fn open(&mut self) -> Result<(), BlockDevError> {
             self.is_open = true;
             Ok(())
         }
 
-        fn close(&mut self) -> Result<(), crate::blockdev::BlockDevError> {
+        fn close(&mut self) -> Result<(), BlockDevError> {
             self.is_open = false;
             Ok(())
         }

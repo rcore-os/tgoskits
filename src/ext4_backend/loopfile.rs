@@ -3,16 +3,18 @@
 use alloc::vec::Vec;
 use log::{error, info};
 
-use crate::blockdev::{Jbd2Dev, BlockDevice, BlockDevResult};
-use crate::config::BLOCK_SIZE;
-use crate::disknode::Ext4Inode;
-use crate::entries::classic_dir;
-use crate::ext4::Ext4FileSystem;
-use crate::BlockDevError;
-use crate::endian::DiskFormat;
-use crate::disknode::{Ext4ExtentHeader, Ext4Extent};
-use crate::extents_tree::ExtentTree;
-use crate::hashtree::lookup_directory_entry;
+use crate::ext4_backend::jbd2::*;
+use crate::ext4_backend::config::*;
+use crate::ext4_backend::jbd2::jbdstruct::*;
+use crate::ext4_backend::endian::*;
+use crate::ext4_backend::superblock::*;
+use crate::ext4_backend::ext4::*;
+use crate::ext4_backend::blockdev::*;
+use crate::ext4_backend::disknode::*;
+use crate::ext4_backend::extents_tree::*;
+use crate::ext4_backend::entries::*;
+use crate::ext4_backend::mkfile::*;
+use crate::ext4_backend::hashtree::*;
 
 /// 根据 inode 的逻辑块号解析到物理块号，支持 12 个直接块和 1/2/3 级间接块
 pub fn resolve_inode_block<B: BlockDevice>(

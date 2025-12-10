@@ -1,17 +1,31 @@
 /// 注意，jbd2 全是大端序（on-disk values are big-endian）
-
+use crate::ext4_backend::jbd2::*;
+use crate::ext4_backend::config::*;
+use crate::ext4_backend::endian::*;
+use crate::ext4_backend::superblock::*;
+use crate::ext4_backend::blockdev::*;
+use crate::ext4_backend::disknode::*;
+use crate::ext4_backend::loopfile::*;
+use crate::ext4_backend::entries::*;
+use crate::ext4_backend::mkfile::*;
+use crate::ext4_backend::*;
+use crate::ext4_backend::datablock_cache::*;
+use crate::ext4_backend::inodetable_cache::*;
+use crate::ext4_backend::blockgroup_description::*;
+use crate::ext4_backend::mkd::*;
+use crate::ext4_backend::tool::*;
+use crate::ext4_backend::jbd2::jbd2::*;
+use crate::ext4_backend::ext4::*;
+use crate::ext4_backend::bitmap::*;
+use alloc::vec::{ Vec};
+use alloc::vec;
+use log::{error, trace};
+use core::convert::TryInto;
 pub const JOURNAL_FILE_INODE: u64 = 8; /// 根据 ext4 标准，journal 的 inode 为 8
 pub const JBD2_MAGIC: u32 = 0xC03B_3998u32; // jbd2 magic number (on-disk big-endian)
 pub const JOURNAL_BLOCK_COUNT:u32 = 32*1024*1024 /BLOCK_SIZE_U32;
 pub const JOURANL_ESCAPE :u16 = 0x1;
 pub const JBD2_FLAG_LAST_TAG:u16 = 0x8;
-use alloc::vec::{ Vec};
-use alloc::vec;
-use log::{error, trace};
-
-use crate::{BLOCK_SIZE, BLOCK_SIZE_U32, BlockDevice, endian::DiskFormat};
-use core::convert::TryInto;
-
 #[repr(C)]
 ///（主物理块号，元数据内容）
 pub struct JBD2_UPDATE(pub u64,pub [u8;BLOCK_SIZE]);
@@ -19,7 +33,7 @@ pub const JBD2_BUFFER_MAX:usize=3;//最多3条缓存
 #[repr(C)]
 pub struct JBD2DEVSYSTEM{
     pub jbd2_super_block:journal_superblock_s,
-    pub start_block:u32,// 日志区在磁盘的物理起始块号
+    pub start_block:u32,// 日志区在磁盘的物理起始块号 include superblock
     pub max_len:u32,// 日志总块数
     pub head:u32,//当前日志写指针(块)(相对于 start_block 的偏移)
     pub sequence:u32, //下一个事务ID
@@ -349,7 +363,7 @@ pub struct commit_header {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::endian::DiskFormat;
+    use DiskFormat;
 
     #[test]
     fn test_journal_header_roundtrip() {

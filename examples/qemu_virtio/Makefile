@@ -15,7 +15,7 @@ QEMU_ARGS := -machine virt \
              -drive file=disk.img,if=none,format=raw,id=x0 \
              -device virtio-blk-device,drive=x0 \
              -smp 1 \
-             -m 128M
+             -m 800M
 
 .PHONY: all build run clean disk
 

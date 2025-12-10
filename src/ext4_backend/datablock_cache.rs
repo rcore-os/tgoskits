@@ -4,8 +4,25 @@
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use crate::blockdev::{Jbd2Dev, BlockDevice, BlockDevResult};
-use crate::BLOCK_SIZE;
+use crate::ext4_backend::jbd2::*;
+use crate::ext4_backend::config::*;
+use crate::ext4_backend::jbd2::jbdstruct::*;
+use crate::ext4_backend::endian::*;
+use crate::ext4_backend::superblock::*;
+use crate::ext4_backend::blockdev::*;
+use crate::ext4_backend::disknode::*;
+use crate::ext4_backend::loopfile::*;
+use crate::ext4_backend::entries::*;
+use crate::ext4_backend::mkfile::*;
+use crate::ext4_backend::*;
+use crate::ext4_backend::bmalloc::*;
+use crate::ext4_backend::bitmap_cache::*;
+use crate::ext4_backend::inodetable_cache::*;
+use crate::ext4_backend::blockgroup_description::*;
+use crate::ext4_backend::mkd::*;
+use crate::ext4_backend::tool::*;
+use crate::ext4_backend::jbd2::jbd2::*;
+use crate::ext4_backend::ext4::*;
 /// 数据块缓存键（全局块号）
 pub type BlockCacheKey = u64;
 
@@ -110,7 +127,7 @@ impl DataBlockCache {
 
         self.cache
             .get(&block_num)
-            .ok_or(crate::blockdev::BlockDevError::Corrupted)
+            .ok_or(BlockDevError::Corrupted)
     }
 
     /// 内部使用：获取可变引用（如果不存在则从磁盘加载）
@@ -134,7 +151,7 @@ impl DataBlockCache {
             cached.last_access = self.access_counter;
             Ok(cached)
         } else {
-            Err(crate::blockdev::BlockDevError::Corrupted)
+            Err(BlockDevError::Corrupted)
         }
     }
     
@@ -243,16 +260,48 @@ impl DataBlockCache {
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
     ) -> BlockDevResult<()> {
-        // 收集需要写回的数据块信息
-        let dirty_blocks: Vec<(u64, Vec<u8>)> = self.cache
-            .iter()
-            .filter(|(_, cached)| cached.dirty)
-            .map(|(_, cached)| (cached.block_num, cached.data.clone()))
+        // 收集需要写回的数据块信息（block_num, data），并按块号排序
+        let mut dirty_blocks: Vec<(u64, Vec<u8>)> = self
+            .cache
+            .values()
+            .filter(|cached| cached.dirty)
+            .map(|cached| (cached.block_num, cached.data.clone()))
             .collect();
-        
-        // 写回到磁盘
-        for (block_num, data) in dirty_blocks {
-            Self::write_block_static(block_dev, block_num, &data)?;
+
+        if dirty_blocks.is_empty() {
+            return Ok(());
+        }
+
+        dirty_blocks.sort_by_key(|(block_num, _)| *block_num);
+
+        // 将连续块聚合后，使用 write_blocks 一次性写回
+        let max_part_size = BLOCK_SIZE*100;//最大聚合块数;
+        let block_size = self.block_size;
+        let mut idx = 0usize;
+        while idx < dirty_blocks.len() {
+            let (start_block, _) = dirty_blocks[idx];
+            let mut run_len = 1usize;
+
+            // 统计从 start_block 开始的连续块数量
+            while idx + run_len < dirty_blocks.len() && run_len<=max_part_size {
+                let expected = start_block + run_len as u64;
+                if dirty_blocks[idx + run_len].0 == expected {
+                    run_len += 1;
+                } else {
+                    break;
+                }
+            }
+
+            // 聚合这一段连续块的数据到一个大的 buffer 中
+            let mut buf: Vec<u8> = Vec::with_capacity(block_size * run_len);
+            for off in 0..run_len {
+                buf.extend_from_slice(&dirty_blocks[idx + off].1);
+            }
+
+            // 通过底层的 write_blocks 一次性写入连续块
+            block_dev.write_blocks(&buf, start_block as u32, run_len as u32,false)?;
+
+            idx += run_len;
         }
         
         // 清除脏标记

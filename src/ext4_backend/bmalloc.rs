@@ -1,11 +1,26 @@
 //! 位图分配器模块
 
 use core::cell::RefCell;
-
-use crate::bitmap::{BlockBitmapMut, InodeBitmapMut, BitmapError};
-use crate::blockgroup_description::Ext4GroupDesc;
-use crate::superblock::Ext4Superblock;
-
+use crate::ext4_backend::jbd2::*;
+use crate::ext4_backend::config::*;
+use crate::ext4_backend::jbd2::jbdstruct::*;
+use crate::ext4_backend::endian::*;
+use crate::ext4_backend::superblock::*;
+use crate::ext4_backend::blockdev::*;
+use crate::ext4_backend::disknode::*;
+use crate::ext4_backend::loopfile::*;
+use crate::ext4_backend::entries::*;
+use crate::ext4_backend::mkfile::*;
+use crate::ext4_backend::*;
+use crate::ext4_backend::bitmap_cache::*;
+use crate::ext4_backend::datablock_cache::*;
+use crate::ext4_backend::inodetable_cache::*;
+use crate::ext4_backend::blockgroup_description::*;
+use crate::ext4_backend::mkd::*;
+use crate::ext4_backend::tool::*;
+use crate::ext4_backend::jbd2::jbd2::*;
+use crate::ext4_backend::ext4::*;
+use crate::ext4_backend::bitmap::*;
 /// 块分配器错误类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AllocError {

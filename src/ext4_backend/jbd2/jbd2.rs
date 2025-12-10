@@ -1,29 +1,31 @@
 use core::error;
-
+use crate::ext4_backend::jbd2::*;
+use crate::ext4_backend::config::*;
+use crate::ext4_backend::jbd2::jbdstruct::*;
+use crate::ext4_backend::endian::*;
+use crate::ext4_backend::superblock::*;
+use crate::ext4_backend::blockdev::*;
+use crate::ext4_backend::disknode::*;
+use crate::ext4_backend::loopfile::*;
+use crate::ext4_backend::entries::*;
+use crate::ext4_backend::mkfile::*;
+use crate::ext4_backend::*;
+use crate::ext4_backend::datablock_cache::*;
+use crate::ext4_backend::inodetable_cache::*;
+use crate::ext4_backend::blockgroup_description::*;
+use crate::ext4_backend::mkd::*;
+use crate::ext4_backend::tool::*;
+use crate::ext4_backend::ext4::*;
+use crate::ext4_backend::bitmap::*;
 use alloc::vec;
 use log::error;
 use log::info;
 use log::warn;
 
-use crate::BLOCK_SIZE_U32;
-use crate::BlockDevError;
-use crate::BlockDevice;
-use crate::Jbd2Dev;
-use crate::disknode::Ext4Extent;
-use crate::disknode::Ext4Inode;
-use crate::endian::DiskFormat;
-use crate::ext4::*;
-use crate::BlockDevResult;
-use crate::jbd2::jbdstruct::JOURNAL_BLOCK_COUNT;
-use crate::jbd2::jbdstruct::JOURNAL_FILE_INODE;
-use crate::BLOCK_SIZE;
-use crate::jbd2::jbdstruct::journal_superblock_s;
-use crate::loopfile::resolve_inode_block;
-use crate::mkfile::build_file_block_mapping;
-use crate::mkfile::read_file;
+
 use log::trace;
 use alloc::vec::Vec;
-use crate::jbd2::jbdstruct::*;
+
 impl JBD2DEVSYSTEM {
     ///计算下一个日志块的位置(处理回绕),返回当前的（可以直接用，直接写，已经处理过偏移）!
     pub fn set_next_log_block(&mut self)->u32{
@@ -71,7 +73,7 @@ impl JBD2DEVSYSTEM {
                 t_checksum:0, 
                 t_flags:0, //后面记得处理逃逸
             };
-            let mut magic:u32 = u32::from_le_bytes(update.1[0..4].try_into().unwrap());
+            let magic:u32 = u32::from_le_bytes(update.1[0..4].try_into().unwrap());
             if magic ==JBD2_MAGIC{
                 tag.t_flags |=JOURANL_ESCAPE;
                 error!("JOURNAL ERROR ,Updates data escape!!!");
@@ -99,7 +101,7 @@ impl JBD2DEVSYSTEM {
 
         let mut no_escape:Vec<(u64,[u8;BLOCK_SIZE])> =Vec::new();
         //逃逸处理
-        for (idx, update) in self.commit_queue.iter().enumerate() {
+        for (_, update) in self.commit_queue.iter().enumerate() {
              //逃逸处理
             let mut check_data:[u8;BLOCK_SIZE]=[0;BLOCK_SIZE];
             check_data.copy_from_slice(&update.1);

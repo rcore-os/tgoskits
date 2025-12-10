@@ -2,15 +2,18 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 use log::{error, warn};
 
-use crate::disknode::{Ext4Inode, Ext4Extent, Ext4ExtentHeader};
-use crate::extents_tree::{ExtentTree, ExtentNode};
-use crate::endian::DiskFormat;
-use crate::ext4::Ext4FileSystem;
-use crate::mkd::{ get_inode_with_num, mkdir, split_paren_child_and_tranlatevalid};
-use crate::loopfile::{get_file_inode, resolve_inode_block};
-use crate::entries::Ext4DirEntry2;
-use crate::blockdev::{BlockDevice, Jbd2Dev, BlockDevResult, BlockDevError};
-use crate::BLOCK_SIZE;
+use crate::ext4_backend::jbd2::*;
+use crate::ext4_backend::config::*;
+use crate::ext4_backend::jbd2::jbdstruct::*;
+use crate::ext4_backend::endian::*;
+use crate::ext4_backend::superblock::*;
+use crate::ext4_backend::ext4::*;
+use crate::ext4_backend::blockdev::*;
+use crate::ext4_backend::disknode::*;
+use crate::ext4_backend::extents_tree::*;
+use crate::ext4_backend::loopfile::*;
+use crate::ext4_backend::mkd::*;
+use crate::ext4_backend::entries::*;
 ///mkfile lib
 
 
@@ -148,15 +151,13 @@ pub fn mkfile<B: BlockDevice>(device: &mut Jbd2Dev<B>,fs:&mut Ext4FileSystem, pa
             let write_len = core::cmp::min(remaining, BLOCK_SIZE as usize);
 
             // 将数据写入新分配的数据块，其余部分填零
-            if fs.datablock_cache.modify(device, blk as u64, |data| {
+             fs.datablock_cache.modify_new( blk as u64, |data| {
                 for b in data.iter_mut() {
                     *b = 0;
                 }
                 let end = src_off + write_len;
                 data[..write_len].copy_from_slice(&buf[src_off..end]);
-            }).is_err() {
-                break;
-            }
+            });
 
             data_blocks.push(blk);
             total_written += write_len;
@@ -199,7 +200,7 @@ pub fn mkfile<B: BlockDevice>(device: &mut Jbd2Dev<B>,fs:&mut Ext4FileSystem, pa
 
     //在父目录中插入一个普通文件类型的目录项（必要时自动扩展目录块）
     let mut parent_inode_copy = parent_inode;
-    if crate::mkd::insert_dir_entry(fs, device, parent_ino_num, &mut parent_inode_copy, new_file_ino, &child, Ext4DirEntry2::EXT4_FT_REG_FILE).is_err() {
+    if insert_dir_entry(fs, device, parent_ino_num, &mut parent_inode_copy, new_file_ino, &child, Ext4DirEntry2::EXT4_FT_REG_FILE).is_err() {
         return None;
     }
 
@@ -219,6 +220,10 @@ pub fn read_file<B: BlockDevice>(
         Ok(None) => return Ok(None),
         Err(e) => return Err(e),
     };
+    if !inode.is_file() {
+        error!("Entry:{} not aa file",path);
+        return BlockDevResult::Err(BlockDevError::ReadError)
+    }
 
     let size = inode.size() as usize;
     if size == 0 {

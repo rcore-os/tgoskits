@@ -4,21 +4,21 @@ use core::{error::Error};
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use crate::BLOCK_SIZE;
-use crate::blockdev::{Jbd2Dev, BlockDevice, BlockDevResult, BlockDevError};
-use crate::ext4::find_file;
-use crate::loopfile::{resolve_inode_block, get_file_inode};
-use crate::mkfile::build_file_block_mapping;
-use crate::{
-    disknode::Ext4Inode,
-    entries::Ext4DirEntry2,
-    ext4::{Ext4FileSystem, file_entry_exisr},
-};
+use crate::ext4_backend::jbd2::*;
+use crate::ext4_backend::config::*;
+use crate::ext4_backend::jbd2::jbdstruct::*;
+use crate::ext4_backend::endian::*;
+use crate::ext4_backend::superblock::*;
+use crate::ext4_backend::ext4::*;
+use crate::ext4_backend::blockdev::*;
+use crate::ext4_backend::disknode::*;
+use crate::ext4_backend::extents_tree::*;
+use crate::ext4_backend::loopfile::*;
+use crate::ext4_backend::entries::*;
 use crate::alloc::string::ToString;
+use crate::ext4_backend::mkfile::*;
 use log::{debug, error};
-use crate::endian::DiskFormat;
-use crate::disknode::{Ext4Extent, Ext4ExtentHeader};
-use crate::extents_tree::{ExtentTree, ExtentNode};
+
 #[derive(Debug)]
 pub enum FileError {
     DirExist,
@@ -114,7 +114,7 @@ pub fn get_inode_with_num<B: BlockDevice>(
                 .get_or_load(device, phys as u64)?;
             let block_data = &cached_block.data[..block_bytes];
 
-            if let Some(entry) = crate::entries::classic_dir::find_entry(block_data, target) {
+            if let Some(entry) = classic_dir::find_entry(block_data, target) {
                 found_inode_num = Some(entry.inode as u64);
                 break;
             }
@@ -492,17 +492,6 @@ pub fn mkdir<B: BlockDevice>(device: &mut Jbd2Dev<B>, fs: &mut Ext4FileSystem, p
 
     // 写新目录 inode（单块目录，按特性选择 extent 或直接块）
     let (group_idx, _idx) = fs.inode_allocator.global_to_group(new_dir_ino);
-    let inode_table_start = match fs.group_descs.get(group_idx as usize) {
-        Some(desc) => desc.inode_table() as u64,
-        None => return None,
-    };
-    let (block_num, offset, _g) = fs.inodetable_cahce.calc_inode_location(
-        new_dir_ino,
-        fs.superblock.s_inodes_per_group,
-        inode_table_start,
-        BLOCK_SIZE,
-    );
-
       //仅仅的视图，修改过后的
     
     let mut inode_pre= fs.get_inode_by_num(device, new_dir_ino).expect("Can't getinode");

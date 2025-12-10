@@ -2,7 +2,26 @@ use alloc::vec::Vec;
 use alloc::vec;
 use log::{error, trace, warn};
 
-use crate::{config::BLOCK_SIZE, jbd2::jbdstruct::{JBD2_BUFFER_MAX, JBD2_UPDATE, JBD2DEVSYSTEM, journal_superblock_s}};
+use core::cell::RefCell;
+use crate::ext4_backend::jbd2::*;
+use crate::ext4_backend::config::*;
+use crate::ext4_backend::jbd2::jbdstruct::*;
+use crate::ext4_backend::endian::*;
+use crate::ext4_backend::superblock::*;
+use crate::ext4_backend::disknode::*;
+use crate::ext4_backend::loopfile::*;
+use crate::ext4_backend::entries::*;
+use crate::ext4_backend::mkfile::*;
+use crate::ext4_backend::*;
+use crate::ext4_backend::bitmap_cache::*;
+use crate::ext4_backend::datablock_cache::*;
+use crate::ext4_backend::inodetable_cache::*;
+use crate::ext4_backend::blockgroup_description::*;
+use crate::ext4_backend::mkd::*;
+use crate::ext4_backend::tool::*;
+use crate::ext4_backend::jbd2::jbd2::*;
+use crate::ext4_backend::ext4::*;
+use crate::ext4_backend::bitmap::*;
 /// 块设备错误类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockDevError {
@@ -229,6 +248,10 @@ impl<'a,B:BlockDevice> Jbd2Dev<'a,B> {
             systeam:None }
         }
 
+        pub fn is_use_journal(&self)->bool{
+            self.journal_use
+        }
+
         ///外部重放journal日志入口 注意性能影响
         pub fn journal_replay(&mut self){
             if self.journal_use {
@@ -332,10 +355,54 @@ impl<'a,B:BlockDevice> Jbd2Dev<'a,B> {
         pub fn read_blocks(&self, buf: &mut [u8], block_id: u32, count: u32) -> BlockDevResult<()> {
             self.inner.read_blocks(buf, block_id, count)
         }
-        pub fn write_blocks(&mut self, buf: &[u8], block_id: u32, count: u32) -> BlockDevResult<()> {
-            if !self.journal_use {
-               return  self.inner.write_blocks(buf, block_id, count)
+        pub fn write_blocks(&mut self, buf: &[u8], block_id: u32, count: u32,is_metadata:bool) -> BlockDevResult<()> {
+            //error!("write block :{} ,use journal?:{} ismetadata:{}",block_id,self.journal_use,is_metadata);
+
+            // 1) 非元数据 或 未开启日志：直接写回到底层块设备
+            if !self.journal_use || !is_metadata {
+                // BlockDev 内部的 buffer 已经被上层写好，直接把当前 buffer 写到 block_id
+                return self.inner.write_blocks(buf, block_id, count)
             }
+
+            // 2) 元数据且启用日志：走 JBD2 事务
+            //    此时之前的普通数据块已经完成写入
+
+            //由于分布提交机制，必须需要拷贝数据牺牲性能来确保日志提交
+            // 从缓存里拷贝当前要写回的元数据块内容到本地 Vec，避免一直持有对 self.inner 的不可变借用
+            let meta_vec = self.inner.buffer();
+            let updates = JBD2_UPDATE(block_id as u64,meta_vec.try_into().expect("Data can;t into [u8;BLOCK_SIZE] panic!,os should process"));
+
+            // 注意：在 mkfs/早期阶段可能还没设置 super_block，此时直接退化为普通写，避免阻塞格式化
+            if self.systeam.is_none() {
+                    // 日志标志已开但还没有 journal superblock，暂时按非日志写处理
+                    error!("Journal systeam uninitial,but journal has turned，this sentence must be once!!!");
+                    return self.inner.write_block(block_id);
+            }
+
+            let systeam =  self.systeam.as_mut().unwrap();
+
+            // 使用原始底层块设备提交事务
+            let raw_dev =self.inner.device_mut();
+
+            //先写入缓存
+            if systeam.commit_queue.len()>JBD2_BUFFER_MAX {
+                //缓存已满 直接提交，然后再塞入缓存
+                let _ = systeam.commit_transaction(raw_dev);
+                //赛入缓存
+                systeam.commit_queue.push(updates);
+                trace!("[JBD2 BUFFER] BUFFER IS FULL ,FLUSHED!")
+                
+            }else {
+                //赛入缓存
+                systeam.commit_queue.push(updates);
+            }
+
+          
+            
+            //此时再把metadata写到主fs，确保数据一致性，journal仅用于崩溃恢复
+            self.inner.write_blocks(buf, block_id, count).expect("Write block failed!");
+           
+
             Ok(())
         }
         pub fn flush(&mut self) -> BlockDevResult<()> {

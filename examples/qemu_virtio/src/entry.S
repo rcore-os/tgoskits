@@ -11,6 +11,6 @@ _start:
     .section .bss.stack
     .globl boot_stack
 boot_stack:
-    .space 4096 * 16  
+    .space 1024*1024*300 #堆内存应该足够大，确保内存的测试文件不会爆栈
     .globl boot_stack_top
 boot_stack_top:

@@ -2,28 +2,32 @@
 //!
 //! 提供文件系统挂载、卸载、文件操作等高层接口
 
-use crate::blockdev::{Jbd2Dev,BlockDevice ,BlockDevError, BlockDevResult};
-use crate::datablock_cache::DataBlockCache;
-use crate::endian::DiskFormat;
-use crate::jbd2::jbd2::{create_journal_entry, dump_journal_inode};
-use crate::entries::Ext4DirEntry2;
-use crate::inodetable_cache::InodeCache;
-use crate::jbd2::jbdstruct::{JOURNAL_FILE_INODE, journal_superblock_s};
-use crate::loopfile::{get_file_inode, resolve_inode_block};
-use crate::mkd::{create_lost_found_directory, create_root_directory_entry, get_inode_with_num, mkdir};
-use crate::mkfile::mkfile;
-use crate::superblock::Ext4Superblock;
-use crate::blockgroup_description::Ext4GroupDesc;
-use crate::bmalloc::{BlockAllocator, InodeAllocator};
-use crate::bitmap_cache::{BitmapCache, CacheKey};
-use crate::config::*;
-use crate::tool::{cloc_group_layout, debugSuperAndDesc, generate_uuid, generate_uuid_8, need_redundant_backup};
+use crate::ext4_backend::jbd2::*;
+use crate::ext4_backend::config::*;
+use crate::ext4_backend::jbd2::jbdstruct::*;
+use crate::ext4_backend::endian::*;
+use crate::ext4_backend::superblock::*;
+use crate::ext4_backend::blockdev::*;
+use crate::ext4_backend::disknode::*;
+use crate::ext4_backend::loopfile::*;
+use crate::ext4_backend::entries::*;
+use crate::ext4_backend::mkfile::*;
+use crate::ext4_backend::*;
+use crate::ext4_backend::bmalloc::*;
+use crate::ext4_backend::bitmap_cache::*;
+use crate::ext4_backend::datablock_cache::*;
+use crate::ext4_backend::inodetable_cache::*;
+use crate::ext4_backend::blockgroup_description::*;
+use crate::ext4_backend::mkd::*;
+use crate::ext4_backend::tool::*;
+use crate::ext4_backend::jbd2::jbd2::*;
+
+
 use alloc::collections::vec_deque::VecDeque;
 use log::{debug, error, info, warn};
 use alloc::vec::Vec;
 use alloc::string::{String, ToString};
-use crate::disknode::Ext4Inode;
-use crate::BlockDevError::BufferTooSmall;
+
 /// Ext4文件系统挂载错误
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MountError {
@@ -154,8 +158,9 @@ impl Ext4FileSystem {
         debug!("Start mounting Ext4 filesystem...");
 
 
-           //在mount时应该重放一遍日志
-            block_dev.journal_replay();
+            //在mount时应该重放一遍日志
+            //block_dev.set_journal_superblock(super_block, jouranl_start_block);
+            
         
         // 1. 读取超级块（按 ext4 标准偏移 1024 字节，大小 1024 字节）
         let superblock = read_superblock(block_dev).map_err(|_| MountError::IoError)?;
@@ -259,52 +264,59 @@ impl Ext4FileSystem {
 
         // journal check
         {
-            let mut jouranl_exist: bool = true;
-            fs.modify_inode(block_dev, JOURNAL_FILE_INODE as u32, |ji| {
-                if ji.i_mode == 0 {
-                    jouranl_exist = false;
-                } else {
-                    jouranl_exist = true;
+            if fs.superblock.has_journal() {
+                
+            
+                let mut jouranl_exist: bool = true;
+                fs.modify_inode(block_dev, JOURNAL_FILE_INODE as u32, |ji| {
+                    if ji.i_mode == 0 {
+                        jouranl_exist = false;
+                    } else {
+                        jouranl_exist = true;
+                    }
+                }).expect("file system error panic!");
+
+                if fs.superblock.has_feature_compat(Ext4Superblock::EXT4_FEATURE_COMPAT_HAS_JOURNAL) && !jouranl_exist {
+                    // 不存在但 superblock 声明有 journal，则创建一个新的 journal 文件
+                    create_journal_entry(&mut fs, block_dev).expect("create journal entry failed");
+                    //dump_journal_inode(&mut fs, block_dev);
                 }
-            }).expect("file system error panic!");
 
-            if fs.superblock.has_feature_compat(Ext4Superblock::EXT4_FEATURE_COMPAT_HAS_JOURNAL) && !jouranl_exist {
-                // 不存在但 superblock 声明有 journal，则创建一个新的 journal 文件
-                create_journal_entry(&mut fs, block_dev).expect("create journal entry failed");
-                //dump_journal_inode(&mut fs, block_dev);
-            }
+                
 
-            // 到这里为止：journal inode 一定存在
-            // 初始化 jbd2：读入 journal 超级块并塞进 Jbd2Dev
-            let mut j_inode = fs
-                .get_inode_by_num(block_dev, JOURNAL_FILE_INODE as u32)
-                .expect("load journal inode failed");
+             }
+             //实际启用Journal
+             if block_dev.is_use_journal() {
+                 
+                // 到这里为止：journal inode 一定存在
+                // 初始化 jbd2：读入 journal 超级块并塞进 Jbd2Dev
+                let mut j_inode = fs
+                    .get_inode_by_num(block_dev, JOURNAL_FILE_INODE as u32)
+                    .expect("load journal inode failed");
 
-           
-            // 解析 journal inode 第 0 号逻辑块 -> 物理块
-            let journal_first_block = resolve_inode_block(&mut fs, block_dev, &mut j_inode, 0)
-                .and_then(|opt| opt.ok_or(BlockDevError::Corrupted))
-                .expect("resolve journal first block failed");
+            
+                // 解析 journal inode 第 0 号逻辑块 -> 物理块
+                let journal_first_block = resolve_inode_block(&mut fs, block_dev, &mut j_inode, 0)
+                    .and_then(|opt| opt.ok_or(BlockDevError::Corrupted))
+                    .expect("resolve journal first block failed");
 
-            //写入fs
-            fs.journal_sb_block_start = Some(journal_first_block);
+                //写入fs
+                fs.journal_sb_block_start = Some(journal_first_block);
+                // 通过数据块缓存读出 journal superblock 内容
+                let journal_data = fs
+                    .datablock_cache
+                    .get_or_load(block_dev, journal_first_block as u64)
+                    .expect("load journal superblock block failed")
+                    .data
+                    .clone();
 
+                let j_sb = journal_superblock_s::from_disk_bytes(&journal_data);
 
-            // 通过数据块缓存读出 journal superblock 内容
-            let journal_data = fs
-                .datablock_cache
-                .get_or_load(block_dev, journal_first_block as u64)
-                .expect("load journal superblock block failed")
-                .data
-                .clone();
-
-            let j_sb = journal_superblock_s::from_disk_bytes(&journal_data);
-
-            // 把 journal superblock 交给 Jbd2Dev，由它内部 lazy-init JBD2DEVSYSTEM
-            block_dev.set_journal_superblock(j_sb,fs.journal_sb_block_start.unwrap());
-            block_dev.set_journal_use(true);//开启journal
-
+                // 把 journal superblock 交给 Jbd2Dev，由它内部 lazy-init JBD2DEVSYSTEM
+                block_dev.set_journal_superblock(j_sb,fs.journal_sb_block_start.unwrap());
          
+
+             }
 
         }
 
@@ -375,6 +387,7 @@ impl Ext4FileSystem {
         info!("  - total inodes: {}", fs.superblock.s_inodes_count);
         info!("  - free inodes: {}", fs.superblock.s_free_inodes_count);
         //缓存刷新回磁盘
+        fs.datablock_cache.flush_all(block_dev).expect("flush failed!");
         fs.bitmap_cache.flush_all(block_dev).expect("flush failed!");
         fs.inodetable_cahce.flush_all(block_dev).expect("flush failed!");
 
@@ -470,13 +483,11 @@ impl Ext4FileSystem {
         
         ///确保缓存已经提交完毕
         block_dev.umount_commit();
-
+        block_dev.journal_replay();
 
         self.mounted = false;
         info!("Filesystem unmounted cleanly");
 
-
-        //block_dev.journal_replay();
 
         Ok(())
     }
@@ -633,7 +644,7 @@ impl Ext4FileSystem {
         block_dev: &mut Jbd2Dev<B>,
         count: u32,
     ) -> BlockDevResult<Vec<u64>> {
-        use crate::bmalloc::BlockAlloc;
+      
 
         if count == 0 {
             return Ok(Vec::new());
@@ -753,7 +764,7 @@ impl Ext4FileSystem {
         block_dev: &mut Jbd2Dev<B>,
         count: u32,
     ) -> BlockDevResult<Vec<u32>> {
-        use crate::bmalloc::InodeAlloc;
+     
 
         if count == 0 {
             return Ok(Vec::new());
@@ -1045,6 +1056,7 @@ pub fn mkfs<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) -> BlockDevResult<()> {
     debug!("Start initializing Ext4 filesystem...");
     // mkfs 阶段先强制关闭日志，避免还未初始化 journal superblock 时触发 JBD2 逻辑
     block_dev.set_journal_use(false);
+    let old_jouranl_use  = block_dev.is_use_journal();
 
     // 1. 计算布局参数
     let total_blocks = block_dev.total_blocks();
@@ -1099,7 +1111,7 @@ pub fn mkfs<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) -> BlockDevResult<()> {
     let verify_sb = read_superblock(block_dev)?;
 
     // mkfs 结束前恢复日志开关（为后续真实挂载做准备）
-    block_dev.set_journal_use(true);
+    block_dev.set_journal_use(old_jouranl_use);
 
     if verify_sb.s_magic == EXT4_SUPER_MAGIC {
         debug!("Format completed, superblock magic verified: {:#x}", verify_sb.s_magic);
@@ -1204,7 +1216,7 @@ fn build_uninit_group_desc(sb:&Ext4Superblock,group_id: u32, layout: &FsLayoutIn
     let mut desc = Ext4GroupDesc::default();
 
     // 通过工具函数统一计算该块组的布局
-    let gl = crate::tool::cloc_group_layout(
+    let gl = cloc_group_layout(
         group_id,
         sb,
         layout.blocks_per_group,
@@ -1486,7 +1498,7 @@ fn initialize_other_groups_bitmaps<B: BlockDevice>(
     // 从块组1开始，逐组初始化
     for group_id in 1..layout.groups {
         // 使用与 build_uninit_group_desc 相同的布局计算
-        let gl = crate::tool::cloc_group_layout(
+        let gl = cloc_group_layout(
             group_id,
             &sb,
             layout.blocks_per_group,

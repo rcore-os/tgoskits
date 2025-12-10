@@ -1,4 +1,6 @@
 target/
 lwext4/
 *.img
+*.bin
+*.lock
 .vscode/
