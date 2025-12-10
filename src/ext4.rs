@@ -17,7 +17,7 @@ use crate::blockgroup_description::Ext4GroupDesc;
 use crate::bmalloc::{BlockAllocator, InodeAllocator};
 use crate::bitmap_cache::{BitmapCache, CacheKey};
 use crate::config::*;
-use crate::tool::{cloc_group_layout, debugSuperAndDesc, need_redundant_backup};
+use crate::tool::{cloc_group_layout, debugSuperAndDesc, generate_uuid, generate_uuid_8, need_redundant_backup};
 use alloc::collections::vec_deque::VecDeque;
 use log::{debug, error, info, warn};
 use alloc::vec::Vec;
@@ -468,6 +468,10 @@ impl Ext4FileSystem {
         debug!("Writing back group descriptors...");
         self.sync_group_descriptors(block_dev)?;
         
+        ///确保缓存已经提交完毕
+        block_dev.umount_commit();
+
+
         self.mounted = false;
         info!("Filesystem unmounted cleanly");
 
@@ -1145,6 +1149,16 @@ fn build_superblock(
     // 预留块数（低/高 32 位）
     sb.s_r_blocks_count_lo = (layout.reserved_blocks & 0xFFFFFFFF) as u32;
     sb.s_r_blocks_count_hi = (layout.reserved_blocks >> 32) as u32;
+
+
+    //设置hash种子
+    //需要生成UUID
+    let uuid = generate_uuid();
+    sb.s_hash_seed = uuid.0;
+
+    //设置文件系统UUID
+    let filesys_uuid = generate_uuid_8();
+    sb.s_uuid = filesys_uuid;
 
 
     // 空闲计数：总块数 - 组0元数据块数 - 预留块数（其余组初始全空闲）

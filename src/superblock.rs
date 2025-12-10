@@ -1,5 +1,10 @@
 use crate::config::RESERVED_GDT_BLOCKS;
 use crate::jbd2::jbdstruct::JOURNAL_FILE_INODE;
+
+///UUID
+pub struct UUID(pub [u32;4]);
+
+
 /// Ext4 超级块结构
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -182,7 +187,7 @@ impl Default for Ext4Superblock {
             s_journal_dev: 0,
             s_last_orphan: 0,
             s_hash_seed: [0; 4],
-            s_def_hash_version: 0,
+            s_def_hash_version: 1, //默认Legacy版本
             s_jnl_backup_type: 0,
             s_desc_size: 0,
             s_default_mount_opts: 0,

@@ -3,7 +3,7 @@
 #![feature(alloc_error_handler)]
 
 extern crate alloc;
-
+use alloc::format;
 mod allocator;
 mod virtio_blk;
 mod console;
@@ -11,7 +11,7 @@ mod lang_items;
 
 use core::arch::asm;
 use RVlwext4::{Jbd2Dev, api::{open_file, read_from_file}, ext4::*, mkd::mkdir, mkfile::{mkfile, read_file}, BlockDevice};
-use alloc::string::String;
+use alloc::{fmt::format, string::String};
 use log::*;
 
 use crate::virtio_blk::VirtIOBlockWrapper;
@@ -85,6 +85,11 @@ fn test_base_io<B: BlockDevice>(block_dev:&mut Jbd2Dev<B>, fs:&mut Ext4FileSyste
     let resu=read_from_file(block_dev, fs, &mut file, 10).unwrap();
     error!("offset read:{:?}",String::from_utf8(resu));
     error!("read: {}",string);
+
+    for i in 0..0 {
+        let file_name =format!("/test_dir/test_file:{}",i);
+        mkfile(block_dev, fs, &file_name,None);
+    }
 }
 ///文件查找测试
 fn test_find_file_line<B: BlockDevice>(block_dev:&mut Jbd2Dev<B>,fs:&mut Ext4FileSystem){

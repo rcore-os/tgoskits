@@ -1,7 +1,8 @@
+use alloc::vec::Vec;
 use alloc::vec;
-use log::{error, warn};
+use log::{error, trace, warn};
 
-use crate::{config::BLOCK_SIZE, jbd2::jbdstruct::{JBD2_UPDATE, JBD2DEVSYSTEM, journal_superblock_s}};
+use crate::{config::BLOCK_SIZE, jbd2::jbdstruct::{JBD2_BUFFER_MAX, JBD2_UPDATE, JBD2DEVSYSTEM, journal_superblock_s}};
 /// 块设备错误类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockDevError {
@@ -252,9 +253,20 @@ impl<'a,B:BlockDevice> Jbd2Dev<'a,B> {
                 max_len:super_block.s_maxlen,
                 head:0,
                 sequence:super_block.s_sequence,
-                jbd2_super_block:super_block
+                jbd2_super_block:super_block,
+                commit_queue:Vec::new()
             };
             self.systeam=Some(system);
+        }
+
+
+        ///防止滥用，仅仅umount调用，确保事务缓存全部提交完毕
+        pub fn umount_commit(&mut self){
+            if self.journal_use {
+                self.systeam.as_mut().unwrap().commit_transaction(self.inner.dev);                
+            }else {
+                warn!("Jouranl not use , no thing to commit")
+            }
         }
 
         pub fn write_block(&mut self, block_id: u32,is_metadata:bool) -> BlockDevResult<()> {
@@ -270,9 +282,10 @@ impl<'a,B:BlockDevice> Jbd2Dev<'a,B> {
             // 2) 元数据且启用日志：走 JBD2 事务
             //    此时之前的普通数据块已经完成写入
 
+            //由于分布提交机制，必须需要拷贝数据牺牲性能来确保日志提交
             // 从缓存里拷贝当前要写回的元数据块内容到本地 Vec，避免一直持有对 self.inner 的不可变借用
-            let meta_vec = self.inner.buffer().to_vec();
-            let updates = vec![JBD2_UPDATE(block_id as u64, meta_vec.as_slice())];
+            let meta_vec = self.inner.buffer();
+            let updates = JBD2_UPDATE(block_id as u64,meta_vec.try_into().expect("Data can;t into [u8;BLOCK_SIZE] panic!,os should process"));
 
             // 注意：在 mkfs/早期阶段可能还没设置 super_block，此时直接退化为普通写，避免阻塞格式化
             if self.systeam.is_none() {
@@ -285,7 +298,21 @@ impl<'a,B:BlockDevice> Jbd2Dev<'a,B> {
 
             // 使用原始底层块设备提交事务
             let raw_dev =self.inner.device_mut();
-            let _ = systeam.commit_transaction(raw_dev, updates);
+
+            //先写入缓存
+            if systeam.commit_queue.len()>JBD2_BUFFER_MAX {
+                //缓存已满 直接提交，然后再塞入缓存
+                let _ = systeam.commit_transaction(raw_dev);
+                //赛入缓存
+                systeam.commit_queue.push(updates);
+                trace!("[JBD2 BUFFER] BUFFER IS FULL ,FLUSHED!")
+                
+            }else {
+                //赛入缓存
+                systeam.commit_queue.push(updates);
+            }
+
+          
             
             //此时再把metadata写到主fs，确保数据一致性，journal仅用于崩溃恢复
             self.inner.write_block(block_id).expect("Write block failed!");

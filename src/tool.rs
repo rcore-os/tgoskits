@@ -1,8 +1,46 @@
 use crate::ext4::BlcokGroupLayout;
+use crate::superblock::UUID;
 use crate::{ext4::Ext4FileSystem, superblock::Ext4Superblock};
-use log::debug;
+use log::{debug, error};
 use alloc::vec;
 use alloc::vec::*;
+
+///UUID生成 需要4个u32的uuid
+pub fn generate_uuid()->UUID{
+    //uuid生成策略 将函数指针进行异或
+    let mut orign_uuid = [1_u32;4];
+    let target_seed = debugSuperAndDesc as u32;
+    let mut last_idx:usize =0;
+    //首次异或
+    orign_uuid[0]^=target_seed;
+    //进行迭代异或    
+    for idx in 0..orign_uuid.len()*2 {
+        let real_idx = idx % orign_uuid.len();
+        orign_uuid[real_idx] ^= orign_uuid[last_idx];
+        last_idx=real_idx;
+    }
+
+    UUID(orign_uuid)
+}
+
+///UUID生成 需要16个u8的uuid
+pub fn generate_uuid_8()->[u8;16]{
+    //uuid生成策略 将函数指针进行异或
+    let mut orign_uuid = [1_u8;16];
+    let target_seed = debugSuperAndDesc as u8;
+    let mut last_idx:usize =0;
+    //首次异或
+    orign_uuid[0]^=target_seed;
+    //进行迭代异或    
+    for idx in 0..orign_uuid.len()*2 {
+        let real_idx = idx % orign_uuid.len();
+        orign_uuid[real_idx] ^= orign_uuid[last_idx];
+        last_idx=real_idx;
+    }
+
+    orign_uuid
+}
+
 
 pub fn debugSuperAndDesc(superblock:&Ext4Superblock,fs:&Ext4FileSystem){
     debug!("Superblock info: {:?}", &superblock);
