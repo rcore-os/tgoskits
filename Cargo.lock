@@ -417,6 +417,7 @@ dependencies = [
  "cfg-if",
  "derive_more",
  "event-listener",
+ "extern-trait",
  "kspin",
  "linux-raw-sys",
  "log",
