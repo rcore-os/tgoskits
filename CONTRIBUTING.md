@@ -86,7 +86,7 @@ The project uses a custom `rustfmt.toml` configuration.
 
 We follow the [Conventional Commits](https://www.conventionalcommits.org/) specification. The commit message format is:
 
-```
+```text
 <type>(<scope>): <subject>
 
 <body>
@@ -107,7 +107,7 @@ We follow the [Conventional Commits](https://www.conventionalcommits.org/) speci
 
 **Example**:
 
-```
+```text
 feat(syscall): add epoll system call support
 
 Implement epoll_create, epoll_ctl, and epoll_wait system calls,
