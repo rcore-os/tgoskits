@@ -5,7 +5,7 @@ use axerrno::{AxError, AxResult};
 use axfs::FS_CONTEXT;
 use axhal::uspace::UserContext;
 use axtask::current;
-use starry_core::{mm::load_user_app, task::AsThread};
+use starry_core::{config::USER_HEAP_BASE, mm::load_user_app, task::AsThread};
 use starry_vm::vm_load_until_nul;
 
 use crate::{file::FD_TABLE, mm::vm_load_string};
@@ -59,6 +59,9 @@ pub fn sys_execve(
 
     *proc_data.exe_path.write() = loc.absolute_path()?.to_string();
     *proc_data.cmdline.write() = Arc::new(args);
+
+    proc_data.set_heap_bottom(USER_HEAP_BASE);
+    proc_data.set_heap_top(USER_HEAP_BASE);
 
     *proc_data.signal.actions.lock() = Default::default();
 
