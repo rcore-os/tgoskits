@@ -1,34 +1,17 @@
-use crate::ext4_backend::jbd2::*;
 use crate::ext4_backend::config::*;
-use crate::ext4_backend::jbd2::jbdstruct::*;
 use crate::ext4_backend::endian::*;
-use crate::ext4_backend::superblock::*;
-use crate::ext4_backend::blockdev::*;
-use crate::ext4_backend::disknode::*;
-use crate::ext4_backend::loopfile::*;
-use crate::ext4_backend::mkfile::*;
-use crate::ext4_backend::*;
-use crate::ext4_backend::bmalloc::*;
-use crate::ext4_backend::bitmap_cache::*;
-use crate::ext4_backend::datablock_cache::*;
-use crate::ext4_backend::inodetable_cache::*;
-use crate::ext4_backend::blockgroup_description::*;
-use crate::ext4_backend::mkd::*;
-use crate::ext4_backend::tool::*;
-use crate::ext4_backend::jbd2::jbd2::*;
-use crate::ext4_backend::ext4::*;
 use alloc::vec::Vec;
 /// Ext4 目录条目结构（传统格式）
 /// 用于ext3/ext4的线性目录条目格式
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Ext4DirEntry {
-    pub inode: u32,             // Inode号
-    pub rec_len: u16,           // 目录条目长度
-    pub name_len: u8,           // 文件名长度
-    pub file_type: u8,          // 文件类型
+    pub inode: u32,    // Inode号
+    pub rec_len: u16,  // 目录条目长度
+    pub name_len: u8,  // 文件名长度
+    pub file_type: u8, // 文件类型
     // 文件名紧跟其后（变长，最长255字节）
-    pub name: [u8; DIRNAME_LEN]
+    pub name: [u8; DIRNAME_LEN],
 }
 
 /// Ext4 目录条目结构2（扩展格式）
@@ -36,12 +19,12 @@ pub struct Ext4DirEntry {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Ext4DirEntry2 {
-    pub inode: u32,             // Inode号
-    pub rec_len: u16,           // 目录条目长度 占用的字节数
-    pub name_len: u8,           // 文件名长度
-    pub file_type: u8,          // 文件类型（EXT4_FT_*）
+    pub inode: u32,    // Inode号
+    pub rec_len: u16,  // 目录条目长度 占用的字节数
+    pub name_len: u8,  // 文件名长度
+    pub file_type: u8, // 文件类型（EXT4_FT_*）
     // 文件名紧跟其后（变长，最长255字节） 写入时进行截断写入
-    pub name: [u8; DIRNAME_LEN]
+    pub name: [u8; DIRNAME_LEN],
 }
 
 impl Ext4DirEntry2 {
@@ -61,41 +44,41 @@ impl Ext4DirEntry2 {
 
     /// 目录条目最小长度
     pub const MIN_DIR_ENTRY_LEN: u16 = 12;
-    
+
     /// 文件名最大长度
     pub const MAX_NAME_LEN: u8 = 255;
 
     /// 计算目录条目实际占用长度（含对齐）
     pub fn entry_len(name_len: u8) -> u16 {
-        let base_len = 8; 
+        let base_len = 8;
         let total = base_len + name_len as u16;
         // 对齐到4字节边界
-        ((total + 3) / 4) * 4
+        total.div_ceil(4) * 4
     }
 }
 
 // 文件类型常量
 impl Ext4DirEntry2 {
-    pub const EXT4_FT_UNKNOWN: u8 = 0;   // 未知类型
-    pub const EXT4_FT_REG_FILE: u8 = 1;  // 普通文件
-    pub const EXT4_FT_DIR: u8 = 2;       // 目录
-    pub const EXT4_FT_CHRDEV: u8 = 3;    // 字符设备
-    pub const EXT4_FT_BLKDEV: u8 = 4;    // 块设备
-    pub const EXT4_FT_FIFO: u8 = 5;      // FIFO
-    pub const EXT4_FT_SOCK: u8 = 6;      // 套接字
-    pub const EXT4_FT_SYMLINK: u8 = 7;   // 符号链接
-    pub const EXT4_FT_MAX: u8 = 8;       // 最大值
+    pub const EXT4_FT_UNKNOWN: u8 = 0; // 未知类型
+    pub const EXT4_FT_REG_FILE: u8 = 1; // 普通文件
+    pub const EXT4_FT_DIR: u8 = 2; // 目录
+    pub const EXT4_FT_CHRDEV: u8 = 3; // 字符设备
+    pub const EXT4_FT_BLKDEV: u8 = 4; // 块设备
+    pub const EXT4_FT_FIFO: u8 = 5; // FIFO
+    pub const EXT4_FT_SOCK: u8 = 6; // 套接字
+    pub const EXT4_FT_SYMLINK: u8 = 7; // 符号链接
+    pub const EXT4_FT_MAX: u8 = 8; // 最大值
 }
 
 /// 目录条目尾部（用于校验和）
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Ext4DirEntryTail {
-    pub det_reserved_zero1: u32,    // 保留，必须为0
-    pub det_rec_len: u16,           // 12
-    pub det_reserved_zero2: u8,     // 保留，必须为0
-    pub det_reserved_ft: u8,        // 0xDE，用于标识这是尾部
-    pub det_checksum: u32,          // 目录块的CRC32C校验和
+    pub det_reserved_zero1: u32, // 保留，必须为0
+    pub det_rec_len: u16,        // 12
+    pub det_reserved_zero2: u8,  // 保留，必须为0
+    pub det_reserved_ft: u8,     // 0xDE，用于标识这是尾部
+    pub det_checksum: u32,       // 目录块的CRC32C校验和
 }
 
 impl Ext4DirEntryTail {
@@ -108,21 +91,21 @@ impl Ext4DirEntryTail {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Ext4DxRoot {
-    pub dot: Ext4DirEntry2,         // "." 条目
-    pub dotdot: Ext4DirEntry2,      // ".." 条目
-    pub info: Ext4DxRootInfo,       // 根信息
-    // 后面跟着Ext4DxEntry数组
+    pub dot: Ext4DirEntry2,    // "." 条目
+    pub dotdot: Ext4DirEntry2, // ".." 条目
+    pub info: Ext4DxRootInfo,  // 根信息
+                               // 后面跟着Ext4DxEntry数组
 }
 
 /// HTree根节点信息
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Ext4DxRootInfo {
-    pub reserved_zero: u32,         // 保留，必须为0
-    pub hash_version: u8,           // 哈希版本
-    pub info_length: u8,            // 信息长度（8字节）
-    pub indirect_levels: u8,        // 间接层数
-    pub unused_flags: u8,           // 未使用的标志
+    pub reserved_zero: u32,  // 保留，必须为0
+    pub hash_version: u8,    // 哈希版本
+    pub info_length: u8,     // 信息长度（8字节）
+    pub indirect_levels: u8, // 间接层数
+    pub unused_flags: u8,    // 未使用的标志
 }
 
 impl Ext4DxRootInfo {
@@ -131,12 +114,12 @@ impl Ext4DxRootInfo {
 
 // 哈希版本常量
 impl Ext4DxRootInfo {
-    pub const DX_HASH_LEGACY: u8 = 0;           // 传统哈希
-    pub const DX_HASH_HALF_MD4: u8 = 1;         // Half MD4
-    pub const DX_HASH_TEA: u8 = 2;              // TEA
-    pub const DX_HASH_LEGACY_UNSIGNED: u8 = 3;  // 传统无符号
-    pub const DX_HASH_HALF_MD4_UNSIGNED: u8 = 4;// Half MD4无符号
-    pub const DX_HASH_TEA_UNSIGNED: u8 = 5;     // TEA无符号
+    pub const DX_HASH_LEGACY: u8 = 0; // 传统哈希
+    pub const DX_HASH_HALF_MD4: u8 = 1; // Half MD4
+    pub const DX_HASH_TEA: u8 = 2; // TEA
+    pub const DX_HASH_LEGACY_UNSIGNED: u8 = 3; // 传统无符号
+    pub const DX_HASH_HALF_MD4_UNSIGNED: u8 = 4; // Half MD4无符号
+    pub const DX_HASH_TEA_UNSIGNED: u8 = 5; // TEA无符号
 }
 
 /// HTree条目结构
@@ -144,42 +127,42 @@ impl Ext4DxRootInfo {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Ext4DxEntry {
-    pub hash: u32,              // 哈希值
-    pub block: u32,             // 块号
+    pub hash: u32,  // 哈希值
+    pub block: u32, // 块号
 }
 
 /// HTree计数信息
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Ext4DxCountlimit {
-    pub limit: u16,             // 最大条目数
-    pub count: u16,             // 当前条目数
+    pub limit: u16, // 最大条目数
+    pub count: u16, // 当前条目数
 }
 
 /// 完整的HTree节点
 #[repr(C)]
 #[derive(Debug)]
 pub struct Ext4DxNode {
-    pub fake: Ext4DirEntry2,        // 伪造的目录条目
+    pub fake: Ext4DirEntry2, // 伪造的目录条目
     pub countlimit: Ext4DxCountlimit, // 计数和限制
-    // 后面跟着Ext4DxEntry数组
+                             // 后面跟着Ext4DxEntry数组
 }
 
 /// Extent状态树的叶子节点
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Ext4ExtentStatus {
-    pub es_lblk: u64,           // 第一个逻辑块
-    pub es_len: u64,            // extent长度
-    pub es_pblk: u64,           // 第一个物理块
+    pub es_lblk: u64, // 第一个逻辑块
+    pub es_len: u64,  // extent长度
+    pub es_pblk: u64, // 第一个物理块
 }
 
 /// 用于在目录中查找文件名的辅助结构
 #[derive(Debug)]
 pub struct Ext4DirEntryInfo<'a> {
-    pub inode: u32,             // Inode号
-    pub file_type: u8,          // 文件类型
-    pub name: &'a [u8],         // 文件名切片
+    pub inode: u32,     // Inode号
+    pub file_type: u8,  // 文件类型
+    pub name: &'a [u8], // 文件名切片
 }
 
 impl<'a> Ext4DirEntryInfo<'a> {
@@ -330,17 +313,19 @@ pub mod htree_dir {
     fn tea_hash(name: &[u8], seed: &[u32; 4]) -> u32 {
         let mut hash = seed[0];
         let mut buf = [0u32; 4];
-        
+
         for chunk in name.chunks(16) {
             for (i, bytes) in chunk.chunks(4).enumerate() {
-                if i >= 4 { break; }
+                if i >= 4 {
+                    break;
+                }
                 let mut val = 0u32;
                 for &b in bytes {
                     val = (val << 8) | b as u32;
                 }
                 buf[i] = val;
             }
-            
+
             // TEA算法的简化版本
             for _ in 0..4 {
                 hash = hash.wrapping_add(buf[0] ^ buf[1]);
@@ -359,18 +344,18 @@ impl DiskFormat for Ext4DirEntry2 {
             rec_len: read_u16_le(&bytes[4..6]),
             name_len: bytes[6],
             file_type: bytes[7],
-            name:[0;DIRNAME_LEN]
+            name: [0; DIRNAME_LEN],
         }
     }
-    
+
     fn to_disk_bytes(&self, bytes: &mut [u8]) {
         write_u32_le(self.inode, &mut bytes[0..4]);
         write_u16_le(self.rec_len, &mut bytes[4..6]);
         bytes[6] = self.name_len;
         bytes[7] = self.file_type;
     }
-    
+
     fn disk_size() -> usize {
-        8  // 固定头部大小，不包括变长文件名
+        8 // 固定头部大小，不包括变长文件名
     }
 }

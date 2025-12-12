@@ -6,6 +6,15 @@ KERNEL_ELF := target/$(TARGET)/$(MODE)/qemu_virtio_example
 KERNEL_BIN := $(KERNEL_ELF).bin
 BOOTLOADER := ./bootloader/rustsbi-qemu.bin
 
+BE_TARGET := mips-unknown-linux-gnu
+BE_MODE := release
+BE_BIN := ../../target/$(BE_TARGET)/$(BE_MODE)/RVlwext4
+QEMU_USER := qemu-mips
+QEMU_USER_LD := /usr/mips-linux-gnu
+
+CARGO_NIGHTLY := cargo +nightly
+BUILD_STD_FLAGS := -Zbuild-std=std,panic_abort
+
 # QEMU 参数
 QEMU := qemu-system-riscv64
 QEMU_ARGS := -machine virt \
@@ -17,34 +26,18 @@ QEMU_ARGS := -machine virt \
              -smp 1 \
              -m 800M
 
-.PHONY: all build run clean disk
+.PHONY: build run clean disk be_build be_run
+be_build:
+	@echo "构建 big-endian usermode..."
+	@cd ../.. && \
+		CARGO_TARGET_MIPS_UNKNOWN_LINUX_GNU_LINKER=mips-linux-gnu-gcc \
+		CARGO_TARGET_MIPS_UNKNOWN_LINUX_GNU_AR=mips-linux-gnu-ar \
+		$(CARGO_NIGHTLY) build --release --target $(BE_TARGET) $(BUILD_STD_FLAGS)
+	@echo "构建完成: $(BE_BIN)"
 
-all: build
-
-# 构建
-build:
-	@echo "构建内核..."
-	@cargo build --release
-	@rust-objcopy --binary-architecture=riscv64 \
-		--strip-all \
-		-O binary $(KERNEL_ELF) $(KERNEL_BIN)
-	@echo "构建完成: $(KERNEL_BIN)"
-
-# 创建磁盘镜像
-disk:
-	@echo "创建 512MB 磁盘镜像..."
-	@dd if=/dev/zero of=disk.img bs=1M count=512
-	@echo "磁盘镜像创建完成: disk.img"
-
-# 运行
-run: build disk
-	@echo "启动 QEMU..."
-	@$(QEMU) $(QEMU_ARGS)
-
-# 调试
-debug: build disk
-	@echo "启动 QEMU (调试模式)..."
-	@$(QEMU) $(QEMU_ARGS) -s -S
+be_run: be_build
+	@echo "启动 big-endian usermode..."
+	@$(QEMU_USER) -L $(QEMU_USER_LD) $(BE_BIN)
 
 # 清理
 clean:

@@ -1,9 +1,13 @@
+#![deny(unused)]
+#![deny(dead_code)]
+#![deny(warnings)]
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
-
+mod testfs;
+use crate::testfs::*;
+use rsext4::*;
 use log::*;
-use RVlwext4::*;
 struct SimpleLogger;
 
 impl Log for SimpleLogger {
@@ -20,8 +24,8 @@ impl Log for SimpleLogger {
         // 根据级别选颜色
         let (level_str, color) = match record.level() {
             Level::Error => ("ERROR", "\x1b[31m"), // 红
-            Level::Warn  => ("WARN ", "\x1b[33m"), // 黄
-            Level::Info  => ("INFO ", "\x1b[32m"), // 绿
+            Level::Warn => ("WARN ", "\x1b[33m"),  // 黄
+            Level::Info => ("INFO ", "\x1b[32m"),  // 绿
             Level::Debug => ("DEBUG", "\x1b[34m"), // 蓝
             Level::Trace => ("TRACE", "\x1b[90m"), // 灰
         };
@@ -44,7 +48,6 @@ impl Log for SimpleLogger {
 // 全局静态实例
 static LOGGER: SimpleLogger = SimpleLogger;
 
-
 /// 简单的基于宿主机文件的块设备实现
 struct FileBlockDev {
     file: File,
@@ -57,7 +60,7 @@ impl FileBlockDev {
         let block_size = BLOCK_SIZE as u64;
         let size_bytes = total_blocks * block_size;
 
-        let mut file = OpenOptions::new()
+        let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
@@ -142,29 +145,31 @@ fn main() {
     let level = match std::env::var("LOG").as_deref() {
         Ok("trace") => LevelFilter::Trace,
         Ok("debug") => LevelFilter::Debug,
-        Ok("info")  => LevelFilter::Info,
-        Ok("warn")  => LevelFilter::Warn,
+        Ok("info") => LevelFilter::Info,
+        Ok("warn") => LevelFilter::Warn,
         Ok("error") => LevelFilter::Error,
         _ => LevelFilter::Off, // 默认
     };
     log::set_max_level(level);
 
-    // 简单地创建一个 512MB 的镜像文件
-    let blocks: u64 = (512u64 * 1024 * 1024) / (BLOCK_SIZE as u64);
+    // 简单地创建一个 8G 的镜像文件
+    let blocks: u64 = (8192u64 * 1024 * 1024) / (BLOCK_SIZE as u64);
     let img_path = "ext4.img";
 
-    info!("使用宿主机文件作为块设备: {} (blocks={}, block_size={})", img_path, blocks, BLOCK_SIZE);
+    info!(
+        "使用宿主机文件作为块设备: {img_path} (blocks={blocks}, block_size={BLOCK_SIZE})"
+    );
 
     let mut host_dev = match FileBlockDev::open_or_create(img_path, blocks) {
         Ok(dev) => dev,
         Err(e) => {
-            eprintln!("打开/创建镜像文件失败: {}", e);
+            eprintln!("打开/创建镜像文件失败: {e}");
             return;
         }
     };
 
     // 包一层 Jbd2Dev，开启 journal
-    let mut jbd = Jbd2Dev::initial_jbd2dev(0, &mut host_dev, true);
+    let mut jbd = Jbd2Dev::initial_jbd2dev(0, &mut host_dev, false);
 
     info!("=== 测试 Ext4 mkfs ===");
     test_mkfs(&mut jbd);
@@ -178,140 +183,22 @@ fn main() {
     info!("=== 基本 IO 测试 ===");
     test_base_io(&mut jbd, &mut fs);
 
+    test_normal_apiuse(&mut jbd, &mut fs);
+
+    info!("=== 删除 测试 ===");
+    test_delete(&mut jbd, &mut fs);
+
+    info!("=== link 测试 ===");
+    test_link(&mut jbd, &mut fs);
+
+    info!("=== unlink 测试 ===");
+    test_unlink(&mut jbd, &mut fs);
+
+    info!("=== mv 测试 ===");
+    test_mv(&mut jbd, &mut fs);
+
     info!("=== 卸载测试 ===");
     test_unmount(&mut jbd, fs);
 
     info!("=== 测试完成 ===");
-}
-
-
-//mkfs
-fn test_mkfs<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) {
-    mkfs(block_dev);
-}
-
-
-/// 文件夹创建，文件写入/读取测试
-fn test_base_io<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4FileSystem) {
-    mkdir(block_dev, fs, "/test_dir/");
-
-    let mut tmp_buffer: [u8; 9000] = [b'R'; 9000];
-    let test_str = b"Hello ext4 rust!";
-    tmp_buffer[8999] = b'L';
-    mkfile(block_dev, fs, "/test_dir/testfile", Some(&tmp_buffer));
-    mkfile(block_dev, fs, "/testfile2", Some(test_str));
-
-    let data = read_file(block_dev, fs, "/testfile2").unwrap().unwrap();
-    let string = String::from_utf8(data).unwrap();
-
-    let mut file = open_file(block_dev, fs, "/testfile2", false).unwrap();
-    let resu = read_from_file(block_dev, fs, &mut file, 10).unwrap();
-    error!("offset read: {:?}", String::from_utf8(resu));
-    error!("read: {}", string);
-
-    // 大文件测试：写入 + 读取 吞吐量
-    let test_big_file: Vec<u8> = vec![b'g'; 1024 * 1024 * 200]; // 200MB
-    let file_count = 1u64; // 写入 3 个大文件，避免内存占用过大
-    let total_write_bytes = test_big_file.len() as u64;
-
-    let write_start = std::time::Instant::now();
-    for i in 0..file_count {
-        let file_name = format!("/test_dir/test_file:{}", i);
-        mkfile(block_dev, fs, &file_name, Some(&test_big_file));
-    }
-    //数据实际落盘
-    fs.datablock_cache.flush_all(block_dev);
-    fs.inodetable_cahce.flush_all(block_dev);
-    fs.bitmap_cache.flush_all(block_dev);
-    let write_duration = write_start.elapsed();
-    let write_secs = write_duration.as_secs_f64();
-    let write_mib = total_write_bytes as f64 / (1024.0 * 1024.0);
-    let write_mib_s = if write_secs > 0.0 { write_mib / write_secs } else { 0.0 };
-    println!(
-        "大文件写入: total={:.2} MiB, time={:.3} s, speed={:.2} MiB/s",
-        write_mib, write_secs, write_mib_s
-    );
-
-    // 读取吞吐量测试：依次读回刚才写入的几个大文件
-    let read_start = std::time::Instant::now();
-    let mut read_bytes: u64 = 0;
-    for i in 0..file_count {
-        let file_name = format!("/test_dir/test_file:{}", i);
-        if let Some(data) = read_file(block_dev, fs, &file_name).unwrap() {
-            read_bytes += data.len() as u64;
-        }
-    }
-    let read_duration = read_start.elapsed();
-    let read_secs = read_duration.as_secs_f64();
-    let read_mib = read_bytes as f64 / (1024.0 * 1024.0);
-    let read_mib_s = if read_secs > 0.0 { read_mib / read_secs } else { 0.0 };
-    println!(
-        "大文件读取: total={:.2} MiB, time={:.3} s, speed={:.2} MiB/s",
-        read_mib, read_secs, read_mib_s
-    );
-
-    //=== 宿主机文件系统: 相同规模的大文件写入/读取测试 ===
-    let host_path = "host_fs_test.bin";
-    let total_bytes = test_big_file.len() as u64;
-
-    // 宿主机写入
-    let host_write_start = std::time::Instant::now();
-    {
-        let mut f = std::fs::File::create(host_path)
-            .expect("create host fs test file failed");
-        f.write_all(&test_big_file)
-            .expect("write host fs test file failed");
-        f.flush().expect("flush host fs test file failed");
-    }
-    let host_write_dur = host_write_start.elapsed();
-    let host_write_secs = host_write_dur.as_secs_f64();
-    let host_write_mib = total_bytes as f64 / (1024.0 * 1024.0);
-    let host_write_mib_s = if host_write_secs > 0.0 {
-        host_write_mib / host_write_secs
-    } else {
-        0.0
-    };
-    println!(
-        "[HOST FS] 写入: total={:.2} MiB, time={:.3} s, speed={:.2} MiB/s",
-        host_write_mib, host_write_secs, host_write_mib_s
-    );
-
-    // 宿主机读取
-    let host_read_start = std::time::Instant::now();
-    let mut host_read_buf = vec![0u8; test_big_file.len()];
-    {
-        let mut f = std::fs::File::open(host_path)
-            .expect("open host fs test file failed");
-        f.read_exact(&mut host_read_buf)
-            .expect("read host fs test file failed");
-    }
-    let host_read_dur = host_read_start.elapsed();
-    let host_read_secs = host_read_dur.as_secs_f64();
-    let host_read_mib = total_bytes as f64 / (1024.0 * 1024.0);
-    let host_read_mib_s = if host_read_secs > 0.0 {
-        host_read_mib / host_read_secs
-    } else {
-        0.0
-    };
-    println!(
-        "[HOST FS] 读取: total={:.2} MiB, time={:.3} s, speed={:.2} MiB/s",
-        host_read_mib, host_read_secs, host_read_mib_s
-    );
-}
-
-/// 文件查找测试
-fn test_find_file_line<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4FileSystem) {
-    find_file(fs, block_dev, "/.////../.a");
-}
-
-/// 挂载测试
-fn test_mount<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) -> Ext4FileSystem {
-    debug!("EXT4挂载测试");
-    mount(block_dev).expect("Mount Error!")
-}
-
-/// 取消挂载测试
-fn test_unmount<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: Ext4FileSystem) {
-    debug!("EXT4 umount 测试");
-    umount(fs, block_dev);
 }

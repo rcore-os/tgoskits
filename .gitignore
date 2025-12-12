@@ -4,3 +4,4 @@ lwext4/
 *.bin
 *.lock
 .vscode/
+src/testfs/mount_point/*

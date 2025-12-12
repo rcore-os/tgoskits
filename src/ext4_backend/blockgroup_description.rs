@@ -1,23 +1,4 @@
-use core::cell::RefCell;
-use crate::ext4_backend::jbd2::*;
-use crate::ext4_backend::config::*;
-use crate::ext4_backend::jbd2::jbdstruct::*;
 use crate::ext4_backend::endian::*;
-use crate::ext4_backend::superblock::*;
-use crate::ext4_backend::blockdev::*;
-use crate::ext4_backend::disknode::*;
-use crate::ext4_backend::loopfile::*;
-use crate::ext4_backend::entries::*;
-use crate::ext4_backend::mkfile::*;
-use crate::ext4_backend::*;
-use crate::ext4_backend::bitmap_cache::*;
-use crate::ext4_backend::datablock_cache::*;
-use crate::ext4_backend::inodetable_cache::*;
-use crate::ext4_backend::mkd::*;
-use crate::ext4_backend::tool::*;
-use crate::ext4_backend::jbd2::jbd2::*;
-use crate::ext4_backend::ext4::*;
-use crate::ext4_backend::bitmap::*;
 
 /// Ext4 块组描述符结构
 /// 块组描述符包含了块组的元数据信息，如位图位置、inode表位置等
@@ -26,41 +7,41 @@ use crate::ext4_backend::bitmap::*;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Ext4GroupDesc {
     // 0x00 - 基本信息（32字节，兼容ext2/ext3）
-    pub bg_block_bitmap_lo: u32,        // 块位图块号（低32位）
-    pub bg_inode_bitmap_lo: u32,        // Inode位图块号（低32位）
-    pub bg_inode_table_lo: u32,         // Inode表起始块号（低32位）
+    pub bg_block_bitmap_lo: u32, // 块位图块号（低32位）
+    pub bg_inode_bitmap_lo: u32, // Inode位图块号（低32位）
+    pub bg_inode_table_lo: u32,  // Inode表起始块号（低32位）
 
-    pub bg_free_blocks_count_lo: u16,   // 空闲块数（低16位）
-    pub bg_free_inodes_count_lo: u16,   // 空闲inode数（低16位）
-    pub bg_used_dirs_count_lo: u16,     // 目录数（低16位）
+    pub bg_free_blocks_count_lo: u16, // 空闲块数（低16位）
+    pub bg_free_inodes_count_lo: u16, // 空闲inode数（低16位）
+    pub bg_used_dirs_count_lo: u16,   // 目录数（低16位）
 
-    pub bg_flags: u16,                  // 标志
-    pub bg_exclude_bitmap_lo: u32,      // 快照排除位图块号（低32位）
-    pub bg_block_bitmap_csum_lo: u16,   // 块位图校验和（低16位）
-    pub bg_inode_bitmap_csum_lo: u16,   // Inode位图校验和（低16位）
+    pub bg_flags: u16,                // 标志
+    pub bg_exclude_bitmap_lo: u32,    // 快照排除位图块号（低32位）
+    pub bg_block_bitmap_csum_lo: u16, // 块位图校验和（低16位）
+    pub bg_inode_bitmap_csum_lo: u16, // Inode位图校验和（低16位）
 
-    pub bg_itable_unused_lo: u16,       // 未使用的inode数（低16位）
-    
-    pub bg_checksum: u16,               // 块组描述符校验和
+    pub bg_itable_unused_lo: u16, // 未使用的inode数（低16位）
+
+    pub bg_checksum: u16, // 块组描述符校验和
 
     // 0x20 - 扩展信息（64位支持，额外32字节）
-    pub bg_block_bitmap_hi: u32,        // 块位图块号（高32位）
-    pub bg_inode_bitmap_hi: u32,        // Inode位图块号（高32位）
-    pub bg_inode_table_hi: u32,         // Inode表起始块号（高32位）
-    pub bg_free_blocks_count_hi: u16,   // 空闲块数（高16位）
-    pub bg_free_inodes_count_hi: u16,   // 空闲inode数（高16位）
-    pub bg_used_dirs_count_hi: u16,     // 目录数（高16位）
-    pub bg_itable_unused_hi: u16,       // 未使用的inode数（高16位）
-    pub bg_exclude_bitmap_hi: u32,      // 快照排除位图块号（高32位）
-    pub bg_block_bitmap_csum_hi: u16,   // 块位图校验和（高16位）
-    pub bg_inode_bitmap_csum_hi: u16,   // Inode位图校验和（高16位）
-    pub bg_reserved: u32,               // 保留字段
+    pub bg_block_bitmap_hi: u32,      // 块位图块号（高32位）
+    pub bg_inode_bitmap_hi: u32,      // Inode位图块号（高32位）
+    pub bg_inode_table_hi: u32,       // Inode表起始块号（高32位）
+    pub bg_free_blocks_count_hi: u16, // 空闲块数（高16位）
+    pub bg_free_inodes_count_hi: u16, // 空闲inode数（高16位）
+    pub bg_used_dirs_count_hi: u16,   // 目录数（高16位）
+    pub bg_itable_unused_hi: u16,     // 未使用的inode数（高16位）
+    pub bg_exclude_bitmap_hi: u32,    // 快照排除位图块号（高32位）
+    pub bg_block_bitmap_csum_hi: u16, // 块位图校验和（高16位）
+    pub bg_inode_bitmap_csum_hi: u16, // Inode位图校验和（高16位）
+    pub bg_reserved: u32,             // 保留字段
 }
 
 impl Ext4GroupDesc {
     /// 标准块组描述符大小（32字节）
     pub const GOOD_OLD_DESC_SIZE: usize = 32;
-    
+
     /// 64位块组描述符大小（64字节）
     pub const EXT4_DESC_SIZE_64BIT: usize = 64;
 
@@ -139,10 +120,10 @@ impl Ext4GroupDesc {
 impl Ext4GroupDesc {
     /// Inode表和位图未初始化
     pub const EXT4_BG_INODE_UNINIT: u16 = 0x0001;
-    
+
     /// 块位图未初始化
     pub const EXT4_BG_BLOCK_UNINIT: u16 = 0x0002;
-    
+
     /// Inode表已清零
     pub const EXT4_BG_INODE_ZEROED: u16 = 0x0004;
 }
@@ -151,9 +132,9 @@ impl Ext4GroupDesc {
 /// 包含所有块组描述符的集合
 #[derive(Debug)]
 pub struct BlockGroupDescTable<'a> {
-    data: &'a [u8],                 // 原始数据
-    desc_size: usize,               // 每个描述符的大小
-    group_count: u32,               // 块组数量
+    data: &'a [u8],   // 原始数据
+    desc_size: usize, // 每个描述符的大小
+    group_count: u32, // 块组数量
 }
 
 impl<'a> BlockGroupDescTable<'a> {
@@ -271,9 +252,9 @@ impl<'a> Iterator for BlockGroupDescIter<'a> {
 /// 可变块组描述符表
 /// 用于修改块组描述符
 pub struct BlockGroupDescTableMut<'a> {
-    data: &'a mut [u8],             // 可变原始数据
-    desc_size: usize,               // 每个描述符的大小
-    group_count: u32,               // 块组数量
+    data: &'a mut [u8], // 可变原始数据
+    desc_size: usize,   // 每个描述符的大小
+    group_count: u32,   // 块组数量
 }
 
 impl<'a> BlockGroupDescTableMut<'a> {
@@ -383,12 +364,12 @@ impl<'a> BlockGroupDescTableMut<'a> {
 /// 块组信息统计
 #[derive(Debug, Clone, Copy)]
 pub struct BlockGroupStats {
-    pub group_idx: u32,             // 块组索引
-    pub free_blocks: u32,           // 空闲块数
-    pub free_inodes: u32,           // 空闲inode数
-    pub used_dirs: u32,             // 目录数
-    pub itable_unused: u32,         // 未使用的inode数
-    pub flags: u16,                 // 标志
+    pub group_idx: u32,     // 块组索引
+    pub free_blocks: u32,   // 空闲块数
+    pub free_inodes: u32,   // 空闲inode数
+    pub used_dirs: u32,     // 目录数
+    pub itable_unused: u32, // 未使用的inode数
+    pub flags: u16,         // 标志
 }
 
 impl BlockGroupStats {
@@ -439,7 +420,7 @@ mod tests {
 
     #[test]
     fn test_group_desc_64bit_values() {
-        let mut desc = Ext4GroupDesc {
+        let  desc = Ext4GroupDesc {
             bg_block_bitmap_lo: 0x12345678,
             bg_block_bitmap_hi: 0xABCDEF00,
             bg_inode_bitmap_lo: 0,
@@ -473,7 +454,7 @@ mod tests {
 
     #[test]
     fn test_group_desc_flags() {
-        let mut desc = Ext4GroupDesc {
+        let  desc = Ext4GroupDesc {
             bg_flags: Ext4GroupDesc::EXT4_BG_INODE_UNINIT,
             ..Default::default()
         };
@@ -512,7 +493,7 @@ impl DiskFormat for Ext4GroupDesc {
             bg_reserved: read_u32_le(&bytes[60..64]),
         }
     }
-    
+
     fn to_disk_bytes(&self, bytes: &mut [u8]) {
         write_u32_le(self.bg_block_bitmap_lo, &mut bytes[0..4]);
         write_u32_le(self.bg_inode_bitmap_lo, &mut bytes[4..8]);
@@ -538,7 +519,7 @@ impl DiskFormat for Ext4GroupDesc {
         write_u16_le(self.bg_inode_bitmap_csum_hi, &mut bytes[58..60]);
         write_u32_le(self.bg_reserved, &mut bytes[60..64]);
     }
-    
+
     fn disk_size() -> usize {
         64
     }

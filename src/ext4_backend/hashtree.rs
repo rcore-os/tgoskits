@@ -3,25 +3,13 @@
 //! Provides hash tree-based directory lookup functionality, replacing linear search to improve performance for large directories
 //! Supports Ext4 HTree index format, including multiple hash algorithms
 
-
- 
-use crate::ext4_backend::jbd2::*;
-use crate::ext4_backend::config::*;
-use crate::ext4_backend::jbd2::jbdstruct::*;
-use crate::ext4_backend::endian::*;
-use crate::ext4_backend::superblock::*;
-use crate::ext4_backend::ext4::*;
 use crate::ext4_backend::blockdev::*;
+use crate::ext4_backend::config::*;
 use crate::ext4_backend::disknode::*;
-use crate::ext4_backend::extents_tree::*;
-use crate::ext4_backend::loopfile::*;
+use crate::ext4_backend::endian::*;
 use crate::ext4_backend::entries::*;
-use crate::ext4_backend::mkfile::*;
-use crate::ext4_backend::*;
-use crate::ext4_backend::bmalloc::*;
-use crate::ext4_backend::bitmap_cache::*;
-use crate::ext4_backend::datablock_cache::*;
-use crate::ext4_backend::inodetable_cache::*;
+use crate::ext4_backend::ext4::*;
+use crate::ext4_backend::loopfile::*;
 
 use alloc::vec::Vec;
 use log::{debug, info, warn};
@@ -95,7 +83,10 @@ impl HashTreeManager {
         dir_inode: &Ext4Inode,
         target_name: &[u8],
     ) -> Result<HashTreeSearchResult, HashTreeError> {
-        info!("Starting hash tree lookup: {:?}", core::str::from_utf8(target_name));
+        info!(
+            "Starting hash tree lookup: {:?}",
+            core::str::from_utf8(target_name)
+        );
 
         // 1. Check if directory has hash tree index enabled
         if !dir_inode.is_htree_indexed() {
@@ -106,7 +97,7 @@ impl HashTreeManager {
         // 2. Calculate hash value of target filename
         let target_hash =
             htree_dir::calculate_hash(target_name, self.hash_version, &self.hash_seed);
-        debug!("Target hash value: 0x{:08x}", target_hash);
+        debug!("Target hash value: 0x{target_hash:08x}");
 
         // 3. Read root node
         let root_block = self.get_root_block(fs, block_dev, dir_inode)?;
@@ -119,7 +110,9 @@ impl HashTreeManager {
         match self.search_in_hash_tree(fs, block_dev, &root_info, target_hash, target_name) {
             Ok(result) => Ok(result),
             Err(e) => {
-                warn!("Hash tree lookup failed: {}, falling back to linear search", e);
+                warn!(
+                    "Hash tree lookup failed: {e}, falling back to linear search"
+                );
                 self.fallback_to_linear_search(fs, block_dev, dir_inode, target_name)
             }
         }
@@ -335,23 +328,22 @@ impl HashTreeManager {
         dir_inode: &Ext4Inode,
         target_name: &[u8],
     ) -> Result<HashTreeSearchResult, HashTreeError> {
-        info!("Using linear search: {:?}", core::str::from_utf8(target_name));
+        info!(
+            "Using linear search: {:?}",
+            core::str::from_utf8(target_name)
+        );
 
         let total_size = dir_inode.size() as usize;
-        let block_bytes = BLOCK_SIZE as usize;
+        let block_bytes = BLOCK_SIZE;
         let total_blocks = if total_size == 0 {
             0
         } else {
-            (total_size + block_bytes - 1) / block_bytes
+            total_size.div_ceil(block_bytes)
         };
 
         for lbn in 0..total_blocks {
-            let phys = match resolve_inode_block(
-                fs,
-                block_dev,
-                &mut dir_inode.clone(),
-                lbn as u32,
-            ) {
+            let phys = match resolve_inode_block(fs, block_dev, &mut dir_inode.clone(), lbn as u32)
+            {
                 Ok(Some(b)) => b,
                 Ok(None) => continue,
                 Err(_) => return Err(HashTreeError::BlockOutOfRange),
@@ -466,12 +458,7 @@ mod tests {
     }
 
     impl BlockDevice for MockBlockDevice {
-        fn write(
-            &mut self,
-            buffer: &[u8],
-            block_id: u32,
-            count: u32,
-        ) -> Result<(), BlockDevError> {
+        fn write(&mut self, buffer: &[u8], block_id: u32, count: u32) -> Result<(), BlockDevError> {
             if !self.is_open {
                 return Err(BlockDevError::DeviceNotOpen);
             }
@@ -490,12 +477,7 @@ mod tests {
             Ok(())
         }
 
-        fn read(
-            &self,
-            buffer: &mut [u8],
-            block_id: u32,
-            count: u32,
-        ) -> Result<(), BlockDevError> {
+        fn read(&self, buffer: &mut [u8], block_id: u32, count: u32) -> Result<(), BlockDevError> {
             if !self.is_open {
                 return Err(BlockDevError::DeviceNotOpen);
             }
@@ -531,6 +513,11 @@ mod tests {
 
     // Create test filesystem
     fn create_test_fs() -> Ext4FileSystem {
+        use crate::ext4_backend::superblock::Ext4Superblock;
+        use crate::ext4_backend::inodetable_cache::InodeCache;
+        use crate::ext4_backend::datablock_cache::DataBlockCache;
+        use crate::ext4_backend::bitmap_cache::BitmapCache;
+        use crate::ext4_backend::bmalloc::*;
         let mut superblock = Ext4Superblock::default();
         superblock.s_hash_seed = [0x12345678, 0x87654321, 0xABCDEF00, 0x00FEDCBA];
         superblock.s_def_hash_version = 0x8; // Half SipHash
@@ -546,7 +533,7 @@ mod tests {
             root_inode: 2,
             group_count: 1,
             mounted: true,
-            journal_sb_block_start:None,
+            journal_sb_block_start: None,
         }
     }
 

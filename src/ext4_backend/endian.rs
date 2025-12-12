@@ -1,8 +1,7 @@
 /// 字节序转换辅助模块
-/// 
+///
 /// Ext4 磁盘格式使用小端序（Little Endian）
 /// 本模块提供在内存表示和磁盘表示之间转换的辅助函数
-
 use core::mem::size_of;
 
 /// 从小端字节序读取 u16
@@ -21,8 +20,7 @@ pub fn read_u32_le(bytes: &[u8]) -> u32 {
 #[inline]
 pub fn read_u64_le(bytes: &[u8]) -> u64 {
     u64::from_le_bytes([
-        bytes[0], bytes[1], bytes[2], bytes[3],
-        bytes[4], bytes[5], bytes[6], bytes[7],
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
     ])
 }
 
@@ -52,10 +50,10 @@ pub fn write_u64_le(value: u64, bytes: &mut [u8]) {
 pub trait DiskFormat: Sized {
     /// 从磁盘字节（小端序）反序列化
     fn from_disk_bytes(bytes: &[u8]) -> Self;
-    
+
     /// 序列化到磁盘字节（小端序）
     fn to_disk_bytes(&self, bytes: &mut [u8]);
-    
+
     /// 磁盘大小（字节）
     fn disk_size() -> usize {
         size_of::<Self>()
@@ -70,10 +68,10 @@ mod tests {
     fn test_u16_conversion() {
         let value = 0x1234u16;
         let mut bytes = [0u8; 2];
-        
+
         write_u16_le(value, &mut bytes);
         assert_eq!(bytes, [0x34, 0x12]); // 小端序：低字节在前
-        
+
         let read_value = read_u16_le(&bytes);
         assert_eq!(read_value, value);
     }
@@ -82,10 +80,10 @@ mod tests {
     fn test_u32_conversion() {
         let value = 0x12345678u32;
         let mut bytes = [0u8; 4];
-        
+
         write_u32_le(value, &mut bytes);
         assert_eq!(bytes, [0x78, 0x56, 0x34, 0x12]); // 小端序
-        
+
         let read_value = read_u32_le(&bytes);
         assert_eq!(read_value, value);
     }
@@ -94,10 +92,10 @@ mod tests {
     fn test_u64_conversion() {
         let value = 0x123456789ABCDEF0u64;
         let mut bytes = [0u8; 8];
-        
+
         write_u64_le(value, &mut bytes);
         assert_eq!(bytes, [0xF0, 0xDE, 0xBC, 0x9A, 0x78, 0x56, 0x34, 0x12]);
-        
+
         let read_value = read_u64_le(&bytes);
         assert_eq!(read_value, value);
     }
