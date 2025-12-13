@@ -14,4 +14,4 @@ documentation = "https://docs.rs/axsched"
 rust-version = "1.76"
 
 [dependencies]
-linked_list_r4l = "0.2"
+linked_list_r4l = "0.3"
