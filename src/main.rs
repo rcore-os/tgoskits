@@ -174,6 +174,10 @@ fn main() {
     info!("=== 测试 Ext4 mkfs ===");
     test_mkfs(&mut jbd);
 
+
+    // Enable journaling for mounted filesystem operations.
+    //jbd.set_journal_use(true);
+
     info!("=== EXT4 挂载测试 ===");
     let mut fs = test_mount(&mut jbd);
 
@@ -181,7 +185,7 @@ fn main() {
     test_find_file_line(&mut jbd, &mut fs);
 
     info!("=== 基本 IO 测试 ===");
-    test_base_io(&mut jbd, &mut fs);
+    _test_base_io(&mut jbd, &mut fs);
 
     test_normal_apiuse(&mut jbd, &mut fs);
 
@@ -203,6 +207,12 @@ fn main() {
     info!("=== truncate 测试 ===");
     test_truncate(&mut jbd, &mut fs);
 
+    info!("=== api_write_at_read_at 测试 ===");
+    test_api_write_at_read_at(&mut jbd, &mut fs);
+
+    info!("=== journal 断电回放 测试 ===");
+    //fs = test_journal_poweerfail(&mut jbd, fs);
+    
     info!("=== rename 测试 ===");
     test_rename(&mut jbd, &mut fs);
 

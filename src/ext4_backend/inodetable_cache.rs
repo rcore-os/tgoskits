@@ -8,7 +8,7 @@ use crate::ext4_backend::disknode::*;
 use crate::ext4_backend::endian::*;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-
+use crate::ext4_backend::error::*;
 /// Inode缓存键（全局inode号）
 pub type InodeCacheKey = u64;
 

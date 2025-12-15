@@ -3,113 +3,9 @@ use log::{error, trace, warn};
 
 use crate::ext4_backend::config::*;
 use crate::ext4_backend::jbd2::jbdstruct::*;
-/// 块设备错误类型
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BlockDevError {
+use crate::ext4_backend::error::*;
 
-    /// 非法输入
-    InvalidInput,
 
-    /// 读取错误
-    ReadError,
-
-    /// 写入错误
-    WriteError,
-
-    /// 块号超出范围
-    BlockOutOfRange { block_id: u32, max_blocks: u64 },
-
-    /// 无效的块大小
-    InvalidBlockSize { size: usize, expected: usize },
-
-    /// 缓冲区太小
-    BufferTooSmall { provided: usize, required: usize },
-
-    /// 设备未打开
-    DeviceNotOpen,
-
-    /// 设备已关闭
-    DeviceClosed,
-
-    /// I/O错误
-    IoError,
-
-    /// 对齐错误（数据未对齐到块边界）
-    AlignmentError { offset: u64, alignment: u32 },
-
-    /// 设备忙
-    DeviceBusy,
-
-    /// 超时
-    Timeout,
-
-    /// 不支持的操作
-    Unsupported,
-
-    /// 设备只读
-    ReadOnly,
-
-    /// 空间不足
-    NoSpace,
-
-    /// 权限错误
-    PermissionDenied,
-
-    /// 设备损坏或数据损坏
-    Corrupted,
-
-    /// 校验和错误
-    ChecksumError,
-
-    /// 未知错误
-    Unknown,
-}
-
-impl core::fmt::Display for BlockDevError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            BlockDevError::InvalidInput =>{write!(f,"invalid input")}
-            BlockDevError::ReadError => write!(f, "failed to read from block device"),
-            BlockDevError::WriteError => write!(f, "failed to write to block device"),
-            BlockDevError::BlockOutOfRange {
-                block_id,
-                max_blocks,
-            } => {
-                write!(f, "block id {block_id} out of range (max {max_blocks})")
-            }
-            BlockDevError::InvalidBlockSize { size, expected } => {
-                write!(f, "invalid block size {size} (expected {expected})")
-            }
-            BlockDevError::BufferTooSmall { provided, required } => {
-                write!(
-                    f,
-                    "buffer too small: provided {provided} bytes, required {required} bytes"
-                )
-            }
-            BlockDevError::DeviceNotOpen => write!(f, "device not open"),
-            BlockDevError::DeviceClosed => write!(f, "device already closed"),
-            BlockDevError::IoError => write!(f, "I/O error"),
-            BlockDevError::AlignmentError { offset, alignment } => {
-                write!(
-                    f,
-                    "alignment error: offset {offset} is not aligned to {alignment}-byte boundary"
-                )
-            }
-            BlockDevError::DeviceBusy => write!(f, "device is busy"),
-            BlockDevError::Timeout => write!(f, "operation timed out"),
-            BlockDevError::Unsupported => write!(f, "unsupported operation"),
-            BlockDevError::ReadOnly => write!(f, "device is read-only"),
-            BlockDevError::NoSpace => write!(f, "no space left on device"),
-            BlockDevError::PermissionDenied => write!(f, "permission denied"),
-            BlockDevError::Corrupted => write!(f, "device or data is corrupted"),
-            BlockDevError::ChecksumError => write!(f, "checksum error"),
-            BlockDevError::Unknown => write!(f, "unknown error"),
-        }
-    }
-}
-
-/// 块设备操作结果类型
-pub type BlockDevResult<T> = Result<T, BlockDevError>;
 
 ///可以调用block write的函数标记 有序管理写,jbd2需要
 pub trait INeedBlockdevToWrite {}
@@ -332,11 +228,6 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             systeam.commit_queue.push(updates);
         }
 
-        //此时再把metadata写到主fs，确保数据一致性，journal仅用于崩溃恢复
-        self.inner
-            .write_block(block_id)
-            .expect("Write block failed!");
-
         Ok(())
     }
     pub fn read_block(&mut self, block_id: u32) -> BlockDevResult<()> {
@@ -405,10 +296,6 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             systeam.commit_queue.push(updates);
         }
 
-        //此时再把metadata写到主fs，确保数据一致性，journal仅用于崩溃恢复
-        self.inner
-            .write_blocks(buf, block_id, count)
-            .expect("Write block failed!");
 
         Ok(())
     }

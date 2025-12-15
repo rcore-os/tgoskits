@@ -1,5 +1,6 @@
 //文件遍历
 
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use log::{error, info};
 
@@ -10,20 +11,18 @@ use crate::ext4_backend::entries::*;
 use crate::ext4_backend::ext4::*;
 use crate::ext4_backend::extents_tree::*;
 use crate::ext4_backend::hashtree::*;
+use crate::ext4_backend::error::*;
 use log::debug;
 
-#[cfg(feature = "vfs-perf")]
-use axhal::time::monotonic_time_nanos;
 ///支持extend数和多级索引(多级索引将来弃用)
 /// 根据 inode 的逻辑块号解析到物理块号，支持 12 个直接块和 1/2/3 级间接块
 pub fn resolve_inode_block<B: BlockDevice>(
-    fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     inode: &mut Ext4Inode,
     logical_block: u32,
 ) -> BlockDevResult<Option<u32>> {
     // 优先走 extent 树（支持多层索引）；失败时再回退到传统多级指针逻辑
-    if inode.is_extent() {
+    if inode.have_extend_header_and_use_extend() {
         let mut tree = ExtentTree::new(inode);
         if let Some(ext) = tree.find_extent(block_dev, logical_block)? {
             let mut len = ext.ee_len as u32;
@@ -47,165 +46,23 @@ pub fn resolve_inode_block<B: BlockDevice>(
             }
             return Ok(Some(phys as u32));
         }
-        error!("Can;t find proper extend for this logical block");
+        error!("Can't find proper extend for this logical block");
+        return Err(BlockDevError::ReadError);
+    }else {
+        error!("Only Support Extend mode!");
+        return Err(BlockDevError::Unsupported);
     }
 
-    let lbn = logical_block as usize;
-    let per_block = BLOCK_SIZE / 4; // 每个间接块能存多少个 u32 块号
-
-    //  直接块 [0, 12)
-    if lbn < 12 {
-        let blk = inode.i_block[lbn];
-        return Ok(if blk == 0 { None } else { Some(blk) });
-    }
-
-    //  一级间接块
-    let mut idx = lbn - 12;
-    if idx < per_block {
-        let ind_blk = inode.i_block[12];
-        if ind_blk == 0 {
-            return Ok(None);
-        }
-        let cached = fs.datablock_cache.get_or_load(block_dev, ind_blk as u64)?;
-        let data = &cached.data[..BLOCK_SIZE];
-        let off = idx * 4;
-        if off + 4 > data.len() {
-            return Ok(None);
-        }
-        let raw = u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]);
-        return Ok(if raw == 0 { None } else { Some(raw) });
-    }
-
-    //  二级间接块
-    idx -= per_block;
-    let level1_span = per_block * per_block;
-    if idx < level1_span {
-        let l1_blk = inode.i_block[13];
-        if l1_blk == 0 {
-            return Ok(None);
-        }
-
-        let first_idx = idx / per_block;
-        let second_idx = idx % per_block;
-
-        // 读取一级间接块，取出对应的二级块号
-        let l1_cached = fs.datablock_cache.get_or_load(block_dev, l1_blk as u64)?;
-        let l1_data = &l1_cached.data[..BLOCK_SIZE];
-        let off1 = first_idx * 4;
-        if off1 + 4 > l1_data.len() {
-            return Ok(None);
-        }
-        let l2_blk = u32::from_le_bytes([
-            l1_data[off1],
-            l1_data[off1 + 1],
-            l1_data[off1 + 2],
-            l1_data[off1 + 3],
-        ]);
-        if l2_blk == 0 {
-            return Ok(None);
-        }
-
-        // 读取二级间接块，取出最终数据块号
-        let l2_cached = fs.datablock_cache.get_or_load(block_dev, l2_blk as u64)?;
-        let l2_data = &l2_cached.data[..BLOCK_SIZE];
-        let off2 = second_idx * 4;
-        if off2 + 4 > l2_data.len() {
-            return Ok(None);
-        }
-        let data_blk = u32::from_le_bytes([
-            l2_data[off2],
-            l2_data[off2 + 1],
-            l2_data[off2 + 2],
-            l2_data[off2 + 3],
-        ]);
-        return Ok(if data_blk == 0 { None } else { Some(data_blk) });
-    }
-
-    //  三级间接块
-    idx -= level1_span;
-    let level2_span = per_block * per_block * per_block;
-    if idx >= level2_span {
-        // 超出三级间接能表示的范围
-        return Ok(None);
-    }
-
-    let l0_blk = inode.i_block[14];
-    if l0_blk == 0 {
-        return Ok(None);
-    }
-
-    let idx0 = idx / level1_span; // 第一级索引
-    let rem = idx % level1_span;
-    let idx1 = rem / per_block; // 第二级索引
-    let idx2 = rem % per_block; // 第三级索引
-
-    // 第一级
-    let l0_cached = fs.datablock_cache.get_or_load(block_dev, l0_blk as u64)?;
-    let l0_data = &l0_cached.data[..BLOCK_SIZE];
-    let off0 = idx0 * 4;
-    if off0 + 4 > l0_data.len() {
-        return Ok(None);
-    }
-    let l1_blk = u32::from_le_bytes([
-        l0_data[off0],
-        l0_data[off0 + 1],
-        l0_data[off0 + 2],
-        l0_data[off0 + 3],
-    ]);
-    if l1_blk == 0 {
-        return Ok(None);
-    }
-
-    // 第二级
-    let l1_cached = fs.datablock_cache.get_or_load(block_dev, l1_blk as u64)?;
-    let l1_data = &l1_cached.data[..BLOCK_SIZE];
-    let off1 = idx1 * 4;
-    if off1 + 4 > l1_data.len() {
-        return Ok(None);
-    }
-    let l2_blk = u32::from_le_bytes([
-        l1_data[off1],
-        l1_data[off1 + 1],
-        l1_data[off1 + 2],
-        l1_data[off1 + 3],
-    ]);
-    if l2_blk == 0 {
-        return Ok(None);
-    }
-
-    // 第三级
-    let l2_cached = fs.datablock_cache.get_or_load(block_dev, l2_blk as u64)?;
-    let l2_data = &l2_cached.data[..BLOCK_SIZE];
-    let off2 = idx2 * 4;
-    if off2 + 4 > l2_data.len() {
-        return Ok(None);
-    }
-    let data_blk = u32::from_le_bytes([
-        l2_data[off2],
-        l2_data[off2 + 1],
-        l2_data[off2 + 2],
-        l2_data[off2 + 3],
-    ]);
-
-    Ok(if data_blk == 0 { None } else { Some(data_blk) })
+    
 }
 
 pub fn resolve_inode_block_allextend<B: BlockDevice>(
     _fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     inode: &mut Ext4Inode,
-) -> BlockDevResult<Vec<u64>> {
-    let blocks = resolve_inode_block_allextend_lbn(_fs, block_dev, inode)?;
-    Ok(blocks.into_iter().map(|(_, phys)| phys).collect())
-}
-
-pub fn resolve_inode_block_allextend_lbn<B: BlockDevice>(
-    _fs: &mut Ext4FileSystem,
-    block_dev: &mut Jbd2Dev<B>,
-    inode: &mut Ext4Inode,
-) -> BlockDevResult<Vec<(u32, u64)>> {
-    if !inode.is_extent() {
-        return Ok(Vec::new());
+) -> BlockDevResult<BTreeMap<u32, u64>> {
+    if !inode.have_extend_header_and_use_extend() {
+        return Ok(BTreeMap::new());
     }
 
     fn push_extent_blocks(out: &mut Vec<(u32, u64)>, ext: &Ext4Extent) {
@@ -252,14 +109,19 @@ pub fn resolve_inode_block_allextend_lbn<B: BlockDevice>(
     let tree = ExtentTree::new(inode);
     let root = match tree.load_root_from_inode() {
         Some(n) => n,
-        None => return Ok(Vec::new()),
+        None => return Ok(BTreeMap::new()),
     };
 
     let mut blocks: Vec<(u32, u64)> = Vec::new();
     walk_node(block_dev, &root, &mut blocks)?;
     blocks.sort_unstable_by_key(|(lbn, _)| *lbn);
     blocks.dedup_by_key(|(lbn, _)| *lbn);
-    Ok(blocks)
+
+    let mut out = BTreeMap::new();
+    for (lbn, phys) in blocks {
+        out.insert(lbn, phys);
+    }
+    Ok(out)
 }
 
 ///传入完整的路径信息按照特性进行扫描。
@@ -268,8 +130,7 @@ pub fn get_file_inode<B: BlockDevice>(
     block_dev: &mut Jbd2Dev<B>,
     path: &str,
 ) -> BlockDevResult<Option<(u32, Ext4Inode)>> {
-    #[cfg(feature = "vfs-perf")]
-    let __t0 = monotonic_time_nanos();
+
 
     // 规范化路径：空串或"/" 视为根目录
     if path.is_empty() || path == "/" {
@@ -316,9 +177,6 @@ pub fn get_file_inode<B: BlockDevice>(
         let mut found_inode_num: Option<u64> = None;
 
         // 尝试使用哈希树查找
-        #[cfg(feature = "vfs-perf")]
-        let __step0 = monotonic_time_nanos();
-
         match lookup_directory_entry(fs, block_dev, &current_inode, target) {
             Ok(result) => {
                 found_inode_num = Some(result.entry.inode as u64);
@@ -338,8 +196,8 @@ pub fn get_file_inode<B: BlockDevice>(
                 );
 
                 for (idx, phys) in blocks.iter().enumerate() {
-                    info!("Scan dir block idx {} phys {}", &idx, phys);
-                    let cached_block = fs.datablock_cache.get_or_load(block_dev, *phys)?;
+                    info!("Scan dir block idx {} phys {}", &idx, phys.1);
+                    let cached_block = fs.datablock_cache.get_or_load(block_dev, *phys.1)?;
                     let block_data = &cached_block.data[..block_bytes];
 
                     if let Some(entry) = classic_dir::find_entry(block_data, target) {
@@ -350,15 +208,7 @@ pub fn get_file_inode<B: BlockDevice>(
             }
         }
 
-        #[cfg(feature = "vfs-perf")]
-        {
-            let __dt = monotonic_time_nanos().saturating_sub(__step0);
-            log::debug!(
-                "vfs-perf get_file_inode step name={} dt_us={}",
-                name,
-                (__dt as u64) / 1000
-            );
-        }
+   
 
         let inode_num = match found_inode_num {
             Some(n) => n,
@@ -382,15 +232,7 @@ pub fn get_file_inode<B: BlockDevice>(
         path_vec.push(current_inode);
     }
 
-    #[cfg(feature = "vfs-perf")]
-    {
-        let __dt = monotonic_time_nanos().saturating_sub(__t0);
-        log::debug!(
-            "vfs-perf get_file_inode path={} dt_us={}",
-            path,
-            (__dt as u64) / 1000
-        );
-    }
+ 
 
     Ok(Some((current_ino_num, current_inode)))
 }

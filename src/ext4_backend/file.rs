@@ -2,7 +2,7 @@ use core::u32;
 
 use alloc::string::ToString;
 use alloc::vec::Vec;
-use log::error;
+use log::{error, info};
 use log::{debug, warn};
 
 use crate::ext4_backend::blockdev::*;
@@ -13,10 +13,10 @@ use crate::ext4_backend::entries::*;
 use crate::ext4_backend::ext4::*;
 use crate::ext4_backend::extents_tree::*;
 use crate::ext4_backend::loopfile::*;
+use crate::ext4_backend::error::*;
 use alloc::string::String;
 
-#[cfg(feature = "vfs-perf")]
-use axhal::time::monotonic_time_nanos;
+
 
 
 pub fn rename<B: BlockDevice>(
@@ -70,6 +70,7 @@ pub fn truncate<B: BlockDevice>(
     truncate_with_ino(device, fs, inode_num, truncate_size)
 }
 
+///TODO:shrink暂时不要用不成熟   记得更新inodesize extendtree不负责更新inodesize
 pub fn truncate_with_ino<B: BlockDevice>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
@@ -77,8 +78,12 @@ pub fn truncate_with_ino<B: BlockDevice>(
     truncate_size: u64,
 ) -> BlockDevResult<()> {
     let mut inode = fs.get_inode_by_num(device, inode_num)?;
+    
     if !inode.is_file() {
-        return Err(BlockDevError::InvalidInput);
+        warn!("trubcate abnormal file")
+    }else if inode.is_symlink() {
+        error!("Can't truncate symlink file!");
+        return Err(BlockDevError::Unsupported);
     }
 
     let old_size = inode.size();
@@ -99,37 +104,44 @@ pub fn truncate_with_ino<B: BlockDevice>(
     };
 
     // extent 分支：支持 grow；shrink 仅支持 truncate 到 0（否则需要删/裁剪 extent）
-    if fs.superblock.has_extents() && inode.is_extent() {
-        if truncate_size < old_size && truncate_size != 0 {
-            return Err(BlockDevError::Unsupported);
-        }
+    if fs.superblock.has_extents() && inode.have_extend_header_and_use_extend() {
+        if truncate_size < old_size {
+            // shrink：删除逻辑范围尾部，但 hole 不应导致 double free。
+            // 通过 ExtentTree::remove_extend 让 extent tree 内部负责释放物理块。
+            let del_start_lbn = new_blocks as u32;
 
-        if truncate_size == 0 {
-            // 释放所有数据块
-            let mut used_blocks = resolve_inode_block_allextend(fs, device, &mut inode)?;
-            used_blocks.sort_unstable();
-            for blk in used_blocks {
-                fs.free_block(device, blk)?;
+            loop {
+                let blocks_map = resolve_inode_block_allextend(fs, device, &mut inode)?;
+                let del_len = if truncate_size == 0 {
+                    blocks_map.len() as u32
+                } else {
+                    blocks_map.range(del_start_lbn..).count() as u32
+                };
+
+                if del_len == 0 {
+                    break;
+                }
+
+                let start_lbn = if truncate_size == 0 {
+                    // Plan B: start from the first mapped LBN to avoid rescanning from 0 repeatedly.
+                    let Some((&first_lbn, _)) = blocks_map.iter().next() else {
+                        break;
+                    };
+                    first_lbn
+                } else {
+                    del_start_lbn
+                };
+
+                let chunk = core::cmp::min(del_len, 0x7FFF);
+                {
+                    let mut tree = ExtentTree::new(&mut inode);
+                    tree.remove_extend(fs, Ext4Extent::new(start_lbn, 0, chunk as u16), device)?;
+                }
             }
-
-            inode.i_size_lo = 0;
-            inode.i_size_high = 0;
-            inode.i_blocks_lo = 0;
-            inode.l_i_blocks_high = 0;
-            inode.i_flags |= Ext4Inode::EXT4_EXTENTS_FL;
-            inode.write_extend_header();
-
-            fs.modify_inode(device, inode_num, |td| {
-                *td = inode;
-            })?;
-            return Ok(());
         }
 
         if new_blocks > old_blocks {
-            // 确保 extent header 存在
-            if !inode.have_extend_header() {
-                inode.write_extend_header();
-            }
+
 
             let mut new_blocks_map: Vec<(u32, u64)> = Vec::new();
             for lbn in old_blocks as u32..new_blocks as u32 {
@@ -170,7 +182,9 @@ pub fn truncate_with_ino<B: BlockDevice>(
 
         inode.i_size_lo = (truncate_size & 0xffff_ffff) as u32;
         inode.i_size_high = (truncate_size >> 32) as u32;
-        let iblocks_used = (new_blocks.saturating_mul(BLOCK_SIZE as u64 / 512)) as u64;
+        // i_blocks reflects number of allocated blocks, not logical length. Recompute after edits.
+        let alloc_blocks = resolve_inode_block_allextend(fs, device, &mut inode)?.len() as u64;
+        let iblocks_used = alloc_blocks.saturating_mul(BLOCK_SIZE as u64 / 512);
         inode.i_blocks_lo = (iblocks_used & 0xffff_ffff) as u32;
         inode.l_i_blocks_high = ((iblocks_used >> 32) & 0xffff) as u16;
 
@@ -354,8 +368,7 @@ fn read_symlink_target<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
     inode: &mut Ext4Inode,
 ) -> BlockDevResult<Vec<u8>> {
-    #[cfg(feature = "vfs-perf")]
-    let __t0 = monotonic_time_nanos();
+
 
     let size = inode.size() as usize;
     if size == 0 {
@@ -374,9 +387,9 @@ fn read_symlink_target<B: BlockDevice>(
     let total_blocks = size.div_ceil(block_bytes);
     let mut buf = Vec::with_capacity(size);
 
-    if inode.is_extent() {
+    if inode.have_extend_header_and_use_extend() {
         let blocks = resolve_inode_block_allextend(fs, device, inode)?;
-        for phys in blocks {
+        for &phys in blocks.values() {
             let cached = fs.datablock_cache.get_or_load(device, phys)?;
             let data = &cached.data[..block_bytes];
             buf.extend_from_slice(data);
@@ -386,7 +399,7 @@ fn read_symlink_target<B: BlockDevice>(
         }
     } else {
         for lbn in 0..total_blocks {
-            let phys = match resolve_inode_block(fs, device, inode, lbn as u32)? {
+            let phys = match resolve_inode_block( device, inode, lbn as u32)? {
                 Some(b) => b,
                 None => break,
             };
@@ -398,15 +411,7 @@ fn read_symlink_target<B: BlockDevice>(
 
     buf.truncate(size);
 
-    #[cfg(feature = "vfs-perf")]
-    {
-        let __dt = monotonic_time_nanos().saturating_sub(__t0);
-        log::debug!(
-            "vfs-perf rsext4 read_symlink_target size={} dt_us={}",
-            size,
-            (__dt as u64) / 1000
-        );
-    }
+  
 
     Ok(buf)
 }
@@ -437,9 +442,7 @@ fn read_file_follow<B: BlockDevice>(
     path: &str,
     depth: usize,
 ) -> BlockDevResult<Option<Vec<u8>>> {
-    #[cfg(feature = "vfs-perf")]
-    let __t0 = monotonic_time_nanos();
-
+  
     if depth > 8 {
         return Err(BlockDevError::InvalidInput);
     }
@@ -475,9 +478,9 @@ fn read_file_follow<B: BlockDevice>(
 
     let mut buf = Vec::with_capacity(size);
 
-    if inode.is_extent() {
+    if inode.have_extend_header_and_use_extend() {
         let blocks = resolve_inode_block_allextend(fs, device, &mut inode)?;
-        for phys in blocks {
+        for &phys in blocks.values() {
             let cached = fs.datablock_cache.get_or_load(device, phys)?;
             let data = &cached.data[..block_bytes];
             buf.extend_from_slice(data);
@@ -487,7 +490,7 @@ fn read_file_follow<B: BlockDevice>(
         }
     } else {
         for lbn in 0..total_blocks {
-            let phys = match resolve_inode_block(fs, device, &mut inode, lbn as u32)? {
+            let phys = match resolve_inode_block( device, &mut inode, lbn as u32)? {
                 Some(b) => b,
                 None => break,
             };
@@ -500,16 +503,7 @@ fn read_file_follow<B: BlockDevice>(
 
     buf.truncate(size);
 
-    #[cfg(feature = "vfs-perf")]
-    {
-        let __dt = monotonic_time_nanos().saturating_sub(__t0);
-        log::debug!(
-            "vfs-perf rsext4 read_file_follow path={} size={} dt_us={}",
-            path,
-            size,
-            (__dt as u64) / 1000
-        );
-    }
+   
 
     Ok(Some(buf))
 }
@@ -580,7 +574,7 @@ pub fn mv<B: BlockDevice>(
     let mut src_ft: Option<u8> = None;
     if let Ok(blocks) = resolve_inode_block_allextend(fs, block_dev, &mut old_parent_inode) {
         for phys in blocks {
-            let cached = match fs.datablock_cache.get_or_load(block_dev, phys) {
+            let cached = match fs.datablock_cache.get_or_load(block_dev, phys.1) {
                 Ok(v) => v,
                 Err(_) => continue,
             };
@@ -610,7 +604,7 @@ pub fn mv<B: BlockDevice>(
             total_size.div_ceil(BLOCK_SIZE)
         };
         for lbn in 0..total_blocks {
-            let phys = match resolve_inode_block(fs, block_dev, &mut old_parent_inode, lbn as u32) {
+            let phys = match resolve_inode_block( block_dev, &mut old_parent_inode, lbn as u32) {
                 Ok(Some(b)) => b,
                 _ => continue,
             };
@@ -741,7 +735,7 @@ pub fn mv<B: BlockDevice>(
             });
 
             // 更新被移动目录的 ".." 指向新父目录 inode
-            let first_blk = match resolve_inode_block(fs, block_dev, &mut moved_inode, 0) {
+            let first_blk = match resolve_inode_block( block_dev, &mut moved_inode, 0) {
                 Ok(Some(b)) => b,
                 _ => {
                     error!("mv resolve_inode_block failed for moved dir ino={}", src_ino);
@@ -818,7 +812,7 @@ pub fn unlink<B: BlockDevice>(
         }
     };
 
-    for phys in blocks {
+    for &phys in blocks.values() {
         let cached = match fs.datablock_cache.get_or_load(block_dev, phys) {
             Ok(v) => v,
             Err(_) => continue,
@@ -872,7 +866,7 @@ pub fn unlink<B: BlockDevice>(
     if new_links == 0 {
         let mut used_blocks: Vec<u64> =
             match resolve_inode_block_allextend(fs, block_dev, &mut target_inode) {
-                Ok(v) => v,
+                Ok(v) => v.into_values().collect(),
                 Err(e) => {
                     warn!("Parse inode blocks failed (unlink free): {e:?}");
                     return;
@@ -974,7 +968,7 @@ pub fn link<B: BlockDevice>(
         .ok()
         .flatten()
         && let Ok(blocks) = resolve_inode_block_allextend(fs, block_dev, &mut lp_inode) {
-            for phys in blocks {
+            for &phys in blocks.values() {
                 let cached = match fs.datablock_cache.get_or_load(block_dev, phys) {
                     Ok(v) => v,
                     Err(_) => continue,
@@ -1067,7 +1061,7 @@ pub fn remove_inodeentry_from_parentdir<B: BlockDevice>(
         if removed {
             break;
         }
-        let phys = match resolve_inode_block(fs, block_dev, &mut parent_inode, lbn as u32) {
+        let phys = match resolve_inode_block( block_dev, &mut parent_inode, lbn as u32) {
             Ok(Some(b)) => b,
             _ => continue,
         };
@@ -1196,7 +1190,7 @@ pub fn delete_dir<B: BlockDevice>(fs: &mut Ext4FileSystem, block_dev: &mut Jbd2D
         if frame.stage == 0 {
             let block_bytes = BLOCK_SIZE;
 
-            let dir_blocks: Vec<u64> =
+            let dir_blocks =
                 match resolve_inode_block_allextend(fs, block_dev, &mut frame.inode) {
                     Ok(v) => v,
                     Err(e) => {
@@ -1212,7 +1206,7 @@ pub fn delete_dir<B: BlockDevice>(fs: &mut Ext4FileSystem, block_dev: &mut Jbd2D
                 alloc::string::String,
             )> = Vec::new();
 
-            for &phys in &dir_blocks {
+            for &phys in dir_blocks.values() {
                 // 先收集 entry，避免在持有 datablock_cache 借用时再次可变借用 fs
                 let mut child_entries: Vec<(u32, alloc::string::String)> = Vec::new();
                 {
@@ -1348,7 +1342,7 @@ pub fn delete_dir<B: BlockDevice>(fs: &mut Ext4FileSystem, block_dev: &mut Jbd2D
         // 然后仿照deletefile的逻辑释放entry对应的inode的blocks和inode。
         let used_blocks: Vec<u64> =
             match resolve_inode_block_allextend(fs, block_dev, &mut cur_inode) {
-                Ok(v) => v,
+                Ok(v) => v.into_values().collect(),
                 Err(e) => {
                     warn!(
                         "Parse dir blocks failed (freeing): {:?} path={}",
@@ -1415,7 +1409,9 @@ pub fn delete_file<B: BlockDevice>(
     //统计block（i_blocks 以 512 字节为单位，换算成数据块个数）
     let mut inode_used_blocks: Vec<u64> =
         resolve_inode_block_allextend(fs, block_dev, &mut target_inode)
-            .expect("Parse inode extend failed");
+            .expect("Parse inode extend failed")
+            .into_values()
+            .collect();
     inode_used_blocks.sort(); //排序block
     //link-1
     target_inode.i_links_count = target_inode.i_links_count.saturating_sub(1);
@@ -1494,7 +1490,8 @@ pub fn build_file_block_mapping<B: BlockDevice>(
         inode.i_block = [0; 15];
 
         //初始头构建
-        if !inode.have_extend_header() {
+        if !inode.have_extend_header_and_use_extend() {
+            inode.i_flags |=Ext4Inode::EXT4_EXTENTS_FL;
             inode.write_extend_header();
         }
 
@@ -1533,15 +1530,7 @@ pub fn build_file_block_mapping<B: BlockDevice>(
             tree.insert_extent(fs, extend, block_dev).expect("Extend insert Failed!");
         }
     } else {
-        //传统直接最多使用前12个+3个间接指针
-        inode.i_block = [0; 15];
-        for (i, blk) in data_blocks.iter().take(12).enumerate() {
-            inode.i_block[i] = *blk as u32;
-        }
-        if data_blocks.len() > 12 {
-            //需要1级间接块
-            error!("not support tranditional block pointer");
-        }
+        error!("not support tranditional block pointer");
     }
 }
 
@@ -1658,9 +1647,13 @@ pub fn mkfile_with_ino<B: BlockDevice>(
     // 构造新文件 inode 的内存版本，然后通过 modify_inode 一次性写回
     let mut new_inode = Ext4Inode::default();
     new_inode.i_mode = Ext4Inode::S_IFREG | 0o644;
+
+    //extend是否开启
+    if fs.superblock.has_extents() {
+        new_inode.write_extend_header();
+    }
+
     new_inode.i_links_count = 1;
-
-
 
     let size_lo = (total_written & 0xffffffff) as u32;
     let size_hi = ((total_written as u64) >> 32) as u32;
@@ -1790,116 +1783,65 @@ pub fn write_file_with_ino<B: BlockDevice>(
     // before any extent-based operations. Some inodes may have EXTENTS flag set
     // but the on-disk header is missing/invalid.
     if fs.superblock.has_extents() {
-        if !inode.is_extent() {
+        if !inode.have_extend_header_and_use_extend() {
             inode.i_flags |= Ext4Inode::EXT4_EXTENTS_FL;
-        }
-        if !inode.have_extend_header() {
             inode.write_extend_header();
         }
     }
 
     if offset > old_size {
-        return Err(BlockDevError::Unsupported);
+        info!("Expend write!");
     }
 
     let end = offset.saturating_add(data.len());
-    let old_blocks = if old_size == 0 {
-        0
-    } else {
-        old_size.div_ceil(block_bytes)
-    };
-    let new_blocks = if end == 0 {
-        0
-    } else {
-        end.div_ceil(block_bytes)
-    };
-
-    if end > old_size {
-        if !fs.superblock.has_extents() || !inode.is_extent() {
-            // 只在 extent 模式下支持扩展
-            return Err(BlockDevError::Unsupported);
-        }
-
-        if !inode.have_extend_header() {
-            inode.write_extend_header();
-        }
-
-        let mut new_blocks_map: Vec<(u32, u64)> = Vec::new();
-        for lbn in old_blocks as u32..new_blocks as u32 {
-            let phys = fs.alloc_block(device)?;
-            new_blocks_map.push((lbn, phys));
-        }
-
-        let mut tree = ExtentTree::new(&mut inode);
-
-        if !new_blocks_map.is_empty() {
-            //合并extent
-            let mut idx = 0usize;
-            while idx < new_blocks_map.len() {
-                let (start_lbn, start_phys) = new_blocks_map[idx];
-                let mut run_len: u32 = 1;
-                let mut last_lbn = start_lbn;
-                let mut last_phys = start_phys;
-
-                idx += 1;
-                while idx < new_blocks_map.len() {
-                    let (cur_lbn, cur_phys) = new_blocks_map[idx];
-                    if cur_lbn == last_lbn + 1 && cur_phys == last_phys + 1 {
-                        run_len = run_len.saturating_add(1);
-                        last_lbn = cur_lbn;
-                        last_phys = cur_phys;
-                        idx += 1;
-                    } else {
-                        break;
-                    }
-                }
-
-                let ext = Ext4Extent::new(start_lbn, start_phys, run_len as u16);
-                tree.insert_extent(fs, ext, device)?;
-            }
-        }
-
-        // 更新 inode 的大小和块计数
-        let new_size = end;
-        inode.i_size_lo = new_size as u32;
-        inode.i_size_high = ((new_size as u64) >> 32) as u32;
-        let used_blocks = new_blocks as u32;
-        inode.i_blocks_lo = used_blocks.saturating_mul((BLOCK_SIZE / 512) as u32);
-        inode.l_i_blocks_high = 0;
-
-        // 写回 inode 元数据
-        let (group_idx, _idx) = fs.inode_allocator.global_to_group(inode_num);
-        let inode_table_start = match fs.group_descs.get(group_idx as usize) {
-            Some(desc) => desc.inode_table(),
-            None => return Err(BlockDevError::Corrupted),
-        };
-        let (block_num, off, _g) = fs.inodetable_cahce.calc_inode_location(
-            inode_num,
-            fs.superblock.s_inodes_per_group,
-            inode_table_start,
-            BLOCK_SIZE,
-        );
-
-        fs.inodetable_cahce
-            .modify(device, inode_num as u64, block_num, off, |on_disk| {
-                on_disk.i_size_lo = inode.i_size_lo;
-                on_disk.i_size_high = inode.i_size_high;
-                on_disk.i_blocks_lo = inode.i_blocks_lo;
-                on_disk.l_i_blocks_high = inode.l_i_blocks_high;
-                on_disk.i_flags = inode.i_flags;
-                on_disk.i_block = inode.i_block;
-            })?;
-    }
-
-   
 
     let start_lbn = offset / block_bytes;
     let end_lbn = (end - 1) / block_bytes;
 
+    // Extent files may be sparse. For writes that cross holes, allocate blocks on-demand.
+    if end > old_size {
+        if !fs.superblock.has_extents() || !inode.have_extend_header_and_use_extend() {
+            // 只在 extent 模式下支持扩展
+            return Err(BlockDevError::Unsupported);
+        }
+    }
+
+    let mut blocks_map = if inode.have_extend_header_and_use_extend() {
+        Some(resolve_inode_block_allextend(fs, device, &mut inode)?)
+    } else {
+        None
+    };
+
     for lbn in start_lbn..=end_lbn {
-        let phys = match resolve_inode_block(fs, device, &mut inode, lbn as u32)? {
-            Some(b) => b,
-            None => return Err(BlockDevError::Corrupted),
+        let phys = if inode.have_extend_header_and_use_extend() {
+            let map = blocks_map.as_mut().ok_or(BlockDevError::Corrupted)?;
+            if let Some(&b) = map.get(&(lbn as u32)) {
+                b
+            } else {
+                // Hole: allocate a new block and insert an extent for this single LBN.
+                let new_phys = fs.alloc_block(device)?;
+                fs.datablock_cache.modify_new(new_phys, |blk| {
+                    for b in blk.iter_mut() {
+                        *b = 0;
+                    }
+                });
+                {
+                    let mut tree = ExtentTree::new(&mut inode);
+                    let ext = Ext4Extent::new(lbn as u32, new_phys, 1);
+                    tree.insert_extent(fs, ext, device)?;
+                }
+                map.insert(lbn as u32, new_phys);
+
+                let add_iblocks = (BLOCK_SIZE / 512) as u32;
+                inode.i_blocks_lo = inode.i_blocks_lo.saturating_add(add_iblocks);
+
+                new_phys
+            }
+        } else {
+            match resolve_inode_block(device, &mut inode, lbn as u32)? {
+                Some(b) => b as u64,
+                None => return Err(BlockDevError::Unsupported),
+            }
         };
 
         fs.datablock_cache.modify(device, phys as u64, |blk| {
@@ -1919,6 +1861,16 @@ pub fn write_file_with_ino<B: BlockDevice>(
             blk[dst_off..dst_off + len].copy_from_slice(&data[src_off..src_off + len]);
         })?;
     }
+
+    if end > old_size {
+        inode.i_size_lo = (end as u64 & 0xffff_ffff) as u32;
+        inode.i_size_high = ((end as u64) >> 32) as u32;
+
+    }
+
+    fs.modify_inode(device, inode_num, |td| {
+        *td = inode;
+    })?;
 
     Ok(())
 }

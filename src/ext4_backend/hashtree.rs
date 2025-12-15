@@ -12,7 +12,8 @@ use crate::ext4_backend::ext4::*;
 use crate::ext4_backend::loopfile::*;
 
 use alloc::vec::Vec;
-use log::{debug, info, warn};
+use log::error;
+use log::{debug,  warn};
 
 /// Hash tree error type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,7 +84,7 @@ impl HashTreeManager {
         dir_inode: &Ext4Inode,
         target_name: &[u8],
     ) -> Result<HashTreeSearchResult, HashTreeError> {
-        info!(
+        debug!(
             "Starting hash tree lookup: {:?}",
             core::str::from_utf8(target_name)
         );
@@ -100,7 +101,7 @@ impl HashTreeManager {
         debug!("Target hash value: 0x{target_hash:08x}");
 
         // 3. Read root node
-        let root_block = self.get_root_block(fs, block_dev, dir_inode)?;
+        let root_block = self.get_root_block( block_dev, dir_inode)?;
         let root_data = self.read_block_data(fs, block_dev, root_block)?;
 
         // 4. Parse root node
@@ -121,12 +122,11 @@ impl HashTreeManager {
     /// Get hash tree root block number
     fn get_root_block<B: BlockDevice>(
         &self,
-        fs: &mut Ext4FileSystem,
         block_dev: &mut Jbd2Dev<B>,
         dir_inode: &Ext4Inode,
     ) -> Result<u32, HashTreeError> {
         // Root block is usually the first data block of the directory
-        match resolve_inode_block(fs, block_dev, &mut dir_inode.clone(), 0) {
+        match resolve_inode_block(block_dev, &mut dir_inode.clone(), 0) {
             Ok(Some(block)) => Ok(block),
             Ok(None) => Err(HashTreeError::InvalidHashTree),
             Err(_) => Err(HashTreeError::BlockOutOfRange),
@@ -328,7 +328,7 @@ impl HashTreeManager {
         dir_inode: &Ext4Inode,
         target_name: &[u8],
     ) -> Result<HashTreeSearchResult, HashTreeError> {
-        info!(
+        debug!(
             "Using linear search: {:?}",
             core::str::from_utf8(target_name)
         );
@@ -341,31 +341,40 @@ impl HashTreeManager {
             total_size.div_ceil(block_bytes)
         };
 
-        for lbn in 0..total_blocks {
-            let phys = match resolve_inode_block(fs, block_dev, &mut dir_inode.clone(), lbn as u32)
-            {
-                Ok(Some(b)) => b,
-                Ok(None) => continue,
+        // Fast path for extent-based directories: resolve all blocks once, then scan.
+        if dir_inode.have_extend_header_and_use_extend() {
+            let mut inode_clone = dir_inode.clone();
+            let blocks_map = match resolve_inode_block_allextend(fs, block_dev, &mut inode_clone) {
+                Ok(v) => v,
                 Err(_) => return Err(HashTreeError::BlockOutOfRange),
             };
 
-            let cached_block = match fs.datablock_cache.get_or_load(block_dev, phys as u64) {
-                Ok(block) => block,
-                Err(_) => return Err(HashTreeError::BlockOutOfRange),
-            };
+            for lbn in 0..total_blocks {
+                let phys = match blocks_map.get(&(lbn as u32)) {
+                    Some(v) => *v,
+                    None => continue,
+                };
 
-            let block_data = &cached_block.data[..block_bytes];
+                let cached_block = match fs.datablock_cache.get_or_load(block_dev, phys as u64) {
+                    Ok(block) => block,
+                    Err(_) => return Err(HashTreeError::BlockOutOfRange),
+                };
 
-            if let Some(entry) = classic_dir::find_entry(block_data, target_name) {
-                return Ok(HashTreeSearchResult {
-                    entry: unsafe { core::mem::transmute(entry) },
-                    block_num: phys,
-                    offset: 0, // Specific offset not recorded in linear search
-                });
+                let block_data = &cached_block.data[..block_bytes];
+                if let Some(entry) = classic_dir::find_entry(block_data, target_name) {
+                    return Ok(HashTreeSearchResult {
+                        entry: unsafe { core::mem::transmute(entry) },
+                        block_num: phys as u32,
+                        offset: 0,
+                    });
+                }
             }
+            
+            return Err(HashTreeError::EntryNotFound);
         }
 
-        Err(HashTreeError::EntryNotFound)
+        error!("FS NOT SUPPORT NORMAL MULTIPUL POINTER ,PLEASE TURN ON EXTEND FEATURE!");
+        Err(HashTreeError::CorruptedHashTree)
     }
 }
 
@@ -439,7 +448,7 @@ mod tests {
     use super::*;
 
     use alloc::vec::Vec;
-
+use crate::ext4_backend::error::BlockDevError;
     // Mock block device
     struct MockBlockDevice {
         data: Vec<u8>,
@@ -458,6 +467,7 @@ mod tests {
     }
 
     impl BlockDevice for MockBlockDevice {
+
         fn write(&mut self, buffer: &[u8], block_id: u32, count: u32) -> Result<(), BlockDevError> {
             if !self.is_open {
                 return Err(BlockDevError::DeviceNotOpen);
@@ -544,7 +554,7 @@ mod tests {
 
     // Create test directory inode
     fn create_test_dir_inode() -> Ext4Inode {
-        Ext4Inode {
+        let mut inode = Ext4Inode {
             i_mode: 0x4000 | 0o755, // Directory type
             i_uid: 0,
             i_size_lo: 4096,
@@ -577,7 +587,13 @@ mod tests {
             i_crtime_extra: 0,
             i_version_hi: 0,
             i_projid: 0,
-        }
+        };
+
+        // Provide a valid direct block mapping for lbn=0, so linear search can read the block
+        // instead of failing in resolve_inode_block due to a 0/invalid physical address.
+
+        inode.write_extend_header();
+        inode
     }
 
     #[test]
@@ -692,13 +708,14 @@ mod tests {
     fn test_fallback_to_linear_search() {
         let mut fs = create_test_fs();
         let manager = create_hash_tree_manager(&fs);
-        let dir_inode = create_test_dir_inode();
+        let mut dir_inode = create_test_dir_inode();
 
         // Create a mock block device
         let mut mock_device = MockBlockDevice::new(1024 * 1024);
         mock_device.open().unwrap();
         let mut mock_dev = Jbd2Dev::initial_jbd2dev(0, mock_device, false);
-
+        dir_inode.write_extend_header();
+        dir_inode.i_flags |=Ext4Inode::EXT4_EXTENTS_FL;
         let result = manager.fallback_to_linear_search(
             &mut fs,
             &mut mock_dev,

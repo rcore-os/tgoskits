@@ -4,6 +4,7 @@
 
 use crate::ext4_backend::blockdev::*;
 use crate::ext4_backend::config::*;
+use crate::ext4_backend::error::*;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 /// 数据块缓存键（全局块号）

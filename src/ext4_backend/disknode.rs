@@ -1,3 +1,5 @@
+use log::debug;
+
 use crate::ext4_backend::endian::*;
 
 /// Ext4 磁盘Inode结构
@@ -122,11 +124,17 @@ impl Ext4Inode {
     }
 
     /// 检查是否使用extent树
-    pub fn is_extent(&self) -> bool {
+    fn is_extent(&self) -> bool {
         self.i_flags & Self::EXT4_EXTENTS_FL != 0
     }
     ///检查是否有extend树的结构
-    pub fn have_extend_header(&self) -> bool {
+    /// 检查EXT4_EXTENTS_FL标志和标志extend头
+    pub fn have_extend_header_and_use_extend(&self) -> bool {
+        if !Self::is_extent(&self){
+            debug!("Inode not have extend flag!");
+            return false;
+        }
+
         let word0_le = self.i_block[0].to_le_bytes();
         let magic = u16::from_le_bytes([word0_le[0], word0_le[1]]);
         if magic == Ext4ExtentHeader::EXT4_EXT_MAGIC {

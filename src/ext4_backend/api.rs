@@ -7,6 +7,7 @@ use crate::ext4_backend::disknode::*;
 use crate::ext4_backend::ext4::*;
 use crate::ext4_backend::file::*;
 use crate::ext4_backend::loopfile::*;
+use crate::ext4_backend::error::*;
 use crate::ext4_backend::*;
 use crate::BLOCK_SIZE;
 /// 文件句柄
@@ -29,13 +30,21 @@ pub fn lseek(
     file:&mut OpenFile,
     location:usize
     )->bool{
-        let file_size = file.inode.size();
-        if location>(file_size-1) as usize {
-            return false;
-        }
         file.offset = location;
         true
     }
+
+fn refresh_open_file_inode<B: BlockDevice>(
+    dev: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    file: &mut OpenFile,
+) -> BlockDevResult<()> {
+    let Some((_ino, inode)) = get_file_inode(fs, dev, &file.path)? else {
+        return Err(BlockDevError::InvalidInput);
+    };
+    file.inode = inode;
+    Ok(())
+}
 
 ///打开文件：可选自动创建
 pub fn open<B: BlockDevice>(
@@ -72,7 +81,7 @@ pub fn open<B: BlockDevice>(
 }
 
 ///写入文件:基于当前offset追加写入
-pub fn append<B: BlockDevice>(
+pub fn write_at<B: BlockDevice>(
     dev: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     file: &mut OpenFile,
@@ -85,6 +94,7 @@ pub fn append<B: BlockDevice>(
     let off = file.offset;
     write_file(dev, fs, &file.path, off, data)?;
     file.offset = file.offset.saturating_add(data.len());
+    refresh_open_file_inode(dev, fs, file)?;
     Ok(())
 }
 
@@ -108,6 +118,8 @@ pub fn read_at<B: BlockDevice>(
         return Ok(Vec::new());
     }
 
+    refresh_open_file_inode(dev, fs, file)?;
+
     let file_size = file.inode.size() as usize;
     if file.offset >= file_size {
         return Ok(Vec::new());
@@ -118,6 +130,10 @@ pub fn read_at<B: BlockDevice>(
         return Ok(Vec::new());
     }
 
+    if !file.inode.have_extend_header_and_use_extend() {
+        return Err(BlockDevError::Unsupported);
+    }
+
     let block_bytes = BLOCK_SIZE;
     let start_off = file.offset;
     let end_off = start_off + to_read; // exclusive
@@ -125,11 +141,7 @@ pub fn read_at<B: BlockDevice>(
     let start_lbn = start_off / block_bytes;
     let end_lbn = (end_off - 1) / block_bytes;
 
-    let extent_map = if file.inode.is_extent() {
-        Some(resolve_inode_block_allextend_lbn(fs, dev, &mut file.inode)?)
-    } else {
-        None
-    };
+    let extent_map = resolve_inode_block_allextend(fs, dev, &mut file.inode)?;
 
     let mut out = Vec::with_capacity(to_read);
     for lbn in start_lbn..=end_lbn {
@@ -143,22 +155,12 @@ pub fn read_at<B: BlockDevice>(
             continue;
         }
 
-        let mut phys_opt: Option<u64> = None;
-        if let Some(ref map) = extent_map {
-            if let Ok(idx) = map.binary_search_by_key(&(lbn as u32), |(k, _)| *k) {
-                phys_opt = Some(map[idx].1);
-            }
-        }
-
-        if phys_opt.is_none() {
-            phys_opt = resolve_inode_block(fs, dev, &mut file.inode, lbn as u32)?.map(|v| v as u64);
-        }
-
-        if let Some(phys) = phys_opt {
+        if let Some(&phys) = extent_map.get(&(lbn as u32)) {
             let cached = fs.datablock_cache.get_or_load(dev, phys)?;
             let data = &cached.data[..block_bytes];
             out.extend_from_slice(&data[copy_start..copy_start + copy_len]);
         } else {
+            // Hole: return zeros for the requested logical range.
             out.extend(core::iter::repeat_n(0u8, copy_len));
         }
 

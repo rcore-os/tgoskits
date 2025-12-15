@@ -3,6 +3,7 @@
 use crate::ext4_backend::blockdev::*;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use crate::ext4_backend::error::*;
 use log::debug;
 
 /// 位图类型

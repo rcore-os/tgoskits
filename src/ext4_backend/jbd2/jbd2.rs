@@ -6,6 +6,7 @@ use crate::ext4_backend::ext4::*;
 use crate::ext4_backend::file::*;
 use crate::ext4_backend::jbd2::jbdstruct::*;
 use crate::ext4_backend::loopfile::*;
+use crate::ext4_backend::error::*;
 use alloc::vec;
 use log::debug;
 use log::error;
@@ -30,7 +31,7 @@ impl JBD2DEVSYSTEM {
     /// update:Vec<JBD2_UPDATE>
     pub fn commit_transaction<B: BlockDevice>(&mut self, block_dev: &mut B) -> Result<bool, ()> {
         let tid = self.sequence; //事务id
-        trace!(
+        error!(
             "[JBD2 commit] begin: tid={} updates_len={} head={} start_block={} max_len={} seq_in_superblock={} s_start={}",
             tid,
             self.commit_queue.len(),
@@ -343,21 +344,22 @@ impl JBD2DEVSYSTEM {
                     "[JBD2 replay] write journal superblock to block={} (sequence={} s_start={})",
                     sb_block, self.jbd2_super_block.s_sequence, self.jbd2_super_block.s_start
                 );
-                let _ = block_dev.write(&sb_buf, sb_block, BLOCK_SIZE_U32);
+                let _ = block_dev.write(&sb_buf, sb_block, 1);
                 let _ = block_dev.flush();
             }
         }
-        trace!(
-            "[JBD2 replay] end: final_sequence={} final_s_start={}",
-            self.jbd2_super_block.s_sequence, self.jbd2_super_block.s_start
-        );
+        debug!(
+        "[JBD2 replay] end: final_sequence={} final_s_start={} ",
+        self.jbd2_super_block.s_sequence, self.jbd2_super_block.s_start
+    );
     }
+    
 }
 
 ///dump jouranl inode
 pub fn dump_journal_inode<B: BlockDevice>(fs: &mut Ext4FileSystem, block_dev: &mut Jbd2Dev<B>) {
     let mut indo = fs.get_inode_by_num(block_dev, 8).expect("journal");
-    let datablock = resolve_inode_block(fs, block_dev, &mut indo, 0)
+    let datablock = resolve_inode_block( block_dev, &mut indo, 0)
         .unwrap()
         .unwrap();
     let journal_data = fs
@@ -381,6 +383,13 @@ pub fn create_journal_entry<B: BlockDevice>(
     let free_block = fs
         .alloc_blocks(block_dev, 4096)
         .expect("No enough block can alloc out!");
+
+    // Ensure journal area starts clean: otherwise old image contents could look like valid
+    // descriptor/commit blocks and replay would corrupt filesystem metadata.
+    let zero = [0u8; BLOCK_SIZE];
+    for &b in free_block.iter() {
+        block_dev.write_blocks(&zero, b as u32, 1, true)?;
+    }
     //journal inode 额外参数
     let mut jour_inode = fs
         .get_inode_by_num(block_dev, journal_inode_num as u32)

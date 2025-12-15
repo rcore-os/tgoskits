@@ -14,6 +14,7 @@ pub mod ext4;
 pub mod extents_tree;
 pub mod file;
 pub mod hashtree;
+pub mod error;
 pub mod inodetable_cache;
 pub mod jbd2;
 pub mod loopfile;

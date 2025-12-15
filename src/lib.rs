@@ -12,3 +12,4 @@ pub use ext4_backend::config::*;
 pub use ext4_backend::dir::*;
 pub use ext4_backend::ext4::*;
 pub use ext4_backend::file::*;
+pub use ext4_backend::error::*;

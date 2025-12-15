@@ -18,41 +18,13 @@ use crate::ext4_backend::jbd2::jbdstruct::*;
 use crate::ext4_backend::loopfile::*;
 use crate::ext4_backend::superblock::*;
 use crate::ext4_backend::tool::*;
+use crate::ext4_backend::error::*;
 use log::trace;
 
 use alloc::collections::vec_deque::VecDeque;
 use alloc::vec::Vec;
 use log::{debug, error, info, warn};
 
-/// Ext4文件系统挂载错误
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MountError {
-    /// IO错误
-    IoError,
-    /// 魔数无效
-    InvalidMagic,
-    /// 超级块无效（如GDT超出预留空间）
-    InvalidSuperblock,
-    /// 文件系统有错误
-    FilesystemHasErrors,
-    /// 不支持的特性
-    UnsupportedFeature,
-    /// 已经挂载
-    AlreadyMounted,
-}
-
-impl core::fmt::Display for MountError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            MountError::IoError => write!(f, "IO错误"),
-            MountError::InvalidMagic => write!(f, "魔数无效"),
-            MountError::InvalidSuperblock => write!(f, "超级块无效"),
-            MountError::FilesystemHasErrors => write!(f, "文件系统有错误"),
-            MountError::UnsupportedFeature => write!(f, "不支持的特性"),
-            MountError::AlreadyMounted => write!(f, "文件系统已挂载"),
-        }
-    }
-}
 
 /// Ext4文件系统实例
 /// 管理挂载后的文件系统状态
@@ -207,14 +179,14 @@ impl Ext4FileSystem {
     }
 
     /// 打开Ext4文件系统
-    pub fn mount<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) -> Result<Self, MountError> {
+    pub fn mount<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) -> Result<Self, RSEXT4Error> {
         debug!("Start mounting Ext4 filesystem...");
 
         //在mount时应该重放一遍日志
         //block_dev.set_journal_superblock(super_block, jouranl_start_block);
 
         // 1. 读取超级块（按 ext4 标准偏移 1024 字节，大小 1024 字节）
-        let superblock = read_superblock(block_dev).map_err(|_| MountError::IoError)?;
+        let superblock = read_superblock(block_dev).map_err(|_| RSEXT4Error::IoError)?;
 
         // 2. 验证魔数
         if superblock.s_magic != EXT4_SUPER_MAGIC {
@@ -222,14 +194,14 @@ impl Ext4FileSystem {
                 "Invalid magic: {:#x}, expected: {:#x}",
                 superblock.s_magic, EXT4_SUPER_MAGIC
             );
-            return Err(MountError::InvalidMagic);
+            return Err(RSEXT4Error::InvalidMagic);
         }
         debug!("Superblock magic verified");
 
         // 3. 检查文件系统状态
         if superblock.s_state == Ext4Superblock::EXT4_ERROR_FS {
             warn!("Filesystem is in error state");
-          //  return Err(MountError::FilesystemHasErrors);
+          //  return Err(RSEXT4Error::FilesystemHasErrors);
         }
 
         // 4. 计算块组数量
@@ -285,7 +257,7 @@ impl Ext4FileSystem {
         // rootinode check !
         debug!("Checking root directory...");
         {
-            let root_inode = fs.get_root(block_dev).map_err(|_| MountError::IoError)?;
+            let root_inode = fs.get_root(block_dev).map_err(|_| RSEXT4Error::IoError)?;
             if root_inode.i_mode == 0 || !root_inode.is_dir() {
                 warn!(
                     "Root inode is uninitialized or not a directory, creating root and lost+found... i_mode: {}, is_dir: {}",
@@ -293,7 +265,7 @@ impl Ext4FileSystem {
                     root_inode.is_dir()
                 );
                 fs.create_root_dir(block_dev)
-                    .map_err(|_| MountError::IoError)?;
+                    .map_err(|_| RSEXT4Error::IoError)?;
             }
         }
 
@@ -348,7 +320,7 @@ impl Ext4FileSystem {
                     .expect("load journal inode failed");
 
                 // 解析 journal inode 第 0 号逻辑块 -> 物理块
-                let journal_first_block = resolve_inode_block(&mut fs, block_dev, &mut j_inode, 0)
+                let journal_first_block = resolve_inode_block( block_dev, &mut j_inode, 0)
                     .and_then(|opt| opt.ok_or(BlockDevError::Corrupted))
                     .expect("resolve journal first block failed");
 
@@ -366,6 +338,9 @@ impl Ext4FileSystem {
 
                 // 把 journal superblock 交给 Jbd2Dev，由它内部 lazy-init JBD2DEVSYSTEM
                 block_dev.set_journal_superblock(j_sb, fs.journal_sb_block_start.unwrap());
+
+                // Mount-time journal replay for crash recovery.
+                block_dev.journal_replay();
             }
         }
 
@@ -373,7 +348,7 @@ impl Ext4FileSystem {
         {
             let g0 = match fs.group_descs.first() {
                 Some(desc) => desc,
-                None => return Err(MountError::InvalidSuperblock),
+                None => return Err(RSEXT4Error::InvalidSuperblock),
             };
             let inode_bitmap_blk = g0.inode_bitmap();
             let data_bitmap_blk = g0.block_bitmap();
@@ -451,7 +426,7 @@ impl Ext4FileSystem {
         block_dev: &mut Jbd2Dev<B>,
         group_count: u32,
         desc_size: usize,
-    ) -> Result<Vec<Ext4GroupDesc>, MountError> {
+    ) -> Result<Vec<Ext4GroupDesc>, RSEXT4Error> {
         let mut group_descs = Vec::new();
 
         let gdt_base: u64 = BLOCK_SIZE as u64;
@@ -472,7 +447,7 @@ impl Ext4FileSystem {
             if current_block != Some(block_num) {
                 block_dev
                     .read_block(block_num as u32)
-                    .map_err(|_| MountError::IoError)?;
+                    .map_err(|_| RSEXT4Error::IoError)?;
                 current_block = Some(block_num);
             }
 
@@ -486,7 +461,7 @@ impl Ext4FileSystem {
                     desc_size,
                     buffer.len()
                 );
-                return Err(MountError::InvalidSuperblock);
+                return Err(RSEXT4Error::InvalidSuperblock);
             }
 
             let desc = Ext4GroupDesc::from_disk_bytes(&buffer[in_block..end]);
@@ -516,16 +491,6 @@ impl Ext4FileSystem {
         self.datablock_cache.flush_all(block_dev)?;
         debug!("Data block cache flushed");
 
-        //同步group_desc 和 super_block计数
-        let mut real_free_blocks: u64 = 0;
-        let mut real_free_inodes: u64 = 0;
-        for desc in &self.group_descs {
-            real_free_blocks += desc.free_blocks_count() as u64;
-            real_free_inodes += desc.free_inodes_count() as u64;
-        }
-        self.superblock.s_free_blocks_count_lo = (real_free_blocks & 0xFFFFFFFF) as u32;
-        self.superblock.s_free_blocks_count_hi = (real_free_blocks >> 32) as u32;
-        self.superblock.s_free_inodes_count = real_free_inodes as u32;
 
         // 4. Update superblock
         info!("Writing back superblock...");
@@ -549,7 +514,7 @@ impl Ext4FileSystem {
     /// 同步块组描述符到磁盘
     /// 按 ext4 标准布局，将所有块组描述符写回：
     /// GDT 字节流紧跟在超级块之后
-    fn sync_group_descriptors<B: BlockDevice>(
+    pub fn sync_group_descriptors<B: BlockDevice>(
         &self,
         block_dev: &mut Jbd2Dev<B>,
     ) -> BlockDevResult<()> {
@@ -614,7 +579,18 @@ impl Ext4FileSystem {
 
     /// 同时修改所有需要冗余备份的块组
     /// 同步超级块到磁盘
-    fn sync_superblock<B: BlockDevice>(&self, block_dev: &mut Jbd2Dev<B>) -> BlockDevResult<()> {
+    pub fn sync_superblock<B: BlockDevice>(&mut self, block_dev: &mut Jbd2Dev<B>) -> BlockDevResult<()> {
+        //同步group_desc 和 super_block计数
+        let mut real_free_blocks: u64 = 0;
+        let mut real_free_inodes: u64 = 0;
+        for desc in &self.group_descs {
+            real_free_blocks += desc.free_blocks_count() as u64;
+            real_free_inodes += desc.free_inodes_count() as u64;
+        }
+        self.superblock.s_free_blocks_count_lo = (real_free_blocks & 0xFFFFFFFF) as u32;
+        self.superblock.s_free_blocks_count_hi = (real_free_blocks >> 32) as u32;
+        self.superblock.s_free_inodes_count = real_free_inodes as u32;
+
         write_superblock(block_dev, &self.superblock)
     }
 

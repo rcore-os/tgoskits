@@ -11,6 +11,7 @@ use crate::ext4_backend::ext4::*;
 use crate::ext4_backend::extents_tree::*;
 use crate::ext4_backend::file::*;
 use crate::ext4_backend::loopfile::*;
+use crate::ext4_backend::error::*;
 use alloc::string::String;
 use alloc::vec::Vec;
 use log::error;
@@ -93,7 +94,7 @@ pub fn get_inode_with_num<B: BlockDevice>(
         let mut found_inode_num: Option<u64> = None;
 
         for lbn in 0..total_blocks {
-            let phys = match resolve_inode_block(fs, device, &mut current_inode, lbn as u32)? {
+            let phys = match resolve_inode_block( device, &mut current_inode, lbn as u32)? {
                 Some(b) => b,
                 None => continue,
             };
@@ -167,14 +168,22 @@ pub fn insert_dir_entry<B: BlockDevice>(
 
     let mut inserted = false;
 
+    let blocks = resolve_inode_block_allextend(fs, device, parent_inode)?;
+
     for lbn in 0..total_blocks {
         if inserted {
             break;
         }
 
-        let phys = match resolve_inode_block(fs, device, parent_inode, lbn as u32) {
-            Ok(Some(b)) => b,
-            _ => continue,
+        let phys = match blocks.get(&(lbn as u32)) {
+            Some(&b) => b,
+            None => {
+                error!(
+                    "insert_dir_entry: missing extent mapping for parent_ino={} lbn={} name={}",
+                    parent_ino_num, lbn, child_name
+                );
+                return Err(BlockDevError::Corrupted);
+            }
         };
 
         let _ = fs.datablock_cache.modify(device, phys as u64, |data| {
@@ -262,7 +271,7 @@ pub fn insert_dir_entry<B: BlockDevice>(
     };
     let new_lbn = old_blocks as u32; // 新块对应的逻辑块号
 
-    if fs.superblock.has_extents() && parent_inode.is_extent() {
+    if fs.superblock.has_extents() && parent_inode.have_extend_header_and_use_extend() {
         // extent 目录：通过 ExtentTree 追加一个长度为 1 的 extent
         let new_ext = Ext4Extent::new(new_lbn, new_block, 1);
         let mut tree = ExtentTree::new(parent_inode);
@@ -776,7 +785,7 @@ pub fn create_lost_found_directory<B: BlockDevice>(
 
     //这里也需要根据extend来解析
     let mut root_inode = fs.get_root(block_dev)?;
-    let root_block = resolve_inode_block(fs, block_dev, &mut root_inode, 0)?
+    let root_block = resolve_inode_block( block_dev, &mut root_inode, 0)?
         .expect("lost+found logical_block can't map to physical blcok!");
 
     if root_block == 0 {

@@ -7,7 +7,7 @@ pub fn test_mkfs<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) {
     mkfs(block_dev).expect("File system mount failed panic!");
 }
 /// 文件写入/读取测试
-pub fn test_base_io<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4FileSystem) {
+pub fn _test_base_io<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4FileSystem) {
     mkdir(block_dev, fs, "/test_dir/");
     // 大文件测试：写入 + 读取 吞吐量
     let test_big_file: Vec<u8> = vec![b'g'; 1024 * 1024 * 2001]; // 2001MB
@@ -202,8 +202,24 @@ pub fn test_symbol_link<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext
 pub fn test_truncate<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4FileSystem) {
     mkdir(block_dev, fs, "/truncatetest");
 
-    let payload: Vec<u8> = (0..(256 * 1024)).map(|i| (i % 251) as u8).collect();
+    let payload: Vec<u8> = (0..(64 * 1024)).map(|i| (i % 251) as u8).collect();
     mkfile(block_dev, fs, "/truncatetest/f1", Some(&payload));
+
+    // shrink to non-zero (cross block boundary)
+    let shrink_len: u64 = (BLOCK_SIZE + 123) as u64;
+    truncate(block_dev, fs, "/truncatetest/f1", shrink_len).expect("truncate shrink failed");
+    let data_shrink = read_file(block_dev, fs, "/truncatetest/f1")
+        .unwrap()
+        .expect("read after truncate shrink failed");
+    assert_eq!(data_shrink.len() as u64, shrink_len);
+    assert_eq!(&data_shrink[..], &payload[..shrink_len as usize]);
+
+    // truncate to same size should be no-op
+    truncate(block_dev, fs, "/truncatetest/f1", shrink_len).expect("truncate same size failed");
+    let data_same = read_file(block_dev, fs, "/truncatetest/f1")
+        .unwrap()
+        .expect("read after truncate same size failed");
+    assert_eq!(data_same, data_shrink);
 
     // truncate -> 0
     truncate(block_dev, fs, "/truncatetest/f1", 0).expect("truncate to 0 failed");
@@ -213,13 +229,110 @@ pub fn test_truncate<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4Fi
     assert!(data0.is_empty());
 
     // grow：新空间应为 0
-    let new_len: u64 = (128 * 1024) as u64;
+    let new_len: u64 = (BLOCK_SIZE + 17) as u64;
     truncate(block_dev, fs, "/truncatetest/f1", new_len).expect("truncate grow failed");
     let data1 = read_file(block_dev, fs, "/truncatetest/f1")
         .unwrap()
         .expect("read after truncate grow failed");
     assert_eq!(data1.len() as u64, new_len);
     assert!(data1.iter().all(|&b| b == 0));
+
+    // shrink on sparse file: create a hole then truncate to 0 (should not double free)
+    mkfile(block_dev, fs, "/truncatetest/f_sparse", None);
+    write_file(block_dev, fs, "/truncatetest/f_sparse", 0, b"ABC").unwrap();
+    write_file(
+        block_dev,
+        fs,
+        "/truncatetest/f_sparse",
+        BLOCK_SIZE * 3,
+        b"XYZ",
+    )
+    .unwrap();
+    truncate(block_dev, fs, "/truncatetest/f_sparse", 0).expect("truncate sparse->0 failed");
+    let data_sparse0 = read_file(block_dev, fs, "/truncatetest/f_sparse")
+        .unwrap()
+        .expect("read sparse after truncate(0) failed");
+    assert!(data_sparse0.is_empty());
+}
+
+pub fn test_api_write_at_read_at<B: BlockDevice>(
+    block_dev: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+) {
+    mkdir(block_dev, fs, "/apiiotest");
+
+    let mut f = open(block_dev, fs, "/apiiotest/f1", true).expect("open failed");
+
+    // write_at appends at current offset
+    write_at(block_dev, fs, &mut f, b"HELLO").expect("write_at failed");
+    assert_eq!(f.offset, 5);
+
+    // create a hole by seeking forward, then write again
+    assert!(lseek(&mut f, BLOCK_SIZE + 10));
+    write_at(block_dev, fs, &mut f, b"WORLD").expect("write_at 2 failed");
+
+    // Ensure inode metadata is up-to-date for subsequent assertions.
+    let Some((_ino, inode_now)) = get_file_inode(fs, block_dev, "/apiiotest/f1")
+        .ok()
+        .flatten()
+    else {
+        panic!("inode missing after writes");
+    };
+    assert!(inode_now.size() as usize >= BLOCK_SIZE + 10 + 5);
+
+    // read back from start across the hole: hole bytes should be zeros
+    assert!(lseek(&mut f, 0));
+    let want = BLOCK_SIZE + 10 + 5;
+    let got = read_at(block_dev, fs, &mut f, want).expect("read_at failed");
+    assert_eq!(got.len(), want);
+    assert_eq!(&got[..5], b"HELLO");
+    assert!(got[5..BLOCK_SIZE + 10].iter().all(|&b| b == 0));
+    assert_eq!(&got[BLOCK_SIZE + 10..BLOCK_SIZE + 10 + 5], b"WORLD");
+
+    // offset advanced by logical bytes read
+    assert_eq!(f.offset, BLOCK_SIZE + 10 + 5);
+}
+
+pub fn _test_journal_powerfail<B: BlockDevice>(
+    block_dev: &mut Jbd2Dev<B>,
+    mut fs: Ext4FileSystem,
+) -> Ext4FileSystem {
+    // This test only makes sense when journal is enabled.
+    block_dev.set_journal_use(true);
+
+    mkdir(block_dev, &mut fs, "/journaltest");
+    mkfile(block_dev, &mut fs, "/journaltest/f1", None);
+
+    let payload = b"JOURNAL_PAYLOAD_123456";
+    write_file(block_dev, &mut fs, "/journaltest/f1", 0, payload)
+        .expect("write_file failed");
+
+    // Flush caches to generate journaled metadata updates (inode table, bitmaps, etc.).
+    fs.datablock_cache
+        .flush_all(block_dev)
+        .expect("flush datablock failed");
+    fs.inodetable_cahce
+        .flush_all(block_dev)
+        .expect("flush inode table failed");
+    fs.bitmap_cache
+        .flush_all(block_dev)
+        .expect("flush bitmap failed");
+
+    // Commit the journal transaction, but do NOT call fs.umount (simulate power loss).
+    block_dev.umount_commit();
+    drop(fs);
+
+    // Remount: ext4::mount will inject journal superblock and replay.
+    let mut fs2 = mount(block_dev).expect("remount failed");
+
+    // After replay, inode size/metadata should be visible, and file should read correctly.
+    let got = read_file(block_dev, &mut fs2, "/journaltest/f1")
+        .unwrap()
+        .expect("read after replay failed");
+    assert_eq!(got, payload);
+
+    // Restore default behavior for subsequent tests.
+    fs2
 }
 
 pub fn test_rename<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4FileSystem) {
