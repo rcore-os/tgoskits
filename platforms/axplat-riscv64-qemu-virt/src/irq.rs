@@ -153,6 +153,9 @@ impl IrqIf for IrqIfImpl {
                     // SAFETY: The handler is guaranteed to be a valid function pointer.
                     unsafe { core::mem::transmute::<*mut (), IrqHandler>(handler)() };
                 }
+                unsafe {
+                    riscv::register::sip::clear_ssoft();
+                }
             },
             @S_EXT => {
                 // TODO: get IRQ number from PLIC
