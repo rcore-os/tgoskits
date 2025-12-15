@@ -231,17 +231,8 @@
  delete_dir(&mut fs, &mut dev, "/path/to/dir");
  ```
  
- ## 6. 可选：手动 flush 缓存（强制落盘）
- 
- 如果你希望在不卸载的情况下尽量把数据写回设备，可以参考 `src/testfs/test_example.rs`：
- 
- ```rust
- fs.datablock_cache.flush_all(&mut dev)?;
- fs.inodetable_cahce.flush_all(&mut dev)?;
- fs.bitmap_cache.flush_all(&mut dev)?;
- ```
 
- ## 7.注意，目前数据完整性依赖umount时的flush来把所有缓存落盘，如果不使用umount请手动flush
+ ## 6.注意，目前数据完整性依赖umount时的flush来把所有缓存落盘，如果不使用umount请手动flush
  ```rust
         // Flush dirty caches
         self.bitmap_cache.flush_all(block_dev)?;
@@ -268,3 +259,4 @@
 
  ```
  
+
