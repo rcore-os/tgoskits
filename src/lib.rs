@@ -1,7 +1,7 @@
 //! [`std::io`]-like I/O traits for `no_std` environment.
 
 #![cfg_attr(not(doc), no_std)]
-#![feature(doc_auto_cfg)]
+#![feature(doc_cfg)]
 #![feature(core_io_borrowed_buf)]
 
 #[cfg(feature = "alloc")]
@@ -67,9 +67,6 @@ pub fn default_read_to_end<R: Read + ?Sized>(
         }
     }
 
-    let mut initialized = 0; // Extra initialized bytes from previous loop iteration
-    let mut consecutive_short_reads = 0;
-
     loop {
         if buf.len() == buf.capacity() && buf.capacity() == start_cap {
             // The buffer might be an exact fit. Let's read into a probe buffer
@@ -95,19 +92,15 @@ pub fn default_read_to_end<R: Read + ?Sized>(
         spare = &mut spare[..buf_len];
         let mut read_buf: BorrowedBuf<'_> = spare.into();
 
-        // SAFETY: These bytes were initialized but not filled in the previous loop
-        unsafe {
-            read_buf.set_init(initialized);
-        }
-
         let mut cursor = read_buf.unfilled();
         // Difference from `std`: We don't have a `read_buf` method that returns both data and an error, so we return early on error.
-        let n = r.read(cursor.ensure_init().init_mut())?;
-        cursor.advance(n);
+        let n = r.read(unsafe { cursor.as_mut().assume_init_mut() })?;
+        assert!(n <= cursor.capacity());
+        unsafe {
+            cursor.advance(n);
+        }
 
-        let unfilled_but_initialized = cursor.init_ref().len();
         let bytes_read = cursor.written();
-        let was_fully_initialized = read_buf.init_len() == buf_len;
 
         // SAFETY: BorrowedBuf's invariants mean this much memory is initialized.
         unsafe {
@@ -119,27 +112,8 @@ pub fn default_read_to_end<R: Read + ?Sized>(
             return Ok(buf.len() - start_len);
         }
 
-        if bytes_read < buf_len {
-            consecutive_short_reads += 1;
-        } else {
-            consecutive_short_reads = 0;
-        }
-
-        // store how much was initialized but not filled
-        initialized = unfilled_but_initialized;
-
         // Use heuristics to determine the max read size if no initial size hint was provided
         if size_hint.is_none() {
-            // The reader is returning short reads but it doesn't call ensure_init().
-            // In that case we no longer need to restrict read sizes to avoid
-            // initialization costs.
-            // When reading from disk we usually don't get any short reads except at EOF.
-            // So we wait for at least 2 short reads before uncapping the read buffer;
-            // this helps with the Windows issue.
-            if !was_fully_initialized && consecutive_short_reads > 1 {
-                max_read_size = usize::MAX;
-            }
-
             // we have passed a larger buffer than previously and the
             // reader still hasn't returned a short read
             if buf_len >= max_read_size && bytes_read == buf_len {
