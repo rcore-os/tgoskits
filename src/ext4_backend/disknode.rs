@@ -127,16 +127,13 @@ impl Ext4Inode {
     }
     ///检查是否有extend树的结构
     pub fn have_extend_header(&self) -> bool {
-        // i_block 在内存中是 host-endian 的 [u32; 15] 数组。
-        // extent header 在磁盘格式中要求 little-endian，因此不能把 i_block 直接当作
-        // Ext4ExtentHeader 结构体进行 native-endian 解析。
         let word0_le = self.i_block[0].to_le_bytes();
         let magic = u16::from_le_bytes([word0_le[0], word0_le[1]]);
         if magic == Ext4ExtentHeader::EXT4_EXT_MAGIC {
             true
         } else {
-            use log::info;
-            info!("No tree header!!!");
+            use log::debug;
+            debug!("No tree header!!!");
             false
         }
     }
@@ -474,6 +471,9 @@ impl DiskFormat for Ext4Inode {
     }
 
     fn disk_size() -> usize {
-        256 // 大inode的默认大小
+        // Base ext4 on-disk inode is 128 bytes ("good old inode").
+        // The actual inode table entry size is a filesystem property (superblock.s_inode_size)
+        // and should be handled by inode table/cache logic, not this struct.
+        Self::GOOD_OLD_INODE_SIZE as usize
     }
 }

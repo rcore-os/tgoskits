@@ -90,7 +90,7 @@ impl HashTreeManager {
 
         // 1. Check if directory has hash tree index enabled
         if !dir_inode.is_htree_indexed() {
-            warn!("Directory does not have hash tree index enabled, falling back to linear search");
+           //warn!("Directory does not have hash tree index enabled, falling back to linear search");
             return self.fallback_to_linear_search(fs, block_dev, dir_inode, target_name);
         }
 
@@ -477,7 +477,7 @@ mod tests {
             Ok(())
         }
 
-        fn read(&self, buffer: &mut [u8], block_id: u32, count: u32) -> Result<(), BlockDevError> {
+        fn read(&mut self, buffer: &mut [u8], block_id: u32, count: u32) -> Result<(), BlockDevError> {
             if !self.is_open {
                 return Err(BlockDevError::DeviceNotOpen);
             }
@@ -522,13 +522,18 @@ mod tests {
         superblock.s_hash_seed = [0x12345678, 0x87654321, 0xABCDEF00, 0x00FEDCBA];
         superblock.s_def_hash_version = 0x8; // Half SipHash
 
+        let inode_size = match superblock.s_inode_size {
+            0 => crate::ext4_backend::config::DEFAULT_INODE_SIZE as usize,
+            n => n as usize,
+        };
+
         Ext4FileSystem {
             superblock,
             group_descs: Vec::new(),
             block_allocator: BlockAllocator::new(&superblock),
             inode_allocator: InodeAllocator::new(&superblock),
             bitmap_cache: BitmapCache::new(100),
-            inodetable_cahce: InodeCache::new(100, 256),
+            inodetable_cahce: InodeCache::new(100, inode_size),
             datablock_cache: DataBlockCache::new(100, 4096),
             root_inode: 2,
             group_count: 1,
@@ -692,7 +697,7 @@ mod tests {
         // Create a mock block device
         let mut mock_device = MockBlockDevice::new(1024 * 1024);
         mock_device.open().unwrap();
-        let mut mock_dev = Jbd2Dev::initial_jbd2dev(0, &mut mock_device, false);
+        let mut mock_dev = Jbd2Dev::initial_jbd2dev(0, mock_device, false);
 
         let result = manager.fallback_to_linear_search(
             &mut fs,

@@ -85,9 +85,9 @@ impl InodeCache {
         }
     }
 
-    /// 创建默认配置的缓存（最多32个inode，256字节大小）
-    pub fn default() -> Self {
-        Self::new(INODE_CACHE_MAX, INODE_SIZE as usize)
+    /// 创建默认配置的缓存
+    pub fn default(inode_size:u16) -> Self {
+        Self::new(INODE_CACHE_MAX, inode_size as usize)
     }
 
     /// 计算inode在磁盘上的位置
@@ -430,7 +430,7 @@ mod tests {
 
     #[test]
     fn test_inode_location_calc() {
-        let cache = InodeCache::default();
+        let cache = InodeCache::default(DEFAULT_INODE_SIZE);
 
         let inodes_per_group = 128;
         let inode_table_start = 100;
@@ -442,8 +442,9 @@ mod tests {
         assert_eq!(offset, 0);
         assert_eq!(group, 0);
 
+        let inodes_per_block = (block_size / DEFAULT_INODE_SIZE as usize) as u32;
         let (block, offset, group) = cache.calc_inode_location(
-            (INODES_PER_BLOCK + 1) as u32,
+            (inodes_per_block + 1) as u32,
             inodes_per_group,
             inode_table_start,
             block_size,

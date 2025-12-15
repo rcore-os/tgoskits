@@ -31,7 +31,10 @@ impl Ext4DirEntry2 {
     ///构造函数
     pub fn new(inode_num: u32, rec_len: u16, file_type: u8, name: &[u8]) -> Self {
         let mut name_buf = [0u8; DIRNAME_LEN];
-        let len = core::cmp::min(name.len(), DIRNAME_LEN);
+        let len = core::cmp::min(
+            name.len(),
+            core::cmp::min(Self::MAX_NAME_LEN as usize, DIRNAME_LEN),
+        );
         name_buf[..len].copy_from_slice(&name[..len]);
         Ext4DirEntry2 {
             inode: inode_num,
@@ -228,26 +231,27 @@ impl<'a> Iterator for DirEntryIterator<'a> {
     type Item = (Ext4DirEntryInfo<'a>, u16); // (条目信息, rec_len)
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.offset >= self.data.len() {
-            return None;
+        while self.offset < self.data.len() {
+            let remaining = &self.data[self.offset..];
+            if remaining.len() < 8 {
+                return None;
+            }
+
+            let rec_len = u16::from_le_bytes([remaining[4], remaining[5]]);
+            if rec_len < 8 || rec_len as usize > remaining.len() {
+                return None;
+            }
+
+            let entry_data = &remaining[..rec_len as usize];
+            self.offset += rec_len as usize;
+
+            // Skip unused or malformed entries but keep iterating.
+            if let Some(entry_info) = Ext4DirEntryInfo::parse_from_bytes(entry_data) {
+                return Some((entry_info, rec_len));
+            }
         }
 
-        let remaining = &self.data[self.offset..];
-        if remaining.len() < 8 {
-            return None;
-        }
-
-        let rec_len = u16::from_le_bytes([remaining[4], remaining[5]]);
-        if rec_len < 8 || rec_len as usize > remaining.len() {
-            return None;
-        }
-
-        let entry_data = &remaining[..rec_len as usize];
-        let entry_info = Ext4DirEntryInfo::parse_from_bytes(entry_data)?;
-
-        self.offset += rec_len as usize;
-
-        Some((entry_info, rec_len))
+        None
     }
 }
 

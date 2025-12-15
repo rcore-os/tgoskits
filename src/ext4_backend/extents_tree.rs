@@ -577,7 +577,7 @@ impl<'a> ExtentTree<'a> {
                 // 分配新块用于存储右半部分
                 let new_phy_block = fs.alloc_block(block_dev)?;
                 self.add_inode_sectors_for_block();
-                error!(
+                debug!(
                     "insert_recursive: allocated new block for right leaf node: {new_phy_block}"
                 );
 

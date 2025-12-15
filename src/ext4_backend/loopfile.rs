@@ -12,6 +12,9 @@ use crate::ext4_backend::extents_tree::*;
 use crate::ext4_backend::hashtree::*;
 use log::debug;
 
+#[cfg(feature = "vfs-perf")]
+use axhal::time::monotonic_time_nanos;
+///支持extend数和多级索引(多级索引将来弃用)
 /// 根据 inode 的逻辑块号解析到物理块号，支持 12 个直接块和 1/2/3 级间接块
 pub fn resolve_inode_block<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
@@ -192,11 +195,20 @@ pub fn resolve_inode_block_allextend<B: BlockDevice>(
     block_dev: &mut Jbd2Dev<B>,
     inode: &mut Ext4Inode,
 ) -> BlockDevResult<Vec<u64>> {
+    let blocks = resolve_inode_block_allextend_lbn(_fs, block_dev, inode)?;
+    Ok(blocks.into_iter().map(|(_, phys)| phys).collect())
+}
+
+pub fn resolve_inode_block_allextend_lbn<B: BlockDevice>(
+    _fs: &mut Ext4FileSystem,
+    block_dev: &mut Jbd2Dev<B>,
+    inode: &mut Ext4Inode,
+) -> BlockDevResult<Vec<(u32, u64)>> {
     if !inode.is_extent() {
         return Ok(Vec::new());
     }
 
-    fn push_extent_blocks(out: &mut Vec<u64>, ext: &Ext4Extent) {
+    fn push_extent_blocks(out: &mut Vec<(u32, u64)>, ext: &Ext4Extent) {
         let mut len = ext.ee_len as u32;
         // 最高位表示 uninitialized 标志，长度使用低 15 位
         if (len & 0x8000) != 0 {
@@ -206,15 +218,16 @@ pub fn resolve_inode_block_allextend<B: BlockDevice>(
             return;
         }
         let base = ((ext.ee_start_hi as u64) << 32) | ext.ee_start_lo as u64;
-        for i in 0..len as u64 {
-            out.push(base + i);
+        for i in 0..len {
+            let lbn = ext.ee_block.saturating_add(i);
+            out.push((lbn, base + i as u64));
         }
     }
 
     fn walk_node<B: BlockDevice>(
         dev: &mut Jbd2Dev<B>,
         node: &ExtentNode,
-        out: &mut Vec<u64>,
+        out: &mut Vec<(u32, u64)>,
     ) -> BlockDevResult<()> {
         match node {
             ExtentNode::Leaf { entries, .. } => {
@@ -242,10 +255,10 @@ pub fn resolve_inode_block_allextend<B: BlockDevice>(
         None => return Ok(Vec::new()),
     };
 
-    let mut blocks: Vec<u64> = Vec::new();
+    let mut blocks: Vec<(u32, u64)> = Vec::new();
     walk_node(block_dev, &root, &mut blocks)?;
-    blocks.sort_unstable();
-    blocks.dedup();
+    blocks.sort_unstable_by_key(|(lbn, _)| *lbn);
+    blocks.dedup_by_key(|(lbn, _)| *lbn);
     Ok(blocks)
 }
 
@@ -255,6 +268,9 @@ pub fn get_file_inode<B: BlockDevice>(
     block_dev: &mut Jbd2Dev<B>,
     path: &str,
 ) -> BlockDevResult<Option<(u32, Ext4Inode)>> {
+    #[cfg(feature = "vfs-perf")]
+    let __t0 = monotonic_time_nanos();
+
     // 规范化路径：空串或"/" 视为根目录
     if path.is_empty() || path == "/" {
         let inode = fs.get_root(block_dev)?;
@@ -300,6 +316,9 @@ pub fn get_file_inode<B: BlockDevice>(
         let mut found_inode_num: Option<u64> = None;
 
         // 尝试使用哈希树查找
+        #[cfg(feature = "vfs-perf")]
+        let __step0 = monotonic_time_nanos();
+
         match lookup_directory_entry(fs, block_dev, &current_inode, target) {
             Ok(result) => {
                 found_inode_num = Some(result.entry.inode as u64);
@@ -331,6 +350,16 @@ pub fn get_file_inode<B: BlockDevice>(
             }
         }
 
+        #[cfg(feature = "vfs-perf")]
+        {
+            let __dt = monotonic_time_nanos().saturating_sub(__step0);
+            log::debug!(
+                "vfs-perf get_file_inode step name={} dt_us={}",
+                name,
+                (__dt as u64) / 1000
+            );
+        }
+
         let inode_num = match found_inode_num {
             Some(n) => n,
             None => return Ok(None),
@@ -351,6 +380,16 @@ pub fn get_file_inode<B: BlockDevice>(
         current_inode = cached_inode.inode;
         current_ino_num = inode_num_u32;
         path_vec.push(current_inode);
+    }
+
+    #[cfg(feature = "vfs-perf")]
+    {
+        let __dt = monotonic_time_nanos().saturating_sub(__t0);
+        log::debug!(
+            "vfs-perf get_file_inode path={} dt_us={}",
+            path,
+            (__dt as u64) / 1000
+        );
     }
 
     Ok(Some((current_ino_num, current_inode)))

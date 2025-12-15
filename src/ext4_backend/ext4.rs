@@ -229,7 +229,7 @@ impl Ext4FileSystem {
         // 3. 检查文件系统状态
         if superblock.s_state == Ext4Superblock::EXT4_ERROR_FS {
             warn!("Filesystem is in error state");
-            return Err(MountError::FilesystemHasErrors);
+          //  return Err(MountError::FilesystemHasErrors);
         }
 
         // 4. 计算块组数量
@@ -251,7 +251,14 @@ impl Ext4FileSystem {
         debug!("Bitmap cache initialized (lazy loading)");
 
         // 初始化inode缓存
-        let inode_cache = InodeCache::new(INODE_CACHE_MAX, INODE_SIZE as usize);
+        // NOTE: inode size is a filesystem property (superblock.s_inode_size), not a fixed constant.
+        // Using a wrong inode size will make inode table offsets incorrect and may read zeroed inodes
+        // (e.g. /dev becomes mode=0, then VFS mount fails with ENOTDIR).
+        let inode_size = match superblock.s_inode_size {
+            0 => DEFAULT_INODE_SIZE as usize,
+            n => n as usize,
+        };
+        let inode_cache = InodeCache::new(INODE_CACHE_MAX, inode_size);
         debug!("Inode cache initialized");
 
         // 初始化数据块缓存
@@ -873,15 +880,28 @@ impl Ext4FileSystem {
             cache_key = CacheKey::new_block(group_idx);
         }
         // 在位图上清零对应 bit
+        // Note: freeing the same block twice should not bring the whole filesystem down.
+        // Treat AlreadyFree as a no-op.
         let mut free_ok = Ok(());
+        let mut did_free = true;
         self.bitmap_cache
             .modify(block_dev, cache_key, bitmap_block, |data| {
-                free_ok = self
-                    .block_allocator
-                    .free_block(data, block_in_group)
-                    .map_err(|_| BlockDevError::Corrupted);
+                free_ok = match self.block_allocator.free_block(data, block_in_group) {
+                    Ok(()) => Ok(()),
+                    Err(crate::ext4_backend::bmalloc::AllocError::BitmapError(
+                        crate::ext4_backend::bitmap::BitmapError::AlreadyFree,
+                    )) => {
+                        did_free = false;
+                        Ok(())
+                    }
+                    Err(_) => Err(BlockDevError::Corrupted),
+                };
             })?;
         free_ok?;
+
+        if !did_free {
+            return Ok(());
+        }
         let desc = self
             .get_group_desc_mut(group_idx)
             .ok_or(BlockDevError::Corrupted)?;
@@ -918,14 +938,25 @@ impl Ext4FileSystem {
         }
 
         let mut free_ok = Ok(());
+        let mut did_free = true;
         self.bitmap_cache
             .modify(block_dev, cache_key, bitmap_block, |data| {
-                free_ok = self
-                    .inode_allocator
-                    .free_inode(data, inode_in_group)
-                    .map_err(|_| BlockDevError::Corrupted);
+                free_ok = match self.inode_allocator.free_inode(data, inode_in_group) {
+                    Ok(()) => Ok(()),
+                    Err(crate::ext4_backend::bmalloc::AllocError::BitmapError(
+                        crate::ext4_backend::bitmap::BitmapError::AlreadyFree,
+                    )) => {
+                        did_free = false;
+                        Ok(())
+                    }
+                    Err(_) => Err(BlockDevError::Corrupted),
+                };
             })?;
         free_ok?;
+
+        if !did_free {
+            return Ok(());
+        }
 
         let desc = self
             .get_group_desc_mut(group_idx)
@@ -1086,7 +1117,7 @@ pub struct BlcokGroupLayout {
     pub metadata_blocks_in_group: u32,
 }
 
-pub fn compute_fs_layout(total_blocks: u64) -> FsLayoutInfo {
+pub fn compute_fs_layout(inode_size:u16,total_blocks: u64) -> FsLayoutInfo {
     let block_size: u32 = 1024u32 << LOG_BLOCK_SIZE;
 
     // 每组块数：8 * block_size（标准 ext4 默认）
@@ -1095,7 +1126,6 @@ pub fn compute_fs_layout(total_blocks: u64) -> FsLayoutInfo {
     // 每组 inode 数：blocks_per_group / 4（简化策略）
     let inodes_per_group: u32 = blocks_per_group / 4;
 
-    let inode_size: u16 = INODE_SIZE;
 
     // 块组数：向上取整
     let groups: u32 =
@@ -1168,7 +1198,7 @@ pub fn mkfs<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) -> BlockDevResult<()> {
 
     // 1. 计算布局参数
     let total_blocks = block_dev.total_blocks();
-    let layout = compute_fs_layout(total_blocks);
+    let layout = compute_fs_layout(DEFAULT_INODE_SIZE,total_blocks);
     let total_groups = layout.groups;
 
     debug!("  Total blocks: {total_blocks}");

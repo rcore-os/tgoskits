@@ -6,6 +6,10 @@ use crate::ext4_backend::jbd2::jbdstruct::*;
 /// 块设备错误类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockDevError {
+
+    /// 非法输入
+    InvalidInput,
+
     /// 读取错误
     ReadError,
 
@@ -64,6 +68,7 @@ pub enum BlockDevError {
 impl core::fmt::Display for BlockDevError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            BlockDevError::InvalidInput =>{write!(f,"invalid input")}
             BlockDevError::ReadError => write!(f, "failed to read from block device"),
             BlockDevError::WriteError => write!(f, "failed to write to block device"),
             BlockDevError::BlockOutOfRange {
@@ -121,7 +126,7 @@ pub trait BlockDevice {
     /// * `buffer` - 读取数据的目标缓冲区
     /// * `block_id` - 起始块号
     /// * `count` - 块数量
-    fn read(&self, buffer: &mut [u8], block_id: u32, count: u32) -> BlockDevResult<()>;
+    fn read(&mut self, buffer: &mut [u8], block_id: u32, count: u32) -> BlockDevResult<()>;
 
     /// 打开块设备
     fn open(&mut self) -> BlockDevResult<()>;
@@ -195,8 +200,8 @@ impl Default for BlockBuffer {
 
 /// 块设备封装
 /// 提供缓存和便捷的块设备操作接口
-struct BlockDev<'a, B: BlockDevice> {
-    dev: &'a mut B,
+struct BlockDev<B: BlockDevice> {
+    dev: B,
     buffer: BlockBuffer,
     is_dirty: bool,            // 缓冲区是否已修改
     cached_block: Option<u32>, // 当前缓存的块号
@@ -205,9 +210,9 @@ pub enum Jbd2RunState {
     Commit,
     Replay,
 }
-pub struct Jbd2Dev<'a, B: BlockDevice> {
+pub struct Jbd2Dev<B: BlockDevice> {
     _mode: u8, //日志级别，默认ordered 0
-    inner: BlockDev<'a, B>,
+    inner: BlockDev<B>,
     journal_use: bool, //是否启用日志系统
     _state: Jbd2RunState,
     systeam: Option<JBD2DEVSYSTEM>,
@@ -216,9 +221,9 @@ pub struct Jbd2Dev<'a, B: BlockDevice> {
 ///jbd2代理blockdev
 ///只记录metadata
 /// 采用Jouranl超级快注入的思想，必须需要使用mount来给块设备注入超级块，之后才能使用日志。
-impl<'a, B: BlockDevice> Jbd2Dev<'a, B> {
+impl<B: BlockDevice> Jbd2Dev<B> {
     ///你拿到我之后应该先把超级块给我传进来吧
-    pub fn initial_jbd2dev(_mode: u8, block_dev: &'a mut B, use_journal: bool) -> Self {
+    pub fn initial_jbd2dev(_mode: u8, block_dev:B, use_journal: bool) -> Self {
         let block_dev = BlockDev::new(block_dev);
         Self {
             _mode,
@@ -241,7 +246,7 @@ impl<'a, B: BlockDevice> Jbd2Dev<'a, B> {
                 .systeam
                 .as_mut()
                 .expect("jbd2dev are not initial,please initial the jbd2dev first!");
-            jbd_sys.replay(*dev);
+            jbd_sys.replay(&mut *dev);
         } else {
             warn!("Jouranl function not turn ,please turn on this function and retry!");
         }
@@ -276,7 +281,7 @@ impl<'a, B: BlockDevice> Jbd2Dev<'a, B> {
             self.systeam
                 .as_mut()
                 .unwrap()
-                .commit_transaction(self.inner.dev).expect("Translation commit failed!!!");
+                .commit_transaction(&mut self.inner.dev).expect("Translation commit failed!!!");
         } else {
             warn!("Jouranl not use , no thing to commit")
         }
@@ -293,9 +298,7 @@ impl<'a, B: BlockDevice> Jbd2Dev<'a, B> {
 
         // 2) 元数据且启用日志：走 JBD2 事务
         //    此时之前的普通数据块已经完成写入
-
         //由于分布提交机制，必须需要拷贝数据牺牲性能来确保日志提交
-        // 从缓存里拷贝当前要写回的元数据块内容到本地 Vec，避免一直持有对 self.inner 的不可变借用
         let meta_vec = self.inner.buffer();
         let updates = Jbd2Update(
             block_id as u64,
@@ -304,7 +307,6 @@ impl<'a, B: BlockDevice> Jbd2Dev<'a, B> {
                 .expect("Data can;t into [u8;BLOCK_SIZE] panic!,os should process"),
         );
 
-        // 注意：在 mkfs/早期阶段可能还没设置 super_block，此时直接退化为普通写，避免阻塞格式化
         if self.systeam.is_none() {
             // 日志标志已开但还没有 journal superblock，暂时按非日志写处理
             error!(
@@ -346,7 +348,7 @@ impl<'a, B: BlockDevice> Jbd2Dev<'a, B> {
     pub fn buffer_mut(&mut self) -> &mut [u8] {
         self.inner.buffer_mut()
     }
-    pub fn read_blocks(&self, buf: &mut [u8], block_id: u32, count: u32) -> BlockDevResult<()> {
+    pub fn read_blocks(&mut self, buf: &mut [u8], block_id: u32, count: u32) -> BlockDevResult<()> {
         self.inner.read_blocks(buf, block_id, count)
     }
     pub fn write_blocks(
@@ -425,9 +427,9 @@ impl<'a, B: BlockDevice> Jbd2Dev<'a, B> {
     }
 }
 
-impl<'a, B: BlockDevice> BlockDev<'a, B> {
+impl<B: BlockDevice> BlockDev<B> {
     /// 创建新的块设备封装
-    pub fn new(dev: &'a mut B) -> Self {
+    pub fn new(dev:B) -> Self {
         Self {
             dev,
             buffer: BlockBuffer::new(),
@@ -437,7 +439,7 @@ impl<'a, B: BlockDevice> BlockDev<'a, B> {
     }
 
     /// 使用指定缓冲区初始化块设备
-    pub fn _with_buffer(dev: &'a mut B, buffer: BlockBuffer) -> BlockDevResult<Self> {
+    pub fn _with_buffer(dev:B, buffer: BlockBuffer) -> BlockDevResult<Self> {
         if buffer.len() < 512 {
             return Err(BlockDevError::BufferTooSmall {
                 provided: buffer.len(),
@@ -499,7 +501,7 @@ impl<'a, B: BlockDevice> BlockDev<'a, B> {
     }
 
     /// 直接读取多个块
-    pub fn read_blocks(&self, buffer: &mut [u8], block_id: u32, count: u32) -> BlockDevResult<()> {
+    pub fn read_blocks(&mut self, buffer: &mut [u8], block_id: u32, count: u32) -> BlockDevResult<()> {
         let block_size = self.dev.block_size() as usize;
         let required_size = block_size * count as usize;
 
@@ -581,11 +583,11 @@ impl<'a, B: BlockDevice> BlockDev<'a, B> {
 
     /// 获取内部设备引用
     pub fn _device(&self) -> &B {
-        self.dev
+        &self.dev
     }
 
     /// 获取内部设备可变引用
     pub fn device_mut(&mut self) -> &mut B {
-        self.dev
+        &mut self.dev
     }
 }

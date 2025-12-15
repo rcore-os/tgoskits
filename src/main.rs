@@ -100,7 +100,7 @@ impl BlockDevice for FileBlockDev {
         Ok(())
     }
 
-    fn read(&self, buffer: &mut [u8], block_id: u32, count: u32) -> BlockDevResult<()> {
+    fn read(&mut self, buffer: &mut [u8], block_id: u32, count: u32) -> BlockDevResult<()> {
         let block_size = self.block_size() as usize;
         let required = block_size * count as usize;
         if buffer.len() < required {
@@ -160,7 +160,7 @@ fn main() {
         "使用宿主机文件作为块设备: {img_path} (blocks={blocks}, block_size={BLOCK_SIZE})"
     );
 
-    let mut host_dev = match FileBlockDev::open_or_create(img_path, blocks) {
+    let host_dev = match FileBlockDev::open_or_create(img_path, blocks) {
         Ok(dev) => dev,
         Err(e) => {
             eprintln!("打开/创建镜像文件失败: {e}");
@@ -169,7 +169,7 @@ fn main() {
     };
 
     // 包一层 Jbd2Dev，开启 journal
-    let mut jbd = Jbd2Dev::initial_jbd2dev(0, &mut host_dev, false);
+    let mut jbd = Jbd2Dev::initial_jbd2dev(0, host_dev, false);
 
     info!("=== 测试 Ext4 mkfs ===");
     test_mkfs(&mut jbd);
@@ -196,6 +196,15 @@ fn main() {
 
     info!("=== mv 测试 ===");
     test_mv(&mut jbd, &mut fs);
+
+    info!("=== create symbol link 测试 ===");
+    test_symbol_link(&mut jbd, &mut fs);
+
+    info!("=== truncate 测试 ===");
+    test_truncate(&mut jbd, &mut fs);
+
+    info!("=== rename 测试 ===");
+    test_rename(&mut jbd, &mut fs);
 
     info!("=== 卸载测试 ===");
     test_unmount(&mut jbd, fs);

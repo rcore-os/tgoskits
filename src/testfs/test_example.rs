@@ -178,6 +178,86 @@ pub fn test_unlink<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4File
     );
 }
 
+pub fn test_symbol_link<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4FileSystem) {
+    mkdir(block_dev, fs, "/symlinktest");
+
+    let payload: Vec<u8> = (0..(64 * 1024)).map(|i| (i % 251) as u8).collect();
+    mkfile(block_dev, fs, "/symlinktest/target", Some(&payload));
+
+    create_symbol_link(block_dev, fs, "/symlinktest/target", "/symlinktest/l1")
+        .expect("create_symbol_link failed");
+
+    let (_ino_link, inode_link) = get_file_inode(fs, block_dev, "/symlinktest/l1")
+        .ok()
+        .flatten()
+        .expect("symlink inode missing after create_symbol_link");
+    assert!(inode_link.is_symlink());
+
+    let data_via_link = read_file(block_dev, fs, "/symlinktest/l1")
+        .unwrap()
+        .expect("read symlink-follow failed");
+    assert_eq!(data_via_link, payload);
+}
+
+pub fn test_truncate<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4FileSystem) {
+    mkdir(block_dev, fs, "/truncatetest");
+
+    let payload: Vec<u8> = (0..(256 * 1024)).map(|i| (i % 251) as u8).collect();
+    mkfile(block_dev, fs, "/truncatetest/f1", Some(&payload));
+
+    // truncate -> 0
+    truncate(block_dev, fs, "/truncatetest/f1", 0).expect("truncate to 0 failed");
+    let data0 = read_file(block_dev, fs, "/truncatetest/f1")
+        .unwrap()
+        .expect("read after truncate(0) failed");
+    assert!(data0.is_empty());
+
+    // grow：新空间应为 0
+    let new_len: u64 = (128 * 1024) as u64;
+    truncate(block_dev, fs, "/truncatetest/f1", new_len).expect("truncate grow failed");
+    let data1 = read_file(block_dev, fs, "/truncatetest/f1")
+        .unwrap()
+        .expect("read after truncate grow failed");
+    assert_eq!(data1.len() as u64, new_len);
+    assert!(data1.iter().all(|&b| b == 0));
+}
+
+pub fn test_rename<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4FileSystem) {
+    mkdir(block_dev, fs, "/renametest");
+
+    let payload_a: Vec<u8> = (0..(32 * 1024)).map(|i| (i % 251) as u8).collect();
+    let payload_b: Vec<u8> = (0..(16 * 1024)).map(|i| ((i + 7) % 251) as u8).collect();
+
+    mkfile(block_dev, fs, "/renametest/a", Some(&payload_a));
+    mkfile(block_dev, fs, "/renametest/b", Some(&payload_b));
+
+    // rename a -> c
+    rename(block_dev, fs, "/renametest/a", "/renametest/c").expect("rename a->c failed");
+    assert!(
+        get_file_inode(fs, block_dev, "/renametest/a")
+            .ok()
+            .flatten()
+            .is_none()
+    );
+    let c = read_file(block_dev, fs, "/renametest/c")
+        .unwrap()
+        .expect("read /renametest/c failed");
+    assert_eq!(c, payload_a);
+
+    // overwrite: rename b -> c (c exists)
+    rename(block_dev, fs, "/renametest/b", "/renametest/c").expect("rename b->c overwrite failed");
+    assert!(
+        get_file_inode(fs, block_dev, "/renametest/b")
+            .ok()
+            .flatten()
+            .is_none()
+    );
+    let c2 = read_file(block_dev, fs, "/renametest/c")
+        .unwrap()
+        .expect("read /renametest/c after overwrite failed");
+    assert_eq!(c2, payload_b);
+}
+
 
 
 pub fn test_mv<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4FileSystem) {
@@ -188,7 +268,7 @@ pub fn test_mv<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4FileSyst
     let payload: Vec<u8> = (0..(128 * 1024)).map(|i| (i % 251) as u8).collect();
     mkfile(block_dev, fs, "/mvtest/a/f1", Some(&payload));
 
-    mv(fs, block_dev, "/mvtest/a/f1", "/mvtest/a/f1_renamed");
+    mv(fs, block_dev, "/mvtest/a/f1", "/mvtest/a/f1_renamed").expect("mv rename failed");
     assert!(
         get_file_inode(fs, block_dev, "/mvtest/a/f1")
             .ok()
@@ -200,7 +280,7 @@ pub fn test_mv<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4FileSyst
         .expect("read moved file failed");
     assert_eq!(data1, payload);
 
-    mv(fs, block_dev, "/mvtest/a/f1_renamed", "/mvtest/b/f1_moved");
+    mv(fs, block_dev, "/mvtest/a/f1_renamed", "/mvtest/b/f1_moved").expect("mv cross-dir failed");
     assert!(
         get_file_inode(fs, block_dev, "/mvtest/a/f1_renamed")
             .ok()
@@ -217,7 +297,7 @@ pub fn test_mv<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4FileSyst
     mkfile(block_dev, fs, "/mvtest/dir1/inner", Some(&payload));
     mkdir(block_dev, fs, "/mvtest/dir2");
 
-    mv(fs, block_dev, "/mvtest/dir1", "/mvtest/dir2/dir1_moved");
+    mv(fs, block_dev, "/mvtest/dir1", "/mvtest/dir2/dir1_moved").expect("mv dir failed");
     assert!(
         get_file_inode(fs, block_dev, "/mvtest/dir1")
             .ok()

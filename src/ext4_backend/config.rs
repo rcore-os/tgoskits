@@ -22,11 +22,11 @@ pub const GROUP_DESC_SIZE: u16 = 64;
 // Inode 相关配置
 // ============================================================================
 
-/// Inode 大小（字节）
-pub const INODE_SIZE: u16 = 256;
-
-/// 每个块中可容纳的 inode 数量
-pub const INODES_PER_BLOCK: u32 = (BLOCK_SIZE / INODE_SIZE as usize) as u32;
+/// Inode 默认大小（字节）
+///
+/// NOTE: real inode size is stored in superblock.s_inode_size.
+/// This constant should only be used as a fallback when s_inode_size is 0.
+pub const DEFAULT_INODE_SIZE: u16 = 256;
 
 // ============================================================================
 // 数据结构缓存相关
@@ -39,7 +39,7 @@ pub const DATABLOCK_CACHE_MAX: usize = 32;
 //============================================================================
 //目录项DirEntry配置
 //============================================================================
-pub const DIRNAME_LEN: usize = 32; //目录名长度
+pub const DIRNAME_LEN: usize = 255; //目录名长度
 ///保留inodes数量
 pub const RESERVED_INODES: u32 = 10;
 

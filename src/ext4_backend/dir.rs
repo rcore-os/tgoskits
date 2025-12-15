@@ -13,6 +13,7 @@ use crate::ext4_backend::file::*;
 use crate::ext4_backend::loopfile::*;
 use alloc::string::String;
 use alloc::vec::Vec;
+use log::error;
 use log::debug;
 
 #[derive(Debug)]
@@ -62,12 +63,6 @@ pub fn get_inode_with_num<B: BlockDevice>(
     let mut current_inode = fs.get_root(device)?;
     let mut current_ino: u32 = fs.root_inode;
 
-    // 根目录所在 inode 表起始块（先按 group0 处理）
-    let inode_table_start = match fs.group_descs.first() {
-        Some(desc) => desc.inode_table(),
-        None => return Err(BlockDevError::Corrupted),
-    };
-
     for name in components {
         if !current_inode.is_dir() {
             return Ok(None);
@@ -116,6 +111,13 @@ pub fn get_inode_with_num<B: BlockDevice>(
             Some(n) => n,
             None => return Ok(None),
         };
+
+        let (inode_group_idx, _idx_in_group) = fs.inode_allocator.global_to_group(inode_num as u32);
+        let inode_table_start = fs
+            .group_descs
+            .get(inode_group_idx as usize)
+            .ok_or(BlockDevError::Corrupted)?
+            .inode_table();
 
         let (block_num, offset, _group_idx) = fs.inodetable_cahce.calc_inode_location(
             inode_num as u32,
@@ -182,11 +184,7 @@ pub fn insert_dir_entry<B: BlockDevice>(
 
             let block_bytes = BLOCK_SIZE;
 
-            // 从头扫描，找到“最后一条有效目录项”的偏移及其 rec_len
             let mut offset = 0usize;
-            let mut last_offset = None;
-            let mut last_rec_len = 0usize;
-
             while offset + 8 <= block_bytes {
                 let inode = u32::from_le_bytes([
                     data[offset],
@@ -195,71 +193,56 @@ pub fn insert_dir_entry<B: BlockDevice>(
                     data[offset + 3],
                 ]);
                 let rec_len = u16::from_le_bytes([data[offset + 4], data[offset + 5]]) as usize;
-
-                if inode == 0 || rec_len == 0 {
-                    break;
+                if rec_len < 8 {
+                    return;
+                }
+                let entry_end = offset + rec_len;
+                if entry_end > block_bytes {
+                    return;
                 }
 
-                last_offset = Some(offset);
-                last_rec_len = rec_len;
-
-                if offset + rec_len >= block_bytes {
-                    break;
-                }
-
-                offset += rec_len;
-            }
-
-            let (last_off, old_rec_len) = match last_offset {
-                Some(o) => (o, last_rec_len),
-                None => {
-                    // 整个块目前没有有效目录项，直接把新 entry 占满整个块
-                    if new_rec_len <= block_bytes {
+                // Free entry: directly use it if it can hold the new entry.
+                if inode == 0 {
+                    if rec_len >= new_rec_len {
                         let mut full_entry = new_entry;
-                        full_entry.rec_len = block_bytes as u16;
-                        full_entry.to_disk_bytes(&mut data[0..8]);
+                        full_entry.rec_len = rec_len as u16;
+                        full_entry.to_disk_bytes(&mut data[offset..offset + 8]);
                         let nlen = full_entry.name_len as usize;
-                        data[8..8 + nlen].copy_from_slice(&full_entry.name[..nlen]);
+                        data[offset + 8..offset + 8 + nlen]
+                            .copy_from_slice(&full_entry.name[..nlen]);
                         inserted = true;
                     }
                     return;
                 }
-            };
 
-            // 计算最后一条 entry 的理想长度（对齐到 4 字节）
-            // Ext4DirEntry2: inode(4) + rec_len(2) + name_len(1) + file_type(1) + name
-            // name_len 在偏移 last_off + 6
-            let last_name_len = data[last_off + 6] as usize;
-            let mut ideal = 8 + last_name_len;
-            ideal = (ideal + 3) & !3; // 4 字节对齐
+                // Occupied entry: try to split tail space.
+                let cur_name_len = data[offset + 6] as usize;
+                let mut ideal = 8 + cur_name_len;
+                ideal = (ideal + 3) & !3;
+                if ideal <= rec_len {
+                    let tail = rec_len - ideal;
+                    if tail >= new_rec_len {
+                        let ideal_bytes = (ideal as u16).to_le_bytes();
+                        data[offset + 4] = ideal_bytes[0];
+                        data[offset + 5] = ideal_bytes[1];
 
-            if ideal > old_rec_len {
-                // 不合理，本块放弃插入
-                return;
+                        let new_off = offset + ideal;
+                        let mut full_entry = new_entry;
+                        full_entry.rec_len = tail as u16;
+                        full_entry.to_disk_bytes(&mut data[new_off..new_off + 8]);
+                        let nlen = full_entry.name_len as usize;
+                        data[new_off + 8..new_off + 8 + nlen]
+                            .copy_from_slice(&full_entry.name[..nlen]);
+                        inserted = true;
+                        return;
+                    }
+                }
+
+                if entry_end == block_bytes {
+                    return;
+                }
+                offset = entry_end;
             }
-
-            let tail = old_rec_len - ideal;
-            if tail < new_rec_len {
-                // 尾部空间不足，本块放弃插入
-                return;
-            }
-
-            // 1) 缩短最后一条目录项的 rec_len 为 ideal
-            let ideal_bytes = (ideal as u16).to_le_bytes();
-            data[last_off + 4] = ideal_bytes[0];
-            data[last_off + 5] = ideal_bytes[1];
-
-            // 2) 在尾部写入新 entry，占用剩余空间
-            let new_off = last_off + ideal;
-            let new_rec_len_total = tail as u16;
-
-            let mut full_entry = new_entry;
-            full_entry.rec_len = new_rec_len_total;
-            full_entry.to_disk_bytes(&mut data[new_off..new_off + 8]);
-            let nlen = full_entry.name_len as usize;
-            data[new_off + 8..new_off + 8 + nlen].copy_from_slice(&full_entry.name[..nlen]);
-
-            inserted = true;
         });
     }
 
@@ -350,29 +333,49 @@ pub fn mkdir<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
     path: &str,
 ) -> Option<Ext4Inode> {
+    mkdir_with_ino(device, fs, path).map(|(_, inode)| inode)
+}
+
+pub fn mkdir_with_ino<B: BlockDevice>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    path: &str,
+) -> Option<(u32, Ext4Inode)> {
     // 先对传入路径做规范化（去掉重复的 '/' 等）
     let norm_path = split_paren_child_and_tranlatevalid(path);
 
     // 若目标已存在，直接返回
     if let Ok(Some(inode)) = get_file_inode(fs, device, &norm_path) {
-        return Some(inode.1);
+        return Some(inode);
     }
 
     // 根目录和空路径的特殊情况
     if norm_path.is_empty() || norm_path == "/" {
         debug!("Creating root directory");
         if let Err(e) = create_root_directory_entry(fs, device) {
-            debug!("create_root_directory_entry failed: {e:?}");
+            error!("mkdir create_root_directory_entry failed path={} err={:?} ({})", path, e, e);
             return None;
         }
-        return fs.get_root(device).ok();
+        return match fs.get_root(device) {
+            Ok(inode) => Some((fs.root_inode, inode)),
+            Err(e) => {
+                error!("mkdir get_root failed path={} err={:?} ({})", path, e, e);
+                None
+            }
+        };
     }
 
     // 拆分规范化路径，构建 path_vec
     let parts: Vec<&str> = norm_path.split('/').filter(|s| !s.is_empty()).collect();
 
     if parts.is_empty() {
-        return fs.get_root(device).ok();
+        return match fs.get_root(device) {
+            Ok(inode) => Some((fs.root_inode, inode)),
+            Err(e) => {
+                error!("mkdir get_root failed(empty parts) path={} err={:?} ({})", path, e, e);
+                None
+            }
+        };
     }
 
     // 从头逐一判断父路径是否存在，不存在则递归创建
@@ -388,7 +391,10 @@ pub fn mkdir<B: BlockDevice>(
         }
 
         if let Ok(None) = get_file_inode(fs, device, &cur_path) {
-            mkdir(device, fs, &cur_path);
+            if mkdir(device, fs, &cur_path).is_none() {
+                error!("mkdir recursive parent create failed path={} parent={}", path, cur_path);
+                return None;
+            }
         }
     }
 
@@ -409,39 +415,60 @@ pub fn mkdir<B: BlockDevice>(
     let (parent_ino_num, mut parent_inode) =
         match get_inode_with_num(fs, device, &parent).ok().flatten() {
             Some((n, ino)) => (n, ino),
-            None => return None,
+            None => {
+                error!("mkdir get parent inode failed path={} parent={} child={}", path, parent, child);
+                return None;
+            }
         };
 
     // 特殊情况：根目录本身
     if (parent.is_empty() || parent == "/") && child.is_empty() {
         debug!("Creating root directory");
         if let Err(e) = create_root_directory_entry(fs, device) {
-            debug!("create_root_directory_entry failed: {e:?}");
+            error!("mkdir create_root_directory_entry failed path={} err={:?} ({})", path, e, e);
             return None;
         }
-        return fs.get_root(device).ok();
+        return match fs.get_root(device) {
+            Ok(inode) => Some((fs.root_inode, inode)),
+            Err(e) => {
+                error!("mkdir get_root failed path={} err={:?} ({})", path, e, e);
+                None
+            }
+        };
     }
 
     // 特殊情况：/lost+found
     if (parent.is_empty() || parent == "/") && child == "lost+found" {
         debug!("Creating /lost+found directory");
         if let Err(e) = create_lost_found_directory(fs, device) {
-            debug!("create_lost_found_directory failed: {e:?}");
+            error!("mkdir create_lost_found_directory failed path={} err={:?} ({})", path, e, e);
             return None;
         }
-        return fs.find_file(device, "/lost+found");
+        return match get_inode_with_num(fs, device, "/lost+found").ok().flatten() {
+            Some((ino, inode)) => Some((ino, inode)),
+            None => {
+                error!("mkdir post-create lost+found lookup failed path={}", path);
+                None
+            }
+        };
     }
 
     // 为新目录分配 inode（内部自动选择块组）
     let new_dir_ino = match fs.alloc_inode(device) {
         Ok(ino) => ino,
-        Err(_) => return None,
+        Err(e) => {
+            error!("mkdir alloc_inode failed path={} parent={} child={} err={:?} ({})", path, parent, child, e, e);
+            return None;
+        }
     };
 
     // 为新目录分配数据块（内部自动选择块组）
     let data_block = match fs.alloc_block(device) {
         Ok(b) => b,
-        Err(_) => return None,
+        Err(e) => {
+            error!("mkdir alloc_block failed path={} ino={} err={:?} ({})", path, new_dir_ino, e, e);
+            return None;
+        }
     };
 
     // 初始化新目录的数据块：写 '.' 和 '..'
@@ -505,6 +532,7 @@ pub fn mkdir<B: BlockDevice>(
         })
         .is_err()
     {
+        error!("mkdir modify_inode failed path={} ino={}", path, new_dir_ino);
         return None;
     }
 
@@ -513,7 +541,10 @@ pub fn mkdir<B: BlockDevice>(
         let (p_group, _pidx) = fs.inode_allocator.global_to_group(parent_ino_num);
         let p_inode_table_start = match fs.group_descs.get(p_group as usize) {
             Some(desc) => desc.inode_table(),
-            None => return None,
+            None => {
+                error!("mkdir parent group desc missing path={} parent_ino={} group={}", path, parent_ino_num, p_group);
+                return None;
+            }
         };
         let (p_block_num, p_offset, _pg) = fs.inodetable_cahce.calc_inode_location(
             parent_ino_num,
@@ -552,15 +583,29 @@ pub fn mkdir<B: BlockDevice>(
     )
     .is_err()
     {
+        error!(
+            "mkdir insert_dir_entry failed path={} parent_ino={} child={} ino={}",
+            path,
+            parent_ino_num,
+            child,
+            new_dir_ino
+        );
         return None;
     }
 
-    // 返回新目录的 inode
-    let (_, inode) = get_file_inode(fs, device, path)
-        .ok()
-        .flatten()
-        .expect("Inode not found");
-    Some(inode)
+    match fs.get_inode_by_num(device, new_dir_ino) {
+        Ok(inode) => Some((new_dir_ino, inode)),
+        Err(e) => {
+            error!(
+                "mkdir get_inode_by_num failed path={} ino={} err={:?} ({})",
+                path,
+                new_dir_ino,
+                e,
+                e
+            );
+            None
+        }
+    }
 }
 
 /// 根目录创建实现

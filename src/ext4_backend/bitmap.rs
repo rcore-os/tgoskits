@@ -1,5 +1,5 @@
 use log::error;
-
+use log::warn;
 /// 位图用于跟踪块和inode的分配状态
 
 /// 块位图包装结构
@@ -347,7 +347,7 @@ impl<'a> InodeBitmapMut<'a> {
         }
 
         if (self.data[byte_idx] & (1 << bit_idx)) == 0 {
-            error!("Inode num:{inode_idx} already free!");
+            warn!("Inode num:{inode_idx} already free!");
             return Err(BitmapError::AlreadyFree);
         }
 
