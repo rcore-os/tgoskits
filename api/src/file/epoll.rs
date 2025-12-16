@@ -446,7 +446,7 @@ impl FileLike for Epoll {
         Ok(Kstat::default())
     }
 
-    fn path(&self) -> Cow<str> {
+    fn path(&self) -> Cow<'_, str> {
         "anon_inode:[eventpoll]".into()
     }
 

@@ -192,7 +192,7 @@ impl FutexTable {
     }
 
     /// Gets the wait queue associated with the given address.
-    pub fn get(&self, key: &FutexKey) -> Option<FutexGuard> {
+    pub fn get(&self, key: &FutexKey) -> Option<FutexGuard<'_>> {
         let key = key.as_usize();
         let entry = self.0.lock().get(&key).cloned()?;
         Some(FutexGuard {
@@ -204,7 +204,7 @@ impl FutexTable {
 
     /// Gets the wait queue associated with the given address, or inserts a a
     /// new one if it doesn't exist.
-    pub fn get_or_insert(&self, key: &FutexKey) -> FutexGuard {
+    pub fn get_or_insert(&self, key: &FutexKey) -> FutexGuard<'_> {
         let key = key.as_usize();
         let mut table = self.0.lock();
         let entry = table

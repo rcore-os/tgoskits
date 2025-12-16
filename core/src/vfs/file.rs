@@ -13,7 +13,7 @@ use super::fs::{SimpleFs, SimpleFsNode};
 /// Operations for a simple file.
 pub trait SimpleFileOps: Send + Sync + 'static {
     /// Reads all content in the file.
-    fn read_all(&self) -> VfsResult<Cow<[u8]>>;
+    fn read_all(&self) -> VfsResult<Cow<'_, [u8]>>;
     /// Replaces the file's content with `data`.
     fn write_all(&self, data: &[u8]) -> VfsResult<()>;
 }
@@ -46,7 +46,7 @@ where
     F: Fn(SimpleFileOperation) -> VfsResult<Option<R>> + Send + Sync + 'static,
     R: Into<Vec<u8>>,
 {
-    fn read_all(&self) -> VfsResult<Cow<[u8]>> {
+    fn read_all(&self) -> VfsResult<Cow<'_, [u8]>> {
         (self.0)(SimpleFileOperation::Read).map(|it| Cow::Owned(it.unwrap().into()))
     }
 
@@ -60,7 +60,7 @@ where
     F: Fn() -> VfsResult<R> + Send + Sync + 'static,
     R: Into<Vec<u8>>,
 {
-    fn read_all(&self) -> VfsResult<Cow<[u8]>> {
+    fn read_all(&self) -> VfsResult<Cow<'_, [u8]>> {
         (self)().map(|it| Cow::Owned(it.into()))
     }
 

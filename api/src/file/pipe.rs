@@ -187,7 +187,7 @@ impl FileLike for Pipe {
         })
     }
 
-    fn path(&self) -> Cow<str> {
+    fn path(&self) -> Cow<'_, str> {
         format!("pipe:[{}]", self as *const _ as usize).into()
     }
 

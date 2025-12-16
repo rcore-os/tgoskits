@@ -169,7 +169,7 @@ impl FileLike for File {
         self.nonblock.load(Ordering::Acquire)
     }
 
-    fn path(&self) -> Cow<str> {
+    fn path(&self) -> Cow<'_, str> {
         path_for(self.inner.location())
     }
 
@@ -231,7 +231,7 @@ impl FileLike for Directory {
         Ok(metadata_to_kstat(&self.inner.metadata()?))
     }
 
-    fn path(&self) -> Cow<str> {
+    fn path(&self) -> Cow<'_, str> {
         path_for(&self.inner)
     }
 

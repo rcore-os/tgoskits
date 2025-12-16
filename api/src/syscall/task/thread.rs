@@ -1,6 +1,5 @@
 use axerrno::{AxError, AxResult};
 use axtask::current;
-use num_enum::TryFromPrimitive;
 use starry_core::task::AsThread;
 
 pub fn sys_getpid() -> AxResult<isize> {
@@ -25,7 +24,8 @@ pub fn sys_gettid() -> AxResult<isize> {
 ///
 /// It is only avaliable on x86_64, and is not convenient
 /// to generate automatically via c_to_rust binding.
-#[derive(Debug, Eq, PartialEq, TryFromPrimitive)]
+#[cfg(target_arch = "x86_64")]
+#[derive(Debug, Eq, PartialEq, num_enum::TryFromPrimitive)]
 #[repr(i32)]
 enum ArchPrctlCode {
     /// Set the GS segment base

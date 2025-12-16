@@ -56,7 +56,7 @@ impl FileLike for Socket {
             .set_option(SetSocketOption::NonBlocking(&nonblocking))
     }
 
-    fn path(&self) -> Cow<str> {
+    fn path(&self) -> Cow<'_, str> {
         format!("socket:[{}]", self as *const _ as usize).into()
     }
 

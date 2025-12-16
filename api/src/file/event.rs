@@ -107,7 +107,7 @@ impl FileLike for EventFd {
         Ok(())
     }
 
-    fn path(&self) -> Cow<str> {
+    fn path(&self) -> Cow<'_, str> {
         "anon_inode:[eventfd]".into()
     }
 

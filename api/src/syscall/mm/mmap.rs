@@ -287,7 +287,7 @@ pub fn sys_mremap(addr: usize, old_size: usize, new_size: usize, flags: u32) -> 
 
     // TODO: full implementation
 
-    if addr % PageSize::Size4K as usize != 0 {
+    if !addr.is_multiple_of(PageSize::Size4K as usize) {
         return Err(AxError::InvalidInput);
     }
     let addr = VirtAddr::from(addr);

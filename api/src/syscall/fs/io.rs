@@ -33,7 +33,7 @@ impl FileLike for DummyFd {
         unimplemented!()
     }
 
-    fn path(&self) -> Cow<str> {
+    fn path(&self) -> Cow<'_, str> {
         "anon_inode:[bruh]".into()
     }
 

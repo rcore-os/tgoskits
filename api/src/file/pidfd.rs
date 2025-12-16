@@ -39,7 +39,7 @@ impl FileLike for PidFd {
         Ok(Kstat::default())
     }
 
-    fn path(&self) -> Cow<str> {
+    fn path(&self) -> Cow<'_, str> {
         "anon_inode:[pidfd]".into()
     }
 

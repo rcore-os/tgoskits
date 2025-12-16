@@ -248,7 +248,7 @@ pub trait FileLike: Pollable + Send + Sync {
     fn write(&self, src: &mut SealedBuf) -> AxResult<usize>;
     fn stat(&self) -> AxResult<Kstat>;
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync>;
-    fn path(&self) -> Cow<str>;
+    fn path(&self) -> Cow<'_, str>;
     fn ioctl(&self, _cmd: u32, _arg: usize) -> AxResult<usize> {
         Err(AxError::NotATty)
     }

@@ -34,7 +34,7 @@ impl PartialEq for Entry {
 impl Eq for Entry {}
 impl PartialOrd for Entry {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        Some(other.deadline.cmp(&self.deadline))
+        Some(self.cmp(other))
     }
 }
 impl Ord for Entry {
