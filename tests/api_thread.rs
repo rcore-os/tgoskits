@@ -1,6 +1,8 @@
+#![feature(maybe_uninit_write_slice)]
+
 use std::{
     mem::{MaybeUninit, zeroed},
-    sync::Arc,
+    sync::{Arc, LazyLock, Mutex, MutexGuard},
 };
 
 use axcpu::uspace::UserContext;
@@ -10,7 +12,7 @@ use starry_signal::{
     SignalDisposition, SignalInfo, SignalOSAction, SignalSet, Signo,
     api::{ProcessSignalManager, SignalActions, ThreadSignalManager},
 };
-use starry_vm::VmResult;
+use starry_vm::{VmIo, VmResult};
 
 struct TestEnv {
     actions: Arc<SpinNoIrq<SignalActions>>,
@@ -27,20 +29,33 @@ impl TestEnv {
     }
 }
 
-#[derive(Clone, Copy)]
-struct DummyVm;
+static POOL: LazyLock<Mutex<Box<[u8]>>> = LazyLock::new(|| {
+    let size = 0x0100_0000; // 1 MiB
+    Mutex::new(vec![0; size].into_boxed_slice())
+});
+
+struct Vm(MutexGuard<'static, Box<[u8]>>);
 
 #[extern_trait]
-unsafe impl starry_vm::VmIo for DummyVm {
+unsafe impl VmIo for Vm {
     fn new() -> Self {
-        DummyVm
+        let pool = POOL.lock().unwrap();
+        Vm(pool)
     }
 
-    fn read(&mut self, _start: usize, _buf: &mut [MaybeUninit<u8>]) -> starry_vm::VmResult {
+    fn read(&mut self, start: usize, buf: &mut [MaybeUninit<u8>]) -> VmResult {
+        let base = self.0.as_ptr() as usize;
+        let offset = start - base;
+        let slice = &self.0[offset..offset + buf.len()];
+        buf.write_copy_of_slice(slice);
         Ok(())
     }
 
-    fn write(&mut self, _start: usize, _buf: &[u8]) -> starry_vm::VmResult {
+    fn write(&mut self, start: usize, buf: &[u8]) -> VmResult {
+        let base = self.0.as_ptr() as usize;
+        let offset = start - base;
+        let slice = &mut self.0[offset..offset + buf.len()];
+        slice.copy_from_slice(buf);
         Ok(())
     }
 }
@@ -78,7 +93,10 @@ fn handle_signal() {
     let sig = SignalInfo::new_user(Signo::SIGTERM, 9, 9);
 
     let mut uctx: UserContext = unsafe { zeroed() };
-    let initial_sp = 0x8000_0000usize;
+    let initial_sp = {
+        let pool = POOL.lock().unwrap();
+        pool.as_ptr() as usize + pool.len()
+    };
     uctx.set_sp(initial_sp);
 
     let restore_blocked = env.thr.blocked();
@@ -128,4 +146,33 @@ fn check_signals() {
     assert!(env.thr.send_signal(sig.clone()));
     let (si, _os_action) = env.thr.check_signals(&mut uctx, None).unwrap();
     assert_eq!(si.signo(), Signo::SIGTERM);
+}
+
+#[test]
+fn restore() {
+    unsafe extern "C" fn test_handler(_: i32) {}
+    let env = TestEnv::new();
+    let sig = SignalInfo::new_user(Signo::SIGTERM, 0, 1);
+    env.actions.lock()[Signo::SIGTERM].disposition = SignalDisposition::Handler(test_handler);
+
+    let sp = {
+        let pool = POOL.lock().unwrap();
+        pool.as_ptr() as usize + pool.len()
+    };
+    let mut initial: UserContext = unsafe { zeroed() };
+    initial.set_sp(sp);
+    initial.set_ip(0x219);
+    let mut uctx_user = initial.clone();
+
+    let restore_blocked = env.thr.blocked();
+    let action = env.actions.lock()[sig.signo()].clone();
+    env.thr
+        .handle_signal(&mut uctx_user, restore_blocked, &sig, &action);
+
+    let new_sp = uctx_user.sp() + 8;
+    uctx_user.set_sp(new_sp);
+    env.thr.restore(&mut uctx_user);
+
+    assert_eq!(uctx_user.ip(), initial.ip());
+    assert_eq!(uctx_user.sp(), initial.sp());
 }
