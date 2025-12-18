@@ -1,6 +1,6 @@
 [package]
 name = "axplat-aarch64-raspi"
-version = "0.2.0"
+version = "0.3.0"
 description = "Implementation of `axplat` hardware abstraction layer for Raspberry Pi 4B board."
 documentation = "https://docs.rs/axplat-aarch64-raspi"
 keywords = ["arceos", "os", "hal", "aarch64", "raspi"]
@@ -22,7 +22,7 @@ log = "0.4"
 aarch64-cpu = "10.0"
 page_table_entry = "0.5"
 axconfig-macros = "0.2"
-axplat-aarch64-peripherals = { version = "0.2", path = "../axplat-aarch64-peripherals" }
+axplat-aarch64-peripherals = { workspace = true }
 axcpu = { workspace = true }
 axplat = { workspace = true }
 

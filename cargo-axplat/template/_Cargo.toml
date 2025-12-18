@@ -9,4 +9,4 @@ smp = ["axplat/smp"]
 
 [dependencies]
 axconfig-macros = "0.2"
-axplat = "0.2"
+axplat = "0.3"

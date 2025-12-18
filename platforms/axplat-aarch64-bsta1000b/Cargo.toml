@@ -1,6 +1,6 @@
 [package]
 name = "axplat-aarch64-bsta1000b"
-version = "0.2.0"
+version = "0.3.0"
 description = "Implementation of `axplat` hardware abstraction layer for Black Sesame Technology A1000b SoC."
 documentation = "https://docs.rs/axplat-aarch64-bsta1000b"
 keywords = ["arceos", "os", "hal", "embedded", "aarch64"]
@@ -24,7 +24,7 @@ page_table_entry = "0.5"
 dw_apb_uart = "0.1"
 
 axconfig-macros = "0.2"
-axplat-aarch64-peripherals = { version = "0.2", path = "../axplat-aarch64-peripherals" }
+axplat-aarch64-peripherals = { workspace = true }
 axcpu = { workspace = true }
 axplat = { workspace = true }
 

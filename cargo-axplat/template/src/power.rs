@@ -18,4 +18,9 @@ impl PowerIf for PowerImpl {
     fn system_off() -> ! {
         todo!()
     }
+
+    /// Get the number of CPU cores available on this platform.
+    fn cpu_num() -> usize {
+        todo!()
+    }
 }

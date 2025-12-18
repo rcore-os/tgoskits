@@ -9,8 +9,9 @@ package = "axplat-riscv64-qemu-virt"            # str
 # Platform configs
 #
 [plat]
-# Number of CPUs.
-cpu-num = 1                         # uint
+# Maximum number of CPUs. For platforms that do not support runtime CPU number
+# detection, it's also the number of CPUs to boot.
+max-cpu-num = 1                     # uint
 # Base address of the whole physical memory.
 phys-memory-base = 0x8000_0000      # uint
 # Size of the whole physical memory. (128M)

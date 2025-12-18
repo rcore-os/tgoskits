@@ -1,6 +1,6 @@
 [package]
 name = "axplat-aarch64-qemu-virt"
-version = "0.2.0"
+version = "0.3.0"
 description = "Implementation of `axplat` hardware abstraction layer for QEMU ARM64 virtual machine."
 documentation = "https://docs.rs/axplat-aarch64-qemu-virt"
 keywords = ["arceos", "os", "hal", "embedded", "aarch64"]
@@ -21,7 +21,7 @@ smp = ["axplat/smp"]
 log = "0.4"
 page_table_entry = "0.5"
 axconfig-macros = "0.2"
-axplat-aarch64-peripherals = { version = "0.2", path = "../axplat-aarch64-peripherals" }
+axplat-aarch64-peripherals = { workspace = true }
 axcpu = { workspace = true }
 axplat = { workspace = true }
 

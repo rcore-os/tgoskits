@@ -1,6 +1,6 @@
 [package]
 name = "axplat"
-version = "0.2.0"
+version = "0.3.0"
 description = "This crate provides a unified abstraction layer for diverse hardware platforms."
 documentation = "https://docs.rs/axplat"
 keywords = ["arceos", "os", "hal", "embedded"]

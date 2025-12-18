@@ -1,6 +1,6 @@
 [package]
 name = "axplat-x86-pc"
-version = "0.2.0"
+version = "0.3.0"
 description = "Implementation of `axplat` hardware abstraction layer for x86 Standard PC machine."
 documentation = "https://docs.rs/axplat-x86-pc"
 keywords = ["arceos", "os", "hal", "x86"]

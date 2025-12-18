@@ -1,6 +1,6 @@
 [package]
 name = "cargo-axplat"
-version = "0.2.3"
+version = "0.2.4"
 description = "Manages hardware platform packages using `axplat`"
 keywords = ["arceos", "hal", "hardware", "cargo-subcommand"]
 categories = ["development-tools", "development-tools::cargo-plugins", "embedded", "hardware-support", "os"]

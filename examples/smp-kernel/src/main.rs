@@ -27,7 +27,7 @@ use core::sync::atomic::Ordering::Release;
 
 const CPU_NUM: usize = match option_env!("AX_CPU_NUM") {
     Some(val) => const_str::parse!(val, usize),
-    None => axplat_crate::config::plat::CPU_NUM,
+    None => axplat_crate::config::plat::MAX_CPU_NUM,
 };
 
 #[axplat::main]

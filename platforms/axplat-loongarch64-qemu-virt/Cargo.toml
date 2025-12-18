@@ -1,6 +1,6 @@
 [package]
 name = "axplat-loongarch64-qemu-virt"
-version = "0.2.0"
+version = "0.3.0"
 description = "Implementation of `axplat` hardware abstraction layer for QEMU LoongArch virtual machine."
 documentation = "https://docs.rs/axplat-loongarch64-qemu-virt"
 keywords = ["arceos", "os", "hal", "embedded", "loongarch"]

@@ -13,4 +13,13 @@ pub trait PowerIf {
 
     /// Shutdown the whole system.
     fn system_off() -> !;
+
+    /// Get the number of CPU cores available on this platform.
+    ///
+    /// The platform should either get this value statically from its
+    /// configuration or dynamically by platform-specific methods.
+    ///
+    /// For statically configured platforms, by convention, this value should be
+    /// the same as `MAX_CPU_NUM` defined in the platform configuration.
+    fn cpu_num() -> usize;
 }
