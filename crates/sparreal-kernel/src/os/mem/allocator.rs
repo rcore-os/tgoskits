@@ -29,11 +29,15 @@ pub struct KernelAllocator;
 
 impl FrameAllocator for KernelAllocator {
     fn alloc_frame(&self) -> Option<page_table_generic::PhysAddr> {
-        kernel_memory_allocator().lock_heap32().alloc(page_frame_layout()).ok().map(|nn| {
-            let virt = VirtAddr::from(nn);
-            let phys: PhysAddr = virt.into();
-            phys.raw().into()
-        })
+        kernel_memory_allocator()
+            .lock_heap32()
+            .alloc(page_frame_layout())
+            .ok()
+            .map(|nn| {
+                let virt = VirtAddr::from(nn);
+                let phys: PhysAddr = virt.into();
+                phys.raw().into()
+            })
     }
 
     fn dealloc_frame(&self, frame: page_table_generic::PhysAddr) {
@@ -41,7 +45,9 @@ impl FrameAllocator for KernelAllocator {
         let virt: VirtAddr = phys.into();
         let ptr = virt.as_mut_ptr();
         let nn = unsafe { NonNull::new_unchecked(ptr) };
-        kernel_memory_allocator().lock_heap32().dealloc(nn, page_frame_layout());
+        kernel_memory_allocator()
+            .lock_heap32()
+            .dealloc(nn, page_frame_layout());
     }
 
     fn phys_to_virt(&self, paddr: page_table_generic::PhysAddr) -> *mut u8 {
@@ -62,7 +68,8 @@ pub fn kernel_memory_allocator() -> &'static KernelMemoryAllocator {
         // 对于非 none 目标，提供一个空实现
         use core::sync::atomic::{AtomicPtr, Ordering};
 
-        static EMPTY_ALLOCATOR: AtomicPtr<KernelMemoryAllocator> = AtomicPtr::new(core::ptr::null_mut());
+        static EMPTY_ALLOCATOR: AtomicPtr<KernelMemoryAllocator> =
+            AtomicPtr::new(core::ptr::null_mut());
 
         let ptr = EMPTY_ALLOCATOR.load(Ordering::Acquire);
         if ptr.is_null() {
@@ -74,7 +81,7 @@ pub fn kernel_memory_allocator() -> &'static KernelMemoryAllocator {
                 Ordering::Acquire,
             ) {
                 Ok(_) => allocator,
-                Err(existing) => unsafe { &*existing }
+                Err(existing) => unsafe { &*existing },
             }
         } else {
             unsafe { &*ptr }

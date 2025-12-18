@@ -65,6 +65,26 @@ pub trait PageTable: Send + 'static {
         flush: bool,
     ) -> Result<(), PagingError>;
     fn unmap(&mut self, virt_start: VirtAddr, size: usize) -> Result<(), PagingError>;
+
+    fn iomap(
+        &mut self,
+        phys_start: PhysAddr,
+        size: usize,
+        flush: bool,
+    ) -> Result<VirtAddr, PagingError> {
+        let virt_start = memory::phys_to_virt(phys_start);
+        self.map(
+            virt_start,
+            phys_start,
+            size,
+            MemConfig {
+                access: AccessFlags::READ | AccessFlags::WRITE,
+                attrs: MemAttributes::Device,
+            },
+            flush,
+        )?;
+        Ok(virt_start)
+    }
 }
 
 define_type! {

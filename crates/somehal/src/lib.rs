@@ -46,7 +46,7 @@ pub use somehal_macros::{entry, secondary_entry};
 use crate::{irq::SoftIrqId, mem::PageTableInfo};
 
 trait ArchTrait {
-    type PT: TableGeneric;
+    type PT<A: FrameAllocator>: PageTableOp<A>;
 
     fn kernel_code() -> &'static [u8];
     fn post_allocator();
@@ -59,7 +59,7 @@ trait ArchTrait {
     fn ioremap(paddr: usize, size: usize) -> *mut u8;
 
     fn enable_paging();
-    fn create_page_table<A: FrameAllocator>(allocator: A) -> PageTable<Self::PT, A>;
+    fn create_page_table<A: FrameAllocator>(allocator: A) -> Self::PT<A>;
     fn kernel_page_table() -> PageTableInfo;
     fn set_kernel_page_table(val: PageTableInfo);
 
@@ -118,4 +118,19 @@ fn prime_entry() -> ! {
         fn __somehal_main() -> !;
     }
     unsafe { __somehal_main() }
+}
+
+pub trait PageTableOp<A: FrameAllocator> {
+    fn map(&mut self, config: &MapConfig<arch::paging::Entry>) -> Result<(), PagingError>;
+
+    fn unmap(&mut self, virt_start: VirtAddr, size: usize) -> Result<(), PagingError>;
+
+    fn iomap(
+        &mut self,
+        phys_start: PhysAddr,
+        size: usize,
+        flush: bool,
+    ) -> Result<VirtAddr, PagingError>;
+
+    fn root_paddr(&self) -> PhysAddr;
 }

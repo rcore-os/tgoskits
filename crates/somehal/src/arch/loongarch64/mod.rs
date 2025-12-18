@@ -15,20 +15,56 @@ use loongArch64::{
     register::{crmd, tcfg, ticlr},
     time::{Time, get_timer_freq},
 };
-use page_table_generic::{FrameAllocator, PageTable};
+use page_table_generic::{FrameAllocator, MapConfig, PageTable};
 pub use paging::Entry as Pte;
 pub use relocate::relocate;
 
-use crate::{ArchTrait, arch::register::irq::TI, irq::SoftIrqId};
+use crate::{ArchTrait, PageTableOp, arch::register::irq::TI, irq::SoftIrqId};
 
 const MIN_TICKS: usize = 4;
 
-pub type PT<A> = page_table_generic::PageTable<paging::Generic, A>;
+// pub type PT<A> = page_table_generic::PageTable<paging::Generic, A>;
+
+pub struct PT<A: FrameAllocator> {
+    inner: page_table_generic::PageTable<paging::Generic, A>,
+}
+
+impl<A: FrameAllocator> PageTableOp<A> for PT<A> {
+    fn map(
+        &mut self,
+        config: &MapConfig<paging::Entry>,
+    ) -> Result<(), page_table_generic::PagingError> {
+        self.inner.map(config)
+    }
+
+    fn unmap(
+        &mut self,
+        virt_start: page_table_generic::VirtAddr,
+        size: usize,
+    ) -> Result<(), page_table_generic::PagingError> {
+        self.inner.unmap(virt_start, size)
+    }
+
+    fn iomap(
+        &mut self,
+        phys_start: page_table_generic::PhysAddr,
+        _size: usize,
+        _flush: bool,
+    ) -> Result<page_table_generic::VirtAddr, page_table_generic::PagingError> {
+        let virt = Arch::_io(phys_start.raw());
+        debug!("ioremap direct {:#x} -> {:#p}", phys_start.raw(), virt);
+        Ok(virt.into())
+    }
+
+    fn root_paddr(&self) -> page_table_generic::PhysAddr {
+        self.inner.root_paddr()
+    }
+}
 
 pub struct Arch;
 
 impl ArchTrait for Arch {
-    type PT = paging::Generic;
+    type PT<A: FrameAllocator> = PT<A>;
 
     fn kernel_code() -> &'static [u8] {
         let start = ext_sym_addr!(_head);
@@ -162,8 +198,10 @@ impl ArchTrait for Arch {
         }
     }
 
-    fn create_page_table<A: FrameAllocator>(allocator: A) -> PageTable<Self::PT, A> {
-        PageTable::<Self::PT, A>::new(allocator).unwrap()
+    fn create_page_table<A: FrameAllocator>(allocator: A) -> Self::PT<A> {
+        PT {
+            inner: PageTable::<paging::Generic, A>::new(allocator).unwrap(),
+        }
     }
 
     fn kernel_page_table() -> crate::mem::PageTableInfo {

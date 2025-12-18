@@ -1,7 +1,7 @@
 use alloc::boxed::Box;
 use core::time::Duration;
 
-use somehal::{MemConfig, mem::PageTableEntry};
+use somehal::{MemConfig, PageTableOp, mem::PageTableEntry};
 use sparreal_kernel::{hal::al::*, impl_trait, os::mem::KernelAllocator};
 
 struct InitImpl;
@@ -93,6 +93,17 @@ impl PageTable for PageTableImpl {
 
     fn unmap(&mut self, virt_start: VirtAddr, size: usize) -> Result<(), PagingError> {
         self.0.unmap(virt_start.raw().into(), size)
+    }
+
+    fn iomap(
+        &mut self,
+        phys_start: PhysAddr,
+        size: usize,
+        flush: bool,
+    ) -> Result<VirtAddr, PagingError> {
+        self.0
+            .iomap(phys_start.raw().into(), size, flush)
+            .map(|vaddr| VirtAddr::new(vaddr.raw()))
     }
 }
 

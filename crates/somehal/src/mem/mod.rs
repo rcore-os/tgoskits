@@ -4,7 +4,6 @@ pub use kernutil::memory::{MemoryDescriptor, MemoryType};
 use num_align::NumAlign;
 use ranges_ext::RangeError;
 
-pub(crate) mod address;
 pub(crate) mod ram;
 pub(crate) mod region;
 
