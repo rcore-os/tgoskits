@@ -12,7 +12,7 @@ version = "0.7.0"
 
 [dependencies]
 bitflags = "2.9"
-heapless = "0.8"
+heapless = "0.9"
 log = "0.4"
 num-align = "0.1"
 thiserror = {version = "2", default-features = false}

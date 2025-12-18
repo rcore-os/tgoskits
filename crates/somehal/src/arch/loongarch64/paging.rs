@@ -7,7 +7,7 @@
 
 use page_table_generic::{PageTableEntry, PhysAddr, TableGeneric, VirtAddr};
 
-use crate::consts::PAGE_SIZE;
+use crate::{ArchTrait, consts::PAGE_SIZE};
 
 // ============================================================================
 // CSR 寄存器地址定义
@@ -976,4 +976,8 @@ pub fn cpu_has_ptw() -> bool {
     }
     // bit 24 = PTW 支持
     (cfg1 & (1 << 24)) != 0
+}
+
+pub fn relocate_kernel_to_vm_code() {
+    // TODO: 实现内核搬迁到虚拟内存的代码
 }

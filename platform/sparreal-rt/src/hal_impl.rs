@@ -95,15 +95,19 @@ impl PageTable for PageTableImpl {
         self.0.unmap(virt_start.raw().into(), size)
     }
 
-    fn iomap(
+    fn ioremap(
         &mut self,
         phys_start: PhysAddr,
         size: usize,
         flush: bool,
-    ) -> Result<VirtAddr, PagingError> {
+    ) -> Result<IoMemAddr, PagingError> {
         self.0
-            .iomap(phys_start.raw().into(), size, flush)
-            .map(|vaddr| VirtAddr::new(vaddr.raw()))
+            .ioremap(phys_start.raw().into(), size, flush)
+            .map(|vaddr| IoMemAddr::new(vaddr.raw()))
+    }
+
+    fn iounmap(&mut self, io_addr: IoMemAddr, size: usize) -> Result<(), PagingError> {
+        self.0.iounmap(io_addr.raw().into(), size)
     }
 }
 

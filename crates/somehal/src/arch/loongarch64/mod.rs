@@ -45,7 +45,7 @@ impl<A: FrameAllocator> PageTableOp<A> for PT<A> {
         self.inner.unmap(virt_start, size)
     }
 
-    fn iomap(
+    fn ioremap(
         &mut self,
         phys_start: page_table_generic::PhysAddr,
         _size: usize,
@@ -58,6 +58,15 @@ impl<A: FrameAllocator> PageTableOp<A> for PT<A> {
 
     fn root_paddr(&self) -> page_table_generic::PhysAddr {
         self.inner.root_paddr()
+    }
+
+    fn iounmap(
+        &mut self,
+        _io_addr: page_table_generic::VirtAddr,
+        _size: usize,
+    ) -> Result<(), page_table_generic::PagingError> {
+        // 对于直接映射的 I/O 内存，不需要实际操作
+        Ok(())
     }
 }
 
@@ -231,6 +240,10 @@ impl ArchTrait for Arch {
         // LoongArch64 在启动时已经启用了分页
         // 这里只需要确保 TLB 已经刷新
         paging::local_flush_tlb_all();
+    }
+
+    fn relocate_kernel_to_vm_code() {
+        paging::relocate_kernel_to_vm_code();
     }
 }
 

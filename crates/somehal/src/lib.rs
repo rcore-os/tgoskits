@@ -49,6 +49,7 @@ trait ArchTrait {
     type PT<A: FrameAllocator>: PageTableOp<A>;
 
     fn kernel_code() -> &'static [u8];
+    fn relocate_kernel_to_vm_code();
     fn post_allocator();
 
     fn per_cpu_trap_init(is_primary: bool);
@@ -108,6 +109,8 @@ fn prime_entry() -> ! {
     mem::set_mmu_enabled();
     arch::Arch::per_cpu_trap_init(true);
     fdt::setup_earlycon();
+    arch::Arch::relocate_kernel_to_vm_code();
+
     fdt::setup_memory_map();
     let _ = acpi::earlycon::acpi_setup_earlycon();
 
@@ -125,12 +128,14 @@ pub trait PageTableOp<A: FrameAllocator> {
 
     fn unmap(&mut self, virt_start: VirtAddr, size: usize) -> Result<(), PagingError>;
 
-    fn iomap(
+    fn ioremap(
         &mut self,
         phys_start: PhysAddr,
         size: usize,
         flush: bool,
     ) -> Result<VirtAddr, PagingError>;
+
+    fn iounmap(&mut self, io_addr: VirtAddr, size: usize) -> Result<(), PagingError>;
 
     fn root_paddr(&self) -> PhysAddr;
 }

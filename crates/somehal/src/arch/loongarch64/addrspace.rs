@@ -40,3 +40,5 @@ pub const UNCACHE_BASE: usize = CSR_DMW0_BASE;
 pub const CACHE_BASE: usize = CSR_DMW1_BASE;
 pub const IO_BASE: usize = UNCACHE_BASE;
 pub const PAGE_OFFSET: usize = CACHE_BASE;
+
+pub const VM_CODE_START: usize = 0xb000 << PABITS;

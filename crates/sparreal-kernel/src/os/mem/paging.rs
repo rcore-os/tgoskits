@@ -28,7 +28,7 @@ fn map_regions(pt: &mut Box<dyn PageTable>) {
                     (phys.raw() + region.size_in_bytes),
                     fmt
                 );
-                pt.iomap(phys.raw().into(), region.size_in_bytes, false)
+                pt.ioremap(phys.raw().into(), region.size_in_bytes, false)
                     .expect("Failed to map mmio");
             }
             _ => {
