@@ -45,7 +45,7 @@ pub fn local_apic<'a>() -> &'a mut LocalApic {
     unsafe { LOCAL_APIC.assume_init_mut() }
 }
 
-#[cfg(feature = "smp")]
+#[cfg(any(feature = "smp", feature = "irq"))]
 pub fn raw_apic_id(id_u8: u8) -> u32 {
     if unsafe { IS_X2APIC } {
         id_u8 as u32
@@ -158,14 +158,15 @@ mod irq_impl {
         /// Sends an inter-processor interrupt (IPI) to the specified target CPU or all CPUs.
         fn send_ipi(irq_num: usize, target: IpiTarget) {
             match target {
-                IpiTarget::Current { cpu_id } => {
+                IpiTarget::Current { cpu_id: _ } => {
                     unsafe {
-                        super::local_apic().send_ipi_self(cpu_id as _);
+                        super::local_apic().send_ipi_self(irq_num as _);
                     };
                 }
                 IpiTarget::Other { cpu_id } => {
+                    let apic_id = super::raw_apic_id(cpu_id as u8);
                     unsafe {
-                        super::local_apic().send_ipi(irq_num as _, cpu_id as _);
+                        super::local_apic().send_ipi(irq_num as _, apic_id as _);
                     };
                 }
                 IpiTarget::AllExceptCurrent {
