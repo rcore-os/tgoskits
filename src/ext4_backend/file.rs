@@ -289,6 +289,7 @@ pub fn create_symbol_link<B: BlockDevice>(
     new_inode.i_size_lo = size_lo;
     new_inode.i_size_high = size_hi;
 
+
     if target_len == 0 {
         new_inode.i_blocks_lo = 0;
         new_inode.l_i_blocks_high = 0;
@@ -335,7 +336,7 @@ pub fn create_symbol_link<B: BlockDevice>(
 
         let used_datablocks = data_blocks.len() as u64;
         let iblocks_used = used_datablocks.saturating_mul(BLOCK_SIZE as u64 / 512) as u32;
-        new_inode.i_blocks_lo = iblocks_used;
+        new_inode.i_blocks_lo = iblocks_used as u32;
         new_inode.l_i_blocks_high = (iblocks_used as u64 >> 32) as u16;
 
         build_file_block_mapping(fs, &mut new_inode, &data_blocks, device);
@@ -1536,13 +1537,15 @@ pub fn build_file_block_mapping<B: BlockDevice>(
 
 ///创建文件类型entry通用接口
 /// 传入文件名称,可选初始数据
+/// file_type 可选文件entry类型，None表示默认普通文件,传entry类型,别传inode类型
 pub fn mkfile<B: BlockDevice>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
     initial_data: Option<&[u8]>,
+    file_type: Option<u8>,
 ) -> Option<Ext4Inode> {
-    mkfile_with_ino(device, fs, path, initial_data).map(|(_, inode)| inode)
+    mkfile_with_ino(device, fs, path, initial_data, file_type).map(|(_, inode)| inode)
 }
 
 pub fn mkfile_with_ino<B: BlockDevice>(
@@ -1550,6 +1553,7 @@ pub fn mkfile_with_ino<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
     path: &str,
     initial_data: Option<&[u8]>,
+    file_type: Option<u8>,
 ) -> Option<(u32, Ext4Inode)> {
     // 规范化路径
     let norm_path = split_paren_child_and_tranlatevalid(path);
@@ -1645,8 +1649,24 @@ pub fn mkfile_with_ino<B: BlockDevice>(
     }
 
     // 构造新文件 inode 的内存版本，然后通过 modify_inode 一次性写回
+    let imode;
     let mut new_inode = Ext4Inode::default();
-    new_inode.i_mode = Ext4Inode::S_IFREG | 0o644;
+    if file_type.is_some() {
+        imode = match file_type.unwrap(){
+            Ext4DirEntry2::EXT4_FT_SYMLINK => Ext4Inode::S_IFLNK | 0o777,
+            Ext4DirEntry2::EXT4_FT_REG_FILE => Ext4Inode::S_IFREG | 0o644,
+            Ext4DirEntry2::EXT4_FT_DIR => Ext4Inode::S_IFDIR | 0o755,
+            Ext4DirEntry2::EXT4_FT_BLKDEV => Ext4Inode::S_IFBLK | 0o600,
+            Ext4DirEntry2::EXT4_FT_CHRDEV => Ext4Inode::S_IFCHR | 0o600,
+            Ext4DirEntry2::EXT4_FT_FIFO => Ext4Inode::S_IFIFO | 0o644,
+            Ext4DirEntry2::EXT4_FT_SOCK => Ext4Inode::S_IFSOCK | 0o644,
+            _ => Ext4Inode::S_IFREG | 0o644,
+        };
+    }else {
+        imode = Ext4Inode::S_IFREG | 0o644;
+    }
+    
+    new_inode.i_mode = imode;
 
     //extend是否开启
     if fs.superblock.has_extents() {
@@ -1695,6 +1715,12 @@ pub fn mkfile_with_ino<B: BlockDevice>(
     }
 
     //在父目录中插入一个普通文件类型的目录项（必要时自动扩展目录块）
+
+    let file_type = match file_type {
+        Some(ft) => ft,
+        None => Ext4DirEntry2::EXT4_FT_REG_FILE,
+    };
+
     let mut parent_inode_copy = parent_inode;
     if insert_dir_entry(
         fs,
@@ -1703,7 +1729,7 @@ pub fn mkfile_with_ino<B: BlockDevice>(
         &mut parent_inode_copy,
         new_file_ino,
         &child,
-        Ext4DirEntry2::EXT4_FT_REG_FILE,
+        file_type,
     )
     .is_err()
     {
@@ -1746,7 +1772,7 @@ pub fn write_file<B: BlockDevice>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
-    offset: usize,
+    offset: u64,
     data: &[u8],
 ) -> BlockDevResult<()> {
     if data.is_empty() {
@@ -1767,7 +1793,7 @@ pub fn write_file_with_ino<B: BlockDevice>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     inode_num: u32,
-    offset: usize,
+    offset: u64,
     data: &[u8],
 ) -> BlockDevResult<()> {
     if data.is_empty() {
@@ -1776,8 +1802,9 @@ pub fn write_file_with_ino<B: BlockDevice>(
 
     let mut inode = fs.get_inode_by_num(device, inode_num)?;
 
-    let old_size = inode.size() as usize;
-    let block_bytes = BLOCK_SIZE;
+
+    let old_size = inode.size() as u64;
+    let block_bytes = BLOCK_SIZE as u64;
 
     // If extents are supported, make sure the inode has a valid extent header
     // before any extent-based operations. Some inodes may have EXTENTS flag set
@@ -1793,7 +1820,7 @@ pub fn write_file_with_ino<B: BlockDevice>(
         info!("Expend write!");
     }
 
-    let end = offset.saturating_add(data.len());
+    let end = offset.saturating_add(data.len() as u64);
 
     let start_lbn = offset / block_bytes;
     let end_lbn = (end - 1) / block_bytes;
@@ -1834,6 +1861,9 @@ pub fn write_file_with_ino<B: BlockDevice>(
 
                 let add_iblocks = (BLOCK_SIZE / 512) as u32;
                 inode.i_blocks_lo = inode.i_blocks_lo.saturating_add(add_iblocks);
+                inode.l_i_blocks_high =
+                    inode.l_i_blocks_high.saturating_add(((add_iblocks as u64) >> 32) as u16);
+
 
                 new_phys
             }
@@ -1854,18 +1884,17 @@ pub fn write_file_with_ino<B: BlockDevice>(
                 return;
             }
 
-            let src_off = write_start - offset;
-            let dst_off = write_start - block_start;
+            let src_off = (write_start - offset) as u64;
+            let dst_off = (write_start - block_start) as usize;
             let len = write_end - write_start;
 
-            blk[dst_off..dst_off + len].copy_from_slice(&data[src_off..src_off + len]);
+            blk[dst_off..dst_off + len as usize].copy_from_slice(&data[src_off as usize..(src_off + len) as usize]);
         })?;
     }
 
     if end > old_size {
         inode.i_size_lo = (end as u64 & 0xffff_ffff) as u32;
         inode.i_size_high = ((end as u64) >> 32) as u32;
-
     }
 
     fs.modify_inode(device, inode_num, |td| {

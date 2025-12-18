@@ -145,6 +145,19 @@ impl Ext4Inode {
             false
         }
     }
+
+
+    //some metadata change support 
+    pub fn set_mtime(&mut self, mtime: u32) {
+        self.i_mtime = mtime;
+    }
+    pub fn set_ctime(&mut self, ctime: u32) {
+        self.i_ctime = ctime;
+    }
+    pub fn set_atime(&mut self, atime: u32) {
+        self.i_atime = atime;
+    }
+
 }
 
 // 文件模式常量 - 文件类型

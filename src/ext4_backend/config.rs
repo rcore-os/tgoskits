@@ -1,9 +1,16 @@
 use crate::ext4_backend::superblock::*;
+
+// ============================================================================
+// Journal 相关配置
+// ============================================================================
+/// JBD2 日志缓冲区最大数量
+pub const JBD2_BUFFER_MAX: usize = 10; //最多10条缓存
+
 // ============================================================================
 // 块相关配置
 // ============================================================================
 /// Ext4 块大小（字节）
-pub const BLOCK_SIZE: usize = 4096;
+pub const BLOCK_SIZE: usize = 4096;//usize没问题
 pub const BLOCK_SIZE_U32: u32 = BLOCK_SIZE as u32;
 
 /// Ext4 块大小对数（log2）
@@ -32,9 +39,9 @@ pub const DEFAULT_INODE_SIZE: u16 = 256;
 // 数据结构缓存相关
 // ============================================================================
 ///Inodecahe数量
-pub const INODE_CACHE_MAX: usize = 32;
+pub const INODE_CACHE_MAX: usize = 4096;
 ///Datablock cahce数量
-pub const DATABLOCK_CACHE_MAX: usize = 32;
+pub const DATABLOCK_CACHE_MAX: usize = 4096;
 
 //============================================================================
 //目录项DirEntry配置

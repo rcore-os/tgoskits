@@ -91,19 +91,20 @@
  }
  ```
  
- ## 2. 用 `Jbd2Dev` 包装块设备（可选启用 journal，目前推荐关闭）
- 
+ ## 2. 用 `Jbd2Dev` 包装块设备,目前只支持ordered模式,ordered会储存完整元数据内容然后写主盘，如果对性能有较高要求请关闭
+  
  `rsext4` 的所有读写都通过 `Jbd2Dev<B>` 进行：
  
  ```rust
  use rsext4::Jbd2Dev;
  
- // _mode: 日志级别（当前实现里常用 0）
+ // _mode: 日志级别（当前实现里只用 0 - ordered）
  // use_journal: 是否启用 journaling
- let mut dev = Jbd2Dev::initial_jbd2dev(0, block_dev, /*use_journal=*/ false);
+ let mut dev = Jbd2Dev::initial_jbd2dev(0, block_dev, /*use_journal=*/ true);
  ```
  
  运行时可以切换 journal 开关：
+ 如果在mount之后启用需要手动读取日志超级块并且注入!
  
  ```rust
  dev.set_journal_use(true);
@@ -137,7 +138,7 @@
  
  // ... 对 fs 进行各种操作 ...
  
- umount(fs, &mut dev)?;
+ umount(fs, &mut dev)?; //数据块缓存，inode缓存，同步超级块，同步块组描述符
  ```
  
  ## 5. 常用 API 使用
@@ -152,8 +153,8 @@
  mkdir(&mut dev, &mut fs, "/test_dir/");
  
  let data = vec![b'a'; 4096];
- mkfile(&mut dev, &mut fs, "/test_dir/hello", Some(&data));
- mkfile(&mut dev, &mut fs, "/test_dir/empty", None);
+ mkfile(&mut dev, &mut fs, "/test_dir/hello", Some(&data),None);//最后的是文件类型，仅仅作用于inode标志和entry标志。对数据结构不产生任何影响
+ mkfile(&mut dev, &mut fs, "/test_dir/empty", None,None);
  ```
  
  ### 5.2 读取整个文件
@@ -259,4 +260,5 @@
 
  ```
  
+
 

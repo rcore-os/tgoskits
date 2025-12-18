@@ -11,14 +11,13 @@ pub const JBD2_FLAG_LAST_TAG: u16 = 0x8;
 #[repr(C)]
 ///（主物理块号，元数据内容）
 pub struct Jbd2Update(pub u64, pub [u8; BLOCK_SIZE]);
-pub const JBD2_BUFFER_MAX: usize = 3; //最多3条缓存
 #[repr(C)]
 pub struct JBD2DEVSYSTEM {
     pub jbd2_super_block: JournalSuperBllockS,
-    pub start_block: u32, // 日志区在磁盘的物理起始块号 include superblock
+    pub start_block: u32, // Journal 超级块 开始块号
     pub max_len: u32,     // 日志总块数
-    pub head: u32,        //当前日志写指针(块)(相对于 start_block 的偏移)
-    pub sequence: u32,    //下一个事务ID
+    pub head: u32,        //commit游标(相对块号)
+    pub sequence: u32,    //当前期待事务ID(验证和写commit用)
     pub commit_queue: Vec<Jbd2Update>, //事务缓存
 }
 
@@ -30,10 +29,11 @@ pub struct JournalHeaderS {
     pub h_sequence: u32,  // __be32: transaction sequence id
 }
 impl Default for JournalHeaderS {
+    ///block_type默认超级块
     fn default() -> Self {
         JournalHeaderS {
             h_magic: JBD2_MAGIC,
-            h_blocktype: 4,
+            h_blocktype: 4,//超级块 类型
             h_sequence: 0,
         }
     }

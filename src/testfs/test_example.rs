@@ -6,17 +6,17 @@ use std::io::Write;
 pub fn test_mkfs<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) {
     mkfs(block_dev).expect("File system mount failed panic!");
 }
-/// 文件写入/读取测试
+/// 大文件写入/读取测试
 pub fn _test_base_io<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4FileSystem) {
     mkdir(block_dev, fs, "/test_dir/");
     // 大文件测试：写入 + 读取 吞吐量
-    let test_big_file: Vec<u8> = vec![b'g'; 1024 * 1024 * 2001]; // 2001MB
+    let test_big_file: Vec<u8> = vec![b'g'; 1024 * 1024 * 2000];
     let file_count = 1u64;
     let total_write_bytes = test_big_file.len() as u64;
     let write_start = std::time::Instant::now();
     for i in 0..file_count {
         let file_name = format!("/test_dir/test_file:{i}");
-        mkfile(block_dev, fs, &file_name, Some(&test_big_file));
+        mkfile(block_dev, fs, &file_name, Some(&test_big_file),None);
     }
     //数据实际落盘
     fs.datablock_cache.flush_all(block_dev).expect("Bitmap Flsuh failed!");
@@ -105,7 +105,7 @@ pub fn test_delete<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4File
     let test_big_file: Vec<u8> = vec![b'g'; 1024 * 1024 * 20]; // 20MB
     for idx in 0..10 {
         let file_name = format!("/deltest/childdir/file:{idx}");
-        mkfile(block_dev, fs, &file_name, Some(&test_big_file));
+        mkfile(block_dev, fs, &file_name, Some(&test_big_file),None);
     }
     delete_dir(fs, block_dev, "/deltest");
 }
@@ -114,7 +114,7 @@ pub fn test_link<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4FileSy
     mkdir(block_dev, fs, "/linktest_link");
 
     let payload: Vec<u8> = (0..(1024 * 1024)).map(|i| (i % 251) as u8).collect();
-    mkfile(block_dev, fs, "/linktest_link/target", Some(&payload));
+    mkfile(block_dev, fs, "/linktest_link/target", Some(&payload),None);
 
     link(fs, block_dev, "/linktest_link/l1", "/linktest_link/target");
 
@@ -142,7 +142,7 @@ pub fn test_unlink<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4File
     mkdir(block_dev, fs, "/linktest_unlink");
 
     let payload: Vec<u8> = (0..(1024 * 1024)).map(|i| (i % 251) as u8).collect();
-    mkfile(block_dev, fs, "/linktest_unlink/target", Some(&payload));
+    mkfile(block_dev, fs, "/linktest_unlink/target", Some(&payload),None);
     link(
         fs,
         block_dev,
@@ -182,7 +182,7 @@ pub fn test_symbol_link<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext
     mkdir(block_dev, fs, "/symlinktest");
 
     let payload: Vec<u8> = (0..(64 * 1024)).map(|i| (i % 251) as u8).collect();
-    mkfile(block_dev, fs, "/symlinktest/target", Some(&payload));
+    mkfile(block_dev, fs, "/symlinktest/target", Some(&payload),None);
 
     create_symbol_link(block_dev, fs, "/symlinktest/target", "/symlinktest/l1")
         .expect("create_symbol_link failed");
@@ -203,7 +203,7 @@ pub fn test_truncate<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4Fi
     mkdir(block_dev, fs, "/truncatetest");
 
     let payload: Vec<u8> = (0..(64 * 1024)).map(|i| (i % 251) as u8).collect();
-    mkfile(block_dev, fs, "/truncatetest/f1", Some(&payload));
+    mkfile(block_dev, fs, "/truncatetest/f1", Some(&payload),None);
 
     // shrink to non-zero (cross block boundary)
     let shrink_len: u64 = (BLOCK_SIZE + 123) as u64;
@@ -238,13 +238,13 @@ pub fn test_truncate<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4Fi
     assert!(data1.iter().all(|&b| b == 0));
 
     // shrink on sparse file: create a hole then truncate to 0 (should not double free)
-    mkfile(block_dev, fs, "/truncatetest/f_sparse", None);
+    mkfile(block_dev, fs, "/truncatetest/f_sparse", None,None);
     write_file(block_dev, fs, "/truncatetest/f_sparse", 0, b"ABC").unwrap();
     write_file(
         block_dev,
         fs,
         "/truncatetest/f_sparse",
-        BLOCK_SIZE * 3,
+        BLOCK_SIZE as u64 * 3,
         b"XYZ",
     )
     .unwrap();
@@ -268,7 +268,7 @@ pub fn test_api_write_at_read_at<B: BlockDevice>(
     assert_eq!(f.offset, 5);
 
     // create a hole by seeking forward, then write again
-    assert!(lseek(&mut f, BLOCK_SIZE + 10));
+    assert!(lseek(&mut f, BLOCK_SIZE as u64 + 10));
     write_at(block_dev, fs, &mut f, b"WORLD").expect("write_at 2 failed");
 
     // Ensure inode metadata is up-to-date for subsequent assertions.
@@ -290,7 +290,7 @@ pub fn test_api_write_at_read_at<B: BlockDevice>(
     assert_eq!(&got[BLOCK_SIZE + 10..BLOCK_SIZE + 10 + 5], b"WORLD");
 
     // offset advanced by logical bytes read
-    assert_eq!(f.offset, BLOCK_SIZE + 10 + 5);
+    assert_eq!(f.offset, BLOCK_SIZE as u64 + 10 + 5);
 }
 
 pub fn _test_journal_powerfail<B: BlockDevice>(
@@ -301,7 +301,7 @@ pub fn _test_journal_powerfail<B: BlockDevice>(
     block_dev.set_journal_use(true);
 
     mkdir(block_dev, &mut fs, "/journaltest");
-    mkfile(block_dev, &mut fs, "/journaltest/f1", None);
+    mkfile(block_dev, &mut fs, "/journaltest/f1", None,None);
 
     let payload = b"JOURNAL_PAYLOAD_123456";
     write_file(block_dev, &mut fs, "/journaltest/f1", 0, payload)
@@ -317,6 +317,10 @@ pub fn _test_journal_powerfail<B: BlockDevice>(
     fs.bitmap_cache
         .flush_all(block_dev)
         .expect("flush bitmap failed");
+    fs.sync_group_descriptors(block_dev)
+        .expect("flush group desc failed");
+    fs.sync_superblock(block_dev)
+        .expect("flush superblock failed");
 
     // Commit the journal transaction, but do NOT call fs.umount (simulate power loss).
     block_dev.umount_commit();
@@ -335,14 +339,14 @@ pub fn _test_journal_powerfail<B: BlockDevice>(
     fs2
 }
 
-pub fn test_rename<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4FileSystem) {
+pub fn _test_rename<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4FileSystem) {
     mkdir(block_dev, fs, "/renametest");
 
     let payload_a: Vec<u8> = (0..(32 * 1024)).map(|i| (i % 251) as u8).collect();
     let payload_b: Vec<u8> = (0..(16 * 1024)).map(|i| ((i + 7) % 251) as u8).collect();
 
-    mkfile(block_dev, fs, "/renametest/a", Some(&payload_a));
-    mkfile(block_dev, fs, "/renametest/b", Some(&payload_b));
+    mkfile(block_dev, fs, "/renametest/a", Some(&payload_a),None);
+    mkfile(block_dev, fs, "/renametest/b", Some(&payload_b),None);
 
     // rename a -> c
     rename(block_dev, fs, "/renametest/a", "/renametest/c").expect("rename a->c failed");
@@ -379,7 +383,7 @@ pub fn test_mv<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4FileSyst
     mkdir(block_dev, fs, "/mvtest/b");
 
     let payload: Vec<u8> = (0..(128 * 1024)).map(|i| (i % 251) as u8).collect();
-    mkfile(block_dev, fs, "/mvtest/a/f1", Some(&payload));
+    mkfile(block_dev, fs, "/mvtest/a/f1", Some(&payload),None);
 
     mv(fs, block_dev, "/mvtest/a/f1", "/mvtest/a/f1_renamed").expect("mv rename failed");
     assert!(
@@ -407,7 +411,7 @@ pub fn test_mv<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4FileSyst
 
     // directory move across parents
     mkdir(block_dev, fs, "/mvtest/dir1");
-    mkfile(block_dev, fs, "/mvtest/dir1/inner", Some(&payload));
+    mkfile(block_dev, fs, "/mvtest/dir1/inner", Some(&payload),None);
     mkdir(block_dev, fs, "/mvtest/dir2");
 
     mv(fs, block_dev, "/mvtest/dir1", "/mvtest/dir2/dir1_moved").expect("mv dir failed");
@@ -430,7 +434,7 @@ pub fn test_normal_apiuse<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut E
     let test_big_file: Vec<u8> = vec![b'g'; 1024 * 1024 * 20]; // 20MB
     for idx in 0..10 {
         let file_name = format!("/test/hello/test{idx}");
-        mkfile(block_dev, fs, &file_name, Some(&test_big_file));
+        mkfile(block_dev, fs, &file_name, Some(&test_big_file),None);
     }
 }
 
@@ -445,6 +449,6 @@ pub fn test_mount<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) -> Ext4FileSystem 
 }
 
 /// 取消挂载测试
-pub fn test_unmount<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: Ext4FileSystem) {
+pub fn _test_unmount<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: Ext4FileSystem) {
     umount(fs, block_dev).expect("File system umount failed panic!");
 }

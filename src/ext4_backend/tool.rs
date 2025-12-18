@@ -8,7 +8,7 @@ use log::debug;
 pub fn generate_uuid() -> UUID {
     //uuid生成策略 将函数指针进行异或
     let mut orign_uuid = [1_u32; 4];
-    let target_seed = debug_super_and_desc as u32;
+    let target_seed = debug_super_and_desc as *const () as u32;
     let mut last_idx: usize = 0;
     //首次异或
     orign_uuid[0] ^= target_seed;
@@ -26,7 +26,7 @@ pub fn generate_uuid() -> UUID {
 pub fn generate_uuid_8() -> [u8; 16] {
     //uuid生成策略 将函数指针进行异或
     let mut orign_uuid = [1_u8; 16];
-    let target_seed = debug_super_and_desc as u8;
+    let target_seed = debug_super_and_desc as *const ()  as u8;
     let mut last_idx: usize = 0;
     //首次异或
     orign_uuid[0] ^= target_seed;

@@ -288,9 +288,12 @@ pub fn insert_dir_entry<B: BlockDevice>(
     let new_size = total_size + block_bytes;
     parent_inode.i_size_lo = new_size as u32;
     parent_inode.i_size_high = ((new_size as u64) >> 32) as u32;
-    let used_blocks = old_blocks.saturating_add(1) as u32;
-    parent_inode.i_blocks_lo = used_blocks.saturating_mul((BLOCK_SIZE / 512) as u32);
-    parent_inode.l_i_blocks_high = 0;
+    //fix:extend元数据也会占block，不能仅仅靠现有blocks_count计算，需要考虑extent树的开销
+    let cur = parent_inode.blocks_count();
+    let add_sectors = (BLOCK_SIZE as u64 / 512) as u64;
+    let newv = cur.saturating_add(add_sectors);
+    parent_inode.i_blocks_lo = (newv & 0xffff_ffff) as u32;
+    parent_inode.l_i_blocks_high = ((newv >> 32) & 0xffff) as u16;
 
     let (p_group, _pidx) = fs.inode_allocator.global_to_group(parent_ino_num);
     let inode_table_start = match fs.group_descs.get(p_group as usize) {

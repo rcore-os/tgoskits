@@ -4,7 +4,7 @@ use log::{error, trace, warn};
 use crate::ext4_backend::config::*;
 use crate::ext4_backend::jbd2::jbdstruct::*;
 use crate::ext4_backend::error::*;
-
+use crate::ext4_backend::config::JBD2_BUFFER_MAX;
 
 
 ///可以调用block write的函数标记 有序管理写,jbd2需要
@@ -189,14 +189,15 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         // 1) 非元数据 或 未开启日志：直接写回到底层块设备
         if !self.journal_use || !is_metadata {
             // BlockDev 内部的 buffer 已经被上层写好，直接把当前 buffer 写到 block_id
-            return self.inner.write_block(block_id);
+            return self.inner.write_block(block_id);//把缓存直接写入盘
         }
 
         // 2) 元数据且启用日志：走 JBD2 事务
         //    此时之前的普通数据块已经完成写入
         //由于分布提交机制，必须需要拷贝数据牺牲性能来确保日志提交
+
         let meta_vec = self.inner.buffer();
-        let updates = Jbd2Update(
+        let updates = Jbd2Update( //把缓存变成事务
             block_id as u64,
             meta_vec
                 .try_into()
@@ -227,6 +228,13 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             //赛入缓存
             systeam.commit_queue.push(updates);
         }
+
+        if self._mode == 0 {//ordered模式
+            //再写入主盘
+            self.inner.write_block(block_id)?;
+        }
+
+
 
         Ok(())
     }
@@ -260,15 +268,7 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         // 2) 元数据且启用日志：走 JBD2 事务
         //    此时之前的普通数据块已经完成写入
 
-        //由于分布提交机制，必须需要拷贝数据牺牲性能来确保日志提交
-        // 从缓存里拷贝当前要写回的元数据块内容到本地 Vec，避免一直持有对 self.inner 的不可变借用
-        let meta_vec = self.inner.buffer();
-        let updates = Jbd2Update(
-            block_id as u64,
-            meta_vec
-                .try_into()
-                .expect("Data can;t into [u8;BLOCK_SIZE] panic!,os should process"),
-        );
+
 
         // 注意：在 mkfs/早期阶段可能还没设置 super_block，此时直接退化为普通写，避免阻塞格式化
         if self.systeam.is_none() {
@@ -276,7 +276,7 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             error!(
                 "Journal systeam uninitial,but journal has turned，this sentence must be once!!!"
             );
-            return self.inner.write_block(block_id);
+            return self.inner.write_blocks(buf, block_id, count);
         }
 
         let systeam = self.systeam.as_mut().unwrap();
@@ -284,26 +284,39 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         // 使用原始底层块设备提交事务
         let raw_dev = self.inner.device_mut();
 
-        //先写入缓存
-        if systeam.commit_queue.len() > JBD2_BUFFER_MAX {
-            //缓存已满 直接提交，然后再塞入缓存
-            let _ = systeam.commit_transaction(raw_dev);
-            //赛入缓存
-            systeam.commit_queue.push(updates);
-            trace!("[JBD2 BUFFER] BUFFER IS FULL ,FLUSHED!")
-        } else {
-            //赛入缓存
-            systeam.commit_queue.push(updates);
+
+        for i in 0..count {
+              let off = (i as usize) * (BLOCK_SIZE as usize);
+            let block_bytes: [u8; BLOCK_SIZE] = buf[off..off + (BLOCK_SIZE as usize)]
+                .try_into()
+                .expect("slice len must be BLOCK_SIZE");
+            let updates = Jbd2Update((block_id + i) as u64, block_bytes);
+            
+
+            //先写入缓存
+            if systeam.commit_queue.len() > JBD2_BUFFER_MAX {
+                //缓存已满 直接提交，然后再塞入缓存
+                let _ = systeam.commit_transaction(raw_dev);
+                //赛入缓存
+                systeam.commit_queue.push(updates);
+                trace!("[JBD2 BUFFER] BUFFER IS FULL ,FLUSHED!")
+            } else {
+                //赛入缓存
+                systeam.commit_queue.push(updates);
+            }
         }
+
+       
 
 
         Ok(())
     }
-    pub fn flush(&mut self) -> BlockDevResult<()> {
+    pub fn cantflush(&mut self) -> BlockDevResult<()> {
         if !self.journal_use {
             return self.inner.flush();
+        }else {
+            return self.inner.flush();
         }
-        Ok(())
     }
 
     pub fn total_blocks(&self) -> u64 {

@@ -274,7 +274,7 @@ pub mod classic_dir {
     }
 
     /// 列出目录中的所有条目
-    pub fn list_entries(block_data: &[u8]) -> Vec<Ext4DirEntryInfo> {
+    pub fn list_entries<'a>(block_data: &'a [u8]) -> Vec<Ext4DirEntryInfo<'a>> {
         let iter = DirEntryIterator::new(block_data);
         iter.map(|(entry, _)| entry).collect()
     }

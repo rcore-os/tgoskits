@@ -8,7 +8,7 @@ BOOTLOADER := ./bootloader/rustsbi-qemu.bin
 
 BE_TARGET := mips-unknown-linux-gnu
 BE_MODE := release
-BE_BIN := ../../target/$(BE_TARGET)/$(BE_MODE)/RVlwext4
+BE_BIN := ../../target/$(BE_TARGET)/$(BE_MODE)/rsext4
 QEMU_USER := qemu-mips
 QEMU_USER_LD := /usr/mips-linux-gnu
 

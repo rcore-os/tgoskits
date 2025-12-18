@@ -1,19 +1,14 @@
 ❯ LOG=info cargo run --release
-   Compiling rsext4 v0.1.0 (/home/inkbottle/othersrc/rsext4)
-    Finished `release` profile [optimized] target(s) in 1.84s
-     Running `target/release/rsext4`
+    Finished `release` profile [optimized] target(s) in 0.00s
+     Running `/home/inkbottle/othersrc/rsext4/target/release/rsext4`
 [INFO ] rsext4: 使用宿主机文件作为块设备: ext4.img (blocks=2097152, block_size=4096)
 [INFO ] rsext4: === 测试 Ext4 mkfs ===
 [WARN ] rsext4::ext4_backend::ext4: Root inode is uninitialized or not a directory, creating root and lost+found... i_mode: 0, is_dir: false
 [WARN ] rsext4::ext4_backend::ext4: s_lpf_ino is 0, lost+found not recorded in superblock
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("lost+found")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("lost+found")
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
 [INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 516
 [WARN ] rsext4::ext4_backend::ext4: Not found: /lost+found !
 [INFO ] rsext4::ext4_backend::ext4: /lost+found not found by path scan;will create!
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("lost+found")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("lost+found")
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
 [INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 516
 [WARN ] rsext4::ext4_backend::ext4: Not Find it:(
@@ -29,8 +24,6 @@
 [WARN ] rsext4::ext4_backend::blockdev: Jouranl not use , no thing to commit
 [INFO ] rsext4::ext4_backend::ext4: Filesystem unmounted cleanly
 [INFO ] rsext4: === EXT4 挂载测试 ===
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("lost+found")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("lost+found")
 [INFO ] rsext4::ext4_backend::ext4: /lost+found exists (path resolution)
 [INFO ] rsext4::ext4_backend::ext4: Ext4 filesystem mounted
 [INFO ] rsext4::ext4_backend::ext4:   - block size: 4096 bytes
@@ -40,648 +33,167 @@
 [INFO ] rsext4::ext4_backend::ext4:   - free inodes: 524277
 [INFO ] rsext4::ext4_backend::ext4: Ext4 filesystem mounted
 [INFO ] rsext4: === 文件查找测试 ===
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok(".a")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok(".a")
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
 [INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 516
 [WARN ] rsext4::ext4_backend::ext4: Not found: /.////../.a !
 [INFO ] rsext4: === 基本 IO 测试 ===
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test_dir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test_dir")
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
 [INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 516
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test_dir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test_dir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test_file:0")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test_file:0")
-[INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 4614
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test_dir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test_dir")
-大文件写入: total=2001.00 MiB, time=12.440 s, speed=160.85 MiB/s
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test_dir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test_dir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test_file:0")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test_file:0")
-大文件读取: total=2001.00 MiB, time=1.544 s, speed=1295.92 MiB/s
-[HOST FS] 写入: total=2001.00 MiB, time=1.952 s, speed=1025.10 MiB/s
-[HOST FS] 读取: total=2001.00 MiB, time=2.081 s, speed=961.34 MiB/s
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test")
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
 [INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 516
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test")
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
 [INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 516
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test")
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 516
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test0")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test0")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 4615
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 525108
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test1")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test1")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 4615
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 525108
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test2")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test2")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 4615
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 525108
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test3")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test3")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 4615
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 525108
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test4")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test4")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 4615
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 525108
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test5")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test5")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 4615
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 525108
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test6")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test6")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 4615
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 525108
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test7")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test7")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 4615
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 525108
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test8")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test8")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 4615
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 525108
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test9")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test9")
-[INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 525108
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("test")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("hello")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("hello")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 4615
 [INFO ] rsext4: === 删除 测试 ===
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
 [INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 516
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
 [INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 516
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
 [INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 516
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
 [INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 516
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("file:1")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("file:1")
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 576824
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("file:2")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("file:2")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56333
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 576824
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("file:3")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("file:3")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56333
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 576824
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("file:4")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("file:4")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56333
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 576824
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("file:5")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("file:5")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56333
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 576824
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("file:6")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("file:6")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56333
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 576824
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("file:7")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("file:7")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56333
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 576824
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("file:8")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("file:8")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56333
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 576824
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("file:9")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("file:9")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56333
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 576824
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("file:0")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("file:0")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("file:1")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("file:1")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("file:2")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("file:2")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("file:3")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("file:3")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("file:4")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("file:4")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("file:5")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("file:5")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("file:6")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("file:6")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("file:7")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("file:7")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("file:8")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("file:8")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("deltest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("childdir")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("file:9")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("file:9")
-[WARN ] rsext4::ext4_backend::file: dir inode links_count != 2 (links=1) path=/deltest ino=26
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56333
+[WARN ] rsext4::ext4_backend::file: dir inode links_count != 2 (links=1) path=/deltest ino=24
 [INFO ] rsext4: === link 测试 ===
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("linktest_link")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("linktest_link")
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
 [INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 516
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("linktest_link")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("linktest_link")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("target")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("target")
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 576823
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("linktest_link")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("linktest_link")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("linktest_link")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("linktest_link")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("target")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("target")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("linktest_link")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("linktest_link")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("l1")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("l1")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56332
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 576823
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("linktest_link")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("linktest_link")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("target")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("target")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("linktest_link")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("linktest_link")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("l1")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("l1")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("linktest_link")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("linktest_link")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("target")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("target")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("linktest_link")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("linktest_link")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("l1")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("l1")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56332
 [INFO ] rsext4: === unlink 测试 ===
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("linktest_unlink")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("linktest_unlink")
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
 [INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 516
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("linktest_unlink")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("linktest_unlink")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("target")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("target")
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 577080
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("linktest_unlink")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("linktest_unlink")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("linktest_unlink")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("linktest_unlink")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("target")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("target")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("linktest_unlink")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("linktest_unlink")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("l1")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("l1")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56589
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 577080
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("linktest_unlink")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("linktest_unlink")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("l1")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("l1")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56589
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 577080
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("linktest_unlink")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("linktest_unlink")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("target")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("target")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("linktest_unlink")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("linktest_unlink")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("target")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("target")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("linktest_unlink")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("linktest_unlink")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("target")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("target")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("linktest_unlink")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("linktest_unlink")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("target")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("target")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56589
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 577080
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56589
 [INFO ] rsext4: === mv 测试 ===
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("mvtest")
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
 [INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 516
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("a")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("a")
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 577081
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("b")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("b")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56590
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 577081
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("a")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("a")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("f1")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("f1")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56590
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 577082
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("a")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("a")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("a")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("a")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("f1")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("f1")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56591
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 577082
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("a")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("a")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("f1_renamed")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("f1_renamed")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("a")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("a")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("f1_renamed")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("f1_renamed")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56591
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 577082
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("b")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("b")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("f1_moved")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("f1_moved")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("dir1")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("dir1")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56591
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 577081
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("dir1")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("dir1")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("inner")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("inner")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56590
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 577116
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("dir1")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("dir1")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("dir2")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("dir2")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56625
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 577081
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("dir1")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("dir1")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56590
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 577081
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("mvtest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("dir2")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("dir2")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("dir1_moved")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("dir1_moved")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("inner")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("inner")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56590
 [INFO ] rsext4: === create symbol link 测试 ===
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("symlinktest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("symlinktest")
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
 [INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 516
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("symlinktest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("symlinktest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("target")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("target")
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 577150
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("symlinktest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("symlinktest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("symlinktest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("symlinktest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("target")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("target")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("symlinktest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("symlinktest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("l1")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("l1")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56659
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 577150
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("symlinktest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("symlinktest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("l1")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("l1")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("symlinktest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("symlinktest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("l1")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("l1")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("symlinktest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("symlinktest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("target")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("target")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56659
 [INFO ] rsext4: === truncate 测试 ===
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("truncatetest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("truncatetest")
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
 [INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 516
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("truncatetest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("truncatetest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("f1")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("f1")
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 577167
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("truncatetest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("truncatetest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("truncatetest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("truncatetest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("f1")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("f1")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("truncatetest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("truncatetest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("f1")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("f1")
-[INFO ] rsext4: === rename 测试 ===
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("renametest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("renametest")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56676
+[INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56676
+[INFO ] rsext4::ext4_backend::file: Expend write!
+[INFO ] rsext4: === api_write_at_read_at 测试 ===
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
 [INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 516
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("renametest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("renametest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("a")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("a")
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 577200
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("renametest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("renametest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("renametest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("renametest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("b")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("b")
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56679
 [INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 577200
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("renametest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("renametest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("renametest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("renametest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("a")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("a")
-[INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 577200
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("renametest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("renametest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("c")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("c")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("renametest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("renametest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("c")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("c")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("renametest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("renametest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("b")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("b")
-[INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
-[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 577200
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("renametest")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("renametest")
-[INFO ] rsext4::ext4_backend::hashtree: Starting hash tree lookup: Ok("c")
-[INFO ] rsext4::ext4_backend::hashtree: Using linear search: Ok("c")
-[INFO ] rsext4: === 卸载测试 ===
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56679
+[INFO ] rsext4::ext4_backend::file: Expend write!
+[INFO ] rsext4: === journal 断电回放 测试 ===
 [INFO ] rsext4::ext4_backend::ext4: Flushing bitmap cache...
 [INFO ] rsext4::ext4_backend::ext4: Writing back superblock...
 [WARN ] rsext4::ext4_backend::blockdev: Jouranl not use , no thing to commit
 [INFO ] rsext4::ext4_backend::ext4: Filesystem unmounted cleanly
+[INFO ] rsext4::ext4_backend::ext4: /lost+found exists (path resolution)
+[INFO ] rsext4::ext4_backend::ext4: Ext4 filesystem mounted
+[INFO ] rsext4::ext4_backend::ext4:   - block size: 4096 bytes
+[INFO ] rsext4::ext4_backend::ext4:   - total blocks: 2097152
+[INFO ] rsext4::ext4_backend::ext4:   - free blocks: 2008588
+[INFO ] rsext4::ext4_backend::ext4:   - total inodes: 524288
+[INFO ] rsext4::ext4_backend::ext4:   - free inodes: 524247
+[INFO ] rsext4::ext4_backend::ext4: Ext4 filesystem mounted
+[INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 516
+[INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56682
+[INFO ] rsext4::ext4_backend::ext4: /lost+found exists (path resolution)
+[INFO ] rsext4::ext4_backend::ext4: Ext4 filesystem mounted
+[INFO ] rsext4::ext4_backend::ext4:   - block size: 4096 bytes
+[INFO ] rsext4::ext4_backend::ext4:   - total blocks: 2097152
+[INFO ] rsext4::ext4_backend::ext4:   - free blocks: 2008586
+[INFO ] rsext4::ext4_backend::ext4:   - total inodes: 524288
+[INFO ] rsext4::ext4_backend::ext4:   - free inodes: 524245
+[INFO ] rsext4::ext4_backend::ext4: Ext4 filesystem mounted
+[INFO ] rsext4: === rename 测试 ===
+[INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 516
+[INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56684
+[INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56684
+[INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56684
+[INFO ] rsext4::ext4_backend::loopfile: Directory inode size: 4096 bytes, blocks used: 1
+[INFO ] rsext4::ext4_backend::loopfile: Scan dir block idx 0 phys 56684
+[INFO ] rsext4: === 卸载测试 ===
+[INFO ] rsext4::ext4_backend::ext4: Flushing bitmap cache...
+[INFO ] rsext4::ext4_backend::ext4: Writing back superblock...
+[INFO ] rsext4::ext4_backend::ext4: Filesystem unmounted cleanly
 [INFO ] rsext4: === 测试完成 ===
 
-╭─░▒▓ ~/ot/rsext4  on main +1 !17 ▓▒░··░▒▓ ✔  took 24s  base Py  at 13:32:49 ▓▒░─╮
-╰─                             
+╭─░▒▓ ~/ot/rsext4/src  on optimizate !14 ▓▒░······░▒▓ ✔  base Py  at 08:57:47 ▓▒░─╮
+╰─                              

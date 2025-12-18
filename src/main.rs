@@ -175,8 +175,7 @@ fn main() {
     test_mkfs(&mut jbd);
 
 
-    // Enable journaling for mounted filesystem operations.
-    //jbd.set_journal_use(true);
+    
 
     info!("=== EXT4 挂载测试 ===");
     let mut fs = test_mount(&mut jbd);
@@ -211,13 +210,18 @@ fn main() {
     test_api_write_at_read_at(&mut jbd, &mut fs);
 
     info!("=== journal 断电回放 测试 ===");
-    //fs = test_journal_poweerfail(&mut jbd, fs);
+    // Enable journaling for mounted filesystem operations.
+    umount(fs, &mut jbd).unwrap();
+    jbd.set_journal_use(true);
+    
+    let mut fs = mount(&mut jbd).unwrap();
+    fs = _test_journal_powerfail(&mut jbd, fs);
     
     info!("=== rename 测试 ===");
-    test_rename(&mut jbd, &mut fs);
+    _test_rename(&mut jbd, &mut fs);
 
     info!("=== 卸载测试 ===");
-    test_unmount(&mut jbd, fs);
+    _test_unmount(&mut jbd, fs);
 
     info!("=== 测试完成 ===");
 }
