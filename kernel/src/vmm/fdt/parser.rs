@@ -9,7 +9,7 @@ use crate::vmm::fdt::create::update_cpu_node;
 
 pub fn get_host_fdt() -> &'static [u8] {
     const FDT_VALID_MAGIC: u32 = 0xd00d_feed;
-    let bootarg: usize = std::os::arceos::modules::axhal::get_bootarg();
+    let bootarg: usize = std::os::arceos::modules::axhal::dtb::get_bootarg();
     let header = unsafe {
         core::slice::from_raw_parts(bootarg as *const u8, core::mem::size_of::<FdtHeader>())
     };

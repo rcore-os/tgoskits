@@ -33,7 +33,7 @@ toml = "0.9"
 
 # System dependent modules provided by ArceOS.
 # FIXME: pin to a specific tag!
-axstd = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251202", features = [
+axstd = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251216", features = [
   "alloc-level-1",
   "paging",
   "irq",
@@ -42,17 +42,17 @@ axstd = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251202", f
   "smp", # "page-alloc-64g",
 ]}
 
-axalloc = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251202"}
-axconfig = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251202"}
-axdisplay = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251202"}
-axdriver = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251202"}
-axfs = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251202"}
-axhal = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251202"}
-axipi = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251202"}
-axlog = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251202"}
-axmm = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251202"}
-axnet = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251202"}
-axtask = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251202"}
+axalloc = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251216"}
+axconfig = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251216"}
+axdisplay = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251216"}
+axdriver = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251216"}
+axfs = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251216"}
+axhal = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251216"}
+axipi = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251216"}
+axlog = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251216"}
+axmm = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251216"}
+axnet = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251216"}
+axtask = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251216"}
 
 axcpu = {git = "https://github.com/arceos-org/axcpu.git", tag = "dev-v03"}
 axplat = {git = "https://github.com/arceos-org/axplat_crates.git", tag = "dev-v03"}
