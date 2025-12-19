@@ -57,7 +57,7 @@ fn extern_fn_mod_name(trait_name: &Ident) -> Ident {
 ///
 /// It is not necessary to define it in the same crate as the implementation,
 /// but it is required that these crates are linked together.
-/// 
+///
 /// It is also possible to generate calling helper functions for each interface
 /// function by enabling the `gen_caller` option.
 ///
@@ -175,7 +175,7 @@ pub fn def_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// It is not necessary to implement it in the same crate as the definition, but
 /// it is required that these crates are linked together.
-/// 
+///
 /// The specified trait name must not be an alias to the originally defined
 /// name; otherwise, it will result in a compile error.
 ///
@@ -193,19 +193,19 @@ pub fn def_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///     fn foo() {}
 /// }
 /// ```
-/// 
+///
 /// It's also mandatory to match the namespace if one is specified when defining
 /// the interface. For example, the following will result in a compile error:
-/// 
+///
 /// ```rust,compile_fail
 /// # use crate_interface::*;
 /// #[def_interface(namespace = MyNs)]
 /// trait MyIf {
 ///     fn foo();
 /// }
-/// 
+///
 /// struct MyImpl;
-/// 
+///
 /// #[impl_interface(namespace = OtherNs)] // error: namespace does not match
 /// impl MyIf for MyImpl {
 ///     fn foo() {}
