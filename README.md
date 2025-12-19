@@ -77,7 +77,7 @@ impl HelloIf for HelloIfImpl {
 
 // Call the generated caller function using caller function
 assert_eq!(
-    unsafe { hello("world", 123) },
+    hello("world", 123),
     "Hello, world 123!"
 );
 ```
@@ -149,8 +149,8 @@ A few things to keep in mind when using this crate:
 - Do not define multiple interfaces with the same name, without assigning them
   different namespaces. `crate_interface` does not use crates and modules to
   isolate interfaces, only their names and namespaces are used to identify them.
-- Do not aliasing interface traits with `use path::to::Trait as Alias;`, only
-  use the original trait name, or an error will be raised.
+- Do not alias interface traits with `use path::to::Trait as Alias;`, only use
+  the original trait name, or an error will be raised.
 
 ## Implementation
 

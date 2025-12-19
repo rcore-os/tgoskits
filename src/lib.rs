@@ -1,7 +1,5 @@
 #![doc = include_str!("../README.md")]
 
-use std::vec;
-
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::{format_ident, quote};
@@ -49,7 +47,7 @@ fn extern_fn_mod_name(trait_name: &Ident) -> Ident {
     format_ident!("__{}_mod", trait_name)
 }
 
-/// Define an crate interface.
+/// Define a crate interface.
 ///
 /// This attribute should be added above the definition of a trait. All traits
 /// that use the attribute cannot have the same name, unless they are assigned
@@ -138,7 +136,7 @@ pub fn def_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
     ast.items.push(alias_guard);
 
     // Enforce namespace matching if a namespace is specified. No default value
-    // should be provided to ensure that `impl_interface` have a namespace
+    // should be provided to ensure that `impl_interface` has a namespace
     // specified when `def_interface` has one.
     if let Some(ns) = &macro_arg.namespace {
         let ns_guard_name = namespace_guard_name(ns);
@@ -167,7 +165,7 @@ pub fn def_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
-/// Implement the interface for a struct.
+/// Implement the crate interface for a struct.
 ///
 /// This attribute should be added above the implementation of a trait for a
 /// struct, and the trait must be defined with
@@ -298,7 +296,7 @@ pub fn impl_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
     quote! { #ast }.into()
 }
 
-/// Call a function in the interface.
+/// Call a function in a crate interface.
 ///
 /// It is not necessary to call it in the same crate as the implementation, but
 /// it is required that these crates are linked together.
