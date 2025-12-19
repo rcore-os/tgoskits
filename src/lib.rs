@@ -137,7 +137,7 @@ pub fn def_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
     // should be provided to ensure that `impl_interface` have a namespace
     // specified when `def_interface` has one.
     if let Some(ns) = &macro_arg.namespace {
-        let ns_guard_name = namespace_guard_name(&ns);
+        let ns_guard_name = namespace_guard_name(ns);
         let ns_guard = parse_quote!(
             #[allow(non_upper_case_globals)]
             #[doc(hidden)]
