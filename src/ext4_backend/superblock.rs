@@ -318,6 +318,18 @@ impl Ext4Superblock {
         }
     }
 
+    /// 每个块组的组描述符大小（字节）
+    pub fn get_desc_size(&self) -> u16 {
+        if self.s_desc_size == 0 {
+            if self.has_feature_compat(Ext4Superblock::EXT4_FEATURE_INCOMPAT_64BIT) {
+                return GROUP_DESC_SIZE;
+            } else {
+                return GROUP_DESC_SIZE_OLD;
+            }
+        }
+        self.s_desc_size
+    }
+
     /// 每个块组的 inode 表占用多少个块
     pub fn inode_table_blocks(&self) -> u32 {
         let block_size = self.block_size() as u32;
