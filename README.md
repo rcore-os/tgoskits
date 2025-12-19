@@ -52,6 +52,9 @@ It's also possible to generate calling helper functions for each interface
 function, so that you can call them directly without using the `call_interface!`
 macro.
 
+This is the **RECOMMENDED** way to use this crate whenever possible, as it
+provides a much more ergonomic API.
+
 ```rust
 // Define the interface with caller generation
 #[crate_interface::def_interface(gen_caller)]
