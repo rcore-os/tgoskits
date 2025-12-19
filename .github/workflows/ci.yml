@@ -8,26 +8,29 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        rust-toolchain: [nightly]
-        targets: [x86_64-unknown-linux-gnu, x86_64-unknown-none, riscv64gc-unknown-none-elf, aarch64-unknown-none-softfloat]
+        rust-toolchain: 
+        - nightly
+        - nightly-2025-05-20
+        - nightly-2025-12-12
+        - stable
+    env:
+      RUSTC_BOOTSTRAP: "${{ matrix.rust-toolchain == 'stable' && '1' || '' }}"
     steps:
     - uses: actions/checkout@v4
     - uses: dtolnay/rust-toolchain@nightly
       with:
         toolchain: ${{ matrix.rust-toolchain }}
         components: rust-src, clippy, rustfmt
-        targets: ${{ matrix.targets }}
     - name: Check rust version
       run: rustc --version --verbose
     - name: Check code format
-      run: cargo fmt --all -- --check
+      run: cargo fmt --all --check
+
+    - uses: taiki-e/install-action@cargo-hack
     - name: Clippy
-      run: cargo clippy --target ${{ matrix.targets }} --all-features -- -A clippy::new_without_default
-    - name: Build
-      run: cargo build --target ${{ matrix.targets }} --all-features
+      run: cargo hack clippy --feature-powerset
     - name: Unit test
-      if: ${{ matrix.targets == 'x86_64-unknown-linux-gnu' }}
-      run: cargo test --target ${{ matrix.targets }} -- --nocapture
+      run: cargo hack test --feature-powerset -- --nocapture
 
   doc:
     runs-on: ubuntu-latest
