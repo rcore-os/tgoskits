@@ -13,7 +13,7 @@ extern crate ax_runtime;
 extern crate alloc;
 
 #[macro_use]
-mod utils;
+pub mod utils;
 
 mod imp;
 
