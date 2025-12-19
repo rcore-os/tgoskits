@@ -117,7 +117,7 @@ impl Build {
     fn prepare_loongarch64(&mut self) {
         let ld_src = "src/arch/loongarch64/link.ld";
 
-        self.kernel_vaddr = 0x9000000000200000;
+        self.kernel_vaddr = 0xB000000000200000;
 
         let kernel_load_vaddr = self.kernel_vaddr as usize;
 
