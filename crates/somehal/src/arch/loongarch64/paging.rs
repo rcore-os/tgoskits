@@ -7,17 +7,18 @@
 
 use core::arch::naked_asm;
 
+use kernutil::StaticCell;
 use num_align::NumAlign;
-use page_table_generic::{
-    MapConfig, MemConfig, PageTable, PageTableEntry, PhysAddr, TableGeneric, VirtAddr,
-};
+use page_table_generic::{MapConfig, MemConfig, PageTableEntry, PhysAddr, TableGeneric, VirtAddr};
 
 use crate::{
     ArchTrait,
-    arch::{Arch, PT},
+    arch::Arch,
     consts::PAGE_SIZE,
-    mem::{page_size, ram::Ram, virt_to_phys},
+    mem::{PageTableInfo, page_size, ram::Ram, virt_to_phys},
 };
+
+static BOOT_TABLE: StaticCell<page_table_generic::PageTable<Generic, Ram>> = StaticCell::uninit();
 
 // ============================================================================
 // CSR 寄存器地址定义
@@ -1012,12 +1013,18 @@ pub fn relocate_kernel_to_vm_code() -> ! {
             paddr: kernel_start_phys.into(),
             size,
             pte,
-            allow_huge: true,
+            allow_huge: false,
             flush: false,
         })
         .unwrap();
 
     let table_addr = table.root_paddr();
+    BOOT_TABLE.init(table);
+    super::Arch::set_kernel_page_table(PageTableInfo {
+        asid: 0,
+        addr: table_addr.raw(),
+    });
+
     let offset = kernel_start_virt - kernel_start_phys;
     let entry = virt_to_phys(crate::after_finally_relocate as _) + offset;
     println!(
