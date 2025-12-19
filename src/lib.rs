@@ -1,18 +1,52 @@
 #![doc = include_str!("../README.md")]
 
+use std::vec;
+
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::{format_ident, quote};
-use syn::parse::{Error, Parse, ParseStream, Result};
-use syn::punctuated::Punctuated;
-use syn::{parenthesized, parse_macro_input, parse_quote, Token};
 use syn::{
-    Expr, FnArg, ImplItem, ImplItemFn, ItemImpl, ItemTrait, Path, PathArguments, PathSegment,
+    parse::Error, parse_macro_input, parse_quote, punctuated::Punctuated, token::Comma, Expr,
+    FnArg, Ident, ImplItem, ImplItemFn, ItemImpl, ItemTrait, Pat, PathArguments, PathSegment,
     TraitItem, Type,
 };
 
+mod args;
+
+use args::{CallInterface, DefInterfaceArgs, ImplInterfaceArgs};
+
 fn compiler_error(err: Error) -> TokenStream {
     err.to_compile_error().into()
+}
+
+/// Generate a unique identifier to guard against aliasing of trait names.
+fn alias_guard_name(trait_name: &Ident) -> Ident {
+    format_ident!("__MustNotAnAlias__{}", trait_name)
+}
+
+/// Generate a unique identifier to enforce namespace matching between
+/// `def_interface` and `impl_interface`.
+fn namespace_guard_name(namespace: &str) -> Ident {
+    format_ident!("__NamespaceGuard__{}", namespace)
+}
+
+/// Generate the extern function name (the symbol `def_interface` defines and
+/// `impl_interface` implements), based on the optional namespace, trait name,
+/// and function name.
+fn extern_fn_name(namespace: Option<&str>, trait_name: &Ident, fn_name: &Ident) -> Ident {
+    if let Some(ns) = namespace {
+        format_ident!("__{}_{}_{}", ns, trait_name, fn_name)
+    } else {
+        format_ident!("__{}_{}", trait_name, fn_name)
+    }
+}
+
+/// Generate the module name that contains the extern function declarations.
+///
+/// Namespaces are not included here because no two traits can have the same
+/// name in the same module, so the generated module name will always be unique.
+fn extern_fn_mod_name(trait_name: &Ident) -> Ident {
+    format_ident!("__{}_mod", trait_name)
 }
 
 /// Define an interface.
@@ -26,42 +60,72 @@ fn compiler_error(err: Error) -> TokenStream {
 /// See the [crate-level documentation](crate) for more details.
 #[proc_macro_attribute]
 pub fn def_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
-    if !attr.is_empty() {
-        return compiler_error(Error::new(
-            Span::call_site(),
-            "expect an empty attribute: `#[def_interface]`",
-        ));
-    }
+    let macro_arg = syn::parse_macro_input!(attr as DefInterfaceArgs);
 
     let mut ast = syn::parse_macro_input!(item as ItemTrait);
     let trait_name = &ast.ident;
     let vis = &ast.vis;
 
+    let mod_name = extern_fn_mod_name(trait_name);
+
     let mut extern_fn_list = vec![];
+    let mut callers: Vec<proc_macro2::TokenStream> = vec![];
     for item in &ast.items {
         if let TraitItem::Fn(method) = item {
-            let mut sig = method.sig.clone();
+            let sig = &method.sig;
             let fn_name = &sig.ident;
-            sig.ident = format_ident!("__{}_{}", trait_name, fn_name);
-            sig.inputs = syn::punctuated::Punctuated::new();
+
+            let extern_fn_name =
+                extern_fn_name(macro_arg.namespace.as_deref(), trait_name, fn_name);
+
+            let mut extern_fn_sig = sig.clone();
+            extern_fn_sig.ident = extern_fn_name.clone();
+            extern_fn_sig.inputs = Punctuated::new();
 
             for arg in &method.sig.inputs {
                 if let FnArg::Typed(_) = arg {
-                    sig.inputs.push(arg.clone());
+                    extern_fn_sig.inputs.push(arg.clone());
                 }
             }
 
-            let extern_fn = quote! {
-                pub #sig;
-            };
-            extern_fn_list.push(extern_fn);
+            extern_fn_list.push(quote! {
+                pub #extern_fn_sig;
+            });
+
+            if macro_arg.gen_caller {
+                let attrs = &method.attrs;
+                let mut caller_fn_sig = sig.clone();
+                caller_fn_sig.inputs = Punctuated::new();
+                let mut caller_args: Punctuated<Expr, Comma> = Punctuated::new();
+
+                for arg in &method.sig.inputs {
+                    if let FnArg::Typed(t) = arg {
+                        if let Pat::Ident(arg_ident) = &*t.pat {
+                            caller_fn_sig.inputs.push(arg.clone());
+                            caller_args.push(parse_quote! { #arg_ident });
+                        } else {
+                            return compiler_error(Error::new_spanned(
+                                &t.pat,
+                                "unexpected pattern in function argument",
+                            ));
+                        }
+                    }
+                }
+                callers.push(quote! {
+                    #(#attrs)*
+                    #[inline]
+                    #vis #caller_fn_sig {
+                        unsafe { #mod_name :: #extern_fn_name ( #caller_args ) }
+                    }
+                })
+            }
         }
     }
 
     // Enforce no alias is used to implement an interface, as this makes it
     // possible to link the function called by `call_interface` to an
     // implementation with a different signature, which is extremely unsound.
-    let alias_guard_name = format_ident!("__MustNotAnAlias__{}", trait_name);
+    let alias_guard_name = alias_guard_name(trait_name);
     let alias_guard = parse_quote!(
         #[allow(non_upper_case_globals)]
         #[doc(hidden)]
@@ -69,7 +133,19 @@ pub fn def_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
     );
     ast.items.push(alias_guard);
 
-    let mod_name = format_ident!("__{}_mod", trait_name);
+    // Enforce namespace matching if a namespace is specified. No default value
+    // should be provided to ensure that `impl_interface` have a namespace
+    // specified when `def_interface` has one.
+    if let Some(ns) = &macro_arg.namespace {
+        let ns_guard_name = namespace_guard_name(&ns);
+        let ns_guard = parse_quote!(
+            #[allow(non_upper_case_globals)]
+            #[doc(hidden)]
+            const #ns_guard_name: ();
+        );
+        ast.items.push(ns_guard);
+    }
+
     quote! {
         #ast
 
@@ -81,6 +157,8 @@ pub fn def_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
                 #(#extern_fn_list)*
             }
         }
+
+        #(#callers)*
     }
     .into()
 }
@@ -117,12 +195,7 @@ pub fn def_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro_attribute]
 pub fn impl_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
-    if !attr.is_empty() {
-        return compiler_error(Error::new(
-            Span::call_site(),
-            "expect an empty attribute: `#[impl_interface]`",
-        ));
-    }
+    let arg = syn::parse_macro_input!(attr as ImplInterfaceArgs);
 
     let mut ast = syn::parse_macro_input!(item as ItemImpl);
     let trait_name = if let Some((_, path, _)) = &ast.trait_ {
@@ -141,11 +214,12 @@ pub fn impl_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
             let (attrs, vis, sig, stmts) =
                 (&method.attrs, &method.vis, &method.sig, &method.block.stmts);
             let fn_name = &sig.ident;
-            let extern_fn_name = format_ident!("__{}_{}", trait_name, fn_name).to_string();
+            let extern_fn_name =
+                extern_fn_name(arg.namespace.as_deref(), trait_name, fn_name).to_string();
 
             let mut new_sig = sig.clone();
             new_sig.ident = format_ident!("{}", extern_fn_name);
-            new_sig.inputs = syn::punctuated::Punctuated::new();
+            new_sig.inputs = Punctuated::new();
 
             let mut args = vec![];
             let mut has_self = false;
@@ -189,33 +263,19 @@ pub fn impl_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
 
-    let alias_guard_name = format_ident!("__MustNotAnAlias__{}", trait_name);
+    // generate alias guard to prevent aliasing of trait names
+    let alias_guard_name = alias_guard_name(trait_name);
     let alias_guard = parse_quote!(const #alias_guard_name: () = (););
     ast.items.push(alias_guard);
 
-    quote! { #ast }.into()
-}
-
-struct CallInterface {
-    path: Path,
-    args: Punctuated<Expr, Token![,]>,
-}
-
-impl Parse for CallInterface {
-    fn parse(input: ParseStream) -> Result<Self> {
-        let content;
-        let path: Path = input.parse()?;
-        let args = if input.peek(Token![,]) {
-            input.parse::<Token![,]>()?;
-            input.parse_terminated(Expr::parse, Token![,])?
-        } else if !input.is_empty() {
-            parenthesized!(content in input);
-            content.parse_terminated(Expr::parse, Token![,])?
-        } else {
-            Punctuated::new()
-        };
-        Ok(CallInterface { path, args })
+    // generate namespace guard to enforce namespace matching
+    if let Some(ns) = arg.namespace {
+        let ns_guard_name = namespace_guard_name(&ns);
+        let ns_guard = parse_quote!(const #ns_guard_name: () = (););
+        ast.items.push(ns_guard);
     }
+
+    quote! { #ast }.into()
 }
 
 /// Call a function in the interface.
@@ -235,10 +295,14 @@ pub fn call_interface(item: TokenStream) -> TokenStream {
     }
     let fn_name = path.pop().unwrap();
     let trait_name = path.pop().unwrap();
-    let extern_fn_name = format_ident!("__{}_{}", trait_name.value().ident, fn_name.value().ident);
+    let extern_fn_name = extern_fn_name(
+        call.namespace.as_deref(),
+        &trait_name.value().ident,
+        &fn_name.value().ident,
+    );
 
     path.push_value(PathSegment {
-        ident: format_ident!("__{}_mod", trait_name.value().ident),
+        ident: extern_fn_mod_name(&trait_name.value().ident),
         arguments: PathArguments::None,
     });
     quote! { unsafe { #path :: #extern_fn_name( #args ) } }.into()
