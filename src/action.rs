@@ -15,16 +15,12 @@ use crate::SignalSet;
 pub enum DefaultSignalAction {
     /// Terminate the process.
     Terminate,
-
     /// Ignore the signal.
     Ignore,
-
     /// Terminate the process and generate a core dump.
     CoreDump,
-
     /// Stop the process.
     Stop,
-
     /// Continue the process if stopped.
     Continue,
 }

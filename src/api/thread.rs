@@ -1,20 +1,19 @@
+use alloc::sync::Arc;
 use core::{
     alloc::Layout,
     mem::offset_of,
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use alloc::sync::Arc;
 use axcpu::uspace::UserContext;
 use kspin::SpinNoIrq;
 use starry_vm::VmMutPtr;
 
+use super::ProcessSignalManager;
 use crate::{
     DefaultSignalAction, PendingSignals, SignalAction, SignalActionFlags, SignalDisposition,
     SignalInfo, SignalOSAction, SignalSet, SignalStack, Signo, arch::UContext,
 };
-
-use super::ProcessSignalManager;
 
 struct SignalFrame {
     ucontext: UContext,
@@ -188,7 +187,7 @@ impl ThreadSignalManager {
     /// Restores the signal frame. Called by `sigreturn`.
     pub fn restore(&self, uctx: &mut UserContext) {
         let frame_ptr = uctx.sp() as *const SignalFrame;
-        // SAFETY: pointer is valid
+        // FIXME: remove this `unsafe`
         let frame = unsafe { &*frame_ptr };
 
         *uctx = frame.uctx;

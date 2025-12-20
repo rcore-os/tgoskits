@@ -1,13 +1,13 @@
+use alloc::{
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 use core::{
     array,
     ops::{Index, IndexMut},
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use alloc::{
-    sync::{Arc, Weak},
-    vec::Vec,
-};
 use kspin::SpinNoIrq;
 
 use crate::{
@@ -27,6 +27,7 @@ impl Default for SignalActions {
 
 impl Index<Signo> for SignalActions {
     type Output = SignalAction;
+
     fn index(&self, signo: Signo) -> &SignalAction {
         &self.0[signo as usize - 1]
     }

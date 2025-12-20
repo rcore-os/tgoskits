@@ -1,6 +1,5 @@
-use core::array;
-
 use alloc::{boxed::Box, collections::vec_deque::VecDeque};
+use core::array;
 
 use crate::{SignalInfo, SignalSet};
 
