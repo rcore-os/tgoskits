@@ -10,4 +10,4 @@ repository = "https://github.com/arceos-org/crate_interface"
 documentation = "https://docs.rs/crate_interface_lite"
 keywords = ["arceos", "api", "macro"]
 categories = ["development-tools::procedural-macro-helpers", "no-std"]
-rust-version = "1.57"
+rust-version = "1.68"

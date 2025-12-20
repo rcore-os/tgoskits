@@ -3,9 +3,9 @@ members = ["crate_interface_lite"]
 
 [package]
 name = "crate_interface"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2021"
-authors = ["Yuekai Jia <equation618@gmail.com>"]
+authors = ["Yuekai Jia <equation618@gmail.com>", "Su Mingxian <aarkegz@gmail.com>"]
 description = "Provides a way to define an interface (trait) in a crate, but can implement or use it in any crate."
 license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
 homepage = "https://github.com/arceos-org/arceos"
