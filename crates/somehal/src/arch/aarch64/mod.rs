@@ -26,9 +26,8 @@ use page_table_generic::{AccessFlags, MemAttributes, MemConfig, PageTableEntry, 
 
 use crate::{
     ArchTrait,
-    arch::addrspace::LINER_OFFSET,
     consts::VM_LOAD_ADDRESS,
-    mem::{_fixmap_io, PageTableInfo, page_size},
+    mem::{PageTableInfo, page_size},
 };
 
 // ARM Generic Timer IRQ number (PPI 30)
