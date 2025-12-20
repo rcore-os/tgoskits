@@ -30,7 +30,7 @@ struct Struct {
 #[def_percpu]
 static STRUCT: Struct = Struct { foo: 0, bar: 0 };
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "non-zero-vma"))]
 #[test]
 fn test_percpu() {
     println!("feature = \"sp-naive\": {}", cfg!(feature = "sp-naive"));
@@ -41,10 +41,12 @@ fn test_percpu() {
     #[cfg(not(feature = "sp-naive"))]
     let base = {
         assert_eq!(init(), 4);
-        unsafe { write_percpu_reg(percpu_area_base(0)) };
+        let area_base_0 = percpu_area_base(0);
+        unsafe { write_percpu_reg(area_base_0) };
 
         let base = read_percpu_reg();
-        println!("per-CPU area base = {:#x}", base);
+        println!("per-CPU area base (calculated) = {:#x}", area_base_0);
+        println!("per-CPU area base (read) = {:#x}", base);
         println!("per-CPU area size = {}", percpu_area_size());
         base
     };
@@ -104,7 +106,11 @@ fn test_percpu() {
     test_remote_access();
 }
 
-#[cfg(all(target_os = "linux", not(feature = "sp-naive")))]
+#[cfg(all(
+    target_os = "linux",
+    not(feature = "sp-naive"),
+    feature = "non-zero-vma"
+))]
 fn test_remote_access() {
     // test remote write
     unsafe {

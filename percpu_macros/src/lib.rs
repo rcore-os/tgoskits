@@ -144,6 +144,7 @@ pub fn def_percpu(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! {}
     };
 
+    let symbol_vma = arch::gen_symbol_vma(inner_symbol_name);
     let offset = arch::gen_offset(inner_symbol_name);
     let current_ptr = arch::gen_current_ptr(inner_symbol_name, ty);
     quote! {
@@ -159,6 +160,16 @@ pub fn def_percpu(attr: TokenStream, item: TokenStream) -> TokenStream {
         #vis static #name: #struct_name = #struct_name {};
 
         impl #struct_name {
+            /// Returns the virtual memory address of this per-CPU static
+            /// variable in the `.percpu` section.
+            ///
+            /// It's same across all CPUs, and also the same as `offset` if the
+            /// "non-zero-vma" feature is not enabled.
+            #[inline]
+            pub fn symbol_vma(&self) -> usize {
+                #symbol_vma
+            }
+
             /// Returns the offset relative to the per-CPU data area base.
             #[inline]
             pub fn offset(&self) -> usize {
@@ -254,8 +265,8 @@ pub fn def_percpu(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[doc(hidden)]
 #[cfg(not(feature = "sp-naive"))]
 #[proc_macro]
-pub fn percpu_symbol_offset(item: TokenStream) -> TokenStream {
+pub fn percpu_symbol_vma(item: TokenStream) -> TokenStream {
     let symbol = &format_ident!("{}", item.to_string());
-    let offset = arch::gen_offset(symbol);
+    let offset = arch::gen_symbol_vma(symbol);
     quote!({ #offset }).into()
 }

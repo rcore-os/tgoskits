@@ -24,6 +24,10 @@ preempt = ["percpu_macros/preempt", "dep:kernel_guard"]
 # ARM specific, whether to run at the EL2 privilege level.
 arm-el2 = ["percpu_macros/arm-el2"]
 
+# Allow using non-zero VMA addresses for `.percpu` section. Required for testing
+# on Linux user-space. May reduce performance slightly.
+non-zero-vma = ["percpu_macros/non-zero-vma"]
+
 [dependencies]
 cfg-if = "1.0"
 kernel_guard = { version = "0.1", optional = true }

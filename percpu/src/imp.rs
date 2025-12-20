@@ -19,14 +19,15 @@ extern "C" {
 
 /// Returns the number of per-CPU data areas reserved.
 pub fn percpu_area_num() -> usize {
-    (_percpu_end as usize - _percpu_start as usize) / align_up_64(percpu_area_size())
+    (_percpu_end as *const () as usize - _percpu_start as *const () as usize)
+        / align_up_64(percpu_area_size())
 }
 
 /// Returns the per-CPU data area size for one CPU.
 pub fn percpu_area_size() -> usize {
     // It seems that `_percpu_load_start as usize - _percpu_load_end as usize` will result in more instructions.
-    use percpu_macros::percpu_symbol_offset;
-    percpu_symbol_offset!(_percpu_load_end) - percpu_symbol_offset!(_percpu_load_start)
+    use percpu_macros::percpu_symbol_vma;
+    percpu_symbol_vma!(_percpu_load_end) - percpu_symbol_vma!(_percpu_load_start)
 }
 
 /// Returns the base address of the per-CPU data area on the given CPU.
@@ -35,7 +36,7 @@ pub fn percpu_area_size() -> usize {
 pub fn percpu_area_base(cpu_id: usize) -> usize {
     cfg_if::cfg_if! {
         if #[cfg(target_os = "none")] {
-            let base = _percpu_start as usize;
+            let base = _percpu_start as *const () as usize;
         } else {
             let base = *PERCPU_AREA_BASE.get().unwrap();
         }
@@ -62,10 +63,18 @@ pub fn init() -> usize {
         return 0;
     }
 
+    #[cfg(not(feature = "non-zero-vma"))]
+    {
+        assert_eq!(
+            _percpu_load_start as *const () as usize, 0,
+            "The `.percpu` section must be loaded at VMA address 0 when feature \"non-zero-vma\" is disabled"
+        )
+    }
+
     #[cfg(target_os = "linux")]
     {
         // we not load the percpu section in ELF, allocate them here.
-        let total_size = _percpu_end as usize - _percpu_start as usize;
+        let total_size = _percpu_end as *const () as usize - _percpu_start as *const () as usize;
         let layout = std::alloc::Layout::from_size_align(total_size, 0x1000).unwrap();
         PERCPU_AREA_BASE.call_once(|| unsafe { std::alloc::alloc(layout) as usize });
     }
@@ -76,7 +85,7 @@ pub fn init() -> usize {
     for i in 1..num {
         let secondary_base = percpu_area_base(i);
         #[cfg(target_os = "none")]
-        assert!(secondary_base + size <= _percpu_end as usize);
+        assert!(secondary_base + size <= _percpu_end as *const () as usize);
         // copy per-cpu data of the primary CPU to other CPUs.
         unsafe {
             core::ptr::copy_nonoverlapping(base as *const u8, secondary_base as *mut u8, size);
@@ -89,7 +98,7 @@ pub fn init() -> usize {
 ///
 /// This register is used to hold the per-CPU data base on each CPU.
 pub fn read_percpu_reg() -> usize {
-    let tp;
+    let tp: usize;
     unsafe {
         cfg_if::cfg_if! {
             if #[cfg(target_arch = "x86_64")] {
@@ -113,7 +122,13 @@ pub fn read_percpu_reg() -> usize {
             }
         }
     }
-    tp
+    cfg_if::cfg_if! {
+        if #[cfg(feature = "non-zero-vma")] {
+            tp + (_percpu_load_start as *const () as usize)
+        } else {
+            tp
+        }
+    }
 }
 
 /// Writes the architecture-specific per-CPU data register.
@@ -124,6 +139,12 @@ pub fn read_percpu_reg() -> usize {
 ///
 /// This function is unsafe because it writes the low-level register directly.
 pub unsafe fn write_percpu_reg(tp: usize) {
+    cfg_if::cfg_if! {
+        if #[cfg(feature = "non-zero-vma")] {
+            let tp = tp - (_percpu_load_start as *const () as usize);
+        }
+    };
+
     unsafe {
         cfg_if::cfg_if! {
             if #[cfg(target_arch = "x86_64")] {

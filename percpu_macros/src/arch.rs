@@ -12,10 +12,11 @@ fn macos_unimplemented(item: proc_macro2::TokenStream) -> proc_macro2::TokenStre
     }
 }
 
-/// Generate a code block that calculates the offset of the per-CPU variable based on the inner symbol name.
-pub fn gen_offset(symbol: &Ident) -> proc_macro2::TokenStream {
+/// Generate a code block that calculates the virtual memory address (VMA) of
+/// a symbol in the `.percpu` section based on the inner symbol name.
+pub fn gen_symbol_vma(symbol: &Ident) -> proc_macro2::TokenStream {
     // the outer pair of braces is necessary to make the result an expression
-    quote! {
+    macos_unimplemented(quote! {
         unsafe {
             let value: usize;
             #[cfg(target_arch = "x86_64")]
@@ -46,6 +47,25 @@ pub fn gen_offset(symbol: &Ident) -> proc_macro2::TokenStream {
             );
             value
         }
+    })
+}
+
+/// Generate a code block that calculates the offset of the per-CPU variable based on the inner symbol name.
+pub fn gen_offset(symbol: &Ident) -> proc_macro2::TokenStream {
+    #[cfg(feature = "non-zero-vma")]
+    {
+        let symbol_vma = gen_symbol_vma(symbol);
+        let sumbol_vma_percpu_load_start = gen_symbol_vma(&format_ident!("_percpu_load_start"));
+        quote! {
+            {
+                extern "C" { fn _percpu_load_start(); }
+                (#symbol_vma) - (#sumbol_vma_percpu_load_start)
+            }
+        }
+    }
+    #[cfg(not(feature = "non-zero-vma"))]
+    {
+        gen_symbol_vma(symbol)
     }
 }
 
@@ -82,7 +102,7 @@ pub fn gen_current_ptr(symbol: &Ident, ty: &Type) -> proc_macro2::TokenStream {
             ::core::arch::asm!("mv {}, gp", out(reg) base);
             #[cfg(any(target_arch = "loongarch64"))]
             ::core::arch::asm!("move {}, $r21", out(reg) base);
-            (base + self.offset()) as *const #ty
+            (base + self.symbol_vma()) as *const #ty
         }
     })
 }

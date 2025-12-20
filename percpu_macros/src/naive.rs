@@ -3,10 +3,14 @@
 use quote::quote;
 use syn::{Ident, Type};
 
-pub fn gen_offset(symbol: &Ident) -> proc_macro2::TokenStream {
+pub fn gen_symbol_vma(symbol: &Ident) -> proc_macro2::TokenStream {
     quote! {
         unsafe { ::core::ptr::addr_of!(#symbol) as usize }
     }
+}
+
+pub fn gen_offset(symbol: &Ident) -> proc_macro2::TokenStream {
+    gen_symbol_vma(symbol)
 }
 
 pub fn gen_current_ptr(symbol: &Ident, _ty: &Type) -> proc_macro2::TokenStream {
