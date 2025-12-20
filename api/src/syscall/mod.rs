@@ -518,6 +518,23 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::getitimer => sys_getitimer(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::setitimer => sys_setitimer(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
 
+        // msg
+        Sysno::msgget => sys_msgget(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::msgsnd => sys_msgsnd(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+        ),
+        Sysno::msgrcv => sys_msgrcv(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+        ),
+        Sysno::msgctl => sys_msgctl(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
+
         // shm
         Sysno::shmget => sys_shmget(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         Sysno::shmat => sys_shmat(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),

@@ -15,7 +15,7 @@ use starry_core::{
     task::AsThread,
 };
 
-use super::next_ipc_id;
+use super::{IPC_PRIVATE, IPC_RMID, IPC_SET, IPC_STAT, next_ipc_id};
 use crate::mm::{UserPtr, nullable};
 
 bitflags::bitflags! {
@@ -30,15 +30,6 @@ bitflags::bitflags! {
         const SHM_REMAP = 0o40000;
     }
 }
-
-/// flags for sys_shmget, sys_msgget, sys_semget
-const IPC_PRIVATE: i32 = 0;
-
-const IPC_RMID: u32 = 0;
-
-const IPC_SET: u32 = 1;
-
-const IPC_STAT: u32 = 2;
 
 pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
     let page_num = memory_addr::align_up_4k(size) / PAGE_SIZE_4K;
@@ -168,6 +159,7 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> AxResult<isize
     };
     let mut shm_inner = shm_inner.lock();
 
+    let cmd = cmd as i32;
     if cmd == IPC_SET {
         shm_inner.shmid_ds = *buf.get_as_mut()?;
     } else if cmd == IPC_STAT {
