@@ -7,7 +7,7 @@ use crate::{
     ArchTrait,
     arch::elx::{Pte, flush_tlb, set_kernal_table, set_user_table, setup_sctlr, setup_table_regs},
     console::print_mapping,
-    mem::{PageTableInfo, page_size, ram::Ram, vm_load_offset},
+    mem::{MB, PageTableInfo, page_size, ram::Ram, vm_load_offset},
     prime_entry,
 };
 
@@ -48,7 +48,7 @@ pub fn enable_mmu() -> ! {
             .unwrap();
     }
     let v_start = super::Arch::_va(k_start);
-    let size = crate::mem::kimage_range().len().align_up(page_size());
+    let size = crate::mem::kimage_range().len().align_up(2 * MB);
 
     print_mapping("KImage", v_start as _, k_start, size);
 

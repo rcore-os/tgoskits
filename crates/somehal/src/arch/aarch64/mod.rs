@@ -144,6 +144,9 @@ impl ArchTrait for Arch {
 
     fn per_cpu_trap_init(_is_primary: bool) {
         trap::setup();
+        println!("Disable user page table");
+        elx::set_user_table(PageTableInfo { asid: 0, addr: 0 });
+        elx::flush_tlb(None);
     }
 
     fn systimer_irq() -> usize {
