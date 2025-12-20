@@ -11,7 +11,7 @@ use linux_raw_sys::{
 
 use crate::SignalSet;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DefaultSignalAction {
     /// Terminate the process.
     Terminate,
@@ -32,7 +32,7 @@ pub enum DefaultSignalAction {
 /// Signal action that should be properly handled by the OS.
 ///
 /// See [`SignalManager::check_signals`] for details.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignalOSAction {
     /// Terminate the process.
     Terminate,
