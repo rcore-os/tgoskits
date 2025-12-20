@@ -4,7 +4,7 @@ use core::arch::asm;
 
 use crate::arch::addrspace::VM_CODE_START;
 
-use super::addrspace::VMLINUX_LOAD_ADDRESS;
+use super::addrspace::VM_LOAD_ADDRESS;
 
 const R_LARCH_RELATIVE: u32 = 3;
 
@@ -31,7 +31,7 @@ unsafe extern "C" {
 
 /// 计算加载偏移量 (实际地址 - 链接地址)
 pub fn get_load_offset() -> i64 {
-    sym_lma!(_head) as i64 - VMLINUX_LOAD_ADDRESS as i64
+    sym_lma!(_head) as i64 - VM_LOAD_ADDRESS as i64
 }
 
 /// 早期重定位入口点

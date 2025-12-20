@@ -1,5 +1,7 @@
 use core::arch::naked_asm;
 
+use crate::{ArchTrait, consts::VM_LOAD_ADDRESS, mem::set_vm_load_offset};
+
 use super::switch_to_elx;
 
 #[unsafe(naked)]
@@ -33,12 +35,14 @@ pub unsafe extern "C" fn kernel_entry(_fdt_addr: usize) -> ! {
 
 pub fn el_entry() -> ! {
     super::relocate::apply();
+    set_vm_load_offset(super::Arch::kernel_code().as_ptr() as isize - VM_LOAD_ADDRESS as isize);
     super::trap::setup();
 
     crate::fdt::setup_earlycon();
     if let Some(cmdline) = crate::cmdline::cmdline() {
         println!("{cmdline}");
     }
+    println!("VM Load Offset: {:#x}", crate::mem::vm_load_offset());
 
     crate::mem::early_init();
     crate::arch::paging::enable_mmu()

@@ -16,6 +16,7 @@ pub const KB: usize = 1024;
 pub const MB: usize = 1024 * KB;
 pub const GB: usize = 1024 * MB;
 
+static mut VM_LOAD_OFFSET: isize = 0;
 static mut MMU_ENABLED: bool = false;
 static MEMORY_MAP: StaticCell<MemoryMap> = StaticCell::new(MemoryMap::new());
 
@@ -26,6 +27,16 @@ pub type MemoryMap = ranges_ext::RangeSet<MemoryDescriptor>;
 pub struct PageTableInfo {
     pub asid: usize,
     pub addr: usize,
+}
+
+pub(crate) fn set_vm_load_offset(offset: isize) {
+    unsafe {
+        VM_LOAD_OFFSET = offset;
+    }
+}
+
+pub(crate) fn vm_load_offset() -> isize {
+    unsafe { VM_LOAD_OFFSET }
 }
 
 pub fn memory_map() -> &'static [MemoryDescriptor] {

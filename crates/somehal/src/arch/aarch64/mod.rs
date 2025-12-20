@@ -18,7 +18,7 @@ mod trap;
 
 use aarch64_cpu::registers::*;
 pub use elx::Pte;
-pub use elx::Pte as Entry;  // 导出统一的 Entry 类型
+pub use elx::Pte as Entry; // 导出统一的 Entry 类型
 use elx::*;
 
 use crate::{ArchTrait, mem::PageTableInfo};
@@ -31,20 +31,36 @@ pub struct PT<A: page_table_generic::FrameAllocator> {
 }
 
 impl<A: page_table_generic::FrameAllocator> crate::PageTableOp<A> for PT<A> {
-    fn map(&mut self, config: &page_table_generic::MapConfig<paging::Entry>) -> Result<(), page_table_generic::PagingError> {
+    fn map(
+        &mut self,
+        config: &page_table_generic::MapConfig<paging::Entry>,
+    ) -> Result<(), page_table_generic::PagingError> {
         self.inner.map(config)
     }
 
-    fn unmap(&mut self, virt_start: page_table_generic::VirtAddr, size: usize) -> Result<(), page_table_generic::PagingError> {
+    fn unmap(
+        &mut self,
+        virt_start: page_table_generic::VirtAddr,
+        size: usize,
+    ) -> Result<(), page_table_generic::PagingError> {
         self.inner.unmap(virt_start, size)
     }
 
-    fn ioremap(&mut self, phys_start: page_table_generic::PhysAddr, _size: usize, _flush: bool) -> Result<page_table_generic::VirtAddr, page_table_generic::PagingError> {
+    fn ioremap(
+        &mut self,
+        phys_start: page_table_generic::PhysAddr,
+        _size: usize,
+        _flush: bool,
+    ) -> Result<page_table_generic::VirtAddr, page_table_generic::PagingError> {
         let virt = Arch::_io(phys_start.raw());
         Ok(virt.into())
     }
 
-    fn iounmap(&mut self, _io_addr: page_table_generic::VirtAddr, _size: usize) -> Result<(), page_table_generic::PagingError> {
+    fn iounmap(
+        &mut self,
+        _io_addr: page_table_generic::VirtAddr,
+        _size: usize,
+    ) -> Result<(), page_table_generic::PagingError> {
         // 对于直接映射的 I/O 内存，不需要实际操作
         Ok(())
     }
@@ -69,11 +85,11 @@ impl ArchTrait for Arch {
     }
 
     fn _pa(vaddr: *const u8) -> usize {
-        vaddr as usize - crate::consts::KERNEL_LINER_OFFSET
+        (vaddr as usize as isize + crate::mem::vm_load_offset()) as usize
     }
 
     fn _va(paddr: usize) -> *mut u8 {
-        (paddr + crate::consts::KERNEL_LINER_OFFSET) as *mut u8
+        (paddr as isize - crate::mem::vm_load_offset()) as usize as *mut u8
     }
 
     fn ioremap(paddr: usize, _size: usize) -> *mut u8 {
@@ -148,9 +164,7 @@ impl ArchTrait for Arch {
         }
     }
 
-    fn create_page_table<A: page_table_generic::FrameAllocator>(
-        allocator: A,
-    ) -> Self::PT<A> {
+    fn create_page_table<A: page_table_generic::FrameAllocator>(allocator: A) -> Self::PT<A> {
         PT {
             inner: page_table_generic::PageTable::<paging::Generic, A>::new(allocator).unwrap(),
         }

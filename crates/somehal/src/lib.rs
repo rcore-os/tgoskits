@@ -30,7 +30,7 @@ pub mod arch;
 
 mod acpi;
 mod cmdline;
-mod consts;
+pub(crate) mod consts;
 #[cfg(efi)]
 mod efi_stub;
 mod elf;

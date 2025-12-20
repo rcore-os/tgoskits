@@ -2,7 +2,9 @@
 args = [
   "-Z", "build-std=core,alloc"  
 ]
-features = []
+features = [
+  "sparreal-rt/uspace"
+]
 package = "test-suit-timer"
 post_build_cmds = []
 pre_build_cmds = []

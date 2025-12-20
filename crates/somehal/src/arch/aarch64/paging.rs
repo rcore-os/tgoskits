@@ -4,14 +4,14 @@ use num_align::NumAlign;
 use page_table_generic::{GB, MapConfig, PageTable};
 
 use crate::{
+    ArchTrait,
     arch::elx::{Pte, flush_tlb, set_kernal_table, set_user_table, setup_sctlr, setup_table_regs},
-    consts::KERNEL_LINER_OFFSET,
-    mem::{PageTableInfo, page_size, ram::Ram},
+    mem::{PageTableInfo, page_size, ram::Ram, vm_load_offset},
     prime_entry,
 };
 
 pub use super::elx::Generic;
-pub use super::elx::Pte as Entry;  // 导出统一的 Entry 类型
+pub use super::elx::Pte as Entry; // 导出统一的 Entry 类型
 
 static BOOT_TABLE: spin::Once<PageTable<Generic, Ram>> = spin::Once::new();
 
@@ -33,6 +33,28 @@ pub fn enable_mmu() -> ! {
         .map(&MapConfig {
             vaddr: start.into(),
             paddr: start.into(),
+            size,
+            pte,
+            allow_huge: true,
+            flush: false,
+        })
+        .unwrap();
+
+    let v_start = super::Arch::_va(k_start);
+    let size = crate::mem::kernel_range().len().align_up(page_size());
+
+    println!(
+        "map                 : [{:#x}, {:#x}) -> [{:#x}, {:#x})",
+        v_start as usize,
+        v_start as usize + size,
+        k_start,
+        k_start + size
+    );
+
+    table
+        .map(&MapConfig {
+            vaddr: v_start.into(),
+            paddr: k_start.into(),
             size,
             pte,
             allow_huge: true,
@@ -66,7 +88,7 @@ pub fn enable_mmu() -> ! {
     println!("Boot page table at physical address: {:#x}", tb_addr);
 
     // Use physical address to avoid virtual address mapping issues
-    let mmu_entry_phys = prime_entry as usize;
+    let mmu_entry_phys = prime_entry as *const () as usize;
     println!("MMU Entry point at physical address: {:#x}", mmu_entry_phys);
     setup_table_regs();
     let tb = PageTableInfo {
@@ -77,8 +99,8 @@ pub fn enable_mmu() -> ! {
     set_user_table(tb);
     flush_tlb(None);
 
-    let v_sp = ext_sym_addr!(__cpu0_stack_top) + KERNEL_LINER_OFFSET;
-    let v_entry = mmu_entry_phys + KERNEL_LINER_OFFSET;
+    let v_sp = (ext_sym_addr!(__cpu0_stack_top) as isize - vm_load_offset()) as usize;
+    let v_entry = (mmu_entry_phys as isize - vm_load_offset()) as usize;
 
     println!("Enabling MMU...");
     setup_sctlr();

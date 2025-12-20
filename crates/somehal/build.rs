@@ -26,7 +26,6 @@ fn main() {
         arch: Arch::from(arch.as_str()),
         out_dir,
         kernel_vaddr: 0x200000,
-        kernel_liner_offset: 0,
         uspace,
         hv,
         page_size: 4096,
@@ -63,7 +62,6 @@ struct Build {
     arch: Arch,
     out_dir: PathBuf,
     kernel_vaddr: u64,
-    kernel_liner_offset: u64,
     uspace: bool,
     hv: bool,
     page_size: usize,
@@ -77,6 +75,8 @@ impl Build {
             Arch::Loongarch64 => self.prepare_loongarch64(),
             Arch::Arch64 => self.prepare_aarch64(),
         }
+
+        self.gen_defines();
     }
 
     fn prepare_aarch64(&mut self) {
@@ -88,11 +88,10 @@ impl Build {
             self.uspace = false;
         }
         if self.uspace {
-            self.kernel_liner_offset = 0xFFFF_0000_0000_0000;
+            self.kernel_vaddr = 0xFFFF_9000_0020_0000;
         }
 
         let kernel_vaddr = self.kernel_vaddr as usize;
-        let kernel_liner_offset = self.kernel_liner_offset as usize;
 
         let ld = include_str!("src/arch/aarch64/link.ld")
             .replace("${kernel_load_vaddr}", &format!("{kernel_vaddr:#x}"));
@@ -104,20 +103,12 @@ impl Build {
         let ld_dst = self.out_dir.join(Self::LD_NAME);
 
         fs::write(ld_dst, ld).unwrap();
-
-        let defines = quote::quote! {
-            pub const KERNEL_LINER_OFFSET: usize = #kernel_liner_offset;
-        };
-        let syntax_tree = syn::parse2(defines).unwrap();
-        let formatted = prettyplease::unparse(&syntax_tree);
-        let mut out_file = fs::File::create(self.out_dir.join("defines.rs")).unwrap();
-        out_file.write_all(formatted.as_bytes()).unwrap();
     }
 
     fn prepare_loongarch64(&mut self) {
         let ld_src = "src/arch/loongarch64/link.ld";
 
-        self.kernel_vaddr = 0xB000000000200000;
+        self.kernel_vaddr = 0xF000000000000000;
 
         let kernel_load_vaddr = self.kernel_vaddr as usize;
 
@@ -130,9 +121,12 @@ impl Build {
         let ld_dst = self.out_dir.join(Self::LD_NAME);
 
         fs::write(ld_dst, ld).unwrap();
+    }
 
+    fn gen_defines(&self) {
+        let kernel_load_vaddr = self.kernel_vaddr as usize;
         let defines = quote::quote! {
-            pub const VMLINUX_LOAD_ADDRESS: usize = #kernel_load_vaddr;
+            pub const VM_LOAD_ADDRESS: usize = #kernel_load_vaddr;
         };
         let syntax_tree = syn::parse2(defines).unwrap();
         let formatted = prettyplease::unparse(&syntax_tree);
