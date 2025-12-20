@@ -82,6 +82,8 @@ uart-paddr = 0x1FE001E0                 # uint
 timer-frequency = 100_000_000           # uint
 # Timer interrupt number.
 timer-irq = 11                          # uint
+# IPI interrupt num
+ipi-irq = 12                            # uint                                 
 
 # RTC (ls7a) Address
 rtc-paddr = 0x100d_0100                 # uint
