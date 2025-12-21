@@ -12,11 +12,5 @@ mod hal_impl;
 
 #[somehal::entry]
 fn main() -> ! {
-    somehal::print!("{LOGO}");
-    sparreal_kernel::hal::setup::start_kernel()
+    sparreal_kernel::run_kernel()
 }
-
-const LOGO: &str = "
-\x1b[38;2;255;255;255m      🐦 SparrealOS 🐦
-\x1b[0m
-";

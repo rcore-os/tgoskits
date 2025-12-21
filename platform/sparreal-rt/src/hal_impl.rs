@@ -77,8 +77,7 @@ impl PageTable for PageTableImpl {
         settings: MemConfig,
         flush: bool,
     ) -> Result<(), PagingError> {
-        let mut pte = somehal::mem::Pte::empty();
-        pte.set_valid(true);
+        let mut pte = somehal::mem::Pte::new_valid();
         pte.set_mem_config(settings);
 
         self.0.map(&somehal::mem::MapConfig {

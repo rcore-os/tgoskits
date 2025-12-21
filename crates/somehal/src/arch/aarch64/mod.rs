@@ -23,9 +23,7 @@ pub use elx::Pte;
 pub use elx::Pte as Entry; // 导出统一的 Entry 类型
 use elx::*;
 use num_align::NumAlign;
-use page_table_generic::{
-    AccessFlags, MemAttributes, MemConfig, PageTableEntry, PageTableRef, PagingError,
-};
+use page_table_generic::{AccessFlags, MemAttributes, MemConfig, PageTableEntry, PagingError};
 
 use crate::{
     ArchTrait,
