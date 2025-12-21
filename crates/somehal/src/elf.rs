@@ -1,9 +1,9 @@
 // RELA 重定位结构 (参考 include/uapi/linux/elf.h)
 #[repr(C)]
 pub struct Rela {
-    r_offset: u64, // 需要重定位的地址
-    r_info: u64,   // 类型和符号索引
-    r_addend: i64, // 加数值
+    pub r_offset: u64, // 需要重定位的地址
+    pub r_info: u64,   // 类型和符号索引
+    pub r_addend: i64, // 加数值
 }
 
 impl Rela {

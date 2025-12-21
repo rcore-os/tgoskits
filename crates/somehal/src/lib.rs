@@ -109,7 +109,11 @@ pub fn set_kernel_page_table_paddr(paddr: usize) {
 fn prime_entry() -> ! {
     arch::relocate::apply();
     fdt::setup_earlycon();
+    arch::relocate::print_reloc_info();
+    console::print_con_info();
+
     mem::early_init();
+
     arch::Arch::per_cpu_trap_init(true);
 
     unsafe{

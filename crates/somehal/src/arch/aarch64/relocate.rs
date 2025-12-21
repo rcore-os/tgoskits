@@ -20,3 +20,28 @@ pub fn apply() {
         );
     }
 }
+
+pub(crate) fn print_reloc_info() {
+    unsafe {
+        let rela_start = ext_sym_addr!(__rela_dyn_begin);
+        let rela_end = ext_sym_addr!(__rela_dyn_end);
+        let rela_size = rela_end - rela_start;
+        let rela_count = rela_size / core::mem::size_of::<crate::elf::Rela>();
+        println!(
+            "Relocation entries from {:#x} to {:#x}, count: {}",
+            rela_start, rela_end, rela_count
+        );
+
+        let rela_slice = core::slice::from_raw_parts(
+            rela_start as *const crate::elf::Rela,
+            rela_count,
+        );
+
+        for (i, rela) in rela_slice.iter().enumerate() {
+            println!(
+                "Reloc[{}]: offset={:#x}, info={:#x}, addend={:#x}",
+                i, rela.r_offset, rela.r_info, rela.r_addend
+            );
+        }
+    }
+}

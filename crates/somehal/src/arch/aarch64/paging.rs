@@ -1,7 +1,9 @@
 use core::arch::asm;
 
 use num_align::NumAlign;
-use page_table_generic::{MapConfig, PageTable};
+use page_table_generic::{
+    AccessFlags, MapConfig, MemAttributes, MemConfig, PageTable, PageTableEntry,
+};
 
 use crate::{
     ArchTrait,
@@ -28,7 +30,10 @@ pub fn enable_mmu() -> ! {
     let mut table = PageTable::<Generic, _>::new(Ram).unwrap();
 
     let mut pte = Pte::new_valid();
-    pte.set_mair_idx(1);
+    pte.set_mem_config(MemConfig {
+        access: AccessFlags::READ | AccessFlags::WRITE | AccessFlags::EXECUTE,
+        attrs: MemAttributes::Normal,
+    });
 
     for memory in crate::fdt::memories() {
         let start = memory.start;
@@ -68,7 +73,10 @@ pub fn enable_mmu() -> ! {
         let start = debug_base.align_down(page_size());
         let size = page_size();
         let mut pte = Pte::new_valid();
-        pte.set_mair_idx(0);
+        pte.set_mem_config(MemConfig {
+            access: AccessFlags::READ | AccessFlags::WRITE,
+            attrs: MemAttributes::Device,
+        });
 
         print_mapping("Debug serial", super::Arch::_io(start) as _, start, size);
 

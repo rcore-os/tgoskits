@@ -135,6 +135,14 @@ impl Con for NoCon {
 #[allow(dead_code)]
 static mut CON: &dyn Con = &NoCon;
 
+pub(crate) fn print_con_info() {
+    unsafe {
+        let ptr = &raw const CON;
+        println!("Console at {:p}", ptr);
+
+    }
+}
+
 #[allow(dead_code)]
 pub(crate) unsafe fn set_out(v: &'static dyn Con) {
     unsafe {

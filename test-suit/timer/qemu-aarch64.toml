@@ -4,10 +4,10 @@ args = [
   "cortex-a53",
   "-machine",
   "virt,gic-version=3,virtualization=on",
-  # "-d",
-  # "int,mmu,guest_errors",
-  # "-D",
-  # "qemu.log"
+  "-d",
+  "int,mmu,guest_errors",
+  "-D",
+  "qemu.log"
 ]
 fail_regex = [
   "FAILED",
