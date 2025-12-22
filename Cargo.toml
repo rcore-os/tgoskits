@@ -10,7 +10,8 @@ repository = "https://github.com/Starry-OS/scope-local"
 
 [dependencies]
 percpu = "0.2"
-spin = { version = "0.9", default-features = false, features = ["lazy"] }
+spin = { version = "0.10", default-features = false, features = ["lazy"] }
 
 [dev-dependencies]
-ctor = "0.4.2"
+ctor = "0.6"
+percpu = { version = "0.2", features = ["non-zero-vma"] }
