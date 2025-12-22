@@ -65,6 +65,9 @@ pub fn sys_execve(
 
     *proc_data.signal.actions.lock() = Default::default();
 
+    // Clear set_child_tid after exec since the original address is no longer valid
+    curr.as_thread().set_clear_child_tid(0);
+
     // Close CLOEXEC file descriptors
     let mut fd_table = FD_TABLE.write();
     let cloexec_fds = fd_table

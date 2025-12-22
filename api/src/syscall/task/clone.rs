@@ -182,6 +182,9 @@ pub fn sys_clone(
             exit_signal,
         );
         proc_data.set_umask(old_proc_data.umask());
+        // Inherit heap pointers from parent to ensure child's heap state is consistent after fork
+        proc_data.set_heap_bottom(old_proc_data.get_heap_bottom());
+        proc_data.set_heap_top(old_proc_data.get_heap_top());
 
         {
             let mut scope = proc_data.scope.write();

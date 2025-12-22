@@ -33,6 +33,7 @@ pub fn new_user_task(
     TaskInner::new(
         move || {
             let curr = axtask::current();
+
             access_user_memory(|| {
                 if let Some(tid) = set_child_tid {
                     *tid = curr.id().as_u64() as Pid;
