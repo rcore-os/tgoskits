@@ -4,6 +4,7 @@ use crate::ext4_backend::blockdev::*;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use crate::ext4_backend::error::*;
+use crate::BITMAP_CACHE_MAX;
 use log::debug;
 
 /// 位图类型
@@ -89,7 +90,7 @@ impl BitmapCache {
 
     /// 创建默认配置的缓存
     pub fn default() -> Self {
-        Self::new(8)
+        Self::new(BITMAP_CACHE_MAX)
     }
 
     /// 获取位图（如果不存在则从磁盘加载） - 只读视图

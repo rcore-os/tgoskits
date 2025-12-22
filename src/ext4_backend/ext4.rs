@@ -340,7 +340,7 @@ impl Ext4FileSystem {
                 block_dev.set_journal_superblock(j_sb, fs.journal_sb_block_start.unwrap());
 
                 // Mount-time journal replay for crash recovery.
-                block_dev.journal_replay();
+                block_dev.journal_replay(); //这里是在读取超级块之后再进行回放的，目前为了快速开启日志时数据不一致问题已经在写入超级块，块组描述符时直接落盘
             }
         }
 
@@ -504,7 +504,7 @@ impl Ext4FileSystem {
 
         //确保缓存已经提交完毕
         block_dev.umount_commit();
-        //block_dev.journal_replay();
+       
 
         self.mounted = false;
         info!("Filesystem unmounted cleanly");
@@ -544,7 +544,8 @@ impl Ext4FileSystem {
             if current_block != Some(block_num) {
                 if let Some(prev_block) = current_block
                     && Some(prev_block) == buffer_snapshot_block {
-                        block_dev.write_block(prev_block as u32, true)?;
+                        //由于目前日志回放在fs构建之后（块组描述符读取之后），目前为了快速修复防止读取到旧的超级块。直接落盘写回
+                        block_dev.write_block(prev_block as u32, false)?;
                     }
 
                 // 读取新块
@@ -1429,7 +1430,7 @@ fn write_superblock<B: BlockDevice>(
         let offset = Ext4Superblock::SUPERBLOCK_OFFSET as usize; // 1024
         let end = offset + Ext4Superblock::SUPERBLOCK_SIZE;
         sb.to_disk_bytes(&mut buffer[offset..end]);
-        block_dev.write_block(0, true)?;
+        block_dev.write_block(0, false)?; //由于目前日志回放在超级块读取后，目前为了快速修复防止读取到旧的超级块。直接让超级块落盘写回
     }
 
     Ok(())

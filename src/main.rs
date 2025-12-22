@@ -223,5 +223,9 @@ fn main() {
     info!("=== 卸载测试 ===");
     _test_unmount(&mut jbd, fs);
 
+    info!("=== 挂载后文件完整性验证测试 ===");
+    let fs = mount(&mut jbd).unwrap();
+    let _ = umount(fs, &mut jbd);
+
     info!("=== 测试完成 ===");
 }

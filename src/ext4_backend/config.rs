@@ -37,12 +37,14 @@ pub const GROUP_DESC_SIZE_OLD: u16 = 32;
 pub const DEFAULT_INODE_SIZE: u16 = 256;
 
 // ============================================================================
-// 数据结构缓存相关
+// 数据结构缓存相关配置,在小的嵌入式系统中可以适当调小防止崩内存
 // ============================================================================
 ///Inodecahe数量
-pub const INODE_CACHE_MAX: usize = 4096;
+pub const INODE_CACHE_MAX: usize = 128;
 ///Datablock cahce数量
-pub const DATABLOCK_CACHE_MAX: usize = 4096;
+pub const DATABLOCK_CACHE_MAX: usize = 128;
+///BITMAP cache数量
+pub const BITMAP_CACHE_MAX: usize = 128;
 
 //============================================================================
 //目录项DirEntry配置
