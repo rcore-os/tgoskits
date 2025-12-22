@@ -467,30 +467,61 @@ mod tests {
 /// 实现 DiskFormat trait 用于字节序转换
 impl DiskFormat for Ext4GroupDesc {
     fn from_disk_bytes(bytes: &[u8]) -> Self {
-        Self {
-            bg_block_bitmap_lo: read_u32_le(&bytes[0..4]),
-            bg_inode_bitmap_lo: read_u32_le(&bytes[4..8]),
-            bg_inode_table_lo: read_u32_le(&bytes[8..12]),
-            bg_free_blocks_count_lo: read_u16_le(&bytes[12..14]),
-            bg_free_inodes_count_lo: read_u16_le(&bytes[14..16]),
-            bg_used_dirs_count_lo: read_u16_le(&bytes[16..18]),
-            bg_flags: read_u16_le(&bytes[18..20]),
-            bg_exclude_bitmap_lo: read_u32_le(&bytes[20..24]),
-            bg_block_bitmap_csum_lo: read_u16_le(&bytes[24..26]),
-            bg_inode_bitmap_csum_lo: read_u16_le(&bytes[26..28]),
-            bg_itable_unused_lo: read_u16_le(&bytes[28..30]),
-            bg_checksum: read_u16_le(&bytes[30..32]),
-            bg_block_bitmap_hi: read_u32_le(&bytes[32..36]),
-            bg_inode_bitmap_hi: read_u32_le(&bytes[36..40]),
-            bg_inode_table_hi: read_u32_le(&bytes[40..44]),
-            bg_free_blocks_count_hi: read_u16_le(&bytes[44..46]),
-            bg_free_inodes_count_hi: read_u16_le(&bytes[46..48]),
-            bg_used_dirs_count_hi: read_u16_le(&bytes[48..50]),
-            bg_itable_unused_hi: read_u16_le(&bytes[50..52]),
-            bg_exclude_bitmap_hi: read_u32_le(&bytes[52..56]),
-            bg_block_bitmap_csum_hi: read_u16_le(&bytes[56..58]),
-            bg_inode_bitmap_csum_hi: read_u16_le(&bytes[58..60]),
-            bg_reserved: read_u32_le(&bytes[60..64]),
+        // 检查是否是旧版 32 字节组描述符
+        if bytes.len() == 32 {
+            Self {
+                bg_block_bitmap_lo: read_u32_le(&bytes[0..4]),
+                bg_inode_bitmap_lo: read_u32_le(&bytes[4..8]),
+                bg_inode_table_lo: read_u32_le(&bytes[8..12]),
+                bg_free_blocks_count_lo: read_u16_le(&bytes[12..14]),
+                bg_free_inodes_count_lo: read_u16_le(&bytes[14..16]),
+                bg_used_dirs_count_lo: read_u16_le(&bytes[16..18]),
+                bg_flags: read_u16_le(&bytes[18..20]),
+                bg_exclude_bitmap_lo: read_u32_le(&bytes[20..24]),
+                bg_block_bitmap_csum_lo: read_u16_le(&bytes[24..26]),
+                bg_inode_bitmap_csum_lo: read_u16_le(&bytes[26..28]),
+                bg_itable_unused_lo: read_u16_le(&bytes[28..30]),
+                bg_checksum: read_u16_le(&bytes[30..32]),
+                // 旧版中没有这些字段，设置为 0
+                bg_block_bitmap_hi: 0,
+                bg_inode_bitmap_hi: 0,
+                bg_inode_table_hi: 0,
+                bg_free_blocks_count_hi: 0,
+                bg_free_inodes_count_hi: 0,
+                bg_used_dirs_count_hi: 0,
+                bg_itable_unused_hi: 0,
+                bg_exclude_bitmap_hi: 0,
+                bg_block_bitmap_csum_hi: 0,
+                bg_inode_bitmap_csum_hi: 0,
+                bg_reserved: 0,
+            }
+        } else {
+            // 新版 ext4 组描述符（64 字节）
+            Self {
+                bg_block_bitmap_lo: read_u32_le(&bytes[0..4]),
+                bg_inode_bitmap_lo: read_u32_le(&bytes[4..8]),
+                bg_inode_table_lo: read_u32_le(&bytes[8..12]),
+                bg_free_blocks_count_lo: read_u16_le(&bytes[12..14]),
+                bg_free_inodes_count_lo: read_u16_le(&bytes[14..16]),
+                bg_used_dirs_count_lo: read_u16_le(&bytes[16..18]),
+                bg_flags: read_u16_le(&bytes[18..20]),
+                bg_exclude_bitmap_lo: read_u32_le(&bytes[20..24]),
+                bg_block_bitmap_csum_lo: read_u16_le(&bytes[24..26]),
+                bg_inode_bitmap_csum_lo: read_u16_le(&bytes[26..28]),
+                bg_itable_unused_lo: read_u16_le(&bytes[28..30]),
+                bg_checksum: read_u16_le(&bytes[30..32]),
+                bg_block_bitmap_hi: read_u32_le(&bytes[32..36]),
+                bg_inode_bitmap_hi: read_u32_le(&bytes[36..40]),
+                bg_inode_table_hi: read_u32_le(&bytes[40..44]),
+                bg_free_blocks_count_hi: read_u16_le(&bytes[44..46]),
+                bg_free_inodes_count_hi: read_u16_le(&bytes[46..48]),
+                bg_used_dirs_count_hi: read_u16_le(&bytes[48..50]),
+                bg_itable_unused_hi: read_u16_le(&bytes[50..52]),
+                bg_exclude_bitmap_hi: read_u32_le(&bytes[52..56]),
+                bg_block_bitmap_csum_hi: read_u16_le(&bytes[56..58]),
+                bg_inode_bitmap_csum_hi: read_u16_le(&bytes[58..60]),
+                bg_reserved: read_u32_le(&bytes[60..64]),
+            }
         }
     }
 

@@ -210,7 +210,7 @@ impl Ext4FileSystem {
 
         // 5. 读取所有块组描述符
         let group_descs =
-            Self::load_group_descriptors(block_dev, group_count, superblock.s_desc_size as usize)?;
+            Self::load_group_descriptors(block_dev, group_count)?;
         debug!("Loaded {} group descriptors", group_descs.len());
 
         // 6. 初始化分配器
@@ -425,14 +425,15 @@ impl Ext4FileSystem {
     fn load_group_descriptors<B: BlockDevice>(
         block_dev: &mut Jbd2Dev<B>,
         group_count: u32,
-        desc_size: usize,
     ) -> Result<Vec<Ext4GroupDesc>, RSEXT4Error> {
         let mut group_descs = Vec::new();
-
         let gdt_base: u64 = BLOCK_SIZE as u64;
 
         // 为了减少重复读块，这里缓存当前块号
         let mut current_block: Option<u64> = None;
+
+        let superblock = read_superblock(block_dev).map_err(|_| RSEXT4Error::IoError)?;
+        let desc_size = superblock.get_desc_size() as usize;
 
         debug!(
             "Loading group descriptors: {group_count} groups, desc_size = {desc_size} bytes"
@@ -519,7 +520,7 @@ impl Ext4FileSystem {
         block_dev: &mut Jbd2Dev<B>,
     ) -> BlockDevResult<()> {
         let total_desc_count = self.group_descs.len();
-        let desc_size = GROUP_DESC_SIZE as usize;
+        let desc_size = self.superblock.get_desc_size() as usize;
 
         // GDT 基地址统一为块号 1 的起始字节偏移
         let gdt_base: u64 = BLOCK_SIZE as u64;
@@ -1057,6 +1058,8 @@ pub struct FsLayoutInfo {
     inode_size: u16,
     /// 块组数
     groups: u32,
+    /// 块组描述符大小（字节）
+    desc_size: u16,
     /// 每块能容纳的组描述符个数
     descs_per_block: u32,
     /// 主 GDT 实际占用的块数
@@ -1102,16 +1105,22 @@ pub fn compute_fs_layout(inode_size:u16,total_blocks: u64) -> FsLayoutInfo {
     // 每组 inode 数：blocks_per_group / 4（简化策略）
     let inodes_per_group: u32 = blocks_per_group / 4;
 
-
     // 块组数：向上取整
     let groups: u32 =
         total_blocks.div_ceil(blocks_per_group as u64) as u32;
 
+    // 确定块组描述符大小，默认使用64位描述符大小，除非明确指定使用32位
+    let desc_size: u16 = if DEFAULT_FEATURE_INCOMPAT & Ext4Superblock::EXT4_FEATURE_INCOMPAT_64BIT != 0 {
+        GROUP_DESC_SIZE
+    } else {
+        GROUP_DESC_SIZE_OLD
+    };
+
     // 每块能容纳的组描述符个数
-    let descs_per_block: u32 = if GROUP_DESC_SIZE == 0 {
+    let descs_per_block: u32 = if desc_size == 0 {
         0
     } else {
-        block_size / GROUP_DESC_SIZE as u32
+        block_size / desc_size as u32
     };
 
     // GDT 实际占用的块数
@@ -1153,6 +1162,7 @@ pub fn compute_fs_layout(inode_size:u16,total_blocks: u64) -> FsLayoutInfo {
         inodes_per_group,
         inode_size,
         groups,
+        desc_size,
         descs_per_block,
         gdt_blocks,
         inode_table_blocks,
@@ -1310,8 +1320,7 @@ fn build_superblock(total_blocks: u64, layout: &FsLayoutInfo) -> Ext4Superblock 
     sb.s_feature_ro_compat = DEFAULT_FEATURE_RO_COMPAT;
 
     // 块组描述符大小
-    sb.s_desc_size = GROUP_DESC_SIZE;
-
+    sb.s_desc_size = layout.desc_size;
     // 预留的 GDT 块数（仅 mkfs 默认值，挂载时应相信磁盘中的值）
     sb.s_reserved_gdt_blocks = layout.reserved_gdt_blocks as u16;
 
@@ -1454,8 +1463,9 @@ fn write_gdt_redundant_backup<B: BlockDevice>(
     fs_layout: &FsLayoutInfo,
 ) -> BlockDevResult<()> {
     //参数合法性判断
-    let desc_all_size = descs.len() * GROUP_DESC_SIZE as usize;
-    let can_recive_size = fs_layout.gdt_blocks * fs_layout.descs_per_block * GROUP_DESC_SIZE as u32;
+    let desc_size = sb.get_desc_size();
+    let desc_all_size = descs.len() * desc_size as usize;
+    let can_recive_size = fs_layout.gdt_blocks * fs_layout.descs_per_block * desc_size as u32;
     if can_recive_size < desc_all_size as u32 {
         return Err(BlockDevError::BufferTooSmall {
             provided: can_recive_size as usize,
@@ -1491,9 +1501,9 @@ fn write_gdt_redundant_backup<B: BlockDevice>(
                         if let Some(desc) = desc_iter.next() {
                             desc.to_disk_bytes(
                                 &mut buffer
-                                    [current_offset..current_offset + GROUP_DESC_SIZE as usize],
+                                    [current_offset..current_offset + desc_size as usize],
                             );
-                            current_offset += GROUP_DESC_SIZE as usize;
+                            current_offset += desc_size as usize;
                         }
                     }
                     //写回磁盘
@@ -1512,8 +1522,11 @@ fn write_group_desc<B: BlockDevice>(
     group_id: u32,
     desc: &Ext4GroupDesc,
 ) -> BlockDevResult<()> {
+    // 读取超级块以确定块组描述符大小
+    let superblock = read_superblock(block_dev)?;
+    let desc_size = superblock.get_desc_size() as usize;
+    
     // GDT 基地址统一为块号 1 的起始字节偏移：按字节偏移计算所在块和块内偏移
-    let desc_size = GROUP_DESC_SIZE as usize;
     let gdt_base: u64 = BLOCK_SIZE as u64;
     let byte_offset = gdt_base + group_id as u64 * desc_size as u64;
     let block_size_u64 = BLOCK_SIZE as u64;
