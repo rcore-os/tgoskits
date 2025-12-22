@@ -84,3 +84,8 @@ _percpu_end = _percpu_start + SIZEOF(.percpu);
 - `arm-el2`: For **ARM system** running at **EL2** use (e.g. hypervisors).
   In this case, we use `TPIDR_EL2` instead of `TPIDR_EL1`
   to store the base address of per-CPU data area.
+- `non-zero-vma`: Allow the per-CPU data area (section `.percpu`) to be placed
+  at a **non-zero virtual memory address**. By default, the section is placed
+  at virtual address `0x0` to simplify the calculation of offsets, however, it's
+  not allowed by some linkers/loaders. Without this feature enabled, it's likely
+  impossible to use this crate in user-space programs.
