@@ -46,7 +46,6 @@ axalloc = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251216"}
 axconfig = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251216"}
 axdisplay = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251216"}
 axdriver = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251216"}
-axfs = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251216"}
 axhal = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251216"}
 axipi = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251216"}
 axlog = {git = "https://github.com/arceos-org/arceos.git", tag = "dev-251216"}
@@ -62,6 +61,7 @@ axaddrspace = "0.1.1"
 axhvc = {git = "https://github.com/arceos-hypervisor/axhvc.git"}
 axklib = {git = "https://github.com/arceos-hypervisor/axklib.git"}
 axruntime = {path = "modules/axruntime"}
+axfs = {path = "modules/axfs"}
 axvcpu = "0.1"
 axvm = {git = "https://github.com/arceos-hypervisor/axvm.git", branch = "next"}
 
@@ -95,3 +95,4 @@ axvmconfig = {git = "https://github.com/arceos-hypervisor/axvmconfig.git", branc
 [patch."https://github.com/arceos-org/arceos"]
 axconfig = {path = "modules/axconfig"}
 axruntime = {path = "modules/axruntime"}
+axfs = {path = "modules/axfs"}
