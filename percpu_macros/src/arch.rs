@@ -31,6 +31,17 @@ pub fn gen_symbol_vma(symbol: &Ident) -> proc_macro2::TokenStream {
                 out(reg) value,
                 VAR = sym #symbol,
             );
+            #[cfg(target_arch = "arm")]
+            {
+                let mut offset: u32;
+                ::core::arch::asm!(
+                    "movw {0}, #:lower16:{VAR}",
+                    "movt {0}, #:upper16:{VAR}",
+                    out(reg) offset,
+                    VAR = sym #symbol,
+                );
+                value = offset as usize;
+            }
             #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
             ::core::arch::asm!(
                 "lui {0}, %hi({VAR})",
@@ -98,6 +109,8 @@ pub fn gen_current_ptr(symbol: &Ident, ty: &Type) -> proc_macro2::TokenStream {
         {
             #[cfg(target_arch = "aarch64")]
             ::core::arch::asm!(#aarch64_asm, out(reg) base);
+            #[cfg(target_arch = "arm")]
+            ::core::arch::asm!("mrc p15, 0, {}, c13, c0, 3", out(reg) base);
             #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
             ::core::arch::asm!("mv {}, gp", out(reg) base);
             #[cfg(any(target_arch = "loongarch64"))]

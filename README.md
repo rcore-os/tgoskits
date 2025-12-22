@@ -20,10 +20,17 @@ to access the corresponding field.
 
 | Architecture | per-CPU Register Used  |
 | ---          | ---                    |
+| ARM (32-bit) | `TPIDRURO` (c13)       |
 | RISC-V       | `gp`                   |
 | AArch64      | `TPIDR_ELx`            |
 | x86_64       | `GS_BASE`              |
 | LoongArch    | `$r21`                 |
+
+> Notes for ARM (32-bit):
+> We use `TPIDRURO` (User Read-Only Thread ID Register, CP15 c13) to store the
+> per-CPU data area base address. This register is accessed via coprocessor
+> instructions `mrc p15, 0, <Rt>, c13, c0, 3` (read) and
+> `mcr p15, 0, <Rt>, c13, c0, 3` (write).
 
 > Notes for RISC-V:
 > Since RISC-V does not provide separate thread pointer registers for user and

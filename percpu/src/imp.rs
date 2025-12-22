@@ -119,6 +119,8 @@ pub fn read_percpu_reg() -> usize {
                 // Register Convention
                 // https://docs.kernel.org/arch/loongarch/introduction.html#gprs
                 core::arch::asm!("move {}, $r21", out(reg) tp)
+            } else if #[cfg(target_arch = "arm")] {
+                core::arch::asm!("mrc p15, 0, {}, c13, c0, 3", out(reg) tp)
             }
         }
     }
@@ -171,6 +173,8 @@ pub unsafe fn write_percpu_reg(tp: usize) {
                 core::arch::asm!("msr TPIDR_EL2, {}", in(reg) tp)
             } else if #[cfg(target_arch = "loongarch64")] {
                 core::arch::asm!("move $r21, {}", in(reg) tp)
+            } else if #[cfg(target_arch = "arm")] {
+                core::arch::asm!("mcr p15, 0, {}, c13, c0, 3", in(reg) tp)
             }
         }
     }
