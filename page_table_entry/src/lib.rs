@@ -2,11 +2,11 @@
 #![cfg_attr(doc, feature(doc_cfg))]
 #![doc = include_str!("../README.md")]
 
-mod arch;
+use core::fmt;
 
-use core::fmt::{self, Debug};
 use memory_addr::PhysAddr;
 
+mod arch;
 pub use self::arch::*;
 
 bitflags::bitflags! {
@@ -29,16 +29,16 @@ bitflags::bitflags! {
     }
 }
 
-impl Debug for MappingFlags {
+impl fmt::Debug for MappingFlags {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        Debug::fmt(&self.0, f)
+        fmt::Debug::fmt(&self.0, f)
     }
 }
 
 /// A generic page table entry.
 ///
 /// All architecture-specific page table entry types implement this trait.
-pub trait GenericPTE: Debug + Clone + Copy + Sync + Send + Sized {
+pub trait GenericPTE: fmt::Debug + Clone + Copy + Sync + Send + Sized {
     /// Creates a page table entry point to a terminate page or block.
     fn new_page(paddr: PhysAddr, flags: MappingFlags, is_huge: bool) -> Self;
     /// Creates a page table entry point to a next level page table.

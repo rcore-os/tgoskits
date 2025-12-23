@@ -1,8 +1,8 @@
 //! x86 page table entries on 64-bit paging.
 
 use core::fmt;
-use memory_addr::PhysAddr;
 
+use memory_addr::PhysAddr;
 pub use x86_64::structures::paging::page_table::PageTableFlags as PTF;
 
 use crate::{GenericPTE, MappingFlags};
@@ -57,7 +57,8 @@ impl From<MappingFlags> for PTF {
 pub struct X64PTE(u64);
 
 impl X64PTE {
-    const PHYS_ADDR_MASK: u64 = 0x000f_ffff_ffff_f000; // bits 12..52
+    // bits 12..52
+    const PHYS_ADDR_MASK: u64 = 0x000f_ffff_ffff_f000;
 
     /// Creates an empty descriptor with all bits set to zero.
     pub const fn empty() -> Self {
@@ -73,19 +74,24 @@ impl GenericPTE for X64PTE {
         }
         Self(flags.bits() | (paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK))
     }
+
     fn new_table(paddr: PhysAddr) -> Self {
         let flags = PTF::PRESENT | PTF::WRITABLE | PTF::USER_ACCESSIBLE;
         Self(flags.bits() | (paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK))
     }
+
     fn paddr(&self) -> PhysAddr {
         PhysAddr::from((self.0 & Self::PHYS_ADDR_MASK) as usize)
     }
+
     fn flags(&self) -> MappingFlags {
         PTF::from_bits_truncate(self.0).into()
     }
+
     fn set_paddr(&mut self, paddr: PhysAddr) {
         self.0 = (self.0 & !Self::PHYS_ADDR_MASK) | (paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK)
     }
+
     fn set_flags(&mut self, flags: MappingFlags, is_huge: bool) {
         let mut flags = PTF::from(flags);
         if is_huge {
@@ -97,15 +103,19 @@ impl GenericPTE for X64PTE {
     fn bits(self) -> usize {
         self.0 as usize
     }
+
     fn is_unused(&self) -> bool {
         self.0 == 0
     }
+
     fn is_present(&self) -> bool {
         PTF::from_bits_truncate(self.0).contains(PTF::PRESENT)
     }
+
     fn is_huge(&self) -> bool {
         PTF::from_bits_truncate(self.0).contains(PTF::HUGE_PAGE)
     }
+
     fn clear(&mut self) {
         self.0 = 0
     }

@@ -1,7 +1,11 @@
-use crate::{GenericPTE, PagingHandler, PagingMetaData};
-use crate::{MappingFlags, PageSize, PagingError, PagingResult, TlbFlush, TlbFlushAll};
 use core::marker::PhantomData;
+
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr};
+
+use crate::{
+    GenericPTE, MappingFlags, PageSize, PagingError, PagingHandler, PagingMetaData, PagingResult,
+    TlbFlush, TlbFlushAll,
+};
 
 const ENTRY_COUNT: usize = 512;
 
@@ -151,13 +155,15 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
     ///
     /// The virtual and physical memory regions start with `vaddr` and `paddr`
     /// respectively. The region size is `size`. The addresses and `size` must
-    /// be aligned to 4K, otherwise it will return [`Err(PagingError::NotAligned)`].
+    /// be aligned to 4K, otherwise it will return
+    /// [`Err(PagingError::NotAligned)`].
     ///
     /// When `allow_huge` is true, it will try to map the region with huge pages
     /// if possible. Otherwise, it will map the region with 4K pages.
     ///
-    /// When `flush_tlb_by_page` is true, it will flush the TLB immediately after
-    /// mapping each page. Otherwise, the TLB flush should by handled by the caller.
+    /// When `flush_tlb_by_page` is true, it will flush the TLB immediately
+    /// after mapping each page. Otherwise, the TLB flush should be handled by
+    /// the caller.
     ///
     /// [`Err(PagingError::NotAligned)`]: PagingError::NotAligned
     pub fn map_region(
@@ -222,10 +228,12 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
     /// Unmaps a contiguous virtual memory region.
     ///
     /// The region must be mapped before using [`PageTable64::map_region`], or
-    /// unexpected behaviors may occur. It can deal with huge pages automatically.
+    /// unexpected behaviors may occur. It can deal with huge pages
+    /// automatically.
     ///
-    /// When `flush_tlb_by_page` is true, it will flush the TLB immediately after
-    /// mapping each page. Otherwise, the TLB flush should by handled by the caller.
+    /// When `flush_tlb_by_page` is true, it will flush the TLB immediately
+    /// after mapping each page. Otherwise, the TLB flush should by handled by
+    /// the caller.
     pub fn unmap_region(
         &mut self,
         vaddr: M::VirtAddr,
@@ -262,10 +270,12 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
     /// Updates mapping flags of a contiguous virtual memory region.
     ///
     /// The region must be mapped before using [`PageTable64::map_region`], or
-    /// unexpected behaviors may occur. It can deal with huge pages automatically.
+    /// unexpected behaviors may occur. It can deal with huge pages
+    /// automatically.
     ///
-    /// When `flush_tlb_by_page` is true, it will flush the TLB immediately after
-    /// mapping each page. Otherwise, the TLB flush should by handled by the caller.
+    /// When `flush_tlb_by_page` is true, it will flush the TLB immediately
+    /// after mapping each page. Otherwise, the TLB flush should by handled
+    /// by the caller.
     pub fn protect_region(
         &mut self,
         vaddr: M::VirtAddr,
@@ -327,7 +337,8 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
         )
     }
 
-    /// Copy entries from another page table within the given virtual memory range.
+    /// Copy entries from another page table within the given virtual memory
+    /// range.
     #[cfg(feature = "copy-from")]
     pub fn copy_from(&mut self, other: &Self, start: M::VirtAddr, size: usize) {
         if size == 0 {

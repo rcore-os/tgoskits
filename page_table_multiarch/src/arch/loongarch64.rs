@@ -1,8 +1,11 @@
 //! LoongArch64 specific page table structures.
 
-use crate::{PageTable64, PagingMetaData};
 use core::arch::asm;
+
+use memory_addr::VirtAddr;
 use page_table_entry::loongarch64::LA64PTE;
+
+use crate::{PageTable64, PagingMetaData};
 
 /// Metadata of LoongArch64 page tables.
 #[derive(Copy, Clone, Debug)]
@@ -44,10 +47,11 @@ impl PagingMetaData for LA64MetaData {
     const LEVELS: usize = 4;
     const PA_MAX_BITS: usize = 48;
     const VA_MAX_BITS: usize = 48;
-    type VirtAddr = memory_addr::VirtAddr;
+
+    type VirtAddr = VirtAddr;
 
     #[inline]
-    fn flush_tlb(vaddr: Option<memory_addr::VirtAddr>) {
+    fn flush_tlb(vaddr: Option<VirtAddr>) {
         unsafe {
             if let Some(vaddr) = vaddr {
                 // <https://loongson.github.io/LoongArch-Documentation/LoongArch-Vol1-EN.html#_dbar>
@@ -82,4 +86,4 @@ impl PagingMetaData for LA64MetaData {
 /// 4 levels:
 ///
 /// using page table dir3, dir2, dir1 and pt, ignore dir4
-pub type LA64PageTable<I> = PageTable64<LA64MetaData, LA64PTE, I>;
+pub type LA64PageTable<H> = PageTable64<LA64MetaData, LA64PTE, H>;
