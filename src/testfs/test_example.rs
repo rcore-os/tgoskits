@@ -10,7 +10,14 @@ pub fn test_mkfs<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) {
 pub fn _test_base_io<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4FileSystem) {
     mkdir(block_dev, fs, "/test_dir/");
     // 大文件测试：写入 + 读取 吞吐量
-    let test_big_file: Vec<u8> = vec![b'g'; 1024 * 1024 * 2000];
+    let big_file_mib: usize = if cfg!(target_pointer_width = "64") { //prevent overflow
+        println!("64-bits Machine Detected!");
+        1024 // 1024 MiB for 64-bit
+    } else {
+        println!("32-bits Machine Detected!");
+        512 // 512 MiB for 32-bit
+    };
+    let test_big_file: Vec<u8> = vec![b'g'; 1024 * 1024 * big_file_mib];
     let file_count = 1u64;
     let total_write_bytes = test_big_file.len() as u64;
     let write_start = std::time::Instant::now();

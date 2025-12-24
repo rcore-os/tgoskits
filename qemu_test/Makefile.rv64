@@ -1,0 +1,29 @@
+# Minimal Makefile for RV64 usermode test
+
+TARGET ?= riscv64gc-unknown-linux-gnu
+MODE ?= release
+BIN ?= ../target/$(TARGET)/$(MODE)/rsext4
+
+QEMU ?= qemu-riscv64
+QEMU_LD ?= /usr/riscv64-linux-gnu
+
+CARGO ?= cargo +nightly
+BUILD_STD_FLAGS ?= -Zbuild-std=std,panic_abort
+
+LINKER ?= riscv64-linux-gnu-gcc
+AR ?= riscv64-linux-gnu-ar
+
+.PHONY: build run clean
+
+build:
+	@cd ../ && \
+		CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER=$(LINKER) \
+		CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_AR=$(AR) \
+		$(CARGO) build --$(MODE) --target $(TARGET) $(BUILD_STD_FLAGS)
+	@echo "built: $(BIN)"
+
+run: build
+	@$(QEMU) -L $(QEMU_LD) $(BIN)
+
+clean:
+	@cargo clean
