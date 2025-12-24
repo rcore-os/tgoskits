@@ -202,14 +202,22 @@ impl IrqIf for IrqIfImpl {
                 Some(irq)
             },
             @S_EXT => {
+                // TODO: judge irq's ownership before handling (axvisor or any vm).
+                // Maybe later it will be done by registering all irqs IQR_HANDLER_TABLE.
+
                 let mut plic = PLIC.lock();
                 let Some(irq) = plic.claim(this_context()) else {
                     debug!("Spurious external IRQ");
                     return None;
                 };
-                trace!("IRQ: external {irq}");
-                IRQ_HANDLER_TABLE.handle(irq.get() as usize);
-                plic.complete(this_context(), irq);
+                drop(plic);
+                // Inject the virtual interrupt to the guest VM
+                axvisor_api::arch::inject_virtual_interrupt(irq.get() as usize);
+
+                // trace!("IRQ: external {irq}");
+                // IRQ_HANDLER_TABLE.handle(irq.get() as usize);                
+                // Only for irqs that belong to axvisor, complete the IRQ.
+                // plic.complete(this_context(), irq);
                 Some(irq.get() as usize)
             },
             @EX_IRQ => {

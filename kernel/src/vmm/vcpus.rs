@@ -309,16 +309,17 @@ fn vcpu_on(vm: VMRef, vcpu_id: usize, entry_point: GuestPhysAddr, arg: usize) {
 
     vcpu.set_entry(entry_point)
         .expect("vcpu_on: set_entry failed");
+    #[cfg(not(target_arch = "riscv64"))]
     vcpu.set_gpr(0, arg);
 
     #[cfg(target_arch = "riscv64")]
     {
-        debug!(
+        info!(
             "vcpu_on: vcpu[{}] entry={:x} opaque={:x}",
             vcpu_id, entry_point, arg
         );
-        vcpu.set_gpr(0, vcpu_id);
-        vcpu.set_gpr(1, arg);
+        vcpu.set_gpr(riscv_vcpu::GprIndex::A0 as usize, vcpu_id);
+        vcpu.set_gpr(riscv_vcpu::GprIndex::A1 as usize, arg);
     }
 
     let vcpu_task = alloc_vcpu_task(&vm, vcpu);
@@ -507,7 +508,10 @@ fn vcpu_run() {
                         });
 
                     vcpu_on(vm.clone(), target_vcpu_id, entry_point, arg as _);
+                    #[cfg(not(target_arch = "riscv64"))]
                     vcpu.set_gpr(0, 0);
+                    #[cfg(target_arch = "riscv64")]
+                    vcpu.set_gpr(riscv_vcpu::GprIndex::A0 as usize, 0);
                 }
                 AxVCpuExitReason::SystemDown => {
                     warn!("VM[{vm_id}] run VCpu[{vcpu_id}] SystemDown");

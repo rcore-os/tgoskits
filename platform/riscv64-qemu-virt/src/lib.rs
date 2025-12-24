@@ -29,6 +29,10 @@ pub mod config {
     );
 }
 
-pub fn cpu_count() -> usize {
+pub const fn cpu_count() -> usize {
     config::plat::CPU_NUM
+}
+
+pub const fn plic_base() -> usize {
+    config::devices::PLIC_PADDR
 }

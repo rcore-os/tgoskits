@@ -340,3 +340,8 @@ pub fn cpu_count() -> usize {
 
     cpu_count
 }
+
+#[cfg(target_arch = "riscv64")]
+pub fn plic_base() -> usize {
+    axplat_riscv64_qemu_virt::plic_base()
+}

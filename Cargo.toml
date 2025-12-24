@@ -91,16 +91,24 @@ axvmconfig = {git = "https://github.com/arceos-hypervisor/axvmconfig.git", branc
 
 [patch.crates-io]
 axvcpu = {path="crates/axvcpu"}
-axvmconfig = {git = "https://github.com/arceos-hypervisor/axvmconfig.git", branch = "next"}
-riscv = {git = "https://github.com/liulog/riscv.git", branch = "master"}
+axvmconfig = {path = "crates/axvmconfig"}
+# riscv = {git = "https://github.com/liulog/riscv.git", branch = "master"}
+axcpu = {path = "crates/axcpu"}
+axvisor_api = {path = "../axvisor_api"}
+page_table_entry = { path = "../page_table_multiarch/page_table_entry" }
+page_table_multiarch = { path = "../page_table_multiarch/page_table_multiarch", features = ["stage-2"]}
+axaddrspace = {path = "crates/axaddrspace"}
+
+[patch."https://github.com/arceos-hypervisor/axvmconfig.git"]
+axvmconfig = {path = "crates/axvmconfig"}
 
 [patch."https://github.com/arceos-org/arceos"]
 axconfig = {path = "modules/axconfig"}
 axruntime = {path = "modules/axruntime"}
 axfs = {path = "modules/axfs"}
-
-[patch."https://github.com/arceos-hypervisor/arm_vcpu.git"]
-arm_vcpu = {path = "crates/arm_vcpu"}
+axhal = {path = "../arceos/modules/axhal"}
+axalloc = {path = "../arceos/modules/axalloc"}
+axdriver = {path = "../arceos/modules/axdriver"}
 
 [patch."https://github.com/arceos-hypervisor/axvm.git"]
 axvm = {path = "crates/axvm"}
@@ -110,3 +118,9 @@ riscv_vcpu = {path = "crates/riscv_vcpu"}
 
 [patch."https://github.com/arceos-org/axcpu.git"]
 axcpu = {path = "crates/axcpu"}
+
+[patch."https://github.com/arceos-hypervisor/arm_vcpu.git"]
+arm_vcpu = {path = "crates/arm_vcpu"}
+
+[patch."https://github.com/arceos-hypervisor/axdevice.git"]
+axdevice = {git = "https://github.com/liulog/axdevice", branch = "master"}
