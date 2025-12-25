@@ -74,6 +74,14 @@ pub fn sys_get_mempolicy(
     Ok(0)
 }
 
+/// prctl() is called with a first argument describing what to do, and further
+/// arguments with a significance depending on the first one.
+/// The first argument can be:
+/// - PR_SET_NAME: set the name of the calling thread, using the value pointed to by `arg2`
+/// - PR_GET_NAME: get the name of the calling
+/// - PR_SET_SECCOMP: enable seccomp mode, with the mode specified in `arg2`
+/// - PR_MCE_KILL: set the machine check exception policy
+/// - PR_SET_MM options: set various memory management options (start/end code/data/brk/stack)
 pub fn sys_prctl(
     option: u32,
     arg2: usize,
@@ -99,12 +107,10 @@ pub fn sys_prctl(
         }
         PR_SET_SECCOMP => {}
         PR_MCE_KILL => {}
-        PR_SET_MM_START_CODE
-        | PR_SET_MM_END_CODE
-        | PR_SET_MM_START_DATA
-        | PR_SET_MM_END_DATA
-        | PR_SET_MM_START_BRK
-        | PR_SET_MM_START_STACK => {}
+        PR_SET_MM => {
+            // not implemented; but avoid annoying warnings
+            return Err(AxError::InvalidInput);
+        }
         _ => {
             warn!("sys_prctl: unsupported option {option}");
             return Err(AxError::InvalidInput);

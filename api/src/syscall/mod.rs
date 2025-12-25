@@ -347,6 +347,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         ),
         Sysno::munmap => sys_munmap(uctx.arg0(), uctx.arg1() as _),
         Sysno::mprotect => sys_mprotect(uctx.arg0(), uctx.arg1() as _, uctx.arg2() as _),
+        Sysno::mincore => sys_mincore(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         Sysno::mremap => sys_mremap(
             uctx.arg0(),
             uctx.arg1() as _,
