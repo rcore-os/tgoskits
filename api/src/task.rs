@@ -7,7 +7,6 @@ use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::ROBUST_LIST_LIMIT;
 use starry_core::{
     futex::FutexKey,
-    mm::access_user_memory,
     shm::SHM_MANAGER,
     task::{
         AsThread, get_process_data, get_task, send_signal_to_process, send_signal_to_thread,
@@ -25,20 +24,14 @@ use crate::{
 };
 
 /// Create a new user task.
-pub fn new_user_task(
-    name: &str,
-    mut uctx: UserContext,
-    set_child_tid: Option<&'static mut Pid>,
-) -> TaskInner {
+pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) -> TaskInner {
     TaskInner::new(
         move || {
             let curr = axtask::current();
 
-            access_user_memory(|| {
-                if let Some(tid) = set_child_tid {
-                    *tid = curr.id().as_u64() as Pid;
-                }
-            });
+            if let Some(tid) = (set_child_tid as *mut Pid).nullable() {
+                tid.vm_write(curr.id().as_u64() as Pid).ok();
+            }
 
             info!("Enter user space: ip={:#x}, sp={:#x}", uctx.ip(), uctx.sp());
 

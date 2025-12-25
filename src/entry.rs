@@ -36,7 +36,7 @@ pub fn run_initproc(args: &[String], envs: &[String]) -> i32 {
 
     let uctx = UserContext::new(entry_vaddr.into(), ustack_top, 0);
 
-    let mut task = new_user_task(name, uctx, None);
+    let mut task = new_user_task(name, uctx, 0);
     task.ctx_mut().set_page_table_root(uspace.page_table_root());
 
     let pid = task.id().as_u64() as Pid;

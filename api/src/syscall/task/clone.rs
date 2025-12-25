@@ -13,10 +13,10 @@ use starry_core::{
 };
 use starry_process::Pid;
 use starry_signal::Signo;
+use starry_vm::VmMutPtr;
 
 use crate::{
     file::{FD_TABLE, FileLike, PidFd},
-    mm::UserPtr,
     task::new_user_task,
 };
 
@@ -128,9 +128,9 @@ pub fn sys_clone(
     new_uctx.set_retval(0);
 
     let set_child_tid = if flags.contains(CloneFlags::CHILD_SETTID) {
-        Some(UserPtr::<u32>::from(child_tid).get_as_mut()?)
+        child_tid
     } else {
-        None
+        0
     };
 
     let curr = current();
@@ -140,7 +140,7 @@ pub fn sys_clone(
 
     let tid = new_task.id().as_u64() as Pid;
     if flags.contains(CloneFlags::PARENT_SETTID) {
-        *UserPtr::<Pid>::from(parent_tid).get_as_mut()? = tid;
+        (parent_tid as *mut Pid).vm_write(tid).ok();
     }
 
     let new_proc_data = if flags.contains(CloneFlags::THREAD) {
@@ -214,7 +214,7 @@ pub fn sys_clone(
 
     if flags.contains(CloneFlags::PIDFD) {
         let pidfd = PidFd::new(&new_proc_data);
-        *UserPtr::<i32>::from(parent_tid).get_as_mut()? = pidfd.add_to_fd_table(true)?;
+        (parent_tid as *mut i32).vm_write(pidfd.add_to_fd_table(true)?)?;
     }
 
     let thr = Thread::new(tid, new_proc_data);
