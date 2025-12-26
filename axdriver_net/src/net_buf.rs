@@ -1,9 +1,49 @@
-extern crate alloc;
-
-use crate::{DevError, DevResult, NetBufPtr};
 use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
 use core::ptr::NonNull;
+
 use spin::Mutex;
+
+use crate::{DevError, DevResult};
+
+/// A raw buffer struct for network device.
+pub struct NetBufPtr {
+    // The raw pointer of the original object.
+    raw_ptr: NonNull<u8>,
+    // The pointer to the net buffer.
+    buf_ptr: NonNull<u8>,
+    len: usize,
+}
+
+impl NetBufPtr {
+    /// Create a new [`NetBufPtr`].
+    pub fn new(raw_ptr: NonNull<u8>, buf_ptr: NonNull<u8>, len: usize) -> Self {
+        Self {
+            raw_ptr,
+            buf_ptr,
+            len,
+        }
+    }
+
+    /// Return raw pointer of the original object.
+    pub fn raw_ptr<T>(&self) -> *mut T {
+        self.raw_ptr.as_ptr() as *mut T
+    }
+
+    /// Return [`NetBufPtr`] buffer len.
+    pub fn packet_len(&self) -> usize {
+        self.len
+    }
+
+    /// Return [`NetBufPtr`] buffer as &[u8].
+    pub fn packet(&self) -> &[u8] {
+        unsafe { core::slice::from_raw_parts(self.buf_ptr.as_ptr() as *const u8, self.len) }
+    }
+
+    /// Return [`NetBufPtr`] buffer as &mut [u8].
+    pub fn packet_mut(&mut self) -> &mut [u8] {
+        unsafe { core::slice::from_raw_parts_mut(self.buf_ptr.as_ptr(), self.len) }
+    }
+}
 
 const MIN_BUFFER_LEN: usize = 1526;
 const MAX_BUFFER_LEN: usize = 65535;
@@ -42,11 +82,11 @@ unsafe impl Sync for NetBuf {}
 
 impl NetBuf {
     const unsafe fn get_slice(&self, start: usize, len: usize) -> &[u8] {
-        core::slice::from_raw_parts(self.buf_ptr.as_ptr().add(start), len)
+        unsafe { core::slice::from_raw_parts(self.buf_ptr.as_ptr().add(start), len) }
     }
 
     const unsafe fn get_slice_mut(&mut self, start: usize, len: usize) -> &mut [u8] {
-        core::slice::from_raw_parts_mut(self.buf_ptr.as_ptr().add(start), len)
+        unsafe { core::slice::from_raw_parts_mut(self.buf_ptr.as_ptr().add(start), len) }
     }
 
     /// Returns the capacity of the buffer.
@@ -119,7 +159,7 @@ impl NetBuf {
     /// This function is unsafe because it may cause some memory issues,
     /// so we must ensure that it is called after calling `into_buf_ptr`.
     pub unsafe fn from_buf_ptr(ptr: NetBufPtr) -> Box<Self> {
-        Box::from_raw(ptr.raw_ptr::<Self>())
+        unsafe { Box::from_raw(ptr.raw_ptr::<Self>()) }
     }
 }
 

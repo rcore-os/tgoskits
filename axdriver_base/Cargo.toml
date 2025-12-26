@@ -1,6 +1,6 @@
 [package]
 name = "axdriver_base"
-edition = "2021"
+edition.workspace = true
 description = "Common interfaces for all kinds of device drivers"
 documentation = "https://arceos-org.github.io/axdriver_crates/axdriver_base"
 keywords = ["arceos", "driver"]

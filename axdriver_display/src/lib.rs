@@ -30,10 +30,10 @@ impl<'a> FrameBuffer<'a> {
     ///
     /// # Safety
     ///
-    /// Caller must insure that the given memory region is valid and accessible.
+    /// Caller must ensure that the given memory region is valid and accessible.
     pub unsafe fn from_raw_parts_mut(ptr: *mut u8, len: usize) -> Self {
         Self {
-            _raw: core::slice::from_raw_parts_mut(ptr, len),
+            _raw: unsafe { core::slice::from_raw_parts_mut(ptr, len) },
         }
     }
 

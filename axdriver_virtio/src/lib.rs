@@ -11,14 +11,30 @@
 //! [3]: https://docs.rs/virtio-drivers/latest/virtio_drivers/trait.Hal.html
 
 #![no_std]
-#![cfg_attr(doc, feature(doc_auto_cfg))]
+#![cfg_attr(doc, feature(doc_cfg))]
+
+#[cfg(feature = "alloc")]
+extern crate alloc;
 
 #[cfg(feature = "block")]
 mod blk;
+
 #[cfg(feature = "gpu")]
 mod gpu;
+
 #[cfg(feature = "net")]
 mod net;
+
+use axdriver_base::{DevError, DeviceType};
+use virtio_drivers::transport::DeviceType as VirtIoDevType;
+pub use virtio_drivers::{
+    BufferDirection, Hal as VirtIoHal, PhysAddr,
+    transport::{
+        Transport,
+        mmio::MmioTransport,
+        pci::{PciTransport, bus as pci},
+    },
+};
 
 #[cfg(feature = "block")]
 pub use self::blk::VirtIoBlkDev;
@@ -26,14 +42,7 @@ pub use self::blk::VirtIoBlkDev;
 pub use self::gpu::VirtIoGpuDev;
 #[cfg(feature = "net")]
 pub use self::net::VirtIoNetDev;
-
-pub use virtio_drivers::transport::pci::bus as pci;
-pub use virtio_drivers::transport::{mmio::MmioTransport, pci::PciTransport, Transport};
-pub use virtio_drivers::{BufferDirection, Hal as VirtIoHal, PhysAddr};
-
 use self::pci::{DeviceFunction, DeviceFunctionInfo, PciRoot};
-use axdriver_base::{DevError, DeviceType};
-use virtio_drivers::transport::DeviceType as VirtIoDevType;
 
 /// Try to probe a VirtIO MMIO device from the given memory region.
 ///
@@ -44,6 +53,7 @@ pub fn probe_mmio_device(
     _reg_size: usize,
 ) -> Option<(DeviceType, MmioTransport)> {
     use core::ptr::NonNull;
+
     use virtio_drivers::transport::mmio::VirtIOHeader;
 
     let header = NonNull::new(reg_base as *mut VirtIOHeader).unwrap();

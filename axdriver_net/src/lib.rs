@@ -1,7 +1,9 @@
 //! Common traits and types for network device (NIC) drivers.
 
 #![no_std]
-#![cfg_attr(doc, feature(doc_auto_cfg))]
+#![cfg_attr(doc, feature(doc_cfg))]
+
+extern crate alloc;
 
 #[cfg(feature = "fxmac")]
 /// fxmac driver for PhytiumPi
@@ -9,14 +11,12 @@ pub mod fxmac;
 #[cfg(feature = "ixgbe")]
 /// ixgbe NIC device driver.
 pub mod ixgbe;
-mod net_buf;
-
-use core::ptr::NonNull;
 
 #[doc(no_inline)]
 pub use axdriver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
 
-pub use self::net_buf::{NetBuf, NetBufBox, NetBufPool};
+mod net_buf;
+pub use self::net_buf::{NetBuf, NetBufBox, NetBufPool, NetBufPtr};
 
 /// The ethernet address of the NIC (MAC address).
 pub struct EthernetAddress(pub [u8; 6]);
@@ -44,8 +44,8 @@ pub trait NetDriverOps: BaseDriverOps {
     /// [`NetDriverOps::receive`].
     fn recycle_rx_buffer(&mut self, rx_buf: NetBufPtr) -> DevResult;
 
-    /// Poll the transmit queue and gives back the buffers for previous transmiting.
-    /// returns [`DevResult`].
+    /// Poll the transmit queue and gives back the buffers for previous
+    /// transmiting. returns [`DevResult`].
     fn recycle_tx_buffers(&mut self) -> DevResult;
 
     /// Transmits a packet in the buffer to the network, without blocking,
@@ -65,44 +65,4 @@ pub trait NetDriverOps: BaseDriverOps {
     /// Allocate a memory buffer of a specified size for network transmission,
     /// returns [`DevResult`]
     fn alloc_tx_buffer(&mut self, size: usize) -> DevResult<NetBufPtr>;
-}
-
-/// A raw buffer struct for network device.
-pub struct NetBufPtr {
-    // The raw pointer of the original object.
-    raw_ptr: NonNull<u8>,
-    // The pointer to the net buffer.
-    buf_ptr: NonNull<u8>,
-    len: usize,
-}
-
-impl NetBufPtr {
-    /// Create a new [`NetBufPtr`].
-    pub fn new(raw_ptr: NonNull<u8>, buf_ptr: NonNull<u8>, len: usize) -> Self {
-        Self {
-            raw_ptr,
-            buf_ptr,
-            len,
-        }
-    }
-
-    /// Return raw pointer of the original object.
-    pub fn raw_ptr<T>(&self) -> *mut T {
-        self.raw_ptr.as_ptr() as *mut T
-    }
-
-    /// Return [`NetBufPtr`] buffer len.
-    pub fn packet_len(&self) -> usize {
-        self.len
-    }
-
-    /// Return [`NetBufPtr`] buffer as &[u8].
-    pub fn packet(&self) -> &[u8] {
-        unsafe { core::slice::from_raw_parts(self.buf_ptr.as_ptr() as *const u8, self.len) }
-    }
-
-    /// Return [`NetBufPtr`] buffer as &mut [u8].
-    pub fn packet_mut(&mut self) -> &mut [u8] {
-        unsafe { core::slice::from_raw_parts_mut(self.buf_ptr.as_ptr(), self.len) }
-    }
 }

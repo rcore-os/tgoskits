@@ -1,9 +1,8 @@
-extern crate alloc;
-use crate::as_dev_err;
-
 use axdriver_base::{BaseDriverOps, DevResult, DeviceType};
 use axdriver_display::{DisplayDriverOps, DisplayInfo, FrameBuffer};
-use virtio_drivers::{device::gpu::VirtIOGpu as InnerDev, transport::Transport, Hal};
+use virtio_drivers::{Hal, device::gpu::VirtIOGpu as InnerDev, transport::Transport};
+
+use crate::as_dev_err;
 
 /// The VirtIO GPU device driver.
 pub struct VirtIoGpuDev<H: Hal, T: Transport> {

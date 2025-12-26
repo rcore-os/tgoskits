@@ -42,7 +42,6 @@ jobs:
     - uses: actions/checkout@v4
     - uses: dtolnay/rust-toolchain@nightly
     - name: Build docs
-      continue-on-error: ${{ github.ref != env.default-branch && github.event_name != 'pull_request' }}
       run: |
         for crate in axdriver_base axdriver_block axdriver_net axdriver_display axdriver_pci axdriver_virtio;
         do
