@@ -13,7 +13,6 @@ use alloc::{
     task::Wake,
 };
 use core::{
-    any::Any,
     hash::{Hash, Hasher},
     sync::atomic::{AtomicBool, Ordering},
     task::{Context, Waker},
@@ -26,7 +25,7 @@ use hashbrown::HashMap;
 use kspin::SpinNoPreempt;
 use linux_raw_sys::general::{EPOLLET, EPOLLONESHOT, epoll_event};
 
-use crate::file::{FileLike, Kstat, SealedBuf, SealedBufMut, get_file_like};
+use crate::file::{FileLike, get_file_like};
 
 pub struct EpollEvent {
     pub events: IoEvents,
@@ -434,24 +433,8 @@ impl Epoll {
 }
 
 impl FileLike for Epoll {
-    fn read(&self, _dst: &mut SealedBufMut) -> AxResult<usize> {
-        Err(AxError::InvalidInput)
-    }
-
-    fn write(&self, _src: &mut SealedBuf) -> AxResult<usize> {
-        Err(AxError::InvalidInput)
-    }
-
-    fn stat(&self) -> AxResult<Kstat> {
-        Ok(Kstat::default())
-    }
-
     fn path(&self) -> Cow<'_, str> {
         "anon_inode:[eventpoll]".into()
-    }
-
-    fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
-        self
     }
 }
 

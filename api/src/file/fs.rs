@@ -1,6 +1,5 @@
 use alloc::{borrow::Cow, string::ToString, sync::Arc};
 use core::{
-    any::Any,
     ffi::c_int,
     hint::likely,
     sync::atomic::{AtomicBool, Ordering},
@@ -16,7 +15,7 @@ use axtask::future::{block_on, poll_io};
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW};
 
 use super::{FileLike, Kstat, get_file_like};
-use crate::file::{SealedBuf, SealedBufMut};
+use crate::file::{IoDst, IoSrc};
 
 pub fn with_fs<R>(dirfd: c_int, f: impl FnOnce(&mut FsContext) -> AxResult<R>) -> AxResult<R> {
     let mut fs = FS_CONTEXT.lock();
@@ -56,7 +55,7 @@ pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> AxResult<Reso
                 return Err(AxError::NotFound);
             }
             let file_like = get_file_like(dirfd)?;
-            let f = file_like.clone().into_any();
+            let f = file_like.clone();
             Ok(if let Some(file) = f.downcast_ref::<File>() {
                 ResolveAtResult::File(file.inner().backend()?.location().clone())
             } else if let Some(dir) = f.downcast_ref::<Directory>() {
@@ -126,34 +125,30 @@ fn path_for(loc: &Location) -> Cow<'static, str> {
 }
 
 impl FileLike for File {
-    fn read(&self, dst: &mut SealedBufMut) -> AxResult<usize> {
+    fn read(&self, dst: &mut IoDst) -> AxResult<usize> {
         let inner = self.inner();
         if likely(self.is_blocking()) {
             inner.read(dst)
         } else {
             block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-                inner.read(dst)
+                inner.read(&mut *dst)
             }))
         }
     }
 
-    fn write(&self, src: &mut SealedBuf) -> AxResult<usize> {
+    fn write(&self, src: &mut IoSrc) -> AxResult<usize> {
         let inner = self.inner();
         if likely(self.is_blocking()) {
             inner.write(src)
         } else {
             block_on(poll_io(self, IoEvents::OUT, self.nonblocking(), || {
-                inner.write(src)
+                inner.write(&mut *src)
             }))
         }
     }
 
     fn stat(&self) -> AxResult<Kstat> {
         Ok(metadata_to_kstat(&self.inner().location().metadata()?))
-    }
-
-    fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
-        self
     }
 
     fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
@@ -177,9 +172,7 @@ impl FileLike for File {
     where
         Self: Sized + 'static,
     {
-        let any = get_file_like(fd)?.into_any();
-
-        any.downcast::<Self>().map_err(|any| {
+        get_file_like(fd)?.downcast_arc().map_err(|any| {
             if any.is::<Directory>() {
                 AxError::IsADirectory
             } else {
@@ -219,11 +212,11 @@ impl Directory {
 }
 
 impl FileLike for Directory {
-    fn read(&self, _dst: &mut SealedBufMut) -> AxResult<usize> {
+    fn read(&self, _dst: &mut IoDst) -> AxResult<usize> {
         Err(AxError::BadFileDescriptor)
     }
 
-    fn write(&self, _src: &mut SealedBuf) -> AxResult<usize> {
+    fn write(&self, _src: &mut IoSrc) -> AxResult<usize> {
         Err(AxError::BadFileDescriptor)
     }
 
@@ -235,14 +228,9 @@ impl FileLike for Directory {
         path_for(&self.inner)
     }
 
-    fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
-        self
-    }
-
     fn from_fd(fd: c_int) -> AxResult<Arc<Self>> {
         get_file_like(fd)?
-            .into_any()
-            .downcast::<Self>()
+            .downcast_arc()
             .map_err(|_| AxError::NotADirectory)
     }
 }

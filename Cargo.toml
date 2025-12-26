@@ -50,7 +50,7 @@ axtask = { path = "arceos/modules/axtask" }
 axbacktrace = "0.1"
 axerrno = "0.2"
 axfs-ng-vfs = "0.1"
-axio = { version = "0.2", git = "https://github.com/arceos-org/axio.git", tag = "dev-v02" }
+axio = "0.3.0-pre.1"
 axpoll = "0.1"
 bitflags = "2.10"
 bytemuck = { version = "1.23", features = ["unsound_ptr_pod_impl"] }

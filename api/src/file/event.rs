@@ -1,16 +1,14 @@
 use alloc::{borrow::Cow, sync::Arc};
 use core::{
-    any::Any,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     task::Context,
 };
 
 use axerrno::AxError;
-use axio::{Buf, BufMut, Read, Write};
 use axpoll::{IoEvents, PollSet, Pollable};
 use axtask::future::{block_on, poll_io};
 
-use crate::file::{FileLike, Kstat, SealedBuf, SealedBufMut};
+use crate::file::{FileLike, IoDst, IoSrc};
 
 pub struct EventFd {
     count: AtomicU64,
@@ -35,7 +33,7 @@ impl EventFd {
 }
 
 impl FileLike for EventFd {
-    fn read(&self, dst: &mut SealedBufMut) -> axio::Result<usize> {
+    fn read(&self, dst: &mut IoDst) -> axio::Result<usize> {
         if dst.remaining_mut() < size_of::<u64>() {
             return Err(AxError::InvalidInput);
         }
@@ -62,7 +60,7 @@ impl FileLike for EventFd {
         }))
     }
 
-    fn write(&self, src: &mut SealedBuf) -> axio::Result<usize> {
+    fn write(&self, src: &mut IoSrc) -> axio::Result<usize> {
         if src.remaining() < size_of::<u64>() {
             return Err(AxError::InvalidInput);
         }
@@ -94,10 +92,6 @@ impl FileLike for EventFd {
         }))
     }
 
-    fn stat(&self) -> axio::Result<Kstat> {
-        Ok(Kstat::default())
-    }
-
     fn nonblocking(&self) -> bool {
         self.non_blocking.load(Ordering::Acquire)
     }
@@ -109,10 +103,6 @@ impl FileLike for EventFd {
 
     fn path(&self) -> Cow<'_, str> {
         "anon_inode:[eventfd]".into()
-    }
-
-    fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
-        self
     }
 }
 

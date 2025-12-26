@@ -155,7 +155,7 @@ impl ElfCacheEntry {
         let cache = CachedFile::get_or_create(loc);
 
         let mut data = vec![0; 4096];
-        let read = cache.read_at(&mut data.as_mut_slice(), 0)?;
+        let read = cache.read_at(&mut data[..], 0)?;
         data.truncate(read);
         match ElfCacheEntry::try_new_or_recover::<AxError>(cache.clone(), data, |data| {
             let builder = ELFHeadersBuilder::new(data).map_err(map_elf_error)?;
@@ -164,7 +164,7 @@ impl ElfCacheEntry {
                 builder.build(&data[range.start as usize..range.end as usize])
             } else {
                 let mut buf = vec![0; (range.end - range.start) as usize];
-                cache.read_at(&mut buf.as_mut_slice(), range.start)?;
+                cache.read_at(&mut buf[..], range.start)?;
                 builder.build(&buf)
             }
             .map_err(map_elf_error)
@@ -210,7 +210,7 @@ impl ElfLoader {
         {
             let cache = entry.borrow_cache();
             let mut data = vec![0; header.file_size as usize];
-            let read = cache.read_at(&mut data.as_mut_slice(), header.offset)?;
+            let read = cache.read_at(&mut data[..], header.offset)?;
             assert_eq!(data.len(), read);
 
             let ldso = CStr::from_bytes_with_nul(&data)

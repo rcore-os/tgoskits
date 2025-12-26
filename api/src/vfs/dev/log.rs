@@ -13,7 +13,7 @@ pub fn bind_dev_log() -> LinuxResult<()> {
         move || {
             let mut buf = [0u8; 65536];
             loop {
-                match server.recv(&mut buf.as_mut_slice(), RecvOptions::default()) {
+                match server.recv(&mut buf[..], RecvOptions::default()) {
                     Ok(read) => {
                         let msg = ByteStr::new(buf[..read].trim_ascii_end());
                         info!("{msg}");

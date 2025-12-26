@@ -2,7 +2,7 @@ use alloc::{boxed::Box, vec::Vec};
 use core::net::Ipv4Addr;
 
 use axerrno::{AxError, AxResult};
-use axio::{Buf, BufMut};
+use axio::prelude::*;
 use axnet::{CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddrEx, SocketOps};
 use linux_raw_sys::net::{
     MSG_PEEK, MSG_TRUNC, SCM_RIGHTS, SOL_SOCKET, cmsghdr, msghdr, sockaddr, socklen_t,
@@ -18,7 +18,7 @@ use crate::{
 
 fn send_impl(
     fd: i32,
-    mut src: impl Buf,
+    mut src: impl Read + IoBuf,
     flags: u32,
     addr: UserConstPtr<sockaddr>,
     addrlen: socklen_t,
@@ -83,7 +83,7 @@ pub fn sys_sendmsg(fd: i32, msg: UserConstPtr<msghdr>, flags: u32) -> AxResult<i
 
 fn recv_impl(
     fd: i32,
-    mut dst: impl BufMut,
+    mut dst: impl Write + IoBufMut,
     flags: u32,
     addr: UserPtr<sockaddr>,
     addrlen: UserPtr<socklen_t>,

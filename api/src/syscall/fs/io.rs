@@ -14,31 +14,15 @@ use starry_vm::{VmMutPtr, VmPtr};
 use syscalls::Sysno;
 
 use crate::{
-    file::{File, FileLike, Pipe, SealedBuf, SealedBufMut, get_file_like},
+    file::{File, FileLike, Pipe, get_file_like},
     io::{IoVec, IoVectorBuf},
     mm::{UserConstPtr, VmBytes, VmBytesMut},
 };
 
 struct DummyFd;
 impl FileLike for DummyFd {
-    fn read(&self, _dst: &mut SealedBufMut) -> AxResult<usize> {
-        unimplemented!()
-    }
-
-    fn write(&self, _src: &mut SealedBuf) -> AxResult<usize> {
-        unimplemented!()
-    }
-
-    fn stat(&self) -> AxResult<crate::file::Kstat> {
-        unimplemented!()
-    }
-
     fn path(&self) -> Cow<'_, str> {
-        "anon_inode:[bruh]".into()
-    }
-
-    fn into_any(self: Arc<Self>) -> Arc<dyn core::any::Any + Send + Sync> {
-        self
+        "anon_inode:[dummy]".into()
     }
 }
 impl Pollable for DummyFd {
@@ -64,13 +48,13 @@ pub fn sys_dummy_fd(sysno: Sysno) -> AxResult<isize> {
 /// Return the read size if success.
 pub fn sys_read(fd: i32, buf: *mut u8, len: usize) -> AxResult<isize> {
     debug!("sys_read <= fd: {fd}, buf: {buf:p}, len: {len}");
-    Ok(get_file_like(fd)?.read(&mut VmBytesMut::new(buf, len).into())? as _)
+    Ok(get_file_like(fd)?.read(&mut VmBytesMut::new(buf, len))? as _)
 }
 
 pub fn sys_readv(fd: i32, iov: *const IoVec, iovcnt: usize) -> AxResult<isize> {
     debug!("sys_readv <= fd: {fd}, iovcnt: {iovcnt}");
     let f = get_file_like(fd)?;
-    f.read(&mut IoVectorBuf::new(iov, iovcnt)?.into_io().into())
+    f.read(&mut IoVectorBuf::new(iov, iovcnt)?.into_io())
         .map(|n| n as _)
 }
 
@@ -79,13 +63,13 @@ pub fn sys_readv(fd: i32, iov: *const IoVec, iovcnt: usize) -> AxResult<isize> {
 /// Return the written size if success.
 pub fn sys_write(fd: i32, buf: *mut u8, len: usize) -> AxResult<isize> {
     debug!("sys_write <= fd: {fd}, buf: {buf:p}, len: {len}");
-    Ok(get_file_like(fd)?.write(&mut VmBytes::new(buf, len).into())? as _)
+    Ok(get_file_like(fd)?.write(&mut VmBytes::new(buf, len))? as _)
 }
 
 pub fn sys_writev(fd: i32, iov: *const IoVec, iovcnt: usize) -> AxResult<isize> {
     debug!("sys_writev <= fd: {fd}, iovcnt: {iovcnt}");
     let f = get_file_like(fd)?;
-    f.write(&mut IoVectorBuf::new(iov, iovcnt)?.into_io().into())
+    f.write(&mut IoVectorBuf::new(iov, iovcnt)?.into_io())
         .map(|n| n as _)
 }
 
@@ -174,9 +158,7 @@ pub fn sys_pread64(fd: c_int, buf: *mut u8, len: usize, offset: __kernel_off_t) 
     if offset < 0 {
         return Err(AxError::InvalidInput);
     }
-    let read = f
-        .inner()
-        .read_at(&mut VmBytesMut::new(buf, len), offset as _)?;
+    let read = f.inner().read_at(VmBytesMut::new(buf, len), offset as _)?;
     Ok(read as _)
 }
 
@@ -190,9 +172,7 @@ pub fn sys_pwrite64(
         return Ok(0);
     }
     let f = File::from_fd(fd)?;
-    let write = f
-        .inner()
-        .write_at(&mut VmBytes::new(buf, len), offset as _)?;
+    let write = f.inner().write_at(VmBytes::new(buf, len), offset as _)?;
     Ok(write as _)
 }
 
@@ -224,7 +204,7 @@ pub fn sys_preadv2(
     debug!("sys_preadv2 <= fd: {fd}, iovcnt: {iovcnt}, offset: {offset}, flags: {_flags}");
     let f = File::from_fd(fd)?;
     f.inner()
-        .read_at(&mut IoVectorBuf::new(iov, iovcnt)?.into_io(), offset as _)
+        .read_at(IoVectorBuf::new(iov, iovcnt)?.into_io(), offset as _)
         .map(|n| n as _)
 }
 
@@ -238,7 +218,7 @@ pub fn sys_pwritev2(
     debug!("sys_pwritev2 <= fd: {fd}, iovcnt: {iovcnt}, offset: {offset}, flags: {_flags}");
     let f = File::from_fd(fd)?;
     f.inner()
-        .read_at(&mut IoVectorBuf::new(iov, iovcnt)?.into_io(), offset as _)
+        .read_at(IoVectorBuf::new(iov, iovcnt)?.into_io(), offset as _)
         .map(|n| n as _)
 }
 
@@ -258,7 +238,7 @@ impl SendFile {
 
     fn read(&mut self, mut buf: &mut [u8]) -> AxResult<usize> {
         match self {
-            SendFile::Direct(file) => file.read(&mut buf.into()),
+            SendFile::Direct(file) => file.read(&mut buf),
             SendFile::Offset(file, offset) => {
                 let off = offset.vm_read()?;
                 let bytes_read = file.inner().read_at(&mut buf, off)?;
@@ -270,10 +250,10 @@ impl SendFile {
 
     fn write(&mut self, mut buf: &[u8]) -> AxResult<usize> {
         match self {
-            SendFile::Direct(file) => file.write(&mut buf.into()),
+            SendFile::Direct(file) => file.write(&mut buf),
             SendFile::Offset(file, offset) => {
                 let off = offset.vm_read()?;
-                let bytes_written = file.inner().write_at(&mut buf, off)?;
+                let bytes_written = file.inner().write_at(buf, off)?;
                 offset.vm_write(off + bytes_written as u64)?;
                 Ok(bytes_written)
             }
@@ -434,7 +414,7 @@ pub fn sys_splice(
             return Err(AxError::InvalidInput);
         }
         let f = get_file_like(fd_out)?;
-        f.write(&mut b"".as_slice().into())?;
+        f.write(&mut b"".as_slice())?;
         SendFile::Direct(f)
     };
 
