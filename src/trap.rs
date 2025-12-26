@@ -1,8 +1,67 @@
-use core::mem::size_of;
-
-use memoffset::offset_of;
-
 use crate::regs::*;
+use core::mem::size_of;
+use memoffset::offset_of;
+use riscv::ExceptionNumber;
+use riscv::result::{Error, Result};
+
+/// Exception
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(usize)]
+pub enum Exception {
+    InstructionMisaligned = 0,
+    InstructionFault = 1,
+    IllegalInstruction = 2,
+    Breakpoint = 3,
+    LoadMisaligned = 4,
+    LoadFault = 5,
+    StoreMisaligned = 6,
+    StoreFault = 7,
+    UserEnvCall = 8,
+    SupervisorEnvCall = 9,
+    VirtualSupervisorEnvCall = 10,
+    InstructionPageFault = 12,
+    LoadPageFault = 13,
+    StorePageFault = 15,
+    InstructionGuestPageFault = 20,
+    LoadGuestPageFault = 21,
+    VirtualInstruction = 22,
+    StoreGuestPageFault = 23,
+}
+
+/// SAFETY: `Exception` represents the standard RISC-V exceptions
+unsafe impl ExceptionNumber for Exception {
+    const MAX_EXCEPTION_NUMBER: usize = Self::StoreGuestPageFault as usize;
+
+    #[inline]
+    fn number(self) -> usize {
+        self as usize
+    }
+
+    #[inline]
+    fn from_number(value: usize) -> Result<Self> {
+        match value {
+            0 => Ok(Self::InstructionMisaligned),
+            1 => Ok(Self::InstructionFault),
+            2 => Ok(Self::IllegalInstruction),
+            3 => Ok(Self::Breakpoint),
+            4 => Ok(Self::LoadMisaligned),
+            5 => Ok(Self::LoadFault),
+            6 => Ok(Self::StoreMisaligned),
+            7 => Ok(Self::StoreFault),
+            8 => Ok(Self::UserEnvCall),
+            9 => Ok(Self::SupervisorEnvCall),
+            10 => Ok(Self::VirtualSupervisorEnvCall),
+            12 => Ok(Self::InstructionPageFault),
+            13 => Ok(Self::LoadPageFault),
+            15 => Ok(Self::StorePageFault),
+            20 => Ok(Self::InstructionGuestPageFault),
+            21 => Ok(Self::LoadGuestPageFault),
+            22 => Ok(Self::VirtualInstruction),
+            23 => Ok(Self::StoreGuestPageFault),
+            _ => Err(Error::InvalidVariant(value)),
+        }
+    }
+}
 
 #[allow(dead_code)]
 const fn hyp_gpr_offset(index: GprIndex) -> usize {

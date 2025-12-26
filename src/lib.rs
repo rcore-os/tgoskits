@@ -20,6 +20,7 @@ mod vcpu;
 pub use self::percpu::RISCVPerCpu;
 pub use self::vcpu::RISCVVCpu;
 pub use detect::detect_h_extension as has_hardware_support;
+pub use regs::GprIndex;
 
 /// Extension ID for hypercall, defined by ourselves.
 /// `0x48`, `0x56`, `0x43` is "HVC" in ASCII.
@@ -34,14 +35,14 @@ pub struct RISCVVCpuCreateConfig {
     pub hart_id: usize,
     /// The physical address of the device tree blob.
     /// Default to `0x9000_0000`.
-    pub dtb_addr: axaddrspace::GuestPhysAddr,
+    pub dtb_addr: usize,
 }
 
 impl Default for RISCVVCpuCreateConfig {
     fn default() -> Self {
         Self {
             hart_id: 0,
-            dtb_addr: axaddrspace::GuestPhysAddr::from_usize(0x9000_0000),
+            dtb_addr: 0x9000_0000,
         }
     }
 }
