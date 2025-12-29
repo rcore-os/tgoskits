@@ -15,10 +15,7 @@ use axhal::{
 use axio::prelude::*;
 use axtask::current;
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
-use starry_core::{
-    mm::{access_user_memory, is_accessing_user_memory},
-    task::AsThread,
-};
+use starry_core::{mm::access_user_memory, task::AsThread};
 use starry_vm::{vm_load_until_nul, vm_read_slice, vm_write_slice};
 
 fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> AxResult<()> {
@@ -240,14 +237,15 @@ pub(crate) use nullable;
 #[register_trap_handler(PAGE_FAULT)]
 fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
     debug!("Page fault at {vaddr:#x}, access_flags: {access_flags:#x?}");
-    if unlikely(!is_accessing_user_memory()) {
-        return false;
-    }
 
     let curr = current();
     let Some(thr) = curr.try_as_thread() else {
         return false;
     };
+
+    if unlikely(!thr.is_accessing_user_memory()) {
+        return false;
+    }
 
     thr.proc_data
         .aspace

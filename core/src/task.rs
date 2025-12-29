@@ -82,6 +82,9 @@ pub struct Thread {
 
     /// Ready to exit
     exit: AtomicBool,
+
+    /// Indicates whether the thread is currently accessing user memory.
+    accessing_user_memory: AtomicBool,
 }
 
 impl Thread {
@@ -95,6 +98,7 @@ impl Thread {
             time: AssumeSync(RefCell::new(TimeManager::new())),
             oom_score_adj: AtomicI32::new(200),
             exit: AtomicBool::new(false),
+            accessing_user_memory: AtomicBool::new(false),
         })
     }
 
@@ -138,6 +142,17 @@ impl Thread {
     /// Set the thread to exit.
     pub fn set_exit(&self) {
         self.exit.store(true, Ordering::Release);
+    }
+
+    /// Check if the thread is accessing user memory.
+    pub fn is_accessing_user_memory(&self) -> bool {
+        self.accessing_user_memory.load(Ordering::Acquire)
+    }
+
+    /// Set the accessing user memory flag.
+    pub fn set_accessing_user_memory(&self, accessing: bool) {
+        self.accessing_user_memory
+            .store(accessing, Ordering::Release);
     }
 }
 
