@@ -14,8 +14,12 @@ pub mod api;
 pub mod fops;
 
 use crate::partition::PartitionInfo;
-use alloc::{string::String, sync::Arc, vec::Vec};
-use axdriver::{AxDeviceContainer, prelude::*};
+use alloc::{
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
+};
+use axdriver::{prelude::*, AxDeviceContainer};
 
 /// Initializes filesystems by block devices.
 pub fn init_filesystems(mut blk_devs: AxDeviceContainer<AxBlockDevice>, bootargs: Option<&str>) {
@@ -102,6 +106,7 @@ struct RootSpec {
     partition_index: Option<usize>,
     partuuid: Option<String>,
     uuid: Option<String>,
+    partlabel: Option<String>,
 }
 
 /// Parse root parameter from bootargs
@@ -131,6 +136,14 @@ fn parse_root_spec(bootargs: Option<&str>) -> RootSpec {
                     info!("Looking for filesystem with UUID: {}", uuid);
                     RootSpec {
                         uuid: Some(uuid),
+                        ..Default::default()
+                    }
+                }
+                v if v.starts_with("PARTLABEL=") => {
+                    let partlabel = v.strip_prefix("PARTLABEL=").unwrap_or("").to_string();
+                    info!("Looking for partition with PARTLABEL: {}", partlabel);
+                    RootSpec {
+                        partlabel: Some(partlabel),
                         ..Default::default()
                     }
                 }
@@ -209,6 +222,14 @@ fn find_root_partition(partitions: &[PartitionInfo], root_spec: &RootSpec) -> Op
                     info!("UUID matches partition {} ({})", i, partition.name);
                     return Some(i);
                 }
+            }
+        }
+
+        // Check PARTLABEL match
+        if let Some(ref partlabel) = root_spec.partlabel {
+            if partition.name == *partlabel {
+                info!("PARTLABEL matches partition {} ({})", i, partition.name);
+                return Some(i);
             }
         }
     }
