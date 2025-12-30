@@ -201,8 +201,6 @@ pub struct ProcessData {
     pub aspace: Arc<Mutex<AddrSpace>>,
     /// The resource scope
     pub scope: RwLock<Scope>,
-    /// The user heap bottom
-    heap_bottom: AtomicUsize,
     /// The user heap top
     heap_top: AtomicUsize,
 
@@ -242,7 +240,6 @@ impl ProcessData {
             cmdline: RwLock::new(cmdline),
             aspace,
             scope: RwLock::new(Scope::new()),
-            heap_bottom: AtomicUsize::new(crate::config::USER_HEAP_BASE),
             heap_top: AtomicUsize::new(crate::config::USER_HEAP_BASE),
 
             rlim: RwLock::default(),
@@ -260,16 +257,6 @@ impl ProcessData {
 
             umask: AtomicU32::new(0o022),
         })
-    }
-
-    /// Get the bottom address of the user heap.
-    pub fn get_heap_bottom(&self) -> usize {
-        self.heap_bottom.load(Ordering::Acquire)
-    }
-
-    /// Set the bottom address of the user heap.
-    pub fn set_heap_bottom(&self, bottom: usize) {
-        self.heap_bottom.store(bottom, Ordering::Release)
     }
 
     /// Get the top address of the user heap.

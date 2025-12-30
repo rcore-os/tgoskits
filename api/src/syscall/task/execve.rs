@@ -60,7 +60,6 @@ pub fn sys_execve(
     *proc_data.exe_path.write() = loc.absolute_path()?.to_string();
     *proc_data.cmdline.write() = Arc::new(args);
 
-    proc_data.set_heap_bottom(USER_HEAP_BASE);
     proc_data.set_heap_top(USER_HEAP_BASE);
 
     *proc_data.signal.actions.lock() = Default::default();
