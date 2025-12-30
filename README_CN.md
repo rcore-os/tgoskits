@@ -101,6 +101,10 @@ AxVisor 使用 xtask 工具进行构建管理，支持多种硬件平台和配�
   <img src="https://contrib.rocks/image?repo=arceos-hypervisor/axvisor" />
 </a>
 
+您也可以扫描下方二维码加入讨论群（请务必发送备注信息：AxVisor），进行问题咨询、经验交流与反馈建议。
+
+![group](https://arceos-hypervisor.github.io/axvisorbook/assets/images/group-c0e9fb6c8a7720a1f7eb55d3f4f40b4c.png)
+
 # 许可协议
 
 AxVisor 使用如下开源协议

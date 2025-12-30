@@ -101,6 +101,10 @@ Welcome to fork this repository and submit pull requests. The existence and deve
   <img src="https://contrib.rocks/image?repo=arceos-hypervisor/axvisor" />
 </a>
 
+You are also welcome to scan the QR code below to join the discussion group (please send a note with: AxVisor). We look forward to consulting on issues, exchanging experiences, and receiving feedback suggestions.
+
+![group](https://arceos-hypervisor.github.io/axvisorbook/assets/images/group-c0e9fb6c8a7720a1f7eb55d3f4f40b4c.png)
+
 # License
 
 AxVisor uses the following open-source licenses:
