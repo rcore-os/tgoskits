@@ -464,23 +464,6 @@ impl<B: BlockDevice> BlockDev<B> {
         self.dev.block_size()
     }
 
-    /// 检查块号是否有效
-    pub fn _is_valid_block(&self, block_id: u32) -> bool {
-        (block_id as u64) < self.total_blocks()
-    }
-
-    /// 验证块范围
-    pub fn _validate_block_range(&self, block_id: u32, count: u32) -> BlockDevResult<()> {
-        let end_block = block_id as u64 + count as u64;
-        if end_block > self.total_blocks() {
-            return Err(BlockDevError::BlockOutOfRange {
-                block_id,
-                max_blocks: self.total_blocks(),
-            });
-        }
-        Ok(())
-    }
-
     /// 获取内部设备引用
     pub fn _device(&self) -> &B {
         &self.dev

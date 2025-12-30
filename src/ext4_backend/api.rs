@@ -12,6 +12,7 @@ use crate::ext4_backend::*;
 use crate::BLOCK_SIZE;
 /// 文件句柄
 pub struct OpenFile {
+    pub inode_num:u32,
     pub path: String,
     pub inode: Ext4Inode,
     pub offset: u64,
@@ -46,7 +47,7 @@ fn refresh_open_file_inode<B: BlockDevice>(
     Ok(())
 }
 
-///打开文件：可选自动创建
+///打开文件 只能自动创建文件
 pub fn open<B: BlockDevice>(
     dev: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
@@ -58,6 +59,7 @@ pub fn open<B: BlockDevice>(
     if let Ok(Some(inode)) = get_file_inode(fs, dev, &norm_path) {
         let real_inode = inode.1;
         return Ok(OpenFile {
+            inode_num: inode.0,
             path: norm_path,
             inode: real_inode,
             offset: 0,
@@ -68,14 +70,15 @@ pub fn open<B: BlockDevice>(
         return Err(BlockDevError::WriteError);
     }
 
-    let inode = match mkfile(dev, fs, &norm_path, None,None) {
+    let inode = match mkfile_with_ino(dev, fs, &norm_path, None,None) {
         Some(ino) => ino,
         None => return Err(BlockDevError::WriteError),
     };
 
     Ok(OpenFile {
+        inode_num:inode.0,
         path: norm_path,
-        inode,
+        inode:inode.1,
         offset: 0,
     })
 }
