@@ -8,27 +8,18 @@ jobs:
     strategy:
       matrix:
         include:
-          # - board: phytiumpi
-          #   vmconfigs: .github/workflows/vmconfigs/linux.toml,.github/workflows/vmconfigs/arceos.toml
-          #   vmconfigs_name: Linux + ArceOS
           - board: phytiumpi
             vmconfigs: configs/vms/arceos-aarch64-e2000-smp1.toml
             vmconfigs_name: ArceOS
-            vmimage_name: phytiumpi_arceos
           - board: phytiumpi
             vmconfigs: configs/vms/linux-aarch64-e2000-smp1.toml
             vmconfigs_name: Linux
-            vmimage_name: phytiumpi_linux
           - board: roc-rk3568-pc
             vmconfigs: configs/vms/arceos-aarch64-rk3568-smp1.toml
             vmconfigs_name: ArceOS
-            # Multiple image archive names separated by commas, for example, roc-rk3568-pc_arceos,roc-rk3568-pc_linux[,...]
-            vmimage_name: roc-rk3568-pc_arceos
           - board: roc-rk3568-pc
             vmconfigs: configs/vms/linux-aarch64-rk3568-smp1.toml
             vmconfigs_name: Linux
-            # Multiple image archive names separated by commas, for example, roc-rk3568-pc_arceos,roc-rk3568-pc_linux[,...]
-            vmimage_name: roc-rk3568-pc_linux
       fail-fast: false
     runs-on:
       - self-hosted
@@ -41,22 +32,6 @@ jobs:
 
       - name: Install dependencies
         run: cargo +stable install ostool --version ^0.8
-
-      - name: Download images and patch VM configs
-        run: |
-          echo "Downloading guest images and patching VM config files..."
-          IFS=',' read -ra CONFIGS <<< "${{ matrix.vmconfigs }}"
-          IFS=',' read -ra IMAGES <<< "${{ matrix.vmimage_name }}"
-          for i in "${!CONFIGS[@]}"; do
-            img="${IMAGES[$i]}"
-            img=$(echo "$img" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-            config="${CONFIGS[$i]}"
-            config=$(echo "$config" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-            cargo xtask image download $img
-            img_name="${{ matrix.board }}"
-            sed -i 's|^kernel_path[[:space:]]*=.*|kernel_path = "/tmp/axvisor/'"$img"'/'"$img_name"'"|' "$config"
-            echo "Updated kernel_path in $config"
-          done
 
       - name: Run tests
         run: |

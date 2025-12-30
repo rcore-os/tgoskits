@@ -20,11 +20,11 @@ phys_cpu_ids = [0x200, 0x300]
 entry_point = 0x8008_0000
 # The location of image: "memory" | "fs".
 # Load from memory.
-image_location = "memory"
+image_location = "fs"
 # The load address of the kernel image.
 kernel_load_addr = 0x8008_0000
 ## The file path of the kernel image.
-kernel_path = "/code/axvisor/rk3568-linux/Image"
+kernel_path = "/userdata/rootfs_overlay/guest/linux/roc-rk3568-pc"
 ## The file path of the device tree blob (DTB).
 dtb_load_addr = 0x8000_0000
 #dtb_path = "/code/axvisor/configs/vms/linux-aarch64-rk3568_smp2.dtb"

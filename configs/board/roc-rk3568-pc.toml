@@ -3,6 +3,9 @@ features = [
     # "ept-level-4",
     "dyn-plat",
     "axstd/bus-mmio",
+    "fs",
+    "driver/sdmmc",
+    "driver/rk3568-clk"
 ]
 log = "Info"
 target = "aarch64-unknown-none-softfloat"

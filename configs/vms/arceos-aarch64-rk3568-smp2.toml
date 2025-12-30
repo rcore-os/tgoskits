@@ -20,11 +20,11 @@ phys_cpu_ids = [0x00, 0x100]
 entry_point = 0x7008_0000
 # The location of image: "memory" | "fs".
 # Load from memory.
-image_location = "memory"
+image_location = "fs"
 # The load address of the kernel image.
 kernel_load_addr = 0x7008_0000
 ## The file path of the kernel image.
-kernel_path = "/path/arceos-aarch64-dyn.bin"
+kernel_path = "/userdata/rootfs_overlay/guest/arceos/roc-rk3568-pc"
 ## The file path of the device tree blob (DTB).
 dtb_load_addr = 0x7000_0000
 #dtb_path = "/path/arceos-aarch64-rk3568_smp2.dtb"
