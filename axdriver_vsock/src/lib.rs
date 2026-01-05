@@ -79,5 +79,5 @@ pub trait VsockDriverOps: BaseDriverOps {
     fn abort(&mut self, cid: VsockConnId) -> DevResult<()>;
 
     /// poll event from driver
-    fn poll_event(&mut self, buf: &mut [u8]) -> DevResult<Option<VsockDriverEvent>>;
+    fn poll_event(&mut self) -> DevResult<Option<VsockDriverEvent>>;
 }

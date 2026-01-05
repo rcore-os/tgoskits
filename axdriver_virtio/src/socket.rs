@@ -24,7 +24,7 @@ impl<H: Hal, T: Transport> VirtIoSocketDev<H, T> {
     pub fn try_new(transport: T) -> DevResult<Self> {
         let virtio_socket = VirtIOSocket::<H, _>::new(transport).map_err(as_dev_err)?;
         Ok(Self {
-            inner: InnerDev::new(virtio_socket),
+            inner: InnerDev::new_with_capacity(virtio_socket, 32 * 1024), // 32KB buffer
         })
     }
 }
@@ -73,9 +73,12 @@ impl<H: Hal, T: Transport> VsockDriverOps for VirtIoSocketDev<H, T> {
 
     fn recv(&mut self, cid: VsockConnId, buf: &mut [u8]) -> DevResult<usize> {
         let (peer_addr, src_port) = map_conn_id(cid);
-        self.inner
+        let res = self
+            .inner
             .recv(peer_addr, src_port, buf)
-            .map_err(as_dev_err)
+            .map_err(as_dev_err);
+        self.inner.update_credit(peer_addr, src_port);
+        res
     }
 
     fn recv_avail(&mut self, cid: VsockConnId) -> DevResult<usize> {
@@ -97,7 +100,7 @@ impl<H: Hal, T: Transport> VsockDriverOps for VirtIoSocketDev<H, T> {
             .map_err(as_dev_err)
     }
 
-    fn poll_event(&mut self, buf: &mut [u8]) -> DevResult<Option<VsockDriverEvent>> {
+    fn poll_event(&mut self) -> DevResult<Option<VsockDriverEvent>> {
         match self.inner.poll() {
             Ok(None) => {
                 // no event
@@ -105,7 +108,7 @@ impl<H: Hal, T: Transport> VsockDriverOps for VirtIoSocketDev<H, T> {
             }
             Ok(Some(event)) => {
                 // translate event
-                let result = convert_vsock_event(event, &mut self.inner, buf)?;
+                let result = convert_vsock_event(event, &mut self.inner)?;
                 Ok(Some(result))
             }
             Err(e) => {
@@ -119,7 +122,6 @@ impl<H: Hal, T: Transport> VsockDriverOps for VirtIoSocketDev<H, T> {
 fn convert_vsock_event<H: Hal, T: Transport>(
     event: VsockEvent,
     inner: &mut InnerDev<H, T>,
-    buf: &mut [u8],
 ) -> DevResult<VsockDriverEvent> {
     let cid = VsockConnId {
         peer_addr: axdriver_vsock::VsockAddr {
@@ -133,10 +135,8 @@ fn convert_vsock_event<H: Hal, T: Transport>(
         VsockEventType::ConnectionRequest => Ok(VsockDriverEvent::ConnectionRequest(cid)),
         VsockEventType::Connected => Ok(VsockDriverEvent::Connected(cid)),
         VsockEventType::Received { length } => {
-            let read = inner
-                .recv(event.source, event.destination.port, &mut buf[..length])
-                .map_err(as_dev_err)?;
-            Ok(VsockDriverEvent::Received(cid, read))
+            // Do not read data here, let the upper layer decide when to read.
+            Ok(VsockDriverEvent::Received(cid, length))
         }
         VsockEventType::Disconnected { reason: _ } => Ok(VsockDriverEvent::Disconnected(cid)),
         _ => Ok(VsockDriverEvent::Unknown),
