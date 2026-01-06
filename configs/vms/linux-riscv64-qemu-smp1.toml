@@ -20,14 +20,14 @@ phys_cpu_ids = [0]
 entry_point = 0x8020_0000
 # The location of image: "memory" | "fs".
 # load from memory.
-image_location = "memory"
+image_location = "fs"
 # The file path of the kernel image.
 # kernel_path = "linux-6.6.62.bin"
-kernel_path = "tmp/Image"
+kernel_path = "/guest/qemu-riscv64"
 # The load address of the kernel image.
 kernel_load_addr = 0x8020_0000
 # The file path of the device tree blob (DTB).
-#dtb_path = "tmp/linux-aarch64-qemu-smp1.dtb"
+dtb_path = "/guest/linux-aarch64-qemu-smp1.dtb"
 # The load address of the device tree blob (DTB).
 dtb_load_addr = 0x8000_0000
 

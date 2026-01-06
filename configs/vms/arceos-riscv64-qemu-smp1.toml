@@ -20,9 +20,9 @@ phys_cpu_ids = [0]
 entry_point = 0x8020_0000
 # The location of image: "memory" | "fs".
 # load from memory.
-image_location = "memory"
+image_location = "fs"
 # The file path of the kernel image.
-kernel_path = "path/arceos-riscv64-smp1.bin"
+kernel_path = "/guest/helloworld_riscv64-qemu-virt.bin"
 # The load address of the kernel image.
 kernel_load_addr = 0x8020_0000
 # The file path of the device tree blob (DTB).

@@ -32,7 +32,7 @@ use tokio::io::{AsyncWriteExt, BufWriter};
 
 /// Base URL for downloading images
 const IMAGE_URL_BASE: &str =
-    "https://github.com/arceos-hypervisor/axvisor-guest/releases/download/v0.0.20/";
+    "https://github.com/arceos-hypervisor/axvisor-guest/releases/download/v0.0.22/";
 
 /// Image management command line arguments.
 #[derive(Parser)]

@@ -63,7 +63,7 @@ aarch64-cpu-ext = "0.1"
 arm-gic-driver = {version = "0.15.5", features = ["rdif"]}
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
-riscv_vplic = { path="../crates/riscv_vplic" }
+riscv_vplic = { git = "https://github.com/arceos-hypervisor/riscv_vplic.git", rev = "8bc5213" }
 riscv_vcpu = { git = "https://github.com/liulog/riscv_vcpu.git", branch = "master" }
 
 [build-dependencies]
