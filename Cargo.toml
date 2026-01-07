@@ -92,8 +92,7 @@ axvmconfig = {git = "https://github.com/arceos-hypervisor/axvmconfig.git", branc
 [patch.crates-io]
 axvmconfig = { path = "crates/axvmconfig" }
 axvisor_api = {path = "../axvisor_api"}
-# page_table_entry = { path = "../page_table_multiarch/page_table_entry" }
-# page_table_multiarch = { path = "../page_table_multiarch/page_table_multiarch", features = ["stage-2"]}
+# axvcpu = { path = "./crates/axvcpu" }
 
 [patch."https://github.com/arceos-hypervisor/axvmconfig.git"]
 axvmconfig = {path = "crates/axvmconfig"}

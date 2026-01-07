@@ -1121,6 +1121,17 @@ dependencies = [
 [[package]]
 name = "axvcpu"
 version = "0.1.1"
+dependencies = [
+ "axaddrspace",
+ "axerrno 0.1.2",
+ "axvisor_api",
+ "memory_addr",
+ "percpu",
+]
+
+[[package]]
+name = "axvcpu"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cefe761786c0c69a7c0eaf45602c460f721bce9d8b8decc4f733b488e9da657f"
 dependencies = [
@@ -1154,11 +1165,12 @@ dependencies = [
  "axconfig",
  "axdevice 0.1.0 (git+https://github.com/liulog/axdevice?branch=master)",
  "axdevice_base",
+ "axdriver",
  "axerrno 0.2.2",
  "axhvc",
  "axruntime",
  "axstd",
- "axvcpu 0.1.1",
+ "axvcpu 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "axvisor_api",
  "axvm",
  "bitflags 2.10.0",
@@ -1221,7 +1233,7 @@ dependencies = [
  "axdevice 0.1.0 (git+https://github.com/liulog/axdevice?branch=master)",
  "axdevice_base",
  "axerrno 0.2.2",
- "axvcpu 0.1.1",
+ "axvcpu 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "axvmconfig",
  "cfg-if",
  "cpumask",
@@ -2368,7 +2380,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4204,7 +4216,7 @@ dependencies = [
  "once_cell",
  "socket2 0.6.1",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4688,7 +4700,7 @@ version = "0.1.2"
 dependencies = [
  "axaddrspace",
  "axerrno 0.1.2",
- "axvcpu 0.1.1",
+ "axvcpu 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "axvisor_api",
  "bit_field",
  "bitflags 2.10.0",
@@ -4883,7 +4895,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.11.0",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5624,7 +5636,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.3",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6759,7 +6771,7 @@ dependencies = [
  "axaddrspace",
  "axdevice_base",
  "axerrno 0.1.2",
- "axvcpu 0.1.1",
+ "axvcpu 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "axvisor_api",
  "bit_field",
  "bitflags 2.10.0",

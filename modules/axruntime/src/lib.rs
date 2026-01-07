@@ -128,7 +128,6 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     //     build_mode = {}\n\
     //     smp = {}\n\
     //     ",
-
     // );
     #[cfg(feature = "rtc")]
     ax_println!(

@@ -20,9 +20,9 @@ phys_cpu_ids = [0]
 entry_point = 0x8020_0000
 # The location of image: "memory" | "fs".
 # load from memory.
-image_location = "fs"
+image_location = "memory"
 # The file path of the kernel image.
-kernel_path = "/guest/helloworld_riscv64-qemu-virt.bin"
+kernel_path = "/path/tmp/images/helloworld_riscv64-qemu-virt.bin"
 # The load address of the kernel image.
 kernel_load_addr = 0x8020_0000
 # The file path of the device tree blob (DTB).
@@ -40,7 +40,7 @@ dtb_load_addr = 0x8220_0000
 # Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
 # For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`.
 memory_regions = [
-  [0x8000_0000, 0x4000_0000, 0x7, 1], # System RAM 1G MAP_ALLOC
+  [0x8000_0000, 0x800_0000, 0x7, 0], # System RAM 1G MAP_ALLOC
 ]
 
 #
@@ -49,7 +49,6 @@ memory_regions = [
 [devices]
 # Pass-through devices.
 passthrough_devices = [
-  ["/",],
 ]
 
 # Passthrough addresses.
@@ -60,7 +59,6 @@ passthrough_addresses = [
 
 # Devices that are not desired to be passed through to the guest
 excluded_devices = [
-    ["/pci@30000000"],
 ]
 
 # Emu_devices.

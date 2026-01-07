@@ -14,7 +14,7 @@ cpu-num = 4                         # uint
 # Base address of the whole physical memory.
 phys-memory-base = 0x8000_0000      # uint
 # Size of the whole physical memory. (8GB)
-phys-memory-size = 0x2_0000_0000    # uint
+phys-memory-size = 0x1_0000_0000    # uint
 # Base physical address of the kernel image.
 kernel-base-paddr = 0x8020_0000     # uint
 # Base virtual address of the kernel image.
@@ -44,6 +44,7 @@ mmio-ranges = [
     [0x1000_1000, 0x8000],          # VirtIO
     [0x3000_0000, 0x1000_0000],     # PCI config space
     [0x4000_0000, 0x4000_0000],     # PCI memory ranges (ranges 1: 32-bit MMIO space)
+    [0x2_7fe0_0000, 0x1000_0000]
 ]                                   # [(uint, uint)]
 # VirtIO MMIO ranges with format (`base_paddr`, `size`).
 virtio-mmio-ranges = [
