@@ -13,7 +13,7 @@ repository = "https://github.com/arceos-hypervisor/axvisor_api"
 [package]
 name = "axvisor_api"
 description = "Basic API for components of the Hypervisor on ArceOS"
-version = "0.1.0"
+version = "0.2.0"
 keywords = ["axvisor", "api", "embedded"]
 categories = ["embedded", "no-std"]
 authors.workspace = true
@@ -22,8 +22,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-axvisor_api_proc = { path = "axvisor_api_proc", version = "0.1.0"}
+axvisor_api_proc = { path = "axvisor_api_proc", version = "0.2.0"}
 
-crate_interface = "0.1"
+crate_interface = "0.2"
 memory_addr = "0.4"
 axaddrspace = "0.1.0"

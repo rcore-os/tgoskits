@@ -1,6 +1,6 @@
 [package]
 name = "axvisor_api_proc"
-version = "0.1.0"
+version = "0.2.0"
 description = "Procedural macros for the `axvisor_api` crate"
 keywords = ["axvisor", "api", "embedded", "macros"]
 categories = ["development-tools::procedural-macro-helpers"]
