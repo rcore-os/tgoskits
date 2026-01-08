@@ -21,6 +21,7 @@ log = "0.4"
 thiserror = {version = "2", default-features = false}
 ranges-ext = "0.5"
 uefi = "0.36"
+tock-registers = "0.10"
 
 dma-api = {version = "0.6", path = "crates/dma-api"}
 kasm-aarch64 = {path = "crates/kasm-aarch64", version = "0.2"}

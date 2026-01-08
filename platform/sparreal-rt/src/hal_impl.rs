@@ -86,7 +86,14 @@ impl PageTable for PageTableImpl {
         flush: bool,
     ) -> Result<(), PagingError> {
         let mut pte = self.0.new_valid_pte();
-        pte.set_mem_config(settings);
+        // pte.set_mem_config(settings);
+        pte.set_mem_attr(settings.attrs);
+        if settings.access.contains(AccessFlags::WRITE) {
+            pte.set_writable(true);
+        }
+        if settings.access.contains(AccessFlags::EXECUTE) {
+            pte.set_executable(true);
+        }
 
         self.0.map(&somehal::mem::MapConfig {
             vaddr: virt_start.raw().into(),

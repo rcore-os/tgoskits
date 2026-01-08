@@ -21,7 +21,7 @@ mod trap;
 use aarch64_cpu::registers::*;
 use elx::*;
 use num_align::NumAlign;
-use page_table_generic::{AccessFlags, MemAttributes, MemConfig, PageTableEntry, PagingError};
+use page_table_generic::{MemAttributes, PageTableEntry, PagingError};
 pub use paging::Entry;
 
 use crate::{
@@ -82,10 +82,13 @@ impl<A: page_table_generic::FrameAllocator> crate::PageTableOp<A> for PT<A> {
             size,
             pte: {
                 let mut pte = paging::Entry::new_valid();
-                pte.set_mem_config(MemConfig {
-                    access: AccessFlags::READ | AccessFlags::WRITE,
-                    attrs: MemAttributes::Device,
-                });
+                pte.set_writable(true);
+                pte.set_executable(false);
+                pte.set_mem_attr(MemAttributes::Device);
+                // pte.set_mem_config(MemConfig {
+                //     access: AccessFlags::READ | AccessFlags::WRITE,
+                //     attrs: MemAttributes::Device,
+                // });
                 pte
             },
             allow_huge: true,
