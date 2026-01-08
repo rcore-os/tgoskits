@@ -20,107 +20,16 @@ mod trap;
 
 use aarch64_cpu::registers::*;
 use elx::*;
-use num_align::NumAlign;
-use page_table_generic::{MemAttributes, PageTableEntry, PagingError};
 pub use paging::Entry;
 
-use crate::{
-    ArchTrait,
-    arch::addrspace::PAGE_OFFSET,
-    consts::VM_LOAD_ADDRESS,
-    mem::{__va, PageTableInfo, page_size},
-};
+use crate::{ArchTrait, arch::addrspace::PAGE_OFFSET, consts::VM_LOAD_ADDRESS, mem::PageTableInfo};
 
 // ARM Generic Timer IRQ number (PPI 30)
 const TIMER_IRQ: usize = 30;
 
-pub struct PT<A: page_table_generic::FrameAllocator> {
-    inner: page_table_generic::PageTable<paging::Generic, A>,
-}
-
-impl<A: page_table_generic::FrameAllocator> crate::PageTableOp<A> for PT<A> {
-    type Entry = paging::Entry;
-
-    fn new_valid_pte(&self) -> Self::Entry {
-        paging::Entry::new_valid()
-    }
-
-    fn map(
-        &mut self,
-        config: &page_table_generic::MapConfig<paging::Entry>,
-    ) -> Result<(), page_table_generic::PagingError> {
-        self.inner.map(config)
-    }
-
-    fn unmap(
-        &mut self,
-        virt_start: page_table_generic::VirtAddr,
-        size: usize,
-    ) -> Result<(), page_table_generic::PagingError> {
-        self.inner.unmap(virt_start, size)
-    }
-
-    fn ioremap(
-        &mut self,
-        phys_start: page_table_generic::PhysAddr,
-        size: usize,
-        _flush: bool,
-    ) -> Result<page_table_generic::VirtAddr, page_table_generic::PagingError> {
-        let virt = __va(phys_start.raw());
-        let end = virt as usize + size;
-        let vaddr = (virt as usize).align_down(page_size());
-        let paddr = phys_start.raw().align_down(page_size());
-        let end = end.align_up(page_size());
-        let size = end - vaddr;
-        debug!(
-            "ioremap: phys=0x{:x}, virt=0x{:x}, size=0x{:x}",
-            paddr, vaddr, size
-        );
-        let config = page_table_generic::MapConfig {
-            vaddr: vaddr.into(),
-            paddr: paddr.into(),
-            size,
-            pte: {
-                let mut pte = paging::Entry::new_valid();
-                pte.set_writable(true);
-                pte.set_executable(false);
-                pte.set_mem_attr(MemAttributes::Device);
-                // pte.set_mem_config(MemConfig {
-                //     access: AccessFlags::READ | AccessFlags::WRITE,
-                //     attrs: MemAttributes::Device,
-                // });
-                pte
-            },
-            allow_huge: true,
-            flush: true,
-        };
-
-        match self.inner.map(&config) {
-            Ok(()) | Err(PagingError::MappingConflict { .. }) => {}
-            Err(e) => return Err(e),
-        }
-        Ok(virt.into())
-    }
-
-    fn iounmap(
-        &mut self,
-        _io_addr: page_table_generic::VirtAddr,
-        _size: usize,
-    ) -> Result<(), page_table_generic::PagingError> {
-        // 对于直接映射的 I/O 内存，不需要实际操作
-        Ok(())
-    }
-
-    fn root_paddr(&self) -> page_table_generic::PhysAddr {
-        self.inner.root_paddr()
-    }
-}
-
 pub struct Arch;
 
 impl ArchTrait for Arch {
-    type PT<A: page_table_generic::FrameAllocator> = PT<A>;
-
     type P = paging::Generic;
 
     const PAGE_OFFSET: usize = PAGE_OFFSET;
@@ -136,10 +45,6 @@ impl ArchTrait for Arch {
         unsafe { core::slice::from_raw_parts(start as *const u8, size) }
     }
 
-    // fn _va(paddr: usize) -> *mut u8 {
-    //     (paddr as isize - crate::mem::vm_load_offset()) as usize as *mut u8
-    // }
-
     fn is_mmu_enabled() -> bool {
         elx::is_mmu_enabled()
     }
@@ -151,10 +56,6 @@ impl ArchTrait for Arch {
             paddr as *mut u8
         }
     }
-
-    // fn _io(paddr: usize) -> *mut u8 {
-    //     (paddr + addrspace::PAGE_OFFSET) as *mut u8
-    // }
 
     fn per_cpu_trap_init(_is_primary: bool) {
         trap::setup();
@@ -216,12 +117,6 @@ impl ArchTrait for Arch {
             } else {
                 core::arch::asm!("msr daifset, #2", options(nomem, nostack));
             }
-        }
-    }
-
-    fn create_page_table<A: page_table_generic::FrameAllocator>(allocator: A) -> Self::PT<A> {
-        PT {
-            inner: page_table_generic::PageTable::<paging::Generic, A>::new(allocator).unwrap(),
         }
     }
 

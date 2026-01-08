@@ -120,9 +120,9 @@ impl KernelMemoryAllocator {
         self.low_address_heap.lock()
     }
 
-    pub(crate) fn lock_heap64(&self) -> spin::MutexGuard<'_, Heap<64>> {
-        self.high_address_heap.lock()
-    }
+    // pub(crate) fn lock_heap64(&self) -> spin::MutexGuard<'_, Heap<64>> {
+    //     self.high_address_heap.lock()
+    // }
 
     // pub(crate) unsafe fn alloc_with_mask(
     //     &self,

@@ -21,7 +21,7 @@ pub trait Memory {
     fn page_size() -> usize;
     fn memory_map() -> &'static [MemoryDescriptor];
 
-    fn page_table_new() -> Box<dyn PageTable>;
+    fn page_table_new() -> Result<Box<dyn PageTable>, PagingError>;
 
     fn enable_paging();
     fn kernel_page_table() -> PhysAddr;

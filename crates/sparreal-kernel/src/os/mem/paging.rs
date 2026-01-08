@@ -10,7 +10,7 @@ static KERNEL_TABLE: Mutex<Option<Box<dyn PageTable>>> = Mutex::new(None);
 pub fn init() {
     info!("Setting up MMU and page tables");
 
-    let mut pt = memory::page_table_new();
+    let mut pt = memory::page_table_new().unwrap();
     map_regions(&mut pt);
     let pt_addr = pt.addr();
     {

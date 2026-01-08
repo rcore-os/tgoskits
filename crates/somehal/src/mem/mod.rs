@@ -8,7 +8,10 @@ pub mod mmu;
 pub(crate) mod ram;
 pub(crate) mod region;
 
-use crate::{ArchTrait, mem::ram::Ram};
+use crate::{
+    ArchTrait,
+    mem::{mmu::ArchPageTable, ram::Ram},
+};
 
 pub use page_table_generic::*;
 
@@ -20,7 +23,7 @@ pub const GB: usize = 1024 * MB;
 static mut VM_LOAD_OFFSET: isize = 0;
 static MEMORY_MAP: StaticCell<MemoryMap> = StaticCell::new(MemoryMap::new());
 
-pub type PageTable<A> = crate::arch::PT<A>;
+// pub type PageTable<A> = crate::arch::PT<A>;
 pub type MemoryMap = heapless::Vec<MemoryDescriptor, 128>;
 
 /// Set the offset between virtual address and physical address of the loaded kernel image
@@ -134,8 +137,9 @@ pub fn page_size() -> usize {
     core::ptr::addr_of!(PAGE_SIZE) as usize
 }
 
-pub fn new_page_table<A: FrameAllocator>(allocator: A) -> PageTable<A> {
-    crate::arch::Arch::create_page_table(allocator)
+pub fn new_page_table<A: FrameAllocator>(allocator: A) -> Result<ArchPageTable<A>, PagingError> {
+    // crate::arch::Arch::create_page_table(allocator)
+    crate::mem::mmu::new_page_table(allocator)
 }
 
 pub(crate) fn memory_map_setup() {

@@ -1,7 +1,7 @@
 use alloc::boxed::Box;
 use core::time::Duration;
 
-use somehal::{MemConfig, PageTableOp, mem::PageTableEntry};
+use somehal::{MemConfig, mem::PageTableEntry};
 use sparreal_kernel::{hal::al::*, impl_trait, os::mem::KernelAllocator};
 
 struct InitImpl;
@@ -51,8 +51,8 @@ impl Memory for MemoryImpl {
         somehal::mem::memory_map()
     }
 
-    fn page_table_new() -> Box<dyn PageTable> {
-        Box::new( PageTableImpl( somehal::mem::new_page_table(KernelAllocator)))
+    fn page_table_new() -> Result< Box<dyn PageTable>, PagingError> {
+        Ok(Box::new( PageTableImpl( somehal::mem::new_page_table(KernelAllocator)?)))
     }
 
     fn enable_paging() {
@@ -78,7 +78,7 @@ impl Memory for MemoryImpl {
 }
 }
 
-pub struct PageTableImpl(somehal::mem::PageTable<KernelAllocator>);
+pub struct PageTableImpl(somehal::mem::mmu::ArchPageTable<KernelAllocator>);
 
 impl PageTable for PageTableImpl {
     fn addr(&self) -> PhysAddr {
@@ -93,8 +93,8 @@ impl PageTable for PageTableImpl {
         settings: MemConfig,
         flush: bool,
     ) -> Result<(), PagingError> {
-        let mut pte = self.0.new_valid_pte();
-        // pte.set_mem_config(settings);
+        let mut pte = somehal::mem::mmu::ArchPte::new_valid();
+
         pte.set_mem_attr(settings.attrs);
         if settings.access.contains(AccessFlags::WRITE) {
             pte.set_writable(true);

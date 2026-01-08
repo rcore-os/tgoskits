@@ -46,8 +46,7 @@ pub use somehal_macros::{entry, secondary_entry};
 use crate::{irq::SoftIrqId, mem::PageTableInfo};
 
 #[allow(unused)]
-trait ArchTrait {
-    type PT<A: FrameAllocator>: PageTableOp<A>;
+pub trait ArchTrait {
     type P: TableGeneric;
 
     /// RAM 与内核虚拟地址空间的偏移
@@ -63,7 +62,7 @@ trait ArchTrait {
     fn is_mmu_enabled() -> bool;
 
     fn enable_paging();
-    fn create_page_table<A: FrameAllocator>(allocator: A) -> Self::PT<A>;
+    // fn create_page_table<A: FrameAllocator>(allocator: A) -> Self::P<A>;
     fn kernel_page_table() -> PageTableInfo;
     fn set_kernel_page_table(val: PageTableInfo);
     fn user_page_table() -> PageTableInfo;
@@ -134,25 +133,4 @@ fn prime_entry() -> ! {
         fn __somehal_main() -> !;
     }
     unsafe { __somehal_main() }
-}
-
-pub trait PageTableOp<A: FrameAllocator> {
-    type Entry: PageTableEntry;
-
-    fn new_valid_pte(&self) -> Self::Entry;
-
-    fn map(&mut self, config: &MapConfig<arch::paging::Entry>) -> Result<(), PagingError>;
-
-    fn unmap(&mut self, virt_start: VirtAddr, size: usize) -> Result<(), PagingError>;
-
-    fn ioremap(
-        &mut self,
-        phys_start: PhysAddr,
-        size: usize,
-        flush: bool,
-    ) -> Result<VirtAddr, PagingError>;
-
-    fn iounmap(&mut self, io_addr: VirtAddr, size: usize) -> Result<(), PagingError>;
-
-    fn root_paddr(&self) -> PhysAddr;
 }
