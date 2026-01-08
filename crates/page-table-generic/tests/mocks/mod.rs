@@ -94,12 +94,25 @@ impl PageTableEntry for PteImpl {
     fn set_mem_config(&mut self, config: MemConfig) {
         // 设置访问权限
         self.reg().modify(
-            PTE64::READ.val(if config.access.contains(AccessFlags::READ) { 1 } else { 0 })
-                + PTE64::WRITE.val(if config.access.contains(AccessFlags::WRITE) { 1 } else { 0 })
-                + PTE64::USER_EXECUTE.val(if config.access.contains(AccessFlags::EXECUTE) { 1 } else { 0 })
-                + PTE64::USER_ACCESS.val(if config.access.contains(AccessFlags::LOWER) { 1 } else { 0 })
+            PTE64::READ.val(if config.access.contains(AccessFlags::READ) {
+                1
+            } else {
+                0
+            }) + PTE64::WRITE.val(if config.access.contains(AccessFlags::WRITE) {
+                1
+            } else {
+                0
+            }) + PTE64::USER_EXECUTE.val(if config.access.contains(AccessFlags::EXECUTE) {
+                1
+            } else {
+                0
+            }) + PTE64::USER_ACCESS.val(if config.access.contains(AccessFlags::LOWER) {
+                1
+            } else {
+                0
+            }),
         );
-        
+
         // 设置缓存属性
         let cache_val = match config.attrs {
             MemAttributes::Normal => 1,
@@ -390,14 +403,14 @@ impl PteImpl {
     /// 复杂用户映射：全部权限 + 大页
     pub fn complex_user_mapping() -> Self {
         Self::new_with_flags(
-            true,  // read
-            true,  // write
-            true,  // user_execute
-            true,  // user_access
-            true,  // privilege_execute
-            1,     // normal cache
-            true,  // valid
-            true,  // block (大页)
+            true, // read
+            true, // write
+            true, // user_execute
+            true, // user_access
+            true, // privilege_execute
+            1,    // normal cache
+            true, // valid
+            true, // block (大页)
         )
     }
 
@@ -545,10 +558,7 @@ impl TrackedFram4k {
         unsafe {
             let frames = &*self.allocated_frames;
             let frames = frames.lock().unwrap();
-            println!(
-                "分配器统计: {} 个帧已分配",
-                frames.len()
-            );
+            println!("分配器统计: {} 个帧已分配", frames.len());
             if !frames.is_empty() {
                 println!("未释放的帧地址:");
                 for addr in frames.iter() {

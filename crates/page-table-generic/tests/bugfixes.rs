@@ -1,5 +1,5 @@
 //! 针对发现的bug的回归测试
-//! 
+//!
 //! 这个测试文件专门用于验证修复的问题不会再次出现
 
 use page_table_generic::*;
@@ -7,7 +7,7 @@ mod mocks;
 use mocks::*;
 
 /// 测试大页偏移计算
-/// 
+///
 /// Bug描述：translate方法在计算大页偏移时总是使用MAX_BLOCK_LEVEL，
 /// 而不是实际PTE所在的级别，导致不同级别的大页计算错误
 #[test]
@@ -40,7 +40,7 @@ fn test_huge_page_offset_calculation() {
         let expected_paddr = paddr_base + offset;
 
         let (translated_paddr, pte) = pg.translate(test_vaddr.into()).unwrap();
-        
+
         assert!(pte.is_huge(), "应该是大页映射");
         assert_eq!(
             translated_paddr.raw(),
@@ -56,7 +56,7 @@ fn test_huge_page_offset_calculation() {
 }
 
 /// 测试多级别大页的正确处理
-/// 
+///
 /// 验证不同级别的大页（如果架构支持）都能正确计算偏移
 #[test]
 fn test_multi_level_huge_pages() {
@@ -91,28 +91,20 @@ fn test_multi_level_huge_pages() {
     // 测试Level 2大页的翻译
     let (paddr, pte) = pg.translate((vaddr1 + 0x80000).into()).unwrap();
     if pte.is_huge() {
-        assert_eq!(
-            paddr.raw(),
-            paddr1 + 0x80000,
-            "Level 2大页偏移计算错误"
-        );
+        assert_eq!(paddr.raw(), paddr1 + 0x80000, "Level 2大页偏移计算错误");
     }
 
     // 测试Level 3大页的翻译
     let (paddr, pte) = pg.translate((vaddr2 + 16 * MB).into()).unwrap();
     if pte.is_huge() {
-        assert_eq!(
-            paddr.raw(),
-            paddr2 + 16 * MB,
-            "Level 3大页偏移计算错误"
-        );
+        assert_eq!(paddr.raw(), paddr2 + 16 * MB, "Level 3大页偏移计算错误");
     }
 
     println!("✅ 多级别大页测试通过！");
 }
 
 /// 测试地址比较逻辑
-/// 
+///
 /// Bug描述：walk.rs中使用了.ge()方法而不是>=运算符，
 /// 虽然功能相同，但应该使用更惯用的运算符
 #[test]
@@ -139,7 +131,7 @@ fn test_walk_address_comparison() {
 }
 
 /// 测试unmap递归回收逻辑
-/// 
+///
 /// Bug描述：unmap_range_recursive中遇到无效页表项时错误地设置can_reclaim=false，
 /// 实际上无效项不应该影响回收判断
 #[test]
@@ -172,23 +164,20 @@ fn test_unmap_reclaim_logic() {
 
     // 验证空的子页表帧被正确回收
     // 注意：根页表帧不会被回收，所以应该只剩下根帧
-    assert!(
-        allocated_after < allocated_before,
-        "空的子页表帧应该被回收"
-    );
+    assert!(allocated_after < allocated_before, "空的子页表帧应该被回收");
 
     println!("✅ unmap回收逻辑测试通过！");
 }
 
 /// 测试部分取消映射不影响其他映射
-/// 
+///
 /// 验证取消映射时正确处理混合有效/无效页表项的情况
 #[test]
 fn test_unmap_mixed_entries() {
     let mut pg = PageTable::<T4kL4, Fram4k>::new(Fram4k).unwrap();
 
     let base = 0x10000000usize;
-    
+
     // 创建稀疏映射：映射第1、3、5个页面
     for i in [0, 2, 4] {
         pg.map(&MapConfig {
@@ -215,13 +204,16 @@ fn test_unmap_mixed_entries() {
     // 验证其他映射仍然存在
     assert!(pg.is_mapped((base).into()), "第1个页面应该仍然存在");
     assert!(!pg.is_mapped((base + 0x2000).into()), "第3个页面应该被取消");
-    assert!(pg.is_mapped((base + 0x4000).into()), "第5个页面应该仍然存在");
+    assert!(
+        pg.is_mapped((base + 0x4000).into()),
+        "第5个页面应该仍然存在"
+    );
 
     println!("✅ 混合条目取消映射测试通过！");
 }
 
 /// 测试MemConfig的正确实现
-/// 
+///
 /// Bug描述：PteImpl没有实现set_mem_config和mem_config方法
 #[test]
 fn test_mem_config_implementation() {
@@ -256,7 +248,7 @@ fn test_mem_config_implementation() {
 }
 
 /// 测试边界情况：地址溢出检查
-/// 
+///
 /// 验证在映射和取消映射时正确处理地址溢出情况
 #[test]
 fn test_address_overflow_handling() {
@@ -277,8 +269,10 @@ fn test_address_overflow_handling() {
     if let Err(e) = result {
         // 可能是AddressOverflow或AlignmentError
         assert!(
-            matches!(e, PagingError::AddressOverflow { .. }) || matches!(e, PagingError::AlignmentError { .. }),
-            "应该返回AddressOverflow或AlignmentError错误，实际: {:?}", e
+            matches!(e, PagingError::AddressOverflow { .. })
+                || matches!(e, PagingError::AlignmentError { .. }),
+            "应该返回AddressOverflow或AlignmentError错误，实际: {:?}",
+            e
         );
     }
 
@@ -290,7 +284,7 @@ fn test_address_overflow_handling() {
 }
 
 /// 测试页表层次结构的正确性
-/// 
+///
 /// 验证在深层嵌套的页表结构中，translate和unmap正确工作
 #[test]
 fn test_deep_hierarchy() {
@@ -323,7 +317,7 @@ fn test_deep_hierarchy() {
 }
 
 /// 测试大页和普通页混合映射
-/// 
+///
 /// 验证在同一个地址空间中混合使用大页和普通页时的正确性
 #[test]
 fn test_mixed_huge_and_normal_pages() {
@@ -366,7 +360,7 @@ fn test_mixed_huge_and_normal_pages() {
 }
 
 /// 压力测试：大量映射和取消映射
-/// 
+///
 /// 验证在大量操作下的稳定性和正确性
 #[test]
 fn test_stress_mapping_unmapping() {

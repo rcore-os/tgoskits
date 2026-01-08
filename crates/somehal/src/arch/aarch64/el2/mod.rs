@@ -41,6 +41,4 @@ pub fn switch_to_elx() {
 }
 
 #[inline(always)]
-pub fn is_mmu_enabled() -> bool {
-    
-}
+pub fn is_mmu_enabled() -> bool {}

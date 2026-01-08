@@ -220,7 +220,11 @@ where
     /// # 返回值
     /// - `Ok((T::P, usize))`: 找到的页表项及其所在的级别
     /// - `Err(PagingError)`: 查找失败
-    pub fn translate_recursive_with_level(&self, vaddr: VirtAddr, level: usize) -> PagingResult<(T::P, usize)> {
+    pub fn translate_recursive_with_level(
+        &self,
+        vaddr: VirtAddr,
+        level: usize,
+    ) -> PagingResult<(T::P, usize)> {
         // 计算当前级别的页表索引
         let index = Self::virt_to_index(vaddr, level);
 
@@ -246,7 +250,7 @@ where
 
         // 不应该到达这里
         Err(PagingError::hierarchy_error(
-            "Invalid page table level during translation"
+            "Invalid page table level during translation",
         ))
     }
 

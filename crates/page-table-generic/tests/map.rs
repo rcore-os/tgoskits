@@ -566,7 +566,10 @@ fn test_unmap_basic() {
 
     // 验证地址可翻译
     assert!(pg.is_mapped(test_vaddr.into()), "地址应该被映射");
-    assert!(pg.is_mapped((test_vaddr + 0x1000).into()), "第二个地址应该被映射");
+    assert!(
+        pg.is_mapped((test_vaddr + 0x1000).into()),
+        "第二个地址应该被映射"
+    );
 
     println!("=== 取消映射前的状态 ===");
     for p in pg.walk_valid() {
@@ -587,7 +590,10 @@ fn test_unmap_basic() {
 
     // 验证地址不再可翻译
     assert!(!pg.is_mapped(test_vaddr.into()), "地址应该不再被映射");
-    assert!(!pg.is_mapped((test_vaddr + 0x1000).into()), "第二个地址应该不再被映射");
+    assert!(
+        !pg.is_mapped((test_vaddr + 0x1000).into()),
+        "第二个地址应该不再被映射"
+    );
 
     println!("🎉 基本取消映射测试通过！");
 }
@@ -624,7 +630,10 @@ fn test_unmap_huge_pages() {
     for p in pg.walk_valid() {
         println!(
             "l: {}, va: {:?}, pte: {:?}, huge: {}",
-            p.level, p.vaddr, p.pte, p.pte.is_huge()
+            p.level,
+            p.vaddr,
+            p.pte,
+            p.pte.is_huge()
         );
     }
 
@@ -635,7 +644,10 @@ fn test_unmap_huge_pages() {
     for p in pg.walk_valid() {
         println!(
             "l: {}, va: {:?}, pte: {:?}, huge: {}",
-            p.level, p.vaddr, p.pte, p.pte.is_huge()
+            p.level,
+            p.vaddr,
+            p.pte,
+            p.pte.is_huge()
         );
     }
 
@@ -695,12 +707,21 @@ fn test_unmap_partial_mapping() {
 
     // 验证第一个和最后两个页面仍然存在
     assert!(pg.is_mapped(base_addr.into()), "第一个页面应该仍然存在");
-    assert!(pg.is_mapped((base_addr + 0x3000).into()), "第4个页面应该仍然存在");
-    assert!(pg.is_mapped((base_addr + 0x4000).into()), "第5个页面应该仍然存在");
+    assert!(
+        pg.is_mapped((base_addr + 0x3000).into()),
+        "第4个页面应该仍然存在"
+    );
+    assert!(
+        pg.is_mapped((base_addr + 0x4000).into()),
+        "第5个页面应该仍然存在"
+    );
 
     // 验证被取消的页面不存在
     assert!(!pg.is_mapped(unmap_start.into()), "被取消的页面应该不存在");
-    assert!(!pg.is_mapped((unmap_start + 0x1000).into()), "被取消的第2个页面应该不存在");
+    assert!(
+        !pg.is_mapped((unmap_start + 0x1000).into()),
+        "被取消的第2个页面应该不存在"
+    );
 
     println!("🎉 部分取消映射测试通过！");
 }

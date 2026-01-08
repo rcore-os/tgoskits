@@ -256,15 +256,25 @@ fn test_translate_complex_layout() {
         if pte.is_huge() {
             // 大页映射：验证大页偏移计算
             let expected = pte.paddr().raw() + (vaddr % (2 * MB));
-            assert_eq!(translated.raw(), expected,
-                      "大页映射翻译失败: vaddr={:#x}, expected={:#x}, got={:#x}",
-                      vaddr, expected, translated.raw());
+            assert_eq!(
+                translated.raw(),
+                expected,
+                "大页映射翻译失败: vaddr={:#x}, expected={:#x}, got={:#x}",
+                vaddr,
+                expected,
+                translated.raw()
+            );
         } else {
             // 普通页面映射：验证页面偏移计算
             let expected = pte.paddr().raw() + (vaddr % 0x1000);
-            assert_eq!(translated.raw(), expected,
-                      "普通页面映射翻译失败: vaddr={:#x}, expected={:#x}, got={:#x}",
-                      vaddr, expected, translated.raw());
+            assert_eq!(
+                translated.raw(),
+                expected,
+                "普通页面映射翻译失败: vaddr={:#x}, expected={:#x}, got={:#x}",
+                vaddr,
+                expected,
+                translated.raw()
+            );
         }
     }
 

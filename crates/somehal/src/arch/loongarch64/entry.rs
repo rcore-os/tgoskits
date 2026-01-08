@@ -92,6 +92,5 @@ fn rust_main() -> ! {
         println!("{cmdline}");
     }
 
-
     prime_entry()
 }
