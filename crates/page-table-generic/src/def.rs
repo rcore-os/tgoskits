@@ -230,8 +230,9 @@ bitflags::bitflags! {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MemAttributes {
+    #[default]
     Normal,
     PerCpu,
     Device,
@@ -274,7 +275,7 @@ impl core::fmt::Display for MemConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PteConfig {
     pub paddr: PhysAddr,
     pub valid: bool,
