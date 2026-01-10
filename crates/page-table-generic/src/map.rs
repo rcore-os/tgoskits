@@ -161,7 +161,11 @@ where
             };
 
             // 计算当前页表条目对应的范围结束地址
-            let current_entry_end = ((vaddr.raw() / level_size) + 1) * level_size;
+            // 使用 saturating 操作防止溢出，同时确保不超过地址空间最大值
+            let current_entry_end = (vaddr.raw() / level_size)
+                .saturating_add(1)
+                .saturating_mul(level_size)
+                .min(usize::MAX);
             let next_level_vaddr = VirtAddr::new(current_entry_end.min(config.end_vaddr.raw()));
             let mut child_frame = child_frame;
             let child_config = MapRecursiveConfig {

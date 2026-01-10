@@ -382,10 +382,37 @@ fn test_huge_not_align<T: TableGeneric, A: FrameAllocator>(pte: T::P, alloc: A) 
 fn test_high_huge_not_align<T: TableGeneric, A: FrameAllocator>(pte: T::P, alloc: A) {
     let mut pg = PageTable::<T, A>::new(alloc).unwrap();
 
+    // 注意:在48位虚拟地址空间中,0xffffffff80000000 会被截断为 0x0000ffff80000000
+    let vaddr = 0xffffffff80000000usize;
+    let paddr = 0x0000000005380000usize;
+    let size = 2 * MB;
+
+    // 计算实际有效的虚拟地址(48位地址空间)
+    let valid_bits = pg.valid_bits();
+    let addr_mask = if valid_bits == 64 {
+        usize::MAX
+    } else {
+        (1usize << valid_bits) - 1
+    };
+    let actual_vaddr = vaddr & addr_mask;
+
+    println!("\n=== 开始映射高地址（非2MB对齐的物理地址） ===");
+    println!("输入虚拟地址: {:#x}", vaddr);
+    println!(
+        "实际虚拟地址: {:#x} ({}位地址空间)",
+        actual_vaddr, valid_bits
+    );
+    println!(
+        "物理地址: {:#x} (2MB对齐: {})",
+        paddr,
+        paddr % (2 * MB) == 0
+    );
+    println!("大小: {:#x} ({}KB)", size, size / 1024);
+
     pg.map(&MapConfig {
-        vaddr: 0xffffffff80000000usize.into(),
-        paddr: 0x0000000005380000usize.into(),
-        size: 2 * MB,
+        vaddr: vaddr.into(),
+        paddr: paddr.into(),
+        size,
         pte,
         allow_huge: true,
         flush: false,
@@ -422,14 +449,79 @@ fn test_high_huge_not_align<T: TableGeneric, A: FrameAllocator>(pte: T::P, alloc
     let total_mappings = huge_pages + normal_pages;
     assert!(total_mappings > 0, "应该有至少一个映射");
 
-    // 验证高地址映射存在
-    let high_mapping = mappings
-        .iter()
-        .find(|(vaddr, _, _, _)| *vaddr == 0xffffffff80000000);
+    println!("\n=== 映射统计 ===");
+    println!("大页数量: {}", huge_pages);
+    println!("普通页数量: {}", normal_pages);
+    println!("总映射数: {}", total_mappings);
+
+    // 验证高地址映射存在(使用实际的有效虚拟地址)
+    let high_mapping = mappings.iter().find(|(va, _, _, _)| *va == actual_vaddr);
     assert!(
         high_mapping.is_some(),
-        "应该有从0xffffffff80000000开始的映射"
+        "应该有从{:#x}开始的映射 (实际有效地址)",
+        actual_vaddr
     );
+
+    if let Some((va, pa, is_huge, level)) = high_mapping {
+        println!("\n=== 高地址映射详情 ===");
+        println!("虚拟地址: {:#x}", va);
+        println!("物理地址: {:#x}", pa);
+        println!("是否大页: {}", is_huge);
+        println!("页表级别: {}", level);
+        println!("✓ 高地址映射验证通过");
+    }
+
+    // 验证映射覆盖了请求的范围
+    let start_addr = actual_vaddr;
+    let end_addr = start_addr + size;
+
+    // 检查是否有映射覆盖起始地址
+    let covers_start = mappings
+        .iter()
+        .any(|(va, _, _, _)| *va <= start_addr && start_addr < *va + T::PAGE_SIZE);
+
+    assert!(covers_start, "应该有映射覆盖起始地址 {:#x}", start_addr);
+
+    // 验证映射完整覆盖了2MB范围
+    let expected_pages = size / T::PAGE_SIZE;
+    let pages_in_range = mappings
+        .iter()
+        .filter(|(va, _, _, _)| *va >= start_addr && *va < end_addr)
+        .count();
+
+    assert_eq!(
+        pages_in_range, expected_pages,
+        "应该映射{}个页面,实际映射{}个",
+        expected_pages, pages_in_range
+    );
+
+    // 验证物理地址映射正确
+    if let Some((first_va, first_pa, _, _)) =
+        mappings.iter().find(|(va, _, _, _)| *va == start_addr)
+    {
+        assert_eq!(
+            *first_pa, paddr,
+            "第一个页面的物理地址应该是{:#x},实际是{:#x}",
+            paddr, first_pa
+        );
+
+        // 验证后续页面的物理地址连续
+        let mut expected_pa = paddr;
+        for (va, pa, _, _) in mappings
+            .iter()
+            .filter(|(va, _, _, _)| *va >= start_addr && *va < end_addr)
+        {
+            let expected_offset = (va - start_addr) / T::PAGE_SIZE;
+            expected_pa = paddr + expected_offset * T::PAGE_SIZE;
+            assert_eq!(
+                *pa, expected_pa,
+                "虚拟地址{:#x}的物理地址应该是{:#x},实际是{:#x}",
+                va, expected_pa, pa
+            );
+        }
+    }
+
+    println!("🎉 高地址非对齐物理地址映射测试通过！");
 }
 
 #[test]
