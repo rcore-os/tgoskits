@@ -190,6 +190,8 @@ fn do_vint(_tf: &mut TrapFrame) {
 /// Page Fault 处理函数 (普通 TLB 异常: TLBL, TLBS, TLBI, TLBM, TLBNR, TLBNX, TLBPE)
 #[unsafe(no_mangle)]
 extern "C" fn do_page_fault(tf: &TrapFrame, write: usize, address: usize) -> ! {
+    println!("do_page_fault called");
+   
     let estat = estat::read();
     let ecode = estat.ecode();
     let esubcode = estat.esubcode();
@@ -225,6 +227,8 @@ extern "C" fn do_page_fault(tf: &TrapFrame, write: usize, address: usize) -> ! {
 /// TLB Refill 使用独立的 CSR: TLBRERA, TLBRPRMD, TLBRBADV
 #[unsafe(no_mangle)]
 extern "C" fn do_tlb_refill(tf: &TrapFrame, address: usize) -> ! {
+    println!("do_tlb_refill called");
+
     panic_on_exception(
         "TLB REFILL",
         tf,
@@ -528,7 +532,27 @@ global_asm!(
     // ------------------------------------------------------------------------
     r#"
 .set exc_num, 8
-.rept 56
+.rept 1
+    .balign VECSIZE
+    .set handle_exc_label, exc_num
+    BACKUP_T0T1
+    move    $t0, $sp
+    addi.d  $sp, $sp, -FRAME_SIZE
+    SAVE_REGS_EXCEPT_T0T1
+    st.d    $t0, $sp, TF_SP
+    RESTORE_T0T1
+    st.d    $t0, $sp, TF_T0
+    st.d    $t1, $sp, TF_T1
+    csrrd   $t0, CSR_PRMD
+    st.d    $t0, $sp, TF_PRMD
+    csrrd   $t0, CSR_ERA
+    st.d    $t0, $sp, TF_ERA
+    move    $a0, $sp
+    csrrd   $a1, CSR_BADV
+    bl      do_address_error
+    .set exc_num, exc_num + 1
+.endr
+.rept 55
     .balign VECSIZE
     .set handle_exc_label, exc_num
     b handle_reserved_exception
@@ -677,6 +701,42 @@ extern "C" fn do_reserved_exception(tf: &TrapFrame) -> ! {
             ERA (PC):    0x{:016x}\n\
             PRMD:        0x{:016x}",
             ecode, esubcode, tf.era, tf.prmd
+        ),
+    )
+}
+
+/// 地址错误异常处理函数 (ADF/ADE - Address Error)
+#[unsafe(no_mangle)]
+extern "C" fn do_address_error(tf: &TrapFrame, badv: usize) -> ! {
+    println!("\n*** do_address_error 被调用 ***");
+    println!("BADV (错误地址): {:#x}", badv);
+
+    let estat = estat::read();
+    let ecode = estat.ecode();
+    let esubcode = estat.esubcode();
+
+    println!("ESTAT.ECODE: {:#x}", ecode);
+    println!("ESTAT.ESUBCODE: {:#x}", esubcode);
+    println!("ERA (PC): {:#x}", tf.era);
+
+    let fault_type = match ecode {
+        exccode::ADF => "Address Error - Fetch",
+        exccode::ADE => "Address Error - Memory access",
+        _ => "Unknown Address Error",
+    };
+
+    println!("异常类型: {}", fault_type);
+    println!("*** 开始 panic ***\n");
+
+    panic_on_exception(
+        "ADDRESS ERROR",
+        tf,
+        format_args!(
+            "Type:        {} (ecode=0x{:x}, esubcode=0x{:x})\n\
+            Address:     0x{:016x}\n\
+            ERA (PC):    0x{:016x}\n\
+            PRMD:        0x{:016x}",
+            fault_type, ecode, esubcode, badv, tf.era, tf.prmd
         ),
     )
 }

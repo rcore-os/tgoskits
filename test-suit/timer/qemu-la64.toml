@@ -1,7 +1,13 @@
-args = ["-nographic"]
+args = [
+  "-nographic",
+  "-d",
+  "int,mmu,guest_errors",
+  "-D",
+  "qemu.log",
+]
 fail_regex = [
   "Panicked:",
-  "!!!! Can't find image information. !!!!"
+  "!!!! Can't find image information. !!!!",
 ]
 success_regex = [
   "All tests passed!",

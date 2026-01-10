@@ -87,6 +87,7 @@ fn rust_main() -> ! {
     // 执行重定位，将所有地址从物理地址转换为虚拟地址
     super::relocate();
     let kernel_code_start_lma = to_phys(ext_sym_addr!(_head));
+    println!("Kernel LMA: {:#x}", kernel_code_start_lma);
     let kernel_code_end_lma = to_phys(ext_sym_addr!(__kernel_code_end));
     crate::mem::set_kernel_range(kernel_code_start_lma, kernel_code_end_lma);
     set_vm_load_offset(crate::mem::kimage_range().start as isize - VM_LOAD_ADDRESS as isize);
