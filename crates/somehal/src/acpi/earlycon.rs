@@ -22,6 +22,7 @@ pub(crate) fn acpi_setup_earlycon() -> Result<(), AcpiError> {
 
 fn deal_with_spsr(spsr: &PhysicalMapping<impl Handler, Spcr>) -> Option<()> {
     println!("Found {:?}", spsr.interface_type());
+
     let base_address = match spsr.base_address()? {
         Ok(addr) => addr,
         Err(e) => {

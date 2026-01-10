@@ -174,11 +174,6 @@ impl ArchTrait for Arch {
         addrspace::to_phys(vaddr as usize)
     }
 
-    fn is_mmu_enabled() -> bool {
-        // LoongArch64 启动后 MMU 始终启用
-        true
-    }
-
     fn user_page_table() -> PageTableInfo {
         PageTableInfo {
             addr: paging::read_csr_pgdl() as usize,

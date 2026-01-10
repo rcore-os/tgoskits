@@ -109,7 +109,7 @@ pub fn enable_mmu() -> ! {
     println!("Enabling MMU...");
     setup_sctlr();
     println!("MMU enabled, jumping to {v_entry:#x}, sp={v_sp:#x}");
-
+    crate::mem::mmu::set_mmu_enabled();
     // Jump to mmu_entry using physical address
     unsafe {
         asm!(

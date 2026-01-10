@@ -167,6 +167,12 @@ pub(crate) unsafe fn set_out(v: &'static dyn Con) {
     }
 }
 
+pub(crate) unsafe fn reset_out() {
+    unsafe {
+        CON = &NoCon;
+    }
+}
+
 pub fn set_earlycon_sender(sender: Sender) {
     unsafe {
         *EARLYCON_SENDER.0.get() = Some(sender);

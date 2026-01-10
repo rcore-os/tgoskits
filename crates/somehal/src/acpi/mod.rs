@@ -26,12 +26,12 @@ fn rsdp() -> Option<NonNull<u8>> {
     }
 
     let ptr = phys_to_virt(rsdp);
+
     NonNull::new(ptr)
 }
 
 pub fn tables() -> Result<AcpiTables<AcpiHandle>, acpi::AcpiError> {
     let ptr = rsdp().ok_or(acpi::AcpiError::NoValidRsdp)?;
-
     let h = AcpiHandle;
     unsafe { ::acpi::AcpiTables::from_rsdp(h, ptr.as_ptr() as usize) }
 }

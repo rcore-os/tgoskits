@@ -48,10 +48,6 @@ impl ArchTrait for Arch {
         unsafe { core::slice::from_raw_parts(start as *const u8, size) }
     }
 
-    fn is_mmu_enabled() -> bool {
-        elx::is_mmu_enabled()
-    }
-
     fn per_cpu_trap_init(_is_primary: bool) {
         trap::setup();
         println!("Disable user page table");

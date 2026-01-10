@@ -58,7 +58,6 @@ pub trait ArchTrait {
     fn per_cpu_trap_init(is_primary: bool);
 
     fn virt_to_phys(vaddr: *const u8) -> usize;
-    fn is_mmu_enabled() -> bool;
 
     fn enable_paging();
     fn kernel_page_table() -> PageTableInfo;

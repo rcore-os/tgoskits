@@ -2,8 +2,6 @@
 
 use core::arch::asm;
 
-use crate::arch::addrspace::VM_CODE_START;
-
 use super::addrspace::VM_LOAD_ADDRESS;
 
 const R_LARCH_RELATIVE: u32 = 3;

@@ -57,17 +57,12 @@ pub fn memory_map() -> &'static [MemoryDescriptor] {
     MEMORY_MAP.as_slice()
 }
 
-#[inline(always)]
-pub(crate) fn is_mmu_enabled() -> bool {
-    crate::arch::Arch::is_mmu_enabled()
-}
-
 pub fn enable_paging() {
     crate::arch::Arch::enable_paging();
 }
 
 pub fn phys_to_virt(paddr: usize) -> *mut u8 {
-    if is_mmu_enabled() {
+    if mmu::is_mmu_enabled() {
         if kimage_range().contains(&paddr) {
             __kimage_va(paddr)
         } else {
@@ -83,7 +78,7 @@ pub fn virt_to_phys(vaddr: *const u8) -> usize {
 }
 
 pub(crate) fn _fixmap_io(paddr: usize) -> *mut u8 {
-    if is_mmu_enabled() {
+    if mmu::is_mmu_enabled() {
         __va(paddr)
     } else {
         paddr as *mut u8
