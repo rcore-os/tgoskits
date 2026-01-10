@@ -1,6 +1,6 @@
 use core::{arch::naked_asm, ffi::c_void};
 
-use crate::{arch::addrspace::*, prime_entry};
+use crate::{arch::addrspace::*, mem::set_vm_load_offset, prime_entry, ArchTrait};
 
 static FW_ARG0: usize = 0;
 static FW_ARG1: usize = 0;
@@ -85,7 +85,19 @@ pub unsafe extern "C" fn kernel_entry(
 }
 
 fn rust_main() -> ! {
+    // 在 relocate 之前获取内核代码的物理地址
+    // 此时 ext_sym_addr!(_head) 返回的是实际加载地址（物理地址）
+    let kernel_code_phys = super::Arch::kernel_code().as_ptr() as isize;
+
+    // 执行重定位，将所有地址从物理地址转换为虚拟地址
     super::relocate();
+
+    // 设置虚拟内存加载偏移量
+    // kernel_code_phys 已经是物理地址，不需要再次转换
+    // VM_LOAD_ADDRESS 是虚拟地址
+    let offset = kernel_code_phys - VM_LOAD_ADDRESS as isize;
+    set_vm_load_offset(offset);
+
     println!("Rust main.");
 
     if let Some(cmdline) = crate::cmdline::cmdline() {

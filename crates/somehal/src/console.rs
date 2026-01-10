@@ -101,17 +101,10 @@ impl Write for ConFmt {
     }
 }
 
-// #[allow(dead_code)]
-// fn con() -> &'static dyn Con {
-//     unsafe { CON }
-// }
-
-#[allow(dead_code)]
-fn con() -> &'static EarlyconSenderCell {
-    &EARLYCON_SENDER
+fn con() -> &'static dyn Con {
+    unsafe { CON }
 }
 
-#[allow(dead_code)]
 pub(crate) trait Con: Send + Sync {
     fn write_bytes(&self, _bytes: &[u8]) -> usize {
         _bytes.len()

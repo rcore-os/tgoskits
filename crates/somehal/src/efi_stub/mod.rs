@@ -28,6 +28,7 @@ pub unsafe extern "C" fn efi_pe_entry(
         table::set_system_table(system_table.cast());
 
         crate::console::set_out(&UefiPrinter);
+        println!("UEFI application started.");
 
         if let Err(e) = efi_main() {
             println!("EFI application error: {:?}", e);
@@ -71,7 +72,6 @@ fn efi_main() -> Result {
     Ok(())
 }
 
-#[unsafe(link_section = ".data")]
 static UEFI_SERVICE_OK: AtomicBool = AtomicBool::new(true);
 
 struct UefiPrinter;
@@ -80,7 +80,7 @@ impl crate::console::Con for UefiPrinter {
         if !UEFI_SERVICE_OK.load(core::sync::atomic::Ordering::Relaxed) {
             return;
         }
-        ::uefi::system::with_stdout(|stdout| {
+        uefi::system::with_stdout(|stdout| {
             let _ = stdout.write_str(s);
         });
     }
