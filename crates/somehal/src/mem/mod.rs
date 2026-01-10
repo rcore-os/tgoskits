@@ -103,10 +103,7 @@ pub(crate) fn early_init(kernel_end_phys: usize) {
 }
 
 pub(crate) fn init_after_mmu() -> Option<()> {
-    unsafe {
-        MEMORY_MAP.update(|map| map.clear());
-        super::fdt::init_memory_map();
-    }
+    super::fdt::init_memory_map();
     Some(())
 }
 

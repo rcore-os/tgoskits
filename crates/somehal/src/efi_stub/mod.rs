@@ -11,6 +11,12 @@ use uefi::{
 
 use crate::{acpi::set_rsdp, arch::relocate};
 
+pub(crate) fn setup_service(system_table: *const ::core::ffi::c_void) {
+    unsafe { table::set_system_table(system_table.cast()) };
+    setup_console();
+    find_acpi_rsdp();
+}
+
 pub(crate) mod memmap;
 pub mod pe;
 
@@ -26,24 +32,22 @@ pub unsafe extern "C" fn efi_pe_entry(
         relocate();
         boot::set_image_handle(image_handle);
         table::set_system_table(system_table.cast());
-
-        crate::console::set_out(&UefiPrinter);
+        setup_console();
         println!("UEFI application started.");
-
-        if let Err(e) = efi_main() {
-            println!("EFI application error: {:?}", e);
-            return e.status();
-        }
-
-        let _ = crate::acpi::earlycon::acpi_setup_earlycon();
-
-        UEFI_SERVICE_OK.store(false, core::sync::atomic::Ordering::Relaxed);
-        let mem_map = boot::exit_boot_services(None);
-        println!("Exited boot services, owned memory map obtained.");
-        memmap::setup_memory_map(mem_map.entries()).unwrap();
         crate::arch::entry::kernel_entry(1, null(), system_table);
         unreachable!()
     }
+}
+
+pub(crate) fn exit_boot_services() {
+    UEFI_SERVICE_EXIT.store(true, core::sync::atomic::Ordering::Relaxed);
+    let mem_map = unsafe { boot::exit_boot_services(None) };
+    println!("Exited boot services, owned memory map obtained.");
+    memmap::setup_memory_map(mem_map.entries()).unwrap();
+}
+
+fn setup_console() {
+    unsafe { crate::console::set_out(&UefiPrinter) };
 }
 
 fn efi_main() -> Result {
@@ -58,9 +62,6 @@ fn efi_main() -> Result {
     match img.load_options_as_cstr16() {
         Ok(cmdline) => {
             println!("Kernel command line: {}", cmdline);
-            uefi::system::with_stdout(|stdout| {
-                let _ = cmdline.as_str_in_buf(stdout);
-            });
         }
         Err(e) => {
             println!("Failed to get load options as CStr16: {:?}", e);
@@ -70,12 +71,12 @@ fn efi_main() -> Result {
     Ok(())
 }
 
-static UEFI_SERVICE_OK: AtomicBool = AtomicBool::new(true);
+static UEFI_SERVICE_EXIT: AtomicBool = AtomicBool::new(false);
 
 struct UefiPrinter;
 impl crate::console::Con for UefiPrinter {
     fn write_str(&self, s: &str) {
-        if !UEFI_SERVICE_OK.load(core::sync::atomic::Ordering::Relaxed) {
+        if UEFI_SERVICE_EXIT.load(core::sync::atomic::Ordering::Relaxed) {
             return;
         }
         uefi::system::with_stdout(|stdout| {
