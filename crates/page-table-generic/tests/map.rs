@@ -522,6 +522,97 @@ fn test_high_huge_not_align<T: TableGeneric, A: FrameAllocator>(pte: T::P, alloc
     }
 
     println!("🎉 高地址非对齐物理地址映射测试通过！");
+
+    // === 额外验证：使用 translate 检查映射正确性 ===
+    println!("\n=== Translate 验证 ===");
+
+    // 检查起始地址
+    let translate_start = pg.translate(start_addr.into());
+    assert!(
+        translate_start.is_ok(),
+        "起始地址 {:#x} 应该可以翻译",
+        start_addr
+    );
+    if let Ok((trans_pa, trans_pte)) = translate_start {
+        assert_eq!(
+            trans_pa.raw(),
+            paddr,
+            "起始地址 {:#x} 应该翻译为物理地址 {:#x}，实际为 {:#x}",
+            start_addr,
+            paddr,
+            trans_pa.raw()
+        );
+        println!(
+            "✓ 起始地址翻译正确: VA {:#x} -> PA {:#x}, Huge={}",
+            start_addr,
+            trans_pa.raw(),
+            trans_pte.is_huge()
+        );
+    }
+
+    // 检查中间地址
+    let mid_addr = start_addr + 0x100000; // 1MB 偏移
+    let expected_mid_pa = paddr + 0x100000;
+    let translate_mid = pg.translate(mid_addr.into());
+    assert!(
+        translate_mid.is_ok(),
+        "中间地址 {:#x} 应该可以翻译",
+        mid_addr
+    );
+    if let Ok((trans_pa, trans_pte)) = translate_mid {
+        assert_eq!(
+            trans_pa.raw(),
+            expected_mid_pa,
+            "中间地址 {:#x} 应该翻译为物理地址 {:#x}，实际为 {:#x}",
+            mid_addr,
+            expected_mid_pa,
+            trans_pa.raw()
+        );
+        println!(
+            "✓ 中间地址翻译正确: VA {:#x} -> PA {:#x}, Huge={}",
+            mid_addr,
+            trans_pa.raw(),
+            trans_pte.is_huge()
+        );
+    }
+
+    // 检查结束地址前一个页面
+    let last_addr = start_addr + size - T::PAGE_SIZE;
+    let expected_last_pa = paddr + size - T::PAGE_SIZE;
+    let translate_last = pg.translate(last_addr.into());
+    assert!(
+        translate_last.is_ok(),
+        "结束地址 {:#x} 应该可以翻译",
+        last_addr
+    );
+    if let Ok((trans_pa, trans_pte)) = translate_last {
+        assert_eq!(
+            trans_pa.raw(),
+            expected_last_pa,
+            "结束地址 {:#x} 应该翻译为物理地址 {:#x}，实际为 {:#x}",
+            last_addr,
+            expected_last_pa,
+            trans_pa.raw()
+        );
+        println!(
+            "✓ 结束地址翻译正确: VA {:#x} -> PA {:#x}, Huge={}",
+            last_addr,
+            trans_pa.raw(),
+            trans_pte.is_huge()
+        );
+    }
+
+    // 检查边界外的地址（应该失败）
+    let out_of_range = start_addr + size;
+    let translate_out = pg.translate(out_of_range.into());
+    assert!(
+        translate_out.is_err(),
+        "边界外地址 {:#x} 不应该可以翻译",
+        out_of_range
+    );
+    println!("✓ 边界外地址正确返回未映射错误");
+
+    println!("\n🎉 Translate 验证全部通过！映射完全正确！");
 }
 
 #[test]

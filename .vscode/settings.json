@@ -9,4 +9,7 @@
         "loongarch64-unknown-none-softfloat",
         "system"
     ],
+    "chat.tools.terminal.autoApprove": {
+        "./test_la64.sh": true
+    },
 }
