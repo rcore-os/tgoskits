@@ -75,7 +75,7 @@ impl PageTableEntry for Entry {
             .modify(PTE::PHYS_ADDR.val(config.paddr.raw() as u64 >> 12));
 
         // 设置大页标志（NON_BLOCK=0 表示大页）
-        if config.huge {
+        if config.huge && config.is_dir {
             entry.as_typed().modify(PTE::NON_BLOCK::CLEAR);
         } else {
             entry.as_typed().modify(PTE::NON_BLOCK::SET);

@@ -118,6 +118,10 @@ impl PageTableEntry for PteImpl {
             },
         }
     }
+    
+    fn valid(&self) -> bool {
+        self.reg().is_set(PTE64::VALID)
+    }
 }
 
 // Flag 构造和操作方法
