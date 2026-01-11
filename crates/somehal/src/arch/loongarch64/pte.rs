@@ -52,7 +52,7 @@ register_bitfields![u64,
 
         G OFFSET(12) NUMBITS(1) [],
 
-        PHYS_ADDR OFFSET(13) NUMBITS(39) [],
+        PHYS_ADDR OFFSET(12) NUMBITS(40) [],
 
         /// NR - 禁止读位 (bit 61)
         NO_READ OFFSET(61) NUMBITS(1) [],
@@ -213,7 +213,7 @@ impl PageTableEntry for Entry {
         // 设置物理地址（关键：根据 is_dir 选择不同的布局）
         if config.is_dir {
             // 目录项：使用 PTE_DIR 格式，bits [51:13]
-            let ppn = (config.paddr.raw() as u64) >> 13;
+            let ppn = (config.paddr.raw() as u64) >> 12;
             entry.as_dir().modify(PTE_DIR::PHYS_ADDR.val(ppn));
 
             // 设置全局标志（目录项使用 G 位，bit 12）
@@ -256,7 +256,7 @@ impl PageTableEntry for Entry {
         let paddr = if is_dir {
             // 目录项：使用 PTE_DIR 格式，bits [51:13]
             let raw_val = self.as_dir().read(PTE_DIR::PHYS_ADDR);
-            (raw_val << 13) as usize
+            (raw_val << 12) as usize
         } else {
             // 页表项：使用 PTE 格式，bits [51:12]
             let raw_val = self.as_base().read(PTE::PHYS_ADDR);
