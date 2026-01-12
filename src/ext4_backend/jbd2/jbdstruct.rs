@@ -1,5 +1,6 @@
 use crate::ext4_backend::config::*;
 use crate::ext4_backend::endian::*;
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::convert::TryInto;
 pub const JOURNAL_FILE_INODE: u64 = 8;
@@ -10,7 +11,7 @@ pub const JOURANL_ESCAPE: u16 = 0x1;
 pub const JBD2_FLAG_LAST_TAG: u16 = 0x8;
 #[repr(C)]
 ///（主物理块号，元数据内容）
-pub struct Jbd2Update(pub u64, pub [u8; BLOCK_SIZE]);
+pub struct Jbd2Update(pub u64, pub Box<[u8; BLOCK_SIZE]>);
 #[repr(C)]
 pub struct JBD2DEVSYSTEM {
     pub jbd2_super_block: JournalSuperBllockS,

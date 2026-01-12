@@ -1,3 +1,5 @@
+
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use log::{error, trace, warn};
 
@@ -56,25 +58,25 @@ pub trait BlockDevice {
 
 /// 块设备缓存
 pub struct BlockBuffer {
-    buffer: [u8; BLOCK_SIZE],
+    buffer: Box<[u8;BLOCK_SIZE]>,
 }
 
 impl BlockBuffer {
     /// 创建新的块缓冲区
     pub fn new() -> Self {
         Self {
-            buffer: [0u8; BLOCK_SIZE],
+            buffer: Box::new([0;BLOCK_SIZE]),
         }
     }
 
     /// 获取缓冲区引用
     pub fn as_slice(&self) -> &[u8] {
-        &self.buffer
+        &*self.buffer
     }
 
     /// 获取可变缓冲区引用
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        &mut self.buffer
+        &mut *self.buffer
     }
 
     /// 获取缓冲区大小
@@ -191,17 +193,17 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             // BlockDev 内部的 buffer 已经被上层写好，直接把当前 buffer 写到 block_id
             return self.inner.write_block(block_id);//把缓存直接写入盘
         }
-
+        
         // 2) 元数据且启用日志：走 JBD2 事务
         //    此时之前的普通数据块已经完成写入
         //由于分布提交机制，必须需要拷贝数据牺牲性能来确保日志提交
 
         let meta_vec = self.inner.buffer();
+        let mut new_buf = Box::new([0;BLOCK_SIZE]);
+        new_buf[..].copy_from_slice(meta_vec);
         let updates = Jbd2Update( //把缓存变成事务
             block_id as u64,
-            meta_vec
-                .try_into()
-                .expect("Data can;t into [u8;BLOCK_SIZE] panic!,os should process"),
+            new_buf
         );
 
         if self.systeam.is_none() {
@@ -235,7 +237,6 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         }
 
 
-
         Ok(())
     }
     pub fn read_block(&mut self, block_id: u32) -> BlockDevResult<()> {
@@ -257,7 +258,6 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         count: u32,
         is_metadata: bool,
     ) -> BlockDevResult<()> {
-        //error!("write block :{} ,use journal?:{} ismetadata:{}",block_id,self.journal_use,is_metadata);
 
         // 1) 非元数据 或 未开启日志：直接写回到底层块设备
         if !self.journal_use || !is_metadata {
@@ -287,10 +287,9 @@ impl<B: BlockDevice> Jbd2Dev<B> {
 
         for i in 0..count {
               let off = (i as usize) * (BLOCK_SIZE as usize);
-            let block_bytes: [u8; BLOCK_SIZE] = buf[off..off + (BLOCK_SIZE as usize)]
-                .try_into()
-                .expect("slice len must be BLOCK_SIZE");
-            let updates = Jbd2Update((block_id + i) as u64, block_bytes);
+              let mut boxbuf = Box::new([0;BLOCK_SIZE]);
+                boxbuf[..].copy_from_slice(&buf[off..off + (BLOCK_SIZE as usize)]);  
+            let updates = Jbd2Update((block_id + i) as u64, boxbuf);
             
 
             //先写入缓存

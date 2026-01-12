@@ -140,7 +140,6 @@ impl Ext4Inode {
         if magic == Ext4ExtentHeader::EXT4_EXT_MAGIC {
             true
         } else {
-            use log::debug;
             debug!("No tree header!!!");
             false
         }

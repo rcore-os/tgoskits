@@ -116,7 +116,7 @@ impl JBD2DEVSYSTEM {
         for update in self.commit_queue.iter() {
             //逃逸处理
             let mut check_data: [u8; BLOCK_SIZE] = [0; BLOCK_SIZE];
-            check_data.copy_from_slice(&update.1);
+            check_data.copy_from_slice(&*update.1);
             let magic = u32::from_le_bytes(check_data[0..4].try_into().unwrap());
             if magic == JBD2_MAGIC {
                 debug!("Find excape data,will fill 0");

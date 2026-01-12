@@ -1,6 +1,5 @@
 use alloc::string::String;
 use alloc::vec::Vec;
-
 use crate::ext4_backend::blockdev::*;
 use crate::ext4_backend::dir::*;
 use crate::ext4_backend::disknode::*;
@@ -171,6 +170,7 @@ pub fn read_at<B: BlockDevice>(
             out.extend_from_slice(&data[copy_start as usize ..(copy_start + copy_len) as usize]);
         } else {
             // Hole: return zeros for the requested logical range.
+            
             out.extend(core::iter::repeat_n(0u8, copy_len as usize));
         }
 
