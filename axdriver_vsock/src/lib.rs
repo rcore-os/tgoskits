@@ -45,6 +45,8 @@ pub enum VsockDriverEvent {
     Received(VsockConnId, usize),
     /// Disconnected
     Disconnected(VsockConnId),
+    /// Credit Update
+    CreditUpdate(VsockConnId),
     /// unknown event
     Unknown,
 }

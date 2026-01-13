@@ -134,11 +134,9 @@ fn convert_vsock_event<H: Hal, T: Transport>(
     match event.event_type {
         VsockEventType::ConnectionRequest => Ok(VsockDriverEvent::ConnectionRequest(cid)),
         VsockEventType::Connected => Ok(VsockDriverEvent::Connected(cid)),
-        VsockEventType::Received { length } => {
-            // Do not read data here, let the upper layer decide when to read.
-            Ok(VsockDriverEvent::Received(cid, length))
-        }
+        VsockEventType::Received { length } => Ok(VsockDriverEvent::Received(cid, length)),
         VsockEventType::Disconnected { reason: _ } => Ok(VsockDriverEvent::Disconnected(cid)),
+        VsockEventType::CreditUpdate => Ok(VsockDriverEvent::CreditUpdate(cid)),
         _ => Ok(VsockDriverEvent::Unknown),
     }
 }
