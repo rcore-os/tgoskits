@@ -629,6 +629,16 @@ pub fn relocate_kernel_to_vm_code() -> ! {
 
     println!("MMU enabled, jumping to {v_entry:#x}, sp={v_sp:#x}");
 
+    // 在跳转到虚拟地址之前完成重定位重置
+    // 这样可以避免修改正在执行的代码导致的指令缓存不一致问题
+    crate::arch::relocate::reset();
+
+    // 刷新指令缓存，确保跳转后执行的是正确位置的指令
+    unsafe {
+        core::arch::asm!("ibar 0", options(nomem, nostack));
+        core::arch::asm!("dbar 0", options(nomem, nostack));
+    }
+
     relocate_kernel(v_entry, v_sp);
     unreachable!()
 }
