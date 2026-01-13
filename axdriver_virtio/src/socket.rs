@@ -77,7 +77,7 @@ impl<H: Hal, T: Transport> VsockDriverOps for VirtIoSocketDev<H, T> {
             .inner
             .recv(peer_addr, src_port, buf)
             .map_err(as_dev_err);
-        self.inner.update_credit(peer_addr, src_port);
+        let _ = self.inner.update_credit(peer_addr, src_port);
         res
     }
 
