@@ -52,14 +52,8 @@ pub unsafe fn reset(r_type: u32) {
     for reloc in relocations {
         if reloc.r_type_raw() == r_type {
             let addr = reloc.r_offset as usize as *mut usize;
-
-            // println!(
-            //     "Reset reloc at {:#x} {:#x} to {:#x}",
-            //     addr as usize,
-            //     unsafe { addr.read_volatile() },
-            //     reloc.r_addend as u64 as usize
-            // );
             unsafe { addr.write_volatile(reloc.r_addend as u64 as usize) };
+            println!();
         }
     }
 }
