@@ -12,9 +12,12 @@ mod osal;
 mod array;
 mod common;
 mod dbox;
+mod slice;
 
 pub use array::*;
 pub use dbox::*;
+pub use slice::*;
+
 // mod stream;
 
 // pub use stream::*;
@@ -46,6 +49,8 @@ pub enum DmaError {
     NoMemory,
     #[error("Invalid layout for DMA allocation")]
     LayoutError,
+    #[error("DMA address {addr:#x} does not match device mask {mask:#x}")]
+    DmaMaskNotMatch { addr: DmaAddr, mask: u64 },
 }
 
 impl From<core::alloc::LayoutError> for DmaError {
@@ -80,18 +85,38 @@ impl Deref for DmaHandle {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MapHandle {
+    pub virt_addr: NonNull<u8>,
+    pub dma_addr: DmaAddr,
+    pub size: usize,
+}
+
 /// 操作系统抽象层 trait
 ///
 /// 用于适配不同的 OS/平台
-pub trait Osal: Sync + Send + 'static {
+pub trait DeviceDmaOps: Sync + Send + 'static {
     fn page_size(&self) -> usize;
 
-    // /// 将虚拟地址映射到 DMA 地址
-    // /// 若返回的size小于请求的size，则需要分多次映射
-    // fn map(&self, addr: NonNull<u8>, size: usize, direction: Direction) -> DmaAddr;
+    /// 获取设备支持的最大 DMA 地址掩码
+    fn dma_mask(&self) -> u64 {
+        u64::MAX
+    }
 
-    // /// 解除 DMA 映射
-    // fn unmap(&self, handle: DmaHandle);
+    /// 将虚拟地址映射到 DMA 地址
+    /// # Safety
+    /// 只能是单个连续内存块
+    unsafe fn map_single(
+        &self,
+        addr: NonNull<u8>,
+        size: usize,
+        direction: Direction,
+    ) -> Result<MapHandle, DmaError>;
+
+    /// 解除 DMA 映射
+    /// # Safety
+    /// 必须与 map_single 配对使用
+    unsafe fn unmap_single(&self, handle: MapHandle);
 
     /// 写回缓存到内存 (clean)
     fn flush(&self, addr: NonNull<u8>, size: usize) {
@@ -129,19 +154,15 @@ pub trait Osal: Sync + Send + 'static {
 }
 
 #[derive(Clone)]
-pub struct DmaApi {
-    osal: Arc<dyn Osal>,
+pub struct DeviceDma {
+    inner: Arc<dyn DeviceDmaOps>,
 }
 
-impl DmaApi {
-    pub fn new(osal: impl Osal) -> Self {
+impl DeviceDma {
+    pub fn new(osal: impl DeviceDmaOps) -> Self {
         Self {
-            osal: Arc::new(osal),
+            inner: Arc::new(osal),
         }
-    }
-
-    pub fn osal(&self) -> &Arc<dyn Osal> {
-        &self.osal
     }
 
     pub fn new_array<T>(
@@ -150,7 +171,7 @@ impl DmaApi {
         align: usize,
         direction: Direction,
     ) -> Result<array::DArray<T>, DmaError> {
-        array::DArray::new_zero(&self.osal, size, align, direction)
+        array::DArray::new_zero(&self.inner, size, align, direction)
     }
 
     pub fn new_box<T>(
@@ -158,6 +179,22 @@ impl DmaApi {
         align: usize,
         direction: Direction,
     ) -> Result<dbox::DBox<T>, DmaError> {
-        dbox::DBox::new_zero(&self.osal, align, direction)
+        dbox::DBox::new_zero(&self.inner, align, direction)
+    }
+
+    pub fn map_single<'a, T>(
+        &self,
+        s: &'a [T],
+        direction: Direction,
+    ) -> Result<DSliceSingle<'a, T>, DmaError> {
+        DSliceSingle::new(&self.inner, s, direction)
+    }
+
+    pub fn map_single_mut<'a, T>(
+        &self,
+        s: &'a mut [T],
+        direction: Direction,
+    ) -> Result<DSliceSingleMut<'a, T>, DmaError> {
+        DSliceSingleMut::new(&self.inner, s, direction)
     }
 }

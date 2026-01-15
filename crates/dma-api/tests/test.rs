@@ -76,13 +76,13 @@ fn test_index() {
     assert_eq!(a, 0);
 }
 
-fn new_api() -> DmaApi {
-    DmaApi::new(Impled)
+fn new_api() -> DeviceDma {
+    DeviceDma::new(Impled)
 }
 
 struct Impled;
 
-impl Osal for Impled {
+impl DeviceDmaOps for Impled {
     // fn map(&self, addr: std::ptr::NonNull<u8>, size: usize, direction: Direction) -> DmaHandle {
     //     println!("map @{:?}, size {size:#x}, {direction:?}", addr);
     //     addr.as_ptr() as usize as _

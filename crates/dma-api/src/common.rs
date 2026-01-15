@@ -2,11 +2,11 @@ use core::{alloc::Layout, ptr::NonNull};
 
 use alloc::sync::Arc;
 
-use crate::{Direction, DmaError, DmaHandle, Osal};
+use crate::{DeviceDmaOps, Direction, DmaError, DmaHandle};
 
 pub struct DCommon<T> {
     pub handle: DmaHandle,
-    pub osal: Arc<dyn Osal>,
+    pub osal: Arc<dyn DeviceDmaOps>,
     pub direction: Direction,
     _phantom: core::marker::PhantomData<T>,
 }
@@ -15,13 +15,24 @@ unsafe impl<T: Send> Send for DCommon<T> {}
 
 impl<T> DCommon<T> {
     pub fn new(
-        os: &Arc<dyn Osal>,
+        os: &Arc<dyn DeviceDmaOps>,
         size: usize,
         align: usize,
         direction: Direction,
     ) -> Result<Self, DmaError> {
         let layout = Layout::from_size_align(size, align)?;
         let handle = unsafe { os.alloc_coherent(layout) }.ok_or(DmaError::NoMemory)?;
+        let dma_mask = os.dma_mask();
+        if handle.dma_addr > dma_mask {
+            unsafe {
+                os.dealloc_coherent(handle);
+            }
+            return Err(DmaError::DmaMaskNotMatch {
+                addr: handle.dma_addr,
+                mask: dma_mask,
+            });
+        }
+
         Ok(Self {
             handle,
             osal: os.clone(),

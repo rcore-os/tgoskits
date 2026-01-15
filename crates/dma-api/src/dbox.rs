@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 
-use crate::{Direction, DmaError, Osal, common::DCommon};
+use crate::{DeviceDmaOps, Direction, DmaError, common::DCommon};
 
 pub struct DBox<T> {
     data: DCommon<T>,
@@ -8,7 +8,7 @@ pub struct DBox<T> {
 
 impl<T> DBox<T> {
     pub(crate) fn new_zero(
-        os: &Arc<dyn Osal>,
+        os: &Arc<dyn DeviceDmaOps>,
         align: usize,
         direction: Direction,
     ) -> Result<Self, DmaError> {
