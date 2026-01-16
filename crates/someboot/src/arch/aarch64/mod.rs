@@ -62,12 +62,12 @@ impl ArchTrait for Arch {
     }
 
     fn systimer_irq_disable() {
-        debug!("Disable systick irq");
+        // debug!("Disable systick irq");
         elx::systick_irq_disable();
     }
 
     fn systimer_irq_enable() {
-        debug!("Enable systick irq");
+        // debug!("Enable systick irq");
         elx::systick_irq_enable();
     }
 
