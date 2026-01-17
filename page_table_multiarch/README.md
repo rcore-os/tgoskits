@@ -49,10 +49,18 @@ impl PagingHandler for PagingHandlerImpl {
         Some(PhysAddr::from(ptr as usize))
     }
 
+    fn alloc_frames(num: usize, align_pow2: usize) -> Option<PhysAddr> {
+        todo!();
+    }
+
     fn dealloc_frame(paddr: PhysAddr) {
         let layout = Layout::from_size_align(0x1000, 0x1000).unwrap();
         let ptr = paddr.as_usize() as *mut u8;
         unsafe { alloc::alloc::dealloc(ptr, layout) };
+    }
+
+    fn dealloc_frames(paddr: PhysAddr, num: usize) {
+        todo!();
     }
 
     fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {

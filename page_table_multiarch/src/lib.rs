@@ -10,7 +10,7 @@ mod bits64;
 
 use core::{fmt::Debug, marker::PhantomData};
 
-use memory_addr::{MemoryAddr, PhysAddr, VirtAddr};
+use memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr};
 #[doc(no_inline)]
 pub use page_table_entry::{GenericPTE, MappingFlags};
 
@@ -90,9 +90,20 @@ pub trait PagingMetaData: Sync + Send {
 /// [`PageTable64`].
 pub trait PagingHandler: Sized {
     /// Request to allocate a 4K-sized physical frame.
-    fn alloc_frame() -> Option<PhysAddr>;
+    fn alloc_frame() -> Option<PhysAddr> {
+        Self::alloc_frames(1, PAGE_SIZE_4K)
+    }
+    /// Allocate `num` contiguous physical frames, with the starting physical
+    /// address aligned to `align` bytes (must be a power of two, and must be
+    /// a multiple of 4K).
+    fn alloc_frames(num: usize, align: usize) -> Option<PhysAddr>;
     /// Request to free a allocated physical frame.
-    fn dealloc_frame(paddr: PhysAddr);
+    fn dealloc_frame(paddr: PhysAddr) {
+        Self::dealloc_frames(paddr, 1)
+    }
+    /// Free `num` contiguous physical frames starting from the given physical
+    /// address. The `num` must be the same as that used in allocation.
+    fn dealloc_frames(paddr: PhysAddr, num: usize);
     /// Returns a virtual address that maps to the given physical address.
     ///
     /// Used to access the physical memory directly in page table

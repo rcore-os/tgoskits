@@ -1,7 +1,7 @@
 use std::{
     alloc::{self, Layout},
     cell::RefCell,
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     marker::PhantomData,
 };
 
@@ -10,10 +10,23 @@ use page_table_entry::{GenericPTE, MappingFlags};
 use page_table_multiarch::{PageSize, PageTable64, PagingHandler, PagingMetaData, PagingResult};
 use rand::{Rng, SeedableRng, rngs::SmallRng};
 
-const PAGE_LAYOUT: Layout = unsafe { Layout::from_size_align_unchecked(4096, 4096) };
+/// Creates a layout for allocating `num` pages with alignment of `2^align_pow2`
+/// pages.
+const fn pages_layout(num: usize, align: usize) -> Layout {
+    if !align.is_power_of_two() {
+        panic!("alignment must be a power of two");
+    }
+    if align % 4096 != 0 {
+        panic!("alignment must be a multiple of 4K");
+    }
+    unsafe { Layout::from_size_align_unchecked(4096 * num, align) }
+}
+
+const PAGE_LAYOUT: Layout = pages_layout(1, 4096);
 
 thread_local! {
     static ALLOCATED: RefCell<HashSet<usize>> = RefCell::default();
+    static ALIGN: RefCell<HashMap<usize, usize>> = RefCell::default();
 }
 
 struct TrackPagingHandler<M: PagingMetaData>(PhantomData<M>);
@@ -29,6 +42,24 @@ impl<M: PagingMetaData> PagingHandler for TrackPagingHandler<M> {
         Some(PhysAddr::from_usize(ptr))
     }
 
+    fn alloc_frames(num: usize, align: usize) -> Option<PhysAddr> {
+        let layout = pages_layout(num, align);
+        let ptr = unsafe { alloc::alloc(layout) } as usize;
+        assert!(
+            ptr <= M::PA_MAX_ADDR,
+            "allocated frame address exceeds PA_MAX_ADDR"
+        );
+        ALLOCATED.with_borrow_mut(|it| {
+            for i in 0..num {
+                it.insert(ptr + i * 4096);
+            }
+        });
+        ALIGN.with_borrow_mut(|it| {
+            it.insert(ptr, align);
+        });
+        Some(PhysAddr::from_usize(ptr))
+    }
+
     fn dealloc_frame(paddr: PhysAddr) {
         let ptr = paddr.as_usize();
         ALLOCATED.with_borrow_mut(|it| {
@@ -36,6 +67,24 @@ impl<M: PagingMetaData> PagingHandler for TrackPagingHandler<M> {
         });
         unsafe {
             alloc::dealloc(ptr as _, PAGE_LAYOUT);
+        }
+    }
+
+    fn dealloc_frames(paddr: PhysAddr, num: usize) {
+        let ptr = paddr.as_usize();
+        ALLOCATED.with_borrow_mut(|it| {
+            for i in 0..num {
+                let addr = ptr + i * 4096;
+                assert!(it.remove(&addr), "dealloc a frame that was not allocated");
+            }
+        });
+        let align = ALIGN.with_borrow_mut(|it| {
+            it.remove(&ptr)
+                .expect("dealloc frames that were not allocated")
+        });
+        let layout = pages_layout(num, align);
+        unsafe {
+            alloc::dealloc(ptr as _, layout);
         }
     }
 
