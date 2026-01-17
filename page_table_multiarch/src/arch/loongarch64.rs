@@ -5,7 +5,7 @@ use core::arch::asm;
 use memory_addr::VirtAddr;
 use page_table_entry::loongarch64::LA64PTE;
 
-use crate::{PageTable64, PagingMetaData};
+use crate::{PageTable64, PageTable64Cursor, PagingMetaData};
 
 /// Metadata of LoongArch64 page tables.
 #[derive(Copy, Clone, Debug)]
@@ -87,3 +87,5 @@ impl PagingMetaData for LA64MetaData {
 ///
 /// using page table dir3, dir2, dir1 and pt, ignore dir4
 pub type LA64PageTable<H> = PageTable64<LA64MetaData, LA64PTE, H>;
+/// loongarch64 page table cursor.
+pub type LA64PageTableCursor<'a, H> = PageTable64Cursor<'a, LA64MetaData, LA64PTE, H>;

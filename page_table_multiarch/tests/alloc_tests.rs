@@ -104,7 +104,9 @@ fn run_test_for<M: PagingMetaData<VirtAddr = VirtAddr>, PTE: GenericPTE>() -> Pa
     let mut table = PageTable64::<M, PTE, TrackPagingHandler<M>>::try_new().unwrap();
     let mut pages = HashSet::new();
     let mut rng = SmallRng::seed_from_u64(1234);
+
     for _ in 0..2048 {
+        let mut cursor = table.cursor();
         if rng.random_ratio(3, 4) || pages.is_empty() {
             // insert a mapping
             let addr = loop {
@@ -113,18 +115,16 @@ fn run_test_for<M: PagingMetaData<VirtAddr = VirtAddr>, PTE: GenericPTE>() -> Pa
                     break addr;
                 }
             };
-            table
-                .map(
-                    VirtAddr::from_usize(addr as usize),
-                    PhysAddr::from_usize((rng.random::<u64>() & vaddr_mask) as usize),
-                    PageSize::Size4K,
-                    MappingFlags::READ | MappingFlags::WRITE,
-                )?
-                .ignore();
+            cursor.map(
+                VirtAddr::from_usize(addr as usize),
+                PhysAddr::from_usize((rng.random::<u64>() & vaddr_mask) as usize),
+                PageSize::Size4K,
+                MappingFlags::READ | MappingFlags::WRITE,
+            )?;
         } else {
             // remove a mapping
             let addr = *pages.iter().next().unwrap();
-            table.unmap(VirtAddr::from_usize(addr as usize))?.2.ignore();
+            cursor.unmap(VirtAddr::from_usize(addr as usize))?;
             pages.remove(&addr);
         }
     }
