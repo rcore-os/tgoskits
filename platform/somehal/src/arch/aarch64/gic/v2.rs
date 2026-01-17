@@ -1,12 +1,12 @@
-use aarch64_cpu::registers::CurrentEL;
 use alloc::format;
-use arm_gic_driver::v3::*;
+use arm_gic_driver::v2::*;
 use kernutil::StaticCell;
 use rdrive::{PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo};
 
 use crate::common::ioremap;
 
 static CPU_IF: StaticCell<CpuInterface> = StaticCell::uninit();
+static TRAP: StaticCell<TrapOp> = StaticCell::uninit();
 
 pub fn with_gic(f: impl FnOnce(&mut Gic)) {
     let mut gic = super::get_gicd().lock().unwrap();
@@ -16,12 +16,12 @@ pub fn with_gic(f: impl FnOnce(&mut Gic)) {
 }
 
 module_driver!(
-    name: "GICv3",
+    name: "GICv2",
     level: ProbeLevel::PreKernel,
     priority: ProbePriority::INTC,
     probe_kinds: &[
         ProbeKind::Fdt {
-            compatibles: &["arm,gic-v3"],
+            compatibles: &["arm,cortex-a15-gic", "arm,gic-400"],
             on_probe: probe_gic
         }
     ],
@@ -39,10 +39,23 @@ fn probe_gic(info: FdtInfo<'_>, dev: PlatformDevice) -> Result<(), OnProbeError>
     let gicd = ioremap(gicd_reg.address as _, gicd_reg.size.unwrap_or(0x1000))?;
     let gicr = ioremap(gicr_reg.address as _, gicr_reg.size.unwrap_or(0x1000))?;
 
-    let mut gic = unsafe { Gic::new(gicd.into(), gicr.into()) };
+    let mut hyper = None;
+
+    if let Some(gich_reg) = reg.next()
+        && let Some(gicv_reg) = reg.next()
+    {
+        let gich = ioremap(gich_reg.address as _, gich_reg.size.unwrap_or(0x1000))?;
+        let gicv = ioremap(gicv_reg.address as _, gicv_reg.size.unwrap_or(0x1000))?;
+
+        hyper = Some(HyperAddress::new(gich.into(), gicv.into()))
+    }
+
+    let mut gic = unsafe { Gic::new(gicd.into(), gicr.into(), hyper) };
     gic.init();
     let cpu = gic.cpu_interface();
+    let trap = cpu.trap_operations();
     CPU_IF.init(cpu);
+    TRAP.init(trap);
 
     init_cpu();
 
@@ -51,46 +64,37 @@ fn probe_gic(info: FdtInfo<'_>, dev: PlatformDevice) -> Result<(), OnProbeError>
     Ok(())
 }
 
-pub fn is_v3() -> bool {
-    if CurrentEL.read(CurrentEL::EL) == 1 {
-        ICC_SRE_EL1.is_set(ICC_SRE_EL1::SRE)
-    } else if CurrentEL.read(CurrentEL::EL) == 2 {
-        ICC_SRE_EL2.is_set(ICC_SRE_EL2::SRE)
-    } else {
-        panic!(
-            "Unsupported exception level {} for IRQ handling",
-            CurrentEL.read(CurrentEL::EL)
-        );
+pub fn handle_irq() {
+    let ack = TRAP.ack();
+
+    let irq_num = match ack {
+        Ack::Other(intid) => intid,
+        Ack::SGI { intid, cpu_id: _ } => intid,
+    };
+    super::_handle_irq(someboot::irq::IrqId::new(irq_num.to_u32() as _));
+
+    if !ack.is_special() {
+        TRAP.eoi(ack);
+        if TRAP.eoi_mode_ns() {
+            TRAP.dir(ack);
+        }
     }
 }
 
-pub fn handle_irq() {
-    let ack = ack1();
-
-    super::_handle_irq(someboot::irq::IrqId::new(ack.to_u32() as _));
-
-    if !ack.is_special() {
-        eoi1(ack);
-        if eoi_mode() {
-            dir(ack);
-        }
+pub fn init_cpu() {
+    unsafe {
+        CPU_IF.update(|cpu| {
+            cpu.init_current_cpu();
+            #[cfg(feature = "hv")]
+            cpu.set_eoi_mode_ns(true);
+        });
     }
+
+    debug!("GICCv2 initialized");
 }
 
 pub fn irq_set_enable(raw: usize, enable: bool) {
     with_gic(|gic| {
         gic.set_irq_enable(unsafe { IntId::raw(raw as _) }, enable);
     });
-}
-
-pub fn init_cpu() {
-    unsafe {
-        CPU_IF.update(|cpu| {
-            cpu.init_current_cpu().unwrap();
-            #[cfg(feature = "hv")]
-            cpu.set_eoi_mode(true);
-        });
-    }
-
-    debug!("GICCv3 initialized");
 }

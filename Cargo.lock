@@ -1082,6 +1082,7 @@ dependencies = [
  "aarch64-cpu 11.2.0",
  "anyhow",
  "arm-gic-driver",
+ "kernutil",
  "log",
  "page-table-generic",
  "rdif-intc",

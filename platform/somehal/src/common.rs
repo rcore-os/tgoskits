@@ -4,8 +4,6 @@ use someboot::PagingError;
 use crate::setup::kernel;
 
 pub trait PlatOp {
-    fn init_irq_main() -> Result<(), anyhow::Error>;
-    fn init_irq_current_cpu() -> Result<(), anyhow::Error>;
     fn irq_set_enable(irq: IrqId, enable: bool);
 
     fn systick_irq() -> IrqId;

@@ -17,8 +17,6 @@ pub use page_table_generic::{PagingError, PagingResult};
 pub use setup::*;
 pub use someboot::*;
 
-use crate::{arch::Plat, common::PlatOp};
-
 #[cfg(target_arch = "loongarch64")]
 #[path = "arch/loongarch64/mod.rs"]
 pub mod arch;
@@ -33,7 +31,4 @@ pub fn init(kernel: &'static dyn KernelOp) {
 
 pub fn post_paging() {
     driver::rdrive_setup();
-
-    Plat::init_irq_main().unwrap();
-    Plat::init_irq_current_cpu().unwrap();
 }

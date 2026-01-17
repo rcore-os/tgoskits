@@ -25,6 +25,7 @@ somehal-macros = {workspace = true}
 tock-registers = "0.10"
 thiserror = {workspace = true}
 log = {workspace = true}
+kernutil = {workspace = true}
 
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
