@@ -138,23 +138,23 @@ pub fn setup_sctlr() {
 }
 
 pub fn systick_enable() {
-    // EL2 continues to use EL0 physical timer registers
-    // These registers are accessible at all exception levels
-    CNTP_CTL_EL0.write(CNTP_CTL_EL0::ENABLE::SET);
+    CNTHP_CTL_EL2.write(CNTHP_CTL_EL2::ENABLE::SET);
 }
 
 pub fn systick_irq_disable() {
-    CNTP_CTL_EL0.modify(CNTP_CTL_EL0::IMASK::SET);
+    CNTHP_CTL_EL2.modify(CNTHP_CTL_EL2::IMASK::SET);
 }
 
 pub fn systick_irq_enable() {
-    CNTP_CTL_EL0.modify(CNTP_CTL_EL0::IMASK::CLEAR);
+    CNTHP_CTL_EL2.modify(CNTHP_CTL_EL2::IMASK::CLEAR);
 }
 
 pub fn systick_irq_is_enabled() -> bool {
-    !CNTP_CTL_EL0.is_set(CNTP_CTL_EL0::IMASK)
+    !CNTHP_CTL_EL2.is_set(CNTHP_CTL_EL2::IMASK)
 }
 
 pub fn systick_set_interval(ticks: usize) {
-    CNTP_TVAL_EL0.set(ticks as u64);
+    unsafe {
+        core::arch::asm!("msr CNTHP_TVAL_EL2, {0:x}", in(reg) ticks);
+    }
 }
