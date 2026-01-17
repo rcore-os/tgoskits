@@ -1,4 +1,4 @@
-use crate::hal::{al, timer};
+use crate::hal::al;
 
 pub fn start_kernel() -> ! {
     crate::os::logger::init();
@@ -10,7 +10,7 @@ pub fn start_kernel() -> ! {
 
     al::platform::post_paging();
 
-    timer::init();
+    crate::os::time::init();
 
     // rdrive::probe_all(true).unwrap();
 

@@ -4,6 +4,7 @@ use core::{
     time::Duration,
 };
 
+use super::{duration_to_ticks, ticks};
 use crate::os::sync::IrqSpinlock;
 
 type TimerCallback = Box<dyn FnMut() + Send + 'static>;
@@ -22,20 +23,27 @@ pub enum TimerError {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub struct TimerHandle(TimerId);
 
+impl TimerHandle {
+    pub fn cancel(self) -> bool {
+        cancel(self)
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 struct TimerId(u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct TimerKey {
-    deadline: Duration,
+    // deadline in ticks
+    deadline: usize,
     id: TimerId,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct TimeListEntry {
     pub handle: TimerHandle,
-    pub deadline: Duration,
-    pub remaining: Duration,
+    pub deadline: usize,
+    pub remaining: usize,
 }
 
 /// Software timer core that keeps a sorted list of one-shot callbacks.
@@ -43,7 +51,7 @@ pub struct TimeListEntry {
 struct TimerManager {
     next_id: u64,
     timers: BTreeMap<TimerKey, TimerCallback>,
-    index: BTreeMap<TimerId, Duration>,
+    index: BTreeMap<TimerId, usize>,
 }
 
 impl TimerManager {
@@ -55,28 +63,23 @@ impl TimerManager {
         }
     }
 
-    /// Get current monotonic time from hardware
-    fn now() -> Duration {
-        crate::hal::al::cpu::systimer_since_boot()
-    }
-
-    fn schedule_after<F>(&mut self, delay: Duration, callback: F) -> TimerResult<TimerHandle>
+    fn schedule_after<F>(&mut self, delay: usize, callback: F) -> TimerResult<TimerHandle>
     where
         F: FnOnce() + Send + 'static,
     {
-        let now = Self::now();
+        let now = ticks();
         let deadline = now.checked_add(delay).ok_or(TimerError::Overflow)?;
         Ok(self.schedule_at_internal(deadline, callback))
     }
 
-    fn schedule_at<F>(&mut self, deadline: Duration, callback: F) -> TimerHandle
+    fn schedule_at<F>(&mut self, deadline: usize, callback: F) -> TimerHandle
     where
         F: FnOnce() + Send + 'static,
     {
         self.schedule_at_internal(deadline, callback)
     }
 
-    fn schedule_at_internal<F>(&mut self, deadline: Duration, callback: F) -> TimerHandle
+    fn schedule_at_internal<F>(&mut self, deadline: usize, callback: F) -> TimerHandle
     where
         F: FnOnce() + Send + 'static,
     {
@@ -120,7 +123,8 @@ impl TimerManager {
     }
 
     fn handle_irq(&mut self) -> Vec<TimerCallback> {
-        let now = Self::now();
+        debug!("Timer IRQ fired");
+        let now = ticks();
         let mut expired = Vec::new();
 
         // Collect all expired timers
@@ -146,23 +150,25 @@ impl TimerManager {
     /// Program the hardware timer for the next deadline
     fn arm_hardware_timer(&self) {
         if let Some(key) = self.timers.keys().next() {
-            let now = Self::now();
+            let now = ticks();
             let delay = key.deadline.saturating_sub(now);
 
             // Ensure minimum delay to avoid missing the interrupt
             // Use a larger minimum to handle edge cases with zero/near-zero delays
-            let delay = delay.max(Duration::from_micros(100));
+            let delay = delay.max(1);
 
-            crate::hal::al::cpu::systimer_set_next_event(delay);
-            crate::hal::al::cpu::systimer_irq_enable();
+            crate::hal::al::cpu::systick_set_interval(delay);
+            debug!("Armed hardware timer for next deadline in {} ticks", delay);
+            crate::hal::al::cpu::systick_irq_enable();
         } else {
             // No pending timers, disable hardware timer
-            crate::hal::al::cpu::systimer_irq_disable();
+            crate::hal::al::cpu::systick_set_interval(usize::MAX);
+            crate::hal::al::cpu::systick_irq_disable();
         }
     }
 
     fn snapshot(&self) -> Vec<TimeListEntry> {
-        let now = Self::now();
+        let now = ticks();
         let mut list = Vec::with_capacity(self.timers.len());
         for key in self.timers.keys() {
             let remaining = key.deadline.saturating_sub(now);
@@ -175,9 +181,9 @@ impl TimerManager {
         list
     }
 
-    fn next_deadline(&self) -> Option<Duration> {
-        self.timers.keys().next().map(|k| k.deadline)
-    }
+    // fn next_deadline(&self) -> Option<usize> {
+    //     self.timers.keys().next().map(|k| k.deadline)
+    // }
 
     fn next_timer_id(&mut self) -> TimerId {
         loop {
@@ -191,8 +197,6 @@ impl TimerManager {
 }
 
 pub(crate) fn init() {
-    crate::hal::al::cpu::systimer_irq_disable();
-    crate::hal::al::cpu::systimer_enable();
     {
         let mut guard = TIMER_MANAGER.lock();
         if guard.is_some() {
@@ -203,7 +207,7 @@ pub(crate) fn init() {
 
     TIMER_READY.store(true, Ordering::Release);
 
-    let timer_irq = crate::hal::al::cpu::systimer_irq();
+    let timer_irq = crate::hal::al::cpu::systick_irq_id();
     crate::os::irq::register_handler(timer_irq, systimer_irq_handler);
 }
 
@@ -216,6 +220,7 @@ where
         return Err(TimerError::NotReady);
     }
     let mut cb = Some(callback);
+    let delay = duration_to_ticks(delay);
     with_manager_mut(|mgr| mgr.schedule_after(delay, cb.take().unwrap()))
         .ok_or(TimerError::NotReady)?
 }
@@ -229,6 +234,7 @@ where
         return Err(TimerError::NotReady);
     }
     let mut cb = Some(callback);
+    let deadline = duration_to_ticks(deadline);
     with_manager_mut(|mgr| mgr.schedule_at(deadline, cb.take().unwrap()))
         .ok_or(TimerError::NotReady)
 }
@@ -236,16 +242,6 @@ where
 /// Cancel a scheduled timer.
 pub fn cancel(handle: TimerHandle) -> bool {
     with_manager_mut(|mgr| mgr.cancel(handle)).unwrap_or(false)
-}
-
-/// Monotonic time elapsed since boot.
-pub fn uptime() -> Duration {
-    crate::hal::al::cpu::systimer_since_boot()
-}
-
-/// Get the next scheduled deadline (if any).
-pub fn next_deadline() -> Option<Duration> {
-    with_manager(|mgr| mgr.next_deadline()).flatten()
 }
 
 /// Snapshot the current pending timers for diagnostics.
@@ -259,8 +255,9 @@ pub fn is_ready() -> bool {
 }
 
 fn systimer_irq_handler() {
+    debug!("Timer IRQ handler invoked");
     // Acknowledge the timer interrupt first to prevent interrupt storm
-    crate::hal::al::cpu::systimer_ack();
+    crate::hal::al::cpu::systick_ack();
     let callbacks = with_manager_mut(|mgr| mgr.handle_irq()).unwrap_or_default();
     run_callbacks(callbacks);
 }
@@ -296,5 +293,6 @@ where
     F: FnOnce(&mut TimerManager) -> R,
 {
     let mut guard = TIMER_MANAGER.lock();
+    debug!("got lock");
     guard.as_mut().map(f)
 }

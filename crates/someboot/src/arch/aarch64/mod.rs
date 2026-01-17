@@ -110,13 +110,11 @@ impl ArchTrait for Arch {
     }
 
     fn irq_all_set_enable(enable: bool) {
-        unsafe {
-            if enable {
-                core::arch::asm!("msr daifclr, #2", options(nomem, nostack));
-            } else {
-                core::arch::asm!("msr daifset, #2", options(nomem, nostack));
-            }
-        }
+        DAIF.modify(if enable {
+            DAIF::I::CLEAR
+        } else {
+            DAIF::I::Masked
+        });
     }
 
     fn kernel_page_table() -> PageTableInfo {

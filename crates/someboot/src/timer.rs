@@ -28,6 +28,10 @@ pub fn set_next_event(interval: Duration) {
     crate::arch::Arch::systimer_set_interval(ticks);
 }
 
+pub fn set_next_event_in_ticks(ticks: usize) {
+    crate::arch::Arch::systimer_set_interval(ticks);
+}
+
 /// Acknowledge and clear the timer interrupt.
 /// This must be called in the timer interrupt handler.
 pub fn ack() {
@@ -46,7 +50,7 @@ pub fn freq() -> usize {
 
 /// Get the current timer tick count.
 #[inline]
-pub fn tick() -> usize {
+pub fn ticks() -> usize {
     crate::arch::Arch::systimer_tick()
 }
 
@@ -79,5 +83,5 @@ pub fn duration_to_ticks(duration: Duration) -> usize {
 /// Get the elapsed time since boot.
 #[inline]
 pub fn elapsed() -> Duration {
-    ticks_to_duration(tick())
+    ticks_to_duration(ticks())
 }

@@ -8,7 +8,7 @@ use core::{
 };
 
 use log::info;
-use sparreal_rt::os::time::{cancel, one_shot_after, one_shot_at, since_boot, time_list};
+use sparreal_rt::os::time::{one_shot_after, one_shot_at, since_boot, time_list};
 
 extern crate alloc;
 #[macro_use]
@@ -152,7 +152,7 @@ fn test_cancel_timer() {
     .unwrap();
 
     // 取消第一个定时器
-    let cancelled = cancel(handle);
+    let cancelled = handle.cancel();
     assert_test!(cancelled, "Timer should be cancelled successfully");
 
     // 等待足够时间
@@ -185,7 +185,7 @@ fn test_cancel_invalid_timer() {
     assert_test!(wait_for_flag(&TRIGGERED, 500), "Timer should trigger");
 
     // 定时器已经触发，再次取消应该返回 false
-    let cancelled = cancel(handle);
+    let cancelled = handle.cancel();
     assert_test!(!cancelled, "Already fired timer should not be cancellable");
 
     info!("[PASS] test_cancel_invalid_timer");

@@ -140,36 +140,43 @@ impl Cpu for CpuImpl {
         someboot::irq::irq_local_set_enable(enable);
     }
 
-    fn systimer_irq() -> IrqId {
+    fn systick_irq_id() -> IrqId {
        let irq: usize = somehal::irq::systick_irq().into();
          IrqId::from(irq)
     }
 
-    fn systimer_enable() {
+    fn systick_enable() {
         someboot::timer::enable();
     }
 
-    fn systimer_irq_enable() {
+    fn systick_irq_enable() {
         someboot::timer::irq_enable();
     }
 
-    fn systimer_irq_disable() {
+    fn systick_irq_disable() {
         someboot::timer::irq_disable();
     }
 
-    fn systimer_irq_is_enabled() -> bool {
+    fn systick_irq_is_enabled() -> bool {
         someboot::timer::irq_is_enabled()
     }
 
-    fn systimer_set_next_event(interval: Duration) {
-        someboot::timer::set_next_event(interval);
-    }
-    fn systimer_ack() {
+    fn systick_ack() {
         someboot::timer::ack();
     }
-    fn systimer_since_boot() -> Duration {
-        someboot::timer::since_boot()
+
+    fn systick_frequency() -> usize {
+        someboot::timer::freq()
     }
+
+    fn systick_ticks() -> usize {
+        someboot::timer::ticks()
+    }
+
+    fn systick_set_interval(ticks: usize){
+        someboot::timer::set_next_event_in_ticks(ticks);
+    }
+
 }
 }
 

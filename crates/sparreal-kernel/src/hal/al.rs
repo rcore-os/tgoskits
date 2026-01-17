@@ -48,14 +48,18 @@ pub trait Cpu {
     fn current_cpu_id() -> usize;
     fn irq_local_is_enabled() -> bool;
     fn irq_local_set_enable(enabled: bool);
-    fn systimer_irq() -> IrqId;
-    fn systimer_enable();
-    fn systimer_irq_enable();
-    fn systimer_irq_disable();
-    fn systimer_irq_is_enabled() -> bool;
-    fn systimer_set_next_event(intval: Duration);
-    fn systimer_ack();
-    fn systimer_since_boot() -> Duration;
+    fn systick_irq_id() -> IrqId;
+    fn systick_enable();
+    fn systick_irq_enable();
+    fn systick_irq_disable();
+    fn systick_irq_is_enabled() -> bool;
+    // fn systimer_set_next_event(intval: Duration);
+    fn systick_ack();
+    fn systick_frequency() -> usize;
+    // fn systimer_since_boot() -> Duration;
+    fn systick_ticks() -> usize;
+    /// Set next irq interval in ticks
+    fn systick_set_interval(ticks: usize);
 }
 
 #[trait_ffi::def_extern_trait(mod_path = "hal::al", not_def_impl)]
