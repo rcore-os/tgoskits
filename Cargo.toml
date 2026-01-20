@@ -5,7 +5,7 @@ edition = "2024"
 authors = ["Mivik <mivikq@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>"]
 description = "Signal management library for Starry OS"
 keywords = ["starry-os", "arceos", "signal", "ipc"]
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 repository = "https://github.com/Starry-OS/starry-signal"
 
 [dependencies]
