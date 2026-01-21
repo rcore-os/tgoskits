@@ -46,25 +46,25 @@ pub struct ImageArgs {
 pub enum ImageCommands {
     /// List all available images
     Ls,
-    
+
     /// Download the specified image and automatically extract it
     Download {
         /// Name of the image to download
         image_name: String,
-        
+
         /// Output directory for the downloaded image
         #[arg(short, long)]
         output_dir: Option<String>,
-        
+
         /// Do not extract after download
         #[arg(long, help = "Do not extract after download")]
         no_extract: bool,
     },
-    
+
     /// Remove the specified image from temp directory
     Rm {
         /// Name of the image to remove
-        image_name: String
+        image_name: String,
     },
 }
 
@@ -433,12 +433,16 @@ async fn image_download(image_name: &str, output_dir: Option<String>, extract: b
         Ok(false) => {
             // Remove the invalid downloaded file
             let _ = fs::remove_file(&output_path);
-            return Err(anyhow!("Download completed but file SHA256 verification failed"));
+            return Err(anyhow!(
+                "Download completed but file SHA256 verification failed"
+            ));
         }
         Err(e) => {
             // Remove the potentially corrupted downloaded file
             let _ = fs::remove_file(&output_path);
-            return Err(anyhow!("Download completed but error verifying downloaded file: {e}"));
+            return Err(anyhow!(
+                "Download completed but error verifying downloaded file: {e}"
+            ));
         }
     }
 

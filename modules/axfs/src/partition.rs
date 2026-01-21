@@ -225,7 +225,7 @@ fn parse_gpt_partitions(disk: &mut Disk) -> AxResult<Vec<PartitionInfo>> {
             for j in 0..36 {
                 name_utf16[j] = entry.partition_name[j];
             }
-            
+
             // Find the null terminator
             let mut name_len = 36;
             for j in 0..36 {
@@ -234,7 +234,7 @@ fn parse_gpt_partitions(disk: &mut Disk) -> AxResult<Vec<PartitionInfo>> {
                     break;
                 }
             }
-            
+
             // Convert only the valid portion
             let name_slice = &name_utf16[..name_len];
             let name_str = String::from_utf16_lossy(name_slice);

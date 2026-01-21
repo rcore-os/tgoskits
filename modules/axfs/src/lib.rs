@@ -19,7 +19,7 @@ use alloc::{
     sync::Arc,
     vec::Vec,
 };
-use axdriver::{prelude::*, AxDeviceContainer};
+use axdriver::{AxDeviceContainer, prelude::*};
 
 /// Initializes filesystems by block devices.
 pub fn init_filesystems(mut blk_devs: AxDeviceContainer<AxBlockDevice>, bootargs: Option<&str>) {

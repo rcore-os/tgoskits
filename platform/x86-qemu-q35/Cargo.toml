@@ -7,7 +7,7 @@ version = "0.1.0"
 default = [
   "irq",
   "smp",
-  "reboot-on-system-off",
+  # "reboot-on-system-off",
 ]
 fp-simd = []
 irq = ["axplat/irq"]

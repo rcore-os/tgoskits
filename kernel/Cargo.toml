@@ -5,7 +5,7 @@ license.workspace = true
 name = "axvisor"
 
 [features]
-ept-level-4 = ["axaddrspace/4-level-ept"]
+ept-level-4 = []
 fs = ["axstd/fs", "axruntime/fs"]
 dyn-plat = ["axstd/myplat", "axstd/driver-dyn", "axruntime/driver-dyn"]
 
@@ -18,7 +18,7 @@ kspin = "0.1"
 lazy_static = {version = "1.5", default-features = false, features = ["spin_no_std"]}
 lazyinit = "0.2"
 log = "0.4"
-spin = "0.9"
+spin = "0.10"
 timer_list = "0.1.0"
 
 # System dependent modules provided by ArceOS.
@@ -54,7 +54,7 @@ vm-fdt = {workspace = true, default-features = false, features = ["alloc"]}
 
 axdevice.workspace = true
 axdevice_base = "0.1"
-axvisor_api = "0.1"
+axvisor_api = "0.2"
 driver.workspace = true
 
 
