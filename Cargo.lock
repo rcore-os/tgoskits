@@ -1112,6 +1112,7 @@ dependencies = [
  "buddy_system_allocator",
  "byte-unit",
  "dma-api 0.6.0",
+ "fdt-raw",
  "heapless",
  "kernutil",
  "log",
