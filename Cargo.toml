@@ -1,6 +1,6 @@
 [package]
 name = "axcpu"
-version = "0.3.0"
+version = "0.3.0-alpha.0"
 edition = "2021"
 authors = [
     "Yuekai Jia <equation618@gmail.com>",
@@ -11,11 +11,13 @@ authors = [
     "Su Mingxian <aarkegz@gmail.com>",
     "hky1999 <keyang.hu@qq.com>",
     "RobertYuan <634954435@qq.com>",
+    "Mivik <mivikq@gmail.com>",
+    "朝倉水希 <asakuramizu111@gmail.com>",
 ]
 description = "Privileged instruction and structure abstractions for various CPU architectures"
 license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
 homepage = "https://github.com/arceos-org/axcpu"
-repository = "https://github.com/arceos-org/axcpu"
+repository = "https://github.com/arceos-org/axcpu/tree/dev"
 documentation = "https://docs.rs/axcpu"
 keywords = ["arceos", "cpu", "architecture", "hal"]
 categories = ["embedded", "no-std", "hardware-support", "os"]
