@@ -5,16 +5,10 @@ use syn::{
     parenthesized,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
-    Error, Expr, Ident, Path, Result, Token,
+    Expr, Ident, Path, Result, Token,
 };
 
-fn duplicate_arg_error(ident: &Ident) -> Error {
-    Error::new_spanned(ident, format!("duplicate argument: {}", ident))
-}
-
-fn unknown_arg_error(ident: &Ident) -> Error {
-    Error::new_spanned(ident, format!("unknown argument: {}", ident))
-}
+use crate::errors::{duplicate_arg_error, unknown_arg_error};
 
 const KEY_GEN_CALLER: &str = "gen_caller";
 const KEY_NAMESPACE: &str = "namespace";

@@ -7,7 +7,7 @@ trait SimpleIf {
     }
 
     /// Test comments
-    fn bar(&self, a: u16, b: &[u8], c: &str);
+    fn bar(a: u16, b: &[u8], c: &str);
 }
 
 struct SimpleIfImpl;
@@ -20,7 +20,7 @@ impl SimpleIf for SimpleIfImpl {
     }
 
     /// Test comments2
-    fn bar(&self, a: u16, b: &[u8], c: &str) {
+    fn bar(a: u16, b: &[u8], c: &str) {
         println!("{} {:?} {}", a, b, c);
         assert_eq!(b[1], 3);
     }
@@ -28,14 +28,14 @@ impl SimpleIf for SimpleIfImpl {
 
 #[def_interface(gen_caller)]
 trait WithCallerIf {
-    fn baz(&self, x: i32) -> i32;
+    fn baz(x: i32) -> i32;
 }
 
 struct WithCallerIfImpl;
 
 #[impl_interface]
 impl WithCallerIf for WithCallerIfImpl {
-    fn baz(&self, x: i32) -> i32 {
+    fn baz(x: i32) -> i32 {
         x + 1
     }
 }

@@ -21,7 +21,7 @@ using the `impl_interface!` attribute macro, and call it using the
 // Define the interface
 #[crate_interface::def_interface]
 pub trait HelloIf {
-    fn hello(&self, name: &str, id: usize) -> String;
+    fn hello(name: &str, id: usize) -> String;
 }
 
 // Implement the interface in any crate
@@ -29,7 +29,7 @@ struct HelloIfImpl;
 
 #[crate_interface::impl_interface]
 impl HelloIf for HelloIfImpl {
-    fn hello(&self, name: &str, id: usize) -> String {
+    fn hello(name: &str, id: usize) -> String {
         format!("Hello, {} {}!", name, id)
     }
 }
@@ -59,7 +59,7 @@ provides a much more ergonomic API.
 // Define the interface with caller generation
 #[crate_interface::def_interface(gen_caller)]
 pub trait HelloIf {
-    fn hello(&self, name: &str, id: usize) -> String;
+    fn hello(name: &str, id: usize) -> String;
 }
 
 // a function to call the interface function is generated here like:
@@ -70,7 +70,7 @@ struct HelloIfImpl;
 
 #[crate_interface::impl_interface]
 impl HelloIf for HelloIfImpl {
-    fn hello(&self, name: &str, id: usize) -> String {
+    fn hello(name: &str, id: usize) -> String {
         format!("Hello, {} {}!", name, id)
     }
 }
@@ -93,14 +93,14 @@ done by adding the `namespace` argument to the `def_interface!`,
 mod a {
     #[crate_interface::def_interface(namespace = ShoppingMall)]
     pub trait HelloIf {
-        fn hello(&self, name: &str, id: usize) -> String;
+        fn hello(name: &str, id: usize) -> String;
     }
 }
 
 mod b {
     #[crate_interface::def_interface(namespace = Restaurant)]
     pub trait HelloIf {
-        fn hello(&self, name: &str, id: usize) -> String;
+        fn hello(name: &str, id: usize) -> String;
     }
 }
 
@@ -111,7 +111,7 @@ mod c {
 
     #[crate_interface::impl_interface(namespace = ShoppingMall)]
     impl a::HelloIf for HelloIfImplA {
-        fn hello(&self, name: &str, id: usize) -> String {
+        fn hello(name: &str, id: usize) -> String {
             format!("Welcome to the mall, {} {}!", name, id)
         }
     }
@@ -119,7 +119,7 @@ mod c {
     struct HelloIfImplB;
     #[crate_interface::impl_interface(namespace = Restaurant)]
     impl b::HelloIf for HelloIfImplB {
-        fn hello(&self, name: &str, id: usize) -> String {
+        fn hello(name: &str, id: usize) -> String {
             format!("Welcome to the restaurant, {} {}!", name, id)
         }
     }
@@ -143,6 +143,29 @@ fn main() {
 
 A few things to keep in mind when using this crate:
 
+- **Methods with receivers are not supported.** Interface functions must not
+  have `self`, `&self`, or `&mut self` parameters. Use associated functions
+  (static methods) instead:
+
+  ```rust,compile_fail
+  # use crate_interface::*;
+  #[def_interface]
+  trait MyIf {
+      fn foo(&self); // error: methods with receiver (self) are not allowed
+  }
+  ```
+
+- **Generic parameters are not supported.** Interface functions cannot have
+  generic type parameters, lifetime parameters, or const generic parameters:
+
+  ```rust,compile_fail
+  # use crate_interface::*;
+  #[def_interface]
+  trait MyIf {
+      fn foo<T>(x: T); // error: generic parameters are not allowed
+  }
+  ```
+
 - Do not implement an interface for multiple types. No matter in the same crate
   or different crates as long as they are linked together, it will cause a
   link-time error due to duplicate symbol definitions.
@@ -159,7 +182,7 @@ The procedural macros in the above example will generate the following code:
 ```rust
 // #[def_interface]
 pub trait HelloIf {
-    fn hello(&self, name: &str, id: usize) -> String;
+    fn hello(name: &str, id: usize) -> String;
 }
 
 #[allow(non_snake_case)]
@@ -175,13 +198,12 @@ struct HelloIfImpl;
 // #[impl_interface]
 impl HelloIf for HelloIfImpl {
     #[inline]
-    fn hello(&self, name: &str, id: usize) -> String {
+    fn hello(name: &str, id: usize) -> String {
         {
             #[inline]
             #[export_name = "__HelloIf_hello"]
             extern "Rust" fn __HelloIf_hello(name: &str, id: usize) -> String {
-                let _impl: HelloIfImpl = HelloIfImpl;
-                _impl.hello(name, id)
+                HelloIfImpl::hello(name, id)
             }
         }
         {
@@ -202,7 +224,7 @@ functions will also be generated. For example, `HelloIf` above will generate:
 
 ```rust
 pub trait HelloIf {
-    fn hello(&self, name: &str, id: usize) -> String;
+    fn hello(name: &str, id: usize) -> String;
 }
 #[doc(hidden)]
 #[allow(non_snake_case)]
@@ -224,7 +246,7 @@ namespace, the generated code will be:
 
 ```rust
 pub trait HelloIf {
-    fn hello(&self, name: &str, id: usize) -> String;
+    fn hello(name: &str, id: usize) -> String;
 }
 #[doc(hidden)]
 #[allow(non_snake_case)]
