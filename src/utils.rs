@@ -1,3 +1,8 @@
+//! Architecture helpers for FXMAC on supported targets.
+//!
+//! This module provides low-level helpers (CPU ID, barriers, cache ops) used by
+//! the driver on aarch64 platforms.
+
 #[cfg(target_arch = "aarch64")]
 mod arch {
     use core::arch::asm;
@@ -127,7 +132,7 @@ mod arch {
         MTCPSR(currmask);
     }
 
-    use aarch64_cpu::registers::{CNTFRQ_EL0, CNTVCT_EL0, Readable};
+    use aarch64_cpu::registers::{Readable, CNTFRQ_EL0, CNTVCT_EL0};
 
     #[inline]
     pub fn now_tsc() -> u64 {

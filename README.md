@@ -59,6 +59,14 @@ let recv_packets = FXmacRecvHandler(fxmac_device);
 cargo build --target=aarch64-unknown-none-softfloat
 ```
 
+## Testing (建议)
+
+由于该驱动强依赖硬件与 DMA，建议分层补充测试并按能力选择运行环境：
+
+- 单元测试/文档测试（主机可跑）：`cargo test --all-features`、`cargo test --doc`
+- 功能测试（mock/模拟）：对 BD ring、地址转换与错误分支做行为验证
+- 系统测试（真实板子）：在 PhytiumPi 上验证链路协商、收发路径与中断处理
+
 ## About ethernet
 PHY: Motorcomm YT8521
 
