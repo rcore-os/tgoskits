@@ -139,6 +139,98 @@ fn main() {
 
 ```
 
+### Default Implementations with Weak Symbols
+
+The `weak_default` feature allows you to define **default implementations** for
+interface methods. These defaults are compiled as **weak symbols**, which means:
+
+- Implementors can choose to override only the methods they need
+- Methods without explicit implementations will automatically use the defaults
+- The linker resolves which implementation to use at link time
+
+This is useful when you want to provide sensible defaults while still allowing
+customization. To use this feature, you need to use nightly Rust and enable
+`#![feature(linkage)]` in the crate that defines the interface trait.
+
+Due to Rust compiler limitations, it's impossible to implement an interface  
+with default implementations in the same crate where it's defined. This should
+not be a problem for most cases, because the only sensible scenario where an
+interface would be implemented in the same crate where it's defined is for  
+testing, and such tests can always be done in a separate crate.  
+
+For example, given the following interface definition with default
+implementations:
+
+```rust,ignore
+#![feature(linkage)]
+use crate_interface::def_interface;
+
+#[def_interface]
+pub trait InitIf {
+    fn init() {
+        // default implementation that calls another method
+        Self::setup();
+        println!("Default init");
+    }
+    fn setup() {
+        println!("Default setup");
+    }
+}
+```
+
+The macro will expand to:
+
+```rust,ignore
+pub trait InitIf {
+    fn init() {
+        #[allow(non_snake_case)]
+        #[linkage = "weak"]
+        #[no_mangle]
+        extern "Rust" fn __InitIf_init() {
+            // A proxy function is generated for Self::setup() calls
+            #[allow(non_snake_case)]
+            fn __self_proxy_setup() {
+                unsafe { __InitIf_mod::__InitIf_setup() }
+            }
+
+            // Self::setup() is rewritten to use the proxy function
+            __self_proxy_setup();
+            println!("Default init");
+        }
+        __InitIf_init()
+    }
+    fn setup() {
+        #[allow(non_snake_case)]
+        #[linkage = "weak"]
+        #[no_mangle]
+        extern "Rust" fn __InitIf_setup() {
+            println!("Default setup");
+        }
+        __InitIf_setup()
+    }
+}
+
+#[doc(hidden)]
+#[allow(non_snake_case)]
+pub mod __InitIf_mod {
+    use super::*;
+    extern "Rust" {
+        pub fn __InitIf_init();
+        pub fn __InitIf_setup();
+    }
+}
+```
+
+The default implementation is compiled as a weak symbol (`#[linkage = "weak"]`).
+When an implementor provides their own implementation using `impl_interface`, it
+generates a strong symbol with the same name, which the linker will prefer over
+the weak symbol.
+
+When a default implementation calls another trait method via `Self::method()`,
+a proxy function (`__self_proxy_method`) is generated. This proxy calls the
+extern function, ensuring that if an implementor overrides that method, the
+overridden (strong symbol) version is called at runtime instead of the default.
+
 ## Things to Note
 
 A few things to keep in mind when using this crate:

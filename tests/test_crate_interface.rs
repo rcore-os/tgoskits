@@ -2,9 +2,7 @@ use crate_interface::*;
 
 #[def_interface]
 trait SimpleIf {
-    fn foo() -> u32 {
-        123
-    }
+    fn foo() -> u32;
 
     /// Test comments
     fn bar(a: u16, b: &[u8], c: &str);

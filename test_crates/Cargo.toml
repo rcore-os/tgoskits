@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = [
+    "define-simple-traits",
+    "define-weak-traits",
+    "impl-simple-traits",
+    "impl-weak-traits",
+    "impl-weak-partial",
+    "test-simple",
+    "test-weak",
+    "test-weak-partial",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+crate_interface = { path = ".." }
+define-simple-traits = { path = "./define-simple-traits" }
+define-weak-traits = { path = "./define-weak-traits" }
+impl-simple-traits = { path = "./impl-simple-traits" }
+impl-weak-traits = { path = "./impl-weak-traits" }
+impl-weak-partial = { path = "./impl-weak-partial" }

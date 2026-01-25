@@ -1,5 +1,6 @@
 [workspace]
 members = ["crate_interface_lite"]
+exclude = ["test_crates"]
 
 [package]
 name = "crate_interface"
@@ -18,7 +19,13 @@ rust-version = "1.68"
 [dependencies]
 proc-macro2 = "1.0"
 quote = "1.0"
-syn = { version = "2.0", features = ["full"] }
+syn = { version = "2.0", features = ["full", "visit-mut"] }
+
+[features]
+default = []
+# Generate weak symbol functions for trait methods with default implementations.
+# Requires nightly Rust and `#![feature(linkage)]` in the crate that uses this.
+weak_default = []
 
 [lib]
 proc-macro = true
