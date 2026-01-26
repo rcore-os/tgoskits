@@ -6,14 +6,24 @@
 extern crate log;
 
 mod arch;
+#[cfg(any(target_pointer_width = "32", doc, docsrs))]
+mod bits32;
+#[cfg(any(target_pointer_width = "64", doc, docsrs))]
 mod bits64;
 
 use core::fmt::Debug;
 
+use arrayvec::ArrayVec;
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr};
 #[doc(no_inline)]
 pub use page_table_entry::{GenericPTE, MappingFlags};
 
+#[cfg(any(target_pointer_width = "32", doc, docsrs))]
+pub use self::{
+    arch::*,
+    bits32::{PageTable32, PageTable32Cursor},
+};
+#[cfg(any(target_pointer_width = "64", doc, docsrs))]
 pub use self::{
     arch::*,
     bits64::{PageTable64, PageTable64Cursor},
@@ -120,6 +130,8 @@ pub trait PagingHandler: Sized {
 pub enum PageSize {
     /// Size of 4 kilobytes (2<sup>12</sup> bytes).
     Size4K = 0x1000,
+    /// Size of 1 megabytes (2<sup>20</sup> bytes).
+    Size1M = 0x10_0000,
     /// Size of 2 megabytes (2<sup>21</sup> bytes).
     Size2M = 0x20_0000,
     /// Size of 1 gigabytes (2<sup>30</sup> bytes).
@@ -129,7 +141,7 @@ pub enum PageSize {
 impl PageSize {
     /// Whether this page size is considered huge (larger than 4K).
     pub const fn is_huge(self) -> bool {
-        matches!(self, Self::Size1G | Self::Size2M)
+        matches!(self, Self::Size1G | Self::Size2M | Self::Size1M)
     }
 
     /// Checks whether a given address or size is aligned to the page size.
@@ -148,4 +160,13 @@ impl From<PageSize> for usize {
     fn from(size: PageSize) -> usize {
         size as usize
     }
+}
+
+// TODO: tune threshold; employ a more advanced data structure
+const SMALL_FLUSH_THRESHOLD: usize = 32;
+
+enum TlbFlusher<M: PagingMetaData> {
+    None,
+    Array(ArrayVec<M::VirtAddr, SMALL_FLUSH_THRESHOLD>),
+    Full,
 }

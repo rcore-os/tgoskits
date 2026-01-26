@@ -6,28 +6,32 @@
 
 This crate provides generic, unified, architecture-independent, and OS-free page table structures for various hardware architectures.
 
-The core struct is [`PageTable64<M, PTE, H>`][1]. OS-functions and architecture-dependent types are provided by generic parameters:
+The core structs are [`PageTable64<M, PTE, H>`][1] (for 64-bit) and [`PageTable32<M, PTE, H>`][2] (for 32-bit). OS-functions and architecture-dependent types are provided by generic parameters:
 
-- `M`: The architecture-dependent metadata, requires to implement the [`PagingMetaData`][2] trait.
-- `PTE`: The architecture-dependent page table entry, requires to implement the [`GenericPTE`][3] trait.
-- `H`: OS-functions such as physical memory allocation, requires to implement the [`PagingHandler`][4] trait.
+- `M`: The architecture-dependent metadata, requires to implement the [`PagingMetaData`][3] trait.
+- `PTE`: The architecture-dependent page table entry, requires to implement the [`GenericPTE`][4] trait.
+- `H`: OS-functions such as physical memory allocation, requires to implement the [`PagingHandler`][5] trait.
 
 Currently supported architectures and page table structures:
 
-- x86: [`x86_64::X64PageTable`][5]
-- ARM: [`aarch64::A64PageTable`][6]
-- RISC-V: [`riscv::Sv39PageTable`][7], [`riscv::Sv48PageTable`][8]
-- LoongArch64: [`loongarch64:LA64PageTable`][9]
+- x86: [`x86_64::X64PageTable`][6]
+- ARM (64-bit): [`aarch64::A64PageTable`][7]
+- ARM (32-bit): [`arm::A32PageTable`][8]
+- RISC-V: [`riscv::Sv39PageTable`][9], [`riscv::Sv48PageTable`][10]
+- LoongArch64: [`loongarch64:LA64PageTable`][11]
 
 [1]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/struct.PageTable64.html
-[2]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/trait.PagingMetaData.html
-[3]: https://docs.rs/page_table_entry/latest/page_table_entry/trait.GenericPTE.html
-[4]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/trait.PagingHandler.html
-[5]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/x86_64/type.X64PageTable.html
-[6]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/aarch64/type.A64PageTable.html
-[7]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/riscv/type.Sv39PageTable.html
-[8]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/riscv/type.Sv48PageTable.html
-[9]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/loongarch64/type.LA64PageTable.html
+[2]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/struct.PageTable32.html
+[3]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/trait.PagingMetaData.html
+[4]: https://docs.rs/page_table_entry/latest/page_table_entry/trait.GenericPTE.html
+[5]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/trait.PagingHandler.html
+[6]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/x86_64/type.X64PageTable.html
+[7]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/aarch64/type.A64PageTable.html
+[8]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/arm/type.A32PageTable.html
+[9]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/riscv/type.Sv39PageTable.html
+[10]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/riscv/type.Sv48PageTable.html
+[11]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/loongarch64/type.LA64PageTable.html
+
 
 ## Examples (x86_64)
 
@@ -49,8 +53,10 @@ impl PagingHandler for PagingHandlerImpl {
         Some(PhysAddr::from(ptr as usize))
     }
 
-    fn alloc_frames(num: usize, align_pow2: usize) -> Option<PhysAddr> {
-        todo!();
+    fn alloc_frames(num_pages: usize, align: usize) -> Option<PhysAddr> {
+        let layout = Layout::from_size_align(num_pages * 0x1000, align).unwrap();
+        let ptr = unsafe { alloc::alloc::alloc(layout) };
+        Some(PhysAddr::from(ptr as usize))
     }
 
     fn dealloc_frame(paddr: PhysAddr) {
@@ -58,9 +64,11 @@ impl PagingHandler for PagingHandlerImpl {
         let ptr = paddr.as_usize() as *mut u8;
         unsafe { alloc::alloc::dealloc(ptr, layout) };
     }
-
-    fn dealloc_frames(paddr: PhysAddr, num: usize) {
-        todo!();
+    
+    fn dealloc_frames(paddr: PhysAddr, num_pages: usize) {
+        let layout = Layout::from_size_align(num_pages * 0x1000, 0x1000).unwrap();
+        let ptr = paddr.as_usize() as *mut u8;
+        unsafe { alloc::alloc::dealloc(ptr, layout) };
     }
 
     fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {

@@ -139,6 +139,66 @@ fn run_test_for<M: PagingMetaData<VirtAddr = VirtAddr>, PTE: GenericPTE>() -> Pa
     Ok(())
 }
 
+#[cfg(target_pointer_width = "32")]
+fn run_test_for_32bit<M: PagingMetaData<VirtAddr = VirtAddr>, PTE: GenericPTE>() -> PagingResult<()>
+{
+    use page_table_multiarch::PageTable32;
+    ALLOCATED.with_borrow_mut(|it| {
+        it.clear();
+    });
+
+    let vaddr_mask = ((1u64 << M::VA_MAX_BITS) - 1) & !0xfff;
+
+    let mut table = PageTable32::<M, PTE, TrackPagingHandler<M>>::try_new().unwrap();
+    let mut pages = HashSet::new();
+    let mut rng = SmallRng::seed_from_u64(5678);
+    for _ in 0..512 {
+        // Fewer iterations for 32-bit to avoid address space exhaustion
+        if rng.random_ratio(3, 4) || pages.is_empty() {
+            // insert a mapping
+            let addr = loop {
+                let addr = rng.random::<u32>() & (vaddr_mask as u32);
+                if pages.insert(addr as u64) {
+                    break addr as u64;
+                }
+            };
+            table
+                .map(
+                    VirtAddr::from_usize(addr as usize),
+                    PhysAddr::from_usize((rng.random::<u32>() & (vaddr_mask as u32)) as usize),
+                    PageSize::Size4K,
+                    MappingFlags::READ | MappingFlags::WRITE,
+                )?
+                .ignore();
+        } else {
+            // remove a mapping
+            let addr = *pages.iter().next().unwrap();
+            table.unmap(VirtAddr::from_usize(addr as usize))?.2.ignore();
+            pages.remove(&addr);
+        }
+    }
+
+    drop(table);
+    assert_eq!(
+        ALLOCATED.with_borrow(|it| it.len()),
+        0,
+        "Some frames were not deallocated"
+    );
+
+    Ok(())
+}
+
+#[test]
+#[cfg(any(target_arch = "arm", docsrs))]
+#[cfg(target_pointer_width = "32")]
+fn test_dealloc_arm32() -> PagingResult<()> {
+    run_test_for_32bit::<
+        page_table_multiarch::arm::A32PagingMetaData,
+        page_table_entry::arm::A32PTE,
+    >()?;
+    Ok(())
+}
+
 #[test]
 #[cfg(any(target_arch = "x86_64", docsrs))]
 fn test_dealloc_x86() -> PagingResult<()> {
