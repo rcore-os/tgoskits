@@ -1,11 +1,15 @@
 [package]
 name = "axklib"
-version = "0.2.0"
+version = "0.1.0-alpha.1"
 edition = "2024"
 authors = ["周睿 <zrufo747@outlook.com>"]
+description = "Small kernel-helper abstractions used across the microkernel"
+repository = "https://github.com/arceos-hypervisor/axklib"
 license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
 keywords = ["arceos", "kernel"]
 categories = ["os", "no-std"]
+readme = "README.md"
+documentation = "https://arceos-hypervisor.github.io/axklib"
 
 [dependencies]
 axerrno = "0.1"
