@@ -14,6 +14,7 @@ rust-version.workspace = true
 
 [features]
 arm-el2 = []
+xuantie-c9xx = []
 
 [dependencies]
 bitflags = "2.9"
