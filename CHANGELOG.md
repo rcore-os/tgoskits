@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.6.0
+
+### New Features
+
+- [Add ARMv7-A support with page table structures and tests](https://github.com/arceos-org/page_table_multiarch/pull/31).
+- [Add xuantie-c9xx special pte attr support](https://github.com/arceos-org/page_table_multiarch/pull/39).
+- [Update `PagingHandler`, adding methods for allocating/deallocating multiple frames](https://github.com/arceos-org/page_table_multiarch/pull/37).
+
+### Refactoring
+
+- [Refactor page table cursor](https://github.com/arceos-org/page_table_multiarch/pull/35).
+
+### Style
+
+- [Style: cleanup](https://github.com/arceos-org/page_table_multiarch/pull/34).
+
+## 0.5.7
+
+### New Features
+
+- [Add axerrno compatibility](https://github.com/arceos-org/page_table_multiarch/pull/25).
+
+### Bug Fixes
+
+- [Fix: use `--cfg docsrs` for document](https://github.com/arceos-org/page_table_multiarch/pull/27).
+
+## 0.5.6
+
+### Bug Fixes
+
+- Fix doc_auto_cfg.
+- [Fix LoongArch64: set PTEFlags::D with MappingFlags::WRITE](https://github.com/arceos-org/page_table_multiarch/commit/e537bd4).
+- [Fix documentation: clarify alignment behavior and fix typo in map function](https://github.com/arceos-org/page_table_multiarch/commit/9049ac7).
+
 ## 0.5.5
 
 ### Bug Fixes

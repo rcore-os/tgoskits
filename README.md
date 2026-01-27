@@ -6,6 +6,7 @@ Currently supported architectures:
 
 - x86_64 (4 levels)
 - AArch64 (4 levels)
+- ARM (32-bit) (2 levels)
 - RISC-V (3 level Sv39, 4 levels Sv48)
 - LoongArch64 (4 levels)
 
