@@ -114,7 +114,7 @@ impl PageTableEntry for Entry {
                 if matches!(config.mem_attr, MemAttributes::PerCpu) {
                     val += PTE::SHAREABLE::NON;
                 } else {
-                    val += PTE::SHAREABLE::OUTER;
+                    val += PTE::SHAREABLE::INNER;
                 }
             }
             MemAttributes::Uncached => {
