@@ -99,7 +99,7 @@ mod arch {
     /// len: Length of the range to be invalidated in bytes.
     pub(crate) fn FCacheDCacheInvalidateRange(mut adr: u64, len: u64) {
         let end: u64 = adr + len;
-        adr = adr & (!CACHE_LINE_ADDR_MASK);
+        adr &= !CACHE_LINE_ADDR_MASK;
         let currmask: u32 = MFCPSR();
         MTCPSR(currmask | IRQ_FIQ_MASK);
         if (len != 0) {
@@ -118,7 +118,7 @@ mod arch {
     /// adr: 64bit start address of the range to be flush.
     pub(crate) fn FCacheDCacheFlushRange(mut adr: u64, len: u64) {
         let end: u64 = adr + len;
-        adr = adr & (!CACHE_LINE_ADDR_MASK);
+        adr &= !CACHE_LINE_ADDR_MASK;
         let currmask: u32 = MFCPSR();
         MTCPSR(currmask | IRQ_FIQ_MASK);
         if len != 0 {
@@ -141,7 +141,7 @@ mod arch {
 
     #[inline]
     pub fn timer_freq() -> u64 {
-        CNTFRQ_EL0.get() as u64
+        CNTFRQ_EL0.get()
     }
 }
 

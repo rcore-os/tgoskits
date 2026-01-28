@@ -107,19 +107,19 @@ extern crate log;
 #[macro_use]
 mod log {
     macro_rules! trace {
-        ($($arg:expr),*) => { $( let _ = $arg; )* };
+        ($($arg:tt)*) => {};
     }
     macro_rules! debug {
-        ($($arg:expr),*) => { $( let _ = $arg; )* };
+        ($($arg:tt)*) => {};
     }
     macro_rules! info {
-        ($($arg:expr),*) => { $( let _ = $arg; )*};
+        ($($arg:tt)*) => {};
     }
     macro_rules! warn {
-        ($($arg:expr),*) => { $( let _ = $arg; )*};
+        ($($arg:tt)*) => {};
     }
     macro_rules! error {
-        ($($arg:expr),*) => { $( let _ = $arg; )* };
+        ($($arg:tt)*) => {};
     }
 }
 
