@@ -4,7 +4,7 @@
 //! including register configurations for GPU, NPU, VCODEC, and other domains.
 
 use crate::variants::{
-    DomainMap, PowerDomain, RockchipDomainInfo, RockchipPmuInfo, _macros::domain_m_o_r,
+    _macros::domain_m_o_r, DomainMap, PowerDomain, RockchipDomainInfo, RockchipPmuInfo,
 };
 
 define_power_domains! {
