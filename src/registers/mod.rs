@@ -1,8 +1,13 @@
+//! PMU register definitions and access functions
+//!
+//! This module provides bitfield definitions for PMU registers and safe
+//! functions to read and write to hardware registers.
+
 use core::ptr::NonNull;
 
 use tock_registers::register_bitfields;
 
-// 定义位域（bitfields）
+// Define bitfields
 register_bitfields! [
     u32,
 
@@ -48,6 +53,9 @@ register_bitfields! [
     ],
 ];
 
+/// PMU register access structure
+///
+/// Provides safe access to PMU hardware registers at a given base address.
 #[derive(Clone, Copy)]
 pub struct PmuRegs {
     base_addr: NonNull<u8>,
@@ -56,6 +64,11 @@ pub struct PmuRegs {
 unsafe impl Send for PmuRegs {}
 
 impl PmuRegs {
+    /// Create a new PMU register accessor
+    ///
+    /// # Arguments
+    ///
+    /// * `base_addr` - Base address of the PMU register block
     pub const fn new(base_addr: NonNull<u8>) -> Self {
         Self { base_addr }
     }
@@ -68,12 +81,25 @@ impl PmuRegs {
     //     self.reg(0x0)
     // }
 
-    /// 读取32位寄存器值
+    /// Read a 32-bit register value
+    ///
+    /// # Arguments
+    ///
+    /// * `offset` - Byte offset from the base address
+    ///
+    /// # Returns
+    ///
+    /// The 32-bit value read from the register
     pub fn read_u32(&self, offset: usize) -> u32 {
         unsafe { core::ptr::read_volatile(self.base_addr.as_ptr().add(offset) as *const u32) }
     }
 
-    /// 写入32位寄存器值
+    /// Write a 32-bit register value
+    ///
+    /// # Arguments
+    ///
+    /// * `offset` - Byte offset from the base address
+    /// * `value` - The 32-bit value to write to the register
     pub fn write_u32(&self, offset: usize, value: u32) {
         unsafe {
             core::ptr::write_volatile(self.base_addr.as_ptr().add(offset) as *mut u32, value);

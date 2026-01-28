@@ -7,6 +7,8 @@ categories = ["embedded", "no-std"]
 description = "Driver for Rockchip Power Management Unit (PMU) supporting RK3588 and similar SoCs."
 keywords = ["os", "rockchip", "power", "driver"]
 license = "MIT"
+readme = "README.md"
+documentation = "https://docs.rs/rockchip-pm"
 repository = "https://github.com/drivercraft/rockchip-pm"
 
 exclude = [

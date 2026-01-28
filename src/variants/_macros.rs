@@ -1,12 +1,13 @@
+/// Helper macros for power domain definition
 #[macro_export(local_inner_macros)]
 macro_rules! map {
-    // 空 map
+    // Empty map
     () => {
         {
             ::alloc::collections::BTreeMap::new()
         }
     };
-    // 支持多个键值对
+    // Multiple key-value pairs
     ( $( $key:expr => $value:expr ),+ $(,)? ) => {{
         let mut map = ::alloc::collections::BTreeMap::new();
         $( map.insert($key.into(), $value); )*
@@ -29,6 +30,7 @@ macro_rules! define_power_domains {
     };
 }
 
+/// Create a bit mask at the given position
 macro_rules! bit {
     ($n:expr) => {
         (1 << $n)
@@ -39,6 +41,23 @@ macro_rules! bit {
 // Make sure RockchipDomainInfo is in scope
 use super::RockchipDomainInfo;
 
+/// Create a power domain configuration with memory, output, and repair support
+///
+/// # Arguments
+///
+/// * `name` - Domain name
+/// * `pwr_offset` - Power control register offset
+/// * `pwr` - Power control mask
+/// * `status` - Status mask
+/// * `mem_offset` - Memory power register offset
+/// * `mem_status` - Memory status mask
+/// * `repair_status` - Repair status mask
+/// * `req_offset` - Request register offset
+/// * `req` - Request mask
+/// * `idle` - Idle mask
+/// * `ack` - Acknowledge mask
+/// * `wakeup` - Active wakeup flag
+/// * `keepon` - Keep on at startup flag
 #[allow(clippy::too_many_arguments)]
 pub fn domain_m_o_r(
     name: &'static str,

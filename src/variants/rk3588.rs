@@ -1,5 +1,10 @@
+//! RK3588 power domain definitions
+//!
+//! This module contains all power domain definitions for the RK3588 SoC,
+//! including register configurations for GPU, NPU, VCODEC, and other domains.
+
 use crate::variants::{
-    _macros::domain_m_o_r, DomainMap, PowerDomain, RockchipDomainInfo, RockchipPmuInfo,
+    DomainMap, PowerDomain, RockchipDomainInfo, RockchipPmuInfo, _macros::domain_m_o_r,
 };
 
 define_power_domains! {
@@ -63,6 +68,10 @@ define_power_domains! {
     SDMMC = 40,
 }
 
+/// Get PMU configuration for RK3588
+///
+/// Returns the complete PMU register layout and domain configuration
+/// for the RK3588 SoC.
 pub fn pmu_info() -> RockchipPmuInfo {
     RockchipPmuInfo {
         pwr_offset: 0x14c,
@@ -79,6 +88,7 @@ pub fn pmu_info() -> RockchipPmuInfo {
     }
 }
 
+/// Create a basic power domain configuration
 #[allow(clippy::too_many_arguments)]
 fn domain(
     name: &'static str,
@@ -110,6 +120,7 @@ fn domain(
     )
 }
 
+/// Create a power domain configuration that keeps power on at startup
 #[allow(clippy::too_many_arguments)]
 fn domain_p(
     name: &'static str,
@@ -141,6 +152,7 @@ fn domain_p(
     )
 }
 
+/// Get the complete power domain map for RK3588
 fn domains() -> DomainMap {
     map! {
         GPU     => domain("gpu",     0x0, bit!(0), 0,       0x0, 0,        bit!(1),  0x0, bit!(0), bit!(0), false),

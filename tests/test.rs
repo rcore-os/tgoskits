@@ -17,7 +17,7 @@ mod tests {
     use super::*;
     use alloc::vec::Vec;
     use bare_test::{
-        globals::{PlatformInfoKind, global_val},
+        globals::{global_val, PlatformInfoKind},
         mem::{iomap, page_size},
     };
     // RK3588 NPU 相关电源域 ID
