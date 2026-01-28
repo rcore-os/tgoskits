@@ -4,7 +4,7 @@ exclude = ["test_crates"]
 
 [package]
 name = "crate_interface"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["Yuekai Jia <equation618@gmail.com>", "Su Mingxian <aarkegz@gmail.com>"]
 description = "Provides a way to define an interface (trait) in a crate, but can implement or use it in any crate."
