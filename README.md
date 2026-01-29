@@ -52,13 +52,6 @@ fn main() {
 
 ```
 
-## Tests
-Run the tests with:
-
-```bash
-cargo test
-```
-
 ## License
 This project is licensed under either of
 

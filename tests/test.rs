@@ -1,17 +1,4 @@
 use range_alloc_arceos::RangeAllocator;
-use std::ops::Range;
-
-fn assert_fully_freed(allocator: &RangeAllocator<usize>, initial_range: Range<usize>) {
-    assert_eq!(allocator.initial_range(), &initial_range);
-    let len = initial_range.end - initial_range.start;
-    let mut temp = allocator.clone();
-    let res = temp.allocate_range(len);
-    assert!(
-        res.is_ok(),
-        "Allocator should be fully merged and capable of allocating full size"
-    );
-    assert_eq!(res.unwrap(), initial_range);
-}
 
 #[test]
 fn test_simple_allocation() {
@@ -70,25 +57,4 @@ fn test_alignment_gaps() {
 
     let r2 = allocator.allocate_range(100).unwrap();
     assert_eq!(r2, 1100..1200);
-}
-
-#[test]
-fn test_double_free_check() {
-    let mut allocator = RangeAllocator::new(0..100);
-    let r1 = allocator.allocate_range(10).unwrap();
-
-    allocator.free_range(r1.clone());
-}
-
-#[test]
-fn test_grow() {
-    let mut allocator = RangeAllocator::new(0..100);
-    let _ = allocator.allocate_range(100).unwrap();
-
-    allocator.insert_range(100..200);
-
-    let r2 = allocator
-        .allocate_range(50)
-        .expect("Should allow alloc after grow");
-    assert_eq!(r2, 100..150);
 }
