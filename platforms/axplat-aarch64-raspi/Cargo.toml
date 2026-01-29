@@ -13,7 +13,7 @@ repository.workspace = true
 
 [features]
 fp-simd = ["axcpu/fp-simd"]
-irq = ["axplat/irq"]
+irq = ["axplat/irq", "axplat-aarch64-peripherals/irq"]
 rtc = [] # Not implemented, currently no effect
 smp = ["axplat/smp"]
 

@@ -1,6 +1,6 @@
 //! ARM Generic Timer.
 
-use aarch64_cpu::registers::{CNTFRQ_EL0, CNTP_CTL_EL0, CNTP_TVAL_EL0, CNTPCT_EL0};
+use aarch64_cpu::registers::{CNTFRQ_EL0, CNTP_TVAL_EL0, CNTPCT_EL0};
 use aarch64_cpu::registers::{Readable, Writeable};
 use int_ratio::Ratio;
 
@@ -53,7 +53,9 @@ pub fn init_early() {
 ///
 /// It should be called on all CPUs, as the timer interrupt is a PPI (Private
 /// Peripheral Interrupt).
+#[cfg(feature = "irq")]
 pub fn enable_irqs(timer_irq_num: usize) {
+    use aarch64_cpu::registers::CNTP_CTL_EL0;
     CNTP_CTL_EL0.write(CNTP_CTL_EL0::ENABLE::SET);
     CNTP_TVAL_EL0.set(0);
     axplat::irq::set_enable(timer_irq_num, true);
@@ -93,6 +95,7 @@ macro_rules! time_if_impl {
             ///
             /// A timer interrupt will be triggered at the specified monotonic time
             /// deadline (in nanoseconds).
+            #[cfg(feature = "irq")]
             fn set_oneshot_timer(deadline_ns: u64) {
                 $crate::generic_timer::set_oneshot_timer(deadline_ns)
             }
