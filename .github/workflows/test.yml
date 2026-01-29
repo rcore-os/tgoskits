@@ -35,17 +35,12 @@ jobs:
         uses: arceos-org/setup-qemu@v1
         with:
           version: 10.1.0
-          arch_list: ${{ matrix.arch }}
+          arch_list: x86_64,aarch64,riscv64,loongarch64
 
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test
           cache-targets: false
-
-      # - name: Install cargo-binutils
-      #   run: cargo install cargo-binutils
-      # - name: Install ostool
-      #   run: cargo install ostool
 
       - uses: cargo-bins/cargo-binstall@main
 
