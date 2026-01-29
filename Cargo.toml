@@ -1,13 +1,13 @@
 [package]
 name = "range-alloc-arceos"
-version = "0.1.4-alpha.1"
+version = "0.1.4-pre.1"
 description = "Generic range allocator"
-homepage = "https://github.com/numpy1314/range-alloc"
-repository = "https://github.com/numpy1314/range-alloc"
+homepage = "https://github.com/arceos-hypervisor/range-alloc"
+repository = "https://github.com/arceos-hypervisor/range-alloc"
 keywords = ["allocator"]
 license = "MIT OR Apache-2.0"
 authors = ["the gfx-rs Developers"]
-documentation = "https://numpy1314.github.io/range-alloc"
+documentation = "https://docs.rs/range-alloc-arceos"
 categories = ["memory-management"]
 edition = "2018"
 readme = "README.md"
