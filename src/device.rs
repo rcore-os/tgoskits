@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::Range;
 
-use range_alloc::RangeAllocator;
+use range_alloc_arceos::RangeAllocator;
 use spin::Mutex;
 
 use axaddrspace::{
