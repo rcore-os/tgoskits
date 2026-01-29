@@ -1,10 +1,10 @@
-use std::sync::{Arc, Mutex};
+use axaddrspace::device::AccessWidth;
+use axaddrspace::{GuestPhysAddr, GuestPhysAddrRange};
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
 use axdevice_base::BaseDeviceOps;
-use axaddrspace::{GuestPhysAddr, GuestPhysAddrRange};
-use axaddrspace::device::AccessWidth;
 use axerrno::AxResult;
 use axvmconfig::EmulatedDeviceType;
+use std::sync::{Arc, Mutex};
 
 struct MockMmioDevice {
     name: String,
@@ -16,7 +16,7 @@ impl MockMmioDevice {
     fn new(name: &str, base: usize, len: usize) -> Self {
         let start = GuestPhysAddr::from(base);
         let end = GuestPhysAddr::from(base + len);
-        
+
         Self {
             name: String::from(name),
             range: GuestPhysAddrRange::new(start, end),
@@ -43,8 +43,11 @@ impl BaseDeviceOps<GuestPhysAddrRange> for MockMmioDevice {
     }
 
     fn handle_write(&self, addr: GuestPhysAddr, _width: AccessWidth, val: usize) -> AxResult {
-        println!("[Test] Device {} write: addr={:?}, val={:#x}", self.name, addr, val);
-        
+        println!(
+            "[Test] Device {} write: addr={:?}, val={:#x}",
+            self.name, addr, val
+        );
+
         let offset = addr.as_usize() - self.range.start.as_usize();
         *self.last_write.lock().unwrap() = Some((offset, val));
         Ok(())
@@ -65,7 +68,7 @@ fn test_mmio_dispatch_functionality() {
     let write_offset = 0x40;
     let target_addr = GuestPhysAddr::from(base_addr + write_offset);
     let write_val = 0x1234_5678;
-    
+
     let width = AccessWidth::try_from(4).unwrap();
 
     devices
@@ -81,7 +84,7 @@ fn test_mmio_dispatch_functionality() {
     let read_result = devices
         .handle_mmio_read(target_addr, width)
         .expect("MMIO read failed");
-    
+
     assert_eq!(read_result, 0xDEAD_BEEF, "Read value mismatch");
 }
 
