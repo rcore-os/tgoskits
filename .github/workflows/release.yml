@@ -1,0 +1,128 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+      - 'v*.*.*-pre.*'
+
+permissions:
+  contents: write
+
+# Only run for the official repository
+if: github.repository_owner == 'drivercraft'
+
+jobs:
+  check:
+    uses: ./.github/workflows/check.yml
+
+  test:
+    uses: ./.github/workflows/test.yml
+    needs: check
+
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: check
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag and branch (HEAD-based)
+        shell: bash
+        run: |
+          set -e
+
+          TAG="${{ github.ref_name }}"
+          TAG_COMMIT=$(git rev-list -n 1 "$TAG")
+
+          git fetch origin main dev
+
+          MAIN_HEAD=$(git rev-parse origin/main)
+          DEV_HEAD=$(git rev-parse origin/dev)
+
+          echo "Tag:        $TAG"
+          echo "Tag commit: $TAG_COMMIT"
+          echo "main HEAD:  $MAIN_HEAD"
+          echo "dev  HEAD:  $DEV_HEAD"
+
+          if [[ "$TAG" == *-pre.* ]]; then
+            if [ "$TAG_COMMIT" != "$DEV_HEAD" ]; then
+              echo "❌ prerelease tag must be created from dev HEAD"
+              exit 1
+            fi
+            echo "✅ prerelease tag validated on dev"
+          else
+            if [ "$TAG_COMMIT" != "$MAIN_HEAD" ]; then
+              echo "❌ stable release tag must be created from main HEAD"
+              exit 1
+            fi
+            echo "✅ stable release tag validated on main"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-pre.') }}
+          body: |
+            ## ${{ github.ref_name }}
+
+            - [Documentation](https://docs.rs/phytium-mci)
+            - [crates.io](https://crates.io/crates/phytium-mci)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-crates:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    needs: check
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag and branch (HEAD-based)
+        shell: bash
+        run: |
+          set -e
+
+          TAG="${{ github.ref_name }}"
+          TAG_COMMIT=$(git rev-list -n 1 "$TAG")
+
+          git fetch origin main dev
+
+          MAIN_HEAD=$(git rev-parse origin/main)
+          DEV_HEAD=$(git rev-parse origin/dev)
+
+          echo "Tag:        $TAG"
+          echo "Tag commit: $TAG_COMMIT"
+          echo "main HEAD:  $MAIN_HEAD"
+          echo "dev  HEAD:  $DEV_HEAD"
+
+          if [[ "$TAG" == *-pre.* ]]; then
+            if [ "$TAG_COMMIT" != "$DEV_HEAD" ]; then
+              echo "❌ prerelease tag must be created from dev HEAD"
+              exit 1
+            fi
+            echo "✅ prerelease tag validated on dev"
+          else
+            if [ "$TAG_COMMIT" != "$MAIN_HEAD" ]; then
+              echo "❌ stable release tag must be created from main HEAD"
+              exit 1
+            fi
+            echo "✅ stable release tag validated on main"
+          fi
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-08-15
+
+      - name: Publish to crates.io
+        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
