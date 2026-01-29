@@ -5,7 +5,7 @@ edition.workspace = true
 license = "MIT"
 description = "macros for bare-test"
 authors = ["周睿 <zrufo747@outlook.com>"]
-repository = "https://github.com/qclic/sparreal-os/tree/main/crates/bare-test-macros"
+repository.workspace = true
 categories = ["embedded", "no-std"]
 
 [lib]

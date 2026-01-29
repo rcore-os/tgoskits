@@ -2,9 +2,6 @@
 runner = "cargo osrun"
 
 [alias]
-build = "build --config .cargo/config-app.toml  -Z unstable-options -Z build-std=core,alloc"
-run = "run --config .cargo/config-app.toml  -Z unstable-options -Z build-std=core,alloc"
-ostest = "test --config .cargo/config-test.toml  -Z unstable-options -Z build-std=core,alloc"
-
-run-aarch64 = "run --config .cargo/config-app.toml  -Z unstable-options -Z build-std=core,alloc --target aarch64-unknown-none-softfloat"
-run-la64 = "run --config .cargo/config-app.toml  -Z unstable-options -Z build-std=core,alloc --target loongarch64-unknown-none-softfloat"
+b = "build --config .cargo/config-app.toml  -Z unstable-options -Z build-std=core,alloc"
+r = "run --config .cargo/config-app.toml  -Z unstable-options -Z build-std=core,alloc"
+t = "test --config .cargo/config-test.toml  -Z unstable-options -Z build-std=core,alloc"

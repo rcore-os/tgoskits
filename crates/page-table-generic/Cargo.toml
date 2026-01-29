@@ -7,7 +7,7 @@ edition.workspace = true
 keywords = ["pagetable", "mmu"]
 license.workspace = true
 name = "page-table-generic"
-repository = "https://github.com/rcore-os/somehal/page-table-generic"
+repository.workspace = true
 version = "0.7.0"
 
 [dependencies]

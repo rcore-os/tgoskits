@@ -5,8 +5,8 @@ description = "A test framework for bare metal."
 keywords = ["test", "case", "testing", "testcase", "unittest"]
 license = "MPL-2.0"
 name = "bare-test"
-edition = "2024"
-repository = "https://github.com/ZR233/sparreal-os/tree/main/crates/bare-test"
+edition.workspace = true
+repository.workspace = true
 version = "0.8.0"
 
 [dependencies]

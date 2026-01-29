@@ -6,7 +6,7 @@ edition.workspace = true
 keywords = ["os"]
 license = "MPL-2.0"
 name = "someboot"
-repository = "https://github.com/ZR233/sparreal-os"
+repository.workspace = true
 version = "0.1.0"
 
 [features]
