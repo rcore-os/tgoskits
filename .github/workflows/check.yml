@@ -1,6 +1,7 @@
 name: Check
 
 on:
+  workflow_call:
   push:
     branches: [ no_std ]
   pull_request:
