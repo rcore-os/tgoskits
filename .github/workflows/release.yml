@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+      - 'v*.*.*-pre.*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    if: github.repository_owner == 'arceos-hypervisor'
+    name: Check
+    uses: ./.github/workflows/check.yml
+
+  test:
+    if: github.repository_owner == 'arceos-hypervisor'
+    name: Test
+    uses: ./.github/workflows/test.yml
+    needs: check
+
+  publish-crates:
+    if: github.repository_owner == 'arceos-hypervisor'
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag and branch (HEAD-based)
+        shell: bash
+        run: |
+          set -e
+
+          TAG="${{ github.ref_name }}"
+          TAG_COMMIT=$(git rev-list -n 1 "$TAG")
+
+          git fetch origin master
+
+          MASTER_HEAD=$(git rev-parse origin/master)
+
+          echo "Tag:         $TAG"
+          echo "Tag commit:  $TAG_COMMIT"
+          echo "Master HEAD: $MASTER_HEAD"
+
+          if [ "$TAG_COMMIT" != "$MASTER_HEAD" ]; then
+            echo "❌ release tag must be created from master HEAD"
+            exit 1
+          fi
+          echo "✅ tag validated on master"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Publish to crates.io
+        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  create-release:
+    if: github.repository_owner == 'arceos-hypervisor'
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: publish-crates
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-pre.') }}
+          generate_release_notes: true
+          body: |
+            ## ${{ github.ref_name }}
+
+            - Documentation: https://docs.rs/axdevice
+            - crates.io: https://crates.io/crates/axdevice
