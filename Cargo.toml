@@ -1,18 +1,29 @@
 [package]
 name = "axdevice_base"
-edition = "2024"
 version = "0.1.0"
-description = "Basic traits and structures for emulated devices in ArceOS hypervisor."
+edition = "2024"
 authors = ["Hui Xiao <1127751018@qq.com>"]
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0" # MulanPubL2 is not included in SPDX
-categories = ["virtualization", "no-std"]
-homepage = "https://github.com/arceos-hypervisor/axvisor" 
+description = "Basic traits and structures for emulated devices in ArceOS hypervisor."
+documentation = "https://docs.rs/axdevice_base"
+repository = "https://github.com/arceos-hypervisor/axdevice_base"
+readme = "README.md"
+license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
+keywords = ["arceos", "hypervisor", "virtualization", "device", "no-std"]
+categories = ["no-std", "virtualization"]
 
 [dependencies]
-cfg-if = "1.0"
-serde = { version = "1.0.204", default-features = false, features = ["derive", "alloc"] }
-# System independent crates provided by ArceOS.
-axerrno = "0.1.0"
-axaddrspace = "0.1.0"
-axvmconfig = { version = "0.1.0", default-features = false }
+# Serialization support
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+
+# ArceOS core crates
+axaddrspace = "0.1"
+axerrno = "0.1"
+axvmconfig = { version = "0.1", default-features = false }
 memory_addr = "0.4"
+
+[dev-dependencies]
+
+[package.metadata.docs.rs]
+all-features = true
+default-target = "x86_64-unknown-linux-gnu"
+targets = ["x86_64-unknown-linux-gnu", "riscv64gc-unknown-none-elf", "aarch64-unknown-none-softfloat"]
