@@ -11,6 +11,8 @@ impl Context {
             Arch::Aarch64
         } else if build_config.target.contains("x86_64") {
             Arch::X86_64
+        } else if build_config.target.contains("riscv64") {
+            Arch::Riscv64
         } else {
             return Err(anyhow::anyhow!(
                 "Unsupported target architecture: {}",
@@ -64,4 +66,5 @@ impl Context {
 enum Arch {
     Aarch64,
     X86_64,
+    Riscv64,
 }
