@@ -1,8 +1,6 @@
 [workspace]
 resolver = "2"
-members = [
-    "axvisor_api_proc",
-]
+members = ["axvisor_api_proc"]
 
 [workspace.package]
 authors = ["Su Mingxian <aarkegz@gmail.com>"]
@@ -12,9 +10,11 @@ repository = "https://github.com/arceos-hypervisor/axvisor_api"
 
 [package]
 name = "axvisor_api"
-description = "Basic API for components of the Hypervisor on ArceOS"
 version = "0.2.0"
-keywords = ["axvisor", "api", "embedded"]
+description = "Basic API for components of the Hypervisor on ArceOS"
+documentation = "https://docs.rs/axvisor_api"
+readme = "README.md"
+keywords = ["axvisor", "api", "embedded", "hypervisor"]
 categories = ["embedded", "no-std"]
 authors.workspace = true
 edition.workspace = true
@@ -22,8 +22,24 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-axvisor_api_proc = { path = "axvisor_api_proc", version = "0.2.0"}
+# === Core Components ===
+# Procedural macro definitions
+axvisor_api_proc = { path = "axvisor_api_proc", version = "0.2.0" }
 
-crate_interface = "0.2"
-memory_addr = "0.4"
+# === Third-party Libraries ===
+# Address space abstraction
 axaddrspace = "0.1.0"
+# Interface definition tools
+crate_interface = "0.2"
+# Physical/virtual address types
+memory_addr = "0.4"
+
+[package.metadata.docs.rs]
+all-features = true
+default-target = "x86_64-unknown-linux-gnu"
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-none",
+    "riscv64gc-unknown-none-elf",
+    "aarch64-unknown-none-softfloat",
+]

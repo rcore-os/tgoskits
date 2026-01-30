@@ -1,6 +1,9 @@
 # axvisor\_api (Experimental Next-Generation Axvisor API)
+
 [![CI](https://github.com/arceos-hypervisor/axvisor_api/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/arceos-hypervisor/axvisor_api/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)]
+[![Crates.io](https://img.shields.io/crates/v/axvisor_api)](https://crates.io/crates/axvisor_api)
+[![Docs.rs](https://docs.rs/axvisor_api/badge.svg)](https://docs.rs/axvisor_api)
+[![License](https://img.shields.io/badge/License-GPL--3.0--or--later%20OR%20Apache--2.0%20OR%20MulanPSL--2.0-blue.svg)](LICENSE.Apache2)
 
 \> [中文README](README.zh-cn.md) <
 

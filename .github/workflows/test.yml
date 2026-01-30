@@ -1,0 +1,23 @@
+name: Test
+
+on:
+  workflow_call:
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2025-05-20
+
+      - name: Run tests
+        run: cargo test --all-features -- --nocapture
+
+      - name: Run doc tests
+        run: cargo test --doc --all-features

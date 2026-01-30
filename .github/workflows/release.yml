@@ -1,0 +1,174 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+      - 'v*.*.*-pre.*'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUSTDOCFLAGS: -D rustdoc::broken_intra_doc_links -D missing-docs
+
+jobs:
+  check:
+    uses: ./.github/workflows/check.yml
+
+  test:
+    uses: ./.github/workflows/test.yml
+    needs: check
+
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: check
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag and branch (HEAD-based)
+        shell: bash
+        run: |
+          set -e
+
+          TAG="${{ github.ref_name }}"
+          TAG_COMMIT=$(git rev-list -n 1 "$TAG")
+
+          git fetch origin main dev
+
+          MAIN_HEAD=$(git rev-parse origin/main)
+          DEV_HEAD=$(git rev-parse origin/dev)
+
+          echo "Tag:        $TAG"
+          echo "Tag commit: $TAG_COMMIT"
+          echo "main HEAD:  $MAIN_HEAD"
+          echo "dev  HEAD:  $DEV_HEAD"
+
+          if [[ "$TAG" == *-pre.* ]]; then
+            if [ "$TAG_COMMIT" != "$DEV_HEAD" ]; then
+              echo "❌ prerelease tag must be created from dev HEAD"
+              exit 1
+            fi
+            echo "✅ prerelease tag validated on dev"
+          else
+            if [ "$TAG_COMMIT" != "$MAIN_HEAD" ]; then
+              echo "❌ stable release tag must be created from main HEAD"
+              exit 1
+            fi
+            echo "✅ stable release tag validated on main"
+          fi
+
+      - name: Verify version consistency
+        run: |
+          # Extract version from git tag (remove 'v' prefix)
+          TAG_VERSION="${{ github.ref_name }}"
+          TAG_VERSION="${TAG_VERSION#v}"
+          # Extract version from Cargo.toml using cargo metadata
+          CARGO_VERSION=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "axvisor_api") | .version')
+          echo "Git tag version: $TAG_VERSION"
+          echo "Cargo.toml version: $CARGO_VERSION"
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "ERROR: Version mismatch! Tag version ($TAG_VERSION) != Cargo.toml version ($CARGO_VERSION)"
+            exit 1
+          fi
+          echo "Version check passed!"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-pre.') }}
+          body: |
+            ## ${{ github.ref_name }}
+
+            - [Documentation](https://docs.rs/axvisor_api)
+            - [crates.io](https://crates.io/crates/axvisor_api)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-crates:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    needs: check
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag and branch (HEAD-based)
+        shell: bash
+        run: |
+          set -e
+
+          TAG="${{ github.ref_name }}"
+          TAG_COMMIT=$(git rev-list -n 1 "$TAG")
+
+          git fetch origin main dev
+
+          MAIN_HEAD=$(git rev-parse origin/main)
+          DEV_HEAD=$(git rev-parse origin/dev)
+
+          echo "Tag:        $TAG"
+          echo "Tag commit: $TAG_COMMIT"
+          echo "main HEAD:  $MAIN_HEAD"
+          echo "dev  HEAD:  $DEV_HEAD"
+
+          if [[ "$TAG" == *-pre.* ]]; then
+            if [ "$TAG_COMMIT" != "$DEV_HEAD" ]; then
+              echo "❌ prerelease tag must be created from dev HEAD"
+              exit 1
+            fi
+            echo "✅ prerelease tag validated on dev"
+          else
+            if [ "$TAG_COMMIT" != "$MAIN_HEAD" ]; then
+              echo "❌ stable release tag must be created from main HEAD"
+              exit 1
+            fi
+            echo "✅ stable release tag validated on main"
+          fi
+
+      - name: Verify version consistency
+        run: |
+          # Extract version from git tag (remove 'v' prefix)
+          TAG_VERSION="${{ github.ref_name }}"
+          TAG_VERSION="${TAG_VERSION#v}"
+          # Extract version from Cargo.toml using cargo metadata
+          CARGO_VERSION=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "axvisor_api") | .version')
+          echo "Git tag version: $TAG_VERSION"
+          echo "Cargo.toml version: $CARGO_VERSION"
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "ERROR: Version mismatch! Tag version ($TAG_VERSION) != Cargo.toml version ($CARGO_VERSION)"
+            exit 1
+          fi
+          echo "Version check passed!"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2025-05-20
+
+      # Workspace crates must be published in dependency order
+      - name: Dry run publish (axvisor_api_proc)
+        run: cargo publish --dry-run -p axvisor_api_proc
+
+      - name: Dry run publish (axvisor_api)
+        run: cargo publish --dry-run -p axvisor_api
+
+      - name: Publish axvisor_api_proc to crates.io
+        run: cargo publish -p axvisor_api_proc --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      # Wait for crates.io to index the proc-macro crate
+      - name: Wait for crates.io indexing
+        run: sleep 30
+
+      - name: Publish axvisor_api to crates.io
+        run: cargo publish -p axvisor_api --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
