@@ -135,14 +135,8 @@ jobs:
           draft: false
           prerelease: ${{ needs.verify-tag.outputs.is_prerelease == 'true' }}
           body: |
-            ## ${{ github.ref_name }}
-
-            ### Changes
+            ## Changes
             ${{ steps.release_notes.outputs.changelog }}
-
-            ### Links
-            - [Documentation](https://docs.rs/arm_vgic)
-            - [crates.io](https://crates.io/crates/arm_vgic)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
