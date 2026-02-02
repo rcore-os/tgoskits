@@ -10,7 +10,7 @@ authors = [
     "周睿 <zrufo747@outlook.com>"
 ]
 description = "Aarch64 VCPU implementation for Arceos Hypervisor"
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 repository = "https://github.com/arceos-hypervisor/arm_vcpu"
 categories = ["embedded", "no-std"]
 keywords = ["hypervisor", "aarch64", "vcpu"]

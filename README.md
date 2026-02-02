@@ -59,10 +59,4 @@ if has_hardware_support() {
 
 ## License
 
-This project is dual-licensed under either:
-
-- MIT License ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
-
-at your option.
-
+Arm_vcpu is licensed under the Apache License, Version 2.0. See the [LICENSE](./LICENSE) file for details.
