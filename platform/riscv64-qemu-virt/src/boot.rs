@@ -73,7 +73,7 @@ unsafe extern "C" fn _start() -> ! {
 /// The earliest entry point for secondary CPUs.
 #[cfg(feature = "smp")]
 #[unsafe(naked)]
-pub(crate) unsafe extern "C" fn _start_secondary() -> ! {
+pub(crate) unsafe extern fn _start_secondary() -> ! {
     // a0 = hartid
     // a1 = SP
     core::arch::naked_asm!("

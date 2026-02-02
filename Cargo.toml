@@ -79,7 +79,7 @@ rdrive = "0.18"
 
 vm-fdt = {git = "https://github.com/bullhh/vm-fdt.git", default-features = false, features = ["alloc"]}
 
-axdevice = {git = "https://github.com/arceos-hypervisor/axdevice.git"}
+axdevice = {git = "https://github.com/arceos-hypervisor/axdevice.git", branch = "next"}
 axdevice_base = "0.1"
 axvisor_api = "0.1"
 driver = {path = "modules/driver"}
@@ -89,23 +89,9 @@ axplat-x86-qemu-q35 = {path = "platform/x86-qemu-q35"}
 axplat-riscv64-qemu-virt = {path = "platform/riscv64-qemu-virt"}
 axvmconfig = {git = "https://github.com/arceos-hypervisor/axvmconfig.git", branch = "next"}
 
-[patch.crates-io]
-axvmconfig = { path = "crates/axvmconfig" }
-axvisor_api = {path = "../axvisor_api"}
-# axvcpu = { path = "./crates/axvcpu" }
-
-[patch."https://github.com/arceos-hypervisor/axvmconfig.git"]
-axvmconfig = {path = "crates/axvmconfig"}
-
 [patch."https://github.com/arceos-org/arceos.git"]
 axconfig = { path = "modules/axconfig" }
 axruntime = { path = "modules/axruntime" }
 
-[patch."https://github.com/arceos-hypervisor/axvm.git"]
-axvm = {path = "crates/axvm"}
-
-[patch."https://github.com/liulog/riscv_vcpu.git"]
-riscv_vcpu = { path = "crates/riscv_vcpu" }
-
-[patch."https://github.com/arceos-hypervisor/axdevice.git"]
-axdevice = {git = "https://github.com/liulog/axdevice", branch = "master"}
+[patch.crates-io]
+axvmconfig = {git = "https://github.com/arceos-hypervisor/axvmconfig.git", branch = "next"}

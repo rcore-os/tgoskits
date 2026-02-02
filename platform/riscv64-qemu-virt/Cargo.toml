@@ -27,6 +27,7 @@ axconfig-macros = "0.2"
 axcpu = { workspace = true }
 axplat = { workspace = true }
 axvisor_api = { workspace = true }
+crate_interface = { workspace = true }
 
 [package.metadata.docs.rs]
 targets = ["riscv64gc-unknown-none-elf"]

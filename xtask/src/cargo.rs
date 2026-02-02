@@ -1,5 +1,5 @@
-use std::{fs, path::PathBuf};
 use ostool::build::CargoRunnerKind;
+use std::{fs, path::PathBuf};
 
 use crate::ctx::Context;
 
@@ -13,7 +13,7 @@ impl Context {
             Arch::X86_64
         } else if build_config.target.contains("riscv64") {
             Arch::Riscv64
-        }else {
+        } else {
             return Err(anyhow::anyhow!(
                 "Unsupported target architecture: {}",
                 build_config.target

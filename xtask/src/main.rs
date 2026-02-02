@@ -55,15 +55,12 @@ struct QemuArgs {
     /// Path to custom build configuration file (TOML format)
     #[arg(long)]
     build_config: Option<PathBuf>,
-    
     /// Path to custom QEMU configuration file
     #[arg(long)]
     qemu_config: Option<PathBuf>,
-    
     /// Comma-separated list of VM configuration files
     #[arg(long)]
     vmconfigs: Vec<String>,
-
     #[command(flatten)]
     build: BuildArgs,
 }
@@ -73,23 +70,18 @@ struct ClippyArgs {
     /// Only check specific packages (comma separated)
     #[arg(long)]
     packages: Option<String>,
-    
     /// Only check specific targets (comma separated)
     #[arg(long)]
     targets: Option<String>,
-    
     /// Continue on error instead of exiting immediately
     #[arg(long)]
     continue_on_error: bool,
-    
     /// Dry run - show what would be checked without running clippy
     #[arg(long)]
     dry_run: bool,
-    
     /// Automatically fix clippy warnings where possible
     #[arg(long)]
     fix: bool,
-    
     /// Allow fixing when the working directory is dirty (has uncommitted changes)
     #[arg(long)]
     allow_dirty: bool,
@@ -100,11 +92,9 @@ struct UbootArgs {
     /// Path to custom build configuration file (TOML format)
     #[arg(long)]
     build_config: Option<PathBuf>,
-    
     /// Path to custom U-Boot configuration file
     #[arg(long)]
     uboot_config: Option<PathBuf>,
-    
     /// Comma-separated list of VM configuration files
     #[arg(long)]
     vmconfigs: Vec<String>,

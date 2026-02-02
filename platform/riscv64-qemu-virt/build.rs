@@ -9,8 +9,10 @@ fn main() {
 
     let ld_content = include_str!("linker.lds.S");
     let ld_content = ld_content.replace("%ARCH%", "riscv");
-    let ld_content =
-        ld_content.replace("%KERNEL_BASE%", &format!("{:#x}", 0xffff_ffc0_8020_0000usize));
+    let ld_content = ld_content.replace(
+        "%KERNEL_BASE%",
+        &format!("{:#x}", 0xffff_ffc0_8020_0000usize),
+    );
     let ld_content = ld_content.replace("%SMP%", &format!("{smp}",));
 
     // target/<target_triple>/<mode>/build/axvisor-xxxx/out

@@ -15,6 +15,14 @@ use sbi_rt::HartMask;
 
 use crate::config::{devices::PLIC_PADDR, plat::PHYS_VIRT_OFFSET};
 
+/// Use call_interface with the trait path as known to crate_interface
+/// Interface for injecting virtual interrupts to guest VMs.
+/// This trait is defined and implemented in the kernel (axvisor).
+#[crate_interface::def_interface]
+pub trait InjectIrqIf {
+    fn inject_virtual_interrupt(irq: usize);
+}
+
 /// `Interrupt` bit in `scause`
 pub(super) const INTC_IRQ_BASE: usize = 1 << (usize::BITS - 1);
 
@@ -212,10 +220,10 @@ impl IrqIf for IrqIfImpl {
                 };
                 drop(plic);
                 // Inject the virtual interrupt to the guest VM
-                axvisor_api::arch::inject_virtual_interrupt(irq.get() as usize);
+                crate_interface::call_interface!(InjectIrqIf::inject_virtual_interrupt, irq.get() as usize);
 
                 // trace!("IRQ: external {irq}");
-                // IRQ_HANDLER_TABLE.handle(irq.get() as usize);                
+                // IRQ_HANDLER_TABLE.handle(irq.get() as usize);
                 // Only for irqs that belong to axvisor, complete the IRQ.
                 // plic.complete(this_context(), irq);
                 Some(irq.get() as usize)

@@ -5,11 +5,12 @@ extern crate log;
 #[macro_use]
 extern crate axplat;
 
+#[cfg(feature = "irq")]
+pub mod irq;
+
 mod boot;
 mod console;
 mod init;
-#[cfg(feature = "irq")]
-mod irq;
 mod mem;
 mod power;
 mod time;

@@ -1,6 +1,8 @@
-#[axvisor_api::api_mod_impl(axvisor_api::arch)]
-mod arch_api_impl {
-    extern fn inject_virtual_interrupt(irq: usize) {
+struct VmInterruptIfImpl;
+
+#[crate_interface::impl_interface]
+impl axplat_riscv64_qemu_virt::irq::InjectIrqIf for VmInterruptIfImpl {
+    fn inject_virtual_interrupt(irq: usize) {
         crate::hal::arch::inject_interrupt(irq);
     }
 }

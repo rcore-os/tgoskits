@@ -70,4 +70,3 @@ emu_devices = [
 ]
 
 interrupt_mode = "passthrough"
-

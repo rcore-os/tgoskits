@@ -46,25 +46,21 @@ pub struct ImageArgs {
 pub enum ImageCommands {
     /// List all available images
     Ls,
-    
     /// Download the specified image and automatically extract it
     Download {
         /// Name of the image to download
         image_name: String,
-        
         /// Output directory for the downloaded image
         #[arg(short, long)]
         output_dir: Option<String>,
-        
         /// Do not extract after download
         #[arg(long, help = "Do not extract after download")]
         no_extract: bool,
     },
-    
     /// Remove the specified image from temp directory
     Rm {
         /// Name of the image to remove
-        image_name: String
+        image_name: String,
     },
 }
 
@@ -82,133 +78,140 @@ impl Image {
     pub const EVM3588_ARCEOS: Self = Self {
         name: "evm3588_arceos",
         description: "ArceOS for EVM3588 development board",
-        sha256: "c9f197408f14f2cd9d3b9d2e077a9e91d233479713cb24d5280f7dc5562ae800",
+        sha256: "b1627aa216a98ffa56ce2295252e4d293125184ca394d5e409a1c711bd9a8eff",
         arch: "aarch64",
     };
 
     pub const EVM3588_LINUX: Self = Self {
         name: "evm3588_linux",
         description: "Linux for EVM3588 development board",
-        sha256: "cc12be121e75b0eb6588a774106582ee7c7b279895d73558f31ce34712a8fea3",
+        sha256: "bce8a1a0ed22215f6d98456574009ad4678c6dfda7c5fe8dfcdf15d59f858ef1",
         arch: "aarch64",
     };
 
     pub const ORANGEPI_ARCEOS: Self = Self {
         name: "orangepi_arceos",
         description: "ArceOS for Orange Pi development board",
-        sha256: "2a95477e1e18d9ca95f666de93cd8ba53ffafb3f285fbdf4fde1e0cdfb0d8f1d",
+        sha256: "cdef0112156bf1d630f8d46d1fd60f45790f99cb8a656a8b716a9efe7958dbc1",
         arch: "aarch64",
     };
 
     pub const ORANGEPI_LINUX: Self = Self {
         name: "orangepi_linux",
         description: "Linux for Orange Pi development board",
-        sha256: "7a1fd69f10dd223988c436ea461bed15ddae4351fc7a47fb7b3fee9792afac86",
+        sha256: "f50a6eaf730a5e962f0ded5474b32cc0b6905e1ee796ac77a1cf83d0576ffbb9",
         arch: "aarch64",
     };
 
     pub const PHYTIUMPI_ARCEOS: Self = Self {
         name: "phytiumpi_arceos",
         description: "ArceOS for Phytium Pi development board",
-        sha256: "c774824e36319f2f20575e488861a61c6ef7a5d2e5f219edd03a2c3c29ca3d05",
+        sha256: "8b7b76d60f2868eeaf6b5d28c067bef6307372f31b56b11bbc7999c635d614e5",
         arch: "aarch64",
     };
 
     pub const PHYTIUMPI_LINUX: Self = Self {
         name: "phytiumpi_linux",
         description: "Linux for Phytium Pi development board",
-        sha256: "78a27021b76b6d20a5420938473cf92ac59dc4674d528295b75ecfabdf9bea69",
+        sha256: "792d5a6645f773226f6758133b2be4887eceaf713321dcfec7fdffe4412bc46d",
+        arch: "aarch64",
+    };
+
+    pub const PHYTIUMPI_RTTHREAD: Self = Self {
+        name: "phytiumpi_rtthread",
+        description: "RT-Thread for Phytium Pi development board",
+        sha256: "96ec4bfce212a183b0ca3c6330a815c9e273b393da753d871498672c38815dd8",
         arch: "aarch64",
     };
 
     pub const QEMU_AARCH64_ARCEOS: Self = Self {
         name: "qemu_aarch64_arceos",
         description: "ArceOS for QEMU aarch64 virtualization",
-        sha256: "56c1f517444dcd6668f0d4bc280543d6f236728c4ec5b81e7e5b5a06cf012690",
+        sha256: "f2422b89de216e595256b1d18b9305cc1f6d1f3b4d3e50016c50ac9126bf804b",
         arch: "aarch64",
     };
 
     pub const QEMU_AARCH64_LINUX: Self = Self {
         name: "qemu_aarch64_linux",
         description: "Linux for QEMU aarch64 virtualization",
-        sha256: "ffccd4f89ee84def89ab66e23249d30723fd4a9af7896d7ef4d6f6d75d34225b",
+        sha256: "9e2a19e00a72962c4aac53ad8d6172ca473a93d321e3bb3f49a979264754e397",
         arch: "aarch64",
     };
 
     pub const QEMU_AARCH64_NIMBOS: Self = Self {
         name: "qemu_aarch64_nimbos",
         description: "NIMBOS for QEMU aarch64 virtualization",
-        sha256: "283681356af35e141bcf050dd56aa698966477289c21ac49941bb68d9a9ad1b8",
+        sha256: "77d50bc1b5df282e31ed3780dd2d09691026836144c0ce6f46ef99301f5aaea8",
         arch: "aarch64",
     };
 
     pub const QEMU_RISCV64_ARCEOS: Self = Self {
         name: "qemu_riscv64_arceos",
         description: "ArceOS for QEMU riscv64 virtualization",
-        sha256: "19248561c242a06a893a6a4debfc05ba5ca3e438347814c10351eecef88e54be",
+        sha256: "1c6a63c1ff1713aa7aaac61a07c2c43e94cace404a8f9e5808275d5335526b0b",
         arch: "riscv64",
     };
 
     pub const QEMU_RISCV64_LINUX: Self = Self {
         name: "qemu_riscv64_linux",
         description: "Linux for QEMU riscv64 virtualization",
-        sha256: "34a355907bf3b05ea3949207fd98aad05d91c21d3b724d345f54576ef6e12eba",
+        sha256: "86ec223dcdd0cd39210e961d1d6cac0179f03c9a179b6514cd787410bf766d61",
         arch: "riscv64",
     };
 
     pub const QEMU_RISCV64_NIMBOS: Self = Self {
         name: "qemu_riscv64_nimbos",
         description: "NIMBOS for QEMU riscv64 virtualization",
-        sha256: "064f75df290905687221b2554dd4e4efc077a6a95cafcbf7f98e2181441c24e3",
+        sha256: "ce75be7bb5dc6ca1df3a23a055100adbd309da0cc65e0dc669a35f81e369249f",
         arch: "riscv64",
     };
 
     pub const QEMU_X86_64_ARCEOS: Self = Self {
         name: "qemu_x86_64_arceos",
         description: "ArceOS for QEMU x86_64 virtualization",
-        sha256: "ee9bdd4f6ae3ef2ee807ac712b82318329eeb6d1cffdf737f98a393ad730b5d9",
+        sha256: "64538c2330e7658a381902af448cda72e14d9b7971995eb6c4ec5cf8bcaa622b",
         arch: "x86_64",
     };
 
     pub const QEMU_X86_64_LINUX: Self = Self {
         name: "qemu_x86_64_linux",
         description: "Linux for QEMU x86_64 virtualization",
-        sha256: "1a27da24b02f836b259462d5c73dc550553ea708d24af299378137beedc46c51",
+        sha256: "8a04e36174dd0b0ea386c261d1fee59d47cfbd2e5f0f2a48c53f99c4deead0a5",
         arch: "x86_64",
     };
 
     pub const QEMU_X86_64_NIMBOS: Self = Self {
         name: "qemu_x86_64_nimbos",
         description: "NIMBOS for QEMU x86_64 virtualization",
-        sha256: "55d73898f9f98fca80e15387b1e5149ba6bbf74d3631281ea1ece75de3529078",
+        sha256: "dddfa6067af453d49f2925fe75514779549041ba78bb390a54aab1c836ed6c63",
         arch: "x86_64",
     };
 
     pub const ROC_RK3568_PC_ARCEOS: Self = Self {
         name: "roc-rk3568-pc_arceos",
         description: "ArceOS for ROC-RK3568-PC development board",
-        sha256: "4dd2f727c2a46ff1e64632616c308c9504ef5ddb4b519acf3f69c928e4475ca7",
+        sha256: "5ec4721d449d302ce6e00ec6efeb8e5284e1ed2051e4a417229a1464d991469c",
         arch: "aarch64",
     };
 
     pub const ROC_RK3568_PC_LINUX: Self = Self {
         name: "roc-rk3568-pc_linux",
         description: "Linux for ROC-RK3568-PC development board",
-        sha256: "73feb8b84473603252dbadc4c81446f9a68098bd899fd524ec26f68761a35cf8",
+        sha256: "1c47b0fa63f47c6e02450a4c4bac59d74c486a55f72b032c1cf5f4a432e2973e",
         arch: "aarch64",
     };
 
     pub const TAC_E400_PLC_ARCEOS: Self = Self {
         name: "tac-e400-plc_arceos",
         description: "ArceOS for TAC-E400-PLC industrial control board",
-        sha256: "a2504506c81871c84ba421a94f77028f067c5589886f37c0c389a545d7e57aeb",
+        sha256: "0b249ff8daeb1070b4518f09ef46b05266322594907afd0ed2b21b83810ca6ab",
         arch: "aarch64",
     };
 
     pub const TAC_E400_PLC_LINUX: Self = Self {
         name: "tac-e400-plc_linux",
         description: "Linux for TAC-E400-PLC industrial control board",
-        sha256: "920743161a73da228e714d71f55d8ba77b91ed37092d4f80e774f4e809b34403",
+        sha256: "a639c5bdb2d1ed07907085e2d181be2d5f2f5433f7fe64bcae8d8d86ddf657f7",
         arch: "aarch64",
     };
 
@@ -221,6 +224,7 @@ impl Image {
             Self::ORANGEPI_LINUX,
             Self::PHYTIUMPI_ARCEOS,
             Self::PHYTIUMPI_LINUX,
+            Self::PHYTIUMPI_RTTHREAD,
             Self::QEMU_AARCH64_ARCEOS,
             Self::QEMU_RISCV64_ARCEOS,
             Self::QEMU_X86_64_ARCEOS,
@@ -433,12 +437,16 @@ async fn image_download(image_name: &str, output_dir: Option<String>, extract: b
         Ok(false) => {
             // Remove the invalid downloaded file
             let _ = fs::remove_file(&output_path);
-            return Err(anyhow!("Download completed but file SHA256 verification failed"));
+            return Err(anyhow!(
+                "Download completed but file SHA256 verification failed"
+            ));
         }
         Err(e) => {
             // Remove the potentially corrupted downloaded file
             let _ = fs::remove_file(&output_path);
-            return Err(anyhow!("Download completed but error verifying downloaded file: {e}"));
+            return Err(anyhow!(
+                "Download completed but error verifying downloaded file: {e}"
+            ));
         }
     }
 
