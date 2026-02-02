@@ -156,3 +156,7 @@ This project is part of the ArceOS hypervisor ecosystem. Contributions should fo
 - [axdevice_crates](https://github.com/arceos-hypervisor/axdevice_crates) - Device abstraction layer
 - [axvisor_api](https://github.com/arceos-hypervisor/axvisor_api) - Hypervisor API definitions
 - [axaddrspace](https://github.com/arceos-hypervisor/axaddrspace) - Address space management
+
+## License
+
+Arm_vgic is licensed under the Apache License, Version 2.0. See the [LICENSE](./LICENSE) file for details.

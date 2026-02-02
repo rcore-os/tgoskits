@@ -1,5 +1,5 @@
 [package]
-version = "0.1.0"
+version = "0.2.0"
 authors = [
   "Mingxian Su <aarkegz@gmail.com>",
   "DeBin Luo <luodeb@outlook.com>",
@@ -7,7 +7,7 @@ authors = [
 categories = ["os", "no-std"]
 edition = "2021"
 keywords = ["hypervisor", "kernel", "vgic"]
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
+license = "Apache-2.0"
 name = "arm_vgic"
 repository = "https://github.com/arceos-hypervisor/arm_vgic"
 description = "ARM Virtual Generic Interrupt Controller (VGIC) implementation."
