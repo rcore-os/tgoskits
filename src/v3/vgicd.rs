@@ -12,6 +12,7 @@ use super::{
     utils::{perform_mmio_read, perform_mmio_write},
 };
 
+/// Default size for GICD region.
 pub const DEFAULT_GICD_SIZE: usize = 0x10000; // 64K
 
 /// Virtual Generic Interrupt Controller (VGIC) Distributor (D) implementation.
@@ -33,6 +34,7 @@ pub struct VGicD {
 }
 
 impl VGicD {
+    /// Creates a new VGicD instance.
     pub fn new(addr: GuestPhysAddr, size: Option<usize>) -> Self {
         let size = size.unwrap_or(DEFAULT_GICD_SIZE);
 
@@ -44,6 +46,7 @@ impl VGicD {
         }
     }
 
+    /// Assigns an IRQ to a specific CPU.
     pub fn assign_irq(&self, irq: u32, cpu_phys_id: usize, target_cpu_affinity: (u8, u8, u8, u8)) {
         debug!(
             "Physically assigning IRQ {irq} to CPU {cpu_phys_id} with affinity {target_cpu_affinity:?}"
@@ -233,15 +236,18 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicD {
 }
 
 impl VGicD {
+    /// Checks if an IRQ is assigned to this VGicD.
     pub fn is_irq_assigned(&self, irq: u32) -> bool {
         unsafe { (*self.assigned_irqs.get()).get(irq as usize) }
     }
 
+    /// Checks if an IRQ is a Software Generated Interrupt (SGI).
     pub fn is_irq_sgi(&self, irq: u32) -> bool {
         // Check if the IRQ is a Software Generated Interrupt (SGI)
         irq < 16
     }
 
+    /// Checks if an IRQ is a Shared Peripheral Interrupt (SPI).
     pub fn is_irq_spi(&self, irq: u32) -> bool {
         // Check if the IRQ is a Shared Peripheral Interrupt (SPI)
         (16..1020).contains(&irq)
@@ -279,6 +285,7 @@ impl VGicD {
         mask
     }
 
+    /// Performs masked read access to GICD registers.
     pub fn irq_masked_read(
         &self,
         offset: usize,
@@ -292,6 +299,7 @@ impl VGicD {
         Ok(perform_mmio_read(self.host_gicd_addr + offset, width)? & mask)
     }
 
+    /// Performs masked write access to GICD registers.
     pub fn irq_masked_write(
         &self,
         offset: usize,

@@ -5,7 +5,9 @@ use axerrno::AxResult;
 use axvisor_api::vmm::current_vcpu_id;
 use spin::Mutex;
 
-// 实现 Vgic
+/// Virtual Generic Interrupt Controller.
+///
+/// Manages virtual interrupt distribution for guest VMs.
 pub struct Vgic {
     vgicd: Mutex<Vgicd>,
 }
@@ -17,6 +19,7 @@ impl Default for Vgic {
 }
 
 impl Vgic {
+    /// Creates a new VGIC instance.
     pub fn new() -> Vgic {
         Vgic {
             vgicd: Mutex::new(Vgicd::new()),
@@ -32,6 +35,7 @@ impl Vgic {
         Ok((value >> (8 * (addr & 0x3))) & 0xffff)
     }
 
+    /// Handles 32-bit read access to VGIC registers.
     pub fn handle_read32(&self, addr: usize) -> AxResult<usize> {
         match GicRegister::from_addr(addr as u32) {
             Some(reg) => match reg {
@@ -55,14 +59,17 @@ impl Vgic {
         }
     }
 
+    /// Handles 8-bit write access to VGIC registers.
     pub fn handle_write8(&self, addr: usize, value: usize) {
         self.handle_write32(addr, value);
     }
 
+    /// Handles 16-bit write access to VGIC registers.
     pub fn handle_write16(&self, addr: usize, value: usize) {
         self.handle_write32(addr, value);
     }
 
+    /// Handles 32-bit write access to VGIC registers.
     pub fn handle_write32(&self, addr: usize, value: usize) {
         let _vcpu_id = current_vcpu_id();
         if let Some(reg) = GicRegister::from_addr(addr as u32) {
@@ -84,9 +91,11 @@ impl Vgic {
     //     self.vgicd.lock().inject_irq(irq);
     // }
 
+    /// Fetches interrupt information for the given IRQ number.
     pub fn fetch_irq(&self, irq: u32) -> VgicInt {
         self.vgicd.lock().fetch_irq(irq)
     }
 
+    /// Placeholder method for unused operations.
     pub fn nothing(&self, _value: u32) {}
 }

@@ -1,7 +1,13 @@
+//! ARM Virtual Generic Interrupt Controller (VGIC) implementation.
+//!
+//! This crate provides virtualization support for ARM's Generic Interrupt Controller (GIC),
+//! enabling virtual machines to manage interrupts in a virtualized environment.
+
 #![cfg_attr(not(test), no_std)]
 
 mod devops_impl;
 
+/// Virtual GIC implementation module.
 pub mod vgic;
 pub use vgic::Vgic;
 
@@ -10,9 +16,11 @@ mod interrupt;
 // mod list_register;
 mod registers;
 mod vgicd;
+/// Virtual timer implementation module.
 pub mod vtimer;
 
 #[cfg(feature = "vgicv3")]
+/// GICv3 specific implementation module.
 pub mod v3;
 
 #[cfg(target_arch = "aarch64")]

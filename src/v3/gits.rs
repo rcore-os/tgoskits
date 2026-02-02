@@ -16,25 +16,38 @@ use super::{
     utils::{enable_one_lpi, perform_mmio_read, perform_mmio_write},
 };
 
+/// Virtual GITS registers.
 #[derive(Default)]
 pub struct VirtualGitsRegs {
+    /// Collection table base address register.
     pub ct_baser: usize,
+    /// Device table base address register.
     pub dt_baser: usize,
 
+    /// Command queue base address register.
     pub cbaser: usize,
+    /// Command queue read pointer.
     pub creadr: usize,
+    /// Command queue write pointer.
     pub cwriter: usize,
 }
 
+/// Default size for GITS region.
 pub const DEFAULT_GITS_SIZE: usize = 0x20_000; // 128Ki: two 64-Ki frames
 
+/// Virtual GICv3 Interrupt Translation Service.
 pub struct Gits {
+    /// Guest physical address.
     pub addr: GuestPhysAddr,
+    /// Size of the GITS region.
     pub size: usize,
 
+    /// Host physical base address of GITS.
     pub host_gits_base: HostPhysAddr,
+    /// Whether this is a root VM.
     pub is_root_vm: bool,
 
+    /// Virtual GITS registers.
     pub regs: UnsafeCell<VirtualGitsRegs>,
 }
 
@@ -48,6 +61,7 @@ impl Gits {
         unsafe { &mut *self.regs.get() }
     }
 
+    /// Creates a new GITS instance.
     pub fn new(
         addr: GuestPhysAddr,
         size: Option<usize>,
@@ -202,6 +216,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for Gits {
     }
 }
 
+/// Command queue for GITS commands.
 pub struct Cmdq {
     phy_addr: PhysAddr,
     readr: usize,
@@ -220,7 +235,9 @@ impl Drop for Cmdq {
     }
 }
 
+/// Bytes per GITS command.
 pub const BYTES_PER_CMD: usize = 0x20;
+/// Quadwords per GITS command.
 pub const QWORD_PER_CMD: usize = BYTES_PER_CMD >> 3; // 8 bytes per qword
 
 impl Cmdq {

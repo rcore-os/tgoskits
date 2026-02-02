@@ -12,34 +12,44 @@ use super::{
     utils::{perform_mmio_read, perform_mmio_write},
 };
 
+/// Default size per GICR region.
 pub const DEFAULT_SIZE_PER_GICR: usize = 0x20000; // 128K: 64K for SGI/PPI, then 64K for LPI
 
+/// Virtual GICR registers.
 pub struct VGicRRegs {
+    /// LPI configuration table base address.
     pub propbaser: usize,
 }
 
+/// Virtual GICv3 Redistributor.
 pub struct VGicR {
     /// The address of the VGicR in the guest physical address space.
     pub addr: GuestPhysAddr,
     /// The size of the VGicR in bytes.
     pub size: usize,
 
+    /// CPU ID associated with this redistributor.
     pub cpu_id: usize,
+    /// Host physical base address of GICR for this CPU.
     pub host_gicr_base_this_cpu: HostPhysAddr,
 
+    /// Virtual GICR registers.
     pub regs: UnsafeCell<VGicRRegs>,
 }
 
 impl VGicR {
+    /// Gets a reference to the registers.
     pub fn regs(&self) -> &VGicRRegs {
         unsafe { &*self.regs.get() }
     }
 
+    /// Gets a mutable reference to the registers.
     #[allow(clippy::mut_from_ref)]
     pub fn regs_mut(&self) -> &mut VGicRRegs {
         unsafe { &mut *self.regs.get() }
     }
 
+    /// Creates a new VGicR instance.
     pub fn new(addr: GuestPhysAddr, size: Option<usize>, cpu_id: usize) -> Self {
         let size = size.unwrap_or(DEFAULT_SIZE_PER_GICR);
         let host_gicr_base_this_cpu = crate::api_reexp::get_host_gicr_base() + cpu_id * size;
@@ -197,6 +207,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicR {
 }
 
 // todo: move the lpi prop table to arm-gic-driver, and find a good interface to use it.
+/// LPI property table for managing Locality-specific Peripheral Interrupts.
 pub struct LpiPropTable {
     frame: PhysAddr,
     frame_pages: usize,
@@ -256,8 +267,10 @@ impl LpiPropTable {
     }
 }
 
+/// Global LPI property table instance.
 pub static LPT: Once<Mutex<LpiPropTable>> = Once::new();
 
+/// Gets or initializes the global LPI property table.
 pub fn get_lpt(
     host_gicd_typer: u32,
     host_gicr_base: HostPhysAddr,
@@ -277,6 +290,7 @@ pub fn get_lpt(
     LPT.get().unwrap()
 }
 
+/// Enables a single LPI by updating the property table.
 pub fn enable_one_lpi(lpi: usize) {
     let lpt = get_lpt(
         crate::api_reexp::read_vgicd_typer(),

@@ -49,12 +49,16 @@ impl BaseDeviceOps<SysRegAddrRange> for SysCntpTvalEl0 {
     }
 }
 
+/// System register emulation for CNTP_TVAL_EL0.
+///
+/// Provides virtualization support for the physical timer value register.
 #[derive(Default)]
 pub struct SysCntpTvalEl0 {
     // Fields
 }
 
 impl SysCntpTvalEl0 {
+    /// Creates a new CNTP_TVAL_EL0 register emulator.
     pub fn new() -> Self {
         Self {
             // Initialize fields

@@ -36,12 +36,16 @@ impl BaseDeviceOps<SysRegAddrRange> for SysCntpctEl0 {
     }
 }
 
+/// System register emulation for CNTPCT_EL0.
+///
+/// Provides virtualization support for the physical counter register.
 #[derive(Default)]
 pub struct SysCntpctEl0 {
     // Fields
 }
 
 impl SysCntpctEl0 {
+    /// Creates a new CNTPCT_EL0 register emulator.
     pub fn new() -> Self {
         Self {
             // Initialize fields
