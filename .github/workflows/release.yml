@@ -150,7 +150,7 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
 
       - name: Dry run publish
-        run: cargo publish --dry-run
+        run: cargo publish --dry-run --target aarch64-unknown-none-softfloat
 
       - name: Publish to crates.io
-        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }} --target aarch64-unknown-none-softfloat
