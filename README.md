@@ -157,11 +157,4 @@ impl AxArchVCpu for MyArchVCpu {
 
 ## License
 
-This project is licensed under multiple licenses. You may choose to use this project under any of the following licenses:
-
-- **[GPL-3.0-or-later](LICENSE.GPLv3)** - GNU General Public License v3.0 or later
-- **[Apache-2.0](LICENSE.Apache2)** - Apache License 2.0
-- **[MulanPubL-2.0](LICENSE.MulanPubL2)** - Mulan Public License 2.0
-- **[MulanPSL2](LICENSE.MulanPSL2)** - Mulan Permissive Software License v2
-
-You may use this software under the terms of any of these licenses at your option.
+Axvcpu is licensed under the Apache License, Version 2.0. See the [LICENSE](LICENSE) file for details.

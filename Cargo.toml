@@ -7,7 +7,7 @@ categories = ["virtualization", "no-std"]
 description = "Virtual CPU abstraction for ArceOS hypervisor"
 repository = "https://github.com/arceos-hypervisor/axvcpu"
 keywords = ["vcpu", "hypervisor", "arceos"]
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0" # MulanPubL2 is not included in SPDX
+license = "Apache-2.0"
 
 [dependencies]
 axerrno = "0.1.0"
