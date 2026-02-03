@@ -150,3 +150,7 @@ Besides the above drawbacks, the current implementation of `axvisor_api` has som
 Additionally, there are some platform-related issues that are independent of the `axvisor_api` design or implementation. For example:
 
 * **Platform-specific APIs**: Some APIs are strongly tied to specific platforms or even specific devices but are essential. For example, on ARM, the semi-virtualized GIC implementation relies heavily on the physical GIC driver. Including all such functionality in `axvisor_api` makes the modules bloated, but not doing so could hurt readability and maintainability.
+
+## License
+
+Axvisor_api is licensed under the Apache License, Version 2.0. See the [LICENSE](./LICENSE) file for details.
