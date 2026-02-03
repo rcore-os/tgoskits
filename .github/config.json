@@ -1,0 +1,10 @@
+{
+  "targets": [
+    "riscv64gc-unknown-none-elf"
+  ],
+  "rust_components": [
+    "rust-src",
+    "clippy",
+    "rustfmt"
+  ]
+}
