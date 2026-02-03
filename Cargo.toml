@@ -1,6 +1,6 @@
 [package]
 name = "axklib"
-version = "0.1.0-alpha.1"
+version = "0.2.0"
 edition = "2024"
 authors = ["周睿 <zrufo747@outlook.com>"]
 description = "Small kernel-helper abstractions used across the microkernel"
