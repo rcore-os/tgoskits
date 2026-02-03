@@ -290,9 +290,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             // Tracing, do a diff of the guest registers before entering the guest
             let diff = GeneralRegistersDiff::new(self.guest_regs_exiting, self.guest_regs);
             if !diff.is_same() {
-                debug!(
-                    "VCpu registers changed during handling VM-exit: {diff:#x?}"
-                );
+                debug!("VCpu registers changed during handling VM-exit: {diff:#x?}");
             } else {
                 debug!("VCpu registers unchanged during handling VM-exit");
             }
@@ -678,17 +676,20 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             // CpuCtrl2::VIRTUALIZE_APIC | 
             CpuCtrl2::ENABLE_EPT | CpuCtrl2::UNRESTRICTED_GUEST;
         if let Some(features) = raw_cpuid.get_extended_processor_and_feature_identifiers()
-            && features.has_rdtscp() {
-                val |= CpuCtrl2::ENABLE_RDTSCP;
-            }
+            && features.has_rdtscp()
+        {
+            val |= CpuCtrl2::ENABLE_RDTSCP;
+        }
         if let Some(features) = raw_cpuid.get_extended_feature_info()
-            && features.has_invpcid() {
-                val |= CpuCtrl2::ENABLE_INVPCID;
-            }
+            && features.has_invpcid()
+        {
+            val |= CpuCtrl2::ENABLE_INVPCID;
+        }
         if let Some(features) = raw_cpuid.get_extended_state_info()
-            && features.has_xsaves_xrstors() {
-                val |= CpuCtrl2::ENABLE_XSAVES_XRSTORS;
-            }
+            && features.has_xsaves_xrstors()
+        {
+            val |= CpuCtrl2::ENABLE_XSAVES_XRSTORS;
+        }
         vmcs::set_control(
             VmcsControl32::SECONDARY_PROCBASED_EXEC_CONTROLS,
             Msr::IA32_VMX_PROCBASED_CTLS2,
@@ -978,9 +979,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         if write {
             let value = self.read_edx_eax() as usize;
 
-            trace!(
-                "handle_vlapic_msr_write: msr={msr:#x}, value={value:#x}"
-            );
+            trace!("handle_vlapic_msr_write: msr={msr:#x}, value={value:#x}");
 
             <EmulatedLocalApic as BaseDeviceOps<SysRegAddrRange>>::handle_write(
                 &self.vlapic,
@@ -1314,18 +1313,14 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
                         let port = io_info.port;
 
                         if io_info.is_repeat || io_info.is_string {
-                            warn!(
-                                "VMX unsupported IO-Exit: {io_info:#x?} of {exit_info:#x?}"
-                            );
+                            warn!("VMX unsupported IO-Exit: {io_info:#x?} of {exit_info:#x?}");
                             warn!("VCpu {self:#x?}");
                             AxVCpuExitReason::Halt
                         } else {
                             let width = match AccessWidth::try_from(io_info.access_size as usize) {
                                 Ok(width) => width,
                                 Err(_) => {
-                                    warn!(
-                                        "VMX invalid IO-Exit: {io_info:#x?} of {exit_info:#x?}"
-                                    );
+                                    warn!("VMX invalid IO-Exit: {io_info:#x?} of {exit_info:#x?}");
                                     warn!("VCpu {self:#x?}");
                                     return Ok(AxVCpuExitReason::Halt);
                                 }

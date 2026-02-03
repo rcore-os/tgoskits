@@ -647,9 +647,7 @@ pub fn set_control(
     let allowed0 = cap as u32;
     let allowed1 = (cap >> 32) as u32;
     assert_eq!(allowed0 & allowed1, allowed0);
-    debug!(
-        "set {control:?}: {old_value:#x} (+{set:#x}, -{clear:#x})"
-    );
+    debug!("set {control:?}: {old_value:#x} (+{set:#x}, -{clear:#x})");
     if (set & clear) != 0 {
         return ax_err!(
             InvalidInput,
