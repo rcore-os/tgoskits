@@ -1,3 +1,24 @@
+//! A simple, fast range allocator for managing contiguous ranges of resources.
+//!
+//! This crate provides a [`RangeAllocator`] that efficiently allocates and frees
+//! contiguous ranges from an initial range. It uses a best-fit allocation strategy
+//! to minimize memory fragmentation.
+//!
+//! # Example
+//!
+//! ```
+//! use range_alloc_arceos::RangeAllocator;
+//!
+//! let mut allocator = RangeAllocator::new(0..100);
+//! 
+//! // Allocate a range of length 10
+//! let range = allocator.allocate_range(10).unwrap();
+//! assert_eq!(range, 0..10);
+//! 
+//! // Free the range when done
+//! allocator.free_range(range);
+//! ```
+
 #![no_std]
 
 extern crate alloc;
@@ -10,6 +31,15 @@ use core::{
     ops::{Add, AddAssign, Range, Sub},
 };
 
+/// A range allocator that manages allocation and deallocation of contiguous ranges.
+///
+/// The allocator starts with an initial range and maintains a list of free ranges.
+/// It uses a best-fit allocation strategy to minimize fragmentation when allocating
+/// new ranges.
+///
+/// # Type Parameters
+///
+/// * `T` - The type used for range bounds. Must support arithmetic operations and ordering.
 #[derive(Debug)]
 pub struct RangeAllocator<T> {
     /// The range this allocator covers.
@@ -20,8 +50,17 @@ pub struct RangeAllocator<T> {
     free_ranges: Vec<Range<T>>,
 }
 
+/// Error type returned when a range allocation fails.
+///
+/// This error indicates that there is not enough contiguous space available
+/// to satisfy the allocation request, although there may be enough total free
+/// space if it were defragmented.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RangeAllocationError<T> {
+    /// The total length of all free ranges combined.
+    ///
+    /// This value represents how much space would be available if all fragmented
+    /// free ranges could be combined into one contiguous range.
     pub fragmented_free_length: T,
 }
 
@@ -29,6 +68,21 @@ impl<T> RangeAllocator<T>
 where
     T: Clone + Copy + Add<Output = T> + AddAssign + Sub<Output = T> + Eq + PartialOrd + Debug,
 {
+    /// Creates a new range allocator with the specified initial range.
+    ///
+    /// The entire initial range is marked as free and available for allocation.
+    ///
+    /// # Arguments
+    ///
+    /// * `range` - The initial range that this allocator will manage.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use range_alloc_arceos::RangeAllocator;
+    ///
+    /// let allocator = RangeAllocator::new(0..1024);
+    /// ```
     pub fn new(range: Range<T>) -> Self {
         RangeAllocator {
             initial_range: range.clone(),
@@ -36,10 +90,23 @@ where
         }
     }
 
+    /// Returns a reference to the initial range managed by this allocator.
+    ///
+    /// This is the range that was provided when the allocator was created,
+    /// or the expanded range if [`grow_to`](Self::grow_to) was called.
     pub fn initial_range(&self) -> &Range<T> {
         &self.initial_range
     }
 
+    /// Grows the allocator's range to a new end point.
+    ///
+    /// This extends the upper bound of the initial range and makes the new space
+    /// available for allocation. If the last free range ends at the current upper
+    /// bound, it is extended; otherwise, a new free range is added.
+    ///
+    /// # Arguments
+    ///
+    /// * `new_end` - The new end point for the range (must be greater than the current end).
     pub fn grow_to(&mut self, new_end: T) {
         let initial_range_end = self.initial_range.end;
         if let Some(last_range) = self
@@ -55,6 +122,32 @@ where
         self.initial_range.end = new_end;
     }
 
+    /// Allocates a contiguous range of the specified length.
+    ///
+    /// This method uses a best-fit allocation strategy to find the smallest free range
+    /// that can satisfy the request, minimizing fragmentation. If no single contiguous
+    /// range is large enough, it returns an error with information about the total
+    /// fragmented free space.
+    ///
+    /// # Arguments
+    ///
+    /// * `length` - The length of the range to allocate.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Range<T>)` - The allocated range if successful.
+    /// * `Err(RangeAllocationError<T>)` - If allocation fails, containing information
+    ///   about the total fragmented free space available.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use range_alloc_arceos::RangeAllocator;
+    ///
+    /// let mut allocator = RangeAllocator::new(0..100);
+    /// let range = allocator.allocate_range(20).unwrap();
+    /// assert_eq!(range, 0..20);
+    /// ```
     pub fn allocate_range(&mut self, length: T) -> Result<Range<T>, RangeAllocationError<T>> {
         assert_ne!(length + length, length);
         let mut best_fit: Option<(usize, Range<T>)> = None;
@@ -102,6 +195,30 @@ where
         }
     }
 
+    /// Frees a previously allocated range, making it available for future allocations.
+    ///
+    /// This method attempts to merge the freed range with adjacent free ranges to
+    /// reduce fragmentation. The freed range must be within the initial range and
+    /// must not be empty.
+    ///
+    /// # Arguments
+    ///
+    /// * `range` - The range to free. Must be within the allocator's initial range.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the range is outside the initial range or if the range is empty
+    /// (start >= end).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use range_alloc_arceos::RangeAllocator;
+    ///
+    /// let mut allocator = RangeAllocator::new(0..100);
+    /// let range = allocator.allocate_range(20).unwrap();
+    /// allocator.free_range(range);
+    /// ```
     pub fn free_range(&mut self, range: Range<T>) {
         assert!(self.initial_range.start <= range.start && range.end <= self.initial_range.end);
         assert!(range.start < range.end);
@@ -175,17 +292,28 @@ where
         first.into_iter().chain(mid).chain(last)
     }
 
+    /// Resets the allocator to its initial state.
+    ///
+    /// This marks the entire initial range as free, effectively deallocating
+    /// all previously allocated ranges.
     pub fn reset(&mut self) {
         self.free_ranges.clear();
         self.free_ranges.push(self.initial_range.clone());
     }
 
+    /// Returns `true` if no ranges have been allocated.
+    ///
+    /// This checks whether the allocator is in its initial state with all space free.
     pub fn is_empty(&self) -> bool {
         self.free_ranges.len() == 1 && self.free_ranges[0] == self.initial_range
     }
 }
 
 impl<T: Copy + Sub<Output = T> + Sum> RangeAllocator<T> {
+    /// Returns the total amount of free space available across all free ranges.
+    ///
+    /// This sums the lengths of all free ranges, giving the total amount of space
+    /// that could be allocated if fragmentation is not an issue.
     pub fn total_available(&self) -> T {
         self.free_ranges
             .iter()
