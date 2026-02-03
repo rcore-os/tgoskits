@@ -9,7 +9,7 @@ categories = ["virtualization", "no-std"]
 description = "RISC-V virtualization-related registers"
 repository = "https://github.com/arceos-hypervisor/riscv-h"
 keywords = ["riscv", "hypervisor"]
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0" # MulanPubL2 is not included in SPDX
+license = "Apache-2.0"
 
 [dependencies]
 riscv = { version = "0.14.0"}

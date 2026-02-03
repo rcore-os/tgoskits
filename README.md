@@ -146,24 +146,4 @@ This crate provides `unsafe` functions for writing to CSRs, as register modifica
 
 ## License
 
-This project is licensed under multiple licenses:
-- GNU General Public License v3.0 or later
-- Apache License 2.0  
-- Mulan PSL v2
-
-See the LICENSE files for details.
-
-## Contributing
-
-Contributions are welcome! Please:
-
-1. Follow the existing code style and conventions
-2. Add tests for new register implementations
-3. Update documentation for any API changes
-4. Ensure all tests pass before submitting
-
-## References
-
-- [RISC-V Hypervisor Extension Specification](https://github.com/riscv/riscv-isa-manual)
-- [RISC-V Privileged Architecture Specification](https://github.com/riscv/riscv-isa-manual)
-- [riscv crate](https://crates.io/crates/riscv) - Base RISC-V register support
+Riscv-h is licensed under the Apache License, Version 2.0. See the [LICENSE](./LICENSE) file for details.
