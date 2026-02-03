@@ -196,17 +196,11 @@ impl<H: AxVCpuHal> axvcpu::AxArchVCpu for RISCVVCpu<H> {
                 if let Some(gpr_index) = GprIndex::from_raw(index as u32) {
                     self.set_gpr_from_gpr_index(gpr_index, val);
                 } else {
-                    warn!(
-                        "RISCVVCpu: Failed to map general purpose register index: {}",
-                        index
-                    );
+                    warn!("RISCVVCpu: Failed to map general purpose register index: {index}");
                 }
             }
             _ => {
-                warn!(
-                    "RISCVVCpu: Unsupported general purpose register index: {}",
-                    index
-                );
+                warn!("RISCVVCpu: Unsupported general purpose register index: {index}");
             }
         }
     }
@@ -303,8 +297,7 @@ impl<H: AxVCpuHal> RISCVVCpu<H> {
                         }
                         _ => {
                             warn!(
-                                "Unsupported SBI legacy extension id {:#x} function id {:#x}",
-                                extension_id, function_id
+                                "Unsupported SBI legacy extension id {extension_id:#x} function id {function_id:#x}"
                             );
                         }
                     },
@@ -360,9 +353,9 @@ impl<H: AxVCpuHal> RISCVVCpu<H> {
                                 return Ok(AxVCpuExitReason::Nothing);
                             }
 
-                            let mut buf = alloc::vec![0u8; num_bytes as usize];
+                            let mut buf = alloc::vec![0u8; num_bytes];
                             let copied = guest_mem::copy_from_guest(
-                                &mut *buf,
+                                &mut buf,
                                 GuestPhysAddr::from(gpa as usize),
                             );
 
@@ -385,7 +378,7 @@ impl<H: AxVCpuHal> RISCVVCpu<H> {
                                 return Ok(AxVCpuExitReason::Nothing);
                             }
 
-                            let mut buf = alloc::vec![0u8; num_bytes as usize];
+                            let mut buf = alloc::vec![0u8; num_bytes];
                             let ret = console_read(&mut buf);
 
                             if ret.is_ok() && ret.value <= buf.len() {
@@ -494,7 +487,7 @@ impl<H: AxVCpuHal> RISCVVCpu<H> {
         // The htinst CSR contains "transformed instruction" that caused the page fault. We
         // can use it but we use the sepc to fetch the original instruction instead for now.
         let mut instr = riscv_h::register::htinst::read();
-        let mut instr_len = 0;
+        let instr_len;
         if instr == 0 {
             // Read the instruction from guest memory.
             instr = guest_mem::fetch_guest_instruction(vaddr) as _;
