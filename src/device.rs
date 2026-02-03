@@ -12,12 +12,14 @@ use axaddrspace::{
 use axdevice_base::{BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps};
 use axerrno::{AxResult, ax_err};
 use axvmconfig::{EmulatedDeviceConfig, EmulatedDeviceType};
-use memory_addr::{PhysAddr, is_aligned_4k};
+use memory_addr::is_aligned_4k;
 
 use crate::AxVmDeviceConfig;
 
 #[cfg(target_arch = "aarch64")]
 use arm_vgic::Vgic;
+#[cfg(target_arch = "aarch64")]
+use memory_addr::PhysAddr;
 
 /// A set of emulated device types that can be accessed by a specific address range type.
 pub struct AxEmuDevices<R: DeviceAddrRange> {
@@ -85,10 +87,7 @@ fn log_device_io(
     width: AccessWidth,
 ) {
     let rw = if read { "read" } else { "write" };
-    trace!(
-        "emu_device {}: {} {:#x} in range {:#x} with width {:?}",
-        rw, addr_type, addr, addr_range, width
-    )
+    trace!("emu_device {rw}: {addr_type} {addr:#x} in range {addr_range:#x} with width {width:?}")
 }
 
 #[inline]
@@ -100,8 +99,7 @@ fn panic_device_not_found(
 ) -> ! {
     let rw = if read { "read" } else { "write" };
     error!(
-        "emu_device {} failed: device not found for {} {:#x} with width {:?}",
-        rw, addr_type, addr, width
+        "emu_device {rw} failed: device not found for {addr_type} {addr:#x} with width {width:?}"
     );
     panic!("emu_device not found");
 }
@@ -141,7 +139,7 @@ impl AxVmDevices {
                 EmulatedDeviceType::GPPTRedistributor => {
                     #[cfg(target_arch = "aarch64")]
                     {
-                        const GPPT_GICR_ARG_ERR_MSG: &'static str =
+                        const GPPT_GICR_ARG_ERR_MSG: &str =
                             "expect 3 args for gppt redistributor (cpu_num, stride, pcpu_id)";
 
                         let cpu_num = config
@@ -163,6 +161,7 @@ impl AxVmDevices {
                         for i in 0..cpu_num {
                             let addr = config.base_gpa + i * stride;
                             let size = config.length;
+                            #[allow(clippy::arc_with_non_send_sync)]
                             this.add_mmio_dev(Arc::new(arm_vgic::v3::vgicr::VGicR::new(
                                 addr.into(),
                                 Some(size),
@@ -170,8 +169,7 @@ impl AxVmDevices {
                             )));
 
                             info!(
-                                "GPPT Redistributor initialized for vCPU {} with base GPA {:#x} and length {:#x}",
-                                i, addr, size
+                                "GPPT Redistributor initialized for vCPU {i} with base GPA {addr:#x} and length {size:#x}"
                             );
                         }
                     }
@@ -186,14 +184,16 @@ impl AxVmDevices {
                 EmulatedDeviceType::GPPTDistributor => {
                     #[cfg(target_arch = "aarch64")]
                     {
+                        #[allow(clippy::arc_with_non_send_sync)]
                         this.add_mmio_dev(Arc::new(arm_vgic::v3::vgicd::VGicD::new(
                             config.base_gpa.into(),
                             Some(config.length),
                         )));
 
                         info!(
-                            "GPPT Distributor initialized with base GPA {:#x} and length {:#x}",
-                            config.base_gpa, config.length
+                            "GPPT Distributor initialized with base GPA {base_gpa:#x} and length {length:#x}",
+                            base_gpa = config.base_gpa,
+                            length = config.length
                         );
                     }
                     #[cfg(not(target_arch = "aarch64"))]
@@ -214,6 +214,7 @@ impl AxVmDevices {
                             .map(PhysAddr::from_usize)
                             .expect("expect 1 arg for gppt its (host_gits_base)");
 
+                        #[allow(clippy::arc_with_non_send_sync)]
                         this.add_mmio_dev(Arc::new(arm_vgic::v3::gits::Gits::new(
                             config.base_gpa.into(),
                             Some(config.length),
@@ -222,8 +223,10 @@ impl AxVmDevices {
                         )));
 
                         info!(
-                            "GPPT ITS initialized with base GPA {:#x} and length {:#x}, host GITS base {:#x}",
-                            config.base_gpa, config.length, host_gits_base
+                            "GPPT ITS initialized with base GPA {base_gpa:#x} and length {length:#x}, host GITS base {host_gits_base:#x}",
+                            base_gpa = config.base_gpa,
+                            length = config.length,
+                            host_gits_base = host_gits_base
                         );
                     }
                     #[cfg(not(target_arch = "aarch64"))]
@@ -242,8 +245,9 @@ impl AxVmDevices {
                             end: config.base_gpa + config.length,
                         })));
                         info!(
-                            "IVCChannel initialized with base GPA {:#x} and length {:#x}",
-                            config.base_gpa, config.length
+                            "IVCChannel initialized with base GPA {base_gpa:#x} and length {length:#x}",
+                            base_gpa = config.base_gpa,
+                            length = config.length
                         );
                     } else {
                         warn!("IVCChannel already initialized, ignoring additional config");
@@ -273,11 +277,11 @@ impl AxVmDevices {
                 .lock()
                 .allocate_range(size)
                 .map_err(|e| {
-                    warn!("Failed to allocate IVC channel range: {:x?}", e);
+                    warn!("Failed to allocate IVC channel range: {e:x?}");
                     axerrno::ax_err_type!(NoMemory, "IVC channel allocation failed")
                 })
                 .map(|range| {
-                    debug!("Allocated IVC channel range: {:x?}", range);
+                    debug!("Allocated IVC channel range: {range:x?}");
                     GuestPhysAddr::from_usize(range.start)
                 })
         } else {
