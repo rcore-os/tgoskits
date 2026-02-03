@@ -1,7 +1,6 @@
 //! Virtual memory utilities.
 #![no_std]
 #![feature(maybe_uninit_as_bytes)]
-#![feature(maybe_uninit_slice)]
 #![warn(missing_docs)]
 
 use core::{mem::MaybeUninit, slice};
