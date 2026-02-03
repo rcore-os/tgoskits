@@ -33,6 +33,10 @@ pub use memory_addr::{PhysAddr, VirtAddr};
 
 use trait_ffi::*;
 
+/// A simple IRQ handler function pointer type.
+///
+/// This is a function that takes no arguments and returns nothing,
+/// used for handling interrupt requests (IRQs) in the kernel.
 pub type IrqHandler = fn();
 
 /// The kernel helper trait that platform implementations must provide.
