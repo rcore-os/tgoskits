@@ -1,20 +1,42 @@
 name: Quality Checks
 
 on:
+  push:
+    branches:
+      - '**'
+    tags-ignore:
+      - '**'
+  pull_request:
   workflow_call:
 
 jobs:
-  check:
-    name: Quality Checks
+  load-config:
+    name: Load CI Configuration
     runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.config.outputs.targets }}
+      rust_components: ${{ steps.config.outputs.rust_components }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Load configuration
+        id: config
+        run: |
+          TARGETS=$(jq -c '.targets' .github/config.json)
+          COMPONENTS=$(jq -r '.rust_components | join(", ")' .github/config.json)
+          
+          echo "targets=$TARGETS" >> $GITHUB_OUTPUT
+          echo "rust_components=$COMPONENTS" >> $GITHUB_OUTPUT
+
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    needs: load-config
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - x86_64-unknown-linux-gnu
-          - x86_64-unknown-none
-          - riscv64gc-unknown-none-elf
-          - aarch64-unknown-none-softfloat
+        target: ${{ fromJson(needs.load-config.outputs.targets) }}
 
     steps:
       - name: Checkout code
@@ -23,7 +45,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
         with:
-          components: rust-src, clippy, rustfmt
+          components: ${{ needs.load-config.outputs.rust_components }}
           targets: ${{ matrix.target }}
 
       - name: Check rust version
@@ -36,7 +58,7 @@ jobs:
         run: cargo build --target ${{ matrix.target }} --all-features
 
       - name: Run clippy
-        run: cargo clippy --target ${{ matrix.target }} --all-features -- -D warnings -A clippy::new_without_default
+        run: cargo clippy --target ${{ matrix.target }} --all-features -- -D warnings
 
       - name: Build documentation
         env:

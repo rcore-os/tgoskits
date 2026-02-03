@@ -3,64 +3,67 @@ name: Release
 on:
   push:
     tags:
-      - 'v*.*.*'
-      - 'v*.*.*-pre.*'
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-pre.[0-9]+'
 
 permissions:
   contents: write
 
 jobs:
-  check:
-    uses: ./.github/workflows/check.yml
-
-  test:
-    uses: ./.github/workflows/test.yml
-    needs: check
-
-  create-release:
-    name: Create GitHub Release
+  verify-tag:
+    name: Verify Tag
     runs-on: ubuntu-latest
-    needs: check
-
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+      is_prerelease: ${{ steps.check.outputs.is_prerelease }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Validate tag and branch (HEAD-based)
-        shell: bash
+      
+      - name: Check tag type and branch
+        id: check
         run: |
-          set -e
-
+          git fetch origin main master dev || true
+          
           TAG="${{ github.ref_name }}"
-          TAG_COMMIT=$(git rev-list -n 1 "$TAG")
-
-          git fetch origin main dev
-
-          MAIN_HEAD=$(git rev-parse origin/main)
-          DEV_HEAD=$(git rev-parse origin/dev)
-
-          echo "Tag:        $TAG"
-          echo "Tag commit: $TAG_COMMIT"
-          echo "main HEAD:  $MAIN_HEAD"
-          echo "dev  HEAD:  $DEV_HEAD"
-
-          if [[ "$TAG" == *-pre.* ]]; then
-            if [ "$TAG_COMMIT" != "$DEV_HEAD" ]; then
-              echo "❌ prerelease tag must be created from dev HEAD"
-              exit 1
+          BRANCHES=$(git branch -r --contains ${{ github.ref }})
+          
+          echo "Tag: $TAG"
+          echo "Branches containing this tag: $BRANCHES"
+          
+          # Check if it's a prerelease tag
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-pre\.[0-9]+$ ]]; then
+            echo "📦 Detected prerelease tag"
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+            
+            if echo "$BRANCHES" | grep -q 'origin/dev'; then
+              echo "✓ Prerelease tag is on dev branch"
+              echo "should_release=true" >> $GITHUB_OUTPUT
+            else
+              echo "✗ Prerelease tag must be on dev branch, skipping release"
+              echo "should_release=false" >> $GITHUB_OUTPUT
             fi
-            echo "✅ prerelease tag validated on dev"
+          elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "📦 Detected stable release tag"
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+            
+            if echo "$BRANCHES" | grep -qE 'origin/(main|master)'; then
+              echo "✓ Stable release tag is on main or master branch"
+              echo "should_release=true" >> $GITHUB_OUTPUT
+            else
+              echo "✗ Stable release tag must be on main or master branch, skipping release"
+              echo "should_release=false" >> $GITHUB_OUTPUT
+            fi
           else
-            if [ "$TAG_COMMIT" != "$MAIN_HEAD" ]; then
-              echo "❌ stable release tag must be created from main HEAD"
-              exit 1
-            fi
-            echo "✅ stable release tag validated on main"
+            echo "✗ Unknown tag format, skipping release"
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+            echo "should_release=false" >> $GITHUB_OUTPUT
           fi
-
+      
       - name: Verify version consistency
+        if: steps.check.outputs.should_release == 'true'
         run: |
           # Extract version from git tag (remove 'v' prefix)
           TAG_VERSION="${{ github.ref_name }}"
@@ -73,78 +76,79 @@ jobs:
             echo "ERROR: Version mismatch! Tag version ($TAG_VERSION) != Cargo.toml version ($CARGO_VERSION)"
             exit 1
           fi
-          echo "Version check passed!"
+          echo "✓ Version check passed!"
+
+  check:
+    uses: ./.github/workflows/check.yml
+    needs: verify-tag
+    if: needs.verify-tag.outputs.should_release == 'true'
+
+  test:
+    uses: ./.github/workflows/test.yml
+    needs: [verify-tag, check]
+    if: needs.verify-tag.outputs.should_release == 'true'
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [verify-tag, check]
+    if: needs.verify-tag.outputs.should_release == 'true'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          CURRENT_TAG="${{ github.ref_name }}"
+          
+          # Get previous tag
+          PREVIOUS_TAG=$(git tag --sort=-version:refname | grep -A1 "^${CURRENT_TAG}$" | tail -n1)
+          
+          if [ -z "$PREVIOUS_TAG" ] || [ "$PREVIOUS_TAG" == "$CURRENT_TAG" ]; then
+            echo "No previous tag found, this is the first release"
+            CHANGELOG="Initial release"
+          else
+            echo "Generating changelog from $PREVIOUS_TAG to $CURRENT_TAG"
+            
+            # Generate changelog with commit messages
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" "${PREVIOUS_TAG}..${CURRENT_TAG}")
+            
+            if [ -z "$CHANGELOG" ]; then
+              CHANGELOG="No changes"
+            fi
+          fi
+          
+          # Write changelog to output file (multi-line)
+          {
+            echo "changelog<<EOF"
+            echo "$CHANGELOG"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           draft: false
-          prerelease: ${{ contains(github.ref_name, '-pre.') }}
+          prerelease: ${{ needs.verify-tag.outputs.is_prerelease == 'true' }}
           body: |
-            ## ${{ github.ref_name }}
-
-            - [Documentation](https://docs.rs/axdevice_base)
-            - [crates.io](https://crates.io/crates/axdevice_base)
+            ## Changes
+            ${{ steps.release_notes.outputs.changelog }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  publish-crates:
+  publish:
     name: Publish to crates.io
     runs-on: ubuntu-latest
-    needs: check
+    needs: [verify-tag, check]
+    if: needs.verify-tag.outputs.should_release == 'true'
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Validate tag and branch (HEAD-based)
-        shell: bash
-        run: |
-          set -e
-
-          TAG="${{ github.ref_name }}"
-          TAG_COMMIT=$(git rev-list -n 1 "$TAG")
-
-          git fetch origin main dev
-
-          MAIN_HEAD=$(git rev-parse origin/main)
-          DEV_HEAD=$(git rev-parse origin/dev)
-
-          echo "Tag:        $TAG"
-          echo "Tag commit: $TAG_COMMIT"
-          echo "main HEAD:  $MAIN_HEAD"
-          echo "dev  HEAD:  $DEV_HEAD"
-
-          if [[ "$TAG" == *-pre.* ]]; then
-            if [ "$TAG_COMMIT" != "$DEV_HEAD" ]; then
-              echo "❌ prerelease tag must be created from dev HEAD"
-              exit 1
-            fi
-            echo "✅ prerelease tag validated on dev"
-          else
-            if [ "$TAG_COMMIT" != "$MAIN_HEAD" ]; then
-              echo "❌ stable release tag must be created from main HEAD"
-              exit 1
-            fi
-            echo "✅ stable release tag validated on main"
-          fi
-
-      - name: Verify version consistency
-        run: |
-          # Extract version from git tag (remove 'v' prefix)
-          TAG_VERSION="${{ github.ref_name }}"
-          TAG_VERSION="${TAG_VERSION#v}"
-          # Extract version from Cargo.toml
-          CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')
-          echo "Git tag version: $TAG_VERSION"
-          echo "Cargo.toml version: $CARGO_VERSION"
-          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
-            echo "ERROR: Version mismatch! Tag version ($TAG_VERSION) != Cargo.toml version ($CARGO_VERSION)"
-            exit 1
-          fi
-          echo "Version check passed!"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
