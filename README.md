@@ -47,18 +47,5 @@ fn my_irq_handler() {
 ```
 
 ## License
-This project is licensed under either of
 
-- GNU General Public License, Version 3.0 or later (LICENSE-GPL
- or https://www.gnu.org/licenses/gpl-3.0.html
-)
-
-- Apache License, Version 2.0 (LICENSE-APACHE
- or http://www.apache.org/licenses/LICENSE-2.0
-)
-
-- Mulan Permissive Software License, Version 2.0 (LICENSE-MULAN
- or https://license.coscl.org.cn/MulanPSL2/
-)
-
-at your option.
+Axklib is licensed under the Apache License, Version 2.0. See the [LICENSE](./LICENSE) file for details.
