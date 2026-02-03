@@ -9,7 +9,7 @@ authors = [
 keywords = ["axvisor", "config", "toml"]
 repository = "https://github.com/arceos-hypervisor/axvmconfig"
 description = "A simple VM configuration tool for ArceOS-Hypervisor."
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0" # MulanPubL2 is not included in SPDX
+license = "Apache-2.0"
 
 [features]
 default = ["std"]

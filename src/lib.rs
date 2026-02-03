@@ -1,3 +1,17 @@
+// Copyright 2025 The Axvisor Team
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! [ArceOS-Hypervisor](https://github.com/arceos-hypervisor/arceos-umhv)
 //! [VM](https://github.com/arceos-hypervisor/axvm) config module.
 //! [`AxVMCrateConfig`]: the configuration structure for the VM.
@@ -91,19 +105,22 @@ pub struct VmMemConfig {
 ///
 /// Allocation scheme:
 /// - 0x00 - 0x1F: Special devices, and abstract device types that does not specify a concrete
-/// interface or implementation. The device objects created from these types depend on the target
-/// architecture and the specific implementation of the hypervisor.
+///   interface or implementation. The device objects created from these types depend on the target
+///   architecture and the specific implementation of the hypervisor.
 /// - 0x20 - 0x7F: Concrete emulated device types.
 ///   - 0x20 - 0x2F: Interrupt controller devices.
 ///   - 0x30 - 0x3F: Reserved for future use.
 /// - 0x80 - 0xDF: Reserved for future use.
 /// - 0xE0 - 0xEF: Virtio devices.
 /// - 0xF0 - 0xFF: Reserved for future use.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize_repr, Deserialize_repr, Enumerable)]
+#[derive(
+    Debug, Copy, Clone, PartialEq, Eq, Serialize_repr, Deserialize_repr, Enumerable, Default,
+)]
 #[repr(u8)]
 pub enum EmulatedDeviceType {
     // Special devices and abstract device types.
     /// Dummy device type.
+    #[default]
     Dummy = 0x0,
     /// Interrupt controller device, e.g. vGICv2 in aarch64, vLAPIC in x86.
     InterruptController = 0x1,
@@ -141,12 +158,6 @@ pub enum EmulatedDeviceType {
     // SGIR = 0x8,
     // /// Interrupt controller GICR device.
     // GICR = 0x9,
-}
-
-impl Default for EmulatedDeviceType {
-    fn default() -> Self {
-        Self::Dummy
-    }
 }
 
 impl Display for EmulatedDeviceType {
@@ -270,11 +281,12 @@ pub struct VMBaseConfig {
     ///
     /// - If `None`, vcpu will be scheduled on available physical CPUs randomly.
     /// - If set, each vcpu will be scheduled on the specified physical CPUs.
-    ///      
-    ///     For example, [0x0101, 0x0010] means:
-    ///          - vCpu0 can be scheduled at pCpu0 and pCpu2;
-    ///          - vCpu1 will only be scheduled at pCpu1;
-    ///      It will phrase an error if the number of vCpus is not equal to the length of `phys_cpu_sets` array.
+    ///
+    ///   For example, [0x0101, 0x0010] means:
+    ///   - vCpu0 can be scheduled at pCpu0 and pCpu2;
+    ///   - vCpu1 will only be scheduled at pCpu1;
+    ///
+    ///   It will phrase an error if the number of vCpus is not equal to the length of `phys_cpu_sets` array.
     pub phys_cpu_sets: Option<Vec<usize>>,
 }
 
@@ -310,10 +322,11 @@ pub struct VMKernelConfig {
 }
 
 /// Specifies how the VM should handle interrupts and interrupt controllers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 pub enum VMInterruptMode {
     /// The VM will not handle interrupts, and the guest OS should not use interrupts.
     #[serde(rename = "no_irq", alias = "no", alias = "none")]
+    #[default]
     NoIrq,
     /// The VM will use the emulated interrupt controller to handle interrupts.
     #[serde(rename = "emu", alias = "emulated")]
@@ -321,12 +334,6 @@ pub enum VMInterruptMode {
     /// The VM will use the passthrough interrupt controller (including GPPT) to handle interrupts.
     #[serde(rename = "passthrough", alias = "pt")]
     Passthrough,
-}
-
-impl Default for VMInterruptMode {
-    fn default() -> Self {
-        Self::NoIrq
-    }
 }
 
 /// The configuration structure for the guest VM devices.

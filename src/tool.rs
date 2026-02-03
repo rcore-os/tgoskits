@@ -1,3 +1,17 @@
+// Copyright 2025 The Axvisor Team
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! ArceOS-Hypervisor VM configuration tool
 //!
 //! This module provides a command-line interface for managing VM configurations,
@@ -9,7 +23,7 @@ use std::path::Path;
 
 use clap::{Args, Parser, Subcommand};
 
-use crate::templates::get_vm_config_template;
+use crate::templates::{get_vm_config_template, VmTemplateParams};
 use crate::AxVMCrateConfig;
 
 /// Main CLI structure for the axvmconfig tool
@@ -22,7 +36,7 @@ use crate::AxVMCrateConfig;
 #[command(about = "A simple VM configuration tool for ArceOS-Hypervisor.", long_about = None)]
 #[command(args_conflicts_with_subcommands = true)]
 #[command(flatten_help = true)]
-pub struct CLI {
+pub struct Cli {
     #[command(subcommand)]
     pub subcmd: CLISubCmd,
 }
@@ -99,7 +113,7 @@ pub struct TemplateArgs {
 ///
 /// Supports multiple number formats:
 /// - Hexadecimal (0x prefix): e.g., 0x80200000
-/// - Binary (0b prefix): e.g., 0b10101010  
+/// - Binary (0b prefix): e.g., 0b10101010
 /// - Decimal: e.g., 123456
 ///
 /// # Arguments
@@ -108,12 +122,12 @@ pub struct TemplateArgs {
 /// # Returns
 /// * `Result<usize, Box<dyn Error + Send + Sync + 'static>>` - Parsed number or error
 fn parse_usize(s: &str) -> Result<usize, Box<dyn Error + Send + Sync + 'static>> {
-    if s.starts_with("0x") {
+    if let Some(stripped) = s.strip_prefix("0x") {
         // Parse hexadecimal number
-        Ok(usize::from_str_radix(&s[2..], 16)?)
-    } else if s.starts_with("0b") {
+        Ok(usize::from_str_radix(stripped, 16)?)
+    } else if let Some(stripped) = s.strip_prefix("0b") {
         // Parse binary number
-        Ok(usize::from_str_radix(&s[2..], 2)?)
+        Ok(usize::from_str_radix(stripped, 2)?)
     } else {
         // Parse decimal number
         Ok(s.parse()?)
@@ -125,7 +139,7 @@ fn parse_usize(s: &str) -> Result<usize, Box<dyn Error + Send + Sync + 'static>>
 /// Parses command line arguments and dispatches to appropriate handlers
 /// for either configuration validation or template generation.
 pub fn run() {
-    let cli = CLI::parse();
+    let cli = Cli::parse();
     match cli.subcmd {
         // Handle configuration file validation
         CLISubCmd::Check(args) => {
@@ -174,17 +188,17 @@ pub fn run() {
             };
 
             // Generate the VM configuration template with provided parameters
-            let template = get_vm_config_template(
-                args.id,
-                args.name + "-" + args.arch.as_str(),
-                args.vm_type,
-                args.cpu_num,
-                args.entry_point,
+            let template = get_vm_config_template(VmTemplateParams {
+                id: args.id,
+                name: args.name + "-" + args.arch.as_str(),
+                vm_type: args.vm_type,
+                cpu_num: args.cpu_num,
+                entry_point: args.entry_point,
                 kernel_path,
-                args.kernel_load_addr,
-                args.image_location,
-                args.cmdline,
-            );
+                kernel_load_addr: args.kernel_load_addr,
+                image_location: args.image_location,
+                cmdline: args.cmdline,
+            });
 
             // Convert the configuration template to TOML format
             let template_toml = toml::to_string(&template).unwrap();

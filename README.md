@@ -134,13 +134,4 @@ Contributions are welcome! Please ensure that:
 
 ## License
 
-This project is licensed under multiple licenses:
-
-- Apache License 2.0 ([LICENSE.Apache2](LICENSE.Apache2))
-- GNU General Public License v3.0 ([LICENSE.GPLv3](LICENSE.GPLv3))
-- Mulan Permissive Software License v2 ([LICENSE.MulanPSL2](LICENSE.MulanPSL2))
-- Mulan Public License v2 ([LICESNE.MulanPubL2](LICESNE.MulanPubL2))
-
-## Related Projects
-
-- [AxVisor](https://github.com/arceos-hypervisor/axvisor) - The main hypervisor project
+Axvmconfig is licensed under the Apache License, Version 2.0. See the [LICENSE](./LICENSE) file for details.
