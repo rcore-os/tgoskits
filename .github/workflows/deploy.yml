@@ -88,6 +88,7 @@ jobs:
           RUSTDOCFLAGS: -D rustdoc::broken_intra_doc_links -D missing-docs
         run: |
           cargo doc --no-deps --all-features
+          printf '<meta http-equiv="refresh" content="0;url=%s/index.html">' $(cargo tree | head -1 | cut -d' ' -f1) > target/doc/index.html
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
