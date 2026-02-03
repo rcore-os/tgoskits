@@ -40,18 +40,18 @@ impl<H: PagingHandler> NestedPageTable<H> {
                     use axerrno::ax_err_type;
 
                     let res = NestedPageTableL3::try_new().map_err(|_| ax_err_type!(NoMemory))?;
-                    return Ok(NestedPageTable::L3(res));
+                    Ok(NestedPageTable::L3(res))
                 }
                 #[cfg(target_arch = "x86_64")]
                 {
-                    return ax_err!(InvalidInput, "L3 not supported on x86_64");
+                    ax_err!(InvalidInput, "L3 not supported on x86_64")
                 }
             }
             4 => {
                 let res = NestedPageTableL4::try_new().map_err(|_| ax_err_type!(NoMemory))?;
-                return Ok(NestedPageTable::L4(res));
+                Ok(NestedPageTable::L4(res))
             }
-            _ => return ax_err!(InvalidInput, "Invalid page table level"),
+            _ => ax_err!(InvalidInput, "Invalid page table level"),
         }
     }
 
@@ -79,8 +79,7 @@ impl<H: PagingHandler> NestedPageTable<H> {
                     .flush();
             }
             NestedPageTable::L4(pt) => {
-                let _res = pt
-                    .map(vaddr, paddr, size, flags)
+                pt.map(vaddr, paddr, size, flags)
                     .map_err(|_| MappingError::BadState)?
                     .flush();
             }

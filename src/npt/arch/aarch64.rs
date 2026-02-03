@@ -1,7 +1,7 @@
 use core::arch::asm;
 use core::fmt;
 use page_table_entry::{GenericPTE, MappingFlags};
-use page_table_multiarch::{PageTable64, PagingMetaData};
+use page_table_multiarch::PagingMetaData;
 // use memory_addr::HostPhysAddr;
 use crate::{GuestPhysAddr, HostPhysAddr};
 
