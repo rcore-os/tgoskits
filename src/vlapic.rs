@@ -92,6 +92,7 @@ impl VirtualApicRegs {
     }
 
     /// Gets the APIC base MSR value.
+    #[allow(dead_code)]
     pub fn apic_base(&self) -> u64 {
         self.apic_base.get()
     }
@@ -103,6 +104,7 @@ impl VirtualApicRegs {
     }
 
     /// Returns whether the xAPIC mode is enabled.
+    #[allow(dead_code)]
     pub fn is_xapic_enabled(&self) -> bool {
         self.apic_base.is_set(APIC_BASE::XAPIC_ENABLED)
             && !self.apic_base.is_set(APIC_BASE::X2APIC_Enabled)
@@ -137,7 +139,7 @@ impl VirtualApicRegs {
 
     fn update_ppr(&mut self) {
         let isrv = self.isrv;
-        let tpr = self.regs().TPR.get() as u32;
+        let tpr = self.regs().TPR.get();
         // IF VTPR[7:4] ≥ SVI[7:4]
         let ppr = if prio(tpr) >= prio(isrv) {
             // THEN VPPR := VTPR & FFH;
@@ -192,7 +194,7 @@ impl VirtualApicRegs {
             unimplemented!("vioapic_broadcast_eoi(vlapic2vcpu(vlapic)->vm, vector);")
         }
 
-        debug!("Gratuitous EOI vector: {:#010X}", vector);
+        debug!("Gratuitous EOI vector: {vector:#010X}");
 
         unimplemented!("vcpu_make_request(vlapic2vcpu(vlapic), ACRN_REQUEST_EVENT);")
     }
@@ -369,10 +371,7 @@ impl VirtualApicRegs {
         ldr &= !LDR_RESERVED;
 
         self.regs().LDR.set(ldr);
-        debug!(
-            "[VLAPIC] apic_id={:#010X} write LDR register to {:#010X}",
-            apic_id, ldr
-        );
+        debug!("[VLAPIC] apic_id={apic_id:#010X} write LDR register to {ldr:#010X}");
     }
 
     fn write_dfr(&mut self) {
@@ -386,7 +385,7 @@ impl VirtualApicRegs {
         dfr |= APIC_DFR_RESERVED;
         self.regs().DFR.set(dfr);
 
-        debug!("[VLAPIC] write DFR register to {:#010X}", dfr);
+        debug!("[VLAPIC] write DFR register to {dfr:#010X}");
 
         match self.regs().DFR.read_as_enum(DESTINATION_FORMAT::Model) {
             Some(DESTINATION_FORMAT::Model::Value::Flat) => {
@@ -396,7 +395,7 @@ impl VirtualApicRegs {
                 debug!("[VLAPIC] DFR in Cluster Model");
             }
             None => {
-                debug!("[VLAPIC] DFR in Unknown Model {:#010X}", dfr);
+                debug!("[VLAPIC] DFR in Unknown Model {dfr:#010X}");
             }
         }
     }
@@ -436,7 +435,7 @@ impl VirtualApicRegs {
 
     fn write_esr(&mut self) {
         let esr = self.regs().ESR.get();
-        debug!("[VLAPIC] write ESR register to {:#010X}", esr);
+        debug!("[VLAPIC] write ESR register to {esr:#010X}");
         self.regs().ESR.set(self.esr_pending.get());
         self.esr_pending.set(0);
     }
@@ -469,14 +468,14 @@ impl VirtualApicRegs {
 
         if mode == APICDeliveryMode::Fixed && vec < 16 {
             self.set_err(ERROR_STATUS::SendIllegalVector::SET);
-            debug!("[VLAPIC] Ignoring invalid IPI {:#010X}", vec);
+            debug!("[VLAPIC] Ignoring invalid IPI {vec:#010X}");
         } else if (shorthand == APICDestination::SELF
             || shorthand == APICDestination::AllIncludingSelf)
             && (mode == APICDeliveryMode::NMI
                 || mode == APICDeliveryMode::INIT
                 || mode == APICDeliveryMode::StartUp)
         {
-            debug!("[VLAPIC] Invalid ICR value {:#010X}", vec);
+            debug!("[VLAPIC] Invalid ICR value {vec:#010X}");
         } else {
             debug!(
                 "icrlow {:#010X} icrhi {:#010X} triggered ipi {:#010X}",
@@ -492,11 +491,11 @@ impl VirtualApicRegs {
                     match mode {
                         APICDeliveryMode::Fixed => {
                             self.set_intr(i, vec, LAPIC_TRIG_EDGE);
-                            debug!("[VLAPIC] sending IPI {} to vcpu {}", vec, i);
+                            debug!("[VLAPIC] sending IPI {vec} to vcpu {i}");
                         }
                         APICDeliveryMode::NMI => {
                             self.inject_nmi(i);
-                            debug!("[VLAPIC] sending NMI to vcpu {}", i);
+                            debug!("[VLAPIC] sending NMI to vcpu {i}");
                         }
                         APICDeliveryMode::INIT | APICDeliveryMode::StartUp => {
                             self.process_init_sipi(i, mode, icr_low);
@@ -505,7 +504,7 @@ impl VirtualApicRegs {
                             warn!("[VLPAIC] SMI IPI do not support");
                         }
                         _ => {
-                            error!("Unhandled icrlo write with mode {:?}\n", mode);
+                            error!("Unhandled icrlo write with mode {mode:?}\n");
                         }
                     }
                 }
@@ -525,7 +524,7 @@ impl VirtualApicRegs {
             ApicRegOffset::LvtLint1 => self.regs().LVT_LINT1.get(),
             ApicRegOffset::LvtErr => self.regs().LVT_ERROR.get(),
             _ => {
-                warn!("[VLAPIC] read unsupported APIC register: {:?}", offset);
+                warn!("[VLAPIC] read unsupported APIC register: {offset:?}");
                 0
             }
         }
@@ -616,7 +615,7 @@ impl VirtualApicRegs {
                 self.lvt_last.lvt_thermal.set(val);
             }
             _ => {
-                warn!("[VLAPIC] write unsupported APIC register: {:?}", offset);
+                warn!("[VLAPIC] write unsupported APIC register: {offset:?}");
                 return Err(AxError::InvalidInput);
             }
         }
@@ -695,7 +694,7 @@ impl VirtualApicRegs {
             }
             ApicRegOffset::EOI => {
                 // value = self.regs().EOI.get() as _;
-                warn!("[VLAPIC] read EOI register: {:#010X}", value);
+                warn!("[VLAPIC] read EOI register: {value:#010X}");
             }
             ApicRegOffset::LDR => {
                 value = self.regs().LDR.get() as _;
@@ -723,7 +722,7 @@ impl VirtualApicRegs {
                 if self.is_x2apic_enabled() && width == AccessWidth::Qword {
                     let icr_hi = self.regs().ICR_HI.get() as usize;
                     value |= icr_hi << 32;
-                    debug!("[VLAPIC] read ICR register: {:#018X}", value);
+                    debug!("[VLAPIC] read ICR register: {value:#018X}");
                 } else if self.is_x2apic_enabled() ^ (width == AccessWidth::Qword) {
                     warn!(
                         "[VLAPIC] Illegal read attempt of ICR register at width {:?} with X2APIC {}",
@@ -776,7 +775,7 @@ impl VirtualApicRegs {
                         warn!("[VLAPIC] read TimerInitCount register: invalid timer mode");
                     }
                 }
-                debug!("[VLAPIC] read TimerInitCount register: {:#010X}", value);
+                debug!("[VLAPIC] read TimerInitCount register: {value:#010X}");
             }
             ApicRegOffset::TimerCurCount => {
                 value = self.virtual_timer.read_ccr() as _;
@@ -785,10 +784,10 @@ impl VirtualApicRegs {
                 value = self.regs().DCR_TIMER.get() as _;
             }
             _ => {
-                warn!("[VLAPIC] read unknown APIC register: {:?}", offset);
+                warn!("[VLAPIC] read unknown APIC register: {offset:?}");
             }
         }
-        debug!("[VLAPIC] read {} register: {:#010X}", offset, value);
+        debug!("[VLAPIC] read {offset} register: {value:#010X}");
         Ok(value)
     }
 
@@ -826,7 +825,7 @@ impl VirtualApicRegs {
             }
             ApicRegOffset::ICRLow => {
                 if self.is_x2apic_enabled() && width == AccessWidth::Qword {
-                    debug!("[VLAPIC] write ICR register: {:#018X} in X2APIC mode", val);
+                    debug!("[VLAPIC] write ICR register: {val:#018X} in X2APIC mode");
                     self.regs().ICR_HI.set((val >> 32) as u32);
                 } else if self.is_x2apic_enabled() ^ (width == AccessWidth::Qword) {
                     warn!(
@@ -898,12 +897,12 @@ impl VirtualApicRegs {
                 }
             }
             _ => {
-                warn!("[VLAPIC] write unsupported APIC register: {:?}", offset);
+                warn!("[VLAPIC] write unsupported APIC register: {offset:?}");
                 return Err(AxError::InvalidInput);
             }
         }
 
-        debug!("[VLAPIC] write {} register: {:#010X}", offset, val);
+        debug!("[VLAPIC] write {offset} register: {val:#010X}");
 
         Ok(())
     }

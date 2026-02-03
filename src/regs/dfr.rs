@@ -35,4 +35,5 @@ pub type DestinationFormatRegisterMmio = ReadWrite<u32, DESTINATION_FORMAT::Regi
 /// This behaves very similarly to a MMIO read-write register, but instead of doing a
 /// volatile read to MMIO to get the value for each function call, a copy of the
 /// register contents are stored locally in memory.
+#[allow(dead_code)]
 pub type DestinationFormatRegisterLocal = LocalRegisterCopy<u32, DESTINATION_FORMAT::Register>;

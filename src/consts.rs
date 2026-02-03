@@ -58,6 +58,7 @@ define_index_enum!(TMRIndex);
 define_index_enum!(IRRIndex);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::upper_case_acronyms)]
 pub enum ApicRegOffset {
     /// ID register 0x2.
     ID,
@@ -164,9 +165,9 @@ impl core::fmt::Display for ApicRegOffset {
             ApicRegOffset::LDR => write!(f, "LDR"),
             ApicRegOffset::DFR => write!(f, "DFR"),
             ApicRegOffset::SIVR => write!(f, "SIVR"),
-            ApicRegOffset::ISR(index) => write!(f, "{:?}", index),
-            ApicRegOffset::TMR(index) => write!(f, "{:?}", index),
-            ApicRegOffset::IRR(index) => write!(f, "{:?}", index),
+            ApicRegOffset::ISR(index) => write!(f, "{index:?}"),
+            ApicRegOffset::TMR(index) => write!(f, "{index:?}"),
+            ApicRegOffset::IRR(index) => write!(f, "{index:?}"),
             ApicRegOffset::ESR => write!(f, "ESR"),
             ApicRegOffset::LvtCMCI => write!(f, "LvtCMCI"),
             ApicRegOffset::ICRLow => write!(f, "ICR_LOW"),
@@ -198,6 +199,7 @@ pub const RESET_LVT_REG: u32 = APIC_LVT_M;
 /// - Value after reset: 0000 00FFH
 pub const RESET_SPURIOUS_INTERRUPT_VECTOR: u32 = 0x0000_00FF;
 
+#[allow(dead_code)]
 pub const LAPIC_TRIG_LEVEL: bool = true;
 pub const LAPIC_TRIG_EDGE: bool = false;
 

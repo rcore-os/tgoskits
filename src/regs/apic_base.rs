@@ -48,9 +48,12 @@ register_bitfields! {
 /// IA32_APIC_BASE MSR (Model Specific Register) supporting x2APIC.
 /// - Address: 1B0H
 /// - Value after reset: FEE_0000_0000H
-/// Table 11-5, “x2APIC operating mode configurations” describe the possible combinations of the enable bit (EN - bit 11)
+///
+/// Table 11-5, "x2APIC operating mode configurations" describe the possible combinations of the enable bit (EN - bit 11)
 /// and the extended mode bit (EXTD - bit 10) in the IA32_APIC_BASE MSR.
+///
 /// (xAPIC global enable (IA32_APIC_BASE[11]),x2APIC enable (IA32_APIC_BASE[10])) = Description
+///
 /// - (0, 0) = local APIC is disabled
 /// - (0, 1) = Invalid
 /// - (1, 0) = local APIC is enabled in xAPIC mode
