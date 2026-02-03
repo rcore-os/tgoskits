@@ -74,3 +74,7 @@ This library is designed for x86_64 architecture and targets `x86_64-unknown-non
 ---
 
 **Note**: This is a virtualization library and does not interact with actual hardware LAPIC. It's designed for use in hypervisors and virtual machine monitors.
+
+## License
+
+X86_vlapic is licensed under the Apache License, Version 2.0. See the [LICENSE](./LICENSE) file for details.
