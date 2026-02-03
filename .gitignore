@@ -3,6 +3,8 @@
 /.vscode
 /tmp
 /.arceos
+/.images
+/.image.toml
 
 .DS_Store
 *.asm

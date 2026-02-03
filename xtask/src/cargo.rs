@@ -1,5 +1,5 @@
-use std::{fs, path::PathBuf};
 use ostool::build::CargoRunnerKind;
+use std::{fs, path::PathBuf};
 
 use crate::ctx::Context;
 

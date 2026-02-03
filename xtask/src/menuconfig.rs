@@ -10,7 +10,10 @@ impl Context {
 
         let config_path = self.ctx.paths.workspace.join(".build.toml");
         if config_path.exists() {
-            println!("\nCurrent .build.toml configuration file: {}", config_path.display());
+            println!(
+                "\nCurrent .build.toml configuration file: {}",
+                config_path.display()
+            );
         } else {
             println!("\nNo .build.toml configuration file found, will use default configuration");
         }

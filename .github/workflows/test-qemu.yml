@@ -39,6 +39,10 @@ jobs:
 
       - name: Download images and patch vm configs
         run: |
+          ls -lha .
+          ls -lha modules/
+
+          IMAGE_DIR="/tmp/.axvisor-images"
           IFS=',' read -ra CONFIGS <<< "${{ matrix.vmconfigs }}"
           IFS=',' read -ra IMAGES <<< "${{ matrix.vmimage_name }}"
           for i in "${!CONFIGS[@]}"; do
@@ -55,7 +59,7 @@ jobs:
               echo "Filesystem storage mode - no config update needed"
               ;;
             "memory")
-              sed -i 's|^kernel_path[[:space:]]*=.*|kernel_path = "/tmp/axvisor/'"$img"'/'"$img_name"'"|' "$config"
+              sed -i 's|^kernel_path[[:space:]]*=.*|kernel_path = "'"${IMAGE_DIR}"'/'"$img"'/'"$img_name"'"|' "$config"
               echo "Memory storage mode - updating kernel_path"
               ;;
             *)
@@ -64,7 +68,7 @@ jobs:
               ;;
             esac
 
-            ROOTFS_IMG_PATH="/tmp/axvisor/$img/rootfs.img"
+            ROOTFS_IMG_PATH="${IMAGE_DIR}/$img/rootfs.img"
 
             # Check if rootfs.img exists after extraction
             if [ -f "${ROOTFS_IMG_PATH}" ]; then
