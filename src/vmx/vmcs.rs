@@ -648,8 +648,7 @@ pub fn set_control(
     let allowed1 = (cap >> 32) as u32;
     assert_eq!(allowed0 & allowed1, allowed0);
     debug!(
-        "set {:?}: {:#x} (+{:#x}, -{:#x})",
-        control, old_value, set, clear
+        "set {control:?}: {old_value:#x} (+{set:#x}, -{clear:#x})"
     );
     if (set & clear) != 0 {
         return ax_err!(

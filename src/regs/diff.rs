@@ -38,7 +38,7 @@ impl Debug for GeneralRegistersDiff {
             if old != new {
                 debug.field(
                     GeneralRegisters::register_name(i),
-                    &format!("{:#x} -> {:#x}", old, new),
+                    &format!("{old:#x} -> {new:#x}"),
                 );
             }
         }

@@ -291,8 +291,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             let diff = GeneralRegistersDiff::new(self.guest_regs_exiting, self.guest_regs);
             if !diff.is_same() {
                 debug!(
-                    "VCpu registers changed during handling VM-exit: {:#x?}",
-                    diff
+                    "VCpu registers changed during handling VM-exit: {diff:#x?}"
                 );
             } else {
                 debug!("VCpu registers unchanged during handling VM-exit");
@@ -503,42 +502,12 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         // By default, I/O bitmap is set as `intercept_all`.
         // Todo: these should be combined with emulated pio device management,
         // in `modules/axvm/src/device/x86_64/mod.rs` somehow.
-        let io_to_be_intercepted = [
-            // // UART
-            // // 0x3f8..0x3f8 + 8, // COM1
-            // // We need to intercepted the access to COM2 ports.
-            // // Because we want to reserve this port for host Linux.
-            // 0x2f8..0x2f8 + 8, // COM2
-            // // 0x3e8..0x3e8 + 8, // COM3
-            // // 0x2e8..0x2e8 + 8, // COM4
-            // // Virual PIC
-            // 0x20..0x20 + 2, // PIC1
-            // 0xa0..0xa0 + 2, // PIC2
-            // // Debug Port
-            // // 0x80..0x80 + 1,   // Debug Port
-            // //
-            // 0x92..0x92 + 1, // system_control_a
-            // 0x61..0x61 + 1, // system_control_b
-            // // RTC
-            // 0x70..0x70 + 2, // CMOS
-            // 0x40..0x40 + 4, // PIT
-            // // 0xf0..0xf0 + 2,   // ports about fpu
-            // // 0x3d4..0x3d4 + 2, // ports about vga
-            // 0x87..0x87 + 1,   // port about dma
-            // 0x60..0x60 + 1,   // ports about ps/2 controller
-            // 0x64..0x64 + 1,   // ports about ps/2 controller
-            // 0xcf8..0xcf8 + 8, // PCI
-
-            // QEMU exit port
-            QEMU_EXIT_PORT..QEMU_EXIT_PORT + 1, // QEMU exit port
-        ];
-        for port_range in io_to_be_intercepted {
-            self.io_bitmap.set_intercept_of_range(
-                port_range.start as _,
-                port_range.count() as u32,
-                true,
-            );
-        }
+        let io_to_be_intercepted = QEMU_EXIT_PORT..QEMU_EXIT_PORT + 1; // QEMU exit port
+        self.io_bitmap.set_intercept_of_range(
+            io_to_be_intercepted.start as _,
+            io_to_be_intercepted.count() as u32,
+            true,
+        );
         Ok(())
     }
 
@@ -708,21 +677,18 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         let mut val =
             // CpuCtrl2::VIRTUALIZE_APIC | 
             CpuCtrl2::ENABLE_EPT | CpuCtrl2::UNRESTRICTED_GUEST;
-        if let Some(features) = raw_cpuid.get_extended_processor_and_feature_identifiers() {
-            if features.has_rdtscp() {
+        if let Some(features) = raw_cpuid.get_extended_processor_and_feature_identifiers()
+            && features.has_rdtscp() {
                 val |= CpuCtrl2::ENABLE_RDTSCP;
             }
-        }
-        if let Some(features) = raw_cpuid.get_extended_feature_info() {
-            if features.has_invpcid() {
+        if let Some(features) = raw_cpuid.get_extended_feature_info()
+            && features.has_invpcid() {
                 val |= CpuCtrl2::ENABLE_INVPCID;
             }
-        }
-        if let Some(features) = raw_cpuid.get_extended_state_info() {
-            if features.has_xsaves_xrstors() {
+        if let Some(features) = raw_cpuid.get_extended_state_info()
+            && features.has_xsaves_xrstors() {
                 val |= CpuCtrl2::ENABLE_XSAVES_XRSTORS;
             }
-        }
         vmcs::set_control(
             VmcsControl32::SECONDARY_PROCBASED_EXEC_CONTROLS,
             Msr::IA32_VMX_PROCBASED_CTLS2,
@@ -979,7 +945,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             msr_rw @ (VmxExitReason::MSR_READ | VmxExitReason::MSR_WRITE)
                 if {
                     let msr = self.regs().rcx as u32;
-                    msr >= X2APIC_MSR_BASE && msr <= X2APIC_MSR_END
+                    (X2APIC_MSR_BASE..=X2APIC_MSR_END).contains(&msr)
                 } =>
             {
                 Some(self.handle_apic_msr_access(
@@ -1013,8 +979,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             let value = self.read_edx_eax() as usize;
 
             trace!(
-                "handle_vlapic_msr_write: msr={:#x}, value={:#x}",
-                msr, value
+                "handle_vlapic_msr_write: msr={msr:#x}, value={value:#x}"
             );
 
             <EmulatedLocalApic as BaseDeviceOps<SysRegAddrRange>>::handle_write(
@@ -1030,7 +995,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
                 AccessWidth::Qword,
             )? as u64;
 
-            trace!("handle_vlapic_msr_read: msr={:#x}, value={:#x}", msr, value);
+            trace!("handle_vlapic_msr_read: msr={msr:#x}, value={value:#x}");
 
             self.write_edx_eax(value);
             Ok(())
@@ -1121,7 +1086,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         const VENDOR_STR: &[u8; 12] = b"RVMRVMRVMRVM";
         let vendor_regs = unsafe { &*(VENDOR_STR.as_ptr() as *const [u32; 3]) };
 
-        let regs_clone = self.regs_mut().clone();
+        let regs_clone = *self.regs_mut();
         let function = regs_clone.rax as u32;
         let res = match function {
             LEAF_FEATURE_INFO => {
@@ -1172,8 +1137,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
                 let mut res = cpuid!(regs_clone.rax, regs_clone.rcx);
                 if res.eax == 0 {
                     warn!(
-                        "handle_cpuid: Failed to get TSC frequency by CPUID, default to {} MHz",
-                        TIMER_FREQUENCY_MHZ
+                        "handle_cpuid: Failed to get TSC frequency by CPUID, default to {TIMER_FREQUENCY_MHZ} MHz"
                     );
                     res.eax = TIMER_FREQUENCY_MHZ;
                 }
@@ -1351,20 +1315,18 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
 
                         if io_info.is_repeat || io_info.is_string {
                             warn!(
-                                "VMX unsupported IO-Exit: {:#x?} of {:#x?}",
-                                io_info, exit_info
+                                "VMX unsupported IO-Exit: {io_info:#x?} of {exit_info:#x?}"
                             );
-                            warn!("VCpu {:#x?}", self);
+                            warn!("VCpu {self:#x?}");
                             AxVCpuExitReason::Halt
                         } else {
                             let width = match AccessWidth::try_from(io_info.access_size as usize) {
                                 Ok(width) => width,
                                 Err(_) => {
                                     warn!(
-                                        "VMX invalid IO-Exit: {:#x?} of {:#x?}",
-                                        io_info, exit_info
+                                        "VMX invalid IO-Exit: {io_info:#x?} of {exit_info:#x?}"
                                     );
-                                    warn!("VCpu {:#x?}", self);
+                                    warn!("VCpu {self:#x?}");
                                     return Ok(AxVCpuExitReason::Halt);
                                 }
                             };
@@ -1411,8 +1373,8 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
                         }
                     }
                     _ => {
-                        warn!("VMX unsupported VM-Exit: {:#x?}", exit_info);
-                        warn!("VCpu {:#x?}", self);
+                        warn!("VMX unsupported VM-Exit: {exit_info:#x?}");
+                        warn!("VCpu {self:#x?}");
                         AxVCpuExitReason::Halt
                     }
                 }
@@ -1441,7 +1403,8 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
             warn!("interrupt queued in inject_interrupt: vector 0");
             panic!()
         }
-        Ok(self.queue_event(vector as u8, None))
+        self.queue_event(vector as u8, None);
+        Ok(())
     }
 
     fn set_return_value(&mut self, val: usize) {
