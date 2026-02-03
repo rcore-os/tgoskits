@@ -137,3 +137,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 - [GitHub Repository](https://github.com/arceos-hypervisor/axaddrspace)
 - [ArceOS-Hypervisor Project](https://github.com/arceos-hypervisor/)
+
+## License
+
+Axaddrspace is licensed under the Apache License, Version 2.0. See the [LICENSE](./LICENSE) file for details.
