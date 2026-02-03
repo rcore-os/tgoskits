@@ -1,13 +1,13 @@
 [package]
 name = "axhvc"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = ["AxVisor Team"]
 description = "AxVisor HyperCall definitions for guest-hypervisor communication"
 documentation = "https://docs.rs/axhvc"
 repository = "https://github.com/arceos-hypervisor/axhvc"
 readme = "README.md"
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
+license = "Apache-2.0"
 keywords = ["hypervisor", "hypercall", "virtualization", "arceos", "axvisor"]
 categories = ["no-std", "embedded", "os"]
 

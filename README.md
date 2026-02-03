@@ -60,8 +60,4 @@ fn handle_hypercall(code: HyperCallCode) -> HyperCallResult {
 
 ## License
 
-Licensed under one of the following licenses:
-
-- GNU General Public License, Version 3.0 or later ([LICENSE-GPL](LICENSE-GPL) or https://www.gnu.org/licenses/gpl-3.0.html)
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-- Mulan PSL v2 ([LICENSE-MULAN](LICENSE-MULAN) or https://license.coscl.org.cn/MulanPSL2)
+Axhvc is licensed under the Apache License, Version 2.0. See the [LICENSE](./LICENSE) file for details.
