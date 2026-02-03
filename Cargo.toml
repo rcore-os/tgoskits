@@ -19,7 +19,7 @@ bytemuck = { version = "1.24", features = [
     "const_zeroed",
     "zeroable_maybe_uninit",
 ] }
-extern-trait = "0.2"
+extern-trait = "0.4"
 
 [dev-dependencies]
 bytemuck = { version = "1.24", features = ["derive"] }

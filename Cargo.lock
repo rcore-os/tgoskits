@@ -34,9 +34,19 @@ dependencies = [
 
 [[package]]
 name = "extern-trait"
-version = "0.2.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba8f5038f5845165d06fe1453fe4130ad546d3314818bbda57e208e7b0cffe08"
+checksum = "6aaf674806ff7ed99a1a7060e50bd6c770116e026cb574345c093e2450fd4e1c"
+dependencies = [
+ "extern-trait-impl",
+ "typeid",
+]
+
+[[package]]
+name = "extern-trait-impl"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a9ab8a5ebf22d1bbf721af50af91ef7b4764fbf2f3c84e0e7ad4f7dc1a056e0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -113,6 +123,12 @@ dependencies = [
  "quote",
  "unicode-ident",
 ]
+
+[[package]]
+name = "typeid"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc7d623258602320d5c55d1bc22793b57daff0ec7efc270ea7d55ce1d5f5471c"
 
 [[package]]
 name = "unicode-ident"
