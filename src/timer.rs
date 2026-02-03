@@ -87,6 +87,7 @@ impl ApicTimer {
     //     }
     // }
 
+    #[allow(dead_code)]
     pub fn read_lvt(&self) -> u32 {
         self.lvt_timer_register.get()
     }
@@ -100,6 +101,7 @@ impl ApicTimer {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn read_icr(&self) -> u32 {
         self.initial_count_register
     }
@@ -117,6 +119,7 @@ impl ApicTimer {
     }
 
     /// Read from the Divide Configuration Register.
+    #[allow(dead_code)]
     pub fn read_dcr(&self) -> u32 {
         self.divide_configuration_register
     }
@@ -151,7 +154,7 @@ impl ApicTimer {
         }
         let remaining_ns = self.deadline_ns.wrapping_sub(time::current_time_nanos());
         let remaining_ticks = time::nanos_to_ticks(remaining_ns);
-        return (remaining_ticks >> self.divide_shift) as _;
+        (remaining_ticks >> self.divide_shift) as _
     }
 
     /// Get the timer mode.
@@ -162,6 +165,7 @@ impl ApicTimer {
     }
 
     /// Check whether the timer interrupt is masked.
+    #[allow(dead_code)]
     pub fn is_masked(&self) -> bool {
         self.lvt_timer_register.is_set(LVT_TIMER::Mask)
     }
@@ -180,7 +184,7 @@ impl ApicTimer {
     /// Restart the timer. Will not start the timer if it is not started.
     pub fn restart_timer(&mut self) -> AxResult {
         if !self.is_started() {
-            return Ok(());
+            Ok(())
         } else {
             self.stop_timer()?;
             self.start_timer()
@@ -200,8 +204,7 @@ impl ApicTimer {
         let vector = self.vector();
 
         trace!(
-            "vlapic @ (vm {}, vcpu {}) starts timer @ tick {:?}, deadline tick {:?}",
-            vm_id, vcpu_id, current_ticks, deadline_ticks
+            "vlapic @ (vm {vm_id}, vcpu {vcpu_id}) starts timer @ tick {current_ticks:?}, deadline tick {deadline_ticks:?}"
         );
 
         self.last_start_ticks = current_ticks;
@@ -212,8 +215,7 @@ impl ApicTimer {
             Box::new(move |_| {
                 // TODO: read the LVT Timer Register here
                 trace!(
-                    "vlapic @ (vm {}, vcpu {}) timer expired, inject interrupt {}",
-                    vm_id, vcpu_id, vector
+                    "vlapic @ (vm {vm_id}, vcpu {vcpu_id}) timer expired, inject interrupt {vector}"
                 );
                 inject_interrupt(vm_id, vcpu_id, vector);
             }),

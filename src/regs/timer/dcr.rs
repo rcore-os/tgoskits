@@ -39,4 +39,5 @@ pub type DivideConfigurationRegisterMmio = ReadWrite<u32, DCR_TIMER::Register>;
 /// This behaves very similarly to a MMIO read-write register, but instead of doing a
 /// volatile read to MMIO to get the value for each function call, a copy of the
 /// register contents are stored locally in memory.
+#[allow(dead_code)]
 pub type DivideConfigurationRegisterLocal = LocalRegisterCopy<u32, DCR_TIMER::Register>;
