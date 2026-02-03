@@ -117,11 +117,4 @@ Issues and PRs are welcome! Please follow the [ArceOS-hypervisor project guideli
 
 ## License
 
-This project is licensed under multiple licenses. You may choose to use this project under any of the following licenses:
-
-- [GPL-3.0-or-later](LICENSE.GPLv3)
-- [Apache-2.0](LICENSE.Apache2)
-- [MulanPSL2](LICENSE.MulanPSL2)
-- [MulanPubL2](LICENSE.MulanPubL2)
-
-You may use this software under the terms of any of these licenses at your option.
+Axdevice_base is licensed under the Apache License, Version 2.0. See the [LICENSE](./LICENSE) file for details.
