@@ -10,11 +10,11 @@
 //! use range_alloc_arceos::RangeAllocator;
 //!
 //! let mut allocator = RangeAllocator::new(0..100);
-//! 
+//!
 //! // Allocate a range of length 10
 //! let range = allocator.allocate_range(10).unwrap();
 //! assert_eq!(range, 0..10);
-//! 
+//!
 //! // Free the range when done
 //! allocator.free_range(range);
 //! ```
