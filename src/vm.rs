@@ -2,6 +2,7 @@ use alloc::boxed::Box;
 use alloc::format;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+#[cfg(target_arch = "aarch64")]
 use axvmconfig::VMInterruptMode;
 use core::sync::atomic::{AtomicBool, Ordering};
 use memory_addr::{align_down_4k, align_up_4k};
@@ -12,6 +13,10 @@ use spin::Mutex;
 use axaddrspace::{AddrSpace, GuestPhysAddr, HostPhysAddr, MappingFlags, device::AccessWidth};
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
 use axvcpu::{AxVCpu, AxVCpuExitReason, AxVCpuHal};
+
+#[cfg(target_arch = "riscv64")]
+use axvcpu::AxArchVCpu;
+
 use cpumask::CpuMask;
 
 use crate::config::{AxVMConfig, VmMemMappingType};
@@ -220,11 +225,17 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
             )?;
         }
 
+        #[cfg(target_arch = "aarch64")]
         let mut devices = axdevice::AxVmDevices::new(AxVmDeviceConfig {
             emu_configs: config.emu_devices().to_vec(),
         });
-
+        #[cfg(target_arch = "aarch64")]
         let passthrough = config.interrupt_mode() == VMInterruptMode::Passthrough;
+
+        #[cfg(not(target_arch = "aarch64"))]
+        let devices = axdevice::AxVmDevices::new(AxVmDeviceConfig {
+            emu_configs: config.emu_devices().to_vec(),
+        });
 
         #[cfg(target_arch = "aarch64")]
         {
