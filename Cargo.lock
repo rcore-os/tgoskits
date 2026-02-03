@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "axklib"
-version = "0.1.0-alpha.1"
+version = "0.2.0"
 dependencies = [
  "axerrno",
  "memory_addr",
