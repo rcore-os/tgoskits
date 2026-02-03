@@ -11,7 +11,7 @@ use spin::Mutex;
 
 use axaddrspace::{AddrSpace, GuestPhysAddr, HostPhysAddr, MappingFlags, device::AccessWidth};
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
-use axvcpu::{AxArchVCpu, AxVCpu, AxVCpuExitReason, AxVCpuHal};
+use axvcpu::{AxVCpu, AxVCpuExitReason, AxVCpuHal};
 use cpumask::CpuMask;
 
 use crate::config::{AxVMConfig, VmMemMappingType};
@@ -435,15 +435,13 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
                     reg_width: _,
                     signed_ext: _,
                 } => {
-                    let val = self
-                        .get_devices()
-                        .handle_mmio_read(*addr, (*width).into())?;
+                    let val = self.get_devices().handle_mmio_read(*addr, *width)?;
                     vcpu.set_gpr(*reg, val);
                     true
                 }
                 AxVCpuExitReason::MmioWrite { addr, width, data } => {
                     self.get_devices()
-                        .handle_mmio_write(*addr, (*width).into(), *data as usize)?;
+                        .handle_mmio_write(*addr, *width, *data as usize)?;
                     true
                 }
                 AxVCpuExitReason::IoRead { port, width } => {
@@ -543,7 +541,10 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
         let size = core::mem::size_of::<T>();
 
         // Ensure the address is properly aligned for the type.
-        if gpa_ptr.as_usize() % core::mem::align_of::<T>() != 0 {
+        if !gpa_ptr
+            .as_usize()
+            .is_multiple_of(core::mem::align_of::<T>())
+        {
             return ax_err!(InvalidInput, "Unaligned guest physical address");
         }
 
@@ -591,7 +592,7 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
                     )
                 };
                 let mut copied_bytes = 0;
-                for (_i, chunk) in buffer.iter_mut().enumerate() {
+                for chunk in buffer.iter_mut() {
                     let end = copied_bytes + chunk.len();
                     chunk.copy_from_slice(&bytes[copied_bytes..end]);
                     copied_bytes += chunk.len();
