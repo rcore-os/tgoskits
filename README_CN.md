@@ -75,3 +75,7 @@ devices.handle_mmio_write(0x1000_0000, 4, 0xdead_beef);
 - `alloc`
 - `cfg-if`
 - `axerrno`
+
+## License
+
+Axdevice 采用 Apache License 2.0 开源协议。详见 [LICENSE](./LICENSE) 文件。
