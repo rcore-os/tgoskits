@@ -72,3 +72,7 @@ devices.handle_mmio_write(0x1000_0000, 4, 0xdead_beef);
 - [`axaddrspace`](https://github.com/arceos-hypervisor/axaddrspace.git)
 - [`axdevice_base`](https://github.com/arceos-hypervisor/axdevice_crates.git)
 - `log`, `alloc`, `cfg-if`, `axerrno`
+
+## License
+
+Axdevice is licensed under the Apache License, Version 2.0. See the [LICENSE](./LICENSE) file for details.
