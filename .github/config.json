@@ -1,0 +1,13 @@
+{
+  "targets": [
+    "aarch64-unknown-none-softfloat",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-none",
+    "riscv64gc-unknown-none-elf"
+  ],
+  "rust_components": [
+    "rust-src",
+    "clippy",
+    "rustfmt"
+  ]
+}
