@@ -1,6 +1,6 @@
 {
   "targets": [
-    "riscv64gc-unknown-none-elf"
+    "x86_64-unknown-none"
   ],
   "rust_components": [
     "rust-src",
