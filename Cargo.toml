@@ -1,6 +1,6 @@
 [package]
 name = "axhvc"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = ["AxVisor Team"]
 description = "AxVisor HyperCall definitions for guest-hypervisor communication"
