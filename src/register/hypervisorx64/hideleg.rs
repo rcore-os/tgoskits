@@ -13,17 +13,23 @@ impl Hideleg {
     /// Returns the raw bits of the register.
     #[inline]
     pub fn bits(&self) -> usize {
-        return self.bits;
+        self.bits
     }
     /// Creates a register value from raw bits.
     #[inline]
     pub fn from_bits(x: usize) -> Self {
-        return Hideleg { bits: x };
+        Hideleg { bits: x }
     }
     /// Writes the register value to the CSR.
+    ///
+    /// # Safety
+    ///
+    /// This function is unsafe because writing to CSR registers can have
+    /// system-wide effects and may violate memory safety guarantees.
     #[inline]
     pub unsafe fn write(&self) {
-        _write(self.bits);
+        // SAFETY: Caller ensures this is safe to execute
+        unsafe { _write(self.bits) };
     }
     /// Returns the status of the supervisor software interrupt delegation.
     #[inline]
