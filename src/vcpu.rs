@@ -5,6 +5,7 @@ cfg_if::cfg_if! {
         pub use x86_vcpu::VmxArchVCpu as AxArchVCpuImpl;
         pub use x86_vcpu::VmxArchPerCpuState as AxVMArchPerCpuImpl;
         pub use x86_vcpu::has_hardware_support;
+        #[allow(dead_code)]
         pub type AxVCpuCreateConfig = ();
 
         // Note:

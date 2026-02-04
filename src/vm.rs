@@ -17,7 +17,11 @@ use axvcpu::{AxVCpu, AxVCpuExitReason, AxVCpuHal};
 use cpumask::CpuMask;
 
 use crate::config::{AxVMConfig, VmMemMappingType};
-use crate::vcpu::{AxArchVCpuImpl, AxVCpuCreateConfig};
+use crate::vcpu::AxArchVCpuImpl;
+
+#[cfg(not(target_arch = "x86_64"))]
+use crate::vcpu::AxVCpuCreateConfig;
+
 use crate::{AxVMHal, has_hardware_support};
 
 #[cfg(target_arch = "aarch64")]
@@ -94,15 +98,23 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
                     .dtb_load_gpa
                     .unwrap_or(GuestPhysAddr::from_usize(0x9000_0000)),
             };
-            #[cfg(target_arch = "x86_64")]
-            let arch_config = AxVCpuCreateConfig::default();
 
+            #[cfg(not(target_arch = "x86_64"))]
             vcpu_list.push(Arc::new(VCpu::new(
                 config.id(),
                 vcpu_id,
                 0, // Currently not used.
                 phys_cpu_set,
                 arch_config,
+            )?));
+
+            #[cfg(target_arch = "x86_64")]
+            vcpu_list.push(Arc::new(VCpu::new(
+                config.id(),
+                vcpu_id,
+                0, // Currently not used.
+                phys_cpu_set,
+                (),
             )?));
         }
         let mut address_space =
