@@ -5,7 +5,7 @@ use core::{fmt::Display, ops::Deref, ptr::NonNull, sync::atomic::Ordering};
 pub use anyhow::Error;
 
 pub trait MmioOp: Sync + Send + 'static {
-    fn ioremap(&self, addr: PhysAddr, size: usize) -> Result<Mmio, Error>;
+    fn ioremap(&self, addr: MmioAddr, size: usize) -> Result<Mmio, Error>;
     fn iounmap(&self, mmio: &Mmio);
 }
 
@@ -28,7 +28,7 @@ pub fn init(mmio_op: &'static dyn MmioOp) {
 /// # Safety
 ///
 /// Caller should manually unmap the returned `Mmio` by calling `iounmap` when it is no longer needed.
-pub unsafe fn ioremap(addr: PhysAddr, size: usize) -> Result<Mmio, Error> {
+pub unsafe fn ioremap(addr: MmioAddr, size: usize) -> Result<Mmio, Error> {
     let mmio_op = unsafe { MMIO_OP.expect("MmioOp is not initialized") };
     mmio_op.ioremap(addr, size)
 }
@@ -41,11 +41,12 @@ pub unsafe fn iounmap(mmio: &Mmio) {
     mmio_op.iounmap(mmio);
 }
 
-pub fn ioremap_guard(addr: PhysAddr, size: usize) -> Result<MmioGuard, Error> {
+pub fn ioremap_guard(addr: MmioAddr, size: usize) -> Result<MmioGuard, Error> {
     let mmio = unsafe { ioremap(addr, size)? };
     Ok(MmioGuard(mmio))
 }
 
+/// Physical MMIO Address
 #[derive(
     Default,
     derive_more::From,
@@ -63,23 +64,23 @@ pub fn ioremap_guard(addr: PhysAddr, size: usize) -> Result<MmioGuard, Error> {
 #[repr(transparent)]
 #[debug("PhysAddr({_0:#x})")]
 #[display("{_0:#x}")]
-pub struct PhysAddr(usize);
+pub struct MmioAddr(usize);
 
-impl PhysAddr {
+impl MmioAddr {
     pub fn as_usize(&self) -> usize {
         self.0
     }
 }
 
-impl From<u64> for PhysAddr {
+impl From<u64> for MmioAddr {
     fn from(value: u64) -> Self {
-        PhysAddr(value as usize)
+        MmioAddr(value as usize)
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct Mmio {
-    phys: PhysAddr,
+    phys: MmioAddr,
     virt: NonNull<u8>,
     size: usize,
 }
@@ -88,11 +89,11 @@ impl Mmio {
     /// # Safety
     ///
     /// Caller must ensure that `virt` is a valid mapping for the given `phys` and `size`.
-    pub unsafe fn new(phys: PhysAddr, virt: NonNull<u8>, size: usize) -> Self {
+    pub unsafe fn new(phys: MmioAddr, virt: NonNull<u8>, size: usize) -> Self {
         Mmio { phys, virt, size }
     }
 
-    pub fn phys_addr(&self) -> PhysAddr {
+    pub fn phys_addr(&self) -> MmioAddr {
         self.phys
     }
 

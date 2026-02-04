@@ -1,4 +1,4 @@
-pub use mmio_api::{Error, Mmio, MmioOp, PhysAddr};
+pub use mmio_api::{Error, Mmio, MmioAddr, MmioOp};
 
 pub trait KernelOp: MmioOp {}
 
@@ -7,7 +7,7 @@ struct EmptyKernelOp;
 impl KernelOp for EmptyKernelOp {}
 
 impl MmioOp for EmptyKernelOp {
-    fn ioremap(&self, _addr: PhysAddr, _size: usize) -> Result<Mmio, Error> {
+    fn ioremap(&self, _addr: MmioAddr, _size: usize) -> Result<Mmio, Error> {
         unimplemented!()
     }
 

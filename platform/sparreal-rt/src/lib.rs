@@ -7,8 +7,7 @@ extern crate somehal;
 
 use core::ptr::NonNull;
 
-use somehal::setup::{Error, KernelOp, Mmio, MmioOp, PhysAddr};
-pub use sparreal_kernel::entry;
+use somehal::setup::*;
 pub use sparreal_kernel::*;
 
 mod hal_impl;
@@ -23,7 +22,7 @@ pub struct Kernel;
 impl KernelOp for Kernel {}
 
 impl MmioOp for Kernel {
-    fn ioremap(&self, addr: PhysAddr, size: usize) -> Result<Mmio, Error> {
+    fn ioremap(&self, addr: MmioAddr, size: usize) -> Result<Mmio, Error> {
         let res = sparreal_kernel::os::mem::ioremap(addr.as_usize().into(), size)?;
         let ptr = res.raw() as *mut u8;
         Ok(unsafe { Mmio::new(addr, NonNull::new_unchecked(ptr), size) })
