@@ -20,7 +20,6 @@ pub use axvmconfig::{
 //     pub create_config: <AxArchVCpuImpl<H> as AxArchVCpu>::CreateConfig,
 //     pub setup_config: <AxArchVCpuImpl<H> as AxArchVCpu>::SetupConfig,
 // }
-
 /// A part of `AxVMConfig`, which represents a `VCpu`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AxVCpuConfig {

@@ -2,6 +2,7 @@ use alloc::boxed::Box;
 use alloc::format;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+#[cfg(target_arch = "aarch64")]
 use axvmconfig::VMInterruptMode;
 use core::sync::atomic::{AtomicBool, Ordering};
 use memory_addr::{align_down_4k, align_up_4k};
@@ -11,11 +12,16 @@ use spin::Mutex;
 
 use axaddrspace::{AddrSpace, GuestPhysAddr, HostPhysAddr, MappingFlags, device::AccessWidth};
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
-use axvcpu::{AxArchVCpu, AxVCpu, AxVCpuExitReason, AxVCpuHal};
+use axvcpu::{AxVCpu, AxVCpuExitReason, AxVCpuHal};
+
 use cpumask::CpuMask;
 
 use crate::config::{AxVMConfig, VmMemMappingType};
-use crate::vcpu::{AxArchVCpuImpl, AxVCpuCreateConfig};
+use crate::vcpu::AxArchVCpuImpl;
+
+#[cfg(not(target_arch = "x86_64"))]
+use crate::vcpu::AxVCpuCreateConfig;
+
 use crate::{AxVMHal, has_hardware_support};
 
 #[cfg(target_arch = "aarch64")]
@@ -92,15 +98,23 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
                     .dtb_load_gpa
                     .unwrap_or(GuestPhysAddr::from_usize(0x9000_0000)),
             };
-            #[cfg(target_arch = "x86_64")]
-            let arch_config = AxVCpuCreateConfig::default();
 
+            #[cfg(not(target_arch = "x86_64"))]
             vcpu_list.push(Arc::new(VCpu::new(
                 config.id(),
                 vcpu_id,
                 0, // Currently not used.
                 phys_cpu_set,
                 arch_config,
+            )?));
+
+            #[cfg(target_arch = "x86_64")]
+            vcpu_list.push(Arc::new(VCpu::new(
+                config.id(),
+                vcpu_id,
+                0, // Currently not used.
+                phys_cpu_set,
+                (),
             )?));
         }
         let mut address_space =
@@ -220,11 +234,17 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
             )?;
         }
 
+        #[cfg(target_arch = "aarch64")]
         let mut devices = axdevice::AxVmDevices::new(AxVmDeviceConfig {
             emu_configs: config.emu_devices().to_vec(),
         });
-
+        #[cfg(target_arch = "aarch64")]
         let passthrough = config.interrupt_mode() == VMInterruptMode::Passthrough;
+
+        #[cfg(not(target_arch = "aarch64"))]
+        let devices = axdevice::AxVmDevices::new(AxVmDeviceConfig {
+            emu_configs: config.emu_devices().to_vec(),
+        });
 
         #[cfg(target_arch = "aarch64")]
         {
@@ -284,19 +304,11 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
         info!("VM created: id={}", result.id());
 
         // Setup VCpus.
+        #[cfg(target_arch = "aarch64")]
         for vcpu in result.vcpu_list() {
-            let setup_config = {
-                #[cfg(target_arch = "aarch64")]
-                {
-                    crate::vcpu::AxVCpuSetupConfig {
-                        passthrough_interrupt: passthrough,
-                        passthrough_timer: passthrough,
-                    }
-                }
-                #[cfg(not(target_arch = "aarch64"))]
-                {
-                    <AxArchVCpuImpl<U> as AxArchVCpu>::SetupConfig::default()
-                }
+            let setup_config = crate::vcpu::AxVCpuSetupConfig {
+                passthrough_interrupt: passthrough,
+                passthrough_timer: passthrough,
             };
 
             let entry = if vcpu.id() == 0 {
@@ -306,6 +318,17 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
             };
             vcpu.setup(entry, result.ept_root(), setup_config)?;
         }
+
+        #[cfg(not(target_arch = "aarch64"))]
+        for vcpu in result.vcpu_list() {
+            let entry = if vcpu.id() == 0 {
+                result.inner_const.config.bsp_entry()
+            } else {
+                result.inner_const.config.ap_entry()
+            };
+            vcpu.setup(entry, result.ept_root(), ())?;
+        }
+
         info!("VM setup: id={}", result.id());
 
         Ok(result)
@@ -435,15 +458,13 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
                     reg_width: _,
                     signed_ext: _,
                 } => {
-                    let val = self
-                        .get_devices()
-                        .handle_mmio_read(*addr, (*width).into())?;
+                    let val = self.get_devices().handle_mmio_read(*addr, *width)?;
                     vcpu.set_gpr(*reg, val);
                     true
                 }
                 AxVCpuExitReason::MmioWrite { addr, width, data } => {
                     self.get_devices()
-                        .handle_mmio_write(*addr, (*width).into(), *data as usize)?;
+                        .handle_mmio_write(*addr, *width, *data as usize)?;
                     true
                 }
                 AxVCpuExitReason::IoRead { port, width } => {
@@ -543,7 +564,10 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
         let size = core::mem::size_of::<T>();
 
         // Ensure the address is properly aligned for the type.
-        if gpa_ptr.as_usize() % core::mem::align_of::<T>() != 0 {
+        if !gpa_ptr
+            .as_usize()
+            .is_multiple_of(core::mem::align_of::<T>())
+        {
             return ax_err!(InvalidInput, "Unaligned guest physical address");
         }
 
@@ -591,7 +615,7 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
                     )
                 };
                 let mut copied_bytes = 0;
-                for (_i, chunk) in buffer.iter_mut().enumerate() {
+                for chunk in buffer.iter_mut() {
                     let end = copied_bytes + chunk.len();
                     chunk.copy_from_slice(&bytes[copied_bytes..end]);
                     copied_bytes += chunk.len();

@@ -25,7 +25,7 @@ percpu = { version = "0.2.0", features = ["arm-el2"] }
 # System dependent modules provided by ArceOS-Hypervisor.
 axvcpu = "0.1"
 axaddrspace = "0.1"
-axdevice = { git = "https://github.com/arceos-hypervisor/axdevice.git" }
+axdevice = "0.2"
 axdevice_base = "0.1"
 axvmconfig = { version = "0.1", default-features = false }
 
