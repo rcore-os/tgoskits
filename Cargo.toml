@@ -1,8 +1,13 @@
 [package]
-license = "Apache-2.0"
 name = "axvm"
+authors = ["aarkegz <aarkegz@gmail.com>"]
 version = "0.2.0"
 edition = "2024"
+categories = ["virtualization", "no-std"]
+description = "Virtual Machine resource management crate for ArceOS's hypervisor variant."
+repository = "https://github.com/arceos-hypervisor/axvm"
+keywords = ["vm", "hypervisor", "arceos"]
+license = "Apache-2.0"
 
 [features]
 default = ["vmx"]
