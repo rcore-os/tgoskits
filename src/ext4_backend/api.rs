@@ -66,12 +66,12 @@ pub fn open<B: BlockDevice>(
     }
 
     if !create {
-        return Err(BlockDevError::WriteError);
+        return Err(BlockDevError::NoEntry);
     }
 
     let inode = match mkfile_with_ino(dev, fs, &norm_path, None,None) {
         Some(ino) => ino,
-        None => return Err(BlockDevError::WriteError),
+        None => return Err(BlockDevError::NoEntry),
     };
 
     Ok(OpenFile {

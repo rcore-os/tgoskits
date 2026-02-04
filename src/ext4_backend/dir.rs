@@ -117,7 +117,7 @@ pub fn get_inode_with_num<B: BlockDevice>(
         let inode_table_start = fs
             .group_descs
             .get(inode_group_idx as usize)
-            .ok_or(BlockDevError::Corrupted)?
+            .ok_or(BlockDevError::NoEntry)?
             .inode_table();
 
         let (block_num, offset, _group_idx) = fs.inodetable_cahce.calc_inode_location(
@@ -279,7 +279,7 @@ pub fn insert_dir_entry<B: BlockDevice>(
     } else {
         // 传统直接块模式：仅支持追加到前 12 个直接块
         if old_blocks >= 12 {
-            return Err(BlockDevError::Unsupported);
+            return Err(BlockDevError::NoSpace);
         }
         parent_inode.i_block[old_blocks] = new_block as u32;
     }
@@ -298,7 +298,7 @@ pub fn insert_dir_entry<B: BlockDevice>(
     let (p_group, _pidx) = fs.inode_allocator.global_to_group(parent_ino_num);
     let inode_table_start = match fs.group_descs.get(p_group as usize) {
         Some(desc) => desc.inode_table(),
-        None => return Err(BlockDevError::Corrupted),
+        None => return Err(BlockDevError::NoEntry),
     };
     let (p_block_num, p_offset, _pg) = fs.inodetable_cahce.calc_inode_location(
         parent_ino_num,
@@ -846,7 +846,7 @@ pub fn create_lost_found_directory<B: BlockDevice>(
     //  更新根 inode 的链接计数（多了一个子目录）
     let inode_table_start = match fs.group_descs.first() {
         Some(desc) => desc.inode_table(),
-        None => return Err(BlockDevError::Corrupted),
+        None => return Err(BlockDevError::NoEntry),
     };
     let (block_num, offset, _group_idx) = fs.inodetable_cahce.calc_inode_location(
         fs.root_inode,

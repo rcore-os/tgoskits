@@ -109,7 +109,10 @@ impl Ext4FileSystem {
         device: &mut Jbd2Dev<B>,
         path: &str,
     ) -> bool {
-        let inode = get_file_inode(self, device, path).expect("no dir");
+        let inode = match get_file_inode(self, device, path) {
+            Ok(inode) => inode,
+            Err(_) => return false,
+        };
         match &inode {
             Some(inode) => {
                 debug!("Find it! Inode:{:?}", &inode);
@@ -128,7 +131,10 @@ impl Ext4FileSystem {
         device: &mut Jbd2Dev<B>,
         path: &str,
     ) -> Option<Ext4Inode> {
-        let inode = get_file_inode(self, device, path).expect("no dir");
+        let inode = match get_file_inode(self, device, path) {
+            Ok(inode) => inode,
+            Err(_) => return None,
+        };
         match &inode {
             Some(inode) => {
                 debug!("Found it: {path} !");
@@ -299,7 +305,10 @@ impl Ext4FileSystem {
                 fs.modify_inode(block_dev, JOURNAL_FILE_INODE as u32, |ji| {
                     jouranl_exist = ji.i_mode != 0;
                 })
-                .expect("file system error panic!");
+                .map_err(|e| {
+                    error!("mount: check journal inode failed ino={} err={:?} ({})", JOURNAL_FILE_INODE, e, e);
+                    RSEXT4Error::IoError
+                })?;
 
                 if fs
                     .superblock
@@ -307,7 +316,10 @@ impl Ext4FileSystem {
                     && !jouranl_exist
                 {
                     // 不存在但 superblock 声明有 journal，则创建一个新的 journal 文件
-                    create_journal_entry(&mut fs, block_dev).expect("create journal entry failed");
+                    create_journal_entry(&mut fs, block_dev).map_err(|e| {
+                        error!("mount: create journal entry failed err={:?} ({})", e, e);
+                        RSEXT4Error::IoError
+                    })?;
                     //dump_journal_inode(&mut fs, block_dev);
                 }
             }
@@ -317,12 +329,18 @@ impl Ext4FileSystem {
                 // 初始化 jbd2：读入 journal 超级块并塞进 Jbd2Dev
                 let mut j_inode = fs
                     .get_inode_by_num(block_dev, JOURNAL_FILE_INODE as u32)
-                    .expect("load journal inode failed");
+                    .map_err(|e| {
+                        error!("mount: load journal inode failed ino={} err={:?} ({})", JOURNAL_FILE_INODE, e, e);
+                        RSEXT4Error::IoError
+                    })?;
 
                 // 解析 journal inode 第 0 号逻辑块 -> 物理块
                 let journal_first_block = resolve_inode_block( block_dev, &mut j_inode, 0)
                     .and_then(|opt| opt.ok_or(BlockDevError::Corrupted))
-                    .expect("resolve journal first block failed");
+                    .map_err(|e| {
+                        error!("mount: resolve journal first block failed ino={} err={:?} ({})", JOURNAL_FILE_INODE, e, e);
+                        RSEXT4Error::IoError
+                    })?;
 
                 //写入fs
                 fs.journal_sb_block_start = Some(journal_first_block);
@@ -330,7 +348,10 @@ impl Ext4FileSystem {
                 let journal_data = fs
                     .datablock_cache
                     .get_or_load(block_dev, journal_first_block as u64)
-                    .expect("load journal superblock block failed")
+                    .map_err(|e| {
+                        error!("mount: load journal superblock block failed block={} err={:?} ({})", journal_first_block, e, e);
+                        RSEXT4Error::IoError
+                    })?
                     .data
                     .clone();
 
@@ -358,12 +379,15 @@ impl Ext4FileSystem {
             let inode_bitmap_data = fs
                 .bitmap_cache
                 .get_or_load(block_dev, inode_cache_key, inode_bitmap_blk as u64)
-                .expect("Blcok Read Failed!")
+                .map_err(|e| {
+                    error!("mount: load inode bitmap failed ino={} err={:?} ({})", inode_bitmap_blk, e, e);
+                    RSEXT4Error::IoError
+                })?
                 .clone();
             let blockbitmap_data = fs
                 .bitmap_cache
                 .get_or_load(block_dev, data_cache_key, data_bitmap_blk as u64)
-                .expect("Blcok Read Failed!");
+                .map_err(|e| {error!("mount: load block bitmap failed ino={} err={:?} ({})", data_bitmap_blk, e, e);RSEXT4Error::IoError})?;
 
             let mut indoe_count: u64 = 0;
             let mut datablock_count: u64 = 0;
@@ -412,11 +436,13 @@ impl Ext4FileSystem {
         //缓存刷新回磁盘
         fs.datablock_cache
             .flush_all(block_dev)
-            .expect("flush failed!");
-        fs.bitmap_cache.flush_all(block_dev).expect("flush failed!");
+            .map_err(|_| RSEXT4Error::IoError)?;
+        fs.bitmap_cache
+            .flush_all(block_dev)
+            .map_err(|_| RSEXT4Error::IoError)?;
         fs.inodetable_cahce
             .flush_all(block_dev)
-            .expect("flush failed!");
+            .map_err(|e| {error!("mount: flush datablock cache failed err={:?} ({})", e, e);RSEXT4Error::IoError})?;
 
         Ok(fs)
     }
@@ -1224,7 +1250,10 @@ pub fn mkfs<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) -> BlockDevResult<()> {
     //通过一次挂载/卸载流程，让根目录在 mkfs 阶段就被真正创建并写回磁盘
     // 注意：此时日志仍然关闭，等真正挂载时再开启 JBD2
     {
-        let mut fs = Ext4FileSystem::mount(block_dev).expect("Mount Failed!");
+        let mut fs = Ext4FileSystem::mount(block_dev).map_err(|e| {
+            error!("mkfs: mount failed err={:?} ({})", e, e);
+            BlockDevError::Corrupted
+        })?;
         fs.umount(block_dev)?;
     }
 
@@ -1403,10 +1432,10 @@ fn write_superblock_redundant_backup<B: BlockDevice>(
             //需要超级块备份
             if need_redundant_backup(gid) {
                 let super_blocks = group_layout.group_start_block;
-                block_dev.read_block(super_blocks as u32).expect("Superblock read failed!");
-                let buffer = block_dev.buffer_mut();
-                sb.to_disk_bytes(&mut buffer[0..SUPERBLOCK_SIZE]);
-                block_dev.write_block(super_blocks as u32, true)?;
+                block_dev.read_block(super_blocks as u32).map_err(|_| {error!("write_superblock_redundant_backup: read block failed super_blocks={} err={:?} ({})", super_blocks, e, e);RSEXT4Error::IoError});
+                    let buffer = block_dev.buffer_mut();
+                    sb.to_disk_bytes(&mut buffer[0..SUPERBLOCK_SIZE]);
+                    block_dev.write_block(super_blocks as u32, true).map_err(|_| {error!("write_superblock_redundant_backup: write block failed super_blocks={} err={:?} ({})", super_blocks, e, e);RSEXT4Error::IoError})?;
             }
         }
     }

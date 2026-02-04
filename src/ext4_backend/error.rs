@@ -52,8 +52,29 @@ pub enum BlockDevError {
     /// 权限错误
     PermissionDenied,
 
-    /// 设备损坏或数据损坏
+    /// 设备损坏或数据损坏（Linux：EIO / EUCLEAN / EFSCORRUPTED 语义）
     Corrupted,
+
+    /// 不存在（ENOENT）
+    NoEntry,
+
+    /// 已存在（EEXIST）
+    Exist,
+
+    /// 不是目录（ENOTDIR）
+    NotDir,
+
+    /// 是目录（EISDIR）
+    IsDir,
+
+    /// 目录非空（ENOTEMPTY）
+    NotEmpty,
+
+    /// 资源忙（EBUSY）
+    Busy,
+
+    /// 参数过长（ENAMETOOLONG）
+    NameTooLong,
 
     /// 校验和错误
     ChecksumError,
@@ -100,6 +121,13 @@ impl core::fmt::Display for BlockDevError {
             BlockDevError::NoSpace => write!(f, "no space left on device"),
             BlockDevError::PermissionDenied => write!(f, "permission denied"),
             BlockDevError::Corrupted => write!(f, "device or data is corrupted"),
+            BlockDevError::NoEntry => write!(f, "no such file or directory"),
+            BlockDevError::Exist => write!(f, "file exists"),
+            BlockDevError::NotDir => write!(f, "not a directory"),
+            BlockDevError::IsDir => write!(f, "is a directory"),
+            BlockDevError::NotEmpty => write!(f, "directory not empty"),
+            BlockDevError::Busy => write!(f, "device or resource busy"),
+            BlockDevError::NameTooLong => write!(f, "file name too long"),
             BlockDevError::ChecksumError => write!(f, "checksum error"),
             BlockDevError::Unknown => write!(f, "unknown error"),
         }
