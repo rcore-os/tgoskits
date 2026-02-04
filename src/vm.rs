@@ -14,9 +14,6 @@ use axaddrspace::{AddrSpace, GuestPhysAddr, HostPhysAddr, MappingFlags, device::
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
 use axvcpu::{AxVCpu, AxVCpuExitReason, AxVCpuHal};
 
-#[cfg(target_arch = "riscv64")]
-use axvcpu::AxArchVCpu;
-
 use cpumask::CpuMask;
 
 use crate::config::{AxVMConfig, VmMemMappingType};
@@ -295,19 +292,11 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
         info!("VM created: id={}", result.id());
 
         // Setup VCpus.
+        #[cfg(target_arch = "aarch64")]
         for vcpu in result.vcpu_list() {
-            let setup_config = {
-                #[cfg(target_arch = "aarch64")]
-                {
-                    crate::vcpu::AxVCpuSetupConfig {
-                        passthrough_interrupt: passthrough,
-                        passthrough_timer: passthrough,
-                    }
-                }
-                #[cfg(not(target_arch = "aarch64"))]
-                {
-                    <AxArchVCpuImpl<U> as AxArchVCpu>::SetupConfig::default()
-                }
+            let setup_config = crate::vcpu::AxVCpuSetupConfig {
+                passthrough_interrupt: passthrough,
+                passthrough_timer: passthrough,
             };
 
             let entry = if vcpu.id() == 0 {
@@ -317,6 +306,17 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
             };
             vcpu.setup(entry, result.ept_root(), setup_config)?;
         }
+
+        #[cfg(not(target_arch = "aarch64"))]
+        for vcpu in result.vcpu_list() {
+            let entry = if vcpu.id() == 0 {
+                result.inner_const.config.bsp_entry()
+            } else {
+                result.inner_const.config.ap_entry()
+            };
+            vcpu.setup(entry, result.ept_root(), ())?;
+        }
+
         info!("VM setup: id={}", result.id());
 
         Ok(result)
