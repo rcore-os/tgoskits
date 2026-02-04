@@ -107,9 +107,4 @@ You are also welcome to scan the QR code below to join the discussion group (ple
 
 # License
 
-AxVisor uses the following open-source licenses:
-
-- Apache-2.0
-- MulanPubL-2.0
-- MulanPSL2
-- GPL-3.0-or-later
+Axvisor is licensed under the Apache License, Version 2.0. See the [LICENSE](./LICENSE) file for details.

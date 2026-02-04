@@ -107,9 +107,4 @@ AxVisor 使用 xtask 工具进行构建管理，支持多种硬件平台和配�
 
 # 许可协议
 
-AxVisor 使用如下开源协议
-
-- Apache-2.0
-- MulanPubL-2.0
-- MulanPSL2
-- GPL-3.0-or-later
+Axvisor 采用 Apache License 2.0 开源协议。详见 [LICENSE](./LICENSE) 文件。
