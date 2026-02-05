@@ -29,9 +29,9 @@ jobs:
     steps:
       - name: Clean up workspace
         run: |
-          git submodule deinit -f . 2>/dev/null || true
-          rm -rf .git/modules
-          git clean -ffdx
+          [ -d .git ] && git submodule deinit -f . || true
+          [ -d .git/modules ] && rm -rf .git/modules || true
+          [ -d .git ] && git clean -ffdx || true
 
       - name: Checkout
         uses: actions/checkout@v4
