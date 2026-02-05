@@ -31,8 +31,17 @@ jobs:
       - intel
 
     steps:
+      - name: Clean up workspace
+        run: |
+          git submodule deinit -f . 2>/dev/null || true
+          rm -rf .git/modules
+          git clean -ffdx
+
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          clean: true
+          submodules: recursive
 
       - name: Install dependencies
         run: cargo +stable install ostool --version ^0.8
