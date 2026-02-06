@@ -1,0 +1,44 @@
+name: Check
+
+on: [push, pull_request]
+
+env:
+  RUST_BACKTRACE: 1
+
+jobs:
+  rustfmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+
+      - name: Check format
+        run: cargo fmt --all --check
+
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rust-toolchain:
+          - nightly
+          - nightly-2025-05-20
+          - nightly-2025-12-12
+          - stable
+    env:
+      RUSTC_BOOTSTRAP: "${{ matrix.rust-toolchain == 'stable' && '1' || '' }}"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust-toolchain }}
+          components: clippy
+
+      - uses: taiki-e/install-action@cargo-hack
+      - name: Clippy
+        run: cargo hack clippy --feature-powerset -- -D warnings
+      - name: Test
+        run: cargo hack test --feature-powerset -- --nocapture

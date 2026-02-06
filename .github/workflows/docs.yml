@@ -1,0 +1,48 @@
+name: Docs
+
+on: [push, pull_request]
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  RUST_BACKTRACE: 1
+  RUSTDOCFLAGS: -D rustdoc::broken_intra_doc_links -D missing-docs
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - name: Build docs
+        run: cargo doc --all-features --no-deps
+
+      - name: Add redirect
+        run: printf '<meta http-equiv="refresh" content="0;url=%s/index.html">' $(cargo tree | head -1 | cut -d' ' -f1) > target/doc/index.html
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: target/doc
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
