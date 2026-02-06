@@ -8,12 +8,18 @@ members = [
     "axdriver_display",
     "axdriver_pci",
     "axdriver_virtio",
+    "axdriver_input",
+    "axdriver_vsock",
 ]
 
 [workspace.package]
-version = "0.1.2"
+version = "0.1.3-preview.1"
 edition = "2021"
-authors = ["Yuekai Jia <equation618@gmail.com>"]
+authors = [
+    "Yuekai Jia <equation618@gmail.com>",
+    "朝倉水希 <asakuramizu111@gmail.com>",
+    "Yu Chen <yuchen@tsinghua.edu.cn>"
+]
 license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
 homepage = "https://github.com/arceos-org/arceos"
 documentation = "https://arceos-org.github.io/axdriver_crates"
@@ -30,3 +36,13 @@ axdriver_pci = { path = "axdriver_pci", version = "0.1" }
 axdriver_virtio = { path = "axdriver_virtio", version = "0.1" }
 axdriver_vsock = { path = "axdriver_vsock", version = "0.1" }
 log = "0.4"
+
+# For local dev and dry-run: use local crates until published to crates.io
+[patch.crates-io]
+axdriver_base = { path = "axdriver_base" }
+axdriver_block = { path = "axdriver_block" }
+axdriver_display = { path = "axdriver_display" }
+axdriver_net = { path = "axdriver_net" }
+axdriver_virtio = { path = "axdriver_virtio" }
+axdriver_input = { path = "axdriver_input" }
+axdriver_vsock = { path = "axdriver_vsock" }
