@@ -1,30 +1,27 @@
 [package]
 name = "axdriver_virtio"
 edition.workspace = true
-description = "Wrappers of some devices in the `virtio-drivers` crate, that implement traits in the `axdriver_base` series crates"
-documentation = "https://arceos-org.github.io/axdriver_crates/axdriver_virtio"
-keywords = ["arceos", "driver", "vritio"]
 version.workspace = true
 authors.workspace = true
+description = "Wrappers of some devices in the `virtio-drivers` crate, that implement traits in the `axdriver_base` series crates"
+documentation = "https://arceos-org.github.io/axdriver_crates/axdriver_virtio"
+keywords = ["arceos", "driver", "virtio"]
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 categories.workspace = true
+readme = "README.md"
 
 [features]
 alloc = ["virtio-drivers/alloc"]
 block = ["axdriver_block"]
 gpu = ["alloc", "axdriver_display"]
-input = ["alloc", "axdriver_input"]
 net = ["alloc", "axdriver_net"]
-socket = ["alloc", "axdriver_vsock"]
 
 [dependencies]
-axdriver_base = { workspace = true }
-axdriver_block = { workspace = true, optional = true }
-axdriver_display = { workspace = true, optional = true }
-axdriver_input = { workspace = true, optional = true }
-axdriver_net = { workspace = true, optional = true }
-axdriver_vsock = { workspace = true, optional = true }
+axdriver_base = { version = "0.1.3-preview.1" }
+axdriver_block = { version = "0.1.3-preview.1", optional = true }
+axdriver_display = { version = "0.1.3-preview.1", optional = true }
+axdriver_net = { version = "0.1.3-preview.1", optional = true }
 log = { workspace = true }
 virtio-drivers = { version = "0.7.4", default-features = false }
