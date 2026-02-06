@@ -1,15 +1,16 @@
 [package]
 name = "axdriver_pci"
 edition.workspace = true
+version.workspace = true
+authors.workspace = true
 description = "Structures and functions for PCI bus operations"
 documentation = "https://arceos-org.github.io/axdriver_crates/axdriver_pci"
 keywords = ["arceos", "driver", "pci"]
-version.workspace = true
-authors.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 categories.workspace = true
+readme = "README.md"
 
 [dependencies]
 virtio-drivers = "0.7.4"
