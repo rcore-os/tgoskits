@@ -1,14 +1,15 @@
 [package]
 name = "axdriver_base"
 edition.workspace = true
+version.workspace = true
+authors.workspace = true
 description = "Common interfaces for all kinds of device drivers"
 documentation = "https://arceos-org.github.io/axdriver_crates/axdriver_base"
 keywords = ["arceos", "driver"]
-version.workspace = true
-authors.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 categories.workspace = true
+readme = "README.md"
 
 [dependencies]
