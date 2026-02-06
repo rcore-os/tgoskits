@@ -15,7 +15,9 @@ readme = "README.md"
 [features]
 ramdisk = []
 ramdisk-static = []
+sdmmc = ["dep:simple-sdmmc"]
 
 [dependencies]
 axdriver_base = { version = "0.1.3-preview.1" }
 log = { workspace = true }
+simple-sdmmc = { version = "0.1", optional = true }
