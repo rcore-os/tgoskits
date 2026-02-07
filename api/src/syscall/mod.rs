@@ -58,6 +58,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::symlinkat => sys_symlinkat(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         #[cfg(target_arch = "x86_64")]
         Sysno::rename => sys_rename(uctx.arg0() as _, uctx.arg1() as _),
+        #[cfg(not(target_arch = "riscv64"))]
         Sysno::renameat => sys_renameat(
             uctx.arg0() as _,
             uctx.arg1() as _,
@@ -303,14 +304,14 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::fstat => sys_fstat(uctx.arg0() as _, uctx.arg1() as _),
         #[cfg(target_arch = "x86_64")]
         Sysno::lstat => sys_lstat(uctx.arg0() as _, uctx.arg1() as _),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
         Sysno::newfstatat => sys_fstatat(
             uctx.arg0() as _,
             uctx.arg1() as _,
             uctx.arg2() as _,
             uctx.arg3() as _,
         ),
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "riscv64")))]
         Sysno::fstatat => sys_fstatat(
             uctx.arg0() as _,
             uctx.arg1() as _,

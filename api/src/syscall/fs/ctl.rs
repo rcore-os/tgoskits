@@ -482,6 +482,7 @@ pub fn sys_rename(old_path: *const c_char, new_path: *const c_char) -> AxResult<
     sys_renameat(AT_FDCWD, old_path, AT_FDCWD, new_path)
 }
 
+#[cfg(not(target_arch = "riscv64"))]
 pub fn sys_renameat(
     old_dirfd: i32,
     old_path: *const c_char,
