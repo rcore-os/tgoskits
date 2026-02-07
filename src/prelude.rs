@@ -5,7 +5,7 @@
 //!
 //! ```
 //! # #![allow(unused_imports)]
-//! use std::io::prelude::*;
+//! use axio::prelude::*;
 //! ```
 
-pub use super::{BufRead, Read, Seek, Write};
+pub use crate::{BufRead, Read, Seek, Write};

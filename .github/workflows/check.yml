@@ -25,7 +25,6 @@ jobs:
       matrix:
         rust-toolchain:
           - nightly
-          - nightly-2025-05-20
           - nightly-2025-12-12
           - stable
     env:

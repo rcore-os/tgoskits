@@ -1,9 +1,9 @@
 [package]
 name = "axio"
 version = "0.2.1"
-edition = "2021"
+edition = "2024"
 authors = ["Yuekai Jia <equation618@gmail.com>"]
-description = "`std::io`-like I/O traits for `no_std` environment"
+description = "`std::io` for `no_std` environment"
 license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
 homepage = "https://github.com/arceos-org/arceos"
 repository = "https://github.com/arceos-org/axio"
@@ -12,11 +12,13 @@ keywords = ["arceos", "io", "no-std"]
 categories = ["no-std"]
 
 [features]
-alloc = []
 default = []
+alloc = []
+continue-on-interrupt = []
 
 [dependencies]
-axerrno = "0.1"
+axerrno = "0.2"
+memchr = { version = "2", default-features = false }
 
 [build-dependencies]
 autocfg = "1"
