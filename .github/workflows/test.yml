@@ -45,14 +45,14 @@ jobs:
       - uses: cargo-bins/cargo-binstall@main
 
       - name: Install ostool
-        run: cargo binstall ostool --no-confirm
+        run: cargo binstall ostool --no-confirm --force
 
       - name: Install cargo-binutils
         run: |
           cargo-binstall \
             --pkg-url="{ repo }/releases/download/v{ version }/{ target }.tar.gz" \
             --pkg-fmt="tgz" \
-            cargo-binutils --no-confirm
+            cargo-binutils --no-confirm --force
 
       - name: Add Target
         run: rustc --version
