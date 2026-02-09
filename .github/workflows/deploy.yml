@@ -87,13 +87,30 @@ jobs:
         env:
           RUSTDOCFLAGS: -D rustdoc::broken_intra_doc_links -D missing-docs
         run: |
+          # Build documentation
           cargo doc --no-deps --all-features
-          printf '<meta http-equiv="refresh" content="0;url=%s/index.html">' $(cargo tree | head -1 | cut -d' ' -f1) > target/doc/index.html
+          
+          # Auto-detect documentation directory
+          # Check if doc exists in target/doc or target/*/doc
+          if [ -d "target/doc" ]; then
+            DOC_DIR="target/doc"
+          else
+            # Find doc directory under target/*/doc pattern
+            DOC_DIR=$(find target -type d -name doc -path "target/*/doc" | head -n 1)
+            if [ -z "$DOC_DIR" ]; then
+              echo "Error: Could not find documentation directory"
+              exit 1
+            fi
+          fi
+          
+          echo "Documentation found in: $DOC_DIR"
+          printf '<meta http-equiv="refresh" content="0;url=%s/index.html">' $(cargo tree | head -1 | cut -d' ' -f1) > "${DOC_DIR}/index.html"
+          echo "DOC_DIR=${DOC_DIR}" >> $GITHUB_ENV
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: target/doc
+          path: ${{ env.DOC_DIR }}
 
   deploy:
     name: Deploy to GitHub Pages
