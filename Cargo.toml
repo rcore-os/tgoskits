@@ -1,26 +1,24 @@
 [package]
-version = "0.1.0"
-authors = [
-  "Jingyu liu <liujingyu24s@ict.ac.cn>",
-]
-categories = ["os", "no-std"]
-edition = "2021"
-keywords = ["hypervisor", "kernel", "vplic"]
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
 name = "riscv_vplic"
-repository = "https://github.com/arceos-hypervisor/riscv_vplic"
+authors = ["Jingyu liu <liujingyu24s@ict.ac.cn>"]
+version = "0.1.0"
+edition = "2021"
+categories = ["os", "no-std"]
 description = "RISCV Virtual PLIC implementation."
+repository = "https://github.com/arceos-hypervisor/riscv_vplic"
+keywords = ["hypervisor", "kernel", "vplic"]
+license = "Apache-2.0"
 
 [features]
 default = []
 
 [dependencies]
-axaddrspace = "0.1"
-axdevice_base = "0.1"
+axaddrspace = "0.1.4"
+axdevice_base = "0.2.1"
 axvisor_api = "0.1"
 
 axerrno = "0.1.0"
-bitmaps = {version = "3.2", default-features = false}
+bitmaps = { version = "3.2", default-features = false }
 log = "0.4"
 spin = "0.9"
 

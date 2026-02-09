@@ -1,7 +1,12 @@
-use core::result::Result::Ok;
+//! MMIO utility functions.
+//!
+//! Internal helper functions for performing memory-mapped I/O operations.
+
 use axaddrspace::{device::AccessWidth, HostPhysAddr};
 use axerrno::AxResult;
+use core::result::Result::Ok;
 
+/// Performs a volatile MMIO read operation.
 pub(crate) fn perform_mmio_read(addr: HostPhysAddr, width: AccessWidth) -> AxResult<usize> {
     let addr = axvisor_api::memory::phys_to_virt(addr).as_ptr();
 
@@ -13,6 +18,7 @@ pub(crate) fn perform_mmio_read(addr: HostPhysAddr, width: AccessWidth) -> AxRes
     }
 }
 
+/// Performs a volatile MMIO write operation.
 pub(crate) fn perform_mmio_write(
     addr: HostPhysAddr,
     width: AccessWidth,

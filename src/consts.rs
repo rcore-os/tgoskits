@@ -1,3 +1,8 @@
+//! PLIC memory map constants.
+//!
+//! This module defines all memory offsets and constants following the
+//! RISC-V PLIC 1.0.0 specification.
+
 // Strictly follows the PLIC 1.0.0 memory map as provided in riscv-plic-1.0.0.
 
 /// Number of interrupt sources defined by PLIC 1.0.0.

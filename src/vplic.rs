@@ -1,9 +1,17 @@
+//! Virtual PLIC global controller.
+//!
+//! This module implements the core data structure for managing a virtual PLIC device.
+
 use crate::consts::*;
 use axaddrspace::{GuestPhysAddr, HostPhysAddr};
 use bitmaps::Bitmap;
 use core::option::Option;
 use spin::Mutex;
 
+/// Virtual PLIC global controller.
+///
+/// Manages the state of a virtual PLIC device including interrupt assignment,
+/// pending interrupts, and active interrupts for guest VMs.
 pub struct VPlicGlobal {
     /// The address of the VPlicGlobal in the guest physical address space.
     pub addr: GuestPhysAddr,
@@ -22,6 +30,15 @@ pub struct VPlicGlobal {
 }
 
 impl VPlicGlobal {
+    /// Creates a new virtual PLIC global controller.
+    ///
+    /// # Arguments
+    /// * `addr` - Guest physical address where the PLIC is mapped
+    /// * `size` - Size of the PLIC memory region in bytes
+    /// * `contexts_num` - Number of interrupt contexts (typically equal to number of harts)
+    ///
+    /// # Panics
+    /// Panics if the provided size is insufficient to hold all PLIC registers.
     pub fn new(addr: GuestPhysAddr, size: Option<usize>, contexts_num: usize) -> Self {
         let addr_end = addr.as_usize()
             + contexts_num * PLIC_CONTEXT_STRIDE
