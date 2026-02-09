@@ -1,6 +1,6 @@
 [package]
 name = "riscv_vcpu"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 authors = [
     "KeYang Hu <keyang.hu@qq.com>",
@@ -26,7 +26,7 @@ bit_field = "0.10"
 crate_interface = "0.1"
 
 riscv = { version = "0.14.0", features = ["s-mode"] }
-riscv-h = "0.1"
+riscv-h = "0.2"
 
 riscv-decode = "0.2.3"
 rustsbi = { version = "0.4.0", features = ["forward"] }
@@ -36,9 +36,9 @@ tock-registers = "0.9"
 memoffset = { version = ">=0.6.5", features = ["unstable_const"] }
 
 axerrno = "0.1.0"
-page_table_entry = "0.5"
+page_table_entry = "=0.5.7"
 memory_addr = "0.4"
 
-axaddrspace = "0.1"
-axvcpu = "0.1"
+axaddrspace = "0.1.4"
+axvcpu = "0.2"
 axvisor_api = "0.1"
