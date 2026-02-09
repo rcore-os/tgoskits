@@ -1,7 +1,7 @@
 [package]
 edition = "2024"
 name = "arm_vcpu"
-version = "0.2.0"
+version = "0.2.1"
 authors = [
     "KeYang Hu <keyang.hu@qq.com>",
     "Mingxian Su <aarkegz@gmail.com>",
@@ -15,21 +15,17 @@ repository = "https://github.com/arceos-hypervisor/arm_vcpu"
 categories = ["embedded", "no-std"]
 keywords = ["hypervisor", "aarch64", "vcpu"]
 
-[features]
-4-level-ept = []
-
 [dependencies]
 log = "0.4"
 spin = "0.10"
 
 aarch64-cpu = "10.0"
 numeric-enum-macro = "0.2"
-tock-registers = "0.9"
 
 axerrno = "0.1.0"
 percpu = {version = "0.2.0", features = ["arm-el2"]}
 
-axaddrspace = "0.1"
-axdevice_base = "0.1.0"
-axvcpu = "0.1.0"
+axaddrspace = "0.1.4"
+axdevice_base = "0.2.1"
+axvcpu = "0.2"
 axvisor_api = "0.1.0"
