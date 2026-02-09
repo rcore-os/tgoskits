@@ -23,23 +23,20 @@ spin = "0.9"
 axerrno = "0.1.0"
 memory_addr = "0.4"
 
-axvmconfig = { version = "0.1", default-features = false }
-axaddrspace = "0.1"
-axdevice_base = "0.1"
+axvmconfig = { version = "0.2", default-features = false }
+axaddrspace = "0.1.4"
+axdevice_base = "0.2.1"
 range-alloc-arceos = "0.1.4-pre.1"
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
-arm_vgic = { version = "0.1", features = ["vgicv3"] }
+arm_vgic = { version = "0.2.1", features = ["vgicv3"] }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
-riscv_vplic = { git = "https://github.com/arceos-hypervisor/riscv_vplic.git", rev = "8bc5213" }
+riscv_vplic = "0.2.1"
 
 [dev-dependencies]
-axdevice_base = "0.1"
-axaddrspace = "0.1"
+axdevice_base = "0.2.1"
+axaddrspace = "0.1.4"
 memory_addr = "0.4"
 axerrno = "0.1"
-axvmconfig = "0.1"
-
-[patch.crates-io]
-axvmconfig = { git = "https://github.com/arceos-hypervisor/axvmconfig.git", branch = "next" }
+axvmconfig = "0.2"
