@@ -1,11 +1,13 @@
 [package]
 name = "riscv_vplic"
-authors = ["Jingyu liu <liujingyu24s@ict.ac.cn>"]
-version = "0.1.0"
+version = "0.2.1"
 edition = "2021"
-categories = ["os", "no-std"]
+authors = ["Jingyu liu <liujingyu24s@ict.ac.cn>"]
 description = "RISCV Virtual PLIC implementation."
+documentation = "https://docs.rs/riscv_vplic"
 repository = "https://github.com/arceos-hypervisor/riscv_vplic"
+readme = "README.md"
+categories = ["os", "no-std"]
 keywords = ["hypervisor", "kernel", "vplic"]
 license = "Apache-2.0"
 
@@ -23,3 +25,9 @@ log = "0.4"
 spin = "0.9"
 
 riscv-h = "0.1"
+
+[package.metadata.docs.rs]
+# # 指定 docs.rs 默认显示的 target
+default-target = ["riscv64gc-unknown-none-elf"]
+# 指定 docs.rs 使用的 target
+targets = ["riscv64gc-unknown-none-elf"]
