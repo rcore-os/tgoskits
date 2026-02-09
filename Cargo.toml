@@ -1,5 +1,5 @@
 [package]
-version = "0.2.0"
+version = "0.2.1"
 authors = [
   "Mingxian Su <aarkegz@gmail.com>",
   "DeBin Luo <luodeb@outlook.com>",
@@ -19,8 +19,8 @@ default = []
 vgicv3 = []
 
 [dependencies]
-axaddrspace = "0.1"
-axdevice_base = "0.1"
+axaddrspace = "0.1.4"
+axdevice_base = "0.2.1"
 axvisor_api = "0.1"
 
 aarch64-cpu = "10.0"
