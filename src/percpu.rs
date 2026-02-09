@@ -30,6 +30,10 @@ pub trait AxArchPerCpu: Sized {
     fn hardware_enable(&mut self) -> AxResult;
     /// Disable hardware virtualization on the current CPU.
     fn hardware_disable(&mut self) -> AxResult;
+    /// Return max guest page table levels used by the architecture.
+    fn max_guest_page_table_levels(&self) -> usize {
+        4
+    }
 }
 
 /// Host per-CPU states to run the guest.

@@ -1,7 +1,7 @@
 [package]
 name = "axvcpu"
 authors = ["aarkegz <aarkegz@gmail.com>"]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 categories = ["virtualization", "no-std"]
 description = "Virtual CPU abstraction for ArceOS hypervisor"
@@ -13,5 +13,5 @@ license = "Apache-2.0"
 axerrno = "0.1.0"
 memory_addr = "0.4"
 percpu = "0.2.0"
-axaddrspace = "0.1"
+axaddrspace = "0.1.4"
 axvisor_api = "0.1"
