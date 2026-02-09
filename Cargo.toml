@@ -1,6 +1,6 @@
 [package]
 name = "axdevice_base"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 authors = ["Hui Xiao <1127751018@qq.com>"]
 description = "Basic traits and structures for emulated devices in ArceOS hypervisor."
@@ -16,9 +16,9 @@ categories = ["no-std", "virtualization"]
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
 
 # ArceOS core crates
-axaddrspace = "0.1"
+axaddrspace = "0.1.4"
 axerrno = "0.1"
-axvmconfig = { version = "0.1", default-features = false }
+axvmconfig = { version = "0.2", default-features = false }
 memory_addr = "0.4"
 
 [dev-dependencies]
