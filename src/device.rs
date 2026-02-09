@@ -35,6 +35,9 @@ use arm_vgic::Vgic;
 #[cfg(target_arch = "aarch64")]
 use memory_addr::PhysAddr;
 
+#[cfg(target_arch = "riscv64")]
+use riscv_vplic::VPlicGlobal;
+
 /// A set of emulated device types that can be accessed by a specific address range type.
 pub struct AxEmuDevices<R: DeviceAddrRange> {
     emu_devices: Vec<Arc<dyn BaseDeviceOps<R>>>,
@@ -244,6 +247,33 @@ impl AxVmDevices {
                         );
                     }
                     #[cfg(not(target_arch = "aarch64"))]
+                    {
+                        warn!(
+                            "emu type: {} is not supported on this platform",
+                            config.emu_type
+                        );
+                    }
+                }
+                EmulatedDeviceType::PPPTGlobal => {
+                    #[cfg(target_arch = "riscv64")]
+                    {
+                        let context_num = config
+                            .cfg_list
+                            .first()
+                            .copied()
+                            .expect("expect 1 arg for pppt global (context_num)");
+                        this.add_mmio_dev(Arc::new(VPlicGlobal::new(
+                            config.base_gpa.into(),
+                            Some(config.length),
+                            context_num, // Here only 1 core and should be cpu0
+                        )));
+                        // PLIC Partial Passthrough Global.
+                        info!(
+                            "Partial PLIC Passthrough Global initialized with base GPA {:#x} and length {:#x}",
+                            config.base_gpa, config.length
+                        );
+                    }
+                    #[cfg(not(target_arch = "riscv64"))]
                     {
                         warn!(
                             "emu type: {} is not supported on this platform",
