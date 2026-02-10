@@ -29,7 +29,7 @@ extern-trait.workspace = true
 hashbrown = { workspace = true }
 inherit-methods-macro = "0.1.0"
 kernel_guard = "0.1"
-kernel-elf-parser = { git = "https://github.com/Starry-OS/kernel_elf_parser.git", rev = "fdcce74" }
+kernel-elf-parser = "0.3.4"
 kspin.workspace = true
 lazy_static = { workspace = true }
 linkme.workspace = true

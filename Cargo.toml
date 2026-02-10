@@ -73,7 +73,7 @@ scope-local = "0.1"
 slab = { version = "0.4.9", default-features = false }
 spin = "0.10"
 starry-process = "0.2"
-starry-signal = { version = "0.2", git = "https://github.com/Starry-OS/starry-signal.git", tag = "dev-v02" }
+starry-signal = "0.2.4-preview.1"
 starry-vm = "0.2"
 
 starry-core = { path = "./core" }
@@ -129,9 +129,7 @@ starry-core.workspace = true
 starry-api.workspace = true
 
 [dependencies.axplat-riscv64-visionfive2]
-version = "0.3"
-git = "https://github.com/Starry-OS/axplat-riscv64-visionfive2.git"
-tag = "dev-v03"
+version = "0.1.0-pre.1"
 features = ["fp-simd", "irq", "rtc"]
 optional = true
 
