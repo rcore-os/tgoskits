@@ -1,7 +1,7 @@
 [package]
 name = "axvm"
 authors = ["aarkegz <aarkegz@gmail.com>"]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 categories = ["virtualization", "no-std"]
 description = "Virtual Machine resource management crate for ArceOS's hypervisor variant."
@@ -12,7 +12,7 @@ license = "Apache-2.0"
 [features]
 default = ["vmx"]
 vmx = []
-4-level-ept = ["arm_vcpu/4-level-ept"]   # TODO: Realize 4-level-ept on x86_64 and riscv64.
+4-level-ept = ["axaddrspace/4-level-ept"]   # TODO: Realize 4-level-ept on x86_64 and riscv64.
 
 [dependencies]
 log = "0.4"
@@ -20,7 +20,7 @@ cfg-if = "1.0"
 spin = "0.9"
 
 # System independent crates provided by ArceOS.
-axerrno = "0.1.0"
+axerrno = "0.2"
 cpumask = "0.1.0"
 # kspin = "0.1.0"
 memory_addr = "0.4"
@@ -29,18 +29,18 @@ page_table_multiarch = "0.5"
 percpu = { version = "0.2.0", features = ["arm-el2"] }
 
 # System dependent modules provided by ArceOS-Hypervisor.
-axvcpu = "0.1"
-axaddrspace = "0.1"
-axdevice = "0.2"
-axdevice_base = "0.1"
-axvmconfig = { version = "0.1", default-features = false }
+axvcpu = "0.2"
+axaddrspace = "0.1.4"
+axdevice = "0.2.1"
+axdevice_base = "0.2.1"
+axvmconfig = { version = "0.2", default-features = false }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-x86_vcpu = "0.1"
+x86_vcpu = "0.2.1"
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
-riscv_vcpu = "0.1"
+riscv_vcpu = "0.2.1"
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
-arm_vcpu = "0.1"
-arm_vgic = { version = "0.1", features = ["vgicv3"] }
+arm_vcpu = "0.2.1"
+arm_vgic = { version = "0.2.1", features = ["vgicv3"] }
