@@ -36,7 +36,4 @@ rustc-args = ["--cfg", "docsrs"]
 all-features = true
 
 [dev-dependencies]
-# FIXME: use a released version when available
-rand = { version = "0.10.0-rc.5", default-features = false, features = [
-    "small_rng",
-] }
+rand = { version = "0.10", default-features = false }

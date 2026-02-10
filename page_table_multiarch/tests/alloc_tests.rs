@@ -8,7 +8,7 @@ use std::{
 use memory_addr::{PhysAddr, VirtAddr};
 use page_table_entry::{GenericPTE, MappingFlags};
 use page_table_multiarch::{PageSize, PageTable64, PagingHandler, PagingMetaData, PagingResult};
-use rand::{Rng, SeedableRng, rngs::SmallRng};
+use rand::{RngExt, SeedableRng, rngs::SmallRng};
 
 /// Creates a layout for allocating `num` pages with alignment of `2^align_pow2`
 /// pages.
