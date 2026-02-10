@@ -93,12 +93,10 @@ impl UserContext {
 
         const PAGE_FAULT_VECTOR: u8 = ExceptionVector::Page as u8;
 
-        let ret = match vector {
-            PAGE_FAULT_VECTOR if let Ok(flags) = err_code_to_flags(self.error_code) => {
-                ReturnReason::PageFault(va!(cr2), flags)
-            }
-            LEGACY_SYSCALL_VECTOR => ReturnReason::Syscall,
-            IRQ_VECTOR_START..=IRQ_VECTOR_END => {
+        let ret = match (vector, err_code_to_flags(self.error_code)) {
+            (PAGE_FAULT_VECTOR, Ok(flags)) => ReturnReason::PageFault(va!(cr2), flags),
+            (LEGACY_SYSCALL_VECTOR, _) => ReturnReason::Syscall,
+            (IRQ_VECTOR_START..=IRQ_VECTOR_END, _) => {
                 handle_trap!(IRQ, vector as _);
                 ReturnReason::Interrupt
             }
@@ -156,7 +154,9 @@ pub(super) fn init_syscall() {
         fn syscall_entry();
     }
 
-    LStar::write(x86_64::VirtAddr::new_truncate(syscall_entry as usize as _));
+    LStar::write(x86_64::VirtAddr::new_truncate(
+        syscall_entry as *const () as usize as _,
+    ));
     Star::write(gdt::UCODE64, gdt::UDATA, gdt::KCODE64, gdt::KDATA).unwrap();
     SFMask::write(
         RFlags::TRAP_FLAG

@@ -27,7 +27,6 @@ fn handle_page_fault(tf: &mut TrapFrame) {
     if tf.fixup_exception() {
         return;
     }
-    core::hint::cold_path();
     panic!(
         "Unhandled #PF @ {:#x}, fault_vaddr={:#x}, error_code={:#x} ({:?}):\n{:#x?}\n{}",
         tf.rip,

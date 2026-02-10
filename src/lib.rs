@@ -1,7 +1,5 @@
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
-#![feature(cold_path)]
-#![feature(if_let_guard)]
 #![deny(missing_docs)]
 #![doc = include_str!("../README.md")]
 

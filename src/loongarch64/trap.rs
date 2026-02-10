@@ -26,7 +26,6 @@ fn handle_page_fault(tf: &mut TrapFrame, access_flags: PageFaultFlags) {
     if tf.fixup_exception() {
         return;
     }
-    core::hint::cold_path();
     panic!(
         "Unhandled PLV0 Page Fault @ {:#x}, fault_vaddr={:#x} ({:?}):\n{:#x?}\n{}",
         tf.era,

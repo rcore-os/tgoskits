@@ -50,7 +50,6 @@ fn handle_page_fault(tf: &mut TrapFrame, access_flags: PageFaultFlags) {
     if tf.fixup_exception() {
         return;
     }
-    core::hint::cold_path();
     panic!(
         "Unhandled EL1 Page Fault @ {:#x}, fault_vaddr={:#x}, ESR={:#x} ({:?}):\n{:#x?}\n{}",
         tf.elr,
