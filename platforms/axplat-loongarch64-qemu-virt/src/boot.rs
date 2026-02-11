@@ -91,8 +91,7 @@ unsafe extern "C" fn _start() -> ! {
 /// The earliest entry point for secondary CPUs.
 #[cfg(feature = "smp")]
 #[unsafe(naked)]
-#[unsafe(no_mangle)]
-unsafe extern "C" fn _start_secondary() -> ! {
+pub(crate) unsafe extern "C" fn _start_secondary() -> ! {
     core::arch::naked_asm!("
         ori          $t0, $zero, 0x1     # CSR_DMW1_PLV0
         lu52i.d      $t0, $t0, -2048     # UC, PLV0, 0x8000 xxxx xxxx xxxx

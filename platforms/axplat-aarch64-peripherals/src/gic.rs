@@ -15,9 +15,9 @@ static TRAP_OP: LazyInit<TrapOp> = LazyInit::new();
 static IRQ_HANDLER_TABLE: HandlerTable<MAX_IRQ_COUNT> = HandlerTable::new();
 
 /// Enables or disables the given IRQ.
-pub fn set_enable(irq_num: usize, enabled: bool) {
-    trace!("GIC set enable: {} {}", irq_num, enabled);
-    let intid = unsafe { IntId::raw(irq_num as u32) };
+pub fn set_enable(irq: usize, enabled: bool) {
+    trace!("GIC set enable: {irq} {enabled}");
+    let intid = unsafe { IntId::raw(irq as u32) };
     GIC.lock().set_irq_enable(intid, enabled);
 }
 
@@ -25,13 +25,13 @@ pub fn set_enable(irq_num: usize, enabled: bool) {
 ///
 /// It also enables the IRQ if the registration succeeds. It returns `false`
 /// if the registration failed.
-pub fn register_handler(irq_num: usize, handler: IrqHandler) -> bool {
-    trace!("register handler IRQ {}", irq_num);
-    if IRQ_HANDLER_TABLE.register_handler(irq_num, handler) {
-        set_enable(irq_num, true);
+pub fn register_handler(irq: usize, handler: IrqHandler) -> bool {
+    if IRQ_HANDLER_TABLE.register_handler(irq, handler) {
+        trace!("register handler IRQ {irq}");
+        set_enable(irq, true);
         return true;
     }
-    warn!("register handler for IRQ {} failed", irq_num);
+    warn!("register handler for IRQ {irq} failed");
     false
 }
 
@@ -39,10 +39,10 @@ pub fn register_handler(irq_num: usize, handler: IrqHandler) -> bool {
 ///
 /// It also disables the IRQ if the unregistration succeeds. It returns the
 /// existing handler if it is registered, `None` otherwise.
-pub fn unregister_handler(irq_num: usize) -> Option<IrqHandler> {
-    trace!("unregister handler IRQ {}", irq_num);
-    set_enable(irq_num, false);
-    IRQ_HANDLER_TABLE.unregister_handler(irq_num)
+pub fn unregister_handler(irq: usize) -> Option<IrqHandler> {
+    trace!("unregister handler IRQ {irq}");
+    set_enable(irq, false);
+    IRQ_HANDLER_TABLE.unregister_handler(irq)
 }
 
 /// Handles the IRQ.
@@ -50,22 +50,26 @@ pub fn unregister_handler(irq_num: usize) -> Option<IrqHandler> {
 /// It is called by the common interrupt handler. It should look up in the
 /// IRQ handler table and calls the corresponding handler. If necessary, it
 /// also acknowledges the interrupt controller after handling.
-pub fn handle_irq(_unused: usize) {
+pub fn handle_irq(_irq: usize) {
     let ack = TRAP_OP.ack();
-    debug!("Handling IRQ: {ack:?}");
+    if ack.is_special() {
+        return;
+    }
 
-    let irq_num = match ack {
+    trace!("IRQ: {ack:?}");
+
+    let irq = match ack {
         Ack::Other(intid) => intid,
         Ack::SGI { intid, cpu_id: _ } => intid,
-    };
-    if !IRQ_HANDLER_TABLE.handle(irq_num.to_u32() as _) {
-        warn!("Unhandled IRQ {:?}", irq_num);
     }
-    if !ack.is_special() {
-        TRAP_OP.eoi(ack);
-        if TRAP_OP.eoi_mode_ns() {
-            TRAP_OP.dir(ack);
-        }
+    .to_u32() as usize;
+    if !IRQ_HANDLER_TABLE.handle(irq) {
+        warn!("Unhandled IRQ {ack:?}");
+    }
+
+    TRAP_OP.eoi(ack);
+    if TRAP_OP.eoi_mode_ns() {
+        TRAP_OP.dir(ack);
     }
 }
 
