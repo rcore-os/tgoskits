@@ -35,7 +35,7 @@ homepage = "https://github.com/arceos-org/arceos"
 repository = "https://github.com/arceos-org/axplat_crates"
 
 [workspace.dependencies]
-axcpu = "0.2"
+axcpu = "0.3.0-preview.4"
 axplat = { version = "0.3.0", path = "./axplat" }
 axplat-macros = { version = "0.1.0", path = "./axplat-macros" }
 axplat-aarch64-peripherals = { version = "0.3.0", path = "platforms/axplat-aarch64-peripherals" }

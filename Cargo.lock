@@ -100,6 +100,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
+name = "axbacktrace"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf9566516f5d799b2f791a6ec5af57eec87d17624346f7c876fa006b922c99e6"
+dependencies = [
+ "cfg-if",
+ "log",
+ "spin 0.10.0",
+]
+
+[[package]]
 name = "axconfig-gen"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -123,11 +134,12 @@ dependencies = [
 
 [[package]]
 name = "axcpu"
-version = "0.2.2"
+version = "0.3.0-preview.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e09bc1235e3da45e942b50f47812f8397ad84cb490264bf914c65ac44e6f8b1d"
+checksum = "627bdaa84f4a3c10e4e3858e7e671463d4dbeac6867643340a06d56d8ce24d24"
 dependencies = [
  "aarch64-cpu",
+ "axbacktrace",
  "cfg-if",
  "lazyinit",
  "linkme",
