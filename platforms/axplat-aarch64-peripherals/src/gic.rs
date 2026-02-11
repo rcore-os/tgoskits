@@ -1,6 +1,6 @@
 //! ARM Generic Interrupt Controller (GIC).
 
-use arm_gic_driver::v2::{Ack, Gic, IntId, SGITarget, TargetList, TrapOp, VirtAddr};
+use arm_gic_driver::v2::{Ack, Gic, IntId, SGITarget, TargetList, TrapOp, Trigger, VirtAddr};
 use axplat::irq::{HandlerTable, IpiTarget, IrqHandler};
 use kspin::SpinNoIrq;
 use lazyinit::LazyInit;
@@ -18,7 +18,11 @@ static IRQ_HANDLER_TABLE: HandlerTable<MAX_IRQ_COUNT> = HandlerTable::new();
 pub fn set_enable(irq: usize, enabled: bool) {
     trace!("GIC set enable: {irq} {enabled}");
     let intid = unsafe { IntId::raw(irq as u32) };
-    GIC.lock().set_irq_enable(intid, enabled);
+    let gic = GIC.lock();
+    gic.set_irq_enable(intid, enabled);
+    if !intid.is_private() {
+        gic.set_cfg(intid, Trigger::Edge);
+    }
 }
 
 /// Registers an IRQ handler for the given IRQ.
@@ -66,7 +70,7 @@ pub fn handle_irq(_irq: usize) -> Option<usize> {
     trace!("IRQ: {ack:?}");
 
     if !IRQ_HANDLER_TABLE.handle(irq) {
-        warn!("Unhandled IRQ {ack:?}");
+        debug!("Unhandled IRQ {ack:?}");
     }
 
     TRAP_OP.eoi(ack);

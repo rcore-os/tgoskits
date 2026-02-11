@@ -59,11 +59,6 @@ pub fn init_early(uart_base: VirtAddr) {
     }));
 }
 
-/// UART IRQ Handler
-pub fn irq_handler() {
-    UART.lock().ack_interrupts();
-}
-
 /// Default implementation of [`axplat::console::ConsoleIf`] using the
 /// PL011 UART.
 #[macro_export]
