@@ -1432,10 +1432,10 @@ fn write_superblock_redundant_backup<B: BlockDevice>(
             //需要超级块备份
             if need_redundant_backup(gid) {
                 let super_blocks = group_layout.group_start_block;
-                block_dev.read_block(super_blocks as u32).map_err(|_| {error!("write_superblock_redundant_backup: read block failed super_blocks={} err={:?} ({})", super_blocks, e, e);RSEXT4Error::IoError});
+                block_dev.read_block(super_blocks as u32).map_err(|e| {error!("write_superblock_redundant_backup: read block failed super_blocks={} err={:?} ({})", super_blocks, e, e);e})?;
                     let buffer = block_dev.buffer_mut();
                     sb.to_disk_bytes(&mut buffer[0..SUPERBLOCK_SIZE]);
-                    block_dev.write_block(super_blocks as u32, true).map_err(|_| {error!("write_superblock_redundant_backup: write block failed super_blocks={} err={:?} ({})", super_blocks, e, e);RSEXT4Error::IoError})?;
+                    block_dev.write_block(super_blocks as u32, true).map_err(|e| {error!("write_superblock_redundant_backup: write block failed super_blocks={} err={:?} ({})", super_blocks, e, e);e})?;
             }
         }
     }
