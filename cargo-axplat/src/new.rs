@@ -1,5 +1,4 @@
-use std::io;
-use std::path::Path;
+use std::{io, path::Path};
 
 use clap::{Parser, builder::PossibleValuesParser};
 use toml_edit::DocumentMut;
@@ -26,14 +25,24 @@ pub struct CommandNew {
         value_parser = PossibleValuesParser::new(["2015", "2018", "2021", "2024"]),
     )]
     edition: Option<String>,
+
+    /// Path to `axplat`
+    #[arg(long, hide = true)]
+    axplat_path: Option<String>,
 }
 
-fn apply_cargo_toml_template(orig: &mut DocumentMut, new: &DocumentMut) {
+fn apply_cargo_toml_template(orig: &mut DocumentMut, new: &DocumentMut, axplat_path: Option<&str>) {
     orig["dependencies"] = new["dependencies"].clone();
     orig["features"] = new["features"].clone();
+
+    if let Some(path) = axplat_path {
+        let mut axplat = toml_edit::InlineTable::new();
+        axplat.insert("path", path.into());
+        orig["dependencies"]["axplat"] = axplat.into();
+    }
 }
 
-fn apply_template(path: &str, arch: &str) -> io::Result<()> {
+fn apply_template(path: &str, arch: &str, axplat_path: Option<&str>) -> io::Result<()> {
     let path = Path::new(path);
 
     let cargo_toml = std::fs::read_to_string(path.join("Cargo.toml"))?;
@@ -46,7 +55,7 @@ fn apply_template(path: &str, arch: &str) -> io::Result<()> {
         match *name {
             "Cargo.toml" => {
                 let new_table = content.parse::<DocumentMut>().unwrap();
-                apply_cargo_toml_template(&mut orig_table, &new_table);
+                apply_cargo_toml_template(&mut orig_table, &new_table, axplat_path);
                 std::fs::write(dst, orig_table.to_string())?;
             }
             "axconfig.toml" => {
@@ -72,5 +81,5 @@ pub fn new_platform(args: CommandNew) {
         }
     });
 
-    apply_template(&args.path, &args.arch).unwrap();
+    apply_template(&args.path, &args.arch, args.axplat_path.as_deref()).unwrap();
 }

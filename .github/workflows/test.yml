@@ -1,0 +1,44 @@
+name: Test
+
+on: [push, pull_request]
+
+jobs:
+  cli:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src, clippy
+      - name: Clippy
+        run: cargo clippy -p cargo-axplat
+      - name: Build
+        run: cargo build -p cargo-axplat
+      - name: Create and test new axplat project from template
+        run: |
+          cargo run -p cargo-axplat -- axplat new /tmp/axplat-test --axplat-path "${{ github.workspace }}/axplat"
+          cd /tmp/axplat-test
+          cargo check
+
+  examples:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64, riscv64, loongarch64]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src, clippy
+          targets: x86_64-unknown-none, riscv64gc-unknown-none-elf, aarch64-unknown-none-softfloat, loongarch64-unknown-none-softfloat
+      - name: Clippy
+        run: |
+          make -C examples/hello-kernel ARCH=${{ matrix.arch }} clippy
+          make -C examples/irq-kernel ARCH=${{ matrix.arch }} clippy
+          make -C examples/smp-kernel ARCH=${{ matrix.arch }} clippy
+      - name: Build
+        run: |
+          make -C examples/hello-kernel ARCH=${{ matrix.arch }}
+          make -C examples/irq-kernel ARCH=${{ matrix.arch }}
+          make -C examples/smp-kernel ARCH=${{ matrix.arch }} SMP=4
