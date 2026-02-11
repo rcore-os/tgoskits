@@ -175,7 +175,6 @@ fn main() {
     test_mkfs(&mut jbd);
 
 
-    
 
     info!("=== EXT4 挂载测试 ===");
     let mut fs = test_mount(&mut jbd);
@@ -214,8 +213,8 @@ fn main() {
     info!("=== journal 断电回放 测试 ===");
     // Enable journaling for mounted filesystem operations.
     umount(fs, &mut jbd).unwrap();
-    jbd.set_journal_use(true);
     
+    jbd.set_journal_use(true);
     let mut fs = mount(&mut jbd).unwrap();
     fs = _test_journal_powerfail(&mut jbd, fs);
     

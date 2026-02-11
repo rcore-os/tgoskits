@@ -54,6 +54,37 @@ pub struct Ext4FileSystem {
 }
 
 impl Ext4FileSystem {
+
+
+    /// 同步文件系统所有数据到磁盘
+    pub fn sync_filesystem<B: BlockDevice>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+    ) -> BlockDevResult<()> {
+        debug!("Syncing filesystem...");
+
+        // 同步超级块
+        info!("Writing back superblock...");
+            self.sync_superblock(block_dev)?;
+        info!("Superblock updated");
+        // 同步块组描述符
+        info!("Writing back group descriptors...");
+        self.sync_group_descriptors(block_dev)?;
+        // 同步位图缓存
+        info!("Flushing bitmap cache...");
+        self.bitmap_cache.flush_all(block_dev)?;
+        info!("Bitmap cache flushed");
+        // 同步inode表缓存
+        self.inodetable_cahce.flush_all(block_dev)?;
+        info!("Inode table cache flushed");
+        // 同步datablock缓存
+        self.datablock_cache.flush_all(block_dev)?;
+        info!("Data block cache flushed");
+        Ok(())
+        
+        
+        
+    }
     ///对应inode是否已经被分配
     pub fn inode_num_already_allocted<B: BlockDevice>(
         &mut self,
@@ -509,26 +540,10 @@ impl Ext4FileSystem {
 
         debug!("Unmounting Ext4 filesystem...");
 
-        // 1. Flush dirty caches
-        info!("Flushing bitmap cache...");
-        self.bitmap_cache.flush_all(block_dev)?;
-        debug!("Bitmap cache flushed");
-        self.inodetable_cahce.flush_all(block_dev)?;
-        debug!("Inode table cache flushed");
-        self.datablock_cache.flush_all(block_dev)?;
-        debug!("Data block cache flushed");
+        // 同步所有缓存数据到磁盘
+        self.sync_filesystem(block_dev)?;
 
-
-        // 4. Update superblock
-        info!("Writing back superblock...");
-        self.sync_superblock(block_dev)?;
-        debug!("Superblock updated");
-
-        // Write back group descriptors
-        debug!("Writing back group descriptors...");
-        self.sync_group_descriptors(block_dev)?;
-
-        //确保缓存已经提交完毕
+        //确保JBD2缓存已经提交完毕
         block_dev.umount_commit();
        
 

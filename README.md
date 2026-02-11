@@ -1,4 +1,13 @@
  # rsext4
+
+
+### 注意！！rsext4使用多级缓存来提升读写性能,写操作只修改内存缓存，不会立即写入磁盘。在需要确保所有数据已经实际写入磁盘的时机前，请调用
+ ```rust
+        // 同步所有缓存数据到磁盘
+        self.sync_filesystem(block_dev)?;
+
+ ```
+
  
  **如何使用**。
  
@@ -90,6 +99,8 @@
      fn block_size(&self) -> u32 { BLOCK_SIZE as u32 }
  }
  ```
+
+
  
  ## 2. 用 `Jbd2Dev` 包装块设备,目前只支持ordered模式,ordered会储存完整元数据内容然后写主盘，如果对性能有较高要求请关闭
   
@@ -233,32 +244,7 @@
  ```
  
 
- ## 6.注意，目前数据完整性依赖umount时的flush来把所有缓存落盘，如果不使用umount请手动flush
- ```rust
-        // Flush dirty caches
-        self.bitmap_cache.flush_all(block_dev)?;
-        self.inodetable_cahce.flush_all(block_dev)?;
-        self.datablock_cache.flush_all(block_dev)?;
 
-        //同步group_desc 和 super_block计数
-        let mut real_free_blocks: u64 = 0;
-        let mut real_free_inodes: u64 = 0;
-        for desc in &self.group_descs {
-            real_free_blocks += desc.free_blocks_count() as u64;
-            real_free_inodes += desc.free_inodes_count() as u64;
-        }
-        self.superblock.s_free_blocks_count_lo = (real_free_blocks & 0xFFFFFFFF) as u32;
-        self.superblock.s_free_blocks_count_hi = (real_free_blocks >> 32) as u32;
-        self.superblock.s_free_inodes_count = real_free_inodes as u32;
-
-        // 4. Update superblock
-        self.sync_superblock(block_dev)?;
-        self.sync_group_descriptors(block_dev)?;
-
-        //确保缓存已经提交完毕
-        block_dev.umount_commit();
-
- ```
  
 
 
