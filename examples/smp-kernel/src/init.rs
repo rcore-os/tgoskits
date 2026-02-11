@@ -9,9 +9,7 @@ pub fn init_smp_ok() -> bool {
 }
 
 pub fn init_kernel(cpu_id: usize, arg: usize) {
-    percpu::init();
-    percpu::init_percpu_reg(cpu_id);
-    init_cpu_id(cpu_id);
+    axplat::percpu::init_primary(cpu_id);
 
     // Initialize trap, console, time.
     axplat::init::init_early(cpu_id, arg);
@@ -21,26 +19,11 @@ pub fn init_kernel(cpu_id: usize, arg: usize) {
 }
 
 pub fn init_kernel_secondary(cpu_id: usize) {
-    percpu::init_percpu_reg(cpu_id);
-    init_cpu_id(cpu_id);
+    axplat::percpu::init_secondary(cpu_id);
 
     // Initialize trap, console, time.
     axplat::init::init_early_secondary(cpu_id);
 
     // Initialize platform peripherals, such as IRQ handlers.
     axplat::init::init_later_secondary(cpu_id);
-}
-
-#[percpu::def_percpu]
-static CPU_ID: usize = 0;
-
-pub fn this_cpu_id() -> usize {
-    unsafe { CPU_ID.read_current_raw() }
-}
-
-/// Initialize the CPU ID for the current thread.
-pub fn init_cpu_id(cpu_id: usize) {
-    unsafe {
-        CPU_ID.write_current_raw(cpu_id);
-    }
 }

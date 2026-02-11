@@ -17,7 +17,7 @@ pub fn init_irq() {
         axplat::console_println!(
             "{:?} elapsed. Timer IRQ processed on CPU {}.",
             axplat::time::monotonic_time(),
-            crate::this_cpu_id()
+            axplat::percpu::this_cpu_id()
         );
 
         let now_ns = axplat::time::monotonic_time_nanos();

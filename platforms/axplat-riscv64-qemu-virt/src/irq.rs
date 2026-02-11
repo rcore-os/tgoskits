@@ -1,7 +1,8 @@
 //! TODO: PLIC
 
-use axplat::irq::{HandlerTable, IpiTarget, IrqHandler, IrqIf};
 use core::sync::atomic::{AtomicPtr, Ordering};
+
+use axplat::irq::{HandlerTable, IpiTarget, IrqHandler, IrqIf};
 use riscv::register::sie;
 use sbi_rt::HartMask;
 
