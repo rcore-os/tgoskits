@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.1
+
+### Other
+
+- [Update `rand` to 0.10.0](https://github.com/arceos-org/page_table_multiarch/pull/41).
+- [Update `aarch64-cpu` to 11.0](https://github.com/arceos-org/page_table_multiarch/pull/42).
+- [Update `riscv` to 0.16](https://github.com/arceos-org/page_table_multiarch/pull/42).
+
 ## 0.6.0
 
 ### New Features
