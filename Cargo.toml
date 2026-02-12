@@ -36,8 +36,8 @@ linkme = "0.3"
 log = "0.4"
 cfg-if = "1.0"
 memory_addr = "0.4"
-page_table_entry = "0.5"
-static_assertions = "1.1.0"
+page_table_entry = "0.6"
+static_assertions = "1.1"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 lazyinit = "0.2"
@@ -48,15 +48,15 @@ x86_64 = { version = "0.15", default-features = false, features = [
 ] }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
-aarch64-cpu = "10.0"
-tock-registers = "0.9"
+aarch64-cpu = "11.0"
+tock-registers = "0.10"
 
 [target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64"))'.dependencies]
-riscv = "0.14"
+riscv = "0.16"
 
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
-loongArch64 = "0.2.4"
-page_table_multiarch = "0.5"
+loongArch64 = "0.2"
+page_table_multiarch = "0.6"
 
 [lints.clippy]
 new_without_default = "allow"
