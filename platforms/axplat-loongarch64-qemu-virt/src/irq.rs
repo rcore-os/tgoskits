@@ -159,7 +159,7 @@ impl IrqIf for IrqIfImpl {
                     let vector = status.trailing_zeros() as usize;
                     status &= !(1 << vector);
                     if !IRQ_HANDLER_TABLE.handle(irq.as_usize()) {
-                        warn!("Unhandled IRQ {}", irq);
+                        warn!("Unhandled IRQ {irq:?}");
                     }
                 }
             }
