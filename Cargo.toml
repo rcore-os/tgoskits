@@ -1,6 +1,6 @@
 [package]
 name = "axcpu"
-version = "0.3.0-preview.4"
+version = "0.3.0-preview.5"
 edition = "2021"
 authors = [
     "Yuekai Jia <equation618@gmail.com>",
