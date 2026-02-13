@@ -41,7 +41,6 @@ pub type VmResult<T = ()> = Result<T, VmError>;
 ///
 /// # Safety
 ///
-/// - Satisfy the restrictions of [`mod@extern_trait`].
 /// - The implementation must ensure that the memory accesses are safe and do
 ///   not violate any memory safety rules.
 #[extern_trait(VmImpl)]
