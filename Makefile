@@ -23,7 +23,7 @@ endif
 
 default: build
 
-ROOTFS_URL = https://github.com/Starry-OS/rootfs/releases/download/20250917
+ROOTFS_URL = https://github.com/Starry-OS/rootfs/releases/download/20260214
 ROOTFS_IMG = rootfs-$(ARCH).img
 
 rootfs:
