@@ -1,6 +1,6 @@
 [package]
 name = "axpoll"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "A library for polling I/O events and waking up tasks."
 authors = ["Mivik <mivikq@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>"]
@@ -14,12 +14,17 @@ default = ["alloc"]
 
 [dependencies]
 bitflags = { version = "2.10", default-features = false }
-linux-raw-sys = { version = "0.11", default-features = false, features = [
+linux-raw-sys = { version = "0.12", default-features = false, features = [
     "no_std",
     "general",
 ] }
 spin = { version = "0.10", default-features = false, features = ["spin_mutex"] }
 
 [dev-dependencies]
-tokio = { version = "1.37", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tokio = { version = "1.37", features = [
+    "rt-multi-thread",
+    "macros",
+    "time",
+    "sync",
+] }
 futures = "0.3"
