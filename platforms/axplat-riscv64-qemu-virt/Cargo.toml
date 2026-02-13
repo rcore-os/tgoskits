@@ -21,7 +21,7 @@ smp = ["axplat/smp"]
 kspin = "0.1"
 lazyinit = "0.2"
 log = "0.4"
-riscv = "0.14"
+riscv = "0.16"
 riscv_goldfish = { version = "0.1", optional = true }
 riscv_plic = { version = "0.2", optional = true }
 sbi-rt = { version = "0.0.3", features = ["legacy"] }

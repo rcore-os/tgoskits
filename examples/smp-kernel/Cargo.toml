@@ -12,7 +12,7 @@ axconfig-macros = "0.2"
 cfg-if = "1.0"
 linkme = "0.3.33"
 percpu = "0.2"
-const-str = "0.6.2"
+const-str = "1.0"
 memory_addr = "0.4"
 axcpu = { workspace = true }
 axplat = { workspace = true }
