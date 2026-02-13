@@ -19,9 +19,21 @@ members = [
     "examples/irq-kernel",
     "examples/smp-kernel",
 ]
+default-members = [
+    "axplat",
+
+    "platforms/axplat-x86-pc",
+    "platforms/axplat-aarch64-peripherals",
+    "platforms/axplat-aarch64-qemu-virt",
+    "platforms/axplat-aarch64-raspi",
+    "platforms/axplat-aarch64-bsta1000b",
+    "platforms/axplat-aarch64-phytium-pi",
+    "platforms/axplat-riscv64-qemu-virt",
+    "platforms/axplat-loongarch64-qemu-virt",
+]
 
 [workspace.package]
-version = "0.3.1-pre.3"
+version = "0.3.1-pre.4"
 edition = "2024"
 authors = [
     "Yuekai Jia <equation618@gmail.com>",
@@ -37,6 +49,6 @@ repository = "https://github.com/arceos-org/axplat_crates"
 
 [workspace.dependencies]
 axcpu = "0.3.0-preview.5"
-axplat = { version = "0.3.1-pre.3", path = "./axplat" }
+axplat = { version = "0.3.1-pre.4", path = "./axplat" }
 axplat-macros = { version = "0.1.0", path = "./axplat-macros" }
-axplat-aarch64-peripherals = { version = "0.3.1-pre.3", path = "platforms/axplat-aarch64-peripherals" }
+axplat-aarch64-peripherals = { version = "0.3.1-pre.4", path = "platforms/axplat-aarch64-peripherals" }

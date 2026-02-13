@@ -164,7 +164,7 @@ dependencies = [
 
 [[package]]
 name = "axplat"
-version = "0.3.1-pre.3"
+version = "0.3.1-pre.4"
 dependencies = [
  "axplat-macros",
  "bitflags 2.10.0",
@@ -178,7 +178,7 @@ dependencies = [
 
 [[package]]
 name = "axplat-aarch64-bsta1000b"
-version = "0.3.1-pre.3"
+version = "0.3.1-pre.4"
 dependencies = [
  "axconfig-macros",
  "axcpu",
@@ -192,7 +192,7 @@ dependencies = [
 
 [[package]]
 name = "axplat-aarch64-peripherals"
-version = "0.3.1-pre.3"
+version = "0.3.1-pre.4"
 dependencies = [
  "aarch64-cpu",
  "arm-gic-driver",
@@ -209,7 +209,7 @@ dependencies = [
 
 [[package]]
 name = "axplat-aarch64-phytium-pi"
-version = "0.3.1-pre.3"
+version = "0.3.1-pre.4"
 dependencies = [
  "axconfig-macros",
  "axcpu",
@@ -221,7 +221,7 @@ dependencies = [
 
 [[package]]
 name = "axplat-aarch64-qemu-virt"
-version = "0.3.1-pre.3"
+version = "0.3.1-pre.4"
 dependencies = [
  "axconfig-macros",
  "axcpu",
@@ -233,7 +233,7 @@ dependencies = [
 
 [[package]]
 name = "axplat-aarch64-raspi"
-version = "0.3.1-pre.3"
+version = "0.3.1-pre.4"
 dependencies = [
  "aarch64-cpu",
  "axconfig-macros",
@@ -246,7 +246,7 @@ dependencies = [
 
 [[package]]
 name = "axplat-loongarch64-qemu-virt"
-version = "0.3.1-pre.3"
+version = "0.3.1-pre.4"
 dependencies = [
  "axconfig-macros",
  "axcpu",
@@ -272,7 +272,7 @@ dependencies = [
 
 [[package]]
 name = "axplat-riscv64-qemu-virt"
-version = "0.3.1-pre.3"
+version = "0.3.1-pre.4"
 dependencies = [
  "axconfig-macros",
  "axcpu",
@@ -289,7 +289,7 @@ dependencies = [
 
 [[package]]
 name = "axplat-x86-pc"
-version = "0.3.1-pre.3"
+version = "0.3.1-pre.4"
 dependencies = [
  "axconfig-macros",
  "axcpu",
