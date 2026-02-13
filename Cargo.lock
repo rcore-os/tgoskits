@@ -63,9 +63,9 @@ dependencies = [
 
 [[package]]
 name = "arm-gic-driver"
-version = "0.16.2"
+version = "0.16.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c69a38ef36506fb35776e320250f7ec5d2484e401eaab00d1d149f2ece250967"
+checksum = "1d09177e7ffff6c78aee3db4816fb478255c5d579f916d72f914c243b797e68e"
 dependencies = [
  "aarch64-cpu",
  "bitflags 2.10.0",
