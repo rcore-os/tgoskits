@@ -386,7 +386,6 @@ impl<B: BlockDevice> BlockDev<B> {
     }
 
     /// 写入内部缓冲区到指定块
-    ///
     pub fn write_block(&mut self, block_id: u32) -> BlockDevResult<()> {
         if self.dev.is_readonly() {
             return Err(BlockDevError::ReadOnly);

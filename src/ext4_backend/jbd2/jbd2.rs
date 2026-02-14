@@ -1,5 +1,6 @@
 use crate::ext4_backend::blockdev::*;
 use crate::ext4_backend::config::*;
+use crate::ext4_backend::crc32c::ext4_superblock_has_metadata_csum;
 use crate::ext4_backend::disknode::*;
 use crate::ext4_backend::endian::*;
 use crate::ext4_backend::ext4::*;
@@ -442,10 +443,18 @@ pub fn create_journal_entry<B: BlockDevice>(
         inode.i_flags = Ext4Inode::EXT4_EXTENTS_FL;
         inode.i_blocks_lo = (inode_size / 512) as u32;
         inode.i_block = jour_inode.i_block;
+        inode.i_extra_isize = 32;
     })
     .expect("Jouranl inode create faild!");
 
     let mut jbd2_sb = JournalSuperBllockS::default();
+
+    if ext4_superblock_has_metadata_csum(&fs.superblock) {
+        jbd2_sb.s_checksum_type = JBD2_CRC32C_CHKSUM; //启用metadata_csum
+    } else {
+        jbd2_sb.s_checksum_type = 0; // metadata_csum disabled
+    }
+    
 
     jbd2_sb.s_maxlen = (free_block.len()-1) as u32; //修正块数 排除超级块
     jbd2_sb.s_start = 0; //相对于superblock
@@ -453,9 +462,9 @@ pub fn create_journal_entry<B: BlockDevice>(
     jbd2_sb.s_sequence = 1;
     jbd2_sb.s_first = 1; //第一个日志块 相对于superblock
 
-    fs.datablock_cache.modify_new(free_block[0], |data| {
+    fs.datablock_cache.modify_new(block_dev, free_block[0], |data| {
         jbd2_sb.to_disk_bytes(data);
-    });
+    })?;
     info!("Journal inode created!");
     Ok(())
 }

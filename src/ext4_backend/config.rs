@@ -1,5 +1,8 @@
 use crate::ext4_backend::superblock::*;
 
+
+
+
 // ============================================================================
 // Journal 相关配置
 // ============================================================================
@@ -39,6 +42,8 @@ pub const DEFAULT_INODE_SIZE: u16 = 256;
 // ============================================================================
 // 数据结构缓存相关配置,在小的嵌入式系统中可以适当调小防止崩内存
 // ============================================================================
+/// 是否使用多级缓存(Inode表/datablock/bitmap/gdt 缓存) 默认开启（建议在某些特殊情况下关闭，会增加文件系统的开销）
+pub const USE_MULTILEVEL_CACHE: bool = cfg!(feature= "USE_MULTILEVEL_CACHE");
 ///Inodecahe数量
 pub const INODE_CACHE_MAX: usize = 128;
 ///Datablock cahce数量
@@ -81,7 +86,7 @@ pub const DEFAULT_FEATURE_INCOMPAT: u32 = Ext4Superblock::EXT4_FEATURE_INCOMPAT_
 
 /// 默认的只读兼容特性标志
 pub const DEFAULT_FEATURE_RO_COMPAT: u32 = Ext4Superblock::EXT4_FEATURE_RO_COMPAT_EXTRA_ISIZE
-    | Ext4Superblock::EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER;
+    | Ext4Superblock::EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER | Ext4Superblock::EXT4_FEATURE_RO_COMPAT_METADATA_CSUM;
 
 // ============================================================================
 // 魔数和版本

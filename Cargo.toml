@@ -8,10 +8,6 @@ bitflags = "2.10"
 lazy_static = { version = "1.5", features = ["spin_no_std"] }
 log = "0.4"
 [features]
-default = ["debug_printf", "debug_assert","CONFIG_META_CSUM_ENABLE"]
-std = []
-debug_printf = []
-debug_assert = []
-own_assert = []
-CONFIG_META_CSUM_ENABLE = []
-vfs-perf = []
+default = ["USE_MULTILEVEL_CACHE"]
+USE_MULTILEVEL_CACHE = [] #启用多级缓存
+

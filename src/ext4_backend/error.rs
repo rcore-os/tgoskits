@@ -153,6 +153,8 @@ pub enum RSEXT4Error {
     UnsupportedFeature,
     /// 已经挂载
     AlreadyMounted,
+    /// 超级块校验和无效
+    InvalidSuperblockChecksum,
 }
 
 impl core::fmt::Display for RSEXT4Error {
@@ -164,6 +166,7 @@ impl core::fmt::Display for RSEXT4Error {
             RSEXT4Error::FilesystemHasErrors => write!(f, "文件系统有错误"),
             RSEXT4Error::UnsupportedFeature => write!(f, "不支持的特性"),
             RSEXT4Error::AlreadyMounted => write!(f, "文件系统已挂载"),
+            RSEXT4Error::InvalidSuperblockChecksum => write!(f, "超级块校验和无效"),
         }
     }
 }

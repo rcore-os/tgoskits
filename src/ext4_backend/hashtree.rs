@@ -578,7 +578,7 @@ use crate::ext4_backend::error::BlockDevError;
             l_i_gid_high: 0,
             l_i_checksum_lo: 0,
             l_i_reserved: 0,
-            i_extra_isize: 0,
+            i_extra_isize: 32, // Set extra_isize to 32 to indicate presence of extra fields
             i_checksum_hi: 0,
             i_ctime_extra: 0,
             i_mtime_extra: 0,

@@ -14,6 +14,7 @@ use crate::ext4_backend::ext4::*;
 use crate::ext4_backend::extents_tree::*;
 use crate::ext4_backend::loopfile::*;
 use crate::ext4_backend::error::*;
+use crate::ext4_backend::checksum::update_ext4_dirblock_csum32;
 use alloc::string::String;
 
 
@@ -53,7 +54,6 @@ pub fn rename<B: BlockDevice>(
         error!("rename: new entry missing after move old={} new={}", old_path, new_path);
         return Err(BlockDevError::Corrupted);
     }
-
     Ok(())
 }
 pub fn truncate<B: BlockDevice>(
@@ -75,6 +75,7 @@ pub fn truncate<B: BlockDevice>(
 
     truncate_with_ino(device, fs, inode_num, truncate_size)
 }
+
 
 ///TODO:shrink暂时不要用不成熟   记得更新inodesize extendtree不负责更新inodesize
 pub fn truncate_with_ino<B: BlockDevice>(
@@ -155,11 +156,11 @@ pub fn truncate_with_ino<B: BlockDevice>(
             let mut new_blocks_map: Vec<(u32, u64)> = Vec::new();
             for lbn in old_blocks as u32..new_blocks as u32 {
                 let phys = fs.alloc_block(device)?;
-                fs.datablock_cache.modify_new(phys, |data| {
+                fs.datablock_cache.modify_new(device, phys, |data| {
                     for b in data.iter_mut() {
                         *b = 0;
                     }
-                });
+                })?;
                 new_blocks_map.push((lbn, phys));
             }
 
@@ -213,11 +214,11 @@ pub fn truncate_with_ino<B: BlockDevice>(
     if new_blocks > old_blocks {
         for lbn in old_blocks as u32..new_blocks as u32 {
             let phys = fs.alloc_block(device)?;
-            fs.datablock_cache.modify_new(phys, |data| {
+            fs.datablock_cache.modify_new(device, phys, |data| {
                 for b in data.iter_mut() {
                     *b = 0;
                 }
-            });
+            })?;
             inode.i_block[lbn as usize] = phys as u32;
         }
     }
@@ -335,13 +336,13 @@ pub fn create_symbol_link<B: BlockDevice>(
 
             let blk = fs.alloc_block(device)?;
             let write_len = core::cmp::min(remaining, BLOCK_SIZE);
-            fs.datablock_cache.modify_new(blk, |data| {
+            fs.datablock_cache.modify_new(device, blk, |data| {
                 for b in data.iter_mut() {
                     *b = 0;
                 }
                 let end = src_off + write_len;
                 data[..write_len].copy_from_slice(&target_bytes[src_off..end]);
-            });
+            })?;
 
             data_blocks.push(blk);
             remaining -= write_len;
@@ -531,7 +532,6 @@ fn read_file_follow<B: BlockDevice>(
 
     Ok(Some(buf))
 }
-
 //mv
 pub fn mv<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
@@ -787,13 +787,13 @@ pub fn mv<B: BlockDevice>(
                     data[off1 + 1] = bytes[1];
                     data[off1 + 2] = bytes[2];
                     data[off1 + 3] = bytes[3];
+                    update_ext4_dirblock_csum32(&fs.superblock, src_ino, moved_inode.i_generation, data);
                 });
         }
     }
 
     Ok(())
 }
-
 ///UnLink
 pub fn unlink<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
@@ -920,7 +920,6 @@ pub fn unlink<B: BlockDevice>(
         );
     }
 }
-
 ///Link
 pub fn link<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
@@ -1049,7 +1048,6 @@ pub fn link<B: BlockDevice>(
         let _ = remove_inodeentry_from_parentdir(fs, block_dev, &parent_path, &child_name);
     }
 }
-
 pub fn remove_inodeentry_from_parentdir<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
@@ -1068,7 +1066,7 @@ pub fn remove_inodeentry_from_parentdir<B: BlockDevice>(
             return false;
         }
     };
-    let (_parent_ino_num, mut parent_inode) = parent_info;
+    let (parent_ino_num, mut parent_inode) = parent_info;
 
     let total_size = parent_inode.size() as usize;
     let block_bytes = BLOCK_SIZE;
@@ -1114,6 +1112,7 @@ pub fn remove_inodeentry_from_parentdir<B: BlockDevice>(
                 }
 
                 // Only compare name bytes within the current entry's rec_len.
+                // error!("entry: inode={} rec_len={} name_len={} name={:?}", inode, rec_len, name_len, &data[offset + 8..offset + 8 + name_len.min(block_bytes - offset - 8)]);
                 if name_len > 0 && offset + 8 + name_len <= entry_end {
                     let name = &data[offset + 8..offset + 8 + name_len];
                     if inode != 0 && name == name_bytes {
@@ -1149,12 +1148,14 @@ pub fn remove_inodeentry_from_parentdir<B: BlockDevice>(
                 prev_rec_len = rec_len;
                 offset = entry_end;
             }
+            if removed {
+                update_ext4_dirblock_csum32(&fs.superblock, parent_ino_num, parent_inode.i_generation, data);
+            }
         });
     }
 
     removed
 }
-
 ///删除目录
 pub fn delete_dir<B: BlockDevice>(fs: &mut Ext4FileSystem, block_dev: &mut Jbd2Dev<B>, path: &str) {
     #[derive(Clone)]
@@ -1403,7 +1404,6 @@ pub fn delete_dir<B: BlockDevice>(fs: &mut Ext4FileSystem, block_dev: &mut Jbd2D
         }
     }
 }
-
 ///删除文件/删除链接文件
 pub fn delete_file<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
@@ -1590,7 +1590,6 @@ pub fn mkfile<B: BlockDevice>(
 ) -> Option<Ext4Inode> {
     mkfile_with_ino(device, fs, path, initial_data, file_type).map(|(_, inode)| inode)
 }
-
 pub fn mkfile_with_ino<B: BlockDevice>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
@@ -1676,13 +1675,15 @@ pub fn mkfile_with_ino<B: BlockDevice>(
             let write_len = core::cmp::min(remaining, BLOCK_SIZE);
 
             // 将数据写入新分配的数据块，其余部分填零
-            fs.datablock_cache.modify_new(blk, |data| {
+            fs.datablock_cache
+                .modify_new(device, blk, |data| {
                 for b in data.iter_mut() {
                     *b = 0;
                 }
                 let end = src_off + write_len;
                 data[..write_len].copy_from_slice(&buf[src_off..end]);
-            });
+            })
+                .ok()?;
 
             data_blocks.push(blk);
             total_written += write_len;
@@ -1834,7 +1835,6 @@ pub fn write_file<B: BlockDevice>(
 
     write_file_with_ino(device, fs, inode_num, offset, data)
 }
-
 pub fn write_file_with_ino<B: BlockDevice>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
@@ -1893,11 +1893,11 @@ pub fn write_file_with_ino<B: BlockDevice>(
             } else {
                 // Hole: allocate a new block and insert an extent for this single LBN.
                 let new_phys = fs.alloc_block(device)?;
-                fs.datablock_cache.modify_new(new_phys, |blk| {
+                fs.datablock_cache.modify_new(device, new_phys, |blk| {
                     for b in blk.iter_mut() {
                         *b = 0;
                     }
-                });
+                })?;
                 {
                     let mut tree = ExtentTree::new(&mut inode);
                     let ext = Ext4Extent::new(lbn as u32, new_phys, 1);

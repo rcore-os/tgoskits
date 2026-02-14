@@ -3,7 +3,7 @@ use rsext4::*;
 use std::io::Read;
 use std::io::Write;
 //mkfs
-pub fn test_mkfs<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) {
+pub fn _test_mkfs<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) {
     mkfs(block_dev).expect("File system mount failed panic!");
 }
 

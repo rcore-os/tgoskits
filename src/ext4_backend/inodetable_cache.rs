@@ -238,9 +238,21 @@ impl InodeCache {
         B: BlockDevice,
         F: FnOnce(&mut Ext4Inode),
     {
+        let inode_size = self.inode_size;
         let cached = self.get_or_load_mut(block_dev, inode_num, block_num, offset)?;
         f(&mut cached.inode);
         cached.mark_dirty();
+
+        if !USE_MULTILEVEL_CACHE {
+            Self::write_inode_static(
+                block_dev,
+                &cached.inode,
+                cached.block_num,
+                cached.offset_in_block,
+                inode_size,
+            )?;
+            cached.dirty = false;
+        }
         Ok(())
     }
 

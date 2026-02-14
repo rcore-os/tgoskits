@@ -12,6 +12,7 @@ use crate::ext4_backend::ext4::*;
 use crate::ext4_backend::extents_tree::*;
 use crate::ext4_backend::hashtree::*;
 use crate::ext4_backend::error::*;
+use crate::ext4_backend::checksum::verify_ext4_dirblock_checksum;
 use log::debug;
 
 ///支持extend数和多级索引(多级索引将来弃用)
@@ -200,9 +201,16 @@ pub fn get_file_inode<B: BlockDevice>(
                     let cached_block = fs.datablock_cache.get_or_load(block_dev, *phys.1)?;
                     let block_data = &cached_block.data[..block_bytes];
 
+                    if !verify_ext4_dirblock_checksum(&fs.superblock, current_ino_num, current_inode.i_generation, block_data) {
+                        error!("dir block checksum mismatch: ino={} blk_idx={} phys={}", current_ino_num, idx, phys.1);
+                    }
+
                     if let Some(entry) = classic_dir::find_entry(block_data, target) {
-                        found_inode_num = Some(entry.inode as u64);
-                        break;
+                        if entry.file_type != Ext4DirEntryTail::RESERVED_FT {
+                             found_inode_num = Some(entry.inode as u64);
+                             break;
+                        }
+                       
                     }
                 }
             }

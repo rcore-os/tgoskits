@@ -4,6 +4,8 @@
 use crate::alloc::string::ToString;
 use crate::ext4_backend::blockdev::*;
 use crate::ext4_backend::config::*;
+use crate::ext4_backend::crc32c::ext4_superblock_has_metadata_csum;
+use crate::ext4_backend::checksum::ext4_update_dirblock_tail_checksum;
 use crate::ext4_backend::disknode::*;
 use crate::ext4_backend::endian::*;
 use crate::ext4_backend::entries::*;
@@ -12,6 +14,7 @@ use crate::ext4_backend::extents_tree::*;
 use crate::ext4_backend::file::*;
 use crate::ext4_backend::loopfile::*;
 use crate::ext4_backend::error::*;
+use crate::ext4_backend::checksum::update_ext4_dirblock_csum32;
 use alloc::string::String;
 use alloc::vec::Vec;
 use log::error;
@@ -137,8 +140,9 @@ pub fn get_inode_with_num<B: BlockDevice>(
     Ok(Some((current_ino, current_inode)))
 }
 
+
 /// 在父目录的所有逻辑块中查找空闲空间并插入一个目录项；
-/// 若所有现有块都无法容纳，则自动为目录分配一个新数据块并扩展 inode 映射和大小。
+/// 若所有现有块都无法容纳，则自动为目录分配一个新数据块并扩展 inode 映射和大小。 
 pub fn insert_dir_entry<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
     device: &mut Jbd2Dev<B>,
@@ -148,6 +152,8 @@ pub fn insert_dir_entry<B: BlockDevice>(
     child_name: &str,
     file_type: u8,
 ) -> BlockDevResult<()> {
+    let has_checksum = ext4_superblock_has_metadata_csum(&fs.superblock);
+
     let name_bytes = child_name.as_bytes();
     let name_len = core::cmp::min(name_bytes.len(), Ext4DirEntry2::MAX_NAME_LEN as usize);
     let new_rec_len = Ext4DirEntry2::entry_len(name_len as u8) as usize;
@@ -195,6 +201,9 @@ pub fn insert_dir_entry<B: BlockDevice>(
 
             let mut offset = 0usize;
             while offset + 8 <= block_bytes {
+
+                
+
                 let inode = u32::from_le_bytes([
                     data[offset],
                     data[offset + 1],
@@ -202,7 +211,8 @@ pub fn insert_dir_entry<B: BlockDevice>(
                     data[offset + 3],
                 ]);
                 let rec_len = u16::from_le_bytes([data[offset + 4], data[offset + 5]]) as usize;
-                if rec_len < 8 {
+                let rec_type = data[offset + 7];
+                if rec_len < 8 { //代表扫描到空洞或者无效条目
                     return;
                 }
                 let entry_end = offset + rec_len;
@@ -210,8 +220,13 @@ pub fn insert_dir_entry<B: BlockDevice>(
                     return;
                 }
 
+                if rec_type == Ext4DirEntryTail::RESERVED_FT{
+                    // 扫到尾巴了,分配新数据块
+                    break;
+                }
+
                 // Free entry: directly use it if it can hold the new entry.
-                if inode == 0 {
+                if inode == 0{
                     if rec_len >= new_rec_len {
                         let mut full_entry = new_entry;
                         full_entry.rec_len = rec_len as u16;
@@ -221,15 +236,17 @@ pub fn insert_dir_entry<B: BlockDevice>(
                             .copy_from_slice(&full_entry.name[..nlen]);
                         inserted = true;
                     }
+                    // 更新tail
+                    update_ext4_dirblock_csum32(&fs.superblock, parent_ino_num, parent_inode.i_generation, data);
+                    
                     return;
-                }
-
+                } 
                 // Occupied entry: try to split tail space.
                 let cur_name_len = data[offset + 6] as usize;
                 let mut ideal = 8 + cur_name_len;
                 ideal = (ideal + 3) & !3;
                 if ideal <= rec_len {
-                    let tail = rec_len - ideal;
+                    let tail = rec_len - ideal; //这个rec_len已经不包含tail了.最开始创建文件夹时..就已经处理了不包含tail的reclen.后面的插入也都保证了reclen不包含tail
                     if tail >= new_rec_len {
                         let ideal_bytes = (ideal as u16).to_le_bytes();
                         data[offset + 4] = ideal_bytes[0];
@@ -243,6 +260,10 @@ pub fn insert_dir_entry<B: BlockDevice>(
                         data[new_off + 8..new_off + 8 + nlen]
                             .copy_from_slice(&full_entry.name[..nlen]);
                         inserted = true;
+
+                        // 更新tail
+                        update_ext4_dirblock_csum32(&fs.superblock, parent_ino_num, parent_inode.i_generation, data);
+
                         return;
                     }
                 }
@@ -295,32 +316,14 @@ pub fn insert_dir_entry<B: BlockDevice>(
     parent_inode.i_blocks_lo = (newv & 0xffff_ffff) as u32;
     parent_inode.l_i_blocks_high = ((newv >> 32) & 0xffff) as u16;
 
-    let (p_group, _pidx) = fs.inode_allocator.global_to_group(parent_ino_num);
-    let inode_table_start = match fs.group_descs.get(p_group as usize) {
-        Some(desc) => desc.inode_table(),
-        None => return Err(BlockDevError::NoEntry),
-    };
-    let (p_block_num, p_offset, _pg) = fs.inodetable_cahce.calc_inode_location(
-        parent_ino_num,
-        fs.superblock.s_inodes_per_group,
-        inode_table_start,
-        BLOCK_SIZE,
-    );
-
-    fs.inodetable_cahce.modify(
-        device,
-        parent_ino_num as u64,
-        p_block_num,
-        p_offset,
-        |inode| {
-            inode.i_size_lo = parent_inode.i_size_lo;
-            inode.i_size_high = parent_inode.i_size_high;
-            inode.i_blocks_lo = parent_inode.i_blocks_lo;
-            inode.l_i_blocks_high = parent_inode.l_i_blocks_high;
-            inode.i_flags = parent_inode.i_flags;
-            inode.i_block = parent_inode.i_block;
-        },
-    )?;
+    fs.modify_inode(device, parent_ino_num, |inode| {
+        inode.i_size_lo = parent_inode.i_size_lo;
+        inode.i_size_high = parent_inode.i_size_high;
+        inode.i_blocks_lo = parent_inode.i_blocks_lo;
+        inode.l_i_blocks_high = parent_inode.l_i_blocks_high;
+        inode.i_flags = parent_inode.i_flags;
+        inode.i_block = parent_inode.i_block;
+    })?;
 
     // 在新分配的数据块中写入唯一的目录项，占满整个块
     fs.datablock_cache
@@ -329,11 +332,27 @@ pub fn insert_dir_entry<B: BlockDevice>(
                 *b = 0;
             }
             let mut full_entry = new_entry;
-            full_entry.rec_len = BLOCK_SIZE as u16;
+
+            full_entry.rec_len = if has_checksum{
+                (BLOCK_SIZE - Ext4DirEntryTail::TAIL_LEN as usize) as u16
+            } else {
+                BLOCK_SIZE as u16
+            };
+
             full_entry.to_disk_bytes(&mut data[0..8]);
             let nlen = full_entry.name_len as usize;
             data[8..8 + nlen].copy_from_slice(&full_entry.name[..nlen]);
+            // 初始化 tail 结构（det_rec_len=12, det_reserved_ft=0xDE 等）
+            if has_checksum {
+                let tail = Ext4DirEntryTail::new();
+                let tail_offset = BLOCK_SIZE - Ext4DirEntryTail::TAIL_LEN as usize;
+                tail.to_disk_bytes(&mut data[tail_offset..tail_offset + Ext4DirEntryTail::TAIL_LEN as usize]);
+            }
+            // 更新新目录块的 checksum
+            update_ext4_dirblock_csum32(&fs.superblock, parent_ino_num, parent_inode.i_generation, data);
         })?;
+    
+    
 
     Ok(())
 }
@@ -353,6 +372,10 @@ pub fn mkdir_with_ino<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
     path: &str,
 ) -> Option<(u32, Ext4Inode)> {
+
+    // check sumfeature
+    let has_checksum = ext4_superblock_has_metadata_csum(&fs.superblock); 
+
     // 先对传入路径做规范化（去掉重复的 '/' 等）
     let norm_path = split_paren_child_and_tranlatevalid(path);
 
@@ -483,7 +506,13 @@ pub fn mkdir_with_ino<B: BlockDevice>(
         }
     };
 
-    // 初始化新目录的数据块：写 '.' 和 '..'
+    // 读取分配后 inode 的 i_generation（alloc_inode 已自增）
+    let new_dir_gen = fs
+        .get_inode_by_num(device, new_dir_ino)
+        .map(|ino| ino.i_generation)
+        .unwrap_or(0);
+
+    // 初始化新目录的数据块：写 '.' 和 '..'  如果有metadata_checksum特性，还需要写入dir tail
     {
         let cached = fs.datablock_cache.create_new(data_block);
         let data = &mut cached.data;
@@ -497,8 +526,18 @@ pub fn mkdir_with_ino<B: BlockDevice>(
             dot_name,
         );
 
+
+        
+
         let dotdot_name = b"..";
-        let dotdot_rec_len = (BLOCK_SIZE as u16).saturating_sub(dot_rec_len);
+
+        // 不同情况不同长度
+        let dotdot_rec_len = if has_checksum {
+            (BLOCK_SIZE as u16).saturating_sub(dot_rec_len).saturating_sub(Ext4DirEntryTail::TAIL_LEN)
+        } else {
+            (BLOCK_SIZE as u16).saturating_sub(dot_rec_len)
+        };
+
         let dotdot = Ext4DirEntry2::new(
             parent_ino_num,
             dotdot_rec_len,
@@ -518,6 +557,21 @@ pub fn mkdir_with_ino<B: BlockDevice>(
             let name_len = dotdot.name_len as usize;
             data[offset + 8..offset + 8 + name_len].copy_from_slice(&dotdot.name[..name_len]);
         }
+
+        // 有校验和特性的目录需要在目录块末尾写入 dir tail，包含校验和
+        if has_checksum {
+            let tail = Ext4DirEntryTail::new();
+            let tail_offset = BLOCK_SIZE - Ext4DirEntryTail::TAIL_LEN as usize;
+            tail.to_disk_bytes(&mut data[tail_offset..tail_offset + Ext4DirEntryTail::TAIL_LEN as usize]);
+            ext4_update_dirblock_tail_checksum(
+                &fs.superblock,
+                new_dir_ino,
+                new_dir_gen,
+                data,
+                tail_offset,
+            );
+        }
+
     }
 
     // 写新目录 inode（单块目录，按特性选择 extent 或直接块）
@@ -550,30 +604,9 @@ pub fn mkdir_with_ino<B: BlockDevice>(
 
     //更新父目录的i_links_count+1
     {
-        let (p_group, _pidx) = fs.inode_allocator.global_to_group(parent_ino_num);
-        let p_inode_table_start = match fs.group_descs.get(p_group as usize) {
-            Some(desc) => desc.inode_table(),
-            None => {
-                error!("mkdir parent group desc missing path={} parent_ino={} group={}", path, parent_ino_num, p_group);
-                return None;
-            }
-        };
-        let (p_block_num, p_offset, _pg) = fs.inodetable_cahce.calc_inode_location(
-            parent_ino_num,
-            fs.superblock.s_inodes_per_group,
-            p_inode_table_start,
-            BLOCK_SIZE,
-        );
-
-        let _ = fs.inodetable_cahce.modify(
-            device,
-            parent_ino_num as u64,
-            p_block_num,
-            p_offset,
-            |inode| {
-                inode.i_links_count = inode.i_links_count.saturating_add(1);
-            },
-        );
+        let _ = fs.modify_inode(device, parent_ino_num, |inode| {
+            inode.i_links_count = inode.i_links_count.saturating_add(1);
+        });
     }
 
     // 更新新目录所属块组的目录计数
@@ -582,6 +615,8 @@ pub fn mkdir_with_ino<B: BlockDevice>(
         desc.bg_used_dirs_count_lo = (newc & 0xFFFF) as u16;
         desc.bg_used_dirs_count_hi = ((newc >> 16) & 0xFFFF) as u16;
     }
+
+    let _ = fs.sync_group_descriptor_if_needed(device, group_idx);
 
     // 在父目录的数据块中插入新目录项（线性目录，多块遍历，必要时自动扩展目录块）
     if insert_dir_entry(
@@ -631,7 +666,11 @@ pub fn create_root_directory_entry<B: BlockDevice>(
     //  为根目录分配一个数据块（内部自动选择块组）
     let root_inode_num = fs.root_inode;
     let data_block = fs.alloc_block(block_dev)?;
-
+    // 更新新目录块的 checksum
+    let root = get_inode_with_num(fs, block_dev, "/").expect("Root inode must exist")
+        .expect("Root inode must exist")
+        .1;
+    let root_gen = root.i_generation;
     //  写入目录项 . 和 ..
     {
         let cached = fs.datablock_cache.create_new(data_block);
@@ -669,6 +708,8 @@ pub fn create_root_directory_entry<B: BlockDevice>(
             let name_len = dotdot.name_len as usize;
             data[offset + 8..offset + 8 + name_len].copy_from_slice(&dotdot.name[..name_len]);
         }
+        
+        update_ext4_dirblock_csum32(&fs.superblock, root_inode_num, root_gen, data);
     }
 
     //仅仅的视图，修改过后的
@@ -688,6 +729,7 @@ pub fn create_root_directory_entry<B: BlockDevice>(
         // i_blocks 以 512 字节为单位
         inode.i_blocks_lo = (BLOCK_SIZE / 512) as u32;
         inode.l_i_blocks_high = 0;
+        inode.i_extra_isize = 32; // TODO, 保证目前高hi checksum也能正常工作，先预留32字节的extra_isize
     })?;
 
     //块组描述符更新 目录数
@@ -696,6 +738,8 @@ pub fn create_root_directory_entry<B: BlockDevice>(
         desc.bg_used_dirs_count_lo = (newc & 0xFFFF) as u16;
         desc.bg_used_dirs_count_hi = ((newc >> 16) & 0xFFFF) as u16;
     }
+
+    let _ = fs.sync_group_descriptor_if_needed(block_dev, 0);
 
     debug!(
         "Root directory created: inode={}, data_block={}",
@@ -714,6 +758,7 @@ pub fn create_lost_found_directory<B: BlockDevice>(
         return Ok(());
     }
 
+    let has_checksum = ext4_superblock_has_metadata_csum(&fs.superblock);
     let root_inode_num = fs.root_inode;
 
     //  分配 inode（内部自动选择块组）
@@ -722,6 +767,12 @@ pub fn create_lost_found_directory<B: BlockDevice>(
 
     //  分配数据块（内部自动选择块组）
     let data_block = fs.alloc_block(block_dev)?;
+
+    // 读取 alloc_inode 后的 i_generation
+    let lost_gen = fs
+        .get_inode_by_num(block_dev, lost_ino)
+        .map(|ino| ino.i_generation)
+        .unwrap_or(0);
 
     //  初始化 lost+found 目录块（".", ".."）
     {
@@ -733,7 +784,11 @@ pub fn create_lost_found_directory<B: BlockDevice>(
         let dot = Ext4DirEntry2::new(lost_ino, dot_rec_len, Ext4DirEntry2::EXT4_FT_DIR, dot_name);
 
         let dotdot_name = b"..";
-        let dotdot_rec_len = (BLOCK_SIZE as u16).saturating_sub(dot_rec_len);
+        let dotdot_rec_len = if has_checksum {
+            (BLOCK_SIZE as u16).saturating_sub(dot_rec_len).saturating_sub(Ext4DirEntryTail::TAIL_LEN)
+        } else {
+            (BLOCK_SIZE as u16).saturating_sub(dot_rec_len)
+        };
         let dotdot = Ext4DirEntry2::new(
             root_inode_num,
             dotdot_rec_len,
@@ -752,6 +807,19 @@ pub fn create_lost_found_directory<B: BlockDevice>(
             dotdot.to_disk_bytes(&mut data[offset..offset + 8]);
             let name_len = dotdot.name_len as usize;
             data[offset + 8..offset + 8 + name_len].copy_from_slice(&dotdot.name[..name_len]);
+        }
+
+        if has_checksum {
+            let tail = Ext4DirEntryTail::new();
+            let tail_offset = BLOCK_SIZE - Ext4DirEntryTail::TAIL_LEN as usize;
+            tail.to_disk_bytes(&mut data[tail_offset..tail_offset + Ext4DirEntryTail::TAIL_LEN as usize]);
+            ext4_update_dirblock_tail_checksum(
+                &fs.superblock,
+                lost_ino,
+                lost_gen,
+                data,
+                tail_offset,
+            );
         }
     }
 
@@ -784,6 +852,8 @@ pub fn create_lost_found_directory<B: BlockDevice>(
         desc.bg_used_dirs_count_hi = ((newc >> 16) & 0xFFFF) as u16;
     }
 
+    let _ = fs.sync_group_descriptor_if_needed(block_dev, lf_group);
+
     //  更新根目录数据块：加入 lost+found 目录项
 
     //这里也需要根据extend来解析
@@ -796,7 +866,7 @@ pub fn create_lost_found_directory<B: BlockDevice>(
     }
 
     fs.datablock_cache
-        .modify(block_dev, root_block as u64, move |data| {
+        .modify(block_dev, root_block as u64, |data| {
             let dot_name = b".";
             let dot_rec_len = Ext4DirEntry2::entry_len(dot_name.len() as u8);
             let dot = Ext4DirEntry2::new(
@@ -816,7 +886,13 @@ pub fn create_lost_found_directory<B: BlockDevice>(
             );
 
             let lf_name = b"lost+found";
-            let lf_rec_len = (BLOCK_SIZE as u16).saturating_sub(dot_rec_len + dotdot_rec_len);
+            
+            let lf_rec_len = if ext4_superblock_has_metadata_csum(&fs.superblock){
+                (BLOCK_SIZE as u16).saturating_sub(dot_rec_len + dotdot_rec_len + Ext4DirEntryTail::TAIL_LEN)
+            }else {
+                (BLOCK_SIZE as u16).saturating_sub(dot_rec_len + dotdot_rec_len)
+            };
+
             let lost =
                 Ext4DirEntry2::new(lost_ino, lf_rec_len, Ext4DirEntry2::EXT4_FT_DIR, lf_name);
 
@@ -841,29 +917,16 @@ pub fn create_lost_found_directory<B: BlockDevice>(
             lost.to_disk_bytes(&mut data[offset..offset + 8]);
             let lf_len = lost.name_len as usize;
             data[offset + 8..offset + 8 + lf_len].copy_from_slice(&lost.name[..lf_len]);
+
+            // 更新新目录块的 checksum
+            update_ext4_dirblock_csum32(&fs.superblock, root_inode_num, root_inode.i_generation, data);
         })?;
 
     //  更新根 inode 的链接计数（多了一个子目录）
-    let inode_table_start = match fs.group_descs.first() {
-        Some(desc) => desc.inode_table(),
-        None => return Err(BlockDevError::NoEntry),
-    };
-    let (block_num, offset, _group_idx) = fs.inodetable_cahce.calc_inode_location(
-        fs.root_inode,
-        fs.superblock.s_inodes_per_group,
-        inode_table_start,
-        BLOCK_SIZE,
-    );
-
-    fs.inodetable_cahce.modify(
-        block_dev,
-        fs.root_inode as u64,
-        block_num,
-        offset,
-        |inode| {
-            inode.i_links_count = inode.i_links_count.saturating_add(1);
-        },
-    )?;
+    let root_ino = fs.root_inode;
+    fs.modify_inode(block_dev, root_ino, |inode| {
+        inode.i_links_count = inode.i_links_count.saturating_add(1);
+    })?;
 
     //  记录到超级块
     fs.superblock.s_lpf_ino = lost_ino;

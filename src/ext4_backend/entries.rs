@@ -77,16 +77,33 @@ impl Ext4DirEntry2 {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Ext4DirEntryTail {
-    pub det_reserved_zero1: u32, // 保留，必须为0
-    pub det_rec_len: u16,        // 12
-    pub det_reserved_zero2: u8,  // 保留，必须为0
-    pub det_reserved_ft: u8,     // 0xDE，用于标识这是尾部
-    pub det_checksum: u32,       // 目录块的CRC32C校验和
+    pub det_reserved_zero1: u32, // 保留，必须为0  伪装inode
+    pub det_rec_len: u16,        // 12 固定长度
+    pub det_reserved_zero2: u8,  // 保留，必须为0  伪装name_len
+    pub det_reserved_ft: u8,     // 0xDE，用于标识这是尾部  伪装file_type，RESERVED_FT
+    pub det_checksum: u32,       // 目录块的CRC32C校验和 计算时将此字段视为0
 }
 
 impl Ext4DirEntryTail {
     pub const RESERVED_FT: u8 = 0xDE;
     pub const TAIL_LEN: u16 = 12;
+    pub fn new() -> Self {
+        Ext4DirEntryTail {
+            det_reserved_zero1: 0,
+            det_rec_len: Self::TAIL_LEN,
+            det_reserved_zero2: 0,
+            det_reserved_ft: Self::RESERVED_FT,
+            det_checksum: 0,
+        }
+    }
+
+    pub fn to_disk_bytes(&self, bytes: &mut [u8]) {
+        write_u32_le(self.det_reserved_zero1, &mut bytes[0..4]);
+        write_u16_le(self.det_rec_len, &mut bytes[4..6]);
+        bytes[6] = self.det_reserved_zero2;
+        bytes[7] = self.det_reserved_ft;
+        write_u32_le(self.det_checksum, &mut bytes[8..12]);
+    }
 }
 
 /// HTree根节点信息结构

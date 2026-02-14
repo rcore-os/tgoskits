@@ -1,6 +1,7 @@
 //! 位图缓存模块
 
 use crate::ext4_backend::blockdev::*;
+use crate::ext4_backend::config::USE_MULTILEVEL_CACHE;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use crate::ext4_backend::error::*;
@@ -190,6 +191,11 @@ impl BitmapCache {
 
         f(&mut bitmap.data);
         bitmap.mark_dirty();
+
+        if !USE_MULTILEVEL_CACHE {
+            Self::write_bitmap_static(block_dev, bitmap.block_num, &bitmap.data)?;
+            bitmap.dirty = false;
+        }
 
         debug!(
             "BitmapCache::modify: key=({}:{:?}) block_num={} marked_dirty=true (bitmap updated in cache, writeback deferred)",

@@ -8,6 +8,7 @@ use crate::ext4_backend::blockdev::*;
 use crate::ext4_backend::blockgroup_description::*;
 use crate::ext4_backend::bmalloc::*;
 use crate::ext4_backend::config::*;
+use crate::ext4_backend::crc32c::ext4_superblock_has_metadata_csum;
 use crate::ext4_backend::datablock_cache::*;
 use crate::ext4_backend::dir::*;
 use crate::ext4_backend::disknode::*;
@@ -19,6 +20,7 @@ use crate::ext4_backend::loopfile::*;
 use crate::ext4_backend::superblock::*;
 use crate::ext4_backend::tool::*;
 use crate::ext4_backend::error::*;
+use crate::ext4_backend::checksum::*;
 use log::trace;
 
 use alloc::collections::vec_deque::VecDeque;
@@ -54,6 +56,54 @@ pub struct Ext4FileSystem {
 }
 
 impl Ext4FileSystem {
+    pub(crate) fn sync_group_descriptor_if_needed<B: BlockDevice>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+        group_id: u32,
+    ) -> BlockDevResult<()> {
+        if USE_MULTILEVEL_CACHE {
+            return Ok(());
+        }
+
+        // 索引范围检查
+        let idx = group_id as usize;
+        if idx >= self.group_descs.len() {
+            return Err(BlockDevError::Corrupted);
+        }
+
+        // 计算组描述符的偏移量
+        let desc_size = self.superblock.get_desc_size() as usize;
+        let gdt_base: u64 = BLOCK_SIZE as u64;
+        let block_size_u64 = BLOCK_SIZE as u64;
+        let byte_offset = gdt_base + idx as u64 * desc_size as u64;
+        let block_num = byte_offset / block_size_u64;
+        let in_block = (byte_offset % block_size_u64) as usize;
+        let end = in_block + desc_size; // 结束范围
+
+        let mut desc = self.group_descs[idx];
+        
+        // 看情况更新 checksum
+        desc.update_checksum(&self.superblock, group_id, None, None);
+        self.group_descs[idx] = desc;
+
+        // 序列化
+        let mut raw_desc_bytes = [0u8; Ext4GroupDesc::EXT4_DESC_SIZE_64BIT];
+        desc.to_disk_bytes(&mut raw_desc_bytes);
+
+
+        block_dev.read_block(block_num as u32)?;
+        let buffer = block_dev.buffer_mut();
+        // 安全检查，确保不会越界写块
+        if end > buffer.len() {
+            return Err(BlockDevError::Corrupted);
+        }
+
+        buffer[in_block..end].copy_from_slice(&raw_desc_bytes[..desc_size]);
+        // 直接写回磁盘，确保数据一致
+        block_dev.write_block(block_num as u32, true)?;
+        Ok(())
+    }
+
 
 
     /// 同步文件系统所有数据到磁盘
@@ -61,25 +111,26 @@ impl Ext4FileSystem {
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
     ) -> BlockDevResult<()> {
-        debug!("Syncing filesystem...");
-
-        // 同步超级块
-        info!("Writing back superblock...");
-            self.sync_superblock(block_dev)?;
-        info!("Superblock updated");
-        // 同步块组描述符
-        info!("Writing back group descriptors...");
-        self.sync_group_descriptors(block_dev)?;
+        info!("Syncing filesystem...");
+        // 同步datablock缓存
+        self.datablock_cache.flush_all(block_dev)?;
+        info!("Data block cache flushed");
+        // 同步inode表缓存
+        self.inodetable_cahce.flush_all(block_dev)?;
+        info!("Inode table cache flushed");
         // 同步位图缓存
         info!("Flushing bitmap cache...");
         self.bitmap_cache.flush_all(block_dev)?;
         info!("Bitmap cache flushed");
-        // 同步inode表缓存
-        self.inodetable_cahce.flush_all(block_dev)?;
-        info!("Inode table cache flushed");
-        // 同步datablock缓存
-        self.datablock_cache.flush_all(block_dev)?;
-        info!("Data block cache flushed");
+        info!("Superblock updated");
+        // 同步块组描述符
+        info!("Writing back group descriptors...");
+        self.sync_group_descriptors(block_dev)?;
+        // 同步超级块
+        info!("Writing back superblock...");
+            self.sync_superblock(block_dev)?;
+        // 刷新块设备缓存回磁盘
+        block_dev.cantflush()?;
         Ok(())
         
         
@@ -109,10 +160,7 @@ impl Ext4FileSystem {
         let bitmap_block = desc.inode_bitmap();
         let cache_key = CacheKey::new_inode(group_idx);
 
-        let bitmap = match self
-            .bitmap_cache
-            .get_or_load(device, cache_key, bitmap_block)
-        {
+        let bitmap = match self.bitmap_cache.get_or_load(device, cache_key, bitmap_block) {
             Ok(b) => b,
             Err(e) => {
                 warn!(
@@ -121,6 +169,18 @@ impl Ext4FileSystem {
                 return false;
             }
         };
+
+        if ext4_superblock_has_metadata_csum(&self.superblock) && !desc.is_inode_bitmap_uninit() {
+            let expected = ext4_inode_bitmap_csum32(&self.superblock, &bitmap.data);
+            let stored = desc.inode_bitmap_csum();
+            if expected != stored {
+                warn!(
+                    "inode_num_already_allocted: inode bitmap checksum mismatch group={} expected={} stored={} (treat as not allocated)",
+                    group_idx, expected, stored
+                );
+                return false;
+            }
+        }
 
         let bm = InodeBitmap::new(&bitmap.data, self.superblock.s_inodes_per_group);
         match bm.is_allocated(inode_in_group) {
@@ -225,6 +285,8 @@ impl Ext4FileSystem {
         // 1. 读取超级块（按 ext4 标准偏移 1024 字节，大小 1024 字节）
         let superblock = read_superblock(block_dev).map_err(|_| RSEXT4Error::IoError)?;
 
+        
+
         // 2. 验证魔数
         if superblock.s_magic != EXT4_SUPER_MAGIC {
             error!(
@@ -241,11 +303,21 @@ impl Ext4FileSystem {
           //  return Err(RSEXT4Error::FilesystemHasErrors);
         }
 
+        // 3.1 校验超级块checksum
+        superblock.verify_superblock()?;
+
+        // 3.2 检查特性
+        if !superblock.is_all_feature_supported() {
+            warn!("Unsupported features detected");
+            // 通常不支持的特性会导致挂载失败
+            return Err(RSEXT4Error::UnsupportedFeature);
+        }
+
         // 4. 计算块组数量
         let group_count = superblock.block_groups_count();
         debug!("Block group count: {group_count}");
 
-        // 5. 读取所有块组描述符
+        // 5. 读取所有块组描述符 并且验证每个块组描述符的 checksum
         let group_descs =
             Self::load_group_descriptors(block_dev, group_count)?;
         debug!("Loaded {} group descriptors", group_descs.len());
@@ -420,6 +492,29 @@ impl Ext4FileSystem {
                 .get_or_load(block_dev, data_cache_key, data_bitmap_blk as u64)
                 .map_err(|e| {error!("mount: load block bitmap failed ino={} err={:?} ({})", data_bitmap_blk, e, e);RSEXT4Error::IoError})?;
 
+            if ext4_superblock_has_metadata_csum(&fs.superblock)
+            {
+                if !g0.is_inode_bitmap_uninit() {
+                    let expected_inode =
+                        ext4_inode_bitmap_csum32(&fs.superblock, &inode_bitmap_data.data);
+                    let stored_inode = g0.inode_bitmap_csum();
+                    if expected_inode != stored_inode {
+                        error!("Inode bitmap checksum mismatch group=0 expected={:#x} stored={:#x}", expected_inode, stored_inode);
+                        return Err(RSEXT4Error::InvalidSuperblock);
+                    }
+                }
+
+                if !g0.is_block_bitmap_uninit() {
+                    let expected_block =
+                        ext4_block_bitmap_csum32(&fs.superblock, &blockbitmap_data.data);
+                    let stored_block = g0.block_bitmap_csum();
+                    if expected_block != stored_block {
+                        error!("Block bitmap checksum mismatch group=0 expected={:#x} stored={:#x}", expected_block, stored_block);
+                        return Err(RSEXT4Error::InvalidSuperblock);
+                    }
+                }
+            }
+
             let mut indoe_count: u64 = 0;
             let mut datablock_count: u64 = 0;
             let inode_data_array = &inode_bitmap_data.data;
@@ -478,7 +573,7 @@ impl Ext4FileSystem {
         Ok(fs)
     }
 
-    /// 加载所有块组描述符 顺序性
+    /// 加载所有块组描述符 顺序性 验证每个块组描述符的 checksum
     fn load_group_descriptors<B: BlockDevice>(
         block_dev: &mut Jbd2Dev<B>,
         group_count: u32,
@@ -523,6 +618,9 @@ impl Ext4FileSystem {
             }
 
             let desc = Ext4GroupDesc::from_disk_bytes(&buffer[in_block..end]);
+
+            // 验证每个块组描述符的 checksum
+            desc.verify_checksum(&superblock, group_id);
             group_descs.push(desc);
         }
 
@@ -557,7 +655,7 @@ impl Ext4FileSystem {
     /// 按 ext4 标准布局，将所有块组描述符写回：
     /// GDT 字节流紧跟在超级块之后
     pub fn sync_group_descriptors<B: BlockDevice>(
-        &self,
+        &mut self,
         block_dev: &mut Jbd2Dev<B>,
     ) -> BlockDevResult<()> {
         let total_desc_count = self.group_descs.len();
@@ -575,7 +673,13 @@ impl Ext4FileSystem {
         let mut current_block: Option<u64> = None;
         let mut buffer_snapshot_block: Option<u64> = None;
 
-        for (idx, desc) in self.group_descs.iter().enumerate() {
+        for (idx, desc) in self.group_descs.iter_mut().enumerate() {
+
+            // 更新每个块组描述符的 checksum
+            let group_id = idx as u32;
+            desc.update_checksum(&self.superblock, group_id, None, None);
+            
+
             let byte_offset = gdt_base + idx as u64 * desc_size as u64;
             let block_num = byte_offset / block_size_u64;
             let in_block = (byte_offset % block_size_u64) as usize;
@@ -621,7 +725,7 @@ impl Ext4FileSystem {
     }
 
     /// 同时修改所有需要冗余备份的块组
-    /// 同步超级块到磁盘
+    /// 同步超级块到磁盘 含crc32c校验和计算
     pub fn sync_superblock<B: BlockDevice>(&mut self, block_dev: &mut Jbd2Dev<B>) -> BlockDevResult<()> {
         //同步group_desc 和 super_block计数
         let mut real_free_blocks: u64 = 0;
@@ -633,6 +737,9 @@ impl Ext4FileSystem {
         self.superblock.s_free_blocks_count_lo = (real_free_blocks & 0xFFFFFFFF) as u32;
         self.superblock.s_free_blocks_count_hi = (real_free_blocks >> 32) as u32;
         self.superblock.s_free_inodes_count = real_free_inodes as u32;
+
+        // 更新超级块checksum
+        self.superblock.update_checksum();
 
         write_superblock(block_dev, &self.superblock)
     }
@@ -648,6 +755,7 @@ impl Ext4FileSystem {
     }
 
     /// 使用闭包修改指定 inode，内部自动计算 inode 在磁盘上的位置
+    /// 闭包执行后自动更新 inode checksum（如果启用 metadata_csum）
     pub fn modify_inode<B, F>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
@@ -674,8 +782,19 @@ impl Ext4FileSystem {
             BLOCK_SIZE,
         );
 
+        let sb = self.superblock;
+        let inode_size = sb.s_inode_size as usize;
+        let has_csum = ext4_superblock_has_metadata_csum(&sb);
+
+        let wrapped_f = move |inode: &mut Ext4Inode| {
+            f(inode);
+            if has_csum {
+                ext4_update_inode_checksum(&sb, inode_num, inode.i_generation, inode, inode_size);
+            }
+        };
+
         self.inodetable_cahce
-            .modify(block_dev, inode_num as u64, block_num, offset, f)
+            .modify(block_dev, inode_num as u64, block_num, offset, wrapped_f)
     }
 
     /// 按 inode 号加载 inode（只读），内部自动计算在磁盘上的位置
@@ -740,14 +859,40 @@ impl Ext4FileSystem {
                 "alloc_blocks: candidate group={group_idx} bitmap_block={bitmap_block} starting contiguous allocation of {count} blocks"
             );
 
-            self.bitmap_cache
-                .modify(block_dev, cache_key, bitmap_block, |data| {
+            if ext4_superblock_has_metadata_csum(&self.superblock) && !desc.is_block_bitmap_uninit() {
+                let bm = self.bitmap_cache.get_or_load(block_dev, cache_key, bitmap_block)?;
+                let expected =
+                    ext4_block_bitmap_csum32(&self.superblock, &bm.data);
+                let stored = desc.block_bitmap_csum();
+                if expected != stored {
+                    error!("alloc_blocks: block bitmap csum mismatch group={} expected={:#x} stored={:#x}", group_idx, expected, stored);
+                    return Err(BlockDevError::Corrupted);
+                }
+            }
+
+            self.bitmap_cache.modify(block_dev, cache_key, bitmap_block, |data| {
                     // 这里只修改位图，不直接接触 group_desc / superblock 计数
                     let r = self
                         .block_allocator
                         .alloc_contiguous_blocks(data, group_idx, count);
                     alloc_res = r.map_err(|_| BlockDevError::NoSpace);
                 })?;
+
+            if ext4_superblock_has_metadata_csum(&self.superblock) {
+                let sb = self.superblock;
+                let updated_data = {
+                    let updated = self
+                        .bitmap_cache
+                        .get(&cache_key)
+                        .ok_or(BlockDevError::Corrupted)?;
+                    updated.data.clone()
+                };
+                let desc_mut = self
+                    .get_group_desc_mut(group_idx)
+                    .ok_or(BlockDevError::Corrupted)?;
+                desc_mut.update_checksum(&sb, group_idx, Some(&updated_data), None);
+                self.sync_group_descriptor_if_needed(block_dev, group_idx)?;
+            }
 
             let alloc = alloc_res?;
 
@@ -758,11 +903,16 @@ impl Ext4FileSystem {
                 desc_mut.bg_free_blocks_count_lo = (new_count & 0xFFFF) as u16;
                 desc_mut.bg_free_blocks_count_hi = (new_count >> 16) as u16;
 
+                // 清除 BG_BLOCK_UNINIT 标志（内核 ext4_new_inode 中的行为）
+                desc_mut.bg_flags &= !Ext4GroupDesc::EXT4_BG_BLOCK_UNINIT;
+
                 debug!(
                     "alloc_blocks: group={} free_blocks_count change {} -> {} (allocated {} blocks starting at global={})",
                     group_idx, before, new_count, count, alloc.global_block
                 );
             }
+
+            self.sync_group_descriptor_if_needed(block_dev, group_idx)?;
 
             // 更新超级块
             let sb_before = self.superblock.free_blocks_count();
@@ -826,8 +976,17 @@ impl Ext4FileSystem {
 
             let mut inodes: Vec<u32> = Vec::with_capacity(count as usize);
 
-            self.bitmap_cache
-                .modify(block_dev, cache_key, bitmap_block, |data| {
+            if ext4_superblock_has_metadata_csum(&self.superblock) && !desc.is_inode_bitmap_uninit() {
+                let bm = self.bitmap_cache.get_or_load(block_dev, cache_key, bitmap_block)?;
+                let expected =
+                    ext4_inode_bitmap_csum32(&self.superblock, &bm.data);
+                let stored = desc.inode_bitmap_csum();
+                if expected != stored {
+                    return Err(BlockDevError::Corrupted);
+                }
+            }
+
+            self.bitmap_cache.modify(block_dev, cache_key, bitmap_block, |data| {
                     // 简化实现：在同一块组中循环调用 alloc_inode_in_group，得到 count 个 inode
                     for _ in 0..count {
                         let r = self
@@ -844,16 +1003,52 @@ impl Ext4FileSystem {
                     }
                 })?;
 
+            if ext4_superblock_has_metadata_csum(&self.superblock) {
+                let sb = self.superblock;
+                let updated_data = {
+                    let updated = self
+                        .bitmap_cache
+                        .get(&cache_key)
+                        .ok_or(BlockDevError::Corrupted)?;
+                    updated.data.clone()
+                };
+                let desc_mut = self
+                    .get_group_desc_mut(group_idx)
+                    .ok_or(BlockDevError::Corrupted)?;
+                desc_mut.update_checksum(&sb, group_idx, None, Some(&updated_data));
+                self.sync_group_descriptor_if_needed(block_dev, group_idx)?;
+            }
+
             if inodes.len() as u32 != count {
                 return Err(BlockDevError::NoSpace);
             }
+
+            // 预先提取需要的值，避免借用冲突
+            let ipg = self.superblock.s_inodes_per_group;
+            let max_ino_in_group = inodes.iter().map(|&global| {
+                let (_g, idx) = self.inode_allocator.global_to_group(global);
+                idx
+            }).max().unwrap_or(0);
 
             // 更新块组描述符
             if let Some(desc_mut) = self.get_group_desc_mut(group_idx) {
                 let new_count = desc_mut.free_inodes_count().saturating_sub(count);
                 desc_mut.bg_free_inodes_count_lo = (new_count & 0xFFFF) as u16;
                 desc_mut.bg_free_inodes_count_hi = (new_count >> 16) as u16;
+
+                // 清除 BG_INODE_UNINIT 标志（内核 ext4_new_inode 行为）
+                desc_mut.bg_flags &= !Ext4GroupDesc::EXT4_BG_INODE_UNINIT;
+
+                // 更新 bg_itable_unused：跟踪 inode 表末尾连续未使用的 inode 数
+                let used = ipg.saturating_sub(desc_mut.itable_unused());
+                if max_ino_in_group >= used {
+                    let new_unused = ipg.saturating_sub(max_ino_in_group + 1);
+                    desc_mut.bg_itable_unused_lo = (new_unused & 0xFFFF) as u16;
+                    desc_mut.bg_itable_unused_hi = (new_unused >> 16) as u16;
+                }
             }
+
+            self.sync_group_descriptor_if_needed(block_dev, group_idx)?;
 
             // 更新超级块
             self.superblock.s_free_inodes_count =
@@ -871,12 +1066,21 @@ impl Ext4FileSystem {
     }
 
     /// 在整个文件系统中分配一个 inode（兼容旧接口）
+    /// 分配后自动将 i_generation 自增，确保复用的 inode 号有不同的 generation
     pub fn alloc_inode<B: BlockDevice>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
     ) -> BlockDevResult<u32> {
         let mut v = self.alloc_inodes(block_dev, 1)?;
-        Ok(v.pop().unwrap())
+        let ino = v.pop().unwrap();
+        // 清零整个 inode（磁盘上可能有残留数据），然后设置新的 i_generation
+        self.modify_inode(block_dev, ino, |td| {
+            let old_gen = td.i_generation;
+            *td = Ext4Inode::default();
+            td.i_generation = old_gen.wrapping_add(1);
+            td.i_extra_isize = 32;
+        })?;
+        Ok(ino)
     }
 
     /// 根据全局物理块号释放一个数据块
@@ -903,8 +1107,22 @@ impl Ext4FileSystem {
         // Treat AlreadyFree as a no-op.
         let mut free_ok = Ok(());
         let mut did_free = true;
-        self.bitmap_cache
-            .modify(block_dev, cache_key, bitmap_block, |data| {
+
+        if ext4_superblock_has_metadata_csum(&self.superblock) {
+            let (uninit, stored) = {
+                let gdesc = self.get_group_desc(group_idx).ok_or(BlockDevError::Corrupted)?;
+                (gdesc.is_block_bitmap_uninit(), gdesc.block_bitmap_csum())
+            };
+            if !uninit {
+                let bm = self.bitmap_cache.get_or_load(block_dev, cache_key, bitmap_block)?;
+                let expected = ext4_block_bitmap_csum32(&self.superblock, &bm.data);
+                if expected != stored {
+                    return Err(BlockDevError::Corrupted);
+                }
+            }
+        }
+
+        self.bitmap_cache.modify(block_dev, cache_key, bitmap_block, |data| {
                 free_ok = match self.block_allocator.free_block(data, block_in_group) {
                     Ok(()) => Ok(()),
                     Err(crate::ext4_backend::bmalloc::AllocError::BitmapError(
@@ -916,6 +1134,23 @@ impl Ext4FileSystem {
                     Err(_) => Err(BlockDevError::Corrupted),
                 };
             })?;
+
+            if ext4_superblock_has_metadata_csum(&self.superblock)
+        {
+            let sb = self.superblock;
+            let updated_data = {
+                let updated = self
+                    .bitmap_cache
+                    .get(&cache_key)
+                    .ok_or(BlockDevError::Corrupted)?;
+                updated.data.clone()
+            };
+            let desc_mut = self
+                .get_group_desc_mut(group_idx)
+                .ok_or(BlockDevError::Corrupted)?;
+            desc_mut.update_checksum(&sb, group_idx, Some(&updated_data), None);
+            self.sync_group_descriptor_if_needed(block_dev, group_idx)?;
+        }
         free_ok?;
 
         if !did_free {
@@ -929,6 +1164,8 @@ impl Ext4FileSystem {
         let new_count = before.saturating_add(1);
         desc.bg_free_blocks_count_lo = (new_count & 0xFFFF) as u16;
         desc.bg_free_blocks_count_hi = (new_count >> 16) as u16;
+
+        self.sync_group_descriptor_if_needed(block_dev, group_idx)?;
 
         // 更新超级块 free_blocks_count
         self.superblock.s_free_blocks_count_lo =
@@ -958,8 +1195,23 @@ impl Ext4FileSystem {
 
         let mut free_ok = Ok(());
         let mut did_free = true;
-        self.bitmap_cache
-            .modify(block_dev, cache_key, bitmap_block, |data| {
+
+        if ext4_superblock_has_metadata_csum(&self.superblock)
+        {
+            let (uninit, stored) = {
+                let gdesc = self.get_group_desc(group_idx).ok_or(BlockDevError::Corrupted)?;
+                (gdesc.is_inode_bitmap_uninit(), gdesc.inode_bitmap_csum())
+            };
+            if !uninit {
+                let bm = self.bitmap_cache.get_or_load(block_dev, cache_key, bitmap_block)?;
+                let expected = ext4_inode_bitmap_csum32(&self.superblock, &bm.data);
+                if expected != stored {
+                    return Err(BlockDevError::Corrupted);
+                }
+            }
+        }
+
+        self.bitmap_cache.modify(block_dev, cache_key, bitmap_block, |data| {
                 free_ok = match self.inode_allocator.free_inode(data, inode_in_group) {
                     Ok(()) => Ok(()),
                     Err(crate::ext4_backend::bmalloc::AllocError::BitmapError(
@@ -971,6 +1223,23 @@ impl Ext4FileSystem {
                     Err(_) => Err(BlockDevError::Corrupted),
                 };
             })?;
+
+        if ext4_superblock_has_metadata_csum(&self.superblock)
+        {
+            let sb = self.superblock;
+            let updated_data = {
+                let updated = self
+                    .bitmap_cache
+                    .get(&cache_key)
+                    .ok_or(BlockDevError::Corrupted)?;
+                updated.data.clone()
+            };
+            let desc_mut = self
+                .get_group_desc_mut(group_idx)
+                .ok_or(BlockDevError::Corrupted)?;
+            desc_mut.update_checksum(&sb, group_idx, None, Some(&updated_data));
+            self.sync_group_descriptor_if_needed(block_dev, group_idx)?;
+        }
         free_ok?;
 
         if !did_free {
@@ -986,10 +1255,17 @@ impl Ext4FileSystem {
         desc.bg_free_inodes_count_lo = (new_count & 0xFFFF) as u16;
         desc.bg_free_inodes_count_hi = (new_count >> 16) as u16;
 
+        self.sync_group_descriptor_if_needed(block_dev, group_idx)?;
+
         // 更新超级块 free_inodes_count
         self.superblock.s_free_inodes_count = self.superblock.s_free_inodes_count.saturating_add(1);
         // 真正清空inodetable 大坑....，free_inode必须清空inodetable。不然e2fsck会捣蛋
-        self.modify_inode(block_dev, inode_num, |td| *td = Ext4Inode::default())?;
+        // 保留 i_generation：删除后复用时 checksum 能检测到 inode 换代
+        self.modify_inode(block_dev, inode_num, |td| {
+            let old_gen = td.i_generation;
+            *td = Ext4Inode::default();
+            td.i_generation = old_gen;
+        })?;
         Ok(())
     }
 
@@ -1247,8 +1523,8 @@ pub fn mkfs<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) -> BlockDevResult<()> {
     let mut descs: VecDeque<Ext4GroupDesc> = VecDeque::new();
     //为superblock写入gdt（全部标记为UNINIT）
     for group_id in 0..total_groups {
-        let desc = build_uninit_group_desc(&superblock, group_id, &layout);
-        write_group_desc(block_dev, group_id, &desc)?;
+        let mut desc = build_uninit_group_desc(&superblock, group_id, &layout);
+        write_group_desc(block_dev, group_id, &mut desc)?;
         descs.push_back(desc);
     }
     //为其它块组选择性的写入冗余备份desc
@@ -1262,6 +1538,11 @@ pub fn mkfs<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) -> BlockDevResult<()> {
     // 初始化其它块组的位图（全部视为空闲）
     initialize_other_groups_bitmaps(block_dev, &layout, &superblock)?;
 
+    // 先写一轮 group desc（bitmap 初始化后的初始 checksum）
+    for group_id in 0..total_groups {
+        write_group_desc(block_dev, group_id, &mut descs[group_id as usize])?;
+    }
+
     //通过一次挂载/卸载流程，让根目录在 mkfs 阶段就被真正创建并写回磁盘
     // 注意：此时日志仍然关闭，等真正挂载时再开启 JBD2
     {
@@ -1271,6 +1552,7 @@ pub fn mkfs<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) -> BlockDevResult<()> {
         })?;
         fs.umount(block_dev)?;
     }
+
 
     //  验证：读回超级块检查魔数
     let verify_sb = read_superblock(block_dev)?;
@@ -1294,6 +1576,7 @@ pub fn mkfs<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) -> BlockDevResult<()> {
 fn build_superblock(total_blocks: u64, layout: &FsLayoutInfo) -> Ext4Superblock {
     let mut sb = Ext4Superblock::default();
 
+    
     // 魔数
     sb.s_magic = EXT4_SUPER_MAGIC;
 
@@ -1368,6 +1651,17 @@ fn build_superblock(total_blocks: u64, layout: &FsLayoutInfo) -> Ext4Superblock 
     sb.s_desc_size = layout.desc_size;
     // 预留的 GDT 块数（仅 mkfs 默认值，挂载时应相信磁盘中的值）
     sb.s_reserved_gdt_blocks = layout.reserved_gdt_blocks as u16;
+    // 校验和类型
+    sb.s_checksum_type = if ext4_superblock_has_metadata_csum(&sb) {
+        1 // CRC32C
+    } else {
+        0
+    } ;
+
+
+    // checksum
+    sb.update_checksum();
+    
 
     sb
 }
@@ -1418,6 +1712,7 @@ fn build_uninit_group_desc(
     desc.bg_used_dirs_count_hi = 0;
     desc.bg_flags = 0;
 
+    desc.update_checksum(sb, group_id, None, None);
     desc
 }
 
@@ -1565,7 +1860,7 @@ fn write_gdt_redundant_backup<B: BlockDevice>(
 fn write_group_desc<B: BlockDevice>(
     block_dev: &mut Jbd2Dev<B>,
     group_id: u32,
-    desc: &Ext4GroupDesc,
+    desc: &mut Ext4GroupDesc,
 ) -> BlockDevResult<()> {
     // 读取超级块以确定块组描述符大小
     let superblock = read_superblock(block_dev)?;
@@ -1579,12 +1874,24 @@ fn write_group_desc<B: BlockDevice>(
     let in_block = (byte_offset % block_size_u64) as usize;
     let end = in_block + desc_size;
 
+
+    // 读取块的bitmap,计算校验和，更新描述符中的校验和字段
+    let inode_bitmap_blk = desc.inode_bitmap() as u32;
+    block_dev.read_block(inode_bitmap_blk)?;
+    let inode_bitmap_bytes = block_dev.buffer().to_vec();
+    let block_bitmap_blk = desc.block_bitmap() as u32;
+    block_dev.read_block(block_bitmap_blk)?;
+    let block_bitmap_bytes = block_dev.buffer().to_vec();
+    desc.update_checksum(&superblock, group_id, Some(&block_bitmap_bytes), Some(&inode_bitmap_bytes));
+
     // 读取目标块，修改对应 slice，再写回
     block_dev.read_block(block_num as u32)?;
     let buffer = block_dev.buffer_mut();
     if end > buffer.len() {
         return Err(BlockDevError::Corrupted);
     }
+
+
     desc.to_disk_bytes(&mut buffer[in_block..end]);
     block_dev.write_block(block_num as u32, true)?;
 
@@ -1610,7 +1917,7 @@ fn initialize_group_0<B: BlockDevice>(
             let byte_idx = i / 8;
             let bit_idx = i % 8;
             buffer[byte_idx] |= 1 << bit_idx;
-        }
+        }   
     }
     block_dev.write_block(block_bitmap_blk, true)?;
 
@@ -1654,7 +1961,7 @@ fn initialize_group_0<B: BlockDevice>(
     desc.bg_inode_bitmap_lo = inode_bitmap_blk;
     desc.bg_inode_table_lo = inode_table_blk;
 
-    write_group_desc(block_dev, 0, &desc)?;
+    write_group_desc(block_dev, 0, &mut desc)?;
 
     Ok(())
 }

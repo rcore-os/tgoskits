@@ -154,7 +154,7 @@ fn main() {
 
     // 简单地创建一个 8G 的镜像文件
     let blocks: u64 = (8192u64 * 1024 * 1024) / (BLOCK_SIZE as u64);
-    let img_path = "ext4.img";
+    let img_path = "ext4_meta.img";
 
     info!(
         "使用宿主机文件作为块设备: {img_path} (blocks={blocks}, block_size={BLOCK_SIZE})"
@@ -171,8 +171,8 @@ fn main() {
     // 包一层 Jbd2Dev，开启 journal
     let mut jbd = Jbd2Dev::initial_jbd2dev(0, host_dev, false);
 
-    info!("=== 测试 Ext4 mkfs ===");
-    test_mkfs(&mut jbd);
+    //info!("=== 测试 Ext4 mkfs ===");
+    //_test_mkfs(&mut jbd);
 
 
 

@@ -1,6 +1,11 @@
 use crate::ext4_backend::config::*;
 use crate::ext4_backend::endian::*;
+use log::error;
 use crate::ext4_backend::jbd2::jbdstruct::*;
+use crate::ext4_backend::checksum::ext4_superblock_csum32;
+use crate::ext4_backend::crc32c::ext4_superblock_has_metadata_csum;
+use crate::ext4_backend::checksum::ext4_update_superblock_checksum;
+use crate::RSEXT4Error;
 ///UUID
 pub struct UUID(pub [u32; 4]);
 
@@ -265,6 +270,27 @@ impl Ext4Superblock {
         self.s_magic == Self::EXT4_SUPER_MAGIC
     }
 
+
+    // 更新自己的checksum字段
+    pub fn update_checksum(&mut self) {
+        if ext4_superblock_has_metadata_csum(self) {
+            ext4_update_superblock_checksum(self);
+        }
+    }
+
+    // 验证checksum（如果ext4带metachecksum）
+    pub fn verify_superblock(&self) ->Result<Self, RSEXT4Error>{
+        if ext4_superblock_has_metadata_csum(self) {
+            let orign_checksum = self.s_checksum;
+            let verify_checksum = ext4_superblock_csum32(self);
+            if orign_checksum != verify_checksum {
+                error!("Superblock checksum verification failed: original {:08x}, calculated {:08x}", orign_checksum, verify_checksum);
+                return Err(RSEXT4Error::InvalidSuperblockChecksum);
+            }
+        }
+        Ok(*self)
+    }
+
     /// 获取块大小（字节）
     pub fn block_size(&self) -> u64 {
         1024 << self.s_log_block_size
@@ -340,6 +366,11 @@ impl Ext4Superblock {
         } else {
             (inodes_per_group * inode_size).div_ceil(block_size)
         }
+    }
+
+    /// 是兼容所有特性
+    pub fn is_all_feature_supported(&self) -> bool {
+        true
     }
 
     /// 判断兼容特性是否启用

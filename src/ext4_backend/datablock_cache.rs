@@ -191,17 +191,35 @@ impl DataBlockCache {
         let cached = self.get_or_load_mut(block_dev, block_num)?;
         f(&mut cached.data);
         cached.mark_dirty();
+
+        if !USE_MULTILEVEL_CACHE {
+            Self::write_block_static(block_dev, cached.block_num, &cached.data)?;
+            cached.dirty = false;
+        }
         Ok(())
     }
 
     /// 为新分配的数据块提供基于闭包的初始化接口
-    pub fn modify_new<F>(&mut self, block_num: u64, f: F)
+    pub fn modify_new<B, F>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+        block_num: u64,
+        f: F,
+    ) -> BlockDevResult<()>
     where
+        B: BlockDevice,
         F: FnOnce(&mut [u8]),
     {
         let cached = self.create_new(block_num);
         f(&mut cached.data);
         cached.mark_dirty();
+
+        if !USE_MULTILEVEL_CACHE {
+            Self::write_block_static(block_dev, cached.block_num, &cached.data)?;
+            cached.dirty = false;
+        }
+
+        Ok(())
     }
 
     /// LRU淘汰：找到最久未访问的并写回（如果脏）

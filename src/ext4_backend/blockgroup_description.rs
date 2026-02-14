@@ -1,5 +1,9 @@
-use crate::ext4_backend::endian::*;
+use log::error;
 
+use crate::ext4_backend::{endian::*};
+use crate::ext4_backend::crc32c::ext4_superblock_has_metadata_csum;
+use crate::ext4_backend::checksum::{ext4_group_desc_csum16, ext4_block_bitmap_csum32, ext4_inode_bitmap_csum32};
+use crate::ext4_backend::superblock::Ext4Superblock;
 /// Ext4 块组描述符结构
 /// 块组描述符包含了块组的元数据信息，如位图位置、inode表位置等
 /// 每个块组都有一个对应的块组描述符
@@ -44,6 +48,67 @@ impl Ext4GroupDesc {
 
     /// 64位块组描述符大小（64字节）
     pub const EXT4_DESC_SIZE_64BIT: usize = 64;
+
+
+    /// 更新GDT的checksum字段
+    /// 可选传入 block/inode 位图数据，一并更新 bitmap checksum 字段后再算 GDT 自身 checksum
+    pub fn update_checksum(
+        &mut self,
+        superblock: &Ext4Superblock,
+        group_id: u32,
+        block_bitmap: Option<&[u8]>,
+        inode_bitmap: Option<&[u8]>,
+    ) {
+        if !ext4_superblock_has_metadata_csum(superblock) {
+            return;
+        }
+
+        if let Some(bm) = block_bitmap {
+            let csum = ext4_block_bitmap_csum32(superblock, bm);
+            self.bg_block_bitmap_csum_lo = (csum & 0xFFFF) as u16;
+            self.bg_block_bitmap_csum_hi = ((csum >> 16) & 0xFFFF) as u16;
+        }
+        if let Some(bm) = inode_bitmap {
+            let csum = ext4_inode_bitmap_csum32(superblock, bm);
+            self.bg_inode_bitmap_csum_lo = (csum & 0xFFFF) as u16;
+            self.bg_inode_bitmap_csum_hi = ((csum >> 16) & 0xFFFF) as u16;
+        }
+
+        // ext4 约定：计算 checksum 时，校验字段自身必须当作 0
+        let mut desc_for_csum = *self;
+        desc_for_csum.bg_checksum = 0;
+
+        // 参与校验的字节范围由 superblock 的 desc_size 决定（通常 32 或 64）
+        let desc_size = superblock.get_desc_size() as usize;
+        let desc_size = core::cmp::min(desc_size, Ext4GroupDesc::EXT4_DESC_SIZE_64BIT);
+
+        let mut raw_desc_bytes = [0u8; Ext4GroupDesc::EXT4_DESC_SIZE_64BIT];
+        desc_for_csum.to_disk_bytes(&mut raw_desc_bytes);
+        self.bg_checksum = ext4_group_desc_csum16(superblock, group_id, &raw_desc_bytes[..desc_size]);
+    }
+
+    /// 验证GDT checksum. 通过true返回验证成功, 否则返回false.
+    pub fn verify_checksum(&self, superblock: &Ext4Superblock, group_id: u32){
+        if !ext4_superblock_has_metadata_csum(superblock) {
+            return; // 如果没有启用 metadata_csum，则跳过校验
+        }
+
+        // 计算 checksum 时，校验字段自身必须当作 0
+        let mut desc_for_csum = *self;
+        desc_for_csum.bg_checksum = 0;
+
+        // 参与校验的字节范围由 superblock 的 desc_size 决定（通常 32 或 64）
+        let desc_size = superblock.get_desc_size() as usize;
+        let desc_size = core::cmp::min(desc_size, Ext4GroupDesc::EXT4_DESC_SIZE_64BIT);
+
+        let mut raw_desc_bytes = [0u8; Ext4GroupDesc::EXT4_DESC_SIZE_64BIT];
+        desc_for_csum.to_disk_bytes(&mut raw_desc_bytes);
+        if ext4_group_desc_csum16(superblock, group_id, &raw_desc_bytes[..desc_size]) != self.bg_checksum {
+            error!("Group descriptor checksum mismatch for group {}: expected {:04x}, got {:04x}", group_id, self.bg_checksum, ext4_group_desc_csum16(superblock, group_id, &raw_desc_bytes[..desc_size]));
+            panic!("GDT checksum verification failed for group {}", group_id);
+        }
+        
+    }
 
     /// 获取块位图块号（64位）
     pub fn block_bitmap(&self) -> u64 {

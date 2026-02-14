@@ -54,6 +54,8 @@ pub struct Ext4Inode {
 }
 
 impl Ext4Inode {
+
+
     /// 写入初始extend header便捷函数
     pub fn write_extend_header(&mut self) {
         let per_extent_header_offset = Ext4ExtentHeader::disk_size();
@@ -414,15 +416,15 @@ impl DiskFormat for Ext4Inode {
             l_i_gid_high: read_u16_le(&bytes[122..124]),
             l_i_checksum_lo: read_u16_le(&bytes[124..126]),
             l_i_reserved: read_u16_le(&bytes[126..128]),
-            i_extra_isize: 0,
-            i_checksum_hi: 0,
-            i_ctime_extra: 0,
-            i_mtime_extra: 0,
-            i_atime_extra: 0,
-            i_crtime: 0,
-            i_crtime_extra: 0,
-            i_version_hi: 0,
-            i_projid: 0,
+            i_extra_isize: read_u16_le(&bytes[128..130]), // 大inode的额外大小，默认为0表示没有额外字段
+            i_checksum_hi: read_u16_le(&bytes[130..132]), // 大inode的校验和高16位，默认为0
+            i_ctime_extra: read_u32_le(&bytes[132..136]), // 大inode的额外状态改变时间，默认为0
+            i_mtime_extra: read_u32_le(&bytes[136..140]), // 大inode的额外修改时间，默认为0
+            i_atime_extra: read_u32_le(&bytes[140..144]), // 大inode的额外访问时间，默认为0
+            i_crtime: read_u32_le(&bytes[144..148]),      // 大inode的创建时间，默认为0
+            i_crtime_extra: read_u32_le(&bytes[148..152]),// 大inode的额外创建时间，默认为0
+            i_version_hi: read_u32_le(&bytes[152..156]),  // 大inode的版本号高32位，默认为0
+            i_projid: read_u32_le(&bytes[156..160]),      // 大inode的项目ID，默认为0
         };
 
         // 读取i_block数组
