@@ -1,14 +1,10 @@
 use crate::BLOCK_SIZE;
-use crate::ext4_backend::crc32c::{
-    crc32c_append, crc32c_init, ext4_crc32c_seed_from_superblock, ext4_superblock_has_metadata_csum,
-};
-use crate::ext4_backend::crc32c::crc32c;
 use crate::ext4_backend::disknode::Ext4Inode;
 use crate::ext4_backend::entries::Ext4DirEntryTail;
 use crate::ext4_backend::endian::DiskFormat;
 use crate::ext4_backend::jbd2::jbdstruct::JournalSuperBllockS;
 use crate::ext4_backend::superblock::Ext4Superblock;
-
+use crate::ext4_backend::crc32c::crc32c::*;
 extern crate alloc;
 
 /// 计算 ext4 `metadata_csum` 使用的 CRC32C（32位）。

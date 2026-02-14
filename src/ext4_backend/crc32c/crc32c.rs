@@ -1,4 +1,7 @@
 // crc32c.rs
+#[cfg(target_arch = "aarch64")]
+#[allow(dead_code)]
+use crate::ext4_backend::crc32c::arm64::*;
 
 use crate::ext4_backend::superblock::Ext4Superblock;
 
@@ -53,6 +56,16 @@ pub fn crc32c_finalize(crc: u32) -> u32 {
 
 #[inline]
 pub fn crc32c_append(crc: u32, data: &[u8]) -> u32 {
+    // aarch64 架构的crc32c硬件加速
+    #[cfg(target_arch = "aarch64")]
+    {
+        if *HARDWARE_SUPPORT_CRC32 {
+             return unsafe { crc32c_hardware(crc, data) };
+            
+        }
+        
+    }
+
     crc32c_update(crc, data)
 }
 

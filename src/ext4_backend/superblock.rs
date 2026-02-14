@@ -3,7 +3,7 @@ use crate::ext4_backend::endian::*;
 use log::error;
 use crate::ext4_backend::jbd2::jbdstruct::*;
 use crate::ext4_backend::checksum::ext4_superblock_csum32;
-use crate::ext4_backend::crc32c::ext4_superblock_has_metadata_csum;
+use crate::ext4_backend::crc32c::crc32c::ext4_superblock_has_metadata_csum;
 use crate::ext4_backend::checksum::ext4_update_superblock_checksum;
 use crate::RSEXT4Error;
 ///UUID

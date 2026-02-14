@@ -8,7 +8,7 @@ use crate::ext4_backend::blockdev::*;
 use crate::ext4_backend::blockgroup_description::*;
 use crate::ext4_backend::bmalloc::*;
 use crate::ext4_backend::config::*;
-use crate::ext4_backend::crc32c::ext4_superblock_has_metadata_csum;
+use crate::ext4_backend::crc32c::crc32c::ext4_superblock_has_metadata_csum;
 use crate::ext4_backend::datablock_cache::*;
 use crate::ext4_backend::dir::*;
 use crate::ext4_backend::disknode::*;

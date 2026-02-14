@@ -25,6 +25,9 @@ be_run: be_build
 rv64_run:
 	@$(MAKE) -f Makefile.rv64 run
 
+arm64_run:
+	@$(MAKE) -f Makefile.arm64 run LOG=warn
+
 # 清理
 clean:
 	@cargo clean
