@@ -1,15 +1,15 @@
  # rsext4
 
 
-### 注意！！rsext4使用多级缓存来提升读写性能,写操作只修改内存缓存，不会立即写入磁盘。在需要确保所有数据已经实际写入磁盘的时机前，请调用
+### 注意！！在开启 **USE_MULTILEVEL_CACHE**(使用多级缓存,默认开启!)feature的情况rsext4 使用多级缓存来提升读写性能,写操作只修改内存缓存，不会立即写入磁盘。在需要确保所有数据已经实际写入磁盘的时机前，请调用
  ```rust
         // 同步所有缓存数据到磁盘
         self.sync_filesystem(block_dev)?;
-
  ```
+ ### 不需要多级缓存的特殊情况可以在```Cargo.toml```关闭掉**USE_MULTILEVEL_CACHE** feature来禁用多级缓存
 
  
- **如何使用**。
+ **如何使用rsext4**。
  
  ## 1. 接入块设备（实现 `BlockDevice` trait）
  

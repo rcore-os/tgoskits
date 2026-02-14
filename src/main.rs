@@ -171,8 +171,8 @@ fn main() {
     // 包一层 Jbd2Dev，开启 journal
     let mut jbd = Jbd2Dev::initial_jbd2dev(0, host_dev, false);
 
-    //info!("=== 测试 Ext4 mkfs ===");
-    //_test_mkfs(&mut jbd);
+    info!("=== 测试 Ext4 mkfs ===");
+    _test_mkfs(&mut jbd);
 
 
 
