@@ -56,12 +56,12 @@ bitflags = "2.10"
 bytemuck = { version = "1.23", features = ["unsound_ptr_pod_impl"] }
 cfg-if = "1.0"
 event-listener = { version = "5.4.0", default-features = false }
-extern-trait = "0.2"
+extern-trait = "0.4"
 hashbrown = "0.16"
 kspin = "0.1"
 lazy_static = { version = "1.5", features = ["spin_no_std"] }
 linkme = "0.3.33"
-linux-raw-sys = { version = "0.11", default-features = false, features = [
+linux-raw-sys = { version = "0.12", default-features = false, features = [
     "no_std",
     "general",
     "net",
@@ -73,8 +73,8 @@ scope-local = "0.1"
 slab = { version = "0.4.9", default-features = false }
 spin = "0.10"
 starry-process = "0.2"
-starry-signal = "0.2.4-preview.1"
-starry-vm = "0.2"
+starry-signal = "0.3"
+starry-vm = "0.3"
 
 starry-core = { path = "./core" }
 starry-api = { path = "./api" }

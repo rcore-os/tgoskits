@@ -50,10 +50,7 @@ linkme.workspace = true
 linux-raw-sys = { workspace = true, features = ["ioctl", "loop_device"] }
 memory_addr.workspace = true
 num_enum = { version = "0.7", default-features = false }
-rand = { version = "0.9.1", default-features = false, features = [
-    "alloc",
-    "small_rng",
-] }
+rand = { version = "0.10", default-features = false, features = ["alloc"] }
 ringbuf = { version = "0.4.8", default-features = false, features = ["alloc"] }
 scope-local.workspace = true
 slab.workspace = true
@@ -70,4 +67,4 @@ starry-core.workspace = true
 x86 = "0.52"
 
 [target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64"))'.dependencies]
-riscv = "0.14"
+riscv = "0.16"

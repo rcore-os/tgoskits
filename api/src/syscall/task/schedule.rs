@@ -87,7 +87,7 @@ pub fn sys_clock_nanosleep(
 }
 
 pub fn sys_sched_getaffinity(pid: i32, cpusetsize: usize, user_mask: *mut u8) -> AxResult<isize> {
-    if cpusetsize * 8 < axconfig::plat::CPU_NUM {
+    if cpusetsize * 8 < axhal::cpu_num() {
         return Err(AxError::InvalidInput);
     }
 
@@ -109,11 +109,11 @@ pub fn sys_sched_setaffinity(
     cpusetsize: usize,
     user_mask: *const u8,
 ) -> AxResult<isize> {
-    let size = cpusetsize.min(axconfig::plat::CPU_NUM.div_ceil(8));
+    let size = cpusetsize.min(axhal::cpu_num().div_ceil(8));
     let user_mask = vm_load(user_mask, size)?;
     let mut cpu_mask = AxCpuMask::new();
 
-    for i in 0..(size * 8).min(axconfig::plat::CPU_NUM) {
+    for i in 0..(size * 8).min(axhal::cpu_num()) {
         if user_mask[i / 8] & (1 << (i % 8)) != 0 {
             cpu_mask.set(i, true);
         }

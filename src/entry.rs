@@ -60,7 +60,7 @@ pub fn run_initproc(args: &[String], envs: &[String]) -> i32 {
     }
     let thr = Thread::new(pid, proc_data);
 
-    *task.task_ext_mut() = Some(unsafe { AxTaskExt::from_impl(thr) });
+    *task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
 
     let task = spawn_task(task);
     add_task_to_table(&task);

@@ -220,7 +220,7 @@ pub fn sys_clone(
     if flags.contains(CloneFlags::CHILD_CLEARTID) {
         thr.set_clear_child_tid(child_tid);
     }
-    *new_task.task_ext_mut() = Some(unsafe { AxTaskExt::from_impl(thr) });
+    *new_task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
 
     let task = spawn_task(new_task);
     add_task_to_table(&task);
