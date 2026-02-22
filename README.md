@@ -14,6 +14,8 @@
   - Enables extra methods on `Read`: `read_to_end`, `read_to_string`.
   - Enables extra methods on `BufRead`: `read_until`, `read_line`, `split`, `lines`.
   - Enables implementations of axio traits for `alloc` types like `Vec<u8>`, `Box<T>`, etc.
+  - Enables `BufWriter::with_capacity`. (If `alloc` is disabled, only `BufWriter::new` is available.)
+  - Removes the capacity limit on `BufReader`. (If `alloc` is disabled, `BufReader::with_capacity` will panic if the capacity is larger than a fixed limit.)
 
 ### Differences to `std::io`
 
