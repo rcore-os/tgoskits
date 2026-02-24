@@ -49,7 +49,7 @@ pub trait DisplayDriverOps: BaseDriverOps {
     fn info(&self) -> DisplayInfo;
 
     /// Get the framebuffer.
-    fn fb(&self) -> FrameBuffer;
+    fn fb(&self) -> FrameBuffer<'_>;
 
     /// Whether need to flush the framebuffer to the screen.
     fn need_flush(&self) -> bool;
