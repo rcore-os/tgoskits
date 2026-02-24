@@ -1,7 +1,7 @@
 [package]
 name = "axvm"
 authors = ["aarkegz <aarkegz@gmail.com>"]
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 categories = ["virtualization", "no-std"]
 description = "Virtual Machine resource management crate for ArceOS's hypervisor variant."
@@ -24,8 +24,8 @@ axerrno = "0.2"
 cpumask = "0.1.0"
 # kspin = "0.1.0"
 memory_addr = "0.4"
-page_table_entry = { version = "0.5", features = ["arm-el2"] }
-page_table_multiarch = "0.5"
+page_table_entry = { version = "0.6", features = ["arm-el2"] }
+page_table_multiarch = "0.6"
 percpu = { version = "0.2.0", features = ["arm-el2"] }
 
 # System dependent modules provided by ArceOS-Hypervisor.
