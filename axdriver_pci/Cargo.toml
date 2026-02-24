@@ -2,7 +2,7 @@
 name = "axdriver_pci"
 edition.workspace = true
 description = "Structures and functions for PCI bus operations"
-documentation = "https://arceos-org.github.io/axdriver_crates/axdriver_pci"
+documentation = "https://docs.rs/axdriver_pci"
 keywords = ["arceos", "driver", "pci"]
 version.workspace = true
 authors.workspace = true

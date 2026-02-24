@@ -6,7 +6,7 @@ authors = [
     "ChengXiang Qi <kuangjux@outlook.com>",
 ]
 description = "Common traits and types for network device (NIC) drivers"
-documentation = "https://arceos-org.github.io/axdriver_crates/axdriver_net"
+documentation = "https://docs.rs/axdriver_net"
 keywords = ["arceos", "driver", "nic"]
 version.workspace = true
 license.workspace = true

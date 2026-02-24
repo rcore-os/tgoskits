@@ -2,8 +2,8 @@
 name = "axdriver_virtio"
 edition.workspace = true
 description = "Wrappers of some devices in the `virtio-drivers` crate, that implement traits in the `axdriver_base` series crates"
-documentation = "https://arceos-org.github.io/axdriver_crates/axdriver_virtio"
-keywords = ["arceos", "driver", "vritio"]
+documentation = "https://docs.rs/axdriver_virtio"
+keywords = ["arceos", "driver", "virtio"]
 version.workspace = true
 authors.workspace = true
 license.workspace = true
