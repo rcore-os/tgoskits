@@ -1,6 +1,6 @@
 [package]
 name = "riscv_vcpu"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 authors = [
     "KeYang Hu <keyang.hu@qq.com>",
@@ -36,7 +36,7 @@ tock-registers = "0.9"
 memoffset = { version = ">=0.6.5", features = ["unstable_const"] }
 
 axerrno = "0.1.0"
-page_table_entry = "=0.5.7"
+page_table_entry = "0.6"
 memory_addr = "0.4"
 
 axaddrspace = "0.1.4"
