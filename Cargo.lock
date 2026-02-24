@@ -28,11 +28,11 @@ checksum = "ace50bade8e6234aa140d9a2f552bbee1db4d353f69b8217bc503490fc1a9f26"
 
 [[package]]
 name = "axdriver_base"
-version = "0.1.2"
+version = "0.1.3"
 
 [[package]]
 name = "axdriver_block"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "axdriver_base",
  "bcm2835-sdhci",
@@ -41,14 +41,14 @@ dependencies = [
 
 [[package]]
 name = "axdriver_display"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "axdriver_base",
 ]
 
 [[package]]
 name = "axdriver_net"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "axdriver_base",
  "fxmac_rs",
@@ -59,14 +59,14 @@ dependencies = [
 
 [[package]]
 name = "axdriver_pci"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "virtio-drivers",
 ]
 
 [[package]]
 name = "axdriver_virtio"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "axdriver_base",
  "axdriver_block",
