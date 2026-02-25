@@ -28,6 +28,8 @@ arm-el2 = []
 # on Linux user-space. May reduce performance slightly.
 non-zero-vma = []
 
+custom-base = []
+
 [dependencies]
 cfg-if = "1.0"
 proc-macro2 = "1.0"
