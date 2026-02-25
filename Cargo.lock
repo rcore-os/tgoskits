@@ -18,7 +18,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b5d307320b3181d6d7954e663bd7c774a838b8220fe0593c86d9fb09f498b4b"
 dependencies = [
  "cpp_demangle",
- "gimli 0.32.3",
+ "gimli",
  "rustc-demangle",
 ]
 
@@ -195,7 +195,7 @@ checksum = "bf9566516f5d799b2f791a6ec5af57eec87d17624346f7c876fa006b922c99e6"
 dependencies = [
  "addr2line",
  "cfg-if",
- "gimli 0.32.3",
+ "gimli",
  "log",
  "paste",
  "spin 0.10.0",
@@ -1329,12 +1329,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gimli"
-version = "0.33.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0bf7f043f89559805f8c7cacc432749b2fa0d0a0a9ee46ce47164ed5ba7f126c"
-
-[[package]]
 name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2189,30 +2183,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
-name = "starry"
-version = "0.1.0"
-dependencies = [
- "axdriver",
- "axerrno 0.2.2",
- "axfeat",
- "axfs",
- "axhal",
- "axlog",
- "axplat-riscv64-visionfive2",
- "axruntime",
- "axsync",
- "axtask",
- "cfg-if",
- "linkme",
- "linux-raw-sys",
- "starry-api",
- "starry-core",
- "starry-process",
- "starry-signal",
-]
-
-[[package]]
-name = "starry-api"
+name = "starry-kernel"
 version = "0.1.0"
 dependencies = [
  "axalloc",
@@ -2240,55 +2211,11 @@ dependencies = [
  "chrono",
  "downcast-rs",
  "event-listener",
+ "extern-trait",
  "flatten_objects",
- "gimli 0.33.0",
+ "gimli",
  "hashbrown 0.16.1",
  "indoc",
- "inherit-methods-macro",
- "kspin",
- "lazy_static",
- "linkme",
- "linux-raw-sys",
- "memory_addr",
- "num_enum",
- "rand",
- "ringbuf",
- "riscv 0.16.0",
- "scope-local",
- "slab",
- "spin 0.10.0",
- "starry-core",
- "starry-process",
- "starry-signal",
- "starry-vm",
- "syscalls",
- "x86",
- "zerocopy 0.8.39",
-]
-
-[[package]]
-name = "starry-core"
-version = "0.1.0"
-dependencies = [
- "axbacktrace",
- "axconfig",
- "axerrno 0.2.2",
- "axfeat",
- "axfs",
- "axfs-ng-vfs",
- "axhal",
- "axio",
- "axlog",
- "axmm",
- "axpoll",
- "axsync",
- "axtask",
- "bitflags 2.10.0",
- "bytemuck",
- "cfg-if",
- "event-listener",
- "extern-trait",
- "hashbrown 0.16.1",
  "inherit-methods-macro",
  "kernel-elf-parser",
  "kernel_guard",
@@ -2298,8 +2225,12 @@ dependencies = [
  "linux-raw-sys",
  "lock_api",
  "memory_addr",
+ "num_enum",
  "ouroboros",
  "percpu",
+ "rand",
+ "ringbuf",
+ "riscv 0.16.0",
  "scope-local",
  "slab",
  "spin 0.10.0",
@@ -2307,9 +2238,12 @@ dependencies = [
  "starry-signal",
  "starry-vm",
  "strum",
+ "syscalls",
  "uluru",
  "weak-map",
+ "x86",
  "xmas-elf",
+ "zerocopy 0.8.39",
 ]
 
 [[package]]
@@ -2350,6 +2284,28 @@ dependencies = [
  "axerrno 0.2.2",
  "bytemuck",
  "extern-trait",
+]
+
+[[package]]
+name = "starryos"
+version = "0.1.0"
+dependencies = [
+ "axdriver",
+ "axerrno 0.2.2",
+ "axfeat",
+ "axfs",
+ "axhal",
+ "axlog",
+ "axplat-riscv64-visionfive2",
+ "axruntime",
+ "axsync",
+ "axtask",
+ "cfg-if",
+ "linkme",
+ "linux-raw-sys",
+ "starry-kernel",
+ "starry-process",
+ "starry-signal",
 ]
 
 [[package]]

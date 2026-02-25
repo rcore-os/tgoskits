@@ -7,10 +7,11 @@ use axfs::FS_CONTEXT;
 use axhal::uspace::UserContext;
 use axsync::Mutex;
 use axtask::{AxTaskExt, spawn_task};
-use starry_api::{file::FD_TABLE, task::new_user_task, vfs::dev::tty::N_TTY};
-use starry_core::{
+use starry_kernel::{
+    file::FD_TABLE,
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty},
-    task::{ProcessData, Thread, add_task_to_table},
+    pseudofs::dev::tty::N_TTY,
+    task::{ProcessData, Thread, add_task_to_table, new_user_task},
 };
 use starry_process::{Pid, Process};
 
@@ -55,7 +56,7 @@ pub fn run_initproc(args: &[String], envs: &[String]) -> i32 {
     );
     {
         let mut scope = proc_data.scope.write();
-        starry_api::file::add_stdio(&mut FD_TABLE.scope_mut(&mut scope).write())
+        starry_kernel::file::add_stdio(&mut FD_TABLE.scope_mut(&mut scope).write())
             .expect("Failed to add stdio");
     }
     let thr = Thread::new(pid, proc_data);

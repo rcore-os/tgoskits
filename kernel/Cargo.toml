@@ -1,0 +1,81 @@
+[package]
+name = "starry-kernel"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[features]
+input = ["dep:axinput"]
+memtrack = ["axfeat/dwarf", "axalloc/tracking", "dep:gimli"]
+vsock = ["axnet/vsock"]
+dev-log = []
+
+[dependencies]
+axalloc.workspace = true
+axbacktrace.workspace = true
+axconfig.workspace = true
+axdisplay.workspace = true
+axdriver.workspace = true
+axerrno.workspace = true
+axfeat.workspace = true
+axfs-ng-vfs.workspace = true
+axfs.workspace = true
+axhal.workspace = true
+axinput = { workspace = true, optional = true }
+axio.workspace = true
+axlog.workspace = true
+axmm.workspace = true
+axnet.workspace = true
+axpoll.workspace = true
+axsync.workspace = true
+axtask.workspace = true
+bitflags.workspace = true
+bitmaps = { version = "3.2.1", default-features = false }
+bytemuck = { workspace = true, features = ["derive"] }
+cfg-if.workspace = true
+chrono = { version = "0.4.41", default-features = false }
+downcast-rs = { version = "2.0", default-features = false, features = ["sync"] }
+event-listener.workspace = true
+extern-trait.workspace = true
+flatten_objects = "0.2.4"
+gimli = { version = "*", default-features = false, optional = true }
+hashbrown = { workspace = true }
+indoc = "2"
+inherit-methods-macro = "0.1.0"
+kernel_guard = "0.1"
+kernel-elf-parser = "0.3.4"
+kspin.workspace = true
+lazy_static = { workspace = true }
+linkme.workspace = true
+linux-raw-sys = { workspace = true, features = ["ioctl", "loop_device"] }
+lock_api = { version = "0.4.13", features = ["arc_lock"] }
+memory_addr.workspace = true
+num_enum = { version = "0.7", default-features = false }
+ouroboros = { version = "0.18.5", default-features = false }
+percpu = "0.2.0"
+rand = { version = "0.10", default-features = false, features = ["alloc"] }
+ringbuf = { version = "0.4.8", default-features = false, features = ["alloc"] }
+scope-local.workspace = true
+slab.workspace = true
+spin.workspace = true
+starry-process.workspace = true
+starry-signal.workspace = true
+starry-vm.workspace = true
+strum = { version = "0.27.2", default-features = false, features = ["derive"] }
+syscalls = { version = "0.8.1", default-features = false }
+uluru = "3.1.0"
+weak-map = "0.1.1"
+xmas-elf = "0.9"
+zerocopy = { version = "0.8.26", features = ["derive"] }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+x86 = "0.52"
+
+[target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64"))'.dependencies]
+riscv = "0.16"
+
+[target.'cfg(not(any(target_arch = "aarch64", target_arch = "loongarch64")))'.dependencies]
+axmm = { workspace = true, features = ["copy"] }

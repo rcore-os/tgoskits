@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["api", "core"]
+members = ["kernel"]
 exclude = ["arceos"]
 
 [workspace.package]
@@ -15,8 +15,8 @@ authors = [
     "朝倉水希 <asakuramizu111@gmail.com>",
     "Mivik <mivikq@gmail.com>",
 ]
-homepage = "https://github.com/arceos-org/arceos"
-repository = "https://github.com/arceos-org/starry-next"
+homepage = "https://github.com/Starry-OS"
+repository = "https://github.com/Starry-OS/StarryOS"
 
 [workspace.dependencies]
 axfeat = { path = "arceos/api/axfeat", features = [
@@ -76,11 +76,10 @@ starry-process = "0.2"
 starry-signal = "0.3"
 starry-vm = "0.3"
 
-starry-core = { path = "./core" }
-starry-api = { path = "./api" }
+starry-kernel = { path = "./kernel" }
 
 [package]
-name = "starry"
+name = "starryos"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -93,17 +92,17 @@ default = []
 qemu = [
     "axfeat/display",
     "axfeat/input",
-    "starry-api/input",
+    "starry-kernel/input",
 
     "axfeat/vsock",
-    "starry-api/vsock",
+    "starry-kernel/vsock",
 
     "axfeat/defplat",
     "axfeat/bus-pci",
 
     # auxilary features
     "axfeat/fs-times",
-    "starry-api/dev-log",
+    "starry-kernel/dev-log",
 ]
 smp = ["axfeat/smp", "axplat-riscv64-visionfive2?/smp"]
 
@@ -122,11 +121,9 @@ axtask.workspace = true
 cfg-if.workspace = true
 linkme.workspace = true
 linux-raw-sys.workspace = true
+starry-kernel.workspace = true
 starry-process.workspace = true
 starry-signal.workspace = true
-
-starry-core.workspace = true
-starry-api.workspace = true
 
 [dependencies.axplat-riscv64-visionfive2]
 version = "0.1.0-pre.1"
