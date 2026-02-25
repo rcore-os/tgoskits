@@ -276,7 +276,14 @@ pub fn percpu_symbol_vma(item: TokenStream) -> TokenStream {
 }
 
 #[cfg(all(feature = "custom-base", not(feature = "sp-naive")))]
-fn def_percpu_impl(_args: TokenStream, input: TokenStream) -> TokenStream {
+fn def_percpu_impl(attr: TokenStream, input: TokenStream) -> TokenStream {
+    if !attr.is_empty() {
+        return compiler_error(Error::new(
+            Span::call_site(),
+            "expect an empty attribute: `#[def_percpu]`",
+        ));
+    }
+
     use syn::parse_macro_input;
 
     let ItemStatic {

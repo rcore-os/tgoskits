@@ -61,6 +61,7 @@ pub fn gen_symbol_vma(symbol: &Ident) -> proc_macro2::TokenStream {
     })
 }
 
+#[allow(unused)]
 /// Generate a code block that calculates the offset of the per-CPU variable based on the inner symbol name.
 pub fn gen_offset(symbol: &Ident) -> proc_macro2::TokenStream {
     #[cfg(feature = "non-zero-vma")]
@@ -80,6 +81,7 @@ pub fn gen_offset(symbol: &Ident) -> proc_macro2::TokenStream {
     }
 }
 
+#[allow(unused)]
 /// Generate a code block that calculates the pointer to the per-CPU variable on the current CPU, based on the inner
 /// symbol name and the type of the variable.
 pub fn gen_current_ptr(symbol: &Ident, ty: &Type) -> proc_macro2::TokenStream {
@@ -120,6 +122,8 @@ pub fn gen_current_ptr(symbol: &Ident, ty: &Type) -> proc_macro2::TokenStream {
     })
 }
 
+
+#[allow(unused)]
 /// Generate a code block that reads the value of the per-CPU variable on the current CPU, based on the inner symbol
 /// name and the type of the variable.
 ///
@@ -213,6 +217,7 @@ pub fn gen_read_current_raw(symbol: &Ident, ty: &Type) -> proc_macro2::TokenStre
     })
 }
 
+#[allow(unused)]
 /// Generate a code block that writes the value of the per-CPU variable on the current CPU, based on the inner symbol
 /// name, the identifier of the value to write, and the type of the variable.
 ///
