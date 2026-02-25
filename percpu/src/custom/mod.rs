@@ -12,8 +12,6 @@ pub use tp::*;
 use kernel_guard::NoPreempt;
 
 static IS_INIT: AtomicBool = AtomicBool::new(false);
-static mut PERCPU_SIZE: usize = 0;
-static mut PERCPU_BASE: usize = 0;
 
 #[repr(transparent)]
 pub struct PerCpuData<T> {
@@ -58,7 +56,7 @@ impl<T> PerCpuData<T> {
     /// - data races will not happen.
     #[inline]
     pub fn remote_ptr(&self, cpu_idx: usize) -> *mut T {
-        let addr = percpu_base() + cpu_idx * percpu_area_size() + self.offset();
+        let addr = unsafe { _percpu_base_ptr(cpu_idx) } as usize + self.offset();
         addr as *mut T
     }
 
@@ -97,7 +95,7 @@ impl<T> PerCpuData<T> {
     /// Set the value of the per-CPU static variable on the current CPU. Preemption will be disabled during the
     /// call.
     pub fn write_current(&self, val: T) {
-        with_preempt(unsafe { self.write_current_raw(val) });
+        with_preempt(|| unsafe { self.write_current_raw(val) });
     }
 
     /// Set the value of the per-CPU static variable on the current CPU.
@@ -117,7 +115,7 @@ impl<T> PerCpuData<T> {
     ///
     /// This function should called with a mutex or before the cpu is online.
     pub unsafe fn write_remote(&self, cpu_idx: usize, val: T) {
-        with_preempt(unsafe {
+        with_preempt(|| unsafe {
             *self.remote_ptr(cpu_idx) = val;
         })
     }
@@ -128,7 +126,7 @@ impl<T> PerCpuData<T> {
     where
         F: FnOnce(&mut T) -> R,
     {
-        with_preempt(unsafe { f(&mut *self.current_ptr()) })
+        with_preempt(|| unsafe { f(&mut *self.current_ptr()) })
     }
 
     /// Returns the reference of the per-CPU static variable on the given CPU.
@@ -161,7 +159,7 @@ impl<T: Clone> PerCpuData<T> {
     /// Returns the value of the per-CPU static variable on the current CPU. Preemption will be disabled during
     /// the call.
     pub fn read_current(&self) -> T {
-        with_preempt(unsafe { self.read_current_raw() })
+        with_preempt(|| unsafe { self.read_current_raw() })
     }
 
     /// Returns the value of the per-CPU static variable on the current CPU.
@@ -175,97 +173,39 @@ impl<T: Clone> PerCpuData<T> {
 
     /// Returns the value of the per-CPU static variable on the given CPU.
     pub fn read_remote(&self, cpu_idx: usize) -> T {
-        with_preempt(unsafe { (*self.remote_ptr(cpu_idx)).clone() })
+        with_preempt(|| unsafe { (*self.remote_ptr(cpu_idx)).clone() })
     }
 }
 
 impl<T: Debug> Debug for PerCpuData<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        with_preempt(unsafe { &*self.data.get() }.fmt(f))
+        with_preempt(|| unsafe { &*self.data.get() }.fmt(f))
     }
 }
 
 impl<T: Display> Display for PerCpuData<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        with_preempt(unsafe { &*self.data.get() }.fmt(f))
+        with_preempt(|| unsafe { &*self.data.get() }.fmt(f))
     }
 }
 
 unsafe extern "C" {
     fn _percpu_load_start();
-    fn _percpu_load_end();
-}
-
-/// Returns the size of the per-CPU link section.
-pub fn percpu_section_size() -> usize {
-    _percpu_load_end as usize - _percpu_load_start as usize
-}
-
-#[inline]
-fn percpu_base() -> usize {
-    unsafe { PERCPU_BASE }
+    fn _percpu_base_ptr(idx: usize) -> *mut u8;
 }
 
 #[inline]
 fn percpu_link_start() -> usize {
-    _percpu_load_start as usize
-}
-
-/// Returns the per-CPU data area size for one CPU.
-#[inline]
-pub fn percpu_area_size() -> usize {
-    unsafe { PERCPU_SIZE }
-}
-
-fn get_actual_percpu_base() -> usize {
-    cfg_if::cfg_if! {
-        if #[cfg(target_os = "linux")]{
-            _linux::percpu_base()
-        }else{
-            unsafe extern "C" {
-                fn _percpu_base() -> *mut u8;
-            }
-            unsafe{
-                _percpu_base() as _
-            }
-        }
-    }
+    _percpu_load_start as *const () as usize
 }
 
 /// Initialize all per-CPU data areas.
 ///
 /// Returns the number of areas initialized. If this function has been called
 /// before, it does nothing and returns 0.
-pub fn init(cpu_count: usize) -> usize {
+pub fn init() {
     #[cfg(target_os = "linux")]
     _linux::init(cpu_count);
-
-    unsafe {
-        // avoid re-initialization.
-        if IS_INIT
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
-            return 0;
-        }
-
-        PERCPU_BASE = get_actual_percpu_base();
-        PERCPU_SIZE = percpu_section_size();
-
-        let src = core::slice::from_raw_parts(percpu_link_start() as *const u8, percpu_area_size());
-
-        for i in 0..cpu_count {
-            let ptr = (percpu_base() + i * PERCPU_SIZE) as *mut u8;
-
-            let dst = core::slice::from_raw_parts_mut(ptr, percpu_area_size());
-
-            if i == 0 && dst.eq(&src) {
-                continue;
-            }
-            dst.copy_from_slice(src);
-        }
-    }
-    cpu_count
 }
 
 /// Initializes the per-CPU data register.
@@ -277,16 +217,9 @@ pub fn init(cpu_count: usize) -> usize {
 /// `cpu_id` indicates which per-CPU data area to use.
 pub fn init_percpu_reg(cpu_idx: usize) {
     unsafe {
-        let ptr = percpu_area_base(cpu_idx);
-        write_percpu_reg(ptr);
+        let ptr = _percpu_base_ptr(cpu_idx);
+        write_percpu_reg(ptr as usize);
     }
-}
-
-/// Returns the base address of the per-CPU data area on the given CPU.
-///
-/// Always returns `0` for "sp-naive" use.
-pub fn percpu_area_base(cpu_idx: usize) -> usize {
-    percpu_base() + cpu_idx * percpu_area_size()
 }
 
 #[cfg(target_os = "linux")]
