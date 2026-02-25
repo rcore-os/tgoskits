@@ -1,7 +1,6 @@
 use core::{
     cell::UnsafeCell,
     fmt::{Debug, Display},
-    sync::atomic::{AtomicBool, Ordering},
 };
 
 mod tp;
@@ -10,8 +9,6 @@ pub use tp::*;
 
 #[cfg(feature = "preempt")]
 use kernel_guard::NoPreempt;
-
-static IS_INIT: AtomicBool = AtomicBool::new(false);
 
 #[repr(transparent)]
 pub struct PerCpuData<T> {
