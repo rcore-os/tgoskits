@@ -3,7 +3,6 @@ use alloc::sync::Arc;
 use axerrno::{AxError, AxResult};
 use axfs::FileBackend;
 use axhal::paging::{MappingFlags, PageSize};
-use axmm::backend::{Backend, SharedPages};
 use axtask::current;
 use linux_raw_sys::general::*;
 use memory_addr::{MemoryAddr, VirtAddr, VirtAddrRange, align_up_4k};
@@ -11,6 +10,7 @@ use starry_vm::{vm_load, vm_write_slice};
 
 use crate::{
     file::{File, FileLike},
+    mm::{Backend, SharedPages},
     pseudofs::{Device, DeviceMmap},
     task::AsThread,
 };

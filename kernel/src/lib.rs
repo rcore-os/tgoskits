@@ -8,23 +8,16 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 extern crate alloc;
+extern crate axruntime;
 
 #[macro_use]
 extern crate axlog;
 
 pub mod config;
+pub mod entry;
 pub mod file;
 pub mod mm;
 pub mod pseudofs;
 pub mod syscall;
 pub mod task;
 pub mod time;
-
-/// Initialize.
-pub fn init() {
-    info!("Initialize pseudofs...");
-    pseudofs::mount_all().expect("Failed to mount pseudofs");
-
-    info!("Initialize alarm...");
-    task::spawn_alarm_task();
-}

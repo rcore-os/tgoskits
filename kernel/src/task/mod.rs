@@ -15,7 +15,6 @@ use core::{
     sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering},
 };
 
-use axmm::AddrSpace;
 use axpoll::PollSet;
 use axsync::{Mutex, spin::SpinNoIrq};
 use axtask::{TaskExt, TaskInner};
@@ -29,6 +28,7 @@ use starry_signal::{
 };
 
 pub use self::{futex::*, ops::*, resources::*, signal::*, stat::*, timer::*, user::*};
+use crate::mm::AddrSpace;
 
 ///  A wrapper type that assumes the inner type is `Sync`.
 #[repr(transparent)]

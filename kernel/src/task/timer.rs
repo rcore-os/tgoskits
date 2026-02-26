@@ -268,6 +268,7 @@ async fn alarm_task() {
 
 /// Spawns the alarm task.
 pub fn spawn_alarm_task() {
+    info!("Initialize alarm...");
     axtask::spawn_raw(
         || block_on(alarm_task()),
         "alarm_task".to_owned(),

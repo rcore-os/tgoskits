@@ -59,6 +59,8 @@ fn mount_at(fs: &FsContext, path: &str, mount_fs: Filesystem) -> LinuxResult<()>
 
 /// Mount all filesystems
 pub fn mount_all() -> LinuxResult<()> {
+    info!("Initialize pseudofs...");
+
     let fs = FS_CONTEXT.lock();
     mount_at(&fs, "/dev", dev::new_devfs())?;
     mount_at(&fs, "/dev/shm", tmp::MemoryFs::new())?;

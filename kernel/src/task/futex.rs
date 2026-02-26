@@ -14,10 +14,6 @@ use core::{
 };
 
 use axerrno::AxResult;
-use axmm::{
-    AddrSpace,
-    backend::{Backend, SharedPages},
-};
 use axsync::Mutex;
 use axtask::{
     current,
@@ -27,7 +23,10 @@ use hashbrown::HashMap;
 use kspin::SpinNoIrq;
 use memory_addr::VirtAddr;
 
-use crate::task::AsThread;
+use crate::{
+    mm::{AddrSpace, Backend, SharedPages},
+    task::AsThread,
+};
 
 /// Wait queue used by futex.
 #[derive(Default)]

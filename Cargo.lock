@@ -515,7 +515,6 @@ dependencies = [
  "log",
  "memory_addr",
  "memory_set",
- "page_table_multiarch",
 ]
 
 [[package]]
@@ -2202,6 +2201,7 @@ dependencies = [
  "axmm",
  "axnet",
  "axpoll",
+ "axruntime",
  "axsync",
  "axtask",
  "bitflags 2.10.0",
@@ -2210,6 +2210,7 @@ dependencies = [
  "cfg-if",
  "chrono",
  "downcast-rs",
+ "enum_dispatch",
  "event-listener",
  "extern-trait",
  "flatten_objects",
@@ -2225,8 +2226,10 @@ dependencies = [
  "linux-raw-sys",
  "lock_api",
  "memory_addr",
+ "memory_set",
  "num_enum",
  "ouroboros",
+ "page_table_multiarch",
  "percpu",
  "rand",
  "ringbuf",
@@ -2290,22 +2293,9 @@ dependencies = [
 name = "starryos"
 version = "0.1.0"
 dependencies = [
- "axdriver",
- "axerrno 0.2.2",
  "axfeat",
- "axfs",
- "axhal",
- "axlog",
  "axplat-riscv64-visionfive2",
- "axruntime",
- "axsync",
- "axtask",
- "cfg-if",
- "linkme",
- "linux-raw-sys",
  "starry-kernel",
- "starry-process",
- "starry-signal",
 ]
 
 [[package]]

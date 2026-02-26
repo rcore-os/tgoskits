@@ -5,7 +5,6 @@ use axhal::{
     paging::{MappingFlags, PageSize},
     time::monotonic_time_nanos,
 };
-use axmm::backend::{Backend, SharedPages};
 use axsync::Mutex;
 use axtask::current;
 use linux_raw_sys::{ctypes::c_ushort, general::*};
@@ -14,7 +13,7 @@ use starry_process::Pid;
 
 use super::{IPC_PRIVATE, IPC_RMID, IPC_SET, IPC_STAT, IpcPerm, next_ipc_id};
 use crate::{
-    mm::{UserPtr, nullable},
+    mm::{Backend, SharedPages, UserPtr, nullable},
     task::AsThread,
 };
 

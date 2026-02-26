@@ -10,14 +10,16 @@ use axhal::{
     mem::virt_to_phys,
     paging::{MappingFlags, PageSize},
 };
-use axmm::{AddrSpace, backend::Backend};
 use axsync::Mutex;
 use kernel_elf_parser::{AuxEntry, ELFHeaders, ELFHeadersBuilder, ELFParser, app_stack_region};
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ouroboros::self_referencing;
 use uluru::LRUCache;
 
-use crate::config::{USER_SPACE_BASE, USER_SPACE_SIZE};
+use crate::{
+    config::{USER_SPACE_BASE, USER_SPACE_SIZE},
+    mm::aspace::{AddrSpace, Backend},
+};
 
 /// Creates a new empty user address space.
 pub fn new_user_aspace_empty() -> AxResult<AddrSpace> {
@@ -32,7 +34,12 @@ pub fn copy_from_kernel(_aspace: &mut AddrSpace) -> AxResult {
         // ARMv8 (aarch64) and LoongArch64 use separate page tables for user space
         // (aarch64: TTBR0_EL1, LoongArch64: PGDL), so there is no need to copy the
         // kernel portion to the user page table.
-        _aspace.copy_mappings_from(&axmm::kernel_aspace().lock())?;
+        let kspace = axmm::kernel_aspace().lock();
+        _aspace.page_table_mut().cursor().copy_from(
+            kspace.page_table(),
+            kspace.base(),
+            kspace.size(),
+        );
     }
     Ok(())
 }
