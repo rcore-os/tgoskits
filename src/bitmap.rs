@@ -66,13 +66,27 @@ impl<const PAGE_SIZE: usize> BaseAllocator for BitmapPageAllocator<PAGE_SIZE> {
         self.total_pages = (end - start) / PAGE_SIZE;
 
         // Calculate the base offset stored in the real [`BitAlloc`] instance.
+        // The base must be aligned to MAX_ALIGN_1GB to support maximum alignment.
         self.base = crate::align_down(start, MAX_ALIGN_1GB);
 
         // Range in bitmap: [start - self.base, start - self.base + total_pages * PAGE_SIZE)
-        let start = start - self.base;
-        let start_idx = start / PAGE_SIZE;
+        let start_idx = (start - self.base) / PAGE_SIZE;
+        let end_idx = start_idx + self.total_pages;
 
-        self.inner.insert(start_idx..start_idx + self.total_pages);
+        // Panic if the bitmap capacity is insufficient for the requested range.
+        // This can happen when:
+        // 1. The size is too large for the bitmap capacity
+        // 2. The start address is not aligned well, creating a large gap
+        assert!(
+            end_idx <= BitAllocUsed::CAP,
+            "bitmap capacity exceeded: need {} pages but CAP is {} (start={:#x}, size={:#x})",
+            end_idx,
+            BitAllocUsed::CAP,
+            start,
+            size
+        );
+
+        self.inner.insert(start_idx..end_idx);
     }
 
     fn add_memory(&mut self, _start: usize, _size: usize) -> AllocResult {
@@ -333,5 +347,22 @@ mod tests {
 
             i += 1;
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "bitmap capacity exceeded")]
+    fn test_init_capacity_exceeded() {
+        // Test that init panics when the required range exceeds bitmap capacity.
+        // In test mode, BitAlloc1M has CAP = 1M pages = 4GB.
+        // With a start address that creates a 1GB gap (due to alignment) and
+        // requesting 4GB allocation, we need 1GB/4KB + 4GB/4KB = 256K + 1M = ~1.25M pages,
+        // which exceeds the 1M capacity.
+        let mut allocator = BitmapPageAllocator::<PAGE_SIZE>::new();
+        let size = 4 * 1024 * 1024 * 1024; // 4 GB - at capacity limit
+        let start_addr = PAGE_SIZE; // Small offset causes 1GB gap when aligned down to 1GB boundary
+
+        // This should panic because start is aligned down to 0, creating gap of 1 page,
+        // and 4GB = 1M pages, total = 1M + 1 which exceeds CAP of 1M
+        allocator.init(start_addr, size);
     }
 }
