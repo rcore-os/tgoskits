@@ -28,6 +28,9 @@ arm-el2 = ["percpu_macros/arm-el2"]
 # on Linux user-space. May reduce performance slightly.
 non-zero-vma = ["percpu_macros/non-zero-vma"]
 
+# Enable custom per-CPU base mode: per-CPU statics are generated as `PerCpuData<T>`
+# and the caller is responsible for setting the CPU-local base register (e.g. via
+# `init_percpu_reg`) before current-CPU access.
 custom-base = ["percpu_macros/custom-base"]
 
 [dependencies]
