@@ -122,7 +122,6 @@ pub fn gen_current_ptr(symbol: &Ident, ty: &Type) -> proc_macro2::TokenStream {
     })
 }
 
-
 #[allow(unused)]
 /// Generate a code block that reads the value of the per-CPU variable on the current CPU, based on the inner symbol
 /// name and the type of the variable.
