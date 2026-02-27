@@ -3,7 +3,6 @@
 #![no_std]
 #![deny(missing_docs)]
 
-#[cfg(feature = "alloc")]
 extern crate alloc;
 
 use core::{
@@ -11,9 +10,10 @@ use core::{
     task::{Context, Waker},
 };
 
+use alloc::{boxed::Box, sync::Arc, task::Wake};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
-use spin::Mutex;
+use spin::{Lazy, Mutex};
 
 bitflags! {
     /// I/O events.
@@ -66,14 +66,14 @@ pub trait Pollable {
 const POLL_SET_CAPACITY: usize = 64;
 
 struct Inner {
-    entries: [MaybeUninit<Waker>; POLL_SET_CAPACITY],
+    entries: Box<[MaybeUninit<Waker>]>,
     cursor: usize,
 }
 
 impl Inner {
-    const fn new() -> Self {
+    fn new() -> Self {
         Self {
-            entries: unsafe { MaybeUninit::uninit().assume_init() },
+            entries: Box::new_uninit_slice(POLL_SET_CAPACITY),
             cursor: 0,
         }
     }
@@ -110,7 +110,7 @@ impl Drop for Inner {
 }
 
 /// A data structure for waking up tasks that are waiting for I/O events.
-pub struct PollSet(Mutex<Inner>);
+pub struct PollSet(Lazy<Mutex<Inner>>);
 
 impl Default for PollSet {
     fn default() -> Self {
@@ -121,7 +121,7 @@ impl Default for PollSet {
 impl PollSet {
     /// Creates a new empty [`PollSet`].
     pub const fn new() -> Self {
-        Self(Mutex::new(Inner::new()))
+        Self(Lazy::new(|| Mutex::new(Inner::new())))
     }
 
     /// Registers a waker.
@@ -148,13 +148,12 @@ impl Drop for PollSet {
     }
 }
 
-#[cfg(feature = "alloc")]
-impl alloc::task::Wake for PollSet {
-    fn wake(self: alloc::sync::Arc<Self>) {
+impl Wake for PollSet {
+    fn wake(self: Arc<Self>) {
         self.as_ref().wake();
     }
 
-    fn wake_by_ref(self: &alloc::sync::Arc<Self>) {
+    fn wake_by_ref(self: &Arc<Self>) {
         self.as_ref().wake();
     }
 }

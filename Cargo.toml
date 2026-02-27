@@ -9,7 +9,7 @@ repository = "https://github.com/Starry-OS/axpoll"
 documentation = "https://docs.rs/axpoll"
 
 [features]
-alloc = []
+alloc = []          # Deprecated
 default = ["alloc"]
 
 [dependencies]
@@ -18,7 +18,10 @@ linux-raw-sys = { version = "0.12", default-features = false, features = [
     "no_std",
     "general",
 ] }
-spin = { version = "0.10", default-features = false, features = ["spin_mutex"] }
+spin = { version = "0.10", default-features = false, features = [
+    "lazy",
+    "spin_mutex",
+] }
 
 [dev-dependencies]
 tokio = { version = "1.37", features = [
