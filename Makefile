@@ -32,17 +32,17 @@ rootfs:
 		curl -f -L $(ROOTFS_URL)/$(ROOTFS_IMG).xz -O; \
 		xz -d $(ROOTFS_IMG).xz; \
 	fi
-	@cp $(ROOTFS_IMG) arceos/disk.img
+	@cp $(ROOTFS_IMG) make/disk.img
 
 img:
 	@echo -e "\033[33mWARN: The 'img' target is deprecated. Please use 'rootfs' instead.\033[0m"
 	@$(MAKE) --no-print-directory rootfs
 
 defconfig justrun clean:
-	@make -C arceos $@
+	@$(MAKE) -C make $@
 
 build run debug disasm: defconfig
-	@make -C arceos $@
+	@$(MAKE) -C make $@
 
 # Aliases
 rv:
