@@ -22,3 +22,6 @@ jobs:
 
       - name: Run tests (non-zero-vma)
         run: cargo test --target x86_64-unknown-linux-gnu --features "non-zero-vma" -- --nocapture
+
+      - name: Run tests (custom-base)
+        run: cargo test --target x86_64-unknown-linux-gnu --features "custom-base,non-zero-vma" -- --nocapture

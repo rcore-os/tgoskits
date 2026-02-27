@@ -200,9 +200,15 @@ fn percpu_link_start() -> usize {
 ///
 /// Returns the number of areas initialized. If this function has been called
 /// before, it does nothing and returns 0.
-pub fn init() {
+pub fn init() -> usize {
     #[cfg(target_os = "linux")]
-    _linux::init(cpu_count);
+    {
+        _linux::init(4)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        0
+    }
 }
 
 /// Initializes the per-CPU data register.
@@ -219,6 +225,19 @@ pub fn init_percpu_reg(cpu_idx: usize) {
     }
 }
 
+/// Returns the base address of the per-CPU data area on the given CPU.
+pub fn percpu_area_base(cpu_idx: usize) -> usize {
+    unsafe { _percpu_base_ptr(cpu_idx) as usize }
+}
+
+/// Returns the per-CPU data area size for one CPU.
+pub fn percpu_area_size() -> usize {
+    unsafe extern "C" {
+        fn _percpu_load_end();
+    }
+    _percpu_load_end as *const () as usize - percpu_link_start()
+}
+
 #[cfg(target_os = "linux")]
 mod _linux {
     use std::sync::Mutex;
@@ -228,11 +247,14 @@ mod _linux {
     static PERCPU_DATA: Mutex<Vec<u8>> = Mutex::new(Vec::new());
     static mut PERCPU_BASE: usize = 0;
 
-    pub fn percpu_base() -> usize {
-        unsafe { PERCPU_BASE }
+    fn percpu_section_size() -> usize {
+        unsafe extern "C" {
+            fn _percpu_load_end();
+        }
+        _percpu_load_end as *const () as usize - percpu_link_start()
     }
 
-    pub fn init(cpu_count: usize) {
+    pub fn init(cpu_count: usize) -> usize {
         let size = cpu_count * percpu_section_size();
         let mut g = PERCPU_DATA.lock().unwrap();
         g.resize(size, 0);
@@ -242,5 +264,11 @@ mod _linux {
             PERCPU_BASE = base;
             println!("alloc percpu data @{:#x}, size: {:#x}", base, size);
         }
+        cpu_count
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe fn _percpu_base_ptr(idx: usize) -> *mut u8 {
+        unsafe { (PERCPU_BASE + idx * percpu_section_size()) as *mut u8 }
     }
 }
