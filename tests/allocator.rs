@@ -5,7 +5,7 @@ use std::alloc::{Allocator, Layout};
 use std::collections::BTreeMap;
 use std::io::Write;
 
-use allocator::{AllocatorRc, BuddyByteAllocator, SlabByteAllocator, TlsfByteAllocator};
+use axallocator::{AllocatorRc, BuddyByteAllocator, SlabByteAllocator, TlsfByteAllocator};
 use rand::{prelude::SliceRandom, Rng};
 
 const POOL_SIZE: usize = 1024 * 1024 * 128;

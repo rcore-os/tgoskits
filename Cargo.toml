@@ -1,13 +1,16 @@
 [package]
-name = "allocator"
-version = "0.1.2"
+name = "axallocator"
+version = "0.2.0"
 edition = "2021"
-authors = ["Yuekai Jia <equation618@gmail.com>"]
+authors = [
+    "Yuekai Jia <equation618@gmail.com>",
+    "Yu Chen <yuchen@tsinghua.edu.cn>",
+]
 description = "Various allocator algorithms in a unified interface"
 license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
 homepage = "https://github.com/arceos-org/arceos"
-repository = "https://github.com/arceos-org/allocator"
-documentation = "https://arceos-org.github.io/allocator"
+repository = "https://github.com/arceos-org/axallocator"
+readme = "README.md"
 
 [features]
 default = ["page-alloc-256m"]
@@ -16,7 +19,7 @@ full = ["bitmap", "tlsf", "slab", "buddy", "allocator_api", "page-alloc-256m"]
 bitmap = ["dep:bitmap-allocator"]
 
 tlsf = ["dep:rlsf"]
-slab = ["dep:slab_allocator"]
+slab = ["dep:ax_slab_allocator"]
 buddy = ["dep:buddy_system_allocator"]
 
 allocator_api = []
@@ -33,11 +36,11 @@ axerrno = { version = "0.1", optional = true }
 cfg-if = "1.0"
 rlsf = { version = "0.2", optional = true }
 buddy_system_allocator = { version = "0.10", default-features = false, optional = true }
-slab_allocator = { git = "https://github.com/arceos-org/slab_allocator.git", tag = "v0.3.1", optional = true }
+ax_slab_allocator = { version = "0.4", optional = true }
 bitmap-allocator = { version = "0.2", optional = true }
 
 [dev-dependencies]
-allocator = { path = ".", features = ["full"] }
+axallocator = { path = ".", features = ["full"] }
 rand = { version = "0.8", features = ["small_rng"] }
 criterion = { version = "0.5", features = ["html_reports"] }
 
