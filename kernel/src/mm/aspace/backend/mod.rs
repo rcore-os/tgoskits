@@ -145,6 +145,12 @@ impl MappingBackend for Backend {
         new_flags: Self::Flags,
         pt: &mut Self::PageTable,
     ) -> bool {
-        pt.cursor().protect_region(start, size, new_flags).is_ok()
+        let range = VirtAddrRange::from_start_size(start, size);
+        let mut cursor = pt.cursor();
+        if let Err(err) = BackendOps::on_protect(self, range, new_flags, &mut cursor) {
+            warn!("Failed to protect area: {:?}", err);
+            return false;
+        }
+        cursor.protect_region(start, size, new_flags).is_ok()
     }
 }

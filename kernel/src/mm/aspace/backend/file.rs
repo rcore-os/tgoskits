@@ -33,9 +33,12 @@ impl Drop for FileBackendInner {
     }
 }
 impl FileBackendInner {
-    pub fn register_listener(self: &Arc<Self>, aspace: &Arc<Mutex<AddrSpace>>) -> usize {
+    pub fn register_listener(self: &Arc<Self>, aspace: &Arc<Mutex<AddrSpace>>) {
+        if self.handle.load(Ordering::Acquire) != 0 {
+            panic!("Listener already registered");
+        }
         let aspace = Arc::downgrade(aspace);
-        self.cache.add_evict_listener({
+        let handle = self.cache.add_evict_listener({
             let this = Arc::downgrade(self);
             move |pn, _page| {
                 let Some(this) = this.upgrade() else {
@@ -53,7 +56,8 @@ impl FileBackendInner {
                 };
                 this.on_evict(pn, &mut aspace);
             }
-        })
+        });
+        self.handle.store(handle, Ordering::Release);
     }
 
     fn on_evict(self: &Arc<Self>, pn: u32, aspace: &mut AddrSpace) {

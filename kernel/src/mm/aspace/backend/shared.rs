@@ -14,12 +14,15 @@ pub struct SharedPages {
 }
 impl SharedPages {
     pub fn new(size: usize, page_size: PageSize) -> AxResult<Self> {
-        Ok(Self {
-            phys_pages: (0..divide_page(size, page_size))
-                .map(|_| alloc_frame(true, page_size))
-                .collect::<AxResult<_>>()?,
+        let num_pages = divide_page(size, page_size);
+        let mut result = Self {
+            phys_pages: Vec::with_capacity(num_pages),
             size: page_size,
-        })
+        };
+        for _ in 0..num_pages {
+            result.phys_pages.push(alloc_frame(true, page_size)?);
+        }
+        Ok(result)
     }
 
     pub fn len(&self) -> usize {
