@@ -2079,7 +2079,7 @@ dependencies = [
  "as-any",
  "async-trait",
  "paste",
- "rdif-def 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "rdif-def 0.2.0",
  "thiserror 2.0.18",
  "tokio",
 ]
