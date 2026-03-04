@@ -25,12 +25,12 @@ checksum = "bf9566516f5d799b2f791a6ec5af57eec87d17624346f7c876fa006b922c99e6"
 dependencies = [
  "cfg-if",
  "log",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
 name = "axcpu"
-version = "0.3.0-preview.5"
+version = "0.3.0-preview.6"
 dependencies = [
  "aarch64-cpu",
  "axbacktrace",
@@ -183,21 +183,21 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "percpu"
-version = "0.2.2"
+version = "0.2.3-preview.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "54ca06381bdd16a5397e23cf61d347b539c765e2c20b2ecc5cb36df88695c1f7"
+checksum = "8c03ecfaf97c11a791d8b65e34a6353d012a735a5cbfebba34ee6668da16ce38"
 dependencies = [
  "cfg-if",
  "percpu_macros",
- "spin 0.9.8",
+ "spin",
  "x86",
 ]
 
 [[package]]
 name = "percpu_macros"
-version = "0.2.2"
+version = "0.2.3-preview.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a933d46113c0171aee86623311a9367f2ec3a86dab0a96aba1d5bc627473617e"
+checksum = "6660d83b91174e6d39fae0cdf893889dcdbffda6e99664f8ee8a45fde6a6936c"
 dependencies = [
  "cfg-if",
  "proc-macro2",
@@ -276,18 +276,12 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "spin"
-version = "0.9.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
-dependencies = [
- "lock_api",
-]
-
-[[package]]
-name = "spin"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
+dependencies = [
+ "lock_api",
+]
 
 [[package]]
 name = "static_assertions"

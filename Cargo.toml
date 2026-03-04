@@ -1,6 +1,6 @@
 [package]
 name = "axcpu"
-version = "0.3.0-preview.5"
+version = "0.3.0-preview.6"
 edition = "2021"
 authors = [
     "Yuekai Jia <equation618@gmail.com>",
@@ -41,7 +41,7 @@ static_assertions = "1.1"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 lazyinit = "0.2"
-percpu = "0.2"
+percpu = "0.2.3-preview.1"
 x86 = "0.52"
 x86_64 = { version = "0.15", default-features = false, features = [
     "instructions",
