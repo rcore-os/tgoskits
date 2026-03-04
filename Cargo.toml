@@ -33,7 +33,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.3.1-pre.4"
+version = "0.3.1-pre.5"
 edition = "2024"
 authors = [
     "Yuekai Jia <equation618@gmail.com>",
@@ -48,7 +48,8 @@ homepage = "https://github.com/arceos-org/arceos"
 repository = "https://github.com/arceos-org/axplat_crates"
 
 [workspace.dependencies]
-axcpu = "0.3.0-preview.5"
-axplat = { version = "0.3.1-pre.4", path = "./axplat" }
+axcpu = "0.3.0-preview.6"
+axplat = { version = "0.3.1-pre.5", path = "./axplat" }
 axplat-macros = { version = "0.1.0", path = "./axplat-macros" }
-axplat-aarch64-peripherals = { version = "0.3.1-pre.4", path = "platforms/axplat-aarch64-peripherals" }
+axplat-aarch64-peripherals = { version = "0.3.1-pre.5", path = "platforms/axplat-aarch64-peripherals" }
+percpu = "0.2.3-preview.1"
