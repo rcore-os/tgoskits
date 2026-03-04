@@ -7,7 +7,6 @@ members = [
     "driver/rdrive-macros",
     "driver/rdrive",
     "driver/interface/*",
-    "driver/interface/rdif-def",
     "driver/block/*",
     "xtask",
 ]
@@ -38,7 +37,7 @@ uefi = "0.36"
 rdrive = { version = "0.18", path = "driver/rdrive" }
 
 dma-api = { version = "0.7", path = "crates/dma-api" }
-mmio-api = { path = "crates/mmio-api", version = "0.1" }
+mmio-api = { path = "crates/mmio-api", version = "0.2" }
 
 bare-test = { path = "crates/bare-test", version = "0.8" }
 bare-test-macros = { path = "crates/bare-test-macros", version = "0.3" }

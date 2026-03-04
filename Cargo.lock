@@ -1614,7 +1614,7 @@ dependencies = [
 
 [[package]]
 name = "mmio-api"
-version = "0.1.3"
+version = "0.2.0"
 dependencies = [
  "derive_more",
  "thiserror 2.0.18",
@@ -2079,7 +2079,7 @@ dependencies = [
  "as-any",
  "async-trait",
  "paste",
- "rdif-def 0.2.0",
+ "rdif-def 0.2.1",
  "thiserror 2.0.18",
  "tokio",
 ]
@@ -2093,7 +2093,7 @@ dependencies = [
  "as-any",
  "async-trait",
  "paste",
- "rdif-def 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "rdif-def 0.2.0",
  "thiserror 2.0.18",
 ]
 
@@ -2116,15 +2116,15 @@ dependencies = [
 [[package]]
 name = "rdif-def"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c238eb44d86fabc99028adc973f896ce2202aeb6184cc8b89863f2d157d7ca06"
 dependencies = [
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "rdif-def"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c238eb44d86fabc99028adc973f896ce2202aeb6184cc8b89863f2d157d7ca06"
+version = "0.2.1"
 dependencies = [
  "thiserror 2.0.18",
 ]

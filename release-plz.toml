@@ -1,0 +1,93 @@
+# Release-plz configuration for Sparreal OS
+# Reference: https://release-plz.dev/docs/config
+
+# Driver directory crates - do not publish or release
+[[package]]
+name = "arm-gic-driver"
+publish = false
+release = false
+
+[[package]]
+name = "rdif-intc"
+publish = false
+release = false
+
+[[package]]
+name = "rdif-systick"
+publish = false
+release = false
+
+[[package]]
+name = "rdif-power"
+publish = false
+release = false
+
+[[package]]
+name = "rdif-block"
+publish = false
+release = false
+
+[[package]]
+name = "rdif-clk"
+publish = false
+release = false
+
+[[package]]
+name = "rdif-net"
+publish = false
+release = false
+
+[[package]]
+name = "rdif-base"
+publish = false
+release = false
+
+[[package]]
+name = "rdif-def"
+publish = false
+release = false
+
+[[package]]
+name = "rdrive"
+publish = false
+release = false
+
+[[package]]
+name = "enumerate"
+publish = false
+release = false
+
+[[package]]
+name = "rdif-timer"
+publish = false
+release = false
+
+[[package]]
+name = "rdif-serial"
+publish = false
+release = false
+
+[[package]]
+name = "rdif-pcie"
+publish = false
+release = false
+
+[[package]]
+name = "rdrive-macros"
+publish = false
+release = false
+
+[[package]]
+name = "ramdisk"
+publish = false
+release = false
+
+[[package]]
+name = "rd-block"
+publish = false
+release = false
+
+[[package]]
+name = "pcie"
+publish = false
+release = false

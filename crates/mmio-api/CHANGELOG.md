@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.3](https://github.com/drivercraft/sparreal-os/compare/mmio-api-v0.1.2...mmio-api-v0.1.3) - 2026-02-13
+## [0.2.0](https://github.com/drivercraft/sparreal-os/compare/mmio-api-v0.1.2...mmio-api-v0.2.0) - 2026-02-13
 
 ### Other
 

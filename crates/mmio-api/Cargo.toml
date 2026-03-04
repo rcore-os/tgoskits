@@ -1,6 +1,6 @@
 [package]
 name = "mmio-api"
-version = "0.1.3"
+version = "0.2.0"
 authors.workspace = true
 categories.workspace = true
 description = "Memory-mapped I/O abstraction API for OS kernel development."
