@@ -2,7 +2,7 @@ use axerrno::{AxError, AxResult, LinuxError};
 #[cfg(feature = "vsock")]
 use axnet::vsock::{VsockSocket, VsockStreamTransport};
 use axnet::{
-    Shutdown, SocketAddrEx, SocketOps,
+    Shutdown, Socket as SocketInner, SocketAddrEx, SocketOps,
     tcp::TcpSocket,
     udp::UdpSocket,
     unix::{DgramTransport, StreamTransport, UnixSocket},
@@ -33,19 +33,19 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
             if proto != 0 && proto != IPPROTO_TCP as _ {
                 return Err(AxError::from(LinuxError::EPROTONOSUPPORT));
             }
-            axnet::Socket::Tcp(TcpSocket::new())
+            SocketInner::Tcp(TcpSocket::new())
         }
         (AF_INET, SOCK_DGRAM) => {
             if proto != 0 && proto != IPPROTO_UDP as _ {
                 return Err(AxError::from(LinuxError::EPROTONOSUPPORT));
             }
-            axnet::Socket::Udp(UdpSocket::new())
+            SocketInner::Udp(UdpSocket::new())
         }
-        (AF_UNIX, SOCK_STREAM) => axnet::Socket::Unix(UnixSocket::new(StreamTransport::new(pid))),
-        (AF_UNIX, SOCK_DGRAM) => axnet::Socket::Unix(UnixSocket::new(DgramTransport::new(pid))),
+        (AF_UNIX, SOCK_STREAM) => SocketInner::Unix(UnixSocket::new(StreamTransport::new(pid))),
+        (AF_UNIX, SOCK_DGRAM) => SocketInner::Unix(UnixSocket::new(DgramTransport::new(pid))),
         #[cfg(feature = "vsock")]
         (AF_VSOCK, SOCK_STREAM) => {
-            axnet::Socket::Vsock(VsockSocket::new(VsockStreamTransport::new()))
+            SocketInner::Vsock(VsockSocket::new(VsockStreamTransport::new()))
         }
         (AF_INET, _) | (AF_UNIX, _) | (AF_VSOCK, _) => {
             warn!("Unsupported socket type: domain: {domain}, ty: {ty}");
@@ -177,8 +177,8 @@ pub fn sys_socketpair(
             return Err(AxError::from(LinuxError::ESOCKTNOSUPPORT));
         }
     };
-    let sock1 = Socket(axnet::Socket::Unix(sock1));
-    let sock2 = Socket(axnet::Socket::Unix(sock2));
+    let sock1 = Socket(SocketInner::Unix(sock1));
+    let sock2 = Socket(SocketInner::Unix(sock2));
 
     if raw_ty & O_NONBLOCK != 0 {
         sock1.set_nonblocking(true)?;

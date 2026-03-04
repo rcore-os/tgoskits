@@ -8,17 +8,30 @@ homepage.workspace = true
 repository.workspace = true
 
 [features]
-input = ["dep:axinput"]
-memtrack = ["axfeat/dwarf", "axalloc/tracking", "dep:gimli"]
-vsock = ["axnet/vsock"]
 dev-log = []
+input = ["dep:axinput", "axfeat/input"]
+memtrack = ["axfeat/dwarf", "axalloc/tracking", "dep:gimli"]
+vsock = ["axfeat/vsock"]
 
 [dependencies]
+axfeat = { workspace = true, features = [
+    "alloc-slab",
+    "fp-simd",
+    "fs-ext4",
+    "irq",
+    "multitask",
+    "net",
+    "page-alloc-4g",
+    "rtc",
+    "sched-rr",
+    "task-ext",
+    "uspace",
+] }
+
 axalloc.workspace = true
 axconfig.workspace = true
 axdisplay.workspace = true
 axdriver.workspace = true
-axfeat.workspace = true
 axfs.workspace = true
 axhal.workspace = true
 axinput = { workspace = true, optional = true }

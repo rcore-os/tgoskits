@@ -21,7 +21,7 @@ use linux_raw_sys::general::{RLIMIT_NOFILE, stat, statx, statx_timestamp};
 use spin::RwLock;
 
 pub use self::{
-    fs::{Directory, File, ResolveAtResult, metadata_to_kstat, resolve_at, with_fs},
+    fs::{Directory, File, resolve_at, with_fs},
     net::Socket,
     pidfd::PidFd,
     pipe::Pipe,

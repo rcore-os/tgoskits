@@ -19,19 +19,7 @@ homepage = "https://github.com/Starry-OS"
 repository = "https://github.com/Starry-OS/StarryOS"
 
 [workspace.dependencies]
-axfeat = { path = "arceos/api/axfeat", features = [
-    "alloc-slab",
-    "fp-simd",
-    "fs-ext4",
-    "irq",
-    "multitask",
-    "net",
-    "page-alloc-4g",
-    "rtc",
-    "sched-rr",
-    "task-ext",
-    "uspace",
-] }
+axfeat = { path = "arceos/api/axfeat" }
 
 axalloc = { path = "arceos/modules/axalloc" }
 axconfig = { path = "arceos/modules/axconfig" }
@@ -61,15 +49,13 @@ repository.workspace = true
 [features]
 default = []
 qemu = [
-    "axfeat/display",
-    "axfeat/input",
-    "starry-kernel/input",
-
-    "axfeat/vsock",
-    "starry-kernel/vsock",
-
     "axfeat/defplat",
     "axfeat/bus-pci",
+
+    "axfeat/display",
+
+    "starry-kernel/input",
+    "starry-kernel/vsock",
 
     # auxilary features
     "axfeat/fs-times",

@@ -13,11 +13,12 @@ extern crate axruntime;
 #[macro_use]
 extern crate axlog;
 
-pub mod config;
 pub mod entry;
-pub mod file;
-pub mod mm;
-pub mod pseudofs;
-pub mod syscall;
-pub mod task;
-pub mod time;
+
+mod config;
+mod file;
+mod mm;
+mod pseudofs;
+mod syscall;
+mod task;
+mod time;
