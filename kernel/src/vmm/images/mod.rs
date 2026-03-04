@@ -111,7 +111,13 @@ impl ImageLoader {
                 self.vm.clone(),
             );
         } else {
-            info!("dtb_load_gpa not provided");
+            if let Some(buffer) = vm_imags.dtb {
+                #[cfg(target_arch = "riscv64")]
+                load_vm_image_from_memory(buffer, self.dtb_load_gpa.unwrap(), self.vm.clone())
+                    .expect("Failed to load DTB images");
+            } else {
+                info!("dtb_load_gpa not provided");
+            }
         }
 
         // Load BIOS image

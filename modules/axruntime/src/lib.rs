@@ -25,6 +25,9 @@ extern crate axlog;
 #[cfg(target_arch = "x86_64")]
 extern crate axplat_x86_qemu_q35;
 
+#[cfg(target_arch = "riscv64")]
+extern crate axplat_riscv64_qemu_virt;
+
 #[cfg(target_arch = "aarch64")]
 extern crate axplat_aarch64_dyn;
 
@@ -125,7 +128,6 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     //     build_mode = {}\n\
     //     smp = {}\n\
     //     ",
-
     // );
     #[cfg(feature = "rtc")]
     ax_println!(
@@ -324,6 +326,8 @@ pub fn cpu_count() -> usize {
             cpu_count = axplat_x86_qemu_q35::cpu_count()
         } else if #[cfg(target_arch = "aarch64")] {
             cpu_count = somehal::mem::cpu_id_list().count()
+        } else if #[cfg(all(target_arch = "riscv64", target_os = "none"))] {
+            cpu_count = axplat_riscv64_qemu_virt::cpu_count()
         } else {
             cpu_count = 1;
         }
@@ -334,4 +338,9 @@ pub fn cpu_count() -> usize {
     }
 
     cpu_count
+}
+
+#[cfg(target_arch = "riscv64")]
+pub fn plic_base() -> usize {
+    axplat_riscv64_qemu_virt::plic_base()
 }

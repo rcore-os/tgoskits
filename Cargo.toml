@@ -65,7 +65,7 @@ axfs = {path = "modules/axfs"}
 axvcpu = "0.1"
 axvm = {git = "https://github.com/arceos-hypervisor/axvm.git", branch = "aar-master"}
 
-# System independent crates provided by ArceOS, these crates could be imported by remote url. 
+# System independent crates provided by ArceOS, these crates could be imported by remote url.
 axerrno = "0.2"
 byte-unit = {version = "5", default-features = false, features = ["byte"]}
 crate_interface = "0.2"
@@ -79,14 +79,19 @@ rdrive = "0.18"
 
 vm-fdt = {git = "https://github.com/bullhh/vm-fdt.git", default-features = false, features = ["alloc"]}
 
-axdevice = {git = "https://github.com/arceos-hypervisor/axdevice.git",branch = "aar-master"}
+axdevice = {git = "https://github.com/arceos-hypervisor/axdevice.git", branch = "aar-master"}
 axdevice_base = "0.1"
 axvisor_api = "0.2"
 driver = {path = "modules/driver"}
 
 # platform
 axplat-x86-qemu-q35 = {path = "platform/x86-qemu-q35"}
+axplat-riscv64-qemu-virt = {path = "platform/riscv64-qemu-virt"}
 axvmconfig = {git = "https://github.com/arceos-hypervisor/axvmconfig.git", branch = "aar-master"}
+
+[patch."https://github.com/arceos-org/arceos.git"]
+axconfig = { path = "modules/axconfig" }
+axruntime = { path = "modules/axruntime" }
 
 [patch.crates-io]
 axvcpu = { git = "https://github.com/arceos-hypervisor/axvcpu", branch = "aar-master" }

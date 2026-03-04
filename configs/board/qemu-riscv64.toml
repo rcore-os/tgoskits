@@ -1,10 +1,12 @@
 cargo_args = []
 features = [
-    # "axstd/myplat",
+    "axstd/myplat",
+    "axstd/bus-mmio",
     "ept-level-4",
-    "fs",
+    # "fs",
 ]
 log = "Info"
 target = "riscv64gc-unknown-none-elf"
-to_bin = false
+to_bin = true
 vm_configs = []
+smp = 4

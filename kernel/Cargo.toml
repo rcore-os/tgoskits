@@ -36,6 +36,7 @@ axhvc.workspace = true
 axruntime = {workspace = true, features = ["alloc", "irq", "paging", "smp", "multitask"]}
 axvcpu.workspace = true
 axvm.workspace = true
+axdriver.workspace = true
 
 # System independent crates provided by ArceOS, these crates could be imported by remote url. 
 axerrno.workspace = true
@@ -57,10 +58,14 @@ axdevice_base = "0.1"
 axvisor_api = "0.2"
 driver.workspace = true
 
-
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 aarch64-cpu-ext = "0.1"
 arm-gic-driver = {version = "0.15.5", features = ["rdif"]}
+
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+axplat-riscv64-qemu-virt.workspace = true
+riscv_vplic = { git = "https://github.com/arceos-hypervisor/riscv_vplic.git", rev = "8bc5213" }
+riscv_vcpu = { git = "https://github.com/arceos-hypervisor/riscv_vcpu.git", branch = "master" }
 
 [build-dependencies]
 axconfig.workspace = true

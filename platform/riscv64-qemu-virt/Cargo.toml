@@ -1,0 +1,33 @@
+[package]
+edition = "2024"
+name = "axplat-riscv64-qemu-virt"
+version = "0.3.0"
+
+[features]
+default = [
+  "irq",
+  "smp",
+]
+fp-simd = ["axcpu/fp-simd"]
+irq = ["axplat/irq"]
+rtc = ["riscv_goldfish"]
+smp = ["axplat/smp"]
+
+[dependencies]
+kspin = "0.1"
+lazyinit = "0.2"
+log = "0.4"
+riscv = "0.14.0"
+riscv_goldfish = { version = "0.1", optional = true }
+riscv_plic = "0.2"
+sbi-rt = { version = "0.0.3", features = ["legacy"] }
+uart_16550 = "0.4.0"
+
+axconfig-macros = "0.2"
+axcpu = { workspace = true }
+axplat = { workspace = true }
+axvisor_api = { workspace = true }
+crate_interface = { workspace = true }
+
+[package.metadata.docs.rs]
+targets = ["riscv64gc-unknown-none-elf"]
