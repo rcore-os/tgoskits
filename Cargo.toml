@@ -1,6 +1,6 @@
 [package]
 name = "axvmconfig"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 authors = [
     "Keyang Hu <keyang.hu@qq.com>",
@@ -24,7 +24,7 @@ name = "axvmconfig"
 path = "src/main.rs"
 
 [dependencies]
-axerrno = "0.1.0"
+axerrno = "0.2.0"
 clap = {version = "4.5.23", optional = true, features = ["derive"]}
 enumerable = {version = "1.2", default-features = false}
 env_logger = {version = "0.11.3", optional = true}
