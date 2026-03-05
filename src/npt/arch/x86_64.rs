@@ -190,6 +190,7 @@ impl PagingMetaData for ExtendedPageTableMetadata {
 
     // Under the x86 architecture, the flush_tlb operation will invoke the ring0 instruction,
     // causing the test to trigger a SIGSEGV exception.
+    #[allow(unused_variables)]
     fn flush_tlb(vaddr: Option<GuestPhysAddr>) {
         #[cfg(not(test))]
         if let Some(vaddr) = vaddr {

@@ -15,7 +15,7 @@
 use alloc::vec::Vec;
 use core::fmt;
 
-use axerrno::ax_err;
+use axerrno::{AxResult, ax_err};
 use memory_addr::{MemoryAddr, PhysAddr, is_aligned_4k};
 use memory_set::{MemoryArea, MemorySet};
 use page_table_multiarch::PagingHandler;
@@ -25,7 +25,6 @@ use crate::{GuestPhysAddr, GuestPhysAddrRange, mapping_err_to_ax_err};
 
 mod backend;
 
-pub use axerrno::{AxError, AxResult};
 pub use backend::Backend;
 pub use page_table_entry::MappingFlags;
 

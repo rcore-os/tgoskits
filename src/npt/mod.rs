@@ -16,20 +16,21 @@ use axerrno::{ax_err, ax_err_type};
 use memory_addr::PhysAddr;
 use memory_set::MappingError;
 use page_table_entry::MappingFlags;
-use page_table_multiarch::PagingHandler;
+use page_table_multiarch::{PageSize, PagingHandler};
 
 use crate::GuestPhysAddr;
 
 cfg_if::cfg_if! {
     if #[cfg(target_arch = "x86_64")] {
         pub type NestedPageTableL4<H> = arch::ExtendedPageTable<H>;
-
     } else if #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))] {
+        /// RISC-V Level 3 nested page table (Sv39, x4 not supported)
         pub type NestedPageTableL3<H> = page_table_multiarch::PageTable64<arch::Sv39MetaData<GuestPhysAddr>, arch::Rv64PTE, H>;
-        pub type NestedPageTableL4<H> = page_table_multiarch::PageTable64<arch::Sv48MetaData<GuestPhysAddr>, arch::Rv64PTE, H>;
 
+        /// RISC-V Level 4 nested page table (Sv48, x4 not supported)
+        pub type NestedPageTableL4<H> = page_table_multiarch::PageTable64<arch::Sv48MetaData<GuestPhysAddr>, arch::Rv64PTE, H>;
     } else if #[cfg(target_arch = "aarch64")] {
-       /// AArch64 Level 3 nested page table type alias.
+        /// AArch64 Level 3 nested page table type alias.
         pub type NestedPageTableL3<H> = page_table_multiarch::PageTable64<arch::A64HVPagingMetaDataL3, arch::A64PTEHV, H>;
 
         /// AArch64 Level 4 nested page table type alias.
@@ -51,8 +52,6 @@ impl<H: PagingHandler> NestedPageTable<H> {
             3 => {
                 #[cfg(not(target_arch = "x86_64"))]
                 {
-                    use axerrno::ax_err_type;
-
                     let res = NestedPageTableL3::try_new().map_err(|_| ax_err_type!(NoMemory))?;
                     Ok(NestedPageTable::L3(res))
                 }
@@ -69,7 +68,7 @@ impl<H: PagingHandler> NestedPageTable<H> {
         }
     }
 
-    pub fn root_paddr(&self) -> memory_addr::PhysAddr {
+    pub const fn root_paddr(&self) -> PhysAddr {
         match self {
             #[cfg(not(target_arch = "x86_64"))]
             NestedPageTable::L3(pt) => pt.root_paddr(),
@@ -81,22 +80,20 @@ impl<H: PagingHandler> NestedPageTable<H> {
     pub fn map(
         &mut self,
         vaddr: crate::GuestPhysAddr,
-        paddr: memory_addr::PhysAddr,
-        size: page_table_multiarch::PageSize,
+        paddr: PhysAddr,
+        size: PageSize,
         flags: page_table_entry::MappingFlags,
     ) -> memory_set::MappingResult {
         match self {
             #[cfg(not(target_arch = "x86_64"))]
-            NestedPageTable::L3(pt) => {
-                pt.map(vaddr, paddr, size, flags)
-                    .map_err(|_| MappingError::BadState)?
-                    .flush();
-            }
-            NestedPageTable::L4(pt) => {
-                pt.map(vaddr, paddr, size, flags)
-                    .map_err(|_| MappingError::BadState)?
-                    .flush();
-            }
+            NestedPageTable::L3(pt) => pt
+                .cursor()
+                .map(vaddr, paddr, size, flags)
+                .map_err(|_| MappingError::BadState)?,
+            NestedPageTable::L4(pt) => pt
+                .cursor()
+                .map(vaddr, paddr, size, flags)
+                .map_err(|_| MappingError::BadState)?,
         }
         Ok(())
     }
@@ -105,19 +102,11 @@ impl<H: PagingHandler> NestedPageTable<H> {
     pub fn unmap(
         &mut self,
         vaddr: GuestPhysAddr,
-    ) -> memory_set::MappingResult<(memory_addr::PhysAddr, page_table_multiarch::PageSize)> {
+    ) -> memory_set::MappingResult<(PhysAddr, MappingFlags, PageSize)> {
         match self {
             #[cfg(not(target_arch = "x86_64"))]
-            NestedPageTable::L3(pt) => {
-                let (addr, size, f) = pt.unmap(vaddr).map_err(|_| MappingError::BadState)?;
-                f.flush();
-                Ok((addr, size))
-            }
-            NestedPageTable::L4(pt) => {
-                let (addr, size, f) = pt.unmap(vaddr).map_err(|_| MappingError::BadState)?;
-                f.flush();
-                Ok((addr, size))
-            }
+            NestedPageTable::L3(pt) => pt.cursor().unmap(vaddr).map_err(|_| MappingError::BadState),
+            NestedPageTable::L4(pt) => pt.cursor().unmap(vaddr).map_err(|_| MappingError::BadState),
         }
     }
 
@@ -129,43 +118,33 @@ impl<H: PagingHandler> NestedPageTable<H> {
         size: usize,
         flags: MappingFlags,
         allow_huge: bool,
-        flush_tlb_by_page: bool,
     ) -> memory_set::MappingResult {
         match self {
             #[cfg(not(target_arch = "x86_64"))]
-            NestedPageTable::L3(pt) => {
-                pt.map_region(vaddr, get_paddr, size, flags, allow_huge, flush_tlb_by_page)
-                    .map_err(|_| MappingError::BadState)?
-                    .flush_all();
-            }
-            NestedPageTable::L4(pt) => {
-                pt.map_region(vaddr, get_paddr, size, flags, allow_huge, flush_tlb_by_page)
-                    .map_err(|_| MappingError::BadState)?
-                    .flush_all();
-            }
+            NestedPageTable::L3(pt) => pt
+                .cursor()
+                .map_region(vaddr, get_paddr, size, flags, allow_huge)
+                .map_err(|_| MappingError::BadState)?,
+            NestedPageTable::L4(pt) => pt
+                .cursor()
+                .map_region(vaddr, get_paddr, size, flags, allow_huge)
+                .map_err(|_| MappingError::BadState)?,
         }
         Ok(())
     }
 
     /// Unmaps a region.
-    pub fn unmap_region(
-        &mut self,
-        start: GuestPhysAddr,
-        size: usize,
-        flush: bool,
-    ) -> memory_set::MappingResult {
+    pub fn unmap_region(&mut self, start: GuestPhysAddr, size: usize) -> memory_set::MappingResult {
         match self {
             #[cfg(not(target_arch = "x86_64"))]
-            NestedPageTable::L3(pt) => {
-                pt.unmap_region(start, size, flush)
-                    .map_err(|_| MappingError::BadState)?
-                    .ignore();
-            }
-            NestedPageTable::L4(pt) => {
-                pt.unmap_region(start, size, flush)
-                    .map_err(|_| MappingError::BadState)?
-                    .ignore();
-            }
+            NestedPageTable::L3(pt) => pt
+                .cursor()
+                .unmap_region(start, size)
+                .map_err(|_| MappingError::BadState)?,
+            NestedPageTable::L4(pt) => pt
+                .cursor()
+                .unmap_region(start, size)
+                .map_err(|_| MappingError::BadState)?,
         }
         Ok(())
     }
@@ -173,8 +152,8 @@ impl<H: PagingHandler> NestedPageTable<H> {
     pub fn remap(&mut self, start: GuestPhysAddr, paddr: PhysAddr, flags: MappingFlags) -> bool {
         match self {
             #[cfg(not(target_arch = "x86_64"))]
-            NestedPageTable::L3(pt) => pt.remap(start, paddr, flags).is_ok(),
-            NestedPageTable::L4(pt) => pt.remap(start, paddr, flags).is_ok(),
+            NestedPageTable::L3(pt) => pt.cursor().remap(start, paddr, flags).is_ok(),
+            NestedPageTable::L4(pt) => pt.cursor().remap(start, paddr, flags).is_ok(),
         }
     }
 
@@ -184,19 +163,16 @@ impl<H: PagingHandler> NestedPageTable<H> {
         start: GuestPhysAddr,
         size: usize,
         new_flags: page_table_entry::MappingFlags,
-        flush: bool,
     ) -> bool {
         match self {
             #[cfg(not(target_arch = "x86_64"))]
             NestedPageTable::L3(pt) => pt
-                .protect_region(start, size, new_flags, flush) // If the TLB is refreshed immediately every time, there might be performance issues.
-                // The TLB refresh is managed uniformly at a higher level.
-                .map(|tlb| tlb.ignore())
+                .cursor()
+                .protect_region(start, size, new_flags) // If the TLB is refreshed immediately every time, there might be performance issues.
                 .is_ok(),
             NestedPageTable::L4(pt) => pt
-                .protect_region(start, size, new_flags, flush) // If the TLB is refreshed immediately every time, there might be performance issues.
-                // The TLB refresh is managed uniformly at a higher level.
-                .map(|tlb| tlb.ignore())
+                .cursor()
+                .protect_region(start, size, new_flags) // If the TLB is refreshed immediately every time, there might be performance issues.
                 .is_ok(),
         }
     }
@@ -205,11 +181,8 @@ impl<H: PagingHandler> NestedPageTable<H> {
     pub fn query(
         &self,
         vaddr: crate::GuestPhysAddr,
-    ) -> page_table_multiarch::PagingResult<(
-        memory_addr::PhysAddr,
-        page_table_entry::MappingFlags,
-        page_table_multiarch::PageSize,
-    )> {
+    ) -> page_table_multiarch::PagingResult<(PhysAddr, page_table_entry::MappingFlags, PageSize)>
+    {
         match self {
             #[cfg(not(target_arch = "x86_64"))]
             NestedPageTable::L3(pt) => pt.query(vaddr),

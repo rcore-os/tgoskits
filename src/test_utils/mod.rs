@@ -90,8 +90,29 @@ impl PagingHandler for MockHal {
         Self::mock_alloc_frame()
     }
 
+    fn alloc_frames(count: usize, _align: usize) -> Option<PhysAddr> {
+        if count == 0 {
+            return Some(PhysAddr::from(0));
+        }
+        // For simplicity, just allocate frames sequentially
+        let first = Self::mock_alloc_frame()?;
+        for _ in 1..count {
+            if Self::mock_alloc_frame().is_none() {
+                return None;
+            }
+        }
+        Some(first)
+    }
+
     fn dealloc_frame(_paddr: PhysAddr) {
         Self::mock_dealloc_frame(_paddr)
+    }
+
+    fn dealloc_frames(paddr: PhysAddr, count: usize) {
+        for i in 0..count {
+            let offset = i * PAGE_SIZE;
+            Self::mock_dealloc_frame(PhysAddr::from(paddr.as_usize() + offset));
+        }
     }
 
     fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {

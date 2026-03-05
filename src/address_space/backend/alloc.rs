@@ -61,7 +61,6 @@ impl<H: PagingHandler> Backend<H> {
                 size,
                 MappingFlags::empty(),
                 false,
-                false,
             )
             .is_ok()
         }
@@ -76,7 +75,7 @@ impl<H: PagingHandler> Backend<H> {
     ) -> bool {
         debug!("unmap_alloc: [{:#x}, {:#x})", start, start + size);
         for addr in PageIter4K::new(start, start + size).unwrap() {
-            if let Ok((frame, page_size)) = pt.unmap(addr) {
+            if let Ok((frame, _, page_size)) = pt.unmap(addr) {
                 // Deallocate the physical frame if there is a mapping in the
                 // page table.
                 if page_size.is_huge() {
