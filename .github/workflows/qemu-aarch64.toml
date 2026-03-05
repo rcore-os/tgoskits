@@ -15,7 +15,7 @@ args = [
   "-m",
   "8g",
 ]
-fail_regex = []
+fail_regex = ["panicked at"]
 success_regex = [
     "Hello, world!",
     "test pass!",

@@ -46,11 +46,12 @@ jobs:
         run: |
           echo $BOARD_POWER_RESET
           export RUST_LOG=debug
-          cargo xtask uboot \
+          # Use script to provide a PTY so ostool's crossterm can initialize (avoids "reader source not set" panic in CI)
+          script -q -c "cargo xtask uboot \
             --build-config configs/board/${{ matrix.board }}.toml \
             --uboot-config .github/workflows/uboot.toml \
             --vmconfigs ${{ matrix.vmconfigs }} \
-            --bin-dir /home/runner/tftp
+            --bin-dir /home/runner/tftp" /dev/null
           # cargo xtask uboot \
           #   --build-config configs/board/${{ matrix.board }}.toml \
           #   --uboot-config .github/workflows/uboot.toml

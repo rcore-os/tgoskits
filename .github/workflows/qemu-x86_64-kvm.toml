@@ -1,3 +1,6 @@
+# QEMU x86_64 配置 - KVM 加速（需 VT-x/VMX 支持）
+# 用于物理 Linux 机或支持嵌套虚拟化的 VM
+# 若使用 TCG（无 KVM），请用 qemu-x86_64.toml
 args = [
   "-m",
   "128M",

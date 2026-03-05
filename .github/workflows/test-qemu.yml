@@ -70,6 +70,13 @@ jobs:
             "memory")
               sed -i 's|^kernel_path[[:space:]]*=.*|kernel_path = "'"${IMAGE_DIR}"'/'"$img"'/'"$img_name"'"|' "$config"
               echo "Memory storage mode - updating kernel_path"
+              # NimbOS x86_64 requires axvm-bios for bootstrapping; ensure it exists in the extracted image
+              if [[ "$img" == "qemu_x86_64_nimbos" ]]; then
+                if [ ! -f "${IMAGE_DIR}/${img}/axvm-bios.bin" ]; then
+                  echo "ERROR: axvm-bios.bin not found for NimbOS image at ${IMAGE_DIR}/${img}/axvm-bios.bin"
+                  exit 1
+                fi
+              fi
               ;;
             *)
               echo "Unknown image_location: $image_location"
@@ -96,7 +103,15 @@ jobs:
       - name: Run tests
         run: |
           export RUST_LOG=debug
-          cargo xtask qemu \
-            --build-config configs/board/qemu-${{ matrix.arch }}.toml \
-            --qemu-config .github/workflows/qemu-${{ matrix.arch }}.toml \
-            --vmconfigs ${{ matrix.vmconfigs }}
+          if [ "${{ matrix.vmconfigs_name }}" = "NimbOS" ]; then
+            python3 scripts/ci_run_qemu_nimbos.py -- \
+              cargo xtask qemu \
+              --build-config configs/board/qemu-${{ matrix.arch }}.toml \
+              --qemu-config .github/workflows/qemu-${{ matrix.arch }}.toml \
+              --vmconfigs ${{ matrix.vmconfigs }}
+          else
+            cargo xtask qemu \
+              --build-config configs/board/qemu-${{ matrix.arch }}.toml \
+              --qemu-config .github/workflows/qemu-${{ matrix.arch }}.toml \
+              --vmconfigs ${{ matrix.vmconfigs }}
+          fi

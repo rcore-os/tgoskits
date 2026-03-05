@@ -61,6 +61,8 @@ AxVisor is built based on the Rust ecosystem, providing complete project build, 
 
 ## Build Environment
 
+> **Quick Start**: To quickly run AxVisor on QEMU, see the [QEMU Quickstart Guide](doc/qemu-quickstart.md) for a complete walkthrough from environment setup to running guest OSes.
+
 First, in a Linux environment, you need to install basic development tool packages such as `libssl-dev gcc libudev-dev pkg-config`.
 
 Second, AxVisor is written in the Rust programming language, so you need to install the Rust development environment according to the official Rust website instructions, and use the `cargo install cargo-binutils` command to install [cargo-binutils](https://github.com/rust-embedded/cargo-binutils) to use tools like `rust-objcopy` and `rust-objdump`.
@@ -92,6 +94,10 @@ AxVisor uses the xtask tool for build management, supporting multiple hardware p
 2. **Modify Configuration**: Use `cargo xtask menuconfig` to launch the interactive configuration interface, where you can adjust the target architecture, feature sets, log levels, and other parameters.
 
 3. **Execute Build**: Use `cargo xtask build` to compile the project according to the `.build.toml` configuration file, generating the target platform binary file.
+
+## QEMU Quick Run
+
+To quickly run AxVisor on QEMU with a guest OS (ArceOS / Linux / NimbOS), see the [QEMU Quickstart Guide](doc/qemu-quickstart.md).
 
 # Contributing
 

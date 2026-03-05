@@ -1,3 +1,7 @@
+[net]
+# 使用系统 git 拉取依赖，可利用已配置的 git 凭证（如 gh auth、credential helper）
+git-fetch-with-cli = true
+
 [target.aarch64-unknown-none-softfloat]
 rustflags = [
     "-Clink-args=-no-pie",
