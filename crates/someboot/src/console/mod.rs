@@ -154,6 +154,19 @@ pub fn set_earlycon_reciever(reciever: Reciever) {
     }
 }
 
+pub fn read_byte() -> Option<u8> {
+    unsafe {
+        if let Some(ref mut reciever) = *EARLYCON_RECIEVER.0.get() {
+            match reciever.read_byte() {
+                Some(Ok(byte)) => Some(byte),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }
+}
+
 static EARLYCON_SENDER: EarlyconSenderCell = EarlyconSenderCell(UnsafeCell::new(None));
 
 struct EarlyconSenderCell(UnsafeCell<Option<Sender>>);
