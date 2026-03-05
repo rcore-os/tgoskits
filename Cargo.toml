@@ -10,7 +10,7 @@ repository = "https://github.com/arceos-hypervisor/axvisor_api"
 
 [package]
 name = "axvisor_api"
-version = "0.2.0"
+version = "0.3.0"
 description = "Basic API for components of the Hypervisor on ArceOS"
 documentation = "https://docs.rs/axvisor_api"
 readme = "README.md"
@@ -24,15 +24,18 @@ repository.workspace = true
 [dependencies]
 # === Core Components ===
 # Procedural macro definitions
-axvisor_api_proc = { path = "axvisor_api_proc", version = "0.2.0" }
+axvisor_api_proc = { path = "axvisor_api_proc", version = "0.3.0"}
 
 # === Third-party Libraries ===
 # Address space abstraction
-axaddrspace = "0.1.0"
+axaddrspace = "0.3"
 # Interface definition tools
-crate_interface = "0.2"
+crate_interface = "0.3"
 # Physical/virtual address types
 memory_addr = "0.4"
+# CPU mask
+cpumask = "0.1.0"
+
 
 [package.metadata.docs.rs]
 all-features = true

@@ -170,6 +170,7 @@ pub trait MemoryIf {
 /// This struct provides an implementation of the `AxMmHal` trait from the
 /// `axaddrspace` crate, delegating to the axvisor_api memory functions.
 #[doc(hidden)]
+#[derive(Debug)]
 pub struct AxMmHalApiImpl;
 
 impl axaddrspace::AxMmHal for AxMmHalApiImpl {

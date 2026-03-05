@@ -71,6 +71,12 @@ pub type VCpuId = usize;
 /// Represents the interrupt vector number to be injected into a guest.
 pub type InterruptVector = u8;
 
+/// The maximum number of virtual CPUs supported in a virtual machine.
+pub const MAX_VCPU_NUM: usize = 64;
+
+/// A set of virtual CPUs.
+pub type VCpuSet = cpumask::CpuMask<MAX_VCPU_NUM>;
+
 /// The API trait for virtual machine management functionalities.
 ///
 /// This trait defines the core VM management interface required by the
@@ -78,6 +84,7 @@ pub type InterruptVector = u8;
 /// layer.
 #[crate::api_def]
 pub trait VmmIf {
+    /// Notify that a virtual CPU timer has expired.
     /// Get the identifier of the current virtual machine.
     ///
     /// This function returns the VM ID of the VM that the calling context
@@ -145,6 +152,9 @@ pub trait VmmIf {
     /// ```
     fn inject_interrupt(vm_id: VMId, vcpu_id: VCpuId, vector: InterruptVector);
 
+    /// Inject an interrupt to a set of virtual CPUs.
+    fn inject_interrupt_to_cpus(vm_id: VMId, vcpu_set: VCpuSet, vector: InterruptVector);
+
     /// Notify that a virtual CPU's timer has expired.
     ///
     /// This function is called when a vCPU's virtual timer expires and needs
@@ -162,7 +172,8 @@ pub trait VmmIf {
     fn notify_vcpu_timer_expired(vm_id: VMId, vcpu_id: VCpuId);
 }
 
-/// Get the number of virtual CPUs in the current virtual machine.
+/// Get the number of virtual CPUs in the current virtual machine executing on
+/// the current physical CPU.
 ///
 /// This is a convenience function that combines [`current_vm_id`] and
 /// [`vcpu_num`].
@@ -179,7 +190,8 @@ pub fn current_vm_vcpu_num() -> usize {
     vcpu_num(current_vm_id()).unwrap()
 }
 
-/// Get the bitmask of active virtual CPUs in the current virtual machine.
+/// Get the bitmask of active virtual CPUs in the current virtual machine
+/// executing on the current physical CPU.
 ///
 /// This is a convenience function that combines [`current_vm_id`] and
 /// [`active_vcpus`].

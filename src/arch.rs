@@ -133,4 +133,16 @@ pub trait ArchIf {
     /// later.
     #[cfg(target_arch = "aarch64")]
     fn get_host_gicr_base() -> PhysAddr;
+
+    /// Retrieve the current pending interrupt for the CPU from the physical hardware.
+    #[cfg(target_arch = "aarch64")]
+    fn fetch_irq() -> u64;
+    /// Calls the IRQ handler of the underlying OS to handle a pending interrupt.
+    ///
+    /// TODO: Determine if this function should be exposed in other architectures (and moved to
+    /// `host` module) or remain architecture-specific.
+    ///
+    /// TODO: Consider whether this function should replace `AxVCpuExitReason::ExternalInterrupt`.
+    #[cfg(target_arch = "aarch64")]
+    fn handle_irq();
 }
