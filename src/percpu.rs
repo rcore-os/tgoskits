@@ -12,10 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::marker::PhantomData;
-
 use axerrno::{AxError, AxResult};
-use axvcpu::{AxArchPerCpu, AxVCpuHal};
+use axvcpu::AxArchPerCpu;
 
 use riscv::register::sie;
 use riscv_h::register::{hedeleg, hideleg, hvip};
@@ -24,19 +22,15 @@ use crate::consts::traps;
 use crate::has_hardware_support;
 
 /// Risc-V per-CPU state.
-pub struct RISCVPerCpu<H: AxVCpuHal> {
-    _marker: PhantomData<H>,
-}
+pub struct RISCVPerCpu;
 
-impl<H: AxVCpuHal> AxArchPerCpu for RISCVPerCpu<H> {
+impl AxArchPerCpu for RISCVPerCpu {
     fn new(_cpu_id: usize) -> AxResult<Self> {
         unsafe {
             setup_csrs();
         }
 
-        Ok(Self {
-            _marker: PhantomData,
-        })
+        Ok(Self)
     }
 
     fn is_enabled(&self) -> bool {

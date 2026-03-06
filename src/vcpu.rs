@@ -36,8 +36,8 @@ use crate::{
 };
 
 use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, MappingFlags, device::AccessWidth};
-use axerrno::{AxError::InvalidData, AxResult};
-use axvcpu::{AxVCpuExitReason, AxVCpuHal};
+use axerrno::{AxErrorKind::InvalidData, AxResult};
+use axvcpu::AxVCpuExitReason;
 
 unsafe extern "C" {
     fn _run_guest(state: *mut VmCpuRegisters);
@@ -57,10 +57,9 @@ pub struct VCpuConfig {}
 
 #[derive(Default)]
 /// A virtual CPU within a guest
-pub struct RISCVVCpu<H: AxVCpuHal> {
+pub struct RISCVVCpu {
     regs: VmCpuRegisters,
     sbi: RISCVVCpuSbi,
-    _marker: core::marker::PhantomData<H>,
 }
 
 #[derive(RustSBI)]
@@ -76,7 +75,7 @@ impl Default for RISCVVCpuSbi {
     }
 }
 
-impl<H: AxVCpuHal> axvcpu::AxArchVCpu for RISCVVCpu<H> {
+impl axvcpu::AxArchVCpu for RISCVVCpu {
     type CreateConfig = RISCVVCpuCreateConfig;
 
     type SetupConfig = ();
@@ -92,7 +91,6 @@ impl<H: AxVCpuHal> axvcpu::AxArchVCpu for RISCVVCpu<H> {
         Ok(Self {
             regs,
             sbi: RISCVVCpuSbi::default(),
-            _marker: core::marker::PhantomData,
         })
     }
 
@@ -228,7 +226,7 @@ impl<H: AxVCpuHal> axvcpu::AxArchVCpu for RISCVVCpu<H> {
     }
 }
 
-impl<H: AxVCpuHal> RISCVVCpu<H> {
+impl RISCVVCpu {
     /// Gets one of the vCPU's general purpose registers.
     pub fn get_gpr(&self, index: GprIndex) -> usize {
         self.regs.guest_regs.gprs.reg(index)
@@ -250,7 +248,7 @@ impl<H: AxVCpuHal> RISCVVCpu<H> {
     }
 }
 
-impl<H: AxVCpuHal> RISCVVCpu<H> {
+impl RISCVVCpu {
     fn vmexit_handler(&mut self) -> AxResult<AxVCpuExitReason> {
         self.regs.trap_csrs.load_from_hw();
 
