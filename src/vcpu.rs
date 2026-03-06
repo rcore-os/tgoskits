@@ -314,6 +314,7 @@ static mut CURRENT_VCPU: Option<*mut u8> = None;
 ///
 /// It's guaranteed that each time before a method of [`AxArchVCpu`] is called, the current VCpu is set to the corresponding [`AxVCpu`].
 /// So methods of [`AxArchVCpu`] can always get the [`AxVCpu`] containing itself by calling this method.
+#[allow(static_mut_refs)]
 pub fn get_current_vcpu<'a, A: AxArchVCpu>() -> Option<&'a AxVCpu<A>> {
     unsafe {
         CURRENT_VCPU
@@ -327,6 +328,7 @@ pub fn get_current_vcpu<'a, A: AxArchVCpu>() -> Option<&'a AxVCpu<A>> {
 /// Get a mutable reference to the current VCpu on the current physical CPU.
 ///
 /// See [`get_current_vcpu`] for more details.
+#[allow(static_mut_refs)]
 pub fn get_current_vcpu_mut<'a, A: AxArchVCpu>() -> Option<&'a mut AxVCpu<A>> {
     unsafe {
         CURRENT_VCPU
@@ -342,6 +344,7 @@ pub fn get_current_vcpu_mut<'a, A: AxArchVCpu>() -> Option<&'a mut AxVCpu<A>> {
 /// # Safety
 /// This method is marked as unsafe because it may result in unexpected behavior if not used properly.
 /// Do not call this method unless you know what you are doing.
+#[allow(static_mut_refs)]
 pub unsafe fn set_current_vcpu<A: AxArchVCpu>(vcpu: &AxVCpu<A>) {
     unsafe {
         CURRENT_VCPU
@@ -354,7 +357,8 @@ pub unsafe fn set_current_vcpu<A: AxArchVCpu>(vcpu: &AxVCpu<A>) {
 ///
 /// # Safety
 /// This method is marked as unsafe because it may result in unexpected behavior if not used properly.
-/// Do not call this method unless you know what you are doing.    
+/// Do not call this method unless you know what you are doing.
+#[allow(static_mut_refs)]
 pub unsafe fn clear_current_vcpu<A: AxArchVCpu>() {
     unsafe {
         CURRENT_VCPU.current_ref_mut_raw().take();
