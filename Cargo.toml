@@ -19,21 +19,21 @@ homepage = "https://github.com/Starry-OS"
 repository = "https://github.com/Starry-OS/StarryOS"
 
 [workspace.dependencies]
-axfeat = { path = "arceos/api/axfeat" }
+axfeat = { version = "0.3.0-preview.2" }
 
-axalloc = { path = "arceos/modules/axalloc" }
-axconfig = { path = "arceos/modules/axconfig" }
-axdisplay = { path = "arceos/modules/axdisplay" }
-axdriver = { path = "arceos/modules/axdriver" }
-axfs = { path = "arceos/modules/axfs" }
-axhal = { path = "arceos/modules/axhal" }
-axinput = { path = "arceos/modules/axinput" }
-axlog = { path = "arceos/modules/axlog" }
-axmm = { path = "arceos/modules/axmm" }
-axnet = { path = "arceos/modules/axnet" }
-axruntime = { path = "arceos/modules/axruntime" }
-axsync = { path = "arceos/modules/axsync" }
-axtask = { path = "arceos/modules/axtask" }
+axalloc = { version = "0.3.0-preview.2" }
+axconfig = { version = "0.3.0-preview.2" }
+axdisplay = { version = "0.3.0-preview.2" }
+axdriver = { version = "0.3.0-preview.2" }
+axfs = { version = "0.3.0-preview.2", package = "axfs-ng" }
+axhal = { version = "0.3.0-preview.2" }
+axinput = { version = "0.3.0-preview.2" }
+axlog = { version = "0.3.0-preview.2" }
+axmm = { version = "0.3.0-preview.2" }
+axnet = { version = "0.3.0-preview.2", package = "axnet-ng" }
+axruntime = { version = "0.3.0-preview.2" }
+axsync = { version = "0.3.0-preview.2" }
+axtask = { version = "0.3.0-preview.2" }
 
 starry-kernel = { path = "kernel" }
 
@@ -58,7 +58,7 @@ qemu = [
     "starry-kernel/vsock",
 
     # auxilary features
-    "axfeat/fs-times",
+    "axfeat/fs-ng-times",
     "starry-kernel/dev-log",
 ]
 smp = ["axfeat/smp", "axplat-riscv64-visionfive2?/smp"]
