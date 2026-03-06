@@ -12,39 +12,41 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use axaddrspace::{HostPhysAddr, HostVirtAddr};
-use axerrno::AxResult;
+use memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr};
+use page_table_multiarch::PagingHandler;
 
-/// The interfaces which the underlying software (kernel or hypervisor) must implement.
-pub trait AxVMHal: Sized {
-    /// The low-level **OS-dependent** helpers that must be provided for physical address management.
-    type PagingHandler: page_table_multiarch::PagingHandler;
+pub struct PagingHandlerImpl;
 
-    /// Converts a virtual address to the corresponding physical address.
-    fn virt_to_phys(vaddr: HostVirtAddr) -> HostPhysAddr;
+impl PagingHandler for PagingHandlerImpl {
+    fn alloc_frames(num: usize, align: usize) -> Option<PhysAddr> {
+        let align_frames = if align.is_multiple_of(PAGE_SIZE_4K) {
+            align / PAGE_SIZE_4K
+        } else {
+            panic!("align must be multiple of PAGE_SIZE_4K")
+        };
 
-    /// Current time in nanoseconds.
-    fn current_time_nanos() -> u64;
+        let align_frames_pow2 = if align_frames.is_power_of_two() {
+            align_frames.trailing_zeros()
+        } else {
+            panic!("align must be a power of 2")
+        };
 
-    /// Current VM ID.
-    fn current_vm_id() -> usize;
+        axvisor_api::memory::alloc_contiguous_frames(num, align_frames_pow2 as _)
+    }
 
-    /// Current Virtual CPU ID.
-    fn current_vcpu_id() -> usize;
+    fn dealloc_frames(paddr: PhysAddr, num: usize) {
+        axvisor_api::memory::dealloc_contiguous_frames(paddr, num);
+    }
 
-    /// Current Physical CPU ID.
-    fn current_pcpu_id() -> usize;
+    fn alloc_frame() -> Option<PhysAddr> {
+        axvisor_api::memory::alloc_frame()
+    }
 
-    /// Get the Physical CPU ID where the specified VCPU of the current VM resides.
-    ///
-    /// Returns an error if the VCPU is not found.
-    fn vcpu_resides_on(vm_id: usize, vcpu_id: usize) -> AxResult<usize>;
+    fn dealloc_frame(paddr: PhysAddr) {
+        axvisor_api::memory::dealloc_frame(paddr)
+    }
 
-    /// Inject an IRQ to the specified VCPU.
-    ///
-    /// This method should find the physical CPU where the specified VCPU resides and inject the IRQ
-    /// to it on that physical CPU with [`axvcpu::AxVCpu::inject_interrupt`].
-    ///
-    /// Returns an error if the VCPU is not found.
-    fn inject_irq_to_vcpu(vm_id: usize, vcpu_id: usize, irq: usize) -> AxResult;
+    fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
+        axvisor_api::memory::phys_to_virt(paddr)
+    }
 }
