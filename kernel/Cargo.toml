@@ -45,8 +45,8 @@ crate_interface.workspace = true
 extern-trait = "0.2"
 fdt-parser = "0.4"
 memory_addr.workspace = true
-page_table_entry = {version = "0.5", features = ["arm-el2"]}
-page_table_multiarch = "0.5"
+page_table_entry.workspace = true
+page_table_multiarch.workspace = true
 percpu = {version = "0.2", features = ["arm-el2"]}
 rdif-intc = "0.12"
 rdrive = "0.18"
@@ -54,8 +54,8 @@ rdrive = "0.18"
 vm-fdt = {workspace = true, default-features = false, features = ["alloc"]}
 
 axdevice.workspace = true
-axdevice_base = "0.1"
-axvisor_api = "0.2"
+axdevice_base.workspace = true
+axvisor_api.workspace = true
 driver.workspace = true
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
@@ -64,8 +64,8 @@ arm-gic-driver = {version = "0.15.5", features = ["rdif"]}
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 axplat-riscv64-qemu-virt.workspace = true
-riscv_vplic = { git = "https://github.com/arceos-hypervisor/riscv_vplic.git", rev = "8bc5213" }
-riscv_vcpu = { git = "https://github.com/arceos-hypervisor/riscv_vcpu.git", branch = "master" }
+riscv_vplic.workspace = true
+riscv_vcpu.workspace = true
 
 [build-dependencies]
 axconfig.workspace = true
