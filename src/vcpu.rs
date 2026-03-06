@@ -181,60 +181,15 @@ impl<H: AxVCpuHal> Aarch64VCpu<H> {
         self.guest_system_regs.sctlr_el1 = 0x30C50830;
         self.guest_system_regs.pmcr_el0 = 0;
 
-        // use 3 level ept paging
-        // - 4KiB granule (TG0)
-        // - 39-bit address space (T0_SZ)
-        // - start at level 1 (SL0)
-        #[cfg(not(feature = "4-level-ept"))]
-        {
-            self.guest_system_regs.vtcr_el2 = (VTCR_EL2::PS::PA_40B_1TB
-                + VTCR_EL2::TG0::Granule4KB
+        self.guest_system_regs.vtcr_el2 = probe_vtcr_support()
+            + (VTCR_EL2::TG0::Granule4KB
                 + VTCR_EL2::SH0::Inner
                 + VTCR_EL2::ORGN0::NormalWBRAWA
-                + VTCR_EL2::IRGN0::NormalWBRAWA
-                + VTCR_EL2::SL0.val(0b01)
-                + VTCR_EL2::T0SZ.val(64 - 39))
-            .into();
-        }
+                + VTCR_EL2::IRGN0::NormalWBRAWA)
+                .value;
 
-        // use 4 level ept paging
-        // - 4KiB granule (TG0)
-        // - 48-bit address space (T0_SZ)
-        // - start at level 0 (SL0)
-        #[cfg(feature = "4-level-ept")]
-        {
-            // read PARange (bits 3:0)
-            let parange = (ID_AA64MMFR0_EL1.get() & 0xF) as u8;
-            // ARM Definition: 0x5 indicates 48 bits PA, 0x4 indicates 44 bits PA, and so on.
-            if parange <= 0x4 {
-                panic!(
-                    "CPU only supports {}-bit PA (< 44), \
-                 cannot enable 4-level EPT paging!",
-                    match parange {
-                        0x0 => 32,
-                        0x1 => 36,
-                        0x2 => 40,
-                        0x3 => 42,
-                        0x4 => 44,
-                        _ => 48,
-                    }
-                );
-            }
-            self.guest_system_regs.vtcr_el2 = (VTCR_EL2::PS::PA_48B_256TB
-                + VTCR_EL2::TG0::Granule4KB
-                + VTCR_EL2::SH0::Inner
-                + VTCR_EL2::ORGN0::NormalWBRAWA
-                + VTCR_EL2::IRGN0::NormalWBRAWA
-                + VTCR_EL2::SL0.val(0b10) // 0b10 means start at level 0
-                + VTCR_EL2::T0SZ.val(64 - 48))
-            .into();
-        }
-
-        let mut hcr_el2 = HCR_EL2::VM::Enable
-            + HCR_EL2::RW::EL1IsAarch64
-            + HCR_EL2::FMO::EnableVirtualFIQ
-            + HCR_EL2::TSC::EnableTrapEl1SmcToEl2
-            + HCR_EL2::RW::EL1IsAarch64;
+        let mut hcr_el2 =
+            HCR_EL2::VM::Enable + HCR_EL2::TSC::EnableTrapEl1SmcToEl2 + HCR_EL2::RW::EL1IsAarch64;
 
         if !config.passthrough_interrupt {
             // Set HCR_EL2.IMO will trap IRQs to EL2 while enabling virtual IRQs.
@@ -242,7 +197,7 @@ impl<H: AxVCpuHal> Aarch64VCpu<H> {
             // We must choose one of the two:
             // - Enable virtual IRQs and trap physical IRQs to EL2.
             // - Disable virtual IRQs and pass through physical IRQs to EL1.
-            hcr_el2 += HCR_EL2::IMO::EnableVirtualIRQ;
+            hcr_el2 += HCR_EL2::IMO::EnableVirtualIRQ + HCR_EL2::FMO::EnableVirtualFIQ;
         }
 
         self.guest_system_regs.hcr_el2 = hcr_el2.into();
@@ -454,4 +409,55 @@ impl<H: AxVCpuHal> Aarch64VCpu<H> {
             }
         }
     }
+}
+
+pub(crate) fn pa_bits() -> usize {
+    match ID_AA64MMFR0_EL1.read_as_enum(ID_AA64MMFR0_EL1::PARange) {
+        Some(ID_AA64MMFR0_EL1::PARange::Value::Bits_32) => 32,
+        Some(ID_AA64MMFR0_EL1::PARange::Value::Bits_36) => 36,
+        Some(ID_AA64MMFR0_EL1::PARange::Value::Bits_40) => 40,
+        Some(ID_AA64MMFR0_EL1::PARange::Value::Bits_42) => 42,
+        Some(ID_AA64MMFR0_EL1::PARange::Value::Bits_44) => 44,
+        Some(ID_AA64MMFR0_EL1::PARange::Value::Bits_48) => 48,
+        Some(ID_AA64MMFR0_EL1::PARange::Value::Bits_52) => 52,
+        _ => 32,
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn current_gpt_level() -> usize {
+    let t0sz = VTCR_EL2.read(VTCR_EL2::T0SZ) as usize;
+    match t0sz {
+        16..=25 => 4,
+        26..=35 => 3,
+        _ => 2,
+    }
+}
+
+pub(crate) fn max_gpt_level(pa_bits: usize) -> usize {
+    match pa_bits {
+        44.. => 4,
+        _ => 3,
+    }
+}
+
+fn probe_vtcr_support() -> u64 {
+    let pa_bits = pa_bits();
+
+    let mut val = match max_gpt_level(pa_bits) {
+        4 => VTCR_EL2::SL0::Granule4KBLevel0 + VTCR_EL2::T0SZ.val(64 - 48),
+        _ => VTCR_EL2::SL0::Granule4KBLevel1 + VTCR_EL2::T0SZ.val(64 - 39),
+    };
+
+    match pa_bits {
+        52..=64 => val += VTCR_EL2::PS::PA_52B_4PB,
+        48..=51 => val += VTCR_EL2::PS::PA_48B_256TB,
+        44..=47 => val += VTCR_EL2::PS::PA_44B_16TB,
+        42..=43 => val += VTCR_EL2::PS::PA_42B_4TB,
+        40..=41 => val += VTCR_EL2::PS::PA_40B_1TB,
+        36..=39 => val += VTCR_EL2::PS::PA_36B_64GB,
+        _ => val += VTCR_EL2::PS::PA_32B_4GB,
+    }
+
+    val.value
 }
