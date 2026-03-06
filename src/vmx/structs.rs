@@ -17,18 +17,19 @@ use bitflags::bitflags;
 
 use memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
 
-use axaddrspace::{AxMmHal, HostPhysAddr, PhysFrame};
+use axaddrspace::HostPhysAddr;
 use axerrno::AxResult;
+use axvisor_api::memory::PhysFrame;
 
 use crate::msr::{Msr, MsrReadWrite};
 
 /// VMCS/VMXON region in 4K size. (SDM Vol. 3C, Section 24.2)
 #[derive(Debug)]
-pub struct VmxRegion<H: AxMmHal> {
-    frame: PhysFrame<H>,
+pub struct VmxRegion {
+    frame: PhysFrame,
 }
 
-impl<H: AxMmHal> VmxRegion<H> {
+impl VmxRegion {
     pub const unsafe fn uninit() -> Self {
         Self {
             frame: unsafe { PhysFrame::uninit() },
@@ -55,12 +56,12 @@ impl<H: AxMmHal> VmxRegion<H> {
 // I/O bitmap A contains one bit for each I/O port in the range 0000H through 7FFFH;
 // I/O bitmap B contains bits for ports in the range 8000H through FFFFH.
 #[derive(Debug)]
-pub struct IOBitmap<H: AxMmHal> {
-    io_bitmap_a_frame: PhysFrame<H>,
-    io_bitmap_b_frame: PhysFrame<H>,
+pub struct IOBitmap {
+    io_bitmap_a_frame: PhysFrame,
+    io_bitmap_b_frame: PhysFrame,
 }
 
-impl<H: AxMmHal> IOBitmap<H> {
+impl IOBitmap {
     pub fn passthrough_all() -> AxResult<Self> {
         Ok(Self {
             io_bitmap_a_frame: PhysFrame::alloc_zero()?,
@@ -115,11 +116,11 @@ impl<H: AxMmHal> IOBitmap<H> {
 }
 
 #[derive(Debug)]
-pub struct MsrBitmap<H: AxMmHal> {
-    frame: PhysFrame<H>,
+pub struct MsrBitmap {
+    frame: PhysFrame,
 }
 
-impl<H: AxMmHal> MsrBitmap<H> {
+impl MsrBitmap {
     pub fn passthrough_all() -> AxResult<Self> {
         Ok(Self {
             frame: PhysFrame::alloc_zero()?,
@@ -291,7 +292,7 @@ mod tests {
 
     #[test]
     fn test_vmx_region_uninit() {
-        let region = unsafe { VmxRegion::<MockMmHal>::uninit() };
+        let region = unsafe { VmxRegion::uninit() };
 
         // Test that we can create an uninitialized region
         // Can't test much more without allocating memory
@@ -305,7 +306,7 @@ mod tests {
         MockMmHal::reset();
 
         // Test VmxRegion::new with valid parameters
-        let region = VmxRegion::<MockMmHal>::new(0x12345, false);
+        let region = VmxRegion::new(0x12345, false);
         assert!(region.is_ok());
 
         let region = region.unwrap();
@@ -321,10 +322,10 @@ mod tests {
         MockMmHal::reset();
 
         // Test VmxRegion::new with different shadow indicator values
-        let region_no_shadow = VmxRegion::<MockMmHal>::new(0x12345, false);
+        let region_no_shadow = VmxRegion::new(0x12345, false);
         assert!(region_no_shadow.is_ok());
 
-        let region_with_shadow = VmxRegion::<MockMmHal>::new(0x12345, true);
+        let region_with_shadow = VmxRegion::new(0x12345, true);
         assert!(region_with_shadow.is_ok());
 
         // Test that both regions have valid physical addresses
@@ -347,11 +348,11 @@ mod tests {
         MockMmHal::reset();
 
         // Test passthrough_all creation
-        let passthrough_bitmap = IOBitmap::<MockMmHal>::passthrough_all();
+        let passthrough_bitmap = IOBitmap::passthrough_all();
         assert!(passthrough_bitmap.is_ok());
 
         // Test intercept_all creation
-        let intercept_bitmap = IOBitmap::<MockMmHal>::intercept_all();
+        let intercept_bitmap = IOBitmap::intercept_all();
         assert!(intercept_bitmap.is_ok());
 
         // Test that phys_addr returns valid addresses
@@ -368,11 +369,11 @@ mod tests {
         MockMmHal::reset();
 
         // Test passthrough_all creation
-        let passthrough_bitmap = MsrBitmap::<MockMmHal>::passthrough_all();
+        let passthrough_bitmap = MsrBitmap::passthrough_all();
         assert!(passthrough_bitmap.is_ok());
 
         // Test intercept_all creation
-        let intercept_bitmap = MsrBitmap::<MockMmHal>::intercept_all();
+        let intercept_bitmap = MsrBitmap::intercept_all();
         assert!(intercept_bitmap.is_ok());
 
         // Test that phys_addr returns valid addresses
@@ -466,13 +467,13 @@ mod tests {
     #[test]
     fn test_debug_implementations() {
         // Test that all our structs implement Debug properly
-        let vmx_region = unsafe { VmxRegion::<MockMmHal>::uninit() };
+        let vmx_region = unsafe { VmxRegion::uninit() };
         let _debug_str = format!("{:?}", vmx_region);
 
-        let io_bitmap = IOBitmap::<MockMmHal>::passthrough_all().unwrap();
+        let io_bitmap = IOBitmap::passthrough_all().unwrap();
         let _debug_str = format!("{:?}", io_bitmap);
 
-        let msr_bitmap = MsrBitmap::<MockMmHal>::passthrough_all().unwrap();
+        let msr_bitmap = MsrBitmap::passthrough_all().unwrap();
         let _debug_str = format!("{:?}", msr_bitmap);
 
         let flags = FeatureControlFlags::LOCKED;
