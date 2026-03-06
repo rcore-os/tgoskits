@@ -292,12 +292,12 @@ fn handle_smc64_exception(ctx: &mut TrapFrame) -> AxResult<AxVCpuExitReason> {
 
 /// Handles IRQ exceptions that occur from the current exception level.
 /// Dispatches IRQs to the appropriate handler provided by the underlying host OS,
-/// which is registered at [`crate::pcpu::IRQ_HANDLER`] during `Aarch64PerCpu::new()`.
+/// which is provided by `axvisor_api::arch::handle_irq()`.
 #[unsafe(no_mangle)]
 fn current_el_irq_handler(_tf: &mut TrapFrame) {
-    unsafe { crate::pcpu::IRQ_HANDLER.current_ref_raw() }
-        .get()
-        .unwrap()()
+    // TODO: consider if returning AxVCpuExitReason::ExternalInterrupt (or another enum variant) is
+    // better than directly calling the handler here.
+    axvisor_api::arch::handle_irq()
 }
 
 /// Handles synchronous exceptions that occur from the current exception level.
