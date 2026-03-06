@@ -17,15 +17,25 @@
     stp     x28, x29, [sp, 28 * 8]
     str     x30, [sp, 30 * 8]
 
+    .ifdef arm_el2
+    mrs     x9, elr_el2
+    mrs     x10, spsr_el2
+    .else
     mrs     x9, elr_el1
     mrs     x10, spsr_el1
+    .endif
     stp     x9, x10, [sp, 31 * 8]
 .endm
 
 .macro RESTORE_REGS
     ldp     x9, x10, [sp, 31 * 8]
+    .ifdef arm_el2
+    msr     elr_el2, x9
+    msr     spsr_el2, x10
+    .else
     msr     elr_el1, x9
     msr     spsr_el1, x10
+    .endif
 
     ldr     x30, [sp, 30 * 8]
     ldp     x28, x29, [sp, 28 * 8]

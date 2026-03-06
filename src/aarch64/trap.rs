@@ -1,4 +1,4 @@
-use aarch64_cpu::registers::{ESR_EL1, FAR_EL1};
+use aarch64_cpu::registers::*;
 use tock_registers::interfaces::Readable;
 
 use super::TrapFrame;
@@ -23,7 +23,10 @@ enum TrapSource {
 }
 
 core::arch::global_asm!(
+    #[cfg(not(feature = "arm-el2"))]
     include_str!("trap.S"),
+    #[cfg(feature = "arm-el2")]
+    concat!(".equ arm_el2, 1\n", include_str!("trap.S")),
     trapframe_size = const core::mem::size_of::<TrapFrame>(),
     TRAP_KIND_SYNC = const TrapKind::Synchronous as u8,
     TRAP_KIND_IRQ = const TrapKind::Irq as u8,
@@ -41,8 +44,34 @@ pub(super) fn is_valid_page_fault(iss: u64) -> bool {
     matches!(iss & 0b111100, 0b0100 | 0b1100) // IFSC or DFSC bits
 }
 
+#[inline(always)]
+fn fault_addr() -> usize {
+    #[cfg(not(feature = "arm-el2"))]
+    {
+        FAR_EL1.get() as usize
+    }
+
+    #[cfg(feature = "arm-el2")]
+    {
+        FAR_EL2.get() as usize
+    }
+}
+
+#[inline(always)]
+fn esr_value() -> u64 {
+    #[cfg(not(feature = "arm-el2"))]
+    {
+        ESR_EL1.get()
+    }
+
+    #[cfg(feature = "arm-el2")]
+    {
+        ESR_EL2.get()
+    }
+}
+
 fn handle_page_fault(tf: &mut TrapFrame, access_flags: PageFaultFlags) {
-    let vaddr = va!(FAR_EL1.get() as usize);
+    let vaddr = va!(fault_addr());
     if handle_trap!(PAGE_FAULT, vaddr, access_flags) {
         return;
     }
@@ -51,10 +80,10 @@ fn handle_page_fault(tf: &mut TrapFrame, access_flags: PageFaultFlags) {
         return;
     }
     panic!(
-        "Unhandled EL1 Page Fault @ {:#x}, fault_vaddr={:#x}, ESR={:#x} ({:?}):\n{:#x?}\n{}",
+        "Unhandled Page Fault @ {:#x}, fault_vaddr={:#x}, ESR={:#x} ({:?}):\n{:#x?}\n{}",
         tf.elr,
         vaddr,
-        ESR_EL1.get(),
+        esr_value(),
         access_flags,
         tf,
         tf.backtrace()
@@ -80,12 +109,31 @@ fn aarch64_trap_handler(tf: &mut TrapFrame, kind: TrapKind, source: TrapSource) 
             handle_trap!(IRQ, 0);
         }
         TrapKind::Synchronous => {
+            #[cfg(not(feature = "arm-el2"))]
             let esr = ESR_EL1.extract();
+            #[cfg(feature = "arm-el2")]
+            let esr = ESR_EL2.extract();
+
+            #[cfg(not(feature = "arm-el2"))]
             let iss = esr.read(ESR_EL1::ISS);
-            match esr.read_as_enum(ESR_EL1::EC) {
+            #[cfg(feature = "arm-el2")]
+            let iss = esr.read(ESR_EL2::ISS);
+
+            #[cfg(not(feature = "arm-el2"))]
+            let ec = esr.read_as_enum(ESR_EL1::EC);
+            #[cfg(feature = "arm-el2")]
+            let ec = esr.read_as_enum(ESR_EL2::EC);
+
+            match ec {
+                #[cfg(not(feature = "arm-el2"))]
                 Some(ESR_EL1::EC::Value::InstrAbortCurrentEL) if is_valid_page_fault(iss) => {
                     handle_page_fault(tf, PageFaultFlags::EXECUTE);
                 }
+                #[cfg(feature = "arm-el2")]
+                Some(ESR_EL2::EC::Value::InstrAbortCurrentEL) if is_valid_page_fault(iss) => {
+                    handle_page_fault(tf, PageFaultFlags::EXECUTE);
+                }
+                #[cfg(not(feature = "arm-el2"))]
                 Some(ESR_EL1::EC::Value::DataAbortCurrentEL) if is_valid_page_fault(iss) => {
                     let wnr = (iss & (1 << 6)) != 0; // WnR: Write not Read
                     let cm = (iss & (1 << 8)) != 0; // CM: Cache maintenance
@@ -98,18 +146,43 @@ fn aarch64_trap_handler(tf: &mut TrapFrame, kind: TrapKind, source: TrapSource) 
                         },
                     );
                 }
+                #[cfg(feature = "arm-el2")]
+                Some(ESR_EL2::EC::Value::DataAbortCurrentEL) if is_valid_page_fault(iss) => {
+                    let wnr = (iss & (1 << 6)) != 0; // WnR: Write not Read
+                    let cm = (iss & (1 << 8)) != 0; // CM: Cache maintenance
+                    handle_page_fault(
+                        tf,
+                        if wnr & !cm {
+                            PageFaultFlags::WRITE
+                        } else {
+                            PageFaultFlags::READ
+                        },
+                    );
+                }
+                #[cfg(not(feature = "arm-el2"))]
                 Some(ESR_EL1::EC::Value::Brk64) => {
                     debug!("BRK #{:#x} @ {:#x} ", iss, tf.elr);
                     tf.elr += 4;
                 }
+                #[cfg(feature = "arm-el2")]
+                Some(ESR_EL2::EC::Value::Brk64) => {
+                    debug!("BRK #{:#x} @ {:#x} ", iss, tf.elr);
+                    tf.elr += 4;
+                }
                 e => {
-                    let vaddr = va!(FAR_EL1.get() as usize);
+                    let vaddr = va!(fault_addr());
+
+                    #[cfg(not(feature = "arm-el2"))]
+                    let ec_bits = esr.read(ESR_EL1::EC);
+                    #[cfg(feature = "arm-el2")]
+                    let ec_bits = esr.read(ESR_EL2::EC);
+
                     panic!(
                         "Unhandled synchronous exception {:?} @ {:#x}: ESR={:#x} (EC {:#08b}, FAR: {:#x} ISS {:#x})\n{}",
                         e,
                         tf.elr,
                         esr.get(),
-                        esr.read(ESR_EL1::EC),
+                        ec_bits,
                         vaddr,
                         iss,
                         tf.backtrace()
