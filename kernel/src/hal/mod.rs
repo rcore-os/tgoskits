@@ -14,17 +14,13 @@
 
 use std::os::arceos::{
     self,
-    modules::{axhal::percpu::this_cpu_id, axtask},
+    modules::{axhal::percpu::this_cpu_id},
 };
 
-use axerrno::{AxResult, ax_err_type};
-use memory_addr::PAGE_SIZE_4K;
 use page_table_multiarch::PagingHandler;
-
 use arceos::modules::axhal;
 use axaddrspace::{AxMmHal, HostPhysAddr, HostVirtAddr};
 use axvm::AxVMPerCpu;
-use page_table_multiarch::PagingHandler;
 
 #[cfg_attr(target_arch = "aarch64", path = "arch/aarch64/mod.rs")]
 #[cfg_attr(target_arch = "x86_64", path = "arch/x86_64/mod.rs")]
