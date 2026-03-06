@@ -1,5 +1,5 @@
 [package]
-version = "0.2.1"
+version = "0.2.2"
 authors = [
   "Mingxian Su <aarkegz@gmail.com>",
   "DeBin Luo <luodeb@outlook.com>",
@@ -19,15 +19,15 @@ default = []
 vgicv3 = []
 
 [dependencies]
-axaddrspace = "0.1.4"
-axdevice_base = "0.2.1"
-axvisor_api = "0.1"
+axaddrspace = "0.3"
+axdevice_base = "0.2.2"
+axvisor_api = "0.3"
 
-aarch64-cpu = "10.0"
+aarch64-cpu = "11.0"
 aarch64_sysreg = "0.1.1"
-axerrno = "0.1.0"
+axerrno = "0.2"
 bitmaps = {version = "3.2", default-features = false}
 log = "0.4"
 memory_addr = "0.4"
-spin = "0.9"
+spin = "0.10"
 tock-registers = "0.10"
