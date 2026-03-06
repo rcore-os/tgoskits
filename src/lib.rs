@@ -13,10 +13,6 @@
 // limitations under the License.
 
 #![no_std]
-#![feature(new_range_api)]
-// #![feature(concat_idents)]
-// #![feature(naked_functions)]
-// #![feature(const_trait_impl)]
 
 //! This crate provides a minimal VM monitor (VMM) for running guest VMs.
 //!
@@ -37,6 +33,8 @@ pub use hal::AxVMHal;
 pub use vm::AxVCpuRef;
 pub use vm::AxVM;
 pub use vm::AxVMRef;
+pub use vm::VMMemoryRegion;
+pub use vm::VMStatus;
 
 /// The architecture-independent per-CPU type.
 pub type AxVMPerCpu<U> = axvcpu::AxPerCpu<vcpu::AxVMArchPerCpuImpl<U>>;
