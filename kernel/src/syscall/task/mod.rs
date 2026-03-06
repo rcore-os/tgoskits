@@ -1,4 +1,5 @@
 mod clone;
+mod clone3;
 mod ctl;
 mod execve;
 mod exit;
@@ -7,4 +8,6 @@ mod schedule;
 mod thread;
 mod wait;
 
-pub use self::{clone::*, ctl::*, execve::*, exit::*, job::*, schedule::*, thread::*, wait::*};
+pub use self::{
+    clone::*, clone3::*, ctl::*, execve::*, exit::*, job::*, schedule::*, thread::*, wait::*,
+};

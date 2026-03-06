@@ -429,6 +429,11 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg3(),
             uctx.arg4(),
         ),
+        Sysno::clone3 => sys_clone3(
+            uctx,
+            uctx.arg0() as _, // args_ptr
+            uctx.arg1() as _, // args_size
+        ),
         #[cfg(target_arch = "x86_64")]
         Sysno::fork => sys_fork(uctx),
         Sysno::exit => sys_exit(uctx.arg0() as _),

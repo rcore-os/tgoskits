@@ -237,6 +237,8 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
             .lock()
             .clear_proc_shm(process.pid());
     }
+    thr.exit_event.wake();
+
     if group_exit && !process.is_group_exited() {
         process.group_exit();
         let sig = SignalInfo::new_kernel(Signo::SIGKILL);

@@ -1,21 +1,34 @@
 use axerrno::{AxError, AxResult};
+use bitflags::bitflags;
 use starry_signal::SignalInfo;
 
 use crate::{
     file::{FD_TABLE, FileLike, PidFd, add_file_like},
     syscall::signal::make_queue_signal_info,
-    task::{get_process_data, send_signal_to_process},
+    task::{AsThread, get_process_data, get_task, send_signal_to_process},
 };
+
+bitflags! {
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct PidFdFlags: u32 {
+        const NONBLOCK = 2048;
+        const THREAD = 128;
+    }
+}
 
 pub fn sys_pidfd_open(pid: u32, flags: u32) -> AxResult<isize> {
     debug!("sys_pidfd_open <= pid: {pid}, flags: {flags}");
 
-    if flags != 0 {
-        return Err(AxError::InvalidInput);
-    }
+    let flags = PidFdFlags::from_bits(flags).ok_or(AxError::InvalidInput)?;
 
-    let task = get_process_data(pid)?;
-    let fd = PidFd::new(&task);
+    let fd = if flags.contains(PidFdFlags::THREAD) {
+        PidFd::new_thread(get_task(pid)?.as_thread())
+    } else {
+        PidFd::new_process(&get_process_data(pid)?)
+    };
+    if flags.contains(PidFdFlags::NONBLOCK) {
+        fd.set_nonblocking(true)?;
+    }
 
     fd.add_to_fd_table(true).map(|fd| fd as _)
 }
