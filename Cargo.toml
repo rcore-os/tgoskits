@@ -1,9 +1,9 @@
 [package]
 name = "range-alloc-arceos"
-version = "0.1.4-pre.1"
+version = "0.1.4"
 description = "Generic range allocator"
-homepage = "https://github.com/arceos-hypervisor/range-alloc"
-repository = "https://github.com/arceos-hypervisor/range-alloc"
+homepage = "https://github.com/arceos-hypervisor/range-alloc-arceos"
+repository = "https://github.com/arceos-hypervisor/range-alloc-arceos"
 keywords = ["allocator"]
 license = "MIT OR Apache-2.0"
 authors = ["the gfx-rs Developers"]
