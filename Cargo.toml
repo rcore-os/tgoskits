@@ -1,6 +1,6 @@
 [package]
 name = "axcpu"
-version = "0.3.0-preview.7"
+version = "0.3.0-preview.8"
 edition = "2021"
 authors = [
     "Yuekai Jia <equation618@gmail.com>",
@@ -28,7 +28,7 @@ default = []
 fp-simd = []
 tls = []
 uspace = []
-arm-el2 = []
+arm-el2 = ["page_table_entry/arm-el2"]
 
 [dependencies]
 axbacktrace = "0.1"
