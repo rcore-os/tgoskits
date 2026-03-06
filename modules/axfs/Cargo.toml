@@ -19,7 +19,7 @@ cap_access = "0.1"
 lazyinit = "0.2"
 spin = "0.9"
 log = "0.4"
-rsext4 = {git = "https://github.com/Dirinkbottle/rsext4.git", tag = "dev-251222"}
+rsext4 = {git = "https://github.com/Dirinkbottle/rsext4.git", branch = "main"}
 
 [dependencies.fatfs]
 default-features = false

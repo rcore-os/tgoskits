@@ -1,4 +1,5 @@
 [package]
+license = "Apache-2.0"
 edition = "2024"
 name = "axplat-x86-qemu-q35"
 version = "0.1.0"

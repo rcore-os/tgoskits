@@ -23,7 +23,7 @@ entry_point = 0x8020_0000
 image_location = "memory"
 # The file path of the kernel image.
 # kernel_path = "linux-6.6.62.bin"
-kernel_path = "tmp/Image"
+kernel_path = "/tmp/axvisor/qemu_aarch64_linux/qemu-aarch64"
 # The load address of the kernel image.
 kernel_load_addr = 0x8020_0000
 # The file path of the device tree blob (DTB).

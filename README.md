@@ -61,6 +61,8 @@ AxVisor is built based on the Rust ecosystem, providing complete project build, 
 
 ## Build Environment
 
+> **Quick Start**: To quickly run AxVisor on QEMU, see the [QEMU Quickstart Guide](doc/qemu-quickstart.md) for a complete walkthrough from environment setup to running guest OSes.
+
 First, in a Linux environment, you need to install basic development tool packages such as `libssl-dev gcc libudev-dev pkg-config`.
 
 Second, AxVisor is written in the Rust programming language, so you need to install the Rust development environment according to the official Rust website instructions, and use the `cargo install cargo-binutils` command to install [cargo-binutils](https://github.com/rust-embedded/cargo-binutils) to use tools like `rust-objcopy` and `rust-objdump`.
@@ -93,6 +95,10 @@ AxVisor uses the xtask tool for build management, supporting multiple hardware p
 
 3. **Execute Build**: Use `cargo xtask build` to compile the project according to the `.build.toml` configuration file, generating the target platform binary file.
 
+## QEMU Quick Run
+
+To quickly run AxVisor on QEMU with a guest OS (ArceOS / Linux / NimbOS), see the [QEMU Quickstart Guide](doc/qemu-quickstart.md).
+
 # Contributing
 
 Welcome to fork this repository and submit pull requests. The existence and development of this project is thanks to the support of all contributors.
@@ -107,9 +113,4 @@ You are also welcome to scan the QR code below to join the discussion group (ple
 
 # License
 
-AxVisor uses the following open-source licenses:
-
-- Apache-2.0
-- MulanPubL-2.0
-- MulanPSL2
-- GPL-3.0-or-later
+Axvisor is licensed under the Apache License, Version 2.0. See the [LICENSE](./LICENSE) file for details.

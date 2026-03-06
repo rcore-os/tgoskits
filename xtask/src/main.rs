@@ -1,3 +1,17 @@
+// Copyright 2025 The Axvisor Team
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #![cfg_attr(not(any(windows, unix)), no_main)]
 #![cfg_attr(not(any(windows, unix)), no_std)]
 #![cfg(any(windows, unix))]
@@ -55,12 +69,15 @@ struct QemuArgs {
     /// Path to custom build configuration file (TOML format)
     #[arg(long)]
     build_config: Option<PathBuf>,
+
     /// Path to custom QEMU configuration file
     #[arg(long)]
     qemu_config: Option<PathBuf>,
+
     /// Comma-separated list of VM configuration files
     #[arg(long)]
     vmconfigs: Vec<String>,
+
     #[command(flatten)]
     build: BuildArgs,
 }
@@ -70,18 +87,23 @@ struct ClippyArgs {
     /// Only check specific packages (comma separated)
     #[arg(long)]
     packages: Option<String>,
+
     /// Only check specific targets (comma separated)
     #[arg(long)]
     targets: Option<String>,
+
     /// Continue on error instead of exiting immediately
     #[arg(long)]
     continue_on_error: bool,
+
     /// Dry run - show what would be checked without running clippy
     #[arg(long)]
     dry_run: bool,
+
     /// Automatically fix clippy warnings where possible
     #[arg(long)]
     fix: bool,
+
     /// Allow fixing when the working directory is dirty (has uncommitted changes)
     #[arg(long)]
     allow_dirty: bool,
@@ -92,9 +114,11 @@ struct UbootArgs {
     /// Path to custom build configuration file (TOML format)
     #[arg(long)]
     build_config: Option<PathBuf>,
+
     /// Path to custom U-Boot configuration file
     #[arg(long)]
     uboot_config: Option<PathBuf>,
+
     /// Comma-separated list of VM configuration files
     #[arg(long)]
     vmconfigs: Vec<String>,
