@@ -11,7 +11,7 @@ use syn::{Item, ItemMod, parse, spanned::Spanned};
 #[proc_macro]
 pub fn build_test_setup(_input: TokenStream) -> TokenStream {
     quote! {
-    println!("cargo::rustc-link-arg-tests=-Ttest_case_link.ld");
+    println!("cargo::rustc-link-arg-tests=-Tlink-test.x");
     println!("cargo::rustc-link-arg-tests=-znostart-stop-gc");
     }
     .into()

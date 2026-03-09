@@ -125,25 +125,26 @@ impl KernelMemoryAllocator {
         self.low_address_heap.lock()
     }
 
-    // pub(crate) fn lock_heap64(&self) -> spin::MutexGuard<'_, Heap<64>> {
-    //     self.high_address_heap.lock()
-    // }
+    pub(crate) unsafe fn alloc_with_mask(
+        &self,
+        layout: core::alloc::Layout,
+        dma_mask: u64,
+    ) -> *mut u8 {
+        let guard = NoIrqGuard::new();
+        let result = if dma_mask <= u32::MAX as u64 {
+            Self::try_alloc(&self.low_address_heap, layout)
+        } else {
+            Self::try_alloc(&self.high_address_heap, layout)
+                .or_else(|| Self::try_alloc(&self.low_address_heap, layout))
+        };
+        drop(guard);
 
-    // pub(crate) unsafe fn alloc_with_mask(
-    //     &self,
-    //     layout: core::alloc::Layout,
-    //     dma_mask: u64,
-    // ) -> *mut u8 {
-    //     let guard = NoIrqGuard::new();
-    //     let result = if dma_mask <= u32::MAX as u64 {
-    //         Self::try_alloc(&self.heap32, layout)
-    //     } else {
-    //         Self::try_alloc(&self.heap64, layout).or_else(|| Self::try_alloc(&self.heap32, layout))
-    //     };
-    //     drop(guard);
+        result.map_or(null_mut(), |ptr| ptr.as_ptr())
+    }
 
-    //     result.map_or(null_mut(), |ptr| ptr.as_ptr())
-    // }
+    pub(crate) unsafe fn dealloc_raw(&self, ptr: *mut u8, layout: core::alloc::Layout) {
+        unsafe { <Self as GlobalAlloc>::dealloc(self, ptr, layout) }
+    }
 
     #[inline]
     fn try_alloc<const BITS: usize>(

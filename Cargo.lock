@@ -151,7 +151,7 @@ dependencies = [
  "bitflags 2.11.0",
  "cfg-if",
  "embedded-hal-nb",
- "fdt-parser",
+ "fdt-parser 0.4.18",
  "x86_64",
 ]
 
@@ -742,6 +742,17 @@ name = "fdt-parser"
 version = "0.4.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f95f0bda5ff920492f6573294d8e3a99b75ee2e5ef93ab313fc6d517fa46785"
+
+[[package]]
+name = "fdt-parser"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac31c65bf27abc963061bd20741543f422e413f7cce0145fff1750bb73dadabe"
+dependencies = [
+ "heapless 0.9.2",
+ "log",
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "fdt-raw"
@@ -1665,6 +1676,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "300e4bdb6b46b592948e700ea1ef24a4296491f6a0ee722b258040abd15a3714"
 
 [[package]]
+name = "nvme-driver"
+version = "0.4.0"
+dependencies = [
+ "bare-test 0.8.1",
+ "byte-unit",
+ "dma-api 0.7.1",
+ "fdt-parser 0.5.1",
+ "log",
+ "mmio-api",
+ "pcie 0.5.0",
+ "rd-block",
+ "spin 0.10.0",
+ "tock-registers 0.10.1",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1853,7 +1880,7 @@ dependencies = [
  "aarch64-cpu-ext",
  "any-uart",
  "bitflags 2.11.0",
- "fdt-parser",
+ "fdt-parser 0.4.18",
  "kasm-aarch64 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "kdef-pgtable",
  "log",
@@ -2247,7 +2274,7 @@ version = "0.18.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5bb19c33dcc59938b27666df7233c56dfdf980738b94558885786a546cb18c8"
 dependencies = [
- "fdt-parser",
+ "fdt-parser 0.4.18",
  "log",
  "paste",
  "pcie 0.4.5",
@@ -2262,7 +2289,7 @@ dependencies = [
 name = "rdrive"
 version = "0.19.1"
 dependencies = [
- "fdt-parser",
+ "fdt-parser 0.4.18",
  "log",
  "paste",
  "pcie 0.5.0",
@@ -2858,7 +2885,7 @@ dependencies = [
  "aarch64-cpu-ext",
  "any-uart",
  "bindeps-simple",
- "fdt-parser",
+ "fdt-parser 0.4.18",
  "futures",
  "heapless 0.8.0",
  "kasm-aarch64 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -2919,7 +2946,7 @@ dependencies = [
  "buddy_system_allocator 0.11.0",
  "byte-unit",
  "dma-api 0.5.2",
- "fdt-parser",
+ "fdt-parser 0.4.18",
  "heapless 0.9.2",
  "lazy_static",
  "lock_api",
@@ -2953,6 +2980,7 @@ dependencies = [
  "heapless 0.9.2",
  "kernutil",
  "log",
+ "mmio-api",
  "num-align",
  "page-table-generic 0.7.1",
  "rdrive 0.19.1",
@@ -3002,7 +3030,7 @@ dependencies = [
  "arm-gic-driver 0.15.12",
  "arrayvec",
  "buddy_system_allocator 0.11.0",
- "fdt-parser",
+ "fdt-parser 0.4.18",
  "heapless 0.9.2",
  "log",
  "memory_addr",

@@ -77,3 +77,16 @@ pub fn ioremap(phys_start: PhysAddr, size: usize) -> Result<IoMemAddr, PagingErr
     let pt = g.as_mut().expect("Kernel page table not initialized");
     pt.ioremap(phys_start, size, true)
 }
+
+pub fn iounmap(mmio: &mmio_api::MmioRaw) -> Result<(), PagingError> {
+    let phys_start = PhysAddr::from(mmio.phys_addr().as_usize());
+    let virt = crate::os::mem::__io(phys_start);
+    let end = virt + mmio.size();
+    let virt_start = virt.align_down(memory::page_size());
+    let virt_end = end.align_up(memory::page_size());
+    let size = virt_end - virt_start;
+
+    let mut g = KERNEL_TABLE.lock();
+    let pt = g.as_mut().expect("Kernel page table not initialized");
+    pt.unmap(virt_start.raw().into(), size)
+}

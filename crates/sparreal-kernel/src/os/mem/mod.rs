@@ -7,9 +7,11 @@ pub use allocator::{KernelAllocator, KernelMemoryAllocator, kernel_memory_alloca
 
 mod address;
 mod allocator;
+pub mod dma;
+pub mod mmio;
 pub(crate) mod paging;
 
-pub use paging::ioremap;
+pub use paging::{ioremap, iounmap};
 
 pub fn page_size() -> usize {
     crate::hal::al::memory::page_size()

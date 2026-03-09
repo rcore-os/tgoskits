@@ -58,5 +58,6 @@ rdif-pcie = { path = "driver/interface/rdif-pcie", version = "0.2" }
 rdif-block = { path = "driver/interface/rdif-block", version = "0.7" }
 
 rd-block = { path = "driver/block/rd-block", version = "0.1" }
+pcie = { path = "driver/bus/pcie", version = "0.5" }
 
 arm-gic-driver = { version = "0.17", path = "driver/intc/gic" }
