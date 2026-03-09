@@ -47,7 +47,7 @@ impl Frame {
     const OFFSET: usize = 1;
 
     fn read(fp: usize) -> Option<Self> {
-        if fp == 0 || fp % core::mem::align_of::<Frame>() != 0 {
+        if fp == 0 || !fp.is_multiple_of(core::mem::align_of::<Frame>()) {
             return None;
         }
 
