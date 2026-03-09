@@ -32,12 +32,11 @@ arm-el2 = ["page_table_entry/arm-el2"]
 
 [dependencies]
 axbacktrace = "0.1"
+cfg-if = "1.0"
 linkme = "0.3"
 log = "0.4"
-cfg-if = "1.0"
 memory_addr = "0.4"
 page_table_entry = "0.6"
-static_assertions = "1.1"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 lazyinit = "0.2"

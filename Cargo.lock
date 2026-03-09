@@ -44,7 +44,6 @@ dependencies = [
  "page_table_multiarch",
  "percpu",
  "riscv",
- "static_assertions",
  "tock-registers",
  "x86",
  "x86_64",
@@ -282,12 +281,6 @@ checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
 dependencies = [
  "lock_api",
 ]
-
-[[package]]
-name = "static_assertions"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "syn"

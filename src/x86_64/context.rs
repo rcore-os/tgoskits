@@ -175,7 +175,7 @@ pub struct FxsaveArea {
     _padding: [u64; 12],
 }
 
-static_assertions::const_assert_eq!(core::mem::size_of::<FxsaveArea>(), 512);
+const _: () = assert!(core::mem::size_of::<FxsaveArea>() == 512);
 
 /// Extended state of a task, such as FP/SIMD states.
 pub struct ExtendedState {
