@@ -59,8 +59,7 @@ jobs:
           name: starry-${{ inputs.arch }}
 
       - name: Prepare rootfs
-        run: |
-          make ARCH=${{ inputs.arch }} img
+        run: make ARCH=${{ inputs.arch }} rootfs
 
       - name: Test
-        run: scripts/ci-test.py ${{ inputs.arch }}
+        run: make ARCH=${{ inputs.arch }} ci-test

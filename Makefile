@@ -44,6 +44,9 @@ defconfig justrun clean:
 build run debug disasm: defconfig
 	@$(MAKE) -C make $@
 
+ci-test:
+	./scripts/ci-test.py $(ARCH)
+
 # Aliases
 rv:
 	$(MAKE) ARCH=riscv64 run

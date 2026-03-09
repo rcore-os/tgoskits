@@ -32,9 +32,9 @@ dependencies = [
 
 [[package]]
 name = "acpi"
-version = "6.1.0"
+version = "6.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ccf6d4e668d9babca9103f59f305d3bc55e24355cf166dbddf5a7a5e1243d06"
+checksum = "b763acdc1d85c36d61acf97a59938f23202d0e8efe45e8759de10c02db242744"
 dependencies = [
  "bit_field",
  "bitflags 2.11.0",
@@ -46,12 +46,12 @@ dependencies = [
 
 [[package]]
 name = "addr2line"
-version = "0.25.1"
+version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b5d307320b3181d6d7954e663bd7c774a838b8220fe0593c86d9fb09f498b4b"
+checksum = "9698bf0769c641b18618039fe2ebd41eb3541f98433000f64e663fab7cea2c87"
 dependencies = [
  "cpp_demangle",
- "gimli 0.32.3",
+ "gimli",
  "rustc-demangle",
 ]
 
@@ -265,7 +265,7 @@ dependencies = [
  "log",
  "memory_addr",
  "percpu",
- "strum",
+ "strum 0.27.2",
 ]
 
 [[package]]
@@ -283,13 +283,13 @@ dependencies = [
 
 [[package]]
 name = "axbacktrace"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf9566516f5d799b2f791a6ec5af57eec87d17624346f7c876fa006b922c99e6"
+checksum = "1ed127f24c722b06d19c9c1ff73907905bbc2f9463dfd7440652f3f0d6617a93"
 dependencies = [
  "addr2line",
  "cfg-if",
- "gimli 0.32.3",
+ "gimli",
  "log",
  "paste",
  "spin 0.10.0",
@@ -418,7 +418,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5703515bf1f113d272f1e6f6b7043976fbbee66553e21360e07cc7ba75866838"
 dependencies = [
  "axdriver_base",
- "strum",
+ "strum 0.27.2",
 ]
 
 [[package]]
@@ -483,7 +483,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f961d2868582a092fb1e71b90c16cc6f2cbbe7bb5fa7e4bd6fe61d882ce6bb34"
 dependencies = [
  "log",
- "strum",
+ "strum 0.27.2",
 ]
 
 [[package]]
@@ -567,15 +567,15 @@ dependencies = [
 
 [[package]]
 name = "axfs-ng-vfs"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf0d501c182116576111dc04ba89f48fea639b7080e0455393be5dbc41cfacef"
+checksum = "75b3fc5c71051e9ae0b29700aa6eb676b7dadb91be3415d2b374cc8d2a2d37c6"
 dependencies = [
  "axerrno 0.2.2",
  "axpoll",
  "bitflags 2.11.0",
  "cfg-if",
- "hashbrown 0.15.5",
+ "hashbrown",
  "inherit-methods-macro",
  "log",
  "smallvec",
@@ -746,7 +746,7 @@ dependencies = [
  "cfg-if",
  "enum_dispatch",
  "event-listener",
- "hashbrown 0.16.1",
+ "hashbrown",
  "lazy_static",
  "log",
  "ringbuf",
@@ -1283,9 +1283,9 @@ dependencies = [
 
 [[package]]
 name = "cpp_demangle"
-version = "0.4.5"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2bb79cb74d735044c972aae58ed0aaa9a837e85b01106a54c39e42e97f62253"
+checksum = "0667304c32ea56cb4cd6d2d7c0cfe9a2f8041229db8c033af7f8d69492429def"
 dependencies = [
  "cfg-if",
 ]
@@ -1678,12 +1678,6 @@ checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
 name = "foldhash"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
-
-[[package]]
-name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
@@ -1769,18 +1763,12 @@ dependencies = [
 
 [[package]]
 name = "gimli"
-version = "0.32.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
-dependencies = [
- "stable_deref_trait",
-]
-
-[[package]]
-name = "gimli"
 version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bf7f043f89559805f8c7cacc432749b2fa0d0a0a9ee46ce47164ed5ba7f126c"
+dependencies = [
+ "stable_deref_trait",
+]
 
 [[package]]
 name = "glob"
@@ -1805,24 +1793,13 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
-version = "0.15.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
-dependencies = [
- "allocator-api2",
- "equivalent",
- "foldhash 0.1.5",
-]
-
-[[package]]
-name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 dependencies = [
  "allocator-api2",
  "equivalent",
- "foldhash 0.2.0",
+ "foldhash",
 ]
 
 [[package]]
@@ -1870,7 +1847,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7714e70437a7dc3ac8eb7e6f8df75fd8eb422675fc7678aff7364301092b1017"
 dependencies = [
  "equivalent",
- "hashbrown 0.16.1",
+ "hashbrown",
 ]
 
 [[package]]
@@ -1944,7 +1921,7 @@ checksum = "3f1495ab3ea0a7cee31d14901a858a732e282c139b3d17d3f935aebeeefcc34a"
 dependencies = [
  "xmas-elf",
  "zero",
- "zerocopy 0.8.40",
+ "zerocopy 0.8.41",
 ]
 
 [[package]]
@@ -2024,9 +2001,9 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.182"
+version = "0.2.183"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6800badb6cb2082ffd7b6a67e6125bb39f18782f793520caee8cb8846be06112"
+checksum = "b5b646652bf6661599e1da8901b3b9522896f01e736bad5f723fe7a3a27f899d"
 
 [[package]]
 name = "libloading"
@@ -2101,7 +2078,7 @@ version = "0.16.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1dc47f592c06f33f8e3aea9591776ec7c9f9e4124778ff8a3c3b87159f7e593"
 dependencies = [
- "hashbrown 0.16.1",
+ "hashbrown",
 ]
 
 [[package]]
@@ -2592,9 +2569,9 @@ dependencies = [
 
 [[package]]
 name = "rdrive"
-version = "0.19.0"
+version = "0.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab4f7c92af8670536001b449bf8d27c67c22ff5f2391dd76ca2da9b5c5343f40"
+checksum = "b07b25da4361480c3ac22159f6b71ee712c4b6b3c82cb3fd20ad9b2fbe2a1d2e"
 dependencies = [
  "fdt-parser",
  "log",
@@ -2898,9 +2875,9 @@ dependencies = [
 
 [[package]]
 name = "someboot"
-version = "0.1.4"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d098355236a04942502f316661e06e8df92ac0e0db1c6c25922bab4b08e8317"
+checksum = "beca7da37e97c79fade1f8ee0ee1a186881cbc2364cb17593ad76cbe68545da9"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64-cpu-ext",
@@ -2942,9 +2919,9 @@ dependencies = [
 
 [[package]]
 name = "somehal"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0959f802461a5c3458a5eff143d0622f3710946b3c47129e20be257fb9648bb4"
+checksum = "c14ce6607060f05f2b4f1a9bad3bd990169a32daba5a74424f894bef530a6987"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "anyhow",
@@ -3017,7 +2994,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "starry-kernel"
-version = "0.1.0"
+version = "0.2.0-preview.2"
 dependencies = [
  "axalloc",
  "axbacktrace",
@@ -3048,8 +3025,8 @@ dependencies = [
  "event-listener",
  "extern-trait",
  "flatten_objects",
- "gimli 0.33.0",
- "hashbrown 0.16.1",
+ "gimli",
+ "hashbrown",
  "indoc",
  "inherit-methods-macro",
  "kernel-elf-parser",
@@ -3074,13 +3051,13 @@ dependencies = [
  "starry-process",
  "starry-signal",
  "starry-vm",
- "strum",
+ "strum 0.28.0",
  "syscalls",
  "uluru",
  "weak-map",
  "x86",
  "xmas-elf",
- "zerocopy 0.8.40",
+ "zerocopy 0.8.41",
 ]
 
 [[package]]
@@ -3109,7 +3086,7 @@ dependencies = [
  "linux-raw-sys",
  "log",
  "starry-vm",
- "strum",
+ "strum 0.27.2",
 ]
 
 [[package]]
@@ -3140,7 +3117,7 @@ dependencies = [
 
 [[package]]
 name = "starryos"
-version = "0.1.0"
+version = "0.2.0-preview.2"
 dependencies = [
  "axfeat",
  "axplat-riscv64-visionfive2",
@@ -3171,7 +3148,16 @@ version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
 dependencies = [
- "strum_macros",
+ "strum_macros 0.27.2",
+]
+
+[[package]]
+name = "strum"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9628de9b8791db39ceda2b119bbe13134770b56c138ec1d3af810d045c04f9bd"
+dependencies = [
+ "strum_macros 0.28.0",
 ]
 
 [[package]]
@@ -3179,6 +3165,18 @@ name = "strum_macros"
 version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7695ce3845ea4b33927c055a39dc438a45b059f7c1b3d91d38d10355fb8cbca7"
+dependencies = [
+ "heck 0.5.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "strum_macros"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab85eea0270ee17587ed4156089e10b9e6880ee688791d45a905f5b1ca36f664"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -3489,9 +3487,9 @@ dependencies = [
 
 [[package]]
 name = "winnow"
-version = "0.7.14"
+version = "0.7.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a5364e9d77fcdeeaa6062ced926ee3381faa2ee02d3eb83a5c27a8825540829"
+checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
 dependencies = [
  "memchr",
 ]
@@ -3585,11 +3583,11 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.40"
+version = "0.8.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a789c6e490b576db9f7e6b6d661bcc9799f7c0ac8352f56ea20193b2681532e5"
+checksum = "96e13bc581734df6250836c59a5f44f3c57db9f9acb9dc8e3eaabdaf6170254d"
 dependencies = [
- "zerocopy-derive 0.8.40",
+ "zerocopy-derive 0.8.41",
 ]
 
 [[package]]
@@ -3605,9 +3603,9 @@ dependencies = [
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.40"
+version = "0.8.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f65c489a7071a749c849713807783f70672b28094011623e200cb86dcb835953"
+checksum = "3545ea9e86d12ab9bba9fcd99b54c1556fd3199007def5a03c375623d05fac1c"
 dependencies = [
  "proc-macro2",
  "quote",
