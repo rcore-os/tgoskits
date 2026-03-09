@@ -1,27 +1,18 @@
 # Build output and other log/bin files from arceos
-/target
+**/target
 /.vscode
 /tmp
 /.arceos
 /.images
 /.image.toml
 
-.DS_Store
-*.asm
-*.img
+.img
 *.bin
 *.elf
 *.tmp_its
 *guest.S
 actual.out
 qemu.log
-rusty-tags.vi
-
-# Python virtual environment
-venv/
-__pycache__/
-*.pyc
-*.pyo
 
 /**/.axconfig.*
 /**/.hvconfig.*

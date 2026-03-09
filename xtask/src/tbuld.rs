@@ -82,10 +82,11 @@ impl Context {
             package: "axvisor".to_string(),
             features: config.features,
             log: config.log,
-            args: config.cargo_args,
+            args: vec!["--bin".to_string(), "axvisor".to_string()],
             to_bin: config.to_bin,
             ..Default::default()
         };
+        cargo.args.extend(config.cargo_args);
 
         if let Some(smp) = config.smp {
             cargo.env.insert("AXVISOR_SMP".to_string(), smp.to_string());

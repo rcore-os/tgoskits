@@ -1,6 +1,13 @@
 name: Test for QEMU
 
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+    branches:
+      - '**'
+    tags-ignore:
+      - '**'
+  pull_request:
+  workflow_call:
 
 jobs:
   test-qemu:
@@ -34,7 +41,6 @@ jobs:
       - name: Clean up workspace
         run: |
           [ -d .git ] && git submodule deinit -f . || true
-          [ -d .git/modules ] && rm -rf .git/modules || true
           [ -d .git ] && git clean -ffdx || true
 
       - name: Checkout
@@ -49,7 +55,6 @@ jobs:
       - name: Download images and patch vm configs
         run: |
           ls -lha .
-          ls -lha modules/
 
           IMAGE_DIR="/tmp/.axvisor-images"
           IFS=',' read -ra CONFIGS <<< "${{ matrix.vmconfigs }}"

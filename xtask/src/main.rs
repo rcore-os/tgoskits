@@ -12,6 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Build tool for Axvisor hypervisor.
+//!
+//! This crate provides the `xtask` binary for building, running, and managing
+//! the Axvisor hypervisor project.
+
 #![cfg_attr(not(any(windows, unix)), no_main)]
 #![cfg_attr(not(any(windows, unix)), no_std)]
 #![cfg(any(windows, unix))]

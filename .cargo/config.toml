@@ -4,9 +4,10 @@ git-fetch-with-cli = true
 
 [target.aarch64-unknown-none-softfloat]
 rustflags = [
-    "-Clink-args=-no-pie",
+    "-Crelocation-model=pic",
+    "-Clink-args=-pie",
     "-Clink-args=-znostart-stop-gc",
-    "-Clink-args=-Tlink.x",
+    "-Clink-args=-Taxplat.x",
 ]
 
 [target.'cfg(target_os = "none")']
@@ -20,5 +21,4 @@ rustflags = [
 ]
 
 [alias]
-xtask = "run --package xtask --"
-
+xtask = "run --bin xtask --no-default-features --features xtask --"
