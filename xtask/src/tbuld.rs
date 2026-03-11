@@ -77,6 +77,11 @@ impl Context {
             vm_config_paths.push(vm_config);
         }
 
+        let log_level = config
+            .log
+            .as_ref()
+            .map(|l| format!("{:?}", l).to_lowercase());
+
         let mut cargo = Cargo {
             target: config.target,
             package: "axvisor".to_string(),
@@ -90,6 +95,10 @@ impl Context {
 
         if let Some(smp) = config.smp {
             cargo.env.insert("AXVISOR_SMP".to_string(), smp.to_string());
+        }
+
+        if let Some(log_level) = log_level {
+            cargo.env.insert("AX_LOG".to_string(), log_level);
         }
 
         if !vm_config_paths.is_empty() {

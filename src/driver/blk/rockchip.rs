@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{format, vec::Vec};
+use alloc::{format, string::ToString, vec::Vec};
 use core::time::Duration;
 
 use rdif_clk::ClockId;
@@ -22,7 +22,7 @@ use rdrive::{
 use sdmmc::emmc::{self, EMmcHost};
 use spin::Once;
 
-use crate::driver::iomap;
+use crate::driver::{blk::PlatformDeviceBlock, iomap};
 
 module_driver!(
     name: "Rockchip sdhci",
@@ -39,8 +39,9 @@ module_driver!(
 fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
     let base_reg = info
         .node
-        .reg()
-        .and_then(|mut regs| regs.next())
+        .regs()
+        .into_iter()
+        .next()
         .ok_or(OnProbeError::other(alloc::format!(
             "[{}] has no reg",
             info.node.name()
@@ -48,31 +49,28 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
 
     let mmio_size = base_reg.size.unwrap_or(0x1000);
 
-    let mmio_base = iomap(base_reg.address, mmio_size)?;
+    let mmio_base = iomap(base_reg.address, mmio_size as usize)?;
 
-    let clock = info.node.clocks().collect::<Vec<_>>();
+    let clock: Vec<_> = info.node.clocks().into_iter().collect();
 
     info!("perparing to init emmc with clock");
 
     for clk in &clock {
         info!(
-            "clock: {}, select {}, name: {:?}, rate: {:?}",
-            clk.node.name(),
-            clk.select,
-            clk.name,
-            clk.clock_frequency
+            "clock: phandle {}, name: {:?}, cells: {:?}",
+            clk.phandle, clk.name, clk.cells
         );
 
-        if clk.name == Some("core") {
+        if clk.name == Some("core".to_string()) {
             let id = info
-                .phandle_to_device_id(clk.node.phandle().expect("clk no phandle"))
+                .phandle_to_device_id(clk.phandle)
                 .expect("no device id");
 
             let clk_dev = rdrive::get::<rdif_clk::Clk>(id).expect("clk not found");
 
             let clk_dev = ClkDev {
                 inner: clk_dev,
-                id: clk.select.into(),
+                id: (clk.select().unwrap_or(0) as usize).into(),
                 // TODO: verify the id
                 // id: 300.into(),
             };
@@ -98,7 +96,7 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
     info!("eMMC card info: {:#?}", info);
 
     let dev = BlockDivce { dev: Some(emmc) };
-    plat_dev.register(Device::new(dev));
+    plat_dev.register_block(dev);
     debug!("virtio block device registered successfully");
     Ok(())
 }

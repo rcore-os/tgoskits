@@ -79,7 +79,7 @@ timer_list = "0.1.0"
 hashbrown = "0.14"
 
 # System dependent modules provided by ArceOS.
-axstd = { version = "=0.3.0-preview.2", features = [
+axstd = { version = "=0.3.0-preview.3", features = [
   "alloc-level-1",
   "paging",
   "irq",
@@ -115,7 +115,8 @@ percpu = { version = "0.2.3-preview.1", features = ["arm-el2"] }
 rdif-intc = "0.14"
 rdif-block = "0.7"
 rdif-clk = "0.5"
-rdrive = "0.19"
+rdrive = "0.20"
+rd-block = "0.1"
 pcie = "0.5.0"
 
 # Optional driver dependencies
@@ -135,7 +136,7 @@ axplat-x86-qemu-q35 = { version = "0.2.0", default-features = false, features = 
     "irq",
     "smp",
 ] }
-axconfig = { version = "=0.3.0-preview.2", features = ["plat-dyn"] }
+axconfig = { version = "=0.3.0-preview.3", features = ["plat-dyn"] }
 
 # xtask dependencies (only used when xtask feature is enabled)
 [target.'cfg(any(windows, unix))'.dependencies]
@@ -160,7 +161,7 @@ toml = { version = "0.9", optional = true }
 axvmconfig = { version = "0.2", features = ["std"], optional = true }
 
 [build-dependencies]
-axconfig = "=0.3.0-preview.2"
+axconfig = "=0.3.0-preview.3"
 prettyplease = "0.2"
 quote = "1.0"
 syn = "2.0"

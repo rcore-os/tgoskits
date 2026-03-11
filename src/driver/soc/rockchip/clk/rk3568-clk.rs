@@ -40,12 +40,8 @@ impl ClkDriver {
 }
 
 impl DriverGeneric for ClkDriver {
-    fn open(&mut self) -> Result<(), KError> {
-        Ok(())
-    }
-
-    fn close(&mut self) -> Result<(), KError> {
-        Ok(())
+    fn name(&self) -> &str {
+        "rk3568-clk"
     }
 }
 
@@ -109,8 +105,9 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
 
     let cru_reg = info
         .node
-        .reg()
-        .and_then(|mut regs| regs.next())
+        .regs()
+        .into_iter()
+        .next()
         .ok_or(OnProbeError::other(alloc::format!(
             "[{}] has no reg",
             info.node.name()
@@ -124,7 +121,7 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
 
     let cru_reg_base = iomap(
         (cru_reg.address as usize).into(),
-        cru_reg.size.unwrap_or(0x1000),
+        cru_reg.size.unwrap_or(0x1000) as usize,
     )
     .expect("Failed to iomap CRU");
 

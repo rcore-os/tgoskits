@@ -22,7 +22,7 @@ use core::{
 };
 
 use log::{debug, info};
-use rdrive::{Device, PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo};
+use rdrive::{PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo};
 
 use phytium_mci::sd::SdCard;
 use phytium_mci::{IoPad, PAD_ADDRESS, mci_host::err::MCIHostError};
@@ -32,7 +32,7 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use log::trace;
 
 use rdif_block::{BlkError, IQueue, Interface, Request, RequestId};
-use rdrive::{DriverGeneric, KError};
+use rdrive::DriverGeneric;
 
 use spin::Mutex;
 
@@ -52,6 +52,8 @@ impl Kernel for KernelImpl {
 
 set_impl!(KernelImpl);
 
+use crate::driver::blk::PlatformDeviceBlock;
+
 module_driver!(
     name: "Phytium SdCard",
     level: ProbeLevel::PostKernel,
@@ -68,8 +70,9 @@ fn probe_sdcard(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnPro
     info!("Probing Phytium SDCard...");
     let mci_reg = info
         .node
-        .reg()
-        .and_then(|mut regs| regs.next())
+        .regs()
+        .into_iter()
+        .next()
         .ok_or(OnProbeError::other(alloc::format!(
             "[{}] has no reg",
             info.node.name()
@@ -83,7 +86,7 @@ fn probe_sdcard(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnPro
 
     let mci_reg_base = iomap(
         (mci_reg.address as usize).into(),
-        mci_reg.size.unwrap_or(0x10000),
+        mci_reg.size.unwrap_or(0x10000) as usize,
     )
     .expect("Failed to iomap mci reg");
 
@@ -103,8 +106,7 @@ fn probe_sdcard(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnPro
     info!("MCI reg mapped at {:p}", mci_reg);
 
     let sdcard = SdCardDriver::new(mci_reg, iopad);
-    let dev = Device::new(sdcard);
-    plat_dev.register(dev);
+    plat_dev.register_block(sdcard);
 
     debug!("phytium block device registered successfully");
 

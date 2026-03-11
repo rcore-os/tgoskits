@@ -45,9 +45,8 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
 
     let mmio_base = iomap(base_reg.address, mmio_size)?;
 
-    let clk = Rk3588Cru::new(mmio_base);
-
-    let clk = rdif_clk::Clk::new(ClkDrv { inner: clk });
+    let cru = Rk3588Cru::new(mmio_base);
+    let clk = rdif_clk::Clk::new(ClkDrv::new(cru));
 
     plat_dev.register(clk);
     info!("clk registered successfully");
@@ -58,16 +57,18 @@ pub struct ClkDrv {
     inner: Rk3588Cru,
 }
 
+impl ClkDrv {
+    pub fn new(cru: Rk3588Cru) -> Self {
+        cru.init();
+        Self { inner: cru }
+    }
+}
+
 unsafe impl Send for ClkDrv {}
 
 impl DriverGeneric for ClkDrv {
-    fn open(&mut self) -> Result<(), rdrive::KError> {
-        self.inner.init();
-        Ok(())
-    }
-
-    fn close(&mut self) -> Result<(), rdrive::KError> {
-        Ok(())
+    fn name(&self) -> &str {
+        "rk3588-clk"
     }
 }
 
