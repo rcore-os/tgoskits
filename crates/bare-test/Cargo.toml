@@ -9,8 +9,19 @@ edition.workspace = true
 repository.workspace = true
 version = "0.8.1"
 
+[features]
+default = []
+net = ["dep:dma-api", "dep:rdif-eth", "dep:smoltcp"]
+
 [dependencies]
 bare-test-macros.workspace = true
+dma-api = { workspace = true, optional = true }
 log.workspace = true
+rdif-eth = { workspace = true, optional = true }
+smoltcp = { version = "0.12", default-features = false, features = [
+    "alloc",
+    "medium-ethernet",
+    "proto-ipv4",
+    "socket-icmp",
+], optional = true }
 sparreal-rt.workspace = true
-

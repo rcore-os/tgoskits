@@ -189,7 +189,10 @@ name = "bare-test"
 version = "0.8.1"
 dependencies = [
  "bare-test-macros 0.3.3",
+ "dma-api 0.7.1",
  "log",
+ "rdif-eth",
+ "smoltcp",
  "sparreal-rt",
 ]
 
@@ -211,16 +214,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "bare-test-net"
-version = "0.1.0"
-dependencies = [
- "bare-test",
- "dma-api 0.7.1",
- "rdif-eth",
- "smoltcp",
 ]
 
 [[package]]
@@ -538,7 +531,6 @@ name = "eth-intel"
 version = "0.1.0"
 dependencies = [
  "bare-test",
- "bare-test-net",
  "dma-api 0.7.1",
  "fdt-edit",
  "log",

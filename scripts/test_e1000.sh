@@ -11,6 +11,6 @@ cd "$PROJECT_ROOT" || exit 1
 cargo t --manifest-path ./driver/eth/intel/Cargo.toml \
 	--test test_e1000 \
 	--target aarch64-unknown-none-softfloat \
+	--config "$QEMU_CONFIG" \
 	-- \
-	--show-output \
-	--config "$QEMU_CONFIG"
+	--show-output

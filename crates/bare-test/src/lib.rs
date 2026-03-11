@@ -15,6 +15,8 @@ use alloc::{format, string::String, sync::Arc};
 pub use bare_test_macros::tests;
 pub use sparreal_rt::*;
 
+#[cfg(feature = "net")]
+pub mod net;
 mod test_case;
 
 #[sparreal_rt::entry]

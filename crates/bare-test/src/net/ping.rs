@@ -17,13 +17,13 @@ const LOCAL_IP: IpAddress = IpAddress::v4(10, 0, 2, 15);
 const GATEWAY_IP: Ipv4Address = Ipv4Address::new(10, 0, 2, 2);
 
 fn now() -> Instant {
-    let ms = bare_test::os::time::since_boot().as_millis() as i64;
+    let ms = crate::os::time::since_boot().as_millis() as i64;
     Instant::from_millis(ms)
 }
 
 fn spin_delay(duration: Duration) {
-    let start = bare_test::os::time::since_boot();
-    while bare_test::os::time::since_boot().saturating_sub(start) < duration {
+    let start = crate::os::time::since_boot();
+    while crate::os::time::since_boot().saturating_sub(start) < duration {
         core::hint::spin_loop();
     }
 }
@@ -48,7 +48,7 @@ impl NetDevice {
         for _ in 0..64 {
             let mut storage = vec![0u8; cfg.size.max(1536)];
             let map = unsafe {
-                bare_test::os::mem::dma::kernel_dma_op()
+                crate::os::mem::dma::kernel_dma_op()
                     .map_single(
                         cfg.dma_mask,
                         NonNull::new(storage.as_mut_ptr()).expect("nonnull rx buffer"),
@@ -101,7 +101,7 @@ impl NetDevice {
             match self.rx.poll_request(req_id) {
                 Ok(resp) => {
                     let len = resp.len.min(self.slots[idx].storage.len());
-                    bare_test::os::mem::dma::kernel_dma_op().prepare_read(
+                    crate::os::mem::dma::kernel_dma_op().prepare_read(
                         &self.slots[idx].map,
                         0,
                         len,
@@ -128,7 +128,7 @@ impl Drop for NetDevice {
     fn drop(&mut self) {
         for slot in &self.slots {
             unsafe {
-                bare_test::os::mem::dma::kernel_dma_op().unmap_single(slot.map);
+                crate::os::mem::dma::kernel_dma_op().unmap_single(slot.map);
             }
         }
     }
@@ -264,14 +264,14 @@ pub fn run_ping_test(nic: &mut dyn Interface) {
             let mut packet = smoltcp::wire::Icmpv4Packet::new_unchecked(payload);
             repr.emit(&mut packet, &dev.capabilities().checksum);
             sent = true;
-            bare_test::println!("ping_test: icmp echo request sent");
+            crate::println!("ping_test: icmp echo request sent");
         }
 
         if sent
             && socket.can_recv()
             && let Ok((_data, addr)) = socket.recv()
         {
-            bare_test::println!("ping_test: icmp echo reply from {addr:?}");
+            crate::println!("ping_test: icmp echo reply from {addr:?}");
             received = true;
             break;
         }

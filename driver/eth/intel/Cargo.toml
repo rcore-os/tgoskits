@@ -17,8 +17,7 @@ rdif-eth.workspace = true
 thiserror = { version = "2", default-features = false }
 
 [dev-dependencies]
-bare-test.workspace = true
-bare-test-net.workspace = true
+bare-test = { workspace = true, features = ["net"] }
 fdt-edit.workspace = true
 pcie.workspace = true
 
