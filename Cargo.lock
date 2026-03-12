@@ -435,6 +435,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-std-tokio_test"
+version = "0.1.0"
+dependencies = [
+ "arceos-rust",
+ "tokio",
+]
+
+[[package]]
 name = "arceos-tls"
 version = "0.3.1"
 dependencies = [
