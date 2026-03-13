@@ -1,0 +1,175 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# 主仓库 Subtree Pull 工作流
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# 此工作流用于从子仓库拉取更新到主仓库。与 scripts/push.yml（子仓库使用）配合。
+#
+# 【配合关系】
+# ─────────────────────────────────────────────────────────────────────────────
+# .github/workflows/push.yml (子仓库)        .github/workflows/pull.yml (主仓库)
+#        │                                            │
+#   子仓库 push ────────────────────────────────> repository_dispatch
+#        │                                            │
+#   发送通知 (curl API) ────────────────────────>   触发此工作流
+#                                                     │
+#                                               subtree pull 同步
+#
+# 【触发方式】
+# ─────────────────────────────────────────────────────────────────────────────
+# - 自动触发：子仓库通过 repository_dispatch 发送 subtree-update 事件
+# - 手动触发：Actions → Subtree Pull → Run workflow（指定组件名）
+#
+# 【前置条件】
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. 子仓库需配置 scripts/push.yml（包含正确的 PARENT_REPO）和 PARENT_REPO_TOKEN
+# 2. 无需 scripts/repos.list 也无需子仓库指定目录，subtree 目录由主仓库从 git 历史自动推断
+#
+# 【注意事项】
+# ─────────────────────────────────────────────────────────────────────────────
+# - 默认拉取到 next 分支，可根据需要修改 ref 参数
+# - 如果有冲突，subtree pull 会失败，需手动解决
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: Subtree Pull
+
+# 当收到组件仓库的更新通知时触发
+on:
+  repository_dispatch:
+    types: [subtree-update]
+  workflow_dispatch:
+    inputs:
+      repo_url:
+        description: '组件仓库 URL（如 https://github.com/arceos-hypervisor/arm_vcpu）'
+        required: true
+        type: string
+      branch:
+        description: '组件分支（留空则默认 main）'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  subtree-pull:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: next
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+      - name: Get component info
+        id: component
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            REPO_URL="${{ inputs.repo_url }}"
+            BRANCH="${{ inputs.branch }}"
+          else
+            REPO_URL="${{ github.event.client_payload.repo_url }}"
+            BRANCH="${{ github.event.client_payload.branch }}"
+          fi
+
+          if [ -z "$REPO_URL" ]; then
+            echo "Error: repo_url is empty."
+            exit 1
+          fi
+
+          BRANCH="${BRANCH:-main}"
+          COMPONENT=$(basename "${REPO_URL%.git}")
+
+          echo "component=${COMPONENT}" >> $GITHUB_OUTPUT
+          echo "repo_url=${REPO_URL}" >> $GITHUB_OUTPUT
+          echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
+
+          echo "Component : ${COMPONENT}"
+          echo "Repo URL  : ${REPO_URL}"
+          echo "Branch    : ${BRANCH}"
+
+      - name: Pull subtree updates
+        id: pull_subtree
+        run: |
+          COMPONENT="${{ steps.component.outputs.component }}"
+          BRANCH="${{ steps.component.outputs.branch }}"
+          REPO_URL="${{ steps.component.outputs.repo_url }}"
+
+          # remote 名取仓库名，避免斜杠
+          REMOTE_NAME="subtree-${COMPONENT}"
+
+          # 添加或更新 remote
+          if git remote | grep -q "^${REMOTE_NAME}$"; then
+            git remote set-url "${REMOTE_NAME}" "${REPO_URL}"
+          else
+            git remote add "${REMOTE_NAME}" "${REPO_URL}"
+          fi
+
+          # 先 fetch，才能用 merge-base 做祖先检查
+          echo "Fetching ${REPO_URL}:${BRANCH} ..."
+          git fetch "${REMOTE_NAME}" "${BRANCH}" --no-tags
+
+          # 从 git 历史自动推断 subtree 目录：
+          # git subtree add/pull 会在 merge commit 消息中写入
+          #   git-subtree-dir: <prefix>
+          #   git-subtree-split: <split-sha>
+          # 找到 split-sha 是本次 fetch HEAD 祖先的那条记录，即为本仓库对应的目录。
+          FULL_DIR=$(git log --format="%B" --grep="git-subtree-split:" | \
+            awk '/^git-subtree-dir:/{dir=$2} /^git-subtree-split:/{if(dir!="") print dir" "$2; dir=""}' | \
+            while IFS=' ' read -r dir split_sha; do
+              if git merge-base --is-ancestor "$split_sha" "${REMOTE_NAME}/${BRANCH}" 2>/dev/null; then
+                echo "$dir"
+                break
+              fi
+            done)
+
+          if [ -z "$FULL_DIR" ]; then
+            echo "Error: Cannot find a subtree prefix for ${REPO_URL} in this repository's git history."
+            echo "Make sure this repo was added via 'git subtree add' before using this workflow."
+            exit 1
+          fi
+
+          echo "Pulling updates for ${COMPONENT} from ${REPO_URL}:${BRANCH}"
+          echo "Detected subtree directory: ${FULL_DIR}"
+
+          # 执行 subtree pull
+          git subtree pull --prefix="${FULL_DIR}" "${REMOTE_NAME}" "${BRANCH}" \
+            -m "Merge subtree ${FULL_DIR} from ${COMPONENT}@${BRANCH}"
+
+          # 将推断出的目录传给后续步骤
+          echo "full_dir=${FULL_DIR}" >> $GITHUB_OUTPUT
+
+      - name: Push changes
+        run: |
+          # 检查是否有新提交需要推送
+          git fetch origin next --quiet
+          AHEAD=$(git rev-list --count origin/next..HEAD 2>/dev/null || echo "0")
+          
+          if [ "$AHEAD" -eq 0 ]; then
+            echo "No new commits to push"
+          else
+            echo "Pushing ${AHEAD} commit(s) to next branch..."
+            git push origin HEAD:next
+            echo "Changes pushed to next branch successfully"
+          fi
+
+      - name: Create summary
+        run: |
+          COMPONENT="${{ steps.component.outputs.component }}"
+          FULL_DIR="${{ steps.pull_subtree.outputs.full_dir }}"
+          BRANCH="${{ steps.component.outputs.branch }}"
+          REPO_URL="${{ steps.component.outputs.repo_url }}"
+          
+          echo "## Subtree Pull Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Component**: ${COMPONENT}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Directory**: ${FULL_DIR}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: ${BRANCH}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Repository**: ${REPO_URL}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ✅ Success" >> $GITHUB_STEP_SUMMARY

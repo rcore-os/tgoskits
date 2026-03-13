@@ -1,0 +1,259 @@
+[workspace.package]
+edition = "2024"
+version = "0.3.0-preview.3"
+authors = [
+    "RCore Team <yuchen@tsinghua.edu.cn>",
+    "Yuekai Jia <equation618@gmail.com>",
+]
+license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
+homepage = "https://github.com/rcore-os/tgoskits"
+repository = "https://github.com/rcore-os/tgoskits"
+keywords = ["arceos", "kernel"]
+categories = ["os", "no-std"]
+
+# [profile.release]
+# lto = true
+
+[workspace]
+resolver = "3"
+members = [
+    # components
+    "components/aarch64_sysreg",
+    "components/arm_pl011",
+    "components/arm_pl031",
+    "components/arm_vcpu",
+    "components/arm_vgic",
+    "components/axaddrspace",
+    "components/axallocator",
+    "components/axbacktrace",
+    "components/axdevice",
+    "components/axdevice_base",
+    "components/axerrno",
+    "components/axfs-ng-vfs",
+    "components/axhvc",
+    "components/axio",
+    "components/axklib",
+    "components/axpoll",
+    "components/axsched",
+    "components/axvcpu",
+    "components/axvm",
+    "components/axvmconfig",
+    "components/bitmap-allocator",
+    "components/cap_access",
+    "components/cpumask",
+    "components/handler_table",
+    "components/int_ratio",
+    "components/kernel_guard",
+    "components/kspin",
+    "components/lazyinit",
+    "components/linked_list_r4l",
+    "components/range-alloc-arceos",
+    "components/riscv-h",
+    "components/riscv_plic",
+    "components/riscv_vcpu",
+    "components/riscv_vplic",
+    "components/rsext4",
+    "components/scope-local",
+    "components/starry-process",
+    "components/starry-signal",
+    "components/starry-smoltcp",
+    "components/starry-vm",
+    "components/timer_list",
+    "components/virtio-drivers",
+
+    # os/arceos/modules
+    "os/arceos/modules/axalloc",
+    "os/arceos/modules/axconfig",
+    "os/arceos/modules/axdisplay",
+    "os/arceos/modules/axdma",
+    "os/arceos/modules/axdriver",
+    "os/arceos/modules/axfs",
+    "os/arceos/modules/axfs-ng",
+    "os/arceos/modules/axhal",
+    "os/arceos/modules/axinput",
+    "os/arceos/modules/axipi",
+    "os/arceos/modules/axlog",
+    "os/arceos/modules/axmm",
+    "os/arceos/modules/axnet",
+    "os/arceos/modules/axnet-ng",
+    "os/arceos/modules/axplat-dyn",
+    "os/arceos/modules/axruntime",
+    "os/arceos/modules/axsync",
+    "os/arceos/modules/axtask",
+
+    # os/arceos/api
+    "os/arceos/api/axfeat",
+    "os/arceos/api/arceos_api",
+    "os/arceos/api/arceos_posix_api",
+
+    # os/arceos/ulib
+    "os/arceos/ulib/axstd",
+    "os/arceos/ulib/axlibc",
+
+    # os/arceos/examples
+    "os/arceos/examples/helloworld",
+    "os/arceos/examples/helloworld-myplat",
+    "os/arceos/examples/httpclient",
+    "os/arceos/examples/httpserver",
+    "os/arceos/examples/shell",
+
+    # os/axvisor
+    "os/axvisor",
+
+    # virtio-drivers examples
+    "components/virtio-drivers/examples/aarch64",
+    "components/virtio-drivers/examples/hexagon",
+    "components/virtio-drivers/examples/riscv",
+    "components/virtio-drivers/examples/x86_64",
+    "components/virtio-drivers/examples/vsock_server",
+]
+exclude = [
+    # workspace directories
+    "components/axplat_crates",
+    "os/arceos",
+    "os/StarryOS",
+    "components/percpu",
+    "components/axvisor_api",
+    "components/crate_interface",
+    "components/ctor_bare",
+    "components/page_table_multiarch",
+    "components/axconfig-gen",
+    "components/axdriver_crates",
+    "components/axmm_crates",
+    "components/starry-smoltcp/fuzz",
+    "components/crate_interface/test_crates",
+]
+
+[patch.crates-io]
+# === axcpu ===
+axcpu = { path = "components/axcpu" }
+
+# === axplat ===
+axplat = { path = "components/axplat_crates/axplat" }
+axplat-macros = { path = "components/axplat_crates/axplat-macros" }
+axplat-aarch64-bsta1000b = { path = "components/axplat_crates/platforms/axplat-aarch64-bsta1000b" }
+axplat-aarch64-peripherals = { path = "components/axplat_crates/platforms/axplat-aarch64-peripherals" }
+axplat-aarch64-phytium-pi = { path = "components/axplat_crates/platforms/axplat-aarch64-phytium-pi" }
+axplat-aarch64-qemu-virt = { path = "components/axplat_crates/platforms/axplat-aarch64-qemu-virt" }
+axplat-aarch64-raspi = { path = "components/axplat_crates/platforms/axplat-aarch64-raspi" }
+axplat-loongarch64-qemu-virt = { path = "components/axplat_crates/platforms/axplat-loongarch64-qemu-virt" }
+axplat-riscv64-qemu-virt = { path = "components/axplat_crates/platforms/axplat-riscv64-qemu-virt" }
+axplat-x86-pc = { path = "components/axplat_crates/platforms/axplat-x86-pc" }
+
+# === axdriver ===
+axdriver_base = { path = "components/axdriver_crates/axdriver_base" }
+axdriver_block = { path = "components/axdriver_crates/axdriver_block" }
+axdriver_display = { path = "components/axdriver_crates/axdriver_display" }
+axdriver_net = { path = "components/axdriver_crates/axdriver_net" }
+axdriver_pci = { path = "components/axdriver_crates/axdriver_pci" }
+axdriver_virtio = { path = "components/axdriver_crates/axdriver_virtio" }
+
+# === percpu ===
+percpu = { path = "components/percpu/percpu" }
+percpu_macros = { path = "components/percpu/percpu_macros" }
+
+# === page_table ===
+page_table_entry = { path = "components/page_table_multiarch/page_table_entry" }
+page_table_multiarch = { path = "components/page_table_multiarch/page_table_multiarch" }
+
+# === crate_interface ===
+crate_interface_lite = { path = "components/crate_interface/crate_interface_lite" }
+
+# === ctor_bare ===
+ctor_bare = { path = "components/ctor_bare/ctor_bare" }
+ctor_bare_macros = { path = "components/ctor_bare/ctor_bare_macros" }
+
+# === memory (axmm_crates) ===
+memory_addr = { path = "components/axmm_crates/memory_addr" }
+memory_set = { path = "components/axmm_crates/memory_set" }
+
+# === bitmap-allocator ===
+bitmap-allocator = { path = "components/bitmap-allocator" }
+
+[workspace.dependencies]
+# === os/arceos crates (0.3.0-preview.3) ===
+# ulib
+axstd = { path = "os/arceos/ulib/axstd", version = "0.3.0-preview.3" }
+axlibc = { path = "os/arceos/ulib/axlibc", version = "0.3.0-preview.3" }
+
+# api
+arceos_api = { path = "os/arceos/api/arceos_api", version = "0.3.0-preview.3" }
+arceos_posix_api = { path = "os/arceos/api/arceos_posix_api", version = "0.3.0-preview.3" }
+axfeat = { path = "os/arceos/api/axfeat", version = "0.3.0-preview.3" }
+
+# modules
+axalloc = { path = "os/arceos/modules/axalloc", version = "0.3.0-preview.3" }
+axconfig = { path = "os/arceos/modules/axconfig", version = "0.3.0-preview.3" }
+axdisplay = { path = "os/arceos/modules/axdisplay", version = "0.3.0-preview.3" }
+axdma = { path = "os/arceos/modules/axdma", version = "0.3.0-preview.3" }
+axdriver = { path = "os/arceos/modules/axdriver", version = "0.3.0-preview.3" }
+axfs = { path = "os/arceos/modules/axfs", version = "0.3.0-preview.3" }
+axfs-ng = { path = "os/arceos/modules/axfs-ng", version = "0.3.0-preview.3" }
+axhal = { path = "os/arceos/modules/axhal", version = "0.3.0-preview.3" }
+axinput = { path = "os/arceos/modules/axinput", version = "0.3.0-preview.3" }
+axipi = { path = "os/arceos/modules/axipi", version = "0.3.0-preview.3" }
+axlog = { path = "os/arceos/modules/axlog", version = "0.3.0-preview.3" }
+axmm = { path = "os/arceos/modules/axmm", version = "0.3.0-preview.3" }
+axnet = { path = "os/arceos/modules/axnet", version = "0.3.0-preview.3" }
+axnet-ng = { path = "os/arceos/modules/axnet-ng", version = "0.3.0-preview.3" }
+axplat-dyn = { path = "os/arceos/modules/axplat-dyn", version = "0.3.0-preview.3", default-features = false }
+axruntime = { path = "os/arceos/modules/axruntime", version = "0.3.0-preview.3" }
+axsync = { path = "os/arceos/modules/axsync", version = "0.3.0-preview.3" }
+axtask = { path = "os/arceos/modules/axtask", version = "0.3.0-preview.3" }
+
+# === components (actual versions) ===
+axaddrspace = { path = "components/axaddrspace", version = "0.3.0" }
+axallocator = { path = "components/axallocator", version = "0.2.0" }
+axbacktrace = { path = "components/axbacktrace", version = "0.1.2" }
+axdevice = { path = "components/axdevice", version = "0.2.2" }
+axdevice_base = { path = "components/axdevice_base", version = "0.2.2" }
+axerrno = { path = "components/axerrno", version = "0.2.2" }
+axfs-ng-vfs = { path = "components/axfs-ng-vfs", version = "0.1.1" }
+axhvc = { path = "components/axhvc", version = "0.2.0" }
+axio = { path = "components/axio", version = "0.2.1" }
+axklib = { path = "components/axklib", version = "0.3.0" }
+axpoll = { path = "components/axpoll", version = "0.1.2" }
+axsched = { path = "components/axsched", version = "0.3.1" }
+axvcpu = { path = "components/axvcpu", version = "0.3.0" }
+axvm = { path = "components/axvm", version = "0.3.0" }
+axvmconfig = { path = "components/axvmconfig", version = "0.2.2" }
+
+# === External ax* crates ===
+axcpu = "0.3.0-preview.8"
+axplat = "0.3.1-pre.6"
+axplat-aarch64-bsta1000b = "0.3.1-pre.6"
+axplat-aarch64-peripherals = "0.3.1-pre.6"
+axplat-aarch64-phytium-pi = "0.3.1-pre.6"
+axplat-aarch64-qemu-virt = "0.3.1-pre.6"
+axplat-aarch64-raspi = "0.3.1-pre.6"
+axplat-loongarch64-qemu-virt = "0.3.1-pre.6"
+axplat-riscv64-qemu-virt = "0.3.1-pre.6"
+axplat-x86-pc = "0.3.1-pre.6"
+axdriver_base = "0.1.4-preview.3"
+axdriver_block = "0.1.4-preview.3"
+axdriver_display = "0.1.4-preview.3"
+axdriver_input = "0.1.4-preview.3"
+axdriver_net = "0.1.4-preview.3"
+axdriver_pci = "0.1.4-preview.3"
+axdriver_virtio = "0.1.4-preview.3"
+axdriver_vsock = "0.1.4-preview.3"
+
+# === Other external crates ===
+bindgen = "0.72"
+buddy-slab-allocator = "0.2"
+cfg-if = "1.0"
+chrono = { version = "0.4", default-features = false }
+crate_interface = "0.1"
+ctor_bare = "0.2"
+event-listener = { version = "5.4.0", default-features = false }
+kernel_guard = "0.1"
+kspin = "0.1"
+lazyinit = "0.2"
+lazy_static = { version = "1.5", features = ["spin_no_std"] }
+lock_api = { version = "0.4", default-features = false }
+log = "0.4"
+memory_addr = "0.4"
+page_table_multiarch = { version = "0.6", features = ["axerrno"] }
+percpu = "0.2.3-preview.1"
+scope-local = "0.1"
+spin = "0.10"
