@@ -1,0 +1,21 @@
+[package]
+name = "ctor_bare_macros"
+edition.workspace = true
+description = "Macros for registering constructor functions for Rust under no_std."
+documentation = "https://docs.rs/ctor_bare_macros"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[dependencies]
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full"] }
+
+[lib]
+proc-macro = true
