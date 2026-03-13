@@ -1,0 +1,23 @@
+[package]
+name = "axlog"
+version.workspace = true
+edition.workspace = true
+authors = ["Yuekai Jia <equation618@gmail.com>"]
+description = "Macros for multi-level formatted logging used by ArceOS"
+license.workspace = true
+homepage.workspace = true
+repository = "https://github.com/arceos-org/arceos/tree/main/modules/axlog"
+
+[features]
+std = ["dep:chrono"]
+default = []
+
+[dependencies]
+cfg-if.workspace = true
+chrono = { workspace = true, default-features = true, optional = true }
+crate_interface.workspace = true
+kspin.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+axlog = { path = ".", features = ["std"] }

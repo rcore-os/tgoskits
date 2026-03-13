@@ -1,0 +1,66 @@
+[package]
+name = "axtask"
+version.workspace = true
+edition.workspace = true
+authors = ["Yuekai Jia <equation618@gmail.com>"]
+description = "ArceOS task management module"
+license.workspace = true
+homepage.workspace = true
+repository = "https://github.com/arceos-org/arceos/tree/main/modules/axtask"
+
+[features]
+default = []
+
+multitask = [
+    "dep:axconfig",
+    "dep:axpoll",
+    "dep:axsched",
+    "dep:cpumask",
+    "dep:crate_interface",
+    "dep:event-listener",
+    "dep:futures-util",
+    "dep:kernel_guard",
+    "dep:kspin",
+    "dep:lazyinit",
+    "dep:memory_addr",
+    "dep:percpu",
+    "dep:spin",
+]
+task-ext = ["dep:extern-trait"]
+irq = ["axhal/irq"]
+tls = ["axhal/tls"]
+preempt = ["irq", "percpu?/preempt", "kernel_guard/preempt"]
+smp = ["kspin/smp"]
+
+sched-fifo = ["multitask"]
+sched-rr = ["multitask", "preempt"]
+sched-cfs = ["multitask", "preempt"]
+
+test = ["percpu?/sp-naive"]
+
+[dependencies]
+axconfig = { workspace = true, optional = true }
+axerrno.workspace = true
+axhal.workspace = true
+axpoll = { workspace = true, optional = true }
+axsched = { version = "0.3", optional = true }
+cfg-if.workspace = true
+cpumask = { version = "0.1", optional = true }
+crate_interface = { workspace = true, optional = true }
+event-listener = { workspace = true, optional = true }
+extern-trait = { version = "0.4", optional = true }
+futures-util = { version = "0.3", default-features = false, optional = true, features = [
+    "alloc",
+    "async-await-macro",
+] }
+kernel_guard = { workspace = true, optional = true }
+kspin = { workspace = true, optional = true }
+lazyinit = { workspace = true, optional = true }
+log.workspace = true
+memory_addr = { workspace = true, optional = true }
+percpu = { workspace = true, optional = true }
+spin = { workspace = true, optional = true }
+
+[dev-dependencies]
+axhal = { workspace = true, features = ["fp-simd"] }
+axtask = { path = ".", features = ["test", "multitask"] }

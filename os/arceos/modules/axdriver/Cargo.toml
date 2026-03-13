@@ -1,0 +1,63 @@
+[package]
+name = "axdriver"
+version.workspace = true
+edition.workspace = true
+authors = [
+    "Yuekai Jia <equation618@gmail.com>",
+    "ChengXiang Qi <kuangjux@outlook.com>",
+]
+description = "ArceOS device drivers"
+license.workspace = true
+homepage.workspace = true
+repository = "https://github.com/arceos-org/arceos/tree/main/modules/axdriver"
+
+[features]
+bus-mmio = []
+bus-pci = ["dep:axdriver_pci", "dep:axhal", "dep:axconfig"]
+net = ["dep:axdriver_net"]
+block = ["dep:axdriver_block"]
+display = ["dep:axdriver_display"]
+input = ["dep:axdriver_input"]
+vsock = ["axdriver_vsock"]
+
+# Enabled by features `virtio-*`
+virtio = ["dep:axdriver_virtio", "dep:axalloc", "dep:axhal", "dep:axconfig"]
+
+# various types of drivers
+virtio-blk = ["block", "virtio", "axdriver_virtio/block"]
+virtio-net = ["net", "virtio", "axdriver_virtio/net"]
+virtio-gpu = ["display", "virtio", "axdriver_virtio/gpu"]
+virtio-input = ["input", "virtio", "axdriver_virtio/input"]
+virtio-socket = ["vsock", "virtio", "axdriver_virtio/socket"]
+ramdisk = ["block", "axdriver_block/ramdisk"]
+bcm2835-sdhci = ["block", "axdriver_block/bcm2835-sdhci"]
+sdmmc = ["block", "axdriver_block/sdmmc", "dep:axhal", "dep:axconfig"]
+ahci = ["block", "axdriver_block/ahci", "dep:axhal", "dep:axconfig"]
+ixgbe = ["net", "axdriver_net/ixgbe", "dep:axalloc", "dep:axhal", "dep:axdma"]
+fxmac = ["net", "axdriver_net/fxmac", "dep:axalloc", "dep:axhal", "dep:axdma"]
+# more devices example: e1000 = ["net", "axdriver_net/e1000"]
+
+irq = []
+dyn = ["dep:axerrno", "dep:axplat-dyn"]
+
+default = ["bus-pci"]
+
+[dependencies]
+axalloc = { workspace = true, optional = true }
+axconfig = { workspace = true, optional = true }
+axdma = { workspace = true, optional = true }
+axdriver_base.workspace = true
+axdriver_block = { workspace = true, optional = true }
+axdriver_display = { workspace = true, optional = true }
+axdriver_input = { workspace = true, optional = true }
+axdriver_net = { workspace = true, optional = true }
+axdriver_pci = { workspace = true, optional = true }
+axdriver_virtio = { workspace = true, optional = true }
+axdriver_vsock = { workspace = true, optional = true }
+axerrno = { workspace = true, optional = true }
+axhal = { workspace = true, optional = true }
+cfg-if.workspace = true
+crate_interface.workspace = true
+log.workspace = true
+smallvec = { version = "1.15", features = ["const_generics", "union"] }
+axplat-dyn = { workspace = true, optional = true }

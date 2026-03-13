@@ -1,0 +1,59 @@
+[package]
+name = "axruntime"
+version.workspace = true
+edition.workspace = true
+authors = ["Yuekai Jia <equation618@gmail.com>"]
+description = "Runtime library of ArceOS"
+license.workspace = true
+homepage.workspace = true
+repository = "https://github.com/arceos-org/arceos/tree/main/modules/axruntime"
+
+[features]
+default = []
+
+alloc = ["dep:axalloc"]
+dma = ["paging"]
+hv = ["axalloc/hv"]
+ipi = ["dep:axipi"]
+irq = ["axhal/irq", "axtask?/irq", "dep:percpu"]
+multitask = ["axtask/multitask"]
+paging = ["axhal/paging", "dep:axmm", "dep:axklib"]
+rtc = []
+smp = ["axhal/smp", "axtask?/smp"]
+tls = ["axhal/tls", "axtask?/tls"]
+
+plat-dyn = ["axdriver/dyn", "paging"]
+
+axdriver = ["dep:axdriver"]
+display = ["axdriver", "dep:axdisplay"]
+fs = ["axdriver", "dep:axfs"]
+fs-ng = ["axdriver", "dep:axfs-ng"]
+input = ["axdriver", "dep:axinput"]
+net = ["axdriver", "dep:axnet"]
+net-ng = ["axdriver", "dep:axnet-ng"]
+vsock = ["net-ng", "axnet-ng/vsock"]
+
+[dependencies]
+axalloc = { workspace = true, optional = true }
+axbacktrace = { workspace = true }
+axconfig = { workspace = true }
+axdisplay = { workspace = true, optional = true }
+axdriver = { workspace = true, optional = true }
+axfs = { workspace = true, optional = true }
+axfs-ng = { workspace = true, optional = true }
+axhal = { workspace = true }
+axinput = { workspace = true, optional = true }
+axipi = { workspace = true, optional = true }
+axklib = { workspace = true, optional = true }
+axlog = { workspace = true }
+axmm = { workspace = true, optional = true }
+axnet = { workspace = true, optional = true }
+axnet-ng = { workspace = true, optional = true }
+axplat = { workspace = true }
+axtask = { workspace = true, optional = true }
+cfg-if = { workspace = true }
+chrono = { version = "0.4", default-features = false }
+crate_interface = { workspace = true }
+ctor_bare = "0.2"
+indoc = "2"
+percpu = { workspace = true, optional = true }

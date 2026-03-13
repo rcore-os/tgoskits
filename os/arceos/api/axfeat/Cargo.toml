@@ -1,0 +1,130 @@
+[package]
+name = "axfeat"
+version.workspace = true
+edition.workspace = true
+authors = ["Yuekai Jia <equation618@gmail.com>"]
+description = "Top-level feature selection for ArceOS"
+license.workspace = true
+homepage.workspace = true
+repository = "https://github.com/arceos-org/arceos/tree/main/api/axfeat"
+
+[features]
+default = []
+
+# Multicore
+smp = ["axhal/smp", "axruntime/smp", "axtask?/smp", "kspin/smp"]
+
+# Floating point/SIMD
+fp-simd = ["axhal/fp-simd"]
+
+# User space support
+uspace = ["axhal/uspace"]
+hv = ["axhal/hv"]
+
+# Interrupts
+irq = ["axhal/irq", "axruntime/irq", "axtask?/irq", "axdriver?/irq"]
+ipi = ["irq", "dep:axipi", "axhal/ipi", "axruntime/ipi"]
+
+# Custom or default platforms
+myplat = ["axhal/myplat"]
+defplat = ["axhal/defplat"]
+plat-dyn = [
+    "axhal/plat-dyn",
+    "paging",
+    "axruntime/plat-dyn",
+    "axconfig/plat-dyn",
+]
+
+# Memory
+alloc = ["axalloc", "axruntime/alloc"]
+alloc-tlsf = ["axalloc/tlsf"]
+alloc-slab = ["axalloc/slab"]
+alloc-buddy = ["axalloc/buddy"]
+alloc-level-1 = ["axalloc/level-1", "alloc"]
+page-alloc-64g = ["axalloc/page-alloc-64g"]                  # up to 64G memory capacity
+page-alloc-4g = ["axalloc/page-alloc-4g"]                    # up to 4G memory capacity
+paging = ["alloc", "axhal/paging", "axruntime/paging"]
+tls = ["alloc", "axhal/tls", "axruntime/tls", "axtask?/tls"]
+dma = ["alloc", "paging"]
+
+# Multi-threading and scheduler
+multitask = [
+    "alloc",
+    "axtask/multitask",
+    "axsync/multitask",
+    "axruntime/multitask",
+]
+task-ext = ["axtask/task-ext"]
+sched-fifo = ["axtask/sched-fifo"]
+sched-rr = ["axtask/sched-rr", "irq"]
+sched-cfs = ["axtask/sched-cfs", "irq"]
+
+# File system
+fs = [
+    "alloc",
+    "paging",
+    "axdriver/virtio-blk",
+    "dep:axfs",
+    "axruntime/fs",
+] # TODO: try to remove "paging"
+fs-ng = ["fs", "axruntime/fs-ng"]
+fs-ng-ext4 = ["fs-ng", "axfs-ng/ext4"]
+fs-ng-fat = ["fs-ng", "axfs-ng/fat"]
+fs-ng-times = ["fs-ng", "axfs-ng/times"]
+
+# Networking
+net = ["alloc", "paging", "axdriver/virtio-net", "dep:axnet", "axruntime/net"]
+net-ng = ["net", "irq", "multitask", "axruntime/net-ng"]
+vsock = ["axruntime/vsock"]
+
+# Display
+display = [
+    "alloc",
+    "paging",
+    "axdriver/virtio-gpu",
+    "dep:axdisplay",
+    "axruntime/display",
+]
+
+# Input
+input = [
+    "alloc",
+    "paging",
+    "axdriver/virtio-input",
+    "dep:axinput",
+    "axruntime/input",
+]
+
+# Real Time Clock (RTC) Driver.
+rtc = ["axhal/rtc", "axruntime/rtc"]
+
+# Device drivers
+bus-mmio = ["axdriver?/bus-mmio"]
+bus-pci = ["axdriver?/bus-pci"]
+driver-ramdisk = ["axdriver?/ramdisk", "axfs?/use-ramdisk"]
+driver-sdmmc = ["axdriver?/sdmmc"]
+driver-ixgbe = ["axdriver?/ixgbe"]
+driver-fxmac = ["axdriver?/fxmac"]                          # fxmac ethernet driver for PhytiumPi
+driver-bcm2835-sdhci = ["axdriver?/bcm2835-sdhci"]
+driver-ahci = ["axdriver?/ahci"]
+
+# Backtrace
+dwarf = ["alloc", "axbacktrace/dwarf"]
+
+[dependencies]
+axalloc = { workspace = true, optional = true }
+axbacktrace.workspace = true
+axconfig = { workspace = true, optional = true }
+axdisplay = { workspace = true, optional = true }
+axdriver = { workspace = true, optional = true }
+axfs = { workspace = true, optional = true }
+axfs-ng = { workspace = true, optional = true }
+axhal.workspace = true
+axinput = { workspace = true, optional = true }
+axipi = { workspace = true, optional = true }
+axlog.workspace = true
+axnet = { workspace = true, optional = true }
+axruntime.workspace = true
+axsync = { workspace = true, optional = true }
+axtask = { workspace = true, optional = true }
+kspin = { workspace = true, optional = true }

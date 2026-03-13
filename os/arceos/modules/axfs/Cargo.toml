@@ -1,0 +1,38 @@
+[package]
+name = "axfs"
+version.workspace = true
+edition.workspace = true
+authors = ["Yuekai Jia <equation618@gmail.com>"]
+description = "ArceOS filesystem module"
+license.workspace = true
+homepage.workspace = true
+repository = "https://github.com/arceos-org/arceos/tree/main/modules/axfs"
+
+[features]
+default = []
+times = []
+use-ramdisk = [] # TODO: init ramdisk
+
+[dependencies]
+axdriver = { workspace = true, features = ["block"] }
+axerrno = { workspace = true }
+axfs_devfs = { version = "0.1" }
+axfs_ramfs = { version = "0.1" }
+axfs_vfs = "0.1"
+axio = { workspace = true, features = ["alloc"] }
+cap_access = "0.1"
+lazyinit = "0.2"
+log = { workspace = true }
+rsext4 = "0.1.0-pre.0"
+spin = { workspace = true }
+
+[dependencies.axfatfs]
+version = "0.1.0-pre.0"
+default-features = false
+features = [
+  # no std
+  "alloc",
+  "lfn",
+  "log_level_trace",
+  "unicode",
+]

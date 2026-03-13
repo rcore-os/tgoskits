@@ -1,0 +1,13 @@
+[package]
+name = "arceos-shell"
+version = "0.1.0"
+edition.workspace = true
+authors = ["Yuekai Jia <equation618@gmail.com>"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+default = []
+
+[dependencies]
+axstd = { workspace = true, features = ["alloc", "fs"], optional = true }

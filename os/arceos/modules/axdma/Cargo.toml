@@ -1,0 +1,26 @@
+[package]
+name = "axdma"
+edition.workspace = true
+version.workspace = true
+authors = ["Zhour Rui <zrufo747@outlook.com>"]
+description = "ArceOS global DMA allocator"
+license.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+repository = "https://github.com/arceos-org/arceos/tree/main/modules/axdma"
+
+[features]
+default = []
+hv = ["dep:buddy-slab-allocator"]
+
+[dependencies]
+axalloc.workspace = true
+axallocator.workspace = true
+axconfig.workspace = true
+axhal.workspace = true
+axmm.workspace = true
+buddy-slab-allocator = { workspace = true, optional = true }
+kspin.workspace = true
+log.workspace = true
+memory_addr.workspace = true

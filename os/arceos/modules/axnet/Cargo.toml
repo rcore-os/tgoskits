@@ -1,0 +1,52 @@
+[package]
+name = "axnet"
+version.workspace = true
+edition.workspace = true
+authors = [
+  "Yuekai Jia <equation618@gmail.com>",
+  "ChengXiang Qi <kuangjux@outlook.com>",
+]
+description = "ArceOS network module"
+license.workspace = true
+homepage.workspace = true
+repository = "https://github.com/arceos-org/arceos/tree/main/modules/axnet"
+
+[features]
+smoltcp = ["dep:smoltcp"]
+default = ["smoltcp"]
+vsock = ["axdriver/vsock"]
+
+[dependencies]
+axdriver = { workspace = true, features = ["net"] }
+axerrno.workspace = true
+axhal.workspace = true
+axio.workspace = true
+axsync.workspace = true
+axtask.workspace = true
+cfg-if.workspace = true
+lazyinit.workspace = true
+log.workspace = true
+spin.workspace = true
+
+[dependencies.smoltcp]
+version = "0.12.1-preview.1"
+package = "starry-smoltcp"
+optional = true
+default-features = false
+features = [
+  "alloc",
+  "log",             # no std
+  "async",
+  "medium-ethernet",
+  "medium-ip",
+  "proto-ipv4",
+  "proto-ipv6",
+  "socket-raw",
+  "socket-icmp",
+  "socket-udp",
+  "socket-tcp",
+  "socket-dns",
+  # "fragmentation-buffer-size-65536", "proto-ipv4-fragmentation",
+  # "reassembly-buffer-size-65536", "reassembly-buffer-count-32",
+  # "assembler-max-segment-count-32",
+]
