@@ -1,0 +1,62 @@
+// Copyright 2025 The Axvisor Team
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#![no_std]
+#![feature(doc_cfg)]
+#![feature(riscv_ext_intrinsics)]
+#![doc = include_str!("../README.md")]
+
+#[macro_use]
+extern crate log;
+extern crate alloc;
+
+mod consts;
+/// The Control and Status Registers (CSRs) for a RISC-V hypervisor.
+mod detect;
+mod guest_mem;
+mod percpu;
+mod regs;
+mod sbi_console;
+mod trap;
+mod vcpu;
+
+pub use self::percpu::RISCVPerCpu;
+pub use self::vcpu::RISCVVCpu;
+pub use detect::detect_h_extension as has_hardware_support;
+pub use regs::GprIndex;
+
+/// Extension ID for hypercall, defined by ourselves.
+/// `0x48`, `0x56`, `0x43` is "HVC" in ASCII.
+///
+/// Borrowed from the design of `eid_from_str` in [sbi-spec](https://github.com/rustsbi/rustsbi/blob/62ab2e498ca66cdf75ce049c9dbc2f1862874553/sbi-spec/src/lib.rs#L51)
+pub const EID_HVC: usize = 0x485643;
+
+/// Configuration for creating a new `RISCVVCpu`
+#[derive(Clone, Debug)]
+pub struct RISCVVCpuCreateConfig {
+    /// The ID of the vCPU, default to `0`.
+    pub hart_id: usize,
+    /// The physical address of the device tree blob.
+    /// Default to `0x9000_0000`.
+    pub dtb_addr: usize,
+}
+
+impl Default for RISCVVCpuCreateConfig {
+    fn default() -> Self {
+        Self {
+            hart_id: 0,
+            dtb_addr: 0x9000_0000,
+        }
+    }
+}

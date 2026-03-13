@@ -1,0 +1,44 @@
+[package]
+name = "riscv_vcpu"
+version = "0.2.2"
+edition = "2024"
+authors = [
+    "KeYang Hu <keyang.hu@qq.com>",
+    "Mingxian Su <aarkegz@gmail.com>",
+    "Peizhong Qiu <15608652022@163.com>",
+    "周睿 <zrufo747@outlook.com>"
+]
+description = "ArceOS-Hypervisor riscv vcpu module"
+license = "Apache-2.0"
+repository = "https://github.com/arceos-hypervisor/riscv_vcpu"
+categories = ["embedded", "no-std"]
+keywords = ["hypervisor", "riscv", "vcpu"]
+
+[package.metadata.docs.rs]
+default-target = "riscv64gc-unknown-none-elf"
+targets = ["riscv64gc-unknown-none-elf"]
+
+[dependencies]
+log = "0.4"
+cfg-if = "1.0"
+bitflags = "2.2"
+bit_field = "0.10"
+crate_interface = "0.1"
+
+riscv = { version = "0.14.0", features = ["s-mode"] }
+riscv-h = "0.2"
+
+riscv-decode = "0.2.3"
+rustsbi = { version = "0.4.0", features = ["forward"] }
+sbi-rt = { version = "0.0.3", features = ["integer-impls"] }
+sbi-spec = { version = "0.0.7", features = ["legacy"] }
+tock-registers = "0.9"
+memoffset = { version = ">=0.6.5", features = ["unstable_const"] }
+
+axerrno = "0.1.0"
+page_table_entry = "0.6"
+memory_addr = "0.4"
+
+axaddrspace = "0.1.4"
+axvcpu = "0.2"
+axvisor_api = "0.1"
