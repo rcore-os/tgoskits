@@ -1,0 +1,43 @@
+[package]
+name = "x86_vcpu"
+version = "0.2.2"
+edition = "2024"
+authors = [
+    "Mingxian Su <aarkegz@gmail.com>",
+    "Keyang Hu <keyang.hu@qq.com>"
+]
+categories = ["virtualization", "no-std"]
+description = "x86 Virtual CPU implementation for the Arceos Hypervisor"
+repository = "https://github.com/arceos-hypervisor/x86_vcpu"
+keywords = ["x86", "vcpu", "hypervisor", "arceos"]
+license = "Apache-2.0"
+
+[dependencies]
+log = "0.4.19"
+cfg-if = "1.0"
+bitflags = "2.2"
+bit_field = "0.10"
+paste = "1.0.15"
+x86 = "0.52"
+x86_64 = "0.15"
+raw-cpuid = "11.0"
+numeric-enum-macro = "0.2"
+
+axerrno = "0.1.0"
+page_table_entry = "0.6"
+memory_addr = "0.4"
+crate_interface = "0.1"
+
+axaddrspace = "0.1.4"
+axvcpu = "0.2"
+x86_vlapic = "0.2.1"
+axdevice_base = "0.2.1"
+axvisor_api = "0.1.0"
+
+spin = { version = "0.9", default-features = false }
+
+[features]
+default = ["vmx"]
+tracing = []
+vmx = []
+svm = []
