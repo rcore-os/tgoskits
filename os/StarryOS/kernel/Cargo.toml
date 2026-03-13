@@ -1,0 +1,111 @@
+[package]
+name = "starry-kernel"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[features]
+dev-log = []
+input = ["dep:axinput", "axfeat/input"]
+memtrack = ["axfeat/dwarf", "axalloc/tracking", "dep:gimli"]
+vsock = ["axfeat/vsock"]
+
+[dependencies]
+axfeat = { workspace = true, features = [
+    "fp-simd",
+    "irq",
+    "uspace",
+
+    "page-alloc-4g",
+    "alloc-slab",
+
+    "multitask",
+    "task-ext",
+    "sched-rr",
+
+    "rtc",
+
+    "fs-ng-ext4",
+    "net-ng",
+] }
+
+axalloc.workspace = true
+axconfig.workspace = true
+axdisplay.workspace = true
+axdriver.workspace = true
+axfs.workspace = true
+axhal.workspace = true
+axinput = { workspace = true, optional = true }
+axlog.workspace = true
+axmm.workspace = true
+axnet.workspace = true
+axruntime.workspace = true
+axsync.workspace = true
+axtask.workspace = true
+
+axbacktrace = "0.1"
+axerrno = "0.2"
+axfs-ng-vfs = "0.1"
+axio = "0.3.0-pre.1"
+axpoll = "0.1"
+bitflags = "2.10"
+bitmaps = { version = "3.2", default-features = false }
+bytemuck = { version = "1.23", features = ["unsound_ptr_pod_impl", "derive"] }
+cfg-if = "1.0"
+chrono = { version = "0.4", default-features = false }
+downcast-rs = { version = "2.0", default-features = false, features = ["sync"] }
+enum_dispatch = "0.3"
+event-listener = { version = "5.4", default-features = false }
+extern-trait = "0.4"
+flatten_objects = "0.2.4"
+gimli = { version = "0.33", default-features = false, optional = true }
+hashbrown = "0.16"
+indoc = "2"
+inherit-methods-macro = "0.1.0"
+kernel_guard = "0.1"
+kernel-elf-parser = "0.3.4"
+kspin = "0.1"
+lazy_static = { version = "1.5", features = ["spin_no_std"] }
+linkme = "0.3"
+linux-raw-sys = { version = "0.12", default-features = false, features = [
+    "no_std",
+    "general",
+    "net",
+    "prctl",
+    "system",
+    "ioctl",
+    "loop_device",
+] }
+lock_api = { version = "0.4", features = ["arc_lock"] }
+memory_addr = "0.4"
+memory_set = "0.4"
+num_enum = { version = "0.7", default-features = false }
+ouroboros = { version = "0.18", default-features = false }
+percpu = "0.2.3-preview.1"
+rand = { version = "0.10", default-features = false, features = ["alloc"] }
+ringbuf = { version = "0.4.8", default-features = false, features = ["alloc"] }
+scope-local = "0.1"
+slab = { version = "0.4.9", default-features = false }
+spin = "0.10"
+starry-process = "0.2"
+starry-signal = "0.3"
+starry-vm = "0.3"
+strum = { version = "0.28", default-features = false, features = ["derive"] }
+syscalls = { version = "0.8", default-features = false }
+uluru = "3.1.0"
+weak-map = "0.1.1"
+xmas-elf = "0.9"
+zerocopy = { version = "0.8", features = ["derive"] }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+x86 = "0.52"
+
+[target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64"))'.dependencies]
+riscv = "0.16"
+
+[target.'cfg(not(any(target_arch = "aarch64", target_arch = "loongarch64")))'.dependencies]
+page_table_multiarch = { version = "0.6", features = ["copy-from"] }

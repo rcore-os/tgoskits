@@ -1,0 +1,29 @@
+# Automatically detect text files and normalize line endings to LF
+* text=auto eol=lf
+
+# Explicitly specify text files
+*.rs text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.txt text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.cpp text eol=lf
+*.hpp text eol=lf
+
+# Binary files
+*.bin binary
+*.elf binary
+*.img binary
+*.dbg binary
+*.swp binary
+*.swo binary
+
+# Script files (keep executable)
+*.sh text eol=lf
+

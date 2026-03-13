@@ -1,0 +1,86 @@
+[workspace]
+resolver = "2"
+members = ["kernel"]
+exclude = ["arceos"]
+
+[workspace.package]
+version = "0.2.0-preview.2"
+edition = "2024"
+description = "A Linux-compatible OS kernel built on ArceOS unikernel"
+license = "Apache-2.0"
+
+authors = [
+    "Azure-stars <Azure_stars@126.com>",
+    "Yuekai Jia <equation618@gmail.com>",
+    "KylinSoft Co., Ltd. <https://www.kylinos.cn/>",
+    "朝倉水希 <asakuramizu111@gmail.com>",
+    "Mivik <mivikq@gmail.com>",
+]
+homepage = "https://github.com/Starry-OS"
+repository = "https://github.com/Starry-OS/StarryOS"
+
+[workspace.dependencies]
+axfeat = { version = "0.3.0-preview.2" }
+
+axalloc = { version = "0.3.0-preview.2" }
+axconfig = { version = "0.3.0-preview.2" }
+axdisplay = { version = "0.3.0-preview.2" }
+axdriver = { version = "0.3.0-preview.2" }
+axfs = { version = "0.3.0-preview.2", package = "axfs-ng" }
+axhal = { version = "0.3.0-preview.2" }
+axinput = { version = "0.3.0-preview.2" }
+axlog = { version = "0.3.0-preview.2" }
+axmm = { version = "0.3.0-preview.2" }
+axnet = { version = "0.3.0-preview.2", package = "axnet-ng" }
+axruntime = { version = "0.3.0-preview.2" }
+axsync = { version = "0.3.0-preview.2" }
+axtask = { version = "0.3.0-preview.2" }
+
+starry-kernel = { path = "kernel", version = "=0.2.0-preview.2" }
+
+[package]
+name = "starryos"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+qemu = [
+    "axfeat/defplat",
+    "axfeat/bus-pci",
+
+    "axfeat/display",
+
+    "starry-kernel/input",
+    "starry-kernel/vsock",
+
+    # auxilary features
+    "axfeat/fs-ng-times",
+    "starry-kernel/dev-log",
+]
+smp = ["axfeat/smp", "axplat-riscv64-visionfive2?/smp"]
+
+vf2 = ["dep:axplat-riscv64-visionfive2", "axfeat/driver-sdmmc"]
+
+[[bin]]
+name = "starryos"
+path = "src/main.rs"
+required-features = ["qemu"]
+
+[dependencies]
+axfeat.workspace = true
+starry-kernel.workspace = true
+
+[dependencies.axplat-riscv64-visionfive2]
+version = "0.1.0-pre.1"
+features = ["fp-simd", "irq", "rtc"]
+optional = true
+
+[package.metadata.vendor-filter]
+platforms = ["riscv64gc-unknown-none-elf", "loongarch64-unknown-none-softfloat"]
+all-features = true
