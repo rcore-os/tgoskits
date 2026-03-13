@@ -1,0 +1,17 @@
+[package]
+name = "axconfig-gen"
+description = "A TOML-based configuration generation tool for ArceOS."
+documentation = "https://docs.rs/axconfig-gen"
+categories = ["config", "parsing", "parser-implementations"]
+keywords.workspace = true
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+toml_edit = { version = "0.22" }
+clap = { version = "4", features = ["derive"] }

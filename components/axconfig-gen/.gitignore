@@ -1,0 +1,4 @@
+/target
+/.vscode
+/.axconfig.*
+.DS_Store
