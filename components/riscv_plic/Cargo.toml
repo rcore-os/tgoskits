@@ -1,0 +1,15 @@
+[package]
+name = "riscv_plic"
+version = "0.2.0"
+edition = "2024"
+authors = ["Keyang Hu <keyang.hu@qq.com>"]
+description = "RISC-V platform-level interrupt controller (PLIC) register definitions and basic operations"
+license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
+homepage = "https://github.com/arceos-org/arceos"
+repository = "https://github.com/arceos-org/riscv_plic"
+documentation = "https://docs.rs/riscv_plic"
+keywords = ["arceos", "riscv", "riscv64", "plic", "interrupt-controller"]
+categories = ["embedded", "no-std", "hardware-support", "os"]
+
+[dependencies]
+tock-registers = "0.10"

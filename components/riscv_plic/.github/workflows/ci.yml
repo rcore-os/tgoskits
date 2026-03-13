@@ -1,0 +1,55 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rust-toolchain: [nightly]
+        targets: [riscv64gc-unknown-none-elf]
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@nightly
+      with:
+        toolchain: ${{ matrix.rust-toolchain }}
+        components: rust-src, clippy, rustfmt
+        targets: ${{ matrix.targets }}
+    - name: Check rust version
+      run: rustc --version --verbose
+    - name: Check code format
+      run: cargo fmt --all -- --check
+    - name: Clippy
+      run: cargo clippy --target ${{ matrix.targets }} --all-features -- -A clippy::new_without_default
+    - name: Build
+      run: cargo build --target ${{ matrix.targets }} --all-features
+    - name: Unit test
+      if: ${{ matrix.targets == 'x86_64-unknown-linux-gnu' }}
+      run: cargo test --target ${{ matrix.targets }} -- --nocapture
+
+  doc:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    permissions:
+      contents: write
+    env:
+      default-branch: ${{ format('refs/heads/{0}', github.event.repository.default_branch) }}
+      RUSTDOCFLAGS: -D rustdoc::broken_intra_doc_links -D missing-docs
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@nightly
+    - name: Build docs
+      continue-on-error: ${{ github.ref != env.default-branch && github.event_name != 'pull_request' }}
+      run: |
+        cargo doc --no-deps --all-features
+        printf '<meta http-equiv="refresh" content="0;url=%s/index.html">' $(cargo tree | head -1 | cut -d' ' -f1) > target/doc/index.html
+    - name: Deploy to Github Pages
+      if: ${{ github.ref == env.default-branch }}
+      uses: JamesIves/github-pages-deploy-action@v4
+      with:
+        single-commit: true
+        branch: gh-pages
+        folder: target/doc
