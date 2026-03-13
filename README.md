@@ -1,5 +1,7 @@
 # TGOSKits
 
+[![Build & Test](https://github.com/rcore-os/tgoskits/actions/workflows/test.yml/badge.svg)](https://github.com/rcore-os/tgoskits/actions/workflows/test.yml)
+
 TGOSKits 是一个面向操作系统开发的工具包集成仓库，通过 Git Subtree 技术将多个独立的组件仓库整合到一个统一的主仓库中，同时保留每个组件的完整开发历史。
 
 ## 特性
@@ -8,6 +10,12 @@ TGOSKits 是一个面向操作系统开发的工具包集成仓库，通过 Git 
 - 📜 **历史保留** - 完整保留每个组件的独立开发历史和提交记录
 - 🔄 **双向同步** - 支持主仓库和组件仓库之间的双向代码同步
 - 🚀 **独立开发** - 组件可以独立开发、测试和发布
+
+## AI 支持
+
+- 📄 **基于 `AGENTS.md` 的技能路由** - AI 助手会优先读取仓库根目录 `AGENTS.md`，按项目约定选择可用技能
+- 🧩 **已配置技能：`update-std-tests`** - 当需求涉及 `scripts/test/std_crates.csv` 审核/更新、workspace 包与 std-test 白名单比对、或新增候选确认时，优先使用该技能
+- ✅ **使用方式** - 在提问中直接说明目标（例如“审查 std test 白名单并更新 csv”），AI 会按 `AGENTS.md` 规则执行对应流程
 
 ## 仓库结构
 
