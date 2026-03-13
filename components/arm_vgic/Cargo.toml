@@ -1,0 +1,33 @@
+[package]
+version = "0.2.1"
+authors = [
+  "Mingxian Su <aarkegz@gmail.com>",
+  "DeBin Luo <luodeb@outlook.com>",
+]
+categories = ["os", "no-std"]
+edition = "2021"
+keywords = ["hypervisor", "kernel", "vgic"]
+license = "Apache-2.0"
+name = "arm_vgic"
+repository = "https://github.com/arceos-hypervisor/arm_vgic"
+description = "ARM Virtual Generic Interrupt Controller (VGIC) implementation."
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+default = []
+vgicv3 = []
+
+[dependencies]
+axaddrspace = "0.1.4"
+axdevice_base = "0.2.1"
+axvisor_api = "0.1"
+
+aarch64-cpu = "10.0"
+aarch64_sysreg = "0.1.1"
+axerrno = "0.1.0"
+bitmaps = {version = "3.2", default-features = false}
+log = "0.4"
+memory_addr = "0.4"
+spin = "0.9"
+tock-registers = "0.10"
