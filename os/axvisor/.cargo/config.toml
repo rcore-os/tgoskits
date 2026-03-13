@@ -21,4 +21,4 @@ rustflags = [
 ]
 
 [alias]
-xtask = "run --bin xtask --no-default-features --features xtask --"
+xtask = "run --bin xtask --"
