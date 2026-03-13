@@ -132,15 +132,18 @@ cd tgoskits
    git add components/arm_vcpu/
    git commit -m "feat(arm_vcpu): add new feature"
    ```
-
-3. 推送到组件仓库：
+   
+3. 将更改推送到当前主仓库：
+   ```bash
+   git push origin main
+   ```
+   
+3. 【可选】推送到独立组件子仓库：
    ```bash
    python3 scripts/repo/repo.py push arm_vcpu
    ```
 
 #### 同步组件更新
-
-**一般不需要手动同步，CI 脚本会自动实现同步**
 
 1. 拉取组件仓库的更新：
    ```bash
