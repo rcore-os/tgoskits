@@ -1,0 +1,14 @@
+[package]
+name = "handler_table"
+version = "0.1.2"
+edition = "2021"
+authors = ["Yuekai Jia <equation618@gmail.com>"]
+description = "A lock-free table of event handlers"
+license = "Apache-2.0"
+homepage = "https://github.com/arceos-org/arceos"
+repository = "https://github.com/arceos-org/handler_table"
+documentation = "https://docs.rs/handler_table"
+keywords = ["arceos", "event", "lock-free"]
+categories = ["no-std"]
+
+[dependencies]
