@@ -13,7 +13,7 @@ incompatible-rust-versions = "allow"
 runner = "cargo osrun"
 
 [alias]
-xtask = "run --bin xtask --no-default-features --features xtask --"
+xtask = "run --bin xtask --"
 
 [target.aarch64-unknown-none-softfloat]
 rustflags = [
@@ -22,4 +22,3 @@ rustflags = [
     "-Clink-args=-znostart-stop-gc",
     "-Clink-args=-Taxplat.x",
 ]
-

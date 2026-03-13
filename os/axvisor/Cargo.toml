@@ -31,7 +31,6 @@ lto = true
 [[bin]]
 name = "xtask"
 path = "xtask/src/main.rs"
-required-features = ["xtask"]
 
 [features]
 default = []
@@ -44,26 +43,6 @@ rk3588-clk = ["dep:rk3588-clk"]
 sdmmc = ["dep:sdmmc"]
 rockchip-pm = ["dep:rockchip-pm"]
 phytium-blk = ["dep:phytium-mci"]
-xtask = [
-    "dep:anyhow",
-    "dep:axvmconfig",
-    "dep:cargo_metadata",
-    "dep:chrono",
-    "dep:clap",
-    "dep:colored",
-    "dep:flate2",
-    "dep:jkconfig",
-    "dep:ostool",
-    "dep:regex",
-    "dep:reqwest",
-    "dep:schemars",
-    "dep:serde",
-    "dep:serde_json",
-    "dep:sha2",
-    "dep:tar",
-    "dep:tokio",
-    "dep:toml",
-]
 
 [target.'cfg(not(any(windows, unix)))'.dependencies]
 bitflags = "2.2"
@@ -138,27 +117,27 @@ axplat-x86-qemu-q35 = { version = "0.2.0", default-features = false, features = 
 ] }
 axconfig = { version = "=0.3.0-preview.3", features = ["plat-dyn"] }
 
-# xtask dependencies (only used when xtask feature is enabled)
+# xtask dependencies (only used on host platforms)
 [target.'cfg(any(windows, unix))'.dependencies]
-anyhow = { version = "1.0", optional = true }
-cargo_metadata = { version = "0.23", optional = true }
-chrono = { version = "0.4", features = ["serde"], optional = true }
-clap = {version = "4.4", features = ["derive"], optional = true }
-colored = { version = "3", optional = true }
-flate2 = { version = "1.0", optional = true }
-jkconfig = { version = "0.1", optional = true }
-ostool = { version = "0.8.4", optional = true }
-regex = { version = "1.12", optional = true }
-reqwest = { version = "0.13", optional = true }
-schemars = {version = "1", features = ["derive"], optional = true }
-serde = {version = "1.0", features = ["derive"], optional = true }
-serde_json = { version = "1", optional = true }
-sha2 = { version = "0.10", optional = true }
-tar = { version = "0.4", optional = true }
-tokio = {version = "1", features = ["full"], optional = true }
-toml = { version = "0.9", optional = true }
+anyhow = { version = "1.0" }
+cargo_metadata = { version = "0.23" }
+chrono = { version = "0.4", features = ["serde"] }
+clap = {version = "4.4", features = ["derive"] }
+colored = { version = "3" }
+flate2 = { version = "1.0" }
+jkconfig = { version = "0.1" }
+ostool = { version = "0.8.4" }
+regex = { version = "1.12" }
+reqwest = { version = "0.13" }
+schemars = {version = "1", features = ["derive"] }
+serde = {version = "1.0", features = ["derive"] }
+serde_json = { version = "1" }
+sha2 = { version = "0.10" }
+tar = { version = "0.4" }
+tokio = {version = "1", features = ["full"] }
+toml = { version = "0.9" }
 
-axvmconfig = { version = "0.2", features = ["std"], optional = true }
+axvmconfig = { version = "0.2", features = ["std"] }
 
 [build-dependencies]
 axconfig = "=0.3.0-preview.3"
