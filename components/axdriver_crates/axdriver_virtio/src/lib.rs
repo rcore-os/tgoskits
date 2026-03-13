@@ -18,31 +18,36 @@ extern crate alloc;
 
 #[cfg(feature = "block")]
 mod blk;
+#[cfg(feature = "block")]
+pub use self::blk::VirtIoBlkDev;
 
 #[cfg(feature = "gpu")]
 mod gpu;
+#[cfg(feature = "gpu")]
+pub use self::gpu::VirtIoGpuDev;
+
+#[cfg(feature = "input")]
+mod input;
+#[cfg(feature = "input")]
+pub use self::input::VirtIoInputDev;
 
 #[cfg(feature = "net")]
 mod net;
-
-use axdriver_base::{DevError, DeviceType};
-use virtio_drivers::transport::DeviceType as VirtIoDevType;
-pub use virtio_drivers::{
-    BufferDirection, Hal as VirtIoHal, PhysAddr,
-    transport::{
-        Transport,
-        mmio::MmioTransport,
-        pci::{PciTransport, bus as pci},
-    },
-};
-
-#[cfg(feature = "block")]
-pub use self::blk::VirtIoBlkDev;
-#[cfg(feature = "gpu")]
-pub use self::gpu::VirtIoGpuDev;
 #[cfg(feature = "net")]
 pub use self::net::VirtIoNetDev;
+
+#[cfg(feature = "socket")]
+mod socket;
+#[cfg(feature = "socket")]
+pub use self::socket::VirtIoSocketDev;
+
+pub use virtio_drivers::transport::pci::bus as pci;
+pub use virtio_drivers::transport::{mmio::MmioTransport, pci::PciTransport, Transport};
+pub use virtio_drivers::{BufferDirection, Hal as VirtIoHal, PhysAddr};
+
 use self::pci::{DeviceFunction, DeviceFunctionInfo, PciRoot};
+use axdriver_base::{DevError, DeviceType};
+use virtio_drivers::transport::DeviceType as VirtIoDevType;
 
 /// Try to probe a VirtIO MMIO device from the given memory region.
 ///
@@ -53,7 +58,6 @@ pub fn probe_mmio_device(
     _reg_size: usize,
 ) -> Option<(DeviceType, MmioTransport)> {
     use core::ptr::NonNull;
-
     use virtio_drivers::transport::mmio::VirtIOHeader;
 
     let header = NonNull::new(reg_base as *mut VirtIOHeader).unwrap();
@@ -70,12 +74,22 @@ pub fn probe_pci_device<H: VirtIoHal>(
     root: &mut PciRoot,
     bdf: DeviceFunction,
     dev_info: &DeviceFunctionInfo,
-) -> Option<(DeviceType, PciTransport)> {
+) -> Option<(DeviceType, PciTransport, usize)> {
     use virtio_drivers::transport::pci::virtio_device_type;
+
+    #[cfg(target_arch = "x86_64")]
+    const PCI_IRQ_BASE: usize = 0x20;
+    #[cfg(target_arch = "riscv64")]
+    const PCI_IRQ_BASE: usize = 0x20;
+    #[cfg(target_arch = "loongarch64")]
+    const PCI_IRQ_BASE: usize = 0x10;
+    #[cfg(target_arch = "aarch64")]
+    const PCI_IRQ_BASE: usize = 0x23;
 
     let dev_type = virtio_device_type(dev_info).and_then(as_dev_type)?;
     let transport = PciTransport::new::<H>(root, bdf).ok()?;
-    Some((dev_type, transport))
+    let irq = PCI_IRQ_BASE + (bdf.device & 3) as usize;
+    Some((dev_type, transport, irq))
 }
 
 const fn as_dev_type(t: VirtIoDevType) -> Option<DeviceType> {
@@ -84,12 +98,15 @@ const fn as_dev_type(t: VirtIoDevType) -> Option<DeviceType> {
         Block => Some(DeviceType::Block),
         Network => Some(DeviceType::Net),
         GPU => Some(DeviceType::Display),
+        Input => Some(DeviceType::Input),
+        Socket => Some(DeviceType::Vsock),
         _ => None,
     }
 }
 
 #[allow(dead_code)]
 const fn as_dev_err(e: virtio_drivers::Error) -> DevError {
+    use virtio_drivers::device::socket::SocketError::*;
     use virtio_drivers::Error::*;
     match e {
         QueueFull => DevError::BadState,
@@ -102,6 +119,18 @@ const fn as_dev_err(e: virtio_drivers::Error) -> DevError {
         Unsupported => DevError::Unsupported,
         ConfigSpaceTooSmall => DevError::BadState,
         ConfigSpaceMissing => DevError::BadState,
-        _ => DevError::BadState,
+        SocketDeviceError(e) => match e {
+            ConnectionExists => DevError::AlreadyExists,
+            NotConnected => DevError::BadState,
+            InvalidOperation | InvalidNumber | UnknownOperation(_) => DevError::InvalidParam,
+            OutputBufferTooShort(_) | BufferTooShort | BufferTooLong(_, _) => {
+                DevError::InvalidParam
+            }
+            UnexpectedDataInPacket | PeerSocketShutdown | NoResponseReceived | ConnectionFailed => {
+                DevError::Io
+            }
+            InsufficientBufferSpaceInPeer => DevError::Again,
+            RecycledWrongBuffer => DevError::BadState,
+        },
     }
 }
