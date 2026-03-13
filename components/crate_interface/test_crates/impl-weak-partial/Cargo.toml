@@ -1,0 +1,9 @@
+[package]
+name = "impl-weak-partial"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+crate_interface.workspace = true
+define-weak-traits.workspace = true

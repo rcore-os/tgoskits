@@ -1,0 +1,96 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  metadata:
+    name: Extract crate metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Extract crate metadata
+        id: metadata
+        run: |
+          cargo metadata --no-deps --format-version=1 \
+            | jq -r '.packages[0]
+              | {name, version, rust_version}
+              | to_entries
+              | map("\(.key)=\(.value)")
+              | join("\n")' \
+            | tee -a $GITHUB_OUTPUT
+    outputs:
+      name: ${{ steps.metadata.outputs.name }}
+      version: ${{ steps.metadata.outputs.version }}
+      rust_version: ${{ steps.metadata.outputs.rust_version }}
+
+  ci:
+    needs: [metadata]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rust-toolchain: [nightly, "${{ needs.metadata.outputs.rust_version }}"]
+        targets: [x86_64-unknown-linux-gnu, x86_64-unknown-none, riscv64gc-unknown-none-elf, aarch64-unknown-none-softfloat]
+        exclude:
+          # component 'rust-std' for target 'x86_64-unknown-none' is unavailable for channel '1.57'
+          - rust-toolchain: "${{ needs.metadata.outputs.rust_version }}"
+            targets: x86_64-unknown-none
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@nightly
+      with:
+        toolchain: ${{ matrix.rust-toolchain }}
+        components: rust-src, clippy, rustfmt
+        targets: ${{ matrix.targets }}
+    - name: Check rust version
+      run: rustc --version --verbose
+    - name: Check code format
+      run: cargo fmt --all -- --check
+    - name: Clippy
+      run: cargo clippy --workspace --target ${{ matrix.targets }} --all-features
+    - name: Build
+      run: cargo build --workspace --target ${{ matrix.targets }} --all-features
+    - name: Unit test (without weak_default)
+      if: ${{ matrix.targets == 'x86_64-unknown-linux-gnu' }}
+      run: cargo test --workspace --target ${{ matrix.targets }} -- --nocapture
+    - name: Unit test (with weak_default)
+      if: ${{ matrix.targets == 'x86_64-unknown-linux-gnu' && matrix.rust-toolchain == 'nightly' }}
+      run: cargo test --workspace --target ${{ matrix.targets }} --features weak_default -- --nocapture
+    - name: Multi-crate test (without weak_default)
+      if: ${{ matrix.targets == 'x86_64-unknown-linux-gnu' }}
+      working-directory: test_crates
+      run: cargo run -p test-simple
+    - name: Multi-crate test (with weak_default, nightly only)
+      if: ${{ matrix.targets == 'x86_64-unknown-linux-gnu' && matrix.rust-toolchain == 'nightly' }}
+      working-directory: test_crates
+      run: |
+        cargo run -p test-simple
+        cargo run -p test-weak
+        cargo run -p test-weak-partial
+
+  doc:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    permissions:
+      contents: write
+    env:
+      default-branch: ${{ format('refs/heads/{0}', github.event.repository.default_branch) }}
+      RUSTDOCFLAGS: -D rustdoc::broken_intra_doc_links -D missing-docs
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@nightly
+    - name: Build docs
+      continue-on-error: ${{ github.ref != env.default-branch && github.event_name != 'pull_request' }}
+      run: |
+        cargo doc --no-deps --all-features
+        printf '<meta http-equiv="refresh" content="0;url=%s/index.html">' $(cargo tree | head -1 | cut -d' ' -f1) > target/doc/index.html
+    - name: Deploy to Github Pages
+      if: ${{ github.ref == env.default-branch }}
+      uses: JamesIves/github-pages-deploy-action@v4
+      with:
+        single-commit: true
+        branch: gh-pages
+        folder: target/doc

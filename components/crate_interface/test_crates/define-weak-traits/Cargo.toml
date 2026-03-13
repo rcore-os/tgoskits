@@ -1,0 +1,9 @@
+[package]
+name = "define-weak-traits"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Don't use workspace dependency here because we want to test the weak_default feature
+crate_interface = { path = "../..", features = ["weak_default"] }
