@@ -1,6 +1,6 @@
 use axdriver_base::{BaseDriverOps, DevResult, DeviceType};
 use axdriver_display::{DisplayDriverOps, DisplayInfo, FrameBuffer};
-use virtio_drivers::{Hal, device::gpu::VirtIOGpu as InnerDev, transport::Transport};
+use virtio_drivers::{device::gpu::VirtIOGpu as InnerDev, transport::Transport, Hal};
 
 use crate::as_dev_err;
 
@@ -53,7 +53,7 @@ impl<H: Hal, T: Transport> DisplayDriverOps for VirtIoGpuDev<H, T> {
         self.info
     }
 
-    fn fb(&self) -> FrameBuffer<'_> {
+    fn fb(&self) -> FrameBuffer {
         unsafe {
             FrameBuffer::from_raw_parts_mut(self.info.fb_base_vaddr as *mut u8, self.info.fb_size)
         }

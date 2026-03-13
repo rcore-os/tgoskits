@@ -1,6 +1,6 @@
-# axdriver_base
+# axdriver_input
 
-Common interfaces for all kinds of device drivers in `no_std` environments.
+Common traits and types for input device drivers in `no_std` environments.
 
 Part of the [axdriver_crates](https://github.com/arceos-org/axdriver_crates) workspace.
 

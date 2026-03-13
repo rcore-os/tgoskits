@@ -44,8 +44,8 @@ pub trait NetDriverOps: BaseDriverOps {
     /// [`NetDriverOps::receive`].
     fn recycle_rx_buffer(&mut self, rx_buf: NetBufPtr) -> DevResult;
 
-    /// Poll the transmit queue and gives back the buffers for previous
-    /// transmiting. returns [`DevResult`].
+    /// Poll the transmit queue and gives back the buffers for previous transmiting.
+    /// returns [`DevResult`].
     fn recycle_tx_buffers(&mut self) -> DevResult;
 
     /// Transmits a packet in the buffer to the network, without blocking,

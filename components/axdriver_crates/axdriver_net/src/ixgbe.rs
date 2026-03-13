@@ -2,8 +2,8 @@ use alloc::{collections::VecDeque, sync::Arc};
 use core::{convert::From, mem::ManuallyDrop, ptr::NonNull};
 
 use axdriver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
-pub use ixgbe_driver::{INTEL_82599, INTEL_VEND, IxgbeHal, PhysAddr};
 use ixgbe_driver::{IxgbeDevice, IxgbeError, IxgbeNetBuf, MemPool, NicDevice};
+pub use ixgbe_driver::{IxgbeHal, PhysAddr, INTEL_82599, INTEL_VEND};
 use log::*;
 
 use crate::{EthernetAddress, NetBufPtr, NetDriverOps};
@@ -142,8 +142,8 @@ impl From<IxgbeNetBuf> for NetBufPtr {
     fn from(buf: IxgbeNetBuf) -> Self {
         // Use `ManuallyDrop` to avoid drop `tx_buf`.
         let mut buf = ManuallyDrop::new(buf);
-        // In ixgbe, `raw_ptr` is the pool entry, `buf_ptr` is the packet ptr, `len` is
-        // packet len to avoid too many dynamic memory allocation.
+        // In ixgbe, `raw_ptr` is the pool entry, `buf_ptr` is the packet ptr, `len` is packet len
+        // to avoid too many dynamic memory allocation.
         let buf_ptr = buf.packet_mut().as_mut_ptr();
         Self::new(
             NonNull::new(buf.pool_entry() as *mut u8).unwrap(),

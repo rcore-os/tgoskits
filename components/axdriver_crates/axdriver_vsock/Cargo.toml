@@ -1,16 +1,20 @@
 [package]
-name = "axdriver_display"
+name = "axdriver_vsock"
 edition.workspace = true
 version.workspace = true
 authors.workspace = true
-description = "Common traits and types for graphics device drivers"
-documentation = "https://arceos-org.github.io/axdriver_crates/axdriver_display"
-keywords = ["arceos", "driver", "gpu", "framebuffer"]
+description = "Common traits and types for vsock drivers"
+documentation = "https://arceos-org.github.io/axdriver_crates/axdriver_vsock"
+keywords = ["arceos", "driver", "vsock"]
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 categories.workspace = true
 readme = "README.md"
 
+[features]
+default = []
+
 [dependencies]
 axdriver_base = { version = "0.1.4-preview.3" }
+log = "0.4"

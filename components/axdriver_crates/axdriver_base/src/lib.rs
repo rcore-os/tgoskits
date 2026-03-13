@@ -5,8 +5,7 @@
 //! device types:
 //!
 //! - [`axdriver_block`][2]: Common traits for block storage drivers.
-//! - [`axdriver_display`][3]: Common traits and types for graphics display
-//!   drivers.
+//! - [`axdriver_display`][3]: Common traits and types for graphics display drivers.
 //! - [`axdriver_net`][4]: Common traits and types for network (NIC) drivers.
 //!
 //! [1]: https://github.com/arceos-org/arceos
@@ -27,6 +26,10 @@ pub enum DeviceType {
     Net,
     /// Graphic display device (e.g., GPU)
     Display,
+    /// Input device (e.g., keyboard, mouse).
+    Input,
+    /// Vsock device (e.g., virtio-vsock).
+    Vsock,
 }
 
 /// The error type for device operation failures.
@@ -75,4 +78,9 @@ pub trait BaseDriverOps: Send + Sync {
 
     /// The type of the device.
     fn device_type(&self) -> DeviceType;
+
+    /// The IRQ number of the device, if applicable.
+    fn irq_num(&self) -> Option<usize> {
+        None
+    }
 }
