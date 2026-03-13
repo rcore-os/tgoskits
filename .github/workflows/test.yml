@@ -21,6 +21,16 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+          cache-targets: false
+
+      - uses: cargo-bins/cargo-binstall@main
+
+      - name: Install ostool
+        run: cargo binstall ostool --no-confirm --force
+
       - uses: actions/checkout@v5
       - run: rustc --version
       - run: cargo xtask test std
@@ -58,10 +68,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
+      - run: rustc --version
+      
+      - uses: Swatinem/rust-cache@v2
         with:
-          targets: ${{ matrix.target }}
+          shared-key: test
+          cache-targets: false
+
+      - uses: cargo-bins/cargo-binstall@main
+
+      - name: Install ostool
+        run: cargo binstall ostool --no-confirm --force
 
       - name: Run ${{ matrix.os }} tests
         run: cargo xtask test ${{ matrix.os }} --target ${{ matrix.target }}
