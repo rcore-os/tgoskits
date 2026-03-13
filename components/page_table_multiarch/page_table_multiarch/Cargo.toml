@@ -1,0 +1,39 @@
+[package]
+name = "page_table_multiarch"
+description = "Generic page table structures for various hardware architectures"
+documentation = "https://docs.rs/page_table_multiarch"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+axerrno = ["dep:axerrno"]
+copy-from = ["dep:bitmaps"]
+
+[dependencies]
+axerrno = { version = "0.1", optional = true }
+arrayvec = { version = "0.7", default-features = false }
+bitmaps = { version = "3.2", default-features = false, optional = true }
+log = "0.4"
+memory_addr.workspace = true
+page_table_entry.workspace = true
+
+[target.'cfg(any(target_arch = "x86_64", doc, docsrs))'.dependencies]
+x86 = "0.52"
+
+[target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64", doc, docsrs))'.dependencies]
+riscv = { version = "0.16", default-features = false }
+
+[package.metadata.docs.rs]
+rustc-args = ["--cfg", "docsrs"]
+all-features = true
+
+[dev-dependencies]
+rand = { version = "0.10", default-features = false }
