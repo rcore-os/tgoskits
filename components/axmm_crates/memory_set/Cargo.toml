@@ -1,0 +1,21 @@
+[package]
+name = "memory_set"
+description = "Data structures and operations for managing memory mappings"
+documentation = "https://docs.rs/memory_set"
+keywords = ["arceos", "virtual-memory", "memory-area", "mmap"]
+
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+axerrno = { version = "0.1", optional = true }
+memory_addr = { path = "../memory_addr", version = "0.4" }
+
+[features]
+axerrno = ["dep:axerrno"]
