@@ -1,11 +1,11 @@
 //! 位图缓存模块
 
+use crate::BITMAP_CACHE_MAX;
 use crate::ext4_backend::blockdev::*;
 use crate::ext4_backend::config::USE_MULTILEVEL_CACHE;
+use crate::ext4_backend::error::*;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use crate::ext4_backend::error::*;
-use crate::BITMAP_CACHE_MAX;
 use log::debug;
 
 /// 位图类型
@@ -226,9 +226,10 @@ impl BitmapCache {
         key: &CacheKey,
     ) -> BlockDevResult<()> {
         if let Some(bitmap) = self.cache.remove(key)
-            && bitmap.dirty {
-                Self::write_bitmap_static(block_dev, bitmap.block_num, &bitmap.data)?;
-            }
+            && bitmap.dirty
+        {
+            Self::write_bitmap_static(block_dev, bitmap.block_num, &bitmap.data)?;
+        }
         Ok(())
     }
 
@@ -276,18 +277,19 @@ impl BitmapCache {
         key: &CacheKey,
     ) -> BlockDevResult<()> {
         if let Some(bitmap) = self.cache.get(key)
-            && bitmap.dirty {
-                let block_num = bitmap.block_num;
-                let data = bitmap.data.clone();
+            && bitmap.dirty
+        {
+            let block_num = bitmap.block_num;
+            let data = bitmap.data.clone();
 
-                // 写回磁盘
-                Self::write_bitmap_static(block_dev, block_num, &data)?;
+            // 写回磁盘
+            Self::write_bitmap_static(block_dev, block_num, &data)?;
 
-                // 清除脏标记
-                if let Some(bitmap) = self.cache.get_mut(key) {
-                    bitmap.dirty = false;
-                }
+            // 清除脏标记
+            if let Some(bitmap) = self.cache.get_mut(key) {
+                bitmap.dirty = false;
             }
+        }
         Ok(())
     }
 

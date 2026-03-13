@@ -1,13 +1,11 @@
-
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use log::{error, trace, warn};
 
-use crate::ext4_backend::config::*;
-use crate::ext4_backend::jbd2::jbdstruct::*;
-use crate::ext4_backend::error::*;
 use crate::ext4_backend::config::JBD2_BUFFER_MAX;
-
+use crate::ext4_backend::config::*;
+use crate::ext4_backend::error::*;
+use crate::ext4_backend::jbd2::jbdstruct::*;
 
 ///可以调用block write的函数标记 有序管理写,jbd2需要
 pub trait INeedBlockdevToWrite {}
@@ -58,14 +56,14 @@ pub trait BlockDevice {
 
 /// 块设备缓存
 pub struct BlockBuffer {
-    buffer: Box<[u8;BLOCK_SIZE]>,
+    buffer: Box<[u8; BLOCK_SIZE]>,
 }
 
 impl BlockBuffer {
     /// 创建新的块缓冲区
     pub fn new() -> Self {
         Self {
-            buffer: Box::new([0;BLOCK_SIZE]),
+            buffer: Box::new([0; BLOCK_SIZE]),
         }
     }
 
@@ -121,7 +119,7 @@ pub struct Jbd2Dev<B: BlockDevice> {
 /// 采用Jouranl超级快注入的思想，必须需要使用mount来给块设备注入超级块，之后才能使用日志。
 impl<B: BlockDevice> Jbd2Dev<B> {
     ///你拿到我之后应该先把超级块给我传进来吧
-    pub fn initial_jbd2dev(_mode: u8, block_dev:B, use_journal: bool) -> Self {
+    pub fn initial_jbd2dev(_mode: u8, block_dev: B, use_journal: bool) -> Self {
         let block_dev = BlockDev::new(block_dev);
         Self {
             _mode,
@@ -179,7 +177,8 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             self.systeam
                 .as_mut()
                 .unwrap()
-                .commit_transaction(&mut self.inner.dev).expect("Translation commit failed!!!");
+                .commit_transaction(&mut self.inner.dev)
+                .expect("Translation commit failed!!!");
         } else {
             warn!("Jouranl not use , no thing to commit")
         }
@@ -191,19 +190,20 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         // 1) 非元数据 或 未开启日志：直接写回到底层块设备
         if !self.journal_use || !is_metadata {
             // BlockDev 内部的 buffer 已经被上层写好，直接把当前 buffer 写到 block_id
-            return self.inner.write_block(block_id);//把缓存直接写入盘
+            return self.inner.write_block(block_id); //把缓存直接写入盘
         }
-        
+
         // 2) 元数据且启用日志：走 JBD2 事务
         //    此时之前的普通数据块已经完成写入
         //由于分布提交机制，必须需要拷贝数据牺牲性能来确保日志提交
 
         let meta_vec = self.inner.buffer();
-        let mut new_buf = Box::new([0;BLOCK_SIZE]);
+        let mut new_buf = Box::new([0; BLOCK_SIZE]);
         new_buf[..].copy_from_slice(meta_vec);
-        let updates = Jbd2Update( //把缓存变成事务
+        let updates = Jbd2Update(
+            //把缓存变成事务
             block_id as u64,
-            new_buf
+            new_buf,
         );
 
         if self.systeam.is_none() {
@@ -231,11 +231,11 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             systeam.commit_queue.push(updates);
         }
 
-        if self._mode == 0 {//ordered模式
+        if self._mode == 0 {
+            //ordered模式
             //再写入主盘
             self.inner.write_block(block_id)?;
         }
-
 
         Ok(())
     }
@@ -258,7 +258,6 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         count: u32,
         is_metadata: bool,
     ) -> BlockDevResult<()> {
-
         // 1) 非元数据 或 未开启日志：直接写回到底层块设备
         if !self.journal_use || !is_metadata {
             // BlockDev 内部的 buffer 已经被上层写好，直接把当前 buffer 写到 block_id
@@ -267,8 +266,6 @@ impl<B: BlockDevice> Jbd2Dev<B> {
 
         // 2) 元数据且启用日志：走 JBD2 事务
         //    此时之前的普通数据块已经完成写入
-
-
 
         // 注意：在 mkfs/早期阶段可能还没设置 super_block，此时直接退化为普通写，避免阻塞格式化
         if self.systeam.is_none() {
@@ -284,13 +281,11 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         // 使用原始底层块设备提交事务
         let raw_dev = self.inner.device_mut();
 
-
         for i in 0..count {
-              let off = (i as usize) * (BLOCK_SIZE as usize);
-              let mut boxbuf = Box::new([0;BLOCK_SIZE]);
-                boxbuf[..].copy_from_slice(&buf[off..off + (BLOCK_SIZE as usize)]);  
+            let off = (i as usize) * (BLOCK_SIZE as usize);
+            let mut boxbuf = Box::new([0; BLOCK_SIZE]);
+            boxbuf[..].copy_from_slice(&buf[off..off + (BLOCK_SIZE as usize)]);
             let updates = Jbd2Update((block_id + i) as u64, boxbuf);
-            
 
             //先写入缓存
             if systeam.commit_queue.len() > JBD2_BUFFER_MAX {
@@ -305,15 +300,12 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             }
         }
 
-       
-
-
         Ok(())
     }
     pub fn cantflush(&mut self) -> BlockDevResult<()> {
         if !self.journal_use {
             return self.inner.flush();
-        }else {
+        } else {
             return self.inner.flush();
         }
     }
@@ -328,7 +320,7 @@ impl<B: BlockDevice> Jbd2Dev<B> {
 
 impl<B: BlockDevice> BlockDev<B> {
     /// 创建新的块设备封装
-    pub fn new(dev:B) -> Self {
+    pub fn new(dev: B) -> Self {
         Self {
             dev,
             buffer: BlockBuffer::new(),
@@ -338,7 +330,7 @@ impl<B: BlockDevice> BlockDev<B> {
     }
 
     /// 使用指定缓冲区初始化块设备
-    pub fn _with_buffer(dev:B, buffer: BlockBuffer) -> BlockDevResult<Self> {
+    pub fn _with_buffer(dev: B, buffer: BlockBuffer) -> BlockDevResult<Self> {
         if buffer.len() < 512 {
             return Err(BlockDevError::BufferTooSmall {
                 provided: buffer.len(),
@@ -399,7 +391,12 @@ impl<B: BlockDevice> BlockDev<B> {
     }
 
     /// 直接读取多个块
-    pub fn read_blocks(&mut self, buffer: &mut [u8], block_id: u32, count: u32) -> BlockDevResult<()> {
+    pub fn read_blocks(
+        &mut self,
+        buffer: &mut [u8],
+        block_id: u32,
+        count: u32,
+    ) -> BlockDevResult<()> {
         let block_size = self.dev.block_size() as usize;
         let required_size = block_size * count as usize;
 
@@ -446,9 +443,10 @@ impl<B: BlockDevice> BlockDev<B> {
     /// 刷新脏缓冲区到磁盘
     pub fn flush(&mut self) -> BlockDevResult<()> {
         if self.is_dirty
-            && let Some(block_id) = self.cached_block {
-                self.write_block(block_id)?;
-            }
+            && let Some(block_id) = self.cached_block
+        {
+            self.write_block(block_id)?;
+        }
         self.dev.flush()
     }
 

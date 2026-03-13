@@ -54,8 +54,6 @@ pub struct Ext4Inode {
 }
 
 impl Ext4Inode {
-
-
     /// 写入初始extend header便捷函数
     pub fn write_extend_header(&mut self) {
         let per_extent_header_offset = Ext4ExtentHeader::disk_size();
@@ -132,7 +130,7 @@ impl Ext4Inode {
     ///检查是否有extend树的结构
     /// 检查EXT4_EXTENTS_FL标志和标志extend头
     pub fn have_extend_header_and_use_extend(&self) -> bool {
-        if !Self::is_extent(&self){
+        if !Self::is_extent(&self) {
             debug!("Inode not have extend flag!");
             return false;
         }
@@ -147,8 +145,7 @@ impl Ext4Inode {
         }
     }
 
-
-    //some metadata change support 
+    //some metadata change support
     pub fn set_mtime(&mut self, mtime: u32) {
         self.i_mtime = mtime;
     }
@@ -158,7 +155,6 @@ impl Ext4Inode {
     pub fn set_atime(&mut self, atime: u32) {
         self.i_atime = atime;
     }
-
 }
 
 // 文件模式常量 - 文件类型
@@ -422,7 +418,7 @@ impl DiskFormat for Ext4Inode {
             i_mtime_extra: read_u32_le(&bytes[136..140]), // 大inode的额外修改时间，默认为0
             i_atime_extra: read_u32_le(&bytes[140..144]), // 大inode的额外访问时间，默认为0
             i_crtime: read_u32_le(&bytes[144..148]),      // 大inode的创建时间，默认为0
-            i_crtime_extra: read_u32_le(&bytes[148..152]),// 大inode的额外创建时间，默认为0
+            i_crtime_extra: read_u32_le(&bytes[148..152]), // 大inode的额外创建时间，默认为0
             i_version_hi: read_u32_le(&bytes[152..156]),  // 大inode的版本号高32位，默认为0
             i_projid: read_u32_le(&bytes[156..160]),      // 大inode的项目ID，默认为0
         };

@@ -6,9 +6,9 @@ use crate::ext4_backend::blockdev::*;
 use crate::ext4_backend::config::*;
 use crate::ext4_backend::disknode::*;
 use crate::ext4_backend::endian::*;
+use crate::ext4_backend::error::*;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use crate::ext4_backend::error::*;
 /// Inode缓存键（全局inode号）
 pub type InodeCacheKey = u64;
 
@@ -86,7 +86,7 @@ impl InodeCache {
     }
 
     /// 创建默认配置的缓存
-    pub fn default(inode_size:u16) -> Self {
+    pub fn default(inode_size: u16) -> Self {
         Self::new(INODE_CACHE_MAX, inode_size as usize)
     }
 
@@ -159,7 +159,7 @@ impl InodeCache {
             }
 
             // 从磁盘加载
-            let inode = self.load_inode(block_dev,  block_num, offset)?;
+            let inode = self.load_inode(block_dev, block_num, offset)?;
             let cached = CachedInode::new(inode, inode_num, block_num, offset);
             self.cache.insert(inode_num, cached);
         }
@@ -187,7 +187,7 @@ impl InodeCache {
                 self.evict_lru(block_dev)?;
             }
 
-            let inode = self.load_inode(block_dev,  block_num, offset)?;
+            let inode = self.load_inode(block_dev, block_num, offset)?;
             let cached = CachedInode::new(inode, inode_num, block_num, offset);
             self.cache.insert(inode_num, cached);
         }
@@ -294,15 +294,16 @@ impl InodeCache {
         inode_num: u64,
     ) -> BlockDevResult<()> {
         if let Some(cached) = self.cache.remove(&inode_num)
-            && cached.dirty {
-                Self::write_inode_static(
-                    block_dev,
-                    &cached.inode,
-                    cached.block_num,
-                    cached.offset_in_block,
-                    self.inode_size,
-                )?;
-            }
+            && cached.dirty
+        {
+            Self::write_inode_static(
+                block_dev,
+                &cached.inode,
+                cached.block_num,
+                cached.offset_in_block,
+                self.inode_size,
+            )?;
+        }
         Ok(())
     }
 
@@ -367,18 +368,19 @@ impl InodeCache {
         inode_num: u64,
     ) -> BlockDevResult<()> {
         if let Some(cached) = self.cache.get(&inode_num)
-            && cached.dirty {
-                let block_num = cached.block_num;
-                let offset = cached.offset_in_block;
-                let mut buffer = alloc::vec![0u8; self.inode_size];
-                cached.inode.to_disk_bytes(&mut buffer);
+            && cached.dirty
+        {
+            let block_num = cached.block_num;
+            let offset = cached.offset_in_block;
+            let mut buffer = alloc::vec![0u8; self.inode_size];
+            cached.inode.to_disk_bytes(&mut buffer);
 
-                Self::write_inode_bytes_static(block_dev, block_num, offset, &buffer)?;
+            Self::write_inode_bytes_static(block_dev, block_num, offset, &buffer)?;
 
-                if let Some(cached) = self.cache.get_mut(&inode_num) {
-                    cached.dirty = false;
-                }
+            if let Some(cached) = self.cache.get_mut(&inode_num) {
+                cached.dirty = false;
             }
+        }
         Ok(())
     }
 

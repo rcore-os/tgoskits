@@ -1,10 +1,10 @@
 use crate::BLOCK_SIZE;
+use crate::ext4_backend::crc32c::crc32c::*;
 use crate::ext4_backend::disknode::Ext4Inode;
-use crate::ext4_backend::entries::Ext4DirEntryTail;
 use crate::ext4_backend::endian::DiskFormat;
+use crate::ext4_backend::entries::Ext4DirEntryTail;
 use crate::ext4_backend::jbd2::jbdstruct::JournalSuperBllockS;
 use crate::ext4_backend::superblock::Ext4Superblock;
-use crate::ext4_backend::crc32c::crc32c::*;
 extern crate alloc;
 
 /// 计算 ext4 `metadata_csum` 使用的 CRC32C（32位）。
@@ -50,11 +50,7 @@ pub fn ext4_update_superblock_checksum(sb: &mut Ext4Superblock) {
 /// ext4 在某些场景下会把 CRC32C 的低 16 位存入 `bg_checksum`。
 /// 此函数只提供计算入口，是否/何时启用仍需根据 feature 位与布局规则决定。
 #[allow(dead_code)]
-pub fn ext4_group_desc_csum16(
-    sb: &Ext4Superblock,
-    group_id: u32,
-    desc_bytes: &[u8],
-) -> u16 {
+pub fn ext4_group_desc_csum16(sb: &Ext4Superblock, group_id: u32, desc_bytes: &[u8]) -> u16 {
     let seed = ext4_crc32c_seed_from_superblock(sb);
     let group_id_le = group_id.to_le_bytes();
     let csum = ext4_metadata_csum32(seed, &[&group_id_le, desc_bytes]);
@@ -119,7 +115,6 @@ pub fn ext4_metadata_block_csum32(sb: &Ext4Superblock, data: &[u8]) -> u32 {
     ext4_metadata_csum32(seed, &[data])
 }
 
-
 /// 校验目录块的 checksum 是否正确（读路径使用）。
 /// 返回 true 表示校验通过或未启用 metadata_csum。
 pub fn verify_ext4_dirblock_checksum(
@@ -151,23 +146,21 @@ pub fn verify_ext4_dirblock_checksum(
 }
 
 /// 更新目录块（dirblock）的 CRC32C（32位）便捷封装
-pub fn update_ext4_dirblock_csum32(sb: &Ext4Superblock, parent_dir_ino: u32, generation: u32, block_bytes: &mut [u8]){
+pub fn update_ext4_dirblock_csum32(
+    sb: &Ext4Superblock,
+    parent_dir_ino: u32,
+    generation: u32,
+    block_bytes: &mut [u8],
+) {
     let has_checksum = ext4_superblock_has_metadata_csum(sb);
     if has_checksum {
         // 内核只对 tail 之前的数据计算 checksum：size = BLOCK_SIZE - 12
         let data_len = BLOCK_SIZE - Ext4DirEntryTail::TAIL_LEN as usize;
-        let csum = ext4_dirblock_csum32(
-            sb,
-            parent_dir_ino,
-            generation,
-            &block_bytes[..data_len],
-        );
-        let tail_checksum = &mut block_bytes[BLOCK_SIZE-4..];
+        let csum = ext4_dirblock_csum32(sb, parent_dir_ino, generation, &block_bytes[..data_len]);
+        let tail_checksum = &mut block_bytes[BLOCK_SIZE - 4..];
         tail_checksum.copy_from_slice(&csum.to_le_bytes());
     }
 }
-                    
-
 
 /// 计算目录块（dirblock）的 CRC32C（32位）。
 ///
@@ -175,7 +168,12 @@ pub fn update_ext4_dirblock_csum32(sb: &Ext4Superblock, parent_dir_ino: u32, gen
 /// 避免跨目录搬运或 inode 复用后误通过校验。
 /// 输入形式：`seed + uuid + ino + gen + block_bytes`。
 #[allow(dead_code)]
-pub fn ext4_dirblock_csum32(sb: &Ext4Superblock, ino: u32, generation: u32, block_bytes: &[u8]) -> u32 {
+pub fn ext4_dirblock_csum32(
+    sb: &Ext4Superblock,
+    ino: u32,
+    generation: u32,
+    block_bytes: &[u8],
+) -> u32 {
     let seed = ext4_crc32c_seed_from_superblock(sb);
     let ino_le = ino.to_le_bytes();
     let gen_le = generation.to_le_bytes();
@@ -254,4 +252,3 @@ pub fn ext4_inode_bitmap_csum32(sb: &Ext4Superblock, bitmap_bytes: &[u8]) -> u32
     let sz = core::cmp::min(sz, bitmap_bytes.len());
     ext4_metadata_csum32(seed, &[&bitmap_bytes[..sz]])
 }
-

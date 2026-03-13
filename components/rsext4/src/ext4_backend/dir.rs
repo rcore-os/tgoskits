@@ -1,24 +1,23 @@
 //创建文件夹功能模块
 
-
 use crate::alloc::string::ToString;
 use crate::ext4_backend::blockdev::*;
+use crate::ext4_backend::checksum::ext4_update_dirblock_tail_checksum;
+use crate::ext4_backend::checksum::update_ext4_dirblock_csum32;
 use crate::ext4_backend::config::*;
 use crate::ext4_backend::crc32c::crc32c::ext4_superblock_has_metadata_csum;
-use crate::ext4_backend::checksum::ext4_update_dirblock_tail_checksum;
 use crate::ext4_backend::disknode::*;
 use crate::ext4_backend::endian::*;
 use crate::ext4_backend::entries::*;
+use crate::ext4_backend::error::*;
 use crate::ext4_backend::ext4::*;
 use crate::ext4_backend::extents_tree::*;
 use crate::ext4_backend::file::*;
 use crate::ext4_backend::loopfile::*;
-use crate::ext4_backend::error::*;
-use crate::ext4_backend::checksum::update_ext4_dirblock_csum32;
 use alloc::string::String;
 use alloc::vec::Vec;
-use log::error;
 use log::debug;
+use log::error;
 
 #[derive(Debug)]
 pub enum FileError {
@@ -97,7 +96,7 @@ pub fn get_inode_with_num<B: BlockDevice>(
         let mut found_inode_num: Option<u64> = None;
 
         for lbn in 0..total_blocks {
-            let phys = match resolve_inode_block( device, &mut current_inode, lbn as u32)? {
+            let phys = match resolve_inode_block(device, &mut current_inode, lbn as u32)? {
                 Some(b) => b,
                 None => continue,
             };
@@ -140,9 +139,8 @@ pub fn get_inode_with_num<B: BlockDevice>(
     Ok(Some((current_ino, current_inode)))
 }
 
-
 /// 在父目录的所有逻辑块中查找空闲空间并插入一个目录项；
-/// 若所有现有块都无法容纳，则自动为目录分配一个新数据块并扩展 inode 映射和大小。 
+/// 若所有现有块都无法容纳，则自动为目录分配一个新数据块并扩展 inode 映射和大小。
 pub fn insert_dir_entry<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
     device: &mut Jbd2Dev<B>,
@@ -201,9 +199,6 @@ pub fn insert_dir_entry<B: BlockDevice>(
 
             let mut offset = 0usize;
             while offset + 8 <= block_bytes {
-
-                
-
                 let inode = u32::from_le_bytes([
                     data[offset],
                     data[offset + 1],
@@ -212,7 +207,8 @@ pub fn insert_dir_entry<B: BlockDevice>(
                 ]);
                 let rec_len = u16::from_le_bytes([data[offset + 4], data[offset + 5]]) as usize;
                 let rec_type = data[offset + 7];
-                if rec_len < 8 { //代表扫描到空洞或者无效条目
+                if rec_len < 8 {
+                    //代表扫描到空洞或者无效条目
                     return;
                 }
                 let entry_end = offset + rec_len;
@@ -220,13 +216,13 @@ pub fn insert_dir_entry<B: BlockDevice>(
                     return;
                 }
 
-                if rec_type == Ext4DirEntryTail::RESERVED_FT{
+                if rec_type == Ext4DirEntryTail::RESERVED_FT {
                     // 扫到尾巴了,分配新数据块
                     break;
                 }
 
                 // Free entry: directly use it if it can hold the new entry.
-                if inode == 0{
+                if inode == 0 {
                     if rec_len >= new_rec_len {
                         let mut full_entry = new_entry;
                         full_entry.rec_len = rec_len as u16;
@@ -237,10 +233,15 @@ pub fn insert_dir_entry<B: BlockDevice>(
                         inserted = true;
                     }
                     // 更新tail
-                    update_ext4_dirblock_csum32(&fs.superblock, parent_ino_num, parent_inode.i_generation, data);
-                    
+                    update_ext4_dirblock_csum32(
+                        &fs.superblock,
+                        parent_ino_num,
+                        parent_inode.i_generation,
+                        data,
+                    );
+
                     return;
-                } 
+                }
                 // Occupied entry: try to split tail space.
                 let cur_name_len = data[offset + 6] as usize;
                 let mut ideal = 8 + cur_name_len;
@@ -262,7 +263,12 @@ pub fn insert_dir_entry<B: BlockDevice>(
                         inserted = true;
 
                         // 更新tail
-                        update_ext4_dirblock_csum32(&fs.superblock, parent_ino_num, parent_inode.i_generation, data);
+                        update_ext4_dirblock_csum32(
+                            &fs.superblock,
+                            parent_ino_num,
+                            parent_inode.i_generation,
+                            data,
+                        );
 
                         return;
                     }
@@ -326,33 +332,37 @@ pub fn insert_dir_entry<B: BlockDevice>(
     })?;
 
     // 在新分配的数据块中写入唯一的目录项，占满整个块
-    fs.datablock_cache
-        .modify(device, new_block, |data| {
-            for b in data.iter_mut() {
-                *b = 0;
-            }
-            let mut full_entry = new_entry;
+    fs.datablock_cache.modify(device, new_block, |data| {
+        for b in data.iter_mut() {
+            *b = 0;
+        }
+        let mut full_entry = new_entry;
 
-            full_entry.rec_len = if has_checksum{
-                (BLOCK_SIZE - Ext4DirEntryTail::TAIL_LEN as usize) as u16
-            } else {
-                BLOCK_SIZE as u16
-            };
+        full_entry.rec_len = if has_checksum {
+            (BLOCK_SIZE - Ext4DirEntryTail::TAIL_LEN as usize) as u16
+        } else {
+            BLOCK_SIZE as u16
+        };
 
-            full_entry.to_disk_bytes(&mut data[0..8]);
-            let nlen = full_entry.name_len as usize;
-            data[8..8 + nlen].copy_from_slice(&full_entry.name[..nlen]);
-            // 初始化 tail 结构（det_rec_len=12, det_reserved_ft=0xDE 等）
-            if has_checksum {
-                let tail = Ext4DirEntryTail::new();
-                let tail_offset = BLOCK_SIZE - Ext4DirEntryTail::TAIL_LEN as usize;
-                tail.to_disk_bytes(&mut data[tail_offset..tail_offset + Ext4DirEntryTail::TAIL_LEN as usize]);
-            }
-            // 更新新目录块的 checksum
-            update_ext4_dirblock_csum32(&fs.superblock, parent_ino_num, parent_inode.i_generation, data);
-        })?;
-    
-    
+        full_entry.to_disk_bytes(&mut data[0..8]);
+        let nlen = full_entry.name_len as usize;
+        data[8..8 + nlen].copy_from_slice(&full_entry.name[..nlen]);
+        // 初始化 tail 结构（det_rec_len=12, det_reserved_ft=0xDE 等）
+        if has_checksum {
+            let tail = Ext4DirEntryTail::new();
+            let tail_offset = BLOCK_SIZE - Ext4DirEntryTail::TAIL_LEN as usize;
+            tail.to_disk_bytes(
+                &mut data[tail_offset..tail_offset + Ext4DirEntryTail::TAIL_LEN as usize],
+            );
+        }
+        // 更新新目录块的 checksum
+        update_ext4_dirblock_csum32(
+            &fs.superblock,
+            parent_ino_num,
+            parent_inode.i_generation,
+            data,
+        );
+    })?;
 
     Ok(())
 }
@@ -372,9 +382,8 @@ pub fn mkdir_with_ino<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
     path: &str,
 ) -> Option<(u32, Ext4Inode)> {
-
     // check sumfeature
-    let has_checksum = ext4_superblock_has_metadata_csum(&fs.superblock); 
+    let has_checksum = ext4_superblock_has_metadata_csum(&fs.superblock);
 
     // 先对传入路径做规范化（去掉重复的 '/' 等）
     let norm_path = split_paren_child_and_tranlatevalid(path);
@@ -388,7 +397,10 @@ pub fn mkdir_with_ino<B: BlockDevice>(
     if norm_path.is_empty() || norm_path == "/" {
         debug!("Creating root directory");
         if let Err(e) = create_root_directory_entry(fs, device) {
-            error!("mkdir create_root_directory_entry failed path={} err={:?} ({})", path, e, e);
+            error!(
+                "mkdir create_root_directory_entry failed path={} err={:?} ({})",
+                path, e, e
+            );
             return None;
         }
         return match fs.get_root(device) {
@@ -407,7 +419,10 @@ pub fn mkdir_with_ino<B: BlockDevice>(
         return match fs.get_root(device) {
             Ok(inode) => Some((fs.root_inode, inode)),
             Err(e) => {
-                error!("mkdir get_root failed(empty parts) path={} err={:?} ({})", path, e, e);
+                error!(
+                    "mkdir get_root failed(empty parts) path={} err={:?} ({})",
+                    path, e, e
+                );
                 None
             }
         };
@@ -427,7 +442,10 @@ pub fn mkdir_with_ino<B: BlockDevice>(
 
         if let Ok(None) = get_file_inode(fs, device, &cur_path) {
             if mkdir(device, fs, &cur_path).is_none() {
-                error!("mkdir recursive parent create failed path={} parent={}", path, cur_path);
+                error!(
+                    "mkdir recursive parent create failed path={} parent={}",
+                    path, cur_path
+                );
                 return None;
             }
         }
@@ -451,7 +469,10 @@ pub fn mkdir_with_ino<B: BlockDevice>(
         match get_inode_with_num(fs, device, &parent).ok().flatten() {
             Some((n, ino)) => (n, ino),
             None => {
-                error!("mkdir get parent inode failed path={} parent={} child={}", path, parent, child);
+                error!(
+                    "mkdir get parent inode failed path={} parent={} child={}",
+                    path, parent, child
+                );
                 return None;
             }
         };
@@ -460,7 +481,10 @@ pub fn mkdir_with_ino<B: BlockDevice>(
     if (parent.is_empty() || parent == "/") && child.is_empty() {
         debug!("Creating root directory");
         if let Err(e) = create_root_directory_entry(fs, device) {
-            error!("mkdir create_root_directory_entry failed path={} err={:?} ({})", path, e, e);
+            error!(
+                "mkdir create_root_directory_entry failed path={} err={:?} ({})",
+                path, e, e
+            );
             return None;
         }
         return match fs.get_root(device) {
@@ -476,7 +500,10 @@ pub fn mkdir_with_ino<B: BlockDevice>(
     if (parent.is_empty() || parent == "/") && child == "lost+found" {
         debug!("Creating /lost+found directory");
         if let Err(e) = create_lost_found_directory(fs, device) {
-            error!("mkdir create_lost_found_directory failed path={} err={:?} ({})", path, e, e);
+            error!(
+                "mkdir create_lost_found_directory failed path={} err={:?} ({})",
+                path, e, e
+            );
             return None;
         }
         return match get_inode_with_num(fs, device, "/lost+found").ok().flatten() {
@@ -492,7 +519,10 @@ pub fn mkdir_with_ino<B: BlockDevice>(
     let new_dir_ino = match fs.alloc_inode(device) {
         Ok(ino) => ino,
         Err(e) => {
-            error!("mkdir alloc_inode failed path={} parent={} child={} err={:?} ({})", path, parent, child, e, e);
+            error!(
+                "mkdir alloc_inode failed path={} parent={} child={} err={:?} ({})",
+                path, parent, child, e, e
+            );
             return None;
         }
     };
@@ -501,7 +531,10 @@ pub fn mkdir_with_ino<B: BlockDevice>(
     let data_block = match fs.alloc_block(device) {
         Ok(b) => b,
         Err(e) => {
-            error!("mkdir alloc_block failed path={} ino={} err={:?} ({})", path, new_dir_ino, e, e);
+            error!(
+                "mkdir alloc_block failed path={} ino={} err={:?} ({})",
+                path, new_dir_ino, e, e
+            );
             return None;
         }
     };
@@ -526,14 +559,13 @@ pub fn mkdir_with_ino<B: BlockDevice>(
             dot_name,
         );
 
-
-        
-
         let dotdot_name = b"..";
 
         // 不同情况不同长度
         let dotdot_rec_len = if has_checksum {
-            (BLOCK_SIZE as u16).saturating_sub(dot_rec_len).saturating_sub(Ext4DirEntryTail::TAIL_LEN)
+            (BLOCK_SIZE as u16)
+                .saturating_sub(dot_rec_len)
+                .saturating_sub(Ext4DirEntryTail::TAIL_LEN)
         } else {
             (BLOCK_SIZE as u16).saturating_sub(dot_rec_len)
         };
@@ -562,7 +594,9 @@ pub fn mkdir_with_ino<B: BlockDevice>(
         if has_checksum {
             let tail = Ext4DirEntryTail::new();
             let tail_offset = BLOCK_SIZE - Ext4DirEntryTail::TAIL_LEN as usize;
-            tail.to_disk_bytes(&mut data[tail_offset..tail_offset + Ext4DirEntryTail::TAIL_LEN as usize]);
+            tail.to_disk_bytes(
+                &mut data[tail_offset..tail_offset + Ext4DirEntryTail::TAIL_LEN as usize],
+            );
             ext4_update_dirblock_tail_checksum(
                 &fs.superblock,
                 new_dir_ino,
@@ -571,7 +605,6 @@ pub fn mkdir_with_ino<B: BlockDevice>(
                 tail_offset,
             );
         }
-
     }
 
     // 写新目录 inode（单块目录，按特性选择 extent 或直接块）
@@ -598,7 +631,10 @@ pub fn mkdir_with_ino<B: BlockDevice>(
         })
         .is_err()
     {
-        error!("mkdir modify_inode failed path={} ino={}", path, new_dir_ino);
+        error!(
+            "mkdir modify_inode failed path={} ino={}",
+            path, new_dir_ino
+        );
         return None;
     }
 
@@ -632,10 +668,7 @@ pub fn mkdir_with_ino<B: BlockDevice>(
     {
         error!(
             "mkdir insert_dir_entry failed path={} parent_ino={} child={} ino={}",
-            path,
-            parent_ino_num,
-            child,
-            new_dir_ino
+            path, parent_ino_num, child, new_dir_ino
         );
         return None;
     }
@@ -645,10 +678,7 @@ pub fn mkdir_with_ino<B: BlockDevice>(
         Err(e) => {
             error!(
                 "mkdir get_inode_by_num failed path={} ino={} err={:?} ({})",
-                path,
-                new_dir_ino,
-                e,
-                e
+                path, new_dir_ino, e, e
             );
             None
         }
@@ -667,7 +697,8 @@ pub fn create_root_directory_entry<B: BlockDevice>(
     let root_inode_num = fs.root_inode;
     let data_block = fs.alloc_block(block_dev)?;
     // 更新新目录块的 checksum
-    let root = get_inode_with_num(fs, block_dev, "/").expect("Root inode must exist")
+    let root = get_inode_with_num(fs, block_dev, "/")
+        .expect("Root inode must exist")
         .expect("Root inode must exist")
         .1;
     let root_gen = root.i_generation;
@@ -708,7 +739,7 @@ pub fn create_root_directory_entry<B: BlockDevice>(
             let name_len = dotdot.name_len as usize;
             data[offset + 8..offset + 8 + name_len].copy_from_slice(&dotdot.name[..name_len]);
         }
-        
+
         update_ext4_dirblock_csum32(&fs.superblock, root_inode_num, root_gen, data);
     }
 
@@ -785,7 +816,9 @@ pub fn create_lost_found_directory<B: BlockDevice>(
 
         let dotdot_name = b"..";
         let dotdot_rec_len = if has_checksum {
-            (BLOCK_SIZE as u16).saturating_sub(dot_rec_len).saturating_sub(Ext4DirEntryTail::TAIL_LEN)
+            (BLOCK_SIZE as u16)
+                .saturating_sub(dot_rec_len)
+                .saturating_sub(Ext4DirEntryTail::TAIL_LEN)
         } else {
             (BLOCK_SIZE as u16).saturating_sub(dot_rec_len)
         };
@@ -812,7 +845,9 @@ pub fn create_lost_found_directory<B: BlockDevice>(
         if has_checksum {
             let tail = Ext4DirEntryTail::new();
             let tail_offset = BLOCK_SIZE - Ext4DirEntryTail::TAIL_LEN as usize;
-            tail.to_disk_bytes(&mut data[tail_offset..tail_offset + Ext4DirEntryTail::TAIL_LEN as usize]);
+            tail.to_disk_bytes(
+                &mut data[tail_offset..tail_offset + Ext4DirEntryTail::TAIL_LEN as usize],
+            );
             ext4_update_dirblock_tail_checksum(
                 &fs.superblock,
                 lost_ino,
@@ -858,7 +893,7 @@ pub fn create_lost_found_directory<B: BlockDevice>(
 
     //这里也需要根据extend来解析
     let mut root_inode = fs.get_root(block_dev)?;
-    let root_block = resolve_inode_block( block_dev, &mut root_inode, 0)?
+    let root_block = resolve_inode_block(block_dev, &mut root_inode, 0)?
         .expect("lost+found logical_block can't map to physical blcok!");
 
     if root_block == 0 {
@@ -886,10 +921,11 @@ pub fn create_lost_found_directory<B: BlockDevice>(
             );
 
             let lf_name = b"lost+found";
-            
-            let lf_rec_len = if ext4_superblock_has_metadata_csum(&fs.superblock){
-                (BLOCK_SIZE as u16).saturating_sub(dot_rec_len + dotdot_rec_len + Ext4DirEntryTail::TAIL_LEN)
-            }else {
+
+            let lf_rec_len = if ext4_superblock_has_metadata_csum(&fs.superblock) {
+                (BLOCK_SIZE as u16)
+                    .saturating_sub(dot_rec_len + dotdot_rec_len + Ext4DirEntryTail::TAIL_LEN)
+            } else {
                 (BLOCK_SIZE as u16).saturating_sub(dot_rec_len + dotdot_rec_len)
             };
 
@@ -919,7 +955,12 @@ pub fn create_lost_found_directory<B: BlockDevice>(
             data[offset + 8..offset + 8 + lf_len].copy_from_slice(&lost.name[..lf_len]);
 
             // 更新新目录块的 checksum
-            update_ext4_dirblock_csum32(&fs.superblock, root_inode_num, root_inode.i_generation, data);
+            update_ext4_dirblock_csum32(
+                &fs.superblock,
+                root_inode_num,
+                root_inode.i_generation,
+                data,
+            );
         })?;
 
     //  更新根 inode 的链接计数（多了一个子目录）
@@ -931,9 +972,7 @@ pub fn create_lost_found_directory<B: BlockDevice>(
     //  记录到超级块
     fs.superblock.s_lpf_ino = lost_ino;
 
-    debug!(
-        "lost+found directory created: inode={lost_ino}, data_block={data_block}"
-    );
+    debug!("lost+found directory created: inode={lost_ino}, data_block={data_block}");
 
     Ok(())
 }

@@ -6,8 +6,8 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 mod testfs;
 use crate::testfs::*;
-use rsext4::*;
 use log::*;
+use rsext4::*;
 struct SimpleLogger;
 
 impl Log for SimpleLogger {
@@ -156,9 +156,7 @@ fn main() {
     let blocks: u64 = (8192u64 * 1024 * 1024) / (BLOCK_SIZE as u64);
     let img_path = "ext4_meta.img";
 
-    info!(
-        "使用宿主机文件作为块设备: {img_path} (blocks={blocks}, block_size={BLOCK_SIZE})"
-    );
+    info!("使用宿主机文件作为块设备: {img_path} (blocks={blocks}, block_size={BLOCK_SIZE})");
 
     let host_dev = match FileBlockDev::open_or_create(img_path, blocks) {
         Ok(dev) => dev,
@@ -173,8 +171,6 @@ fn main() {
 
     info!("=== 测试 Ext4 mkfs ===");
     _test_mkfs(&mut jbd);
-
-
 
     info!("=== EXT4 挂载测试 ===");
     let mut fs = test_mount(&mut jbd);
@@ -208,16 +204,14 @@ fn main() {
     info!("=== api_write_at_read_at 测试 ===");
     test_api_write_at_read_at(&mut jbd, &mut fs);
 
-
-
     info!("=== journal 断电回放 测试 ===");
     // Enable journaling for mounted filesystem operations.
     umount(fs, &mut jbd).unwrap();
-    
+
     jbd.set_journal_use(true);
     let mut fs = mount(&mut jbd).unwrap();
     fs = _test_journal_powerfail(&mut jbd, fs);
-    
+
     info!("=== rename 测试 ===");
     _test_rename(&mut jbd, &mut fs);
 

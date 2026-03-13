@@ -60,10 +60,8 @@ pub fn crc32c_append(crc: u32, data: &[u8]) -> u32 {
     #[cfg(target_arch = "aarch64")]
     {
         if *HARDWARE_SUPPORT_CRC32 {
-             return unsafe { crc32c_hardware(crc, data) };
-            
+            return unsafe { crc32c_hardware(crc, data) };
         }
-        
     }
 
     crc32c_update(crc, data)
@@ -89,7 +87,6 @@ pub fn ext4_crc32c_seed_from_superblock(sb: &Ext4Superblock) -> u32 {
         crc32c_append(crc32c_init(), &sb.s_uuid)
     }
 }
-
 
 #[cfg(test)]
 mod tests {

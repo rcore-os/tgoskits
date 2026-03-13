@@ -5,14 +5,14 @@ use alloc::vec::Vec;
 use log::{error, info};
 
 use crate::ext4_backend::blockdev::*;
+use crate::ext4_backend::checksum::verify_ext4_dirblock_checksum;
 use crate::ext4_backend::config::*;
 use crate::ext4_backend::disknode::*;
 use crate::ext4_backend::entries::*;
+use crate::ext4_backend::error::*;
 use crate::ext4_backend::ext4::*;
 use crate::ext4_backend::extents_tree::*;
 use crate::ext4_backend::hashtree::*;
-use crate::ext4_backend::error::*;
-use crate::ext4_backend::checksum::verify_ext4_dirblock_checksum;
 use log::debug;
 
 ///支持extend数和多级索引(多级索引将来弃用)
@@ -49,12 +49,10 @@ pub fn resolve_inode_block<B: BlockDevice>(
         }
         error!("Can't find proper extend for this logical block");
         return Err(BlockDevError::ReadError);
-    }else {
+    } else {
         error!("Only Support Extend mode!");
         return Err(BlockDevError::Unsupported);
     }
-
-    
 }
 
 pub fn resolve_inode_block_allextend<B: BlockDevice>(
@@ -131,8 +129,6 @@ pub fn get_file_inode<B: BlockDevice>(
     block_dev: &mut Jbd2Dev<B>,
     path: &str,
 ) -> BlockDevResult<Option<(u32, Ext4Inode)>> {
-
-
     // 规范化路径：空串或"/" 视为根目录
     if path.is_empty() || path == "/" {
         let inode = fs.get_root(block_dev)?;
@@ -201,22 +197,27 @@ pub fn get_file_inode<B: BlockDevice>(
                     let cached_block = fs.datablock_cache.get_or_load(block_dev, *phys.1)?;
                     let block_data = &cached_block.data[..block_bytes];
 
-                    if !verify_ext4_dirblock_checksum(&fs.superblock, current_ino_num, current_inode.i_generation, block_data) {
-                        error!("dir block checksum mismatch: ino={} blk_idx={} phys={}", current_ino_num, idx, phys.1);
+                    if !verify_ext4_dirblock_checksum(
+                        &fs.superblock,
+                        current_ino_num,
+                        current_inode.i_generation,
+                        block_data,
+                    ) {
+                        error!(
+                            "dir block checksum mismatch: ino={} blk_idx={} phys={}",
+                            current_ino_num, idx, phys.1
+                        );
                     }
 
                     if let Some(entry) = classic_dir::find_entry(block_data, target) {
                         if entry.file_type != Ext4DirEntryTail::RESERVED_FT {
-                             found_inode_num = Some(entry.inode as u64);
-                             break;
+                            found_inode_num = Some(entry.inode as u64);
+                            break;
                         }
-                       
                     }
                 }
             }
         }
-
-   
 
         let inode_num = match found_inode_num {
             Some(n) => n,
@@ -239,8 +240,6 @@ pub fn get_file_inode<B: BlockDevice>(
         current_ino_num = inode_num_u32;
         path_vec.push(current_inode);
     }
-
- 
 
     Ok(Some((current_ino_num, current_inode)))
 }

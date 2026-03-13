@@ -13,7 +13,7 @@ use crate::ext4_backend::loopfile::*;
 
 use alloc::vec::Vec;
 use log::error;
-use log::{debug,  warn};
+use log::{debug, warn};
 
 /// Hash tree error type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,7 +91,7 @@ impl HashTreeManager {
 
         // 1. Check if directory has hash tree index enabled
         if !dir_inode.is_htree_indexed() {
-           //warn!("Directory does not have hash tree index enabled, falling back to linear search");
+            //warn!("Directory does not have hash tree index enabled, falling back to linear search");
             return self.fallback_to_linear_search(fs, block_dev, dir_inode, target_name);
         }
 
@@ -101,7 +101,7 @@ impl HashTreeManager {
         debug!("Target hash value: 0x{target_hash:08x}");
 
         // 3. Read root node
-        let root_block = self.get_root_block( block_dev, dir_inode)?;
+        let root_block = self.get_root_block(block_dev, dir_inode)?;
         let root_data = self.read_block_data(fs, block_dev, root_block)?;
 
         // 4. Parse root node
@@ -111,9 +111,7 @@ impl HashTreeManager {
         match self.search_in_hash_tree(fs, block_dev, &root_info, target_hash, target_name) {
             Ok(result) => Ok(result),
             Err(e) => {
-                warn!(
-                    "Hash tree lookup failed: {e}, falling back to linear search"
-                );
+                warn!("Hash tree lookup failed: {e}, falling back to linear search");
                 self.fallback_to_linear_search(fs, block_dev, dir_inode, target_name)
             }
         }
@@ -369,7 +367,7 @@ impl HashTreeManager {
                     });
                 }
             }
-            
+
             return Err(HashTreeError::EntryNotFound);
         }
 
@@ -447,8 +445,8 @@ pub fn lookup_directory_entry<B: BlockDevice>(
 mod tests {
     use super::*;
 
+    use crate::ext4_backend::error::BlockDevError;
     use alloc::vec::Vec;
-use crate::ext4_backend::error::BlockDevError;
     // Mock block device
     struct MockBlockDevice {
         data: Vec<u8>,
@@ -467,7 +465,6 @@ use crate::ext4_backend::error::BlockDevError;
     }
 
     impl BlockDevice for MockBlockDevice {
-
         fn write(&mut self, buffer: &[u8], block_id: u32, count: u32) -> Result<(), BlockDevError> {
             if !self.is_open {
                 return Err(BlockDevError::DeviceNotOpen);
@@ -487,7 +484,12 @@ use crate::ext4_backend::error::BlockDevError;
             Ok(())
         }
 
-        fn read(&mut self, buffer: &mut [u8], block_id: u32, count: u32) -> Result<(), BlockDevError> {
+        fn read(
+            &mut self,
+            buffer: &mut [u8],
+            block_id: u32,
+            count: u32,
+        ) -> Result<(), BlockDevError> {
             if !self.is_open {
                 return Err(BlockDevError::DeviceNotOpen);
             }
@@ -523,11 +525,11 @@ use crate::ext4_backend::error::BlockDevError;
 
     // Create test filesystem
     fn create_test_fs() -> Ext4FileSystem {
-        use crate::ext4_backend::superblock::Ext4Superblock;
-        use crate::ext4_backend::inodetable_cache::InodeCache;
-        use crate::ext4_backend::datablock_cache::DataBlockCache;
         use crate::ext4_backend::bitmap_cache::BitmapCache;
         use crate::ext4_backend::bmalloc::*;
+        use crate::ext4_backend::datablock_cache::DataBlockCache;
+        use crate::ext4_backend::inodetable_cache::InodeCache;
+        use crate::ext4_backend::superblock::Ext4Superblock;
         let mut superblock = Ext4Superblock::default();
         superblock.s_hash_seed = [0x12345678, 0x87654321, 0xABCDEF00, 0x00FEDCBA];
         superblock.s_def_hash_version = 0x8; // Half SipHash
@@ -715,7 +717,7 @@ use crate::ext4_backend::error::BlockDevError;
         mock_device.open().unwrap();
         let mut mock_dev = Jbd2Dev::initial_jbd2dev(0, mock_device, false);
         dir_inode.write_extend_header();
-        dir_inode.i_flags |=Ext4Inode::EXT4_EXTENTS_FL;
+        dir_inode.i_flags |= Ext4Inode::EXT4_EXTENTS_FL;
         let result = manager.fallback_to_linear_search(
             &mut fs,
             &mut mock_dev,

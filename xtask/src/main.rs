@@ -2,7 +2,7 @@
 #![cfg_attr(not(any(windows, unix)), no_std)]
 #![cfg(any(windows, unix))]
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use cargo_metadata::{Metadata, MetadataCommand};
 use clap::{Parser, Subcommand};
 use std::collections::HashSet;
@@ -227,9 +227,11 @@ mod tests {
     fn rejects_unknown_packages() {
         let csv = "package\naxhal\naxstd\n";
         let error = parse_std_crates_csv(csv, &known_packages(&["axhal"])).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("unknown workspace package `axstd`"));
+        assert!(
+            error
+                .to_string()
+                .contains("unknown workspace package `axstd`")
+        );
     }
 
     #[test]

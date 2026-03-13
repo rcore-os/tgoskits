@@ -9,8 +9,8 @@ use std::{
 };
 
 use axpoll::PollSet;
-use tokio::sync::Barrier;
 use futures::future;
+use tokio::sync::Barrier;
 
 struct WaitFuture {
     ps: Arc<PollSet>,

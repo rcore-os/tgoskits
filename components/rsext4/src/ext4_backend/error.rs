@@ -1,9 +1,8 @@
 //!错误处理模块
-//! 
+//!
 /// 块设备错误类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockDevError {
-
     /// 非法输入
     InvalidInput,
 
@@ -83,11 +82,12 @@ pub enum BlockDevError {
     Unknown,
 }
 
-
 impl core::fmt::Display for BlockDevError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            BlockDevError::InvalidInput =>{write!(f,"invalid input")}
+            BlockDevError::InvalidInput => {
+                write!(f, "invalid input")
+            }
             BlockDevError::ReadError => write!(f, "failed to read from block device"),
             BlockDevError::WriteError => write!(f, "failed to write to block device"),
             BlockDevError::BlockOutOfRange {
@@ -135,8 +135,6 @@ impl core::fmt::Display for BlockDevError {
 }
 /// 块设备操作结果类型
 pub type BlockDevResult<T> = Result<T, BlockDevError>;
-
-
 
 /// Ext4文件系统错误
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

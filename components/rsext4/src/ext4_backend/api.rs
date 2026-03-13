@@ -1,17 +1,17 @@
-use alloc::string::String;
-use alloc::vec::Vec;
+use crate::BLOCK_SIZE;
 use crate::ext4_backend::blockdev::*;
 use crate::ext4_backend::dir::*;
 use crate::ext4_backend::disknode::*;
+use crate::ext4_backend::error::*;
 use crate::ext4_backend::ext4::*;
 use crate::ext4_backend::file::*;
 use crate::ext4_backend::loopfile::*;
-use crate::ext4_backend::error::*;
 use crate::ext4_backend::*;
-use crate::BLOCK_SIZE;
+use alloc::string::String;
+use alloc::vec::Vec;
 /// 文件句柄
 pub struct OpenFile {
-    pub inode_num:u32,
+    pub inode_num: u32,
     pub path: String,
     pub inode: Ext4Inode,
     pub offset: u64,
@@ -26,13 +26,10 @@ pub fn fs_mount<B: BlockDevice>(dev: &mut Jbd2Dev<B>) -> BlockDevResult<Ext4File
 pub fn fs_umount<B: BlockDevice>(fs: Ext4FileSystem, dev: &mut Jbd2Dev<B>) -> BlockDevResult<()> {
     ext4::umount(fs, dev)
 }
-pub fn lseek(
-    file:&mut OpenFile,
-    location: u64
-    )->bool{
-        file.offset = location;
-        true
-    }
+pub fn lseek(file: &mut OpenFile, location: u64) -> bool {
+    file.offset = location;
+    true
+}
 
 fn refresh_open_file_inode<B: BlockDevice>(
     dev: &mut Jbd2Dev<B>,
@@ -69,15 +66,15 @@ pub fn open<B: BlockDevice>(
         return Err(BlockDevError::NoEntry);
     }
 
-    let inode = match mkfile_with_ino(dev, fs, &norm_path, None,None) {
+    let inode = match mkfile_with_ino(dev, fs, &norm_path, None, None) {
         Some(ino) => ino,
         None => return Err(BlockDevError::NoEntry),
     };
 
     Ok(OpenFile {
-        inode_num:inode.0,
+        inode_num: inode.0,
         path: norm_path,
-        inode:inode.1,
+        inode: inode.1,
         offset: 0,
     })
 }
@@ -89,7 +86,6 @@ pub fn write_at<B: BlockDevice>(
     file: &mut OpenFile,
     data: &[u8],
 ) -> BlockDevResult<()> {
-
     if data.len() > usize::MAX {
         // 超出平台支持的大小
         return Err(BlockDevError::Unsupported);
@@ -167,10 +163,10 @@ pub fn read_at<B: BlockDevice>(
         if let Some(&phys) = extent_map.get(&(lbn as u32)) {
             let cached = fs.datablock_cache.get_or_load(dev, phys)?;
             let data = &cached.data[..block_bytes as usize];
-            out.extend_from_slice(&data[copy_start as usize ..(copy_start + copy_len) as usize]);
+            out.extend_from_slice(&data[copy_start as usize..(copy_start + copy_len) as usize]);
         } else {
             // Hole: return zeros for the requested logical range.
-            
+
             out.extend(core::iter::repeat_n(0u8, copy_len as usize));
         }
 

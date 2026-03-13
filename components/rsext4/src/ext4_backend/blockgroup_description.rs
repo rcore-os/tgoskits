@@ -1,8 +1,10 @@
 use log::error;
 
-use crate::ext4_backend::{endian::*};
+use crate::ext4_backend::checksum::{
+    ext4_block_bitmap_csum32, ext4_group_desc_csum16, ext4_inode_bitmap_csum32,
+};
 use crate::ext4_backend::crc32c::crc32c::ext4_superblock_has_metadata_csum;
-use crate::ext4_backend::checksum::{ext4_group_desc_csum16, ext4_block_bitmap_csum32, ext4_inode_bitmap_csum32};
+use crate::ext4_backend::endian::*;
 use crate::ext4_backend::superblock::Ext4Superblock;
 /// Ext4 块组描述符结构
 /// 块组描述符包含了块组的元数据信息，如位图位置、inode表位置等
@@ -49,7 +51,6 @@ impl Ext4GroupDesc {
     /// 64位块组描述符大小（64字节）
     pub const EXT4_DESC_SIZE_64BIT: usize = 64;
 
-
     /// 更新GDT的checksum字段
     /// 可选传入 block/inode 位图数据，一并更新 bitmap checksum 字段后再算 GDT 自身 checksum
     pub fn update_checksum(
@@ -84,11 +85,12 @@ impl Ext4GroupDesc {
 
         let mut raw_desc_bytes = [0u8; Ext4GroupDesc::EXT4_DESC_SIZE_64BIT];
         desc_for_csum.to_disk_bytes(&mut raw_desc_bytes);
-        self.bg_checksum = ext4_group_desc_csum16(superblock, group_id, &raw_desc_bytes[..desc_size]);
+        self.bg_checksum =
+            ext4_group_desc_csum16(superblock, group_id, &raw_desc_bytes[..desc_size]);
     }
 
     /// 验证GDT checksum. 通过true返回验证成功, 否则返回false.
-    pub fn verify_checksum(&self, superblock: &Ext4Superblock, group_id: u32){
+    pub fn verify_checksum(&self, superblock: &Ext4Superblock, group_id: u32) {
         if !ext4_superblock_has_metadata_csum(superblock) {
             return; // 如果没有启用 metadata_csum，则跳过校验
         }
@@ -103,11 +105,17 @@ impl Ext4GroupDesc {
 
         let mut raw_desc_bytes = [0u8; Ext4GroupDesc::EXT4_DESC_SIZE_64BIT];
         desc_for_csum.to_disk_bytes(&mut raw_desc_bytes);
-        if ext4_group_desc_csum16(superblock, group_id, &raw_desc_bytes[..desc_size]) != self.bg_checksum {
-            error!("Group descriptor checksum mismatch for group {}: expected {:04x}, got {:04x}", group_id, self.bg_checksum, ext4_group_desc_csum16(superblock, group_id, &raw_desc_bytes[..desc_size]));
+        if ext4_group_desc_csum16(superblock, group_id, &raw_desc_bytes[..desc_size])
+            != self.bg_checksum
+        {
+            error!(
+                "Group descriptor checksum mismatch for group {}: expected {:04x}, got {:04x}",
+                group_id,
+                self.bg_checksum,
+                ext4_group_desc_csum16(superblock, group_id, &raw_desc_bytes[..desc_size])
+            );
             panic!("GDT checksum verification failed for group {}", group_id);
         }
-        
     }
 
     /// 获取块位图块号（64位）
@@ -485,7 +493,7 @@ mod tests {
 
     #[test]
     fn test_group_desc_64bit_values() {
-        let  desc = Ext4GroupDesc {
+        let desc = Ext4GroupDesc {
             bg_block_bitmap_lo: 0x12345678,
             bg_block_bitmap_hi: 0xABCDEF00,
             bg_inode_bitmap_lo: 0,
@@ -519,7 +527,7 @@ mod tests {
 
     #[test]
     fn test_group_desc_flags() {
-        let  desc = Ext4GroupDesc {
+        let desc = Ext4GroupDesc {
             bg_flags: Ext4GroupDesc::EXT4_BG_INODE_UNINIT,
             ..Default::default()
         };

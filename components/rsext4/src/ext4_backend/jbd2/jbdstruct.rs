@@ -16,10 +16,10 @@ pub struct Jbd2Update(pub u64, pub Box<[u8; BLOCK_SIZE]>);
 #[repr(C)]
 pub struct JBD2DEVSYSTEM {
     pub jbd2_super_block: JournalSuperBllockS,
-    pub start_block: u32, // Journal 超级块 开始块号
-    pub max_len: u32,     // 日志总块数
-    pub head: u32,        //commit游标(相对块号)
-    pub sequence: u32,    //当前期待事务ID(验证和写commit用)
+    pub start_block: u32,              // Journal 超级块 开始块号
+    pub max_len: u32,                  // 日志总块数
+    pub head: u32,                     //commit游标(相对块号)
+    pub sequence: u32,                 //当前期待事务ID(验证和写commit用)
     pub commit_queue: Vec<Jbd2Update>, //事务缓存
 }
 
@@ -35,7 +35,7 @@ impl Default for JournalHeaderS {
     fn default() -> Self {
         JournalHeaderS {
             h_magic: JBD2_MAGIC,
-            h_blocktype: 4,//超级块 类型
+            h_blocktype: 4, //超级块 类型
             h_sequence: 0,
         }
     }
@@ -312,8 +312,8 @@ impl DiskFormat for Jbd2JournalBlockTail {
 #[derive(Debug, Clone, Copy)]
 pub struct Jbd2JournalRevokeHeadS {
     pub r_header: JournalHeaderS, // common header
-    pub r_count: u32,               // __be32: number of bytes used in this block
-                                    // Followed by an array of block numbers (4 or 8 bytes each depending on 64-bit support)
+    pub r_count: u32,             // __be32: number of bytes used in this block
+                                  // Followed by an array of block numbers (4 or 8 bytes each depending on 64-bit support)
 }
 
 impl DiskFormat for Jbd2JournalRevokeHeadS {
@@ -351,12 +351,12 @@ impl DiskFormat for Jbd2JouranlRevokeTail {
 #[derive(Debug, Clone, Copy)]
 pub struct CommitHeader {
     pub h_header: JournalHeaderS, // common header (12 bytes)
-    pub h_chksum_type: u8,          // 0xC  checksum type: 1=crc32,2=md5,3=sha1,4=crc32c
-    pub h_chksum_size: u8,          // 0xD  size in bytes of checksum
-    pub h_padding: [u8; 2],         // 0xE  padding
-    pub h_chksum: [u32; 8],         // 0x10..0x2F: space for checksums (32 bytes)
-    pub h_commit_sec: u64,          // 0x30 __be64: commit time seconds since epoch
-    pub h_commit_nsec: u32,         // 0x38 __be32: commit time nanoseconds
+    pub h_chksum_type: u8,        // 0xC  checksum type: 1=crc32,2=md5,3=sha1,4=crc32c
+    pub h_chksum_size: u8,        // 0xD  size in bytes of checksum
+    pub h_padding: [u8; 2],       // 0xE  padding
+    pub h_chksum: [u32; 8],       // 0x10..0x2F: space for checksums (32 bytes)
+    pub h_commit_sec: u64,        // 0x30 __be64: commit time seconds since epoch
+    pub h_commit_nsec: u32,       // 0x38 __be32: commit time nanoseconds
 }
 
 #[cfg(test)]

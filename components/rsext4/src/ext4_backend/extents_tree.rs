@@ -4,8 +4,8 @@ use crate::ext4_backend::blockdev::*;
 use crate::ext4_backend::config::*;
 use crate::ext4_backend::disknode::*;
 use crate::ext4_backend::endian::*;
-use crate::ext4_backend::ext4::*;
 use crate::ext4_backend::error::*;
+use crate::ext4_backend::ext4::*;
 use alloc::vec;
 use alloc::vec::*;
 
@@ -31,7 +31,7 @@ impl ExtentNode {
             ExtentNode::Index { header, .. } => header,
         }
     }
-   
+
     pub fn header_mut(&mut self) -> &mut Ext4ExtentHeader {
         match self {
             ExtentNode::Leaf { header, .. } => header,
@@ -108,9 +108,7 @@ impl<'a> ExtentTree<'a> {
         let entries = header.eh_entries as usize;
         let max = header.eh_max as usize;
         if entries > max {
-            error!(
-                "Extent header entries overflow: entries={entries}, max={max}"
-            );
+            error!("Extent header entries overflow: entries={entries}, max={max}");
             return None;
         }
 
@@ -283,9 +281,7 @@ impl<'a> ExtentTree<'a> {
 
                 let child_block = (chosen.ei_leaf_hi as u64) << 32 | (chosen.ei_leaf_lo as u64);
 
-                debug!(
-                    "Descending into extent child block {child_block} for lblock {lblock}"
-                );
+                debug!("Descending into extent child block {child_block} for lblock {lblock}");
 
                 // 读取子节点所在的物理块，并从块开头解析 extent 节点
                 dev.read_block(child_block as u32)?;
@@ -522,8 +518,12 @@ impl<'a> ExtentTree<'a> {
 
         fn first_key_of_node(node: &ExtentNode) -> u32 {
             match node {
-                ExtentNode::Leaf { entries, .. } => entries.first().map(|e| e.ee_block).unwrap_or(0),
-                ExtentNode::Index { entries, .. } => entries.first().map(|e| e.ei_block).unwrap_or(0),
+                ExtentNode::Leaf { entries, .. } => {
+                    entries.first().map(|e| e.ee_block).unwrap_or(0)
+                }
+                ExtentNode::Index { entries, .. } => {
+                    entries.first().map(|e| e.ei_block).unwrap_or(0)
+                }
             }
         }
 
@@ -647,7 +647,8 @@ impl<'a> ExtentTree<'a> {
                 let mut left_e = e;
                 left_e.ee_len = build_extent_len(e.ee_len, left_len15)?;
 
-                let right_start_phys = extent_start_phys(&e) + seg_end.saturating_sub(e_start) as u64;
+                let right_start_phys =
+                    extent_start_phys(&e) + seg_end.saturating_sub(e_start) as u64;
                 let mut right_e = e;
                 right_e.ee_block = seg_end;
                 right_e.ee_len = build_extent_len(e.ee_len, right_len15)?;
@@ -688,8 +689,9 @@ impl<'a> ExtentTree<'a> {
             phy_block: Option<u32>,
         ) -> BlockDevResult<StepRes> {
             match node {
-                ExtentNode::Leaf { header, entries } =>
-                    leaf_step(tree, fs, dev, header, entries, cur_lbn, remaining, phy_block),
+                ExtentNode::Leaf { header, entries } => leaf_step(
+                    tree, fs, dev, header, entries, cur_lbn, remaining, phy_block,
+                ),
                 ExtentNode::Index { header, entries } => {
                     if entries.is_empty() {
                         return Ok(StepRes {
@@ -712,8 +714,8 @@ impl<'a> ExtentTree<'a> {
                             | (entries[idx_pos].ei_leaf_lo as u64);
                         dev.read_block(child_phy as u32)?;
                         let child_bytes = dev.buffer();
-                        let mut child_node =
-                            ExtentTree::parse_node_from_bytes(child_bytes).ok_or(BlockDevError::Corrupted)?;
+                        let mut child_node = ExtentTree::parse_node_from_bytes(child_bytes)
+                            .ok_or(BlockDevError::Corrupted)?;
 
                         let child_res = step_recursive(
                             tree,
@@ -744,7 +746,12 @@ impl<'a> ExtentTree<'a> {
                                         header: *header,
                                         entries: entries.clone(),
                                     };
-                                    ExtentTree::write_node_to_block(dev, block_id, &disk_node, header.eh_max)?;
+                                    ExtentTree::write_node_to_block(
+                                        dev,
+                                        block_id,
+                                        &disk_node,
+                                        header.eh_max,
+                                    )?;
                                 }
 
                                 return Ok(StepRes {
@@ -830,8 +837,7 @@ impl<'a> ExtentTree<'a> {
                     hdr.eh_magic = Ext4ExtentHeader::EXT4_EXT_MAGIC;
                     hdr.eh_depth = 0;
                     hdr.eh_entries = 0;
-                    hdr.eh_max = (15usize * 4usize
-                        .saturating_sub(Ext4ExtentHeader::disk_size())
+                    hdr.eh_max = (15usize * 4usize.saturating_sub(Ext4ExtentHeader::disk_size())
                         / Ext4Extent::disk_size()) as u16;
                     let empty_root = ExtentNode::Leaf {
                         header: hdr,
@@ -842,11 +848,12 @@ impl<'a> ExtentTree<'a> {
                 }
 
                 if entries.len() == 1 {
-                    let child_phy = ((entries[0].ei_leaf_hi as u64) << 32) | (entries[0].ei_leaf_lo as u64);
+                    let child_phy =
+                        ((entries[0].ei_leaf_hi as u64) << 32) | (entries[0].ei_leaf_lo as u64);
                     block_dev.read_block(child_phy as u32)?;
                     let child_bytes = block_dev.buffer();
-                    let mut child_node =
-                        ExtentTree::parse_node_from_bytes(child_bytes).ok_or(BlockDevError::Corrupted)?;
+                    let mut child_node = ExtentTree::parse_node_from_bytes(child_bytes)
+                        .ok_or(BlockDevError::Corrupted)?;
 
                     let inline_max = inline_eh_max_for_node(&child_node) as usize;
                     let child_entries_len = match &child_node {
@@ -876,8 +883,6 @@ impl<'a> ExtentTree<'a> {
             }
         }
     }
-
-    
 
     /// 插入新的 Extent 入口函数
     pub fn insert_extent<B: BlockDevice>(
@@ -1440,10 +1445,10 @@ mod tests {
     extern crate std;
 
     use super::*;
-    use crate::ext4_backend::blockdev::{BlockDevice, Jbd2Dev};
     use crate::ext4_backend::bitmap_cache::CacheKey;
-    use crate::ext4_backend::ext4::{mkfs, mount};
+    use crate::ext4_backend::blockdev::{BlockDevice, Jbd2Dev};
     use crate::ext4_backend::error::{BlockDevError, BlockDevResult};
+    use crate::ext4_backend::ext4::{mkfs, mount};
     use alloc::vec;
     use alloc::vec::Vec;
 
@@ -1784,10 +1789,16 @@ mod tests {
         assert_eq!(exts.len(), 2);
         assert_eq!(exts[0].ee_block, 0);
         assert_eq!((exts[0].ee_len as u32) & 0x7FFF, 1);
-        assert_eq!(((exts[0].ee_start_hi as u64) << 32) | (exts[0].ee_start_lo as u64), base);
+        assert_eq!(
+            ((exts[0].ee_start_hi as u64) << 32) | (exts[0].ee_start_lo as u64),
+            base
+        );
         assert_eq!(exts[1].ee_block, 3);
         assert_eq!((exts[1].ee_len as u32) & 0x7FFF, 1);
-        assert_eq!(((exts[1].ee_start_hi as u64) << 32) | (exts[1].ee_start_lo as u64), base + 3);
+        assert_eq!(
+            ((exts[1].ee_start_hi as u64) << 32) | (exts[1].ee_start_lo as u64),
+            base + 3
+        );
     }
 
     #[test]
@@ -1848,7 +1859,10 @@ mod tests {
         assert_eq!(exts.len(), 1);
         assert_eq!(exts[0].ee_block, 0);
         assert_eq!((exts[0].ee_len as u32) & 0x7FFF, 1);
-        assert_eq!(((exts[0].ee_start_hi as u64) << 32) | (exts[0].ee_start_lo as u64), base1);
+        assert_eq!(
+            ((exts[0].ee_start_hi as u64) << 32) | (exts[0].ee_start_lo as u64),
+            base1
+        );
     }
 
     #[test]
