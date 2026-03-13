@@ -502,11 +502,14 @@ def cmd_pull(args: argparse.Namespace) -> int:
             skipped.append(f"{repo.repo_name} (no target_dir)")
             continue
 
+        # Use command-line branch if specified, otherwise use CSV branch
+        branch = args.branch if args.branch else repo.branch
+
         try:
             print(f"\nPulling {repo.repo_name}...")
             if args.force:
                 print(f"Using force mode (will prefer remote changes on conflict)")
-            git_manager.pull_subtree(repo.url, repo.target_dir, repo.branch, force=args.force)
+            git_manager.pull_subtree(repo.url, repo.target_dir, branch, force=args.force)
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
             if not args.all:
@@ -553,9 +556,12 @@ def cmd_push(args: argparse.Namespace) -> int:
             skipped.append(f"{repo.repo_name} (no target_dir)")
             continue
 
+        # Use command-line branch if specified, otherwise use CSV branch
+        branch = args.branch if args.branch else repo.branch
+
         try:
             print(f"\nPushing {repo.repo_name}...")
-            git_manager.push_subtree(repo.url, repo.target_dir, repo.branch)
+            git_manager.push_subtree(repo.url, repo.target_dir, branch)
         except (subprocess.CalledProcessError, ValueError) as e:
             print(f"Error pushing {repo.repo_name}: {e}", file=sys.stderr)
             if not args.all:
@@ -759,6 +765,7 @@ Examples:
     pull_parser = subparsers.add_parser('pull', help='Pull updates from remote')
     pull_parser.add_argument('repo_name', nargs='?', help='Repository name (or use --all)')
     pull_parser.add_argument('--all', action='store_true', help='Pull all repositories')
+    pull_parser.add_argument('-b', '--branch', default='', help='Branch name')
     pull_parser.add_argument('-f', '--force', action='store_true',
                             help='Force pull: prefer remote changes on conflict')
 
@@ -766,6 +773,7 @@ Examples:
     push_parser = subparsers.add_parser('push', help='Push local changes to remote')
     push_parser.add_argument('repo_name', nargs='?', help='Repository name (or use --all)')
     push_parser.add_argument('--all', action='store_true', help='Push all repositories')
+    push_parser.add_argument('-b', '--branch', default='', help='Branch name')
 
     # List command
     list_parser = subparsers.add_parser('list', help='List all repositories')
