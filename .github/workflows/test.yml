@@ -28,6 +28,12 @@ jobs:
   test_os_target:
     name: Test ${{ matrix.os }} ${{ matrix.target }}
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/${{ github.repository }}-container:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
     strategy:
       fail-fast: false
       matrix:
