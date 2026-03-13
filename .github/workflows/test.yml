@@ -4,13 +4,22 @@ on:
   push:
   pull_request:
 
-env: 
+permissions:
+  contents: read
+  packages: read
+
+env:
   CARGO_TERM_COLOR: always
 
 jobs:
   test_std:
     name: Test with std
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/${{ github.repository }}-container:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - run: rustc --version
