@@ -18,6 +18,20 @@ name: Push to Subrepos
 # - branch: 推送到子仓库的目标分支（默认：mirror）
 # - push_all: 推送所有组件（忽略变更检测）
 #
+# 【权限配置】
+# ─────────────────────────────────────────────────────────────────────────────
+# 需要配置 Personal Access Token (PAT) 以推送到子仓库：
+#
+#   1. 创建 PAT：https://github.com/settings/tokens/new
+#      - 名称：tgoskits-subtree-push
+#      - 权限：repo (Full control of private repositories)
+#      - 过期时间：根据需要设置
+#
+#   2. 添加到仓库 Secrets：
+#      仓库 → Settings → Secrets and variables → Actions → New repository secret
+#      - Name: SUBTREE_PUSH_TOKEN
+#      - Value: 粘贴刚才创建的 PAT
+#
 # ═══════════════════════════════════════════════════════════════════════════════
 
 on:
@@ -45,12 +59,11 @@ on:
         type: boolean
         default: false
 
-permissions:
-  contents: write
-
 jobs:
   detect-changes:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       components: ${{ steps.detect.outputs.components }}
       has-changes: ${{ steps.detect.outputs.has-changes }}
@@ -63,9 +76,13 @@ jobs:
 
       - name: Detect changed components
         id: detect
+        env:
+          INPUT_PUSH_ALL: ${{ inputs.push_all }}
+          INPUT_COMPONENTS: ${{ inputs.components }}
+          GH_EVENT_NAME: ${{ github.event_name }}
         run: |
           # 如果手动指定推送所有组件
-          if [ "${{ inputs.push_all }}" = "true" ]; then
+          if [ "$INPUT_PUSH_ALL" = "true" ]; then
             echo "components=__all__" >> $GITHUB_OUTPUT
             echo "has-changes=true" >> $GITHUB_OUTPUT
             echo "Pushing all components"
@@ -73,10 +90,10 @@ jobs:
           fi
           
           # 如果手动指定了组件列表
-          if [ -n "${{ inputs.components }}" ]; then
-            echo "components=${{ inputs.components }}" >> $GITHUB_OUTPUT
+          if [ -n "$INPUT_COMPONENTS" ]; then
+            echo "components=$INPUT_COMPONENTS" >> $GITHUB_OUTPUT
             echo "has-changes=true" >> $GITHUB_OUTPUT
-            echo "Using manually specified components: ${{ inputs.components }}"
+            echo "Using manually specified components: $INPUT_COMPONENTS"
             exit 0
           fi
           
@@ -84,7 +101,7 @@ jobs:
           echo "Detecting changed components..."
           
           # 获取修改的文件列表
-          if [ "${{ github.event_name }}" = "push" ]; then
+          if [ "$GH_EVENT_NAME" = "push" ]; then
             CHANGED_FILES=$(git diff --name-only HEAD^ HEAD)
           else
             CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
@@ -133,6 +150,8 @@ jobs:
   push-to-subrepos:
     needs: detect-changes
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     if: ${{ needs.detect-changes.outputs.has-changes == 'true' }}
     
     steps:
@@ -140,48 +159,66 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.SUBTREE_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: '3.12'
 
       - name: Configure Git
+        env:
+          SUBTREE_PUSH_TOKEN: ${{ secrets.SUBTREE_PUSH_TOKEN }}
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # 配置 git 使用 PAT 进行认证（token 通过 env 传入，不直接嵌入命令行）
+          if [ -n "$SUBTREE_PUSH_TOKEN" ]; then
+            git config --global credential.helper store
+            printf 'https://x-access-token:%s@github.com\n' "$SUBTREE_PUSH_TOKEN" > ~/.git-credentials
+            chmod 600 ~/.git-credentials
+            echo "✅ Configured authentication with SUBTREE_PUSH_TOKEN"
+          else
+            echo "⚠️ SUBTREE_PUSH_TOKEN not set, using GITHUB_TOKEN (may fail for cross-repo push)"
+          fi
 
       - name: Get target branch
         id: branch
+        env:
+          INPUT_BRANCH: ${{ inputs.branch }}
         run: |
           # 使用输入的分支，如果没有输入则默认为 mirror
-          TARGET_BRANCH="${{ inputs.branch || 'mirror' }}"
+          TARGET_BRANCH="${INPUT_BRANCH:-mirror}"
           echo "target_branch=${TARGET_BRANCH}" >> $GITHUB_OUTPUT
           echo "Target branch: ${TARGET_BRANCH}"
 
       - name: List components to push
+        env:
+          TARGET_BRANCH: ${{ steps.branch.outputs.target_branch }}
         run: |
           echo "=========================================="
           echo "Components Configuration"
           echo "=========================================="
           python3 scripts/repo/repo.py list
           echo ""
-          echo "Target branch for all components: ${{ steps.branch.outputs.target_branch }}"
+          echo "Target branch for all components: ${TARGET_BRANCH}"
           echo "=========================================="
 
       - name: Push all components to target branch
         if: ${{ needs.detect-changes.outputs.components == '__all__' }}
+        env:
+          TARGET_BRANCH: ${{ steps.branch.outputs.target_branch }}
         run: |
-          echo "Pushing ALL components to ${{ steps.branch.outputs.target_branch }} branch..."
-          python3 scripts/repo/repo.py push --all -b ${{ steps.branch.outputs.target_branch }}
+          echo "Pushing ALL components to ${TARGET_BRANCH} branch..."
+          python3 scripts/repo/repo.py push --all -b "${TARGET_BRANCH}"
 
       - name: Push changed components to target branch
-        if: ${{ needs.detect-changes.outputs.components != '__all__' }}
+        if: ${{ needs.detect-changes.outputs.components != '__all__' && needs.detect-changes.outputs.components != '' }}
+        env:
+          COMPONENTS: ${{ needs.detect-changes.outputs.components }}
+          TARGET_BRANCH: ${{ steps.branch.outputs.target_branch }}
         run: |
-          COMPONENTS="${{ needs.detect-changes.outputs.components }}"
-          TARGET_BRANCH="${{ steps.branch.outputs.target_branch }}"
-          
           if [ -z "$COMPONENTS" ]; then
             echo "No components to push"
             exit 0
@@ -206,12 +243,12 @@ jobs:
             echo "Pushing: ${repo_name}"
             echo "=========================================="
             
-            if python3 scripts/repo/repo.py push "${repo_name}" -b ${TARGET_BRANCH}; then
+            if python3 scripts/repo/repo.py push "${repo_name}" -b "${TARGET_BRANCH}"; then
               echo "✅ Successfully pushed ${repo_name}"
-              ((SUCCESS++))
+              SUCCESS=$((SUCCESS + 1))
             else
               echo "❌ Failed to push ${repo_name}"
-              ((FAIL++))
+              FAIL=$((FAIL + 1))
             fi
           done
           
@@ -228,17 +265,38 @@ jobs:
             exit 1
           fi
 
-      - name: Create summary
+      - name: Cleanup credentials
         if: always()
         run: |
-          COMPONENTS="${{ needs.detect-changes.outputs.components }}"
-          TARGET_BRANCH="${{ steps.branch.outputs.target_branch }}"
-          
+          if [ -f ~/.git-credentials ]; then
+            rm -f ~/.git-credentials
+            git config --global --unset credential.helper || true
+          fi
+
+      - name: Create summary
+        if: always()
+        env:
+          COMPONENTS: ${{ needs.detect-changes.outputs.components }}
+          TARGET_BRANCH: ${{ steps.branch.outputs.target_branch }}
+          GH_EVENT_NAME: ${{ github.event_name }}
+          GH_REF_NAME: ${{ github.ref_name }}
+          SUBTREE_PUSH_TOKEN: ${{ secrets.SUBTREE_PUSH_TOKEN }}
+        run: |
           echo "## Push to Subrepos Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Components**: ${COMPONENTS}" >> $GITHUB_STEP_SUMMARY
           echo "- **Target Branch**: ${TARGET_BRANCH}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Trigger**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Source Branch**: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Trigger**: ${GH_EVENT_NAME}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Source Branch**: ${GH_REF_NAME}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "All components are pushed to the \`${TARGET_BRANCH}\` branch in their respective repositories." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # 检查是否配置了 PAT
+          if [ -z "$SUBTREE_PUSH_TOKEN" ]; then
+            echo "⚠️ **Warning**: SUBTREE_PUSH_TOKEN is not configured." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "To enable cross-repository push, please:" >> $GITHUB_STEP_SUMMARY
+            echo "1. Create a PAT at https://github.com/settings/tokens/new with \`repo\` scope" >> $GITHUB_STEP_SUMMARY
+            echo "2. Add it as \`SUBTREE_PUSH_TOKEN\` in repository secrets" >> $GITHUB_STEP_SUMMARY
+          fi
