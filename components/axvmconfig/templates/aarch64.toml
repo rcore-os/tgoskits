@@ -1,0 +1,39 @@
+id = 1
+name = "GuestVM-aarch64"
+vm_type = 1
+cpu_num = 1
+phys_cpu_sets = [1]
+entry_point = 0x4008_0000
+kernel_path = "arceos-aarch64.bin"
+kernel_load_addr = 0x4008_0000
+# ramdisk_path = ""
+# ramdisk_load_addr = 0
+# disk_path = "disk.img"
+# dtb_load_addr = 0
+
+# The location of image: "memory" | "fs"
+image_location = "fs"
+
+# Memory regions with format (`base_paddr`, `size`, `flags`, `type`).
+memory_regions = [
+    [0x8000_0000, 0x4000_0000, 0x7, 1], # System RAM 1G 
+]
+
+# Emu_devices
+# Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig
+emu_devices = []
+
+# Pass-through devices
+# Name Base-Ipa Base-Pa Length Alloc-Irq
+passthrough_devices = [
+    ["intc@8000000", 0x800_0000, 0x800_0000, 0x50_000, 0x1],
+    ["pl011@9000000", 0x900_0000, 0x900_0000, 0x1000, 0x1],
+    ["pl031@9010000", 0x901_0000, 0x901_0000, 0x1000, 0x1],
+    ["pl061@9030000", 0x903_0000, 0x903_0000, 0x1000, 0x1],
+    # a003000.virtio_mmio virtio_mmio@a003000 
+    # a003200.virtio_mmio virtio_mmio@a003200
+    ["virtio_mmio", 0xa00_0000, 0xa00_0000, 0x4000, 0x1],
+    # [0x1000_0000, 0x2EFF_0000, 0x17],       # pcie@10000000
+    # [0x40_1000_0000, 0x1000_0000, 0x17],    # PCI ECAM
+    # [0x80_0000_0000, 0x80_0000_0000, 0x17], # pcie@10000000
+]

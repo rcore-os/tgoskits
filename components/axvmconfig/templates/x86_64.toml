@@ -1,0 +1,37 @@
+id = 1
+name = "GuestVM-x86_64"
+vm_type = 1
+cpu_num = 1
+phys_cpu_sets = [1]
+entry_point = 0x8000
+bios_path = "rvm-bios.bin"
+bios_load_addr = 0x8000
+kernel_path = "arceos-x86_64.bin"
+kernel_load_addr = 0x20_0000
+# ramdisk_path = ""
+# ramdisk_load_addr = 0
+# disk_path = "disk.img"
+
+# The location of image: "memory" | "fs"
+image_location = "fs"
+
+# Memory regions with format (`base_paddr`, `size`, `flags`).
+memory_regions = [
+    [0x0000_0000, 0x100_0000, 0x7],   # Low RAM		16M	0b111
+    [0xfec0_0000, 0x1000, 0x17],      # IO APIC		4K	0b10111
+    [0xfee0_0000, 0x1000, 0x17],      # Local APIC	4K	0b10111
+    [0xfed0_0000, 0x1000, 0x17],      # HPET 		4K  0b10111
+]
+
+# Emu_devices
+# Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig
+emu_devices = [
+]
+
+# Pass-through devices
+# Name Base-Ipa Base-Pa Length Alloc-Irq
+passthrough_devices = [
+    ["IoAPIC@fec00000", 0xfec0_0000, 0xfec0_0000, 0x1000, 0x1],
+    ["LocalAPIC@fee00000", 0xfee0_0000, 0xfee0_0000, 0x1000, 0x1],
+    ["HPET@fed00000", 0xfed0_0000, 0xfed0_0000, 0x1000, 0x1],
+]

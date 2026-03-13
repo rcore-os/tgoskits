@@ -1,0 +1,29 @@
+id = 1
+name = "GuestVM-riscv64"
+vm_type = 1
+cpu_num = 1
+phys_cpu_sets = [1]
+entry_point = 0x8020_0000
+kernel_path = "arceos-riscv64.bin"
+kernel_load_addr = 0x8020_0000
+# ramdisk_path = ""
+# ramdisk_load_addr = 0
+# disk_path = "disk.img"
+# dtb_load_addr = 0
+
+image_location = "fs"
+
+# Memory regions with format (`base_paddr`, `size`, `flags`).
+memory_regions = [
+    [0x8000_0000, 0x100_0000, 0x7], # Low RAM		16M	0b1111  R|W|EXECUTE|U
+]
+
+# Emu_devices
+# Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig
+emu_devices = []
+# Pass-through devices
+# Name Base-Ipa Base-Pa Length Alloc-Irq
+passthrough_devices = [
+    ["PLIC@c00_0000", 0x0c00_0000, 0x0c00_0000, 0x21_0000, 0x1],
+    ["UART@1000_0000", 0x1000_0000, 0x1000_0000, 0x1000, 0x1],
+]
