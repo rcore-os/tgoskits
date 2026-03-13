@@ -1,0 +1,21 @@
+[package]
+name = "axhvc"
+version = "0.2.0"
+edition = "2024"
+authors = ["AxVisor Team"]
+description = "AxVisor HyperCall definitions for guest-hypervisor communication"
+documentation = "https://docs.rs/axhvc"
+repository = "https://github.com/arceos-hypervisor/axhvc"
+readme = "README.md"
+license = "Apache-2.0"
+keywords = ["hypervisor", "hypercall", "virtualization", "arceos", "axvisor"]
+categories = ["no-std", "embedded", "os"]
+
+[dependencies]
+# Error types for ArceOS ecosystem
+axerrno = "0.2"
+
+[package.metadata.docs.rs]
+all-features = true
+default-target = "x86_64-unknown-linux-gnu"
+targets = ["x86_64-unknown-linux-gnu", "x86_64-unknown-none", "riscv64gc-unknown-none-elf", "aarch64-unknown-none-softfloat"]
