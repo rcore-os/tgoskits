@@ -114,3 +114,5 @@ __pycache__/
 .qemu*
 .build*
 .uboot*
+
+/.cargo/.config-local.toml

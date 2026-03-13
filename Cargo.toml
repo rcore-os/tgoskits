@@ -59,7 +59,6 @@ members = [
     "components/starry-smoltcp",
     "components/starry-vm",
     "components/timer_list",
-    "components/virtio-drivers",
 
     # os/arceos/modules
     "os/arceos/modules/axalloc",
@@ -99,13 +98,6 @@ members = [
 
     # os/axvisor
     "os/axvisor",
-
-    # virtio-drivers examples
-    "components/virtio-drivers/examples/aarch64",
-    "components/virtio-drivers/examples/hexagon",
-    "components/virtio-drivers/examples/riscv",
-    "components/virtio-drivers/examples/x86_64",
-    "components/virtio-drivers/examples/vsock_server",
 ]
 exclude = [
     # workspace directories
