@@ -1,0 +1,51 @@
+name: Quality Checks
+
+on:
+  workflow_call:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    name: Quality Checks
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-none
+          - riscv64gc-unknown-none-elf
+          - aarch64-unknown-none-softfloat
+          - loongarch64-unknown-none-softfloat
+          - armv7a-none-eabi
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src, clippy, rustfmt
+          targets: ${{ matrix.target }}
+
+      - name: Check rust version
+        run: rustc --version --verbose
+
+      - name: Check code format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (zero-vma)
+        run: cargo clippy --target ${{ matrix.target }} --features "preempt,arm-el2"
+
+      - name: Build (zero-vma)
+        run: cargo build --target ${{ matrix.target }} --features "preempt,arm-el2"
+
+      - name: Clippy (non-zero-vma)
+        run: cargo clippy --target ${{ matrix.target }} --features "preempt,arm-el2,non-zero-vma"
+
+      - name: Build (non-zero-vma)
+        run: cargo build --target ${{ matrix.target }} --features "preempt,arm-el2,non-zero-vma"

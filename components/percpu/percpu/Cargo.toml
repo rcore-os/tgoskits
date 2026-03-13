@@ -1,0 +1,45 @@
+[package]
+name = "percpu"
+description = "Define and access per-CPU data structures"
+documentation = "https://docs.rs/percpu"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+
+# For single CPU use, just make the per-CPU data a global variable.
+sp-naive = ["percpu_macros/sp-naive"]
+
+# Whether the system enables preemption.
+preempt = ["percpu_macros/preempt", "dep:kernel_guard"]
+
+# ARM specific, whether to run at the EL2 privilege level.
+arm-el2 = ["percpu_macros/arm-el2"]
+
+# Allow using non-zero VMA addresses for `.percpu` section. Required for testing
+# on Linux user-space. May reduce performance slightly.
+non-zero-vma = ["percpu_macros/non-zero-vma"]
+
+# Enable custom per-CPU base mode: per-CPU statics are generated as `PerCpuData<T>`
+# and the caller is responsible for setting the CPU-local base register (e.g. via
+# `init_percpu_reg`) before current-CPU access.
+custom-base = ["percpu_macros/custom-base"]
+
+[dependencies]
+cfg-if = "1.0"
+kernel_guard = { version = "0.1", optional = true }
+percpu_macros = { path = "../percpu_macros", version = "0.2.3-preview.1" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+x86 = "0.52"
+
+[target.'cfg(not(target_os = "none"))'.dependencies]
+spin = "0.10"
