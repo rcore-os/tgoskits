@@ -287,11 +287,15 @@ TGOSKits 采用 **Git Subtree** 作为核心同步技术，相比 Git Submodule 
        └─ 推送修改 (push)  ←──────────┤  同步本地更改
 ```
 
-### 3.2 从组件仓库同步到主仓库
+### 3.2 手动同步
+
+在当前主仓库修改了组件的代码之后，可以使用 `scripts/repo/repo.py` 脚本来手动将修改同步到独立的组件子仓库中。注意，CI 默认配置了同步，可以在将修改提交当远程仓库后自动同步。
+
+#### 3.2.1 从组件仓库同步到主仓库
 
 当组件仓库有新的更新时，可以使用 `repo.py pull` 命令将组件子仓库中的更改同步到当前主仓库中的对应组件目录下。
 
-#### 3.2.1 基本用法
+##### 3.2.1.1 基本用法
 
 ```bash
 # 拉取单个组件更新
@@ -304,7 +308,7 @@ python3 scripts/repo/repo.py pull --all
 python3 scripts/repo/repo.py pull arm_vcpu -b dev
 ```
 
-#### 3.2.2 Pull 命令执行流程
+##### 3.2.1.2 Pull 命令执行流程
 
 ```python
 # 伪代码展示 pull 的工作流程
@@ -326,7 +330,7 @@ def pull_subtree(url, target_dir, branch):
     # Merge subtree arm_vcpu/main
 ```
 
-#### 3.2.3 强制模式
+##### 3.2.1.3 强制模式
 
 当遇到冲突或需要完全重置时，使用 `--force` 参数：
 
@@ -345,11 +349,11 @@ python3 scripts/repo/repo.py pull arm_vcpu --force
 - 严重的合并冲突无法解决
 - 需要完全重新同步组件
 
-### 3.3 从主仓库同步到组件仓库
+#### 3.2.2 从主仓库同步到组件仓库
 
 当在主仓库中修改了组件代码后，可以使用 `repo.py push` 命令将对当前组件的更改推送回独立的组件子仓库中。
 
-#### 3.3.1 基本用法
+##### 3.2.2.1 基本用法
 
 ```bash
 # 推送单个组件
@@ -362,7 +366,7 @@ python3 scripts/repo/repo.py push --all
 python3 scripts/repo/repo.py push arm_vcpu -b dev
 ```
 
-#### 3.3.2 Push 命令执行流程
+##### 3.2.2.2 Push 命令执行流程
 
 ```python
 # 伪代码展示 push 的工作流程
@@ -382,18 +386,18 @@ def push_subtree(url, target_dir, branch):
     # 4. 组件仓库会收到新的提交
 ```
 
-#### 3.3.3 Push 注意事项
+##### 3.2.2.3 Push 注意事项
 
 - **权限要求**：需要对组件仓库有写权限
 - **提交分离**：Git subtree 会将主仓库的提交拆分成组件仓库的独立提交
 - **历史保持**：推送的提交会保留原始作者信息和时间戳
 - **冲突处理**：如果组件仓库有新提交，需要先 pull 再 push
 
-### 3.4 自动同步
+### 3.3 自动同步
 
 TGOSKits 仓库配置了 `.github/workflows/pull.yml` 和 `.github/workflows/push.yml` 两个 CI 文件来实现自动化的双向同步。
 
-#### 3.4.1 Pull 工作流
+#### 3.3.1 从组件仓库同步到主仓库
 
 Pull 工作流由 `.github/workflows/pull.yml` 文件实现从子仓库拉取更新到主仓库的 next 分支（默认），支持如下两种触发方式：
 
@@ -631,7 +635,7 @@ Pull 工作流由 `.github/workflows/pull.yml` 文件实现从子仓库拉取更
 # - target_branch: next
 ```
 
-#### 3.4.2 Push 工作流
+#### 3.3.2 从主仓库同步到组件仓库
 
 Push 工作流由 `.github/workflows/push.yml` 文件实现将主仓库中修改的组件推送到子仓库，支持如下两种触发方式：
 
@@ -778,7 +782,7 @@ Push 工作流需要配置 Personal Access Token (PAT) 以推送到子仓库：
 # 工作流自动检测修改的组件并推送
 ```
 
-#### 3.4.3 双向同步工作流示例
+#### 3.3.3 双向同步工作流示例
 
 **场景：组件仓库更新 → 主仓库同步**
 
