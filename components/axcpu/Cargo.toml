@@ -1,0 +1,70 @@
+[package]
+name = "axcpu"
+version = "0.3.0-preview.8"
+edition = "2021"
+authors = [
+    "Yuekai Jia <equation618@gmail.com>",
+    "Youjie Zheng <Azure_stars@126.com>",
+    "yfblock <321353225@qq.com>",
+    "yanjuguang <coolyanjg@163.com>",
+    "Grow Zheng <hhmcn@outlook.com>",
+    "Su Mingxian <aarkegz@gmail.com>",
+    "hky1999 <keyang.hu@qq.com>",
+    "RobertYuan <634954435@qq.com>",
+    "Mivik <mivikq@gmail.com>",
+    "朝倉水希 <asakuramizu111@gmail.com>",
+]
+description = "Privileged instruction and structure abstractions for various CPU architectures"
+license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
+homepage = "https://github.com/arceos-org/axcpu"
+repository = "https://github.com/arceos-org/axcpu/tree/dev"
+documentation = "https://docs.rs/axcpu"
+keywords = ["arceos", "cpu", "architecture", "hal"]
+categories = ["embedded", "no-std", "hardware-support", "os"]
+rust-version = "1.88.0"
+
+[features]
+default = []
+fp-simd = []
+tls = []
+uspace = []
+arm-el2 = ["page_table_entry/arm-el2"]
+
+[dependencies]
+axbacktrace = "0.1"
+cfg-if = "1.0"
+linkme = "0.3"
+log = "0.4"
+memory_addr = "0.4"
+page_table_entry = "0.6"
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+lazyinit = "0.2"
+percpu = "0.2.3-preview.1"
+x86 = "0.52"
+x86_64 = { version = "0.15", default-features = false, features = [
+    "instructions",
+] }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+aarch64-cpu = "11.0"
+tock-registers = "0.10"
+
+[target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64"))'.dependencies]
+riscv = "0.16"
+
+[target.'cfg(target_arch = "loongarch64")'.dependencies]
+loongArch64 = "0.2"
+page_table_multiarch = "0.6"
+
+[lints.clippy]
+new_without_default = "allow"
+
+[package.metadata.docs.rs]
+all-features = true
+targets = [
+    "x86_64-unknown-none",
+    "aarch64-unknown-none-softfloat",
+    "riscv64gc-unknown-none-elf",
+    "loongarch64-unknown-none-softfloat",
+]

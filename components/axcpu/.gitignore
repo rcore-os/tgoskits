@@ -1,0 +1,5 @@
+/target
+/.vscode
+.DS_Store
+*.swp
+*.swo
