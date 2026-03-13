@@ -1,0 +1,10 @@
+{
+  "targets": [
+    "aarch64-unknown-none-softfloat"
+  ],
+  "rust_components": [
+    "rust-src",
+    "clippy",
+    "rustfmt"
+  ]
+}
