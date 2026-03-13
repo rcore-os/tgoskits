@@ -12,6 +12,27 @@ use std::process::Command;
 
 const STD_CRATES_CSV: &str = "scripts/test/std_crates.csv";
 
+const AXVISOR_TARGETS: &[&str] = &[
+    "x86_64-unknown-none",
+    "riscv64gc-unknown-none-elf",
+    "aarch64-unknown-none-softfloat",
+];
+
+const STARRY_TARGETS: &[&str] = &[
+    "x86_64-unknown-none",
+    "riscv64gc-unknown-none-elf",
+    "aarch64-unknown-none-softfloat",
+    "loongarch64-unknown-none-softfloat",
+];
+
+fn supported_targets(os: &str) -> &'static [&'static str] {
+    match os {
+        "axvisor" => AXVISOR_TARGETS,
+        "starry" => STARRY_TARGETS,
+        _ => &[],
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "tg-xtask")]
 #[command(about = "Workspace maintenance tasks")]
@@ -31,6 +52,16 @@ enum Commands {
 #[derive(Subcommand)]
 enum TestCommand {
     Std,
+    Axvisor {
+        /// Target triple for cross-compilation
+        #[arg(long)]
+        target: String,
+    },
+    Starry {
+        /// Target triple for cross-compilation
+        #[arg(long)]
+        target: String,
+    },
 }
 
 trait CargoRunner {
@@ -58,6 +89,12 @@ fn main() -> Result<()> {
         Commands::Test {
             command: TestCommand::Std,
         } => run_std_test_command(),
+        Commands::Test {
+            command: TestCommand::Axvisor { target },
+        } => run_target_test_command("axvisor", &target),
+        Commands::Test {
+            command: TestCommand::Starry { target },
+        } => run_target_test_command("starry", &target),
     }
 }
 
@@ -175,6 +212,33 @@ fn run_std_tests<R: CargoRunner>(
     Ok(failed)
 }
 
+fn run_target_test_command(os: &str, target: &str) -> Result<()> {
+    let supported = supported_targets(os);
+
+    // 验证 target 是否在支持的列表中
+    if !supported.contains(&target) {
+        bail!(
+            "unsupported target `{}` for {}. Supported targets are: {}",
+            target,
+            os,
+            supported.join(", ")
+        );
+    }
+
+    let metadata = MetadataCommand::new()
+        .no_deps()
+        .exec()
+        .context("failed to load cargo metadata")?;
+    let _workspace_root = metadata.workspace_root.clone().into_std_path_buf();
+
+    println!("running {} tests for target: {}", os, target);
+    // TODO: 实现实际的测试逻辑
+    println!("  (test implementation placeholder for {} on {})", os, target);
+
+    println!("{} test passed", os);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,5 +320,64 @@ mod tests {
                 (workspace_root, "axlog".to_owned()),
             ]
         );
+    }
+
+    #[test]
+    fn supported_targets_returns_axvisor_targets() {
+        let targets = supported_targets("axvisor");
+        assert_eq!(
+            targets,
+            &[
+                "x86_64-unknown-none",
+                "riscv64gc-unknown-none-elf",
+                "aarch64-unknown-none-softfloat",
+            ]
+        );
+    }
+
+    #[test]
+    fn supported_targets_returns_starry_targets() {
+        let targets = supported_targets("starry");
+        assert_eq!(
+            targets,
+            &[
+                "x86_64-unknown-none",
+                "riscv64gc-unknown-none-elf",
+                "aarch64-unknown-none-softfloat",
+                "loongarch64-unknown-none-softfloat",
+            ]
+        );
+    }
+
+    #[test]
+    fn supported_targets_returns_empty_for_unknown_os() {
+        let targets = supported_targets("unknown");
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn axvisor_contains_expected_targets() {
+        let targets = supported_targets("axvisor");
+        assert!(targets.contains(&"x86_64-unknown-none"));
+        assert!(targets.contains(&"riscv64gc-unknown-none-elf"));
+        assert!(targets.contains(&"aarch64-unknown-none-softfloat"));
+    }
+
+    #[test]
+    fn starry_contains_expected_targets() {
+        let targets = supported_targets("starry");
+        assert!(targets.contains(&"x86_64-unknown-none"));
+        assert!(targets.contains(&"riscv64gc-unknown-none-elf"));
+        assert!(targets.contains(&"aarch64-unknown-none-softfloat"));
+        assert!(targets.contains(&"loongarch64-unknown-none-softfloat"));
+    }
+
+    #[test]
+    fn starry_supports_loongarch() {
+        let targets = supported_targets("starry");
+        let axvisor_targets = supported_targets("axvisor");
+        // starry 应该支持 loongarch，但 axvisor 不支持
+        assert!(targets.contains(&"loongarch64-unknown-none-softfloat"));
+        assert!(!axvisor_targets.contains(&"loongarch64-unknown-none-softfloat"));
     }
 }

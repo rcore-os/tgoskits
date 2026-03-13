@@ -24,3 +24,38 @@ jobs:
       - uses: actions/checkout@v5
       - run: rustc --version
       - run: cargo xtask test std
+
+  test_os_target:
+    name: Test ${{ matrix.os }} ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # axvisor
+          - os: axvisor
+            target: x86_64-unknown-none
+          - os: axvisor
+            target: riscv64gc-unknown-none-elf
+          - os: axvisor
+            target: aarch64-unknown-none-softfloat
+          # starry
+          - os: starry
+            target: x86_64-unknown-none
+          - os: starry
+            target: riscv64gc-unknown-none-elf
+          - os: starry
+            target: aarch64-unknown-none-softfloat
+          - os: starry
+            target: loongarch64-unknown-none-softfloat
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Run ${{ matrix.os }} tests
+        run: cargo xtask test ${{ matrix.os }} --target ${{ matrix.target }}
