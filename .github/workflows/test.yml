@@ -21,17 +21,13 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
+      - uses: actions/checkout@v5
+
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test
           cache-targets: false
 
-      - uses: cargo-bins/cargo-binstall@main
-
-      - name: Install ostool
-        run: cargo binstall ostool --no-confirm --force
-
-      - uses: actions/checkout@v5
       - run: rustc --version
       - run: cargo xtask test std
 
@@ -69,13 +65,13 @@ jobs:
         uses: actions/checkout@v5
 
       - run: rustc --version
-      
+
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test
           cache-targets: false
 
-      - uses: cargo-bins/cargo-binstall@main
+      - uses: cargo-bins/cargo-binstall@v1.17.7
 
       - name: Install ostool
         run: cargo binstall ostool --no-confirm --force
