@@ -4,42 +4,29 @@ name: Push to Subrepos
 # 使用说明 / Usage Guide
 # ═══════════════════════════════════════════════════════════════════════════════
 #
-# 此工作流用于将主仓库中修改的组件自动推送到对应的子仓库。
-#
-# 【SSH 配置】（推荐）
-# ─────────────────────────────────────────────────────────────────────────────
-# 如果子仓库使用 SSH 地址（git@github.com:...），需要配置 SSH 密钥：
-#
-#   1. 生成 SSH 密钥对（如果没有）：
-#      ssh-keygen -t ed25519 -C "github-actions" -f deploy_key -N ""
-#
-#   2. 将公钥（deploy_key.pub）添加到目标仓库的 Deploy Keys：
-#      GitHub 仓库 → Settings → Deploy keys → Add new
-#
-#   3. 将私钥（deploy_key）添加到本仓库的 Secrets：
-#      GitHub 仓库 → Settings → Secrets → Actions → New repository secret
-#      名称: SSH_KEY
-#      值: 私钥内容
-#
-# 【HTTPS 配置】（无需 SSH）
-# ─────────────────────────────────────────────────────────────────────────────
-# 如果 remote URL 使用 HTTPS（https://github.com/...），则无需配置 SSH_KEY，
-# 工作流会使用内置的 GITHUB_TOKEN 进行推送。
+# 此工作流使用 scripts/repo/repo.py 将主仓库中修改的组件推送到子仓库。
+# 所有组件都推送到子仓库的 mirror 分支。
 #
 # 【触发方式】
 # ─────────────────────────────────────────────────────────────────────────────
 # - 自动触发：推送到 main/master/dev/next 分支时自动检测变更并推送
 # - 手动触发：Actions → Push to Subrepos → Run workflow
 #
+# 【手动触发参数】
+# ─────────────────────────────────────────────────────────────────────────────
+# - components: 指定组件（逗号分隔，留空自动检测）
+# - branch: 推送到子仓库的目标分支（默认：mirror）
+# - push_all: 推送所有组件（忽略变更检测）
+#
 # ═══════════════════════════════════════════════════════════════════════════════
 
 on:
   push:
-    branches:
-      - main
-      - master
-      - dev
-      - next
+    # branches:
+    #   - main
+    #   - master
+    #   - dev
+    #   - next
   workflow_dispatch:
     inputs:
       components:
@@ -51,9 +38,9 @@ on:
         description: '推送到子仓库的目标分支'
         required: false
         type: string
-        default: 'dev'
-      force:
-        description: '强制推送（覆盖远程更新）'
+        default: 'mirror'
+      push_all:
+        description: '推送所有组件（忽略变更检测）'
         required: false
         type: boolean
         default: false
@@ -72,12 +59,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 需要完整历史来获取 subtree 信息
+          fetch-depth: 0
 
       - name: Detect changed components
         id: detect
         run: |
-          # 如果手动指定了组件，直接使用
+          # 如果手动指定推送所有组件
+          if [ "${{ inputs.push_all }}" = "true" ]; then
+            echo "components=__all__" >> $GITHUB_OUTPUT
+            echo "has-changes=true" >> $GITHUB_OUTPUT
+            echo "Pushing all components"
+            exit 0
+          fi
+          
+          # 如果手动指定了组件列表
           if [ -n "${{ inputs.components }}" ]; then
             echo "components=${{ inputs.components }}" >> $GITHUB_OUTPUT
             echo "has-changes=true" >> $GITHUB_OUTPUT
@@ -90,10 +85,8 @@ jobs:
           
           # 获取修改的文件列表
           if [ "${{ github.event_name }}" = "push" ]; then
-            # 对于 push 事件，比较上一个 commit
             CHANGED_FILES=$(git diff --name-only HEAD^ HEAD)
           else
-            # 对于其他事件，使用最近的一个 commit
             CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
           fi
           
@@ -104,20 +97,18 @@ jobs:
             exit 0
           fi
           
-          # 分析修改的文件，找出涉及的组件
-          declare -A CHANGED_COMPONENTS
-          
-          # 从 git log 中的 subtree 信息获取组件目录列表
-          COMPONENT_DIRS=$(git log --all --format="%b" --grep="git-subtree-dir" 2>/dev/null | \
-                           grep "^git-subtree-dir:" | \
-                           sed 's/git-subtree-dir: //' | \
-                           sort -u | \
+          # 从 repos.csv 获取组件目录列表
+          COMPONENT_DIRS=$(python3 scripts/repo/repo.py list 2>/dev/null | \
+                           tail -n +3 | \
+                           awk '{print $3}' | \
+                           grep -v '^$' | \
                            tr '\n' ' ')
           echo "Available components: ${COMPONENT_DIRS}"
           
-          # 检查每个修改的文件属于哪个组件
+          # 分析修改的文件，找出涉及的组件
+          declare -A CHANGED_COMPONENTS
+          
           while IFS= read -r file; do
-            # 检查是否是已配置的组件目录
             for component in ${COMPONENT_DIRS}; do
               if [[ "$file" == "$component"* ]]; then
                 CHANGED_COMPONENTS["$component"]=1
@@ -148,224 +139,106 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 获取完整历史
+          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Setup SSH
-        uses: webfactory/ssh-agent@v0.7.0
-        if: ${{ env.SSH_KEY != '' }}
-        env:
-          SSH_KEY: ${{ secrets.SSH_KEY }}
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          ssh-private-key: ${{ secrets.SSH_KEY }}
+          python-version: '3.x'
 
       - name: Configure Git
         run: |
-          git config --global user.name "$(git log -n 1 --pretty=format:%an)"
-          git config --global user.email "$(git log -n 1 --pretty=format:%ae)"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Get push parameters
-        id: params
+      - name: Get target branch
+        id: branch
+        run: |
+          # 使用输入的分支，如果没有输入则默认为 mirror
+          TARGET_BRANCH="${{ inputs.branch || 'mirror' }}"
+          echo "target_branch=${TARGET_BRANCH}" >> $GITHUB_OUTPUT
+          echo "Target branch: ${TARGET_BRANCH}"
+
+      - name: List components to push
+        run: |
+          echo "=========================================="
+          echo "Components Configuration"
+          echo "=========================================="
+          python3 scripts/repo/repo.py list
+          echo ""
+          echo "Target branch for all components: ${{ steps.branch.outputs.target_branch }}"
+          echo "=========================================="
+
+      - name: Push all components to target branch
+        if: ${{ needs.detect-changes.outputs.components == '__all__' }}
+        run: |
+          echo "Pushing ALL components to ${{ steps.branch.outputs.target_branch }} branch..."
+          python3 scripts/repo/repo.py push --all -b ${{ steps.branch.outputs.target_branch }}
+
+      - name: Push changed components to target branch
+        if: ${{ needs.detect-changes.outputs.components != '__all__' }}
         run: |
           COMPONENTS="${{ needs.detect-changes.outputs.components }}"
-          TARGET_BRANCH="${{ inputs.branch || 'dev' }}"
-          FORCE_PUSH="${{ inputs.force || 'false' }}"
+          TARGET_BRANCH="${{ steps.branch.outputs.target_branch }}"
           
-          echo "components=${COMPONENTS}" >> $GITHUB_OUTPUT
-          echo "target_branch=${TARGET_BRANCH}" >> $GITHUB_OUTPUT
-          echo "force_push=${FORCE_PUSH}" >> $GITHUB_OUTPUT
-          
-          echo "Components to push: ${COMPONENTS}"
-          echo "Target branch: ${TARGET_BRANCH}"
-          echo "Force push: ${FORCE_PUSH}"
-
-      - name: Discover repo URLs via GitHub API
-        id: repos
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # 特殊映射：目录名 -> 仓库名（处理目录名与仓库名不一致的情况）
-          declare -A SPECIAL_NAMES
-          SPECIAL_NAMES["components/range-alloc-arceos"]="range-alloc"
-          SPECIAL_NAMES["components/axallocator"]="allocator"
-          SPECIAL_NAMES["components/starry-smoltcp"]="smoltcp"
-          
-          # GitHub 组织列表（按优先级搜索）
-          ORGS=("arceos-hypervisor" "arceos-org" "Starry-OS" "arceos")
-          
-          # 获取所有组件目录（从 git log 中的 subtree 信息）
-          COMPONENTS=$(git log --all --format="%b" --grep="git-subtree-dir" | \
-                       grep "^git-subtree-dir:" | \
-                       sed 's/git-subtree-dir: //' | \
-                       sort -u)
-          
-          echo "Discovering repository URLs for components..."
-          
-          for component in ${COMPONENTS}; do
-            # 获取组件名（检查特殊映射，否则使用目录名）
-            if [[ -n "${SPECIAL_NAMES[$component]}" ]]; then
-              comp_name="${SPECIAL_NAMES[$component]}"
-            else
-              comp_name=$(basename "${component}")
-            fi
-            
-            # 在各组织中搜索仓库
-            found_url=""
-            for org in "${ORGS[@]}"; do
-              repo_url="https://github.com/${org}/${comp_name}"
-              
-              # 检查仓库是否存在
-              if gh api "repos/${org}/${comp_name}" --jq '.html_url' >/dev/null 2>&1; then
-                found_url="${repo_url}"
-                echo "  Found: ${component} -> ${repo_url}"
-                break
-              fi
-            done
-            
-            if [[ -n "${found_url}" ]]; then
-              echo "${component}|${found_url}|main" >> /tmp/repo_mappings.txt
-            else
-              echo "  Warning: No repository found for ${component}"
-            fi
-          done
-          
-          echo "Parsed $(wc -l < /tmp/repo_mappings.txt) repository mappings"
-
-      - name: Push changes to subrepos
-        run: |
-          COMPONENTS="${{ steps.params.outputs.components }}"
-          TARGET_BRANCH="${{ steps.params.outputs.target_branch }}"
-          FORCE_PUSH="${{ steps.params.outputs.force_push }}"
-          
-          # 将逗号分隔的组件列表转换为数组
-          IFS=',' read -ra COMP_ARRAY <<< "$COMPONENTS"
-          
-          FORCE_FLAG=""
-          if [ "$FORCE_PUSH" = "true" ]; then
-            FORCE_FLAG="--force"
-            echo "Warning: Force push enabled. This may overwrite remote changes."
+          if [ -z "$COMPONENTS" ]; then
+            echo "No components to push"
+            exit 0
           fi
           
-          SUCCESS_COUNT=0
-          FAIL_COUNT=0
+          echo "Pushing changed components to ${TARGET_BRANCH} branch..."
+          echo "Components: ${COMPONENTS}"
+          
+          # 将逗号分隔的组件列表转换为空格分隔
+          IFS=',' read -ra COMP_ARRAY <<< "$COMPONENTS"
+          
+          SUCCESS=0
+          FAIL=0
           
           for component in "${COMP_ARRAY[@]}"; do
-            component=$(echo "$component" | xargs)  # 去除空格
-            
-            echo "=========================================="
-            echo "Processing component: ${component}"
-            echo "=========================================="
-            
-            # 从映射文件中查找仓库 URL
-            REPO_INFO=$(grep "^${component}|" /tmp/repo_mappings.txt | head -1)
-            
-            if [ -z "$REPO_INFO" ]; then
-              echo "Error: No repository URL found for component ${component}"
-              ((FAIL_COUNT++))
-              continue
-            fi
-            
-            REPO_URL=$(echo "$REPO_INFO" | cut -d'|' -f2)
-            DEFAULT_BRANCH=$(echo "$REPO_INFO" | cut -d'|' -f3)
-            
-            echo "Repository URL: ${REPO_URL}"
-            echo "Default branch: ${DEFAULT_BRANCH}"
-            echo "Target branch: ${TARGET_BRANCH}"
-            
-            # 检查组件目录是否存在
-            if [ ! -d "${component}" ]; then
-              echo "Error: Component directory ${component} does not exist"
-              ((FAIL_COUNT++))
-              continue
-            fi
-            
-            # 添加或更新 remote
-            REMOTE_NAME=$(echo "${component}" | tr '/' '_')
-            
-            if git remote | grep -q "^${REMOTE_NAME}$"; then
-              echo "Updating remote URL for ${REMOTE_NAME}"
-              git remote set-url "${REMOTE_NAME}" "${REPO_URL}"
-            else
-              echo "Adding remote: ${REMOTE_NAME} -> ${REPO_URL}"
-              git remote add "${REMOTE_NAME}" "${REPO_URL}"
-            fi
-            
-            # 获取远程分支信息
-            echo "Fetching remote branches..."
-            git fetch "${REMOTE_NAME}" --no-tags 2>/dev/null || true
-            
-            # 检查目标分支是否存在
-            if git ls-remote --heads "${REPO_URL}" "${TARGET_BRANCH}" | grep -q "${TARGET_BRANCH}"; then
-              echo "Target branch ${TARGET_BRANCH} exists on remote"
-            else
-              echo "Warning: Target branch ${TARGET_BRANCH} does not exist on remote"
-              echo "Will try to push to ${DEFAULT_BRANCH} instead"
-              TARGET_BRANCH="${DEFAULT_BRANCH}"
-            fi
-            
-            # 使用 git subtree push
-            echo "Pushing ${component} to ${REPO_URL}:${TARGET_BRANCH}..."
-            
-            PUSH_CMD="git subtree push ${FORCE_FLAG} --prefix=\"${component}\" \"${REMOTE_NAME}\" \"${TARGET_BRANCH}\""
-            
-            if eval "$PUSH_CMD"; then
-              echo "✅ Successfully pushed ${component}"
-              ((SUCCESS_COUNT++))
-            else
-              echo "❌ Failed to push ${component}"
-              ((FAIL_COUNT++))
-              
-              # 如果失败且未启用强制推送，给出建议
-              if [ "$FORCE_PUSH" != "true" ]; then
-                echo ""
-                echo "Push failed. This might be due to:"
-                echo "  1. Remote branch has new commits (non-fast-forward)"
-                echo "  2. There are conflicts between local and remote changes"
-                echo ""
-                echo "Solutions:"
-                echo "  - Pull remote changes first and resolve conflicts"
-                echo "  - Use force push if you're sure (set force=true)"
-                echo "  - Check the component directory structure"
-              fi
-            fi
+            component=$(echo "$component" | xargs)
+            # 提取组件名（从目录路径中获取最后一部分）
+            repo_name=$(basename "${component}")
             
             echo ""
+            echo "=========================================="
+            echo "Pushing: ${repo_name}"
+            echo "=========================================="
+            
+            if python3 scripts/repo/repo.py push "${repo_name}" -b ${TARGET_BRANCH}; then
+              echo "✅ Successfully pushed ${repo_name}"
+              ((SUCCESS++))
+            else
+              echo "❌ Failed to push ${repo_name}"
+              ((FAIL++))
+            fi
           done
           
+          echo ""
           echo "=========================================="
           echo "Push Summary"
           echo "=========================================="
-          echo "✅ Success: ${SUCCESS_COUNT}"
-          echo "❌ Failed: ${FAIL_COUNT}"
+          echo "✅ Success: ${SUCCESS}"
+          echo "❌ Failed: ${FAIL}"
           echo "=========================================="
           
-          # 保存结果
-          echo "success_count=${SUCCESS_COUNT}" >> $GITHUB_OUTPUT
-          echo "fail_count=${FAIL_COUNT}" >> $GITHUB_OUTPUT
-          
-          # 如果有失败，返回错误
-          if [ $FAIL_COUNT -gt 0 ]; then
-            echo "::error::${FAIL_COUNT} component(s) failed to push"
+          if [ $FAIL -gt 0 ]; then
+            echo "::error::${FAIL} component(s) failed to push"
             exit 1
           fi
 
       - name: Create summary
         if: always()
         run: |
-          COMPONENTS="${{ steps.params.outputs.components }}"
-          TARGET_BRANCH="${{ steps.params.outputs.target_branch }}"
-          FORCE_PUSH="${{ steps.params.outputs.force_push }}"
+          COMPONENTS="${{ needs.detect-changes.outputs.components }}"
+          TARGET_BRANCH="${{ steps.branch.outputs.target_branch }}"
           
           echo "## Push to Subrepos Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Components**: ${COMPONENTS}" >> $GITHUB_STEP_SUMMARY
           echo "- **Target Branch**: ${TARGET_BRANCH}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Force Push**: ${FORCE_PUSH}" >> $GITHUB_STEP_SUMMARY
           echo "- **Trigger**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Branch**: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Source Branch**: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          
-          if [ -f /tmp/push_results.txt ]; then
-            echo "### Results" >> $GITHUB_STEP_SUMMARY
-            cat /tmp/push_results.txt >> $GITHUB_STEP_SUMMARY
-          fi
+          echo "All components are pushed to the \`${TARGET_BRANCH}\` branch in their respective repositories." >> $GITHUB_STEP_SUMMARY
