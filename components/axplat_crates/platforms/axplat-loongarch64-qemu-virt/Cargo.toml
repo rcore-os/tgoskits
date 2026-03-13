@@ -1,0 +1,34 @@
+[package]
+name = "axplat-loongarch64-qemu-virt"
+version.workspace = true
+description = "Implementation of `axplat` hardware abstraction layer for QEMU LoongArch virtual machine."
+documentation = "https://docs.rs/axplat-loongarch64-qemu-virt"
+keywords = ["arceos", "os", "hal", "embedded", "loongarch"]
+categories = ["embedded", "no-std", "hardware-support", "os"]
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[features]
+fp-simd = ["axcpu/fp-simd"]
+irq = ["axplat/irq"]
+rtc = ["dep:chrono"]
+smp = ["axplat/smp", "kspin/smp"]
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, optional = true }
+kspin = "0.1"
+lazyinit = "0.2"
+log = "0.4"
+loongArch64 = "0.2.4"
+page_table_entry = "0.6"
+uart_16550 = "0.4.0"
+
+axconfig-macros = "0.2"
+axcpu = { workspace = true }
+axplat = { workspace = true }
+
+[package.metadata.docs.rs]
+targets = ["loongarch64-unknown-none"]

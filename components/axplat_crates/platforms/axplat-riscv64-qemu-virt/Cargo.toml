@@ -1,0 +1,35 @@
+[package]
+name = "axplat-riscv64-qemu-virt"
+version.workspace = true
+description = "Implementation of `axplat` hardware abstraction layer for QEMU RISC-V virt board."
+documentation = "https://docs.rs/axplat-riscv64-qemu-virt"
+keywords = ["arceos", "os", "hal", "embedded", "riscv"]
+categories = ["embedded", "no-std", "hardware-support", "os"]
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[features]
+fp-simd = ["axcpu/fp-simd"]
+irq = ["axplat/irq", "dep:riscv_plic"]
+rtc = ["dep:riscv_goldfish"]
+smp = ["axplat/smp"]
+
+[dependencies]
+kspin = "0.1"
+lazyinit = "0.2"
+log = "0.4"
+riscv = "0.16"
+riscv_goldfish = { version = "0.1", optional = true }
+riscv_plic = { version = "0.2", optional = true }
+sbi-rt = { version = "0.0.3", features = ["legacy"] }
+uart_16550 = "0.4.0"
+
+axconfig-macros = "0.2"
+axcpu = { workspace = true }
+axplat = { workspace = true }
+
+[package.metadata.docs.rs]
+targets = ["riscv64gc-unknown-none-elf"]

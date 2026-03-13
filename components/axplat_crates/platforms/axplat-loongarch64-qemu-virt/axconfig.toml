@@ -1,0 +1,121 @@
+# Architecture identifier.
+arch = "loongarch64"                            # str
+# Platform identifier.
+platform = "loongarch64-qemu-virt"              # str
+# Platform package.
+package = "axplat-loongarch64-qemu-virt"        # str
+
+#
+# Platform configs
+#
+[plat]
+# Maximum number of CPUs. For platforms that do not support runtime CPU number
+# detection, it's also the number of CPUs to boot.
+max-cpu-num = 1                       # uint
+# Base address of the low physical memory.
+low-memory-base = 0x0                   # uint
+# Size of the low physical memory. (256M)
+low-memory-size = 0x1000_0000           # uint
+# Base address of the high physical memory.
+high-memory-base = 0x8000_0000          # uint
+# Size of the whole physical memory. (128M)
+phys-memory-size = 0x800_0000           # uint
+
+# Linear mapping offset at boot time.
+phys-boot-offset = "0x9000_0000_0000_0000"      # uint
+# Linear mapping offset, for quick conversions between physical and virtual
+# addresses.
+phys-virt-offset = "0xffff_8000_0000_0000"      # uint
+# Offset of bus address and phys address. some boards, the bus address is
+# different from the physical address.
+phys-bus-offset = 0                             # uint
+
+# Base physical address of the kernel image.
+kernel-base-paddr = 0x0020_0000                 # uint
+# Base virtual address of the kernel image.
+kernel-base-vaddr = "0xffff_8000_0020_0000"     # uint
+# Kernel address space base.
+kernel-aspace-base = "0xffff_8000_0000_0000"    # uint
+# Kernel address space size.
+kernel-aspace-size = "0x0000_7fff_ffff_f000"    # uint
+# Stack size on bootstrapping. (256K)
+boot-stack-size = 0x40000                       # uint
+
+#
+# Device specifications
+#
+[devices]
+# MMIO ranges with format (`base_paddr`, `size`).
+mmio-ranges = [
+    [0x1000_0000, 0x0000_0400],         # PIC
+    [0x100D_0000, 0x0000_1000],         # RTC
+    [0x100E_0000, 0x0000_1000],         # GED
+    [0x1FE0_0000, 0x0000_1000],         # UART
+    [0x2000_0000, 0x1000_0000],         # PCI
+    [0x4000_0000, 0x0002_0000],         # PCI RANGES
+]           # [(uint, uint)]
+# VirtIO MMIO ranges with format (`base_paddr`, `size`).
+virtio-mmio-ranges = []    # [(uint, uint)]
+# Base physical address of the PCIe ECAM space.
+pci-ecam-base = 0x2000_0000             # uint
+# End PCI bus number.
+pci-bus-end = 0x7f                      # uint
+# PCI device memory ranges.
+pci-ranges = [
+    [0, 0],
+    [0x4000_0000, 0x0002_0000]
+]                                       # [(uint, uint)]
+# poweroff {
+#     value = <0x00000034>;
+#     offset = <0x00000000>;
+#     compatible = "syscon-poweroff";
+# };
+# ged@100e001c {
+#     reg-io-width = <0x00000001>;
+#     reg-shift = <0x00000000>;
+#     reg = <0x00000000 0x100e001c 0x00000000 0x00000003>;
+#     compatible = "syscon";
+# };
+ged-paddr  = 0x100E001C                 # uint
+# serial@1fe001e0 {
+#     interrupt-parent = <0x00008003>;
+#     interrupts = <0x00000002 0x00000004>;
+#     clock-frequency = <0x05f5e100>;
+#     reg = <0x00000000 0x1fe001e0 0x00000000 0x00000100>;
+#     compatible = "ns16550a";
+# };
+uart-paddr = 0x1FE001E0                 # uint
+uart-irq = 0x2                            # uint
+
+# Timer interrupt frequency in Hz.
+timer-frequency = 100_000_000           # uint
+# Timer interrupt number.
+timer-irq = 11                          # uint
+# IPI interrupt num
+ipi-irq = 12                            # uint                                 
+
+# RTC (ls7a) Address
+rtc-paddr = 0x100d_0100                 # uint
+
+# eiointc@1400 {
+#     reg = <0x00 0x1400 0x00 0x800>;
+#     interrupts = <0x03>;
+#     interrupt-parent = <0x8001>;
+#     #interrupt-cells = <0x01>;
+#     interrupt-controller;
+#     compatible = "loongson,ls2k2000-eiointc";
+#     phandle = <0x8002>;
+# };
+eiointc-paddr = 0x1400                  # uint
+eiointc-irq = 0x03                      # uint
+
+# platic@10000000 {
+#     loongson,pic-base-vec = <0x00>;
+#     interrupt-parent = <0x8002>;
+#     #interrupt-cells = <0x02>;
+#     interrupt-controller;
+#     reg = <0x00 0x10000000 0x00 0x400>;
+#     compatible = "loongson,pch-pic-1.0";
+#     phandle = <0x8003>;
+# };
+pch-pic-paddr = 0x10000000              # uint

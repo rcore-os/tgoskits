@@ -1,0 +1,29 @@
+[package]
+name = "axplat-aarch64-phytium-pi"
+version.workspace = true
+description = "Implementation of `axplat` hardware abstraction layer for Phytium Pi board."
+documentation = "https://docs.rs/axplat-aarch64-phytium-pi"
+keywords = ["arceos", "os", "hal", "embedded", "aarch64"]
+categories = ["embedded", "no-std", "hardware-support", "os"]
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[features]
+fp-simd = ["axcpu/fp-simd"]
+irq = ["axplat/irq", "axplat-aarch64-peripherals/irq"]
+rtc = []
+smp = ["axplat/smp"]
+
+[dependencies]
+log = "0.4"
+page_table_entry = "0.6"
+axconfig-macros = "0.2"
+axplat-aarch64-peripherals = { workspace = true }
+axcpu = { workspace = true }
+axplat = { workspace = true }
+
+[package.metadata.docs.rs]
+targets = ["aarch64-unknown-none"]

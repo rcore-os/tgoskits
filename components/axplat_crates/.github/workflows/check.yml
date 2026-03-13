@@ -1,0 +1,66 @@
+name: Check
+
+on: [push, pull_request]
+
+jobs:
+  axplat:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-none
+          - riscv64gc-unknown-none-elf
+          - aarch64-unknown-none-softfloat
+          - loongarch64-unknown-none-softfloat
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src, clippy, rustfmt
+          targets: ${{ matrix.target }}
+      - name: Check rust version
+        run: rustc --version --verbose
+      - name: Check code format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy -p axplat --target ${{ matrix.target }} --all-features
+      - name: Build
+        run: cargo build -p axplat --target ${{ matrix.target }} --all-features
+      - name: Unit test
+        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' }}
+        run: cargo test -p axplat --all-features -- --nocapture
+
+  platforms:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: axplat-x86-pc
+            target: x86_64-unknown-none
+          - name: axplat-aarch64-peripherals
+            target: aarch64-unknown-none
+          - name: axplat-aarch64-qemu-virt
+            target: aarch64-unknown-none
+          - name: axplat-aarch64-raspi
+            target: aarch64-unknown-none
+          - name: axplat-aarch64-bsta1000b
+            target: aarch64-unknown-none
+          - name: axplat-aarch64-phytium-pi
+            target: aarch64-unknown-none
+          - name: axplat-riscv64-qemu-virt
+            target: riscv64gc-unknown-none-elf
+          - name: axplat-loongarch64-qemu-virt
+            target: loongarch64-unknown-none
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src, clippy
+          targets: ${{ matrix.platform.target }}
+      - name: Clippy
+        run: cargo clippy --target ${{ matrix.platform.target }} -p ${{ matrix.platform.name }} --all-features
+      - name: Build
+        run: cargo build --target ${{ matrix.platform.target }} -p ${{ matrix.platform.name }} --all-features
