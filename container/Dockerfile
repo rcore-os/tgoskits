@@ -20,6 +20,7 @@ RUN apt-get update \
         libglib2.0-dev \
         libpixman-1-dev \
         libslirp-dev \
+        libudev-dev \
         make \
         ninja-build \
         pkg-config \
