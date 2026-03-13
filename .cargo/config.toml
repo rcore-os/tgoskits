@@ -12,3 +12,4 @@ runner = "cargo osrun"
 
 [alias]
 axvisor = "run -p axvisor --bin xtask --"
+xtask = "run -p tg-xtask --bin tg-xtask --"

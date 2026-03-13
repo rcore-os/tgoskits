@@ -17,6 +17,8 @@ categories = ["os", "no-std"]
 [workspace]
 resolver = "3"
 members = [
+    "xtask",
+
     # components
     "components/aarch64_sysreg",
     "components/arm_pl011",

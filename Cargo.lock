@@ -7343,6 +7343,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dee6f92408c23beea910b60784f6dc323b488c477bf6fa88aff8083675eda26c"
 
 [[package]]
+name = "tg-xtask"
+version = "0.3.0-preview.3"
+dependencies = [
+ "anyhow",
+ "cargo_metadata",
+ "clap",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
