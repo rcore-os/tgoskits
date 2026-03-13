@@ -2,13 +2,15 @@
 #![cfg_attr(not(any(windows, unix)), no_std)]
 #![cfg(any(windows, unix))]
 
-use anyhow::{Context, Result, bail};
+#[macro_use]
+extern crate anyhow;
+
+use anyhow::{Context, Result};
 use cargo_metadata::{Metadata, MetadataCommand};
 use clap::{Parser, Subcommand};
-use std::collections::HashSet;
-use std::fs;
-use std::path::Path;
-use std::process::Command;
+use std::{collections::HashSet, fs, path::Path, process::Command};
+
+mod axvisor;
 
 const STD_CRATES_CSV: &str = "scripts/test/std_crates.csv";
 
@@ -232,8 +234,18 @@ fn run_target_test_command(os: &str, target: &str) -> Result<()> {
     let _workspace_root = metadata.workspace_root.clone().into_std_path_buf();
 
     println!("running {} tests for target: {}", os, target);
-    // TODO: 实现实际的测试逻辑
-    println!("  (test implementation placeholder for {} on {})", os, target);
+
+    match os {
+        "axvisor" => axvisor::run_test(target)?,
+        "starry" => {
+            // starry 的测试实现占位
+            println!(
+                "  (test implementation placeholder for {} on {})",
+                os, target
+            );
+        }
+        _ => unreachable!(), // 之前已经验证过了
+    }
 
     println!("{} test passed", os);
     Ok(())
