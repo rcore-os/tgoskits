@@ -46,11 +46,13 @@ impl Context {
             config_path = c.clone();
         }
 
+        let path = config_path.parent().unwrap().join(".build-schema.json");
+
         std::fs::write(
-            config_path.parent().unwrap().join(".build-schema.json"),
+            &path,
             serde_json::to_string_pretty(&json).unwrap(),
         )
-        .with_context(|| "Failed to write schema file .build-schema.json")?;
+        .with_context(|| format!("Failed to write schema file: {}", path.display()))?;
 
         let config_str = std::fs::read_to_string(&config_path)
             .with_context(|| format!("Failed to read config file: {}", config_path.display()))?;
