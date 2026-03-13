@@ -1,0 +1,24 @@
+# QEMU x86_64 配置 - KVM 加速（需 VT-x/VMX 支持）
+# 用于物理 Linux 机或支持嵌套虚拟化的 VM
+# 若使用 TCG（无 KVM），请用 qemu-x86_64.toml
+args = [
+  "-m",
+  "128M",
+  "-smp",
+  "1",
+  "-machine",
+  "q35",
+  "-device",
+  "virtio-blk-pci,drive=disk0",
+  "-drive",
+  "id=disk0,if=none,format=raw,file=${workspaceFolder}/tmp/rootfs.img",
+  "-nographic",
+  "-accel",
+  "kvm",
+  "-cpu",
+  "host",
+]
+fail_regex = ["System will reboot, press any key to continue ..."]
+success_regex = ["usertests passed!"]
+to_bin = false
+uefi = false

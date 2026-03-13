@@ -1,0 +1,10 @@
+cargo_args = []
+features = [
+    "axstd/myplat",
+    "ept-level-4",
+    "fs",
+]
+log = "Info"
+target = "x86_64-unknown-none"
+to_bin = false
+vm_configs = []

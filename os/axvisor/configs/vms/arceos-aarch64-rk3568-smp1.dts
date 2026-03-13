@@ -1,0 +1,87 @@
+/dts-v1/;
+
+/memreserve/	0x0000000008300000 0x000000000001c000;
+/memreserve/	0x000000000a200000 0x00000000008cf15d;
+/ {
+	serial-number = "425ca8fc29ade692";
+	compatible = "rockchip,rk3568-firefly-roc-pc\0rockchip,rk3568";
+	interrupt-parent = <0x01>;
+	#address-cells = <0x02>;
+	#size-cells = <0x02>;
+	model = "Firefly RK3568-ROC-PC";
+
+	memory {
+		reg = <0x00 0x70000000 0x00 0x10000000>;
+		device_type = "memory";
+	};
+
+	chosen {
+		bootargs = "earlycon=uart8250,mmio32,0xfe660000";
+	};
+
+	aliases {
+		serial2 = "/serial@fe660000";
+	};
+
+	cpus {
+		#address-cells = <0x02>;
+		#size-cells = <0x00>;
+
+		cpu@200 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a55";
+			reg = <0x00 0x200>;
+			enable-method = "psci";
+			clocks = <0x02 0x00>;
+			operating-points-v2 = <0x03>;
+			cpu-idle-states = <0x04>;
+			phandle = <0x0d>;
+		};
+	};
+
+	psci {
+		compatible = "arm,psci-1.0";
+		method = "smc";
+	};
+
+	timer {
+		compatible = "arm,armv8-timer";
+		interrupts = <0x01 0x0d 0xf04 0x01 0x0e 0xf04 0x01 0x0b 0xf04 0x01 0x0a 0xf04>;
+		arm,no-tick-in-suspend;
+	};
+
+	interrupt-controller@fd400000 {
+		compatible = "arm,gic-v3";
+		#interrupt-cells = <0x03>;
+		#address-cells = <0x02>;
+		#size-cells = <0x02>;
+		ranges;
+		interrupt-controller;
+		reg = <0x00 0xfd400000 0x00 0x10000 0x00 0xfd460000 0x00 0xc0000>;
+		interrupts = <0x01 0x09 0x04>;
+		phandle = <0x01>;
+
+		interrupt-controller@fd440000 {
+			compatible = "arm,gic-v3-its";
+			msi-controller;
+			#msi-cells = <0x01>;
+			reg = <0x00 0xfd440000 0x00 0x20000>;
+			status = "okay";
+			phandle = <0xbe>;
+		};
+	};
+
+	serial@fe660000 {
+		compatible = "rockchip,rk3568-uart\0snps,dw-apb-uart";
+		reg = <0x00 0xfe660000 0x00 0x100>;
+		interrupts = <0x00 0x76 0x04>;
+		clocks = <0x23 0x123 0x23 0x120>;
+		clock-names = "baudclk\0apb_pclk";
+		reg-shift = <0x02>;
+		reg-io-width = <0x04>;
+		dmas = <0x4e 0x04 0x4e 0x05>;
+		pinctrl-names = "default";
+		pinctrl-0 = <0x10c>;
+		status = "okay";
+	};
+};
