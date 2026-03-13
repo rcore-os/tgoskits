@@ -49,7 +49,7 @@ on:
     branches:
       - dev    # 主仓库推送的目标分支
       - main   # 兼容直接在子仓库开发的情况
-      - test
+      - zcs
   workflow_dispatch:
 
 jobs:
