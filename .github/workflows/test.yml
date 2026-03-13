@@ -71,10 +71,8 @@ jobs:
           shared-key: test
           cache-targets: false
 
-      - uses: cargo-bins/cargo-binstall@v1.17.7
-
       - name: Install ostool
-        run: cargo binstall ostool --no-confirm --force
+        run: cargo install ostool --version ^0.8
 
       - name: Run ${{ matrix.os }} tests
         run: cargo xtask test ${{ matrix.os }} --target ${{ matrix.target }}
