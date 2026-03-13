@@ -81,7 +81,7 @@ jobs:
       - name: Notify parent repository
         env:
           # ── 需要修改 ──────────────────────────────────────────────────────────
-          PARENT_REPO: "arceos-hypervisor/tgoskits"       # 主仓库路径
+          PARENT_REPO: "rcore-os/tgoskits"       # 主仓库路径
           # ── 无需修改 ──────────────────────────────────────────────────────────
           DISPATCH_TOKEN: ${{ secrets.PARENT_REPO_TOKEN }}
           # 将用户可控内容通过 env 传入，避免直接插值到 shell 脚本
