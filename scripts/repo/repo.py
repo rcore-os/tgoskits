@@ -578,6 +578,7 @@ def cmd_push(args: argparse.Namespace) -> int:
 def cmd_list(args: argparse.Namespace) -> int:
     """Handle the 'list' command."""
     csv_manager = CSVManager(args.csv)
+    git_manager = GitSubtreeManager(csv_manager)
     repos = csv_manager.list_repos()
 
     if not repos:
@@ -593,7 +594,20 @@ def cmd_list(args: argparse.Namespace) -> int:
     print("-" * 85)
 
     for repo in repos:
-        branch = repo.branch if repo.branch else "main"
+        if repo.branch:
+            branch = repo.branch
+        elif repo.target_dir:
+            # Auto-detect branch from remote
+            remote_name = repo.target_dir.replace('/', '_')
+            subprocess.run(['git', 'remote', 'add', remote_name, repo.url],
+                          capture_output=True)
+            subprocess.run(['git', 'fetch', remote_name, '--no-tags'],
+                          capture_output=True)
+            branch = git_manager.detect_branch(repo.url, remote_name)
+            subprocess.run(['git', 'remote', 'remove', remote_name],
+                          capture_output=True)
+        else:
+            branch = "<none>"
         target = repo.target_dir if repo.target_dir else "<not set>"
         category = repo.category if repo.category else "<none>"
         print(f"{repo.repo_name:<25} {category:<15} {target:<35} {branch:<10}")
