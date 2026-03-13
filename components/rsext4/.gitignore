@@ -1,0 +1,7 @@
+target/
+lwext4/
+*.img
+*.bin
+*.lock
+.vscode/
+src/testfs/mount_point/*
