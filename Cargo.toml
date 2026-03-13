@@ -3,7 +3,6 @@ edition = "2024"
 version = "0.3.0-preview.3"
 authors = [
     "RCore Team <yuchen@tsinghua.edu.cn>",
-    "Yuekai Jia <equation618@gmail.com>",
 ]
 license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
 homepage = "https://github.com/rcore-os/tgoskits"
@@ -11,8 +10,8 @@ repository = "https://github.com/rcore-os/tgoskits"
 keywords = ["arceos", "kernel"]
 categories = ["os", "no-std"]
 
-# [profile.release]
-# lto = true
+[profile.release]
+lto = true
 
 [workspace]
 resolver = "3"
@@ -212,9 +211,8 @@ axvcpu = { path = "components/axvcpu", version = "0.3.0" }
 axvm = { path = "components/axvm", version = "0.3.0" }
 axvmconfig = { path = "components/axvmconfig", version = "0.2.2" }
 
-# === External ax* crates ===
-axcpu = "0.3.0-preview.8"
-axplat = "0.3.1-pre.6"
+axcpu = { version = "0.3.0-preview.8" }
+axplat = {  version ="0.3.1-pre.6"}
 axplat-aarch64-bsta1000b = "0.3.1-pre.6"
 axplat-aarch64-peripherals = "0.3.1-pre.6"
 axplat-aarch64-phytium-pi = "0.3.1-pre.6"
