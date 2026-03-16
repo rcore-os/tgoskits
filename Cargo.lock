@@ -6943,9 +6943,9 @@ dependencies = [
 
 [[package]]
 name = "someboot"
-version = "0.1.8"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9afbf93ac5c9501d93d1496f58ff089ac3aa02648adedad5777a767bcfd448ad"
+checksum = "3557a437ad0d81e4ff6935da1ee7c06ca4d8f086db2e9838a941697d879221b3"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64-cpu-ext",
