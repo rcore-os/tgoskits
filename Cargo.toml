@@ -251,3 +251,4 @@ page_table_multiarch = { version = "0.6", features = ["axerrno"] }
 percpu = "0.2.3-preview.1"
 scope-local = "0.1"
 spin = "0.10"
+ostool = { version = "0.8.12" }

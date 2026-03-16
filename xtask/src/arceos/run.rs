@@ -120,9 +120,8 @@ pub async fn run_run(args: RunArgs) -> Result<()> {
     println!();
 
     println!("Running in QEMU...");
-    println!("  QEMU args: {}", config.qemu.accel);
-
     let runner = QemuRunner::new(config, output.bin, arceos_dir);
+    println!("  QEMU config: {}", runner.qemu_config_path().display());
     runner.run().await?;
 
     Ok(())

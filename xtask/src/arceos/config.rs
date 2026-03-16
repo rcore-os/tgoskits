@@ -201,7 +201,9 @@ pub fn parse_qemu_options(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+
+    use axbuild::arceos::{FeatureResolver, PlatformResolver, ostool};
 
     use super::*;
 
@@ -266,5 +268,58 @@ mod tests {
         let err =
             load_config(&workspace, None, "axhal".to_string(), None, false, None).unwrap_err();
         assert!(err.to_string().contains("has no binary target"));
+    }
+
+    #[test]
+    fn test_loaded_config_maps_to_ostool_specs() {
+        let workspace = workspace_root();
+        let config = load_config(
+            &workspace,
+            None,
+            "arceos-helloworld".to_string(),
+            None,
+            false,
+            Some("fs,net".to_string()),
+        )
+        .unwrap();
+        let arceos_dir = workspace.join("os/arceos");
+        let target_dir = arceos_dir.join("target");
+        let plat_dyn = matches!(config.arch, Arch::AArch64)
+            || PlatformResolver::new(workspace.clone()).is_dyn_platform(&config.platform);
+        let ax_features = FeatureResolver::resolve_ax_features(&config, plat_dyn);
+        let lib_features = FeatureResolver::resolve_lib_features(&config, "axstd");
+
+        let spec = ostool::build_cargo_spec(
+            &config,
+            &workspace,
+            &arceos_dir,
+            &target_dir,
+            &ax_features,
+            &lib_features,
+            false,
+            plat_dyn,
+        )
+        .unwrap();
+        let qemu = ostool::build_qemu_config(&config, &arceos_dir);
+
+        assert_eq!(spec.cargo.target, config.arch.to_target());
+        assert!(spec.cargo.features.contains(&"axstd/plat-dyn".to_string()));
+        assert!(spec.cargo.features.contains(&"axstd/fs".to_string()));
+        assert!(spec.cargo.features.contains(&"axstd/net".to_string()));
+        assert_eq!(
+            spec.cargo.env.get("AX_PLATFORM"),
+            Some(&config.platform.clone())
+        );
+        assert!(spec.ctx.debug);
+        assert!(
+            qemu.args
+                .windows(2)
+                .any(|window| window[0] == "-m" && window[1] == "128M")
+        );
+        assert!(
+            qemu.args
+                .windows(2)
+                .any(|window| window[0] == "-smp" && window[1] == "1")
+        );
     }
 }

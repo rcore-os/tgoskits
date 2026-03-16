@@ -15,6 +15,7 @@
 pub mod build;
 pub mod config;
 pub mod features;
+pub mod ostool;
 pub mod platform;
 pub mod qemu;
 
