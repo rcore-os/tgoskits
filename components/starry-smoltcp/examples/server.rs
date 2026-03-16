@@ -1,14 +1,15 @@
 mod utils;
 
-use log::debug;
-use std::fmt::Write;
-use std::os::unix::io::AsRawFd;
+use std::{fmt::Write, os::unix::io::AsRawFd};
 
-use smoltcp::iface::{Config, Interface, SocketSet};
-use smoltcp::phy::{wait as phy_wait, Device, Medium};
-use smoltcp::socket::{tcp, udp};
-use smoltcp::time::{Duration, Instant};
-use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr, Ipv4Address, Ipv6Address};
+use log::debug;
+use smoltcp::{
+    iface::{Config, Interface, SocketSet},
+    phy::{Device, Medium, wait as phy_wait},
+    socket::{tcp, udp},
+    time::{Duration, Instant},
+    wire::{EthernetAddress, IpAddress, IpCidr, Ipv4Address, Ipv6Address},
+};
 
 fn main() {
     utils::setup_logging("");
@@ -21,7 +22,7 @@ fn main() {
     let device = utils::parse_tuntap_options(&mut matches);
     let fd = device.as_raw_fd();
     let mut device =
-        utils::parse_middleware_options(&mut matches, device, /*loopback=*/ false);
+        utils::parse_middleware_options(&mut matches, device, /* loopback= */ false);
 
     // Create interface
     let mut config = match device.capabilities().medium {

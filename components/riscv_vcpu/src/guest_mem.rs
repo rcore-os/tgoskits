@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use axaddrspace::{GuestPhysAddr, GuestVirtAddr};
 use core::arch::riscv64::hfence_vvma_all;
+
+use axaddrspace::{GuestPhysAddr, GuestVirtAddr};
 use riscv_h::register::vsatp::Vsatp;
 
 // Notes about this file:

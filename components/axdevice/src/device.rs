@@ -12,13 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::sync::Arc;
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 use core::ops::Range;
 
-use range_alloc_arceos::RangeAllocator;
-use spin::Mutex;
-
+#[cfg(target_arch = "aarch64")]
+use arm_vgic::Vgic;
 use axaddrspace::{
     GuestPhysAddr, GuestPhysAddrRange,
     device::{AccessWidth, DeviceAddrRange, Port, PortRange, SysRegAddr, SysRegAddrRange},
@@ -26,17 +24,15 @@ use axaddrspace::{
 use axdevice_base::{BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps};
 use axerrno::{AxResult, ax_err};
 use axvmconfig::{EmulatedDeviceConfig, EmulatedDeviceType};
-use memory_addr::is_aligned_4k;
-
-use crate::AxVmDeviceConfig;
-
-#[cfg(target_arch = "aarch64")]
-use arm_vgic::Vgic;
 #[cfg(target_arch = "aarch64")]
 use memory_addr::PhysAddr;
-
+use memory_addr::is_aligned_4k;
+use range_alloc_arceos::RangeAllocator;
 #[cfg(target_arch = "riscv64")]
 use riscv_vplic::VPlicGlobal;
+use spin::Mutex;
+
+use crate::AxVmDeviceConfig;
 
 /// A set of emulated device types that can be accessed by a specific address range type.
 pub struct AxEmuDevices<R: DeviceAddrRange> {
@@ -186,7 +182,8 @@ impl AxVmDevices {
                             )));
 
                             info!(
-                                "GPPT Redistributor initialized for vCPU {i} with base GPA {addr:#x} and length {size:#x}"
+                                "GPPT Redistributor initialized for vCPU {i} with base GPA \
+                                 {addr:#x} and length {size:#x}"
                             );
                         }
                     }
@@ -208,7 +205,8 @@ impl AxVmDevices {
                         )));
 
                         info!(
-                            "GPPT Distributor initialized with base GPA {base_gpa:#x} and length {length:#x}",
+                            "GPPT Distributor initialized with base GPA {base_gpa:#x} and length \
+                             {length:#x}",
                             base_gpa = config.base_gpa,
                             length = config.length
                         );
@@ -240,7 +238,8 @@ impl AxVmDevices {
                         )));
 
                         info!(
-                            "GPPT ITS initialized with base GPA {base_gpa:#x} and length {length:#x}, host GITS base {host_gits_base:#x}",
+                            "GPPT ITS initialized with base GPA {base_gpa:#x} and length \
+                             {length:#x}, host GITS base {host_gits_base:#x}",
                             base_gpa = config.base_gpa,
                             length = config.length,
                             host_gits_base = host_gits_base
@@ -269,7 +268,8 @@ impl AxVmDevices {
                         )));
                         // PLIC Partial Passthrough Global.
                         info!(
-                            "Partial PLIC Passthrough Global initialized with base GPA {:#x} and length {:#x}",
+                            "Partial PLIC Passthrough Global initialized with base GPA {:#x} and \
+                             length {:#x}",
                             config.base_gpa, config.length
                         );
                     }
@@ -289,7 +289,8 @@ impl AxVmDevices {
                             end: config.base_gpa + config.length,
                         })));
                         info!(
-                            "IVCChannel initialized with base GPA {base_gpa:#x} and length {length:#x}",
+                            "IVCChannel initialized with base GPA {base_gpa:#x} and length \
+                             {length:#x}",
                             base_gpa = config.base_gpa,
                             length = config.length
                         );

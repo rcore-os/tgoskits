@@ -247,7 +247,8 @@ impl LpiPropTable {
         let page_num: usize = ((1 << (id_bits + 1)) - 8192) / memory_addr::PAGE_SIZE_4K;
 
         debug!(
-            "Creating LPI prop table: id_bits: {id_bits}, page_num: {page_num}, size_per_gicr: {size_per_gicr}"
+            "Creating LPI prop table: id_bits: {id_bits}, page_num: {page_num}, size_per_gicr: \
+             {size_per_gicr}"
         );
 
         let f = axvisor_api::memory::alloc_contiguous_frames(page_num, 0)

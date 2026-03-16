@@ -2,11 +2,10 @@
 //!
 //! Implements the `BaseDeviceOps` trait for MMIO read/write handling.
 
-use crate::consts::*;
-use crate::utils::*;
-use crate::vplic::VPlicGlobal;
-use axaddrspace::{device::AccessWidth, GuestPhysAddrRange, HostPhysAddr};
+use axaddrspace::{GuestPhysAddrRange, HostPhysAddr, device::AccessWidth};
 use axdevice_base::{BaseDeviceOps, EmuDeviceType};
+
+use crate::{consts::*, utils::*, vplic::VPlicGlobal};
 
 /// Implementation of device emulation operations for virtual PLIC.
 impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {

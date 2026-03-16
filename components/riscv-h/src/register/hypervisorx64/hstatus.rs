@@ -193,9 +193,9 @@ set_clear_csr!(
 #[repr(usize)]
 pub enum VsxlValues {
     /// 32-bit virtual address space
-    Vsxl32 = 1,
+    Vsxl32  = 1,
     /// 64-bit virtual address space
-    Vsxl64 = 2,
+    Vsxl64  = 2,
     /// 128-bit virtual address space
     Vsxl128 = 3,
 }

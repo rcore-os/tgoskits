@@ -1,8 +1,10 @@
 use core::fmt;
 
-use crate::phy::{self, Device, DeviceCapabilities, Medium};
-use crate::time::Instant;
-use crate::wire::pretty_print::{PrettyIndent, PrettyPrint};
+use crate::{
+    phy::{self, Device, DeviceCapabilities, Medium},
+    time::Instant,
+    wire::pretty_print::{PrettyIndent, PrettyPrint},
+};
 
 /// A tracer device.
 ///

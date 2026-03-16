@@ -14,7 +14,7 @@
 
 use core::cell::UnsafeCell;
 
-use axaddrspace::{device::AccessWidth, GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr};
+use axaddrspace::{GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr, device::AccessWidth};
 use axdevice_base::{BaseDeviceOps, EmuDeviceType};
 use axerrno::AxResult;
 use axvisor_api::memory::phys_to_virt;
@@ -63,7 +63,8 @@ impl VGicD {
     /// Assigns an IRQ to a specific CPU.
     pub fn assign_irq(&self, irq: u32, cpu_phys_id: usize, target_cpu_affinity: (u8, u8, u8, u8)) {
         debug!(
-            "Physically assigning IRQ {irq} to CPU {cpu_phys_id} with affinity {target_cpu_affinity:?}"
+            "Physically assigning IRQ {irq} to CPU {cpu_phys_id} with affinity \
+             {target_cpu_affinity:?}"
         );
 
         if irq >= MAX_IRQ_V3 as u32 {

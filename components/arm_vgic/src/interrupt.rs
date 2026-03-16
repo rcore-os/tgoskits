@@ -14,13 +14,14 @@
 
 #![allow(unused)]
 
-use crate::consts::{PPI_ID_MAX, SGI_ID_MAX, SPI_ID_MAX};
 use log::debug;
+
+use crate::consts::{PPI_ID_MAX, SGI_ID_MAX, SPI_ID_MAX};
 
 /// Interrupt trigger mode.
 #[derive(Debug, Clone, Copy)]
 pub enum TriggerMode {
-    Edge = 0,
+    Edge  = 0,
     Level = 1,
 }
 

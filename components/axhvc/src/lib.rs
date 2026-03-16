@@ -94,7 +94,7 @@ pub enum HyperCallCode {
     ///
     /// - `Ok(0)` on success
     /// - `Err(_)` if the hypervisor cannot be disabled
-    HypervisorDisable = 0,
+    HypervisorDisable    = 0,
 
     /// Prepare to disable the hypervisor.
     ///
@@ -116,7 +116,7 @@ pub enum HyperCallCode {
     /// # Warning
     ///
     /// This hypercall should not be used in production environments.
-    HyperVisorDebug = 2,
+    HyperVisorDebug      = 2,
 
     /// Publish an IVC (Inter-VM Communication) shared memory channel.
     ///
@@ -134,7 +134,7 @@ pub enum HyperCallCode {
     ///
     /// - `Ok(0)` on success, with the shared memory info written to the provided pointers
     /// - `Err(_)` if the channel cannot be created
-    HIVCPublishChannel = 3,
+    HIVCPublishChannel   = 3,
 
     /// Subscribe to an IVC shared memory channel.
     ///
@@ -152,7 +152,7 @@ pub enum HyperCallCode {
     ///
     /// - `Ok(0)` on success, with the shared memory info written to the provided pointers
     /// - `Err(_)` if subscription fails (e.g., channel not found)
-    HIVCSubscribChannel = 4,
+    HIVCSubscribChannel  = 4,
 
     /// Unpublish an IVC shared memory channel.
     ///

@@ -16,15 +16,14 @@
 //!
 //! This module provides a command-line interface for managing VM configurations,
 //! including validation of existing configurations and generation of new templates.
-use std::env;
-use std::error::Error;
-use std::fs;
-use std::path::Path;
+use std::{env, error::Error, fs, path::Path};
 
 use clap::{Args, Parser, Subcommand};
 
-use crate::templates::{get_vm_config_template, VmTemplateParams};
-use crate::AxVMCrateConfig;
+use crate::{
+    AxVMCrateConfig,
+    templates::{VmTemplateParams, get_vm_config_template},
+};
 
 /// Main CLI structure for the axvmconfig tool
 ///

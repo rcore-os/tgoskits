@@ -11,15 +11,11 @@
 //!
 //! ## Basic Usage
 //! ```rust,no_run
-//! use riscv_vplic::VPlicGlobal;
 //! use axaddrspace::GuestPhysAddr;
+//! use riscv_vplic::VPlicGlobal;
 //!
 //! // Create a virtual PLIC with 2 contexts
-//! let vplic = VPlicGlobal::new(
-//!     GuestPhysAddr::from(0x0c000000),
-//!     Some(0x4000),
-//!     2
-//! );
+//! let vplic = VPlicGlobal::new(GuestPhysAddr::from(0x0c000000), Some(0x4000), 2);
 //! ```
 
 #![cfg_attr(not(test), no_std)]

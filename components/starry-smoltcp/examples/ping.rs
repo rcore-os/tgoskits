@@ -1,28 +1,29 @@
 mod utils;
 
-use byteorder::{ByteOrder, NetworkEndian};
-use smoltcp::iface::{Interface, SocketSet};
-use std::cmp;
-use std::collections::HashMap;
-use std::os::unix::io::AsRawFd;
-use std::str::FromStr;
+use std::{cmp, collections::HashMap, os::unix::io::AsRawFd, str::FromStr};
 
-use smoltcp::iface::Config;
-use smoltcp::phy::wait as phy_wait;
-use smoltcp::phy::Device;
-use smoltcp::socket::icmp;
-use smoltcp::wire::{
-    EthernetAddress, Icmpv4Packet, Icmpv4Repr, Icmpv6Packet, Icmpv6Repr, IpAddress, IpCidr,
-    Ipv4Address, Ipv6Address,
-};
+use byteorder::{ByteOrder, NetworkEndian};
 use smoltcp::{
-    phy::Medium,
+    iface::{Config, Interface, SocketSet},
+    phy::{Device, Medium, wait as phy_wait},
+    socket::icmp,
     time::{Duration, Instant},
+    wire::{
+        EthernetAddress, Icmpv4Packet, Icmpv4Repr, Icmpv6Packet, Icmpv6Repr, IpAddress, IpCidr,
+        Ipv4Address, Ipv6Address,
+    },
 };
 
 macro_rules! send_icmp_ping {
-    ( $repr_type:ident, $packet_type:ident, $ident:expr, $seq_no:expr,
-      $echo_payload:expr, $socket:expr, $remote_addr:expr ) => {{
+    (
+        $repr_type:ident,
+        $packet_type:ident,
+        $ident:expr,
+        $seq_no:expr,
+        $echo_payload:expr,
+        $socket:expr,
+        $remote_addr:expr
+    ) => {{
         let icmp_repr = $repr_type::EchoRequest {
             ident: $ident,
             seq_no: $seq_no,
@@ -37,8 +38,15 @@ macro_rules! send_icmp_ping {
 }
 
 macro_rules! get_icmp_pong {
-    ( $repr_type:ident, $repr:expr, $payload:expr, $waiting_queue:expr, $remote_addr:expr,
-      $timestamp:expr, $received:expr ) => {{
+    (
+        $repr_type:ident,
+        $repr:expr,
+        $payload:expr,
+        $waiting_queue:expr,
+        $remote_addr:expr,
+        $timestamp:expr,
+        $received:expr
+    ) => {{
         if let $repr_type::EchoReply { seq_no, data, .. } = $repr {
             if let Some(_) = $waiting_queue.get(&seq_no) {
                 let packet_timestamp_ms = NetworkEndian::read_i64(data);
@@ -86,7 +94,7 @@ fn main() {
     let device = utils::parse_tuntap_options(&mut matches);
     let fd = device.as_raw_fd();
     let mut device =
-        utils::parse_middleware_options(&mut matches, device, /*loopback=*/ false);
+        utils::parse_middleware_options(&mut matches, device, /* loopback= */ false);
     let device_caps = device.capabilities();
     let remote_addr = IpAddress::from_str(&matches.free[0]).expect("invalid address format");
     let count = matches

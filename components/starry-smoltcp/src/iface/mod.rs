@@ -1,8 +1,7 @@
-/*! Network interface logic.
-
-The `iface` module deals with the *network interfaces*. It filters incoming frames,
-provides lookup and caching of hardware addresses, and handles management packets.
-*/
+//! Network interface logic.
+//!
+//! The `iface` module deals with the *network interfaces*. It filters incoming frames,
+//! provides lookup and caching of hardware addresses, and handles management packets.
 
 mod fragmentation;
 mod interface;
@@ -18,9 +17,10 @@ mod packet;
 
 #[cfg(feature = "multicast")]
 pub use self::interface::multicast::MulticastError;
-pub use self::interface::{
-    Config, Interface, InterfaceInner as Context, PollIngressSingleResult, PollResult,
+pub use self::{
+    interface::{
+        Config, Interface, InterfaceInner as Context, PollIngressSingleResult, PollResult,
+    },
+    route::{Route, RouteTableFull, Routes},
+    socket_set::{SocketHandle, SocketSet, SocketStorage},
 };
-
-pub use self::route::{Route, RouteTableFull, Routes};
-pub use self::socket_set::{SocketHandle, SocketSet, SocketStorage};

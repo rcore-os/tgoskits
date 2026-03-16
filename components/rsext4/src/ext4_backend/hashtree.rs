@@ -3,17 +3,13 @@
 //! Provides hash tree-based directory lookup functionality, replacing linear search to improve performance for large directories
 //! Supports Ext4 HTree index format, including multiple hash algorithms
 
-use crate::ext4_backend::blockdev::*;
-use crate::ext4_backend::config::*;
-use crate::ext4_backend::disknode::*;
-use crate::ext4_backend::endian::*;
-use crate::ext4_backend::entries::*;
-use crate::ext4_backend::ext4::*;
-use crate::ext4_backend::loopfile::*;
-
 use alloc::vec::Vec;
-use log::error;
-use log::{debug, warn};
+
+use log::{debug, error, warn};
+
+use crate::ext4_backend::{
+    blockdev::*, config::*, disknode::*, endian::*, entries::*, ext4::*, loopfile::*,
+};
 
 /// Hash tree error type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,7 +87,7 @@ impl HashTreeManager {
 
         // 1. Check if directory has hash tree index enabled
         if !dir_inode.is_htree_indexed() {
-            //warn!("Directory does not have hash tree index enabled, falling back to linear search");
+            // warn!("Directory does not have hash tree index enabled, falling back to linear search");
             return self.fallback_to_linear_search(fs, block_dev, dir_inode, target_name);
         }
 
@@ -443,10 +439,10 @@ pub fn lookup_directory_entry<B: BlockDevice>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    use crate::ext4_backend::error::BlockDevError;
     use alloc::vec::Vec;
+
+    use super::*;
+    use crate::ext4_backend::error::BlockDevError;
     // Mock block device
     struct MockBlockDevice {
         data: Vec<u8>,
@@ -525,11 +521,10 @@ mod tests {
 
     // Create test filesystem
     fn create_test_fs() -> Ext4FileSystem {
-        use crate::ext4_backend::bitmap_cache::BitmapCache;
-        use crate::ext4_backend::bmalloc::*;
-        use crate::ext4_backend::datablock_cache::DataBlockCache;
-        use crate::ext4_backend::inodetable_cache::InodeCache;
-        use crate::ext4_backend::superblock::Ext4Superblock;
+        use crate::ext4_backend::{
+            bitmap_cache::BitmapCache, bmalloc::*, datablock_cache::DataBlockCache,
+            inodetable_cache::InodeCache, superblock::Ext4Superblock,
+        };
         let mut superblock = Ext4Superblock::default();
         superblock.s_hash_seed = [0x12345678, 0x87654321, 0xABCDEF00, 0x00FEDCBA];
         superblock.s_def_hash_version = 0x8; // Half SipHash

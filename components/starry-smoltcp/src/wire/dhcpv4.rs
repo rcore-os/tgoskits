@@ -1,13 +1,13 @@
 // See https://tools.ietf.org/html/rfc2131 for the DHCP specification.
 
+use core::iter;
+
 use bitflags::bitflags;
 use byteorder::{ByteOrder, NetworkEndian};
-use core::iter;
 use heapless::Vec;
 
 use super::{Error, Result};
-use crate::wire::arp::Hardware;
-use crate::wire::{EthernetAddress, Ipv4Address, Ipv4AddressExt};
+use crate::wire::{EthernetAddress, Ipv4Address, Ipv4AddressExt, arp::Hardware};
 
 pub const SERVER_PORT: u16 = 67;
 pub const CLIENT_PORT: u16 = 68;

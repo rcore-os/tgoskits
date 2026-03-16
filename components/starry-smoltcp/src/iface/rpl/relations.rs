@@ -1,7 +1,4 @@
-use crate::time::Instant;
-use crate::wire::Ipv6Address;
-
-use crate::config::RPL_RELATIONS_BUFFER_COUNT;
+use crate::{config::RPL_RELATIONS_BUFFER_COUNT, time::Instant, wire::Ipv6Address};
 
 #[derive(Debug)]
 pub struct Relation {

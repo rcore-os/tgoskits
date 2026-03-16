@@ -1,18 +1,18 @@
-use crate::ext4_backend::ext4::*;
-use crate::ext4_backend::superblock::*;
-use alloc::vec;
-use alloc::vec::*;
+use alloc::{vec, vec::*};
+
 use log::debug;
 
-///UUID生成 需要4个u32的uuid
+use crate::ext4_backend::{ext4::*, superblock::*};
+
+/// UUID生成 需要4个u32的uuid
 pub fn generate_uuid() -> UUID {
-    //uuid生成策略 将函数指针进行异或
+    // uuid生成策略 将函数指针进行异或
     let mut orign_uuid = [1_u32; 4];
     let target_seed = debug_super_and_desc as *const () as u32;
     let mut last_idx: usize = 0;
-    //首次异或
+    // 首次异或
     orign_uuid[0] ^= target_seed;
-    //进行迭代异或
+    // 进行迭代异或
     for idx in 0..orign_uuid.len() * 2 {
         let real_idx = idx % orign_uuid.len();
         orign_uuid[real_idx] ^= orign_uuid[last_idx];
@@ -22,15 +22,15 @@ pub fn generate_uuid() -> UUID {
     UUID(orign_uuid)
 }
 
-///UUID生成 需要16个u8的uuid
+/// UUID生成 需要16个u8的uuid
 pub fn generate_uuid_8() -> [u8; 16] {
-    //uuid生成策略 将函数指针进行异或
+    // uuid生成策略 将函数指针进行异或
     let mut orign_uuid = [1_u8; 16];
     let target_seed = debug_super_and_desc as *const () as u8;
     let mut last_idx: usize = 0;
-    //首次异或
+    // 首次异或
     orign_uuid[0] ^= target_seed;
-    //进行迭代异或
+    // 进行迭代异或
     for idx in 0..orign_uuid.len() * 2 {
         let real_idx = idx % orign_uuid.len();
         orign_uuid[real_idx] ^= orign_uuid[last_idx];
@@ -49,7 +49,7 @@ pub fn debug_super_and_desc(superblock: &Ext4Superblock, fs: &Ext4FileSystem) {
     }
 }
 
-///是否需要redundance backup
+/// 是否需要redundance backup
 pub fn need_redundant_backup(gid: u32) -> bool {
     if gid == 0 || gid == 1 {
         return true;
@@ -63,7 +63,7 @@ pub fn need_redundant_backup(gid: u32) -> bool {
     }
     false
 }
-///number是不是base的幂
+/// number是不是base的幂
 pub fn is_numbers_power(number: usize, base: usize) -> bool {
     let mut tmp_number = number;
     if tmp_number == 1 {
@@ -75,7 +75,7 @@ pub fn is_numbers_power(number: usize, base: usize) -> bool {
     tmp_number == 1
 }
 
-///根据块组号 计算块组布局（仅在 mkfs 阶段使用）
+/// 根据块组号 计算块组布局（仅在 mkfs 阶段使用）
 /// - `gid` 当前块组号
 /// - `sb`  超级块（用于检查是否启用 sparse_super）
 /// - `blocks_per_group` 每组块数

@@ -7,8 +7,10 @@
 use byteorder::{ByteOrder, NetworkEndian};
 
 use super::{Error, Result};
-use crate::wire::icmpv6::{field, Message, Packet};
-use crate::wire::{Ipv6Address, Ipv6AddressExt};
+use crate::wire::{
+    Ipv6Address, Ipv6AddressExt,
+    icmpv6::{Message, Packet, field},
+};
 
 enum_with_unknown! {
     /// MLDv2 Multicast Listener Report Record Type. See [RFC 3810 § 5.2.12] for
@@ -458,9 +460,12 @@ impl<'a> Repr<'a> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::phy::ChecksumCapabilities;
-    use crate::wire::icmpv6::Message;
-    use crate::wire::{Icmpv6Repr, IPV6_LINK_LOCAL_ALL_NODES, IPV6_LINK_LOCAL_ALL_ROUTERS};
+    use crate::{
+        phy::ChecksumCapabilities,
+        wire::{
+            IPV6_LINK_LOCAL_ALL_NODES, IPV6_LINK_LOCAL_ALL_ROUTERS, Icmpv6Repr, icmpv6::Message,
+        },
+    };
 
     static QUERY_PACKET_BYTES: [u8; 44] = [
         0x82, 0x00, 0x73, 0x74, 0x04, 0x00, 0x00, 0x00, 0xff, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,

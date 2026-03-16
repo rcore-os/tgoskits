@@ -5,14 +5,17 @@ use core::task::Waker;
 use heapless::Vec;
 use managed::ManagedSlice;
 
-use crate::config::{DNS_MAX_NAME_SIZE, DNS_MAX_RESULT_COUNT, DNS_MAX_SERVER_COUNT};
-use crate::socket::{Context, PollAt};
-use crate::time::{Duration, Instant};
-use crate::wire::dns::{Flags, Opcode, Packet, Question, Rcode, Record, RecordData, Repr, Type};
-use crate::wire::{self, IpAddress, IpProtocol, IpRepr, UdpRepr};
-
 #[cfg(feature = "async")]
 use super::WakerRegistration;
+use crate::{
+    config::{DNS_MAX_NAME_SIZE, DNS_MAX_RESULT_COUNT, DNS_MAX_SERVER_COUNT},
+    socket::{Context, PollAt},
+    time::{Duration, Instant},
+    wire::{
+        self, IpAddress, IpProtocol, IpRepr, UdpRepr,
+        dns::{Flags, Opcode, Packet, Question, Rcode, Record, RecordData, Repr, Type},
+    },
+};
 
 const DNS_PORT: u16 = 53;
 const MDNS_DNS_PORT: u16 = 5353;

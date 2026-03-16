@@ -3,13 +3,11 @@
 
 mod utils;
 
-use std::alloc::Allocator;
-use std::collections::BTreeMap;
-use std::io::Write;
+use std::{alloc::Allocator, collections::BTreeMap, io::Write};
 
 use allocator::{AllocatorRc, BuddyByteAllocator, SlabByteAllocator, TlsfByteAllocator};
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use rand::{rngs::SmallRng, seq::SliceRandom, RngCore, SeedableRng};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use rand::{RngCore, SeedableRng, rngs::SmallRng, seq::SliceRandom};
 
 use self::utils::MemoryPool;
 

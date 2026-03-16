@@ -75,11 +75,11 @@
 //! [osi]: https://en.wikipedia.org/wiki/OSI_model
 //! [berk]: https://en.wikipedia.org/wiki/Berkeley_sockets
 
-/* XXX compiler bug
-#![cfg(not(any(feature = "socket-raw",
-               feature = "socket-udp",
-               feature = "socket-tcp")))]
-compile_error!("at least one socket needs to be enabled"); */
+// XXX compiler bug
+// #![cfg(not(any(feature = "socket-raw",
+// feature = "socket-udp",
+// feature = "socket-tcp")))]
+// compile_error!("at least one socket needs to be enabled");
 
 #![allow(clippy::match_like_matches_macro)]
 #![allow(clippy::redundant_field_names)]
@@ -96,7 +96,10 @@ extern crate alloc;
     feature = "proto-ipv6",
     feature = "proto-sixlowpan"
 )))]
-compile_error!("You must enable at least one of the following features: proto-ipv4, proto-ipv6, proto-sixlowpan");
+compile_error!(
+    "You must enable at least one of the following features: proto-ipv4, proto-ipv6, \
+     proto-sixlowpan"
+);
 
 #[cfg(all(
     feature = "socket",
@@ -109,7 +112,10 @@ compile_error!("You must enable at least one of the following features: proto-ip
         feature = "socket-dns",
     ))
 ))]
-compile_error!("If you enable the socket feature, you must enable at least one of the following features: socket-raw, socket-udp, socket-tcp, socket-icmp, socket-dhcpv4, socket-dns");
+compile_error!(
+    "If you enable the socket feature, you must enable at least one of the following features: \
+     socket-raw, socket-udp, socket-tcp, socket-icmp, socket-dhcpv4, socket-dns"
+);
 
 #[cfg(all(
     feature = "socket",
@@ -119,7 +125,10 @@ compile_error!("If you enable the socket feature, you must enable at least one o
         feature = "medium-ieee802154",
     ))
 ))]
-compile_error!("If you enable the socket feature, you must enable at least one of the following features: medium-ip, medium-ethernet, medium-ieee802154");
+compile_error!(
+    "If you enable the socket feature, you must enable at least one of the following features: \
+     medium-ip, medium-ethernet, medium-ieee802154"
+);
 
 #[cfg(all(feature = "defmt", feature = "log"))]
 compile_error!("You must enable at most one of the following features: defmt, log");

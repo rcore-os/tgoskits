@@ -1,17 +1,21 @@
 mod utils;
 
-use std::cmp;
-use std::io::{Read, Write};
-use std::net::TcpStream;
-use std::os::unix::io::AsRawFd;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
+use std::{
+    cmp,
+    io::{Read, Write},
+    net::TcpStream,
+    os::unix::io::AsRawFd,
+    sync::atomic::{AtomicBool, Ordering},
+    thread,
+};
 
-use smoltcp::iface::{Config, Interface, SocketSet};
-use smoltcp::phy::{wait as phy_wait, Device, Medium};
-use smoltcp::socket::tcp;
-use smoltcp::time::{Duration, Instant};
-use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr};
+use smoltcp::{
+    iface::{Config, Interface, SocketSet},
+    phy::{Device, Medium, wait as phy_wait},
+    socket::tcp,
+    time::{Duration, Instant},
+    wire::{EthernetAddress, IpAddress, IpCidr},
+};
 
 const AMOUNT: usize = 1_000_000_000;
 
@@ -71,7 +75,7 @@ fn main() {
     let device = utils::parse_tuntap_options(&mut matches);
     let fd = device.as_raw_fd();
     let mut device =
-        utils::parse_middleware_options(&mut matches, device, /*loopback=*/ false);
+        utils::parse_middleware_options(&mut matches, device, /* loopback= */ false);
     let mode = match matches.free[0].as_ref() {
         "reader" => Client::Reader,
         "writer" => Client::Writer,

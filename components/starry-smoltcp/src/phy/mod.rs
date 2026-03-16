@@ -1,16 +1,15 @@
-/*! Access to networking hardware.
-
-The `phy` module deals with the *network devices*. It provides a trait
-for transmitting and receiving frames, [Device](trait.Device.html)
-and implementations of it:
-
-  * the [_loopback_](struct.Loopback.html), for zero dependency testing;
-  * _middleware_ [Tracer](struct.Tracer.html) and
-    [FaultInjector](struct.FaultInjector.html), to facilitate debugging;
-  * _adapters_ [RawSocket](struct.RawSocket.html) and
-    [TunTapInterface](struct.TunTapInterface.html), to transmit and receive frames
-    on the host OS.
-*/
+//! Access to networking hardware.
+//!
+//! The `phy` module deals with the *network devices*. It provides a trait
+//! for transmitting and receiving frames, [Device](trait.Device.html)
+//! and implementations of it:
+//!
+//! the [_loopback_](struct.Loopback.html), for zero dependency testing;
+//! _middleware_ [Tracer](struct.Tracer.html) and
+//! [FaultInjector](struct.FaultInjector.html), to facilitate debugging;
+//! _adapters_ [RawSocket](struct.RawSocket.html) and
+//! [TunTapInterface](struct.TunTapInterface.html), to transmit and receive frames
+//! on the host OS.
 #![cfg_attr(
     feature = "medium-ethernet",
     doc = r##"
@@ -111,26 +110,27 @@ mod tracer;
 ))]
 mod tuntap_interface;
 
+#[cfg(feature = "alloc")]
+pub use self::fuzz_injector::{FuzzInjector, Fuzzer};
+#[cfg(feature = "alloc")]
+pub use self::loopback::Loopback;
+#[cfg(all(feature = "phy-raw_socket", unix))]
+pub use self::raw_socket::RawSocket;
 #[cfg(all(
     any(feature = "phy-raw_socket", feature = "phy-tuntap_interface"),
     unix
 ))]
 pub use self::sys::wait;
-
-pub use self::fault_injector::FaultInjector;
-#[cfg(feature = "alloc")]
-pub use self::fuzz_injector::{FuzzInjector, Fuzzer};
-#[cfg(feature = "alloc")]
-pub use self::loopback::Loopback;
-pub use self::pcap_writer::{PcapLinkType, PcapMode, PcapSink, PcapWriter};
-#[cfg(all(feature = "phy-raw_socket", unix))]
-pub use self::raw_socket::RawSocket;
-pub use self::tracer::Tracer;
 #[cfg(all(
     feature = "phy-tuntap_interface",
     any(target_os = "linux", target_os = "android")
 ))]
 pub use self::tuntap_interface::TunTapInterface;
+pub use self::{
+    fault_injector::FaultInjector,
+    pcap_writer::{PcapLinkType, PcapMode, PcapSink, PcapWriter},
+    tracer::Tracer,
+};
 
 /// Metadata associated to a packet.
 ///
@@ -284,7 +284,7 @@ impl DeviceCapabilities {
             #[cfg(feature = "medium-ip")]
             Medium::Ip => self.max_transmission_unit,
             #[cfg(feature = "medium-ieee802154")]
-            Medium::Ieee802154 => self.max_transmission_unit, // TODO(thvdveld): what is the MTU for Medium::IEEE802
+            Medium::Ieee802154 => self.max_transmission_unit, /* TODO(thvdveld): what is the MTU for Medium::IEEE802 */
         }
     }
 }

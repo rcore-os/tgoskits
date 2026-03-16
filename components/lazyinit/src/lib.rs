@@ -1,12 +1,14 @@
 #![cfg_attr(not(test), no_std)]
 #![doc = include_str!("../README.md")]
 
-use core::cell::UnsafeCell;
-use core::fmt;
-use core::hint::spin_loop;
-use core::mem::MaybeUninit;
-use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::{
+    cell::UnsafeCell,
+    fmt,
+    hint::spin_loop,
+    mem::MaybeUninit,
+    ops::{Deref, DerefMut},
+    sync::atomic::{AtomicU8, Ordering},
+};
 
 /// Not initialized yet.
 const UNINIT: u8 = 0;
@@ -205,9 +207,9 @@ impl<T> Drop for LazyInit<T> {
 
 #[cfg(test)]
 mod tests {
+    use std::{thread, time::Duration};
+
     use super::*;
-    use std::thread;
-    use std::time::Duration;
 
     #[test]
     fn lazyinit_basic() {

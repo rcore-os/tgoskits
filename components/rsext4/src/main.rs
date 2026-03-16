@@ -1,13 +1,16 @@
 #![deny(unused)]
 #![deny(dead_code)]
 #![deny(warnings)]
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::{
+    fs::{File, OpenOptions},
+    io::{Read, Seek, SeekFrom, Write},
+    path::Path,
+};
 mod testfs;
-use crate::testfs::*;
 use log::*;
 use rsext4::*;
+
+use crate::testfs::*;
 struct SimpleLogger;
 
 impl Log for SimpleLogger {

@@ -28,14 +28,12 @@ pub use slab::SlabByteAllocator;
 
 #[cfg(feature = "tlsf")]
 mod tlsf;
-#[cfg(feature = "tlsf")]
-pub use tlsf::TlsfByteAllocator;
-
-use core::alloc::Layout;
-use core::ptr::NonNull;
+use core::{alloc::Layout, ptr::NonNull};
 
 #[cfg(feature = "axerrno")]
 use axerrno::AxError;
+#[cfg(feature = "tlsf")]
+pub use tlsf::TlsfByteAllocator;
 
 /// The error type used for allocation.
 #[derive(Debug)]
@@ -168,11 +166,14 @@ const fn is_aligned(base_addr: usize, align: usize) -> bool {
 mod allocator_api {
     extern crate alloc;
 
-    use super::ByteAllocator;
     use alloc::rc::Rc;
-    use core::alloc::{AllocError, Allocator, Layout};
-    use core::cell::RefCell;
-    use core::ptr::NonNull;
+    use core::{
+        alloc::{AllocError, Allocator, Layout},
+        cell::RefCell,
+        ptr::NonNull,
+    };
+
+    use super::ByteAllocator;
 
     /// A byte-allocator wrapped in [`Rc<RefCell>`] that implements [`core::alloc::Allocator`].
     pub struct AllocatorRc<A: ByteAllocator>(Rc<RefCell<A>>);

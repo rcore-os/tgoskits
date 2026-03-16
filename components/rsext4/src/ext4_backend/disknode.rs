@@ -60,11 +60,11 @@ impl Ext4Inode {
         let current_offset = 0;
         let mut extent_buffer: [u8; 60] = [0; 60];
         let header = Ext4ExtentHeader::new();
-        //写入header
+        // 写入header
         header.to_disk_bytes(
             &mut extent_buffer[current_offset..current_offset + per_extent_header_offset],
         );
-        //转换写回
+        // 转换写回
         let mut new_slice: [u32; 15] = [0; 15];
         for idx in 0..15 {
             new_slice[idx] = u32::from_le_bytes([
@@ -127,7 +127,7 @@ impl Ext4Inode {
     fn is_extent(&self) -> bool {
         self.i_flags & Self::EXT4_EXTENTS_FL != 0
     }
-    ///检查是否有extend树的结构
+    /// 检查是否有extend树的结构
     /// 检查EXT4_EXTENTS_FL标志和标志extend头
     pub fn have_extend_header_and_use_extend(&self) -> bool {
         if !Self::is_extent(&self) {
@@ -145,7 +145,7 @@ impl Ext4Inode {
         }
     }
 
-    //some metadata change support
+    // some metadata change support
     pub fn set_mtime(&mut self, mtime: u32) {
         self.i_mtime = mtime;
     }
@@ -240,7 +240,7 @@ impl Default for Ext4ExtentHeader {
 
 impl Ext4ExtentHeader {
     pub const EXT4_EXT_MAGIC: u16 = 0xF30A;
-    ///默认根节点配置 4个条目 最大容量 深度 生成号
+    /// 默认根节点配置 4个条目 最大容量 深度 生成号
     pub fn new() -> Self {
         Self {
             eh_magic: Self::EXT4_EXT_MAGIC,
@@ -291,7 +291,7 @@ impl Ext4Extent {
     /// extent最大长度（未初始化）
     pub const EXT_UNINIT_MAX_LEN: u16 = 32768;
 
-    ///默认配置
+    /// 默认配置
     pub fn new(logic_start: u32, start_phy_block: u64, len: u16) -> Self {
         let high = (start_phy_block >> 32) as u16;
         let low = (start_phy_block & 0xffffffff) as u32;
@@ -412,7 +412,7 @@ impl DiskFormat for Ext4Inode {
             l_i_gid_high: read_u16_le(&bytes[122..124]),
             l_i_checksum_lo: read_u16_le(&bytes[124..126]),
             l_i_reserved: read_u16_le(&bytes[126..128]),
-            i_extra_isize: read_u16_le(&bytes[128..130]), // 大inode的额外大小，默认为0表示没有额外字段
+            i_extra_isize: read_u16_le(&bytes[128..130]), /* 大inode的额外大小，默认为0表示没有额外字段 */
             i_checksum_hi: read_u16_le(&bytes[130..132]), // 大inode的校验和高16位，默认为0
             i_ctime_extra: read_u32_le(&bytes[132..136]), // 大inode的额外状态改变时间，默认为0
             i_mtime_extra: read_u32_le(&bytes[136..140]), // 大inode的额外修改时间，默认为0

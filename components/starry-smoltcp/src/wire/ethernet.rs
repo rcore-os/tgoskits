@@ -1,5 +1,6 @@
-use byteorder::{ByteOrder, NetworkEndian};
 use core::fmt;
+
+use byteorder::{ByteOrder, NetworkEndian};
 
 use super::{Error, Result};
 
@@ -134,11 +135,7 @@ impl<T: AsRef<[u8]>> Frame<T> {
     /// Returns `Err(Error)` if the buffer is too short.
     pub fn check_len(&self) -> Result<()> {
         let len = self.buffer.as_ref().len();
-        if len < HEADER_LEN {
-            Err(Error)
-        } else {
-            Ok(())
-        }
+        if len < HEADER_LEN { Err(Error) } else { Ok(()) }
     }
 
     /// Consumes the frame, returning the underlying buffer.

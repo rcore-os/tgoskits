@@ -1,12 +1,14 @@
 use heapless::Vec;
 
-use crate::config::IFACE_MAX_ROUTE_COUNT;
-use crate::time::Instant;
-use crate::wire::{IpAddress, IpCidr};
 #[cfg(feature = "proto-ipv4")]
 use crate::wire::{Ipv4Address, Ipv4Cidr};
 #[cfg(feature = "proto-ipv6")]
 use crate::wire::{Ipv6Address, Ipv6Cidr};
+use crate::{
+    config::IFACE_MAX_ROUTE_COUNT,
+    time::Instant,
+    wire::{IpAddress, IpCidr},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]

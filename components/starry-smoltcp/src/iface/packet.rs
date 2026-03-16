@@ -1,5 +1,4 @@
-use crate::phy::DeviceCapabilities;
-use crate::wire::*;
+use crate::{phy::DeviceCapabilities, wire::*};
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, PartialEq)]
@@ -234,7 +233,7 @@ impl<'p> IpPayload<'p> {
             #[cfg(feature = "proto-ipv6")]
             Self::Icmpv6(_) => SixlowpanNextHeader::Uncompressed(IpProtocol::Icmpv6),
             #[cfg(feature = "proto-ipv6")]
-            Self::HopByHopIcmpv6(_, _) => unreachable!(),
+            Self::HopByHopIcmpv6(..) => unreachable!(),
             #[cfg(all(feature = "proto-ipv4", feature = "multicast"))]
             Self::Igmp(_) => unreachable!(),
             #[cfg(feature = "socket-tcp")]

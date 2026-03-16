@@ -1,7 +1,10 @@
+use std::{
+    io,
+    os::unix::io::{AsRawFd, RawFd},
+};
+
 use super::*;
 use crate::{phy::Medium, wire::EthernetFrame};
-use std::io;
-use std::os::unix::io::{AsRawFd, RawFd};
 
 #[derive(Debug)]
 pub struct TunTapInterfaceDesc {

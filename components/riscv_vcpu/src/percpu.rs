@@ -16,12 +16,10 @@ use core::marker::PhantomData;
 
 use axerrno::{AxError, AxResult};
 use axvcpu::{AxArchPerCpu, AxVCpuHal};
-
 use riscv::register::sie;
 use riscv_h::register::{hedeleg, hideleg, hvip};
 
-use crate::consts::traps;
-use crate::has_hardware_support;
+use crate::{consts::traps, has_hardware_support};
 
 /// Risc-V per-CPU state.
 pub struct RISCVPerCpu<H: AxVCpuHal> {

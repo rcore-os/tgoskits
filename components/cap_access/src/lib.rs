@@ -88,7 +88,10 @@ impl<T> WithCap<T> {
     /// let data = WithCap::new(42, Cap::READ);
     ///
     /// assert_eq!(data.access_or_err(Cap::READ, "cannot read").unwrap(), &42);
-    /// assert_eq!(data.access_or_err(Cap::WRITE, "cannot write").err(), Some("cannot write"));
+    /// assert_eq!(
+    ///     data.access_or_err(Cap::WRITE, "cannot write").err(),
+    ///     Some("cannot write")
+    /// );
     /// ```
     pub fn access_or_err<E>(&self, cap: Cap, err: E) -> Result<&T, E> {
         if self.can_access(cap) {

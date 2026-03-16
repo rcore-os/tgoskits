@@ -1,74 +1,73 @@
-/*! Low-level packet access and construction.
-
-The `wire` module deals with the packet *representation*. It provides two levels
-of functionality.
-
- * First, it provides functions to extract fields from sequences of octets,
-   and to insert fields into sequences of octets. This happens `Packet` family of
-   structures, e.g. [EthernetFrame] or [Ipv4Packet].
- * Second, in cases where the space of valid field values is much smaller than the space
-   of possible field values, it provides a compact, high-level representation
-   of packet data that can be parsed from and emitted into a sequence of octets.
-   This happens through the `Repr` family of structs and enums, e.g. [ArpRepr] or [Ipv4Repr].
-
-[EthernetFrame]: struct.EthernetFrame.html
-[Ipv4Packet]: struct.Ipv4Packet.html
-[ArpRepr]: enum.ArpRepr.html
-[Ipv4Repr]: struct.Ipv4Repr.html
-
-The functions in the `wire` module are designed for use together with `-Cpanic=abort`.
-
-The `Packet` family of data structures guarantees that, if the `Packet::check_len()` method
-returned `Ok(())`, then no accessor or setter method will panic; however, the guarantee
-provided by `Packet::check_len()` may no longer hold after changing certain fields,
-which are listed in the documentation for the specific packet.
-
-The `Packet::new_checked` method is a shorthand for a combination of `Packet::new_unchecked`
-and `Packet::check_len`.
-When parsing untrusted input, it is *necessary* to use `Packet::new_checked()`;
-so long as the buffer is not modified, no accessor will fail.
-When emitting output, though, it is *incorrect* to use `Packet::new_checked()`;
-the length check is likely to succeed on a zeroed buffer, but fail on a buffer
-filled with data from a previous packet, such as when reusing buffers, resulting
-in nondeterministic panics with some network devices but not others.
-The buffer length for emission is not calculated by the `Packet` layer.
-
-In the `Repr` family of data structures, the `Repr::parse()` method never panics
-as long as `Packet::new_checked()` (or `Packet::check_len()`) has succeeded, and
-the `Repr::emit()` method never panics as long as the underlying buffer is exactly
-`Repr::buffer_len()` octets long.
-
-# Examples
-
-To emit an IP packet header into an octet buffer, and then parse it back:
-
-```rust
-# #[cfg(feature = "proto-ipv4")]
-# {
-use smoltcp::phy::ChecksumCapabilities;
-use smoltcp::wire::*;
-let repr = Ipv4Repr {
-    src_addr:    Ipv4Address::new(10, 0, 0, 1),
-    dst_addr:    Ipv4Address::new(10, 0, 0, 2),
-    next_header: IpProtocol::Tcp,
-    payload_len: 10,
-    hop_limit:   64,
-};
-let mut buffer = vec![0; repr.buffer_len() + repr.payload_len];
-{ // emission
-    let mut packet = Ipv4Packet::new_unchecked(&mut buffer);
-    repr.emit(&mut packet, &ChecksumCapabilities::default());
-}
-{ // parsing
-    let packet = Ipv4Packet::new_checked(&buffer)
-                            .expect("truncated packet");
-    let parsed = Ipv4Repr::parse(&packet, &ChecksumCapabilities::default())
-                          .expect("malformed packet");
-    assert_eq!(repr, parsed);
-}
-# }
-```
-*/
+//! Low-level packet access and construction.
+//!
+//! The `wire` module deals with the packet *representation*. It provides two levels
+//! of functionality.
+//!
+//! First, it provides functions to extract fields from sequences of octets,
+//! and to insert fields into sequences of octets. This happens `Packet` family of
+//! structures, e.g. [EthernetFrame] or [Ipv4Packet].
+//! Second, in cases where the space of valid field values is much smaller than the space
+//! of possible field values, it provides a compact, high-level representation
+//! of packet data that can be parsed from and emitted into a sequence of octets.
+//! This happens through the `Repr` family of structs and enums, e.g. [ArpRepr] or [Ipv4Repr].
+//!
+//! [EthernetFrame]: struct.EthernetFrame.html
+//! [Ipv4Packet]: struct.Ipv4Packet.html
+//! [ArpRepr]: enum.ArpRepr.html
+//! [Ipv4Repr]: struct.Ipv4Repr.html
+//!
+//! The functions in the `wire` module are designed for use together with `-Cpanic=abort`.
+//!
+//! The `Packet` family of data structures guarantees that, if the `Packet::check_len()` method
+//! returned `Ok(())`, then no accessor or setter method will panic; however, the guarantee
+//! provided by `Packet::check_len()` may no longer hold after changing certain fields,
+//! which are listed in the documentation for the specific packet.
+//!
+//! The `Packet::new_checked` method is a shorthand for a combination of `Packet::new_unchecked`
+//! and `Packet::check_len`.
+//! When parsing untrusted input, it is *necessary* to use `Packet::new_checked()`;
+//! so long as the buffer is not modified, no accessor will fail.
+//! When emitting output, though, it is *incorrect* to use `Packet::new_checked()`;
+//! the length check is likely to succeed on a zeroed buffer, but fail on a buffer
+//! filled with data from a previous packet, such as when reusing buffers, resulting
+//! in nondeterministic panics with some network devices but not others.
+//! The buffer length for emission is not calculated by the `Packet` layer.
+//!
+//! In the `Repr` family of data structures, the `Repr::parse()` method never panics
+//! as long as `Packet::new_checked()` (or `Packet::check_len()`) has succeeded, and
+//! the `Repr::emit()` method never panics as long as the underlying buffer is exactly
+//! `Repr::buffer_len()` octets long.
+//!
+//! # Examples
+//!
+//! To emit an IP packet header into an octet buffer, and then parse it back:
+//!
+//! ```rust
+//! # #[cfg(feature = "proto-ipv4")]
+//! # {
+//! use smoltcp::{phy::ChecksumCapabilities, wire::*};
+//! let repr = Ipv4Repr {
+//!     src_addr: Ipv4Address::new(10, 0, 0, 1),
+//!     dst_addr: Ipv4Address::new(10, 0, 0, 2),
+//!     next_header: IpProtocol::Tcp,
+//!     payload_len: 10,
+//!     hop_limit: 64,
+//! };
+//! let mut buffer = vec![0; repr.buffer_len() + repr.payload_len];
+//! {
+//!     // emission
+//!     let mut packet = Ipv4Packet::new_unchecked(&mut buffer);
+//!     repr.emit(&mut packet, &ChecksumCapabilities::default());
+//! }
+//! {
+//!     // parsing
+//!     let packet = Ipv4Packet::new_checked(&buffer).expect("truncated packet");
+//!     let parsed =
+//!         Ipv4Repr::parse(&packet, &ChecksumCapabilities::default()).expect("malformed packet");
+//!     assert_eq!(repr, parsed);
+//! }
+//! # }
+//! ```
 
 mod field {
     pub type Field = ::core::ops::Range<usize>;
@@ -137,115 +136,91 @@ mod ipsec_esp;
 
 use core::fmt;
 
-use crate::phy::Medium;
-
-pub use self::pretty_print::PrettyPrinter;
-
-#[cfg(feature = "medium-ethernet")]
-pub use self::ethernet::{
-    Address as EthernetAddress, EtherType as EthernetProtocol, Frame as EthernetFrame,
-    Repr as EthernetRepr, HEADER_LEN as ETHERNET_HEADER_LEN,
-};
-
 #[cfg(all(feature = "proto-ipv4", feature = "medium-ethernet"))]
 pub use self::arp::{
     Hardware as ArpHardware, Operation as ArpOperation, Packet as ArpPacket, Repr as ArpRepr,
 };
-
-#[cfg(feature = "proto-rpl")]
-pub use self::rpl::{
-    data::HopByHopOption as RplHopByHopRepr, data::Packet as RplHopByHopPacket,
-    options::Packet as RplOptionPacket, options::Repr as RplOptionRepr,
-    InstanceId as RplInstanceId, Repr as RplRepr,
+#[cfg(feature = "proto-dhcpv4")]
+pub use self::dhcpv4::{
+    CLIENT_PORT as DHCP_CLIENT_PORT, DhcpOption, DhcpOptionWriter, Flags as DhcpFlags,
+    MAX_DNS_SERVER_COUNT as DHCP_MAX_DNS_SERVER_COUNT, MessageType as DhcpMessageType,
+    OpCode as DhcpOpCode, Packet as DhcpPacket, Repr as DhcpRepr, SERVER_PORT as DHCP_SERVER_PORT,
 };
-
-#[cfg(all(feature = "proto-sixlowpan", feature = "medium-ieee802154"))]
-pub use self::sixlowpan::{
-    frag::{Key as SixlowpanFragKey, Packet as SixlowpanFragPacket, Repr as SixlowpanFragRepr},
-    iphc::{Packet as SixlowpanIphcPacket, Repr as SixlowpanIphcRepr},
-    nhc::{
-        ExtHeaderId as SixlowpanExtHeaderId, ExtHeaderPacket as SixlowpanExtHeaderPacket,
-        ExtHeaderRepr as SixlowpanExtHeaderRepr, NhcPacket as SixlowpanNhcPacket,
-        UdpNhcPacket as SixlowpanUdpNhcPacket, UdpNhcRepr as SixlowpanUdpNhcRepr,
-    },
-    AddressContext as SixlowpanAddressContext, NextHeader as SixlowpanNextHeader, SixlowpanPacket,
+#[cfg(feature = "proto-dns")]
+pub use self::dns::{
+    Flags as DnsFlags, Opcode as DnsOpcode, Packet as DnsPacket, Question as DnsQuestion,
+    Rcode as DnsRcode, Record as DnsRecord, RecordData as DnsRecordData, Repr as DnsRepr,
+    Type as DnsQueryType,
 };
-
-#[cfg(feature = "medium-ieee802154")]
-pub use self::ieee802154::{
-    Address as Ieee802154Address, AddressingMode as Ieee802154AddressingMode,
-    Frame as Ieee802154Frame, FrameType as Ieee802154FrameType,
-    FrameVersion as Ieee802154FrameVersion, Pan as Ieee802154Pan, Repr as Ieee802154Repr,
+#[cfg(feature = "medium-ethernet")]
+pub use self::ethernet::{
+    Address as EthernetAddress, EtherType as EthernetProtocol, Frame as EthernetFrame,
+    HEADER_LEN as ETHERNET_HEADER_LEN, Repr as EthernetRepr,
 };
-
-pub use self::ip::{
-    Address as IpAddress, Cidr as IpCidr, Endpoint as IpEndpoint,
-    ListenEndpoint as IpListenEndpoint, Protocol as IpProtocol, Repr as IpRepr,
-    Version as IpVersion,
-};
-
-#[cfg(feature = "proto-ipv4")]
-pub use self::ipv4::{
-    Address as Ipv4Address, Cidr as Ipv4Cidr, Key as Ipv4FragKey, Packet as Ipv4Packet,
-    Repr as Ipv4Repr, HEADER_LEN as IPV4_HEADER_LEN, MIN_MTU as IPV4_MIN_MTU,
-    MULTICAST_ALL_ROUTERS as IPV4_MULTICAST_ALL_ROUTERS,
-    MULTICAST_ALL_SYSTEMS as IPV4_MULTICAST_ALL_SYSTEMS,
-};
-
-#[cfg(feature = "proto-ipv4")]
-pub(crate) use self::ipv4::AddressExt as Ipv4AddressExt;
-
-#[cfg(feature = "proto-ipv6")]
-pub use self::ipv6::{
-    Address as Ipv6Address, Cidr as Ipv6Cidr, Packet as Ipv6Packet, Repr as Ipv6Repr,
-    HEADER_LEN as IPV6_HEADER_LEN,
-    LINK_LOCAL_ALL_MLDV2_ROUTERS as IPV6_LINK_LOCAL_ALL_MLDV2_ROUTERS,
-    LINK_LOCAL_ALL_NODES as IPV6_LINK_LOCAL_ALL_NODES,
-    LINK_LOCAL_ALL_ROUTERS as IPV6_LINK_LOCAL_ALL_ROUTERS,
-    LINK_LOCAL_ALL_RPL_NODES as IPV6_LINK_LOCAL_ALL_RPL_NODES, MIN_MTU as IPV6_MIN_MTU,
-};
-#[cfg(feature = "proto-ipv6")]
-pub(crate) use self::ipv6::{AddressExt as Ipv6AddressExt, MulticastScope as Ipv6MulticastScope};
-
-#[cfg(feature = "proto-ipv6")]
-pub use self::ipv6option::{
-    FailureType as Ipv6OptionFailureType, Ipv6Option, Ipv6OptionsIterator, Repr as Ipv6OptionRepr,
-    RouterAlert as Ipv6OptionRouterAlert, Type as Ipv6OptionType,
-};
-
-#[cfg(feature = "proto-ipv6")]
-pub use self::ipv6ext_header::{Header as Ipv6ExtHeader, Repr as Ipv6ExtHeaderRepr};
-
-#[cfg(feature = "proto-ipv6")]
-pub use self::ipv6fragment::{Header as Ipv6FragmentHeader, Repr as Ipv6FragmentRepr};
-
-#[cfg(feature = "proto-ipv6")]
-pub use self::ipv6hbh::{Header as Ipv6HopByHopHeader, Repr as Ipv6HopByHopRepr};
-
-#[cfg(feature = "proto-ipv6")]
-pub use self::ipv6routing::{
-    Header as Ipv6RoutingHeader, Repr as Ipv6RoutingRepr, Type as Ipv6RoutingType,
-};
-
+#[cfg(any(feature = "proto-ipv4", feature = "proto-ipv6"))]
+pub use self::icmp::Repr as IcmpRepr;
 #[cfg(feature = "proto-ipv4")]
 pub use self::icmpv4::{
     DstUnreachable as Icmpv4DstUnreachable, Message as Icmpv4Message, Packet as Icmpv4Packet,
     ParamProblem as Icmpv4ParamProblem, Redirect as Icmpv4Redirect, Repr as Icmpv4Repr,
     TimeExceeded as Icmpv4TimeExceeded,
 };
-
-#[cfg(feature = "proto-ipv4")]
-pub use self::igmp::{IgmpVersion, Packet as IgmpPacket, Repr as IgmpRepr};
-
 #[cfg(feature = "proto-ipv6")]
 pub use self::icmpv6::{
     DstUnreachable as Icmpv6DstUnreachable, Message as Icmpv6Message, Packet as Icmpv6Packet,
     ParamProblem as Icmpv6ParamProblem, Repr as Icmpv6Repr, TimeExceeded as Icmpv6TimeExceeded,
 };
-
-#[cfg(any(feature = "proto-ipv4", feature = "proto-ipv6"))]
-pub use self::icmp::Repr as IcmpRepr;
-
+#[cfg(feature = "medium-ieee802154")]
+pub use self::ieee802154::{
+    Address as Ieee802154Address, AddressingMode as Ieee802154AddressingMode,
+    Frame as Ieee802154Frame, FrameType as Ieee802154FrameType,
+    FrameVersion as Ieee802154FrameVersion, Pan as Ieee802154Pan, Repr as Ieee802154Repr,
+};
+#[cfg(feature = "proto-ipv4")]
+pub use self::igmp::{IgmpVersion, Packet as IgmpPacket, Repr as IgmpRepr};
+#[cfg(feature = "proto-ipsec-ah")]
+pub use self::ipsec_ah::{Packet as IpSecAuthHeaderPacket, Repr as IpSecAuthHeaderRepr};
+#[cfg(feature = "proto-ipsec-esp")]
+pub use self::ipsec_esp::{Packet as IpSecEspPacket, Repr as IpSecEspRepr};
+#[cfg(feature = "proto-ipv4")]
+pub(crate) use self::ipv4::AddressExt as Ipv4AddressExt;
+#[cfg(feature = "proto-ipv4")]
+pub use self::ipv4::{
+    Address as Ipv4Address, Cidr as Ipv4Cidr, HEADER_LEN as IPV4_HEADER_LEN, Key as Ipv4FragKey,
+    MIN_MTU as IPV4_MIN_MTU, MULTICAST_ALL_ROUTERS as IPV4_MULTICAST_ALL_ROUTERS,
+    MULTICAST_ALL_SYSTEMS as IPV4_MULTICAST_ALL_SYSTEMS, Packet as Ipv4Packet, Repr as Ipv4Repr,
+};
+#[cfg(feature = "proto-ipv6")]
+pub use self::ipv6::{
+    Address as Ipv6Address, Cidr as Ipv6Cidr, HEADER_LEN as IPV6_HEADER_LEN,
+    LINK_LOCAL_ALL_MLDV2_ROUTERS as IPV6_LINK_LOCAL_ALL_MLDV2_ROUTERS,
+    LINK_LOCAL_ALL_NODES as IPV6_LINK_LOCAL_ALL_NODES,
+    LINK_LOCAL_ALL_ROUTERS as IPV6_LINK_LOCAL_ALL_ROUTERS,
+    LINK_LOCAL_ALL_RPL_NODES as IPV6_LINK_LOCAL_ALL_RPL_NODES, MIN_MTU as IPV6_MIN_MTU,
+    Packet as Ipv6Packet, Repr as Ipv6Repr,
+};
+#[cfg(feature = "proto-ipv6")]
+pub(crate) use self::ipv6::{AddressExt as Ipv6AddressExt, MulticastScope as Ipv6MulticastScope};
+#[cfg(feature = "proto-ipv6")]
+pub use self::ipv6ext_header::{Header as Ipv6ExtHeader, Repr as Ipv6ExtHeaderRepr};
+#[cfg(feature = "proto-ipv6")]
+pub use self::ipv6fragment::{Header as Ipv6FragmentHeader, Repr as Ipv6FragmentRepr};
+#[cfg(feature = "proto-ipv6")]
+pub use self::ipv6hbh::{Header as Ipv6HopByHopHeader, Repr as Ipv6HopByHopRepr};
+#[cfg(feature = "proto-ipv6")]
+pub use self::ipv6option::{
+    FailureType as Ipv6OptionFailureType, Ipv6Option, Ipv6OptionsIterator, Repr as Ipv6OptionRepr,
+    RouterAlert as Ipv6OptionRouterAlert, Type as Ipv6OptionType,
+};
+#[cfg(feature = "proto-ipv6")]
+pub use self::ipv6routing::{
+    Header as Ipv6RoutingHeader, Repr as Ipv6RoutingRepr, Type as Ipv6RoutingType,
+};
+#[cfg(feature = "proto-ipv6")]
+pub use self::mld::{
+    AddressRecord as MldAddressRecord, AddressRecordRepr as MldAddressRecordRepr,
+    RecordType as MldRecordType, Repr as MldRepr,
+};
 #[cfg(all(
     feature = "proto-ipv6",
     any(feature = "medium-ethernet", feature = "medium-ieee802154")
@@ -253,7 +228,6 @@ pub use self::icmp::Repr as IcmpRepr;
 pub use self::ndisc::{
     NeighborFlags as NdiscNeighborFlags, Repr as NdiscRepr, RouterFlags as NdiscRouterFlags,
 };
-
 #[cfg(all(
     feature = "proto-ipv6",
     any(feature = "medium-ethernet", feature = "medium-ieee802154")
@@ -263,39 +237,37 @@ pub use self::ndiscoption::{
     PrefixInformation as NdiscPrefixInformation, RedirectedHeader as NdiscRedirectedHeader,
     Repr as NdiscOptionRepr, Type as NdiscOptionType,
 };
-
-#[cfg(feature = "proto-ipv6")]
-pub use self::mld::{
-    AddressRecord as MldAddressRecord, AddressRecordRepr as MldAddressRecordRepr,
-    RecordType as MldRecordType, Repr as MldRepr,
+#[cfg(feature = "proto-rpl")]
+pub use self::rpl::{
+    InstanceId as RplInstanceId, Repr as RplRepr, data::HopByHopOption as RplHopByHopRepr,
+    data::Packet as RplHopByHopPacket, options::Packet as RplOptionPacket,
+    options::Repr as RplOptionRepr,
 };
-
-pub use self::udp::{Packet as UdpPacket, Repr as UdpRepr, HEADER_LEN as UDP_HEADER_LEN};
-
-pub use self::tcp::{
-    Control as TcpControl, Packet as TcpPacket, Repr as TcpRepr, SeqNumber as TcpSeqNumber,
-    TcpOption, TcpTimestampGenerator, TcpTimestampRepr, HEADER_LEN as TCP_HEADER_LEN,
+#[cfg(all(feature = "proto-sixlowpan", feature = "medium-ieee802154"))]
+pub use self::sixlowpan::{
+    AddressContext as SixlowpanAddressContext, NextHeader as SixlowpanNextHeader, SixlowpanPacket,
+    frag::{Key as SixlowpanFragKey, Packet as SixlowpanFragPacket, Repr as SixlowpanFragRepr},
+    iphc::{Packet as SixlowpanIphcPacket, Repr as SixlowpanIphcRepr},
+    nhc::{
+        ExtHeaderId as SixlowpanExtHeaderId, ExtHeaderPacket as SixlowpanExtHeaderPacket,
+        ExtHeaderRepr as SixlowpanExtHeaderRepr, NhcPacket as SixlowpanNhcPacket,
+        UdpNhcPacket as SixlowpanUdpNhcPacket, UdpNhcRepr as SixlowpanUdpNhcRepr,
+    },
 };
-
-#[cfg(feature = "proto-dhcpv4")]
-pub use self::dhcpv4::{
-    DhcpOption, DhcpOptionWriter, Flags as DhcpFlags, MessageType as DhcpMessageType,
-    OpCode as DhcpOpCode, Packet as DhcpPacket, Repr as DhcpRepr, CLIENT_PORT as DHCP_CLIENT_PORT,
-    MAX_DNS_SERVER_COUNT as DHCP_MAX_DNS_SERVER_COUNT, SERVER_PORT as DHCP_SERVER_PORT,
+pub use self::{
+    ip::{
+        Address as IpAddress, Cidr as IpCidr, Endpoint as IpEndpoint,
+        ListenEndpoint as IpListenEndpoint, Protocol as IpProtocol, Repr as IpRepr,
+        Version as IpVersion,
+    },
+    pretty_print::PrettyPrinter,
+    tcp::{
+        Control as TcpControl, HEADER_LEN as TCP_HEADER_LEN, Packet as TcpPacket, Repr as TcpRepr,
+        SeqNumber as TcpSeqNumber, TcpOption, TcpTimestampGenerator, TcpTimestampRepr,
+    },
+    udp::{HEADER_LEN as UDP_HEADER_LEN, Packet as UdpPacket, Repr as UdpRepr},
 };
-
-#[cfg(feature = "proto-dns")]
-pub use self::dns::{
-    Flags as DnsFlags, Opcode as DnsOpcode, Packet as DnsPacket, Question as DnsQuestion,
-    Rcode as DnsRcode, Record as DnsRecord, RecordData as DnsRecordData, Repr as DnsRepr,
-    Type as DnsQueryType,
-};
-
-#[cfg(feature = "proto-ipsec-ah")]
-pub use self::ipsec_ah::{Packet as IpSecAuthHeaderPacket, Repr as IpSecAuthHeaderRepr};
-
-#[cfg(feature = "proto-ipsec-esp")]
-pub use self::ipsec_esp::{Packet as IpSecEspPacket, Repr as IpSecEspRepr};
+use crate::phy::Medium;
 
 /// Parsing a packet failed.
 ///
@@ -566,8 +538,9 @@ impl From<HardwareAddress> for RawHardwareAddress {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rstest::rstest;
+
+    use super::*;
 
     #[rstest]
     #[cfg(feature = "medium-ethernet")]

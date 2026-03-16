@@ -1,14 +1,13 @@
-/*! Time structures.
-
-The `time` module contains structures used to represent both
-absolute and relative time.
-
- - [Instant] is used to represent absolute time.
- - [Duration] is used to represent relative time.
-
-[Instant]: struct.Instant.html
-[Duration]: struct.Duration.html
-*/
+//! Time structures.
+//!
+//! The `time` module contains structures used to represent both
+//! absolute and relative time.
+//!
+//! - [Instant] is used to represent absolute time.
+//! - [Duration] is used to represent relative time.
+//!
+//! [Instant]: struct.Instant.html
+//! [Duration]: struct.Duration.html
 
 use core::{fmt, ops};
 

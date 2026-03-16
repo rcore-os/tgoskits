@@ -1,12 +1,16 @@
-use bitflags::bitflags;
-use byteorder::{ByteOrder, NetworkEndian};
 use core::fmt;
 
-use super::{Error, Result};
-use crate::time::Duration;
-use crate::wire::{Ipv6Address, Ipv6AddressExt, Ipv6Packet, Ipv6Repr, MAX_HARDWARE_ADDRESS_LEN};
+use bitflags::bitflags;
+use byteorder::{ByteOrder, NetworkEndian};
 
-use crate::wire::RawHardwareAddress;
+use super::{Error, Result};
+use crate::{
+    time::Duration,
+    wire::{
+        Ipv6Address, Ipv6AddressExt, Ipv6Packet, Ipv6Repr, MAX_HARDWARE_ADDRESS_LEN,
+        RawHardwareAddress,
+    },
+};
 
 enum_with_unknown! {
     /// NDISC Option Type
@@ -634,15 +638,12 @@ impl<T: AsRef<[u8]>> PrettyPrint for NdiscOption<T> {
 #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
 #[cfg(test)]
 mod test {
-    use super::Error;
-    use super::{NdiscOption, PrefixInfoFlags, PrefixInformation, Repr, Type};
-    use crate::time::Duration;
-    use crate::wire::Ipv6Address;
-
+    use super::{Error, NdiscOption, PrefixInfoFlags, PrefixInformation, Repr, Type};
     #[cfg(feature = "medium-ethernet")]
     use crate::wire::EthernetAddress;
     #[cfg(all(not(feature = "medium-ethernet"), feature = "medium-ieee802154"))]
     use crate::wire::Ieee802154Address;
+    use crate::{time::Duration, wire::Ipv6Address};
 
     static PREFIX_OPT_BYTES: [u8; 32] = [
         0x03, 0x04, 0x40, 0xc0, 0x00, 0x00, 0x03, 0x84, 0x00, 0x00, 0x03, 0xe8, 0x00, 0x00, 0x00,

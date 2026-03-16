@@ -61,8 +61,8 @@ impl InterfaceInner {
             #[cfg(not(feature = "proto-sixlowpan-fragmentation"))]
             SixlowpanPacket::FragmentHeader => {
                 net_debug!(
-                    "Fragmentation is not supported, \
-                    use the `proto-sixlowpan-fragmentation` feature to add support."
+                    "Fragmentation is not supported, use the `proto-sixlowpan-fragmentation` \
+                     feature to add support."
                 );
                 return None;
             }
@@ -330,8 +330,8 @@ impl InterfaceInner {
                 let pkt = frag;
                 if pkt.buffer.len() < total_size {
                     net_debug!(
-                        "dispatch_ieee802154: dropping, \
-                        fragmentation buffer is too small, at least {} needed",
+                        "dispatch_ieee802154: dropping, fragmentation buffer is too small, at \
+                         least {} needed",
                         total_size
                     );
                     return;
@@ -870,7 +870,7 @@ mod tests {
             })),
         };
 
-        let (total_size, _, _) = InterfaceInner::compressed_packet_size(&mut ip_packet, &ieee_repr);
+        let (total_size, ..) = InterfaceInner::compressed_packet_size(&mut ip_packet, &ieee_repr);
         let mut buffer = vec![0u8; total_size];
 
         InterfaceInner::ipv6_to_sixlowpan(
@@ -954,7 +954,7 @@ mod tests {
             })),
         };
 
-        let (total_size, _, _) = InterfaceInner::compressed_packet_size(&mut ip_packet, &ieee_repr);
+        let (total_size, ..) = InterfaceInner::compressed_packet_size(&mut ip_packet, &ieee_repr);
         let mut buffer = vec![0u8; total_size];
 
         InterfaceInner::ipv6_to_sixlowpan(

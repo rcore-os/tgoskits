@@ -1,8 +1,9 @@
 macro_rules! def_test_sched {
-    ($name: ident, $scheduler: ty, $task: ty) => {
+    ($name:ident, $scheduler:ty, $task:ty) => {
         mod $name {
-            use crate::*;
             use alloc::sync::Arc;
+
+            use crate::*;
 
             #[test]
             fn test_sched() {

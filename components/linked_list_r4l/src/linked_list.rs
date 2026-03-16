@@ -11,7 +11,7 @@ extern crate alloc;
 use alloc::{boxed::Box, sync::Arc};
 use core::{iter, ptr::NonNull};
 
-use crate::{raw_list, raw_list::RawList, GetLinks, Links};
+use crate::{GetLinks, Links, raw_list, raw_list::RawList};
 
 // TODO: Use the one from `kernel::file_operations::PointerWrapper` instead.
 /// Wraps an object to be inserted in a linked list.

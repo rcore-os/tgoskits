@@ -12,12 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::AxVMCrateConfig;
-use crate::EmulatedDeviceType;
-use crate::VMDevicesConfig;
-use crate::VMInterruptMode;
-use crate::VmMemMappingType;
 use enumerable::Enumerable;
+
+use crate::{
+    AxVMCrateConfig, EmulatedDeviceType, VMDevicesConfig, VMInterruptMode, VmMemMappingType,
+};
 
 #[test]
 fn test_config_deser() {
@@ -203,8 +202,9 @@ fn test_emulated_device_type_removable() {
 
 #[test]
 fn test_emulated_device_type_display() {
-    use crate::EmulatedDeviceType;
     use alloc::format;
+
+    use crate::EmulatedDeviceType;
 
     assert_eq!(format!("{}", EmulatedDeviceType::Dummy), "meta device");
     assert_eq!(

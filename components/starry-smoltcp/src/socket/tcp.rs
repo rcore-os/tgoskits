@@ -2,19 +2,20 @@
 // the parts of RFC 1122 that discuss TCP, as well as RFC 7323 for some of the TCP options.
 // Consult RFC 7414 when implementing a new feature.
 
-use core::fmt::Display;
 #[cfg(feature = "async")]
 use core::task::Waker;
-use core::{fmt, mem};
+use core::{fmt, fmt::Display, mem};
 
 #[cfg(feature = "async")]
 use crate::socket::WakerRegistration;
-use crate::socket::{Context, PollAt};
-use crate::storage::{Assembler, RingBuffer};
-use crate::time::{Duration, Instant};
-use crate::wire::{
-    IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, IpRepr, TcpControl, TcpRepr, TcpSeqNumber,
-    TcpTimestampGenerator, TcpTimestampRepr, TCP_HEADER_LEN,
+use crate::{
+    socket::{Context, PollAt},
+    storage::{Assembler, RingBuffer},
+    time::{Duration, Instant},
+    wire::{
+        IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, IpRepr, TCP_HEADER_LEN, TcpControl,
+        TcpRepr, TcpSeqNumber, TcpTimestampGenerator, TcpTimestampRepr,
+    },
 };
 
 mod congestion;
@@ -979,11 +980,13 @@ impl<'a> Socket<'a> {
     /// #
     /// # let mut iface: Interface = todo!();
     /// #
-    /// socket.connect(
-    ///     iface.context(),
-    ///     (IpAddress::v4(10, 0, 0, 1), 80),
-    ///     get_ephemeral_port()
-    /// ).unwrap();
+    /// socket
+    ///     .connect(
+    ///         iface.context(),
+    ///         (IpAddress::v4(10, 0, 0, 1), 80),
+    ///         get_ephemeral_port(),
+    ///     )
+    ///     .unwrap();
     /// # }
     /// ```
     ///
@@ -1623,7 +1626,7 @@ impl<'a> Socket<'a> {
                 return Some(Self::rst_reply(ip_repr, repr));
             }
             // Anything else in the SYN-SENT state is invalid.
-            (State::SynSent, _, _) => {
+            (State::SynSent, ..) => {
                 net_debug!("expecting a SYN|ACK");
                 return None;
             }
@@ -1684,57 +1687,60 @@ impl<'a> Socket<'a> {
             State::Listen | State::SynSent => (&[][..], 0),
             _ => {
                 // https://www.rfc-editor.org/rfc/rfc9293.html#name-segment-acceptability-tests
-                let segment_in_window = match (
-                    segment_start == segment_end,
-                    window_start == window_end,
-                ) {
-                    (true, _) if segment_end == window_start - 1 => {
-                        net_debug!(
-                            "received a keep-alive or window probe packet, will send an ACK"
-                        );
-                        false
-                    }
-                    (true, true) => {
-                        if window_start == segment_start {
-                            true
-                        } else {
+                let segment_in_window =
+                    match (segment_start == segment_end, window_start == window_end) {
+                        (true, _) if segment_end == window_start - 1 => {
                             net_debug!(
-                                "zero-length segment not inside zero-length window, will send an ACK."
+                                "received a keep-alive or window probe packet, will send an ACK"
                             );
                             false
                         }
-                    }
-                    (true, false) => {
-                        if window_start <= segment_start && segment_start < window_end {
-                            true
-                        } else {
-                            net_debug!("zero-length segment not inside window, will send an ACK.");
-                            false
+                        (true, true) => {
+                            if window_start == segment_start {
+                                true
+                            } else {
+                                net_debug!(
+                                    "zero-length segment not inside zero-length window, will send \
+                                     an ACK."
+                                );
+                                false
+                            }
                         }
-                    }
-                    (false, true) => {
-                        net_debug!(
-                            "non-zero-length segment with zero receive window, will only send an ACK"
-                        );
-                        false
-                    }
-                    (false, false) => {
-                        if (window_start <= segment_start && segment_start < window_end)
-                            || (window_start < segment_end && segment_end <= window_end)
-                        {
-                            true
-                        } else {
+                        (true, false) => {
+                            if window_start <= segment_start && segment_start < window_end {
+                                true
+                            } else {
+                                net_debug!(
+                                    "zero-length segment not inside window, will send an ACK."
+                                );
+                                false
+                            }
+                        }
+                        (false, true) => {
                             net_debug!(
-                                "segment not in receive window ({}..{} not intersecting {}..{}), will send challenge ACK",
-                                segment_start,
-                                segment_end,
-                                window_start,
-                                window_end
+                                "non-zero-length segment with zero receive window, will only send \
+                                 an ACK"
                             );
                             false
                         }
-                    }
-                };
+                        (false, false) => {
+                            if (window_start <= segment_start && segment_start < window_end)
+                                || (window_start < segment_end && segment_end <= window_end)
+                            {
+                                true
+                            } else {
+                                net_debug!(
+                                    "segment not in receive window ({}..{} not intersecting \
+                                     {}..{}), will send challenge ACK",
+                                    segment_start,
+                                    segment_end,
+                                    window_start,
+                                    window_end
+                                );
+                                false
+                            }
+                        }
+                    };
 
                 if segment_in_window {
                     let overlap_start = window_start.max(segment_start);
@@ -1801,7 +1807,12 @@ impl<'a> Socket<'a> {
         // If a FIN is received at the end of the current segment, but
         // we have a hole in the assembler before the current segment, disregard this FIN.
         if control == TcpControl::Fin && window_start < segment_start {
-            tcp_trace!("ignoring FIN because we don't have full data yet. window_start={} segment_start={}", window_start, segment_start);
+            tcp_trace!(
+                "ignoring FIN because we don't have full data yet. window_start={} \
+                 segment_start={}",
+                window_start,
+                segment_start
+            );
             control = TcpControl::None;
         }
 
@@ -2206,7 +2217,7 @@ impl<'a> Socket<'a> {
     fn timed_out(&self, timestamp: Instant) -> bool {
         match (self.remote_last_ts, self.timeout) {
             (Some(remote_last_ts), Some(timeout)) => timestamp >= remote_last_ts + timeout,
-            (_, _) => false,
+            (..) => false,
         }
     }
 
@@ -2684,7 +2695,7 @@ impl<'a> Socket<'a> {
                 // when the timeout would expire.
                 (Some(remote_last_ts), Some(timeout)) => PollAt::Time(remote_last_ts + timeout),
                 // Otherwise we have no timeout.
-                (_, _) => PollAt::Ingress,
+                (..) => PollAt::Ingress,
             };
 
             // We wait for the earliest of our timers to fire.
@@ -2712,10 +2723,13 @@ impl<'a> fmt::Write for Socket<'a> {
 // tests in here, which I didn't had the time for at the moment.
 #[cfg(all(test, feature = "medium-ip"))]
 mod test {
+    use std::{
+        ops::{Deref, DerefMut},
+        vec::Vec,
+    };
+
     use super::*;
     use crate::wire::IpRepr;
-    use std::ops::{Deref, DerefMut};
-    use std::vec::Vec;
 
     // =========================================================================================//
     // Constants
@@ -2975,7 +2989,7 @@ mod test {
     }
 
     fn socket_with_buffer_sizes(tx_len: usize, rx_len: usize) -> TestSocket {
-        let (iface, _, _) = crate::tests::setup(crate::phy::Medium::Ip);
+        let (iface, ..) = crate::tests::setup(crate::phy::Medium::Ip);
 
         let rx_buffer = SocketBuffer::new(vec![0; rx_len]);
         let tx_buffer = SocketBuffer::new(vec![0; tx_len]);

@@ -20,8 +20,9 @@ use memory_addr::{MemoryAddr, PhysAddr, is_aligned_4k};
 use memory_set::{MemoryArea, MemorySet};
 use page_table_multiarch::PagingHandler;
 
-use crate::npt::NestedPageTable as PageTable;
-use crate::{GuestPhysAddr, GuestPhysAddrRange, mapping_err_to_ax_err};
+use crate::{
+    GuestPhysAddr, GuestPhysAddrRange, mapping_err_to_ax_err, npt::NestedPageTable as PageTable,
+};
 
 mod backend;
 
@@ -183,7 +184,7 @@ impl<H: PagingHandler> AddrSpace<H> {
         }
         self.pt
             .query(vaddr)
-            .map(|(phys_addr, _, _)| {
+            .map(|(phys_addr, ..)| {
                 debug!("vaddr {vaddr:?} translate to {phys_addr:?}");
                 phys_addr
             })
@@ -252,7 +253,7 @@ impl<H: PagingHandler> AddrSpace<H> {
         if let Some(area) = self.areas.find(vaddr) {
             self.pt
                 .query(vaddr)
-                .map(|(phys_addr, _, _)| (phys_addr, area.size()))
+                .map(|(phys_addr, ..)| (phys_addr, area.size()))
                 .ok()
         } else {
             None
@@ -278,13 +279,15 @@ impl<H: PagingHandler> Drop for AddrSpace<H> {
 
 #[cfg(test)]
 mod tests {
+    use core::sync::atomic::Ordering;
+
+    use axin::axin;
+
     use super::*;
     use crate::test_utils::{
         ALLOC_COUNT, BASE_PADDR, DEALLOC_COUNT, MEMORY_LEN, MockHal, mock_hal_test,
         test_dealloc_count,
     };
-    use axin::axin;
-    use core::sync::atomic::Ordering;
 
     /// Generate an address space for the test
     fn setup_test_addr_space() -> (AddrSpace<MockHal>, GuestPhysAddr, usize) {

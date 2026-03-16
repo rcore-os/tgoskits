@@ -23,7 +23,7 @@ pub(crate) const SPI_ID_MAX: usize = 512;
 /// Number of GICH List Registers
 pub(crate) const GICH_LR_NUM: usize = 4;
 
-/* GIC Distributor Register Offsets */
+// GIC Distributor Register Offsets
 /// Control Register
 pub(crate) const VGICD_CTLR: usize = 0x0000;
 /// Type Register
@@ -63,7 +63,7 @@ pub(crate) const VGICD_CPENDSGIR_X: usize = 0x0f10;
 /// SGI Set-Pending Registers
 pub(crate) const VGICD_SPENDSGIR_X: usize = 0x0f20;
 
-/* GIC CPU Interface Register Offsets */
+// GIC CPU Interface Register Offsets
 /// CPU Interface Control Register
 pub(crate) const VGICC_CTRL: usize = 0x0000;
 /// Priority Mask Register
@@ -95,7 +95,7 @@ pub(crate) const VGICC_IIDR: usize = 0x00fc;
 /// Deactivate Interrupt Register
 pub(crate) const VGICC_DIR: usize = 0x1000;
 
-/* GIC Virtual Interface Control Register Offsets */
+// GIC Virtual Interface Control Register Offsets
 /// Hypervisor Control Register
 pub(crate) const VGICH_HCR: usize = 0x0000;
 /// VGIC Type Register

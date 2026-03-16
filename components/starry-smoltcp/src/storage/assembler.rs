@@ -151,11 +151,7 @@ impl Assembler {
     /// Return length of the front contiguous range without removing it from the assembler
     pub fn peek_front(&self) -> usize {
         let front = self.front();
-        if front.has_hole() {
-            0
-        } else {
-            front.data_size
-        }
+        if front.has_hole() { 0 } else { front.data_size }
     }
 
     fn back(&self) -> Contig {
@@ -376,8 +372,9 @@ impl<'a> Iterator for AssemblerIter<'a> {
 
 #[cfg(test)]
 mod test {
-    use super::*;
     use std::vec::Vec;
+
+    use super::*;
 
     impl From<Vec<(usize, usize)>> for Assembler {
         fn from(vec: Vec<(usize, usize)>) -> Assembler {
@@ -700,7 +697,7 @@ mod test {
 
         for max_size in [2, 5, 10, 100] {
             for _ in 0..300 {
-                //println!("===");
+                // println!("===");
                 let mut assr = Assembler::new();
                 let mut map = [false; MAX_INDEX];
 
@@ -708,7 +705,7 @@ mod test {
                     let offset = rand::thread_rng().gen_range(0..MAX_INDEX - max_size - 1);
                     let size = rand::thread_rng().gen_range(1..=max_size);
 
-                    //println!("add {}..{} {}", offset, offset + size, size);
+                    // println!("add {}..{} {}", offset, offset + size, size);
                     // Real impl
                     let res = assr.add(offset, size);
 

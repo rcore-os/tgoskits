@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use axaddrspace::{device::AccessWidth, HostPhysAddr};
+use axaddrspace::{HostPhysAddr, device::AccessWidth};
 use axerrno::AxResult;
 
 pub(crate) fn perform_mmio_read(addr: HostPhysAddr, width: AccessWidth) -> AxResult<usize> {

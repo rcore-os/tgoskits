@@ -92,7 +92,6 @@ use axaddrspace::{
     device::{AccessWidth, DeviceAddrRange, PortRange, SysRegAddrRange},
 };
 use axerrno::AxResult;
-
 pub use axvmconfig::EmulatedDeviceType as EmuDeviceType;
 
 /// Represents the configuration of an emulated device for a virtual machine.

@@ -15,7 +15,6 @@
 use core::marker::PhantomData;
 
 use axerrno::{AxResult, ax_err_type};
-
 pub(crate) use memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
 
 use crate::{AxMmHal, HostPhysAddr};
@@ -89,11 +88,13 @@ impl<H: AxMmHal> Drop for PhysFrame<H> {
 
 #[cfg(test)]
 mod test {
-    use super::*;
-    use crate::test_utils::{BASE_PADDR, MockHal, mock_hal_test, test_dealloc_count};
     use alloc::vec::Vec;
+
     use assert_matches::assert_matches;
     use axin::axin;
+
+    use super::*;
+    use crate::test_utils::{BASE_PADDR, MockHal, mock_hal_test, test_dealloc_count};
 
     #[test]
     #[axin(decorator(mock_hal_test), on_exit(test_dealloc_count(1)))]

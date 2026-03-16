@@ -1,10 +1,12 @@
-use byteorder::{ByteOrder, NetworkEndian};
 use core::fmt;
 
+use byteorder::{ByteOrder, NetworkEndian};
+
 use super::{Error, Result};
-use crate::phy::ChecksumCapabilities;
-use crate::wire::ip::checksum;
-use crate::wire::{IpAddress, IpProtocol};
+use crate::{
+    phy::ChecksumCapabilities,
+    wire::{IpAddress, IpProtocol, ip::checksum},
+};
 
 /// A read/write wrapper around an User Datagram Protocol packet buffer.
 #[derive(Debug, PartialEq, Eq, Clone)]

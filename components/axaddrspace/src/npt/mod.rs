@@ -192,6 +192,6 @@ impl<H: PagingHandler> NestedPageTable<H> {
 
     /// Translates a virtual address to a physical address.
     pub fn translate(&self, vaddr: crate::GuestPhysAddr) -> Option<crate::HostPhysAddr> {
-        self.query(vaddr).ok().map(|(paddr, _, _)| paddr)
+        self.query(vaddr).ok().map(|(paddr, ..)| paddr)
     }
 }

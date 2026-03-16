@@ -1,5 +1,6 @@
-use anyhow::{Context, bail};
 use std::{path::Path, process::Command};
+
+use anyhow::{Context, bail};
 
 pub fn run_test(target: &str) -> anyhow::Result<()> {
     if target.contains("aarch64") {

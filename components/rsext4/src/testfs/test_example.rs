@@ -1,8 +1,9 @@
-use crate::ext4_backend::loopfile::get_file_inode;
+use std::io::{Read, Write};
+
 use rsext4::*;
-use std::io::Read;
-use std::io::Write;
-//mkfs
+
+use crate::ext4_backend::loopfile::get_file_inode;
+// mkfs
 pub fn _test_mkfs<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>) {
     mkfs(block_dev).expect("File system mount failed panic!");
 }
@@ -12,7 +13,7 @@ pub fn _test_base_io<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4Fi
     mkdir(block_dev, fs, "/test_dir/");
     // 大文件测试：写入 + 读取 吞吐量
     let big_file_mib: usize = if cfg!(target_pointer_width = "64") {
-        //prevent overflow
+        // prevent overflow
         println!("64-bits Machine Detected!");
         1024 // 1024 MiB for 64-bit
     } else {
@@ -27,7 +28,7 @@ pub fn _test_base_io<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4Fi
         let file_name = format!("/test_dir/test_file:{i}");
         mkfile(block_dev, fs, &file_name, Some(&test_big_file), None);
     }
-    //数据实际落盘
+    // 数据实际落盘
     fs.datablock_cache
         .flush_all(block_dev)
         .expect("Bitmap Flsuh failed!");
@@ -46,7 +47,8 @@ pub fn _test_base_io<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4Fi
         0.0
     };
     println!(
-        "大文件写入: total={write_mib:.2} MiB, time={write_secs:.3} s, speed={write_mib_s:.2} MiB/s"
+        "大文件写入: total={write_mib:.2} MiB, time={write_secs:.3} s, speed={write_mib_s:.2} \
+         MiB/s"
     );
 
     // 读取吞吐量测试：依次读回刚才写入的几个大文件
@@ -91,7 +93,8 @@ pub fn _test_base_io<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4Fi
         0.0
     };
     println!(
-        "[HOST FS] 写入: total={host_write_mib:.2} MiB, time={host_write_secs:.3} s, speed={host_write_mib_s:.2} MiB/s"
+        "[HOST FS] 写入: total={host_write_mib:.2} MiB, time={host_write_secs:.3} s, \
+         speed={host_write_mib_s:.2} MiB/s"
     );
 
     // 宿主机读取
@@ -111,7 +114,8 @@ pub fn _test_base_io<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4Fi
         0.0
     };
     println!(
-        "[HOST FS] 读取: total={host_read_mib:.2} MiB, time={host_read_secs:.3} s, speed={host_read_mib_s:.2} MiB/s"
+        "[HOST FS] 读取: total={host_read_mib:.2} MiB, time={host_read_secs:.3} s, \
+         speed={host_read_mib_s:.2} MiB/s"
     );
 }
 
@@ -447,7 +451,7 @@ pub fn test_mv<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4FileSyst
 
 /// 文件写入测试
 pub fn test_normal_apiuse<B: BlockDevice>(block_dev: &mut Jbd2Dev<B>, fs: &mut Ext4FileSystem) {
-    //make many file and dir
+    // make many file and dir
     mkdir(block_dev, fs, "/test/hello");
     let test_big_file: Vec<u8> = vec![b'g'; 1024 * 1024 * 20]; // 20MB
     for idx in 0..10 {

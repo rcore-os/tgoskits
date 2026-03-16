@@ -8,19 +8,19 @@ use alloc::{
     vec,
     vec::Vec,
 };
-use bitflags::bitflags;
 use core::{
     any::{Any, TypeId},
     fmt, iter,
     ops::Deref,
     task::Context,
 };
-use smallvec::SmallVec;
 
 use axpoll::{IoEvents, Pollable};
+use bitflags::bitflags;
 pub use dir::*;
 pub use file::*;
 use inherit_methods_macro::inherit_methods;
+use smallvec::SmallVec;
 
 use crate::{
     FilesystemOps, Metadata, MetadataUpdate, Mutex, MutexGuard, NodeType, VfsError, VfsResult,

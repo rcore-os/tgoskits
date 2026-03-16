@@ -1,6 +1,5 @@
-use crate::time::Instant;
-
 use super::RttEstimator;
+use crate::time::Instant;
 
 pub(super) mod no_control;
 

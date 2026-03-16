@@ -1,12 +1,14 @@
 mod utils;
 
-use smoltcp::iface::{Config, Interface, SocketSet};
-use smoltcp::phy::Device;
-use smoltcp::phy::{wait as phy_wait, Medium};
-use smoltcp::socket::dns::{self, GetQueryResultError};
-use smoltcp::time::Instant;
-use smoltcp::wire::{DnsQueryType, EthernetAddress, IpAddress, IpCidr, Ipv4Address, Ipv6Address};
 use std::os::unix::io::AsRawFd;
+
+use smoltcp::{
+    iface::{Config, Interface, SocketSet},
+    phy::{Device, Medium, wait as phy_wait},
+    socket::dns::{self, GetQueryResultError},
+    time::Instant,
+    wire::{DnsQueryType, EthernetAddress, IpAddress, IpCidr, Ipv4Address, Ipv6Address},
+};
 
 fn main() {
     utils::setup_logging("warn");
@@ -20,7 +22,7 @@ fn main() {
     let device = utils::parse_tuntap_options(&mut matches);
     let fd = device.as_raw_fd();
     let mut device =
-        utils::parse_middleware_options(&mut matches, device, /*loopback=*/ false);
+        utils::parse_middleware_options(&mut matches, device, /* loopback= */ false);
     let name = &matches.free[0];
 
     // Create interface

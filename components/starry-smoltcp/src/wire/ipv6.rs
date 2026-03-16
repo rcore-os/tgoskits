@@ -1,12 +1,12 @@
 #![deny(missing_docs)]
 
-use byteorder::{ByteOrder, NetworkEndian};
 use core::fmt;
 
-use super::{Error, Result};
-use crate::wire::ip::pretty_print_ip_payload;
+use byteorder::{ByteOrder, NetworkEndian};
 
 pub use super::IpProtocol as Protocol;
+use super::{Error, Result};
+use crate::wire::ip::pretty_print_ip_payload;
 
 /// Minimum MTU required of all links supporting IPv6. See [RFC 8200 § 5].
 ///
@@ -45,19 +45,19 @@ pub const LINK_LOCAL_ALL_RPL_NODES: Address = Address::new(0xff02, 0, 0, 0, 0, 0
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MulticastScope {
     /// Interface Local scope
-    InterfaceLocal = 0x1,
+    InterfaceLocal    = 0x1,
     /// Link local scope
-    LinkLocal = 0x2,
+    LinkLocal         = 0x2,
     /// Administratively configured
-    AdminLocal = 0x4,
+    AdminLocal        = 0x4,
     /// Single site scope
-    SiteLocal = 0x5,
+    SiteLocal         = 0x5,
     /// Organization scope
     OrganizationLocal = 0x8,
     /// Global scope
-    Global = 0xE,
+    Global            = 0xE,
     /// Unknown scope
-    Unknown = 0xFF,
+    Unknown           = 0xFF,
 }
 
 impl From<u8> for MulticastScope {
@@ -784,11 +784,15 @@ pub(crate) mod test {
         );
         assert_eq!(
             addr.mask(128),
-            [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+            [
+                0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1
+            ]
         );
         assert_eq!(
             addr.mask(127),
-            [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            [
+                0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+            ]
         );
     }
 

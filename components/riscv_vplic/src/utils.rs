@@ -2,9 +2,10 @@
 //!
 //! Internal helper functions for performing memory-mapped I/O operations.
 
-use axaddrspace::{device::AccessWidth, HostPhysAddr};
-use axerrno::AxResult;
 use core::result::Result::Ok;
+
+use axaddrspace::{HostPhysAddr, device::AccessWidth};
+use axerrno::AxResult;
 
 /// Performs a volatile MMIO read operation.
 pub(crate) fn perform_mmio_read(addr: HostPhysAddr, width: AccessWidth) -> AxResult<usize> {

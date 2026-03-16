@@ -20,6 +20,7 @@
 //! ref: <https://github.com/luojia65/zihai/blob/main/zihai/src/detect.rs>
 
 use core::arch::{asm, naked_asm};
+
 use riscv::{
     interrupt::{Exception, Interrupt, Trap},
     register::{

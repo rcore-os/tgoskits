@@ -74,8 +74,9 @@ impl PartialEq for SequenceCounter {
 
 impl PartialOrd for SequenceCounter {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        use super::consts::SEQUENCE_WINDOW;
         use core::cmp::Ordering;
+
+        use super::consts::SEQUENCE_WINDOW;
 
         let a = self.value() as usize;
         let b = other.value() as usize;

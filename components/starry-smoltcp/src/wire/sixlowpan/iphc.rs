@@ -3,11 +3,12 @@
 //!
 //! [RFC 6282 § 3.1]: https://datatracker.ietf.org/doc/html/rfc6282#section-3.1
 
-use super::{
-    AddressContext, AddressMode, Error, NextHeader, Result, UnresolvedAddress, DISPATCH_IPHC_HEADER,
-};
-use crate::wire::{ieee802154::Address as LlAddress, ipv6, ipv6::AddressExt, IpProtocol};
 use byteorder::{ByteOrder, NetworkEndian};
+
+use super::{
+    AddressContext, AddressMode, DISPATCH_IPHC_HEADER, Error, NextHeader, Result, UnresolvedAddress,
+};
+use crate::wire::{IpProtocol, ieee802154::Address as LlAddress, ipv6, ipv6::AddressExt};
 
 mod field {
     use crate::wire::field::*;
@@ -757,7 +758,7 @@ impl Repr {
         len += 2; // The minimal header length
 
         len += match self.next_header {
-            NextHeader::Compressed => 0, // The next header is compressed (we don't need to inline what the next header is)
+            NextHeader::Compressed => 0, /* The next header is compressed (we don't need to inline what the next header is) */
             NextHeader::Uncompressed(_) => 1, // The next header field is inlined
         };
 

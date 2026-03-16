@@ -264,8 +264,7 @@ fn test_echo_request_sixlowpan_128_bytes() {
 #[test]
 #[cfg(feature = "proto-sixlowpan-fragmentation")]
 fn test_sixlowpan_udp_with_fragmentation() {
-    use crate::phy::Checksum;
-    use crate::socket::udp;
+    use crate::{phy::Checksum, socket::udp};
 
     let mut ieee802154_repr = Ieee802154Repr {
         frame_type: Ieee802154FrameType::Data,

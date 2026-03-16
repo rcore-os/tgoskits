@@ -51,9 +51,9 @@ pub enum VCpuState {
     /// Initial state after VCpu creation, not yet initialized
     Created = 1,
     /// VCpu is initialized and ready to be bound to a physical CPU
-    Free = 2,
+    Free    = 2,
     /// VCpu is bound to a physical CPU and ready for execution
-    Ready = 3,
+    Ready   = 3,
     /// VCpu is currently executing on a physical CPU
     Running = 4,
     /// VCpu execution is blocked (waiting for I/O, etc.)

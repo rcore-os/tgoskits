@@ -1,12 +1,15 @@
 use core::result::Result;
+
 use heapless::{LinearMap, Vec};
 
-#[cfg(any(feature = "proto-ipv4", feature = "proto-ipv6"))]
-use super::{check, IpPayload, Packet};
 use super::{Interface, InterfaceInner};
-use crate::config::{IFACE_MAX_ADDR_COUNT, IFACE_MAX_MULTICAST_GROUP_COUNT};
-use crate::phy::{Device, PacketMeta};
-use crate::wire::*;
+#[cfg(any(feature = "proto-ipv4", feature = "proto-ipv6"))]
+use super::{IpPayload, Packet, check};
+use crate::{
+    config::{IFACE_MAX_ADDR_COUNT, IFACE_MAX_MULTICAST_GROUP_COUNT},
+    phy::{Device, PacketMeta},
+    wire::*,
+};
 
 /// Error type for `join_multicast_group`, `leave_multicast_group`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

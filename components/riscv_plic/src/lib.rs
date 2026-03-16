@@ -3,8 +3,7 @@
 
 #![no_std]
 
-use core::num::NonZeroU32;
-use core::ptr::NonNull;
+use core::{num::NonZeroU32, ptr::NonNull};
 
 use tock_registers::{
     fields::Field,

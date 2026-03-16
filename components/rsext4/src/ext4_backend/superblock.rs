@@ -1,12 +1,16 @@
-use crate::RSEXT4Error;
-use crate::ext4_backend::checksum::ext4_superblock_csum32;
-use crate::ext4_backend::checksum::ext4_update_superblock_checksum;
-use crate::ext4_backend::config::*;
-use crate::ext4_backend::crc32c::crc32c::ext4_superblock_has_metadata_csum;
-use crate::ext4_backend::endian::*;
-use crate::ext4_backend::jbd2::jbdstruct::*;
 use log::error;
-///UUID
+
+use crate::{
+    RSEXT4Error,
+    ext4_backend::{
+        checksum::{ext4_superblock_csum32, ext4_update_superblock_checksum},
+        config::*,
+        crc32c::crc32c::ext4_superblock_has_metadata_csum,
+        endian::*,
+        jbd2::jbdstruct::*,
+    },
+};
+/// UUID
 pub struct UUID(pub [u32; 4]);
 
 /// Ext4 超级块结构
@@ -90,7 +94,7 @@ pub struct Ext4Superblock {
     // 0x170 - Flexible Block Groups
     pub s_log_groups_per_flex: u8,      // 弹性块组大小
     pub s_checksum_type: u8,            // 元数据校验和算法类型
-    pub s_encryption_level: u8,         //加密版本
+    pub s_encryption_level: u8,         // 加密版本
     pub s_reserved_pad: u8,             // 填充
     pub s_kbytes_written: u64,          // 生命周期写入的KB数
     pub s_snapshot_inum: u32,           // 活动快照的inode号
@@ -191,7 +195,7 @@ impl Default for Ext4Superblock {
             s_journal_dev: 0,
             s_last_orphan: 0,
             s_hash_seed: [0; 4],
-            s_def_hash_version: 1, //默认Legacy版本
+            s_def_hash_version: 1, // 默认Legacy版本
             s_jnl_backup_type: 0,
             s_desc_size: 0,
             s_default_mount_opts: 0,

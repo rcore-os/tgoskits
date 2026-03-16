@@ -1,6 +1,6 @@
-use crate::ext4_backend::config::*;
-use crate::ext4_backend::endian::*;
 use alloc::vec::Vec;
+
+use crate::ext4_backend::{config::*, endian::*};
 /// Ext4 目录条目结构（传统格式）
 /// 用于ext3/ext4的线性目录条目格式
 #[repr(C)]
@@ -28,7 +28,7 @@ pub struct Ext4DirEntry2 {
 }
 
 impl Ext4DirEntry2 {
-    ///构造函数
+    /// 构造函数
     pub fn new(inode_num: u32, rec_len: u16, file_type: u8, name: &[u8]) -> Self {
         let mut name_buf = [0u8; DIRNAME_LEN];
         let len = core::cmp::min(
@@ -113,8 +113,8 @@ impl Ext4DirEntryTail {
 pub struct Ext4DxRoot {
     pub dot: Ext4DirEntry2,    // "." 条目
     pub dotdot: Ext4DirEntry2, // ".." 条目
-    pub info: Ext4DxRootInfo,  // 根信息
-                               // 后面跟着Ext4DxEntry数组
+    pub info: Ext4DxRootInfo,  /* 根信息
+                                * 后面跟着Ext4DxEntry数组 */
 }
 
 /// HTree根节点信息
@@ -164,8 +164,8 @@ pub struct Ext4DxCountlimit {
 #[derive(Debug)]
 pub struct Ext4DxNode {
     pub fake: Ext4DirEntry2, // 伪造的目录条目
-    pub countlimit: Ext4DxCountlimit, // 计数和限制
-                             // 后面跟着Ext4DxEntry数组
+    pub countlimit: Ext4DxCountlimit, /* 计数和限制
+                              * 后面跟着Ext4DxEntry数组 */
 }
 
 /// Extent状态树的叶子节点

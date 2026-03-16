@@ -38,20 +38,19 @@
 //! # Teardown
 //!
 //!     rmmod mac802154_hwsim
-//!
 
 mod utils;
 
-use log::debug;
-use std::os::unix::io::AsRawFd;
-use std::str;
+use std::{os::unix::io::AsRawFd, str};
 
-use smoltcp::iface::{Config, Interface, SocketSet};
-use smoltcp::phy::{wait as phy_wait, Device, Medium, RawSocket};
-use smoltcp::socket::tcp;
-use smoltcp::socket::udp;
-use smoltcp::time::Instant;
-use smoltcp::wire::{EthernetAddress, Ieee802154Address, Ieee802154Pan, IpAddress, IpCidr};
+use log::debug;
+use smoltcp::{
+    iface::{Config, Interface, SocketSet},
+    phy::{Device, Medium, RawSocket, wait as phy_wait},
+    socket::{tcp, udp},
+    time::Instant,
+    wire::{EthernetAddress, Ieee802154Address, Ieee802154Pan, IpAddress, IpCidr},
+};
 
 fn main() {
     utils::setup_logging("");
@@ -64,7 +63,7 @@ fn main() {
     let device = RawSocket::new("wpan1", Medium::Ieee802154).unwrap();
     let fd = device.as_raw_fd();
     let mut device =
-        utils::parse_middleware_options(&mut matches, device, /*loopback=*/ false);
+        utils::parse_middleware_options(&mut matches, device, /* loopback= */ false);
 
     // Create interface
     let mut config = match device.capabilities().medium {

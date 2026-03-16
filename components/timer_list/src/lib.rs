@@ -4,8 +4,10 @@
 extern crate alloc;
 
 use alloc::{boxed::Box, collections::BinaryHeap};
-use core::cmp::{Ord, Ordering, PartialOrd};
-use core::time::Duration;
+use core::{
+    cmp::{Ord, Ordering, PartialOrd},
+    time::Duration,
+};
 
 /// The type of the time value.
 ///
@@ -128,9 +130,10 @@ impl TimerEvent for TimerEventFn {
 
 #[cfg(test)]
 mod tests {
-    use super::{TimeValue, TimerEvent, TimerEventFn, TimerList};
     use core::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
+
+    use super::{TimeValue, TimerEvent, TimerEventFn, TimerList};
 
     #[test]
     fn test_timer_list() {

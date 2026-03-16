@@ -1,8 +1,6 @@
 use super::*;
-
 #[cfg(feature = "socket-dns")]
 use crate::socket::dns::Socket as DnsSocket;
-
 #[cfg(feature = "socket-udp")]
 use crate::socket::udp::Socket as UdpSocket;
 

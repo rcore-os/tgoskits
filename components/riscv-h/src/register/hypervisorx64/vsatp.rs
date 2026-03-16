@@ -88,7 +88,7 @@ clear!(0x280);
 #[repr(usize)]
 pub enum HgatpValues {
     /// Bare
-    Bare = 0,
+    Bare   = 0,
     /// Supervisor Virtual Address Translation (SV39)
     Sv39x4 = 8,
     /// Supervisor Virtual Address Translation (SV48)

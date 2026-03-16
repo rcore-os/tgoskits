@@ -1,14 +1,18 @@
 mod utils;
 
-use log::debug;
-use std::os::unix::io::AsRawFd;
-use std::str::{self, FromStr};
+use std::{
+    os::unix::io::AsRawFd,
+    str::{self, FromStr},
+};
 
-use smoltcp::iface::{Config, Interface, SocketSet};
-use smoltcp::phy::{wait as phy_wait, Device, Medium};
-use smoltcp::socket::tcp;
-use smoltcp::time::Instant;
-use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr, Ipv4Address, Ipv6Address};
+use log::debug;
+use smoltcp::{
+    iface::{Config, Interface, SocketSet},
+    phy::{Device, Medium, wait as phy_wait},
+    socket::tcp,
+    time::Instant,
+    wire::{EthernetAddress, IpAddress, IpCidr, Ipv4Address, Ipv6Address},
+};
 
 fn main() {
     utils::setup_logging("");
@@ -24,7 +28,7 @@ fn main() {
 
     let fd = device.as_raw_fd();
     let mut device =
-        utils::parse_middleware_options(&mut matches, device, /*loopback=*/ false);
+        utils::parse_middleware_options(&mut matches, device, /* loopback= */ false);
     let address = IpAddress::from_str(&matches.free[0]).expect("invalid address format");
     let port = u16::from_str(&matches.free[1]).expect("invalid port format");
 

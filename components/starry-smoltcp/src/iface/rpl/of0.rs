@@ -1,5 +1,4 @@
-use super::parents::*;
-use super::rank::Rank;
+use super::{parents::*, rank::Rank};
 
 pub struct ObjectiveFunction0;
 
@@ -53,9 +52,8 @@ impl ObjectiveFunction for ObjectiveFunction0 {
 
 #[cfg(test)]
 mod tests {
-    use crate::iface::rpl::consts::DEFAULT_MIN_HOP_RANK_INCREASE;
-
     use super::*;
+    use crate::iface::rpl::consts::DEFAULT_MIN_HOP_RANK_INCREASE;
 
     #[test]
     fn rank_increase() {

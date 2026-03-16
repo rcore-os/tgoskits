@@ -8,17 +8,12 @@ mod sixlowpan;
 #[allow(unused)]
 use std::vec::Vec;
 
-use crate::tests::setup;
-
 use rstest::*;
 
 use super::*;
-
-use crate::iface::Interface;
-use crate::phy::ChecksumCapabilities;
 #[cfg(feature = "alloc")]
 use crate::phy::Loopback;
-use crate::time::Instant;
+use crate::{iface::Interface, phy::ChecksumCapabilities, tests::setup, time::Instant};
 
 #[allow(unused)]
 fn fill_slice(s: &mut [u8], val: u8) {
@@ -68,8 +63,7 @@ fn test_new_panic() {
 #[case::ieee802154(Medium::Ieee802154)]
 #[cfg(feature = "medium-ieee802154")]
 fn test_handle_udp_broadcast(#[case] medium: Medium) {
-    use crate::socket::udp;
-    use crate::wire::IpEndpoint;
+    use crate::{socket::udp, wire::IpEndpoint};
 
     static UDP_PAYLOAD: [u8; 5] = [0x48, 0x65, 0x6c, 0x6c, 0x6f];
 

@@ -31,10 +31,10 @@ mod sbi_console;
 mod trap;
 mod vcpu;
 
-pub use self::percpu::RISCVPerCpu;
-pub use self::vcpu::RISCVVCpu;
 pub use detect::detect_h_extension as has_hardware_support;
 pub use regs::GprIndex;
+
+pub use self::{percpu::RISCVPerCpu, vcpu::RISCVVCpu};
 
 /// Extension ID for hypercall, defined by ourselves.
 /// `0x48`, `0x56`, `0x43` is "HVC" in ASCII.

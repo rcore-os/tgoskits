@@ -1,11 +1,12 @@
-use byteorder::{ByteOrder, NetworkEndian};
 use core::fmt;
 
-use super::{Error, Result};
-use crate::time::Duration;
-use crate::wire::ip::checksum;
+use byteorder::{ByteOrder, NetworkEndian};
 
-use crate::wire::{Ipv4Address, Ipv4AddressExt};
+use super::{Error, Result};
+use crate::{
+    time::Duration,
+    wire::{Ipv4Address, Ipv4AddressExt, ip::checksum},
+};
 
 enum_with_unknown! {
     /// Internet Group Management Protocol v1/v2 message version/type.
@@ -341,7 +342,8 @@ impl fmt::Display for Repr {
                 version,
             } => write!(
                 f,
-                "IGMP membership query max_resp_time={max_resp_time} group_addr={group_addr} version={version:?}"
+                "IGMP membership query max_resp_time={max_resp_time} group_addr={group_addr} \
+                 version={version:?}"
             ),
             Repr::MembershipReport {
                 group_addr,

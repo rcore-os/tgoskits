@@ -122,9 +122,9 @@ macro_rules! __def_node_internal {
 /// # Example
 ///
 /// ```rust
-/// use linked_list_r4l::{def_node, List};
+/// use linked_list_r4l::{List, def_node};
 ///
-/// def_node!{
+/// def_node! {
 ///     /// An example Node with usize
 ///     struct ExampleNode(usize);
 ///     /// An example Node with generic Inner type and pub(crate)
@@ -135,12 +135,12 @@ macro_rules! __def_node_internal {
 ///
 /// let node1 = Box::new(ExampleNode::new(0));
 /// let node2 = Box::new(ExampleNode::new(1));
-/// let mut list =  List::<Box<ExampleNode>>::new();
+/// let mut list = List::<Box<ExampleNode>>::new();
 ///
 /// list.push_back(node1);
 /// list.push_back(node2);
 ///
-/// for (i,e) in list.iter().enumerate() {
+/// for (i, e) in list.iter().enumerate() {
 ///     assert!(*e.inner() == i);
 /// }
 ///
@@ -154,16 +154,15 @@ macro_rules! __def_node_internal {
 /// let node1 = Box::new(GenericNode::new(0));
 /// let node2 = Box::new(GenericNode::new(1));
 ///
-/// let mut list =  List::<Box<GenericNode<usize>>>::new();
+/// let mut list = List::<Box<GenericNode<usize>>>::new();
 ///
 /// list.push_back(node1);
 /// list.push_back(node2);
 ///
-/// for (i,e) in list.iter().enumerate() {
+/// for (i, e) in list.iter().enumerate() {
 ///     assert!(*e.inner() == i);
 /// }
 /// ```
-///
 #[macro_export(local_inner_macros)]
 macro_rules! def_node {
     ($(#[$meta:meta])* $vis:vis struct $name:ident($type:ty); $($t:tt)*) => {

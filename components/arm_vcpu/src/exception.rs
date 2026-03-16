@@ -12,16 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::TrapFrame;
-use crate::exception_utils::{
-    exception_class, exception_class_value, exception_data_abort_access_is_write,
-    exception_data_abort_access_reg, exception_data_abort_access_reg_width,
-    exception_data_abort_access_width, exception_data_abort_handleable,
-    exception_data_abort_is_permission_fault, exception_data_abort_is_translate_fault,
-    exception_esr, exception_fault_addr, exception_next_instruction_step, exception_sysreg_addr,
-    exception_sysreg_direction_write, exception_sysreg_gpr,
-};
-
 use aarch64_cpu::registers::{ESR_EL2, HCR_EL2, Readable, SCTLR_EL1, VTCR_EL2, VTTBR_EL2};
 use axaddrspace::{
     GuestPhysAddr,
@@ -30,6 +20,18 @@ use axaddrspace::{
 use axerrno::{AxError, AxResult};
 use axvcpu::AxVCpuExitReason;
 use log::error;
+
+use crate::{
+    TrapFrame,
+    exception_utils::{
+        exception_class, exception_class_value, exception_data_abort_access_is_write,
+        exception_data_abort_access_reg, exception_data_abort_access_reg_width,
+        exception_data_abort_access_width, exception_data_abort_handleable,
+        exception_data_abort_is_permission_fault, exception_data_abort_is_translate_fault,
+        exception_esr, exception_fault_addr, exception_next_instruction_step,
+        exception_sysreg_addr, exception_sysreg_direction_write, exception_sysreg_gpr,
+    },
+};
 
 numeric_enum_macro::numeric_enum! {
 #[repr(u8)]
@@ -84,7 +86,6 @@ core::arch::global_asm!(
 /// If an unhandled exception class is encountered, the function will panic, outputting
 /// details about the exception including the instruction pointer, faulting address, exception
 /// syndrome register (ESR), and system control registers.
-///
 pub fn handle_exception_sync(ctx: &mut TrapFrame) -> AxResult<AxVCpuExitReason> {
     match exception_class() {
         Some(ESR_EL2::EC::Value::DataAbortLowerEL) => {
@@ -145,7 +146,7 @@ fn handle_data_abort(context_frame: &mut TrapFrame) -> AxResult<AxVCpuExitReason
     let addr = exception_fault_addr()?;
     let access_width = exception_data_abort_access_width();
     let is_write = exception_data_abort_access_is_write();
-    //let sign_ext = exception_data_abort_access_is_sign_ext();
+    // let sign_ext = exception_data_abort_access_is_sign_ext();
     let reg = exception_data_abort_access_reg();
     let reg_width = exception_data_abort_access_reg_width();
 
@@ -362,7 +363,7 @@ unsafe extern "C" fn vmexit_trampoline() -> ! {
         "ldr x10, [x9]", // Get `host_stack_top` value from `&Aarch64VCpu.host_stack_top`.
         "mov sp, x10",   // Set `sp` as the host stack top.
         restore_regs_from_stack!(), // Restore host function context frame.
-        "ret", // Control flow is handed back to Aarch64VCpu.run(), simulating the normal return of the `run_guest` function.
+        "ret", /* Control flow is handed back to Aarch64VCpu.run(), simulating the normal return of the `run_guest` function. */
     )
 }
 

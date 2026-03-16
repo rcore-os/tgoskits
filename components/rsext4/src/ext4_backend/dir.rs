@@ -1,23 +1,26 @@
-//创建文件夹功能模块
+// 创建文件夹功能模块
 
-use crate::alloc::string::ToString;
-use crate::ext4_backend::blockdev::*;
-use crate::ext4_backend::checksum::ext4_update_dirblock_tail_checksum;
-use crate::ext4_backend::checksum::update_ext4_dirblock_csum32;
-use crate::ext4_backend::config::*;
-use crate::ext4_backend::crc32c::crc32c::ext4_superblock_has_metadata_csum;
-use crate::ext4_backend::disknode::*;
-use crate::ext4_backend::endian::*;
-use crate::ext4_backend::entries::*;
-use crate::ext4_backend::error::*;
-use crate::ext4_backend::ext4::*;
-use crate::ext4_backend::extents_tree::*;
-use crate::ext4_backend::file::*;
-use crate::ext4_backend::loopfile::*;
-use alloc::string::String;
-use alloc::vec::Vec;
-use log::debug;
-use log::error;
+use alloc::{string::String, vec::Vec};
+
+use log::{debug, error};
+
+use crate::{
+    alloc::string::ToString,
+    ext4_backend::{
+        blockdev::*,
+        checksum::{ext4_update_dirblock_tail_checksum, update_ext4_dirblock_csum32},
+        config::*,
+        crc32c::crc32c::ext4_superblock_has_metadata_csum,
+        disknode::*,
+        endian::*,
+        entries::*,
+        error::*,
+        ext4::*,
+        extents_tree::*,
+        file::*,
+        loopfile::*,
+    },
+};
 
 #[derive(Debug)]
 pub enum FileError {
@@ -27,9 +30,9 @@ pub enum FileError {
     FileNotFound,
 }
 
-///合法化路径：去掉重复的 '/'
+/// 合法化路径：去掉重复的 '/'
 pub fn split_paren_child_and_tranlatevalid(pat: &str) -> String {
-    //去掉重复///类型和中间空路径
+    // 去掉重复///类型和中间空路径
     let mut last_c = '\0';
     let mut result_s = String::new();
     for ch in pat.chars() {
@@ -208,7 +211,7 @@ pub fn insert_dir_entry<B: BlockDevice>(
                 let rec_len = u16::from_le_bytes([data[offset + 4], data[offset + 5]]) as usize;
                 let rec_type = data[offset + 7];
                 if rec_len < 8 {
-                    //代表扫描到空洞或者无效条目
+                    // 代表扫描到空洞或者无效条目
                     return;
                 }
                 let entry_end = offset + rec_len;
@@ -315,7 +318,7 @@ pub fn insert_dir_entry<B: BlockDevice>(
     let new_size = total_size + block_bytes;
     parent_inode.i_size_lo = new_size as u32;
     parent_inode.i_size_high = ((new_size as u64) >> 32) as u32;
-    //fix:extend元数据也会占block，不能仅仅靠现有blocks_count计算，需要考虑extent树的开销
+    // fix:extend元数据也会占block，不能仅仅靠现有blocks_count计算，需要考虑extent树的开销
     let cur = parent_inode.blocks_count();
     let add_sectors = (BLOCK_SIZE as u64 / 512) as u64;
     let newv = cur.saturating_add(add_sectors);
@@ -609,7 +612,7 @@ pub fn mkdir_with_ino<B: BlockDevice>(
 
     // 写新目录 inode（单块目录，按特性选择 extent 或直接块）
     let (group_idx, _idx) = fs.inode_allocator.global_to_group(new_dir_ino);
-    //仅仅的视图，修改过后的
+    // 仅仅的视图，修改过后的
 
     let mut inode_pre = fs
         .get_inode_by_num(device, new_dir_ino)
@@ -627,7 +630,7 @@ pub fn mkdir_with_ino<B: BlockDevice>(
             inode.i_dtime = 0;
             inode.i_flags |= inode_pre.i_flags
 
-            //由于借用冲突，暂时先把mapping移步到外面
+            // 由于借用冲突，暂时先把mapping移步到外面
         })
         .is_err()
     {
@@ -638,7 +641,7 @@ pub fn mkdir_with_ino<B: BlockDevice>(
         return None;
     }
 
-    //更新父目录的i_links_count+1
+    // 更新父目录的i_links_count+1
     {
         let _ = fs.modify_inode(device, parent_ino_num, |inode| {
             inode.i_links_count = inode.i_links_count.saturating_add(1);
@@ -743,7 +746,7 @@ pub fn create_root_directory_entry<B: BlockDevice>(
         update_ext4_dirblock_csum32(&fs.superblock, root_inode_num, root_gen, data);
     }
 
-    //仅仅的视图，修改过后的
+    // 仅仅的视图，修改过后的
     let root_inode_num = fs.root_inode;
     let mut inode_pre = fs
         .get_inode_by_num(block_dev, root_inode_num)
@@ -763,7 +766,7 @@ pub fn create_root_directory_entry<B: BlockDevice>(
         inode.i_extra_isize = 32; // TODO, 保证目前高hi checksum也能正常工作，先预留32字节的extra_isize
     })?;
 
-    //块组描述符更新 目录数
+    // 块组描述符更新 目录数
     if let Some(desc) = fs.get_group_desc_mut(0) {
         let newc = desc.used_dirs_count().saturating_add(1);
         desc.bg_used_dirs_count_lo = (newc & 0xFFFF) as u16;
@@ -861,7 +864,7 @@ pub fn create_lost_found_directory<B: BlockDevice>(
     //  写 lost+found inode
     let (lf_group, _idx) = fs.inode_allocator.global_to_group(lost_ino);
 
-    //仅仅的视图，修改过后的
+    // 仅仅的视图，修改过后的
     let mut inode_pre = fs
         .get_inode_by_num(block_dev, lost_ino)
         .expect("Can't getinode");
@@ -891,7 +894,7 @@ pub fn create_lost_found_directory<B: BlockDevice>(
 
     //  更新根目录数据块：加入 lost+found 目录项
 
-    //这里也需要根据extend来解析
+    // 这里也需要根据extend来解析
     let mut root_inode = fs.get_root(block_dev)?;
     let root_block = resolve_inode_block(block_dev, &mut root_inode, 0)?
         .expect("lost+found logical_block can't map to physical blcok!");

@@ -1,6 +1,9 @@
-use crate::phy::{self, Device, DeviceCapabilities};
-use crate::time::Instant;
 use alloc::vec::Vec;
+
+use crate::{
+    phy::{self, Device, DeviceCapabilities},
+    time::Instant,
+};
 
 // This could be fixed once associated consts are stable.
 const MTU: usize = 1536;
@@ -81,7 +84,7 @@ where
     fn transmit(&mut self, timestamp: Instant) -> Option<Self::TxToken<'_>> {
         self.inner.transmit(timestamp).map(|token| TxToken {
             fuzzer: &mut self.fuzz_tx,
-            token: token,
+            token,
         })
     }
 }

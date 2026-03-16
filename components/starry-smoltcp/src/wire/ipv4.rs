@@ -1,11 +1,13 @@
-use byteorder::{ByteOrder, NetworkEndian};
 use core::fmt;
 
-use super::{Error, Result};
-use crate::phy::ChecksumCapabilities;
-use crate::wire::ip::{checksum, pretty_print_ip_payload};
+use byteorder::{ByteOrder, NetworkEndian};
 
 pub use super::IpProtocol as Protocol;
+use super::{Error, Result};
+use crate::{
+    phy::ChecksumCapabilities,
+    wire::ip::{checksum, pretty_print_ip_payload},
+};
 
 /// Minimum MTU required of all links supporting IPv4. See [RFC 791 § 3.1].
 ///

@@ -1,8 +1,10 @@
 #![cfg_attr(not(test), no_std)]
 #![doc = include_str!("../README.md")]
 
-use core::hash::{Hash, Hasher};
-use core::ops::*;
+use core::{
+    hash::{Hash, Hasher},
+    ops::*,
+};
 
 use bitmaps::{BitOps, Bitmap, Bits, BitsImpl};
 

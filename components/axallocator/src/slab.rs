@@ -2,9 +2,9 @@
 //!
 //! TODO: comments
 
+use core::{alloc::Layout, ptr::NonNull};
+
 use ax_slab_allocator::Heap;
-use core::alloc::Layout;
-use core::ptr::NonNull;
 
 use super::{AllocError, AllocResult, BaseAllocator, ByteAllocator};
 

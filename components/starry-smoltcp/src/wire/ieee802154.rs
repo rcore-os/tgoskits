@@ -484,7 +484,7 @@ impl<T: AsRef<[u8]>> Frame<T> {
     /// Return the destination PAN field.
     #[inline]
     pub fn dst_pan_id(&self) -> Option<Pan> {
-        if let Some((true, _, _, _)) = self.addr_present_flags() {
+        if let Some((true, ..)) = self.addr_present_flags() {
             let addressing_fields = self.addressing_fields()?;
             Some(Pan(LittleEndian::read_u16(&addressing_fields[..2])))
         } else {
@@ -495,7 +495,7 @@ impl<T: AsRef<[u8]>> Frame<T> {
     /// Return the destination address field.
     #[inline]
     pub fn dst_addr(&self) -> Option<Address> {
-        if let Some((dst_pan_id, dst_addr, _, _)) = self.addr_present_flags() {
+        if let Some((dst_pan_id, dst_addr, ..)) = self.addr_present_flags() {
             let addressing_fields = self.addressing_fields()?;
             let offset = if dst_pan_id { 2 } else { 0 };
 
@@ -663,11 +663,7 @@ impl<T: AsRef<[u8]>> Frame<T> {
     pub fn key_source(&self) -> Option<&[u8]> {
         let ki = self.key_identifier();
         let len = ki.len();
-        if len > 1 {
-            Some(&ki[..len - 1])
-        } else {
-            None
-        }
+        if len > 1 { Some(&ki[..len - 1]) } else { None }
     }
 
     /// Return the Key Index field.
@@ -675,11 +671,7 @@ impl<T: AsRef<[u8]>> Frame<T> {
         let ki = self.key_identifier();
         let len = ki.len();
 
-        if len > 0 {
-            Some(ki[len - 1])
-        } else {
-            None
-        }
+        if len > 0 { Some(ki[len - 1]) } else { None }
     }
 
     /// Return the Message Integrity Code (MIC).

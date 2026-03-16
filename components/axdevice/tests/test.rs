@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use axaddrspace::device::AccessWidth;
-use axaddrspace::{GuestPhysAddr, GuestPhysAddrRange};
+use std::sync::{Arc, Mutex};
+
+use axaddrspace::{GuestPhysAddr, GuestPhysAddrRange, device::AccessWidth};
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
 use axdevice_base::BaseDeviceOps;
 use axerrno::AxResult;
 use axvmconfig::EmulatedDeviceType;
-use std::sync::{Arc, Mutex};
 
 struct MockMmioDevice {
     name: String,

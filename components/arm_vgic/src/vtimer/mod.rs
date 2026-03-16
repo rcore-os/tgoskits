@@ -14,8 +14,8 @@
 
 extern crate alloc;
 
-use alloc::sync::Arc;
-use alloc::{vec, vec::Vec};
+use alloc::{sync::Arc, vec, vec::Vec};
+
 use axdevice_base::BaseSysRegDeviceOps;
 
 mod cntp_ctl_el0;

@@ -1,9 +1,9 @@
-use alloc::collections::VecDeque;
-use alloc::vec;
-use alloc::vec::Vec;
+use alloc::{collections::VecDeque, vec, vec::Vec};
 
-use crate::phy::{self, ChecksumCapabilities, Device, DeviceCapabilities, Medium};
-use crate::time::Instant;
+use crate::{
+    phy::{self, ChecksumCapabilities, Device, DeviceCapabilities, Medium},
+    time::Instant,
+};
 
 /// A loopback device.
 #[derive(Debug)]

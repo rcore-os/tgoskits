@@ -1,5 +1,6 @@
-use super::{Error, Result};
 use byteorder::{ByteOrder, NetworkEndian};
+
+use super::{Error, Result};
 
 /// A read/write wrapper around an IPSec Encapsulating Security Payload (ESP) packet buffer.
 #[derive(Debug, PartialEq, Eq)]

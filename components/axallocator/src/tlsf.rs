@@ -2,10 +2,11 @@
 //!
 //! This module wraps the implementation provided by the [rlsf] crate.
 
-use super::{AllocError, AllocResult, BaseAllocator, ByteAllocator};
-use core::alloc::Layout;
-use core::ptr::NonNull;
+use core::{alloc::Layout, ptr::NonNull};
+
 use rlsf::Tlsf;
+
+use super::{AllocError, AllocResult, BaseAllocator, ByteAllocator};
 
 /// A TLSF (Two-Level Segregated Fit) memory allocator.
 ///

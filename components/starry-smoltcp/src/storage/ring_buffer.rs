@@ -3,11 +3,11 @@
 // [RFC 1940]: https://github.com/rust-lang/rust/issues/43302
 
 use core::cmp;
+
 use managed::ManagedSlice;
 
-use crate::storage::Resettable;
-
 use super::{Empty, Full};
+use crate::storage::Resettable;
 
 /// A ring buffer.
 ///

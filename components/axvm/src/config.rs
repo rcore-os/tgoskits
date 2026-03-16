@@ -15,11 +15,9 @@
 //! The configuration structure for the VM.
 //! The `AxVMCrateConfig` is generated from toml file, and then converted to `AxVMConfig` for the VM creation.
 
-use alloc::string::String;
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 
 use axaddrspace::GuestPhysAddr;
-
 pub use axvmconfig::{
     AxVMCrateConfig, EmulatedDeviceConfig, PassThroughAddressConfig, PassThroughDeviceConfig,
     VMInterruptMode, VMType, VmMemConfig, VmMemMappingType,

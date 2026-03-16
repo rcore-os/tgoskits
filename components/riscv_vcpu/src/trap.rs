@@ -12,34 +12,38 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::regs::*;
 use core::mem::size_of;
+
 use memoffset::offset_of;
-use riscv::ExceptionNumber;
-use riscv::result::{Error, Result};
+use riscv::{
+    ExceptionNumber,
+    result::{Error, Result},
+};
+
+use crate::regs::*;
 
 /// Exception
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(usize)]
 pub enum Exception {
     InstructionMisaligned = 0,
-    InstructionFault = 1,
-    IllegalInstruction = 2,
-    Breakpoint = 3,
-    LoadMisaligned = 4,
-    LoadFault = 5,
-    StoreMisaligned = 6,
-    StoreFault = 7,
-    UserEnvCall = 8,
-    SupervisorEnvCall = 9,
+    InstructionFault     = 1,
+    IllegalInstruction   = 2,
+    Breakpoint           = 3,
+    LoadMisaligned       = 4,
+    LoadFault            = 5,
+    StoreMisaligned      = 6,
+    StoreFault           = 7,
+    UserEnvCall          = 8,
+    SupervisorEnvCall    = 9,
     VirtualSupervisorEnvCall = 10,
     InstructionPageFault = 12,
-    LoadPageFault = 13,
-    StorePageFault = 15,
+    LoadPageFault        = 13,
+    StorePageFault       = 15,
     InstructionGuestPageFault = 20,
-    LoadGuestPageFault = 21,
-    VirtualInstruction = 22,
-    StoreGuestPageFault = 23,
+    LoadGuestPageFault   = 21,
+    VirtualInstruction   = 22,
+    StoreGuestPageFault  = 23,
 }
 
 /// SAFETY: `Exception` represents the standard RISC-V exceptions

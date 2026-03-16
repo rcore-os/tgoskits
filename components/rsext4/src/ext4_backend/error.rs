@@ -1,5 +1,4 @@
-//!错误处理模块
-//!
+//! 错误处理模块
 /// 块设备错误类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockDevError {

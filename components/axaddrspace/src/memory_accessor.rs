@@ -17,9 +17,10 @@
 //! This module provides a safe and consistent way to access guest memory
 //! from VirtIO device implementations, handling address translation and
 //! memory safety concerns.
-use crate::GuestPhysAddr;
 use axerrno::{AxError, AxResult};
 use memory_addr::PhysAddr;
+
+use crate::GuestPhysAddr;
 
 /// A stateful accessor to the memory space of a guest
 pub trait GuestMemoryAccessor {
@@ -200,10 +201,11 @@ pub trait GuestMemoryAccessor {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::test_utils::{BASE_PADDR, mock_hal_test};
     use axin::axin;
     use memory_addr::PhysAddr;
+
+    use super::*;
+    use crate::test_utils::{BASE_PADDR, mock_hal_test};
 
     /// Mock implementation of GuestMemoryAccessor for testing
     struct MockTranslator {
