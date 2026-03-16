@@ -95,8 +95,11 @@ members = [
     "os/arceos/examples/httpserver",
     "os/arceos/examples/shell",
 
+    # test-suit
+    "test-suit/arceos/task/*",
+
     # os/axvisor
-    "os/axvisor", "components/axbuild",
+    "os/axvisor", "components/axbuild",    
 ]
 exclude = [
     # workspace directories
