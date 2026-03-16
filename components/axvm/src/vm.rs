@@ -12,30 +12,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::sync::Arc;
-use alloc::vec::Vec;
-use axaddrspace::HostVirtAddr;
-use axerrno::{AxError, AxResult, ax_err, ax_err_type};
-use core::alloc::Layout;
-use core::fmt;
-use memory_addr::{align_down_4k, align_up_4k};
-use spin::{Mutex, Once};
+use alloc::{boxed::Box, format, sync::Arc, vec::Vec};
+use core::{alloc::Layout, fmt};
 
-use axaddrspace::{AddrSpace, GuestPhysAddr, HostPhysAddr, MappingFlags, device::AccessWidth};
+use axaddrspace::{
+    AddrSpace, GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, device::AccessWidth,
+};
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
+use axerrno::{AxError, AxResult, ax_err, ax_err_type};
 use axvcpu::{AxVCpu, AxVCpuExitReason, AxVCpuHal};
 use cpumask::CpuMask;
-
-use crate::config::{AxVMConfig, PhysCpuList};
-use crate::vcpu::AxArchVCpuImpl;
-use crate::{AxVMHal, has_hardware_support};
+use memory_addr::{align_down_4k, align_up_4k};
+use spin::{Mutex, Once};
 
 #[cfg(target_arch = "riscv64")]
 use crate::vcpu::AxVCpuCreateConfig;
 #[cfg(target_arch = "aarch64")]
 use crate::vcpu::{AxVCpuCreateConfig, get_sysreg_device};
+use crate::{
+    AxVMHal,
+    config::{AxVMConfig, PhysCpuList},
+    has_hardware_support,
+    vcpu::AxArchVCpuImpl,
+};
 
 const VM_ASPACE_BASE: usize = 0x0;
 const VM_ASPACE_SIZE: usize = 0x7fff_ffff_f000;
@@ -505,7 +504,6 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
     ///
     /// ## Returns
     /// * `AxVCpuExitReason` - the exit reason of the vCPU, wrapped in an `AxResult`.
-    ///
     pub fn run_vcpu(&self, vcpu_id: usize) -> AxResult<AxVCpuExitReason> {
         let vcpu = self
             .vcpu(vcpu_id)
@@ -822,7 +820,8 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
         let current_status = self.vm_status();
         if !matches!(current_status, VMStatus::Stopping | VMStatus::Stopped) {
             warn!(
-                "VM[{}] is being dropped without explicit shutdown (status: {:?}), marking as stopping",
+                "VM[{}] is being dropped without explicit shutdown (status: {:?}), marking as \
+                 stopping",
                 self.id(),
                 current_status
             );
@@ -870,7 +869,8 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
                 }
             } else {
                 debug!(
-                    "VM[{}] skipping dealloc for reserved memory region: GPA={:#x}, HVA={:#x}, size={:#x}",
+                    "VM[{}] skipping dealloc for reserved memory region: GPA={:#x}, HVA={:#x}, \
+                     size={:#x}",
                     self.id(),
                     region.gpa.as_usize(),
                     region.hva.as_usize(),

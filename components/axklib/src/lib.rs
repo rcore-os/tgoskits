@@ -44,7 +44,6 @@ use core::time::Duration;
 
 pub use axerrno::AxResult;
 pub use memory_addr::{PhysAddr, VirtAddr};
-
 use trait_ffi::*;
 
 /// A simple IRQ handler function pointer type.
@@ -111,6 +110,5 @@ pub mod time {
 
 /// Convenience re-exports for IRQ operations.
 pub mod irq {
-    pub use super::klib::irq_register as register;
-    pub use super::klib::irq_set_enable as set_enable;
+    pub use super::klib::{irq_register as register, irq_set_enable as set_enable};
 }

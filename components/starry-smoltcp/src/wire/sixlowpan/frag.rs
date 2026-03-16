@@ -2,10 +2,10 @@
 //!
 //! [RFC 4944 § 5.3]: https://datatracker.ietf.org/doc/html/rfc4944#section-5.3
 
-use super::{DISPATCH_FIRST_FRAGMENT_HEADER, DISPATCH_FRAGMENT_HEADER};
-use crate::wire::{Error, Result};
-use crate::wire::{Ieee802154Address, Ieee802154Repr};
 use byteorder::{ByteOrder, NetworkEndian};
+
+use super::{DISPATCH_FIRST_FRAGMENT_HEADER, DISPATCH_FRAGMENT_HEADER};
+use crate::wire::{Error, Ieee802154Address, Ieee802154Repr, Result};
 
 /// Key used for identifying all the link fragments that belong to the same packet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

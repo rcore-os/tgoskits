@@ -2,13 +2,15 @@ use core::cmp::min;
 #[cfg(feature = "async")]
 use core::task::Waker;
 
-use crate::iface::Context;
-use crate::phy::PacketMeta;
-use crate::socket::PollAt;
 #[cfg(feature = "async")]
 use crate::socket::WakerRegistration;
-use crate::storage::Empty;
-use crate::wire::{IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, IpRepr, UdpRepr};
+use crate::{
+    iface::Context,
+    phy::PacketMeta,
+    socket::PollAt,
+    storage::Empty,
+    wire::{IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, IpRepr, UdpRepr},
+};
 
 /// Metadata for a sent or received UDP packet.
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -605,12 +607,14 @@ impl<'a> Socket<'a> {
 
 #[cfg(test)]
 mod test {
-    use super::*;
-    use crate::wire::{IpRepr, UdpRepr};
-
-    use crate::phy::Medium;
-    use crate::tests::setup;
     use rstest::*;
+
+    use super::*;
+    use crate::{
+        phy::Medium,
+        tests::setup,
+        wire::{IpRepr, UdpRepr},
+    };
 
     fn buffer(packets: usize) -> PacketBuffer<'static> {
         PacketBuffer::new(
@@ -784,7 +788,7 @@ mod test {
     #[case::ieee802154(Medium::Ieee802154)]
     #[cfg(feature = "medium-ieee802154")]
     fn test_send_dispatch(#[case] medium: Medium) {
-        let (mut iface, _, _) = setup(medium);
+        let (mut iface, ..) = setup(medium);
         let cx = iface.context();
         let mut socket = socket(buffer(0), buffer(1));
 
@@ -834,7 +838,7 @@ mod test {
     #[case::ieee802154(Medium::Ieee802154)]
     #[cfg(feature = "medium-ieee802154")]
     fn test_recv_process(#[case] medium: Medium) {
-        let (mut iface, _, _) = setup(medium);
+        let (mut iface, ..) = setup(medium);
         let cx = iface.context();
 
         let mut socket = socket(buffer(1), buffer(0));
@@ -878,7 +882,7 @@ mod test {
     #[case::ieee802154(Medium::Ieee802154)]
     #[cfg(feature = "medium-ieee802154")]
     fn test_peek_process(#[case] medium: Medium) {
-        let (mut iface, _, _) = setup(medium);
+        let (mut iface, ..) = setup(medium);
         let cx = iface.context();
 
         let mut socket = socket(buffer(1), buffer(0));
@@ -913,7 +917,7 @@ mod test {
     #[case::ieee802154(Medium::Ieee802154)]
     #[cfg(feature = "medium-ieee802154")]
     fn test_recv_truncated_slice(#[case] medium: Medium) {
-        let (mut iface, _, _) = setup(medium);
+        let (mut iface, ..) = setup(medium);
         let cx = iface.context();
 
         let mut socket = socket(buffer(1), buffer(0));
@@ -941,7 +945,7 @@ mod test {
     #[case::ieee802154(Medium::Ieee802154)]
     #[cfg(feature = "medium-ieee802154")]
     fn test_peek_truncated_slice(#[case] medium: Medium) {
-        let (mut iface, _, _) = setup(medium);
+        let (mut iface, ..) = setup(medium);
         let cx = iface.context();
 
         let mut socket = socket(buffer(1), buffer(0));
@@ -970,7 +974,7 @@ mod test {
     #[case::ieee802154(Medium::Ieee802154)]
     #[cfg(feature = "medium-ieee802154")]
     fn test_set_hop_limit(#[case] medium: Medium) {
-        let (mut iface, _, _) = setup(medium);
+        let (mut iface, ..) = setup(medium);
         let cx = iface.context();
 
         let mut s = socket(buffer(0), buffer(1));
@@ -980,7 +984,7 @@ mod test {
         s.set_hop_limit(Some(0x2a));
         assert_eq!(s.send_slice(b"abcdef", REMOTE_END), Ok(()));
         assert_eq!(
-            s.dispatch(cx, |_, _, (ip_repr, _, _)| {
+            s.dispatch(cx, |_, _, (ip_repr, ..)| {
                 assert_eq!(
                     ip_repr,
                     IpReprIpvX(IpvXRepr {
@@ -1005,7 +1009,7 @@ mod test {
     #[case::ieee802154(Medium::Ieee802154)]
     #[cfg(feature = "medium-ieee802154")]
     fn test_doesnt_accept_wrong_port(#[case] medium: Medium) {
-        let (mut iface, _, _) = setup(medium);
+        let (mut iface, ..) = setup(medium);
         let cx = iface.context();
 
         let mut socket = socket(buffer(1), buffer(0));
@@ -1026,7 +1030,7 @@ mod test {
     #[case::ieee802154(Medium::Ieee802154)]
     #[cfg(feature = "medium-ieee802154")]
     fn test_doesnt_accept_wrong_ip(#[case] medium: Medium) {
-        let (mut iface, _, _) = setup(medium);
+        let (mut iface, ..) = setup(medium);
         let cx = iface.context();
 
         let mut port_bound_socket = socket(buffer(1), buffer(0));
@@ -1064,7 +1068,7 @@ mod test {
         let recv_buffer = PacketBuffer::new(&mut meta[..], vec![]);
         let mut socket = socket(recv_buffer, buffer(0));
 
-        let (mut iface, _, _) = setup(medium);
+        let (mut iface, ..) = setup(medium);
         let cx = iface.context();
 
         assert_eq!(socket.bind(LOCAL_PORT), Ok(()));

@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{AxMmHal, HostPhysAddr, HostVirtAddr};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
 use lazy_static::lazy_static;
-use memory_addr::{PhysAddr, VirtAddr};
+use memory_addr::{PAGE_SIZE_4K as PAGE_SIZE, PhysAddr, VirtAddr};
 use page_table_multiarch::PagingHandler;
 use spin::Mutex;
 
-use memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
+use crate::{AxMmHal, HostPhysAddr, HostVirtAddr};
 
 /// The starting physical address for the simulated memory region in tests.
 /// This offset is used to map simulated physical addresses to the `MEMORY` array's virtual address space.

@@ -2,9 +2,9 @@
 //!
 //! TODO: more efficient
 
+use core::{alloc::Layout, ptr::NonNull};
+
 use buddy_system_allocator::Heap;
-use core::alloc::Layout;
-use core::ptr::NonNull;
 
 use crate::{AllocError, AllocResult, BaseAllocator, ByteAllocator};
 

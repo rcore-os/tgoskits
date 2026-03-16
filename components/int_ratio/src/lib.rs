@@ -116,7 +116,7 @@ impl Ratio {
     /// let ratio = Ratio::new(2, 3);
     ///
     /// // Works as expected for an exact integer result.
-    /// assert_eq!(ratio.mul_trunc(99), 66);  // 99 * 2 / 3 = 66
+    /// assert_eq!(ratio.mul_trunc(99), 66); // 99 * 2 / 3 = 66
     ///
     /// // The fractional part is truncated (floored) when the result is not an integer.
     /// assert_eq!(ratio.mul_trunc(100), 66); // trunc(100 * 2 / 3) = trunc(66.66...) = 66
@@ -136,7 +136,7 @@ impl Ratio {
     /// let ratio = Ratio::new(2, 3);
     ///
     /// // Works as expected for an exact integer result.
-    /// assert_eq!(ratio.mul_round(99), 66);  // 99 * 2 / 3 = 66
+    /// assert_eq!(ratio.mul_round(99), 66); // 99 * 2 / 3 = 66
     ///
     /// // The result is rounded to the nearest whole number when it has a fractional part.
     /// assert_eq!(ratio.mul_round(100), 67); // round(100 * 2 / 3) = round(66.66...) = 67

@@ -1,7 +1,5 @@
-use crate::wire::Ipv6Address;
-
 use super::{lollipop::SequenceCounter, rank::Rank};
-use crate::config::RPL_PARENTS_BUFFER_COUNT;
+use crate::{config::RPL_PARENTS_BUFFER_COUNT, wire::Ipv6Address};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Parent {

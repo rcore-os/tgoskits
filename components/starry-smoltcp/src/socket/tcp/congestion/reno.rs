@@ -1,6 +1,5 @@
-use crate::{socket::tcp::RttEstimator, time::Instant};
-
 use super::Controller;
+use crate::{socket::tcp::RttEstimator, time::Instant};
 
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -64,9 +63,8 @@ impl Controller for Reno {
 
 #[cfg(test)]
 mod test {
-    use crate::time::Instant;
-
     use super::*;
+    use crate::time::Instant;
 
     #[test]
     fn test_reno() {

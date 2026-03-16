@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::vec;
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec, vec::Vec};
+
 use axaddrspace::{GuestPhysAddr, GuestPhysAddrRange, device::AccessWidth};
 use axerrno::AxResult;
 

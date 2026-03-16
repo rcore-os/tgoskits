@@ -1,5 +1,4 @@
 use super::*;
-
 use crate::socket::tcp::Socket;
 
 impl InterfaceInner {

@@ -1,8 +1,7 @@
-use crate::ext4_backend::config::*;
-use crate::ext4_backend::endian::*;
-use alloc::boxed::Box;
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 use core::convert::TryInto;
+
+use crate::ext4_backend::{config::*, endian::*};
 pub const JOURNAL_FILE_INODE: u64 = 8;
 /// 根据 ext4 标准，journal 的 inode 为 8
 pub const JBD2_MAGIC: u32 = 0xC03B_3998u32; // jbd2 magic number (on-disk big-endian)
@@ -11,16 +10,16 @@ pub const JOURANL_ESCAPE: u16 = 0x1;
 pub const JBD2_FLAG_LAST_TAG: u16 = 0x8;
 pub const JBD2_CRC32C_CHKSUM: u8 = 4; // JBD2 checksum type for CRC32C
 #[repr(C)]
-///（主物理块号，元数据内容）
+/// （主物理块号，元数据内容）
 pub struct Jbd2Update(pub u64, pub Box<[u8; BLOCK_SIZE]>);
 #[repr(C)]
 pub struct JBD2DEVSYSTEM {
     pub jbd2_super_block: JournalSuperBllockS,
     pub start_block: u32,              // Journal 超级块 开始块号
     pub max_len: u32,                  // 日志总块数
-    pub head: u32,                     //commit游标(相对块号)
-    pub sequence: u32,                 //当前期待事务ID(验证和写commit用)
-    pub commit_queue: Vec<Jbd2Update>, //事务缓存
+    pub head: u32,                     // commit游标(相对块号)
+    pub sequence: u32,                 // 当前期待事务ID(验证和写commit用)
+    pub commit_queue: Vec<Jbd2Update>, // 事务缓存
 }
 
 #[repr(C)]
@@ -31,11 +30,11 @@ pub struct JournalHeaderS {
     pub h_sequence: u32,  // __be32: transaction sequence id
 }
 impl Default for JournalHeaderS {
-    ///block_type默认超级块
+    /// block_type默认超级块
     fn default() -> Self {
         JournalHeaderS {
             h_magic: JBD2_MAGIC,
-            h_blocktype: 4, //超级块 类型
+            h_blocktype: 4, // 超级块 类型
             h_sequence: 0,
         }
     }
@@ -97,7 +96,7 @@ pub struct JournalSuperBllockS {
 }
 
 impl Default for JournalSuperBllockS {
-    ///必须手动配置max_len（块数）,默认4096个
+    /// 必须手动配置max_len（块数）,默认4096个
     fn default() -> Self {
         let header = JournalHeaderS::default();
         JournalSuperBllockS {
@@ -233,9 +232,9 @@ pub struct JournalBlockTagS {
     // Basic (v1/v2) tag layout
     pub t_blocknr: u32,  // __be32: lower 32-bits of target block number
     pub t_checksum: u16, // __be16: checksum (lower 16 bits)
-    pub t_flags: u16,    // __be16: flags (escaped, same UUID, last tag, ...)
-                         // Optionally followed by __be32 t_blocknr_high (when 64-bit support)
-                         // and optionally a 16-byte uuid, depending on flags/features.
+    pub t_flags: u16,    /* __be16: flags (escaped, same UUID, last tag, ...)
+                          * Optionally followed by __be32 t_blocknr_high (when 64-bit support)
+                          * and optionally a 16-byte uuid, depending on flags/features. */
 }
 
 impl DiskFormat for JournalBlockTagS {
@@ -264,8 +263,8 @@ pub struct JouranlBlockTag3S {
     pub t_blocknr: u32,      // __be32: lower 32 bits
     pub t_flags: u32,        // __be32: flags (includes LAST flag, SAME_UUID, ESCAPED)
     pub t_blocknr_high: u32, // __be32: upper 32 bits when 64-bit support present
-    pub t_checksum: u32,     // __be32: full checksum
-                             // Optionally followed by a uuid (16 bytes) unless SAME_UUID flag set.
+    pub t_checksum: u32,     /* __be32: full checksum
+                              * Optionally followed by a uuid (16 bytes) unless SAME_UUID flag set. */
 }
 
 impl DiskFormat for JouranlBlockTag3S {
@@ -312,8 +311,8 @@ impl DiskFormat for Jbd2JournalBlockTail {
 #[derive(Debug, Clone, Copy)]
 pub struct Jbd2JournalRevokeHeadS {
     pub r_header: JournalHeaderS, // common header
-    pub r_count: u32,             // __be32: number of bytes used in this block
-                                  // Followed by an array of block numbers (4 or 8 bytes each depending on 64-bit support)
+    pub r_count: u32,             /* __be32: number of bytes used in this block
+                                   * Followed by an array of block numbers (4 or 8 bytes each depending on 64-bit support) */
 }
 
 impl DiskFormat for Jbd2JournalRevokeHeadS {
@@ -361,8 +360,9 @@ pub struct CommitHeader {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use DiskFormat;
+
+    use super::*;
 
     #[test]
     fn test_journal_header_roundtrip() {

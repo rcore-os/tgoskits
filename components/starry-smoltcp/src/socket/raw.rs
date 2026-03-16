@@ -2,17 +2,18 @@ use core::cmp::min;
 #[cfg(feature = "async")]
 use core::task::Waker;
 
-use crate::iface::Context;
-use crate::socket::PollAt;
 #[cfg(feature = "async")]
 use crate::socket::WakerRegistration;
-
-use crate::storage::Empty;
-use crate::wire::{IpProtocol, IpRepr, IpVersion};
 #[cfg(feature = "proto-ipv4")]
 use crate::wire::{Ipv4Packet, Ipv4Repr};
 #[cfg(feature = "proto-ipv6")]
 use crate::wire::{Ipv6Packet, Ipv6Repr};
+use crate::{
+    iface::Context,
+    socket::PollAt,
+    storage::Empty,
+    wire::{IpProtocol, IpRepr, IpVersion},
+};
 
 /// Error returned by [`Socket::bind`]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -478,16 +479,14 @@ impl<'a> Socket<'a> {
 
 #[cfg(test)]
 mod test {
-    use crate::phy::Medium;
-    use crate::tests::setup;
     use rstest::*;
 
     use super::*;
-    use crate::wire::IpRepr;
     #[cfg(feature = "proto-ipv4")]
     use crate::wire::{Ipv4Address, Ipv4Repr};
     #[cfg(feature = "proto-ipv6")]
     use crate::wire::{Ipv6Address, Ipv6Repr};
+    use crate::{phy::Medium, tests::setup, wire::IpRepr};
 
     fn buffer(packets: usize) -> PacketBuffer<'static> {
         PacketBuffer::new(vec![PacketMetadata::EMPTY; packets], vec![0; 48 * packets])
@@ -578,7 +577,7 @@ mod test {
                 #[case::ieee802154(Medium::Ieee802154)]
                 #[cfg(feature = "medium-ieee802154")]
                 fn test_send_dispatch(#[case] medium: Medium) {
-                    let (mut iface, _, _) = setup(medium);
+                    let (mut iface, ..) = setup(medium);
                     let mut cx = iface.context();
                     let mut socket = $socket(buffer(0), buffer(1));
 
@@ -621,7 +620,7 @@ mod test {
                 #[case::ieee802154(Medium::Ieee802154)]
                 #[cfg(feature = "medium-ieee802154")]
                 fn test_recv_truncated_slice(#[case] medium: Medium) {
-                    let (mut iface, _, _) = setup(medium);
+                    let (mut iface, ..) = setup(medium);
                     let mut cx = iface.context();
                     let mut socket = $socket(buffer(1), buffer(0));
 
@@ -640,7 +639,7 @@ mod test {
                 #[case::ieee802154(Medium::Ieee802154)]
                 #[cfg(feature = "medium-ieee802154")]
                 fn test_recv_truncated_packet(#[case] medium: Medium) {
-                    let (mut iface, _, _) = setup(medium);
+                    let (mut iface, ..) = setup(medium);
                     let mut cx = iface.context();
                     let mut socket = $socket(buffer(1), buffer(0));
 
@@ -659,7 +658,7 @@ mod test {
                 #[case::ieee802154(Medium::Ieee802154)]
                 #[cfg(feature = "medium-ieee802154")]
                 fn test_peek_truncated_slice(#[case] medium: Medium) {
-                    let (mut iface, _, _) = setup(medium);
+                    let (mut iface, ..) = setup(medium);
                     let mut cx = iface.context();
                     let mut socket = $socket(buffer(1), buffer(0));
 
@@ -702,7 +701,7 @@ mod test {
     fn test_send_illegal(#[case] medium: Medium) {
         #[cfg(feature = "proto-ipv4")]
         {
-            let (mut iface, _, _) = setup(medium);
+            let (mut iface, ..) = setup(medium);
             let cx = iface.context();
             let mut socket = ipv4_locals::socket(buffer(0), buffer(2));
 
@@ -720,7 +719,7 @@ mod test {
         }
         #[cfg(feature = "proto-ipv6")]
         {
-            let (mut iface, _, _) = setup(medium);
+            let (mut iface, ..) = setup(medium);
             let cx = iface.context();
             let mut socket = ipv6_locals::socket(buffer(0), buffer(2));
 
@@ -748,7 +747,7 @@ mod test {
     fn test_recv_process(#[case] medium: Medium) {
         #[cfg(feature = "proto-ipv4")]
         {
-            let (mut iface, _, _) = setup(medium);
+            let (mut iface, ..) = setup(medium);
             let cx = iface.context();
             let mut socket = ipv4_locals::socket(buffer(1), buffer(0));
             assert!(!socket.can_recv());
@@ -768,7 +767,7 @@ mod test {
         }
         #[cfg(feature = "proto-ipv6")]
         {
-            let (mut iface, _, _) = setup(medium);
+            let (mut iface, ..) = setup(medium);
             let cx = iface.context();
             let mut socket = ipv6_locals::socket(buffer(1), buffer(0));
             assert!(!socket.can_recv());
@@ -794,7 +793,7 @@ mod test {
     fn test_peek_process(#[case] medium: Medium) {
         #[cfg(feature = "proto-ipv4")]
         {
-            let (mut iface, _, _) = setup(medium);
+            let (mut iface, ..) = setup(medium);
             let cx = iface.context();
             let mut socket = ipv4_locals::socket(buffer(1), buffer(0));
 
@@ -813,7 +812,7 @@ mod test {
         }
         #[cfg(feature = "proto-ipv6")]
         {
-            let (mut iface, _, _) = setup(medium);
+            let (mut iface, ..) = setup(medium);
             let cx = iface.context();
             let mut socket = ipv6_locals::socket(buffer(1), buffer(0));
 
@@ -882,7 +881,7 @@ mod test {
         let mut socket = Socket::new(None, None, buffer(0), buffer(2));
         #[cfg(feature = "proto-ipv4")]
         {
-            let (mut iface, _, _) = setup(medium);
+            let (mut iface, ..) = setup(medium);
             let cx = iface.context();
 
             let mut udp_packet = ipv4_locals::PACKET_BYTES;
@@ -899,7 +898,7 @@ mod test {
         }
         #[cfg(feature = "proto-ipv6")]
         {
-            let (mut iface, _, _) = setup(medium);
+            let (mut iface, ..) = setup(medium);
             let cx = iface.context();
 
             let mut udp_packet = ipv6_locals::PACKET_BYTES;

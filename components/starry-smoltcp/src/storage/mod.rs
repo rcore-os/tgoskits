@@ -1,17 +1,18 @@
-/*! Specialized containers.
-
-The `storage` module provides containers for use in other modules.
-The containers support both pre-allocated memory, without the `std`
-or `alloc` crates being available, and heap-allocated memory.
-*/
+//! Specialized containers.
+//!
+//! The `storage` module provides containers for use in other modules.
+//! The containers support both pre-allocated memory, without the `std`
+//! or `alloc` crates being available, and heap-allocated memory.
 
 mod assembler;
 mod packet_buffer;
 mod ring_buffer;
 
-pub use self::assembler::Assembler;
-pub use self::packet_buffer::{PacketBuffer, PacketMetadata};
-pub use self::ring_buffer::RingBuffer;
+pub use self::{
+    assembler::Assembler,
+    packet_buffer::{PacketBuffer, PacketMetadata},
+    ring_buffer::RingBuffer,
+};
 
 /// A trait for setting a value to a known state.
 ///

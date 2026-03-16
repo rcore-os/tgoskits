@@ -1,6 +1,6 @@
-use super::{Error, Result};
 use core::fmt;
 
+use super::{Error, Result};
 use crate::wire::{Ipv6Address as Address, Ipv6AddressExt};
 
 enum_with_unknown! {

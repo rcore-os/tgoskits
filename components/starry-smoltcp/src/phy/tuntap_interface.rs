@@ -1,11 +1,15 @@
-use std::cell::RefCell;
-use std::io;
-use std::os::unix::io::{AsRawFd, RawFd};
-use std::rc::Rc;
-use std::vec::Vec;
+use std::{
+    cell::RefCell,
+    io,
+    os::unix::io::{AsRawFd, RawFd},
+    rc::Rc,
+    vec::Vec,
+};
 
-use crate::phy::{self, sys, Device, DeviceCapabilities, Medium};
-use crate::time::Instant;
+use crate::{
+    phy::{self, Device, DeviceCapabilities, Medium, sys},
+    time::Instant,
+};
 
 /// A virtual TUN (IP) or TAP (Ethernet) interface.
 #[derive(Debug)]

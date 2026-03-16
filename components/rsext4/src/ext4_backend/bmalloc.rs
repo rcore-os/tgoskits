@@ -1,8 +1,6 @@
 //! 位图分配器模块
 
-use crate::ext4_backend::bitmap::*;
-use crate::ext4_backend::blockgroup_description::*;
-use crate::ext4_backend::superblock::*;
+use crate::ext4_backend::{bitmap::*, blockgroup_description::*, superblock::*};
 /// 块分配器错误类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AllocError {
@@ -45,9 +43,9 @@ pub struct BlockAlloc {
     pub global_block: u64,
 }
 
-///Bitmap Buffer
+/// Bitmap Buffer
 pub struct BitmapBuffer<'a> {
-    _data: BTreeMap<u32, (&'a mut [u8], &'a mut [u8])>, //group_id bitmap_data
+    _data: BTreeMap<u32, (&'a mut [u8], &'a mut [u8])>, // group_id bitmap_data
 }
 
 /// Inode分配结果
@@ -329,15 +327,17 @@ impl InodeAllocator {
 }
 
 use alloc::collections::btree_map::BTreeMap;
+
 use lazy_static::lazy_static;
 use log::error;
-//crete global inode_alloctor and block alloctor;
+// crete global inode_alloctor and block alloctor;
 lazy_static! {}
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec;
+
+    use super::*;
 
     #[test]
     fn test_block_allocator_single() {

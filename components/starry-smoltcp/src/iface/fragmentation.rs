@@ -1,15 +1,15 @@
 #![allow(unused)]
 
-use core::fmt;
+use core::{fmt, result::Result};
 
 use managed::{ManagedMap, ManagedSlice};
 
-use crate::config::{FRAGMENTATION_BUFFER_SIZE, REASSEMBLY_BUFFER_COUNT, REASSEMBLY_BUFFER_SIZE};
-use crate::storage::Assembler;
-use crate::time::{Duration, Instant};
-use crate::wire::*;
-
-use core::result::Result;
+use crate::{
+    config::{FRAGMENTATION_BUFFER_SIZE, REASSEMBLY_BUFFER_COUNT, REASSEMBLY_BUFFER_SIZE},
+    storage::Assembler,
+    time::{Duration, Instant},
+    wire::*,
+};
 
 #[cfg(feature = "alloc")]
 type Buffer = alloc::vec::Vec<u8>;

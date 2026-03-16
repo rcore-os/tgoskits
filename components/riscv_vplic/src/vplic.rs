@@ -2,11 +2,13 @@
 //!
 //! This module implements the core data structure for managing a virtual PLIC device.
 
-use crate::consts::*;
+use core::option::Option;
+
 use axaddrspace::{GuestPhysAddr, HostPhysAddr};
 use bitmaps::Bitmap;
-use core::option::Option;
 use spin::Mutex;
+
+use crate::consts::*;
 
 /// Virtual PLIC global controller.
 ///
@@ -59,7 +61,7 @@ impl VPlicGlobal {
             pending_irqs: Mutex::new(Bitmap::new()),
             active_irqs: Mutex::new(Bitmap::new()),
             contexts_num,
-            host_plic_addr: HostPhysAddr::from_usize(addr.as_usize()), // Currently we assume host_plic_addr = guest_vplic_addr
+            host_plic_addr: HostPhysAddr::from_usize(addr.as_usize()), /* Currently we assume host_plic_addr = guest_vplic_addr */
         }
     }
 

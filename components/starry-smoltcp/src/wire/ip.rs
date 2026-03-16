@@ -1,5 +1,4 @@
-use core::convert::From;
-use core::fmt;
+use core::{convert::From, fmt};
 
 use super::{Error, Result};
 use crate::phy::ChecksumCapabilities;
@@ -812,10 +811,9 @@ pub fn pretty_print_ip_payload<T: Into<Repr>>(
 ) -> fmt::Result {
     #[cfg(feature = "proto-ipv4")]
     use super::pretty_print::PrettyPrint;
-    use crate::wire::ip::checksum::format_checksum;
     #[cfg(feature = "proto-ipv4")]
     use crate::wire::Icmpv4Packet;
-    use crate::wire::{TcpPacket, TcpRepr, UdpPacket, UdpRepr};
+    use crate::wire::{TcpPacket, TcpRepr, UdpPacket, UdpRepr, ip::checksum::format_checksum};
 
     let checksum_caps = ChecksumCapabilities::ignored();
     let repr = ip_repr.into();

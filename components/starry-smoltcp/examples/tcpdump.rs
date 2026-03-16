@@ -1,9 +1,10 @@
-use smoltcp::phy::wait as phy_wait;
-use smoltcp::phy::{Device, RawSocket, RxToken};
-use smoltcp::time::Instant;
-use smoltcp::wire::{EthernetFrame, PrettyPrinter};
-use std::env;
-use std::os::unix::io::AsRawFd;
+use std::{env, os::unix::io::AsRawFd};
+
+use smoltcp::{
+    phy::{Device, RawSocket, RxToken, wait as phy_wait},
+    time::Instant,
+    wire::{EthernetFrame, PrettyPrinter},
+};
 
 fn main() {
     let ifname = env::args().nth(1).unwrap();

@@ -1,7 +1,10 @@
+use std::{
+    io, mem,
+    os::unix::io::{AsRawFd, RawFd},
+};
+
 use super::*;
 use crate::phy::Medium;
-use std::os::unix::io::{AsRawFd, RawFd};
-use std::{io, mem};
 
 #[derive(Debug)]
 pub struct RawSocketDesc {

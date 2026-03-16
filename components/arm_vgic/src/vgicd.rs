@@ -13,8 +13,7 @@
 // limitations under the License.
 
 extern crate alloc;
-use crate::consts::*;
-use crate::interrupt::VgicInt;
+use crate::{consts::*, interrupt::VgicInt};
 
 pub struct Vgicd {
     pub ctrlr: u32,

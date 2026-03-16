@@ -1,10 +1,12 @@
-use byteorder::{ByteOrder, NetworkEndian};
 use core::{cmp, fmt, ops};
 
+use byteorder::{ByteOrder, NetworkEndian};
+
 use super::{Error, Result};
-use crate::phy::ChecksumCapabilities;
-use crate::wire::ip::checksum;
-use crate::wire::{IpAddress, IpProtocol};
+use crate::{
+    phy::ChecksumCapabilities,
+    wire::{IpAddress, IpProtocol, ip::checksum},
+};
 
 /// A TCP sequence number.
 ///
@@ -15,19 +17,11 @@ pub struct SeqNumber(pub i32);
 
 impl SeqNumber {
     pub fn max(self, rhs: Self) -> Self {
-        if self > rhs {
-            self
-        } else {
-            rhs
-        }
+        if self > rhs { self } else { rhs }
     }
 
     pub fn min(self, rhs: Self) -> Self {
-        if self < rhs {
-            self
-        } else {
-            rhs
-        }
+        if self < rhs { self } else { rhs }
     }
 }
 
@@ -337,7 +331,6 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the selective acknowledgement ranges, if any. If there are none in the packet, an
     /// array of ``None`` values will be returned.
-    ///
     pub fn selective_ack_ranges(&self) -> Result<[Option<(u32, u32)>; 3]> {
         let data = self.buffer.as_ref();
         let mut options = &data[field::OPTIONS(self.header_len())];
@@ -713,7 +706,7 @@ impl<'a> TcpOption<'a> {
                         let tsecr = NetworkEndian::read_u32(&data[4..8]);
                         option = TcpOption::TimeStamp { tsval, tsecr };
                     }
-                    (_, _) => option = TcpOption::Unknown { kind, data },
+                    (..) => option = TcpOption::Unknown { kind, data },
                 }
             }
         }
@@ -952,15 +945,15 @@ impl<'a> Repr<'a> {
         Ok(Repr {
             src_port: packet.src_port(),
             dst_port: packet.dst_port(),
-            control: control,
+            control,
             seq_number: packet.seq_number(),
-            ack_number: ack_number,
+            ack_number,
             window_len: packet.window_len(),
-            window_scale: window_scale,
-            max_seg_size: max_seg_size,
-            sack_permitted: sack_permitted,
-            sack_ranges: sack_ranges,
-            timestamp: timestamp,
+            window_scale,
+            max_seg_size,
+            sack_permitted,
+            sack_ranges,
+            timestamp,
             payload: packet.payload(),
         })
     }
@@ -1131,7 +1124,7 @@ impl<'a, T: AsRef<[u8]> + ?Sized> fmt::Display for Packet<&'a T> {
                 TcpOption::MaxSegmentSize(value) => write!(f, " mss={value}")?,
                 TcpOption::WindowScale(value) => write!(f, " ws={value}")?,
                 TcpOption::SackPermitted => write!(f, " sACK")?,
-                TcpOption::SackRange(slice) => write!(f, " sACKr{slice:?}")?, // debug print conveniently includes the []s
+                TcpOption::SackRange(slice) => write!(f, " sACKr{slice:?}")?, /* debug print conveniently includes the []s */
                 TcpOption::TimeStamp { tsval, tsecr } => {
                     write!(f, " tsval {tsval:08x} tsecr {tsecr:08x}")?
                 }
@@ -1398,8 +1391,8 @@ mod test {
             &[
                 0x08, // data length
                 0x0a, // type
-                0x00, 0x4c, 0x4b, 0x40, //tsval
-                0x00, 0x6a, 0xcf, 0xc0 //tsecr
+                0x00, 0x4c, 0x4b, 0x40, // tsval
+                0x00, 0x6a, 0xcf, 0xc0 // tsecr
             ]
         );
         assert_option_parses!(

@@ -1,8 +1,9 @@
 #![no_std]
 #![doc = include_str!("../README.md")]
 
-use bit_field::BitField;
 use core::ops::Range;
+
+use bit_field::BitField;
 
 /// Allocator of a bitmap, able to allocate / free bits.
 pub trait BitAlloc: Default {

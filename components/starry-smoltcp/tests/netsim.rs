@@ -1,17 +1,14 @@
-use std::cell::RefCell;
-use std::collections::BinaryHeap;
-use std::fmt::Write as _;
-use std::io::Write as _;
-use std::sync::Mutex;
+use std::{cell::RefCell, collections::BinaryHeap, fmt::Write as _, io::Write as _, sync::Mutex};
 
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
-use smoltcp::iface::{Config, Interface, SocketSet};
-use smoltcp::phy::Tracer;
-use smoltcp::phy::{self, ChecksumCapabilities, Device, DeviceCapabilities, Medium};
-use smoltcp::socket::tcp;
-use smoltcp::time::{Duration, Instant};
-use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr};
+use smoltcp::{
+    iface::{Config, Interface, SocketSet},
+    phy::{self, ChecksumCapabilities, Device, DeviceCapabilities, Medium, Tracer},
+    socket::tcp,
+    time::{Duration, Instant},
+    wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr},
+};
 
 const MAC_A: HardwareAddress = HardwareAddress::Ethernet(EthernetAddress([2, 0, 0, 0, 0, 1]));
 const MAC_B: HardwareAddress = HardwareAddress::Ethernet(EthernetAddress([2, 0, 0, 0, 0, 2]));
@@ -106,7 +103,7 @@ fn run_test(case: TestCase) -> f64 {
     while processed < BYTES {
         *CLOCK.lock().unwrap() = (time, ' ');
         log::info!("loop");
-        //println!("t = {}", time);
+        // println!("t = {}", time);
 
         *CLOCK.lock().unwrap() = (time, 'A');
 
@@ -114,14 +111,14 @@ fn run_test(case: TestCase) -> f64 {
 
         let socket = sockets_a.get_mut::<tcp::Socket>(socket_a_handle);
         if !socket.is_active() && !socket.is_listening() && !did_listen {
-            //println!("listening");
+            // println!("listening");
             socket.listen(1234).unwrap();
             did_listen = true;
         }
 
         while socket.can_recv() {
             let received = socket.recv(|buffer| (buffer.len(), buffer.len())).unwrap();
-            //println!("got {:?}", received,);
+            // println!("got {:?}", received,);
             processed += received;
         }
 
@@ -130,13 +127,13 @@ fn run_test(case: TestCase) -> f64 {
         let socket = sockets_b.get_mut::<tcp::Socket>(socket_b_handle);
         let cx = iface_b.context();
         if !socket.is_open() && !did_connect {
-            //println!("connecting");
+            // println!("connecting");
             socket.connect(cx, (IP_A, 1234), 65000).unwrap();
             did_connect = true;
         }
 
         while socket.can_send() {
-            //println!("sending");
+            // println!("sending");
             socket.send(|buffer| (buffer.len(), ())).unwrap();
         }
 

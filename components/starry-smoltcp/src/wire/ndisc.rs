@@ -2,12 +2,14 @@ use bitflags::bitflags;
 use byteorder::{ByteOrder, NetworkEndian};
 
 use super::{Error, Result};
-use crate::time::Duration;
-use crate::wire::icmpv6::{field, Message, Packet};
-use crate::wire::RawHardwareAddress;
-use crate::wire::{Ipv6Address, Ipv6AddressExt};
-use crate::wire::{NdiscOption, NdiscOptionRepr};
-use crate::wire::{NdiscPrefixInformation, NdiscRedirectedHeader};
+use crate::{
+    time::Duration,
+    wire::{
+        Ipv6Address, Ipv6AddressExt, NdiscOption, NdiscOptionRepr, NdiscPrefixInformation,
+        NdiscRedirectedHeader, RawHardwareAddress,
+        icmpv6::{Message, Packet, field},
+    },
+};
 
 bitflags! {
     #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -458,9 +460,10 @@ impl<'a> Repr<'a> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::phy::ChecksumCapabilities;
-    use crate::wire::EthernetAddress;
-    use crate::wire::Icmpv6Repr;
+    use crate::{
+        phy::ChecksumCapabilities,
+        wire::{EthernetAddress, Icmpv6Repr},
+    };
 
     const MOCK_IP_ADDR_1: Ipv6Address = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
     const MOCK_IP_ADDR_2: Ipv6Address = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 2);

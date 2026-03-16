@@ -1,13 +1,14 @@
 //! Implementation of Next Header Compression from [RFC 6282 § 4].
 //!
 //! [RFC 6282 § 4]: https://datatracker.ietf.org/doc/html/rfc6282#section-4
-use super::{Error, NextHeader, Result, DISPATCH_EXT_HEADER, DISPATCH_UDP_HEADER};
-use crate::{
-    phy::ChecksumCapabilities,
-    wire::{ip::checksum, ipv6, udp::Repr as UdpRepr, IpProtocol},
-};
 use byteorder::{ByteOrder, NetworkEndian};
 use ipv6::Address;
+
+use super::{DISPATCH_EXT_HEADER, DISPATCH_UDP_HEADER, Error, NextHeader, Result};
+use crate::{
+    phy::ChecksumCapabilities,
+    wire::{IpProtocol, ip::checksum, ipv6, udp::Repr as UdpRepr},
+};
 
 macro_rules! get_field {
     ($name:ident, $mask:expr, $shift:expr) => {
@@ -315,13 +316,11 @@ impl ExtHeaderRepr {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use crate::wire::{Ipv6RoutingHeader, Ipv6RoutingRepr};
-
     #[cfg(feature = "proto-rpl")]
     use crate::wire::{
         Ipv6Option, Ipv6OptionRepr, Ipv6OptionsIterator, RplHopByHopRepr, RplInstanceId,
     };
+    use crate::wire::{Ipv6RoutingHeader, Ipv6RoutingRepr};
 
     #[cfg(feature = "proto-rpl")]
     const RPL_HOP_BY_HOP_PACKET: [u8; 9] = [0xe0, 0x3a, 0x06, 0x63, 0x04, 0x00, 0x1e, 0x03, 0x00];
@@ -662,7 +661,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> UdpNhcPacket<T> {
                 idx += 2;
                 data[idx] = (dst_port - 0xf000) as u8;
             }
-            (_, _) => {
+            (..) => {
                 // We cannot compress any port.
                 self.set_ports_field(0b00);
                 let data = self.buffer.as_mut();
@@ -738,7 +737,7 @@ impl<'a> UdpNhcRepr {
         match (self.src_port, self.dst_port) {
             (0xf0b0..=0xf0bf, 0xf0b0..=0xf0bf) => len + 1,
             (0xf000..=0xf0ff, _) | (_, 0xf000..=0xf0ff) => len + 3,
-            (_, _) => len + 4,
+            (..) => len + 4,
         }
     }
 

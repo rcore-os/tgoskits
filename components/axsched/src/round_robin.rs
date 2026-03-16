@@ -1,6 +1,8 @@
 use alloc::sync::Arc;
-use core::ops::Deref;
-use core::sync::atomic::{AtomicIsize, Ordering};
+use core::{
+    ops::Deref,
+    sync::atomic::{AtomicIsize, Ordering},
+};
 
 use linked_list_r4l::{GetLinks, Links, List};
 

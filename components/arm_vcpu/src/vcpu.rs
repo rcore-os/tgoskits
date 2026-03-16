@@ -19,10 +19,12 @@ use axaddrspace::{GuestPhysAddr, HostPhysAddr, device::SysRegAddr};
 use axerrno::AxResult;
 use axvcpu::{AxArchVCpu, AxVCpuExitReason, AxVCpuHal};
 
-use crate::TrapFrame;
-use crate::context_frame::GuestSystemRegisters;
-use crate::exception::{TrapKind, handle_exception_sync};
-use crate::exception_utils::exception_class_value;
+use crate::{
+    TrapFrame,
+    context_frame::GuestSystemRegisters,
+    exception::{TrapKind, handle_exception_sync},
+    exception_utils::exception_class_value,
+};
 
 #[percpu::def_percpu]
 static HOST_SP_EL0: u64 = 0;
@@ -386,7 +388,8 @@ impl<H: AxVCpuHal> Aarch64VCpu<H> {
                 let target_list = value & 0xffff;
 
                 debug!(
-                    "arm_vcpu ICC_SGI1R_EL1 write: aff3:{aff3:#x} aff2:{aff2:#x} aff1:{aff1:#x} intid:{intid:#x} target_list:{target_list:#x}"
+                    "arm_vcpu ICC_SGI1R_EL1 write: aff3:{aff3:#x} aff2:{aff2:#x} aff1:{aff1:#x} \
+                     intid:{intid:#x} target_list:{target_list:#x}"
                 );
 
                 Ok(Some(AxVCpuExitReason::SendIPI {

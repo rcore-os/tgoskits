@@ -88,11 +88,9 @@ macro_rules! arm_at {
 /// # Errors
 /// Returns a `BadState` error if the translation is aborted (indicated by the `F` bit in `PAR_EL1`).
 fn translate_far_to_hpfar(far: usize) -> AxResult<usize> {
-    /*
-     * We have
-     *	PAR[PA_Shift - 1 : 12] = PA[PA_Shift - 1 : 12]
-     *	HPFAR[PA_Shift - 9 : 4]  = FIPA[PA_Shift - 1 : 12]
-     */
+    // We have
+    // 	PAR[PA_Shift - 1 : 12] = PA[PA_Shift - 1 : 12]
+    // 	HPFAR[PA_Shift - 9 : 4]  = FIPA[PA_Shift - 1 : 12]
     // #define PAR_TO_HPFAR(par) (((par) & GENMASK_ULL(PHYS_MASK_SHIFT - 1, 12)) >> 8)
     fn par_to_far(par: u64) -> u64 {
         let mask = ((1 << (52 - 12)) - 1) << 12;

@@ -1,12 +1,12 @@
-use std::io;
-use std::mem;
-use std::os::unix::io::{AsRawFd, RawFd};
+use std::{
+    io, mem,
+    os::unix::io::{AsRawFd, RawFd},
+};
 
 use libc;
 
 use super::{ifreq, ifreq_for};
-use crate::phy::Medium;
-use crate::wire::ETHERNET_HEADER_LEN;
+use crate::{phy::Medium, wire::ETHERNET_HEADER_LEN};
 
 /// set interface
 #[cfg(any(
@@ -58,7 +58,7 @@ const BPF_HDRLEN: usize = (((SIZEOF_BPF_HDR + ETHERNET_HEADER_LEN) + mem::align_
     - ETHERNET_HEADER_LEN;
 
 macro_rules! try_ioctl {
-    ($fd:expr,$cmd:expr,$req:expr) => {
+    ($fd:expr, $cmd:expr, $req:expr) => {
         unsafe {
             if libc::ioctl($fd, $cmd, $req) == -1 {
                 return Err(io::Error::last_os_error());

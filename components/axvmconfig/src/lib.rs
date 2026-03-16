@@ -22,13 +22,12 @@ extern crate alloc;
 #[macro_use]
 extern crate log;
 
-use alloc::string::String;
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 use core::fmt::{Display, Formatter};
-use enumerable::Enumerable;
-use serde_repr::{Deserialize_repr, Serialize_repr};
 
 use axerrno::AxResult;
+use enumerable::Enumerable;
+use serde_repr::{Deserialize_repr, Serialize_repr};
 
 #[cfg_attr(feature = "std", derive(schemars::JsonSchema))]
 /// A part of `AxVMConfig`, which represents guest VM type.
@@ -38,9 +37,9 @@ pub enum VMType {
     VMTHostVM = 0,
     /// Guest RTOS, generally a simple guest OS with most of the resource passthrough.
     #[default]
-    VMTRTOS = 1,
+    VMTRTOS   = 1,
     /// Guest Linux, generally a full-featured guest OS with complicated device emulation requirements.
-    VMTLinux = 2,
+    VMTLinux  = 2,
 }
 
 impl From<usize> for VMType {
@@ -72,11 +71,11 @@ impl From<VMType> for usize {
 #[repr(u8)]
 pub enum VmMemMappingType {
     /// The memory region is allocated by the VM monitor.
-    MapAlloc = 0,
+    MapAlloc     = 0,
     /// The memory region is identical to the host physical memory region.
     MapIdentical = 1,
     /// The memory region is reserved memory for the guest OS.
-    MapReserved = 2,
+    MapReserved  = 2,
 }
 
 /// The default value of `VmMemMappingType` is `MapAlloc`.
@@ -127,38 +126,38 @@ pub enum EmulatedDeviceType {
     // Special devices and abstract device types.
     /// Dummy device type.
     #[default]
-    Dummy = 0x0,
+    Dummy               = 0x0,
     /// Interrupt controller device, e.g. vGICv2 in aarch64, vLAPIC in x86.
     InterruptController = 0x1,
     /// Console (serial) device.
-    Console = 0x2,
+    Console             = 0x2,
     /// An emulated device that provides Inter-VM Communication (IVC) channel.
     ///
     /// This device is used for communication between different VMs,
     /// the corresponding memory region of this device should be marked as `Reserved` in
     /// device tree or ACPI table.
-    IVCChannel = 0xA,
+    IVCChannel          = 0xA,
 
     // Arch-specific interrupt controller devices.
     // 0x20 - 0x22: GPPT (GIC Partial Passthrough) devices.
     /// ARM GIC Partial Passthrough Redistributor device.
-    GPPTRedistributor = 0x20,
+    GPPTRedistributor   = 0x20,
     /// ARM GIC Partial Passthrough Distributor device.
-    GPPTDistributor = 0x21,
+    GPPTDistributor     = 0x21,
     /// ARM GIC Partial Passthrough Interrupt Translation Service device.
-    GPPTITS = 0x22,
+    GPPTITS             = 0x22,
 
     // 0x30: PPPT (PLIC Partial Passthrough) devices.
     /// RISC-V PLIC Partial Passthrough Global device.
-    PPPTGlobal = 0x30,
+    PPPTGlobal          = 0x30,
 
     // Virtio devices.
     /// Virtio block device.
-    VirtioBlk = 0xE1,
+    VirtioBlk           = 0xE1,
     /// Virtio net device.
-    VirtioNet = 0xE2,
+    VirtioNet           = 0xE2,
     /// Virtio console device.
-    VirtioConsole = 0xE3,
+    VirtioConsole       = 0xE3,
     // Following are some other emulated devices that are not currently used and removed from the enum temporarily.
     // /// IOMMU device.
     // IOMMU = 0x6,
@@ -380,10 +379,10 @@ pub struct VMDevicesConfig {
     /// How the VM should handle interrupts and interrupt controllers.
     #[serde(default)]
     pub interrupt_mode: VMInterruptMode,
-    ///we would not like to pass through devices
+    /// we would not like to pass through devices
     #[serde(default)]
     pub excluded_devices: Vec<Vec<String>>,
-    ///we would like to pass through address
+    /// we would like to pass through address
     #[serde(default)]
     pub passthrough_addresses: Vec<PassThroughAddressConfig>,
 }

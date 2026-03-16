@@ -1,6 +1,8 @@
-use crate::Rtc;
-use chrono::{DateTime, TimeZone as _, Utc};
 use core::num::TryFromIntError;
+
+use chrono::{DateTime, TimeZone as _, Utc};
+
+use crate::Rtc;
 
 impl Rtc {
     /// Returns the current time.

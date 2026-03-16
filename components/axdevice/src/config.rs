@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use alloc::vec::Vec;
+
 use axvmconfig::EmulatedDeviceConfig;
 
 /// The vector of DeviceConfig

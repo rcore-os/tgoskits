@@ -92,15 +92,17 @@ fn any_ip(#[case] medium: Medium) {
 
     // Accept any IP:
     iface.set_any_ip(true);
-    assert!(iface
-        .inner
-        .process_ipv6(
-            &mut sockets,
-            PacketMeta::default(),
-            HardwareAddress::default(),
-            &Ipv6Packet::new_checked(&data[..]).unwrap()
-        )
-        .is_some());
+    assert!(
+        iface
+            .inner
+            .process_ipv6(
+                &mut sockets,
+                PacketMeta::default(),
+                HardwareAddress::default(),
+                &Ipv6Packet::new_checked(&data[..]).unwrap()
+            )
+            .is_some()
+    );
 }
 
 #[rstest]
@@ -847,7 +849,7 @@ fn test_handle_valid_ndisc_request(#[case] medium: Medium) {
 #[case(Medium::Ieee802154)]
 #[cfg(feature = "medium-ieee802154")]
 fn test_solicited_node_addrs(#[case] medium: Medium) {
-    let (mut iface, _, _) = setup(medium);
+    let (mut iface, ..) = setup(medium);
     let mut new_addrs = heapless::Vec::<IpCidr, IFACE_MAX_ADDR_COUNT>::new();
     new_addrs
         .push(IpCidr::new(IpAddress::v6(0xfe80, 0, 0, 0, 1, 2, 0, 2), 64))
@@ -862,15 +864,21 @@ fn test_solicited_node_addrs(#[case] medium: Medium) {
         new_addrs.extend(addrs.to_vec());
         *addrs = new_addrs;
     });
-    assert!(iface
-        .inner
-        .has_solicited_node(Ipv6Address::new(0xff02, 0, 0, 0, 0, 1, 0xff00, 0x0002)));
-    assert!(iface
-        .inner
-        .has_solicited_node(Ipv6Address::new(0xff02, 0, 0, 0, 0, 1, 0xff00, 0xffff)));
-    assert!(!iface
-        .inner
-        .has_solicited_node(Ipv6Address::new(0xff02, 0, 0, 0, 0, 1, 0xff00, 0x0003)));
+    assert!(
+        iface
+            .inner
+            .has_solicited_node(Ipv6Address::new(0xff02, 0, 0, 0, 0, 1, 0xff00, 0x0002))
+    );
+    assert!(
+        iface
+            .inner
+            .has_solicited_node(Ipv6Address::new(0xff02, 0, 0, 0, 0, 1, 0xff00, 0xffff))
+    );
+    assert!(
+        !iface
+            .inner
+            .has_solicited_node(Ipv6Address::new(0xff02, 0, 0, 0, 0, 1, 0xff00, 0x0003))
+    );
 }
 
 #[rstest]
@@ -881,8 +889,7 @@ fn test_solicited_node_addrs(#[case] medium: Medium) {
 #[case(Medium::Ieee802154)]
 #[cfg(all(feature = "socket-udp", feature = "medium-ieee802154"))]
 fn test_icmp_reply_size(#[case] medium: Medium) {
-    use crate::wire::Icmpv6DstUnreachable;
-    use crate::wire::IPV6_MIN_MTU as MIN_MTU;
+    use crate::wire::{IPV6_MIN_MTU as MIN_MTU, Icmpv6DstUnreachable};
     const MAX_PAYLOAD_LEN: usize = 1192;
 
     let (mut iface, mut sockets, _device) = setup(medium);
@@ -953,7 +960,7 @@ fn test_icmp_reply_size(#[case] medium: Medium) {
 #[cfg(feature = "medium-ip")]
 #[test]
 fn get_source_address() {
-    let (mut iface, _, _) = setup(Medium::Ip);
+    let (mut iface, ..) = setup(Medium::Ip);
 
     const OWN_LINK_LOCAL_ADDR: Ipv6Address = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
     const OWN_UNIQUE_LOCAL_ADDR1: Ipv6Address = Ipv6Address::new(0xfd00, 0, 0, 201, 1, 1, 1, 2);
@@ -1070,7 +1077,7 @@ fn get_source_address() {
 #[cfg(feature = "medium-ip")]
 #[test]
 fn get_source_address_only_link_local() {
-    let (mut iface, _, _) = setup(Medium::Ip);
+    let (mut iface, ..) = setup(Medium::Ip);
 
     // List of addresses in the interface:
     //   fe80::1/64
@@ -1168,7 +1175,7 @@ fn get_source_address_only_link_local() {
 #[cfg(feature = "medium-ip")]
 #[test]
 fn get_source_address_empty_interface() {
-    let (mut iface, _, _) = setup(Medium::Ip);
+    let (mut iface, ..) = setup(Medium::Ip);
 
     iface.update_ip_addrs(|ips| ips.clear());
 
@@ -1570,7 +1577,7 @@ fn test_handle_valid_multicast_query(#[case] medium: Medium) {
 #[case(Medium::Ethernet)]
 #[cfg(all(feature = "multicast", feature = "medium-ethernet"))]
 fn test_solicited_node_multicast_autojoin(#[case] medium: Medium) {
-    let (mut iface, _, _) = setup(medium);
+    let (mut iface, ..) = setup(medium);
 
     let addr1 = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
     let addr2 = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 2);

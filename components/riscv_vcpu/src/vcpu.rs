@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, MappingFlags, device::AccessWidth};
+use axerrno::{AxError::InvalidData, AxResult};
+use axvcpu::{AxVCpuExitReason, AxVCpuHal};
 use riscv::register::{scause, sie, sstatus};
 use riscv_decode::{
     Instruction,
@@ -34,10 +37,6 @@ use sbi_spec::{hsm, legacy, srst};
 use crate::{
     EID_HVC, RISCVVCpuCreateConfig, consts::traps::irq::S_EXT, guest_mem, regs::*, sbi_console::*,
 };
-
-use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, MappingFlags, device::AccessWidth};
-use axerrno::{AxError::InvalidData, AxResult};
-use axvcpu::{AxVCpuExitReason, AxVCpuHal};
 
 unsafe extern "C" {
     fn _run_guest(state: *mut VmCpuRegisters);
@@ -255,8 +254,9 @@ impl<H: AxVCpuHal> RISCVVCpu<H> {
         self.regs.trap_csrs.load_from_hw();
 
         let scause = scause::read();
-        use super::trap::Exception;
         use riscv::interrupt::{Interrupt, Trap};
+
+        use super::trap::Exception;
 
         trace!(
             "vmexit_handler: {:?}, sepc: {:#x}, stval: {:#x}",
@@ -311,7 +311,8 @@ impl<H: AxVCpuHal> RISCVVCpu<H> {
                         }
                         _ => {
                             warn!(
-                                "Unsupported SBI legacy extension id {extension_id:#x} function id {function_id:#x}"
+                                "Unsupported SBI legacy extension id {extension_id:#x} function \
+                                 id {function_id:#x}"
                             );
                         }
                     },
@@ -445,7 +446,8 @@ impl<H: AxVCpuHal> RISCVVCpu<H> {
                         let ret = self.sbi.handle_ecall(extension_id, function_id, param);
                         if ret.is_err() {
                             warn!(
-                                "forward ecall eid {:#x} fid {:#x} param {:#x?} err {:#x} value {:#x}",
+                                "forward ecall eid {:#x} fid {:#x} param {:#x?} err {:#x} value \
+                                 {:#x}",
                                 extension_id, function_id, param, ret.error, ret.value
                             );
                         }

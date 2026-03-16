@@ -1,5 +1,4 @@
-use std::alloc::Layout;
-use std::ptr::NonNull;
+use std::{alloc::Layout, ptr::NonNull};
 
 pub struct MemoryPool {
     ptr: NonNull<u8>,

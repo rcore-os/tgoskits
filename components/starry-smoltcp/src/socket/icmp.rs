@@ -2,19 +2,18 @@ use core::cmp;
 #[cfg(feature = "async")]
 use core::task::Waker;
 
-use crate::phy::ChecksumCapabilities;
 #[cfg(feature = "async")]
 use crate::socket::WakerRegistration;
-use crate::socket::{Context, PollAt};
-
-use crate::storage::Empty;
-use crate::wire::IcmpRepr;
 #[cfg(feature = "proto-ipv4")]
 use crate::wire::{Icmpv4Packet, Icmpv4Repr, Ipv4Repr};
 #[cfg(feature = "proto-ipv6")]
 use crate::wire::{Icmpv6Packet, Icmpv6Repr, Ipv6Repr};
-use crate::wire::{IpAddress, IpListenEndpoint, IpProtocol, IpRepr};
-use crate::wire::{UdpPacket, UdpRepr};
+use crate::{
+    phy::ChecksumCapabilities,
+    socket::{Context, PollAt},
+    storage::Empty,
+    wire::{IcmpRepr, IpAddress, IpListenEndpoint, IpProtocol, IpRepr, UdpPacket, UdpRepr},
+};
 
 /// Error returned by [`Socket::bind`]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -681,12 +680,14 @@ mod tests_common {
 
 #[cfg(all(test, feature = "proto-ipv4"))]
 mod test_ipv4 {
-    use crate::phy::Medium;
-    use crate::tests::setup;
     use rstest::*;
 
     use super::tests_common::*;
-    use crate::wire::{Icmpv4DstUnreachable, IpEndpoint, Ipv4Address};
+    use crate::{
+        phy::Medium,
+        tests::setup,
+        wire::{Icmpv4DstUnreachable, IpEndpoint, Ipv4Address},
+    };
 
     const REMOTE_IPV4: Ipv4Address = Ipv4Address::new(192, 168, 1, 2);
     const LOCAL_IPV4: Ipv4Address = Ipv4Address::new(192, 168, 1, 1);
@@ -731,7 +732,7 @@ mod test_ipv4 {
     #[case::ethernet(Medium::Ethernet)]
     #[cfg(feature = "medium-ethernet")]
     fn test_send_dispatch(#[case] medium: Medium) {
-        let (mut iface, _, _) = setup(medium);
+        let (mut iface, ..) = setup(medium);
         let cx = iface.context();
 
         let mut socket = socket(buffer(0), buffer(1));
@@ -787,7 +788,7 @@ mod test_ipv4 {
     #[case::ethernet(Medium::Ethernet)]
     #[cfg(feature = "medium-ethernet")]
     fn test_set_hop_limit_v4(#[case] medium: Medium) {
-        let (mut iface, _, _) = setup(medium);
+        let (mut iface, ..) = setup(medium);
         let cx = iface.context();
 
         let mut s = socket(buffer(0), buffer(1));
@@ -825,7 +826,7 @@ mod test_ipv4 {
     #[case::ethernet(Medium::Ethernet)]
     #[cfg(feature = "medium-ethernet")]
     fn test_recv_process(#[case] medium: Medium) {
-        let (mut iface, _, _) = setup(medium);
+        let (mut iface, ..) = setup(medium);
         let cx = iface.context();
 
         let mut socket = socket(buffer(1), buffer(1));
@@ -856,7 +857,7 @@ mod test_ipv4 {
     #[case::ethernet(Medium::Ethernet)]
     #[cfg(feature = "medium-ethernet")]
     fn test_accept_bad_id(#[case] medium: Medium) {
-        let (mut iface, _, _) = setup(medium);
+        let (mut iface, ..) = setup(medium);
         let cx = iface.context();
 
         let mut socket = socket(buffer(1), buffer(1));
@@ -881,7 +882,7 @@ mod test_ipv4 {
     #[case::ethernet(Medium::Ethernet)]
     #[cfg(feature = "medium-ethernet")]
     fn test_accepts_udp(#[case] medium: Medium) {
-        let (mut iface, _, _) = setup(medium);
+        let (mut iface, ..) = setup(medium);
         let cx = iface.context();
 
         let mut socket = socket(buffer(1), buffer(1));
@@ -942,13 +943,14 @@ mod test_ipv4 {
 
 #[cfg(all(test, feature = "proto-ipv6"))]
 mod test_ipv6 {
-    use crate::phy::Medium;
-    use crate::tests::setup;
     use rstest::*;
 
     use super::tests_common::*;
-
-    use crate::wire::{Icmpv6DstUnreachable, IpEndpoint, Ipv6Address};
+    use crate::{
+        phy::Medium,
+        tests::setup,
+        wire::{Icmpv6DstUnreachable, IpEndpoint, Ipv6Address},
+    };
 
     const REMOTE_IPV6: Ipv6Address = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 2);
     const LOCAL_IPV6: Ipv6Address = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
@@ -992,7 +994,7 @@ mod test_ipv6 {
     #[case::ethernet(Medium::Ethernet)]
     #[cfg(feature = "medium-ethernet")]
     fn test_send_dispatch(#[case] medium: Medium) {
-        let (mut iface, _, _) = setup(medium);
+        let (mut iface, ..) = setup(medium);
         let cx = iface.context();
 
         let mut socket = socket(buffer(0), buffer(1));
@@ -1048,7 +1050,7 @@ mod test_ipv6 {
     #[case::ethernet(Medium::Ethernet)]
     #[cfg(feature = "medium-ethernet")]
     fn test_set_hop_limit(#[case] medium: Medium) {
-        let (mut iface, _, _) = setup(medium);
+        let (mut iface, ..) = setup(medium);
         let cx = iface.context();
 
         let mut s = socket(buffer(0), buffer(1));
@@ -1086,7 +1088,7 @@ mod test_ipv6 {
     #[case::ethernet(Medium::Ethernet)]
     #[cfg(feature = "medium-ethernet")]
     fn test_recv_process(#[case] medium: Medium) {
-        let (mut iface, _, _) = setup(medium);
+        let (mut iface, ..) = setup(medium);
         let cx = iface.context();
 
         let mut socket = socket(buffer(1), buffer(1));
@@ -1117,7 +1119,7 @@ mod test_ipv6 {
     #[case::ethernet(Medium::Ethernet)]
     #[cfg(feature = "medium-ethernet")]
     fn test_truncated_recv_slice(#[case] medium: Medium) {
-        let (mut iface, _, _) = setup(medium);
+        let (mut iface, ..) = setup(medium);
         let cx = iface.context();
 
         let mut socket = socket(buffer(1), buffer(1));
@@ -1148,7 +1150,7 @@ mod test_ipv6 {
     #[case::ethernet(Medium::Ethernet)]
     #[cfg(feature = "medium-ethernet")]
     fn test_accept_bad_id(#[case] medium: Medium) {
-        let (mut iface, _, _) = setup(medium);
+        let (mut iface, ..) = setup(medium);
         let cx = iface.context();
 
         let mut socket = socket(buffer(1), buffer(1));
@@ -1173,7 +1175,7 @@ mod test_ipv6 {
     #[case::ethernet(Medium::Ethernet)]
     #[cfg(feature = "medium-ethernet")]
     fn test_accepts_udp(#[case] medium: Medium) {
-        let (mut iface, _, _) = setup(medium);
+        let (mut iface, ..) = setup(medium);
         let cx = iface.context();
 
         let mut socket = socket(buffer(1), buffer(1));

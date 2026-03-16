@@ -1,12 +1,14 @@
 #![feature(btreemap_alloc)]
 #![feature(allocator_api)]
 
-use std::alloc::{Allocator, Layout};
-use std::collections::BTreeMap;
-use std::io::Write;
+use std::{
+    alloc::{Allocator, Layout},
+    collections::BTreeMap,
+    io::Write,
+};
 
 use axallocator::{AllocatorRc, BuddyByteAllocator, SlabByteAllocator, TlsfByteAllocator};
-use rand::{prelude::SliceRandom, Rng};
+use rand::{Rng, prelude::SliceRandom};
 
 const POOL_SIZE: usize = 1024 * 1024 * 128;
 

@@ -1,21 +1,20 @@
 #[cfg(feature = "async")]
 use core::task::Waker;
 
-use crate::iface::Context;
-use crate::time::{Duration, Instant};
-use crate::wire::dhcpv4::field as dhcpv4_field;
-use crate::wire::{
-    DhcpMessageType, DhcpPacket, DhcpRepr, IpAddress, IpProtocol, Ipv4Address, Ipv4AddressExt,
-    Ipv4Cidr, Ipv4Repr, UdpRepr, DHCP_CLIENT_PORT, DHCP_MAX_DNS_SERVER_COUNT, DHCP_SERVER_PORT,
-    UDP_HEADER_LEN,
-};
-use crate::wire::{DhcpOption, HardwareAddress};
 use heapless::Vec;
 
+use super::PollAt;
 #[cfg(feature = "async")]
 use super::WakerRegistration;
-
-use super::PollAt;
+use crate::{
+    iface::Context,
+    time::{Duration, Instant},
+    wire::{
+        DHCP_CLIENT_PORT, DHCP_MAX_DNS_SERVER_COUNT, DHCP_SERVER_PORT, DhcpMessageType, DhcpOption,
+        DhcpPacket, DhcpRepr, HardwareAddress, IpAddress, IpProtocol, Ipv4Address, Ipv4AddressExt,
+        Ipv4Cidr, Ipv4Repr, UDP_HEADER_LEN, UdpRepr, dhcpv4::field as dhcpv4_field,
+    },
+};
 
 const DEFAULT_LEASE_DURATION: Duration = Duration::from_secs(120);
 
@@ -538,7 +537,7 @@ impl<'a> Socket<'a> {
 
             // Use the defaults if the following order is not met:
             // T1 < T2 < lease_duration
-            (_, _) => {
+            (..) => {
                 net_debug!("using default T1 and T2 values since the provided values are invalid");
                 (lease_duration / 2, lease_duration * 7 / 8)
             }
@@ -1074,12 +1073,12 @@ mod test {
     // =========================================================================================//
     // Tests
 
-    use crate::phy::Medium;
-    use crate::tests::setup;
     use rstest::*;
 
+    use crate::{phy::Medium, tests::setup};
+
     fn socket(medium: Medium) -> TestSocket {
-        let (iface, _, _) = setup(medium);
+        let (iface, ..) = setup(medium);
         let mut s = Socket::new();
         assert_eq!(s.poll(), Some(Event::Deconfigured));
         TestSocket {
@@ -1089,7 +1088,7 @@ mod test {
     }
 
     fn socket_different_port(medium: Medium) -> TestSocket {
-        let (iface, _, _) = setup(medium);
+        let (iface, ..) = setup(medium);
         let mut s = Socket::new();
         s.set_ports(DIFFERENT_SERVER_PORT, DIFFERENT_CLIENT_PORT);
 

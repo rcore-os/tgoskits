@@ -180,9 +180,9 @@ set_clear_csr!(
 #[repr(usize)]
 pub enum UxlValues {
     /// 32-bit virtual address space
-    Uxl32 = 1,
+    Uxl32  = 1,
     /// 64-bit virtual address space
-    Uxl64 = 2,
+    Uxl64  = 2,
     /// 128-bit virtual address space
     Uxl128 = 3,
 }

@@ -5,12 +5,12 @@
 
 extern crate alloc;
 
+use alloc::{boxed::Box, sync::Arc, task::Wake};
 use core::{
     mem::MaybeUninit,
     task::{Context, Waker},
 };
 
-use alloc::{boxed::Box, sync::Arc, task::Wake};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 use spin::{Lazy, Mutex};

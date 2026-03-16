@@ -1,9 +1,10 @@
+use core::fmt;
+
+use byteorder::{ByteOrder, NetworkEndian};
+
 use super::{Error, Result};
 #[cfg(feature = "proto-rpl")]
 use super::{RplHopByHopPacket, RplHopByHopRepr};
-
-use byteorder::{ByteOrder, NetworkEndian};
-use core::fmt;
 
 enum_with_unknown! {
     /// IPv6 Extension Header Option Type
@@ -57,11 +58,11 @@ impl RouterAlert {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum FailureType {
     /// Skip this option and continue processing the packet
-    Skip = 0b00000000,
+    Skip               = 0b00000000,
     /// Discard the containing packet
-    Discard = 0b01000000,
+    Discard            = 0b01000000,
     /// Discard the containing packet and notify the sender
-    DiscardSendAll = 0b10000000,
+    DiscardSendAll     = 0b10000000,
     /// Discard the containing packet and only notify the sender
     /// if the sender is a unicast address
     DiscardSendUnicast = 0b11000000,

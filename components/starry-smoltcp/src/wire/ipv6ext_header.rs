@@ -1,7 +1,6 @@
 #![allow(unused)]
 
-use super::IpProtocol;
-use super::{Error, Result};
+use super::{Error, IpProtocol, Result};
 
 mod field {
     #![allow(non_snake_case)]

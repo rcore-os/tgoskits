@@ -1,16 +1,15 @@
 #![allow(clippy::option_map_unit_fn)]
 mod utils;
 
-use log::*;
 use std::os::unix::io::AsRawFd;
 
-use smoltcp::iface::{Config, Interface, SocketSet};
-use smoltcp::socket::dhcpv4;
-use smoltcp::time::Instant;
-use smoltcp::wire::{EthernetAddress, IpCidr, Ipv4Cidr};
+use log::*;
 use smoltcp::{
-    phy::{wait as phy_wait, Device, Medium},
-    time::Duration,
+    iface::{Config, Interface, SocketSet},
+    phy::{Device, Medium, wait as phy_wait},
+    socket::dhcpv4,
+    time::{Duration, Instant},
+    wire::{EthernetAddress, IpCidr, Ipv4Cidr},
 };
 
 fn main() {
@@ -25,7 +24,7 @@ fn main() {
     let device = utils::parse_tuntap_options(&mut matches);
     let fd = device.as_raw_fd();
     let mut device =
-        utils::parse_middleware_options(&mut matches, device, /*loopback=*/ false);
+        utils::parse_middleware_options(&mut matches, device, /* loopback= */ false);
 
     // Create interface
     let mut config = match device.capabilities().medium {

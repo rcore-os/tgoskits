@@ -1,9 +1,11 @@
 use std::collections::VecDeque;
 
-use crate::iface::*;
-use crate::phy::{self, Device, DeviceCapabilities, Medium};
-use crate::time::Instant;
-use crate::wire::*;
+use crate::{
+    iface::*,
+    phy::{self, Device, DeviceCapabilities, Medium},
+    time::Instant,
+    wire::*,
+};
 
 pub(crate) fn setup<'a>(medium: Medium) -> (Interface, SocketSet<'a>, TestingDevice) {
     let mut device = TestingDevice::new(medium);

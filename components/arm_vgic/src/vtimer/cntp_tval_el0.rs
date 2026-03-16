@@ -14,15 +14,15 @@
 
 extern crate alloc;
 
+use alloc::boxed::Box;
+use core::time::Duration;
+
 use aarch64_sysreg::SystemRegType;
 use axaddrspace::device::{AccessWidth, DeviceAddrRange, SysRegAddr, SysRegAddrRange};
 use axdevice_base::{BaseDeviceOps, EmuDeviceType};
 use axerrno::AxResult;
 use axvisor_api::time::{current_time_nanos, register_timer};
 use log::info;
-
-use alloc::boxed::Box;
-use core::time::Duration;
 
 impl BaseDeviceOps<SysRegAddrRange> for SysCntpTvalEl0 {
     fn emu_type(&self) -> EmuDeviceType {

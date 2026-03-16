@@ -1,8 +1,7 @@
 use managed::ManagedSlice;
 
-use crate::storage::{Full, RingBuffer};
-
 use super::Empty;
+use crate::storage::{Full, RingBuffer};
 
 /// Size and header of a packet.
 #[derive(Debug, Clone, Copy)]
@@ -20,15 +19,12 @@ impl<H> PacketMetadata<H> {
     };
 
     fn padding(size: usize) -> PacketMetadata<H> {
-        PacketMetadata {
-            size: size,
-            header: None,
-        }
+        PacketMetadata { size, header: None }
     }
 
     fn packet(size: usize, header: H) -> PacketMetadata<H> {
         PacketMetadata {
-            size: size,
+            size,
             header: Some(header),
         }
     }
@@ -322,12 +318,14 @@ mod test {
         ));
         assert_eq!(buffer.metadata_ring.len(), 1);
 
-        assert!(buffer
-            .dequeue_with(|&mut (), payload| {
-                assert_eq!(payload, &b"abcd"[..]);
-                Result::<(), ()>::Ok(())
-            })
-            .is_ok());
+        assert!(
+            buffer
+                .dequeue_with(|&mut (), payload| {
+                    assert_eq!(payload, &b"abcd"[..]);
+                    Result::<(), ()>::Ok(())
+                })
+                .is_ok()
+        );
         assert_eq!(buffer.metadata_ring.len(), 0);
     }
 

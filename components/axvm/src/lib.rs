@@ -30,11 +30,7 @@ mod vm;
 pub mod config;
 
 pub use hal::AxVMHal;
-pub use vm::AxVCpuRef;
-pub use vm::AxVM;
-pub use vm::AxVMRef;
-pub use vm::VMMemoryRegion;
-pub use vm::VMStatus;
+pub use vm::{AxVCpuRef, AxVM, AxVMRef, VMMemoryRegion, VMStatus};
 
 /// The architecture-independent per-CPU type.
 pub type AxVMPerCpu<U> = axvcpu::AxPerCpu<vcpu::AxVMArchPerCpuImpl<U>>;

@@ -3,8 +3,7 @@
     allow(dead_code)
 )]
 
-use core::result;
-use core::str::FromStr;
+use core::{result, str::FromStr};
 
 #[cfg(feature = "medium-ethernet")]
 use crate::wire::EthernetAddress;

@@ -1,13 +1,14 @@
-use alloc::boxed::Box;
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
+
 use log::{error, trace, warn};
 
-use crate::ext4_backend::config::JBD2_BUFFER_MAX;
-use crate::ext4_backend::config::*;
-use crate::ext4_backend::error::*;
-use crate::ext4_backend::jbd2::jbdstruct::*;
+use crate::ext4_backend::{
+    config::{JBD2_BUFFER_MAX, *},
+    error::*,
+    jbd2::jbdstruct::*,
+};
 
-///可以调用block write的函数标记 有序管理写,jbd2需要
+/// 可以调用block write的函数标记 有序管理写,jbd2需要
 pub trait INeedBlockdevToWrite {}
 
 /// 外部需要实现的块设备trait
@@ -107,18 +108,18 @@ pub enum Jbd2RunState {
     Replay,
 }
 pub struct Jbd2Dev<B: BlockDevice> {
-    _mode: u8, //日志级别，默认ordered 0
+    _mode: u8, // 日志级别，默认ordered 0
     inner: BlockDev<B>,
-    journal_use: bool, //是否启用日志系统
+    journal_use: bool, // 是否启用日志系统
     _state: Jbd2RunState,
     systeam: Option<JBD2DEVSYSTEM>,
 }
 
-///jbd2代理blockdev
-///只记录metadata
+/// jbd2代理blockdev
+/// 只记录metadata
 /// 采用Jouranl超级快注入的思想，必须需要使用mount来给块设备注入超级块，之后才能使用日志。
 impl<B: BlockDevice> Jbd2Dev<B> {
-    ///你拿到我之后应该先把超级块给我传进来吧
+    /// 你拿到我之后应该先把超级块给我传进来吧
     pub fn initial_jbd2dev(_mode: u8, block_dev: B, use_journal: bool) -> Self {
         let block_dev = BlockDev::new(block_dev);
         Self {
@@ -134,7 +135,7 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         self.journal_use
     }
 
-    ///外部重放journal日志入口 注意性能影响
+    /// 外部重放journal日志入口 注意性能影响
     pub fn journal_replay(&mut self) {
         if self.journal_use {
             let dev = &mut self.inner.dev;
@@ -171,7 +172,7 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         self.systeam = Some(system);
     }
 
-    ///防止滥用，仅仅umount调用，确保事务缓存全部提交完毕
+    /// 防止滥用，仅仅umount调用，确保事务缓存全部提交完毕
     pub fn umount_commit(&mut self) {
         if self.journal_use {
             self.systeam
@@ -185,7 +186,7 @@ impl<B: BlockDevice> Jbd2Dev<B> {
     }
 
     pub fn write_block(&mut self, block_id: u32, is_metadata: bool) -> BlockDevResult<()> {
-        //error!("write block :{} ,use journal?:{} ismetadata:{}",block_id,self.journal_use,is_metadata);
+        // error!("write block :{} ,use journal?:{} ismetadata:{}",block_id,self.journal_use,is_metadata);
 
         // 1) 非元数据 或 未开启日志：直接写回到底层块设备
         if !self.journal_use || !is_metadata {
@@ -195,13 +196,13 @@ impl<B: BlockDevice> Jbd2Dev<B> {
 
         // 2) 元数据且启用日志：走 JBD2 事务
         //    此时之前的普通数据块已经完成写入
-        //由于分布提交机制，必须需要拷贝数据牺牲性能来确保日志提交
+        // 由于分布提交机制，必须需要拷贝数据牺牲性能来确保日志提交
 
         let meta_vec = self.inner.buffer();
         let mut new_buf = Box::new([0; BLOCK_SIZE]);
         new_buf[..].copy_from_slice(meta_vec);
         let updates = Jbd2Update(
-            //把缓存变成事务
+            // 把缓存变成事务
             block_id as u64,
             new_buf,
         );
@@ -219,21 +220,21 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         // 使用原始底层块设备提交事务
         let raw_dev = self.inner.device_mut();
 
-        //先写入缓存
+        // 先写入缓存
         if systeam.commit_queue.len() > JBD2_BUFFER_MAX {
-            //缓存已满 直接提交，然后再塞入缓存
+            // 缓存已满 直接提交，然后再塞入缓存
             let _ = systeam.commit_transaction(raw_dev);
-            //赛入缓存
+            // 赛入缓存
             systeam.commit_queue.push(updates);
             trace!("[JBD2 BUFFER] BUFFER IS FULL ,FLUSHED!")
         } else {
-            //赛入缓存
+            // 赛入缓存
             systeam.commit_queue.push(updates);
         }
 
         if self._mode == 0 {
-            //ordered模式
-            //再写入主盘
+            // ordered模式
+            // 再写入主盘
             self.inner.write_block(block_id)?;
         }
 
@@ -287,15 +288,15 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             boxbuf[..].copy_from_slice(&buf[off..off + (BLOCK_SIZE as usize)]);
             let updates = Jbd2Update((block_id + i) as u64, boxbuf);
 
-            //先写入缓存
+            // 先写入缓存
             if systeam.commit_queue.len() > JBD2_BUFFER_MAX {
-                //缓存已满 直接提交，然后再塞入缓存
+                // 缓存已满 直接提交，然后再塞入缓存
                 let _ = systeam.commit_transaction(raw_dev);
-                //赛入缓存
+                // 赛入缓存
                 systeam.commit_queue.push(updates);
                 trace!("[JBD2 BUFFER] BUFFER IS FULL ,FLUSHED!")
             } else {
-                //赛入缓存
+                // 赛入缓存
                 systeam.commit_queue.push(updates);
             }
         }

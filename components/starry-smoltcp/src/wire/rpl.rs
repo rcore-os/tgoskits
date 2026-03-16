@@ -5,8 +5,10 @@
 use byteorder::{ByteOrder, NetworkEndian};
 
 use super::{Error, Result};
-use crate::wire::icmpv6::Packet;
-use crate::wire::ipv6::{Address, AddressExt};
+use crate::wire::{
+    icmpv6::Packet,
+    ipv6::{Address, AddressExt},
+};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -81,21 +83,21 @@ mod field {
     pub const DIO_MOP: usize = 8;
     pub const DIO_PRF: usize = 8;
     pub const DIO_DTSN: usize = 9;
-    //pub const DIO_FLAGS: usize = 10;
-    //pub const DIO_RESERVED: usize = 11;
+    // pub const DIO_FLAGS: usize = 10;
+    // pub const DIO_RESERVED: usize = 11;
     pub const DIO_DODAG_ID: Field = 12..12 + 16;
 
     // Destination advertisement object (DAO)
     pub const DAO_K: usize = 5;
     pub const DAO_D: usize = 5;
-    //pub const DAO_FLAGS: usize = 5;
-    //pub const DAO_RESERVED: usize = 6;
+    // pub const DAO_FLAGS: usize = 5;
+    // pub const DAO_RESERVED: usize = 6;
     pub const DAO_SEQUENCE: usize = 7;
     pub const DAO_DODAG_ID: Field = 8..8 + 16;
 
     // Destination advertisement object ack (DAO-ACK)
     pub const DAO_ACK_D: usize = 5;
-    //pub const DAO_ACK_RESERVED: usize = 5;
+    // pub const DAO_ACK_RESERVED: usize = 5;
     pub const DAO_ACK_SEQUENCE: usize = 6;
     pub const DAO_ACK_STATUS: usize = 7;
     pub const DAO_ACK_DODAG_ID: Field = 8..8 + 16;
@@ -165,28 +167,28 @@ impl<'p, T: AsRef<[u8]> + ?Sized> Packet<&'p T> {
         let len = self.buffer.as_ref().len();
         match RplControlMessage::from(self.msg_code()) {
             RplControlMessage::DodagInformationSolicitation if len < field::DIS_RESERVED + 1 => {
-                return Err(Error)
+                return Err(Error);
             }
             RplControlMessage::DodagInformationObject if len < field::DIO_DODAG_ID.end => {
-                return Err(Error)
+                return Err(Error);
             }
             RplControlMessage::DestinationAdvertisementObject
                 if self.dao_dodag_id_present() && len < field::DAO_DODAG_ID.end =>
             {
-                return Err(Error)
+                return Err(Error);
             }
             RplControlMessage::DestinationAdvertisementObject if len < field::DAO_SEQUENCE + 1 => {
-                return Err(Error)
+                return Err(Error);
             }
             RplControlMessage::DestinationAdvertisementObjectAck
                 if self.dao_ack_dodag_id_present() && len < field::DAO_ACK_DODAG_ID.end =>
             {
-                return Err(Error)
+                return Err(Error);
             }
             RplControlMessage::DestinationAdvertisementObjectAck
                 if len < field::DAO_ACK_STATUS + 1 =>
             {
-                return Err(Error)
+                return Err(Error);
             }
             RplControlMessage::SecureDodagInformationSolicitation
             | RplControlMessage::SecureDodagInformationObject
@@ -655,15 +657,9 @@ impl core::fmt::Display for Repr<'_> {
             } => {
                 write!(
                     f,
-                    "DIO \
-                             IID={rpl_instance_id:?} \
-                             V={version_number} \
-                             R={rank} \
-                             G={grounded} \
-                             MOP={mode_of_operation:?} \
-                             Pref={dodag_preference} \
-                             DTSN={dtsn} \
-                             DODAGID={dodag_id}"
+                    "DIO IID={rpl_instance_id:?} V={version_number} R={rank} G={grounded} \
+                     MOP={mode_of_operation:?} Pref={dodag_preference} DTSN={dtsn} \
+                     DODAGID={dodag_id}"
                 )?;
             }
             Repr::DestinationAdvertisementObject {
@@ -675,11 +671,8 @@ impl core::fmt::Display for Repr<'_> {
             } => {
                 write!(
                     f,
-                    "DAO \
-                             IID={rpl_instance_id:?} \
-                             Ack={expect_ack} \
-                             Seq={sequence} \
-                             DODAGID={dodag_id:?}",
+                    "DAO IID={rpl_instance_id:?} Ack={expect_ack} Seq={sequence} \
+                     DODAGID={dodag_id:?}",
                 )?;
             }
             Repr::DestinationAdvertisementObjectAck {
@@ -691,11 +684,8 @@ impl core::fmt::Display for Repr<'_> {
             } => {
                 write!(
                     f,
-                    "DAO-ACK \
-                             IID={rpl_instance_id:?} \
-                             Seq={sequence} \
-                             Status={status} \
-                             DODAGID={dodag_id:?}",
+                    "DAO-ACK IID={rpl_instance_id:?} Seq={sequence} Status={status} \
+                     DODAGID={dodag_id:?}",
                 )?;
             }
         };
@@ -1880,9 +1870,9 @@ pub mod options {
         },
         RplTarget {
             prefix_length: u8,
-            prefix: crate::wire::Ipv6Address, // FIXME: this is not the correct type, because the
-                                              // field can be an IPv6 address, a prefix or a
-                                              // multicast group.
+            prefix: crate::wire::Ipv6Address, /* FIXME: this is not the correct type, because the
+                                               * field can be an IPv6 address, a prefix or a
+                                               * multicast group. */
         },
         TransitInformation {
             external: bool,
@@ -1927,11 +1917,8 @@ pub mod options {
                 } => {
                     write!(
                         f,
-                        "ROUTE INFO \
-                        PrefixLength={prefix_length} \
-                        Preference={preference} \
-                        Lifetime={lifetime} \
-                        Prefix={prefix:0x?}"
+                        "ROUTE INFO PrefixLength={prefix_length} Preference={preference} \
+                         Lifetime={lifetime} Prefix={prefix:0x?}"
                     )
                 }
                 Repr::DodagConfiguration {
@@ -1947,15 +1934,10 @@ pub mod options {
                 } => {
                     write!(
                         f,
-                        "DODAG CONF \
-                        IntD={dio_interval_doublings} \
-                        IntMin={dio_interval_min} \
-                        RedCst={dio_redundancy_constant} \
-                        MaxRankIncr={max_rank_increase} \
-                        MinHopRankIncr={minimum_hop_rank_increase} \
-                        OCP={objective_code_point} \
-                        DefaultLifetime={default_lifetime} \
-                        LifeUnit={lifetime_unit}"
+                        "DODAG CONF IntD={dio_interval_doublings} IntMin={dio_interval_min} \
+                         RedCst={dio_redundancy_constant} MaxRankIncr={max_rank_increase} \
+                         MinHopRankIncr={minimum_hop_rank_increase} OCP={objective_code_point} \
+                         DefaultLifetime={default_lifetime} LifeUnit={lifetime_unit}"
                     )
                 }
                 Repr::RplTarget {
@@ -1964,9 +1946,7 @@ pub mod options {
                 } => {
                     write!(
                         f,
-                        "RPL Target \
-                        PrefixLength={prefix_length} \
-                        Prefix={prefix:0x?}"
+                        "RPL Target PrefixLength={prefix_length} Prefix={prefix:0x?}"
                     )
                 }
                 Repr::TransitInformation {
@@ -1978,12 +1958,9 @@ pub mod options {
                 } => {
                     write!(
                         f,
-                        "Transit Info \
-                        External={external} \
-                        PathCtrl={path_control} \
-                        PathSqnc={path_sequence} \
-                        PathLifetime={path_lifetime} \
-                        Parent={parent_address:0x?}"
+                        "Transit Info External={external} PathCtrl={path_control} \
+                         PathSqnc={path_sequence} PathLifetime={path_lifetime} \
+                         Parent={parent_address:0x?}"
                     )
                 }
                 Repr::SolicitedInformation {
@@ -1996,13 +1973,9 @@ pub mod options {
                 } => {
                     write!(
                         f,
-                        "Solicited Info \
-                        I={instance_id_predicate} \
-                        IID={rpl_instance_id:0x?} \
-                        D={dodag_id_predicate} \
-                        DODAGID={dodag_id} \
-                        V={version_predicate} \
-                        Version={version_number}"
+                        "Solicited Info I={instance_id_predicate} IID={rpl_instance_id:0x?} \
+                         D={dodag_id_predicate} DODAGID={dodag_id} V={version_predicate} \
+                         Version={version_number}"
                     )
                 }
                 Repr::PrefixInformation {
@@ -2016,12 +1989,10 @@ pub mod options {
                 } => {
                     write!(
                         f,
-                        "Prefix Info \
-                        PrefixLength={prefix_length} \
-                        L={on_link} A={autonomous_address_configuration} R={router_address} \
-                        Valid={valid_lifetime} \
-                        Preferred={preferred_lifetime} \
-                        Prefix={destination_prefix:0x?}"
+                        "Prefix Info PrefixLength={prefix_length} L={on_link} \
+                         A={autonomous_address_configuration} R={router_address} \
+                         Valid={valid_lifetime} Preferred={preferred_lifetime} \
+                         Prefix={destination_prefix:0x?}"
                     )
                 }
                 Repr::RplTargetDescriptor { .. } => write!(f, "Target Descriptor"),
@@ -2229,8 +2200,9 @@ pub mod options {
 }
 
 pub mod data {
-    use super::{InstanceId, Result};
     use byteorder::{ByteOrder, NetworkEndian};
+
+    use super::{InstanceId, Result};
 
     mod field {
         use crate::wire::field::*;
@@ -2391,11 +2363,15 @@ pub mod data {
 
 #[cfg(test)]
 mod tests {
-    use super::options::{Packet as OptionPacket, Repr as OptionRepr};
-    use super::Repr as RplRepr;
-    use super::*;
-    use crate::phy::ChecksumCapabilities;
-    use crate::wire::{icmpv6::*, *};
+    use super::{
+        Repr as RplRepr,
+        options::{Packet as OptionPacket, Repr as OptionRepr},
+        *,
+    };
+    use crate::{
+        phy::ChecksumCapabilities,
+        wire::{icmpv6::*, *},
+    };
 
     #[test]
     fn dis_packet() {

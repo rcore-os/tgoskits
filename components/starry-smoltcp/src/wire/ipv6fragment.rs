@@ -1,7 +1,8 @@
-use super::{Error, Result};
 use core::fmt;
 
 use byteorder::{ByteOrder, NetworkEndian};
+
+use super::{Error, Result};
 
 /// A read/write wrapper around an IPv6 Fragment Header.
 #[derive(Debug, PartialEq, Eq)]

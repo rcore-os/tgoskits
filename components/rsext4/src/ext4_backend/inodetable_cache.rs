@@ -2,13 +2,9 @@
 //!
 //! 提供inode结构的缓存管理，支持延迟写回和LRU淘汰
 
-use crate::ext4_backend::blockdev::*;
-use crate::ext4_backend::config::*;
-use crate::ext4_backend::disknode::*;
-use crate::ext4_backend::endian::*;
-use crate::ext4_backend::error::*;
-use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
+use alloc::{collections::BTreeMap, vec::Vec};
+
+use crate::ext4_backend::{blockdev::*, config::*, disknode::*, endian::*, error::*};
 /// Inode缓存键（全局inode号）
 pub type InodeCacheKey = u64;
 
@@ -330,7 +326,7 @@ impl InodeCache {
 
         let mut idx = 0usize;
         while idx < dirty_inodes.len() {
-            let (block_num, _, _) = dirty_inodes[idx];
+            let (block_num, ..) = dirty_inodes[idx];
 
             // 读出当前 inode 表块到 Jbd2Dev 的 buffer
             block_dev.read_block(block_num as u32)?;

@@ -1,5 +1,4 @@
-use log::error;
-use log::warn;
+use log::{error, warn};
 /// 位图用于跟踪块和inode的分配状态
 
 /// 块位图包装结构
@@ -463,8 +462,9 @@ pub mod bitmap_utils {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec;
+
+    use super::*;
 
     #[test]
     fn test_block_bitmap_basic() {

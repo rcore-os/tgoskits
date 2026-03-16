@@ -1,22 +1,25 @@
 #![allow(dead_code)]
 
+use std::{
+    env,
+    fs::File,
+    io::{self, Write},
+    process,
+    str::{self, FromStr},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
 #[cfg(feature = "log")]
 use env_logger::Builder;
 use getopts::{Matches, Options};
 #[cfg(feature = "log")]
-use log::{trace, Level, LevelFilter};
-use std::env;
-use std::fs::File;
-use std::io::{self, Write};
-use std::process;
-use std::str::{self, FromStr};
-use std::time::{SystemTime, UNIX_EPOCH};
-
+use log::{Level, LevelFilter, trace};
 #[cfg(feature = "phy-tuntap_interface")]
 use smoltcp::phy::TunTapInterface;
-use smoltcp::phy::{Device, FaultInjector, Medium, Tracer};
-use smoltcp::phy::{PcapMode, PcapWriter};
-use smoltcp::time::{Duration, Instant};
+use smoltcp::{
+    phy::{Device, FaultInjector, Medium, PcapMode, PcapWriter, Tracer},
+    time::{Duration, Instant},
+};
 
 #[cfg(feature = "log")]
 pub fn setup_logging_with_clock<F>(filter: &str, since_startup: F)
@@ -130,15 +133,13 @@ pub fn add_middleware_options(opts: &mut Options, _free: &mut [&str]) {
     opts.optopt(
         "",
         "tx-rate-limit",
-        "Drop packets after transmit rate exceeds given limit \
-                                      (packets per interval)",
+        "Drop packets after transmit rate exceeds given limit (packets per interval)",
         "RATE",
     );
     opts.optopt(
         "",
         "rx-rate-limit",
-        "Drop packets after transmit rate exceeds given limit \
-                                      (packets per interval)",
+        "Drop packets after transmit rate exceeds given limit (packets per interval)",
         "RATE",
     );
     opts.optopt(

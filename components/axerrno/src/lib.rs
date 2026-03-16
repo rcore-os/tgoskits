@@ -2,6 +2,7 @@
 #![doc = include_str!("../README.md")]
 
 use core::fmt;
+
 use strum::EnumCount;
 
 mod linux_errno {
@@ -481,10 +482,7 @@ pub type AxResult<T = ()> = Result<T, AxError>;
 /// # use axerrno::{ax_err_type, AxError};
 /// #
 /// // Also print "[AxError::AlreadyExists]" if the `log` crate is enabled.
-/// assert_eq!(
-///     ax_err_type!(AlreadyExists),
-///     AxError::AlreadyExists,
-/// );
+/// assert_eq!(ax_err_type!(AlreadyExists), AxError::AlreadyExists,);
 ///
 /// // Also print "[AxError::BadAddress] the address is 0!" if the `log` crate
 /// // is enabled.
@@ -495,13 +493,13 @@ pub type AxResult<T = ()> = Result<T, AxError>;
 /// ```
 #[macro_export]
 macro_rules! ax_err_type {
-    ($err: ident) => {{
+    ($err:ident) => {{
         use $crate::AxErrorKind::*;
         let err = $crate::AxError::from($err);
         $crate::__priv::warn!("[{:?}]", err);
         err
     }};
-    ($err: ident, $msg: expr) => {{
+    ($err:ident, $msg:expr) => {{
         use $crate::AxErrorKind::*;
         let err = $crate::AxError::from($err);
         $crate::__priv::warn!("[{:?}] {}", err, $msg);
@@ -556,10 +554,10 @@ macro_rules! ensure {
 /// [`Err(AxError)`]: Err
 #[macro_export]
 macro_rules! ax_err {
-    ($err: ident) => {
+    ($err:ident) => {
         Err($crate::ax_err_type!($err))
     };
-    ($err: ident, $msg: expr) => {
+    ($err:ident, $msg:expr) => {
         Err($crate::ax_err_type!($err, $msg))
     };
 }

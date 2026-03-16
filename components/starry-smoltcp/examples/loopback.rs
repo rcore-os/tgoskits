@@ -6,17 +6,20 @@
 mod utils;
 
 use core::str;
-use log::{debug, error, info};
 
-use smoltcp::iface::{Config, Interface, SocketSet};
-use smoltcp::phy::{Device, Loopback, Medium};
-use smoltcp::socket::tcp;
-use smoltcp::time::{Duration, Instant};
-use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr};
+use log::{debug, error, info};
+use smoltcp::{
+    iface::{Config, Interface, SocketSet},
+    phy::{Device, Loopback, Medium},
+    socket::tcp,
+    time::{Duration, Instant},
+    wire::{EthernetAddress, IpAddress, IpCidr},
+};
 
 #[cfg(not(feature = "std"))]
 mod mock {
     use core::cell::Cell;
+
     use smoltcp::time::{Duration, Instant};
 
     #[derive(Debug)]
@@ -40,9 +43,12 @@ mod mock {
 
 #[cfg(feature = "std")]
 mod mock {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
     use smoltcp::time::{Duration, Instant};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
 
     // should be AtomicU64 but that's unstable
     #[derive(Debug, Clone)]
@@ -78,7 +84,7 @@ fn main() {
         utils::add_middleware_options(&mut opts, &mut free);
 
         let mut matches = utils::parse_options(&opts, free);
-        utils::parse_middleware_options(&mut matches, device, /*loopback=*/ true)
+        utils::parse_middleware_options(&mut matches, device, /* loopback= */ true)
     };
 
     // Create interface

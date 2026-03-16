@@ -2,13 +2,15 @@ mod utils;
 
 use std::os::unix::io::AsRawFd;
 
-use smoltcp::iface::{Config, Interface, SocketSet};
-use smoltcp::phy::{wait as phy_wait, Device, Medium};
-use smoltcp::socket::{raw, udp};
-use smoltcp::time::Instant;
-use smoltcp::wire::{
-    EthernetAddress, IgmpPacket, IgmpRepr, IpAddress, IpCidr, IpProtocol, IpVersion, Ipv4Address,
-    Ipv4Packet, Ipv6Address,
+use smoltcp::{
+    iface::{Config, Interface, SocketSet},
+    phy::{Device, Medium, wait as phy_wait},
+    socket::{raw, udp},
+    time::Instant,
+    wire::{
+        EthernetAddress, IgmpPacket, IgmpRepr, IpAddress, IpCidr, IpProtocol, IpVersion,
+        Ipv4Address, Ipv4Packet, Ipv6Address,
+    },
 };
 
 const MDNS_PORT: u16 = 5353;
@@ -25,7 +27,7 @@ fn main() {
     let device = utils::parse_tuntap_options(&mut matches);
     let fd = device.as_raw_fd();
     let mut device =
-        utils::parse_middleware_options(&mut matches, device, /*loopback=*/ false);
+        utils::parse_middleware_options(&mut matches, device, /* loopback= */ false);
 
     // Create interface
     let mut config = match device.capabilities().medium {

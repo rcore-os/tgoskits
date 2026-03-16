@@ -12,12 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::interrupt::VgicInt;
-use crate::registers::GicRegister;
-use crate::vgicd::Vgicd;
 use axerrno::AxResult;
 use axvisor_api::vmm::current_vcpu_id;
 use spin::Mutex;
+
+use crate::{interrupt::VgicInt, registers::GicRegister, vgicd::Vgicd};
 
 /// Virtual Generic Interrupt Controller.
 ///
@@ -67,7 +66,7 @@ impl Vgic {
                 }
             },
             None => {
-                //error!("Invalid read register address: {addr:#x}");
+                // error!("Invalid read register address: {addr:#x}");
                 Ok(0)
             }
         }
@@ -94,7 +93,7 @@ impl Vgic {
                     self.vgicd.lock().vgicd_isenabler_write(idx, value)
                 }
                 _ => {
-                    //error!("Write register address: {:#x}", addr);
+                    // error!("Write register address: {:#x}", addr);
                 }
             }
         }

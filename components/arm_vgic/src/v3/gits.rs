@@ -23,12 +23,11 @@ use log::{debug, trace};
 use memory_addr::PhysAddr;
 use spin::{Mutex, Once};
 
-use crate::v3::vgicr::get_lpt;
-
 use super::{
     registers::*,
     utils::{enable_one_lpi, perform_mmio_read, perform_mmio_write},
 };
+use crate::v3::vgicr::get_lpt;
 
 /// Virtual GITS registers.
 #[derive(Default)]
@@ -327,7 +326,8 @@ impl Cmdq {
                 // | (0b00 << 8)   // 4-KiB page size
                 | (16 - 1); // 16 frames, 64 KiB
             debug!(
-                "setting dt_baser: {dt_baser:#x}, ct_baser: {ct_baser:#x}, dt_addr: {dt_addr:?}, ct_addr: {ct_addr:?}"
+                "setting dt_baser: {dt_baser:#x}, ct_baser: {ct_baser:#x}, dt_addr: {dt_addr:?}, \
+                 ct_addr: {ct_addr:?}"
             );
             ptr::write_volatile(dt_baser_ptr, dt_baser);
             ptr::write_volatile(ct_baser_ptr, ct_baser);
@@ -415,7 +415,8 @@ impl Cmdq {
         let cmd_num = cmd_size / BYTES_PER_CMD;
 
         trace!(
-            "vm_cbaser: {vm_cbaser:#x}, vm_creadr: {vm_creadr:#x}, vm_writer: {vm_writer:#x}, vm_addr: {vm_addr:#x}"
+            "vm_cbaser: {vm_cbaser:#x}, vm_creadr: {vm_creadr:#x}, vm_writer: {vm_writer:#x}, \
+             vm_addr: {vm_addr:#x}"
         );
         debug!("cmd size: {cmd_size:#x}, cmd num: {cmd_num:#x}");
 
@@ -479,9 +480,5 @@ fn get_cmdq(host_gits_base: HostPhysAddr) -> &'static Mutex<Cmdq> {
 }
 
 fn ring_ptr_update(val: usize) -> usize {
-    if val >= 0x10000 {
-        val - 0x10000
-    } else {
-        val
-    }
+    if val >= 0x10000 { val - 0x10000 } else { val }
 }

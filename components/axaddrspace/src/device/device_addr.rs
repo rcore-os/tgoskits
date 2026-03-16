@@ -16,9 +16,8 @@ use core::fmt::LowerHex;
 
 use memory_addr::AddrRange;
 
-use crate::GuestPhysAddr;
-
 use super::{Port, SysRegAddr};
+use crate::GuestPhysAddr;
 
 /// An address-like type that can be used to access devices.
 pub trait DeviceAddr: Copy + Eq + Ord + core::fmt::Debug {}

@@ -5,10 +5,11 @@
 #[macro_use]
 extern crate anyhow;
 
+use std::{collections::HashSet, fs, path::Path, process::Command};
+
 use anyhow::{Context, Result};
 use cargo_metadata::{Metadata, MetadataCommand};
 use clap::{Parser, Subcommand};
-use std::{collections::HashSet, fs, path::Path, process::Command};
 
 mod axvisor;
 
@@ -253,9 +254,9 @@ fn run_target_test_command(os: &str, target: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::VecDeque, path::PathBuf};
+
     use super::*;
-    use std::collections::VecDeque;
-    use std::path::PathBuf;
 
     struct FakeCargoRunner {
         statuses: VecDeque<bool>,

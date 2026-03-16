@@ -4,14 +4,14 @@ use core::{fmt::Debug, time::Duration};
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum NodeType {
-    Unknown = 0,
-    Fifo = 0o1,
+    Unknown         = 0,
+    Fifo            = 0o1,
     CharacterDevice = 0o2,
-    Directory = 0o4,
-    BlockDevice = 0o6,
-    RegularFile = 0o10,
-    Symlink = 0o12,
-    Socket = 0o14,
+    Directory       = 0o4,
+    BlockDevice     = 0o6,
+    RegularFile     = 0o10,
+    Symlink         = 0o12,
+    Socket          = 0o14,
 }
 
 impl From<u8> for NodeType {

@@ -39,28 +39,27 @@
 //! # Teardown
 //!
 //!     rmmod mac802154_hwsim
-//!
 
 mod utils;
 
-use std::os::unix::io::AsRawFd;
-use std::str;
+use std::{
+    cmp, fs,
+    io::{Read, Write},
+    net::{SocketAddrV6, TcpStream},
+    os::unix::io::AsRawFd,
+    str,
+    sync::atomic::{AtomicBool, Ordering},
+    thread,
+};
 
-use smoltcp::iface::{Config, Interface, SocketSet};
-use smoltcp::phy::{wait as phy_wait, Device, Medium, RawSocket};
-use smoltcp::socket::tcp;
-use smoltcp::wire::{EthernetAddress, Ieee802154Address, Ieee802154Pan, IpAddress, IpCidr};
-
-//For benchmark
+// For benchmark
 use smoltcp::time::{Duration, Instant};
-use std::cmp;
-use std::io::{Read, Write};
-use std::net::SocketAddrV6;
-use std::net::TcpStream;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
-
-use std::fs;
+use smoltcp::{
+    iface::{Config, Interface, SocketSet},
+    phy::{Device, Medium, RawSocket, wait as phy_wait},
+    socket::tcp,
+    wire::{EthernetAddress, Ieee802154Address, Ieee802154Pan, IpAddress, IpCidr},
+};
 
 fn if_nametoindex(ifname: &str) -> u32 {
     let contents = fs::read_to_string(format!("/sys/devices/virtual/net/{ifname}/ifindex"))
@@ -138,7 +137,7 @@ fn main() {
 
     let fd = device.as_raw_fd();
     let mut device =
-        utils::parse_middleware_options(&mut matches, device, /*loopback=*/ false);
+        utils::parse_middleware_options(&mut matches, device, /* loopback= */ false);
 
     let mode = match matches.free[0].as_ref() {
         "reader" => Client::Reader,

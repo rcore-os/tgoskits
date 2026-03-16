@@ -1,11 +1,16 @@
+use std::{
+    env,
+    fs::File,
+    io::{self, Read},
+    path::Path,
+    process::exit,
+};
+
 use getopts::Options;
-use smoltcp::phy::{PcapLinkType, PcapSink};
-use smoltcp::time::Instant;
-use std::env;
-use std::fs::File;
-use std::io::{self, Read};
-use std::path::Path;
-use std::process::exit;
+use smoltcp::{
+    phy::{PcapLinkType, PcapSink},
+    time::Instant,
+};
 
 fn convert(
     packet_filename: &Path,

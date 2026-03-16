@@ -16,16 +16,18 @@ extern crate alloc;
 
 #[cfg(test)]
 mod tests {
-    use crate::{AxArchVCpu, AxVCpu, VCpuState, exit::AxVCpuExitReason};
     use alloc::{
         rc::Rc,
         string::{String, ToString},
         vec::Vec,
     };
+    use core::cell::RefCell;
+
     use axaddrspace::{GuestPhysAddr, HostPhysAddr};
     use axerrno::{AxError, AxResult};
     use axvisor_api::vmm::{VCpuId, VMId};
-    use core::cell::RefCell;
+
+    use crate::{AxArchVCpu, AxVCpu, VCpuState, exit::AxVCpuExitReason};
 
     // Mock architecture implementation for testing
     #[derive(Debug)]

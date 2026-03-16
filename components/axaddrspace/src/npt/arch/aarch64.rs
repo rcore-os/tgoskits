@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::arch::asm;
-use core::fmt;
+use core::{arch::asm, fmt};
+
 use page_table_entry::{GenericPTE, MappingFlags};
 use page_table_multiarch::PagingMetaData;
+
 // use memory_addr::HostPhysAddr;
 use crate::{GuestPhysAddr, HostPhysAddr};
 
@@ -72,8 +73,8 @@ bitflags::bitflags! {
 #[repr(u64)]
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum MemType {
-    Device = 0,
-    Normal = 1,
+    Device         = 0,
+    Normal         = 1,
     NormalNonCache = 2,
 }
 
