@@ -480,7 +480,7 @@ async fn run_arceos_test_package(
         arch.map(|v| v.to_string()),
         package.to_owned(),
         None,
-        false,
+        true,
         None,
         smp,
         false,
