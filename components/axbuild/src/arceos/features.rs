@@ -23,6 +23,7 @@ impl FeatureResolver {
     /// Default lib features for axlibc (C applications)
     pub const DEFAULT_LIBC_FEATURES: &[&str] = &[
         "fp-simd",
+        "smp",
         "irq",
         "alloc",
         "multitask",
@@ -69,6 +70,7 @@ impl FeatureResolver {
         matches!(
             feat,
             "fp-simd"
+                | "smp"
                 | "irq"
                 | "alloc"
                 | "multitask"
@@ -112,6 +114,10 @@ impl FeatureResolver {
     /// Resolve lib features for a specific library
     pub fn resolve_lib_features(config: &ArceosConfig, lib_name: &str) -> Vec<String> {
         let mut features = Vec::new();
+
+        if config.smp.unwrap_or(1) > 1 {
+            features.push("smp".to_string());
+        }
 
         // C application (axlibc) includes default lib features
         if lib_name == "axlibc" {
@@ -197,6 +203,7 @@ mod tests {
     #[test]
     fn test_is_lib_feature() {
         assert!(FeatureResolver::is_lib_feature("fp-simd"));
+        assert!(FeatureResolver::is_lib_feature("smp"));
         assert!(FeatureResolver::is_lib_feature("net"));
         assert!(!FeatureResolver::is_lib_feature("defplat"));
         assert!(!FeatureResolver::is_lib_feature("myplat"));
@@ -255,6 +262,29 @@ mod tests {
         assert!(lib_features.contains(&"fs".to_string()));
         assert!(lib_features.contains(&"net".to_string()));
         assert!(lib_features.contains(&"fp-simd".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_lib_features_enables_smp_when_cpu_count_gt_one() {
+        let mut config = ArceosConfig {
+            arch: Arch::AArch64,
+            platform: "aarch64-qemu-virt".to_string(),
+            app: PathBuf::from("examples/helloworld"),
+            mode: BuildMode::Debug,
+            log: LogLevel::Info,
+            smp: Some(4),
+            mem: None,
+            features: vec![],
+            app_features: vec![],
+            qemu: QemuOptions::default(),
+        };
+
+        let lib_features = FeatureResolver::resolve_lib_features(&config, "axstd");
+        assert!(lib_features.contains(&"smp".to_string()));
+
+        config.smp = Some(1);
+        let lib_features = FeatureResolver::resolve_lib_features(&config, "axstd");
+        assert!(!lib_features.contains(&"smp".to_string()));
     }
 
     #[test]

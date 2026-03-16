@@ -34,7 +34,11 @@ pub fn build_config_override(
     platform: Option<String>,
     release: bool,
     features: Option<String>,
+    smp: Option<usize>,
 ) -> Result<ArceosConfigOverride> {
+    if matches!(smp, Some(0)) {
+        anyhow::bail!("invalid SMP value `0`: SMP must be >= 1");
+    }
     Ok(ArceosConfigOverride {
         arch: arch
             .as_deref()
@@ -44,6 +48,7 @@ pub fn build_config_override(
         app: Some(resolve_package_app_dir(manifest_dir, &package)?),
         platform,
         mode: release.then_some(BuildMode::Release),
+        smp,
         features: features
             .as_deref()
             .map(FeatureResolver::parse_features)
@@ -60,6 +65,7 @@ pub fn run_config_override(
     platform: Option<String>,
     release: bool,
     features: Option<String>,
+    smp: Option<usize>,
     blk: bool,
     disk_img: Option<String>,
     net: bool,
@@ -67,8 +73,15 @@ pub fn run_config_override(
     graphic: bool,
     accel: bool,
 ) -> Result<ArceosConfigOverride> {
-    let mut overrides =
-        build_config_override(manifest_dir, arch, package, platform, release, features)?;
+    let mut overrides = build_config_override(
+        manifest_dir,
+        arch,
+        package,
+        platform,
+        release,
+        features,
+        smp,
+    )?;
     overrides.qemu = Some(parse_qemu_options(
         blk, disk_img, net, net_dev, graphic, accel,
     ));
@@ -95,14 +108,32 @@ mod tests {
             None,
             false,
             Some("fs,net".to_string()),
+            Some(4),
         )
         .unwrap();
 
         assert_eq!(overrides.arch, Some(Arch::X86_64));
         assert_eq!(overrides.app, Some(PathBuf::from("examples/helloworld")));
+        assert_eq!(overrides.smp, Some(4));
         assert_eq!(
             overrides.features,
             Some(vec!["fs".to_string(), "net".to_string()])
         );
+    }
+
+    #[test]
+    fn test_build_config_override_rejects_zero_smp() {
+        let manifest_dir = arceos_manifest_dir().unwrap();
+        let err = build_config_override(
+            &manifest_dir,
+            None,
+            "arceos-helloworld".to_string(),
+            None,
+            false,
+            None,
+            Some(0),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("SMP must be >= 1"));
     }
 }

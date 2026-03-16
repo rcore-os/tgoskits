@@ -144,37 +144,53 @@ fn cleanup_files(manifest_dir: &Path, config: &ArceosConfig) -> Vec<PathBuf> {
 }
 
 pub fn prepare_artifacts(manifest_dir: &Path, config: &ArceosConfig) -> Result<PreparedArtifacts> {
-    let project = ArtifactPreparer::new(manifest_dir.to_path_buf(), config.clone());
+    prepare_artifacts_with_qemu_config_path(manifest_dir, config, None)
+}
+
+pub fn prepare_artifacts_with_qemu_config_path(
+    manifest_dir: &Path,
+    config: &ArceosConfig,
+    qemu_config_path: Option<PathBuf>,
+) -> Result<PreparedArtifacts> {
+    let project =
+        ArtifactPreparer::new(manifest_dir.to_path_buf(), config.clone(), qemu_config_path);
     project.prepare()
 }
 
 struct ArtifactPreparer {
     config: ArceosConfig,
     manifest_dir: PathBuf,
+    qemu_config_path: Option<PathBuf>,
 }
 
 impl ArtifactPreparer {
-    fn new(manifest_dir: PathBuf, config: ArceosConfig) -> Self {
+    fn new(manifest_dir: PathBuf, config: ArceosConfig, qemu_config_path: Option<PathBuf>) -> Self {
         Self {
             config,
             manifest_dir,
+            qemu_config_path,
         }
     }
 
     fn prepare(&self) -> Result<PreparedArtifacts> {
-        let plat_dyn = self.resolve_platform()?;
-        self.generate_config()?;
-        let qemu_config_path = ostool_bridge::write_qemu_config(&self.manifest_dir, &self.config)?;
+        let mut config = self.config.clone();
+        self.resolve_effective_smp(&mut config)?;
+        let plat_dyn = self.resolve_platform(&config)?;
+        self.generate_config(&config)?;
+        let qemu_config_path = self.qemu_config_path.clone().map_or_else(
+            || ostool_bridge::write_qemu_config(&self.manifest_dir, &config),
+            Ok,
+        )?;
 
-        let ax_features = FeatureResolver::resolve_ax_features(&self.config, plat_dyn);
-        let use_axlibc = self.is_c_app()?;
+        let ax_features = FeatureResolver::resolve_ax_features(&config, plat_dyn);
+        let use_axlibc = self.is_c_app(&config)?;
         let lib_features = FeatureResolver::resolve_lib_features(
-            &self.config,
+            &config,
             if use_axlibc { "axlibc" } else { "axstd" },
         );
 
         let cargo_spec = ostool_bridge::build_cargo_spec(
-            &self.config,
+            &config,
             &self.manifest_dir,
             &ax_features,
             &lib_features,
@@ -184,23 +200,41 @@ impl ArtifactPreparer {
 
         Ok(PreparedArtifacts {
             cargo_spec,
-            axconfig_path: axconfig_path_for_config(&self.manifest_dir, &self.config),
+            axconfig_path: axconfig_path_for_config(&self.manifest_dir, &config),
             qemu_config_path,
         })
     }
 
-    fn resolve_platform(&self) -> Result<bool> {
+    fn resolve_effective_smp(&self, config: &mut ArceosConfig) -> Result<()> {
+        if let Some(smp) = config.smp {
+            if smp == 0 {
+                anyhow::bail!("invalid SMP value `0`: SMP must be >= 1");
+            }
+            return Ok(());
+        }
+
+        let app_dir = config.app_dir(&self.manifest_dir);
+        let platform_package = self.resolve_platform_package(config);
+        let plat_config = self.resolve_platform_config_path(&app_dir, &platform_package)?;
+        let contents = std::fs::read_to_string(&plat_config)
+            .with_context(|| format!("Failed to read {}", plat_config.display()))?;
+        let smp = parse_max_cpu_num_from_platform_config(&contents, &plat_config)?;
+        config.smp = Some(smp);
+        Ok(())
+    }
+
+    fn resolve_platform(&self, config: &ArceosConfig) -> Result<bool> {
         let resolver = PlatformResolver::new(self.manifest_dir.clone());
-        let plat_dyn = matches!(self.config.arch, crate::arceos::config::Arch::AArch64)
-            || resolver.is_dyn_platform(&self.config.platform);
+        let plat_dyn = matches!(config.arch, crate::arceos::config::Arch::AArch64)
+            || resolver.is_dyn_platform(&config.platform);
         Ok(plat_dyn)
     }
 
-    fn generate_config(&self) -> Result<()> {
+    fn generate_config(&self, config: &ArceosConfig) -> Result<()> {
         let defconfig = self.manifest_dir.join("configs/defconfig.toml");
-        let out_config = axconfig_path_for_config(&self.manifest_dir, &self.config);
-        let app_dir = self.config.app_dir(&self.manifest_dir);
-        let platform_package = self.resolve_platform_package();
+        let out_config = axconfig_path_for_config(&self.manifest_dir, config);
+        let app_dir = config.app_dir(&self.manifest_dir);
+        let platform_package = self.resolve_platform_package(config);
         let plat_config = self.resolve_platform_config_path(&app_dir, &platform_package)?;
 
         let mut args = vec![
@@ -209,20 +243,20 @@ impl ArtifactPreparer {
         ];
 
         args.push("-w".to_string());
-        args.push(format!("arch=\"{}\"", self.config.arch));
+        args.push(format!("arch=\"{}\"", config.arch));
         args.push("-w".to_string());
-        args.push(format!("platform=\"{}\"", self.config.platform));
+        args.push(format!("platform=\"{}\"", config.platform));
 
         args.push("-o".to_string());
         args.push(out_config.display().to_string());
 
-        if let Some(mem) = &self.config.mem {
+        if let Some(mem) = &config.mem {
             let mem = self.parse_mem_size(mem)?;
             args.push("-w".to_string());
             args.push(format!("plat.phys-memory-size={}", mem));
         }
 
-        if let Some(smp) = self.config.smp {
+        if let Some(smp) = config.smp {
             args.push("-w".to_string());
             args.push(format!("plat.max-cpu-num={}", smp));
         }
@@ -240,11 +274,11 @@ impl ArtifactPreparer {
         Ok(())
     }
 
-    fn resolve_platform_package(&self) -> String {
-        if self.config.platform.starts_with("axplat-") {
-            self.config.platform.clone()
+    fn resolve_platform_package(&self, config: &ArceosConfig) -> String {
+        if config.platform.starts_with("axplat-") {
+            config.platform.clone()
         } else {
-            PlatformResolver::resolve_default_platform(&self.config.arch)
+            PlatformResolver::resolve_default_platform(&config.arch)
         }
     }
 
@@ -295,8 +329,8 @@ impl ArtifactPreparer {
         Ok(path)
     }
 
-    fn is_c_app(&self) -> Result<bool> {
-        let cargo_toml = self.config.app_dir(&self.manifest_dir).join("Cargo.toml");
+    fn is_c_app(&self, config: &ArceosConfig) -> Result<bool> {
+        let cargo_toml = config.app_dir(&self.manifest_dir).join("Cargo.toml");
         if cargo_toml.exists() {
             let contents = std::fs::read_to_string(&cargo_toml)?;
             return Ok(contents.contains("axlibc"));
@@ -330,9 +364,34 @@ impl ArtifactPreparer {
     }
 }
 
+fn parse_max_cpu_num_from_platform_config(contents: &str, path: &Path) -> Result<usize> {
+    let value: toml::Value =
+        toml::from_str(contents).with_context(|| format!("Failed to parse {}", path.display()))?;
+    let Some(max_cpu_num) = value
+        .get("plat")
+        .and_then(|plat| plat.get("max-cpu-num"))
+        .and_then(|max| max.as_integer())
+    else {
+        anyhow::bail!(
+            "`plat.max-cpu-num` is not defined in the platform configuration file: {}",
+            path.display()
+        );
+    };
+
+    if max_cpu_num < 1 {
+        anyhow::bail!(
+            "invalid `plat.max-cpu-num` value `{}` in {}: SMP must be >= 1",
+            max_cpu_num,
+            path.display()
+        );
+    }
+
+    Ok(max_cpu_num as usize)
+}
+
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use super::*;
 
@@ -347,5 +406,28 @@ mod tests {
         let files = cleanup_files(&manifest_dir, &config);
         assert!(files.contains(&manifest_dir.join("examples/helloworld/.axconfig.toml")));
         assert!(files.contains(&manifest_dir.join(".axconfig.toml")));
+    }
+
+    #[test]
+    fn parse_max_cpu_num_from_platform_config_accepts_positive_value() {
+        let path = Path::new("/tmp/axplat.toml");
+        let parsed =
+            parse_max_cpu_num_from_platform_config("[plat]\nmax-cpu-num = 4\n", path).unwrap();
+        assert_eq!(parsed, 4);
+    }
+
+    #[test]
+    fn parse_max_cpu_num_from_platform_config_rejects_missing_field() {
+        let path = Path::new("/tmp/axplat.toml");
+        let err = parse_max_cpu_num_from_platform_config("[plat]\nfoo = 1\n", path).unwrap_err();
+        assert!(err.to_string().contains("plat.max-cpu-num"));
+    }
+
+    #[test]
+    fn parse_max_cpu_num_from_platform_config_rejects_zero() {
+        let path = Path::new("/tmp/axplat.toml");
+        let err =
+            parse_max_cpu_num_from_platform_config("[plat]\nmax-cpu-num = 0\n", path).unwrap_err();
+        assert!(err.to_string().contains("SMP must be >= 1"));
     }
 }

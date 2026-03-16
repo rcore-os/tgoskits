@@ -19,7 +19,10 @@ pub mod ostool;
 pub mod platform;
 pub mod qemu;
 
-pub use build::{BuildOutput, Builder, PreparedArtifacts, prepare_artifacts};
+pub use build::{
+    BuildOutput, Builder, PreparedArtifacts, prepare_artifacts,
+    prepare_artifacts_with_qemu_config_path,
+};
 pub use config::{
     AVAILABLE_BOARDS, AXCONFIG_FILE_NAME, ArceosConfig, ArceosConfigOverride, Arch, BuildMode,
     CONFIG_FILE_NAME, LogLevel, NetDev, OSTOOL_EXTRA_CONFIG_FILE_NAME, QEMU_CONFIG_FILE_NAME,

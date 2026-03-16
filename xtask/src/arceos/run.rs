@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::path::PathBuf;
+
 use anyhow::Result;
 use axbuild::arceos::{ArceosConfig, QemuRunner, config_path};
 use clap::Parser;
@@ -38,6 +40,10 @@ pub struct RunArgs {
     /// Comma-separated feature list
     #[arg(long)]
     pub features: Option<String>,
+
+    /// Number of CPUs (must be >= 1)
+    #[arg(long)]
+    pub smp: Option<usize>,
 
     /// Enable block device
     #[arg(long)]
@@ -72,6 +78,7 @@ impl RunArgs {
             platform,
             release,
             features,
+            smp,
             blk,
             disk_img,
             net,
@@ -87,6 +94,7 @@ impl RunArgs {
             platform,
             release,
             features,
+            smp,
             blk,
             disk_img,
             net,
@@ -107,6 +115,14 @@ pub async fn run_run(args: RunArgs) -> Result<()> {
 }
 
 pub async fn run_with_config(manifest_dir: std::path::PathBuf, config: ArceosConfig) -> Result<()> {
+    run_with_config_and_qemu_config(manifest_dir, config, None).await
+}
+
+pub async fn run_with_config_and_qemu_config(
+    manifest_dir: PathBuf,
+    config: ArceosConfig,
+    qemu_config_path: Option<PathBuf>,
+) -> Result<()> {
     println!("Building ArceOS application:");
     println!("  Architecture: {}", config.arch);
     println!("  Platform: {}", config.platform);
@@ -120,8 +136,13 @@ pub async fn run_with_config(manifest_dir: std::path::PathBuf, config: ArceosCon
 
     println!("Running in QEMU...");
     let runner = QemuRunner::new(config, manifest_dir);
-    println!("  QEMU config: {}", runner.qemu_config_path().display());
-    runner.run().await?;
+    if let Some(qemu_config_path) = qemu_config_path {
+        println!("  QEMU config: {}", qemu_config_path.display());
+        runner.run_with_qemu_config_path(qemu_config_path).await?;
+    } else {
+        println!("  QEMU config: {}", runner.qemu_config_path().display());
+        runner.run().await?;
+    }
 
     Ok(())
 }

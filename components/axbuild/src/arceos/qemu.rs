@@ -18,7 +18,8 @@ use ::ostool::build::CargoRunnerKind;
 use anyhow::Result;
 
 use crate::arceos::{
-    build::prepare_artifacts,
+    PreparedArtifacts,
+    build::{prepare_artifacts, prepare_artifacts_with_qemu_config_path},
     config::{ArceosConfig, qemu_config_path_for_config},
     ostool as ostool_bridge,
 };
@@ -58,6 +59,19 @@ impl QemuRunner {
     /// Run QEMU through ostool's cargo_run flow.
     pub async fn run(&self) -> Result<()> {
         let prepared = prepare_artifacts(&self.manifest_dir, &self.config)?;
+        self.run_prepared(prepared).await
+    }
+
+    pub async fn run_with_qemu_config_path(&self, qemu_config_path: PathBuf) -> Result<()> {
+        let prepared = prepare_artifacts_with_qemu_config_path(
+            &self.manifest_dir,
+            &self.config,
+            Some(qemu_config_path),
+        )?;
+        self.run_prepared(prepared).await
+    }
+
+    async fn run_prepared(&self, prepared: PreparedArtifacts) -> Result<()> {
         let mut ctx = prepared.cargo_spec.ctx.into_app_context();
         ctx.cargo_run(
             &prepared.cargo_spec.cargo,

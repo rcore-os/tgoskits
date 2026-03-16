@@ -38,6 +38,10 @@ pub struct BuildArgs {
     /// Comma-separated feature list
     #[arg(long)]
     pub features: Option<String>,
+
+    /// Number of CPUs (must be >= 1)
+    #[arg(long)]
+    pub smp: Option<usize>,
 }
 
 impl BuildArgs {
@@ -48,6 +52,7 @@ impl BuildArgs {
             platform,
             release,
             features,
+            smp,
         } = self;
 
         let overrides = super::config::build_config_override(
@@ -57,6 +62,7 @@ impl BuildArgs {
             platform,
             release,
             features,
+            smp,
         )?;
         load_config(manifest_dir, overrides)
     }

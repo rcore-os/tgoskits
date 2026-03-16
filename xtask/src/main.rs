@@ -300,6 +300,7 @@ async fn run_arceos_test_command(target: Option<&str>) -> Result<()> {
     }
 
     let arch = target.map(parse_arceos_target).transpose()?;
+    let selected_arch = arceos_test_arch(arch);
     let manifest_dir = arceos::config::arceos_manifest_dir()?;
 
     println!(
@@ -310,7 +311,6 @@ async fn run_arceos_test_command(target: Option<&str>) -> Result<()> {
             .unwrap_or_default()
     );
 
-    let mut failed = Vec::new();
     for (index, package) in packages.iter().enumerate() {
         println!(
             "[{}/{}] arceos run -p {}{}",
@@ -322,25 +322,17 @@ async fn run_arceos_test_command(target: Option<&str>) -> Result<()> {
                 .unwrap_or_default()
         );
         cleanup_arceos_test_configs(&package.crate_dir)?;
-        if run_arceos_test_package(&manifest_dir, &package.name, arch).await? {
-            println!("ok: {}", package.name);
-        } else {
-            eprintln!("failed: {}", package.name);
-            failed.push(package.name.clone());
-        }
+        let qemu_config_path =
+            ensure_arceos_test_qemu_config_path(&package.crate_dir, &package.name, selected_arch)?;
+        let smp = arceos_test_smp_from_qemu_config(&qemu_config_path)?;
+        run_arceos_test_package(&manifest_dir, &package.name, arch, smp, &qemu_config_path)
+            .await
+            .with_context(|| format!("arceos test failed for package `{}`", package.name))?;
+        println!("ok: {}", package.name);
     }
 
-    if failed.is_empty() {
-        println!("all arceos tests passed");
-        return Ok(());
-    }
-
-    eprintln!(
-        "arceos tests failed for {} package(s): {}",
-        failed.len(),
-        failed.join(", ")
-    );
-    bail!("arceos test run failed")
+    println!("all arceos tests passed");
+    Ok(())
 }
 
 fn discover_arceos_test_packages(metadata: &Metadata) -> Vec<ArceosTestPackage> {
@@ -409,11 +401,80 @@ fn cleanup_arceos_test_configs(crate_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+fn arceos_test_arch(target_arch: Option<Arch>) -> Arch {
+    target_arch.unwrap_or_default()
+}
+
+fn arceos_test_qemu_config_path(crate_dir: &Path, arch: Arch) -> PathBuf {
+    crate_dir.join(format!("qemu-{}.toml", arch.to_qemu_arch()))
+}
+
+fn ensure_arceos_test_qemu_config_path(
+    crate_dir: &Path,
+    package: &str,
+    arch: Arch,
+) -> Result<PathBuf> {
+    let path = arceos_test_qemu_config_path(crate_dir, arch);
+    if !path.exists() {
+        bail!(
+            "missing qemu config for package `{}`: {}",
+            package,
+            path.display()
+        );
+    }
+    Ok(path)
+}
+
+fn arceos_test_smp_from_qemu_config(qemu_config_path: &Path) -> Result<Option<usize>> {
+    let contents = fs::read_to_string(qemu_config_path)
+        .with_context(|| format!("failed to read {}", qemu_config_path.display()))?;
+    let parsed: toml::Value = toml::from_str(&contents)
+        .with_context(|| format!("failed to parse {}", qemu_config_path.display()))?;
+    let Some(args) = parsed.get("args").and_then(|v| v.as_array()) else {
+        return Ok(None);
+    };
+
+    for (idx, arg) in args.iter().enumerate() {
+        if arg.as_str() == Some("-smp") {
+            let value = args.get(idx + 1).with_context(|| {
+                format!(
+                    "invalid qemu args in {}: `-smp` is missing value",
+                    qemu_config_path.display()
+                )
+            })?;
+            let value = value.as_str().with_context(|| {
+                format!(
+                    "invalid qemu args in {}: `-smp` value must be a string",
+                    qemu_config_path.display()
+                )
+            })?;
+            let smp = value.parse::<usize>().with_context(|| {
+                format!(
+                    "invalid qemu args in {}: `-smp` value `{}` is not a number",
+                    qemu_config_path.display(),
+                    value
+                )
+            })?;
+            if smp == 0 {
+                bail!(
+                    "invalid qemu args in {}: `-smp` value must be >= 1",
+                    qemu_config_path.display()
+                );
+            }
+            return Ok(Some(smp));
+        }
+    }
+
+    Ok(None)
+}
+
 async fn run_arceos_test_package(
     manifest_dir: &Path,
     package: &str,
     arch: Option<Arch>,
-) -> Result<bool> {
+    smp: Option<usize>,
+    qemu_config_path: &Path,
+) -> Result<()> {
     let overrides = arceos::config::run_config_override(
         manifest_dir,
         arch.map(|v| v.to_string()),
@@ -421,6 +482,7 @@ async fn run_arceos_test_package(
         None,
         false,
         None,
+        smp,
         false,
         None,
         false,
@@ -431,15 +493,13 @@ async fn run_arceos_test_package(
     let mut config = axbuild::arceos::ArceosConfig::default_for_manifest(manifest_dir);
     overrides.apply_to(&mut config);
     apply_target_defaults(&mut config, arch);
-
-    let result = arceos::run::run_with_config(manifest_dir.to_path_buf(), config).await;
-    match result {
-        Ok(()) => Ok(true),
-        Err(err) => {
-            eprintln!("  error: {err:#}");
-            Ok(false)
-        }
-    }
+    config.smp = smp;
+    arceos::run::run_with_config_and_qemu_config(
+        manifest_dir.to_path_buf(),
+        config,
+        Some(qemu_config_path.to_path_buf()),
+    )
+    .await
 }
 
 fn apply_target_defaults(config: &mut axbuild::arceos::ArceosConfig, arch: Option<Arch>) {
@@ -677,13 +737,13 @@ mod tests {
         std::fs::create_dir_all(&crate_dir).unwrap();
         std::fs::write(crate_dir.join(".axconfig.toml"), "x").unwrap();
         std::fs::write(crate_dir.join(".arceos.toml"), "x").unwrap();
-        std::fs::write(crate_dir.join(".qemu.toml"), "x").unwrap();
+        std::fs::write(crate_dir.join("qemu-aarch64.toml"), "x").unwrap();
 
         cleanup_arceos_test_configs(&crate_dir).unwrap();
 
         assert!(!crate_dir.join(".axconfig.toml").exists());
         assert!(!crate_dir.join(".arceos.toml").exists());
-        assert!(crate_dir.join(".qemu.toml").exists());
+        assert!(crate_dir.join("qemu-aarch64.toml").exists());
 
         std::fs::remove_dir_all(&crate_dir).unwrap();
     }
@@ -694,5 +754,74 @@ mod tests {
         apply_target_defaults(&mut config, Some(Arch::RiscV64));
         assert_eq!(config.arch, Arch::RiscV64);
         assert_eq!(config.platform, "riscv64-qemu-virt");
+    }
+
+    #[test]
+    fn arceos_test_arch_defaults_to_aarch64() {
+        assert_eq!(arceos_test_arch(None), Arch::AArch64);
+    }
+
+    #[test]
+    fn arceos_test_qemu_config_path_uses_target_specific_name() {
+        let crate_dir = PathBuf::from("/ws/test-suit/arceos/task/wait_queue");
+        assert_eq!(
+            arceos_test_qemu_config_path(&crate_dir, Arch::X86_64),
+            crate_dir.join("qemu-x86_64.toml")
+        );
+        assert_eq!(
+            arceos_test_qemu_config_path(&crate_dir, Arch::AArch64),
+            crate_dir.join("qemu-aarch64.toml")
+        );
+        assert_eq!(
+            arceos_test_qemu_config_path(&crate_dir, Arch::RiscV64),
+            crate_dir.join("qemu-riscv64.toml")
+        );
+        assert_eq!(
+            arceos_test_qemu_config_path(&crate_dir, Arch::LoongArch64),
+            crate_dir.join("qemu-loongarch64.toml")
+        );
+    }
+
+    #[test]
+    fn ensure_arceos_test_qemu_config_path_fails_when_missing() {
+        let crate_dir = std::env::temp_dir().join(format!(
+            "tg-xtask-qemu-check-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&crate_dir).unwrap();
+
+        let err =
+            ensure_arceos_test_qemu_config_path(&crate_dir, "missing", Arch::AArch64).unwrap_err();
+        assert!(err.to_string().contains("missing qemu config"));
+
+        std::fs::remove_dir_all(&crate_dir).unwrap();
+    }
+
+    #[test]
+    fn arceos_test_smp_from_qemu_config_reads_smp_flag() {
+        let crate_dir = std::env::temp_dir().join(format!(
+            "tg-xtask-qemu-smp-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&crate_dir).unwrap();
+        let qemu_path = crate_dir.join("qemu-aarch64.toml");
+        std::fs::write(
+            &qemu_path,
+            "args = [\"-machine\", \"virt\", \"-smp\", \"4\", \"-nographic\"]\n",
+        )
+        .unwrap();
+
+        let smp = arceos_test_smp_from_qemu_config(&qemu_path).unwrap();
+        assert_eq!(smp, Some(4));
+
+        std::fs::remove_dir_all(&crate_dir).unwrap();
     }
 }
