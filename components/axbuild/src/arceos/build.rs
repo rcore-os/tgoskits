@@ -22,7 +22,7 @@ use anyhow::{Context, Result};
 use crate::arceos::{
     config::{
         AXCONFIG_FILE_NAME, ArceosConfig, OSTOOL_EXTRA_CONFIG_FILE_NAME, QEMU_CONFIG_FILE_NAME,
-        qemu_config_path_for_config,
+        axconfig_path_for_config, qemu_config_path_for_config,
     },
     features::FeatureResolver,
     ostool as ostool_bridge,
@@ -110,20 +110,7 @@ impl Builder {
             anyhow::bail!("cargo clean failed with status: {}", status);
         }
 
-        let legacy_qemu_config = self.manifest_dir.join(QEMU_CONFIG_FILE_NAME);
-        let app_qemu_config = qemu_config_path_for_config(&self.manifest_dir, &self.config);
-        let mut files = vec![
-            self.manifest_dir.join(AXCONFIG_FILE_NAME),
-            app_qemu_config.clone(),
-            self.manifest_dir
-                .join(".cargo")
-                .join(OSTOOL_EXTRA_CONFIG_FILE_NAME),
-        ];
-        if app_qemu_config != legacy_qemu_config {
-            files.push(legacy_qemu_config);
-        }
-
-        for file in files {
+        for file in cleanup_files(&self.manifest_dir, &self.config) {
             if file.exists() {
                 std::fs::remove_file(&file)
                     .with_context(|| format!("Failed to remove {}", file.display()))?;
@@ -132,6 +119,28 @@ impl Builder {
 
         Ok(())
     }
+}
+
+fn cleanup_files(manifest_dir: &Path, config: &ArceosConfig) -> Vec<PathBuf> {
+    let app_axconfig = axconfig_path_for_config(manifest_dir, config);
+    let legacy_axconfig = manifest_dir.join(AXCONFIG_FILE_NAME);
+    let app_qemu_config = qemu_config_path_for_config(manifest_dir, config);
+    let legacy_qemu_config = manifest_dir.join(QEMU_CONFIG_FILE_NAME);
+
+    let mut files = vec![
+        app_axconfig.clone(),
+        app_qemu_config.clone(),
+        manifest_dir
+            .join(".cargo")
+            .join(OSTOOL_EXTRA_CONFIG_FILE_NAME),
+    ];
+    if app_axconfig != legacy_axconfig {
+        files.push(legacy_axconfig);
+    }
+    if app_qemu_config != legacy_qemu_config {
+        files.push(legacy_qemu_config);
+    }
+    files
 }
 
 pub fn prepare_artifacts(manifest_dir: &Path, config: &ArceosConfig) -> Result<PreparedArtifacts> {
@@ -175,7 +184,7 @@ impl ArtifactPreparer {
 
         Ok(PreparedArtifacts {
             cargo_spec,
-            axconfig_path: self.manifest_dir.join(AXCONFIG_FILE_NAME),
+            axconfig_path: axconfig_path_for_config(&self.manifest_dir, &self.config),
             qemu_config_path,
         })
     }
@@ -189,7 +198,7 @@ impl ArtifactPreparer {
 
     fn generate_config(&self) -> Result<()> {
         let defconfig = self.manifest_dir.join("configs/defconfig.toml");
-        let out_config = self.manifest_dir.join(AXCONFIG_FILE_NAME);
+        let out_config = axconfig_path_for_config(&self.manifest_dir, &self.config);
         let app_dir = self.config.app_dir(&self.manifest_dir);
         let platform_package = self.resolve_platform_package();
         let plat_config = self.resolve_platform_config_path(&app_dir, &platform_package)?;
@@ -318,5 +327,25 @@ impl ArtifactPreparer {
             anyhow::bail!("failed to parse memory size `{}`: empty output", mem);
         }
         Ok(parsed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    #[test]
+    fn cleanup_files_includes_app_local_and_legacy_axconfig_paths() {
+        let manifest_dir = PathBuf::from("/workspace/os/arceos");
+        let config = ArceosConfig {
+            app: PathBuf::from("examples/helloworld"),
+            ..ArceosConfig::default()
+        };
+
+        let files = cleanup_files(&manifest_dir, &config);
+        assert!(files.contains(&manifest_dir.join("examples/helloworld/.axconfig.toml")));
+        assert!(files.contains(&manifest_dir.join(".axconfig.toml")));
     }
 }

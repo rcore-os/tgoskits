@@ -28,7 +28,7 @@ use cargo_metadata::MetadataCommand;
 use serde::{Deserialize, Serialize};
 
 use crate::arceos::config::{
-    AXCONFIG_FILE_NAME, ArceosConfig, Arch, BuildMode, NetDev, ostool_extra_config_path,
+    ArceosConfig, Arch, BuildMode, NetDev, axconfig_path_for_config, ostool_extra_config_path,
     qemu_config_path_for_config,
 };
 
@@ -262,7 +262,9 @@ fn build_env(config: &ArceosConfig, manifest_dir: &Path) -> HashMap<String, Stri
     env.insert("AX_LOG".to_string(), config.log.to_string().to_string());
     env.insert(
         "AX_CONFIG_PATH".to_string(),
-        manifest_dir.join(AXCONFIG_FILE_NAME).display().to_string(),
+        axconfig_path_for_config(manifest_dir, config)
+            .display()
+            .to_string(),
     );
     env
 }
@@ -275,12 +277,9 @@ fn build_rustflags(
 ) -> Vec<String> {
     let target = config.arch.to_target();
     let mode = config.mode.to_string();
-    let target_dir = manifest_dir.join("target");
+    let target_dir = resolve_target_dir(config, manifest_dir);
     let mut rustflags = vec!["-A".to_string(), "unsafe_op_in_unsafe_fn".to_string()];
-    let link_script = target_dir
-        .join(target)
-        .join(mode)
-        .join(format!("linker_{}.lds", config.platform));
+    let link_script = resolve_link_script_path(&target_dir, target, &config.platform, mode);
 
     if use_axlibc {
         let axlibc_linker = target_dir
@@ -303,6 +302,33 @@ fn build_rustflags(
     }
 
     rustflags
+}
+
+fn resolve_target_dir(config: &ArceosConfig, manifest_dir: &Path) -> PathBuf {
+    let app_dir = config.app_dir(manifest_dir);
+    cargo_default_manifest_dir(&app_dir)
+        .map(|dir| dir.join("target"))
+        .unwrap_or_else(|_| manifest_dir.join("target"))
+}
+
+fn resolve_link_script_path(
+    target_dir: &Path,
+    target: &str,
+    platform: &str,
+    mode: &str,
+) -> PathBuf {
+    let file_name = format!("linker_{}.lds", platform);
+    let mut modes = vec!["release".to_string(), mode.to_string(), "debug".to_string()];
+    modes.dedup();
+
+    for m in &modes {
+        let candidate = target_dir.join(target).join(m).join(&file_name);
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+
+    target_dir.join(target).join(mode).join(file_name)
 }
 
 fn write_extra_config(
@@ -475,6 +501,15 @@ mod tests {
             Some(&"x86-pc".to_string())
         );
         assert_eq!(spec.cargo.env.get("AX_LOG"), Some(&"info".to_string()));
+        assert_eq!(
+            spec.cargo.env.get("AX_CONFIG_PATH"),
+            Some(
+                &manifest_dir
+                    .join("examples/helloworld/.axconfig.toml")
+                    .display()
+                    .to_string()
+            )
+        );
         assert!(spec.cargo.extra_config.is_some());
     }
 
@@ -582,6 +617,26 @@ mod tests {
                 .ends_with(&["-monitor".to_string(), "none".to_string()])
         );
         assert!(qemu.to_bin);
+    }
+
+    #[test]
+    fn test_resolve_link_script_path_prefers_existing_release_script() {
+        let dir = tempdir().unwrap();
+        let target_dir = dir.path().join("target");
+        let release_script = target_dir
+            .join("riscv64gc-unknown-none-elf")
+            .join("release")
+            .join("linker_riscv64-qemu-virt.lds");
+        fs::create_dir_all(release_script.parent().unwrap()).unwrap();
+        fs::write(&release_script, "/* linker */").unwrap();
+
+        let resolved = resolve_link_script_path(
+            &target_dir,
+            "riscv64gc-unknown-none-elf",
+            "riscv64-qemu-virt",
+            "debug",
+        );
+        assert_eq!(resolved, release_script);
     }
 
     #[test]

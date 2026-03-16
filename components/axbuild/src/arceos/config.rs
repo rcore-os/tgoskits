@@ -160,6 +160,10 @@ pub fn axconfig_path(manifest_dir: &Path) -> PathBuf {
     manifest_dir.join(AXCONFIG_FILE_NAME)
 }
 
+pub fn axconfig_path_for_config(manifest_dir: &Path, config: &ArceosConfig) -> PathBuf {
+    config.app_dir(manifest_dir).join(AXCONFIG_FILE_NAME)
+}
+
 pub fn qemu_config_path(manifest_dir: &Path) -> PathBuf {
     manifest_dir.join(QEMU_CONFIG_FILE_NAME)
 }
@@ -738,6 +742,19 @@ mod tests {
         assert_eq!(
             qemu_config_path_for_config(&manifest_dir, &config),
             manifest_dir.join("examples/helloworld/.qemu.toml")
+        );
+    }
+
+    #[test]
+    fn test_axconfig_path_for_config_uses_app_dir() {
+        let manifest_dir = workspace_root().join("os/arceos");
+        let config = ArceosConfig {
+            app: PathBuf::from("examples/helloworld"),
+            ..ArceosConfig::default()
+        };
+        assert_eq!(
+            axconfig_path_for_config(&manifest_dir, &config),
+            manifest_dir.join("examples/helloworld/.axconfig.toml")
         );
     }
 

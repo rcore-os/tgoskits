@@ -112,6 +112,7 @@ __pycache__/
 
 *-schema.json
 .qemu*
+!test-suit/arceos/**/.qemu.toml
 .build*
 .uboot*
 

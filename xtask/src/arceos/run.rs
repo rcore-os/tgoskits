@@ -103,7 +103,10 @@ impl RunArgs {
 pub async fn run_run(args: RunArgs) -> Result<()> {
     let manifest_dir = super::config::arceos_manifest_dir()?;
     let config = args.into_config(&manifest_dir)?;
+    run_with_config(manifest_dir, config).await
+}
 
+pub async fn run_with_config(manifest_dir: std::path::PathBuf, config: ArceosConfig) -> Result<()> {
     println!("Building ArceOS application:");
     println!("  Architecture: {}", config.arch);
     println!("  Platform: {}", config.platform);

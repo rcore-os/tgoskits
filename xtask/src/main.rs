@@ -5,9 +5,15 @@
 #[macro_use]
 extern crate anyhow;
 
-use std::{collections::HashSet, fs, path::Path, process::Command};
+use std::{
+    collections::HashSet,
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use anyhow::{Context, Result};
+use axbuild::arceos::{Arch, PlatformResolver};
 use cargo_metadata::{Metadata, MetadataCommand};
 use clap::{Parser, Subcommand};
 
@@ -29,10 +35,18 @@ const STARRY_TARGETS: &[&str] = &[
     "loongarch64-unknown-none-softfloat",
 ];
 
+const ARCEOS_TARGETS: &[&str] = &[
+    "x86_64-unknown-none",
+    "riscv64gc-unknown-none-elf",
+    "aarch64-unknown-none-softfloat",
+    "loongarch64-unknown-none-softfloat",
+];
+
 fn supported_targets(os: &str) -> &'static [&'static str] {
     match os {
         "axvisor" => AXVISOR_TARGETS,
         "starry" => STARRY_TARGETS,
+        "arceos" => ARCEOS_TARGETS,
         _ => &[],
     }
 }
@@ -71,6 +85,17 @@ enum TestCommand {
         #[arg(long)]
         target: String,
     },
+    Arceos {
+        /// Target triple for cross-compilation
+        #[arg(long)]
+        target: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ArceosTestPackage {
+    name: String,
+    crate_dir: PathBuf,
 }
 
 trait CargoRunner {
@@ -105,6 +130,9 @@ async fn main() -> Result<()> {
         Commands::Test {
             command: TestCommand::Starry { target },
         } => run_target_test_command("starry", &target),
+        Commands::Test {
+            command: TestCommand::Arceos { target },
+        } => run_arceos_test_command(target.as_deref()).await,
         Commands::Arceos { command } => command.run().await,
     }
 }
@@ -260,6 +288,167 @@ fn run_target_test_command(os: &str, target: &str) -> Result<()> {
     Ok(())
 }
 
+async fn run_arceos_test_command(target: Option<&str>) -> Result<()> {
+    let metadata = MetadataCommand::new()
+        .no_deps()
+        .exec()
+        .context("failed to load cargo metadata")?;
+    let packages = discover_arceos_test_packages(&metadata);
+    if packages.is_empty() {
+        println!("no arceos test packages found under test-suit/arceos");
+        return Ok(());
+    }
+
+    let arch = target.map(parse_arceos_target).transpose()?;
+    let manifest_dir = arceos::config::arceos_manifest_dir()?;
+
+    println!(
+        "running arceos tests for {} package(s){}",
+        packages.len(),
+        target
+            .map(|t| format!(" on target: {}", t))
+            .unwrap_or_default()
+    );
+
+    let mut failed = Vec::new();
+    for (index, package) in packages.iter().enumerate() {
+        println!(
+            "[{}/{}] arceos run -p {}{}",
+            index + 1,
+            packages.len(),
+            package.name,
+            target
+                .map(|t| format!(" --target {}", t))
+                .unwrap_or_default()
+        );
+        cleanup_arceos_test_configs(&package.crate_dir)?;
+        if run_arceos_test_package(&manifest_dir, &package.name, arch).await? {
+            println!("ok: {}", package.name);
+        } else {
+            eprintln!("failed: {}", package.name);
+            failed.push(package.name.clone());
+        }
+    }
+
+    if failed.is_empty() {
+        println!("all arceos tests passed");
+        return Ok(());
+    }
+
+    eprintln!(
+        "arceos tests failed for {} package(s): {}",
+        failed.len(),
+        failed.join(", ")
+    );
+    bail!("arceos test run failed")
+}
+
+fn discover_arceos_test_packages(metadata: &Metadata) -> Vec<ArceosTestPackage> {
+    let workspace_root = metadata.workspace_root.clone().into_std_path_buf();
+    let workspace_members: HashSet<_> = metadata.workspace_members.iter().cloned().collect();
+    let packages = metadata
+        .packages
+        .iter()
+        .filter(|pkg| workspace_members.contains(&pkg.id))
+        .map(|pkg| {
+            (
+                pkg.name.to_string(),
+                pkg.manifest_path.clone().into_std_path_buf(),
+            )
+        });
+    collect_arceos_test_packages(&workspace_root, packages)
+}
+
+fn collect_arceos_test_packages<I>(workspace_root: &Path, packages: I) -> Vec<ArceosTestPackage>
+where
+    I: IntoIterator<Item = (String, PathBuf)>,
+{
+    let arceos_test_root = workspace_root.join("test-suit/arceos");
+    let mut selected = packages
+        .into_iter()
+        .filter_map(|(name, manifest_path)| {
+            let crate_dir = manifest_path.parent()?.to_path_buf();
+            if crate_dir.starts_with(&arceos_test_root) {
+                Some(ArceosTestPackage { name, crate_dir })
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    selected.sort_by(|a, b| {
+        a.crate_dir
+            .cmp(&b.crate_dir)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    selected
+}
+
+fn parse_arceos_target(target: &str) -> Result<Arch> {
+    match target {
+        "x86_64-unknown-none" => Ok(Arch::X86_64),
+        "aarch64-unknown-none-softfloat" => Ok(Arch::AArch64),
+        "riscv64gc-unknown-none-elf" => Ok(Arch::RiscV64),
+        "loongarch64-unknown-none-softfloat" => Ok(Arch::LoongArch64),
+        _ => bail!(
+            "unsupported target `{}` for arceos. Supported targets are: {}",
+            target,
+            supported_targets("arceos").join(", ")
+        ),
+    }
+}
+
+fn cleanup_arceos_test_configs(crate_dir: &Path) -> Result<()> {
+    for file in [".axconfig.toml", ".arceos.toml"] {
+        let path = crate_dir.join(file);
+        if path.exists() {
+            fs::remove_file(&path)
+                .with_context(|| format!("failed to remove {}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+async fn run_arceos_test_package(
+    manifest_dir: &Path,
+    package: &str,
+    arch: Option<Arch>,
+) -> Result<bool> {
+    let overrides = arceos::config::run_config_override(
+        manifest_dir,
+        arch.map(|v| v.to_string()),
+        package.to_owned(),
+        None,
+        false,
+        None,
+        false,
+        None,
+        false,
+        None,
+        false,
+        false,
+    )?;
+    let mut config = axbuild::arceos::ArceosConfig::default_for_manifest(manifest_dir);
+    overrides.apply_to(&mut config);
+    apply_target_defaults(&mut config, arch);
+
+    let result = arceos::run::run_with_config(manifest_dir.to_path_buf(), config).await;
+    match result {
+        Ok(()) => Ok(true),
+        Err(err) => {
+            eprintln!("  error: {err:#}");
+            Ok(false)
+        }
+    }
+}
+
+fn apply_target_defaults(config: &mut axbuild::arceos::ArceosConfig, arch: Option<Arch>) {
+    if let Some(arch) = arch {
+        config.arch = arch;
+        config.platform = PlatformResolver::resolve_default_platform_name(&arch);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::VecDeque, path::PathBuf};
@@ -400,5 +589,110 @@ mod tests {
         // starry 应该支持 loongarch，但 axvisor 不支持
         assert!(targets.contains(&"loongarch64-unknown-none-softfloat"));
         assert!(!axvisor_targets.contains(&"loongarch64-unknown-none-softfloat"));
+    }
+
+    #[test]
+    fn supported_targets_returns_arceos_targets() {
+        let targets = supported_targets("arceos");
+        assert_eq!(
+            targets,
+            &[
+                "x86_64-unknown-none",
+                "riscv64gc-unknown-none-elf",
+                "aarch64-unknown-none-softfloat",
+                "loongarch64-unknown-none-softfloat",
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_arceos_target_maps_to_arch() {
+        assert_eq!(
+            parse_arceos_target("x86_64-unknown-none").unwrap(),
+            Arch::X86_64
+        );
+        assert_eq!(
+            parse_arceos_target("aarch64-unknown-none-softfloat").unwrap(),
+            Arch::AArch64
+        );
+        assert_eq!(
+            parse_arceos_target("riscv64gc-unknown-none-elf").unwrap(),
+            Arch::RiscV64
+        );
+        assert_eq!(
+            parse_arceos_target("loongarch64-unknown-none-softfloat").unwrap(),
+            Arch::LoongArch64
+        );
+    }
+
+    #[test]
+    fn parse_arceos_target_rejects_unknown_target() {
+        let err = parse_arceos_target("thumbv7em-none-eabihf").unwrap_err();
+        assert!(err.to_string().contains("unsupported target"));
+    }
+
+    #[test]
+    fn collect_arceos_test_packages_filters_and_sorts() {
+        let workspace = PathBuf::from("/ws");
+        let packages = vec![
+            (
+                "z".to_string(),
+                PathBuf::from("/ws/test-suit/arceos/task/z/Cargo.toml"),
+            ),
+            (
+                "outside".to_string(),
+                PathBuf::from("/ws/components/axbuild/Cargo.toml"),
+            ),
+            (
+                "a".to_string(),
+                PathBuf::from("/ws/test-suit/arceos/task/a/Cargo.toml"),
+            ),
+        ];
+        let selected = collect_arceos_test_packages(&workspace, packages);
+        assert_eq!(
+            selected,
+            vec![
+                ArceosTestPackage {
+                    name: "a".to_string(),
+                    crate_dir: PathBuf::from("/ws/test-suit/arceos/task/a"),
+                },
+                ArceosTestPackage {
+                    name: "z".to_string(),
+                    crate_dir: PathBuf::from("/ws/test-suit/arceos/task/z"),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn cleanup_arceos_test_configs_removes_target_files_only() {
+        let crate_dir = std::env::temp_dir().join(format!(
+            "tg-xtask-cleanup-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&crate_dir).unwrap();
+        std::fs::write(crate_dir.join(".axconfig.toml"), "x").unwrap();
+        std::fs::write(crate_dir.join(".arceos.toml"), "x").unwrap();
+        std::fs::write(crate_dir.join(".qemu.toml"), "x").unwrap();
+
+        cleanup_arceos_test_configs(&crate_dir).unwrap();
+
+        assert!(!crate_dir.join(".axconfig.toml").exists());
+        assert!(!crate_dir.join(".arceos.toml").exists());
+        assert!(crate_dir.join(".qemu.toml").exists());
+
+        std::fs::remove_dir_all(&crate_dir).unwrap();
+    }
+
+    #[test]
+    fn apply_target_defaults_overrides_platform_for_specified_arch() {
+        let mut config = axbuild::arceos::ArceosConfig::default();
+        apply_target_defaults(&mut config, Some(Arch::RiscV64));
+        assert_eq!(config.arch, Arch::RiscV64);
+        assert_eq!(config.platform, "riscv64-qemu-virt");
     }
 }
