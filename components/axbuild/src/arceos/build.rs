@@ -20,7 +20,10 @@ use std::{
 use anyhow::{Context, Result};
 
 use crate::arceos::{
-    config::{ArceosConfig, Arch},
+    config::{
+        AXCONFIG_FILE_NAME, ArceosConfig, OSTOOL_EXTRA_CONFIG_FILE_NAME, QEMU_CONFIG_FILE_NAME,
+        qemu_config_path_for_config,
+    },
     features::FeatureResolver,
     ostool as ostool_bridge,
     platform::PlatformResolver,
@@ -35,73 +38,159 @@ pub struct BuildOutput {
     pub bin: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+pub struct PreparedArtifacts {
+    pub cargo_spec: ostool_bridge::CargoBuildSpec,
+    pub axconfig_path: PathBuf,
+    pub qemu_config_path: PathBuf,
+}
+
 /// Builder for ArceOS applications
 pub struct Builder {
     config: ArceosConfig,
-    workspace_root: PathBuf,
-    arceos_dir: PathBuf,
-    target_dir: PathBuf,
+    manifest_dir: PathBuf,
 }
 
 impl Builder {
-    pub fn new(config: ArceosConfig, workspace_root: PathBuf) -> Self {
-        let arceos_dir = workspace_root.join("os/arceos");
-        let target_dir = arceos_dir.join("target");
-
+    pub fn new(config: ArceosConfig, manifest_dir: PathBuf) -> Self {
         Self {
             config,
-            workspace_root,
-            arceos_dir,
-            target_dir,
+            manifest_dir,
         }
+    }
+
+    pub fn manifest_dir(&self) -> &Path {
+        &self.manifest_dir
     }
 
     /// Execute the build process
     pub async fn build(&self) -> Result<BuildOutput> {
-        tracing::info!("Starting build for {:?}", self.config.arch);
+        tracing::info!(
+            "Starting build for {:?} in {}",
+            self.config.arch,
+            self.manifest_dir.display()
+        );
 
-        // 1. Resolve platform
-        tracing::info!("Resolving platform: {}", self.config.platform);
+        let prepared = prepare_artifacts(&self.manifest_dir, &self.config)?;
+
+        tracing::debug!("ostool cargo config: {:?}", prepared.cargo_spec.cargo);
+        let mut ctx = prepared.cargo_spec.ctx.into_app_context();
+        ctx.cargo_build(&prepared.cargo_spec.cargo).await?;
+
+        let elf = ctx
+            .paths
+            .artifacts
+            .elf
+            .clone()
+            .context("ostool build did not produce an ELF artifact")?;
+        let bin = ctx
+            .paths
+            .artifacts
+            .bin
+            .clone()
+            .context("ostool build did not produce a BIN artifact")?;
+
+        Ok(BuildOutput { elf, bin })
+    }
+
+    /// Clean build artifacts
+    pub fn clean(&self) -> Result<()> {
+        tracing::info!(
+            "Cleaning build artifacts in {}",
+            self.manifest_dir.display()
+        );
+
+        let status = Command::new("cargo")
+            .current_dir(&self.manifest_dir)
+            .arg("clean")
+            .status()
+            .context("Failed to run cargo clean")?;
+
+        if !status.success() {
+            anyhow::bail!("cargo clean failed with status: {}", status);
+        }
+
+        let legacy_qemu_config = self.manifest_dir.join(QEMU_CONFIG_FILE_NAME);
+        let app_qemu_config = qemu_config_path_for_config(&self.manifest_dir, &self.config);
+        let mut files = vec![
+            self.manifest_dir.join(AXCONFIG_FILE_NAME),
+            app_qemu_config.clone(),
+            self.manifest_dir
+                .join(".cargo")
+                .join(OSTOOL_EXTRA_CONFIG_FILE_NAME),
+        ];
+        if app_qemu_config != legacy_qemu_config {
+            files.push(legacy_qemu_config);
+        }
+
+        for file in files {
+            if file.exists() {
+                std::fs::remove_file(&file)
+                    .with_context(|| format!("Failed to remove {}", file.display()))?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+pub fn prepare_artifacts(manifest_dir: &Path, config: &ArceosConfig) -> Result<PreparedArtifacts> {
+    let project = ArtifactPreparer::new(manifest_dir.to_path_buf(), config.clone());
+    project.prepare()
+}
+
+struct ArtifactPreparer {
+    config: ArceosConfig,
+    manifest_dir: PathBuf,
+}
+
+impl ArtifactPreparer {
+    fn new(manifest_dir: PathBuf, config: ArceosConfig) -> Self {
+        Self {
+            config,
+            manifest_dir,
+        }
+    }
+
+    fn prepare(&self) -> Result<PreparedArtifacts> {
         let plat_dyn = self.resolve_platform()?;
-
-        // 2. Generate configuration
         self.generate_config()?;
+        let qemu_config_path = ostool_bridge::write_qemu_config(&self.manifest_dir, &self.config)?;
 
-        // 3. Resolve features
         let ax_features = FeatureResolver::resolve_ax_features(&self.config, plat_dyn);
-        tracing::debug!("ax_features: {:?}", ax_features);
-
-        // 4. Determine if using axlibc (C app)
         let use_axlibc = self.is_c_app()?;
         let lib_features = FeatureResolver::resolve_lib_features(
             &self.config,
             if use_axlibc { "axlibc" } else { "axstd" },
         );
-        tracing::debug!("lib_features: {:?}", lib_features);
 
-        // 5. Execute cargo build
-        let output = self
-            .build_with_ostool(&ax_features, &lib_features, use_axlibc, plat_dyn)
-            .await?;
+        let cargo_spec = ostool_bridge::build_cargo_spec(
+            &self.config,
+            &self.manifest_dir,
+            &ax_features,
+            &lib_features,
+            use_axlibc,
+            plat_dyn,
+        )?;
 
-        tracing::info!("Build completed successfully");
-        Ok(output)
+        Ok(PreparedArtifacts {
+            cargo_spec,
+            axconfig_path: self.manifest_dir.join(AXCONFIG_FILE_NAME),
+            qemu_config_path,
+        })
     }
 
-    /// Resolve platform and check if it's dynamic
     fn resolve_platform(&self) -> Result<bool> {
-        let resolver = PlatformResolver::new(self.workspace_root.clone());
-        let plat_dyn = matches!(self.config.arch, Arch::AArch64)
+        let resolver = PlatformResolver::new(self.manifest_dir.clone());
+        let plat_dyn = matches!(self.config.arch, crate::arceos::config::Arch::AArch64)
             || resolver.is_dyn_platform(&self.config.platform);
         Ok(plat_dyn)
     }
 
-    /// Generate axconfig.toml using axconfig-gen
     fn generate_config(&self) -> Result<()> {
-        let arceos_dir = &self.arceos_dir;
-        let defconfig = arceos_dir.join("configs/defconfig.toml");
-        let out_config = arceos_dir.join(".axconfig.toml");
-        let app_dir = self.app_dir();
+        let defconfig = self.manifest_dir.join("configs/defconfig.toml");
+        let out_config = self.manifest_dir.join(AXCONFIG_FILE_NAME);
+        let app_dir = self.config.app_dir(&self.manifest_dir);
         let platform_package = self.resolve_platform_package();
         let plat_config = self.resolve_platform_config_path(&app_dir, &platform_package)?;
 
@@ -110,33 +199,27 @@ impl Builder {
             plat_config.display().to_string(),
         ];
 
-        // Set variables
         args.push("-w".to_string());
         args.push(format!("arch=\"{}\"", self.config.arch));
         args.push("-w".to_string());
         args.push(format!("platform=\"{}\"", self.config.platform));
 
-        // Output
         args.push("-o".to_string());
         args.push(out_config.display().to_string());
 
-        // Memory size
         if let Some(mem) = &self.config.mem {
             let mem = self.parse_mem_size(mem)?;
             args.push("-w".to_string());
             args.push(format!("plat.phys-memory-size={}", mem));
         }
 
-        // SMP
         if let Some(smp) = self.config.smp {
             args.push("-w".to_string());
             args.push(format!("plat.max-cpu-num={}", smp));
         }
 
-        tracing::debug!("Running axconfig-gen with args: {:?}", args);
-
         let status = Command::new("axconfig-gen")
-            .current_dir(arceos_dir)
+            .current_dir(&self.manifest_dir)
             .args(&args)
             .status()
             .context("Failed to run axconfig-gen")?;
@@ -145,7 +228,6 @@ impl Builder {
             anyhow::bail!("axconfig-gen failed with status: {}", status);
         }
 
-        tracing::debug!("Generated config at {}", out_config.display());
         Ok(())
     }
 
@@ -204,110 +286,18 @@ impl Builder {
         Ok(path)
     }
 
-    async fn build_with_ostool(
-        &self,
-        ax_features: &[String],
-        lib_features: &[String],
-        use_axlibc: bool,
-        plat_dyn: bool,
-    ) -> Result<BuildOutput> {
-        let spec = ostool_bridge::build_cargo_spec(
-            &self.config,
-            &self.workspace_root,
-            &self.arceos_dir,
-            &self.target_dir,
-            ax_features,
-            lib_features,
-            use_axlibc,
-            plat_dyn,
-        )?;
-
-        tracing::info!("Running cargo build in {}", spec.ctx.manifest.display());
-        tracing::debug!("ostool cargo config: {:?}", spec.cargo);
-
-        let mut ctx = spec.ctx.into_app_context();
-        let workspace_root = ctx.paths.workspace.clone();
-        // Keep ArceOS build semantics owned by axbuild instead of someboot auto-detection.
-        ctx.paths.workspace = workspace_root.join(".axbuild-ostool");
-        let build_result = ctx.cargo_build(&spec.cargo).await;
-        ctx.paths.workspace = workspace_root;
-        build_result?;
-
-        let elf = ctx
-            .paths
-            .artifacts
-            .elf
-            .clone()
-            .context("ostool build did not produce an ELF artifact")?;
-        let bin = ctx
-            .paths
-            .artifacts
-            .bin
-            .clone()
-            .context("ostool build did not produce a BIN artifact")?;
-
-        Ok(BuildOutput { elf, bin })
-    }
-
-    /// Check if the app is a C application (using axlibc)
     fn is_c_app(&self) -> Result<bool> {
-        let app_dir = self.app_dir();
-
-        let cargo_toml = app_dir.join("Cargo.toml");
+        let cargo_toml = self.config.app_dir(&self.manifest_dir).join("Cargo.toml");
         if cargo_toml.exists() {
             let contents = std::fs::read_to_string(&cargo_toml)?;
-            // Check if it depends on axlibc
             return Ok(contents.contains("axlibc"));
         }
 
         Ok(false)
     }
 
-    /// Clean build artifacts
-    pub fn clean(&self) -> Result<()> {
-        tracing::info!("Cleaning build artifacts");
-
-        let app_dir = self.app_dir();
-
-        // Clean the app directory
-        let status = Command::new("cargo")
-            .current_dir(&app_dir)
-            .arg("clean")
-            .arg("--target-dir")
-            .arg(&self.target_dir)
-            .status()
-            .context("Failed to run cargo clean")?;
-
-        if !status.success() {
-            anyhow::bail!("cargo clean failed with status: {}", status);
-        }
-
-        // Clean the output config
-        let out_config = self.arceos_dir.join(".axconfig.toml");
-        if out_config.exists() {
-            std::fs::remove_file(&out_config)
-                .with_context(|| format!("Failed to remove {}", out_config.display()))?;
-        }
-
-        let qemu_config = self.arceos_dir.join(".qemu.toml");
-        if qemu_config.exists() {
-            std::fs::remove_file(&qemu_config)
-                .with_context(|| format!("Failed to remove {}", qemu_config.display()))?;
-        }
-
-        Ok(())
-    }
-
-    fn app_dir(&self) -> PathBuf {
-        if self.config.app.is_absolute() {
-            self.config.app.clone()
-        } else {
-            self.arceos_dir.join(&self.config.app)
-        }
-    }
-
     fn parse_mem_size(&self, mem: &str) -> Result<String> {
-        let script = self.arceos_dir.join("scripts/make/strtosz.py");
+        let script = self.manifest_dir.join("scripts/make/strtosz.py");
         let output = Command::new(&script)
             .arg(mem)
             .output()

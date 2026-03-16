@@ -12,39 +12,38 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use ::ostool::{
-    ctx::{AppContext, OutputArtifacts, PathConfig},
-    run::qemu::{RunQemuArgs, run_qemu},
-};
-use anyhow::{Context, Result};
-use object::Architecture as ObjectArchitecture;
+use ::ostool::build::CargoRunnerKind;
+use anyhow::Result;
 
 use crate::arceos::{
-    config::{ArceosConfig, Arch},
+    build::prepare_artifacts,
+    config::{ArceosConfig, qemu_config_path_for_config},
     ostool as ostool_bridge,
 };
 
 /// QEMU runner
 pub struct QemuRunner {
     config: ArceosConfig,
-    image_path: PathBuf,
-    arceos_dir: PathBuf,
+    manifest_dir: PathBuf,
 }
 
 impl QemuRunner {
-    pub fn new(config: ArceosConfig, image_path: PathBuf, arceos_dir: PathBuf) -> Self {
+    pub fn new(config: ArceosConfig, manifest_dir: PathBuf) -> Self {
         Self {
             config,
-            image_path,
-            arceos_dir,
+            manifest_dir,
         }
+    }
+
+    pub fn manifest_dir(&self) -> &Path {
+        &self.manifest_dir
     }
 
     /// Build QEMU command arguments
     pub fn build_args(&self) -> Vec<String> {
-        ostool_bridge::build_qemu_config(&self.config, &self.arceos_dir).args
+        ostool_bridge::build_qemu_config(&self.config, &self.manifest_dir).args
     }
 
     /// Get QEMU binary name
@@ -53,31 +52,22 @@ impl QemuRunner {
     }
 
     pub fn qemu_config_path(&self) -> PathBuf {
-        self.arceos_dir.join(".qemu.toml")
+        qemu_config_path_for_config(&self.manifest_dir, &self.config)
     }
 
-    /// Run QEMU
+    /// Run QEMU through ostool's cargo_run flow.
     pub async fn run(&self) -> Result<()> {
-        let qemu = self.qemu_binary();
-        let qemu_config = ostool_bridge::build_qemu_config(&self.config, &self.arceos_dir);
-        let qemu_config_path = self.qemu_config_path();
-
-        std::fs::write(&qemu_config_path, toml::to_string_pretty(&qemu_config)?)
-            .with_context(|| format!("Failed to write {}", qemu_config_path.display()))?;
-
-        tracing::info!("Running QEMU: {} {}", qemu, qemu_config.args.join(" "));
-
-        run_qemu(
-            self.app_context(),
-            RunQemuArgs {
-                qemu_config: Some(qemu_config_path),
+        let prepared = prepare_artifacts(&self.manifest_dir, &self.config)?;
+        let mut ctx = prepared.cargo_spec.ctx.into_app_context();
+        ctx.cargo_run(
+            &prepared.cargo_spec.cargo,
+            &CargoRunnerKind::Qemu {
+                qemu_config: Some(prepared.qemu_config_path),
+                debug: false,
                 dtb_dump: false,
-                show_output: true,
             },
         )
-        .await
-        .with_context(|| format!("Failed to run {}", qemu))?;
-
+        .await?;
         Ok(())
     }
 
@@ -87,39 +77,6 @@ impl QemuRunner {
         let args = self.build_args();
         format!("{} {}", qemu, args.join(" "))
     }
-
-    fn app_context(&self) -> AppContext {
-        let workspace_root = self.workspace_root();
-        AppContext {
-            paths: PathConfig {
-                workspace: workspace_root.clone(),
-                manifest: workspace_root,
-                artifacts: OutputArtifacts {
-                    elf: None,
-                    bin: Some(self.image_path.clone()),
-                },
-                ..Default::default()
-            },
-            arch: Some(object_arch(self.config.arch)),
-            ..Default::default()
-        }
-    }
-
-    fn workspace_root(&self) -> PathBuf {
-        self.arceos_dir
-            .parent()
-            .and_then(|path| path.parent())
-            .map_or_else(|| self.arceos_dir.clone(), |path| path.to_path_buf())
-    }
-}
-
-fn object_arch(arch: Arch) -> ObjectArchitecture {
-    match arch {
-        Arch::X86_64 => ObjectArchitecture::X86_64,
-        Arch::AArch64 => ObjectArchitecture::Aarch64,
-        Arch::RiscV64 => ObjectArchitecture::Riscv64,
-        Arch::LoongArch64 => ObjectArchitecture::LoongArch64,
-    }
 }
 
 #[cfg(test)]
@@ -127,7 +84,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::arceos::config::{ArceosConfig, NetDev, QemuOptions};
+    use crate::arceos::config::{Arch, NetDev, QemuOptions};
 
     #[test]
     fn test_qemu_binary() {
@@ -135,7 +92,7 @@ mod tests {
             arch: Arch::AArch64,
             ..Default::default()
         };
-        let runner = QemuRunner::new(config, PathBuf::from("test.elf"), PathBuf::from("/tmp"));
+        let runner = QemuRunner::new(config, PathBuf::from("/tmp/project"));
         assert_eq!(runner.qemu_binary(), "qemu-system-aarch64");
     }
 
@@ -145,24 +102,11 @@ mod tests {
             arch: Arch::X86_64,
             ..Default::default()
         };
-        let runner = QemuRunner::new(config, PathBuf::from("test.elf"), PathBuf::from("/tmp"));
+        let runner = QemuRunner::new(config, PathBuf::from("/tmp/project"));
 
         let args = runner.build_args();
         assert!(args.windows(2).any(|w| w[0] == "-cpu" && w[1] == "max"));
         assert!(!args.iter().any(|arg| arg == "-kernel"));
-    }
-
-    #[test]
-    fn test_memory_default() {
-        let config = ArceosConfig {
-            arch: Arch::AArch64,
-            mem: None,
-            ..Default::default()
-        };
-        let runner = QemuRunner::new(config, PathBuf::from("test.elf"), PathBuf::from("/tmp"));
-
-        let args = runner.build_args();
-        assert!(args.windows(2).any(|w| w[0] == "-m" && w[1] == "128M"));
     }
 
     #[test]
@@ -172,7 +116,7 @@ mod tests {
             mem: Some("256M".to_string()),
             ..Default::default()
         };
-        let runner = QemuRunner::new(config, PathBuf::from("test.elf"), PathBuf::from("/tmp"));
+        let runner = QemuRunner::new(config, PathBuf::from("/tmp/project"));
 
         let args = runner.build_args();
         assert!(args.windows(2).any(|w| w[0] == "-m" && w[1] == "256M"));
@@ -189,7 +133,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let runner = QemuRunner::new(config, PathBuf::from("test.elf"), PathBuf::from("/tmp"));
+        let runner = QemuRunner::new(config, PathBuf::from("/tmp/project"));
 
         let args = runner.build_args();
         assert!(args.iter().any(|a| a.contains("user")));
@@ -198,15 +142,11 @@ mod tests {
     #[test]
     fn test_qemu_config_path() {
         let config = ArceosConfig::default();
-        let runner = QemuRunner::new(
-            config,
-            PathBuf::from("test.bin"),
-            PathBuf::from("/workspace/os/arceos"),
-        );
+        let runner = QemuRunner::new(config, PathBuf::from("/workspace/os/arceos"));
 
         assert_eq!(
             runner.qemu_config_path(),
-            PathBuf::from("/workspace/os/arceos/.qemu.toml")
+            PathBuf::from("/workspace/os/arceos/examples/helloworld/.qemu.toml")
         );
     }
 }

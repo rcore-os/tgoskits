@@ -116,3 +116,4 @@ __pycache__/
 .uboot*
 
 /.cargo/.config-local.toml
+.arceos.toml

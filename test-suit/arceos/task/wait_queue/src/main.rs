@@ -167,7 +167,7 @@ fn test_wait_timeout_until() {
     println!("wait_timeout_until: test tasks woken up by notification or timeout, test OK!");
 }
 
-#[cfg_attr(feature = "axstd", no_mangle)]
+#[cfg_attr(feature = "axstd", unsafe(no_mangle))]
 fn main() {
     println!("Hello, main task");
     #[cfg(feature = "axstd")]

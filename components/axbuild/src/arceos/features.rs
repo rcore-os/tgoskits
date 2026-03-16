@@ -227,7 +227,6 @@ mod tests {
             features: vec!["fs".to_string(), "net".to_string()],
             app_features: vec![],
             qemu: QemuOptions::default(),
-            output_dir: None,
         };
 
         // Non-dynamic platform, so "defplat" is used
@@ -250,7 +249,6 @@ mod tests {
             features: vec!["fs".to_string(), "net".to_string(), "fp-simd".to_string()],
             app_features: vec![],
             qemu: QemuOptions::default(),
-            output_dir: None,
         };
 
         let lib_features = FeatureResolver::resolve_lib_features(&config, "axlibc");

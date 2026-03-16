@@ -192,32 +192,7 @@ pub struct CacheInfo {
     pub l3: Option<usize>,
 }
 
-/// Load board configuration from file
-pub fn load_board_config(workspace_root: &Path, board_name: &str) -> Result<crate::ArceosConfig> {
-    use crate::ArceosConfig;
-
-    let board_config_path = workspace_root
-        .join("os/arceos/configs/board")
-        .join(format!("{}.toml", board_name));
-
-    if !board_config_path.exists() {
-        anyhow::bail!(
-            "Board configuration '{}' not found at {}",
-            board_name,
-            board_config_path.display()
-        );
-    }
-
-    let contents = std::fs::read_to_string(&board_config_path)
-        .with_context(|| format!("Failed to read {}", board_config_path.display()))?;
-
-    let mut config: ArceosConfig = toml::from_str(&contents)
-        .with_context(|| format!("Failed to parse {}", board_config_path.display()))?;
-
-    // Make app path absolute relative to workspace root
-    if config.app.is_relative() {
-        config.app = workspace_root.join("os/arceos").join(&config.app);
-    }
-
-    Ok(config)
+/// Backward-compatible wrapper around the config module's board loader.
+pub fn load_board_config(manifest_dir: &Path, board_name: &str) -> Result<crate::ArceosConfig> {
+    crate::arceos::config::load_board_config(manifest_dir, board_name)
 }

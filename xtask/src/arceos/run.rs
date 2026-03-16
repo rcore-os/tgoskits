@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use anyhow::{Context, Result};
-use axbuild::arceos::{ArceosConfig, Builder, QemuRunner};
+use anyhow::Result;
+use axbuild::arceos::{ArceosConfig, QemuRunner, config_path};
 use clap::Parser;
 
 /// Run command arguments
@@ -80,47 +80,43 @@ impl RunArgs {
             accel,
         } = self;
 
-        let mut config =
-            super::config::load_config(workspace_root, arch, package, platform, release, features)?;
+        let overrides = super::config::run_config_override(
+            workspace_root,
+            arch,
+            package,
+            platform,
+            release,
+            features,
+            blk,
+            disk_img,
+            net,
+            net_dev,
+            graphic,
+            accel,
+        )?;
 
-        // Set QEMU options
-        config.qemu =
-            super::config::parse_qemu_options(blk, disk_img, net, net_dev, graphic, accel);
-
-        Ok(config)
+        axbuild::arceos::load_config(workspace_root, overrides)
     }
 }
 
 /// Run the build and run command
 pub async fn run_run(args: RunArgs) -> Result<()> {
-    let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .context("failed to locate workspace root")?;
-
-    let config = args.into_config(workspace_root)?;
+    let manifest_dir = super::config::arceos_manifest_dir()?;
+    let config = args.into_config(&manifest_dir)?;
 
     println!("Building ArceOS application:");
     println!("  Architecture: {}", config.arch);
     println!("  Platform: {}", config.platform);
     println!("  App: {}", config.app.display());
+    println!("  Config: {}", config_path(&manifest_dir).display());
     println!(
         "  Mode: {}",
         axbuild::arceos::config::BuildMode::to_string(config.mode)
     );
     println!();
 
-    let arceos_dir = workspace_root.join("os/arceos");
-    let builder = Builder::new(config.clone(), workspace_root.to_path_buf());
-    let output = builder.build().await?;
-
-    println!();
-    println!("Build successful!");
-    println!("  ELF: {}", output.elf.display());
-    println!("  Binary: {}", output.bin.display());
-    println!();
-
     println!("Running in QEMU...");
-    let runner = QemuRunner::new(config, output.bin, arceos_dir);
+    let runner = QemuRunner::new(config, manifest_dir);
     println!("  QEMU config: {}", runner.qemu_config_path().display());
     runner.run().await?;
 

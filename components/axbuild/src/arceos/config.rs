@@ -12,12 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::path::PathBuf;
+use std::{
+    collections::HashSet,
+    fs,
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
+use anyhow::{Context, Result};
+use cargo_metadata::{MetadataCommand, TargetKind};
 use serde::{Deserialize, Serialize};
 
+pub const CONFIG_FILE_NAME: &str = ".arceos.toml";
+pub const AXCONFIG_FILE_NAME: &str = ".axconfig.toml";
+pub const QEMU_CONFIG_FILE_NAME: &str = ".qemu.toml";
+pub const OSTOOL_EXTRA_CONFIG_FILE_NAME: &str = "axbuild-ostool.toml";
+pub const AVAILABLE_BOARDS: &[&str] = &["qemu-x86_64", "qemu-aarch64", "qemu-riscv64"];
+
 /// ArceOS build configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ArceosConfig {
     /// Target architecture
     pub arch: Arch,
@@ -25,7 +38,7 @@ pub struct ArceosConfig {
     /// Platform name
     pub platform: String,
 
-    /// Application path (relative to workspace root)
+    /// Application path (relative to manifest directory)
     pub app: PathBuf,
 
     /// Build mode
@@ -48,9 +61,29 @@ pub struct ArceosConfig {
 
     /// QEMU options
     pub qemu: QemuOptions,
+}
 
-    /// Output directory (optional, default is target/{arch}/release)
-    pub output_dir: Option<PathBuf>,
+impl ArceosConfig {
+    pub fn default_for_manifest(manifest_dir: &Path) -> Self {
+        let app = if manifest_dir.join("examples/helloworld/Cargo.toml").exists() {
+            PathBuf::from("examples/helloworld")
+        } else {
+            PathBuf::from(".")
+        };
+
+        Self {
+            app,
+            ..Self::default()
+        }
+    }
+
+    pub fn app_dir(&self, manifest_dir: &Path) -> PathBuf {
+        if self.app.is_absolute() {
+            self.app.clone()
+        } else {
+            manifest_dir.join(&self.app)
+        }
+    }
 }
 
 impl Default for ArceosConfig {
@@ -66,8 +99,289 @@ impl Default for ArceosConfig {
             features: vec![],
             app_features: vec![],
             qemu: QemuOptions::default(),
-            output_dir: None,
         }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ArceosConfigOverride {
+    pub arch: Option<Arch>,
+    pub platform: Option<String>,
+    pub app: Option<PathBuf>,
+    pub mode: Option<BuildMode>,
+    pub log: Option<LogLevel>,
+    pub smp: Option<usize>,
+    pub mem: Option<String>,
+    pub features: Option<Vec<String>>,
+    pub app_features: Option<Vec<String>>,
+    pub qemu: Option<QemuOptions>,
+}
+
+impl ArceosConfigOverride {
+    pub fn apply_to(self, config: &mut ArceosConfig) {
+        if let Some(arch) = self.arch {
+            config.arch = arch;
+        }
+        if let Some(platform) = self.platform {
+            config.platform = platform;
+        }
+        if let Some(app) = self.app {
+            config.app = app;
+        }
+        if let Some(mode) = self.mode {
+            config.mode = mode;
+        }
+        if let Some(log) = self.log {
+            config.log = log;
+        }
+        if let Some(smp) = self.smp {
+            config.smp = Some(smp);
+        }
+        if let Some(mem) = self.mem {
+            config.mem = Some(mem);
+        }
+        if let Some(features) = self.features {
+            config.features = features;
+        }
+        if let Some(app_features) = self.app_features {
+            config.app_features = app_features;
+        }
+        if let Some(qemu) = self.qemu {
+            config.qemu = qemu;
+        }
+    }
+}
+
+pub fn config_path(manifest_dir: &Path) -> PathBuf {
+    manifest_dir.join(CONFIG_FILE_NAME)
+}
+
+pub fn axconfig_path(manifest_dir: &Path) -> PathBuf {
+    manifest_dir.join(AXCONFIG_FILE_NAME)
+}
+
+pub fn qemu_config_path(manifest_dir: &Path) -> PathBuf {
+    manifest_dir.join(QEMU_CONFIG_FILE_NAME)
+}
+
+pub fn qemu_config_path_for_config(manifest_dir: &Path, config: &ArceosConfig) -> PathBuf {
+    config.app_dir(manifest_dir).join(QEMU_CONFIG_FILE_NAME)
+}
+
+pub fn ostool_extra_config_path(manifest_dir: &Path) -> PathBuf {
+    manifest_dir
+        .join(".cargo")
+        .join(OSTOOL_EXTRA_CONFIG_FILE_NAME)
+}
+
+pub fn load_config(manifest_dir: &Path, overrides: ArceosConfigOverride) -> Result<ArceosConfig> {
+    let path = config_path(manifest_dir);
+    let mut config = if path.exists() {
+        let contents = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+        toml::from_str(&contents).with_context(|| format!("Failed to parse {}", path.display()))?
+    } else {
+        ArceosConfig::default_for_manifest(manifest_dir)
+    };
+
+    overrides.apply_to(&mut config);
+    Ok(config)
+}
+
+pub fn save_config(manifest_dir: &Path, config: &ArceosConfig) -> Result<PathBuf> {
+    let path = config_path(manifest_dir);
+    let mut serializable = config.clone();
+    serializable.app = make_path_relative(manifest_dir, &serializable.app);
+    let contents = toml::to_string_pretty(&serializable)
+        .with_context(|| format!("Failed to serialize {}", path.display()))?;
+    fs::write(&path, contents).with_context(|| format!("Failed to write {}", path.display()))?;
+    Ok(path)
+}
+
+pub fn apply_defconfig(manifest_dir: &Path, board_name: &str) -> Result<ArceosConfig> {
+    let board_config = load_board_config(manifest_dir, board_name)?;
+    backup_existing_config(&config_path(manifest_dir))?;
+    save_config(manifest_dir, &board_config)?;
+    Ok(board_config)
+}
+
+pub fn load_board_config(manifest_dir: &Path, board_name: &str) -> Result<ArceosConfig> {
+    let path = resolve_board_config_path(manifest_dir, board_name)?;
+    let contents =
+        fs::read_to_string(&path).with_context(|| format!("Failed to read {}", path.display()))?;
+    let mut config: ArceosConfig =
+        toml::from_str(&contents).with_context(|| format!("Failed to parse {}", path.display()))?;
+    config.app = make_path_relative(manifest_dir, &config.app);
+    Ok(config)
+}
+
+pub fn resolve_package_app_dir(manifest_dir: &Path, package_name: &str) -> Result<PathBuf> {
+    let mut probe_dirs = vec![manifest_dir.to_path_buf()];
+    let mut cursor = manifest_dir.parent();
+    while let Some(parent) = cursor {
+        probe_dirs.push(parent.to_path_buf());
+        cursor = parent.parent();
+    }
+
+    for dir in probe_dirs {
+        let workspace_manifest = dir.join("Cargo.toml");
+        if !workspace_manifest.exists() {
+            continue;
+        }
+
+        if let Ok(package_dir) =
+            resolve_package_app_dir_from_manifest(&workspace_manifest, package_name)
+        {
+            return Ok(make_path_relative(manifest_dir, &package_dir));
+        }
+    }
+
+    anyhow::bail!(
+        "workspace package `{}` not found; only exact package names are supported",
+        package_name
+    );
+}
+
+fn resolve_package_app_dir_from_manifest(
+    workspace_manifest: &Path,
+    package_name: &str,
+) -> Result<PathBuf> {
+    let metadata = MetadataCommand::new()
+        .manifest_path(workspace_manifest)
+        .no_deps()
+        .exec()
+        .with_context(|| {
+            format!(
+                "failed to load cargo metadata for package resolution from {}",
+                workspace_manifest.display()
+            )
+        })?;
+
+    let workspace_members: HashSet<_> = metadata.workspace_members.iter().cloned().collect();
+    let candidates: Vec<_> = metadata
+        .packages
+        .iter()
+        .filter(|pkg| workspace_members.contains(&pkg.id) && pkg.name == package_name)
+        .collect();
+
+    if candidates.is_empty() {
+        anyhow::bail!("package `{}` not found in workspace", package_name);
+    }
+
+    if candidates.len() > 1 {
+        let manifest_paths = candidates
+            .iter()
+            .map(|pkg| pkg.manifest_path.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::bail!(
+            "found multiple packages named `{}`: {}",
+            package_name,
+            manifest_paths
+        );
+    }
+
+    let package = candidates[0];
+    let has_bin_target = package
+        .targets
+        .iter()
+        .any(|target| target.kind.iter().any(|kind| kind == &TargetKind::Bin));
+    if !has_bin_target {
+        anyhow::bail!(
+            "package `{}` has no binary target; `arceos build/run -p` only supports runnable \
+             packages",
+            package_name
+        );
+    }
+
+    let manifest_path = package.manifest_path.clone().into_std_path_buf();
+    let package_dir = manifest_path.parent().with_context(|| {
+        format!(
+            "failed to resolve package directory from manifest path {}",
+            manifest_path.display()
+        )
+    })?;
+
+    Ok(package_dir.to_path_buf())
+}
+
+pub fn parse_qemu_options(
+    blk: bool,
+    disk_img: Option<String>,
+    net: bool,
+    net_dev: Option<String>,
+    graphic: bool,
+    accel: bool,
+) -> QemuOptions {
+    QemuOptions {
+        blk,
+        disk_image: disk_img.map(PathBuf::from),
+        net,
+        net_dev: net_dev
+            .as_deref()
+            .and_then(|dev| NetDev::from_str(dev).ok())
+            .unwrap_or(NetDev::User),
+        graphic,
+        accel,
+        extra_args: vec![],
+    }
+}
+
+fn resolve_board_config_path(manifest_dir: &Path, board_name: &str) -> Result<PathBuf> {
+    let file_name = if board_name.ends_with(".toml") {
+        board_name.to_string()
+    } else {
+        format!("{board_name}.toml")
+    };
+    let path = manifest_dir.join("configs/board").join(file_name);
+    if !path.exists() {
+        anyhow::bail!(
+            "Board configuration '{}' not found at {}\nAvailable boards: {}",
+            board_name,
+            path.display(),
+            AVAILABLE_BOARDS.join(", ")
+        );
+    }
+    Ok(path)
+}
+
+fn backup_existing_config(config_path: &Path) -> Result<()> {
+    if !config_path.exists() {
+        return Ok(());
+    }
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before UNIX_EPOCH")?
+        .as_secs();
+    let backup_path = config_path.with_extension(format!("toml.backup_{timestamp}"));
+    fs::copy(config_path, &backup_path).with_context(|| {
+        format!(
+            "Failed to backup {} to {}",
+            config_path.display(),
+            backup_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn make_path_relative(manifest_dir: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        if let Ok(relative) = path.strip_prefix(manifest_dir) {
+            let relative = if relative.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                relative
+            };
+            return relative.to_path_buf();
+        }
+        return path.to_path_buf();
+    }
+
+    if path.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        path.to_path_buf()
     }
 }
 
@@ -124,16 +438,6 @@ impl Arch {
         }
     }
 
-    /// Get the default link script name
-    pub fn to_link_script(self) -> &'static str {
-        match self {
-            Arch::X86_64 => "linker_x86_64.ld",
-            Arch::AArch64 => "linker_aarch64.ld",
-            Arch::RiscV64 => "linker_riscv64.ld",
-            Arch::LoongArch64 => "linker_loongarch64.ld",
-        }
-    }
-
     /// Convert from string
     pub fn from_str(s: &str) -> anyhow::Result<Self> {
         match s.to_lowercase().as_str() {
@@ -182,14 +486,6 @@ impl BuildMode {
             BuildMode::Debug => "debug",
         }
     }
-
-    pub fn from_str(s: &str) -> anyhow::Result<Self> {
-        match s.to_lowercase().as_str() {
-            "release" | "rel" => Ok(BuildMode::Release),
-            "debug" | "dev" => Ok(BuildMode::Debug),
-            _ => anyhow::bail!("Unknown build mode: {}", s),
-        }
-    }
 }
 
 /// Log level
@@ -222,18 +518,6 @@ impl LogLevel {
             LogLevel::Trace => "trace",
         }
     }
-
-    pub fn from_str(s: &str) -> anyhow::Result<Self> {
-        match s.to_lowercase().as_str() {
-            "off" => Ok(LogLevel::Off),
-            "error" => Ok(LogLevel::Error),
-            "warn" | "warning" => Ok(LogLevel::Warn),
-            "info" => Ok(LogLevel::Info),
-            "debug" => Ok(LogLevel::Debug),
-            "trace" => Ok(LogLevel::Trace),
-            _ => anyhow::bail!("Unknown log level: {}", s),
-        }
-    }
 }
 
 impl std::fmt::Display for LogLevel {
@@ -243,7 +527,7 @@ impl std::fmt::Display for LogLevel {
 }
 
 /// QEMU options
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct QemuOptions {
     /// Enable block device
@@ -285,10 +569,11 @@ impl Default for QemuOptions {
 }
 
 /// Network device type
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum NetDev {
     /// User-mode networking
+    #[default]
     User,
 
     /// TAP device
@@ -316,5 +601,169 @@ impl std::fmt::Display for NetDev {
             NetDev::Tap => write!(f, "tap"),
             NetDev::Bridge => write!(f, "bridge"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, path::Path};
+
+    use tempfile::tempdir;
+
+    use super::*;
+
+    fn workspace_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("components directory should exist")
+            .parent()
+            .expect("workspace root should exist")
+            .to_path_buf()
+    }
+
+    #[test]
+    fn test_load_config_uses_manifest_default_for_workspace() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("examples/helloworld")).unwrap();
+        fs::write(dir.path().join("Cargo.toml"), "[workspace]\nmembers=[]\n").unwrap();
+        fs::write(
+            dir.path().join("examples/helloworld/Cargo.toml"),
+            "[package]\nname=\"hello\"\nversion=\"0.1.0\"\nedition=\"2024\"\n[[bin]]\nname=\"\
+             hello\"\npath=\"src/main.rs\"\n",
+        )
+        .unwrap();
+
+        let config = load_config(dir.path(), ArceosConfigOverride::default()).unwrap();
+
+        assert_eq!(config.app, PathBuf::from("examples/helloworld"));
+    }
+
+    #[test]
+    fn test_load_config_uses_dot_default_for_single_crate() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\nedition=\"2024\"\n[[bin]]\nname=\"demo\"\
+             \npath=\"src/main.rs\"\n",
+        )
+        .unwrap();
+
+        let config = load_config(dir.path(), ArceosConfigOverride::default()).unwrap();
+
+        assert_eq!(config.app, PathBuf::from("."));
+    }
+
+    #[test]
+    fn test_save_and_load_config_uses_dot_arceos_toml() {
+        let dir = tempdir().unwrap();
+        let config = ArceosConfig::default_for_manifest(dir.path());
+
+        let saved = save_config(dir.path(), &config).unwrap();
+        let loaded = load_config(dir.path(), ArceosConfigOverride::default()).unwrap();
+
+        assert_eq!(saved, dir.path().join(".arceos.toml"));
+        assert_eq!(loaded, config);
+    }
+
+    #[test]
+    fn test_apply_defconfig_writes_dot_arceos_toml() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("configs/board")).unwrap();
+        fs::write(
+            dir.path().join("configs/board/qemu-aarch64.toml"),
+            "arch = \"aarch64\"\nplatform = \"aarch64-qemu-virt\"\napp = \".\"\nmode = \
+             \"debug\"\nlog = \"warn\"\nfeatures = []\napp_features = []\n[qemu]\n",
+        )
+        .unwrap();
+
+        let config = apply_defconfig(dir.path(), "qemu-aarch64").unwrap();
+
+        assert_eq!(config.app, PathBuf::from("."));
+        assert!(dir.path().join(".arceos.toml").exists());
+    }
+
+    #[test]
+    fn test_resolve_package_app_dir_for_workspace_member() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("apps/demo/src")).unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers=[\"apps/demo\"]\nresolver=\"2\"\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("apps/demo/Cargo.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\nedition=\"2024\"\n[[bin]]\nname=\"demo\"\
+             \npath=\"src/main.rs\"\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("apps/demo/src/main.rs"), "fn main() {}\n").unwrap();
+
+        let app = resolve_package_app_dir(dir.path(), "demo").unwrap();
+
+        assert_eq!(app, PathBuf::from("apps/demo"));
+    }
+
+    #[test]
+    fn test_resolve_package_app_dir_for_single_crate_returns_dot() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\nedition=\"2024\"\n[[bin]]\nname=\"demo\"\
+             \npath=\"src/main.rs\"\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+
+        let app = resolve_package_app_dir(dir.path(), "demo").unwrap();
+
+        assert_eq!(app, PathBuf::from("."));
+    }
+
+    #[test]
+    fn test_resolve_package_app_dir_falls_back_to_parent_workspace() {
+        let manifest_dir = workspace_root().join("os/arceos");
+        let app = resolve_package_app_dir(&manifest_dir, "test-wait-queue").unwrap();
+        assert!(app.ends_with(Path::new("test-suit/arceos/task/wait_queue")));
+    }
+
+    #[test]
+    fn test_qemu_config_path_for_config_uses_app_dir() {
+        let manifest_dir = workspace_root().join("os/arceos");
+        let config = ArceosConfig {
+            app: PathBuf::from("examples/helloworld"),
+            ..ArceosConfig::default()
+        };
+        assert_eq!(
+            qemu_config_path_for_config(&manifest_dir, &config),
+            manifest_dir.join("examples/helloworld/.qemu.toml")
+        );
+    }
+
+    #[test]
+    fn test_load_config_ignores_legacy_build_toml() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join(".build.toml"), "arch = \"x86_64\"\n").unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\nedition=\"2024\"\n[[bin]]\nname=\"demo\"\
+             \npath=\"src/main.rs\"\n",
+        )
+        .unwrap();
+
+        let config = load_config(dir.path(), ArceosConfigOverride::default()).unwrap();
+
+        assert_eq!(config.arch, Arch::AArch64);
+    }
+
+    #[test]
+    fn test_make_path_relative_strips_manifest_prefix() {
+        let dir = tempdir().unwrap();
+        let absolute = dir.path().join("apps/demo");
+        assert_eq!(
+            make_path_relative(dir.path(), &absolute),
+            Path::new("apps/demo").to_path_buf()
+        );
     }
 }

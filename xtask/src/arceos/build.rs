@@ -12,10 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::path::PathBuf;
-
-use anyhow::{Context, Result};
-use axbuild::arceos::{ArceosConfig, Builder};
+use anyhow::Result;
+use axbuild::arceos::{ArceosConfig, Builder, config_path, load_config};
 use clap::Parser;
 
 /// Build command arguments
@@ -40,46 +38,40 @@ pub struct BuildArgs {
     /// Comma-separated feature list
     #[arg(long)]
     pub features: Option<String>,
-
-    /// Output directory
-    #[arg(long)]
-    pub output_dir: Option<PathBuf>,
 }
 
 impl BuildArgs {
-    pub fn into_config(self, workspace_root: &std::path::Path) -> Result<ArceosConfig> {
+    pub fn into_config(self, manifest_dir: &std::path::Path) -> Result<ArceosConfig> {
         let Self {
             arch,
             package,
             platform,
             release,
             features,
-            output_dir,
         } = self;
 
-        let mut config =
-            super::config::load_config(workspace_root, arch, package, platform, release, features)?;
-
-        if let Some(output) = output_dir {
-            config.output_dir = Some(output);
-        }
-
-        Ok(config)
+        let overrides = super::config::build_config_override(
+            manifest_dir,
+            arch,
+            package,
+            platform,
+            release,
+            features,
+        )?;
+        load_config(manifest_dir, overrides)
     }
 }
 
 /// Run the build command
 pub async fn run_build(args: BuildArgs) -> Result<()> {
-    let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .context("failed to locate workspace root")?;
-
-    let config = args.into_config(workspace_root)?;
+    let manifest_dir = super::config::arceos_manifest_dir()?;
+    let config = args.into_config(&manifest_dir)?;
 
     println!("Building ArceOS application:");
     println!("  Architecture: {}", config.arch);
     println!("  Platform: {}", config.platform);
     println!("  App: {}", config.app.display());
+    println!("  Config: {}", config_path(&manifest_dir).display());
     println!(
         "  Mode: {}",
         axbuild::arceos::config::BuildMode::to_string(config.mode)
@@ -89,7 +81,7 @@ pub async fn run_build(args: BuildArgs) -> Result<()> {
         axbuild::arceos::config::LogLevel::to_string(config.log)
     );
 
-    let builder = Builder::new(config, workspace_root.to_path_buf());
+    let builder = Builder::new(config, manifest_dir);
     let output = builder.build().await?;
 
     println!();

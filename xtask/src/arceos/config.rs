@@ -12,314 +12,97 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    collections::HashSet,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use axbuild::arceos::config::{ArceosConfig, Arch, BuildMode, LogLevel, NetDev, QemuOptions};
-use cargo_metadata::{MetadataCommand, TargetKind};
+use axbuild::arceos::{
+    ArceosConfigOverride, Arch, BuildMode, FeatureResolver, parse_qemu_options,
+    resolve_package_app_dir,
+};
 
-/// Load configuration from various sources
-///
-/// Priority:
-/// 1. Command line arguments (provided via args)
-/// 2. Board configuration file (if board_name provided)
-/// 3. .build.toml in arceos directory
-/// 4. Default configuration
-pub fn load_config(
-    workspace_root: &Path,
+pub fn arceos_manifest_dir() -> Result<PathBuf> {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .context("failed to locate workspace root")?;
+    Ok(workspace_root.join("os/arceos"))
+}
+
+pub fn build_config_override(
+    manifest_dir: &Path,
     arch: Option<String>,
     package: String,
     platform: Option<String>,
     release: bool,
     features: Option<String>,
-) -> Result<ArceosConfig> {
-    let mut config = ArceosConfig::default();
-
-    // Try to load from board config first
-    let board_config = workspace_root.join("os/arceos/.build.toml");
-
-    if board_config.exists() {
-        let contents = std::fs::read_to_string(&board_config)
-            .with_context(|| format!("Failed to read {}", board_config.display()))?;
-
-        let board_cfg: ArceosConfig = toml::from_str(&contents)
-            .with_context(|| format!("Failed to parse {}", board_config.display()))?;
-
-        // Merge board config
-        merge_config(&mut config, board_cfg);
-    }
-
-    // Override with command line arguments
-    if let Some(arch_str) = arch {
-        config.arch = Arch::from_str(&arch_str)?;
-    }
-
-    if let Some(platform_name) = platform {
-        config.platform = platform_name;
-    }
-
-    if release {
-        config.mode = BuildMode::Release;
-    }
-
-    if let Some(features_str) = features {
-        config.features = axbuild::arceos::features::FeatureResolver::parse_features(&features_str);
-    }
-
-    // Override app path with workspace package resolution.
-    config.app = resolve_package_app_dir(workspace_root, &package)?;
-
-    // Make app path absolute if relative
-    if config.app.is_relative() {
-        config.app = workspace_root.join("os/arceos").join(&config.app);
-    }
-
-    Ok(config)
+) -> Result<ArceosConfigOverride> {
+    Ok(ArceosConfigOverride {
+        arch: arch
+            .as_deref()
+            .map(Arch::from_str)
+            .transpose()
+            .context("failed to parse arch override")?,
+        app: Some(resolve_package_app_dir(manifest_dir, &package)?),
+        platform,
+        mode: release.then_some(BuildMode::Release),
+        features: features
+            .as_deref()
+            .map(FeatureResolver::parse_features)
+            .map(Some)
+            .unwrap_or(None),
+        ..Default::default()
+    })
 }
 
-fn resolve_package_app_dir(workspace_root: &Path, package_name: &str) -> Result<PathBuf> {
-    let metadata = MetadataCommand::new()
-        .manifest_path(workspace_root.join("Cargo.toml"))
-        .no_deps()
-        .exec()
-        .context("failed to load cargo metadata for workspace package resolution")?;
-
-    let workspace_members: HashSet<_> = metadata.workspace_members.iter().cloned().collect();
-    let candidates: Vec<_> = metadata
-        .packages
-        .iter()
-        .filter(|pkg| workspace_members.contains(&pkg.id) && pkg.name == package_name)
-        .collect();
-
-    if candidates.is_empty() {
-        anyhow::bail!(
-            "workspace package `{}` not found; only exact workspace package names are supported",
-            package_name
-        );
-    }
-
-    if candidates.len() > 1 {
-        let manifest_paths = candidates
-            .iter()
-            .map(|pkg| pkg.manifest_path.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        anyhow::bail!(
-            "found multiple workspace packages named `{}`: {}",
-            package_name,
-            manifest_paths
-        );
-    }
-
-    let package = candidates[0];
-    let has_bin_target = package
-        .targets
-        .iter()
-        .any(|target| target.kind.iter().any(|kind| kind == &TargetKind::Bin));
-    if !has_bin_target {
-        anyhow::bail!(
-            "workspace package `{}` has no binary target; `arceos run/build -p` only supports \
-             runnable packages",
-            package_name
-        );
-    }
-
-    let manifest_path = package.manifest_path.clone().into_std_path_buf();
-    let package_dir = manifest_path.parent().with_context(|| {
-        format!(
-            "failed to resolve package directory from manifest path {}",
-            manifest_path.display()
-        )
-    })?;
-
-    Ok(package_dir.to_path_buf())
-}
-
-/// Merge two configs, with `override` taking precedence
-fn merge_config(base: &mut ArceosConfig, override_cfg: ArceosConfig) {
-    if override_cfg.arch != Arch::default() {
-        base.arch = override_cfg.arch;
-    }
-    if !override_cfg.platform.is_empty() {
-        base.platform = override_cfg.platform;
-    }
-    if override_cfg.app != PathBuf::default() {
-        base.app = override_cfg.app;
-    }
-    if override_cfg.mode != BuildMode::default() {
-        base.mode = override_cfg.mode;
-    }
-    if override_cfg.log != LogLevel::default() {
-        base.log = override_cfg.log;
-    }
-    if override_cfg.smp.is_some() {
-        base.smp = override_cfg.smp;
-    }
-    if override_cfg.mem.is_some() {
-        base.mem = override_cfg.mem;
-    }
-    if !override_cfg.features.is_empty() {
-        base.features = override_cfg.features;
-    }
-    if !override_cfg.app_features.is_empty() {
-        base.app_features = override_cfg.app_features;
-    }
-    if override_cfg.qemu != QemuOptions::default() {
-        base.qemu = override_cfg.qemu;
-    }
-    if override_cfg.output_dir.is_some() {
-        base.output_dir = override_cfg.output_dir;
-    }
-}
-
-/// Parse QEMU options from command line
-pub fn parse_qemu_options(
+pub fn run_config_override(
+    manifest_dir: &Path,
+    arch: Option<String>,
+    package: String,
+    platform: Option<String>,
+    release: bool,
+    features: Option<String>,
     blk: bool,
     disk_img: Option<String>,
     net: bool,
     net_dev: Option<String>,
     graphic: bool,
     accel: bool,
-) -> QemuOptions {
-    QemuOptions {
-        blk,
-        disk_image: disk_img.map(PathBuf::from),
-        net,
-        net_dev: if let Some(dev) = net_dev {
-            NetDev::from_str(&dev).unwrap_or(NetDev::User)
-        } else {
-            NetDev::User
-        },
-        graphic,
-        accel,
-        extra_args: vec![],
-    }
+) -> Result<ArceosConfigOverride> {
+    let mut overrides =
+        build_config_override(manifest_dir, arch, package, platform, release, features)?;
+    overrides.qemu = Some(parse_qemu_options(
+        blk, disk_img, net, net_dev, graphic, accel,
+    ));
+    Ok(overrides)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
-
-    use axbuild::arceos::{FeatureResolver, PlatformResolver, ostool};
-
     use super::*;
 
-    fn workspace_root() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("failed to locate workspace root")
-            .to_path_buf()
+    #[test]
+    fn test_manifest_dir_exists() {
+        let manifest_dir = arceos_manifest_dir().unwrap();
+        assert!(manifest_dir.join("Cargo.toml").exists());
     }
 
     #[test]
-    fn test_load_config_defaults() {
-        let workspace = workspace_root();
-        let config = load_config(
-            &workspace,
-            None,
-            "arceos-helloworld".to_string(),
-            None,
-            false,
-            None,
-        )
-        .unwrap();
-        assert_eq!(config.arch, Arch::AArch64);
-        assert_eq!(config.platform, "aarch64-qemu-virt");
-        assert_eq!(config.mode, BuildMode::Debug);
-        assert!(config.app.is_absolute());
-        assert!(
-            config
-                .app
-                .ends_with(Path::new("os/arceos/examples/helloworld"))
-        );
-    }
-
-    #[test]
-    fn test_parse_arch() {
-        assert_eq!(Arch::from_str("x86_64").unwrap(), Arch::X86_64);
-        assert_eq!(Arch::from_str("aarch64").unwrap(), Arch::AArch64);
-        assert_eq!(Arch::from_str("riscv64").unwrap(), Arch::RiscV64);
-    }
-
-    #[test]
-    fn test_load_config_unknown_package() {
-        let workspace = workspace_root();
-        let err = load_config(
-            &workspace,
-            None,
-            "arceos-nonexistent".to_string(),
-            None,
-            false,
-            None,
-        )
-        .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("only exact workspace package names are supported")
-        );
-    }
-
-    #[test]
-    fn test_load_config_rejects_non_binary_package() {
-        let workspace = workspace_root();
-        let err =
-            load_config(&workspace, None, "axhal".to_string(), None, false, None).unwrap_err();
-        assert!(err.to_string().contains("has no binary target"));
-    }
-
-    #[test]
-    fn test_loaded_config_maps_to_ostool_specs() {
-        let workspace = workspace_root();
-        let config = load_config(
-            &workspace,
-            None,
+    fn test_build_config_override_resolves_workspace_package() {
+        let manifest_dir = arceos_manifest_dir().unwrap();
+        let overrides = build_config_override(
+            &manifest_dir,
+            Some("x86_64".to_string()),
             "arceos-helloworld".to_string(),
             None,
             false,
             Some("fs,net".to_string()),
         )
         .unwrap();
-        let arceos_dir = workspace.join("os/arceos");
-        let target_dir = arceos_dir.join("target");
-        let plat_dyn = matches!(config.arch, Arch::AArch64)
-            || PlatformResolver::new(workspace.clone()).is_dyn_platform(&config.platform);
-        let ax_features = FeatureResolver::resolve_ax_features(&config, plat_dyn);
-        let lib_features = FeatureResolver::resolve_lib_features(&config, "axstd");
 
-        let spec = ostool::build_cargo_spec(
-            &config,
-            &workspace,
-            &arceos_dir,
-            &target_dir,
-            &ax_features,
-            &lib_features,
-            false,
-            plat_dyn,
-        )
-        .unwrap();
-        let qemu = ostool::build_qemu_config(&config, &arceos_dir);
-
-        assert_eq!(spec.cargo.target, config.arch.to_target());
-        assert!(spec.cargo.features.contains(&"axstd/plat-dyn".to_string()));
-        assert!(spec.cargo.features.contains(&"axstd/fs".to_string()));
-        assert!(spec.cargo.features.contains(&"axstd/net".to_string()));
+        assert_eq!(overrides.arch, Some(Arch::X86_64));
+        assert_eq!(overrides.app, Some(PathBuf::from("examples/helloworld")));
         assert_eq!(
-            spec.cargo.env.get("AX_PLATFORM"),
-            Some(&config.platform.clone())
-        );
-        assert!(spec.ctx.debug);
-        assert!(
-            qemu.args
-                .windows(2)
-                .any(|window| window[0] == "-m" && window[1] == "128M")
-        );
-        assert!(
-            qemu.args
-                .windows(2)
-                .any(|window| window[0] == "-smp" && window[1] == "1")
+            overrides.features,
+            Some(vec!["fs".to_string(), "net".to_string()])
         );
     }
 }
