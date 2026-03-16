@@ -5,12 +5,13 @@
 #[cfg(feature = "axstd")]
 extern crate axstd as std;
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::thread;
-use std::time::Duration;
-
 #[cfg(feature = "axstd")]
 use std::os::arceos::api::task::{self as api, AxWaitQueueHandle};
+use std::{
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    thread,
+    time::Duration,
+};
 
 const NUM_TASKS: usize = 16;
 
