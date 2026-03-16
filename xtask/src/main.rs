@@ -11,6 +11,7 @@ use anyhow::{Context, Result};
 use cargo_metadata::{Metadata, MetadataCommand};
 use clap::{Parser, Subcommand};
 
+mod arceos;
 mod axvisor;
 
 const STD_CRATES_CSV: &str = "scripts/test/std_crates.csv";
@@ -50,6 +51,11 @@ enum Commands {
         #[command(subcommand)]
         command: TestCommand,
     },
+    /// ArceOS build commands
+    Arceos {
+        #[command(subcommand)]
+        command: arceos::ArceosCommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -85,7 +91,8 @@ impl CargoRunner for ProcessCargoRunner {
     }
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
@@ -98,6 +105,7 @@ fn main() -> Result<()> {
         Commands::Test {
             command: TestCommand::Starry { target },
         } => run_target_test_command("starry", &target),
+        Commands::Arceos { command } => command.run().await,
     }
 }
 

@@ -96,7 +96,7 @@ members = [
     "os/arceos/examples/shell",
 
     # os/axvisor
-    "os/axvisor",
+    "os/axvisor", "components/axbuild",
 ]
 exclude = [
     # workspace directories
@@ -229,6 +229,7 @@ axdriver_virtio = "0.1.4-preview.3"
 axdriver_vsock = "0.1.4-preview.3"
 
 # === Other external crates ===
+anyhow = "1.0"
 bindgen = "0.72"
 buddy-slab-allocator = "0.2"
 cfg-if = "1.0"
