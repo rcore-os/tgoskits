@@ -57,19 +57,22 @@ on:
         default: false
 
 jobs:
-  detect-changes:
+  push-to-subrepos:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-    outputs:
-      components: ${{ steps.detect.outputs.components }}
-      has-changes: ${{ steps.detect.outputs.has-changes }}
+      contents: write
     
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          token: ${{ secrets.SUBTREE_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
       - name: Detect changed components
         id: detect
@@ -144,26 +147,8 @@ jobs:
             echo "Detected changed components: ${COMPONENTS_LIST}"
           fi
 
-  push-to-subrepos:
-    needs: detect-changes
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    if: ${{ needs.detect-changes.outputs.has-changes == 'true' }}
-    
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.SUBTREE_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
       - name: Configure Git
+        if: steps.detect.outputs.has-changes == 'true'
         env:
           SUBTREE_PUSH_TOKEN: ${{ secrets.SUBTREE_PUSH_TOKEN }}
         run: |
@@ -180,51 +165,23 @@ jobs:
             echo "⚠️ SUBTREE_PUSH_TOKEN not set, using GITHUB_TOKEN (may fail for cross-repo push)"
           fi
 
-      - name: Get target branch
-        id: branch
+      - name: Push components to target branch
+        if: steps.detect.outputs.has-changes == 'true'
         env:
+          COMPONENTS: ${{ steps.detect.outputs.components }}
           INPUT_BRANCH: ${{ inputs.branch }}
         run: |
-          # 使用输入的分支，如果没有输入则默认为 mirror
           TARGET_BRANCH="${INPUT_BRANCH:-mirror}"
-          echo "target_branch=${TARGET_BRANCH}" >> $GITHUB_OUTPUT
-          echo "Target branch: ${TARGET_BRANCH}"
-
-      - name: List components to push
-        env:
-          TARGET_BRANCH: ${{ steps.branch.outputs.target_branch }}
-        run: |
-          echo "=========================================="
-          echo "Components Configuration"
-          echo "=========================================="
-          python3 scripts/repo/repo.py list
-          echo ""
-          echo "Target branch for all components: ${TARGET_BRANCH}"
-          echo "=========================================="
-
-      - name: Push all components to target branch
-        if: ${{ needs.detect-changes.outputs.components == '__all__' }}
-        env:
-          TARGET_BRANCH: ${{ steps.branch.outputs.target_branch }}
-        run: |
-          echo "Pushing ALL components to ${TARGET_BRANCH} branch..."
-          python3 scripts/repo/repo.py push --all -b "${TARGET_BRANCH}"
-
-      - name: Push changed components to target branch
-        if: ${{ needs.detect-changes.outputs.components != '__all__' && needs.detect-changes.outputs.components != '' }}
-        env:
-          COMPONENTS: ${{ needs.detect-changes.outputs.components }}
-          TARGET_BRANCH: ${{ steps.branch.outputs.target_branch }}
-        run: |
-          if [ -z "$COMPONENTS" ]; then
-            echo "No components to push"
+          
+          if [ "$COMPONENTS" = "__all__" ]; then
+            echo "Pushing ALL components to ${TARGET_BRANCH} branch..."
+            python3 scripts/repo/repo.py push --all -b "${TARGET_BRANCH}"
             exit 0
           fi
           
           echo "Pushing changed components to ${TARGET_BRANCH} branch..."
           echo "Components: ${COMPONENTS}"
           
-          # 将逗号分隔的组件列表转换为空格分隔
           IFS=',' read -ra COMP_ARRAY <<< "$COMPONENTS"
           
           SUCCESS=0
@@ -232,7 +189,6 @@ jobs:
           
           for component in "${COMP_ARRAY[@]}"; do
             component=$(echo "$component" | xargs)
-            # 提取组件名（从目录路径中获取最后一部分）
             repo_name=$(basename "${component}")
             
             echo ""
@@ -273,12 +229,13 @@ jobs:
       - name: Create summary
         if: always()
         env:
-          COMPONENTS: ${{ needs.detect-changes.outputs.components }}
-          TARGET_BRANCH: ${{ steps.branch.outputs.target_branch }}
+          COMPONENTS: ${{ steps.detect.outputs.components }}
+          INPUT_BRANCH: ${{ inputs.branch }}
           GH_EVENT_NAME: ${{ github.event_name }}
           GH_REF_NAME: ${{ github.ref_name }}
           SUBTREE_PUSH_TOKEN: ${{ secrets.SUBTREE_PUSH_TOKEN }}
         run: |
+          TARGET_BRANCH="${INPUT_BRANCH:-mirror}"
           echo "## Push to Subrepos Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Components**: ${COMPONENTS}" >> $GITHUB_STEP_SUMMARY
