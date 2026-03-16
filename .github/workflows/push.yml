@@ -35,12 +35,9 @@ name: Push to Subrepos
 # ═══════════════════════════════════════════════════════════════════════════════
 
 on:
-  # push:
-  #   branches:
-  #     - main
-  #     - master
-  #     - dev
-  #     - next
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       components:

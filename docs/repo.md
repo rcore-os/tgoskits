@@ -730,7 +730,7 @@ Push 工作流由 `.github/workflows/push.yml` 文件实现将主仓库中修改
 
     ![workflow_dispatch](./images/workflow_dispatch_push.png)
 
-- `push`： 当将修改的代码推送到 `tgoskits` 的指定分支时自动触发推送到独立组件仓库
+- `push`： 当将修改的代码推送到 `tgoskits` 的指定分支（当前仅配置了 `main` 分支）时自动触发推送到独立组件仓库
 
 `.github/workflows/push.yml` 的完整工作流程：
 
