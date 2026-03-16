@@ -8,7 +8,7 @@
 
 ### 1.1 项目简介
 
-TGOSKits 是一个面向操作系统开发的工具包集成仓库。该仓库通过 Git Subtree 技术将多个独立的组件仓库整合到一个统一的主仓库中，为操作系统开发提供完整的组件生态。
+TGOSKits 是一个面向操作系统开发的系统组件集成仓库。该仓库通过 Git Subtree 技术将多个独立的组件仓库整合到一个统一的主仓库中，为操作系统开发提供完整的组件生态从而统一开发过程。
 
 ### 1.2 核心特性
 
@@ -71,16 +71,7 @@ TGOSKits 通过 Git Subtree 技术来管理着 **60+ 位于独立仓库的组件
 | **远程信息** | 持久保存在 `.git/config` | ❌ 临时 remote 用完即删 |
 | **来源追溯** | `git submodule status` 可查询 | ❌ 只能从 commit message 推断，且不全面 |
 
-因此，TGOSKits 使用 [scripts/repo/repos.csv](scripts/repo/repos.csv) 作为**外部配置清单**来记录每个组件的来源 URL（哪个远程仓库）、目标路径（在主仓库中的位置）、分支/版本信息、分类和描述元数据等信息。
-
-```csv
-url,branch,target_dir,category,description
-https://github.com/arceos-org/arceos,dev,os/arceos,OS,ArceOS
-https://github.com/arceos-hypervisor/axvisor,,os/axvisor,OS,axvisor - ArceOS Hypervisor
-https://github.com/Starry-OS/StarryOS,,os/StarryOS,OS,StarryOS - 教学操作系统
-```
-
-**字段说明：**
+因此，TGOSKits 使用 [scripts/repo/repos.csv](scripts/repo/repos.csv) 作为**外部配置清单**来记录每个组件的来源 URL（哪个远程仓库）、目标路径（在主仓库中的位置）、分支/版本信息、分类和描述元数据等信息。每行记录一条信息，基本格式为 `url,branch,target_dir,category,description`，其中各个字段含义如下：
 
 | 字段 | 必填 | 说明 | 示例 |
 |------|:----:|------|------|
@@ -90,86 +81,11 @@ https://github.com/Starry-OS/StarryOS,,os/StarryOS,OS,StarryOS - 教学操作系
 | `category` | ❌ | 组件分类标签 | `Hypervisor`, `ArceOS`, `OS` |
 | `description` | ❌ | 组件描述信息 | `ARM virtual CPU support` |
 
-### 2.3 分支自动检测
-
-当 [scripts/repo/repos.csv](scripts/repo/repos.csv) 中的组件配置中的 `branch` 字段为空时，`repo.py` 会通过 `detect_branch()` 方法自动检测仓库的默认分支。检测逻辑如下：
-
-```
-1. 尝试检查 remote 是否存在 main 分支
-   └── git rev-parse <remote>/main
-   └── 如果存在，返回 'main'
-
-2. 尝试检查 remote 是否存在 master 分支
-   └── git rev-parse <remote>/master
-   └── 如果存在，返回 'master'
-
-3. 查询 remote 的 HEAD 分支
-   └── git remote show <remote>
-   └── 解析输出中的 "HEAD branch" 字段
-   └── 如果找到，返回该分支名
-
-4. 兜底返回 'main'
-```
-
-**代码实现**（[scripts/repo/repo.py](scripts/repo/repo.py#L213-L241)）：
-
-```python
-def detect_branch(self, url: str, remote_name: str) -> str:
-    """Auto-detect the default branch for a repository."""
-    # Try main first
-    result = subprocess.run(
-        ['git', 'rev-parse', f'{remote_name}/main'],
-        capture_output=True,
-        text=True
-    )
-    if result.returncode == 0:
-        return 'main'
-    
-    # Try master
-    result = subprocess.run(
-        ['git', 'rev-parse', f'{remote_name}/master'],
-        capture_output=True,
-        text=True
-    )
-    if result.returncode == 0:
-        return 'master'
-    
-    # Use default branch from remote
-    result = subprocess.run(
-        ['git', 'remote', 'show', remote_name],
-        capture_output=True,
-        text=True
-    )
-    if result.returncode == 0:
-        for line in result.stdout.split('\n'):
-            if 'HEAD branch' in line:
-                branch = line.split(':')[1].strip()
-                if branch:
-                    return branch
-    
-    # Fallback to main
-    return 'main'
-```
-
-**使用场景：**
-
-| 命令 | 分支检测行为 |
-|------|-------------|
-| `list` | 显示每个组件的实际分支（空分支自动检测后显示） |
-| `add` | branch 参数为空时自动检测并使用 |
-| `pull` | 未指定分支时自动检测并拉取 |
-| `push` | 未指定分支时自动检测并推送 |
-
-**注意事项：**
-- 检测过程会创建临时 remote，fetch 完成后自动清理
-- 优先检测 `main` 分支，符合 GitHub 新仓库的默认命名规范
-- 对于使用非标准分支名的仓库，建议在 CSV 中显式指定 branch
-
-### 2.4 组件管理工具
+### 2.3 组件管理工具
 
 `repo.py` 是一个对 Git Subtree 相关命令封装后的管理工具，其工作严重依赖 [scripts/repo/repos.csv](scripts/repo/repos.csv) 配置文件。
 
-#### 2.4.1 列出已有组件
+#### 2.3.1 列出已有组件
 
 使用如下命令可以查看当前仓库所有配置的组件的基本信息。
 
@@ -183,7 +99,7 @@ python3 scripts/repo/repo.py list --category ArceOS
 python3 scripts/repo/repo.py list --category OS
 ```
 
-#### 2.4.2 添加新组件
+#### 2.3.2 添加新组件
 
 将新的组件仓库添加到主仓库：
 
@@ -215,7 +131,7 @@ python3 scripts/repo/repo.py add \
 - 工作目录必须干净（无未提交更改）
 - URL 和 target_dir 不能与已有组件冲突
 
-#### 2.4.3 移除组件
+#### 2.3.3 移除组件
 
 从配置和仓库中移除组件：
 
@@ -227,7 +143,7 @@ python3 scripts/repo/repo.py remove old-component
 python3 scripts/repo/repo.py remove old-component --remove-dir
 ```
 
-#### 2.4.4 切换分支
+#### 2.3.4 切换分支
 
 切换组件到不同的分支或标签：
 
@@ -243,7 +159,7 @@ python3 scripts/repo/repo.py branch arm_vcpu main
 1. 从新分支拉取更新
 2. 自动更新 CSV 配置文件中的 branch 字段
 
-#### 2.4.5 批量初始化
+#### 2.3.5 批量初始化
 
 批量初始化仅用于首次批量初始化已有的独立组件。该命令实现从 CSV 文件中读取所有组件，然后批量添加所有组件到当前仓库，添加采用了 `git subtree add` 命令完整保留原仓库的提交历史记录。
 
@@ -261,35 +177,79 @@ python3 scripts/repo/repo.py init -f /path/to/repos.csv
 
 ---
 
+### 2.4 分支自动检测
+
+当 [scripts/repo/repos.csv](scripts/repo/repos.csv) 中的组件配置中的 `branch` 字段为空时，`repo.py` 会通过 `detect_branch()` 方法自动检测仓库的默认分支。检测逻辑如下：
+
+```
+1. 尝试检查 remote 是否存在 main 分支
+   └── git rev-parse <remote>/main
+   └── 如果存在，返回 'main'
+
+2. 尝试检查 remote 是否存在 master 分支
+   └── git rev-parse <remote>/master
+   └── 如果存在，返回 'master'
+
+3. 查询 remote 的 HEAD 分支
+   └── git remote show <remote>
+   └── 解析输出中的 "HEAD branch" 字段
+   └── 如果找到，返回该分支名
+
+4. 兜底返回 'main'
+```
+
+在执行 `list`、`add`、`pull`、`push` 命令时，如果不指定分支都会自动检测分支。但是需要注意以下几个问题：
+
+- 检测过程会创建临时 remote，fetch 完成后自动清理
+- 优先检测 `main` 分支，符合 GitHub 新仓库的默认命名规范
+- 对于使用非标准分支名的仓库，建议在 CSV 中显式指定 branch
+
 ## 3. 同步机制
+
+为了同时保持统一仓库的开发便捷性与独立组件仓库的灵活性，`repo.py`还提供了 `tgoskits` 主仓库与独立组件仓库的之间的同步功能。并且配合在 CI 中的使用，还可实现自动同步。
 
 ### 3.1 Git Subtree 技术原理
 
-TGOSKits 采用 **Git Subtree** 作为核心同步技术，相比 Git Submodule 具有显著优势：
+**Git Subtree** 是一种将外部 Git 仓库的历史完整合并到主仓库子目录中的技术。与 Git Submodule 仅存储指向外部仓库的引用不同，Subtree 会将外部仓库的所有提交历史作为主仓库历史的一部分永久保存。
 
-| 特性 | Git Subtree | Git Submodule |
-|------|-------------|---------------|
-| **克隆便利性** | ✅ 克隆主仓库自动获取所有代码 | ❌ 需要 `--recursive` 或额外命令 |
-| **历史保留** | ✅ 完整保留组件提交历史 | ✅ 保留历史但分散在各仓库 |
-| **工作流复杂度** | ✅ 简单，无需额外学习 | ⚠️ 需要理解 submodule 概念 |
-| **推送更改** | ✅ 直接推送，Git 自动处理 | ⚠️ 需要先在子模块提交再主仓库 |
-| **分支切换** | ✅ 支持任意分支和标签 | ⚠️ 需要更新子模块配置 |
+Subtree 使用特殊的 `Subtree Merge Strategy` 合并策略处理不同根目录仓库之间的合并，支持生成单个合并提交，历史简洁但丢失外部仓库细节的 **Squash 模式** (`--squash`)以及保留外部仓库的所有提交历史，可完整追溯的 **Preserve History 模式**，核心包含三个关键机制：
 
-**核心工作原理：**
+1. **Merge Base 计算**：Git 能识别主仓库中已合并的 subtree 历史与外部仓库的公共基准点
+2. **路径重写**：自动将外部仓库的文件路径映射到主仓库的子目录（如 `src/` → `components/arm_vcpu/src/`）
+3. **Split 算法**：反向操作，从主仓库中提取子目录的提交历史，移除路径前缀后重建独立历史
 
 ```
-主仓库 (tgoskits)                组件仓库 (GitHub)
-       │                               │
-       ├─ components/arm_vcpu/  ←──────┤  https://github.com/.../arm_vcpu
-       │                               │
-       ├─ 拉取更新 (pull)  ──────────→ │  获取最新代码
-       │                               │
-       └─ 推送修改 (push)  ←──────────┤  同步本地更改
+┌─────────────────────────────────────────────────────────────────────┐
+│                      Subtree 同步机制                               │
+└─────────────────────────────────────────────────────────────────────┘
+
+      独立组件仓库                           主仓库 (tgoskits)
+      github.com/.../arm_vcpu               components/arm_vcpu/
+              │                                     │
+              │     ┌─────────────────────┐         │
+    pull ◄────┼─────┤   git subtree pull  │◄────────┤  获取更新
+              │     │   git merge -s      │         │
+              │     │   subtree           │         │
+              │     └─────────────────────┘         │
+              │                                     │
+              │     ┌─────────────────────┐         │
+    ────►push─┼─────┤   git subtree push  │────────►│  推送修改
+              │     │   git split + push  │         │
+              │     └─────────────────────┘         │
+              │                                     │
+
+关键特性：
+• 离线可用：克隆主仓库即可获得所有组件完整历史
+• 历史保留：TGOSKits 使用 Preserve History 模式，保留组件开发历史
+• 双向同步：支持主仓库与组件仓库之间的双向代码流动
+• 自动路径映射：Subtree 策略自动处理路径前缀转换
 ```
 
 ### 3.2 手动同步
 
-在当前主仓库修改了组件的代码之后，可以使用 `scripts/repo/repo.py` 脚本来手动将修改同步到独立的组件子仓库中。注意，CI 默认配置了同步，可以在将修改提交当远程仓库后自动同步。
+`scripts/repo/repo.py` 提供了 `pull` 和 `push` 命令分别实现从组件仓库同步到主仓库和从主仓库同步到组件仓库两个方向的同步。
+
+> 注意，CI 默认配置了同步，可以在将修改提交当远程仓库后自动同步，一般无需手动同步
 
 #### 3.2.1 从组件仓库同步到主仓库
 
@@ -298,13 +258,13 @@ TGOSKits 采用 **Git Subtree** 作为核心同步技术，相比 Git Submodule 
 ##### 3.2.1.1 基本用法
 
 ```bash
-# 拉取单个组件更新
+# 拉取单个指定组件更新
 python3 scripts/repo/repo.py pull arm_vcpu
 
 # 拉取所有组件更新
 python3 scripts/repo/repo.py pull --all
 
-# 拉取指定分支
+# 拉取指定组件的指定分支
 python3 scripts/repo/repo.py pull arm_vcpu -b dev
 ```
 
@@ -349,6 +309,10 @@ python3 scripts/repo/repo.py pull arm_vcpu --force
 - 严重的合并冲突无法解决
 - 需要完全重新同步组件
 
+##### 3.2.1.4 示例
+
+![pull](./images/pull.png)
+
 #### 3.2.2 从主仓库同步到组件仓库
 
 当在主仓库中修改了组件代码后，可以使用 `repo.py push` 命令将对当前组件的更改推送回独立的组件子仓库中。
@@ -356,15 +320,21 @@ python3 scripts/repo/repo.py pull arm_vcpu --force
 ##### 3.2.2.1 基本用法
 
 ```bash
-# 推送单个组件
+# 修改然后提交到本地仓库
+
+# 推送单个指定组件
 python3 scripts/repo/repo.py push arm_vcpu
 
 # 推送所有组件
 python3 scripts/repo/repo.py push --all
 
-# 推送到指定分支
+# 推送到指定组件的指定分支
 python3 scripts/repo/repo.py push arm_vcpu -b dev
 ```
+
+> **权限要求**：需要对组件仓库有写权限
+
+> **冲突处理**：如果组件仓库有新提交，需要先 pull 再 push
 
 ##### 3.2.2.2 Push 命令执行流程
 
@@ -386,22 +356,21 @@ def push_subtree(url, target_dir, branch):
     # 4. 组件仓库会收到新的提交
 ```
 
-##### 3.2.2.3 Push 注意事项
+##### 3.2.2.3 示例
 
-- **权限要求**：需要对组件仓库有写权限
-- **提交分离**：Git subtree 会将主仓库的提交拆分成组件仓库的独立提交
-- **历史保持**：推送的提交会保留原始作者信息和时间戳
-- **冲突处理**：如果组件仓库有新提交，需要先 pull 再 push
+Git subtree 会将主仓库的提交拆分成组件仓库的独立提交，且推送的提交会保留原始作者信息和时间戳，与直接在独立子仓库推动代码别无二致！
+
+![push](./images/push.png)
 
 ### 3.3 自动同步
 
-TGOSKits 仓库配置了 `.github/workflows/pull.yml` 和 `.github/workflows/push.yml` 两个 CI 文件来实现自动化的双向同步。
+TGOSKits 仓库配置了 `.github/workflows/pull.yml` 和 `.github/workflows/push.yml` 两个 CI 文件，这两个 CI 文件中会直接调用 `scripts/repo/repo.py` 来实现自动化的双向同步。
 
 #### 3.3.1 从组件仓库同步到主仓库
 
-Pull 工作流由 `.github/workflows/pull.yml` 文件实现从子仓库拉取更新到主仓库的 next 分支（默认），支持如下两种触发方式：
+Pull 工作流由 `.github/workflows/pull.yml` 文件实现从子仓库拉取更新到主仓库的 **next 分支**，并支持如下两种触发方式：
 
-- `workflow_dispatch`：管理员手动同步特定组件或所有组件
+- `workflow_dispatch`：管理员可以在 `tgoskits` 仓库的 `Actions -> Pull from Subrepos` 界面中手动同步特定组件或所有组件
 
     ![workflow_dispatch](./images/workflow_dispatch_pull.png)
 
@@ -620,30 +589,148 @@ Pull 工作流由 `.github/workflows/pull.yml` 文件实现从子仓库拉取更
 - 只请求必要的 `contents: write` 权限
 - 使用 `GITHUB_TOKEN` 而非 PAT（仅限主仓库内部操作）
 
-**使用示例：**
+**工作流示例：**
 
-```bash
-# 手动触发：拉取单个组件
-# Actions → Pull from Subrepos → Run workflow
-# - repo_name: arm_vcpu
-# - branch: dev
-# - target_branch: next
+当开发者在独立的组件仓库中推送代码时，会自动触发主仓库的 Pull 工作流，将更新同步到主仓库。
 
-# 手动触发：拉取所有组件
-# Actions → Pull from Subrepos → Run workflow
-# - pull_all: true
-# - target_branch: next
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│            场景：组件仓库更新 → 主仓库同步 (repository_dispatch)             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+时间线    组件仓库 (arm_vcpu)              GitHub Actions                 主仓库 (tgoskits)
+  │
+  │     ┌─────────────────────┐
+  │     │ Step 1: 开发者推送   │
+  T1    │ git push origin dev │
+  │     └──────────┬──────────┘
+  │                │
+  │                ▼
+  │     ┌─────────────────────────────────────┐
+  │     │ Step 2: 子仓库 CI 触发               │
+  T2    │ .github/workflows/push.yml          │
+  │     │ • 获取组件信息 (name, branch, url)   │
+  │     │ • 构建 JSON payload                 │
+  │     └──────────────────┬──────────────────┘
+  │                        │
+  │                        ▼
+  │     ┌───────────────────────────────────────────────────────────┐
+  │     │ Step 3: 调用主仓库 API                                     │
+  T3    │ POST https://api.github.com/repos/rcore-os/tgoskits/...   │
+  │     │ {                                                         │
+  │     │   "event_type": "subtree-update",                         │
+  │     │   "client_payload": {                                     │
+  │     │     "component": "arm_vcpu",                              │
+  │     │     "branch": "dev",                                      │
+  │     │     "repo_url": "https://github.com/rcore-os/arm_vcpu",   │
+  │     │     "commit": "abc1234...",                               │
+  │     │     "author": "developer"                                 │
+  │     │   }                                                       │
+  │     │ }                                                         │
+  │     └────────────────────────────┬──────────────────────────────┘
+  │                                  │
+  │                                  ▼           ┌─────────────────────────────┐
+  │                                  │           │ Step 4: Pull 工作流触发      │
+  T4                                 ├──────────► .github/workflows/pull.yml   │
+  │                                  │           │ • 接收 repository_dispatch  │
+  │                                  │           │ • 解析 client_payload       │
+  │                                  │           │ • 校验组件白名单             │
+  │                                  │           └──────────────┬──────────────┘
+  │                                  │                          │
+  │                                  │                          ▼
+  │                                  │           ┌─────────────────────────────┐
+  │                                  │           │ Step 5: 执行 Subtree Pull   │
+  T5                                 │           │ git subtree pull            │
+  │                                  │           │   --prefix=components/      │
+  │                                  │           │   arm_vcpu                  │
+  │                                  │           │   https://github.com/...    │
+  │                                  │           │   dev                       │
+  │                                  │           └──────────────┬──────────────┘
+  │                                  │                          │
+  │                                  │                          ▼
+  │                                  │           ┌─────────────────────────────┐
+  │                                  │           │ Step 6: 推送到目标分支       │
+  T6                                 │           │ git push origin HEAD:next   │
+  │                                  │           │                             │
+  │                                  │           │ 主仓库 next 分支已更新       │
+  │                                  │           └─────────────────────────────┘
+  │                                  │
+  ▼                                  ▼
+```
+
+**关键检查点：**
+
+| 步骤 | 检查项 | 失败处理 |
+|------|--------|----------|
+| T2 | `PARENT_REPO_TOKEN` 是否配置 | 工作流失败，需配置 Secret |
+| T3 | Token 是否有主仓库 `repo` 权限 | API 返回 401/403 |
+| T4 | 组件是否在 `repos.csv` 白名单中 | 工作流跳过，记录警告 |
+| T5 | 是否存在合并冲突 | 需手动解决或使用 `--force` |
+| T6 | 是否有推送到 `next` 分支权限 | 使用 `GITHUB_TOKEN`，通常有权限 |
+
+**拉取策略说明：**
+
+- 默认只拉取到 next 分支
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         Pull 工作流拉取策略                                  │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+组件仓库 (dev/main)                    主仓库 (tgoskits)
+       │                                    │
+       │  开发者推送更新                      │
+       │                                    │
+       ▼                                    │
+┌─────────────────┐                         │
+│   push.yaml     │                         │
+│    CI 触发      │                         │
+└────────┬────────┘                         │
+         │                                  │
+         │   repository_dispatch            │
+         │   event                          │
+         ▼                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    Pull 工作流执行                               │
+│                                                                 │
+│  1. git subtree pull --prefix=components/arm_vcpu <url> dev    │
+│  2. git push origin HEAD:next                                   │
+│                                                                 │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │
+                           │       ┌────────────────────┼────────────────────┐
+                           │       │                    │                    │
+                           │       ▼                    ▼                    ▼
+                           │  ┌─────────┐          ┌─────────┐          ┌─────────┐
+                           └─►│  next   │          │  main   │          │  dev    │
+                              │ (拉取)  │          │ (保护)  │          │ (保护)  │
+                              └────┬────┘          └─────────┘          └─────────┘
+                                   │
+                                   │  测试验证
+                                   │  合并 PR
+                                   ▼
+                              ┌─────────┐
+                              │  main   │
+                              │ (合并)  │
+                              └─────────┘
+
+为什么拉取到 next 而非 main？
+• 保护主分支稳定性：组件更新可能引入 bug
+• 允许集成测试：在 next 分支进行完整测试
+• 批量同步支持：多个组件更新可一次性合并
+• 可回滚：问题发现后可快速回滚 next 分支
+• 审核流程：重要更新可要求 PR 审核
 ```
 
 #### 3.3.2 从主仓库同步到组件仓库
 
 Push 工作流由 `.github/workflows/push.yml` 文件实现将主仓库中修改的组件推送到子仓库，支持如下两种触发方式：
 
-- `workflow_dispatch`： 管理员手动推送组件更改
+- `workflow_dispatch`： 管理员可以在 `tgoskits` 仓库的 `Actions -> Push to Subrepos` 界面中手动将特定组件或所有组件的修改同步到独立组件仓库
 
     ![workflow_dispatch](./images/workflow_dispatch_push.png)
 
-- `push`： 推送到特定分支时自动触发
+- `push`： 当将修改的代码推送到 `tgoskits` 的指定分支（当前仅配置了 `main` 分支）时自动触发推送到独立组件仓库
 
 `.github/workflows/push.yml` 的完整工作流程：
 
@@ -758,80 +845,155 @@ Push 工作流需要配置 Personal Access Token (PAT) 以推送到子仓库：
    fi
    ```
 
-**推送策略：**
+**工作流示例：**
+
+当开发者在主仓库中修改了组件代码后，可以手动触发 Push 工作流，将修改推送到对应的独立组件仓库。
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│            场景：主仓库修改 → 组件仓库同步 (workflow_dispatch)                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+时间线    主仓库 (tgoskits)               GitHub Actions               组件仓库 (arm_vcpu)
+  │
+  │     ┌─────────────────────────────────────┐
+  │     │ Step 1: 开发者修改组件代码           │
+  T1    │ 编辑 components/arm_vcpu/src/...    │
+  │     │ git add . && git commit -m "fix: ..."│
+  │     │ git push origin main                 │
+  │     └──────────────────┬──────────────────┘
+  │                        │
+  │                        ▼
+  │     ┌──────────────────────────────────────────────────────┐
+  │     │ Step 2: 手动触发 Push 工作流                          │
+  T2    │ Actions → Push to Subrepos → Run workflow            │
+  │     │                                                      │
+  │     │ 输入参数:                                             │
+  │     │   components: "arm_vcpu"    (或 push_all: true)      │
+  │     │   branch: "mirror"          (目标分支)                │
+  │     └────────────────────────────┬─────────────────────────┘
+  │                                │
+  │                                ▼
+  │     ┌──────────────────────────────────────────────────────┐
+  │     │ Step 3: Job 1 - detect-changes                       │
+  T3    │                                                      │
+  │     │ ┌──────────────────────────────────────────────────┐ │
+  │     │ │ 3.1 分析修改的文件                                │ │
+  │     │ │     git diff --name-only HEAD^ HEAD              │ │
+  │     │ │     → components/arm_vcpu/src/lib.rs             │ │
+  │     │ │     → components/arm_vcpu/Cargo.toml             │ │
+  │     │ └──────────────────────────────────────────────────┘ │
+  │     │                                                       │
+  │     │ ┌──────────────────────────────────────────────────┐ │
+  │     │ │ 3.2 匹配组件目录                                  │ │
+  │     │ │     匹配到组件: arm_vcpu                          │ │
+  │     │ └──────────────────────────────────────────────────┘ │
+  │     │                                                       │
+  │     │ ┌──────────────────────────────────────────────────┐ │
+  │     │ │ 3.3 输出组件列表                                  │ │
+  │     │ │     changed_components=arm_vcpu                  │ │
+  │     │ └──────────────────────────────────────────────────┘ │
+  │     └────────────────────────────┬─────────────────────────┘
+  │                                │
+  │                                ▼
+  │     ┌──────────────────────────────────────────────────────┐
+  │     │ Step 4: Job 2 - push-to-subrepos                     │
+  T4    │                                                      │
+  │     │ ┌──────────────────────────────────────────────────┐ │
+  │     │ │ 4.1 配置 Git 认证                                 │ │
+  │     │ │     使用 SUBTREE_PUSH_TOKEN                       │ │
+  │     │ │     git config credential.helper store           │ │
+  │     │ └──────────────────────────────────────────────────┘ │
+  │     │                                                      │
+  │     │ ┌──────────────────────────────────────────────────┐ │
+  │     │ │ 4.2 执行 Subtree Push                             │ │
+  │     │ │     git subtree push                              │ │
+  │     │ │       --prefix=components/arm_vcpu                │ │
+  │     │ │       https://github.com/rcore-os/arm_vcpu        │ │
+  │     │ │       mirror                                      │ │
+  │     │ │                                                   │ │
+  │     │ │     Git 自动拆分提交:                              │ │
+  │     │ │     • 筛选影响 arm_vcpu 的提交                     │ │
+  │     │ │     • 移除路径前缀                                 │ │
+  │     │ │     • 重建独立历史                                 │ │
+  │     │ └──────────────────────────────────────────────────┘ │
+  │     │                                                       │
+  │     │ ┌──────────────────────────────────────────────────┐ │
+  │     │ │ 4.3 生成摘要报告                                   │ │
+  │     │ │     • 推送的组件列表                               │ │
+  │     │ │     • 每个组件的提交数量                           │ │
+  │     │ │     • 推送状态 (成功/失败)                         │ │
+  │     │ └──────────────────────────────────────────────────┘ │
+  │     └──────────────────────────┬───────────────────────────┘
+  │                                │
+  │                                │              ┌─────────────────────────────┐
+  T5                               ├─────────────►│ Step 5: 组件仓库收到推送     │
+  │                                │              │ arm_vcpu/mirror 分支更新    │
+  │                                │              │                            │
+  │                                │              │ 维护者可审核后合并到 main    │
+  │                                │              └─────────────────────────────┘
+  ▼                                ▼
+```
+
+**关键检查点：**
+
+| 步骤 | 检查项 | 失败处理 |
+|------|--------|----------|
+| T2 | 参数格式是否正确 | 工作流验证失败 |
+| T3 | 是否检测到组件修改 | 无修改则跳过 Job 2 |
+| T4.1 | `SUBTREE_PUSH_TOKEN` 是否配置 | 认证失败 |
+| T4.2 | 目标仓库是否有写权限 | Push 失败，返回 403 |
+| T4.2 | 是否存在冲突（远程有新提交） | 需先执行 Pull 同步 |
+| T5 | 组件仓库 `mirror` 分支是否存在 | 自动创建 |
+
+**推送策略说明：**
 
 - **目标分支**：所有组件推送到子仓库的 `mirror` 分支（默认）
 - **分支保护**：不直接推送到 `main`/`master`，避免影响子仓库稳定性
 - **合并流程**：子仓库维护者审核 `mirror` 分支后合并到主分支
 
-**使用示例：**
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         Push 工作流推送策略                                  │
+└─────────────────────────────────────────────────────────────────────────────┘
 
-```bash
-# 手动触发：推送所有组件
-# Actions → Push to Subrepos → Run workflow
-# - push_all: true
-# - branch: mirror
+主仓库 (main)                      组件仓库
+       │                              │
+       │  修改 components/arm_vcpu/   │
+       │                              │
+       ▼                              │
+┌─────────────────┐                   │
+│ git subtree push│                   │
+│                 │                   │
+│ 拆分提交历史     │                   │
+│ • 筛选相关提交   │                   │
+│ • 移除路径前缀   │                   │
+│ • 重建独立历史   │                   │
+└────────┬────────┘                   │
+         │                            │
+         │       ┌────────────────────┼────────────────────┐
+         │       │                    │                    │
+         │       ▼                    ▼                    ▼
+         │  ┌─────────┐          ┌─────────┐          ┌─────────┐
+         └─►│ mirror  │          │  main   │          │  dev    │
+            │ (推送)  │          │ (保护)  │          │ (保护)  │
+            └────┬────┘          └─────────┘          └─────────┘
+                 │
+                 │  维护者审核
+                 │  PR / Merge
+                 ▼
+            ┌─────────┐
+            │  main   │
+            │ (合并)  │
+            └─────────┘
 
-# 手动触发：推送指定组件
-# Actions → Push to Subrepos → Run workflow
-# - components: arm_vcpu,axvm,axdevice
-# - branch: mirror
-
-# 自动触发（需启用 push 事件）
-# git push origin main
-# 工作流自动检测修改的组件并推送
+为什么不直接推送到 main？
+• 保护主分支稳定性
+• 允许维护者审核变更
+• 支持测试和验证流程
+• 可拒绝有问题的变更
 ```
 
-#### 3.3.3 双向同步工作流示例
-
-**场景：组件仓库更新 → 主仓库同步**
-
-```
-组件仓库                  主仓库                  GitHub Actions
-   │                        │                         │
-   │  开发者推送更新         │                         │
-   ├─────────────────────→ │                         │
-   │                        │                         │
-   │  触发 repository_      │                         │
-   │  dispatch 事件         │                         │
-   ├────────────────────────┼────────────────────────→│
-   │                        │                         │
-   │                        │    Pull 工作流触发      │
-   │                        │←────────────────────────┤
-   │                        │                         │
-   │                        │    repo.py pull         │
-   │                        │←────────────────────────┤
-   │                        │                         │
-   │                        │    推送到 next 分支     │
-   │                        │←────────────────────────┤
-   │                        │                         │
-```
-
-**场景：主仓库修改 → 组件仓库同步**
-
-```
-主仓库                   GitHub Actions              组件仓库
-   │                         │                         │
-   │  开发者修改组件          │                         │
-   ├────────────────────────→│                         │
-   │                         │                         │
-   │  手动触发 Push 工作流    │                         │
-   ├────────────────────────→│                         │
-   │                         │                         │
-   │                         │  检测修改的组件         │
-   │                         ├──────────────┐          │
-   │                         │              │          │
-   │                         │←─────────────┘          │
-   │                         │                         │
-   │                         │  repo.py push           │
-   │                         ├────────────────────────→│
-   │                         │                         │
-   │                         │    推送到 mirror 分支   │
-   │                         ├────────────────────────→│
-   │                         │                         │
-   │                         │    生成摘要报告         │
-   │                         ├──────────────┐          │
-   │                         │              │          │
-   │                         │←─────────────┘          │
-   │                         │                         │
-```
+**触发条件：**
+- 主仓库手动触发 `Push to Subrepos` 工作流
+- （可选）推送到主仓库特定分支时自动触发（需在 `push.yml` 中配置 `push` 事件）
