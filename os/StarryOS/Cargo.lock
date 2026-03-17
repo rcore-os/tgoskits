@@ -269,6 +269,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "axalloc"
+version = "0.3.0-preview.3"
+dependencies = [
+ "axallocator",
+ "axerrno 0.2.2",
+ "cfg-if",
+ "kspin",
+ "log",
+ "memory_addr",
+ "strum 0.27.2",
+]
+
+[[package]]
 name = "axallocator"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -300,6 +313,13 @@ name = "axconfig"
 version = "0.3.0-preview.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "25985c64d932bf954b02eaf0873e4445d234d39b5100b1985585e3276b6b47d1"
+dependencies = [
+ "axconfig-macros",
+]
+
+[[package]]
+name = "axconfig"
+version = "0.3.0-preview.3"
 dependencies = [
  "axconfig-macros",
 ]
@@ -356,8 +376,8 @@ version = "0.3.0-preview.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "202dbb36844c1822040957ecfbcf467a7dddbc183fe3e89d098523d3fc00e64a"
 dependencies = [
- "axdriver",
- "axsync",
+ "axdriver 0.3.0-preview.2",
+ "axsync 0.3.0-preview.2",
  "lazyinit",
  "log",
 ]
@@ -368,8 +388,8 @@ version = "0.3.0-preview.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a92c9e28dbeeb219f91abed250fa9e04d3cd28a6d5d296fc2fb46a8b99d8f86"
 dependencies = [
- "axalloc",
- "axconfig",
+ "axalloc 0.3.0-preview.2",
+ "axconfig 0.3.0-preview.2",
  "axdriver_base",
  "axdriver_block",
  "axdriver_display",
@@ -378,7 +398,23 @@ dependencies = [
  "axdriver_pci",
  "axdriver_virtio",
  "axdriver_vsock",
- "axhal",
+ "axhal 0.3.0-preview.2",
+ "cfg-if",
+ "crate_interface 0.1.4",
+ "log",
+ "smallvec",
+]
+
+[[package]]
+name = "axdriver"
+version = "0.3.0-preview.3"
+dependencies = [
+ "axconfig 0.3.0-preview.3",
+ "axdriver_base",
+ "axdriver_block",
+ "axdriver_net",
+ "axdriver_pci",
+ "axhal 0.3.0-preview.3",
  "cfg-if",
  "crate_interface 0.1.4",
  "log",
@@ -502,19 +538,19 @@ version = "0.3.0-preview.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0abc9f576faa89f8ffb6a56e521fcf4eccf47fc4321afa93a3c5b769d4fbaafa"
 dependencies = [
- "axalloc",
+ "axalloc 0.3.0-preview.2",
  "axbacktrace",
  "axdisplay",
- "axdriver",
+ "axdriver 0.3.0-preview.2",
  "axfs",
- "axfs-ng",
- "axhal",
+ "axfs-ng 0.3.0-preview.2",
+ "axhal 0.3.0-preview.2",
  "axinput",
  "axlog",
  "axnet",
  "axruntime",
- "axsync",
- "axtask",
+ "axsync 0.3.0-preview.2",
+ "axtask 0.3.0-preview.2",
  "kspin",
 ]
 
@@ -524,7 +560,7 @@ version = "0.3.0-preview.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8c4cf42f326689f0365e3f08b7b8d59fcee360a82b343674eaf375439ea6051"
 dependencies = [
- "axdriver",
+ "axdriver 0.3.0-preview.2",
  "axerrno 0.2.2",
  "axfatfs",
  "axfs_devfs",
@@ -544,14 +580,14 @@ version = "0.3.0-preview.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cda01a3d5334aef9764462e9e06639de220490f897a85749444bac4517d6edd4"
 dependencies = [
- "axalloc",
- "axdriver",
+ "axalloc 0.3.0-preview.2",
+ "axdriver 0.3.0-preview.2",
  "axerrno 0.2.2",
  "axfs-ng-vfs",
- "axhal",
+ "axhal 0.3.0-preview.2",
  "axio",
  "axpoll",
- "axsync",
+ "axsync 0.3.0-preview.2",
  "bitflags 2.11.0",
  "cfg-if",
  "chrono",
@@ -560,6 +596,30 @@ dependencies = [
  "log",
  "lru",
  "lwext4_rust",
+ "scope-local",
+ "slab",
+ "spin 0.10.0",
+]
+
+[[package]]
+name = "axfs-ng"
+version = "0.3.0-preview.3"
+dependencies = [
+ "axalloc 0.3.0-preview.3",
+ "axdriver 0.3.0-preview.3",
+ "axerrno 0.2.2",
+ "axfs-ng-vfs",
+ "axhal 0.3.0-preview.3",
+ "axio",
+ "axpoll",
+ "axsync 0.3.0-preview.3",
+ "bitflags 2.11.0",
+ "cfg-if",
+ "chrono",
+ "intrusive-collections",
+ "kspin",
+ "log",
+ "lru",
  "scope-local",
  "slab",
  "spin 0.10.0",
@@ -621,12 +681,12 @@ version = "0.3.0-preview.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b721414abb9554522acdc0495cef83eadfc7d47257fe3c979e655c982d79588"
 dependencies = [
- "axalloc",
- "axconfig",
+ "axalloc 0.3.0-preview.2",
+ "axconfig 0.3.0-preview.2",
  "axcpu",
  "axplat",
  "axplat-aarch64-qemu-virt",
- "axplat-dyn",
+ "axplat-dyn 0.3.0-preview.2",
  "axplat-loongarch64-qemu-virt",
  "axplat-riscv64-qemu-virt",
  "axplat-x86-pc",
@@ -643,13 +703,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "axhal"
+version = "0.3.0-preview.3"
+dependencies = [
+ "axconfig 0.3.0-preview.3",
+ "axcpu",
+ "axplat",
+ "axplat-aarch64-qemu-virt",
+ "axplat-dyn 0.3.0-preview.3",
+ "axplat-loongarch64-qemu-virt",
+ "axplat-riscv64-qemu-virt",
+ "axplat-x86-pc",
+ "cfg-if",
+ "fdt-parser",
+ "heapless 0.9.2",
+ "kernel_guard",
+ "linkme",
+ "log",
+ "memory_addr",
+ "percpu",
+ "spin 0.10.0",
+]
+
+[[package]]
 name = "axinput"
 version = "0.3.0-preview.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e3d30c4cfd7b920fe5d7fb4a79ad019c25b8620a75bf83e96a54f9653f4217d"
 dependencies = [
- "axdriver",
- "axsync",
+ "axdriver 0.3.0-preview.2",
+ "axsync 0.3.0-preview.2",
  "lazyinit",
  "log",
 ]
@@ -695,9 +778,9 @@ version = "0.3.0-preview.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "49440d27560749ce68ed60e44377772f09a4beaae3f96e1b875c4794b29c8e64"
 dependencies = [
- "axalloc",
+ "axalloc 0.3.0-preview.2",
  "axerrno 0.2.2",
- "axhal",
+ "axhal 0.3.0-preview.2",
  "kspin",
  "lazyinit",
  "log",
@@ -711,12 +794,12 @@ version = "0.3.0-preview.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b03ce184f77f748369b6fa315385e2093c159d1a08d6ce18beec9fad6d2c27f6"
 dependencies = [
- "axdriver",
+ "axdriver 0.3.0-preview.2",
  "axerrno 0.2.2",
- "axhal",
+ "axhal 0.3.0-preview.2",
  "axio",
- "axsync",
- "axtask",
+ "axsync 0.3.0-preview.2",
+ "axtask 0.3.0-preview.2",
  "cfg-if",
  "lazyinit",
  "log",
@@ -732,16 +815,44 @@ checksum = "a3a33a22c3b07301d1cf096021a1f048c0d48b02d5fc034c237fb9968dc06da2"
 dependencies = [
  "async-channel",
  "async-trait",
- "axconfig",
- "axdriver",
+ "axconfig 0.3.0-preview.2",
+ "axdriver 0.3.0-preview.2",
  "axerrno 0.2.2",
- "axfs-ng",
+ "axfs-ng 0.3.0-preview.2",
  "axfs-ng-vfs",
- "axhal",
+ "axhal 0.3.0-preview.2",
  "axio",
  "axpoll",
- "axsync",
- "axtask",
+ "axsync 0.3.0-preview.2",
+ "axtask 0.3.0-preview.2",
+ "bitflags 2.11.0",
+ "cfg-if",
+ "enum_dispatch",
+ "event-listener",
+ "hashbrown",
+ "lazy_static",
+ "log",
+ "ringbuf",
+ "spin 0.10.0",
+ "starry-smoltcp",
+]
+
+[[package]]
+name = "axnet-ng"
+version = "0.3.0-preview.3"
+dependencies = [
+ "async-channel",
+ "async-trait",
+ "axconfig 0.3.0-preview.3",
+ "axdriver 0.3.0-preview.3",
+ "axerrno 0.2.2",
+ "axfs-ng 0.3.0-preview.3",
+ "axfs-ng-vfs",
+ "axhal 0.3.0-preview.3",
+ "axio",
+ "axpoll",
+ "axsync 0.3.0-preview.3",
+ "axtask 0.3.0-preview.3",
  "bitflags 2.11.0",
  "cfg-if",
  "enum_dispatch",
@@ -818,6 +929,32 @@ dependencies = [
  "heapless 0.9.2",
  "log",
  "percpu",
+ "somehal",
+ "spin 0.10.0",
+]
+
+[[package]]
+name = "axplat-dyn"
+version = "0.3.0-preview.3"
+dependencies = [
+ "anyhow",
+ "axalloc 0.3.0-preview.3",
+ "axconfig-macros",
+ "axcpu",
+ "axdriver_base",
+ "axdriver_block",
+ "axdriver_virtio",
+ "axerrno 0.2.2",
+ "axklib",
+ "axplat",
+ "dma-api 0.7.1",
+ "fdt-edit 0.2.3",
+ "heapless 0.9.2",
+ "log",
+ "memory_addr",
+ "percpu",
+ "rd-block",
+ "rdrive 0.20.0",
  "somehal",
  "spin 0.10.0",
 ]
@@ -931,22 +1068,22 @@ version = "0.3.0-preview.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ce5c658dc9a0e283dafb99317ade2bb191d3881b2133ac58da251d03f589f83f"
 dependencies = [
- "axalloc",
+ "axalloc 0.3.0-preview.2",
  "axbacktrace",
- "axconfig",
+ "axconfig 0.3.0-preview.2",
  "axdisplay",
- "axdriver",
+ "axdriver 0.3.0-preview.2",
  "axfs",
- "axfs-ng",
- "axhal",
+ "axfs-ng 0.3.0-preview.2",
+ "axhal 0.3.0-preview.2",
  "axinput",
  "axklib",
  "axlog",
  "axmm",
  "axnet",
- "axnet-ng",
+ "axnet-ng 0.3.0-preview.2",
  "axplat",
- "axtask",
+ "axtask 0.3.0-preview.2",
  "cfg-if",
  "chrono",
  "crate_interface 0.1.4",
@@ -970,7 +1107,17 @@ version = "0.3.0-preview.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4fb8e90184332ae787f483a256561c6c4eecc4b5b41e06d3850fbd524a8c6a98"
 dependencies = [
- "axtask",
+ "axtask 0.3.0-preview.2",
+ "event-listener",
+ "kspin",
+ "lock_api",
+]
+
+[[package]]
+name = "axsync"
+version = "0.3.0-preview.3"
+dependencies = [
+ "axtask 0.3.0-preview.3",
  "event-listener",
  "kspin",
  "lock_api",
@@ -982,9 +1129,9 @@ version = "0.3.0-preview.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc45120776afddf28b19bb7aba87e379c5779cf28a8f7884943a4821caeec774"
 dependencies = [
- "axconfig",
+ "axconfig 0.3.0-preview.2",
  "axerrno 0.2.2",
- "axhal",
+ "axhal 0.3.0-preview.2",
  "axpoll",
  "axsched",
  "cfg-if",
@@ -992,6 +1139,29 @@ dependencies = [
  "crate_interface 0.1.4",
  "event-listener",
  "extern-trait",
+ "futures-util",
+ "kernel_guard",
+ "kspin",
+ "lazyinit",
+ "log",
+ "memory_addr",
+ "percpu",
+ "spin 0.10.0",
+]
+
+[[package]]
+name = "axtask"
+version = "0.3.0-preview.3"
+dependencies = [
+ "axconfig 0.3.0-preview.3",
+ "axerrno 0.2.2",
+ "axhal 0.3.0-preview.3",
+ "axpoll",
+ "axsched",
+ "cfg-if",
+ "cpumask",
+ "crate_interface 0.1.4",
+ "event-listener",
  "futures-util",
  "kernel_guard",
  "kspin",
@@ -1535,6 +1705,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "dma-api"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a8e9ce2657334f873c12845789d5a4f1b34bef91fe531437284b8387d77bd925"
+dependencies = [
+ "aarch64-cpu-ext",
+ "cfg-if",
+ "derive_more",
+ "log",
+ "mbarrier",
+ "spin 0.10.0",
+ "thiserror",
+]
+
+[[package]]
 name = "downcast-rs"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1634,6 +1819,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fdt-edit"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bda8ff88f0dd8770b247b17d9e0faf293c52cb5733e2500294ffa93ac1f0b384"
+dependencies = [
+ "enum_dispatch",
+ "fdt-raw 0.3.0",
+ "log",
+]
+
+[[package]]
 name = "fdt-parser"
 version = "0.4.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1655,6 +1851,17 @@ name = "fdt-raw"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cce2d6b3100c219add1cf704f0996cd45003fee5f1a2567397625c62cb7688f4"
+dependencies = [
+ "heapless 0.9.2",
+ "log",
+ "thiserror",
+]
+
+[[package]]
+name = "fdt-raw"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91e6747052012035c3473585be1d706207893d8db73101825d8a3f75effa9843"
 dependencies = [
  "heapless 0.9.2",
  "log",
@@ -2320,6 +2527,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "pcie"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8b092a434cb4a9dff1321bc486f0d324ce2425f217eb1fe43d34b1d21b03294"
+dependencies = [
+ "bit_field",
+ "bitflags 2.11.0",
+ "log",
+ "mmio-api",
+ "pci_types",
+ "rdif-pcie",
+ "thiserror",
+]
+
+[[package]]
 name = "percpu"
 version = "0.2.3-preview.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2349,6 +2571,12 @@ name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+
+[[package]]
+name = "pin-utils"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 
 [[package]]
 name = "portable-atomic"
@@ -2498,6 +2726,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rd-block"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c20952f27dc5aaf853e8c00026ba7f2633e149ce47f9a58115704b342756307"
+dependencies = [
+ "dma-api 0.7.1",
+ "futures",
+ "rdif-block",
+ "spin_on",
+]
+
+[[package]]
 name = "rdif-base"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2520,6 +2760,17 @@ dependencies = [
  "async-trait",
  "paste",
  "rdif-def",
+ "thiserror",
+]
+
+[[package]]
+name = "rdif-block"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea2a2573c1fb0af5daf596a32b9e10284f1fc018adfd0413e2213f35151ebff1"
+dependencies = [
+ "dma-api 0.7.1",
+ "rdif-base 0.8.0",
  "thiserror",
 ]
 
@@ -2576,7 +2827,26 @@ dependencies = [
  "fdt-parser",
  "log",
  "paste",
- "pcie",
+ "pcie 0.5.0",
+ "rdif-base 0.8.0",
+ "rdif-pcie",
+ "rdrive-macros",
+ "spin 0.10.0",
+ "thiserror",
+]
+
+[[package]]
+name = "rdrive"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9bdca8365115779b803244844c4db3c8e2ae3355edbdb5ce6547de540b29dd2"
+dependencies = [
+ "fdt-edit 0.2.3",
+ "fdt-raw 0.3.0",
+ "log",
+ "mmio-api",
+ "paste",
+ "pcie 0.6.0",
  "rdif-base 0.8.0",
  "rdif-pcie",
  "rdrive-macros",
@@ -2862,7 +3132,7 @@ checksum = "20ad586f110c679176859fe111f2c3dd176b95bbe731e9b4c3d1c6382cb301c9"
 dependencies = [
  "bare-test-macros",
  "bitflags 2.11.0",
- "dma-api",
+ "dma-api 0.5.2",
  "enum_dispatch",
  "heapless 0.9.2",
  "log",
@@ -2892,7 +3162,7 @@ dependencies = [
  "byte-unit",
  "byteorder",
  "derive_more",
- "fdt-edit",
+ "fdt-edit 0.1.5",
  "fdt-raw 0.2.0",
  "heapless 0.9.2",
  "kasm-aarch64",
@@ -2931,7 +3201,7 @@ dependencies = [
  "mmio-api",
  "page-table-generic",
  "rdif-intc",
- "rdrive",
+ "rdrive 0.19.1",
  "someboot",
  "somehal-macros",
  "thiserror",
@@ -2969,6 +3239,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "spin_on"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "076e103ed41b9864aa838287efe5f4e3a7a0362dd00671ae62a212e5e4612da2"
+dependencies = [
+ "pin-utils",
+]
+
+[[package]]
 name = "spinning_top"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2996,25 +3275,25 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 name = "starry-kernel"
 version = "0.2.0-preview.2"
 dependencies = [
- "axalloc",
+ "axalloc 0.3.0-preview.2",
  "axbacktrace",
- "axconfig",
+ "axconfig 0.3.0-preview.2",
  "axdisplay",
- "axdriver",
+ "axdriver 0.3.0-preview.2",
  "axerrno 0.2.2",
  "axfeat",
- "axfs-ng",
+ "axfs-ng 0.3.0-preview.3",
  "axfs-ng-vfs",
- "axhal",
+ "axhal 0.3.0-preview.2",
  "axinput",
  "axio",
  "axlog",
  "axmm",
- "axnet-ng",
+ "axnet-ng 0.3.0-preview.3",
  "axpoll",
  "axruntime",
- "axsync",
- "axtask",
+ "axsync 0.3.0-preview.2",
+ "axtask 0.3.0-preview.2",
  "bitflags 2.11.0",
  "bitmaps",
  "bytemuck",
