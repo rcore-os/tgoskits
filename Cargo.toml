@@ -214,6 +214,7 @@ axsched = { path = "components/axsched", version = "0.3.1" }
 axvcpu = { path = "components/axvcpu", version = "0.3.0" }
 axvm = { path = "components/axvm", version = "0.3.0" }
 axvmconfig = { path = "components/axvmconfig", version = "0.2.2" }
+axbuild = { path = "components/axbuild", version = "0.1" }
 
 axcpu = { version = "0.3.0-preview.8" }
 axplat = { version = "0.3.1-pre.6" }
