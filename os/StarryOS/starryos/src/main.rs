@@ -1,6 +1,6 @@
 #![no_std]
 #![no_main]
-#![doc = include_str!("../README.md")]
+#![doc = include_str!("../../README.md")]
 
 extern crate alloc;
 

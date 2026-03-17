@@ -2,8 +2,14 @@
 name = "starry-kernel"
 version.workspace = true
 edition.workspace = true
-description.workspace = true
-authors.workspace = true
+description = "A Linux-compatible OS kernel built on ArceOS unikernel"
+authors = [
+    "Azure-stars <Azure_stars@126.com>",
+    "Yuekai Jia <equation618@gmail.com>",
+    "KylinSoft Co., Ltd. <https://www.kylinos.cn/>",
+    "朝倉水希 <asakuramizu111@gmail.com>",
+    "Mivik <mivikq@gmail.com>",
+]
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
