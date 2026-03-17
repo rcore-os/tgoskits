@@ -7,9 +7,6 @@ git-fetch-with-cli = true
 [resolver]
 incompatible-rust-versions = "allow"
 
-[target.'cfg(target_os = "none")']
-runner = "cargo osrun"
-
 [alias]
 axvisor = "run -p axvisor --bin xtask --"
-xtask = "run -p tg-xtask --bin tg-xtask --"
+xtask = "run -p tg-xtask --"

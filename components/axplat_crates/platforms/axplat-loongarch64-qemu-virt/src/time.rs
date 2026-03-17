@@ -127,7 +127,7 @@ impl TimeIf for TimeIfImpl {
 
         let ticks_now = Self::current_ticks();
         let ticks_deadline = Self::nanos_to_ticks(deadline_ns);
-        let init_value = ticks_deadline - ticks_now;
+        let init_value = ticks_deadline.saturating_sub(ticks_now).max(1);
         tcfg::set_init_val(init_value as _);
         tcfg::set_en(true);
     }

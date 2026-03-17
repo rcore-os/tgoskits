@@ -116,3 +116,5 @@ __pycache__/
 .uboot*
 
 /.cargo/.config-local.toml
+.axconfig*
+*.img

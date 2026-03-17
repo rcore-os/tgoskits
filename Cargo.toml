@@ -95,8 +95,11 @@ members = [
     "os/arceos/examples/httpserver",
     "os/arceos/examples/shell",
 
+    # test-suit
+    "test-suit/arceos/task/*",
+
     # os/axvisor
-    "os/axvisor",
+    "os/axvisor", "components/axbuild",    
 ]
 exclude = [
     # workspace directories
@@ -116,6 +119,9 @@ exclude = [
 ]
 
 [patch.crates-io]
+# === axerrno ===
+axerrno = { path = "components/axerrno", version = "0.2.2" }
+
 # === axcpu ===
 axcpu = { path = "components/axcpu" }
 
@@ -208,6 +214,7 @@ axsched = { path = "components/axsched", version = "0.3.1" }
 axvcpu = { path = "components/axvcpu", version = "0.3.0" }
 axvm = { path = "components/axvm", version = "0.3.0" }
 axvmconfig = { path = "components/axvmconfig", version = "0.2.2" }
+axbuild = { path = "components/axbuild", version = "0.1" }
 
 axcpu = { version = "0.3.0-preview.8" }
 axplat = { version = "0.3.1-pre.6" }
@@ -229,6 +236,7 @@ axdriver_virtio = "0.1.4-preview.3"
 axdriver_vsock = "0.1.4-preview.3"
 
 # === Other external crates ===
+anyhow = "1.0"
 bindgen = "0.72"
 buddy-slab-allocator = "0.2"
 cfg-if = "1.0"
@@ -247,3 +255,4 @@ page_table_multiarch = { version = "0.6", features = ["axerrno"] }
 percpu = "0.2.3-preview.1"
 scope-local = "0.1"
 spin = "0.10"
+ostool = { version = "0.8.12" }

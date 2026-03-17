@@ -60,6 +60,15 @@ jobs:
             target: aarch64-unknown-none-softfloat
           - os: starry
             target: loongarch64-unknown-none-softfloat
+          # arceos
+          - os: arceos
+            target: x86_64-unknown-none
+          - os: arceos
+            target: riscv64gc-unknown-none-elf
+          - os: arceos
+            target: aarch64-unknown-none-softfloat
+          - os: arceos
+            target: loongarch64-unknown-none-softfloat
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
