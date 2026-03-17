@@ -394,16 +394,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cleanup_files_includes_app_local_and_legacy_axconfig_paths() {
+    fn cleanup_files_includes_app_local_config_paths() {
         let manifest_dir = PathBuf::from("/workspace/os/arceos");
-        let config = ArceosConfig {
-            app: PathBuf::from("examples/helloworld"),
-            ..ArceosConfig::default()
-        };
+        let app_dir = PathBuf::from("examples/helloworld");
 
-        let files = cleanup_files(&manifest_dir, &config);
-        assert!(files.contains(&manifest_dir.join("examples/helloworld/.axconfig.toml")));
-        assert!(files.contains(&manifest_dir.join(".axconfig.toml")));
+        let files = cleanup_files(&manifest_dir, &app_dir);
+        assert!(files.contains(&app_dir.join(AXCONFIG_FILE_NAME)));
+        assert!(files.contains(&app_dir.join(QEMU_CONFIG_FILE_NAME)));
+    }
+
+    #[test]
+    fn cleanup_files_returns_correct_paths_for_root_app() {
+        let manifest_dir = PathBuf::from("/workspace/os/arceos");
+        let app_dir = PathBuf::from(".");
+
+        let files = cleanup_files(&manifest_dir, &app_dir);
+        assert!(files.contains(&app_dir.join(AXCONFIG_FILE_NAME)));
+        assert!(files.contains(&app_dir.join(QEMU_CONFIG_FILE_NAME)));
     }
 
     #[test]

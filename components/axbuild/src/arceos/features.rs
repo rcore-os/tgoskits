@@ -283,6 +283,44 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_ax_features_with_dynamic_platform() {
+        let config = ArceosConfig {
+            arch: Arch::AArch64,
+            platform: "aarch64-qemu-virt".to_string(),
+            mode: BuildMode::Debug,
+            log: LogLevel::Info,
+            smp: None,
+            mem: None,
+            features: vec![],
+            app_features: vec![],
+            qemu: QemuOptions::default(),
+        };
+
+        let ax_features = FeatureResolver::resolve_ax_features(&config, true);
+        assert!(ax_features.contains(&"plat-dyn".to_string()));
+        assert!(!ax_features.contains(&"defplat".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_ax_features_with_myplat() {
+        let config = ArceosConfig {
+            arch: Arch::AArch64,
+            platform: "myplat-custom".to_string(),
+            mode: BuildMode::Debug,
+            log: LogLevel::Info,
+            smp: None,
+            mem: None,
+            features: vec![],
+            app_features: vec![],
+            qemu: QemuOptions::default(),
+        };
+
+        let ax_features = FeatureResolver::resolve_ax_features(&config, false);
+        assert!(ax_features.contains(&"myplat".to_string()));
+        assert!(!ax_features.contains(&"defplat".to_string()));
+    }
+
+    #[test]
     fn test_parse_features() {
         let features = FeatureResolver::parse_features("fs,net,fp-simd");
         assert_eq!(features, vec!["fs", "net", "fp-simd"]);

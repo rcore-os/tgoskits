@@ -603,41 +603,9 @@ mod tests {
     }
 
     #[test]
-    fn test_load_config_uses_manifest_default_for_workspace() {
+    fn test_save_and_load_config_roundtrip() {
         let dir = tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("examples/helloworld")).unwrap();
-        fs::write(dir.path().join("Cargo.toml"), "[workspace]\nmembers=[]\n").unwrap();
-        fs::write(
-            dir.path().join("examples/helloworld/Cargo.toml"),
-            "[package]\nname=\"hello\"\nversion=\"0.1.0\"\nedition=\"2024\"\n[[bin]]\nname=\"\
-             hello\"\npath=\"src/main.rs\"\n",
-        )
-        .unwrap();
-
-        let config = load_config(dir.path(), ArceosConfigOverride::default()).unwrap();
-
-        assert_eq!(config.app, PathBuf::from("examples/helloworld"));
-    }
-
-    #[test]
-    fn test_load_config_uses_dot_default_for_single_crate() {
-        let dir = tempdir().unwrap();
-        fs::write(
-            dir.path().join("Cargo.toml"),
-            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\nedition=\"2024\"\n[[bin]]\nname=\"demo\"\
-             \npath=\"src/main.rs\"\n",
-        )
-        .unwrap();
-
-        let config = load_config(dir.path(), ArceosConfigOverride::default()).unwrap();
-
-        assert_eq!(config.app, PathBuf::from("."));
-    }
-
-    #[test]
-    fn test_save_and_load_config_uses_dot_arceos_toml() {
-        let dir = tempdir().unwrap();
-        let config = ArceosConfig::default_for_manifest(dir.path());
+        let config = ArceosConfig::default();
 
         let saved = save_config(dir.path(), &config).unwrap();
         let loaded = load_config(dir.path(), ArceosConfigOverride::default()).unwrap();
@@ -652,14 +620,15 @@ mod tests {
         fs::create_dir_all(dir.path().join("configs/board")).unwrap();
         fs::write(
             dir.path().join("configs/board/qemu-aarch64.toml"),
-            "arch = \"aarch64\"\nplatform = \"aarch64-qemu-virt\"\napp = \".\"\nmode = \
-             \"debug\"\nlog = \"warn\"\nfeatures = []\napp_features = []\n[qemu]\n",
+            "arch = \"aarch64\"\nplatform = \"aarch64-qemu-virt\"\nmode = \"debug\"\nlog = \
+             \"warn\"\nfeatures = []\napp_features = []\n[qemu]\n",
         )
         .unwrap();
 
         let config = apply_defconfig(dir.path(), "qemu-aarch64").unwrap();
 
-        assert_eq!(config.app, PathBuf::from("."));
+        assert_eq!(config.arch, Arch::AArch64);
+        assert_eq!(config.platform, "aarch64-qemu-virt");
         assert!(dir.path().join(".arceos.toml").exists());
     }
 
@@ -710,29 +679,34 @@ mod tests {
     }
 
     #[test]
-    fn test_qemu_config_path_for_config_uses_app_dir() {
-        let manifest_dir = workspace_root().join("os/arceos");
-        let config = ArceosConfig {
-            app: PathBuf::from("examples/helloworld"),
-            ..ArceosConfig::default()
-        };
-        assert_eq!(
-            qemu_config_path_for_config(&manifest_dir, &config),
-            manifest_dir.join("examples/helloworld/.qemu.toml")
-        );
+    fn test_load_config_with_override() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join(".arceos.toml"),
+            "arch = \"x86_64\"\nplatform = \"x86-qemu\"\nmode = \"debug\"\nlog = \"warn\"\nfeatures = []\napp_features = []\n[qemu]\n",
+        )
+        .unwrap();
+
+        let config = load_config(
+            dir.path(),
+            ArceosConfigOverride {
+                arch: Some(Arch::RiscV64),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(config.arch, Arch::RiscV64);
+        assert_eq!(config.platform, "x86-qemu");
     }
 
     #[test]
-    fn test_axconfig_path_for_config_uses_app_dir() {
-        let manifest_dir = workspace_root().join("os/arceos");
-        let config = ArceosConfig {
-            app: PathBuf::from("examples/helloworld"),
-            ..ArceosConfig::default()
-        };
-        assert_eq!(
-            axconfig_path_for_config(&manifest_dir, &config),
-            manifest_dir.join("examples/helloworld/.axconfig.toml")
-        );
+    fn test_load_config_uses_default_when_file_missing() {
+        let dir = tempdir().unwrap();
+
+        let config = load_config(dir.path(), ArceosConfigOverride::default()).unwrap();
+
+        assert_eq!(config, ArceosConfig::default());
     }
 
     #[test]
@@ -752,12 +726,43 @@ mod tests {
     }
 
     #[test]
-    fn test_make_path_relative_strips_manifest_prefix() {
-        let dir = tempdir().unwrap();
-        let absolute = dir.path().join("apps/demo");
-        assert_eq!(
-            make_path_relative(dir.path(), &absolute),
-            Path::new("apps/demo").to_path_buf()
+    fn test_parse_qemu_options() {
+        let options = parse_qemu_options(
+            true,
+            Some("/tmp/disk.img".to_string()),
+            true,
+            Some("tap".to_string()),
+            false,
+            false,
         );
+
+        assert!(options.blk);
+        assert_eq!(options.disk_image, Some(PathBuf::from("/tmp/disk.img")));
+        assert!(options.net);
+        assert_eq!(options.net_dev, NetDev::Tap);
+        assert!(!options.graphic);
+        assert!(!options.accel);
+    }
+
+    #[test]
+    fn test_arch_to_target() {
+        assert_eq!(Arch::X86_64.to_target(), "x86_64-unknown-none");
+        assert_eq!(Arch::AArch64.to_target(), "aarch64-unknown-none-softfloat");
+        assert_eq!(Arch::RiscV64.to_target(), "riscv64gc-unknown-none-elf");
+        assert_eq!(
+            Arch::LoongArch64.to_target(),
+            "loongarch64-unknown-none-softfloat"
+        );
+    }
+
+    #[test]
+    fn test_arch_from_str() {
+        assert_eq!(Arch::from_str("x86_64").unwrap(), Arch::X86_64);
+        assert_eq!(Arch::from_str("x86").unwrap(), Arch::X86_64);
+        assert_eq!(Arch::from_str("aarch64").unwrap(), Arch::AArch64);
+        assert_eq!(Arch::from_str("arm64").unwrap(), Arch::AArch64);
+        assert_eq!(Arch::from_str("riscv64").unwrap(), Arch::RiscV64);
+        assert_eq!(Arch::from_str("loongarch64").unwrap(), Arch::LoongArch64);
+        assert!(Arch::from_str("unknown").is_err());
     }
 }

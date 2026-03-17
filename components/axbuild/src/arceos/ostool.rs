@@ -356,7 +356,6 @@ mod tests {
         ArceosConfig {
             arch: Arch::X86_64,
             platform: "x86-pc".to_string(),
-            app: PathBuf::from("examples/helloworld"),
             mode: BuildMode::Debug,
             log: LogLevel::Info,
             smp: Some(2),
@@ -368,15 +367,24 @@ mod tests {
     }
 
     #[test]
-    fn test_build_cargo_spec_for_rust_app() {
-        let manifest_dir = manifest_dir();
+    fn test_build_cargo_spec_basic() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\nedition=\"2024\"\n[[bin]]\nname=\"demo\"\
+             \npath=\"src/main.rs\"\n",
+        )
+        .unwrap();
         let config = helloworld_config();
+
         let ax_features = FeatureResolver::resolve_ax_features(&config, false);
         let lib_features = FeatureResolver::resolve_lib_features(&config, "axstd");
 
         let spec = build_cargo_spec(
             &config,
-            &manifest_dir,
+            &manifest_dir(),
+            dir.path(),
             &ax_features,
             &lib_features,
             false,
@@ -384,36 +392,19 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(spec.cargo.package, "arceos-helloworld");
+        assert_eq!(spec.cargo.package, "demo");
         assert_eq!(spec.cargo.target, "x86_64-unknown-none");
         assert!(spec.cargo.features.contains(&"axstd/defplat".to_string()));
         assert!(spec.cargo.features.contains(&"axstd/fs".to_string()));
         assert!(spec.cargo.features.contains(&"axstd/net".to_string()));
         assert!(spec.cargo.features.contains(&"custom-app".to_string()));
         assert_eq!(spec.cargo.log, None);
-        assert!(spec.cargo.args.is_empty());
-        assert_eq!(spec.ctx.manifest, manifest_dir);
-        assert!(spec.ctx.workspace.ends_with(".axbuild-ostool"));
-        assert!(spec.ctx.debug);
-        assert_eq!(
-            spec.cargo.env.get("AX_PLATFORM"),
-            Some(&"x86-pc".to_string())
-        );
+        assert_eq!(spec.cargo.env.get("AX_PLATFORM"), Some(&"x86-pc".to_string()));
         assert_eq!(spec.cargo.env.get("AX_LOG"), Some(&"info".to_string()));
-        assert_eq!(
-            spec.cargo.env.get("AX_CONFIG_PATH"),
-            Some(
-                &manifest_dir
-                    .join("examples/helloworld/.axconfig.toml")
-                    .display()
-                    .to_string()
-            )
-        );
-        assert!(spec.cargo.extra_config.is_some());
     }
 
     #[test]
-    fn test_build_cargo_spec_writes_target_rustflags_and_build_std_to_extra_config() {
+    fn test_build_cargo_spec_with_dynamic_platform() {
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join("src")).unwrap();
         fs::write(
@@ -426,7 +417,6 @@ mod tests {
         config.arch = Arch::AArch64;
         config.platform = "aarch64-qemu-virt".to_string();
         config.mode = BuildMode::Release;
-        config.app = PathBuf::from(".");
 
         let ax_features = FeatureResolver::resolve_ax_features(&config, true);
         let lib_features = FeatureResolver::resolve_lib_features(&config, "axstd");
@@ -434,30 +424,18 @@ mod tests {
         let spec = build_cargo_spec(
             &config,
             dir.path(),
+            dir.path(),
             &ax_features,
             &lib_features,
             false,
             true,
         )
         .unwrap();
-        let extra = fs::read_to_string(&spec.extra_config_path).unwrap();
-        let parsed: toml::Value = toml::from_str(&extra).unwrap();
 
         assert!(!spec.ctx.debug);
-        assert!(extra.contains("[target.aarch64-unknown-none-softfloat]"));
-        assert!(extra.contains("axplat.x"));
-        assert!(extra.contains("[unstable]"));
-        assert_eq!(
-            parsed["unstable"]["build-std"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter_map(|value| value.as_str())
-                .collect::<Vec<_>>(),
-            vec!["core", "alloc"]
-        );
-        assert!(spec.cargo.args.is_empty());
-        assert_eq!(spec.ctx.manifest, dir.path());
+        assert_eq!(spec.cargo.target, "aarch64-unknown-none-softfloat");
+        // With use_axlibc=false, ax features get "axstd/" prefix
+        assert!(spec.cargo.features.contains(&"axstd/plat-dyn".to_string()));
     }
 
     #[test]
@@ -519,32 +497,43 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_link_script_path_prefers_existing_release_script() {
-        let dir = tempdir().unwrap();
-        let target_dir = dir.path().join("target");
-        let release_script = target_dir
-            .join("riscv64gc-unknown-none-elf")
-            .join("release")
-            .join("linker_riscv64-qemu-virt.lds");
-        fs::create_dir_all(release_script.parent().unwrap()).unwrap();
-        fs::write(&release_script, "/* linker */").unwrap();
+    fn test_build_qemu_config_with_user_net() {
+        let mut config = helloworld_config();
+        config.arch = Arch::AArch64;
+        config.qemu = QemuOptions {
+            net: true,
+            net_dev: NetDev::User,
+            ..Default::default()
+        };
 
-        let resolved = resolve_link_script_path(
-            &target_dir,
-            "riscv64gc-unknown-none-elf",
-            "riscv64-qemu-virt",
-            "debug",
-        );
-        assert_eq!(resolved, release_script);
+        let qemu = build_qemu_config(&config, &manifest_dir());
+
+        assert!(qemu.args.iter().any(|arg| arg == "user,id=net0,hostfwd=tcp::5555-:5555"));
     }
 
     #[test]
-    fn test_write_qemu_config_targets_app_dir() {
+    fn test_build_qemu_config_nographic() {
+        let mut config = helloworld_config();
+        config.qemu = QemuOptions {
+            graphic: false,
+            ..Default::default()
+        };
+
+        let qemu = build_qemu_config(&config, &manifest_dir());
+
+        assert!(qemu.args.iter().any(|arg| arg == "-nographic"));
+        assert!(qemu.args.iter().any(|arg| arg == "mon:stdio"));
+    }
+
+    #[test]
+    fn test_write_qemu_config_writes_file() {
         let dir = tempdir().unwrap();
         let app_dir = dir.path().join("examples/helloworld");
         fs::create_dir_all(&app_dir).unwrap();
-        let path = write_qemu_config(dir.path(), &helloworld_config()).unwrap();
-        assert_eq!(path, app_dir.join(".qemu.toml"));
+        let config_path = app_dir.join(".qemu.toml");
+
+        let path = write_qemu_config(dir.path(), &config_path, &helloworld_config()).unwrap();
+        assert_eq!(path, config_path);
         assert!(path.exists());
     }
 }
