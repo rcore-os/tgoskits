@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+
+members = [
+    "axfs_vfs",
+    "axfs_devfs",
+    "axfs_ramfs",
+]
+
+[workspace.package]
+version = "0.1.2"
+edition = "2021"
+authors = ["Yuekai Jia <equation618@gmail.com>"]
+license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
+homepage = "https://github.com/arceos-org/arceos"
+documentation = "https://arceos-org.github.io/axfs_crates"
+repository = "https://github.com/arceos-org/axfs_crates"
+categories = ["os", "no-std", "filesystem"]
+
+[workspace.dependencies]
+axfs_vfs = { path = "axfs_vfs", version = "0.1" }
