@@ -58,6 +58,9 @@ members = [
     "components/starry-smoltcp",
     "components/starry-vm",
     "components/timer_list",
+    "components/axfs_crates/axfs_vfs",
+    "components/axfs_crates/axfs_ramfs",
+    "components/axfs_crates/axfs_devfs",
 
     # os/arceos/modules
     "os/arceos/modules/axalloc",
@@ -120,6 +123,7 @@ exclude = [
     "components/axmm_crates",
     "components/starry-smoltcp/fuzz",
     "components/crate_interface/test_crates",
+    "components/axfs_crates",
 ]
 
 [patch.crates-io]
@@ -131,6 +135,9 @@ axcpu = { path = "components/axcpu" }
 axio = { path = "components/axio" }
 axpoll = { path = "components/axpoll" }
 axfs-ng-vfs = { path = "components/axfs-ng-vfs" }
+axfs_vfs = { path = "components/axfs_crates/axfs_vfs" }
+axfs_ramfs = { path = "components/axfs_crates/axfs_ramfs" }
+axfs_devfs = { path = "components/axfs_crates/axfs_devfs" }
 
 # === axplat ===
 axplat = { path = "components/axplat_crates/axplat" }
@@ -238,6 +245,8 @@ axsched = { path = "components/axsched", version = "0.3.1" }
 axvcpu = { path = "components/axvcpu", version = "0.3.0" }
 axvm = { path = "components/axvm", version = "0.3.0" }
 axvmconfig = { path = "components/axvmconfig", version = "0.2.2" }
+axfs_vfs = { path = "components/axfs_crates/axfs_vfs", version = "0.1.2" }
+
 axbuild = { path = "components/axbuild", version = "0.1" }
 
 starry-kernel = { path = "os/StarryOS/kernel", version = "0.3.0-preview.3" }
