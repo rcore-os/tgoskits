@@ -44,8 +44,8 @@ pub struct BuildArgs {
     pub smp: Option<usize>,
 
     /// Enable dynamic platform (plat-dyn)
-    #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
-    pub plat_dyn: bool,
+    #[arg(long, action = clap::ArgAction::Set)]
+    pub plat_dyn: Option<bool>,
 }
 
 impl BuildArgs {

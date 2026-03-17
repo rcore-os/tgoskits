@@ -34,20 +34,26 @@ pub fn build_config_override(
     release: bool,
     features: Option<String>,
     smp: Option<usize>,
-    plat_dyn: bool,
+    plat_dyn: Option<bool>,
 ) -> Result<ArceosConfigOverride> {
     if matches!(smp, Some(0)) {
         anyhow::bail!("invalid SMP value `0`: SMP must be >= 1");
     }
+    let parsed_arch = arch
+        .as_deref()
+        .map(Arch::from_str)
+        .transpose()
+        .context("failed to parse arch override")?;
+    let effective_plat_dyn = plat_dyn.unwrap_or(match parsed_arch {
+        Some(Arch::AArch64) | None => true,
+        Some(_) => false,
+    });
+
     Ok(ArceosConfigOverride {
-        arch: arch
-            .as_deref()
-            .map(Arch::from_str)
-            .transpose()
-            .context("failed to parse arch override")?,
+        arch: parsed_arch,
         platform,
         mode: release.then_some(BuildMode::Release),
-        plat_dyn: Some(plat_dyn),
+        plat_dyn: Some(effective_plat_dyn),
         smp,
         features: features
             .as_deref()
@@ -65,7 +71,7 @@ pub fn run_config_override(
     release: bool,
     features: Option<String>,
     smp: Option<usize>,
-    plat_dyn: bool,
+    plat_dyn: Option<bool>,
     blk: bool,
     disk_img: Option<String>,
     net: bool,
@@ -100,12 +106,12 @@ mod tests {
             false,
             Some("fs,net".to_string()),
             Some(4),
-            true,
+            None,
         )
         .unwrap();
 
         assert_eq!(overrides.arch, Some(Arch::X86_64));
-        assert_eq!(overrides.plat_dyn, Some(true));
+        assert_eq!(overrides.plat_dyn, Some(false));
         assert_eq!(overrides.smp, Some(4));
         assert_eq!(
             overrides.features,
@@ -122,9 +128,24 @@ mod tests {
             false,
             None,
             Some(0),
-            true,
+            None,
         )
         .unwrap_err();
         assert!(err.to_string().contains("SMP must be >= 1"));
+    }
+
+    #[test]
+    fn test_build_config_override_defaults_plat_dyn_for_aarch64() {
+        let overrides = build_config_override(
+            Some("aarch64".to_string()),
+            "arceos-helloworld".to_string(),
+            None,
+            false,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(overrides.plat_dyn, Some(true));
     }
 }

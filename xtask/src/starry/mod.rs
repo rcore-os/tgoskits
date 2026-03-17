@@ -22,7 +22,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use axbuild::arceos::{
     ArceosConfigOverride, Arch, AxBuild, BuildMode, FeatureResolver, PlatformResolver,
-    parse_qemu_options,
+    QEMU_CONFIG_FILE_NAME, parse_qemu_options, resolve_package_app_dir,
 };
 use clap::{Parser, Subcommand};
 use serde_json::Value;
@@ -67,6 +67,49 @@ impl StarryCommand {
             StarryCommand::Img { arch } => run_img_command(arch),
         }
     }
+}
+
+pub async fn run_test(target: &str) -> Result<()> {
+    let arch = parse_starry_target_for_test(target)?;
+    let args = RunArgs {
+        arch: Some(arch.to_string()),
+        package: STARRY_PACKAGE.to_string(),
+        platform: None,
+        release: true,
+        features: None,
+        smp: None,
+        plat_dyn: false,
+        blk: true,
+        disk_img: None,
+        net: false,
+        net_dev: None,
+        graphic: false,
+        accel: false,
+    };
+
+    let run_result = run_with_arg(args).await;
+    let cleanup_result = cleanup_generated_qemu_config();
+
+    match (run_result, cleanup_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(run_err), Ok(())) => Err(run_err),
+        (Ok(()), Err(cleanup_err)) => Err(cleanup_err),
+        (Err(run_err), Err(cleanup_err)) => {
+            Err(run_err.context(format!("also failed to cleanup qemu config: {cleanup_err}")))
+        }
+    }
+}
+
+fn cleanup_generated_qemu_config() -> Result<()> {
+    let manifest_dir =
+        std::env::current_dir().context("failed to get current working directory")?;
+    let app_dir = resolve_package_app_dir(&manifest_dir, STARRY_PACKAGE)?;
+    let qemu_config_path = manifest_dir.join(app_dir).join(QEMU_CONFIG_FILE_NAME);
+    if qemu_config_path.exists() {
+        fs::remove_file(&qemu_config_path)
+            .with_context(|| format!("failed to remove {}", qemu_config_path.display()))?;
+    }
+    Ok(())
 }
 
 #[derive(Parser, Debug)]
@@ -274,9 +317,8 @@ fn run_config_override(
     graphic: bool,
     accel: bool,
 ) -> Result<ArceosConfigOverride> {
-    let mut overrides = build_config_override(
-        arch, package, platform, release, features, smp, plat_dyn,
-    )?;
+    let mut overrides =
+        build_config_override(arch, package, platform, release, features, smp, plat_dyn)?;
     overrides.qemu = Some(parse_qemu_options(
         blk, disk_img, net, net_dev, graphic, accel,
     ));
@@ -287,6 +329,16 @@ fn parse_starry_arch(arch: Option<&str>) -> Result<Arch> {
     match arch {
         Some(value) => Arch::from_str(value).context("failed to parse arch override"),
         None => Ok(Arch::RiscV64),
+    }
+}
+
+fn parse_starry_target_for_test(target: &str) -> Result<Arch> {
+    match target {
+        "x86_64-unknown-none" => Ok(Arch::X86_64),
+        "aarch64-unknown-none-softfloat" => Ok(Arch::AArch64),
+        "riscv64gc-unknown-none-elf" => Ok(Arch::RiscV64),
+        "loongarch64-unknown-none-softfloat" => Ok(Arch::LoongArch64),
+        other => Arch::from_str(other).context("failed to parse starry test target as arch"),
     }
 }
 

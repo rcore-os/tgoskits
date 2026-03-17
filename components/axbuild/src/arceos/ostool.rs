@@ -185,7 +185,7 @@ pub fn build_qemu_config(config: &ArceosConfig, manifest_dir: &Path) -> QemuConf
         args,
         uefi: false,
         to_bin: !matches!(config.arch, Arch::X86_64),
-        success_regex: vec![],
+        success_regex: vec!["to install packages.".to_string()],
         fail_regex: vec![],
     }
 }
@@ -613,6 +613,11 @@ mod tests {
         assert!(
             qemu.args
                 .ends_with(&["-monitor".to_string(), "none".to_string()])
+        );
+        assert!(
+            qemu.success_regex
+                .iter()
+                .any(|pattern| pattern == "Use apk to install packages.")
         );
         assert!(qemu.to_bin);
     }

@@ -132,10 +132,10 @@ async fn main() -> Result<()> {
         } => run_std_test_command(),
         Commands::Test {
             command: TestCommand::Axvisor { target },
-        } => run_target_test_command("axvisor", &target),
+        } => run_target_test_command("axvisor", &target).await,
         Commands::Test {
             command: TestCommand::Starry { target },
-        } => run_target_test_command("starry", &target),
+        } => run_target_test_command("starry", &target).await,
         Commands::Test {
             command: TestCommand::Arceos { target },
         } => run_arceos_test_command(target.as_deref()).await,
@@ -258,7 +258,7 @@ fn run_std_tests<R: CargoRunner>(
     Ok(failed)
 }
 
-fn run_target_test_command(os: &str, target: &str) -> Result<()> {
+async fn run_target_test_command(os: &str, target: &str) -> Result<()> {
     let supported = supported_targets(os);
 
     // 验证 target 是否在支持的列表中
@@ -281,13 +281,7 @@ fn run_target_test_command(os: &str, target: &str) -> Result<()> {
 
     match os {
         "axvisor" => axvisor::run_test(target)?,
-        "starry" => {
-            // starry 的测试实现占位
-            println!(
-                "  (test implementation placeholder for {} on {})",
-                os, target
-            );
-        }
+        "starry" => starry::run_test(target).await?,
         _ => unreachable!(), // 之前已经验证过了
     }
 
@@ -480,6 +474,7 @@ async fn run_arceos_test_package(
     smp: Option<usize>,
     qemu_config_path: &Path,
 ) -> Result<()> {
+    let effective_arch = arch.unwrap_or_default();
     let target_platform = arch.map(|arch| PlatformResolver::resolve_default_platform_name(&arch));
     let overrides = arceos::config::run_config_override(
         arch.map(|v| v.to_string()),
@@ -488,7 +483,7 @@ async fn run_arceos_test_package(
         true,
         None,
         smp,
-        true,
+        Some(matches!(effective_arch, Arch::AArch64)),
         false,
         None,
         false,

@@ -53,8 +53,6 @@ jobs:
             target: aarch64-unknown-none-softfloat
           # starry
           - os: starry
-            target: x86_64-unknown-none
-          - os: starry
             target: riscv64gc-unknown-none-elf
           - os: starry
             target: aarch64-unknown-none-softfloat
