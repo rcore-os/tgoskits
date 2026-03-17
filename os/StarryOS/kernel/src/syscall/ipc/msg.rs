@@ -836,7 +836,7 @@ pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> AxResult<isize> {
 
         // Update queue size limit (requires privilege check)
         if user_buf.msg_qbytes != msg_queue.msqid_ds.msg_qbytes {
-            if user_buf.msg_qbytes > MSGMNB as _ && !is_privileged {
+            if user_buf.msg_qbytes > MSGMNB as u64 && !is_privileged {
                 return Err(AxError::from(LinuxError::EPERM)); // EPERM - requires privilege to exceed MSGMNB
             }
             msg_queue.msqid_ds.msg_qbytes = user_buf.msg_qbytes;

@@ -128,6 +128,7 @@ axerrno = { path = "components/axerrno", version = "0.2.2" }
 
 # === axcpu ===
 axcpu = { path = "components/axcpu" }
+axio = { path = "components/axio" }
 
 # === axplat ===
 axplat = { path = "components/axplat_crates/axplat" }
@@ -226,7 +227,7 @@ axdevice_base = { path = "components/axdevice_base", version = "0.2.2" }
 axerrno = { path = "components/axerrno", version = "0.2.2" }
 axfs-ng-vfs = { path = "components/axfs-ng-vfs", version = "0.1.1" }
 axhvc = { path = "components/axhvc", version = "0.2.0" }
-axio = { path = "components/axio", version = "0.2.1" }
+axio = { path = "components/axio", version = "0.3.0-pre.1" }
 axklib = { path = "components/axklib", version = "0.3.0" }
 axpoll = { path = "components/axpoll", version = "0.1.2" }
 axsched = { path = "components/axsched", version = "0.3.1" }

@@ -21,8 +21,8 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use axbuild::arceos::{
-    ArceosConfigOverride, Arch, AxBuild, BuildMode, FeatureResolver, PlatformResolver, load_config,
-    parse_qemu_options, prepare_artifacts, resolve_package_app_dir,
+    ArceosConfigOverride, Arch, AxBuild, BuildMode, FeatureResolver, PlatformResolver,
+    parse_qemu_options,
 };
 use clap::{Parser, Subcommand};
 use serde_json::Value;
@@ -43,28 +43,7 @@ pub enum StarryCommand {
         #[command(flatten)]
         args: RunArgs,
     },
-    /// Generate StarryOS config files
-    Defconfig {
-        /// Target architecture (x86_64, aarch64, riscv64, loongarch64)
-        #[arg(long)]
-        arch: Option<String>,
 
-        /// Workspace package name
-        #[arg(short = 'p', long = "package", default_value = STARRY_PACKAGE)]
-        package: String,
-
-        /// Platform name
-        #[arg(long)]
-        platform: Option<String>,
-
-        /// Number of CPUs (must be >= 1)
-        #[arg(long)]
-        smp: Option<usize>,
-
-        /// Build in release mode (default: true)
-        #[arg(long, default_value_t = true)]
-        release: bool,
-    },
     /// Download rootfs image and place it under target artifact directory
     Rootfs {
         /// Target architecture (default: riscv64)
@@ -84,13 +63,6 @@ impl StarryCommand {
         match self {
             StarryCommand::Build { args } => run_build(args).await,
             StarryCommand::Run { args } => run_with_arg(args).await,
-            StarryCommand::Defconfig {
-                arch,
-                package,
-                platform,
-                smp,
-                release,
-            } => run_defconfig(arch, package, platform, smp, release),
             StarryCommand::Rootfs { arch } => run_rootfs_command(arch),
             StarryCommand::Img { arch } => run_img_command(arch),
         }
@@ -176,7 +148,6 @@ pub struct RunArgs {
 }
 
 async fn run_build(args: BuildArgs) -> Result<()> {
-    let manifest_dir = starry_manifest_dir()?;
     let overrides = build_config_override(
         args.arch,
         args.package.clone(),
@@ -185,7 +156,7 @@ async fn run_build(args: BuildArgs) -> Result<()> {
         args.features,
         args.smp,
     )?;
-    let axbuild = AxBuild::from_overrides(&manifest_dir, overrides, Some(args.package), None)?;
+    let axbuild = AxBuild::from_overrides(overrides, Some(args.package), None)?;
 
     println!("Building StarryOS application:");
     let output = axbuild.build().await?;
@@ -197,7 +168,6 @@ async fn run_build(args: BuildArgs) -> Result<()> {
 }
 
 async fn run_with_arg(args: RunArgs) -> Result<()> {
-    let manifest_dir = starry_manifest_dir()?;
     let arch = parse_starry_arch(args.arch.as_deref())?;
     let default_disk_img = starry_default_disk_image(arch)?;
     let disk_img = args
@@ -228,33 +198,15 @@ async fn run_with_arg(args: RunArgs) -> Result<()> {
         args.graphic,
         args.accel,
     )?;
-    let axbuild = AxBuild::from_overrides(&manifest_dir, overrides, Some(args.package), None)?;
+    let axbuild = AxBuild::from_overrides(overrides, Some(STARRY_PACKAGE.into()), None)?;
     println!("Running in QEMU...");
     axbuild.run_qemu().await
-}
-
-fn run_defconfig(
-    arch: Option<String>,
-    package: String,
-    platform: Option<String>,
-    smp: Option<usize>,
-    release: bool,
-) -> Result<()> {
-    let manifest_dir = starry_manifest_dir()?;
-    let overrides = build_config_override(arch, package.clone(), platform, release, None, smp)?;
-    let config = load_config(&manifest_dir, overrides)?;
-    let app_dir = manifest_dir.join(resolve_package_app_dir(&manifest_dir, &package)?);
-    let prepared = prepare_artifacts(&manifest_dir, &app_dir, &config)?;
-
-    println!("StarryOS defconfig generated:");
-    println!("  AX config: {}", prepared.axconfig_path.display());
-    println!("  QEMU config: {}", prepared.qemu_config_path.display());
-    Ok(())
 }
 
 fn run_rootfs_command(arch: Option<String>) -> Result<()> {
     let arch = parse_starry_arch(arch.as_deref())?;
     let disk_img = starry_default_disk_image(arch)?;
+    println!("Preparing rootfs for {} at {}...", arch, disk_img.display());
     ensure_rootfs_in_target_dir(arch, &disk_img)?;
     println!("rootfs ready at {}", disk_img.display());
     Ok(())
@@ -265,13 +217,6 @@ fn run_img_command(arch: Option<String>) -> Result<()> {
         "\u{1b}[33mWARN: The 'img' command is deprecated. Please use 'rootfs' instead.\u{1b}[0m"
     );
     run_rootfs_command(arch)
-}
-
-fn starry_manifest_dir() -> Result<PathBuf> {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .context("failed to locate workspace root")?;
-    Ok(workspace_root.join("os/StarryOS"))
 }
 
 fn build_config_override(
@@ -339,17 +284,10 @@ fn starry_default_disk_image(arch: Arch) -> Result<PathBuf> {
 }
 
 fn resolve_starry_artifact_dir(arch: Arch) -> Result<PathBuf> {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .context("failed to locate workspace root")?;
-    let manifest_path = workspace_root.join("os/StarryOS/Cargo.toml");
     let target = arch.to_target();
 
     let output = Command::new("cargo")
-        .current_dir(workspace_root)
         .arg("build")
-        .arg("--manifest-path")
-        .arg(&manifest_path)
         .arg("-p")
         .arg(STARRY_PACKAGE)
         .arg("--target")
@@ -454,10 +392,12 @@ fn parse_artifact_dir_from_cargo_json(
 }
 
 fn ensure_rootfs_in_target_dir(arch: Arch, disk_img_path: &Path) -> Result<()> {
-    let manifest_dir = starry_manifest_dir()?;
+    let down_dir = disk_img_path
+        .parent()
+        .context("disk image path must have a parent directory")?;
     let rootfs_name = rootfs_image_name(arch);
-    let rootfs_img = manifest_dir.join(&rootfs_name);
-    let rootfs_xz = manifest_dir.join(format!("{rootfs_name}.xz"));
+    let rootfs_img = down_dir.join(&rootfs_name);
+    let rootfs_xz = down_dir.join(format!("{rootfs_name}.xz"));
 
     if !rootfs_img.exists() {
         println!("image not found, downloading {}...", rootfs_name);

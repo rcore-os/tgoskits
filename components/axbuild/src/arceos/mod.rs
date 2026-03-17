@@ -49,13 +49,11 @@ impl AxBuild {
     }
 
     pub fn from_overrides(
-        manifest_dir: impl AsRef<Path>,
         overrides: ArceosConfigOverride,
         package: Option<String>,
         qemu_config_path: Option<PathBuf>,
     ) -> anyhow::Result<Self> {
         let ctx = AxContext::new(
-            manifest_dir.as_ref().to_path_buf(),
             overrides,
             package,
             qemu_config_path,

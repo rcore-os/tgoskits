@@ -67,11 +67,14 @@ impl Builder {
         tracing::info!(
             "Starting build for {:?} in {}",
             self.ctx.config.arch,
-            self.ctx.manifest_dir.display()
+            self.ctx.manifest_dir().display()
         );
 
-        let prepared =
-            prepare_artifacts(&self.ctx.manifest_dir, self.ctx.app_dir(), &self.ctx.config)?;
+        let prepared = prepare_artifacts(
+            self.ctx.manifest_dir(),
+            self.ctx.app_dir(),
+            &self.ctx.config,
+        )?;
 
         tracing::debug!("ostool cargo config: {:?}", prepared.cargo_spec.cargo);
         let mut ctx = prepared.cargo_spec.ctx.into_app_context();
@@ -97,11 +100,11 @@ impl Builder {
     pub fn clean(&self) -> Result<()> {
         tracing::info!(
             "Cleaning build artifacts in {}",
-            self.ctx.manifest_dir.display()
+            self.ctx.manifest_dir().display()
         );
 
         let status = Command::new("cargo")
-            .current_dir(&self.ctx.manifest_dir)
+            .current_dir(self.ctx.manifest_dir())
             .arg("clean")
             .status()
             .context("Failed to run cargo clean")?;
@@ -110,7 +113,7 @@ impl Builder {
             anyhow::bail!("cargo clean failed with status: {}", status);
         }
 
-        for file in cleanup_files(&self.ctx.manifest_dir, self.ctx.app_dir()) {
+        for file in cleanup_files(self.ctx.manifest_dir(), self.ctx.app_dir()) {
             if file.exists() {
                 std::fs::remove_file(&file)
                     .with_context(|| format!("Failed to remove {}", file.display()))?;

@@ -45,7 +45,7 @@ pub struct BuildArgs {
 }
 
 impl BuildArgs {
-    pub fn into_axbuild(self, manifest_dir: &std::path::Path) -> Result<AxBuild> {
+    pub fn into_axbuild(self) -> Result<AxBuild> {
         let Self {
             arch,
             package,
@@ -63,18 +63,15 @@ impl BuildArgs {
             features,
             smp,
         )?;
-        AxBuild::from_overrides(manifest_dir, overrides, Some(package), None)
+        AxBuild::from_overrides(overrides, Some(package), None)
     }
 }
 
 /// Run the build command
 pub async fn run_build(args: BuildArgs) -> Result<()> {
-    let manifest_dir = super::config::arceos_manifest_dir()?;
-    let axbuild = args.into_axbuild(&manifest_dir)?;
+    let axbuild = args.into_axbuild()?;
 
     println!("Building ArceOS application:");
-    println!("  Config: {}", config_path(&manifest_dir).display());
-
     let output = axbuild.build().await?;
 
     println!();

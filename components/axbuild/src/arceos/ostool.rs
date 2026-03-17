@@ -71,14 +71,13 @@ enum AxFeaturePrefixFamily {
 
 pub fn build_cargo_spec(
     config: &ArceosConfig,
-    _manifest_dir: &Path,
+    manifest_dir: &Path,
     app_dir: &Path,
     ax_features: &[String],
     lib_features: &[String],
     use_axlibc: bool,
     plat_dyn: bool,
 ) -> Result<CargoBuildSpec> {
-    let cargo_manifest_dir = cargo_default_manifest_dir(app_dir)?;
     let package = package_name(app_dir)?;
     let ax_feature_family = detect_ax_feature_prefix_family(app_dir, &package)?;
     let features = build_features(
@@ -96,15 +95,15 @@ pub fn build_cargo_spec(
         features,
         log: None,
         extra_config: None,
-        args: build_cargo_args(config, &cargo_manifest_dir, plat_dyn),
+        args: build_cargo_args(config, manifest_dir, plat_dyn),
         pre_build_cmds: vec![],
         post_build_cmds: vec![],
         to_bin: true,
     };
 
     let ctx = AppContextSpec {
-        workspace: cargo_manifest_dir.clone(),
-        manifest: cargo_manifest_dir,
+        workspace: manifest_dir.to_path_buf(),
+        manifest: manifest_dir.to_path_buf(),
         debug: matches!(config.mode, BuildMode::Debug),
     };
 
@@ -360,20 +359,6 @@ fn qemu_cpu(arch: Arch) -> &'static str {
         Arch::RiscV64 => "rv64",
         Arch::LoongArch64 => "la464",
     }
-}
-
-fn cargo_default_manifest_dir(app_dir: &Path) -> Result<PathBuf> {
-    let metadata = MetadataCommand::new()
-        .current_dir(app_dir)
-        .no_deps()
-        .exec()
-        .with_context(|| {
-            format!(
-                "failed to resolve cargo default manifest directory from {}",
-                app_dir.display()
-            )
-        })?;
-    Ok(metadata.workspace_root.into_std_path_buf())
 }
 
 fn package_name(app_dir: &Path) -> Result<String> {

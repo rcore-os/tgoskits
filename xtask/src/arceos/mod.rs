@@ -19,11 +19,9 @@ use clap::Subcommand;
 
 pub mod build;
 pub mod config;
-pub mod defconfig;
 pub mod run;
 
 pub use build::{BuildArgs, run_build};
-pub use defconfig::run_defconfig;
 pub use run::RunArgs;
 
 use crate::arceos::run::run_with_arg;
@@ -41,11 +39,6 @@ pub enum ArceosCommand {
         #[command(flatten)]
         args: RunArgs,
     },
-    /// Set default configuration
-    Defconfig {
-        /// Board configuration name (e.g., qemu-aarch64, qemu-x86_64)
-        board_name: String,
-    },
 }
 
 impl ArceosCommand {
@@ -53,7 +46,6 @@ impl ArceosCommand {
         match self {
             ArceosCommand::Build { args } => run_build(args).await,
             ArceosCommand::Run { args } => run_with_arg(args).await,
-            ArceosCommand::Defconfig { board_name } => run_defconfig(&board_name),
         }
     }
 }

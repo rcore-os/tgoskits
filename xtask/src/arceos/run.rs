@@ -69,7 +69,7 @@ pub struct RunArgs {
 }
 
 impl RunArgs {
-    pub fn into_axbuild(self, manifest_dir: &std::path::Path) -> Result<AxBuild> {
+    pub fn into_axbuild(self) -> Result<AxBuild> {
         let Self {
             arch,
             package,
@@ -100,7 +100,7 @@ impl RunArgs {
             accel,
         )?;
 
-        AxBuild::from_overrides(manifest_dir, overrides, Some(package), None)
+        AxBuild::from_overrides(overrides, Some(package), None)
     }
 }
 
@@ -111,8 +111,7 @@ pub async fn run_with_context(ctx: AxContext) -> Result<()> {
 }
 
 pub async fn run_with_arg(arg: RunArgs) -> Result<()> {
-    let manifest_dir = super::config::arceos_manifest_dir()?;
-    let axbuild = arg.into_axbuild(&manifest_dir)?;
+    let axbuild = arg.into_axbuild()?;
     println!("Running in QEMU...");
     axbuild.run_qemu().await
 }

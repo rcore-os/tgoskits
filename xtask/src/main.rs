@@ -308,7 +308,6 @@ async fn run_arceos_test_command(target: Option<&str>) -> Result<()> {
 
     let arch = target.map(parse_arceos_target).transpose()?;
     let selected_arch = arceos_test_arch(arch);
-    let manifest_dir = arceos::config::arceos_manifest_dir()?;
 
     println!(
         "running arceos tests for {} package(s){}",
@@ -332,7 +331,7 @@ async fn run_arceos_test_command(target: Option<&str>) -> Result<()> {
         let qemu_config_path =
             ensure_arceos_test_qemu_config_path(&package.crate_dir, &package.name, selected_arch)?;
         let smp = arceos_test_smp_from_qemu_config(&qemu_config_path)?;
-        run_arceos_test_package(&manifest_dir, &package.name, arch, smp, &qemu_config_path)
+        run_arceos_test_package(&package.name, arch, smp, &qemu_config_path)
             .await
             .with_context(|| format!("arceos test failed for package `{}`", package.name))?;
         println!("ok: {}", package.name);
@@ -476,7 +475,6 @@ fn arceos_test_smp_from_qemu_config(qemu_config_path: &Path) -> Result<Option<us
 }
 
 async fn run_arceos_test_package(
-    manifest_dir: &Path,
     package: &str,
     arch: Option<Arch>,
     smp: Option<usize>,
@@ -498,7 +496,6 @@ async fn run_arceos_test_package(
         false,
     )?;
     let ctx = AxContext::new(
-        manifest_dir.to_path_buf(),
         overrides,
         Some(package.to_owned()),
         Some(qemu_config_path.to_path_buf()),
