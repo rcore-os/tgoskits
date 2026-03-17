@@ -8,4 +8,4 @@
 //! use axio::prelude::*;
 //! ```
 
-pub use crate::{BufRead, Read, Seek, Write};
+pub use crate::{BufRead, IoBuf, IoBufExt, IoBufMut, IoBufMutExt, Read, Seek, Write};

@@ -1,6 +1,6 @@
 [package]
 name = "axio"
-version = "0.2.1"
+version = "0.3.0-pre.1"
 edition = "2024"
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "`std::io` for `no_std` environment"
@@ -12,9 +12,8 @@ keywords = ["arceos", "io", "no-std"]
 categories = ["no-std"]
 
 [features]
-default = []
 alloc = []
-continue-on-interrupt = []
+default = []
 
 [dependencies]
 axerrno = "0.2"

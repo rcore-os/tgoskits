@@ -43,6 +43,10 @@ pub struct RunArgs {
     #[arg(long)]
     pub smp: Option<usize>,
 
+    /// Enable dynamic platform (plat-dyn)
+    #[arg(long, action = clap::ArgAction::Set)]
+    pub plat_dyn: Option<bool>,
+
     /// Enable block device
     #[arg(long)]
     pub blk: bool,
@@ -69,7 +73,7 @@ pub struct RunArgs {
 }
 
 impl RunArgs {
-    pub fn into_axbuild(self, manifest_dir: &std::path::Path) -> Result<AxBuild> {
+    pub fn into_axbuild(self) -> Result<AxBuild> {
         let Self {
             arch,
             package,
@@ -77,6 +81,7 @@ impl RunArgs {
             release,
             features,
             smp,
+            plat_dyn,
             blk,
             disk_img,
             net,
@@ -92,6 +97,7 @@ impl RunArgs {
             release,
             features,
             smp,
+            plat_dyn,
             blk,
             disk_img,
             net,
@@ -100,7 +106,7 @@ impl RunArgs {
             accel,
         )?;
 
-        AxBuild::from_overrides(manifest_dir, overrides, Some(package), None)
+        AxBuild::from_overrides(overrides, Some(package), None)
     }
 }
 
@@ -111,8 +117,7 @@ pub async fn run_with_context(ctx: AxContext) -> Result<()> {
 }
 
 pub async fn run_with_arg(arg: RunArgs) -> Result<()> {
-    let manifest_dir = super::config::arceos_manifest_dir()?;
-    let axbuild = arg.into_axbuild(&manifest_dir)?;
+    let axbuild = arg.into_axbuild()?;
     println!("Running in QEMU...");
     axbuild.run_qemu().await
 }

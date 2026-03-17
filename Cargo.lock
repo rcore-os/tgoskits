@@ -289,7 +289,7 @@ dependencies = [
  "axfeat 0.3.0-preview.3",
  "axfs 0.3.0-preview.3",
  "axhal 0.3.0-preview.3",
- "axio 0.2.1",
+ "axio",
  "axipi",
  "axlog 0.3.0-preview.3",
  "axmm 0.3.0-preview.3",
@@ -312,7 +312,7 @@ dependencies = [
  "axfeat 0.3.0-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "axfs 0.3.0-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "axhal 0.3.0-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
- "axio 0.3.0-pre.1",
+ "axio",
  "axlog 0.3.0-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "axruntime 0.3.0-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "axsync 0.3.0-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -329,7 +329,7 @@ dependencies = [
  "axfeat 0.3.0-preview.3",
  "axfs 0.3.0-preview.3",
  "axhal 0.3.0-preview.3",
- "axio 0.2.1",
+ "axio",
  "axlog 0.3.0-preview.3",
  "axnet",
  "axruntime 0.3.0-preview.3",
@@ -338,7 +338,7 @@ dependencies = [
  "bindgen",
  "flatten_objects",
  "lazy_static",
- "scope-local 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "scope-local",
  "spin 0.10.0",
 ]
 
@@ -1040,7 +1040,7 @@ dependencies = [
  "axfs_devfs",
  "axfs_ramfs",
  "axfs_vfs",
- "axio 0.2.1",
+ "axio",
  "cap_access 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "lazyinit 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "log",
@@ -1060,7 +1060,7 @@ dependencies = [
  "axfs_devfs",
  "axfs_ramfs",
  "axfs_vfs",
- "axio 0.3.0-pre.1",
+ "axio",
  "cap_access 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "lazyinit 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "log",
@@ -1075,10 +1075,10 @@ dependencies = [
  "axalloc 0.3.0-preview.3",
  "axdriver 0.3.0-preview.3",
  "axerrno 0.2.2",
- "axfs-ng-vfs 0.1.1",
+ "axfs-ng-vfs",
  "axhal 0.3.0-preview.3",
- "axio 0.2.1",
- "axpoll 0.1.2",
+ "axio",
+ "axpoll",
  "axsync 0.3.0-preview.3",
  "bitflags 2.11.0",
  "cfg-if",
@@ -1088,7 +1088,7 @@ dependencies = [
  "log",
  "lru 0.16.3",
  "lwext4_rust",
- "scope-local 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "scope-local",
  "slab",
  "spin 0.10.0",
  "starry-fatfs",
@@ -1099,24 +1099,7 @@ name = "axfs-ng-vfs"
 version = "0.1.1"
 dependencies = [
  "axerrno 0.2.2",
- "axpoll 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "bitflags 2.11.0",
- "cfg-if",
- "hashbrown 0.16.1",
- "inherit-methods-macro",
- "log",
- "smallvec",
- "spin 0.10.0",
-]
-
-[[package]]
-name = "axfs-ng-vfs"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75b3fc5c71051e9ae0b29700aa6eb676b7dadb91be3415d2b374cc8d2a2d37c6"
-dependencies = [
- "axerrno 0.2.2",
- "axpoll 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "axpoll",
  "bitflags 2.11.0",
  "cfg-if",
  "hashbrown 0.16.1",
@@ -1129,8 +1112,6 @@ dependencies = [
 [[package]]
 name = "axfs_devfs"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81b87ae981272ca8d5d8f106a4452c63f4b5ac36e17ee8f848ee1b250538b9f8"
 dependencies = [
  "axfs_vfs",
  "log",
@@ -1140,8 +1121,6 @@ dependencies = [
 [[package]]
 name = "axfs_ramfs"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f50c26614485d837a3fc09a92f24a226caddc25a30df7e6aaf4bd19b304c399"
 dependencies = [
  "axfs_vfs",
  "log",
@@ -1151,10 +1130,8 @@ dependencies = [
 [[package]]
 name = "axfs_vfs"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dcba2006898d7879d456a9c34b9c9460cb536f5bf69d1d5d7d0e0f19f073368d"
 dependencies = [
- "axerrno 0.1.2",
+ "axerrno 0.2.2",
  "bitflags 2.11.0",
  "log",
 ]
@@ -1251,19 +1228,7 @@ dependencies = [
 
 [[package]]
 name = "axio"
-version = "0.2.1"
-dependencies = [
- "autocfg",
- "axerrno 0.2.2",
- "heapless 0.9.2",
- "memchr",
-]
-
-[[package]]
-name = "axio"
 version = "0.3.0-pre.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f6ce41624ae4e7ef942ebe3ac3aa3ce5d64340e8f23fb29bbd0007e9765544b4"
 dependencies = [
  "autocfg",
  "axerrno 0.2.2",
@@ -1310,7 +1275,7 @@ dependencies = [
  "arceos_posix_api",
  "axerrno 0.2.2",
  "axfeat 0.3.0-preview.3",
- "axio 0.2.1",
+ "axio",
  "bindgen",
 ]
 
@@ -1376,7 +1341,7 @@ dependencies = [
  "axdriver 0.3.0-preview.3",
  "axerrno 0.2.2",
  "axhal 0.3.0-preview.3",
- "axio 0.2.1",
+ "axio",
  "axsync 0.3.0-preview.3",
  "axtask 0.3.0-preview.3",
  "cfg-if",
@@ -1396,10 +1361,10 @@ dependencies = [
  "axdriver 0.3.0-preview.3",
  "axerrno 0.2.2",
  "axfs-ng",
- "axfs-ng-vfs 0.1.1",
+ "axfs-ng-vfs",
  "axhal 0.3.0-preview.3",
- "axio 0.2.1",
- "axpoll 0.1.2",
+ "axio",
+ "axpoll",
  "axsync 0.3.0-preview.3",
  "axtask 0.3.0-preview.3",
  "bitflags 2.11.0",
@@ -1670,17 +1635,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "axpoll"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36b92f85c6903350f5146216ccb7d7a7e7b4dbd6f5927a1279db03ba52a53ae7"
-dependencies = [
- "bitflags 2.11.0",
- "linux-raw-sys 0.12.1",
- "spin 0.10.0",
-]
-
-[[package]]
 name = "axruntime"
 version = "0.3.0-preview.3"
 dependencies = [
@@ -1757,7 +1711,7 @@ dependencies = [
  "arceos_api 0.3.0-preview.3",
  "axerrno 0.2.2",
  "axfeat 0.3.0-preview.3",
- "axio 0.2.1",
+ "axio",
  "kspin",
  "lazyinit 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "lock_api",
@@ -1773,7 +1727,7 @@ dependencies = [
  "arceos_api 0.3.0-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "axerrno 0.2.2",
  "axfeat 0.3.0-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
- "axio 0.3.0-pre.1",
+ "axio",
  "kspin",
  "lazyinit 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "lock_api",
@@ -1811,7 +1765,7 @@ dependencies = [
  "axconfig 0.3.0-preview.3",
  "axerrno 0.2.2",
  "axhal 0.3.0-preview.3",
- "axpoll 0.1.2",
+ "axpoll",
  "axsched 0.3.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "axtask 0.3.0-preview.3",
  "cfg-if",
@@ -1838,7 +1792,7 @@ dependencies = [
  "axconfig 0.3.0-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "axerrno 0.2.2",
  "axhal 0.3.0-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
- "axpoll 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "axpoll",
  "axsched 0.3.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "cfg-if",
  "cpumask 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -4917,7 +4871,7 @@ version = "0.4.1"
 name = "memory_set"
 version = "0.4.1"
 dependencies = [
- "axerrno 0.1.2",
+ "axerrno 0.2.2",
  "memory_addr",
 ]
 
@@ -5258,7 +5212,7 @@ name = "page_table_multiarch"
 version = "0.6.1"
 dependencies = [
  "arrayvec",
- "axerrno 0.1.2",
+ "axerrno 0.2.2",
  "bitmaps",
  "log",
  "memory_addr",
@@ -6703,16 +6657,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "scope-local"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c80f3dd0611957c9384d8e5b076236a265e873b41dcae7ccc5d1ba4fe58e32ae"
-dependencies = [
- "percpu",
- "spin 0.10.0",
-]
-
-[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7239,15 +7183,15 @@ dependencies = [
  "axdriver 0.3.0-preview.3",
  "axerrno 0.2.2",
  "axfeat 0.3.0-preview.3",
- "axfs 0.3.0-preview.3",
- "axfs-ng-vfs 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "axfs-ng",
+ "axfs-ng-vfs",
  "axhal 0.3.0-preview.3",
  "axinput",
- "axio 0.3.0-pre.1",
+ "axio",
  "axlog 0.3.0-preview.3",
  "axmm 0.3.0-preview.3",
- "axnet",
- "axpoll 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "axnet-ng",
+ "axpoll",
  "axruntime 0.3.0-preview.3",
  "axsync 0.3.0-preview.3",
  "axtask 0.3.0-preview.3",
@@ -7281,7 +7225,7 @@ dependencies = [
  "rand 0.10.0",
  "ringbuf",
  "riscv 0.16.0",
- "scope-local 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "scope-local",
  "slab",
  "spin 0.10.0",
  "starry-process",
@@ -7587,6 +7531,7 @@ dependencies = [
  "cargo_metadata",
  "chrono",
  "clap",
+ "serde_json",
  "tokio",
  "toml 0.8.23",
 ]

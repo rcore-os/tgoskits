@@ -42,10 +42,14 @@ pub struct BuildArgs {
     /// Number of CPUs (must be >= 1)
     #[arg(long)]
     pub smp: Option<usize>,
+
+    /// Enable dynamic platform (plat-dyn)
+    #[arg(long, action = clap::ArgAction::Set)]
+    pub plat_dyn: Option<bool>,
 }
 
 impl BuildArgs {
-    pub fn into_axbuild(self, manifest_dir: &std::path::Path) -> Result<AxBuild> {
+    pub fn into_axbuild(self) -> Result<AxBuild> {
         let Self {
             arch,
             package,
@@ -53,6 +57,7 @@ impl BuildArgs {
             release,
             features,
             smp,
+            plat_dyn,
         } = self;
 
         let overrides = super::config::build_config_override(
@@ -62,19 +67,17 @@ impl BuildArgs {
             release,
             features,
             smp,
+            plat_dyn,
         )?;
-        AxBuild::from_overrides(manifest_dir, overrides, Some(package), None)
+        AxBuild::from_overrides(overrides, Some(package), None)
     }
 }
 
 /// Run the build command
 pub async fn run_build(args: BuildArgs) -> Result<()> {
-    let manifest_dir = super::config::arceos_manifest_dir()?;
-    let axbuild = args.into_axbuild(&manifest_dir)?;
+    let axbuild = args.into_axbuild()?;
 
     println!("Building ArceOS application:");
-    println!("  Config: {}", config_path(&manifest_dir).display());
-
     let output = axbuild.build().await?;
 
     println!();

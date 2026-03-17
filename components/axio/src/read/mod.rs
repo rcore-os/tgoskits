@@ -2,7 +2,7 @@
 use alloc::{string::String, vec::Vec};
 use core::io::BorrowedCursor;
 
-use crate::{Error, Result};
+use crate::{Chain, Error, Result, Take};
 
 mod impls;
 
@@ -14,7 +14,6 @@ pub fn default_read_exact<R: Read + ?Sized>(this: &mut R, mut buf: &mut [u8]) ->
             Ok(n) => {
                 buf = &mut buf[n..];
             }
-            #[cfg(feature = "continue-on-interrupt")]
             Err(e) if e.canonicalize() == Error::Interrupted => continue,
             Err(e) => return Err(e),
         }
@@ -58,7 +57,6 @@ pub fn default_read_buf_exact<R: Read + ?Sized>(
         let prev_written = cursor.written();
         match this.read_buf(cursor.reborrow()) {
             Ok(()) => {}
-            #[cfg(feature = "continue-on-interrupt")]
             Err(e) if e.canonicalize() == Error::Interrupted => continue,
             Err(e) => return Err(e),
         }
@@ -98,7 +96,6 @@ pub fn default_read_to_end<R: Read + ?Sized>(
     fn small_probe_read<R: Read + ?Sized>(r: &mut R, buf: &mut Vec<u8>) -> Result<usize> {
         let mut probe = [0u8; PROBE_SIZE];
 
-        #[allow(clippy::never_loop)]
         loop {
             match r.read(&mut probe) {
                 Ok(n) => {
@@ -107,7 +104,6 @@ pub fn default_read_to_end<R: Read + ?Sized>(
                     buf.extend_from_slice(&probe[..n]);
                     return Ok(n);
                 }
-                #[cfg(feature = "continue-on-interrupt")]
                 Err(e) if e.canonicalize() == Error::Interrupted => continue,
                 Err(e) => return Err(e),
             }
@@ -157,10 +153,8 @@ pub fn default_read_to_end<R: Read + ?Sized>(
         }
 
         let mut cursor = read_buf.unfilled();
-        #[allow(clippy::never_loop)]
         let result = loop {
             match r.read_buf(cursor.reborrow()) {
-                #[cfg(feature = "continue-on-interrupt")]
                 Err(e) if e.canonicalize() == Error::Interrupted => continue,
                 // Do not stop now in case of error: we might have received both data
                 // and an error
@@ -323,6 +317,34 @@ pub trait Read {
         Self: Sized,
     {
         self
+    }
+
+    /// Creates an adapter which will chain this stream with another.
+    ///
+    /// The returned `Read` instance will first read all bytes from this object
+    /// until EOF is encountered. Afterwards the output is equivalent to the
+    /// output of `next`.
+    fn chain<R: Read>(self, next: R) -> Chain<Self, R>
+    where
+        Self: Sized,
+    {
+        Chain::new(self, next)
+    }
+
+    /// Creates an adapter which will read at most `limit` bytes from it.
+    ///
+    /// This function returns a new instance of `Read` which will read at most
+    /// `limit` bytes, after which it will always return EOF ([`Ok(0)`]). Any
+    /// read errors will not count towards the number of bytes read and future
+    /// calls to [`read()`] may succeed.
+    ///
+    /// [`Ok(0)`]: Ok
+    /// [`read()`]: Read::read
+    fn take(self, limit: u64) -> Take<Self>
+    where
+        Self: Sized,
+    {
+        Take::new(self, limit)
     }
 }
 

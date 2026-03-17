@@ -54,7 +54,7 @@ impl Buffer {
 
     #[inline]
     pub fn buffer(&self) -> &[u8] {
-        // SAFETY: self.pos and self.filled are valid, and self.filled >= self.pos, and
+        // SAFETY: self.pos and self.filled are valid, and self.filled => self.pos, and
         // that region is initialized because those are all invariants of this type.
         unsafe {
             self.buf

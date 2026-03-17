@@ -66,7 +66,6 @@ pub trait Write {
             match self.write(buf) {
                 Ok(0) => return Err(Error::WriteZero),
                 Ok(n) => buf = &buf[n..],
-                #[cfg(feature = "continue-on-interrupt")]
                 Err(e) if e.canonicalize() == Error::Interrupted => {}
                 Err(e) => return Err(e),
             }

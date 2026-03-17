@@ -1,6 +1,6 @@
 use core::{fmt, mem::ManuallyDrop, ptr};
 
-use crate::{DEFAULT_BUF_SIZE, Error, IntoInnerError, Result, Seek, SeekFrom, Write};
+use crate::{DEFAULT_BUF_SIZE, Error, IntoInnerError, IoBufMut, Result, Seek, SeekFrom, Write};
 
 #[cfg(feature = "alloc")]
 type Buffer = alloc::vec::Vec<u8>;
@@ -137,6 +137,10 @@ impl<W: ?Sized + Write> BufWriter<W> {
     /// Returns the number of bytes the internal buffer can hold without flushing.
     pub fn capacity(&self) -> usize {
         self.buf.capacity()
+    }
+
+    pub(crate) fn buffer_mut(&mut self) -> &mut Buffer {
+        &mut self.buf
     }
 
     /// Send data in our local buffer into the inner writer, looping as
@@ -382,5 +386,12 @@ impl<W: ?Sized + Write> Drop for BufWriter<W> {
             // dtors should not panic, so we ignore a failed flush
             let _r = self.flush_buf();
         }
+    }
+}
+
+impl<W: ?Sized + Write + IoBufMut> IoBufMut for BufWriter<W> {
+    #[inline]
+    fn remaining_mut(&self) -> usize {
+        self.inner.remaining_mut().saturating_sub(self.buf.len())
     }
 }

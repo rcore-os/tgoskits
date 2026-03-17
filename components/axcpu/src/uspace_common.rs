@@ -1,6 +1,6 @@
 use memory_addr::VirtAddr;
 
-use crate::{trap::PageFaultFlags, uspace::ExceptionInfo, TrapFrame};
+use crate::{TrapFrame, trap::PageFaultFlags, uspace::ExceptionInfo};
 
 /// A reason as to why the control of the CPU is returned from
 /// the user space to the kernel.
@@ -32,10 +32,46 @@ pub enum ExceptionKind {
 }
 
 #[repr(C)]
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, PartialEq, Eq)]
 struct ExceptionTableEntry {
+    #[cfg(target_arch = "aarch64")]
+    from: i32,
+    #[cfg(target_arch = "aarch64")]
+    to: i32,
+    #[cfg(not(target_arch = "aarch64"))]
     from: usize,
+    #[cfg(not(target_arch = "aarch64"))]
     to: usize,
+}
+
+impl ExceptionTableEntry {
+    #[inline]
+    fn from_addr(&self) -> usize {
+        #[cfg(target_arch = "aarch64")]
+        {
+            let base = (&self.from as *const i32) as isize;
+            return (base + self.from as isize) as usize;
+        }
+
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            self.from
+        }
+    }
+
+    #[inline]
+    fn to_addr(&self) -> usize {
+        #[cfg(target_arch = "aarch64")]
+        {
+            let base = (&self.to as *const i32) as isize;
+            return (base + self.to as isize) as usize;
+        }
+
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            self.to
+        }
+    }
 }
 
 unsafe extern "C" {
@@ -53,9 +89,9 @@ impl TrapFrame {
                     .offset_from_unsigned(_ex_table_start.as_ptr()),
             )
         };
-        match entries.binary_search_by(|e| e.from.cmp(&self.ip())) {
+        match entries.binary_search_by_key(&self.ip(), ExceptionTableEntry::from_addr) {
             Ok(entry) => {
-                self.set_ip(entries[entry].to);
+                self.set_ip(entries[entry].to_addr());
                 true
             }
             Err(_) => false,
@@ -73,5 +109,5 @@ pub(crate) fn init_exception_table() {
                 .offset_from_unsigned(_ex_table_start.as_ptr()),
         )
     };
-    ex_table.sort_unstable();
+    ex_table.sort_unstable_by_key(ExceptionTableEntry::from_addr);
 }

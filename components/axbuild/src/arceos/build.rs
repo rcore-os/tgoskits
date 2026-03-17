@@ -13,11 +13,12 @@
 // limitations under the License.
 
 use std::{
+    fs,
     path::{Path, PathBuf},
     process::Command,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::arceos::{
     config::{AXCONFIG_FILE_NAME, ArceosConfig, QEMU_CONFIG_FILE_NAME},
@@ -26,6 +27,14 @@ use crate::arceos::{
     ostool as ostool_bridge,
     platform::PlatformResolver,
 };
+
+const DEFAULT_DEFCONFIG_CONTENT: &str = r#"# Stack size of each task.
+task-stack-size = 0x40000   # uint
+
+# Number of timer ticks per second (Hz). A timer tick may contain several timer
+# interrupts.
+ticks-per-sec = 100         # uint
+"#;
 
 /// Build output
 #[derive(Debug, Clone)]
@@ -58,11 +67,14 @@ impl Builder {
         tracing::info!(
             "Starting build for {:?} in {}",
             self.ctx.config.arch,
-            self.ctx.manifest_dir.display()
+            self.ctx.manifest_dir().display()
         );
 
-        let prepared =
-            prepare_artifacts(&self.ctx.manifest_dir, self.ctx.app_dir(), &self.ctx.config)?;
+        let prepared = prepare_artifacts(
+            self.ctx.manifest_dir(),
+            self.ctx.app_dir(),
+            &self.ctx.config,
+        )?;
 
         tracing::debug!("ostool cargo config: {:?}", prepared.cargo_spec.cargo);
         let mut ctx = prepared.cargo_spec.ctx.into_app_context();
@@ -88,11 +100,11 @@ impl Builder {
     pub fn clean(&self) -> Result<()> {
         tracing::info!(
             "Cleaning build artifacts in {}",
-            self.ctx.manifest_dir.display()
+            self.ctx.manifest_dir().display()
         );
 
         let status = Command::new("cargo")
-            .current_dir(&self.ctx.manifest_dir)
+            .current_dir(self.ctx.manifest_dir())
             .arg("clean")
             .status()
             .context("Failed to run cargo clean")?;
@@ -101,7 +113,7 @@ impl Builder {
             anyhow::bail!("cargo clean failed with status: {}", status);
         }
 
-        for file in cleanup_files(&self.ctx.manifest_dir, self.ctx.app_dir()) {
+        for file in cleanup_files(self.ctx.manifest_dir(), self.ctx.app_dir()) {
             if file.exists() {
                 std::fs::remove_file(&file)
                     .with_context(|| format!("Failed to remove {}", file.display()))?;
@@ -223,6 +235,9 @@ impl ArtifactPreparer {
     }
 
     fn resolve_platform(&self, config: &ArceosConfig) -> Result<bool> {
+        if let Some(plat_dyn) = config.plat_dyn {
+            return Ok(plat_dyn);
+        }
         let resolver = PlatformResolver::new(self.manifest_dir.clone());
         let plat_dyn = matches!(config.arch, crate::arceos::config::Arch::AArch64)
             || resolver.is_dyn_platform(&config.platform);
@@ -230,7 +245,7 @@ impl ArtifactPreparer {
     }
 
     fn generate_config(&self, config: &ArceosConfig) -> Result<()> {
-        let defconfig = self.manifest_dir.join("configs/defconfig.toml");
+        let defconfig = resolve_defconfig_path(&self.manifest_dir, &workspace_root_path()?)?;
         let out_config = self.app_dir.join(AXCONFIG_FILE_NAME);
         let platform_package = self.resolve_platform_package(config);
         let plat_config = self.resolve_platform_config_path(&self.app_dir, &platform_package)?;
@@ -338,7 +353,7 @@ impl ArtifactPreparer {
     }
 
     fn parse_mem_size(&self, mem: &str) -> Result<String> {
-        let script = self.manifest_dir.join("scripts/make/strtosz.py");
+        let script = resolve_strtosz_script_path(&self.manifest_dir)?;
         let output = Command::new(&script)
             .arg(mem)
             .output()
@@ -360,6 +375,55 @@ impl ArtifactPreparer {
         }
         Ok(parsed)
     }
+}
+
+fn workspace_root_path() -> Result<PathBuf> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .context("failed to locate workspace root from axbuild crate")?;
+    Ok(root.to_path_buf())
+}
+
+fn resolve_defconfig_path(manifest_dir: &Path, workspace_root: &Path) -> Result<PathBuf> {
+    let manifest_defconfig = manifest_dir.join("configs/defconfig.toml");
+    if manifest_defconfig.exists() {
+        return Ok(manifest_defconfig);
+    }
+
+    let fallback = workspace_root.join("target/defconfig.toml");
+    ensure_default_defconfig_file(&fallback)?;
+    Ok(fallback)
+}
+
+fn ensure_default_defconfig_file(path: &Path) -> Result<()> {
+    if path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(path, DEFAULT_DEFCONFIG_CONTENT)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(())
+}
+
+fn resolve_strtosz_script_path(manifest_dir: &Path) -> Result<PathBuf> {
+    let candidates = [
+        manifest_dir.join("scripts/make/strtosz.py"),
+        manifest_dir.join("make/strtosz.py"),
+    ];
+    for path in candidates {
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+
+    bail!(
+        "strtosz.py not found under `{}` (checked scripts/make and make)",
+        manifest_dir.display()
+    )
 }
 
 fn parse_max_cpu_num_from_platform_config(contents: &str, path: &Path) -> Result<usize> {
@@ -390,6 +454,8 @@ fn parse_max_cpu_num_from_platform_config(contents: &str, path: &Path) -> Result
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
+
+    use tempfile::tempdir;
 
     use super::*;
 
@@ -434,5 +500,44 @@ mod tests {
         let err =
             parse_max_cpu_num_from_platform_config("[plat]\nmax-cpu-num = 0\n", path).unwrap_err();
         assert!(err.to_string().contains("SMP must be >= 1"));
+    }
+
+    #[test]
+    fn resolve_defconfig_path_prefers_manifest_configs() {
+        let dir = tempdir().unwrap();
+        let manifest = dir.path().join("manifest");
+        let workspace = dir.path().join("workspace");
+        fs::create_dir_all(manifest.join("configs")).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(manifest.join("configs/defconfig.toml"), "key = 1\n").unwrap();
+
+        let resolved = resolve_defconfig_path(&manifest, &workspace).unwrap();
+        assert_eq!(resolved, manifest.join("configs/defconfig.toml"));
+    }
+
+    #[test]
+    fn resolve_defconfig_path_falls_back_to_workspace_target() {
+        let dir = tempdir().unwrap();
+        let manifest = dir.path().join("manifest");
+        let workspace = dir.path().join("workspace");
+        fs::create_dir_all(&manifest).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+
+        let resolved = resolve_defconfig_path(&manifest, &workspace).unwrap();
+        let expected = workspace.join("target/defconfig.toml");
+        assert_eq!(resolved, expected);
+        let contents = fs::read_to_string(expected).unwrap();
+        assert_eq!(contents, DEFAULT_DEFCONFIG_CONTENT);
+    }
+
+    #[test]
+    fn resolve_strtosz_script_path_accepts_make_fallback() {
+        let dir = tempdir().unwrap();
+        let manifest = dir.path().join("manifest");
+        fs::create_dir_all(manifest.join("make")).unwrap();
+        fs::write(manifest.join("make/strtosz.py"), "#!/usr/bin/env python3\n").unwrap();
+
+        let resolved = resolve_strtosz_script_path(&manifest).unwrap();
+        assert_eq!(resolved, manifest.join("make/strtosz.py"));
     }
 }

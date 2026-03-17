@@ -19,6 +19,7 @@ use clap::{Parser, Subcommand};
 
 mod arceos;
 mod axvisor;
+mod starry;
 
 const STD_CRATES_CSV: &str = "scripts/test/std_crates.csv";
 
@@ -69,6 +70,11 @@ enum Commands {
     Arceos {
         #[command(subcommand)]
         command: arceos::ArceosCommand,
+    },
+    /// StarryOS build commands
+    Starry {
+        #[command(subcommand)]
+        command: starry::StarryCommand,
     },
 }
 
@@ -126,14 +132,15 @@ async fn main() -> Result<()> {
         } => run_std_test_command(),
         Commands::Test {
             command: TestCommand::Axvisor { target },
-        } => run_target_test_command("axvisor", &target),
+        } => run_target_test_command("axvisor", &target).await,
         Commands::Test {
             command: TestCommand::Starry { target },
-        } => run_target_test_command("starry", &target),
+        } => run_target_test_command("starry", &target).await,
         Commands::Test {
             command: TestCommand::Arceos { target },
         } => run_arceos_test_command(target.as_deref()).await,
         Commands::Arceos { command } => command.run().await,
+        Commands::Starry { command } => command.run().await,
     }
 }
 
@@ -251,7 +258,7 @@ fn run_std_tests<R: CargoRunner>(
     Ok(failed)
 }
 
-fn run_target_test_command(os: &str, target: &str) -> Result<()> {
+async fn run_target_test_command(os: &str, target: &str) -> Result<()> {
     let supported = supported_targets(os);
 
     // 验证 target 是否在支持的列表中
@@ -274,13 +281,7 @@ fn run_target_test_command(os: &str, target: &str) -> Result<()> {
 
     match os {
         "axvisor" => axvisor::run_test(target)?,
-        "starry" => {
-            // starry 的测试实现占位
-            println!(
-                "  (test implementation placeholder for {} on {})",
-                os, target
-            );
-        }
+        "starry" => starry::run_test(target).await?,
         _ => unreachable!(), // 之前已经验证过了
     }
 
@@ -301,7 +302,6 @@ async fn run_arceos_test_command(target: Option<&str>) -> Result<()> {
 
     let arch = target.map(parse_arceos_target).transpose()?;
     let selected_arch = arceos_test_arch(arch);
-    let manifest_dir = arceos::config::arceos_manifest_dir()?;
 
     println!(
         "running arceos tests for {} package(s){}",
@@ -325,7 +325,7 @@ async fn run_arceos_test_command(target: Option<&str>) -> Result<()> {
         let qemu_config_path =
             ensure_arceos_test_qemu_config_path(&package.crate_dir, &package.name, selected_arch)?;
         let smp = arceos_test_smp_from_qemu_config(&qemu_config_path)?;
-        run_arceos_test_package(&manifest_dir, &package.name, arch, smp, &qemu_config_path)
+        run_arceos_test_package(&package.name, arch, smp, &qemu_config_path)
             .await
             .with_context(|| format!("arceos test failed for package `{}`", package.name))?;
         println!("ok: {}", package.name);
@@ -469,12 +469,12 @@ fn arceos_test_smp_from_qemu_config(qemu_config_path: &Path) -> Result<Option<us
 }
 
 async fn run_arceos_test_package(
-    manifest_dir: &Path,
     package: &str,
     arch: Option<Arch>,
     smp: Option<usize>,
     qemu_config_path: &Path,
 ) -> Result<()> {
+    let effective_arch = arch.unwrap_or_default();
     let target_platform = arch.map(|arch| PlatformResolver::resolve_default_platform_name(&arch));
     let overrides = arceos::config::run_config_override(
         arch.map(|v| v.to_string()),
@@ -483,6 +483,7 @@ async fn run_arceos_test_package(
         true,
         None,
         smp,
+        Some(matches!(effective_arch, Arch::AArch64)),
         false,
         None,
         false,
@@ -491,7 +492,6 @@ async fn run_arceos_test_package(
         false,
     )?;
     let ctx = AxContext::new(
-        manifest_dir.to_path_buf(),
         overrides,
         Some(package.to_owned()),
         Some(qemu_config_path.to_path_buf()),

@@ -1,0 +1,20 @@
+[package]
+name = "axfs_vfs"
+description = "Virtual filesystem interfaces used by ArceOS"
+documentation = "https://docs.rs/axfs_vfs"
+keywords = ["arceos", "filesystem", "vfs"]
+edition.workspace = true
+version = "0.1.2"
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+log = "0.4"
+bitflags = "2.6"
+axerrno = "0.2"

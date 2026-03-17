@@ -5,9 +5,10 @@
 
 .macro _asm_extable, from, to
     .pushsection __ex_table, "a"
-    .balign 8
-    .quad \from
-    .quad \to
+    .balign 4
+    // Store PC-relative offsets so entries remain valid in PIE builds.
+    .word \from - .
+    .word \to - .
     .popsection
 .endm
 

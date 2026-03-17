@@ -34,7 +34,7 @@ impl QemuRunner {
 
     /// Build QEMU command arguments
     pub fn build_args(&self) -> Vec<String> {
-        ostool_bridge::build_qemu_config(&self.ctx.config, &self.ctx.manifest_dir).args
+        ostool_bridge::build_qemu_config(&self.ctx.config, self.ctx.manifest_dir()).args
     }
 
     /// Get QEMU binary name
@@ -53,7 +53,7 @@ impl QemuRunner {
     pub async fn run(&self) -> Result<()> {
         let qemu_config_path = self.qemu_config_path();
         let prepared = prepare_artifacts_with_qemu_config_path(
-            &self.ctx.manifest_dir,
+            self.ctx.manifest_dir(),
             self.ctx.app_dir(),
             &self.ctx.config,
             qemu_config_path,

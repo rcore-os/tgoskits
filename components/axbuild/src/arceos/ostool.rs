@@ -32,6 +32,9 @@ use crate::arceos::{
     config::{AXCONFIG_FILE_NAME, ArceosConfig, Arch, BuildMode, NetDev},
 };
 
+const DEFAULT_AX_IP: &str = "10.0.2.15";
+const DEFAULT_AX_GW: &str = "10.0.2.2";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppContextSpec {
     pub workspace: PathBuf,
@@ -60,18 +63,30 @@ pub struct CargoBuildSpec {
     pub ctx: AppContextSpec,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AxFeaturePrefixFamily {
+    AxStd,
+    AxFeat,
+}
+
 pub fn build_cargo_spec(
     config: &ArceosConfig,
-    _manifest_dir: &Path,
+    manifest_dir: &Path,
     app_dir: &Path,
     ax_features: &[String],
     lib_features: &[String],
     use_axlibc: bool,
     plat_dyn: bool,
 ) -> Result<CargoBuildSpec> {
-    let cargo_manifest_dir = cargo_default_manifest_dir(app_dir)?;
     let package = package_name(app_dir)?;
-    let features = build_features(ax_features, lib_features, &config.app_features, use_axlibc);
+    let ax_feature_family = detect_ax_feature_prefix_family(app_dir, &package)?;
+    let features = build_features(
+        ax_features,
+        lib_features,
+        &config.app_features,
+        ax_feature_family,
+        use_axlibc,
+    );
 
     let cargo = Cargo {
         env: build_env(config, app_dir),
@@ -80,15 +95,15 @@ pub fn build_cargo_spec(
         features,
         log: None,
         extra_config: None,
-        args: build_cargo_args(config, &cargo_manifest_dir, plat_dyn),
+        args: build_cargo_args(config, manifest_dir, plat_dyn),
         pre_build_cmds: vec![],
         post_build_cmds: vec![],
         to_bin: true,
     };
 
     let ctx = AppContextSpec {
-        workspace: cargo_manifest_dir.clone(),
-        manifest: cargo_manifest_dir,
+        workspace: manifest_dir.to_path_buf(),
+        manifest: manifest_dir.to_path_buf(),
         debug: matches!(config.mode, BuildMode::Debug),
     };
 
@@ -170,7 +185,7 @@ pub fn build_qemu_config(config: &ArceosConfig, manifest_dir: &Path) -> QemuConf
         args,
         uefi: false,
         to_bin: !matches!(config.arch, Arch::X86_64),
-        success_regex: vec![],
+        success_regex: vec!["to install packages.".to_string()],
         fail_regex: vec![],
     }
 }
@@ -195,9 +210,13 @@ fn build_features(
     ax_features: &[String],
     lib_features: &[String],
     app_features: &[String],
+    ax_feature_family: AxFeaturePrefixFamily,
     use_axlibc: bool,
 ) -> Vec<String> {
-    let ax_prefix = if use_axlibc { "axfeat/" } else { "axstd/" };
+    let ax_prefix = match ax_feature_family {
+        AxFeaturePrefixFamily::AxStd => "axstd/",
+        AxFeaturePrefixFamily::AxFeat => "axfeat/",
+    };
     let lib_prefix = if use_axlibc { "axlibc/" } else { "axstd/" };
 
     let mut features =
@@ -212,6 +231,52 @@ fn build_features(
     features
 }
 
+fn detect_ax_feature_prefix_family(app_dir: &Path, package: &str) -> Result<AxFeaturePrefixFamily> {
+    let metadata = MetadataCommand::new()
+        .current_dir(app_dir)
+        .no_deps()
+        .exec()
+        .with_context(|| {
+            format!(
+                "failed to load cargo metadata for dependency detection from {}",
+                app_dir.display()
+            )
+        })?;
+
+    let manifest_path = app_dir.join("Cargo.toml");
+    let package_info = metadata
+        .packages
+        .iter()
+        .find(|pkg| {
+            pkg.name == package && pkg.manifest_path.clone().into_std_path_buf() == manifest_path
+        })
+        .with_context(|| {
+            format!(
+                "failed to locate package `{}` from manifest {}",
+                package,
+                manifest_path.display()
+            )
+        })?;
+
+    let has_axstd = package_info
+        .dependencies
+        .iter()
+        .any(|dep| dep.name == "axstd" || dep.rename.as_deref() == Some("axstd"));
+    let has_axfeat = package_info
+        .dependencies
+        .iter()
+        .any(|dep| dep.name == "axfeat" || dep.rename.as_deref() == Some("axfeat"));
+
+    match (has_axstd, has_axfeat) {
+        (true, true) | (true, false) => Ok(AxFeaturePrefixFamily::AxStd),
+        (false, true) => Ok(AxFeaturePrefixFamily::AxFeat),
+        (false, false) => anyhow::bail!(
+            "package `{}` must directly depend on `axstd` or `axfeat`",
+            package
+        ),
+    }
+}
+
 fn build_env(config: &ArceosConfig, app_dir: &Path) -> HashMap<String, String> {
     let mut env = HashMap::new();
     env.insert("AX_ARCH".to_string(), config.arch.to_string());
@@ -220,6 +285,8 @@ fn build_env(config: &ArceosConfig, app_dir: &Path) -> HashMap<String, String> {
         effective_linker_platform_name(config),
     );
     env.insert("AX_LOG".to_string(), config.log.as_str().to_string());
+    env.insert("AX_IP".to_string(), DEFAULT_AX_IP.to_string());
+    env.insert("AX_GW".to_string(), DEFAULT_AX_GW.to_string());
     env.insert(
         "AX_CONFIG_PATH".to_string(),
         app_dir.join(AXCONFIG_FILE_NAME).display().to_string(),
@@ -294,20 +361,6 @@ fn qemu_cpu(arch: Arch) -> &'static str {
     }
 }
 
-fn cargo_default_manifest_dir(app_dir: &Path) -> Result<PathBuf> {
-    let metadata = MetadataCommand::new()
-        .current_dir(app_dir)
-        .no_deps()
-        .exec()
-        .with_context(|| {
-            format!(
-                "failed to resolve cargo default manifest directory from {}",
-                app_dir.display()
-            )
-        })?;
-    Ok(metadata.workspace_root.into_std_path_buf())
-}
-
 fn package_name(app_dir: &Path) -> Result<String> {
     #[derive(Deserialize)]
     struct Manifest {
@@ -358,6 +411,7 @@ mod tests {
             arch: Arch::X86_64,
             platform: "x86-pc".to_string(),
             mode: BuildMode::Debug,
+            plat_dyn: None,
             log: LogLevel::Info,
             smp: Some(2),
             mem: Some("256M".to_string()),
@@ -367,16 +421,44 @@ mod tests {
         }
     }
 
+    fn write_demo_package(dir: &Path, deps_body: &str) {
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/main.rs"), "fn main() {}\n").unwrap();
+        fs::write(
+            dir.join("Cargo.toml"),
+            format!(
+                concat!(
+                    "[package]\n",
+                    "name=\"demo\"\n",
+                    "version=\"0.1.0\"\n",
+                    "edition=\"2024\"\n\n",
+                    "[dependencies]\n",
+                    "{}"
+                ),
+                deps_body
+            ),
+        )
+        .unwrap();
+    }
+
+    fn write_fake_dependency_crate(path: &Path, name: &str) {
+        fs::create_dir_all(path.join("src")).unwrap();
+        fs::write(
+            path.join("Cargo.toml"),
+            format!(
+                "[package]\nname=\"{}\"\nversion=\"0.1.0\"\nedition=\"2024\"\n",
+                name
+            ),
+        )
+        .unwrap();
+        fs::write(path.join("src/lib.rs"), "").unwrap();
+    }
+
     #[test]
     fn test_build_cargo_spec_basic() {
         let dir = tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("src")).unwrap();
-        fs::write(
-            dir.path().join("Cargo.toml"),
-            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\nedition=\"2024\"\n[[bin]]\nname=\"demo\"\
-             \npath=\"src/main.rs\"\n",
-        )
-        .unwrap();
+        write_fake_dependency_crate(&dir.path().join("axstd"), "axstd");
+        write_demo_package(dir.path(), "axstd = { path = \"axstd\" }\n");
         let config = helloworld_config();
 
         let ax_features = FeatureResolver::resolve_ax_features(&config, false);
@@ -405,18 +487,15 @@ mod tests {
             Some(&"x86-pc".to_string())
         );
         assert_eq!(spec.cargo.env.get("AX_LOG"), Some(&"info".to_string()));
+        assert_eq!(spec.cargo.env.get("AX_IP"), Some(&"10.0.2.15".to_string()));
+        assert_eq!(spec.cargo.env.get("AX_GW"), Some(&"10.0.2.2".to_string()));
     }
 
     #[test]
     fn test_build_cargo_spec_with_dynamic_platform() {
         let dir = tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("src")).unwrap();
-        fs::write(
-            dir.path().join("Cargo.toml"),
-            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\nedition=\"2024\"\n[[bin]]\nname=\"demo\"\
-             \npath=\"src/main.rs\"\n",
-        )
-        .unwrap();
+        write_fake_dependency_crate(&dir.path().join("axfeat"), "axfeat");
+        write_demo_package(dir.path(), "axfeat = { path = \"axfeat\" }\n");
         let mut config = helloworld_config();
         config.arch = Arch::AArch64;
         config.platform = "aarch64-qemu-virt".to_string();
@@ -438,8 +517,46 @@ mod tests {
 
         assert!(!spec.ctx.debug);
         assert_eq!(spec.cargo.target, "aarch64-unknown-none-softfloat");
-        // With use_axlibc=false, ax features get "axstd/" prefix
-        assert!(spec.cargo.features.contains(&"axstd/plat-dyn".to_string()));
+        assert!(spec.cargo.features.contains(&"axfeat/plat-dyn".to_string()));
+    }
+
+    #[test]
+    fn test_detect_ax_feature_prefix_family_prefers_axstd_when_both_exist() {
+        let dir = tempdir().unwrap();
+        write_fake_dependency_crate(&dir.path().join("axstd"), "axstd");
+        write_fake_dependency_crate(&dir.path().join("axfeat"), "axfeat");
+        write_demo_package(
+            dir.path(),
+            "axstd = { path = \"axstd\" }\naxfeat = { path = \"axfeat\" }\n",
+        );
+
+        let family = detect_ax_feature_prefix_family(dir.path(), "demo").unwrap();
+        assert_eq!(family, AxFeaturePrefixFamily::AxStd);
+    }
+
+    #[test]
+    fn test_detect_ax_feature_prefix_family_errors_when_both_absent() {
+        let dir = tempdir().unwrap();
+        write_demo_package(dir.path(), "");
+
+        let err = detect_ax_feature_prefix_family(dir.path(), "demo").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("must directly depend on `axstd` or `axfeat`")
+        );
+    }
+
+    #[test]
+    fn test_build_features_keeps_axlibc_prefix_for_lib_features() {
+        let features = build_features(
+            &["defplat".to_string()],
+            &["fs".to_string()],
+            &[],
+            AxFeaturePrefixFamily::AxFeat,
+            true,
+        );
+        assert!(features.contains(&"axfeat/defplat".to_string()));
+        assert!(features.contains(&"axlibc/fs".to_string()));
     }
 
     #[test]
@@ -497,6 +614,11 @@ mod tests {
             qemu.args
                 .ends_with(&["-monitor".to_string(), "none".to_string()])
         );
+        assert!(
+            qemu.success_regex
+                .iter()
+                .any(|pattern| pattern == "Use apk to install packages.")
+        );
         assert!(qemu.to_bin);
     }
 
@@ -531,6 +653,23 @@ mod tests {
 
         assert!(qemu.args.iter().any(|arg| arg == "-nographic"));
         assert!(qemu.args.iter().any(|arg| arg == "mon:stdio"));
+    }
+
+    #[test]
+    fn test_build_cargo_args_release_uses_release_linker_script() {
+        let mut config = helloworld_config();
+        config.arch = Arch::RiscV64;
+        config.platform = "riscv64-qemu-virt".to_string();
+        config.mode = BuildMode::Release;
+
+        let args = build_cargo_args(&config, Path::new("/tmp/os/StarryOS"), false);
+        let joined = args.join(" ");
+        assert!(joined.contains("target.riscv64gc-unknown-none-elf.rustflags"));
+        assert!(joined.contains(
+            "/tmp/os/StarryOS/target/riscv64gc-unknown-none-elf/release/linker_riscv64-qemu-virt.\
+             lds"
+        ));
+        assert!(!joined.contains("/debug/linker_riscv64-qemu-virt.lds"));
     }
 
     #[test]
