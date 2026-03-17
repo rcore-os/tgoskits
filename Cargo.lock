@@ -1131,7 +1131,7 @@ dependencies = [
 name = "axfs_vfs"
 version = "0.1.2"
 dependencies = [
- "axerrno 0.1.2",
+ "axerrno 0.2.2",
  "bitflags 2.11.0",
  "log",
 ]
@@ -4871,7 +4871,7 @@ version = "0.4.1"
 name = "memory_set"
 version = "0.4.1"
 dependencies = [
- "axerrno 0.1.2",
+ "axerrno 0.2.2",
  "memory_addr",
 ]
 
@@ -5212,7 +5212,7 @@ name = "page_table_multiarch"
 version = "0.6.1"
 dependencies = [
  "arrayvec",
- "axerrno 0.1.2",
+ "axerrno 0.2.2",
  "bitmaps",
  "log",
  "memory_addr",
