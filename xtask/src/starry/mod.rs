@@ -94,6 +94,10 @@ pub struct BuildArgs {
     /// Number of CPUs (must be >= 1)
     #[arg(long)]
     pub smp: Option<usize>,
+
+    /// Enable dynamic platform (plat-dyn)
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = false)]
+    pub plat_dyn: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -121,6 +125,10 @@ pub struct RunArgs {
     /// Number of CPUs (must be >= 1)
     #[arg(long)]
     pub smp: Option<usize>,
+
+    /// Enable dynamic platform (plat-dyn)
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = false)]
+    pub plat_dyn: bool,
 
     /// Enable block device
     #[arg(long, default_value_t = true)]
@@ -155,6 +163,7 @@ async fn run_build(args: BuildArgs) -> Result<()> {
         args.release,
         args.features,
         args.smp,
+        args.plat_dyn,
     )?;
     let axbuild = AxBuild::from_overrides(overrides, Some(args.package), None)?;
 
@@ -191,6 +200,7 @@ async fn run_with_arg(args: RunArgs) -> Result<()> {
         args.release,
         args.features,
         args.smp,
+        args.plat_dyn,
         args.blk,
         Some(disk_img.display().to_string()),
         args.net,
@@ -226,6 +236,7 @@ fn build_config_override(
     release: bool,
     features: Option<String>,
     smp: Option<usize>,
+    plat_dyn: bool,
 ) -> Result<ArceosConfigOverride> {
     let arch = parse_starry_arch(arch.as_deref())?;
     if matches!(smp, Some(0)) {
@@ -236,6 +247,7 @@ fn build_config_override(
         arch: Some(arch),
         platform: platform.or_else(|| Some(PlatformResolver::resolve_default_platform_name(&arch))),
         mode: release.then_some(BuildMode::Release),
+        plat_dyn: Some(plat_dyn),
         smp,
         features: features
             .as_deref()
@@ -254,6 +266,7 @@ fn run_config_override(
     release: bool,
     features: Option<String>,
     smp: Option<usize>,
+    plat_dyn: bool,
     blk: bool,
     disk_img: Option<String>,
     net: bool,
@@ -261,7 +274,9 @@ fn run_config_override(
     graphic: bool,
     accel: bool,
 ) -> Result<ArceosConfigOverride> {
-    let mut overrides = build_config_override(arch, package, platform, release, features, smp)?;
+    let mut overrides = build_config_override(
+        arch, package, platform, release, features, smp, plat_dyn,
+    )?;
     overrides.qemu = Some(parse_qemu_options(
         blk, disk_img, net, net_dev, graphic, accel,
     ));

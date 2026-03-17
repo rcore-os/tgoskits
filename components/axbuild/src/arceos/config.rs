@@ -42,6 +42,11 @@ pub struct ArceosConfig {
     /// Build mode
     pub mode: BuildMode,
 
+    /// Whether to enable dynamic platform (plat-dyn) mode.
+    /// If None, auto-detect based on architecture/platform.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plat_dyn: Option<bool>,
+
     /// Log level
     pub log: LogLevel,
 
@@ -69,6 +74,7 @@ impl Default for ArceosConfig {
             arch: Arch::AArch64,
             platform: "aarch64-qemu-virt".to_string(),
             mode: BuildMode::Debug,
+            plat_dyn: None,
             log: LogLevel::Warn,
             smp: None,
             mem: None,
@@ -84,6 +90,7 @@ pub struct ArceosConfigOverride {
     pub arch: Option<Arch>,
     pub platform: Option<String>,
     pub mode: Option<BuildMode>,
+    pub plat_dyn: Option<bool>,
     pub log: Option<LogLevel>,
     pub smp: Option<usize>,
     pub mem: Option<String>,
@@ -103,6 +110,9 @@ impl ArceosConfigOverride {
 
         if let Some(mode) = self.mode {
             config.mode = mode;
+        }
+        if let Some(plat_dyn) = self.plat_dyn {
+            config.plat_dyn = Some(plat_dyn);
         }
         if let Some(log) = self.log {
             config.log = log;

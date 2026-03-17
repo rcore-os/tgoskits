@@ -235,6 +235,9 @@ impl ArtifactPreparer {
     }
 
     fn resolve_platform(&self, config: &ArceosConfig) -> Result<bool> {
+        if let Some(plat_dyn) = config.plat_dyn {
+            return Ok(plat_dyn);
+        }
         let resolver = PlatformResolver::new(self.manifest_dir.clone());
         let plat_dyn = matches!(config.arch, crate::arceos::config::Arch::AArch64)
             || resolver.is_dyn_platform(&config.platform);

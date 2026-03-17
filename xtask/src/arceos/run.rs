@@ -43,6 +43,10 @@ pub struct RunArgs {
     #[arg(long)]
     pub smp: Option<usize>,
 
+    /// Enable dynamic platform (plat-dyn)
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
+    pub plat_dyn: bool,
+
     /// Enable block device
     #[arg(long)]
     pub blk: bool,
@@ -77,6 +81,7 @@ impl RunArgs {
             release,
             features,
             smp,
+            plat_dyn,
             blk,
             disk_img,
             net,
@@ -92,6 +97,7 @@ impl RunArgs {
             release,
             features,
             smp,
+            plat_dyn,
             blk,
             disk_img,
             net,

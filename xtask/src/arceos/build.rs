@@ -42,6 +42,10 @@ pub struct BuildArgs {
     /// Number of CPUs (must be >= 1)
     #[arg(long)]
     pub smp: Option<usize>,
+
+    /// Enable dynamic platform (plat-dyn)
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
+    pub plat_dyn: bool,
 }
 
 impl BuildArgs {
@@ -53,6 +57,7 @@ impl BuildArgs {
             release,
             features,
             smp,
+            plat_dyn,
         } = self;
 
         let overrides = super::config::build_config_override(
@@ -62,6 +67,7 @@ impl BuildArgs {
             release,
             features,
             smp,
+            plat_dyn,
         )?;
         AxBuild::from_overrides(overrides, Some(package), None)
     }

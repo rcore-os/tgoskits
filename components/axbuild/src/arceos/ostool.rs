@@ -411,6 +411,7 @@ mod tests {
             arch: Arch::X86_64,
             platform: "x86-pc".to_string(),
             mode: BuildMode::Debug,
+            plat_dyn: None,
             log: LogLevel::Info,
             smp: Some(2),
             mem: Some("256M".to_string()),

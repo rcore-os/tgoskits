@@ -488,6 +488,7 @@ async fn run_arceos_test_package(
         true,
         None,
         smp,
+        true,
         false,
         None,
         false,
