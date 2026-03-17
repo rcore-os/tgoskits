@@ -16,6 +16,7 @@ use std::{
     collections::HashSet,
     fs,
     path::{Path, PathBuf},
+    str::FromStr,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -37,9 +38,6 @@ pub struct ArceosConfig {
 
     /// Platform name
     pub platform: String,
-
-    /// Application path (relative to manifest directory)
-    pub app: PathBuf,
 
     /// Build mode
     pub mode: BuildMode,
@@ -63,35 +61,13 @@ pub struct ArceosConfig {
     pub qemu: QemuOptions,
 }
 
-impl ArceosConfig {
-    pub fn default_for_manifest(manifest_dir: &Path) -> Self {
-        let app = if manifest_dir.join("examples/helloworld/Cargo.toml").exists() {
-            PathBuf::from("examples/helloworld")
-        } else {
-            PathBuf::from(".")
-        };
-
-        Self {
-            app,
-            ..Self::default()
-        }
-    }
-
-    pub fn app_dir(&self, manifest_dir: &Path) -> PathBuf {
-        if self.app.is_absolute() {
-            self.app.clone()
-        } else {
-            manifest_dir.join(&self.app)
-        }
-    }
-}
+impl ArceosConfig {}
 
 impl Default for ArceosConfig {
     fn default() -> Self {
         Self {
             arch: Arch::AArch64,
             platform: "aarch64-qemu-virt".to_string(),
-            app: PathBuf::from("examples/helloworld"),
             mode: BuildMode::Debug,
             log: LogLevel::Warn,
             smp: None,
@@ -107,7 +83,6 @@ impl Default for ArceosConfig {
 pub struct ArceosConfigOverride {
     pub arch: Option<Arch>,
     pub platform: Option<String>,
-    pub app: Option<PathBuf>,
     pub mode: Option<BuildMode>,
     pub log: Option<LogLevel>,
     pub smp: Option<usize>,
@@ -125,9 +100,7 @@ impl ArceosConfigOverride {
         if let Some(platform) = self.platform {
             config.platform = platform;
         }
-        if let Some(app) = self.app {
-            config.app = app;
-        }
+
         if let Some(mode) = self.mode {
             config.mode = mode;
         }
@@ -160,16 +133,8 @@ pub fn axconfig_path(manifest_dir: &Path) -> PathBuf {
     manifest_dir.join(AXCONFIG_FILE_NAME)
 }
 
-pub fn axconfig_path_for_config(manifest_dir: &Path, config: &ArceosConfig) -> PathBuf {
-    config.app_dir(manifest_dir).join(AXCONFIG_FILE_NAME)
-}
-
 pub fn qemu_config_path(manifest_dir: &Path) -> PathBuf {
     manifest_dir.join(QEMU_CONFIG_FILE_NAME)
-}
-
-pub fn qemu_config_path_for_config(manifest_dir: &Path, config: &ArceosConfig) -> PathBuf {
-    config.app_dir(manifest_dir).join(QEMU_CONFIG_FILE_NAME)
 }
 
 pub fn ostool_extra_config_path(manifest_dir: &Path) -> PathBuf {
@@ -185,7 +150,7 @@ pub fn load_config(manifest_dir: &Path, overrides: ArceosConfigOverride) -> Resu
             .with_context(|| format!("Failed to read {}", path.display()))?;
         toml::from_str(&contents).with_context(|| format!("Failed to parse {}", path.display()))?
     } else {
-        ArceosConfig::default_for_manifest(manifest_dir)
+        ArceosConfig::default()
     };
 
     overrides.apply_to(&mut config);
@@ -194,9 +159,7 @@ pub fn load_config(manifest_dir: &Path, overrides: ArceosConfigOverride) -> Resu
 
 pub fn save_config(manifest_dir: &Path, config: &ArceosConfig) -> Result<PathBuf> {
     let path = config_path(manifest_dir);
-    let mut serializable = config.clone();
-    serializable.app = make_path_relative(manifest_dir, &serializable.app);
-    let contents = toml::to_string_pretty(&serializable)
+    let contents = toml::to_string_pretty(config)
         .with_context(|| format!("Failed to serialize {}", path.display()))?;
     fs::write(&path, contents).with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(path)
@@ -213,9 +176,8 @@ pub fn load_board_config(manifest_dir: &Path, board_name: &str) -> Result<Arceos
     let path = resolve_board_config_path(manifest_dir, board_name)?;
     let contents =
         fs::read_to_string(&path).with_context(|| format!("Failed to read {}", path.display()))?;
-    let mut config: ArceosConfig =
+    let config: ArceosConfig =
         toml::from_str(&contents).with_context(|| format!("Failed to parse {}", path.display()))?;
-    config.app = make_path_relative(manifest_dir, &config.app);
     Ok(config)
 }
 
@@ -441,17 +403,6 @@ impl Arch {
             Arch::LoongArch64 => "virt",
         }
     }
-
-    /// Convert from string
-    pub fn from_str(s: &str) -> anyhow::Result<Self> {
-        match s.to_lowercase().as_str() {
-            "x86_64" | "x86" => Ok(Arch::X86_64),
-            "aarch64" | "arm64" => Ok(Arch::AArch64),
-            "riscv64" | "riscv" => Ok(Arch::RiscV64),
-            "loongarch64" | "loongarch" => Ok(Arch::LoongArch64),
-            _ => anyhow::bail!("Unknown architecture: {}", s),
-        }
-    }
 }
 
 impl std::fmt::Display for Arch {
@@ -461,6 +412,20 @@ impl std::fmt::Display for Arch {
             Arch::AArch64 => write!(f, "aarch64"),
             Arch::RiscV64 => write!(f, "riscv64"),
             Arch::LoongArch64 => write!(f, "loongarch64"),
+        }
+    }
+}
+
+impl std::str::FromStr for Arch {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s.to_lowercase().as_str() {
+            "x86_64" | "x86" => Ok(Arch::X86_64),
+            "aarch64" | "arm64" => Ok(Arch::AArch64),
+            "riscv64" | "riscv" => Ok(Arch::RiscV64),
+            "loongarch64" | "loongarch" => Ok(Arch::LoongArch64),
+            _ => anyhow::bail!("Unknown architecture: {}", s),
         }
     }
 }
@@ -479,7 +444,10 @@ pub enum BuildMode {
 
 impl std::fmt::Display for BuildMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.to_string())
+        match self {
+            BuildMode::Release => write!(f, "release"),
+            BuildMode::Debug => write!(f, "debug"),
+        }
     }
 }
 
@@ -526,7 +494,14 @@ impl LogLevel {
 
 impl std::fmt::Display for LogLevel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.to_string())
+        match self {
+            LogLevel::Off => write!(f, "off"),
+            LogLevel::Error => write!(f, "error"),
+            LogLevel::Warn => write!(f, "warn"),
+            LogLevel::Info => write!(f, "info"),
+            LogLevel::Debug => write!(f, "debug"),
+            LogLevel::Trace => write!(f, "trace"),
+        }
     }
 }
 
@@ -587,8 +562,10 @@ pub enum NetDev {
     Bridge,
 }
 
-impl NetDev {
-    pub fn from_str(s: &str) -> anyhow::Result<Self> {
+impl std::str::FromStr for NetDev {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
         match s.to_lowercase().as_str() {
             "user" => Ok(NetDev::User),
             "tap" => Ok(NetDev::Tap),

@@ -25,9 +25,9 @@ pub use arceos::{
     config::{
         AVAILABLE_BOARDS, AXCONFIG_FILE_NAME, ArceosConfig, ArceosConfigOverride, Arch, BuildMode,
         CONFIG_FILE_NAME, LogLevel, NetDev, OSTOOL_EXTRA_CONFIG_FILE_NAME, QEMU_CONFIG_FILE_NAME,
-        QemuOptions, apply_defconfig, axconfig_path, axconfig_path_for_config, config_path,
-        load_board_config, load_config, ostool_extra_config_path, parse_qemu_options,
-        qemu_config_path, resolve_package_app_dir, save_config,
+        QemuOptions, apply_defconfig, axconfig_path, config_path, load_board_config, load_config,
+        ostool_extra_config_path, parse_qemu_options, qemu_config_path, resolve_package_app_dir,
+        save_config,
     },
     features::FeatureResolver,
     platform::{PlatformInfo, PlatformResolver},

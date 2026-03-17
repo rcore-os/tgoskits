@@ -28,8 +28,7 @@ use cargo_metadata::MetadataCommand;
 use serde::{Deserialize, Serialize};
 
 use crate::arceos::config::{
-    ArceosConfig, Arch, BuildMode, NetDev, axconfig_path_for_config, ostool_extra_config_path,
-    qemu_config_path_for_config,
+    AXCONFIG_FILE_NAME, ArceosConfig, Arch, BuildMode, NetDev, ostool_extra_config_path,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,16 +94,16 @@ struct PatchEntry {
 pub fn build_cargo_spec(
     config: &ArceosConfig,
     manifest_dir: &Path,
+    app_dir: &Path,
     ax_features: &[String],
     lib_features: &[String],
     use_axlibc: bool,
     plat_dyn: bool,
 ) -> Result<CargoBuildSpec> {
-    let app_dir = config.app_dir(manifest_dir);
-    let cargo_manifest_dir = cargo_default_manifest_dir(&app_dir)?;
-    let package = package_name(&app_dir)?;
+    let cargo_manifest_dir = cargo_default_manifest_dir(app_dir)?;
+    let package = package_name(app_dir)?;
     let features = build_features(ax_features, lib_features, &config.app_features, use_axlibc);
-    let extra_config_path = write_extra_config(manifest_dir, config, use_axlibc, plat_dyn)
+    let extra_config_path = write_extra_config(manifest_dir, app_dir, config, use_axlibc, plat_dyn)
         .with_context(|| {
             format!(
                 "failed to prepare ostool cargo config under {}",
@@ -113,7 +112,7 @@ pub fn build_cargo_spec(
         })?;
 
     let cargo = Cargo {
-        env: build_env(config, manifest_dir),
+        env: build_env(config, app_dir),
         target: config.arch.to_target().to_string(),
         package,
         features,
@@ -160,7 +159,7 @@ pub fn build_qemu_config(config: &ArceosConfig, manifest_dir: &Path) -> QemuConf
                 disk_img.display()
             ));
         } else {
-            let default_disk = manifest_dir.join("resources/disk.img");
+            let default_disk = manifest_dir.join("disk.img");
             if default_disk.exists() {
                 args.push("-drive".to_string());
                 args.push(format!(
@@ -218,8 +217,12 @@ pub fn build_qemu_config(config: &ArceosConfig, manifest_dir: &Path) -> QemuConf
     }
 }
 
-pub fn write_qemu_config(manifest_dir: &Path, config: &ArceosConfig) -> Result<PathBuf> {
-    let path = qemu_config_path_for_config(manifest_dir, config);
+pub fn write_qemu_config(
+    manifest_dir: &Path,
+    qemu_config_path: &Path,
+    config: &ArceosConfig,
+) -> Result<PathBuf> {
+    let path = qemu_config_path.to_path_buf();
     let qemu = build_qemu_config(config, manifest_dir);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -255,29 +258,28 @@ fn build_features(
     features
 }
 
-fn build_env(config: &ArceosConfig, manifest_dir: &Path) -> HashMap<String, String> {
+fn build_env(config: &ArceosConfig, app_dir: &Path) -> HashMap<String, String> {
     let mut env = HashMap::new();
     env.insert("AX_ARCH".to_string(), config.arch.to_string());
     env.insert("AX_PLATFORM".to_string(), config.platform.clone());
     env.insert("AX_LOG".to_string(), config.log.to_string().to_string());
     env.insert(
         "AX_CONFIG_PATH".to_string(),
-        axconfig_path_for_config(manifest_dir, config)
-            .display()
-            .to_string(),
+        app_dir.join(AXCONFIG_FILE_NAME).display().to_string(),
     );
     env
 }
 
 fn build_rustflags(
     config: &ArceosConfig,
+    app_dir: &Path,
     manifest_dir: &Path,
     use_axlibc: bool,
     plat_dyn: bool,
 ) -> Vec<String> {
     let target = config.arch.to_target();
     let mode = config.mode.to_string();
-    let target_dir = resolve_target_dir(config, manifest_dir);
+    let target_dir = resolve_target_dir(app_dir, manifest_dir);
     let mut rustflags = vec!["-A".to_string(), "unsafe_op_in_unsafe_fn".to_string()];
     let link_script = resolve_link_script_path(&target_dir, target, &config.platform, mode);
 
@@ -291,9 +293,9 @@ fn build_rustflags(
             rustflags.push(format!("-Clink-arg={}", axlibc_linker.display()));
         }
     } else if plat_dyn {
-        rustflags.push("-Crelocation-model=pic".to_string());
-        rustflags.push("-Clink-arg=-pie".to_string());
-        rustflags.push("-Clink-arg=-znostart-stop-gc".to_string());
+        // rustflags.push("-Crelocation-model=pic".to_string());
+        // rustflags.push("-Clink-arg=-pie".to_string());
+        // rustflags.push("-Clink-arg=-znostart-stop-gc".to_string());
         rustflags.push("-Clink-arg=-Taxplat.x".to_string());
     } else {
         rustflags.push(format!("-Clink-arg=-T{}", link_script.display()));
@@ -304,8 +306,7 @@ fn build_rustflags(
     rustflags
 }
 
-fn resolve_target_dir(config: &ArceosConfig, manifest_dir: &Path) -> PathBuf {
-    let app_dir = config.app_dir(manifest_dir);
+fn resolve_target_dir(app_dir: &Path, manifest_dir: &Path) -> PathBuf {
     cargo_default_manifest_dir(&app_dir)
         .map(|dir| dir.join("target"))
         .unwrap_or_else(|_| manifest_dir.join("target"))
@@ -333,6 +334,7 @@ fn resolve_link_script_path(
 
 fn write_extra_config(
     manifest_dir: &Path,
+    app_dir: &Path,
     config: &ArceosConfig,
     use_axlibc: bool,
     plat_dyn: bool,
@@ -347,7 +349,7 @@ fn write_extra_config(
     target.insert(
         config.arch.to_target().to_string(),
         TargetExtraConfig {
-            rustflags: build_rustflags(config, manifest_dir, use_axlibc, plat_dyn),
+            rustflags: build_rustflags(config, app_dir, manifest_dir, use_axlibc, plat_dyn),
         },
     );
 

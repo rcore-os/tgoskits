@@ -20,10 +20,8 @@ use std::{
 use anyhow::{Context, Result};
 
 use crate::arceos::{
-    config::{
-        AXCONFIG_FILE_NAME, ArceosConfig, OSTOOL_EXTRA_CONFIG_FILE_NAME, QEMU_CONFIG_FILE_NAME,
-        axconfig_path_for_config, qemu_config_path_for_config,
-    },
+    config::{AXCONFIG_FILE_NAME, ArceosConfig, QEMU_CONFIG_FILE_NAME},
+    context::AxContext,
     features::FeatureResolver,
     ostool as ostool_bridge,
     platform::PlatformResolver,
@@ -47,31 +45,24 @@ pub struct PreparedArtifacts {
 
 /// Builder for ArceOS applications
 pub struct Builder {
-    config: ArceosConfig,
-    manifest_dir: PathBuf,
+    ctx: AxContext,
 }
 
 impl Builder {
-    pub fn new(config: ArceosConfig, manifest_dir: PathBuf) -> Self {
-        Self {
-            config,
-            manifest_dir,
-        }
-    }
-
-    pub fn manifest_dir(&self) -> &Path {
-        &self.manifest_dir
+    pub fn new(ctx: AxContext) -> Self {
+        Self { ctx }
     }
 
     /// Execute the build process
     pub async fn build(&self) -> Result<BuildOutput> {
         tracing::info!(
             "Starting build for {:?} in {}",
-            self.config.arch,
-            self.manifest_dir.display()
+            self.ctx.config.arch,
+            self.ctx.manifest_dir.display()
         );
 
-        let prepared = prepare_artifacts(&self.manifest_dir, &self.config)?;
+        let prepared =
+            prepare_artifacts(&self.ctx.manifest_dir, self.ctx.app_dir(), &self.ctx.config)?;
 
         tracing::debug!("ostool cargo config: {:?}", prepared.cargo_spec.cargo);
         let mut ctx = prepared.cargo_spec.ctx.into_app_context();
@@ -97,11 +88,11 @@ impl Builder {
     pub fn clean(&self) -> Result<()> {
         tracing::info!(
             "Cleaning build artifacts in {}",
-            self.manifest_dir.display()
+            self.ctx.manifest_dir.display()
         );
 
         let status = Command::new("cargo")
-            .current_dir(&self.manifest_dir)
+            .current_dir(&self.ctx.manifest_dir)
             .arg("clean")
             .status()
             .context("Failed to run cargo clean")?;
@@ -110,7 +101,7 @@ impl Builder {
             anyhow::bail!("cargo clean failed with status: {}", status);
         }
 
-        for file in cleanup_files(&self.manifest_dir, &self.config) {
+        for file in cleanup_files(&self.ctx.manifest_dir, self.ctx.app_dir()) {
             if file.exists() {
                 std::fs::remove_file(&file)
                     .with_context(|| format!("Failed to remove {}", file.display()))?;
@@ -121,53 +112,60 @@ impl Builder {
     }
 }
 
-fn cleanup_files(manifest_dir: &Path, config: &ArceosConfig) -> Vec<PathBuf> {
-    let app_axconfig = axconfig_path_for_config(manifest_dir, config);
-    let legacy_axconfig = manifest_dir.join(AXCONFIG_FILE_NAME);
-    let app_qemu_config = qemu_config_path_for_config(manifest_dir, config);
-    let legacy_qemu_config = manifest_dir.join(QEMU_CONFIG_FILE_NAME);
-
-    let mut files = vec![
-        app_axconfig.clone(),
-        app_qemu_config.clone(),
-        manifest_dir
-            .join(".cargo")
-            .join(OSTOOL_EXTRA_CONFIG_FILE_NAME),
-    ];
-    if app_axconfig != legacy_axconfig {
-        files.push(legacy_axconfig);
-    }
-    if app_qemu_config != legacy_qemu_config {
-        files.push(legacy_qemu_config);
-    }
-    files
+fn cleanup_files(_manifest_dir: &Path, app_dir: &Path) -> Vec<PathBuf> {
+    vec![
+        app_dir.join(AXCONFIG_FILE_NAME),
+        app_dir.join(QEMU_CONFIG_FILE_NAME),
+    ]
 }
 
-pub fn prepare_artifacts(manifest_dir: &Path, config: &ArceosConfig) -> Result<PreparedArtifacts> {
-    prepare_artifacts_with_qemu_config_path(manifest_dir, config, None)
+pub fn prepare_artifacts(
+    manifest_dir: &Path,
+    app_dir: &Path,
+    config: &ArceosConfig,
+) -> Result<PreparedArtifacts> {
+    let project = ArtifactPreparer::new(
+        manifest_dir.to_path_buf(),
+        app_dir.to_path_buf(),
+        config.clone(),
+        None,
+    );
+    project.prepare()
 }
 
 pub fn prepare_artifacts_with_qemu_config_path(
     manifest_dir: &Path,
+    app_dir: &Path,
     config: &ArceosConfig,
-    qemu_config_path: Option<PathBuf>,
+    qemu_config_path: PathBuf,
 ) -> Result<PreparedArtifacts> {
-    let project =
-        ArtifactPreparer::new(manifest_dir.to_path_buf(), config.clone(), qemu_config_path);
+    let project = ArtifactPreparer::new(
+        manifest_dir.to_path_buf(),
+        app_dir.to_path_buf(),
+        config.clone(),
+        Some(qemu_config_path),
+    );
     project.prepare()
 }
 
 struct ArtifactPreparer {
     config: ArceosConfig,
     manifest_dir: PathBuf,
+    app_dir: PathBuf,
     qemu_config_path: Option<PathBuf>,
 }
 
 impl ArtifactPreparer {
-    fn new(manifest_dir: PathBuf, config: ArceosConfig, qemu_config_path: Option<PathBuf>) -> Self {
+    fn new(
+        manifest_dir: PathBuf,
+        app_dir: PathBuf,
+        config: ArceosConfig,
+        qemu_config_path: Option<PathBuf>,
+    ) -> Self {
         Self {
             config,
             manifest_dir,
+            app_dir,
             qemu_config_path,
         }
     }
@@ -177,13 +175,14 @@ impl ArtifactPreparer {
         self.resolve_effective_smp(&mut config)?;
         let plat_dyn = self.resolve_platform(&config)?;
         self.generate_config(&config)?;
-        let qemu_config_path = self.qemu_config_path.clone().map_or_else(
-            || ostool_bridge::write_qemu_config(&self.manifest_dir, &config),
-            Ok,
-        )?;
+        let qemu_config_path = self
+            .qemu_config_path
+            .clone()
+            .unwrap_or_else(|| self.app_dir.join(QEMU_CONFIG_FILE_NAME));
+        ostool_bridge::write_qemu_config(&self.manifest_dir, &qemu_config_path, &config)?;
 
         let ax_features = FeatureResolver::resolve_ax_features(&config, plat_dyn);
-        let use_axlibc = self.is_c_app(&config)?;
+        let use_axlibc = self.is_c_app()?;
         let lib_features = FeatureResolver::resolve_lib_features(
             &config,
             if use_axlibc { "axlibc" } else { "axstd" },
@@ -192,6 +191,7 @@ impl ArtifactPreparer {
         let cargo_spec = ostool_bridge::build_cargo_spec(
             &config,
             &self.manifest_dir,
+            &self.app_dir,
             &ax_features,
             &lib_features,
             use_axlibc,
@@ -200,7 +200,7 @@ impl ArtifactPreparer {
 
         Ok(PreparedArtifacts {
             cargo_spec,
-            axconfig_path: axconfig_path_for_config(&self.manifest_dir, &config),
+            axconfig_path: self.app_dir.join(AXCONFIG_FILE_NAME),
             qemu_config_path,
         })
     }
@@ -213,9 +213,8 @@ impl ArtifactPreparer {
             return Ok(());
         }
 
-        let app_dir = config.app_dir(&self.manifest_dir);
         let platform_package = self.resolve_platform_package(config);
-        let plat_config = self.resolve_platform_config_path(&app_dir, &platform_package)?;
+        let plat_config = self.resolve_platform_config_path(&self.app_dir, &platform_package)?;
         let contents = std::fs::read_to_string(&plat_config)
             .with_context(|| format!("Failed to read {}", plat_config.display()))?;
         let smp = parse_max_cpu_num_from_platform_config(&contents, &plat_config)?;
@@ -232,10 +231,9 @@ impl ArtifactPreparer {
 
     fn generate_config(&self, config: &ArceosConfig) -> Result<()> {
         let defconfig = self.manifest_dir.join("configs/defconfig.toml");
-        let out_config = axconfig_path_for_config(&self.manifest_dir, config);
-        let app_dir = config.app_dir(&self.manifest_dir);
+        let out_config = self.app_dir.join(AXCONFIG_FILE_NAME);
         let platform_package = self.resolve_platform_package(config);
-        let plat_config = self.resolve_platform_config_path(&app_dir, &platform_package)?;
+        let plat_config = self.resolve_platform_config_path(&self.app_dir, &platform_package)?;
 
         let mut args = vec![
             defconfig.display().to_string(),
@@ -329,8 +327,8 @@ impl ArtifactPreparer {
         Ok(path)
     }
 
-    fn is_c_app(&self, config: &ArceosConfig) -> Result<bool> {
-        let cargo_toml = config.app_dir(&self.manifest_dir).join("Cargo.toml");
+    fn is_c_app(&self) -> Result<bool> {
+        let cargo_toml = self.app_dir.join("Cargo.toml");
         if cargo_toml.exists() {
             let contents = std::fs::read_to_string(&cargo_toml)?;
             return Ok(contents.contains("axlibc"));

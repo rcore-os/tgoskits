@@ -13,7 +13,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use axbuild::arceos::{Arch, PlatformResolver};
+use axbuild::arceos::{Arch, PlatformResolver, context::AxContext};
 use cargo_metadata::{Metadata, MetadataCommand};
 use clap::{Parser, Subcommand};
 
@@ -475,11 +475,11 @@ async fn run_arceos_test_package(
     smp: Option<usize>,
     qemu_config_path: &Path,
 ) -> Result<()> {
+    let target_platform = arch.map(|arch| PlatformResolver::resolve_default_platform_name(&arch));
     let overrides = arceos::config::run_config_override(
-        manifest_dir,
         arch.map(|v| v.to_string()),
         package.to_owned(),
-        None,
+        target_platform,
         true,
         None,
         smp,
@@ -490,18 +490,16 @@ async fn run_arceos_test_package(
         false,
         false,
     )?;
-    let mut config = axbuild::arceos::ArceosConfig::default_for_manifest(manifest_dir);
-    overrides.apply_to(&mut config);
-    apply_target_defaults(&mut config, arch);
-    config.smp = smp;
-    arceos::run::run_with_config_and_qemu_config(
+    let ctx = AxContext::new(
         manifest_dir.to_path_buf(),
-        config,
+        overrides,
+        Some(package.to_owned()),
         Some(qemu_config_path.to_path_buf()),
-    )
-    .await
+    )?;
+    arceos::run::run_with_context(ctx).await
 }
 
+#[cfg(test)]
 fn apply_target_defaults(config: &mut axbuild::arceos::ArceosConfig, arch: Option<Arch>) {
     if let Some(arch) = arch {
         config.arch = arch;

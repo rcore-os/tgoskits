@@ -195,8 +195,6 @@ impl FeatureResolver {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::*;
     use crate::arceos::config::{ArceosConfig, Arch, BuildMode, LogLevel, QemuOptions};
 
@@ -226,7 +224,6 @@ mod tests {
         let config = ArceosConfig {
             arch: Arch::AArch64,
             platform: "aarch64-qemu-virt".to_string(),
-            app: PathBuf::from("examples/helloworld"),
             mode: BuildMode::Debug,
             log: LogLevel::Info,
             smp: None,
@@ -248,7 +245,6 @@ mod tests {
         let config = ArceosConfig {
             arch: Arch::AArch64,
             platform: "aarch64-qemu-virt".to_string(),
-            app: PathBuf::from("examples/helloworld"),
             mode: BuildMode::Debug,
             log: LogLevel::Info,
             smp: None,
@@ -269,7 +265,6 @@ mod tests {
         let mut config = ArceosConfig {
             arch: Arch::AArch64,
             platform: "aarch64-qemu-virt".to_string(),
-            app: PathBuf::from("examples/helloworld"),
             mode: BuildMode::Debug,
             log: LogLevel::Info,
             smp: Some(4),

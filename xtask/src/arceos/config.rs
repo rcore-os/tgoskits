@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 
 use anyhow::{Context, Result};
-use axbuild::arceos::{
-    ArceosConfigOverride, Arch, BuildMode, FeatureResolver, parse_qemu_options,
-    resolve_package_app_dir,
-};
+use axbuild::arceos::{ArceosConfigOverride, Arch, BuildMode, FeatureResolver, parse_qemu_options};
 
 pub fn arceos_manifest_dir() -> Result<PathBuf> {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -28,9 +28,8 @@ pub fn arceos_manifest_dir() -> Result<PathBuf> {
 }
 
 pub fn build_config_override(
-    manifest_dir: &Path,
     arch: Option<String>,
-    package: String,
+    _package: String,
     platform: Option<String>,
     release: bool,
     features: Option<String>,
@@ -45,7 +44,6 @@ pub fn build_config_override(
             .map(Arch::from_str)
             .transpose()
             .context("failed to parse arch override")?,
-        app: Some(resolve_package_app_dir(manifest_dir, &package)?),
         platform,
         mode: release.then_some(BuildMode::Release),
         smp,
@@ -59,7 +57,6 @@ pub fn build_config_override(
 }
 
 pub fn run_config_override(
-    manifest_dir: &Path,
     arch: Option<String>,
     package: String,
     platform: Option<String>,
@@ -73,15 +70,7 @@ pub fn run_config_override(
     graphic: bool,
     accel: bool,
 ) -> Result<ArceosConfigOverride> {
-    let mut overrides = build_config_override(
-        manifest_dir,
-        arch,
-        package,
-        platform,
-        release,
-        features,
-        smp,
-    )?;
+    let mut overrides = build_config_override(arch, package, platform, release, features, smp)?;
     overrides.qemu = Some(parse_qemu_options(
         blk, disk_img, net, net_dev, graphic, accel,
     ));
@@ -100,9 +89,7 @@ mod tests {
 
     #[test]
     fn test_build_config_override_resolves_workspace_package() {
-        let manifest_dir = arceos_manifest_dir().unwrap();
         let overrides = build_config_override(
-            &manifest_dir,
             Some("x86_64".to_string()),
             "arceos-helloworld".to_string(),
             None,
@@ -113,7 +100,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(overrides.arch, Some(Arch::X86_64));
-        assert_eq!(overrides.app, Some(PathBuf::from("examples/helloworld")));
         assert_eq!(overrides.smp, Some(4));
         assert_eq!(
             overrides.features,
@@ -123,9 +109,7 @@ mod tests {
 
     #[test]
     fn test_build_config_override_rejects_zero_smp() {
-        let manifest_dir = arceos_manifest_dir().unwrap();
         let err = build_config_override(
-            &manifest_dir,
             None,
             "arceos-helloworld".to_string(),
             None,

@@ -12,10 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::path::PathBuf;
-
 use anyhow::Result;
-use axbuild::arceos::{ArceosConfig, QemuRunner, config_path};
+use axbuild::arceos::{AxBuild, context::AxContext};
 use clap::Parser;
 
 /// Run command arguments
@@ -71,7 +69,7 @@ pub struct RunArgs {
 }
 
 impl RunArgs {
-    pub fn into_config(self, workspace_root: &std::path::Path) -> Result<ArceosConfig> {
+    pub fn into_axbuild(self, manifest_dir: &std::path::Path) -> Result<AxBuild> {
         let Self {
             arch,
             package,
@@ -88,9 +86,8 @@ impl RunArgs {
         } = self;
 
         let overrides = super::config::run_config_override(
-            workspace_root,
             arch,
-            package,
+            package.clone(),
             platform,
             release,
             features,
@@ -103,46 +100,19 @@ impl RunArgs {
             accel,
         )?;
 
-        axbuild::arceos::load_config(workspace_root, overrides)
+        AxBuild::from_overrides(manifest_dir, overrides, Some(package), None)
     }
 }
 
 /// Run the build and run command
-pub async fn run_run(args: RunArgs) -> Result<()> {
-    let manifest_dir = super::config::arceos_manifest_dir()?;
-    let config = args.into_config(&manifest_dir)?;
-    run_with_config(manifest_dir, config).await
-}
-
-pub async fn run_with_config(manifest_dir: std::path::PathBuf, config: ArceosConfig) -> Result<()> {
-    run_with_config_and_qemu_config(manifest_dir, config, None).await
-}
-
-pub async fn run_with_config_and_qemu_config(
-    manifest_dir: PathBuf,
-    config: ArceosConfig,
-    qemu_config_path: Option<PathBuf>,
-) -> Result<()> {
-    println!("Building ArceOS application:");
-    println!("  Architecture: {}", config.arch);
-    println!("  Platform: {}", config.platform);
-    println!("  App: {}", config.app.display());
-    println!("  Config: {}", config_path(&manifest_dir).display());
-    println!(
-        "  Mode: {}",
-        axbuild::arceos::config::BuildMode::to_string(config.mode)
-    );
-    println!();
-
+pub async fn run_with_context(ctx: AxContext) -> Result<()> {
     println!("Running in QEMU...");
-    let runner = QemuRunner::new(config, manifest_dir);
-    if let Some(qemu_config_path) = qemu_config_path {
-        println!("  QEMU config: {}", qemu_config_path.display());
-        runner.run_with_qemu_config_path(qemu_config_path).await?;
-    } else {
-        println!("  QEMU config: {}", runner.qemu_config_path().display());
-        runner.run().await?;
-    }
+    AxBuild::new(ctx).run_qemu().await
+}
 
-    Ok(())
+pub async fn run_with_arg(arg: RunArgs) -> Result<()> {
+    let manifest_dir = super::config::arceos_manifest_dir()?;
+    let axbuild = arg.into_axbuild(&manifest_dir)?;
+    println!("Running in QEMU...");
+    axbuild.run_qemu().await
 }

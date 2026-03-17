@@ -7,7 +7,6 @@ extern crate axstd as std;
 
 #[cfg(feature = "axstd")]
 use std::os::arceos::api::task::{self as api, AxWaitQueueHandle};
-
 #[cfg(feature = "axstd")]
 use std::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},

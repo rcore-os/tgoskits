@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use anyhow::Result;
-use axbuild::arceos::{ArceosConfig, Builder, config_path, load_config};
+use axbuild::arceos::{AxBuild, config_path};
 use clap::Parser;
 
 /// Build command arguments
@@ -45,7 +45,7 @@ pub struct BuildArgs {
 }
 
 impl BuildArgs {
-    pub fn into_config(self, manifest_dir: &std::path::Path) -> Result<ArceosConfig> {
+    pub fn into_axbuild(self, manifest_dir: &std::path::Path) -> Result<AxBuild> {
         let Self {
             arch,
             package,
@@ -56,39 +56,26 @@ impl BuildArgs {
         } = self;
 
         let overrides = super::config::build_config_override(
-            manifest_dir,
             arch,
-            package,
+            package.clone(),
             platform,
             release,
             features,
             smp,
         )?;
-        load_config(manifest_dir, overrides)
+        AxBuild::from_overrides(manifest_dir, overrides, Some(package), None)
     }
 }
 
 /// Run the build command
 pub async fn run_build(args: BuildArgs) -> Result<()> {
     let manifest_dir = super::config::arceos_manifest_dir()?;
-    let config = args.into_config(&manifest_dir)?;
+    let axbuild = args.into_axbuild(&manifest_dir)?;
 
     println!("Building ArceOS application:");
-    println!("  Architecture: {}", config.arch);
-    println!("  Platform: {}", config.platform);
-    println!("  App: {}", config.app.display());
     println!("  Config: {}", config_path(&manifest_dir).display());
-    println!(
-        "  Mode: {}",
-        axbuild::arceos::config::BuildMode::to_string(config.mode)
-    );
-    println!(
-        "  Log level: {}",
-        axbuild::arceos::config::LogLevel::to_string(config.log)
-    );
 
-    let builder = Builder::new(config, manifest_dir);
-    let output = builder.build().await?;
+    let output = axbuild.build().await?;
 
     println!();
     println!("Build successful!");

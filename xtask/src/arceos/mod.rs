@@ -24,7 +24,9 @@ pub mod run;
 
 pub use build::{BuildArgs, run_build};
 pub use defconfig::run_defconfig;
-pub use run::{RunArgs, run_run};
+pub use run::RunArgs;
+
+use crate::arceos::run::run_with_arg;
 
 /// ArceOS subcommands
 #[derive(Subcommand, Debug)]
@@ -50,7 +52,7 @@ impl ArceosCommand {
     pub async fn run(self) -> Result<()> {
         match self {
             ArceosCommand::Build { args } => run_build(args).await,
-            ArceosCommand::Run { args } => run_run(args).await,
+            ArceosCommand::Run { args } => run_with_arg(args).await,
             ArceosCommand::Defconfig { board_name } => run_defconfig(&board_name),
         }
     }

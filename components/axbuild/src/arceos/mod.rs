@@ -14,10 +14,13 @@
 
 pub mod build;
 pub mod config;
+pub mod context;
 pub mod features;
 pub mod ostool;
 pub mod platform;
 pub mod qemu;
+
+use std::path::{Path, PathBuf};
 
 pub use build::{
     BuildOutput, Builder, PreparedArtifacts, prepare_artifacts,
@@ -26,10 +29,54 @@ pub use build::{
 pub use config::{
     AVAILABLE_BOARDS, AXCONFIG_FILE_NAME, ArceosConfig, ArceosConfigOverride, Arch, BuildMode,
     CONFIG_FILE_NAME, LogLevel, NetDev, OSTOOL_EXTRA_CONFIG_FILE_NAME, QEMU_CONFIG_FILE_NAME,
-    QemuOptions, apply_defconfig, axconfig_path, axconfig_path_for_config, config_path,
-    load_board_config, load_config, ostool_extra_config_path, parse_qemu_options, qemu_config_path,
-    qemu_config_path_for_config, resolve_package_app_dir, save_config,
+    QemuOptions, apply_defconfig, axconfig_path, config_path, load_board_config, load_config,
+    ostool_extra_config_path, parse_qemu_options, qemu_config_path, resolve_package_app_dir,
+    save_config,
 };
 pub use features::FeatureResolver;
 pub use platform::{CpuInfo, PlatformInfo, PlatformResolver};
 pub use qemu::QemuRunner;
+
+use crate::arceos::context::AxContext;
+
+pub struct AxBuild {
+    ctx: AxContext,
+}
+
+impl AxBuild {
+    pub fn new(ctx: AxContext) -> Self {
+        Self { ctx }
+    }
+
+    pub fn from_overrides(
+        manifest_dir: impl AsRef<Path>,
+        overrides: ArceosConfigOverride,
+        package: Option<String>,
+        qemu_config_path: Option<PathBuf>,
+    ) -> anyhow::Result<Self> {
+        let ctx = AxContext::new(
+            manifest_dir.as_ref().to_path_buf(),
+            overrides,
+            package,
+            qemu_config_path,
+        )?;
+        Ok(Self::new(ctx))
+    }
+
+    pub async fn build(self) -> anyhow::Result<BuildOutput> {
+        let builder = Builder::new(self.ctx);
+        builder.build().await
+    }
+
+    pub async fn run_qemu(self) -> anyhow::Result<()> {
+        let qemu_runner = QemuRunner::new(self.ctx);
+        qemu_runner.run().await
+    }
+
+    pub async fn run_qemu_with_config_path(self, qemu_config_path: PathBuf) -> anyhow::Result<()> {
+        let mut ctx = self.ctx;
+        ctx.qemu_config_path = Some(qemu_config_path);
+        let qemu_runner = QemuRunner::new(ctx);
+        qemu_runner.run().await
+    }
+}
