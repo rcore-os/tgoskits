@@ -32,6 +32,9 @@ use crate::arceos::{
     config::{AXCONFIG_FILE_NAME, ArceosConfig, Arch, BuildMode, NetDev},
 };
 
+const DEFAULT_AX_IP: &str = "10.0.2.15";
+const DEFAULT_AX_GW: &str = "10.0.2.2";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppContextSpec {
     pub workspace: PathBuf,
@@ -283,6 +286,8 @@ fn build_env(config: &ArceosConfig, app_dir: &Path) -> HashMap<String, String> {
         effective_linker_platform_name(config),
     );
     env.insert("AX_LOG".to_string(), config.log.as_str().to_string());
+    env.insert("AX_IP".to_string(), DEFAULT_AX_IP.to_string());
+    env.insert("AX_GW".to_string(), DEFAULT_AX_GW.to_string());
     env.insert(
         "AX_CONFIG_PATH".to_string(),
         app_dir.join(AXCONFIG_FILE_NAME).display().to_string(),
@@ -496,6 +501,8 @@ mod tests {
             Some(&"x86-pc".to_string())
         );
         assert_eq!(spec.cargo.env.get("AX_LOG"), Some(&"info".to_string()));
+        assert_eq!(spec.cargo.env.get("AX_IP"), Some(&"10.0.2.15".to_string()));
+        assert_eq!(spec.cargo.env.get("AX_GW"), Some(&"10.0.2.2".to_string()));
     }
 
     #[test]
