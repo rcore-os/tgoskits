@@ -129,6 +129,8 @@ axerrno = { path = "components/axerrno", version = "0.2.2" }
 # === axcpu ===
 axcpu = { path = "components/axcpu" }
 axio = { path = "components/axio" }
+axpoll = { path = "components/axpoll" }
+axfs-ng-vfs = { path = "components/axfs-ng-vfs" }
 
 # === axplat ===
 axplat = { path = "components/axplat_crates/axplat" }
@@ -186,6 +188,8 @@ starry-signal = { path = "components/starry-signal", version = "0.3.0" }
 
 # === starry-vm ===
 starry-vm = { path = "components/starry-vm", version = "0.3.0" }
+
+scope-local = { path = "components/scope-local", version = "0.1.0" }
 
 [workspace.dependencies]
 # === os/arceos crates (0.3.0-preview.3) ===
