@@ -27,7 +27,10 @@ use anyhow::{Context, Result};
 use cargo_metadata::MetadataCommand;
 use serde::Deserialize;
 
-use crate::arceos::config::{AXCONFIG_FILE_NAME, ArceosConfig, Arch, BuildMode, NetDev};
+use crate::arceos::{
+    PlatformResolver,
+    config::{AXCONFIG_FILE_NAME, ArceosConfig, Arch, BuildMode, NetDev},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppContextSpec {
@@ -77,7 +80,7 @@ pub fn build_cargo_spec(
         features,
         log: None,
         extra_config: None,
-        args: build_cargo_args(config, plat_dyn),
+        args: build_cargo_args(config, &cargo_manifest_dir, plat_dyn),
         pre_build_cmds: vec![],
         post_build_cmds: vec![],
         to_bin: true,
@@ -212,7 +215,10 @@ fn build_features(
 fn build_env(config: &ArceosConfig, app_dir: &Path) -> HashMap<String, String> {
     let mut env = HashMap::new();
     env.insert("AX_ARCH".to_string(), config.arch.to_string());
-    env.insert("AX_PLATFORM".to_string(), config.platform.clone());
+    env.insert(
+        "AX_PLATFORM".to_string(),
+        effective_linker_platform_name(config),
+    );
     env.insert("AX_LOG".to_string(), config.log.to_string().to_string());
     env.insert(
         "AX_CONFIG_PATH".to_string(),
@@ -221,16 +227,61 @@ fn build_env(config: &ArceosConfig, app_dir: &Path) -> HashMap<String, String> {
     env
 }
 
-fn build_cargo_args(config: &ArceosConfig, plat_dyn: bool) -> Vec<String> {
+fn build_cargo_args(config: &ArceosConfig, manifest_dir: &Path, plat_dyn: bool) -> Vec<String> {
     let mut args = Vec::new();
-    if plat_dyn {
-        args.push("--config".to_string());
-        args.push(format!(
+    args.push("--config".to_string());
+    args.push(if plat_dyn {
+        format!(
             "target.{}.rustflags=[\"-Clink-arg=-Taxplat.x\"]",
             config.arch.to_target()
-        ));
-    }
+        )
+    } else {
+        let mode = if matches!(config.mode, BuildMode::Debug) {
+            "debug"
+        } else {
+            "release"
+        };
+        let platform_name = effective_linker_platform_name(config);
+        let platform = linker_platform_name(&platform_name);
+        let ld_script = manifest_dir
+            .join("target")
+            .join(config.arch.to_target())
+            .join(mode)
+            .join(format!("linker_{platform}.lds"));
+        format!(
+            "target.{}.rustflags=[\"-Clink-arg=-T{}\",\"-Clink-arg=-no-pie\",\"-Clink-arg=-znostart-stop-gc\"]",
+            config.arch.to_target(),
+            ld_script.display()
+        )
+    });
     args
+}
+
+fn linker_platform_name(platform: &str) -> &str {
+    platform.strip_prefix("axplat-").unwrap_or(platform)
+}
+
+fn effective_linker_platform_name(config: &ArceosConfig) -> String {
+    let platform = config.platform.trim();
+    if platform.is_empty() {
+        return PlatformResolver::resolve_default_platform_name(&config.arch);
+    }
+
+    let normalized = linker_platform_name(platform);
+    if arch_matches_platform(config.arch, normalized) {
+        normalized.to_string()
+    } else {
+        PlatformResolver::resolve_default_platform_name(&config.arch)
+    }
+}
+
+fn arch_matches_platform(arch: Arch, platform: &str) -> bool {
+    match arch {
+        Arch::X86_64 => platform.starts_with("x86"),
+        Arch::AArch64 => platform.starts_with("aarch64"),
+        Arch::RiscV64 => platform.starts_with("riscv64"),
+        Arch::LoongArch64 => platform.starts_with("loongarch64"),
+    }
 }
 
 fn qemu_cpu(arch: Arch) -> &'static str {
