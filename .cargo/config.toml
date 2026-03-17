@@ -10,3 +10,4 @@ incompatible-rust-versions = "allow"
 [alias]
 axvisor = "run -p axvisor --bin xtask --"
 xtask = "run -p tg-xtask --"
+starry = "run -p tg-xtask -- starry"

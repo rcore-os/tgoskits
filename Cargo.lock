@@ -7587,6 +7587,7 @@ dependencies = [
  "cargo_metadata",
  "chrono",
  "clap",
+ "serde_json",
  "tokio",
  "toml 0.8.23",
 ]

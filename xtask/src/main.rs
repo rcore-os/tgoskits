@@ -19,6 +19,7 @@ use clap::{Parser, Subcommand};
 
 mod arceos;
 mod axvisor;
+mod starry;
 
 const STD_CRATES_CSV: &str = "scripts/test/std_crates.csv";
 
@@ -69,6 +70,11 @@ enum Commands {
     Arceos {
         #[command(subcommand)]
         command: arceos::ArceosCommand,
+    },
+    /// StarryOS build commands
+    Starry {
+        #[command(subcommand)]
+        command: starry::StarryCommand,
     },
 }
 
@@ -134,6 +140,7 @@ async fn main() -> Result<()> {
             command: TestCommand::Arceos { target },
         } => run_arceos_test_command(target.as_deref()).await,
         Commands::Arceos { command } => command.run().await,
+        Commands::Starry { command } => command.run().await,
     }
 }
 
