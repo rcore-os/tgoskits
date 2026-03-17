@@ -480,7 +480,7 @@ pub enum LogLevel {
 }
 
 impl LogLevel {
-    pub fn to_string(self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             LogLevel::Off => "off",
             LogLevel::Error => "error",
@@ -683,7 +683,8 @@ mod tests {
         let dir = tempdir().unwrap();
         fs::write(
             dir.path().join(".arceos.toml"),
-            "arch = \"x86_64\"\nplatform = \"x86-qemu\"\nmode = \"debug\"\nlog = \"warn\"\nfeatures = []\napp_features = []\n[qemu]\n",
+            "arch = \"x86_64\"\nplatform = \"x86-qemu\"\nmode = \"debug\"\nlog = \
+             \"warn\"\nfeatures = []\napp_features = []\n[qemu]\n",
         )
         .unwrap();
 

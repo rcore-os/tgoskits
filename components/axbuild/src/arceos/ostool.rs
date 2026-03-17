@@ -219,7 +219,7 @@ fn build_env(config: &ArceosConfig, app_dir: &Path) -> HashMap<String, String> {
         "AX_PLATFORM".to_string(),
         effective_linker_platform_name(config),
     );
-    env.insert("AX_LOG".to_string(), config.log.to_string().to_string());
+    env.insert("AX_LOG".to_string(), config.log.as_str().to_string());
     env.insert(
         "AX_CONFIG_PATH".to_string(),
         app_dir.join(AXCONFIG_FILE_NAME).display().to_string(),
@@ -249,7 +249,8 @@ fn build_cargo_args(config: &ArceosConfig, manifest_dir: &Path, plat_dyn: bool) 
             .join(mode)
             .join(format!("linker_{platform}.lds"));
         format!(
-            "target.{}.rustflags=[\"-Clink-arg=-T{}\",\"-Clink-arg=-no-pie\",\"-Clink-arg=-znostart-stop-gc\"]",
+            "target.{}.rustflags=[\"-Clink-arg=-T{}\",\"-Clink-arg=-no-pie\",\"\
+             -Clink-arg=-znostart-stop-gc\"]",
             config.arch.to_target(),
             ld_script.display()
         )
@@ -399,7 +400,10 @@ mod tests {
         assert!(spec.cargo.features.contains(&"axstd/net".to_string()));
         assert!(spec.cargo.features.contains(&"custom-app".to_string()));
         assert_eq!(spec.cargo.log, None);
-        assert_eq!(spec.cargo.env.get("AX_PLATFORM"), Some(&"x86-pc".to_string()));
+        assert_eq!(
+            spec.cargo.env.get("AX_PLATFORM"),
+            Some(&"x86-pc".to_string())
+        );
         assert_eq!(spec.cargo.env.get("AX_LOG"), Some(&"info".to_string()));
     }
 
@@ -508,7 +512,11 @@ mod tests {
 
         let qemu = build_qemu_config(&config, &manifest_dir());
 
-        assert!(qemu.args.iter().any(|arg| arg == "user,id=net0,hostfwd=tcp::5555-:5555"));
+        assert!(
+            qemu.args
+                .iter()
+                .any(|arg| arg == "user,id=net0,hostfwd=tcp::5555-:5555")
+        );
     }
 
     #[test]
