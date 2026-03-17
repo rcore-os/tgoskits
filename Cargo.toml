@@ -119,6 +119,9 @@ exclude = [
 ]
 
 [patch.crates-io]
+# === axerrno ===
+axerrno = { path = "components/axerrno", version = "0.2.2" }
+
 # === axcpu ===
 axcpu = { path = "components/axcpu" }
 

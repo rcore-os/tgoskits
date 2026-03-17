@@ -25,11 +25,9 @@ use ::ostool::{
 };
 use anyhow::{Context, Result};
 use cargo_metadata::MetadataCommand;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
-use crate::arceos::config::{
-    AXCONFIG_FILE_NAME, ArceosConfig, Arch, BuildMode, NetDev, ostool_extra_config_path,
-};
+use crate::arceos::config::{AXCONFIG_FILE_NAME, ArceosConfig, Arch, BuildMode, NetDev};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppContextSpec {
@@ -57,43 +55,11 @@ impl AppContextSpec {
 pub struct CargoBuildSpec {
     pub cargo: Cargo,
     pub ctx: AppContextSpec,
-    pub extra_config_path: PathBuf,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct CargoExtraConfig {
-    target: HashMap<String, TargetExtraConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    unstable: Option<UnstableConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    patch: Option<PatchConfig>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct TargetExtraConfig {
-    rustflags: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct UnstableConfig {
-    #[serde(rename = "build-std")]
-    build_std: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct PatchConfig {
-    #[serde(rename = "crates-io")]
-    crates_io: HashMap<String, PatchEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct PatchEntry {
-    path: String,
 }
 
 pub fn build_cargo_spec(
     config: &ArceosConfig,
-    manifest_dir: &Path,
+    _manifest_dir: &Path,
     app_dir: &Path,
     ax_features: &[String],
     lib_features: &[String],
@@ -103,13 +69,6 @@ pub fn build_cargo_spec(
     let cargo_manifest_dir = cargo_default_manifest_dir(app_dir)?;
     let package = package_name(app_dir)?;
     let features = build_features(ax_features, lib_features, &config.app_features, use_axlibc);
-    let extra_config_path = write_extra_config(manifest_dir, app_dir, config, use_axlibc, plat_dyn)
-        .with_context(|| {
-            format!(
-                "failed to prepare ostool cargo config under {}",
-                manifest_dir.display()
-            )
-        })?;
 
     let cargo = Cargo {
         env: build_env(config, app_dir),
@@ -117,24 +76,20 @@ pub fn build_cargo_spec(
         package,
         features,
         log: None,
-        extra_config: Some(extra_config_path.display().to_string()),
-        args: vec![],
+        extra_config: None,
+        args: build_cargo_args(config, plat_dyn),
         pre_build_cmds: vec![],
         post_build_cmds: vec![],
         to_bin: true,
     };
 
     let ctx = AppContextSpec {
-        workspace: isolated_workspace(manifest_dir),
+        workspace: cargo_manifest_dir.clone(),
         manifest: cargo_manifest_dir,
         debug: matches!(config.mode, BuildMode::Debug),
     };
 
-    Ok(CargoBuildSpec {
-        cargo,
-        ctx,
-        extra_config_path,
-    })
+    Ok(CargoBuildSpec { cargo, ctx })
 }
 
 pub fn build_qemu_config(config: &ArceosConfig, manifest_dir: &Path) -> QemuConfig {
@@ -233,10 +188,6 @@ pub fn write_qemu_config(
     Ok(path)
 }
 
-pub fn isolated_workspace(manifest_dir: &Path) -> PathBuf {
-    manifest_dir.join(".axbuild-ostool")
-}
-
 fn build_features(
     ax_features: &[String],
     lib_features: &[String],
@@ -270,109 +221,16 @@ fn build_env(config: &ArceosConfig, app_dir: &Path) -> HashMap<String, String> {
     env
 }
 
-fn build_rustflags(
-    config: &ArceosConfig,
-    app_dir: &Path,
-    manifest_dir: &Path,
-    use_axlibc: bool,
-    plat_dyn: bool,
-) -> Vec<String> {
-    let target = config.arch.to_target();
-    let mode = config.mode.to_string();
-    let target_dir = resolve_target_dir(app_dir, manifest_dir);
-    let mut rustflags = vec!["-A".to_string(), "unsafe_op_in_unsafe_fn".to_string()];
-    let link_script = resolve_link_script_path(&target_dir, target, &config.platform, mode);
-
-    if use_axlibc {
-        let axlibc_linker = target_dir
-            .join("axlibc")
-            .join(target)
-            .join("release")
-            .join("axlibc.a");
-        if axlibc_linker.exists() {
-            rustflags.push(format!("-Clink-arg={}", axlibc_linker.display()));
-        }
-    } else if plat_dyn {
-        // rustflags.push("-Crelocation-model=pic".to_string());
-        // rustflags.push("-Clink-arg=-pie".to_string());
-        // rustflags.push("-Clink-arg=-znostart-stop-gc".to_string());
-        rustflags.push("-Clink-arg=-Taxplat.x".to_string());
-    } else {
-        rustflags.push(format!("-Clink-arg=-T{}", link_script.display()));
-        rustflags.push("-Clink-arg=-no-pie".to_string());
-        rustflags.push("-Clink-arg=-znostart-stop-gc".to_string());
+fn build_cargo_args(config: &ArceosConfig, plat_dyn: bool) -> Vec<String> {
+    let mut args = Vec::new();
+    if plat_dyn {
+        args.push("--config".to_string());
+        args.push(format!(
+            "target.{}.rustflags=[\"-Clink-arg=-Taxplat.x\"]",
+            config.arch.to_target()
+        ));
     }
-
-    rustflags
-}
-
-fn resolve_target_dir(app_dir: &Path, manifest_dir: &Path) -> PathBuf {
-    cargo_default_manifest_dir(&app_dir)
-        .map(|dir| dir.join("target"))
-        .unwrap_or_else(|_| manifest_dir.join("target"))
-}
-
-fn resolve_link_script_path(
-    target_dir: &Path,
-    target: &str,
-    platform: &str,
-    mode: &str,
-) -> PathBuf {
-    let file_name = format!("linker_{}.lds", platform);
-    let mut modes = vec!["release".to_string(), mode.to_string(), "debug".to_string()];
-    modes.dedup();
-
-    for m in &modes {
-        let candidate = target_dir.join(target).join(m).join(&file_name);
-        if candidate.exists() {
-            return candidate;
-        }
-    }
-
-    target_dir.join(target).join(mode).join(file_name)
-}
-
-fn write_extra_config(
-    manifest_dir: &Path,
-    app_dir: &Path,
-    config: &ArceosConfig,
-    use_axlibc: bool,
-    plat_dyn: bool,
-) -> Result<PathBuf> {
-    let path = ostool_extra_config_path(manifest_dir);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create {}", parent.display()))?;
-    }
-
-    let mut target = HashMap::new();
-    target.insert(
-        config.arch.to_target().to_string(),
-        TargetExtraConfig {
-            rustflags: build_rustflags(config, app_dir, manifest_dir, use_axlibc, plat_dyn),
-        },
-    );
-
-    let extra = CargoExtraConfig {
-        target,
-        unstable: plat_dyn.then(|| UnstableConfig {
-            build_std: vec!["core".to_string(), "alloc".to_string()],
-        }),
-        patch: resolve_axerrno_patch(manifest_dir).map(|path| {
-            let mut crates_io = HashMap::new();
-            crates_io.insert(
-                "axerrno".to_string(),
-                PatchEntry {
-                    path: path.display().to_string(),
-                },
-            );
-            PatchConfig { crates_io }
-        }),
-    };
-
-    fs::write(&path, toml::to_string_pretty(&extra)?)
-        .with_context(|| format!("Failed to write {}", path.display()))?;
-    Ok(path)
+    args
 }
 
 fn qemu_cpu(arch: Arch) -> &'static str {
@@ -382,18 +240,6 @@ fn qemu_cpu(arch: Arch) -> &'static str {
         Arch::RiscV64 => "rv64",
         Arch::LoongArch64 => "la464",
     }
-}
-
-fn resolve_axerrno_patch(manifest_dir: &Path) -> Option<PathBuf> {
-    let mut cursor = Some(manifest_dir);
-    while let Some(dir) = cursor {
-        let candidate = dir.join("components/axerrno");
-        if candidate.join("Cargo.toml").exists() {
-            return Some(candidate);
-        }
-        cursor = dir.parent();
-    }
-    None
 }
 
 fn cargo_default_manifest_dir(app_dir: &Path) -> Result<PathBuf> {
