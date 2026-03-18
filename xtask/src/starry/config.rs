@@ -93,51 +93,62 @@ pub fn resolve_starry_artifact_dir(arch: Arch) -> Result<PathBuf> {
 fn parse_artifact_dir_from_cargo_json(
     stdout: impl AsRef<str>,
     package_name: &str,
-    target: &str,
+    target_triple: &str,
 ) -> Result<PathBuf> {
+    let mut package_match = None;
+    let mut triple_match = None;
+    let triple_marker = format!("/{target_triple}/");
+
     for line in stdout.as_ref().lines() {
-        if line.starts_with('{')
-            && let Ok(value) = serde_json::from_str::<Value>(line)
-            && let (Some("compiler-artifact"), Some(artifacts)) = (
-                value.get("reason").and_then(|v| v.as_str()),
-                value.get("files"),
-            )
-        {
-            // Check if this is our target package
-            let is_target_package = artifacts
-                .get("package")
-                .and_then(|v| v.get("name"))
-                .and_then(|v| v.as_str())
-                .map(|name| name == package_name)
-                .unwrap_or(false);
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if value.get("reason").and_then(|v| v.as_str()) != Some("compiler-artifact") {
+            continue;
+        }
+        let is_package_match = value
+            .get("target")
+            .and_then(|v| v.get("name"))
+            .and_then(|v| v.as_str())
+            == Some(package_name);
 
-            let is_target_triple = artifacts
-                .get("target")
-                .and_then(|v| v.get("forced-message-target"))
-                .or_else(|| artifacts.get("target"))
-                .and_then(|v| v.get("spec"))
-                .and_then(|v| v.get("target"))
-                .and_then(|v| v.get("triple"))
-                .and_then(|v| v.as_str())
-                .map(|triple| triple == target)
-                .unwrap_or(false);
-
-            if is_target_package && is_target_triple {
-                return artifacts
-                    .get("directory")
-                    .and_then(|v| v.as_str())
-                    .map(PathBuf::from)
-                    .with_context(|| {
-                        format!("missing 'directory' field in cargo JSON for {}", package_name)
-                    });
+        if let Some(executable) = value.get("executable").and_then(|v| v.as_str()) {
+            let parent = Path::new(executable)
+                .parent()
+                .context("missing artifact parent directory")?;
+            let parent = parent.to_path_buf();
+            if is_package_match {
+                package_match = Some(parent.clone());
             }
+            if executable.contains(&triple_marker) {
+                triple_match = Some(parent);
+            }
+            continue;
+        }
+
+        if let Some(filename) = value
+            .get("filenames")
+            .and_then(|v| v.as_array())
+            .and_then(|v| v.first())
+            .and_then(|v| v.as_str())
+        {
+            let parent = Path::new(filename)
+                .parent()
+                .context("missing artifact parent directory")?;
+            let parent = parent.to_path_buf();
+            if is_package_match {
+                package_match = Some(parent.clone());
+            }
+            if filename.contains(&triple_marker) {
+                triple_match = Some(parent);
+            }
+            continue;
         }
     }
-    bail!(
-        "could not find artifact directory for package `{}` and target `{}` in cargo output",
-        package_name,
-        target
-    )
+
+    package_match
+        .or(triple_match)
+        .context("no matching compiler-artifact entry found")
 }
 
 pub fn ensure_rootfs_in_target_dir(arch: Arch, disk_img: &Path) -> Result<()> {
