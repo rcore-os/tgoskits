@@ -10,10 +10,10 @@ publish = false
 
 [dependencies]
 anyhow = { workspace = true }
-axbuild = { path = "../components/axbuild" }
+axbuild.workspace = true
 cargo_metadata = "0.23"
 chrono = "0.4"
 clap = { version = "4.6", features = ["derive"] }
 serde_json = "1.0"
-toml = "0.8"
+toml = "0.9"
 tokio = { version = "1.0", features = ["full"] }

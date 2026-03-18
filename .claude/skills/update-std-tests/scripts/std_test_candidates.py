@@ -87,6 +87,11 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Workspace packages to merge into std_crates.csv",
     )
+    apply_cmd.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be changed without modifying the CSV",
+    )
     apply_cmd.set_defaults(handler=handle_apply)
     return parser
 
@@ -119,9 +124,19 @@ def handle_apply(args: argparse.Namespace) -> int:
     merged = set(existing_csv_packages)
     merged.update(requested)
     ordered = [name for name in workspace_names if name in merged]
-    write_csv_packages(csv_path, ordered)
 
     added = [name for name in requested if name not in existing_csv_packages]
+
+    if args.dry_run:
+        print(f"[DRY RUN] Would write {len(ordered)} package(s) to {csv_path}")
+        if added:
+            print(f"[DRY RUN] Would add {len(added)} new package(s): {', '.join(added)}")
+        else:
+            print("[DRY RUN] No new packages would be added")
+        return 0
+
+    write_csv_packages(csv_path, ordered)
+
     if added:
         print(f"added {len(added)} package(s): {', '.join(added)}")
     else:
