@@ -130,7 +130,6 @@ exclude = [
 # === axerrno ===
 axerrno = { path = "components/axerrno", version = "0.2.2" }
 
-# === axcpu ===
 axcpu = { path = "components/axcpu" }
 axio = { path = "components/axio" }
 axpoll = { path = "components/axpoll" }
@@ -138,6 +137,11 @@ axfs-ng-vfs = { path = "components/axfs-ng-vfs" }
 axfs_vfs = { path = "components/axfs_crates/axfs_vfs" }
 axfs_ramfs = { path = "components/axfs_crates/axfs_ramfs" }
 axfs_devfs = { path = "components/axfs_crates/axfs_devfs" }
+
+axfs = { path = "os/arceos/modules/axfs", version = "0.3.0-preview.3" }
+axfs-ng = { path = "os/arceos/modules/axfs-ng", version = "0.3.0-preview.3" }
+axnet = { path = "os/arceos/modules/axnet", version = "0.3.0-preview.3" }
+axnet-ng = { path = "os/arceos/modules/axnet-ng", version = "0.3.0-preview.3" }
 
 # === axplat ===
 axplat = { path = "components/axplat_crates/axplat" }

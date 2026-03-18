@@ -287,7 +287,7 @@ dependencies = [
  "axdriver 0.3.0-preview.3",
  "axerrno 0.2.2",
  "axfeat 0.3.0-preview.3",
- "axfs 0.3.0-preview.3",
+ "axfs",
  "axhal 0.3.0-preview.3",
  "axio",
  "axipi",
@@ -310,7 +310,7 @@ dependencies = [
  "axdriver 0.3.0-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "axerrno 0.2.2",
  "axfeat 0.3.0-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
- "axfs 0.3.0-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "axfs",
  "axhal 0.3.0-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "axio",
  "axlog 0.3.0-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -327,7 +327,7 @@ dependencies = [
  "axconfig 0.3.0-preview.3",
  "axerrno 0.2.2",
  "axfeat 0.3.0-preview.3",
- "axfs 0.3.0-preview.3",
+ "axfs",
  "axhal 0.3.0-preview.3",
  "axio",
  "axlog 0.3.0-preview.3",
@@ -998,7 +998,7 @@ dependencies = [
  "axconfig 0.3.0-preview.3",
  "axdisplay",
  "axdriver 0.3.0-preview.3",
- "axfs 0.3.0-preview.3",
+ "axfs",
  "axfs-ng",
  "axhal 0.3.0-preview.3",
  "axinput",
@@ -1021,7 +1021,7 @@ dependencies = [
  "axbacktrace 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "axconfig 0.3.0-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "axdriver 0.3.0-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
- "axfs 0.3.0-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "axfs",
  "axhal 0.3.0-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "axlog 0.3.0-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "axruntime 0.3.0-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -1035,26 +1035,6 @@ name = "axfs"
 version = "0.3.0-preview.3"
 dependencies = [
  "axdriver 0.3.0-preview.3",
- "axerrno 0.2.2",
- "axfatfs",
- "axfs_devfs",
- "axfs_ramfs",
- "axfs_vfs",
- "axio",
- "cap_access 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "lazyinit 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "log",
- "rsext4 0.1.0-pre.0",
- "spin 0.10.0",
-]
-
-[[package]]
-name = "axfs"
-version = "0.3.0-preview.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b7b9d07fd327e010fd3b9c09ea9ccdfaccf329afd859ff802d2448dfb685ac9"
-dependencies = [
- "axdriver 0.3.0-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "axerrno 0.2.2",
  "axfatfs",
  "axfs_devfs",
@@ -1643,7 +1623,7 @@ dependencies = [
  "axconfig 0.3.0-preview.3",
  "axdisplay",
  "axdriver 0.3.0-preview.3",
- "axfs 0.3.0-preview.3",
+ "axfs",
  "axfs-ng",
  "axhal 0.3.0-preview.3",
  "axinput",
@@ -1673,7 +1653,7 @@ dependencies = [
  "axbacktrace 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "axconfig 0.3.0-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "axdriver 0.3.0-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
- "axfs 0.3.0-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "axfs",
  "axhal 0.3.0-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "axklib 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "axlog 0.3.0-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
