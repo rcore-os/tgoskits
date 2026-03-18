@@ -1,6 +1,13 @@
 name: Test for BOARD
 
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+    branches:
+      - '**'
+    tags-ignore:
+      - '**'
+  pull_request:
+  workflow_call:
 
 jobs:
   test-board:

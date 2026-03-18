@@ -19,8 +19,8 @@
 use std::{collections::BTreeMap, fs, path::Path};
 
 use anyhow::{Result, anyhow};
-use regex::Regex;
 use chrono::{DateTime, Utc};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use super::download::download_to_string;

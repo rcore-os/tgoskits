@@ -77,18 +77,28 @@ impl Context {
             vm_config_paths.push(vm_config);
         }
 
+        let log_level = config
+            .log
+            .as_ref()
+            .map(|l| format!("{:?}", l).to_lowercase());
+
         let mut cargo = Cargo {
             target: config.target,
             package: "axvisor".to_string(),
             features: config.features,
             log: config.log,
-            args: config.cargo_args,
+            args: vec!["--bin".to_string(), "axvisor".to_string()],
             to_bin: config.to_bin,
             ..Default::default()
         };
+        cargo.args.extend(config.cargo_args);
 
         if let Some(smp) = config.smp {
             cargo.env.insert("AXVISOR_SMP".to_string(), smp.to_string());
+        }
+
+        if let Some(log_level) = log_level {
+            cargo.env.insert("AX_LOG".to_string(), log_level);
         }
 
         if !vm_config_paths.is_empty() {
