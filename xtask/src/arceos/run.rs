@@ -16,8 +16,8 @@ use std::str::FromStr;
 
 use anyhow::Result;
 use axbuild::{
-    NetDev, QemuOptions,
-    arceos::{AxBuild, context::AxContext},
+    QemuOptions,
+    arceos::{AxBuild, NetDev, context::AxContext},
 };
 use clap::Args;
 

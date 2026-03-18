@@ -19,15 +19,11 @@
 //! as a library and as a command-line tool.
 
 pub mod arceos;
+pub mod axvisor;
 
 pub use arceos::{
     build::{BuildOutput, Builder, PreparedArtifacts, prepare_artifacts},
-    config::{
-        AVAILABLE_BOARDS, ArceosConfig, ArceosConfigOverride, Arch, BuildMode, LogLevel,
-        NetDev, QEMU_CONFIG_FILE_NAME, QemuOptions, apply_defconfig, config_path,
-        load_board_config, load_config, parse_qemu_options, qemu_config_path,
-        resolve_package_app_dir, save_config,
-    },
+    config::{ArceosConfigOverride, Arch, BuildMode, QEMU_CONFIG_FILE_NAME, QemuOptions},
     features::FeatureResolver,
     platform::PlatformResolver,
     qemu::QemuRunner,
