@@ -1,0 +1,19 @@
+# Release Workflow
+# References shared workflow from axci
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-pre.[0-9]+'
+
+jobs:
+  release:
+    uses: arceos-hypervisor/axci/.github/workflows/release.yml@main
+    with:
+      verify_branch: true
+      verify_version: true
+    secrets:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

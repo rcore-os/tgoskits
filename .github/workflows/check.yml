@@ -1,0 +1,15 @@
+# Quality Check Workflow
+# References shared workflow from axci
+
+name: Check
+
+on:
+  push:
+    branches: ['**']
+    tags-ignore: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    uses: arceos-hypervisor/axci/.github/workflows/check.yml@main

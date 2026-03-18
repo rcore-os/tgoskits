@@ -1,0 +1,16 @@
+{
+  "component": {
+    "name": "aarch64_sysreg",
+    "crate_name": "aarch64_sysreg"
+  },
+  "targets": [
+    "aarch64-unknown-none-softfloat"
+  ],
+  "unit_test_targets": [],
+  "test_targets": [],
+  "rust_components": [
+    "rust-src",
+    "clippy",
+    "rustfmt"
+  ]
+}
