@@ -7,7 +7,7 @@
     "aarch64-unknown-none-softfloat"
   ],
   "unit_test_targets": [
-    "aarch64-unknown-linux-gnu"
+    "x86_64-unknown-linux-gnu"
   ],
   "rust_components": [
     "rust-src",
