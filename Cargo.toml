@@ -35,11 +35,10 @@ required-features = ["xtask"]
 
 [features]
 default = []
-ept-level-4 = ["axaddrspace/4-level-ept"]
+ept-level-4 = []
 fs = ["axstd/fs"]
 dyn-plat = ["axstd/plat-dyn"]
 # Driver features (from former driver crate)
-rk3568-clk = ["dep:rk3568_clk"]
 rk3588-clk = ["dep:rk3588-clk"]
 sdmmc = ["dep:sdmmc"]
 rockchip-pm = ["dep:rockchip-pm"]
