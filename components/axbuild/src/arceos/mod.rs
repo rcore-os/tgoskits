@@ -20,7 +20,7 @@ pub mod ostool;
 pub mod platform;
 pub mod qemu;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub use build::{
     BuildOutput, Builder, PreparedArtifacts, prepare_artifacts,
@@ -53,11 +53,7 @@ impl AxBuild {
         package: Option<String>,
         qemu_config_path: Option<PathBuf>,
     ) -> anyhow::Result<Self> {
-        let ctx = AxContext::new(
-            overrides,
-            package,
-            qemu_config_path,
-        )?;
+        let ctx = AxContext::new(overrides, package, qemu_config_path)?;
         Ok(Self::new(ctx))
     }
 
