@@ -44,16 +44,32 @@ pub async fn run_test_qemu_with_target(
     println!("  qemu config: {}", qemu_config.display());
     let image_name = format!("qemu_{arch}_linux");
 
+    let tmp_dir = std::env::temp_dir();
+
+    let image_dir = tmp_dir.join(".axvisor-images");
+    let image_rootfs = image_dir
+        .join(format!("qemu-{arch}-linux"))
+        .join("rootfs.img");
+    println!("  image rootfs: {}", image_rootfs.display());
+
     let image = ImageArgs {
         overrides: Default::default(),
         command: ImageCommands::Download {
             image_name,
-            output_dir: None,
+            output_dir: Some(image_dir.to_str().unwrap().into()),
             no_extract: false,
         },
     };
 
     image.execute().await?;
+
+    let qemu_args = [
+        "-drive".to_string(),
+        format!(
+            "id=disk0,if=none,format=raw,file={}",
+            image_rootfs.display()
+        ),
+    ];
 
     let mut ctx = ctx::Context::new();
     ctx.apply_build_args(&BuildArgs {
