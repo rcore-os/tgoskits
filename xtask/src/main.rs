@@ -23,12 +23,6 @@ mod starry;
 
 const STD_CRATES_CSV: &str = "scripts/test/std_crates.csv";
 
-const AXVISOR_TARGETS: &[&str] = &[
-    "x86_64-unknown-none",
-    "riscv64gc-unknown-none-elf",
-    "aarch64-unknown-none-softfloat",
-];
-
 const STARRY_TARGETS: &[&str] = &[
     "x86_64-unknown-none",
     "riscv64gc-unknown-none-elf",
@@ -45,7 +39,6 @@ const ARCEOS_TARGETS: &[&str] = &[
 
 fn supported_targets(os: &str) -> &'static [&'static str] {
     match os {
-        "axvisor" => AXVISOR_TARGETS,
         "starry" => STARRY_TARGETS,
         "arceos" => ARCEOS_TARGETS,
         _ => &[],
@@ -83,8 +76,8 @@ enum TestCommand {
     Std,
     Axvisor {
         /// Target triple for cross-compilation
-        #[arg(long)]
-        target: String,
+        #[arg(short, long)]
+        target: Option<String>,
     },
     Starry {
         /// Target triple for cross-compilation
@@ -132,7 +125,7 @@ async fn main() -> Result<()> {
         } => run_std_test_command(),
         Commands::Test {
             command: TestCommand::Axvisor { target },
-        } => run_target_test_command("axvisor", &target).await,
+        } => axvisor::run_test_qemu(target).await,
         Commands::Test {
             command: TestCommand::Starry { target },
         } => run_target_test_command("starry", &target).await,
@@ -259,28 +252,9 @@ fn run_std_tests<R: CargoRunner>(
 }
 
 async fn run_target_test_command(os: &str, target: &str) -> Result<()> {
-    let supported = supported_targets(os);
-
-    // 验证 target 是否在支持的列表中
-    if !supported.contains(&target) {
-        bail!(
-            "unsupported target `{}` for {}. Supported targets are: {}",
-            target,
-            os,
-            supported.join(", ")
-        );
-    }
-
-    let metadata = MetadataCommand::new()
-        .no_deps()
-        .exec()
-        .context("failed to load cargo metadata")?;
-    let _workspace_root = metadata.workspace_root.clone().into_std_path_buf();
-
     println!("running {} tests for target: {}", os, target);
 
     match os {
-        "axvisor" => axvisor::run_test(target)?,
         "starry" => starry::run_test(target).await?,
         _ => unreachable!(), // 之前已经验证过了
     }

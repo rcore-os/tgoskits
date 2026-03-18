@@ -8,4 +8,6 @@ mod menuconfig;
 mod tbuld;
 mod vmconfig;
 
+pub mod xtest;
+
 pub use cmd::*;

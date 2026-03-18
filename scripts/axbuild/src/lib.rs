@@ -18,6 +18,9 @@
 //! It supports multiple architectures and platforms, and can be used both
 //! as a library and as a command-line tool.
 
+#[macro_use]
+extern crate anyhow;
+
 pub mod arceos;
 pub mod axvisor;
 

@@ -64,7 +64,7 @@ pub struct ImageArgs {
     pub command: ImageCommands,
 }
 
-#[derive(Parser)]
+#[derive(Parser, Default)]
 pub struct ImageConfigOverrides {
     /// The path to the local storage of images. Override the config file.
     #[arg(short('S'), long, global = true)]
