@@ -43,12 +43,12 @@ axalloc.workspace = true
 axconfig.workspace = true
 axdisplay.workspace = true
 axdriver.workspace = true
-axfs = { path = "../../arceos/modules/axfs-ng", package = "axfs-ng", version = "0.3.0-preview.3" }
+axfs = { version = "0.3.0-preview.3", package = "axfs-ng" }
 axhal.workspace = true
 axinput = { workspace = true, optional = true }
 axlog.workspace = true
 axmm.workspace = true
-axnet = { path = "../../arceos/modules/axnet-ng", package = "axnet-ng", version = "0.3.0-preview.3" }
+axnet = { version = "0.3.0-preview.3", package = "axnet-ng" }
 axruntime.workspace = true
 axsync.workspace = true
 axtask.workspace = true
