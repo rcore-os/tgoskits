@@ -270,6 +270,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-irq"
+version = "0.1.0"
+dependencies = [
+ "axstd 0.3.0-preview.3",
+]
+
+[[package]]
 name = "arceos-shell"
 version = "0.1.0"
 dependencies = [

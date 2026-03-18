@@ -118,3 +118,4 @@ __pycache__/
 /.cargo/.config-local.toml
 .axconfig*
 *.img
+!.claude/skills/*
