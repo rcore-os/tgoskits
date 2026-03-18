@@ -3,107 +3,126 @@
 <p align="center">AArch64 系统寄存器类型定义库</p>
 
 <div align="center">
+
 [![Crates.io](https://img.shields.io/crates/v/aarch64_sysreg.svg)](https://crates.io/crates/aarch64_sysreg)
 [![Docs.rs](https://docs.rs/aarch64_sysreg/badge.svg)](https://docs.rs/aarch64_sysreg)
 [![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/arceos-org/aarch64_sysreg/blob/main/LICENSE)
+
 </div>
 
 [English](README.md) | 中文
 
 # 简介
 
-AArch64 系统寄存器类型定义库，提供 ARM64 架构中操作类型、寄存器类型和系统寄存器的枚举定义。
+AArch64 系统寄存器类型定义库，提供 ARM64 架构中操作类型、寄存器类型和系统寄存器的枚举定义。支持 `#![no_std]`，可用于裸机和操作系统内核开发。
 
-## 特性
+本库导出三个核心枚举类型：
 
-- `#![no_std]` - 可在裸机环境使用
-- `OperationType` - AArch64 指令操作类型枚举
-- `RegistersType` - 通用寄存器类型枚举 (W/X/V/B/H/S/D/Q 寄存器等)
-- `SystemRegType` - 系统寄存器类型枚举
+- **`OperationType`** — AArch64 指令操作类型（1000+ 种指令）
+- **`RegistersType`** — 通用寄存器与向量寄存器（W/X/V/B/H/S/D/Q/Z/P 等）
+- **`SystemRegType`** — 系统寄存器（调试、跟踪、性能计数、系统控制等）
 
-## 安装
+每个类型均实现了 `Display`、`From<usize>`、`LowerHex`、`UpperHex` trait。
+
+## 快速上手
+
+### 环境要求
+
+- Rust nightly 工具链
+- Rust 组件: rust-src, clippy, rustfmt
+
+```bash
+# 安装 rustup（如未安装）
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# 安装 nightly 工具链及组件
+rustup install nightly
+rustup component add rust-src clippy rustfmt --toolchain nightly
+```
+
+### 运行检查和测试
+
+```bash
+# 1. 克隆仓库
+git clone https://github.com/arceos-org/aarch64_sysreg.git
+cd aarch64_sysreg
+
+# 2. 代码检查（格式检查 + clippy + 构建 + 文档生成）
+./scripts/check.sh
+
+# 3. 运行测试
+# 运行全部测试（单元测试 + 集成测试）
+./scripts/test.sh
+
+# 仅运行单元测试
+./scripts/test.sh unit
+
+# 仅运行集成测试
+./scripts/test.sh integration
+
+# 列出所有可用的测试套件
+./scripts/test.sh list
+
+# 指定单元测试目标
+./scripts/test.sh unit --unit-targets x86_64-unknown-linux-gnu
+```
+
+## 集成使用
+
+### 安装
 
 在 `Cargo.toml` 中添加：
 
 ```toml
 [dependencies]
-aarch64_sysreg = "0.1"
+aarch64_sysreg = "0.1.1"
 ```
 
-## 使用示例
+### 使用示例
 
 ```rust
 use aarch64_sysreg::{OperationType, RegistersType, SystemRegType};
 
 fn main() {
-    // 操作类型
+    // 操作类型：枚举变体与数值互转
     let op = OperationType::ADD;
-    println!("Operation: {}", op);           // ADD
-    println!("Value: 0x{:x}", op);           // 0x6
+    println!("{}", op);                      // ADD
+    println!("0x{:x}", op);                  // 0x6
+    println!("0x{:X}", op);                  // 0x6
 
-    // 从数值转换
     let op_from = OperationType::from(0x6);
     assert_eq!(op_from, OperationType::ADD);
 
     // 寄存器类型
     let reg = RegistersType::X0;
-    println!("Register: {}", reg);           // X0
+    println!("{}", reg);                     // X0
+    let reg_from = RegistersType::from(0x22);
+    assert_eq!(reg_from, RegistersType::X0);
 
     // 系统寄存器
     let sys_reg = SystemRegType::MDSCR_EL1;
-    println!("System Register: {}", sys_reg); // MDSCR_EL1
+    println!("{}", sys_reg);                 // MDSCR_EL1
+    println!("0x{:x}", sys_reg);             // 0x240004
 }
 ```
 
-## 类型说明
+### 文档
 
-### OperationType
-
-定义 AArch64 指令操作类型，包括：
-- 算术运算: `ADD`, `SUB`, `MUL`, `DIV` 等
-- 逻辑运算: `AND`, `ORR`, `EOR`, `BIC` 等
-- 分支指令: `B`, `BL`, `BR`, `RET` 等
-- 加载存储: `LDR`, `STR`, `LDP`, `STP` 等
-- 系统指令: `MSR`, `MRS`, `SVC`, `HVC` 等
-
-### RegistersType
-
-定义 AArch64 通用和向量寄存器：
-- 32位通用寄存器: `W0` - `W30`, `WZR`, `WSP`
-- 64位通用寄存器: `X0` - `X30`, `XZR`, `SP`
-- 向量寄存器: `V0` - `V31`, `B0` - `B31`, `H0` - `H31`, `S0` - `S31`, `D0` - `D31`, `Q0` - `Q31`
-- SVE 寄存器: `Z0` - `Z31`, `P0` - `P15`
-
-### SystemRegType
-
-定义 AArch64 系统寄存器，编号格式为 `<op0><op2><op1><CRn>00000<CRm>0`：
-- 调试寄存器: `DBGBCR*_EL1`, `DBGBVR*_EL1` 等
-- 跟踪寄存器: `TRC*` 系列
-- 性能寄存器: `PMEVCNTR*_EL0`, `PMEVTYPER*_EL0` 等
-- 系统控制寄存器: `SCTLR_EL1`, `TTBR*_EL1` 等
-
-# 验证
-
-通过本地 `test.sh` 快速启动验证：
-
-```bash
-./scripts/test.sh
-```
-
-# 文档
-
-## API 文档
+生成并查看 API 文档：
 
 ```bash
 cargo doc --no-deps --open
 ```
 
+在线文档：[docs.rs/aarch64_sysreg](https://docs.rs/aarch64_sysreg)
+
 # 贡献
 
-1. 通过本地 `check.sh`
-2. 通过本地 `test.sh`
-3. 提交 PR 并通过 CI 检查
+1. Fork 仓库并创建分支
+2. 运行本地检查：`./scripts/check.sh`
+3. 运行本地测试：`./scripts/test.sh`
+4. 提交 PR 并通过 CI 检查
 
 # 协议
 
