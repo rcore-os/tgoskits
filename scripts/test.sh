@@ -18,7 +18,7 @@ download_axci() {
         cd "$AXCI_DIR" && git pull --quiet
     else
         echo "Downloading axci repository..."
-        git clone --quiet -b ndev "$AXCI_REPO" "$AXCI_DIR"
+        git clone --quiet "$AXCI_REPO" "$AXCI_DIR"
     fi
 }
 
