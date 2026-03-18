@@ -7,7 +7,6 @@
     "aarch64-unknown-none-softfloat"
   ],
   "unit_test_targets": [],
-  "test_targets": [],
   "rust_components": [
     "rust-src",
     "clippy",
