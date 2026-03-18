@@ -1,68 +1,82 @@
 ---
 name: update-std-tests
-description: Audit and update `scripts/test/std_crates.csv` in this repository. Use when Codex needs to compare the current workspace's host `cargo test -p PACKAGE` results against the std test whitelist, summarize missing std-test candidates, ask whether passing or failing candidates should be added, or rewrite the CSV after user confirmation.
+description: Audit and update `scripts/test/std_crates.csv` for this ArceOS/StarryOS workspace. Use this skill whenever the user mentions std tests, whitelist, cargo test validation, wants to check which packages pass host tests, refreshes the test suite, or asks about adding new packages to the test CSV. This is the primary way to manage the std test candidates list.
 ---
 
 # Update Std Tests
 
-Use this skill when the user wants to audit or refresh the std test whitelist for this repo.
-
-## Quick Start
-
-- Run `python3 scripts/std_test_candidates.py audit --repo-root <repo-root> --format markdown`.
-- Show `Passing candidates` first and ask whether to add all of them.
-- Then show `Failing candidates` and let the user choose `all`, `ignore`, or a comma-separated subset.
-- Only run `python3 scripts/std_test_candidates.py apply --repo-root <repo-root> --packages ...` after the user confirms the exact additions.
-- If only passing candidates are added, suggest validating with `cargo xtask test std`.
+This skill manages the std test whitelist (`scripts/test/std_crates.csv`) by auditing workspace packages against host `cargo test` results.
 
 ## Workflow
 
-1. Run the audit script from the skill directory or with an absolute path.
-2. Present the `Passing candidates` section before anything else.
-3. If the environment exposes `request_user_input`, prefer it for confirmations. Otherwise ask a short plain-text question.
-4. Present `Failing candidates` as a second decision point. Treat these as opt-in additions because they will currently fail `cargo xtask test std`.
-5. Apply only the user-approved packages.
-6. Re-run the audit or inspect `scripts/test/std_crates.csv` after applying changes.
-
-## Candidate Policy
-
-- Candidate source: workspace packages from `cargo metadata --no-deps`.
-- Existing whitelist: `scripts/test/std_crates.csv` with a single `package` column.
-- Include for auditing: `lib` packages and examples/bin-only packages.
-- Exclude by default: `tg-xtask`, `axlibc`, `arm_vcpu`, `riscv_vcpu`, `axvisor`.
-- Split remaining packages by full `cargo test -p <package>` result, not `--no-run`.
-
-Read `references/filtering.md` before changing the filtering policy or explaining why a package lands in `passing`, `failing`, or `excluded`.
+1. **Run audit** to identify candidates not in the whitelist
+2. **Ask about passing candidates** first (recommended to add)
+3. **Ask about failing candidates** second (opt-in, these currently fail)
+4. **Apply only confirmed packages** after user approval
+5. **Optional validation** with `cargo xtask test std` if only passing packages added
 
 ## Commands
 
-Audit in Markdown:
+The script is located at `<skill-path>/scripts/std_test_candidates.py`.
 
+**Audit (Markdown output):**
 ```bash
 python3 scripts/std_test_candidates.py audit --repo-root /path/to/repo --format markdown
 ```
 
-Audit in JSON:
-
+**Audit (JSON output):**
 ```bash
 python3 scripts/std_test_candidates.py audit --repo-root /path/to/repo --format json
 ```
 
-Apply confirmed packages:
-
+**Apply packages to CSV:**
 ```bash
-python3 scripts/std_test_candidates.py apply --repo-root /path/to/repo --packages arceos-helloworld arceos-httpclient
+python3 scripts/std_test_candidates.py apply --repo-root /path/to/repo --packages pkg1 pkg2 pkg3
+```
+
+**Dry-run (preview changes without applying):**
+```bash
+python3 scripts/std_test_candidates.py apply --repo-root /path/to/repo --packages pkg1 pkg2 --dry-run
+```
+
+## How to Ask User
+
+Always get confirmation before applying changes. For passing candidates, ask "Add all passing packages?" (yes/no). For failing candidates, ask "Add failing packages? Options: `all`, `ignore`, or comma-separated names".
+
+## Filtering Policy
+
+- **Include**: `lib` packages, `bin-only` examples
+- **Exclude by name**: `tg-xtask`, `axlibc`, `arm_vcpu`, `riscv_vcpu`, `axvisor`
+- **Exclude by failure pattern**: `invalid register`, `undefined symbol: main` (host-incompatible)
+- **Test method**: Full `cargo test -p <package>`, not `--no-run`
+
+See `references/filtering.md` for detailed explanation of the filtering logic.
+
+## Output Format
+
+Show candidates in this order with clear visual separation:
+
+```
+## ✅ Passing candidates (N)
+- `package-name` (type) - path - passes cargo test
+
+## ❌ Failing candidates (N)
+- `package-name` (type) - path - error message
+
+## ⏭️ Excluded candidates (N)
+- `package-name` (type) - path - exclusion reason
 ```
 
 ## Validation
 
-- Validate the skill structure with:
-  `python3 /home/ubuntu/.codex/skills/.system/skill-creator/scripts/quick_validate.py .claude/skills/update-std-tests`
-- After updating the CSV with only passing candidates, validate the repo with:
-  `cargo xtask test std`
-- If the user explicitly adds failing candidates, do not promise a green validation run. Call out that the whitelist now contains known failing items.
+After updating with only passing packages, suggest running:
+```bash
+cargo xtask test std
+```
+
+If failing packages were added, explicitly warn that the whitelist contains known failing items and validation may not pass.
 
 ## Resources
 
-- `scripts/std_test_candidates.py`: audits workspace packages and rewrites `scripts/test/std_crates.csv`.
-- `references/filtering.md`: explains the filtering method and the current expected baseline.
+- `scripts/std_test_candidates.py`: Main audit and apply script
+- `references/filtering.md`: Detailed filtering policy documentation

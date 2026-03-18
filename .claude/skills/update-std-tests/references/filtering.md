@@ -22,34 +22,34 @@ Use `cargo metadata --no-deps` to enumerate workspace packages, compare them aga
 - Exclude `axlibc` because it is `staticlib`-only.
 - Exclude `arm_vcpu` and `riscv_vcpu` because they are architecture-specific host-incompatible packages.
 - Exclude `axvisor` because it is a bare-metal application package.
-- Exclude future failures that clearly indicate host incompatibility, such as `invalid register` or `undefined symbol: main`.
+- Exclude failures that clearly indicate host incompatibility:
+  - `invalid register` - inline assembly incompatible with host
+  - `undefined symbol: main` - missing host entrypoint
 
-## Current Repo Baseline
+## Exclusion Reasoning
 
-Passing candidates not currently in the CSV:
+Packages are excluded to avoid false negatives in the test suite:
 
-- `arceos-helloworld`
-- `arceos-helloworld-myplat`
-- `arceos-httpclient`
-- `arceos-httpserver`
-- `arceos-shell`
+| Category | Reason | Examples |
+|----------|--------|----------|
+| Tooling | Not part of the std test suite | `tg-xtask` |
+| Architecture-specific | Won't compile on host | `arm_vcpu`, `riscv_vcpu` |
+| Build artifact | Not a testable package | `axlibc` (staticlib-only) |
+| Bare-metal | Requires custom runtime | `axvisor` |
+| Host-incompatible patterns | Test would always fail on host | Invalid register errors |
 
-Failing host/std candidates not currently in the CSV:
+## Current Expected Behavior
 
-- `arceos_posix_api`
-- `axdma`
-- `axmm`
-- `axfs`
-- `axfs-ng`
-- `axnet-ng`
-- `axstd`
+When running the audit script, expect these categories:
 
-Excluded candidates not currently in the CSV:
+- **Passing candidates**: Packages that pass `cargo test -p <package>` on the host
+- **Failing candidates**: Packages that fail but might be valid (e.g., missing dependencies)
+- **Excluded candidates**: Packages that should never be in the whitelist
 
-- `tg-xtask`
-- `axlibc`
-- `arm_vcpu`
-- `riscv_vcpu`
-- `axvisor`
+Re-run the audit script whenever:
+- Workspace membership changes
+- Target kinds are modified
+- Host test behavior changes
+- Dependencies are updated
 
-Re-run the audit script whenever the workspace membership, target kinds, or host test behavior changes. Treat this baseline as expected current output, not a permanent allowlist.
+This baseline reflects the filtering logic, not a fixed allowlist. The actual candidates will vary based on the workspace state.
