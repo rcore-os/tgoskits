@@ -1,79 +1,110 @@
-# aarch64_sysreg
+<h1 align="center">aarch64_sysreg</h1>
 
+<p align="center">AArch64 System Register Type Definitions</p>
+
+<div align="center">
 [![Crates.io](https://img.shields.io/crates/v/aarch64_sysreg.svg)](https://crates.io/crates/aarch64_sysreg)
 [![Docs.rs](https://docs.rs/aarch64_sysreg/badge.svg)](https://docs.rs/aarch64_sysreg)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/arceos-org/aarch64_sysreg/blob/main/LICENSE)
+</div>
 
-AArch64 系统寄存器类型定义库，提供 ARM64 架构中操作类型、寄存器类型和系统寄存器的枚举定义。
+English | [中文](README_CN.md)
 
-## 特性
+# Introduction
 
-- `#![no_std]` - 可在裸机环境使用
-- `OperationType` - AArch64 指令操作类型枚举
-- `RegistersType` - 通用寄存器类型枚举 (W/X/V/B/H/S/D/Q 寄存器等)
-- `SystemRegType` - 系统寄存器类型枚举
+A library providing type definitions for AArch64 system registers, including operation types, register types, and system register enumerations for the ARM64 architecture.
 
-## 安装
+## Features
 
-在 `Cargo.toml` 中添加：
+- `#![no_std]` - Compatible with bare-metal environments
+- `OperationType` - AArch64 instruction operation type enumeration
+- `RegistersType` - General register type enumeration (W/X/V/B/H/S/D/Q registers, etc.)
+- `SystemRegType` - System register type enumeration
+
+## Installation
+
+Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
 aarch64_sysreg = "0.1"
 ```
 
-## 使用示例
+## Usage
 
 ```rust
 use aarch64_sysreg::{OperationType, RegistersType, SystemRegType};
 
 fn main() {
-    // 操作类型
+    // Operation type
     let op = OperationType::ADD;
     println!("Operation: {}", op);           // ADD
     println!("Value: 0x{:x}", op);           // 0x6
 
-    // 从数值转换
+    // Convert from value
     let op_from = OperationType::from(0x6);
     assert_eq!(op_from, OperationType::ADD);
 
-    // 寄存器类型
+    // Register type
     let reg = RegistersType::X0;
     println!("Register: {}", reg);           // X0
 
-    // 系统寄存器
+    // System register
     let sys_reg = SystemRegType::MDSCR_EL1;
     println!("System Register: {}", sys_reg); // MDSCR_EL1
 }
 ```
 
-## 类型说明
+## Type Reference
 
 ### OperationType
 
-定义 AArch64 指令操作类型，包括：
-- 算术运算: `ADD`, `SUB`, `MUL`, `DIV` 等
-- 逻辑运算: `AND`, `ORR`, `EOR`, `BIC` 等
-- 分支指令: `B`, `BL`, `BR`, `RET` 等
-- 加载存储: `LDR`, `STR`, `LDP`, `STP` 等
-- 系统指令: `MSR`, `MRS`, `SVC`, `HVC` 等
+Defines AArch64 instruction operation types, including:
+- Arithmetic: `ADD`, `SUB`, `MUL`, `DIV`, etc.
+- Logical: `AND`, `ORR`, `EOR`, `BIC`, etc.
+- Branch: `B`, `BL`, `BR`, `RET`, etc.
+- Load/Store: `LDR`, `STR`, `LDP`, `STP`, etc.
+- System: `MSR`, `MRS`, `SVC`, `HVC`, etc.
 
 ### RegistersType
 
-定义 AArch64 通用和向量寄存器：
-- 32位通用寄存器: `W0` - `W30`, `WZR`, `WSP`
-- 64位通用寄存器: `X0` - `X30`, `XZR`, `SP`
-- 向量寄存器: `V0` - `V31`, `B0` - `B31`, `H0` - `H31`, `S0` - `S31`, `D0` - `D31`, `Q0` - `Q31`
-- SVE 寄存器: `Z0` - `Z31`, `P0` - `P15`
+Defines AArch64 general-purpose and vector registers:
+- 32-bit GPR: `W0` - `W30`, `WZR`, `WSP`
+- 64-bit GPR: `X0` - `X30`, `XZR`, `SP`
+- Vector registers: `V0` - `V31`, `B0` - `B31`, `H0` - `H31`, `S0` - `S31`, `D0` - `D31`, `Q0` - `Q31`
+- SVE registers: `Z0` - `Z31`, `P0` - `P15`
 
 ### SystemRegType
 
-定义 AArch64 系统寄存器，编号格式为 `<op0><op2><op1><CRn>00000<CRm>0`：
-- 调试寄存器: `DBGBCR*_EL1`, `DBGBVR*_EL1` 等
-- 跟踪寄存器: `TRC*` 系列
-- 性能寄存器: `PMEVCNTR*_EL0`, `PMEVTYPER*_EL0` 等
-- 系统控制寄存器: `SCTLR_EL1`, `TTBR*_EL1` 等
+Defines AArch64 system registers with encoding format `<op0><op2><op1><CRn>00000<CRm>0`:
+- Debug registers: `DBGBCR*_EL1`, `DBGBVR*_EL1`, etc.
+- Trace registers: `TRC*` series
+- Performance registers: `PMEVCNTR*_EL0`, `PMEVTYPER*_EL0`, etc.
+- System control registers: `SCTLR_EL1`, `TTBR*_EL1`, etc.
 
-## 许可证
+# Verification
 
-本项目采用 Apache-2.0 许可证。详见 [LICENSE](LICENSE) 文件。
+Run local tests quickly:
+
+```bash
+./scripts/test.sh
+```
+
+# Documentation
+
+## API Documentation
+
+```bash
+cargo doc --no-deps --open
+```
+
+# Contributing
+
+1. Run local check: `./scripts/check.sh`
+2. Run local tests: `./scripts/test.sh`
+3. Submit PR and pass CI checks
+
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
