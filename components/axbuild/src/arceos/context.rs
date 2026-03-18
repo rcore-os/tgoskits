@@ -3,9 +3,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::Context;
-use cargo_metadata::MetadataCommand;
-
 use crate::{
     ArceosConfig, ArceosConfigOverride, arceos::config::resolve_package_app_dir, load_config,
 };

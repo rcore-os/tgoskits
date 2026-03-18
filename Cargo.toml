@@ -251,7 +251,7 @@ axvm = { path = "components/axvm", version = "0.3.0" }
 axvmconfig = { path = "components/axvmconfig", version = "0.2.2" }
 axfs_vfs = { path = "components/axfs_crates/axfs_vfs", version = "0.1.2" }
 
-axbuild = { path = "components/axbuild", version = "0.1" }
+axbuild = { path = "components/axbuild", version = "0.3.0-perview.3" }
 
 starry-kernel = { path = "os/StarryOS/kernel", version = "0.3.0-preview.3" }
 
