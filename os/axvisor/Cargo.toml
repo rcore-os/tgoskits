@@ -45,12 +45,14 @@ rockchip-pm = ["dep:rockchip-pm"]
 phytium-blk = ["dep:phytium-mci"]
 
 [target.'cfg(not(any(windows, unix)))'.dependencies]
-bitflags = "2.2"
+bitflags = "2.9.1"
 cfg-if = "1.0"
 cpumask = "0.1.0"
 kernel_guard = "0.1"
 kspin = "0.1"
-lazy_static = {version = "1.5", default-features = false, features = ["spin_no_std"]}
+lazy_static = { version = "1.5", default-features = false, features = [
+    "spin_no_std",
+] }
 lazyinit = "0.2"
 log = "0.4"
 spin = "0.9"
@@ -59,14 +61,14 @@ hashbrown = "0.14"
 
 # System dependent modules provided by ArceOS.
 axstd = { version = "=0.3.0-preview.3", features = [
-  "alloc-level-1",
-  "paging",
-  "irq",
-  "multitask",
-  "task-ext",
-  "smp",
-  "hv",
-]}
+    "alloc-level-1",
+    "paging",
+    "irq",
+    "multitask",
+    "task-ext",
+    "smp",
+    "hv",
+] }
 
 # System dependent modules provided by ArceOS-Hypervisor (bare-metal only)
 axaddrspace = "0.1.5"
@@ -82,7 +84,7 @@ axvisor_api = "0.1.0"
 axerrno = "0.2.2"
 axklib = "0.3.0"
 # axcpu = { version = "0.3.0-preview.8", features = ["arm-el2"] }
-byte-unit = {version = "5", default-features = false, features = ["byte"]}
+byte-unit = { version = "5", default-features = false, features = ["byte"] }
 crate_interface = "0.1.4"
 extern-trait = "0.4"
 fdt-parser = "0.4"
@@ -100,14 +102,18 @@ pcie = "0.5.0"
 
 # Optional driver dependencies
 rk3568_clk = { version = "0.1", optional = true }
-sdmmc = { version = "0.1", default-features = false, features = ["pio"], optional = true }
+sdmmc = { version = "0.1", default-features = false, features = [
+    "pio",
+], optional = true }
 rk3588-clk = { version = "0.1", optional = true }
 rockchip-pm = { version = "0.4", optional = true }
-phytium-mci = { version = "0.1", default-features = false, features = ["pio"], optional = true }
+phytium-mci = { version = "0.1", default-features = false, features = [
+    "pio",
+], optional = true }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 aarch64-cpu-ext = "0.1"
-arm-gic-driver = {version = "0.17", features = ["rdif"]}
+arm-gic-driver = { version = "0.17", features = ["rdif"] }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 axplat-x86-qemu-q35 = { version = "0.2.0", default-features = false, features = [
@@ -115,32 +121,33 @@ axplat-x86-qemu-q35 = { version = "0.2.0", default-features = false, features = 
     "irq",
     "smp",
 ] }
-axconfig = { version = "=0.3.0-preview.3", features = ["plat-dyn"] }
+axconfig = { version = "0.3.0-preview.3", features = ["plat-dyn"] }
 
 # xtask dependencies (only used on host platforms)
 [target.'cfg(any(windows, unix))'.dependencies]
+axbuild = { version = "0.3.0-preview.3" }
 anyhow = { version = "1.0" }
 cargo_metadata = { version = "0.23" }
 chrono = { version = "0.4", features = ["serde"] }
-clap = {version = "4.4", features = ["derive"] }
+clap = { version = "4.4", features = ["derive"] }
 colored = { version = "3" }
 flate2 = { version = "1.0" }
 jkconfig = { version = "0.1" }
 ostool = { version = "0.8.4" }
 regex = { version = "1.12" }
 reqwest = { version = "0.13" }
-schemars = {version = "1", features = ["derive"] }
-serde = {version = "1.0", features = ["derive"] }
+schemars = { version = "1", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1" }
 sha2 = { version = "0.10" }
 tar = { version = "0.4" }
-tokio = {version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full"] }
 toml = { version = "0.9" }
 
 axvmconfig = { version = "0.2", features = ["std"] }
 
 [build-dependencies]
-axconfig = "=0.3.0-preview.3"
+axconfig = "0.3.0-preview.3"
 prettyplease = "0.2"
 quote = "1.0"
 syn = "2.0"

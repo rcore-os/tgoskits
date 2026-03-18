@@ -18,7 +18,6 @@ use anyhow::Result;
 use clap::Subcommand;
 
 pub mod build;
-pub mod config;
 pub mod run;
 
 pub use build::{BuildArgs, run_build};

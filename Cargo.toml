@@ -205,6 +205,8 @@ starry-vm = { path = "components/starry-vm", version = "0.3.0" }
 
 scope-local = { path = "components/scope-local", version = "0.1.0" }
 
+axbuild = { path = "scripts/axbuild", version = "0.3.0-preview.3" }
+
 [workspace.dependencies]
 # === os/arceos crates (0.3.0-preview.3) ===
 # ulib
