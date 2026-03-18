@@ -1,5 +1,6 @@
 # Release Workflow
 # References shared workflow from axci
+# check + test must pass before release
 
 name: Release
 
@@ -10,7 +11,14 @@ on:
       - 'v[0-9]+.[0-9]+.[0-9]+-pre.[0-9]+'
 
 jobs:
+  check:
+    uses: arceos-hypervisor/axci/.github/workflows/check.yml@main
+
+  test:
+    uses: arceos-hypervisor/axci/.github/workflows/test.yml@main
+
   release:
+    needs: [check, test]
     uses: arceos-hypervisor/axci/.github/workflows/release.yml@main
     with:
       verify_branch: true

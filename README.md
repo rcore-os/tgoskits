@@ -2,7 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/aarch64_sysreg.svg)](https://crates.io/crates/aarch64_sysreg)
 [![Docs.rs](https://docs.rs/aarch64_sysreg/badge.svg)](https://docs.rs/aarch64_sysreg)
-[![License](https://img.shields.io/badge/license-GPL--3.0%2FApache--2.0%2FMulanPSL--2.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 AArch64 系统寄存器类型定义库，提供 ARM64 架构中操作类型、寄存器类型和系统寄存器的枚举定义。
 
@@ -76,9 +76,4 @@ fn main() {
 
 ## 许可证
 
-本项目采用以下许可证之一：
-- GPL-3.0-or-later
-- Apache-2.0
-- MulanPSL-2.0
-
-详见 [LICENSE](LICENSE) 文件。
+本项目采用 Apache-2.0 许可证。详见 [LICENSE](LICENSE) 文件。
