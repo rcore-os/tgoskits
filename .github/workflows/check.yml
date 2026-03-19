@@ -15,4 +15,4 @@ jobs:
     uses: arceos-hypervisor/axci/.github/workflows/check.yml@main
     with:
       targets: '["riscv64gc-unknown-none-elf"]'
-      rust_components: '["rust-src", "clippy", "rustfmt"]'
+      rust_components: 'rust-src, clippy, rustfmt'
