@@ -24,7 +24,7 @@ ifeq ($(PLAT_DYN),y)
 endif
 
 ifeq ($(PLAT_DYN),y)
-  RUSTFLAGS_LINK_ARGS := -C relocation-model=pic -C link-arg=-pie -C link-arg=-znostart-stop-gc -C link-arg=-Tlinker.x
+  RUSTFLAGS_LINK_ARGS := -C relocation-model=pic -C link-arg=-pie -C link-arg=-znostart-stop-gc -C link-arg=-Taxplat.x
 else
   RUSTFLAGS_LINK_ARGS := -C link-arg=-Tlinker.x -C link-arg=-no-pie -C link-arg=-znostart-stop-gc
 endif

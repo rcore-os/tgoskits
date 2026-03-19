@@ -1,6 +1,6 @@
 use std::{fs, path::PathBuf};
 
-const LINKER_SCRIPT_NAME: &str = "linker.x";
+const LINKER_SCRIPT_NAME: &str = "axplat.x";
 
 fn main() {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());

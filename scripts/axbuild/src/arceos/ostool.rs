@@ -299,7 +299,7 @@ fn build_cargo_args(config: &ArceosConfig, _manifest_dir: &Path, plat_dyn: bool)
     args.push("--config".to_string());
     args.push(if plat_dyn {
         format!(
-            "target.{}.rustflags=[\"-Clink-arg=-Tlinker.x\"]",
+            "target.{}.rustflags=[\"-Clink-arg=-Taxplat.x\"]",
             config.arch.to_target()
         )
     } else {
