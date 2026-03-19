@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# aarch64_sysreg 代码检查脚本
+# axdevice 代码检查脚本
 # 下载并调用 axci 仓库中的检查脚本
 #
 

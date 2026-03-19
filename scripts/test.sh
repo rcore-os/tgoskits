@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# aarch64_sysreg 测试脚本
+# axdevice 测试脚本
 # 下载并调用 axci 仓库中的测试框架
 #
 
