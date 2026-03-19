@@ -12,14 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::path::PathBuf;
-
 use ::ostool::build::CargoRunnerKind;
 use anyhow::Result;
 
 use crate::arceos::{
-    PreparedArtifacts, build::prepare_artifacts_with_qemu_config_path,
-    config::QEMU_CONFIG_FILE_NAME, context::AxContext, ostool as ostool_bridge,
+    PreparedArtifacts, build::prepare_artifacts_for_qemu, context::AxContext,
+    ostool as ostool_bridge,
 };
 
 /// QEMU runner
@@ -42,21 +40,13 @@ impl QemuRunner {
         format!("qemu-system-{}", self.ctx.config.arch.to_qemu_arch())
     }
 
-    pub fn qemu_config_path(&self) -> PathBuf {
-        self.ctx
-            .qemu_config_path
-            .clone()
-            .unwrap_or_else(|| self.ctx.app_dir().join(QEMU_CONFIG_FILE_NAME))
-    }
-
     /// Run QEMU through ostool's cargo_run flow.
     pub async fn run(&self) -> Result<()> {
-        let qemu_config_path = self.qemu_config_path();
-        let prepared = prepare_artifacts_with_qemu_config_path(
+        let prepared = prepare_artifacts_for_qemu(
             self.ctx.manifest_dir(),
             self.ctx.app_dir(),
             &self.ctx.config,
-            qemu_config_path,
+            self.ctx.qemu_config_path.clone(),
         )?;
         self.run_prepared(prepared).await
     }

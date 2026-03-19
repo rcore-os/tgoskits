@@ -29,7 +29,7 @@ use serde::Deserialize;
 
 use crate::arceos::{
     PlatformResolver,
-    config::{AXCONFIG_FILE_NAME, ArceosConfig, Arch, BuildMode, NetDev},
+    config::{AXCONFIG_FILE_NAME, ArceosConfig, Arch, BuildMode, NetDev, QEMU_CONFIG_FILE_NAME},
 };
 
 const DEFAULT_AX_IP: &str = "10.0.2.15";
@@ -208,6 +208,23 @@ pub fn write_qemu_config(
     fs::write(&path, toml::to_string_pretty(&qemu)?)
         .with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(path)
+}
+
+pub fn ensure_qemu_config(
+    manifest_dir: &Path,
+    app_dir: &Path,
+    config: &ArceosConfig,
+    explicit_qemu_config_path: Option<&Path>,
+) -> Result<PathBuf> {
+    if let Some(path) = explicit_qemu_config_path {
+        if !path.exists() {
+            anyhow::bail!("missing qemu config: {}", path.display());
+        }
+        return Ok(path.to_path_buf());
+    }
+
+    let qemu_config_path = app_dir.join(QEMU_CONFIG_FILE_NAME);
+    write_qemu_config(manifest_dir, &qemu_config_path, config)
 }
 
 fn build_features(
