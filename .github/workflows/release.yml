@@ -13,9 +13,14 @@ on:
 jobs:
   check:
     uses: arceos-hypervisor/axci/.github/workflows/check.yml@main
+    with:
+      targets: '["riscv64gc-unknown-none-elf"]'
+      rust_components: '["rust-src", "clippy", "rustfmt"]'
 
   test:
     uses: arceos-hypervisor/axci/.github/workflows/test.yml@main
+    with:
+      targets: '["x86_64-unknown-linux-gnu"]'
 
   release:
     needs: [check, test]
