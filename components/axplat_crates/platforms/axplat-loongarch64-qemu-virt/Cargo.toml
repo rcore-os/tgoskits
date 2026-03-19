@@ -15,7 +15,7 @@ repository.workspace = true
 fp-simd = ["axcpu/fp-simd"]
 irq = ["axplat/irq"]
 rtc = ["dep:chrono"]
-smp = ["axplat/smp", "kspin/smp"]
+smp = ["axplat/smp", "kspin/smp", "irq"]
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, optional = true }

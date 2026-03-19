@@ -34,6 +34,7 @@ use crate::arceos::{
 
 const DEFAULT_AX_IP: &str = "10.0.2.15";
 const DEFAULT_AX_GW: &str = "10.0.2.2";
+const DEFAULT_QEMU_FAIL_REGEX: &[&str] = &["(?i)\\bpanic(?:ked)?\\b"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppContextSpec {
@@ -186,7 +187,10 @@ pub fn build_qemu_config(config: &ArceosConfig, manifest_dir: &Path) -> QemuConf
         uefi: false,
         to_bin: !matches!(config.arch, Arch::X86_64),
         success_regex: vec!["to install packages.".to_string()],
-        fail_regex: vec![],
+        fail_regex: DEFAULT_QEMU_FAIL_REGEX
+            .iter()
+            .map(|pattern| (*pattern).to_string())
+            .collect(),
     }
 }
 
