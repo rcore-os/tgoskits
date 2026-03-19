@@ -20,6 +20,16 @@ const NUM_TASKS: usize = 10;
 const NUM_TIMES: usize = 100;
 static FINISHED_TASKS: AtomicUsize = AtomicUsize::new(0);
 
+#[cfg(feature = "axstd")]
+fn online_cpu_mask() -> AxCpuMask {
+    let cpu_num = thread::available_parallelism().unwrap().get();
+    let mut cpumask = AxCpuMask::new();
+    for cpu_id in 0..cpu_num {
+        cpumask.set(cpu_id, true);
+    }
+    cpumask
+}
+
 #[allow(clippy::modulo_one)]
 #[cfg_attr(feature = "axstd", unsafe(no_mangle))]
 fn main() {
@@ -45,7 +55,7 @@ fn main() {
             // Change cpu affinity here.
             #[cfg(feature = "axstd")]
             {
-                let mut cpumask = AxCpuMask::full();
+                let mut cpumask = online_cpu_mask();
                 cpumask.set(cpu_id, false);
                 assert!(
                     ax_set_current_affinity(cpumask).is_ok(),
