@@ -1,6 +1,6 @@
 <h1 align="center">axhvc</h1>
 
-<p align="center">AxVisor HyperCall Definitions</p>
+<p align="center">AxVisor HyperCall 定义库</p>
 
 <div align="center">
 
@@ -11,32 +11,32 @@
 
 </div>
 
-English | [中文](README_CN.md)
+[English](README.md) | 中文
 
 # Introduction
 
-`axhvc` provides AxVisor hypercall definitions for guest-hypervisor communication. It is a lightweight `#![no_std]` crate intended for bare-metal guests, hypervisors, and low-level virtualization components across x86_64, RISC-V, and AArch64 platforms.
+`axhvc` 提供 AxVisor 中 guest 与 hypervisor 通信所需的 hypercall 定义。它是一个轻量级的 `#![no_std]` crate，适用于裸机 guest、hypervisor 以及 x86_64、RISC-V、AArch64 等平台上的底层虚拟化组件。
 
-This library exports three core public types:
+该库导出三个核心公开类型：
 
-- **`HyperCallCode`** - Enumerates all supported AxVisor hypercall operations
-- **`InvalidHyperCallCode`** - Represents conversion errors for invalid numeric hypercall values
-- **`HyperCallResult`** - Alias of `AxResult<usize>` used by hypercall handlers
+- **`HyperCallCode`** - 枚举所有受支持的 AxVisor hypercall 操作
+- **`InvalidHyperCallCode`** - 表示非法数值转换为 hypercall 编码时的错误
+- **`HyperCallResult`** - Hypercall 处理函数使用的 `AxResult<usize>` 类型别名
 
-`HyperCallCode` supports `TryFrom<u32>` conversion and includes variants for hypervisor control and IVC channel management.
+`HyperCallCode` 支持 `TryFrom<u32>` 转换，当前覆盖 hypervisor 控制和 IVC 通道管理两类操作。
 
 ## Quick Start
 
 ### Requirements
 
-- Rust nightly toolchain
-- Rust components: rust-src, clippy, rustfmt
+- Rust nightly 工具链
+- Rust 组件：rust-src、clippy、rustfmt
 
 ```bash
-# Install rustup (if not installed)
+# 安装 rustup（如果尚未安装）
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# Install nightly toolchain and components
+# 安装 nightly 工具链与所需组件
 rustup install nightly
 rustup component add rust-src clippy rustfmt --toolchain nightly
 ```
@@ -44,13 +44,13 @@ rustup component add rust-src clippy rustfmt --toolchain nightly
 ### Run Check and Test
 
 ```bash
-# 1. Enter the repository
+# 1. 进入仓库目录
 cd axhvc
 
-# 2. Code check
+# 2. 代码检查
 ./scripts/check.sh
 
-# 3. Run tests
+# 3. 运行测试
 ./scripts/test.sh
 ```
 
@@ -58,7 +58,7 @@ cd axhvc
 
 ### Installation
 
-Add to your `Cargo.toml`:
+将以下依赖加入 `Cargo.toml`：
 
 ```toml
 [dependencies]
@@ -98,21 +98,21 @@ fn main() {
 
 ### Documentation
 
-Generate and view API documentation:
+生成并查看 API 文档：
 
 ```bash
 cargo doc --no-deps --open
 ```
 
-Online documentation: [docs.rs/axhvc](https://docs.rs/axhvc)
+在线文档： [docs.rs/axhvc](https://docs.rs/axhvc)
 
 # Contributing
 
-1. Fork the repository and create a branch
-2. Run local check: `./scripts/check.sh`
-3. Run local tests: `./scripts/test.sh`
-4. Submit PR and pass CI checks
+1. Fork 仓库并创建分支
+2. 本地运行检查：`./scripts/check.sh`
+3. 本地运行测试：`./scripts/test.sh`
+4. 提交 PR 并通过 CI 检查
 
 # License
 
-Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
+本项目基于 Apache License 2.0 许可证发布。详见 [LICENSE](LICENSE)。
