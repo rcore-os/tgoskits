@@ -152,7 +152,9 @@ fn parse_artifact_dir_from_cargo_json(
 }
 
 pub fn ensure_rootfs_in_target_dir(arch: Arch, disk_img: &Path) -> Result<()> {
-    let down_dir = disk_img.parent().context("disk image path must have a parent directory")?;
+    let down_dir = disk_img
+        .parent()
+        .context("disk image path must have a parent directory")?;
     let rootfs_name = rootfs_image_name(arch);
     let rootfs_img = down_dir.join(&rootfs_name);
     let rootfs_xz = down_dir.join(format!("{rootfs_name}.xz"));
@@ -187,8 +189,13 @@ pub fn ensure_rootfs_in_target_dir(arch: Arch, disk_img: &Path) -> Result<()> {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
-    fs::copy(&rootfs_img, disk_img)
-        .with_context(|| format!("failed to copy {} to {}", rootfs_img.display(), disk_img.display()))?;
+    fs::copy(&rootfs_img, disk_img).with_context(|| {
+        format!(
+            "failed to copy {} to {}",
+            rootfs_img.display(),
+            disk_img.display()
+        )
+    })?;
 
     Ok(())
 }

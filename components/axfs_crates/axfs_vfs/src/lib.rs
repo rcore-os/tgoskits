@@ -44,7 +44,8 @@ mod structs;
 pub mod path;
 
 use alloc::sync::Arc;
-use axerrno::{ax_err, AxError, AxResult};
+
+use axerrno::{AxError, AxResult, ax_err};
 
 pub use self::structs::{FileSystemInfo, VfsDirEntry, VfsNodeAttr, VfsNodePerm, VfsNodeType};
 
@@ -173,5 +174,6 @@ pub trait VfsNodeOps: Send + Sync {
 #[doc(hidden)]
 pub mod __priv {
     pub use alloc::sync::Arc;
+
     pub use axerrno::ax_err;
 }

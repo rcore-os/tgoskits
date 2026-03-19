@@ -12,12 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::{collections::HashSet, process::Command, time::Instant};
+
 use anyhow::{Context, Result, anyhow};
 use cargo_metadata::{MetadataCommand, Package};
 use colored::*;
-use std::collections::HashSet;
-use std::process::Command;
-use std::time::Instant;
 
 // Import ClippyArgs from main.rs
 use super::ClippyArgs;

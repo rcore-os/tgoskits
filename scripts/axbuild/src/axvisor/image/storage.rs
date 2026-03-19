@@ -16,16 +16,20 @@
 //!
 //! Provides `Storage` for managing a local image directory and its registry index.
 
-use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::{Result, anyhow};
 
-use super::config::ImageConfig;
-use super::download::{download_to_path, image_verify_sha256};
-use super::registry::{ImageEntry, ImageRegistry};
-use super::spec::ImageSpecRef;
+use super::{
+    config::ImageConfig,
+    download::{download_to_path, image_verify_sha256},
+    registry::{ImageEntry, ImageRegistry},
+    spec::ImageSpecRef,
+};
 
 /// Filename of the image registry index inside the local storage directory.
 pub const REGISTRY_FILENAME: &str = "images.toml";

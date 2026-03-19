@@ -1,5 +1,6 @@
 use alloc::vec::Vec;
-use axfs_vfs::{impl_vfs_non_dir_default, VfsNodeAttr, VfsNodeOps, VfsResult};
+
+use axfs_vfs::{VfsNodeAttr, VfsNodeOps, VfsResult, impl_vfs_non_dir_default};
 use spin::RwLock;
 
 /// The file node in the RAM filesystem.

@@ -12,10 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::{BTreeMap, HashMap, hash_map::Entry};
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::{
+    collections::{BTreeMap, HashMap, hash_map::Entry},
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use anyhow::{Context, Result, anyhow};
 use cargo_metadata::{Metadata, MetadataCommand, Package};

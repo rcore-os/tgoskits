@@ -14,10 +14,12 @@ fn test_configs() -> Vec<TestConfig> {
         TestConfig {
             arch: Arch::Aarch64,
             vms: vec!["linux-aarch64-qemu-smp1"],
+            images: vec!["qemu_aarch64_linux"],
         },
         TestConfig {
             arch: Arch::X86_64,
             vms: vec!["nimbos-x86_64-qemu-smp1"],
+            images: vec!["qemu_x86_64_nimbos"],
         },
     ]
 }
@@ -26,6 +28,7 @@ fn test_configs() -> Vec<TestConfig> {
 struct TestConfig {
     arch: Arch,
     vms: Vec<&'static str>,
+    images: Vec<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -80,6 +83,7 @@ pub async fn run_test_qemu(
 async fn run_test_qemu_with_target_vms(
     arch: Arch,
     vms: Vec<String>,
+    images: Vec<String>,
     axvisor_dir: impl AsRef<Path>,
 ) -> anyhow::Result<()> {
     let axvisor_dir = axvisor_dir.as_ref();
@@ -96,26 +100,17 @@ async fn run_test_qemu_with_target_vms(
     println!("Running qemu test for {arch}");
     println!("  build config: {}", build_config.display());
     println!("  qemu config: {}", qemu_config.display());
-    let image_name = format!("qemu_{arch}_linux");
 
     let tmp_dir = std::env::temp_dir();
-
     let image_dir = tmp_dir.join(".axvisor-images");
-    let image_rootfs = image_dir
-        .join(format!("qemu_{arch}_linux"))
-        .join("rootfs.img");
+
+    println!("  required images:");
+    for image_name in &images {
+        println!("    - {image_name}");
+    }
+
+    let image_rootfs = ensure_images(&images, &image_dir).await?;
     println!("  image rootfs: {}", image_rootfs.display());
-
-    let image = ImageArgs {
-        overrides: Default::default(),
-        command: ImageCommands::Download {
-            image_name,
-            output_dir: Some(image_dir.to_str().unwrap().into()),
-            no_extract: false,
-        },
-    };
-
-    image.execute().await?;
 
     let qemu_args = vec![
         "-drive".to_string(),
@@ -173,6 +168,7 @@ pub async fn run_test_qemu_with_target(
         run_test_qemu_with_target_vms(
             arch,
             test.vms.into_iter().map(String::from).collect(),
+            test.images.into_iter().map(String::from).collect(),
             &axvisor_dir,
         )
         .await?;
@@ -186,4 +182,34 @@ fn arch_tests(arch: Arch) -> Vec<TestConfig> {
         .into_iter()
         .filter(|config| config.arch == arch)
         .collect()
+}
+
+async fn ensure_images(images: &[String], image_dir: &Path) -> anyhow::Result<PathBuf> {
+    let mut rootfs_path = None;
+
+    for image_name in images {
+        let extract_dir = image_dir.join(image_name);
+        let candidate_rootfs = extract_dir.join("rootfs.img");
+
+        if !candidate_rootfs.exists() {
+            let image = ImageArgs {
+                overrides: Default::default(),
+                command: ImageCommands::Download {
+                    image_name: image_name.clone(),
+                    output_dir: Some(image_dir.to_string_lossy().into_owned()),
+                    no_extract: false,
+                },
+            };
+
+            image.execute().await?;
+        } else {
+            println!("  image already extracted: {}", extract_dir.display());
+        }
+
+        if rootfs_path.is_none() && candidate_rootfs.exists() {
+            rootfs_path = Some(candidate_rootfs);
+        }
+    }
+
+    rootfs_path.ok_or_else(|| anyhow::anyhow!("No rootfs.img found in required images"))
 }

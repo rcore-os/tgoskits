@@ -23,8 +23,7 @@ use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use super::download::download_to_string;
-use super::spec::ImageSpecRef;
+use super::{download::download_to_string, spec::ImageSpecRef};
 
 /// An image entry in the image list file (one row in the registry TOML).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,7 +87,8 @@ pub fn merge_entries(sources: impl IntoIterator<Item = Vec<ImageEntry>>) -> Vec<
             if let Some(existing) = by_key.get(&key) {
                 if existing != &entry {
                     println!(
-                        "Warning: conflict for image {} version {} (different description/sha256/arch/url); keeping existing entry.",
+                        "Warning: conflict for image {} version {} (different \
+                         description/sha256/arch/url); keeping existing entry.",
                         entry.name, entry.version
                     );
                 }

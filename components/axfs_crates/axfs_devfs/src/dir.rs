@@ -1,7 +1,11 @@
-use alloc::collections::BTreeMap;
-use alloc::sync::{Arc, Weak};
-use axfs_vfs::{VfsDirEntry, VfsNodeAttr, VfsNodeOps, VfsNodeRef, VfsNodeType};
-use axfs_vfs::{VfsError, VfsResult};
+use alloc::{
+    collections::BTreeMap,
+    sync::{Arc, Weak},
+};
+
+use axfs_vfs::{
+    VfsDirEntry, VfsError, VfsNodeAttr, VfsNodeOps, VfsNodeRef, VfsNodeType, VfsResult,
+};
 use spin::RwLock;
 
 /// The directory node in the device filesystem.

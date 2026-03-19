@@ -24,10 +24,12 @@ pub mod run;
 pub use build::{BuildArgs, STARRY_PACKAGE, run_build};
 pub use run::RunArgs;
 
-use crate::starry::run::run_with_arg;
-use crate::starry::config::{
-    ensure_rootfs_in_target_dir, parse_starry_arch, starry_default_disk_image,
-    parse_starry_target_for_test,
+use crate::starry::{
+    config::{
+        ensure_rootfs_in_target_dir, parse_starry_arch, parse_starry_target_for_test,
+        starry_default_disk_image,
+    },
+    run::run_with_arg,
 };
 
 /// StarryOS subcommands
