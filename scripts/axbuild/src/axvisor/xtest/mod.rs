@@ -1,11 +1,63 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fmt::Display,
+    path::{Path, PathBuf},
+};
 
 use super::ctx;
 use crate::axvisor::{
     BuildArgs,
     image::{ImageArgs, ImageCommands},
-    vmconfig,
 };
+
+fn test_configs() -> Vec<TestConfig> {
+    vec![
+        TestConfig {
+            arch: Arch::Aarch64,
+            vms: vec!["linux-aarch64-qemu-smp1"],
+        },
+        TestConfig {
+            arch: Arch::X86_64,
+            vms: vec!["nimbos-x86_64-qemu-smp1"],
+        },
+    ]
+}
+
+#[derive(Debug, Clone)]
+struct TestConfig {
+    arch: Arch,
+    vms: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Arch {
+    X86_64,
+    #[default]
+    Aarch64,
+}
+
+impl Arch {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Arch::X86_64 => "x86_64",
+            Arch::Aarch64 => "aarch64",
+        }
+    }
+
+    fn from_target(target: &str) -> anyhow::Result<Self> {
+        let sp = target.split('-').collect::<Vec<_>>();
+        match sp[0] {
+            "x86_64" => Ok(Arch::X86_64),
+            "aarch64" => Ok(Arch::Aarch64),
+            _ => Err(anyhow::anyhow!("Unsupported architecture: {}", target)),
+        }
+    }
+}
+
+impl Display for Arch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
 
 pub async fn run_test_qemu(
     target: Option<impl AsRef<str>>,
@@ -13,31 +65,24 @@ pub async fn run_test_qemu(
 ) -> anyhow::Result<()> {
     let axvisor_dir = axvisor_dir.as_ref();
     if let Some(target) = target {
-        run_test_qemu_with_target(target, axvisor_dir).await?;
+        let arch = Arch::from_target(target.as_ref())?;
+        run_test_qemu_with_target(arch, axvisor_dir).await?;
     } else {
-        let targets = ["x86_64", "aarch64"];
-        for target in &targets {
-            run_test_qemu_with_target(target, axvisor_dir).await?;
+        let archs = [Arch::X86_64, Arch::Aarch64];
+        for arch in archs {
+            run_test_qemu_with_target(arch, axvisor_dir).await?;
         }
     }
 
     Ok(())
 }
 
-pub async fn run_test_qemu_with_target(
-    target: impl AsRef<str>,
+async fn run_test_qemu_with_target_vms(
+    arch: Arch,
+    vms: Vec<String>,
     axvisor_dir: impl AsRef<Path>,
 ) -> anyhow::Result<()> {
-    let arch = target_to_arch(target.as_ref())?;
     let axvisor_dir = axvisor_dir.as_ref();
-
-    let mut vms = vec![];
-    match arch.as_str() {
-        "aarch64" => {
-            vms.push("linux-aarch64-qemu-smp1");
-        }
-        _ => {} // _ => return Err(anyhow::anyhow!("Unsupported architecture: {}", arch)),
-    }
 
     let qemu_config = PathBuf::from(axvisor_dir)
         .join(".github")
@@ -119,7 +164,26 @@ pub async fn run_test_qemu_with_target(
     Ok(())
 }
 
-fn target_to_arch(target: &str) -> anyhow::Result<String> {
-    let sp = target.split('-').collect::<Vec<_>>();
-    Ok(sp[0].into())
+pub async fn run_test_qemu_with_target(
+    arch: Arch,
+    axvisor_dir: impl AsRef<Path>,
+) -> anyhow::Result<()> {
+    let tests = arch_tests(arch);
+    for test in tests {
+        run_test_qemu_with_target_vms(
+            arch,
+            test.vms.into_iter().map(String::from).collect(),
+            &axvisor_dir,
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+fn arch_tests(arch: Arch) -> Vec<TestConfig> {
+    test_configs()
+        .into_iter()
+        .filter(|config| config.arch == arch)
+        .collect()
 }
