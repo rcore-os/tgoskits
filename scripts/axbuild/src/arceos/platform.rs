@@ -20,7 +20,7 @@ use std::{
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::arceos::Arch;
+use crate::arceos::{ArceosConfig, Arch};
 
 /// Platform resolver
 pub struct PlatformResolver {
@@ -193,6 +193,6 @@ pub struct CacheInfo {
 }
 
 /// Backward-compatible wrapper around the config module's board loader.
-pub fn load_board_config(manifest_dir: &Path, board_name: &str) -> Result<crate::ArceosConfig> {
+pub fn load_board_config(manifest_dir: &Path, board_name: &str) -> Result<ArceosConfig> {
     crate::arceos::config::load_board_config(manifest_dir, board_name)
 }

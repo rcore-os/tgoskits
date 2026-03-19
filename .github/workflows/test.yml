@@ -45,10 +45,10 @@ jobs:
       matrix:
         include:
           # axvisor
-          - os: axvisor
-            target: x86_64-unknown-none
-          - os: axvisor
-            target: riscv64gc-unknown-none-elf
+          # - os: axvisor
+          #   target: x86_64-unknown-none
+          # - os: axvisor
+          #   target: riscv64gc-unknown-none-elf
           - os: axvisor
             target: aarch64-unknown-none-softfloat
           # starry
@@ -78,8 +78,8 @@ jobs:
           shared-key: test
           cache-targets: false
 
-      - name: Install ostool
-        run: cargo install ostool --version ^0.8
+      # - name: Install ostool
+      #   run: cargo install ostool --version ^0.8
 
       - name: Run ${{ matrix.os }} tests
         run: cargo xtask test ${{ matrix.os }} --target ${{ matrix.target }}

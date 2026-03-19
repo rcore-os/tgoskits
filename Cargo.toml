@@ -102,11 +102,14 @@ members = [
     "test-suit/arceos/task/*",
 
     # os/axvisor
-    "os/axvisor", "components/axbuild",    
+    "os/axvisor",
 
     # os/StarryOS
     "os/StarryOS/starryos",
     "os/StarryOS/kernel",
+
+    # scripts
+    "scripts/axbuild",
 ]
 exclude = [
     # workspace directories
@@ -130,6 +133,9 @@ exclude = [
 # === axerrno ===
 axerrno = { path = "components/axerrno", version = "0.2.2" }
 
+axconfig = { path = "os/arceos/modules/axconfig", version = "0.3.0-preview.3" }
+axhal = { path = "os/arceos/modules/axhal", version = "0.3.0-preview.3" }
+
 axcpu = { path = "components/axcpu" }
 axio = { path = "components/axio" }
 axpoll = { path = "components/axpoll" }
@@ -142,6 +148,18 @@ axfs = { path = "os/arceos/modules/axfs", version = "0.3.0-preview.3" }
 axfs-ng = { path = "os/arceos/modules/axfs-ng", version = "0.3.0-preview.3" }
 axnet = { path = "os/arceos/modules/axnet", version = "0.3.0-preview.3" }
 axnet-ng = { path = "os/arceos/modules/axnet-ng", version = "0.3.0-preview.3" }
+axalloc = { path = "os/arceos/modules/axalloc", version = "0.3.0-preview.3" }
+axdriver = { path = "os/arceos/modules/axdriver", version = "0.3.0-preview.3" }
+axlog = { path = "os/arceos/modules/axlog", version = "0.3.0-preview.3" }
+axmm = { path = "os/arceos/modules/axmm", version = "0.3.0-preview.3" }
+axruntime = { path = "os/arceos/modules/axruntime", version = "0.3.0-preview.3" }
+axsync = { path = "os/arceos/modules/axsync", version = "0.3.0-preview.3" }
+axtask = { path = "os/arceos/modules/axtask", version = "0.3.0-preview.3" }
+axfeat = { path = "os/arceos/api/axfeat", version = "0.3.0-preview.3" }
+arceos_api = { path = "os/arceos/api/arceos_api", version = "0.3.0-preview.3" }
+arceos_posix_api = { path = "os/arceos/api/arceos_posix_api", version = "0.3.0-preview.3" }
+axstd = { path = "os/arceos/ulib/axstd", version = "0.3.0-preview.3" }
+axlibc = { path = "os/arceos/ulib/axlibc", version = "0.3.0-preview.3" }
 
 # === axplat ===
 axplat = { path = "components/axplat_crates/axplat" }
@@ -154,6 +172,7 @@ axplat-aarch64-raspi = { path = "components/axplat_crates/platforms/axplat-aarch
 axplat-loongarch64-qemu-virt = { path = "components/axplat_crates/platforms/axplat-loongarch64-qemu-virt" }
 axplat-riscv64-qemu-virt = { path = "components/axplat_crates/platforms/axplat-riscv64-qemu-virt" }
 axplat-x86-pc = { path = "components/axplat_crates/platforms/axplat-x86-pc" }
+axplat-x86-qemu-q35 = { path = "platform/x86-qemu-q35" }
 
 # === axdriver ===
 axdriver_base = { path = "components/axdriver_crates/axdriver_base" }
@@ -201,6 +220,8 @@ starry-signal = { path = "components/starry-signal", version = "0.3.0" }
 starry-vm = { path = "components/starry-vm", version = "0.3.0" }
 
 scope-local = { path = "components/scope-local", version = "0.1.0" }
+
+axbuild = { path = "scripts/axbuild", version = "0.3.0-preview.3" }
 
 [workspace.dependencies]
 # === os/arceos crates (0.3.0-preview.3) ===
@@ -251,7 +272,7 @@ axvm = { path = "components/axvm", version = "0.3.0" }
 axvmconfig = { path = "components/axvmconfig", version = "0.2.2" }
 axfs_vfs = { path = "components/axfs_crates/axfs_vfs", version = "0.1.2" }
 
-axbuild = { path = "components/axbuild", version = "0.3.0-perview.3" }
+axbuild = { path = "scripts/axbuild", version = "0.3.0-perview.3" }
 
 starry-kernel = { path = "os/StarryOS/kernel", version = "0.3.0-preview.3" }
 

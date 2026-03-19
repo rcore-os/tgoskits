@@ -4,7 +4,8 @@ use std::{
 };
 
 use crate::{
-    ArceosConfig, ArceosConfigOverride, arceos::config::resolve_package_app_dir, load_config,
+    ArceosConfigOverride,
+    arceos::{ArceosConfig, config::resolve_package_app_dir, load_config},
 };
 
 pub struct AxContext {

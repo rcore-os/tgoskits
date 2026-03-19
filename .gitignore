@@ -119,3 +119,4 @@ __pycache__/
 .axconfig*
 *.img
 !.claude/skills/*
+/tmp/*

@@ -14,14 +14,12 @@ mod zero;
 #[cfg(test)]
 mod tests;
 
-pub use self::dir::DirNode;
-pub use self::null::NullDev;
-pub use self::urandom::UrandomDev;
-pub use self::zero::ZeroDev;
-
 use alloc::sync::Arc;
+
 use axfs_vfs::{VfsNodeRef, VfsOps, VfsResult};
 use spin::once::Once;
+
+pub use self::{dir::DirNode, null::NullDev, urandom::UrandomDev, zero::ZeroDev};
 
 /// A device filesystem that implements [`axfs_vfs::VfsOps`].
 pub struct DeviceFileSystem {

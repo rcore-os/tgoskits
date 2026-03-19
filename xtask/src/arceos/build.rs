@@ -12,12 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use anyhow::Result;
-use axbuild::arceos::{AxBuild, config_path};
-use clap::Parser;
+use std::str::FromStr;
+
+use anyhow::{Context, Result};
+use axbuild::{
+    Arch, BuildMode, FeatureResolver,
+    arceos::{ArceosConfigOverride, AxBuild},
+};
+use clap::Args;
 
 /// Build command arguments
-#[derive(Parser, Debug)]
+#[derive(Args, Debug)]
 pub struct BuildArgs {
     /// Target architecture (x86_64, aarch64, riscv64, loongarch64)
     #[arg(long)]
@@ -50,26 +55,39 @@ pub struct BuildArgs {
 
 impl BuildArgs {
     pub fn into_axbuild(self) -> Result<AxBuild> {
-        let Self {
-            arch,
-            package,
-            platform,
-            release,
-            features,
-            smp,
-            plat_dyn,
-        } = self;
+        let overrides = self.as_override()?;
+        AxBuild::from_overrides(overrides, Some(self.package), None)
+    }
 
-        let overrides = super::config::build_config_override(
-            arch,
-            package.clone(),
-            platform,
-            release,
-            features,
-            smp,
-            plat_dyn,
-        )?;
-        AxBuild::from_overrides(overrides, Some(package), None)
+    pub fn as_override(&self) -> Result<ArceosConfigOverride> {
+        if matches!(self.smp, Some(0)) {
+            bail!("invalid SMP value `0`: SMP must be >= 1");
+        }
+        let parsed_arch = self
+            .arch
+            .as_deref()
+            .map(Arch::from_str)
+            .transpose()
+            .context("failed to parse arch override")?;
+        let effective_plat_dyn = self.plat_dyn.unwrap_or(match parsed_arch {
+            Some(Arch::AArch64) | None => true,
+            Some(_) => false,
+        });
+
+        Ok(ArceosConfigOverride {
+            arch: parsed_arch,
+            platform: self.platform.clone(),
+            mode: self.release.then_some(BuildMode::Release),
+            plat_dyn: Some(effective_plat_dyn),
+            smp: self.smp,
+            features: self
+                .features
+                .as_deref()
+                .map(FeatureResolver::parse_features)
+                .map(Some)
+                .unwrap_or(None),
+            ..Default::default()
+        })
     }
 }
 

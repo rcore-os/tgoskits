@@ -1,5 +1,6 @@
-use axfs_vfs::{VfsNodeAttr, VfsNodeOps, VfsNodePerm, VfsNodeType, VfsResult};
 use core::sync::atomic::{AtomicU64, Ordering};
+
+use axfs_vfs::{VfsNodeAttr, VfsNodeOps, VfsNodePerm, VfsNodeType, VfsResult};
 
 /// A urandom device behaves like `/dev/urandom`.
 ///

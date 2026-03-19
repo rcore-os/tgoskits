@@ -12,40 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::str::FromStr;
+
 use anyhow::Result;
-use axbuild::arceos::{AxBuild, context::AxContext};
-use clap::Parser;
+use axbuild::{
+    QemuOptions,
+    arceos::{AxBuild, NetDev, context::AxContext},
+};
+use clap::Args;
+
+use super::build::BuildArgs;
 
 /// Run command arguments
-#[derive(Parser, Debug)]
+#[derive(Args, Debug)]
 pub struct RunArgs {
-    /// Target architecture (x86_64, aarch64, riscv64, loongarch64)
-    #[arg(long)]
-    pub arch: Option<String>,
-
-    /// Workspace package name (for example: arceos-helloworld)
-    #[arg(short = 'p', long = "package")]
-    pub package: String,
-
-    /// Platform name
-    #[arg(long)]
-    pub platform: Option<String>,
-
-    /// Build in release mode
-    #[arg(long)]
-    pub release: bool,
-
-    /// Comma-separated feature list
-    #[arg(long)]
-    pub features: Option<String>,
-
-    /// Number of CPUs (must be >= 1)
-    #[arg(long)]
-    pub smp: Option<usize>,
-
-    /// Enable dynamic platform (plat-dyn)
-    #[arg(long, action = clap::ArgAction::Set)]
-    pub plat_dyn: Option<bool>,
+    #[command(flatten)]
+    pub build: BuildArgs,
 
     /// Enable block device
     #[arg(long)]
@@ -73,40 +55,30 @@ pub struct RunArgs {
 }
 
 impl RunArgs {
+    pub fn as_override(&self) -> Result<axbuild::arceos::ArceosConfigOverride> {
+        let mut overrides = self.build.as_override()?;
+        let qemu = QemuOptions {
+            blk: self.blk,
+            disk_image: self.disk_img.clone().map(String::into),
+            net: self.net,
+            net_dev: self
+                .net_dev
+                .as_deref()
+                .and_then(|dev| NetDev::from_str(dev).ok())
+                .unwrap_or(NetDev::User),
+            graphic: self.graphic,
+            accel: self.accel,
+            extra_args: vec![],
+        };
+
+        overrides.qemu = Some(qemu);
+        Ok(overrides)
+    }
+
     pub fn into_axbuild(self) -> Result<AxBuild> {
-        let Self {
-            arch,
-            package,
-            platform,
-            release,
-            features,
-            smp,
-            plat_dyn,
-            blk,
-            disk_img,
-            net,
-            net_dev,
-            graphic,
-            accel,
-        } = self;
+        let overrides = self.as_override()?;
 
-        let overrides = super::config::run_config_override(
-            arch,
-            package.clone(),
-            platform,
-            release,
-            features,
-            smp,
-            plat_dyn,
-            blk,
-            disk_img,
-            net,
-            net_dev,
-            graphic,
-            accel,
-        )?;
-
-        AxBuild::from_overrides(overrides, Some(package), None)
+        AxBuild::from_overrides(overrides, Some(self.build.package), None)
     }
 }
 

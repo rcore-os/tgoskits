@@ -18,18 +18,16 @@
 //! It supports multiple architectures and platforms, and can be used both
 //! as a library and as a command-line tool.
 
+#[macro_use]
+extern crate anyhow;
+
 pub mod arceos;
+pub mod axvisor;
 
 pub use arceos::{
     build::{BuildOutput, Builder, PreparedArtifacts, prepare_artifacts},
-    config::{
-        AVAILABLE_BOARDS, AXCONFIG_FILE_NAME, ArceosConfig, ArceosConfigOverride, Arch, BuildMode,
-        CONFIG_FILE_NAME, LogLevel, NetDev, OSTOOL_EXTRA_CONFIG_FILE_NAME, QEMU_CONFIG_FILE_NAME,
-        QemuOptions, apply_defconfig, axconfig_path, config_path, load_board_config, load_config,
-        ostool_extra_config_path, parse_qemu_options, qemu_config_path, resolve_package_app_dir,
-        save_config,
-    },
+    config::{ArceosConfigOverride, Arch, BuildMode, QEMU_CONFIG_FILE_NAME, QemuOptions},
     features::FeatureResolver,
-    platform::{PlatformInfo, PlatformResolver},
+    platform::PlatformResolver,
     qemu::QemuRunner,
 };

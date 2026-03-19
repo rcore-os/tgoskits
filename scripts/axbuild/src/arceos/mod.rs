@@ -27,14 +27,12 @@ pub use build::{
     prepare_artifacts_with_qemu_config_path,
 };
 pub use config::{
-    AVAILABLE_BOARDS, AXCONFIG_FILE_NAME, ArceosConfig, ArceosConfigOverride, Arch, BuildMode,
-    CONFIG_FILE_NAME, LogLevel, NetDev, OSTOOL_EXTRA_CONFIG_FILE_NAME, QEMU_CONFIG_FILE_NAME,
-    QemuOptions, apply_defconfig, axconfig_path, config_path, load_board_config, load_config,
-    ostool_extra_config_path, parse_qemu_options, qemu_config_path, resolve_package_app_dir,
-    save_config,
+    AVAILABLE_BOARDS, ArceosConfig, ArceosConfigOverride, Arch, BuildMode, LogLevel, NetDev,
+    QEMU_CONFIG_FILE_NAME, QemuOptions, apply_defconfig, config_path, load_board_config,
+    load_config, parse_qemu_options, qemu_config_path, resolve_package_app_dir, save_config,
 };
 pub use features::FeatureResolver;
-pub use platform::{CpuInfo, PlatformInfo, PlatformResolver};
+pub use platform::PlatformResolver;
 pub use qemu::QemuRunner;
 
 use crate::arceos::context::AxContext;
