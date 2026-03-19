@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.4](https://github.com/drivercraft/sparreal-os/compare/somehal-v0.6.3...somehal-v0.6.4) - 2026-03-19
+
+### Other
+
+- ✨ feat: 添加x86_64支持 ([#60](https://github.com/drivercraft/sparreal-os/pull/60))
+
 ## [0.6.3](https://github.com/drivercraft/sparreal-os/compare/somehal-v0.6.2...somehal-v0.6.3) - 2026-03-10
 
 ### Other

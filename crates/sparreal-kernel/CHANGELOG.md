@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.2](https://github.com/drivercraft/sparreal-os/compare/sparreal-kernel-v0.15.1...sparreal-kernel-v0.15.2) - 2026-03-19
+
+### Other
+
+- ✨ feat: 添加x86_64支持 ([#60](https://github.com/drivercraft/sparreal-os/pull/60))
+
 ## [0.15.1](https://github.com/drivercraft/sparreal-os/compare/sparreal-kernel-v0.15.0...sparreal-kernel-v0.15.1) - 2026-03-10
 
 ### Other

@@ -1444,7 +1444,7 @@ dependencies = [
 
 [[package]]
 name = "someboot"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64-cpu-ext",
@@ -1487,7 +1487,7 @@ dependencies = [
 
 [[package]]
 name = "somehal"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "anyhow",
@@ -1517,7 +1517,7 @@ dependencies = [
 
 [[package]]
 name = "sparreal-kernel"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "ansi_rgb",
  "anstyle",
