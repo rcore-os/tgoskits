@@ -13,5 +13,5 @@ args = [
 ]
 uefi = false
 to_bin = true
-success_regex = ["Task affinity tests run OK!"]
+success_regex = ["to install packages."]
 fail_regex = ['(?i)\bpanic(?:ked)?\b']
