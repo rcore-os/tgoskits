@@ -43,7 +43,6 @@ axconfig
 axdisplay
 axdriver
 axhal
-axplat-dyn
 axsync
 axtask
 axinput

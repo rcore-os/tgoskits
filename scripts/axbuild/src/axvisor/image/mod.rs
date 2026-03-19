@@ -22,14 +22,14 @@
 //!
 //! # Usage examples
 //!
-//! ```
-//! // List available images
+//! ```text
+//! # List available images
 //! xtask image ls
-//! // Download a specific image and automatically extract it (default behavior)
+//! # Download a specific image and automatically extract it (default behavior)
 //! xtask image download evm3588_arceos --output-dir ./images
-//! // Download a specific image without extracting
+//! # Download a specific image without extracting
 //! xtask image download evm3588_arceos --output-dir ./images --no-extract
-//! // Remove a specific image from temp directory
+//! # Remove a specific image from temp directory
 //! xtask image rm evm3588_arceos
 //! ```
 
