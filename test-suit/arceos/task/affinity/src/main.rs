@@ -67,6 +67,5 @@ fn main() {
         thread::yield_now();
     }
 
-    panic!("test_vec() failed!");
     println!("Task affinity tests run OK!");
 }
