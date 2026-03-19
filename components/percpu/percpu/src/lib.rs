@@ -4,19 +4,12 @@
 
 extern crate percpu_macros;
 
-cfg_if::cfg_if! {
-    if #[cfg(feature = "sp-naive")] {
-        #[path = "naive.rs"]
-        mod imp;
-    } else if #[cfg(feature = "custom-base")] {
-        #[path = "custom/mod.rs"]
-        mod imp;
-    }else{
-        mod imp;
-    }
-}
+#[cfg_attr(feature = "sp-naive", path = "naive.rs")]
+mod imp;
+mod init_error;
 
 pub use self::imp::*;
+pub use self::init_error::InitError;
 pub use percpu_macros::def_percpu;
 
 #[doc(hidden)]

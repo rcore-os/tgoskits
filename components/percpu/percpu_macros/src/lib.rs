@@ -212,6 +212,16 @@ fn def_percpu_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                 f(unsafe { self.current_ref_mut_raw() })
             }
 
+            /// Reset the per-CPU data on the current CPU to the initial value.
+            /// Preemption will be disabled during the reset.
+            ///
+            /// If the initial expression has side effects, they may be executed.
+            pub fn reset_to_init(&self) {
+                self.with_current(|val| unsafe {
+                    *val = #init_expr;
+                });
+            }
+
             /// Returns the raw pointer of this per-CPU static variable on the given CPU.
             ///
             /// # Safety

@@ -1,10 +1,18 @@
 //! Naive implementation for single CPU use.
+use crate::InitError;
 
 /// Returns the per-CPU data area size for one CPU.
 ///
 /// Always returns `0` for "sp-naive" use.
 pub fn percpu_area_size() -> usize {
     0
+}
+
+/// Returns the per-CPU data area size for the given number of CPUs.
+///
+/// Always returns `0` for "sp-naive" mode since no per-CPU memory areas are needed.
+pub fn percpu_area_layout_expected(_cpu_count: usize) -> core::alloc::Layout {
+    core::alloc::Layout::from_size_align(0, 0x40).unwrap()
 }
 
 /// Returns the number of per-CPU data areas reserved.
@@ -43,11 +51,26 @@ pub unsafe fn write_percpu_reg(_tp: usize) {}
 /// No effect for "sp-naive" use.
 pub fn init_percpu_reg(_cpu_id: usize) {}
 
-/// Initialize all per-CPU data areas.
+/// Initialize per-CPU data areas.
+///
+/// For "sp-naive" mode, no initialization is needed since per-CPU data is stored
+/// in global variables. Always returns `1`.
 ///
 /// Returns the number of areas initialized.
+pub fn init_in_place() -> Result<usize, InitError> {
+    Ok(1)
+}
+
+/// Initialize per-CPU data areas with user-provided memory.
 ///
-/// For "sp-naive" use it does nothing and returns `1`.
-pub fn init() -> usize {
-    1
+/// For "sp-naive" mode, parameters are ignored since per-CPU data is stored
+/// in global variables. Always returns `1`.
+///
+/// # Arguments
+/// - `_base`: Base address (ignored)
+/// - `_cpu_count`: Number of CPUs (ignored)
+///
+/// Returns the number of areas initialized.
+pub fn init(_base: *mut u8, _cpu_count: usize) -> Result<usize, InitError> {
+    Ok(1)
 }

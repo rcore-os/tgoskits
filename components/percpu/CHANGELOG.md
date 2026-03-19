@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.3.1
+
+### Bug Fixes
+
+- Use `TPIDRPRW` instead of `TPIDRURO` as the per-CPU pointer register for ARM32 (https://github.com/arceos-org/percpu/pull/24).
+
+## 0.3.0
+
+### New Features & Breaking Changes
+
+- Add custom per-CPU area support (https://github.com/arceos-org/percpu/pull/22)
+- API changes:
+  + `init()` -> `init(base, count)`: the base address of per-CPU area and number of CPUs have been added as parameters.
+  + the old `init()` function is renamed to `init_in_place()`.
+
+## 0.2.2
+
+### Bug Fixes
+
+- Use `percpu_symbol_vma!` to get the VMA of `_percpu_load_start` to avoid incorrect pointer-non-zero optimization (https://github.com/arceos-org/percpu/pull/19).
+
+## 0.2.1
+
+### New Features
+
+- Introduce feature `non-zero-vma` to use a non-zero address for the `.percpu` section to fix a linker issue when testing under linux (https://github.com/arceos-org/percpu/pull/16).
+- Add ARMv7A (32-bit) target support (https://github.com/arceos-org/percpu/pull/15).
+
 ## 0.2.0
 
 ### Breaking Changes

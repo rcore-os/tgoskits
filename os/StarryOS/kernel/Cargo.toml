@@ -91,7 +91,7 @@ memory_addr = "0.4"
 memory_set = "0.4"
 num_enum = { version = "0.7", default-features = false }
 ouroboros = { version = "0.18", default-features = false }
-percpu = "0.2.3-preview.1"
+percpu = "0.3.1"
 rand = { version = "0.10", default-features = false, features = ["alloc"] }
 ringbuf = { version = "0.4.8", default-features = false, features = ["alloc"] }
 scope-local = "0.1"

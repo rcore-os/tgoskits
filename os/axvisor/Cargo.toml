@@ -75,7 +75,7 @@ axaddrspace = "0.1.5"
 axhvc = "0.2.0"
 # axruntime = { version = "=0.3.0-preview.1", features = ["alloc", "irq", "paging", "smp", "multitask"] }
 axvcpu = "0.2.2"
-axvm = "0.2.1"
+axvm = "0.2.3"
 axdevice = "0.2.1"
 axdevice_base = "0.2.1"
 axvisor_api = "0.1.0"
@@ -91,7 +91,7 @@ fdt-parser = "0.4"
 memory_addr = "0.4.1"
 page_table_entry = { version = "0.6", features = ["arm-el2"] }
 page_table_multiarch = "0.6"
-percpu = { version = "0.2.3-preview.1", features = ["arm-el2"] }
+percpu = { version = "0.3.1", features = ["arm-el2"] }
 
 rdif-intc = "0.14"
 rdif-block = "0.7"

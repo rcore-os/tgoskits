@@ -112,7 +112,7 @@ pub fn gen_current_ptr(symbol: &Ident, ty: &Type) -> proc_macro2::TokenStream {
             #[cfg(target_arch = "aarch64")]
             ::core::arch::asm!(#aarch64_asm, out(reg) base);
             #[cfg(target_arch = "arm")]
-            ::core::arch::asm!("mrc p15, 0, {}, c13, c0, 3", out(reg) base);
+            ::core::arch::asm!("mrc p15, 0, {}, c13, c0, 4", out(reg) base);
             #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
             ::core::arch::asm!("mv {}, gp", out(reg) base);
             #[cfg(any(target_arch = "loongarch64"))]

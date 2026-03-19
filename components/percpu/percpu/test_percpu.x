@@ -24,10 +24,11 @@ CPU_NUM = 4;
 
 SECTIONS
 {
+    . = PERCPU_LOAD;
     . = ALIGN(4K);
     _percpu_start = .;
     _percpu_end = _percpu_start + SIZEOF(.percpu);
-    .percpu PERCPU_LOAD (NOLOAD) : AT(_percpu_start) {
+    .percpu PERCPU_LOAD : AT(_percpu_start) {
         _percpu_load_start = .;
         *(.percpu .percpu.*)
         _percpu_load_end = .;

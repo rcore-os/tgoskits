@@ -223,6 +223,17 @@ scope-local = { path = "components/scope-local", version = "0.1.0" }
 
 axbuild = { path = "scripts/axbuild", version = "0.3.0-preview.3" }
 
+# === axvisor ===
+axvm = { path = "components/axvm", version = "0.2.3" }
+axvmconfig = { path = "components/axvmconfig", version = "0.2.2" }
+axvcpu = { path = "components/axvcpu", version = "0.2.2" }
+x86_vcpu = { path = "components/x86_vcpu", version = "0.2.2" }
+arm_vcpu = { path = "components/arm_vcpu", version = "0.2.2" }
+arm_vgic = { path = "components/arm_vgic", version = "0.2.1" }
+riscv_vcpu = { path = "components/riscv_vcpu", version = "0.2.2" }
+riscv_vplic = { path = "components/riscv_vplic", version = "0.2.1" }
+# x86_vlapic = { path = "components/x86_vlapic", version = "0.2.2" }
+
 [workspace.dependencies]
 # === os/arceos crates (0.3.0-preview.3) ===
 # ulib
@@ -268,7 +279,7 @@ axklib = { path = "components/axklib", version = "0.3.0" }
 axpoll = { path = "components/axpoll", version = "0.1.2" }
 axsched = { path = "components/axsched", version = "0.3.1" }
 axvcpu = { path = "components/axvcpu", version = "0.3.0" }
-axvm = { path = "components/axvm", version = "0.3.0" }
+axvm = { path = "components/axvm", version = "0.2.3" }
 axvmconfig = { path = "components/axvmconfig", version = "0.2.2" }
 axfs_vfs = { path = "components/axfs_crates/axfs_vfs", version = "0.1.2" }
 
@@ -317,7 +328,7 @@ lock_api = { version = "0.4", default-features = false }
 log = "0.4"
 memory_addr = "0.4"
 page_table_multiarch = { version = "0.6", features = ["axerrno"] }
-percpu = "0.2.3-preview.1"
+percpu = "0.3.1"
 scope-local = "0.1"
 spin = "0.10"
 ostool = { version = "0.8.12" }

@@ -35,17 +35,14 @@ jobs:
       - name: Check rust version
         run: rustc --version --verbose
 
+      - name: Install cargo-hack
+        run: cargo install cargo-hack
+
       - name: Check code format
         run: cargo fmt --all -- --check
 
-      - name: Clippy (zero-vma)
-        run: cargo clippy --target ${{ matrix.target }} --features "preempt,arm-el2"
+      - name: Build all feature power sets
+        run: cargo hack build --feature-powerset --no-dev-deps --workspace --target ${{ matrix.target }}
 
-      - name: Build (zero-vma)
-        run: cargo build --target ${{ matrix.target }} --features "preempt,arm-el2"
-
-      - name: Clippy (non-zero-vma)
-        run: cargo clippy --target ${{ matrix.target }} --features "preempt,arm-el2,non-zero-vma"
-
-      - name: Build (non-zero-vma)
-        run: cargo build --target ${{ matrix.target }} --features "preempt,arm-el2,non-zero-vma"
+      - name: Clippy all feature power sets
+        run: cargo hack clippy --feature-powerset --no-dev-deps --workspace --target ${{ matrix.target }}

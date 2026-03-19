@@ -10,6 +10,16 @@ env:
 jobs:
   test:
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        feature_set:
+          - "sp-naive"
+          - "sp-naive,non-zero-vma"
+          - "sp-naive,preempt"
+          - "sp-naive,non-zero-vma,preempt"
+          - "non-zero-vma"
+          - "non-zero-vma,preempt"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -17,11 +27,5 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
 
-      - name: Run tests (sp-naive,non-zero-vma)
-        run: cargo test --target x86_64-unknown-linux-gnu --features "sp-naive,non-zero-vma" -- --nocapture
-
-      - name: Run tests (non-zero-vma)
-        run: cargo test --target x86_64-unknown-linux-gnu --features "non-zero-vma" -- --nocapture
-
-      - name: Run tests (custom-base)
-        run: cargo test --target x86_64-unknown-linux-gnu --features "custom-base,non-zero-vma" -- --nocapture
+      - name: Run tests (${{ matrix.feature_set }})
+        run: cargo test --target x86_64-unknown-linux-gnu --features "${{ matrix.feature_set }}" -- --nocapture --test-threads=1

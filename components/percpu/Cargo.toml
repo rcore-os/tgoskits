@@ -7,13 +7,14 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.3-preview.1"
+version = "0.3.1"
 edition = "2021"
 authors = [
     "Yuekai Jia <equation618@gmail.com>",
     "hky1999 <976929993@qq.com>",
     "Su Mingxian <aarkegz@gmail.com>",
     "yufeng <321353225@qq.com>",
+    "Debin <luodeb@outlook.com>",
 ]
 license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
 homepage = "https://github.com/arceos-org/arceos"

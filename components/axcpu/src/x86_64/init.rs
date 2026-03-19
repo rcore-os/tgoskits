@@ -7,7 +7,7 @@
 ///
 /// [`percpu`]: https://docs.rs/percpu/latest/percpu/index.html
 pub fn init_percpu(cpu_id: usize) {
-    percpu::init();
+    percpu::init_in_place();
     percpu::init_percpu_reg(cpu_id);
 }
 
