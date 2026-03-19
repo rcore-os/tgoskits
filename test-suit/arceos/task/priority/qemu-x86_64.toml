@@ -1,8 +1,8 @@
 args = [
     "-machine",
-    "virt",
+    "q35",
     "-cpu",
-    "cortex-a72",
+    "max",
     "-m",
     "128M",
     "-smp",
@@ -12,6 +12,6 @@ args = [
     "mon:stdio",
 ]
 uefi = false
-to_bin = true
-success_regex = ["All tests passed!"]
-fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+to_bin = false
+success_regex = ["Priority tests run OK!"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b']

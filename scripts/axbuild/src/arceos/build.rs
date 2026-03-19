@@ -18,7 +18,7 @@ use std::{
     process::Command,
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 
 use crate::arceos::{
     config::{AXCONFIG_FILE_NAME, ArceosConfig, QEMU_CONFIG_FILE_NAME},
@@ -145,17 +145,17 @@ pub fn prepare_artifacts(
     project.prepare()
 }
 
-pub fn prepare_artifacts_with_qemu_config_path(
+pub(crate) fn prepare_artifacts_for_qemu(
     manifest_dir: &Path,
     app_dir: &Path,
     config: &ArceosConfig,
-    qemu_config_path: PathBuf,
+    qemu_config_path: Option<PathBuf>,
 ) -> Result<PreparedArtifacts> {
     let project = ArtifactPreparer::new(
         manifest_dir.to_path_buf(),
         app_dir.to_path_buf(),
         config.clone(),
-        Some(qemu_config_path),
+        qemu_config_path,
     );
     project.prepare()
 }
@@ -187,11 +187,12 @@ impl ArtifactPreparer {
         self.resolve_effective_smp(&mut config)?;
         let plat_dyn = self.resolve_platform(&config)?;
         self.generate_config(&config)?;
-        let qemu_config_path = self
-            .qemu_config_path
-            .clone()
-            .unwrap_or_else(|| self.app_dir.join(QEMU_CONFIG_FILE_NAME));
-        ostool_bridge::write_qemu_config(&self.manifest_dir, &qemu_config_path, &config)?;
+        let qemu_config_path = ostool_bridge::ensure_qemu_config(
+            &self.manifest_dir,
+            &self.app_dir,
+            &config,
+            self.qemu_config_path.as_deref(),
+        )?;
 
         let ax_features = FeatureResolver::resolve_ax_features(&config, plat_dyn);
         let use_axlibc = self.is_c_app()?;

@@ -29,11 +29,12 @@ use serde::Deserialize;
 
 use crate::arceos::{
     PlatformResolver,
-    config::{AXCONFIG_FILE_NAME, ArceosConfig, Arch, BuildMode, NetDev},
+    config::{AXCONFIG_FILE_NAME, ArceosConfig, Arch, BuildMode, NetDev, QEMU_CONFIG_FILE_NAME},
 };
 
 const DEFAULT_AX_IP: &str = "10.0.2.15";
 const DEFAULT_AX_GW: &str = "10.0.2.2";
+const DEFAULT_QEMU_FAIL_REGEX: &[&str] = &["(?i)\\bpanic(?:ked)?\\b"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppContextSpec {
@@ -186,7 +187,10 @@ pub fn build_qemu_config(config: &ArceosConfig, manifest_dir: &Path) -> QemuConf
         uefi: false,
         to_bin: !matches!(config.arch, Arch::X86_64),
         success_regex: vec!["to install packages.".to_string()],
-        fail_regex: vec![],
+        fail_regex: DEFAULT_QEMU_FAIL_REGEX
+            .iter()
+            .map(|pattern| (*pattern).to_string())
+            .collect(),
     }
 }
 
@@ -204,6 +208,23 @@ pub fn write_qemu_config(
     fs::write(&path, toml::to_string_pretty(&qemu)?)
         .with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(path)
+}
+
+pub fn ensure_qemu_config(
+    manifest_dir: &Path,
+    app_dir: &Path,
+    config: &ArceosConfig,
+    explicit_qemu_config_path: Option<&Path>,
+) -> Result<PathBuf> {
+    if let Some(path) = explicit_qemu_config_path {
+        if !path.exists() {
+            anyhow::bail!("missing qemu config: {}", path.display());
+        }
+        return Ok(path.to_path_buf());
+    }
+
+    let qemu_config_path = app_dir.join(QEMU_CONFIG_FILE_NAME);
+    write_qemu_config(manifest_dir, &qemu_config_path, config)
 }
 
 fn build_features(

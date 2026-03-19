@@ -143,10 +143,6 @@ pub fn axconfig_path(manifest_dir: &Path) -> PathBuf {
     manifest_dir.join(AXCONFIG_FILE_NAME)
 }
 
-pub fn qemu_config_path(manifest_dir: &Path) -> PathBuf {
-    manifest_dir.join(QEMU_CONFIG_FILE_NAME)
-}
-
 pub fn ostool_extra_config_path(manifest_dir: &Path) -> PathBuf {
     manifest_dir
         .join(".cargo")

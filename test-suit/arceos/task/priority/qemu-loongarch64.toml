@@ -2,7 +2,7 @@ args = [
     "-machine",
     "virt",
     "-cpu",
-    "cortex-a72",
+    "la464",
     "-m",
     "128M",
     "-smp",
@@ -13,5 +13,5 @@ args = [
 ]
 uefi = false
 to_bin = true
-success_regex = ["All tests passed!"]
-fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+success_regex = ["Priority tests run OK!"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b']

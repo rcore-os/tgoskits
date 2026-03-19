@@ -13,5 +13,7 @@ args = [
 ]
 uefi = false
 to_bin = true
-success_regex = ["All tests passed!"]
-fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+success_regex = ["Memory tests run OK!"]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b"
+]
