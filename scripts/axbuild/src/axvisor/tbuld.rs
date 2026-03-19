@@ -99,6 +99,14 @@ impl Context {
                 "-Z",
                 "build-std-features=compiler-builtins-mem",
             );
+            ensure_cargo_arg_pair(
+                &mut cargo.args,
+                "--config",
+                &format!(
+                    "target.{}.rustflags=[\"-Clink-arg=-Taxplat.x\"]",
+                    cargo.target
+                ),
+            );
         }
         if !cargo.features.iter().any(|feature| feature == "dyn-plat") {
             ensure_cargo_arg_pair(
