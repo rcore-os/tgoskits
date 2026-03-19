@@ -187,11 +187,18 @@ impl ArtifactPreparer {
         self.resolve_effective_smp(&mut config)?;
         let plat_dyn = self.resolve_platform(&config)?;
         self.generate_config(&config)?;
-        let qemu_config_path = self
-            .qemu_config_path
+        let explicit_qemu_config_path = self.qemu_config_path.clone();
+        let qemu_config_path = explicit_qemu_config_path
             .clone()
             .unwrap_or_else(|| self.app_dir.join(QEMU_CONFIG_FILE_NAME));
-        ostool_bridge::write_qemu_config(&self.manifest_dir, &qemu_config_path, &config)?;
+
+        if let Some(path) = explicit_qemu_config_path {
+            if !path.exists() {
+                bail!("missing qemu config: {}", path.display());
+            }
+        } else {
+            ostool_bridge::write_qemu_config(&self.manifest_dir, &qemu_config_path, &config)?;
+        }
 
         let ax_features = FeatureResolver::resolve_ax_features(&config, plat_dyn);
         let use_axlibc = self.is_c_app()?;
