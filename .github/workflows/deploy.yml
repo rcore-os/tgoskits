@@ -13,6 +13,5 @@ jobs:
     uses: arceos-hypervisor/axci/.github/workflows/deploy.yml@main
     with:
       targets: '["riscv64gc-unknown-none-elf"]'
-      rust_components: 'rust-src, clippy, rustfmt'
       verify_branch: true
       verify_version: true
