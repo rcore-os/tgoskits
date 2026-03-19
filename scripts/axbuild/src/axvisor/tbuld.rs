@@ -90,9 +90,7 @@ impl Context {
             to_bin: config.to_bin,
             ..Default::default()
         };
-        if cargo.target == "aarch64-unknown-none-softfloat"
-            && cargo.features.iter().any(|feature| feature == "dyn-plat")
-        {
+        if cargo.features.iter().any(|feature| feature == "dyn-plat") {
             // Dynamic-platform AArch64 builds link as PIE, so core/alloc must be
             // rebuilt with the same PIC settings instead of using prebuilt std.
             ensure_cargo_arg_pair(&mut cargo.args, "-Z", "build-std=core,alloc");
@@ -100,6 +98,17 @@ impl Context {
                 &mut cargo.args,
                 "-Z",
                 "build-std-features=compiler-builtins-mem",
+            );
+        }
+        if !cargo.features.iter().any(|feature| feature == "dyn-plat") {
+            ensure_cargo_arg_pair(
+                &mut cargo.args,
+                "--config",
+                &format!(
+                    "target.{}.rustflags=[\"-Clink-arg=-Tlinker.x\",\"-Clink-arg=-no-pie\",\"\
+                     -Clink-arg=-znostart-stop-gc\"]",
+                    cargo.target
+                ),
             );
         }
         cargo.args.extend(config.cargo_args);

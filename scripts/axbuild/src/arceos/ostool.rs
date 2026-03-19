@@ -294,32 +294,19 @@ fn build_env(config: &ArceosConfig, app_dir: &Path) -> HashMap<String, String> {
     env
 }
 
-fn build_cargo_args(config: &ArceosConfig, manifest_dir: &Path, plat_dyn: bool) -> Vec<String> {
+fn build_cargo_args(config: &ArceosConfig, _manifest_dir: &Path, plat_dyn: bool) -> Vec<String> {
     let mut args = Vec::new();
     args.push("--config".to_string());
     args.push(if plat_dyn {
         format!(
-            "target.{}.rustflags=[\"-Clink-arg=-Taxplat.x\"]",
+            "target.{}.rustflags=[\"-Clink-arg=-Tlinker.x\"]",
             config.arch.to_target()
         )
     } else {
-        let mode = if matches!(config.mode, BuildMode::Debug) {
-            "debug"
-        } else {
-            "release"
-        };
-        let platform_name = effective_linker_platform_name(config);
-        let platform = linker_platform_name(&platform_name);
-        let ld_script = manifest_dir
-            .join("target")
-            .join(config.arch.to_target())
-            .join(mode)
-            .join(format!("linker_{platform}.lds"));
         format!(
-            "target.{}.rustflags=[\"-Clink-arg=-T{}\",\"-Clink-arg=-no-pie\",\"\
+            "target.{}.rustflags=[\"-Clink-arg=-Tlinker.x\",\"-Clink-arg=-no-pie\",\"\
              -Clink-arg=-znostart-stop-gc\"]",
-            config.arch.to_target(),
-            ld_script.display()
+            config.arch.to_target()
         )
     });
     args
