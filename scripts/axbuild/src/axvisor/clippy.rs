@@ -20,6 +20,7 @@ use colored::*;
 
 // Import ClippyArgs from main.rs
 use super::ClippyArgs;
+use crate::process::run_output;
 
 /// Static target array configuration
 const TARGETS: &[&str] = &["x86_64-unknown-none", "aarch64-unknown-none-softfloat"];
@@ -358,66 +359,32 @@ fn run_single_clippy(
     // Set environment variable for stricter checking
     cmd.env("RUSTFLAGS", "-D warnings");
 
-    let fix_str = if fix { " --fix" } else { "" };
-    let allow_dirty_str = if fix && allow_dirty {
-        " --allow-dirty"
-    } else {
-        ""
-    };
-    println!(
-        "    Executing: {}",
-        format!(
-            "cargo clippy --target {} -p {}{}{}{}",
-            target,
-            package,
-            if features.is_empty() {
-                String::new()
-            } else {
-                format!(" --features {}", features.join(","))
-            },
-            fix_str,
-            allow_dirty_str
-        )
-        .dimmed()
-    );
-
-    let output = cmd.output().context(format!(
-        "Failed to execute cargo clippy: target={target}, package={package}, features={features:?}"
-    ))?;
-
-    if output.status.success() {
-        // Even if successful, check if there's output (sometimes clippy has warnings but still returns success)
-        if !output.stderr.is_empty() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("warning:") || stderr.contains("error:") {
-                return Err(anyhow!("Clippy output warnings or errors:\n{stderr}"));
+    let desc = format!("cargo clippy: target={target}, package={package}, features={features:?}");
+    let output = match run_output(&mut cmd, &desc) {
+        Ok(output) => output,
+        Err(err) => {
+            if continue_on_error {
+                eprintln!("    {}", format!("⚠️  Error (continuing): {err}").yellow());
+                return Ok(());
             }
+            return Err(err.context("Clippy check failed"));
         }
-        println!("    {}", "✅ Passed".green());
-        Ok(())
-    } else {
+    };
+
+    // Even if successful, check if there's output (sometimes clippy has warnings but still returns success)
+    if !output.stderr.is_empty() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
-        let error_msg = if !stderr.is_empty() {
-            stderr.to_string()
-        } else if !stdout.is_empty() {
-            stdout.to_string()
-        } else {
-            format!(
-                "clippy check failed, exit code: {}",
-                output.status.code().unwrap_or(-1)
-            )
-        };
-
-        if continue_on_error {
-            eprintln!(
-                "    {}",
-                format!("⚠️  Error (continuing):\n{error_msg}").yellow()
+        if stderr.contains("warning:") || stderr.contains("error:") {
+            let err = anyhow!(
+                "Clippy output contains warnings or errors for target={target}, package={package}"
             );
-            Ok(())
-        } else {
-            Err(anyhow!("Clippy check failed:\n{error_msg}"))
+            if continue_on_error {
+                eprintln!("    {}", format!("⚠️  Error (continuing): {err}").yellow());
+                return Ok(());
+            }
+            return Err(err);
         }
     }
+    println!("    {}", "✅ Passed".green());
+    Ok(())
 }

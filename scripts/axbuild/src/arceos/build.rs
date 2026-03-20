@@ -20,12 +20,15 @@ use std::{
 
 use anyhow::{Context, Result};
 
-use crate::arceos::{
-    config::{AXCONFIG_FILE_NAME, ArceosConfig},
-    context::AxContext,
-    features::FeatureResolver,
-    ostool as ostool_bridge,
-    platform::PlatformResolver,
+use crate::{
+    arceos::{
+        config::{AXCONFIG_FILE_NAME, ArceosConfig},
+        context::AxContext,
+        features::FeatureResolver,
+        ostool as ostool_bridge,
+        platform::PlatformResolver,
+    },
+    process::{run_output, run_status},
 };
 
 const DEFAULT_DEFCONFIG_CONTENT: &str = r#"# Stack size of each task.
@@ -102,15 +105,9 @@ impl Builder {
             self.ctx.manifest_dir().display()
         );
 
-        let status = Command::new("cargo")
-            .current_dir(self.ctx.manifest_dir())
-            .arg("clean")
-            .status()
-            .context("Failed to run cargo clean")?;
-
-        if !status.success() {
-            anyhow::bail!("cargo clean failed with status: {}", status);
-        }
+        let mut command = Command::new("cargo");
+        command.current_dir(self.ctx.manifest_dir()).arg("clean");
+        run_status(&mut command, "cargo clean")?;
 
         for file in cleanup_files(self.ctx.manifest_dir(), self.ctx.app_dir()) {
             if file.exists() {
@@ -259,15 +256,9 @@ impl ArtifactPreparer {
             args.push(format!("plat.max-cpu-num={}", smp));
         }
 
-        let status = Command::new("axconfig-gen")
-            .current_dir(&self.manifest_dir)
-            .args(&args)
-            .status()
-            .context("Failed to run axconfig-gen")?;
-
-        if !status.success() {
-            anyhow::bail!("axconfig-gen failed with status: {}", status);
-        }
+        let mut command = Command::new("axconfig-gen");
+        command.current_dir(&self.manifest_dir).args(&args);
+        run_status(&mut command, "axconfig-gen")?;
 
         Ok(())
     }
@@ -285,31 +276,20 @@ impl ArtifactPreparer {
         app_dir: &Path,
         platform_package: &str,
     ) -> Result<PathBuf> {
-        let output = Command::new("cargo")
+        let desc = format!(
+            "cargo axplat info -C {} -c {}",
+            app_dir.display(),
+            platform_package
+        );
+        let mut command = Command::new("cargo");
+        command
             .arg("axplat")
             .arg("info")
             .arg("-C")
             .arg(app_dir)
             .arg("-c")
-            .arg(platform_package)
-            .output()
-            .with_context(|| {
-                format!(
-                    "Failed to run `cargo axplat info -C {} -c {}`",
-                    app_dir.display(),
-                    platform_package
-                )
-            })?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!(
-                "cargo axplat info failed for package `{}`: {}\nstderr:\n{}",
-                platform_package,
-                output.status,
-                stderr
-            );
-        }
+            .arg(platform_package);
+        let output = run_output(&mut command, &desc)?;
 
         let config_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if config_path.is_empty() {
@@ -339,20 +319,10 @@ impl ArtifactPreparer {
 
     fn parse_mem_size(&self, mem: &str) -> Result<String> {
         let script = resolve_strtosz_script_path(&self.manifest_dir)?;
-        let output = Command::new(&script)
-            .arg(mem)
-            .output()
-            .with_context(|| format!("Failed to run {}", script.display()))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!(
-                "failed to parse memory size `{}` via {}: {}",
-                mem,
-                script.display(),
-                stderr.trim()
-            );
-        }
+        let desc = format!("{} {}", script.display(), mem);
+        let mut command = Command::new(&script);
+        command.arg(mem);
+        let output = run_output(&mut command, &desc)?;
 
         let parsed = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if parsed.is_empty() {
