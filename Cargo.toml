@@ -229,6 +229,26 @@ scope-local = { path = "components/scope-local", version = "0.1.0" }
 
 axbuild = { path = "scripts/axbuild", version = "0.3.0-preview.3" }
 
+# === axvisor ===
+axvm = { path = "components/axvm", version = "0.3" }
+axvmconfig = { path = "components/axvmconfig", version = "0.3" }
+axvcpu = { path = "components/axvcpu", version = "0.3" }
+x86_vcpu = { path = "components/x86_vcpu", version = "0.3" }
+x86_vlapic = { path = "components/x86_vlapic", version = "0.2.2" }
+arm_vcpu = { path = "components/arm_vcpu", version = "0.3" }
+arm_vgic = { path = "components/arm_vgic", version = "0.2.2" }
+aarch64_sysreg = { path = "components/aarch64_sysreg", version = "0.1.1" }
+riscv_vcpu = { path = "components/riscv_vcpu", version = "0.3" }
+riscv_vplic = { path = "components/riscv_vplic", version = "0.2.2" }
+riscv-h = { path = "components/riscv-h", version = "0.2" }
+axaddrspace = { path = "components/axaddrspace", version = "0.3" }
+axdevice = { path = "components/axdevice", version = "0.2.2" }
+axdevice_base = { path = "components/axdevice_base", version = "0.2.2" }
+axvisor_api = { path = "components/axvisor_api", version = "0.3" }
+axhvc = { path = "components/axhvc", version = "0.2.0" }
+axklib = { path = "components/axklib", version = "0.3.0" }
+range-alloc-arceos = { path = "components/range-alloc-arceos", version = "0.1.4" }
+
 [workspace.dependencies]
 # === os/arceos crates (0.3.0-preview.3) ===
 # ulib
@@ -307,7 +327,7 @@ bindgen = "0.72"
 buddy-slab-allocator = "0.2"
 cfg-if = "1.0"
 chrono = { version = "0.4", default-features = false }
-crate_interface = "0.1"
+crate_interface = "0.3"
 ctor_bare = "0.2"
 event-listener = { version = "5.4.0", default-features = false }
 kernel_guard = "0.1"
