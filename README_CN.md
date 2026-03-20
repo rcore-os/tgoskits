@@ -1,6 +1,6 @@
 <h1 align="center">axaddrspace</h1>
 
-<p align="center">ArceOS-Hypervisor guest VM address space management module</p>
+<p align="center">ArceOS-Hypervisor 客户机虚拟机地址空间管理模块</p>
 
 <div align="center">
 
@@ -11,78 +11,76 @@
 
 </div>
 
-English | [中文](README_CN.md)
+[English](README.md) | 中文
 
-# Introduction
+# 简介
 
-`axaddrspace` is the guest address space management crate for the
-[ArceOS-Hypervisor](https://github.com/arceos-hypervisor/) project. It provides
-nested page table management, guest physical address translation, memory
-mapping backends, and nested page fault handling for hypervisor environments.
+`axaddrspace` 是 [ArceOS-Hypervisor](https://github.com/arceos-hypervisor/)
+项目中的客户机地址空间管理 crate，提供嵌套页表管理、客户机物理地址转换、内存映射后端以及嵌套页错误处理能力，面向 Hypervisor 场景使用。
 
-This crate supports multiple architectures:
+该 crate 支持多种体系结构：
 
-- **x86_64** - VMX Extended Page Tables (EPT)
-- **AArch64** - Stage-2 page tables
-- **RISC-V** - Nested page tables based on the hypervisor extension
+- **x86_64** - VMX Extended Page Tables（EPT）
+- **AArch64** - Stage-2 页表
+- **RISC-V** - 基于 Hypervisor 扩展的嵌套页表
 
-Key capabilities include:
+核心能力包括：
 
-- **`AddrSpace`** - address space creation, mapping, unmapping, and translation
-- **`AxMmHal`** - hardware abstraction trait for frame allocation and address conversion
-- **Linear mapping backend** - map known contiguous host physical memory ranges
-- **Allocation mapping backend** - allocate frames eagerly or lazily on page faults
-- **Guest memory helpers** - translate guest addresses to accessible host buffers
+- **`AddrSpace`** - 地址空间创建、映射、解除映射与地址转换
+- **`AxMmHal`** - 用于页帧分配与地址转换的硬件抽象 trait
+- **线性映射后端** - 映射已知的连续宿主物理内存区域
+- **分配映射后端** - 支持预分配或缺页时惰性分配页帧
+- **客户机内存辅助接口** - 将客户机地址转换为宿主可访问缓冲区
 
-Supports `#![no_std]` and is intended for bare-metal hypervisor and kernel use.
+该库支持 `#![no_std]`，适用于裸机 Hypervisor 和内核环境。
 
-## Quick Start
+## 快速开始
 
-### Requirements
+### 环境要求
 
-- Rust nightly toolchain
-- Rust components: `rust-src`, `clippy`, `rustfmt`
+- Rust nightly 工具链
+- Rust 组件：`rust-src`、`clippy`、`rustfmt`
 
 ```bash
-# Install rustup (if not installed)
+# 安装 rustup（如未安装）
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# Install nightly toolchain and components
+# 安装 nightly 工具链和组件
 rustup install nightly
 rustup component add rust-src clippy rustfmt --toolchain nightly
 ```
 
-### Run Check and Test
+### 运行检查和测试
 
 ```bash
-# 1. Clone the repository
+# 1. 克隆仓库
 git clone https://github.com/arceos-hypervisor/axaddrspace.git
 cd axaddrspace
 
-# 2. Code check
+# 2. 代码检查
 ./scripts/check.sh
 
-# 3. Run tests
+# 3. 运行测试
 ./scripts/test.sh
 
-# 4. Run a specific integration test target directly
+# 4. 直接运行指定集成测试目标
 cargo test --test address_space
 ```
 
-The helper scripts download the shared `axci` test/check framework on first run.
+辅助脚本会在首次运行时自动下载共享的 `axci` 检查/测试框架。
 
-## Integration
+## 集成方式
 
-### Installation
+### 安装
 
-Add to your `Cargo.toml`:
+在 `Cargo.toml` 中添加：
 
 ```toml
 [dependencies]
 axaddrspace = "0.3.0"
 ```
 
-### Example
+### 示例
 
 ```rust
 use axaddrspace::{AddrSpace, AxMmHal, GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags};
@@ -154,28 +152,28 @@ fn example() -> axerrno::AxResult<()> {
 }
 ```
 
-### Features
+### 特性
 
-- `arm-el2`: enable AArch64 EL2 support
-- `default`: includes `arm-el2`
+- `arm-el2`：启用 AArch64 EL2 支持
+- `default`：默认包含 `arm-el2`
 
-### Documentation
+### 文档
 
-Generate and view API documentation:
+生成并查看 API 文档：
 
 ```bash
 cargo doc --no-deps --open
 ```
 
-Online documentation: [docs.rs/axaddrspace](https://docs.rs/axaddrspace)
+在线文档：[docs.rs/axaddrspace](https://docs.rs/axaddrspace)
 
-# Contributing
+# 贡献
 
-1. Fork the repository and create a branch
-2. Run local check: `./scripts/check.sh`
-3. Run local tests: `./scripts/test.sh`
-4. Submit PR and pass CI checks
+1. Fork 仓库并创建分支
+2. 本地运行检查：`./scripts/check.sh`
+3. 本地运行测试：`./scripts/test.sh`
+4. 提交 PR 并通过 CI 检查
 
-# License
+# 许可证
 
-Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
+本项目采用 Apache License 2.0。详见 [LICENSE](LICENSE)。
