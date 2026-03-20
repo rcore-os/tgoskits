@@ -77,8 +77,7 @@ impl Builder {
 
         tracing::debug!("ostool cargo config: {:?}", prepared.cargo_spec.cargo);
         let mut ctx = prepared.cargo_spec.ctx.into_app_context();
-        ostool_bridge::cargo_build_with_artifact_resolution(&mut ctx, &prepared.cargo_spec.cargo)
-            .await?;
+        ostool_bridge::cargo_build(&mut ctx, &prepared.cargo_spec.cargo).await?;
 
         let elf = ctx
             .paths

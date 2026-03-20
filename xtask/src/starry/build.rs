@@ -87,8 +87,12 @@ impl BuildArgs {
 pub async fn run_build(args: BuildArgs) -> Result<()> {
     let package = args.package.clone();
     let overrides = args.into_config_override()?;
-    let axbuild =
-        axbuild::arceos::AxBuild::from_overrides(overrides, Some(package), None, RunScope::Default)?;
+    let axbuild = axbuild::arceos::AxBuild::from_overrides(
+        overrides,
+        Some(package),
+        None,
+        RunScope::Default,
+    )?;
 
     println!("Building StarryOS application:");
     let output = axbuild.build().await?;

@@ -23,12 +23,12 @@ pub mod qemu;
 use std::path::PathBuf;
 
 pub use build::{BuildOutput, Builder, PreparedArtifacts, prepare_artifacts};
-pub use context::RunScope;
 pub use config::{
     AVAILABLE_BOARDS, ArceosConfig, ArceosConfigOverride, Arch, BuildMode, LogLevel, NetDev,
     QEMU_CONFIG_FILE_NAME, QemuOptions, apply_defconfig, config_path, load_board_config,
     load_config, parse_qemu_options, resolve_package_app_dir, save_config,
 };
+pub use context::RunScope;
 pub use features::FeatureResolver;
 pub use platform::PlatformResolver;
 pub use qemu::QemuRunner;
@@ -60,11 +60,32 @@ impl AxBuild {
     }
 
     pub async fn run_qemu(self) -> anyhow::Result<()> {
+        self.run_qemu_internal().await
+    }
+
+    pub async fn test(self) -> anyhow::Result<()> {
+        self.run_qemu_internal().await
+    }
+
+    pub async fn run_qemu_with_config_path(self, qemu_config_path: PathBuf) -> anyhow::Result<()> {
+        self.run_qemu_with_config_path_internal(qemu_config_path)
+            .await
+    }
+
+    pub async fn test_with_config_path(self, qemu_config_path: PathBuf) -> anyhow::Result<()> {
+        self.run_qemu_with_config_path_internal(qemu_config_path)
+            .await
+    }
+
+    async fn run_qemu_internal(self) -> anyhow::Result<()> {
         let qemu_runner = QemuRunner::new(self.ctx);
         qemu_runner.run().await
     }
 
-    pub async fn run_qemu_with_config_path(self, qemu_config_path: PathBuf) -> anyhow::Result<()> {
+    async fn run_qemu_with_config_path_internal(
+        self,
+        qemu_config_path: PathBuf,
+    ) -> anyhow::Result<()> {
         let mut ctx = self.ctx;
         ctx.qemu_config_path = Some(qemu_config_path);
         let qemu_runner = QemuRunner::new(ctx);

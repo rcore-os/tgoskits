@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ::ostool::run::qemu::{RunQemuArgs, run_qemu_with_more_default_args};
 use anyhow::Result;
 
 use crate::arceos::{
@@ -64,20 +63,13 @@ impl QemuRunner {
     ) -> Result<()> {
         let mut ctx = prepared.cargo_spec.ctx.into_app_context();
         ctx.config_search_dir = Some(self.ctx.config_search_dir().to_path_buf());
-        ostool_bridge::cargo_build_with_artifact_resolution(&mut ctx, &prepared.cargo_spec.cargo)
-            .await?;
-        run_qemu_with_more_default_args(
-            ctx,
-            RunQemuArgs {
-                qemu_config: self.ctx.qemu_config_path.clone(),
-                dtb_dump: false,
-                show_output: true,
-            },
-            ostool_bridge::build_qemu_default_args(effective_config, self.ctx.manifest_dir()),
-            effective_config.qemu.success_regex.clone(),
-            effective_config.qemu.fail_regex.clone(),
-        )
-        .await
+        let qemu_config_path = ostool_bridge::ensure_qemu_config(
+            self.ctx.manifest_dir(),
+            self.ctx.app_dir(),
+            effective_config,
+            self.ctx.qemu_config_path.as_deref(),
+        )?;
+        ostool_bridge::cargo_run_qemu(&mut ctx, &prepared.cargo_spec.cargo, qemu_config_path).await
     }
 
     /// Get QEMU command as a string (for debugging)
@@ -85,26 +77,5 @@ impl QemuRunner {
         let qemu = self.qemu_binary();
         let args = self.build_args();
         format!("{} {}", qemu, args.join(" "))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::PathBuf;
-
-    use super::*;
-
-    #[test]
-    fn run_qemu_args_forward_explicit_config_path() {
-        let config_path = PathBuf::from("/tmp/custom-qemu.toml");
-        let args = RunQemuArgs {
-            qemu_config: Some(config_path.clone()),
-            dtb_dump: false,
-            show_output: true,
-        };
-
-        assert_eq!(args.qemu_config, Some(config_path));
-        assert!(!args.dtb_dump);
-        assert!(args.show_output);
     }
 }

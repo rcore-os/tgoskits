@@ -21,9 +21,7 @@ pub mod build;
 pub mod run;
 
 pub use build::{BuildArgs, run_build};
-pub use run::RunArgs;
-
-use crate::arceos::run::run_with_arg;
+pub use run::{RunArgs, run_with_arg, test_with_arg_in_scope};
 
 /// ArceOS subcommands
 #[derive(Subcommand, Debug)]

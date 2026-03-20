@@ -107,6 +107,7 @@ pub async fn run_with_qemu_regex(
     success_regex: Vec<String>,
     fail_regex: Vec<String>,
 ) -> Result<()> {
+    let as_test = !success_regex.is_empty() || !fail_regex.is_empty();
     let package = args.build.package.clone();
     let run_scope = if package == STARRY_TEST_PACKAGE {
         RunScope::PackageRoot
@@ -118,14 +119,15 @@ pub async fn run_with_qemu_regex(
         qemu.success_regex = success_regex;
         qemu.fail_regex = fail_regex;
     }
-    let axbuild = axbuild::arceos::AxBuild::from_overrides(
-        overrides,
-        Some(package),
-        None,
-        run_scope,
-    )?;
-    println!("Running in QEMU...");
-    axbuild.run_qemu().await
+    let axbuild =
+        axbuild::arceos::AxBuild::from_overrides(overrides, Some(package), None, run_scope)?;
+    if as_test {
+        println!("Running test in QEMU...");
+        axbuild.test().await
+    } else {
+        println!("Running in QEMU...");
+        axbuild.run_qemu().await
+    }
 }
 
 pub fn default_test_success_regex() -> Vec<String> {
