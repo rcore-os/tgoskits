@@ -29,7 +29,7 @@ use spin::{Mutex, Once};
 #[cfg(not(target_arch = "x86_64"))]
 use crate::vcpu::AxVCpuCreateConfig;
 #[cfg(target_arch = "aarch64")]
-use crate::vcpu::{AxVCpuCreateConfig, get_sysreg_device};
+use crate::vcpu::get_sysreg_device;
 use crate::{
     config::{AxVMConfig, PhysCpuList},
     hal::PagingHandlerImpl,

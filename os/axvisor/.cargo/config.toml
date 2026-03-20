@@ -9,13 +9,14 @@ rustflags = [
     "-Clink-args=-Tlink.x",
 ]
 
-[target.aarch64-unknown-none-softfloat]
-rustflags = [
-    "-Crelocation-model=pic",
-    "-Clink-args=-pie",
-    "-Clink-args=-znostart-stop-gc",
-    "-Clink-args=-Taxplat.x",
-]
+# Comment out because it's specified by runner in tgoskits
+# [target.aarch64-unknown-none-softfloat]
+# rustflags = [
+#     "-Crelocation-model=pic",
+#     "-Clink-args=-pie",
+#     "-Clink-args=-znostart-stop-gc",
+#     "-Clink-args=-Taxplat.x",
+# ]
 
 [target.riscv64gc-unknown-none-elf]
 rustflags = [

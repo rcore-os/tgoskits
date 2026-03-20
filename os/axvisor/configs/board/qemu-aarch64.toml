@@ -1,11 +1,7 @@
 cargo_args = [
-    "--config",
-    'target.aarch64-unknown-none-softfloat.rustflags = ["-Crelocation-model=pic", "-Clink-args=-pie", "-Clink-args=-znostart-stop-gc", "-Clink-args=-Taxplat.x"]',
-]
-# cargo_args = [
 #     "--config",
-#     'target.aarch64-unknown-none-softfloat.rustflags = ["-Clink-args=-Taxplat.x"]',
-# ]
+#     'target.aarch64-unknown-none-softfloat.rustflags = ["-Crelocation-model=pic", "-Clink-args=-pie", "-Clink-args=-znostart-stop-gc", "-Clink-args=-Taxplat.x"]',
+]
 features = [
     "ept-level-4",
     "axstd/bus-mmio",
