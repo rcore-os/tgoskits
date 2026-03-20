@@ -19,8 +19,10 @@ use core::mem::MaybeUninit;
 use axplat::mem::{PhysAddr, pa, phys_to_virt};
 use kspin::SpinNoIrq;
 use lazyinit::LazyInit;
-use x2apic::ioapic::IoApic;
-use x2apic::lapic::{LocalApic, LocalApicBuilder, xapic_base};
+use x2apic::{
+    ioapic::IoApic,
+    lapic::{LocalApic, LocalApicBuilder, xapic_base},
+};
 use x86_64::instructions::port::Port;
 
 use self::vectors::*;

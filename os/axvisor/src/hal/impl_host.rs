@@ -6,6 +6,6 @@ struct HostImpl;
 impl HostIf for HostImpl {
     fn get_host_cpu_num() -> usize {
         // std::os::arceos::modules::axconfig::plat::CPU_NUM
-        axruntime::cpu_count()
+        std::os::arceos::modules::axhal::cpu_num()
     }
 }

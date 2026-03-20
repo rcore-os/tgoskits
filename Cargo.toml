@@ -231,7 +231,7 @@ axbuild = { path = "scripts/axbuild", version = "0.3.0-preview.3" }
 
 # === axvisor ===
 axvm = { path = "components/axvm", version = "0.3" }
-axvmconfig = { path = "components/axvmconfig", version = "0.3" }
+axvmconfig = { path = "components/axvmconfig", version = "0.2.2" }
 axvcpu = { path = "components/axvcpu", version = "0.3" }
 x86_vcpu = { path = "components/x86_vcpu", version = "0.3" }
 x86_vlapic = { path = "components/x86_vlapic", version = "0.2.2" }

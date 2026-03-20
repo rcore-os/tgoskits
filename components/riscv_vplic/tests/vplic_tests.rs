@@ -1,6 +1,6 @@
 use axaddrspace::GuestPhysAddr;
 use riscv_vplic::{
-    VPlicGlobal, PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET, PLIC_CONTEXT_CTRL_OFFSET, PLIC_CONTEXT_STRIDE,
+    PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET, PLIC_CONTEXT_CTRL_OFFSET, PLIC_CONTEXT_STRIDE, VPlicGlobal,
 };
 
 /// Calculate minimum required size for VPlicGlobal with given contexts

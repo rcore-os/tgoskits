@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use axaddrspace::{AxMmHal, HostPhysAddr, HostVirtAddr};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use axaddrspace::{AxMmHal, HostPhysAddr, HostVirtAddr};
 use lazy_static::lazy_static;
 use memory_addr::{PAGE_SIZE_4K as PAGE_SIZE, PhysAddr, VirtAddr};
 use page_table_multiarch::PagingHandler;

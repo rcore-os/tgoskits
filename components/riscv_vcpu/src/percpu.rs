@@ -14,7 +14,6 @@
 
 use axerrno::{AxError, AxResult};
 use axvcpu::AxArchPerCpu;
-
 use riscv::register::sie;
 use riscv_h::register::{hedeleg, hideleg, hvip};
 

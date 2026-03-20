@@ -14,8 +14,8 @@
 
 extern crate alloc;
 
-use alloc::vec;
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec, vec::Vec};
+
 use axaddrspace::{GuestPhysAddr, GuestPhysAddrRange, device::AccessWidth};
 use axdevice_base::{BaseDeviceOps, EmuDeviceType, map_device_of_type};
 use axerrno::AxResult;

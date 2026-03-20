@@ -12,38 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::sync::Arc;
-use alloc::vec::Vec;
-use axaddrspace::HostVirtAddr;
-use axerrno::{AxError, AxResult, ax_err, ax_err_type};
-use axvisor_api::vmm::InterruptVector;
-use core::alloc::Layout;
-use core::fmt;
-use memory_addr::{align_down_4k, align_up_4k};
-use spin::{Mutex, Once};
+use alloc::{boxed::Box, format, sync::Arc, vec::Vec};
+use core::{alloc::Layout, fmt};
 
-use axaddrspace::{AddrSpace, GuestPhysAddr, HostPhysAddr, MappingFlags, device::AccessWidth};
+use axaddrspace::{
+    AddrSpace, GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, device::AccessWidth,
+};
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
+use axerrno::{AxError, AxResult, ax_err, ax_err_type};
 use axvcpu::{AxVCpu, AxVCpuExitReason};
+use axvisor_api::vmm::InterruptVector;
 use cpumask::CpuMask;
 use memory_addr::{align_down_4k, align_up_4k};
 use spin::{Mutex, Once};
 
-use crate::config::{AxVMConfig, PhysCpuList};
-use crate::hal::PagingHandlerImpl;
-use crate::has_hardware_support;
-use crate::vcpu::AxArchVCpuImpl;
-
 #[cfg(not(target_arch = "x86_64"))]
 use crate::vcpu::AxVCpuCreateConfig;
-
 #[cfg(target_arch = "aarch64")]
 use crate::vcpu::{AxVCpuCreateConfig, get_sysreg_device};
 use crate::{
-    AxVMHal,
     config::{AxVMConfig, PhysCpuList},
+    hal::PagingHandlerImpl,
     has_hardware_support,
     vcpu::AxArchVCpuImpl,
 };
@@ -98,55 +87,6 @@ struct AxVMInnerMut {
     memory_regions: Vec<VMMemoryRegion>,
     config: AxVMConfig,
     vm_status: VMStatus,
-}
-
-/// VM status enumeration representing the lifecycle states of a virtual machine
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VMStatus {
-    /// VM is being created/loaded
-    Loading,
-    /// VM is loaded but not yet started
-    Loaded,
-    /// VM is currently running
-    Running,
-    /// VM is suspended (paused but can be resumed)
-    Suspended,
-    /// VM is in the process of shutting down
-    Stopping,
-    /// VM is stopped
-    Stopped,
-}
-
-impl VMStatus {
-    /// Get status as a string (lowercase)
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            VMStatus::Loading => "loading",
-            VMStatus::Loaded => "loaded",
-            VMStatus::Running => "running",
-            VMStatus::Suspended => "suspended",
-            VMStatus::Stopping => "stopping",
-            VMStatus::Stopped => "stopped",
-        }
-    }
-
-    /// Get status with emoji icon
-    pub fn as_str_with_icon(&self) -> &'static str {
-        match self {
-            VMStatus::Loading => "🔄 loading",
-            VMStatus::Loaded => "📦 loaded",
-            VMStatus::Running => "🚀 running",
-            VMStatus::Suspended => "🛑 suspended",
-            VMStatus::Stopping => "⏹️ stopping",
-            VMStatus::Stopped => "💤 stopped",
-        }
-    }
-}
-
-impl fmt::Display for VMStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
 }
 
 /// VM status enumeration representing the lifecycle states of a virtual machine
@@ -876,7 +816,8 @@ impl AxVM {
         let current_status = self.vm_status();
         if !matches!(current_status, VMStatus::Stopping | VMStatus::Stopped) {
             warn!(
-                "VM[{}] is being dropped without explicit shutdown (status: {:?}), marking as stopping",
+                "VM[{}] is being dropped without explicit shutdown (status: {:?}), marking as \
+                 stopping",
                 self.id(),
                 current_status
             );
@@ -924,7 +865,8 @@ impl AxVM {
                 }
             } else {
                 debug!(
-                    "VM[{}] skipping dealloc for reserved memory region: GPA={:#x}, HVA={:#x}, size={:#x}",
+                    "VM[{}] skipping dealloc for reserved memory region: GPA={:#x}, HVA={:#x}, \
+                     size={:#x}",
                     self.id(),
                     region.gpa.as_usize(),
                     region.hva.as_usize(),

@@ -95,10 +95,10 @@ impl ArchIf for ArchImpl {
             .lock()
             .unwrap();
         if let Some(gic) = gic.typed_mut::<arm_gic_driver::v2::Gic>() {
-            return u32::from(gic.cpu_interface().ack()) as _
+            return u32::from(gic.cpu_interface().ack()) as _;
         }
         if let Some(gic) = gic.typed_mut::<arm_gic_driver::v3::Gic>() {
-            return gic.cpu_interface().ack1().to_u32() as _
+            return gic.cpu_interface().ack1().to_u32() as _;
         }
         panic!("No GIC driver found");
     }
