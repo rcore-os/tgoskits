@@ -84,29 +84,29 @@ cd tgoskits
 
 ```bash
 # RISC-V 64位架构
-cargo xtask arceos run --package helloworld --arch riscv64
+cargo xtask arceos run --package arceos-helloworld --arch riscv64
 
 # x86_64架构
-cargo xtask arceos run --package helloworld --arch x86_64
+cargo xtask arceos run --package arceos-helloworld --arch x86_64
 
 # ARM64架构
-cargo xtask arceos run --package helloworld --arch aarch64
+cargo xtask arceos run --package arceos-helloworld --arch aarch64
 
 # LoongArch64架构
-cargo xtask arceos run --package helloworld --arch loongarch64
+cargo xtask arceos run --package arceos-helloworld --arch loongarch64
 ```
 
 ### ArceOS - 其他示例
 
 ```bash
 # HTTP 服务器
-cargo xtask arceos run --package httpserver --arch riscv64
+cargo xtask arceos run --package arceos-httpserver --arch riscv64
 
 # HTTP 客户端
-cargo xtask arceos run --package httpclient --arch riscv64
+cargo xtask arceos run --package arceos-httpclient --arch riscv64
 
 # Shell
-cargo xtask arceos run --package shell --arch riscv64
+cargo xtask arceos run --package arceos-shell --arch riscv64
 ```
 
 ### StarryOS
@@ -260,7 +260,7 @@ cargo install cargo-binutils
 
 **A:** 确保已经构建项目：
 ```bash
-cargo xtask arceos build --package helloworld --arch riscv64
+cargo xtask arceos build --package arceos-helloworld --arch riscv64
 ```
 
 ### Q: StarryOS 运行时找不到 rootfs
@@ -275,11 +275,11 @@ cargo xtask starry rootfs --arch riscv64
 **A:** 使用 `-v` 参数或设置环境变量：
 ```bash
 # 方法1：使用 verbose 参数
-cargo xtask arceos build --package helloworld --arch riscv64 -v
+cargo xtask arceos build --package arceos-helloworld --arch riscv64 -v
 
 # 方法2：设置环境变量
 export RUST_LOG=debug
-cargo xtask arceos run --package helloworld --arch riscv64
+cargo xtask arceos run --package arceos-helloworld --arch riscv64
 ```
 
 ### Q: 如何调试内核？
@@ -287,10 +287,10 @@ cargo xtask arceos run --package helloworld --arch riscv64
 **A:** 使用 QEMU 的调试功能：
 ```bash
 # 启动 QEMU 并等待 GDB 连接
-cargo xtask arceos run --package helloworld --arch riscv64 -- -s -S
+cargo xtask arceos run --package arceos-helloworld --arch riscv64 -- -s -S
 
 # 在另一个终端连接 GDB
-riscv64-unknown-elf-gdb target/riscv64gc-unknown-none-elf/release/helloworld
+riscv64-unknown-elf-gdb target/riscv64gc-unknown-none-elf/release/arceos-helloworld
 (gdb) target remote :1234
 (gdb) break rust_main
 (gdb) continue

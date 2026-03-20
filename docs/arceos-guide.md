@@ -73,13 +73,13 @@ ArceOS 是一个用 Rust 编写的模块化操作系统框架（或 Unikernel）
 cd /path/to/tgoskits
 
 # 2. 构建并运行示例
-cargo xtask arceos run --package helloworld --arch riscv64
+cargo xtask arceos run --package arceos-helloworld --arch riscv64
 
 # 3. 只构建不运行
-cargo xtask arceos build --package helloworld --arch riscv64
+cargo xtask arceos build --package arceos-helloworld --arch riscv64
 
 # 4. 指定平台
-cargo xtask arceos run --package helloworld --arch aarch64 --platform axplat-aarch64-qemu-virt
+cargo xtask arceos run --package arceos-helloworld --arch aarch64 --platform axplat-aarch64-qemu-virt
 ```
 
 ### 使用 Makefile（在 ArceOS 目录）
@@ -142,15 +142,15 @@ axruntime (运行时入口)
 
 ```bash
 # 启用网络
-cargo xtask arceos run --package httpserver --arch riscv64 \
+cargo xtask arceos run --package arceos-httpserver --arch riscv64 \
     --features axfeat/net
 
 # 启用文件系统
-cargo xtask arceos run --package shell --arch riscv64 \
+cargo xtask arceos run --package arceos-shell --arch riscv64 \
     --features axfeat/fs
 
 # 启用 SMP
-cargo xtask arceos run --package helloworld --arch riscv64 \
+cargo xtask arceos run --package arceos-helloworld --arch riscv64 \
     --features axfeat/smp --smp 4
 ```
 
@@ -335,10 +335,10 @@ cargo xtask arceos run --package myapp --arch riscv64 \
 
 ```bash
 # 1. 启动 QEMU 并等待 GDB 连接
-cargo xtask arceos run --package helloworld --arch riscv64 -- -s -S
+cargo xtask arceos run --package arceos-helloworld --arch riscv64 -- -s -S
 
 # 2. 在另一个终端连接 GDB
-riscv64-unknown-elf-gdb target/riscv64gc-unknown-none-elf/release/helloworld
+riscv64-unknown-elf-gdb target/riscv64gc-unknown-none-elf/release/arceos-helloworld
 
 # GDB 命令
 (gdb) target remote :1234
@@ -352,7 +352,7 @@ riscv64-unknown-elf-gdb target/riscv64gc-unknown-none-elf/release/helloworld
 
 ```bash
 # 方法1：通过命令行
-cargo xtask arceos run --package helloworld --arch riscv64 --features axfeat/log-debug
+cargo xtask arceos run --package arceos-helloworld --arch riscv64 --features axfeat/log-debug
 
 # 方法2：通过 Makefile
 make A=examples/helloworld ARCH=riscv64 LOG=trace run
@@ -464,13 +464,13 @@ make A=examples/helloworld ARCH=riscv64 LOG=off run
 
 ```bash
 # HTTP 服务器（需要网络支持）
-cargo xtask arceos run --package httpserver --arch riscv64
+cargo xtask arceos run --package arceos-httpserver --arch riscv64
 
 # HTTP 客户端
-cargo xtask arceos run --package httpclient --arch riscv64
+cargo xtask arceos run --package arceos-httpclient --arch riscv64
 
 # Shell（需要块设备支持）
-cargo xtask arceos run --package shell --arch riscv64
+cargo xtask arceos run --package arceos-shell --arch riscv64
 ```
 
 ## 参考资源

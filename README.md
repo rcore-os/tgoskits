@@ -82,7 +82,7 @@ git clone https://github.com/rcore-os/tgoskits.git
 cd tgoskits
 
 # 2. ArceOS 示例 - Hello World
-cargo xtask arceos run --package helloworld --arch riscv64
+cargo xtask arceos run --package arceos-helloworld --arch riscv64
 
 # 3. StarryOS
 cargo xtask starry rootfs --arch riscv64

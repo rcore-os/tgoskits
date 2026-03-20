@@ -43,8 +43,8 @@ TGOSKits 使用多层次的构建系统：
 
 ```bash
 # ArceOS 构建
-cargo xtask arceos build --package helloworld --arch riscv64
-cargo xtask arceos run --package helloworld --arch riscv64
+cargo xtask arceos build --package arceos-helloworld --arch riscv64
+cargo xtask arceos run --package arceos-helloworld --arch riscv64
 
 # StarryOS 构建
 cargo xtask starry build --arch riscv64 --package starryos
@@ -282,7 +282,7 @@ vms = ["configs/vms/arceos-aarch64.toml"]
 
 ```bash
 # ArceOS - 通过构建参数
-cargo xtask arceos build --package helloworld --arch riscv64
+cargo xtask arceos build --package arceos-helloworld --arch riscv64
 
 # Axvisor - 通过 defconfig
 cargo xtask defconfig qemu-aarch64
@@ -340,11 +340,11 @@ cargo xtask menuconfig
 
 ```bash
 # 最简单的方式
-cargo xtask arceos run --package helloworld --arch riscv64
+cargo xtask arceos run --package arceos-helloworld --arch riscv64
 
 # 自定义选项
 cargo xtask arceos build \
-    --package httpserver \
+    --package arceos-httpserver \
     --arch aarch64 \
     --platform axplat-aarch64-qemu-virt \
     --release \
@@ -424,7 +424,7 @@ rustup target add riscv64gc-unknown-none-elf
 cargo build --target riscv64gc-unknown-none-elf
 
 # 使用 xtask
-cargo xtask arceos build --package helloworld --arch riscv64
+cargo xtask arceos build --package arceos-helloworld --arch riscv64
 ```
 
 ## 构建输出
@@ -435,28 +435,28 @@ cargo xtask arceos build --package helloworld --arch riscv64
 target/
 ├── riscv64gc-unknown-none-elf/
 │   ├── debug/
-│   │   └── helloworld
+│   │   └── arceos-helloworld
 │   └── release/
-│       └── helloworld
+│       └── arceos-helloworld
 ├── aarch64-unknown-none-softfloat/
 │   └── release/
-│       └── helloworld
+│       └── arceos-helloworld
 └── x86_64-unknown-none/
     └── release/
-        └── helloworld
+        └── arceos-helloworld
 ```
 
 ### 镜像文件
 
 ```bash
 # ELF 格式
-target/riscv64gc-unknown-none-elf/release/helloworld
+target/riscv64gc-unknown-none-elf/release/arceos-helloworld
 
 # 二进制格式
-target/riscv64gc-unknown-none-elf/release/helloworld.bin
+target/riscv64gc-unknown-none-elf/release/arceos-helloworld.bin
 
 # 反汇编
-rust-objdump -d target/riscv64gc-unknown-none-elf/release/helloworld
+rust-objdump -d target/riscv64gc-unknown-none-elf/release/arceos-helloworld
 ```
 
 ## 调试构建问题
@@ -542,7 +542,7 @@ jobs:
           targets: riscv64gc-unknown-none-elf
       
       - name: Build
-        run: cargo xtask arceos build --package helloworld --arch riscv64
+        run: cargo xtask arceos build --package arceos-helloworld --arch riscv64
       
       - name: Test
         run: cargo xtask test arceos --target riscv64gc-unknown-none-elf
