@@ -17,10 +17,13 @@ use std::{
     process::Command,
 };
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::arceos::{ArceosConfig, Arch};
+use crate::{
+    arceos::{ArceosConfig, Arch},
+    process::run_output,
+};
 
 /// Platform resolver
 pub struct PlatformResolver {
@@ -78,17 +81,7 @@ impl PlatformResolver {
             cmd.arg("--platform").arg(plat);
         }
 
-        let output = cmd.output().context("Failed to run cargo-axplat info")?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!(
-                "cargo-axplat info failed: {}\nstderr: {}",
-                output.status,
-                stderr
-            );
-        }
-
+        let output = run_output(&mut cmd, "cargo axplat info")?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         self.parse_axplat_output(&stdout)
     }
