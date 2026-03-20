@@ -118,18 +118,11 @@ rdrive = "0.20"
 rd-block = "0.1"
 pcie = "0.5.0"
 
-# platform
-axplat-riscv64-qemu-virt = {path = "platform/riscv64-qemu-virt"}
-
 # Optional driver dependencies
 sdmmc = { version = "0.1", default-features = false, features = ["pio"], optional = true }
 rk3588-clk = { version = "0.1", optional = true }
 rockchip-pm = { version = "0.4", optional = true }
 phytium-mci = { version = "0.1", default-features = false, features = ["pio"], optional = true }
-
-[target.'cfg(target_arch = "aarch64")'.dependencies]
-aarch64-cpu-ext = "0.1"
-arm-gic-driver = {version = "0.17", features = ["rdif"]}
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 axplat-x86-qemu-q35 = { version = "0.2.0", default-features = false, features = [
@@ -138,6 +131,13 @@ axplat-x86-qemu-q35 = { version = "0.2.0", default-features = false, features = 
     "smp",
 ] }
 axconfig = { version = "=0.3.0-preview.3", features = ["plat-dyn"] }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+aarch64-cpu-ext = "0.1"
+arm-gic-driver = {version = "0.17", features = ["rdif"]}
+
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+axplat-riscv64-qemu-virt = "0.3.1-pre.6"
 
 # xtask dependencies (only used when xtask feature is enabled)
 [target.'cfg(any(windows, unix))'.dependencies]

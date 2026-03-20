@@ -12,15 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::os::arceos::{
-    self,
-    modules::{axhal::percpu::this_cpu_id},
-};
+use std::os::arceos::{self, modules::axhal::percpu::this_cpu_id};
 
-use page_table_multiarch::PagingHandler;
 use arceos::modules::axhal;
 use axaddrspace::{AxMmHal, HostPhysAddr, HostVirtAddr};
 use axvm::AxVMPerCpu;
+use page_table_multiarch::PagingHandler;
 
 #[cfg_attr(target_arch = "aarch64", path = "arch/aarch64/mod.rs")]
 #[cfg_attr(target_arch = "x86_64", path = "arch/x86_64/mod.rs")]

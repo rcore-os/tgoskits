@@ -3,7 +3,6 @@ use std::os::arceos::modules::{axhal, axtask};
 use axaddrspace::{HostPhysAddr, HostVirtAddr};
 use axerrno::{AxResult, ax_err_type};
 use axvisor_api::vmm::{InterruptVector, VCpuId, VCpuSet, VMId, VmmIf};
-use axvm::AxVMHal;
 
 use crate::{task::AsVCpuTask, vmm};
 
