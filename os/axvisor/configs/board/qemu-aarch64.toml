@@ -1,0 +1,10 @@
+cargo_args = []
+features = [
+    "ept-level-4",
+    "axstd/bus-mmio",
+    "dyn-plat",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+to_bin = true
+vm_configs = []
