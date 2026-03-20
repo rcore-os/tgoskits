@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+extern crate alloc;
+
 use alloc::vec;
 use alloc::{sync::Arc, vec::Vec};
 use axaddrspace::{GuestPhysAddr, GuestPhysAddrRange, device::AccessWidth};
+use axdevice_base::{BaseDeviceOps, EmuDeviceType, map_device_of_type};
 use axerrno::AxResult;
-
-use crate::{BaseDeviceOps, EmuDeviceType, map_device_of_type};
 
 const DEVICE_A_TEST_METHOD_ANSWER: usize = 42;
 

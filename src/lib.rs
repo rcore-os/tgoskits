@@ -333,6 +333,3 @@ pub trait BaseSysRegDeviceOps = BaseDeviceOps<SysRegAddrRange>;
 ///
 /// Port I/O devices are only used on x86/x86_64 architectures.
 pub trait BasePortDeviceOps = BaseDeviceOps<PortRange>;
-
-#[cfg(test)]
-mod test;
