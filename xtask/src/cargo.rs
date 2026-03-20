@@ -39,15 +39,14 @@ impl Context {
         } else {
             PathBuf::from(format!(".qemu-{arch:?}.toml").to_lowercase())
         };
+        let default_config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("scripts")
+            .join("ostool")
+            .join(format!("qemu-{arch:?}.toml").to_lowercase());
 
         // If the configuration file does not exist, copy from the default location
         if !config_path.exists() {
-            fs::copy(
-                PathBuf::from("scripts")
-                    .join("ostool")
-                    .join(format!("qemu-{arch:?}.toml").to_lowercase()),
-                &config_path,
-            )?;
+            fs::copy(&default_config_path, &config_path)?;
         }
 
         let kind = CargoRunnerKind::Qemu {

@@ -46,11 +46,10 @@ impl Context {
             config_path = c.clone();
         }
 
-        std::fs::write(
-            config_path.parent().unwrap().join(".build-schema.json"),
-            serde_json::to_string_pretty(&json).unwrap(),
-        )
-        .with_context(|| "Failed to write schema file .build-schema.json")?;
+        let path = config_path.parent().unwrap().join(".build-schema.json");
+
+        std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap())
+            .with_context(|| format!("Failed to write schema file: {}", path.display()))?;
 
         let config_str = std::fs::read_to_string(&config_path)
             .with_context(|| format!("Failed to read config file: {}", config_path.display()))?;
@@ -91,6 +90,18 @@ impl Context {
             to_bin: config.to_bin,
             ..Default::default()
         };
+        if cargo.target == "aarch64-unknown-none-softfloat"
+            && cargo.features.iter().any(|feature| feature == "dyn-plat")
+        {
+            // Dynamic-platform AArch64 builds link as PIE, so core/alloc must be
+            // rebuilt with the same PIC settings instead of using prebuilt std.
+            ensure_cargo_arg_pair(&mut cargo.args, "-Z", "build-std=core,alloc");
+            ensure_cargo_arg_pair(
+                &mut cargo.args,
+                "-Z",
+                "build-std-features=compiler-builtins-mem",
+            );
+        }
         cargo.args.extend(config.cargo_args);
 
         if let Some(smp) = config.smp {
@@ -118,4 +129,15 @@ impl Context {
 
         Ok(())
     }
+}
+
+fn ensure_cargo_arg_pair(args: &mut Vec<String>, flag: &str, value: &str) {
+    if args
+        .windows(2)
+        .any(|window| window[0] == flag && window[1] == value)
+    {
+        return;
+    }
+    args.push(flag.to_string());
+    args.push(value.to_string());
 }
