@@ -14,8 +14,6 @@ use std::{
     thread,
 };
 
-const KERNEL_STACK_SIZE: usize = 0x40000; // 256 KiB
-
 const NUM_TASKS: usize = 10;
 const NUM_TIMES: usize = 100;
 static FINISHED_TASKS: AtomicUsize = AtomicUsize::new(0);
@@ -34,8 +32,12 @@ fn online_cpu_mask() -> AxCpuMask {
 #[cfg_attr(feature = "axstd", unsafe(no_mangle))]
 fn main() {
     println!("Hello, main task!");
+    let available_cpus = thread::available_parallelism().unwrap().get();
     for i in 0..NUM_TASKS {
-        let cpu_id = i % thread::available_parallelism().unwrap().get();
+        #[cfg(feature = "axstd")]
+        let cpu_id = i % available_cpus;
+        #[cfg(not(feature = "axstd"))]
+        let _cpu_id = i % available_cpus;
         thread::spawn(move || {
             // Initialize cpu affinity here.
             #[cfg(feature = "axstd")]
@@ -54,20 +56,19 @@ fn main() {
 
             // Change cpu affinity here.
             #[cfg(feature = "axstd")]
-            {
+            if available_cpus > 1 {
                 let mut cpumask = online_cpu_mask();
                 cpumask.set(cpu_id, false);
                 assert!(
                     ax_set_current_affinity(cpumask).is_ok(),
                     "Change CPU affinity failed!"
                 );
-            }
 
-            for _t in 0..NUM_TIMES {
-                // Test CPU affinity here.
-                #[cfg(feature = "axstd")]
-                assert_ne!(this_cpu_id(), cpu_id, "CPU affinity changes failed!");
-                thread::yield_now();
+                for _t in 0..NUM_TIMES {
+                    // Test CPU affinity here.
+                    assert_ne!(this_cpu_id(), cpu_id, "CPU affinity changes failed!");
+                    thread::yield_now();
+                }
             }
             let _ = FINISHED_TASKS.fetch_add(1, Ordering::Relaxed);
         });
