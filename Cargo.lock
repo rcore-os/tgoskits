@@ -1483,6 +1483,7 @@ dependencies = [
  "x2apic",
  "x86",
  "x86_64",
+ "x86_rtc",
 ]
 
 [[package]]
