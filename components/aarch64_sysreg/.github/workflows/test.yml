@@ -1,0 +1,17 @@
+# Integration Test Workflow
+# References shared workflow from axci
+
+name: Test
+
+on:
+  push:
+    branches:
+      - '**'
+    tags-ignore:
+      - '**'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    uses: arceos-hypervisor/axci/.github/workflows/test.yml@main
