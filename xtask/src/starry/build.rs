@@ -15,10 +15,14 @@
 use std::str::FromStr;
 
 use anyhow::{Context, Result, bail};
-use axbuild::{Arch, BuildMode, FeatureResolver, PlatformResolver, arceos::ArceosConfigOverride};
+use axbuild::{
+    Arch, BuildMode, FeatureResolver, PlatformResolver,
+    arceos::{ArceosConfigOverride, RunScope},
+};
 use clap::Args;
 
 pub const STARRY_PACKAGE: &str = "starryos";
+pub const STARRY_TEST_PACKAGE: &str = "starryos-test";
 
 /// Build command arguments
 #[derive(Args, Debug)]
@@ -83,7 +87,12 @@ impl BuildArgs {
 pub async fn run_build(args: BuildArgs) -> Result<()> {
     let package = args.package.clone();
     let overrides = args.into_config_override()?;
-    let axbuild = axbuild::arceos::AxBuild::from_overrides(overrides, Some(package), None)?;
+    let axbuild = axbuild::arceos::AxBuild::from_overrides(
+        overrides,
+        Some(package),
+        None,
+        RunScope::Default,
+    )?;
 
     println!("Building StarryOS application:");
     let output = axbuild.build().await?;

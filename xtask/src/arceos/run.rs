@@ -17,7 +17,7 @@ use std::str::FromStr;
 use anyhow::Result;
 use axbuild::{
     QemuOptions,
-    arceos::{AxBuild, NetDev, context::AxContext},
+    arceos::{AxBuild, NetDev, RunScope},
 };
 use clap::Args;
 
@@ -69,27 +69,47 @@ impl RunArgs {
             graphic: self.graphic,
             accel: self.accel,
             extra_args: vec![],
+            success_regex: vec![],
+            fail_regex: vec![],
         };
 
         overrides.qemu = Some(qemu);
         Ok(overrides)
     }
-
-    pub fn into_axbuild(self) -> Result<AxBuild> {
-        let overrides = self.as_override()?;
-
-        AxBuild::from_overrides(overrides, Some(self.build.package), None)
-    }
 }
 
 /// Run the build and run command
-pub async fn run_with_context(ctx: AxContext) -> Result<()> {
-    println!("Running in QEMU...");
-    AxBuild::new(ctx).run_qemu().await
+pub async fn run_with_arg(arg: RunArgs) -> Result<()> {
+    run_with_arg_in_scope(arg, RunScope::Default).await
 }
 
-pub async fn run_with_arg(arg: RunArgs) -> Result<()> {
-    let axbuild = arg.into_axbuild()?;
-    println!("Running in QEMU...");
-    axbuild.run_qemu().await
+pub async fn run_with_arg_in_scope(arg: RunArgs, run_scope: RunScope) -> Result<()> {
+    run_with_mode_in_scope(arg, run_scope, vec![], vec![], false).await
+}
+
+pub async fn test_with_arg_in_scope(arg: RunArgs, run_scope: RunScope) -> Result<()> {
+    run_with_mode_in_scope(arg, run_scope, vec![], vec![], true).await
+}
+
+async fn run_with_mode_in_scope(
+    arg: RunArgs,
+    run_scope: RunScope,
+    success_regex: Vec<String>,
+    fail_regex: Vec<String>,
+    as_test: bool,
+) -> Result<()> {
+    let package = arg.build.package.clone();
+    let mut overrides = arg.as_override()?;
+    if let Some(qemu) = overrides.qemu.as_mut() {
+        qemu.success_regex = success_regex;
+        qemu.fail_regex = fail_regex;
+    }
+    let axbuild = AxBuild::from_overrides(overrides, Some(package), None, run_scope)?;
+    if as_test {
+        println!("Running test in QEMU...");
+        axbuild.test().await
+    } else {
+        println!("Running in QEMU...");
+        axbuild.run_qemu().await
+    }
 }

@@ -15,13 +15,16 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use axbuild::arceos::{ArceosConfigOverride, parse_qemu_options};
+use axbuild::arceos::{ArceosConfigOverride, RunScope, parse_qemu_options};
 use clap::Args;
 
 use super::{
-    build::BuildArgs,
+    build::{BuildArgs, STARRY_TEST_PACKAGE},
     config::{ensure_rootfs_in_target_dir, parse_starry_arch, starry_default_disk_image},
 };
+
+const STARRY_TEST_SUCCESS_REGEX: &[&str] = &["starry:~#"];
+const STARRY_TEST_FAIL_REGEX: &[&str] = &["(?i)\\bpanic(?:ked)?\\b"];
 
 /// Run command arguments
 #[derive(Args, Debug)]
@@ -87,6 +90,8 @@ impl RunArgs {
             self.net_dev,
             self.graphic,
             self.accel,
+            vec![],
+            vec![],
         ));
         Ok(overrides)
     }
@@ -94,12 +99,47 @@ impl RunArgs {
 
 /// Run the build and run command
 pub async fn run_with_arg(args: RunArgs) -> Result<()> {
-    let overrides = args.into_config_override()?;
-    let axbuild = axbuild::arceos::AxBuild::from_overrides(
-        overrides,
-        Some(super::build::STARRY_PACKAGE.into()),
-        None,
-    )?;
-    println!("Running in QEMU...");
-    axbuild.run_qemu().await
+    run_with_qemu_regex(args, vec![], vec![]).await
+}
+
+pub async fn run_with_qemu_regex(
+    args: RunArgs,
+    success_regex: Vec<String>,
+    fail_regex: Vec<String>,
+) -> Result<()> {
+    let as_test = !success_regex.is_empty() || !fail_regex.is_empty();
+    let package = args.build.package.clone();
+    let run_scope = if package == STARRY_TEST_PACKAGE {
+        RunScope::PackageRoot
+    } else {
+        RunScope::StarryOsRoot
+    };
+    let mut overrides = args.into_config_override()?;
+    if let Some(qemu) = overrides.qemu.as_mut() {
+        qemu.success_regex = success_regex;
+        qemu.fail_regex = fail_regex;
+    }
+    let axbuild =
+        axbuild::arceos::AxBuild::from_overrides(overrides, Some(package), None, run_scope)?;
+    if as_test {
+        println!("Running test in QEMU...");
+        axbuild.test().await
+    } else {
+        println!("Running in QEMU...");
+        axbuild.run_qemu().await
+    }
+}
+
+pub fn default_test_success_regex() -> Vec<String> {
+    STARRY_TEST_SUCCESS_REGEX
+        .iter()
+        .map(|pattern| (*pattern).to_string())
+        .collect()
+}
+
+pub fn default_test_fail_regex() -> Vec<String> {
+    STARRY_TEST_FAIL_REGEX
+        .iter()
+        .map(|pattern| (*pattern).to_string())
+        .collect()
 }

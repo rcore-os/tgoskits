@@ -17,7 +17,7 @@ use std::str::FromStr;
 use anyhow::{Context, Result};
 use axbuild::{
     Arch, BuildMode, FeatureResolver,
-    arceos::{ArceosConfigOverride, AxBuild},
+    arceos::{ArceosConfigOverride, AxBuild, RunScope},
 };
 use clap::Args;
 
@@ -56,7 +56,7 @@ pub struct BuildArgs {
 impl BuildArgs {
     pub fn into_axbuild(self) -> Result<AxBuild> {
         let overrides = self.as_override()?;
-        AxBuild::from_overrides(overrides, Some(self.package), None)
+        AxBuild::from_overrides(overrides, Some(self.package), None, RunScope::Default)
     }
 
     pub fn as_override(&self) -> Result<ArceosConfigOverride> {

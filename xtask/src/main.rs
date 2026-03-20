@@ -13,7 +13,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use axbuild::arceos::{Arch, PlatformResolver, context::AxContext};
+use axbuild::arceos::{Arch, PlatformResolver, RunScope};
 use cargo_metadata::{Metadata, MetadataCommand};
 use clap::{Parser, Subcommand};
 
@@ -295,11 +295,24 @@ async fn run_arceos_test_command(target: Option<&str>) -> Result<()> {
                 .map(|t| format!(" --target {}", t))
                 .unwrap_or_default()
         );
-        cleanup_arceos_test_configs(&package.crate_dir)?;
-        let qemu_config_path =
-            ensure_arceos_test_qemu_config_path(&package.crate_dir, &package.name, selected_arch)?;
-        let smp = arceos_test_smp_from_qemu_config(&qemu_config_path)?;
-        run_arceos_test_package(&package.name, arch, smp, &qemu_config_path)
+        let run_args = arceos::RunArgs {
+            build: arceos::BuildArgs {
+                arch: arch.map(|value| value.to_string()),
+                package: package.name.clone(),
+                platform: arch.map(|value| PlatformResolver::resolve_default_platform_name(&value)),
+                release: true,
+                features: None,
+                smp: None,
+                plat_dyn: Some(matches!(selected_arch, Arch::AArch64)),
+            },
+            blk: false,
+            disk_img: None,
+            net: false,
+            net_dev: None,
+            graphic: false,
+            accel: false,
+        };
+        arceos::test_with_arg_in_scope(run_args, RunScope::PackageRoot)
             .await
             .with_context(|| format!("arceos test failed for package `{}`", package.name))?;
         println!("ok: {}", package.name);
@@ -364,113 +377,6 @@ fn parse_arceos_target(target: &str) -> Result<Arch> {
     }
 }
 
-fn cleanup_arceos_test_configs(crate_dir: &Path) -> Result<()> {
-    for file in [".axconfig.toml", ".arceos.toml"] {
-        let path = crate_dir.join(file);
-        if path.exists() {
-            fs::remove_file(&path)
-                .with_context(|| format!("failed to remove {}", path.display()))?;
-        }
-    }
-    Ok(())
-}
-
 fn arceos_test_arch(target_arch: Option<Arch>) -> Arch {
     target_arch.unwrap_or_default()
-}
-
-fn arceos_test_qemu_config_path(crate_dir: &Path, arch: Arch) -> PathBuf {
-    crate_dir.join(format!("qemu-{}.toml", arch.to_qemu_arch()))
-}
-
-fn ensure_arceos_test_qemu_config_path(
-    crate_dir: &Path,
-    package: &str,
-    arch: Arch,
-) -> Result<PathBuf> {
-    let path = arceos_test_qemu_config_path(crate_dir, arch);
-    if !path.exists() {
-        bail!(
-            "missing qemu config for package `{}`: {}",
-            package,
-            path.display()
-        );
-    }
-    Ok(path)
-}
-
-fn arceos_test_smp_from_qemu_config(qemu_config_path: &Path) -> Result<Option<usize>> {
-    let contents = fs::read_to_string(qemu_config_path)
-        .with_context(|| format!("failed to read {}", qemu_config_path.display()))?;
-    let parsed: toml::Value = toml::from_str(&contents)
-        .with_context(|| format!("failed to parse {}", qemu_config_path.display()))?;
-    let Some(args) = parsed.get("args").and_then(|v| v.as_array()) else {
-        return Ok(None);
-    };
-
-    for (idx, arg) in args.iter().enumerate() {
-        if arg.as_str() == Some("-smp") {
-            let value = args.get(idx + 1).with_context(|| {
-                format!(
-                    "invalid qemu args in {}: `-smp` is missing value",
-                    qemu_config_path.display()
-                )
-            })?;
-            let value = value.as_str().with_context(|| {
-                format!(
-                    "invalid qemu args in {}: `-smp` value must be a string",
-                    qemu_config_path.display()
-                )
-            })?;
-            let smp = value.parse::<usize>().with_context(|| {
-                format!(
-                    "invalid qemu args in {}: `-smp` value `{}` is not a number",
-                    qemu_config_path.display(),
-                    value
-                )
-            })?;
-            if smp == 0 {
-                bail!(
-                    "invalid qemu args in {}: `-smp` value must be >= 1",
-                    qemu_config_path.display()
-                );
-            }
-            return Ok(Some(smp));
-        }
-    }
-
-    Ok(None)
-}
-
-async fn run_arceos_test_package(
-    package: &str,
-    arch: Option<Arch>,
-    smp: Option<usize>,
-    qemu_config_path: &Path,
-) -> Result<()> {
-    let effective_arch = arch.unwrap_or_default();
-    let run_args = arceos::RunArgs {
-        build: arceos::BuildArgs {
-            arch: arch.map(|value| value.to_string()),
-            package: package.to_owned(),
-            platform: arch.map(|value| PlatformResolver::resolve_default_platform_name(&value)),
-            release: true,
-            features: None,
-            smp,
-            plat_dyn: Some(matches!(effective_arch, Arch::AArch64)),
-        },
-        blk: false,
-        disk_img: None,
-        net: false,
-        net_dev: None,
-        graphic: false,
-        accel: false,
-    };
-    let overrides = run_args.as_override()?;
-    let ctx = AxContext::new(
-        overrides,
-        Some(package.to_owned()),
-        Some(qemu_config_path.to_path_buf()),
-    )?;
-    arceos::run::run_with_context(ctx).await
 }

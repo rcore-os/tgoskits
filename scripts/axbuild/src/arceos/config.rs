@@ -284,6 +284,8 @@ pub fn parse_qemu_options(
     net_dev: Option<String>,
     graphic: bool,
     accel: bool,
+    success_regex: Vec<String>,
+    fail_regex: Vec<String>,
 ) -> QemuOptions {
     QemuOptions {
         blk,
@@ -296,6 +298,8 @@ pub fn parse_qemu_options(
         graphic,
         accel,
         extra_args: vec![],
+        success_regex,
+        fail_regex,
     }
 }
 
@@ -537,6 +541,12 @@ pub struct QemuOptions {
 
     /// Extra QEMU arguments
     pub extra_args: Vec<String>,
+
+    /// Regex patterns that indicate a successful QEMU run
+    pub success_regex: Vec<String>,
+
+    /// Regex patterns that indicate a failed QEMU run
+    pub fail_regex: Vec<String>,
 }
 
 impl Default for QemuOptions {
@@ -549,6 +559,8 @@ impl Default for QemuOptions {
             graphic: false,
             accel: false,
             extra_args: vec![],
+            success_regex: vec![],
+            fail_regex: vec![],
         }
     }
 }
