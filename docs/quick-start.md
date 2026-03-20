@@ -183,8 +183,11 @@ cargo xtask test axvisor --target aarch64-unknown-none-softfloat
 | 你已经跑通了什么 | 下一篇建议文档 |
 | --- | --- |
 | 只想继续做 ArceOS 示例、模块或平台 | [arceos-guide.md](arceos-guide.md) |
+| 想系统理解 ArceOS 的分层、feature 装配和启动路径 | [arceos-internals.md](arceos-internals.md) |
 | 想改 StarryOS 内核、rootfs 或 syscall | [starryos-guide.md](starryos-guide.md) |
+| 想系统理解 StarryOS 的 syscall、进程和 rootfs 装载链路 | [starryos-internals.md](starryos-internals.md) |
 | 想搞清楚 Axvisor 的板级配置、VM 配置和虚拟化组件 | [axvisor-guide.md](axvisor-guide.md) |
+| 想系统理解 Axvisor 的 VMM、vCPU 与配置生效路径 | [axvisor-internals.md](axvisor-internals.md) |
 | 想从“组件”视角理解三个系统的关系 | [components.md](components.md) |
 | 想理解工作区、xtask、Makefile 和测试矩阵 | [build-system.md](build-system.md) |
 

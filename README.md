@@ -18,8 +18,11 @@ TGOSKits 是一个面向操作系统与虚拟化开发的集成仓库。它用 G
 | 理解命令入口、工作区和测试入口 | [docs/build-system.md](docs/build-system.md) | `cargo xtask test std` |
 | 基于组件开发三个系统 | [docs/components.md](docs/components.md) | 从 `components/` 或 `os/arceos/modules/` 开始定位 |
 | 开发 ArceOS 应用或模块 | [docs/arceos-guide.md](docs/arceos-guide.md) | `cargo xtask arceos run --package arceos-helloworld --arch riscv64` |
+| 深入理解 ArceOS 的分层、feature 装配与启动路径 | [docs/arceos-internals.md](docs/arceos-internals.md) | `cargo xtask arceos run --package arceos-helloworld --arch riscv64` |
 | 修改 StarryOS 内核或 rootfs 路径 | [docs/starryos-guide.md](docs/starryos-guide.md) | `cargo xtask starry rootfs --arch riscv64` |
+| 深入理解 StarryOS 的 syscall、进程与 rootfs 装载路径 | [docs/starryos-internals.md](docs/starryos-internals.md) | `cargo xtask starry run --arch riscv64 --package starryos` |
 | 运行或扩展 Axvisor | [docs/axvisor-guide.md](docs/axvisor-guide.md) | `cargo axvisor defconfig qemu-aarch64` |
+| 深入理解 Axvisor 的 VMM、vCPU 与配置体系 | [docs/axvisor-internals.md](docs/axvisor-internals.md) | `cd os/axvisor && ./scripts/setup_qemu.sh arceos` |
 | 管理组件来源和同步 | [docs/repo.md](docs/repo.md) | `python3 scripts/repo/repo.py list` |
 
 ## 仓库结构
@@ -138,8 +141,11 @@ cargo xtask test axvisor --target aarch64-unknown-none-softfloat
 - [docs/build-system.md](docs/build-system.md): 理解命令入口、workspace 和测试入口
 - [docs/components.md](docs/components.md): 理解组件如何接入 ArceOS、StarryOS、Axvisor
 - [docs/arceos-guide.md](docs/arceos-guide.md): ArceOS 的模块、API、平台与示例
+- [docs/arceos-internals.md](docs/arceos-internals.md): ArceOS 的分层、feature 装配、启动流程与内部机制
 - [docs/starryos-guide.md](docs/starryos-guide.md): StarryOS 的内核、rootfs 与 syscall 开发
+- [docs/starryos-internals.md](docs/starryos-internals.md): StarryOS 的叠层架构、syscall 分发、进程与地址空间机制
 - [docs/axvisor-guide.md](docs/axvisor-guide.md): Axvisor 的组件、板级配置与 VM 配置
+- [docs/axvisor-internals.md](docs/axvisor-internals.md): Axvisor 的五层架构、VMM 启动链与 `axvisor_api` 机制
 
 ## 许可证
 

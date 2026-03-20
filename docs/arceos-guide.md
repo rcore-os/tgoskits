@@ -220,6 +220,7 @@ make A=examples/helloworld ARCH=riscv64 debug
 
 ## 7. 继续往哪里读
 
+- [arceos-internals.md](arceos-internals.md): 系统理解 ArceOS 的分层、feature 装配、启动路径和内部机制
 - [components.md](components.md): 从组件视角继续看共享依赖怎么接到三个系统
 - [build-system.md](build-system.md): 理解根 xtask、Makefile 和 workspace 的边界
 - [starryos-guide.md](starryos-guide.md): 如果你的 ArceOS 改动会波及 StarryOS
