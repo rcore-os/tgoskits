@@ -12,21 +12,33 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{boxed::Box, format, sync::Arc, vec::Vec};
-use core::{alloc::Layout, fmt};
-
-use axaddrspace::{
-    AddrSpace, GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, device::AccessWidth,
-};
-use axdevice::{AxVmDeviceConfig, AxVmDevices};
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use axaddrspace::HostVirtAddr;
 use axerrno::{AxError, AxResult, ax_err, ax_err_type};
-use axvcpu::{AxVCpu, AxVCpuExitReason, AxVCpuHal};
+use axvisor_api::vmm::InterruptVector;
+use core::alloc::Layout;
+use core::fmt;
+use memory_addr::{align_down_4k, align_up_4k};
+use spin::{Mutex, Once};
+
+use axaddrspace::{AddrSpace, GuestPhysAddr, HostPhysAddr, MappingFlags, device::AccessWidth};
+use axdevice::{AxVmDeviceConfig, AxVmDevices};
+use axvcpu::{AxVCpu, AxVCpuExitReason};
 use cpumask::CpuMask;
 use memory_addr::{align_down_4k, align_up_4k};
 use spin::{Mutex, Once};
 
-#[cfg(target_arch = "riscv64")]
+use crate::config::{AxVMConfig, PhysCpuList};
+use crate::hal::PagingHandlerImpl;
+use crate::has_hardware_support;
+use crate::vcpu::AxArchVCpuImpl;
+
+#[cfg(not(target_arch = "x86_64"))]
 use crate::vcpu::AxVCpuCreateConfig;
+
 #[cfg(target_arch = "aarch64")]
 use crate::vcpu::{AxVCpuCreateConfig, get_sysreg_device};
 use crate::{
@@ -40,23 +52,20 @@ const VM_ASPACE_BASE: usize = 0x0;
 const VM_ASPACE_SIZE: usize = 0x7fff_ffff_f000;
 
 /// A vCPU with architecture-independent interface.
-#[allow(type_alias_bounds)]
-type VCpu<U: AxVCpuHal> = AxVCpu<AxArchVCpuImpl<U>>;
+type VCpu = AxVCpu<AxArchVCpuImpl>;
 /// A reference to a vCPU.
-#[allow(type_alias_bounds)]
-pub type AxVCpuRef<U: AxVCpuHal> = Arc<VCpu<U>>;
+pub type AxVCpuRef = Arc<VCpu>;
 /// A reference to a VM.
-#[allow(type_alias_bounds)]
-pub type AxVMRef<H: AxVMHal, U: AxVCpuHal> = Arc<AxVM<H, U>>; // we know the bound is not enforced here, we keep it for clarity
+pub type AxVMRef = Arc<AxVM>;
 
-struct AxVMInnerConst<U: AxVCpuHal> {
+struct AxVMInnerConst {
     phys_cpu_ls: PhysCpuList,
-    vcpu_list: Box<[AxVCpuRef<U>]>,
+    vcpu_list: Box<[AxVCpuRef]>,
     devices: AxVmDevices,
 }
 
-unsafe impl<U: AxVCpuHal> Send for AxVMInnerConst<U> {}
-unsafe impl<U: AxVCpuHal> Sync for AxVMInnerConst<U> {}
+unsafe impl Send for AxVMInnerConst {}
+unsafe impl Sync for AxVMInnerConst {}
 
 /// Represents a memory region in a virtual machine.
 #[derive(Debug, Clone)]
@@ -83,13 +92,61 @@ impl VMMemoryRegion {
     }
 }
 
-struct AxVMInnerMut<H: AxVMHal> {
+struct AxVMInnerMut {
     // Todo: use more efficient lock.
-    address_space: AddrSpace<H::PagingHandler>,
+    address_space: AddrSpace<PagingHandlerImpl>,
     memory_regions: Vec<VMMemoryRegion>,
     config: AxVMConfig,
     vm_status: VMStatus,
-    _marker: core::marker::PhantomData<H>,
+}
+
+/// VM status enumeration representing the lifecycle states of a virtual machine
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VMStatus {
+    /// VM is being created/loaded
+    Loading,
+    /// VM is loaded but not yet started
+    Loaded,
+    /// VM is currently running
+    Running,
+    /// VM is suspended (paused but can be resumed)
+    Suspended,
+    /// VM is in the process of shutting down
+    Stopping,
+    /// VM is stopped
+    Stopped,
+}
+
+impl VMStatus {
+    /// Get status as a string (lowercase)
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            VMStatus::Loading => "loading",
+            VMStatus::Loaded => "loaded",
+            VMStatus::Running => "running",
+            VMStatus::Suspended => "suspended",
+            VMStatus::Stopping => "stopping",
+            VMStatus::Stopped => "stopped",
+        }
+    }
+
+    /// Get status with emoji icon
+    pub fn as_str_with_icon(&self) -> &'static str {
+        match self {
+            VMStatus::Loading => "🔄 loading",
+            VMStatus::Loaded => "📦 loaded",
+            VMStatus::Running => "🚀 running",
+            VMStatus::Suspended => "🛑 suspended",
+            VMStatus::Stopping => "⏹️ stopping",
+            VMStatus::Stopped => "💤 stopped",
+        }
+    }
+}
+
+impl fmt::Display for VMStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
 }
 
 /// VM status enumeration representing the lifecycle states of a virtual machine
@@ -144,19 +201,20 @@ impl fmt::Display for VMStatus {
 const TEMP_MAX_VCPU_NUM: usize = 64;
 
 /// A Virtual Machine.
-pub struct AxVM<H: AxVMHal, U: AxVCpuHal> {
+pub struct AxVM {
     id: usize,
-    inner_const: Once<AxVMInnerConst<U>>,
-    inner_mut: Mutex<AxVMInnerMut<H>>,
+    inner_const: Once<AxVMInnerConst>,
+    inner_mut: Mutex<AxVMInnerMut>,
 }
 
-impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
+impl AxVM {
     /// Creates a new VM with the given configuration.
     /// Returns an error if the configuration is invalid.
     /// The VM is not started until `boot` is called.
-    pub fn new(config: AxVMConfig) -> AxResult<AxVMRef<H, U>> {
+    pub fn new(config: AxVMConfig) -> AxResult<AxVMRef> {
         let address_space =
-            AddrSpace::new_empty(GuestPhysAddr::from(VM_ASPACE_BASE), VM_ASPACE_SIZE)?;
+            // TODO: read level from config
+            AddrSpace::new_empty(4, GuestPhysAddr::from(VM_ASPACE_BASE), VM_ASPACE_SIZE)?;
 
         let result = Arc::new(Self {
             id: config.id(),
@@ -166,7 +224,6 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
                 config,
                 memory_regions: Vec::new(),
                 vm_status: VMStatus::Loading,
-                _marker: core::marker::PhantomData,
             }),
         });
 
@@ -188,7 +245,7 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
         let dtb_addr = inner_mut.config.image_config().dtb_load_gpa;
         let vcpu_id_pcpu_sets = inner_mut.config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
 
-        info!("dtb_load_gpa: {:?}", dtb_addr);
+        info!("dtb_load_gpa: {dtb_addr:?}");
         debug!("id: {}, VCpuIdPCpuSets: {vcpu_id_pcpu_sets:#x?}", self.id());
 
         let mut vcpu_list = Vec::with_capacity(vcpu_id_pcpu_sets.len());
@@ -204,6 +261,10 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
                 dtb_addr: dtb_addr.unwrap_or_default().as_usize(),
             };
 
+            // FIXME: VCpu is neither `Send` nor `Sync` by design, check whether
+            // 1. we should make it `Send` and `Sync`, or
+            // 2. we can guarantee that no cross-thread access is performed
+            #[allow(clippy::arc_with_non_send_sync)]
             vcpu_list.push(Arc::new(VCpu::new(
                 self.id(),
                 vcpu_id,
@@ -277,12 +338,8 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
             )?;
         }
 
-        #[cfg(target_arch = "aarch64")]
+        #[cfg_attr(not(target_arch = "aarch64"), expect(unused_mut))]
         let mut devices = axdevice::AxVmDevices::new(AxVmDeviceConfig {
-            emu_configs: inner_mut.config.emu_devices().to_vec(),
-        });
-        #[cfg(not(target_arch = "aarch64"))]
-        let devices = axdevice::AxVmDevices::new(AxVmDeviceConfig {
             emu_configs: inner_mut.config.emu_devices().to_vec(),
         });
 
@@ -345,6 +402,9 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
                     passthrough_timer: passthrough,
                 }
             };
+            #[cfg(not(target_arch = "aarch64"))]
+            #[allow(clippy::let_unit_value)]
+            let setup_config = <AxArchVCpuImpl as axvcpu::AxArchVCpu>::SetupConfig::default();
 
             let entry = if vcpu.id() == 0 {
                 inner_mut.config.bsp_entry()
@@ -357,10 +417,7 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
             vcpu.setup(
                 entry,
                 inner_mut.address_space.page_table_root(),
-                #[cfg(target_arch = "aarch64")]
                 setup_config,
-                #[cfg(not(target_arch = "aarch64"))]
-                (),
             )?;
         }
         info!("VM setup: id={}", self.id());
@@ -382,7 +439,7 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
     /// Retrieves the vCPU corresponding to the given vcpu_id for the VM.
     /// Returns None if the vCPU does not exist.
     #[inline]
-    pub fn vcpu(&self, vcpu_id: usize) -> Option<AxVCpuRef<U>> {
+    pub fn vcpu(&self, vcpu_id: usize) -> Option<AxVCpuRef> {
         self.vcpu_list().get(vcpu_id).cloned()
     }
 
@@ -392,7 +449,7 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
         self.inner_const().vcpu_list.len()
     }
 
-    fn inner_const(&self) -> &AxVMInnerConst<U> {
+    fn inner_const(&self) -> &AxVMInnerConst {
         self.inner_const
             .get()
             .expect("VM inner_const not initialized")
@@ -400,7 +457,7 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
 
     /// Returns a reference to the list of vCPUs corresponding to the VM.
     #[inline]
-    pub fn vcpu_list(&self) -> &[AxVCpuRef<U>] {
+    pub fn vcpu_list(&self) -> &[AxVCpuRef] {
         &self.inner_const().vcpu_list
     }
 
@@ -592,13 +649,12 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
         // It is not supported to inject interrupt to a vcpu in another VM yet.
         //
         // It may be supported in the future, as a essential feature for cross-VM communication.
-        if H::current_vm_id() != self.id() {
+        let current_running_vm = axvisor_api::vmm::current_vm_id();
+        if current_running_vm != vm_id {
             panic!("Injecting interrupt to a vcpu in another VM is not supported");
         }
 
-        for target_vcpu in &targets {
-            H::inject_irq_to_vcpu(vm_id, target_vcpu, irq)?;
-        }
+        axvisor_api::vmm::inject_interrupt_to_cpus(vm_id, targets, irq as InterruptVector);
 
         Ok(())
     }
@@ -755,7 +811,7 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
         let s = unsafe { core::slice::from_raw_parts_mut(hva, layout.size()) };
         let hva = HostVirtAddr::from_mut_ptr_of(hva);
 
-        let hpa = H::virt_to_phys(hva);
+        let hpa = axvisor_api::memory::virt_to_phys(hva);
 
         let gpa = gpa.unwrap_or_else(|| hpa.as_usize().into());
 
@@ -820,8 +876,7 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
         let current_status = self.vm_status();
         if !matches!(current_status, VMStatus::Stopping | VMStatus::Stopped) {
             warn!(
-                "VM[{}] is being dropped without explicit shutdown (status: {:?}), marking as \
-                 stopping",
+                "VM[{}] is being dropped without explicit shutdown (status: {:?}), marking as stopping",
                 self.id(),
                 current_status
             );
@@ -869,8 +924,7 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
                 }
             } else {
                 debug!(
-                    "VM[{}] skipping dealloc for reserved memory region: GPA={:#x}, HVA={:#x}, \
-                     size={:#x}",
+                    "VM[{}] skipping dealloc for reserved memory region: GPA={:#x}, HVA={:#x}, size={:#x}",
                     self.id(),
                     region.gpa.as_usize(),
                     region.hva.as_usize(),
@@ -923,7 +977,7 @@ impl<H: AxVMHal, U: AxVCpuHal> AxVM<H, U> {
     }
 }
 
-impl<H: AxVMHal, U: AxVCpuHal> Drop for AxVM<H, U> {
+impl Drop for AxVM {
     fn drop(&mut self) {
         info!("Dropping VM[{}]", self.id());
 
