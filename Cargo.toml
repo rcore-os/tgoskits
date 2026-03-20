@@ -131,7 +131,6 @@ exclude = [
     "components/starry-smoltcp/fuzz",
     "components/crate_interface/test_crates",
     "components/axfs_crates",
-    "platform/axplat-dyn",
 ]
 
 [patch.crates-io]
