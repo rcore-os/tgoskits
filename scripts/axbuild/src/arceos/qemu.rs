@@ -12,11 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ::ostool::build::CargoRunnerKind;
+use ::ostool::run::qemu::{RunQemuArgs, run_qemu_with_more_default_args};
 use anyhow::Result;
 
 use crate::arceos::{
-    PreparedArtifacts, build::prepare_artifacts_for_qemu, context::AxContext,
+    ArceosConfig, PreparedArtifacts,
+    build::{prepare_artifacts, resolve_effective_config},
+    context::AxContext,
     ostool as ostool_bridge,
 };
 
@@ -32,7 +34,7 @@ impl QemuRunner {
 
     /// Build QEMU command arguments
     pub fn build_args(&self) -> Vec<String> {
-        ostool_bridge::build_qemu_config(&self.ctx.config, self.ctx.manifest_dir()).args
+        ostool_bridge::build_qemu_default_args(&self.ctx.config, self.ctx.manifest_dir())
     }
 
     /// Get QEMU binary name
@@ -42,27 +44,40 @@ impl QemuRunner {
 
     /// Run QEMU through ostool's cargo_run flow.
     pub async fn run(&self) -> Result<()> {
-        let prepared = prepare_artifacts_for_qemu(
+        let effective_config = resolve_effective_config(
             self.ctx.manifest_dir(),
             self.ctx.app_dir(),
             &self.ctx.config,
-            self.ctx.qemu_config_path.clone(),
         )?;
-        self.run_prepared(prepared).await
+        let prepared = prepare_artifacts(
+            self.ctx.manifest_dir(),
+            self.ctx.app_dir(),
+            &effective_config,
+        )?;
+        self.run_prepared(prepared, &effective_config).await
     }
 
-    async fn run_prepared(&self, prepared: PreparedArtifacts) -> Result<()> {
+    async fn run_prepared(
+        &self,
+        prepared: PreparedArtifacts,
+        effective_config: &ArceosConfig,
+    ) -> Result<()> {
         let mut ctx = prepared.cargo_spec.ctx.into_app_context();
-        ctx.cargo_run(
-            &prepared.cargo_spec.cargo,
-            &CargoRunnerKind::Qemu {
-                qemu_config: Some(prepared.qemu_config_path),
-                debug: false,
+        ctx.config_search_dir = Some(self.ctx.config_search_dir().to_path_buf());
+        ostool_bridge::cargo_build_with_artifact_resolution(&mut ctx, &prepared.cargo_spec.cargo)
+            .await?;
+        run_qemu_with_more_default_args(
+            ctx,
+            RunQemuArgs {
+                qemu_config: self.ctx.qemu_config_path.clone(),
                 dtb_dump: false,
+                show_output: true,
             },
+            ostool_bridge::build_qemu_default_args(effective_config, self.ctx.manifest_dir()),
+            effective_config.qemu.success_regex.clone(),
+            effective_config.qemu.fail_regex.clone(),
         )
-        .await?;
-        Ok(())
+        .await
     }
 
     /// Get QEMU command as a string (for debugging)
@@ -70,5 +85,26 @@ impl QemuRunner {
         let qemu = self.qemu_binary();
         let args = self.build_args();
         format!("{} {}", qemu, args.join(" "))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    #[test]
+    fn run_qemu_args_forward_explicit_config_path() {
+        let config_path = PathBuf::from("/tmp/custom-qemu.toml");
+        let args = RunQemuArgs {
+            qemu_config: Some(config_path.clone()),
+            dtb_dump: false,
+            show_output: true,
+        };
+
+        assert_eq!(args.qemu_config, Some(config_path));
+        assert!(!args.dtb_dump);
+        assert!(args.show_output);
     }
 }

@@ -17,7 +17,7 @@ use std::str::FromStr;
 use anyhow::Result;
 use axbuild::{
     QemuOptions,
-    arceos::{AxBuild, NetDev, context::AxContext},
+    arceos::{AxBuild, NetDev, RunScope, context::AxContext},
 };
 use clap::Args;
 
@@ -69,6 +69,8 @@ impl RunArgs {
             graphic: self.graphic,
             accel: self.accel,
             extra_args: vec![],
+            success_regex: vec![],
+            fail_regex: vec![],
         };
 
         overrides.qemu = Some(qemu);
@@ -78,7 +80,7 @@ impl RunArgs {
     pub fn into_axbuild(self) -> Result<AxBuild> {
         let overrides = self.as_override()?;
 
-        AxBuild::from_overrides(overrides, Some(self.build.package), None)
+        AxBuild::from_overrides(overrides, Some(self.build.package), None, RunScope::Default)
     }
 }
 

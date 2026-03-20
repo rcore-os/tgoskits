@@ -13,7 +13,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use axbuild::arceos::{Arch, PlatformResolver, context::AxContext};
+use axbuild::arceos::{Arch, PlatformResolver, RunScope, context::AxContext};
 use cargo_metadata::{Metadata, MetadataCommand};
 use clap::{Parser, Subcommand};
 
@@ -471,6 +471,7 @@ async fn run_arceos_test_package(
         overrides,
         Some(package.to_owned()),
         Some(qemu_config_path.to_path_buf()),
+        RunScope::PackageRoot,
     )?;
     arceos::run::run_with_context(ctx).await
 }

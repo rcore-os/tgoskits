@@ -23,6 +23,7 @@ pub mod qemu;
 use std::path::PathBuf;
 
 pub use build::{BuildOutput, Builder, PreparedArtifacts, prepare_artifacts};
+pub use context::RunScope;
 pub use config::{
     AVAILABLE_BOARDS, ArceosConfig, ArceosConfigOverride, Arch, BuildMode, LogLevel, NetDev,
     QEMU_CONFIG_FILE_NAME, QemuOptions, apply_defconfig, config_path, load_board_config,
@@ -47,8 +48,9 @@ impl AxBuild {
         overrides: ArceosConfigOverride,
         package: Option<String>,
         qemu_config_path: Option<PathBuf>,
+        run_scope: RunScope,
     ) -> anyhow::Result<Self> {
-        let ctx = AxContext::new(overrides, package, qemu_config_path)?;
+        let ctx = AxContext::new(overrides, package, qemu_config_path, run_scope)?;
         Ok(Self::new(ctx))
     }
 

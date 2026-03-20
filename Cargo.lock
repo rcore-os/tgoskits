@@ -99,7 +99,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "version_check",
- "zerocopy 0.8.42",
+ "zerocopy 0.8.47",
 ]
 
 [[package]]
@@ -551,9 +551,9 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "aws-lc-rs"
-version = "1.16.1"
+version = "1.16.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94bffc006df10ac2a68c83692d734a465f8ee6c5b384d8545a636f81d858f4bf"
+checksum = "a054912289d18629dc78375ba2c3726a3afe3ff71b4edba9dedfca0e3446d1fc"
 dependencies = [
  "aws-lc-sys",
  "zeroize",
@@ -561,9 +561,9 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-sys"
-version = "0.38.0"
+version = "0.39.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4321e568ed89bb5a7d291a7f37997c2c0df89809d7b6d12062c81ddb54aa782e"
+checksum = "1fa7e52a4c5c547c741610a2c6f123f3881e409b714cd27e6798ef020c514f0a"
 dependencies = [
  "cc",
  "cmake",
@@ -699,7 +699,7 @@ dependencies = [
  "jkconfig",
  "log",
  "object 0.38.1",
- "ostool",
+ "ostool 0.9.0",
  "regex",
  "reqwest 0.13.2",
  "schemars",
@@ -1709,7 +1709,7 @@ dependencies = [
  "lazyinit 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "log",
  "memory_addr",
- "ostool",
+ "ostool 0.8.16",
  "page_table_entry",
  "page_table_multiarch",
  "pcie 0.5.0",
@@ -3649,7 +3649,7 @@ checksum = "6ea2d84b969582b4b1864a92dc5d27cd2b77b622a8d79306834f1be5ba20d84b"
 dependencies = [
  "cfg-if",
  "crunchy",
- "zerocopy 0.8.42",
+ "zerocopy 0.8.47",
 ]
 
 [[package]]
@@ -4208,9 +4208,9 @@ dependencies = [
 
 [[package]]
 name = "itoa"
-version = "1.0.17"
+version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2"
+checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "ixgbe-driver"
@@ -4251,9 +4251,9 @@ dependencies = [
 
 [[package]]
 name = "jkconfig"
-version = "0.1.6"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8af2ca0c0ea6ee42a80e380d44e2a18a06185484236a8af0cf766682b17176a"
+checksum = "04d7e3eb031e5963da78db5c3ec4e50e2f7a8cea2a0ac2aa0432ca150d88abe7"
 dependencies = [
  "anyhow",
  "axum",
@@ -4334,7 +4334,7 @@ checksum = "3f1495ab3ea0a7cee31d14901a858a732e282c139b3d17d3f935aebeeefcc34a"
 dependencies = [
  "xmas-elf",
  "zero",
- "zerocopy 0.8.42",
+ "zerocopy 0.8.47",
 ]
 
 [[package]]
@@ -4919,9 +4919,9 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "ostool"
-version = "0.8.15"
+version = "0.8.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8cafb80b0b80a79755701ff100ce05d97daba37dfea538fb729cf386fd594854"
+checksum = "3cb671bfba4fbb5a24eba1726c7022f457e9c2968942c2db2f3e46487c078806"
 dependencies = [
  "anyhow",
  "byte-unit",
@@ -4942,6 +4942,45 @@ dependencies = [
  "ratatui",
  "regex",
  "reqwest 0.12.28",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serialport",
+ "sha2",
+ "tar",
+ "tftpd",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+ "uboot-shell",
+ "ureq",
+]
+
+[[package]]
+name = "ostool"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6472f8f90b606310d1de197493b5fb09e3c77e9db4bd7590a979d30a6d611b3"
+dependencies = [
+ "anyhow",
+ "byte-unit",
+ "cargo_metadata",
+ "clap",
+ "colored",
+ "crossterm 0.29.0",
+ "cursive",
+ "env_logger 0.11.9",
+ "fitimage",
+ "futures",
+ "indicatif",
+ "jkconfig",
+ "log",
+ "lzma-rs",
+ "network-interface",
+ "object 0.38.1",
+ "ratatui",
+ "regex",
+ "reqwest 0.13.2",
  "schemars",
  "serde",
  "serde_json",
@@ -5210,7 +5249,7 @@ version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9"
 dependencies = [
- "zerocopy 0.8.42",
+ "zerocopy 0.8.47",
 ]
 
 [[package]]
@@ -6822,9 +6861,9 @@ dependencies = [
 
 [[package]]
 name = "someboot"
-version = "0.1.10"
+version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e23db70e1c837afb6cb1bb3e7a94d2cf3d4b3ab394eadf9414e913bc061fa6b"
+checksum = "4877fed8767a4012fee195bc791f3f0b5224a110ffd795566a3f4c579fe8a1fa"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64-cpu-ext",
@@ -6867,9 +6906,9 @@ dependencies = [
 
 [[package]]
 name = "somehal"
-version = "0.6.4"
+version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "644cf933128e512332d49458cbfa6006295b2ed920a8154017c33b1e0f945273"
+checksum = "60cb0a4534555ab461547d0c43044fc27d6069044078ab30172994fed80a7cb5"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "anyhow",
@@ -7025,7 +7064,7 @@ dependencies = [
  "weak-map",
  "x86",
  "xmas-elf",
- "zerocopy 0.8.42",
+ "zerocopy 0.8.47",
 ]
 
 [[package]]
@@ -7081,6 +7120,15 @@ dependencies = [
 
 [[package]]
 name = "starryos"
+version = "0.3.0-preview.3"
+dependencies = [
+ "axfeat",
+ "axplat-riscv64-visionfive2",
+ "starry-kernel",
+]
+
+[[package]]
+name = "starryos-test"
 version = "0.3.0-preview.3"
 dependencies = [
  "axfeat",
@@ -7266,9 +7314,9 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 
 [[package]]
 name = "tar"
-version = "0.4.44"
+version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d863878d212c87a19c1a610eb53bb01fe12951c0501cf5a0d65f724914a667a"
+checksum = "22692a6476a21fa75fdfc11d452fda482af402c008cdbaf3476414e122040973"
 dependencies = [
  "filetime",
  "libc",
@@ -8830,11 +8878,11 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.42"
+version = "0.8.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2578b716f8a7a858b7f02d5bd870c14bf4ddbbcf3a4c05414ba6503640505e3"
+checksum = "efbb2a062be311f2ba113ce66f697a4dc589f85e78a4aea276200804cea0ed87"
 dependencies = [
- "zerocopy-derive 0.8.42",
+ "zerocopy-derive 0.8.47",
 ]
 
 [[package]]
@@ -8850,9 +8898,9 @@ dependencies = [
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.42"
+version = "0.8.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e6cc098ea4d3bd6246687de65af3f920c430e236bee1e3bf2e441463f08a02f"
+checksum = "0e8bc7269b54418e7aeeef514aa68f8690b8c0489a06b0136e5f57c4c5ccab89"
 dependencies = [
  "proc-macro2",
  "quote",

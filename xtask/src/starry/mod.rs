@@ -14,14 +14,14 @@
 
 //! StarryOS build commands for xtask
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Subcommand;
 
 pub mod build;
 pub mod config;
 pub mod run;
 
-pub use build::{BuildArgs, STARRY_PACKAGE, run_build};
+pub use build::{BuildArgs, STARRY_TEST_PACKAGE, run_build};
 pub use run::RunArgs;
 
 use crate::starry::{
@@ -29,7 +29,7 @@ use crate::starry::{
         ensure_rootfs_in_target_dir, parse_starry_arch, parse_starry_target_for_test,
         starry_default_disk_image,
     },
-    run::run_with_arg,
+    run::{default_test_fail_regex, default_test_success_regex, run_with_arg, run_with_qemu_regex},
 };
 
 /// StarryOS subcommands
@@ -91,7 +91,7 @@ pub async fn run_test(target: &str) -> Result<()> {
     let args = RunArgs {
         build: BuildArgs {
             arch: Some(arch.to_string()),
-            package: STARRY_PACKAGE.to_string(),
+            package: STARRY_TEST_PACKAGE.to_string(),
             platform: None,
             release: true,
             features: None,
@@ -105,30 +105,10 @@ pub async fn run_test(target: &str) -> Result<()> {
         graphic: false,
         accel: false,
     };
-
-    let run_result = run_with_arg(args).await;
-    let cleanup_result = cleanup_generated_qemu_config();
-
-    match (run_result, cleanup_result) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(run_err), Ok(())) => Err(run_err),
-        (Ok(()), Err(cleanup_err)) => Err(cleanup_err),
-        (Err(run_err), Err(cleanup_err)) => {
-            Err(run_err.context(format!("also failed to cleanup qemu config: {cleanup_err}")))
-        }
-    }
-}
-
-fn cleanup_generated_qemu_config() -> Result<()> {
-    use axbuild::arceos::QEMU_CONFIG_FILE_NAME;
-
-    let manifest_dir =
-        std::env::current_dir().context("failed to get current working directory")?;
-    let app_dir = axbuild::arceos::resolve_package_app_dir(&manifest_dir, STARRY_PACKAGE)?;
-    let qemu_config_path = manifest_dir.join(app_dir).join(QEMU_CONFIG_FILE_NAME);
-    if qemu_config_path.exists() {
-        std::fs::remove_file(&qemu_config_path)
-            .with_context(|| format!("failed to remove {}", qemu_config_path.display()))?;
-    }
-    Ok(())
+    run_with_qemu_regex(
+        args,
+        default_test_success_regex(),
+        default_test_fail_regex(),
+    )
+    .await
 }

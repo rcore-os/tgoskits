@@ -1,0 +1,52 @@
+[package]
+name = "starryos-test"
+version.workspace = true
+edition.workspace = true
+description = "A Linux-compatible OS kernel built on ArceOS unikernel"
+authors = [
+    "Azure-stars <Azure_stars@126.com>",
+    "Yuekai Jia <equation618@gmail.com>",
+    "KylinSoft Co., Ltd. <https://www.kylinos.cn/>",
+    "朝倉水希 <asakuramizu111@gmail.com>",
+    "Mivik <mivikq@gmail.com>",
+]
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+qemu = [
+    "axfeat/defplat",
+    "axfeat/bus-pci",
+
+    "axfeat/display",
+
+    "starry-kernel/input",
+    "starry-kernel/vsock",
+
+    # auxilary features
+    "axfeat/fs-ng-times",
+    "starry-kernel/dev-log",
+]
+smp = ["axfeat/smp", "axplat-riscv64-visionfive2?/smp"]
+
+vf2 = ["dep:axplat-riscv64-visionfive2", "axfeat/driver-sdmmc"]
+
+[[bin]]
+name = "starryos"
+path = "src/main.rs"
+required-features = ["qemu"]
+
+[dependencies]
+axfeat.workspace = true
+starry-kernel.workspace = true
+
+[dependencies.axplat-riscv64-visionfive2]
+version = "0.1.0-pre.1"
+features = ["fp-simd", "irq", "rtc"]
+optional = true
+
+[package.metadata.vendor-filter]
+platforms = ["riscv64gc-unknown-none-elf", "loongarch64-unknown-none-softfloat"]
+all-features = true

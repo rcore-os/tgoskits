@@ -25,7 +25,7 @@ use serde_json::Value;
 
 const ROOTFS_URL: &str = "https://github.com/Starry-OS/rootfs/releases/download/20260214";
 
-use super::build::STARRY_PACKAGE;
+use super::build::STARRY_TEST_PACKAGE;
 
 pub fn parse_starry_arch(arch: Option<&str>) -> Result<Arch> {
     match arch {
@@ -48,7 +48,7 @@ pub fn resolve_starry_artifact_dir(arch: Arch) -> Result<PathBuf> {
     let output = Command::new("cargo")
         .arg("build")
         .arg("-p")
-        .arg(STARRY_PACKAGE)
+        .arg(STARRY_TEST_PACKAGE)
         .arg("--target")
         .arg(target)
         .arg("--features")
@@ -58,7 +58,7 @@ pub fn resolve_starry_artifact_dir(arch: Arch) -> Result<PathBuf> {
         .with_context(|| format!("failed to run cargo build for target `{target}`"))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    match parse_artifact_dir_from_cargo_json(stdout, STARRY_PACKAGE, target) {
+    match parse_artifact_dir_from_cargo_json(stdout, STARRY_TEST_PACKAGE, target) {
         Ok(dir) => {
             if !output.status.success() {
                 eprintln!(
@@ -83,7 +83,7 @@ pub fn resolve_starry_artifact_dir(arch: Arch) -> Result<PathBuf> {
             Err(parse_err).with_context(|| {
                 format!(
                     "failed to parse cargo JSON output for package `{}` and target `{}`",
-                    STARRY_PACKAGE, target
+                    STARRY_TEST_PACKAGE, target
                 )
             })
         }
@@ -95,6 +95,7 @@ fn parse_artifact_dir_from_cargo_json(
     package_name: &str,
     target_triple: &str,
 ) -> Result<PathBuf> {
+    let mut executable_match = None;
     let mut package_match = None;
     let mut triple_match = None;
     let triple_marker = format!("/{target_triple}/");
@@ -113,14 +114,13 @@ fn parse_artifact_dir_from_cargo_json(
             == Some(package_name);
 
         if let Some(executable) = value.get("executable").and_then(|v| v.as_str()) {
-            let parent = Path::new(executable)
-                .parent()
-                .context("missing artifact parent directory")?;
+            let parent = normalize_artifact_dir(Path::new(executable))?;
             let parent = parent.to_path_buf();
             if is_package_match {
                 package_match = Some(parent.clone());
             }
             if executable.contains(&triple_marker) {
+                executable_match = Some(parent.clone());
                 triple_match = Some(parent);
             }
             continue;
@@ -132,9 +132,7 @@ fn parse_artifact_dir_from_cargo_json(
             .and_then(|v| v.first())
             .and_then(|v| v.as_str())
         {
-            let parent = Path::new(filename)
-                .parent()
-                .context("missing artifact parent directory")?;
+            let parent = normalize_artifact_dir(Path::new(filename))?;
             let parent = parent.to_path_buf();
             if is_package_match {
                 package_match = Some(parent.clone());
@@ -146,9 +144,20 @@ fn parse_artifact_dir_from_cargo_json(
         }
     }
 
-    package_match
+    executable_match
+        .or(package_match)
         .or(triple_match)
         .context("no matching compiler-artifact entry found")
+}
+
+fn normalize_artifact_dir(path: &Path) -> Result<&Path> {
+    let parent = path.parent().context("missing artifact parent directory")?;
+    if parent.file_name().and_then(|name| name.to_str()) == Some("deps") {
+        return parent
+            .parent()
+            .context("missing target profile directory for artifact");
+    }
+    Ok(parent)
 }
 
 pub fn ensure_rootfs_in_target_dir(arch: Arch, disk_img: &Path) -> Result<()> {

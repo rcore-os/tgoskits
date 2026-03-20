@@ -19,9 +19,8 @@ use std::{
 };
 
 use ::ostool::{
-    build::config::Cargo,
+    build::{cargo_builder::CargoBuilder, config::Cargo},
     ctx::{AppContext, OutputConfig, PathConfig},
-    run::qemu::QemuConfig,
 };
 use anyhow::{Context, Result};
 use cargo_metadata::MetadataCommand;
@@ -29,17 +28,17 @@ use serde::Deserialize;
 
 use crate::arceos::{
     PlatformResolver,
-    config::{AXCONFIG_FILE_NAME, ArceosConfig, Arch, BuildMode, NetDev, QEMU_CONFIG_FILE_NAME},
+    config::{AXCONFIG_FILE_NAME, ArceosConfig, Arch, BuildMode, NetDev},
 };
 
 const DEFAULT_AX_IP: &str = "10.0.2.15";
 const DEFAULT_AX_GW: &str = "10.0.2.2";
-const DEFAULT_QEMU_FAIL_REGEX: &[&str] = &["(?i)\\bpanic(?:ked)?\\b"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppContextSpec {
     pub workspace: PathBuf,
     pub manifest: PathBuf,
+    pub config_search_dir: Option<PathBuf>,
     pub debug: bool,
 }
 
@@ -52,6 +51,7 @@ impl AppContextSpec {
                 config: OutputConfig::default(),
                 ..Default::default()
             },
+            config_search_dir: self.config_search_dir,
             debug: self.debug,
             ..Default::default()
         }
@@ -105,13 +105,14 @@ pub fn build_cargo_spec(
     let ctx = AppContextSpec {
         workspace: manifest_dir.to_path_buf(),
         manifest: manifest_dir.to_path_buf(),
+        config_search_dir: None,
         debug: matches!(config.mode, BuildMode::Debug),
     };
 
     Ok(CargoBuildSpec { cargo, ctx })
 }
 
-pub fn build_qemu_config(config: &ArceosConfig, manifest_dir: &Path) -> QemuConfig {
+pub fn build_qemu_default_args(config: &ArceosConfig, manifest_dir: &Path) -> Vec<String> {
     let mut args = vec![
         "-machine".to_string(),
         config.arch.to_qemu_machine().to_string(),
@@ -181,50 +182,17 @@ pub fn build_qemu_config(config: &ArceosConfig, manifest_dir: &Path) -> QemuConf
     }
 
     args.extend(config.qemu.extra_args.iter().cloned());
-
-    QemuConfig {
-        args,
-        uefi: false,
-        to_bin: !matches!(config.arch, Arch::X86_64),
-        success_regex: vec!["to install packages.".to_string()],
-        fail_regex: DEFAULT_QEMU_FAIL_REGEX
-            .iter()
-            .map(|pattern| (*pattern).to_string())
-            .collect(),
-    }
+    args
 }
 
-pub fn write_qemu_config(
-    manifest_dir: &Path,
-    qemu_config_path: &Path,
-    config: &ArceosConfig,
-) -> Result<PathBuf> {
-    let path = qemu_config_path.to_path_buf();
-    let qemu = build_qemu_config(config, manifest_dir);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create {}", parent.display()))?;
-    }
-    fs::write(&path, toml::to_string_pretty(&qemu)?)
-        .with_context(|| format!("Failed to write {}", path.display()))?;
-    Ok(path)
-}
-
-pub fn ensure_qemu_config(
-    manifest_dir: &Path,
-    app_dir: &Path,
-    config: &ArceosConfig,
-    explicit_qemu_config_path: Option<&Path>,
-) -> Result<PathBuf> {
-    if let Some(path) = explicit_qemu_config_path {
-        if !path.exists() {
-            anyhow::bail!("missing qemu config: {}", path.display());
-        }
-        return Ok(path.to_path_buf());
-    }
-
-    let qemu_config_path = app_dir.join(QEMU_CONFIG_FILE_NAME);
-    write_qemu_config(manifest_dir, &qemu_config_path, config)
+pub async fn cargo_build_with_artifact_resolution(
+    ctx: &mut AppContext,
+    cargo: &Cargo,
+) -> Result<()> {
+    CargoBuilder::build_auto(ctx, cargo)
+        .resolve_artifact_from_json(true)
+        .execute()
+        .await
 }
 
 fn build_features(
@@ -387,4 +355,86 @@ fn package_name(app_dir: &Path) -> Result<String> {
         .with_context(|| format!("Failed to parse {}", manifest_path.display()))?;
 
     Ok(manifest.package.name)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+    use crate::arceos::config::{ArceosConfig, Arch, NetDev};
+
+    #[test]
+    fn qemu_default_args_include_arch_memory_and_smp_defaults() {
+        let mut config = ArceosConfig {
+            arch: Arch::AArch64,
+            smp: Some(4),
+            mem: Some("512M".to_string()),
+            ..Default::default()
+        };
+        config.qemu.extra_args = vec!["-d".to_string(), "guest_errors".to_string()];
+
+        let args = build_qemu_default_args(&config, Path::new("/workspace"));
+
+        assert_eq!(
+            args,
+            vec![
+                "-machine",
+                "virt",
+                "-cpu",
+                "cortex-a72",
+                "-m",
+                "512M",
+                "-smp",
+                "4",
+                "-nographic",
+                "-serial",
+                "mon:stdio",
+                "-d",
+                "guest_errors",
+            ]
+        );
+    }
+
+    #[test]
+    fn qemu_default_args_use_default_disk_image_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_dir = dir.path();
+        let default_disk = manifest_dir.join("disk.img");
+        fs::write(&default_disk, b"disk").unwrap();
+
+        let mut config = ArceosConfig::default();
+        config.qemu.blk = true;
+
+        let args = build_qemu_default_args(&config, manifest_dir);
+
+        assert!(args.iter().any(|arg| arg == "virtio-blk-pci,drive=disk0"));
+        assert!(args.iter().any(|arg| {
+            arg == &format!(
+                "id=disk0,if=none,format=raw,file={}",
+                default_disk.display()
+            )
+        }));
+    }
+
+    #[test]
+    fn qemu_default_args_include_network_graphics_and_accel() {
+        let mut config = ArceosConfig {
+            arch: Arch::X86_64,
+            ..Default::default()
+        };
+        config.qemu.net = true;
+        config.qemu.net_dev = NetDev::Bridge;
+        config.qemu.graphic = true;
+        config.qemu.accel = true;
+
+        let args = build_qemu_default_args(&config, Path::new("/workspace"));
+
+        assert!(args.windows(2).any(|window| window == ["-accel", "kvm"]));
+        assert!(args.windows(2).any(|window| window == ["-display", "gtk"]));
+        assert!(
+            args.windows(2)
+                .any(|window| window == ["-netdev", "bridge,id=net0,br=virbr0"])
+        );
+    }
 }
