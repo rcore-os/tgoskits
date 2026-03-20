@@ -77,7 +77,6 @@ members = [
     "os/arceos/modules/axmm",
     "os/arceos/modules/axnet",
     "os/arceos/modules/axnet-ng",
-    "os/arceos/modules/axplat-dyn",
     "os/arceos/modules/axruntime",
     "os/arceos/modules/axsync",
     "os/arceos/modules/axtask",
@@ -111,6 +110,10 @@ members = [
 
     # scripts
     "scripts/axbuild",
+
+    # platform
+    "platform/axplat-dyn",
+    "platform/x86-qemu-q35",
 ]
 exclude = [
     # workspace directories
@@ -174,6 +177,8 @@ axplat-loongarch64-qemu-virt = { path = "components/axplat_crates/platforms/axpl
 axplat-riscv64-qemu-virt = { path = "components/axplat_crates/platforms/axplat-riscv64-qemu-virt" }
 axplat-x86-pc = { path = "components/axplat_crates/platforms/axplat-x86-pc" }
 axplat-x86-qemu-q35 = { path = "platform/x86-qemu-q35" }
+
+axplat-dyn = { path = "platform/axplat-dyn", version = "0.3.0-preview.3" }
 
 # === axdriver ===
 axdriver_base = { path = "components/axdriver_crates/axdriver_base" }
@@ -250,7 +255,7 @@ axlog = { path = "os/arceos/modules/axlog", version = "0.3.0-preview.3" }
 axmm = { path = "os/arceos/modules/axmm", version = "0.3.0-preview.3" }
 axnet = { path = "os/arceos/modules/axnet", version = "0.3.0-preview.3" }
 axnet-ng = { path = "os/arceos/modules/axnet-ng", version = "0.3.0-preview.3" }
-axplat-dyn = { path = "os/arceos/modules/axplat-dyn", version = "0.3.0-preview.3", default-features = false }
+axplat-dyn = { path = "platform/axplat-dyn", version = "0.3.0-preview.3", default-features = false }
 axruntime = { path = "os/arceos/modules/axruntime", version = "0.3.0-preview.3" }
 axsync = { path = "os/arceos/modules/axsync", version = "0.3.0-preview.3" }
 axtask = { path = "os/arceos/modules/axtask", version = "0.3.0-preview.3" }

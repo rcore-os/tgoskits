@@ -12,6 +12,7 @@ use std::{sync::Arc, thread, time, vec, vec::Vec};
 struct TaskParam {
     data_len: usize,
     value: u64,
+    #[allow(dead_code)]
     nice: isize,
 }
 
@@ -74,6 +75,7 @@ fn main() {
     for i in 0..PAYLOAD_KIND {
         let vec = data[i].clone();
         let data_len = TASK_PARAMS[i].data_len;
+        #[cfg(feature = "axstd")]
         let nice = TASK_PARAMS[i].nice;
         tasks.push(thread::spawn(move || {
             #[cfg(feature = "axstd")]
