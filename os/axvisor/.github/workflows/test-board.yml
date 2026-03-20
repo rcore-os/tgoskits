@@ -1,0 +1,64 @@
+name: Test for BOARD
+
+on:
+  push:
+    branches:
+      - '**'
+    tags-ignore:
+      - '**'
+  pull_request:
+  workflow_call:
+
+jobs:
+  test-board:
+    name: "Test board: ${{ matrix.board }} - ${{ matrix.vmconfigs_name }}"
+    strategy:
+      matrix:
+        include:
+          - board: phytiumpi
+            vmconfigs: configs/vms/arceos-aarch64-e2000-smp1.toml
+            vmconfigs_name: ArceOS
+          - board: phytiumpi
+            vmconfigs: configs/vms/linux-aarch64-e2000-smp1.toml
+            vmconfigs_name: Linux
+          - board: roc-rk3568-pc
+            vmconfigs: configs/vms/arceos-aarch64-rk3568-smp1.toml
+            vmconfigs_name: ArceOS
+          - board: roc-rk3568-pc
+            vmconfigs: configs/vms/linux-aarch64-rk3568-smp1.toml
+            vmconfigs_name: Linux
+      fail-fast: false
+    runs-on:
+      - self-hosted
+      - linux
+      - ${{ matrix.board }}
+
+    steps:
+      - name: Clean up workspace
+        run: |
+          [ -d .git ] && git submodule deinit -f . || true
+          [ -d .git/modules ] && rm -rf .git/modules || true
+          [ -d .git ] && git clean -ffdx || true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          clean: true
+          submodules: recursive
+
+      - name: Install dependencies
+        run: cargo +stable install ostool --version ^0.8
+
+      - name: Run tests
+        run: |
+          echo $BOARD_POWER_RESET
+          export RUST_LOG=debug
+          # Use script to provide a PTY so ostool's crossterm can initialize (avoids "reader source not set" panic in CI)
+          script -q -c "cargo xtask uboot \
+            --build-config configs/board/${{ matrix.board }}.toml \
+            --uboot-config .github/workflows/uboot.toml \
+            --vmconfigs ${{ matrix.vmconfigs }} \
+            --bin-dir /home/runner/tftp" /dev/null
+          # cargo xtask uboot \
+          #   --build-config configs/board/${{ matrix.board }}.toml \
+          #   --uboot-config .github/workflows/uboot.toml
