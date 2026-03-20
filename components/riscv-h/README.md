@@ -1,8 +1,11 @@
 # riscv-h
 
-[![CI](https://github.com/arceos-hypervisor/riscv-h/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/arceos-hypervisor/riscv-h/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/riscv-h.svg)](https://crates.io/crates/riscv-h)
-[![Documentation](https://docs.rs/riscv-h/badge.svg)](https://docs.rs/riscv-h)
+[![Docs.rs](https://docs.rs/riscv-h/badge.svg)](https://docs.rs/riscv-h)
+[![Rust](https://img.shields.io/badge/edition-2024-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/arceos-hypervisor/riscv-h/blob/main/LICENSE)
+
+English | [中文](README_CN.md)
 
 RISC-V Hypervisor Extension Register Support
 
