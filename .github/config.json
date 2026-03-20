@@ -1,9 +1,16 @@
 {
+  "component": {
+    "name": "axdevice",
+    "crate_name": "axdevice"
+  },
   "targets": [
     "aarch64-unknown-none-softfloat",
     "x86_64-unknown-linux-gnu",
     "x86_64-unknown-none",
     "riscv64gc-unknown-none-elf"
+  ],
+  "unit_test_targets": [
+    "x86_64-unknown-linux-gnu"
   ],
   "rust_components": [
     "rust-src",
