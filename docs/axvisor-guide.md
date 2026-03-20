@@ -1,638 +1,290 @@
 # Axvisor 开发指南
 
-Axvisor 是一个基于 ArceOS 构建的统一模块化 Type I 虚拟机监控器（Hypervisor）。
+Axvisor 在 TGOSKits 里是一条和 ArceOS / StarryOS 并列的系统路径，但它的开发体验和前两者最大的不同是：除了代码，还必须把板级配置、VM 配置和 Guest 镜像一起看。
 
-## 📋 目录
+## 1. Axvisor 在仓库里的位置
 
-- [简介](#简介)
-- [快速开始](#快速开始)
-- [架构设计](#架构设计)
-- [开发流程](#开发流程)
-- [虚拟机管理](#虚拟机管理)
-- [设备虚拟化](#设备虚拟化)
-- [调试技巧](#调试技巧)
-- [进阶主题](#进阶主题)
+| 路径 | 角色 | 什么时候会改到 |
+| --- | --- | --- |
+| `os/axvisor/src/` | Hypervisor 运行时 | VM 生命周期、调度、设备管理、异常处理 |
+| `os/axvisor/configs/board/` | 板级配置 | 目标架构、target、feature、默认 VM 列表 |
+| `os/axvisor/configs/vms/` | Guest VM 配置 | kernel 路径、入口地址、内存布局、设备直通 |
+| `components/axvm`、`components/axvcpu`、`components/axdevice`、`components/axaddrspace` | 虚拟化核心组件 | VM、vCPU、虚拟设备、地址空间 |
+| `components/axvisor_api` | Hypervisor 对外接口 | Guest / Hypervisor 交互接口 |
+| `platform/x86-qemu-q35` | x86_64 QEMU Q35 平台实现 | x86_64 板级能力 |
 
-## 简介
+此外，Axvisor 运行时依然大量复用了 ArceOS 能力，例如 `axstd` 和底层平台支持。
 
-### 特性
+## 2. 先记住命令入口
 
-- ✅ **统一架构**: 单一代码库支持 x86_64、ARM64、RISC-V
-- ✅ **模块化设计**: 功能组件化，易于扩展
-- ✅ **多 Guest 支持**: 运行 ArceOS、Linux、StarryOS、NimbOS
-- ✅ **硬件虚拟化**: 利用硬件虚拟化扩展
-- ✅ **设备虚拟化**: VirtIO 设备支持
-- ✅ **多平台**: QEMU、树莓派、飞腾派等
+Axvisor 的 build/qemu 不是根 `cargo xtask` 的子命令，而是 `os/axvisor` 自带 xtask 提供的。
 
-### 架构支持
-
-| 架构 | 状态 | 硬件虚拟化 |
-|------|------|------------|
-| **ARM64** | ✅ 支持 | ARMv8-A VHE |
-| **x86_64** | ✅ 支持 | VT-x / EPT |
-| **RISC-V** | ✅ 支持 | H-extension |
-
-### Guest 系统支持
-
-| Guest 系统 | 类型 | 架构支持 | 状态 |
-|-----------|------|----------|------|
-| **ArceOS** | Unikernel | ARM64, x86_64, RISC-V | ✅ |
-| **Linux** | 宏内核 | ARM64, x86_64, RISC-V | ✅ |
-| **StarryOS** | 教学OS | ARM64, x86_64 | ✅ |
-| **NimbOS** | RTOS | ARM64, x86_64, RISC-V | ✅ |
-
-## 快速开始
-
-### 环境准备
+你有两种等价写法：
 
 ```bash
-# 安装基础工具
-sudo apt install -y build-essential cmake clang libssl-dev pkg-config
-
-# 安装 Rust 工具链
-rustup target add aarch64-unknown-none-softfloat
-rustup target add x86_64-unknown-none
-rustup target add riscv64gc-unknown-none-elf
-
-# 安装工具
-cargo install cargo-binutils
+# 仓库根目录
+cargo axvisor defconfig qemu-aarch64
+cargo axvisor build
+cargo axvisor qemu
 ```
 
-### 在 TGOSKits 中构建
-
 ```bash
-# 1. 进入 Axvisor 目录
+# Axvisor 子目录
 cd os/axvisor
-
-# 2. 选择配置（QEMU ARM64）
-cargo xtask defconfig qemu-aarch64
-
-# 3. 构建
-cargo xtask build
-
-# 4. 运行
-cargo xtask run
-```
-
-### 快速运行（完整流程）
-
-```bash
-# 1. 准备 Guest 镜像（参考 axvisor-guest 仓库）
-git clone https://github.com/arceos-hypervisor/axvisor-guest
-cd axvisor-guest
-
-# 2. 构建 ArceOS Guest
-./build-arceos.sh aarch64
-
-# 3. 回到 Axvisor 目录
-cd ../axvisor
-
-# 4. 配置并运行
 cargo xtask defconfig qemu-aarch64
 cargo xtask build
-cargo xtask run
+cargo xtask qemu
 ```
 
-### 使用 Makefile
+当前本地 xtask 里最常用的子命令包括：
+
+- `defconfig`
+- `build`
+- `qemu`
+- `menuconfig`
+- `image`
+- `vmconfig`
+
+## 3. 第一条成功路径：QEMU AArch64
+
+第一次上手建议从 `qemu-aarch64` 开始，因为当前仓库里的现成配置与 CI 入口都优先覆盖这条路径。
+
+### 3.1 推荐方式：使用官方 `setup_qemu.sh`
+
+不要直接从 `defconfig/build/qemu` 开始。  
+当前默认 QEMU 模板会引用 `tmp/rootfs.img`，而这个文件不会由 `defconfig` 或 `build` 自动生成。
+
+官方推荐流程是：
 
 ```bash
 cd os/axvisor
-
-# ARM64
-make ARCH=aarch64 run
-
-# x86_64
-make ARCH=x86_64 run
-
-# RISC-V
-make ARCH=riscv64 run
+./scripts/setup_qemu.sh arceos
 ```
 
-## 架构设计
+这个脚本会自动完成：
 
-### 五层架构
+1. 下载并解压 Guest 镜像到 `/tmp/.axvisor-images/qemu_aarch64_arceos`
+2. 从 `configs/vms/arceos-aarch64-qemu-smp1.toml` 生成临时 VM 配置  
+   输出到 `tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml`
+3. 自动修正 VM 配置中的 `kernel_path`
+4. 复制 `rootfs.img` 到 `os/axvisor/tmp/rootfs.img`
 
-```
-┌─────────────────────────────────────────┐
-│      Guest VMs (ArceOS/Linux/...)       │  虚拟机
-├─────────────────────────────────────────┤
-│    Virtual Devices (VirtIO/GIC/...)     │  虚拟设备
-├─────────────────────────────────────────┤
-│    VM Management (axvm/axvcpu/...)      │  VM 管理
-├─────────────────────────────────────────┤
-│    CPU Virtualization (vCPU/VMX/...)    │  CPU 虚拟化
-├─────────────────────────────────────────┤
-│    Hardware (ArceOS HAL + Drivers)      │  硬件层
-└─────────────────────────────────────────┘
-```
+### 3.2 正确的启动命令
 
-### 核心组件
-
-| 组件 | 路径 | 说明 |
-|------|------|------|
-| **axvm** | `components/axvm` | 虚拟机管理 |
-| **axvcpu** | `components/axvcpu` | vCPU 管理 |
-| **axvisor_api** | `components/axvisor_api` | API 接口 |
-| **arm_vcpu** | `components/arm_vcpu` | ARM vCPU |
-| **arm_vgic** | `components/arm_vgic` | ARM 虚拟中断控制器 |
-| **riscv_vcpu** | `components/riscv_vcpu` | RISC-V vCPU |
-| **riscv_vplic** | `components/riscv_vplic` | RISC-V 虚拟中断控制器 |
-| **x86_vcpu** | `components/x86_vcpu` | x86 vCPU |
-| **axdevice** | `components/axdevice` | 设备虚拟化 |
-| **axaddrspace** | `components/axaddrspace` | 地址空间管理 |
-
-### 目录结构
-
-```
-os/axvisor/
-├── src/                  # 主程序
-├── configs/             # 配置文件
-│   ├── board/           # 开发板配置
-│   └── vms/             # VM 配置
-├── crates/              # 内部 crates
-└── doc/                 # 文档
-```
-
-## 开发流程
-
-### 配置系统
-
-#### 1. 开发板配置
-
-配置文件位于 `configs/board/` 目录：
-
-```toml
-# configs/board/qemu-aarch64.toml
-[build]
-arch = "aarch64"
-smp = 4
-log = "info"
-
-[plat]
-name = "axplat-aarch64-qemu-virt"
-
-[features]
-default = ["virtio", "gicv3"]
-
-[vm_configs]
-# VM 配置列表（需要手动指定）
-vms = ["configs/vms/arceos-aarch64.toml"]
-```
-
-#### 2. VM 配置
-
-```toml
-# configs/vms/arceos-aarch64.toml
-[vm]
-name = "arceos"
-kernel = "path/to/arceos.bin"
-
-[vm.memory]
-size = "128M"
-
-[vm.cpus]
-num = 2
-
-[vm.devices]
-# 设备列表
-```
-
-### 构建命令
+准备完成后，直接运行：
 
 ```bash
-# 选择配置
-cargo xtask defconfig <board_name>
+cd os/axvisor
+cargo xtask qemu \
+  --build-config configs/board/qemu-aarch64.toml \
+  --qemu-config .github/workflows/qemu-aarch64.toml \
+  --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
+```
 
-# 查看当前配置
-cargo xtask menuconfig
+如果一切正常，ArceOS Guest 会输出 `Hello, world!`。
 
-# 构建
+### 3.3 为什么直接 `cargo axvisor qemu` 会失败
+
+原因通常有两个：
+
+1. `configs/board/qemu-aarch64.toml` 当前默认是 `vm_configs = []`
+2. 默认 QEMU 配置模板 `scripts/ostool/qemu-aarch64.toml` 会引用 `tmp/rootfs.img`
+
+所以仅执行：
+
+```bash
+cargo axvisor defconfig qemu-aarch64
+cargo axvisor build
+cargo axvisor qemu
+```
+
+还不够。除非你已经手工准备好了：
+
+- `.build.toml`
+- 可用的 `vmconfigs`
+- `os/axvisor/tmp/rootfs.img`
+
+否则 `qemu` 会因为找不到 rootfs 或 VM 配置而失败。
+
+## 4. 组件、运行时和配置是怎样连起来的
+
+```mermaid
+flowchart TD
+    HvCrates["components/axvm + axvcpu + axdevice + axaddrspace"]
+    ArceosBase["ArceOS base capabilities"]
+    Runtime["os/axvisor/src/*"]
+    BoardCfg["configs/board/*.toml -> .build.toml"]
+    VmCfg["configs/vms/*.toml"]
+    GuestImg["Guest image"]
+    QemuRun["cargo axvisor qemu"]
+
+    HvCrates --> Runtime
+    ArceosBase --> Runtime
+    Runtime --> QemuRun
+    BoardCfg --> QemuRun
+    VmCfg --> QemuRun
+    GuestImg --> VmCfg
+```
+
+这条链路说明了四类不同改动：
+
+- 代码实现：`components/*` 或 `os/axvisor/src/*`
+- 板级能力：`configs/board/*`、`platform/x86-qemu-q35`
+- 单个 Guest 启动参数：`configs/vms/*`
+- Guest 本身内容：外部生成的 Guest 镜像
+
+## 5. 常见开发动作
+
+### 5.1 修改虚拟化核心组件
+
+如果你改的是：
+
+- `components/axvm`
+- `components/axvcpu`
+- `components/axdevice`
+- `components/axaddrspace`
+
+通常先做 build-only 验证：
+
+```bash
+cargo axvisor defconfig qemu-aarch64
+cargo axvisor build
+```
+
+只有在 Guest 镜像和 VM 配置都已准备好的前提下，再跑：
+
+```bash
+cargo axvisor qemu
+```
+
+### 5.2 修改 Hypervisor 运行时
+
+`os/axvisor/src/*` 更偏系统整合层。  
+这类改动常常会同时依赖：
+
+- 板级 feature 是否启用正确
+- Guest 的 `kernel_path` 是否正确
+- 设备直通或内存区域配置是否一致
+
+所以排查顺序通常是：
+
+1. 先确认 `build` 成功
+2. 再确认 `.build.toml` 和 `configs/vms/*.toml`
+3. 最后再判断是不是运行时代码本身的问题
+
+### 5.3 新增板级支持
+
+新增板级支持往往需要两部分一起落地：
+
+- `os/axvisor/configs/board/<board>.toml`
+- 对应的平台 crate，例如 `components/axplat_crates/platforms/*` 或 `platform/x86-qemu-q35`
+
+当前仓库里现成的板级配置包括：
+
+- `qemu-aarch64.toml`
+- `qemu-x86_64.toml`
+- `orangepi-5-plus.toml`
+- `phytiumpi.toml`
+- `roc-rk3568-pc.toml`
+
+### 5.4 调整 VM 配置
+
+如果你只是想切换 Guest 或修改 Guest 资源分配，最常见的入口就是 `configs/vms/*.toml`：
+
+- `kernel_path`
+- `entry_point`
+- `cpu_num`
+- `memory_regions`
+- `passthrough_devices`
+- `excluded_devices`
+
+这类改动通常不需要动 Hypervisor 主代码，但经常会决定你能不能真正把 Guest 拉起来。
+
+## 6. 最常用的验证入口
+
+### build-only 验证
+
+```bash
+cd os/axvisor
+cargo xtask defconfig qemu-aarch64
 cargo xtask build
-
-# 清理
-cargo xtask clean
-
-# 运行
-cargo xtask run
-
-# 调试模式运行
-cargo xtask debug
 ```
 
-### 添加新的开发板
-
-1. **创建配置文件**
-
-```toml
-# configs/board/my-board.toml
-[build]
-arch = "aarch64"
-smp = 2
-log = "debug"
-
-[plat]
-name = "axplat-aarch64-myboard"
-
-[features]
-default = ["virtio"]
-
-[vm_configs]
-vms = ["configs/vms/arceos-aarch64.toml"]
-```
-
-2. **实现平台支持**
-
-```rust
-// components/axplat_crates/platforms/axplat-aarch64-myboard/src/lib.rs
-use axplat::Platform;
-
-pub struct MyBoardPlatform;
-
-impl Platform for MyBoardPlatform {
-    fn name() -> &'static str {
-        "my-board"
-    }
-    
-    // 实现必要的 trait...
-}
-
-axplat::register_platform!(MyBoardPlatform);
-```
-
-3. **使用配置**
+### 运行 QEMU 验证
 
 ```bash
-cargo xtask defconfig my-board
-cargo xtask build
-cargo xtask run
+cd os/axvisor
+./scripts/setup_qemu.sh arceos
+cargo xtask qemu \
+  --build-config configs/board/qemu-aarch64.toml \
+  --qemu-config .github/workflows/qemu-aarch64.toml \
+  --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
 ```
 
-## 虚拟机管理
-
-### 创建虚拟机
-
-```rust
-use axvm::{AxVM, AxVMOptions};
-
-let options = AxVMOptions {
-    name: "my-vm",
-    memory_size: 128 * 1024 * 1024,  // 128MB
-    num_cpus: 2,
-    kernel_image: "path/to/kernel",
-    ..Default::default()
-};
-
-let vm = AxVM::new(options)?;
-vm.start()?;
-```
-
-### vCPU 管理
-
-```rust
-use axvcpu::AxVCpu;
-
-// 创建 vCPU
-let vcpu = AxVCpu::new(0)?;
-
-// 设置初始状态
-vcpu.set_pc(entry_point);
-vcpu.set_reg(0, 0);  // a0 = 0
-vcpu.set_reg(1, dtb_addr);  // a1 = DTB address
-
-// 运行 vCPU
-vcpu.run()?;
-
-// 处理 VM exit
-loop {
-    let exit_reason = vcpu.run()?;
-    match exit_reason {
-        VmExit::ExternalInterrupt => {
-            // 处理外部中断
-        }
-        VmExit::Hypercall => {
-            // 处理 hypercall
-        }
-        _ => {}
-    }
-}
-```
-
-### 内存管理
-
-```rust
-use axaddrspace::AddrSpace;
-
-// 创建地址空间
-let mut addr_space = AddrSpace::new();
-
-// 映射内存区域
-addr_space.map_range(
-    guest_phys_addr,
-    host_virt_addr,
-    size,
-    Flags::READ | Flags::WRITE | Flags::EXECUTE,
-)?;
-
-// 加载内核
-addr_space.load_kernel(kernel_image)?;
-```
-
-## 设备虚拟化
-
-### VirtIO 设备
-
-```rust
-use axdevice::virtio::{VirtIOBlk, VirtIONet};
-
-// 创建虚拟块设备
-let blk = VirtIOBlk::new(0x10000, 128 * 1024 * 1024)?;
-vm.add_device(blk)?;
-
-// 创建虚拟网卡
-let net = VirtIONet::new(0x20000)?;
-vm.add_device(net)?;
-```
-
-### 中断控制器
-
-#### ARM - GIC
-
-```rust
-use arm_vgic::{GicV3, Vgic};
-
-// 创建虚拟 GIC
-let vgic = GicV3::new(gicd_base, gicc_base)?;
-
-// 注入虚拟中断
-vgic.inject_irq(vcpu_id, irq_num)?;
-```
-
-#### RISC-V - PLIC
-
-```rust
-use riscv_vplic::VPlic;
-
-// 创建虚拟 PLIC
-let vplic = VPlic::new(plic_base)?;
-
-// 注入虚拟中断
-vplic.inject_irq(vcpu_id, irq_num)?;
-```
-
-### Pass-through 设备
-
-```rust
-// 设备直通（需要硬件支持）
-let device = PassthroughDevice::new(pci_address)?;
-vm.add_device(device)?;
-```
-
-## 调试技巧
-
-### 启用调试日志
+### 根工作区测试入口
 
 ```bash
-# 方法1：通过配置文件
-# configs/board/qemu-aarch64.toml
-[build]
-log = "debug"
-
-# 方法2：环境变量
-export LOG=debug
-cargo xtask run
+cargo xtask test axvisor --target aarch64-unknown-none-softfloat
 ```
 
-### 使用 GDB 调试 Hypervisor
+这条命令属于根工作区测试矩阵，不等价于本地 `cargo xtask qemu ...`。  
+它会走自己的测试逻辑，并自动确保所需镜像已下载；当前 AArch64 测试默认使用的是 Linux guest 测试配置，而不是你手工运行的 ArceOS guest 路径。
+
+### x86_64 路径
+
+如果你在做 x86_64 相关改动，可以切到：
 
 ```bash
-# 1. 启动 QEMU 并等待 GDB
-cargo xtask debug
-
-# 2. 在另一个终端连接 GDB
-aarch64-elf-gdb target/aarch64-unknown-none/release/axvisor
-
-# GDB 命令
-(gdb) target remote :1234
-(gdb) break vm_entry
-(gdb) continue
+cargo axvisor defconfig qemu-x86_64
+cargo axvisor build
 ```
 
-### 调试 Guest 内核
+这时常常还要一起关注 `platform/x86-qemu-q35`。
+
+## 7. 调试建议
+
+### 先看配置，再看代码
+
+Axvisor 启动失败时，最常见的问题不是 Rust 代码编译失败，而是下面四件事没对齐：
+
+1. `.build.toml` 是不是当前想要的板级配置
+2. `vm_configs` 是不是空的
+3. `configs/vms/*.toml` 里的 `kernel_path` 是否真实存在
+4. Guest 镜像的入口地址、加载地址、内存布局是否匹配
+
+### 调整日志和配置
+
+最直接的做法是：
+
+- 先在板级配置里调高 `log`
+- 再重新执行 `defconfig`
+- 需要交互式调整时用 `cargo axvisor menuconfig`
+
+### 哪些命令适合排错
 
 ```bash
-# 1. 启动 Axvisor
-cargo xtask run
+# 重新生成当前配置
+cargo axvisor defconfig qemu-aarch64
 
-# 2. 在 Guest 内核编译时包含调试信息
-# 3. 使用 GDB 连接到 Guest
-(gdb) target remote :1234
-(gdb) break rust_main  # Guest 的入口点
+# 查看或调整配置
+cargo axvisor menuconfig
+
+# 只做构建，先排除编译问题
+cargo axvisor build
+
+# 使用官方脚本准备镜像和 rootfs
+cd os/axvisor
+./scripts/setup_qemu.sh arceos
+
+# 明确指定 VM 配置运行
+cargo xtask qemu \
+  --build-config configs/board/qemu-aarch64.toml \
+  --qemu-config .github/workflows/qemu-aarch64.toml \
+  --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
 ```
 
-### QEMU 监控命令
+## 8. 继续往哪里读
 
-```bash
-# 在 QEMU 运行时按 Ctrl+A, C
-(qemu) info status         # VM 状态
-(qemu) info registers      # 寄存器
-(qemu) info mtree          # 内存布局
-(qemu) info cpus           # CPU 信息
-(qemu) x/10i $pc           # 反汇编
-```
-
-## 进阶主题
-
-### 添加新的虚拟设备
-
-1. **实现设备 trait**
-
-```rust
-use axdevice::{Device, DeviceIO};
-
-pub struct MyVirtualDevice {
-    // 设备状态
-}
-
-impl Device for MyVirtualDevice {
-    fn name(&self) -> &str {
-        "my-device"
-    }
-}
-
-impl DeviceIO for MyVirtualDevice {
-    fn read(&self, offset: usize, size: usize) -> Result<u64> {
-        // 实现读取逻辑
-        Ok(0)
-    }
-    
-    fn write(&self, offset: usize, value: u64, size: usize) -> Result<()> {
-        // 实现写入逻辑
-        Ok(())
-    }
-}
-```
-
-2. **注册设备**
-
-```rust
-vm.add_device(MyVirtualDevice::new())?;
-```
-
-### 实现 Hypercall
-
-```rust
-// 定义 hypercall 编号
-const HC_MY_HYPERCALL: u64 = 100;
-
-// 处理 hypercall
-fn handle_hypercall(vcpu: &AxVCpu, code: u64, args: [u64; 6]) -> Result<u64> {
-    match code {
-        HC_MY_HYPERCALL => {
-            debug!("my_hypercall called: {:?}", args);
-            Ok(0)
-        }
-        _ => Err(Error::UnknownHypercall),
-    }
-}
-
-// 在 VM exit 处理中调用
-match exit_reason {
-    VmExit::Hypercall => {
-        let code = vcpu.get_reg(0);
-        let args = [
-            vcpu.get_reg(1),
-            vcpu.get_reg(2),
-            // ...
-        ];
-        let ret = handle_hypercall(vcpu, code, args)?;
-        vcpu.set_reg(0, ret);
-    }
-}
-```
-
-### 性能优化
-
-1. **使用大页**
-
-```rust
-// 使用 2MB 大页
-addr_space.map_range(
-    guest_addr,
-    host_addr,
-    size,
-    Flags::HUGE_PAGE,
-)?;
-```
-
-2. **减少 VM exit**
-
-```rust
-// 批量处理中断
-vgic.enable_batch_mode();
-```
-
-3. **优化内存映射**
-
-```rust
-// 使用 EPT/NPT 扩展页表
-addr_space.enable_ept();
-```
-
-### 支持新架构
-
-1. **实现 vCPU 接口**
-
-```rust
-// components/newarch_vcpu/src/lib.rs
-use axvcpu::AxVCpuOps;
-
-pub struct NewArchVCpu {
-    // 架构特定状态
-}
-
-impl AxVCpuOps for NewArchVCpu {
-    fn run(&mut self) -> Result<VmExit> {
-        // 实现运行逻辑
-    }
-    
-    // 实现其他方法...
-}
-```
-
-2. **实现中断控制器**
-
-```rust
-pub struct NewArchInterruptController {
-    // 中断控制器状态
-}
-
-impl InterruptController for NewArchInterruptController {
-    // 实现必要方法...
-}
-```
-
-## 常见问题
-
-### Q: Guest 启动失败
-
-**A:** 检查以下几点：
-1. Guest 镜像格式是否正确
-2. 内存配置是否足够
-3. 设备树是否正确
-
-```bash
-# 查看 Guest 镜像信息
-file path/to/guest.bin
-
-# 检查配置
-cat configs/vms/arceos-aarch64.toml
-```
-
-### Q: 设备虚拟化不工作
-
-**A:** 确认：
-1. VirtIO 驱动是否加载
-2. 中断是否正确配置
-3. 内存映射是否正确
-
-### Q: 如何查看 VM 状态
-
-**A:** 使用 Axvisor shell：
-
-```bash
-# 启动后进入 Axvisor shell
-> vm list              # 列出 VM
-> vm status <id>       # 查看 VM 状态
-> vcpu list <vm-id>    # 列出 vCPU
-```
-
-## 硬件平台
-
-### QEMU
-
-| 平台 | 架构 | 配置 |
-|------|------|------|
-| qemu-aarch64 | ARM64 | `configs/board/qemu-aarch64.toml` |
-| qemu-x86_64 | x86_64 | `configs/board/qemu-x86_64.toml` |
-| qemu-riscv64 | RISC-V | `configs/board/qemu-riscv64.toml` |
-
-### 实际硬件
-
-| 平台 | 架构 | 状态 |
-|------|------|------|
-| Orange Pi 5 Plus | ARM64 | ✅ |
-| Phytium Pi | ARM64 | ✅ |
-| ROC-RK3568-PC | ARM64 | ✅ |
-| EVM3588 | ARM64 | ✅ |
-
-## 参考资源
-
-- [Axvisor 官方文档](https://arceos-hypervisor.github.io/axvisorbook/)
-- [Axvisor 仓库](https://github.com/arceos-hypervisor/axvisor)
-- [ARM 虚拟化手册](https://developer.arm.com/documentation/)
-- [Intel VT-x 手册](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-virtualization-technology-specifications.html)
-- [RISC-V H-extension](https://github.com/riscv/riscv-virtual-memory)
-
----
-
-**下一步**: 学习 [组件开发指南](components.md) 了解如何开发可复用组件
+- [components.md](components.md): 从组件角度看 Axvisor 与 ArceOS / StarryOS 的共享依赖
+- [build-system.md](build-system.md): 理解 `cargo axvisor` 与根 `cargo xtask test axvisor` 的边界
+- [quick-start.md](quick-start.md): 如果你只是想先把第一条 QEMU 路径跑通

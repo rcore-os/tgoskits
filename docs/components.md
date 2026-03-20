@@ -1,624 +1,274 @@
-# 组件开发指南
+# 基于组件开发指南
 
-本指南介绍如何在 TGOSKits 中开发、测试和维护可复用的操作系统组件。
+TGOSKits 的核心价值不只是“把仓库放在一起”，而是让你可以从组件出发，一路追到 ArceOS、StarryOS 和 Axvisor 的实际消费者。这篇文档专门回答这个问题。
 
-## 📋 目录
+## 1. 组件不只在 `components/`
 
-- [组件概述](#组件概述)
-- [组件分类](#组件分类)
-- [创建新组件](#创建新组件)
-- [组件开发规范](#组件开发规范)
-- [测试组件](#测试组件)
-- [文档规范](#文档规范)
-- [发布流程](#发布流程)
+新开发者最容易误解的一点是：只有 `components/` 才算组件。实际上，TGOSKits 里至少有六类“组件化层次”。
 
-## 组件概述
+| 路径 | 角色 | 典型内容 | 主要消费者 |
+| --- | --- | --- | --- |
+| `components/` | subtree 管理的独立可复用 crate | `axerrno`、`kspin`、`axvm`、`starry-process` | 三套系统都可能直接或间接使用 |
+| `os/arceos/modules/` | ArceOS 内核模块 | `axhal`、`axtask`、`axnet`、`axfs` | ArceOS，且经常被 StarryOS 和 Axvisor 复用 |
+| `os/arceos/api/` | feature 与对外 API 聚合 | `axfeat`、`arceos_api` | ArceOS 应用、StarryOS、Axvisor |
+| `os/arceos/ulib/` | 用户侧库 | `axstd`、`axlibc` | ArceOS 示例与用户应用 |
+| `os/StarryOS/kernel/` | StarryOS 内核逻辑 | syscall、进程、内存、文件系统 | `starryos` 包 |
+| `os/axvisor/` | Hypervisor 运行时与配置 | `src/`、`configs/board/`、`configs/vms/` | Axvisor |
 
-TGOSKits 包含 60+ 个可复用的操作系统组件，这些组件：
+此外还有两个经常要一起看的目录：
 
-- **独立可测试**: 每个组件都可以独立测试
-- **高度模块化**: 组件之间松耦合，通过接口通信
-- **跨项目共享**: 可以在 ArceOS、StarryOS、Axvisor 等项目中复用
-- **版本管理**: 通过 Git Subtree 管理独立仓库
+- `components/axplat_crates/platforms/*` 与 `platform/*`：平台实现
+- `test-suit/*`：系统级测试入口
 
-## 组件分类
+## 2. 组件是怎样流到三个系统里的
 
-### Hypervisor 组件
+```mermaid
+flowchart TD
+    ReusableCrate["components/* reusable crates"]
+    ArceosModules["os/arceos/modules/*"]
+    ArceosApi["os/arceos/api/* + os/arceos/ulib/*"]
+    ArceosApps["ArceOS examples + test-suit/arceos"]
+    StarryKernel["os/StarryOS/kernel + components/starry-*"]
+    AxvisorRuntime["os/axvisor + components/axvm/axvcpu/axdevice/*"]
+    PlatformCrates["components/axplat_crates/platforms/* + platform/*"]
 
-虚拟化相关组件，支持 ARM/RISC-V/x86 架构：
-
-| 组件 | 说明 | 仓库 |
-|------|------|------|
-| **arm_vcpu** | ARM 虚拟 CPU | [GitHub](https://github.com/arceos-hypervisor/arm_vcpu) |
-| **arm_vgic** | ARM 虚拟中断控制器 | [GitHub](https://github.com/arceos-hypervisor/arm_vgic) |
-| **riscv_vcpu** | RISC-V 虚拟 CPU | [GitHub](https://github.com/arceos-hypervisor/riscv_vcpu) |
-| **x86_vcpu** | x86 虚拟 CPU | [GitHub](https://github.com/arceos-hypervisor/x86_vcpu) |
-| **axvm** | 虚拟机管理 | [GitHub](https://github.com/arceos-hypervisor/axvm) |
-| **axvcpu** | vCPU 抽象 | [GitHub](https://github.com/arceos-hypervisor/axvcpu) |
-| **axvisor_api** | Hypervisor API | [GitHub](https://github.com/arceos-hypervisor/axvisor_api) |
-
-### ArceOS 组件
-
-ArceOS 框架核心组件：
-
-| 组件 | 说明 | 仓库 |
-|------|------|------|
-| **axcpu** | CPU 抽象 | [GitHub](https://github.com/arceos-org/axcpu) |
-| **axsched** | 调度器 | [GitHub](https://github.com/arceos-org/axsched) |
-| **axerrno** | 错误处理 | [GitHub](https://github.com/arceos-org/axerrno) |
-| **axio** | I/O 抽象 | [GitHub](https://github.com/arceos-org/axio) |
-| **percpu** | Per-CPU 变量 | [GitHub](https://github.com/arceos-org/percpu) |
-| **kspin** | 自旋锁 | [GitHub](https://github.com/arceos-org/kspin) |
-| **lazyinit** | 延迟初始化 | [GitHub](https://github.com/arceos-org/lazyinit) |
-| **axdriver_crates** | 驱动框架 | [GitHub](https://github.com/arceos-org/axdriver_crates) |
-| **axplat_crates** | 平台抽象 | [GitHub](https://github.com/arceos-org/axplat_crates) |
-
-### Starry 组件
-
-StarryOS 专用组件：
-
-| 组件 | 说明 | 仓库 |
-|------|------|------|
-| **starry-process** | 进程管理 | [GitHub](https://github.com/Starry-OS/starry-process) |
-| **starry-signal** | 信号机制 | [GitHub](https://github.com/Starry-OS/starry-signal) |
-| **starry-vm** | 虚拟内存 | [GitHub](https://github.com/Starry-OS/starry-vm) |
-| **axpoll** | I/O 多路复用 | [GitHub](https://github.com/Starry-OS/axpoll) |
-| **rsext4** | ext4 文件系统 | [GitHub](https://github.com/Starry-OS/rsext4) |
-
-### 基础组件
-
-通用基础组件：
-
-| 组件 | 说明 | 仓库 |
-|------|------|------|
-| **axallocator** | 内存分配器 | [GitHub](https://github.com/arceos-org/allocator) |
-| **axerrno** | 错误处理 | [GitHub](https://github.com/arceos-org/axerrno) |
-| **page_table_multiarch** | 多架构页表 | [GitHub](https://github.com/arceos-org/page_table_multiarch) |
-| **crate_interface** | 接口抽象 | [GitHub](https://github.com/arceos-org/crate_interface) |
-| **bitmap-allocator** | 位图分配器 | [GitHub](https://github.com/rcore-os/bitmap-allocator) |
-
-## 创建新组件
-
-### 1. 规划组件
-
-在创建新组件前，考虑：
-
-- **功能范围**: 组件应该单一职责
-- **依赖关系**: 最小化依赖
-- **接口设计**: 清晰的 API 边界
-- **复用性**: 是否可以跨项目使用
-
-### 2. 创建组件目录
-
-```bash
-# 在 TGOSKits 根目录
-cd /path/to/tgoskits
-
-# 创建组件目录
-mkdir -p components/my_component/src
-cd components/my_component
+    ReusableCrate --> ArceosModules
+    ArceosModules --> ArceosApi
+    ArceosApi --> ArceosApps
+    ReusableCrate --> StarryKernel
+    ArceosModules --> StarryKernel
+    ReusableCrate --> AxvisorRuntime
+    ArceosModules --> AxvisorRuntime
+    PlatformCrates --> ArceosApps
+    PlatformCrates --> StarryKernel
+    PlatformCrates --> AxvisorRuntime
 ```
 
-### 3. 创建 Cargo.toml
+这张图的意思不是所有改动都要经过所有层，而是告诉你常见路径通常有三种：
+
+1. 纯复用 crate 直接被系统包依赖  
+   例如 `components/starry-process`、`components/axvm`
+
+2. 先经过 ArceOS 模块层，再被上层系统消费  
+   例如 `axhal`、`axtask`、`axdriver`、`axnet`
+
+3. 通过平台和配置接到最终系统  
+   例如 `axplat-*`、`platform/x86-qemu-q35`、Axvisor 的 `configs/board/*.toml`
+
+## 3. 先判断你的改动应该落在哪
+
+| 你要改什么 | 优先看哪里 | 常见影响面 |
+| --- | --- | --- |
+| 通用基础能力：错误、锁、页表、Per-CPU、容器 | `components/axerrno`、`components/kspin`、`components/page_table_multiarch`、`components/percpu` | 三套系统都可能受影响 |
+| ArceOS 内核服务：调度、HAL、驱动、网络、文件系统 | `os/arceos/modules/*`，以及相关 `axdriver_crates` / `axmm_crates` / `axplat_crates` | ArceOS，且可能波及 StarryOS / Axvisor |
+| ArceOS 的 feature 或应用接口 | `os/arceos/api/axfeat`、`os/arceos/ulib/axstd`、`os/arceos/ulib/axlibc` | ArceOS 应用与上层系统 |
+| StarryOS 的 Linux 兼容行为 | `components/starry-*`、`os/StarryOS/kernel/*` | StarryOS |
+| Hypervisor、vCPU、虚拟设备、VM 管理 | `components/axvm`、`components/axvcpu`、`components/axdevice`、`components/axvisor_api`、`os/axvisor/src/*` | Axvisor |
+| 平台、板级适配或 VM 启动配置 | `components/axplat_crates/platforms/*`、`platform/*`、`os/axvisor/configs/*` | 一到多个系统 |
+
+如果你还不知道一个 crate 是谁维护、来自哪个独立仓库，先看 `scripts/repo/repos.csv`。它是所有 subtree 组件的来源总表。
+
+## 4. 修改已有组件时，推荐的验证闭环
+
+### 4.1 先找“最近的消费者”
+
+不要一上来跑完整测试矩阵。先问自己：
+
+- 这个 crate 是被哪个包直接依赖的
+- 它是只影响一个系统，还是会同时影响多个系统
+- 有没有比“启动整套系统”更小的验证入口
+
+通常可以先看相关 `Cargo.toml`，再选择最小运行路径。
+
+### 4.2 从最小路径开始
+
+| 改动位置 | 第一步验证 | 第二步验证 |
+| --- | --- | --- |
+| `components/axerrno`、`components/kspin`、`components/lazyinit` 这类基础 crate | `cargo test -p <crate>` | `cargo xtask arceos run --package arceos-helloworld --arch riscv64` |
+| `os/arceos/modules/*` | `cargo xtask arceos run --package arceos-helloworld --arch riscv64` | 需要功能时换成 `arceos-httpserver --net` 或 `arceos-shell --blk` |
+| `components/starry-*`、`os/StarryOS/kernel/*` | `cargo xtask starry run --arch riscv64 --package starryos` | `cargo xtask test starry --target riscv64gc-unknown-none-elf` |
+| `components/axvm`、`components/axvcpu`、`components/axdevice`、`os/axvisor/src/*` | `cd os/axvisor && cargo xtask build` | 准备好 Guest 后运行 `./scripts/setup_qemu.sh arceos`，再执行 `cargo xtask qemu --build-config ... --qemu-config ... --vmconfigs ...` |
+
+### 4.3 最后再补统一测试
+
+```bash
+cargo xtask test std
+cargo xtask test arceos --target riscv64gc-unknown-none-elf
+cargo xtask test starry --target riscv64gc-unknown-none-elf
+cargo xtask test axvisor --target aarch64-unknown-none-softfloat
+```
+
+如果你改的是跨系统基础组件，至少要跑：
+
+- 一条 host/`std` 路径
+- 一条 ArceOS 路径
+- 一条它真正影响到的系统路径
+
+## 5. 新增组件时，先把“工作区接线”做对
+
+### 5.1 先选层次，再创建目录
+
+先问自己这个新 crate 应该属于哪一层：
+
+- 真正可复用的独立 crate：放 `components/`
+- 仅属于 ArceOS 的 OS 模块：放 `os/arceos/modules/`
+- 仅属于 ArceOS 的 API 或用户库：放 `os/arceos/api/` 或 `os/arceos/ulib/`
+- 仅属于 StarryOS / Axvisor 的系统内部逻辑：优先放对应系统目录
+
+### 5.2 新建普通 leaf crate 的最小模板
+
+如果它是一个新的普通组件，可以从类似下面的 `Cargo.toml` 开始：
 
 ```toml
 [package]
 name = "my_component"
 version = "0.1.0"
-edition = "2021"
-authors = ["Your Name <your@email.com>"]
-description = "A brief description of your component"
-license = "Apache-2.0 OR MIT"
-repository = "https://github.com/your-org/my_component"
-keywords = ["arceos", "no_std", "os"]
-categories = ["os", "no-std"]
+edition.workspace = true
 
 [dependencies]
-# 添加必要的依赖
-
-[features]
-default = []
-
-# 可选功能
-std = []
-
-[dev-dependencies]
-# 测试依赖
 ```
 
-### 4. 创建源代码
+相比旧仓库里常见的模板，这里更推荐直接复用根工作区的 `edition.workspace = true`，和当前仓库保持一致。
 
-```rust
-// src/lib.rs
-#![no_std]
+### 5.3 把组件接到根 workspace
 
-/// My component's public API
-pub struct MyComponent {
-    // 内部状态
-}
+普通 leaf crate 常见需要两步：
 
-impl MyComponent {
-    /// 创建新实例
-    pub fn new() -> Self {
-        Self {
-            // 初始化
-        }
-    }
-    
-    /// 执行操作
-    pub fn do_something(&self) -> Result<(), MyError> {
-        // 实现
-        Ok(())
-    }
-}
+1. 在根 `Cargo.toml` 的 `[workspace.members]` 里加入路径
+2. 在 `[patch.crates-io]` 里加入同名 patch，让其他包解析到本地源码
 
-impl Default for MyComponent {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// 错误类型
-#[derive(Debug)]
-pub enum MyError {
-    InvalidInput,
-    InternalError,
-}
-```
-
-### 5. 添加到工作空间
+例如：
 
 ```toml
-# 在根 Cargo.toml 的 [workspace.members] 中添加
 [workspace]
 members = [
-    # ...
     "components/my_component",
 ]
 
-# 添加 patch
 [patch.crates-io]
 my_component = { path = "components/my_component" }
 ```
 
-### 6. 添加到 repos.csv
+### 5.4 遇到嵌套 workspace 时不要照抄
 
-```csv
-# 在 scripts/repo/repos.csv 中添加
-https://github.com/your-org/my_component,,components/my_component,ArceOS,My component description
-```
+`components/axplat_crates`、`components/axdriver_crates`、`components/axmm_crates` 这类目录本身是独立 workspace。给这类目录加新 crate 时，通常应该：
 
-## 组件开发规范
+- 先在它自己的 workspace 里接好
+- 再在根 `Cargo.toml` 里为具体 leaf crate 增加 patch 或 member
+- 不要把整个父目录直接重新塞回根 workspace
 
-### 代码规范
+### 5.5 什么时候需要改 `repos.csv`
 
-1. **命名规范**
+只有当这个新组件本身要作为独立 subtree 仓库管理时，才需要把它加入 `scripts/repo/repos.csv`。如果你只是先在 TGOSKits 内部做原型，不一定要立刻动 subtree 配置。
 
-```rust
-// 类型名: 大驼峰
-pub struct MyStruct {}
-pub enum MyEnum {}
+Subtree 细节请看 [repo.md](repo.md)。
 
-// 函数/变量: 蛇形命名
-pub fn my_function() {}
-let my_variable = 0;
+## 6. 把组件接到 ArceOS
 
-// 常量: 大写蛇形
-pub const MAX_SIZE: usize = 1024;
+在 ArceOS 里，组件开发常见的落地链路是：
 
-// 静态变量: 蛇形命名
-pub static GLOBAL_COUNTER: AtomicUsize = AtomicUsize::new(0);
-```
+1. 复用逻辑在 `components/` 或 `os/arceos/modules/` 实现
+2. 如果要作为可选能力暴露，接到 `os/arceos/api/axfeat`
+3. 如果要给应用直接用，再接到 `os/arceos/ulib/axstd` 或 `axlibc`
+4. 用 `os/arceos/examples/*` 或 `test-suit/arceos/*` 验证
 
-2. **文档注释**
-
-```rust
-/// 创建新的组件实例
-/// 
-/// # Arguments
-/// 
-/// * `config` - 配置参数
-/// 
-/// # Returns
-/// 
-/// 返回新创建的实例，如果失败则返回错误
-/// 
-/// # Examples
-/// 
-/// ```
-/// use my_component::MyComponent;
-/// 
-/// let component = MyComponent::new(config)?;
-/// ```
-pub fn new(config: Config) -> Result<Self, Error> {
-    // 实现
-}
-```
-
-3. **错误处理**
-
-```rust
-use axerrno::AxResult;
-
-pub fn my_function() -> AxResult<()> {
-    // 使用 AxResult 统一错误类型
-    let value = some_operation().map_err(|e| {
-        ax_err_type!(InvalidInput, "invalid input parameter")
-    })?;
-    
-    Ok(())
-}
-```
-
-4. **特性开关**
-
-```rust
-// 使用 features 控制功能
-#[cfg(feature = "std")]
-pub fn std_only_function() {
-    // 仅在 std 环境下可用
-}
-
-#[cfg(not(feature = "std"))]
-pub fn no_std_function() {
-    // no_std 环境下的实现
-}
-```
-
-### 接口设计
-
-1. **提供清晰的接口**
-
-```rust
-// 好的设计: 简单清晰的 API
-pub trait MyTrait {
-    fn init(&mut self) -> Result<(), Error>;
-    fn process(&self, data: &[u8]) -> Result<Vec<u8>, Error>;
-    fn cleanup(&mut self);
-}
-
-// 避免过度复杂的接口
-```
-
-2. **使用 Builder 模式**
-
-```rust
-pub struct MyComponentBuilder {
-    config: Config,
-}
-
-impl MyComponentBuilder {
-    pub fn new() -> Self {
-        Self {
-            config: Config::default(),
-        }
-    }
-    
-    pub fn with_option(mut self, value: bool) -> Self {
-        self.config.option = value;
-        self
-    }
-    
-    pub fn build(self) -> Result<MyComponent, Error> {
-        Ok(MyComponent {
-            config: self.config,
-        })
-    }
-}
-```
-
-3. **提供默认实现**
-
-```rust
-impl Default for MyComponent {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-```
-
-### 性能考虑
-
-1. **避免不必要的分配**
-
-```rust
-// 使用引用而不是克隆
-pub fn process(&self, data: &[u8]) -> Result<&[u8], Error> {
-    // 优先使用引用
-    Ok(data)
-}
-
-// 如果需要所有权，明确说明
-pub fn take_ownership(&self, data: Vec<u8>) -> Result<(), Error> {
-    // 处理并获取所有权
-    Ok(())
-}
-```
-
-2. **使用适当的同步原语**
-
-```rust
-use kspin::SpinLock;
-
-pub struct SharedState {
-    lock: SpinLock<InnerState>,
-}
-
-impl SharedState {
-    pub fn access<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&mut InnerState) -> R,
-    {
-        let mut state = self.lock.lock();
-        f(&mut state)
-    }
-}
-```
-
-## 测试组件
-
-### 单元测试
-
-```rust
-// src/lib.rs
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    #[test]
-    fn test_new() {
-        let component = MyComponent::new();
-        assert!(component.is_ok());
-    }
-    
-    #[test]
-    fn test_do_something() {
-        let component = MyComponent::new().unwrap();
-        let result = component.do_something();
-        assert!(result.is_ok());
-    }
-}
-```
-
-运行测试：
+最常用的三个验证入口：
 
 ```bash
-# 在组件目录
-cd components/my_component
-cargo test
-
-# 在 TGOSKits 根目录
-cargo test -p my_component
+cargo xtask arceos run --package arceos-helloworld --arch riscv64
+cargo xtask arceos run --package arceos-httpserver --arch riscv64 --net
+cargo xtask arceos run --package arceos-shell --arch riscv64 --blk
 ```
 
-### 集成测试
+什么时候要动哪层：
 
-```rust
-// tests/integration_test.rs
-use my_component::MyComponent;
+- 只改内部实现：通常只动 `components/` 或 `modules/`
+- 要新增 feature 开关：动 `os/arceos/api/axfeat`
+- 要新增应用侧 API：动 `os/arceos/ulib/axstd` 或 `axlibc`
+- 要增加示例：动 `os/arceos/examples/`
 
-#[test]
-fn test_integration() {
-    let component = MyComponent::new().unwrap();
-    
-    // 测试完整的使用场景
-    let result = component.do_something();
-    assert!(result.is_ok());
-}
-```
+## 7. 把组件接到 StarryOS
 
-### no_std 测试
+StarryOS 的一个关键点是：它既复用了大量 ArceOS 模块，也维护了自己的一套 `starry-*` 组件和 `os/StarryOS/kernel/` 内核逻辑。
 
-```rust
-// 对于 no_std 组件，使用自定义测试框架
-#![no_std]
-#![no_main]
+常见路径如下：
 
-#[no_mangle]
-fn main() {
-    // 测试代码
-    test_my_component();
-    println!("All tests passed!");
-}
+- 通用基础能力：先改 `components/*` 或 `os/arceos/modules/*`
+- Linux 兼容行为：改 `components/starry-*` 或 `os/StarryOS/kernel/*`
+- 启动包、特性组合、平台入口：改 `os/StarryOS/starryos`
 
-fn test_my_component() {
-    let component = MyComponent::new();
-    assert!(component.is_ok());
-}
-```
-
-## 文档规范
-
-### README.md 结构
-
-```markdown
-# Component Name
-
-Brief description of the component.
-
-## Features
-
-- Feature 1
-- Feature 2
-
-## Usage
-
-Add to Cargo.toml:
-
-\`\`\`toml
-[dependencies]
-my_component = "0.1.0"
-\`\`\`
-
-## Example
-
-\`\`\`rust
-use my_component::MyComponent;
-
-let component = MyComponent::new()?;
-component.do_something()?;
-\`\`\`
-
-## License
-
-Apache-2.0 OR MIT
-```
-
-### API 文档
-
-```rust
-//! # My Component
-//! 
-//! This component provides...
-//! 
-//! ## Features
-//! 
-//! - Feature 1: description
-//! - Feature 2: description
-//! 
-//! ## Quick Start
-//! 
-//! ```rust
-//! use my_component::MyComponent;
-//! 
-//! let component = MyComponent::new()?;
-//! ```
-
-/// Represents a component instance
-/// 
-/// This struct manages...
-pub struct MyComponent {
-    // ...
-}
-```
-
-## 发布流程
-
-### 1. 准备发布
+验证时建议优先用根目录集成入口：
 
 ```bash
-# 1. 确保所有测试通过
-cargo test
-
-# 2. 检查文档
-cargo doc --open
-
-# 3. 更新版本号
-# 编辑 Cargo.toml 中的 version
-
-# 4. 更新 CHANGELOG.md
+cargo xtask starry rootfs --arch riscv64
+cargo xtask starry run --arch riscv64 --package starryos
 ```
 
-### 2. 创建 Git 标签
+如果你的改动会影响用户态行为，例如 syscall、文件系统或 rootfs 内程序，通常还要再做一层验证：
+
+- 把测试程序放进 rootfs
+- 或直接扩展 `test-suit/starryos`
+
+## 8. 把组件接到 Axvisor
+
+Axvisor 的组件化通常分成三层：
+
+1. 复用 crate  
+   例如 `axvm`、`axvcpu`、`axdevice`、`axvisor_api`
+
+2. Hypervisor 运行时  
+   `os/axvisor/src/*`
+
+3. 板级与 VM 配置  
+   `os/axvisor/configs/board/*` 与 `os/axvisor/configs/vms/*`
+
+因此，做 Axvisor 相关改动时要特别注意区分：
+
+- 这是“代码”改动，还是“配置”改动
+- 它影响的是 Hypervisor 本身，还是 Guest 启动参数
+
+最小验证路径通常是：
 
 ```bash
-# 在组件独立仓库
-git tag v0.1.0
-git push origin v0.1.0
+cd os/axvisor
+cargo xtask build
 ```
 
-### 3. 发布到 crates.io
+只有当 Guest 镜像、`tmp/rootfs.img` 和 `vmconfigs` 已经准备好时，再继续：
 
 ```bash
-# 登录
-cargo login
-
-# 发布
-cargo publish
+cd os/axvisor
+./scripts/setup_qemu.sh arceos
+cargo xtask qemu \
+  --build-config configs/board/qemu-aarch64.toml \
+  --qemu-config .github/workflows/qemu-aarch64.toml \
+  --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
 ```
 
-### 4. 更新 TGOSKits
+如果你改的是板级能力，还要一起看：
 
-```bash
-# 更新 repos.csv 中的版本标签
-vim scripts/repo/repos.csv
+- `components/axplat_crates/platforms/*`
+- `platform/x86-qemu-q35`
+- `os/axvisor/configs/board/*.toml`
 
-# 拉取更新
-python3 scripts/repo/repo.py pull my_component
-```
+## 9. 什么时候需要看 `repo.md`
 
-## 最佳实践
+下面这些场景暂时不需要进入 subtree 细节：
 
-### 1. 保持组件独立
+- 修改已有组件源码
+- 在 TGOSKits 里先做联调验证
+- 只做根 workspace 内的依赖接线
 
-- 最小化外部依赖
-- 避免循环依赖
-- 提供清晰的接口
+下面这些场景就应该去看 [repo.md](repo.md)：
 
-### 2. 版本兼容性
+- 新增一个要长期独立维护的 subtree 组件
+- 需要同步组件仓库和主仓库
+- 需要改 `scripts/repo/repos.csv`
 
-- 使用语义化版本
-- 保持向后兼容
-- 提供迁移指南
+## 10. 推荐阅读顺序
 
-### 3. 性能考虑
-
-- 避免不必要的内存分配
-- 使用合适的同步原语
-- 提供性能基准测试
-
-### 4. 文档完善
-
-- 提供使用示例
-- 解释设计决策
-- 维护更新日志
-
-## 常见问题
-
-### Q: 如何处理跨组件依赖？
-
-**A:** 通过接口抽象：
-
-```rust
-// 定义接口 trait
-pub trait MyInterface {
-    fn do_something(&self) -> Result<(), Error>;
-}
-
-// 组件依赖接口而不是具体实现
-pub struct MyComponent<T: MyInterface> {
-    interface: T,
-}
-```
-
-### Q: 如何调试组件？
-
-**A:** 使用日志：
-
-```rust
-use axlog::debug;
-
-pub fn my_function() {
-    debug!("my_function called");
-    // 实现
-}
-```
-
-### Q: 如何处理平台差异？
-
-**A:** 使用 cfg 条件编译：
-
-```rust
-#[cfg(target_arch = "aarch64")]
-fn arch_specific() {
-    // ARM64 实现
-}
-
-#[cfg(target_arch = "riscv64")]
-fn arch_specific() {
-    // RISC-V 实现
-}
-```
-
-## 参考资源
-
-- [Rust API 指南](https://rust-lang.github.io/api-guidelines/)
-- [Rust 嵌入式开发书籍](https://doc.rust-lang.org/stable/embedded-book/)
-- [操作系统开发最佳实践](https://wiki.osdev.org/)
-
----
-
-**相关文档**:
-- [快速开始指南](quick-start.md)
-- [构建系统说明](build-system.md)
-- [仓库管理指南](repo.md)
+- [quick-start.md](quick-start.md): 先把三套系统入口跑通
+- [build-system.md](build-system.md): 再理解 workspace、xtask 和测试矩阵
+- [arceos-guide.md](arceos-guide.md): 继续看 ArceOS 的模块与 API 关系
+- [starryos-guide.md](starryos-guide.md): 继续看 StarryOS 的 rootfs、syscall 和内核入口
+- [axvisor-guide.md](axvisor-guide.md): 继续看 Axvisor 的板级配置、VM 配置和 Guest 启动
