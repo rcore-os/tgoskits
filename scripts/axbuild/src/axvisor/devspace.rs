@@ -23,6 +23,8 @@ use anyhow::{Context, Result, anyhow};
 use cargo_metadata::{Metadata, MetadataCommand, Package};
 use serde::{Deserialize, Serialize};
 
+use crate::process::run_status;
+
 const STATE_DIR: &str = ".devspace";
 const STATE_FILE: &str = ".devspace/state.json";
 const PATCH_BEGIN_MARKER: &str = "# >>> devspace patches >>>";
@@ -450,15 +452,10 @@ fn to_unix_path(path: &Path) -> String {
 }
 
 fn run_git(args: &[&str]) -> Result<()> {
-    let status = Command::new("git")
-        .current_dir(workspace_root()?)
-        .args(args)
-        .status()
-        .with_context(|| format!("Failed to run git {}", args.join(" ")))?;
-    if !status.success() {
-        return Err(anyhow!("git command failed: git {}", args.join(" ")));
-    }
-    Ok(())
+    let desc = format!("git {}", args.join(" "));
+    let mut command = Command::new("git");
+    command.current_dir(workspace_root()?).args(args);
+    run_status(&mut command, &desc)
 }
 
 fn workspace_root() -> Result<PathBuf> {

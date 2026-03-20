@@ -23,6 +23,7 @@ extern crate anyhow;
 
 pub mod arceos;
 pub mod axvisor;
+pub(crate) mod process;
 
 pub use arceos::{
     build::{BuildOutput, Builder, PreparedArtifacts, prepare_artifacts},
