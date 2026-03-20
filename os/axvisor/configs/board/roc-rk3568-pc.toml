@@ -1,6 +1,0 @@
-cargo_args = []
-features = ["dyn-plat", "axstd/bus-mmio", "fs", "sdmmc", "rk3568-clk"]
-log = "Info"
-target = "aarch64-unknown-none-softfloat"
-to_bin = true
-vm_configs = []
