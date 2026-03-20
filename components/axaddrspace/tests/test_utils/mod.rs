@@ -20,8 +20,6 @@ use memory_addr::{PAGE_SIZE_4K as PAGE_SIZE, PhysAddr, VirtAddr};
 use page_table_multiarch::PagingHandler;
 use spin::Mutex;
 
-use crate::{AxMmHal, HostPhysAddr, HostVirtAddr};
-
 /// The starting physical address for the simulated memory region in tests.
 /// This offset is used to map simulated physical addresses to the `MEMORY` array's virtual address space.
 pub const BASE_PADDR: usize = 0x1000;
