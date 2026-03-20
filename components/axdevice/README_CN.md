@@ -1,81 +1,154 @@
-# axdevice
+<h1 align="center">axdevice</h1>
 
-**axdevice** 是一个可复用、与操作系统无关的设备抽象层，专为虚拟机设计，支持在 `no_std` 环境中进行设备配置与 MMIO 模拟。适用于开发 hypervisor 或嵌入式操作系统。
+<p align="center">面向虚拟机的操作系统无关设备抽象层</p>
 
-## ✨ 特性亮点
+<div align="center">
 
-- 📦 **模块化设计**：适用于任意操作系统或虚拟化平台的组件库。
-- 🧩 **灵活设备抽象**：通过配置动态加载和注册设备。
-- 🛠️ **无标准库依赖**：适配裸机、EL2 等场景，仅依赖 `core` 与 `alloc`。
-- 🧵 **线程安全**：所有设备均用 `Arc` 管理，支持多核并发。
-- 🧱 **便于扩展**：接入自定义设备只需实现 `BaseDeviceOps` trait。
+[![Crates.io](https://img.shields.io/crates/v/axdevice.svg)](https://crates.io/crates/axdevice)
+[![Docs.rs](https://docs.rs/axdevice/badge.svg)](https://docs.rs/axdevice)
+[![Rust](https://img.shields.io/badge/edition-2024-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/arceos-hypervisor/axdevice/blob/main/LICENSE)
 
-## 📦 模块结构
+</div>
 
-- `config.rs`: 定义 `AxVmDeviceConfig`，用于初始化设备配置。
-- `device.rs`: 定义 `AxVmDevices`，管理设备并处理 MMIO 读写。
+[English](README.md) | 中文
 
-## 📐 依赖图
+# Introduction
 
-```text
-               +-------------------+
-               |  axvmconfig       | <- 提供 EmulatedDeviceConfig
-               +-------------------+
-                         |
-                         v
-+------------------+     uses      +-----------------------+
-|  axdevice        +-------------->+  axdevice_base::trait |
-|  (当前模块)      |               +-----------------------+
-+------------------+                      ^
-        |                                 |
-        v                                 |
-+------------------+                      |
-|  axaddrspace     | -- GuestPhysAddr ----+
-+------------------+
+`axdevice` 是一个可复用、与操作系统无关的虚拟机设备抽象层。它在 `#![no_std]` 环境中为模拟设备提供统一管理能力，并将访存请求分发到 MMIO、系统寄存器和端口类设备。
+
+该 crate 当前导出两个核心类型：
+
+- **`AxVmDeviceConfig`** - 封装用于初始化虚拟机设备的 `EmulatedDeviceConfig` 列表
+- **`AxVmDevices`** - 管理设备集合、分发设备访问请求，并提供 IVC 通道分配能力
+
+该 crate 适用于面向 AArch64 或 RISC-V 的 hypervisor 及底层操作系统组件。
+
+## Quick Start
+
+### Requirements
+
+- Rust nightly 工具链
+- Rust 组件：rust-src、clippy、rustfmt
+
+```bash
+# 安装 rustup（如果尚未安装）
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# 安装 nightly 工具链与所需组件
+rustup install nightly
+rustup component add rust-src clippy rustfmt --toolchain nightly
 ```
 
-## 🔁 使用流程
+### Run Check and Test
 
-```text
-[1] 加载设备配置 Vec<EmulatedDeviceConfig>
-        ↓
-[2] 构造 AxVmDeviceConfig
-        ↓
-[3] AxVmDevices::new() 初始化所有设备
-        ↓
-[4] guest发起 MMIO 访问
-        ↓
-[5] 匹配设备地址范围
-        ↓
-[6] 调用设备 trait 接口 handle_read / handle_write
+```bash
+# 1. 进入仓库目录
+cd axdevice
+
+# 2. 代码检查（格式化 + clippy + 构建）
+./scripts/check.sh
+
+# 3. 运行测试
+./scripts/test.sh
 ```
 
-## 🚀 示例代码
+## Integration
+
+### Installation
+
+将以下依赖加入 `Cargo.toml`：
+
+```toml
+[dependencies]
+axdevice = "0.2.2"
+```
+
+### Example
 
 ```rust
+use std::sync::{Arc, Mutex};
+
+use axaddrspace::device::AccessWidth;
+use axaddrspace::{GuestPhysAddr, GuestPhysAddrRange};
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
+use axdevice_base::BaseDeviceOps;
+use axerrno::AxResult;
+use axvmconfig::EmulatedDeviceType;
 
-let config = AxVmDeviceConfig::new(vec![/* EmulatedDeviceConfig */]);
+struct MockMmioDevice {
+    range: GuestPhysAddrRange,
+    last_write: Mutex<Option<usize>>,
+}
 
-let devices = AxVmDevices::new(config);
+impl MockMmioDevice {
+    fn new(base: usize, size: usize) -> Self {
+        Self {
+            range: GuestPhysAddrRange::new(
+                GuestPhysAddr::from(base),
+                GuestPhysAddr::from(base + size),
+            ),
+            last_write: Mutex::new(None),
+        }
+    }
+}
 
-let _ = devices.handle_mmio_read(0x1000_0000, 4);
-devices.handle_mmio_write(0x1000_0000, 4, 0xdead_beef);
+impl BaseDeviceOps<GuestPhysAddrRange> for MockMmioDevice {
+    fn address_range(&self) -> GuestPhysAddrRange {
+        self.range
+    }
+
+    fn emu_type(&self) -> EmulatedDeviceType {
+        EmulatedDeviceType::IVCChannel
+    }
+
+    fn handle_read(&self, _addr: GuestPhysAddr, _width: AccessWidth) -> AxResult<usize> {
+        Ok(0xDEAD_BEEF)
+    }
+
+    fn handle_write(&self, addr: GuestPhysAddr, _width: AccessWidth, val: usize) -> AxResult {
+        let offset = addr.as_usize() - self.range.start.as_usize();
+        assert_eq!(offset, 0x40);
+        *self.last_write.lock().unwrap() = Some(val);
+        Ok(())
+    }
+}
+
+fn main() {
+    let config = AxVmDeviceConfig::new(vec![]);
+    let mut devices = AxVmDevices::new(config);
+
+    let mock = Arc::new(MockMmioDevice::new(0x1000_0000, 0x1000));
+    devices.add_mmio_dev(mock.clone());
+
+    let width = AccessWidth::try_from(4).unwrap();
+    let addr = GuestPhysAddr::from(0x1000_0040);
+
+    devices.handle_mmio_write(addr, width, 0x1234_5678).unwrap();
+    let value = devices.handle_mmio_read(addr, width).unwrap();
+
+    assert_eq!(value, 0xDEAD_BEEF);
+    assert_eq!(*mock.last_write.lock().unwrap(), Some(0x1234_5678));
+}
 ```
 
-## 🔧 依赖组件
+### Documentation
 
-- [`axvmconfig`](https://github.com/arceos-hypervisor/axvmconfig.git)
-- [`axaddrspace`](https://github.com/arceos-hypervisor/axaddrspace.git)
-- [`axdevice_base`](https://github.com/arceos-hypervisor/axdevice_crates.git)
+生成并查看 API 文档：
 
-其他依赖：
+```bash
+cargo doc --no-deps --open
+```
 
-- `log`
-- `alloc`
-- `cfg-if`
-- `axerrno`
+在线文档： [docs.rs/axdevice](https://docs.rs/axdevice)
 
-## License
+# Contributing
 
-Axdevice 采用 Apache License 2.0 开源协议。详见 [LICENSE](./LICENSE) 文件。
+1. Fork 仓库并创建分支
+2. 本地运行检查：`./scripts/check.sh`
+3. 本地运行测试：`./scripts/test.sh`
+4. 提交 PR 并通过 CI 检查
+
+# License
+
+本项目基于 Apache License 2.0 许可证发布。详见 [LICENSE](LICENSE)。

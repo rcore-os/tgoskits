@@ -1,78 +1,154 @@
-# axdevice
+<h1 align="center">axdevice</h1>
 
-**axdevice** is a reusable, OS-agnostic device abstraction layer designed for virtual machines. It allows dynamic device configuration and MMIO emulation in `no_std` environments, making it suitable for hypervisors or operating systems targeting RISC-V or AArch64.
+<p align="center">OS-Agnostic Virtual Device Abstraction Layer</p>
 
-## ✨ Highlights
+<div align="center">
 
-- 📦 **Componentized**: Designed as a modular crate to be integrated into any OS or hypervisor.
-- 🧩 **Flexible device abstraction**: Supports dynamic device registration and MMIO handling.
-- 🛠️ **No `std` required**: Uses `alloc` and `core` only, suitable for bare-metal development.
-- 🧵 **Thread-safe**: Devices are stored using `Arc`, ready for multicore use.
-- 🧱 **Easily extensible**: Just plug in device types via `axdevice_base::BaseDeviceOps`.
+[![Crates.io](https://img.shields.io/crates/v/axdevice.svg)](https://crates.io/crates/axdevice)
+[![Docs.rs](https://docs.rs/axdevice/badge.svg)](https://docs.rs/axdevice)
+[![Rust](https://img.shields.io/badge/edition-2024-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/arceos-hypervisor/axdevice/blob/main/LICENSE)
 
-## 📦 Structure
+</div>
 
-- `config.rs`: Defines `AxVmDeviceConfig`, a wrapper for device configuration input.
-- `device.rs`: Defines `AxVmDevices`, manages and dispatches MMIO to registered devices.
+English | [中文](README_CN.md)
 
-## 📐 Dependency Graph
+# Introduction
 
-```text
-               +-------------------+
-               |  axvmconfig       | <- defines EmulatedDeviceConfig
-               +-------------------+
-                         |
-                         v
-+------------------+     uses      +-----------------------+
-|  axdevice        +-------------->+  axdevice_base::trait |
-|  (this crate)    |               +-----------------------+
-+------------------+                      ^
-        |                                 |
-        v                                 |
-+------------------+                      |
-|  axaddrspace     | -- GuestPhysAddr ----+
-+------------------+
+`axdevice` is a reusable, OS-agnostic device abstraction layer for virtual machines. It provides unified management for emulated devices and dispatches guest accesses to MMIO, system-register, and port-based devices in `#![no_std]` environments.
+
+This crate currently exports two core types:
+
+- **`AxVmDeviceConfig`** - Wraps a list of `EmulatedDeviceConfig` items used to initialize VM devices
+- **`AxVmDevices`** - Manages device collections, dispatches device access requests, and allocates IVC channels
+
+The crate is suitable for hypervisors and low-level OS components targeting AArch64 or RISC-V.
+
+## Quick Start
+
+### Requirements
+
+- Rust nightly toolchain
+- Rust components: rust-src, clippy, rustfmt
+
+```bash
+# Install rustup (if not installed)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Install nightly toolchain and components
+rustup install nightly
+rustup component add rust-src clippy rustfmt --toolchain nightly
 ```
 
-## 🔁 Usage Flow
+### Run Check and Test
 
-```text
-[1] Load VM device config (Vec<EmulatedDeviceConfig>)
-        ↓
-[2] Create AxVmDeviceConfig
-        ↓
-[3] Pass into AxVmDevices::new()
-        ↓
-[4] MMIO access triggers handle_mmio_{read,write}
-        ↓
-[5] Device selected by GuestPhysAddr
-        ↓
-[6] Forwarded to BaseDeviceOps::handle_{read,write}()
+```bash
+# 1. Enter the repository
+cd axdevice
+
+# 2. Code check (format + clippy + build)
+./scripts/check.sh
+
+# 3. Run tests
+./scripts/test.sh
 ```
 
-## 🚀 Example
+## Integration
+
+### Installation
+
+Add to your `Cargo.toml`:
+
+```toml
+[dependencies]
+axdevice = "0.2.2"
+```
+
+### Example
 
 ```rust
+use std::sync::{Arc, Mutex};
+
+use axaddrspace::device::AccessWidth;
+use axaddrspace::{GuestPhysAddr, GuestPhysAddrRange};
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
+use axdevice_base::BaseDeviceOps;
+use axerrno::AxResult;
+use axvmconfig::EmulatedDeviceType;
 
-// Step 1: Load configuration (e.g. from .toml or hypervisor setup)
-let config = AxVmDeviceConfig::new(vec![/* EmulatedDeviceConfig */]);
+struct MockMmioDevice {
+    range: GuestPhysAddrRange,
+    last_write: Mutex<Option<usize>>,
+}
 
-// Step 2: Initialize devices
-let devices = AxVmDevices::new(config);
+impl MockMmioDevice {
+    fn new(base: usize, size: usize) -> Self {
+        Self {
+            range: GuestPhysAddrRange::new(
+                GuestPhysAddr::from(base),
+                GuestPhysAddr::from(base + size),
+            ),
+            last_write: Mutex::new(None),
+        }
+    }
+}
 
-// Step 3: Emulate MMIO access
-let _ = devices.handle_mmio_read(0x1000_0000, 4);
-devices.handle_mmio_write(0x1000_0000, 4, 0xdead_beef);
+impl BaseDeviceOps<GuestPhysAddrRange> for MockMmioDevice {
+    fn address_range(&self) -> GuestPhysAddrRange {
+        self.range
+    }
+
+    fn emu_type(&self) -> EmulatedDeviceType {
+        EmulatedDeviceType::IVCChannel
+    }
+
+    fn handle_read(&self, _addr: GuestPhysAddr, _width: AccessWidth) -> AxResult<usize> {
+        Ok(0xDEAD_BEEF)
+    }
+
+    fn handle_write(&self, addr: GuestPhysAddr, _width: AccessWidth, val: usize) -> AxResult {
+        let offset = addr.as_usize() - self.range.start.as_usize();
+        assert_eq!(offset, 0x40);
+        *self.last_write.lock().unwrap() = Some(val);
+        Ok(())
+    }
+}
+
+fn main() {
+    let config = AxVmDeviceConfig::new(vec![]);
+    let mut devices = AxVmDevices::new(config);
+
+    let mock = Arc::new(MockMmioDevice::new(0x1000_0000, 0x1000));
+    devices.add_mmio_dev(mock.clone());
+
+    let width = AccessWidth::try_from(4).unwrap();
+    let addr = GuestPhysAddr::from(0x1000_0040);
+
+    devices.handle_mmio_write(addr, width, 0x1234_5678).unwrap();
+    let value = devices.handle_mmio_read(addr, width).unwrap();
+
+    assert_eq!(value, 0xDEAD_BEEF);
+    assert_eq!(*mock.last_write.lock().unwrap(), Some(0x1234_5678));
+}
 ```
 
-## 📦 Dependencies
+### Documentation
 
-- [`axvmconfig`](https://github.com/arceos-hypervisor/axvmconfig.git)
-- [`axaddrspace`](https://github.com/arceos-hypervisor/axaddrspace.git)
-- [`axdevice_base`](https://github.com/arceos-hypervisor/axdevice_crates.git)
-- `log`, `alloc`, `cfg-if`, `axerrno`
+Generate and view API documentation:
 
-## License
+```bash
+cargo doc --no-deps --open
+```
 
-Axdevice is licensed under the Apache License, Version 2.0. See the [LICENSE](./LICENSE) file for details.
+Online documentation: [docs.rs/axdevice](https://docs.rs/axdevice)
+
+# Contributing
+
+1. Fork the repository and create a branch
+2. Run local check: `./scripts/check.sh`
+3. Run local tests: `./scripts/test.sh`
+4. Submit PR and pass CI checks
+
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
