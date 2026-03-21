@@ -26,25 +26,18 @@ jobs:
           - arch: x86_64
             target: x86_64-unknown-none
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/${{ github.repository }}-container:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v6
-
-      - &setup-libudenv
-        uses: awalsh128/cache-apt-pkgs-action@latest
         with:
-          packages: libudev-dev
-          version: 1.0
+          persist-credentials: false
 
-      - name: Install toolchain
-        run: rustup show
       - name: Check rust version
         run: rustc --version --verbose
-
-      - name: Setup QEMU
-        uses: arceos-org/setup-qemu@v1
-        with:
-          version: 10.1.0
-          arch_list: x86_64,aarch64,riscv64,loongarch64
 
       - uses: Swatinem/rust-cache@v2.9.1
         with:
@@ -53,20 +46,6 @@ jobs:
           cache-targets: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - uses: cargo-bins/cargo-binstall@main
-
-      - name: Install ostool
-        run: cargo binstall ostool --no-confirm --force
-
-      - name: Install cargo-binutils
-        run: |
-          cargo-binstall \
-            --pkg-url="{ repo }/releases/download/v{ version }/{ target }.tar.gz" \
-            --pkg-fmt="tgz" \
-            cargo-binutils --no-confirm --force
-
-      - name: Add Target
-        run: rustc --version
       - name: Check code format
         run: cargo fmt --all -- --check
 
