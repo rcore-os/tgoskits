@@ -163,3 +163,52 @@
 - 若要理解系统分层，建议先阅读与自己目标系统最接近的 crate 文档，再沿“直接被依赖”列表向上追踪。
 - 若要做底层修改，建议先看组件层 crate 的文档，再检查其在 ArceOS、StarryOS、Axvisor 中的跨项目定位段落。
 - 本目录文档均已结合源码进行手工精修；涉及 feature 条件编译、QEMU 行为和外部镜像配置时，仍应与对应系统总文档联合阅读。
+
+## 手工精修批次
+
+下表按实际执行时采用的 **15 批次口径** 汇总了这轮全量手工精修的顺序、每批覆盖的 crate，以及为什么要这样分组。
+
+说明：
+
+- 前 5 批属于对前期连续精修工作的规划口径归并。
+- 其中第 4、5 批在实际落地时各自包含连续子轮，但这里统一按 15 批总表呈现。
+
+| 批次 | 主题 | 数量 | Crates 列表 | 为什么这样分组 |
+| --- | --- | ---: | --- | --- |
+| 1 | 核心主干第一批 | 5 | `axhal`、`axtask`、`axvm`、`starry-kernel`、`axvisor` | 这是三套系统最上层、最能定义全局叙事的“总脊柱”文档。先把 HAL、任务调度、VM 生命周期、Starry 主内核和 Axvisor 主运行时写稳，后面所有文档才有统一参照系。 |
+| 2 | 核心主干第二批 | 5 | `axruntime`、`axmm`、`axdriver`、`arceos_api`、`axsync` | 这批是第 1 批的直接支撑层，分别对应运行时装配、内存管理、驱动聚合、应用 API 出口和同步原语。把它们紧跟在主干后面，可以尽早稳定“运行时主链”的术语。 |
+| 3 | 平台/架构基础第一批 | 6 | `axplat-riscv64-qemu-virt`、`axplat-x86-pc`、`axplat-macros`、`arm_vcpu`、`arm_vgic`、`arm_pl031` | 这一批专门处理“平台 bring-up + ARM 虚拟化 + 宏契约”三类高耦合基础件。它们既连接平台抽象，也连接后面的虚拟化主线，所以必须尽早统一边界。 |
+| 4 | 平台抽象与虚拟化主链 | 12 | `axplat`、`axplat-aarch64-peripherals`、`axplat-aarch64-qemu-virt`、`axdevice`、`riscv_vcpu`、`riscv_vplic`、`axvmconfig`、`axaddrspace`、`axdevice_base`、`axvcpu`、`axvisor_api`、`page_table_multiarch` | 这一批的共同点是都位于“平台契约 / 虚拟化公共主链”的中心位置。它们共同定义了平台接口、vCPU 接口、设备接口、VM 配置和页表引擎，不连续写就很容易出现术语漂移。 |
+| 5 | 页表/地址与 per-CPU/接口基础设施 | 12 | `page_table_entry`、`memory_addr`、`memory_set`、`x86_vcpu`、`riscv-h`、`percpu`、`percpu_macros`、`axcpu`、`crate_interface`、`riscv_plic`、`kernel_guard`、`scope-local` | 这批都是“横向复用的低层基础件”，共同特点是定义抽象或运行时语义，而不是做上层系统装配。它们必须集中处理，才能统一“地址、页表、per-CPU、接口绑定、临界区、局部状态”这些公共概念。 |
+| 6 | 平台剩余与板级变体 | 7 | `axplat-aarch64-bsta1000b`、`axplat-aarch64-phytium-pi`、`axplat-aarch64-raspi`、`axplat-loongarch64-qemu-virt`、`axplat-x86-qemu-q35`、`axplat-dyn`、`cargo-axplat` | 前面先写了平台抽象和主流板级实现，这一批才补其余板级变体和平台接入工具。这样可以避免每份平台文档都重新定义一次 `axplat` 概念。 |
+| 7 | 驱动子工作区与设备类别 | 11 | `axdriver_base`、`axdriver_block`、`axdriver_display`、`axdriver_input`、`axdriver_net`、`axdriver_pci`、`axdriver_virtio`、`axdriver_vsock`、`axdisplay`、`axinput`、`axdma` | 这批都围绕“设备类别契约、总线适配、设备聚合到模块层”的同一主题展开。集中处理能把“驱动叶子层”“驱动聚合层”“用户可见能力层”之间的边界一次写清。 |
+| 8 | 文件系统与 VFS | 7 | `axfs`、`axfs-ng`、`axfs-ng-vfs`、`axfs_vfs`、`axfs_devfs`、`axfs_ramfs`、`rsext4` | 这些 crate 形成了最典型的纵向文件系统链：旧栈聚合、新栈聚合、旧/新 VFS、具体 FS 实现和 ext4 引擎。必须放在同一批里，才能把新旧两套栈的差异写明白。 |
+| 9 | 网络、I/O 与轮询 | 9 | `axio`、`axpoll`、`axnet`、`axnet-ng`、`smoltcp`、`smoltcp-fuzz`、`arceos-httpclient`、`arceos-httpserver`、`bwbench-client` | 这批的共同点是都围绕“同步 I/O 语义、就绪模型、协议栈与上层示例程序”展开。集中处理能明确 `axio`/`axpoll`、`smoltcp`、`axnet`/`axnet-ng` 和示例程序各自所处层次。 |
+| 10 | 运行时叶子基础件 | 15 | `axalloc`、`axallocator`、`axbacktrace`、`axerrno`、`axlog`、`axipi`、`axsched`、`axklib`、`kspin`、`cpumask`、`handler_table`、`int_ratio`、`lazyinit`、`linked_list_r4l`、`timer_list` | 这些 crate 复用度极高，但都属于“窄职责叶子件”。放在主链完成后统一整理，可以把它们准确写成基础件，而不是误写成内存、调度、同步或中断主系统。 |
+| 11 | 架构周边与元编程辅助 | 10 | `aarch64_sysreg`、`arm_pl011`、`axhvc`、`axvisor_api_proc`、`crate_interface_lite`、`ctor_bare`、`ctor_bare_macros`、`cap_access`、`bitmap-allocator`、`range-alloc-arceos` | 这批大多是“支持主链但不构成主链”的组件：寄存器编码、单设备叶子、ABI 编号、过程宏、能力位、分配算法。集中处理可以统一强调“辅助件”定位。 |
+| 12 | 配置、API、构建链与用户态封装 | 10 | `axfeat`、`axconfig`、`axconfig-gen`、`axconfig-macros`、`axstd`、`axlibc`、`arceos_posix_api`、`axbuild`、`tg-xtask`、`deptool` | 这一批都位于“编译期装配 / 用户态接口 / 宿主构建工具”交界处。必须放在一起，才能把构建期和运行期的职责严格分开。 |
+| 13 | Starry 扩展栈 | 5 | `starry-process`、`starry-signal`、`starry-vm`、`starryos`、`starryos-test` | `starry-kernel` 已在前面先立住主线，这一批就专注补齐 Starry 的进程关系、信号语义、用户虚拟内存访问、启动包和测试入口，形成完整 Starry 叙事。 |
+| 14 | ArceOS 示例与系统行为样例 | 14 | `arceos-affinity`、`arceos-helloworld`、`arceos-helloworld-myplat`、`arceos-irq`、`arceos-memtest`、`arceos-parallel`、`arceos-priority`、`arceos-shell`、`arceos-sleep`、`arceos-wait-queue`、`arceos-yield`、`hello-kernel`、`irq-kernel`、`smp-kernel` | 这些都不是复用库，而是“能力链验证样例”。放到靠后位置，可以直接把它们写成对前面系统能力的演示和 smoke test，而不是主功能组件。 |
+| 15 | 接口测试桩与剩余实验件 | 9 | `define-simple-traits`、`define-weak-traits`、`impl-simple-traits`、`impl-weak-traits`、`impl-weak-partial`、`test-simple`、`test-weak`、`test-weak-partial`、`mingo` | 最后一批都是非主线运行时资产：`crate_interface` 的测试矩阵和一个特殊实验/工具型二进制 `mingo`。把它们放最后，能避免它们干扰前面的系统主线叙事。 |
+
+## 批次与三大系统子系统对照
+
+下表从系统视角补充说明每一批文档主要影响或覆盖到的 ArceOS、StarryOS、Axvisor 子系统。
+
+| 批次 | ArceOS 主要影响子系统 | StarryOS 主要影响子系统 | Axvisor 主要影响子系统 |
+| --- | --- | --- | --- |
+| 1 | `axhal`、`axtask` 所在的 HAL、任务调度、等待/唤醒主链 | `starry-kernel` 主内核骨架，以及复用的 HAL/任务调度链 | `axvisor` 主运行时、`axvm` VM 生命周期主线 |
+| 2 | `axruntime` 启动链、`axmm` 内存管理、`axdriver` 驱动聚合、`arceos_api` 应用接口、`axsync` 同步层 | 通过复用 `axmm`、`axsync`、`arceos_api` 等公共层间接受影响 | 共享的内存/驱动/同步基础层，以及 Host 侧运行时公共能力 |
+| 3 | RISC-V/x86 平台 bring-up、AArch64 RTC 支撑 | 复用 `axplat` 平台包时的启动链和部分 AArch64 平台语义 | ARM vCPU、虚拟 GIC、宿主平台 bring-up 边界 |
+| 4 | `axplat` 主契约、AArch64 QEMU virt 平台、部分公共页表/平台接口 | 复用 `axplat` 与 `page_table_multiarch` 时的平台/页表公共语义 | `axvcpu`、`axvisor_api`、`axdevice`、`axaddrspace`、`axvmconfig`、`riscv_vcpu`、`riscv_vplic` 等虚拟化主链 |
+| 5 | `memory_addr`、`memory_set`、`percpu`、`percpu_macros`、`axcpu`、`kernel_guard`、`crate_interface` 等低层运行时基础件 | 同样复用 `axcpu`、`percpu`、`scope-local`、`crate_interface` 等公共基础语义 | `x86_vcpu`、`riscv-h`、`riscv_plic` 以及共享的 `crate_interface` / `percpu` / 地址语义基础层 |
+| 6 | 剩余板级平台包、`axplat-dyn` 动态平台桥接、`cargo-axplat` 平台脚手架 | 共享的平台包与平台配置接线方式 | `axplat-x86-qemu-q35`、`axplat-dyn` 等宿主平台接入链 |
+| 7 | `axdriver` 下游类别层，以及 `axdisplay` / `axinput` / `axdma` 模块入口 | 通过共享驱动能力影响输入/显示/块/网卡等设备接入认知 | VirtIO、PCI、vsock、DMA 等 Hypervisor Host 侧设备链认知 |
+| 8 | 旧栈 `axfs`、新栈 `axfs-ng`、VFS、`ramfs`/`devfs`/`rsext4` | 新栈 `axfs-ng-vfs`、伪文件系统与部分共享 FS 基础语义 | 直接运行时影响较弱，更多体现在镜像/rootfs 准备与共享 FS 认知 |
+| 9 | `axio`、`axpoll`、`axnet`、`axnet-ng`、HTTP 示例程序 | `axnet-ng`、socket 路径、`smoltcp` 协议引擎及 syscall 侧网络语义 | 直接主链影响较弱，主要是共享 I/O、网络与协议栈层次认知 |
+| 10 | 分配器、日志、错误码、IPI、调度算法、容器与时间队列等运行时叶子基础件 | 大量复用这些低层件支撑 StarryOS 运行时 | 同样复用这些叶子基础件支撑 Hypervisor 运行时 |
+| 11 | AArch64 系统寄存器编码、PL011 设备叶子、`axhvc`、构造函数、位图/区间分配器等辅助件 | 共享过程宏、能力位和分配算法组件 | `axvisor_api_proc`、`axhvc`、部分寄存器/辅助宏路径与虚拟化侧强相关 |
+| 12 | `axfeat`、`axconfig*`、`axstd`、`axlibc`、`arceos_posix_api`、`axbuild`、`tg-xtask`、`deptool` | 构建/配置继承链、用户态 ABI 理解，以及与 ArceOS API 的边界 | 构建链、配置生成、宿主工具链和部分 API/feature 装配认知 |
+| 13 | 间接受影响，主要是通过共享公共层理解 Starry 扩展 | `starry-process`、`starry-signal`、`starry-vm`、`starryos`、`starryos-test` 直接组成 Starry 扩展栈 | 基本无直接主链影响，更多是与公共基础层的分层对照 |
+| 14 | ArceOS 示例程序、测试入口、`axplat` 最小内核样例链 | 基本无直接运行时主链影响 | 基本无直接运行时主链影响 |
+| 15 | `crate_interface` 测试矩阵，以及 `mingo` 对树莓派链加载工作流的影响 | 几乎无直接子系统影响，仅间接帮助理解 `crate_interface` 机制 | 几乎无直接子系统影响，仅间接帮助理解 `crate_interface` 机制 |
