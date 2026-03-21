@@ -55,7 +55,7 @@ fd = ["ax-posix-api/fd"]
 fs = ["ax-api/fs", "ax-posix-api/fs", "ax-feat/fs"]
 
 # Networking
-net = ["ax-api/net", "ax-posix-api/net", "ax-feat/net"]
+net = ["ax-api/net", "ax-posix-api/net", "ax-posix-api/poll", "ax-feat/net"]
 dns = []
 
 # Display
