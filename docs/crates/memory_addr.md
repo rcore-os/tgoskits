@@ -2,125 +2,245 @@
 
 > 路径：`components/axmm_crates/memory_addr`
 > 类型：库 crate
-> 分层：组件层 / 可复用基础组件
+> 分层：组件层 / 地址建模基础库
 > 版本：`0.4.1`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 `components/axmm_crates/memory_addr/README.md`
+> 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs`、`src/addr.rs`、`src/range.rs`、`src/iter.rs`
 
-`memory_addr` 的核心定位是：Wrappers and helper functions for physical and virtual addresses
+`memory_addr` 是整个仓库内存子系统最底层的语义基石之一。它不做页表，不做映射策略，也不做物理页分配；它只做一件事：用类型化方式表达“地址”和“地址区间”，并提供对齐、算术和分页遍历等最基础但最容易出错的操作。`axplat`、`axmm`、`page_table_multiarch`、`axaddrspace`、虚拟化栈以及 StarryOS 的内存路径都把它当作共同语言层。
 
 ## 1. 架构设计分析
-- 目录角色：可复用基础组件
-- crate 形态：库 crate
-- 工作区位置：子工作区 `components/axmm_crates`
-- feature 视角：该 crate 没有显式声明额外 Cargo feature，功能边界主要由模块本身决定。
-- 关键数据结构：可直接观察到的关键数据结构/对象包括 `PageIter`、`DynPageIter`、`AddrRange`、`PageIter4K`、`PageIter2M`、`PageIter1G`、`Output`、`PAGE_SIZE_4K`、`PAGE_SIZE_2M`、`PAGE_SIZE_1G`。
-- 设计重心：该 crate 通常作为多个内核子系统共享的底层构件，重点在接口边界、数据结构和被上层复用的方式。
 
-### 1.1 内部模块划分
-- `addr`：内部子模块
-- `iter`：内部子模块
-- `range`：内部子模块
+### 1.1 设计定位
 
-### 1.2 核心算法/机制
-- 该 crate 的实现主要围绕顶层模块分工展开，重点在子系统边界、trait/类型约束以及初始化流程。
+该 crate 的设计原则非常克制：
+
+- 不依赖平台和架构特性
+- 不依赖页表实现
+- 不依赖分配器
+- 不绑定宿主还是访客地址空间
+
+因此它适合作为所有内存相关组件的公共底座。
+
+### 1.2 模块划分
+
+| 模块 | 作用 | 关键内容 |
+| --- | --- | --- |
+| `lib.rs` | 顶层导出与通用对齐函数 | `PAGE_SIZE_*`、`align_*`、`is_aligned_*`、页迭代器别名 |
+| `addr.rs` | 地址类型与地址 trait | `MemoryAddr`、`PhysAddr`、`VirtAddr`、`def_usize_addr!` |
+| `range.rs` | 区间建模 | `AddrRange<A>`、`PhysAddrRange`、`VirtAddrRange` |
+| `iter.rs` | 页级遍历 | `PageIter<const PAGE_SIZE, A>`、`DynPageIter<A>` |
+
+### 1.3 地址建模核心：`MemoryAddr`
+
+`MemoryAddr` trait 是本 crate 的抽象中心。它面向所有“本质是地址”的类型，而不是只面向 `PhysAddr` 和 `VirtAddr`。这意味着：
+
+- 它可以建模普通物理地址
+- 可以建模虚拟地址
+- 也可以被上层复用于 GPA/GVA 等访客地址类型
+
+这正是 `axaddrspace` 能基于它继续定义 `GuestPhysAddr`、`GuestVirtAddr` 的原因。
+
+### 1.4 两个内建地址类型
+
+#### `PhysAddr`
+
+表示物理地址，适合：
+
+- 页表项物理页帧地址
+- 设备 MMIO 物理区间
+- 物理内存布局描述
+
+#### `VirtAddr`
+
+表示虚拟地址，除了普通地址操作外，还额外支持：
+
+- 裸指针转换
+- 与 `*const T` / `*mut T` 互转
+- 便于内核早期或 host-side 低层代码桥接指针语义
+
+### 1.5 宏驱动扩展：`def_usize_addr!`
+
+这是本 crate 最重要的工程化能力之一。`def_usize_addr!` 允许上层快速定义新的透明地址类型，并自动获得：
+
+- `From<usize>` / `Into<usize>`
+- `Add` / `Sub`
+- `Debug` / 十六进制格式化
+- `MemoryAddr` trait 能力
+
+这使仓库可以自然扩展出：
+
+- `GuestPhysAddr`
+- `GuestVirtAddr`
+- 其他特化地址类型
+
+而不必复制整套地址运算逻辑。
+
+### 1.6 区间模型：`AddrRange<A>`
+
+`AddrRange<A>` 用半开区间 `[start, end)` 表示一段地址范围。它承担三个关键职责：
+
+- 统一表达地址空间中的连续区段
+- 提供包含、重叠、子区间等关系判断
+- 为更高层的 `MemoryArea` / `MemorySet` 提供底层区间语义
+
+这个设计直接决定了 `memory_set`、`axmm`、`axaddrspace` 等上层都能围绕同一套区间语义组织逻辑。
+
+### 1.7 对齐与遍历
+
+`memory_addr` 在最常见、也最容易写错的两个问题上给出统一实现：
+
+#### 对齐
+
+- `align_down`
+- `align_up`
+- `align_offset`
+- `is_aligned`
+- `align_*_4k`
+- `is_aligned_4k`
+
+既提供面向 `usize` 的自由函数，也通过 `MemoryAddr` 为地址类型提供同名方法。
+
+#### 页级遍历
+
+- `PageIter<const PAGE_SIZE, A>`
+- `DynPageIter<A>`
+
+这使上层能按页粒度扫描地址区间，而不必自己维护加法和边界条件。
+
+### 1.8 设计上的一个细节
+
+源码里有一个值得文档明确说明的点：
+
+- `MemoryAddr::add()` / `sub()` 等方法倾向于 checked 语义，溢出会触发显式错误路径或 panic
+- 某些由宏生成的 `Add<usize>` / `Sub<usize>` 运算符则更接近裸 `usize` 行为
+
+因此在写高层内存代码时，若希望更明确地表达边界检查意图，优先使用 `MemoryAddr` 提供的方法而不是直接依赖运算符重载。
 
 ## 2. 核心功能说明
-- 功能定位：Wrappers and helper functions for physical and virtual addresses
-- 对外接口：从源码可见的主要公开入口包括 `align_down`、`align_up`、`align_offset`、`is_aligned`、`align_down_4k`、`align_up_4k`、`align_offset_4k`、`is_aligned_4k`、`PageIter`、`DynPageIter` 等（另有 2 个公开入口）。
-- 典型使用场景：作为共享基础设施被多个 OS 子系统复用，常见场景包括同步、内存管理、设备抽象、接口桥接和虚拟化基础能力。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `new()` -> `try_new()` -> `from_start_size()` -> `try_from_start_size()` -> `from_start_size_unchecked()`。
+
+### 2.1 主要能力
+
+- 提供 `PhysAddr` / `VirtAddr` 两类标准地址类型
+- 为地址类型提供统一的对齐、偏移和差值计算
+- 提供通用地址区间模型 `AddrRange`
+- 提供页粒度迭代器和标准页大小常量
+- 提供宏机制，支持上层快速定义新的地址类型
+
+### 2.2 典型使用场景
+
+| 场景 | 使用方式 |
+| --- | --- |
+| 平台内存布局 | 用 `PhysAddr`、`VirtAddr` 和页大小常量表达物理/虚拟布局 |
+| 地址空间管理 | 用 `AddrRange` 表示映射区间 |
+| 页表实现 | 用 `PhysAddr` 和对齐函数处理页表页与页帧 |
+| 虚拟化 | 用宏扩展出 `GuestPhysAddr` / `GuestVirtAddr` |
+| 页扫描 | 用 `PageIter4K` 等按页遍历一段区间 |
+
+### 2.3 典型 API 主线
+
+最常见的一条调用链是：
+
+1. 用 `PhysAddr::from_usize()` / `VirtAddr::from_usize()` 创建地址
+2. 用 `align_up_4k()` 或 `align_down_4k()` 处理页对齐
+3. 用 `AddrRange::from_start_size()` 表示连续区间
+4. 用 `PageIter4K` 或 `DynPageIter` 遍历区间内每个页起点
+
+这条主线在 `axmm`、`memory_set`、`page_table_multiarch` 和 `axaddrspace` 里都能看到。
 
 ## 3. 依赖关系图谱
-```mermaid
-graph LR
-    current["memory_addr"]
-    arm_vgic["arm_vgic"] --> current
-    axaddrspace["axaddrspace"] --> current
-    axalloc["axalloc"] --> current
-    axcpu["axcpu"] --> current
-    axdevice["axdevice"] --> current
-    axdevice_base["axdevice_base"] --> current
-    axdma["axdma"] --> current
-    axhal["axhal"] --> current
-```
 
-### 3.1 直接与间接依赖
-- 未检测到本仓库内的直接本地依赖；该 crate 可能主要依赖外部生态或承担叶子节点角色。
+### 3.1 直接依赖
 
-### 3.2 间接本地依赖
-- 未检测到额外的间接本地依赖，或依赖深度主要停留在第一层。
+`memory_addr` 几乎没有外部依赖，核心只依赖标准 `core` 语义。`Cargo.toml` 中没有显式第三方依赖，这意味着它本身就是一个极度轻量、适合作为底座复用的 crate。
 
-### 3.3 被依赖情况
-- `arm_vgic`
-- `axaddrspace`
-- `axalloc`
-- `axcpu`
-- `axdevice`
-- `axdevice_base`
-- `axdma`
-- `axhal`
-- `axklib`
-- `axmm`
+### 3.2 主要消费者
+
+仓库内直接或间接依赖它的关键模块包括：
+
+- `memory_set`
+- `page_table_entry`
+- `page_table_multiarch`
 - `axplat`
-- `axplat-dyn`
-- 另外还有 `12` 个同类项未在此展开
+- `axmm`
+- `axaddrspace`
+- `axvm`
+- `axvisor_api`
+- `x86_vcpu`
+- `riscv_vcpu`
 
-### 3.4 间接被依赖情况
-- `arceos-affinity`
-- `arceos-helloworld`
-- `arceos-helloworld-myplat`
-- `arceos-httpclient`
-- `arceos-httpserver`
-- `arceos-irq`
-- `arceos-memtest`
-- `arceos-parallel`
-- `arceos-priority`
-- `arceos-shell`
-- `arceos-sleep`
-- `arceos-wait-queue`
-- 另外还有 `32` 个同类项未在此展开
+### 3.3 关系示意
 
-### 3.5 关键外部依赖
-- 当前依赖集合几乎完全来自仓库内本地 crate。
+```mermaid
+graph TD
+    A[memory_addr]
+    A --> B[memory_set]
+    A --> C[page_table_entry]
+    A --> D[page_table_multiarch]
+    A --> E[axplat]
+    A --> F[axmm]
+    A --> G[axaddrspace]
+    G --> H[axvm / Axvisor]
+    F --> I[ArceOS / StarryOS 地址空间]
+```
 
 ## 4. 开发指南
-### 4.1 依赖配置
-```toml
-[dependencies]
-memory_addr = { workspace = true }
 
-# 如果在仓库外独立验证，也可以显式绑定本地路径：
-# memory_addr = { path = "components/axmm_crates/memory_addr" }
-```
+### 4.1 新定义一种地址类型
 
-### 4.2 初始化流程
-1. 在 `Cargo.toml` 中接入该 crate，并根据需要开启相关 feature。
-2. 若 crate 暴露初始化入口，优先调用 `init`/`new`/`build`/`start` 类函数建立上下文。
-3. 在最小消费者路径上验证公开 API、错误分支与资源回收行为。
+如果需要在新模块中引入新的地址语义，例如设备总线地址、访客物理地址或其他逻辑地址，推荐：
 
-### 4.3 关键 API 使用提示
-- 优先关注函数入口：`align_down`、`align_up`、`align_offset`、`is_aligned`、`align_down_4k`、`align_up_4k`、`align_offset_4k`、`is_aligned_4k` 等（另有 33 项）。
-- 上下文/对象类型通常从 `PageIter`、`DynPageIter`、`AddrRange` 等结构开始。
+1. 使用 `def_usize_addr!` 定义新类型
+2. 使用 `def_usize_addr_formatter!` 补充格式化
+3. 基于 `AddrRange<YourAddr>` 定义对应区间别名
+
+这样可最大化复用已有工具，而不是重新发明一套地址封装。
+
+### 4.2 地址与区间使用建议
+
+- 表达连续区间时，不要直接传 `(start, size)` 裸元组，优先使用 `AddrRange`
+- 涉及页粒度操作时，优先先做对齐，再做迭代
+- 涉及潜在溢出时，优先使用 checked 风格接口
+
+### 4.3 与上层集成
+
+- 与 `memory_set` 集成时，`AddrRange` 是 `MemoryArea` 的直接区间载体
+- 与 `page_table_entry` / `page_table_multiarch` 集成时，`PhysAddr` 是页表项和页表页操作的基础地址类型
+- 与 `axaddrspace` 集成时，宏扩展机制可直接派生出 GPA/GVA 类型
 
 ## 5. 测试策略
-### 5.1 当前仓库内的测试形态
-- 存在单元测试/`#[cfg(test)]` 场景：`src/addr.rs`、`src/lib.rs`、`src/range.rs`。
 
-### 5.2 单元测试重点
-- 建议用单元测试覆盖公开 API、错误分支、边界条件以及并发/内存安全相关不变量。
+### 5.1 当前源码已覆盖的方向
 
-### 5.3 集成测试重点
-- 建议补充被 ArceOS/StarryOS/Axvisor 消费时的最小集成路径，确保接口语义与 feature 组合稳定。
+源码中已经包含一些基础测试，主要覆盖：
 
-### 5.4 覆盖率要求
-- 覆盖率建议：核心算法与错误路径达到高覆盖，关键数据结构和边界条件应实现接近完整覆盖。
+- 对齐函数
+- 地址算术
+- 指针与 `VirtAddr` 的互转
+- 区间关系判断
+
+这说明本 crate 的测试重点集中在“语义正确性”和“边界条件”。
+
+### 5.2 推荐继续补充的测试
+
+- `PageIter` / `DynPageIter` 的边界行为
+- `AddrRange::try_from_start_size()` 的溢出和非法区间行为
+- 宏生成地址类型后的格式化与算术一致性
+- checked 接口与运算符接口的差异测试
+
+### 5.3 风险点
+
+- 地址运算属于底层公共语义，任何边界错误都会向上放大
+- 若区间构造不严谨，会直接影响 `memory_set`、`axmm`、`axaddrspace` 这类核心模块
+- 页级迭代若处理不当，会造成页表遍历或映射建立的 off-by-one 错误
 
 ## 6. 跨项目定位分析
-### 6.1 ArceOS
-`memory_addr` 不在 ArceOS 目录内部，但被 `axalloc`、`axdma`、`axhal`、`axmm`、`axtask` 等 ArceOS crate 直接依赖，说明它是该系统的共享构件或底层服务。
 
-### 6.2 StarryOS
-`memory_addr` 不在 StarryOS 目录内部，但被 `starry-kernel` 等 StarryOS crate 直接依赖，说明它是该系统的共享构件或底层服务。
+| 项目 | 位置 | 角色 | 核心作用 |
+| --- | --- | --- | --- |
+| ArceOS | MM 和平台层共同基础件 | 地址/区间公共语言 | 支撑 `axplat`、`axmm`、页表与物理内存布局表达 |
+| StarryOS | 内核内存管理底层公共件 | 用户地址空间与区间语义基座 | 为 `mmap`、`brk`、页对齐与区间检查提供统一类型基础 |
+| Axvisor | 宿主/访客地址抽象底座 | 虚拟化地址建模出发点 | `axaddrspace` 在其上扩展出 GPA/GVA，并与嵌套页表逻辑拼接 |
 
-### 6.3 Axvisor
-`memory_addr` 不在 Axvisor 目录内部，但被 `axvisor` 等 Axvisor crate 直接依赖，说明它是该系统的共享构件或底层服务。
+## 7. 总结
+
+`memory_addr` 看起来简单，但它解决的是整个代码库最不适合分散实现的一类问题：地址与区间的基本语义。通过统一类型、统一对齐逻辑、统一区间模型和统一扩展宏，它把内存管理、平台支持和虚拟化组件都拉到了同一套地址语言上，是所有上层内存子系统真正共享的第一层基础设施。
