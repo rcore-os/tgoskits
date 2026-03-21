@@ -1,143 +1,181 @@
-# axaddrspace
+<h1 align="center">axaddrspace</h1>
 
-**ArceOS-Hypervisor guest VM address space management module**
+<p align="center">ArceOS-Hypervisor guest VM address space management module</p>
 
-[![CI](https://github.com/arceos-hypervisor/axaddrspace/actions/workflows/ci.yml/badge.svg)](https://github.com/arceos-hypervisor/axaddrspace/actions/workflows/ci.yml)
-[![Crates.io](https://img.shields.io/crates/v/axaddrspace)](https://crates.io/crates/axaddrspace)
-[![License](https://img.shields.io/badge/license-Apache%202.0%20OR%20MIT-blue)](LICENSE)
+<div align="center">
 
-## Overview
+[![Crates.io](https://img.shields.io/crates/v/axaddrspace.svg)](https://crates.io/crates/axaddrspace)
+[![Docs.rs](https://docs.rs/axaddrspace/badge.svg)](https://docs.rs/axaddrspace)
+[![Rust](https://img.shields.io/badge/edition-2024-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/arceos-hypervisor/axaddrspace/blob/main/LICENSE)
 
-`axaddrspace` is a core component of the [ArceOS-Hypervisor](https://github.com/arceos-hypervisor/) project that provides guest virtual machine address space management capabilities. The crate implements nested page tables and address translation for hypervisor environments, supporting multiple architectures including x86_64, AArch64, and RISC-V.
+</div>
 
-## Features
+English | [中文](README_CN.md)
 
-- **Multi-architecture support**: x86_64 (VMX EPT), AArch64 (Stage 2 page tables), and RISC-V nested page tables
-- **Flexible memory mapping backends**:
-  - **Linear mapping**: For contiguous physical memory regions with known addresses
-  - **Allocation mapping**: Dynamic allocation with optional lazy loading support
-- **Nested page fault handling**: Comprehensive page fault management for guest VMs
-- **Hardware abstraction layer**: Clean interface for memory management operations
-- **No-std compatible**: Designed for bare-metal hypervisor environments
+# Introduction
 
-## Architecture Support
+`axaddrspace` is the guest address space management crate for the
+[ArceOS-Hypervisor](https://github.com/arceos-hypervisor/) project. It provides
+nested page table management, guest physical address translation, memory
+mapping backends, and nested page fault handling for hypervisor environments.
 
-### x86_64
-- VMX Extended Page Tables (EPT)
-- Memory type configuration (WriteBack, Uncached, etc.)
-- Execute permissions for user-mode addresses
+This crate supports multiple architectures:
 
-### AArch64
-- VMSAv8-64 Stage 2 translation tables
-- Configurable MAIR_EL2 memory attributes
-- EL2 privilege level support
+- **x86_64** - VMX Extended Page Tables (EPT)
+- **AArch64** - Stage-2 page tables
+- **RISC-V** - Nested page tables based on the hypervisor extension
 
-### RISC-V
-- Nested page table implementation
-- Hypervisor fence instructions (`hfence.vvma`)
-- Sv39 metadata support
+Key capabilities include:
 
-## Core Components
+- **`AddrSpace`** - address space creation, mapping, unmapping, and translation
+- **`AxMmHal`** - hardware abstraction trait for frame allocation and address conversion
+- **Linear mapping backend** - map known contiguous host physical memory ranges
+- **Allocation mapping backend** - allocate frames eagerly or lazily on page faults
+- **Guest memory helpers** - translate guest addresses to accessible host buffers
 
-### Address Space Management
-The `AddrSpace` struct provides:
-- Virtual address range management
-- Page table root address tracking
-- Memory area organization
-- Address translation services
+Supports `#![no_std]` and is intended for bare-metal hypervisor and kernel use.
 
-### Memory Mapping Backends
-Two types of mapping backends are supported:
+## Quick Start
 
-1. **Linear Backend**: Direct mapping with constant offset between virtual and physical addresses
-2. **Allocation Backend**: Dynamic memory allocation with optional population strategies
+### Requirements
 
-### Nested Page Tables
-Architecture-specific nested page table implementations:
-- **x86_64**: `ExtendedPageTable` with EPT entries
-- **AArch64**: Stage 2 page tables with descriptor attributes
-- **RISC-V**: Sv39-based nested page tables
+- Rust nightly toolchain
+- Rust components: `rust-src`, `clippy`, `rustfmt`
 
-## Usage
+```bash
+# Install rustup (if not installed)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-Add this to your `Cargo.toml`:
+# Install nightly toolchain and components
+rustup install nightly
+rustup component add rust-src clippy rustfmt --toolchain nightly
+```
+
+### Run Check and Test
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/arceos-hypervisor/axaddrspace.git
+cd axaddrspace
+
+# 2. Code check
+./scripts/check.sh
+
+# 3. Run tests
+./scripts/test.sh
+
+# 4. Run a specific integration test target directly
+cargo test --test address_space
+```
+
+The helper scripts download the shared `axci` test/check framework on first run.
+
+## Integration
+
+### Installation
+
+Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-axaddrspace = "0.1.0"
+axaddrspace = "0.3.0"
 ```
 
-### Basic Example
+### Example
 
 ```rust
-use axaddrspace::{AddrSpace, MappingFlags, GuestPhysAddr};
+use axaddrspace::{AddrSpace, AxMmHal, GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags};
+use memory_addr::{PhysAddr, VirtAddr};
 use page_table_multiarch::PagingHandler;
-
-// Create a new address space
-let mut addr_space = AddrSpace::<YourPagingHandler>::new_empty(
-    GuestPhysAddr::from(0x1000_0000),
-    0x1000_0000, // 256MB
-)?;
-
-// Create a linear mapping
-addr_space.map_linear(
-    GuestPhysAddr::from(0x1000_0000), // Guest virtual address
-    PhysAddr::from(0x8000_0000),      // Host physical address
-    0x10_0000,                        // 1MB
-    MappingFlags::READ | MappingFlags::WRITE,
-)?;
-
-// Handle a nested page fault
-let fault_handled = addr_space.handle_page_fault(
-    GuestPhysAddr::from(0x1000_1000),
-    MappingFlags::READ,
-);
-```
-
-### Hardware Abstraction Layer
-
-Implement the `AxMmHal` trait for your platform:
-
-```rust
-use axaddrspace::{AxMmHal, HostPhysAddr, HostVirtAddr};
 
 struct MyHal;
 
 impl AxMmHal for MyHal {
     fn alloc_frame() -> Option<HostPhysAddr> {
-        // Your frame allocation implementation
+        unimplemented!()
     }
 
-    fn dealloc_frame(paddr: HostPhysAddr) {
-        // Your frame deallocation implementation  
+    fn dealloc_frame(_paddr: HostPhysAddr) {
+        unimplemented!()
     }
 
-    fn phys_to_virt(paddr: HostPhysAddr) -> HostVirtAddr {
-        // Your physical to virtual address conversion
+    fn phys_to_virt(_paddr: HostPhysAddr) -> HostVirtAddr {
+        unimplemented!()
     }
 
-    fn virt_to_phys(vaddr: HostVirtAddr) -> HostPhysAddr {
-        // Your virtual to physical address conversion
+    fn virt_to_phys(_vaddr: HostVirtAddr) -> HostPhysAddr {
+        unimplemented!()
     }
+}
+
+impl PagingHandler for MyHal {
+    fn alloc_frame() -> Option<PhysAddr> {
+        <Self as AxMmHal>::alloc_frame()
+    }
+
+    fn dealloc_frame(paddr: PhysAddr) {
+        <Self as AxMmHal>::dealloc_frame(paddr)
+    }
+
+    fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
+        <Self as AxMmHal>::phys_to_virt(paddr)
+    }
+}
+
+fn example() -> axerrno::AxResult<()> {
+    let base = GuestPhysAddr::from_usize(0x1000_0000);
+    let mut addr_space = AddrSpace::<MyHal>::new_empty(4, base, 0x20_0000)?;
+
+    addr_space.map_linear(
+        base,
+        PhysAddr::from_usize(0x8000_0000),
+        0x10_0000,
+        MappingFlags::READ | MappingFlags::WRITE,
+    )?;
+
+    addr_space.map_alloc(
+        base + 0x10_0000,
+        0x2000,
+        MappingFlags::READ | MappingFlags::WRITE,
+        false,
+    )?;
+
+    let fault_handled = addr_space.handle_page_fault(
+        base + 0x10_0000,
+        MappingFlags::READ,
+    );
+    assert!(fault_handled);
+
+    let host_paddr = addr_space.translate(base).unwrap();
+    assert_eq!(host_paddr, PhysAddr::from_usize(0x8000_0000));
+
+    Ok(())
 }
 ```
 
-## Configuration
+### Features
 
-### Feature Flags
+- `arm-el2`: enable AArch64 EL2 support
+- `default`: includes `arm-el2`
 
-- `arm-el2`: Enable AArch64 EL2 support (default)
-- `default`: Includes `arm-el2` feature
+### Documentation
 
-## Contributing
+Generate and view API documentation:
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+```bash
+cargo doc --no-deps --open
+```
 
-## Repository
+Online documentation: [docs.rs/axaddrspace](https://docs.rs/axaddrspace)
 
-- [GitHub Repository](https://github.com/arceos-hypervisor/axaddrspace)
-- [ArceOS-Hypervisor Project](https://github.com/arceos-hypervisor/)
+# Contributing
 
-## License
+1. Fork the repository and create a branch
+2. Run local check: `./scripts/check.sh`
+3. Run local tests: `./scripts/test.sh`
+4. Submit PR and pass CI checks
 
-Axaddrspace is licensed under the Apache License, Version 2.0. See the [LICENSE](./LICENSE) file for details.
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.

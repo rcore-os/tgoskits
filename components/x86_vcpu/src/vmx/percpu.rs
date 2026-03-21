@@ -16,7 +16,7 @@ use x86::bits64::vmx;
 use x86_64::registers::control::{Cr0, Cr4, Cr4Flags};
 
 use axerrno::{AxResult, ax_err, ax_err_type};
-use axvcpu::{AxArchPerCpu, AxVCpuHal};
+use axvcpu::AxArchPerCpu;
 use memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
 
 use crate::msr::Msr;
@@ -29,7 +29,7 @@ use crate::vmx::structs::{FeatureControl, FeatureControlFlags, VmxBasic, VmxRegi
 /// when operating in VMX mode, including the VMCS revision identifier and
 /// the VMX region.
 #[derive(Debug)]
-pub struct VmxPerCpuState<H: AxVCpuHal> {
+pub struct VmxPerCpuState {
     /// The VMCS (Virtual Machine Control Structure) revision identifier.
     ///
     /// This identifier is used to ensure compatibility between the software
@@ -40,10 +40,10 @@ pub struct VmxPerCpuState<H: AxVCpuHal> {
     ///
     /// This region typically contains the VMCS and other state information
     /// required for managing virtual machines on this particular CPU.
-    vmx_region: VmxRegion<H::MmHal>,
+    vmx_region: VmxRegion,
 }
 
-impl<H: AxVCpuHal> AxArchPerCpu for VmxPerCpuState<H> {
+impl AxArchPerCpu for VmxPerCpuState {
     fn new(_cpu_id: usize) -> AxResult<Self> {
         Ok(Self {
             vmcs_revision_id: 0,
@@ -159,14 +159,14 @@ impl<H: AxVCpuHal> AxArchPerCpu for VmxPerCpuState<H> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::mock::{MockMmHal, MockVCpuHal};
+    use crate::test_utils::mock::MockMmHal;
     use alloc::format;
     use alloc::vec::Vec;
 
     #[test]
     fn test_vmx_per_cpu_state_new() {
         MockMmHal::reset(); // Reset before test
-        let result = VmxPerCpuState::<MockVCpuHal>::new(0);
+        let result = VmxPerCpuState::new(0);
         assert!(result.is_ok());
 
         let state = result.unwrap();
@@ -176,7 +176,7 @@ mod tests {
     #[test]
     fn test_vmx_per_cpu_state_default_values() {
         MockMmHal::reset(); // Reset before test
-        let state = VmxPerCpuState::<MockVCpuHal>::new(0).unwrap();
+        let state = VmxPerCpuState::new(0).unwrap();
 
         // Test that vmcs_revision_id is initialized to 0
         assert_eq!(state.vmcs_revision_id, 0);
@@ -193,7 +193,7 @@ mod tests {
 
         // Create states for multiple CPUs
         for cpu_id in 0..4 {
-            let state = VmxPerCpuState::<MockVCpuHal>::new(cpu_id).unwrap();
+            let state = VmxPerCpuState::new(cpu_id).unwrap();
             states.push(state);
         }
 
@@ -211,7 +211,7 @@ mod tests {
     #[test]
     fn test_vmx_per_cpu_state_debug() {
         MockMmHal::reset(); // Reset before test
-        let state = VmxPerCpuState::<MockVCpuHal>::new(0).unwrap();
+        let state = VmxPerCpuState::new(0).unwrap();
 
         // Test that Debug trait is implemented and doesn't panic
         let debug_str = format!("{:?}", state);
@@ -223,7 +223,7 @@ mod tests {
         use core::mem;
 
         // Test that the struct has a reasonable size
-        let size = mem::size_of::<VmxPerCpuState<MockVCpuHal>>();
+        let size = mem::size_of::<VmxPerCpuState>();
 
         // Should be larger than just the u32 field due to the VmxRegion
         assert!(size > 4);

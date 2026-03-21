@@ -17,10 +17,9 @@
 //! Currently, the TSC is used as the clock source.
 
 use axplat::time::TimeIf;
-use raw_cpuid::CpuId;
-
 #[cfg(feature = "irq")]
 use int_ratio::Ratio;
+use raw_cpuid::CpuId;
 
 #[cfg(feature = "irq")]
 const LAPIC_TICKS_PER_SEC: u64 = 1_000_000_000; // TODO: need to calibrate

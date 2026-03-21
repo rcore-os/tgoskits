@@ -29,11 +29,10 @@ mod vm;
 
 pub mod config;
 
-pub use hal::AxVMHal;
 pub use vm::{AxVCpuRef, AxVM, AxVMRef, VMMemoryRegion, VMStatus};
 
 /// The architecture-independent per-CPU type.
-pub type AxVMPerCpu<U> = axvcpu::AxPerCpu<vcpu::AxVMArchPerCpuImpl<U>>;
+pub type AxVMPerCpu = axvcpu::AxPerCpu<vcpu::AxVMArchPerCpuImpl>;
 
 /// Whether the hardware has virtualization support.
 pub fn has_hardware_support() -> bool {

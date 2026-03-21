@@ -1,0 +1,5 @@
+[toolchain]
+channel = "nightly-2025-01-18"
+components = [ "llvm-tools-preview" ]
+targets = [ "aarch64-unknown-none-softfloat" ]
+profile = "minimal"

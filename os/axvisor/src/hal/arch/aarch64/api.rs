@@ -12,17 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[axvisor_api::api_mod_impl(axvisor_api::arch)]
-mod arch_api_impl {
-    use core::panic;
+use axvisor_api::arch::ArchIf;
+use std::os::arceos::modules::axhal::{self, mem::virt_to_phys};
 
-    use axvisor_api::memory::virt_to_phys;
+struct ArchImpl;
 
-    extern fn hardware_inject_virtual_interrupt(irq: axvisor_api::vmm::InterruptVector) {
+#[axvisor_api::api_impl]
+impl ArchIf for ArchImpl {
+    fn hardware_inject_virtual_interrupt(irq: axvisor_api::vmm::InterruptVector) {
         crate::hal::arch::inject_interrupt(irq as _);
     }
 
-    extern fn read_vgicd_typer() -> u32 {
+    fn read_vgicd_typer() -> u32 {
         let mut gic = rdrive::get_one::<rdif_intc::Intc>()
             .expect("Failed to get GIC driver")
             .lock()
@@ -38,7 +39,7 @@ mod arch_api_impl {
         panic!("No GIC driver found");
     }
 
-    extern fn read_vgicd_iidr() -> u32 {
+    fn read_vgicd_iidr() -> u32 {
         // use axstd::os::arceos::modules::axhal::irq::MyVgic;
         // MyVgic::get_gicd().lock().get_iidr()
         let mut gic = rdrive::get_one::<rdif_intc::Intc>()
@@ -57,7 +58,7 @@ mod arch_api_impl {
         panic!("No GIC driver found");
     }
 
-    extern fn get_host_gicd_base() -> memory_addr::PhysAddr {
+    fn get_host_gicd_base() -> memory_addr::PhysAddr {
         let mut gic = rdrive::get_one::<rdif_intc::Intc>()
             .expect("Failed to get GIC driver")
             .lock()
@@ -75,7 +76,7 @@ mod arch_api_impl {
         panic!("No GIC driver found");
     }
 
-    extern fn get_host_gicr_base() -> memory_addr::PhysAddr {
+    fn get_host_gicr_base() -> memory_addr::PhysAddr {
         let mut gic = rdrive::get_one::<rdif_intc::Intc>()
             .expect("Failed to get GIC driver")
             .lock()
@@ -85,5 +86,24 @@ mod arch_api_impl {
             return virt_to_phys((ptr as usize).into());
         }
         panic!("No GICv3 driver found");
+    }
+
+    fn fetch_irq() -> u64 {
+        /// TODO: better implementation
+        let mut gic = rdrive::get_one::<rdif_intc::Intc>()
+            .expect("Failed to get GIC driver")
+            .lock()
+            .unwrap();
+        if let Some(gic) = gic.typed_mut::<arm_gic_driver::v2::Gic>() {
+            return u32::from(gic.cpu_interface().ack()) as _;
+        }
+        if let Some(gic) = gic.typed_mut::<arm_gic_driver::v3::Gic>() {
+            return gic.cpu_interface().ack1().to_u32() as _;
+        }
+        panic!("No GIC driver found");
+    }
+
+    fn handle_irq() {
+        axhal::irq::irq_handler(0);
     }
 }

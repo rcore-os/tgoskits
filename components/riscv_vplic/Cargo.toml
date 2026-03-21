@@ -1,10 +1,10 @@
 [package]
 name = "riscv_vplic"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 authors = ["Jingyu liu <liujingyu24s@ict.ac.cn>"]
 description = "RISCV Virtual PLIC implementation."
-documentation = "https://docs.rs/riscv_vplic"
+documentation = "https://arceos-hypervisor.github.io/riscv_vplic"
 repository = "https://github.com/arceos-hypervisor/riscv_vplic"
 readme = "README.md"
 categories = ["os", "no-std"]
@@ -15,19 +15,17 @@ license = "Apache-2.0"
 default = []
 
 [dependencies]
-axaddrspace = "0.1.4"
-axdevice_base = "0.2.1"
-axvisor_api = "0.1"
+axaddrspace = "0.3"
+axdevice_base = "0.2.2"
+axvisor_api = "0.3"
 
-axerrno = "0.1.0"
+axerrno = "0.2"
 bitmaps = { version = "3.2", default-features = false }
 log = "0.4"
-spin = "0.9"
+spin = "0.10"
 
-riscv-h = "0.1"
+riscv-h = "0.2"
 
 [package.metadata.docs.rs]
-# # 指定 docs.rs 默认显示的 target
 default-target = ["riscv64gc-unknown-none-elf"]
-# 指定 docs.rs 使用的 target
 targets = ["riscv64gc-unknown-none-elf"]

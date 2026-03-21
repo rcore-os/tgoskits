@@ -1,6 +1,9 @@
 # axvisor\_api (Experimental Next-Generation Axvisor API)
+
 [![CI](https://github.com/arceos-hypervisor/axvisor_api/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/arceos-hypervisor/axvisor_api/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)]
+[![Crates.io](https://img.shields.io/crates/v/axvisor_api)](https://crates.io/crates/axvisor_api)
+[![Docs.rs](https://docs.rs/axvisor_api/badge.svg)](https://docs.rs/axvisor_api)
+[![License](https://img.shields.io/badge/License-GPL--3.0--or--later%20OR%20Apache--2.0%20OR%20MulanPSL--2.0-blue.svg)](LICENSE.Apache2)
 
 \> [中文README](README.zh-cn.md) <
 
@@ -147,3 +150,7 @@ Besides the above drawbacks, the current implementation of `axvisor_api` has som
 Additionally, there are some platform-related issues that are independent of the `axvisor_api` design or implementation. For example:
 
 * **Platform-specific APIs**: Some APIs are strongly tied to specific platforms or even specific devices but are essential. For example, on ARM, the semi-virtualized GIC implementation relies heavily on the physical GIC driver. Including all such functionality in `axvisor_api` makes the modules bloated, but not doing so could hurt readability and maintainability.
+
+## License
+
+Axvisor_api is licensed under the Apache License, Version 2.0. See the [LICENSE](./LICENSE) file for details.

@@ -54,7 +54,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
             // threshold
             offset
                 if offset >= PLIC_CONTEXT_CTRL_OFFSET
-                    && (offset - PLIC_CONTEXT_CTRL_OFFSET) % PLIC_CONTEXT_STRIDE == 0 =>
+                    && (offset - PLIC_CONTEXT_CTRL_OFFSET).is_multiple_of(PLIC_CONTEXT_STRIDE) =>
             {
                 perform_mmio_read(host_addr, width)
             }
@@ -62,8 +62,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
             offset
                 if offset >= PLIC_CONTEXT_CTRL_OFFSET
                     && (offset - PLIC_CONTEXT_CTRL_OFFSET - PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET)
-                        % PLIC_CONTEXT_STRIDE
-                        == 0 =>
+                        .is_multiple_of(PLIC_CONTEXT_STRIDE) =>
             {
                 let context_id =
                     (offset - PLIC_CONTEXT_CTRL_OFFSET - PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET)
@@ -144,7 +143,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
             // threshold
             offset
                 if offset >= PLIC_CONTEXT_CTRL_OFFSET
-                    && (offset - PLIC_CONTEXT_CTRL_OFFSET) % PLIC_CONTEXT_STRIDE == 0 =>
+                    && (offset - PLIC_CONTEXT_CTRL_OFFSET).is_multiple_of(PLIC_CONTEXT_STRIDE) =>
             {
                 perform_mmio_write(host_addr, width, val)
             }
@@ -152,8 +151,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
             offset
                 if offset >= PLIC_CONTEXT_CTRL_OFFSET
                     && (offset - PLIC_CONTEXT_CTRL_OFFSET - PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET)
-                        % PLIC_CONTEXT_STRIDE
-                        == 0 =>
+                        .is_multiple_of(PLIC_CONTEXT_STRIDE) =>
             {
                 // info!("vPlicGlobal: Writing to CLAIM/COMPLETE reg {reg:#x} val {val:#x}");
                 let context_id =
