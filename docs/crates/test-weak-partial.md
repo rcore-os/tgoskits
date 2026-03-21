@@ -1,97 +1,200 @@
 # `test-weak-partial` 技术文档
 
 > 路径：`components/crate_interface/test_crates/test-weak-partial`
-> 类型：二进制 crate
-> 分层：组件层 / 可复用基础组件
-> 版本：`0.1.0`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 未检测到 crate 层 README
+> 类型：二进制 crate（独立测试工作区成员，`publish = false`）
+> 分层：组件层 / `crate_interface` 多 crate 测试矩阵 / 最终链接验证端
+> Rust 要求：nightly（依赖 `#![feature(linkage)]`）
+> 文档依据：`components/crate_interface/test_crates/test-weak-partial/Cargo.toml`、`components/crate_interface/test_crates/test-weak-partial/src/main.rs`、`components/crate_interface/test_crates/Cargo.toml`、`components/crate_interface/test_crates/run_tests.sh`、`components/crate_interface/README.md`、`components/crate_interface/tests/test_weak_default.rs`、`components/crate_interface/Cargo.toml`、`Cargo.toml`
 
-`test-weak-partial` 的核心定位是：Integration tests for weak_default traits with PARTIAL implementation only. This binary ONLY links PartialOnlyImpl, which does NOT implement: - default_value() - default_add() - d…
+`test-weak-partial` 是 `crate_interface` `weak_default` 测试矩阵中负责“默认回退路径”的最终链接/验证端。它只链接 `define-weak-traits` 和 `impl-weak-partial`，并且刻意不把 `impl-weak-traits` 带入最终二进制，从而观察当实现侧只补齐必需方法时，弱符号默认实现是否会在真实程序里接管剩余方法。它不是“功能不完整的运行时组件”，而是专门为链接期默认回退语义准备的终端测试资产。
 
 ## 1. 架构设计分析
-- 目录角色：可复用基础组件
-- crate 形态：二进制 crate
-- 工作区位置：子工作区 `components/crate_interface/test_crates`
-- feature 视角：该 crate 没有显式声明额外 Cargo feature，功能边界主要由模块本身决定。
-- 关键数据结构：该 crate 暴露的数据结构较少，关键复杂度主要体现在模块协作、trait 约束或初始化时序。
-- 设计重心：该 crate 通常作为多个内核子系统共享的底层构件，重点在接口边界、数据结构和被上层复用的方式。
 
-### 1.1 内部模块划分
-- 当前 crate 未显式声明多个顶层 `mod`，复杂度更可能集中在单文件入口、宏展开或下层子 crate。
+### 1.1 在测试矩阵中的真实定位
 
-### 1.2 核心算法/机制
-- 该 crate 是入口/编排型二进制，复杂度主要来自初始化顺序、配置注入和对下层模块的串接。
+`test-weak-partial` 与 `test-weak` 共同组成 `weak_default` 的最终验证矩阵，但两者承担的职责相反：
+
+- `test-weak`：观察“有覆盖时，强符号如何优先”
+- `test-weak-partial`：观察“无覆盖时，弱符号如何接管”
+
+它同样位于独立测试工作区中，而不是仓库正式产品路径的一部分：
+
+- 仓库顶层 `Cargo.toml` 将 `components/crate_interface/test_crates` 排除在主工作区之外
+- `components/crate_interface/Cargo.toml` 也排除了 `test_crates`
+- `components/crate_interface/test_crates/Cargo.toml` 统一设置为 `publish = false`
+
+这表明它的价值不在于对外提供功能，而在于给 `crate_interface` 的默认回退语义提供最终证据。
+
+### 1.2 隔离性就是它的架构核心
+
+`test-weak-partial` 最重要的设计不是“做了什么”，而是“刻意不链接什么”：
+
+- 只引入 `PartialOnlyImpl` 与 `SelfRefPartialImpl`
+- 不引入 `impl-weak-traits` 中那些会产生强覆盖的实现类型
+
+如果完整实现 crate 也被带进最终二进制，那么本来应该回退到默认实现的方法就可能被强符号抢走，整个测试将失去意义。换句话说，`test-weak-partial` 的核心架构特征就是“隔离回退路径”。
+
+### 1.3 链接锚点设计
+
+`src/main.rs` 用匿名常量块通过 `std::any::type_name::<...>()` 显式引用了：
+
+- `PartialOnlyImpl`
+- `SelfRefPartialImpl`
+
+这些引用不是为了实例化对象，而是为了稳定地把“部分实现”带进最终链接单元，并把观测对象限定在这组实现上。
+
+### 1.4 覆盖场景矩阵
+
+`main()` 依次运行 5 个测试函数，专门观测默认回退路径：
+
+| 测试函数 | 覆盖对象 | 关注点 |
+| --- | --- | --- |
+| `test_required_methods()` | `WeakDefaultIf` | 必需方法是否仍命中部分实现导出的强符号 |
+| `test_weak_default_methods()` | `WeakDefaultIf` | `default_value`、`default_add`、`default_greeting` 是否回退到弱默认 |
+| `test_weak_default_multiple_calls()` | `WeakDefaultIf` | 默认回退在重复调用下是否稳定 |
+| `test_mixed_required_and_default()` | `WeakDefaultIf` | 同一接口中必需方法与默认方法能否并存 |
+| `test_self_ref_partial()` | `SelfRefIf` | 默认实现内部 `Self::` 直接调用与函数引用是否都回到默认路径 |
+
+这里最关键的观察维度不是“方法能不能运行”，而是“没有覆写时，最终到底会落到哪里”。
+
+### 1.5 与其它测试的关系
+
+`components/crate_interface/tests/test_weak_default.rs` 提供了 `weak_default` 的最小功能确认，但它不负责完整描述跨 crate 的最终链接行为。`test-weak-partial` 则补上真正贴近使用场景的第三段验证：
+
+1. 定义侧在一个 crate 中生成弱符号默认实现
+2. 实现侧在另一个 crate 中故意只实现必需方法
+3. 最终二进制在第三个 crate 中确认默认回退确实生效
+
+这也是 README 中“定义、实现、调用可拆到不同 crate”的模型在默认回退场景下的真正落地证明。
 
 ## 2. 核心功能说明
-- 功能定位：Integration tests for weak_default traits with PARTIAL implementation only. This binary ONLY links PartialOnlyImpl, which does NOT implement: - default_value() - default_add() - d…
-- 对外接口：该 crate 的公开入口主要是 `main()` 或命令子流程，本身不强调稳定库 API。
-- 典型使用场景：作为共享基础设施被多个 OS 子系统复用，常见场景包括同步、内存管理、设备抽象、接口桥接和虚拟化基础能力。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `main()`。
+
+### 2.1 主要能力
+
+- 在真实二进制中验证弱符号默认实现的回退路径
+- 验证“部分实现 + 默认实现”可以在同一接口上稳定协作
+- 验证默认实现中的 `Self::` 直接调用与函数引用在无覆盖时仍能正确工作
+- 作为 `impl-weak-partial` 的最终观测点，为默认回退语义提供端到端证据
+
+### 2.2 真实调用链
+
+```mermaid
+flowchart TD
+    A[define-weak-traits 生成弱符号默认实现] --> B[impl-weak-partial 仅实现必需方法]
+    B --> C[test-weak-partial 通过类型引用确保实现被链接]
+    C --> D[call_interface! 发起调用]
+    D --> E[assert_eq! 观测哪些方法回退到了默认实现]
+```
+
+### 2.3 为什么它必须单独存在
+
+默认回退这件事只有在“覆盖型实现完全缺席”的最终链接单元里才可验证。因此 `test-weak-partial` 不是 `test-weak` 的精简版，也不是冗余副本，而是 `weak_default` 测试矩阵不可替代的一半。
 
 ## 3. 依赖关系图谱
+
+### 3.1 直接依赖
+
+| 依赖 | 作用 |
+| --- | --- |
+| `crate_interface` | 提供 `call_interface!` 调用入口 |
+| `define-weak-traits` | 提供带弱默认实现的接口定义 |
+| `impl-weak-partial` | 提供只实现必需方法的部分实现样本 |
+
+### 3.2 在测试矩阵中的上下游
+
+- 上游定义侧：`define-weak-traits`
+- 上游实现侧：`impl-weak-partial`
+- 互补验证端：`test-weak`
+- 参照测试：`components/crate_interface/tests/test_weak_default.rs`
+
+`test-weak-partial` 同样没有产品代码下游，它的消费方是测试流程本身。
+
+### 3.3 关系示意
+
 ```mermaid
-graph LR
-    current["test-weak-partial"]
-    current --> crate_interface["crate_interface"]
-    current --> define_weak_traits["define-weak-traits"]
-    current --> impl_weak_partial["impl-weak-partial"]
+graph TD
+    A[define-weak-traits] --> C[test-weak-partial]
+    B[impl-weak-partial] --> C
+    D[crate_interface] --> A
+    D --> B
+    D --> C
 ```
-
-### 3.1 直接与间接依赖
-- `crate_interface`
-- `define-weak-traits`
-- `impl-weak-partial`
-
-### 3.2 间接本地依赖
-- 未检测到额外的间接本地依赖，或依赖深度主要停留在第一层。
-
-### 3.3 被依赖情况
-- 当前未发现本仓库内其他 crate 对其存在直接本地依赖。
-
-### 3.4 间接被依赖情况
-- 当前未发现更多间接消费者，或该 crate 主要作为终端入口使用。
-
-### 3.5 关键外部依赖
-- 当前依赖集合几乎完全来自仓库内本地 crate。
 
 ## 4. 开发指南
-### 4.1 依赖配置
-```toml
-# `test-weak-partial` 是二进制/编排入口，通常不作为库依赖。
-# 更常见的接入方式是直接执行命令，而不是在 Cargo.toml 中引用。
-```
+
+### 4.1 什么时候应该修改它
+
+只有当你要扩展 `crate_interface` 的默认回退测试面时，才应该修改 `test-weak-partial`。典型场景包括：
+
+- `define-weak-traits` 新增了默认方法，并需要验证“未覆写时是否会回退”
+- 需要补一个默认实现内部包含 `Self::foo()` 或函数引用的未覆写样例
+- 需要提高回退值与覆盖值之间的可辨识度
+
+### 4.2 修改时的关键约束
+
+- 不要把本应测试“回退”的方法意外实现掉，否则测试语义会消失
+- 不要把 `impl-weak-traits` 相关实现混入本二进制
+- 保留实现类型的显式类型引用，它们是链接锚点的一部分
+- `SelfRefIf` 相关改动必须同时覆盖直接调用与函数引用两条路径
+
+### 4.3 运行方式
+
+由于 `test_crates` 是独立工作区，建议显式指定 manifest，并使用 nightly：
 
 ```bash
-cargo run --manifest-path "components/crate_interface/test_crates/test-weak-partial/Cargo.toml"
+cargo +nightly run --manifest-path components/crate_interface/test_crates/Cargo.toml --bin test-weak-partial
 ```
 
-### 4.2 初始化流程
-1. 在 `Cargo.toml` 中接入该 crate，并根据需要开启相关 feature。
-2. 若 crate 暴露初始化入口，优先调用 `init`/`new`/`build`/`start` 类函数建立上下文。
-3. 在最小消费者路径上验证公开 API、错误分支与资源回收行为。
+或直接调用工作区脚本：
 
-### 4.3 关键 API 使用提示
-- 该 crate 更偏编排、配置或内部 glue 逻辑，关键使用点通常体现在 feature、命令或入口函数上。
+```bash
+components/crate_interface/test_crates/run_tests.sh weak
+```
+
+脚本会顺序执行 `test-weak` 与 `test-weak-partial`，但它们是两个独立二进制，各自形成自己的最终链接单元，因此不会互相污染链接结果。
+
+### 4.4 什么不应该放在这里
+
+以下场景更适合放到别处：
+
+- 强符号优先级验证：放到 `test-weak`
+- 最小 `weak_default` 功能检查：放到 `components/crate_interface/tests/test_weak_default.rs`
+- stable 路径回归：放到 `test-simple`
 
 ## 5. 测试策略
-### 5.1 当前仓库内的测试形态
-- 当前 crate 目录中未发现显式 `tests/`/`benches/`/`fuzz/` 入口，更可能依赖上层系统集成测试或跨 crate 回归。
 
-### 5.2 单元测试重点
-- 建议用单元测试覆盖公开 API、错误分支、边界条件以及并发/内存安全相关不变量。
+### 5.1 当前测试目标
 
-### 5.3 集成测试重点
-- 建议补充被 ArceOS/StarryOS/Axvisor 消费时的最小集成路径，确保接口语义与 feature 组合稳定。
+`test-weak-partial` 重点验证以下几点：
 
-### 5.4 覆盖率要求
-- 覆盖率建议：核心算法与错误路径达到高覆盖，关键数据结构和边界条件应实现接近完整覆盖。
+- 未覆写方法是否稳定回退到弱符号默认实现
+- 必需方法的强符号与默认方法的弱符号是否可在同一接口中共存
+- 默认回退在多次调用中是否保持稳定
+- 默认实现内部的 `Self::` 直接调用与函数引用是否都走默认路径
+
+### 5.2 与 `test-weak` 的分工
+
+可以把 `weak_default` 最终验证理解为两个终端可执行体共同完成：
+
+- `test-weak` 证明覆盖路径成立
+- `test-weak-partial` 证明回退路径成立
+
+只有两边都成立，`weak_default` 的设计语义才算完整闭环。
+
+### 5.3 高风险点
+
+- 一旦覆盖型实现被意外带入最终二进制，默认回退结论就会被污染
+- 若默认值与覆盖值设计得不够分明，测试可观测性会明显下降
+- 若只验证普通默认方法，不验证 `SelfRefIf` 的代理路径，会漏掉更复杂也更关键的问题
 
 ## 6. 跨项目定位分析
-### 6.1 ArceOS
-当前未检测到 ArceOS 工程本体对 `test-weak-partial` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
 
-### 6.2 StarryOS
-当前未检测到 StarryOS 工程本体对 `test-weak-partial` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
+| 项目 | 位置 | 角色 | 核心作用 |
+| --- | --- | --- | --- |
+| ArceOS | 无主线直接依赖 | 间接保护测试资产 | 间接保护 `axlog`、`axruntime`、`axtask` 等真实使用 `crate_interface` 的默认回退语义 |
+| StarryOS | 无主线直接依赖 | 间接保护测试资产 | 通过复用公共基础设施，间接受益于弱默认回退路径的回归验证 |
+| Axvisor | 无主线直接依赖 | 间接保护测试资产 | `axvisor_api` 等组件使用 `crate_interface`，但不会直接消费该测试二进制 |
 
-### 6.3 Axvisor
-当前未检测到 Axvisor 工程本体对 `test-weak-partial` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
+## 7. 最关键的边界澄清
+
+`test-weak-partial` 不是“不完整的正式实现”，也不是给运行时兜底的默认组件；它只是 `crate_interface` `weak_default` 测试矩阵中专门验证默认回退路径的最终链接验证端，用来证明当覆盖实现刻意缺席时，弱符号默认实现会在真实程序里接管剩余方法。

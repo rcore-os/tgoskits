@@ -1,106 +1,146 @@
 # `arceos-wait-queue` 技术文档
 
 > 路径：`test-suit/arceos/task/wait_queue`
-> 类型：二进制 crate
-> 分层：测试层 / 系统级测试与回归入口
+> 类型：测试入口 crate
+> 分层：测试层 / ArceOS 阻塞唤醒语义回归
 > 版本：`0.1.0`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 未检测到 crate 层 README
+> 文档依据：`Cargo.toml`、`src/main.rs`、`qemu-riscv64.toml`、`docs/build-system.md`
 
-`arceos-wait-queue` 的核心定位是：ArceOS 系统级测试与回归入口
+`arceos-wait-queue` 是专门验证 ArceOS 等待队列语义的系统级测试入口。它通过 `AxWaitQueueHandle` 和 `ax_wait_queue_wait_until()` / `ax_wait_queue_wake()` 组合出三类场景：条件满足唤醒、超时唤醒、以及“通知与超时都可能发生”的竞态场景。
+
+这份 crate 的边界必须说清：**它不是生产级同步抽象，也不是通用条件变量库；它只是用最直接的 API 调用去证明 wait queue 语义没有回退。**
 
 ## 1. 架构设计分析
-- 目录角色：系统级测试与回归入口
-- crate 形态：二进制 crate
-- 工作区位置：根工作区
-- feature 视角：该 crate 没有显式声明额外 Cargo feature，功能边界主要由模块本身决定。
-- 关键数据结构：可直接观察到的关键数据结构/对象包括 `NUM_TASKS`、`WQ1`、`WQ2`、`COUNTER`。
-- 设计重心：该 crate 的主线不是提供稳定库 API，而是构造可复现的系统级测试场景，并通过日志、退出行为或 QEMU 结果判断是否回归通过。
+### 1.1 测试场景划分
+`main()` 实际上只负责顺序执行两个子测试：
 
-### 1.1 内部模块划分
-- 当前 crate 未显式声明多个顶层 `mod`，复杂度更可能集中在单文件入口、宏展开或下层子 crate。
+- `test_wait()`
+- `test_wait_timeout_until()`
 
-### 1.2 核心算法/机制
-- 该 crate 主要承载系统级测试入口、QEMU/平台配置或断言编排，核心机制是测试场景构造与结果判定。
+前者验证基本阻塞/唤醒流程，后者验证带超时的等待语义。
+
+### 1.2 真实调用关系
+这个 crate 并没有绕过公开接口直接碰 `axtask::WaitQueue`，而是刻意使用 ArceOS 对外暴露的 API 句柄层：
+
+```mermaid
+flowchart LR
+    A["AxWaitQueueHandle::new()"] --> B["arceos_api::task 封装层"]
+    B --> C["axtask::WaitQueue"]
+    C --> D["wait_until / wait_timeout_until"]
+    D --> E["notify_one / notify_all"]
+```
+
+具体来看：
+
+- `AxWaitQueueHandle` 在 `arceos_api::task` 中包装了 `axtask::WaitQueue`
+- `ax_wait_queue_wait_until()` 会在有 `irq` 时走 `wait_timeout_until` 路径
+- `ax_wait_queue_wake()` 最终映射到 `notify_one(true)` 或 `notify_all(true)`
+
+这说明它验证的是“公开任务 API 到内核等待队列”的整条链，而不是某个私有 helper。
+
+### 1.3 三类超时场景为什么都需要
+`test_wait_timeout_until()` 故意覆盖三种情况：
+
+1. 设置了很长超时，但实际由通知提前唤醒
+2. 条件恒为假，由超时自然唤醒
+3. 条件和通知都可能在截止时间附近生效
+
+只有把这三类都覆盖到，才能较全面地验证 `wait_timeout_until()` 的返回值语义和边界行为。
 
 ## 2. 核心功能说明
-- 功能定位：ArceOS 系统级测试与回归入口
-- 对外接口：该 crate 的公开入口主要是 `main()` 或命令子流程，本身不强调稳定库 API。
-- 典型使用场景：用于验证固定功能点、特定 bug 回归或系统语义是否符合预期，通常通过 QEMU 日志或退出状态判断成功与否。 这类 crate 的核心使用方式通常是运行入口本身，而不是被别的库当作稳定 API 依赖。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `main()`。
+### 2.1 `test_wait()` 覆盖的能力链
+`test_wait()` 使用 `WQ1` / `WQ2`、`COUNTER` 和 `GO` 组织了一套典型的“主线程等子线程全部到位，再统一放行”的阻塞模型。它验证：
+
+- 子任务可以通知主线程
+- 主线程可以等待特定条件成立
+- 主线程可以唤醒一批等待中的任务
+- 所有任务都能最终退出等待队列
+
+### 2.2 `test_wait_timeout_until()` 的关键点
+这部分最容易误读。源码里有一处看似奇怪的写法：
+
+- 在“由通知提前唤醒”的子场景里，条件闭包写成 `|| true`
+
+这不是 bug，而是刻意让 `wait_until` 语义在被通知后可以立刻满足条件，从而证明“返回 `false` 表示不是超时唤醒”这一路径成立。
+
+### 2.3 边界澄清
+这个 crate 不试图证明：
+
+- wait queue 的公平性
+- 高并发场景下的吞吐性能
+- 任意复杂同步协议都正确
+
+它只聚焦在“等待、通知、超时返回值”这三个公开语义点上。
 
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    current["arceos-wait-queue"]
-    current --> axstd["axstd"]
+    test["arceos-wait-queue"] --> axstd["axstd(multitask, irq)"]
+    axstd --> arceos_api["arceos_api::task"]
+    arceos_api --> axtask["axtask::WaitQueue"]
 ```
 
-### 3.1 直接与间接依赖
-- `axstd`
+### 3.1 直接依赖
+- `axstd(multitask, irq)`：说明本测试依赖多任务与基于中断的超时等待。
 
-### 3.2 间接本地依赖
-- `arceos_api`
-- `arm_pl011`
-- `arm_pl031`
-- `axalloc`
-- `axallocator`
-- `axbacktrace`
-- `axconfig`
-- `axconfig-gen`
-- `axconfig-macros`
-- `axcpu`
-- `axdisplay`
-- `axdma`
-- 另外还有 `61` 个同类项未在此展开
+### 3.2 关键间接依赖
+- `arceos_api::task::AxWaitQueueHandle`
+- `arceos_api::task::ax_wait_queue_wait_until`
+- `arceos_api::task::ax_wait_queue_wake`
+- `axtask::WaitQueue`
 
-### 3.3 被依赖情况
-- 当前未发现本仓库内其他 crate 对其存在直接本地依赖。
-
-### 3.4 间接被依赖情况
-- 当前未发现更多间接消费者，或该 crate 主要作为终端入口使用。
-
-### 3.5 关键外部依赖
-- 当前依赖集合几乎完全来自仓库内本地 crate。
+### 3.3 主要消费者
+- `cargo xtask test arceos` 自动发现的任务同步回归。
+- 修改 `axtask::wait_queue` 或 `arceos_api::task` 封装后的首批验证对象。
 
 ## 4. 开发指南
-### 4.1 运行入口
-```toml
-# `arceos-wait-queue` 主要作为测试/验证入口使用，通常不作为普通库依赖。
-# 推荐通过 xtask 统一测试入口或单包运行命令触发。
-```
-
+### 4.1 推荐运行方式
 ```bash
-cargo xtask test arceos --target riscv64gc-unknown-none-elf
 cargo xtask arceos run --package arceos-wait-queue --arch riscv64
 ```
 
-### 4.2 初始化流程
-1. 先明确该测试场景对应的目标架构、QEMU 配置和成功/失败判据。
-2. 优先通过 `cargo xtask test arceos` 跑完整测试入口，单包调试再退回 `run --package`。
-3. 修改测试时同步检查日志匹配、预期 panic、退出状态和 feature 组合，保证回归结果可复现。
+或直接跑全集：
 
-### 4.3 关键 API 使用提示
-- 该 crate 的关键接入点通常是运行命令、CLI 参数或入口函数，而不是稳定库 API。
+```bash
+cargo xtask test arceos --target riscv64gc-unknown-none-elf
+```
+
+### 4.2 维护时的注意点
+1. 不要把复杂业务同步逻辑塞进来，保持每个子场景的语义单一。
+2. 若修改 `success_regex`，要与最终结束语 `All tests passed!` 保持一致。
+3. 超时长度要兼顾“足够区分场景”和“不会拖慢 CI 太多”。
+
+### 4.3 推荐补充方向
+- 更短超时下的边界竞争
+- 多次重复通知/空通知的行为
+- 单核与多核环境下的一致性回归
 
 ## 5. 测试策略
-### 5.1 当前仓库内的测试形态
-- 该 crate 本身就是系统级测试入口，测试价值主要来自 QEMU/平台运行结果而非 host 侧库测试。
+### 5.1 当前自动化形态
+`qemu-riscv64.toml` 已明确配置：
 
-### 5.2 单元测试重点
-- 若该 crate 含辅助库逻辑，可对断言解析、日志匹配和测试输入构造做单元测试。
+- `-smp 4`
+- `success_regex = ["All tests passed!"]`
+- panic 关键字作为失败条件
 
-### 5.3 集成测试重点
-- 重点是保持测试矩阵可复现：架构、平台、QEMU 配置、成功/失败判据都应纳入回归。
+因此这不是人工观察样例，而是标准回归包。
 
-### 5.4 覆盖率要求
-- 覆盖率要求以场景覆盖为主：应覆盖正常路径、预期失败路径和关键平台/feature 组合。
+### 5.2 成功标准
+- 基本等待/通知路径全部通过
+- 提前通知与超时唤醒的返回值语义正确
+- 混合竞争场景不会卡死
+- 最终输出 `All tests passed!`
+
+### 5.3 风险点
+- 若 timer/IRQ 路径失效，超时测试最先挂住。
+- 若 `notify_all(true)` 或条件闭包语义变化，混合场景最容易暴露回归。
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-当前未检测到 ArceOS 工程本体对 `arceos-wait-queue` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
+它是 ArceOS 任务同步公开 API 的直接回归入口，重点验证 `arceos_api` 到 `axtask` 的等待队列桥接。
 
 ### 6.2 StarryOS
-当前未检测到 StarryOS 工程本体对 `arceos-wait-queue` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
+StarryOS 不直接运行它，但共享底层任务同步实现时，这类回归对发现基础语义回退依然有价值。
 
 ### 6.3 Axvisor
-当前未检测到 Axvisor 工程本体对 `arceos-wait-queue` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
+Axvisor 也不会直接消费它；不过仓库中其他组件也会使用等待队列思想，因此先用这条短路径验证基础语义通常更容易定位问题。

@@ -2,98 +2,182 @@
 
 > 路径：`components/starry-vm`
 > 类型：库 crate
-> 分层：组件层 / 可复用基础组件
+> 分层：组件层 / StarryOS 用户虚拟内存访问组件
 > 版本：`0.3.0`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 未检测到 crate 层 README
+> 文档依据：`Cargo.toml`、`src/lib.rs`、`src/thin.rs`、`src/alloc.rs`、`tests/test.rs`、`os/StarryOS/kernel/src/mm/access.rs`、`os/StarryOS/kernel/src/syscall/task/execve.rs`、`os/StarryOS/kernel/src/syscall/task/clone3.rs`、`os/StarryOS/kernel/src/mm/io.rs`、`os/StarryOS/kernel/src/syscall/ipc/msg.rs`
 
-`starry-vm` 的核心定位是：Virtual memory management library for Starry OS
+`starry-vm` 是 StarryOS 的“用户虚拟内存访问层”。它定义了一套与具体地址空间实现解耦的读写接口，使 syscall 实现可以安全地把用户态指针解释成 Rust 值、切片和字符串，而不必把用户态地址直接当普通内核指针使用。
+
+名字里虽然带 `vm`，但它并不管理页表、VMA、`mmap`、ELF 装载或缺页策略。那些真正的“虚拟内存管理”职责在 `starry-kernel::mm`，尤其是 `AddrSpace`、`loader.rs` 和 `access.rs` 中。
 
 ## 1. 架构设计分析
-- 目录角色：可复用基础组件
-- crate 形态：库 crate
-- 工作区位置：根工作区
-- feature 视角：主要通过 `alloc` 控制编译期能力装配。
-- 关键数据结构：可直接观察到的关键数据结构/对象包括 `VmError`、`VmResult`、`Target`、`VmMutPtr`、`VmPtr`、`MAX_BYTES`、`CHUNK_SIZE`。
-- 设计重心：该 crate 通常作为多个内核子系统共享的底层构件，重点在接口边界、数据结构和被上层复用的方式。
+### 1.1 总体定位
+从 StarryOS 的真实调用关系看，`starry-vm` 位于 syscall 层和用户地址空间之间：
 
-### 1.1 内部模块划分
-- `thin`：内部子模块
-- `alloc`：内部子模块（按 feature: alloc 条件启用）
+- syscall 参数进入内核后，常先通过 `VmPtr` / `VmMutPtr` / `vm_load*()` 做指针编组。
+- 真正的地址检查、`user_copy` 和缺页协作由消费者实现 `VmIo`。
+- 同一套 API 既能被内核实现使用，也能在 host 侧测试里用假内存池替身实现。
 
-### 1.2 核心算法/机制
-- 内存分配器初始化、扩容或对象分配路径
-- 虚拟机生命周期、资源模型与状态切换
+这使它更像“用户内存 I/O 抽象层”，而不是“地址空间对象模型”。
+
+### 1.2 模块划分
+- `src/lib.rs`：定义 `VmError`、`VmResult`、`VmIo`、`vm_read_slice()`、`vm_write_slice()`。
+- `src/thin.rs`：定义 `VmPtr` / `VmMutPtr` 两个轻量指针 trait，支持原始指针和 `NonNull<T>`。
+- `src/alloc.rs`：在启用 `alloc` feature 时提供 `vm_load_any()`、`vm_load()`、`vm_load_until_nul()`。
+
+### 1.3 核心抽象
+- `VmIo`：唯一需要由外部实现的 unsafe trait，提供 `new()`、`read()`、`write()`。
+- `VmError`：只暴露三类错误，`BadAddress`、`AccessDenied`、`TooLong`。
+- `VmPtr`：提供 `nullable()`、`vm_read_uninit()`、`vm_read()`。
+- `VmMutPtr`：在 `VmPtr` 基础上增加 `vm_write()`。
+- `vm_read_slice()` / `vm_write_slice()`：面向切片的批量拷贝入口。
+- `vm_load_until_nul()`：按块扫描 C 风格 NUL 终止数组，并限制总长度上限。
+
+其中有两个很重要的实现特征：
+
+- 所有入口都会先检查对齐要求，未对齐直接返回 `VmError::BadAddress`。
+- `vm_load_until_nul()` 的最大扫描字节数是 `131072`，也就是 128 KiB，避免对坏指针进行无界扫描。
+
+### 1.4 `VmIo` 的外部实现机制
+`starry-vm` 最关键的设计点，是用 `#[extern_trait(VmImpl)]` 把“当前环境下的实际 VM 访问后端”留给外部实现。
+
+在 StarryOS 内核中，这个实现位于 `os/StarryOS/kernel/src/mm/access.rs`：
+
+- `struct Vm(IrqSave)` 作为具体实现体，读写期间持有中断保护。
+- `check_access()` 先检查地址是否位于用户空间窗口内。
+- `access_user_memory()` 标记当前线程处于用户内存访问区间，允许 page fault 在内核中安全发生。
+- `VmIo::read()` / `write()` 通过 `axhal::asm::user_copy()` 真正完成跨地址空间拷贝。
+- 注册的 page fault handler 再转给 `AddrSpace::handle_page_fault()` 补页。
+
+也就是说，`starry-vm` 自身不知道“当前地址空间”是什么，但 StarryOS 通过外部实现把它和当前线程的 `AddrSpace` 绑定了起来。
+
+### 1.5 真实调用主线
+在 StarryOS 里，它的使用面非常广：
+
+```mermaid
+flowchart TD
+    Execve["sys_execve"] --> Argv["vm_load_until_nul(argv/envp)"]
+    Clone3["sys_clone3"] --> Struct["vm_read_slice(args)"]
+    Msg["msgsnd/msgrcv"] --> Buf["vm_load / vm_write_slice"]
+    Io["read/write/ioctl"] --> UserBuf["VmPtr / VmMutPtr / vm_*"]
+    Signal["ThreadSignalManager::handle_signal"] --> Frame["VmMutPtr::vm_write(SignalFrame)"]
+```
+
+这说明它承担的是“用户态参数与缓冲区编组”这一整段，而不是个别 syscall 的附属工具。
+
+### 1.6 与地址空间管理的边界
+下面这些职责都不在 `starry-vm` 内部：
+
+- `AddrSpace` 的创建、克隆和销毁。
+- `mmap/brk/mprotect/mincore` 等地址空间布局调整。
+- ELF 装载、用户栈和堆映射。
+- 文件后端、COW、线性映射、缺页策略。
+
+这些职责在 `starry-kernel::mm::{aspace,loader,access}`。`starry-vm` 只负责“已经给你一个用户地址，现在安全地把它读出来或写回去”。
 
 ## 2. 核心功能说明
-- 功能定位：Virtual memory management library for Starry OS
-- 对外接口：从源码可见的主要公开入口包括 `vm_read_slice`、`vm_write_slice`、`vm_load_any`、`vm_load`、`vm_load_until_nul`、`VmError`、`VmPtr`、`VmMutPtr`。
-- 典型使用场景：作为共享基础设施被多个 OS 子系统复用，常见场景包括同步、内存管理、设备抽象、接口桥接和虚拟化基础能力。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `new()` -> `vm_load_any()` -> `vm_load()` -> `vm_load_until_nul()`。
+### 2.1 主要功能
+- 对用户态原始指针进行对齐检查和安全读写。
+- 把用户空间数组加载为内核侧 `Vec<T>`。
+- 读取 NUL 终止数组，为 `argv`、`envp`、路径字符串等场景服务。
+- 为信号栈 frame、futex 地址、时间结构体、消息队列缓冲区等提供统一编组接口。
+
+### 2.2 StarryOS 中的关键使用点
+- `syscall/task/execve.rs`：用 `vm_load_until_nul()` 读取 `argv` / `envp` 指针数组。
+- `mm/access.rs`：实现 `VmIo` 并扩展出 `VmBytes` / `VmBytesMut` 等 I/O 视图。
+- `syscall/task/clone3.rs`：用 `vm_read_slice()` 读取 `clone_args`。
+- `syscall/ipc/msg.rs`：用 `vm_load()` / `vm_write_slice()` 复制消息正文。
+- `syscall/mm/mmap.rs`：在 `mremap` 风格路径中复制用户数据。
+- `task/ops.rs`、`syscall/sync/futex.rs`：通过 `VmPtr` / `VmMutPtr` 读写 futex 相关用户地址。
+- `starry-signal`：用 `VmMutPtr::vm_write()` 把 `SignalFrame` 压入用户栈。
+
+### 2.3 关键 API 使用示例
+典型使用方式如下：
+
+```rust
+let head = head_ptr.vm_read()?;
+let argv = vm_load_until_nul(argv_ptr)?;
+user_ptr.vm_write(value)?;
+
+let data = vm_load(buf_ptr, len)?;
+vm_write_slice(out_ptr, &data)?;
+```
 
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    current["starry-vm"]
-    current --> axerrno["axerrno"]
-    starry_kernel["starry-kernel"] --> current
-    starry_signal["starry-signal"] --> current
+    axerrno["axerrno"] --> vm["starry-vm"]
+    bytemuck["bytemuck"] --> vm
+    externtrait["extern-trait"] --> vm
+
+    vm --> signal["starry-signal"]
+    vm --> starry["starry-kernel"]
+    starry --> starryos["starryos"]
+    starry --> starrytest["starryos-test"]
 ```
 
-### 3.1 直接与间接依赖
-- `axerrno`
+### 3.1 关键直接依赖
+- `axerrno`：把 `VmError` 映射到 StarryOS/ArceOS 统一错误模型。
+- `bytemuck`：为 `vm_read()`、`vm_load()`、`vm_load_until_nul()` 提供按位可解释类型约束。
+- `extern-trait`：让 `VmIo` 的具体实现留给外部环境注入。
 
-### 3.2 间接本地依赖
-- 未检测到额外的间接本地依赖，或依赖深度主要停留在第一层。
-
-### 3.3 被依赖情况
-- `starry-kernel`
-- `starry-signal`
-
-### 3.4 间接被依赖情况
-- `starryos`
-- `starryos-test`
-
-### 3.5 关键外部依赖
-- `bytemuck`
-- `extern-trait`
+### 3.2 关键直接消费者
+- `starry-kernel`：几乎所有需要读写用户缓冲区的 syscall 路径都直接依赖它。
+- `starry-signal`：利用它写入用户信号栈 frame。
 
 ## 4. 开发指南
-### 4.1 依赖配置
+### 4.1 依赖接入
 ```toml
 [dependencies]
 starry-vm = { workspace = true }
-
-# 如果在仓库外独立验证，也可以显式绑定本地路径：
-# starry-vm = { path = "components/starry-vm" }
 ```
 
-### 4.2 初始化流程
-1. 在 `Cargo.toml` 中接入该 crate，并根据需要开启相关 feature。
-2. 若 crate 暴露初始化入口，优先调用 `init`/`new`/`build`/`start` 类函数建立上下文。
-3. 在最小消费者路径上验证公开 API、错误分支与资源回收行为。
+如果只是新增一个 syscall 的用户参数编组，通常不需要扩展 `starry-vm` 本身，只需在内核里直接调用现有 API。
 
-### 4.3 关键 API 使用提示
-- 优先关注函数入口：`vm_read_slice`、`vm_write_slice`、`vm_load_any`、`vm_load`、`vm_load_until_nul`。
+### 4.2 何时该用哪个 API
+1. 读取单个 POD 或按位可解释对象时，优先用 `ptr.vm_read()`。
+2. 写回单个对象时，优先用 `ptr.vm_write(value)`。
+3. 复制定长缓冲区时，优先用 `vm_read_slice()` / `vm_write_slice()`。
+4. 读取 `argv`、`envp`、C 字符串或 NUL 终止数组时，优先用 `vm_load_until_nul()`。
+
+### 4.3 修改这层逻辑时要联动检查什么
+1. 改 `VmError` 到 `AxError` 的映射时，必须核对 syscall 返回值是否仍符合 Linux 预期。
+2. 改 `vm_load_until_nul()` 的扫描策略时，必须同时检查 `execve()`、路径解析和字符串载入逻辑。
+3. 改 `VmPtr` / `VmMutPtr` trait 行为时，必须同时检查 `starry-signal`、futex、时间结构体和 IPC 路径。
+4. 改 `VmIo` 语义时，必须同时检查 `mm/access.rs` 的 page fault 协作是否仍成立。
+
+### 4.4 常见开发误区
+- 不要把这个 crate 当作地址空间管理器；它不创建也不维护页表。
+- 不要在这里实现具体架构的 page fault 策略；那是 `starry-kernel::mm` 的职责。
+- 不要绕过它直接把用户指针转换成普通引用；那会破坏用户态边界检查。
 
 ## 5. 测试策略
-### 5.1 当前仓库内的测试形态
-- 存在 crate 内集成测试：`tests/test.rs`。
+### 5.1 现有测试覆盖
+`tests/test.rs` 使用一个 1 MiB 的假内存池实现 `VmIo`，已经覆盖：
 
-### 5.2 单元测试重点
-- 建议用单元测试覆盖公开 API、错误分支、边界条件以及并发/内存安全相关不变量。
+- `vm_write_slice()` / `vm_read_slice()` 的基本读写。
+- 受保护地址上的 `AccessDenied`。
+- `VmPtr` / `VmMutPtr` 的类型化访问。
+- `vm_load()` 和 `vm_load_until_nul()` 的分配式加载。
 
-### 5.3 集成测试重点
-- 建议补充被 ArceOS/StarryOS/Axvisor 消费时的最小集成路径，确保接口语义与 feature 组合稳定。
+### 5.2 建议重点验证的系统路径
+- `execve()` 的 `argv/envp` 读取。
+- `clone3()` 结构体读取与对齐要求。
+- `futex`、`clear_child_tid`、`robust_list` 等用户地址回写场景。
+- System V 消息队列、`readv/writev`、`ioctl/stat` 等缓冲区复制路径。
+- 信号处理器 frame 压栈与 `sigreturn` 恢复。
 
-### 5.4 覆盖率要求
-- 覆盖率建议：核心算法与错误路径达到高覆盖，关键数据结构和边界条件应实现接近完整覆盖。
+### 5.3 覆盖率要求
+- `vm_read_slice()`、`vm_write_slice()`、`vm_load_until_nul()` 应保持高覆盖。
+- 需要同时覆盖未对齐、越界、只读区域和过长字符串四类失败路径。
+- 涉及 `VmIo` 语义变化的改动，建议至少跑一轮 `execve + clone3 + futex + signal` 回归。
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-当前未检测到 ArceOS 工程本体对 `starry-vm` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
+ArceOS 本体不直接消费 `starry-vm`。这个 crate 更像是 StarryOS 为 Linux 风格用户态接口补上的“用户指针访问层”。
 
 ### 6.2 StarryOS
-`starry-vm` 不在 StarryOS 目录内部，但被 `starry-kernel` 等 StarryOS crate 直接依赖，说明它是该系统的共享构件或底层服务。
+这是 `starry-vm` 的主战场。StarryOS 把它放在 syscall 和 `AddrSpace` 之间，统一处理用户态参数编组、缓冲区复制和字符串加载。
 
 ### 6.3 Axvisor
-从命名与目录角色判断，`starry-vm` 与虚拟化栈语义高度相关，但当前仓库中未检测到更多 Axvisor Rust crate 直接消费它。
+当前仓库中 Axvisor 不直接依赖 `starry-vm`。从真实依赖关系看，它并不是虚拟化栈组件，而是 StarryOS 用户内存访问组件。

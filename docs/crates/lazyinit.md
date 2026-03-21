@@ -2,123 +2,143 @@
 
 > 路径：`components/lazyinit`
 > 类型：库 crate
-> 分层：组件层 / 可复用基础组件
+> 分层：组件层 / 一次性初始化基础件
 > 版本：`0.2.2`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 `components/lazyinit/README.md`
+> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`
 
-`lazyinit` 的核心定位是：Initialize a static value lazily.
+`lazyinit` 提供一个面向静态对象的一次性初始化容器 `LazyInit<T>`。它以 `AtomicU8 + UnsafeCell<MaybeUninit<T>>` 实现无分配、可并发争用的“只初始化一次”语义。它属于运行时叶子基础件：不是资源生命周期框架、不是依赖注入容器，也不是带阻塞唤醒机制的完整 `OnceCell` 替代品。
 
 ## 1. 架构设计分析
-- 目录角色：可复用基础组件
-- crate 形态：库 crate
-- 工作区位置：根工作区
-- feature 视角：该 crate 没有显式声明额外 Cargo feature，功能边界主要由模块本身决定。
-- 关键数据结构：可直接观察到的关键数据结构/对象包括 `LazyInit`、`Target`、`UNINIT`、`INITIALIZING`、`INITED`。
-- 设计重心：该 crate 通常作为多个内核子系统共享的底层构件，重点在接口边界、数据结构和被上层复用的方式。
+### 1.1 设计定位
+ArceOS/StarryOS/Axvisor 的很多全局对象都不能在编译期直接构造：
 
-### 1.1 内部模块划分
-- 当前 crate 未显式声明多个顶层 `mod`，复杂度更可能集中在单文件入口、宏展开或下层子 crate。
+- 平台设备要等 MMIO 基址探测完才能创建。
+- 运行时队列、地址空间、网络状态要等初始化流程走到相应阶段才能建立。
+- 又因为很多路径处于 `no_std` 和早期启动阶段，不能依赖重型同步原语。
 
-### 1.2 核心算法/机制
-- 初始化顺序控制与全局状态建立
+`lazyinit` 正是在这个背景下提供一个极小的“一次建好，之后只读/少量可变访问”的容器。
+
+### 1.2 核心类型与状态机
+- `LazyInit<T>`：主体类型，内部持有初始化状态和未初始化存储。
+- `UNINIT` / `INITIALIZING` / `INITED`：三态状态机。
+
+其状态流转很简单：
+
+```mermaid
+stateDiagram-v2
+    [*] --> UNINIT
+    UNINIT --> INITIALIZING: compare_exchange
+    INITIALIZING --> INITED: 写入 T 并 store(Release)
+    INITED --> [*]
+```
+
+### 1.3 并发初始化主线
+`call_once()` 的执行路径是整个 crate 的核心：
+
+1. 先走一次 `is_inited()` 快路径。
+2. 用 `compare_exchange_weak` 尝试把状态从 `UNINIT` 改成 `INITIALIZING`。
+3. 抢到初始化权的线程执行闭包、写入 `MaybeUninit<T>`，最后 `store(INITED, Release)`。
+4. 其他线程若看到 `INITIALIZING`，就通过 `spin_loop()` 忙等到初始化完成。
+
+这说明 `lazyinit` 的并发模型是“原子争抢 + 自旋等待”，不是睡眠阻塞或任务挂起。
+
+### 1.4 访问模型
+- `init_once(data)`：以直接值初始化，若已初始化则 panic。
+- `call_once(f)`：以闭包初始化，成功初始化返回 `Some(&T)`，否则返回 `None`。
+- `get()` / `get_mut()`：显式检查是否已初始化。
+- `Deref` / `DerefMut`：若未初始化会 panic。
+- `get_unchecked()` / `get_mut_unchecked()`：供调用方在已知状态下绕过检查。
+
+此外，`Drop` 会在对象已初始化时主动销毁内部值，因此它并不是“永不释放”的泄漏型 once cell。
 
 ## 2. 核心功能说明
-- 功能定位：Initialize a static value lazily.
-- 对外接口：从源码可见的主要公开入口包括 `new`、`init_once`、`call_once`、`is_inited`、`get`、`get_mut`、`get_unchecked`、`get_mut_unchecked`、`LazyInit`。
-- 典型使用场景：作为共享基础设施被多个 OS 子系统复用，常见场景包括同步、内存管理、设备抽象、接口桥接和虚拟化基础能力。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `new()` -> `init_once()` -> `panic_on_deref_before_init()` -> `panic_on_double_init()`。
+### 2.1 主要功能
+- 为静态或长期存活对象提供一次性初始化容器。
+- 在多核竞争下保证只有一个初始化者成功写入值。
+- 在初始化后提供低开销的引用访问。
+
+### 2.2 关键 API 与真实使用位置
+- `LazyInit::new()`：大量平台和模块静态对象都以它声明，如 `axtask` 的运行队列、`axmm` 的内核地址空间、`axipi` 的 IPI 队列。
+- `init_once()`：平台 UART、IO APIC、GIC、显示/输入设备等对象初始化时广泛使用。
+- `call_once()`：用于“按需首次构造”的场景，如 `axplat-dyn` 内存区域表、`axstd` 标准 IO 包装器、`axbacktrace` 的地址范围缓存。
+- `get()` / `Deref`：初始化完成后作为普通全局对象读取。
+
+### 2.3 使用边界
+- `lazyinit` 不支持 reset，也不支持重新初始化。
+- 初始化失败不会记录 poisoning 状态；若闭包 panic，外层需要自己承担恢复语义。
+- 它只解决“把值放进去一次”，不解决更高层的生命周期管理、回收编排或依赖排序。
 
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    current["lazyinit"]
-    axaddrspace["axaddrspace"] --> current
-    axcpu["axcpu"] --> current
-    axdisplay["axdisplay"] --> current
-    axfs["axfs"] --> current
-    axinput["axinput"] --> current
-    axipi["axipi"] --> current
-    axmm["axmm"] --> current
-    axnet["axnet"] --> current
+    lazyinit["lazyinit"] --> axtask["axtask"]
+    lazyinit --> axmm["axmm"]
+    lazyinit --> axipi["axipi"]
+    lazyinit --> axfs["axfs / axfs-ng"]
+    lazyinit --> axnet["axnet / axnet-ng"]
+    lazyinit --> axdisplay["axdisplay"]
+    lazyinit --> axinput["axinput"]
+    lazyinit --> axplat["多个 axplat 平台 crate"]
+    lazyinit --> axvisor["axvisor"]
+    lazyinit --> starry["Starry 共享组件"]
 ```
 
-### 3.1 直接与间接依赖
-- 未检测到本仓库内的直接本地依赖；该 crate 可能主要依赖外部生态或承担叶子节点角色。
+### 3.1 关键直接依赖
+`lazyinit` 没有本地 crate 依赖，目的是保持在启动期也能轻量使用。
 
-### 3.2 间接本地依赖
-- 未检测到额外的间接本地依赖，或依赖深度主要停留在第一层。
-
-### 3.3 被依赖情况
-- `axaddrspace`
-- `axcpu`
-- `axdisplay`
-- `axfs`
-- `axinput`
-- `axipi`
-- `axmm`
-- `axnet`
-- `axplat-aarch64-peripherals`
-- `axplat-loongarch64-qemu-virt`
-- `axplat-riscv64-qemu-virt`
-- `axplat-x86-pc`
-- 另外还有 `5` 个同类项未在此展开
-
-### 3.4 间接被依赖情况
-- `arceos-affinity`
-- `arceos-helloworld`
-- `arceos-helloworld-myplat`
-- `arceos-httpclient`
-- `arceos-httpserver`
-- `arceos-irq`
-- `arceos-memtest`
-- `arceos-parallel`
-- `arceos-priority`
-- `arceos-shell`
-- `arceos-sleep`
-- `arceos-wait-queue`
-- 另外还有 `34` 个同类项未在此展开
-
-### 3.5 关键外部依赖
-- 当前依赖集合几乎完全来自仓库内本地 crate。
+### 3.2 关键直接消费者
+- ArceOS 模块：`axtask`、`axmm`、`axipi`、`axfs`、`axnet`、`axdisplay`、`axinput` 等。
+- 平台层：`axplat-x86-pc`、`axplat-aarch64-peripherals`、`axplat-riscv64-qemu-virt`、`axplat-loongarch64-qemu-virt`。
+- Axvisor：如 `vmm/timer.rs` 的 `TimerList`、DTB 缓存等。
 
 ## 4. 开发指南
 ### 4.1 依赖配置
 ```toml
 [dependencies]
 lazyinit = { workspace = true }
-
-# 如果在仓库外独立验证，也可以显式绑定本地路径：
-# lazyinit = { path = "components/lazyinit" }
 ```
 
-### 4.2 初始化流程
-1. 在 `Cargo.toml` 中接入该 crate，并根据需要开启相关 feature。
-2. 若 crate 暴露初始化入口，优先调用 `init`/`new`/`build`/`start` 类函数建立上下文。
-3. 在最小消费者路径上验证公开 API、错误分支与资源回收行为。
+### 4.2 修改时的关键约束
+1. 内存序不能随意放松。当前 `Acquire/Release` 配对保证初始化完成后读取值可见。
+2. `INITIALIZING` 分支采用忙等，这要求初始化闭包尽量短小；不要把耗时很长或会再次依赖同一对象的逻辑塞进去。
+3. `Deref` 在未初始化时 panic 是刻意设计，用来暴露初始化顺序错误；不应默默返回默认值。
+4. `unsafe impl Send/Sync` 依赖 `T` 的 trait 约束，改动这里会直接影响全局对象线程安全边界。
 
-### 4.3 关键 API 使用提示
-- 优先关注函数入口：`new`、`init_once`、`call_once`、`is_inited`、`get`、`get_mut`、`get_unchecked`、`get_mut_unchecked`。
-- 上下文/对象类型通常从 `LazyInit` 等结构开始。
+### 4.3 开发建议
+- 若只需要“一次初始化后全局共享”，优先用 `LazyInit<T>`。
+- 若还需要运行期多次更新，应该在 `LazyInit<Mutex<T>>` 或 `LazyInit<SpinNoIrq<T>>` 外层组合，而不是给 `LazyInit` 自己加可变协议。
+- 若初始化闭包可能递归触发同一个 `LazyInit`，要先重构调用图，否则可能自旋卡住。
 
 ## 5. 测试策略
-### 5.1 当前仓库内的测试形态
-- 存在单元测试/`#[cfg(test)]` 场景：`src/lib.rs`。
+### 5.1 当前测试形态
+`lazyinit` 的测试都在 `src/lib.rs` 内：
+
+- 基本初始化与读取。
+- 未初始化解引用 panic。
+- 重复初始化 panic。
+- 多线程并发 `call_once()`。
+- `get_unchecked()` / `get_mut_unchecked()`。
 
 ### 5.2 单元测试重点
-- 建议用单元测试覆盖公开 API、错误分支、边界条件以及并发/内存安全相关不变量。
+- 状态机从 `UNINIT` 到 `INITED` 的正确流转。
+- 并发下只有一个初始化者成功。
+- `Deref` / `Drop` / unsafe 访问接口的边界行为。
 
 ### 5.3 集成测试重点
-- 建议补充被 ArceOS/StarryOS/Axvisor 消费时的最小集成路径，确保接口语义与 feature 组合稳定。
+- 平台设备初始化顺序。
+- `axtask`、`axmm`、`axnet` 等全局对象的首次构造与后续访问。
+- Axvisor 中 `LazyInit<SpinNoIrq<TimerList<_>>>` 这类组合结构的初始化时序。
 
 ### 5.4 覆盖率要求
-- 覆盖率建议：核心算法与错误路径达到高覆盖，关键数据结构和边界条件应实现接近完整覆盖。
+- 对 `lazyinit`，并发初始化与 panic 路径必须覆盖。
+- 若修改内存序、自旋逻辑或 `Drop` 行为，应补多线程回归测试。
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-`lazyinit` 不在 ArceOS 目录内部，但被 `axdisplay`、`axfs`、`axinput`、`axipi`、`axmm`、`axnet` 等（另有 2 项） 等 ArceOS crate 直接依赖，说明它是该系统的共享构件或底层服务。
+在 ArceOS 中，`lazyinit` 是非常常见的运行时基础件，用来托管“启动后建立一次”的全局对象。它属于基础容器层，不是模块初始化框架本体。
 
 ### 6.2 StarryOS
-`lazyinit` 主要通过 `starry-kernel`、`starryos`、`starryos-test` 等上层 crate 被 StarryOS 间接复用，通常处于更底层的公共依赖层。
+StarryOS 通过共享组件和平台栈间接复用 `lazyinit`。它的角色依旧是一种轻量 once-init 容器。
 
 ### 6.3 Axvisor
-`lazyinit` 不在 Axvisor 目录内部，但被 `axvisor` 等 Axvisor crate 直接依赖，说明它是该系统的共享构件或底层服务。
+Axvisor 直接用 `lazyinit` 初始化 VMM 定时器队列、缓存和设备对象。即便在虚拟化场景里，它也只是初始化原语，而不是 VMM 生命周期管理器。

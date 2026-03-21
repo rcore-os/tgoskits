@@ -2,128 +2,216 @@
 
 > 路径：`components/axio`
 > 类型：库 crate
-> 分层：组件层 / 可复用基础组件
+> 分层：组件层 / 通用同步 I/O 语义层
 > 版本：`0.3.0-pre.1`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 `components/axio/README.md`
+> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`src/read/mod.rs`、`src/write/mod.rs`、`src/seek/mod.rs`、`src/buffered/*`、`src/iobuf/*`、`src/utils/*`、`tests/*`
 
-`axio` 的核心定位是：`std::io` for `no_std` environment
+`axio` 是仓库里所有“同步 I/O 行为”共享的一层公共协议。它把 Rust `std::io` 的核心 trait、缓冲包装器和若干辅助适配器移植到 `no_std` 语境，并将错误统一到 `axerrno`。文件、socket、内存游标、用户态缓冲区访问器、POSIX 兼容层里的读写对象，都通过它来表达“可读”“可写”“可 seek”这些共同语义。
+
+最需要先钉死的一条边界是：`axio` 只定义同步 I/O 接口与默认行为，不负责等待、唤醒、超时和多路复用。`PollState` 只是一个轻量就绪快照，不是事件系统。
 
 ## 1. 架构设计分析
-- 目录角色：可复用基础组件
-- crate 形态：库 crate
-- 工作区位置：根工作区
-- feature 视角：主要通过 `alloc` 控制编译期能力装配。
-- 关键数据结构：可直接观察到的关键数据结构/对象包括 `PollState`、`IntoInnerError`、`Guard`、`Split`、`Lines`、`Adapter`、`SeekFrom`、`Item`、`AxError`、`Error` 等（另有 2 个关键类型/对象）。
-- 设计重心：该 crate 通常作为多个内核子系统共享的底层构件，重点在接口边界、数据结构和被上层复用的方式。
 
-### 1.1 内部模块划分
-- `buffered`：内部子模块
-- `iobuf`：内部子模块
-- `prelude`：The I/O Prelude. The purpose of this module is to alleviate imports of many common I/O traits by adding a glob import to the top of I/O heavy modules: ![allow(unused_imports)] use…
-- `read`：内部子模块
-- `seek`：内部子模块
-- `utils`：通用工具函数和辅助类型
-- `write`：内部子模块
+### 1.1 设计定位
 
-### 1.2 核心算法/机制
-- 该 crate 的实现主要围绕顶层模块分工展开，重点在子系统边界、trait/类型约束以及初始化流程。
+`axio` 解决的不是文件系统、网络协议或设备驱动本身，而是这些子系统都必须共享的 I/O 契约：
+
+- 统一的同步 trait：`Read`、`Write`、`Seek`、`BufRead`
+- 统一的缓冲包装器：`BufReader`、`BufWriter`、`LineWriter`
+- 统一的游标与 glue 工具：`Cursor`、`copy`、`read_fn`、`write_fn`、`empty`、`sink`、`repeat`、`take`、`chain`
+- 统一的“剩余长度”扩展：`IoBuf` / `IoBufMut`
+
+这让上层代码在不关心底层对象究竟是文件、socket、内存切片还是用户缓冲访问器的前提下，复用同一套读写与缓冲逻辑。
+
+### 1.2 模块划分
+
+| 模块 | 作用 |
+| --- | --- |
+| `read` | 定义 `Read` / `BufRead`，提供 `read_exact`、`read_to_end`、`read_to_string`、`read_until`、`lines` 等默认实现 |
+| `write` | 定义 `Write`，提供 `write_all`、`write_fmt` 等通用逻辑 |
+| `seek` | 定义 `Seek` / `SeekFrom`，提供 `stream_len`、`stream_position`、`rewind`、`seek_relative` |
+| `buffered` | 实现 `BufReader`、`BufWriter`、`LineWriter` 以及 `IntoInnerError` |
+| `iobuf` | 定义 `IoBuf` / `IoBufMut` 及其扩展 trait，用于暴露剩余可读/可写长度 |
+| `utils` | 放置 `Cursor`、`copy`、`take`、`chain`、`empty`、`sink`、`repeat`、`read_fn`、`write_fn` 等适配器 |
+| `prelude` | 重导出常用 trait，供上层直接 `use axio::prelude::*` |
+
+### 1.3 与 `std::io` 的关系
+
+`README.md` 已明确说明：`axio` 基本沿用 Rust 标准库 `std::io` 的设计与大量实现细节，但为了适配内核和 `no_std` 场景做了几处关键收敛：
+
+- 错误类型改为 `axerrno::AxError`
+- 不提供 `IoSlice`、`IoSliceMut` 与 `*_vectored` 系列接口
+- 在不启用 `alloc` 时保留一条更适合固定缓冲区的最小能力路径
+
+因此，`axio` 更准确的表述不是“重新发明一套 I/O 接口”，而是“给 ArceOS/StarryOS 提供可在 `no_std` 中使用的 `std::io` 内核版”。
+
+### 1.4 `IoBuf` / `IoBufMut` 的真实意义
+
+这两个扩展 trait 很容易被忽略，但在仓库里它们恰好体现了 `axio` 的定位：不仅要抽象“能不能读写”，还要在对象本身能给出长度信息时，把这类信息向上层显式暴露。
+
+- `IoBuf::remaining()`：当前还剩多少字节可读
+- `IoBufMut::remaining_mut()`：当前还剩多少空间可写
+
+这不是新的 I/O 模型，而是给通用 trait 层补上一点对内核路径很实用的容量语义。`axnet-ng` 的发送/接收接口、部分文件与缓冲区适配器都会消费这类信息。
+
+### 1.5 `alloc` feature 的边界
+
+`alloc` 是 `axio` 最关键的编译期开关。开启后会额外获得：
+
+- `Read::read_to_end`、`Read::read_to_string`
+- `BufRead::read_until`、`read_line`、`split`、`lines`
+- 对 `Vec<u8>`、`Box<T>` 等分配型容器的 trait 实现
+- 更完整的 `BufReader` / `BufWriter` 容量行为
+
+不开启 `alloc` 时，`axio` 仍然是完整可用的同步 I/O 抽象，只是更偏向固定切片、固定容量缓冲和内核内部对象之间的最小通路。
+
+### 1.6 与 `axpoll` 的关系
+
+`src/lib.rs` 中的 `PollState` 只有两个布尔位：`readable` 与 `writable`。它的职责仅仅是表达“此刻是否可读/可写”，给上层留下一个统一的 readiness 结果结构。
+
+真正的等待与唤醒不在 `axio` 中：
+
+- `axpoll` 负责 `IoEvents`、`Pollable` 和 waker 集合
+- `axtask` 负责把 nonblocking I/O 桥接成 future
+- `select` / `poll` / `epoll` 一类系统接口在更高层实现
+
+这条边界对理解 `axio` 极其关键：`axio` 是同步 I/O 语义层，不是事件轮询层。
 
 ## 2. 核心功能说明
-- 功能定位：`std::io` for `no_std` environment
-- 对外接口：从源码可见的主要公开入口包括 `error`、`into_inner`、`into_error`、`into_parts`、`default_read_exact`、`default_read_buf`、`default_read_buf_exact`、`default_read_to_end`、`PollState`、`IntoInnerError` 等（另有 9 个公开入口）。
-- 典型使用场景：作为共享基础设施被多个 OS 子系统复用，常见场景包括同步、内存管理、设备抽象、接口桥接和虚拟化基础能力。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `new()` -> `new_wrapped()`。
 
-## 3. 依赖关系图谱
-```mermaid
-graph LR
-    current["axio"]
-    current --> axerrno["axerrno"]
-    arceos_api["arceos_api"] --> current
-    arceos_posix_api["arceos_posix_api"] --> current
-    axfs["axfs"] --> current
-    axfs_ng["axfs-ng"] --> current
-    axlibc["axlibc"] --> current
-    axnet["axnet"] --> current
-    axnet_ng["axnet-ng"] --> current
-    axstd["axstd"] --> current
-```
+### 2.1 主要能力
 
-### 3.1 直接与间接依赖
-- `axerrno`
+- 为内核对象提供一套统一的同步 I/O trait
+- 为大量常见场景提供默认实现，统一处理 EOF、短读、短写、缓冲扩容与格式化输出
+- 提供 `BufReader` / `BufWriter` / `LineWriter` 等可复用缓冲器
+- 提供 `Cursor`、`take`、`chain`、`copy` 等组合工具，减少上层 glue 代码
+- 通过 `IoBuf` / `IoBufMut` 在有条件时向上层暴露剩余长度信息
 
-### 3.2 间接本地依赖
-- 未检测到额外的间接本地依赖，或依赖深度主要停留在第一层。
+### 2.2 典型上层调用关系
 
-### 3.3 被依赖情况
-- `arceos_api`
-- `arceos_posix_api`
-- `axfs`
-- `axfs-ng`
-- `axlibc`
-- `axnet`
-- `axnet-ng`
-- `axstd`
-- `starry-kernel`
+仓库里的真实调用链大致分为四类：
 
-### 3.4 间接被依赖情况
-- `arceos-affinity`
-- `arceos-helloworld`
-- `arceos-helloworld-myplat`
-- `arceos-httpclient`
-- `arceos-httpserver`
-- `arceos-irq`
-- `arceos-memtest`
-- `arceos-parallel`
-- `arceos-priority`
-- `arceos-shell`
-- `arceos-sleep`
-- `arceos-wait-queue`
-- 另外还有 `6` 个同类项未在此展开
+1. `axstd::io` 直接重导出 `axio` 的 trait 与类型，把它包装成 ArceOS 应用看到的 `std::io` 风格接口。
+2. `axfs`、`axfs-ng` 的文件对象实现 `Read` / `Write` / `Seek`，复用统一的缓冲器和默认读写逻辑。
+3. `axnet`、`axnet-ng` 以及更上层 socket 封装使用 `axio` 作为同步收发 trait 的公共接口。
+4. `arceos_api`、`arceos_posix_api`、StarryOS 的 `FileLike`/用户缓冲访问对象通过 `axio` 收敛系统调用读写路径。
 
-### 3.5 关键外部依赖
-- `autocfg`
-- `heapless`
-- `memchr`
+### 2.3 `PollState` 的实际使用位置
+
+虽然 `PollState` 本身很小，但它在旧一代同步接口里承担了一个稳定契约：
+
+- `axnet` 的 TCP/UDP socket 会返回 `PollState`
+- `arceos_api` 把它重导出为 `AxPollState`
+- `arceos_posix_api` 的 `fd_ops`、`pipe`、`stdio`、`fs`、`net` 等路径都在使用它
+
+因此，`PollState` 不该被理解成“顺手放在这里的小结构体”，而应被视为同步 I/O 层与更高层轮询语义之间的兼容桥。
+
+### 2.4 关键边界
+
+- `axio` 不关心对象属于文件、socket、pipe、TTY 还是内存；它只定义同步 I/O 语义
+- `axio` 不负责等待事件，也不直接注册 waker
+- `axio` 不提供 POSIX fd、系统调用协议或 socket 状态机
+- `axio` 不重新定义应用接口；应用通常通过 `axstd::io` 间接接触它
+
+## 3. 依赖关系
+
+### 3.1 直接依赖
+
+| 依赖 | 作用 |
+| --- | --- |
+| `axerrno` | 定义 `Error`、`ErrorKind` 与 `Result` |
+| `heapless` | 支撑无堆环境下的部分固定容量实现 |
+| `memchr` | 支撑 `BufRead::read_until`、`skip_until` 等基于分隔符的扫描逻辑 |
+
+### 3.2 主要消费者
+
+直接或间接依赖 `axio` 的关键模块包括：
+
+- `axstd`、`axlibc`
+- `arceos_api`、`arceos_posix_api`
+- `axfs`、`axfs-ng`
+- `axnet`、`axnet-ng`
+- StarryOS 的文件、网络、pipe、用户态缓冲访问和系统调用包装层
+
+### 3.3 跨层关系
+
+| 层次 | 与 `axio` 的关系 |
+| --- | --- |
+| `axstd::io` | 面向 ArceOS 应用的重导出接口 |
+| `axfs*` | 把文件对象映射到统一同步 I/O trait |
+| `axnet*` | 把 socket 收发路径映射到统一同步 I/O trait |
+| `arceos_posix_api` | 把系统调用中的文件描述符读写逻辑落到统一 trait 上 |
+| StarryOS `FileLike` | 借助 `axio` 统一内核对象读写/seek 语义 |
 
 ## 4. 开发指南
-### 4.1 依赖配置
+
+### 4.1 依赖方式
+
 ```toml
 [dependencies]
 axio = { workspace = true }
 
-# 如果在仓库外独立验证，也可以显式绑定本地路径：
-# axio = { path = "components/axio" }
+# 需要字符串 / Vec 相关能力时：
+# axio = { workspace = true, features = ["alloc"] }
 ```
 
-### 4.2 初始化流程
-1. 在 `Cargo.toml` 中接入该 crate，并根据需要开启相关 feature。
-2. 若 crate 暴露初始化入口，优先调用 `init`/`new`/`build`/`start` 类函数建立上下文。
-3. 在最小消费者路径上验证公开 API、错误分支与资源回收行为。
+### 4.2 为新对象接入 `axio` 的建议
 
-### 4.3 关键 API 使用提示
-- 优先关注函数入口：`error`、`into_inner`、`into_error`、`into_parts`、`default_read_exact`、`default_read_buf`、`default_read_buf_exact`、`default_read_to_end` 等（另有 3 项）。
-- 上下文/对象类型通常从 `PollState`、`IntoInnerError`、`Guard`、`Split`、`Lines`、`Adapter` 等结构开始。
+1. 只实现真实需要的 trait，不要为了“接口完整”而硬塞 `Seek` 或 `BufRead`。
+2. 如果对象天然知道剩余数据量或剩余容量，优先补上 `IoBuf` / `IoBufMut`。
+3. 如果对象会暂时不可用，应返回 `AxError::WouldBlock` 或 `Interrupted`，不要自行发明错误语义。
+4. 如果对象内部已经有缓存，再考虑实现 `BufRead`；否则交给 `BufReader` 等包装器更合适。
+
+### 4.3 修改实现时的高风险点
+
+- `read_to_end` / `read_to_string` 同时涉及 EOF 语义、增长策略和错误回滚
+- `append_to_string` 一类路径必须保证 UTF-8 校验失败时不会留下脏状态
+- `BufWriter::into_inner` / `IntoInnerError` 关系到错误恢复语义
+- `Seek` 的默认方法会隐含依赖当前位置和长度一致性，尤其容易受包装器影响
+- `alloc` 与非 `alloc` 两条路径都必须保持行为边界一致
 
 ## 5. 测试策略
-### 5.1 当前仓库内的测试形态
-- 存在 crate 内集成测试：`tests/buffered.rs`、`tests/copy.rs`、`tests/cursor.rs`、`tests/impls.rs`、`tests/io.rs`、`tests/iobuf.rs` 等（另有 2 项）。
 
-### 5.2 单元测试重点
-- 建议用单元测试覆盖公开 API、错误分支、边界条件以及并发/内存安全相关不变量。
+### 5.1 当前已有测试资产
 
-### 5.3 集成测试重点
-- 建议补充被 ArceOS/StarryOS/Axvisor 消费时的最小集成路径，确保接口语义与 feature 组合稳定。
+`components/axio/tests` 已有多组集成测试，核心文件包括：
 
-### 5.4 覆盖率要求
-- 覆盖率建议：核心算法与错误路径达到高覆盖，关键数据结构和边界条件应实现接近完整覆盖。
+- `buffered.rs`
+- `copy.rs`
+- `cursor.rs`
+- `impls.rs`
+- `io.rs`
+- `iobuf.rs`
+- `iofn.rs`
+- `utils.rs`
 
-## 6. 跨项目定位分析
+这些测试覆盖了缓冲器、游标、容量语义、trait 默认实现、UTF-8 行为、短读短写和一批历史回归点，是 `axio` 最重要的回归资产。
+
+### 5.2 建议重点
+
+- EOF、短读、短写、`WriteZero`、`Interrupted`、`WouldBlock`
+- `read_to_string` 遇到非法 UTF-8 时的回滚行为
+- `BufReader` / `BufWriter` 的缓冲失效与错误恢复
+- `alloc` 开关两条路径的行为一致性
+- 涉及 `PollState` 语义时，至少补一条上层集成验证
+
+### 5.3 推荐验证命令
+
+```bash
+cargo test -p axio
+cargo test -p axio --features alloc
+```
+
+## 6. 跨项目定位
+
 ### 6.1 ArceOS
-`axio` 不在 ArceOS 目录内部，但被 `arceos_api`、`arceos_posix_api`、`axfs`、`axfs-ng`、`axlibc`、`axnet` 等（另有 2 项） 等 ArceOS crate 直接依赖，说明它是该系统的共享构件或底层服务。
+
+在 ArceOS 中，`axio` 是同步 I/O 语义基座。`axstd` 负责把它包装成应用接口，`axfs*` 和 `axnet*` 则负责把具体内核对象接到这层协议上。
 
 ### 6.2 StarryOS
-`axio` 不在 StarryOS 目录内部，但被 `starry-kernel` 等 StarryOS crate 直接依赖，说明它是该系统的共享构件或底层服务。
+
+StarryOS 大量直接复用 `axio`。文件、pipe、socket、用户缓冲访问对象都需要借它统一读写与 seek 语义，因此它在 StarryOS 中仍然是公共基础设施，而不是某个子系统的私有库。
 
 ### 6.3 Axvisor
-`axio` 主要通过 `axvisor` 等上层 crate 被 Axvisor 间接复用，通常处于更底层的公共依赖层。
+
+当前没有看到 Axvisor 把 `axio` 作为独立 hypervisor 接口来直接设计策略的证据。它在 Axvisor 场景中更多是经由 ArceOS 公共层被间接复用，角色仍然是公共 I/O 抽象而非虚拟化策略层。

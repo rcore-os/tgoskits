@@ -2,130 +2,150 @@
 
 > 路径：`os/arceos/modules/axipi`
 > 类型：库 crate
-> 分层：ArceOS 层 / ArceOS 内核模块
+> 分层：ArceOS 层 / IPI 运行时基础件
 > 版本：`0.3.0-preview.3`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 `os/arceos/modules/axipi/README.md`
+> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`src/event.rs`、`src/queue.rs`
 
-`axipi` 的核心定位是：ArceOS IPI management module
+`axipi` 是 ArceOS 的跨核回调分发模块。它基于 `axhal` 的 IPI 发送能力，为每个 CPU 维护一个本地事件队列，并向上暴露“在某个 CPU 上运行闭包”或“在所有其他 CPU 上广播闭包”的接口。它属于运行时叶子基础件：负责 IPI 事件排队和派发，不负责 SMP bring-up、调度策略或通用消息总线。
 
 ## 1. 架构设计分析
-- 目录角色：ArceOS 内核模块
-- crate 形态：库 crate
-- 工作区位置：子工作区 `os/arceos`
-- feature 视角：该 crate 没有显式声明额外 Cargo feature，功能边界主要由模块本身决定。
-- 关键数据结构：可直接观察到的关键数据结构/对象包括 `Callback`、`MulticastCallback`、`IpiEvent`、`IpiEventQueue`、`IPI_EVENT_QUEUE`。
+### 1.1 设计定位
+`axipi` 的核心目标不是实现一个复杂的多核通信框架，而是提供一条很短的工作链：
 
-### 1.1 内部模块划分
-- `event`：内部子模块
-- `queue`：内部子模块
+1. 把闭包包装成可发送的 IPI 事件。
+2. 放入目标 CPU 的本地队列。
+3. 通过 `axhal::irq::send_ipi()` 触发对方 CPU 进入 IPI 中断。
+4. 在 IPI handler 中把队列里的事件逐个取出执行。
 
-### 1.2 核心算法/机制
-- 跨核 IPI 协调与唤醒路径
-- 队列管理、调度或异步事件缓存
+因此，`axipi` 更像“IPI 回调投递器”，而不是调度器、work queue 或通用 RPC 层。
+
+### 1.2 模块划分
+- `src/lib.rs`：初始化、单播/广播发送和 IPI handler 主线。
+- `src/event.rs`：回调封装，区分单次消费的 `Callback` 与可克隆广播的 `MulticastCallback`。
+- `src/queue.rs`：基于 `VecDeque` 的 `IpiEventQueue`，以 FIFO 顺序存放待处理事件。
+
+### 1.3 关键对象
+- `Callback`：`Box<dyn FnOnce()>` 封装的单播回调。
+- `MulticastCallback`：`Arc<dyn Fn()>` 封装的广播回调，可拆成多个单播回调。
+- `IpiEvent`：记录源 CPU ID 与具体回调。
+- `IpiEventQueue`：每 CPU 一个的待处理事件队列。
+- `IPI_EVENT_QUEUE`：通过 `#[percpu::def_percpu]` 声明的每 CPU 静态 `LazyInit<SpinNoIrq<IpiEventQueue>>`。
+
+### 1.4 发送与处理主线
+发送到单个 CPU 的流程如下：
+
+```mermaid
+flowchart TD
+    A["run_on_cpu(dest, callback)"] --> B{"dest == 当前 CPU ?"}
+    B -- 是 --> C["立即执行 callback"]
+    B -- 否 --> D["取目标 CPU 的 IPI_EVENT_QUEUE"]
+    D --> E["push(src_cpu_id, callback)"]
+    E --> F["axhal::irq::send_ipi()"]
+    F --> G["目标 CPU 进入 ipi_handler()"]
+    G --> H["循环 pop_one() 并执行"]
+```
+
+实现里的重要细节：
+
+- `run_on_cpu()` 遇到目标就是当前 CPU 时不会排队，而是同步立即执行。
+- `run_on_each_cpu()` 会先在当前 CPU 上立刻执行一份，再把 clone 后的回调投给其他 CPU。
+- `ipi_handler()` 会循环 drain 当前 CPU 队列，而不是只处理一个事件。
+
+### 1.5 能力边界
+- `axipi` 队列是 FIFO，但不提供优先级、取消、重试或返回值汇总。
+- 回调运行在 IPI 处理上下文里，默认应保持短小且不可阻塞。
+- 这个 crate 没有自己的 feature 门控，但它依赖 `axhal` 已开启 `ipi` 能力。
 
 ## 2. 核心功能说明
-- 功能定位：ArceOS IPI management module
-- 对外接口：从源码可见的主要公开入口包括 `init`、`run_on_cpu`、`run_on_each_cpu`、`ipi_handler`、`new`、`call`、`into_unicast`、`is_empty`、`Callback`、`MulticastCallback` 等（另有 2 个公开入口）。
-- 典型使用场景：主要服务于 ArceOS 内核模块装配，是运行时、驱动、内存、网络或同步等子系统的一部分。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `init()` -> `run_on_cpu()` -> `run_on_each_cpu()` -> `new()`。
+### 2.1 主要功能
+- 初始化每 CPU 的 IPI 队列。
+- 向指定 CPU 投递单次回调。
+- 向所有其他 CPU 广播回调。
+- 在 IPI 中断处理函数里取出并执行待处理事件。
+
+### 2.2 关键 API 与真实使用位置
+- `init()`：由 `axruntime/src/mp.rs` 在次核 bring-up 路径中调用，为当前 CPU 建立 IPI 队列。
+- `ipi_handler()`：由 `axruntime/src/lib.rs` 的 IRQ 处理路径调用。
+- `run_on_cpu()` / `run_on_each_cpu()`：是这个 crate 的核心公开 API，也是 `arceos_api` / `axfeat` 暴露 IPI 能力的底层基础。
+
+### 2.3 使用边界
+- 它不是 SMP 启动器；启动 CPU 的逻辑在 `axruntime::start_secondary_cpus()`。
+- 它不是通用异步执行框架；没有 future、返回值或 work stealing。
+- 它也不是调度器；闭包何时运行只受 IPI 到达和 handler 执行控制。
 
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    current["axipi"]
-    current --> axconfig["axconfig"]
-    current --> axhal["axhal"]
-    current --> kspin["kspin"]
-    current --> lazyinit["lazyinit"]
-    current --> percpu["percpu"]
-    arceos_api["arceos_api"] --> current
-    axfeat["axfeat"] --> current
-    axruntime["axruntime"] --> current
+    axhal["axhal (ipi)"] --> axipi["axipi"]
+    axconfig["axconfig"] --> axipi
+    kspin["kspin"] --> axipi
+    lazyinit["lazyinit"] --> axipi
+    percpu["percpu"] --> axipi
+
+    axipi --> axruntime["axruntime"]
+    axipi --> arceos_api["arceos_api"]
+    axipi --> axfeat["axfeat"]
 ```
 
-### 3.1 直接与间接依赖
-- `axconfig`
-- `axhal`
-- `kspin`
-- `lazyinit`
-- `percpu`
+### 3.1 关键直接依赖
+- `axhal`：真正的 IPI 发送原语来自这里。
+- `axconfig`：广播时需要 `MAX_CPU_NUM`。
+- `kspin`：保护每 CPU 队列。
+- `lazyinit`：按 CPU 惰性初始化队列。
+- `percpu`：声明每 CPU 静态存储。
 
-### 3.2 间接本地依赖
-- `arm_pl011`
-- `arm_pl031`
-- `axalloc`
-- `axallocator`
-- `axbacktrace`
-- `axconfig-gen`
-- `axconfig-macros`
-- `axcpu`
-- `axdriver_base`
-- `axdriver_block`
-- `axdriver_display`
-- `axdriver_input`
-- 另外还有 `23` 个同类项未在此展开
-
-### 3.3 被依赖情况
-- `arceos_api`
-- `axfeat`
-- `axruntime`
-
-### 3.4 间接被依赖情况
-- `arceos-affinity`
-- `arceos-helloworld`
-- `arceos-helloworld-myplat`
-- `arceos-httpclient`
-- `arceos-httpserver`
-- `arceos-irq`
-- `arceos-memtest`
-- `arceos-parallel`
-- `arceos-priority`
-- `arceos-shell`
-- `arceos-sleep`
-- `arceos-wait-queue`
-- 另外还有 `8` 个同类项未在此展开
-
-### 3.5 关键外部依赖
-- `log`
+### 3.2 关键直接消费者
+- `axruntime`：负责在启动链中初始化队列，并在 IRQ 处理里调用 `ipi_handler()`。
+- `arceos_api` / `axfeat`：把 IPI 能力向上层 feature 与 API 暴露。
 
 ## 4. 开发指南
 ### 4.1 依赖配置
 ```toml
 [dependencies]
 axipi = { workspace = true }
-
-# 如果在仓库外独立验证，也可以显式绑定本地路径：
-# axipi = { path = "os/arceos/modules/axipi" }
 ```
 
-### 4.2 初始化流程
-1. 在 `Cargo.toml` 中接入该 crate，并根据需要开启相关 feature。
-2. 若 crate 暴露初始化入口，优先调用 `init`/`new`/`build`/`start` 类函数建立上下文。
-3. 在最小消费者路径上验证公开 API、错误分支与资源回收行为。
+通常只有在上层 feature 打开 `ipi` 时，最终镜像才会真正把它编进去。
 
-### 4.3 关键 API 使用提示
-- 优先关注函数入口：`init`、`run_on_cpu`、`run_on_each_cpu`、`ipi_handler`、`new`、`call`、`into_unicast`、`is_empty` 等（另有 2 项）。
-- 上下文/对象类型通常从 `Callback`、`MulticastCallback`、`IpiEvent`、`IpiEventQueue` 等结构开始。
+### 4.2 修改时的关键约束
+1. `init()` 是每 CPU 初始化，不是全局初始化；修改时必须同时考虑 BSP 和 AP 路径。
+2. `run_on_each_cpu()` 当前包含“立即执行当前 CPU”这一步，修改时不能无意改变这个语义。
+3. `Callback` / `MulticastCallback` 的封装关系要保持清晰，避免把广播路径退化成共享可变闭包。
+4. 不要把复杂的等待、应答、重传协议塞进 `axipi`；这层应该继续保持单纯。
+
+### 4.3 开发建议
+- IPI 回调应尽量短小，只做必要的跨核通知或状态翻转。
+- 若需要可取消定时或异步 work queue，应该另建专门机制，而不是滥用 IPI 队列。
+- 若引入更复杂的 IPI 事件类型，优先扩展事件内容，而不是让 `axipi` 直接理解高层业务语义。
 
 ## 5. 测试策略
-### 5.1 当前仓库内的测试形态
-- 当前 crate 目录中未发现显式 `tests/`/`benches/`/`fuzz/` 入口，更可能依赖上层系统集成测试或跨 crate 回归。
+### 5.1 当前测试形态
+`axipi` 没有独立的 crate 内测试，当前验证主要依赖真实 SMP 路径：
+
+- `axruntime` 在启用 `ipi`/`smp`/`irq` 组合下的启动与中断处理；
+- API 层对 IPI 能力的集成；
+- 多核环境下回调能否确实落到目标 CPU。
 
 ### 5.2 单元测试重点
-- 建议围绕 API 契约、feature 分支、资源管理和错误恢复路径编写单元测试。
+- `IpiEventQueue` 的 FIFO 行为。
+- `MulticastCallback::into_unicast()` 的语义是否保持“一份广播拆成多份单播”。
+- 当前 CPU 快路径是否绕过排队。
 
 ### 5.3 集成测试重点
-- 建议至少补一条 ArceOS 示例或 `test-suit/arceos` 路径，必要时覆盖多架构或多 feature 组合。
+- QEMU/真实多核环境下的单播与广播是否都能触发。
+- `ipi_handler()` 是否能正确 drain 多个连续事件。
+- 与 `axruntime` 的 IRQ 注册/处理中断链是否匹配。
 
 ### 5.4 覆盖率要求
-- 覆盖率建议：公开 API、初始化失败路径和主要 feature 组合必须覆盖；涉及调度/内存/设备时需补系统级验证。
+- 对 `axipi`，SMP 集成覆盖比局部行覆盖率更关键。
+- 涉及队列结构或广播语义的改动，都应覆盖“当前 CPU”“远端 CPU”“广播”三条路径。
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-`axipi` 直接位于 `os/arceos/` 目录树中，是 ArceOS 工程本体的一部分，承担 ArceOS 内核模块。
+`axipi` 是 ArceOS 在打开 IPI feature 后的跨核通知基础件。它为运行时和 API 层提供最小可用的 IPI 回调能力。
 
 ### 6.2 StarryOS
-`axipi` 主要通过 `starry-kernel`、`starryos`、`starryos-test` 等上层 crate 被 StarryOS 间接复用，通常处于更底层的公共依赖层。
+StarryOS 当前没有直接把 `axipi` 作为独立系统层来扩展，更多是通过共享的 ArceOS 运行时栈间接受用。因此它在 StarryOS 中仍是叶子基础件，而不是并发主控层。
 
 ### 6.3 Axvisor
-`axipi` 主要通过 `axvisor` 等上层 crate 被 Axvisor 间接复用，通常处于更底层的公共依赖层。
+当前仓库里的 Axvisor 没有直接依赖 `axipi` 形成自己的 IPI 子系统；如果未来复用这套能力，也更可能把它当成宿主侧的跨核通知底座，而不是 hypervisor 调度层。

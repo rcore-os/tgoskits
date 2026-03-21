@@ -2,94 +2,174 @@
 
 > 路径：`os/arceos/tools/bwbench_client`
 > 类型：二进制 crate
-> 分层：ArceOS 层 / ArceOS 配套工具与辅助程序
+> 分层：ArceOS 层 / 宿主机配套工具
 > 版本：`0.1.0`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 `os/arceos/tools/bwbench_client/README.md`
+> 文档依据：`Cargo.toml`、`README.md`、`src/main.rs`、`src/device.rs`、`os/arceos/modules/axnet/src/smoltcp_impl/bench.rs`
 
-`bwbench-client` 的核心定位是：ArceOS 配套工具与辅助程序
+`bwbench-client` 是一个运行在 Linux 宿主机上的原始以太网带宽对测工具。它通过 `AF_PACKET` raw socket 直接向指定网卡或 tap 设备发送/接收帧，并按秒输出吞吐统计。它不是 ArceOS 镜像里的应用，也不是可复用网络库；它的真实定位是给 ArceOS 网络基准路径提供一个宿主机侧对端。
+
+最关键的边界是：`bwbench-client` 只负责在宿主机侧制造或接收原始以太网流量，用来观察链路吞吐。它不是 ArceOS 网络栈的一部分，也不是通用 benchmark 框架。
 
 ## 1. 架构设计分析
-- 目录角色：ArceOS 配套工具与辅助程序
-- crate 形态：二进制 crate
-- 工作区位置：子工作区 `os/arceos/tools/bwbench_client`
-- feature 视角：该 crate 没有显式声明额外 Cargo feature，功能边界主要由模块本身决定。
-- 关键数据结构：可直接观察到的关键数据结构/对象包括 `EthernetMacAddress`、`NetDevice`、`Client`、`STANDARD_MTU`、`MAX_BYTES`、`MB`、`GB`。
-- 设计重心：该 crate 运行在宿主机侧，重点是 CLI、配置、外部命令调用和开发流水线接线，而不是目标系统内核热路径。
 
-### 1.1 内部模块划分
-- `device`：设备抽象、枚举与访问封装
+### 1.1 设计定位
 
-### 1.2 核心算法/机制
-- 该 crate 是入口/编排型二进制，复杂度主要来自初始化顺序、配置注入和对下层模块的串接。
+从目录和源码看，`bwbench-client` 与仓库里的 HTTP 示例完全不同：
+
+- 它运行在宿主机 `std` 环境，而不是 `no_std` ArceOS 应用环境
+- 它不走 `axstd`，也不直接依赖仓库内的网络栈
+- 它直接使用 Linux raw socket 与 `ioctl`
+
+因此，它不是“ArceOS 的一个网络示例”，而是“ArceOS 网络基准的宿主机配套工具”。
+
+### 1.2 模块划分
+
+| 模块 | 作用 |
+| --- | --- |
+| `src/main.rs` | 命令行入口、模式选择、吞吐统计与主循环 |
+| `src/device.rs` | Linux raw socket 封装、接口绑定、MTU/MAC 查询、收发接口 |
+
+整个工具的结构非常直接，重点在于以最薄的封装把宿主网卡原始收发能力暴露出来。
+
+### 1.3 设备接入模型
+
+`device.rs` 展示了它的真实工作方式：
+
+- 使用 `libc::socket(AF_PACKET, SOCK_RAW | SOCK_NONBLOCK, ETH_P_ALL)`
+- 通过 `SIOCGIFHWADDR` 读取接口 MAC
+- 通过 `SIOCGIFINDEX` 获取接口索引并完成 `bind`
+- 通过 `SIOCGIFMTU` 读取 MTU
+- 使用 `send` / `recv` 直接收发原始帧
+
+这说明它测量的不是 TCP/UDP 应用吞吐，而是更低层的二层帧收发吞吐。
+
+### 1.4 发送与接收两种工作模式
+
+`main.rs` 只提供两种模式：
+
+- `Sender`：持续发送固定长度以太网帧
+- `Receiver`：持续接收帧并累计字节数
+
+两边都以每秒为窗口输出：
+
+- 累计传输量（GBytes）
+- 当前窗口带宽（Gbits/sec）
+
+并在达到 `MAX_BYTES = 10 * GB` 后结束。
 
 ## 2. 核心功能说明
-- 功能定位：ArceOS 配套工具与辅助程序
-- 对外接口：从源码可见的主要公开入口包括 `new`、`mac_addr`、`bind_interface`、`interface_mtu`、`recv`、`send`、`EthernetMacAddress`、`ifreq`、`NetDevice`、`Client`。
-- 典型使用场景：运行在宿主机侧，为构建、测试、镜像准备、依赖分析或开发辅助提供命令行能力。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `main()` -> `new()`。
 
-## 3. 依赖关系图谱
-```mermaid
-graph LR
-    current["bwbench-client"]
-```
+### 2.1 发送路径
 
-### 3.1 直接与间接依赖
-- 未检测到本仓库内的直接本地依赖；该 crate 可能主要依赖外部生态或承担叶子节点角色。
+发送模式会：
 
-### 3.2 间接本地依赖
-- 未检测到额外的间接本地依赖，或依赖深度主要停留在第一层。
+1. 创建设备对象并绑定接口
+2. 构造一个 `STANDARD_MTU = 1500` 字节的固定缓冲区
+3. 将第 `12..14` 字节写成 `0x0800`，即以太网 IPv4 EtherType
+4. 持续调用 `dev.send(&tx_buf)`，直到累计发送 10GB 数据
 
-### 3.3 被依赖情况
-- 当前未发现本仓库内其他 crate 对其存在直接本地依赖。
+这里没有构造真实的 IP/TCP/UDP 报文。它只是在发“带 IPv4 EtherType 的固定负载帧”，目的是测链路吞吐，而不是验证协议正确性。
 
-### 3.4 间接被依赖情况
-- 当前未发现更多间接消费者，或该 crate 主要作为终端入口使用。
+### 2.2 接收路径
 
-### 3.5 关键外部依赖
-- `chrono`
-- `libc`
+接收模式持续调用 `dev.recv(&mut rx_buffer)`，按秒打印吞吐统计。它同样不解析上层协议，只统计收到的总字节数。
+
+### 2.3 与 ArceOS 侧基准的关系
+
+`README.md` 明确把它描述成与 ArceOS 带宽基准配对使用的宿主工具，并给出了 tap 设备示例。当前仓库中，能直接对上的客体侧入口是：
+
+- `axnet::bench_transmit()`
+- `axnet::bench_receive()`
+
+也就是说，这个工具真正的使命是充当这些基准入口的宿主机对端。
+
+需要特别说明的是：`README.md` 里提到的 `make A=apps/net/bwbench ...` 来自更早期的应用组织方式；在当前仓库快照里，直接能对应上的仍是 `axnet` 中的基准函数，而不是独立存在于同目录的 ArceOS 应用源码。
+
+### 2.4 关键边界
+
+- `bwbench-client` 不验证 HTTP、TCP、UDP 应用协议语义
+- `bwbench-client` 不参与 ArceOS 镜像运行时装配
+- `bwbench-client` 的统计结果主要反映原始链路吞吐，而不是完整应用栈吞吐
+
+## 3. 依赖关系
+
+### 3.1 直接依赖
+
+| 依赖 | 作用 |
+| --- | --- |
+| `libc` | 调用 Linux raw socket、`ioctl`、`bind`、`send`、`recv` |
+| `chrono` | 用于按秒统计吞吐 |
+
+### 3.2 与仓库内其他模块的关系
+
+`bwbench-client` 没有直接依赖仓库内其他 crate。它与仓库的关系主要体现在“测试配对”上：
+
+- 宿主机侧：`bwbench-client`
+- 客体侧：`axnet::bench_transmit()` / `bench_receive()`
+
+### 3.3 跨层关系
+
+| 层次 | 角色 |
+| --- | --- |
+| `bwbench-client` | 宿主机 raw socket 基准工具 |
+| Linux raw socket | 提供二层帧收发能力 |
+| ArceOS `axnet` 基准入口 | 提供客体侧发送/接收对端 |
 
 ## 4. 开发指南
-### 4.1 运行入口
-```toml
-# `bwbench-client` 是二进制/编排入口，通常不作为库依赖。
-# 更常见的接入方式是通过对应构建/运行命令触发，而不是在 Cargo.toml 中引用。
-```
+
+### 4.1 运行方式
+
+根据 `README.md`，最常见的运行方式是：
 
 ```bash
-cargo run --manifest-path "os/arceos/tools/bwbench_client/Cargo.toml"
+cargo build --release --manifest-path os/arceos/tools/bwbench_client/Cargo.toml
+sudo ./target/release/bwbench_client [sender|receiver] <interface>
 ```
 
-### 4.2 初始化流程
-1. 先确认该工具运行在宿主机侧，并准备需要的工作区、配置文件、镜像或外部命令环境。
-2. 优先通过 CLI 子命令或 `--manifest-path` 方式运行，避免误把它当作裸机/内核镜像的一部分。
-3. 对修改后的行为至少做一次成功路径和一次失败路径验证，重点检查日志、输出文件和外部命令返回值。
+它通常需要 root 权限，因为 `AF_PACKET` raw socket 不是普通用户可直接使用的接口。
 
-### 4.3 关键 API 使用提示
-- 该 crate 的关键接入点通常是运行命令、CLI 参数或入口函数，而不是稳定库 API。
-- 优先关注函数入口：`new`、`mac_addr`、`bind_interface`、`interface_mtu`、`recv`、`send`。
-- 上下文/对象类型通常从 `EthernetMacAddress`、`ifreq`、`NetDevice` 等结构开始。
+### 4.2 修改时的建议
+
+1. 如果目标只是测链路吞吐，不要把它扩展成高层协议 benchmark。
+2. 如果要改发送帧内容，先明确自己是在测 raw frame 吞吐，还是试图混入更高层协议开销。
+3. 如果要改 `MAX_BYTES`、MTU 或时间统计逻辑，最好同步关注与 ArceOS 侧基准输出口径是否仍一致。
+
+### 4.3 高风险点
+
+- `WouldBlock` 被当作正常重试路径，其他错误则直接 panic；这说明它更像实验工具而不是健壮 CLI
+- 设备实现只针对 Linux，其他平台直接返回 `"Not supported"`
+- `ifreq`、`sockaddr_ll` 这类底层结构依赖 `unsafe` 与平台 ABI，修改时必须逐项核对
 
 ## 5. 测试策略
-### 5.1 当前仓库内的测试形态
-- 当前 crate 目录中未发现显式 `tests/`/`benches/`/`fuzz/` 入口，更可能依赖上层系统集成测试或跨 crate 回归。
 
-### 5.2 单元测试重点
-- 建议覆盖命令解析、配置序列化/反序列化、路径计算和失败分支。
+### 5.1 当前测试形态
 
-### 5.3 集成测试重点
-- 建议增加 CLI 金丝雀测试、示例工程 smoke test 或与 CI 命令一致的端到端验证。
+没有独立单元测试。这个工具天然依赖真实宿主网络环境，因此验证方式主要是手工或脚本化端到端测试。
 
-### 5.4 覆盖率要求
-- 覆盖率建议：命令分派和配置读写逻辑应保持高覆盖，外部命令执行路径至少要有成功/失败双向验证。
+### 5.2 建议重点
 
-## 6. 跨项目定位分析
+- 至少分别跑一次 `sender` 和 `receiver` 模式
+- 至少验证一条 tap 设备路径或真实网卡路径
+- 若修改 `device.rs`，要重点检查 MAC、MTU、接口绑定与 `WouldBlock` 行为
+
+### 5.3 更适合它的验证方式
+
+最合理的验证组合是：
+
+1. 宿主机启动 `bwbench-client`
+2. 客体侧启动 ArceOS 的网络基准入口
+3. 对照两边统计结果，观察收发是否匹配、吞吐是否稳定
+
+## 6. 跨项目定位
+
 ### 6.1 ArceOS
-`bwbench-client` 直接位于 `os/arceos/` 目录树中，是 ArceOS 工程本体的一部分，承担 ArceOS 配套工具与辅助程序。
+
+虽然路径位于 `os/arceos/tools/` 下，但 `bwbench-client` 并不是跑在 ArceOS 里的程序，而是 ArceOS 网络基准的宿主机侧对端工具。
 
 ### 6.2 StarryOS
-当前未检测到 StarryOS 工程本体对 `bwbench-client` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
+
+当前没有看到 StarryOS 直接使用这个工具的证据。它的 README、命名和对接方式都明显围绕 ArceOS 网络基准场景。
 
 ### 6.3 Axvisor
-当前未检测到 Axvisor 工程本体对 `bwbench-client` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
+
+同样没有看到 Axvisor 与它的直接关系。它本质上是原始链路吞吐测试的配套工具，而不是通用虚拟化测试组件。

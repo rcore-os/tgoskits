@@ -2,123 +2,148 @@
 
 > 路径：`os/arceos/modules/axinput`
 > 类型：库 crate
-> 分层：ArceOS 层 / ArceOS 内核模块
+> 分层：ArceOS 层 / 输入设备接线层
 > 版本：`0.3.0-preview.3`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 未检测到 crate 层 README
+> 文档依据：`Cargo.toml`、`src/lib.rs`、`os/arceos/modules/axruntime/src/lib.rs`、`os/StarryOS/kernel/src/pseudofs/dev/event.rs`、`os/arceos/api/axfeat/Cargo.toml`
 
-`axinput` 的核心定位是：Input device management for ArceOS
+`axinput` 的作用是把 `axdriver` 聚合出来的输入设备收集起来，并在合适的时候一次性交给更上层模块。它不是输入驱动本身，也不是完整的 evdev 子系统；它更像是 ArceOS 驱动聚合层和实际输入服务之间的一道“句柄交接层”。
 
 ## 1. 架构设计分析
-- 目录角色：ArceOS 内核模块
-- crate 形态：库 crate
-- 工作区位置：子工作区 `os/arceos`
-- feature 视角：该 crate 没有显式声明额外 Cargo feature，功能边界主要由模块本身决定。
-- 关键数据结构：可直接观察到的关键数据结构/对象包括 `DEVICES`。
+### 1.1 真实定位
+当前实现只有一个全局对象：
 
-### 1.1 内部模块划分
-- 当前 crate 未显式声明多个顶层 `mod`，复杂度更可能集中在单文件入口、宏展开或下层子 crate。
+- `DEVICES: LazyInit<Mutex<Vec<AxInputDevice>>>`
 
-### 1.2 核心算法/机制
-- 实现重心偏向接口组织和模块协作。
+这说明 `axinput` 的设计目标非常明确：
+
+- 不重新定义输入事件格式。
+- 不保存额外的设备元数据索引结构。
+- 只负责在初始化阶段把 `AxInputDevice` 句柄收集进来。
+- 然后在上层真正准备好时把这些句柄整体移交出去。
+
+### 1.2 初始化主线
+当前仓库中的调用链如下：
+
+1. `axruntime` 调用 `axdriver::init_drivers()`。
+2. `axdriver` 把输入设备收集进 `AllDevices.input`。
+3. `axruntime` 在 `feature = "input"` 下调用 `axinput::init_input(all_devices.input)`。
+4. `axinput` 循环 `take_one()`，把所有输入设备压入内部 `Vec`。
+5. StarryOS 等上层模块再调用 `take_inputs()` 取走整个设备列表。
+
+与 `axdisplay` 最大的区别在于：`axinput` 不只保留一个主设备，而是会收集容器中的所有输入设备。
+
+### 1.3 关键 API
+| API | 作用 |
+| --- | --- |
+| `init_input()` | 从 `AxDeviceContainer<AxInputDevice>` 收集所有输入设备 |
+| `take_inputs()` | 一次性取走当前已收集的所有输入设备 |
+
+### 1.4 所有权模型
+`take_inputs()` 的实现是 `mem::take(&mut DEVICES.lock())`，这意味着：
+
+- 调用方会直接获得内部 `Vec<AxInputDevice>` 的所有权。
+- 全局容器随后被清空。
+- 这不是“只读查询”接口，而是“转移设备句柄”的接口。
+
+因此它很适合 StarryOS 这类在更上层重新组织设备节点的场景，但不适合被设计成可反复窥视的全局设备表。
+
+### 1.5 与上下层的边界
+| 层次 | 负责内容 | 不负责内容 |
+| --- | --- | --- |
+| `axdriver_input` / `VirtIoInputDev` | 输入事件、能力位图、设备 ID 的驱动语义 | 全局设备收集与移交 |
+| `axinput` | 收集并转移输入设备句柄 | evdev、poll、ioctl、按键状态缓存 |
+| StarryOS `pseudofs/dev/event.rs` | 把输入设备包装成事件设备文件 | 底层驱动初始化 |
+
+### 1.6 边界澄清
+最关键的边界是：**`axinput` 不是输入子系统本身，而是“把已经探测好的输入设备句柄收好并交给上层”的桥接层。**
 
 ## 2. 核心功能说明
-- 功能定位：Input device management for ArceOS
-- 对外接口：从源码可见的主要公开入口包括 `init_input`、`take_inputs`。
-- 典型使用场景：主要服务于 ArceOS 内核模块装配，是运行时、驱动、内存、网络或同步等子系统的一部分。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `init_input()`。
+### 2.1 主要能力
+- 收集所有已探测输入设备。
+- 提供一次性移交接口 `take_inputs()`。
+- 在日志中记录注册到的输入设备名称和类型。
+
+### 2.2 与 StarryOS 的真实接线关系
+StarryOS 的 `pseudofs/dev/event.rs` 会：
+
+- 调用 `axinput::take_inputs()` 获取设备列表；
+- 使用 `InputDriverOps::get_event_bits()` 判断其支持按键还是鼠标；
+- 再把它们包装为 `eventN` 或 `mice` 设备；
+- 后续通过 `read_event()`、`poll()`、`ioctl` 等形成更像 Linux evdev 的行为。
+
+这说明 `axinput` 还处在 evdev 之下，是一次更早的桥接层。
+
+### 2.3 与 ArceOS 顶层 feature 的关系
+在 `os/arceos/api/axfeat/Cargo.toml` 中，`input` feature 会同时打开：
+
+- `axdriver/virtio-input`
+- `dep:axinput`
+- `axruntime/input`
+
+因此它的整机定位是“输入功能 feature 的中间模块”，而不是一个独立发行层 API。
 
 ## 3. 依赖关系图谱
-```mermaid
-graph LR
-    current["axinput"]
-    current --> axdriver["axdriver"]
-    current --> axsync["axsync"]
-    current --> lazyinit["lazyinit"]
-    axfeat["axfeat"] --> current
-    axruntime["axruntime"] --> current
-    starry_kernel["starry-kernel"] --> current
-```
+### 3.1 直接依赖
+| 依赖 | 作用 |
+| --- | --- |
+| `axdriver` | 提供 `AxInputDevice`、`AxDeviceContainer` 及 `prelude` 类型 |
+| `axsync` | 保护全局设备列表 |
+| `lazyinit` | 延迟初始化全局容器 |
+| `log` | 初始化日志 |
 
-### 3.1 直接与间接依赖
-- `axdriver`
-- `axsync`
-- `lazyinit`
+### 3.2 主要消费者
+- `os/arceos/modules/axruntime`
+- `os/StarryOS/kernel/src/pseudofs/dev/event.rs`
+- 启用 `axfeat/input` 的整机构建路径
 
-### 3.2 间接本地依赖
-- `arm_pl011`
-- `arm_pl031`
-- `axalloc`
-- `axallocator`
-- `axbacktrace`
-- `axconfig`
-- `axconfig-gen`
-- `axconfig-macros`
-- `axcpu`
-- `axdma`
-- `axdriver_base`
-- `axdriver_block`
-- 另外还有 `36` 个同类项未在此展开
-
-### 3.3 被依赖情况
-- `axfeat`
-- `axruntime`
-- `starry-kernel`
-
-### 3.4 间接被依赖情况
-- `arceos-affinity`
-- `arceos-helloworld`
-- `arceos-helloworld-myplat`
-- `arceos-httpclient`
-- `arceos-httpserver`
-- `arceos-irq`
-- `arceos-memtest`
-- `arceos-parallel`
-- `arceos-priority`
-- `arceos-shell`
-- `arceos-sleep`
-- `arceos-wait-queue`
-- 另外还有 `8` 个同类项未在此展开
-
-### 3.5 关键外部依赖
-- `log`
+### 3.3 分层关系总结
+- 向下消费已经探测好的输入设备。
+- 向上把输入设备交给真正的事件服务层。
+- 不承担设备节点或系统调用接口语义。
 
 ## 4. 开发指南
-### 4.1 依赖配置
-```toml
-[dependencies]
-axinput = { workspace = true }
+### 4.1 适合修改这里的场景
+应修改 `axinput` 的情况主要包括：
 
-# 如果在仓库外独立验证，也可以显式绑定本地路径：
-# axinput = { path = "os/arceos/modules/axinput" }
-```
+- 需要调整输入设备全局保存方式。
+- 需要改变输入设备从初始化阶段到上层服务阶段的交接策略。
+- 需要为更上层输入模块提供新的统一入口。
 
-### 4.2 初始化流程
-1. 在 `Cargo.toml` 中接入该 crate，并根据需要开启相关 feature。
-2. 若 crate 暴露初始化入口，优先调用 `init`/`new`/`build`/`start` 类函数建立上下文。
-3. 在最小消费者路径上验证公开 API、错误分支与资源回收行为。
+如果只是修改事件格式、能力位图或底层读取逻辑，应改 `axdriver_input` 或具体驱动实现。
 
-### 4.3 关键 API 使用提示
-- 优先关注函数入口：`init_input`、`take_inputs`。
+### 4.2 维护时需要特别注意
+1. `take_inputs()` 是一次性转移接口，调用顺序非常重要。
+2. `init_input()` 使用 `while let Some(...) = take_one()`，因此会消费掉整个容器。
+3. 如果未来要支持“多次查询设备列表”，当前 API 需要整体调整，不能只在内部偷偷 clone。
+
+### 4.3 常见坑
+- 不要把 `axinput` 写成用户 API；当前仓库里没有 `arceos_api::input` 这样的封装层。
+- 不要假设调用 `take_inputs()` 后全局设备仍保留。
+- 不要在这里引入按键缓冲、poll 唤醒或 ioctl 语义；这些属于更上层事件设备实现。
 
 ## 5. 测试策略
-### 5.1 当前仓库内的测试形态
-- 当前 crate 目录中未发现显式 `tests/`/`benches/`/`fuzz/` 入口，更可能依赖上层系统集成测试或跨 crate 回归。
+### 5.1 当前有效验证面
+当前主要验证路径包括：
 
-### 5.2 单元测试重点
-- 建议围绕 API 契约、feature 分支、资源管理和错误恢复路径编写单元测试。
+- `virtio-input` 设备被 `axdriver` 正确探测。
+- `init_input()` 能收集全部输入设备。
+- StarryOS `event.rs` 能成功 `take_inputs()` 并生成事件设备。
 
-### 5.3 集成测试重点
-- 建议至少补一条 ArceOS 示例或 `test-suit/arceos` 路径，必要时覆盖多架构或多 feature 组合。
+### 5.2 建议补充的测试
+- `init_input()` 在空容器和多设备容器上的行为。
+- `take_inputs()` 之后再次调用返回空列表的语义。
+- 与 StarryOS 事件设备组装流程的最小集成测试。
 
-### 5.4 覆盖率要求
-- 覆盖率建议：公开 API、初始化失败路径和主要 feature 组合必须覆盖；涉及调度/内存/设备时需补系统级验证。
+### 5.3 风险点
+- 由于 `take_inputs()` 会清空全局列表，若初始化顺序不当，设备可能被过早取走。
+- 设备列表一旦被错误地多次消费，问题会表现为“输入设备神秘消失”，而不是明显报错。
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-`axinput` 直接位于 `os/arceos/` 目录树中，是 ArceOS 工程本体的一部分，承担 ArceOS 内核模块。
+`axinput` 是 ArceOS 本体中的输入桥接模块，服务于启用 `input` feature 的系统构建路径。
 
 ### 6.2 StarryOS
-`axinput` 不在 StarryOS 目录内部，但被 `starry-kernel` 等 StarryOS crate 直接依赖，说明它是该系统的共享构件或底层服务。
+这是当前仓库里最明确的上层消费者。StarryOS 直接拿走 `AxInputDevice` 列表，在伪文件系统中组织成接近 Linux 的输入事件设备。
 
 ### 6.3 Axvisor
-`axinput` 主要通过 `axvisor` 等上层 crate 被 Axvisor 间接复用，通常处于更底层的公共依赖层。
+当前仓库中没有看到 Axvisor 直接依赖 `axinput`。它不是 hypervisor 侧输入管理框架。

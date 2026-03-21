@@ -2,109 +2,162 @@
 
 > 路径：`components/axconfig-gen/axconfig-gen`
 > 类型：库 + 二进制混合 crate
-> 分层：组件层 / 可复用基础组件
+> 分层：组件层 / 宿主侧配置生成工具
 > 版本：`0.2.1`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 `components/axconfig-gen/axconfig-gen/README.md`
+> 文档依据：`Cargo.toml`、`src/lib.rs`、`src/main.rs`、`src/config.rs`、`src/output.rs`、`src/ty.rs`、`src/value.rs`、`src/tests.rs`、`README.md`
 
-`axconfig-gen` 的核心定位是：A TOML-based configuration generation tool for ArceOS.
+`axconfig-gen` 是 ArceOS 配置链路里的“配置编译器”。它运行在宿主机上，负责把一组带类型注释的 TOML 规格文件解析成统一配置，再输出成新的 TOML 文件或 Rust 常量代码；`axconfig-macros` 直接复用它的库接口，而 `axbuild` 则直接调用其可执行文件生成 `.axconfig.toml`。
 
 ## 1. 架构设计分析
-- 目录角色：可复用基础组件
-- crate 形态：库 + 二进制混合 crate
-- 工作区位置：子工作区 `components/axconfig-gen`
-- feature 视角：该 crate 没有显式声明额外 Cargo feature，功能边界主要由模块本身决定。
-- 关键数据结构：可直接观察到的关键数据结构/对象包括 `ConfigItem`、`Config`、`Output`、`ConfigValue`、`ConfigErr`、`OutputFormat`、`ConfigType`、`ConfigResult`、`ConfigTable`、`Err` 等（另有 1 个关键类型/对象）。
-- 设计重心：该 crate 通常作为多个内核子系统共享的底层构件，重点在接口边界、数据结构和被上层复用的方式。
+### 1.1 设计定位
+`axconfig-gen` 同时提供库接口和命令行入口，但两者都围绕同一个核心模型工作：
 
-### 1.1 内部模块划分
-- `config`：配置模型、解析与静态参数装配
-- `output`：内部子模块
-- `ty`：内部子模块
-- `value`：内部子模块
-- `tests`：测试辅助与场景验证代码（按条件编译启用）
+- `Config`：整个配置集合，包含全局表和多个具名表。
+- `ConfigItem`：单个配置项，保留表名、键名、值和注释。
+- `ConfigType`：类型系统，只支持 `bool`、`int`、`uint`、`str`、元组、数组以及推导中的 `Unknown`。
+- `ConfigValue`：配置值与类型校验/推导逻辑。
+- `Output`：把 `Config` 重新输出为 TOML 或 Rust 常量代码。
 
-### 1.2 核心算法/机制
-- 静态配置建模、编译期注入或 TOML 解析
+这说明它不是一般意义上的“键值编辑器”，而是带类型和注释语义的配置转换器。
+
+### 1.2 库侧分层
+源码中的模块职责比较清晰：
+
+- `config.rs`：负责 TOML 到 `Config`/`ConfigItem` 的解析、合并和更新。
+- `value.rs`：负责值的合法性检查、类型匹配、类型推导，以及 TOML/Rust 文本化。
+- `ty.rs`：定义配置类型语法与 Rust 类型映射。
+- `output.rs`：把配置对象写回 TOML 或 Rust 代码，并保留注释。
+- `main.rs`：命令行壳层，负责把多份规格文件、旧配置、读写指令串起来。
+
+### 1.3 真实执行链路
+无论通过库还是通过 CLI，核心流程都相同：
+
+```mermaid
+flowchart TD
+    A["读取一个或多个 spec TOML"] --> B["Config::from_toml"]
+    B --> C["Config::merge"]
+    C --> D["可选 oldconfig 覆盖 / Config::update"]
+    D --> E["可选 -w 写入单项"]
+    E --> F["可选 -r 读取单项"]
+    F --> G["Config::dump(OutputFormat::Toml/Rust)"]
+```
+
+`main.rs` 里还包含两个容易忽略但很关键的行为：
+
+1. 如果指定了 `-o` 输出路径，且目标文件已有旧内容，会自动备份成 `.old.*` 文件。
+2. 如果是读取模式（存在 `-r`），则只打印目标项值，不会再输出整个配置文件。
+
+### 1.4 类型系统的真实边界
+`axconfig-gen` 的类型系统很轻量，但设计得足够满足平台配置场景：
+
+- 允许注释形式的显式类型标注，例如 `# uint`、`# [uint]`、`# (uint, str)`。
+- 若未显式标注，会从值自动推导类型。
+- 字符串里若形如数值字面量，例如 `"0xffff_ffff"`，会被当作数值候选处理。
+- 只支持布尔、整数、字符串、数组和元组；不支持浮点、表数组等更复杂的 TOML 结构。
+
+这也解释了为什么 `Config::from_toml` 会拒绝 `[[table]]` 这样的对象数组：它的目标不是通用 TOML 引擎，而是为内核/平台常量生成服务。
 
 ## 2. 核心功能说明
-- 功能定位：A TOML-based configuration generation tool for ArceOS.
-- 对外接口：从源码可见的主要公开入口包括 `item_name`、`table_name`、`key`、`value`、`comments`、`value_mut`、`new`、`is_empty`、`ConfigItem`、`Config` 等（另有 5 个公开入口）。
-- 典型使用场景：作为共享基础设施被多个 OS 子系统复用，常见场景包括同步、内存管理、设备抽象、接口桥接和虚拟化基础能力。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `new()` -> `new_global()` -> `new_table()` -> `new_with_type()`。
+### 2.1 主要功能
+- 解析带类型注释的 TOML 配置规格。
+- 合并多份规格文件，并拒绝重复键。
+- 用旧配置或命令行写入项覆盖默认值。
+- 输出新的 TOML 配置文件。
+- 输出 Rust 常量定义，供宏或代码生成链路使用。
+
+### 2.2 CLI 能力
+根据 `src/main.rs`，当前 CLI 支持：
+
+- `spec...`：输入一个或多个规格文件
+- `-c, --oldconfig`：读取旧配置并做“按键更新”
+- `-o, --output`：输出到文件
+- `-f, --fmt`：选择 `toml` 或 `rust`
+- `-r, --read`：读取单个配置项
+- `-w, --write`：覆写单个配置项
+- `-v, --verbose`：打印调试信息
+
+这套接口正是 `axbuild` 生成 `.axconfig.toml` 时调用的基础。
+
+### 2.3 与 `axconfig-macros` 的关系
+`axconfig-macros` 并没有自己重新实现 TOML 解析器，而是直接调用：
+
+- `Config::from_toml`
+- `Config::dump(OutputFormat::Rust)`
+
+因此，`axconfig-gen` 是宏层和命令行层共享的核心实现，而不是一个只给终端使用的独立工具。
 
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    current["axconfig-gen"]
-    axconfig_macros["axconfig-macros"] --> current
+    cli["axbuild / 手工命令"] --> exe["axconfig-gen 可执行文件"]
+    macros["axconfig-macros"] --> lib["axconfig-gen 库接口"]
+    exe --> lib
+    lib --> out["TOML / Rust 常量代码"]
 ```
 
-### 3.1 直接与间接依赖
-- 未检测到本仓库内的直接本地依赖；该 crate 可能主要依赖外部生态或承担叶子节点角色。
+### 3.1 关键直接依赖
+- `toml_edit`：负责 TOML 解析和装饰信息保留。
+- `clap`：提供 CLI 参数解析。
 
-### 3.2 间接本地依赖
-- 未检测到额外的间接本地依赖，或依赖深度主要停留在第一层。
+### 3.2 关键直接消费者
+- `axconfig-macros`：直接复用库接口，把 TOML 转成 Rust 代码。
+- `axbuild`：通过执行 `axconfig-gen` 命令生成最终 `.axconfig.toml`。
+- 人工构建流程：开发者也可以直接用命令行查看、修改、生成配置。
 
-### 3.3 被依赖情况
-- `axconfig-macros`
-
-### 3.4 间接被依赖情况
-- `arceos-affinity`
-- `arceos-helloworld`
-- `arceos-helloworld-myplat`
-- `arceos-httpclient`
-- `arceos-httpserver`
-- `arceos-irq`
-- `arceos-memtest`
-- `arceos-parallel`
-- `arceos-priority`
-- `arceos-shell`
-- `arceos-sleep`
-- `arceos-wait-queue`
-- 另外还有 `37` 个同类项未在此展开
-
-### 3.5 关键外部依赖
-- `clap`
-- `toml_edit`
+### 3.3 间接消费者
+- `axconfig`：通过 `axconfig-macros` 或构建链间接使用它的输出。
+- 依赖 `axconfig` 的所有内核模块：间接受益于它生成的常量。
 
 ## 4. 开发指南
-### 4.1 依赖配置
-```toml
-[dependencies]
-axconfig-gen = { workspace = true }
+### 4.1 适合在这里做的改动
+- 扩展配置项类型系统。
+- 调整 TOML 到 Rust 常量的输出格式。
+- 改进多规格合并、旧配置覆盖或 CLI 交互体验。
 
-# 如果在仓库外独立验证，也可以显式绑定本地路径：
-# axconfig-gen = { path = "components/axconfig-gen/axconfig-gen" }
+### 4.2 修改时的关键约束
+1. 新增类型时，必须同时修改 `ty.rs`、`value.rs` 和 `output.rs`。
+2. 任何改变输出格式的改动，都要考虑 `axconfig-macros` 和 `axconfig` 的兼容性。
+3. `merge()` 与 `update()` 语义不同：前者拒绝重复键，后者只更新已知键并返回未触达/多余项。
+4. 不要把运行时平台逻辑放进这里，它应该保持为纯宿主侧工具。
+
+### 4.3 典型调用示例
+```bash
+axconfig-gen configs/defconfig.toml configs/board/qemu-aarch64.toml \
+  -w arch=\"aarch64\" \
+  -w plat.max-cpu-num=4 \
+  -o .axconfig.toml
 ```
 
-### 4.2 初始化流程
-1. 在 `Cargo.toml` 中接入该 crate，并根据需要开启相关 feature。
-2. 若 crate 暴露初始化入口，优先调用 `init`/`new`/`build`/`start` 类函数建立上下文。
-3. 在最小消费者路径上验证公开 API、错误分支与资源回收行为。
-
-### 4.3 关键 API 使用提示
-- 优先关注函数入口：`item_name`、`table_name`、`key`、`value`、`comments`、`value_mut`、`new`、`is_empty` 等（另有 30 项）。
-- 上下文/对象类型通常从 `ConfigItem`、`Config`、`Output`、`ConfigValue` 等结构开始。
+这个示例正对应当前仓库里 `axbuild` 的典型工作方式：先合并规格，再覆写少量构建参数。
 
 ## 5. 测试策略
-### 5.1 当前仓库内的测试形态
-- 存在单元测试/`#[cfg(test)]` 场景：`src/lib.rs`、`src/ty.rs`。
+### 5.1 当前测试形态
+`axconfig-gen` 是这条链路里测试相对完整的一环，`src/tests.rs` 已覆盖：
 
-### 5.2 单元测试重点
-- 建议用单元测试覆盖公开 API、错误分支、边界条件以及并发/内存安全相关不变量。
+- 类型推导
+- 类型匹配与错误分支
+- TOML 值到 Rust 代码的转换
+- 以示例配置为基础的集成回归
 
-### 5.3 集成测试重点
-- 建议补充被 ArceOS/StarryOS/Axvisor 消费时的最小集成路径，确保接口语义与 feature 组合稳定。
+### 5.2 建议继续加强的点
+- CLI 级别 smoke test，例如 `-r`、`-w`、`-c` 组合行为。
+- 对备份文件命名和“输出未变化时不重写”行为的回归测试。
+- 多规格文件冲突时的诊断信息测试。
 
-### 5.4 覆盖率要求
-- 覆盖率建议：核心算法与错误路径达到高覆盖，关键数据结构和边界条件应实现接近完整覆盖。
+### 5.3 高风险改动的验证重点
+- `ConfigValue::update()` 的类型保持语义。
+- `to_rust()` 对嵌套数组/元组的输出。
+- `Config::from_toml()` 对注释中类型标注的解析。
+
+### 5.4 覆盖率重点
+对 `axconfig-gen` 来说，最重要的是“类型系统覆盖”和“输出稳定性覆盖”；一旦这些行为变动，整个 `axconfig*` 链都会受影响。
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-`axconfig-gen` 主要通过 `arceos-affinity`、`arceos-helloworld`、`arceos-helloworld-myplat`、`arceos-httpclient`、`arceos-httpserver`、`arceos-irq` 等（另有 27 项） 等上层 crate 被 ArceOS 间接复用，通常处于更底层的公共依赖层。
+`axconfig-gen` 是 ArceOS 配置链路的生成核心。无论是 `axbuild` 生成 `.axconfig.toml`，还是 `axconfig-macros` 生成 Rust 常量，底层都依赖它的解析与输出逻辑。
 
 ### 6.2 StarryOS
-`axconfig-gen` 主要通过 `starry-kernel`、`starryos`、`starryos-test` 等上层 crate 被 StarryOS 间接复用，通常处于更底层的公共依赖层。
+StarryOS 不直接把 `axconfig-gen` 当运行时依赖使用，但只要沿用同一套 ArceOS 平台配置和构建装配链，就会间接受到它的输出格式和类型系统影响。
 
 ### 6.3 Axvisor
-`axconfig-gen` 主要通过 `axvisor` 等上层 crate 被 Axvisor 间接复用，通常处于更底层的公共依赖层。
+Axvisor 在当前工作区里通过共享的构建基础设施间接受益于 `axconfig-gen`，尤其在动态平台或统一构建工具链场景中更明显。但它依然是宿主侧工具依赖，而不是 hypervisor 镜像中的运行时组件。

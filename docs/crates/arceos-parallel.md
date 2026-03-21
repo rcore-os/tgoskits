@@ -1,106 +1,146 @@
 # `arceos-parallel` 技术文档
 
 > 路径：`test-suit/arceos/task/parallel`
-> 类型：二进制 crate
-> 分层：测试层 / 系统级测试与回归入口
+> 类型：测试入口 crate
+> 分层：测试层 / ArceOS 并行执行与同步回归
 > 版本：`0.1.0`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 未检测到 crate 层 README
+> 文档依据：`Cargo.toml`、`src/main.rs`、`qemu-riscv64.toml`
 
-`arceos-parallel` 的核心定位是：ArceOS 系统级测试与回归入口
+`arceos-parallel` 通过“把 200 万个数分片给 16 个任务并求和”的固定工作负载，验证 ArceOS 的多任务、`join`、等待队列屏障以及多核并行路径是否仍然正确。它不是在提供并行框架，而是在拿一条可复现的并发计算链做系统回归。
+
+核心边界非常清楚：**它不是线程池、不是并行算法库，也不是性能 benchmark；它只是用一个固定工作负载证明并行任务、同步屏障和结果归并没有坏。**
 
 ## 1. 架构设计分析
-- 目录角色：系统级测试与回归入口
-- crate 形态：二进制 crate
-- 工作区位置：根工作区
-- feature 视角：该 crate 没有显式声明额外 Cargo feature，功能边界主要由模块本身决定。
-- 关键数据结构：可直接观察到的关键数据结构/对象包括 `NUM_DATA`、`NUM_TASKS`、`BARRIER_WQ`、`BARRIER_COUNT`。
-- 设计重心：该 crate 的主线不是提供稳定库 API，而是构造可复现的系统级测试场景，并通过日志、退出行为或 QEMU 结果判断是否回归通过。
+### 1.1 工作负载结构
+这个 crate 的主线分三步：
 
-### 1.1 内部模块划分
-- 当前 crate 未显式声明多个顶层 `mod`，复杂度更可能集中在单文件入口、宏展开或下层子 crate。
+1. 用固定随机种子生成 `NUM_DATA = 2_000_000` 个 `u64` 数据。
+2. 主线程串行计算一次期望结果 `expect`。
+3. 16 个任务并行处理各自的切片，最后主线程 `join` 所有任务并汇总结果。
 
-### 1.2 核心算法/机制
-- 该 crate 主要承载系统级测试入口、QEMU/平台配置或断言编排，核心机制是测试场景构造与结果判定。
+这让它同时具备：
+
+- 正确性基线：串行 `expect`
+- 并行路径：多任务分片求和
+- 收敛点：所有子任务 `join`
+
+### 1.2 自制 barrier 的作用
+源码里的 `barrier()` 不是多余的，它明确让所有任务在完成自己的局部计算后，在同一个同步点汇合，然后再统一继续。对 `axstd` 场景，它使用：
+
+- `AxWaitQueueHandle`
+- `ax_wait_queue_wait_until()`
+- `ax_wait_queue_wake()`
+
+这相当于顺手把等待队列同步路径也带进了测试。
+
+### 1.3 真实调用链
+```mermaid
+flowchart LR
+    A["thread::spawn"] --> B["axtask 任务创建"]
+    B --> C["每个任务处理数据切片"]
+    C --> D["barrier() -> wait queue"]
+    D --> E["thread::JoinHandle::join"]
+    E --> F["汇总 partial_sum"]
+```
+
+此外，`main()` 一开始还故意调用了一次“永不满足条件、500ms 超时返回”的 `ax_wait_queue_wait_until()`，专门验证超时路径能返回 `true`。
 
 ## 2. 核心功能说明
-- 功能定位：ArceOS 系统级测试与回归入口
-- 对外接口：该 crate 的公开入口主要是 `main()` 或命令子流程，本身不强调稳定库 API。
-- 典型使用场景：用于验证固定功能点、特定 bug 回归或系统语义是否符合预期，通常通过 QEMU 日志或退出状态判断成功与否。 这类 crate 的核心使用方式通常是运行入口本身，而不是被别的库当作稳定 API 依赖。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `main()`。
+### 2.1 工作负载本身在测什么
+每个任务对自己负责的区间执行整数平方根近似 `sqrt()` 并求和。这个计算不复杂，但足够耗时，能让：
+
+- 任务真正并行运行一段时间
+- `join` 与屏障逻辑有机会暴露问题
+- 结果可通过串行基线精确比对
+
+### 2.2 为什么要保留串行 `expect`
+如果只跑并行求和，没有独立的串行基线，就很难判断：
+
+- 是同步错了
+- 是任务丢了
+- 还是局部计算本身错了
+
+用同一份数据先算出 `expect`，可以把并行路径的错误直接归因到调度、同步或归并。
+
+### 2.3 边界澄清
+这个 crate 不应该被当成：
+
+- 并行运行时抽象
+- 高性能计算示例
+- 自动负载均衡策略验证工具
+
+它只是一个“结果可核对、同步点明确”的并发回归入口。
 
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    current["arceos-parallel"]
-    current --> axstd["axstd"]
+    test["arceos-parallel"] --> axstd["axstd(alloc, multitask, irq)"]
+    test --> rand["rand(small_rng)"]
+    axstd --> arceos_api["arceos_api::task"]
+    arceos_api --> axtask["axtask / wait queue"]
 ```
 
-### 3.1 直接与间接依赖
-- `axstd`
+### 3.1 直接依赖
+- `axstd(alloc, multitask, irq)`：表明它同时依赖堆分配、多任务和超时等待。
+- `rand(small_rng)`：生成固定输入数据集。
 
-### 3.2 间接本地依赖
-- `arceos_api`
-- `arm_pl011`
-- `arm_pl031`
-- `axalloc`
-- `axallocator`
-- `axbacktrace`
-- `axconfig`
-- `axconfig-gen`
-- `axconfig-macros`
-- `axcpu`
-- `axdisplay`
-- `axdma`
-- 另外还有 `61` 个同类项未在此展开
+### 3.2 关键间接依赖
+- `JoinHandle::join`：等待子任务结果收敛。
+- `AxWaitQueueHandle`：构造 barrier 与超时 smoke test。
+- `axtask`：真实承载调度与同步。
 
-### 3.3 被依赖情况
-- 当前未发现本仓库内其他 crate 对其存在直接本地依赖。
-
-### 3.4 间接被依赖情况
-- 当前未发现更多间接消费者，或该 crate 主要作为终端入口使用。
-
-### 3.5 关键外部依赖
-- `rand`
+### 3.3 主要消费者
+- 并行任务与同步基础设施改动后的快速回归。
+- `cargo xtask test arceos` 自动收集的任务并发回归集。
 
 ## 4. 开发指南
-### 4.1 运行入口
-```toml
-# `arceos-parallel` 主要作为测试/验证入口使用，通常不作为普通库依赖。
-# 推荐通过 xtask 统一测试入口或单包运行命令触发。
-```
-
+### 4.1 推荐运行方式
 ```bash
-cargo xtask test arceos --target riscv64gc-unknown-none-elf
 cargo xtask arceos run --package arceos-parallel --arch riscv64
 ```
 
-### 4.2 初始化流程
-1. 先明确该测试场景对应的目标架构、QEMU 配置和成功/失败判据。
-2. 优先通过 `cargo xtask test arceos` 跑完整测试入口，单包调试再退回 `run --package`。
-3. 修改测试时同步检查日志匹配、预期 panic、退出状态和 feature 组合，保证回归结果可复现。
+或：
 
-### 4.3 关键 API 使用提示
-- 该 crate 的关键接入点通常是运行命令、CLI 参数或入口函数，而不是稳定库 API。
+```bash
+cargo xtask test arceos --target riscv64gc-unknown-none-elf
+```
+
+### 4.2 修改时的注意点
+1. 保持输入数据与分片方式可复现，不要引入难以重现实验条件。
+2. 如果修改 `NUM_TASKS`，要同步审视 `barrier()` 的等待条件。
+3. 不要把性能比较结果写死为断言；这个 crate 更关注正确性与活性。
+
+### 4.3 适合新增的方向
+- 更多同步点
+- 不同切片分布策略
+- 更复杂但仍可精确校验结果的工作负载
 
 ## 5. 测试策略
-### 5.1 当前仓库内的测试形态
-- 该 crate 本身就是系统级测试入口，测试价值主要来自 QEMU/平台运行结果而非 host 侧库测试。
+### 5.1 当前自动化形态
+`qemu-riscv64.toml` 明确配置了：
 
-### 5.2 单元测试重点
-- 若该 crate 含辅助库逻辑，可对断言解析、日志匹配和测试输入构造做单元测试。
+- `-smp 4`
+- `success_regex = ["Parallel summation tests run OK!"]`
+- panic 关键字失败匹配
 
-### 5.3 集成测试重点
-- 重点是保持测试矩阵可复现：架构、平台、QEMU 配置、成功/失败判据都应纳入回归。
+说明它是自动回归入口，不依赖人工交互。
 
-### 5.4 覆盖率要求
-- 覆盖率要求以场景覆盖为主：应覆盖正常路径、预期失败路径和关键平台/feature 组合。
+### 5.2 成功标准
+- 500ms 等待队列超时 smoke test 返回正确
+- 所有任务都完成并通过 barrier
+- 所有 `partial_sum` 归并后的 `actual == expect`
+- 最终打印 `Parallel summation tests run OK!`
+
+### 5.3 风险点
+- 若等待队列或 `join` 逻辑有问题，最常见现象是卡住不结束。
+- 若任务分片或结果汇总出错，会直接表现为 `assert_eq!(expect, actual)` 失败。
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-当前未检测到 ArceOS 工程本体对 `arceos-parallel` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
+它是 ArceOS 并发执行与同步语义的一条综合回归入口，但仍然只是测试入口，不是系统功能本身。
 
 ### 6.2 StarryOS
-当前未检测到 StarryOS 工程本体对 `arceos-parallel` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
+StarryOS 不直接运行它；不过共享调度、同步或等待队列改动后，这类回归依然能先一步暴露底层问题。
 
 ### 6.3 Axvisor
-当前未检测到 Axvisor 工程本体对 `arceos-parallel` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
+Axvisor 也不会直接消费它。它的价值在于把“并发 + 同步 + 可校验结果”这条短路径先验证好，再进入更复杂的虚拟化执行场景。

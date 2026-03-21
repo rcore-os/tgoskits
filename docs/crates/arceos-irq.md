@@ -1,107 +1,155 @@
 # `arceos-irq` 技术文档
 
 > 路径：`test-suit/arceos/task/irq`
-> 类型：二进制 crate
-> 分层：测试层 / 系统级测试与回归入口
+> 类型：测试入口 crate
+> 分层：测试层 / ArceOS 任务上下文 IRQ 语义回归
 > 版本：`0.1.0`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 未检测到 crate 层 README
+> 文档依据：`Cargo.toml`、`src/main.rs`、`src/irq.rs`、`qemu-riscv64.toml`
 
-`arceos-irq` 的核心定位是：ArceOS 系统级测试与回归入口
+`arceos-irq` 并不是在测试某个外设中断处理器，而是在测试“任务切换、睡眠、等待队列阻塞前后，IRQ 开关语义是否保持正确”。它把 `yield`、`sleep` 和 `wait_queue` 三条任务路径串起来，在关键点检查中断是否处于预期状态。
+
+需要强调的是：**这不是通用中断框架样例，也不是设备驱动模板；它专门验证任务上下文里的 IRQ 使能/关闭语义。**
 
 ## 1. 架构设计分析
-- 目录角色：系统级测试与回归入口
-- crate 形态：二进制 crate
-- 工作区位置：根工作区
-- feature 视角：该 crate 没有显式声明额外 Cargo feature，功能边界主要由模块本身决定。
-- 关键数据结构：可直接观察到的关键数据结构/对象包括 `NUM_TASKS`、`NUM_TIMES`、`YIELDING_FINISHED_TASKS`、`SLEEP_FINISHED_TASKS`。
-- 设计重心：该 crate 的主线不是提供稳定库 API，而是构造可复现的系统级测试场景，并通过日志、退出行为或 QEMU 结果判断是否回归通过。
+### 1.1 子测试划分
+`main()` 依次调用：
 
-### 1.1 内部模块划分
-- `irq`：IRQ 注册、屏蔽与派发路径
+- `test_yielding()`
+- `test_sleep()`
+- `test_wait_queue()`
 
-### 1.2 核心算法/机制
-- 该 crate 主要承载系统级测试入口、QEMU/平台配置或断言编排，核心机制是测试场景构造与结果判定。
+也就是说，它不是单点测试，而是把三条最常见的任务状态切换路径都过一遍。
+
+### 1.2 `src/irq.rs` 的作用
+辅助模块 `src/irq.rs` 没有注册外设 IRQ handler，而是提供了几个语义检查函数：
+
+- `assert_irq_enabled()`
+- `assert_irq_disabled()`
+- `assert_irq_enabled_and_disabled()`
+- `disable_irqs()`
+- `enable_irqs()`
+
+这些函数直接读写 `axhal::asm::{irqs_enabled, disable_irqs, enable_irqs}`，所以它们观察的是真实的 CPU IRQ 状态，而不是某个模拟标志位。
+
+### 1.3 三条真实调用链
+本 crate 实际上在验证下面三种任务路径：
+
+```mermaid
+flowchart TD
+    A["yield_now()"] --> B["axtask::yield_now"]
+    C["sleep()"] --> D["axtask::sleep_until"]
+    E["WaitQueue wait/notify"] --> F["axtask::WaitQueue"]
+    B --> G["检查 IRQ 状态"]
+    D --> G
+    F --> G
+```
+
+重点不是中断有没有发生，而是“任务在这些切换后回来时，中断状态是否仍符合预期”。
 
 ## 2. 核心功能说明
-- 功能定位：ArceOS 系统级测试与回归入口
-- 对外接口：从源码可见的主要公开入口包括 `assert_irq_enabled`、`assert_irq_disabled`、`assert_irq_enabled_and_disabled`、`disable_irqs`、`enable_irqs`。
-- 典型使用场景：用于验证固定功能点、特定 bug 回归或系统语义是否符合预期，通常通过 QEMU 日志或退出状态判断成功与否。 这类 crate 的核心使用方式通常是运行入口本身，而不是被别的库当作稳定 API 依赖。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `main()`。
+### 2.1 `test_yielding()`
+这个子测试会创建 16 个任务，每个任务反复：
+
+1. 断言当前 IRQ 处于开启状态。
+2. 调用 `thread::yield_now()`。
+3. 再次检查“可开可关再恢复”这一基本语义。
+
+它验证的是 cooperative 切换前后，中断状态没有被错误污染。
+
+### 2.2 `test_sleep()`
+这个子测试验证：
+
+- 主线程睡眠后能恢复
+- 后台 tick 线程在系统运行期间持续推进
+- 多个子任务多次睡眠后仍能保持正确 IRQ 状态
+
+这部分更接近“timer 驱动的任务阻塞/唤醒路径 IRQ 语义回归”。
+
+### 2.3 `test_wait_queue()`
+这里直接使用 `axtask::WaitQueue`，而不是 `AxWaitQueueHandle`。它验证：
+
+- `wait_timeout_until`
+- `wait_until`
+- `notify_one`
+- `notify_all`
+
+在这些阻塞和唤醒点前后，任务仍能安全地观察和切换 IRQ 状态。
+
+### 2.4 边界澄清
+这个 crate 不证明：
+
+- 某个具体设备中断号配置正确
+- trap handler 派发性能
+- 外设驱动完整可用
+
+它只证明任务相关路径没有把 IRQ 语义搞乱。
 
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    current["arceos-irq"]
-    current --> axstd["axstd"]
+    test["arceos-irq"] --> axstd["axstd(multitask, irq)"]
+    test --> axhal["axhal::asm"]
+    test --> axtask["axtask::WaitQueue"]
+    axstd --> arceos_api["arceos_api::task"]
 ```
 
-### 3.1 直接与间接依赖
-- `axstd`
+### 3.1 直接依赖
+- `axstd(multitask, irq)`：启用多任务与中断相关路径。
 
-### 3.2 间接本地依赖
-- `arceos_api`
-- `arm_pl011`
-- `arm_pl031`
-- `axalloc`
-- `axallocator`
-- `axbacktrace`
-- `axconfig`
-- `axconfig-gen`
-- `axconfig-macros`
-- `axcpu`
-- `axdisplay`
-- `axdma`
-- 另外还有 `61` 个同类项未在此展开
+### 3.2 关键间接依赖
+- `axtask`：任务切换、睡眠和等待队列的真实实现。
+- `axhal::asm`：读取和切换当前 CPU 的 IRQ 状态。
 
-### 3.3 被依赖情况
-- 当前未发现本仓库内其他 crate 对其存在直接本地依赖。
-
-### 3.4 间接被依赖情况
-- 当前未发现更多间接消费者，或该 crate 主要作为终端入口使用。
-
-### 3.5 关键外部依赖
-- 当前依赖集合几乎完全来自仓库内本地 crate。
+### 3.3 主要消费者
+- `cargo xtask test arceos` 自动回归。
+- `axtask`、IRQ 相关上下文切换逻辑改动后的定向验证。
 
 ## 4. 开发指南
-### 4.1 运行入口
-```toml
-# `arceos-irq` 主要作为测试/验证入口使用，通常不作为普通库依赖。
-# 推荐通过 xtask 统一测试入口或单包运行命令触发。
-```
-
+### 4.1 推荐运行方式
 ```bash
-cargo xtask test arceos --target riscv64gc-unknown-none-elf
 cargo xtask arceos run --package arceos-irq --arch riscv64
 ```
 
-### 4.2 初始化流程
-1. 先明确该测试场景对应的目标架构、QEMU 配置和成功/失败判据。
-2. 优先通过 `cargo xtask test arceos` 跑完整测试入口，单包调试再退回 `run --package`。
-3. 修改测试时同步检查日志匹配、预期 panic、退出状态和 feature 组合，保证回归结果可复现。
+或者：
 
-### 4.3 关键 API 使用提示
-- 该 crate 的关键接入点通常是运行命令、CLI 参数或入口函数，而不是稳定库 API。
-- 优先关注函数入口：`assert_irq_enabled`、`assert_irq_disabled`、`assert_irq_enabled_and_disabled`、`disable_irqs`、`enable_irqs`。
+```bash
+cargo xtask test arceos --target riscv64gc-unknown-none-elf
+```
+
+### 4.2 修改时的注意点
+1. 新增场景必须明确说明是在验证哪条任务路径的 IRQ 语义。
+2. 尽量复用 `src/irq.rs` 的检查函数，避免分散出多套判定逻辑。
+3. 不要把设备驱动级测试塞进这里，那是另一类回归。
+
+### 4.3 适合补充的场景
+- 与 IPI 或抢占结合的 IRQ 状态回归
+- 不同调度器 feature 下的上下文切换状态检查
 
 ## 5. 测试策略
-### 5.1 当前仓库内的测试形态
-- 该 crate 本身就是系统级测试入口，测试价值主要来自 QEMU/平台运行结果而非 host 侧库测试。
+### 5.1 当前自动化形态
+`qemu-riscv64.toml` 中已配置：
 
-### 5.2 单元测试重点
-- 若该 crate 含辅助库逻辑，可对断言解析、日志匹配和测试输入构造做单元测试。
+- `-smp 4`
+- `success_regex = ["Task irq state tests run OK!"]`
+- panic 关键字失败匹配
 
-### 5.3 集成测试重点
-- 重点是保持测试矩阵可复现：架构、平台、QEMU 配置、成功/失败判据都应纳入回归。
+说明它是标准自动回归包。
 
-### 5.4 覆盖率要求
-- 覆盖率要求以场景覆盖为主：应覆盖正常路径、预期失败路径和关键平台/feature 组合。
+### 5.2 成功标准
+- `yield` / `sleep` / `wait_queue` 三条子路径都能走通
+- 中途不会因为 IRQ 状态异常触发断言
+- 最终打印 `Task irq state tests run OK!`
+
+### 5.3 风险点
+- 若某条路径错误地在恢复任务时关闭了 IRQ，这个测试会直接 panic。
+- 若 timer/等待队列路径有更深层 bug，可能首先表现为“卡住不结束”。
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-当前未检测到 ArceOS 工程本体对 `arceos-irq` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
+它是 ArceOS 任务上下文 IRQ 语义的直接回归入口，定位很窄但很关键。
 
 ### 6.2 StarryOS
-当前未检测到 StarryOS 工程本体对 `arceos-irq` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
+StarryOS 不直接运行它，但共享任务和 IRQ 基础设施改动时，这类回归能帮助更早发现底层问题。
 
 ### 6.3 Axvisor
-当前未检测到 Axvisor 工程本体对 `arceos-irq` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
+Axvisor 也不会直接依赖它；它的意义在于先把共享的任务/IRQ 语义验证清楚，再进入更复杂的虚拟化中断场景。

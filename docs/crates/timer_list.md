@@ -2,92 +2,123 @@
 
 > 路径：`components/timer_list`
 > 类型：库 crate
-> 分层：组件层 / 可复用基础组件
+> 分层：组件层 / 定时事件队列基础件
 > 版本：`0.1.0`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 `components/timer_list/README.md`
+> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`os/axvisor/src/vmm/timer.rs`
 
-`timer_list` 的核心定位是：A list of timed events that will be triggered sequentially when the timer expires
+`timer_list` 提供一个按截止时间排序的定时事件容器。它内部用 `BinaryHeap` 实现最小堆语义，向上暴露“插入事件、取消事件、取出最早到期事件”的接口。它是容器型叶子基础件：不是硬件定时器驱动、不是中断时钟源，也不是完整的定时器子系统。
 
 ## 1. 架构设计分析
-- 目录角色：可复用基础组件
-- crate 形态：库 crate
-- 工作区位置：根工作区
-- feature 视角：该 crate 没有显式声明额外 Cargo feature，功能边界主要由模块本身决定。
-- 关键数据结构：可直接观察到的关键数据结构/对象包括 `TimerEventWrapper`、`TimerList`、`TimerEventFn`、`TestTimerEvent`、`TimeValue`、`EVENT_ORDER`、`COUNT`。
-- 设计重心：该 crate 通常作为多个内核子系统共享的底层构件，重点在接口边界、数据结构和被上层复用的方式。
+### 1.1 设计定位
+这个 crate 解决的是“怎样保存一组带截止时间的事件，并按到期顺序逐个取出来”。它刻意把职责压得很窄：
 
-### 1.1 内部模块划分
-- 当前 crate 未显式声明多个顶层 `mod`，复杂度更可能集中在单文件入口、宏展开或下层子 crate。
+- 不负责获取当前时间。
+- 不负责设置下一次硬件中断。
+- 不负责自动执行回调。
 
-### 1.2 核心算法/机制
-- 定时器触发、截止时间维护和延迟队列
+因此它更像“超时队列”而不是“定时器框架”。
+
+### 1.2 核心类型
+- `TimeValue = core::time::Duration`：当前时间值别名。
+- `TimerEvent`：事件 trait，只要求实现 `callback(self, now)`。
+- `TimerList<E>`：存放事件的主体结构。
+- `TimerEventFn`：把 `FnOnce(TimeValue)` 封装成一个 `TimerEvent`。
+
+### 1.3 内部实现
+`TimerList` 内部实际保存的是：
+
+- `BinaryHeap<TimerEventWrapper<E>>`
+
+而 `TimerEventWrapper` 通过反转 `Ord` / `PartialOrd` 的比较结果，把标准库的大顶堆改造成“最早 deadline 优先”的最小堆语义。也就是说，`peek()` 看到的其实是“最先到期的事件”。
+
+### 1.4 触发主线
+它的典型使用模式如下：
+
+```mermaid
+flowchart TD
+    A["set(deadline, event)"] --> B["push 到最小堆"]
+    C["next_deadline()"] --> D["读取最早 deadline"]
+    E["expire_one(now)"] --> F{"堆顶 deadline <= now ?"}
+    F -- 是 --> G["pop 并返回 (deadline, event)"]
+    F -- 否 --> H["返回 None"]
+```
+
+注意最后一步只是“返回事件”，不是“自动执行事件”。真正调用 `event.callback(now)` 的是上层运行时。
 
 ## 2. 核心功能说明
-- 功能定位：A list of timed events that will be triggered sequentially when the timer expires
-- 对外接口：从源码可见的主要公开入口包括 `new`、`is_empty`、`set`、`cancel`、`next_deadline`、`expire_one`、`TimerEventWrapper`、`TimerList`、`TimerEventFn`、`TestTimerEvent` 等（另有 1 个公开入口）。
-- 典型使用场景：作为共享基础设施被多个 OS 子系统复用，常见场景包括同步、内存管理、设备抽象、接口桥接和虚拟化基础能力。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `new()`。
+### 2.1 主要功能
+- 向队列插入一个带绝对截止时间的事件。
+- 查询当前最早的截止时间。
+- 删除满足条件的一批事件。
+- 逐个弹出已经到期的事件。
+
+### 2.2 关键 API 与真实使用位置
+- `TimerList::set()`：`os/axvisor/src/vmm/timer.rs` 在注册 VMM timer 时调用。
+- `cancel()`：Axvisor 按 token 取消已登记的事件。
+- `expire_one()`：Axvisor 的 `check_events()` 循环不断取出已到期事件，再由上层显式执行回调。
+- `TimerEventFn::new()`：本 crate 测试里用于快速包装闭包事件。
+
+### 2.3 使用边界
+- `timer_list` 不保证线程安全，真实系统里需要像 Axvisor 那样再包一层 `SpinNoIrq` 或其他锁。
+- `timer_list` 不负责重复定时器、周期性重装或硬件编程。
+- `timer_list` 也不是高性能 timer wheel；当前取消实现甚至直接使用 `BinaryHeap::retain()`，源码里明确写了 `TODO: performance optimization`。
 
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    current["timer_list"]
-    axvisor["axvisor"] --> current
+    timer_list["timer_list"] --> axvisor["axvisor VMM timer"]
 ```
 
-### 3.1 直接与间接依赖
-- 未检测到本仓库内的直接本地依赖；该 crate 可能主要依赖外部生态或承担叶子节点角色。
+### 3.1 关键直接依赖
+`timer_list` 没有本地 crate 依赖，保持了纯容器实现。
 
-### 3.2 间接本地依赖
-- 未检测到额外的间接本地依赖，或依赖深度主要停留在第一层。
-
-### 3.3 被依赖情况
-- `axvisor`
-
-### 3.4 间接被依赖情况
-- 当前未发现更多间接消费者，或该 crate 主要作为终端入口使用。
-
-### 3.5 关键外部依赖
-- 当前依赖集合几乎完全来自仓库内本地 crate。
+### 3.2 关键直接消费者
+- `axvisor`：在 `vmm/timer.rs` 中以 `LazyInit<SpinNoIrq<TimerList<VmmTimerEvent>>>` 的形式使用。
 
 ## 4. 开发指南
 ### 4.1 依赖配置
 ```toml
 [dependencies]
 timer_list = { workspace = true }
-
-# 如果在仓库外独立验证，也可以显式绑定本地路径：
-# timer_list = { path = "components/timer_list" }
 ```
 
-### 4.2 初始化流程
-1. 在 `Cargo.toml` 中接入该 crate，并根据需要开启相关 feature。
-2. 若 crate 暴露初始化入口，优先调用 `init`/`new`/`build`/`start` 类函数建立上下文。
-3. 在最小消费者路径上验证公开 API、错误分支与资源回收行为。
+### 4.2 修改时的关键约束
+1. `Ord` 的反转实现决定了最小堆语义，任何改动都要重新验证 `next_deadline()` / `expire_one()` 是否仍返回最早事件。
+2. `expire_one()` 当前只弹一个事件，批量到期场景要由外层循环处理；不要悄悄改成“一次清空所有到期事件”。
+3. `cancel()` 的性能目前是线性保留，若做优化，要保持“按谓词删除多个事件”的语义。
+4. `TimerEventFn` 使用 `FnOnce`，意味着事件天然是一次性的；不要误改成可重复调用而破坏消费语义。
 
-### 4.3 关键 API 使用提示
-- 优先关注函数入口：`new`、`is_empty`、`set`、`cancel`、`next_deadline`、`expire_one`。
-- 上下文/对象类型通常从 `TimerEventWrapper`、`TimerList`、`TimerEventFn`、`TestTimerEvent` 等结构开始。
+### 4.3 开发建议
+- 需要线程安全时，在外层包锁，不要把锁策略硬塞进 `timer_list`。
+- 需要周期定时器时，在回调里重新插入新事件，或由上层另建策略层。
+- 若要接入硬件时钟源，应让平台时间层决定何时唤醒，再由 `timer_list` 只负责维护软件队列。
 
 ## 5. 测试策略
-### 5.1 当前仓库内的测试形态
-- 存在单元测试/`#[cfg(test)]` 场景：`src/lib.rs`。
+### 5.1 当前测试形态
+`timer_list` 的测试位于 `src/lib.rs`：
+
+- `test_timer_list()`：覆盖排序、取消和按顺序到期。
+- `test_timer_list_fn()`：覆盖 `TimerEventFn` 闭包包装。
 
 ### 5.2 单元测试重点
-- 建议用单元测试覆盖公开 API、错误分支、边界条件以及并发/内存安全相关不变量。
+- deadline 顺序是否正确。
+- `cancel()` 是否只删除命中事件。
+- `expire_one()` 在未到期和已到期场景下的行为。
 
 ### 5.3 集成测试重点
-- 建议补充被 ArceOS/StarryOS/Axvisor 消费时的最小集成路径，确保接口语义与 feature 组合稳定。
+- Axvisor 定时器注册、取消、轮询处理链路。
+- 在多事件同一时刻到期时，上层循环是否能逐个取尽。
 
 ### 5.4 覆盖率要求
-- 覆盖率建议：核心算法与错误路径达到高覆盖，关键数据结构和边界条件应实现接近完整覆盖。
+- 对 `timer_list`，顺序语义和取消语义是核心。
+- 如果调整堆排序或取消算法，必须补覆盖同 deadline、多次 cancel、空队列等边界测试。
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-当前未检测到 ArceOS 工程本体对 `timer_list` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
+当前 ArceOS 主线模块没有直接把 `timer_list` 作为公共运行时定时器使用。若未来接入，它也应仍然只是一个定时事件容器。
 
 ### 6.2 StarryOS
-当前未检测到 StarryOS 工程本体对 `timer_list` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
+当前仓库里 StarryOS 没有直接依赖 `timer_list`。即便后续复用，它也只适合作为低层延时队列，而不是完整定时框架。
 
 ### 6.3 Axvisor
-`timer_list` 不在 Axvisor 目录内部，但被 `axvisor` 等 Axvisor crate 直接依赖，说明它是该系统的共享构件或底层服务。
+在 Axvisor 中，`timer_list` 承担的是 VMM 软件定时事件队列角色。真正的当前时间获取、轮询时机和回调执行仍由 Axvisor 自己负责。

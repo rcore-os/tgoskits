@@ -2,147 +2,184 @@
 
 > 路径：`os/arceos/api/axfeat`
 > 类型：库 crate
-> 分层：ArceOS 层 / ArceOS 公共 API/feature 聚合层
+> 分层：ArceOS 层 / 编译期 feature 聚合层
 > 版本：`0.3.0-preview.3`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 未检测到 crate 层 README
+> 文档依据：`Cargo.toml`、`src/lib.rs`、`os/arceos/api/arceos_api/Cargo.toml`、`os/arceos/api/arceos_posix_api/Cargo.toml`、`os/arceos/ulib/axstd/Cargo.toml`、`os/arceos/ulib/axlibc/Cargo.toml`、`os/StarryOS/kernel/Cargo.toml`
 
-`axfeat` 的核心定位是：Top-level feature selection for ArceOS
+`axfeat` 是 ArceOS 体系里的“feature 配电板”。它本身几乎没有运行时代码，也不暴露复杂 API；真正的价值在于把一套顶层能力开关稳定地映射到 `axhal`、`axruntime`、`axtask`、`axdriver`、`axconfig`、`axalloc` 等具体实现 crate 上，让 `axstd`、`axlibc`、`arceos_api`、`arceos_posix_api` 以及 StarryOS 能用同一组 feature 词汇装配系统。
 
 ## 1. 架构设计分析
-- 目录角色：ArceOS 公共 API/feature 聚合层
-- crate 形态：库 crate
-- 工作区位置：子工作区 `os/arceos`
-- feature 视角：主要通过 `alloc`、`alloc-buddy`、`alloc-level-1`、`alloc-slab`、`alloc-tlsf`、`bus-mmio`、`bus-pci`、`defplat`、`display`、`dma` 等（另有 34 个 feature） 控制编译期能力装配。
-- 关键数据结构：该 crate 暴露的数据结构较少，关键复杂度主要体现在模块协作、trait 约束或初始化时序。
-- 设计重心：该 crate 更像 ArceOS 的 feature 总开关或能力编排层，关键在编译期开关如何决定下游模块是否被装配进最终镜像。
+### 1.1 设计定位
+从源码看，`axfeat` 的实现极度克制：`src/lib.rs` 只有 crate 级文档和 `#![no_std]`，所有“逻辑”都在 `Cargo.toml` 的 feature 映射里。这说明它不是运行时门面，而是纯编译期装配层：
 
-### 1.1 内部模块划分
-- 当前 crate 未显式声明多个顶层 `mod`，复杂度更可能集中在单文件入口、宏展开或下层子 crate。
+- 向上，它为 `axstd`、`axlibc`、`arceos_api`、`arceos_posix_api`、`starry-kernel`、`starryos` 提供统一的能力命名。
+- 向下，它把这些顶层能力翻译成对 `axhal`、`axruntime`、`axtask`、`axsync`、`axdriver`、`axalloc`、`axfs`、`axnet` 等 crate 的 feature 组合。
+- 横向，它把“平台选择”“内存能力”“调度器”“上层协议栈”“驱动探测方式”放进一套一致的 feature 语义体系，避免每个上层 crate 都各自维护一套命名。
 
-### 1.2 核心算法/机制
-- 该 crate 以 Cargo feature 编排和能力选择为主，核心价值在编译期装配而非运行时复杂算法。
+因此，`axfeat` 的关键不是“实现某个功能”，而是“让功能在整个工作区里以一致方式被选中”。
+
+### 1.2 真实装配链路
+`axfeat` 的 feature 传播关系可以概括为：
+
+```mermaid
+flowchart LR
+    Top["axstd / axlibc / arceos_api / arceos_posix_api / StarryOS"] --> F["axfeat"]
+    F --> HAL["axhal"]
+    F --> RT["axruntime"]
+    F --> TASK["axtask"]
+    F --> SYNC["axsync"]
+    F --> DRIVER["axdriver"]
+    F --> ALLOC["axalloc"]
+    F --> CFG["axconfig"]
+    F --> FS["axfs / axfs-ng"]
+    F --> NET["axnet"]
+    F --> DISP["axdisplay / axinput"]
+```
+
+其中几个最重要的真实映射如下：
+
+- `multitask = ["alloc", "axtask/multitask", "axsync/multitask", "axruntime/multitask"]`
+  这说明“多任务”不是单个 crate 的开关，而是调度器、同步原语和运行时三方一起进入镜像。
+- `fs = ["alloc", "paging", "axdriver/virtio-blk", "dep:axfs", "axruntime/fs"]`
+  这说明文件系统 feature 会顺带拉起页表、块设备驱动和运行时初始化路径。
+- `net-ng = ["net", "irq", "multitask", "axruntime/net-ng"]`
+  这体现了新网络栈不是简单替换，而是要求 IRQ 和多任务一起打开。
+- `plat-dyn = ["axhal/plat-dyn", "paging", "axruntime/plat-dyn", "axconfig/plat-dyn"]`
+  这条链路直接把动态平台模式同时传播到 HAL、运行时和配置层，是构建期/链接期行为的重要分界点。
+
+### 1.3 feature 分组与边界
+按 `Cargo.toml` 可以把 `axfeat` 管的能力分成六组：
+
+- 平台与执行环境：`myplat`、`defplat`、`plat-dyn`、`uspace`、`hv`
+- CPU 与中断：`smp`、`fp-simd`、`irq`、`ipi`
+- 内存：`alloc`、`alloc-*`、`page-alloc-*`、`paging`、`tls`、`dma`
+- 调度与同步：`multitask`、`task-ext`、`sched-fifo`、`sched-rr`、`sched-cfs`
+- 上层栈：`fs`、`fs-ng*`、`net`、`net-ng`、`display`、`input`、`rtc`、`vsock`
+- 驱动与调试：`bus-mmio`、`bus-pci`、`driver-*`、`dwarf`
+
+这些分组说明 `axfeat` 的职责边界非常清晰：
+
+- 它负责“是否装配”。
+- 它不负责“如何初始化”。
+- 它也不负责“配置值是什么”。
+
+初始化时序属于 `axruntime`，配置数值属于 `axconfig`/平台配置，具体实现属于各模块本身。
 
 ## 2. 核心功能说明
-- 功能定位：Top-level feature selection for ArceOS
-- 对外接口：该 crate 的公开符号较少，更多承担内部桥接、配置注入或编排职责。
-- 典型使用场景：作为 ArceOS 的 feature 编排中心使用，用于把调度、网络、文件系统、设备等能力按需装配进最终镜像。
-- 关键调用链示例：该 crate 没有单一固定的初始化链，通常由上层调用者按 feature/trait 组合接入。
+### 2.1 主要功能
+- 为 ArceOS 顶层库提供统一的 feature 词汇表。
+- 将顶层 feature 精确映射到下游实现 crate 的 feature 组合。
+- 利用 optional dependency 控制某些大模块是否真正进入依赖图。
+- 为跨项目复用提供稳定装配语义，避免 ArceOS、StarryOS、Axvisor 各自定义一套开关。
+
+### 2.2 对外接口形态
+`axfeat` 没有值得单独讨论的运行时 API；它的“接口”就是 feature 名字本身。真实使用方式通常不是调用函数，而是在上层 `Cargo.toml` 里通过依赖它的 crate 间接启用：
+
+```toml
+[dependencies]
+axstd = { workspace = true, features = ["alloc", "multitask", "net"] }
+```
+
+这组 feature 最终会经由 `axstd -> axfeat` 下沉到 `axruntime`、`axtask`、`axnet`、`axdriver` 等模块。
+
+### 2.3 构建期与运行期边界
+`axfeat` 是纯构建期组件：
+
+- 它在 Cargo 解析依赖图时决定哪些模块和哪些 feature 被编译。
+- 它不会生成配置文件，配置文件生成是 `axconfig-gen`/`axbuild` 的工作。
+- 它不会在启动时初始化任何东西，启动编排是 `axruntime` 的工作。
+
+这也是理解整个装配链路的关键前提：`axfeat` 决定“编进来什么”，不是“运行时怎么跑”。
 
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    current["axfeat"]
-    current --> axalloc["axalloc"]
-    current --> axbacktrace["axbacktrace"]
-    current --> axconfig["axconfig"]
-    current --> axdisplay["axdisplay"]
-    current --> axdriver["axdriver"]
-    current --> axfs["axfs"]
-    current --> axfs_ng["axfs-ng"]
-    current --> axhal["axhal"]
-    arceos_api["arceos_api"] --> current
-    arceos_posix_api["arceos_posix_api"] --> current
-    axlibc["axlibc"] --> current
-    axstd["axstd"] --> current
-    starry_kernel["starry-kernel"] --> current
-    starryos["starryos"] --> current
-    starryos_test["starryos-test"] --> current
+    axstd["axstd"] --> axfeat["axfeat"]
+    axlibc["axlibc"] --> axfeat
+    arceos_api["arceos_api"] --> axfeat
+    posix["arceos_posix_api"] --> axfeat
+    starry_kernel["starry-kernel"] --> axfeat
+    starryos["starryos"] --> axfeat
+
+    axfeat --> axhal["axhal"]
+    axfeat --> axruntime["axruntime"]
+    axfeat --> axtask["axtask"]
+    axfeat --> axsync["axsync"]
+    axfeat --> axdriver["axdriver"]
+    axfeat --> axalloc["axalloc"]
+    axfeat --> axconfig["axconfig"]
+    axfeat --> axfs["axfs / axfs-ng"]
+    axfeat --> axnet["axnet"]
+    axfeat --> axdisplay["axdisplay / axinput"]
 ```
 
-### 3.1 直接与间接依赖
-- `axalloc`
-- `axbacktrace`
-- `axconfig`
-- `axdisplay`
-- `axdriver`
-- `axfs`
-- `axfs-ng`
-- `axhal`
-- `axinput`
-- `axipi`
-- `axlog`
-- `axnet`
-- 另外还有 `4` 个同类项未在此展开
+### 3.1 关键直接依赖
+- `axhal`、`axruntime`：几乎所有系统能力最终都要落到这两层的 feature 上。
+- `axtask`、`axsync`：由 `multitask`、调度器和线程相关能力驱动。
+- `axalloc`：由 `alloc`、`paging`、`tls`、`dma` 等内存能力触发。
+- `axdriver`、`axfs`、`axfs-ng`、`axnet`、`axdisplay`、`axinput`：由上层栈 feature 触发。
+- `axconfig`：仅在 `plat-dyn` 路径中直接参与装配链。
 
-### 3.2 间接本地依赖
-- `arm_pl011`
-- `arm_pl031`
-- `axallocator`
-- `axconfig-gen`
-- `axconfig-macros`
-- `axcpu`
-- `axdma`
-- `axdriver_base`
-- `axdriver_block`
-- `axdriver_display`
-- `axdriver_input`
-- `axdriver_net`
-- 另外还有 `43` 个同类项未在此展开
+### 3.2 关键消费者
+- `axstd`：Rust 应用侧 feature 的主要入口。
+- `axlibc`：C 应用侧 feature 的主要入口。
+- `arceos_api`、`arceos_posix_api`：稳定 API 层的 feature 汇聚点。
+- `starry-kernel`、`starryos`：StarryOS 直接复用 `axfeat` 选择底层 ArceOS 能力。
 
-### 3.3 被依赖情况
-- `arceos_api`
-- `arceos_posix_api`
-- `axlibc`
-- `axstd`
-- `starry-kernel`
-- `starryos`
-- `starryos-test`
-
-### 3.4 间接被依赖情况
-- `arceos-affinity`
-- `arceos-helloworld`
-- `arceos-helloworld-myplat`
-- `arceos-httpclient`
-- `arceos-httpserver`
-- `arceos-irq`
-- `arceos-memtest`
-- `arceos-parallel`
-- `arceos-priority`
-- `arceos-shell`
-- `arceos-sleep`
-- `arceos-wait-queue`
-- 另外还有 `2` 个同类项未在此展开
-
-### 3.5 关键外部依赖
-- 当前依赖集合几乎完全来自仓库内本地 crate。
+### 3.3 跨 crate 传播规律
+- Rust 应用通常经由 `axstd` 间接开启 `axfeat`。
+- C 应用通常经由 `axlibc -> arceos_posix_api -> axfeat` 间接开启。
+- StarryOS 直接在内核或启动包里依赖 `axfeat`，而不是再包一层 `axstd`。
 
 ## 4. 开发指南
-### 4.1 依赖配置
-```toml
-[dependencies]
-axfeat = { workspace = true }
+### 4.1 何时应该修改 `axfeat`
+只有当某个能力需要跨多个顶层 crate 共享同一开关语义时，才应该把它放进 `axfeat`。典型场景包括：
 
-# 如果在仓库外独立验证，也可以显式绑定本地路径：
-# axfeat = { path = "os/arceos/api/axfeat" }
-```
+- 新增一个需要同时影响 `axruntime`、`axhal`、`axdriver` 的系统能力。
+- 需要让 `axstd`、`axlibc`、`arceos_api` 使用同样的 feature 名称。
+- 需要给 StarryOS 或 Axvisor 暴露统一装配入口。
 
-### 4.2 初始化流程
-1. 在 `Cargo.toml` 中接入该 crate，并根据需要开启相关 feature。
-2. 若 crate 暴露初始化入口，优先调用 `init`/`new`/`build`/`start` 类函数建立上下文。
-3. 在最小消费者路径上验证公开 API、错误分支与资源回收行为。
+如果某个开关只影响单个 crate 的私有实现，优先留在该 crate 自己的 `Cargo.toml` 中。
 
-### 4.3 关键 API 使用提示
-- 该 crate 更偏编排、配置或内部 glue 逻辑，关键使用点通常体现在 feature、命令或入口函数上。
+### 4.2 新增或调整 feature 的检查清单
+1. 明确该 feature 属于平台、内存、调度、上层栈还是驱动层。
+2. 检查是否需要同步映射到 `axstd`、`axlibc`、`arceos_api`、`arceos_posix_api`。
+3. 检查 optional dependency 是否也要一起加入，否则 feature 打开后模块可能并未真正进入依赖图。
+4. 确认 feature 之间的蕴含关系是否合理，例如 `multitask` 是否需要 `alloc`，`net-ng` 是否必须依赖 `irq`。
+5. 检查 StarryOS 或其他直接消费者是否会因语义变化而失配。
+
+### 4.3 不应在这里做的事情
+- 不要在 `axfeat` 写初始化代码或运行时状态。
+- 不要把板级常量、地址布局、栈大小之类的配置塞进 `axfeat`。
+- 不要把只服务单个消费者的私有实现细节提升为全局 feature。
 
 ## 5. 测试策略
-### 5.1 当前仓库内的测试形态
-- 当前 crate 目录中未发现显式 `tests/`/`benches/`/`fuzz/` 入口，更可能依赖上层系统集成测试或跨 crate 回归。
+### 5.1 当前测试形态
+`axfeat` 自身没有 crate 内单元测试；它的正确性主要体现在“不同 feature 组合下能否成功构建并正确驱动下游模块”。
 
-### 5.2 单元测试重点
-- 建议围绕 API 契约、feature 分支、资源管理和错误恢复路径编写单元测试。
+### 5.2 建议覆盖的编译矩阵
+- 最小镜像：无额外 feature，仅验证基础 bring-up。
+- `alloc + paging`：验证内存装配链。
+- `multitask + irq + sched-rr`：验证调度与中断联动。
+- `fs`、`net`、`display`：验证上层栈对驱动与运行时的传播。
+- `plat-dyn`：验证动态平台模式是否同步打开 `axhal`、`axruntime`、`axconfig` 的对应路径。
 
-### 5.3 集成测试重点
-- 建议至少补一条 ArceOS 示例或 `test-suit/arceos` 路径，必要时覆盖多架构或多 feature 组合。
+### 5.3 集成验证建议
+- ArceOS：至少覆盖 `examples/helloworld` 和带 feature 的 `httpserver`、`shell` 之类样例。
+- StarryOS：验证 `starry-kernel`/`starryos` 的默认 feature 组合能继续构建。
+- C 侧路径：验证 `axlibc` 打开的 feature 与 `arceos_posix_api` 传播一致。
 
-### 5.4 覆盖率要求
-- 覆盖率建议：公开 API、初始化失败路径和主要 feature 组合必须覆盖；涉及调度/内存/设备时需补系统级验证。
+### 5.4 风险最高的改动
+- 改动 `plat-dyn`、`multitask`、`irq`、`paging` 的蕴含关系。
+- 改动 `fs`、`net` 等会牵动 optional dependency 的 feature。
+- 改动同名 feature 在 `axstd`/`axlibc`/`arceos_api` 中的镜像关系。
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-`axfeat` 直接位于 `os/arceos/` 目录树中，是 ArceOS 工程本体的一部分，承担 ArceOS 公共 API/feature 聚合层。
+`axfeat` 是 ArceOS 顶层 feature 语义的唯一汇聚点。`axstd`、`axlibc`、`arceos_api`、`arceos_posix_api` 这些面向不同上层接口的 crate，最终都靠它把能力传播到真正的内核模块。
 
 ### 6.2 StarryOS
-`axfeat` 不在 StarryOS 目录内部，但被 `starry-kernel`、`starryos`、`starryos-test` 等 StarryOS crate 直接依赖，说明它是该系统的共享构件或底层服务。
+StarryOS 直接依赖 `axfeat` 选择底层 ArceOS 能力，而不是通过 `axstd` 做二次封装。因此对 StarryOS 来说，`axfeat` 更像“内核能力装配词典”，而不是应用库。
 
 ### 6.3 Axvisor
-`axfeat` 主要通过 `axvisor` 等上层 crate 被 Axvisor 间接复用，通常处于更底层的公共依赖层。
+当前仓库里 Axvisor 更多是通过 `axstd` 间接复用 `axfeat` 的 feature 语义。也就是说，`axfeat` 在 Axvisor 中承担的是底层公共装配角色，而不是 hypervisor 专用策略层。

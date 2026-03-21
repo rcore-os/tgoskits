@@ -2,104 +2,124 @@
 
 > 路径：`components/handler_table`
 > 类型：库 crate
-> 分层：组件层 / 可复用基础组件
+> 分层：组件层 / 处理器表基础件
 > 版本：`0.1.2`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 `components/handler_table/README.md`
+> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`
 
-`handler_table` 的核心定位是：A lock-free table of event handlers
+`handler_table` 是一个固定大小、无锁、仅存函数指针的处理器表。它用 `AtomicUsize` 数组保存 `fn()` 处理函数，支持按槽位注册、注销和调用。它是非常典型的叶子基础件：不是中断控制器、不是事件总线、也不是通用回调注册中心。
 
 ## 1. 架构设计分析
-- 目录角色：可复用基础组件
-- crate 形态：库 crate
-- 工作区位置：根工作区
-- feature 视角：该 crate 没有显式声明额外 Cargo feature，功能边界主要由模块本身决定。
-- 关键数据结构：可直接观察到的关键数据结构/对象包括 `HandlerTable`、`Handler`。
-- 设计重心：该 crate 通常作为多个内核子系统共享的底层构件，重点在接口边界、数据结构和被上层复用的方式。
+### 1.1 设计定位
+这个 crate 解决的是“如何在极低开销下按编号存放一组处理函数”：
 
-### 1.1 内部模块划分
-- 当前 crate 未显式声明多个顶层 `mod`，复杂度更可能集中在单文件入口、宏展开或下层子 crate。
+- 事件编号天然是整数索引。
+- 处理器要求是极简的 `fn()`，没有捕获环境、没有参数、没有返回值。
+- 注册/注销/查询要尽量避免引入锁。
 
-### 1.2 核心算法/机制
-- 实现重心偏向接口组织和模块协作。
+在当前仓库里，它最真实的使用场景是 `axplat::irq` 及各平台的 `IRQ_HANDLER_TABLE`。
+
+### 1.2 核心类型
+- `Handler = fn()`：处理函数类型，刻意限制为普通函数指针。
+- `HandlerTable<const N: usize>`：内部持有 `[AtomicUsize; N]` 的表结构。
+
+### 1.3 实现主线
+它的实现非常直接：
+
+```mermaid
+flowchart TD
+    A["register_handler(idx, handler)"] --> B["CAS: 0 -> handler"]
+    C["unregister_handler(idx)"] --> D["swap(0)"]
+    E["handle(idx)"] --> F["load()"]
+    F --> G{"槽位非 0 ?"}
+    G -- 是 --> H["transmute 为 fn() 并调用"]
+    G -- 否 --> I["返回 false"]
+```
+
+几个关键点需要文档里明确：
+
+- 注册只允许空槽位写入，已存在处理器时返回 `false`。
+- 注销返回原来的函数指针，便于调用方做恢复或复用。
+- `handle()` 只做一次 load 并立即调用，没有额外同步。
+
+### 1.4 能力边界
+- 它不支持捕获闭包，因为底层存的就是裸 `fn()` 指针。
+- 它不支持处理器链、优先级或共享状态。
+- 它也不保证“注销后绝不会再跑一次处理器”：如果 `handle()` 已经 load 到指针，再 `unregister()`，那次调用仍可能继续发生。
 
 ## 2. 核心功能说明
-- 功能定位：A lock-free table of event handlers
-- 对外接口：从源码可见的主要公开入口包括 `new`、`register_handler`、`unregister_handler`、`handle`、`HandlerTable`。
-- 典型使用场景：作为共享基础设施被多个 OS 子系统复用，常见场景包括同步、内存管理、设备抽象、接口桥接和虚拟化基础能力。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `new()` -> `register_handler()`。
+### 2.1 主要功能
+- 以 O(1) 索引方式注册或注销处理器。
+- 以无锁 load 的方式调用对应槽位的函数。
+- 为空槽位和越界索引返回显式失败结果。
+
+### 2.2 关键 API 与真实使用位置
+- `HandlerTable::new()`：各平台 IRQ 子系统用它声明静态处理器表。
+- `register_handler()` / `unregister_handler()`：被 `components/axplat_crates/axplat/src/irq.rs` 的平台实现间接消费。
+- `handle()`：由平台 IRQ 处理路径在拿到实际 IRQ 号后调用。
+
+### 2.3 使用边界
+- `handler_table` 不负责从硬件拿 IRQ 号，也不负责 EOI/ACK。
+- `handler_table` 不区分设备中断、IPI 或软中断类型；它只管“编号 -> 函数”的映射。
+- `handler_table` 也不是通用事件系统，过于复杂的回调模型不适合塞进来。
 
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    current["handler_table"]
-    axplat["axplat"] --> current
+    handler_table["handler_table"] --> axplat["axplat::irq"]
+    axplat --> x86["axplat-x86-pc / x86-q35"]
+    axplat --> riscv["axplat-riscv64-qemu-virt"]
+    axplat --> aarch64["axplat-aarch64-peripherals"]
+    axplat --> loongarch["axplat-loongarch64-qemu-virt"]
 ```
 
-### 3.1 直接与间接依赖
-- 未检测到本仓库内的直接本地依赖；该 crate 可能主要依赖外部生态或承担叶子节点角色。
+### 3.1 关键直接依赖
+这个 crate 本体没有本地 crate 依赖，保持了非常小的体量。
 
-### 3.2 间接本地依赖
-- 未检测到额外的间接本地依赖，或依赖深度主要停留在第一层。
-
-### 3.3 被依赖情况
-- `axplat`
-
-### 3.4 间接被依赖情况
-- `arceos-affinity`
-- `arceos-helloworld`
-- `arceos-helloworld-myplat`
-- `arceos-httpclient`
-- `arceos-httpserver`
-- `arceos-irq`
-- `arceos-memtest`
-- `arceos-parallel`
-- `arceos-priority`
-- `arceos-shell`
-- `arceos-sleep`
-- `arceos-wait-queue`
-- 另外还有 `37` 个同类项未在此展开
-
-### 3.5 关键外部依赖
-- 当前依赖集合几乎完全来自仓库内本地 crate。
+### 3.2 关键直接消费者
+- `axplat::irq`：把 `HandlerTable` 作为平台 IRQ 管理接口的一部分导出。
+- 各平台 IRQ 实现：如 `axplat-x86-pc`、`axplat-riscv64-qemu-virt` 等，都直接声明静态 `IRQ_HANDLER_TABLE`。
 
 ## 4. 开发指南
 ### 4.1 依赖配置
 ```toml
 [dependencies]
 handler_table = { workspace = true }
-
-# 如果在仓库外独立验证，也可以显式绑定本地路径：
-# handler_table = { path = "components/handler_table" }
 ```
 
-### 4.2 初始化流程
-1. 在 `Cargo.toml` 中接入该 crate，并根据需要开启相关 feature。
-2. 若 crate 暴露初始化入口，优先调用 `init`/`new`/`build`/`start` 类函数建立上下文。
-3. 在最小消费者路径上验证公开 API、错误分支与资源回收行为。
+### 4.2 修改时的关键约束
+1. `Handler` 当前是 `fn()`，这不是偶然简化，而是设计边界；改成闭包会影响存储模型和无锁语义。
+2. `AtomicUsize` 与函数指针互转是这个 crate 的基础假设，任何改动都要重新评估平台 ABI。
+3. 若增加更多同步保证，要明确代价和语义变化，避免把它从“简表”做成“复杂注册中心”。
+4. 索引越界目前统一返回失败而非 panic，这个 API 风格不应随意变动。
 
-### 4.3 关键 API 使用提示
-- 优先关注函数入口：`new`、`register_handler`、`unregister_handler`、`handle`。
-- 上下文/对象类型通常从 `HandlerTable` 等结构开始。
+### 4.3 开发建议
+- 需要复杂回调上下文时，外层应自己维护状态再注册一个静态跳板函数。
+- 需要多处理器链或共享对象时，应新建专门结构，而不是强行扩展 `handler_table`。
+- 平台层如果想做 IRQ 抽象，应把 `handler_table` 作为内部数据结构，而不是把所有控制逻辑下沉到这里。
 
 ## 5. 测试策略
-### 5.1 当前仓库内的测试形态
-- 当前 crate 目录中未发现显式 `tests/`/`benches/`/`fuzz/` 入口，更可能依赖上层系统集成测试或跨 crate 回归。
+### 5.1 当前测试形态
+`handler_table` 本体没有单独测试，当前验证主要依赖平台 IRQ 集成路径。
 
 ### 5.2 单元测试重点
-- 建议用单元测试覆盖公开 API、错误分支、边界条件以及并发/内存安全相关不变量。
+- 空槽注册、重复注册、注销空槽、越界索引。
+- `handle()` 在存在/不存在处理器时的返回值。
+- 并发注册/注销与调用下的基本原子语义。
 
 ### 5.3 集成测试重点
-- 建议补充被 ArceOS/StarryOS/Axvisor 消费时的最小集成路径，确保接口语义与 feature 组合稳定。
+- 平台 IRQ 注册、注销和分发能否与 `axplat::irq` 接口匹配。
+- IPI 或设备中断路径是否能正确查表并调用处理器。
 
 ### 5.4 覆盖率要求
-- 覆盖率建议：核心算法与错误路径达到高覆盖，关键数据结构和边界条件应实现接近完整覆盖。
+- 对 `handler_table`，原子语义和边界条件覆盖最重要。
+- 凡是改动存储表示或注册语义的提交，都应补并发测试和平台集成验证。
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-`handler_table` 主要通过 `arceos-affinity`、`arceos-helloworld`、`arceos-helloworld-myplat`、`arceos-httpclient`、`arceos-httpserver`、`arceos-irq` 等（另有 26 项） 等上层 crate 被 ArceOS 间接复用，通常处于更底层的公共依赖层。
+在 ArceOS 体系里，`handler_table` 主要通过 `axplat` 平台层参与 IRQ 分发。它承担的是“处理器表”角色，不是中断子系统本体。
 
 ### 6.2 StarryOS
-`handler_table` 主要通过 `starry-kernel`、`starryos`、`starryos-test` 等上层 crate 被 StarryOS 间接复用，通常处于更底层的公共依赖层。
+StarryOS 若复用相同平台栈，也会间接受用 `handler_table`。但在分层上，它仍只是一个低层表结构。
 
 ### 6.3 Axvisor
-`handler_table` 主要通过 `axvisor` 等上层 crate 被 Axvisor 间接复用，通常处于更底层的公共依赖层。
+Axvisor 若复用 `axplat` 平台 IRQ 路径，也会间接受用 `handler_table`。它提供的是最底层的编号到函数映射，不是 VMM 事件分发层。

@@ -2,109 +2,123 @@
 
 > 路径：`components/int_ratio`
 > 类型：库 crate
-> 分层：组件层 / 可复用基础组件
+> 分层：组件层 / 整数比例基础件
 > 版本：`0.1.2`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 `components/int_ratio/README.md`
+> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`tests/test_int_ratio.rs`
 
-`int_ratio` 的核心定位是：The type of ratios represented by two integers.
+`int_ratio` 提供一个面向内核/平台代码的小型整数比例类型 `Ratio`。它把 `numerator / denominator` 预计算成 `mult / (1 << shift)` 形式，从而在运行时把“除法换乘移位”，减少高成本整数除法。它是纯数学叶子基础件：不是时间子系统、不是频率校准器，也不是通用数值库。
 
 ## 1. 架构设计分析
-- 目录角色：可复用基础组件
-- crate 形态：库 crate
-- 工作区位置：根工作区
-- feature 视角：该 crate 没有显式声明额外 Cargo feature，功能边界主要由模块本身决定。
-- 关键数据结构：可直接观察到的关键数据结构/对象包括 `Ratio`。
-- 设计重心：该 crate 通常作为多个内核子系统共享的底层构件，重点在接口边界、数据结构和被上层复用的方式。
+### 1.1 设计定位
+这个 crate 要解决的问题非常具体：很多平台代码反复做“ticks 和 nanoseconds 之间的比例换算”，但在 `no_std` 场景里频繁做 `u128` 除法不划算，于是 `Ratio` 在构造时先把比例离散成适合快速乘法的表示。
 
-### 1.1 内部模块划分
-- 当前 crate 未显式声明多个顶层 `mod`，复杂度更可能集中在单文件入口、宏展开或下层子 crate。
+当前仓库里的真实使用场景也印证了这个定位：
 
-### 1.2 核心算法/机制
-- 实现重心偏向接口组织和模块协作。
+- `axplat-x86-pc/src/time.rs` 用它把纳秒转换为 LAPIC ticks。
+- `axplat-aarch64-peripherals/src/generic_timer.rs` 用它在 `CNTPCT` ticks 与纳秒之间双向转换。
+
+### 1.2 核心类型
+- `Ratio`：保存原始 `numerator`、`denominator`，以及预计算后的 `mult` 和 `shift`。
+
+### 1.3 计算模型
+核心等式是：
+
+```text
+numerator / denominator ~= mult / (1 << shift)
+```
+
+`Ratio::new()` 的流程可以概括为：
+
+1. 从 `shift = 32` 开始尝试。
+2. 计算 `mult = round((numerator << shift) / denominator)`。
+3. 若 `mult` 超出 `u32`，持续减小 `shift`。
+4. 在满足范围后，再尽量把 `mult` 的 2 因子消掉，以得到更紧凑表示。
+
+因此 `Ratio` 的重点不是“精确保存一个分数”，而是在 `u32 + u32` 表示约束下，为后续乘法计算找到一个高精度、低成本的近似表示。
+
+### 1.4 特殊值语义
+- `Ratio::zero()` 表示特殊的 `0/0`，它被定义成“乘任何值都得到 0，求逆仍是自己”。
+- `Ratio::new(0, x)` 也是零比例，但它和 `Ratio::zero()` 的语义边界略有不同：前者求逆会变成 `x/0` 并触发 panic，后者不会。
+
+这个细节很重要，因为它说明 `Ratio::zero()` 不是数学意义上的普通分数，而是给系统初始化阶段准备的哨兵值。
 
 ## 2. 核心功能说明
-- 功能定位：The type of ratios represented by two integers.
-- 对外接口：从源码可见的主要公开入口包括 `zero`、`new`、`inverse`、`mul_trunc`、`mul_round`、`Ratio`。
-- 典型使用场景：作为共享基础设施被多个 OS 子系统复用，常见场景包括同步、内存管理、设备抽象、接口桥接和虚拟化基础能力。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `new()`。
+### 2.1 主要功能
+- 构造一个可快速乘法求值的整数比例。
+- 支持向上层暴露截断乘法 `mul_trunc()`。
+- 支持四舍五入乘法 `mul_round()`。
+- 支持快速取倒数 `inverse()`。
+
+### 2.2 关键 API 与真实使用位置
+- `Ratio::new()`：在 `axplat-x86-pc`、`axplat-x86-qemu-q35`、`axplat-aarch64-peripherals` 的时间初始化代码中使用。
+- `mul_trunc()`：平台时间路径用来把 deadline 或 tick 值做快速转换。
+- `inverse()`：AArch64 generic timer 初始化时直接通过现有比例求反比率。
+- `Ratio::zero()`：常作为静态变量的初始化哨兵值。
+
+### 2.3 使用边界
+- `int_ratio` 不做通用分数运算，没有加减除比较等完整代数接口。
+- 它只支持 `u32` 分子和分母，不是大整数比例库。
+- 它也不负责频率探测、校准和时间源选择；这些都属于平台时间子系统。
 
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    current["int_ratio"]
-    axplat_aarch64_peripherals["axplat-aarch64-peripherals"] --> current
-    axplat_x86_pc["axplat-x86-pc"] --> current
-    axplat_x86_qemu_q35["axplat-x86-qemu-q35"] --> current
+    int_ratio["int_ratio"] --> x86pc["axplat-x86-pc"]
+    int_ratio --> x86q35["axplat-x86-qemu-q35"]
+    int_ratio --> aarch64["axplat-aarch64-peripherals"]
 ```
 
-### 3.1 直接与间接依赖
-- 未检测到本仓库内的直接本地依赖；该 crate 可能主要依赖外部生态或承担叶子节点角色。
+### 3.1 关键直接依赖
+`int_ratio` 没有本地 crate 依赖，体量非常小。
 
-### 3.2 间接本地依赖
-- 未检测到额外的间接本地依赖，或依赖深度主要停留在第一层。
-
-### 3.3 被依赖情况
-- `axplat-aarch64-peripherals`
-- `axplat-x86-pc`
-- `axplat-x86-qemu-q35`
-
-### 3.4 间接被依赖情况
-- `arceos-affinity`
-- `arceos-helloworld`
-- `arceos-helloworld-myplat`
-- `arceos-httpclient`
-- `arceos-httpserver`
-- `arceos-irq`
-- `arceos-memtest`
-- `arceos-parallel`
-- `arceos-priority`
-- `arceos-shell`
-- `arceos-sleep`
-- `arceos-wait-queue`
-- 另外还有 `31` 个同类项未在此展开
-
-### 3.5 关键外部依赖
-- 当前依赖集合几乎完全来自仓库内本地 crate。
+### 3.2 关键直接消费者
+- `axplat-x86-pc` / `axplat-x86-qemu-q35`：LAPIC 计时换算。
+- `axplat-aarch64-peripherals`：ARM generic timer 的 ticks / nanos 双向换算。
 
 ## 4. 开发指南
 ### 4.1 依赖配置
 ```toml
 [dependencies]
 int_ratio = { workspace = true }
-
-# 如果在仓库外独立验证，也可以显式绑定本地路径：
-# int_ratio = { path = "components/int_ratio" }
 ```
 
-### 4.2 初始化流程
-1. 在 `Cargo.toml` 中接入该 crate，并根据需要开启相关 feature。
-2. 若 crate 暴露初始化入口，优先调用 `init`/`new`/`build`/`start` 类函数建立上下文。
-3. 在最小消费者路径上验证公开 API、错误分支与资源回收行为。
+### 4.2 修改时的关键约束
+1. `PartialEq` 当前比较的是 `mult` 和 `shift`，不是原始分子分母；改动表示法会直接影响相等语义。
+2. `new()` 里的舍入与压缩逻辑决定了精度和边界行为，任何修改都应重新验证现有平台时间换算。
+3. `Ratio::zero()` 的“可逆零哨兵”语义已经被初始化代码依赖，不能随意改成普通 `0/x`。
+4. `mul_trunc()` / `mul_round()` 使用 `u128` 乘法避免溢出，若调整类型范围，要同步审视所有中间值。
 
-### 4.3 关键 API 使用提示
-- 优先关注函数入口：`zero`、`new`、`inverse`、`mul_trunc`、`mul_round`。
-- 上下文/对象类型通常从 `Ratio` 等结构开始。
+### 4.3 开发建议
+- 若需要更复杂的数值语义，应另建数学类型，不要把 `Ratio` 扩成“大而全分数库”。
+- 若只需要启动期哨兵值，优先用 `Ratio::zero()`，不要手写 `unsafe` 的未初始化状态。
+- 新增平台使用时，应先确认比例常数能安全压进 `u32/u32` 输入模型。
 
 ## 5. 测试策略
-### 5.1 当前仓库内的测试形态
-- 存在 crate 内集成测试：`tests/test_int_ratio.rs`。
-- 存在单元测试/`#[cfg(test)]` 场景：`src/lib.rs`。
+### 5.1 当前测试形态
+`int_ratio` 同时有单元测试和集成测试：
+
+- `src/lib.rs` 内联测试覆盖表示压缩、倒数和零值。
+- `tests/test_int_ratio.rs` 覆盖等价比例、舍入/截断差异、panic 路径和大数边界。
 
 ### 5.2 单元测试重点
-- 建议用单元测试覆盖公开 API、错误分支、边界条件以及并发/内存安全相关不变量。
+- `new()` 的 `mult` / `shift` 推导结果。
+- `inverse()` 对普通比例与零哨兵的不同处理。
+- `mul_trunc()` 与 `mul_round()` 在边界值上的差异。
 
 ### 5.3 集成测试重点
-- 建议补充被 ArceOS/StarryOS/Axvisor 消费时的最小集成路径，确保接口语义与 feature 组合稳定。
+- 平台时间代码中 tick 与 nanosecond 的双向转换。
+- 中断定时器 deadline 设置是否受比例误差影响。
 
 ### 5.4 覆盖率要求
-- 覆盖率建议：核心算法与错误路径达到高覆盖，关键数据结构和边界条件应实现接近完整覆盖。
+- 对 `int_ratio`，panic 路径和极端数值边界必须有覆盖。
+- 只验证普通小数例子还不够，必须保留 `u32::MAX` 级别测试。
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-`int_ratio` 主要通过 `arceos-affinity`、`arceos-helloworld`、`arceos-helloworld-myplat`、`arceos-httpclient`、`arceos-httpserver`、`arceos-irq` 等（另有 26 项） 等上层 crate 被 ArceOS 间接复用，通常处于更底层的公共依赖层。
+在 ArceOS 相关平台实现里，`int_ratio` 主要承担高频时间换算的数学基础件角色。它服务于时间代码，但本身不是时间框架的一部分。
 
 ### 6.2 StarryOS
-`int_ratio` 主要通过 `starry-kernel`、`starryos`、`starryos-test` 等上层 crate 被 StarryOS 间接复用，通常处于更底层的公共依赖层。
+StarryOS 若复用相同平台栈，也会间接受益于 `int_ratio`。其定位仍然是底层比例计算工具。
 
 ### 6.3 Axvisor
-`int_ratio` 主要通过 `axvisor` 等上层 crate 被 Axvisor 间接复用，通常处于更底层的公共依赖层。
+当前仓库里 Axvisor 没有直接依赖 `int_ratio`；即便未来通过共享平台层复用，它也仍只是数值换算基础件，不会变成虚拟化时间管理层。

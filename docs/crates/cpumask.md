@@ -2,108 +2,119 @@
 
 > 路径：`components/cpumask`
 > 类型：库 crate
-> 分层：组件层 / 可复用基础组件
+> 分层：组件层 / CPU 位图基础件
 > 版本：`0.1.0`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 `components/cpumask/README.md`
+> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`
 
-`cpumask` 的核心定位是：CPU mask library in Rust
+`cpumask` 是一个面向 CPU 集合表达的 const-generic 位图类型。它对齐 Linux `cpumask_t` 的基本思想：一位对应一个 CPU 编号，并提供位运算、搜索和迭代接口。它属于叶子基础件：只是“CPU 集合值类型”，不是 CPU 拓扑模型、负载均衡器，也不是调度策略本体。
 
 ## 1. 架构设计分析
-- 目录角色：可复用基础组件
-- crate 形态：库 crate
-- 工作区位置：根工作区
-- feature 视角：该 crate 没有显式声明额外 Cargo feature，功能边界主要由模块本身决定。
-- 关键数据结构：可直接观察到的关键数据结构/对象包括 `CpuMask`、`Iter`、`Item`、`IntoIter`、`Output`。
-- 设计重心：该 crate 通常作为多个内核子系统共享的底层构件，重点在接口边界、数据结构和被上层复用的方式。
+### 1.1 设计定位
+`cpumask` 的价值在于把“CPU 集合”收敛成一个小而稳定的类型：
 
-### 1.1 内部模块划分
-- 当前 crate 未显式声明多个顶层 `mod`，复杂度更可能集中在单文件入口、宏展开或下层子 crate。
+- `axtask` 用它表示任务 CPU affinity。
+- `axvm` / `axvisor` 用它表示 vCPU 目标集合。
+- 平台或上层策略代码可以在不引入复杂调度逻辑的情况下操作 CPU 集合。
 
-### 1.2 核心算法/机制
-- 实现重心偏向接口组织和模块协作。
+这意味着 `cpumask` 只负责位集语义，不负责回答“该把任务迁到哪个 CPU”“哪些 CPU 在线”这类策略问题。
+
+### 1.2 核心类型
+- `CpuMask<const SIZE: usize>`：主体类型，内部包装 `bitmaps::Bitmap<SIZE>`。
+- `Iter<'a, SIZE>`：遍历置位 CPU 编号的双端迭代器。
+
+### 1.3 表示方式与容量边界
+`CpuMask` 的底层存储会根据 `SIZE` 自动选最小合适的无符号类型：
+
+- `SIZE == 1` 时可退化成 `bool` 语义。
+- `SIZE <= 128` 时用单个整数存储。
+- `SIZE > 128` 时按 `[u128; N]` 形式存储，当前最大支持 `1024` 位。
+
+源码还额外为 `256` 到 `1024` 位的若干常见尺寸提供了 `[u128; N]` 之间的显式 `From` 转换，方便虚拟化或多核位图序列化。
+
+### 1.4 能力主线
+它提供的能力主要分为四类：
+
+- 构造：`new()`、`full()`、`mask(bits)`、`one_shot(index)`、`from_value()`、`from_raw_bits()`。
+- 查询：`len()`、`is_empty()`、`is_full()`、`get()`、`first_index()`、`last_index()`、`first_false_index()` 等。
+- 变换：`set()`、`invert()`，以及 `BitAnd` / `BitOr` / `BitXor` / `Not`。
+- 遍历：`IntoIterator for &CpuMask`，支持双端迭代。
 
 ## 2. 核心功能说明
-- 功能定位：CPU mask library in Rust
-- 对外接口：从源码可见的主要公开入口包括 `new`、`full`、`mask`、`from_value`、`from_raw_bits`、`one_shot`、`into_value`、`as_value`、`CpuMask`、`Iter`。
-- 典型使用场景：作为共享基础设施被多个 OS 子系统复用，常见场景包括同步、内存管理、设备抽象、接口桥接和虚拟化基础能力。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `new()`。
+### 2.1 主要功能
+- 用紧凑位图表达 CPU 集合。
+- 提供 CPU 集合的位运算、搜索和迭代能力。
+- 为上层 affinity、目标 CPU 选择等场景提供一个可复制、可比较、可哈希的值对象。
+
+### 2.2 关键 API 与真实使用位置
+- `CpuMask::new()` / `set()`：`axtask/src/api.rs` 用来构造 `AxCpuMask`。
+- `get()` / `is_empty()`：`axtask/src/run_queue.rs` 用于根据 affinity 选择运行队列。
+- `CpuMask`：`components/axvm/src/vm.rs` 和 `os/axvisor/src/vmm/vcpus.rs` 直接使用，用来描述 vCPU 目标集合。
+
+### 2.3 使用边界
+- `cpumask` 不负责验证 CPU 是否在线；它只存位。
+- `cpumask` 不负责 hotplug 或 NUMA 信息。
+- `cpumask` 也不做迁移决策；上层只把它当约束条件或目标集合。
 
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    current["cpumask"]
-    axtask["axtask"] --> current
-    axvisor["axvisor"] --> current
-    axvm["axvm"] --> current
+    bitmaps["bitmaps"] --> cpumask["cpumask"]
+    cpumask --> axtask["axtask"]
+    cpumask --> axvm["axvm"]
+    cpumask --> axvisor["axvisor"]
 ```
 
-### 3.1 直接与间接依赖
-- 未检测到本仓库内的直接本地依赖；该 crate 可能主要依赖外部生态或承担叶子节点角色。
+### 3.1 关键直接依赖
+- `bitmaps`：底层位图实现来源。
 
-### 3.2 间接本地依赖
-- 未检测到额外的间接本地依赖，或依赖深度主要停留在第一层。
-
-### 3.3 被依赖情况
-- `axtask`
-- `axvisor`
-- `axvm`
-
-### 3.4 间接被依赖情况
-- `arceos-affinity`
-- `arceos-helloworld`
-- `arceos-helloworld-myplat`
-- `arceos-httpclient`
-- `arceos-httpserver`
-- `arceos-irq`
-- `arceos-memtest`
-- `arceos-parallel`
-- `arceos-priority`
-- `arceos-shell`
-- `arceos-sleep`
-- `arceos-wait-queue`
-- 另外还有 `16` 个同类项未在此展开
-
-### 3.5 关键外部依赖
-- `bitmaps`
+### 3.2 关键直接消费者
+- `axtask`：任务 affinity 的核心值类型。
+- `axvm` / `axvisor`：虚拟机或 vCPU 目标集合表达。
 
 ## 4. 开发指南
 ### 4.1 依赖配置
 ```toml
 [dependencies]
 cpumask = { workspace = true }
-
-# 如果在仓库外独立验证，也可以显式绑定本地路径：
-# cpumask = { path = "components/cpumask" }
 ```
 
-### 4.2 初始化流程
-1. 在 `Cargo.toml` 中接入该 crate，并根据需要开启相关 feature。
-2. 若 crate 暴露初始化入口，优先调用 `init`/`new`/`build`/`start` 类函数建立上下文。
-3. 在最小消费者路径上验证公开 API、错误分支与资源回收行为。
+### 4.2 修改时的关键约束
+1. `SIZE` 是类型级常量，任何涉及存储布局的改动都要考虑不同尺寸实例的兼容性。
+2. `from_raw_bits()` 只接受能塞进 `usize` 的原始位值，它不是通用序列化入口。
+3. 修改迭代器语义时，要同时检查正向和反向遍历是否仍正确。
+4. 不要把 online/offline、优先级、负载等动态策略字段塞进 `CpuMask`；这层应该继续保持纯值对象。
 
-### 4.3 关键 API 使用提示
-- 优先关注函数入口：`new`、`full`、`mask`、`from_value`、`from_raw_bits`、`one_shot`、`into_value`、`as_value` 等（另有 15 项）。
-- 上下文/对象类型通常从 `CpuMask`、`Iter` 等结构开始。
+### 4.3 开发建议
+- 需要表达“仅允许在哪些 CPU 上运行”时用 `CpuMask` 很合适。
+- 需要表达更复杂拓扑关系时，单独建结构体，不要滥扩 `CpuMask`。
+- 若要新增更大尺寸支持，先确认 `bitmaps` 后端和显式数组转换实现是否都能跟上。
 
 ## 5. 测试策略
-### 5.1 当前仓库内的测试形态
-- 当前 crate 目录中未发现显式 `tests/`/`benches/`/`fuzz/` 入口，更可能依赖上层系统集成测试或跨 crate 回归。
+### 5.1 当前测试形态
+`cpumask` 本体没有独立测试文件，当前验证主要依赖真实消费者：
+
+- `test-suit/arceos/task/affinity` 对任务 affinity 的系统测试。
+- `axvm` / `axvisor` 对 vCPU 目标集合的使用。
 
 ### 5.2 单元测试重点
-- 建议用单元测试覆盖公开 API、错误分支、边界条件以及并发/内存安全相关不变量。
+- 构造函数的边界输入。
+- `first_index()` / `next_index()` / `first_false_index()` 等搜索函数。
+- 位运算与双端迭代的一致性。
 
 ### 5.3 集成测试重点
-- 建议补充被 ArceOS/StarryOS/Axvisor 消费时的最小集成路径，确保接口语义与 feature 组合稳定。
+- `axtask` 在 SMP 下的 affinity 设置和迁移逻辑。
+- `axvm` / `axvisor` 对较大尺寸 mask 的处理。
 
 ### 5.4 覆盖率要求
-- 覆盖率建议：核心算法与错误路径达到高覆盖，关键数据结构和边界条件应实现接近完整覆盖。
+- 对 `cpumask`，位级边界覆盖比单纯行覆盖更重要。
+- 任何改动迭代器、数组转换或存储布局的提交，都应补至少一组尺寸边界测试。
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-`cpumask` 不在 ArceOS 目录内部，但被 `axtask` 等 ArceOS crate 直接依赖，说明它是该系统的共享构件或底层服务。
+在 ArceOS 中，`cpumask` 主要通过 `axtask` 承担任务 affinity 的值类型角色。它是调度约束的表达层，不是调度器本体。
 
 ### 6.2 StarryOS
-`cpumask` 主要通过 `starry-kernel`、`starryos`、`starryos-test` 等上层 crate 被 StarryOS 间接复用，通常处于更底层的公共依赖层。
+当前仓库里 StarryOS 没有直接把 `cpumask` 作为独立子系统扩展；若经共享任务栈间接使用，它也仍只是 CPU 集合值类型。
 
 ### 6.3 Axvisor
-`cpumask` 不在 Axvisor 目录内部，但被 `axvisor` 等 Axvisor crate 直接依赖，说明它是该系统的共享构件或底层服务。
+Axvisor 和 `axvm` 直接使用 `cpumask` 表达 vCPU 目标集合。这里的 `cpumask` 依旧只是位图容器，不是 vCPU 调度或拓扑管理层。

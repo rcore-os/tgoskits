@@ -2,141 +2,165 @@
 
 > 路径：`os/arceos/modules/axalloc`
 > 类型：库 crate
-> 分层：ArceOS 层 / ArceOS 内核模块
+> 分层：ArceOS 层 / 内存分配运行时基础件
 > 版本：`0.3.0-preview.3`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 `os/arceos/modules/axalloc/README.md`
+> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`src/default_impl.rs`、`src/axvisor_impl.rs`、`src/page.rs`、`src/tracking.rs`
 
-`axalloc` 的核心定位是：ArceOS global memory allocator
+`axalloc` 是 ArceOS 的全局分配入口。它把 `axallocator` 提供的字节分配器和页分配器包装成可直接挂到 `#[global_allocator]` 的 `GlobalAllocator`，并额外提供页级接口、使用量统计和可选的分配跟踪能力。它属于运行时叶子基础件：负责“分配”，但不负责页表建立、地址空间管理或物理内存发现，这些职责分别由 `axmm`、`axhal` 和 `axruntime` 承担。
 
 ## 1. 架构设计分析
-- 目录角色：ArceOS 内核模块
-- crate 形态：库 crate
-- 工作区位置：子工作区 `os/arceos`
-- feature 视角：主要通过 `buddy`、`hv`、`level-1`、`page-alloc-4g`、`page-alloc-64g`、`slab`、`tlsf`、`tracking` 控制编译期能力装配。
-- 关键数据结构：可直接观察到的关键数据结构/对象包括 `Usages`、`GlobalPage`、`AllocationInfo`、`GlobalAllocator`、`UsageKind`、`DefaultByteAllocator`、`RustHeap`、`VirtMem`、`PageCache`、`PAGE_SIZE` 等（另有 2 个关键类型/对象）。
+### 1.1 设计定位
+`axalloc` 在启动链和运行期之间扮演的是“统一分配服务”角色：
 
-### 1.1 内部模块划分
-- `page`：内部子模块
-- `tracking`：内部子模块（按 feature: tracking 条件启用）
-- `axvisor_impl`：Axvisor-specific memory allocator implementation using buddy-slab-allocator crate. This implementation is designed for virtualization scenarios and provides address translation su…（按 feature: hv 条件启用）
-- `default_impl`：Default memory allocator implementation using axallocator crate. This is the standard ArceOS memory allocator implementation that uses the axallocator crate with support for diffe…（按 feature: hv 条件启用）
+- 向下，它复用 `axallocator` 或 `buddy-slab-allocator`，而不是自行实现完整分配算法。
+- 向上，它向 `axruntime`、`axmm`、`axhal::paging`、`axdriver`、`axdma`、`arceos_api` 等模块暴露统一的堆/页分配接口。
+- 横向，它通过 `UsageKind`/`Usages` 给页表、DMA、页缓存等不同用途打标签，方便上层做统计与诊断。
 
-### 1.2 核心算法/机制
-- 内存分配器初始化、扩容或对象分配路径
-- 页级映射、页表维护与地址空间布局
+因此，`axalloc` 不是“内存管理本体”，而是“内存分配入口”。把它写成虚拟内存系统、页表系统或用户地址空间管理器，都会高估它的职责。
+
+### 1.2 内部模块划分
+- `src/lib.rs`：顶层 feature 分流与公共类型定义。声明 `UsageKind`、`Usages`，并在默认实现与 `hv` 实现之间切换。
+- `src/default_impl.rs`：默认 ArceOS 路径。把字节分配器与位图页分配器组合成全局分配器。
+- `src/axvisor_impl.rs`：虚拟化路径。改用 `buddy-slab-allocator`，并支持地址翻译器与 DMA32 页分配。
+- `src/page.rs`：`GlobalPage` RAII 封装，负责简单的连续页所有权管理。
+- `src/tracking.rs`：可选分配跟踪状态，记录 `Layout`、`Backtrace` 和分配代次。
+
+### 1.3 关键对象
+- `GlobalAllocator`：真正实现 `core::alloc::GlobalAlloc` 的核心对象。
+- `DefaultByteAllocator`：由 `tlsf` / `slab` / `buddy` feature 选择的字节分配器别名。
+- `BitmapPageAllocator<PAGE_SIZE>`：默认路径的页级后端。
+- `UsageKind`：把内存使用划分为 `RustHeap`、`VirtMem`、`PageCache`、`PageTable`、`Dma`、`Global`。
+- `Usages`：各类用途的累计统计。
+- `GlobalPage`：页块 RAII 包装，只负责申请/释放连续页，不负责映射属性。
+- `AllocationInfo`：只在 `tracking` 下存在的诊断元数据。
+
+### 1.4 默认实现主线
+默认路径采用“字节分配器 + 页分配器”的两级设计：
+
+```mermaid
+flowchart TD
+    A["global_init(start, size)"] --> B["BitmapPageAllocator::init"]
+    B --> C["切出 32 KiB 初始堆"]
+    C --> D["DefaultByteAllocator::init"]
+    D --> E["alloc(layout) 先走字节分配器"]
+    E --> F{"字节堆不足?"}
+    F -- 否 --> G["返回指针"]
+    F -- 是 --> H["alloc_pages 扩堆并 add_memory"]
+    H --> E
+```
+
+实现里的关键约束有：
+
+- `global_init()` 只负责建立第一段可分配区域；后续热插入或额外区域接入走 `global_add_memory()`。
+- 默认两级模式下，`alloc()` 会根据当前堆大小和申请大小动态决定扩堆块大小，再从页分配器取页补给字节分配器。
+- `level-1` feature 会退化为单级字节分配器，此时 `alloc_pages_at()` 明确 `unimplemented!()`。
+- 对 `UsageKind::RustHeap` 的统计有特判，避免“扩堆用页”和“堆内字节分配”重复记账。
+
+### 1.5 `hv` 与 `tracking` 分支
+- `hv`：忽略 `axallocator` 的算法 feature，转而使用 `buddy-slab-allocator`。`global_init()` 需要额外注入 `AddrTranslator`，并暴露 `alloc_dma32_pages()`。当前这一路径的 `used_bytes()`、`available_bytes()`、`used_pages()`、`available_pages()` 都返回 `0`，因为底层库没有提供对应统计。
+- `tracking`：在 `GlobalAlloc::alloc/dealloc` 外围维护一个全局分配表，并记录 `axbacktrace::Backtrace`。`tracking::with_state()` 用每 CPU 的 `IN_GLOBAL_ALLOCATOR` 标记避免跟踪逻辑再次触发分配而递归爆栈。
 
 ## 2. 核心功能说明
-- 功能定位：ArceOS global memory allocator
-- 对外接口：从源码可见的主要公开入口包括 `get`、`global_allocator`、`alloc`、`alloc_zero`、`alloc_contiguous`、`start_vaddr`、`start_paddr`、`size`、`Usages`、`GlobalPage` 等（另有 3 个公开入口）。
-- 典型使用场景：主要服务于 ArceOS 内核模块装配，是运行时、驱动、内存、网络或同步等子系统的一部分。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `new()` -> `alloc()` -> `alloc_zero()` -> `alloc_contiguous()` -> `start_vaddr()` -> ...。
+### 2.1 主要功能
+- 为系统提供可挂到 `#[global_allocator]` 的全局堆分配器。
+- 提供页级接口 `alloc_pages()` / `alloc_pages_at()` / `dealloc_pages()`。
+- 提供 `GlobalPage` 这一轻量页所有权对象。
+- 提供按用途分类的使用量统计，以及可选的 backtrace 跟踪。
+
+### 2.2 关键 API 与真实使用位置
+- `global_init()` / `global_add_memory()`：由 `axruntime/src/lib.rs` 的 `init_allocator()` 调用，是 ArceOS 启动期接入堆的入口。
+- `global_allocator().alloc_pages()`：被 `axmm/src/backend/alloc.rs`、`axhal/src/paging.rs` 等页级消费者直接使用。
+- `global_allocator().alloc()` / `dealloc()`：被 `arceos_api/src/imp/mem.rs` 直接转发给更上层 API。
+- `GlobalPage::alloc*()`：适合需要“拿到一段连续页并在 drop 时自动归还”的简单路径。
+
+### 2.3 使用边界
+- `axalloc` 不负责扫描物理内存，也不决定哪些区域可以加到堆里；这些输入由 `axruntime` 和 `axhal` 提供。
+- `axalloc` 不负责地址映射策略；页表和地址空间对象依然在 `axmm` 层。
+- `Usages` 是统计视图，不是安全边界或配额系统。
 
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    current["axalloc"]
-    current --> axallocator["axallocator"]
-    current --> axbacktrace["axbacktrace"]
-    current --> axerrno["axerrno"]
-    current --> kspin["kspin"]
-    current --> memory_addr["memory_addr"]
-    current --> percpu["percpu"]
-    arceos_api["arceos_api"] --> current
-    arceos_posix_api["arceos_posix_api"] --> current
-    axdma["axdma"] --> current
-    axdriver["axdriver"] --> current
-    axfeat["axfeat"] --> current
-    axfs_ng["axfs-ng"] --> current
-    axhal["axhal"] --> current
-    axmm["axmm"] --> current
+    axallocator["axallocator"] --> axalloc["axalloc"]
+    axbacktrace["axbacktrace (tracking)"] --> axalloc
+    percpu["percpu (tracking)"] --> axalloc
+    kspin["kspin"] --> axalloc
+
+    axalloc --> axruntime["axruntime"]
+    axalloc --> axmm["axmm"]
+    axalloc --> axhal["axhal/paging"]
+    axalloc --> axdriver["axdriver"]
+    axalloc --> axdma["axdma"]
+    axalloc --> axfsng["axfs-ng"]
+    axalloc --> arceos_api["arceos_api"]
+    axalloc --> starry_kernel["starry-kernel"]
+    axalloc --> axplat_dyn["axplat-dyn"]
 ```
 
-### 3.1 直接与间接依赖
-- `axallocator`
-- `axbacktrace`
-- `axerrno`
-- `kspin`
-- `memory_addr`
-- `percpu`
+### 3.1 关键直接依赖
+- `axallocator`：默认路径的算法库来源。
+- `kspin`：保护全局分配器内部状态。
+- `axerrno`：把页对象和分配失败映射到 ArceOS 错误码。
+- `axbacktrace`、`percpu`：只在 `tracking` 下参与分配跟踪。
+- `buddy-slab-allocator`：只在 `hv` 下启用。
 
-### 3.2 间接本地依赖
-- `bitmap-allocator`
-- `crate_interface`
-- `kernel_guard`
-- `percpu_macros`
-
-### 3.3 被依赖情况
-- `arceos_api`
-- `arceos_posix_api`
-- `axdma`
-- `axdriver`
-- `axfeat`
-- `axfs-ng`
-- `axhal`
-- `axmm`
-- `axplat-dyn`
-- `axruntime`
-- `starry-kernel`
-
-### 3.4 间接被依赖情况
-- `arceos-affinity`
-- `arceos-helloworld`
-- `arceos-helloworld-myplat`
-- `arceos-httpclient`
-- `arceos-httpserver`
-- `arceos-irq`
-- `arceos-memtest`
-- `arceos-parallel`
-- `arceos-priority`
-- `arceos-shell`
-- `arceos-sleep`
-- `arceos-wait-queue`
-- 另外还有 `14` 个同类项未在此展开
-
-### 3.5 关键外部依赖
-- `buddy-slab-allocator`
-- `cfg-if`
-- `log`
-- `strum`
+### 3.2 关键直接消费者
+- `axruntime`：启动期初始化全局分配器。
+- `axmm`、`axhal`：页级分配的主要消费者。
+- `axdriver`、`axdma`、`axfs-ng`：驱动、DMA、文件缓存等运行期场景。
+- `arceos_api` / `arceos_posix_api`：向上层 API 暴露堆能力。
+- `starry-kernel`：可复用其 tracking 和页/堆分配能力。
 
 ## 4. 开发指南
 ### 4.1 依赖配置
 ```toml
 [dependencies]
 axalloc = { workspace = true }
-
-# 如果在仓库外独立验证，也可以显式绑定本地路径：
-# axalloc = { path = "os/arceos/modules/axalloc" }
 ```
 
-### 4.2 初始化流程
-1. 在 `Cargo.toml` 中接入该 crate，并根据需要开启相关 feature。
-2. 若 crate 暴露初始化入口，优先调用 `init`/`new`/`build`/`start` 类函数建立上下文。
-3. 在最小消费者路径上验证公开 API、错误分支与资源回收行为。
+对大多数上层模块来说，更常见的接入方式是通过 `axruntime`、`arceos_api` 或其他运行时聚合层间接使用，而不是直接把 `axalloc` 当业务库调用。
 
-### 4.3 关键 API 使用提示
-- 优先关注函数入口：`get`、`global_allocator`、`alloc`、`alloc_zero`、`alloc_contiguous`、`start_vaddr`、`start_paddr`、`size` 等（另有 28 项）。
-- 上下文/对象类型通常从 `Usages`、`GlobalPage`、`AllocationInfo`、`GlobalAllocator` 等结构开始。
+### 4.2 修改时的关键约束
+1. 修改 `global_init()` 或扩堆逻辑时，要同时检查默认路径与 `hv` 路径是否保持语义一致。
+2. 修改 `UsageKind` 或统计规则时，要避免默认两级分配里的双重记账。
+3. 若调整 `GlobalPage`，必须坚持它只是“分配到的连续页块”所有权对象，不能把映射、cache 属性或 IOMMU 语义塞进来。
+4. 若新增 feature，需要同步检查 `axfeat` 与 `axruntime` 的 feature 传播是否正确。
+
+### 4.3 开发建议
+- “算法选择”优先放在 `axallocator` 层，`axalloc` 更适合做全局装配。
+- “地址空间策略”应放在 `axmm` 或更上层，而不是让 `axalloc` 变成第二个内存管理器。
+- 需要定位泄漏或大户时优先用 `tracking`，不要在分配快路径堆太多日志。
 
 ## 5. 测试策略
-### 5.1 当前仓库内的测试形态
-- 当前 crate 目录中未发现显式 `tests/`/`benches/`/`fuzz/` 入口，更可能依赖上层系统集成测试或跨 crate 回归。
+### 5.1 当前测试形态
+`axalloc` 本体没有独立的 crate 内测试，当前验证主要依赖：
+
+- `axallocator` 自身的算法测试与压力测试。
+- `axruntime` 启动链对 `global_init()` 的真实调用。
+- `StarryOS/kernel/src/pseudofs/dev/memtrack.rs` 对 tracking 路径的系统级消费。
 
 ### 5.2 单元测试重点
-- 建议围绕 API 契约、feature 分支、资源管理和错误恢复路径编写单元测试。
+- `level-1` 与默认两级模式的差异分支。
+- `alloc_pages_at()`、`GlobalPage` 的边界行为。
+- `tracking::with_state()` 的递归保护。
+- `hv` 路径下地址翻译器和 DMA32 页分配。
 
 ### 5.3 集成测试重点
-- 建议至少补一条 ArceOS 示例或 `test-suit/arceos` 路径，必要时覆盖多架构或多 feature 组合。
+- ArceOS 正常启动并完成 `axruntime` 堆初始化。
+- `axmm` / `axhal` 的页级消费者能稳定拿到页块。
+- tracking 打开后 memtrack 结果与实际分配行为一致。
+- Axvisor 的 `hv` 组合下分配器初始化与地址翻译可用。
 
 ### 5.4 覆盖率要求
-- 覆盖率建议：公开 API、初始化失败路径和主要 feature 组合必须覆盖；涉及调度/内存/设备时需补系统级验证。
+- 对 `axalloc`，比单纯行覆盖率更重要的是 feature 组合覆盖。
+- 至少应覆盖当前实际启用的字节分配算法，以及 `tracking`、`hv`、`level-1` 这些高风险分支。
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-`axalloc` 直接位于 `os/arceos/` 目录树中，是 ArceOS 工程本体的一部分，承担 ArceOS 内核模块。
+`axalloc` 是 ArceOS 运行时里的标准全局分配模块。它直接服务 `axruntime`、`axmm`、`axhal`、驱动和 API 层，是系统从“知道有哪些内存区域”走到“可以分配内存”的关键一环。
 
 ### 6.2 StarryOS
-`axalloc` 不在 StarryOS 目录内部，但被 `starry-kernel` 等 StarryOS crate 直接依赖，说明它是该系统的共享构件或底层服务。
+StarryOS 复用 `axalloc` 作为共享堆/页分配基础，并在 `memtrack` 场景中消费其 tracking 能力。因此它在 StarryOS 中仍是叶子基础件，而不是 Linux 兼容内存子系统本体。
 
 ### 6.3 Axvisor
-`axalloc` 主要通过 `axvisor` 等上层 crate 被 Axvisor 间接复用，通常处于更底层的公共依赖层。
+Axvisor 通过 `hv` 路径复用 `axalloc`，重点是地址翻译友好的宿主侧分配。它承担的是 Hypervisor 运行时分配服务，不是 guest 物理内存管理器或二级页表策略层。

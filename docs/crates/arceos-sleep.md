@@ -1,106 +1,145 @@
 # `arceos-sleep` 技术文档
 
 > 路径：`test-suit/arceos/task/sleep`
-> 类型：二进制 crate
-> 分层：测试层 / 系统级测试与回归入口
+> 类型：测试入口 crate
+> 分层：测试层 / ArceOS 定时休眠回归
 > 版本：`0.1.0`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 未检测到 crate 层 README
+> 文档依据：`Cargo.toml`、`src/main.rs`、`qemu-riscv64.toml`、`docs/build-system.md`
 
-`arceos-sleep` 的核心定位是：ArceOS 系统级测试与回归入口
+`arceos-sleep` 用一组非常直观的工作负载，验证 ArceOS 中“线程睡眠到期后被唤醒”这条能力链是否正常。它既测试主线程的单次睡眠，也测试多个任务在不同休眠长度下的并发睡眠，还额外放了一个后台 tick 任务观察时间推进。
+
+最重要的边界是：**它不是计时器精度 benchmark，也不是实时性测试套件；它只是用行为级断言和日志来验证 `thread::sleep()` 没有失效。**
 
 ## 1. 架构设计分析
-- 目录角色：系统级测试与回归入口
-- crate 形态：二进制 crate
-- 工作区位置：根工作区
-- feature 视角：该 crate 没有显式声明额外 Cargo feature，功能边界主要由模块本身决定。
-- 关键数据结构：可直接观察到的关键数据结构/对象包括 `NUM_TASKS`、`FINISHED_TASKS`。
-- 设计重心：该 crate 的主线不是提供稳定库 API，而是构造可复现的系统级测试场景，并通过日志、退出行为或 QEMU 结果判断是否回归通过。
+### 1.1 测试场景划分
+这个 crate 可以拆成三段：
 
-### 1.1 内部模块划分
-- 当前 crate 未显式声明多个顶层 `mod`，复杂度更可能集中在单文件入口、宏展开或下层子 crate。
+1. 主线程先睡 1 秒，并打印实际耗时。
+2. 一个后台任务每 500ms 打一次 `tick`，持续 30 次。
+3. 5 个子任务分别按 `1s..5s` 的粒度，每个重复休眠 3 次。
 
-### 1.2 核心算法/机制
-- 该 crate 主要承载系统级测试入口、QEMU/平台配置或断言编排，核心机制是测试场景构造与结果判定。
+最终主线程通过 `FINISHED_TASKS` 原子计数器等待所有子任务结束。
+
+### 1.2 真实调用关系
+这里用的是用户侧最普通的 `thread::sleep()`，但实际会落到任务与时钟子系统：
+
+```mermaid
+flowchart LR
+    A["thread::sleep(Duration)"] --> B["axstd::thread::sleep"]
+    B --> C["arceos_api::task::ax_sleep_until"]
+    C --> D["axtask::sleep_until"]
+    D --> E["IRQ/timer 驱动超时唤醒"]
+```
+
+如果 `multitask` 或 `irq` 不成立，这条链会退化；而本 crate 明确在 `Cargo.toml` 打开了：
+
+- `multitask`
+- `irq`
+
+说明它测试的是“真正的定时阻塞与唤醒”，不是 busy wait 退化路径。
+
+### 1.3 为什么要有后台 tick 线程
+后台线程不是为了功能展示，而是为了额外确认：
+
+- 睡眠期间系统时间仍在推进
+- 调度器和定时器中断没有卡死
+- 一个线程睡眠时，不会阻塞其他线程继续运行
+
+这让 `arceos-sleep` 同时具备“单线程休眠验证”和“多任务定时推进 smoke test”两层含义。
 
 ## 2. 核心功能说明
-- 功能定位：ArceOS 系统级测试与回归入口
-- 对外接口：该 crate 的公开入口主要是 `main()` 或命令子流程，本身不强调稳定库 API。
-- 典型使用场景：用于验证固定功能点、特定 bug 回归或系统语义是否符合预期，通常通过 QEMU 日志或退出状态判断成功与否。 这类 crate 的核心使用方式通常是运行入口本身，而不是被别的库当作稳定 API 依赖。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `main()`。
+### 2.1 具体验证内容
+当前实现主要覆盖：
+
+- 主线程 `sleep(1s)` 的最小正确性
+- 多个任务不同休眠长度下的唤醒行为
+- 后台线程在系统运行期间持续获得调度
+- 所有任务都能最终收敛并打印 `Sleep tests run OK!`
+
+### 2.2 日志为什么只做观察，不做严格时序断言
+源码只打印 `elapsed`，但没有把它与精确阈值严格比较。这是刻意设计，因为：
+
+- QEMU 中断与串口输出本身会引入抖动
+- 多核调度下线程恢复时间不可能完全恒定
+- 这个测试关心的是“睡眠和唤醒是否工作”，不是“纳秒级精度是否达标”
+
+### 2.3 边界澄清
+因此它不适合被解读为：
+
+- 实时调度性能测试
+- 时钟源精度对比工具
+- 高精度延迟测量基准
+
+它只是“休眠 API 仍然可用”的回归入口。
 
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    current["arceos-sleep"]
-    current --> axstd["axstd"]
+    test["arceos-sleep"] --> axstd["axstd(multitask, irq)"]
+    axstd --> arceos_api["arceos_api::task"]
+    arceos_api --> axtask["axtask"]
+    axtask --> axhal["axhal time/irq"]
 ```
 
-### 3.1 直接与间接依赖
-- `axstd`
+### 3.1 直接依赖
+- `axstd(multitask, irq)`：说明测试直接依赖多任务和中断驱动的睡眠路径。
 
-### 3.2 间接本地依赖
-- `arceos_api`
-- `arm_pl011`
-- `arm_pl031`
-- `axalloc`
-- `axallocator`
-- `axbacktrace`
-- `axconfig`
-- `axconfig-gen`
-- `axconfig-macros`
-- `axcpu`
-- `axdisplay`
-- `axdma`
-- 另外还有 `61` 个同类项未在此展开
+### 3.2 关键间接依赖
+- `axtask::sleep_until`：真正把当前任务挂入等待队列。
+- `axhal` 的时间和中断能力：提供超时唤醒所需的时钟推进。
 
-### 3.3 被依赖情况
-- 当前未发现本仓库内其他 crate 对其存在直接本地依赖。
-
-### 3.4 间接被依赖情况
-- 当前未发现更多间接消费者，或该 crate 主要作为终端入口使用。
-
-### 3.5 关键外部依赖
-- 当前依赖集合几乎完全来自仓库内本地 crate。
+### 3.3 主要消费者
+- `cargo xtask test arceos` 自动发现的任务时间语义回归。
+- 调整 timer、IRQ 或 `axtask` 睡眠路径后的快速验证。
 
 ## 4. 开发指南
-### 4.1 运行入口
-```toml
-# `arceos-sleep` 主要作为测试/验证入口使用，通常不作为普通库依赖。
-# 推荐通过 xtask 统一测试入口或单包运行命令触发。
-```
-
+### 4.1 推荐运行方式
 ```bash
-cargo xtask test arceos --target riscv64gc-unknown-none-elf
 cargo xtask arceos run --package arceos-sleep --arch riscv64
 ```
 
-### 4.2 初始化流程
-1. 先明确该测试场景对应的目标架构、QEMU 配置和成功/失败判据。
-2. 优先通过 `cargo xtask test arceos` 跑完整测试入口，单包调试再退回 `run --package`。
-3. 修改测试时同步检查日志匹配、预期 panic、退出状态和 feature 组合，保证回归结果可复现。
+或者统一跑：
 
-### 4.3 关键 API 使用提示
-- 该 crate 的关键接入点通常是运行命令、CLI 参数或入口函数，而不是稳定库 API。
+```bash
+cargo xtask test arceos --target riscv64gc-unknown-none-elf
+```
+
+### 4.2 修改时的注意点
+1. 保持总耗时在 CI 可接受范围内；当前场景已经接近十几秒。
+2. 若增加更长睡眠，先评估测试脚本的超时限制。
+3. 不要引入过于苛刻的时间精度断言，否则很容易造成虚假失败。
+
+### 4.3 适合新增的场景
+- `sleep_until()` 绝对时间路径
+- 极短超时与长超时混合压力
+- 单核和多核配置下的唤醒可达性
 
 ## 5. 测试策略
-### 5.1 当前仓库内的测试形态
-- 该 crate 本身就是系统级测试入口，测试价值主要来自 QEMU/平台运行结果而非 host 侧库测试。
+### 5.1 当前自动化形态
+`qemu-riscv64.toml` 中已经提供：
 
-### 5.2 单元测试重点
-- 若该 crate 含辅助库逻辑，可对断言解析、日志匹配和测试输入构造做单元测试。
+- `-smp 4`
+- `success_regex = ["Sleep tests run OK!"]`
+- panic 关键字失败匹配
 
-### 5.3 集成测试重点
-- 重点是保持测试矩阵可复现：架构、平台、QEMU 配置、成功/失败判据都应纳入回归。
+说明它是典型的自动回归包。
 
-### 5.4 覆盖率要求
-- 覆盖率要求以场景覆盖为主：应覆盖正常路径、预期失败路径和关键平台/feature 组合。
+### 5.2 成功标准
+- 主线程能从休眠中返回
+- 所有子线程都能完成 3 轮休眠
+- 后台 tick 能持续打印
+- 最终出现 `Sleep tests run OK!`
+
+### 5.3 风险点
+- 若 timer/IRQ 路径失效，通常会表现为任务永久不醒。
+- 若调度器有活性问题，后台 tick 或等待循环可能先暴露异常。
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-当前未检测到 ArceOS 工程本体对 `arceos-sleep` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
+它是 ArceOS 时间与调度基本语义的一条行为回归入口，直接服务 `axtask` 和 timer 相关实现。
 
 ### 6.2 StarryOS
-当前未检测到 StarryOS 工程本体对 `arceos-sleep` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
+StarryOS 不直接运行它，但底层时间推进和任务睡眠问题往往会先在这种简单回归里被发现。
 
 ### 6.3 Axvisor
-当前未检测到 Axvisor 工程本体对 `arceos-sleep` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
+Axvisor 也不直接依赖它；它的跨项目价值在于给共享底层定时与调度改动提供一条比虚拟机场景更容易定位的回归路径。

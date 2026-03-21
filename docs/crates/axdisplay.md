@@ -2,125 +2,154 @@
 
 > 路径：`os/arceos/modules/axdisplay`
 > 类型：库 crate
-> 分层：ArceOS 层 / ArceOS 内核模块
+> 分层：ArceOS 层 / 显示能力接线层
 > 版本：`0.3.0-preview.3`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 未检测到 crate 层 README
+> 文档依据：`Cargo.toml`、`src/lib.rs`、`os/arceos/modules/axruntime/src/lib.rs`、`os/arceos/api/arceos_api/src/imp/display.rs`、`os/StarryOS/kernel/src/pseudofs/dev/fb.rs`
 
-`axdisplay` 的核心定位是：ArceOS graphics module
+`axdisplay` 位于 `axdriver_display` 之上、`arceos_api::display` 与 StarryOS framebuffer 设备之下，是一个非常薄的显示能力接线层。它不实现任何 GPU 驱动，也不负责多显示器管理；它做的事情只有一件：从 `axdriver` 聚合层交来的显示设备容器里取出一个主显示设备，保存为全局对象，然后向上提供帧缓冲信息和刷新接口。
 
 ## 1. 架构设计分析
-- 目录角色：ArceOS 内核模块
-- crate 形态：库 crate
-- 工作区位置：子工作区 `os/arceos`
-- feature 视角：该 crate 没有显式声明额外 Cargo feature，功能边界主要由模块本身决定。
-- 关键数据结构：可直接观察到的关键数据结构/对象包括 `AxDeviceContainer`、`MAIN_DISPLAY`。
+### 1.1 真实定位
+当前实现只有一个核心全局对象：
 
-### 1.1 内部模块划分
-- 当前 crate 未显式声明多个顶层 `mod`，复杂度更可能集中在单文件入口、宏展开或下层子 crate。
+- `MAIN_DISPLAY: LazyInit<Mutex<AxDisplayDevice>>`
 
-### 1.2 核心算法/机制
-- 实现重心偏向接口组织和模块协作。
+这已经直接说明了它的设计取舍：
+
+- 全局单主设备。
+- 以互斥锁保护访问。
+- 只向上暴露 framebuffer 信息和 flush。
+
+因此它不是 `axdriver_display` 那样的驱动类别层，而是更靠近“用户可见能力”的上层模块。
+
+### 1.2 初始化主线
+当前仓库中的调用链非常直接：
+
+1. `axruntime` 在完成平台和内核基本初始化后调用 `axdriver::init_drivers()`。
+2. `axdriver` 把显示设备按类别收集进 `AllDevices.display`。
+3. `axruntime` 在 `feature = "display"` 下调用 `axdisplay::init_display(all_devices.display)`。
+4. `axdisplay` 从容器中取出一个设备，存入 `MAIN_DISPLAY`。
+5. `arceos_api` 与 StarryOS 等更上层模块通过 `framebuffer_info()` / `framebuffer_flush()` 使用它。
+
+### 1.3 关键 API
+| API | 作用 |
+| --- | --- |
+| `init_display()` | 从底层设备容器初始化显示模块 |
+| `has_display()` | 查询是否已有主显示设备 |
+| `framebuffer_info()` | 返回当前主显示设备的 `DisplayInfo` |
+| `framebuffer_flush()` | 刷新当前主显示设备的帧缓冲 |
+
+### 1.4 单设备模型的真实含义
+`init_display(mut display_devs: AxDeviceContainer<AxDisplayDevice>)` 的核心实现只有：
+
+- `display_devs.take_one()`
+- `MAIN_DISPLAY.init_once(...)`
+
+这意味着：
+
+- 当前 `axdisplay` 只会选择一个显示设备。
+- 如果底层探测出了多个显示设备，其余设备不会在本模块中保留。
+- 本模块没有设备优先级选择、热插拔或多显示输出管理逻辑。
+
+这一点和 `axinput` 的“收集所有设备”模型非常不同。
+
+### 1.5 与上下层的边界
+| 层次 | 负责内容 | 不负责内容 |
+| --- | --- | --- |
+| `axdriver_display` / `VirtIoGpuDev` | 具体显示驱动与帧缓冲语义 | 全局主显示管理 |
+| `axdisplay` | 选择一个主显示设备并导出 framebuffer 能力 | 设备探测、模式设置、多显示器管理 |
+| `arceos_api::display` | 暴露更稳定的 API 入口 | 保存或管理设备对象 |
+| StarryOS `/dev/fb` | 把 framebuffer 能力包装成伪文件系统设备 | 驱动初始化与主设备选择 |
+
+### 1.6 边界澄清
+最关键的边界是：**`axdisplay` 不是显示驱动层，而是“把一个已经探测好的显示设备变成系统主 framebuffer 能力”的接线层。**
 
 ## 2. 核心功能说明
-- 功能定位：ArceOS graphics module
-- 对外接口：从源码可见的主要公开入口包括 `init_display`、`has_display`、`framebuffer_info`、`framebuffer_flush`。
-- 典型使用场景：主要服务于 ArceOS 内核模块装配，是运行时、驱动、内存、网络或同步等子系统的一部分。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `init_display()`。
+### 2.1 主要能力
+- 持有一个全局主显示设备。
+- 向上暴露 framebuffer 元信息。
+- 向上暴露 flush 操作。
+- 通过 `has_display()` 提供最小存在性判断。
+
+### 2.2 与上层 API 的关系
+`os/arceos/api/arceos_api/src/imp/display.rs` 直接把：
+
+- `axdisplay::framebuffer_info()` 封装为 `ax_framebuffer_info()`
+- `axdisplay::framebuffer_flush()` 封装为 `ax_framebuffer_flush()`
+
+因此 `axdisplay` 是 ArceOS 显示 API 的直接实现后端。
+
+### 2.3 在 StarryOS 中的作用
+StarryOS 的 `pseudofs/dev/fb.rs` 会：
+
+- 调用 `axdisplay::framebuffer_info()` 获取尺寸和地址；
+- 周期性调用 `axdisplay::framebuffer_flush()`；
+- 把 framebuffer 包装成可 `read` / `write` / `mmap` 的伪设备。
+
+这说明 `axdisplay` 已经处在“对用户可见能力很近”的一层，但仍不是最终设备节点层。
 
 ## 3. 依赖关系图谱
-```mermaid
-graph LR
-    current["axdisplay"]
-    current --> axdriver["axdriver"]
-    current --> axsync["axsync"]
-    current --> lazyinit["lazyinit"]
-    arceos_api["arceos_api"] --> current
-    axfeat["axfeat"] --> current
-    axruntime["axruntime"] --> current
-    starry_kernel["starry-kernel"] --> current
-```
+### 3.1 直接依赖
+| 依赖 | 作用 |
+| --- | --- |
+| `axdriver` | 提供 `AxDisplayDevice`、`AxDeviceContainer` 与 `DisplayInfo` |
+| `axsync` | 为主显示设备访问提供互斥 |
+| `lazyinit` | 延迟初始化全局主显示设备 |
+| `log` | 初始化日志 |
 
-### 3.1 直接与间接依赖
-- `axdriver`
-- `axsync`
-- `lazyinit`
+### 3.2 主要消费者
+- `os/arceos/modules/axruntime`
+- `os/arceos/api/arceos_api`
+- `os/StarryOS/kernel/src/pseudofs/dev/fb.rs`
 
-### 3.2 间接本地依赖
-- `arm_pl011`
-- `arm_pl031`
-- `axalloc`
-- `axallocator`
-- `axbacktrace`
-- `axconfig`
-- `axconfig-gen`
-- `axconfig-macros`
-- `axcpu`
-- `axdma`
-- `axdriver_base`
-- `axdriver_block`
-- 另外还有 `36` 个同类项未在此展开
-
-### 3.3 被依赖情况
-- `arceos_api`
-- `axfeat`
-- `axruntime`
-- `starry-kernel`
-
-### 3.4 间接被依赖情况
-- `arceos-affinity`
-- `arceos-helloworld`
-- `arceos-helloworld-myplat`
-- `arceos-httpclient`
-- `arceos-httpserver`
-- `arceos-irq`
-- `arceos-memtest`
-- `arceos-parallel`
-- `arceos-priority`
-- `arceos-shell`
-- `arceos-sleep`
-- `arceos-wait-queue`
-- 另外还有 `7` 个同类项未在此展开
-
-### 3.5 关键外部依赖
-- `log`
+### 3.3 分层关系总结
+- 向下消费已经探测好的显示设备对象。
+- 向上提供更稳定、更简单的显示能力接口。
+- 不参与驱动发现，也不承担最终设备文件语义。
 
 ## 4. 开发指南
-### 4.1 依赖配置
-```toml
-[dependencies]
-axdisplay = { workspace = true }
+### 4.1 适合修改这里的场景
+应修改 `axdisplay` 的情况主要包括：
 
-# 如果在仓库外独立验证，也可以显式绑定本地路径：
-# axdisplay = { path = "os/arceos/modules/axdisplay" }
-```
+- 需要调整全局主显示设备的管理方式。
+- 需要在上层导出的显示能力中增加真正通用的操作。
+- 需要改进主设备选择策略。
 
-### 4.2 初始化流程
-1. 在 `Cargo.toml` 中接入该 crate，并根据需要开启相关 feature。
-2. 若 crate 暴露初始化入口，优先调用 `init`/`new`/`build`/`start` 类函数建立上下文。
-3. 在最小消费者路径上验证公开 API、错误分支与资源回收行为。
+如果只是修改具体 GPU 初始化或 framebuffer 建立逻辑，应去对应驱动实现。
 
-### 4.3 关键 API 使用提示
-- 优先关注函数入口：`init_display`、`has_display`、`framebuffer_info`、`framebuffer_flush`。
+### 4.2 扩展时需要注意的点
+1. 当前 API 假设“系统只有一个主显示设备”；若要支持多显示器，需要从类型和接口层整体改造。
+2. `framebuffer_info()` 和 `framebuffer_flush()` 都隐含依赖 `MAIN_DISPLAY` 已初始化，调用方通常应先检查 `has_display()`。
+3. 若要暴露更复杂能力，例如模式切换或页面翻转，应先确认这些能力应属于 `axdisplay` 还是具体驱动 trait。
+
+### 4.3 常见坑
+- 不要把 `axdisplay` 写成“显示子系统”；它没有渲染、合成或窗口管理逻辑。
+- `init_display()` 只拿一个设备，不要假设所有底层显示设备都会被保留。
 
 ## 5. 测试策略
-### 5.1 当前仓库内的测试形态
-- 当前 crate 目录中未发现显式 `tests/`/`benches/`/`fuzz/` 入口，更可能依赖上层系统集成测试或跨 crate 回归。
+### 5.1 当前有效验证面
+当前主要验证路径包括：
 
-### 5.2 单元测试重点
-- 建议围绕 API 契约、feature 分支、资源管理和错误恢复路径编写单元测试。
+- `virtio-gpu` 启动后 `axdisplay::has_display()` 为真。
+- `framebuffer_info()` 返回的宽高和显存大小与底层一致。
+- `framebuffer_flush()` 能触发实际屏幕刷新。
+- StarryOS `/dev/fb` 读写和 `mmap` 能正常工作。
 
-### 5.3 集成测试重点
-- 建议至少补一条 ArceOS 示例或 `test-suit/arceos` 路径，必要时覆盖多架构或多 feature 组合。
+### 5.2 建议补充的测试
+- 无显示设备时 `init_display()` 和 `has_display()` 行为。
+- 单设备初始化后 `framebuffer_info()` / `framebuffer_flush()` 的基本契约。
+- 多显示设备输入时只保留一个设备的行为是否符合预期。
 
-### 5.4 覆盖率要求
-- 覆盖率建议：公开 API、初始化失败路径和主要 feature 组合必须覆盖；涉及调度/内存/设备时需补系统级验证。
+### 5.3 风险点
+- 单主显示模型若被误用到多显示场景，问题不会在编译期暴露，而会在运行期表现为设备被静默忽略。
+- `framebuffer_info()` 返回的地址和大小完全信任底层驱动，错误会直接传导到上层 framebuffer 访问。
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-`axdisplay` 直接位于 `os/arceos/` 目录树中，是 ArceOS 工程本体的一部分，承担 ArceOS 内核模块。
+`axdisplay` 是 ArceOS 本体中的显示能力模块，直接承接 `axdriver` 聚合出来的显示设备，并为 `arceos_api` 提供后端实现。
 
 ### 6.2 StarryOS
-`axdisplay` 不在 StarryOS 目录内部，但被 `starry-kernel` 等 StarryOS crate 直接依赖，说明它是该系统的共享构件或底层服务。
+StarryOS 直接消费它，把 framebuffer 能力包装成 `/dev/fb` 伪设备，因此是它在当前仓库里最明确的跨项目落点。
 
 ### 6.3 Axvisor
-`axdisplay` 主要通过 `axvisor` 等上层 crate 被 Axvisor 间接复用，通常处于更底层的公共依赖层。
+当前仓库没有看到 Axvisor 直接使用 `axdisplay`。它不是虚拟显示控制器，也不是 VMM 侧显示抽象。

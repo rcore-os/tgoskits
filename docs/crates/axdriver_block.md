@@ -2,116 +2,170 @@
 
 > 路径：`components/axdriver_crates/axdriver_block`
 > 类型：库 crate
-> 分层：组件层 / 可复用基础组件
+> 分层：组件层 / 块设备类别接口层
 > 版本：`0.1.4-preview.3`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 `components/axdriver_crates/axdriver_block/README.md`
+> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`src/ramdisk.rs`、`src/ramdisk_static.rs`、`src/sdmmc.rs`、`src/bcm2835sdhci.rs`、`os/arceos/modules/axdriver/src/drivers.rs`、`platform/axplat-dyn/src/drivers/blk/mod.rs`
 
-`axdriver_block` 的核心定位是：Common traits and types for block storage drivers
+`axdriver_block` 不是文件系统，也不是块缓存层。它的真实定位是 ArceOS 驱动栈里的块设备类别接口 crate：一方面定义统一的 `BlockDriverOps`，另一方面在 feature 打开时提供少量叶子块设备实现，例如 `ramdisk`、`sdmmc`、`bcm2835-sdhci` 和 `ahci`。上层 `axdriver` 负责探测与聚合，`axfs`/`axfs-ng` 才是消费块设备并组织文件系统语义的地方。
 
 ## 1. 架构设计分析
-- 目录角色：可复用基础组件
-- crate 形态：库 crate
-- 工作区位置：子工作区 `components/axdriver_crates`
-- feature 视角：主要通过 `ahci`、`bcm2835-sdhci`、`ramdisk`、`ramdisk-static`、`sdmmc` 控制编译期能力装配。
-- 关键数据结构：可直接观察到的关键数据结构/对象包括 `SDHCIDriver`、`RamDisk`、`AhciDriver`、`SdMmcDriver`、`Target`、`BaseDriverOps`、`DevError`、`DevResult`、`BLOCK_SIZE`。
-- 设计重心：该 crate 多数是寄存器级或设备级薄封装，复杂度集中在 MMIO 语义、安全假设和被上层平台/驱动整合的方式。
+### 1.1 设计定位
+这个 crate 同时承担两类职责：
 
-### 1.1 内部模块划分
-- `bcm2835sdhci`：SD card driver for raspi4（按 feature: bcm2835-sdhci 条件启用）
-- `ramdisk`：A RAM disk driver backed by heap memory（按 feature: ramdisk 条件启用）
-- `ramdisk_static`：A RAM disk driver backed by a static slice（按 feature: ramdisk-static 条件启用）
-- `ahci`：AHCI driver（按 feature: ahci 条件启用）
-- `sdmmc`：SD/MMC driver based on SDIO（按 feature: sdmmc 条件启用）
+- **类别接口层**：通过 `BlockDriverOps` 统一块设备的容量、块大小、读写和刷盘语义。
+- **可选叶子实现层**：通过 feature 暴露若干具体块设备实现。
 
-### 1.2 核心算法/机制
-- 该 crate 的实现主要围绕顶层模块分工展开，重点在子系统边界、trait/类型约束以及初始化流程。
+因此它不是纯粹的“trait-only crate”，但也不是系统级块设备管理器。当前真实模块如下：
+
+| 模块 | 启用条件 | 作用 |
+| --- | --- | --- |
+| `ramdisk` | `ramdisk` | 基于堆内存的 RAM 盘 |
+| `ramdisk_static` | `ramdisk-static` | 基于静态切片的 RAM 盘 |
+| `sdmmc` | `sdmmc` | 基于 `simple_sdmmc::SdMmc` 的 SD/MMC 驱动 |
+| `bcm2835sdhci` | `bcm2835-sdhci` | Raspberry Pi 侧的 BCM2835 SDHCI 驱动 |
+| `ahci` | `ahci` | AHCI 控制器驱动实现入口 |
+
+### 1.2 核心接口
+`BlockDriverOps` 继承 `BaseDriverOps`，定义了五个关键方法：
+
+- `num_blocks()`：返回逻辑块总数。
+- `block_size()`：返回单块大小。
+- `read_block()`：从给定块号开始读取，可跨多块。
+- `write_block()`：从给定块号开始写入，可跨多块。
+- `flush()`：把待刷写数据提交到底层介质。
+
+这里最重要的设计点是：**读写接口以“逻辑块设备”视角工作，而不是以文件、分区或页缓存视角工作。**
+
+### 1.3 具体实现的行为差异
+#### `ramdisk`
+`ramdisk::RamDisk` 用 512 字节对齐的堆内存作为后端：
+
+- `new(size_hint)` 会向上按 512 字节对齐。
+- `read_block()` / `write_block()` 要求缓冲区长度是块大小整数倍。
+- 超界访问返回 `DevError::Io`。
+- `flush()` 为空操作，因为数据本来就在内存中。
+
+#### `sdmmc`
+`sdmmc::SdMmcDriver` 是对 `simple_sdmmc::SdMmc` 的薄封装：
+
+- 构造函数是 `unsafe fn new(base: usize)`。
+- 多块读写通过 `as_chunks()` / `as_chunks_mut()` 分块循环完成。
+- 若缓冲区长度不是块大小整数倍，返回 `DevError::InvalidParam`。
+
+#### `bcm2835sdhci`
+`bcm2835sdhci::SDHCIDriver` 通过 `try_new()` 初始化控制器：
+
+- 初始化失败直接映射为 `DevError::Io`。
+- 读写要求缓冲区至少覆盖一个块，且需满足 `u32` 对齐要求。
+- 将外部 `SDHCIError` 映射回统一的 `DevError`。
+
+### 1.4 与 `axdriver` 聚合层的接线关系
+在当前仓库中，真正把这些实现接进系统初始化流程的是 `os/arceos/modules/axdriver/src/drivers.rs`：
+
+- `ramdisk` 通过 `RamDiskDriver::probe_global()` 创建固定大小 16 MiB RAM 盘。
+- `sdmmc` 通过 `SdMmcDriver::new()` 使用 `axconfig::devices::SDMMC_PADDR` 对应寄存器基址。
+- `bcm2835-sdhci` 通过 `SDHCIDriver::try_new()` 接入。
+
+需要特别注意一个实现事实：**`axdriver_block` 虽然有 `ahci` feature 和 `ahci` 模块，但当前 `axdriver::drivers.rs` 并没有把 AHCI 探测逻辑注册进去。** 也就是说，打开 feature 并不等于当前 ArceOS 探测路径就会自动发现 AHCI 设备。
+
+### 1.5 与动态平台路径的关系
+在 `platform/axplat-dyn/src/drivers/blk/mod.rs` 中，`rd_block::Block` 会被包装成实现 `BlockDriverOps` 的 `Block`。这说明：
+
+- `axdriver_block` 的核心价值首先是 trait 契约。
+- 具体实现不一定非要写在本 crate 内，也可以由其它 crate 适配后满足 `BlockDriverOps`。
 
 ## 2. 核心功能说明
-- 功能定位：Common traits and types for block storage drivers
-- 对外接口：从源码可见的主要公开入口包括 `try_new`、`new`、`SDHCIDriver`、`RamDisk`、`AhciDriver`、`SdMmcDriver`、`BlockDriverOps`。
-- 典型使用场景：提供寄存器定义、MMIO 访问或设备级操作原语，通常被平台 crate、驱动聚合层或更高层子系统进一步封装。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `try_new()` -> `new()`。
+### 2.1 主要能力
+- 提供统一的块设备 trait `BlockDriverOps`。
+- 为 RAM 盘、SD/MMC、BCM2835 SDHCI、AHCI 等设备提供可选实现入口。
+- 复用 `axdriver_base` 的名称、类别和错误模型。
+- 作为 `axdriver_virtio::VirtIoBlkDev` 与 `platform/axplat-dyn` 动态块设备包装的共同契约。
+
+### 2.2 典型调用链
+当前仓库里最典型的使用主线是：
+
+1. `axruntime::init_drivers()` 调用 `axdriver::init_drivers()`。
+2. `axdriver` 根据 feature 选择 `ramdisk`、`sdmmc`、`bcm2835-sdhci` 或 `virtio-blk` 路径。
+3. 设备实例被包装成 `AxBlockDevice` 放入 `AllDevices.block`。
+4. `axfs` 或 `axfs-ng` 再接手这些块设备。
+
+也就是说，本 crate 输出的是“可供上层消费的块设备实例”，而不是最终文件系统能力。
+
+### 2.3 当前实现限制
+- `ahci` 在本 crate 中存在，但当前 ArceOS 静态探测主线尚未接入。
+- `flush()` 在多个实现里目前为空操作或恒成功，语义上更接近“同步点占位接口”。
+- 各实现对缓冲区对齐、长度和块大小的要求不同，调用方不能假设所有块驱动都能接受任意字节数。
 
 ## 3. 依赖关系图谱
-```mermaid
-graph LR
-    current["axdriver_block"]
-    current --> axdriver_base["axdriver_base"]
-    axdriver["axdriver"] --> current
-    axdriver_virtio["axdriver_virtio"] --> current
-    axplat_dyn["axplat-dyn"] --> current
-```
+### 3.1 直接依赖
+| 依赖 | 作用 |
+| --- | --- |
+| `axdriver_base` | 统一设备元信息和错误类型 |
+| `simple-sdmmc` | `sdmmc` 模块的底层控制器实现 |
+| `simple-ahci` | `ahci` 模块的底层控制器实现 |
+| `bcm2835-sdhci` | `bcm2835sdhci` 模块的底层控制器实现 |
+| `log` | 初始化与错误日志 |
 
-### 3.1 直接与间接依赖
-- `axdriver_base`
+### 3.2 主要消费者
+- `os/arceos/modules/axdriver`
+- `components/axdriver_crates/axdriver_virtio`
+- `platform/axplat-dyn`
+- `os/arceos/modules/axfs`
+- `os/arceos/modules/axfs-ng`
 
-### 3.2 间接本地依赖
-- 未检测到额外的间接本地依赖，或依赖深度主要停留在第一层。
-
-### 3.3 被依赖情况
-- `axdriver`
-- `axdriver_virtio`
-- `axplat-dyn`
-
-### 3.4 间接被依赖情况
-- `arceos-affinity`
-- `arceos-helloworld`
-- `arceos-helloworld-myplat`
-- `arceos-httpclient`
-- `arceos-httpserver`
-- `arceos-irq`
-- `arceos-memtest`
-- `arceos-parallel`
-- `arceos-priority`
-- `arceos-shell`
-- `arceos-sleep`
-- `arceos-wait-queue`
-- 另外还有 `23` 个同类项未在此展开
-
-### 3.5 关键外部依赖
-- `bcm2835-sdhci`
-- `log`
-- `simple-ahci`
-- `simple-sdmmc`
+### 3.3 分层关系总结
+- 向下依赖具体控制器库或内存后端。
+- 向上输出统一的 `BlockDriverOps` 语义。
+- 由 `axdriver` 聚合层决定哪些设备真正进入系统。
 
 ## 4. 开发指南
-### 4.1 依赖配置
-```toml
-[dependencies]
-axdriver_block = { workspace = true }
+### 4.1 何时应在这里扩展
+适合放进 `axdriver_block` 的内容有两类：
 
-# 如果在仓库外独立验证，也可以显式绑定本地路径：
-# axdriver_block = { path = "components/axdriver_crates/axdriver_block" }
-```
+- 一个能代表“块设备通用语义”的 trait 或辅助类型。
+- 一个已经被 ArceOS 驱动栈广泛使用、适合以 feature 方式内建的叶子块设备实现。
 
-### 4.2 初始化流程
-1. 先明确该设备/寄存器组件的调用上下文，是被平台 crate 直接使用还是被驱动聚合层再次封装。
-2. 修改寄存器位域、初始化顺序或中断相关逻辑时，应同步检查 `unsafe` 访问、访问宽度和副作用语义。
-3. 尽量通过最小平台集成路径验证真实设备行为，而不要只依赖静态接口检查。
+如果某个块设备只在单一平台实验使用，也可以不放进这里，而是直接在外部 crate 实现 `BlockDriverOps`。
 
-### 4.3 关键 API 使用提示
-- 优先关注函数入口：`try_new`、`new`。
-- 上下文/对象类型通常从 `SDHCIDriver`、`RamDisk`、`AhciDriver`、`SdMmcDriver` 等结构开始。
+### 4.2 新增实现时必须同步检查的地方
+1. `Cargo.toml` 的 feature 和可选依赖。
+2. `os/arceos/modules/axdriver/src/drivers.rs` 是否真的注册了 probe 路径。
+3. `axfeat` 顶层 feature 是否需要把该驱动能力暴露给整机配置。
+4. 读写接口对块大小、缓冲区长度和对齐的约束是否写清楚。
+
+### 4.3 常见坑
+- 不要把本 crate 写成“块设备子系统”；队列调度、页缓存、文件系统挂载都不在这里。
+- 仅在本 crate 中加入一个模块，并不会自动进入 `axdriver` 探测流程。
+- `flush()` 语义在不同实现里强弱不同，不能想当然地把它当作硬件缓存落盘保证。
 
 ## 5. 测试策略
-### 5.1 当前仓库内的测试形态
-- 当前 crate 目录中未发现显式 `tests/`/`benches/`/`fuzz/` 入口，更可能依赖上层系统集成测试或跨 crate 回归。
+### 5.1 当前有效验证面
+该 crate 没有独立的 `tests/` 目录，验证主要依赖：
 
-### 5.2 单元测试重点
-- 建议覆盖寄存器位域、设备状态转换、边界参数和 `unsafe` 访问前提。
+- `ramdisk` 的内存读写行为。
+- `axdriver` 初始化阶段是否能真正注册块设备。
+- `axfs` / `axfs-ng` 是否能基于这些设备完成挂载和读写。
+
+### 5.2 建议补充的单元测试
+- `ramdisk` 的块对齐、越界与多块读写。
+- `sdmmc` 与 `bcm2835sdhci` 的参数检查和错误映射。
+- `BlockDriverOps` 约定下 `num_blocks() * block_size()` 的边界一致性。
 
 ### 5.3 集成测试重点
-- 建议结合最小平台或驱动集成路径验证真实设备行为，重点检查初始化、中断和收发等主线。
+- `virtio-blk`、`ramdisk`、`sdmmc` 至少各保留一条整机启动路径。
+- 文件系统挂载和基础 I/O 回归。
+- 若补齐 `ahci` 接线，应新增对应的总线探测和 BAR 配置验证。
 
-### 5.4 覆盖率要求
-- 覆盖率建议：寄存器访问辅助函数和关键状态机保持高覆盖；真实硬件语义以集成验证补齐。
+### 5.4 风险点
+- Feature 已声明但探测主线未接线，是当前最容易引入误判的地方。
+- 块大小和缓冲区约束一旦处理错误，问题通常会在更上层文件系统中以数据损坏形式出现。
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-`axdriver_block` 不在 ArceOS 目录内部，但被 `axdriver` 等 ArceOS crate 直接依赖，说明它是该系统的共享构件或底层服务。
+这是当前仓库里的主消费方。ArceOS 通过 `axdriver` 和文件系统模块把它作为块设备类别契约和部分内建驱动实现使用。
 
 ### 6.2 StarryOS
-`axdriver_block` 主要通过 `starry-kernel`、`starryos`、`starryos-test` 等上层 crate 被 StarryOS 间接复用，通常处于更底层的公共依赖层。
+StarryOS 在当前仓库中没有把 `axdriver_block` 当成独立块子系统直接使用；它更多是通过共享的 ArceOS 底层模块栈间接受益。
 
 ### 6.3 Axvisor
-`axdriver_block` 主要通过 `axvisor` 等上层 crate 被 Axvisor 间接复用，通常处于更底层的公共依赖层。
+当前 Axvisor 代码主线更偏向 `rd_block` 与自身驱动体系，而不是直接依赖 `axdriver_block`。因此不应把本 crate 写成 Axvisor 的通用块设备框架。

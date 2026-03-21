@@ -1,97 +1,207 @@
 # `test-weak` 技术文档
 
 > 路径：`components/crate_interface/test_crates/test-weak`
-> 类型：二进制 crate
-> 分层：组件层 / 可复用基础组件
-> 版本：`0.1.0`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 未检测到 crate 层 README
+> 类型：二进制 crate（独立测试工作区成员，`publish = false`）
+> 分层：组件层 / `crate_interface` 多 crate 测试矩阵 / 最终链接验证端
+> Rust 要求：nightly（依赖 `#![feature(linkage)]`）
+> 文档依据：`components/crate_interface/test_crates/test-weak/Cargo.toml`、`components/crate_interface/test_crates/test-weak/src/main.rs`、`components/crate_interface/test_crates/Cargo.toml`、`components/crate_interface/test_crates/run_tests.sh`、`components/crate_interface/README.md`、`components/crate_interface/tests/test_weak_default.rs`、`components/crate_interface/Cargo.toml`、`Cargo.toml`
 
-`test-weak` 的核心定位是：Integration tests for weak_default traits with FULL implementations. This binary links FullImpl which overrides ALL methods of WeakDefaultIf. It verifies that strong symbols corre…
+`test-weak` 是 `crate_interface` `weak_default` 测试矩阵中负责“强覆盖优先级与混合解析”的最终链接/验证端。它把 `define-weak-traits` 提供的弱符号默认实现、`impl-weak-traits` 提供的覆盖型实现，以及调用侧断言逻辑真正收束到同一个 nightly 可执行文件里，借此观察链接器最终到底选择了强符号还是弱符号。与 `components/crate_interface/tests/test_weak_default.rs` 这样的最小功能测试相比，`test-weak` 验证的是更接近真实使用方式的跨 crate 链接结果。
 
 ## 1. 架构设计分析
-- 目录角色：可复用基础组件
-- crate 形态：二进制 crate
-- 工作区位置：子工作区 `components/crate_interface/test_crates`
-- feature 视角：该 crate 没有显式声明额外 Cargo feature，功能边界主要由模块本身决定。
-- 关键数据结构：该 crate 暴露的数据结构较少，关键复杂度主要体现在模块协作、trait 约束或初始化时序。
-- 设计重心：该 crate 通常作为多个内核子系统共享的底层构件，重点在接口边界、数据结构和被上层复用的方式。
 
-### 1.1 内部模块划分
-- 当前 crate 未显式声明多个顶层 `mod`，复杂度更可能集中在单文件入口、宏展开或下层子 crate。
+### 1.1 在测试矩阵中的真实定位
 
-### 1.2 核心算法/机制
-- 该 crate 是入口/编排型二进制，复杂度主要来自初始化顺序、配置注入和对下层模块的串接。
+`test-weak` 与 `test-simple` 一样，都是独立测试工作区里的资产，而不是正式产品组件：
+
+- 仓库顶层 `Cargo.toml` 将 `components/crate_interface/test_crates` 排除在主工作区之外
+- `components/crate_interface/Cargo.toml` 也把 `test_crates` 排除在 `crate_interface` 自身工作区之外
+- `components/crate_interface/test_crates/Cargo.toml` 把整组测试 crate 统一设为 `publish = false`
+
+它的存在目的不是提供某种“运行时默认实现服务”，而是作为 `weak_default` 测试矩阵中的终端可执行体，验证强符号优先级、弱符号回退以及二者混合共存是否符合设计。
+
+### 1.2 为什么它不是“纯完整实现测试”
+
+虽然 `test-weak` 链接的是 `impl-weak-traits`，但这个二进制并不意味着“所有方法、所有接口都走强符号”：
+
+- `FullImpl` 会完整覆盖 `WeakDefaultIf`
+- `AllDefaultImpl` 只覆写 `method_a()`，保留 `method_b()` 与 `method_c()` 的默认实现
+- `NamespacedWeakImpl` 只实现必需的 `get_id()`
+- `CallerWeakImpl` 只实现 `compute()`
+- `SelfRefFullImpl` 只覆写 `base_value()` 与 `transform()`，其余衍生逻辑继续使用默认实现
+
+因此，`test-weak` 的真实价值不是“证明某个 crate 能完全实现 trait”，而是证明在一个最终二进制里，强符号覆盖、弱符号保留与默认实现内部代理可以同时成立。
+
+### 1.3 链接锚点设计
+
+`src/main.rs` 用匿名常量块通过 `std::any::type_name::<...>()` 显式引用了：
+
+- `FullImpl`
+- `AllDefaultImpl`
+- `NamespacedWeakImpl`
+- `CallerWeakImpl`
+- `SelfRefFullImpl`
+
+这些类型引用的作用不是实例化对象，而是确保实现侧符号稳定进入最终链接单元。没有这一步，测试可能会退化成“调用代码存在，但实现侧并未真实参与最终程序”。
+
+### 1.4 覆盖场景矩阵
+
+`main()` 依次运行 7 个测试函数，对应 `define-weak-traits` 中最重要的 nightly 风险面：
+
+| 测试函数 | 覆盖对象 | 关注点 |
+| --- | --- | --- |
+| `test_full_impl_required_methods()` | `WeakDefaultIf` | 必需方法是否命中强符号实现 |
+| `test_full_impl_overridden_defaults()` | `WeakDefaultIf` | 默认方法被覆写后，强符号是否压过弱符号 |
+| `test_all_default_interface()` | `AllDefaultIf` | 同一接口里强弱符号能否混合共存 |
+| `test_namespaced_weak_interface()` | `NamespacedWeakIf` | `namespace = WeakNs` 与弱默认机制能否并存 |
+| `test_caller_weak_interface()` | `CallerWeakIf` | `gen_caller` 与默认回退是否一致工作 |
+| `test_mixed_strong_and_weak()` | `AllDefaultIf` | 混合解析在循环调用下是否稳定 |
+| `test_self_ref_full()` | `SelfRefIf` | 默认实现内部 `Self::` 直接调用和函数引用是否正确转向强符号 |
+
+其中 `test_self_ref_full()` 的技术含量最高，因为它不只验证“有没有覆盖”，还验证 `Self::base_value()` 与 `let f = Self::transform` 这两种代理路径在最终链接后是否都命中正确实现。
+
+### 1.5 与其它测试的关系
+
+`components/crate_interface/tests/test_weak_default.rs` 已经提供了一个最小的 `weak_default` 功能检查，但它的目的更接近“确认该 feature 能工作”。`test-weak` 则是下一层验证：
+
+- 定义侧在一个 crate 中生成弱符号默认实现
+- 实现侧在另一个 crate 中导出覆盖型强符号
+- 最终二进制在第三个 crate 中观测强弱符号的解析结果
+
+也就是说，它是 README 所描述的“跨 crate 定义/实现/调用模型”在 `weak_default` 场景下的最终证明。
 
 ## 2. 核心功能说明
-- 功能定位：Integration tests for weak_default traits with FULL implementations. This binary links FullImpl which overrides ALL methods of WeakDefaultIf. It verifies that strong symbols corre…
-- 对外接口：该 crate 的公开入口主要是 `main()` 或命令子流程，本身不强调稳定库 API。
-- 典型使用场景：作为共享基础设施被多个 OS 子系统复用，常见场景包括同步、内存管理、设备抽象、接口桥接和虚拟化基础能力。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `main()`。
+
+### 2.1 主要能力
+
+- 验证强符号在存在覆盖时能优先于弱符号默认实现
+- 验证未覆写的方法仍可在同一二进制中回退到默认实现
+- 验证 `namespace` 与 `gen_caller` 不会破坏弱符号解析语义
+- 验证默认实现内部 `Self::` 直接调用与函数引用都能正确命中强覆盖版本
+
+### 2.2 真实调用链
+
+```mermaid
+flowchart TD
+    A[define-weak-traits 生成弱符号默认实现] --> B[impl-weak-traits 导出覆盖型强符号]
+    B --> C[test-weak 通过类型引用确保实现被链接]
+    C --> D[call_interface! 或生成 caller 发起调用]
+    D --> E[assert_eq! 观测最终强弱符号解析结果]
+```
+
+### 2.3 为什么它必须作为终端可执行体存在
+
+很多 `weak_default` 问题不是宏展开阶段能看出来的，而是要等到“最终链接完成以后”才会暴露，例如：
+
+- 强符号是否真的压过弱符号
+- 默认实现中的 `Self::` 代理是否真的跳到了覆盖版本
+- `namespace` 与 `gen_caller` 是否改变了导出的符号选择
+
+因此它必须作为最终二进制存在，才能承担验证职责。
 
 ## 3. 依赖关系图谱
+
+### 3.1 直接依赖
+
+| 依赖 | 作用 |
+| --- | --- |
+| `crate_interface` | 提供 `call_interface!` 调用入口 |
+| `define-weak-traits` | 提供带弱默认实现的接口定义 |
+| `impl-weak-traits` | 提供覆盖型实现和部分保留默认的混合样本 |
+
+### 3.2 在测试矩阵中的上下游
+
+- 上游定义侧：`define-weak-traits`
+- 上游实现侧：`impl-weak-traits`
+- 互补验证端：`test-weak-partial`
+- 参照测试：`components/crate_interface/tests/test_weak_default.rs`
+
+`test-weak` 的下游不是运行时代码，而是测试流程本身。
+
+### 3.3 关系示意
+
 ```mermaid
-graph LR
-    current["test-weak"]
-    current --> crate_interface["crate_interface"]
-    current --> define_weak_traits["define-weak-traits"]
-    current --> impl_weak_traits["impl-weak-traits"]
+graph TD
+    A[define-weak-traits] --> C[test-weak]
+    B[impl-weak-traits] --> C
+    D[crate_interface] --> A
+    D --> B
+    D --> C
 ```
-
-### 3.1 直接与间接依赖
-- `crate_interface`
-- `define-weak-traits`
-- `impl-weak-traits`
-
-### 3.2 间接本地依赖
-- 未检测到额外的间接本地依赖，或依赖深度主要停留在第一层。
-
-### 3.3 被依赖情况
-- 当前未发现本仓库内其他 crate 对其存在直接本地依赖。
-
-### 3.4 间接被依赖情况
-- 当前未发现更多间接消费者，或该 crate 主要作为终端入口使用。
-
-### 3.5 关键外部依赖
-- 当前依赖集合几乎完全来自仓库内本地 crate。
 
 ## 4. 开发指南
-### 4.1 依赖配置
-```toml
-# `test-weak` 是二进制/编排入口，通常不作为库依赖。
-# 更常见的接入方式是直接执行命令，而不是在 Cargo.toml 中引用。
-```
+
+### 4.1 什么时候应该修改它
+
+只有在你要扩展 `crate_interface` 的 `weak_default` 覆盖侧测试面时，才应该修改 `test-weak`。典型场景包括：
+
+- 新增一个默认方法，并需要验证“覆写后强符号优先”
+- 新增一个 `namespace` 或 `gen_caller` 与弱默认并存的样例
+- 新增一个默认实现内部包含 `Self::foo()` 或函数引用的复杂代理场景
+
+### 4.2 修改时的关键约束
+
+- 定义侧默认方法变更后，必须同步更新 `impl-weak-traits` 与 `test-weak`
+- 不要删除实现类型的显式类型引用；它们承担链接锚点职责
+- 若目标是验证“纯默认回退”，不要放在这里，应放到 `test-weak-partial`
+- 强覆盖值要与默认值明显区分，便于快速判断最终命中了谁
+
+### 4.3 运行方式
+
+由于 `test_crates` 是独立工作区，建议显式指定 manifest，并使用 nightly：
 
 ```bash
-cargo run --manifest-path "components/crate_interface/test_crates/test-weak/Cargo.toml"
+cargo +nightly run --manifest-path components/crate_interface/test_crates/Cargo.toml --bin test-weak
 ```
 
-### 4.2 初始化流程
-1. 在 `Cargo.toml` 中接入该 crate，并根据需要开启相关 feature。
-2. 若 crate 暴露初始化入口，优先调用 `init`/`new`/`build`/`start` 类函数建立上下文。
-3. 在最小消费者路径上验证公开 API、错误分支与资源回收行为。
+或直接调用工作区脚本：
 
-### 4.3 关键 API 使用提示
-- 该 crate 更偏编排、配置或内部 glue 逻辑，关键使用点通常体现在 feature、命令或入口函数上。
+```bash
+components/crate_interface/test_crates/run_tests.sh weak
+```
+
+### 4.4 什么不应该放在这里
+
+以下场景更适合放到别处：
+
+- 最小 `weak_default` 功能检查：放到 `components/crate_interface/tests/test_weak_default.rs`
+- 纯默认回退路径：放到 `test-weak-partial`
+- stable 路径回归：放到 `test-simple`
 
 ## 5. 测试策略
-### 5.1 当前仓库内的测试形态
-- 当前 crate 目录中未发现显式 `tests/`/`benches/`/`fuzz/` 入口，更可能依赖上层系统集成测试或跨 crate 回归。
 
-### 5.2 单元测试重点
-- 建议用单元测试覆盖公开 API、错误分支、边界条件以及并发/内存安全相关不变量。
+### 5.1 当前测试目标
 
-### 5.3 集成测试重点
-- 建议补充被 ArceOS/StarryOS/Axvisor 消费时的最小集成路径，确保接口语义与 feature 组合稳定。
+`test-weak` 重点验证以下几点：
 
-### 5.4 覆盖率要求
-- 覆盖率建议：核心算法与错误路径达到高覆盖，关键数据结构和边界条件应实现接近完整覆盖。
+- 有强覆盖时，链接器是否优先选择强符号
+- 未覆写的方法是否仍能在同一程序中回退到默认实现
+- `namespace`、`gen_caller` 与弱符号机制能否协同工作
+- 默认实现中的 `Self::` 直接调用和函数引用是否都能跳到正确实现
+
+### 5.2 与 `test-weak-partial` 的分工
+
+这两个二进制组成完整的 `weak_default` 终端验证矩阵：
+
+- `test-weak`：验证“有覆盖时怎样解析”
+- `test-weak-partial`：验证“无覆盖时怎样回退”
+
+两者都必不可少，且不能相互替代。
+
+### 5.3 高风险点
+
+- 若把 `impl-weak-partial` 也混入本二进制，会污染原本要观察的覆盖路径
+- 若覆盖值与默认值过于接近，断言即便失败也很难快速定位
+- 若只验证普通默认方法，不验证 `SelfRefIf` 的代理路径，会遗漏最复杂的真实风险点
 
 ## 6. 跨项目定位分析
-### 6.1 ArceOS
-当前未检测到 ArceOS 工程本体对 `test-weak` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
 
-### 6.2 StarryOS
-当前未检测到 StarryOS 工程本体对 `test-weak` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
+| 项目 | 位置 | 角色 | 核心作用 |
+| --- | --- | --- | --- |
+| ArceOS | 无主线直接依赖 | 间接保护测试资产 | 间接保护 `axlog`、`axruntime`、`axtask` 等真实使用 `crate_interface` 的覆盖语义 |
+| StarryOS | 无主线直接依赖 | 间接保护测试资产 | 通过复用公共基础设施，间接受益于弱默认覆盖路径的回归验证 |
+| Axvisor | 无主线直接依赖 | 间接保护测试资产 | `axvisor_api` 等组件使用 `crate_interface`，但不会直接消费该测试二进制 |
 
-### 6.3 Axvisor
-当前未检测到 Axvisor 工程本体对 `test-weak` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
+## 7. 最关键的边界澄清
+
+`test-weak` 不是正式运行时组件，也不是“给系统提供默认实现”的二进制；它只是 `crate_interface` `weak_default` 测试矩阵中面向强符号优先级与混合解析的最终链接验证端，用来证明链接器在真实程序里做出了正确选择。

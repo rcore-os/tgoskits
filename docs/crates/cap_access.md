@@ -2,104 +2,230 @@
 
 > 路径：`components/cap_access`
 > 类型：库 crate
-> 分层：组件层 / 可复用基础组件
+> 分层：组件层 / 能力位访问封装
 > 版本：`0.1.0`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 `components/cap_access/README.md`
+> 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs`、`os/arceos/modules/axfs/src/fops.rs`
 
-`cap_access` 的核心定位是：Provide basic capability-based access control to objects
+`cap_access` 的真实定位是一个**能力位 bitmask + 包装器**组件：它把“某个对象当前允许的访问权限”附着在对象句柄上，并在访问时做一次显式的 capability 子集检查。它不是完整的 capability 安全子系统，不做全局对象管理、权限传播、撤销、审计或命名空间隔离。
 
 ## 1. 架构设计分析
-- 目录角色：可复用基础组件
-- crate 形态：库 crate
-- 工作区位置：根工作区
-- feature 视角：该 crate 没有显式声明额外 Cargo feature，功能边界主要由模块本身决定。
-- 关键数据结构：可直接观察到的关键数据结构/对象包括 `Cap`、`WithCap`、`READ`、`WRITE`、`EXECUTE`。
-- 设计重心：该 crate 通常作为多个内核子系统共享的底层构件，重点在接口边界、数据结构和被上层复用的方式。
 
-### 1.1 内部模块划分
-- 当前 crate 未显式声明多个顶层 `mod`，复杂度更可能集中在单文件入口、宏展开或下层子 crate。
+### 1.1 设计定位
 
-### 1.2 核心算法/机制
-- 实现重心偏向接口组织和模块协作。
+这个 crate 的接口极小，核心就两个类型：
+
+- `Cap`
+- `WithCap<T>`
+
+其中：
+
+- `Cap` 是能力位集合
+- `WithCap<T>` 是“对象 + 能力位”的组合包装
+
+这说明它解决的不是“系统范围权限模型”，而是“**单个对象句柄的本地访问约束**”。
+
+### 1.2 `Cap`：能力位集合
+
+`Cap` 由 `bitflags` 生成，目前只有三个位：
+
+- `READ`
+- `WRITE`
+- `EXECUTE`
+
+这三个权限位对应的不是某种复杂策略语言，而是最基础的访问能力表达。它们的使用语义是：
+
+- 请求的权限必须是已授予权限的子集
+
+具体体现在 `can_access()` 内部使用的是：
+
+- `self.cap.contains(requested_cap)`
+
+### 1.3 `WithCap<T>`：句柄包装模型
+
+`WithCap<T>` 只保存两项数据：
+
+- `inner: T`
+- `cap: Cap`
+
+对外提供的能力也很克制：
+
+- `new(inner, cap)`
+- `cap()`
+- `can_access(cap)`
+- `access_unchecked()`
+- `access(cap)`
+- `access_or_err(cap, err)`
+
+值得注意的是，它只返回：
+
+- `&T`
+
+而不是 `&mut T`。这意味着它本身不承担“可变借用权限模型”的表达。若调用方需要修改对象，通常依赖的是：
+
+- 被包装对象本身的内部可变性
+- 或其底层句柄语义
+
+### 1.4 `unsafe` 边界
+
+`access_unchecked()` 是该 crate 唯一显式越过能力检查的入口：
+
+- 调用者需自行保证不违反能力约束
+
+当前仓库里的真实使用场景是在 `axfs` 的 `Drop` 实现中：
+
+- `File` / `Directory` 在析构时通过 `access_unchecked()` 取出 `VfsNodeRef`
+- 然后调用 `release()`
+
+这类用法说明：`cap_access` 的能力检查主要针对“正常业务访问”，而某些生命周期收尾路径需要由上层自己背书。
+
+### 1.5 与 `axfs` 的真实关系
+
+当前仓库内可确认的直接消费者是：
+
+- `os/arceos/modules/axfs/src/fops.rs`
+
+在那里：
+
+- `File` 和 `Directory` 都把 `VfsNodeRef` 包装成 `WithCap<VfsNodeRef>`
+- `OpenOptions` 会被转换成 `Cap`
+- 文件权限 `FilePerm` 也会被映射成 `Cap`
+- 读、写、执行目录遍历分别通过 `Cap::READ`、`Cap::WRITE`、`Cap::EXECUTE` 做检查
+
+例如：
+
+- `read()` / `read_at()` 要求 `Cap::READ`
+- `write()` / `truncate()` / `flush()` 要求 `Cap::WRITE`
+- 相对目录访问 `access_at()` 要求 `Cap::EXECUTE`
+- `get_attr()` 甚至允许用 `Cap::empty()` 访问元数据
+
+这说明 `cap_access` 在当前系统里承担的是**文件句柄级权限防线**，而不是 VFS 全局权限系统。
 
 ## 2. 核心功能说明
-- 功能定位：Provide basic capability-based access control to objects
-- 对外接口：从源码可见的主要公开入口包括 `new`、`cap`、`can_access`、`access_unchecked`、`access`、`access_or_err`、`Cap`、`WithCap`。
-- 典型使用场景：作为共享基础设施被多个 OS 子系统复用，常见场景包括同步、内存管理、设备抽象、接口桥接和虚拟化基础能力。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `new()`。
+
+### 2.1 主要能力
+
+- 用位标志表达对象可访问权限
+- 在对象句柄外层附着权限集合
+- 在访问时做显式能力检查
+- 支持无检查访问，用于特殊受控路径
+- 支持 `Option` 和 `Result` 风格的访问返回
+
+### 2.2 当前仓库中的典型调用链
+
+真实调用链可概括为：
+
+1. `axfs` 根据 `OpenOptions` 和节点权限生成 `Cap`
+2. 用 `WithCap::new(node, access_cap)` 封装已打开的节点
+3. 各操作通过 `access_or_err()` 检查访问权限
+4. 失败时统一映射为 `PermissionDenied`
+
+因此 `cap_access` 处于“文件对象已获得”之后、“具体操作开始”之前这一层。
+
+### 2.3 最关键的边界澄清
+
+`cap_access` 不提供：
+
+- 权限继承与传播
+- 全局 capability 表
+- capability 撤销
+- 对象命名、查找和授权委托
+- 安全审计日志
+
+它就是一个**本地对象包装器**。
 
 ## 3. 依赖关系图谱
-```mermaid
-graph LR
-    current["cap_access"]
-    axfs["axfs"] --> current
-```
 
-### 3.1 直接与间接依赖
-- 未检测到本仓库内的直接本地依赖；该 crate 可能主要依赖外部生态或承担叶子节点角色。
+### 3.1 直接依赖
 
-### 3.2 间接本地依赖
-- 未检测到额外的间接本地依赖，或依赖深度主要停留在第一层。
+| 依赖 | 作用 |
+| --- | --- |
+| `bitflags` | 生成 `Cap` 能力位集合 |
 
-### 3.3 被依赖情况
+### 3.2 主要消费者
+
+当前仓库内可确认的直接消费者：
+
 - `axfs`
 
-### 3.4 间接被依赖情况
-- `arceos-affinity`
-- `arceos-helloworld`
-- `arceos-helloworld-myplat`
-- `arceos-httpclient`
-- `arceos-httpserver`
-- `arceos-irq`
-- `arceos-memtest`
-- `arceos-parallel`
-- `arceos-priority`
-- `arceos-shell`
-- `arceos-sleep`
-- `arceos-wait-queue`
-- 另外还有 `11` 个同类项未在此展开
+当前最清晰的传递关系：
 
-### 3.5 关键外部依赖
-- `bitflags`
+- `cap_access` -> `axfs` -> 文件系统相关上层模块
+
+### 3.3 关系解读
+
+| 层级 | 角色 |
+| --- | --- |
+| `cap_access` | 句柄级能力检查封装 |
+| `axfs` | 把它用于文件/目录对象的访问限制 |
+| 上层应用或系统调用层 | 通过 `axfs` 间接获得权限约束 |
 
 ## 4. 开发指南
-### 4.1 依赖配置
-```toml
-[dependencies]
-cap_access = { workspace = true }
 
-# 如果在仓库外独立验证，也可以显式绑定本地路径：
-# cap_access = { path = "components/cap_access" }
-```
+### 4.1 适合什么时候使用
 
-### 4.2 初始化流程
-1. 在 `Cargo.toml` 中接入该 crate，并根据需要开启相关 feature。
-2. 若 crate 暴露初始化入口，优先调用 `init`/`new`/`build`/`start` 类函数建立上下文。
-3. 在最小消费者路径上验证公开 API、错误分支与资源回收行为。
+适合使用 `cap_access` 的场景是：
 
-### 4.3 关键 API 使用提示
-- 优先关注函数入口：`new`、`cap`、`can_access`、`access_unchecked`、`access`、`access_or_err`。
-- 上下文/对象类型通常从 `Cap`、`WithCap` 等结构开始。
+- 已经拿到对象句柄
+- 只想在对象访问前做一层轻量能力位检查
+- 需要很低的依赖复杂度
+
+如果需要的是：
+
+- 全局授权模型
+- capability 复制/转移/撤销
+- 多主体安全策略
+
+则应在更高层实现，不要强行扩展这个 crate。
+
+### 4.2 维护时的关键注意事项
+
+- `contains()` 代表“请求权限必须是授予权限的子集”，不要把方向写反
+- 如果新增权限位，要同步更新消费者里的权限映射
+- `access_unchecked()` 只能放在外部不变量已充分成立的路径
+- 当前接口只暴露共享引用，若引入可变访问要重新审视边界
+
+### 4.3 在 `axfs` 场景中的经验
+
+- `Cap::empty()` 可用于无需读写执行权限的元数据访问
+- 相对目录访问为什么要 `EXECUTE`，应在消费者文档中继续保留这一语义
+- `WithCap` 只负责“访问前检查”，不负责打开/关闭对象生命周期
 
 ## 5. 测试策略
-### 5.1 当前仓库内的测试形态
-- 当前 crate 目录中未发现显式 `tests/`/`benches/`/`fuzz/` 入口，更可能依赖上层系统集成测试或跨 crate 回归。
 
-### 5.2 单元测试重点
-- 建议用单元测试覆盖公开 API、错误分支、边界条件以及并发/内存安全相关不变量。
+### 5.1 当前覆盖情况
 
-### 5.3 集成测试重点
-- 建议补充被 ArceOS/StarryOS/Axvisor 消费时的最小集成路径，确保接口语义与 feature 组合稳定。
+crate 本身没有独立测试，当前主要依赖：
 
-### 5.4 覆盖率要求
-- 覆盖率建议：核心算法与错误路径达到高覆盖，关键数据结构和边界条件应实现接近完整覆盖。
+- README 中的示例语义
+- `axfs` 的真实调用路径
+
+### 5.2 建议补充的单元测试
+
+- `READ` / `WRITE` / `EXECUTE` 及其组合的子集判断
+- `Cap::empty()` 的语义
+- `access()` 与 `access_or_err()` 的返回行为
+- `access_unchecked()` 的说明性测试
+
+### 5.3 建议补充的集成测试
+
+- `axfs` 中文件只读、只写、目录遍历等典型路径
+- `PermissionDenied` 的映射是否正确
+- 析构阶段 `access_unchecked()` 是否始终只用于释放句柄
+
+### 5.4 风险点
+
+- 它过于轻量，最容易被误写成“完整 capability 系统”
+- 若消费者权限映射有误，`cap_access` 本身无法替你纠正策略
+- `unsafe` 入口虽小，但若滥用会直接绕过整个模型
 
 ## 6. 跨项目定位分析
-### 6.1 ArceOS
-`cap_access` 不在 ArceOS 目录内部，但被 `axfs` 等 ArceOS crate 直接依赖，说明它是该系统的共享构件或底层服务。
 
-### 6.2 StarryOS
-`cap_access` 主要通过 `starry-kernel`、`starryos`、`starryos-test` 等上层 crate 被 StarryOS 间接复用，通常处于更底层的公共依赖层。
+| 项目 | 位置 | 角色 | 说明 |
+| --- | --- | --- | --- |
+| ArceOS | `axfs` 文件对象访问层 | 句柄级能力封装 | 当前最明确的直接使用场景 |
+| StarryOS | 共享文件系统基础设施 | 句柄级能力封装 | 若复用 `axfs` 路径则会间接带入 |
+| Axvisor | 当前仓库未见直接接线 | 通用能力封装候选组件 | 尚未看到独立使用 |
 
-### 6.3 Axvisor
-`cap_access` 主要通过 `axvisor` 等上层 crate 被 Axvisor 间接复用，通常处于更底层的公共依赖层。
+## 7. 总结
+
+`cap_access` 的关键价值，不是“能力系统做得多复杂”，而是它把对象句柄权限检查压缩成了一个非常清晰的小抽象：`Cap + WithCap<T>`。理解它时一定要守住边界，它是**能力位包装器**，不是完整的安全子系统。

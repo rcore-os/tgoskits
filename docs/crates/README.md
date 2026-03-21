@@ -2,6 +2,10 @@
 
 当前仓库共识别到 **137** 个带 `[package]` 的 Rust crate。本文档索引与 `docs/crates/*.md` 一起构成按 crate 维度的技术参考集合。
 
+当前这 **137** 份 crate 文档都已经过源码核对与手工精修，并全部加入了 `scripts/gen_crate_docs.py` 的 `CURATED_DOCS` 保留名单，用于防止后续批量生成覆盖人工内容。
+
+如果你更关心“组件处在哪一层、如何流到 ArceOS / StarryOS / Axvisor”，建议先配合阅读 [`docs/components.md`](../components.md)。
+
 ## 分类统计
 
 - ArceOS 层：`30` 个
@@ -158,4 +162,4 @@
 
 - 若要理解系统分层，建议先阅读与自己目标系统最接近的 crate 文档，再沿“直接被依赖”列表向上追踪。
 - 若要做底层修改，建议先看组件层 crate 的文档，再检查其在 ArceOS、StarryOS、Axvisor 中的跨项目定位段落。
-- 本目录文档依据源码静态分析自动整理；涉及 feature 条件编译、QEMU 行为和外部镜像配置时，应与对应系统总文档联合阅读。
+- 本目录文档均已结合源码进行手工精修；涉及 feature 条件编译、QEMU 行为和外部镜像配置时，仍应与对应系统总文档联合阅读。

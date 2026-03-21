@@ -2,6 +2,8 @@
 
 TGOSKits 的核心价值不只是“把仓库放在一起”，而是让你可以从组件出发，一路追到 ArceOS、StarryOS 和 Axvisor 的实际消费者。这篇文档专门回答这个问题。
 
+如果你已经知道目标 crate 的名字，建议和 [`docs/crates/README.md`](crates/README.md) 配合阅读：这里负责回答“它处在哪一层、通常影响谁”，crate 索引负责回答“它具体依赖谁、文档入口在哪”。
+
 ## 1. 组件不只在 `components/`
 
 新开发者最容易误解的一点是：只有 `components/` 才算组件。实际上，TGOSKits 里至少有六类“组件化层次”。

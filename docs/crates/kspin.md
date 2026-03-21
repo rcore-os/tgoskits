@@ -2,124 +2,139 @@
 
 > 路径：`components/kspin`
 > 类型：库 crate
-> 分层：组件层 / 可复用基础组件
+> 分层：组件层 / 自旋锁基础件
 > 版本：`0.1.1`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 `components/kspin/README.md`
+> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`src/base.rs`
 
-`kspin` 的核心定位是：Spinlocks used for kernel space that can disable preemption or IRQs in the critical section.
+`kspin` 是内核态自旋锁实现。它把“锁状态”和“进入临界区前要不要关抢占/关 IRQ”两件事拆开：锁本体由 `BaseSpinLock` 负责，临界区语义则由 `kernel_guard` 的 guard 类型决定。它是同步叶子基础件：不是阻塞式 mutex、不是调度器，也不是完整同步库。
 
 ## 1. 架构设计分析
-- 目录角色：可复用基础组件
-- crate 形态：库 crate
-- 工作区位置：根工作区
-- feature 视角：主要通过 `smp` 控制编译期能力装配。
-- 关键数据结构：可直接观察到的关键数据结构/对象包括 `BaseSpinLock`、`BaseSpinLockGuard`、`TestGuardIrq`、`NonCopy`、`Foo`、`Unwinder`、`SpinNoPreempt`、`SpinNoPreemptGuard`、`SpinNoIrq`、`SpinNoIrqGuard` 等（另有 2 个关键类型/对象）。
-- 设计重心：该 crate 通常作为多个内核子系统共享的底层构件，重点在接口边界、数据结构和被上层复用的方式。
+### 1.1 设计定位
+`kspin` 的设计核心在于“锁”和“临界区策略”解耦：
 
-### 1.1 内部模块划分
-- `base`：A naïve spinning mutex. Waiting threads hammer an atomic variable until it becomes available. Best-case latency is low, but worst-case latency is theoretically infinite. Based on…
+- `BaseSpinLock<G, T>`：负责原子测试并设置锁状态。
+- `G: BaseGuard`：负责进入和退出临界区时的副作用，比如关抢占或关本地中断。
 
-### 1.2 核心算法/机制
-- 该 crate 的实现主要围绕顶层模块分工展开，重点在子系统边界、trait/类型约束以及初始化流程。
+这样同一套锁实现可以派生出三种常用锁：
+
+- `SpinRaw<T>`：不额外做任何保护，要求调用方已经在安全上下文中。
+- `SpinNoPreempt<T>`：加锁时关抢占，但不关 IRQ。
+- `SpinNoIrq<T>`：加锁时同时关抢占和本地 IRQ。
+
+这也决定了它的边界：`kspin` 实现的是“自旋锁家族”，不是“内核同步总控”。
+
+### 1.2 模块划分
+- `src/lib.rs`：公开类型别名，把 `kernel_guard` 的 guard 组合成 `SpinRaw` / `SpinNoPreempt` / `SpinNoIrq`。
+- `src/base.rs`：`BaseSpinLock` 与 `BaseSpinLockGuard` 的具体实现，以及测试。
+
+### 1.3 关键实现点
+- `BaseSpinLock`：内部保存 `UnsafeCell<T>`，在 `smp` 下再额外保存 `AtomicBool` 锁位。
+- `BaseSpinLockGuard`：保存 guard 状态与数据指针，drop 时先释放锁位，再恢复 guard 状态。
+- `try_lock()`：获取临界区 guard 后尝试一次 CAS，失败时会立刻恢复 guard 状态。
+- `force_unlock()`：仅用于极端 FFI 等场景，要求调用者自行保证安全。
+
+### 1.4 `smp` feature 的关键影响
+这是 `kspin` 最容易被误读的一点：
+
+- 开启 `smp`：锁位真实存在，通过 `AtomicBool` 做自旋。
+- 关闭 `smp`：锁位被编译期去掉，`is_locked()` 恒为 `false`，排他性完全依赖 guard 语义和单核前提。
+
+因此，`kspin` 在单核下并不是“性能优化的普通 mutex”，而是“把锁状态优化掉的单核专用自旋锁”。
 
 ## 2. 核心功能说明
-- 功能定位：Spinlocks used for kernel space that can disable preemption or IRQs in the critical section.
-- 对外接口：从源码可见的主要公开入口包括 `new`、`into_inner`、`lock`、`is_locked`、`try_lock`、`force_unlock`、`get_mut`、`BaseSpinLock`、`BaseSpinLockGuard`、`TestGuardIrq` 等（另有 3 个公开入口）。
-- 典型使用场景：作为共享基础设施被多个 OS 子系统复用，常见场景包括同步、内存管理、设备抽象、接口桥接和虚拟化基础能力。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `new()`。
+### 2.1 主要功能
+- 提供可参数化临界区策略的内核自旋锁。
+- 提供面向常见场景的三类类型别名。
+- 在 `smp` 下提供真实多核互斥，在非 `smp` 下保留最小语义成本。
+
+### 2.2 关键 API 与真实使用位置
+- `SpinNoIrq`：被 `axalloc`、`axipi`、`axlog`、`axmm`、Axvisor 计时器等路径广泛使用。
+- `SpinNoPreempt`：在 `axfs-ng` 等需要关抢占但不一定关 IRQ 的路径使用。
+- `SpinRaw`：被 `axtask::run_queue` 用来保护已由外层 guard 保证过的就绪队列状态。
+
+### 2.3 使用边界
+- `kspin` 不会睡眠等待，所以它不是阻塞式锁。
+- `kspin` 不维护条件变量、等待队列或唤醒机制，这些属于 `axsync` / `axtask`。
+- `kspin` 也不决定 guard 的具体语义；那部分在 `kernel_guard`。
 
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    current["kspin"]
-    current --> kernel_guard["kernel_guard"]
-    axalloc["axalloc"] --> current
-    axdma["axdma"] --> current
-    axfeat["axfeat"] --> current
-    axfs_ng["axfs-ng"] --> current
-    axipi["axipi"] --> current
-    axlog["axlog"] --> current
-    axmm["axmm"] --> current
-    axplat["axplat"] --> current
+    kernel_guard["kernel_guard"] --> kspin["kspin"]
+
+    kspin --> axalloc["axalloc"]
+    kspin --> axipi["axipi"]
+    kspin --> axlog["axlog"]
+    kspin --> axmm["axmm"]
+    kspin --> axtask["axtask"]
+    kspin --> axsync["axsync"]
+    kspin --> axplat["axplat / platform crates"]
+    kspin --> starry["starry-kernel"]
+    kspin --> axvisor["axvisor"]
 ```
 
-### 3.1 直接与间接依赖
-- `kernel_guard`
+### 3.1 关键直接依赖
+- `kernel_guard`：提供 `NoOp`、`NoPreempt`、`NoPreemptIrqSave` 这些 guard 语义。
 
-### 3.2 间接本地依赖
-- `crate_interface`
-
-### 3.3 被依赖情况
-- `axalloc`
-- `axdma`
-- `axfeat`
-- `axfs-ng`
-- `axipi`
-- `axlog`
-- `axmm`
-- `axplat`
-- `axplat-aarch64-bsta1000b`
-- `axplat-aarch64-peripherals`
-- `axplat-loongarch64-qemu-virt`
-- `axplat-riscv64-qemu-virt`
-- 另外还有 `9` 个同类项未在此展开
-
-### 3.4 间接被依赖情况
-- `arceos-affinity`
-- `arceos-helloworld`
-- `arceos-helloworld-myplat`
-- `arceos-httpclient`
-- `arceos-httpserver`
-- `arceos-irq`
-- `arceos-memtest`
-- `arceos-parallel`
-- `arceos-priority`
-- `arceos-shell`
-- `arceos-sleep`
-- `arceos-wait-queue`
-- 另外还有 `21` 个同类项未在此展开
-
-### 3.5 关键外部依赖
-- `cfg-if`
+### 3.2 关键直接消费者
+- `axalloc`、`axipi`、`axlog`、`axmm`：系统运行时基础模块。
+- `axtask`：任务与 run queue 路径。
+- `axsync`：在非 `multitask` 路径下直接把 `SpinNoIrq` 当 `Mutex`。
+- 各类平台 crate、StarryOS、Axvisor：用于平台状态和驱动共享状态保护。
 
 ## 4. 开发指南
 ### 4.1 依赖配置
 ```toml
 [dependencies]
 kspin = { workspace = true }
-
-# 如果在仓库外独立验证，也可以显式绑定本地路径：
-# kspin = { path = "components/kspin" }
 ```
 
-### 4.2 初始化流程
-1. 在 `Cargo.toml` 中接入该 crate，并根据需要开启相关 feature。
-2. 若 crate 暴露初始化入口，优先调用 `init`/`new`/`build`/`start` 类函数建立上下文。
-3. 在最小消费者路径上验证公开 API、错误分支与资源回收行为。
+若运行在多核环境，通常还要打开：
 
-### 4.3 关键 API 使用提示
-- 优先关注函数入口：`new`、`into_inner`、`lock`、`is_locked`、`try_lock`、`force_unlock`、`get_mut`。
-- 上下文/对象类型通常从 `BaseSpinLock`、`BaseSpinLockGuard`、`TestGuardIrq`、`NonCopy`、`Foo`、`Unwinder` 等结构开始。
+```toml
+[dependencies]
+kspin = { workspace = true, features = ["smp"] }
+```
+
+### 4.2 修改时的关键约束
+1. `BaseSpinLockGuard::drop()` 的顺序不能随意改，必须先释放锁位，再恢复 guard 状态。
+2. `try_lock()` 失败时一定要恢复 guard，否则会导致“没拿到锁却把中断/抢占关住”。
+3. `SpinRaw` 的前提是调用方已经处在足够安全的上下文里，不能把它当普通默认锁到处替换。
+4. 单核下没有真实锁位，任何改动都要同时检查 `smp` 与非 `smp` 两条语义。
+
+### 4.3 开发建议
+- 早期启动、IRQ 相关或显式需要本地中断保护的路径，优先选 `SpinNoIrq`。
+- 已有外层 guard 保证的极短临界区才考虑 `SpinRaw`。
+- 需要可睡眠互斥语义时不要硬用 `kspin`，应该去用 `axsync` 的阻塞 mutex。
 
 ## 5. 测试策略
-### 5.1 当前仓库内的测试形态
-- 存在单元测试/`#[cfg(test)]` 场景：`src/base.rs`。
+### 5.1 当前测试形态
+`src/base.rs` 已覆盖多类关键测试：
+
+- `smoke()`、`try_lock()`：基本互斥行为。
+- `lots_and_lots()`：`smp` 下的并发压力测试。
+- `test_irq_lock_restored()`、`test_irq_try_lock_failed()`：guard 恢复语义。
+- `test_mutex_arc_nested()`、`test_mutex_unsized()`、`test_mutex_force_lock()`：复杂类型与极端用法。
 
 ### 5.2 单元测试重点
-- 建议用单元测试覆盖公开 API、错误分支、边界条件以及并发/内存安全相关不变量。
+- `smp` 与非 `smp` 的双路径语义。
+- `try_lock()` 失败后的 guard 恢复。
+- `force_unlock()` 与 RAII drop 的相互关系。
 
 ### 5.3 集成测试重点
-- 建议补充被 ArceOS/StarryOS/Axvisor 消费时的最小集成路径，确保接口语义与 feature 组合稳定。
+- `axtask` run queue 在高频调度下是否仍稳定。
+- `axlog`、`axalloc` 这类高频使用者在并发环境下是否出现死锁或输出/统计错乱。
 
 ### 5.4 覆盖率要求
-- 覆盖率建议：核心算法与错误路径达到高覆盖，关键数据结构和边界条件应实现接近完整覆盖。
+- 对 `kspin`，并发行为覆盖比普通代码覆盖更重要。
+- 任何改动 CAS、自旋或 drop 顺序的提交，都应补对应并发和 guard 语义测试。
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-`kspin` 不在 ArceOS 目录内部，但被 `axalloc`、`axdma`、`axfeat`、`axfs-ng`、`axipi`、`axlog` 等（另有 4 项） 等 ArceOS crate 直接依赖，说明它是该系统的共享构件或底层服务。
+`kspin` 是 ArceOS 基础栈里最常见的低层锁之一，广泛分布在内存、日志、IPI、平台状态和任务运行队列周围。
 
 ### 6.2 StarryOS
-`kspin` 不在 StarryOS 目录内部，但被 `starry-kernel` 等 StarryOS crate 直接依赖，说明它是该系统的共享构件或底层服务。
+StarryOS 直接复用 `kspin`。在这里它仍然只是自旋锁基础件，而不是线程同步框架本身。
 
 ### 6.3 Axvisor
-`kspin` 不在 Axvisor 目录内部，但被 `axvisor` 等 Axvisor crate 直接依赖，说明它是该系统的共享构件或底层服务。
+Axvisor 同样把 `kspin` 用在计时器、平台状态和 VMM 内部共享对象上。它提供的是宿主侧临界区保护，不是 Hypervisor 调度器。

@@ -2,109 +2,126 @@
 
 > 路径：`components/axsched`
 > 类型：库 crate
-> 分层：组件层 / 可复用基础组件
+> 分层：组件层 / 调度算法基础件
 > 版本：`0.3.1`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 `components/axsched/README.md`
+> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`src/fifo.rs`、`src/round_robin.rs`、`src/cfs.rs`、`src/tests.rs`
 
-`axsched` 的核心定位是：Various scheduler algorithms in a unified interface
+`axsched` 是 ArceOS 调度算法库。它通过统一的 `BaseScheduler` trait 提供 FIFO、RR、CFS 三种就绪队列算法，供 `axtask` 这类真正的任务运行时选择和封装。它是典型的叶子基础件：只负责“在一组 runnable 实体里选下一个”，不负责任务生命周期、阻塞/唤醒、上下文切换或 CPU bring-up。
 
 ## 1. 架构设计分析
-- 目录角色：可复用基础组件
-- crate 形态：库 crate
-- 工作区位置：根工作区
-- feature 视角：该 crate 没有显式声明额外 Cargo feature，功能边界主要由模块本身决定。
-- 关键数据结构：可直接观察到的关键数据结构/对象包括 `CFSTask`、`CFScheduler`、`FifoTask`、`FifoScheduler`、`RRTask`、`RRScheduler`、`SchedItem`、`Target`、`EntryType`、`NICE_RANGE_POS` 等（另有 3 个关键类型/对象）。
-- 设计重心：该 crate 通常作为多个内核子系统共享的底层构件，重点在接口边界、数据结构和被上层复用的方式。
+### 1.1 设计定位
+`axsched` 的核心分层边界非常明确：
 
-### 1.1 内部模块划分
-- `cfs`：内部子模块
-- `fifo`：内部子模块
-- `round_robin`：内部子模块
-- `tests`：测试辅助与场景验证代码（按条件编译启用）
+- `axsched`：提供调度算法和就绪队列操作。
+- `axtask`：提供任务状态机、等待队列、定时器、退出回收和上下文切换。
 
-### 1.2 核心算法/机制
-- 调度策略与就绪队列维护
-- CFS 风格公平调度或时间片分配
+`BaseScheduler` 的文档也直接说明了一点：调度器里的实体都被视为“可运行实体”，睡眠或阻塞的任务应该在外层先移出调度器。这意味着 `axsched` 从设计上就不是完整的任务系统。
+
+### 1.2 模块划分
+- `src/lib.rs`：统一 trait 定义与三种算法导出。
+- `src/fifo.rs`：协作式 FIFO 调度器。
+- `src/round_robin.rs`：带时间片的 RR 调度器。
+- `src/cfs.rs`：简化版 CFS 调度器。
+- `src/tests.rs`：三种算法共享的测试与性能基准入口。
+
+### 1.3 关键类型
+- `BaseScheduler`：所有调度器都必须实现的统一接口。
+- `FifoScheduler<T>` / `FifoTask<T>`：FIFO 策略及其任务包装。
+- `RRScheduler<T, S>` / `RRTask<T, S>`：RR 策略及其时间片任务包装。
+- `CFScheduler<T>` / `CFSTask<T>`：CFS 策略及其 vruntime/priority 包装。
+
+### 1.4 三种算法的真实实现方式
+- `FifoScheduler`：
+  - 使用 `linked_list_r4l::List<Arc<FifoTask<T>>>` 维护就绪队列。
+  - `task_tick()` 永远返回 `false`，不会因时钟中断要求抢占。
+- `RRScheduler`：
+  - 每个 `RRTask` 多一个 `time_slice: AtomicIsize`。
+  - `task_tick()` 每次 tick 把时间片减一，减到零时返回 `true` 请求重调度。
+  - `put_prev_task()` 在“抢占且还有剩余时间片”时把任务放到队首，否则重置时间片后放回队尾。
+- `CFScheduler`：
+  - 用 `BTreeMap<(vruntime, taskid), Arc<CFSTask<T>>>` 维护有序就绪队列。
+  - `CFSTask` 保存 `init_vruntime`、`delta`、`nice` 和唯一 `id`。
+  - 权重表 `NICE2WEIGHT_*` 直接参考 Linux nice 权重。
+
+需要特别说明的是：这里的 CFS 是“能工作的简化实现”，并不是 Linux 调度器的完整移植。
 
 ## 2. 核心功能说明
-- 功能定位：Various scheduler algorithms in a unified interface
-- 对外接口：从源码可见的主要公开入口包括 `new`、`inner`、`scheduler_name`、`CFSTask`、`CFScheduler`、`FifoTask`、`FifoScheduler`、`RRTask`、`RRScheduler`、`BaseScheduler`。
-- 典型使用场景：作为共享基础设施被多个 OS 子系统复用，常见场景包括同步、内存管理、设备抽象、接口桥接和虚拟化基础能力。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `init()` -> `new()` -> `scheduler_name()`。
+### 2.1 主要功能
+- 在统一 trait 下暴露三类可替换的调度算法。
+- 为每类算法定义适配的任务包装类型。
+- 给上层运行时提供 `add/remove/pick/put_prev/task_tick/set_priority` 这组就绪队列操作。
+
+### 2.2 关键 API 与真实使用位置
+- `BaseScheduler`：由 `axtask/src/run_queue.rs` 直接依赖。
+- `FifoScheduler` / `RRScheduler` / `CFScheduler`：由 `axtask/src/api.rs` 按 feature 选成 `Scheduler` 类型别名。
+- `FifoTask` / `RRTask` / `CFSTask`：由 `axtask` 用来包裹 `TaskInner`，形成真正进入运行队列的对象。
+
+### 2.3 使用边界
+- `axsched` 不保存任务的 `Running/Ready/Blocked/Exited` 状态机；那是 `axtask::TaskState` 的职责。
+- `axsched` 不做上下文切换；它只决定“应该切到谁”。
+- `axsched` 的 `set_priority()` 语义因算法不同而不同，不能把它误解为统一系统优先级接口。
 
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    current["axsched"]
-    current --> linked_list_r4l["linked_list_r4l"]
-    axtask["axtask"] --> current
+    linked_list["linked_list_r4l"] --> axsched["axsched"]
+    axsched --> axtask["axtask"]
+    axtask --> starry["starry-kernel"]
+    axtask --> axvisor["axvisor (indirect)"]
 ```
 
-### 3.1 直接与间接依赖
-- `linked_list_r4l`
+### 3.1 关键直接依赖
+- `linked_list_r4l`：FIFO 和 RR 使用的 intrusive 链表容器。
+- `alloc` / `BTreeMap`：CFS 的有序队列依赖标准 `alloc` 数据结构。
 
-### 3.2 间接本地依赖
-- 未检测到额外的间接本地依赖，或依赖深度主要停留在第一层。
-
-### 3.3 被依赖情况
-- `axtask`
-
-### 3.4 间接被依赖情况
-- `arceos-affinity`
-- `arceos-helloworld`
-- `arceos-helloworld-myplat`
-- `arceos-httpclient`
-- `arceos-httpserver`
-- `arceos-irq`
-- `arceos-memtest`
-- `arceos-parallel`
-- `arceos-priority`
-- `arceos-shell`
-- `arceos-sleep`
-- `arceos-wait-queue`
-- 另外还有 `17` 个同类项未在此展开
-
-### 3.5 关键外部依赖
-- 当前依赖集合几乎完全来自仓库内本地 crate。
+### 3.2 关键直接消费者
+- `axtask`：当前仓库里唯一的直接消费者，也是 `axsched` 的实际封装层。
 
 ## 4. 开发指南
 ### 4.1 依赖配置
 ```toml
 [dependencies]
 axsched = { workspace = true }
-
-# 如果在仓库外独立验证，也可以显式绑定本地路径：
-# axsched = { path = "components/axsched" }
 ```
 
-### 4.2 初始化流程
-1. 在 `Cargo.toml` 中接入该 crate，并根据需要开启相关 feature。
-2. 若 crate 暴露初始化入口，优先调用 `init`/`new`/`build`/`start` 类函数建立上下文。
-3. 在最小消费者路径上验证公开 API、错误分支与资源回收行为。
+### 4.2 修改时的关键约束
+1. `BaseScheduler::remove_task()` 的安全约束不能放松；调用方默认会假定待删实体确实在队列中。
+2. 修改 FIFO/RR 时，要同时检查 `linked_list_r4l` 上的节点所有权和 O(1) 删除语义是否仍成立。
+3. 修改 CFS 的权重或 vruntime 逻辑时，要同步评估 `set_priority()`、`task_tick()` 和 `put_prev_task()` 的协同关系。
+4. 不要把阻塞、睡眠、退出回收等逻辑塞进 `axsched`；这会破坏它与 `axtask` 的清晰分层。
 
-### 4.3 关键 API 使用提示
-- 优先关注函数入口：`new`、`inner`、`scheduler_name`。
-- 上下文/对象类型通常从 `CFSTask`、`CFScheduler`、`FifoTask`、`FifoScheduler`、`RRTask`、`RRScheduler` 等结构开始。
+### 4.3 开发建议
+- 如果要新增新算法，优先新增一个实现 `BaseScheduler` 的独立调度器，而不是把现有三个调度器改成巨大的 feature if-else。
+- 如果只是想改任务对象字段，应优先看 `axtask::TaskInner`，不要在 `axsched` 里扩散业务语义。
+- 对需要复杂 load balancing 的场景，应在 `axtask::run_queue` 层做队列选择，而不是让 `axsched` 感知整个系统拓扑。
 
 ## 5. 测试策略
-### 5.1 当前仓库内的测试形态
-- 存在单元测试/`#[cfg(test)]` 场景：`src/lib.rs`。
+### 5.1 当前测试形态
+`src/tests.rs` 为 FIFO、RR、CFS 三种算法统一生成了三类测试：
+
+- `test_sched()`：验证调度顺序。
+- `bench_yield()`：测量高频 pick/put 的开销。
+- `bench_remove()`：测量大量 remove 的性能。
 
 ### 5.2 单元测试重点
-- 建议用单元测试覆盖公开 API、错误分支、边界条件以及并发/内存安全相关不变量。
+- FIFO 的顺序稳定性。
+- RR 的时间片耗尽与 `put_prev_task()` 位置策略。
+- CFS 的 vruntime 排序与 `nice` 映射。
 
 ### 5.3 集成测试重点
-- 建议补充被 ArceOS/StarryOS/Axvisor 消费时的最小集成路径，确保接口语义与 feature 组合稳定。
+- 在 `axtask` 中分别打开 `sched-fifo`、`sched-rr`、`sched-cfs`，验证系统级调度行为不回归。
+- 检查 `set_priority()` 在上层 API 中的外显行为是否与所选调度器一致。
 
 ### 5.4 覆盖率要求
-- 覆盖率建议：核心算法与错误路径达到高覆盖，关键数据结构和边界条件应实现接近完整覆盖。
+- 对 `axsched`，算法行为覆盖比普通行覆盖更重要。
+- 任何改动 ready queue 结构、时间片逻辑或 vruntime 规则的提交，都应补对应算法的专门测试。
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-`axsched` 不在 ArceOS 目录内部，但被 `axtask` 等 ArceOS crate 直接依赖，说明它是该系统的共享构件或底层服务。
+`axsched` 在 ArceOS 中是 `axtask` 背后的算法底座。它决定调度策略，但不直接承担任务系统本体。
 
 ### 6.2 StarryOS
-`axsched` 主要通过 `starry-kernel`、`starryos`、`starryos-test` 等上层 crate 被 StarryOS 间接复用，通常处于更底层的公共依赖层。
+StarryOS 通过复用 `axtask` 间接复用 `axsched`。因此它在 StarryOS 中仍是调度算法叶子件，而不是 Linux 兼容线程系统本身。
 
 ### 6.3 Axvisor
-`axsched` 主要通过 `axvisor` 等上层 crate 被 Axvisor 间接复用，通常处于更底层的公共依赖层。
+Axvisor 若通过共享任务栈把 vCPU 组织成宿主任务，也会间接受用 `axsched`。它提供的是调度算法，不是 hypervisor 并发模型的完整定义。
