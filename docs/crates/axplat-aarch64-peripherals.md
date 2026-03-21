@@ -2,141 +2,262 @@
 
 > 路径：`components/axplat_crates/platforms/axplat-aarch64-peripherals`
 > 类型：库 crate
-> 分层：组件层 / 可复用基础组件
+> 分层：组件层 / AArch64 通用外设 glue 层
 > 版本：`0.3.1-pre.6`
-> 文档依据：当前仓库源码、`Cargo.toml` 与 `components/axplat_crates/platforms/axplat-aarch64-peripherals/README.md`
+> 文档依据：当前仓库源码、`Cargo.toml`、`README.md` 以及相关平台包的调用路径
 
-`axplat-aarch64-peripherals` 的核心定位是：ARM64 common peripheral drivers with `axplat` compatibility
+`axplat-aarch64-peripherals` 是 AArch64 平台包复用的“公共外设适配层”。它并不定义完整的板级平台，也不持有启动页表、内存布局或 boot stub；它的职责是把 PL011、PL031、Generic Timer、GICv2、PSCI 这些通用外设与 `axplat` trait 体系粘合起来，使具体 `axplat-aarch64-*` 平台包只需提供设备地址、IRQ 号和初始化时序即可完成对接。
 
 ## 1. 架构设计分析
-- 目录角色：可复用基础组件
-- crate 形态：库 crate
-- 工作区位置：子工作区 `components/axplat_crates`
-- feature 视角：主要通过 `irq` 控制编译期能力装配。
-- 关键数据结构：可直接观察到的关键数据结构/对象包括 `PsciError`、`MAX_IRQ_COUNT`、`GIC`、`TRAP_OP`。
-- 设计重心：该 crate 的重心通常是板级假设、条件编译矩阵和启动时序，阅读时应优先关注架构/平台绑定点。
 
-### 1.1 内部模块划分
-- `generic_timer`：ARM Generic Timer
-- `gic`：ARM Generic Interrupt Controller (GIC)（按 feature: irq 条件启用）
-- `pl011`：PL011 UART
-- `pl031`：PL031 Real Time Clock (RTC) driver
-- `psci`：ARM Power State Coordination Interface
+### 1.1 设计定位
 
-### 1.2 核心算法/机制
-- 该 crate 以平台初始化、板级寄存器配置和硬件能力接线为主，算法复杂度次于时序与寄存器语义正确性。
-- 定时器触发、截止时间维护和延迟队列
-- 中断控制器状态编排与虚拟中断注入
+该 crate 解决的是 AArch64 平台族中的“横向复用”问题：
+
+- `axplat-aarch64-qemu-virt`、`axplat-aarch64-raspi`、`axplat-aarch64-phytium-pi` 等平台虽然板级地址不同，但串口、时钟、中断控制器和 PSCI 的接线模式高度相似。
+- 如果每个平台包都各自实现 `ConsoleIf`、`TimeIf`、`IrqIf`，会导致大量重复代码。
+- 因此这里把“通用外设驱动 + `axplat` 接口实现宏”下沉为独立 crate，板级平台只保留地址与时序绑定。
+
+从职责边界看，它更接近“HAL 外设拼装层”而不是“板级平台包”：
+
+- 它知道怎么初始化 PL011、GIC、PL031、Generic Timer、PSCI。
+- 它不知道本机 RAM 布局、内核线性映射、引导入口符号和次核启动栈布局。
+- 它不处理 PCI/ECAM/VirtIO MMIO 设备树扫描，这些信息由板级包或更上层驱动体系负责。
+
+### 1.2 模块划分
+
+| 模块 | 作用 | 关键内容 |
+| --- | --- | --- |
+| `generic_timer` | ARM Generic Timer 适配 | tick 与纳秒换算、oneshot 计时器、定时器 IRQ 使能、`time_if_impl!` |
+| `gic` | GICv2 中断控制 | `Gic` 单例、IRQ handler 表、ACK/EOI/DIR、IPI、`irq_if_impl!` |
+| `pl011` | PL011 串口 | `Pl011Uart` 单例、字节读写、`console_if_impl!` |
+| `pl031` | PL031 RTC | Unix 时间读取、epoch 偏移缓存 |
+| `psci` | PSCI 电源管理 | `smc`/`hvc` 路径选择、`cpu_on`、`cpu_off`、`system_off` |
+| `lib.rs` | 导出层 | feature 裁剪与模块组织 |
+
+### 1.3 关键全局对象与状态
+
+该 crate 采用“静态单例 + 宏生成接口实现”的风格，典型全局状态包括：
+
+- `pl011`：`LazyInit<SpinNoIrq<Pl011Uart>>`，保证早期串口只初始化一次。
+- `gic`：`LazyInit<SpinNoIrq<Gic>>`、`LazyInit<TrapOp>`、`HandlerTable<1024>`，分别负责 GIC 设备访问、trap 辅助操作和 IRQ 分发表。
+- `generic_timer`：两组 tick 与纳秒转换比率，用 `CNTFRQ_EL0` 初始化。
+- `pl031`：`RTC_EPOCHOFFSET_NANOS`，缓存墙钟相对于单调时钟零点的偏移。
+- `psci`：`AtomicBool` 记录当前是走 HVC 还是 SMC 调用约定。
+
+这里的设计选择说明：
+
+- 外设对象在系统范围内天然唯一，使用静态单例比“把设备对象传给平台实现结构体”更符合启动期约束。
+- `SpinNoIrq` 保证早期串口与 GIC 操作在尚未建立完整阻塞原语前仍可安全使用。
+- 定时器和 RTC 不直接暴露底层寄存器，而是转译成 `axplat::time` 需要的统一语义。
+
+### 1.4 初始化主线
+
+该 crate 自身不实现 `InitIf`，但为板级包提供了一套非常清晰的初始化拼装顺序：
+
+```mermaid
+flowchart TD
+    A[板级包 init_early] --> B[pl011::init_early]
+    B --> C[psci::init]
+    C --> D[generic_timer::init_early]
+    D --> E[可选 pl031::init_early]
+    E --> F[板级包 init_later]
+    F --> G[gic::init_gic]
+    G --> H[gic::init_gicc]
+    H --> I[generic_timer::enable_irqs]
+```
+
+这个顺序背后的理由是：
+
+- 早期必须先有串口和时间源，方便打印日志和建立最小时间语义。
+- GIC 的 distributor / CPU interface 通常应放到更晚阶段，因为这时内核页表和异常框架已经更完整。
+- 定时器 IRQ 依赖 GIC，所以 `enable_irqs()` 必须出现在 `init_gic()` 之后。
+
+### 1.5 宏驱动的接口接入机制
+
+该 crate 的高价值能力不只是驱动函数，还包括三个 glue 宏：
+
+- `console_if_impl!`
+- `time_if_impl!`
+- `irq_if_impl!`
+
+它们会在调用方平台包中生成 `ConsoleIfImpl`、`TimeIfImpl`、`IrqIfImpl` 等零大小实现体，并通过 `#[impl_plat_interface]` 或 `#[axplat::impl_plat_interface]` 挂到 `axplat` 的接口系统上。宏展开时会直接引用调用方 crate 中的 `crate::config::devices::*` 常量，如：
+
+- `UART_PADDR`
+- `UART_IRQ`
+- `TIMER_IRQ`
+- `GICD_PADDR`
+- `GICC_PADDR`
+
+这意味着本 crate 不写死任何板级地址；真正的地址与 IRQ 号绑定全部由平台包的 `axconfig` 生成模块决定。
+
+### 1.6 与板级平台包的边界
+
+此 crate 与具体 `axplat-aarch64-*` 平台包之间的边界非常清楚：
+
+| 能力 | 本 crate 负责 | 板级平台包负责 |
+| --- | --- | --- |
+| 通用外设寄存器访问 | 是 | 否 |
+| `axplat` trait 接口 glue | 是 | 触发宏展开 |
+| 设备地址与 IRQ 号 | 否 | 是 |
+| RAM/MMIO 全局布局 | 否 | 是 |
+| boot stub / 早期页表 / 线性映射 | 否 | 是 |
+| 次核入口与引导栈 | 否 | 是 |
+
+一个重要结论是：**PCI 不在此 crate 中实现。** 即使某些板级包会在 `axconfig` 中描述 PCI ECAM 或 PCI MMIO 窗口，这里也不会负责枚举、配置或 `axplat` 化暴露 PCI 设备。
 
 ## 2. 核心功能说明
-- 功能定位：ARM64 common peripheral drivers with `axplat` compatibility
-- 对外接口：从源码可见的主要公开入口包括 `current_ticks`、`ticks_to_nanos`、`nanos_to_ticks`、`set_oneshot_timer`、`init_early`、`enable_irqs`、`set_enable`、`register_handler`、`PsciError`。
-- 典型使用场景：承担架构/板级适配职责，为上层运行时提供启动、中断、时钟、串口、设备树和内存布局等基础能力。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `init_early()` -> `register_handler()` -> `init_gic()` -> `init_gicc()` -> `register()`。
+
+### 2.1 主要功能
+
+- 为 PL011 提供统一的控制台读写能力。
+- 为 Generic Timer 提供单调时钟、tick/纳秒转换和 oneshot 定时器能力。
+- 在 `irq` feature 下为 GICv2 提供 IRQ 注册、分发、EOI/DIR 与 IPI 发送能力。
+- 为 PL031 提供墙钟偏移计算。
+- 为 PSCI 提供系统关机和 CPU 启动的底层调用接口。
+- 通过宏把上述能力直接注册到 `axplat`。
+
+### 2.2 典型使用场景
+
+该 crate 几乎不会被应用或内核主体直接使用，它的典型使用者是板级平台 crate：
+
+```rust
+axplat_aarch64_peripherals::console_if_impl!();
+axplat_aarch64_peripherals::time_if_impl!();
+
+#[cfg(feature = "irq")]
+axplat_aarch64_peripherals::irq_if_impl!();
+```
+
+然后在平台包自己的 `init.rs` 中按地址和初始化顺序调用：
+
+```rust
+pl011::init_early(uart_vaddr);
+psci::init(psci_method);
+generic_timer::init_early();
+gic::init_gic(gicd_vaddr, gicc_vaddr);
+generic_timer::enable_irqs(timer_irq);
+```
+
+### 2.3 对上层暴露的实际效果
+
+当平台包完成宏展开后，上层内核将看到的不是 `pl011::write_bytes()` 或 `gic::handle_irq()`，而是统一的：
+
+- `axplat::console::write_bytes()`
+- `axplat::time::current_ticks()`
+- `axplat::irq::register()`
+- `axplat::power::system_off()`（通常由板级包中的 `PowerIf` 再调用 `psci`）
+
+因此它在系统中的价值更接近“把外设能力转译进 `axplat` 合约”。
 
 ## 3. 依赖关系图谱
-```mermaid
-graph LR
-    current["axplat-aarch64-peripherals"]
-    current --> arm_pl011["arm_pl011"]
-    current --> arm_pl031["arm_pl031"]
-    current --> axcpu["axcpu"]
-    current --> axplat["axplat"]
-    current --> int_ratio["int_ratio"]
-    current --> kspin["kspin"]
-    current --> lazyinit["lazyinit"]
-    axplat_aarch64_bsta1000b["axplat-aarch64-bsta1000b"] --> current
-    axplat_aarch64_phytium_pi["axplat-aarch64-phytium-pi"] --> current
-    axplat_aarch64_qemu_virt["axplat-aarch64-qemu-virt"] --> current
-    axplat_aarch64_raspi["axplat-aarch64-raspi"] --> current
-```
 
-### 3.1 直接与间接依赖
-- `arm_pl011`
-- `arm_pl031`
-- `axcpu`
-- `axplat`
-- `int_ratio`
-- `kspin`
-- `lazyinit`
+### 3.1 直接依赖
 
-### 3.2 间接本地依赖
-- `axbacktrace`
-- `axerrno`
-- `axplat-macros`
-- `crate_interface`
-- `handler_table`
-- `kernel_guard`
-- `memory_addr`
-- `page_table_entry`
-- `page_table_multiarch`
-- `percpu`
-- `percpu_macros`
+| 依赖 | 作用 |
+| --- | --- |
+| `arm_pl011` | PL011 串口驱动 |
+| `arm_pl031` | PL031 RTC 驱动 |
+| `arm-gic-driver` | GICv2 控制器访问与 trap 操作 |
+| `aarch64-cpu` | 访问系统寄存器和底层 CPU 能力 |
+| `axcpu` | 与 AArch64 CPU 辅助代码协作 |
+| `axplat` | 目标接口定义与 glue 挂接目标 |
+| `lazyinit` | 早期单例初始化 |
+| `kspin` / `spin` | 自旋锁保护 |
+| `int_ratio` | tick 与纳秒换算比例 |
+| `log` | 调试与错误日志 |
 
-### 3.3 被依赖情况
-- `axplat-aarch64-bsta1000b`
-- `axplat-aarch64-phytium-pi`
+### 3.2 主要消费者
+
 - `axplat-aarch64-qemu-virt`
 - `axplat-aarch64-raspi`
+- `axplat-aarch64-phytium-pi`
+- `axplat-aarch64-bsta1000b`
+- 间接上层：`axhal` 及其所服务的 ArceOS/StarryOS/Axvisor 宿主环境
 
-### 3.4 间接被依赖情况
-- `arceos-affinity`
-- `arceos-helloworld`
-- `arceos-helloworld-myplat`
-- `arceos-httpclient`
-- `arceos-httpserver`
-- `arceos-irq`
-- `arceos-memtest`
-- `arceos-parallel`
-- `arceos-priority`
-- `arceos-shell`
-- `arceos-sleep`
-- `arceos-wait-queue`
-- 另外还有 `27` 个同类项未在此展开
+### 3.3 依赖关系示意
 
-### 3.5 关键外部依赖
-- `aarch64-cpu`
-- `arm-gic-driver`
-- `log`
-- `spin`
+```mermaid
+graph TD
+    A[arm_pl011 / arm_pl031 / arm-gic-driver / aarch64-cpu] --> B[axplat-aarch64-peripherals]
+    C[axplat] --> B
+    D[lazyinit / kspin / int_ratio] --> B
 
-## 4. 开发指南
-### 4.1 依赖配置
-```toml
-[dependencies]
-axplat-aarch64-peripherals = { workspace = true }
-
-# 如果在仓库外独立验证，也可以显式绑定本地路径：
-# axplat-aarch64-peripherals = { path = "components/axplat_crates/platforms/axplat-aarch64-peripherals" }
+    B --> E[axplat-aarch64-qemu-virt]
+    B --> F[axplat-aarch64-raspi]
+    B --> G[axplat-aarch64-phytium-pi]
+    B --> H[axplat-aarch64-bsta1000b]
+    E --> I[axhal]
+    F --> I
+    G --> I
+    H --> I
 ```
 
-### 4.2 初始化流程
-1. 先确认目标架构、板型和外设假设，再检查 feature/cfg 是否能选中正确的平台实现。
-2. 修改平台代码时优先验证启动、串口、中断、时钟和内存布局这些 bring-up 基线能力。
-3. 若涉及设备树或 MMIO 基址变化，需同步验证上层驱动和运行时是否仍能正确接线。
+## 4. 开发指南
 
-### 4.3 关键 API 使用提示
-- 优先关注函数入口：`current_ticks`、`ticks_to_nanos`、`nanos_to_ticks`、`set_oneshot_timer`、`init_early`、`enable_irqs`、`set_enable`、`register_handler` 等（另有 14 项）。
+### 4.1 新平台如何复用该 crate
+
+1. 在板级平台包中准备 `axconfig` 生成的 `config::devices::*` 常量。
+2. 在 `lib.rs` 中展开 `console_if_impl!`、`time_if_impl!`，如支持中断则展开 `irq_if_impl!`。
+3. 在 `init_early()` 中初始化 PL011、PSCI、Generic Timer，必要时初始化 PL031。
+4. 在 `init_later()` 中初始化 GIC，并在 GIC 就绪后使能定时器中断。
+5. 在 `PowerIf` 实现中调用 `psci::cpu_on()`、`psci::system_off()` 完成电源管理接入。
+
+### 4.2 feature 传播策略
+
+该 crate 自身只定义了一个 feature：
+
+- `irq`：启用 `gic` 模块，并同时要求上层打开 `axplat/irq`。
+
+需要特别注意：
+
+- `rtc` 和 `smp` 不是本 crate 的 feature，通常由板级平台包控制是否调用 `pl031` 或启用次核路径。
+- 板级包需要把自己的 `irq` feature 同时转发到 `axplat` 和本 crate，否则上层会出现接口/实现不一致。
+
+### 4.3 构建与验证
+
+最直接的构建方式是对该 crate 做 AArch64 裸机目标的全 feature 构建：
+
+```bash
+cargo build -p axplat-aarch64-peripherals --target aarch64-unknown-none --all-features
+```
+
+但真正有意义的验证应放到板级平台包上进行，例如通过 `axplat-aarch64-qemu-virt` 运行 `hello-kernel`、`irq-kernel` 或多核示例，确认串口输出、时钟推进和中断分发都贯通。
+
+### 4.4 维护时的注意事项
+
+- `pl031` 源码中的注释提到 microseconds，但实现实际是基于 Unix 秒数换算到纳秒；文档和测试应以代码行为为准。
+- `gic::handle_irq()` 负责 ACK/EOI/DIR 路径，若改动 trap 逻辑，需要同步验证 spurious interrupt 和中断完成语义。
+- `time_if_impl!` 依赖调用方提供 `TIMER_IRQ`；板级配置错误会直接造成时钟中断失效。
+- `bsta1000b` 等平台可能不复用 PL011，而是使用自己的 UART glue，不能假设所有 AArch64 平台都展开 `console_if_impl!`。
 
 ## 5. 测试策略
-### 5.1 当前仓库内的测试形态
-- 当前 crate 目录中未发现显式 `tests/`/`benches/`/`fuzz/` 入口，更可能依赖上层系统集成测试或跨 crate 回归。
 
-### 5.2 单元测试重点
-- 若存在纯函数或配置辅助逻辑，可覆盖地址布局计算、设备树解析和平台参数选择分支。
+### 5.1 当前可见测试基础
 
-### 5.3 集成测试重点
-- 重点验证启动、串口、中断、时钟和内存布局等 bring-up 基线能力，必要时覆盖多板级/多架构。
+- crate 内没有显式单元测试，现阶段主要依赖交叉构建和整机验证。
+- CI 已将该 crate 纳入 `cargo clippy` / `cargo build` 检查路径，可覆盖 `irq` 打开时的编译完整性。
 
-### 5.4 覆盖率要求
-- 覆盖率建议以平台场景覆盖为主：至少确保一条真实启动链贯通，并覆盖关键 cfg/feature 组合。
+### 5.2 推荐测试分层
+
+- 构建测试：`aarch64-unknown-none` 下做 `--all-features` 构建，确认 GIC、timer、PL011、PL031 glue 同时可编译。
+- 平台集成测试：在 `axplat-aarch64-qemu-virt` 上验证串口输出、定时器 tick、GIC IRQ 和 PSCI 关机。
+- 多核测试：启用 `smp` 的平台包应额外验证次核初始化后 `gic::init_gicc()` 与 `generic_timer::enable_irqs()` 是否在每核都生效。
+- RTC 测试：启用 `rtc` 的板级包应验证 `epochoffset_nanos()` 是否能让墙钟与单调时钟正确拼接。
+
+### 5.3 风险点
+
+- 该 crate 把大量平台差异隐藏在宏和静态单例后，配置错误通常表现为“运行时无输出”或“IRQ 不到达”，不一定在编译期暴露。
+- 中断号、基地址、PSCI 调用方式高度依赖板级常量，最适合通过端到端启动回归覆盖。
 
 ## 6. 跨项目定位分析
-### 6.1 ArceOS
-`axplat-aarch64-peripherals` 主要通过 `arceos-affinity`、`arceos-helloworld`、`arceos-helloworld-myplat`、`arceos-httpclient`、`arceos-httpserver`、`arceos-irq` 等（另有 26 项） 等上层 crate 被 ArceOS 间接复用，通常处于更底层的公共依赖层。
 
-### 6.2 StarryOS
-`axplat-aarch64-peripherals` 主要通过 `starry-kernel`、`starryos`、`starryos-test` 等上层 crate 被 StarryOS 间接复用，通常处于更底层的公共依赖层。
+| 项目 | 位置 | 角色 | 核心作用 |
+| --- | --- | --- | --- |
+| ArceOS | AArch64 平台包下层 | 通用外设 glue 层 | 为多个 AArch64 板级平台复用串口、时钟、中断和 PSCI 实现，减少板级重复代码 |
+| StarryOS | 通过 `axhal` 间接使用 | 宿主平台外设适配层 | StarryOS 不直接依赖该 crate，但若运行在 ArceOS 平台栈上，会间接受益于同一套 AArch64 外设 glue |
+| Axvisor | 宿主侧平台支持的一部分 | 宿主 bring-up 公共层 | Axvisor 的虚拟中断和虚拟设备核心在 `arm_vgic`/`axdevice`/`axvm`，而本 crate 负责宿主平台侧的串口、计时和 GIC 基础设施，不应与虚拟化设备层混淆 |
 
-### 6.3 Axvisor
-`axplat-aarch64-peripherals` 主要通过 `axvisor` 等上层 crate 被 Axvisor 间接复用，通常处于更底层的公共依赖层。
+## 7. 总结
+
+`axplat-aarch64-peripherals` 的真正价值，在于把“跨多个 AArch64 平台都相似的外设接线逻辑”抽成一个稳定复用层：板级平台包只负责地址、IRQ 号和初始化时序，本 crate 负责把这些通用外设可靠地接入 `axplat`。它让 AArch64 平台支持不再是“每个平台重新写一遍 UART/GIC/timer glue”，而是“在统一骨架上替换配置与启动细节”。

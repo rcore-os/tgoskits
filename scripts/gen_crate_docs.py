@@ -173,12 +173,18 @@ CURATED_DOCS = {
     "axdriver",
     "arceos_api",
     "axsync",
+    "axplat",
+    "axdevice",
+    "axplat-aarch64-qemu-virt",
+    "axplat-aarch64-peripherals",
     "axplat-riscv64-qemu-virt",
     "axplat-x86-pc",
     "axplat-macros",
     "arm_vcpu",
     "arm_vgic",
     "arm_pl031",
+    "riscv_vcpu",
+    "riscv_vplic",
 }
 
 HW_COMPONENT_PREFIXES = (
