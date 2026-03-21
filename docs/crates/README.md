@@ -212,3 +212,304 @@
 | 13 | 间接受影响，主要是通过共享公共层理解 Starry 扩展 | `starry-process`、`starry-signal`、`starry-vm`、`starryos`、`starryos-test` 直接组成 Starry 扩展栈 | 基本无直接主链影响，更多是与公共基础层的分层对照 |
 | 14 | ArceOS 示例程序、测试入口、`axplat` 最小内核样例链 | 基本无直接运行时主链影响 | 基本无直接运行时主链影响 |
 | 15 | `crate_interface` 测试矩阵，以及 `mingo` 对树莓派链加载工作流的影响 | 几乎无直接子系统影响，仅间接帮助理解 `crate_interface` 机制 | 几乎无直接子系统影响，仅间接帮助理解 `crate_interface` 机制 |
+
+## 按批次推荐阅读与快速跳转
+
+下面给出 15 个批次更适合的阅读顺序，以及对应 crate 文档的快速跳转入口。推荐阅读顺序优先考虑“先定义概念、再看消费者、最后看验证入口”的路径。
+
+### 第 1 批：核心主干第一批
+
+推荐阅读顺序：
+
+- 主内核链：`axhal -> axtask -> starry-kernel`
+- 虚拟化链：`axvm -> axvisor`
+
+快速跳转：
+
+- [axhal](./axhal.md)
+- [axtask](./axtask.md)
+- [axvm](./axvm.md)
+- [starry-kernel](./starry-kernel.md)
+- [axvisor](./axvisor.md)
+
+### 第 2 批：核心主干第二批
+
+推荐阅读顺序：
+
+- 运行时主链：`axsync -> axmm -> axdriver -> axruntime -> arceos_api`
+
+快速跳转：
+
+- [axsync](./axsync.md)
+- [axmm](./axmm.md)
+- [axdriver](./axdriver.md)
+- [axruntime](./axruntime.md)
+- [arceos_api](./arceos_api.md)
+
+### 第 3 批：平台/架构基础第一批
+
+推荐阅读顺序：
+
+- 平台链：`axplat-macros -> axplat-riscv64-qemu-virt -> axplat-x86-pc`
+- ARM 虚拟化链：`arm_pl031 -> arm_vgic -> arm_vcpu`
+
+快速跳转：
+
+- [axplat-macros](./axplat-macros.md)
+- [axplat-riscv64-qemu-virt](./axplat-riscv64-qemu-virt.md)
+- [axplat-x86-pc](./axplat-x86-pc.md)
+- [arm_pl031](./arm_pl031.md)
+- [arm_vgic](./arm_vgic.md)
+- [arm_vcpu](./arm_vcpu.md)
+
+### 第 4 批：平台抽象与虚拟化主链
+
+推荐阅读顺序：
+
+- 平台链：`axplat -> axplat-aarch64-peripherals -> axplat-aarch64-qemu-virt`
+- 虚拟化链：`page_table_multiarch -> axaddrspace -> axvmconfig -> axdevice_base -> axdevice -> axvcpu -> riscv_vcpu -> riscv_vplic -> axvisor_api`
+
+快速跳转：
+
+- [axplat](./axplat.md)
+- [axplat-aarch64-peripherals](./axplat-aarch64-peripherals.md)
+- [axplat-aarch64-qemu-virt](./axplat-aarch64-qemu-virt.md)
+- [page_table_multiarch](./page_table_multiarch.md)
+- [axaddrspace](./axaddrspace.md)
+- [axvmconfig](./axvmconfig.md)
+- [axdevice_base](./axdevice_base.md)
+- [axdevice](./axdevice.md)
+- [axvcpu](./axvcpu.md)
+- [riscv_vcpu](./riscv_vcpu.md)
+- [riscv_vplic](./riscv_vplic.md)
+- [axvisor_api](./axvisor_api.md)
+
+### 第 5 批：页表/地址与 per-CPU/接口基础设施
+
+推荐阅读顺序：
+
+- 地址/页表链：`memory_addr -> memory_set -> page_table_entry -> axcpu`
+- 每核/接口链：`kernel_guard -> percpu_macros -> percpu -> crate_interface -> scope-local`
+- RISC-V 补件：`riscv_plic -> riscv-h`
+- x86 补件：`x86_vcpu`
+
+快速跳转：
+
+- [memory_addr](./memory_addr.md)
+- [memory_set](./memory_set.md)
+- [page_table_entry](./page_table_entry.md)
+- [axcpu](./axcpu.md)
+- [kernel_guard](./kernel_guard.md)
+- [percpu_macros](./percpu_macros.md)
+- [percpu](./percpu.md)
+- [crate_interface](./crate_interface.md)
+- [scope-local](./scope-local.md)
+- [riscv_plic](./riscv_plic.md)
+- [riscv-h](./riscv-h.md)
+- [x86_vcpu](./x86_vcpu.md)
+
+### 第 6 批：平台剩余与板级变体
+
+推荐阅读顺序：
+
+- 接入链：`cargo-axplat -> axplat-dyn`
+- 板级变体：`axplat-aarch64-bsta1000b -> axplat-aarch64-phytium-pi -> axplat-aarch64-raspi -> axplat-loongarch64-qemu-virt -> axplat-x86-qemu-q35`
+
+快速跳转：
+
+- [cargo-axplat](./cargo-axplat.md)
+- [axplat-dyn](./axplat-dyn.md)
+- [axplat-aarch64-bsta1000b](./axplat-aarch64-bsta1000b.md)
+- [axplat-aarch64-phytium-pi](./axplat-aarch64-phytium-pi.md)
+- [axplat-aarch64-raspi](./axplat-aarch64-raspi.md)
+- [axplat-loongarch64-qemu-virt](./axplat-loongarch64-qemu-virt.md)
+- [axplat-x86-qemu-q35](./axplat-x86-qemu-q35.md)
+
+### 第 7 批：驱动子工作区与设备类别
+
+推荐阅读顺序：
+
+- 契约/总线：`axdriver_base -> axdriver_pci -> axdriver_virtio`
+- 设备类别：`axdriver_block -> axdriver_display -> axdriver_input -> axdriver_net -> axdriver_vsock`
+- 模块入口：`axdma -> axdisplay -> axinput`
+
+快速跳转：
+
+- [axdriver_base](./axdriver_base.md)
+- [axdriver_pci](./axdriver_pci.md)
+- [axdriver_virtio](./axdriver_virtio.md)
+- [axdriver_block](./axdriver_block.md)
+- [axdriver_display](./axdriver_display.md)
+- [axdriver_input](./axdriver_input.md)
+- [axdriver_net](./axdriver_net.md)
+- [axdriver_vsock](./axdriver_vsock.md)
+- [axdma](./axdma.md)
+- [axdisplay](./axdisplay.md)
+- [axinput](./axinput.md)
+
+### 第 8 批：文件系统与 VFS
+
+推荐阅读顺序：
+
+- 旧栈：`axfs_vfs -> axfs_ramfs -> axfs_devfs -> rsext4 -> axfs`
+- 新栈：`axfs-ng-vfs -> axfs-ng`
+
+快速跳转：
+
+- [axfs_vfs](./axfs_vfs.md)
+- [axfs_ramfs](./axfs_ramfs.md)
+- [axfs_devfs](./axfs_devfs.md)
+- [rsext4](./rsext4.md)
+- [axfs](./axfs.md)
+- [axfs-ng-vfs](./axfs-ng-vfs.md)
+- [axfs-ng](./axfs-ng.md)
+
+### 第 9 批：网络、I/O 与轮询
+
+推荐阅读顺序：
+
+- 通用 I/O：`axio -> axpoll`
+- 网络主链：`smoltcp -> axnet -> axnet-ng`
+- 行为样例：`arceos-httpclient -> arceos-httpserver -> bwbench-client`
+- 质量保障：`smoltcp-fuzz`
+
+快速跳转：
+
+- [axio](./axio.md)
+- [axpoll](./axpoll.md)
+- [smoltcp](./smoltcp.md)
+- [axnet](./axnet.md)
+- [axnet-ng](./axnet-ng.md)
+- [arceos-httpclient](./arceos-httpclient.md)
+- [arceos-httpserver](./arceos-httpserver.md)
+- [bwbench-client](./bwbench-client.md)
+- [smoltcp-fuzz](./smoltcp-fuzz.md)
+
+### 第 10 批：运行时叶子基础件
+
+推荐阅读顺序：
+
+- 分配/错误/日志：`axerrno -> axallocator -> axalloc -> axlog`
+- 调度/跨核/时间：`axsched -> cpumask -> timer_list -> axipi`
+- 容器/辅助：`lazyinit -> linked_list_r4l -> handler_table -> int_ratio -> axklib -> axbacktrace -> kspin`
+
+快速跳转：
+
+- [axerrno](./axerrno.md)
+- [axallocator](./axallocator.md)
+- [axalloc](./axalloc.md)
+- [axlog](./axlog.md)
+- [axsched](./axsched.md)
+- [cpumask](./cpumask.md)
+- [timer_list](./timer_list.md)
+- [axipi](./axipi.md)
+- [lazyinit](./lazyinit.md)
+- [linked_list_r4l](./linked_list_r4l.md)
+- [handler_table](./handler_table.md)
+- [int_ratio](./int_ratio.md)
+- [axklib](./axklib.md)
+- [axbacktrace](./axbacktrace.md)
+- [kspin](./kspin.md)
+
+### 第 11 批：架构周边与元编程辅助
+
+推荐阅读顺序：
+
+- 架构与设备叶子：`aarch64_sysreg -> arm_pl011 -> axhvc`
+- 宏与构造：`crate_interface_lite -> axvisor_api_proc -> ctor_bare_macros -> ctor_bare`
+- 能力/分配算法：`cap_access -> bitmap-allocator -> range-alloc-arceos`
+
+快速跳转：
+
+- [aarch64_sysreg](./aarch64_sysreg.md)
+- [arm_pl011](./arm_pl011.md)
+- [axhvc](./axhvc.md)
+- [crate_interface_lite](./crate_interface_lite.md)
+- [axvisor_api_proc](./axvisor_api_proc.md)
+- [ctor_bare_macros](./ctor_bare_macros.md)
+- [ctor_bare](./ctor_bare.md)
+- [cap_access](./cap_access.md)
+- [bitmap-allocator](./bitmap-allocator.md)
+- [range-alloc-arceos](./range-alloc-arceos.md)
+
+### 第 12 批：配置、API、构建链与用户态封装
+
+推荐阅读顺序：
+
+- 配置链：`axfeat -> axconfig-gen -> axconfig-macros -> axconfig`
+- Rust 用户接口：`axstd`
+- C/POSIX 链：`arceos_posix_api -> axlibc`
+- 构建链：`axbuild -> tg-xtask -> deptool`
+
+快速跳转：
+
+- [axfeat](./axfeat.md)
+- [axconfig-gen](./axconfig-gen.md)
+- [axconfig-macros](./axconfig-macros.md)
+- [axconfig](./axconfig.md)
+- [axstd](./axstd.md)
+- [arceos_posix_api](./arceos_posix_api.md)
+- [axlibc](./axlibc.md)
+- [axbuild](./axbuild.md)
+- [tg-xtask](./tg-xtask.md)
+- [deptool](./deptool.md)
+
+### 第 13 批：Starry 扩展栈
+
+推荐阅读顺序：
+
+- Starry 扩展链：`starry-process -> starry-signal -> starry-vm -> starryos -> starryos-test`
+
+快速跳转：
+
+- [starry-process](./starry-process.md)
+- [starry-signal](./starry-signal.md)
+- [starry-vm](./starry-vm.md)
+- [starryos](./starryos.md)
+- [starryos-test](./starryos-test.md)
+
+### 第 14 批：ArceOS 示例与系统行为样例
+
+推荐阅读顺序：
+
+- 应用 smoke 链：`arceos-helloworld -> arceos-helloworld-myplat -> arceos-shell`
+- 调度/任务链：`arceos-yield -> arceos-sleep -> arceos-wait-queue -> arceos-parallel -> arceos-priority -> arceos-affinity -> arceos-irq`
+- bring-up 链：`hello-kernel -> irq-kernel -> smp-kernel`
+- 独立样例：`arceos-memtest`
+
+快速跳转：
+
+- [arceos-helloworld](./arceos-helloworld.md)
+- [arceos-helloworld-myplat](./arceos-helloworld-myplat.md)
+- [arceos-shell](./arceos-shell.md)
+- [arceos-yield](./arceos-yield.md)
+- [arceos-sleep](./arceos-sleep.md)
+- [arceos-wait-queue](./arceos-wait-queue.md)
+- [arceos-parallel](./arceos-parallel.md)
+- [arceos-priority](./arceos-priority.md)
+- [arceos-affinity](./arceos-affinity.md)
+- [arceos-irq](./arceos-irq.md)
+- [hello-kernel](./hello-kernel.md)
+- [irq-kernel](./irq-kernel.md)
+- [smp-kernel](./smp-kernel.md)
+- [arceos-memtest](./arceos-memtest.md)
+
+### 第 15 批：接口测试桩与剩余实验件
+
+推荐阅读顺序：
+
+- stable 矩阵：`define-simple-traits -> impl-simple-traits -> test-simple`
+- `weak_default` 矩阵：`define-weak-traits -> impl-weak-traits -> impl-weak-partial -> test-weak -> test-weak-partial`
+- 独立实验件：`mingo`
+
+快速跳转：
+
+- [define-simple-traits](./define-simple-traits.md)
+- [impl-simple-traits](./impl-simple-traits.md)
+- [test-simple](./test-simple.md)
+- [define-weak-traits](./define-weak-traits.md)
+- [impl-weak-traits](./impl-weak-traits.md)
+- [impl-weak-partial](./impl-weak-partial.md)
+- [test-weak](./test-weak.md)
+- [test-weak-partial](./test-weak-partial.md)
+- [mingo](./mingo.md)
