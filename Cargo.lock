@@ -400,6 +400,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-std-arce_agent"
+version = "0.2.0"
+dependencies = [
+ "arceos-rust",
+ "env_logger 0.11.10",
+ "log",
+ "minreq",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "arceos-std-helloworld"
 version = "0.1.0"
 dependencies = [
@@ -5591,6 +5603,12 @@ dependencies = [
  "adler2",
  "simd-adler32",
 ]
+
+[[package]]
+name = "minreq"
+version = "2.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05015102dad0f7d61691ca347e9d9d9006685a64aefb3d79eecf62665de2153d"
 
 [[package]]
 name = "mio"
