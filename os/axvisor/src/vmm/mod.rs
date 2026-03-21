@@ -32,18 +32,15 @@ use std::os::arceos::{
 
 use axerrno::{AxResult, ax_err_type};
 
-use crate::{
-    hal::{AxVCpuHalImpl, AxVMHalImpl},
-    task::AsVCpuTask,
-};
+use crate::task::AsVCpuTask;
 pub use timer::init_percpu as init_timer_percpu;
 
 /// The instantiated VM type.
-pub type VM = axvm::AxVM<AxVMHalImpl, AxVCpuHalImpl>;
+pub type VM = axvm::AxVM;
 /// The instantiated VM ref type (by `Arc`).
-pub type VMRef = axvm::AxVMRef<AxVMHalImpl, AxVCpuHalImpl>;
+pub type VMRef = axvm::AxVMRef;
 /// The instantiated VCpu ref type (by `Arc`).
-pub type VCpuRef = axvm::AxVCpuRef<AxVCpuHalImpl>;
+pub type VCpuRef = axvm::AxVCpuRef;
 
 static VMM: AxWaitQueueHandle = AxWaitQueueHandle::new();
 

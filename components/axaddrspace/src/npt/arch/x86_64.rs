@@ -188,15 +188,18 @@ impl PagingMetaData for ExtendedPageTableMetadata {
 
     type VirtAddr = GuestPhysAddr;
 
-    // Under the x86 architecture, the flush_tlb operation will invoke the ring0 instruction,
-    // causing the test to trigger a SIGSEGV exception.
+    // Under the x86 architecture, flushing the TLB requires privileged
+    // instructions. Hosted binaries such as integration tests run in ring 3,
+    // so issue TLB invalidations only for bare-metal targets.
     #[allow(unused_variables)]
     fn flush_tlb(vaddr: Option<GuestPhysAddr>) {
-        #[cfg(not(test))]
-        if let Some(vaddr) = vaddr {
-            unsafe { x86::tlb::flush(vaddr.into()) }
-        } else {
-            unsafe { x86::tlb::flush_all() }
+        #[cfg(target_os = "none")]
+        {
+            if let Some(vaddr) = vaddr {
+                unsafe { x86::tlb::flush(vaddr.into()) }
+            } else {
+                unsafe { x86::tlb::flush_all() }
+            }
         }
     }
 }

@@ -1,13 +1,13 @@
 [package]
 edition = "2024"
 name = "arm_vcpu"
-version = "0.2.2"
+version = "0.3.0"
 authors = [
-    "KeYang Hu <keyang.hu@qq.com>",
-    "Mingxian Su <aarkegz@gmail.com>",
-    "ShiMei Tang <shimei820@gmail.com>",
-    "DeBin Luo <luodeb@outlook.com>",
-    "周睿 <zrufo747@outlook.com>"
+  "KeYang Hu <keyang.hu@qq.com>",
+  "Mingxian Su <aarkegz@gmail.com>",
+  "ShiMei Tang <shimei820@gmail.com>",
+  "DeBin Luo <luodeb@outlook.com>",
+  "周睿 <zrufo747@outlook.com>",
 ]
 description = "Aarch64 VCPU implementation for Arceos Hypervisor"
 license = "Apache-2.0"
@@ -19,13 +19,13 @@ keywords = ["hypervisor", "aarch64", "vcpu"]
 log = "0.4"
 spin = "0.10"
 
-aarch64-cpu = "10.0"
+aarch64-cpu = "11.0"
 numeric-enum-macro = "0.2"
 
-axerrno = "0.1.0"
+axerrno = "0.2.0"
 percpu = { version = "0.2.3-preview.1", features = ["arm-el2"] }
 
-axaddrspace = "0.1.5"
-axdevice_base = "0.2.1"
-axvcpu = "0.2"
-axvisor_api = "0.1.0"
+axaddrspace = "0.3"
+axdevice_base = "0.2.2"
+axvcpu = "0.3"
+axvisor_api = "0.3"

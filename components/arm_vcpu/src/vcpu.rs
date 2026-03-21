@@ -12,12 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::marker::PhantomData;
-
 use aarch64_cpu::registers::*;
 use axaddrspace::{GuestPhysAddr, HostPhysAddr, device::SysRegAddr};
 use axerrno::AxResult;
-use axvcpu::{AxArchVCpu, AxVCpuExitReason, AxVCpuHal};
+use axvcpu::{AxArchVCpu, AxVCpuExitReason};
 
 use crate::{
     TrapFrame,
@@ -53,7 +51,7 @@ pub struct VmCpuRegisters {
 /// A virtual CPU within a guest
 #[repr(C)]
 #[derive(Debug)]
-pub struct Aarch64VCpu<H: AxVCpuHal> {
+pub struct Aarch64VCpu {
     // DO NOT modify `guest_regs` and `host_stack_top` and their order unless you do know what you are doing!
     // DO NOT add anything before or between them unless you do know what you are doing!
     ctx: TrapFrame,
@@ -61,7 +59,6 @@ pub struct Aarch64VCpu<H: AxVCpuHal> {
     guest_system_regs: GuestSystemRegisters,
     /// The MPIDR_EL1 value for the vCPU.
     mpidr: u64,
-    _phantom: PhantomData<H>,
 }
 
 /// Configuration for creating a new `Aarch64VCpu`
@@ -85,7 +82,7 @@ pub struct Aarch64VCpuSetupConfig {
     pub passthrough_timer: bool,
 }
 
-impl<H: AxVCpuHal> axvcpu::AxArchVCpu for Aarch64VCpu<H> {
+impl axvcpu::AxArchVCpu for Aarch64VCpu {
     type CreateConfig = Aarch64VCpuCreateConfig;
 
     type SetupConfig = Aarch64VCpuSetupConfig;
@@ -99,7 +96,6 @@ impl<H: AxVCpuHal> axvcpu::AxArchVCpu for Aarch64VCpu<H> {
             host_stack_top: 0,
             guest_system_regs: GuestSystemRegisters::default(),
             mpidr: config.mpidr_el1,
-            _phantom: PhantomData,
         })
     }
 
@@ -158,7 +154,7 @@ impl<H: AxVCpuHal> axvcpu::AxArchVCpu for Aarch64VCpu<H> {
 }
 
 // Private function
-impl<H: AxVCpuHal> Aarch64VCpu<H> {
+impl Aarch64VCpu {
     fn init_hv(&mut self, config: Aarch64VCpuSetupConfig) {
         self.ctx.spsr = (SPSR_EL1::M::EL1h
             + SPSR_EL1::I::Masked
@@ -225,7 +221,7 @@ impl<H: AxVCpuHal> Aarch64VCpu<H> {
 }
 
 /// Private functions related to vcpu runtime control flow.
-impl<H: AxVCpuHal> Aarch64VCpu<H> {
+impl Aarch64VCpu {
     /// Save host context and run guest.
     ///
     /// When a VM-Exit happens when guest's vCpu is running,
@@ -320,7 +316,7 @@ impl<H: AxVCpuHal> Aarch64VCpu<H> {
         let result = match exit_reason {
             TrapKind::Synchronous => handle_exception_sync(&mut self.ctx),
             TrapKind::Irq => Ok(AxVCpuExitReason::ExternalInterrupt {
-                vector: H::irq_fetch() as _,
+                vector: axvisor_api::arch::fetch_irq(),
             }),
             _ => panic!("Unhandled exception {:?}", exit_reason),
         };

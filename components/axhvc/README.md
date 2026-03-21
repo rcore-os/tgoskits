@@ -1,63 +1,118 @@
-# axhvc
+<h1 align="center">axhvc</h1>
 
-[![Crates.io](https://img.shields.io/crates/v/axhvc)](https://crates.io/crates/axhvc)
+<p align="center">AxVisor HyperCall Definitions</p>
+
+<div align="center">
+
+[![Crates.io](https://img.shields.io/crates/v/axhvc.svg)](https://crates.io/crates/axhvc)
 [![Docs.rs](https://docs.rs/axhvc/badge.svg)](https://docs.rs/axhvc)
-[![CI](https://github.com/arceos-hypervisor/axhvc/actions/workflows/ci.yml/badge.svg)](https://github.com/arceos-hypervisor/axhvc/actions/workflows/ci.yml)
+[![Rust](https://img.shields.io/badge/edition-2024-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/arceos-hypervisor/axhvc/blob/main/LICENSE)
 
-AxVisor HyperCall definitions for guest-hypervisor communication.
+</div>
 
-## Overview
+English | [中文](README_CN.md)
 
-This crate provides the hypercall interface for [AxVisor](https://github.com/arceos-hypervisor/axvisor), a type-1 hypervisor based on [ArceOS](https://github.com/arceos-org/arceos). It defines the hypercall codes and result types used for communication between guest VMs and the hypervisor.
+# Introduction
 
-## Features
+`axhvc` provides AxVisor hypercall definitions for guest-hypervisor communication. It is a lightweight `#![no_std]` crate intended for bare-metal guests, hypervisors, and low-level virtualization components across x86_64, RISC-V, and AArch64 platforms.
 
-- `no_std` compatible - suitable for bare-metal and embedded environments
-- Defines all supported hypercall operations
-- Provides type-safe hypercall codes with numeric enum conversion
-- Cross-platform support (x86_64, RISC-V, AArch64)
+This library exports three core public types:
 
-## Supported Hypercalls
+- **`HyperCallCode`** - Enumerates all supported AxVisor hypercall operations
+- **`InvalidHyperCallCode`** - Represents conversion errors for invalid numeric hypercall values
+- **`HyperCallResult`** - Alias of `AxResult<usize>` used by hypercall handlers
 
-| Code | Name | Description |
-|------|------|-------------|
-| 0 | `HypervisorDisable` | Disable the hypervisor |
-| 1 | `HyperVisorPrepareDisable` | Prepare to disable the hypervisor |
-| 2 | `HyperVisorDebug` | Debug hypercall (development only) |
-| 3 | `HIVCPublishChannel` | Publish an IVC shared memory channel |
-| 4 | `HIVCSubscribChannel` | Subscribe to an IVC shared memory channel |
-| 5 | `HIVCUnPublishChannel` | Unpublish an IVC shared memory channel |
-| 6 | `HIVCUnSubscribChannel` | Unsubscribe from an IVC shared memory channel |
+`HyperCallCode` supports `TryFrom<u32>` conversion and includes variants for hypervisor control and IVC channel management.
 
-## Usage
+## Quick Start
 
-Add this to your `Cargo.toml`:
+### Requirements
+
+- Rust nightly toolchain
+- Rust components: rust-src, clippy, rustfmt
+
+```bash
+# Install rustup (if not installed)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Install nightly toolchain and components
+rustup install nightly
+rustup component add rust-src clippy rustfmt --toolchain nightly
+```
+
+### Run Check and Test
+
+```bash
+# 1. Enter the repository
+cd axhvc
+
+# 2. Code check
+./scripts/check.sh
+
+# 3. Run tests
+./scripts/test.sh
+```
+
+## Integration
+
+### Installation
+
+Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-axhvc = "0.1"
+axhvc = "0.2.0"
 ```
 
 ### Example
 
-```rust,ignore
-use axhvc::{HyperCallCode, HyperCallResult};
+```rust
+use axerrno::ax_err;
+use axhvc::{HyperCallCode, HyperCallResult, InvalidHyperCallCode};
 
-fn handle_hypercall(code: HyperCallCode) -> HyperCallResult {
-    match code {
-        HyperCallCode::HypervisorDisable => {
-            // Handle hypervisor disable request
-            Ok(0)
-        }
-        HyperCallCode::HIVCPublishChannel => {
-            // Handle IVC channel publish request
-            Ok(0)
-        }
-        _ => Err(axerrno::AxError::Unsupported),
-    }
+fn handle_hypercall(code: u32) -> Result<HyperCallResult, InvalidHyperCallCode> {
+    let code = HyperCallCode::try_from(code)?;
+
+    let result = match code {
+        HyperCallCode::HypervisorDisable => Ok(0),
+        HyperCallCode::HyperVisorPrepareDisable => Ok(0),
+        HyperCallCode::HIVCPublishChannel => Ok(0x1000),
+        _ => ax_err!(Unsupported),
+    };
+
+    Ok(result)
+}
+
+fn main() {
+    let code = HyperCallCode::try_from(3u32).unwrap();
+    assert_eq!(code as u32, 3);
+
+    let result = handle_hypercall(code as u32).unwrap().unwrap();
+    assert_eq!(result, 0x1000);
+
+    let invalid = HyperCallCode::try_from(7u32);
+    assert!(invalid.is_err());
 }
 ```
 
-## License
+### Documentation
 
-Axhvc is licensed under the Apache License, Version 2.0. See the [LICENSE](./LICENSE) file for details.
+Generate and view API documentation:
+
+```bash
+cargo doc --no-deps --open
+```
+
+Online documentation: [docs.rs/axhvc](https://docs.rs/axhvc)
+
+# Contributing
+
+1. Fork the repository and create a branch
+2. Run local check: `./scripts/check.sh`
+3. Run local tests: `./scripts/test.sh`
+4. Submit PR and pass CI checks
+
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.

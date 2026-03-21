@@ -14,11 +14,9 @@
 
 #[cfg(test)]
 pub mod mock {
-    use axaddrspace::AxMmHal;
+    use axvisor_api::{api_impl, memory::MemoryIf};
+    use memory_addr::{PhysAddr, VirtAddr};
     use spin::Mutex;
-
-    #[derive(Debug)]
-    pub struct MockMmHal;
 
     static GLOBAL_LOCK: Mutex<MockMmHalState> = Mutex::new(MockMmHalState::new());
 
@@ -40,9 +38,13 @@ pub mod mock {
         }
     }
 
-    impl AxMmHal for MockMmHal {
-        // Allocate a frame of memory
-        fn alloc_frame() -> Option<memory_addr::PhysAddr> {
+    #[derive(Debug)]
+    pub struct MockMmHal;
+
+    #[api_impl]
+    impl MemoryIf for MockMmHal {
+        /// Allocate a frame.
+        fn alloc_frame() -> Option<PhysAddr> {
             let mut state = GLOBAL_LOCK.lock();
 
             for i in 0..16 {
@@ -56,8 +58,16 @@ pub mod mock {
             None
         }
 
-        // Deallocate a frame
-        fn dealloc_frame(paddr: memory_addr::PhysAddr) {
+        /// Allocate a number of contiguous frames, with a specified alignment.
+        fn alloc_contiguous_frames(
+            _num_frames: usize,
+            _frame_align_pow2: usize,
+        ) -> Option<PhysAddr> {
+            unimplemented!()
+        }
+
+        /// Deallocate a frame allocated previously by [`alloc_frame`].
+        fn dealloc_frame(paddr: PhysAddr) {
             let mut state = GLOBAL_LOCK.lock();
 
             let addr = paddr.as_usize();
@@ -68,8 +78,14 @@ pub mod mock {
             }
         }
 
-        // Convert physical address to virtual address
-        fn phys_to_virt(paddr: memory_addr::PhysAddr) -> memory_addr::VirtAddr {
+        /// Deallocate a number of contiguous frames allocated previously by
+        /// [`alloc_contiguous_frames`].
+        fn dealloc_contiguous_frames(_first_addr: PhysAddr, _num_frames: usize) {
+            unimplemented!()
+        }
+
+        /// Convert a physical address to a virtual address.
+        fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
             let state = GLOBAL_LOCK.lock();
 
             let addr = paddr.as_usize();
@@ -84,8 +100,8 @@ pub mod mock {
             }
         }
 
-        // Convert virtual address to physical address
-        fn virt_to_phys(vaddr: memory_addr::VirtAddr) -> memory_addr::PhysAddr {
+        /// Convert a virtual address to a physical address.
+        fn virt_to_phys(vaddr: VirtAddr) -> PhysAddr {
             let state = GLOBAL_LOCK.lock();
 
             let pool_start = state.memory_pool.as_ptr() as usize;
@@ -139,19 +155,12 @@ pub mod mock {
             state.reset_counter
         }
     }
-
-    #[derive(Debug)]
-    pub struct MockVCpuHal;
-
-    impl axvcpu::AxVCpuHal for MockVCpuHal {
-        type MmHal = MockMmHal;
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::test_utils::mock::MockMmHal;
-    use axaddrspace::AxMmHal;
+    use axvisor_api::memory::MemoryIf;
 
     #[test]
     fn test_mock_allocator() {
