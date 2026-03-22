@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
+import subprocess
 import sys
 from collections import defaultdict, deque
 from pathlib import Path
@@ -117,9 +119,18 @@ def layers_from_scc(nodes, succ):
     return {name: sl[scc_of[name]] for name in nodes}, sccs
 
 
-def parse_lock(path: Path):
+def parse_lock_dep_line(raw: str) -> tuple[str, str]:
+    """Cargo.lock dependency 字符串：'name version' 或附带 ' (registry+...)'。"""
+    base = raw.split(" (", 1)[0].strip()
+    parts = base.split()
+    if len(parts) >= 2:
+        return " ".join(parts[:-1]), parts[-1]
+    return base, ""
+
+
+def parse_lock_full(path: Path) -> list[dict]:
     content = path.read_text(encoding="utf-8")
-    pkgs = []
+    pkgs: list[dict] = []
     for block in re.split(r"\n\n+", content):
         if "[[package]]" not in block:
             continue
@@ -129,19 +140,23 @@ def parse_lock(path: Path):
         if not nm or not vm:
             continue
         ds = re.search(r"^dependencies\s*=\s*\[(.*?)\]", block, re.M | re.S)
-        deps = []
+        deps_raw: list[str] = []
         if ds:
-            for d in re.findall(r'"([^"]+)"', ds.group(1)):
-                deps.append(d.split(" (")[0].strip().split()[0])
-        pkgs.append({"name": nm.group(1), "version": vm.group(1), "source": sm.group(1) if sm else None})
+            deps_raw = re.findall(r'"([^"]+)"', ds.group(1))
+        pkgs.append(
+            {
+                "name": nm.group(1),
+                "version": vm.group(1),
+                "source": sm.group(1) if sm else None,
+                "deps_raw": deps_raw,
+            }
+        )
     return pkgs
 
 
 def lock_stats(lock_path: Path, local_names: set):
-    pkgs = parse_lock(lock_path)
-    ws = {p["name"] for p in pkgs if p["source"] is None}
-    internal = local_names & ws
-    ext = [p for p in pkgs if p["name"] not in internal and p["source"]]
+    pkgs = parse_lock_full(lock_path)
+    ext = [p for p in pkgs if p["source"] is not None]
     cats = defaultdict(list)
     for p in ext:
         low = p["name"].lower()
@@ -153,8 +168,147 @@ def lock_stats(lock_path: Path, local_names: set):
         cats[cat].append(f"{p['name']} {p['version']}")
     for c in cats:
         cats[c].sort()
-    return {"lock_total": len(pkgs), "internal_in_lock": sum(1 for p in pkgs if p["name"] in internal),
-            "external_crates": len(ext), "external_cats": dict(cats)}
+    return {
+        "lock_total": len(pkgs),
+        "internal_in_lock": sum(
+            1 for p in pkgs if p["source"] is None and p["name"] in local_names
+        ),
+        "external_crates": len(ext),
+        "external_cats": dict(cats),
+    }
+
+
+def cargo_package_descriptions() -> dict[tuple[str, str], str]:
+    """从 cargo metadata 取 description，键为 (name, version)。"""
+    try:
+        r = subprocess.run(
+            ["cargo", "metadata", "--format-version", "1", "--locked"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"进度: cargo metadata 不可用（{e}），外部简介填 —", file=sys.stderr)
+        return {}
+    if r.returncode != 0:
+        print("进度: cargo metadata 非零退出，外部简介填 —", file=sys.stderr)
+        return {}
+    try:
+        data = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        return {}
+    out: dict[tuple[str, str], str] = {}
+    for pkg in data.get("packages", []):
+        d = (pkg.get("description") or "").strip()
+        if not d:
+            continue
+        d = re.sub(r"\s+", " ", d).replace("|", "｜")
+        out[(pkg["name"], pkg["version"])] = d
+    return out
+
+
+def categorize_external_name(name: str) -> str:
+    low = name.lower()
+    for c, kws in EXTERNAL_CATEGORIES[:-1]:
+        if any(k in low for k in kws):
+            return c
+    return "工具库/其他"
+
+
+def lock_section5_category_tables_md(
+    lock_path: Path, local_names: set[str], desc_map: dict[tuple[str, str], str]
+) -> list[str]:
+    pkgs = parse_lock_full(lock_path)
+
+    ext_versions_by_name: dict[str, list[str]] = defaultdict(list)
+    for p in pkgs:
+        if p["source"] is not None:
+            ext_versions_by_name[p["name"]].append(p["version"])
+
+    # 内部工作区包（Lock 中无 source）且属于 137：dependencies 中直接指向外部的边
+    ext_key_consumers: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for p in pkgs:
+        if p["source"] is not None:
+            continue
+        if p["name"] not in local_names:
+            continue
+        for raw in p["deps_raw"]:
+            dn, dv = parse_lock_dep_line(raw)
+            if not dn or dn in local_names:
+                continue
+            if dv:
+                ext_key_consumers[(dn, dv)].add(p["name"])
+            else:
+                # Lock 中常出现无版本号的依赖项（如 "log",），需挂到该名的各外部版本行上
+                for ver in ext_versions_by_name.get(dn, []):
+                    ext_key_consumers[(dn, ver)].add(p["name"])
+
+    # 外部包块：其 dependencies 中指向 137 清单的直接边
+    ext_key_internals: dict[tuple[str, str], list[str]] = {}
+    for p in pkgs:
+        if p["source"] is None:
+            continue
+        key = (p["name"], p["version"])
+        ints: set[str] = set()
+        for raw in p["deps_raw"]:
+            dn, _ = parse_lock_dep_line(raw)
+            if dn in local_names:
+                ints.add(dn)
+        ext_key_internals[key] = sorted(ints)
+
+    seen: set[tuple[str, str]] = set()
+    by_cat: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for p in pkgs:
+        if p["source"] is None:
+            continue
+        key = (p["name"], p["version"])
+        if key in seen:
+            continue
+        seen.add(key)
+        by_cat[categorize_external_name(p["name"])].append(key)
+    for c in by_cat:
+        by_cat[c].sort()
+
+    def intro_cell(name: str, ver: str) -> str:
+        d = desc_map.get((name, ver), "")
+        if not d:
+            return "—"
+        if len(d) > 100:
+            return d[:99] + "…"
+        return d
+
+    lines = [
+        "## 5. Lock 外部依赖（关键词粗分）",
+        "",
+        "按 crate **名称**关键词粗分类；**内部组件**为本文扫描到的 137 个仓库 crate。",
+        "关系统计来自根目录 **Cargo.lock** 各 `[[package]]` 的 `dependencies` 列表，仅统计**直接**依赖。",
+        "简介来自 `cargo metadata` 的 `description`（≤100 字）；无数据或 metadata 失败时为 —。",
+        "",
+        "| 类别 | 外部包条目数（去重 name+version） |",
+        "|------|-------------------------------------|",
+    ]
+    for cat in sorted(by_cat.keys(), key=lambda x: (-len(by_cat[x]), x)):
+        lines.append(f"| {cat} | {len(by_cat[cat])} |")
+
+    for cat in sorted(by_cat.keys()):
+        lines += ["", f"#### {cat}", ""]
+        lines += [
+            "| 外部组件（name version） | 简介（≤100字） | 直接依赖该外部的内部组件 | 该外部直接依赖的内部组件 |",
+            "|--------------------------|----------------|---------------------------|---------------------------|",
+        ]
+        for name, ver in by_cat[cat]:
+            key = (name, ver)
+            cons = sorted(ext_key_consumers.get(key, set()))
+            ints = ext_key_internals.get(key, [])
+            intro = intro_cell(name, ver)
+            nv = f"`{name}` `{ver}`"
+            lines.append(
+                f"| {nv} | {intro} | {fmt_crate_list(cons)} | {fmt_crate_list(ints)} |"
+            )
+        lines.append("")
+    return lines
 
 
 def mermaid_layers(maxL, byL):
@@ -261,9 +415,12 @@ def main():
     edges = {(u, w) for u, ws in succ.items() for w in ws}
 
     ls = None
+    desc_map: dict[tuple[str, str], str] = {}
     if args.lock.exists():
         print("进度: 解析 Cargo.lock 外部依赖…", file=sys.stderr)
         ls = lock_stats(args.lock, names)
+        print("进度: cargo metadata（外部 crate 简介）…", file=sys.stderr)
+        desc_map = cargo_package_descriptions()
 
     maxL = max(pkg_layer.values()) if pkg_layer else 0
     byL = defaultdict(list)
@@ -306,17 +463,8 @@ def main():
         m = byL.get(L, [])
         md.append(f"| {L} | {len(m)} | {' '.join('`'+x+'`' for x in m)} |")
     md += direct_dep_table_md(pkgs, names, succ, pkg_layer)
-    if ls and ls["external_cats"]:
-        md += ["", "## 5. Lock 外部依赖（关键词粗分）", "", "| 类别 | 数 |", "|------|-----|"]
-        for c in sorted(ls["external_cats"], key=lambda x: (-len(ls["external_cats"][x]), x)):
-            md.append(f"| {c} | {len(ls['external_cats'][c])} |")
-        md += ["", "<details><summary>列表</summary>", ""]
-        for c in sorted(ls["external_cats"]):
-            md.append(f"#### {c}\n")
-            for it in ls["external_cats"][c]:
-                md.append(f"- `{it}`")
-            md.append("")
-        md.append("</details>")
+    if ls and args.lock.exists():
+        md += lock_section5_category_tables_md(args.lock.resolve(), names, desc_map)
     md.append("")
     args.output.write_text("\n".join(md), encoding="utf-8")
     print(f"进度: 已写入 {args.output.relative_to(REPO_ROOT)}", file=sys.stderr)
