@@ -20,6 +20,7 @@ use axbuild::{
     arceos::{ArceosConfigOverride, AxBuild, RunScope},
 };
 use clap::Args;
+use tracing::info;
 
 /// Build command arguments
 #[derive(Args, Debug)]
@@ -95,13 +96,12 @@ impl BuildArgs {
 pub async fn run_build(args: BuildArgs) -> Result<()> {
     let axbuild = args.into_axbuild()?;
 
-    println!("Building ArceOS application:");
+    info!("==> building ArceOS application");
     let output = axbuild.build().await?;
 
-    println!();
-    println!("Build successful!");
-    println!("  ELF: {}", output.elf.display());
-    println!("  Binary: {}", output.bin.display());
+    info!("build successful");
+    info!("  ELF: {}", output.elf.display());
+    info!("  Binary: {}", output.bin.display());
 
     Ok(())
 }

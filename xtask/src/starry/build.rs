@@ -20,6 +20,7 @@ use axbuild::{
     arceos::{ArceosConfigOverride, RunScope},
 };
 use clap::Args;
+use tracing::info;
 
 pub const STARRY_PACKAGE: &str = "starryos";
 pub const STARRY_TEST_PACKAGE: &str = "starryos-test";
@@ -94,12 +95,11 @@ pub async fn run_build(args: BuildArgs) -> Result<()> {
         RunScope::Default,
     )?;
 
-    println!("Building StarryOS application:");
+    info!("==> building StarryOS application");
     let output = axbuild.build().await?;
-    println!();
-    println!("Build successful!");
-    println!("  ELF: {}", output.elf.display());
-    println!("  Binary: {}", output.bin.display());
+    info!("build successful");
+    info!("  ELF: {}", output.elf.display());
+    info!("  Binary: {}", output.bin.display());
     Ok(())
 }
 

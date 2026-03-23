@@ -20,6 +20,7 @@ use axbuild::{
     arceos::{AxBuild, NetDev, RunScope},
 };
 use clap::Args;
+use tracing::info;
 
 use super::build::BuildArgs;
 
@@ -106,10 +107,10 @@ async fn run_with_mode_in_scope(
     }
     let axbuild = AxBuild::from_overrides(overrides, Some(package), None, run_scope)?;
     if as_test {
-        println!("Running test in QEMU...");
+        info!("==> running test in QEMU");
         axbuild.test().await
     } else {
-        println!("Running in QEMU...");
+        info!("==> running in QEMU");
         axbuild.run_qemu().await
     }
 }

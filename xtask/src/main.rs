@@ -16,9 +16,11 @@ use anyhow::{Context, Result};
 use axbuild::arceos::{Arch, PlatformResolver, RunScope};
 use cargo_metadata::{Metadata, MetadataCommand};
 use clap::{Parser, Subcommand};
+use tracing::{error, info, warn};
 
 mod arceos;
 mod axvisor;
+mod logging;
 mod starry;
 
 const STD_CRATES_CSV: &str = "scripts/test/std_crates.csv";
@@ -117,9 +119,10 @@ impl CargoRunner for ProcessCargoRunner {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let _tracing_guard = logging::init_tracing()?;
     let cli = Cli::parse();
 
-    match cli.command {
+    let result = match cli.command {
         Commands::Test {
             command: TestCommand::Std,
         } => run_std_test_command(),
@@ -134,7 +137,13 @@ async fn main() -> Result<()> {
         } => run_arceos_test_command(target.as_deref()).await,
         Commands::Arceos { command } => command.run().await,
         Commands::Starry { command } => command.run().await,
+    };
+
+    if let Err(err) = &result {
+        error!("{err:#}");
     }
+
+    result
 }
 
 fn run_std_test_command() -> Result<()> {
@@ -147,8 +156,8 @@ fn run_std_test_command() -> Result<()> {
     let csv_path = workspace_root.join(STD_CRATES_CSV);
     let packages = load_std_crates(&csv_path, &known_packages)?;
 
-    println!(
-        "running std tests for {} package(s) from {}",
+    info!(
+        "==> running std tests for {} package(s) from {}",
         packages.len(),
         csv_path.display()
     );
@@ -157,11 +166,11 @@ fn run_std_test_command() -> Result<()> {
     let failed = run_std_tests(&mut runner, &workspace_root, &packages)?;
 
     if failed.is_empty() {
-        println!("all std tests passed");
+        info!("all std tests passed");
         return Ok(());
     }
 
-    eprintln!(
+    error!(
         "std tests failed for {} package(s): {}",
         failed.len(),
         failed.join(", ")
@@ -234,16 +243,16 @@ fn run_std_tests<R: CargoRunner>(
     let mut failed = Vec::new();
 
     for (index, package) in packages.iter().enumerate() {
-        println!(
+        info!(
             "[{}/{}] cargo {}",
             index + 1,
             packages.len(),
             cargo_test_args(package).join(" ")
         );
         if runner.run_test(workspace_root, package)? {
-            println!("ok: {}", package);
+            info!("ok: {}", package);
         } else {
-            eprintln!("failed: {}", package);
+            error!("failed: {}", package);
             failed.push(package.clone());
         }
     }
@@ -252,14 +261,14 @@ fn run_std_tests<R: CargoRunner>(
 }
 
 async fn run_target_test_command(os: &str, target: &str) -> Result<()> {
-    println!("running {} tests for target: {}", os, target);
+    info!("==> running {} tests for target: {}", os, target);
 
     match os {
         "starry" => starry::run_test(target).await?,
         _ => unreachable!(), // 之前已经验证过了
     }
 
-    println!("{} test passed", os);
+    info!("{} test passed", os);
     Ok(())
 }
 
@@ -270,15 +279,15 @@ async fn run_arceos_test_command(target: Option<&str>) -> Result<()> {
         .context("failed to load cargo metadata")?;
     let packages = discover_arceos_test_packages(&metadata);
     if packages.is_empty() {
-        println!("no arceos test packages found under test-suit/arceos");
+        warn!("no arceos test packages found under test-suit/arceos");
         return Ok(());
     }
 
     let arch = target.map(parse_arceos_target).transpose()?;
     let selected_arch = arceos_test_arch(arch);
 
-    println!(
-        "running arceos tests for {} package(s){}",
+    info!(
+        "==> running arceos tests for {} package(s){}",
         packages.len(),
         target
             .map(|t| format!(" on target: {}", t))
@@ -286,7 +295,7 @@ async fn run_arceos_test_command(target: Option<&str>) -> Result<()> {
     );
 
     for (index, package) in packages.iter().enumerate() {
-        println!(
+        info!(
             "[{}/{}] arceos run -p {}{}",
             index + 1,
             packages.len(),
@@ -315,10 +324,10 @@ async fn run_arceos_test_command(target: Option<&str>) -> Result<()> {
         arceos::test_with_arg_in_scope(run_args, RunScope::PackageRoot)
             .await
             .with_context(|| format!("arceos test failed for package `{}`", package.name))?;
-        println!("ok: {}", package.name);
+        info!("ok: {}", package.name);
     }
 
-    println!("all arceos tests passed");
+    info!("all arceos tests passed");
     Ok(())
 }
 

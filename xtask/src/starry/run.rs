@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use axbuild::arceos::{ArceosConfigOverride, RunScope, parse_qemu_options};
 use clap::Args;
+use tracing::info;
 
 use super::{
     build::{BuildArgs, STARRY_TEST_PACKAGE},
@@ -72,7 +73,7 @@ impl RunArgs {
                 .unwrap_or_else(|| default_disk_img.clone());
 
             if !disk_img_path.exists() {
-                println!(
+                info!(
                     "disk image missing at {}, preparing rootfs...",
                     disk_img_path.display()
                 );
@@ -122,10 +123,10 @@ pub async fn run_with_qemu_regex(
     let axbuild =
         axbuild::arceos::AxBuild::from_overrides(overrides, Some(package), None, run_scope)?;
     if as_test {
-        println!("Running test in QEMU...");
+        info!("==> running test in QEMU");
         axbuild.test().await
     } else {
-        println!("Running in QEMU...");
+        info!("==> running in QEMU");
         axbuild.run_qemu().await
     }
 }

@@ -22,6 +22,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use axbuild::Arch;
 use serde_json::Value;
+use tracing::{info, warn};
 
 const ROOTFS_URL: &str = "https://github.com/Starry-OS/rootfs/releases/download/20260214";
 
@@ -61,9 +62,9 @@ pub fn resolve_starry_artifact_dir(arch: Arch) -> Result<PathBuf> {
     match parse_artifact_dir_from_cargo_json(stdout, STARRY_TEST_PACKAGE, target) {
         Ok(dir) => {
             if !output.status.success() {
-                eprintln!(
-                    "WARN: cargo build returned non-zero while resolving artifact directory; \
-                     using discovered path: {}",
+                warn!(
+                    "cargo build returned non-zero while resolving artifact directory; using \
+                     discovered path: {}",
                     dir.display()
                 );
             }
@@ -169,7 +170,7 @@ pub fn ensure_rootfs_in_target_dir(arch: Arch, disk_img: &Path) -> Result<()> {
     let rootfs_xz = down_dir.join(format!("{rootfs_name}.xz"));
 
     if !rootfs_img.exists() {
-        println!("image not found, downloading {}...", rootfs_name);
+        info!("image not found, downloading {}...", rootfs_name);
         let url = format!("{ROOTFS_URL}/{rootfs_name}.xz");
         let status = Command::new("curl")
             .arg("-f")

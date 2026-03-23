@@ -16,6 +16,7 @@
 
 use anyhow::Result;
 use clap::Subcommand;
+use tracing::{info, warn};
 
 pub mod build;
 pub mod config;
@@ -73,16 +74,18 @@ impl StarryCommand {
 fn run_rootfs_command(arch: Option<String>) -> Result<()> {
     let arch = parse_starry_arch(arch.as_deref())?;
     let disk_img = starry_default_disk_image(arch)?;
-    println!("Preparing rootfs for {} at {}...", arch, disk_img.display());
+    info!(
+        "==> preparing rootfs for {} at {}...",
+        arch,
+        disk_img.display()
+    );
     ensure_rootfs_in_target_dir(arch, &disk_img)?;
-    println!("rootfs ready at {}", disk_img.display());
+    info!("rootfs ready at {}", disk_img.display());
     Ok(())
 }
 
 fn run_img_command(arch: Option<String>) -> Result<()> {
-    eprintln!(
-        "\u{1b}[33mWARN: The 'img' command is deprecated. Please use 'rootfs' instead.\u{1b}[0m"
-    );
+    warn!("the `img` command is deprecated; please use `rootfs` instead");
     run_rootfs_command(arch)
 }
 
