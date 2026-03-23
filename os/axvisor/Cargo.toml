@@ -120,25 +120,10 @@ axplat-riscv64-qemu-virt = "0.3.1-pre.6"
 
 # xtask dependencies (only used on host platforms)
 [target.'cfg(any(windows, unix))'.dependencies]
-anyhow = { version = "1.0" }
-cargo_metadata = { version = "0.23" }
-chrono = { version = "0.4", features = ["serde"] }
-clap = {version = "4.4", features = ["derive"] }
-colored = { version = "3" }
-flate2 = { version = "1.0" }
-jkconfig = { version = "0.1" }
-ostool = { version = "0.8.4" }
-regex = { version = "1.12" }
-reqwest = { version = "0.13" }
-schemars = {version = "1", features = ["derive"] }
-serde = {version = "1.0", features = ["derive"] }
-serde_json = { version = "1" }
-sha2 = { version = "0.10" }
-tar = { version = "0.4" }
-tokio = {version = "1", features = ["full"] }
-toml = { version = "0.9" }
-
-axvmconfig = { version = "0.2.2", features = ["std"] }
+anyhow.workspace = true
+axbuild.workspace = true
+clap = { version = "4.6", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
 
 [build-dependencies]
 axconfig = "=0.3.0-preview.3"

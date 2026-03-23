@@ -109,7 +109,7 @@ async fn run_test_qemu_with_target_vms(
         println!("    - {image_name}");
     }
 
-    let image_rootfs = ensure_images(&images, &image_dir).await?;
+    let image_rootfs = ensure_images(&images, &image_dir, axvisor_dir).await?;
     println!("  image rootfs: {}", image_rootfs.display());
 
     let qemu_args = vec![
@@ -137,7 +137,7 @@ async fn run_test_qemu_with_target_vms(
     std::fs::write(&new_qemu_config_path, qemu_config.to_string())?;
     println!("  new qemu config: {}", new_qemu_config_path.display());
 
-    let mut ctx = ctx::Context::new();
+    let mut ctx = ctx::Context::new(axvisor_dir);
     ctx.apply_build_args(&BuildArgs {
         build_dir: None,
         bin_dir: None,
@@ -184,7 +184,11 @@ fn arch_tests(arch: Arch) -> Vec<TestConfig> {
         .collect()
 }
 
-async fn ensure_images(images: &[String], image_dir: &Path) -> anyhow::Result<PathBuf> {
+async fn ensure_images(
+    images: &[String],
+    image_dir: &Path,
+    repo_root: &Path,
+) -> anyhow::Result<PathBuf> {
     let mut rootfs_path = None;
 
     for image_name in images {
@@ -201,7 +205,7 @@ async fn ensure_images(images: &[String], image_dir: &Path) -> anyhow::Result<Pa
                 },
             };
 
-            image.execute().await?;
+            image.execute(repo_root).await?;
         } else {
             println!("  image already extracted: {}", extract_dir.display());
         }

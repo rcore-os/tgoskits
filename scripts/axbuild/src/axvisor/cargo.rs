@@ -16,7 +16,7 @@ use std::{fs, path::PathBuf};
 
 use ostool::build::CargoRunnerKind;
 
-use super::ctx::Context;
+use super::{ctx::Context, default_qemu_config_path, resolve_repo_path};
 
 impl Context {
     pub async fn run_qemu(&mut self, config_path: Option<PathBuf>) -> anyhow::Result<()> {
@@ -26,6 +26,8 @@ impl Context {
             Arch::Aarch64
         } else if build_config.target.contains("x86_64") {
             Arch::X86_64
+        } else if build_config.target.contains("riscv64") {
+            Arch::Riscv64
         } else {
             return Err(anyhow::anyhow!(
                 "Unsupported target architecture: {}",
@@ -34,14 +36,12 @@ impl Context {
         };
 
         let config_path = if let Some(path) = config_path {
-            path
+            resolve_repo_path(self.repo_root(), path)
         } else {
-            PathBuf::from(format!(".qemu-{arch:?}.toml").to_lowercase())
+            self.repo_root()
+                .join(format!(".qemu-{}.toml", arch.as_str()))
         };
-        let default_config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("scripts")
-            .join("ostool")
-            .join(format!("qemu-{arch:?}.toml").to_lowercase());
+        let default_config_path = default_qemu_config_path(self.repo_root(), arch.as_str());
 
         // If the configuration file does not exist, copy from the default location
         if !config_path.exists() {
@@ -62,7 +62,9 @@ impl Context {
     pub async fn run_uboot(&mut self, config_path: Option<PathBuf>) -> anyhow::Result<()> {
         let build_config = self.load_config()?;
 
-        let config_path = config_path.unwrap_or_else(|| PathBuf::from(".uboot.toml"));
+        let config_path = config_path
+            .map(|path| resolve_repo_path(self.repo_root(), path))
+            .unwrap_or_else(|| self.repo_root().join(".uboot.toml"));
 
         let kind = CargoRunnerKind::Uboot {
             uboot_config: Some(config_path),
@@ -78,4 +80,15 @@ impl Context {
 enum Arch {
     Aarch64,
     X86_64,
+    Riscv64,
+}
+
+impl Arch {
+    fn as_str(self) -> &'static str {
+        match self {
+            Arch::Aarch64 => "aarch64",
+            Arch::X86_64 => "x86_64",
+            Arch::Riscv64 => "riscv64",
+        }
+    }
 }

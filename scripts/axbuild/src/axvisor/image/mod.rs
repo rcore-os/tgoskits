@@ -159,46 +159,37 @@ fn to_absolute_path(path: &Path) -> Result<PathBuf> {
     })
 }
 
-/// Returns the path to the AxVisor repository root (parent of the xtask crate).
-fn get_axvisor_repo_dir() -> Result<PathBuf> {
-    // CARGO_MANIFEST_DIR contains the path of the xtask crate, and we need to
-    // get the parent directory to get the AxVisor repository directory.
-    Ok(Path::new(&std::env::var("CARGO_MANIFEST_DIR")?)
-        .parent()
-        .ok_or_else(|| anyhow!("Failed to determine AxVisor repository directory"))?
-        .to_path_buf())
-}
-
 impl ImageArgs {
     /// Loads image configuration, merging CLI overrides with values from the config file.
-    pub async fn get_config(&self) -> Result<ImageConfig> {
-        let mut config = ImageConfig::read_config(&get_axvisor_repo_dir()?)?;
+    pub async fn get_config(&self, repo_root: &Path) -> Result<ImageConfig> {
+        let mut config = ImageConfig::read_config(repo_root)?;
         self.overrides.apply_on(&mut config);
         Ok(config)
     }
 
     /// Executes the selected image subcommand (`ls`, `download`, `rm`, `sync`, or `defconfig`).
-    pub async fn execute(&self) -> Result<()> {
+    pub async fn execute(&self, repo_root: &Path) -> Result<()> {
         match &self.command {
             ImageCommands::Ls { verbose, pattern } => {
-                self.list_images(*verbose, pattern.as_deref()).await?;
+                self.list_images(repo_root, *verbose, pattern.as_deref())
+                    .await?;
             }
             ImageCommands::Download {
                 image_name,
                 output_dir,
                 no_extract,
             } => {
-                self.download_image(image_name, output_dir.as_deref(), !no_extract)
+                self.download_image(repo_root, image_name, output_dir.as_deref(), !no_extract)
                     .await?;
             }
             ImageCommands::Rm { image_name } => {
-                self.remove_image(image_name).await?;
+                self.remove_image(repo_root, image_name).await?;
             }
             ImageCommands::Sync => {
-                self.sync_registry().await?;
+                self.sync_registry(repo_root).await?;
             }
             ImageCommands::Defconfig => {
-                ImageConfig::reset_config(&get_axvisor_repo_dir()?)?;
+                ImageConfig::reset_config(repo_root)?;
             }
         }
 
@@ -211,8 +202,13 @@ impl ImageArgs {
     ///
     /// * `verbose` - If `true`, show each version separately; if `false`, merge same-name images and show version count
     /// * `pattern` - If `Some`, filter by name: try regex match first, fallback to substring
-    pub async fn list_images(&self, verbose: bool, pattern: Option<&str>) -> Result<()> {
-        let config = self.get_config().await?;
+    pub async fn list_images(
+        &self,
+        repo_root: &Path,
+        verbose: bool,
+        pattern: Option<&str>,
+    ) -> Result<()> {
+        let config = self.get_config(repo_root).await?;
         let storage = Storage::new_from_config(&config).await?;
 
         storage.image_registry.print(verbose, pattern);
@@ -229,12 +225,13 @@ impl ImageArgs {
     /// * `extract` - If `true`, extract the archive after download
     pub async fn download_image(
         &self,
+        repo_root: &Path,
         spec: impl Into<ImageSpecRef<'_>>,
         output_dir: Option<&str>,
         extract: bool,
     ) -> Result<()> {
         let spec = spec.into();
-        let config = self.get_config().await?;
+        let config = self.get_config(repo_root).await?;
         let storage = Storage::new_from_config(&config).await?;
 
         let output_path = match output_dir {
@@ -272,9 +269,13 @@ impl ImageArgs {
     /// # Arguments
     ///
     /// * `spec` - Image spec (name and optional version)
-    pub async fn remove_image(&self, spec: impl Into<ImageSpecRef<'_>>) -> Result<()> {
+    pub async fn remove_image(
+        &self,
+        repo_root: &Path,
+        spec: impl Into<ImageSpecRef<'_>>,
+    ) -> Result<()> {
         let spec = spec.into();
-        let config = self.get_config().await?;
+        let config = self.get_config(repo_root).await?;
         let storage = Storage::new_from_config(&config).await?;
 
         if storage.remove_image(spec).await? {
@@ -288,8 +289,8 @@ impl ImageArgs {
     /// Synchronizes the image list from the remote registry to local storage.
     ///
     /// Overwrites the local `images.toml` with the registry contents.
-    pub async fn sync_registry(&self) -> Result<()> {
-        let config: ImageConfig = self.get_config().await?;
+    pub async fn sync_registry(&self, repo_root: &Path) -> Result<()> {
+        let config: ImageConfig = self.get_config(repo_root).await?;
         let _ = Storage::new_from_registry(config.registry, config.local_storage).await?;
         Ok(())
     }
@@ -313,6 +314,6 @@ impl ImageArgs {
 /// xtask image download evm3588_arceos --output-dir ./images
 /// xtask image rm evm3588_arceos
 /// ```
-pub async fn run_image(args: ImageArgs) -> Result<()> {
-    args.execute().await
+pub async fn run_image(args: ImageArgs, repo_root: &Path) -> Result<()> {
+    args.execute(repo_root).await
 }

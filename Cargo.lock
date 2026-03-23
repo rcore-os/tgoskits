@@ -642,10 +642,10 @@ dependencies = [
  "flate2",
  "jkconfig",
  "log",
- "object 0.38.1",
- "ostool 0.9.0",
+ "object",
+ "ostool",
  "regex",
- "reqwest 0.13.2",
+ "reqwest",
  "schemars",
  "serde",
  "serde_json",
@@ -1555,6 +1555,7 @@ dependencies = [
  "anyhow",
  "arm-gic-driver 0.17.0",
  "axaddrspace",
+ "axbuild",
  "axconfig",
  "axdevice",
  "axdevice_base",
@@ -1567,28 +1568,21 @@ dependencies = [
  "axvcpu",
  "axvisor_api",
  "axvm",
- "axvmconfig",
  "bitflags 2.11.0",
  "byte-unit",
- "cargo_metadata",
  "cfg-if",
- "chrono",
  "clap",
- "colored",
  "cpumask 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "crate_interface",
  "extern-trait",
  "fdt-parser",
- "flate2",
  "hashbrown 0.14.5",
- "jkconfig",
  "kernel_guard",
  "kspin",
  "lazy_static",
  "lazyinit 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "log",
  "memory_addr",
- "ostool 0.8.16",
  "page_table_entry",
  "page_table_multiarch",
  "pcie 0.5.0",
@@ -1601,18 +1595,11 @@ dependencies = [
  "rdif-clk",
  "rdif-intc",
  "rdrive",
- "regex",
- "reqwest 0.13.2",
  "rk3588-clk",
  "rockchip-pm",
- "schemars",
  "sdmmc",
- "serde",
- "serde_json",
- "sha2",
  "spin 0.10.0",
  "syn 2.0.117",
- "tar",
  "timer_list 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio",
  "toml",
@@ -3671,7 +3658,6 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
- "webpki-roots",
 ]
 
 [[package]]
@@ -4693,17 +4679,6 @@ checksum = "300e4bdb6b46b592948e700ea1ef24a4296491f6a0ee722b258040abd15a3714"
 
 [[package]]
 name = "object"
-version = "0.37.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
-dependencies = [
- "flate2",
- "memchr",
- "ruzstd",
-]
-
-[[package]]
-name = "object"
 version = "0.38.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "271638cd5fa9cca89c4c304675ca658efc4e64a66c716b7cfe1afb4b9611dbbc"
@@ -4739,45 +4714,6 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "ostool"
-version = "0.8.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3cb671bfba4fbb5a24eba1726c7022f457e9c2968942c2db2f3e46487c078806"
-dependencies = [
- "anyhow",
- "byte-unit",
- "cargo_metadata",
- "clap",
- "colored",
- "crossterm 0.29.0",
- "cursive",
- "env_logger 0.11.9",
- "fitimage",
- "futures",
- "indicatif",
- "jkconfig",
- "log",
- "lzma-rs",
- "network-interface",
- "object 0.37.3",
- "ratatui",
- "regex",
- "reqwest 0.12.28",
- "schemars",
- "serde",
- "serde_json",
- "serialport",
- "sha2",
- "tar",
- "tftpd",
- "thiserror 2.0.18",
- "tokio",
- "toml",
- "uboot-shell",
- "ureq",
-]
-
-[[package]]
-name = "ostool"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6472f8f90b606310d1de197493b5fb09e3c77e9db4bd7590a979d30a6d611b3"
@@ -4797,10 +4733,10 @@ dependencies = [
  "log",
  "lzma-rs",
  "network-interface",
- "object 0.38.1",
+ "object",
  "ratatui",
  "regex",
- "reqwest 0.13.2",
+ "reqwest",
  "schemars",
  "serde",
  "serde_json",
@@ -5611,44 +5547,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "71fe3824f5629716b1589be05dacd749f6aa084c87e00e016714a8cdfccc997c"
 dependencies = [
  "bytecheck",
-]
-
-[[package]]
-name = "reqwest"
-version = "0.12.28"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
-dependencies = [
- "base64 0.22.1",
- "bytes",
- "futures-core",
- "http",
- "http-body",
- "http-body-util",
- "hyper",
- "hyper-rustls",
- "hyper-util",
- "js-sys",
- "log",
- "percent-encoding",
- "pin-project-lite",
- "quinn",
- "rustls",
- "rustls-pki-types",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "sync_wrapper",
- "tokio",
- "tokio-rustls",
- "tower",
- "tower-http",
- "tower-service",
- "url",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "webpki-roots",
 ]
 
 [[package]]

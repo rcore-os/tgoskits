@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use jkconfig::{ElemHock, ui::components::editors::show_feature_select};
 
-use super::{ctx::Context, tbuld::Config}; // HashMap is unused
+use super::{cargo_manifest_path, ctx::Context, tbuld::Config}; // HashMap is unused
 
 impl Context {
     /// Main menuconfig runner function
@@ -45,7 +45,7 @@ impl Context {
         let path = "features";
         let package_name = "axvisor".to_string();
 
-        let cargo_toml = self.ctx.paths.workspace.join("Cargo.toml");
+        let cargo_toml = cargo_manifest_path(self.repo_root());
         ElemHock {
             path: path.to_string(),
             callback: Arc::new(move |siv: &mut jkconfig::cursive::Cursive, _path: &str| {

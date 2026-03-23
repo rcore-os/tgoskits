@@ -19,7 +19,7 @@ use ostool::build::config::{Cargo, LogLevel};
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 
-use super::ctx::Context;
+use super::{build_config_path, build_schema_path, ctx::Context, resolve_repo_path};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct Config {
@@ -41,12 +41,12 @@ impl Context {
     pub fn load_config(&mut self) -> anyhow::Result<Cargo> {
         let json = schema_for!(Config);
 
-        let mut config_path = self.ctx.paths.workspace.join(".build.toml");
+        let mut config_path = build_config_path(self.repo_root());
         if let Some(c) = &self.build_config_path {
-            config_path = c.clone();
+            config_path = resolve_repo_path(self.repo_root(), c);
         }
 
-        let path = config_path.parent().unwrap().join(".build-schema.json");
+        let path = build_schema_path(&config_path);
 
         std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap())
             .with_context(|| format!("Failed to write schema file: {}", path.display()))?;
@@ -65,7 +65,7 @@ impl Context {
         for vm_config in &vm_configs {
             let mut vm_config = PathBuf::from(vm_config);
             if !vm_config.is_absolute() {
-                vm_config = self.ctx.paths.workspace.join(vm_config);
+                vm_config = self.repo_root().join(vm_config);
             }
             if !vm_config.exists() {
                 return Err(anyhow::anyhow!(

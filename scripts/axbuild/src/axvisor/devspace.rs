@@ -23,6 +23,7 @@ use anyhow::{Context, Result, anyhow};
 use cargo_metadata::{Metadata, MetadataCommand, Package};
 use serde::{Deserialize, Serialize};
 
+use super::resolve_repo_path;
 use crate::process::run_status;
 
 const STATE_DIR: &str = ".devspace";
@@ -45,18 +46,19 @@ const DEVSPACE_REPO_OVERRIDES: &[(&str, &str)] = &[(
     "https://github.com/arceos-hypervisor/axdevice_base.git",
 )];
 
-pub fn start() -> Result<()> {
+pub fn start(repo_root: &Path) -> Result<()> {
     let metadata = MetadataCommand::new()
+        .current_dir(repo_root)
         .exec()
         .context("Failed to run cargo metadata")?;
     let repos = resolve_dev_repos(&metadata)?;
 
-    let mut state = load_state()?;
-    ensure_submodules(&mut state, &repos)?;
-    save_state(&state)?;
+    let mut state = load_state(repo_root)?;
+    ensure_submodules(repo_root, &mut state, &repos)?;
+    save_state(repo_root, &state)?;
 
     let specs = compute_patch_specs(&metadata, &repos)?;
-    apply_patches(&specs)?;
+    apply_patches(repo_root, &specs)?;
 
     state.patches = specs
         .into_iter()
@@ -65,52 +67,58 @@ pub fn start() -> Result<()> {
             crate_name: spec.crate_name,
         })
         .collect();
-    save_state(&state)?;
+    save_state(repo_root, &state)?;
 
     println!("devspace start completed");
     Ok(())
 }
 
-pub fn stop() -> Result<()> {
-    let mut state = load_state()?;
+pub fn stop(repo_root: &Path) -> Result<()> {
+    let mut state = load_state(repo_root)?;
 
     if !state.patches.is_empty() {
-        remove_patches(&state.patches)?;
+        remove_patches(repo_root, &state.patches)?;
         state.patches.clear();
     }
 
     if !state.modules.is_empty() {
-        remove_submodules(&state.modules)?;
+        remove_submodules(repo_root, &state.modules)?;
         state.modules.clear();
     }
 
-    save_state(&state)?;
+    save_state(repo_root, &state)?;
     println!("devspace stop completed");
     Ok(())
 }
 
-fn ensure_submodules(state: &mut DevspaceState, repos: &[DevRepo]) -> Result<()> {
+fn ensure_submodules(repo_root: &Path, state: &mut DevspaceState, repos: &[DevRepo]) -> Result<()> {
     for repo in repos {
-        let dest_path = Path::new(&repo.dest);
+        let dest_path = resolve_repo_path(repo_root, &repo.dest);
         if dest_path.exists() {
             continue;
         }
 
         println!("Adding submodule {} -> {}", repo.git_url, repo.dest);
-        run_git(&[
-            "submodule",
-            "add",
-            "--force",
-            repo.git_url.as_str(),
-            repo.dest.as_str(),
-        ])?;
-        run_git(&[
-            "submodule",
-            "update",
-            "--init",
-            "--recursive",
-            repo.dest.as_str(),
-        ])?;
+        run_git(
+            &[
+                "submodule",
+                "add",
+                "--force",
+                repo.git_url.as_str(),
+                repo.dest.as_str(),
+            ],
+            repo_root,
+        )?;
+        run_git(
+            &[
+                "submodule",
+                "update",
+                "--init",
+                "--recursive",
+                repo.dest.as_str(),
+            ],
+            repo_root,
+        )?;
         match state.modules.entry(repo.name.clone()) {
             Entry::Occupied(mut entry) => {
                 entry.get_mut().path = repo.dest.clone();
@@ -127,20 +135,22 @@ fn ensure_submodules(state: &mut DevspaceState, repos: &[DevRepo]) -> Result<()>
     Ok(())
 }
 
-fn remove_submodules(modules: &HashMap<String, ManagedModule>) -> Result<()> {
+fn remove_submodules(repo_root: &Path, modules: &HashMap<String, ManagedModule>) -> Result<()> {
     for module in modules.values() {
         println!("Removing submodule {}", module.path);
         let path = module.path.as_str();
-        let _ = run_git(&["submodule", "deinit", "-f", "--", path]);
-        let git_modules_dir = Path::new(".git/modules").join(path);
+        let _ = run_git(&["submodule", "deinit", "-f", "--", path], repo_root);
+        let git_modules_dir = repo_root.join(".git/modules").join(path);
         if git_modules_dir.exists() {
             fs::remove_dir_all(&git_modules_dir)
                 .with_context(|| format!("Failed to remove {git_modules_dir:?}"))?;
         }
-        if Path::new(path).exists() {
-            let _ = run_git(&["rm", "-f", "--", path]);
-            if Path::new(path).exists() {
-                fs::remove_dir_all(path).with_context(|| format!("Failed to remove {path}"))?;
+        let submodule_path = resolve_repo_path(repo_root, path);
+        if submodule_path.exists() {
+            let _ = run_git(&["rm", "-f", "--", path], repo_root);
+            if submodule_path.exists() {
+                fs::remove_dir_all(&submodule_path)
+                    .with_context(|| format!("Failed to remove {}", submodule_path.display()))?;
             }
         }
     }
@@ -188,15 +198,15 @@ fn package_patch_spec(pkg: &Package, repo_map: &HashMap<String, &DevRepo>) -> Op
     })
 }
 
-fn apply_patches(specs: &[PatchSpec]) -> Result<()> {
+fn apply_patches(repo_root: &Path, specs: &[PatchSpec]) -> Result<()> {
     if specs.is_empty() {
         println!("No git dependencies matched managed repos; skipping patch stage");
         return Ok(());
     }
 
-    let config_path = Path::new(".cargo/config.toml");
+    let config_path = repo_root.join(".cargo/config.toml");
     let mut contents = if config_path.exists() {
-        fs::read_to_string(config_path)
+        fs::read_to_string(&config_path)
             .with_context(|| format!("Failed to read {config_path:?}"))?
     } else {
         String::new()
@@ -217,43 +227,46 @@ fn apply_patches(specs: &[PatchSpec]) -> Result<()> {
         contents.push('\n');
     }
 
-    fs::write(config_path, contents).with_context(|| format!("Failed to write {config_path:?}"))?;
+    fs::write(&config_path, contents)
+        .with_context(|| format!("Failed to write {config_path:?}"))?;
     Ok(())
 }
 
-fn remove_patches(_: &[PatchRecord]) -> Result<()> {
-    let config_path = Path::new(".cargo/config.toml");
+fn remove_patches(repo_root: &Path, _: &[PatchRecord]) -> Result<()> {
+    let config_path = repo_root.join(".cargo/config.toml");
     if !config_path.exists() {
         return Ok(());
     }
 
-    let original = fs::read_to_string(config_path)
+    let original = fs::read_to_string(&config_path)
         .with_context(|| format!("Failed to read {config_path:?}"))?;
     let (cleaned, removed) = strip_devspace_section(&original);
 
     if removed {
-        fs::write(config_path, cleaned)
+        fs::write(&config_path, cleaned)
             .with_context(|| format!("Failed to write {config_path:?}"))?;
     }
     Ok(())
 }
 
-fn load_state() -> Result<DevspaceState> {
-    let path = Path::new(STATE_FILE);
+fn load_state(repo_root: &Path) -> Result<DevspaceState> {
+    let path = resolve_repo_path(repo_root, STATE_FILE);
     if !path.exists() {
         return Ok(DevspaceState::default());
     }
 
-    let contents = fs::read_to_string(path).with_context(|| format!("Failed to read {path:?}"))?;
+    let contents = fs::read_to_string(&path).with_context(|| format!("Failed to read {path:?}"))?;
     let state =
         serde_json::from_str(&contents).with_context(|| format!("Failed to parse {path:?}"))?;
     Ok(state)
 }
 
-fn save_state(state: &DevspaceState) -> Result<()> {
-    fs::create_dir_all(STATE_DIR).context("Failed to create devspace state dir")?;
+fn save_state(repo_root: &Path, state: &DevspaceState) -> Result<()> {
+    fs::create_dir_all(resolve_repo_path(repo_root, STATE_DIR))
+        .context("Failed to create devspace state dir")?;
     let data = serde_json::to_string_pretty(state)?;
-    fs::write(STATE_FILE, data).context("Failed to write devspace state")?;
+    fs::write(resolve_repo_path(repo_root, STATE_FILE), data)
+        .context("Failed to write devspace state")?;
     Ok(())
 }
 
@@ -451,15 +464,11 @@ fn to_unix_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-fn run_git(args: &[&str]) -> Result<()> {
+fn run_git(args: &[&str], repo_root: &Path) -> Result<()> {
     let desc = format!("git {}", args.join(" "));
     let mut command = Command::new("git");
-    command.current_dir(workspace_root()?).args(args);
+    command.current_dir(repo_root).args(args);
     run_status(&mut command, &desc)
-}
-
-fn workspace_root() -> Result<PathBuf> {
-    std::env::current_dir().context("Failed to resolve workspace root")
 }
 
 #[derive(Default, Serialize, Deserialize)]

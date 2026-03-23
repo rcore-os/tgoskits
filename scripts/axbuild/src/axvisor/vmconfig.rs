@@ -14,16 +14,14 @@
 
 use anyhow::Context as _;
 
-use super::ctx::Context;
+use super::{ctx::Context, vmconfig_schema_path};
 
 impl Context {
     pub async fn run_vmconfig(&mut self) -> anyhow::Result<()> {
         let json = schemars::schema_for!(axvmconfig::AxVMCrateConfig);
-        std::fs::write(
-            ".vmconfig-schema.json",
-            serde_json::to_string_pretty(&json).unwrap(),
-        )
-        .with_context(|| "Failed to write schema file .vmconfig-schema.json")?;
+        let schema_path = vmconfig_schema_path(self.repo_root());
+        std::fs::write(&schema_path, serde_json::to_string_pretty(&json).unwrap())
+            .with_context(|| format!("Failed to write schema file {}", schema_path.display()))?;
         Ok(())
     }
 }
