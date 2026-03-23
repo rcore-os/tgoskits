@@ -348,7 +348,7 @@ class GitSubtreeManager:
         ]
         self._run_command(cmd)
 
-    def push_subtree(self, url: str, target_dir: str, branch: str = "") -> None:
+    def push_subtree(self, url: str, target_dir: str, branch: str = "", force: bool = False) -> None:
         """Push local changes to a git subtree."""
         if not self.is_added(target_dir):
             raise ValueError(f"Subtree at '{target_dir}' not found. Cannot push.")
@@ -358,11 +358,13 @@ class GitSubtreeManager:
             branch = PUSH_DEFAULT_BRANCH
             print(f"Using default push branch: {branch}")
 
+        refspec = f"+{branch}" if force else branch
+
         cmd = [
             'git', 'subtree', 'push',
             '--prefix=' + target_dir,
             url,
-            branch
+            refspec
         ]
         self._run_command(cmd)
 
@@ -550,12 +552,14 @@ def cmd_push(args: argparse.Namespace) -> int:
             skipped.append(f"{repo.repo_name} (no target_dir)")
             continue
 
-        # Use command-line branch if specified, otherwise use CSV branch
-        branch = args.branch if args.branch else repo.branch
+        # Use command-line branch if specified, otherwise push to the default dev branch.
+        branch = args.branch if args.branch else PUSH_DEFAULT_BRANCH
 
         try:
             print(f"\nPushing {repo.repo_name}...")
-            git_manager.push_subtree(repo.url, repo.target_dir, branch)
+            if args.force:
+                print("Using force mode (will force-push subtree history)")
+            git_manager.push_subtree(repo.url, repo.target_dir, branch, force=args.force)
         except (subprocess.CalledProcessError, ValueError) as e:
             print(f"Error pushing {repo.repo_name}: {e}", file=sys.stderr)
             if not args.all:
@@ -783,6 +787,8 @@ Examples:
     push_parser.add_argument('--all', action='store_true', help='Push all repositories')
     push_parser.add_argument('-b', '--branch', default='',
                              help=f'Branch name (default: {PUSH_DEFAULT_BRANCH})')
+    push_parser.add_argument('-f', '--force', action='store_true',
+                             help='Force push subtree history to remote')
 
     # List command
     list_parser = subparsers.add_parser('list', help='List all repositories')
