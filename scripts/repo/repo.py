@@ -19,6 +19,7 @@ from dataclasses import dataclass, field, astuple
 
 # Default paths
 CSV_PATH = Path(__file__).parent / "repos.csv"
+PUSH_DEFAULT_BRANCH = "dev"
 
 
 @dataclass
@@ -352,17 +353,10 @@ class GitSubtreeManager:
         if not self.is_added(target_dir):
             raise ValueError(f"Subtree at '{target_dir}' not found. Cannot push.")
 
-        # Auto-detect branch if not specified
+        # Push to the component dev branch by default.
         if branch == "":
-            remote_name = target_dir.replace('/', '_')
-            subprocess.run(['git', 'remote', 'add', remote_name, url], 
-                          capture_output=True)
-            subprocess.run(['git', 'fetch', remote_name, '--no-tags'], 
-                          capture_output=True)
-            branch = self.detect_branch(url, remote_name)
-            print(f"Auto-detected branch: {branch}")
-            subprocess.run(['git', 'remote', 'remove', remote_name], 
-                          capture_output=True)
+            branch = PUSH_DEFAULT_BRANCH
+            print(f"Using default push branch: {branch}")
 
         cmd = [
             'git', 'subtree', 'push',
@@ -787,7 +781,8 @@ Examples:
     push_parser = subparsers.add_parser('push', help='Push local changes to remote')
     push_parser.add_argument('repo_name', nargs='?', help='Repository name (or use --all)')
     push_parser.add_argument('--all', action='store_true', help='Push all repositories')
-    push_parser.add_argument('-b', '--branch', default='', help='Branch name')
+    push_parser.add_argument('-b', '--branch', default='',
+                             help=f'Branch name (default: {PUSH_DEFAULT_BRANCH})')
 
     # List command
     list_parser = subparsers.add_parser('list', help='List all repositories')
