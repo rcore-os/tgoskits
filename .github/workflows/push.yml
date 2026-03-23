@@ -5,7 +5,7 @@ name: Push to Subrepos
 # ═══════════════════════════════════════════════════════════════════════════════
 #
 # 此工作流使用 scripts/repo/repo.py 将主仓库中修改的组件推送到子仓库。
-# 所有组件都推送到子仓库的 mirror 分支。
+# 所有组件默认都推送到子仓库的 dev 分支。
 #
 # 【触发方式】
 # ─────────────────────────────────────────────────────────────────────────────
@@ -15,7 +15,7 @@ name: Push to Subrepos
 # 【手动触发参数】
 # ─────────────────────────────────────────────────────────────────────────────
 # - components: 指定组件（逗号分隔，留空自动检测）
-# - branch: 推送到子仓库的目标分支（默认：mirror）
+# - branch: 推送到子仓库的目标分支（默认：dev）
 # - push_all: 推送所有组件（忽略变更检测）
 #
 # 【权限配置】
@@ -49,7 +49,7 @@ on:
         description: '推送到子仓库的目标分支'
         required: false
         type: string
-        default: 'mirror'
+        default: 'dev'
       push_all:
         description: '推送所有组件（忽略变更检测）'
         required: false
@@ -80,6 +80,8 @@ jobs:
           INPUT_PUSH_ALL: ${{ inputs.push_all }}
           INPUT_COMPONENTS: ${{ inputs.components }}
           GH_EVENT_NAME: ${{ github.event_name }}
+          GH_EVENT_BEFORE: ${{ github.event.before }}
+          GH_SHA: ${{ github.sha }}
         run: |
           # 如果手动指定推送所有组件
           if [ "$INPUT_PUSH_ALL" = "true" ]; then
@@ -102,7 +104,11 @@ jobs:
           
           # 获取修改的文件列表
           if [ "$GH_EVENT_NAME" = "push" ]; then
-            CHANGED_FILES=$(git diff --name-only HEAD^ HEAD)
+            if [ -n "$GH_EVENT_BEFORE" ] && [ "$GH_EVENT_BEFORE" != "0000000000000000000000000000000000000000" ]; then
+              CHANGED_FILES=$(git diff --name-only "$GH_EVENT_BEFORE" "$GH_SHA")
+            else
+              CHANGED_FILES=$(git diff-tree --no-commit-id --name-only -r "$GH_SHA")
+            fi
           else
             CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
           fi
@@ -115,11 +121,19 @@ jobs:
           fi
           
           # 从 repos.csv 获取组件目录列表
-          COMPONENT_DIRS=$(python3 scripts/repo/repo.py list 2>/dev/null | \
-                           tail -n +3 | \
-                           awk '{print $3}' | \
-                           grep -v '^$' | \
-                           tr '\n' ' ')
+          COMPONENT_DIRS=$(python3 - <<'PY'
+          import csv
+          from pathlib import Path
+
+          csv_path = Path("scripts/repo/repos.csv")
+          with csv_path.open(newline="", encoding="utf-8") as f:
+              reader = csv.DictReader(f)
+              for row in reader:
+                  target_dir = (row.get("target_dir") or "").strip()
+                  if target_dir:
+                      print(target_dir)
+          PY
+          )
           echo "Available components: ${COMPONENT_DIRS}"
           
           # 分析修改的文件，找出涉及的组件
@@ -171,7 +185,7 @@ jobs:
           COMPONENTS: ${{ steps.detect.outputs.components }}
           INPUT_BRANCH: ${{ inputs.branch }}
         run: |
-          TARGET_BRANCH="${INPUT_BRANCH:-mirror}"
+          TARGET_BRANCH="${INPUT_BRANCH:-dev}"
           
           if [ "$COMPONENTS" = "__all__" ]; then
             echo "Pushing ALL components to ${TARGET_BRANCH} branch..."
@@ -235,7 +249,7 @@ jobs:
           GH_REF_NAME: ${{ github.ref_name }}
           SUBTREE_PUSH_TOKEN: ${{ secrets.SUBTREE_PUSH_TOKEN }}
         run: |
-          TARGET_BRANCH="${INPUT_BRANCH:-mirror}"
+          TARGET_BRANCH="${INPUT_BRANCH:-dev}"
           echo "## Push to Subrepos Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Components**: ${COMPONENTS}" >> $GITHUB_STEP_SUMMARY
