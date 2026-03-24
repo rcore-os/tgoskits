@@ -336,6 +336,7 @@ event-listener = { version = "5.4.0", default-features = false }
 kernel_guard = "0.1"
 kspin = "0.1"
 lazyinit = "0.2"
+schemars = "1.2.1"
 
 # === starry-* ===
 starry-process = "0.2"

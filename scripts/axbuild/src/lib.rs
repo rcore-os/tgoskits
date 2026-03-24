@@ -1,34 +1,38 @@
-// Copyright 2025 The tgoskits Team
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+#![cfg_attr(not(any(windows, unix)), no_std)]
+#![cfg(any(windows, unix))]
 
-//! ArceOS build library
-//!
-//! This library provides the core functionality for building ArceOS applications.
-//! It supports multiple architectures and platforms, and can be used both
-//! as a library and as a command-line tool.
+use clap::{Parser, Subcommand};
 
-#[macro_use]
-extern crate anyhow;
+use crate::arceos::ArceOS;
 
 pub mod arceos;
-pub mod axvisor;
-pub(crate) mod process;
+pub mod context;
+mod logging;
 
-pub use arceos::{
-    build::{BuildOutput, Builder, PreparedArtifacts, prepare_artifacts},
-    config::{ArceosConfigOverride, Arch, CommonBuildConfig, LogLevel, QEMU_CONFIG_FILE_NAME},
-    features::FeatureResolver,
-    platform::PlatformResolver,
-    qemu::QemuRunner,
-};
+#[derive(Parser)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// ArceOS build commands
+    Arceos {
+        #[command(subcommand)]
+        command: arceos::Command,
+    },
+}
+
+pub async fn run() -> anyhow::Result<()> {
+
+    let cli = Cli::parse();
+
+    match cli.command {
+        Commands::Arceos { command } => {
+            ArceOS::new().execute(command).await?;
+        }
+    }
+
+    Ok(())
+}

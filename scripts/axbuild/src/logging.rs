@@ -1,4 +1,4 @@
-// Copyright 2025 The Axvisor Team
+// Copyright 2026 The tgoskits Team
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,16 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use anyhow::Context as _;
+use std::{fs, fs::File, path::Path};
 
-use super::{ctx::Context, vmconfig_schema_path};
+use anyhow::{Context, Result};
 
-impl Context {
-    pub async fn run_vmconfig(&mut self) -> anyhow::Result<()> {
-        let json = schemars::schema_for!(axvmconfig::AxVMCrateConfig);
-        let schema_path = vmconfig_schema_path(self.repo_root());
-        std::fs::write(&schema_path, serde_json::to_string_pretty(&json).unwrap())
-            .with_context(|| format!("Failed to write schema file {}", schema_path.display()))?;
-        Ok(())
-    }
+pub fn init_logging() -> Result<()> {
+    env_logger::init();
+    
+
+
+    Ok(())
 }
