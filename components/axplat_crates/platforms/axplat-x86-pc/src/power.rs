@@ -28,7 +28,7 @@ impl PowerIf for PowerImpl {
         // work. Therefore we use port `0x64` to reboot the system instead.
         if cfg!(feature = "reboot-on-system-off") {
             axplat::console_println!("System will reboot, press any key to continue ...");
-            while super::console::getchar().is_none() {}
+            while axplat::console::read_bytes(&mut [0]) == 0 {}
             axplat::console_println!("Rebooting ...");
             unsafe { PortWriteOnly::new(0x64).write(0xfeu8) };
         } else {

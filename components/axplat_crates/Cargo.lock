@@ -68,7 +68,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d09177e7ffff6c78aee3db4816fb478255c5d579f916d72f914c243b797e68e"
 dependencies = [
  "aarch64-cpu",
- "bitflags 2.10.0",
+ "bitflags 2.11.0",
  "enum_dispatch",
  "log",
  "paste",
@@ -167,7 +167,7 @@ name = "axplat"
 version = "0.3.1-pre.6"
 dependencies = [
  "axplat-macros",
- "bitflags 2.10.0",
+ "bitflags 2.11.0",
  "const-str",
  "crate_interface 0.3.0",
  "handler_table",
@@ -294,7 +294,7 @@ dependencies = [
  "axconfig-macros",
  "axcpu",
  "axplat",
- "bitflags 2.10.0",
+ "bitflags 2.11.0",
  "heapless",
  "int_ratio",
  "kspin",
@@ -330,9 +330,9 @@ checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
 name = "bitflags"
-version = "2.10.0"
+version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "812e12b5285cc515a9c72a5c1d3b6d46a19dac5acfef5265968c166106e31dd3"
+checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
 
 [[package]]
 name = "byteorder"
@@ -844,7 +844,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c9f0d275c70310e2a9d2fc23250c5ac826a73fa828a5f256401f85c5c554283"
 dependencies = [
  "bit_field",
- "bitflags 2.10.0",
+ "bitflags 2.11.0",
 ]
 
 [[package]]
@@ -905,7 +905,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8e9a63b9b86d32f64c3874a90936939281d045ef1751d0aca3d82d5e4e06b2ef"
 dependencies = [
  "aarch64-cpu",
- "bitflags 2.10.0",
+ "bitflags 2.11.0",
  "memory_addr",
  "x86_64",
 ]
@@ -1002,7 +1002,7 @@ version = "11.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "498cd0dc59d73224351ee52a95fee0f1a617a2eae0e7d9d720cc622c73a54186"
 dependencies = [
- "bitflags 2.10.0",
+ "bitflags 2.11.0",
 ]
 
 [[package]]
@@ -1362,13 +1362,11 @@ checksum = "bc7d623258602320d5c55d1bc22793b57daff0ec7efc270ea7d55ce1d5f5471c"
 
 [[package]]
 name = "uart_16550"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94d293f51425981fdb1b766beae254dbb711a17e8c4b549dc69b9b7ee0d478d5"
+checksum = "71cceed8939ba6ebde9d1e8a603b3c7f1a239a3db22e1ff465ed71ddca7a7d66"
 dependencies = [
- "bitflags 2.10.0",
- "rustversion",
- "x86",
+ "bitflags 2.11.0",
 ]
 
 [[package]]
@@ -1474,7 +1472,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f7841fa0098ceb15c567d93d3fae292c49e10a7662b4936d5f6a9728594555ba"
 dependencies = [
  "bit_field",
- "bitflags 2.10.0",
+ "bitflags 2.11.0",
  "const_fn",
  "rustversion",
  "volatile",

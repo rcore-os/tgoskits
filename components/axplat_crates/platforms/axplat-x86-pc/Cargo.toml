@@ -35,7 +35,7 @@ x86_64 = "0.15.2"
 x2apic = "0.5"
 multiboot = "0.8"
 raw-cpuid = "11.5"
-uart_16550 = "0.4"
+uart_16550 = "0.5"
 x86_rtc = { version = "0.1", optional = true }
 
 [package.metadata.docs.rs]

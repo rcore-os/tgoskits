@@ -24,7 +24,7 @@ lazyinit = "0.2"
 log = "0.4"
 loongArch64 = "0.2.4"
 page_table_entry = "0.6"
-uart_16550 = "0.4.0"
+uart_16550 = "0.5"
 
 axconfig-macros = "0.2"
 axcpu = { workspace = true }

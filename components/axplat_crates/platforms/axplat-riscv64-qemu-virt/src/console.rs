@@ -1,16 +1,19 @@
 use axplat::console::ConsoleIf;
 use kspin::SpinNoIrq;
 use lazyinit::LazyInit;
-use uart_16550::MmioSerialPort;
+use uart_16550::{Config, Uart16550, backend::MmioBackend};
 
 use crate::config::{devices::UART_PADDR, plat::PHYS_VIRT_OFFSET};
 
-static UART: LazyInit<SpinNoIrq<MmioSerialPort>> = LazyInit::new();
+static UART: LazyInit<SpinNoIrq<Uart16550<MmioBackend>>> = LazyInit::new();
 
 pub(crate) fn init_early() {
     UART.init_once({
-        let mut uart = unsafe { MmioSerialPort::new(UART_PADDR + PHYS_VIRT_OFFSET) };
-        uart.init();
+        let mut uart =
+            unsafe { Uart16550::new_mmio((UART_PADDR + PHYS_VIRT_OFFSET) as *mut u8, 1) }.unwrap();
+        uart.init(Config::default())
+            .expect("Failed to initialize UART");
+        uart.test_loopback().expect("Failed to test UART loopback");
         SpinNoIrq::new(uart)
     });
 }
@@ -24,11 +27,8 @@ impl ConsoleIf for ConsoleIfImpl {
         for &c in bytes {
             let mut uart = UART.lock();
             match c {
-                b'\n' => {
-                    uart.send_raw(b'\r');
-                    uart.send_raw(b'\n');
-                }
-                c => uart.send_raw(c),
+                b'\n' => uart.send_bytes_exact(b"\r\n"),
+                c => uart.send_bytes_exact(&[c]),
             }
         }
     }
@@ -37,13 +37,7 @@ impl ConsoleIf for ConsoleIfImpl {
     /// Returns the number of bytes read.
     fn read_bytes(bytes: &mut [u8]) -> usize {
         let mut uart = UART.lock();
-        for (i, byte) in bytes.iter_mut().enumerate() {
-            match uart.try_receive() {
-                Ok(c) => *byte = c,
-                Err(_) => return i,
-            }
-        }
-        bytes.len()
+        uart.try_receive_bytes(bytes)
     }
 
     /// Returns the IRQ number for the console, if applicable.
