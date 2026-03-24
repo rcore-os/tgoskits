@@ -66,9 +66,10 @@ impl Builder {
 
     /// Execute the build process
     pub async fn build(&self) -> Result<BuildOutput> {
+        let arch = self.ctx.config.arch()?;
         tracing::info!(
             "Starting build for {:?} in {}",
-            self.ctx.config.arch,
+            arch,
             self.ctx.manifest_dir().display()
         );
 
@@ -79,17 +80,16 @@ impl Builder {
         )?;
 
         tracing::debug!("ostool cargo config: {:?}", prepared.cargo_spec.cargo);
-        let mut ctx = prepared.cargo_spec.ctx.into_app_context();
-        ostool_bridge::cargo_build(&mut ctx, &prepared.cargo_spec.cargo).await?;
+        let mut tool = prepared.cargo_spec.ctx.into_tool()?;
+        ostool_bridge::cargo_build(&mut tool, &prepared.cargo_spec.cargo).await?;
+        let ctx = tool.ctx();
 
         let elf = ctx
-            .paths
             .artifacts
             .elf
             .clone()
             .context("ostool build did not produce an ELF artifact")?;
         let bin = ctx
-            .paths
             .artifacts
             .bin
             .clone()
@@ -200,7 +200,7 @@ impl ArtifactPreparer {
     }
 
     fn resolve_effective_smp(&self, config: &mut ArceosConfig) -> Result<()> {
-        if let Some(smp) = config.smp {
+        if let Some(smp) = config.common.smp {
             if smp == 0 {
                 anyhow::bail!("invalid SMP value `0`: SMP must be >= 1");
             }
@@ -212,7 +212,7 @@ impl ArtifactPreparer {
         let contents = std::fs::read_to_string(&plat_config)
             .with_context(|| format!("Failed to read {}", plat_config.display()))?;
         let smp = parse_max_cpu_num_from_platform_config(&contents, &plat_config)?;
-        config.smp = Some(smp);
+        config.common.smp = Some(smp);
         Ok(())
     }
 
@@ -220,13 +220,14 @@ impl ArtifactPreparer {
         if let Some(plat_dyn) = config.plat_dyn {
             return Ok(plat_dyn);
         }
-        let resolver = PlatformResolver::new(self.manifest_dir.clone());
-        let plat_dyn = matches!(config.arch, crate::arceos::config::Arch::AArch64)
-            || resolver.is_dyn_platform(&config.platform);
+        let arch = config.arch()?;
+        let plat_dyn = matches!(arch, crate::arceos::config::Arch::AArch64);
         Ok(plat_dyn)
     }
 
     fn generate_config(&self, config: &ArceosConfig) -> Result<()> {
+        let arch = config.arch()?;
+        let platform_name = PlatformResolver::resolve_default_platform_name(&arch);
         let defconfig = resolve_defconfig_path(&self.manifest_dir, &workspace_root_path()?)?;
         let out_config = self.app_dir.join(AXCONFIG_FILE_NAME);
         let platform_package = self.resolve_platform_package(config);
@@ -238,20 +239,14 @@ impl ArtifactPreparer {
         ];
 
         args.push("-w".to_string());
-        args.push(format!("arch=\"{}\"", config.arch));
+        args.push(format!("arch=\"{}\"", arch));
         args.push("-w".to_string());
-        args.push(format!("platform=\"{}\"", config.platform));
+        args.push(format!("platform=\"{}\"", platform_name));
 
         args.push("-o".to_string());
         args.push(out_config.display().to_string());
 
-        if let Some(mem) = &config.mem {
-            let mem = self.parse_mem_size(mem)?;
-            args.push("-w".to_string());
-            args.push(format!("plat.phys-memory-size={}", mem));
-        }
-
-        if let Some(smp) = config.smp {
+        if let Some(smp) = config.common.smp {
             args.push("-w".to_string());
             args.push(format!("plat.max-cpu-num={}", smp));
         }
@@ -264,11 +259,8 @@ impl ArtifactPreparer {
     }
 
     fn resolve_platform_package(&self, config: &ArceosConfig) -> String {
-        if config.platform.starts_with("axplat-") {
-            config.platform.clone()
-        } else {
-            PlatformResolver::resolve_default_platform(&config.arch)
-        }
+        let arch = config.arch().unwrap_or(crate::arceos::config::Arch::AArch64);
+        PlatformResolver::resolve_default_platform(&arch)
     }
 
     fn resolve_platform_config_path(
@@ -317,19 +309,6 @@ impl ArtifactPreparer {
         Ok(false)
     }
 
-    fn parse_mem_size(&self, mem: &str) -> Result<String> {
-        let script = resolve_strtosz_script_path(&self.manifest_dir)?;
-        let desc = format!("{} {}", script.display(), mem);
-        let mut command = Command::new(&script);
-        command.arg(mem);
-        let output = run_output(&mut command, &desc)?;
-
-        let parsed = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if parsed.is_empty() {
-            anyhow::bail!("failed to parse memory size `{}`: empty output", mem);
-        }
-        Ok(parsed)
-    }
 }
 
 fn workspace_root_path() -> Result<PathBuf> {
@@ -364,6 +343,7 @@ fn ensure_default_defconfig_file(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn resolve_strtosz_script_path(manifest_dir: &Path) -> Result<PathBuf> {
     let candidates = [
         manifest_dir.join("scripts/make/strtosz.py"),

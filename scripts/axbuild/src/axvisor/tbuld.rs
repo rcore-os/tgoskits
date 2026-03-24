@@ -56,7 +56,7 @@ impl Context {
         let config: Config = toml::from_str(&config_str)
             .with_context(|| format!("Failed to parse config file: {}", config_path.display()))?;
 
-        self.ctx.build_config_path = Some(config_path);
+        self.tool.ctx_mut().build_config_path = Some(config_path);
 
         let mut vm_configs = config.vm_configs.to_vec();
         vm_configs.extend(self.vmconfigs.iter().cloned());
@@ -142,7 +142,7 @@ impl Context {
 
     pub async fn run_build(&mut self) -> anyhow::Result<()> {
         let config = self.load_config()?;
-        self.ctx.cargo_build(&config).await?;
+        self.tool.cargo_build(&config).await?;
 
         Ok(())
     }

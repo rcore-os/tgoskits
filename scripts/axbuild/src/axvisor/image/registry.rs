@@ -22,6 +22,7 @@ use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use tracing::{info, warn};
 
 use super::{download::download_to_string, spec::ImageSpecRef};
 
@@ -86,7 +87,7 @@ pub fn merge_entries(sources: impl IntoIterator<Item = Vec<ImageEntry>>) -> Vec<
             let key = (entry.name.clone(), entry.version.clone());
             if let Some(existing) = by_key.get(&key) {
                 if existing != &entry {
-                    println!(
+                    warn!(
                         "Warning: conflict for image {} version {} (different \
                          description/sha256/arch/url); keeping existing entry.",
                         entry.name, entry.version
@@ -122,6 +123,7 @@ impl ImageRegistry {
             if !seen.insert(current_url.clone()) {
                 continue; // already fetched, skip
             }
+            info!("waiting for network: fetching image registry {current_url}");
             let body = download_to_string(&current_url).await?;
             let raw: RawRegistry = toml::from_str(&body)
                 .map_err(|e| anyhow!("Invalid registry format at {}: {e}", current_url))?;

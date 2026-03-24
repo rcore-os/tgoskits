@@ -14,7 +14,9 @@
 
 use std::collections::HashSet;
 
-use crate::arceos::config::{ArceosConfig, LogLevel};
+use ostool::build::config::LogLevel;
+
+use crate::arceos::config::ArceosConfig;
 
 /// Feature resolver
 pub struct FeatureResolver;
@@ -93,15 +95,13 @@ impl FeatureResolver {
         // Platform-related features
         if plat_dyn {
             features.push("plat-dyn".to_string());
-        } else if config.platform.starts_with("myplat") {
-            features.push("myplat".to_string());
         } else {
             features.push("defplat".to_string());
         }
 
         // User-specified features (non-lib features)
-        for feat in &config.features {
-            if !Self::is_lib_feature(feat) {
+        for feat in &config.common.features {
+            if !Self::is_lib_feature(feat) && Self::is_valid_feature(feat) {
                 features.push(feat.clone());
             }
         }
@@ -115,21 +115,21 @@ impl FeatureResolver {
     pub fn resolve_lib_features(config: &ArceosConfig, lib_name: &str) -> Vec<String> {
         let mut features = Vec::new();
 
-        if config.smp.unwrap_or(1) > 1 {
+        if config.common.smp.unwrap_or(1) > 1 {
             features.push("smp".to_string());
         }
 
         // C application (axlibc) includes default lib features
         if lib_name == "axlibc" {
             for feat in Self::DEFAULT_LIBC_FEATURES {
-                if config.features.contains(&feat.to_string()) {
+                if config.common.features.contains(&feat.to_string()) {
                     features.push(feat.to_string());
                 }
             }
         }
 
         // User-specified lib features
-        for feat in &config.features {
+        for feat in &config.common.features {
             if Self::is_lib_feature(feat) {
                 features.push(feat.clone());
             }
@@ -143,7 +143,6 @@ impl FeatureResolver {
     /// Resolve log level feature
     pub fn resolve_log_feature(log_level: LogLevel) -> String {
         match log_level {
-            LogLevel::Off => "log-level-off".to_string(),
             LogLevel::Error => "log-level-error".to_string(),
             LogLevel::Warn => "log-level-warn".to_string(),
             LogLevel::Info => "log-level-info".to_string(),
@@ -196,7 +195,13 @@ impl FeatureResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arceos::config::{ArceosConfig, Arch, BuildMode, LogLevel, QemuOptions};
+    use crate::arceos::config::ArceosConfig;
+
+    fn config_with_features(features: &[&str]) -> ArceosConfig {
+        let mut config = ArceosConfig::default();
+        config.common.features = features.iter().map(|feat| (*feat).to_string()).collect();
+        config
+    }
 
     #[test]
     fn test_is_lib_feature() {
@@ -221,18 +226,7 @@ mod tests {
 
     #[test]
     fn test_resolve_ax_features() {
-        let config = ArceosConfig {
-            arch: Arch::AArch64,
-            platform: "aarch64-qemu-virt".to_string(),
-            mode: BuildMode::Debug,
-            plat_dyn: None,
-            log: LogLevel::Info,
-            smp: None,
-            mem: None,
-            features: vec!["fs".to_string(), "net".to_string()],
-            app_features: vec![],
-            qemu: QemuOptions::default(),
-        };
+        let config = config_with_features(&["fs", "net"]);
 
         // Non-dynamic platform, so "defplat" is used
         let ax_features = FeatureResolver::resolve_ax_features(&config, false);
@@ -243,18 +237,7 @@ mod tests {
 
     #[test]
     fn test_resolve_lib_features() {
-        let config = ArceosConfig {
-            arch: Arch::AArch64,
-            platform: "aarch64-qemu-virt".to_string(),
-            mode: BuildMode::Debug,
-            plat_dyn: None,
-            log: LogLevel::Info,
-            smp: None,
-            mem: None,
-            features: vec!["fs".to_string(), "net".to_string(), "fp-simd".to_string()],
-            app_features: vec![],
-            qemu: QemuOptions::default(),
-        };
+        let config = config_with_features(&["fs", "net", "fp-simd"]);
 
         let lib_features = FeatureResolver::resolve_lib_features(&config, "axlibc");
         assert!(lib_features.contains(&"fs".to_string()));
@@ -264,64 +247,23 @@ mod tests {
 
     #[test]
     fn test_resolve_lib_features_enables_smp_when_cpu_count_gt_one() {
-        let mut config = ArceosConfig {
-            arch: Arch::AArch64,
-            platform: "aarch64-qemu-virt".to_string(),
-            mode: BuildMode::Debug,
-            plat_dyn: None,
-            log: LogLevel::Info,
-            smp: Some(4),
-            mem: None,
-            features: vec![],
-            app_features: vec![],
-            qemu: QemuOptions::default(),
-        };
+        let mut config = ArceosConfig::default();
+        config.common.smp = Some(4);
 
         let lib_features = FeatureResolver::resolve_lib_features(&config, "axstd");
         assert!(lib_features.contains(&"smp".to_string()));
 
-        config.smp = Some(1);
+        config.common.smp = Some(1);
         let lib_features = FeatureResolver::resolve_lib_features(&config, "axstd");
         assert!(!lib_features.contains(&"smp".to_string()));
     }
 
     #[test]
     fn test_resolve_ax_features_with_dynamic_platform() {
-        let config = ArceosConfig {
-            arch: Arch::AArch64,
-            platform: "aarch64-qemu-virt".to_string(),
-            mode: BuildMode::Debug,
-            plat_dyn: None,
-            log: LogLevel::Info,
-            smp: None,
-            mem: None,
-            features: vec![],
-            app_features: vec![],
-            qemu: QemuOptions::default(),
-        };
+        let config = ArceosConfig::default();
 
         let ax_features = FeatureResolver::resolve_ax_features(&config, true);
         assert!(ax_features.contains(&"plat-dyn".to_string()));
-        assert!(!ax_features.contains(&"defplat".to_string()));
-    }
-
-    #[test]
-    fn test_resolve_ax_features_with_myplat() {
-        let config = ArceosConfig {
-            arch: Arch::AArch64,
-            platform: "myplat-custom".to_string(),
-            mode: BuildMode::Debug,
-            plat_dyn: None,
-            log: LogLevel::Info,
-            smp: None,
-            mem: None,
-            features: vec![],
-            app_features: vec![],
-            qemu: QemuOptions::default(),
-        };
-
-        let ax_features = FeatureResolver::resolve_ax_features(&config, false);
-        assert!(ax_features.contains(&"myplat".to_string()));
         assert!(!ax_features.contains(&"defplat".to_string()));
     }
 

@@ -19,17 +19,16 @@ use std::{
 };
 
 use ::ostool::{
-    build::{cargo_builder::CargoBuilder, config::Cargo},
-    ctx::{AppContext, OutputConfig, PathConfig},
-    run::qemu::QemuConfig,
+    Tool, ToolConfig,
+    build::{CargoRunnerKind, cargo_builder::CargoBuilder, config::Cargo},
 };
 use anyhow::{Context, Result};
 use cargo_metadata::MetadataCommand;
 use serde::Deserialize;
 
 use crate::arceos::{
-    PlatformResolver,
-    config::{AXCONFIG_FILE_NAME, ArceosConfig, Arch, BuildMode, NetDev, QEMU_CONFIG_FILE_NAME},
+    FeatureResolver, PlatformResolver,
+    config::{AXCONFIG_FILE_NAME, ArceosConfig, Arch},
 };
 
 const DEFAULT_AX_IP: &str = "10.0.2.15";
@@ -37,25 +36,17 @@ const DEFAULT_AX_GW: &str = "10.0.2.2";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppContextSpec {
-    pub workspace: PathBuf,
     pub manifest: PathBuf,
-    pub config_search_dir: Option<PathBuf>,
     pub debug: bool,
 }
 
 impl AppContextSpec {
-    pub fn into_app_context(self) -> AppContext {
-        AppContext {
-            paths: PathConfig {
-                workspace: self.workspace,
-                manifest: self.manifest,
-                config: OutputConfig::default(),
-                ..Default::default()
-            },
-            config_search_dir: self.config_search_dir,
+    pub fn into_tool(self) -> Result<Tool> {
+        Tool::new(ToolConfig {
+            manifest: Some(self.manifest),
             debug: self.debug,
             ..Default::default()
-        }
+        })
     }
 }
 
@@ -85,226 +76,38 @@ pub fn build_cargo_spec(
     let features = build_features(
         ax_features,
         lib_features,
-        &config.app_features,
+        &config
+            .common
+            .features
+            .iter()
+            .filter(|feat| !FeatureResolver::is_valid_feature(feat))
+            .cloned()
+            .collect::<Vec<_>>(),
         ax_feature_family,
         use_axlibc,
     );
+    let mut cargo_args = build_cargo_args(config, plat_dyn);
+    cargo_args.extend(config.common.cargo_args.iter().cloned());
 
     let cargo = Cargo {
         env: build_env(config, app_dir),
-        target: config.arch.to_target().to_string(),
+        target: config.common.target.clone(),
         package,
         features,
-        log: None,
+        log: config.common.log.clone(),
         extra_config: None,
-        args: build_cargo_args(config, manifest_dir, plat_dyn),
+        args: cargo_args.clone(),
         pre_build_cmds: vec![],
         post_build_cmds: vec![],
         to_bin: true,
     };
 
     let ctx = AppContextSpec {
-        workspace: manifest_dir.to_path_buf(),
         manifest: manifest_dir.to_path_buf(),
-        config_search_dir: None,
-        debug: matches!(config.mode, BuildMode::Debug),
+        debug: !cargo_args.iter().any(|arg| arg == "--release"),
     };
 
     Ok(CargoBuildSpec { cargo, ctx })
-}
-
-pub fn build_qemu_default_args(config: &ArceosConfig, manifest_dir: &Path) -> Vec<String> {
-    let mut args = vec![
-        "-machine".to_string(),
-        config.arch.to_qemu_machine().to_string(),
-        "-cpu".to_string(),
-        qemu_cpu(config.arch).to_string(),
-        "-m".to_string(),
-        config.mem.clone().unwrap_or_else(|| "128M".to_string()),
-        "-smp".to_string(),
-        config.smp.unwrap_or(1).to_string(),
-    ];
-
-    if config.qemu.blk {
-        args.push("-device".to_string());
-        args.push("virtio-blk-pci,drive=disk0".to_string());
-        if let Some(disk_img) = &config.qemu.disk_image {
-            args.push("-drive".to_string());
-            args.push(format!(
-                "id=disk0,if=none,format=raw,file={}",
-                disk_img.display()
-            ));
-        } else {
-            let default_disk = manifest_dir.join("disk.img");
-            if default_disk.exists() {
-                args.push("-drive".to_string());
-                args.push(format!(
-                    "id=disk0,if=none,format=raw,file={}",
-                    default_disk.display()
-                ));
-            }
-        }
-    }
-
-    if config.qemu.net {
-        args.push("-device".to_string());
-        args.push("virtio-net-pci,netdev=net0".to_string());
-        args.push("-netdev".to_string());
-        args.push(match config.qemu.net_dev {
-            NetDev::User => "user,id=net0,hostfwd=tcp::5555-:5555".to_string(),
-            NetDev::Tap => "tap,id=net0,script=no".to_string(),
-            NetDev::Bridge => "bridge,id=net0,br=virbr0".to_string(),
-        });
-    }
-
-    if config.qemu.graphic {
-        args.push("-device".to_string());
-        args.push("virtio-gpu-pci".to_string());
-        args.push("-display".to_string());
-        args.push("gtk".to_string());
-    } else {
-        args.push("-nographic".to_string());
-        args.push("-serial".to_string());
-        args.push("mon:stdio".to_string());
-    }
-
-    if config.qemu.accel {
-        match config.arch {
-            Arch::X86_64 => {
-                args.push("-accel".to_string());
-                args.push("kvm".to_string());
-            }
-            Arch::AArch64 => {
-                args.push("-accel".to_string());
-                args.push("hvf".to_string());
-            }
-            Arch::RiscV64 | Arch::LoongArch64 => {}
-        }
-    }
-
-    args.extend(config.qemu.extra_args.iter().cloned());
-    args
-}
-
-pub fn build_qemu_config(config: &ArceosConfig, manifest_dir: &Path) -> QemuConfig {
-    QemuConfig {
-        args: build_qemu_default_args(config, manifest_dir),
-        uefi: false,
-        to_bin: !matches!(config.arch, Arch::X86_64),
-        success_regex: config.qemu.success_regex.clone(),
-        fail_regex: config.qemu.fail_regex.clone(),
-    }
-}
-
-pub fn write_qemu_config(
-    manifest_dir: &Path,
-    qemu_config_path: &Path,
-    config: &ArceosConfig,
-) -> Result<PathBuf> {
-    let path = qemu_config_path.to_path_buf();
-    let qemu = build_qemu_config(config, manifest_dir);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create {}", parent.display()))?;
-    }
-    fs::write(&path, toml::to_string_pretty(&qemu)?)
-        .with_context(|| format!("Failed to write {}", path.display()))?;
-    Ok(path)
-}
-
-pub fn ensure_qemu_config(
-    manifest_dir: &Path,
-    app_dir: &Path,
-    config: &ArceosConfig,
-    explicit_qemu_config_path: Option<&Path>,
-) -> Result<Option<PathBuf>> {
-    if let Some(path) = explicit_qemu_config_path {
-        if !path.exists() {
-            anyhow::bail!("missing qemu config: {}", path.display());
-        }
-        return Ok(Some(path.to_path_buf()));
-    }
-
-    if !should_generate_qemu_config(config) {
-        return Ok(None);
-    }
-
-    let qemu_config_path = app_dir.join(QEMU_CONFIG_FILE_NAME);
-    write_qemu_config(manifest_dir, &qemu_config_path, config).map(Some)
-}
-
-pub async fn cargo_build(ctx: &mut AppContext, cargo: &Cargo) -> Result<()> {
-    CargoBuilder::build_auto(ctx, cargo)
-        .resolve_artifact_from_json(true)
-        .execute()
-        .await
-}
-
-pub async fn cargo_run_qemu(
-    ctx: &mut AppContext,
-    cargo: &Cargo,
-    qemu_config_path: Option<PathBuf>,
-) -> Result<()> {
-    ctx.cargo_run(
-        cargo,
-        &::ostool::build::CargoRunnerKind::Qemu {
-            qemu_config: qemu_config_path,
-            debug: false,
-            dtb_dump: false,
-        },
-    )
-    .await
-}
-
-pub fn qemu_config_smp(qemu_config_path: &Path) -> Result<Option<usize>> {
-    let contents = fs::read_to_string(qemu_config_path)
-        .with_context(|| format!("failed to read {}", qemu_config_path.display()))?;
-    let parsed: toml::Value = toml::from_str(&contents)
-        .with_context(|| format!("failed to parse {}", qemu_config_path.display()))?;
-    let Some(args) = parsed.get("args").and_then(|value| value.as_array()) else {
-        return Ok(None);
-    };
-
-    for (index, arg) in args.iter().enumerate() {
-        if arg.as_str() != Some("-smp") {
-            continue;
-        }
-
-        let value = args.get(index + 1).with_context(|| {
-            format!(
-                "invalid qemu args in {}: `-smp` is missing value",
-                qemu_config_path.display()
-            )
-        })?;
-        let value = value.as_str().with_context(|| {
-            format!(
-                "invalid qemu args in {}: `-smp` value must be a string",
-                qemu_config_path.display()
-            )
-        })?;
-        let smp = value.parse::<usize>().with_context(|| {
-            format!(
-                "invalid qemu args in {}: `-smp` value `{}` is not a number",
-                qemu_config_path.display(),
-                value
-            )
-        })?;
-        if smp == 0 {
-            anyhow::bail!(
-                "invalid qemu args in {}: `-smp` value must be >= 1",
-                qemu_config_path.display()
-            );
-        }
-        return Ok(Some(smp));
-    }
-
-    Ok(None)
-}
-
-fn should_generate_qemu_config(config: &ArceosConfig) -> bool {
-    config.smp.is_some()
-        || config.mem.is_some()
-        || config.qemu != crate::arceos::config::QemuOptions::default()
 }
 
 fn build_features(
@@ -380,12 +183,15 @@ fn detect_ax_feature_prefix_family(app_dir: &Path, package: &str) -> Result<AxFe
 
 fn build_env(config: &ArceosConfig, app_dir: &Path) -> HashMap<String, String> {
     let mut env = HashMap::new();
-    env.insert("AX_ARCH".to_string(), config.arch.to_string());
+    let arch = config.arch().unwrap_or(Arch::AArch64);
+    env.insert("AX_ARCH".to_string(), arch.to_string());
     env.insert(
         "AX_PLATFORM".to_string(),
         effective_linker_platform_name(config),
     );
-    env.insert("AX_LOG".to_string(), config.log.as_str().to_string());
+    if let Some(log) = &config.common.log {
+        env.insert("AX_LOG".to_string(), format!("{:?}", log).to_lowercase());
+    }
     env.insert("AX_IP".to_string(), DEFAULT_AX_IP.to_string());
     env.insert("AX_GW".to_string(), DEFAULT_AX_GW.to_string());
     env.insert(
@@ -395,58 +201,92 @@ fn build_env(config: &ArceosConfig, app_dir: &Path) -> HashMap<String, String> {
     env
 }
 
-fn build_cargo_args(config: &ArceosConfig, _manifest_dir: &Path, plat_dyn: bool) -> Vec<String> {
+fn build_cargo_args(config: &ArceosConfig, plat_dyn: bool) -> Vec<String> {
+    let arch = config.arch().unwrap_or(Arch::AArch64);
     let mut args = Vec::new();
     args.push("--config".to_string());
     args.push(if plat_dyn {
         format!(
             "target.{}.rustflags=[\"-Clink-arg=-Taxplat.x\"]",
-            config.arch.to_target()
+            arch.to_target()
         )
     } else {
         format!(
             "target.{}.rustflags=[\"-Clink-arg=-Tlinker.x\",\"-Clink-arg=-no-pie\",\"\
              -Clink-arg=-znostart-stop-gc\"]",
-            config.arch.to_target()
+            arch.to_target()
         )
     });
     args
 }
 
-fn linker_platform_name(platform: &str) -> &str {
-    platform.strip_prefix("axplat-").unwrap_or(platform)
-}
-
 fn effective_linker_platform_name(config: &ArceosConfig) -> String {
-    let platform = config.platform.trim();
-    if platform.is_empty() {
-        return PlatformResolver::resolve_default_platform_name(&config.arch);
-    }
-
-    let normalized = linker_platform_name(platform);
-    if arch_matches_platform(config.arch, normalized) {
-        normalized.to_string()
-    } else {
-        PlatformResolver::resolve_default_platform_name(&config.arch)
-    }
+    let arch = config.arch().unwrap_or(Arch::AArch64);
+    PlatformResolver::resolve_default_platform_name(&arch)
 }
 
-fn arch_matches_platform(arch: Arch, platform: &str) -> bool {
-    match arch {
-        Arch::X86_64 => platform.starts_with("x86"),
-        Arch::AArch64 => platform.starts_with("aarch64"),
-        Arch::RiscV64 => platform.starts_with("riscv64"),
-        Arch::LoongArch64 => platform.starts_with("loongarch64"),
+pub fn resolve_external_qemu_config_path(
+    manifest_dir: &Path,
+    config_search_dir: &Path,
+    config: &ArceosConfig,
+    explicit_qemu_config_path: Option<&Path>,
+) -> Result<PathBuf> {
+    if let Some(path) = explicit_qemu_config_path {
+        if !path.exists() {
+            anyhow::bail!("missing qemu config: {}", path.display());
+        }
+        return Ok(path.to_path_buf());
     }
+
+    let arch = config.arch()?;
+    let arch_name = arch.to_qemu_arch();
+    let candidates = [
+        format!("qemu-{}.toml", arch_name),
+        format!(".qemu-{}.toml", arch_name),
+        "qemu.toml".to_string(),
+        ".qemu.toml".to_string(),
+    ];
+
+    for filename in &candidates {
+        let path = config_search_dir.join(filename);
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+
+    for filename in &candidates {
+        let path = manifest_dir.join(filename);
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+
+    anyhow::bail!(
+        "no external qemu config found for target `{}`; expected one of {:?} under {} or {}",
+        config.common.target,
+        candidates,
+        config_search_dir.display(),
+        manifest_dir.display()
+    );
 }
 
-fn qemu_cpu(arch: Arch) -> &'static str {
-    match arch {
-        Arch::X86_64 => "max",
-        Arch::AArch64 => "cortex-a72",
-        Arch::RiscV64 => "rv64",
-        Arch::LoongArch64 => "la464",
-    }
+pub async fn cargo_build(tool: &mut Tool, cargo: &Cargo) -> Result<()> {
+    CargoBuilder::build_auto(tool, cargo)
+        .resolve_artifact_from_json(true)
+        .execute()
+        .await
+}
+
+pub async fn cargo_run_qemu(tool: &mut Tool, cargo: &Cargo, qemu_config_path: PathBuf) -> Result<()> {
+    tool.cargo_run(
+        cargo,
+        &CargoRunnerKind::Qemu {
+            qemu_config: Some(qemu_config_path),
+            debug: false,
+            dtb_dump: false,
+        },
+    )
+    .await
 }
 
 fn package_name(app_dir: &Path) -> Result<String> {
@@ -471,133 +311,42 @@ fn package_name(app_dir: &Path) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::path::PathBuf;
 
     use super::*;
-    use crate::arceos::config::{ArceosConfig, Arch, NetDev};
+    use crate::arceos::config::ArceosConfig;
 
     #[test]
-    fn qemu_default_args_include_arch_memory_and_smp_defaults() {
-        let mut config = ArceosConfig {
-            arch: Arch::AArch64,
-            smp: Some(4),
-            mem: Some("512M".to_string()),
-            ..Default::default()
-        };
-        config.qemu.extra_args = vec!["-d".to_string(), "guest_errors".to_string()];
-
-        let args = build_qemu_default_args(&config, Path::new("/workspace"));
-
-        assert_eq!(
-            args,
-            vec![
-                "-machine",
-                "virt",
-                "-cpu",
-                "cortex-a72",
-                "-m",
-                "512M",
-                "-smp",
-                "4",
-                "-nographic",
-                "-serial",
-                "mon:stdio",
-                "-d",
-                "guest_errors",
-            ]
-        );
-    }
-
-    #[test]
-    fn qemu_default_args_use_default_disk_image_when_present() {
+    fn resolve_external_qemu_config_path_prefers_search_dir() {
         let dir = tempfile::tempdir().unwrap();
         let manifest_dir = dir.path();
-        let default_disk = manifest_dir.join("disk.img");
-        fs::write(&default_disk, b"disk").unwrap();
+        let search_dir = manifest_dir.join("search");
+        fs::create_dir_all(&search_dir).unwrap();
+        let config_path = search_dir.join("qemu-aarch64.toml");
+        fs::write(&config_path, "args = []\nuefi = false\nto_bin = true\n").unwrap();
 
-        let mut config = ArceosConfig::default();
-        config.qemu.blk = true;
-
-        let args = build_qemu_default_args(&config, manifest_dir);
-
-        assert!(args.iter().any(|arg| arg == "virtio-blk-pci,drive=disk0"));
-        assert!(args.iter().any(|arg| {
-            arg == &format!(
-                "id=disk0,if=none,format=raw,file={}",
-                default_disk.display()
-            )
-        }));
+        let config = ArceosConfig::default();
+        let resolved =
+            resolve_external_qemu_config_path(manifest_dir, &search_dir, &config, None).unwrap();
+        assert_eq!(resolved, config_path);
     }
 
     #[test]
-    fn qemu_default_args_include_network_graphics_and_accel() {
-        let mut config = ArceosConfig {
-            arch: Arch::X86_64,
-            ..Default::default()
-        };
-        config.qemu.net = true;
-        config.qemu.net_dev = NetDev::Bridge;
-        config.qemu.graphic = true;
-        config.qemu.accel = true;
-
-        let args = build_qemu_default_args(&config, Path::new("/workspace"));
-
-        assert!(args.windows(2).any(|window| window == ["-accel", "kvm"]));
-        assert!(args.windows(2).any(|window| window == ["-display", "gtk"]));
-        assert!(
-            args.windows(2)
-                .any(|window| window == ["-netdev", "bridge,id=net0,br=virbr0"])
-        );
-    }
-
-    #[test]
-    fn ensure_qemu_config_skips_generation_for_default_config() {
+    fn resolve_external_qemu_config_path_requires_existing_file() {
         let dir = tempfile::tempdir().unwrap();
         let manifest_dir = dir.path();
-        let app_dir = manifest_dir.join("app");
-        fs::create_dir_all(&app_dir).unwrap();
+        let search_dir = manifest_dir.join("search");
+        fs::create_dir_all(&search_dir).unwrap();
+        let explicit = PathBuf::from("/tmp/not-existing-qemu.toml");
 
-        let path =
-            ensure_qemu_config(manifest_dir, &app_dir, &ArceosConfig::default(), None).unwrap();
-
-        assert!(path.is_none());
-        assert!(!app_dir.join(QEMU_CONFIG_FILE_NAME).exists());
-    }
-
-    #[test]
-    fn ensure_qemu_config_generates_file_when_qemu_overrides_are_present() {
-        let dir = tempfile::tempdir().unwrap();
-        let manifest_dir = dir.path();
-        let app_dir = manifest_dir.join("app");
-        fs::create_dir_all(&app_dir).unwrap();
-
-        let config = ArceosConfig {
-            smp: Some(2),
-            ..Default::default()
-        };
-
-        let path = ensure_qemu_config(manifest_dir, &app_dir, &config, None)
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(path, app_dir.join(QEMU_CONFIG_FILE_NAME));
-        assert!(path.exists());
-    }
-
-    #[test]
-    fn qemu_config_smp_reads_smp_from_qemu_args() {
-        let dir = tempfile::tempdir().unwrap();
-        let qemu_config_path = dir.path().join("qemu.toml");
-        fs::write(
-            &qemu_config_path,
-            r#"
-args = ["-machine", "virt", "-smp", "8", "-nographic"]
-"#,
+        let err = resolve_external_qemu_config_path(
+            manifest_dir,
+            &search_dir,
+            &ArceosConfig::default(),
+            Some(explicit.as_path()),
         )
-        .unwrap();
+        .unwrap_err();
 
-        let smp = qemu_config_smp(&qemu_config_path).unwrap();
-
-        assert_eq!(smp, Some(8));
+        assert!(err.to_string().contains("missing qemu config"));
     }
 }

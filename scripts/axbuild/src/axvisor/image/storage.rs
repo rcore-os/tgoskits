@@ -23,6 +23,7 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
+use tracing::{info, warn};
 
 use super::{
     config::ImageConfig,
@@ -185,6 +186,7 @@ impl Storage {
 
         let registry_filepath = registry_filepath(&path);
 
+        info!("waiting for network: syncing image registry from {registry}");
         let image_registry = ImageRegistry::fetch_with_includes(&registry).await?;
         let toml_content = toml::to_string_pretty(&image_registry)
             .map_err(|e| anyhow!("Failed to serialize registry: {e}"))?;
@@ -225,6 +227,9 @@ impl Storage {
             Err(e) => {
                 println!("Error while loading local storage: {e}");
                 println!("Auto syncing from registry {registry}...");
+                info!(
+                    "waiting for network: local image storage unavailable, syncing from {registry}"
+                );
                 let storage = Self::new_from_registry(registry, path).await?;
                 return Ok(storage);
             }
@@ -252,6 +257,10 @@ impl Storage {
                 .unwrap_or_else(|| "never".to_string()),
             auto_sync_threshold
         );
+        info!(
+            "waiting for network: auto sync image registry from {registry} (threshold {}s)",
+            auto_sync_threshold
+        );
 
         // backup registry file so we can restore on sync failure.
         let registry_path = registry_filepath(&storage.path);
@@ -261,7 +270,7 @@ impl Storage {
         match Self::new_from_registry(registry, path).await {
             Ok(new_storage) => Ok(new_storage),
             Err(e) => {
-                println!("Auto sync failed: {e}");
+                warn!("Auto sync failed: {e}");
                 println!("Restoring previous registry and using existing storage.");
 
                 fs::write(&registry_path, registry_backup)
@@ -367,6 +376,10 @@ impl Storage {
         }
 
         println!("Downloading: {}", image.url);
+        info!(
+            "waiting for network: downloading image archive from {}",
+            image.url
+        );
 
         download_to_path(&image.url, &output_path, Some("Downloading")).await?;
 

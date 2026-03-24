@@ -22,6 +22,7 @@ use anyhow::{Result, anyhow};
 use reqwest::Client;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncWriteExt, BufWriter};
+use tracing::info;
 
 /// HTTP client with 30s connect timeout and 30min total timeout.
 fn http_client() -> Result<Client> {
@@ -38,6 +39,7 @@ fn http_client() -> Result<Client> {
 ///
 /// * `url` - URL to download
 pub async fn download_to_string(url: &str) -> Result<String> {
+    info!("waiting for network: fetching text from {url}");
     let client = http_client()?;
     let response = client.get(url).send().await?;
     if !response.status().is_success() {
@@ -55,6 +57,11 @@ pub async fn download_to_string(url: &str) -> Result<String> {
 /// * `path` - Local path to write the file
 /// * `progress_label` - If `Some`, prints download progress (percent/bytes) with this label
 pub async fn download_to_path(url: &str, path: &Path, progress_label: Option<&str>) -> Result<()> {
+    info!(
+        "waiting for network: downloading {} -> {}",
+        url,
+        path.display()
+    );
     let client = http_client()?;
     let mut response = client.get(url).send().await?;
     if !response.status().is_success() {

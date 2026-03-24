@@ -14,12 +14,12 @@
 
 use std::path::{Path, PathBuf};
 
-use ostool::ctx::{AppContext, PathConfig};
+use ostool::{Tool, ToolConfig};
 
 use super::BuildArgs;
 
 pub struct Context {
-    pub ctx: AppContext,
+    pub tool: Tool,
     repo_root: PathBuf,
     pub build_config_path: Option<std::path::PathBuf>,
     pub vmconfigs: Vec<String>,
@@ -28,17 +28,10 @@ pub struct Context {
 impl Context {
     pub fn new(repo_root: impl AsRef<Path>) -> Self {
         let repo_root = repo_root.as_ref().to_path_buf();
-        let ctx = AppContext {
-            paths: PathConfig {
-                workspace: repo_root.clone(),
-                manifest: repo_root.clone(),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let tool = init_tool(&repo_root, None, None);
 
         Context {
-            ctx,
+            tool,
             repo_root,
             build_config_path: None,
             vmconfigs: vec![],
@@ -46,11 +39,27 @@ impl Context {
     }
 
     pub fn apply_build_args(&mut self, args: &BuildArgs) {
-        self.ctx.paths.config.build_dir = args.build_dir.clone();
-        self.ctx.paths.config.bin_dir = args.bin_dir.clone();
+        self.tool = init_tool(&self.repo_root, args.build_dir.clone(), args.bin_dir.clone());
     }
 
     pub fn repo_root(&self) -> &Path {
         &self.repo_root
     }
+}
+
+fn init_tool(repo_root: &Path, build_dir: Option<PathBuf>, bin_dir: Option<PathBuf>) -> Tool {
+    Tool::new(ToolConfig {
+        manifest: Some(repo_root.to_path_buf()),
+        build_dir: build_dir.clone(),
+        bin_dir: bin_dir.clone(),
+        ..Default::default()
+    })
+    .or_else(|_| {
+        Tool::new(ToolConfig {
+            build_dir,
+            bin_dir,
+            ..Default::default()
+        })
+    })
+    .expect("failed to initialize ostool Tool")
 }

@@ -16,7 +16,7 @@ use std::str::FromStr;
 
 use anyhow::{Context, Result, bail};
 use axbuild::{
-    Arch, BuildMode, FeatureResolver, PlatformResolver,
+    Arch, FeatureResolver,
     arceos::{ArceosConfigOverride, RunScope},
 };
 use clap::Args;
@@ -63,22 +63,21 @@ impl BuildArgs {
         if matches!(self.smp, Some(0)) {
             bail!("invalid SMP value `0`: SMP must be >= 1");
         }
+        let mut features = self
+            .features
+            .as_deref()
+            .map(FeatureResolver::parse_features)
+            .unwrap_or_default();
+        if !features.iter().any(|feature| feature == "qemu") {
+            features.push("qemu".to_string());
+        }
 
         Ok(ArceosConfigOverride {
             arch: Some(arch),
-            platform: self
-                .platform
-                .or_else(|| Some(PlatformResolver::resolve_default_platform_name(&arch))),
-            mode: self.release.then_some(BuildMode::Release),
             plat_dyn: Some(self.plat_dyn),
+            cargo_args: self.release.then_some(vec!["--release".to_string()]),
             smp: self.smp,
-            features: self
-                .features
-                .as_deref()
-                .map(FeatureResolver::parse_features)
-                .map(Some)
-                .unwrap_or(None),
-            app_features: Some(vec!["qemu".to_string()]),
+            features: Some(features),
             ..Default::default()
         })
     }

@@ -21,6 +21,7 @@ use tracing::{error, info, warn};
 mod arceos;
 mod axvisor;
 mod logging;
+mod qemu_override;
 mod starry;
 
 const STD_CRATES_CSV: &str = "scripts/test/std_crates.csv";

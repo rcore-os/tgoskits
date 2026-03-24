@@ -16,12 +16,12 @@ use std::{
     collections::HashSet,
     fs,
     path::{Path, PathBuf},
-    str::FromStr,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
 use cargo_metadata::{MetadataCommand, TargetKind};
+pub use ostool::build::config::LogLevel;
 use serde::{Deserialize, Serialize};
 
 pub const CONFIG_FILE_NAME: &str = ".arceos.toml";
@@ -31,106 +31,95 @@ pub const OSTOOL_EXTRA_CONFIG_FILE_NAME: &str = "axbuild-ostool.toml";
 pub const AVAILABLE_BOARDS: &[&str] = &["qemu-x86_64", "qemu-aarch64", "qemu-riscv64"];
 
 /// ArceOS build configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ArceosConfig {
-    /// Target architecture
-    pub arch: Arch,
-
-    /// Platform name
-    pub platform: String,
-
-    /// Build mode
-    pub mode: BuildMode,
+    #[serde(flatten)]
+    pub common: CommonBuildConfig,
 
     /// Whether to enable dynamic platform (plat-dyn) mode.
-    /// If None, auto-detect based on architecture/platform.
+    /// If None, auto-detect based on architecture.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plat_dyn: Option<bool>,
-
-    /// Log level
-    pub log: LogLevel,
-
-    /// Number of CPU cores
-    pub smp: Option<usize>,
-
-    /// Memory size (e.g., "128M", "1G")
-    pub mem: Option<String>,
-
-    /// ArceOS module features
-    pub features: Vec<String>,
-
-    /// Application-specific features
-    pub app_features: Vec<String>,
-
-    /// QEMU options
-    pub qemu: QemuOptions,
 }
 
-impl ArceosConfig {}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CommonBuildConfig {
+    /// Cargo target triple.
+    pub target: String,
+    /// Features to enable.
+    #[serde(default)]
+    pub features: Vec<String>,
+    /// Optional log level feature.
+    #[serde(default)]
+    pub log: Option<LogLevel>,
+    /// Additional cargo arguments.
+    #[serde(default)]
+    pub cargo_args: Vec<String>,
+    /// Number of CPU cores.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub smp: Option<usize>,
+}
 
-impl Default for ArceosConfig {
+impl Default for CommonBuildConfig {
     fn default() -> Self {
         Self {
-            arch: Arch::AArch64,
-            platform: "aarch64-qemu-virt".to_string(),
-            mode: BuildMode::Debug,
-            plat_dyn: None,
-            log: LogLevel::Warn,
-            smp: None,
-            mem: None,
+            target: Arch::AArch64.to_target().to_string(),
             features: vec![],
-            app_features: vec![],
-            qemu: QemuOptions::default(),
+            log: Some(LogLevel::Warn),
+            cargo_args: vec![],
+            smp: None,
         }
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+impl ArceosConfig {
+    pub fn arch(&self) -> Result<Arch> {
+        Arch::from_target_triple(&self.common.target)
+    }
+}
+
+impl Default for ArceosConfig {
+    fn default() -> Self {
+        Self {
+            common: CommonBuildConfig::default(),
+            plat_dyn: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ArceosConfigOverride {
+    pub target: Option<String>,
     pub arch: Option<Arch>,
-    pub platform: Option<String>,
-    pub mode: Option<BuildMode>,
     pub plat_dyn: Option<bool>,
     pub log: Option<LogLevel>,
+    pub cargo_args: Option<Vec<String>>,
     pub smp: Option<usize>,
-    pub mem: Option<String>,
     pub features: Option<Vec<String>>,
-    pub app_features: Option<Vec<String>>,
-    pub qemu: Option<QemuOptions>,
 }
 
 impl ArceosConfigOverride {
     pub fn apply_to(self, config: &mut ArceosConfig) {
+        if let Some(target) = self.target {
+            config.common.target = target;
+        }
         if let Some(arch) = self.arch {
-            config.arch = arch;
-        }
-        if let Some(platform) = self.platform {
-            config.platform = platform;
-        }
-
-        if let Some(mode) = self.mode {
-            config.mode = mode;
+            config.common.target = arch.to_target().to_string();
         }
         if let Some(plat_dyn) = self.plat_dyn {
             config.plat_dyn = Some(plat_dyn);
         }
         if let Some(log) = self.log {
-            config.log = log;
+            config.common.log = Some(log);
+        }
+        if let Some(cargo_args) = self.cargo_args {
+            config.common.cargo_args = cargo_args;
         }
         if let Some(smp) = self.smp {
-            config.smp = Some(smp);
-        }
-        if let Some(mem) = self.mem {
-            config.mem = Some(mem);
+            config.common.smp = Some(smp);
         }
         if let Some(features) = self.features {
-            config.features = features;
-        }
-        if let Some(app_features) = self.app_features {
-            config.app_features = app_features;
-        }
-        if let Some(qemu) = self.qemu {
-            config.qemu = qemu;
+            config.common.features = features;
         }
     }
 }
@@ -154,6 +143,7 @@ pub fn load_config(manifest_dir: &Path, overrides: ArceosConfigOverride) -> Resu
     let mut config = if path.exists() {
         let contents = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
+        reject_legacy_arceos_fields(&contents, &path)?;
         toml::from_str(&contents).with_context(|| format!("Failed to parse {}", path.display()))?
     } else {
         ArceosConfig::default()
@@ -182,9 +172,41 @@ pub fn load_board_config(manifest_dir: &Path, board_name: &str) -> Result<Arceos
     let path = resolve_board_config_path(manifest_dir, board_name)?;
     let contents =
         fs::read_to_string(&path).with_context(|| format!("Failed to read {}", path.display()))?;
+    reject_legacy_arceos_fields(&contents, &path)?;
     let config: ArceosConfig =
         toml::from_str(&contents).with_context(|| format!("Failed to parse {}", path.display()))?;
     Ok(config)
+}
+
+fn reject_legacy_arceos_fields(contents: &str, path: &Path) -> Result<()> {
+    let value: toml::Value = toml::from_str(contents)
+        .with_context(|| format!("Failed to parse {}", path.display()))?;
+    let Some(table) = value.as_table() else {
+        return Ok(());
+    };
+    let legacy_fields = [
+        "arch",
+        "platform",
+        "mode",
+        "mem",
+        "qemu",
+        "app_features",
+    ];
+    let found = legacy_fields
+        .iter()
+        .copied()
+        .filter(|field| table.contains_key(*field))
+        .collect::<Vec<_>>();
+    if !found.is_empty() {
+        bail!(
+            "legacy ArceOS config fields in {} are no longer supported: {}. \
+             Migrate to common fields `target/features/log/cargo_args/smp` + `plat_dyn`, and put \
+             runtime QEMU options in external qemu*.toml files.",
+            path.display(),
+            found.join(", ")
+        );
+    }
+    Ok(())
 }
 
 pub fn resolve_package_app_dir(manifest_dir: &Path, package_name: &str) -> Result<PathBuf> {
@@ -277,32 +299,6 @@ fn resolve_package_app_dir_from_manifest(
     Ok(package_dir.to_path_buf())
 }
 
-pub fn parse_qemu_options(
-    blk: bool,
-    disk_img: Option<String>,
-    net: bool,
-    net_dev: Option<String>,
-    graphic: bool,
-    accel: bool,
-    success_regex: Vec<String>,
-    fail_regex: Vec<String>,
-) -> QemuOptions {
-    QemuOptions {
-        blk,
-        disk_image: disk_img.map(PathBuf::from),
-        net,
-        net_dev: net_dev
-            .as_deref()
-            .and_then(|dev| NetDev::from_str(dev).ok())
-            .unwrap_or(NetDev::User),
-        graphic,
-        accel,
-        extra_args: vec![],
-        success_regex,
-        fail_regex,
-    }
-}
-
 fn resolve_board_config_path(manifest_dir: &Path, board_name: &str) -> Result<PathBuf> {
     let file_name = if board_name.ends_with(".toml") {
         board_name.to_string()
@@ -384,6 +380,16 @@ pub enum Arch {
 }
 
 impl Arch {
+    pub fn from_target_triple(target: &str) -> anyhow::Result<Self> {
+        match target {
+            "x86_64-unknown-none" => Ok(Arch::X86_64),
+            "aarch64-unknown-none-softfloat" => Ok(Arch::AArch64),
+            "riscv64gc-unknown-none-elf" => Ok(Arch::RiscV64),
+            "loongarch64-unknown-none-softfloat" => Ok(Arch::LoongArch64),
+            other => anyhow::bail!("Unknown target triple: {}", other),
+        }
+    }
+
     /// Convert to target triple
     pub fn to_target(self) -> &'static str {
         match self {
@@ -404,15 +410,6 @@ impl Arch {
         }
     }
 
-    /// Get the default machine type for QEMU
-    pub fn to_qemu_machine(self) -> &'static str {
-        match self {
-            Arch::X86_64 => "q35",
-            Arch::AArch64 => "virt",
-            Arch::RiscV64 => "virt",
-            Arch::LoongArch64 => "virt",
-        }
-    }
 }
 
 impl std::fmt::Display for Arch {
@@ -436,169 +433,6 @@ impl std::str::FromStr for Arch {
             "riscv64" | "riscv" => Ok(Arch::RiscV64),
             "loongarch64" | "loongarch" => Ok(Arch::LoongArch64),
             _ => anyhow::bail!("Unknown architecture: {}", s),
-        }
-    }
-}
-
-/// Build mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum BuildMode {
-    /// Release build with optimizations
-    Release,
-
-    /// Debug build without optimizations
-    #[default]
-    Debug,
-}
-
-impl std::fmt::Display for BuildMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            BuildMode::Release => write!(f, "release"),
-            BuildMode::Debug => write!(f, "debug"),
-        }
-    }
-}
-
-impl BuildMode {
-    pub fn to_string(self) -> &'static str {
-        match self {
-            BuildMode::Release => "release",
-            BuildMode::Debug => "debug",
-        }
-    }
-}
-
-/// Log level
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum LogLevel {
-    /// No logging
-    Off,
-    /// Error level only
-    Error,
-    /// Warning and above
-    #[default]
-    Warn,
-    /// Info and above
-    Info,
-    /// Debug and above
-    Debug,
-    /// All messages
-    Trace,
-}
-
-impl LogLevel {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            LogLevel::Off => "off",
-            LogLevel::Error => "error",
-            LogLevel::Warn => "warn",
-            LogLevel::Info => "info",
-            LogLevel::Debug => "debug",
-            LogLevel::Trace => "trace",
-        }
-    }
-}
-
-impl std::fmt::Display for LogLevel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LogLevel::Off => write!(f, "off"),
-            LogLevel::Error => write!(f, "error"),
-            LogLevel::Warn => write!(f, "warn"),
-            LogLevel::Info => write!(f, "info"),
-            LogLevel::Debug => write!(f, "debug"),
-            LogLevel::Trace => write!(f, "trace"),
-        }
-    }
-}
-
-/// QEMU options
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct QemuOptions {
-    /// Enable block device
-    pub blk: bool,
-
-    /// Disk image path
-    #[serde(alias = "disk_img")]
-    pub disk_image: Option<PathBuf>,
-
-    /// Enable network
-    pub net: bool,
-
-    /// Network device type
-    #[serde(alias = "net_dev")]
-    pub net_dev: NetDev,
-
-    /// Enable graphic output
-    pub graphic: bool,
-
-    /// Enable KVM/HVF hardware acceleration
-    pub accel: bool,
-
-    /// Extra QEMU arguments
-    pub extra_args: Vec<String>,
-
-    /// Regex patterns that indicate a successful QEMU run
-    pub success_regex: Vec<String>,
-
-    /// Regex patterns that indicate a failed QEMU run
-    pub fail_regex: Vec<String>,
-}
-
-impl Default for QemuOptions {
-    fn default() -> Self {
-        Self {
-            blk: false,
-            disk_image: None,
-            net: false,
-            net_dev: NetDev::User,
-            graphic: false,
-            accel: false,
-            extra_args: vec![],
-            success_regex: vec![],
-            fail_regex: vec![],
-        }
-    }
-}
-
-/// Network device type
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum NetDev {
-    /// User-mode networking
-    #[default]
-    User,
-
-    /// TAP device
-    Tap,
-
-    /// Bridge device
-    Bridge,
-}
-
-impl std::str::FromStr for NetDev {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> anyhow::Result<Self> {
-        match s.to_lowercase().as_str() {
-            "user" => Ok(NetDev::User),
-            "tap" => Ok(NetDev::Tap),
-            "bridge" => Ok(NetDev::Bridge),
-            _ => anyhow::bail!("Unknown network device: {}", s),
-        }
-    }
-}
-
-impl std::fmt::Display for NetDev {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            NetDev::User => write!(f, "user"),
-            NetDev::Tap => write!(f, "tap"),
-            NetDev::Bridge => write!(f, "bridge"),
         }
     }
 }

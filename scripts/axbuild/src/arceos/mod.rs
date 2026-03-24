@@ -24,9 +24,9 @@ use std::path::PathBuf;
 
 pub use build::{BuildOutput, Builder, PreparedArtifacts, prepare_artifacts};
 pub use config::{
-    AVAILABLE_BOARDS, ArceosConfig, ArceosConfigOverride, Arch, BuildMode, LogLevel, NetDev,
-    QEMU_CONFIG_FILE_NAME, QemuOptions, apply_defconfig, config_path, load_board_config,
-    load_config, parse_qemu_options, resolve_package_app_dir, save_config,
+    AVAILABLE_BOARDS, ArceosConfig, ArceosConfigOverride, Arch, CommonBuildConfig, LogLevel,
+    QEMU_CONFIG_FILE_NAME, apply_defconfig, config_path, load_board_config, load_config,
+    resolve_package_app_dir, save_config,
 };
 pub use context::RunScope;
 pub use features::FeatureResolver;

@@ -27,7 +27,7 @@ pub(crate) mod process;
 
 pub use arceos::{
     build::{BuildOutput, Builder, PreparedArtifacts, prepare_artifacts},
-    config::{ArceosConfigOverride, Arch, BuildMode, QEMU_CONFIG_FILE_NAME, QemuOptions},
+    config::{ArceosConfigOverride, Arch, CommonBuildConfig, LogLevel, QEMU_CONFIG_FILE_NAME},
     features::FeatureResolver,
     platform::PlatformResolver,
     qemu::QemuRunner,

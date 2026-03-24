@@ -54,7 +54,7 @@ impl Context {
             dtb_dump: false,
         };
 
-        self.ctx.cargo_run(&build_config, &kind).await?;
+        self.tool.cargo_run(&build_config, &kind).await?;
 
         Ok(())
     }
@@ -70,7 +70,7 @@ impl Context {
             uboot_config: Some(config_path),
         };
 
-        self.ctx.cargo_run(&build_config, &kind).await?;
+        self.tool.cargo_run(&build_config, &kind).await?;
 
         Ok(())
     }

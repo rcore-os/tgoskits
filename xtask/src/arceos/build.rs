@@ -16,7 +16,7 @@ use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use axbuild::{
-    Arch, BuildMode, FeatureResolver,
+    Arch, FeatureResolver,
     arceos::{ArceosConfigOverride, AxBuild, RunScope},
 };
 use clap::Args;
@@ -77,9 +77,8 @@ impl BuildArgs {
 
         Ok(ArceosConfigOverride {
             arch: parsed_arch,
-            platform: self.platform.clone(),
-            mode: self.release.then_some(BuildMode::Release),
             plat_dyn: Some(effective_plat_dyn),
+            cargo_args: self.release.then_some(vec!["--release".to_string()]),
             smp: self.smp,
             features: self
                 .features

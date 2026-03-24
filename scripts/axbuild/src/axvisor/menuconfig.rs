@@ -23,7 +23,7 @@ impl Context {
     pub async fn run_menuconfig(&mut self) -> anyhow::Result<()> {
         println!("Configure runtime parameters");
 
-        let config_path = self.ctx.paths.workspace.join(".build.toml");
+        let config_path = self.repo_root().join(".build.toml");
         if config_path.exists() {
             println!(
                 "\nCurrent .build.toml configuration file: {}",

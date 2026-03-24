@@ -12,12 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::path::PathBuf;
+use std::{
+    env::current_dir,
+    path::PathBuf,
+};
 
-use anyhow::Result;
-use axbuild::arceos::{ArceosConfigOverride, RunScope, parse_qemu_options};
+use anyhow::{Context, Result};
+use axbuild::{
+    Arch,
+    arceos::{ArceosConfigOverride, RunScope},
+};
 use clap::Args;
 use tracing::info;
+
+use crate::qemu_override::{
+    RuntimeQemuOverride, resolve_external_qemu_config_path, resolve_qemu_search_dir,
+    write_qemu_override_file,
+};
 
 use super::{
     build::{BuildArgs, STARRY_TEST_PACKAGE},
@@ -59,9 +70,9 @@ pub struct RunArgs {
 }
 
 impl RunArgs {
-    pub fn into_config_override(self) -> Result<ArceosConfigOverride> {
+    pub async fn into_parts(self) -> Result<(ArceosConfigOverride, RuntimeQemuOverride, Arch)> {
         let arch = parse_starry_arch(self.build.arch.as_deref())?;
-        let mut overrides = self.build.into_config_override()?;
+        let overrides = self.build.into_config_override()?;
 
         // Handle disk image
         let disk_img = if self.blk {
@@ -77,24 +88,24 @@ impl RunArgs {
                     "disk image missing at {}, preparing rootfs...",
                     disk_img_path.display()
                 );
-                ensure_rootfs_in_target_dir(arch, &disk_img_path)?;
+                ensure_rootfs_in_target_dir(arch, &disk_img_path).await?;
             }
             Some(disk_img_path.display().to_string())
         } else {
             None
         };
-
-        overrides.qemu = Some(parse_qemu_options(
-            self.blk,
-            disk_img,
-            self.net,
-            self.net_dev,
-            self.graphic,
-            self.accel,
-            vec![],
-            vec![],
-        ));
-        Ok(overrides)
+        Ok((
+            overrides,
+            RuntimeQemuOverride {
+                blk: self.blk,
+                disk_img,
+                net: self.net,
+                net_dev: self.net_dev,
+                graphic: self.graphic,
+                accel: self.accel,
+            },
+            arch,
+        ))
     }
 }
 
@@ -115,19 +126,33 @@ pub async fn run_with_qemu_regex(
     } else {
         RunScope::StarryOsRoot
     };
-    let mut overrides = args.into_config_override()?;
-    if let Some(qemu) = overrides.qemu.as_mut() {
-        qemu.success_regex = success_regex;
-        qemu.fail_regex = fail_regex;
+    let (overrides, runtime, arch) = args.into_parts().await?;
+    let manifest_dir = current_dir().context("failed to get current directory")?;
+    let search_dir = resolve_qemu_search_dir(&manifest_dir, &package, run_scope)?;
+    let base_qemu = resolve_external_qemu_config_path(&manifest_dir, &search_dir, arch)?;
+    let qemu_config_path = write_qemu_override_file(
+        &base_qemu,
+        &runtime,
+        &success_regex,
+        &fail_regex,
+        arch,
+    )?;
+    if as_test {
+        info!(
+            "preparing to wait for QEMU test output; success_regex={:?}, fail_regex={:?}",
+            success_regex, fail_regex
+        );
+    } else {
+        info!("preparing to wait for interactive QEMU run");
     }
     let axbuild =
         axbuild::arceos::AxBuild::from_overrides(overrides, Some(package), None, run_scope)?;
     if as_test {
         info!("==> running test in QEMU");
-        axbuild.test().await
+        axbuild.test_with_config_path(qemu_config_path).await
     } else {
         info!("==> running in QEMU");
-        axbuild.run_qemu().await
+        axbuild.run_qemu_with_config_path(qemu_config_path).await
     }
 }
 

@@ -65,13 +65,13 @@ impl StarryCommand {
         match self {
             StarryCommand::Build { args } => run_build(args).await,
             StarryCommand::Run { args } => run_with_arg(args).await,
-            StarryCommand::Rootfs { arch } => run_rootfs_command(arch),
-            StarryCommand::Img { arch } => run_img_command(arch),
+            StarryCommand::Rootfs { arch } => run_rootfs_command(arch).await,
+            StarryCommand::Img { arch } => run_img_command(arch).await,
         }
     }
 }
 
-fn run_rootfs_command(arch: Option<String>) -> Result<()> {
+async fn run_rootfs_command(arch: Option<String>) -> Result<()> {
     let arch = parse_starry_arch(arch.as_deref())?;
     let disk_img = starry_default_disk_image(arch)?;
     info!(
@@ -79,14 +79,14 @@ fn run_rootfs_command(arch: Option<String>) -> Result<()> {
         arch,
         disk_img.display()
     );
-    ensure_rootfs_in_target_dir(arch, &disk_img)?;
+    ensure_rootfs_in_target_dir(arch, &disk_img).await?;
     info!("rootfs ready at {}", disk_img.display());
     Ok(())
 }
 
-fn run_img_command(arch: Option<String>) -> Result<()> {
+async fn run_img_command(arch: Option<String>) -> Result<()> {
     warn!("the `img` command is deprecated; please use `rootfs` instead");
-    run_rootfs_command(arch)
+    run_rootfs_command(arch).await
 }
 
 pub async fn run_test(target: &str) -> Result<()> {

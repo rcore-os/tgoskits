@@ -15,7 +15,7 @@
 use anyhow::Result;
 
 use crate::arceos::{
-    ArceosConfig, PreparedArtifacts,
+    PreparedArtifacts,
     build::{prepare_artifacts, resolve_effective_config},
     context::AxContext,
     ostool as ostool_bridge,
@@ -31,16 +31,6 @@ impl QemuRunner {
         Self { ctx }
     }
 
-    /// Build QEMU command arguments
-    pub fn build_args(&self) -> Vec<String> {
-        ostool_bridge::build_qemu_default_args(&self.ctx.config, self.ctx.manifest_dir())
-    }
-
-    /// Get QEMU binary name
-    pub fn qemu_binary(&self) -> String {
-        format!("qemu-system-{}", self.ctx.config.arch.to_qemu_arch())
-    }
-
     /// Run QEMU through ostool's cargo_run flow.
     pub async fn run(&self) -> Result<()> {
         let effective_config = resolve_effective_config(
@@ -53,29 +43,17 @@ impl QemuRunner {
             self.ctx.app_dir(),
             &effective_config,
         )?;
-        self.run_prepared(prepared, &effective_config).await
+        self.run_prepared(prepared).await
     }
 
-    async fn run_prepared(
-        &self,
-        prepared: PreparedArtifacts,
-        effective_config: &ArceosConfig,
-    ) -> Result<()> {
-        let mut ctx = prepared.cargo_spec.ctx.into_app_context();
-        ctx.config_search_dir = Some(self.ctx.config_search_dir().to_path_buf());
-        let qemu_config_path = ostool_bridge::ensure_qemu_config(
+    async fn run_prepared(&self, prepared: PreparedArtifacts) -> Result<()> {
+        let mut tool = prepared.cargo_spec.ctx.into_tool()?;
+        let qemu_config_path = ostool_bridge::resolve_external_qemu_config_path(
             self.ctx.manifest_dir(),
-            self.ctx.app_dir(),
-            effective_config,
+            self.ctx.config_search_dir(),
+            &self.ctx.config,
             self.ctx.qemu_config_path.as_deref(),
         )?;
-        ostool_bridge::cargo_run_qemu(&mut ctx, &prepared.cargo_spec.cargo, qemu_config_path).await
-    }
-
-    /// Get QEMU command as a string (for debugging)
-    pub fn command_string(&self) -> String {
-        let qemu = self.qemu_binary();
-        let args = self.build_args();
-        format!("{} {}", qemu, args.join(" "))
+        ostool_bridge::cargo_run_qemu(&mut tool, &prepared.cargo_spec.cargo, qemu_config_path).await
     }
 }
