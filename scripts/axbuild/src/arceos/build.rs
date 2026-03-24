@@ -18,7 +18,7 @@ pub struct BuildConfig {
     /// Cargo features to enable.
     pub features: Vec<String>,
     /// Log level feature to automatically enable.
-    pub log: Option<LogLevel>,
+    pub log: LogLevel,
     /// Whether to use dynamic platform.
     pub plat_dyn: bool,
 }
@@ -36,6 +36,11 @@ impl BuildConfig {
 
         self.features.sort();
         self.features.dedup();
+    }
+
+    fn perper_env(&mut self) {
+        self.env
+            .insert("AX_LOG".into(), format!("{:?}", self.log).to_lowercase());
     }
 
     fn build_cargo_args(&self) -> Vec<String> {
@@ -59,12 +64,16 @@ impl BuildConfig {
 
 impl Default for BuildConfig {
     fn default() -> Self {
+        let mut env = HashMap::new();
+        env.insert("AX_IP".to_string(), "10.0.2.15".to_string());
+        env.insert("AX_GW".to_string(), "10.0.2.2".to_string());
+
         Self {
-            env: HashMap::new(),
+            env,
             target: "aarch64-unknown-none-softfloat".to_string(),
             package: "arceos-helloworld".to_string(),
             plat_dyn: true,
-            log: None,
+            log: LogLevel::Info,
             features: vec!["axstd".to_string()],
         }
     }
@@ -80,7 +89,7 @@ impl IBuildConfig for BuildConfig {
             target: self.target,
             package: self.package,
             features: self.features,
-            log: self.log,
+            log: Some(self.log),
             extra_config: None,
             args,
             pre_build_cmds: vec![],
