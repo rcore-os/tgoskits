@@ -1,6 +1,12 @@
 #![cfg_attr(not(any(windows, unix)), no_std)]
 #![cfg(any(windows, unix))]
 
+#[macro_use]
+extern crate log;
+
+#[macro_use]
+extern crate anyhow;
+
 use clap::{Parser, Subcommand};
 
 use crate::arceos::ArceOS;
@@ -8,6 +14,7 @@ use crate::arceos::ArceOS;
 pub mod arceos;
 pub mod context;
 mod logging;
+pub mod process;
 
 #[derive(Parser)]
 struct Cli {
@@ -27,10 +34,9 @@ enum Commands {
 pub async fn run() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
-
     match cli.command {
         Commands::Arceos { command } => {
-            ArceOS::new().execute(command).await?;
+            ArceOS::new()?.execute(command).await?;
         }
     }
 

@@ -1,7 +1,4 @@
-use std::{
-    ops::{Deref, DerefMut},
-    path::PathBuf,
-};
+use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
 
@@ -44,9 +41,9 @@ pub struct ArceOS {
 }
 
 impl ArceOS {
-    pub fn new() -> Self {
-        let app = AppContext::new();
-        Self { app }
+    pub fn new() -> anyhow::Result<Self> {
+        let app = AppContext::new()?;
+        Ok(Self { app })
     }
 
     pub async fn execute(&mut self, command: Command) -> anyhow::Result<()> {
@@ -74,7 +71,7 @@ impl ArceOS {
 
 impl Default for ArceOS {
     fn default() -> Self {
-        Self::new()
+        Self::new().expect("failed to initialize ArceOS")
     }
 }
 

@@ -16,7 +16,7 @@ pub struct QemuConfig {
 pub trait IBuildConfig:
     Clone + Debug + Default + JsonSchema + DeserializeOwned + Serialize
 {
-    fn to_cargo_config(self) -> Cargo;
+    fn to_cargo_config(self) -> anyhow::Result<Cargo>;
 }
 
 pub struct AppContext {
@@ -27,16 +27,19 @@ pub struct AppContext {
 }
 
 impl AppContext {
-    pub fn new() -> Self {
+    pub fn new() -> anyhow::Result<Self> {
         let workspace_root = find_workspace_root();
-        println!("Workspace root: {}", workspace_root.display());
+        crate::logging::init_logging(&workspace_root)?;
+
+        info!("Workspace root: {}", workspace_root.display());
+
         let tool = Tool::new(ToolConfig::default()).unwrap();
-        Self {
+        Ok(Self {
             tool,
             build_config_path: None,
             qemu_config_path: None,
             root: workspace_root,
-        }
+        })
     }
 
     pub async fn build(&mut self) -> anyhow::Result<()> {
@@ -63,12 +66,12 @@ impl AppContext {
     ) -> anyhow::Result<Cargo> {
         let build_config_path = build_config.unwrap_or_else(|| self.root.join(".build.toml"));
 
-        println!("Using build config: {}", build_config_path.display());
+        info!("Using build config: {}", build_config_path.display());
 
         if build_config_path.exists() {
-            println!("Found build config at {}", build_config_path.display());
+            info!("Found build config at {}", build_config_path.display());
         } else {
-            println!(
+            info!(
                 "Build config not found at {}, using default config",
                 build_config_path.display()
             );
@@ -76,14 +79,14 @@ impl AppContext {
             let default_build = T::default();
             let toml_str = toml::to_string_pretty(&default_build)?;
             std::fs::write(&build_config_path, toml_str)?;
-            println!(
+            info!(
                 "Default build config written to {}",
                 build_config_path.display()
             );
         }
 
         let config = toml::from_str::<T>(&std::fs::read_to_string(&build_config_path)?)?;
-        let cargo = config.to_cargo_config();
+        let cargo = config.to_cargo_config()?;
 
         self.build_config_path = Some(build_config_path);
 
@@ -94,6 +97,7 @@ impl AppContext {
         &mut self,
         config: QemuConfig,
     ) -> anyhow::Result<Cargo> {
+        self.qemu_config_path = config.qemu_config;
         let cargo = self.perper_build_config::<T>(config.build_config).await?;
 
         Ok(cargo)
@@ -102,7 +106,7 @@ impl AppContext {
 
 impl Default for AppContext {
     fn default() -> Self {
-        Self::new()
+        Self::new().expect("failed to initialize AppContext")
     }
 }
 

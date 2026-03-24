@@ -639,7 +639,6 @@ dependencies = [
  "chrono",
  "clap",
  "colored",
- "env_logger 0.11.9",
  "flate2",
  "jkconfig 0.1.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "log",
@@ -656,6 +655,8 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+ "tracing-log",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -7485,6 +7486,7 @@ dependencies = [
  "sharded-slab",
  "smallvec",
  "thread_local",
+ "time",
  "tracing",
  "tracing-core",
  "tracing-log",
