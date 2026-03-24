@@ -47,8 +47,13 @@ impl ConsoleIf for ConsoleIfImpl {
     }
 
     /// Returns the IRQ number for the console, if applicable.
+    ///
+    /// Currently returns `None` to use polling mode instead of interrupt-driven
+    /// input, as the UART interrupt handling may not work correctly with some
+    /// TTY implementations (e.g., StarryOS's LineDiscipline).
     #[cfg(feature = "irq")]
     fn irq_num() -> Option<usize> {
-        Some(crate::config::devices::UART_IRQ)
+        // Use polling mode for better compatibility
+        None
     }
 }
