@@ -8,9 +8,19 @@ use crate::config::{devices::UART_PADDR, plat::PHYS_VIRT_OFFSET};
 static UART: LazyInit<SpinNoIrq<MmioSerialPort>> = LazyInit::new();
 
 pub(crate) fn init_early() {
+    let base = UART_PADDR + PHYS_VIRT_OFFSET;
     UART.init_once({
-        let mut uart = unsafe { MmioSerialPort::new(UART_PADDR + PHYS_VIRT_OFFSET) };
+        let mut uart = unsafe { MmioSerialPort::new(base) };
         uart.init();
+        // `uart_16550` uses non-volatile ptr::write() which the compiler may
+        // optimise away.  Re-write the interrupt-critical registers with
+        // volatile stores — in particular MCR.OUT2 (bit 3) gates the 16550
+        // interrupt output; without it the UART never signals the PLIC.
+        unsafe {
+            core::ptr::write_volatile((base + 2) as *mut u8, 0x01); // FCR: FIFO enable, 1-byte trigger
+            core::ptr::write_volatile((base + 4) as *mut u8, 0x0B); // MCR: DTR+RTS+OUT2
+            core::ptr::write_volatile((base + 1) as *mut u8, 0x01); // IER: RX data available
+        }
         SpinNoIrq::new(uart)
     });
 }
