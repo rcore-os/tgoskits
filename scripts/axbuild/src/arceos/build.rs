@@ -291,7 +291,7 @@ fn resolve_platform_package(
         .packages
         .iter()
         .find(|pkg| pkg.name == package)
-        .ok_or_else(|| anyhow::anyhow!("workspace package `{package}` not found"))?;
+        .ok_or_else(|| anyhow!("workspace package `{package}` not found"))?;
 
     let explicit_platform_features: Vec<_> = features
         .iter()
