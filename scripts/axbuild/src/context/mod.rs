@@ -47,7 +47,7 @@ impl AppContext {
     }
 
     pub async fn qemu<T: IBuildConfig>(&mut self, qemu_config: QemuConfig) -> anyhow::Result<()> {
-        let config = self.perper_config::<T>(qemu_config).await?;
+        let config = self.perper_qemu_config::<T>(qemu_config).await?;
 
         let kind = CargoRunnerKind::Qemu {
             qemu_config: self.qemu_config_path.clone(),
@@ -56,6 +56,20 @@ impl AppContext {
         };
 
         self.tool.cargo_run(&config, &kind).await?;
+
+        Ok(())
+    }
+
+    pub async fn uboot<T: IBuildConfig>(
+        &mut self,
+        build_config: Option<PathBuf>,
+        uboot_config: Option<PathBuf>,
+    ) -> anyhow::Result<()> {
+        let cargo = self.perper_build_config::<T>(build_config).await?;
+
+        let kind = CargoRunnerKind::Uboot { uboot_config };
+
+        self.tool.cargo_run(&cargo, &kind).await?;
 
         Ok(())
     }
@@ -93,7 +107,7 @@ impl AppContext {
         Ok(cargo)
     }
 
-    async fn perper_config<T: IBuildConfig>(
+    async fn perper_qemu_config<T: IBuildConfig>(
         &mut self,
         config: QemuConfig,
     ) -> anyhow::Result<Cargo> {

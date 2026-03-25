@@ -1,25 +1,14 @@
 [package]
-name = "tg-xtask"
-version.workspace = true
-edition.workspace = true
 authors.workspace = true
-license.workspace = true
+edition.workspace = true
 homepage.workspace = true
-repository.workspace = true
+license.workspace = true
+name = "tg-xtask"
 publish = false
+repository.workspace = true
+version.workspace = true
 
 [dependencies]
-anyhow = { workspace = true }
+anyhow = {workspace = true}
 axbuild.workspace = true
-cargo_metadata = "0.23"
-chrono = "0.4"
-clap = { version = "4.6", features = ["derive"] }
-indicatif = "0.17"
-reqwest = { version = "0.13", features = ["blocking"] }
-serde_json = "1.0"
-toml = "0.9"
-tokio = { version = "1.0", features = ["full"] }
-tracing = "0.1"
-tracing-appender = "0.2"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-xz2 = "0.1"
+tokio = {version = "1.0", features = ["full"]}

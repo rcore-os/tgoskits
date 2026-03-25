@@ -119,6 +119,8 @@ impl BuildConfig {
             return Ok(());
         }
 
+        ensure_arceos_tooling_installed()?;
+
         let package_manifest = resolve_package_manifest_path(&self.package, None)?;
         let app_dir = package_manifest
             .parent()
@@ -392,6 +394,49 @@ fn resolve_platform_config_path(app_dir: &Path, platform_package: &str) -> anyho
     }
 
     Ok(config_path)
+}
+
+fn ensure_arceos_tooling_installed() -> anyhow::Result<()> {
+    ensure_cargo_axplat_installed()?;
+    ensure_axconfig_gen_installed()?;
+    Ok(())
+}
+
+fn ensure_cargo_axplat_installed() -> anyhow::Result<()> {
+    if Command::new("cargo")
+        .arg("axplat")
+        .arg("--version")
+        .exec_capture()
+        .is_ok()
+    {
+        return Ok(());
+    }
+
+    warn!("`cargo axplat` not found, installing `cargo-axplat` via cargo");
+    Command::new("cargo")
+        .arg("install")
+        .arg("cargo-axplat")
+        .exec()
+        .context("failed to install cargo-axplat")?;
+    Ok(())
+}
+
+fn ensure_axconfig_gen_installed() -> anyhow::Result<()> {
+    if Command::new("axconfig-gen")
+        .arg("--version")
+        .exec_capture()
+        .is_ok()
+    {
+        return Ok(());
+    }
+
+    warn!("`axconfig-gen` not found, installing `axconfig-gen` via cargo");
+    Command::new("cargo")
+        .arg("install")
+        .arg("axconfig-gen")
+        .exec()
+        .context("failed to install axconfig-gen")?;
+    Ok(())
 }
 
 fn read_platform_name(platform_config: &Path) -> Option<String> {

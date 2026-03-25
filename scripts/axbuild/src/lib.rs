@@ -15,6 +15,7 @@ pub mod arceos;
 pub mod context;
 mod logging;
 pub mod process;
+// pub mod starry;
 
 #[derive(Parser)]
 struct Cli {
@@ -32,7 +33,6 @@ enum Commands {
 }
 
 pub async fn run() -> anyhow::Result<()> {
-
     let cli = Cli::parse();
     match cli.command {
         Commands::Arceos { command } => {

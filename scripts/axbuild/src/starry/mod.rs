@@ -2,9 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
 
-use crate::context::{AppContext, QemuConfig};
-
-pub mod build;
+use crate::{arceos::build, context::AppContext};
 
 /// ArceOS subcommands
 #[derive(Subcommand)]
@@ -48,11 +46,11 @@ pub struct ArgsUboot {
     pub uboot_config: Option<PathBuf>,
 }
 
-pub struct ArceOS {
+pub struct Starry {
     app: AppContext,
 }
 
-impl ArceOS {
+impl Starry {
     pub fn new() -> anyhow::Result<Self> {
         let app = AppContext::new()?;
         Ok(Self { app })
@@ -91,17 +89,8 @@ impl ArceOS {
     }
 }
 
-impl Default for ArceOS {
+impl Default for Starry {
     fn default() -> Self {
         Self::new().expect("failed to initialize ArceOS")
-    }
-}
-
-impl From<ArgsQemu> for QemuConfig {
-    fn from(args: ArgsQemu) -> Self {
-        Self {
-            build_config: args.build.config,
-            qemu_config: args.qemu_config,
-        }
     }
 }

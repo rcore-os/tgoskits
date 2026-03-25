@@ -14,7 +14,6 @@
 
 use std::{
     fs::{self, OpenOptions},
-    io::Write,
     path::Path,
     sync::{Mutex, OnceLock},
 };
