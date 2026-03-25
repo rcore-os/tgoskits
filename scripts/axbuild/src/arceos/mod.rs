@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
 
-use crate::context::{AppContext, BuildConfigLookupKey, QemuConfig};
+use crate::context::{AppContext, BuildCliArgs};
 
 pub mod build;
 
@@ -26,8 +26,8 @@ pub struct ArgsBuild {
     pub package: Option<String>,
     #[arg(short, long)]
     pub target: Option<String>,
-    #[arg(long)]
-    pub no_dyn: bool,
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub no_dyn: Option<bool>,
 }
 
 #[derive(Args)]
@@ -52,8 +52,15 @@ pub struct ArceOS {
     app: AppContext,
 }
 
-fn build_lookup_key(args: &ArgsBuild) -> BuildConfigLookupKey {
-    BuildConfigLookupKey::new("arceos", args.package.clone(), args.target.clone())
+impl From<&ArgsBuild> for BuildCliArgs {
+    fn from(args: &ArgsBuild) -> Self {
+        Self {
+            config: args.config.clone(),
+            package: args.package.clone(),
+            target: args.target.clone(),
+            no_dyn: args.no_dyn,
+        }
+    }
 }
 
 impl ArceOS {
@@ -77,32 +84,43 @@ impl ArceOS {
         Ok(())
     }
 
-    async fn build(&mut self, _args: ArgsBuild) -> anyhow::Result<()> {
-        self.app.build().await?;
+    async fn build(&mut self, args: ArgsBuild) -> anyhow::Result<()> {
+        let (request, snapshot) = self
+            .app
+            .prepare_arceos_request((&args).into(), None, None)?;
+        self.app.store_arceos_snapshot(&snapshot)?;
+
+        let cargo = build::load_cargo_config(&request)?;
+        self.app.build(cargo, request.build_info_path).await?;
         Ok(())
     }
 
     async fn qemu(&mut self, args: ArgsQemu) -> anyhow::Result<()> {
-        let lookup_key = build_lookup_key(&args.build);
-        let def_config = build::BuildConfig::new(
-            args.build.target.clone(),
-            args.build.package.clone(),
-            args.build.no_dyn,
-        );
+        let (request, snapshot) = self.app.prepare_arceos_request(
+            (&args.build).into(),
+            args.qemu_config.clone(),
+            None,
+        )?;
+        self.app.store_arceos_snapshot(&snapshot)?;
 
-        self.app.qemu(args.into(), def_config, lookup_key).await?;
+        let cargo = build::load_cargo_config(&request)?;
+        self.app
+            .qemu(cargo, request.build_info_path, request.qemu_config)
+            .await?;
         Ok(())
     }
 
     async fn uboot(&mut self, args: ArgsUboot) -> anyhow::Result<()> {
-        let lookup_key = build_lookup_key(&args.build);
-        let def_config = build::BuildConfig::new(
-            args.build.target.clone(),
-            args.build.package.clone(),
-            args.build.no_dyn,
-        );
+        let (request, snapshot) = self.app.prepare_arceos_request(
+            (&args.build).into(),
+            None,
+            args.uboot_config.clone(),
+        )?;
+        self.app.store_arceos_snapshot(&snapshot)?;
+
+        let cargo = build::load_cargo_config(&request)?;
         self.app
-            .uboot(args.build.config, args.uboot_config, def_config, lookup_key)
+            .uboot(cargo, request.build_info_path, request.uboot_config)
             .await?;
         Ok(())
     }
@@ -114,37 +132,29 @@ impl Default for ArceOS {
     }
 }
 
-impl From<ArgsQemu> for QemuConfig {
-    fn from(args: ArgsQemu) -> Self {
-        Self {
-            build_config: args.build.config,
-            qemu_config: args.qemu_config,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn build_args_map_to_lookup_key() {
+    fn build_args_convert_to_cli_args() {
         let args = ArgsBuild {
             config: None,
             package: Some("arceos-helloworld".to_string()),
             target: Some("aarch64-unknown-none-softfloat".to_string()),
-            no_dyn: false,
+            no_dyn: Some(true),
         };
 
-        let key = build_lookup_key(&args);
+        let cli_args = BuildCliArgs::from(&args);
 
         assert_eq!(
-            key,
-            BuildConfigLookupKey::new(
-                "arceos",
-                Some("arceos-helloworld".to_string()),
-                Some("aarch64-unknown-none-softfloat".to_string())
-            )
+            cli_args,
+            BuildCliArgs {
+                config: None,
+                package: Some("arceos-helloworld".to_string()),
+                target: Some("aarch64-unknown-none-softfloat".to_string()),
+                no_dyn: Some(true),
+            }
         );
     }
 }

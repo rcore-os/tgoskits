@@ -121,4 +121,4 @@ __pycache__/
 !.claude/skills/*
 /tmp/*
 
-.arceos_*
+.arceos*

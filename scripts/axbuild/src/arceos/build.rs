@@ -5,14 +5,14 @@ use std::{
     process::Command,
 };
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 use cargo_metadata::MetadataCommand;
 use ostool::build::config::Cargo;
 pub use ostool::build::config::LogLevel;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{context::IBuildConfig, process::ProcessExt};
+use crate::{context::ResolvedBuildRequest, process::ProcessExt};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AxFeaturePrefixFamily {
@@ -29,48 +29,28 @@ impl AxFeaturePrefixFamily {
     }
 }
 
-#[derive(Debug, Clone, JsonSchema, Deserialize, Serialize)]
-pub struct BuildConfig {
+#[derive(Debug, Clone, JsonSchema, Deserialize, Serialize, PartialEq)]
+pub struct ArceosBuildInfo {
     /// Environment variables to set during the build.
     pub env: HashMap<String, String>,
-    /// Target triple (e.g., "aarch64-unknown-none-softfloat", "riscv64gc-unknown-none-elf").
-    pub target: String,
-    /// Package name to build.
-    pub package: String,
     /// Cargo features to enable.
     pub features: Vec<String>,
     /// Log level feature to automatically enable.
     pub log: LogLevel,
-    /// Whether to use dynamic platform.
-    pub plat_dyn: bool,
 }
 
-impl BuildConfig {
-    pub fn new(target: Option<String>, package: Option<String>, no_dyn: bool) -> Self {
-        let mut config = BuildConfig::default();
-        if let Some(target) = target {
-            config.plat_dyn = target.starts_with("aarch64-");
-            config.target = target;
-        }
-        if let Some(package) = package {
-            config.package = package;
-        }
-
-        if no_dyn {
-            config.plat_dyn = false;
-        }
-
-        config
-    }
-}
-
-impl BuildConfig {
-    fn resolve_features(&mut self) {
-        self.resolve_features_with_manifest_path(None);
+impl ArceosBuildInfo {
+    fn resolve_features(&mut self, package: &str, plat_dyn: bool) {
+        self.resolve_features_with_manifest_path(package, plat_dyn, None);
     }
 
-    fn resolve_features_with_manifest_path(&mut self, manifest_path: Option<&Path>) {
-        let prefix_family = self.resolve_ax_feature_prefix_family(manifest_path);
+    fn resolve_features_with_manifest_path(
+        &mut self,
+        package: &str,
+        plat_dyn: bool,
+        manifest_path: Option<&Path>,
+    ) {
+        let prefix_family = self.resolve_ax_feature_prefix_family(package, manifest_path);
         let has_myplat = self.features.iter().any(|feature| {
             matches!(
                 feature.as_str(),
@@ -93,7 +73,7 @@ impl BuildConfig {
             )
         });
 
-        if self.plat_dyn {
+        if plat_dyn {
             self.features
                 .push(format!("{}plat-dyn", prefix_family.prefix()));
         } else if has_myplat {
@@ -110,9 +90,10 @@ impl BuildConfig {
 
     fn resolve_ax_feature_prefix_family(
         &self,
+        package: &str,
         manifest_path: Option<&Path>,
     ) -> AxFeaturePrefixFamily {
-        match detect_ax_feature_prefix_family(&self.package, manifest_path) {
+        match detect_ax_feature_prefix_family(package, manifest_path) {
             Ok(prefix_family) => prefix_family,
             Err(err) => {
                 if let Some(prefix_family) = feature_family_from_existing_features(&self.features) {
@@ -121,7 +102,7 @@ impl BuildConfig {
                 warn!(
                     "failed to detect direct ax dependency for package {}: {}, defaulting to \
                      axstd feature prefix",
-                    self.package, err
+                    package, err
                 );
                 AxFeaturePrefixFamily::AxStd
             }
@@ -133,19 +114,23 @@ impl BuildConfig {
             .insert("AX_LOG".into(), format!("{:?}", self.log).to_lowercase());
     }
 
-    fn prepare_non_dynamic_platform(&mut self) -> anyhow::Result<()> {
-        if self.plat_dyn {
+    fn prepare_non_dynamic_platform(
+        &mut self,
+        request: &ResolvedBuildRequest,
+        plat_dyn: bool,
+    ) -> anyhow::Result<()> {
+        if plat_dyn {
             return Ok(());
         }
 
         ensure_arceos_tooling_installed()?;
 
-        let package_manifest = resolve_package_manifest_path(&self.package, None)?;
+        let package_manifest = resolve_package_manifest_path(&request.package, None)?;
         let app_dir = package_manifest
             .parent()
             .context("package manifest path has no parent directory")?;
         let platform_package =
-            resolve_platform_package(&self.package, &self.target, &self.features)?;
+            resolve_platform_package(&request.package, &request.target, &self.features)?;
         let platform_config = resolve_platform_config_path(app_dir, &platform_package)?;
         let platform_name = read_platform_name(&platform_config)
             .unwrap_or_else(|| linker_platform_name(&platform_package).to_string());
@@ -153,7 +138,7 @@ impl BuildConfig {
 
         generate_axconfig(
             &workspace_root_path()?,
-            &self.target,
+            &request.target,
             &platform_name,
             &platform_config,
             &out_config,
@@ -169,53 +154,31 @@ impl BuildConfig {
         Ok(())
     }
 
-    fn build_cargo_args(&self) -> Vec<String> {
+    fn build_cargo_args(target: &str, plat_dyn: bool) -> Vec<String> {
         let mut args = Vec::new();
         args.push("--config".to_string());
-        args.push(if self.plat_dyn {
-            format!(
-                "target.{}.rustflags=[\"-Clink-arg=-Taxplat.x\"]",
-                self.target
-            )
+        args.push(if plat_dyn {
+            format!("target.{target}.rustflags=[\"-Clink-arg=-Taxplat.x\"]")
         } else {
             format!(
-                "target.{}.rustflags=[\"-Clink-arg=-Tlinker.x\",\"-Clink-arg=-no-pie\",\"\
-                 -Clink-arg=-znostart-stop-gc\"]",
-                self.target
+                "target.{target}.rustflags=[\"-Clink-arg=-Tlinker.x\",\"-Clink-arg=-no-pie\",\"\
+                 -Clink-arg=-znostart-stop-gc\"]"
             )
         });
         args
     }
-}
 
-impl Default for BuildConfig {
-    fn default() -> Self {
-        let mut env = HashMap::new();
-        env.insert("AX_IP".to_string(), "10.0.2.15".to_string());
-        env.insert("AX_GW".to_string(), "10.0.2.2".to_string());
-
-        Self {
-            env,
-            target: "aarch64-unknown-none-softfloat".to_string(),
-            package: "arceos-helloworld".to_string(),
-            plat_dyn: true,
-            log: LogLevel::Info,
-            features: vec!["axstd".to_string()],
-        }
-    }
-}
-
-impl IBuildConfig for BuildConfig {
-    fn to_cargo_config(mut self) -> anyhow::Result<Cargo> {
+    pub fn to_cargo_config(mut self, request: &ResolvedBuildRequest) -> anyhow::Result<Cargo> {
+        let plat_dyn = resolve_plat_dyn(&request.target, request.no_dyn);
         self.perper_env();
-        self.prepare_non_dynamic_platform()?;
-        let args = self.build_cargo_args();
-        self.resolve_features();
+        self.prepare_non_dynamic_platform(request, plat_dyn)?;
+        self.resolve_features(&request.package, plat_dyn);
+        let args = Self::build_cargo_args(&request.target, plat_dyn);
 
         Ok(Cargo {
             env: self.env,
-            target: self.target,
-            package: self.package,
+            target: request.target.clone(),
+            package: request.package.clone(),
             features: self.features,
             log: Some(self.log),
             extra_config: None,
@@ -225,6 +188,65 @@ impl IBuildConfig for BuildConfig {
             to_bin: true,
         })
     }
+}
+
+impl Default for ArceosBuildInfo {
+    fn default() -> Self {
+        let mut env = HashMap::new();
+        env.insert("AX_IP".to_string(), "10.0.2.15".to_string());
+        env.insert("AX_GW".to_string(), "10.0.2.2".to_string());
+
+        Self {
+            env,
+            log: LogLevel::Info,
+            features: vec!["axstd".to_string()],
+        }
+    }
+}
+
+pub fn resolve_build_info_path(
+    package: &str,
+    target: &str,
+    explicit_path: Option<PathBuf>,
+) -> anyhow::Result<PathBuf> {
+    if let Some(path) = explicit_path {
+        return Ok(path);
+    }
+
+    let package_manifest = resolve_package_manifest_path(package, None)?;
+    let app_dir = package_manifest
+        .parent()
+        .context("package manifest path has no parent directory")?;
+    Ok(app_dir.join(format!(".build-{target}.toml")))
+}
+
+pub fn load_build_info(request: &ResolvedBuildRequest) -> anyhow::Result<ArceosBuildInfo> {
+    let path = &request.build_info_path;
+    println!("Using build config: {}", path.display());
+
+    if path.exists() {
+        info!("Found build config at {}", path.display());
+    } else {
+        info!(
+            "Build config not found at {}, writing default config",
+            path.display()
+        );
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, toml::to_string_pretty(&ArceosBuildInfo::default())?)?;
+    }
+
+    toml::from_str::<ArceosBuildInfo>(&std::fs::read_to_string(path)?)
+        .with_context(|| format!("failed to parse build info {}", path.display()))
+}
+
+pub fn load_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Result<Cargo> {
+    load_build_info(request)?.to_cargo_config(request)
+}
+
+fn resolve_plat_dyn(target: &str, no_dyn: bool) -> bool {
+    target.starts_with("aarch64-") && !no_dyn
 }
 
 fn feature_family_from_existing_features(features: &[String]) -> Option<AxFeaturePrefixFamily> {
@@ -277,7 +299,7 @@ fn detect_ax_feature_prefix_family(
     }
 }
 
-fn resolve_package_manifest_path(
+pub(crate) fn resolve_package_manifest_path(
     package: &str,
     manifest_path: Option<&Path>,
 ) -> anyhow::Result<PathBuf> {
@@ -520,61 +542,70 @@ mod tests {
 
     use super::*;
 
-    fn base_config() -> BuildConfig {
-        BuildConfig {
-            plat_dyn: true,
-            ..BuildConfig::default()
+    fn request(
+        package: &str,
+        target: &str,
+        no_dyn: bool,
+        build_info_path: PathBuf,
+    ) -> ResolvedBuildRequest {
+        ResolvedBuildRequest {
+            package: package.to_string(),
+            target: target.to_string(),
+            no_dyn,
+            build_info_path,
+            qemu_config: None,
+            uboot_config: None,
         }
+    }
+
+    fn base_build_info() -> ArceosBuildInfo {
+        ArceosBuildInfo::default()
     }
 
     #[test]
     fn resolves_dynamic_platform_features_and_args() {
-        let mut config = base_config();
-        config.resolve_features();
+        let mut build_info = base_build_info();
+        build_info.resolve_features("arceos-helloworld", true);
 
-        assert!(config.features.contains(&"axstd/plat-dyn".to_string()));
-        assert!(!config.features.contains(&"axstd/defplat".to_string()));
+        assert!(build_info.features.contains(&"axstd/plat-dyn".to_string()));
+        assert!(!build_info.features.contains(&"axstd/defplat".to_string()));
 
-        let args = config.build_cargo_args();
+        let args =
+            ArceosBuildInfo::build_cargo_args("aarch64-unknown-none-softfloat", true);
         assert!(args.iter().any(|arg| arg.contains("-Taxplat.x")));
     }
 
     #[test]
     fn resolves_non_dynamic_platform_features_and_args() {
-        let mut config = BuildConfig {
-            plat_dyn: false,
-            ..base_config()
-        };
-        config.resolve_features();
+        let mut build_info = base_build_info();
+        build_info.resolve_features("arceos-helloworld", false);
 
-        assert!(config.features.contains(&"axstd/defplat".to_string()));
-        assert!(!config.features.contains(&"axstd/plat-dyn".to_string()));
+        assert!(build_info.features.contains(&"axstd/defplat".to_string()));
+        assert!(!build_info.features.contains(&"axstd/plat-dyn".to_string()));
 
-        let args = config.build_cargo_args();
+        let args =
+            ArceosBuildInfo::build_cargo_args("aarch64-unknown-none-softfloat", false);
         assert!(args.iter().any(|arg| arg.contains("-Tlinker.x")));
     }
 
     #[test]
     fn preserves_axstd_myplat_for_non_dynamic_platforms() {
-        let mut config = BuildConfig {
-            plat_dyn: false,
+        let mut build_info = ArceosBuildInfo {
             features: vec!["axstd".to_string(), "axstd/myplat".to_string()],
-            ..BuildConfig::default()
+            ..ArceosBuildInfo::default()
         };
-        config.resolve_features();
+        build_info.resolve_features("arceos-helloworld", false);
 
-        assert!(config.features.contains(&"axstd/myplat".to_string()));
-        assert!(!config.features.contains(&"axstd/defplat".to_string()));
+        assert!(build_info.features.contains(&"axstd/myplat".to_string()));
+        assert!(!build_info.features.contains(&"axstd/defplat".to_string()));
     }
 
     #[test]
     fn normalizes_myplat_to_axfeat_when_package_depends_on_axfeat() {
         let workspace = temp_workspace("axfeat-app", "axfeat = \"0.1.0\"\n").unwrap();
-        let mut config = BuildConfig {
-            package: "axfeat-app".to_string(),
-            plat_dyn: false,
+        let mut build_info = ArceosBuildInfo {
             features: vec!["axstd/myplat".to_string()],
-            ..BuildConfig::default()
+            ..ArceosBuildInfo::default()
         };
 
         let family =
@@ -582,12 +613,16 @@ mod tests {
                 .unwrap();
         assert_eq!(family, AxFeaturePrefixFamily::AxFeat);
 
-        config.features.retain(|feature| feature != "axstd");
-        config.resolve_features_with_manifest_path(Some(&workspace.join("Cargo.toml")));
+        build_info.features.retain(|feature| feature != "axstd");
+        build_info.resolve_features_with_manifest_path(
+            "axfeat-app",
+            false,
+            Some(&workspace.join("Cargo.toml")),
+        );
 
-        assert!(config.features.contains(&"axfeat/myplat".to_string()));
-        assert!(!config.features.contains(&"axstd/myplat".to_string()));
-        assert!(!config.features.contains(&"axfeat/defplat".to_string()));
+        assert!(build_info.features.contains(&"axfeat/myplat".to_string()));
+        assert!(!build_info.features.contains(&"axstd/myplat".to_string()));
+        assert!(!build_info.features.contains(&"axfeat/defplat".to_string()));
     }
 
     #[test]
@@ -602,27 +637,94 @@ mod tests {
     }
 
     #[test]
+    fn resolve_build_info_path_uses_package_directory() {
+        let path = resolve_build_info_path(
+            "arceos-helloworld",
+            "aarch64-unknown-none-softfloat",
+            None,
+        )
+        .unwrap();
+
+        assert!(path.ends_with("os/arceos/examples/helloworld/.build-aarch64-unknown-none-softfloat.toml"));
+    }
+
+    #[test]
+    fn resolve_build_info_path_prefers_explicit_path() {
+        let path = resolve_build_info_path(
+            "arceos-helloworld",
+            "aarch64-unknown-none-softfloat",
+            Some(PathBuf::from("/tmp/custom-build.toml")),
+        )
+        .unwrap();
+
+        assert_eq!(path, PathBuf::from("/tmp/custom-build.toml"));
+    }
+
+    #[test]
+    fn load_build_info_creates_missing_default_file() {
+        let root = tempdir().unwrap();
+        let path = root.path().join(".build-target.toml");
+        let request = request("arceos-helloworld", "target", false, path.clone());
+
+        let build_info = load_build_info(&request).unwrap();
+
+        assert_eq!(build_info, ArceosBuildInfo::default());
+        assert!(path.exists());
+        assert!(fs::read_to_string(path).unwrap().contains("features = [\"axstd\"]"));
+    }
+
+    #[test]
+    fn load_build_info_reads_existing_file() {
+        let root = tempdir().unwrap();
+        let path = root.path().join(".build-target.toml");
+        fs::write(
+            &path,
+            r#"
+features = ["axstd", "net"]
+log = "Debug"
+
+[env]
+AX_IP = "127.0.0.1"
+"#,
+        )
+        .unwrap();
+        let request = request("arceos-helloworld", "target", false, path);
+
+        let build_info = load_build_info(&request).unwrap();
+
+        assert_eq!(build_info.log, LogLevel::Debug);
+        assert!(build_info.features.contains(&"net".to_string()));
+        assert_eq!(build_info.env.get("AX_IP"), Some(&"127.0.0.1".to_string()));
+    }
+
+    #[test]
     fn to_cargo_config_includes_ax_log_env() {
-        let cargo = BuildConfig::default().to_cargo_config().unwrap();
+        let root = tempdir().unwrap();
+        let request = request(
+            "arceos-helloworld",
+            "aarch64-unknown-none-softfloat",
+            false,
+            root.path().join(".build.toml"),
+        );
+
+        let cargo = ArceosBuildInfo::default().to_cargo_config(&request).unwrap();
 
         assert_eq!(cargo.env.get("AX_LOG"), Some(&"info".to_string()));
     }
 
     #[test]
-    fn build2_toml_equivalent_config_converts_to_non_dynamic_cargo() {
+    fn build_info_toml_equivalent_config_converts_to_non_dynamic_cargo() {
         let toml = r#"
-target = "aarch64-unknown-none-softfloat"
-package = "arceos-helloworld"
 features = ["axstd"]
 log = "Info"
-plat_dyn = false
 
 [env]
 AX_IP = "10.0.2.15"
 AX_GW = "10.0.2.2"
 "#;
 
-        let config: BuildConfig = toml::from_str(toml).expect("config should deserialize");
+        let build_info: ArceosBuildInfo =
+            toml::from_str(toml).expect("build info should deserialize");
         let app_dir = resolve_package_manifest_path("arceos-helloworld", None)
             .unwrap()
             .parent()
@@ -630,8 +732,14 @@ AX_GW = "10.0.2.2"
             .to_path_buf();
         let generated_config = app_dir.join(".axconfig.toml");
         let existed = generated_config.exists();
+        let request = request(
+            "arceos-helloworld",
+            "aarch64-unknown-none-softfloat",
+            true,
+            app_dir.join(".build-aarch64-unknown-none-softfloat.toml"),
+        );
 
-        let cargo = config.to_cargo_config().unwrap();
+        let cargo = build_info.to_cargo_config(&request).unwrap();
 
         assert!(cargo.features.contains(&"axstd/defplat".to_string()));
         assert!(!cargo.features.contains(&"axstd/plat-dyn".to_string()));
@@ -648,6 +756,13 @@ AX_GW = "10.0.2.2"
         if !existed && generated_config.exists() {
             fs::remove_file(generated_config).unwrap();
         }
+    }
+
+    #[test]
+    fn resolve_plat_dyn_uses_target_and_no_dyn() {
+        assert!(resolve_plat_dyn("aarch64-unknown-none-softfloat", false));
+        assert!(!resolve_plat_dyn("aarch64-unknown-none-softfloat", true));
+        assert!(!resolve_plat_dyn("x86_64-unknown-none", false));
     }
 
     fn temp_workspace(

@@ -1,60 +1,100 @@
-use std::{
-    fmt::Debug,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
+use anyhow::{Context, anyhow};
 use ostool::{
     Tool, ToolConfig,
     build::{CargoRunnerKind, config::Cargo},
 };
-use schemars::JsonSchema;
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
-pub struct QemuConfig {
-    pub build_config: Option<PathBuf>,
+pub const ARCEOS_SNAPSHOT_FILE: &str = ".arceos.toml";
+pub const DEFAULT_ARCEOS_TARGET: &str = "aarch64-unknown-none-softfloat";
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BuildCliArgs {
+    pub config: Option<PathBuf>,
+    pub package: Option<String>,
+    pub target: Option<String>,
+    pub no_dyn: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArceosQemuSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qemu_config: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BuildConfigLookupKey {
-    pub os: String,
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArceosUbootSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uboot_config: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArceosCommandSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub no_dyn: bool,
+    #[serde(default, skip_serializing_if = "ArceosQemuSnapshot::is_empty")]
+    pub qemu: ArceosQemuSnapshot,
+    #[serde(default, skip_serializing_if = "ArceosUbootSnapshot::is_empty")]
+    pub uboot: ArceosUbootSnapshot,
 }
 
-impl BuildConfigLookupKey {
-    pub fn new(os: impl Into<String>, package: Option<String>, target: Option<String>) -> Self {
-        Self {
-            os: os.into(),
-            package,
-            target,
-        }
-    }
-
-    pub fn file_name(&self) -> String {
-        format!(
-            ".{}_{}_{}.toml",
-            self.os,
-            self.package.as_deref().unwrap_or_default(),
-            self.target.as_deref().unwrap_or_default()
-        )
-    }
-
-    fn resolve_path(&self, root: &Path) -> PathBuf {
-        root.join(self.file_name())
-    }
-}
-
-pub trait IBuildConfig: Clone + Debug + JsonSchema + DeserializeOwned + Serialize {
-    fn to_cargo_config(self) -> anyhow::Result<Cargo>;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedBuildRequest {
+    pub package: String,
+    pub target: String,
+    pub no_dyn: bool,
+    pub build_info_path: PathBuf,
+    pub qemu_config: Option<PathBuf>,
+    pub uboot_config: Option<PathBuf>,
 }
 
 pub struct AppContext {
     tool: Tool,
     build_config_path: Option<PathBuf>,
-    qemu_config_path: Option<PathBuf>,
     root: PathBuf,
+}
+
+impl ArceosQemuSnapshot {
+    fn is_empty(&self) -> bool {
+        self.qemu_config.is_none()
+    }
+}
+
+impl ArceosUbootSnapshot {
+    fn is_empty(&self) -> bool {
+        self.uboot_config.is_none()
+    }
+}
+
+impl ArceosCommandSnapshot {
+    pub fn path_in(root: &Path) -> PathBuf {
+        root.join(ARCEOS_SNAPSHOT_FILE)
+    }
+
+    pub fn load(root: &Path) -> anyhow::Result<Self> {
+        let path = Self::path_in(root);
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+
+        toml::from_str(&std::fs::read_to_string(&path)?)
+            .with_context(|| format!("failed to parse snapshot {}", path.display()))
+    }
+
+    pub fn store(&self, root: &Path) -> anyhow::Result<PathBuf> {
+        let path = Self::path_in(root);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, toml::to_string_pretty(self)?)?;
+        Ok(path)
+    }
 }
 
 impl AppContext {
@@ -68,101 +108,122 @@ impl AppContext {
         Ok(Self {
             tool,
             build_config_path: None,
-            qemu_config_path: None,
             root: workspace_root,
         })
     }
 
-    pub async fn build(&mut self) -> anyhow::Result<()> {
-        Ok(())
+    pub fn workspace_root(&self) -> &Path {
+        &self.root
     }
 
-    pub async fn qemu<T: IBuildConfig>(
-        &mut self,
-        qemu_config: QemuConfig,
-        def_config: T,
-        lookup_key: BuildConfigLookupKey,
-    ) -> anyhow::Result<()> {
-        let config = self
-            .perper_qemu_config::<T>(qemu_config, def_config, lookup_key)
-            .await?;
+    pub fn prepare_arceos_request(
+        &self,
+        cli: BuildCliArgs,
+        qemu_config: Option<PathBuf>,
+        uboot_config: Option<PathBuf>,
+    ) -> anyhow::Result<(ResolvedBuildRequest, ArceosCommandSnapshot)> {
+        let snapshot = ArceosCommandSnapshot::load(&self.root)?;
 
-        let kind = CargoRunnerKind::Qemu {
-            qemu_config: self.qemu_config_path.clone(),
-            debug: false,
-            dtb_dump: false,
+        let package = cli
+            .package
+            .clone()
+            .or_else(|| snapshot.package.clone())
+            .ok_or_else(|| {
+                anyhow!(
+                    "missing ArceOS package; pass `--package` or set `package` in {}",
+                    ARCEOS_SNAPSHOT_FILE
+                )
+            })?;
+        let target = cli
+            .target
+            .clone()
+            .or_else(|| snapshot.target.clone())
+            .unwrap_or_else(|| DEFAULT_ARCEOS_TARGET.to_string());
+        let no_dyn = cli.no_dyn.unwrap_or(snapshot.no_dyn);
+
+        let resolved_qemu_config = qemu_config
+            .clone()
+            .or_else(|| resolve_snapshot_path(&self.root, snapshot.qemu.qemu_config.as_ref()));
+        let resolved_uboot_config = uboot_config
+            .clone()
+            .or_else(|| resolve_snapshot_path(&self.root, snapshot.uboot.uboot_config.as_ref()));
+        let build_info_path =
+            crate::arceos::build::resolve_build_info_path(&package, &target, cli.config.clone())?;
+
+        let request = ResolvedBuildRequest {
+            package: package.clone(),
+            target: target.clone(),
+            no_dyn,
+            build_info_path,
+            qemu_config: resolved_qemu_config.clone(),
+            uboot_config: resolved_uboot_config.clone(),
         };
 
-        self.tool.cargo_run(&config, &kind).await?;
+        let snapshot = ArceosCommandSnapshot {
+            package: Some(package),
+            target: Some(target),
+            no_dyn,
+            qemu: ArceosQemuSnapshot {
+                qemu_config: resolved_qemu_config
+                    .as_ref()
+                    .map(|path| snapshot_path_value(&self.root, path)),
+            },
+            uboot: ArceosUbootSnapshot {
+                uboot_config: resolved_uboot_config
+                    .as_ref()
+                    .map(|path| snapshot_path_value(&self.root, path)),
+            },
+        };
 
-        Ok(())
+        Ok((request, snapshot))
     }
 
-    pub async fn uboot<T: IBuildConfig>(
+    pub fn store_arceos_snapshot(
+        &self,
+        snapshot: &ArceosCommandSnapshot,
+    ) -> anyhow::Result<PathBuf> {
+        snapshot.store(&self.root)
+    }
+
+    pub async fn build(&mut self, cargo: Cargo, build_config_path: PathBuf) -> anyhow::Result<()> {
+        self.set_build_config_path(build_config_path);
+        self.tool.cargo_build(&cargo).await
+    }
+
+    pub async fn qemu(
         &mut self,
-        build_config: Option<PathBuf>,
-        uboot_config: Option<PathBuf>,
-        def_config: T,
-        lookup_key: BuildConfigLookupKey,
+        cargo: Cargo,
+        build_config_path: PathBuf,
+        qemu_config: Option<PathBuf>,
     ) -> anyhow::Result<()> {
-        let cargo = self
-            .perper_build_config(build_config, def_config, lookup_key)
-            .await?;
-
-        let kind = CargoRunnerKind::Uboot { uboot_config };
-
-        self.tool.cargo_run(&cargo, &kind).await?;
-
-        Ok(())
+        self.set_build_config_path(build_config_path);
+        self.tool
+            .cargo_run(
+                &cargo,
+                &CargoRunnerKind::Qemu {
+                    qemu_config,
+                    debug: false,
+                    dtb_dump: false,
+                },
+            )
+            .await
     }
 
-    async fn perper_build_config<T: IBuildConfig>(
+    pub async fn uboot(
         &mut self,
-        build_config: Option<PathBuf>,
-        def_config: T,
-        lookup_key: BuildConfigLookupKey,
-    ) -> anyhow::Result<Cargo> {
-        let build_config_path = resolve_build_config_path(&self.root, build_config, &lookup_key);
-
-        println!("Using build config: {}", build_config_path.display());
-
-        if build_config_path.exists() {
-            info!("Found build config at {}", build_config_path.display());
-        } else {
-            info!(
-                "Build config not found at {}, using default config",
-                build_config_path.display()
-            );
-            // Write default config to the path
-            let default_build = def_config;
-            let toml_str = toml::to_string_pretty(&default_build)?;
-            std::fs::write(&build_config_path, toml_str)?;
-            info!(
-                "Default build config written to {}",
-                build_config_path.display()
-            );
-        }
-
-        let config = toml::from_str::<T>(&std::fs::read_to_string(&build_config_path)?)?;
-        let cargo = config.to_cargo_config()?;
-
-        self.build_config_path = Some(build_config_path);
-
-        Ok(cargo)
+        cargo: Cargo,
+        build_config_path: PathBuf,
+        uboot_config: Option<PathBuf>,
+    ) -> anyhow::Result<()> {
+        self.set_build_config_path(build_config_path);
+        self.tool
+            .cargo_run(&cargo, &CargoRunnerKind::Uboot { uboot_config })
+            .await
     }
 
-    async fn perper_qemu_config<T: IBuildConfig>(
-        &mut self,
-        config: QemuConfig,
-        def_config: T,
-        lookup_key: BuildConfigLookupKey,
-    ) -> anyhow::Result<Cargo> {
-        self.qemu_config_path = config.qemu_config;
-        let cargo = self
-            .perper_build_config::<T>(config.build_config, def_config, lookup_key)
-            .await?;
-
-        Ok(cargo)
+    fn set_build_config_path(&mut self, path: PathBuf) {
+        self.build_config_path = Some(path.clone());
+        self.tool.ctx_mut().build_config_path = Some(path);
     }
 }
 
@@ -181,213 +242,166 @@ fn find_workspace_root() -> PathBuf {
     cargo.workspace_root.canonicalize().unwrap()
 }
 
-fn resolve_build_config_path(
-    root: &Path,
-    build_config: Option<PathBuf>,
-    lookup_key: &BuildConfigLookupKey,
-) -> PathBuf {
-    build_config.unwrap_or_else(|| lookup_key.resolve_path(root))
+fn resolve_snapshot_path(root: &Path, path: Option<&PathBuf>) -> Option<PathBuf> {
+    path.map(|path| {
+        if path.is_relative() {
+            root.join(path)
+        } else {
+            path.clone()
+        }
+    })
+}
+
+fn snapshot_path_value(root: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.strip_prefix(root)
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| path.to_path_buf())
+    } else {
+        path.to_path_buf()
+    }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, fs};
+    use std::fs;
 
     use tempfile::tempdir;
 
     use super::*;
 
-    #[derive(Debug, Clone, Serialize, serde::Deserialize, schemars::JsonSchema)]
-    struct TestBuildConfig {
-        value: String,
-    }
-
-    impl IBuildConfig for TestBuildConfig {
-        fn to_cargo_config(self) -> anyhow::Result<Cargo> {
-            Ok(Cargo {
-                env: HashMap::new(),
-                target: "dummy-target".to_string(),
-                package: self.value,
-                features: vec![],
-                log: None,
-                extra_config: None,
-                args: vec![],
-                pre_build_cmds: vec![],
-                post_build_cmds: vec![],
-                to_bin: true,
-            })
-        }
-    }
-
     #[test]
-    fn build_config_lookup_key_formats_full_name() {
-        let key = BuildConfigLookupKey::new(
-            "arceos",
-            Some("arceos-helloworld".to_string()),
-            Some("aarch64-unknown-none-softfloat".to_string()),
-        );
-
-        assert_eq!(
-            key.file_name(),
-            ".arceos_arceos-helloworld_aarch64-unknown-none-softfloat.toml"
-        );
-    }
-
-    #[test]
-    fn build_config_lookup_key_formats_missing_package() {
-        let key = BuildConfigLookupKey::new(
-            "arceos",
-            None,
-            Some("aarch64-unknown-none-softfloat".to_string()),
-        );
-
-        assert_eq!(
-            key.file_name(),
-            ".arceos__aarch64-unknown-none-softfloat.toml"
-        );
-    }
-
-    #[test]
-    fn build_config_lookup_key_formats_missing_target() {
-        let key = BuildConfigLookupKey::new("arceos", Some("arceos-helloworld".to_string()), None);
-
-        assert_eq!(key.file_name(), ".arceos_arceos-helloworld_.toml");
-    }
-
-    #[test]
-    fn build_config_lookup_key_formats_missing_package_and_target() {
-        let key = BuildConfigLookupKey::new("arceos", None, None);
-
-        assert_eq!(key.file_name(), ".arceos__.toml");
-    }
-
-    #[test]
-    fn resolve_build_config_path_prefers_explicit_path() {
-        let root = PathBuf::from("/tmp/workspace");
-        let explicit = PathBuf::from("/tmp/custom.toml");
-        let key = BuildConfigLookupKey::new("arceos", None, None);
-
-        assert_eq!(
-            resolve_build_config_path(&root, Some(explicit.clone()), &key),
-            explicit
-        );
-    }
-
-    #[test]
-    fn resolve_build_config_path_uses_new_lookup_name() {
-        let root = PathBuf::from("/tmp/workspace");
-        let key = BuildConfigLookupKey::new(
-            "arceos",
-            Some("arceos-helloworld".to_string()),
-            Some("aarch64-unknown-none-softfloat".to_string()),
-        );
-
-        assert_eq!(
-            resolve_build_config_path(&root, None, &key),
-            root.join(".arceos_arceos-helloworld_aarch64-unknown-none-softfloat.toml")
-        );
-    }
-
-    #[tokio::test]
-    async fn perper_build_config_reads_existing_new_format_file() {
+    fn snapshot_load_returns_default_when_missing() {
         let root = tempdir().unwrap();
-        let key = BuildConfigLookupKey::new(
-            "arceos",
-            Some("pkg".to_string()),
-            Some("target".to_string()),
-        );
-        let path = root.path().join(key.file_name());
-        fs::write(&path, "value = \"from-file\"\n").unwrap();
+        let snapshot = ArceosCommandSnapshot::load(root.path()).unwrap();
+        assert_eq!(snapshot, ArceosCommandSnapshot::default());
+    }
 
-        let mut app = AppContext {
-            tool: Tool::new(ToolConfig::default()).unwrap(),
-            build_config_path: None,
-            qemu_config_path: None,
-            root: root.path().to_path_buf(),
+    #[test]
+    fn snapshot_store_round_trips() {
+        let root = tempdir().unwrap();
+        let snapshot = ArceosCommandSnapshot {
+            package: Some("arceos-helloworld".into()),
+            target: Some("target".into()),
+            no_dyn: true,
+            qemu: ArceosQemuSnapshot {
+                qemu_config: Some(PathBuf::from("configs/qemu.toml")),
+            },
+            uboot: ArceosUbootSnapshot {
+                uboot_config: Some(PathBuf::from("configs/uboot.toml")),
+            },
         };
 
-        let cargo = app
-            .perper_build_config(
-                None,
-                TestBuildConfig {
-                    value: "default".into(),
-                },
-                key,
-            )
-            .await
-            .unwrap();
+        let path = snapshot.store(root.path()).unwrap();
+        let loaded = ArceosCommandSnapshot::load(root.path()).unwrap();
 
-        assert_eq!(cargo.package, "from-file");
-        assert_eq!(app.build_config_path, Some(path));
+        assert_eq!(path, root.path().join(ARCEOS_SNAPSHOT_FILE));
+        assert_eq!(loaded, snapshot);
     }
 
-    #[tokio::test]
-    async fn perper_build_config_creates_missing_new_format_file() {
-        let root = tempdir().unwrap();
-        let key = BuildConfigLookupKey::new("arceos", None, Some("target".to_string()));
-        let path = root.path().join(key.file_name());
-
-        let mut app = AppContext {
-            tool: Tool::new(ToolConfig::default()).unwrap(),
-            build_config_path: None,
-            qemu_config_path: None,
-            root: root.path().to_path_buf(),
-        };
-
-        let cargo = app
-            .perper_build_config(
-                None,
-                TestBuildConfig {
-                    value: "default".into(),
-                },
-                key,
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(cargo.package, "default");
-        assert!(path.exists());
-        assert!(
-            fs::read_to_string(&path)
-                .unwrap()
-                .contains("value = \"default\"")
-        );
-    }
-
-    #[tokio::test]
-    async fn perper_build_config_does_not_fall_back_to_legacy_name() {
+    #[test]
+    fn prepare_request_prefers_cli_over_snapshot() {
         let root = tempdir().unwrap();
         fs::write(
-            root.path().join(".build-target.toml"),
-            "value = \"legacy\"\n",
+            root.path().join(ARCEOS_SNAPSHOT_FILE),
+            r#"
+package = "from-snapshot"
+target = "snapshot-target"
+no_dyn = false
+
+[qemu]
+qemu_config = "configs/snapshot-qemu.toml"
+
+[uboot]
+uboot_config = "configs/snapshot-uboot.toml"
+"#,
         )
         .unwrap();
-        let key = BuildConfigLookupKey::new("arceos", None, Some("target".to_string()));
-        let new_path = root.path().join(key.file_name());
 
-        let mut app = AppContext {
+        let app = AppContext {
             tool: Tool::new(ToolConfig::default()).unwrap(),
             build_config_path: None,
-            qemu_config_path: None,
             root: root.path().to_path_buf(),
         };
 
-        let cargo = app
-            .perper_build_config(
-                None,
-                TestBuildConfig {
-                    value: "default".into(),
+        let (request, snapshot) = app
+            .prepare_arceos_request(
+                BuildCliArgs {
+                    config: Some(PathBuf::from("/tmp/custom-build.toml")),
+                    package: Some("from-cli".into()),
+                    target: Some("cli-target".into()),
+                    no_dyn: Some(true),
                 },
-                key,
+                Some(PathBuf::from("/tmp/qemu.toml")),
+                None,
             )
-            .await
             .unwrap();
 
-        assert_eq!(cargo.package, "default");
-        assert!(new_path.exists());
+        assert_eq!(request.package, "from-cli");
+        assert_eq!(request.target, "cli-target");
+        assert!(request.no_dyn);
+        assert_eq!(request.build_info_path, PathBuf::from("/tmp/custom-build.toml"));
+        assert_eq!(request.qemu_config, Some(PathBuf::from("/tmp/qemu.toml")));
         assert_eq!(
-            fs::read_to_string(root.path().join(".build-target.toml")).unwrap(),
-            "value = \"legacy\"\n"
+            request.uboot_config,
+            Some(root.path().join("configs/snapshot-uboot.toml"))
         );
+        assert_eq!(snapshot.package.as_deref(), Some("from-cli"));
+        assert_eq!(snapshot.target.as_deref(), Some("cli-target"));
+        assert_eq!(snapshot.qemu.qemu_config, Some(PathBuf::from("/tmp/qemu.toml")));
+    }
+
+    #[test]
+    fn prepare_request_uses_snapshot_and_default_target() {
+        let root = tempdir().unwrap();
+        fs::write(
+            root.path().join(ARCEOS_SNAPSHOT_FILE),
+            r#"
+package = "arceos-helloworld"
+
+[qemu]
+qemu_config = "configs/qemu.toml"
+"#,
+        )
+        .unwrap();
+
+        let app = AppContext {
+            tool: Tool::new(ToolConfig::default()).unwrap(),
+            build_config_path: None,
+            root: root.path().to_path_buf(),
+        };
+
+        let (request, snapshot) = app
+            .prepare_arceos_request(BuildCliArgs::default(), None, None)
+            .unwrap();
+
+        assert_eq!(request.package, "arceos-helloworld");
+        assert_eq!(request.target, DEFAULT_ARCEOS_TARGET);
+        assert!(!request.no_dyn);
+        assert_eq!(
+            request.qemu_config,
+            Some(root.path().join("configs/qemu.toml"))
+        );
+        assert_eq!(snapshot.target.as_deref(), Some(DEFAULT_ARCEOS_TARGET));
+    }
+
+    #[test]
+    fn prepare_request_requires_package() {
+        let root = tempdir().unwrap();
+        let app = AppContext {
+            tool: Tool::new(ToolConfig::default()).unwrap(),
+            build_config_path: None,
+            root: root.path().to_path_buf(),
+        };
+
+        let err = app
+            .prepare_arceos_request(BuildCliArgs::default(), None, None)
+            .unwrap_err();
+
+        assert!(err.to_string().contains("missing ArceOS package"));
     }
 }
