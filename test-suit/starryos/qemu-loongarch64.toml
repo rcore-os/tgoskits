@@ -20,3 +20,4 @@ shell_prefix = "starry:~#"
 success_regex = ["^shell ok$"]
 to_bin = true
 uefi = false
+timeout = 3

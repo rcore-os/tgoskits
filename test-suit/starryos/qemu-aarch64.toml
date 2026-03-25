@@ -17,3 +17,4 @@ shell_prefix = "starry:~#"
 shell_init_cmd = "pwd && echo 'shell ok'"
 success_regex = ["^shell ok$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b']
+timeout = 3
