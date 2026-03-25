@@ -12,9 +12,8 @@ use crate::context::{ResolvedStarryRequest, STARRY_PACKAGE, starry_arch_for_targ
 impl StarryBuildInfo {
     pub fn default_starry_for_target(target: &str) -> Self {
         let mut build_info = Self::default_for_target(target);
-        build_info.env = HashMap::new();
+        build_info.plat_dyn = false;
         build_info.features = vec!["qemu".to_string()];
-        build_info.log = LogLevel::Warn;
         build_info
     }
 }

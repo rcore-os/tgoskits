@@ -105,7 +105,14 @@ impl ArceOS {
 
         let cargo = build::load_cargo_config(&request)?;
         self.app
-            .qemu(cargo, request.build_info_path, request.qemu_config)
+            .qemu(
+                cargo,
+                request.build_info_path,
+                request.qemu_config,
+                vec![],
+                vec![],
+                vec![],
+            )
             .await?;
         Ok(())
     }

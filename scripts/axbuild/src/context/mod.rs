@@ -339,6 +339,9 @@ impl AppContext {
         cargo: Cargo,
         build_config_path: PathBuf,
         qemu_config: Option<PathBuf>,
+        args: Vec<String>,
+        success_regex: Vec<String>,
+        fail_regex: Vec<String>,
     ) -> anyhow::Result<()> {
         self.set_build_config_path(build_config_path);
         self.tool
@@ -348,6 +351,9 @@ impl AppContext {
                     qemu_config,
                     debug: false,
                     dtb_dump: false,
+                    args,
+                    success_regex,
+                    fail_regex,
                 },
             )
             .await
