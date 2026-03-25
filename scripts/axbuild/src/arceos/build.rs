@@ -240,7 +240,7 @@ impl Default for ArceosBuildInfo {
 
         Self {
             env,
-            log: LogLevel::Info,
+            log: LogLevel::Warn,
             features: vec!["axstd".to_string()],
             plat_dyn: false,
         }
@@ -803,11 +803,12 @@ AX_IP = "127.0.0.1"
 
     #[test]
     fn base_cargo_config_defaults_to_bin_false_for_x86_64_targets() {
-        let cargo = ArceosBuildInfo::default_for_target("x86_64-unknown-none").to_base_cargo_config(
-            "arceos-helloworld".to_string(),
-            "x86_64-unknown-none".to_string(),
-            vec![],
-        );
+        let cargo = ArceosBuildInfo::default_for_target("x86_64-unknown-none")
+            .to_base_cargo_config(
+                "arceos-helloworld".to_string(),
+                "x86_64-unknown-none".to_string(),
+                vec![],
+            );
 
         assert!(!cargo.to_bin);
     }
