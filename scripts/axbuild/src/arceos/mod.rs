@@ -27,7 +27,7 @@ pub struct ArgsBuild {
     #[arg(short, long)]
     pub target: Option<String>,
     #[arg(long)]
-    pub plat_dyn: bool,
+    pub no_dyn: bool,
 }
 
 #[derive(Args)]
@@ -79,13 +79,26 @@ impl ArceOS {
     }
 
     async fn qemu(&mut self, args: ArgsQemu) -> anyhow::Result<()> {
-        self.app.qemu::<build::BuildConfig>(args.into()).await?;
+        let def_config = build::BuildConfig::new(
+            args.build.target.clone(),
+            args.build.package.clone(),
+            args.build.no_dyn,
+        );
+
+        let target = args.build.target.clone().unwrap_or_default();
+        self.app.qemu(args.into(), def_config, &target).await?;
         Ok(())
     }
 
     async fn uboot(&mut self, args: ArgsUboot) -> anyhow::Result<()> {
+        let def_config = build::BuildConfig::new(
+            args.build.target.clone(),
+            args.build.package.clone(),
+            args.build.no_dyn,
+        );
+        let target = args.build.target.clone().unwrap_or_default();
         self.app
-            .uboot::<build::BuildConfig>(args.build.config, args.uboot_config)
+            .uboot(args.build.config, args.uboot_config, def_config, &target)
             .await?;
         Ok(())
     }

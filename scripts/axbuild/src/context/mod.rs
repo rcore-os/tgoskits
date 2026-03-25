@@ -13,9 +13,7 @@ pub struct QemuConfig {
     pub qemu_config: Option<PathBuf>,
 }
 
-pub trait IBuildConfig:
-    Clone + Debug + Default + JsonSchema + DeserializeOwned + Serialize
-{
+pub trait IBuildConfig: Clone + Debug + JsonSchema + DeserializeOwned + Serialize {
     fn to_cargo_config(self) -> anyhow::Result<Cargo>;
 }
 
@@ -46,8 +44,15 @@ impl AppContext {
         Ok(())
     }
 
-    pub async fn qemu<T: IBuildConfig>(&mut self, qemu_config: QemuConfig) -> anyhow::Result<()> {
-        let config = self.perper_qemu_config::<T>(qemu_config).await?;
+    pub async fn qemu<T: IBuildConfig>(
+        &mut self,
+        qemu_config: QemuConfig,
+        def_config: T,
+        config_ext: &str,
+    ) -> anyhow::Result<()> {
+        let config = self
+            .perper_qemu_config::<T>(qemu_config, def_config, config_ext)
+            .await?;
 
         let kind = CargoRunnerKind::Qemu {
             qemu_config: self.qemu_config_path.clone(),
@@ -64,8 +69,12 @@ impl AppContext {
         &mut self,
         build_config: Option<PathBuf>,
         uboot_config: Option<PathBuf>,
+        def_config: T,
+        config_ext: &str,
     ) -> anyhow::Result<()> {
-        let cargo = self.perper_build_config::<T>(build_config).await?;
+        let cargo = self
+            .perper_build_config(build_config, def_config, config_ext)
+            .await?;
 
         let kind = CargoRunnerKind::Uboot { uboot_config };
 
@@ -77,10 +86,20 @@ impl AppContext {
     async fn perper_build_config<T: IBuildConfig>(
         &mut self,
         build_config: Option<PathBuf>,
+        def_config: T,
+        ext: &str,
     ) -> anyhow::Result<Cargo> {
-        let build_config_path = build_config.unwrap_or_else(|| self.root.join(".build.toml"));
+        let ext = if ext.is_empty() {
+            String::new()
+        } else {
+            format!("-{}", ext)
+        };
 
-        info!("Using build config: {}", build_config_path.display());
+        let build_name = format!(".build{ext}.toml");
+
+        let build_config_path = build_config.unwrap_or_else(|| self.root.join(&build_name));
+
+        println!("Using build config: {}", build_config_path.display());
 
         if build_config_path.exists() {
             info!("Found build config at {}", build_config_path.display());
@@ -90,7 +109,7 @@ impl AppContext {
                 build_config_path.display()
             );
             // Write default config to the path
-            let default_build = T::default();
+            let default_build = def_config;
             let toml_str = toml::to_string_pretty(&default_build)?;
             std::fs::write(&build_config_path, toml_str)?;
             info!(
@@ -110,9 +129,13 @@ impl AppContext {
     async fn perper_qemu_config<T: IBuildConfig>(
         &mut self,
         config: QemuConfig,
+        def_config: T,
+        config_ext: &str,
     ) -> anyhow::Result<Cargo> {
         self.qemu_config_path = config.qemu_config;
-        let cargo = self.perper_build_config::<T>(config.build_config).await?;
+        let cargo = self
+            .perper_build_config::<T>(config.build_config, def_config, config_ext)
+            .await?;
 
         Ok(cargo)
     }

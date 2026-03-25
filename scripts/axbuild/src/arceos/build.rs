@@ -46,6 +46,25 @@ pub struct BuildConfig {
 }
 
 impl BuildConfig {
+    pub fn new(target: Option<String>, package: Option<String>, no_dyn: bool) -> Self {
+        let mut config = BuildConfig::default();
+        if let Some(target) = target {
+            config.plat_dyn = target.starts_with("aarch64-");
+            config.target = target;
+        }
+        if let Some(package) = package {
+            config.package = package;
+        }
+
+        if no_dyn {
+            config.plat_dyn = false;
+        }
+
+        config
+    }
+}
+
+impl BuildConfig {
     fn resolve_features(&mut self) {
         self.resolve_features_with_manifest_path(None);
     }
