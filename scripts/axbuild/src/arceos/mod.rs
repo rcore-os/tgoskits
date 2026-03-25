@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
 
-use crate::context::{AppContext, QemuConfig};
+use crate::context::{AppContext, BuildConfigLookupKey, QemuConfig};
 
 pub mod build;
 
@@ -52,6 +52,10 @@ pub struct ArceOS {
     app: AppContext,
 }
 
+fn build_lookup_key(args: &ArgsBuild) -> BuildConfigLookupKey {
+    BuildConfigLookupKey::new("arceos", args.package.clone(), args.target.clone())
+}
+
 impl ArceOS {
     pub fn new() -> anyhow::Result<Self> {
         let app = AppContext::new()?;
@@ -73,32 +77,32 @@ impl ArceOS {
         Ok(())
     }
 
-    async fn build(&mut self, args: ArgsBuild) -> anyhow::Result<()> {
+    async fn build(&mut self, _args: ArgsBuild) -> anyhow::Result<()> {
         self.app.build().await?;
         Ok(())
     }
 
     async fn qemu(&mut self, args: ArgsQemu) -> anyhow::Result<()> {
+        let lookup_key = build_lookup_key(&args.build);
         let def_config = build::BuildConfig::new(
             args.build.target.clone(),
             args.build.package.clone(),
             args.build.no_dyn,
         );
 
-        let target = args.build.target.clone().unwrap_or_default();
-        self.app.qemu(args.into(), def_config, &target).await?;
+        self.app.qemu(args.into(), def_config, lookup_key).await?;
         Ok(())
     }
 
     async fn uboot(&mut self, args: ArgsUboot) -> anyhow::Result<()> {
+        let lookup_key = build_lookup_key(&args.build);
         let def_config = build::BuildConfig::new(
             args.build.target.clone(),
             args.build.package.clone(),
             args.build.no_dyn,
         );
-        let target = args.build.target.clone().unwrap_or_default();
         self.app
-            .uboot(args.build.config, args.uboot_config, def_config, &target)
+            .uboot(args.build.config, args.uboot_config, def_config, lookup_key)
             .await?;
         Ok(())
     }
@@ -116,5 +120,31 @@ impl From<ArgsQemu> for QemuConfig {
             build_config: args.build.config,
             qemu_config: args.qemu_config,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_args_map_to_lookup_key() {
+        let args = ArgsBuild {
+            config: None,
+            package: Some("arceos-helloworld".to_string()),
+            target: Some("aarch64-unknown-none-softfloat".to_string()),
+            no_dyn: false,
+        };
+
+        let key = build_lookup_key(&args);
+
+        assert_eq!(
+            key,
+            BuildConfigLookupKey::new(
+                "arceos",
+                Some("arceos-helloworld".to_string()),
+                Some("aarch64-unknown-none-softfloat".to_string())
+            )
+        );
     }
 }

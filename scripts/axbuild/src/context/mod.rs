@@ -1,4 +1,7 @@
-use std::{fmt::Debug, path::PathBuf};
+use std::{
+    fmt::Debug,
+    path::{Path, PathBuf},
+};
 
 use ostool::{
     Tool, ToolConfig,
@@ -11,6 +14,36 @@ use serde::{Serialize, de::DeserializeOwned};
 pub struct QemuConfig {
     pub build_config: Option<PathBuf>,
     pub qemu_config: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildConfigLookupKey {
+    pub os: String,
+    pub package: Option<String>,
+    pub target: Option<String>,
+}
+
+impl BuildConfigLookupKey {
+    pub fn new(os: impl Into<String>, package: Option<String>, target: Option<String>) -> Self {
+        Self {
+            os: os.into(),
+            package,
+            target,
+        }
+    }
+
+    pub fn file_name(&self) -> String {
+        format!(
+            ".{}_{}_{}.toml",
+            self.os,
+            self.package.as_deref().unwrap_or_default(),
+            self.target.as_deref().unwrap_or_default()
+        )
+    }
+
+    fn resolve_path(&self, root: &Path) -> PathBuf {
+        root.join(self.file_name())
+    }
 }
 
 pub trait IBuildConfig: Clone + Debug + JsonSchema + DeserializeOwned + Serialize {
@@ -48,10 +81,10 @@ impl AppContext {
         &mut self,
         qemu_config: QemuConfig,
         def_config: T,
-        config_ext: &str,
+        lookup_key: BuildConfigLookupKey,
     ) -> anyhow::Result<()> {
         let config = self
-            .perper_qemu_config::<T>(qemu_config, def_config, config_ext)
+            .perper_qemu_config::<T>(qemu_config, def_config, lookup_key)
             .await?;
 
         let kind = CargoRunnerKind::Qemu {
@@ -70,10 +103,10 @@ impl AppContext {
         build_config: Option<PathBuf>,
         uboot_config: Option<PathBuf>,
         def_config: T,
-        config_ext: &str,
+        lookup_key: BuildConfigLookupKey,
     ) -> anyhow::Result<()> {
         let cargo = self
-            .perper_build_config(build_config, def_config, config_ext)
+            .perper_build_config(build_config, def_config, lookup_key)
             .await?;
 
         let kind = CargoRunnerKind::Uboot { uboot_config };
@@ -87,17 +120,9 @@ impl AppContext {
         &mut self,
         build_config: Option<PathBuf>,
         def_config: T,
-        ext: &str,
+        lookup_key: BuildConfigLookupKey,
     ) -> anyhow::Result<Cargo> {
-        let ext = if ext.is_empty() {
-            String::new()
-        } else {
-            format!("-{}", ext)
-        };
-
-        let build_name = format!(".build{ext}.toml");
-
-        let build_config_path = build_config.unwrap_or_else(|| self.root.join(&build_name));
+        let build_config_path = resolve_build_config_path(&self.root, build_config, &lookup_key);
 
         println!("Using build config: {}", build_config_path.display());
 
@@ -130,11 +155,11 @@ impl AppContext {
         &mut self,
         config: QemuConfig,
         def_config: T,
-        config_ext: &str,
+        lookup_key: BuildConfigLookupKey,
     ) -> anyhow::Result<Cargo> {
         self.qemu_config_path = config.qemu_config;
         let cargo = self
-            .perper_build_config::<T>(config.build_config, def_config, config_ext)
+            .perper_build_config::<T>(config.build_config, def_config, lookup_key)
             .await?;
 
         Ok(cargo)
@@ -154,4 +179,215 @@ fn find_workspace_root() -> PathBuf {
         .expect("Failed to get cargo metadata");
 
     cargo.workspace_root.canonicalize().unwrap()
+}
+
+fn resolve_build_config_path(
+    root: &Path,
+    build_config: Option<PathBuf>,
+    lookup_key: &BuildConfigLookupKey,
+) -> PathBuf {
+    build_config.unwrap_or_else(|| lookup_key.resolve_path(root))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, fs};
+
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[derive(Debug, Clone, Serialize, serde::Deserialize, schemars::JsonSchema)]
+    struct TestBuildConfig {
+        value: String,
+    }
+
+    impl IBuildConfig for TestBuildConfig {
+        fn to_cargo_config(self) -> anyhow::Result<Cargo> {
+            Ok(Cargo {
+                env: HashMap::new(),
+                target: "dummy-target".to_string(),
+                package: self.value,
+                features: vec![],
+                log: None,
+                extra_config: None,
+                args: vec![],
+                pre_build_cmds: vec![],
+                post_build_cmds: vec![],
+                to_bin: true,
+            })
+        }
+    }
+
+    #[test]
+    fn build_config_lookup_key_formats_full_name() {
+        let key = BuildConfigLookupKey::new(
+            "arceos",
+            Some("arceos-helloworld".to_string()),
+            Some("aarch64-unknown-none-softfloat".to_string()),
+        );
+
+        assert_eq!(
+            key.file_name(),
+            ".arceos_arceos-helloworld_aarch64-unknown-none-softfloat.toml"
+        );
+    }
+
+    #[test]
+    fn build_config_lookup_key_formats_missing_package() {
+        let key = BuildConfigLookupKey::new(
+            "arceos",
+            None,
+            Some("aarch64-unknown-none-softfloat".to_string()),
+        );
+
+        assert_eq!(
+            key.file_name(),
+            ".arceos__aarch64-unknown-none-softfloat.toml"
+        );
+    }
+
+    #[test]
+    fn build_config_lookup_key_formats_missing_target() {
+        let key = BuildConfigLookupKey::new("arceos", Some("arceos-helloworld".to_string()), None);
+
+        assert_eq!(key.file_name(), ".arceos_arceos-helloworld_.toml");
+    }
+
+    #[test]
+    fn build_config_lookup_key_formats_missing_package_and_target() {
+        let key = BuildConfigLookupKey::new("arceos", None, None);
+
+        assert_eq!(key.file_name(), ".arceos__.toml");
+    }
+
+    #[test]
+    fn resolve_build_config_path_prefers_explicit_path() {
+        let root = PathBuf::from("/tmp/workspace");
+        let explicit = PathBuf::from("/tmp/custom.toml");
+        let key = BuildConfigLookupKey::new("arceos", None, None);
+
+        assert_eq!(
+            resolve_build_config_path(&root, Some(explicit.clone()), &key),
+            explicit
+        );
+    }
+
+    #[test]
+    fn resolve_build_config_path_uses_new_lookup_name() {
+        let root = PathBuf::from("/tmp/workspace");
+        let key = BuildConfigLookupKey::new(
+            "arceos",
+            Some("arceos-helloworld".to_string()),
+            Some("aarch64-unknown-none-softfloat".to_string()),
+        );
+
+        assert_eq!(
+            resolve_build_config_path(&root, None, &key),
+            root.join(".arceos_arceos-helloworld_aarch64-unknown-none-softfloat.toml")
+        );
+    }
+
+    #[tokio::test]
+    async fn perper_build_config_reads_existing_new_format_file() {
+        let root = tempdir().unwrap();
+        let key = BuildConfigLookupKey::new(
+            "arceos",
+            Some("pkg".to_string()),
+            Some("target".to_string()),
+        );
+        let path = root.path().join(key.file_name());
+        fs::write(&path, "value = \"from-file\"\n").unwrap();
+
+        let mut app = AppContext {
+            tool: Tool::new(ToolConfig::default()).unwrap(),
+            build_config_path: None,
+            qemu_config_path: None,
+            root: root.path().to_path_buf(),
+        };
+
+        let cargo = app
+            .perper_build_config(
+                None,
+                TestBuildConfig {
+                    value: "default".into(),
+                },
+                key,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(cargo.package, "from-file");
+        assert_eq!(app.build_config_path, Some(path));
+    }
+
+    #[tokio::test]
+    async fn perper_build_config_creates_missing_new_format_file() {
+        let root = tempdir().unwrap();
+        let key = BuildConfigLookupKey::new("arceos", None, Some("target".to_string()));
+        let path = root.path().join(key.file_name());
+
+        let mut app = AppContext {
+            tool: Tool::new(ToolConfig::default()).unwrap(),
+            build_config_path: None,
+            qemu_config_path: None,
+            root: root.path().to_path_buf(),
+        };
+
+        let cargo = app
+            .perper_build_config(
+                None,
+                TestBuildConfig {
+                    value: "default".into(),
+                },
+                key,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(cargo.package, "default");
+        assert!(path.exists());
+        assert!(
+            fs::read_to_string(&path)
+                .unwrap()
+                .contains("value = \"default\"")
+        );
+    }
+
+    #[tokio::test]
+    async fn perper_build_config_does_not_fall_back_to_legacy_name() {
+        let root = tempdir().unwrap();
+        fs::write(
+            root.path().join(".build-target.toml"),
+            "value = \"legacy\"\n",
+        )
+        .unwrap();
+        let key = BuildConfigLookupKey::new("arceos", None, Some("target".to_string()));
+        let new_path = root.path().join(key.file_name());
+
+        let mut app = AppContext {
+            tool: Tool::new(ToolConfig::default()).unwrap(),
+            build_config_path: None,
+            qemu_config_path: None,
+            root: root.path().to_path_buf(),
+        };
+
+        let cargo = app
+            .perper_build_config(
+                None,
+                TestBuildConfig {
+                    value: "default".into(),
+                },
+                key,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(cargo.package, "default");
+        assert!(new_path.exists());
+        assert_eq!(
+            fs::read_to_string(root.path().join(".build-target.toml")).unwrap(),
+            "value = \"legacy\"\n"
+        );
+    }
 }

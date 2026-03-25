@@ -58,7 +58,10 @@ struct LogWriter<'a> {
 
 impl std::io::Write for LogWriter<'_> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.file.lock().expect("log file mutex poisoned").write(buf)
+        self.file
+            .lock()
+            .expect("log file mutex poisoned")
+            .write(buf)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
