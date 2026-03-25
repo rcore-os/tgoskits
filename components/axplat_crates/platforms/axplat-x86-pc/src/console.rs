@@ -1,55 +1,45 @@
-//! Uart 16550 serial port.
-
 use axplat::console::ConsoleIf;
 use kspin::SpinNoIrq;
-use uart_16550::SerialPort;
+use lazyinit::LazyInit;
+use uart_16550::{Config, Uart16550, backend::PioBackend};
 
-static COM1: SpinNoIrq<SerialPort> = unsafe { SpinNoIrq::new(SerialPort::new(0x3f8)) };
+const COM1_PORT: u16 = 0x3F8;
 
-/// Writes a byte to the console.
-pub fn putchar(c: u8) {
-    COM1.lock().send(c)
-}
+static UART: LazyInit<SpinNoIrq<Uart16550<PioBackend>>> = LazyInit::new();
 
-/// Reads a byte from the console, or returns [`None`] if no input is available.
-pub fn getchar() -> Option<u8> {
-    COM1.lock().try_receive().ok()
-}
-
-pub fn init() {
-    COM1.lock().init();
+pub(crate) fn init_early() {
+    UART.init_once({
+        let mut uart = unsafe { Uart16550::new_port(COM1_PORT) }.unwrap();
+        uart.init(Config::default())
+            .expect("Failed to initialize UART");
+        uart.test_loopback().expect("Failed to test UART loopback");
+        SpinNoIrq::new(uart)
+    });
 }
 
 struct ConsoleIfImpl;
 
 #[impl_plat_interface]
 impl ConsoleIf for ConsoleIfImpl {
-    /// Writes given bytes to the console.
+    /// Writes bytes to the console from input u8 slice.
     fn write_bytes(bytes: &[u8]) {
-        for c in bytes {
-            putchar(*c);
+        for &c in bytes {
+            let mut uart = UART.lock();
+            match c {
+                b'\n' => uart.send_bytes_exact(b"\r\n"),
+                c => uart.send_bytes_exact(&[c]),
+            }
         }
     }
 
     /// Reads bytes from the console into the given mutable slice.
-    ///
     /// Returns the number of bytes read.
     fn read_bytes(bytes: &mut [u8]) -> usize {
-        let mut read_len = 0;
-        while read_len < bytes.len() {
-            if let Some(c) = getchar() {
-                bytes[read_len] = c;
-            } else {
-                break;
-            }
-            read_len += 1;
-        }
-        read_len
+        let mut uart = UART.lock();
+        uart.try_receive_bytes(bytes)
     }
 
-    /// Returns the IRQ number for the console input interrupt.
-    ///
-    /// Returns `None` if input interrupt is not supported.
+    /// Returns the IRQ number for the console, if applicable.
     #[cfg(feature = "irq")]
     fn irq_num() -> Option<usize> {
         None
