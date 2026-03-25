@@ -278,6 +278,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-memtest"
+version = "0.1.0"
+dependencies = [
+ "axstd",
+ "rand 0.8.5",
+]
+
+[[package]]
 name = "arceos-parallel"
 version = "0.1.0"
 dependencies = [

@@ -141,7 +141,7 @@ fn patch_starry_cargo_config(
 ) -> anyhow::Result<()> {
     let platform = default_platform_for_arch(&request.arch)?;
 
-    cargo.package = STARRY_PACKAGE.to_string();
+    cargo.package = request.package.clone();
     cargo.target = request.target.clone();
     cargo.features.push("qemu".to_string());
     cargo.features.sort();
@@ -355,6 +355,26 @@ CUSTOM = "1"
             ]
         );
         assert!(cargo.to_bin);
+    }
+
+    #[test]
+    fn patch_starry_cargo_config_preserves_request_package() {
+        let request = ResolvedStarryRequest {
+            package: "starryos-test".to_string(),
+            arch: "x86_64".to_string(),
+            target: "x86_64-unknown-none".to_string(),
+            plat_dyn: None,
+            build_info_path: PathBuf::from("/tmp/.build.toml"),
+            qemu_config: None,
+            uboot_config: None,
+        };
+        let build_info = StarryBuildInfo::default_starry_for_target("x86_64-unknown-none");
+        let mut cargo = build_info
+            .to_base_cargo_config("placeholder".to_string(), request.target.clone(), vec![]);
+
+        patch_starry_cargo_config(&mut cargo, &request).unwrap();
+
+        assert_eq!(cargo.package, "starryos-test");
     }
 
     #[test]
