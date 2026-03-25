@@ -134,6 +134,7 @@ impl ArceosBuildInfo {
         target: String,
         args: Vec<String>,
     ) -> Cargo {
+        let to_bin = default_to_bin_for_target(&target);
         Cargo {
             env: self.env,
             target,
@@ -144,7 +145,7 @@ impl ArceosBuildInfo {
             args,
             pre_build_cmds: vec![],
             post_build_cmds: vec![],
-            to_bin: true,
+            to_bin,
         }
     }
 
@@ -306,6 +307,10 @@ fn resolve_effective_plat_dyn(
 
 fn supports_platform_dynamic(target: &str) -> bool {
     target.starts_with("aarch64-")
+}
+
+fn default_to_bin_for_target(target: &str) -> bool {
+    !target.starts_with("x86_64-")
 }
 
 fn is_false(value: &bool) -> bool {
@@ -794,6 +799,29 @@ AX_IP = "127.0.0.1"
             .unwrap();
 
         assert_eq!(cargo.env.get("AX_LOG"), Some(&"info".to_string()));
+    }
+
+    #[test]
+    fn base_cargo_config_defaults_to_bin_false_for_x86_64_targets() {
+        let cargo = ArceosBuildInfo::default_for_target("x86_64-unknown-none").to_base_cargo_config(
+            "arceos-helloworld".to_string(),
+            "x86_64-unknown-none".to_string(),
+            vec![],
+        );
+
+        assert!(!cargo.to_bin);
+    }
+
+    #[test]
+    fn base_cargo_config_keeps_to_bin_true_for_non_x86_64_targets() {
+        let cargo = ArceosBuildInfo::default_for_target("aarch64-unknown-none-softfloat")
+            .to_base_cargo_config(
+                "arceos-helloworld".to_string(),
+                "aarch64-unknown-none-softfloat".to_string(),
+                vec![],
+            );
+
+        assert!(cargo.to_bin);
     }
 
     #[test]

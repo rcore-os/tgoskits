@@ -58,6 +58,8 @@ jobs:
             target: aarch64-unknown-none-softfloat
           - os: starry
             target: loongarch64-unknown-none-softfloat
+          - os: starry
+            target: x86_64-unknown-none
           # arceos
           - os: arceos
             target: x86_64-unknown-none

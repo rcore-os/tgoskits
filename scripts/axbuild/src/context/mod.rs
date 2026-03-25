@@ -355,6 +355,7 @@ impl AppContext {
         fail_regex: Vec<String>,
     ) -> anyhow::Result<()> {
         self.set_build_config_path(build_config_path);
+        let to_bin = cargo.to_bin;
         self.tool
             .cargo_run(
                 &cargo,
@@ -362,6 +363,7 @@ impl AppContext {
                     qemu_config,
                     debug: false,
                     dtb_dump: false,
+                    to_bin: Some(to_bin),
                     args,
                     success_regex,
                     fail_regex,
