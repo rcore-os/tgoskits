@@ -396,13 +396,19 @@ impl Default for AppContext {
     }
 }
 
-fn find_workspace_root() -> PathBuf {
+pub(crate) fn workspace_root_path() -> anyhow::Result<PathBuf> {
     let cargo = cargo_metadata::MetadataCommand::new()
         .no_deps()
         .exec()
-        .expect("Failed to get cargo metadata");
+        .context("failed to get cargo metadata")?;
 
-    cargo.workspace_root.canonicalize().unwrap()
+    cargo.workspace_root
+        .canonicalize()
+        .context("failed to canonicalize workspace root")
+}
+
+fn find_workspace_root() -> PathBuf {
+    workspace_root_path().expect("failed to resolve workspace root")
 }
 
 fn resolve_snapshot_path(root: &Path, path: Option<&PathBuf>) -> Option<PathBuf> {

@@ -21,18 +21,10 @@
 #![cfg_attr(not(any(windows, unix)), no_std)]
 #![cfg(any(windows, unix))]
 
-use std::path::PathBuf;
-
-use anyhow::{Context, Result};
-use axbuild::axvisor::Cli;
-use clap::Parser;
+use anyhow::Result;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
-    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .context("failed to determine axvisor repo root")?
-        .to_path_buf();
-    axbuild::axvisor::run(cli.command, repo_root).await
+    eprintln!("os/axvisor xtask is not implemented in this workspace yet");
+    Ok(())
 }

@@ -1,0 +1,252 @@
+use std::{collections::BTreeMap, fs, path::Path};
+
+use chrono::{DateTime, Utc};
+use regex::Regex;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageEntry {
+    pub name: String,
+    pub version: String,
+    pub released_at: Option<DateTime<Utc>>,
+    pub description: String,
+    pub sha256: String,
+    pub arch: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageRegistry {
+    pub images: Vec<ImageEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct IncludeEntry {
+    url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RawRegistry {
+    #[serde(default)]
+    includes: Vec<IncludeEntry>,
+    #[serde(default)]
+    images: Vec<ImageEntry>,
+}
+
+impl ImageRegistry {
+    pub async fn fetch_with_includes(url: &str) -> anyhow::Result<ImageRegistry> {
+        use std::collections::{HashSet, VecDeque};
+
+        let mut all_sources = Vec::new();
+        let mut queue = VecDeque::from([url.to_string()]);
+        let mut seen = HashSet::new();
+
+        while let Some(current_url) = queue.pop_front() {
+            if !seen.insert(current_url.clone()) {
+                continue;
+            }
+
+            let body = reqwest::get(&current_url)
+                .await
+                .with_context(|| format!("failed to request registry {current_url}"))?
+                .error_for_status()
+                .with_context(|| format!("failed to fetch registry {current_url}"))?
+                .text()
+                .await
+                .with_context(|| format!("failed to read registry body {current_url}"))?;
+            let raw: RawRegistry = toml::from_str(&body)
+                .map_err(|e| anyhow!("Invalid registry format at {}: {e}", current_url))?;
+
+            all_sources.push(raw.images);
+            for include in raw.includes {
+                queue.push_back(include.url);
+            }
+        }
+
+        Ok(ImageRegistry {
+            images: merge_entries(all_sources),
+        })
+    }
+
+    pub fn load_from_file(path: &Path) -> anyhow::Result<ImageRegistry> {
+        let s = fs::read_to_string(path)
+            .map_err(|e| anyhow!("Failed to read image registry from {}: {e}", path.display()))?;
+        toml::from_str(&s).map_err(|e| anyhow!("Invalid image list format: {e}"))
+    }
+
+    pub fn print(&self, verbose: bool, pattern: Option<&str>) {
+        print!("{}", self.render_table(verbose, pattern));
+    }
+
+    pub fn render_table(&self, verbose: bool, pattern: Option<&str>) -> String {
+        let entries = self.filtered_entries(pattern);
+        if verbose {
+            self.render_verbose(&entries)
+        } else {
+            self.render_merged(&entries)
+        }
+    }
+
+    fn filtered_entries<'a>(&'a self, pattern: Option<&str>) -> Vec<&'a ImageEntry> {
+        let Some(pat) = pattern else {
+            return self.images.iter().collect();
+        };
+        let re = Regex::new(pat).ok();
+        self.images
+            .iter()
+            .filter(|e| match &re {
+                Some(r) => r.is_match(&e.name),
+                None => e.name.contains(pat),
+            })
+            .collect()
+    }
+
+    fn render_verbose(&self, entries: &[&ImageEntry]) -> String {
+        let mut out = String::new();
+        out.push_str(&format!(
+            "{:<25} {:<12} {:<15} {:<50}\n",
+            "Name", "Version", "Architecture", "Description"
+        ));
+        out.push_str(&format!("{}\n", "-".repeat(102)));
+        for image in entries {
+            out.push_str(&format!(
+                "{:<25} {:<12} {:<15} {:<50}\n",
+                image.name, image.version, image.arch, image.description
+            ));
+        }
+        out
+    }
+
+    fn render_merged(&self, entries: &[&ImageEntry]) -> String {
+        let by_name: BTreeMap<&str, Vec<&ImageEntry>> =
+            entries.iter().fold(BTreeMap::new(), |mut m, e| {
+                m.entry(e.name.as_str()).or_default().push(*e);
+                m
+            });
+        let mut out = String::new();
+        out.push_str(&format!(
+            "{:<25} {:<12} {:<15} {:<50}\n",
+            "Name", "Version", "Architecture", "Description"
+        ));
+        out.push_str(&format!("{}\n", "-".repeat(102)));
+        for (name, vers) in by_name {
+            let first = vers.first().unwrap();
+            let version_str = if vers.len() == 1 {
+                "1 version".to_string()
+            } else {
+                format!("{} versions", vers.len())
+            };
+            out.push_str(&format!(
+                "{:<25} {:<12} {:<15} {:<50}\n",
+                name, version_str, first.arch, first.description
+            ));
+        }
+        out
+    }
+
+    pub fn find(&self, name: &str, version: Option<&str>) -> Option<&ImageEntry> {
+        match version {
+            Some(v) => self.images.iter().find(|e| e.name == name && e.version == v),
+            None => self
+                .images
+                .iter()
+                .filter(|e| e.name == name)
+                .max_by(|a, b| a.released_at.cmp(&b.released_at)),
+        }
+    }
+}
+
+fn merge_entries(sources: impl IntoIterator<Item = Vec<ImageEntry>>) -> Vec<ImageEntry> {
+    use std::collections::HashMap;
+
+    let mut by_key: HashMap<(String, String), ImageEntry> = HashMap::new();
+    for entries in sources {
+        for entry in entries {
+            let key = (entry.name.clone(), entry.version.clone());
+            by_key.entry(key).or_insert(entry);
+        }
+    }
+    let mut out: Vec<ImageEntry> = by_key.into_values().collect();
+    out.sort_by(|a, b| {
+        (a.name.as_str(), a.version.as_str()).cmp(&(b.name.as_str(), b.version.as_str()))
+    });
+    out
+}
+
+use anyhow::Context;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn registry() -> ImageRegistry {
+        ImageRegistry {
+            images: vec![
+                ImageEntry {
+                    name: "linux".to_string(),
+                    version: "0.0.1".to_string(),
+                    released_at: Some("2025-01-01T00:00:00Z".parse().unwrap()),
+                    description: "Linux guest".to_string(),
+                    sha256: "abc".to_string(),
+                    arch: "aarch64".to_string(),
+                    url: "https://example.com/linux-0.0.1.tar.gz".to_string(),
+                },
+                ImageEntry {
+                    name: "linux".to_string(),
+                    version: "0.0.2".to_string(),
+                    released_at: Some("2025-01-02T00:00:00Z".parse().unwrap()),
+                    description: "Linux guest".to_string(),
+                    sha256: "def".to_string(),
+                    arch: "aarch64".to_string(),
+                    url: "https://example.com/linux-0.0.2.tar.gz".to_string(),
+                },
+                ImageEntry {
+                    name: "nimbos".to_string(),
+                    version: "0.0.1".to_string(),
+                    released_at: Some("2025-01-03T00:00:00Z".parse().unwrap()),
+                    description: "NimbOS guest".to_string(),
+                    sha256: "ghi".to_string(),
+                    arch: "x86_64".to_string(),
+                    url: "https://example.com/nimbos-0.0.1.tar.gz".to_string(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn render_merged_groups_versions() {
+        let table = registry().render_table(false, None);
+
+        assert!(table.contains("linux"));
+        assert!(table.contains("2 versions"));
+        assert!(table.contains("nimbos"));
+    }
+
+    #[test]
+    fn render_verbose_shows_each_version() {
+        let table = registry().render_table(true, None);
+
+        assert!(table.contains("0.0.1"));
+        assert!(table.contains("0.0.2"));
+    }
+
+    #[test]
+    fn filtering_uses_regex_or_substring() {
+        let table = registry().render_table(true, Some("^nim"));
+        assert!(table.contains("nimbos"));
+        assert!(!table.contains("linux"));
+
+        let table = registry().render_table(true, Some("lin"));
+        assert!(table.contains("linux"));
+    }
+
+    #[test]
+    fn find_prefers_latest_when_version_omitted() {
+        let images = registry();
+        let entry = images.find("linux", None).unwrap();
+        assert_eq!(entry.version, "0.0.2");
+
+        let exact = images.find("linux", Some("0.0.1")).unwrap();
+        assert_eq!(exact.version, "0.0.1");
+    }
+}

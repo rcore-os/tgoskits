@@ -9,9 +9,10 @@ extern crate anyhow;
 
 use clap::{Parser, Subcommand};
 
-use crate::{arceos::ArceOS, starry::Starry};
+use crate::{arceos::ArceOS, axvisor::Axvisor, starry::Starry};
 
 pub mod arceos;
+pub mod axvisor;
 pub mod context;
 mod logging;
 pub mod process;
@@ -31,6 +32,11 @@ enum Commands {
     Test {
         #[command(subcommand)]
         command: TestCommand,
+    },
+    /// Axvisor host-side commands
+    Axvisor {
+        #[command(subcommand)]
+        command: axvisor::Command,
     },
     /// ArceOS build commands
     Arceos {
@@ -65,6 +71,10 @@ enum QemuTestCommand {
 
 pub async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    run_root_cli(cli).await
+}
+
+async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Commands::Test {
             command: TestCommand::Std,
@@ -86,6 +96,9 @@ pub async fn run() -> anyhow::Result<()> {
                 },
         } => {
             test_qemu::run_starry_qemu_tests(args).await?;
+        }
+        Commands::Axvisor { command } => {
+            Axvisor::new()?.execute(command).await?;
         }
         Commands::Arceos { command } => {
             ArceOS::new()?.execute(command).await?;
@@ -150,6 +163,16 @@ mod tests {
                     },
             } => assert_eq!(args.target, "x86_64"),
             _ => panic!("expected `test qemu starry` command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_axvisor_image_ls_command() {
+        let cli = Cli::try_parse_from(["axbuild", "axvisor", "image", "ls"]).unwrap();
+
+        match cli.command {
+            Commands::Axvisor { command: axvisor::Command::Image(_) } => {}
+            _ => panic!("expected `axvisor image ls` command"),
         }
     }
 }

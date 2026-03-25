@@ -650,7 +650,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "indicatif",
- "jkconfig 0.1.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "jkconfig 0.1.7",
  "log",
  "object",
  "ostool",
@@ -4069,6 +4069,8 @@ dependencies = [
 [[package]]
 name = "jkconfig"
 version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04d7e3eb031e5963da78db5c3ec4e50e2f7a8cea2a0ac2aa0432ca150d88abe7"
 dependencies = [
  "anyhow",
  "axum",
@@ -4089,9 +4091,7 @@ dependencies = [
 
 [[package]]
 name = "jkconfig"
-version = "0.1.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04d7e3eb031e5963da78db5c3ec4e50e2f7a8cea2a0ac2aa0432ca150d88abe7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "axum",
@@ -4766,7 +4766,7 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "ostool"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "byte-unit",
@@ -4780,7 +4780,7 @@ dependencies = [
  "fitimage",
  "futures",
  "indicatif",
- "jkconfig 0.1.7",
+ "jkconfig 0.1.8",
  "log",
  "lzma-rs",
  "network-interface",
