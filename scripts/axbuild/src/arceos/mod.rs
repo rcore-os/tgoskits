@@ -26,8 +26,8 @@ pub struct ArgsBuild {
     pub package: Option<String>,
     #[arg(short, long)]
     pub target: Option<String>,
-    #[arg(long, action = clap::ArgAction::SetTrue)]
-    pub no_dyn: Option<bool>,
+    #[arg(long = "plat_dyn", alias = "plat-dyn")]
+    pub plat_dyn: Option<bool>,
 }
 
 #[derive(Args)]
@@ -58,7 +58,7 @@ impl From<&ArgsBuild> for BuildCliArgs {
             config: args.config.clone(),
             package: args.package.clone(),
             target: args.target.clone(),
-            no_dyn: args.no_dyn,
+            plat_dyn: args.plat_dyn,
         }
     }
 }
@@ -142,7 +142,7 @@ mod tests {
             config: None,
             package: Some("arceos-helloworld".to_string()),
             target: Some("aarch64-unknown-none-softfloat".to_string()),
-            no_dyn: Some(true),
+            plat_dyn: Some(true),
         };
 
         let cli_args = BuildCliArgs::from(&args);
@@ -153,7 +153,7 @@ mod tests {
                 config: None,
                 package: Some("arceos-helloworld".to_string()),
                 target: Some("aarch64-unknown-none-softfloat".to_string()),
-                no_dyn: Some(true),
+                plat_dyn: Some(true),
             }
         );
     }

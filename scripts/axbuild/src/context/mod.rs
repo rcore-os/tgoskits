@@ -9,13 +9,25 @@ use serde::{Deserialize, Serialize};
 
 pub const ARCEOS_SNAPSHOT_FILE: &str = ".arceos.toml";
 pub const DEFAULT_ARCEOS_TARGET: &str = "aarch64-unknown-none-softfloat";
+pub const STARRY_SNAPSHOT_FILE: &str = ".starry.toml";
+pub const DEFAULT_STARRY_ARCH: &str = "aarch64";
+pub const DEFAULT_STARRY_TARGET: &str = "aarch64-unknown-none-softfloat";
+pub const STARRY_PACKAGE: &str = "starryos";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BuildCliArgs {
     pub config: Option<PathBuf>,
     pub package: Option<String>,
     pub target: Option<String>,
-    pub no_dyn: Option<bool>,
+    pub plat_dyn: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StarryCliArgs {
+    pub config: Option<PathBuf>,
+    pub arch: Option<String>,
+    pub target: Option<String>,
+    pub plat_dyn: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,8 +48,8 @@ pub struct ArceosCommandSnapshot {
     pub package: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub no_dyn: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plat_dyn: Option<bool>,
     #[serde(default, skip_serializing_if = "ArceosQemuSnapshot::is_empty")]
     pub qemu: ArceosQemuSnapshot,
     #[serde(default, skip_serializing_if = "ArceosUbootSnapshot::is_empty")]
@@ -48,7 +60,44 @@ pub struct ArceosCommandSnapshot {
 pub struct ResolvedBuildRequest {
     pub package: String,
     pub target: String,
-    pub no_dyn: bool,
+    pub plat_dyn: Option<bool>,
+    pub build_info_path: PathBuf,
+    pub qemu_config: Option<PathBuf>,
+    pub uboot_config: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StarryQemuSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qemu_config: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StarryUbootSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uboot_config: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StarryCommandSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plat_dyn: Option<bool>,
+    #[serde(default, skip_serializing_if = "StarryQemuSnapshot::is_empty")]
+    pub qemu: StarryQemuSnapshot,
+    #[serde(default, skip_serializing_if = "StarryUbootSnapshot::is_empty")]
+    pub uboot: StarryUbootSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedStarryRequest {
+    pub package: String,
+    pub arch: String,
+    pub target: String,
+    pub plat_dyn: Option<bool>,
     pub build_info_path: PathBuf,
     pub qemu_config: Option<PathBuf>,
     pub uboot_config: Option<PathBuf>,
@@ -75,6 +124,43 @@ impl ArceosUbootSnapshot {
 impl ArceosCommandSnapshot {
     pub fn path_in(root: &Path) -> PathBuf {
         root.join(ARCEOS_SNAPSHOT_FILE)
+    }
+
+    pub fn load(root: &Path) -> anyhow::Result<Self> {
+        let path = Self::path_in(root);
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+
+        toml::from_str(&std::fs::read_to_string(&path)?)
+            .with_context(|| format!("failed to parse snapshot {}", path.display()))
+    }
+
+    pub fn store(&self, root: &Path) -> anyhow::Result<PathBuf> {
+        let path = Self::path_in(root);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, toml::to_string_pretty(self)?)?;
+        Ok(path)
+    }
+}
+
+impl StarryQemuSnapshot {
+    fn is_empty(&self) -> bool {
+        self.qemu_config.is_none()
+    }
+}
+
+impl StarryUbootSnapshot {
+    fn is_empty(&self) -> bool {
+        self.uboot_config.is_none()
+    }
+}
+
+impl StarryCommandSnapshot {
+    pub fn path_in(root: &Path) -> PathBuf {
+        root.join(STARRY_SNAPSHOT_FILE)
     }
 
     pub fn load(root: &Path) -> anyhow::Result<Self> {
@@ -139,7 +225,7 @@ impl AppContext {
             .clone()
             .or_else(|| snapshot.target.clone())
             .unwrap_or_else(|| DEFAULT_ARCEOS_TARGET.to_string());
-        let no_dyn = cli.no_dyn.unwrap_or(snapshot.no_dyn);
+        let plat_dyn = cli.plat_dyn.or(snapshot.plat_dyn);
 
         let resolved_qemu_config = qemu_config
             .clone()
@@ -153,7 +239,7 @@ impl AppContext {
         let request = ResolvedBuildRequest {
             package: package.clone(),
             target: target.clone(),
-            no_dyn,
+            plat_dyn,
             build_info_path,
             qemu_config: resolved_qemu_config.clone(),
             uboot_config: resolved_uboot_config.clone(),
@@ -162,7 +248,7 @@ impl AppContext {
         let snapshot = ArceosCommandSnapshot {
             package: Some(package),
             target: Some(target),
-            no_dyn,
+            plat_dyn,
             qemu: ArceosQemuSnapshot {
                 qemu_config: resolved_qemu_config
                     .as_ref()
@@ -181,6 +267,64 @@ impl AppContext {
     pub fn store_arceos_snapshot(
         &self,
         snapshot: &ArceosCommandSnapshot,
+    ) -> anyhow::Result<PathBuf> {
+        snapshot.store(&self.root)
+    }
+
+    pub fn prepare_starry_request(
+        &self,
+        cli: StarryCliArgs,
+        qemu_config: Option<PathBuf>,
+        uboot_config: Option<PathBuf>,
+    ) -> anyhow::Result<(ResolvedStarryRequest, StarryCommandSnapshot)> {
+        let snapshot = StarryCommandSnapshot::load(&self.root)?;
+        let (arch, target) = resolve_starry_arch_and_target(
+            cli.arch.clone().or_else(|| snapshot.arch.clone()),
+            cli.target.clone().or_else(|| snapshot.target.clone()),
+        )?;
+        let plat_dyn = cli.plat_dyn.or(snapshot.plat_dyn);
+
+        let resolved_qemu_config = qemu_config
+            .clone()
+            .or_else(|| resolve_snapshot_path(&self.root, snapshot.qemu.qemu_config.as_ref()));
+        let resolved_uboot_config = uboot_config
+            .clone()
+            .or_else(|| resolve_snapshot_path(&self.root, snapshot.uboot.uboot_config.as_ref()));
+        let build_info_path =
+            crate::starry::build::resolve_build_info_path(&self.root, &target, cli.config)?;
+
+        let request = ResolvedStarryRequest {
+            package: STARRY_PACKAGE.to_string(),
+            arch: arch.clone(),
+            target: target.clone(),
+            plat_dyn,
+            build_info_path,
+            qemu_config: resolved_qemu_config.clone(),
+            uboot_config: resolved_uboot_config.clone(),
+        };
+
+        let snapshot = StarryCommandSnapshot {
+            arch: Some(arch),
+            target: Some(target),
+            plat_dyn,
+            qemu: StarryQemuSnapshot {
+                qemu_config: resolved_qemu_config
+                    .as_ref()
+                    .map(|path| snapshot_path_value(&self.root, path)),
+            },
+            uboot: StarryUbootSnapshot {
+                uboot_config: resolved_uboot_config
+                    .as_ref()
+                    .map(|path| snapshot_path_value(&self.root, path)),
+            },
+        };
+
+        Ok((request, snapshot))
+    }
+
+    pub fn store_starry_snapshot(
+        &self,
+        snapshot: &StarryCommandSnapshot,
     ) -> anyhow::Result<PathBuf> {
         snapshot.store(&self.root)
     }
@@ -262,8 +406,75 @@ fn snapshot_path_value(root: &Path, path: &Path) -> PathBuf {
     }
 }
 
-fn is_false(value: &bool) -> bool {
-    !*value
+pub fn starry_target_for_arch(arch: &str) -> &'static str {
+    match arch {
+        "aarch64" => "aarch64-unknown-none-softfloat",
+        "x86_64" => "x86_64-unknown-none",
+        "riscv64" => "riscv64gc-unknown-none-elf",
+        "loongarch64" => "loongarch64-unknown-none-softfloat",
+        _ => panic!("unsupported Starry architecture: {arch}"),
+    }
+}
+
+pub fn starry_arch_for_target(target: &str) -> Option<&'static str> {
+    match target {
+        "aarch64-unknown-none-softfloat" => Some("aarch64"),
+        "x86_64-unknown-none" => Some("x86_64"),
+        "riscv64gc-unknown-none-elf" => Some("riscv64"),
+        "loongarch64-unknown-none-softfloat" => Some("loongarch64"),
+        _ => None,
+    }
+}
+
+fn validate_starry_arch_target_pair(arch: &str, target: &str) -> anyhow::Result<()> {
+    let expected_target = starry_target_for_arch_checked(arch)?;
+    if target != expected_target {
+        anyhow::bail!(
+            "Starry arch `{arch}` maps to target `{expected_target}`, but got `{target}`"
+        );
+    }
+    Ok(())
+}
+
+fn resolve_starry_arch_and_target(
+    arch: Option<String>,
+    target: Option<String>,
+) -> anyhow::Result<(String, String)> {
+    match (arch, target) {
+        (Some(arch), Some(target)) => {
+            validate_starry_arch_target_pair(&arch, &target)?;
+            Ok((arch, target))
+        }
+        (Some(arch), None) => Ok((
+            arch.clone(),
+            starry_target_for_arch_checked(&arch)?.to_string(),
+        )),
+        (None, Some(target)) => Ok((starry_arch_for_target_checked(&target)?.to_string(), target)),
+        (None, None) => Ok((
+            DEFAULT_STARRY_ARCH.to_string(),
+            DEFAULT_STARRY_TARGET.to_string(),
+        )),
+    }
+}
+
+pub fn starry_target_for_arch_checked(arch: &str) -> anyhow::Result<&'static str> {
+    match arch {
+        "aarch64" | "x86_64" | "riscv64" | "loongarch64" => Ok(starry_target_for_arch(arch)),
+        _ => anyhow::bail!(
+            "unsupported Starry architecture `{arch}`; expected one of aarch64, x86_64, riscv64, \
+             loongarch64"
+        ),
+    }
+}
+
+pub fn starry_arch_for_target_checked(target: &str) -> anyhow::Result<&'static str> {
+    starry_arch_for_target(target).ok_or_else(|| {
+        anyhow!(
+            "unsupported Starry target `{target}`; expected one of x86_64-unknown-none, \
+             aarch64-unknown-none-softfloat, riscv64gc-unknown-none-elf, \
+             loongarch64-unknown-none-softfloat"
+        )
+    })
 }
 
 #[cfg(test)]
@@ -287,7 +498,7 @@ mod tests {
         let snapshot = ArceosCommandSnapshot {
             package: Some("arceos-helloworld".into()),
             target: Some("target".into()),
-            no_dyn: true,
+            plat_dyn: Some(true),
             qemu: ArceosQemuSnapshot {
                 qemu_config: Some(PathBuf::from("configs/qemu.toml")),
             },
@@ -311,7 +522,7 @@ mod tests {
             r#"
 package = "from-snapshot"
 target = "snapshot-target"
-no_dyn = false
+plat_dyn = false
 
 [qemu]
 qemu_config = "configs/snapshot-qemu.toml"
@@ -334,7 +545,7 @@ uboot_config = "configs/snapshot-uboot.toml"
                     config: Some(PathBuf::from("/tmp/custom-build.toml")),
                     package: Some("from-cli".into()),
                     target: Some("cli-target".into()),
-                    no_dyn: Some(true),
+                    plat_dyn: Some(true),
                 },
                 Some(PathBuf::from("/tmp/qemu.toml")),
                 None,
@@ -343,8 +554,11 @@ uboot_config = "configs/snapshot-uboot.toml"
 
         assert_eq!(request.package, "from-cli");
         assert_eq!(request.target, "cli-target");
-        assert!(request.no_dyn);
-        assert_eq!(request.build_info_path, PathBuf::from("/tmp/custom-build.toml"));
+        assert_eq!(request.plat_dyn, Some(true));
+        assert_eq!(
+            request.build_info_path,
+            PathBuf::from("/tmp/custom-build.toml")
+        );
         assert_eq!(request.qemu_config, Some(PathBuf::from("/tmp/qemu.toml")));
         assert_eq!(
             request.uboot_config,
@@ -352,7 +566,11 @@ uboot_config = "configs/snapshot-uboot.toml"
         );
         assert_eq!(snapshot.package.as_deref(), Some("from-cli"));
         assert_eq!(snapshot.target.as_deref(), Some("cli-target"));
-        assert_eq!(snapshot.qemu.qemu_config, Some(PathBuf::from("/tmp/qemu.toml")));
+        assert_eq!(snapshot.plat_dyn, Some(true));
+        assert_eq!(
+            snapshot.qemu.qemu_config,
+            Some(PathBuf::from("/tmp/qemu.toml"))
+        );
     }
 
     #[test]
@@ -381,7 +599,7 @@ qemu_config = "configs/qemu.toml"
 
         assert_eq!(request.package, "arceos-helloworld");
         assert_eq!(request.target, DEFAULT_ARCEOS_TARGET);
-        assert!(!request.no_dyn);
+        assert_eq!(request.plat_dyn, None);
         assert_eq!(
             request.qemu_config,
             Some(root.path().join("configs/qemu.toml"))
@@ -403,5 +621,177 @@ qemu_config = "configs/qemu.toml"
             .unwrap_err();
 
         assert!(err.to_string().contains("missing ArceOS package"));
+    }
+
+    #[test]
+    fn starry_snapshot_load_returns_default_when_missing() {
+        let root = tempdir().unwrap();
+        let snapshot = StarryCommandSnapshot::load(root.path()).unwrap();
+        assert_eq!(snapshot, StarryCommandSnapshot::default());
+    }
+
+    #[test]
+    fn starry_snapshot_store_round_trips() {
+        let root = tempdir().unwrap();
+        let snapshot = StarryCommandSnapshot {
+            arch: Some("aarch64".into()),
+            target: Some(DEFAULT_STARRY_TARGET.into()),
+            plat_dyn: Some(false),
+            qemu: StarryQemuSnapshot {
+                qemu_config: Some(PathBuf::from("configs/qemu.toml")),
+            },
+            uboot: StarryUbootSnapshot {
+                uboot_config: Some(PathBuf::from("configs/uboot.toml")),
+            },
+        };
+
+        let path = snapshot.store(root.path()).unwrap();
+        let loaded = StarryCommandSnapshot::load(root.path()).unwrap();
+
+        assert_eq!(path, root.path().join(STARRY_SNAPSHOT_FILE));
+        assert_eq!(loaded, snapshot);
+    }
+
+    #[test]
+    fn prepare_starry_request_prefers_cli_over_snapshot() {
+        let root = tempdir().unwrap();
+        fs::write(
+            root.path().join(STARRY_SNAPSHOT_FILE),
+            r#"
+arch = "riscv64"
+target = "riscv64gc-unknown-none-elf"
+plat_dyn = false
+
+[qemu]
+qemu_config = "configs/snapshot-qemu.toml"
+
+[uboot]
+uboot_config = "configs/snapshot-uboot.toml"
+"#,
+        )
+        .unwrap();
+
+        let app = AppContext {
+            tool: Tool::new(ToolConfig::default()).unwrap(),
+            build_config_path: None,
+            root: root.path().to_path_buf(),
+        };
+
+        let (request, snapshot) = app
+            .prepare_starry_request(
+                StarryCliArgs {
+                    config: Some(PathBuf::from("/tmp/starry-build.toml")),
+                    arch: Some("aarch64".into()),
+                    target: Some(DEFAULT_STARRY_TARGET.into()),
+                    plat_dyn: Some(true),
+                },
+                Some(PathBuf::from("/tmp/qemu.toml")),
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(request.package, STARRY_PACKAGE);
+        assert_eq!(request.arch, DEFAULT_STARRY_ARCH);
+        assert_eq!(request.target, DEFAULT_STARRY_TARGET);
+        assert_eq!(request.plat_dyn, Some(true));
+        assert_eq!(
+            request.build_info_path,
+            PathBuf::from("/tmp/starry-build.toml")
+        );
+        assert_eq!(request.qemu_config, Some(PathBuf::from("/tmp/qemu.toml")));
+        assert_eq!(
+            request.uboot_config,
+            Some(root.path().join("configs/snapshot-uboot.toml"))
+        );
+        assert_eq!(snapshot.arch.as_deref(), Some(DEFAULT_STARRY_ARCH));
+        assert_eq!(snapshot.target.as_deref(), Some(DEFAULT_STARRY_TARGET));
+        assert_eq!(snapshot.plat_dyn, Some(true));
+    }
+
+    #[test]
+    fn prepare_starry_request_uses_snapshot_and_default_arch() {
+        let root = tempdir().unwrap();
+        fs::write(
+            root.path().join(STARRY_SNAPSHOT_FILE),
+            r#"
+[qemu]
+qemu_config = "configs/qemu.toml"
+"#,
+        )
+        .unwrap();
+
+        let app = AppContext {
+            tool: Tool::new(ToolConfig::default()).unwrap(),
+            build_config_path: None,
+            root: root.path().to_path_buf(),
+        };
+
+        let (request, snapshot) = app
+            .prepare_starry_request(StarryCliArgs::default(), None, None)
+            .unwrap();
+
+        assert_eq!(request.package, STARRY_PACKAGE);
+        assert_eq!(request.arch, DEFAULT_STARRY_ARCH);
+        assert_eq!(request.target, DEFAULT_STARRY_TARGET);
+        assert_eq!(request.plat_dyn, None);
+        assert_eq!(
+            request.build_info_path,
+            root.path()
+                .join("os/StarryOS/starryos/.build-aarch64-unknown-none-softfloat.toml")
+        );
+        assert_eq!(
+            request.qemu_config,
+            Some(root.path().join("configs/qemu.toml"))
+        );
+        assert_eq!(snapshot.arch.as_deref(), Some(DEFAULT_STARRY_ARCH));
+        assert_eq!(snapshot.target.as_deref(), Some(DEFAULT_STARRY_TARGET));
+    }
+
+    #[test]
+    fn prepare_starry_request_rejects_mismatched_arch_and_target() {
+        let root = tempdir().unwrap();
+        let app = AppContext {
+            tool: Tool::new(ToolConfig::default()).unwrap(),
+            build_config_path: None,
+            root: root.path().to_path_buf(),
+        };
+
+        let err = app
+            .prepare_starry_request(
+                StarryCliArgs {
+                    config: None,
+                    arch: Some("aarch64".into()),
+                    target: Some("x86_64-unknown-none".into()),
+                    plat_dyn: None,
+                },
+                None,
+                None,
+            )
+            .unwrap_err();
+
+        assert!(err.to_string().contains("maps to target"));
+    }
+
+    #[test]
+    fn starry_arch_target_mapping_helpers_work() {
+        assert_eq!(
+            starry_target_for_arch_checked("aarch64").unwrap(),
+            DEFAULT_STARRY_TARGET
+        );
+        assert_eq!(
+            starry_arch_for_target_checked("x86_64-unknown-none").unwrap(),
+            "x86_64"
+        );
+        assert!(starry_target_for_arch_checked("mips64").is_err());
+        assert!(starry_arch_for_target_checked("mips64-unknown-none").is_err());
+    }
+
+    #[test]
+    fn resolve_starry_arch_and_target_infers_arch_from_target() {
+        let (arch, target) =
+            resolve_starry_arch_and_target(None, Some("x86_64-unknown-none".into())).unwrap();
+
+        assert_eq!(arch, "x86_64");
+        assert_eq!(target, "x86_64-unknown-none");
     }
 }

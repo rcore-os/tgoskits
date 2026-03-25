@@ -9,13 +9,13 @@ extern crate anyhow;
 
 use clap::{Parser, Subcommand};
 
-use crate::arceos::ArceOS;
+use crate::{arceos::ArceOS, starry::Starry};
 
 pub mod arceos;
 pub mod context;
 mod logging;
 pub mod process;
-// pub mod starry;
+pub mod starry;
 
 #[derive(Parser)]
 struct Cli {
@@ -30,6 +30,11 @@ enum Commands {
         #[command(subcommand)]
         command: arceos::Command,
     },
+    /// StarryOS build commands
+    Starry {
+        #[command(subcommand)]
+        command: starry::Command,
+    },
 }
 
 pub async fn run() -> anyhow::Result<()> {
@@ -37,6 +42,9 @@ pub async fn run() -> anyhow::Result<()> {
     match cli.command {
         Commands::Arceos { command } => {
             ArceOS::new()?.execute(command).await?;
+        }
+        Commands::Starry { command } => {
+            Starry::new()?.execute(command).await?;
         }
     }
 
