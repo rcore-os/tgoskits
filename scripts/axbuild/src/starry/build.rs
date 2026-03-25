@@ -1,8 +1,11 @@
 use std::{
     collections::HashMap,
+    fs,
     path::{Path, PathBuf},
+    process::Command,
 };
 
+use anyhow::Context;
 use ostool::build::config::Cargo;
 
 pub type StarryBuildInfo = crate::arceos::build::ArceosBuildInfo;
@@ -39,6 +42,84 @@ pub fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result<Starry
 
 pub fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Result<Cargo> {
     to_cargo_config(load_build_info(request)?, request)
+}
+
+const ROOTFS_URL: &str = "https://github.com/Starry-OS/rootfs/releases/download/20260214";
+
+pub fn rootfs_image_name(arch: &str) -> String {
+    format!("rootfs-{arch}.img")
+}
+
+pub fn rootfs_artifact_dir(workspace_root: &Path, target: &str) -> PathBuf {
+    workspace_root.join("target").join(target)
+}
+
+pub fn rootfs_disk_image_path(workspace_root: &Path, target: &str) -> PathBuf {
+    rootfs_artifact_dir(workspace_root, target).join("disk.img")
+}
+
+pub fn default_qemu_args(disk_img: &Path) -> Vec<String> {
+    vec![
+        "-device".to_string(),
+        "virtio-blk-pci,drive=disk0".to_string(),
+        "-drive".to_string(),
+        format!("id=disk0,if=none,format=raw,file={}", disk_img.display()),
+        "-device".to_string(),
+        "virtio-net-pci,netdev=net0".to_string(),
+        "-netdev".to_string(),
+        "user,id=net0,hostfwd=tcp::5555-:5555".to_string(),
+    ]
+}
+
+pub fn ensure_rootfs_in_target_dir(
+    workspace_root: &Path,
+    arch: &str,
+    target: &str,
+) -> anyhow::Result<PathBuf> {
+    let artifact_dir = rootfs_artifact_dir(workspace_root, target);
+    let disk_img = artifact_dir.join("disk.img");
+    let rootfs_name = rootfs_image_name(arch);
+    let rootfs_img = artifact_dir.join(&rootfs_name);
+    let rootfs_xz = artifact_dir.join(format!("{rootfs_name}.xz"));
+
+    fs::create_dir_all(&artifact_dir)
+        .with_context(|| format!("failed to create {}", artifact_dir.display()))?;
+
+    if !rootfs_img.exists() {
+        println!("image not found, downloading {}...", rootfs_name);
+        let url = format!("{ROOTFS_URL}/{rootfs_name}.xz");
+        let status = Command::new("curl")
+            .arg("-f")
+            .arg("-L")
+            .arg(&url)
+            .arg("-o")
+            .arg(&rootfs_xz)
+            .status()
+            .with_context(|| format!("failed to spawn curl for {url}"))?;
+        if !status.success() {
+            anyhow::bail!("failed to download {}", url);
+        }
+
+        let status = Command::new("xz")
+            .arg("-d")
+            .arg("-f")
+            .arg(&rootfs_xz)
+            .status()
+            .with_context(|| format!("failed to spawn xz for {}", rootfs_xz.display()))?;
+        if !status.success() {
+            anyhow::bail!("failed to decompress {}", rootfs_xz.display());
+        }
+    }
+
+    fs::copy(&rootfs_img, &disk_img).with_context(|| {
+        format!(
+            "failed to copy {} to {}",
+            rootfs_img.display(),
+            disk_img.display()
+        )
+    })?;
+
+    Ok(disk_img)
 }
 
 pub fn to_cargo_config(
@@ -300,5 +381,35 @@ CUSTOM = "1"
         assert!(cargo.features.contains(&"axfeat/defplat".to_string()));
         assert!(!cargo.features.contains(&"axfeat/plat-dyn".to_string()));
         assert!(cargo.args.iter().any(|arg| arg.contains("-Tlinker.x")));
+    }
+
+    #[test]
+    fn rootfs_disk_image_path_uses_workspace_target_triple_dir() {
+        let root = Path::new("/tmp/workspace");
+        let disk_img = rootfs_disk_image_path(root, "aarch64-unknown-none-softfloat");
+
+        assert_eq!(
+            disk_img,
+            PathBuf::from("/tmp/workspace/target/aarch64-unknown-none-softfloat/disk.img")
+        );
+    }
+
+    #[test]
+    fn default_qemu_args_include_disk_and_network_defaults() {
+        let args = default_qemu_args(Path::new("/tmp/disk.img"));
+
+        assert_eq!(
+            args,
+            vec![
+                "-device".to_string(),
+                "virtio-blk-pci,drive=disk0".to_string(),
+                "-drive".to_string(),
+                "id=disk0,if=none,format=raw,file=/tmp/disk.img".to_string(),
+                "-device".to_string(),
+                "virtio-net-pci,netdev=net0".to_string(),
+                "-netdev".to_string(),
+                "user,id=net0,hostfwd=tcp::5555-:5555".to_string(),
+            ]
+        );
     }
 }

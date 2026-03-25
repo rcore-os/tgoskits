@@ -278,10 +278,21 @@ impl AppContext {
         uboot_config: Option<PathBuf>,
     ) -> anyhow::Result<(ResolvedStarryRequest, StarryCommandSnapshot)> {
         let snapshot = StarryCommandSnapshot::load(&self.root)?;
-        let (arch, target) = resolve_starry_arch_and_target(
-            cli.arch.clone().or_else(|| snapshot.arch.clone()),
-            cli.target.clone().or_else(|| snapshot.target.clone()),
-        )?;
+        let effective_arch = cli.arch.clone().or_else(|| {
+            if cli.target.is_some() {
+                None
+            } else {
+                snapshot.arch.clone()
+            }
+        });
+        let effective_target = cli.target.clone().or_else(|| {
+            if cli.arch.is_some() {
+                None
+            } else {
+                snapshot.target.clone()
+            }
+        });
+        let (arch, target) = resolve_starry_arch_and_target(effective_arch, effective_target)?;
         let plat_dyn = cli.plat_dyn.or(snapshot.plat_dyn);
 
         let resolved_qemu_config = qemu_config
@@ -776,6 +787,83 @@ qemu_config = "configs/qemu.toml"
             .unwrap_err();
 
         assert!(err.to_string().contains("maps to target"));
+    }
+
+    #[test]
+    fn prepare_starry_request_cli_arch_overrides_snapshot_target() {
+        let root = tempdir().unwrap();
+        fs::write(
+            root.path().join(STARRY_SNAPSHOT_FILE),
+            r#"
+arch = "aarch64"
+target = "aarch64-unknown-none-softfloat"
+"#,
+        )
+        .unwrap();
+
+        let app = AppContext {
+            tool: Tool::new(ToolConfig::default()).unwrap(),
+            build_config_path: None,
+            root: root.path().to_path_buf(),
+        };
+
+        let (request, snapshot) = app
+            .prepare_starry_request(
+                StarryCliArgs {
+                    config: None,
+                    arch: Some("riscv64".into()),
+                    target: None,
+                    plat_dyn: None,
+                },
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(request.arch, "riscv64");
+        assert_eq!(request.target, "riscv64gc-unknown-none-elf");
+        assert_eq!(snapshot.arch.as_deref(), Some("riscv64"));
+        assert_eq!(
+            snapshot.target.as_deref(),
+            Some("riscv64gc-unknown-none-elf")
+        );
+    }
+
+    #[test]
+    fn prepare_starry_request_cli_target_overrides_snapshot_arch() {
+        let root = tempdir().unwrap();
+        fs::write(
+            root.path().join(STARRY_SNAPSHOT_FILE),
+            r#"
+arch = "aarch64"
+target = "aarch64-unknown-none-softfloat"
+"#,
+        )
+        .unwrap();
+
+        let app = AppContext {
+            tool: Tool::new(ToolConfig::default()).unwrap(),
+            build_config_path: None,
+            root: root.path().to_path_buf(),
+        };
+
+        let (request, snapshot) = app
+            .prepare_starry_request(
+                StarryCliArgs {
+                    config: None,
+                    arch: None,
+                    target: Some("x86_64-unknown-none".into()),
+                    plat_dyn: None,
+                },
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(request.arch, "x86_64");
+        assert_eq!(request.target, "x86_64-unknown-none");
+        assert_eq!(snapshot.arch.as_deref(), Some("x86_64"));
+        assert_eq!(snapshot.target.as_deref(), Some("x86_64-unknown-none"));
     }
 
     #[test]

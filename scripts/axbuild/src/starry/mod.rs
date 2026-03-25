@@ -2,9 +2,12 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
 
-use crate::context::{AppContext, StarryCliArgs};
+use crate::context::{
+    AppContext, DEFAULT_STARRY_ARCH, StarryCliArgs, starry_target_for_arch_checked,
+};
 
 pub mod build;
+pub mod rootfs;
 
 /// StarryOS subcommands
 #[derive(Subcommand)]
@@ -13,6 +16,8 @@ pub enum Command {
     Build(ArgsBuild),
     /// Build and run StarryOS application
     Qemu(ArgsQemu),
+    /// Download rootfs image into workspace target directory
+    Rootfs(ArgsRootfs),
 
     /// Build and run StarryOS application with U-Boot
     Uboot(ArgsUboot),
@@ -48,6 +53,12 @@ pub struct ArgsUboot {
     pub uboot_config: Option<PathBuf>,
 }
 
+#[derive(Args)]
+pub struct ArgsRootfs {
+    #[arg(long)]
+    pub arch: Option<String>,
+}
+
 pub struct Starry {
     app: AppContext,
 }
@@ -77,6 +88,9 @@ impl Starry {
             Command::Qemu(args) => {
                 self.qemu(args).await?;
             }
+            Command::Rootfs(args) => {
+                self.rootfs(args).await?;
+            }
             Command::Uboot(args) => {
                 self.uboot(args).await?;
             }
@@ -104,9 +118,26 @@ impl Starry {
         self.app.store_starry_snapshot(&snapshot)?;
 
         let cargo = build::load_cargo_config(&request)?;
+        let qemu_args = rootfs::default_qemu_args(self.app.workspace_root(), &request).await?;
         self.app
-            .qemu(cargo, request.build_info_path, request.qemu_config)
+            .qemu(
+                cargo,
+                request.build_info_path,
+                request.qemu_config,
+                qemu_args,
+                vec![],
+                vec![],
+            )
             .await?;
+        Ok(())
+    }
+
+    async fn rootfs(&mut self, args: ArgsRootfs) -> anyhow::Result<()> {
+        let arch = args.arch.unwrap_or_else(|| DEFAULT_STARRY_ARCH.to_string());
+        let target = starry_target_for_arch_checked(&arch)?.to_string();
+        let disk_img =
+            rootfs::ensure_rootfs_in_target_dir(self.app.workspace_root(), &arch, &target).await?;
+        println!("rootfs ready at {}", disk_img.display());
         Ok(())
     }
 
@@ -180,5 +211,14 @@ mod tests {
         assert_eq!(qemu.build.arch.as_deref(), Some("x86_64"));
         assert_eq!(uboot.build.target.as_deref(), Some("x86_64-unknown-none"));
         assert_eq!(qemu.build.plat_dyn, Some(true));
+    }
+
+    #[test]
+    fn rootfs_args_allow_arch_override() {
+        let args = ArgsRootfs {
+            arch: Some("riscv64".to_string()),
+        };
+
+        assert_eq!(args.arch.as_deref(), Some("riscv64"));
     }
 }
