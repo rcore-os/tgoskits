@@ -60,7 +60,7 @@ const ESR_ELx_S1PTW: usize = 1 << ESR_ELx_S1PTW_SHIFT;
 /// This macro is unsafe because it directly executes assembly code.
 ///
 /// Example usage:
-/// ```rust
+/// ```ignore
 /// arm_at!("s1e1r", address);
 /// ```
 macro_rules! arm_at {

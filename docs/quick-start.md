@@ -172,7 +172,7 @@ cargo xtask qemu \
 除手动运行 QEMU 外，根工作区还提供统一的测试入口。该命令使用独立的测试逻辑，会自动下载所需镜像，无需手动准备 `os/axvisor/tmp/rootfs.img`：
 
 ```bash
-cargo xtask test axvisor --target aarch64-unknown-none-softfloat
+cargo xtask test qemu axvisor --target aarch64
 ```
 
 ## 7. 开发验证
@@ -196,7 +196,7 @@ cargo xtask test axvisor --target aarch64-unknown-none-softfloat
 cargo xtask test std
 cargo xtask test arceos --target riscv64gc-unknown-none-elf
 cargo xtask test starry --target riscv64gc-unknown-none-elf
-cargo xtask test axvisor --target aarch64-unknown-none-softfloat
+cargo xtask test qemu axvisor --target aarch64
 ```
 
 ## 8. 进阶学习

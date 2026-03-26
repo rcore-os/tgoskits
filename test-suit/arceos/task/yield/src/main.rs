@@ -36,5 +36,5 @@ fn main() {
         #[cfg(all(not(feature = "sched-rr"), not(feature = "sched-cfs")))]
         thread::yield_now();
     }
-    println!("Task yielding tests run OK!");
+    println!("All tests passed!");
 }

@@ -113,7 +113,7 @@ esac
 
 IFS='|' read -r IMAGE_NAME VMCONFIG BUILD_CONFIG QEMU_CONFIG KERNEL_FILE SUCCESS_MSG <<< "$CFG"
 # NOTE:
-#  - `cargo xtask image download` 默认把镜像解压到 `/tmp/.axvisor-images/<IMAGE_NAME>`
+#  - `cargo axvisor image pull` 默认把镜像解压到 `/tmp/.axvisor-images/<IMAGE_NAME>`
 #  - 这里直接使用该目录作为镜像来源，避免路径不一致
 IMAGE_DIR="${IMAGE_STORAGE_ROOT}/${IMAGE_NAME}"
 VMCONFIG_TEMPLATE_PATH="${REPO_ROOT}/configs/vms/${VMCONFIG}"
@@ -128,13 +128,13 @@ echo "[setup_qemu] Guest: ${GUEST} | Repo: ${REPO_ROOT}"
 
 echo "[setup_qemu] Step 1: ensure guest image is downloaded..."
 if [ ! -d "${IMAGE_DIR}" ]; then
-  echo "  -> Image directory ${IMAGE_DIR} not found, downloading via cargo xtask image..."
+  echo "  -> Image directory ${IMAGE_DIR} not found, downloading via cargo axvisor image..."
   echo "  -> Download attempt 1/${IMAGE_DOWNLOAD_MAX_ATTEMPTS}"
-  if ! (cd "${REPO_ROOT}" && cargo xtask image download "${IMAGE_NAME}"); then
+  if ! (cd "${REPO_ROOT}" && cargo axvisor image pull "${IMAGE_NAME}"); then
     echo "  -> Attempt 1/${IMAGE_DOWNLOAD_MAX_ATTEMPTS} failed. Trying to bootstrap registry..."
     bootstrap_image_registry
     echo "  -> Download attempt 2/${IMAGE_DOWNLOAD_MAX_ATTEMPTS}"
-    (cd "${REPO_ROOT}" && cargo xtask image download "${IMAGE_NAME}")
+    (cd "${REPO_ROOT}" && cargo axvisor image pull "${IMAGE_NAME}")
   fi
 else
   echo "  -> Found existing image directory: ${IMAGE_DIR}"
@@ -155,7 +155,7 @@ if [[ "$GUEST" == "nimbos" ]]; then
   BIOS_IMAGE="${IMAGE_DIR}/axvm-bios.bin"
   if [ ! -f "${BIOS_IMAGE}" ]; then
     echo "ERROR: axvm-bios.bin not found at ${BIOS_IMAGE}" >&2
-    echo "  -> Please re-download the NimbOS image via 'cargo xtask image download qemu_x86_64_nimbos'." >&2
+    echo "  -> Please re-download the NimbOS image via 'cargo axvisor image pull qemu_x86_64_nimbos'." >&2
     exit 1
   fi
 fi

@@ -114,7 +114,7 @@ After booting, you will enter the Rust user shell (`>>` prompt). Type `usertests
 
 The script automates three steps, eliminating manual work:
 
-1. **Download images**: calls `cargo xtask image download` to fetch guest images to `/tmp/.axvisor-images/`
+1. **Download images**: calls `cargo axvisor image pull` to fetch and extract guest images to `/tmp/.axvisor-images/`
 2. **Generate temp configs**: copies VM config templates to `tmp/vmconfigs/*.generated.toml`, then uses `sed` to update `kernel_path` (and `bios_path` for NimbOS) to actual image paths without modifying tracked files in `configs/vms/*.toml`
 3. **Prepare rootfs**: copies `rootfs.img` to the project's `tmp/` directory for QEMU to use
 
@@ -136,7 +136,7 @@ QEMU is not installed. Run the `apt install` command from Step 1.
 
 ### `Auto syncing from registry ... timed out`
 
-This usually indicates unstable access to GitHub Raw endpoints. `scripts/setup_qemu.sh` includes one built-in recovery attempt: when the first image download fails, it bootstraps a local registry and retries once automatically. The script also has a default fallback registry (currently pointing to `v0.0.22.toml`).
+This usually indicates unstable access to GitHub Raw endpoints. `cargo axvisor image pull` now handles registry bootstrap internally: it prefers the default registry, follows the included registry when present, and falls back to the built-in fallback registry (`v0.0.22.toml`) when the default endpoint is unavailable.
 
 If your network is unstable for specific registry URLs, you can override the fallback registry:
 
@@ -148,4 +148,3 @@ export AXVISOR_REGISTRY_FALLBACK_URL="https://raw.githubusercontent.com/arceos-h
 ### First build is very slow
 
 This is expected. AxVisor has many dependencies, and the first compilation needs to download and build all crates. Subsequent incremental builds will be much faster.
-

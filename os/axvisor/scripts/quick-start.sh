@@ -140,10 +140,10 @@ setup_qemu_aarch64() {
     run_cmd mkdir -p tmp/{configs,images}
 
     info "Downloading ArceOS image..."
-    run_cmd cargo xtask image download qemu_aarch64_arceos --output-dir tmp/images
+    run_cmd cargo axvisor image pull qemu_aarch64_arceos --output-dir tmp/images
 
     info "Downloading Linux image..."
-    run_cmd cargo xtask image download qemu_aarch64_linux --output-dir tmp/images
+    run_cmd cargo axvisor image pull qemu_aarch64_linux --output-dir tmp/images
 
     info "Preparing board config file..."
     run_cmd cp configs/board/qemu-aarch64.toml tmp/configs/
@@ -203,7 +203,7 @@ setup_qemu_x86_64() {
     run_cmd mkdir -p tmp/{configs,images}
 
     info "Downloading NimbOS image..."
-    run_cmd cargo xtask image download qemu_x86_64_nimbos --output-dir tmp/images
+    run_cmd cargo axvisor image pull qemu_x86_64_nimbos --output-dir tmp/images
 
     info "Preparing board config file..."
     run_cmd cp configs/board/qemu-x86_64.toml tmp/configs/
@@ -267,10 +267,10 @@ setup_phytiumpi() {
     fi
 
     info "Downloading ArceOS image..."
-    run_cmd cargo xtask image download phytiumpi_arceos --output-dir tmp/images
+    run_cmd cargo axvisor image pull phytiumpi_arceos --output-dir tmp/images
 
     info "Downloading Linux image (including device tree)..."
-    run_cmd cargo xtask image download phytiumpi_linux --output-dir tmp/images
+    run_cmd cargo axvisor image pull phytiumpi_linux --output-dir tmp/images
 
     info "Preparing board config file..."
     run_cmd cp configs/board/phytiumpi.toml tmp/configs/
@@ -386,10 +386,10 @@ setup_roc_rk3568_pc() {
     fi
 
     info "Downloading ArceOS image..."
-    run_cmd cargo xtask image download roc-rk3568-pc_arceos --output-dir tmp/images
+    run_cmd cargo axvisor image pull roc-rk3568-pc_arceos --output-dir tmp/images
 
     info "Downloading Linux image (including device tree)..."
-    run_cmd cargo xtask image download roc-rk3568-pc_linux --output-dir tmp/images
+    run_cmd cargo axvisor image pull roc-rk3568-pc_linux --output-dir tmp/images
 
     info "Preparing board config file..."
     run_cmd cp configs/board/roc-rk3568-pc.toml tmp/configs/

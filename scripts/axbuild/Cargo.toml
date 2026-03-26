@@ -1,40 +1,45 @@
 [package]
-name = "axbuild"
-edition.workspace = true
-version.workspace = true
 authors.workspace = true
-license.workspace = true
-homepage.workspace = true
-repository.workspace = true
-keywords.workspace = true
 categories.workspace = true
+edition.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+license.workspace = true
+name = "axbuild"
+repository.workspace = true
+version.workspace = true
 
 [dependencies]
-anyhow = { workspace = true }
-ostool = { workspace = true }
-object = "0.38"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = { version = "1" }
-toml = "0.9"
+anyhow = {workspace = true}
+axvmconfig = {version = "0.2", features = ["std"]}
 cargo_metadata = "0.23"
-clap = { version = "4.6", features = ["derive"], optional = true }
-tokio = { version = "1.0", features = ["process"], optional = true }
-tracing = "0.1"
+chrono = {version = "0.4", features = ["serde"]}
+clap = {version = "4.6", features = ["derive"], optional = true}
+colored = {version = "3"}
+futures-util = "0.3"
+flate2 = {version = "1.0"}
+indicatif = "0.18"
+jkconfig = {version = "0.1"}
 log = "0.4"
-flate2 = { version = "1.0" }
-tar = { version = "0.4" }
-regex = { version = "1.12" }
-reqwest = { version = "0.13" }
-chrono = { version = "0.4", features = ["serde"] }
-sha2 = { version = "0.10" }
-schemars = { version = "1", features = ["derive"] }
-colored = { version = "3" }
-jkconfig = { version = "0.1" }
-axvmconfig = { version = "0.2", features = ["std"] }
+object = "0.38"
+ostool = {workspace = true}
+regex = {version = "1.12"}
+reqwest = {version = "0.13", features = ["stream"]}
+schemars = {workspace = true, features = ["derive"]}
+serde = {version = "1.0", features = ["derive"]}
+serde_json = {version = "1"}
+sha2 = {version = "0.10"}
+tar = {version = "0.4"}
+tokio = {version = "1.0", features = ["fs", "io-util", "macros", "process", "rt-multi-thread"], optional = true}
+toml.workspace = true
+tracing = "0.1"
+tracing-log = "0.2"
+tracing-subscriber = {version = "0.3", features = ["fmt", "std", "time"]}
+xz2 = "0.1"
 
 [features]
-default = ["cli"]
 cli = ["clap", "tokio"]
+default = ["cli"]
 
 [dev-dependencies]
 tempfile = "3"

@@ -22,6 +22,9 @@ cfg_if::cfg_if! {
         #[allow(dead_code)]
         pub type AxVCpuCreateConfig = ();
 
+        /// x86_64 EPT always uses 4-level page tables.
+        pub fn max_guest_page_table_levels() -> usize { 4 }
+
         // Note:
         // According to the requirements of `x86_vcpu`,
         // users of the `x86_vcpu` crate need to implement the `PhysFrameIf` trait for it with the help of `crate_interface`.
@@ -33,12 +36,17 @@ cfg_if::cfg_if! {
         pub use riscv_vcpu::RISCVPerCpu as AxVMArchPerCpuImpl;
         pub use riscv_vcpu::RISCVVCpuCreateConfig as AxVCpuCreateConfig;
         pub use riscv_vcpu::has_hardware_support;
+
+        /// RISC-V uses Sv39 (3 levels) or Sv48 (4 levels) for guest page tables.
+        /// Default to 4 levels (Sv48) for maximum address space.
+        pub fn max_guest_page_table_levels() -> usize { 4 }
     } else if #[cfg(target_arch = "aarch64")] {
         pub use arm_vcpu::Aarch64VCpu as AxArchVCpuImpl;
         pub use arm_vcpu::Aarch64PerCpu as AxVMArchPerCpuImpl;
         pub use arm_vcpu::Aarch64VCpuCreateConfig as AxVCpuCreateConfig;
         pub use arm_vcpu::Aarch64VCpuSetupConfig as AxVCpuSetupConfig;
         pub use arm_vcpu::has_hardware_support;
+        pub use arm_vcpu::max_guest_page_table_levels;
 
         pub use arm_vgic::vtimer::get_sysreg_device;
     }

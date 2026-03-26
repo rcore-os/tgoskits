@@ -26,16 +26,16 @@ Axvisor 的构建与运行由 `os/axvisor` 自带的 xtask 提供，而非根 `c
 ```bash
 # 仓库根目录
 cargo axvisor defconfig qemu-aarch64
-cargo axvisor build
-cargo axvisor qemu
+cargo axvisor build --config os/axvisor/.build-aarch64-unknown-none-softfloat.toml
+cargo axvisor qemu --config os/axvisor/.build-aarch64-unknown-none-softfloat.toml --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
 ```
 
 ```bash
 # Axvisor 子目录
 cd os/axvisor
 cargo xtask defconfig qemu-aarch64
-cargo xtask build
-cargo xtask qemu
+cargo axvisor build --config os/axvisor/.build-aarch64-unknown-none-softfloat.toml
+cargo axvisor qemu --config os/axvisor/.build-aarch64-unknown-none-softfloat.toml --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
 ```
 
 本地 xtask 提供以下子命令：
@@ -72,9 +72,8 @@ cd os/axvisor
 准备工作完成后，执行以下命令：
 
 ```bash
-cd os/axvisor
-cargo xtask qemu \
-  --build-config configs/board/qemu-aarch64.toml \
+cargo axvisor qemu \
+  --config os/axvisor/.build-aarch64-unknown-none-softfloat.toml \
   --qemu-config .github/workflows/qemu-aarch64.toml \
   --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
 ```
@@ -92,15 +91,17 @@ cargo xtask qemu \
 
 ```bash
 cargo axvisor defconfig qemu-aarch64
-cargo axvisor build
-cargo axvisor qemu
+cargo axvisor build --config os/axvisor/.build-aarch64-unknown-none-softfloat.toml
+cargo axvisor qemu --config os/axvisor/.build-aarch64-unknown-none-softfloat.toml
 ```
 
 除非已手动准备好以下资源，否则 QEMU 将因缺少 rootfs 或 VM 配置而启动失败：
 
-- `.build.toml`
+- `.build-aarch64-unknown-none-softfloat.toml`
 - 可用的 `vmconfigs`
 - `os/axvisor/tmp/rootfs.img`
+
+另外，`cargo axvisor build` 和 `cargo axvisor qemu` 都支持重复的 `--vmconfigs`。这些路径不会直接传给通用 QEMU runner，而是会转换成 `AXVISOR_VM_CONFIGS` 环境变量，供 Axvisor 的 `build.rs` 在编译期嵌入客户机配置。
 
 ## 4. 架构概览
 
@@ -226,7 +227,7 @@ cargo xtask qemu \
 ### 自动化回归测试
 
 ```bash
-cargo xtask test axvisor --target aarch64-unknown-none-softfloat
+cargo xtask test qemu axvisor --target aarch64
 ```
 
 这条命令属于根工作区测试矩阵，不等价于本地 `cargo xtask qemu ...`。它会走自己的测试逻辑，并自动确保所需镜像已下载；当前 AArch64 测试默认使用的是 Linux guest 测试配置，而不是你手工运行的 ArceOS guest 路径。
@@ -292,5 +293,5 @@ cargo xtask qemu \
 
 - [axvisor-internals.md](axvisor-internals.md): 系统理解 Axvisor 的五层架构、VMM 启动链、vCPU 任务模型与 `axvisor_api`
 - [components.md](components.md): 从组件角度看 Axvisor 与 ArceOS / StarryOS 的共享依赖
-- [build-system.md](build-system.md): 理解 `cargo axvisor` 与根 `cargo xtask test axvisor` 的边界
+- [build-system.md](build-system.md): 理解 `cargo axvisor` 与根 `cargo xtask test qemu axvisor` 的边界
 - [quick-start.md](quick-start.md): 如果你只是想先把第一条 QEMU 路径跑通

@@ -77,5 +77,5 @@ fn main() {
     while FINISHED_TASKS.load(Ordering::Relaxed) < NUM_TASKS {
         thread::yield_now();
     }
-    println!("Task affinity tests run OK!");
+    println!("All tests passed!");
 }

@@ -1,94 +1,167 @@
-// Copyright 2025 The tgoskits Team
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
-pub mod build;
-pub mod config;
-pub mod context;
-pub mod features;
-pub mod ostool;
-pub mod platform;
-pub mod qemu;
-
 use std::path::PathBuf;
 
-pub use build::{BuildOutput, Builder, PreparedArtifacts, prepare_artifacts};
-pub use config::{
-    AVAILABLE_BOARDS, ArceosConfig, ArceosConfigOverride, Arch, BuildMode, LogLevel, NetDev,
-    QEMU_CONFIG_FILE_NAME, QemuOptions, apply_defconfig, config_path, load_board_config,
-    load_config, parse_qemu_options, resolve_package_app_dir, save_config,
-};
-pub use context::RunScope;
-pub use features::FeatureResolver;
-pub use platform::PlatformResolver;
-pub use qemu::QemuRunner;
+use clap::{Args, Subcommand};
 
-use crate::arceos::context::AxContext;
+use crate::context::{AppContext, BuildCliArgs, QemuRunConfig};
 
-pub struct AxBuild {
-    ctx: AxContext,
+pub mod build;
+
+/// ArceOS subcommands
+#[derive(Subcommand)]
+pub enum Command {
+    /// Build ArceOS application
+    Build(ArgsBuild),
+    /// Build and run ArceOS application
+    Qemu(ArgsQemu),
+
+    /// Build and run ArceOS application with U-Boot
+    Uboot(ArgsUboot),
 }
 
-impl AxBuild {
-    pub fn new(ctx: AxContext) -> Self {
-        Self { ctx }
+#[derive(Args)]
+pub struct ArgsBuild {
+    #[arg(short, long)]
+    pub config: Option<PathBuf>,
+    #[arg(short, long)]
+    pub package: Option<String>,
+    #[arg(short, long)]
+    pub target: Option<String>,
+    #[arg(long = "plat_dyn", alias = "plat-dyn")]
+    pub plat_dyn: Option<bool>,
+}
+
+#[derive(Args)]
+pub struct ArgsQemu {
+    #[command(flatten)]
+    pub build: ArgsBuild,
+
+    #[arg(long)]
+    pub qemu_config: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct ArgsUboot {
+    #[command(flatten)]
+    pub build: ArgsBuild,
+
+    #[arg(long)]
+    pub uboot_config: Option<PathBuf>,
+}
+
+pub struct ArceOS {
+    app: AppContext,
+}
+
+impl From<&ArgsBuild> for BuildCliArgs {
+    fn from(args: &ArgsBuild) -> Self {
+        Self {
+            config: args.config.clone(),
+            package: args.package.clone(),
+            target: args.target.clone(),
+            plat_dyn: args.plat_dyn,
+        }
+    }
+}
+
+impl ArceOS {
+    pub fn new() -> anyhow::Result<Self> {
+        let app = AppContext::new()?;
+        Ok(Self { app })
     }
 
-    pub fn from_overrides(
-        overrides: ArceosConfigOverride,
-        package: Option<String>,
-        qemu_config_path: Option<PathBuf>,
-        run_scope: RunScope,
-    ) -> anyhow::Result<Self> {
-        let ctx = AxContext::new(overrides, package, qemu_config_path, run_scope)?;
-        Ok(Self::new(ctx))
+    pub async fn execute(&mut self, command: Command) -> anyhow::Result<()> {
+        match command {
+            Command::Build(args) => {
+                self.build(args).await?;
+            }
+            Command::Qemu(args) => {
+                self.qemu(args).await?;
+            }
+            Command::Uboot(args) => {
+                self.uboot(args).await?;
+            }
+        }
+        Ok(())
     }
 
-    pub async fn build(self) -> anyhow::Result<BuildOutput> {
-        let builder = Builder::new(self.ctx);
-        builder.build().await
+    async fn build(&mut self, args: ArgsBuild) -> anyhow::Result<()> {
+        let (request, snapshot) = self
+            .app
+            .prepare_arceos_request((&args).into(), None, None)?;
+        self.app.store_arceos_snapshot(&snapshot)?;
+
+        let cargo = build::load_cargo_config(&request)?;
+        self.app.build(cargo, request.build_info_path).await?;
+        Ok(())
     }
 
-    pub async fn run_qemu(self) -> anyhow::Result<()> {
-        self.run_qemu_internal().await
+    async fn qemu(&mut self, args: ArgsQemu) -> anyhow::Result<()> {
+        let (request, snapshot) = self.app.prepare_arceos_request(
+            (&args.build).into(),
+            args.qemu_config.clone(),
+            None,
+        )?;
+        self.app.store_arceos_snapshot(&snapshot)?;
+
+        let cargo = build::load_cargo_config(&request)?;
+        self.app
+            .qemu(
+                cargo,
+                request.build_info_path,
+                QemuRunConfig {
+                    qemu_config: request.qemu_config,
+                    ..Default::default()
+                },
+            )
+            .await?;
+        Ok(())
     }
 
-    pub async fn test(self) -> anyhow::Result<()> {
-        self.run_qemu_internal().await
-    }
+    async fn uboot(&mut self, args: ArgsUboot) -> anyhow::Result<()> {
+        let (request, snapshot) = self.app.prepare_arceos_request(
+            (&args.build).into(),
+            None,
+            args.uboot_config.clone(),
+        )?;
+        self.app.store_arceos_snapshot(&snapshot)?;
 
-    pub async fn run_qemu_with_config_path(self, qemu_config_path: PathBuf) -> anyhow::Result<()> {
-        self.run_qemu_with_config_path_internal(qemu_config_path)
-            .await
+        let cargo = build::load_cargo_config(&request)?;
+        self.app
+            .uboot(cargo, request.build_info_path, request.uboot_config)
+            .await?;
+        Ok(())
     }
+}
 
-    pub async fn test_with_config_path(self, qemu_config_path: PathBuf) -> anyhow::Result<()> {
-        self.run_qemu_with_config_path_internal(qemu_config_path)
-            .await
+impl Default for ArceOS {
+    fn default() -> Self {
+        Self::new().expect("failed to initialize ArceOS")
     }
+}
 
-    async fn run_qemu_internal(self) -> anyhow::Result<()> {
-        let qemu_runner = QemuRunner::new(self.ctx);
-        qemu_runner.run().await
-    }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    async fn run_qemu_with_config_path_internal(
-        self,
-        qemu_config_path: PathBuf,
-    ) -> anyhow::Result<()> {
-        let mut ctx = self.ctx;
-        ctx.qemu_config_path = Some(qemu_config_path);
-        let qemu_runner = QemuRunner::new(ctx);
-        qemu_runner.run().await
+    #[test]
+    fn build_args_convert_to_cli_args() {
+        let args = ArgsBuild {
+            config: None,
+            package: Some("arceos-helloworld".to_string()),
+            target: Some("aarch64-unknown-none-softfloat".to_string()),
+            plat_dyn: Some(true),
+        };
+
+        let cli_args = BuildCliArgs::from(&args);
+
+        assert_eq!(
+            cli_args,
+            BuildCliArgs {
+                config: None,
+                package: Some("arceos-helloworld".to_string()),
+                target: Some("aarch64-unknown-none-softfloat".to_string()),
+                plat_dyn: Some(true),
+            }
+        );
     }
 }
