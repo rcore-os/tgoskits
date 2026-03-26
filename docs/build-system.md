@@ -137,6 +137,8 @@ Axvisor 的构建与运行完全由 `os/axvisor` 自带 xtask 管理。根目录
 
 `defconfig <board>` 的行为是校验 `configs/board/<board>.toml` 是否存在、备份已有 `.build.toml`、把板级配置复制成新的 `.build.toml`。当前仓库里现成的 QEMU 板级配置主要是 `qemu-aarch64` 和 `qemu-x86_64`。其中 `qemu-aarch64.toml` 当前默认是 `vm_configs = []`，而默认 QEMU 配置模板还会引用 `tmp/rootfs.img`。所以新开发者第一次跑 Axvisor 时，不能只执行 `cargo axvisor defconfig/build/qemu`，而应该优先使用 `os/axvisor/scripts/setup_qemu.sh` 自动准备镜像、生成 VM 配置并复制 rootfs。
 
+现在根入口的 `cargo axvisor build` / `cargo axvisor qemu` 采用与 Starry 类似的风格：共享 `--config` 作为板级构建配置路径，并额外支持重复的 `--vmconfigs`。这些 VM 配置路径会被转换成 `AXVISOR_VM_CONFIGS` 环境变量参与编译。
+
 ## 6. 测试入口和实际测试对象
 
 TGOSKits 提供了统一的测试入口来管理不同类型的测试。根目录的 `cargo xtask test` 命令支持多种测试类型，包括标准库测试、ArceOS 测试、StarryOS 测试和 Axvisor 测试。理解这些测试入口的作用有助于快速验证改动是否破坏了现有功能。

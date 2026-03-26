@@ -28,9 +28,9 @@ include = [
 [profile.release]
 lto = true
 
-[[bin]]
-name = "xtask"
-path = "xtask/src/main.rs"
+# [[bin]]
+# name = "xtask"
+# path = "xtask/src/main.rs"
 
 [features]
 default = []

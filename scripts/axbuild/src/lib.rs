@@ -190,4 +190,52 @@ mod tests {
             _ => panic!("expected `axvisor image pull` command"),
         }
     }
+
+    #[test]
+    fn cli_parses_axvisor_build_command() {
+        let cli = Cli::try_parse_from([
+            "axbuild",
+            "axvisor",
+            "build",
+            "--arch",
+            "aarch64",
+            "--config",
+            "os/axvisor/.build.toml",
+            "--vmconfigs",
+            "tmp/vm1.toml",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Axvisor {
+                command: axvisor::Command::Build(_),
+            } => {}
+            _ => panic!("expected `axvisor build` command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_axvisor_qemu_command() {
+        let cli = Cli::try_parse_from([
+            "axbuild",
+            "axvisor",
+            "qemu",
+            "--arch",
+            "aarch64",
+            "--config",
+            "os/axvisor/.build.toml",
+            "--qemu-config",
+            "configs/qemu.toml",
+            "--vmconfigs",
+            "tmp/vm1.toml",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Axvisor {
+                command: axvisor::Command::Qemu(_),
+            } => {}
+            _ => panic!("expected `axvisor qemu` command"),
+        }
+    }
 }
