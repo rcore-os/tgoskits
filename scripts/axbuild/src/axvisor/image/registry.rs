@@ -1,169 +1,135 @@
-// Copyright 2025 The Axvisor Team
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
-//! Image registry data structures and parsing.
-//!
-//! Defines `ImageEntry` and `ImageRegistry` for the TOML-based image list format.
-
 use std::{collections::BTreeMap, fs, path::Path};
 
-use anyhow::{Result, anyhow};
+use anyhow::Context;
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use super::{download::download_to_string, spec::ImageSpecRef};
+use super::spec::ImageSpecRef;
+use crate::download::fetch_text;
 
-/// An image entry in the image list file (one row in the registry TOML).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageEntry {
-    /// Unique image identifier (e.g. `qemu_x86_64_nimbos`, `evm3588_arceos`).
     pub name: String,
-    /// Version of the image (required in registry config).
     pub version: String,
-    /// Release timestamp (UTC). Optional. Entries without it sort earliest when resolving by name only.
-    /// Serialized as RFC 3339 / ISO 8601 in TOML (e.g. `2026-01-06T03:10:51Z`).
     pub released_at: Option<DateTime<Utc>>,
-    /// Short human-readable description of the image.
     pub description: String,
-    /// SHA-256 checksum of the image archive (hex string).
     pub sha256: String,
-    /// Target architecture (e.g. `x86_64`, `aarch64`).
     pub arch: String,
-    /// URL to download the image archive (e.g. `.tar.gz`).
     pub url: String,
 }
 
-/// An image list contains a list of [`ImageEntry`]s (top-level structure of the registry TOML).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageRegistry {
-    /// All image entries from the registry.
     pub images: Vec<ImageEntry>,
 }
 
-/// A single entry in the `[[includes]]` array of a registry TOML.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IncludeEntry {
-    /// URL of another registry TOML to include and merge.
+struct IncludeEntry {
+    url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RawRegistry {
+    #[serde(default)]
+    includes: Vec<IncludeEntry>,
+    #[serde(default)]
+    images: Vec<ImageEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistrySource {
     pub url: String,
-}
-
-/// Raw registry as parsed from TOML: may contain `includes` and/or `images`.
-/// Used when fetching from network; local saved registry has only `images`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RawRegistry {
-    /// Optional list of registry URLs to include and merge.
-    #[serde(default)]
-    pub includes: Vec<IncludeEntry>,
-    /// Image entries (may be empty if registry only includes other URLs).
-    #[serde(default)]
-    pub images: Vec<ImageEntry>,
-}
-
-/// Merges multiple image entry lists into one, deduplicating by (name, version).
-///
-/// On conflict (same name+version, different other fields), prints a warning and keeps one entry.
-///
-/// # Arguments
-///
-/// * `sources` - Iterator of image entry vectors to merge
-pub fn merge_entries(sources: impl IntoIterator<Item = Vec<ImageEntry>>) -> Vec<ImageEntry> {
-    use std::collections::HashMap;
-    let mut by_key: HashMap<(String, String), ImageEntry> = HashMap::new();
-    for entries in sources {
-        for entry in entries {
-            let key = (entry.name.clone(), entry.version.clone());
-            if let Some(existing) = by_key.get(&key) {
-                if existing != &entry {
-                    println!(
-                        "Warning: conflict for image {} version {} (different \
-                         description/sha256/arch/url); keeping existing entry.",
-                        entry.name, entry.version
-                    );
-                }
-                continue;
-            }
-            by_key.insert(key, entry);
-        }
-    }
-    let mut out: Vec<ImageEntry> = by_key.into_values().collect();
-    out.sort_by(|a, b| {
-        (a.name.as_str(), a.version.as_str()).cmp(&(b.name.as_str(), b.version.as_str()))
-    });
-    out
+    pub kind: &'static str,
 }
 
 impl ImageRegistry {
-    /// Fetches a registry from `url`, resolving `[[includes]]`, and returns a merged registry.
-    ///
-    /// # Arguments
-    ///
-    /// * `url` - URL of the registry TOML to fetch
-    pub async fn fetch_with_includes(url: &str) -> Result<ImageRegistry> {
+    pub async fn fetch_with_includes(
+        client: &reqwest::Client,
+        url: &str,
+    ) -> anyhow::Result<ImageRegistry> {
         use std::collections::{HashSet, VecDeque};
 
-        let mut all_sources: Vec<Vec<ImageEntry>> = Vec::new();
-        let mut queue: VecDeque<String> = VecDeque::new();
-        let mut seen: HashSet<String> = HashSet::new();
-        queue.push_back(url.to_string());
+        let mut all_sources = Vec::new();
+        let mut queue = VecDeque::from([url.to_string()]);
+        let mut seen = HashSet::new();
 
         while let Some(current_url) = queue.pop_front() {
             if !seen.insert(current_url.clone()) {
-                continue; // already fetched, skip
+                continue;
             }
-            let body = download_to_string(&current_url).await?;
+
+            let body = fetch_text(client, &current_url).await?;
             let raw: RawRegistry = toml::from_str(&body)
                 .map_err(|e| anyhow!("Invalid registry format at {}: {e}", current_url))?;
 
             all_sources.push(raw.images);
-
             for include in raw.includes {
                 queue.push_back(include.url);
             }
         }
 
-        let images = merge_entries(all_sources);
-        Ok(ImageRegistry { images })
+        Ok(ImageRegistry {
+            images: merge_entries(all_sources),
+        })
     }
 
-    /// Loads the image registry from a TOML file.
-    ///
-    /// # Arguments
-    ///
-    /// * `path` - Path to the registry TOML file
-    pub fn load_from_file(path: &Path) -> Result<ImageRegistry> {
+    pub async fn resolve_bootstrap_source(
+        client: &reqwest::Client,
+        default_url: &str,
+        fallback_url: &str,
+    ) -> anyhow::Result<RegistrySource> {
+        match fetch_text(client, default_url).await {
+            Ok(body) => {
+                let raw: RawRegistry = toml::from_str(&body)
+                    .map_err(|e| anyhow!("Invalid registry format at {}: {e}", default_url))?;
+                if let Some(include) = raw.includes.into_iter().next() {
+                    Ok(RegistrySource {
+                        url: include.url,
+                        kind: "included registry from default.toml",
+                    })
+                } else {
+                    Ok(RegistrySource {
+                        url: default_url.to_string(),
+                        kind: "default registry",
+                    })
+                }
+            }
+            Err(default_err) => {
+                fetch_text(client, fallback_url).await.with_context(|| {
+                    format!(
+                        "failed to fetch default registry {default_url} and fallback registry \
+                         {fallback_url}"
+                    )
+                })?;
+                eprintln!("warning: failed to fetch default registry {default_url}: {default_err}");
+                Ok(RegistrySource {
+                    url: fallback_url.to_string(),
+                    kind: "fallback registry",
+                })
+            }
+        }
+    }
+
+    pub fn load_from_file(path: &Path) -> anyhow::Result<ImageRegistry> {
         let s = fs::read_to_string(path)
             .map_err(|e| anyhow!("Failed to read image registry from {}: {e}", path.display()))?;
         toml::from_str(&s).map_err(|e| anyhow!("Invalid image list format: {e}"))
     }
 
-    /// Prints the image list in a formatted table to stdout.
-    ///
-    /// # Arguments
-    ///
-    /// * `verbose` - If `true`, show each version separately; if `false`, merge same-name images and show version count
-    /// * `pattern` - If `Some`, filter by name: try regex match first (partial), fallback to substring
     pub fn print(&self, verbose: bool, pattern: Option<&str>) {
+        print!("{}", self.render_table(verbose, pattern));
+    }
+
+    pub fn render_table(&self, verbose: bool, pattern: Option<&str>) -> String {
         let entries = self.filtered_entries(pattern);
         if verbose {
-            Self::print_verbose(&entries);
+            self.render_verbose(&entries)
         } else {
-            Self::print_merged(&entries);
+            self.render_merged(&entries)
         }
     }
 
-    /// Filters entries by pattern: regex match (partial) or substring.
     fn filtered_entries<'a>(&'a self, pattern: Option<&str>) -> Vec<&'a ImageEntry> {
         let Some(pat) = pattern else {
             return self.images.iter().collect();
@@ -178,66 +144,153 @@ impl ImageRegistry {
             .collect()
     }
 
-    fn print_verbose(entries: &[&ImageEntry]) {
-        println!(
-            "{:<25} {:<12} {:<15} {:<50}",
+    fn render_verbose(&self, entries: &[&ImageEntry]) -> String {
+        let mut out = String::new();
+        out.push_str(&format!(
+            "{:<25} {:<12} {:<15} {:<50}\n",
             "Name", "Version", "Architecture", "Description"
-        );
-        println!("{}", "-".repeat(102));
+        ));
+        out.push_str(&format!("{}\n", "-".repeat(102)));
         for image in entries {
-            println!(
-                "{:<25} {:<12} {:<15} {:<50}",
+            out.push_str(&format!(
+                "{:<25} {:<12} {:<15} {:<50}\n",
                 image.name, image.version, image.arch, image.description
-            );
+            ));
         }
+        out
     }
 
-    fn print_merged(entries: &[&ImageEntry]) {
+    fn render_merged(&self, entries: &[&ImageEntry]) -> String {
         let by_name: BTreeMap<&str, Vec<&ImageEntry>> =
             entries.iter().fold(BTreeMap::new(), |mut m, e| {
                 m.entry(e.name.as_str()).or_default().push(*e);
                 m
             });
-        println!(
-            "{:<25} {:<12} {:<15} {:<50}",
+        let mut out = String::new();
+        out.push_str(&format!(
+            "{:<25} {:<12} {:<15} {:<50}\n",
             "Name", "Version", "Architecture", "Description"
-        );
-        println!("{}", "-".repeat(102));
+        ));
+        out.push_str(&format!("{}\n", "-".repeat(102)));
         for (name, vers) in by_name {
-            let n = vers.len();
-            let version_str = if n == 1 {
+            let first = vers.first().expect("non-empty grouped entries");
+            let version_str = if vers.len() == 1 {
                 "1 version".to_string()
             } else {
-                format!("{} versions", n)
+                format!("{} versions", vers.len())
             };
-            let first = vers.first().unwrap();
-            println!(
-                "{:<25} {:<12} {:<15} {:<50}",
+            out.push_str(&format!(
+                "{:<25} {:<12} {:<15} {:<50}\n",
                 name, version_str, first.arch, first.description
-            );
+            ));
         }
+        out
     }
 
-    /// Returns an iterator over all image entries in the registry.
-    pub fn iter(&self) -> impl Iterator<Item = &ImageEntry> {
-        self.images.iter()
-    }
-
-    /// Looks up an image by spec (name and optional version).
-    ///
-    /// When version is `Some`, returns the exact match. When `None`, returns the entry with the
-    /// latest `released_at`; entries without `released_at` sort earliest.
-    ///
-    /// # Arguments
-    ///
-    /// * `spec` - Image spec (name and optional version)
     pub fn find(&self, spec: ImageSpecRef<'_>) -> Option<&ImageEntry> {
         match spec.version {
-            Some(v) => self.iter().find(|e| e.name == spec.name && e.version == v),
-            None => self
+            Some(version) => self
+                .images
                 .iter()
-                .filter(|e| e.name == spec.name)
+                .find(|entry| entry.name == spec.name && entry.version == version),
+            None => self
+                .images
+                .iter()
+                .filter(|entry| entry.name == spec.name)
                 .max_by(|a, b| a.released_at.cmp(&b.released_at)),
         }
+    }
+}
+
+fn merge_entries(sources: impl IntoIterator<Item = Vec<ImageEntry>>) -> Vec<ImageEntry> {
+    use std::collections::HashMap;
+
+    let mut by_key: HashMap<(String, String), ImageEntry> = HashMap::new();
+    for entries in sources {
+        for entry in entries {
+            let key = (entry.name.clone(), entry.version.clone());
+            by_key.entry(key).or_insert(entry);
+        }
+    }
+    let mut out: Vec<ImageEntry> = by_key.into_values().collect();
+    out.sort_by(|a, b| {
+        (a.name.as_str(), a.version.as_str()).cmp(&(b.name.as_str(), b.version.as_str()))
+    });
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn registry() -> ImageRegistry {
+        ImageRegistry {
+            images: vec![
+                ImageEntry {
+                    name: "linux".to_string(),
+                    version: "0.0.1".to_string(),
+                    released_at: Some("2025-01-01T00:00:00Z".parse().unwrap()),
+                    description: "Linux guest".to_string(),
+                    sha256: "abc".to_string(),
+                    arch: "aarch64".to_string(),
+                    url: "https://example.com/linux-0.0.1.tar.gz".to_string(),
+                },
+                ImageEntry {
+                    name: "linux".to_string(),
+                    version: "0.0.2".to_string(),
+                    released_at: Some("2025-01-02T00:00:00Z".parse().unwrap()),
+                    description: "Linux guest".to_string(),
+                    sha256: "def".to_string(),
+                    arch: "aarch64".to_string(),
+                    url: "https://example.com/linux-0.0.2.tar.gz".to_string(),
+                },
+                ImageEntry {
+                    name: "nimbos".to_string(),
+                    version: "0.0.1".to_string(),
+                    released_at: Some("2025-01-03T00:00:00Z".parse().unwrap()),
+                    description: "NimbOS guest".to_string(),
+                    sha256: "ghi".to_string(),
+                    arch: "x86_64".to_string(),
+                    url: "https://example.com/nimbos-0.0.1.tar.gz".to_string(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn render_merged_groups_versions() {
+        let table = registry().render_table(false, None);
+
+        assert!(table.contains("linux"));
+        assert!(table.contains("2 versions"));
+        assert!(table.contains("nimbos"));
+    }
+
+    #[test]
+    fn render_verbose_shows_each_version() {
+        let table = registry().render_table(true, None);
+
+        assert!(table.contains("0.0.1"));
+        assert!(table.contains("0.0.2"));
+    }
+
+    #[test]
+    fn filtering_uses_regex_or_substring() {
+        let table = registry().render_table(true, Some("^nim"));
+        assert!(table.contains("nimbos"));
+        assert!(!table.contains("linux"));
+
+        let table = registry().render_table(true, Some("lin"));
+        assert!(table.contains("linux"));
+    }
+
+    #[test]
+    fn find_prefers_latest_when_version_omitted() {
+        let images = registry();
+        let entry = images.find(ImageSpecRef::parse("linux")).unwrap();
+        assert_eq!(entry.version, "0.0.2");
+
+        let exact = images.find(ImageSpecRef::parse("linux:0.0.1")).unwrap();
+        assert_eq!(exact.version, "0.0.1");
     }
 }

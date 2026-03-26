@@ -120,5 +120,5 @@ fn main() {
 
     assert_eq!(expect, actual);
 
-    println!("Priority tests run OK!");
+    println!("All tests passed!");
 }

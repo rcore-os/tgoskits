@@ -61,6 +61,35 @@ tgoskits/
 git clone https://github.com/rcore-os/tgoskits.git
 cd tgoskits
 
+# ArceOS: 最快的 Hello World 路径
+cargo xtask arceos run --package arceos-helloworld --arch riscv64
+
+# StarryOS: 首次运行前先准备 rootfs
+cargo xtask starry rootfs --arch riscv64
+cargo xtask starry run --arch riscv64 --package starryos
+
+# Axvisor: 推荐使用官方 setup 脚本准备 Guest 和 rootfs
+cd os/axvisor
+./scripts/setup_qemu.sh arceos
+cargo axvisor qemu \
+  --config os/axvisor/.build-aarch64-unknown-none-softfloat.toml \
+  --qemu-config .github/workflows/qemu-aarch64.toml \
+  --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
+```
+
+Axvisor 不能只靠 `defconfig/build/qemu` 三条命令直接跑起来，因为默认 QEMU 配置会引用 `tmp/rootfs.img`。推荐先用 `os/axvisor/scripts/setup_qemu.sh` 自动准备 Guest 镜像、VM 配置和 rootfs，再运行 QEMU。完整说明见 [docs/axvisor-guide.md](docs/axvisor-guide.md)。
+
+## 基于组件开发的最短闭环
+
+1. 在 `components/`、`os/arceos/modules/`、`os/StarryOS/kernel/` 或 `os/axvisor/src/` 里找到你要修改的入口。
+2. 先跑最小消费者，而不是一上来跑全量测试。
+3. 改动稳定后，再补系统测试和 host 测试。
+
+常用验证命令如下：
+
+```bash
+# host / std crate
+cargo xtask test std
 # ArceOS
 cargo xtask arceos run --package arceos-helloworld --arch riscv64
 
@@ -71,10 +100,13 @@ cargo xtask starry run --arch riscv64 --package starryos
 # Axvisor（需先准备 Guest 和 rootfs）
 cd os/axvisor
 ./scripts/setup_qemu.sh arceos
-cargo xtask qemu \
-  --build-config configs/board/qemu-aarch64.toml \
+cargo axvisor qemu \
+  --config os/axvisor/.build-aarch64-unknown-none-softfloat.toml \
   --qemu-config .github/workflows/qemu-aarch64.toml \
   --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
+
+# Axvisor 统一测试
+cargo xtask test qemu axvisor --target aarch64
 ```
 
 修改组件后的验证策略见 [docs/components.md](docs/components.md)。

@@ -24,16 +24,16 @@ Axvisor 的 build/qemu 不是根 `cargo xtask` 的子命令，而是 `os/axvisor
 ```bash
 # 仓库根目录
 cargo axvisor defconfig qemu-aarch64
-cargo axvisor build
-cargo axvisor qemu
+cargo axvisor build --config os/axvisor/.build-aarch64-unknown-none-softfloat.toml
+cargo axvisor qemu --config os/axvisor/.build-aarch64-unknown-none-softfloat.toml --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
 ```
 
 ```bash
 # Axvisor 子目录
 cd os/axvisor
 cargo xtask defconfig qemu-aarch64
-cargo xtask build
-cargo xtask qemu
+cargo axvisor build --config os/axvisor/.build-aarch64-unknown-none-softfloat.toml
+cargo axvisor qemu --config os/axvisor/.build-aarch64-unknown-none-softfloat.toml --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
 ```
 
 当前本地 xtask 里最常用的子命令包括：
@@ -74,9 +74,8 @@ cd os/axvisor
 准备完成后，直接运行：
 
 ```bash
-cd os/axvisor
-cargo xtask qemu \
-  --build-config configs/board/qemu-aarch64.toml \
+cargo axvisor qemu \
+  --config os/axvisor/.build-aarch64-unknown-none-softfloat.toml \
   --qemu-config .github/workflows/qemu-aarch64.toml \
   --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
 ```
@@ -94,15 +93,17 @@ cargo xtask qemu \
 
 ```bash
 cargo axvisor defconfig qemu-aarch64
-cargo axvisor build
-cargo axvisor qemu
+cargo axvisor build --config os/axvisor/.build-aarch64-unknown-none-softfloat.toml
+cargo axvisor qemu --config os/axvisor/.build-aarch64-unknown-none-softfloat.toml
 ```
 
 还不够。除非你已经手工准备好了：
 
-- `.build.toml`
+- `.build-aarch64-unknown-none-softfloat.toml`
 - 可用的 `vmconfigs`
 - `os/axvisor/tmp/rootfs.img`
+
+另外，`cargo axvisor build` 和 `cargo axvisor qemu` 都支持重复的 `--vmconfigs`。这些路径不会直接传给通用 QEMU runner，而是会转换成 `AXVISOR_VM_CONFIGS` 环境变量，供 Axvisor 的 `build.rs` 在编译期嵌入客户机配置。
 
 否则 `qemu` 会因为找不到 rootfs 或 VM 配置而失败。
 
@@ -224,7 +225,7 @@ cargo xtask qemu \
 ### 根工作区测试入口
 
 ```bash
-cargo xtask test axvisor --target aarch64-unknown-none-softfloat
+cargo xtask test qemu axvisor --target aarch64
 ```
 
 这条命令属于根工作区测试矩阵，不等价于本地 `cargo xtask qemu ...`。  
@@ -287,5 +288,5 @@ cargo xtask qemu \
 
 - [axvisor-internals.md](axvisor-internals.md): 系统理解 Axvisor 的五层架构、VMM 启动链、vCPU 任务模型与 `axvisor_api`
 - [components.md](components.md): 从组件角度看 Axvisor 与 ArceOS / StarryOS 的共享依赖
-- [build-system.md](build-system.md): 理解 `cargo axvisor` 与根 `cargo xtask test axvisor` 的边界
+- [build-system.md](build-system.md): 理解 `cargo axvisor` 与根 `cargo xtask test qemu axvisor` 的边界
 - [quick-start.md](quick-start.md): 如果你只是想先把第一条 QEMU 路径跑通

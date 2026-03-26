@@ -114,7 +114,7 @@ cargo xtask qemu \
 
 该脚本自动完成以下三步，省去手动操作：
 
-1. **下载镜像**：调用 `cargo xtask image download` 将 Guest 镜像下载到 `/tmp/.axvisor-images/`
+1. **下载镜像**：调用 `cargo axvisor image pull` 将 Guest 镜像下载并解压到 `/tmp/.axvisor-images/`
 2. **生成临时配置**：复制模板 VM 配置到 `tmp/vmconfigs/*.generated.toml`，并用 `sed` 更新 `kernel_path`（以及 NimbOS 的 `bios_path`）到实际镜像路径，不修改仓库内 `configs/vms/*.toml`
 3. **准备 rootfs**：将 `rootfs.img` 复制到项目的 `tmp/` 目录下供 QEMU 使用
 
@@ -136,7 +136,7 @@ VM 配置中的 `kernel_path` 指向了不存在的文件。运行 `./scripts/se
 
 ### `Auto syncing from registry ... timed out`
 
-这通常是访问 GitHub Raw 不稳定导致的。`scripts/setup_qemu.sh` 已内置一次自动恢复逻辑：首次下载失败后，会尝试自动引导本地 registry 并重试镜像下载。脚本内也提供了默认 fallback registry（当前指向 `v0.0.22.toml`）。
+这通常是访问 GitHub Raw 不稳定导致的。`cargo axvisor image pull` 现在会在命令内部处理 registry 引导逻辑：优先使用默认 registry，若其中声明了 include 就继续跟随 include；若默认入口不可用，则自动回退到内建 fallback registry（当前指向 `v0.0.22.toml`）。
 
 如果你所在网络环境对部分 URL 不稳定，可显式覆盖 fallback registry：
 
@@ -148,4 +148,3 @@ export AXVISOR_REGISTRY_FALLBACK_URL="https://raw.githubusercontent.com/arceos-h
 ### 首次构建非常慢
 
 正常现象。AxVisor 依赖较多，首次编译需要下载并编译所有 crate。后续增量编译会快很多。
-

@@ -1,4 +1,4 @@
-include = [{ path = ".config-local.toml", optional = true }]
+include = [{path = ".config-local.toml", optional = true}]
 
 [net]
 # 使用系统 git 拉取依赖，可利用已配置的 git 凭证（如 gh auth、credential helper）
@@ -8,7 +8,7 @@ git-fetch-with-cli = true
 incompatible-rust-versions = "allow"
 
 [alias]
-axvisor = "run -p axvisor --bin xtask --"
-xtask = "run -p tg-xtask --"
-starry = "run -p tg-xtask -- starry"
 arceos = "run -p tg-xtask -- arceos"
+axvisor = "run -p tg-xtask -- axvisor"
+starry = "run -p tg-xtask -- starry"
+xtask = "run -p tg-xtask --"

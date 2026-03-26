@@ -49,5 +49,5 @@ fn main() {
     while FINISHED_TASKS.load(Ordering::Relaxed) < NUM_TASKS {
         thread::sleep(Duration::from_millis(10));
     }
-    println!("Sleep tests run OK!");
+    println!("All tests passed!");
 }

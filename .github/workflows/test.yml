@@ -45,19 +45,17 @@ jobs:
       matrix:
         include:
           # axvisor
-          # - os: axvisor
-          #   target: x86_64-unknown-none
-          # - os: axvisor
-          #   target: riscv64gc-unknown-none-elf
           - os: axvisor
-            target: aarch64-unknown-none-softfloat
+            target: aarch64
           # starry
           - os: starry
-            target: riscv64gc-unknown-none-elf
+            target: riscv64
           - os: starry
-            target: aarch64-unknown-none-softfloat
+            target: aarch64
           - os: starry
-            target: loongarch64-unknown-none-softfloat
+            target: loongarch64
+          - os: starry
+            target: x86_64
           # arceos
           - os: arceos
             target: x86_64-unknown-none
@@ -78,8 +76,25 @@ jobs:
           shared-key: test
           cache-targets: false
 
-      # - name: Install ostool
-      #   run: cargo install ostool --version ^0.8
-
       - name: Run ${{ matrix.os }} tests
-        run: cargo xtask test ${{ matrix.os }} --target ${{ matrix.target }}
+        run: cargo xtask test qemu ${{ matrix.os }} --target ${{ matrix.target }}
+
+  test_axvisor_x86_64:
+    name: Test axvisor x86_64
+    runs-on:
+      - self-hosted
+      - linux
+      - intel
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - run: rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test-axvisor-x86_64
+          cache-targets: false
+
+      - name: Run axvisor x86_64 tests
+        run: cargo xtask test qemu axvisor --target x86_64

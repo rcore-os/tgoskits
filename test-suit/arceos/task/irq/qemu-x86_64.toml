@@ -13,5 +13,5 @@ args = [
 ]
 uefi = false
 to_bin = false
-success_regex = ["Task irq state tests run OK!"]
+success_regex = ["All tests passed!"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b']
