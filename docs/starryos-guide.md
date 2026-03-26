@@ -1,23 +1,23 @@
 # StarryOS 开发指南
 
-在 TGOSKits 里，StarryOS 不是一套完全孤立的内核，而是建立在 ArceOS 模块层之上的 Linux 兼容系统。理解 StarryOS 的关键是把这三层连起来看：
-
-- 共享基础组件
-- ArceOS 提供的基础能力
-- StarryOS 自己的内核逻辑与 rootfs 用户态验证
+在 TGOSKits 里，StarryOS 不是一套完全孤立的内核，而是建立在 ArceOS 模块层之上的 Linux 兼容系统。理解 StarryOS 的关键是把三层连起来看：共享基础组件提供通用能力，ArceOS 模块层提供操作系统底层支撑，StarryOS 自己的内核逻辑和 rootfs 用户态实现 Linux 兼容行为。本文档介绍 StarryOS 在仓库中的位置、运行入口、典型开发流程和调试方法。
 
 ## 1. StarryOS 在仓库里的位置
+
+StarryOS 的代码分散在 `os/StarryOS/`、`components/` 和 `os/arceos/` 三个区域。理解哪些目录属于"StarryOS 自己"、哪些属于"被 StarryOS 复用的共享层"，是判断改动影响面的关键。
 
 | 路径 | 角色 | 什么时候会改到 |
 | --- | --- | --- |
 | `os/StarryOS/kernel/` | StarryOS 内核实现 | syscall、进程、内存、文件系统、驱动接入 |
 | `os/StarryOS/starryos/` | 启动包与 feature 组合 | 改启动入口、包级 feature、平台筛选 |
-| `components/starry-*` | Starry 专用复用组件 | `starry-process`、`starry-signal`、`starry-vm` 等 |
+| `components/starry-*` | Starry 专用复用组件 | `starry-process`、`starry-signal`、`starry-vm`、`starry-smoltcp` 等 |
 | `components/axpoll`、`components/rsext4` 等 | Starry 常用共享组件 | I/O 多路复用、文件系统等 |
 | `os/arceos/modules/*` | StarryOS 复用的底层能力 | HAL、任务、驱动、网络、内存 |
 | `test-suit/starryos/` | 系统测试入口 | 回归测试 |
 
-## 2. 最短运行路径
+## 2. 运行入口
+
+StarryOS 提供两种运行方式：仓库根目录的 `cargo xtask starry` 统一入口和 `os/StarryOS/` 下的本地 Makefile 入口。两者使用不同的 rootfs 镜像位置（详见第 6 节），首次上手建议统一使用根目录入口。
 
 ### 仓库根目录的推荐入口
 
@@ -32,8 +32,7 @@ cargo xtask starry run --arch riscv64 --package starryos
 - `run` 在发现磁盘镜像缺失时也会自动补准备
 - 默认包是 `starryos`
 
-首次上手建议统一使用 `riscv64`。  
-如果你已经熟悉流程，可以尝试：
+首次上手建议统一使用 `riscv64`。如果你已经熟悉流程，可以尝试：
 
 ```bash
 cargo xtask starry run --arch loongarch64 --package starryos
@@ -60,6 +59,8 @@ make la
 - 更适合调试 StarryOS 自己的 `make/` 行为
 
 ## 3. StarryOS 如何复用 ArceOS 和组件
+
+StarryOS 的能力来自三个层次：`components/` 下的共享基础 crate、`components/starry-*` 下的 StarryOS 专用组件、以及 `os/arceos/modules/` 下的 ArceOS 内核模块。下面的流程图展示了这些层次之间的关系。理解这条链路，有助于判断你的改动会从哪一层开始传播。
 
 ```mermaid
 flowchart TD
@@ -88,6 +89,8 @@ flowchart TD
 
 ## 4. 常见开发动作
 
+本节列出 StarryOS 开发中最常见的几类改动。无论你是修改共享基础能力、StarryOS 专用组件、内核逻辑还是启动配置，都应该按照推荐的顺序逐步验证，先确保底层消费者工作正常，再验证上层行为。
+
 ### 4.1 修改共享基础能力
 
 如果你改的是：
@@ -109,6 +112,7 @@ cargo xtask starry run --arch riscv64 --package starryos
 - `components/starry-process`
 - `components/starry-signal`
 - `components/starry-vm`
+- `components/starry-smoltcp`
 - `os/StarryOS/kernel/*`
 
 那就直接从 StarryOS 路径开始验证：
@@ -136,10 +140,11 @@ cargo xtask starry run --arch riscv64 --package starryos
 
 ### 4.4 修改启动包和 feature 组合
 
-`os/StarryOS/starryos/Cargo.toml` 里定义了包级 feature，例如 `qemu`、`smp`、`vf2`。  
-如果你的改动更像“启动形态”而不是“内核算法”，先看这里而不是直接进 kernel。
+`os/StarryOS/starryos/Cargo.toml` 里定义了包级 feature，例如 `qemu`、`smp`、`vf2`。如果你的改动更像"启动形态"而不是"内核算法"，先看这里而不是直接进 kernel。
 
-## 5. 最常用的验证入口
+## 5. 验证入口
+
+StarryOS 提供了从日常运行到系统测试的多层验证入口。根目录 xtask 适合快速迭代，本地 Makefile 适合需要精细控制的场景，系统测试则用于自动化回归。
 
 ### 日常运行
 
@@ -165,9 +170,11 @@ make ARCH=riscv64 run
 make ARCH=riscv64 debug
 ```
 
-## 6. rootfs 相关的几个关键事实
+## 6. rootfs 相关要点
 
-### 根目录 xtask 路径和本地 Makefile 路径不共享默认镜像位置
+StarryOS 的 rootfs 管理有两点需要特别注意：根目录 xtask 路径和本地 Makefile 路径使用不同的镜像位置，且彼此不会自动共享。理解这一点可以避免"明明下载过 rootfs 却还是报找不到镜像"的困惑。
+
+### 两种路径不共享默认镜像位置
 
 - 根目录 `cargo xtask starry rootfs` 使用目标产物目录下的 `disk.img`
 - `os/StarryOS/Makefile` 使用 `os/StarryOS/make/disk.img`
@@ -191,6 +198,8 @@ sudo umount /mnt/rootfs
 如果你使用的是根目录 xtask 路径，请先确认实际生成的 `disk.img` 位于哪个目标产物目录，再按同样方式挂载。
 
 ## 7. 调试建议
+
+StarryOS 的调试手段与 ArceOS 类似，支持日志级别调整和 GDB 调试。当你需要排查启动问题时，建议先确认 rootfs 是否存在、使用的是哪种运行路径，然后根据最近的改动范围缩小排查方向。
 
 ### 看更详细的日志
 
@@ -218,7 +227,9 @@ make ARCH=riscv64 debug
 2. 当前使用的是根目录 xtask 路径还是本地 Makefile 路径
 3. 最近的改动到底在共享组件、ArceOS 模块还是 StarryOS 内核
 
-## 8. 继续往哪里读
+## 8. 继续阅读
+
+以下是深入理解 StarryOS 及其上下文的推荐阅读顺序。
 
 - [starryos-internals.md](starryos-internals.md): 系统理解 StarryOS 的叠层架构、syscall 分发、进程与地址空间机制
 - [components.md](components.md): 从组件视角理解共享依赖如何落到 StarryOS
