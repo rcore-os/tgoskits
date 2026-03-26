@@ -1,5 +1,6 @@
 #[cfg(test)]
 use std::future::Future;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use clap::Args;
@@ -53,6 +54,7 @@ const AXVISOR_AARCH64_TEST_SUCCESS_REGEX: &[&str] = &["^guest test pass!$"];
 const AXVISOR_X86_64_TEST_SHELL_PREFIX: &str = ">>";
 const AXVISOR_X86_64_TEST_SHELL_INIT_CMD: &str = "hello_world";
 const AXVISOR_X86_64_TEST_SUCCESS_REGEX: &[&str] = &["Hello world from user mode program!"];
+const AXVISOR_UBOOT_TEST_BOARDS: &[&str] = &["phytiumpi", "roc-rk3568-pc"];
 const AXVISOR_TEST_FAIL_REGEX: &[&str] = &[
     "(?i)\\bpanic(?:ked)?\\b",
     "(?i)kernel panic",
@@ -76,6 +78,19 @@ pub struct ArgsStarry {
 pub struct ArgsAxvisor {
     #[arg(long, alias = "arch", value_name = "ARCH")]
     pub target: String,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ArgsAxvisorUboot {
+    #[arg(short = 'b', long, value_name = "BOARD")]
+    pub board: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AxvisorUbootBoardConfig {
+    board: &'static str,
+    build_config: &'static str,
+    vmconfig: &'static str,
 }
 
 pub async fn run_arceos_qemu_tests(args: ArgsArceos) -> anyhow::Result<()> {
@@ -235,6 +250,43 @@ pub async fn run_axvisor_qemu_tests(args: ArgsAxvisor) -> anyhow::Result<()> {
     .with_context(|| "axvisor qemu test failed")
 }
 
+pub async fn run_axvisor_uboot_tests(args: ArgsAxvisorUboot) -> anyhow::Result<()> {
+    let board = axvisor_uboot_board_config(&args.board)?;
+    let mut app = AppContext::new()?;
+    let workspace_root = app.workspace_root().to_path_buf();
+    let uboot_config = default_axvisor_uboot_config_path(&workspace_root);
+
+    if !uboot_config.exists() {
+        bail!(
+            "missing U-Boot config `{}` for axvisor board tests; prepare the workspace root \
+             .uboot.toml first",
+            uboot_config.display()
+        );
+    }
+
+    println!(
+        "running axvisor uboot test for board: {} with vmconfig: {}",
+        board.board, board.vmconfig
+    );
+
+    let (request, _snapshot) = app.prepare_axvisor_request(
+        AxvisorCliArgs {
+            config: Some(PathBuf::from(board.build_config)),
+            arch: None,
+            target: None,
+            plat_dyn: None,
+            vmconfigs: vec![PathBuf::from(board.vmconfig)],
+        },
+        None,
+        Some(uboot_config),
+    )?;
+
+    let cargo = axvisor::build::load_cargo_config(&request)?;
+    app.uboot(cargo, request.build_info_path, request.uboot_config)
+        .await
+        .with_context(|| format!("axvisor uboot test failed for board `{}`", board.board))
+}
+
 fn validate_arceos_target(target: &str) -> anyhow::Result<&str> {
     if ARCEOS_TEST_TARGETS.contains(&target) {
         Ok(target)
@@ -281,6 +333,30 @@ fn parse_axvisor_test_target(target: &str) -> anyhow::Result<(&str, &'static str
             _ => unreachable!(),
         },
     ))
+}
+
+fn axvisor_uboot_board_config(board: &str) -> anyhow::Result<AxvisorUbootBoardConfig> {
+    match board {
+        "phytiumpi" => Ok(AxvisorUbootBoardConfig {
+            board: "phytiumpi",
+            build_config: "os/axvisor/configs/board/phytiumpi.toml",
+            vmconfig: "os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml",
+        }),
+        "roc-rk3568-pc" => Ok(AxvisorUbootBoardConfig {
+            board: "roc-rk3568-pc",
+            build_config: "os/axvisor/configs/board/roc-rk3568-pc.toml",
+            vmconfig: "os/axvisor/configs/vms/linux-aarch64-rk3568-smp1.toml",
+        }),
+        _ => bail!(
+            "unsupported board `{}` for axvisor uboot tests. Supported boards are: {}",
+            board,
+            AXVISOR_UBOOT_TEST_BOARDS.join(", ")
+        ),
+    }
+}
+
+fn default_axvisor_uboot_config_path(workspace_root: &Path) -> PathBuf {
+    workspace_root.join(".uboot.toml")
 }
 
 #[cfg(test)]
@@ -452,7 +528,7 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_axvisor_arches() {
-        let err = parse_axvisor_test_target("x86_64").unwrap_err();
+        let err = parse_axvisor_test_target("riscv64").unwrap_err();
 
         assert!(
             err.to_string()
@@ -520,6 +596,47 @@ mod tests {
         assert_eq!(
             shell.success_regex,
             vec!["Hello world from user mode program!".to_string()]
+        );
+    }
+
+    #[test]
+    fn parses_axvisor_uboot_board_config_for_linux_smoke() {
+        assert_eq!(
+            axvisor_uboot_board_config("phytiumpi").unwrap(),
+            AxvisorUbootBoardConfig {
+                board: "phytiumpi",
+                build_config: "os/axvisor/configs/board/phytiumpi.toml",
+                vmconfig: "os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml",
+            }
+        );
+        assert_eq!(
+            axvisor_uboot_board_config("roc-rk3568-pc").unwrap(),
+            AxvisorUbootBoardConfig {
+                board: "roc-rk3568-pc",
+                build_config: "os/axvisor/configs/board/roc-rk3568-pc.toml",
+                vmconfig: "os/axvisor/configs/vms/linux-aarch64-rk3568-smp1.toml",
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_axvisor_uboot_board() {
+        let err = axvisor_uboot_board_config("orangepi-5-plus").unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("unsupported board `orangepi-5-plus`")
+        );
+        assert!(err.to_string().contains("phytiumpi"));
+        assert!(err.to_string().contains("roc-rk3568-pc"));
+    }
+
+    #[test]
+    fn default_axvisor_uboot_config_path_points_to_workspace_root() {
+        let root = PathBuf::from("/tmp/workspace");
+        assert_eq!(
+            default_axvisor_uboot_config_path(&root),
+            PathBuf::from("/tmp/workspace/.uboot.toml")
         );
     }
 
