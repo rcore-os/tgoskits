@@ -20,6 +20,8 @@ pub const LINUX_AARCH64_VMCONFIG_TEMPLATE: &str =
     "os/axvisor/configs/vms/linux-aarch64-qemu-smp1.toml";
 pub const LINUX_AARCH64_GENERATED_VMCONFIG: &str =
     "os/axvisor/tmp/vmconfigs/linux-aarch64-qemu-smp1.generated.toml";
+pub const NIMBOS_X86_64_IMAGE_SPEC: &str = "qemu_x86_64_nimbos";
+pub const NIMBOS_X86_64_VMCONFIG: &str = "os/axvisor/configs/vms/nimbos-x86_64-qemu-smp1.toml";
 pub const AXVISOR_ROOTFS_IMAGE: &str = "os/axvisor/tmp/rootfs.img";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +75,31 @@ pub async fn prepare_linux_aarch64_guest_assets(
         generated_vmconfig,
         rootfs_path,
     })
+}
+
+pub async fn prepare_nimbos_x86_64_guest_vmconfig(ctx: &AxvisorContext) -> anyhow::Result<PathBuf> {
+    let mut config = ImageConfig::read_config(ctx.workspace_root())?;
+    config.local_storage = absolute_path(ctx.workspace_root(), &config.local_storage);
+
+    let storage = Storage::new_from_config(&config).await?;
+    let image_dir = storage
+        .pull_image(ImageSpecRef::parse(NIMBOS_X86_64_IMAGE_SPEC), None, true)
+        .await?;
+
+    let kernel_path = image_dir.join("qemu-x86_64");
+    let bios_path = image_dir.join("axvm-bios.bin");
+    let rootfs_path = image_dir.join("rootfs.img");
+    if !kernel_path.exists() {
+        anyhow::bail!("nimbos guest kernel not found at {}", kernel_path.display());
+    }
+    if !bios_path.exists() {
+        anyhow::bail!("nimbos guest bios not found at {}", bios_path.display());
+    }
+    if !rootfs_path.exists() {
+        anyhow::bail!("nimbos guest rootfs not found at {}", rootfs_path.display());
+    }
+
+    Ok(ctx.workspace_root().join(NIMBOS_X86_64_VMCONFIG))
 }
 
 pub fn shell_autoinit_qemu_override_args(
@@ -243,5 +270,13 @@ uefi = false
             overrides.success_regex.unwrap(),
             vec!["^test pass!$".to_string()]
         );
+    }
+
+    #[test]
+    fn absolute_path_keeps_absolute_paths() {
+        let root = Path::new("/workspace");
+        let path = Path::new("/tmp/image");
+
+        assert_eq!(absolute_path(root, path), PathBuf::from("/tmp/image"));
     }
 }

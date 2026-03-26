@@ -12,7 +12,7 @@ use crate::{
         context::AxvisorContext,
         qemu_test::{
             ShellAutoInitConfig, prepare_linux_aarch64_guest_assets,
-            shell_autoinit_qemu_override_args,
+            prepare_nimbos_x86_64_guest_vmconfig, shell_autoinit_qemu_override_args,
         },
     },
     context::{
@@ -44,10 +44,13 @@ const STARRY_TEST_PACKAGE: &str = "starryos-test";
 const STARRY_TEST_ARCHES: &[&str] = &["x86_64", "riscv64", "aarch64", "loongarch64"];
 const STARRY_TEST_SUCCESS_REGEX: &[&str] = &["^All tests passed!$"];
 const STARRY_TEST_FAIL_REGEX: &[&str] = &["(?i)\\bpanic(?:ked)?\\b"];
-const AXVISOR_TEST_ARCHES: &[&str] = &["aarch64"];
-const AXVISOR_TEST_SHELL_PREFIX: &str = "~ #";
-const AXVISOR_TEST_SHELL_INIT_CMD: &str = "pwd && echo 'guest test pass!'";
-const AXVISOR_TEST_SUCCESS_REGEX: &[&str] = &["^guest test pass!$"];
+const AXVISOR_TEST_ARCHES: &[&str] = &["aarch64", "x86_64"];
+const AXVISOR_AARCH64_TEST_SHELL_PREFIX: &str = "~ #";
+const AXVISOR_AARCH64_TEST_SHELL_INIT_CMD: &str = "pwd && echo 'guest test pass!'";
+const AXVISOR_AARCH64_TEST_SUCCESS_REGEX: &[&str] = &["^guest test pass!$"];
+const AXVISOR_X86_64_TEST_SHELL_PREFIX: &str = ">>";
+const AXVISOR_X86_64_TEST_SHELL_INIT_CMD: &str = "hello_world";
+const AXVISOR_X86_64_TEST_SUCCESS_REGEX: &[&str] = &["Hello world from user mode program!"];
 const AXVISOR_TEST_FAIL_REGEX: &[&str] = &[
     "(?i)\\bpanic(?:ked)?\\b",
     "(?i)kernel panic",
@@ -183,7 +186,6 @@ pub async fn run_starry_qemu_tests(args: ArgsStarry) -> anyhow::Result<()> {
 pub async fn run_axvisor_qemu_tests(args: ArgsAxvisor) -> anyhow::Result<()> {
     let (arch, target) = parse_axvisor_test_target(&args.target)?;
     let guest_ctx = AxvisorContext::new()?;
-    let assets = prepare_linux_aarch64_guest_assets(&guest_ctx).await?;
     let mut app = AppContext::new()?;
 
     println!(
@@ -191,13 +193,23 @@ pub async fn run_axvisor_qemu_tests(args: ArgsAxvisor) -> anyhow::Result<()> {
         arch, target
     );
 
+    let vmconfig = match arch {
+        "aarch64" => {
+            prepare_linux_aarch64_guest_assets(&guest_ctx)
+                .await?
+                .generated_vmconfig
+        }
+        "x86_64" => prepare_nimbos_x86_64_guest_vmconfig(&guest_ctx).await?,
+        _ => unreachable!(),
+    };
+
     let (request, _snapshot) = app.prepare_axvisor_request(
         AxvisorCliArgs {
             config: None,
             arch: Some(arch.to_string()),
             target: None,
             plat_dyn: None,
-            vmconfigs: vec![assets.generated_vmconfig.clone()],
+            vmconfigs: vec![vmconfig],
         },
         None,
     )?;
@@ -205,16 +217,8 @@ pub async fn run_axvisor_qemu_tests(args: ArgsAxvisor) -> anyhow::Result<()> {
     let cargo = axvisor::build::load_cargo_config(&request)?;
     let qemu_config =
         axvisor::build::default_qemu_config_template_path(app.workspace_root(), &request.arch);
-    let override_args = shell_autoinit_qemu_override_args(
-        app.workspace_root(),
-        &request,
-        &ShellAutoInitConfig {
-            shell_prefix: AXVISOR_TEST_SHELL_PREFIX.to_string(),
-            shell_init_cmd: AXVISOR_TEST_SHELL_INIT_CMD.to_string(),
-            success_regex: default_axvisor_test_success_regex(),
-            fail_regex: default_axvisor_test_fail_regex(),
-        },
-    )?;
+    let shell = axvisor_test_shell_config(arch);
+    let override_args = shell_autoinit_qemu_override_args(app.workspace_root(), &request, &shell)?;
 
     app.qemu(
         cargo,
@@ -271,6 +275,7 @@ fn parse_axvisor_test_target(target: &str) -> anyhow::Result<(&str, &'static str
         target,
         match target {
             "aarch64" => "aarch64-unknown-none-softfloat",
+            "x86_64" => "x86_64-unknown-none",
             _ => unreachable!(),
         },
     ))
@@ -291,7 +296,7 @@ fn default_starry_test_fail_regex() -> Vec<String> {
 }
 
 fn default_axvisor_test_success_regex() -> Vec<String> {
-    AXVISOR_TEST_SUCCESS_REGEX
+    AXVISOR_AARCH64_TEST_SUCCESS_REGEX
         .iter()
         .map(|pattern| (*pattern).to_string())
         .collect()
@@ -302,6 +307,27 @@ fn default_axvisor_test_fail_regex() -> Vec<String> {
         .iter()
         .map(|pattern| (*pattern).to_string())
         .collect()
+}
+
+fn axvisor_test_shell_config(arch: &str) -> ShellAutoInitConfig {
+    match arch {
+        "aarch64" => ShellAutoInitConfig {
+            shell_prefix: AXVISOR_AARCH64_TEST_SHELL_PREFIX.to_string(),
+            shell_init_cmd: AXVISOR_AARCH64_TEST_SHELL_INIT_CMD.to_string(),
+            success_regex: default_axvisor_test_success_regex(),
+            fail_regex: default_axvisor_test_fail_regex(),
+        },
+        "x86_64" => ShellAutoInitConfig {
+            shell_prefix: AXVISOR_X86_64_TEST_SHELL_PREFIX.to_string(),
+            shell_init_cmd: AXVISOR_X86_64_TEST_SHELL_INIT_CMD.to_string(),
+            success_regex: AXVISOR_X86_64_TEST_SUCCESS_REGEX
+                .iter()
+                .map(|pattern| (*pattern).to_string())
+                .collect(),
+            fail_regex: default_axvisor_test_fail_regex(),
+        },
+        _ => panic!("unsupported axvisor test arch: {arch}"),
+    }
 }
 
 #[cfg(test)]
@@ -403,6 +429,10 @@ mod tests {
             parse_axvisor_test_target("aarch64").unwrap(),
             ("aarch64", "aarch64-unknown-none-softfloat")
         );
+        assert_eq!(
+            parse_axvisor_test_target("x86_64").unwrap(),
+            ("x86_64", "x86_64-unknown-none")
+        );
     }
 
     #[test]
@@ -474,6 +504,18 @@ mod tests {
                 "(?i)login incorrect".to_string(),
                 "(?i)permission denied".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn axvisor_x86_64_shell_config_matches_expected_values() {
+        let shell = axvisor_test_shell_config("x86_64");
+
+        assert_eq!(shell.shell_prefix, ">>");
+        assert_eq!(shell.shell_init_cmd, "hello_world");
+        assert_eq!(
+            shell.success_regex,
+            vec!["Hello world from user mode program!".to_string()]
         );
     }
 
