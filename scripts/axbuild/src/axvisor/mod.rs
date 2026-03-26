@@ -7,10 +7,10 @@ use crate::{
     context::{AppContext, AxvisorCliArgs},
 };
 
+pub mod board;
 pub mod build;
 pub mod context;
 pub mod image;
-pub mod board;
 
 /// Axvisor host-side commands
 #[derive(Subcommand)]

@@ -4,10 +4,11 @@ use std::{
 };
 
 use ostool::build::config::Cargo;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     arceos::build::ArceosBuildInfo,
+    axvisor::board,
     context::{ResolvedAxvisorRequest, arch_for_target_checked},
 };
 
@@ -16,7 +17,7 @@ pub use crate::arceos::build::LogLevel;
 
 pub const AXVISOR_PACKAGE: &str = "axvisor";
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
 pub struct AxvisorBoardConfig {
     #[serde(flatten, default)]
     pub(crate) arceos: ArceosBuildInfo,
@@ -239,11 +240,22 @@ fn load_build_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<LoadedA
         if let Some(parent) = request.build_info_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let default = AxvisorBuildInfo::default_axvisor_for_target(&request.target);
-        fs::write(&request.build_info_path, toml::to_string_pretty(&default)?)?;
+        if let Some(default_board) = board::default_board_for_target(&request.target) {
+            fs::write(
+                &request.build_info_path,
+                toml::to_string_pretty(&default_board)?,
+            )?;
+            return Ok(default_board.into_loaded());
+        }
+
+        let default_build_info = AxvisorBuildInfo::default_axvisor_for_target(&request.target);
+        fs::write(
+            &request.build_info_path,
+            toml::to_string_pretty(&default_build_info)?,
+        )?;
 
         return Ok(LoadedAxvisorBuildConfig {
-            build_info: default,
+            build_info: default_build_info,
             target: request.target.clone(),
         });
     }
@@ -354,10 +366,9 @@ mod tests {
         ))
         .unwrap();
 
-        assert_eq!(
-            build_info,
-            AxvisorBuildInfo::default_axvisor_for_target("aarch64-unknown-none-softfloat")
-        );
+        assert!(build_info.plat_dyn);
+        assert!(build_info.features.contains(&"ept-level-4".to_string()));
+        assert!(build_info.features.contains(&"axstd/bus-mmio".to_string()));
         assert!(path.exists());
     }
 
@@ -421,6 +432,31 @@ vm_configs = []
             load_target_from_build_config(&path).unwrap(),
             Some("aarch64-unknown-none-softfloat".to_string())
         );
+    }
+
+    #[test]
+    fn load_cargo_config_uses_board_defaults_when_default_file_is_missing() {
+        let root = tempdir().unwrap();
+        let path = root
+            .path()
+            .join("os/axvisor/.build-x86_64-unknown-none.toml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+        let cargo = load_cargo_config(&ResolvedAxvisorRequest {
+            package: AXVISOR_PACKAGE.to_string(),
+            arch: "x86_64".to_string(),
+            target: "x86_64-unknown-none".to_string(),
+            plat_dyn: None,
+            build_info_path: path.clone(),
+            qemu_config: None,
+            vmconfigs: vec![],
+        })
+        .unwrap();
+
+        assert!(path.exists());
+        assert!(cargo.features.contains(&"ept-level-4".to_string()));
+        assert!(cargo.features.contains(&"fs".to_string()));
+        assert!(!cargo.features.contains(&"axstd/plat-dyn".to_string()));
     }
 
     #[test]

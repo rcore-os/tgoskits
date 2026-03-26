@@ -143,6 +143,8 @@ Axvisor 的构建与运行完全由 `os/axvisor` 自带 xtask 管理。根目录
 - `os/axvisor/configs/vms/*.toml`: Guest VM 配置
 - `os/axvisor/.build-<target>.toml`: Axvisor 根入口默认使用的 build info 文件
 
+当默认 `.build-<target>.toml` 不存在时，根入口会优先参考 `axvisor::board` 中的内置 board 定义来生成它，因此首次生成的内容会继承对应 QEMU 板级的默认 `features` / `plat_dyn`，而不是纯 target-only 的空白默认值。
+
 `defconfig <board>` 的行为是：
 
 1. 校验 `configs/board/<board>.toml` 是否存在
