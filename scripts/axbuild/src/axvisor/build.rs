@@ -160,9 +160,25 @@ fn patch_axvisor_cargo_config(
         );
     }
 
+    normalize_axvisor_platform_features(&mut cargo.features);
     cargo.features.sort();
     cargo.features.dedup();
     Ok(())
+}
+
+fn normalize_axvisor_platform_features(features: &mut Vec<String>) {
+    let has_axstd_defplat = features.iter().any(|feature| feature == "axstd/defplat");
+    let has_axstd_myplat = features.iter().any(|feature| feature == "axstd/myplat");
+
+    if has_axstd_defplat && !has_axstd_myplat {
+        for feature in features.iter_mut() {
+            if feature == "axstd/defplat" {
+                *feature = "axstd/myplat".to_string();
+            }
+        }
+    } else {
+        features.retain(|feature| feature != "axstd/defplat");
+    }
 }
 
 pub fn load_target_from_build_config(path: &Path) -> anyhow::Result<Option<String>> {
@@ -618,6 +634,38 @@ vm_configs = []
         assert!(cargo.features.contains(&"ept-level-4".to_string()));
         assert!(cargo.features.contains(&"fs".to_string()));
         assert!(!cargo.features.contains(&"axstd/plat-dyn".to_string()));
+        assert!(!cargo.features.contains(&"axstd/defplat".to_string()));
+        assert!(cargo.features.contains(&"axstd/myplat".to_string()));
+    }
+
+    #[test]
+    fn load_cargo_config_replaces_axstd_defplat_with_myplat() {
+        let root = tempdir().unwrap();
+        let config_path = root.path().join(".build.toml");
+        fs::write(
+            &config_path,
+            r#"
+env = {}
+features = ["axstd", "axstd/defplat", "ept-level-4"]
+log = "Info"
+plat_dyn = false
+"#,
+        )
+        .unwrap();
+
+        let cargo = load_cargo_config(&ResolvedAxvisorRequest {
+            package: AXVISOR_PACKAGE.to_string(),
+            arch: "aarch64".to_string(),
+            target: "aarch64-unknown-none-softfloat".to_string(),
+            plat_dyn: Some(false),
+            build_info_path: config_path,
+            qemu_config: None,
+            vmconfigs: vec![],
+        })
+        .unwrap();
+
+        assert!(!cargo.features.contains(&"axstd/defplat".to_string()));
+        assert!(cargo.features.contains(&"axstd/myplat".to_string()));
     }
 
     #[test]
