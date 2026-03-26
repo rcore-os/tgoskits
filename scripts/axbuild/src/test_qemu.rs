@@ -84,6 +84,9 @@ pub struct ArgsAxvisor {
 pub struct ArgsAxvisorUboot {
     #[arg(short = 'b', long, value_name = "BOARD")]
     pub board: String,
+
+    #[arg(long)]
+    pub uboot_config: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -254,7 +257,10 @@ pub async fn run_axvisor_uboot_tests(args: ArgsAxvisorUboot) -> anyhow::Result<(
     let board = axvisor_uboot_board_config(&args.board)?;
     let mut app = AppContext::new()?;
     let workspace_root = app.workspace_root().to_path_buf();
-    let uboot_config = default_axvisor_uboot_config_path(&workspace_root);
+    let uboot_config = args
+        .uboot_config
+        .clone()
+        .unwrap_or_else(|| default_axvisor_uboot_config_path(&workspace_root));
 
     if !uboot_config.exists() {
         bail!(
@@ -356,7 +362,7 @@ fn axvisor_uboot_board_config(board: &str) -> anyhow::Result<AxvisorUbootBoardCo
 }
 
 fn default_axvisor_uboot_config_path(workspace_root: &Path) -> PathBuf {
-    workspace_root.join(".uboot.toml")
+    workspace_root.join("uboot.toml")
 }
 
 #[cfg(test)]
@@ -636,7 +642,7 @@ mod tests {
         let root = PathBuf::from("/tmp/workspace");
         assert_eq!(
             default_axvisor_uboot_config_path(&root),
-            PathBuf::from("/tmp/workspace/.uboot.toml")
+            PathBuf::from("/tmp/workspace/uboot.toml")
         );
     }
 

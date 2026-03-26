@@ -143,6 +143,8 @@ async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     #[test]
@@ -247,7 +249,10 @@ mod tests {
                     TestCommand::Uboot {
                         command: UbootTestCommand::Axvisor(args),
                     },
-            } => assert_eq!(args.board, "phytiumpi"),
+            } => {
+                assert_eq!(args.board, "phytiumpi");
+                assert_eq!(args.uboot_config, None);
+            }
             _ => panic!("expected `test uboot axvisor` command"),
         }
     }
@@ -264,7 +269,41 @@ mod tests {
                     TestCommand::Uboot {
                         command: UbootTestCommand::Axvisor(args),
                     },
-            } => assert_eq!(args.board, "roc-rk3568-pc"),
+            } => {
+                assert_eq!(args.board, "roc-rk3568-pc");
+                assert_eq!(args.uboot_config, None);
+            }
+            _ => panic!("expected `test uboot axvisor` command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_test_uboot_axvisor_custom_config() {
+        let cli = Cli::try_parse_from([
+            "axbuild",
+            "test",
+            "uboot",
+            "axvisor",
+            "--board",
+            "phytiumpi",
+            "--uboot-config",
+            ".github/workflows/uboot.toml",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Test {
+                command:
+                    TestCommand::Uboot {
+                        command: UbootTestCommand::Axvisor(args),
+                    },
+            } => {
+                assert_eq!(args.board, "phytiumpi");
+                assert_eq!(
+                    args.uboot_config,
+                    Some(PathBuf::from(".github/workflows/uboot.toml"))
+                );
+            }
             _ => panic!("expected `test uboot axvisor` command"),
         }
     }

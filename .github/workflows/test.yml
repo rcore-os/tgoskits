@@ -125,4 +125,4 @@ jobs:
           save-if: ${{ github.event_name == 'push' }}
 
       - name: Run axvisor board tests
-        run: cargo xtask test uboot axvisor --board ${{ matrix.board }}
+        run: cargo xtask test uboot axvisor --board ${{ matrix.board }} --uboot-config .github/workflows/uboot.toml
