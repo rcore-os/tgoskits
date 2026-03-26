@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
-use ostool::build::CargoQemuAppendArgs;
+use ostool::build::CargoQemuOverrideArgs;
 
 use crate::context::{
     AppContext, DEFAULT_STARRY_ARCH, QemuRunConfig, StarryCliArgs, starry_target_for_arch_checked,
@@ -126,7 +126,7 @@ impl Starry {
                 request.build_info_path,
                 QemuRunConfig {
                     qemu_config: request.qemu_config,
-                    append_args: CargoQemuAppendArgs {
+                    default_args: CargoQemuOverrideArgs {
                         args: Some(qemu_args),
                         ..Default::default()
                     },
@@ -225,5 +225,23 @@ mod tests {
         };
 
         assert_eq!(args.arch.as_deref(), Some("riscv64"));
+    }
+
+    #[test]
+    fn starry_qemu_uses_default_args_for_disk_and_net() {
+        let qemu = QemuRunConfig {
+            qemu_config: Some(PathBuf::from("qemu.toml")),
+            default_args: CargoQemuOverrideArgs {
+                args: Some(vec![
+                    "-device".to_string(),
+                    "virtio-blk-pci,drive=disk0".to_string(),
+                ]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert!(qemu.default_args.args.is_some());
+        assert!(qemu.append_args.args.is_none());
     }
 }

@@ -3,7 +3,7 @@ use std::future::Future;
 
 use anyhow::Context;
 use clap::Args;
-use ostool::build::CargoQemuAppendArgs;
+use ostool::build::CargoQemuOverrideArgs;
 
 use crate::{
     arceos,
@@ -42,7 +42,9 @@ const ARCEOS_TEST_TARGETS: &[&str] = &[
 
 const STARRY_TEST_PACKAGE: &str = "starryos-test";
 const STARRY_TEST_ARCHES: &[&str] = &["x86_64", "riscv64", "aarch64", "loongarch64"];
+#[cfg(test)]
 const STARRY_TEST_SUCCESS_REGEX: &[&str] = &["^All tests passed!$"];
+#[cfg(test)]
 const STARRY_TEST_FAIL_REGEX: &[&str] = &["(?i)\\bpanic(?:ked)?\\b"];
 const AXVISOR_TEST_ARCHES: &[&str] = &["aarch64", "x86_64"];
 const AXVISOR_AARCH64_TEST_SHELL_PREFIX: &str = "~ #";
@@ -161,10 +163,9 @@ pub async fn run_starry_qemu_tests(args: ArgsStarry) -> anyhow::Result<()> {
                 request.build_info_path,
                 QemuRunConfig {
                     qemu_config: request.qemu_config,
-                    append_args: CargoQemuAppendArgs {
+                    default_args: CargoQemuOverrideArgs {
                         args: Some(qemu_args),
-                        success_regex: Some(default_starry_test_success_regex()),
-                        fail_regex: Some(default_starry_test_fail_regex()),
+                        ..Default::default()
                     },
                     ..Default::default()
                 },
@@ -281,6 +282,7 @@ fn parse_axvisor_test_target(target: &str) -> anyhow::Result<(&str, &'static str
     ))
 }
 
+#[cfg(test)]
 fn default_starry_test_success_regex() -> Vec<String> {
     STARRY_TEST_SUCCESS_REGEX
         .iter()
@@ -288,6 +290,7 @@ fn default_starry_test_success_regex() -> Vec<String> {
         .collect()
 }
 
+#[cfg(test)]
 fn default_starry_test_fail_regex() -> Vec<String> {
     STARRY_TEST_FAIL_REGEX
         .iter()
