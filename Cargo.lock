@@ -352,9 +352,9 @@ dependencies = [
 
 [[package]]
 name = "arm-gic-driver"
-version = "0.16.4"
+version = "0.16.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e30c6a0ffd23095c69f48afd996eb51156b2511b52a01bdbb0b418fdfd1d458c"
+checksum = "6a1ce13c5a40e028c7cb68b839880903d97db90fb78065c4f972ffbefbe83dae"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "bitflags 2.11.0",
@@ -1184,7 +1184,7 @@ name = "axplat-aarch64-peripherals"
 version = "0.3.1-pre.6"
 dependencies = [
  "aarch64-cpu 11.2.0",
- "arm-gic-driver 0.16.4",
+ "arm-gic-driver 0.16.5",
  "arm_pl011 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "arm_pl031 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "axcpu",
