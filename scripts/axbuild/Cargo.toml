@@ -31,7 +31,7 @@ serde_json = {version = "1"}
 sha2 = {version = "0.10"}
 tar = {version = "0.4"}
 tokio = {version = "1.0", features = ["fs", "io-util", "macros", "process", "rt-multi-thread"], optional = true}
-toml = "0.9"
+toml.workspace = true
 tracing = "0.1"
 tracing-log = "0.2"
 tracing-subscriber = {version = "0.3", features = ["fmt", "std", "time"]}
