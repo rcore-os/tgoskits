@@ -1,0 +1,48 @@
+#!/bin/bash
+#
+# arm_vcpu 测试脚本
+# 下载并调用 axci 仓库中的测试框架
+#
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COMPONENT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+AXCI_DIR="${SCRIPT_DIR}/.axci"
+AXCI_REPO="https://github.com/arceos-hypervisor/axci.git"
+
+# 下载或更新 axci 仓库
+download_axci() {
+    if [ -d "$AXCI_DIR" ]; then
+        echo "Updating axci repository..."
+        cd "$AXCI_DIR" && git pull --quiet
+    else
+        echo "Downloading axci repository..."
+        git clone --quiet --branch ndev "$AXCI_REPO" "$AXCI_DIR"
+    fi
+}
+
+host_target_triple() {
+    rustc -vV | sed -n 's/^host: //p'
+}
+
+run_axci_tests() {
+    local host_target
+    host_target="$(host_target_triple)"
+    cd "$COMPONENT_DIR"
+    exec env CARGO_BUILD_TARGET="$host_target" \
+        bash "$AXCI_DIR/tests.sh" --component-dir "$COMPONENT_DIR" "$@"
+}
+
+# 主函数
+main() {
+    download_axci
+
+    # 在组件目录中运行测试，自动指定当前组件，并固定 host target，
+    # 避免父目录 .cargo/config.toml 的默认 build.target 泄漏到外部工作树。
+    run_axci_tests "$@"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi
