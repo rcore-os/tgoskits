@@ -93,5 +93,5 @@ fn main() {
     println!("sum = {}", actual);
     assert_eq!(expect, actual);
 
-    println!("Parallel summation tests run OK!");
+    println!("All tests passed!");
 }

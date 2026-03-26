@@ -141,5 +141,5 @@ fn main() {
     #[cfg(feature = "axstd")]
     test_wait_queue();
 
-    println!("Task irq state tests run OK!");
+    println!("All tests passed!");
 }

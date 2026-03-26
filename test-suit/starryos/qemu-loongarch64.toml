@@ -16,9 +16,9 @@ args = [
   "user,id=net0",
 ]
 fail_regex = ['(?i)\bpanic(?:ked)?\b']
-shell_init_cmd = "pwd && echo 'shell ok'"
+shell_init_cmd = "pwd && echo 'All tests passed!'"
 shell_prefix = "starry:~#"
-success_regex = ["^shell ok$"]
+success_regex = ["^All tests passed!$"]
 to_bin = true
 uefi = false
 timeout = 3

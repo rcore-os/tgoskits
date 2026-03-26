@@ -46,5 +46,5 @@ fn main() {
     test_vec(&mut rng);
     test_btree_map(&mut rng);
 
-    println!("Memory tests run OK!");
+    println!("All tests passed!");
 }

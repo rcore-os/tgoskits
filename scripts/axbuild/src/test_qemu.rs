@@ -30,7 +30,7 @@ const ARCEOS_TEST_TARGETS: &[&str] = &[
 
 const STARRY_TEST_PACKAGE: &str = "starryos-test";
 const STARRY_TEST_ARCHES: &[&str] = &["x86_64", "riscv64", "aarch64", "loongarch64"];
-const STARRY_TEST_SUCCESS_REGEX: &[&str] = &["starry:~#"];
+const STARRY_TEST_SUCCESS_REGEX: &[&str] = &["^All tests passed!$"];
 const STARRY_TEST_FAIL_REGEX: &[&str] = &["(?i)\\bpanic(?:ked)?\\b"];
 
 #[derive(Args, Debug, Clone)]
@@ -303,7 +303,7 @@ mod tests {
     fn starry_default_regexes_match_expected_values() {
         assert_eq!(
             default_starry_test_success_regex(),
-            vec!["starry:~#".to_string()]
+            vec!["^All tests passed!$".to_string()]
         );
         assert_eq!(
             default_starry_test_fail_regex(),
