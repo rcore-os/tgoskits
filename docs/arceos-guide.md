@@ -1,10 +1,10 @@
 # ArceOS 开发指南
 
-在 TGOSKits 里，ArceOS 既是一个可以单独运行的模块化操作系统，也是 StarryOS 与 Axvisor 复用的基础能力提供者。理解 ArceOS 的关键不只是"怎么跑示例"，而是"一个能力如何从模块一路走到应用和测试"。本文档介绍 ArceOS 在仓库中的位置、运行入口、典型开发流程和调试方法，帮助你高效地进行 ArceOS 相关的开发和验证。
+ArceOS 是 TGOSKits 工作区中的模块化操作系统内核，同时作为 StarryOS 和 Axvisor 的底层基础能力提供者。本文档介绍 ArceOS 的源码组织结构、构建与运行入口、架构概览、开发工作流、测试验证方法及调试手段，帮助开发者高效开展 ArceOS 相关的开发与集成工作。
 
-## 1. ArceOS 在仓库里的位置
+## 1. 源码组织
 
-ArceOS 的代码分布在多个目录中，不同目录承担不同的角色。`os/arceos/` 下是 ArceOS 自身的内核模块、API 层和示例，`components/` 下则是被 ArceOS 和其他系统共同复用的基础 crate，`test-suit/arceos/` 则负责系统级自动化测试。理解这些目录的边界，是判断改动影响面的第一步。
+ArceOS 的源码分布在多个目录中，各目录承担不同职责。`os/arceos/` 包含内核模块、API 层及示例应用，`components/` 包含被 ArceOS 及其他系统共同复用的基础 crate，`test-suit/arceos/` 负责系统级自动化测试。理解这些目录的职责边界，是评估改动影响范围的前提。
 
 | 路径 | 角色 | 什么时候会改到 |
 | --- | --- | --- |
@@ -20,9 +20,9 @@ ArceOS 的代码分布在多个目录中，不同目录承担不同的角色。`
 - `components/` 里的基础 crate 和 `os/arceos/modules/*` 经常一起构成 ArceOS 能力
 - 你改了 ArceOS 的基础层，StarryOS 和 Axvisor 也可能被连带影响
 
-## 2. 运行入口
+## 2. 构建与运行
 
-ArceOS 提供两种运行方式：仓库根目录的 `cargo xtask arceos` 统一入口和 `os/arceos/` 下的本地 Makefile 入口。前者更适合日常开发和 CI，后者更适合需要精细控制 Makefile 变量的场景。
+ArceOS 提供两种构建与运行方式：仓库根目录的 `cargo xtask arceos` 统一入口和 `os/arceos/` 下的本地 Makefile 入口。前者适用于日常开发与 CI 环境，后者适用于需要精细控制 Makefile 变量的场景。
 
 ### 仓库根目录的推荐入口
 
@@ -54,9 +54,9 @@ make A=examples/shell ARCH=riscv64 BLK=y run
 - 你在调试 ArceOS 自己的 Makefile 变量
 - 你需要显式操控 `NET=y`、`BLK=y`、`LOG=debug` 这类本地入口参数
 
-## 3. 从组件到应用的典型链路
+## 3. 架构概览
 
-ArceOS 的能力从可复用 crate 出发，经过内核模块层聚合，再通过 feature 和用户库暴露给应用。下面的流程图展示了这条链路中各层的角色和关系。理解这条链路，有助于判断你的改动应该落在哪一层。
+ArceOS 的能力从可复用 crate 出发，经内核模块层聚合，再通过 feature 和用户库暴露给应用。以下流程图展示了各层的职责与依赖关系，有助于判断改动应落在哪一层。
 
 ```mermaid
 flowchart TD
@@ -77,25 +77,25 @@ flowchart TD
     Ulib --> Tests
 ```
 
-这条链路对应了几种常见开发动作：
+该链路对应以下几类开发场景：
 
 - 改内部实现：动 `components/` 或 `modules/`
 - 新增 feature 开关：动 `axfeat`
 - 新增应用侧 API：动 `axstd` / `axlibc`
 - 新增验证样例：动 `examples/` 或 `test-suit/arceos/`
 
-## 4. 常见开发动作
+## 4. 开发工作流
 
-本节列出 ArceOS 开发中最常见的几类改动，以及对应的推荐验证路径。无论你是修改基础组件、暴露新能力、还是添加示例应用，都应该先跑最小消费者来验证改动是否正确。
+本节介绍 ArceOS 开发中常见的几类改动及其推荐验证路径。无论修改基础组件、暴露新能力还是添加示例应用，均应先从最小消费者开始验证，确保改动正确。
 
 ### 4.1 修改基础组件或模块
 
-如果你改的是：
+若修改内容涉及以下模块：
 
 - `components/axerrno`、`components/kspin`、`components/page_table_multiarch`
 - 或 `os/arceos/modules/axhal`、`axtask`、`axdriver`、`axnet`、`axfs`
 
-建议先跑最小消费者：
+建议先以最小消费者进行验证：
 
 ```bash
 cargo xtask arceos run --package arceos-helloworld --arch riscv64
@@ -111,19 +111,19 @@ cargo xtask arceos run --package arceos-httpserver --arch riscv64 --net
 cargo xtask arceos run --package arceos-shell --arch riscv64 --blk
 ```
 
-### 4.2 新增 feature 或暴露给应用
+### 4.2 新增 Feature 或暴露应用接口
 
-当一个能力已经在模块层实现，但你还希望应用可选启用时，常见接线顺序是：
+当某个能力已在模块层实现，但需要作为可选能力暴露给应用时，推荐按以下顺序接入：
 
 1. 在 `os/arceos/modules/*` 完成或接入实现
 2. 在 `os/arceos/api/axfeat` 暴露 feature
-3. 需要给应用直接用时，再接到 `os/arceos/ulib/axstd` 或 `axlibc`
+3. 若需直接供应用使用，则接入 `os/arceos/ulib/axstd` 或 `axlibc`
 
-如果你只做了第 1 步，没有走到 `axfeat` 或 `axstd`，应用层通常是看不到这个能力的。
+若仅完成第 1 步而未接入 `axfeat` 或 `axstd`，应用层将无法访问该能力。
 
-### 4.3 添加一个新示例应用
+### 4.3 添加新示例应用
 
-新增示例通常放在 `os/arceos/examples/<name>/`。最小 `Cargo.toml` 可以参考：
+新增示例应用通常放置于 `os/arceos/examples/<name>/`。最小 `Cargo.toml` 可参考：
 
 ```toml
 [package]
@@ -156,9 +156,9 @@ fn main() {
 cargo xtask arceos run --package myapp --arch riscv64
 ```
 
-### 4.4 添加或修改平台
+### 4.4 添加或修改平台支持
 
-如果你改的是平台逻辑，需要一起看：
+若修改内容涉及平台逻辑，需同时关注以下目录：
 
 - `components/axplat_crates/platforms/*`
 - `platform/axplat-dyn`
@@ -171,9 +171,9 @@ cargo xtask arceos run --package arceos-helloworld --arch aarch64 \
     --platform axplat-aarch64-qemu-virt
 ```
 
-## 5. 验证入口
+## 5. 测试与验证
 
-ArceOS 提供了从示例应用到系统测试的多层验证入口。日常开发时用示例应用做快速验证，改动稳定后再用系统测试做回归。适合在 host 上跑的基础 crate 可以直接用 `cargo test`。
+ArceOS 提供从示例应用到系统测试的多层验证入口。日常开发使用示例应用进行快速验证，改动稳定后通过系统测试进行回归。适合在宿主机运行的基础 crate 可直接使用 `cargo test`。
 
 ### 示例应用
 
@@ -200,13 +200,13 @@ cargo xtask test arceos --target riscv64gc-unknown-none-elf
 cargo test -p axerrno
 ```
 
-## 6. 调试建议
+## 6. 调试指南
 
-ArceOS 提供了日志级别控制和 GDB 调试两种主要调试手段。调整日志级别最直接的方式是通过本地 Makefile 传入 `LOG` 变量；需要断点调试时，本地 Makefile 的 `debug` 目标已经集成了 GDB 启动。
+ArceOS 提供日志级别控制和 GDB 调试两种主要调试手段。日志级别可通过本地 Makefile 传入 `LOG` 变量进行控制；断点调试可通过本地 Makefile 的 `debug` 目标启动 GDB。
 
-### 看更详细的运行日志
+### 查看详细运行日志
 
-本地 Makefile 路径最直接：
+通过本地 Makefile 传入 `LOG` 变量：
 
 ```bash
 cd os/arceos
@@ -215,7 +215,7 @@ make A=examples/helloworld ARCH=riscv64 LOG=debug run
 
 ### 启动 GDB 调试
 
-ArceOS 本地 Makefile 已经有现成的 `debug` 目标：
+本地 Makefile 已内置 `debug` 目标：
 
 ```bash
 cd os/arceos
@@ -224,15 +224,17 @@ make A=examples/helloworld ARCH=riscv64 debug
 
 这比在根目录命令里硬塞额外 QEMU 参数更可靠，因为根 `cargo xtask arceos run` 当前并不直接暴露原始 QEMU 参数透传接口。
 
-### 什么时候优先用根目录入口
+### 何时优先使用根目录入口
 
-- 你要验证集成行为
-- 你要和 `test-suit`、StarryOS 或 Axvisor 的共享依赖对齐
-- 你希望命令风格和 CI 更接近
+以下场景推荐使用根目录 `cargo xtask arceos` 入口：
 
-## 7. 继续阅读
+- 验证集成行为
+- 与 `test-suit`、StarryOS 或 Axvisor 的共享依赖进行对齐
+- 保持命令风格与 CI 一致
 
-以下是理解 ArceOS 及其上下文的推荐阅读顺序，覆盖了从外部入口到内部机制、从组件视角到系统集成视角的完整知识链。
+## 7. 延伸阅读
+
+以下是理解 ArceOS 及其上下文的推荐阅读顺序，涵盖从外部入口到内部机制、从组件视角到系统集成视角的完整知识链。
 
 - [arceos-internals.md](arceos-internals.md): 系统理解 ArceOS 的分层、feature 装配、启动路径和内部机制
 - [components.md](components.md): 从组件视角继续看共享依赖怎么接到三个系统
