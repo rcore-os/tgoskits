@@ -68,6 +68,8 @@ enum QemuTestCommand {
     Arceos(test_qemu::ArgsArceos),
     /// Run StarryOS QEMU test suite
     Starry(test_qemu::ArgsStarry),
+    /// Run Axvisor QEMU test suite
+    Axvisor(test_qemu::ArgsAxvisor),
 }
 
 pub async fn run() -> anyhow::Result<()> {
@@ -97,6 +99,14 @@ async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
                 },
         } => {
             test_qemu::run_starry_qemu_tests(args).await?;
+        }
+        Commands::Test {
+            command:
+                TestCommand::Qemu {
+                    command: QemuTestCommand::Axvisor(args),
+                },
+        } => {
+            test_qemu::run_axvisor_qemu_tests(args).await?;
         }
         Commands::Axvisor { command } => {
             Axvisor::new()?.execute(command).await?;
@@ -164,6 +174,39 @@ mod tests {
                     },
             } => assert_eq!(args.target, "x86_64"),
             _ => panic!("expected `test qemu starry` command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_test_qemu_axvisor_command() {
+        let cli =
+            Cli::try_parse_from(["axbuild", "test", "qemu", "axvisor", "--target", "aarch64"])
+                .unwrap();
+
+        match cli.command {
+            Commands::Test {
+                command:
+                    TestCommand::Qemu {
+                        command: QemuTestCommand::Axvisor(args),
+                    },
+            } => assert_eq!(args.target, "aarch64"),
+            _ => panic!("expected `test qemu axvisor` command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_test_qemu_axvisor_arch_alias() {
+        let cli = Cli::try_parse_from(["axbuild", "test", "qemu", "axvisor", "--arch", "aarch64"])
+            .unwrap();
+
+        match cli.command {
+            Commands::Test {
+                command:
+                    TestCommand::Qemu {
+                        command: QemuTestCommand::Axvisor(args),
+                    },
+            } => assert_eq!(args.target, "aarch64"),
+            _ => panic!("expected `test qemu axvisor` command"),
         }
     }
 

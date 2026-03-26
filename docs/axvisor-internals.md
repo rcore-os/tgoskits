@@ -15,7 +15,7 @@ AxVisor 在本仓库中的定位，是**基于 ArceOS 的统一组件化 Type-I 
 | 统一 | 尽可能用同一套代码覆盖多架构平台 | `hal/arch/*`、`configs/board/*` |
 | 组件化 | 将 VM、vCPU、虚拟设备、地址空间、API 注入等能力拆成独立组件 | `components/axvm`、`axvcpu`、`axdevice`、`axaddrspace`、`axvisor_api` |
 | 可配置 | 通过板级配置与 VM 配置控制构建与运行行为 | `configs/board/*.toml`、`configs/vms/*.toml`、`.build.toml` |
-| 可验证 | 通过本地 xtask、`setup_qemu.sh`、QEMU workflow 和统一测试入口形成闭环 | `os/axvisor/xtask`、`.github/workflows/*.toml`、根 `cargo xtask test axvisor` |
+| 可验证 | 通过本地 xtask、`setup_qemu.sh`、QEMU workflow 和统一测试入口形成闭环 | `os/axvisor/xtask`、`.github/workflows/*.toml`、根 `cargo xtask test qemu axvisor` |
 
 从开发体验上看，AxVisor 与 ArceOS/StarryOS 的最大差异在于：**代码、配置和 Guest 镜像同等重要**。很多“看起来像代码 bug”的问题，根因其实是 `.build.toml`、`vm_configs`、`kernel_path` 或 `tmp/rootfs.img` 没有对齐。
 
@@ -502,7 +502,7 @@ cd os/axvisor
 
 # 统一测试入口
 cd /home/chyyuu/thecodes/tgoskits
-cargo xtask test axvisor --target aarch64-unknown-none-softfloat
+cargo xtask test qemu axvisor --target aarch64
 ```
 
 ### 8.4 优化切入点

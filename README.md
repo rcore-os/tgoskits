@@ -104,6 +104,9 @@ cargo axvisor qemu \
   --config os/axvisor/.build-aarch64-unknown-none-softfloat.toml \
   --qemu-config .github/workflows/qemu-aarch64.toml \
   --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
+
+# Axvisor 统一测试
+cargo xtask test qemu axvisor --target aarch64
 ```
 
 修改组件后的验证策略见 [docs/components.md](docs/components.md)。

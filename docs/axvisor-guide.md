@@ -225,7 +225,7 @@ cargo xtask qemu \
 ### 根工作区测试入口
 
 ```bash
-cargo xtask test axvisor --target aarch64-unknown-none-softfloat
+cargo xtask test qemu axvisor --target aarch64
 ```
 
 这条命令属于根工作区测试矩阵，不等价于本地 `cargo xtask qemu ...`。  
@@ -288,5 +288,5 @@ cargo xtask qemu \
 
 - [axvisor-internals.md](axvisor-internals.md): 系统理解 Axvisor 的五层架构、VMM 启动链、vCPU 任务模型与 `axvisor_api`
 - [components.md](components.md): 从组件角度看 Axvisor 与 ArceOS / StarryOS 的共享依赖
-- [build-system.md](build-system.md): 理解 `cargo axvisor` 与根 `cargo xtask test axvisor` 的边界
+- [build-system.md](build-system.md): 理解 `cargo axvisor` 与根 `cargo xtask test qemu axvisor` 的边界
 - [quick-start.md](quick-start.md): 如果你只是想先把第一条 QEMU 路径跑通

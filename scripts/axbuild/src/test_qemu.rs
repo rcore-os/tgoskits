@@ -6,7 +6,17 @@ use clap::Args;
 
 use crate::{
     arceos,
-    context::{AppContext, BuildCliArgs, StarryCliArgs, starry_target_for_arch_checked},
+    axvisor::{
+        self,
+        context::AxvisorContext,
+        qemu_test::{
+            ShellAutoInitConfig, prepare_linux_aarch64_guest_assets,
+            prepare_shell_autoinit_qemu_config,
+        },
+    },
+    context::{
+        AppContext, AxvisorCliArgs, BuildCliArgs, StarryCliArgs, starry_target_for_arch_checked,
+    },
     starry,
 };
 
@@ -32,6 +42,16 @@ const STARRY_TEST_PACKAGE: &str = "starryos-test";
 const STARRY_TEST_ARCHES: &[&str] = &["x86_64", "riscv64", "aarch64", "loongarch64"];
 const STARRY_TEST_SUCCESS_REGEX: &[&str] = &["^All tests passed!$"];
 const STARRY_TEST_FAIL_REGEX: &[&str] = &["(?i)\\bpanic(?:ked)?\\b"];
+const AXVISOR_TEST_ARCHES: &[&str] = &["aarch64"];
+const AXVISOR_TEST_SHELL_PREFIX: &str = "~ #";
+const AXVISOR_TEST_SHELL_INIT_CMD: &str = "pwd && echo 'guest test pass!'";
+const AXVISOR_TEST_SUCCESS_REGEX: &[&str] = &["^guest test pass!$"];
+const AXVISOR_TEST_FAIL_REGEX: &[&str] = &[
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)kernel panic",
+    "(?i)login incorrect",
+    "(?i)permission denied",
+];
 
 #[derive(Args, Debug, Clone)]
 pub struct ArgsArceos {
@@ -41,6 +61,12 @@ pub struct ArgsArceos {
 
 #[derive(Args, Debug, Clone)]
 pub struct ArgsStarry {
+    #[arg(long, alias = "arch", value_name = "ARCH")]
+    pub target: String,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ArgsAxvisor {
     #[arg(long, alias = "arch", value_name = "ARCH")]
     pub target: String,
 }
@@ -147,6 +173,52 @@ pub async fn run_starry_qemu_tests(args: ArgsStarry) -> anyhow::Result<()> {
     finalize_qemu_test_run("starry", &failed)
 }
 
+pub async fn run_axvisor_qemu_tests(args: ArgsAxvisor) -> anyhow::Result<()> {
+    let (arch, target) = parse_axvisor_test_target(&args.target)?;
+    let guest_ctx = AxvisorContext::new()?;
+    let assets = prepare_linux_aarch64_guest_assets(&guest_ctx).await?;
+    let mut app = AppContext::new()?;
+
+    println!(
+        "running axvisor qemu tests for arch: {} (target: {})",
+        arch, target
+    );
+
+    let (request, _snapshot) = app.prepare_axvisor_request(
+        AxvisorCliArgs {
+            config: None,
+            arch: Some(arch.to_string()),
+            target: None,
+            plat_dyn: None,
+            vmconfigs: vec![assets.generated_vmconfig.clone()],
+        },
+        None,
+    )?;
+
+    let cargo = axvisor::build::load_cargo_config(&request)?;
+    let qemu_config = prepare_shell_autoinit_qemu_config(
+        app.workspace_root(),
+        &request,
+        &ShellAutoInitConfig {
+            shell_prefix: AXVISOR_TEST_SHELL_PREFIX.to_string(),
+            shell_init_cmd: AXVISOR_TEST_SHELL_INIT_CMD.to_string(),
+            success_regex: default_axvisor_test_success_regex(),
+            fail_regex: default_axvisor_test_fail_regex(),
+        },
+    )?;
+
+    app.qemu(
+        cargo,
+        request.build_info_path,
+        Some(qemu_config),
+        vec![],
+        vec![],
+        vec![],
+    )
+    .await
+    .with_context(|| "axvisor qemu test failed")
+}
+
 fn validate_arceos_target(target: &str) -> anyhow::Result<&str> {
     if ARCEOS_TEST_TARGETS.contains(&target) {
         Ok(target)
@@ -170,6 +242,30 @@ fn parse_starry_test_target(target: &str) -> anyhow::Result<(&str, &'static str)
     Ok((target, starry_target_for_arch_checked(target)?))
 }
 
+fn parse_axvisor_test_target(target: &str) -> anyhow::Result<(&str, &'static str)> {
+    if target.contains('-') {
+        bail!(
+            "unsupported target `{}` for axvisor qemu tests. Pass an arch value like: {}",
+            target,
+            AXVISOR_TEST_ARCHES.join(", ")
+        );
+    }
+    if !AXVISOR_TEST_ARCHES.contains(&target) {
+        bail!(
+            "unsupported target `{}` for axvisor qemu tests. Supported arch values are: {}",
+            target,
+            AXVISOR_TEST_ARCHES.join(", ")
+        );
+    }
+    Ok((
+        target,
+        match target {
+            "aarch64" => "aarch64-unknown-none-softfloat",
+            _ => unreachable!(),
+        },
+    ))
+}
+
 fn default_starry_test_success_regex() -> Vec<String> {
     STARRY_TEST_SUCCESS_REGEX
         .iter()
@@ -179,6 +275,20 @@ fn default_starry_test_success_regex() -> Vec<String> {
 
 fn default_starry_test_fail_regex() -> Vec<String> {
     STARRY_TEST_FAIL_REGEX
+        .iter()
+        .map(|pattern| (*pattern).to_string())
+        .collect()
+}
+
+fn default_axvisor_test_success_regex() -> Vec<String> {
+    AXVISOR_TEST_SUCCESS_REGEX
+        .iter()
+        .map(|pattern| (*pattern).to_string())
+        .collect()
+}
+
+fn default_axvisor_test_fail_regex() -> Vec<String> {
+    AXVISOR_TEST_FAIL_REGEX
         .iter()
         .map(|pattern| (*pattern).to_string())
         .collect()
@@ -278,6 +388,35 @@ mod tests {
     }
 
     #[test]
+    fn parses_supported_axvisor_arch_aliases() {
+        assert_eq!(
+            parse_axvisor_test_target("aarch64").unwrap(),
+            ("aarch64", "aarch64-unknown-none-softfloat")
+        );
+    }
+
+    #[test]
+    fn rejects_axvisor_full_target_triples() {
+        let err = parse_axvisor_test_target("aarch64-unknown-none-softfloat").unwrap_err();
+
+        assert!(
+            err.to_string().contains("Pass an arch value like: aarch64"),
+            "{}",
+            err
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_axvisor_arches() {
+        let err = parse_axvisor_test_target("x86_64").unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("Supported arch values are: aarch64")
+        );
+    }
+
+    #[test]
     fn arceos_package_list_is_stable() {
         assert_eq!(
             ARCEOS_TEST_PACKAGES,
@@ -308,6 +447,23 @@ mod tests {
         assert_eq!(
             default_starry_test_fail_regex(),
             vec!["(?i)\\bpanic(?:ked)?\\b".to_string()]
+        );
+    }
+
+    #[test]
+    fn axvisor_default_regexes_match_expected_values() {
+        assert_eq!(
+            default_axvisor_test_success_regex(),
+            vec!["^test pass!$".to_string()]
+        );
+        assert_eq!(
+            default_axvisor_test_fail_regex(),
+            vec![
+                "(?i)\\bpanic(?:ked)?\\b".to_string(),
+                "(?i)kernel panic".to_string(),
+                "(?i)login incorrect".to_string(),
+                "(?i)permission denied".to_string(),
+            ]
         );
     }
 
