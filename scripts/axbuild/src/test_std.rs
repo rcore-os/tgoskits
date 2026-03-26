@@ -1,7 +1,7 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     fs,
-    path::{Path, PathBuf},
+    path::Path,
     process::Command,
 };
 
@@ -147,6 +147,10 @@ impl CargoRunner for ProcessCargoRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        collections::HashMap,
+        path::PathBuf,
+    };
 
     fn known_packages() -> HashSet<String> {
         HashSet::from([

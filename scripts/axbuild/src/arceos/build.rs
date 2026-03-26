@@ -149,6 +149,7 @@ impl ArceosBuildInfo {
         }
     }
 
+    #[allow(clippy::wrong_self_convention)]
     pub(crate) fn to_base_cargo_config(
         mut self,
         package: String,
@@ -159,6 +160,7 @@ impl ArceosBuildInfo {
         self.into_base_cargo_config(package, target, args)
     }
 
+    #[allow(clippy::wrong_self_convention)]
     pub(crate) fn to_prepared_base_cargo_config(
         mut self,
         package: &str,

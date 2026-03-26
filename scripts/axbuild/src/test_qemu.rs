@@ -1,3 +1,4 @@
+#[cfg(test)]
 use std::future::Future;
 
 use anyhow::Context;
@@ -186,6 +187,7 @@ fn default_starry_test_fail_regex() -> Vec<String> {
         .collect()
 }
 
+#[cfg(test)]
 async fn run_qemu_test_sequence<F, Fut>(
     suite_name: &str,
     packages: &[&str],
