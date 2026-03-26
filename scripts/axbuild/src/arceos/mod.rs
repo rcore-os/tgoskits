@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
 
-use crate::context::{AppContext, BuildCliArgs};
+use crate::context::{AppContext, BuildCliArgs, QemuRunConfig};
 
 pub mod build;
 
@@ -108,10 +108,10 @@ impl ArceOS {
             .qemu(
                 cargo,
                 request.build_info_path,
-                request.qemu_config,
-                vec![],
-                vec![],
-                vec![],
+                QemuRunConfig {
+                    qemu_config: request.qemu_config,
+                    ..Default::default()
+                },
             )
             .await?;
         Ok(())

@@ -4,10 +4,11 @@ use std::{
 };
 
 use anyhow::Context;
+use ostool::build::CargoQemuOverrideArgs;
 
 use crate::{
     axvisor::{
-        build::{self, default_qemu_config_template_path},
+        build::{default_qemu_config_template_path, qemu_override_args_from_template},
         context::AxvisorContext,
         image::{config::ImageConfig, spec::ImageSpecRef, storage::Storage},
     },
@@ -74,15 +75,18 @@ pub async fn prepare_linux_aarch64_guest_assets(
     })
 }
 
-pub fn prepare_shell_autoinit_qemu_config(
+pub fn shell_autoinit_qemu_override_args(
     workspace_root: &Path,
     request: &ResolvedAxvisorRequest,
     shell: &ShellAutoInitConfig,
-) -> anyhow::Result<PathBuf> {
+) -> anyhow::Result<CargoQemuOverrideArgs> {
     let template_path = default_qemu_config_template_path(workspace_root, &request.arch);
-    let generated = build::prepare_qemu_config_from_template(&template_path, request)?;
-    inject_shell_autoinit_fields(&generated, shell)?;
-    Ok(generated)
+    let mut overrides = qemu_override_args_from_template(&template_path, request)?;
+    overrides.success_regex = Some(shell.success_regex.clone());
+    overrides.fail_regex = Some(shell.fail_regex.clone());
+    overrides.shell_prefix = Some(shell.shell_prefix.clone());
+    overrides.shell_init_cmd = Some(shell.shell_init_cmd.clone());
+    Ok(overrides)
 }
 
 fn generate_linux_vmconfig(
@@ -120,33 +124,6 @@ fn copy_rootfs(rootfs_src: &Path, rootfs_dst: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn inject_shell_autoinit_fields(
-    qemu_config_path: &Path,
-    shell: &ShellAutoInitConfig,
-) -> anyhow::Result<()> {
-    let mut value = read_toml(qemu_config_path)?;
-    let table = value
-        .as_table_mut()
-        .ok_or_else(|| anyhow::anyhow!("QEMU config root is not a table"))?;
-    table.insert(
-        "shell_prefix".to_string(),
-        toml::Value::String(shell.shell_prefix.clone()),
-    );
-    table.insert(
-        "shell_init_cmd".to_string(),
-        toml::Value::String(shell.shell_init_cmd.clone()),
-    );
-    table.insert(
-        "success_regex".to_string(),
-        string_list_value(&shell.success_regex),
-    );
-    table.insert(
-        "fail_regex".to_string(),
-        string_list_value(&shell.fail_regex),
-    );
-    write_toml(qemu_config_path, &value)
-}
-
 fn read_toml(path: &Path) -> anyhow::Result<toml::Value> {
     let content =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
@@ -160,16 +137,6 @@ fn write_toml(path: &Path, value: &toml::Value) -> anyhow::Result<()> {
     }
     fs::write(path, toml::to_string_pretty(value)?)
         .with_context(|| format!("failed to write {}", path.display()))
-}
-
-fn string_list_value(values: &[String]) -> toml::Value {
-    toml::Value::Array(
-        values
-            .iter()
-            .cloned()
-            .map(toml::Value::String)
-            .collect::<Vec<_>>(),
-    )
 }
 
 fn absolute_path(workspace_root: &Path, path: &Path) -> PathBuf {
@@ -228,9 +195,12 @@ entry_point = 1
     }
 
     #[test]
-    fn inject_shell_autoinit_fields_preserves_existing_args() {
+    fn shell_autoinit_qemu_override_args_preserves_existing_args() {
         let dir = tempdir().unwrap();
-        let qemu_config = dir.path().join("qemu.toml");
+        let qemu_config = dir
+            .path()
+            .join("os/axvisor/scripts/ostool/qemu-aarch64.toml");
+        fs::create_dir_all(qemu_config.parent().unwrap()).unwrap();
         fs::write(
             &qemu_config,
             r#"
@@ -243,8 +213,17 @@ uefi = false
         )
         .unwrap();
 
-        inject_shell_autoinit_fields(
-            &qemu_config,
+        let overrides = shell_autoinit_qemu_override_args(
+            dir.path(),
+            &ResolvedAxvisorRequest {
+                package: "axvisor".to_string(),
+                arch: "aarch64".to_string(),
+                target: "aarch64-unknown-none-softfloat".to_string(),
+                plat_dyn: None,
+                build_info_path: dir.path().join(".build.toml"),
+                qemu_config: None,
+                vmconfigs: vec![],
+            },
             &ShellAutoInitConfig {
                 shell_prefix: "~ #".to_string(),
                 shell_init_cmd: "pwd && echo 'test pass!'".to_string(),
@@ -254,20 +233,15 @@ uefi = false
         )
         .unwrap();
 
-        let value: toml::Value =
-            toml::from_str(&fs::read_to_string(&qemu_config).unwrap()).unwrap();
+        assert_eq!(overrides.args.unwrap(), vec!["-nographic".to_string()]);
+        assert_eq!(overrides.shell_prefix.as_deref(), Some("~ #"));
         assert_eq!(
-            value["args"].as_array().unwrap(),
-            &vec![toml::Value::String("-nographic".to_string())]
-        );
-        assert_eq!(value["shell_prefix"].as_str(), Some("~ #"));
-        assert_eq!(
-            value["shell_init_cmd"].as_str(),
+            overrides.shell_init_cmd.as_deref(),
             Some("pwd && echo 'test pass!'")
         );
         assert_eq!(
-            value["success_regex"].as_array().unwrap(),
-            &vec![toml::Value::String("^test pass!$".to_string())]
+            overrides.success_regex.unwrap(),
+            vec!["^test pass!$".to_string()]
         );
     }
 }

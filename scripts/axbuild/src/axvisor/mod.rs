@@ -4,7 +4,7 @@ use clap::{Args, Subcommand};
 
 use crate::{
     axvisor::context::AxvisorContext,
-    context::{AppContext, AxvisorCliArgs},
+    context::{AppContext, AxvisorCliArgs, QemuRunConfig},
 };
 
 pub mod board;
@@ -106,24 +106,15 @@ impl Axvisor {
         self.app.store_axvisor_snapshot(&snapshot)?;
 
         let cargo = build::load_cargo_config(&request)?;
-        let qemu_config = if let Some(path) = request.qemu_config.clone() {
-            Some(path)
+        let qemu = if let Some(path) = request.qemu_config.clone() {
+            QemuRunConfig {
+                qemu_config: Some(path),
+                ..Default::default()
+            }
         } else {
-            Some(build::prepare_default_qemu_config(
-                self.app.workspace_root(),
-                &request,
-            )?)
+            build::default_qemu_run_config(&request)?
         };
-        self.app
-            .qemu(
-                cargo,
-                request.build_info_path,
-                qemu_config,
-                vec![],
-                vec![],
-                vec![],
-            )
-            .await?;
+        self.app.qemu(cargo, request.build_info_path, qemu).await?;
         Ok(())
     }
 
@@ -143,7 +134,7 @@ mod tests {
     use clap::Parser;
 
     use super::*;
-    use crate::context::workspace_root_path;
+    use crate::context::{ResolvedAxvisorRequest, workspace_root_path};
 
     #[test]
     fn context_resolves_workspace_root() {
@@ -268,5 +259,22 @@ mod tests {
             }
             _ => panic!("expected qemu command"),
         }
+    }
+
+    #[test]
+    fn default_qemu_run_config_lets_ostool_resolve_default_path() {
+        let run_config = build::default_qemu_run_config(&ResolvedAxvisorRequest {
+            package: "axvisor".to_string(),
+            arch: "aarch64".to_string(),
+            target: "aarch64-unknown-none-softfloat".to_string(),
+            plat_dyn: None,
+            build_info_path: PathBuf::from("os/axvisor/.build-aarch64-unknown-none-softfloat.toml"),
+            qemu_config: None,
+            vmconfigs: vec![],
+        })
+        .unwrap();
+
+        assert_eq!(run_config.qemu_config, None);
+        assert!(run_config.default_args.args.is_some());
     }
 }

@@ -3,6 +3,7 @@ use std::future::Future;
 
 use anyhow::Context;
 use clap::Args;
+use ostool::build::CargoQemuAppendArgs;
 
 use crate::{
     arceos,
@@ -11,11 +12,12 @@ use crate::{
         context::AxvisorContext,
         qemu_test::{
             ShellAutoInitConfig, prepare_linux_aarch64_guest_assets,
-            prepare_shell_autoinit_qemu_config,
+            shell_autoinit_qemu_override_args,
         },
     },
     context::{
-        AppContext, AxvisorCliArgs, BuildCliArgs, StarryCliArgs, starry_target_for_arch_checked,
+        AppContext, AxvisorCliArgs, BuildCliArgs, QemuRunConfig, StarryCliArgs,
+        starry_target_for_arch_checked,
     },
     starry,
 };
@@ -105,10 +107,10 @@ pub async fn run_arceos_qemu_tests(args: ArgsArceos) -> anyhow::Result<()> {
             .qemu(
                 cargo,
                 request.build_info_path,
-                request.qemu_config,
-                vec![],
-                vec![],
-                vec![],
+                QemuRunConfig {
+                    qemu_config: request.qemu_config,
+                    ..Default::default()
+                },
             )
             .await
             .with_context(|| format!("arceos qemu test failed for package `{package}`"))
@@ -154,10 +156,15 @@ pub async fn run_starry_qemu_tests(args: ArgsStarry) -> anyhow::Result<()> {
             .qemu(
                 cargo,
                 request.build_info_path,
-                request.qemu_config,
-                qemu_args,
-                default_starry_test_success_regex(),
-                default_starry_test_fail_regex(),
+                QemuRunConfig {
+                    qemu_config: request.qemu_config,
+                    append_args: CargoQemuAppendArgs {
+                        args: Some(qemu_args),
+                        success_regex: Some(default_starry_test_success_regex()),
+                        fail_regex: Some(default_starry_test_fail_regex()),
+                    },
+                    ..Default::default()
+                },
             )
             .await
             .with_context(|| "starry qemu test failed")
@@ -196,7 +203,9 @@ pub async fn run_axvisor_qemu_tests(args: ArgsAxvisor) -> anyhow::Result<()> {
     )?;
 
     let cargo = axvisor::build::load_cargo_config(&request)?;
-    let qemu_config = prepare_shell_autoinit_qemu_config(
+    let qemu_config =
+        axvisor::build::default_qemu_config_template_path(app.workspace_root(), &request.arch);
+    let override_args = shell_autoinit_qemu_override_args(
         app.workspace_root(),
         &request,
         &ShellAutoInitConfig {
@@ -210,10 +219,11 @@ pub async fn run_axvisor_qemu_tests(args: ArgsAxvisor) -> anyhow::Result<()> {
     app.qemu(
         cargo,
         request.build_info_path,
-        Some(qemu_config),
-        vec![],
-        vec![],
-        vec![],
+        QemuRunConfig {
+            qemu_config: Some(qemu_config),
+            override_args,
+            ..Default::default()
+        },
     )
     .await
     .with_context(|| "axvisor qemu test failed")
@@ -454,7 +464,7 @@ mod tests {
     fn axvisor_default_regexes_match_expected_values() {
         assert_eq!(
             default_axvisor_test_success_regex(),
-            vec!["^test pass!$".to_string()]
+            vec!["^guest test pass!$".to_string()]
         );
         assert_eq!(
             default_axvisor_test_fail_regex(),

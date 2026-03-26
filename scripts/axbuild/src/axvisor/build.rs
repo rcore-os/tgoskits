@@ -3,13 +3,16 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use ostool::build::config::Cargo;
+use ostool::{
+    build::{CargoQemuOverrideArgs, config::Cargo},
+    run::qemu::QemuConfig,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     arceos::build::ArceosBuildInfo,
     axvisor::board,
-    context::{ResolvedAxvisorRequest, arch_for_target_checked},
+    context::{QemuRunConfig, ResolvedAxvisorRequest, arch_for_target_checked},
 };
 
 pub type AxvisorBuildInfo = crate::arceos::build::ArceosBuildInfo;
@@ -96,6 +99,29 @@ pub fn default_qemu_args(arch: &str) -> anyhow::Result<Vec<String>> {
         ),
     }
     Ok(args)
+}
+
+pub fn default_qemu_run_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<QemuRunConfig> {
+    let default_args = CargoQemuOverrideArgs {
+        to_bin: Some(default_qemu_to_bin(&request.arch)?),
+        args: Some(default_runtime_qemu_args(&request.arch, None)),
+        ..Default::default()
+    };
+
+    let override_args = infer_rootfs_path(&request.vmconfigs)?.map_or_else(
+        CargoQemuOverrideArgs::default,
+        |rootfs_path| CargoQemuOverrideArgs {
+            args: Some(default_runtime_qemu_args(&request.arch, Some(&rootfs_path))),
+            ..Default::default()
+        },
+    );
+
+    Ok(QemuRunConfig {
+        qemu_config: None,
+        default_args,
+        override_args,
+        ..Default::default()
+    })
 }
 
 fn to_cargo_config(
@@ -208,6 +234,116 @@ pub fn prepare_qemu_config_from_template(
     Ok(output_path)
 }
 
+pub fn default_qemu_override_args(
+    workspace_root: &Path,
+    request: &ResolvedAxvisorRequest,
+) -> anyhow::Result<CargoQemuOverrideArgs> {
+    let template_path = default_qemu_config_template_path(workspace_root, &request.arch);
+    qemu_override_args_from_template(&template_path, request)
+}
+
+pub fn qemu_override_args_from_template(
+    template_path: &Path,
+    request: &ResolvedAxvisorRequest,
+) -> anyhow::Result<CargoQemuOverrideArgs> {
+    let mut config = load_qemu_config(template_path)?;
+    if let Some(rootfs_path) = infer_rootfs_path(&request.vmconfigs)? {
+        replace_rootfs_arg(&mut config.args, &rootfs_path);
+    }
+
+    Ok(CargoQemuOverrideArgs {
+        args: Some(config.args),
+        ..Default::default()
+    })
+}
+
+fn default_qemu_to_bin(arch: &str) -> anyhow::Result<bool> {
+    match arch {
+        "aarch64" | "riscv64" | "loongarch64" => Ok(true),
+        "x86_64" => Ok(false),
+        _ => anyhow::bail!(
+            "unsupported Axvisor architecture `{arch}`; expected one of aarch64, x86_64, riscv64, \
+             loongarch64"
+        ),
+    }
+}
+
+fn default_runtime_qemu_args(arch: &str, rootfs_path: Option<&Path>) -> Vec<String> {
+    let rootfs = rootfs_path
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "${workspaceFolder}/tmp/rootfs.img".to_string());
+
+    match arch {
+        "aarch64" => vec![
+            "-nographic".to_string(),
+            "-cpu".to_string(),
+            "cortex-a72".to_string(),
+            "-machine".to_string(),
+            "virt,virtualization=on,gic-version=3".to_string(),
+            "-smp".to_string(),
+            "4".to_string(),
+            "-device".to_string(),
+            "virtio-blk-device,drive=disk0".to_string(),
+            "-drive".to_string(),
+            format!("id=disk0,if=none,format=raw,file={rootfs}"),
+            "-append".to_string(),
+            "root=/dev/vda rw init=/init".to_string(),
+            "-m".to_string(),
+            "8g".to_string(),
+        ],
+        "riscv64" => vec![
+            "-nographic".to_string(),
+            "-cpu".to_string(),
+            "rv64".to_string(),
+            "-machine".to_string(),
+            "virt".to_string(),
+            "-bios".to_string(),
+            "default".to_string(),
+            "-smp".to_string(),
+            "4".to_string(),
+            "-device".to_string(),
+            "virtio-blk-device,drive=disk0".to_string(),
+            "-drive".to_string(),
+            format!("id=disk0,if=none,format=raw,file={rootfs}"),
+            "-append".to_string(),
+            "root=/dev/vda rw init=/init".to_string(),
+            "-m".to_string(),
+            "4g".to_string(),
+        ],
+        "x86_64" => vec![
+            "-nographic".to_string(),
+            "-cpu".to_string(),
+            "host".to_string(),
+            "-machine".to_string(),
+            "q35".to_string(),
+            "-smp".to_string(),
+            "1".to_string(),
+            "-accel".to_string(),
+            "kvm".to_string(),
+            "-device".to_string(),
+            "virtio-blk-pci,drive=disk0".to_string(),
+            "-drive".to_string(),
+            format!("id=disk0,if=none,format=raw,file={rootfs}"),
+            "-m".to_string(),
+            "128M".to_string(),
+        ],
+        "loongarch64" => vec![
+            "-nographic".to_string(),
+            "-smp".to_string(),
+            "4".to_string(),
+            "-device".to_string(),
+            "virtio-blk-device,drive=disk0".to_string(),
+            "-drive".to_string(),
+            format!("id=disk0,if=none,format=raw,file={rootfs}"),
+            "-append".to_string(),
+            "root=/dev/vda rw init=/init".to_string(),
+            "-m".to_string(),
+            "4g".to_string(),
+        ],
+        _ => vec![],
+    }
+}
+
 fn infer_rootfs_path(vmconfigs: &[PathBuf]) -> anyhow::Result<Option<PathBuf>> {
     for vmconfig in vmconfigs {
         let content = fs::read_to_string(vmconfig)
@@ -231,6 +367,31 @@ fn infer_rootfs_path(vmconfigs: &[PathBuf]) -> anyhow::Result<Option<PathBuf>> {
         }
     }
     Ok(None)
+}
+
+fn load_qemu_config(path: &Path) -> anyhow::Result<QemuConfig> {
+    let content = fs::read_to_string(path).map_err(|e| {
+        anyhow!(
+            "failed to read QEMU config template {}: {e}",
+            path.display()
+        )
+    })?;
+    toml::from_str(&content).map_err(|e| {
+        anyhow!(
+            "failed to parse QEMU config template {}: {e}",
+            path.display()
+        )
+    })
+}
+
+fn replace_rootfs_arg(args: &mut Vec<String>, rootfs_path: &Path) {
+    const DEFAULT_ROOTFS: &str = "${workspaceFolder}/tmp/rootfs.img";
+
+    for arg in args {
+        if arg.contains(DEFAULT_ROOTFS) {
+            *arg = arg.replace(DEFAULT_ROOTFS, &rootfs_path.display().to_string());
+        }
+    }
 }
 
 fn load_build_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<LoadedAxvisorBuildConfig> {
@@ -505,6 +666,61 @@ kernel_path = "{}"
         assert_eq!(
             infer_rootfs_path(&[vmconfig]).unwrap(),
             Some(image_dir.join("rootfs.img"))
+        );
+    }
+
+    #[test]
+    fn default_qemu_run_config_uses_ostool_default_path_resolution() {
+        let run_config = default_qemu_run_config(&request(
+            PathBuf::from("os/axvisor/.build-aarch64-unknown-none-softfloat.toml"),
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+        ))
+        .unwrap();
+
+        assert!(run_config.qemu_config.is_none());
+        assert_eq!(run_config.default_args.to_bin, Some(true));
+        assert_eq!(
+            run_config.default_args.args,
+            Some(default_runtime_qemu_args("aarch64", None))
+        );
+        assert!(run_config.override_args.args.is_none());
+    }
+
+    #[test]
+    fn default_qemu_run_config_overrides_rootfs_when_vmconfig_provides_one() {
+        let root = tempdir().unwrap();
+        let image_dir = root.path().join("image");
+        fs::create_dir_all(&image_dir).unwrap();
+        let rootfs_path = image_dir.join("rootfs.img");
+        fs::write(&rootfs_path, b"rootfs").unwrap();
+        let vmconfig = root.path().join("vm.toml");
+        fs::write(
+            &vmconfig,
+            format!(
+                r#"
+[kernel]
+kernel_path = "{}"
+"#,
+                image_dir.join("qemu-aarch64").display()
+            ),
+        )
+        .unwrap();
+
+        let run_config = default_qemu_run_config(&ResolvedAxvisorRequest {
+            package: AXVISOR_PACKAGE.to_string(),
+            arch: "aarch64".to_string(),
+            target: "aarch64-unknown-none-softfloat".to_string(),
+            plat_dyn: None,
+            build_info_path: root.path().join(".build.toml"),
+            qemu_config: None,
+            vmconfigs: vec![vmconfig],
+        })
+        .unwrap();
+
+        assert_eq!(
+            run_config.override_args.args,
+            Some(default_runtime_qemu_args("aarch64", Some(&rootfs_path)))
         );
     }
 }

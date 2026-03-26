@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, anyhow};
 use ostool::{
     Tool, ToolConfig,
-    build::{CargoRunnerKind, config::Cargo},
+    build::{CargoQemuAppendArgs, CargoQemuOverrideArgs, CargoRunnerKind, config::Cargo},
 };
 use serde::{Deserialize, Serialize};
 
@@ -146,6 +146,14 @@ pub struct ResolvedStarryRequest {
     pub build_info_path: PathBuf,
     pub qemu_config: Option<PathBuf>,
     pub uboot_config: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct QemuRunConfig {
+    pub qemu_config: Option<PathBuf>,
+    pub default_args: CargoQemuOverrideArgs,
+    pub append_args: CargoQemuAppendArgs,
+    pub override_args: CargoQemuOverrideArgs,
 }
 
 pub struct AppContext {
@@ -528,24 +536,20 @@ impl AppContext {
         &mut self,
         cargo: Cargo,
         build_config_path: PathBuf,
-        qemu_config: Option<PathBuf>,
-        args: Vec<String>,
-        success_regex: Vec<String>,
-        fail_regex: Vec<String>,
+        mut qemu: QemuRunConfig,
     ) -> anyhow::Result<()> {
         self.set_build_config_path(build_config_path);
-        let to_bin = cargo.to_bin;
+        qemu.default_args.to_bin.get_or_insert(cargo.to_bin);
         self.tool
             .cargo_run(
                 &cargo,
                 &CargoRunnerKind::Qemu {
-                    qemu_config,
+                    qemu_config: qemu.qemu_config,
                     debug: false,
                     dtb_dump: false,
-                    to_bin: Some(to_bin),
-                    args,
-                    success_regex,
-                    fail_regex,
+                    default_args: qemu.default_args,
+                    append_args: qemu.append_args,
+                    override_args: qemu.override_args,
                 },
             )
             .await

@@ -1,9 +1,10 @@
 use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
+use ostool::build::CargoQemuAppendArgs;
 
 use crate::context::{
-    AppContext, DEFAULT_STARRY_ARCH, StarryCliArgs, starry_target_for_arch_checked,
+    AppContext, DEFAULT_STARRY_ARCH, QemuRunConfig, StarryCliArgs, starry_target_for_arch_checked,
 };
 
 pub mod build;
@@ -123,10 +124,14 @@ impl Starry {
             .qemu(
                 cargo,
                 request.build_info_path,
-                request.qemu_config,
-                qemu_args,
-                vec![],
-                vec![],
+                QemuRunConfig {
+                    qemu_config: request.qemu_config,
+                    append_args: CargoQemuAppendArgs {
+                        args: Some(qemu_args),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
             )
             .await?;
         Ok(())
