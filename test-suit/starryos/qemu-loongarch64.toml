@@ -3,6 +3,7 @@ args = [
   "virt",
   "-cpu",
   "la464",
+  "-nographic",
   "-m",
   "128M",
   "-device",
