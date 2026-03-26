@@ -125,7 +125,7 @@ pub fn to_cargo_config(
     build_info: StarryBuildInfo,
     request: &ResolvedStarryRequest,
 ) -> anyhow::Result<Cargo> {
-    let mut cargo = build_info.to_prepared_base_cargo_config(
+    let mut cargo = build_info.into_prepared_base_cargo_config(
         &request.package,
         &request.target,
         request.plat_dyn,
@@ -275,7 +275,7 @@ HELLO = "world"
             log: LogLevel::Info,
             plat_dyn: false,
         };
-        let mut cargo = build_info.to_base_cargo_config(
+        let mut cargo = build_info.into_base_cargo_config_with_log(
             STARRY_PACKAGE.to_string(),
             request.target.clone(),
             vec![],
@@ -369,7 +369,7 @@ CUSTOM = "1"
             uboot_config: None,
         };
         let build_info = StarryBuildInfo::default_starry_for_target("x86_64-unknown-none");
-        let mut cargo = build_info.to_base_cargo_config(
+        let mut cargo = build_info.into_base_cargo_config_with_log(
             "placeholder".to_string(),
             request.target.clone(),
             vec![],

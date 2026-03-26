@@ -149,8 +149,7 @@ impl ArceosBuildInfo {
         }
     }
 
-    #[allow(clippy::wrong_self_convention)]
-    pub(crate) fn to_base_cargo_config(
+    pub(crate) fn into_base_cargo_config_with_log(
         mut self,
         package: String,
         target: String,
@@ -160,8 +159,7 @@ impl ArceosBuildInfo {
         self.into_base_cargo_config(package, target, args)
     }
 
-    #[allow(clippy::wrong_self_convention)]
-    pub(crate) fn to_prepared_base_cargo_config(
+    pub(crate) fn into_prepared_base_cargo_config(
         mut self,
         package: &str,
         target: &str,
@@ -172,7 +170,7 @@ impl ArceosBuildInfo {
         self.resolve_features(package, plat_dyn);
         let args = Self::build_cargo_args(target, plat_dyn);
 
-        Ok(self.to_base_cargo_config(package.to_string(), target.to_string(), args))
+        Ok(self.into_base_cargo_config_with_log(package.to_string(), target.to_string(), args))
     }
 
     pub(crate) fn prepare_non_dynamic_platform_for(
@@ -229,8 +227,8 @@ impl ArceosBuildInfo {
         args
     }
 
-    pub fn to_cargo_config(self, request: &ResolvedBuildRequest) -> anyhow::Result<Cargo> {
-        self.to_prepared_base_cargo_config(&request.package, &request.target, request.plat_dyn)
+    pub fn into_cargo_config(self, request: &ResolvedBuildRequest) -> anyhow::Result<Cargo> {
+        self.into_prepared_base_cargo_config(&request.package, &request.target, request.plat_dyn)
     }
 }
 
@@ -272,7 +270,7 @@ pub fn load_build_info(request: &ResolvedBuildRequest) -> anyhow::Result<ArceosB
 }
 
 pub fn load_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Result<Cargo> {
-    load_build_info(request)?.to_cargo_config(request)
+    load_build_info(request)?.into_cargo_config(request)
 }
 
 pub fn load_or_create_build_info<T>(path: &Path, default: impl FnOnce() -> T) -> anyhow::Result<T>
@@ -797,7 +795,7 @@ AX_IP = "127.0.0.1"
         );
 
         let cargo = ArceosBuildInfo::default_for_target("aarch64-unknown-none-softfloat")
-            .to_cargo_config(&request)
+            .into_cargo_config(&request)
             .unwrap();
 
         assert_eq!(cargo.env.get("AX_LOG"), Some(&"info".to_string()));
@@ -806,7 +804,7 @@ AX_IP = "127.0.0.1"
     #[test]
     fn base_cargo_config_defaults_to_bin_false_for_x86_64_targets() {
         let cargo = ArceosBuildInfo::default_for_target("x86_64-unknown-none")
-            .to_base_cargo_config(
+            .into_base_cargo_config_with_log(
                 "arceos-helloworld".to_string(),
                 "x86_64-unknown-none".to_string(),
                 vec![],
@@ -818,7 +816,7 @@ AX_IP = "127.0.0.1"
     #[test]
     fn base_cargo_config_keeps_to_bin_true_for_non_x86_64_targets() {
         let cargo = ArceosBuildInfo::default_for_target("aarch64-unknown-none-softfloat")
-            .to_base_cargo_config(
+            .into_base_cargo_config_with_log(
                 "arceos-helloworld".to_string(),
                 "aarch64-unknown-none-softfloat".to_string(),
                 vec![],
@@ -855,7 +853,7 @@ AX_GW = "10.0.2.2"
             app_dir.join(".build-aarch64-unknown-none-softfloat.toml"),
         );
 
-        let cargo = build_info.to_cargo_config(&request).unwrap();
+        let cargo = build_info.into_cargo_config(&request).unwrap();
 
         assert!(cargo.features.contains(&"axstd/defplat".to_string()));
         assert!(!cargo.features.contains(&"axstd/plat-dyn".to_string()));
