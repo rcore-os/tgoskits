@@ -1,12 +1,10 @@
-cargo_args = []
+env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = [
-    "axstd/myplat",
     "axstd/bus-mmio",
     "ept-level-4",
     # "fs",
 ]
 log = "Info"
 target = "riscv64gc-unknown-none-elf"
-to_bin = true
 vm_configs = []
 max_cpu_num = 4

@@ -236,9 +236,9 @@ pub async fn run_axvisor_qemu_tests(args: ArgsAxvisor) -> anyhow::Result<()> {
 
     let cargo = axvisor::build::load_cargo_config(&request)?;
     let qemu_config =
-        axvisor::build::default_qemu_config_template_path(app.workspace_root(), &request.arch);
+        axvisor::build::default_qemu_config_template_path(&request.axvisor_dir, &request.arch);
     let shell = axvisor_test_shell_config(arch);
-    let override_args = shell_autoinit_qemu_override_args(app.workspace_root(), &request, &shell)?;
+    let override_args = shell_autoinit_qemu_override_args(&request, &shell)?;
 
     app.qemu(
         cargo,

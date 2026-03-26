@@ -180,7 +180,11 @@ impl Axvisor {
     }
 
     fn defconfig(&self, args: ArgsDefconfig) -> anyhow::Result<()> {
-        let path = config::write_defconfig(self.app.workspace_root(), &args.board)?;
+        let path = config::write_defconfig(
+            self.app.workspace_root(),
+            self.app.axvisor_dir(),
+            &args.board,
+        )?;
         println!("Generated {} for board {}", path.display(), args.board);
         Ok(())
     }
@@ -188,7 +192,7 @@ impl Axvisor {
     fn config(&self, args: ArgsConfig) -> anyhow::Result<()> {
         match args.command {
             ConfigCommand::Ls => {
-                for board in config::available_board_names() {
+                for board in config::available_board_names(self.app.axvisor_dir())? {
                     println!("{board}");
                 }
             }
@@ -212,7 +216,7 @@ mod tests {
     use clap::Parser;
 
     use super::*;
-    use crate::context::{ResolvedAxvisorRequest, workspace_root_path};
+    use crate::context::{ResolvedAxvisorRequest, workspace_member_dir, workspace_root_path};
 
     #[test]
     fn context_resolves_workspace_root() {
@@ -220,6 +224,12 @@ mod tests {
         assert_eq!(
             ctx.workspace_root(),
             workspace_root_path().unwrap().as_path()
+        );
+        assert_eq!(
+            ctx.axvisor_dir(),
+            workspace_member_dir(crate::axvisor::build::AXVISOR_PACKAGE)
+                .unwrap()
+                .as_path()
         );
     }
 
@@ -321,8 +331,9 @@ mod tests {
 
     #[test]
     fn build_args_convert_to_cli_args() {
+        let build_config = "os/axvisor/.build.toml";
         let args = ArgsBuild {
-            config: Some(PathBuf::from(config::DEFAULT_BUILD_CONFIG_RELATIVE_PATH)),
+            config: Some(PathBuf::from(build_config)),
             arch: Some("aarch64".to_string()),
             target: Some("aarch64-unknown-none-softfloat".to_string()),
             plat_dyn: Some(false),
@@ -334,7 +345,7 @@ mod tests {
         assert_eq!(
             cli_args,
             AxvisorCliArgs {
-                config: Some(PathBuf::from(config::DEFAULT_BUILD_CONFIG_RELATIVE_PATH)),
+                config: Some(PathBuf::from(build_config)),
                 arch: Some("aarch64".to_string()),
                 target: Some("aarch64-unknown-none-softfloat".to_string()),
                 plat_dyn: Some(false),
@@ -345,6 +356,7 @@ mod tests {
 
     #[test]
     fn command_parses_build_and_qemu() {
+        let build_config = "os/axvisor/.build.toml";
         #[derive(clap::Parser)]
         struct Cli {
             #[command(subcommand)]
@@ -355,7 +367,7 @@ mod tests {
             "axvisor",
             "build",
             "--config",
-            config::DEFAULT_BUILD_CONFIG_RELATIVE_PATH,
+            build_config,
             "--arch",
             "aarch64",
             "--vmconfigs",
@@ -364,10 +376,7 @@ mod tests {
         .unwrap();
         match build_cli.command {
             Command::Build(args) => {
-                assert_eq!(
-                    args.config,
-                    Some(PathBuf::from(config::DEFAULT_BUILD_CONFIG_RELATIVE_PATH))
-                );
+                assert_eq!(args.config, Some(PathBuf::from(build_config)));
                 assert_eq!(args.arch.as_deref(), Some("aarch64"));
                 assert_eq!(args.vmconfigs, vec![PathBuf::from("tmp/vm1.toml")]);
             }
@@ -378,7 +387,7 @@ mod tests {
             "axvisor",
             "qemu",
             "--config",
-            config::DEFAULT_BUILD_CONFIG_RELATIVE_PATH,
+            build_config,
             "--arch",
             "aarch64",
             "--qemu-config",
@@ -391,10 +400,7 @@ mod tests {
         .unwrap();
         match qemu_cli.command {
             Command::Qemu(args) => {
-                assert_eq!(
-                    args.build.config,
-                    Some(PathBuf::from(config::DEFAULT_BUILD_CONFIG_RELATIVE_PATH))
-                );
+                assert_eq!(args.build.config, Some(PathBuf::from(build_config)));
                 assert_eq!(args.build.arch.as_deref(), Some("aarch64"));
                 assert_eq!(args.qemu_config, Some(PathBuf::from("configs/qemu.toml")));
                 assert_eq!(
@@ -410,6 +416,7 @@ mod tests {
     fn default_qemu_run_config_lets_ostool_resolve_default_path() {
         let run_config = build::default_qemu_run_config(&ResolvedAxvisorRequest {
             package: "axvisor".to_string(),
+            axvisor_dir: PathBuf::from("os/axvisor"),
             arch: "aarch64".to_string(),
             target: "aarch64-unknown-none-softfloat".to_string(),
             plat_dyn: None,
