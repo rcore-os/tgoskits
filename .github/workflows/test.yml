@@ -45,10 +45,6 @@ jobs:
       matrix:
         include:
           # axvisor
-          # - os: axvisor
-          #   target: x86_64-unknown-none
-          # - os: axvisor
-          #   target: riscv64gc-unknown-none-elf
           - os: axvisor
             target: aarch64
           # starry
@@ -82,3 +78,23 @@ jobs:
 
       - name: Run ${{ matrix.os }} tests
         run: cargo xtask test qemu ${{ matrix.os }} --target ${{ matrix.target }}
+
+  test_axvisor_x86_64:
+    name: Test axvisor x86_64
+    runs-on:
+      - self-hosted
+      - linux
+      - intel
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - run: rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test-axvisor-x86_64
+          cache-targets: false
+
+      - name: Run axvisor x86_64 tests
+        run: cargo xtask test qemu axvisor --target x86_64
