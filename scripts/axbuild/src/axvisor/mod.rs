@@ -46,14 +46,16 @@ impl Default for Axvisor {
 mod tests {
     use clap::Parser;
 
-    use crate::context::workspace_root_path;
-
     use super::*;
+    use crate::context::workspace_root_path;
 
     #[test]
     fn context_resolves_workspace_root() {
         let ctx = AxvisorContext::new().unwrap();
-        assert_eq!(ctx.workspace_root(), workspace_root_path().unwrap().as_path());
+        assert_eq!(
+            ctx.workspace_root(),
+            workspace_root_path().unwrap().as_path()
+        );
     }
 
     #[test]

@@ -1,9 +1,4 @@
-use std::{
-    collections::HashSet,
-    fs,
-    path::Path,
-    process::Command,
-};
+use std::{collections::HashSet, fs, path::Path, process::Command};
 
 use anyhow::Context;
 use cargo_metadata::{Metadata, MetadataCommand};
@@ -51,7 +46,10 @@ fn workspace_package_names(metadata: &Metadata) -> HashSet<String> {
         .collect()
 }
 
-fn load_std_crates(csv_path: &Path, known_packages: &HashSet<String>) -> anyhow::Result<Vec<String>> {
+fn load_std_crates(
+    csv_path: &Path,
+    known_packages: &HashSet<String>,
+) -> anyhow::Result<Vec<String>> {
     let contents = fs::read_to_string(csv_path)
         .with_context(|| format!("failed to read {}", csv_path.display()))?;
     parse_std_crates_csv(&contents, known_packages)
@@ -146,11 +144,9 @@ impl CargoRunner for ProcessCargoRunner {
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::HashMap, path::PathBuf};
+
     use super::*;
-    use std::{
-        collections::HashMap,
-        path::PathBuf,
-    };
 
     fn known_packages() -> HashSet<String> {
         HashSet::from([
@@ -218,7 +214,10 @@ mod tests {
     fn rejects_unknown_package() {
         let err = parse_std_crates_csv("package\nunknown\n", &known_packages()).unwrap_err();
 
-        assert!(err.to_string().contains("unknown workspace package `unknown`"));
+        assert!(
+            err.to_string()
+                .contains("unknown workspace package `unknown`")
+        );
     }
 
     #[test]
@@ -245,12 +244,18 @@ mod tests {
             "axhal".to_string(),
             "starry-process".to_string(),
         ];
-        let mut runner =
-            FakeCargoRunner::new(&[("axfeat", true), ("axhal", false), ("starry-process", false)]);
+        let mut runner = FakeCargoRunner::new(&[
+            ("axfeat", true),
+            ("axhal", false),
+            ("starry-process", false),
+        ]);
 
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
 
-        assert_eq!(failed, vec!["axhal".to_string(), "starry-process".to_string()]);
+        assert_eq!(
+            failed,
+            vec!["axhal".to_string(), "starry-process".to_string()]
+        );
         assert_eq!(
             runner.invocations,
             vec![

@@ -30,7 +30,10 @@ pub fn resolve_build_info_path(
     }
 
     let _ = starry_arch_for_target_checked(target)?;
-    Ok(workspace_root.join(format!("os/StarryOS/starryos/.build-{target}.toml")))
+    Ok(crate::arceos::build::resolve_build_info_path_in_dir(
+        &workspace_root.join("os/StarryOS/starryos"),
+        target,
+    ))
 }
 
 pub fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result<StarryBuildInfo> {
@@ -208,6 +211,22 @@ mod tests {
     }
 
     #[test]
+    fn resolve_build_info_path_prefers_existing_bare_name() {
+        let root = tempdir().unwrap();
+        let starry_dir = root.path().join("os/StarryOS/starryos");
+        fs::create_dir_all(&starry_dir).unwrap();
+        let bare = starry_dir.join("build-aarch64-unknown-none-softfloat.toml");
+        let dotted = starry_dir.join(".build-aarch64-unknown-none-softfloat.toml");
+        fs::write(&bare, "").unwrap();
+        fs::write(&dotted, "").unwrap();
+
+        let path =
+            resolve_build_info_path(root.path(), "aarch64-unknown-none-softfloat", None).unwrap();
+
+        assert_eq!(path, bare);
+    }
+
+    #[test]
     fn resolve_build_info_path_prefers_explicit_path() {
         let root = tempdir().unwrap();
         let explicit = root.path().join("custom/build.toml");
@@ -273,6 +292,7 @@ HELLO = "world"
             env: HashMap::from([(String::from("CUSTOM"), String::from("1"))]),
             features: vec!["net".to_string()],
             log: LogLevel::Info,
+            max_cpu_num: None,
             plat_dyn: false,
         };
         let mut cargo = build_info.into_base_cargo_config_with_log(

@@ -33,7 +33,10 @@ impl Storage {
         Self::write_registry_to_path(path, image_registry)
     }
 
-    fn write_registry_to_path(path: PathBuf, image_registry: ImageRegistry) -> anyhow::Result<Self> {
+    fn write_registry_to_path(
+        path: PathBuf,
+        image_registry: ImageRegistry,
+    ) -> anyhow::Result<Self> {
         let registry_filepath = registry_filepath(&path);
         let toml_content = toml::to_string_pretty(&image_registry)
             .map_err(|e| anyhow!("Failed to serialize registry: {e}"))?;
@@ -195,13 +198,10 @@ url = "https://example.com/linux-0.0.1.tar.gz"
         fs::write(&sample, sample_registry()).unwrap();
         let image_registry = ImageRegistry::load_from_file(&sample).unwrap();
 
-        let storage = Storage::new_with_auto_sync_for_test(
-            dir.path().to_path_buf(),
-            60,
-            image_registry,
-        )
-        .await
-        .unwrap();
+        let storage =
+            Storage::new_with_auto_sync_for_test(dir.path().to_path_buf(), 60, image_registry)
+                .await
+                .unwrap();
 
         assert_eq!(storage.image_registry.images.len(), 1);
         assert!(dir.path().join(REGISTRY_FILENAME).exists());

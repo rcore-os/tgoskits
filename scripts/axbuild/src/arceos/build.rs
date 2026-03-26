@@ -37,6 +37,9 @@ pub struct ArceosBuildInfo {
     pub features: Vec<String>,
     /// Log level feature to automatically enable.
     pub log: LogLevel,
+    /// Maximum number of CPUs to expose to the build.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cpu_num: Option<usize>,
     /// Whether to use the dynamic platform linker flow when supported.
     #[serde(default, skip_serializing_if = "is_false")]
     pub plat_dyn: bool,
@@ -98,6 +101,10 @@ impl ArceosBuildInfo {
                 .push(format!("{}defplat", prefix_family.prefix()));
         }
 
+        if self.max_cpu_num.is_some_and(|max_cpu_num| max_cpu_num > 1) {
+            self.features.push(format!("{}smp", prefix_family.prefix()));
+        }
+
         self.features.sort();
         self.features.dedup();
     }
@@ -128,6 +135,13 @@ impl ArceosBuildInfo {
             .insert("AX_LOG".into(), format!("{:?}", self.log).to_lowercase());
     }
 
+    pub(crate) fn prepare_max_cpu_num_env(&mut self) -> anyhow::Result<()> {
+        if let Some(max_cpu_num) = self.validated_max_cpu_num()? {
+            self.env.insert("SMP".into(), max_cpu_num.to_string());
+        }
+        Ok(())
+    }
+
     pub(crate) fn into_base_cargo_config(
         self,
         package: String,
@@ -156,6 +170,8 @@ impl ArceosBuildInfo {
         args: Vec<String>,
     ) -> Cargo {
         self.prepare_log_env();
+        self.prepare_max_cpu_num_env()
+            .expect("max_cpu_num validation should run before cargo config generation");
         self.into_base_cargo_config(package, target, args)
     }
 
@@ -166,6 +182,7 @@ impl ArceosBuildInfo {
         plat_dyn_override: Option<bool>,
     ) -> anyhow::Result<Cargo> {
         let plat_dyn = self.effective_plat_dyn(target, plat_dyn_override);
+        self.validated_max_cpu_num()?;
         self.prepare_non_dynamic_platform_for(package, target, plat_dyn)?;
         self.resolve_features(package, plat_dyn);
         let args = Self::build_cargo_args(target, plat_dyn);
@@ -201,6 +218,7 @@ impl ArceosBuildInfo {
             &platform_name,
             &platform_config,
             &out_config,
+            self.validated_max_cpu_num()?,
         )?;
 
         self.env.insert(
@@ -211,6 +229,14 @@ impl ArceosBuildInfo {
             .insert("AX_PLATFORM".to_string(), platform_name.to_string());
 
         Ok(())
+    }
+
+    fn validated_max_cpu_num(&self) -> anyhow::Result<Option<usize>> {
+        match self.max_cpu_num {
+            Some(0) => bail!("max_cpu_num must be greater than 0"),
+            Some(max_cpu_num) => Ok(Some(max_cpu_num)),
+            None => Ok(None),
+        }
     }
 
     pub(crate) fn build_cargo_args(target: &str, plat_dyn: bool) -> Vec<String> {
@@ -242,6 +268,7 @@ impl Default for ArceosBuildInfo {
             env,
             log: LogLevel::Warn,
             features: vec!["axstd".to_string()],
+            max_cpu_num: None,
             plat_dyn: false,
         }
     }
@@ -260,7 +287,7 @@ pub fn resolve_build_info_path(
     let app_dir = package_manifest
         .parent()
         .context("package manifest path has no parent directory")?;
-    Ok(app_dir.join(format!(".build-{target}.toml")))
+    Ok(resolve_build_info_path_in_dir(app_dir, target))
 }
 
 pub fn load_build_info(request: &ResolvedBuildRequest) -> anyhow::Result<ArceosBuildInfo> {
@@ -315,6 +342,20 @@ fn default_to_bin_for_target(target: &str) -> bool {
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+pub(crate) fn resolve_build_info_path_in_dir(dir: &Path, target: &str) -> PathBuf {
+    let bare_path = dir.join(format!("build-{target}.toml"));
+    if bare_path.exists() {
+        return bare_path;
+    }
+
+    let dotted_path = dir.join(format!(".build-{target}.toml"));
+    if dotted_path.exists() {
+        return dotted_path;
+    }
+
+    dotted_path
 }
 
 fn feature_family_from_existing_features(features: &[String]) -> Option<AxFeaturePrefixFamily> {
@@ -563,17 +604,24 @@ fn generate_axconfig(
     platform_name: &str,
     platform_config: &Path,
     out_config: &Path,
+    max_cpu_num: Option<usize>,
 ) -> anyhow::Result<()> {
     let defconfig = resolve_defconfig_path(workspace_root)?;
     let arch = target_arch_name(target)?;
-
-    Command::new("axconfig-gen")
+    let mut command = Command::new("axconfig-gen");
+    command
         .arg(defconfig)
         .arg(platform_config)
         .arg("-w")
         .arg(format!("arch=\"{arch}\""))
         .arg("-w")
-        .arg(format!("platform=\"{platform_name}\""))
+        .arg(format!("platform=\"{platform_name}\""));
+    if let Some(max_cpu_num) = max_cpu_num {
+        command
+            .arg("-w")
+            .arg(format!("plat.max-cpu-num={max_cpu_num}"));
+    }
+    command
         .arg("-o")
         .arg(out_config)
         .exec()
@@ -655,6 +703,18 @@ mod tests {
     }
 
     #[test]
+    fn max_cpu_num_adds_axstd_smp_feature() {
+        let mut build_info = ArceosBuildInfo {
+            max_cpu_num: Some(4),
+            ..ArceosBuildInfo::default()
+        };
+
+        build_info.resolve_features("arceos-helloworld", false);
+
+        assert!(build_info.features.contains(&"axstd/smp".to_string()));
+    }
+
+    #[test]
     fn preserves_axstd_myplat_for_non_dynamic_platforms() {
         let mut build_info = ArceosBuildInfo {
             features: vec!["axstd".to_string(), "axstd/myplat".to_string()],
@@ -703,6 +763,45 @@ mod tests {
     }
 
     #[test]
+    fn max_cpu_num_adds_axfeat_smp_feature() {
+        let workspace = temp_workspace("axfeat-app", "axfeat = \"0.1.0\"\n").unwrap();
+        let mut build_info = ArceosBuildInfo {
+            features: vec!["axfeat/net".to_string()],
+            max_cpu_num: Some(4),
+            ..ArceosBuildInfo::default()
+        };
+
+        build_info.features.retain(|feature| feature != "axstd");
+        build_info.resolve_features_with_manifest_path(
+            "axfeat-app",
+            false,
+            Some(&workspace.join("Cargo.toml")),
+        );
+
+        assert!(build_info.features.contains(&"axfeat/smp".to_string()));
+    }
+
+    #[test]
+    fn max_cpu_num_does_not_duplicate_existing_smp_feature() {
+        let mut build_info = ArceosBuildInfo {
+            features: vec!["axstd".to_string(), "axstd/smp".to_string()],
+            max_cpu_num: Some(4),
+            ..ArceosBuildInfo::default()
+        };
+
+        build_info.resolve_features("arceos-helloworld", false);
+
+        assert_eq!(
+            build_info
+                .features
+                .iter()
+                .filter(|feature| feature.as_str() == "axstd/smp")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn resolve_build_info_path_uses_package_directory() {
         let path =
             resolve_build_info_path("arceos-helloworld", "aarch64-unknown-none-softfloat", None)
@@ -725,6 +824,36 @@ mod tests {
         .unwrap();
 
         assert_eq!(path, PathBuf::from("/tmp/custom-build.toml"));
+    }
+
+    #[test]
+    fn resolve_build_info_path_in_dir_prefers_existing_bare_name() {
+        let root = tempdir().unwrap();
+        let bare = root
+            .path()
+            .join("build-aarch64-unknown-none-softfloat.toml");
+        let dotted = root
+            .path()
+            .join(".build-aarch64-unknown-none-softfloat.toml");
+        fs::write(&bare, "").unwrap();
+        fs::write(&dotted, "").unwrap();
+
+        let path = resolve_build_info_path_in_dir(root.path(), "aarch64-unknown-none-softfloat");
+
+        assert_eq!(path, bare);
+    }
+
+    #[test]
+    fn resolve_build_info_path_in_dir_falls_back_to_dotted_default() {
+        let root = tempdir().unwrap();
+
+        let path = resolve_build_info_path_in_dir(root.path(), "aarch64-unknown-none-softfloat");
+
+        assert_eq!(
+            path,
+            root.path()
+                .join(".build-aarch64-unknown-none-softfloat.toml")
+        );
     }
 
     #[test]
@@ -769,6 +898,7 @@ mod tests {
             r#"
 features = ["axstd", "net"]
 log = "Debug"
+max_cpu_num = 4
 
 [env]
 AX_IP = "127.0.0.1"
@@ -780,8 +910,22 @@ AX_IP = "127.0.0.1"
         let build_info = load_build_info(&request).unwrap();
 
         assert_eq!(build_info.log, LogLevel::Debug);
+        assert_eq!(build_info.max_cpu_num, Some(4));
         assert!(build_info.features.contains(&"net".to_string()));
         assert_eq!(build_info.env.get("AX_IP"), Some(&"127.0.0.1".to_string()));
+    }
+
+    #[test]
+    fn load_build_info_rejects_zero_max_cpu_num() {
+        let err = ArceosBuildInfo {
+            max_cpu_num: Some(0),
+            ..ArceosBuildInfo::default()
+        }
+        .validated_max_cpu_num()
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("max_cpu_num must be greater than 0"));
     }
 
     #[test]
@@ -798,7 +942,49 @@ AX_IP = "127.0.0.1"
             .into_cargo_config(&request)
             .unwrap();
 
-        assert_eq!(cargo.env.get("AX_LOG"), Some(&"info".to_string()));
+        assert_eq!(cargo.env.get("AX_LOG"), Some(&"warn".to_string()));
+    }
+
+    #[test]
+    fn to_cargo_config_maps_max_cpu_num_to_smp_env_for_dynamic_platforms() {
+        let root = tempdir().unwrap();
+        let request = request(
+            "arceos-helloworld",
+            "aarch64-unknown-none-softfloat",
+            Some(true),
+            root.path().join(".build.toml"),
+        );
+
+        let cargo = ArceosBuildInfo {
+            max_cpu_num: Some(4),
+            ..ArceosBuildInfo::default_for_target("aarch64-unknown-none-softfloat")
+        }
+        .into_cargo_config(&request)
+        .unwrap();
+
+        assert_eq!(cargo.env.get("SMP"), Some(&"4".to_string()));
+        assert!(cargo.features.contains(&"axstd/smp".to_string()));
+    }
+
+    #[test]
+    fn to_cargo_config_maps_single_cpu_to_smp_env_without_forcing_smp_feature() {
+        let root = tempdir().unwrap();
+        let request = request(
+            "arceos-helloworld",
+            "aarch64-unknown-none-softfloat",
+            Some(true),
+            root.path().join(".build.toml"),
+        );
+
+        let cargo = ArceosBuildInfo {
+            max_cpu_num: Some(1),
+            ..ArceosBuildInfo::default_for_target("aarch64-unknown-none-softfloat")
+        }
+        .into_cargo_config(&request)
+        .unwrap();
+
+        assert_eq!(cargo.env.get("SMP"), Some(&"1".to_string()));
+        assert!(!cargo.features.contains(&"axstd/smp".to_string()));
     }
 
     #[test]
@@ -831,6 +1017,7 @@ AX_IP = "127.0.0.1"
 features = ["axstd"]
 log = "Info"
 plat_dyn = true
+max_cpu_num = 4
 
 [env]
 AX_IP = "10.0.2.15"
@@ -856,8 +1043,10 @@ AX_GW = "10.0.2.2"
         let cargo = build_info.into_cargo_config(&request).unwrap();
 
         assert!(cargo.features.contains(&"axstd/defplat".to_string()));
+        assert!(cargo.features.contains(&"axstd/smp".to_string()));
         assert!(!cargo.features.contains(&"axstd/plat-dyn".to_string()));
         assert!(cargo.args.iter().any(|arg| arg.contains("-Tlinker.x")));
+        assert_eq!(cargo.env.get("SMP"), Some(&"4".to_string()));
         assert_eq!(
             cargo.env.get("AX_CONFIG_PATH"),
             Some(&generated_config.display().to_string())
@@ -865,6 +1054,11 @@ AX_GW = "10.0.2.2"
         assert_eq!(
             cargo.env.get("AX_PLATFORM"),
             Some(&"aarch64-qemu-virt".to_string())
+        );
+        assert!(
+            fs::read_to_string(&generated_config)
+                .unwrap()
+                .contains("max-cpu-num = 4")
         );
 
         if !existed && generated_config.exists() {

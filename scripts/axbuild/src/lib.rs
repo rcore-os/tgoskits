@@ -171,7 +171,9 @@ mod tests {
         let cli = Cli::try_parse_from(["axbuild", "axvisor", "image", "ls"]).unwrap();
 
         match cli.command {
-            Commands::Axvisor { command: axvisor::Command::Image(_) } => {}
+            Commands::Axvisor {
+                command: axvisor::Command::Image(_),
+            } => {}
             _ => panic!("expected `axvisor image ls` command"),
         }
     }

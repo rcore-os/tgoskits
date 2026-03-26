@@ -80,7 +80,9 @@ async fn list_images(
     let mut config = ImageConfig::read_config(ctx.workspace_root())?;
     overrides.apply_on(&mut config);
     let storage = Storage::new_from_config(&config).await?;
-    storage.image_registry.print(args.verbose, args.pattern.as_deref());
+    storage
+        .image_registry
+        .print(args.verbose, args.pattern.as_deref());
     Ok(())
 }
 

@@ -402,7 +402,8 @@ pub(crate) fn workspace_root_path() -> anyhow::Result<PathBuf> {
         .exec()
         .context("failed to get cargo metadata")?;
 
-    cargo.workspace_root
+    cargo
+        .workspace_root
         .canonicalize()
         .context("failed to canonicalize workspace root")
 }

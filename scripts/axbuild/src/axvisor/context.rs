@@ -1,8 +1,9 @@
 use std::path::{Path, PathBuf};
 
-use crate::axvisor::image::config::IMAGE_CONFIG_FILENAME;
-use crate::axvisor::image::storage::REGISTRY_FILENAME;
-use crate::context::workspace_root_path;
+use crate::{
+    axvisor::image::{config::IMAGE_CONFIG_FILENAME, storage::REGISTRY_FILENAME},
+    context::workspace_root_path,
+};
 
 pub struct AxvisorContext {
     workspace_root: PathBuf,

@@ -5,7 +5,9 @@ use anyhow::Context;
 use clap::Args;
 
 use crate::{
-    arceos, context::{AppContext, BuildCliArgs, StarryCliArgs, starry_target_for_arch_checked}, starry,
+    arceos,
+    context::{AppContext, BuildCliArgs, StarryCliArgs, starry_target_for_arch_checked},
+    starry,
 };
 
 const ARCEOS_TEST_PACKAGES: &[&str] = &[
@@ -75,15 +77,15 @@ pub async fn run_arceos_qemu_tests(args: ArgsArceos) -> anyhow::Result<()> {
         let cargo = arceos::build::load_cargo_config(&request)?;
         match app
             .qemu(
-            cargo,
-            request.build_info_path,
-            request.qemu_config,
-            vec![],
-            vec![],
-            vec![],
-        )
-        .await
-        .with_context(|| format!("arceos qemu test failed for package `{package}`"))
+                cargo,
+                request.build_info_path,
+                request.qemu_config,
+                vec![],
+                vec![],
+                vec![],
+            )
+            .await
+            .with_context(|| format!("arceos qemu test failed for package `{package}`"))
         {
             Ok(()) => println!("ok: {}", package),
             Err(err) => {
@@ -107,12 +109,7 @@ pub async fn run_starry_qemu_tests(args: ArgsStarry) -> anyhow::Result<()> {
     );
 
     for (index, package) in [STARRY_TEST_PACKAGE].iter().enumerate() {
-        println!(
-            "[{}/{}] starry qemu {}",
-            index + 1,
-            1,
-            package
-        );
+        println!("[{}/{}] starry qemu {}", index + 1, 1, package);
         let (mut request, _snapshot) = app.prepare_starry_request(
             StarryCliArgs {
                 config: None,
@@ -129,15 +126,15 @@ pub async fn run_starry_qemu_tests(args: ArgsStarry) -> anyhow::Result<()> {
         let qemu_args = starry::rootfs::default_qemu_args(app.workspace_root(), &request).await?;
         match app
             .qemu(
-            cargo,
-            request.build_info_path,
-            request.qemu_config,
-            qemu_args,
-            default_starry_test_success_regex(),
-            default_starry_test_fail_regex(),
-        )
-        .await
-        .with_context(|| "starry qemu test failed")
+                cargo,
+                request.build_info_path,
+                request.qemu_config,
+                qemu_args,
+                default_starry_test_success_regex(),
+                default_starry_test_fail_regex(),
+            )
+            .await
+            .with_context(|| "starry qemu test failed")
         {
             Ok(()) => println!("ok: {}", package),
             Err(err) => {
@@ -200,7 +197,13 @@ where
     let mut failed = Vec::new();
 
     for (index, package) in packages.iter().enumerate() {
-        println!("[{}/{}] {} qemu {}", index + 1, packages.len(), suite_name, package);
+        println!(
+            "[{}/{}] {} qemu {}",
+            index + 1,
+            packages.len(),
+            suite_name,
+            package
+        );
         match run_one(package).await {
             Ok(()) => println!("ok: {}", package),
             Err(err) => {
@@ -268,9 +271,10 @@ mod tests {
     fn rejects_starry_full_target_triples() {
         let err = parse_starry_test_target("x86_64-unknown-none").unwrap_err();
 
-        assert!(err
-            .to_string()
-            .contains("unsupported target `x86_64-unknown-none`"));
+        assert!(
+            err.to_string()
+                .contains("unsupported target `x86_64-unknown-none`")
+        );
     }
 
     #[test]
@@ -297,7 +301,10 @@ mod tests {
 
     #[test]
     fn starry_default_regexes_match_expected_values() {
-        assert_eq!(default_starry_test_success_regex(), vec!["starry:~#".to_string()]);
+        assert_eq!(
+            default_starry_test_success_regex(),
+            vec!["starry:~#".to_string()]
+        );
         assert_eq!(
             default_starry_test_fail_regex(),
             vec!["(?i)\\bpanic(?:ked)?\\b".to_string()]
@@ -321,8 +328,9 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(err
-            .to_string()
-            .contains("arceos qemu tests failed for 2 package(s): pkg-b, pkg-c"));
+        assert!(
+            err.to_string()
+                .contains("arceos qemu tests failed for 2 package(s): pkg-b, pkg-c")
+        );
     }
 }

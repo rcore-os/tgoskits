@@ -146,7 +146,10 @@ impl ImageRegistry {
 
     pub fn find(&self, name: &str, version: Option<&str>) -> Option<&ImageEntry> {
         match version {
-            Some(v) => self.images.iter().find(|e| e.name == name && e.version == v),
+            Some(v) => self
+                .images
+                .iter()
+                .find(|e| e.name == name && e.version == v),
             None => self
                 .images
                 .iter()
