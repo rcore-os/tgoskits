@@ -415,29 +415,39 @@ impl AppContext {
         qemu_config: Option<PathBuf>,
     ) -> anyhow::Result<(ResolvedAxvisorRequest, AxvisorCommandSnapshot)> {
         let snapshot = AxvisorCommandSnapshot::load(&self.root)?;
+        let explicit_config = cli
+            .config
+            .clone()
+            .or_else(|| resolve_snapshot_path(&self.root, snapshot.config.as_ref()));
+        let config_target = explicit_config
+            .as_ref()
+            .filter(|path| path.exists())
+            .map(|path| crate::axvisor::build::load_target_from_build_config(path))
+            .transpose()?
+            .flatten();
+
         let effective_arch = cli.arch.clone().or_else(|| {
-            if cli.target.is_some() {
+            if cli.target.is_some() || config_target.is_some() {
                 None
             } else {
                 snapshot.arch.clone()
             }
         });
-        let effective_target = cli.target.clone().or_else(|| {
-            if cli.arch.is_some() {
-                None
-            } else {
-                snapshot.target.clone()
-            }
-        });
+        let effective_target = cli
+            .target
+            .clone()
+            .or_else(|| config_target.clone())
+            .or_else(|| {
+                if cli.arch.is_some() {
+                    None
+                } else {
+                    snapshot.target.clone()
+                }
+            });
         let (arch, target) = resolve_axvisor_arch_and_target(effective_arch, effective_target)?;
         let plat_dyn = cli.plat_dyn.or(snapshot.plat_dyn);
-        let build_info_path = crate::axvisor::build::resolve_build_info_path(
-            &self.root,
-            &target,
-            cli.config
-                .clone()
-                .or_else(|| resolve_snapshot_path(&self.root, snapshot.config.as_ref())),
-        )?;
+        let build_info_path =
+            crate::axvisor::build::resolve_build_info_path(&self.root, &target, explicit_config)?;
         let resolved_qemu_config = qemu_config
             .clone()
             .or_else(|| resolve_snapshot_path(&self.root, snapshot.qemu.qemu_config.as_ref()));

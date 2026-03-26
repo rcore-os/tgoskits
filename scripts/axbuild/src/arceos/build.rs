@@ -46,6 +46,16 @@ pub struct ArceosBuildInfo {
 }
 
 impl ArceosBuildInfo {
+    pub fn with_features<T: AsRef<str>>(mut self, features: impl AsRef<[T]>) -> Self {
+        let features = features
+            .as_ref()
+            .iter()
+            .map(|feature| feature.as_ref().to_string())
+            .collect();
+        self.features = features;
+        self
+    }
+
     pub fn default_for_target(target: &str) -> Self {
         Self {
             plat_dyn: supports_platform_dynamic(target),

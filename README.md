@@ -72,7 +72,7 @@ cargo xtask starry run --arch riscv64 --package starryos
 cd os/axvisor
 ./scripts/setup_qemu.sh arceos
 cargo axvisor qemu \
-  --config os/axvisor/.build.toml \
+  --config os/axvisor/.build-aarch64-unknown-none-softfloat.toml \
   --qemu-config .github/workflows/qemu-aarch64.toml \
   --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
 ```
@@ -101,7 +101,7 @@ cargo xtask starry run --arch riscv64 --package starryos
 cd os/axvisor
 ./scripts/setup_qemu.sh arceos
 cargo axvisor qemu \
-  --config os/axvisor/.build.toml \
+  --config os/axvisor/.build-aarch64-unknown-none-softfloat.toml \
   --qemu-config .github/workflows/qemu-aarch64.toml \
   --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
 ```

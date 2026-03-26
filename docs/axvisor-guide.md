@@ -24,16 +24,16 @@ Axvisor 的 build/qemu 不是根 `cargo xtask` 的子命令，而是 `os/axvisor
 ```bash
 # 仓库根目录
 cargo axvisor defconfig qemu-aarch64
-cargo axvisor build --config os/axvisor/.build.toml
-cargo axvisor qemu --config os/axvisor/.build.toml --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
+cargo axvisor build --config os/axvisor/.build-aarch64-unknown-none-softfloat.toml
+cargo axvisor qemu --config os/axvisor/.build-aarch64-unknown-none-softfloat.toml --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
 ```
 
 ```bash
 # Axvisor 子目录
 cd os/axvisor
 cargo xtask defconfig qemu-aarch64
-cargo axvisor build --config os/axvisor/.build.toml
-cargo axvisor qemu --config os/axvisor/.build.toml --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
+cargo axvisor build --config os/axvisor/.build-aarch64-unknown-none-softfloat.toml
+cargo axvisor qemu --config os/axvisor/.build-aarch64-unknown-none-softfloat.toml --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
 ```
 
 当前本地 xtask 里最常用的子命令包括：
@@ -75,7 +75,7 @@ cd os/axvisor
 
 ```bash
 cargo axvisor qemu \
-  --config os/axvisor/.build.toml \
+  --config os/axvisor/.build-aarch64-unknown-none-softfloat.toml \
   --qemu-config .github/workflows/qemu-aarch64.toml \
   --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
 ```
@@ -93,13 +93,13 @@ cargo axvisor qemu \
 
 ```bash
 cargo axvisor defconfig qemu-aarch64
-cargo axvisor build --config os/axvisor/.build.toml
-cargo axvisor qemu --config os/axvisor/.build.toml
+cargo axvisor build --config os/axvisor/.build-aarch64-unknown-none-softfloat.toml
+cargo axvisor qemu --config os/axvisor/.build-aarch64-unknown-none-softfloat.toml
 ```
 
 还不够。除非你已经手工准备好了：
 
-- `.build.toml`
+- `.build-aarch64-unknown-none-softfloat.toml`
 - 可用的 `vmconfigs`
 - `os/axvisor/tmp/rootfs.img`
 

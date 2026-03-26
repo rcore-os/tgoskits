@@ -133,9 +133,28 @@ make A=examples/shell ARCH=riscv64 BLK=y run
 
 ### 5.3 Axvisor 配置与构建
 
-Axvisor 的构建与运行完全由 `os/axvisor` 自带 xtask 管理。根目录的 `cargo axvisor ...` 只是为了方便，不是通过根 `tg-xtask` 转发。当前你最需要知道的文件包括：`os/axvisor/.cargo/config.toml` 定义本地 `cargo xtask` 别名；`os/axvisor/xtask/src/main.rs` 实现 `defconfig` / `build` / `qemu` / `menuconfig` / `image` 等命令；`os/axvisor/configs/board/*.toml` 包含板级配置；`os/axvisor/configs/vms/*.toml` 包含 Guest VM 配置；`os/axvisor/.build.toml` 是 `defconfig` 复制板级配置后生成的当前生效配置。
+Axvisor 的构建与运行完全由 `os/axvisor` 自带 xtask 管理。根目录的 `cargo axvisor ...` 只是为了方便，不是通过根 `tg-xtask` 转发。
 
-`defconfig <board>` 的行为是校验 `configs/board/<board>.toml` 是否存在、备份已有 `.build.toml`、把板级配置复制成新的 `.build.toml`。当前仓库里现成的 QEMU 板级配置主要是 `qemu-aarch64` 和 `qemu-x86_64`。其中 `qemu-aarch64.toml` 当前默认是 `vm_configs = []`，而默认 QEMU 配置模板还会引用 `tmp/rootfs.img`。所以新开发者第一次跑 Axvisor 时，不能只执行 `cargo axvisor defconfig/build/qemu`，而应该优先使用 `os/axvisor/scripts/setup_qemu.sh` 自动准备镜像、生成 VM 配置并复制 rootfs。
+当前你最需要知道的文件是：
+
+- `os/axvisor/.cargo/config.toml`: 本地 `cargo xtask` 别名
+- `os/axvisor/xtask/src/main.rs`: `defconfig` / `build` / `qemu` / `menuconfig` / `image` 等命令实现
+- `os/axvisor/configs/board/*.toml`: 板级配置
+- `os/axvisor/configs/vms/*.toml`: Guest VM 配置
+- `os/axvisor/.build-<target>.toml`: Axvisor 根入口默认使用的 build info 文件
+
+`defconfig <board>` 的行为是：
+
+1. 校验 `configs/board/<board>.toml` 是否存在
+2. 备份已有 `.build.toml`
+3. 把板级配置复制成新的 `.build.toml`
+
+当前仓库里现成的 QEMU 板级配置主要是：
+
+- `qemu-aarch64`
+- `qemu-x86_64`
+
+其中 `qemu-aarch64.toml` 当前默认是 `vm_configs = []`，而默认 QEMU 配置模板还会引用 `tmp/rootfs.img`。所以新开发者第一次跑 Axvisor 时，不能只执行 `cargo axvisor defconfig/build/qemu`，而应该优先使用 `os/axvisor/scripts/setup_qemu.sh` 自动准备镜像、生成 VM 配置并复制 rootfs。
 
 现在根入口的 `cargo axvisor build` / `cargo axvisor qemu` 采用与 Starry 类似的风格：共享 `--config` 作为板级构建配置路径，并额外支持重复的 `--vmconfigs`。这些 VM 配置路径会被转换成 `AXVISOR_VM_CONFIGS` 环境变量参与编译。
 

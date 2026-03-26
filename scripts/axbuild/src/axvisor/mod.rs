@@ -10,6 +10,7 @@ use crate::{
 pub mod build;
 pub mod context;
 pub mod image;
+pub mod board;
 
 /// Axvisor host-side commands
 #[derive(Subcommand)]
@@ -104,17 +105,20 @@ impl Axvisor {
         self.app.store_axvisor_snapshot(&snapshot)?;
 
         let cargo = build::load_cargo_config(&request)?;
-        let qemu_args = if request.qemu_config.is_none() {
-            build::default_qemu_args(&request.arch)?
+        let qemu_config = if let Some(path) = request.qemu_config.clone() {
+            Some(path)
         } else {
-            vec![]
+            Some(build::prepare_default_qemu_config(
+                self.app.workspace_root(),
+                &request,
+            )?)
         };
         self.app
             .qemu(
                 cargo,
                 request.build_info_path,
-                request.qemu_config,
-                qemu_args,
+                qemu_config,
+                vec![],
                 vec![],
                 vec![],
             )
