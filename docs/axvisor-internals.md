@@ -335,7 +335,7 @@ AxVisor README 推荐的环境准备包括：
 如果你的目标只是先跑通 QEMU AArch64 路径，最关键的是：
 
 - QEMU 可用。
-- 能运行 `cargo xtask image download ...` 或 `setup_qemu.sh` 下载镜像。
+- 能运行 `cargo axvisor image pull ...` 或 `setup_qemu.sh` 下载镜像。
 - 不要假设 `defconfig/build` 会自动生成 rootfs。
 
 ### 6.2 本地 xtask 是主入口

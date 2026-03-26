@@ -7,6 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_REGISTRY_URL: &str = "https://raw.githubusercontent.com/arceos-hypervisor/axvisor-guest/refs/heads/main/registry/default.toml";
+pub const DEFAULT_FALLBACK_REGISTRY_URL: &str = "https://raw.githubusercontent.com/arceos-hypervisor/axvisor-guest/refs/heads/main/registry/v0.0.22.toml";
 pub const IMAGE_CONFIG_FILENAME: &str = ".image.toml";
 const DEFAULT_AUTO_SYNC_THRESHOLD: u64 = 60 * 60 * 24 * 7;
 
@@ -49,6 +50,11 @@ impl ImageConfig {
         fs::write(path, toml::to_string(config)?)
             .map_err(|e| anyhow!("Failed to write image config file: {e}"))
     }
+}
+
+pub fn fallback_registry_url() -> String {
+    std::env::var("AXVISOR_REGISTRY_FALLBACK_URL")
+        .unwrap_or_else(|_| DEFAULT_FALLBACK_REGISTRY_URL.to_string())
 }
 
 #[cfg(test)]

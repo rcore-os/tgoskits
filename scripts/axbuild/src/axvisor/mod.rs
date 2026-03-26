@@ -72,4 +72,19 @@ mod tests {
             Command::Image(_) => {}
         }
     }
+
+    #[test]
+    fn command_parses_image_pull() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from(["axvisor", "image", "pull", "linux"]).unwrap();
+
+        match cli.command {
+            Command::Image(_) => {}
+        }
+    }
 }

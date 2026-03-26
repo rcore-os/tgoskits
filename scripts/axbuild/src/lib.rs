@@ -14,6 +14,7 @@ use crate::{arceos::ArceOS, axvisor::Axvisor, starry::Starry};
 pub mod arceos;
 pub mod axvisor;
 pub mod context;
+mod download;
 mod logging;
 pub mod process;
 pub mod starry;
@@ -175,6 +176,18 @@ mod tests {
                 command: axvisor::Command::Image(_),
             } => {}
             _ => panic!("expected `axvisor image ls` command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_axvisor_image_pull_command() {
+        let cli = Cli::try_parse_from(["axbuild", "axvisor", "image", "pull", "linux"]).unwrap();
+
+        match cli.command {
+            Commands::Axvisor {
+                command: axvisor::Command::Image(_),
+            } => {}
+            _ => panic!("expected `axvisor image pull` command"),
         }
     }
 }

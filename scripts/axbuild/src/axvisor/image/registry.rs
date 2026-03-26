@@ -1,8 +1,12 @@
 use std::{collections::BTreeMap, fs, path::Path};
 
+use anyhow::Context;
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+
+use super::spec::ImageSpecRef;
+use crate::download::fetch_text;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageEntry {
@@ -33,8 +37,17 @@ struct RawRegistry {
     images: Vec<ImageEntry>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistrySource {
+    pub url: String,
+    pub kind: &'static str,
+}
+
 impl ImageRegistry {
-    pub async fn fetch_with_includes(url: &str) -> anyhow::Result<ImageRegistry> {
+    pub async fn fetch_with_includes(
+        client: &reqwest::Client,
+        url: &str,
+    ) -> anyhow::Result<ImageRegistry> {
         use std::collections::{HashSet, VecDeque};
 
         let mut all_sources = Vec::new();
@@ -46,14 +59,7 @@ impl ImageRegistry {
                 continue;
             }
 
-            let body = reqwest::get(&current_url)
-                .await
-                .with_context(|| format!("failed to request registry {current_url}"))?
-                .error_for_status()
-                .with_context(|| format!("failed to fetch registry {current_url}"))?
-                .text()
-                .await
-                .with_context(|| format!("failed to read registry body {current_url}"))?;
+            let body = fetch_text(client, &current_url).await?;
             let raw: RawRegistry = toml::from_str(&body)
                 .map_err(|e| anyhow!("Invalid registry format at {}: {e}", current_url))?;
 
@@ -66,6 +72,43 @@ impl ImageRegistry {
         Ok(ImageRegistry {
             images: merge_entries(all_sources),
         })
+    }
+
+    pub async fn resolve_bootstrap_source(
+        client: &reqwest::Client,
+        default_url: &str,
+        fallback_url: &str,
+    ) -> anyhow::Result<RegistrySource> {
+        match fetch_text(client, default_url).await {
+            Ok(body) => {
+                let raw: RawRegistry = toml::from_str(&body)
+                    .map_err(|e| anyhow!("Invalid registry format at {}: {e}", default_url))?;
+                if let Some(include) = raw.includes.into_iter().next() {
+                    Ok(RegistrySource {
+                        url: include.url,
+                        kind: "included registry from default.toml",
+                    })
+                } else {
+                    Ok(RegistrySource {
+                        url: default_url.to_string(),
+                        kind: "default registry",
+                    })
+                }
+            }
+            Err(default_err) => {
+                fetch_text(client, fallback_url).await.with_context(|| {
+                    format!(
+                        "failed to fetch default registry {default_url} and fallback registry \
+                         {fallback_url}"
+                    )
+                })?;
+                eprintln!("warning: failed to fetch default registry {default_url}: {default_err}");
+                Ok(RegistrySource {
+                    url: fallback_url.to_string(),
+                    kind: "fallback registry",
+                })
+            }
+        }
     }
 
     pub fn load_from_file(path: &Path) -> anyhow::Result<ImageRegistry> {
@@ -130,7 +173,7 @@ impl ImageRegistry {
         ));
         out.push_str(&format!("{}\n", "-".repeat(102)));
         for (name, vers) in by_name {
-            let first = vers.first().unwrap();
+            let first = vers.first().expect("non-empty grouped entries");
             let version_str = if vers.len() == 1 {
                 "1 version".to_string()
             } else {
@@ -144,16 +187,16 @@ impl ImageRegistry {
         out
     }
 
-    pub fn find(&self, name: &str, version: Option<&str>) -> Option<&ImageEntry> {
-        match version {
-            Some(v) => self
+    pub fn find(&self, spec: ImageSpecRef<'_>) -> Option<&ImageEntry> {
+        match spec.version {
+            Some(version) => self
                 .images
                 .iter()
-                .find(|e| e.name == name && e.version == v),
+                .find(|entry| entry.name == spec.name && entry.version == version),
             None => self
                 .images
                 .iter()
-                .filter(|e| e.name == name)
+                .filter(|entry| entry.name == spec.name)
                 .max_by(|a, b| a.released_at.cmp(&b.released_at)),
         }
     }
@@ -175,8 +218,6 @@ fn merge_entries(sources: impl IntoIterator<Item = Vec<ImageEntry>>) -> Vec<Imag
     });
     out
 }
-
-use anyhow::Context;
 
 #[cfg(test)]
 mod tests {
@@ -246,10 +287,10 @@ mod tests {
     #[test]
     fn find_prefers_latest_when_version_omitted() {
         let images = registry();
-        let entry = images.find("linux", None).unwrap();
+        let entry = images.find(ImageSpecRef::parse("linux")).unwrap();
         assert_eq!(entry.version, "0.0.2");
 
-        let exact = images.find("linux", Some("0.0.1")).unwrap();
+        let exact = images.find(ImageSpecRef::parse("linux:0.0.1")).unwrap();
         assert_eq!(exact.version, "0.0.1");
     }
 }
