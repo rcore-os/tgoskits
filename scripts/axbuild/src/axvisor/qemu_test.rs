@@ -249,6 +249,7 @@ uefi = false
                 plat_dyn: None,
                 build_info_path: dir.path().join(".build.toml"),
                 qemu_config: None,
+                uboot_config: None,
                 vmconfigs: vec![],
             },
             &ShellAutoInitConfig {

@@ -85,6 +85,12 @@ pub struct AxvisorQemuSnapshot {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AxvisorUbootSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uboot_config: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AxvisorCommandSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arch: Option<String>,
@@ -98,6 +104,8 @@ pub struct AxvisorCommandSnapshot {
     pub vmconfigs: Vec<PathBuf>,
     #[serde(default, skip_serializing_if = "AxvisorQemuSnapshot::is_empty")]
     pub qemu: AxvisorQemuSnapshot,
+    #[serde(default, skip_serializing_if = "AxvisorUbootSnapshot::is_empty")]
+    pub uboot: AxvisorUbootSnapshot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,6 +116,7 @@ pub struct ResolvedAxvisorRequest {
     pub plat_dyn: Option<bool>,
     pub build_info_path: PathBuf,
     pub qemu_config: Option<PathBuf>,
+    pub uboot_config: Option<PathBuf>,
     pub vmconfigs: Vec<PathBuf>,
 }
 
@@ -171,6 +180,12 @@ impl ArceosQemuSnapshot {
 impl AxvisorQemuSnapshot {
     fn is_empty(&self) -> bool {
         self.qemu_config.is_none()
+    }
+}
+
+impl AxvisorUbootSnapshot {
+    fn is_empty(&self) -> bool {
+        self.uboot_config.is_none()
     }
 }
 
@@ -421,6 +436,7 @@ impl AppContext {
         &self,
         cli: AxvisorCliArgs,
         qemu_config: Option<PathBuf>,
+        uboot_config: Option<PathBuf>,
     ) -> anyhow::Result<(ResolvedAxvisorRequest, AxvisorCommandSnapshot)> {
         let snapshot = AxvisorCommandSnapshot::load(&self.root)?;
         let explicit_config = cli
@@ -459,6 +475,9 @@ impl AppContext {
         let resolved_qemu_config = qemu_config
             .clone()
             .or_else(|| resolve_snapshot_path(&self.root, snapshot.qemu.qemu_config.as_ref()));
+        let resolved_uboot_config = uboot_config
+            .clone()
+            .or_else(|| resolve_snapshot_path(&self.root, snapshot.uboot.uboot_config.as_ref()));
         let vmconfigs: Vec<PathBuf> = if cli.vmconfigs.is_empty() {
             snapshot
                 .vmconfigs
@@ -491,6 +510,7 @@ impl AppContext {
             plat_dyn,
             build_info_path: build_info_path.clone(),
             qemu_config: resolved_qemu_config.clone(),
+            uboot_config: resolved_uboot_config.clone(),
             vmconfigs: vmconfigs.clone(),
         };
 
@@ -505,6 +525,11 @@ impl AppContext {
                 .collect(),
             qemu: AxvisorQemuSnapshot {
                 qemu_config: resolved_qemu_config
+                    .as_ref()
+                    .map(|path| snapshot_path_value(&self.root, path)),
+            },
+            uboot: AxvisorUbootSnapshot {
+                uboot_config: resolved_uboot_config
                     .as_ref()
                     .map(|path| snapshot_path_value(&self.root, path)),
             },
@@ -781,6 +806,9 @@ mod tests {
             qemu: AxvisorQemuSnapshot {
                 qemu_config: Some(PathBuf::from("configs/qemu.toml")),
             },
+            uboot: AxvisorUbootSnapshot {
+                uboot_config: Some(PathBuf::from("configs/uboot.toml")),
+            },
         };
 
         let path = snapshot.store(root.path()).unwrap();
@@ -913,6 +941,9 @@ vmconfigs = ["tmp/snapshot-vm.toml"]
 
 [qemu]
 qemu_config = "configs/snapshot-qemu.toml"
+
+[uboot]
+uboot_config = "configs/snapshot-uboot.toml"
 "#,
         )
         .unwrap();
@@ -936,6 +967,7 @@ qemu_config = "configs/snapshot-qemu.toml"
                     ],
                 },
                 Some(PathBuf::from("/tmp/qemu.toml")),
+                Some(PathBuf::from("/tmp/uboot.toml")),
             )
             .unwrap();
 
@@ -948,6 +980,7 @@ qemu_config = "configs/snapshot-qemu.toml"
             PathBuf::from("/tmp/custom-build.toml")
         );
         assert_eq!(request.qemu_config, Some(PathBuf::from("/tmp/qemu.toml")));
+        assert_eq!(request.uboot_config, Some(PathBuf::from("/tmp/uboot.toml")));
         assert_eq!(
             request.vmconfigs,
             vec![
@@ -973,6 +1006,10 @@ qemu_config = "configs/snapshot-qemu.toml"
             snapshot.qemu.qemu_config,
             Some(PathBuf::from("/tmp/qemu.toml"))
         );
+        assert_eq!(
+            snapshot.uboot.uboot_config,
+            Some(PathBuf::from("/tmp/uboot.toml"))
+        );
     }
 
     #[test]
@@ -988,6 +1025,9 @@ vmconfigs = ["tmp/vm1.toml", "tmp/vm2.toml"]
 
 [qemu]
 qemu_config = "configs/qemu.toml"
+
+[uboot]
+uboot_config = "configs/uboot.toml"
 "#,
         )
         .unwrap();
@@ -999,7 +1039,7 @@ qemu_config = "configs/qemu.toml"
         };
 
         let (request, snapshot) = app
-            .prepare_axvisor_request(AxvisorCliArgs::default(), None)
+            .prepare_axvisor_request(AxvisorCliArgs::default(), None, None)
             .unwrap();
 
         assert_eq!(request.arch, DEFAULT_AXVISOR_ARCH);
@@ -1012,6 +1052,10 @@ qemu_config = "configs/qemu.toml"
         assert_eq!(
             request.qemu_config,
             Some(root.path().join("configs/qemu.toml"))
+        );
+        assert_eq!(
+            request.uboot_config,
+            Some(root.path().join("configs/uboot.toml"))
         );
         assert_eq!(
             request.vmconfigs,
@@ -1029,6 +1073,10 @@ qemu_config = "configs/qemu.toml"
         assert_eq!(
             snapshot.vmconfigs,
             vec![PathBuf::from("tmp/vm1.toml"), PathBuf::from("tmp/vm2.toml")]
+        );
+        assert_eq!(
+            snapshot.uboot.uboot_config,
+            Some(PathBuf::from("configs/uboot.toml"))
         );
     }
 
@@ -1050,6 +1098,7 @@ qemu_config = "configs/qemu.toml"
                     plat_dyn: None,
                     vmconfigs: vec![],
                 },
+                None,
                 None,
             )
             .unwrap();

@@ -213,6 +213,7 @@ pub async fn run_axvisor_qemu_tests(args: ArgsAxvisor) -> anyhow::Result<()> {
             vmconfigs: vec![vmconfig],
         },
         None,
+        None,
     )?;
 
     let cargo = axvisor::build::load_cargo_config(&request)?;

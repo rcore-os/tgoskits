@@ -9,6 +9,7 @@ use crate::{
 
 pub mod board;
 pub mod build;
+pub mod config;
 pub mod context;
 pub mod image;
 pub mod qemu_test;
@@ -20,6 +21,12 @@ pub enum Command {
     Build(ArgsBuild),
     /// Build and run Axvisor in QEMU
     Qemu(ArgsQemu),
+    /// Build and run Axvisor with U-Boot
+    Uboot(ArgsUboot),
+    /// Generate a default board config
+    Defconfig(ArgsDefconfig),
+    /// Board config helpers
+    Config(ArgsConfig),
     /// Guest image management
     Image(image::Args),
 }
@@ -49,6 +56,32 @@ pub struct ArgsQemu {
 
     #[arg(long)]
     pub qemu_config: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct ArgsUboot {
+    #[command(flatten)]
+    pub build: ArgsBuild,
+
+    #[arg(long)]
+    pub uboot_config: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct ArgsDefconfig {
+    pub board: String,
+}
+
+#[derive(Args)]
+pub struct ArgsConfig {
+    #[command(subcommand)]
+    pub command: ConfigCommand,
+}
+
+#[derive(Subcommand)]
+pub enum ConfigCommand {
+    /// List available board names
+    Ls,
 }
 
 pub struct Axvisor {
@@ -83,6 +116,15 @@ impl Axvisor {
             Command::Qemu(args) => {
                 self.qemu(args).await?;
             }
+            Command::Uboot(args) => {
+                self.uboot(args).await?;
+            }
+            Command::Defconfig(args) => {
+                self.defconfig(args)?;
+            }
+            Command::Config(args) => {
+                self.config(args)?;
+            }
             Command::Image(args) => {
                 self.image(args).await?;
             }
@@ -91,7 +133,9 @@ impl Axvisor {
     }
 
     async fn build(&mut self, args: ArgsBuild) -> anyhow::Result<()> {
-        let (request, snapshot) = self.app.prepare_axvisor_request((&args).into(), None)?;
+        let (request, snapshot) = self
+            .app
+            .prepare_axvisor_request((&args).into(), None, None)?;
         self.app.store_axvisor_snapshot(&snapshot)?;
 
         let cargo = build::load_cargo_config(&request)?;
@@ -100,9 +144,11 @@ impl Axvisor {
     }
 
     async fn qemu(&mut self, args: ArgsQemu) -> anyhow::Result<()> {
-        let (request, snapshot) = self
-            .app
-            .prepare_axvisor_request((&args.build).into(), args.qemu_config.clone())?;
+        let (request, snapshot) = self.app.prepare_axvisor_request(
+            (&args.build).into(),
+            args.qemu_config.clone(),
+            None,
+        )?;
         self.app.store_axvisor_snapshot(&snapshot)?;
 
         let cargo = build::load_cargo_config(&request)?;
@@ -115,6 +161,38 @@ impl Axvisor {
             build::default_qemu_run_config(&request)?
         };
         self.app.qemu(cargo, request.build_info_path, qemu).await?;
+        Ok(())
+    }
+
+    async fn uboot(&mut self, args: ArgsUboot) -> anyhow::Result<()> {
+        let (request, snapshot) = self.app.prepare_axvisor_request(
+            (&args.build).into(),
+            None,
+            args.uboot_config.clone(),
+        )?;
+        self.app.store_axvisor_snapshot(&snapshot)?;
+
+        let cargo = build::load_cargo_config(&request)?;
+        self.app
+            .uboot(cargo, request.build_info_path, request.uboot_config)
+            .await?;
+        Ok(())
+    }
+
+    fn defconfig(&self, args: ArgsDefconfig) -> anyhow::Result<()> {
+        let path = config::write_defconfig(self.app.workspace_root(), &args.board)?;
+        println!("Generated {} for board {}", path.display(), args.board);
+        Ok(())
+    }
+
+    fn config(&self, args: ArgsConfig) -> anyhow::Result<()> {
+        match args.command {
+            ConfigCommand::Ls => {
+                for board in config::available_board_names() {
+                    println!("{board}");
+                }
+            }
+        }
         Ok(())
     }
 
@@ -178,9 +256,73 @@ mod tests {
     }
 
     #[test]
+    fn command_parses_defconfig() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from(["axvisor", "defconfig", "qemu-aarch64"]).unwrap();
+
+        match cli.command {
+            Command::Defconfig(args) => assert_eq!(args.board, "qemu-aarch64"),
+            _ => panic!("expected defconfig command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_uboot() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from([
+            "axvisor",
+            "uboot",
+            "--arch",
+            "aarch64",
+            "--uboot-config",
+            "uboot.toml",
+            "--vmconfigs",
+            "tmp/vm1.toml",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Uboot(args) => {
+                assert_eq!(args.build.arch.as_deref(), Some("aarch64"));
+                assert_eq!(args.uboot_config, Some(PathBuf::from("uboot.toml")));
+                assert_eq!(args.build.vmconfigs, vec![PathBuf::from("tmp/vm1.toml")]);
+            }
+            _ => panic!("expected uboot command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_config_ls() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from(["axvisor", "config", "ls"]).unwrap();
+
+        match cli.command {
+            Command::Config(ArgsConfig {
+                command: ConfigCommand::Ls,
+            }) => {}
+            _ => panic!("expected config ls command"),
+        }
+    }
+
+    #[test]
     fn build_args_convert_to_cli_args() {
         let args = ArgsBuild {
-            config: Some(PathBuf::from("os/axvisor/.build.toml")),
+            config: Some(PathBuf::from(config::DEFAULT_BUILD_CONFIG_RELATIVE_PATH)),
             arch: Some("aarch64".to_string()),
             target: Some("aarch64-unknown-none-softfloat".to_string()),
             plat_dyn: Some(false),
@@ -192,7 +334,7 @@ mod tests {
         assert_eq!(
             cli_args,
             AxvisorCliArgs {
-                config: Some(PathBuf::from("os/axvisor/.build.toml")),
+                config: Some(PathBuf::from(config::DEFAULT_BUILD_CONFIG_RELATIVE_PATH)),
                 arch: Some("aarch64".to_string()),
                 target: Some("aarch64-unknown-none-softfloat".to_string()),
                 plat_dyn: Some(false),
@@ -213,7 +355,7 @@ mod tests {
             "axvisor",
             "build",
             "--config",
-            "os/axvisor/.build.toml",
+            config::DEFAULT_BUILD_CONFIG_RELATIVE_PATH,
             "--arch",
             "aarch64",
             "--vmconfigs",
@@ -222,7 +364,10 @@ mod tests {
         .unwrap();
         match build_cli.command {
             Command::Build(args) => {
-                assert_eq!(args.config, Some(PathBuf::from("os/axvisor/.build.toml")));
+                assert_eq!(
+                    args.config,
+                    Some(PathBuf::from(config::DEFAULT_BUILD_CONFIG_RELATIVE_PATH))
+                );
                 assert_eq!(args.arch.as_deref(), Some("aarch64"));
                 assert_eq!(args.vmconfigs, vec![PathBuf::from("tmp/vm1.toml")]);
             }
@@ -233,7 +378,7 @@ mod tests {
             "axvisor",
             "qemu",
             "--config",
-            "os/axvisor/.build.toml",
+            config::DEFAULT_BUILD_CONFIG_RELATIVE_PATH,
             "--arch",
             "aarch64",
             "--qemu-config",
@@ -248,7 +393,7 @@ mod tests {
             Command::Qemu(args) => {
                 assert_eq!(
                     args.build.config,
-                    Some(PathBuf::from("os/axvisor/.build.toml"))
+                    Some(PathBuf::from(config::DEFAULT_BUILD_CONFIG_RELATIVE_PATH))
                 );
                 assert_eq!(args.build.arch.as_deref(), Some("aarch64"));
                 assert_eq!(args.qemu_config, Some(PathBuf::from("configs/qemu.toml")));
@@ -270,6 +415,7 @@ mod tests {
             plat_dyn: None,
             build_info_path: PathBuf::from("os/axvisor/.build-aarch64-unknown-none-softfloat.toml"),
             qemu_config: None,
+            uboot_config: None,
             vmconfigs: vec![],
         })
         .unwrap();

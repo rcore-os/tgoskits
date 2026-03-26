@@ -484,6 +484,7 @@ mod tests {
             plat_dyn: None,
             build_info_path: path,
             qemu_config: None,
+            uboot_config: None,
             vmconfigs: vec![],
         }
     }
@@ -571,6 +572,7 @@ plat_dyn = true
             plat_dyn: Some(true),
             build_info_path: config_path,
             qemu_config: None,
+            uboot_config: None,
             vmconfigs: vec![root.path().join("a.toml"), root.path().join("b.toml")],
         })
         .unwrap();
@@ -626,6 +628,7 @@ vm_configs = []
             plat_dyn: None,
             build_info_path: path.clone(),
             qemu_config: None,
+            uboot_config: None,
             vmconfigs: vec![],
         })
         .unwrap();
@@ -660,6 +663,7 @@ plat_dyn = false
             plat_dyn: Some(false),
             build_info_path: config_path,
             qemu_config: None,
+            uboot_config: None,
             vmconfigs: vec![],
         })
         .unwrap();
@@ -762,6 +766,7 @@ kernel_path = "{}"
             plat_dyn: None,
             build_info_path: root.path().join(".build.toml"),
             qemu_config: None,
+            uboot_config: None,
             vmconfigs: vec![vmconfig],
         })
         .unwrap();
