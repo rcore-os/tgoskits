@@ -1603,6 +1603,7 @@ dependencies = [
  "rdrive",
  "regex",
  "reqwest 0.13.2",
+ "rk3568_clk",
  "rk3588-clk",
  "rockchip-pm",
  "schemars",
@@ -5858,6 +5859,19 @@ dependencies = [
  "log",
  "riscv-h",
  "spin 0.10.0",
+]
+
+[[package]]
+name = "rk3568_clk"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a9786b01d79acb045652d4cb451b049b26a509171d4afe5c19767d06a366585"
+dependencies = [
+ "aarch64-cpu 10.0.0",
+ "bare-test-macros",
+ "fdt-parser",
+ "kspin",
+ "log",
 ]
 
 [[package]]
