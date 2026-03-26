@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -10,7 +9,7 @@ use ostool::build::config::Cargo;
 
 pub type StarryBuildInfo = crate::arceos::build::ArceosBuildInfo;
 pub use crate::arceos::build::LogLevel;
-use crate::context::{ResolvedStarryRequest, STARRY_PACKAGE, starry_arch_for_target_checked};
+use crate::context::{ResolvedStarryRequest, starry_arch_for_target_checked};
 
 impl StarryBuildInfo {
     pub fn default_starry_for_target(target: &str) -> Self {
@@ -176,11 +175,12 @@ fn default_platform_for_arch(arch: &str) -> anyhow::Result<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{collections::HashMap, fs};
 
     use tempfile::tempdir;
 
     use super::*;
+    use crate::context::STARRY_PACKAGE;
 
     fn request(path: PathBuf, arch: &str, target: &str) -> ResolvedStarryRequest {
         ResolvedStarryRequest {
@@ -369,8 +369,11 @@ CUSTOM = "1"
             uboot_config: None,
         };
         let build_info = StarryBuildInfo::default_starry_for_target("x86_64-unknown-none");
-        let mut cargo = build_info
-            .to_base_cargo_config("placeholder".to_string(), request.target.clone(), vec![]);
+        let mut cargo = build_info.to_base_cargo_config(
+            "placeholder".to_string(),
+            request.target.clone(),
+            vec![],
+        );
 
         patch_starry_cargo_config(&mut cargo, &request).unwrap();
 
