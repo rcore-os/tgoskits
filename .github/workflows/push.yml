@@ -17,6 +17,7 @@ name: Push to Subrepos
 # - components: 指定组件（逗号分隔，留空自动检测）
 # - branch: 推送到子仓库的目标分支（默认：dev）
 # - push_all: 推送所有组件（忽略变更检测）
+# - force_push: 强制推送到子仓库（传递 repo.py push --force）
 #
 # 【权限配置】
 # ─────────────────────────────────────────────────────────────────────────────
@@ -52,6 +53,11 @@ on:
         default: 'dev'
       push_all:
         description: '推送所有组件（忽略变更检测）'
+        required: false
+        type: boolean
+        default: false
+      force_push:
+        description: '强制推送到子仓库'
         required: false
         type: boolean
         default: false
@@ -184,12 +190,19 @@ jobs:
         env:
           COMPONENTS: ${{ steps.detect.outputs.components }}
           INPUT_BRANCH: ${{ inputs.branch }}
+          INPUT_FORCE_PUSH: ${{ inputs.force_push }}
         run: |
           TARGET_BRANCH="${INPUT_BRANCH:-dev}"
+          FORCE_ARGS=""
+
+          if [ "$INPUT_FORCE_PUSH" = "true" ]; then
+            FORCE_ARGS="--force"
+            echo "Force push enabled"
+          fi
           
           if [ "$COMPONENTS" = "__all__" ]; then
             echo "Pushing ALL components to ${TARGET_BRANCH} branch..."
-            python3 scripts/repo/repo.py push --all -b "${TARGET_BRANCH}"
+            python3 scripts/repo/repo.py push --all -b "${TARGET_BRANCH}" ${FORCE_ARGS}
             exit 0
           fi
           
@@ -210,7 +223,7 @@ jobs:
             echo "Pushing: ${repo_name}"
             echo "=========================================="
             
-            if python3 scripts/repo/repo.py push "${repo_name}" -b "${TARGET_BRANCH}"; then
+            if python3 scripts/repo/repo.py push "${repo_name}" -b "${TARGET_BRANCH}" ${FORCE_ARGS}; then
               echo "✅ Successfully pushed ${repo_name}"
               SUCCESS=$((SUCCESS + 1))
             else
@@ -245,6 +258,7 @@ jobs:
         env:
           COMPONENTS: ${{ steps.detect.outputs.components }}
           INPUT_BRANCH: ${{ inputs.branch }}
+          INPUT_FORCE_PUSH: ${{ inputs.force_push }}
           GH_EVENT_NAME: ${{ github.event_name }}
           GH_REF_NAME: ${{ github.ref_name }}
           SUBTREE_PUSH_TOKEN: ${{ secrets.SUBTREE_PUSH_TOKEN }}
@@ -254,6 +268,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Components**: ${COMPONENTS}" >> $GITHUB_STEP_SUMMARY
           echo "- **Target Branch**: ${TARGET_BRANCH}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Force Push**: ${INPUT_FORCE_PUSH:-false}" >> $GITHUB_STEP_SUMMARY
           echo "- **Trigger**: ${GH_EVENT_NAME}" >> $GITHUB_STEP_SUMMARY
           echo "- **Source Branch**: ${GH_REF_NAME}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY

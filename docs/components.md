@@ -1,16 +1,14 @@
-# 基于组件开发指南
+# 组件开发指南
 
-TGOSKits 的核心价值不只是"把仓库放在一起"，而是让你可以从组件出发，一路追到 ArceOS、StarryOS 和 Axvisor 的实际消费者。这篇文档专门回答这个问题。
+TGOSKits 的核心价值不仅在于将各仓库整合到同一工作区，更在于使开发者能够从组件出发，追踪其在 ArceOS、StarryOS 和 Axvisor 中的实际使用方式。本文档介绍 TGOSKits 的多层组件架构、改动影响评估、验证路径选择，以及将新组件接入三套系统的标准流程。
 
-本文档旨在为开发者提供清晰的组件开发与集成指南，帮助理解 TGOSKits 的多层组件架构、判断改动的影响范围、选择正确的验证路径，以及掌握将新组件接入三套系统的标准流程。无论你是修改已有组件还是新增功能模块，这里都会告诉你应该从哪里开始、如何验证、以及最终如何将组件集成到目标系统中。
+若已知目标 crate 的名称，建议配合 [`docs/crates/README.md`](crates/README.md) 阅读本文档：本文档侧重说明"组件处于哪一层、通常影响哪些系统"，而 crate 索引负责回答"它依赖哪些包、文档入口在哪里"。
 
-如果你已经知道目标 crate 的名字，建议和 [`docs/crates/README.md`](crates/README.md) 配合阅读：这里负责回答"它处在哪一层、通常影响谁"，crate 索引负责回答"它具体依赖谁、文档入口在哪"。
+## 1. 组件层次结构
 
-## 1. 组件不只在 `components/`
+新开发者常见的误解是：只有 `components/` 下的目录才算组件。实际上，TGOSKits 包含六类组件化层次，每一层均有其职责定位和消费者群体。理解这些层次的划分，对于评估改动影响范围和选择验证路径至关重要。
 
-新开发者最容易误解的一点是：只有 `components/` 才算组件。实际上，TGOSKits 里至少有六类"组件化层次"，每一层都有其特定的角色定位和消费者群体。理解这些层次的划分，对于判断改动影响范围和选择正确的验证路径至关重要。
-
-下面的表格总结了这六类组件层次的路径、角色、典型内容和主要消费者：
+下表总结了六类组件层次的路径、职责、典型内容与主要消费者：
 
 | 路径 | 角色 | 典型内容 | 主要消费者 |
 | --- | --- | --- | --- |
@@ -21,16 +19,14 @@ TGOSKits 的核心价值不只是"把仓库放在一起"，而是让你可以从
 | `os/StarryOS/kernel/` | StarryOS 内核逻辑 | syscall、进程、内存、文件系统 | `starryos` 包 |
 | `os/axvisor/` | Hypervisor 运行时与配置 | `src/`、`configs/board/`、`configs/vms/` | Axvisor |
 
-除了上述六类核心组件层次，还有两个经常需要一起查看的目录：平台实现目录（`components/axplat_crates/platforms/*` 与 `platform/*`）和系统级测试入口（`test-suit/*`）。这些目录虽然不直接参与组件的分层架构，但在验证组件功能和系统集成时扮演着重要角色。
-
-此外还有两个经常要一起看的目录：
+除上述六类核心组件层次外，以下两个目录在验证组件功能和系统集成时也需关注：
 
 - `components/axplat_crates/platforms/*` 与 `platform/*`：平台实现
 - `test-suit/*`：系统级测试入口
 
-## 2. 组件是怎样流到三个系统里的
+## 2. 组件依赖关系
 
-理解组件的流向对于把握改动的影响范围至关重要。下面的流程图展示了从可复用 crate 到最终系统的典型路径：
+理解组件的依赖流向对于评估改动影响范围至关重要。以下流程图展示了从可复用 crate 到最终系统的典型路径：
 
 ```mermaid
 flowchart TD
@@ -54,7 +50,7 @@ flowchart TD
     PlatformCrates --> AxvisorRuntime
 ```
 
-这张图的意思不是所有改动都要经过所有层，而是告诉你常见路径通常有三种：
+上述流程图表示常见的三种组件依赖路径：
 
 1. 纯复用 crate 直接被系统包依赖  
    例如 `components/starry-process`、`components/axvm`
@@ -65,9 +61,9 @@ flowchart TD
 3. 通过平台和配置接到最终系统  
    例如 `axplat-*`、`platform/x86-qemu-q35`、Axvisor 的 `configs/board/*.toml`
 
-## 3. 先判断你的改动应该落在哪
+## 3. 改动定位
 
-在开始修改之前，首先要明确你的改动属于哪个层次、会影响哪些系统，这样才能选择最合适的开发位置和验证策略。下面的表格根据你要改动的功能类型，推荐了优先查看的位置和常见的影响面：
+在开始修改前，需首先明确改动所属的层次及其影响的系统范围，以便选择合适的开发位置和验证策略。下表根据功能类型推荐了优先查看的位置和常见影响面：
 
 | 你要改什么 | 优先看哪里 | 常见影响面 |
 | --- | --- | --- |
@@ -78,25 +74,25 @@ flowchart TD
 | Hypervisor、vCPU、虚拟设备、VM 管理 | `components/axvm`、`components/axvcpu`、`components/axdevice`、`components/axvisor_api`、`os/axvisor/src/*` | Axvisor |
 | 平台、板级适配或 VM 启动配置 | `components/axplat_crates/platforms/*`、`platform/*`、`os/axvisor/configs/*` | 一到多个系统 |
 
-如果你还不知道一个 crate 是谁维护、来自哪个独立仓库，先看 `scripts/repo/repos.csv`。它是所有 subtree 组件的来源总表。
+若不确定某个 crate 的维护者或来源仓库，可查看 `scripts/repo/repos.csv`，该文件记录了所有 subtree 组件的来源信息。
 
-## 4. 修改已有组件时，推荐的验证闭环
+## 4. 组件修改与验证
 
-修改已有组件时，不应该一上来就运行完整的测试矩阵，而是应该采用渐进式验证策略：从最小的消费者开始，逐步扩大验证范围，最后再补充统一测试。这种方法既能快速发现问题，又能避免浪费时间在无关的测试上。
+修改已有组件时，推荐采用渐进式验证策略：从最小的消费者开始，逐步扩大验证范围，最后补充统一测试。该方法既能快速发现问题，又能避免在无关测试上浪费时间。
 
-### 4.1 先找最近的消费者
+### 4.1 定位最近的消费者
 
-不要一上来跑完整测试矩阵。先问自己：
+建议先明确以下信息：
 
-- 这个 crate 是被哪个包直接依赖的
-- 它是只影响一个系统，还是会同时影响多个系统
-- 有没有比"启动整套系统"更小的验证入口
+- 该 crate 被哪些包直接依赖
+- 影响范围是单个系统还是多个系统
+- 是否存在比"启动整套系统"更轻量的验证入口
 
-通常可以先看相关 `Cargo.toml`，再选择最小运行路径。
+通常可先查看相关 `Cargo.toml`，再选择最小运行路径。
 
-### 4.2 从最小路径开始
+### 4.2 最小验证路径
 
-根据改动位置的不同，推荐的验证路径也有所差异。下表列出了不同类型改动的第一步和第二步验证方法：
+根据改动位置的不同，推荐的验证路径也有所差异：
 
 | 改动位置 | 第一步验证 | 第二步验证 |
 | --- | --- | --- |
@@ -105,9 +101,9 @@ flowchart TD
 | `components/starry-*`、`os/StarryOS/kernel/*` | `cargo xtask starry run --arch riscv64 --package starryos` | `cargo xtask test starry --target riscv64gc-unknown-none-elf` |
 | `components/axvm`、`components/axvcpu`、`components/axdevice`、`os/axvisor/src/*` | `cd os/axvisor && cargo xtask build` | 准备好 Guest 后运行 `./scripts/setup_qemu.sh arceos`，再执行 `cargo xtask qemu --build-config ... --qemu-config ... --vmconfigs ...` |
 
-### 4.3 最后再补统一测试
+### 4.3 补充统一测试
 
-在完成最小路径验证后，如果改动涉及跨系统基础组件，还需要运行统一测试以确保改动不会破坏其他系统。统一测试包括标准库测试、ArceOS 测试、StarryOS 测试和 Axvisor 测试：
+完成最小路径验证后，若改动涉及跨系统基础组件，还需运行统一测试以确保不会破坏其他系统：
 
 ```bash
 cargo xtask test std
@@ -116,19 +112,19 @@ cargo xtask test starry --target riscv64gc-unknown-none-elf
 cargo xtask test qemu axvisor --target aarch64
 ```
 
-如果你改的是跨系统基础组件，至少要跑：
+若修改的是跨系统基础组件，至少应执行以下测试：
 
-- 一条 host/`std` 路径
+- 一条宿主机/`std` 路径
 - 一条 ArceOS 路径
-- 一条它真正影响到的系统路径
+- 一条该组件实际影响到的系统路径
 
 ## 5. 新增组件
 
-新增组件时，最重要的是先确定它应该属于哪一层，然后按照标准模板创建目录、配置文件和工作区接线。如果一开始就做对了，后续的维护和集成都会顺畅很多。
+新增组件时，首先应确定其所属层次，然后按照标准模板创建目录和配置文件。正确的初始结构设计能够显著降低后续维护和集成的成本。
 
-### 5.1 先选层次，再创建目录
+### 5.1 确定所属层次
 
-先问自己这个新 crate 应该属于哪一层：
+首先需明确新 crate 应属于哪一层：
 
 - 真正可复用的独立 crate：放 `components/`
 - 仅属于 ArceOS 的 OS 模块：放 `os/arceos/modules/`
@@ -137,7 +133,7 @@ cargo xtask test qemu axvisor --target aarch64
 
 ### 5.2 标准目录结构
 
-确认层次后，按照下面的标准结构创建组件目录。这是 `components/` 下独立 subtree crate 的推荐模板：
+确定层次后，按以下标准结构创建组件目录。以下为 `components/` 下独立 subtree crate 的推荐模板：
 
 ```
 my_component/
@@ -263,9 +259,9 @@ my_component = { path = "components/my_component" }
 
 只有当这个新组件本身要作为独立 subtree 仓库管理时，才需要把它加入 `scripts/repo/repos.csv`。如果你只是先在 TGOSKits 内部做原型，不一定要立刻动 subtree 配置。Subtree 的详细操作请参阅 [repo.md](repo.md)。
 
-## 6. 把组件接到 ArceOS
+## 6. ArceOS 集成
 
-在 ArceOS 里，组件开发常见的落地链路是：先在 `components/` 或 `os/arceos/modules/` 实现复用逻辑，如果要作为可选能力暴露则接到 `os/arceos/api/axfeat`，如果要给应用直接用则再接到 `os/arceos/ulib/axstd` 或 `axlibc`，最后用 `os/arceos/examples/*` 或 `test-suit/arceos/*` 验证。这个流程确保了组件能够以正确的层次接入系统，并提供适当的验证入口。
+在 ArceOS 中集成组件的典型链路为：在 `components/` 或 `os/arceos/modules/` 实现复用逻辑，若需作为可选能力暴露则接入 `os/arceos/api/axfeat`，若需直接供应用使用则接入 `os/arceos/ulib/axstd` 或 `axlibc`，最后通过 `os/arceos/examples/*` 或 `test-suit/arceos/*` 进行验证。
 
 最常用的三个验证入口：
 
@@ -275,16 +271,16 @@ cargo xtask arceos run --package arceos-httpserver --arch riscv64 --net
 cargo xtask arceos run --package arceos-shell --arch riscv64 --blk
 ```
 
-什么时候要动哪层：
+各层适用场景：
 
-- 只改内部实现：通常只动 `components/` 或 `modules/`
-- 要新增 feature 开关：动 `os/arceos/api/axfeat`
-- 要新增应用侧 API：动 `os/arceos/ulib/axstd` 或 `axlibc`
-- 要增加示例：动 `os/arceos/examples/`
+- 仅修改内部实现：通常只需修改 `components/` 或 `modules/`
+- 新增 feature 开关：修改 `os/arceos/api/axfeat`
+- 新增应用侧 API：修改 `os/arceos/ulib/axstd` 或 `axlibc`
+- 新增示例：添加至 `os/arceos/examples/`
 
-## 7. 把组件接到 StarryOS
+## 7. StarryOS 集成
 
-StarryOS 的一个关键点是：它既复用了大量 ArceOS 模块，也维护了自己的一套 `starry-*` 组件和 `os/StarryOS/kernel/` 内核逻辑。因此，在 StarryOS 中集成组件时，需要明确改动是通用基础能力、Linux 兼容行为，还是启动包和平台入口。
+StarryOS 既复用了大量 ArceOS 模块，也维护了自身的 `starry-*` 组件和 `os/StarryOS/kernel/` 内核逻辑。因此，在 StarryOS 中集成组件时，需明确改动属于通用基础能力、Linux 兼容行为还是启动包和平台入口。
 
 常见路径如下：
 
@@ -292,30 +288,30 @@ StarryOS 的一个关键点是：它既复用了大量 ArceOS 模块，也维护
 - Linux 兼容行为：改 `components/starry-*` 或 `os/StarryOS/kernel/*`
 - 启动包、特性组合、平台入口：改 `os/StarryOS/starryos`
 
-验证时建议优先用根目录集成入口：
+验证时建议优先使用根目录集成入口：
 
 ```bash
 cargo xtask starry rootfs --arch riscv64
 cargo xtask starry run --arch riscv64 --package starryos
 ```
 
-如果你的改动会影响用户态行为，例如 syscall、文件系统或 rootfs 内程序，通常还要再做一层验证：
+若改动会影响用户态行为（如 syscall、文件系统或 rootfs 内程序），通常还需进行以下额外验证：
 
-- 把测试程序放进 rootfs
-- 或直接扩展 `test-suit/starryos`
+- 将测试程序放入 rootfs
+- 或扩展 `test-suit/starryos`
 
-## 8. 把组件接到 Axvisor
+## 8. Axvisor 集成
 
-Axvisor 的组件化通常分成三层：复用 crate（如 `axvm`、`axvcpu`、`axdevice`、`axvisor_api`）、Hypervisor 运行时（`os/axvisor/src/*`）以及板级与 VM 配置（`os/axvisor/configs/board/*` 与 `os/axvisor/configs/vms/*`）。因此，做 Axvisor 相关改动时要特别注意区分这是"代码"改动还是"配置"改动，它影响的是 Hypervisor 本身还是 Guest 启动参数。
+Axvisor 的组件化架构通常分为三层：复用 crate（如 `axvm`、`axvcpu`、`axdevice`、`axvisor_api`）、Hypervisor 运行时（`os/axvisor/src/*`）以及板级与 VM 配置（`os/axvisor/configs/board/*` 与 `os/axvisor/configs/vms/*`）。因此，进行 Axvisor 相关改动时需区分"代码"改动与"配置"改动，以及改动影响的是 Hypervisor 本身还是 Guest 启动参数。
 
-最小验证路径通常是：
+最小验证路径通常为：
 
 ```bash
 cd os/axvisor
 cargo xtask build
 ```
 
-只有当 Guest 镜像、`tmp/rootfs.img` 和 `vmconfigs` 已经准备好时，再继续：
+仅在 Guest 镜像、`tmp/rootfs.img` 和 `vmconfigs` 均已就绪后，再继续执行：
 
 ```bash
 cd os/axvisor
@@ -326,13 +322,13 @@ cargo xtask qemu \
   --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
 ```
 
-如果你改的是板级能力，还要一起看：
+若修改涉及板级能力，还需同时关注：
 
 - `components/axplat_crates/platforms/*`
 - `platform/x86-qemu-q35`
 - `os/axvisor/configs/board/*.toml`
 
-## 9. 测试与代码检查
+## 9. 测试与质量检查
 
 组件通过 `scripts/` 下的脚本调用 [axci](https://github.com/arceos-hypervisor/axci) 统一测试框架。首次运行时自动下载 axci 到 `scripts/.axci/` 目录。
 
@@ -391,13 +387,13 @@ cargo xtask qemu \
 ./scripts/check.sh --targets aarch64-unknown-none-softfloat
 ```
 
-## 10. CI/CD 与 GitHub Workflows
+## 10. 持续集成与部署
 
 所有 CI 工作流通过调用 axci 的共享工作流实现（push.yml 除外）。
 
 ### check.yml — 代码检查
 
-触发条件：push 到任意分支（tag 除外）、PR、手动触发
+触发条件：推送到任意分支（tag 除外）、PR、手动触发
 
 功能：格式检查 (rustfmt)、静态分析 (clippy)、编译检查、文档生成检查
 

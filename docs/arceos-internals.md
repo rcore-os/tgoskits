@@ -1,13 +1,13 @@
-# ArceOS 深度技术解析
+# ArceOS 内部机制
 
-这篇文档不是上手指南，而是面向准备修改内核模块、做性能分析、补充特性或向上层系统复用 ArceOS 能力的开发者。它重点回答四类问题：
+本文档面向准备修改内核模块、进行性能分析、补充特性或向上层系统复用 ArceOS 能力的开发者，重点阐述以下内容：
 
-- ArceOS 在 TGOSKits 中的分层边界是什么。
-- 一个能力如何从 `Cargo feature` 一路装配到运行时模块。
-- 启动、调度、文件系统、网络等能力在内部如何协作。
-- 当你准备做功能改进、性能优化或二次开发时，应该从哪里下手。
+- ArceOS 在 TGOSKits 中的分层边界。
+- 能力如何从 `Cargo feature` 装配到运行时模块。
+- 启动、调度、文件系统、网络等核心子系统的内部协作机制。
+- 功能改进、性能优化或二次开发的推荐切入点。
 
-如果你的目标只是先把示例跑起来，请先读 [quick-start.md](quick-start.md) 和 [arceos-guide.md](arceos-guide.md)。
+若仅需要运行示例，请先阅读 [quick-start.md](quick-start.md) 和 [arceos-guide.md](arceos-guide.md)。
 
 ## 1. 系统定位与设计目标
 
@@ -19,9 +19,9 @@ ArceOS 在本仓库中同时扮演三种角色：
 | 基础系统平台 | 直接承载示例应用、测试包和实验性系统程序 | `os/arceos/examples/*`、`test-suit/arceos/*` |
 | 共享能力提供者 | 为 StarryOS 和 AxVisor 复用 HAL、任务、内存、驱动等基础能力 | `axhal`、`axtask`、`axmm`、`axdriver` 等模块被上层系统直接依赖 |
 
-从设计目标看，ArceOS 不追求“大而全”的宏内核语义，而更强调以下几点：
+ArceOS 的设计目标并非构建"大而全"的宏内核，而是强调以下原则：
 
-| 目标 | 具体含义 | 典型实现落点 |
+| 目标 | 含义 | 典型实现 |
 | --- | --- | --- |
 | 编译期可裁剪 | 只链接被 feature 选中的能力，避免把不需要的子系统塞进镜像 | `axfeat`、`axruntime/Cargo.toml` |
 | 层次分离 | 把可复用 crate、OS 相关模块、API 封装、用户库和应用分开管理 | `components/`、`modules/`、`api/`、`ulib/` |
@@ -29,9 +29,9 @@ ArceOS 在本仓库中同时扮演三种角色：
 | 低抽象损耗 | `axstd` 直接调用 ArceOS 模块，而不是先走 libc 和 syscall | `os/arceos/ulib/axstd/src/lib.rs` |
 | Rust 安全性 | 利用所有权、trait、类型系统和同步原语减少数据竞争和空悬引用 | `axsync`、`axtask`、`crate_interface` |
 
-## 2. 总体架构与分层设计
+## 2. 架构概览
 
-从仓库结构看，ArceOS 的关键价值不是“有很多 crate”，而是这些 crate 被有意识地组织成一条从底层平台到上层应用的能力传递链。
+从仓库结构来看，ArceOS 的核心价值在于这些 crate 被有意识地组织成一条从底层平台到上层应用的能力传递链。
 
 ```mermaid
 flowchart LR
@@ -57,10 +57,10 @@ flowchart LR
     optionalModules --> upperSystems
 ```
 
-阅读这张图时，可以按“从下往上”和“从右往左”两种方向理解：
+理解此图可从两个方向入手：
 
-- 从下往上看，它说明应用最终不是直接绑定某个驱动文件，而是经由 `user lib -> API -> modules -> HAL/platform` 这一链路拿到能力。
-- 从右往左看，它说明 StarryOS 和 AxVisor 复用的不是“整个 ArceOS”，而是底层模块能力，因此你修改 `axhal`、`axtask`、`axdriver` 之类的模块，很可能会同时影响多个系统。
+- 自下而上：应用最终经由 `user lib -> API -> modules -> HAL/platform` 链路获取能力。
+- 自右向左：StarryOS 和 AxVisor 复用的是底层模块能力，修改 `axhal`、`axtask`、`axdriver` 等模块可能同时影响多个系统。
 
 ### 2.1 分层职责
 
@@ -82,37 +82,42 @@ ArceOS 的基础骨架由四个必选模块组成：
 - `axconfig`：平台常量、栈大小、物理内存、目标平台等构建时参数。
 - `axlog`：日志输出与格式化。
 
-其余模块大多按 feature 启用，例如：
+其余模块大多按 feature 启用，以下按功能域分类列出：
 
 | 模块 | 典型 feature | 作用 |
 | --- | --- | --- |
-| `axalloc` | `alloc` | 全局内存分配器 |
+| `axalloc` | `alloc` | 全局内存分配器（支持 TLSF、buddy、slab 等策略） |
 | `axmm` | `paging` | 地址空间与页表管理 |
-| `axtask` | `multitask`、`sched-*` | 任务创建、调度、sleep、wait queue |
-| `axsync` | `multitask` | 锁、同步原语 |
-| `axdriver` | `driver-*`、`fs`、`net`、`display` | 设备探测与驱动初始化 |
-| `axfs` | `fs` | 文件系统与挂载 |
-| `axnet` | `net` | 网络栈 |
-| `axdisplay` | `display` | 图形显示 |
+| `axtask` | `multitask`、`sched-*` | 任务创建、调度（FIFO/RR/CFS）、sleep、wait queue |
+| `axsync` | `multitask` | mutex、信号量等同步原语 |
+| `axdriver` | `driver-*`、`fs`、`net`、`display` | 设备探测与驱动初始化（virtio、AHCI、SDMMC 等） |
+| `axfs` | `fs` | 文件系统（FAT、ramfs、ext4） |
+| `axfs-ng` | `fs-ng` | 下一代文件系统（FAT、ext4，带 LRU 缓存） |
+| `axnet` | `net` | 网络栈（基于 smoltcp） |
+| `axnet-ng` | `net-ng` | 下一代网络栈（异步感知） |
+| `axdisplay` | `display` | 图形显示（帧缓冲） |
+| `axinput` | `input` | 输入设备管理 |
+| `axdma` | `dma` | DMA 内存分配与管理 |
+| `axipi` | `ipi` | 处理器间中断管理 |
 
-## 3. 核心设计理念与实现机制
+## 3. 核心设计机制
 
 ### 3.1 Crates 与 Modules 的边界
 
-ArceOS 文档中反复强调 `Crates` 与 `Modules` 的区别：
+ArceOS 文档中 `Crates` 与 `Modules` 的区别如下：
 
-- `components/*` 里的 crate 更偏通用基础构件，尽量与某一具体 OS 设计解绑。
-- `modules/*` 则显式体现 ArceOS 的设计取向，例如任务模型、驱动装配方式、文件系统初始化路径等。
+- `components/*` 中的 crate 偏向通用基础构件，尽量与具体 OS 设计解耦。
+- `modules/*` 则体现 ArceOS 的设计取向，如任务模型、驱动装配方式、文件系统初始化路径等。
 
-这种分层的收益是：
+分层的收益：
 
-- 可以让更多基础能力在 StarryOS、AxVisor 等系统中重复使用。
-- 可以把“OS 语义”集中到 `modules/*` 和 `api/*`，降低 API 污染。
-- 可以把“是否启用某个能力”交给 Cargo feature，而不是运行时动态决策。
+- 更多基础能力可在 StarryOS、AxVisor 等系统中复用。
+- OS 语义集中在 `modules/*` 和 `api/*`，降低 API 污染。
+- 能力启用由 Cargo feature 控制，而非运行时动态决策。
 
 ### 3.2 Feature 驱动的系统装配
 
-ArceOS 的装配逻辑不是写在一个“总配置脚本”里，而是分布在应用依赖、`axstd/axfeat` feature、以及 `axruntime` 的 feature 依赖图中。
+ArceOS 的装配逻辑分布在应用依赖、`axstd/axfeat` feature 以及 `axruntime` 的 feature 依赖图中。
 
 ```mermaid
 flowchart TD
@@ -144,22 +149,44 @@ flowchart TD
 axstd = { workspace = true, features = ["alloc", "multitask", "net"], optional = true }
 ```
 
-而 `axruntime` 则把这些 feature 继续映射为更底层的模块依赖，例如：
+而 `axruntime` 将这些 feature 继续映射为更底层的模块依赖：
 
 ```toml
 [features]
+# 内存
 alloc = ["dep:axalloc"]
-multitask = ["axtask/multitask"]
+paging = ["dep:axmm"]
+dma = ["dep:axdma"]
+# 并发
+multitask = ["axtask/multitask", "dep:axsync"]
+smp = ["axhal/smp"]
+tls = ["axhal/tls"]
+ipi = ["dep:axipi", "axhal/ipi"]
+# 中断与时间
+irq = ["axhal/irq"]
+rtc = ["axhal/rtc"]
+# 虚拟化
+hv = ["axhal/hv", "axalloc/hv"]
+# 平台
+plat-dyn = ["axhal/plat-dyn"]
+axdriver = ["dep:axdriver"]
+# 文件系统
 fs = ["axdriver", "dep:axfs"]
+fs-ng = ["axdriver", "dep:axfs-ng"]
+# 网络
 net = ["axdriver", "dep:axnet"]
+net-ng = ["axdriver", "dep:axnet-ng"]
+vsock = ["dep:axnet", "dep:axnet-ng"]
+# 显示与输入
 display = ["axdriver", "dep:axdisplay"]
+input = ["axdriver", "dep:axinput"]
 ```
 
-这意味着对开发者最重要的一点是：**ArceOS 的“功能是否存在”本质上是编译期装配问题，而不是运行时开关问题。**
+这意味着对开发者而言：**ArceOS 的"功能是否存在"本质上是编译期装配问题，而非运行时开关问题。**
 
 ### 3.3 API 封装策略
 
-ArceOS 提供了三种不同粒度的对外接口：
+ArceOS 提供三种不同粒度的对外接口：
 
 | 接口层 | 目录 | 适合谁使用 | 特点 |
 | --- | --- | --- | --- |
@@ -180,14 +207,14 @@ ArceOS 提供了三种不同粒度的对外接口：
 | `display` | 帧缓冲与刷新 |
 | `modules` | 在需要时直接回落到具体模块 |
 
-### 3.4 为什么 `axstd` 不走 syscall
+### 3.4 `axstd` 不走 syscall 的原因
 
-`axstd` 的注释明确说明，它提供的是“类似 Rust `std` 的接口”，但其实现不是通过 libc 和 syscall，而是**直接调用 ArceOS 模块**。这有两个直接影响：
+`axstd` 提供类似 Rust `std` 的接口，但其实现不是通过 libc 和 syscall，而是**直接调用 ArceOS 模块**。这带来两个影响：
 
-- 对单内核应用而言，调用路径更短，减少中间 ABI 层的开销。
-- 应用侧接口和内核能力之间的对应关系更清晰，便于做 feature 裁剪和性能分析。
+- 单内核应用调用路径更短，减少中间 ABI 层开销。
+- 应用接口与内核能力之间的对应关系更清晰，便于 feature 裁剪和性能分析。
 
-下面这张时序图展示了 ArceOS 中最常见的两条能力调用路径：
+以下时序图展示了 ArceOS 中两条典型的能力调用路径：
 
 ```mermaid
 sequenceDiagram
@@ -210,15 +237,19 @@ sequenceDiagram
     Axstd-->>App: Rust 风格结果或值
 ```
 
-阅读这张图时要注意：
+分析此图需注意：
 
-- `axstd` 路径更偏“应用开发接口”。
-- `arceos_api` 路径更偏“系统软件与内部组件接口”。
-- 两者最终都要落到 `modules/*` 和 `axhal`，所以性能瓶颈与行为差异通常也在那里。
+- `axstd` 路径偏向应用开发接口。
+- `arceos_api` 路径偏向系统软件与内部组件接口。
+- 两者最终均落到 `modules/*` 和 `axhal`，性能瓶颈与行为差异通常在此层。
 
-## 4. 主要功能组件与交互关系
+## 4. 功能组件与模块
 
-### 4.1 核心模块速览
+本节从模块总览、交互主线和任务调度模型三个角度介绍 ArceOS 的核心功能组件。
+
+### 4.1 核心模块总览
+
+以下表格汇总了 ArceOS 各核心模块的目录位置、职责及常见联动对象：
 
 | 组件 | 目录 | 关键职责 | 常见联动对象 |
 | --- | --- | --- | --- |
@@ -233,10 +264,15 @@ sequenceDiagram
 | `axnet` | `os/arceos/modules/axnet` | 网络栈、socket 抽象 | `axdriver` |
 | `axconfig` | `os/arceos/modules/axconfig` | 构建期常量与目标参数 | 所有模块 |
 | `axlog` | `os/arceos/modules/axlog` | 多级日志与格式化输出 | 所有模块 |
+| `axfs-ng` | `os/arceos/modules/axfs-ng` | 下一代文件系统（FAT、ext4，LRU 缓存） | `axdriver` |
+| `axnet-ng` | `os/arceos/modules/axnet-ng` | 下一代网络栈（异步感知，基于 starry-smoltcp） | `axdriver` |
+| `axdma` | `os/arceos/modules/axdma` | DMA 内存分配与管理 | `axruntime`、`axmm` |
+| `axipi` | `os/arceos/modules/axipi` | 处理器间中断管理 | `axhal` |
+| `axinput` | `os/arceos/modules/axinput` | 输入设备管理与事件分发 | `axdriver` |
 
-### 4.2 模块之间的关键交互
+### 4.2 模块交互
 
-ArceOS 的模块交互可以粗略归纳为四条主线：
+ArceOS 的模块间交互可归纳为四条主线，覆盖从系统启动到应用调用的完整数据与控制流：
 
 1. 启动主线  
    `axruntime -> axhal -> axalloc/axmm -> axtask -> axdriver -> axfs/axnet`
@@ -252,7 +288,7 @@ ArceOS 的模块交互可以粗略归纳为四条主线：
 
 ### 4.3 任务与调度模型
 
-`axtask` 的设计有几个值得注意的点：
+`axtask` 是 ArceOS 并发模型的核心，其设计有几个值得注意的点：
 
 - `multitask` 打开前后，模块会走完全不同的实现路径。
 - 调度算法由 `sched-fifo`、`sched-rr`、`sched-cfs` 等 feature 选择。
@@ -277,11 +313,13 @@ stateDiagram-v2
 - 一个“卡住”的任务更可能是在 `Blocked` 等待某个唤醒事件，还是根本没有被放进 `Ready` 队列。
 - 一个调度问题究竟是“没有启用正确 scheduler feature”，还是“唤醒条件没有成立”。
 
-## 5. 关键执行场景分析
+## 5. 关键执行流程
+
+本节描述 ArceOS 从引导入口到应用运行的启动初始化流程、Feature 装配对启动路径的影响，以及从应用入口到模块能力的典型调用链。
 
 ### 5.1 系统启动与运行时初始化
 
-ArceOS 的主入口在 `axruntime::rust_main()`。它从平台引导代码跳入后，会按固定顺序把最基础的运行时环境搭起来。
+ArceOS 的主入口位于 `axruntime::rust_main()`，从平台引导代码跳入后，按固定顺序建立运行时环境。
 
 ```mermaid
 flowchart TD
@@ -315,26 +353,26 @@ flowchart TD
     appMain --> shutdown
 ```
 
-这个流程里有几个容易被忽略的关键点：
+此流程中有几个需注意的要点：
 
-- `axhal::init_early()` 与 `axhal::init_later()` 分成两阶段，说明平台初始化并不是一次性完成的。
-- 文件系统、网络、显示等服务并不直接初始化自己，而是依赖 `axdriver::init_drivers()` 的探测结果。
-- `main()` 真正被调用前，调度器、中断、构造器都可能已经完成初始化，因此应用拿到的是“已具备最小运行时”的环境。
+- `axhal::init_early()` 与 `axhal::init_later()` 分两阶段执行，平台初始化并非一次性完成。
+- 文件系统、网络、显示等服务依赖 `axdriver::init_drivers()` 的探测结果，而非自行初始化。
+- `main()` 被调用前，调度器、中断、构造器可能已完成初始化，应用拿到的是"已具备最小运行时"的环境。
 
 ### 5.2 Feature 装配对启动路径的影响
 
-ArceOS 的启动流程虽然固定，但每一步是否执行，取决于 feature 是否被启用：
+启动流程虽固定，但每一步是否执行取决于 feature 是否启用：
 
 - 没有 `alloc`，就不会初始化全局堆。
 - 没有 `paging`，就不会进入 `axmm::init_memory_management()`。
 - 没有 `multitask`，则不会初始化调度器，`main()` 返回后会直接 `system_off()`。
 - 没有 `fs`、`net`、`display`，相应的驱动初始化与子系统初始化也不会发生。
 
-这也是为什么定位问题时要优先检查 Cargo feature，而不是先怀疑运行时分支。
+这也是定位问题时应优先检查 Cargo feature，而非先怀疑运行时分支的原因。
 
-### 5.3 从应用入口到模块能力的典型调用
+### 5.3 从应用入口到模块能力的调用链
 
-最小 `Hello World` 示例非常简单：
+最小 `Hello World` 示例如下：
 
 ```rust
 #![cfg_attr(feature = "axstd", no_std)]
@@ -349,24 +387,26 @@ fn main() {
 }
 ```
 
-但它背后已经隐含了如下事实：
+但此示例已隐含以下事实：
 
 - 应用必须通过 `axstd` 或其他用户接口接入 ArceOS 运行时。
-- `println!` 最终会落到控制台输出能力，而控制台又由 `axhal` 的平台控制台接口承接。
-- 如果你把这个例子换成 `httpserver`，就会额外要求 `alloc`、`multitask`、`net` 三类 feature，进而把网络栈与任务系统一起装配进镜像。
+- `println!` 最终落到控制台输出能力，由 `axhal` 的平台控制台接口承接。
+- 若替换为 `httpserver` 示例，则额外要求 `alloc`、`multitask`、`net` 三类 feature，网络栈与任务系统随之装配进镜像。
 
-## 6. 开发环境与构建指南
+## 6. 开发环境与构建
 
-### 6.1 推荐环境
+本节介绍 ArceOS 的环境配置、构建入口及面向不同模块改动类型的验证顺序。
 
-第一次做 ArceOS 开发时，建议直接复用仓库已有约定：
+### 6.1 环境配置
+
+首次进行 ArceOS 开发，建议直接复用仓库已有约定：
 
 - Linux 开发环境。
-- 安装 Rust toolchain 与目标三元组。
+- 安装 Rust 工具链与目标三元组。
 - 使用 QEMU 做最小验证。
-- 第一次优先固定 `riscv64`，等流程稳定后再切换到 `x86_64`、`aarch64` 或 `loongarch64`。
+- 首次固定 `riscv64` 架构，流程稳定后再切换至 `x86_64`、`aarch64` 或 `loongarch64`。
 
-最小工具准备可直接参考 [quick-start.md](quick-start.md)，这里只保留 ArceOS 最常用的部分：
+最小工具准备可直接参考 [quick-start.md](quick-start.md)，此处仅列出 ArceOS 最常用的部分：
 
 ```bash
 rustup target add riscv64gc-unknown-none-elf
@@ -377,14 +417,39 @@ rustup target add loongarch64-unknown-none-softfloat
 cargo install cargo-binutils
 ```
 
-### 6.2 两套常用构建入口
+Makefile 中常用的构建变量包括：
 
-| 入口 | 适合场景 | 典型命令 |
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `ARCH` | `x86_64` | 目标架构，支持 `x86_64`、`riscv64`、`aarch64`、`loongarch64` |
+| `A` | `examples/helloworld` | 应用路径 |
+| `FEATURES` | 空 | 额外启用的 ArceOS feature |
+| `LOG` | `warn` | 日志级别（`off`、`error`、`warn`、`info`、`debug`、`trace`） |
+| `MODE` | `release` | 构建模式（`release` 或 `debug`） |
+| `SMP` | 配置文件决定 | CPU 核数 |
+| `BLK` | `n` | 启用 `y` 时附加 virtio-blk 设备 |
+| `NET` | `n` | 启用 `y` 时附加 virtio-net 设备 |
+| `BUS` | `pci` | 设备总线类型（`pci` 或 `mmio`） |
+
+### 6.2 构建入口
+
+| 入口 | 适用场景 | 典型命令 |
 | --- | --- | --- |
 | 根目录 `cargo xtask arceos ...` | 集成开发、和 CI 风格保持一致、联调共享组件 | `cargo xtask arceos run --package arceos-helloworld --arch riscv64` |
 | `os/arceos/Makefile` | 调试 ArceOS 原生 Makefile 参数、手工控制 QEMU 选项与日志 | `cd os/arceos && make A=examples/helloworld ARCH=riscv64 LOG=debug run` |
 
-推荐的最小闭环是：
+Makefile 常用目标（在 `os/arceos/` 下执行）：
+
+| 目标 | 说明 |
+| --- | --- |
+| `run` | 构建并在 QEMU 中运行（默认） |
+| `build` / `justrun` | 仅构建 / 仅运行已构建的镜像 |
+| `debug` | 通过 GDB（端口 1234）调试运行 |
+| `disk_img` | 创建 FAT32 虚拟磁盘镜像 |
+| `unittest` | 运行单元测试 |
+| `clippy` / `fmt` / `doc` | 代码检查、格式化、文档生成 |
+
+推荐最小验证闭环：
 
 ```bash
 cargo xtask arceos run --package arceos-helloworld --arch riscv64
@@ -394,6 +459,8 @@ cargo xtask arceos run --package arceos-shell --arch riscv64 --blk
 
 ### 6.3 面向模块开发的验证顺序
 
+不同类型的模块改动需要不同的验证路径，以下表格给出了推荐的优先级：
+
 | 改动类型 | 第一条验证路径 | 第二条验证路径 |
 | --- | --- | --- |
 | 基础 crate 或 `axhal`、`axtask` | `arceos-helloworld` | `cargo xtask test arceos --target riscv64gc-unknown-none-elf` |
@@ -401,21 +468,25 @@ cargo xtask arceos run --package arceos-shell --arch riscv64 --blk
 | 文件系统 | `arceos-shell --blk` | `test-suit/arceos` 中相关测试 |
 | API/用户库 | 使用该 API 的最小示例 | 再补系统级测试 |
 
-## 7. 核心 API 与配置使用说明
+## 7. API 与配置参考
 
-### 7.1 `axstd` 的使用方式
+本节介绍 ArceOS 提供的三种对外接口及其使用方式：`axstd`（应用开发）、`arceos_api`（系统软件）和 `axlibc`（POSIX 兼容）。
 
-如果你写的是 Rust 应用，优先从 `axstd` 开始。它把最常见的能力组织为类似标准库的模块：
+### 7.1 `axstd` 使用方式
 
-| 模块 | 说明 |
-| --- | --- |
-| `axstd::io` | 标准 I/O |
-| `axstd::time` | 时间接口 |
-| `axstd::thread` | 线程与 sleep |
-| `axstd::sync` | 同步原语 |
-| `axstd::fs` | 文件系统 |
-| `axstd::net` | 网络栈 |
-| `axstd::process` | 进程相关抽象 |
+编写 Rust 应用时，优先从 `axstd` 开始。它将最常见的能力组织为类似标准库的模块：
+
+| 模块 | Feature 条件 | 说明 |
+| --- | --- | --- |
+| `axstd::io` | 始终可用 | 标准 I/O（Read/Write traits） |
+| `axstd::env` | 始终可用 | 环境变量与命令行参数 |
+| `axstd::os` | 始终可用 | OS 特定接口 |
+| `axstd::time` | 始终可用 | 时间接口（SystemTime、Duration） |
+| `axstd::thread` | `multitask` | 线程创建与 sleep |
+| `axstd::sync` | `multitask` | 同步原语（Mutex、RwLock、Condvar） |
+| `axstd::fs` | `fs` 或 `fs-ng` | 文件系统操作 |
+| `axstd::net` | `net` 或 `net-ng` | 网络栈（TCP/UDP socket） |
+| `axstd::process` | `multitask` | 进程相关抽象 |
 
 应用最小模板通常就是：
 
@@ -432,13 +503,13 @@ fn main() {
 }
 ```
 
-### 7.2 `arceos_api` 的使用方式
+### 7.2 `arceos_api` 使用方式
 
-如果你在做系统软件、共享组件或需要绕过 `axstd` 的更稳定接口，优先考虑 `arceos_api`。它适合：
+进行系统软件、共享组件开发或需要绕过 `axstd` 使用更稳定的接口时，优先考虑 `arceos_api`，适用于：
 
 - 上层系统复用 ArceOS 能力。
-- 写对 feature 更敏感的中间层代码。
-- 希望明确知道自己依赖了哪些 OS 能力。
+- 编写对 feature 敏感的中间层代码。
+- 需明确依赖的 OS 能力范围。
 
 典型调用域包括：
 
@@ -448,24 +519,38 @@ fn main() {
 
 ### 7.3 `axlibc` 与 POSIX 兼容层
 
-如果目标是兼容 C 程序或 POSIX 风格接口，需要关注：
+若目标为兼容 C 程序或 POSIX 风格接口，需关注：
 
-- `os/arceos/api/arceos_posix_api`
-- `os/arceos/ulib/axlibc`
+- `os/arceos/api/arceos_posix_api` — 提供 POSIX 风格的 syscall 封装，覆盖文件 I/O、socket、epoll、pthread、pipe、时间等类别。
+- `os/arceos/ulib/axlibc` — 将上述 API 编译为静态库，供 C 程序链接使用。
 
-这一路径通常比 `axstd` 更适合迁移已有用户态程序，但其语义边界、覆盖率和调试方式更接近兼容层，而不是原生单内核应用开发。
+`arceos_posix_api` 支持的主要 syscall 类别：
 
-## 8. 调试、故障排查与优化方法
+| 类别 | 典型接口 |
+| --- | --- |
+| 文件操作 | `sys_open`、`sys_read`、`sys_write`、`sys_close`、`sys_stat`、`sys_lseek` |
+| Socket | `sys_socket`、`sys_bind`、`sys_listen`、`sys_accept`、`sys_connect`、`sys_send`、`sys_recv` |
+| I/O 多路复用 | `sys_select`、`sys_epoll_create`、`sys_epoll_ctl`、`sys_epoll_wait` |
+| 线程 | `sys_pthread_create`、`sys_pthread_join`、`sys_pthread_mutex_lock` |
+| 管道 | `sys_pipe` |
+| 时间 | `sys_clock_gettime`、`sys_nanosleep` |
+| 网络 | `sys_getaddrinfo`、`sys_getsockname`、`sys_getpeername` |
 
-### 8.1 先看日志，再看 feature，再看模块边界
+此路径更适合迁移已有用户态程序，但其语义边界、覆盖率和调试方式更接近兼容层。
 
-排障时建议按这个顺序：
+## 8. 调试与排障
 
-1. 先确认日志级别是否足够。
-2. 再确认应用和运行时到底启用了哪些 feature。
-3. 最后再进入具体模块源码分析。
+本节提供 ArceOS 的排障流程、常见问题汇总及性能优化切入点。
 
-本地最直接的调试命令是：
+### 8.1 排障顺序
+
+建议按以下顺序排查问题：
+
+1. 确认日志级别是否足够。
+2. 确认应用和运行时启用了哪些 feature。
+3. 进入具体模块源码分析。
+
+本地调试命令：
 
 ```bash
 cd os/arceos
@@ -475,6 +560,8 @@ make A=examples/helloworld ARCH=riscv64 debug
 
 ### 8.2 常见问题
 
+以下表格汇总了 ArceOS 开发中最常遇到的问题、典型原因及建议的排查路径：
+
 | 现象 | 常见原因 | 建议排查路径 |
 | --- | --- | --- |
 | 链接失败或缺少 `rust-lld` / target | 未安装目标三元组 | 先检查 `rustup target list --installed` |
@@ -483,26 +570,26 @@ make A=examples/helloworld ARCH=riscv64 debug
 | 多任务行为异常 | `multitask` 或 scheduler feature 组合不正确 | 检查 `axtask` 的 feature 和调度器选择 |
 | 示例正常、上层系统异常 | 改动影响了 StarryOS / AxVisor 的复用路径 | 补跑对应系统的最小消费者 |
 
-### 8.3 做性能优化时的切入点
+### 8.3 性能优化切入点
 
-如果你的目标是优化 ArceOS，通常优先从以下几个方向切入：
+优化 ArceOS 时，通常从以下方向切入：
 
-- 启动路径：减少不必要模块初始化，检查 `axruntime` 中的 feature 分支。
+- 启动路径：减少不必要的模块初始化，检查 `axruntime` 中的 feature 分支。
 - 内存路径：关注 `axalloc`、`axmm` 以及是否存在过度映射或不必要分配。
 - 调度路径：分析 `axtask` 调度器选择与 wait queue 唤醒开销。
-- I/O 路径：检查 `axdriver -> axfs/axnet` 的调用链是否有多余层次。
-- 跨系统影响：如果模块会被 StarryOS 或 AxVisor 复用，优化不能只看 ArceOS 自己的示例表现。
+- I/O 路径：检查 `axdriver -> axfs/axnet` 的调用链是否存在多余层次。
+- 跨系统影响：若模块被 StarryOS 或 AxVisor 复用，优化不能仅看 ArceOS 自身的表现。
 
-## 9. 二次开发建议与阅读路径
+## 9. 深入阅读
 
-如果你准备继续深入，推荐按下面的顺序扩展：
+建议按以下顺序继续深入：
 
-1. 先从 `os/arceos/modules/axruntime/src/lib.rs` 看完整初始化路径。
-2. 再看 `os/arceos/api/axfeat` 与 `axruntime/Cargo.toml`，理解 feature 到模块的装配关系。
-3. 根据你关心的子系统分别进入 `axtask`、`axmm`、`axdriver`、`axfs`、`axnet`。
-4. 如果改动会波及上层系统，继续阅读 [starryos-internals.md](starryos-internals.md) 与 [axvisor-internals.md](axvisor-internals.md)。
+1. 从 `os/arceos/modules/axruntime/src/lib.rs` 阅读完整初始化路径。
+2. 阅读 `os/arceos/api/axfeat` 与 `axruntime/Cargo.toml`，理解 feature 到模块的装配关系。
+3. 根据关注的子系统分别进入 `axtask`、`axmm`、`axdriver`、`axfs`、`axnet`。
+4. 若改动波及上层系统，继续阅读 [starryos-internals.md](starryos-internals.md) 与 [axvisor-internals.md](axvisor-internals.md)。
 
-关联阅读建议：
+关联文档：
 
 - [arceos-guide.md](arceos-guide.md)：更偏“目录、命令和验证闭环”。
 - [components.md](components.md)：更偏“组件如何流向三个系统”。
