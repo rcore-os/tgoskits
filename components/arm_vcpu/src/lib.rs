@@ -36,6 +36,15 @@ pub use self::{
 /// context frame for aarch64
 pub type TrapFrame = context_frame::Aarch64ContextFrame;
 
+/// Returns the maximum guest page table levels supported by the hardware.
+///
+/// This is determined by the physical address size:
+/// - 44+ bit PA → 4 levels (48-bit IPA)
+/// - < 44 bit PA → 3 levels (39-bit IPA)
+pub fn max_guest_page_table_levels() -> usize {
+    vcpu::max_gpt_level(vcpu::pa_bits())
+}
+
 /// Return if current platform support virtualization extension.
 pub fn has_hardware_support() -> bool {
     // Hint:
