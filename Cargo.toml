@@ -2,7 +2,7 @@
 edition = "2024"
 version = "0.3.0-preview.3"
 authors = ["RCore Team <yuchen@tsinghua.edu.cn>"]
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
+license = "Apache-2.0"
 homepage = "https://github.com/rcore-os/tgoskits"
 repository = "https://github.com/rcore-os/tgoskits"
 keywords = ["arceos", "kernel"]
