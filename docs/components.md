@@ -1,10 +1,10 @@
 # 基于组件开发指南
 
-TGOSKits 的核心价值不只是“把仓库放在一起”，而是让你可以从组件出发，一路追到 ArceOS、StarryOS 和 Axvisor 的实际消费者。这篇文档专门回答这个问题。
+TGOSKits 的核心价值不只是"把仓库放在一起"，而是让你可以从组件出发，一路追到 ArceOS、StarryOS 和 Axvisor 的实际消费者。这篇文档专门回答这个问题。
 
 本文档旨在为开发者提供清晰的组件开发与集成指南，帮助理解 TGOSKits 的多层组件架构、判断改动的影响范围、选择正确的验证路径，以及掌握将新组件接入三套系统的标准流程。无论你是修改已有组件还是新增功能模块，这里都会告诉你应该从哪里开始、如何验证、以及最终如何将组件集成到目标系统中。
 
-如果你已经知道目标 crate 的名字，建议和 [`docs/crates/README.md`](crates/README.md) 配合阅读：这里负责回答“它处在哪一层、通常影响谁”，crate 索引负责回答“它具体依赖谁、文档入口在哪”。
+如果你已经知道目标 crate 的名字，建议和 [`docs/crates/README.md`](crates/README.md) 配合阅读：这里负责回答"它处在哪一层、通常影响谁"，crate 索引负责回答"它具体依赖谁、文档入口在哪"。
 
 ## 1. 组件不只在 `components/`
 
@@ -81,14 +81,16 @@ flowchart TD
 如果你还不知道一个 crate 是谁维护、来自哪个独立仓库，先看 `scripts/repo/repos.csv`。它是所有 subtree 组件的来源总表。
 
 ## 4. 修改已有组件时，推荐的验证闭环
+
 修改已有组件时，不应该一上来就运行完整的测试矩阵，而是应该采用渐进式验证策略：从最小的消费者开始，逐步扩大验证范围，最后再补充统一测试。这种方法既能快速发现问题，又能避免浪费时间在无关的测试上。
-### 4.1 先找“最近的消费者”
+
+### 4.1 先找最近的消费者
 
 不要一上来跑完整测试矩阵。先问自己：
 
 - 这个 crate 是被哪个包直接依赖的
 - 它是只影响一个系统，还是会同时影响多个系统
-- 有没有比“启动整套系统”更小的验证入口
+- 有没有比"启动整套系统"更小的验证入口
 
 通常可以先看相关 `Cargo.toml`，再选择最小运行路径。
 
@@ -120,9 +122,9 @@ cargo xtask test axvisor --target aarch64-unknown-none-softfloat
 - 一条 ArceOS 路径
 - 一条它真正影响到的系统路径
 
-## 5. 新增组件时，先把“工作区接线”做对
+## 5. 新增组件
 
-新增组件时，最重要的是先确定它应该属于哪一层，然后正确地将其接入工作区。这个过程涉及目录位置选择、Cargo.toml 配置、workspace 成员管理等多个方面。如果一开始就做对了，后续的维护和集成都会顺畅很多。
+新增组件时，最重要的是先确定它应该属于哪一层，然后按照标准模板创建目录、配置文件和工作区接线。如果一开始就做对了，后续的维护和集成都会顺畅很多。
 
 ### 5.1 先选层次，再创建目录
 
@@ -133,9 +135,58 @@ cargo xtask test axvisor --target aarch64-unknown-none-softfloat
 - 仅属于 ArceOS 的 API 或用户库：放 `os/arceos/api/` 或 `os/arceos/ulib/`
 - 仅属于 StarryOS / Axvisor 的系统内部逻辑：优先放对应系统目录
 
-### 5.2 新建普通 leaf crate 的最小模板
+### 5.2 标准目录结构
 
-如果它是一个新的普通组件，可以从一个简单的 Cargo.toml 模板开始。这个模板复用了根工作区的配置，保持与整个仓库的一致性：
+确认层次后，按照下面的标准结构创建组件目录。这是 `components/` 下独立 subtree crate 的推荐模板：
+
+```
+my_component/
+├── Cargo.toml                  # Crate 元数据和依赖配置
+├── rust-toolchain.toml         # Rust 工具链配置
+├── LICENSE                     # 许可证文件
+├── CHANGELOG.md                # 版本变更日志（可选）
+├── README.md                   # 项目简介（英文）
+├── README_CN.md                # README 中文版（可选）
+├── .cargo/
+│   └── config.toml             # Cargo 配置（默认 target、编译选项等）
+├── .github/
+│   ├── workflows/
+│   │  ├── check.yml            # 代码检查工作流
+│   │  ├── test.yml             # 测试工作流
+│   │  ├── deploy.yml           # 文档部署工作流
+│   │  ├── push.yml             # 同步到父仓库
+│   │  └── release.yml          # 发布工作流
+│   └── config.json             # 项目配置文件
+├── scripts/                    # 实用脚本
+│   ├── check.sh                # 代码检查（调用 axci/check.sh）
+│   └── test.sh                 # 测试（调用 axci/tests.sh）
+├── tests/                      # 集成测试文件
+└── src/                        # 组件源码目录
+    └── lib.rs                  # 库入口，导出公共 API
+```
+
+> **注意**：如果组件仅作为 TGOSKits 内部原型，不需要立即添加 `.github/`、`scripts/`、`tests/` 等 subtree CI 相关文件。只有在组件准备作为独立 subtree 仓库长期维护时才需要补齐。
+
+### 5.3 配置文件模板
+
+#### Cargo.toml
+
+```toml
+[package]
+name = "my_component"
+version = "0.1.0"
+edition = "2024"
+authors = ["作者"]
+description = "组件描述"
+license = "Apache-2.0"
+repository = "https://github.com/org/repo"
+keywords = ["os", "component"]
+categories = ["embedded", "no-std"]
+
+[dependencies]
+```
+
+在 TGOSKits 工作区内，更推荐直接复用根工作区的配置：
 
 ```toml
 [package]
@@ -146,11 +197,49 @@ edition.workspace = true
 [dependencies]
 ```
 
-相比旧仓库里常见的模板，这里更推荐直接复用根工作区的 `edition.workspace = true`，和当前仓库保持一致。
+#### .github/config.json
 
-### 5.3 把组件接到根 workspace
+CI/CD 流程读取的组件配置文件：
 
-普通 leaf crate 常见需要两步：在根 `Cargo.toml` 的 `[workspace.members]` 里加入路径，以及在 `[patch.crates-io]` 里加入同名 patch，让其他包解析到本地源码。以下是一个示例配置：
+```json
+{
+  "targets": [
+    "aarch64-unknown-none-softfloat"
+  ],
+  "rust_components": [
+    "rust-src",
+    "clippy",
+    "rustfmt"
+  ]
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `targets` | 编译目标平台列表 |
+| `rust_components` | 需要安装的 Rust 组件 |
+
+#### .cargo/config.toml
+
+```toml
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-linux-gnu-gcc"
+runner = ["qemu-aarch64", "-L", "/usr/aarch64-linux-gnu"]
+```
+
+#### rust-toolchain.toml
+
+```toml
+[toolchain]
+profile = "minimal"
+channel = "nightly-2025-05-20"
+components = ["rust-src", "llvm-tools", "rustfmt", "clippy"]
+targets = ["aarch64-unknown-none-softfloat"]
+```
+
+### 5.4 把组件接到根 workspace
+
+普通 leaf crate 常见需要两步：在根 `Cargo.toml` 的 `[workspace.members]` 里加入路径，以及在 `[patch.crates-io]` 里加入同名 patch，让其他包解析到本地源码：
 
 ```toml
 [workspace]
@@ -162,7 +251,7 @@ members = [
 my_component = { path = "components/my_component" }
 ```
 
-### 5.4 遇到嵌套 workspace 时不要照抄
+### 5.5 遇到嵌套 workspace 时不要照抄
 
 `components/axplat_crates`、`components/axdriver_crates`、`components/axmm_crates` 这类目录本身是独立 workspace。给这类目录加新 crate 时，需要特别注意处理方式：
 
@@ -170,7 +259,7 @@ my_component = { path = "components/my_component" }
 - 再在根 `Cargo.toml` 里为具体 leaf crate 增加 patch 或 member
 - 不要把整个父目录直接重新塞回根 workspace
 
-### 5.5 什么时候需要改 `repos.csv`
+### 5.6 什么时候需要改 `repos.csv`
 
 只有当这个新组件本身要作为独立 subtree 仓库管理时，才需要把它加入 `scripts/repo/repos.csv`。如果你只是先在 TGOSKits 内部做原型，不一定要立刻动 subtree 配置。Subtree 的详细操作请参阅 [repo.md](repo.md)。
 
@@ -243,7 +332,106 @@ cargo xtask qemu \
 - `platform/x86-qemu-q35`
 - `os/axvisor/configs/board/*.toml`
 
-## 9. 什么时候需要看 `repo.md`
+## 9. 测试与代码检查
+
+组件通过 `scripts/` 下的脚本调用 [axci](https://github.com/arceos-hypervisor/axci) 统一测试框架。首次运行时自动下载 axci 到 `scripts/.axci/` 目录。
+
+### 9.1 test.sh — 测试
+
+```bash
+# 运行全部测试（单元测试 + 集成测试）
+./scripts/test.sh
+
+# 仅运行单元测试
+./scripts/test.sh unit
+
+# 仅运行集成测试
+./scripts/test.sh integration
+
+# 列出所有可用的测试套件
+./scripts/test.sh list
+
+# 指定编译目标
+./scripts/test.sh --targets aarch64-unknown-none-softfloat
+
+# 指定测试套件（支持前缀匹配）
+./scripts/test.sh integration --suite axvisor-qemu
+
+# 仅显示将要执行的命令
+./scripts/test.sh --dry-run -v
+
+# 使用文件系统模式，不修改配置文件
+./scripts/test.sh integration --suite axvisor-qemu-aarch64-arceos --fs
+
+# 打印 U-Boot 和串口输出到终端
+./scripts/test.sh integration --suite axvisor-qemu-aarch64-arceos --fs --print
+```
+
+**支持的测试类型**：
+
+| 类型 | 说明 | 示例 |
+|------|------|------|
+| 单元测试 | `cargo test` 在宿主机运行 | `./scripts/test.sh unit` |
+| QEMU 集成测试 | 在 QEMU 中启动 axvisor 运行客户机镜像 | `--suite axvisor-qemu-aarch64-arceos` |
+| 开发板集成测试 | 通过 U-Boot 在物理开发板上运行 | `--suite axvisor-board-phytiumpi-arceos` |
+| Starry 测试 | 构建并运行 StarryOS | `--suite starry-aarch64` |
+
+### 9.2 check.sh — 代码检查
+
+```bash
+# 运行全部检查（格式 + clippy + 构建 + 文档）
+./scripts/check.sh
+
+# 仅运行指定阶段
+./scripts/check.sh --only fmt
+./scripts/check.sh --only clippy
+./scripts/check.sh --only build
+
+# 指定编译目标
+./scripts/check.sh --targets aarch64-unknown-none-softfloat
+```
+
+## 10. CI/CD 与 GitHub Workflows
+
+所有 CI 工作流通过调用 axci 的共享工作流实现（push.yml 除外）。
+
+### check.yml — 代码检查
+
+触发条件：push 到任意分支（tag 除外）、PR、手动触发
+
+功能：格式检查 (rustfmt)、静态分析 (clippy)、编译检查、文档生成检查
+
+```yaml
+jobs:
+  check:
+    uses: arceos-hypervisor/axci/.github/workflows/check.yml@main
+```
+
+### test.yml — 集成测试
+
+触发条件：push 到任意分支（tag 除外）、PR、手动触发
+
+功能：运行单元测试、QEMU / 开发板集成测试
+
+### release.yml — 发布
+
+触发条件：push 版本 tag（`v*.*.*` 或 `v*.*.*-preview.*`）
+
+流程：check + test 通过后执行 verify-tag → GitHub Release → crates.io publish
+
+### deploy.yml — 文档部署
+
+触发条件：push 稳定版 tag（`v*.*.*`，不含 `-preview.*`）
+
+功能：生成 API 文档 (rustdoc) 并部署到 GitHub Pages
+
+### push.yml — 同步到父仓库
+
+触发条件：push 到 main 分支（此工作流为独立实现，直接复制自 axci，不使用 `uses:`）
+
+功能：从父仓库 `scripts/repo/repos.csv` 定位组件 subtree 路径，执行 `git subtree pull`，创建或更新 PR
+
+## 11. 什么时候需要看 `repo.md`
 
 并不是所有的组件开发工作都需要深入了解 subtree 的细节。下面这些场景暂时不需要进入 subtree 细节：
 
@@ -257,7 +445,7 @@ cargo xtask qemu \
 - 需要同步组件仓库和主仓库
 - 需要改 `scripts/repo/repos.csv`
 
-## 10. 推荐阅读顺序
+## 12. 推荐阅读顺序
 
 为了帮助开发者系统地掌握 TGOSKits 的组件开发和集成，建议按照以下顺序阅读相关文档：
 
