@@ -101,7 +101,7 @@ jobs:
         run: cargo xtask test qemu axvisor --target x86_64
 
   test_axvisor_uboot_board:
-    name: Test axvisor uboot ${{ matrix.board }}
+    name: Test axvisor ${{ matrix.board }}
     strategy:
       fail-fast: false
       matrix:
@@ -124,5 +124,5 @@ jobs:
           cache-bin: false
           save-if: ${{ github.event_name == 'push' }}
 
-      - name: Run axvisor uboot board tests
+      - name: Run axvisor board tests
         run: cargo xtask test uboot axvisor --board ${{ matrix.board }}
