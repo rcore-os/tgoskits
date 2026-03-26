@@ -362,6 +362,7 @@ class GitSubtreeManager:
 
         cmd = [
             'git', 'subtree', 'push',
+            '--quiet',
             '--prefix=' + target_dir,
             url,
             refspec
