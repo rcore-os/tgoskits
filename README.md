@@ -2,182 +2,104 @@
 
 [![Build & Test](https://github.com/rcore-os/tgoskits/actions/workflows/test.yml/badge.svg)](https://github.com/rcore-os/tgoskits/actions/workflows/test.yml)
 
-TGOSKits 是一个面向操作系统与虚拟化开发的集成仓库。它用 Git Subtree 管理 60+ 独立组件，并把 ArceOS、StarryOS、Axvisor 以及相关平台 crate 放在同一工作区中，方便做组件级开发、系统级联调和统一测试。
+TGOSKits 是一个面向操作系统与虚拟化开发的集成仓库。它使用 Git Subtree 管理 60 多个独立组件仓库，将 ArceOS、StarryOS、Axvisor 以及相关平台 crate 整合在同一工作区中，支持组件级开发、跨系统联调和统一测试。
 
-## 这个仓库适合谁
+## 1. 快速导航
 
-- 想先跑通 ArceOS、StarryOS 或 Axvisor 的新开发者
-- 想直接修改 `components/` 并验证其在多个系统中的影响的贡献者
-- 想在统一工作区里管理 Subtree、测试矩阵和系统集成的人
-
-## 从哪里开始
+仓库包含多个系统和数十个组件，不同开发目标对应不同的文档和命令入口。下面的表格帮助你根据当前任务快速定位到最合适的文档和最短可用命令。
 
 | 你的目标 | 建议先看 | 最短命令 |
 | --- | --- | --- |
-| 第一次把仓库跑起来 | [docs/quick-start.md](docs/quick-start.md) | `cargo xtask arceos run --package arceos-helloworld --arch riscv64` |
-| 理解命令入口、工作区和测试入口 | [docs/build-system.md](docs/build-system.md) | `cargo xtask test std` |
-| 基于组件开发三个系统 | [docs/components.md](docs/components.md) | 从 `components/` 或 `os/arceos/modules/` 开始定位 |
-| 按 crate 维度系统学习仓库 | [docs/crates/README.md](docs/crates/README.md) | 先看批次总览，再跳到具体 crate 文档 |
-| 开发 ArceOS 应用或模块 | [docs/arceos-guide.md](docs/arceos-guide.md) | `cargo xtask arceos run --package arceos-helloworld --arch riscv64` |
-| 深入理解 ArceOS 的分层、feature 装配与启动路径 | [docs/arceos-internals.md](docs/arceos-internals.md) | `cargo xtask arceos run --package arceos-helloworld --arch riscv64` |
-| 修改 StarryOS 内核或 rootfs 路径 | [docs/starryos-guide.md](docs/starryos-guide.md) | `cargo xtask starry rootfs --arch riscv64` |
-| 深入理解 StarryOS 的 syscall、进程与 rootfs 装载路径 | [docs/starryos-internals.md](docs/starryos-internals.md) | `cargo xtask starry run --arch riscv64 --package starryos` |
-| 运行或扩展 Axvisor | [docs/axvisor-guide.md](docs/axvisor-guide.md) | `cargo axvisor defconfig qemu-aarch64` |
-| 深入理解 Axvisor 的 VMM、vCPU 与配置体系 | [docs/axvisor-internals.md](docs/axvisor-internals.md) | `cd os/axvisor && ./scripts/setup_qemu.sh arceos` |
-| 管理组件来源和同步 | [docs/repo.md](docs/repo.md) | `python3 scripts/repo/repo.py list` |
+| 理解仓库组织和 Subtree 管理 | [docs/repo.md](docs/repo.md) | `python3 scripts/repo/repo.py list` |
+| 第一次跑起来 | [docs/quick-start.md](docs/quick-start.md) | `cargo xtask arceos run --package arceos-helloworld --arch riscv64` |
+| 理解命令入口和测试矩阵 | [docs/build-system.md](docs/build-system.md) | `cargo xtask test std` |
+| 基于组件开发 | [docs/components.md](docs/components.md) | 从 `components/` 或 `os/arceos/modules/` 开始 |
+| 按 crate 维度学习仓库 | [docs/crates/README.md](docs/crates/README.md) | 先看批次总览，再跳到具体 crate 文档 |
+| 开发 ArceOS | [docs/arceos-guide.md](docs/arceos-guide.md) | `cargo xtask arceos run --package arceos-helloworld --arch riscv64` |
+| 开发 StarryOS | [docs/starryos-guide.md](docs/starryos-guide.md) | `cargo xtask starry rootfs --arch riscv64` |
+| 运行 Axvisor | [docs/axvisor-guide.md](docs/axvisor-guide.md) | `cd os/axvisor && ./scripts/setup_qemu.sh arceos` |
 
-## 仓库结构
+## 2. 仓库结构
+
+仓库按职责将代码划分为顶层目录：`components/` 存放独立的可复用组件，`os/` 存放三个目标系统的源码，`platform/` 存放平台相关 crate，`docs/` 集中管理开发者文档。`scripts/repo/` 提供 subtree 管理工具。
 
 ```text
 tgoskits/
 ├── components/                # subtree 管理的独立组件 crate
 ├── os/
-│   ├── arceos/                # ArceOS: modules/api/ulib/examples
-│   ├── StarryOS/              # StarryOS: kernel/starryos/make
-│   └── axvisor/               # Axvisor: src/configs/local xtask
+│   ├── arceos/                # ArceOS: modules / api / ulib / examples
+│   ├── StarryOS/              # StarryOS: kernel / starryos / make
+│   └── axvisor/               # Axvisor: src / configs / local xtask
 ├── platform/                  # 平台相关 crate
 ├── test-suit/                 # ArceOS / StarryOS 系统测试
 ├── xtask/                     # 根目录 tg-xtask
 ├── scripts/
 │   └── repo/                  # subtree 管理脚本与 repos.csv
-└── docs/                      # 新开发者文档
+└── docs/                      # 开发者文档
 ```
 
-最容易误解的一点是：`components/` 并不是按 `Hypervisor/ArceOS/Starry` 再分子目录。大多数组件直接平铺在 `components/` 下，类别信息主要来自 `scripts/repo/repos.csv`、根 `Cargo.toml` 和各系统对它们的依赖关系。
+`components/` 下大多数组件直接平铺，类别信息来自 `scripts/repo/repos.csv` 和根 `Cargo.toml`。
 
-## 按 Crate 学习仓库
+## 3. 命令入口
 
-如果你已经不是“先跑起来”阶段，而是想系统理解这个仓库里每个 crate 的定位、边界和它们如何流到 ArceOS / StarryOS / Axvisor，那么最直接的入口是：
-
-- [docs/crates/README.md](docs/crates/README.md)
-
-这份总览和本 README、[docs/components.md](docs/components.md) 的关系可以这样理解：
-
-- 根 `README.md`：回答“仓库怎么跑、怎么进入三个系统”
-- [docs/components.md](docs/components.md)：回答“组件处在哪一层、通常被谁消费”
-- [docs/crates/README.md](docs/crates/README.md)：回答“具体某个 crate 做什么、依赖谁、该按什么顺序读”
-
-建议按下面三种方式使用它：
-
-| 你的目的 | 建议先看 `docs/crates/README.md` 的哪一部分 | 适合接着看什么 |
-| --- | --- | --- |
-| 已经知道 crate 名字，想直接查技术文档 | `文档索引` | 直接跳到对应 `docs/crates/<name>.md` |
-| 想按主线系统学习，而不是按目录乱看 | `手工精修批次` 与 `批次与三大系统子系统对照` | 再沿 `按批次推荐阅读与快速跳转` 顺序读 |
-| 想补某条能力链，比如平台、驱动、文件系统、虚拟化 | `按批次推荐阅读与快速跳转` | 再结合 [docs/components.md](docs/components.md) 看它落在哪一层 |
-
-如果你不知道第一篇该看哪一篇，可以直接从下面几条阅读路径起步：
-
-- 想理解 ArceOS 主干：先看 `axhal`、`axtask`、`axruntime`、`axmm`
-- 想理解平台与板级 bring-up：先看 `axplat`、`axplat-macros`、对应 `axplat-*` 平台包
-- 想理解 Axvisor：先看 `axvm`、`axvcpu`、`axaddrspace`、`axvisor_api`、`axvisor`
-- 想理解 StarryOS：先看 `starry-kernel`、`starry-process`、`starry-signal`、`starry-vm`
-
-这样读的好处是：先建立统一术语，再回到具体源码时，不容易把“平台包、模块层、叶子基础件、样例程序、测试桩”混在一起。
-
-## 理解工作区关系
-
-- 根 `Cargo.toml` 把常用组件、ArceOS 模块与示例、StarryOS 包、Axvisor、`platform/` 和 `xtask/` 放进一个统一 workspace。
-- `os/arceos` 和 `os/StarryOS` 自己仍保留独立 workspace；根工作区通过 `members`、`exclude` 和 `[patch.crates-io]` 把需要的 crate 接进来。
-- 一些目录本身是嵌套 workspace，比如 `components/axplat_crates`、`components/axdriver_crates`。这些目录通常不会直接作为根 workspace 成员加入，而是通过 patch 指向其中的具体 crate。
-
-这意味着：
-
-- 在仓库根目录开发，适合做跨系统联调和统一测试。
-- 在 `os/arceos/`、`os/StarryOS/` 或 `os/axvisor/` 子目录开发，适合聚焦某一个系统的本地构建入口。
-
-## 命令入口
+仓库提供了统一的 `cargo xtask` 命令来管理 ArceOS、StarryOS 的构建和测试，Axvisor 则使用自带的 xtask 并通过根目录别名调用。各子系统也保留了传统的 `make` 入口。
 
 | 位置 | 命令 | 说明 |
 | --- | --- | --- |
-| 仓库根目录 | `cargo xtask ...` | 根 `tg-xtask`，负责 ArceOS、StarryOS 和统一测试 |
-| 仓库根目录 | `cargo arceos ...` | `cargo xtask arceos ...` 的别名 |
-| 仓库根目录 | `cargo starry ...` | `cargo xtask starry ...` 的别名 |
-| 仓库根目录 | `cargo axvisor ...` | 调用 `os/axvisor` 自带 xtask 的别名 |
-| `os/arceos/` | `make ...` | ArceOS 的传统构建入口 |
-| `os/StarryOS/` | `make ...` | StarryOS 的传统构建入口 |
-| `os/axvisor/` | `cargo xtask ...` | Axvisor 本地 xtask，等价于根目录 `cargo axvisor ...` |
+| 仓库根目录 | `cargo xtask ...` | 统一入口：ArceOS、StarryOS、统一测试 |
+| 仓库根目录 | `cargo arceos ...` / `cargo starry ...` | xtask 别名 |
+| 仓库根目录 | `cargo axvisor ...` | 调用 `os/axvisor` 自带 xtask |
+| `os/arceos/` / `os/StarryOS/` | `make ...` | 传统构建入口 |
 
-需要特别注意：
+根 `Cargo.toml` 通过 `members`、`exclude` 和 `[patch.crates-io]` 管理统一 workspace；`os/arceos` 和 `os/StarryOS` 保留独立 workspace。在仓库根目录开发适合跨系统联调，在子目录开发适合聚焦单一系统。更多细节见 [docs/build-system.md](docs/build-system.md)。
 
-- 根目录的 `cargo xtask` 目前只有 `test`、`arceos`、`starry` 三类子命令。
-- Axvisor 的构建与运行命令由 `os/axvisor` 自己的 xtask 提供，所以要么在根目录执行 `cargo axvisor ...`，要么进入 `os/axvisor/` 执行 `cargo xtask ...`。
+## 4. 快速体验
 
-## 5 分钟体验
+以下命令提供了三个系统的最小运行路径，帮助你快速验证环境是否就绪。ArceOS 可直接运行，StarryOS 需要先准备 rootfs，Axvisor 需要先使用 setup 脚本准备 Guest 镜像和配置。
 
 ```bash
 git clone https://github.com/rcore-os/tgoskits.git
 cd tgoskits
 
-# ArceOS: 最快的 Hello World 路径
-cargo xtask arceos run --package arceos-helloworld --arch riscv64
-
-# StarryOS: 首次运行前先准备 rootfs
-cargo xtask starry rootfs --arch riscv64
-cargo xtask starry run --arch riscv64 --package starryos
-
-# Axvisor: 推荐使用官方 setup 脚本准备 Guest 和 rootfs
-cd os/axvisor
-./scripts/setup_qemu.sh arceos
-cargo xtask qemu \
-  --build-config configs/board/qemu-aarch64.toml \
-  --qemu-config .github/workflows/qemu-aarch64.toml \
-  --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
-```
-
-Axvisor 不能只靠 `defconfig/build/qemu` 三条命令直接跑起来，因为默认 QEMU 配置会引用 `tmp/rootfs.img`。推荐先用 `os/axvisor/scripts/setup_qemu.sh` 自动准备 Guest 镜像、VM 配置和 rootfs，再运行 QEMU。完整说明见 [docs/axvisor-guide.md](docs/axvisor-guide.md)。
-
-## 基于组件开发的最短闭环
-
-1. 在 `components/`、`os/arceos/modules/`、`os/StarryOS/kernel/` 或 `os/axvisor/src/` 里找到你要修改的入口。
-2. 先跑最小消费者，而不是一上来跑全量测试。
-3. 改动稳定后，再补系统测试和 host 测试。
-
-常用验证命令如下：
-
-```bash
-# host / std crate
-cargo xtask test std
-
 # ArceOS
 cargo xtask arceos run --package arceos-helloworld --arch riscv64
-cargo xtask test arceos --target riscv64gc-unknown-none-elf
 
-# StarryOS
+# StarryOS（首次运行前先准备 rootfs）
 cargo xtask starry rootfs --arch riscv64
 cargo xtask starry run --arch riscv64 --package starryos
-cargo xtask test starry --target riscv64gc-unknown-none-elf
 
-# Axvisor
+# Axvisor（需先准备 Guest 和 rootfs）
 cd os/axvisor
 ./scripts/setup_qemu.sh arceos
 cargo xtask qemu \
   --build-config configs/board/qemu-aarch64.toml \
   --qemu-config .github/workflows/qemu-aarch64.toml \
   --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
-
-# Axvisor 统一测试
-cargo xtask test axvisor --target aarch64-unknown-none-softfloat
 ```
 
-## Subtree 与组件来源
+修改组件后的验证策略见 [docs/components.md](docs/components.md)。
 
-- 组件来源、类别和落地路径记录在 [scripts/repo/repos.csv](scripts/repo/repos.csv)。
-- Subtree 的添加、拉取、推送和 CI 同步策略见 [docs/repo.md](docs/repo.md)。
-- 新开发者如果只是“改组件并验证系统”，可以先读 [docs/components.md](docs/components.md)，不必先掌握全部 Subtree 细节。
+## 5. 分支管理
 
-## 进一步阅读
+仓库采用 `main` / `dev` / 功能分支三层策略。`main` 作为稳定基线定期发布，`dev` 作为集成分支汇聚所有开发和 CI 验证，开发者基于 `dev` 创建功能分支并通过 PR 合入（禁止直发 `main`）。
 
-- [docs/quick-start.md](docs/quick-start.md): 第一天先把三个系统跑起来
-- [docs/build-system.md](docs/build-system.md): 理解命令入口、workspace 和测试入口
-- [docs/components.md](docs/components.md): 理解组件如何接入 ArceOS、StarryOS、Axvisor
-- [docs/crates/README.md](docs/crates/README.md): 按 crate 维度查看索引、批次、推荐阅读顺序和快速跳转
-- [docs/arceos-guide.md](docs/arceos-guide.md): ArceOS 的模块、API、平台与示例
-- [docs/arceos-internals.md](docs/arceos-internals.md): ArceOS 的分层、feature 装配、启动流程与内部机制
-- [docs/starryos-guide.md](docs/starryos-guide.md): StarryOS 的内核、rootfs 与 syscall 开发
-- [docs/starryos-internals.md](docs/starryos-internals.md): StarryOS 的叠层架构、syscall 分发、进程与地址空间机制
-- [docs/axvisor-guide.md](docs/axvisor-guide.md): Axvisor 的组件、板级配置与 VM 配置
-- [docs/axvisor-internals.md](docs/axvisor-internals.md): Axvisor 的五层架构、VMM 启动链与 `axvisor_api` 机制
+| 分支 | 职责 | 规则 |
+| --- | --- | --- |
+| `main` | 稳定发布分支，每周从 `dev` 合并 | 禁止直接 push |
+| `dev` | 集成分支，汇聚开发功能，执行 CI | 通过 PR 合并，push 触发自动同步 |
+| 功能分支 | 开发者个人开发 | 完成后向 `dev` 提交 PR（禁止直发 `main`） |
 
-## 许可证
+```text
+feature/* ──PR──► dev ──push.yml──► 组件仓库 dev
+                   │
+                定期合并
+                   │
+                   ▼
+           main ◄──PR── 组件仓库 main
+```
 
-仓库整体采用 `Apache-2.0`，各组件可能带有自己的许可证文件，具体以各组件目录为准。
+详见 [docs/repo.md](docs/repo.md#9-分支管理)。
+
+## 6. 许可证
+
+仓库整体采用 `Apache-2.0` 许可证。各组件可能带有自己的 LICENSE 文件，具体以各组件目录下的为准。
