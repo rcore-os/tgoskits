@@ -84,10 +84,16 @@ pub fn sys_sysinfo(info: *mut sysinfo) -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_syslog(_type: i32, _buf: *mut c_char, _len: usize) -> AxResult<isize> {
-    Ok(0)
+pub fn sys_syslog(type_: i32, _buf: *mut c_char, _len: usize) -> AxResult<isize> {
+    info!("sys_syslog called! type: {}, len: {}", type_, _len);
+    match type_ {
+        2 | 3 | 4 => Ok(0),
+        5 | 6 | 7 | 8 => Ok(0),
+        9 => Ok(0),
+        10 => Ok(4096),
+        _ => Ok(0),
+    }
 }
-
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct GetRandomFlags: u32 {
