@@ -17,7 +17,8 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "arceos:$"
+shell_prefix = "arceos:"
 shell_init_cmd = "pwd && echo 'FS shell tests passed!'"
 success_regex = ["FS shell tests passed!"]
 fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+timeout = 3

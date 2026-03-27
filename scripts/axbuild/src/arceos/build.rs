@@ -307,9 +307,28 @@ pub fn load_build_info(request: &ResolvedBuildRequest) -> anyhow::Result<ArceosB
 }
 
 pub fn load_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Result<Cargo> {
-    let mut cargo = load_build_info(request)?.into_cargo_config(request)?;
+    let mut build_info = load_build_info(request)?;
+    inject_package_build_info(request, &mut build_info);
+    let mut cargo = build_info.into_cargo_config(request)?;
+    inject_package_target_features(request, &mut cargo);
     inject_package_pre_build_cmds(request, &mut cargo)?;
     Ok(cargo)
+}
+
+fn inject_package_build_info(request: &ResolvedBuildRequest, build_info: &mut ArceosBuildInfo) {
+    if request.package == "arceos-net-httpclient" {
+        build_info.max_cpu_num = Some(build_info.max_cpu_num.unwrap_or(4).max(4));
+    }
+}
+
+fn inject_package_target_features(request: &ResolvedBuildRequest, cargo: &mut Cargo) {
+    if (request.package == "arceos-fs-shell" || request.package == "arceos-net-httpclient")
+        && (request.target.starts_with("riscv64") || request.target.starts_with("aarch64"))
+    {
+        cargo.features.push("axstd/bus-mmio".to_string());
+        cargo.features.sort();
+        cargo.features.dedup();
+    }
 }
 
 fn inject_package_pre_build_cmds(
@@ -1014,6 +1033,40 @@ AX_IP = "127.0.0.1"
 
         assert_eq!(cargo.env.get("SMP"), Some(&"1".to_string()));
         assert!(!cargo.features.contains(&"axstd/smp".to_string()));
+    }
+
+    #[test]
+    fn load_cargo_config_injects_httpclient_smp_and_mmio_overrides() {
+        let root = tempdir().unwrap();
+        let request = request(
+            "arceos-net-httpclient",
+            "riscv64gc-unknown-none-elf",
+            None,
+            root.path().join(".build-riscv64gc-unknown-none-elf.toml"),
+        );
+
+        let cargo = load_cargo_config(&request).unwrap();
+
+        assert_eq!(cargo.env.get("SMP"), Some(&"4".to_string()));
+        assert!(cargo.features.contains(&"axstd/smp".to_string()));
+        assert!(cargo.features.contains(&"axstd/bus-mmio".to_string()));
+    }
+
+    #[test]
+    fn load_cargo_config_injects_fs_shell_mmio_and_pre_build_hook() {
+        let root = tempdir().unwrap();
+        let request = request(
+            "arceos-fs-shell",
+            "riscv64gc-unknown-none-elf",
+            None,
+            root.path().join(".build-riscv64gc-unknown-none-elf.toml"),
+        );
+
+        let cargo = load_cargo_config(&request).unwrap();
+
+        assert!(cargo.features.contains(&"axstd/bus-mmio".to_string()));
+        assert_eq!(cargo.pre_build_cmds.len(), 1);
+        assert!(cargo.pre_build_cmds[0].contains("prepare_disk_img.sh"));
     }
 
     #[test]
