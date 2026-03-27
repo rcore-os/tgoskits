@@ -37,7 +37,10 @@ class Repo:
     @property
     def repo_name(self) -> str:
         """Extract repo name from URL."""
-        return self.url.rstrip('/').split('/')[-1]
+        name = self.url.rstrip('/').split('/')[-1]
+        if name.endswith('.git'):
+            name = name[:-4]
+        return name
 
 
 class CSVManager:
@@ -233,7 +236,10 @@ class GitSubtreeManager:
     @staticmethod
     def get_repo_name(url: str) -> str:
         """Extract repo name from URL."""
-        return url.rstrip('/').split('/')[-1]
+        name = url.rstrip('/').split('/')[-1]
+        if name.endswith('.git'):
+            name = name[:-4]
+        return name
 
     @staticmethod
     def check_working_tree_clean() -> bool:
