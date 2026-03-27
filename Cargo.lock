@@ -626,7 +626,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "indicatif",
- "jkconfig",
+ "jkconfig 0.1.8 (registry+https://github.com/rust-lang/crates.io-index)",
  "log",
  "object",
  "ostool",
@@ -1706,7 +1706,7 @@ dependencies = [
  "bitflags 2.11.0",
  "cexpr",
  "clang-sys",
- "itertools 0.13.0",
+ "itertools 0.10.5",
  "log",
  "prettyplease",
  "proc-macro2",
@@ -3167,8 +3167,6 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 [[package]]
 name = "fitimage"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e99ae4a85d0135904ef62da3dfb2b4cc90846622a7b8dd5c7a0cd5fea79b10cf"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -4048,6 +4046,27 @@ dependencies = [
 [[package]]
 name = "jkconfig"
 version = "0.1.8"
+dependencies = [
+ "anyhow",
+ "axum",
+ "cargo_metadata",
+ "chrono",
+ "clap",
+ "cursive",
+ "log",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "tower",
+ "tower-http",
+]
+
+[[package]]
+name = "jkconfig"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "84a1e4236dc4855186772d3fefc7aec6f5aa289ac2f20a9ea4b9ec4a03d36d79"
 dependencies = [
@@ -4747,8 +4766,6 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 [[package]]
 name = "ostool"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "def1656fce7e8764b519ca59c1c32f011fced24c82a84fbb14aa1015760341d3"
 dependencies = [
  "anyhow",
  "byte-unit",
@@ -4762,7 +4779,7 @@ dependencies = [
  "fitimage",
  "futures",
  "indicatif",
- "jkconfig",
+ "jkconfig 0.1.8",
  "log",
  "lzma-rs",
  "network-interface",
@@ -7518,8 +7535,6 @@ dependencies = [
 [[package]]
 name = "uboot-shell"
 version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6f5fe43e54f4e6cf96cd577556bd0cd1726b135a2563e19ca3ed8f98fa163b5"
 dependencies = [
  "colored",
  "log",
@@ -8721,10 +8736,6 @@ name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
-
-[[patch.unused]]
-name = "ostool"
-version = "0.10.1"
 
 [[patch.unused]]
 name = "crate_interface_lite"

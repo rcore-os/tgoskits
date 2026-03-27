@@ -257,6 +257,10 @@ pub async fn run_axvisor_uboot_tests(args: ArgsAxvisorUboot) -> anyhow::Result<(
     let board = axvisor_uboot_board_config(&args.board)?;
     let mut app = AppContext::new()?;
     let explicit_uboot_config = args.uboot_config.clone();
+    let uboot_config_summary = explicit_uboot_config
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "using ostool default search".to_string());
 
     if let Some(path) = explicit_uboot_config.as_ref()
         && !path.exists()
@@ -288,7 +292,13 @@ pub async fn run_axvisor_uboot_tests(args: ArgsAxvisorUboot) -> anyhow::Result<(
     let cargo = axvisor::build::load_cargo_config(&request)?;
     app.uboot(cargo, request.build_info_path, request.uboot_config)
         .await
-        .with_context(|| format!("axvisor uboot test failed for board `{}`", board.board))
+        .with_context(|| {
+            format!(
+                "axvisor uboot test failed for board `{}` (build_config={}, vmconfig={}, \
+                 uboot_config={})",
+                board.board, board.build_config, board.vmconfig, uboot_config_summary
+            )
+        })
 }
 
 fn validate_arceos_target(target: &str) -> anyhow::Result<&str> {
