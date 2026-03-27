@@ -1,30 +1,28 @@
-# 快速上手
+# TGOSKits 快速上手指南
 
-本文档帮助开发者快速上手 TGOSKits 工作区，介绍 ArceOS、StarryOS 和 Axvisor 三个系统的基本运行路径及关键命令，并提供后续深入阅读的文档指引。本文档聚焦最常见的成功路径，不涵盖所有细节。
+本文档帮助你第一次进入 TGOSKits 工作区时，快速跑通 ArceOS、StarryOS 和 Axvisor 的主路径，并避免被已经过时的命令说明带偏。
 
-## 1. 命令入口
+## 1. 命令入口概览
 
-TGOSKits 工作区提供统一的命令入口管理 ArceOS、StarryOS 和 Axvisor 三个系统。ArceOS 和 StarryOS 主要从仓库根目录通过 `cargo xtask` 启动，而 Axvisor 既可在根目录通过 `cargo axvisor` 别名操作，也可进入 `os/axvisor/` 目录使用其独立的 `cargo xtask` 命令。
-
-### 1.1 命令一览表
+TGOSKits 当前统一使用仓库根目录入口：
 
 | 位置 | 命令 | 用途 |
 | --- | --- | --- |
-| 仓库根目录 | `cargo xtask ...` | 统一入口，负责 ArceOS、StarryOS 和测试 |
+| 仓库根目录 | `cargo xtask ...` | 统一入口，负责 ArceOS、StarryOS、Axvisor 和测试 |
 | 仓库根目录 | `cargo arceos ...` | `cargo xtask arceos ...` 的别名 |
 | 仓库根目录 | `cargo starry ...` | `cargo xtask starry ...` 的别名 |
-| 仓库根目录 | `cargo axvisor ...` | 调用 `os/axvisor` 本地 xtask 的别名 |
-| `os/axvisor/` | `cargo xtask ...` | Axvisor 自己的构建与运行入口 |
+| 仓库根目录 | `cargo axvisor ...` | `cargo xtask axvisor ...` 的别名 |
+| `os/arceos/` | `make ...` | ArceOS 本地入口，适合调 Makefile/feature/QEMU 细节 |
+| `os/StarryOS/` | `make ...` | StarryOS 本地入口，适合调 rootfs 和本地启动流程 |
+| `os/axvisor/scripts/*.sh` | Shell 辅助脚本 | 准备 Axvisor Guest 镜像、rootfs 和 VM 配置 |
 
-若仅需记住一条规则：ArceOS 和 StarryOS 从仓库根目录启动；Axvisor 的构建和运行既可使用根目录 `cargo axvisor ...`，也可进入 `os/axvisor/` 执行 `cargo xtask ...`。
+记住一条规则就够了：三组命令都优先从仓库根目录启动。`os/axvisor/xtask` 在这个 workspace 里当前只是占位实现，不应再把它当成 Axvisor 的主入口。
 
-## 2. 环境配置
+## 2. 环境准备
 
-在构建和运行 TGOSKits 中的系统之前，需准备编译工具、Rust 工具链及 QEMU 仿真环境。建议预留至少 10GB 磁盘空间，用于首次下载 rootfs 或 Guest 镜像。
+建议预留至少 10GB 磁盘空间，因为 StarryOS rootfs 和 Axvisor Guest 镜像会额外占用空间。
 
 ### 2.1 基础工具
-
-以下为 Ubuntu/Debian 系统上的最小安装示例：
 
 ```bash
 sudo apt update
@@ -36,10 +34,6 @@ sudo apt install -y \
 
 ### 2.2 Rust 工具链
 
-TGOSKits 需要 Rust nightly 工具链，并支持多个目标平台的交叉编译。
-
-安装 Rust 工具链并配置编译目标：
-
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
@@ -50,7 +44,7 @@ rustup target add x86_64-unknown-none
 rustup target add loongarch64-unknown-none-softfloat
 ```
 
-安装辅助工具：
+常用辅助工具：
 
 ```bash
 cargo install cargo-binutils
@@ -59,174 +53,157 @@ cargo install ostool
 
 ### 2.3 可选：Musl 交叉工具链
 
-若需为 StarryOS rootfs 或某些用户态程序编译静态二进制文件，需额外准备 Musl 交叉工具链。仅首次运行 ArceOS 示例时无需安装此工具链。
+如果你要为 StarryOS rootfs 里的用户态程序构建静态二进制文件，通常还需要 Musl 交叉工具链。首次跑通 ArceOS 不需要它。
 
-### 2.4 WSL2 环境说明
+### 2.4 WSL2 提示
 
-在 WSL2 环境下可正常使用 QEMU 进行纯软件仿真；通常不支持 KVM 或宿主机硬件虚拟化加速；遇到性能问题时，建议减少并行任务并避免依赖硬件加速选项。
+WSL2 下可以跑纯软件 QEMU，但通常不要指望 KVM 或宿主机硬件虚拟化加速可用。
 
-## 3. 获取源码
-
-使用 Git 克隆 TGOSKits 仓库到本地工作目录：
+## 3. 克隆仓库
 
 ```bash
 git clone https://github.com/rcore-os/tgoskits.git
 cd tgoskits
 ```
 
-## 4. 运行 ArceOS
+## 4. ArceOS 快速上手
 
-ArceOS 是一个模块化的 Unikernel 操作系统，适合作为首个运行的示例。通过运行 helloworld 示例可验证工具链和 QEMU 环境是否正确配置。
+ArceOS 当前根 CLI 的真实子命令是 `build`、`qemu`、`uboot`。常用参数只有 `--package`、`--target`、`--config` 和 `--plat_dyn`。
 
 ### 4.1 最小示例
 
-首先运行 helloworld 示例，确认工具链和 QEMU 可用：
-
 ```bash
-cargo xtask arceos run --package arceos-helloworld --arch riscv64
+cargo arceos qemu --package arceos-helloworld --target riscv64gc-unknown-none-elf
 ```
 
-### 4.2 功能示例
-
-基本示例成功后，可尝试以下更具代表性的示例：
+### 4.2 只构建 / U-Boot 路径
 
 ```bash
-# 网络示例
-cargo xtask arceos run --package arceos-httpserver --arch riscv64 --net
-
-# 文件系统示例
-cargo xtask arceos run --package arceos-shell --arch riscv64 --blk
+cargo arceos build --package arceos-helloworld --target riscv64gc-unknown-none-elf
+cargo arceos uboot --package arceos-helloworld --target aarch64-unknown-none-softfloat
 ```
 
-### 4.3 架构选择
+### 4.3 关于高级功能开关
 
-首次运行建议使用 `riscv64` 架构，其支持最为完善。熟悉基本流程后，可切换至 `x86_64`、`aarch64` 或 `loongarch64`。
+根 CLI 不再直接暴露 `--net`、`--blk`、`--features`、`--platform`、`--smp` 这类旧参数。  
+如果你要调网络、块设备、平台或 SMP，请改应用目录下的 `.build-<target>.toml` / `build-<target>.toml`，或者使用 `os/arceos/Makefile` 本地入口。
 
-## 5. 运行 StarryOS
+## 5. StarryOS 快速上手
 
-StarryOS 是一个兼容 Linux 的操作系统内核，基于 ArceOS 构建。与 ArceOS 不同，StarryOS 在运行前需先准备 rootfs 镜像。
+StarryOS 当前根 CLI 的真实子命令是 `build`、`qemu`、`rootfs`、`uboot`。包名固定为 `starryos`，CLI 不需要也不接受 `--package`。
 
-### 5.1 准备 rootfs
+### 5.1 预热 rootfs
 
-首次运行 StarryOS 前必须准备 rootfs 镜像。此步骤会将镜像下载并准备到目标产物目录中：
+`rootfs` 会把镜像准备到工作区 target 目录下，并生成对应目标的 `disk.img`：
 
 ```bash
 cargo xtask starry rootfs --arch riscv64
 ```
 
+这一步适合首次预热或单独检查镜像，但不是每次运行前都必须手工执行，因为 `qemu` 会在需要时自动补齐 rootfs。
+
 ### 5.2 运行 StarryOS
 
-准备完 rootfs 后即可运行 StarryOS：
-
 ```bash
-cargo xtask starry run --arch riscv64 --package starryos
+cargo starry qemu --arch riscv64
 ```
-
-若使用 `os/StarryOS/Makefile` 路径，镜像位于 `os/StarryOS/make/disk.img`。
 
 ### 5.3 其他架构
 
-熟悉基本流程后，也可尝试其他架构：
-
 ```bash
-cargo xtask starry run --arch loongarch64 --package starryos
+cargo starry qemu --arch loongarch64
 ```
 
-## 6. 运行 Axvisor
+如果你走 `os/StarryOS/Makefile` 路径，使用的则是 `os/StarryOS/make/disk.img`。
 
-Axvisor 是一个 Type-1 Hypervisor，与前两个系统的区别在于：它并非单独运行一个内核，而是需要先准备 Guest 镜像，并通过板级配置引用对应的 VM 配置。推荐使用 QEMU AArch64 路径，当前仓库的预置配置和 CI 入口均围绕此路径。
+## 6. Axvisor 快速上手
 
-### 6.1 环境准备
+Axvisor 当前根 CLI 的真实子命令是 `build`、`qemu`、`uboot`、`defconfig`、`config`、`image`。推荐先走 QEMU AArch64 路径。
 
-推荐使用 Axvisor 自带的 `setup_qemu.sh` 脚本，而非手动组合 `defconfig/build/qemu` 命令。该脚本会自动完成以下操作：
+### 6.1 先生成板级配置并准备 Guest 资源
+
+最稳妥的流程不是手工拼参数，而是先生成板级配置，再调用官方脚本准备镜像、VM 配置和 rootfs：
+
+```bash
+cargo axvisor defconfig qemu-aarch64
+(cd os/axvisor && ./scripts/setup_qemu.sh arceos)
+```
+
+`setup_qemu.sh` 会自动完成三件事：
 
 1. 下载并解压 Guest 镜像到 `/tmp/.axvisor-images/`
-2. 生成 VM 配置文件 `tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml`
+2. 生成 `os/axvisor/tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml`
 3. 复制 `rootfs.img` 到 `os/axvisor/tmp/rootfs.img`
 
-```bash
-cd os/axvisor
-./scripts/setup_qemu.sh arceos
-```
-
-### 6.2 运行 QEMU
-
-成功执行 `setup_qemu.sh` 后，使用以下命令启动 Axvisor 并运行 ArceOS Guest。注意：`tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml` 必须先通过 `setup_qemu.sh` 生成。
+### 6.2 启动 Axvisor
 
 ```bash
-cd os/axvisor
-cargo xtask qemu \
-  --build-config configs/board/qemu-aarch64.toml \
+cargo axvisor qemu \
+  --config os/axvisor/.build.toml \
   --qemu-config .github/workflows/qemu-aarch64.toml \
-  --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
+  --vmconfigs os/axvisor/tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
 ```
 
 如果启动成功，ArceOS Guest 会输出 `Hello, world!`。
 
-### 6.3 常见问题：defconfig/build/qemu 失败
+### 6.3 常见失败原因
 
-若使用 `cargo axvisor defconfig`、`cargo axvisor build` 或 `cargo axvisor qemu` 时遇到失败，通常是因为默认 QEMU 配置模板会引用 `os/axvisor/tmp/rootfs.img` 文件。该文件不会通过 `cargo axvisor defconfig` 或 `cargo axvisor build` 自动生成，需手动准备或通过 `./scripts/setup_qemu.sh arceos` 创建。
+如果 `cargo axvisor qemu` 失败，优先检查：
 
-### 6.4 自动化测试
+1. `os/axvisor/.build.toml` 是否已经由 `cargo axvisor defconfig qemu-aarch64` 生成
+2. `os/axvisor/tmp/rootfs.img` 是否已经由 `setup_qemu.sh` 准备好
+3. `os/axvisor/tmp/vmconfigs/*.generated.toml` 是否存在，且里面的 `kernel_path` 指向真实镜像
 
-除手动运行 QEMU 外，根工作区还提供统一的测试入口。该命令使用独立的测试逻辑，会自动下载所需镜像，无需手动准备 `os/axvisor/tmp/rootfs.img`：
+### 6.4 统一测试命令
 
 ```bash
 cargo xtask test qemu axvisor --target aarch64
 ```
 
-## 7. 开发验证
+这条命令属于根工作区测试矩阵，会走自己的测试逻辑。
 
-首次修改代码时，不建议直接运行全量测试。应优先选择距改动最近的消费者进行验证，确认基本功能正常后再考虑运行统一测试。
+## 7. 开发闭环建议
 
-### 7.1 按改动位置选择验证路径
+不要一上来跑全量测试。先选离你改动最近的消费者做验证。
 
 | 改动位置 | 先做什么 | 再做什么 |
 | --- | --- | --- |
 | `components/axerrno`、`components/kspin`、`components/percpu` 这类基础 crate | `cargo test -p <crate>` | 再跑一个最小 ArceOS 或 StarryOS 路径 |
-| `os/arceos/modules/*` 或 `os/arceos/api/*` | `cargo xtask arceos run --package arceos-helloworld --arch riscv64` | 再补 `cargo xtask test arceos --target riscv64gc-unknown-none-elf` |
-| `components/starry-*` 或 `os/StarryOS/kernel/*` | `cargo xtask starry rootfs --arch riscv64` | 再跑 `cargo xtask starry run --arch riscv64 --package starryos` |
-| `components/axvm`、`components/axvcpu`、`components/axdevice`、`os/axvisor/src/*` | `cd os/axvisor && cargo xtask build` | 需要 Guest 时先运行 `./scripts/setup_qemu.sh arceos`，再执行 `cargo xtask qemu --build-config ... --qemu-config ... --vmconfigs ...` |
+| `os/arceos/modules/*` 或 `os/arceos/api/*` | `cargo arceos qemu --package arceos-helloworld --target riscv64gc-unknown-none-elf` | 再补 `cargo xtask test qemu arceos --target riscv64gc-unknown-none-elf` |
+| `components/starry-*` 或 `os/StarryOS/kernel/*` | `cargo starry qemu --arch riscv64` | 再补 `cargo xtask test qemu starry --target riscv64` |
+| `components/axvm`、`components/axvcpu`、`components/axdevice`、`os/axvisor/src/*` | `cargo axvisor build --config os/axvisor/.build.toml` | 需要 Guest 时先运行 `(cd os/axvisor && ./scripts/setup_qemu.sh arceos)`，再执行 `cargo axvisor qemu --config ... --qemu-config ... --vmconfigs ...` |
 
-### 7.2 提交前验证
-
-提交代码前，建议运行统一测试以确保改动未影响其他部分：
+### 7.1 提交前的统一测试
 
 ```bash
 cargo xtask test std
-cargo xtask test arceos --target riscv64gc-unknown-none-elf
-cargo xtask test starry --target riscv64gc-unknown-none-elf
+cargo xtask test qemu arceos --target riscv64gc-unknown-none-elf
+cargo xtask test qemu starry --target riscv64
 cargo xtask test qemu axvisor --target aarch64
 ```
 
-## 8. 进阶学习
+## 8. 后续学习路径
 
-完成快速上手后，应根据接下来的工作重点选择相应的深入文档。以下针对不同学习目标推荐阅读文档：
-
-| 你已经跑通了什么 | 下一篇建议文档 |
+| 你想继续看什么 | 下一篇建议文档 |
 | --- | --- |
-| 只想继续做 ArceOS 示例、模块或平台 | [arceos-guide.md](arceos-guide.md) |
-| 想系统理解 ArceOS 的分层、feature 装配和启动路径 | [arceos-internals.md](arceos-internals.md) |
-| 想改 StarryOS 内核、rootfs 或 syscall | [starryos-guide.md](starryos-guide.md) |
-| 想系统理解 StarryOS 的 syscall、进程和 rootfs 装载链路 | [starryos-internals.md](starryos-internals.md) |
-| 想搞清楚 Axvisor 的板级配置、VM 配置和虚拟化组件 | [axvisor-guide.md](axvisor-guide.md) |
-| 想系统理解 Axvisor 的 VMM、vCPU 与配置生效路径 | [axvisor-internals.md](axvisor-internals.md) |
-| 想从“组件”视角理解三个系统的关系 | [components.md](components.md) |
-| 想理解工作区、xtask、Makefile 和测试矩阵 | [build-system.md](build-system.md) |
+| 继续做 ArceOS 示例、模块或平台 | [arceos-guide.md](arceos-guide.md) |
+| 理解 ArceOS 的分层、feature 装配和启动路径 | [arceos-internals.md](arceos-internals.md) |
+| 修改 StarryOS 内核、rootfs 或 syscall | [starryos-guide.md](starryos-guide.md) |
+| 理解 StarryOS 的 syscall、进程和 rootfs 装载链路 | [starryos-internals.md](starryos-internals.md) |
+| 搞清楚 Axvisor 的板级配置、VM 配置和虚拟化组件 | [axvisor-guide.md](axvisor-guide.md) |
+| 理解 Axvisor 的 VMM、vCPU 与配置生效路径 | [axvisor-internals.md](axvisor-internals.md) |
+| 从组件视角理解三个系统的关系 | [components.md](components.md) |
+| 理解工作区、xtask、Makefile 和测试矩阵 | [build-system.md](build-system.md) |
 
 ## 9. 常见问题
 
-本节收集新手最常遇到的问题及其解决方案。
-
 ### 9.1 `rust-lld` 或目标工具链缺失
-
-若遇到链接器错误或目标工具链缺失的问题，首先确认 Rust 目标已安装：
 
 ```bash
 rustup target list --installed
 ```
 
-若缺少对应目标，重新执行以下命令安装：
+如果缺少目标，重新执行：
 
 ```bash
 rustup target add riscv64gc-unknown-none-elf
@@ -237,21 +214,21 @@ rustup target add loongarch64-unknown-none-softfloat
 
 ### 9.2 StarryOS 提示找不到 rootfs
 
-这是 StarryOS 最常见的问题。先执行 rootfs 准备命令：
+先执行：
 
 ```bash
 cargo xtask starry rootfs --arch riscv64
 ```
 
-然后确认对应目标产物目录下的 `disk.img` 已生成。仅在本地 Makefile 路径下，才需检查 `os/StarryOS/make/disk.img`。
+然后确认目标产物目录下的 `disk.img` 是否已生成。只有本地 Makefile 路径才检查 `os/StarryOS/make/disk.img`。
 
-### 9.3 Axvisor 无法启动 Guest
+### 9.3 Axvisor 启动不了 Guest
 
-优先检查以下两项：
+优先检查：
 
-1. `os/axvisor/tmp/rootfs.img` 是否已由 `./scripts/setup_qemu.sh arceos` 创建
-2. `tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml` 是否已生成，且其中 `kernel_path` 指向真实存在的镜像文件
+1. `os/axvisor/tmp/rootfs.img` 是否已经由 `(cd os/axvisor && ./scripts/setup_qemu.sh arceos)` 准备好
+2. `os/axvisor/tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml` 是否已经生成
 
-### 9.4 WSL2 下运行缓慢
+### 9.4 在 WSL2 下速度很慢
 
-WSL2 下运行缓慢通常由纯软件仿真导致，并非仓库配置问题。建议确保不依赖硬件加速，并从最小示例开始逐步验证。
+WSL2 下运行缓慢通常不是仓库配置问题，而是纯软件仿真导致的。先确保你没有依赖硬件加速，再尽量从最小示例开始。
