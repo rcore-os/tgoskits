@@ -65,7 +65,7 @@ impl ThreadSignalManager {
         &self.proc
     }
 
-    fn handle_signal(
+    pub fn handle_signal(
         &self,
         uctx: &mut UserContext,
         restore_blocked: SignalSet,

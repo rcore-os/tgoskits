@@ -92,7 +92,7 @@ impl ProcessSignalManager {
     }
 
     /// Checks if syscalls interrupted by the given signal can be restarted.
-    pub fn can_restart_locked(&self, signo: Signo, actions: &SignalActions) -> bool {
+    pub fn can_restart(&self, signo: Signo, actions: &SignalActions) -> bool {
         actions[signo].flags.contains(SignalActionFlags::RESTART)
     }
 
