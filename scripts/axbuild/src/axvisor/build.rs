@@ -34,6 +34,24 @@ struct LoadedAxvisorBuildConfig {
     target: String,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub(crate) struct AxvisorBoardFile {
+    pub(crate) target: String,
+    #[serde(flatten)]
+    pub(crate) config: AxvisorBoardConfig,
+}
+
+impl AxvisorBoardFile {
+    pub(crate) fn into_board_config(self) -> AxvisorBoardConfig {
+        self.config
+    }
+
+    fn into_loaded(self) -> LoadedAxvisorBuildConfig {
+        let Self { target, config } = self;
+        config.into_loaded(target)
+    }
+}
+
 impl AxvisorBuildInfo {
     pub fn default_axvisor_for_target(target: &str) -> Self {
         let mut build_info = Self::default_for_target(target);
@@ -43,20 +61,35 @@ impl AxvisorBuildInfo {
 }
 
 impl AxvisorBoardConfig {
-    fn into_loaded(self) -> LoadedAxvisorBuildConfig {
+    fn into_loaded(self, target: String) -> LoadedAxvisorBuildConfig {
         LoadedAxvisorBuildConfig {
             build_info: self.arceos,
-            target: String::new(),
+            target,
         }
     }
 }
 
-pub fn default_qemu_config_template_path(workspace_root: &Path, arch: &str) -> PathBuf {
-    workspace_root.join(format!("os/axvisor/scripts/ostool/qemu-{arch}.toml"))
+pub(crate) fn load_board_file(path: &Path) -> anyhow::Result<AxvisorBoardFile> {
+    let content = fs::read_to_string(path).map_err(|e| {
+        anyhow!(
+            "failed to read Axvisor board config {}: {e}",
+            path.display()
+        )
+    })?;
+    toml::from_str(&content).map_err(|e| {
+        anyhow!(
+            "failed to parse Axvisor board config {}: {e}",
+            path.display()
+        )
+    })
+}
+
+pub fn default_qemu_config_template_path(axvisor_dir: &Path, arch: &str) -> PathBuf {
+    axvisor_dir.join(format!("scripts/ostool/qemu-{arch}.toml"))
 }
 
 pub fn resolve_build_info_path(
-    workspace_root: &Path,
+    axvisor_dir: &Path,
     target: &str,
     explicit_path: Option<PathBuf>,
 ) -> anyhow::Result<PathBuf> {
@@ -66,7 +99,7 @@ pub fn resolve_build_info_path(
 
     let _ = arch_for_target_checked(target)?;
     Ok(crate::arceos::build::resolve_build_info_path_in_dir(
-        &workspace_root.join("os/axvisor"),
+        axvisor_dir,
         target,
     ))
 }
@@ -189,18 +222,8 @@ pub fn load_target_from_build_config(path: &Path) -> anyhow::Result<Option<Strin
         )
     })?;
 
-    let value: toml::Value = toml::from_str(&content).map_err(|e| {
-        anyhow!(
-            "failed to parse Axvisor build config {}: {e}",
-            path.display()
-        )
-    })?;
-    if let Some(target) = value
-        .get("target")
-        .and_then(|value| value.as_str())
-        .map(ToOwned::to_owned)
-    {
-        return Ok(Some(target));
+    if let Ok(board_file) = toml::from_str::<AxvisorBoardFile>(&content) {
+        return Ok(Some(board_file.target));
     }
     if toml::from_str::<AxvisorBuildInfo>(&content).is_ok() {
         return Ok(None);
@@ -209,11 +232,8 @@ pub fn load_target_from_build_config(path: &Path) -> anyhow::Result<Option<Strin
     Err(anyhow!("invalid Axvisor build config {}", path.display()))
 }
 
-pub fn prepare_default_qemu_config(
-    workspace_root: &Path,
-    request: &ResolvedAxvisorRequest,
-) -> anyhow::Result<PathBuf> {
-    let template_path = default_qemu_config_template_path(workspace_root, &request.arch);
+pub fn prepare_default_qemu_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<PathBuf> {
+    let template_path = default_qemu_config_template_path(&request.axvisor_dir, &request.arch);
     prepare_qemu_config_from_template(&template_path, request)
 }
 
@@ -251,10 +271,9 @@ pub fn prepare_qemu_config_from_template(
 }
 
 pub fn default_qemu_override_args(
-    workspace_root: &Path,
     request: &ResolvedAxvisorRequest,
 ) -> anyhow::Result<CargoQemuOverrideArgs> {
-    let template_path = default_qemu_config_template_path(workspace_root, &request.arch);
+    let template_path = default_qemu_config_template_path(&request.axvisor_dir, &request.arch);
     qemu_override_args_from_template(&template_path, request)
 }
 
@@ -417,12 +436,19 @@ fn load_build_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<LoadedA
         if let Some(parent) = request.build_info_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        if let Some(default_board) = board::default_board_for_target(&request.target) {
-            fs::write(
-                &request.build_info_path,
-                toml::to_string_pretty(&default_board)?,
-            )?;
-            return Ok(default_board.into_loaded());
+        if let Some(default_board) =
+            board::default_board_for_target(&request.axvisor_dir, &request.target)?
+        {
+            fs::copy(&default_board.path, &request.build_info_path).map_err(|e| {
+                anyhow!(
+                    "failed to copy default board config {} to {}: {e}",
+                    default_board.path.display(),
+                    request.build_info_path.display()
+                )
+            })?;
+            return Ok(default_board
+                .config
+                .into_loaded(default_board.target.clone()));
         }
 
         let default_build_info = AxvisorBuildInfo::default_axvisor_for_target(&request.target);
@@ -444,7 +470,7 @@ fn load_build_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<LoadedA
         )
     })?;
 
-    if let Ok(board_config) = toml::from_str::<AxvisorBoardConfig>(&content) {
+    if let Ok(board_config) = toml::from_str::<AxvisorBoardFile>(&content) {
         return Ok(board_config.into_loaded());
     }
 
@@ -470,20 +496,34 @@ fn load_build_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<LoadedA
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, path::Path};
 
     use tempfile::tempdir;
 
     use super::*;
 
+    fn write_board(axvisor_dir: &Path, name: &str, body: &str) -> PathBuf {
+        let path = axvisor_dir
+            .join("configs/board")
+            .join(format!("{name}.toml"));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, body).unwrap();
+        path
+    }
+
     fn request(path: PathBuf, arch: &str, target: &str) -> ResolvedAxvisorRequest {
         ResolvedAxvisorRequest {
             package: AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("os/axvisor")),
             arch: arch.to_string(),
             target: target.to_string(),
             plat_dyn: None,
             build_info_path: path,
             qemu_config: None,
+            uboot_config: None,
             vmconfigs: vec![],
         }
     }
@@ -491,8 +531,12 @@ mod tests {
     #[test]
     fn resolve_build_info_path_uses_default_axvisor_location() {
         let root = tempdir().unwrap();
-        let path =
-            resolve_build_info_path(root.path(), "aarch64-unknown-none-softfloat", None).unwrap();
+        let path = resolve_build_info_path(
+            &root.path().join("os/axvisor"),
+            "aarch64-unknown-none-softfloat",
+            None,
+        )
+        .unwrap();
 
         assert_eq!(
             path,
@@ -505,9 +549,12 @@ mod tests {
     fn resolve_build_info_path_prefers_explicit_path() {
         let root = tempdir().unwrap();
         let explicit = root.path().join("custom/build.toml");
-        let path =
-            resolve_build_info_path(root.path(), "x86_64-unknown-none", Some(explicit.clone()))
-                .unwrap();
+        let path = resolve_build_info_path(
+            &root.path().join("os/axvisor"),
+            "x86_64-unknown-none",
+            Some(explicit.clone()),
+        )
+        .unwrap();
 
         assert_eq!(path, explicit);
     }
@@ -523,7 +570,7 @@ mod tests {
         fs::write(&dotted, "").unwrap();
 
         let path =
-            resolve_build_info_path(root.path(), "aarch64-unknown-none-softfloat", None).unwrap();
+            resolve_build_info_path(&axvisor_dir, "aarch64-unknown-none-softfloat", None).unwrap();
 
         assert_eq!(path, bare);
     }
@@ -535,6 +582,18 @@ mod tests {
             .path()
             .join("os/axvisor/.build-aarch64-unknown-none-softfloat.toml");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
+        write_board(
+            path.parent().unwrap(),
+            "qemu-aarch64",
+            r#"
+env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
+target = "aarch64-unknown-none-softfloat"
+features = ["ept-level-4", "axstd/bus-mmio"]
+log = "Info"
+plat_dyn = true
+vm_configs = []
+"#,
+        );
 
         let build_info = load_build_info(&request(
             path.clone(),
@@ -566,11 +625,13 @@ plat_dyn = true
 
         let cargo = load_cargo_config(&ResolvedAxvisorRequest {
             package: AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: root.path().join("os/axvisor"),
             arch: "aarch64".to_string(),
             target: "aarch64-unknown-none-softfloat".to_string(),
             plat_dyn: Some(true),
             build_info_path: config_path,
             qemu_config: None,
+            uboot_config: None,
             vmconfigs: vec![root.path().join("a.toml"), root.path().join("b.toml")],
         })
         .unwrap();
@@ -595,11 +656,10 @@ plat_dyn = true
         fs::write(
             &path,
             r#"
-cargo_args = []
+env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = []
 log = "Info"
 target = "aarch64-unknown-none-softfloat"
-to_bin = true
 vm_configs = []
 "#,
         )
@@ -618,19 +678,36 @@ vm_configs = []
             .path()
             .join("os/axvisor/.build-x86_64-unknown-none.toml");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let board_path = write_board(
+            path.parent().unwrap(),
+            "qemu-x86_64",
+            r#"
+env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
+target = "x86_64-unknown-none"
+features = ["ept-level-4", "fs"]
+log = "Info"
+vm_configs = []
+"#,
+        );
 
         let cargo = load_cargo_config(&ResolvedAxvisorRequest {
             package: AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: root.path().join("os/axvisor"),
             arch: "x86_64".to_string(),
             target: "x86_64-unknown-none".to_string(),
             plat_dyn: None,
             build_info_path: path.clone(),
             qemu_config: None,
+            uboot_config: None,
             vmconfigs: vec![],
         })
         .unwrap();
 
         assert!(path.exists());
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            fs::read_to_string(board_path).unwrap()
+        );
         assert!(cargo.features.contains(&"ept-level-4".to_string()));
         assert!(cargo.features.contains(&"fs".to_string()));
         assert!(!cargo.features.contains(&"axstd/plat-dyn".to_string()));
@@ -655,11 +732,13 @@ plat_dyn = false
 
         let cargo = load_cargo_config(&ResolvedAxvisorRequest {
             package: AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: root.path().join("os/axvisor"),
             arch: "aarch64".to_string(),
             target: "aarch64-unknown-none-softfloat".to_string(),
             plat_dyn: Some(false),
             build_info_path: config_path,
             qemu_config: None,
+            uboot_config: None,
             vmconfigs: vec![],
         })
         .unwrap();
@@ -757,11 +836,13 @@ kernel_path = "{}"
 
         let run_config = default_qemu_run_config(&ResolvedAxvisorRequest {
             package: AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: root.path().join("os/axvisor"),
             arch: "aarch64".to_string(),
             target: "aarch64-unknown-none-softfloat".to_string(),
             plat_dyn: None,
             build_info_path: root.path().join(".build.toml"),
             qemu_config: None,
+            uboot_config: None,
             vmconfigs: vec![vmconfig],
         })
         .unwrap();

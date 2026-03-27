@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, anyhow};
 use ostool::{
@@ -85,6 +88,12 @@ pub struct AxvisorQemuSnapshot {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AxvisorUbootSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uboot_config: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AxvisorCommandSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arch: Option<String>,
@@ -98,16 +107,20 @@ pub struct AxvisorCommandSnapshot {
     pub vmconfigs: Vec<PathBuf>,
     #[serde(default, skip_serializing_if = "AxvisorQemuSnapshot::is_empty")]
     pub qemu: AxvisorQemuSnapshot,
+    #[serde(default, skip_serializing_if = "AxvisorUbootSnapshot::is_empty")]
+    pub uboot: AxvisorUbootSnapshot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedAxvisorRequest {
     pub package: String,
+    pub axvisor_dir: PathBuf,
     pub arch: String,
     pub target: String,
     pub plat_dyn: Option<bool>,
     pub build_info_path: PathBuf,
     pub qemu_config: Option<PathBuf>,
+    pub uboot_config: Option<PathBuf>,
     pub vmconfigs: Vec<PathBuf>,
 }
 
@@ -160,6 +173,7 @@ pub struct AppContext {
     tool: Tool,
     build_config_path: Option<PathBuf>,
     root: PathBuf,
+    axvisor_dir: PathBuf,
 }
 
 impl ArceosQemuSnapshot {
@@ -171,6 +185,12 @@ impl ArceosQemuSnapshot {
 impl AxvisorQemuSnapshot {
     fn is_empty(&self) -> bool {
         self.qemu_config.is_none()
+    }
+}
+
+impl AxvisorUbootSnapshot {
+    fn is_empty(&self) -> bool {
+        self.uboot_config.is_none()
     }
 }
 
@@ -270,20 +290,27 @@ impl AxvisorCommandSnapshot {
 impl AppContext {
     pub fn new() -> anyhow::Result<Self> {
         let workspace_root = find_workspace_root();
+        let axvisor_dir = workspace_member_dir(crate::axvisor::build::AXVISOR_PACKAGE)?;
         crate::logging::init_logging(&workspace_root)?;
 
         info!("Workspace root: {}", workspace_root.display());
+        info!("Axvisor dir: {}", axvisor_dir.display());
 
         let tool = Tool::new(ToolConfig::default()).unwrap();
         Ok(Self {
             tool,
             build_config_path: None,
             root: workspace_root,
+            axvisor_dir,
         })
     }
 
     pub fn workspace_root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn axvisor_dir(&self) -> &Path {
+        &self.axvisor_dir
     }
 
     pub fn prepare_arceos_request(
@@ -421,6 +448,7 @@ impl AppContext {
         &self,
         cli: AxvisorCliArgs,
         qemu_config: Option<PathBuf>,
+        uboot_config: Option<PathBuf>,
     ) -> anyhow::Result<(ResolvedAxvisorRequest, AxvisorCommandSnapshot)> {
         let snapshot = AxvisorCommandSnapshot::load(&self.root)?;
         let explicit_config = cli
@@ -454,11 +482,17 @@ impl AppContext {
             });
         let (arch, target) = resolve_axvisor_arch_and_target(effective_arch, effective_target)?;
         let plat_dyn = cli.plat_dyn.or(snapshot.plat_dyn);
-        let build_info_path =
-            crate::axvisor::build::resolve_build_info_path(&self.root, &target, explicit_config)?;
+        let build_info_path = crate::axvisor::build::resolve_build_info_path(
+            &self.axvisor_dir,
+            &target,
+            explicit_config,
+        )?;
         let resolved_qemu_config = qemu_config
             .clone()
             .or_else(|| resolve_snapshot_path(&self.root, snapshot.qemu.qemu_config.as_ref()));
+        let resolved_uboot_config = uboot_config
+            .clone()
+            .or_else(|| resolve_snapshot_path(&self.root, snapshot.uboot.uboot_config.as_ref()));
         let vmconfigs: Vec<PathBuf> = if cli.vmconfigs.is_empty() {
             snapshot
                 .vmconfigs
@@ -486,11 +520,13 @@ impl AppContext {
 
         let request = ResolvedAxvisorRequest {
             package: crate::axvisor::build::AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: self.axvisor_dir.clone(),
             arch: arch.clone(),
             target: target.clone(),
             plat_dyn,
             build_info_path: build_info_path.clone(),
             qemu_config: resolved_qemu_config.clone(),
+            uboot_config: resolved_uboot_config.clone(),
             vmconfigs: vmconfigs.clone(),
         };
 
@@ -505,6 +541,11 @@ impl AppContext {
                 .collect(),
             qemu: AxvisorQemuSnapshot {
                 qemu_config: resolved_qemu_config
+                    .as_ref()
+                    .map(|path| snapshot_path_value(&self.root, path)),
+            },
+            uboot: AxvisorUbootSnapshot {
+                uboot_config: resolved_uboot_config
                     .as_ref()
                     .map(|path| snapshot_path_value(&self.root, path)),
             },
@@ -580,10 +621,7 @@ impl Default for AppContext {
 }
 
 pub(crate) fn workspace_root_path() -> anyhow::Result<PathBuf> {
-    let cargo = cargo_metadata::MetadataCommand::new()
-        .no_deps()
-        .exec()
-        .context("failed to get cargo metadata")?;
+    let cargo = workspace_metadata()?;
 
     cargo
         .workspace_root
@@ -591,8 +629,34 @@ pub(crate) fn workspace_root_path() -> anyhow::Result<PathBuf> {
         .context("failed to canonicalize workspace root")
 }
 
+pub(crate) fn workspace_member_dir(package: &str) -> anyhow::Result<PathBuf> {
+    let manifest_path = workspace_member_manifest_path(package)?;
+    manifest_path
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| anyhow!("package manifest path has no parent directory"))
+}
+
 fn find_workspace_root() -> PathBuf {
     workspace_root_path().expect("failed to resolve workspace root")
+}
+
+fn workspace_member_manifest_path(package: &str) -> anyhow::Result<PathBuf> {
+    let metadata = workspace_metadata()?;
+    let workspace_members: HashSet<_> = metadata.workspace_members.iter().cloned().collect();
+    metadata
+        .packages
+        .iter()
+        .find(|pkg| workspace_members.contains(&pkg.id) && pkg.name == package)
+        .map(|pkg| pkg.manifest_path.clone().into_std_path_buf())
+        .ok_or_else(|| anyhow!("workspace package `{package}` not found"))
+}
+
+fn workspace_metadata() -> anyhow::Result<cargo_metadata::Metadata> {
+    cargo_metadata::MetadataCommand::new()
+        .no_deps()
+        .exec()
+        .context("failed to get cargo metadata")
 }
 
 fn resolve_snapshot_path(root: &Path, path: Option<&PathBuf>) -> Option<PathBuf> {
@@ -605,7 +669,7 @@ fn resolve_snapshot_path(root: &Path, path: Option<&PathBuf>) -> Option<PathBuf>
     })
 }
 
-fn snapshot_path_value(root: &Path, path: &Path) -> PathBuf {
+pub(crate) fn snapshot_path_value(root: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() {
         path.strip_prefix(root)
             .map(PathBuf::from)
@@ -727,11 +791,20 @@ fn resolve_axvisor_arch_and_target(
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, path::Path};
 
     use tempfile::tempdir;
 
     use super::*;
+
+    fn test_app_context(root: &Path) -> AppContext {
+        AppContext {
+            tool: Tool::new(ToolConfig::default()).unwrap(),
+            build_config_path: None,
+            root: root.to_path_buf(),
+            axvisor_dir: root.join("os/axvisor"),
+        }
+    }
 
     #[test]
     fn snapshot_load_returns_default_when_missing() {
@@ -781,6 +854,9 @@ mod tests {
             qemu: AxvisorQemuSnapshot {
                 qemu_config: Some(PathBuf::from("configs/qemu.toml")),
             },
+            uboot: AxvisorUbootSnapshot {
+                uboot_config: Some(PathBuf::from("configs/uboot.toml")),
+            },
         };
 
         let path = snapshot.store(root.path()).unwrap();
@@ -809,11 +885,7 @@ uboot_config = "configs/snapshot-uboot.toml"
         )
         .unwrap();
 
-        let app = AppContext {
-            tool: Tool::new(ToolConfig::default()).unwrap(),
-            build_config_path: None,
-            root: root.path().to_path_buf(),
-        };
+        let app = test_app_context(root.path());
 
         let (request, snapshot) = app
             .prepare_arceos_request(
@@ -863,11 +935,7 @@ qemu_config = "configs/qemu.toml"
         )
         .unwrap();
 
-        let app = AppContext {
-            tool: Tool::new(ToolConfig::default()).unwrap(),
-            build_config_path: None,
-            root: root.path().to_path_buf(),
-        };
+        let app = test_app_context(root.path());
 
         let (request, snapshot) = app
             .prepare_arceos_request(BuildCliArgs::default(), None, None)
@@ -886,11 +954,7 @@ qemu_config = "configs/qemu.toml"
     #[test]
     fn prepare_request_requires_package() {
         let root = tempdir().unwrap();
-        let app = AppContext {
-            tool: Tool::new(ToolConfig::default()).unwrap(),
-            build_config_path: None,
-            root: root.path().to_path_buf(),
-        };
+        let app = test_app_context(root.path());
 
         let err = app
             .prepare_arceos_request(BuildCliArgs::default(), None, None)
@@ -913,15 +977,14 @@ vmconfigs = ["tmp/snapshot-vm.toml"]
 
 [qemu]
 qemu_config = "configs/snapshot-qemu.toml"
+
+[uboot]
+uboot_config = "configs/snapshot-uboot.toml"
 "#,
         )
         .unwrap();
 
-        let app = AppContext {
-            tool: Tool::new(ToolConfig::default()).unwrap(),
-            build_config_path: None,
-            root: root.path().to_path_buf(),
-        };
+        let app = test_app_context(root.path());
 
         let (request, snapshot) = app
             .prepare_axvisor_request(
@@ -936,6 +999,7 @@ qemu_config = "configs/snapshot-qemu.toml"
                     ],
                 },
                 Some(PathBuf::from("/tmp/qemu.toml")),
+                Some(PathBuf::from("/tmp/uboot.toml")),
             )
             .unwrap();
 
@@ -948,6 +1012,7 @@ qemu_config = "configs/snapshot-qemu.toml"
             PathBuf::from("/tmp/custom-build.toml")
         );
         assert_eq!(request.qemu_config, Some(PathBuf::from("/tmp/qemu.toml")));
+        assert_eq!(request.uboot_config, Some(PathBuf::from("/tmp/uboot.toml")));
         assert_eq!(
             request.vmconfigs,
             vec![
@@ -973,6 +1038,10 @@ qemu_config = "configs/snapshot-qemu.toml"
             snapshot.qemu.qemu_config,
             Some(PathBuf::from("/tmp/qemu.toml"))
         );
+        assert_eq!(
+            snapshot.uboot.uboot_config,
+            Some(PathBuf::from("/tmp/uboot.toml"))
+        );
     }
 
     #[test]
@@ -988,18 +1057,17 @@ vmconfigs = ["tmp/vm1.toml", "tmp/vm2.toml"]
 
 [qemu]
 qemu_config = "configs/qemu.toml"
+
+[uboot]
+uboot_config = "configs/uboot.toml"
 "#,
         )
         .unwrap();
 
-        let app = AppContext {
-            tool: Tool::new(ToolConfig::default()).unwrap(),
-            build_config_path: None,
-            root: root.path().to_path_buf(),
-        };
+        let app = test_app_context(root.path());
 
         let (request, snapshot) = app
-            .prepare_axvisor_request(AxvisorCliArgs::default(), None)
+            .prepare_axvisor_request(AxvisorCliArgs::default(), None, None)
             .unwrap();
 
         assert_eq!(request.arch, DEFAULT_AXVISOR_ARCH);
@@ -1012,6 +1080,10 @@ qemu_config = "configs/qemu.toml"
         assert_eq!(
             request.qemu_config,
             Some(root.path().join("configs/qemu.toml"))
+        );
+        assert_eq!(
+            request.uboot_config,
+            Some(root.path().join("configs/uboot.toml"))
         );
         assert_eq!(
             request.vmconfigs,
@@ -1030,16 +1102,16 @@ qemu_config = "configs/qemu.toml"
             snapshot.vmconfigs,
             vec![PathBuf::from("tmp/vm1.toml"), PathBuf::from("tmp/vm2.toml")]
         );
+        assert_eq!(
+            snapshot.uboot.uboot_config,
+            Some(PathBuf::from("configs/uboot.toml"))
+        );
     }
 
     #[test]
     fn prepare_axvisor_request_resolves_target_from_arch() {
         let root = tempdir().unwrap();
-        let app = AppContext {
-            tool: Tool::new(ToolConfig::default()).unwrap(),
-            build_config_path: None,
-            root: root.path().to_path_buf(),
-        };
+        let app = test_app_context(root.path());
 
         let (request, snapshot) = app
             .prepare_axvisor_request(
@@ -1050,6 +1122,7 @@ qemu_config = "configs/qemu.toml"
                     plat_dyn: None,
                     vmconfigs: vec![],
                 },
+                None,
                 None,
             )
             .unwrap();
@@ -1113,11 +1186,7 @@ uboot_config = "configs/snapshot-uboot.toml"
         )
         .unwrap();
 
-        let app = AppContext {
-            tool: Tool::new(ToolConfig::default()).unwrap(),
-            build_config_path: None,
-            root: root.path().to_path_buf(),
-        };
+        let app = test_app_context(root.path());
 
         let (request, snapshot) = app
             .prepare_starry_request(
@@ -1162,11 +1231,7 @@ qemu_config = "configs/qemu.toml"
         )
         .unwrap();
 
-        let app = AppContext {
-            tool: Tool::new(ToolConfig::default()).unwrap(),
-            build_config_path: None,
-            root: root.path().to_path_buf(),
-        };
+        let app = test_app_context(root.path());
 
         let (request, snapshot) = app
             .prepare_starry_request(StarryCliArgs::default(), None, None)
@@ -1192,11 +1257,7 @@ qemu_config = "configs/qemu.toml"
     #[test]
     fn prepare_starry_request_rejects_mismatched_arch_and_target() {
         let root = tempdir().unwrap();
-        let app = AppContext {
-            tool: Tool::new(ToolConfig::default()).unwrap(),
-            build_config_path: None,
-            root: root.path().to_path_buf(),
-        };
+        let app = test_app_context(root.path());
 
         let err = app
             .prepare_starry_request(
@@ -1226,11 +1287,7 @@ target = "aarch64-unknown-none-softfloat"
         )
         .unwrap();
 
-        let app = AppContext {
-            tool: Tool::new(ToolConfig::default()).unwrap(),
-            build_config_path: None,
-            root: root.path().to_path_buf(),
-        };
+        let app = test_app_context(root.path());
 
         let (request, snapshot) = app
             .prepare_starry_request(
@@ -1266,11 +1323,7 @@ target = "aarch64-unknown-none-softfloat"
         )
         .unwrap();
 
-        let app = AppContext {
-            tool: Tool::new(ToolConfig::default()).unwrap(),
-            build_config_path: None,
-            root: root.path().to_path_buf(),
-        };
+        let app = test_app_context(root.path());
 
         let (request, snapshot) = app
             .prepare_starry_request(
