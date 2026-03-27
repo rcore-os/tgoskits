@@ -223,17 +223,26 @@ fn starry_linker_script_path(
     request: &ResolvedStarryRequest,
     platform: &str,
 ) -> anyhow::Result<PathBuf> {
-    let workspace_root = request
-        .build_info_path
-        .parent()
-        .and_then(Path::parent)
-        .context("Starry build info path should be nested under <workspace>/starryos")?;
+    let workspace_root = resolve_package_workspace_root(&request.package)?;
 
     Ok(workspace_root
         .join("target")
         .join(&request.target)
         .join("release")
         .join(format!("linker_{platform}.lds")))
+}
+
+fn resolve_package_workspace_root(package: &str) -> anyhow::Result<PathBuf> {
+    let manifest_path = crate::arceos::build::resolve_package_manifest_path(package, None)?;
+    let mut command = MetadataCommand::new();
+    command.no_deps().manifest_path(&manifest_path);
+    let metadata = command.exec()?;
+    metadata
+        .workspace_root
+        .clone()
+        .into_std_path_buf()
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize workspace root for package `{package}`"))
 }
 
 fn default_platform_for_arch(arch: &str) -> anyhow::Result<&'static str> {
@@ -528,7 +537,33 @@ HELLO = "world"
         patch_starry_cargo_config(&mut cargo, &request).unwrap();
 
         assert!(cargo.args.iter().any(|arg| arg.contains(
-            "/tmp/os/StarryOS/target/aarch64-unknown-none-softfloat/release/\
+            "/home/zhourui/opensource/tgoskits2/os/StarryOS/target/aarch64-unknown-none-softfloat/release/\
+             linker_aarch64-qemu-virt.lds"
+        )));
+    }
+
+    #[test]
+    fn patch_starry_test_package_uses_root_workspace_linker_script_path() {
+        let request = ResolvedStarryRequest {
+            package: "starryos-test".to_string(),
+            arch: "aarch64".to_string(),
+            target: "aarch64-unknown-none-softfloat".to_string(),
+            plat_dyn: None,
+            build_info_path: PathBuf::from("/tmp/.build.toml"),
+            qemu_config: None,
+            uboot_config: None,
+        };
+        let build_info = StarryBuildInfo::default_starry_for_target(&request.target);
+        let mut cargo = build_info.into_base_cargo_config_with_log(
+            request.package.clone(),
+            request.target.clone(),
+            StarryBuildInfo::build_cargo_args(&request.target, false),
+        );
+
+        patch_starry_cargo_config(&mut cargo, &request).unwrap();
+
+        assert!(cargo.args.iter().any(|arg| arg.contains(
+            "/home/zhourui/opensource/tgoskits2/target/aarch64-unknown-none-softfloat/release/\
              linker_aarch64-qemu-virt.lds"
         )));
     }
