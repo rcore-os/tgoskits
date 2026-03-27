@@ -12,10 +12,8 @@ import sys
 import argparse
 import subprocess
 import re
-import shlex
 import shutil
 import tempfile
-import time
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 from dataclasses import dataclass, field, astuple
@@ -202,6 +200,90 @@ class GitSubtreeManager:
             text=True
         )
         return result.stdout.strip()
+
+    @staticmethod
+    def _git_dir() -> Path:
+        """Return the path to the current git directory."""
+        return Path(
+            GitSubtreeManager._run_command_with_stdout(['git', 'rev-parse', '--git-dir'])
+        )
+
+    @staticmethod
+    def _clear_subtree_cache() -> None:
+        """Remove leftover git-subtree cache directories before a split."""
+        cache_dir = GitSubtreeManager._git_dir() / 'subtree-cache'
+        if cache_dir.exists():
+            print(f"Clearing git subtree cache: {cache_dir}")
+            shutil.rmtree(cache_dir, ignore_errors=True)
+
+    @staticmethod
+    def _split_subtree_rev(target_dir: str) -> Tuple[str, Optional[Path]]:
+        """Return the split commit and optional repo path to push from."""
+        split_cmd = [
+            'git', 'subtree', 'split',
+            '--quiet',
+            '--prefix=' + target_dir,
+        ]
+
+        for attempt in range(2):
+            GitSubtreeManager._clear_subtree_cache()
+            try:
+                split_rev = GitSubtreeManager._run_command_with_stdout(split_cmd)
+                if split_rev:
+                    return split_rev, None
+            except subprocess.CalledProcessError as exc:
+                if attempt == 0:
+                    print(
+                        f"git subtree split failed for '{target_dir}', "
+                        "retrying after clearing subtree cache...",
+                        file=sys.stderr
+                    )
+                    print(f"Original split error: {exc}", file=sys.stderr)
+                    continue
+
+                print(
+                    f"git subtree split still failed for '{target_dir}', "
+                    "falling back to a temporary filter-branch split...",
+                    file=sys.stderr
+                )
+                print(f"Original split error: {exc}", file=sys.stderr)
+
+        head_rev = GitSubtreeManager._run_command_with_stdout(['git', 'rev-parse', 'HEAD'])
+        temp_dir = Path(tempfile.mkdtemp(prefix='git-subtree-split-'))
+        try:
+            GitSubtreeManager._run_command(['git', 'clone', '--quiet', '.', str(temp_dir)])
+            GitSubtreeManager._run_command([
+                'git', '-C', str(temp_dir), 'checkout', '--quiet', head_rev
+            ])
+            print(
+                f"Running: git -C {temp_dir} "
+                f"filter-branch -f --subdirectory-filter {target_dir} HEAD"
+            )
+            subprocess.run(
+                [
+                    'git',
+                    '-C',
+                    str(temp_dir),
+                    'filter-branch',
+                    '-f',
+                    '--subdirectory-filter',
+                    target_dir,
+                    'HEAD',
+                ],
+                check=True,
+                env={**os.environ, 'FILTER_BRANCH_SQUELCH_WARNING': '1'},
+                text=True
+            )
+            split_rev = GitSubtreeManager._run_command_with_stdout([
+                'git', '-C', str(temp_dir), 'rev-parse', 'HEAD'
+            ])
+            if split_rev:
+                return split_rev, temp_dir
+        except Exception:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise
+
+        raise ValueError(f"Failed to split subtree at '{target_dir}'")
 
     @staticmethod
     def get_repo_name(url: str) -> str:
@@ -418,35 +500,24 @@ class GitSubtreeManager:
             branch = PUSH_DEFAULT_BRANCH
             print(f"Using default push branch: {branch}")
 
-        if force:
-            # Some git-subtree versions strip the leading '+' from the refspec
-            # before invoking `git push`, so perform the split/push explicitly.
-            split_cmd = [
-                'git', 'subtree', 'split',
-                '--quiet',
-                '--prefix=' + target_dir,
-            ]
-            split_rev = self._run_command_with_stdout(split_cmd)
-            if not split_rev:
-                raise ValueError(f"Failed to split subtree at '{target_dir}'")
-
-            push_cmd = [
-                'git', 'push',
-                '--force',
+        # Some git-subtree versions fail inside `split`/`push`, so always
+        # perform the split explicitly and push the resulting ref ourselves.
+        split_rev, push_repo = self._split_subtree_rev(target_dir)
+        try:
+            cmd = ['git']
+            if push_repo is not None:
+                cmd.extend(['-C', str(push_repo)])
+            cmd.extend([
+                'push',
                 url,
                 f'{split_rev}:refs/heads/{branch}'
-            ]
-            self._run_command(push_cmd)
-            return
-
-        cmd = [
-            'git', 'subtree', 'push',
-            '--quiet',
-            '--prefix=' + target_dir,
-            url,
-            branch
-        ]
-        self._run_command(cmd)
+            ])
+            if force:
+                cmd.insert(len(cmd) - 2, '--force')
+            self._run_command(cmd)
+        finally:
+            if push_repo is not None:
+                shutil.rmtree(push_repo, ignore_errors=True)
 
     def repair_subtree_history(
         self,
