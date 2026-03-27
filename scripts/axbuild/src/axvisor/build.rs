@@ -177,6 +177,7 @@ fn patch_axvisor_cargo_config(
 ) -> anyhow::Result<()> {
     cargo.package = request.package.clone();
     cargo.target = request.target.clone();
+    ensure_axvisor_bin_arg(&mut cargo.args);
     cargo
         .env
         .insert("AX_ARCH".to_string(), request.arch.clone());
@@ -197,6 +198,15 @@ fn patch_axvisor_cargo_config(
     cargo.features.sort();
     cargo.features.dedup();
     Ok(())
+}
+
+fn ensure_axvisor_bin_arg(args: &mut Vec<String>) {
+    if args.iter().any(|arg| arg == "--bin") {
+        return;
+    }
+
+    args.push("--bin".to_string());
+    args.push(AXVISOR_PACKAGE.to_string());
 }
 
 fn normalize_axvisor_platform_features(features: &mut Vec<String>) {
@@ -647,6 +657,42 @@ plat_dyn = true
             Some("aarch64-unknown-none-softfloat")
         );
         assert!(cargo.env.contains_key("AXVISOR_VM_CONFIGS"));
+        assert_eq!(cargo.args, vec!["--bin".to_string(), "axvisor".to_string()]);
+    }
+
+    #[test]
+    fn load_cargo_config_keeps_existing_explicit_bin_arg() {
+        let root = tempdir().unwrap();
+        let config_path = root.path().join(".build.toml");
+        fs::write(
+            &config_path,
+            r#"
+env = {}
+features = ["ept-level-4"]
+log = "Info"
+plat_dyn = true
+args = ["--bin", "custom-bin"]
+"#,
+        )
+        .unwrap();
+
+        let cargo = load_cargo_config(&ResolvedAxvisorRequest {
+            package: AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: root.path().join("os/axvisor"),
+            arch: "aarch64".to_string(),
+            target: "aarch64-unknown-none-softfloat".to_string(),
+            plat_dyn: Some(true),
+            build_info_path: config_path,
+            qemu_config: None,
+            uboot_config: None,
+            vmconfigs: vec![],
+        })
+        .unwrap();
+
+        assert_eq!(
+            cargo.args,
+            vec!["--bin".to_string(), "custom-bin".to_string()]
+        );
     }
 
     #[test]
