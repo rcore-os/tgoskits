@@ -1,6 +1,6 @@
 #[cfg(test)]
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::Context;
 use clap::Args;
@@ -256,17 +256,14 @@ pub async fn run_axvisor_qemu_tests(args: ArgsAxvisor) -> anyhow::Result<()> {
 pub async fn run_axvisor_uboot_tests(args: ArgsAxvisorUboot) -> anyhow::Result<()> {
     let board = axvisor_uboot_board_config(&args.board)?;
     let mut app = AppContext::new()?;
-    let workspace_root = app.workspace_root().to_path_buf();
-    let uboot_config = args
-        .uboot_config
-        .clone()
-        .unwrap_or_else(|| default_axvisor_uboot_config_path(&workspace_root));
+    let explicit_uboot_config = args.uboot_config.clone();
 
-    if !uboot_config.exists() {
+    if let Some(path) = explicit_uboot_config.as_ref()
+        && !path.exists()
+    {
         bail!(
-            "missing U-Boot config `{}` for axvisor board tests; prepare the workspace root \
-             .uboot.toml first",
-            uboot_config.display()
+            "missing explicit U-Boot config `{}` for axvisor board tests",
+            path.display()
         );
     }
 
@@ -275,7 +272,7 @@ pub async fn run_axvisor_uboot_tests(args: ArgsAxvisorUboot) -> anyhow::Result<(
         board.board, board.vmconfig
     );
 
-    let (request, _snapshot) = app.prepare_axvisor_request(
+    let (mut request, _snapshot) = app.prepare_axvisor_request(
         AxvisorCliArgs {
             config: Some(PathBuf::from(board.build_config)),
             arch: None,
@@ -284,8 +281,9 @@ pub async fn run_axvisor_uboot_tests(args: ArgsAxvisorUboot) -> anyhow::Result<(
             vmconfigs: vec![PathBuf::from(board.vmconfig)],
         },
         None,
-        Some(uboot_config),
+        explicit_uboot_config.clone(),
     )?;
+    request.uboot_config = explicit_uboot_config;
 
     let cargo = axvisor::build::load_cargo_config(&request)?;
     app.uboot(cargo, request.build_info_path, request.uboot_config)
@@ -359,10 +357,6 @@ fn axvisor_uboot_board_config(board: &str) -> anyhow::Result<AxvisorUbootBoardCo
             AXVISOR_UBOOT_TEST_BOARDS.join(", ")
         ),
     }
-}
-
-fn default_axvisor_uboot_config_path(workspace_root: &Path) -> PathBuf {
-    workspace_root.join("uboot.toml")
 }
 
 #[cfg(test)]
@@ -635,15 +629,6 @@ mod tests {
         );
         assert!(err.to_string().contains("phytiumpi"));
         assert!(err.to_string().contains("roc-rk3568-pc"));
-    }
-
-    #[test]
-    fn default_axvisor_uboot_config_path_points_to_workspace_root() {
-        let root = PathBuf::from("/tmp/workspace");
-        assert_eq!(
-            default_axvisor_uboot_config_path(&root),
-            PathBuf::from("/tmp/workspace/uboot.toml")
-        );
     }
 
     #[tokio::test]
