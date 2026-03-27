@@ -615,7 +615,7 @@ dependencies = [
 
 [[package]]
 name = "axbuild"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "axvmconfig",
@@ -1706,7 +1706,7 @@ dependencies = [
  "bitflags 2.11.0",
  "cexpr",
  "clang-sys",
- "itertools 0.13.0",
+ "itertools 0.10.5",
  "log",
  "prettyplease",
  "proc-macro2",
