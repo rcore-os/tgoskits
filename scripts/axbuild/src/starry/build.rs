@@ -149,7 +149,6 @@ fn patch_starry_cargo_config(
     cargo.package = request.package.clone();
     cargo.target = request.target.clone();
     ensure_starry_bin_arg(&mut cargo.args, &request.package)?;
-    rewrite_linker_script_arg(&mut cargo.args, request, platform)?;
     cargo.features.push("qemu".to_string());
     cargo.features.sort();
     cargo.features.dedup();
@@ -199,50 +198,6 @@ fn package_has_bin_named(package: &str, bin_name: &str) -> anyhow::Result<bool> 
                 .iter()
                 .any(|kind| matches!(kind, cargo_metadata::TargetKind::Bin))
     }))
-}
-
-fn rewrite_linker_script_arg(
-    args: &mut Vec<String>,
-    request: &ResolvedStarryRequest,
-    platform: &str,
-) -> anyhow::Result<()> {
-    let linker_script = starry_linker_script_path(request, platform)?;
-    let needle = "-Clink-arg=-Tlinker.x";
-    let replacement = format!("-Clink-arg=-T{}", linker_script.display());
-
-    for arg in args {
-        if arg.contains(needle) {
-            *arg = arg.replace(needle, &replacement);
-        }
-    }
-
-    Ok(())
-}
-
-fn starry_linker_script_path(
-    request: &ResolvedStarryRequest,
-    platform: &str,
-) -> anyhow::Result<PathBuf> {
-    let workspace_root = resolve_package_workspace_root(&request.package)?;
-
-    Ok(workspace_root
-        .join("target")
-        .join(&request.target)
-        .join("release")
-        .join(format!("linker_{platform}.lds")))
-}
-
-fn resolve_package_workspace_root(package: &str) -> anyhow::Result<PathBuf> {
-    let manifest_path = crate::arceos::build::resolve_package_manifest_path(package, None)?;
-    let mut command = MetadataCommand::new();
-    command.no_deps().manifest_path(&manifest_path);
-    let metadata = command.exec()?;
-    metadata
-        .workspace_root
-        .clone()
-        .into_std_path_buf()
-        .canonicalize()
-        .with_context(|| format!("failed to canonicalize workspace root for package `{package}`"))
 }
 
 fn default_platform_for_arch(arch: &str) -> anyhow::Result<&'static str> {
@@ -515,7 +470,7 @@ HELLO = "world"
     }
 
     #[test]
-    fn patch_starry_cargo_config_uses_absolute_linker_script_path() {
+    fn patch_starry_cargo_config_keeps_linker_x_arg() {
         let request = ResolvedStarryRequest {
             package: STARRY_PACKAGE.to_string(),
             arch: "aarch64".to_string(),
@@ -536,14 +491,16 @@ HELLO = "world"
 
         patch_starry_cargo_config(&mut cargo, &request).unwrap();
 
-        assert!(cargo.args.iter().any(|arg| arg.contains(
-            "/home/zhourui/opensource/tgoskits2/os/StarryOS/target/aarch64-unknown-none-softfloat/release/\
-             linker_aarch64-qemu-virt.lds"
-        )));
+        assert!(
+            cargo
+                .args
+                .iter()
+                .any(|arg| arg.contains("-Clink-arg=-Tlinker.x"))
+        );
     }
 
     #[test]
-    fn patch_starry_test_package_uses_root_workspace_linker_script_path() {
+    fn patch_starry_test_package_keeps_linker_x_arg() {
         let request = ResolvedStarryRequest {
             package: "starryos-test".to_string(),
             arch: "aarch64".to_string(),
@@ -562,10 +519,12 @@ HELLO = "world"
 
         patch_starry_cargo_config(&mut cargo, &request).unwrap();
 
-        assert!(cargo.args.iter().any(|arg| arg.contains(
-            "/home/zhourui/opensource/tgoskits2/target/aarch64-unknown-none-softfloat/release/\
-             linker_aarch64-qemu-virt.lds"
-        )));
+        assert!(
+            cargo
+                .args
+                .iter()
+                .any(|arg| arg.contains("-Clink-arg=-Tlinker.x"))
+        );
     }
 
     #[test]
