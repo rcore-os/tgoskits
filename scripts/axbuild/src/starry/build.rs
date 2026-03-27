@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::Context;
+use cargo_metadata::MetadataCommand;
 use ostool::build::config::Cargo;
 
 pub type StarryBuildInfo = crate::arceos::build::ArceosBuildInfo;
@@ -147,7 +148,7 @@ fn patch_starry_cargo_config(
 
     cargo.package = request.package.clone();
     cargo.target = request.target.clone();
-    ensure_starry_bin_arg(&mut cargo.args, &request.package);
+    ensure_starry_bin_arg(&mut cargo.args, &request.package)?;
     rewrite_linker_script_arg(&mut cargo.args, request, platform)?;
     cargo.features.push("qemu".to_string());
     cargo.features.sort();
@@ -167,13 +168,37 @@ fn patch_starry_cargo_config(
     Ok(())
 }
 
-fn ensure_starry_bin_arg(args: &mut Vec<String>, package: &str) {
+fn ensure_starry_bin_arg(args: &mut Vec<String>, package: &str) -> anyhow::Result<()> {
     if args.iter().any(|arg| arg == "--bin") {
-        return;
+        return Ok(());
     }
 
-    args.push("--bin".to_string());
-    args.push(package.to_string());
+    if package_has_bin_named(package, package)? {
+        args.push("--bin".to_string());
+        args.push(package.to_string());
+    }
+
+    Ok(())
+}
+
+fn package_has_bin_named(package: &str, bin_name: &str) -> anyhow::Result<bool> {
+    let manifest_path = crate::arceos::build::resolve_package_manifest_path(package, None)?;
+    let mut command = MetadataCommand::new();
+    command.no_deps().manifest_path(&manifest_path);
+    let metadata = command.exec()?;
+    let package_info = metadata
+        .packages
+        .iter()
+        .find(|pkg| pkg.name == package)
+        .ok_or_else(|| anyhow::anyhow!("workspace package `{package}` not found"))?;
+
+    Ok(package_info.targets.iter().any(|target| {
+        target.name == bin_name
+            && target
+                .kind
+                .iter()
+                .any(|kind| matches!(kind, cargo_metadata::TargetKind::Bin))
+    }))
 }
 
 fn rewrite_linker_script_arg(
@@ -425,12 +450,7 @@ HELLO = "world"
         patch_starry_cargo_config(&mut cargo, &request).unwrap();
 
         assert_eq!(cargo.package, "starryos-test");
-        assert!(
-            cargo
-                .args
-                .windows(2)
-                .any(|window| window == ["--bin", "starryos-test"])
-        );
+        assert!(!cargo.args.iter().any(|arg| arg == "--bin"));
     }
 
     #[test]
@@ -511,5 +531,23 @@ HELLO = "world"
             "/tmp/os/StarryOS/target/aarch64-unknown-none-softfloat/release/\
              linker_aarch64-qemu-virt.lds"
         )));
+    }
+
+    #[test]
+    fn ensure_starry_bin_arg_adds_bin_for_starryos_package() {
+        let mut args = Vec::new();
+
+        ensure_starry_bin_arg(&mut args, "starryos").unwrap();
+
+        assert_eq!(args, vec!["--bin".to_string(), "starryos".to_string()]);
+    }
+
+    #[test]
+    fn ensure_starry_bin_arg_skips_when_package_bin_name_differs() {
+        let mut args = Vec::new();
+
+        ensure_starry_bin_arg(&mut args, "starryos-test").unwrap();
+
+        assert!(args.is_empty());
     }
 }

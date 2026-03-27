@@ -181,9 +181,15 @@ impl Starry {
             SnapshotPersistence::Discard,
         )?;
         request.package = package.to_string();
+        let qemu_config = rootfs::prepare_test_qemu_config(
+            self.app.workspace_root(),
+            &request,
+            &self.test_qemu_config_path(arch),
+        )
+        .await?;
 
         match self
-            .run_qemu_request(request)
+            .run_test_qemu_request(request, qemu_config)
             .await
             .with_context(|| "starry qemu test failed")
         {
@@ -242,8 +248,24 @@ impl Starry {
         })
     }
 
+    fn test_qemu_config_path(&self, arch: &str) -> PathBuf {
+        self.app
+            .workspace_root()
+            .join("test-suit")
+            .join("starryos")
+            .join(format!("qemu-{arch}.toml"))
+    }
+
     async fn run_qemu_request(&mut self, request: ResolvedStarryRequest) -> anyhow::Result<()> {
         let qemu_args = rootfs::default_qemu_args(self.app.workspace_root(), &request).await?;
+        self.run_qemu_request_with_args(request, qemu_args).await
+    }
+
+    async fn run_qemu_request_with_args(
+        &mut self,
+        request: ResolvedStarryRequest,
+        qemu_args: Vec<String>,
+    ) -> anyhow::Result<()> {
         command_flow::run_qemu(
             &mut self.app,
             request,
@@ -251,6 +273,24 @@ impl Starry {
             move |request| Self::qemu_run_config(request.qemu_config.clone(), qemu_args),
         )
         .await
+    }
+
+    async fn run_test_qemu_request(
+        &mut self,
+        request: ResolvedStarryRequest,
+        qemu_config: PathBuf,
+    ) -> anyhow::Result<()> {
+        let cargo = build::load_cargo_config(&request)?;
+        self.app
+            .qemu(
+                cargo,
+                request.build_info_path,
+                QemuRunConfig {
+                    qemu_config: Some(qemu_config),
+                    ..Default::default()
+                },
+            )
+            .await
     }
 
     async fn run_build_request(&mut self, request: ResolvedStarryRequest) -> anyhow::Result<()> {
