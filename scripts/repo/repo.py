@@ -12,6 +12,10 @@ import sys
 import argparse
 import subprocess
 import re
+import shlex
+import shutil
+import tempfile
+import time
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 from dataclasses import dataclass, field, astuple
@@ -37,7 +41,10 @@ class Repo:
     @property
     def repo_name(self) -> str:
         """Extract repo name from URL."""
-        return self.url.rstrip('/').split('/')[-1]
+        repo_name = self.url.rstrip('/').split('/')[-1]
+        if repo_name.endswith('.git'):
+            return repo_name[:-4]
+        return repo_name
 
 
 class CSVManager:
@@ -199,7 +206,10 @@ class GitSubtreeManager:
     @staticmethod
     def get_repo_name(url: str) -> str:
         """Extract repo name from URL."""
-        return url.rstrip('/').split('/')[-1]
+        repo_name = url.rstrip('/').split('/')[-1]
+        if repo_name.endswith('.git'):
+            return repo_name[:-4]
+        return repo_name
 
     @staticmethod
     def check_working_tree_clean() -> bool:
@@ -260,6 +270,44 @@ class GitSubtreeManager:
         
         # Fallback to main
         return 'main'
+
+    def resolve_branch(self, url: str, branch: str = "") -> str:
+        """Resolve the effective branch for a repository."""
+        if branch:
+            return branch
+
+        remote_name = f"resolve_{int(time.time())}_{os.getpid()}"
+        try:
+            subprocess.run(
+                ['git', 'remote', 'add', remote_name, url],
+                capture_output=True,
+                check=True,
+                text=True
+            )
+            subprocess.run(
+                ['git', 'fetch', remote_name, '--no-tags'],
+                capture_output=True,
+                check=True,
+                text=True
+            )
+            branch = self.detect_branch(url, remote_name)
+            print(f"Auto-detected branch: {branch}")
+            return branch
+        finally:
+            subprocess.run(['git', 'remote', 'remove', remote_name], capture_output=True)
+
+    @staticmethod
+    def current_branch_name() -> str:
+        """Return the current local branch name."""
+        branch = GitSubtreeManager._run_command_with_stdout(
+            ['git', 'rev-parse', '--abbrev-ref', 'HEAD']
+        )
+        if branch == 'HEAD':
+            raise ValueError(
+                "Detached HEAD is not supported for subtree history repair. "
+                "Please check out a branch first."
+            )
+        return branch
 
     def add_subtree(self, url: str, target_dir: str, branch: str = "") -> None:
         """Add a new git subtree."""
@@ -399,6 +447,111 @@ class GitSubtreeManager:
             branch
         ]
         self._run_command(cmd)
+
+    def repair_subtree_history(
+        self,
+        repo_name: str,
+        url: str,
+        target_dir: str,
+        branch: str = "",
+        output_branch: str = "",
+        apply: bool = False,
+    ) -> Tuple[str, str]:
+        """Rewrite the current branch with a fresh subtree baseline on a new branch."""
+        if not self.is_added(target_dir):
+            raise ValueError(f"Subtree at '{target_dir}' not found. Cannot repair history.")
+        if not self.check_working_tree_clean():
+            raise ValueError(
+                "Working tree has uncommitted changes. "
+                "Please commit or stash your changes before repairing subtree history."
+            )
+
+        current_branch = self.current_branch_name()
+        head_rev = self._run_command_with_stdout(['git', 'rev-parse', 'HEAD'])
+        effective_branch = self.resolve_branch(url, branch)
+        timestamp = time.strftime('%Y%m%d-%H%M%S')
+        backup_branch = f'backup/{current_branch}-{repo_name}-{timestamp}'
+        repaired_branch = output_branch or f'repair/{repo_name}-{timestamp}'
+
+        snapshot_dir = Path(tempfile.mkdtemp(prefix='git-subtree-snapshot-'))
+        temp_dir = Path(tempfile.mkdtemp(prefix='git-subtree-repair-'))
+
+        try:
+            snapshot_target = snapshot_dir / 'tree'
+            shutil.copytree(target_dir, snapshot_target)
+
+            self._run_command(['git', 'clone', '--quiet', '.', str(temp_dir)])
+            self._run_command(['git', '-C', str(temp_dir), 'checkout', '--quiet', head_rev])
+
+            index_filter = f"git rm -r --cached --ignore-unmatch -- {shlex.quote(target_dir)}"
+            print(
+                "Running: "
+                f"git -C {temp_dir} filter-branch -f --index-filter {index_filter} --prune-empty HEAD"
+            )
+            subprocess.run(
+                [
+                    'git',
+                    '-C',
+                    str(temp_dir),
+                    'filter-branch',
+                    '-f',
+                    '--index-filter',
+                    index_filter,
+                    '--prune-empty',
+                    'HEAD',
+                ],
+                check=True,
+                env={**os.environ, 'FILTER_BRANCH_SQUELCH_WARNING': '1'},
+                text=True
+            )
+
+            self._run_command([
+                'git',
+                '-C',
+                str(temp_dir),
+                'subtree',
+                'add',
+                '--prefix=' + target_dir,
+                url,
+                effective_branch,
+                '-m',
+                f'Re-add subtree {repo_name} after history repair'
+            ])
+
+            shutil.rmtree(temp_dir / target_dir, ignore_errors=True)
+            shutil.copytree(snapshot_target, temp_dir / target_dir)
+            self._run_command(['git', '-C', str(temp_dir), 'add', target_dir])
+
+            diff_result = subprocess.run(
+                ['git', '-C', str(temp_dir), 'diff', '--cached', '--quiet'],
+                check=False
+            )
+            if diff_result.returncode != 0:
+                self._run_command([
+                    'git',
+                    '-C',
+                    str(temp_dir),
+                    'commit',
+                    '-m',
+                    f'Restore current {repo_name} subtree state after history repair'
+                ])
+
+            self._run_command(['git', 'branch', backup_branch, head_rev])
+            self._run_command([
+                'git',
+                'fetch',
+                '--quiet',
+                str(temp_dir),
+                f'HEAD:refs/heads/{repaired_branch}'
+            ])
+
+            if apply:
+                self._run_command(['git', 'reset', '--hard', repaired_branch])
+
+            return backup_branch, repaired_branch
+        finally:
+            shutil.rmtree(snapshot_dir, ignore_errors=True)
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
     def switch_branch(self, url: str, target_dir: str, old_branch: str, new_branch: str) -> None:
         """Switch a subtree to a different branch."""
@@ -605,6 +758,51 @@ def cmd_push(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_repair(args: argparse.Namespace) -> int:
+    """Handle the 'repair' command."""
+    csv_manager = CSVManager(args.csv)
+    git_manager = GitSubtreeManager(csv_manager)
+
+    if not args.repo_name:
+        print("Error: repo_name is required", file=sys.stderr)
+        return 1
+
+    repo = csv_manager.find_repo(args.repo_name)
+    if not repo:
+        print(f"Error: Repository '{args.repo_name}' not found", file=sys.stderr)
+        return 1
+
+    if not repo.target_dir:
+        print(f"Error: Repository '{args.repo_name}' has no target_dir set", file=sys.stderr)
+        return 1
+
+    branch = args.branch if args.branch else repo.branch
+
+    try:
+        print(f"\nRepairing subtree history for {repo.repo_name}...")
+        backup_branch, repaired_branch = git_manager.repair_subtree_history(
+            repo_name=repo.repo_name,
+            url=repo.url,
+            target_dir=repo.target_dir,
+            branch=branch,
+            output_branch=args.output_branch,
+            apply=args.apply
+        )
+        print("\nRepair completed successfully.")
+        print(f"  Backup branch:   {backup_branch}")
+        print(f"  Repaired branch: {repaired_branch}")
+        if args.apply:
+            print(f"  Current branch reset to repaired history: {repaired_branch}")
+        else:
+            print(f"  Inspect with: git log --oneline {repaired_branch}")
+            print(f"  Switch with:  git checkout {repaired_branch}")
+    except (subprocess.CalledProcessError, ValueError) as e:
+        print(f"Error repairing {repo.repo_name}: {e}", file=sys.stderr)
+        return 1
+
+    return 0
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     """Handle the 'list' command."""
     csv_manager = CSVManager(args.csv)
@@ -780,6 +978,7 @@ Examples:
   %(prog)s pull --all
   %(prog)s pull repo_name
   %(prog)s push repo_name
+  %(prog)s repair repo_name
   %(prog)s list --category Hypervisor
         """
     )
@@ -822,6 +1021,23 @@ Examples:
     push_parser.add_argument('-f', '--force', action='store_true',
                              help='Force push subtree history to remote')
 
+    # Repair command
+    repair_parser = subparsers.add_parser(
+        'repair',
+        help='Rewrite subtree history and create a clean repaired branch'
+    )
+    repair_parser.add_argument('repo_name', help='Repository name')
+    repair_parser.add_argument('-b', '--branch', default='', help='Remote branch name')
+    repair_parser.add_argument(
+        '-o', '--output-branch', default='',
+        help='Name for the repaired branch (default: repair/<repo>-<timestamp>)'
+    )
+    repair_parser.add_argument(
+        '--apply',
+        action='store_true',
+        help='Reset the current branch to the repaired branch after it is created'
+    )
+
     # List command
     list_parser = subparsers.add_parser('list', help='List all repositories')
     list_parser.add_argument('--category', help='Filter by category')
@@ -848,6 +1064,7 @@ Examples:
         'remove': cmd_remove,
         'pull': cmd_pull,
         'push': cmd_push,
+        'repair': cmd_repair,
         'list': cmd_list,
         'branch': cmd_branch,
         'init': cmd_init,
