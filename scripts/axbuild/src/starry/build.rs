@@ -1,10 +1,5 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::path::{Path, PathBuf};
 
-use anyhow::Context;
 use cargo_metadata::MetadataCommand;
 use ostool::build::config::Cargo;
 
@@ -49,8 +44,6 @@ pub fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Result<Carg
     to_cargo_config(load_build_info(request)?, request)
 }
 
-const ROOTFS_URL: &str = "https://github.com/Starry-OS/rootfs/releases/download/20260214";
-
 pub fn rootfs_image_name(arch: &str) -> String {
     format!("rootfs-{arch}.img")
 }
@@ -81,50 +74,12 @@ pub fn ensure_rootfs_in_target_dir(
     arch: &str,
     target: &str,
 ) -> anyhow::Result<PathBuf> {
-    let artifact_dir = rootfs_artifact_dir(workspace_root, target);
-    let disk_img = artifact_dir.join("disk.img");
-    let rootfs_name = rootfs_image_name(arch);
-    let rootfs_img = artifact_dir.join(&rootfs_name);
-    let rootfs_xz = artifact_dir.join(format!("{rootfs_name}.xz"));
-
-    fs::create_dir_all(&artifact_dir)
-        .with_context(|| format!("failed to create {}", artifact_dir.display()))?;
-
-    if !rootfs_img.exists() {
-        println!("image not found, downloading {}...", rootfs_name);
-        let url = format!("{ROOTFS_URL}/{rootfs_name}.xz");
-        let status = Command::new("curl")
-            .arg("-f")
-            .arg("-L")
-            .arg(&url)
-            .arg("-o")
-            .arg(&rootfs_xz)
-            .status()
-            .with_context(|| format!("failed to spawn curl for {url}"))?;
-        if !status.success() {
-            anyhow::bail!("failed to download {}", url);
-        }
-
-        let status = Command::new("xz")
-            .arg("-d")
-            .arg("-f")
-            .arg(&rootfs_xz)
-            .status()
-            .with_context(|| format!("failed to spawn xz for {}", rootfs_xz.display()))?;
-        if !status.success() {
-            anyhow::bail!("failed to decompress {}", rootfs_xz.display());
-        }
-    }
-
-    fs::copy(&rootfs_img, &disk_img).with_context(|| {
-        format!(
-            "failed to copy {} to {}",
-            rootfs_img.display(),
-            disk_img.display()
-        )
-    })?;
-
-    Ok(disk_img)
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(crate::starry::rootfs::ensure_rootfs_in_target_dir(
+        workspace_root,
+        arch,
+        target,
+    ))
 }
 
 pub fn to_cargo_config(
