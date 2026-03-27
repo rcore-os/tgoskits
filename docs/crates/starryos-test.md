@@ -6,7 +6,7 @@
 > 版本：`0.3.0-preview.3`
 > 文档依据：`Cargo.toml`、`src/main.rs`、`src/init.sh`、`xtask/src/starry/{mod.rs,run.rs,config.rs,build.rs}`、`os/StarryOS/kernel/src/entry.rs`
 
-`starryos-test` 是 StarryOS 的专用测试入口包。它的运行时代码当前几乎与 `starryos` 相同，同样会构造 `/bin/sh -c init.sh` 并调用 `starry_kernel::entry::init()`；但它在构建和运行流程中的“包身份”完全不同，因为 `cargo xtask test starry` 默认选择的就是它。
+`starryos-test` 是 StarryOS 的专用测试入口包。它的运行时代码当前几乎与 `starryos` 相同，同样会构造 `/bin/sh -c init.sh` 并调用 `starry_kernel::entry::init()`；但它在构建和运行流程中的“包身份”完全不同，因为 `cargo starry test qemu` 默认选择的就是它。
 
 因此，`starryos-test` 不是另一套内核实现，而是“被测试系统的入口包”。它把 StarryOS 的真实启动主线放进了专门的自动化回归通道里。
 
@@ -14,7 +14,7 @@
 ### 1.1 总体定位
 这个包的职责可以概括为三点：
 
-- 作为 `cargo xtask test starry` 的默认目标包。
+- 作为 `cargo starry test qemu` 的默认目标包。
 - 复用与 `starryos` 基本一致的启动路径，确保测试跑在真实系统 bring-up 之上。
 - 让 xtask 能为测试场景注入专门的成功/失败判据和目标产物目录。
 
@@ -24,7 +24,7 @@
 真实差异不在 `src/main.rs`，而在 xtask 的选择逻辑：
 
 - `xtask/src/starry/build.rs` 把测试包名固定为 `STARRY_TEST_PACKAGE = "starryos-test"`。
-- `xtask/src/starry/mod.rs::run_test()` 会构造 `RunArgs` 并强制 `package = "starryos-test"`。
+- `scripts/axbuild/src/starry/mod.rs::Starry::test_qemu()` 会构造测试请求并强制 `package = "starryos-test"`。
 - `xtask/src/starry/run.rs` 在包名等于 `starryos-test` 时使用 `RunScope::PackageRoot`。
 - `xtask/src/starry/config.rs` 通过 `cargo build -p starryos-test --target ... --features qemu` 解析测试产物目录和 `disk.img` 位置。
 
@@ -35,7 +35,7 @@
 
 ```mermaid
 flowchart TD
-    Test["cargo xtask test starry"] --> Xtask["xtask::starry::run_test"]
+    Test["cargo starry test qemu"] --> Xtask["Starry::test_qemu()"]
     Xtask --> Regex["注入 success/fail regex"]
     Regex --> Main["starryos-test::main"]
     Main --> Cmd["CMDLINE = /bin/sh -c init.sh"]
@@ -75,7 +75,7 @@ flowchart TD
 
 ## 2. 核心功能说明
 ### 2.1 主要功能
-- 作为 `cargo xtask test starry` 的目标包。
+- 作为 `cargo starry test qemu` 的目标包。
 - 复用真实的 StarryOS 启动主线进行系统级回归。
 - 为 xtask 提供稳定的包标识和产物根目录。
 - 通过 success/fail regex 把 QEMU 输出转成可自动判定的测试结果。
@@ -83,7 +83,7 @@ flowchart TD
 ### 2.2 关键入口
 - `src/main.rs`：把 `init.sh` 组装成命令行并调用 `starry_kernel::entry::init()`。
 - `src/init.sh`：定义测试入口当前会执行的用户态初始化脚本。
-- `xtask/src/starry/mod.rs::run_test()`：把这个包接入统一测试入口。
+- `scripts/axbuild/src/starry/mod.rs::Starry::test_qemu()`：把这个包接入统一测试入口。
 - `xtask/src/starry/run.rs::run_with_qemu_regex()`：注入正则并以 `PackageRoot` 范围运行。
 - `xtask/src/starry/config.rs`：解析该包的 target 产物目录并准备 rootfs。
 
@@ -91,7 +91,7 @@ flowchart TD
 最常用的使用方式不是直接 `cargo run`，而是通过统一测试命令：
 
 ```bash
-cargo xtask test starry --target riscv64gc-unknown-none-elf
+cargo starry test qemu --target riscv64
 ```
 
 如果需要单独调试这个包，也可以显式运行：
@@ -119,7 +119,7 @@ graph LR
 ## 4. 开发指南
 ### 4.1 常用运行方式
 ```bash
-cargo xtask test starry --target riscv64gc-unknown-none-elf
+cargo starry test qemu --target riscv64
 ```
 
 需要单包调试时再退回：
@@ -148,7 +148,7 @@ cargo xtask starry run --arch riscv64 --package starryos-test
 - 输出中是否出现 panic。
 
 ### 5.2 建议重点验证的场景
-- `cargo xtask test starry` 是否仍能稳定进入成功正则。
+- `cargo starry test qemu` 是否仍能稳定进入成功正则。
 - rootfs 产物目录解析是否仍正确。
 - `qemu` / `smp` / `vf2` 组合下是否仍能完成 bring-up。
 - 若引入测试专属初始化脚本，是否与普通 `starryos` 入口形成清晰边界。
@@ -162,7 +162,7 @@ cargo xtask starry run --arch riscv64 --package starryos-test
 ArceOS 本体不直接依赖 `starryos-test`。这是 StarryOS 在根工作区中单独建立的系统测试入口包。
 
 ### 6.2 StarryOS
-这是 StarryOS 的自动化回归入口。仓库里执行 `cargo xtask test starry` 时，真正被构建和运行的是它，而不是普通的 `starryos` 包。
+这是 StarryOS 的自动化回归入口。仓库里执行 `cargo starry test qemu` 时，真正被构建和运行的是它，而不是普通的 `starryos` 包。
 
 ### 6.3 Axvisor
 当前仓库中 Axvisor 不直接依赖 `starryos-test`。两者没有代码级直接关系。

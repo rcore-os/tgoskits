@@ -197,7 +197,7 @@ cargo axvisor qemu \
 ### 根工作区测试入口
 
 ```bash
-cargo xtask test qemu axvisor --target aarch64
+cargo axvisor test qemu --target aarch64
 ```
 
 这条命令属于根工作区测试矩阵，不等价于手工启动 ArceOS guest 的本地路径。

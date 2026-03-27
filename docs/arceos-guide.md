@@ -164,7 +164,7 @@ cargo arceos qemu --package arceos-httpclient --target riscv64gc-unknown-none-el
 ### 系统测试
 
 ```bash
-cargo xtask test qemu arceos --target riscv64gc-unknown-none-elf
+cargo arceos test qemu --target riscv64gc-unknown-none-elf
 ```
 
 这条命令会自动发现 `test-suit/arceos/` 下的测试包。

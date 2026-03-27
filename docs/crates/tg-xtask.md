@@ -82,7 +82,7 @@ flowchart TD
 StarryOS 子命令在复用 `axbuild` 的同时，增加了两层 Starry 专属逻辑：
 
 - `rootfs`：根据架构准备默认磁盘镜像
-- `run_test()`：为 `starryos-test` 注入默认 success/fail 正则，并在必要时自动准备 rootfs
+- `Starry::test_qemu()`：为 `starryos-test` 注入默认 success/fail 正则，并在必要时自动准备 rootfs
 
 所以 `tg-xtask` 在 StarryOS 侧并不是简单转发，而是做了少量系统特定编排。
 
@@ -171,11 +171,11 @@ graph LR
 - Axvisor 测试入口是否能正确切换工作目录
 
 ### 5.3 集成测试建议
-- `cargo xtask test std`
+- `cargo xtask test`
 - `cargo xtask arceos build -p <pkg>`
 - `cargo xtask arceos run -p <pkg>`
 - `cargo xtask starry rootfs`
-- `cargo xtask test arceos --target <triple>`
+- `cargo arceos test qemu --target <triple>`
 
 ### 5.4 高风险改动
 - 白名单测试机制

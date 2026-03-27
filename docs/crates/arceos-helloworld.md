@@ -142,7 +142,7 @@ cargo xtask arceos run --package arceos-helloworld --arch riscv64
 
 1. `arceos-helloworld`
 2. `arceos-shell` 或网络/块设备样例
-3. `cargo xtask test arceos --target ...`
+3. `cargo arceos test qemu --target ...`
 
 这样能更快判断故障是在“最小启动链”还是在“更高层功能链”。
 

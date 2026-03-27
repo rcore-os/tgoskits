@@ -98,7 +98,7 @@ flowchart TD
 | --- | --- | --- |
 | `components/axerrno`、`components/kspin`、`components/lazyinit` 这类基础 crate | `cargo test -p <crate>` | `cargo xtask arceos run --package arceos-helloworld --arch riscv64` |
 | `os/arceos/modules/*` | `cargo xtask arceos run --package arceos-helloworld --arch riscv64` | 需要功能时换成 `arceos-httpserver --net` 或 `arceos-shell --blk` |
-| `components/starry-*`、`os/StarryOS/kernel/*` | `cargo xtask starry run --arch riscv64 --package starryos` | `cargo xtask test starry --target riscv64gc-unknown-none-elf` |
+| `components/starry-*`、`os/StarryOS/kernel/*` | `cargo xtask starry run --arch riscv64 --package starryos` | `cargo starry test qemu --target riscv64` |
 | `components/axvm`、`components/axvcpu`、`components/axdevice`、`os/axvisor/src/*` | `cd os/axvisor && cargo xtask build` | 准备好 Guest 后运行 `./scripts/setup_qemu.sh arceos`，再执行 `cargo xtask qemu --build-config ... --qemu-config ... --vmconfigs ...` |
 
 ### 4.3 补充统一测试
@@ -106,10 +106,10 @@ flowchart TD
 完成最小路径验证后，若改动涉及跨系统基础组件，还需运行统一测试以确保不会破坏其他系统：
 
 ```bash
-cargo xtask test std
-cargo xtask test arceos --target riscv64gc-unknown-none-elf
-cargo xtask test starry --target riscv64gc-unknown-none-elf
-cargo xtask test qemu axvisor --target aarch64
+cargo xtask test
+cargo arceos test qemu --target riscv64gc-unknown-none-elf
+cargo starry test qemu --target riscv64
+cargo axvisor test qemu --target aarch64
 ```
 
 若修改的是跨系统基础组件，至少应执行以下测试：

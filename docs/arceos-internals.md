@@ -463,7 +463,7 @@ cargo xtask arceos run --package arceos-shell --arch riscv64 --blk
 
 | 改动类型 | 第一条验证路径 | 第二条验证路径 |
 | --- | --- | --- |
-| 基础 crate 或 `axhal`、`axtask` | `arceos-helloworld` | `cargo xtask test arceos --target riscv64gc-unknown-none-elf` |
+| 基础 crate 或 `axhal`、`axtask` | `arceos-helloworld` | `cargo arceos test qemu --target riscv64gc-unknown-none-elf` |
 | 网络栈 | `arceos-httpserver --net` | 对应网络测试或上层消费者 |
 | 文件系统 | `arceos-shell --blk` | `test-suit/arceos` 中相关测试 |
 | API/用户库 | 使用该 API 的最小示例 | 再补系统级测试 |

@@ -33,6 +33,8 @@ struct Cli {
 #[cfg(any(windows, unix))]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    use clap::Parser;
+
     let cli = Cli::parse();
     axbuild::axvisor::Axvisor::new()?
         .execute(cli.command)

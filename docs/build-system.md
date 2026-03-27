@@ -71,7 +71,7 @@ flowchart TD
 | 调 StarryOS 自己的 Makefile 细节 | `cd os/StarryOS && make ...` | 最贴近 StarryOS 原生入口 |
 | 配置、构建、启动 Axvisor | 根目录 `cargo axvisor ...` 或 `cargo xtask axvisor ...` | Axvisor 命令当前由根目录 `tg-xtask` 提供 |
 | 准备 Axvisor Guest 镜像与 VM 配置 | `cd os/axvisor && ./scripts/*.sh` | 脚本负责镜像/rootfs/vmconfig 预处理 |
-| 跑统一测试矩阵 | 根目录 `cargo xtask test ...` | CI 与本地入口一致 |
+| 跑统一测试入口 | `cargo xtask test` 或 `cargo {os} test qemu ...` | std 测试走根入口，OS 测试走各自子命令，CI 与本地入口一致 |
 
 ### 4.1 常用命令示例
 
@@ -94,10 +94,10 @@ cargo axvisor qemu \
   --vmconfigs os/axvisor/tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
 
 # 测试
-cargo xtask test std
-cargo xtask test qemu arceos --target riscv64gc-unknown-none-elf
-cargo xtask test qemu starry --target riscv64
-cargo xtask test qemu axvisor --target aarch64
+cargo xtask test
+cargo arceos test qemu --target riscv64gc-unknown-none-elf
+cargo starry test qemu --target riscv64
+cargo axvisor test qemu --target aarch64
 ```
 
 ## 5. 各系统的配置与构建
@@ -154,32 +154,32 @@ Axvisor 的构建与运行当前由根目录 `tg-xtask` 统一管理。
 
 ### 6.1 标准库测试
 
-`cargo xtask test std` 会读取 `scripts/test/std_crates.csv`，逐个对列表里的 workspace package 执行 `cargo test -p <package>`。
+`cargo xtask test` 会读取 `scripts/test/std_crates.csv`，逐个对列表里的 workspace package 执行 `cargo test -p <package>`。
 
 ### 6.2 ArceOS 测试
 
-`cargo xtask test qemu arceos` 会自动发现 `test-suit/arceos/` 下的测试包，并逐个在 QEMU 中运行。
+`cargo arceos test qemu` 会自动发现 `test-suit/arceos/` 下的测试包，并逐个在 QEMU 中运行。
 
 常用命令：
 
 ```bash
-cargo xtask test qemu arceos --target riscv64gc-unknown-none-elf
+cargo arceos test qemu --target riscv64gc-unknown-none-elf
 ```
 
 ### 6.3 StarryOS 测试
 
-`cargo xtask test qemu starry` 会构建并运行 `test-suit/starryos` 下的 `starryos-test` 包。
+`cargo starry test qemu` 会构建并运行 `test-suit/starryos` 下的 `starryos-test` 包。
 
 常用命令：
 
 ```bash
-cargo xtask test qemu starry --target riscv64
+cargo starry test qemu --target riscv64
 ```
 
 ### 6.4 Axvisor 测试
 
 ```bash
-cargo xtask test qemu axvisor --target aarch64
+cargo axvisor test qemu --target aarch64
 ```
 
 这条命令是根工作区对 Axvisor 的统一测试入口。
@@ -188,10 +188,10 @@ cargo xtask test qemu axvisor --target aarch64
 
 当前最稳妥的本地验证方式就是复用这些命令：
 
-- `cargo xtask test std`
-- `cargo xtask test qemu arceos --target ...`
-- `cargo xtask test qemu starry --target ...`
-- `cargo xtask test qemu axvisor --target aarch64`
+- `cargo xtask test`
+- `cargo arceos test qemu --target ...`
+- `cargo starry test qemu --target ...`
+- `cargo axvisor test qemu --target aarch64`
 
 ## 8. 最容易踩的坑
 

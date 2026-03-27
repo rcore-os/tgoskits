@@ -29,7 +29,7 @@ jobs:
           save-if: ${{ github.event_name == 'push' }}
 
       - run: rustc --version
-      - run: cargo xtask test std
+      - run: cargo xtask test
 
   test_os_target:
     name: Test ${{ matrix.os }} ${{ matrix.target }}
@@ -77,7 +77,7 @@ jobs:
           save-if: ${{ github.event_name == 'push' }}
 
       - name: Run ${{ matrix.os }} tests
-        run: cargo xtask test qemu ${{ matrix.os }} --target ${{ matrix.target }}
+        run: cargo ${{ matrix.os }} test qemu --target ${{ matrix.target }}
 
   test_axvisor_x86_64:
     name: Test axvisor x86_64
@@ -98,7 +98,7 @@ jobs:
           save-if: ${{ github.event_name == 'push' }}
 
       - name: Run axvisor x86_64 tests
-        run: cargo xtask test qemu axvisor --target x86_64
+        run: cargo axvisor test qemu --target x86_64
 
   test_axvisor_uboot_board:
     name: Test axvisor ${{ matrix.board }}
@@ -125,4 +125,4 @@ jobs:
           save-if: ${{ github.event_name == 'push' }}
 
       - name: Run axvisor board tests
-        run: cargo xtask test uboot axvisor --board ${{ matrix.board }} --uboot-config .github/workflows/uboot.toml
+        run: cargo axvisor test uboot --board ${{ matrix.board }} --uboot-config .github/workflows/uboot.toml

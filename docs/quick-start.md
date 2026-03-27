@@ -157,7 +157,7 @@ cargo axvisor qemu \
 ### 6.4 统一测试命令
 
 ```bash
-cargo xtask test qemu axvisor --target aarch64
+cargo axvisor test qemu --target aarch64
 ```
 
 这条命令属于根工作区测试矩阵，会走自己的测试逻辑。
@@ -169,17 +169,17 @@ cargo xtask test qemu axvisor --target aarch64
 | 改动位置 | 先做什么 | 再做什么 |
 | --- | --- | --- |
 | `components/axerrno`、`components/kspin`、`components/percpu` 这类基础 crate | `cargo test -p <crate>` | 再跑一个最小 ArceOS 或 StarryOS 路径 |
-| `os/arceos/modules/*` 或 `os/arceos/api/*` | `cargo arceos qemu --package arceos-helloworld --target riscv64gc-unknown-none-elf` | 再补 `cargo xtask test qemu arceos --target riscv64gc-unknown-none-elf` |
-| `components/starry-*` 或 `os/StarryOS/kernel/*` | `cargo starry qemu --arch riscv64` | 再补 `cargo xtask test qemu starry --target riscv64` |
+| `os/arceos/modules/*` 或 `os/arceos/api/*` | `cargo arceos qemu --package arceos-helloworld --target riscv64gc-unknown-none-elf` | 再补 `cargo arceos test qemu --target riscv64gc-unknown-none-elf` |
+| `components/starry-*` 或 `os/StarryOS/kernel/*` | `cargo starry qemu --arch riscv64` | 再补 `cargo starry test qemu --target riscv64` |
 | `components/axvm`、`components/axvcpu`、`components/axdevice`、`os/axvisor/src/*` | `cargo axvisor build --config os/axvisor/.build.toml` | 需要 Guest 时先运行 `(cd os/axvisor && ./scripts/setup_qemu.sh arceos)`，再执行 `cargo axvisor qemu --config ... --qemu-config ... --vmconfigs ...` |
 
 ### 7.1 提交前的统一测试
 
 ```bash
-cargo xtask test std
-cargo xtask test qemu arceos --target riscv64gc-unknown-none-elf
-cargo xtask test qemu starry --target riscv64
-cargo xtask test qemu axvisor --target aarch64
+cargo xtask test
+cargo arceos test qemu --target riscv64gc-unknown-none-elf
+cargo starry test qemu --target riscv64
+cargo axvisor test qemu --target aarch64
 ```
 
 ## 8. 后续学习路径

@@ -135,7 +135,7 @@ cargo starry qemu --arch riscv64
 ### 系统测试
 
 ```bash
-cargo xtask test qemu starry --target riscv64
+cargo starry test qemu --target riscv64
 ```
 
 根测试入口跑的其实是 `test-suit/starryos` 下的 `starryos-test` 包，而不是普通的 `starryos` 包。

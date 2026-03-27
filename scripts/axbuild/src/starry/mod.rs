@@ -1,10 +1,15 @@
 use std::path::PathBuf;
 
+use anyhow::Context;
 use clap::{Args, Subcommand};
 use ostool::build::CargoQemuOverrideArgs;
 
-use crate::context::{
-    AppContext, DEFAULT_STARRY_ARCH, QemuRunConfig, StarryCliArgs, starry_target_for_arch_checked,
+use crate::{
+    context::{
+        AppContext, DEFAULT_STARRY_ARCH, QemuRunConfig, StarryCliArgs,
+        starry_target_for_arch_checked,
+    },
+    test_qemu,
 };
 
 pub mod build;
@@ -22,6 +27,8 @@ pub enum Command {
 
     /// Build and run StarryOS application with U-Boot
     Uboot(ArgsUboot),
+    /// Run StarryOS test suites
+    Test(ArgsTest),
 }
 
 #[derive(Args, Clone)]
@@ -60,6 +67,29 @@ pub struct ArgsRootfs {
     pub arch: Option<String>,
 }
 
+#[derive(Args)]
+pub struct ArgsTest {
+    #[command(subcommand)]
+    pub command: TestCommand,
+}
+
+#[derive(Subcommand)]
+pub enum TestCommand {
+    /// Run StarryOS QEMU test suite
+    Qemu(ArgsTestQemu),
+    /// Reserved StarryOS U-Boot test suite entrypoint
+    Uboot(ArgsTestUboot),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ArgsTestQemu {
+    #[arg(long, alias = "arch", value_name = "ARCH")]
+    pub target: String,
+}
+
+#[derive(Args, Debug, Clone, Default)]
+pub struct ArgsTestUboot {}
+
 pub struct Starry {
     app: AppContext,
 }
@@ -94,6 +124,9 @@ impl Starry {
             }
             Command::Uboot(args) => {
                 self.uboot(args).await?;
+            }
+            Command::Test(args) => {
+                self.test(args).await?;
             }
         }
         Ok(())
@@ -160,6 +193,72 @@ impl Starry {
             .await?;
         Ok(())
     }
+
+    async fn test(&mut self, args: ArgsTest) -> anyhow::Result<()> {
+        match args.command {
+            TestCommand::Qemu(args) => self.test_qemu(args).await,
+            TestCommand::Uboot(args) => self.test_uboot(args).await,
+        }
+    }
+
+    async fn test_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
+        let (arch, target) = test_qemu::parse_starry_test_target(&args.target)?;
+        let mut failed = Vec::new();
+
+        println!(
+            "running starry qemu tests for package {} on arch: {} (target: {})",
+            test_qemu::STARRY_TEST_PACKAGE,
+            arch,
+            target
+        );
+
+        for (index, package) in [test_qemu::STARRY_TEST_PACKAGE].iter().enumerate() {
+            println!("[{}/{}] starry qemu {}", index + 1, 1, package);
+            let (mut request, _snapshot) = self.app.prepare_starry_request(
+                StarryCliArgs {
+                    config: None,
+                    arch: Some(arch.to_string()),
+                    target: None,
+                    plat_dyn: None,
+                },
+                None,
+                None,
+            )?;
+            request.package = test_qemu::STARRY_TEST_PACKAGE.to_string();
+
+            let cargo = build::load_cargo_config(&request)?;
+            let qemu_args = rootfs::default_qemu_args(self.app.workspace_root(), &request).await?;
+            match self
+                .app
+                .qemu(
+                    cargo,
+                    request.build_info_path,
+                    QemuRunConfig {
+                        qemu_config: request.qemu_config,
+                        default_args: CargoQemuOverrideArgs {
+                            args: Some(qemu_args),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                )
+                .await
+                .with_context(|| "starry qemu test failed")
+            {
+                Ok(()) => println!("ok: {}", package),
+                Err(err) => {
+                    eprintln!("failed: {}: {:#}", package, err);
+                    failed.push((*package).to_string());
+                }
+            }
+        }
+
+        test_qemu::finalize_qemu_test_run("starry", &failed)
+    }
+
+    async fn test_uboot(&mut self, _args: ArgsTestUboot) -> anyhow::Result<()> {
+        test_qemu::unsupported_uboot_test_command("starry")
+    }
 }
 
 impl Default for Starry {
@@ -170,6 +269,8 @@ impl Default for Starry {
 
 #[cfg(test)]
 mod tests {
+    use clap::Parser;
+
     use super::*;
 
     #[test]
@@ -243,5 +344,43 @@ mod tests {
 
         assert!(qemu.default_args.args.is_some());
         assert!(qemu.append_args.args.is_none());
+    }
+
+    #[test]
+    fn command_parses_test_qemu() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from(["starry", "test", "qemu", "--target", "x86_64"]).unwrap();
+
+        match cli.command {
+            Command::Test(args) => match args.command {
+                TestCommand::Qemu(args) => assert_eq!(args.target, "x86_64"),
+                _ => panic!("expected qemu test command"),
+            },
+            _ => panic!("expected test command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_test_uboot() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from(["starry", "test", "uboot"]).unwrap();
+
+        match cli.command {
+            Command::Test(args) => match args.command {
+                TestCommand::Uboot(_) => {}
+                _ => panic!("expected uboot test command"),
+            },
+            _ => panic!("expected test command"),
+        }
     }
 }

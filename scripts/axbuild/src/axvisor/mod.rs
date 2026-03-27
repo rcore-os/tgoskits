@@ -1,10 +1,12 @@
 use std::path::PathBuf;
 
+use anyhow::Context;
 use clap::{Args, Subcommand};
 
 use crate::{
     axvisor::context::AxvisorContext,
     context::{AppContext, AxvisorCliArgs, QemuRunConfig},
+    test_qemu,
 };
 
 pub mod board;
@@ -29,6 +31,8 @@ pub enum Command {
     Config(ArgsConfig),
     /// Guest image management
     Image(image::Args),
+    /// Run Axvisor test suites
+    Test(ArgsTest),
 }
 
 #[derive(Args, Clone)]
@@ -76,6 +80,35 @@ pub struct ArgsDefconfig {
 pub struct ArgsConfig {
     #[command(subcommand)]
     pub command: ConfigCommand,
+}
+
+#[derive(Args)]
+pub struct ArgsTest {
+    #[command(subcommand)]
+    pub command: TestCommand,
+}
+
+#[derive(Subcommand)]
+pub enum TestCommand {
+    /// Run Axvisor QEMU test suite
+    Qemu(ArgsTestQemu),
+    /// Run Axvisor U-Boot board test suite
+    Uboot(ArgsTestUboot),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ArgsTestQemu {
+    #[arg(long, alias = "arch", value_name = "ARCH")]
+    pub target: String,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ArgsTestUboot {
+    #[arg(short = 'b', long, value_name = "BOARD")]
+    pub board: String,
+
+    #[arg(long)]
+    pub uboot_config: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -127,6 +160,9 @@ impl Axvisor {
             }
             Command::Image(args) => {
                 self.image(args).await?;
+            }
+            Command::Test(args) => {
+                self.test(args).await?;
             }
         }
         Ok(())
@@ -202,6 +238,111 @@ impl Axvisor {
 
     async fn image(&self, args: image::Args) -> anyhow::Result<()> {
         image::run(args, &self.ctx).await
+    }
+
+    async fn test(&mut self, args: ArgsTest) -> anyhow::Result<()> {
+        match args.command {
+            TestCommand::Qemu(args) => self.test_qemu(args).await,
+            TestCommand::Uboot(args) => self.test_uboot(args).await,
+        }
+    }
+
+    async fn test_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
+        let (arch, target) = test_qemu::parse_axvisor_test_target(&args.target)?;
+
+        println!(
+            "running axvisor qemu tests for arch: {} (target: {})",
+            arch, target
+        );
+
+        let vmconfig = match arch {
+            "aarch64" => {
+                qemu_test::prepare_linux_aarch64_guest_assets(&self.ctx)
+                    .await?
+                    .generated_vmconfig
+            }
+            "x86_64" => qemu_test::prepare_nimbos_x86_64_guest_vmconfig(&self.ctx).await?,
+            _ => unreachable!(),
+        };
+
+        let (request, _snapshot) = self.app.prepare_axvisor_request(
+            AxvisorCliArgs {
+                config: None,
+                arch: Some(arch.to_string()),
+                target: None,
+                plat_dyn: None,
+                vmconfigs: vec![vmconfig],
+            },
+            None,
+            None,
+        )?;
+
+        let cargo = build::load_cargo_config(&request)?;
+        let qemu_config =
+            build::default_qemu_config_template_path(&request.axvisor_dir, &request.arch);
+        let shell = test_qemu::axvisor_test_shell_config(arch);
+        let override_args = qemu_test::shell_autoinit_qemu_override_args(&request, &shell)?;
+
+        self.app
+            .qemu(
+                cargo,
+                request.build_info_path,
+                QemuRunConfig {
+                    qemu_config: Some(qemu_config),
+                    override_args,
+                    ..Default::default()
+                },
+            )
+            .await
+            .with_context(|| "axvisor qemu test failed")
+    }
+
+    async fn test_uboot(&mut self, args: ArgsTestUboot) -> anyhow::Result<()> {
+        let board = test_qemu::axvisor_uboot_board_config(&args.board)?;
+        let explicit_uboot_config = args.uboot_config.clone();
+        let uboot_config_summary = explicit_uboot_config
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "using ostool default search".to_string());
+
+        if let Some(path) = explicit_uboot_config.as_ref()
+            && !path.exists()
+        {
+            bail!(
+                "missing explicit U-Boot config `{}` for axvisor board tests",
+                path.display()
+            );
+        }
+
+        println!(
+            "running axvisor uboot test for board: {} with vmconfig: {}",
+            board.board, board.vmconfig
+        );
+
+        let (mut request, _snapshot) = self.app.prepare_axvisor_request(
+            AxvisorCliArgs {
+                config: Some(PathBuf::from(board.build_config)),
+                arch: None,
+                target: None,
+                plat_dyn: None,
+                vmconfigs: vec![PathBuf::from(board.vmconfig)],
+            },
+            None,
+            explicit_uboot_config.clone(),
+        )?;
+        request.uboot_config = explicit_uboot_config;
+
+        let cargo = build::load_cargo_config(&request)?;
+        self.app
+            .uboot(cargo, request.build_info_path, request.uboot_config)
+            .await
+            .with_context(|| {
+                format!(
+                    "axvisor uboot test failed for board `{}` (build_config={}, vmconfig={}, \
+                     uboot_config={})",
+                    board.board, board.build_config, board.vmconfig, uboot_config_summary
+                )
+            })
     }
 }
 
@@ -308,6 +449,56 @@ mod tests {
                 assert_eq!(args.build.vmconfigs, vec![PathBuf::from("tmp/vm1.toml")]);
             }
             _ => panic!("expected uboot command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_test_qemu() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from(["axvisor", "test", "qemu", "--target", "aarch64"]).unwrap();
+
+        match cli.command {
+            Command::Test(args) => match args.command {
+                TestCommand::Qemu(args) => assert_eq!(args.target, "aarch64"),
+                _ => panic!("expected qemu test command"),
+            },
+            _ => panic!("expected test command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_test_uboot() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from([
+            "axvisor",
+            "test",
+            "uboot",
+            "--board",
+            "roc-rk3568-pc",
+            "--uboot-config",
+            "uboot.toml",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Test(args) => match args.command {
+                TestCommand::Uboot(args) => {
+                    assert_eq!(args.board, "roc-rk3568-pc");
+                    assert_eq!(args.uboot_config, Some(PathBuf::from("uboot.toml")));
+                }
+                _ => panic!("expected uboot test command"),
+            },
+            _ => panic!("expected test command"),
         }
     }
 

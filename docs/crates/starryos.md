@@ -153,7 +153,7 @@ cargo xtask starry run --arch riscv64 --package starryos
 ### 5.3 与 `starryos-test` 的关系
 人工运行和日常镜像调试更适合用 `starryos`。
 
-自动化回归则应优先用 `starryos-test`，因为 `cargo xtask test starry` 默认跑的是测试入口包，而不是这里。
+自动化回归则应优先用 `starryos-test`，因为 `cargo starry test qemu` 默认跑的是测试入口包，而不是这里。
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
