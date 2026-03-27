@@ -1,12 +1,11 @@
-cargo_args = []
+env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = [
-  "dyn-plat",
   "axstd/bus-mmio",
-  "driver/sdmmc",
-  "driver/rk3588-clk",
+  "sdmmc",
+  "rk3588-clk",
   "fs",
 ]
 log = "Info"
+plat_dyn = true
 target = "aarch64-unknown-none-softfloat"
-to_bin = true
 vm_configs = []

@@ -103,11 +103,10 @@ pub async fn prepare_nimbos_x86_64_guest_vmconfig(ctx: &AxvisorContext) -> anyho
 }
 
 pub fn shell_autoinit_qemu_override_args(
-    workspace_root: &Path,
     request: &ResolvedAxvisorRequest,
     shell: &ShellAutoInitConfig,
 ) -> anyhow::Result<CargoQemuOverrideArgs> {
-    let template_path = default_qemu_config_template_path(workspace_root, &request.arch);
+    let template_path = default_qemu_config_template_path(&request.axvisor_dir, &request.arch);
     let mut overrides = qemu_override_args_from_template(&template_path, request)?;
     overrides.success_regex = Some(shell.success_regex.clone());
     overrides.fail_regex = Some(shell.fail_regex.clone());
@@ -241,14 +240,15 @@ uefi = false
         .unwrap();
 
         let overrides = shell_autoinit_qemu_override_args(
-            dir.path(),
             &ResolvedAxvisorRequest {
                 package: "axvisor".to_string(),
+                axvisor_dir: dir.path().join("os/axvisor"),
                 arch: "aarch64".to_string(),
                 target: "aarch64-unknown-none-softfloat".to_string(),
                 plat_dyn: None,
                 build_info_path: dir.path().join(".build.toml"),
                 qemu_config: None,
+                uboot_config: None,
                 vmconfigs: vec![],
             },
             &ShellAutoInitConfig {
