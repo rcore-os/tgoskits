@@ -1,0 +1,10 @@
+{
+  "targets": [
+    "x86_64-unknown-none"
+  ],
+  "rust_components": [
+    "rust-src",
+    "clippy",
+    "rustfmt"
+  ]
+}
