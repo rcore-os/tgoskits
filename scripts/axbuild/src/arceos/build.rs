@@ -307,7 +307,26 @@ pub fn load_build_info(request: &ResolvedBuildRequest) -> anyhow::Result<ArceosB
 }
 
 pub fn load_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Result<Cargo> {
-    load_build_info(request)?.into_cargo_config(request)
+    let mut cargo = load_build_info(request)?.into_cargo_config(request)?;
+    inject_package_pre_build_cmds(request, &mut cargo)?;
+    Ok(cargo)
+}
+
+fn inject_package_pre_build_cmds(
+    request: &ResolvedBuildRequest,
+    cargo: &mut Cargo,
+) -> anyhow::Result<()> {
+    if request.package == "arceos-fs-shell" {
+        let package_manifest = resolve_package_manifest_path(&request.package, None)?;
+        let app_dir = package_manifest
+            .parent()
+            .context("package manifest path has no parent directory")?;
+        let script = app_dir.join("prepare_disk_img.sh");
+        cargo
+            .pre_build_cmds
+            .push(format!("sh {}", script.display()));
+    }
+    Ok(())
 }
 
 pub fn load_or_create_build_info<T>(path: &Path, default: impl FnOnce() -> T) -> anyhow::Result<T>

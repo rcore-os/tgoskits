@@ -98,7 +98,11 @@ members = [
     "os/arceos/examples/shell",
 
     # test-suit
+    "test-suit/arceos/display",
+    "test-suit/arceos/exception",
+    "test-suit/arceos/fs/*",
     "test-suit/arceos/memtest",
+    "test-suit/arceos/net/*",
     "test-suit/arceos/task/*",
     "test-suit/starryos",
 
@@ -251,7 +255,7 @@ axklib = { path = "components/axklib", version = "0.3.0" }
 range-alloc-arceos = { path = "components/range-alloc-arceos", version = "0.1.4" }
 
 # === drivers ===
-# fxmac_rs = { path = "components/fxmac_rs", version = "0.2.1" }
+fxmac_rs = { path = "components/fxmac_rs", version = "0.2.1" }
 
 [workspace.dependencies]
 # === os/arceos crates (0.3.0-preview.3) ===

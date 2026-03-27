@@ -1,0 +1,19 @@
+args = [
+    "-machine",
+    "q35",
+    "-cpu",
+    "max",
+    "-m",
+    "128M",
+    "-smp",
+    "4",
+    "-nographic",
+    "-device",
+    "virtio-gpu-pci",
+    "-serial",
+    "mon:stdio",
+]
+uefi = false
+to_bin = false
+success_regex = ["Display tests run OK!"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
