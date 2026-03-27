@@ -6,7 +6,7 @@ use ostool::build::CargoQemuOverrideArgs;
 
 use crate::{
     context::{
-        AppContext, DEFAULT_STARRY_ARCH, QemuRunConfig, StarryCliArgs,
+        AppContext, DEFAULT_STARRY_ARCH, QemuRunConfig, ResolvedStarryRequest, StarryCliArgs,
         starry_target_for_arch_checked,
     },
     test_qemu,
@@ -88,7 +88,7 @@ pub struct ArgsTestQemu {
 }
 
 #[derive(Args, Debug, Clone, Default)]
-pub struct ArgsTestUboot {}
+pub struct ArgsTestUboot;
 
 pub struct Starry {
     app: AppContext,
@@ -113,61 +113,23 @@ impl Starry {
 
     pub async fn execute(&mut self, command: Command) -> anyhow::Result<()> {
         match command {
-            Command::Build(args) => {
-                self.build(args).await?;
-            }
-            Command::Qemu(args) => {
-                self.qemu(args).await?;
-            }
-            Command::Rootfs(args) => {
-                self.rootfs(args).await?;
-            }
-            Command::Uboot(args) => {
-                self.uboot(args).await?;
-            }
-            Command::Test(args) => {
-                self.test(args).await?;
-            }
+            Command::Build(args) => self.build(args).await,
+            Command::Qemu(args) => self.qemu(args).await,
+            Command::Rootfs(args) => self.rootfs(args).await,
+            Command::Uboot(args) => self.uboot(args).await,
+            Command::Test(args) => self.test(args).await,
         }
-        Ok(())
     }
 
     async fn build(&mut self, args: ArgsBuild) -> anyhow::Result<()> {
-        let (request, snapshot) = self
-            .app
-            .prepare_starry_request((&args).into(), None, None)?;
-        self.app.store_starry_snapshot(&snapshot)?;
-
-        let cargo = build::load_cargo_config(&request)?;
-        self.app.build(cargo, request.build_info_path).await?;
-        Ok(())
+        let request = self.prepare_persisted_request((&args).into(), None, None)?;
+        self.run_build_request(request).await
     }
 
     async fn qemu(&mut self, args: ArgsQemu) -> anyhow::Result<()> {
-        let (request, snapshot) = self.app.prepare_starry_request(
-            (&args.build).into(),
-            args.qemu_config.clone(),
-            None,
-        )?;
-        self.app.store_starry_snapshot(&snapshot)?;
-
-        let cargo = build::load_cargo_config(&request)?;
-        let qemu_args = rootfs::default_qemu_args(self.app.workspace_root(), &request).await?;
-        self.app
-            .qemu(
-                cargo,
-                request.build_info_path,
-                QemuRunConfig {
-                    qemu_config: request.qemu_config,
-                    default_args: CargoQemuOverrideArgs {
-                        args: Some(qemu_args),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-            )
-            .await?;
-        Ok(())
+        let request =
+            self.prepare_persisted_request((&args.build).into(), args.qemu_config, None)?;
+        self.run_qemu_request(request).await
     }
 
     async fn rootfs(&mut self, args: ArgsRootfs) -> anyhow::Result<()> {
@@ -180,18 +142,9 @@ impl Starry {
     }
 
     async fn uboot(&mut self, args: ArgsUboot) -> anyhow::Result<()> {
-        let (request, snapshot) = self.app.prepare_starry_request(
-            (&args.build).into(),
-            None,
-            args.uboot_config.clone(),
-        )?;
-        self.app.store_starry_snapshot(&snapshot)?;
-
-        let cargo = build::load_cargo_config(&request)?;
-        self.app
-            .uboot(cargo, request.build_info_path, request.uboot_config)
-            .await?;
-        Ok(())
+        let request =
+            self.prepare_persisted_request((&args.build).into(), None, args.uboot_config)?;
+        self.run_uboot_request(request).await
     }
 
     async fn test(&mut self, args: ArgsTest) -> anyhow::Result<()> {
@@ -203,61 +156,104 @@ impl Starry {
 
     async fn test_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
         let (arch, target) = test_qemu::parse_starry_test_target(&args.target)?;
-        let mut failed = Vec::new();
+        let package = test_qemu::STARRY_TEST_PACKAGE;
 
         println!(
             "running starry qemu tests for package {} on arch: {} (target: {})",
-            test_qemu::STARRY_TEST_PACKAGE,
-            arch,
-            target
+            package, arch, target
         );
 
-        for (index, package) in [test_qemu::STARRY_TEST_PACKAGE].iter().enumerate() {
-            println!("[{}/{}] starry qemu {}", index + 1, 1, package);
-            let (mut request, _snapshot) = self.app.prepare_starry_request(
-                StarryCliArgs {
-                    config: None,
-                    arch: Some(arch.to_string()),
-                    target: None,
-                    plat_dyn: None,
-                },
-                None,
-                None,
-            )?;
-            request.package = test_qemu::STARRY_TEST_PACKAGE.to_string();
+        println!("[1/1] starry qemu {}", package);
+        let mut request = self.prepare_request(Self::test_build_args(arch), None, None)?;
+        request.package = package.to_string();
 
-            let cargo = build::load_cargo_config(&request)?;
-            let qemu_args = rootfs::default_qemu_args(self.app.workspace_root(), &request).await?;
-            match self
-                .app
-                .qemu(
-                    cargo,
-                    request.build_info_path,
-                    QemuRunConfig {
-                        qemu_config: request.qemu_config,
-                        default_args: CargoQemuOverrideArgs {
-                            args: Some(qemu_args),
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    },
-                )
-                .await
-                .with_context(|| "starry qemu test failed")
-            {
-                Ok(()) => println!("ok: {}", package),
-                Err(err) => {
-                    eprintln!("failed: {}: {:#}", package, err);
-                    failed.push((*package).to_string());
-                }
+        match self
+            .run_qemu_request(request)
+            .await
+            .with_context(|| "starry qemu test failed")
+        {
+            Ok(()) => {
+                println!("ok: {}", package);
+                test_qemu::finalize_qemu_test_run("starry", &[])
+            }
+            Err(err) => {
+                eprintln!("failed: {}: {:#}", package, err);
+                test_qemu::finalize_qemu_test_run("starry", &[package.to_string()])
             }
         }
-
-        test_qemu::finalize_qemu_test_run("starry", &failed)
     }
 
     async fn test_uboot(&mut self, _args: ArgsTestUboot) -> anyhow::Result<()> {
         test_qemu::unsupported_uboot_test_command("starry")
+    }
+
+    fn prepare_request(
+        &self,
+        args: StarryCliArgs,
+        qemu_config: Option<PathBuf>,
+        uboot_config: Option<PathBuf>,
+    ) -> anyhow::Result<ResolvedStarryRequest> {
+        let (request, _) = self
+            .app
+            .prepare_starry_request(args, qemu_config, uboot_config)?;
+        Ok(request)
+    }
+
+    fn prepare_persisted_request(
+        &self,
+        args: StarryCliArgs,
+        qemu_config: Option<PathBuf>,
+        uboot_config: Option<PathBuf>,
+    ) -> anyhow::Result<ResolvedStarryRequest> {
+        let (request, snapshot) =
+            self.app
+                .prepare_starry_request(args, qemu_config, uboot_config)?;
+        self.app.store_starry_snapshot(&snapshot)?;
+        Ok(request)
+    }
+
+    fn test_build_args(arch: &str) -> StarryCliArgs {
+        StarryCliArgs {
+            config: None,
+            arch: Some(arch.to_string()),
+            target: None,
+            plat_dyn: None,
+        }
+    }
+
+    fn qemu_run_config(qemu_config: Option<PathBuf>, qemu_args: Vec<String>) -> QemuRunConfig {
+        QemuRunConfig {
+            qemu_config,
+            default_args: CargoQemuOverrideArgs {
+                args: Some(qemu_args),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    async fn run_qemu_request(&mut self, request: ResolvedStarryRequest) -> anyhow::Result<()> {
+        let cargo = build::load_cargo_config(&request)?;
+        let qemu_args = rootfs::default_qemu_args(self.app.workspace_root(), &request).await?;
+        self.app
+            .qemu(
+                cargo,
+                request.build_info_path,
+                Self::qemu_run_config(request.qemu_config, qemu_args),
+            )
+            .await
+    }
+
+    async fn run_build_request(&mut self, request: ResolvedStarryRequest) -> anyhow::Result<()> {
+        let cargo = build::load_cargo_config(&request)?;
+        self.app.build(cargo, request.build_info_path).await
+    }
+
+    async fn run_uboot_request(&mut self, request: ResolvedStarryRequest) -> anyhow::Result<()> {
+        let cargo = build::load_cargo_config(&request)?;
+        self.app
+            .uboot(cargo, request.build_info_path, request.uboot_config)
+            .await
     }
 }
 

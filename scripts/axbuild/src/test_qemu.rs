@@ -27,7 +27,6 @@ const AXVISOR_AARCH64_TEST_SUCCESS_REGEX: &[&str] = &["^guest test pass!$"];
 const AXVISOR_X86_64_TEST_SHELL_PREFIX: &str = ">>";
 const AXVISOR_X86_64_TEST_SHELL_INIT_CMD: &str = "hello_world";
 const AXVISOR_X86_64_TEST_SUCCESS_REGEX: &[&str] = &["Hello world from user mode program!"];
-const AXVISOR_UBOOT_TEST_BOARDS: &[&str] = &["phytiumpi", "roc-rk3568-pc"];
 const AXVISOR_TEST_FAIL_REGEX: &[&str] = &[
     "(?i)\\bpanic(?:ked)?\\b",
     "(?i)kernel panic",
@@ -35,51 +34,38 @@ const AXVISOR_TEST_FAIL_REGEX: &[&str] = &[
     "(?i)permission denied",
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AxvisorUbootBoardConfig {
     pub(crate) board: &'static str,
     pub(crate) build_config: &'static str,
     pub(crate) vmconfig: &'static str,
 }
 
+const AXVISOR_UBOOT_BOARD_CONFIGS: &[AxvisorUbootBoardConfig] = &[
+    AxvisorUbootBoardConfig {
+        board: "phytiumpi",
+        build_config: "os/axvisor/configs/board/phytiumpi.toml",
+        vmconfig: "os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml",
+    },
+    AxvisorUbootBoardConfig {
+        board: "roc-rk3568-pc",
+        build_config: "os/axvisor/configs/board/roc-rk3568-pc.toml",
+        vmconfig: "os/axvisor/configs/vms/linux-aarch64-rk3568-smp1.toml",
+    },
+];
+
 pub(crate) fn validate_arceos_target(target: &str) -> anyhow::Result<&str> {
-    if ARCEOS_TEST_TARGETS.contains(&target) {
-        Ok(target)
-    } else {
-        bail!(
-            "unsupported target `{}` for arceos qemu tests. Supported targets are: {}",
-            target,
-            ARCEOS_TEST_TARGETS.join(", ")
-        )
-    }
+    validate_supported_target(target, "arceos qemu tests", "targets", ARCEOS_TEST_TARGETS)?;
+    Ok(target)
 }
 
 pub(crate) fn parse_starry_test_target(target: &str) -> anyhow::Result<(&str, &'static str)> {
-    if !STARRY_TEST_ARCHES.contains(&target) {
-        bail!(
-            "unsupported target `{}` for starry qemu tests. Supported arch values are: {}",
-            target,
-            STARRY_TEST_ARCHES.join(", ")
-        );
-    }
+    validate_supported_arch_alias(target, "starry qemu tests", STARRY_TEST_ARCHES)?;
     Ok((target, starry_target_for_arch_checked(target)?))
 }
 
 pub(crate) fn parse_axvisor_test_target(target: &str) -> anyhow::Result<(&str, &'static str)> {
-    if target.contains('-') {
-        bail!(
-            "unsupported target `{}` for axvisor qemu tests. Pass an arch value like: {}",
-            target,
-            AXVISOR_TEST_ARCHES.join(", ")
-        );
-    }
-    if !AXVISOR_TEST_ARCHES.contains(&target) {
-        bail!(
-            "unsupported target `{}` for axvisor qemu tests. Supported arch values are: {}",
-            target,
-            AXVISOR_TEST_ARCHES.join(", ")
-        );
-    }
+    validate_supported_arch_alias(target, "axvisor qemu tests", AXVISOR_TEST_ARCHES)?;
     Ok((
         target,
         match target {
@@ -91,58 +77,95 @@ pub(crate) fn parse_axvisor_test_target(target: &str) -> anyhow::Result<(&str, &
 }
 
 pub(crate) fn axvisor_uboot_board_config(board: &str) -> anyhow::Result<AxvisorUbootBoardConfig> {
-    match board {
-        "phytiumpi" => Ok(AxvisorUbootBoardConfig {
-            board: "phytiumpi",
-            build_config: "os/axvisor/configs/board/phytiumpi.toml",
-            vmconfig: "os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml",
-        }),
-        "roc-rk3568-pc" => Ok(AxvisorUbootBoardConfig {
-            board: "roc-rk3568-pc",
-            build_config: "os/axvisor/configs/board/roc-rk3568-pc.toml",
-            vmconfig: "os/axvisor/configs/vms/linux-aarch64-rk3568-smp1.toml",
-        }),
-        _ => bail!(
-            "unsupported board `{}` for axvisor uboot tests. Supported boards are: {}",
-            board,
-            AXVISOR_UBOOT_TEST_BOARDS.join(", ")
-        ),
-    }
+    AXVISOR_UBOOT_BOARD_CONFIGS
+        .iter()
+        .copied()
+        .find(|config| config.board == board)
+        .ok_or_else(|| {
+            anyhow!(
+                "unsupported board `{}` for axvisor uboot tests. Supported boards are: {}",
+                board,
+                supported_board_names()
+            )
+        })
 }
 
 fn default_axvisor_test_success_regex() -> Vec<String> {
-    AXVISOR_AARCH64_TEST_SUCCESS_REGEX
-        .iter()
-        .map(|pattern| (*pattern).to_string())
-        .collect()
+    owned_patterns(AXVISOR_AARCH64_TEST_SUCCESS_REGEX)
 }
 
 fn default_axvisor_test_fail_regex() -> Vec<String> {
-    AXVISOR_TEST_FAIL_REGEX
-        .iter()
-        .map(|pattern| (*pattern).to_string())
-        .collect()
+    owned_patterns(AXVISOR_TEST_FAIL_REGEX)
 }
 
-pub(crate) fn axvisor_test_shell_config(arch: &str) -> ShellAutoInitConfig {
+pub(crate) fn axvisor_test_shell_config(arch: &str) -> anyhow::Result<ShellAutoInitConfig> {
     match arch {
-        "aarch64" => ShellAutoInitConfig {
+        "aarch64" => Ok(ShellAutoInitConfig {
             shell_prefix: AXVISOR_AARCH64_TEST_SHELL_PREFIX.to_string(),
             shell_init_cmd: AXVISOR_AARCH64_TEST_SHELL_INIT_CMD.to_string(),
             success_regex: default_axvisor_test_success_regex(),
             fail_regex: default_axvisor_test_fail_regex(),
-        },
-        "x86_64" => ShellAutoInitConfig {
+        }),
+        "x86_64" => Ok(ShellAutoInitConfig {
             shell_prefix: AXVISOR_X86_64_TEST_SHELL_PREFIX.to_string(),
             shell_init_cmd: AXVISOR_X86_64_TEST_SHELL_INIT_CMD.to_string(),
-            success_regex: AXVISOR_X86_64_TEST_SUCCESS_REGEX
-                .iter()
-                .map(|pattern| (*pattern).to_string())
-                .collect(),
+            success_regex: owned_patterns(AXVISOR_X86_64_TEST_SUCCESS_REGEX),
             fail_regex: default_axvisor_test_fail_regex(),
-        },
-        _ => panic!("unsupported axvisor test arch: {arch}"),
+        }),
+        _ => bail!(
+            "unsupported target `{arch}` for axvisor qemu tests. Supported arch values are: {}",
+            AXVISOR_TEST_ARCHES.join(", ")
+        ),
     }
+}
+
+fn validate_supported_target(
+    target: &str,
+    suite_name: &str,
+    supported_kind: &str,
+    supported: &[&str],
+) -> anyhow::Result<()> {
+    if supported.contains(&target) {
+        Ok(())
+    } else {
+        bail!(
+            "unsupported target `{}` for {}. Supported {} are: {}",
+            target,
+            suite_name,
+            supported_kind,
+            supported.join(", ")
+        )
+    }
+}
+
+fn validate_supported_arch_alias(
+    target: &str,
+    suite_name: &str,
+    supported_arches: &[&str],
+) -> anyhow::Result<()> {
+    if target.contains('-') {
+        bail!(
+            "unsupported target `{target}` for {suite_name}. Pass an arch value like: {}",
+            supported_arches.join(", ")
+        );
+    }
+
+    validate_supported_target(target, suite_name, "arch values", supported_arches)
+}
+
+fn supported_board_names() -> String {
+    AXVISOR_UBOOT_BOARD_CONFIGS
+        .iter()
+        .map(|config| config.board)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn owned_patterns(patterns: &[&str]) -> Vec<String> {
+    patterns
+        .iter()
+        .map(|pattern| (*pattern).to_string())
+        .collect()
 }
 
 pub(crate) fn finalize_qemu_test_run(suite_name: &str, failed: &[String]) -> anyhow::Result<()> {

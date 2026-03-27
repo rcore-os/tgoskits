@@ -55,21 +55,11 @@ pub async fn run() -> anyhow::Result<()> {
 
 async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
-        Commands::Test => {
-            test_std::run_std_test_command()?;
-        }
-        Commands::Axvisor { command } => {
-            Axvisor::new()?.execute(command).await?;
-        }
-        Commands::Arceos { command } => {
-            ArceOS::new()?.execute(command).await?;
-        }
-        Commands::Starry { command } => {
-            Starry::new()?.execute(command).await?;
-        }
+        Commands::Test => test_std::run_std_test_command(),
+        Commands::Axvisor { command } => Axvisor::new()?.execute(command).await,
+        Commands::Arceos { command } => ArceOS::new()?.execute(command).await,
+        Commands::Starry { command } => Starry::new()?.execute(command).await,
     }
-
-    Ok(())
 }
 
 #[cfg(test)]

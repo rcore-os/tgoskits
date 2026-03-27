@@ -338,12 +338,10 @@ impl AppContext {
             .unwrap_or_else(|| DEFAULT_ARCEOS_TARGET.to_string());
         let plat_dyn = cli.plat_dyn.or(snapshot.plat_dyn);
 
-        let resolved_qemu_config = qemu_config
-            .clone()
-            .or_else(|| resolve_snapshot_path(&self.root, snapshot.qemu.qemu_config.as_ref()));
-        let resolved_uboot_config = uboot_config
-            .clone()
-            .or_else(|| resolve_snapshot_path(&self.root, snapshot.uboot.uboot_config.as_ref()));
+        let resolved_qemu_config =
+            self.resolve_command_path(qemu_config, snapshot.qemu.qemu_config.as_ref());
+        let resolved_uboot_config =
+            self.resolve_command_path(uboot_config, snapshot.uboot.uboot_config.as_ref());
         let build_info_path =
             crate::arceos::build::resolve_build_info_path(&package, &target, cli.config.clone())?;
 
@@ -373,6 +371,17 @@ impl AppContext {
         };
 
         Ok((request, snapshot))
+    }
+
+    pub fn prepare_and_store_arceos_request(
+        &self,
+        cli: BuildCliArgs,
+        qemu_config: Option<PathBuf>,
+        uboot_config: Option<PathBuf>,
+    ) -> anyhow::Result<ResolvedBuildRequest> {
+        let (request, snapshot) = self.prepare_arceos_request(cli, qemu_config, uboot_config)?;
+        self.store_arceos_snapshot(&snapshot)?;
+        Ok(request)
     }
 
     pub fn store_arceos_snapshot(
@@ -406,12 +415,10 @@ impl AppContext {
         let (arch, target) = resolve_starry_arch_and_target(effective_arch, effective_target)?;
         let plat_dyn = cli.plat_dyn.or(snapshot.plat_dyn);
 
-        let resolved_qemu_config = qemu_config
-            .clone()
-            .or_else(|| resolve_snapshot_path(&self.root, snapshot.qemu.qemu_config.as_ref()));
-        let resolved_uboot_config = uboot_config
-            .clone()
-            .or_else(|| resolve_snapshot_path(&self.root, snapshot.uboot.uboot_config.as_ref()));
+        let resolved_qemu_config =
+            self.resolve_command_path(qemu_config, snapshot.qemu.qemu_config.as_ref());
+        let resolved_uboot_config =
+            self.resolve_command_path(uboot_config, snapshot.uboot.uboot_config.as_ref());
         let build_info_path =
             crate::starry::build::resolve_build_info_path(&self.root, &target, cli.config)?;
 
@@ -444,6 +451,17 @@ impl AppContext {
         Ok((request, snapshot))
     }
 
+    pub fn prepare_and_store_starry_request(
+        &self,
+        cli: StarryCliArgs,
+        qemu_config: Option<PathBuf>,
+        uboot_config: Option<PathBuf>,
+    ) -> anyhow::Result<ResolvedStarryRequest> {
+        let (request, snapshot) = self.prepare_starry_request(cli, qemu_config, uboot_config)?;
+        self.store_starry_snapshot(&snapshot)?;
+        Ok(request)
+    }
+
     pub fn prepare_axvisor_request(
         &self,
         cli: AxvisorCliArgs,
@@ -451,10 +469,8 @@ impl AppContext {
         uboot_config: Option<PathBuf>,
     ) -> anyhow::Result<(ResolvedAxvisorRequest, AxvisorCommandSnapshot)> {
         let snapshot = AxvisorCommandSnapshot::load(&self.root)?;
-        let explicit_config = cli
-            .config
-            .clone()
-            .or_else(|| resolve_snapshot_path(&self.root, snapshot.config.as_ref()));
+        let explicit_config =
+            self.resolve_command_path(cli.config.clone(), snapshot.config.as_ref());
         let config_target = explicit_config
             .as_ref()
             .filter(|path| path.exists())
@@ -487,35 +503,14 @@ impl AppContext {
             &target,
             explicit_config,
         )?;
-        let resolved_qemu_config = qemu_config
-            .clone()
-            .or_else(|| resolve_snapshot_path(&self.root, snapshot.qemu.qemu_config.as_ref()));
-        let resolved_uboot_config = uboot_config
-            .clone()
-            .or_else(|| resolve_snapshot_path(&self.root, snapshot.uboot.uboot_config.as_ref()));
-        let vmconfigs: Vec<PathBuf> = if cli.vmconfigs.is_empty() {
-            snapshot
-                .vmconfigs
-                .iter()
-                .map(|path| {
-                    if path.is_relative() {
-                        self.root.join(path)
-                    } else {
-                        path.clone()
-                    }
-                })
-                .collect()
+        let resolved_qemu_config =
+            self.resolve_command_path(qemu_config, snapshot.qemu.qemu_config.as_ref());
+        let resolved_uboot_config =
+            self.resolve_command_path(uboot_config, snapshot.uboot.uboot_config.as_ref());
+        let vmconfigs = if cli.vmconfigs.is_empty() {
+            self.resolve_workspace_paths(snapshot.vmconfigs.iter())
         } else {
-            cli.vmconfigs
-                .iter()
-                .map(|path| {
-                    if path.is_absolute() {
-                        path.clone()
-                    } else {
-                        self.root.join(path)
-                    }
-                })
-                .collect()
+            self.resolve_workspace_paths(cli.vmconfigs.iter())
         };
 
         let request = ResolvedAxvisorRequest {
@@ -552,6 +547,17 @@ impl AppContext {
         };
 
         Ok((request, snapshot))
+    }
+
+    pub fn prepare_and_store_axvisor_request(
+        &self,
+        cli: AxvisorCliArgs,
+        qemu_config: Option<PathBuf>,
+        uboot_config: Option<PathBuf>,
+    ) -> anyhow::Result<ResolvedAxvisorRequest> {
+        let (request, snapshot) = self.prepare_axvisor_request(cli, qemu_config, uboot_config)?;
+        self.store_axvisor_snapshot(&snapshot)?;
+        Ok(request)
     }
 
     pub fn store_axvisor_snapshot(
@@ -611,6 +617,32 @@ impl AppContext {
     fn set_build_config_path(&mut self, path: PathBuf) {
         self.build_config_path = Some(path.clone());
         self.tool.ctx_mut().build_config_path = Some(path);
+    }
+
+    fn resolve_command_path(
+        &self,
+        explicit_path: Option<PathBuf>,
+        snapshot_path: Option<&PathBuf>,
+    ) -> Option<PathBuf> {
+        explicit_path.or_else(|| resolve_snapshot_path(&self.root, snapshot_path))
+    }
+
+    fn resolve_workspace_paths<'a>(
+        &self,
+        paths: impl IntoIterator<Item = &'a PathBuf>,
+    ) -> Vec<PathBuf> {
+        paths
+            .into_iter()
+            .map(|path| self.resolve_workspace_path(path))
+            .collect()
+    }
+
+    fn resolve_workspace_path(&self, path: &Path) -> PathBuf {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.root.join(path)
+        }
     }
 }
 

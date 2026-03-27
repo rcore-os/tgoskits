@@ -5,7 +5,7 @@ use clap::{Args, Subcommand};
 
 use crate::{
     axvisor::context::AxvisorContext,
-    context::{AppContext, AxvisorCliArgs, QemuRunConfig},
+    context::{AppContext, AxvisorCliArgs, QemuRunConfig, ResolvedAxvisorRequest},
     test_qemu,
 };
 
@@ -143,76 +143,31 @@ impl Axvisor {
 
     pub async fn execute(&mut self, command: Command) -> anyhow::Result<()> {
         match command {
-            Command::Build(args) => {
-                self.build(args).await?;
-            }
-            Command::Qemu(args) => {
-                self.qemu(args).await?;
-            }
-            Command::Uboot(args) => {
-                self.uboot(args).await?;
-            }
-            Command::Defconfig(args) => {
-                self.defconfig(args)?;
-            }
-            Command::Config(args) => {
-                self.config(args)?;
-            }
-            Command::Image(args) => {
-                self.image(args).await?;
-            }
-            Command::Test(args) => {
-                self.test(args).await?;
-            }
+            Command::Build(args) => self.build(args).await,
+            Command::Qemu(args) => self.qemu(args).await,
+            Command::Uboot(args) => self.uboot(args).await,
+            Command::Defconfig(args) => self.defconfig(args),
+            Command::Config(args) => self.config(args),
+            Command::Image(args) => self.image(args).await,
+            Command::Test(args) => self.test(args).await,
         }
-        Ok(())
     }
 
     async fn build(&mut self, args: ArgsBuild) -> anyhow::Result<()> {
-        let (request, snapshot) = self
-            .app
-            .prepare_axvisor_request((&args).into(), None, None)?;
-        self.app.store_axvisor_snapshot(&snapshot)?;
-
-        let cargo = build::load_cargo_config(&request)?;
-        self.app.build(cargo, request.build_info_path).await?;
-        Ok(())
+        let request = self.prepare_persisted_request((&args).into(), None, None)?;
+        self.run_build_request(request).await
     }
 
     async fn qemu(&mut self, args: ArgsQemu) -> anyhow::Result<()> {
-        let (request, snapshot) = self.app.prepare_axvisor_request(
-            (&args.build).into(),
-            args.qemu_config.clone(),
-            None,
-        )?;
-        self.app.store_axvisor_snapshot(&snapshot)?;
-
-        let cargo = build::load_cargo_config(&request)?;
-        let qemu = if let Some(path) = request.qemu_config.clone() {
-            QemuRunConfig {
-                qemu_config: Some(path),
-                ..Default::default()
-            }
-        } else {
-            build::default_qemu_run_config(&request)?
-        };
-        self.app.qemu(cargo, request.build_info_path, qemu).await?;
-        Ok(())
+        let request =
+            self.prepare_persisted_request((&args.build).into(), args.qemu_config, None)?;
+        self.run_qemu_request(request).await
     }
 
     async fn uboot(&mut self, args: ArgsUboot) -> anyhow::Result<()> {
-        let (request, snapshot) = self.app.prepare_axvisor_request(
-            (&args.build).into(),
-            None,
-            args.uboot_config.clone(),
-        )?;
-        self.app.store_axvisor_snapshot(&snapshot)?;
-
-        let cargo = build::load_cargo_config(&request)?;
-        self.app
-            .uboot(cargo, request.build_info_path, request.uboot_config)
-            .await?;
-        Ok(())
+        let request =
+            self.prepare_persisted_request((&args.build).into(), None, args.uboot_config)?;
+        self.run_uboot_request(request).await
     }
 
     fn defconfig(&self, args: ArgsDefconfig) -> anyhow::Result<()> {
@@ -265,27 +220,16 @@ impl Axvisor {
             _ => unreachable!(),
         };
 
-        let (request, _snapshot) = self.app.prepare_axvisor_request(
-            AxvisorCliArgs {
-                config: None,
-                arch: Some(arch.to_string()),
-                target: None,
-                plat_dyn: None,
-                vmconfigs: vec![vmconfig],
-            },
-            None,
-            None,
-        )?;
-
-        let cargo = build::load_cargo_config(&request)?;
+        let request =
+            self.prepare_request(Self::qemu_test_build_args(arch, vmconfig), None, None)?;
         let qemu_config =
             build::default_qemu_config_template_path(&request.axvisor_dir, &request.arch);
-        let shell = test_qemu::axvisor_test_shell_config(arch);
+        let shell = test_qemu::axvisor_test_shell_config(arch)?;
         let override_args = qemu_test::shell_autoinit_qemu_override_args(&request, &shell)?;
 
         self.app
             .qemu(
-                cargo,
+                build::load_cargo_config(&request)?,
                 request.build_info_path,
                 QemuRunConfig {
                     qemu_config: Some(qemu_config),
@@ -319,14 +263,8 @@ impl Axvisor {
             board.board, board.vmconfig
         );
 
-        let (mut request, _snapshot) = self.app.prepare_axvisor_request(
-            AxvisorCliArgs {
-                config: Some(PathBuf::from(board.build_config)),
-                arch: None,
-                target: None,
-                plat_dyn: None,
-                vmconfigs: vec![PathBuf::from(board.vmconfig)],
-            },
+        let mut request = self.prepare_request(
+            Self::uboot_test_build_args(board.build_config, board.vmconfig),
             None,
             explicit_uboot_config.clone(),
         )?;
@@ -343,6 +281,80 @@ impl Axvisor {
                     board.board, board.build_config, board.vmconfig, uboot_config_summary
                 )
             })
+    }
+
+    fn qemu_test_build_args(arch: &str, vmconfig: PathBuf) -> AxvisorCliArgs {
+        AxvisorCliArgs {
+            config: None,
+            arch: Some(arch.to_string()),
+            target: None,
+            plat_dyn: None,
+            vmconfigs: vec![vmconfig],
+        }
+    }
+
+    fn uboot_test_build_args(build_config: &str, vmconfig: &str) -> AxvisorCliArgs {
+        AxvisorCliArgs {
+            config: Some(PathBuf::from(build_config)),
+            arch: None,
+            target: None,
+            plat_dyn: None,
+            vmconfigs: vec![PathBuf::from(vmconfig)],
+        }
+    }
+
+    fn prepare_request(
+        &self,
+        args: AxvisorCliArgs,
+        qemu_config: Option<PathBuf>,
+        uboot_config: Option<PathBuf>,
+    ) -> anyhow::Result<ResolvedAxvisorRequest> {
+        let (request, _) = self
+            .app
+            .prepare_axvisor_request(args, qemu_config, uboot_config)?;
+        Ok(request)
+    }
+
+    fn prepare_persisted_request(
+        &self,
+        args: AxvisorCliArgs,
+        qemu_config: Option<PathBuf>,
+        uboot_config: Option<PathBuf>,
+    ) -> anyhow::Result<ResolvedAxvisorRequest> {
+        let (request, snapshot) =
+            self.app
+                .prepare_axvisor_request(args, qemu_config, uboot_config)?;
+        self.app.store_axvisor_snapshot(&snapshot)?;
+        Ok(request)
+    }
+
+    fn qemu_run_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<QemuRunConfig> {
+        if let Some(path) = request.qemu_config.clone() {
+            Ok(QemuRunConfig {
+                qemu_config: Some(path),
+                ..Default::default()
+            })
+        } else {
+            build::default_qemu_run_config(request)
+        }
+    }
+
+    async fn run_qemu_request(&mut self, request: ResolvedAxvisorRequest) -> anyhow::Result<()> {
+        let cargo = build::load_cargo_config(&request)?;
+        let qemu = Self::qemu_run_config(&request)?;
+        self.app.qemu(cargo, request.build_info_path, qemu).await
+    }
+
+    async fn run_build_request(&mut self, request: ResolvedAxvisorRequest) -> anyhow::Result<()> {
+        let cargo = build::load_cargo_config(&request)?;
+        self.app.build(cargo, request.build_info_path).await
+    }
+
+    async fn run_uboot_request(&mut self, request: ResolvedAxvisorRequest) -> anyhow::Result<()> {
+        let cargo = build::load_cargo_config(&request)?;
+        self.app
+            .uboot(cargo, request.build_info_path, request.uboot_config)
+            .await
     }
 }
 
