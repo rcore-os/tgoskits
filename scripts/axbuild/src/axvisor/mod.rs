@@ -181,20 +181,18 @@ impl Axvisor {
         self.run_uboot_request(request).await
     }
 
-    fn defconfig(&self, args: ArgsDefconfig) -> anyhow::Result<()> {
-        let path = config::write_defconfig(
-            self.app.workspace_root(),
-            self.app.axvisor_dir(),
-            &args.board,
-        )?;
+    fn defconfig(&mut self, args: ArgsDefconfig) -> anyhow::Result<()> {
+        let workspace_root = self.app.workspace_root().to_path_buf();
+        let axvisor_dir = self.app.axvisor_dir()?.to_path_buf();
+        let path = config::write_defconfig(&workspace_root, &axvisor_dir, &args.board)?;
         println!("Generated {} for board {}", path.display(), args.board);
         Ok(())
     }
 
-    fn config(&self, args: ArgsConfig) -> anyhow::Result<()> {
+    fn config(&mut self, args: ArgsConfig) -> anyhow::Result<()> {
         match args.command {
             ConfigCommand::Ls => {
-                for board in config::available_board_names(self.app.axvisor_dir())? {
+                for board in config::available_board_names(self.app.axvisor_dir()?)? {
                     println!("{board}");
                 }
             }
@@ -320,20 +318,19 @@ impl Axvisor {
     }
 
     fn prepare_request(
-        &self,
+        &mut self,
         args: AxvisorCliArgs,
         qemu_config: Option<PathBuf>,
         uboot_config: Option<PathBuf>,
         persistence: SnapshotPersistence,
     ) -> anyhow::Result<ResolvedAxvisorRequest> {
-        command_flow::resolve_request(
-            persistence,
-            || {
-                self.app
-                    .prepare_axvisor_request(args, qemu_config, uboot_config)
-            },
-            |snapshot| self.app.store_axvisor_snapshot(snapshot),
-        )
+        let (request, snapshot) =
+            self.app
+                .prepare_axvisor_request(args, qemu_config, uboot_config)?;
+        if matches!(persistence, SnapshotPersistence::Store) {
+            self.app.store_axvisor_snapshot(&snapshot)?;
+        }
+        Ok(request)
     }
 
     fn qemu_run_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<QemuRunConfig> {

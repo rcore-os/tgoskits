@@ -365,8 +365,6 @@ dependencies = [
 [[package]]
 name = "axbuild"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af47e837143dee079472e5ad2efe378d1f80faef7a9ff317bab3050adc39e719"
 dependencies = [
  "anyhow",
  "axvmconfig",

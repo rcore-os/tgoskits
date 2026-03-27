@@ -29,30 +29,30 @@ pub use types::{
     STARRY_SNAPSHOT_FILE, StarryCliArgs, StarryCommandSnapshot, StarryQemuSnapshot,
     StarryUbootSnapshot,
 };
-pub(crate) use workspace::{find_workspace_root, workspace_member_dir, workspace_root_path};
+pub(crate) use workspace::{
+    find_workspace_root, workspace_member_dir, workspace_member_dir_in, workspace_root_path,
+};
 
 pub struct AppContext {
     tool: Tool,
     build_config_path: Option<PathBuf>,
     root: PathBuf,
-    axvisor_dir: PathBuf,
+    axvisor_dir: Option<PathBuf>,
 }
 
 impl AppContext {
     pub fn new() -> anyhow::Result<Self> {
         let workspace_root = find_workspace_root();
-        let axvisor_dir = workspace_member_dir(crate::axvisor::build::AXVISOR_PACKAGE)?;
         crate::logging::init_logging(&workspace_root)?;
 
         info!("Workspace root: {}", workspace_root.display());
-        info!("Axvisor dir: {}", axvisor_dir.display());
 
         let tool = Tool::new(ToolConfig::default()).unwrap();
         Ok(Self {
             tool,
             build_config_path: None,
             root: workspace_root,
-            axvisor_dir,
+            axvisor_dir: None,
         })
     }
 
@@ -60,8 +60,17 @@ impl AppContext {
         &self.root
     }
 
-    pub fn axvisor_dir(&self) -> &Path {
-        &self.axvisor_dir
+    pub fn axvisor_dir(&mut self) -> anyhow::Result<&Path> {
+        if self.axvisor_dir.is_none() {
+            let axvisor_dir = workspace_member_dir(crate::axvisor::build::AXVISOR_PACKAGE)?;
+            info!("Axvisor dir: {}", axvisor_dir.display());
+            self.axvisor_dir = Some(axvisor_dir);
+        }
+
+        Ok(self
+            .axvisor_dir
+            .as_deref()
+            .expect("axvisor_dir should be initialized"))
     }
 
     pub async fn build(&mut self, cargo: Cargo, build_config_path: PathBuf) -> anyhow::Result<()> {

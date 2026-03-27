@@ -6,7 +6,8 @@ use std::{
 use anyhow::{Context, anyhow};
 
 pub(crate) fn workspace_root_path() -> anyhow::Result<PathBuf> {
-    let cargo = workspace_metadata()?;
+    let current_dir = std::env::current_dir().context("failed to get current directory")?;
+    let cargo = workspace_metadata(&current_dir)?;
 
     cargo
         .workspace_root
@@ -15,7 +16,14 @@ pub(crate) fn workspace_root_path() -> anyhow::Result<PathBuf> {
 }
 
 pub(crate) fn workspace_member_dir(package: &str) -> anyhow::Result<PathBuf> {
-    let manifest_path = workspace_member_manifest_path(package)?;
+    workspace_member_dir_in(&workspace_root_path()?, package)
+}
+
+pub(crate) fn workspace_member_dir_in(
+    workspace_root: &Path,
+    package: &str,
+) -> anyhow::Result<PathBuf> {
+    let manifest_path = workspace_member_manifest_path(workspace_root, package)?;
     manifest_path
         .parent()
         .map(Path::to_path_buf)
@@ -26,8 +34,8 @@ pub(crate) fn find_workspace_root() -> PathBuf {
     workspace_root_path().expect("failed to resolve workspace root")
 }
 
-fn workspace_member_manifest_path(package: &str) -> anyhow::Result<PathBuf> {
-    let metadata = workspace_metadata()?;
+fn workspace_member_manifest_path(workspace_root: &Path, package: &str) -> anyhow::Result<PathBuf> {
+    let metadata = workspace_metadata(workspace_root)?;
     let workspace_members: HashSet<_> = metadata.workspace_members.iter().cloned().collect();
     metadata
         .packages
@@ -37,9 +45,10 @@ fn workspace_member_manifest_path(package: &str) -> anyhow::Result<PathBuf> {
         .ok_or_else(|| anyhow!("workspace package `{package}` not found"))
 }
 
-fn workspace_metadata() -> anyhow::Result<cargo_metadata::Metadata> {
+fn workspace_metadata(workspace_root: &Path) -> anyhow::Result<cargo_metadata::Metadata> {
     cargo_metadata::MetadataCommand::new()
         .no_deps()
+        .current_dir(workspace_root)
         .exec()
         .context("failed to get cargo metadata")
 }

@@ -181,11 +181,12 @@ impl AppContext {
     }
 
     pub fn prepare_axvisor_request(
-        &self,
+        &mut self,
         cli: AxvisorCliArgs,
         qemu_config: Option<PathBuf>,
         uboot_config: Option<PathBuf>,
     ) -> anyhow::Result<(ResolvedAxvisorRequest, AxvisorCommandSnapshot)> {
+        let axvisor_dir = self.axvisor_dir()?.to_path_buf();
         let snapshot = AxvisorCommandSnapshot::load(&self.root)?;
         let explicit_config =
             self.resolve_command_path(cli.config.clone(), snapshot.config.as_ref());
@@ -212,11 +213,8 @@ impl AppContext {
         });
         let (arch, target) = resolve_axvisor_arch_and_target(effective_arch, effective_target)?;
         let plat_dyn = cli.plat_dyn.or(snapshot.plat_dyn);
-        let build_info_path = crate::axvisor::build::resolve_build_info_path(
-            &self.axvisor_dir,
-            &target,
-            explicit_config,
-        )?;
+        let build_info_path =
+            crate::axvisor::build::resolve_build_info_path(&axvisor_dir, &target, explicit_config)?;
         let runtime_paths = self.resolve_runtime_paths(
             qemu_config,
             snapshot.qemu.qemu_config.as_ref(),
@@ -231,7 +229,7 @@ impl AppContext {
 
         let request = ResolvedAxvisorRequest {
             package: crate::axvisor::build::AXVISOR_PACKAGE.to_string(),
-            axvisor_dir: self.axvisor_dir.clone(),
+            axvisor_dir,
             arch: arch.clone(),
             target: target.clone(),
             plat_dyn,
@@ -268,7 +266,7 @@ impl AppContext {
     }
 
     pub fn prepare_and_store_axvisor_request(
-        &self,
+        &mut self,
         cli: AxvisorCliArgs,
         qemu_config: Option<PathBuf>,
         uboot_config: Option<PathBuf>,

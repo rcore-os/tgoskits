@@ -13,7 +13,7 @@ fn test_app_context(root: &Path) -> AppContext {
         tool: Tool::new(ToolConfig::default()).unwrap(),
         build_config_path: None,
         root: root.to_path_buf(),
-        axvisor_dir: root.join("os/axvisor"),
+        axvisor_dir: Some(root.join("os/axvisor")),
     }
 }
 
@@ -195,7 +195,7 @@ uboot_config = "configs/snapshot-uboot.toml"
     )
     .unwrap();
 
-    let app = test_app_context(root.path());
+    let mut app = test_app_context(root.path());
 
     let (request, snapshot) = app
         .prepare_axvisor_request(
@@ -275,7 +275,7 @@ uboot_config = "configs/uboot.toml"
     )
     .unwrap();
 
-    let app = test_app_context(root.path());
+    let mut app = test_app_context(root.path());
 
     let (request, snapshot) = app
         .prepare_axvisor_request(AxvisorCliArgs::default(), None, None)
@@ -322,7 +322,7 @@ uboot_config = "configs/uboot.toml"
 #[test]
 fn prepare_axvisor_request_resolves_target_from_arch() {
     let root = tempdir().unwrap();
-    let app = test_app_context(root.path());
+    let mut app = test_app_context(root.path());
 
     let (request, snapshot) = app
         .prepare_axvisor_request(

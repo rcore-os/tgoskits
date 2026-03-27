@@ -1,4 +1,4 @@
 include = [{path = ".config-local.toml", optional = true}]
 
 [alias]
-xtask = "run -p starryos --bin xtask --"
+xtask = "run --bin xtask --"

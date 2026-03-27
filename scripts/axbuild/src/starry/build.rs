@@ -9,7 +9,9 @@ use ostool::build::config::Cargo;
 
 pub type StarryBuildInfo = crate::arceos::build::ArceosBuildInfo;
 pub use crate::arceos::build::LogLevel;
-use crate::context::{ResolvedStarryRequest, starry_arch_for_target_checked};
+use crate::context::{
+    ResolvedStarryRequest, STARRY_PACKAGE, starry_arch_for_target_checked, workspace_member_dir_in,
+};
 
 impl StarryBuildInfo {
     pub fn default_starry_for_target(target: &str) -> Self {
@@ -31,7 +33,7 @@ pub fn resolve_build_info_path(
 
     let _ = starry_arch_for_target_checked(target)?;
     Ok(crate::arceos::build::resolve_build_info_path_in_dir(
-        &workspace_root.join("os/StarryOS/starryos"),
+        &workspace_member_dir_in(workspace_root, STARRY_PACKAGE)?,
         target,
     ))
 }
@@ -145,6 +147,8 @@ fn patch_starry_cargo_config(
 
     cargo.package = request.package.clone();
     cargo.target = request.target.clone();
+    ensure_starry_bin_arg(&mut cargo.args, &request.package);
+    rewrite_linker_script_arg(&mut cargo.args, request, platform)?;
     cargo.features.push("qemu".to_string());
     cargo.features.sort();
     cargo.features.dedup();
@@ -161,6 +165,50 @@ fn patch_starry_cargo_config(
         .or_insert_with(|| platform.to_string());
 
     Ok(())
+}
+
+fn ensure_starry_bin_arg(args: &mut Vec<String>, package: &str) {
+    if args.iter().any(|arg| arg == "--bin") {
+        return;
+    }
+
+    args.push("--bin".to_string());
+    args.push(package.to_string());
+}
+
+fn rewrite_linker_script_arg(
+    args: &mut Vec<String>,
+    request: &ResolvedStarryRequest,
+    platform: &str,
+) -> anyhow::Result<()> {
+    let linker_script = starry_linker_script_path(request, platform)?;
+    let needle = "-Clink-arg=-Tlinker.x";
+    let replacement = format!("-Clink-arg=-T{}", linker_script.display());
+
+    for arg in args {
+        if arg.contains(needle) {
+            *arg = arg.replace(needle, &replacement);
+        }
+    }
+
+    Ok(())
+}
+
+fn starry_linker_script_path(
+    request: &ResolvedStarryRequest,
+    platform: &str,
+) -> anyhow::Result<PathBuf> {
+    let workspace_root = request
+        .build_info_path
+        .parent()
+        .and_then(Path::parent)
+        .context("Starry build info path should be nested under <workspace>/starryos")?;
+
+    Ok(workspace_root
+        .join("target")
+        .join(&request.target)
+        .join("release")
+        .join(format!("linker_{platform}.lds")))
 }
 
 fn default_platform_for_arch(arch: &str) -> anyhow::Result<&'static str> {
@@ -185,6 +233,17 @@ mod tests {
     use super::*;
     use crate::context::STARRY_PACKAGE;
 
+    fn write_minimal_package_manifest(path: &Path, name: &str) {
+        let src_dir = path.parent().unwrap().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(src_dir.join("lib.rs"), "").unwrap();
+        fs::write(
+            path,
+            format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+        )
+        .unwrap();
+    }
+
     fn request(path: PathBuf, arch: &str, target: &str) -> ResolvedStarryRequest {
         ResolvedStarryRequest {
             package: STARRY_PACKAGE.to_string(),
@@ -200,6 +259,14 @@ mod tests {
     #[test]
     fn resolve_build_info_path_uses_default_starry_location() {
         let root = tempdir().unwrap();
+        let starry_dir = root.path().join("os/StarryOS/starryos");
+        fs::create_dir_all(&starry_dir).unwrap();
+        write_minimal_package_manifest(&starry_dir.join("Cargo.toml"), STARRY_PACKAGE);
+        fs::write(
+            root.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"os/StarryOS/starryos\"]\n",
+        )
+        .unwrap();
         let path =
             resolve_build_info_path(root.path(), "aarch64-unknown-none-softfloat", None).unwrap();
 
@@ -215,6 +282,12 @@ mod tests {
         let root = tempdir().unwrap();
         let starry_dir = root.path().join("os/StarryOS/starryos");
         fs::create_dir_all(&starry_dir).unwrap();
+        write_minimal_package_manifest(&starry_dir.join("Cargo.toml"), STARRY_PACKAGE);
+        fs::write(
+            root.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"os/StarryOS/starryos\"]\n",
+        )
+        .unwrap();
         let bare = starry_dir.join("build-aarch64-unknown-none-softfloat.toml");
         let dotted = starry_dir.join(".build-aarch64-unknown-none-softfloat.toml");
         fs::write(&bare, "").unwrap();
@@ -229,6 +302,14 @@ mod tests {
     #[test]
     fn resolve_build_info_path_prefers_explicit_path() {
         let root = tempdir().unwrap();
+        let starry_dir = root.path().join("os/StarryOS/starryos");
+        fs::create_dir_all(&starry_dir).unwrap();
+        write_minimal_package_manifest(&starry_dir.join("Cargo.toml"), STARRY_PACKAGE);
+        fs::write(
+            root.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"os/StarryOS/starryos\"]\n",
+        )
+        .unwrap();
         let explicit = root.path().join("custom/build.toml");
         let path =
             resolve_build_info_path(root.path(), "x86_64-unknown-none", Some(explicit.clone()))
@@ -344,6 +425,12 @@ HELLO = "world"
         patch_starry_cargo_config(&mut cargo, &request).unwrap();
 
         assert_eq!(cargo.package, "starryos-test");
+        assert!(
+            cargo
+                .args
+                .windows(2)
+                .any(|window| window == ["--bin", "starryos-test"])
+        );
     }
 
     #[test]
@@ -354,6 +441,28 @@ HELLO = "world"
         assert_eq!(
             disk_img,
             PathBuf::from("/tmp/workspace/target/aarch64-unknown-none-softfloat/disk.img")
+        );
+    }
+
+    #[test]
+    fn resolve_build_info_path_supports_starry_subworkspace_root() {
+        let root = tempdir().unwrap();
+        let starry_dir = root.path().join("starryos");
+        fs::create_dir_all(&starry_dir).unwrap();
+        write_minimal_package_manifest(&starry_dir.join("Cargo.toml"), STARRY_PACKAGE);
+        fs::write(
+            root.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"starryos\"]\n",
+        )
+        .unwrap();
+
+        let path =
+            resolve_build_info_path(root.path(), "aarch64-unknown-none-softfloat", None).unwrap();
+
+        assert_eq!(
+            path,
+            root.path()
+                .join("starryos/.build-aarch64-unknown-none-softfloat.toml")
         );
     }
 
@@ -374,5 +483,33 @@ HELLO = "world"
                 "user,id=net0,hostfwd=tcp::5555-:5555".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn patch_starry_cargo_config_uses_absolute_linker_script_path() {
+        let request = ResolvedStarryRequest {
+            package: STARRY_PACKAGE.to_string(),
+            arch: "aarch64".to_string(),
+            target: "aarch64-unknown-none-softfloat".to_string(),
+            plat_dyn: None,
+            build_info_path: PathBuf::from(
+                "/tmp/os/StarryOS/starryos/.build-aarch64-unknown-none-softfloat.toml",
+            ),
+            qemu_config: None,
+            uboot_config: None,
+        };
+        let build_info = StarryBuildInfo::default_starry_for_target(&request.target);
+        let mut cargo = build_info.into_base_cargo_config_with_log(
+            request.package.clone(),
+            request.target.clone(),
+            StarryBuildInfo::build_cargo_args(&request.target, false),
+        );
+
+        patch_starry_cargo_config(&mut cargo, &request).unwrap();
+
+        assert!(cargo.args.iter().any(|arg| arg.contains(
+            "/tmp/os/StarryOS/target/aarch64-unknown-none-softfloat/release/\
+             linker_aarch64-qemu-virt.lds"
+        )));
     }
 }
