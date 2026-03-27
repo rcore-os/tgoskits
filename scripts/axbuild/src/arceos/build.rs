@@ -284,7 +284,7 @@ impl Default for ArceosBuildInfo {
     }
 }
 
-pub fn resolve_build_info_path(
+pub(crate) fn resolve_build_info_path(
     package: &str,
     target: &str,
     explicit_path: Option<PathBuf>,
@@ -300,17 +300,20 @@ pub fn resolve_build_info_path(
     Ok(resolve_build_info_path_in_dir(app_dir, target))
 }
 
-pub fn load_build_info(request: &ResolvedBuildRequest) -> anyhow::Result<ArceosBuildInfo> {
+pub(crate) fn load_build_info(request: &ResolvedBuildRequest) -> anyhow::Result<ArceosBuildInfo> {
     load_or_create_build_info(&request.build_info_path, || {
         ArceosBuildInfo::default_for_target(&request.target)
     })
 }
 
-pub fn load_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Result<Cargo> {
+pub(crate) fn load_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Result<Cargo> {
     load_build_info(request)?.into_cargo_config(request)
 }
 
-pub fn load_or_create_build_info<T>(path: &Path, default: impl FnOnce() -> T) -> anyhow::Result<T>
+pub(crate) fn load_or_create_build_info<T>(
+    path: &Path,
+    default: impl FnOnce() -> T,
+) -> anyhow::Result<T>
 where
     T: Serialize + DeserializeOwned,
 {

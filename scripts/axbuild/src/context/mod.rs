@@ -13,12 +13,10 @@ mod tests;
 mod types;
 mod workspace;
 
-pub use arch::{
-    arch_for_target, arch_for_target_checked, starry_arch_for_target,
-    starry_arch_for_target_checked, starry_target_for_arch, starry_target_for_arch_checked,
-    target_for_arch, target_for_arch_checked,
+pub(crate) use arch::{
+    arch_for_target_checked, resolve_axvisor_arch_and_target, resolve_starry_arch_and_target,
+    starry_arch_for_target_checked, starry_target_for_arch_checked, target_for_arch_checked,
 };
-pub(crate) use arch::{resolve_axvisor_arch_and_target, resolve_starry_arch_and_target};
 pub(crate) use resolve::snapshot_path_value;
 pub use types::{
     ARCEOS_SNAPSHOT_FILE, AXVISOR_SNAPSHOT_FILE, ArceosCommandSnapshot, ArceosQemuSnapshot,
@@ -41,7 +39,7 @@ pub struct AppContext {
 }
 
 impl AppContext {
-    pub fn new() -> anyhow::Result<Self> {
+    pub(crate) fn new() -> anyhow::Result<Self> {
         let workspace_root = find_workspace_root();
         crate::logging::init_logging(&workspace_root)?;
 
@@ -56,11 +54,11 @@ impl AppContext {
         })
     }
 
-    pub fn workspace_root(&self) -> &Path {
+    pub(crate) fn workspace_root(&self) -> &Path {
         &self.root
     }
 
-    pub fn axvisor_dir(&mut self) -> anyhow::Result<&Path> {
+    pub(crate) fn axvisor_dir(&mut self) -> anyhow::Result<&Path> {
         if self.axvisor_dir.is_none() {
             let axvisor_dir = workspace_member_dir(crate::axvisor::build::AXVISOR_PACKAGE)?;
             info!("Axvisor dir: {}", axvisor_dir.display());
@@ -73,12 +71,16 @@ impl AppContext {
             .expect("axvisor_dir should be initialized"))
     }
 
-    pub async fn build(&mut self, cargo: Cargo, build_config_path: PathBuf) -> anyhow::Result<()> {
+    pub(crate) async fn build(
+        &mut self,
+        cargo: Cargo,
+        build_config_path: PathBuf,
+    ) -> anyhow::Result<()> {
         self.set_build_config_path(build_config_path);
         self.tool.cargo_build(&cargo).await
     }
 
-    pub async fn qemu(
+    pub(crate) async fn qemu(
         &mut self,
         cargo: Cargo,
         build_config_path: PathBuf,
@@ -101,7 +103,7 @@ impl AppContext {
             .await
     }
 
-    pub async fn uboot(
+    pub(crate) async fn uboot(
         &mut self,
         cargo: Cargo,
         build_config_path: PathBuf,

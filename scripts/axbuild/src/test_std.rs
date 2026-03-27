@@ -5,7 +5,7 @@ use cargo_metadata::{Metadata, MetadataCommand};
 
 const STD_CRATES_CSV: &str = "scripts/test/std_crates.csv";
 
-pub fn run_std_test_command() -> anyhow::Result<()> {
+pub(crate) fn run_std_test_command() -> anyhow::Result<()> {
     let metadata = MetadataCommand::new()
         .no_deps()
         .exec()

@@ -14,11 +14,11 @@ pub struct Board {
     pub config: AxvisorBoardConfig,
 }
 
-pub fn board_dir(axvisor_dir: &Path) -> PathBuf {
+pub(crate) fn board_dir(axvisor_dir: &Path) -> PathBuf {
     axvisor_dir.join("configs/board")
 }
 
-pub fn board_default_list(axvisor_dir: &Path) -> anyhow::Result<Vec<Board>> {
+pub(crate) fn board_default_list(axvisor_dir: &Path) -> anyhow::Result<Vec<Board>> {
     let mut boards = Vec::new();
     for entry in fs::read_dir(board_dir(axvisor_dir)).map_err(|e| {
         anyhow!(
@@ -50,24 +50,23 @@ pub fn board_default_list(axvisor_dir: &Path) -> anyhow::Result<Vec<Board>> {
     Ok(boards)
 }
 
-pub fn find_board(axvisor_dir: &Path, name: &str) -> anyhow::Result<Option<Board>> {
+pub(crate) fn find_board(axvisor_dir: &Path, name: &str) -> anyhow::Result<Option<Board>> {
     Ok(board_default_list(axvisor_dir)?
         .into_iter()
         .find(|board| board.name == name))
 }
 
-pub fn board_names(axvisor_dir: &Path) -> anyhow::Result<Vec<String>> {
+pub(crate) fn board_names(axvisor_dir: &Path) -> anyhow::Result<Vec<String>> {
     Ok(board_default_list(axvisor_dir)?
         .into_iter()
         .map(|board| board.name)
         .collect())
 }
 
-pub fn board_config(axvisor_dir: &Path, name: &str) -> anyhow::Result<Option<AxvisorBoardConfig>> {
-    Ok(find_board(axvisor_dir, name)?.map(|board| board.config))
-}
-
-pub fn default_board_for_target(axvisor_dir: &Path, target: &str) -> anyhow::Result<Option<Board>> {
+pub(crate) fn default_board_for_target(
+    axvisor_dir: &Path,
+    target: &str,
+) -> anyhow::Result<Option<Board>> {
     Ok(board_default_list(axvisor_dir)?
         .into_iter()
         .find(|board| board.name.starts_with("qemu-") && board.target == target))
@@ -160,7 +159,7 @@ log = "Info"
     }
 
     #[test]
-    fn board_config_matches_lookup_and_unknown_returns_none() {
+    fn find_board_returns_none_for_unknown_name() {
         let root = tempdir().unwrap();
         write_board(
             root.path(),
@@ -174,12 +173,6 @@ plat_dyn = true
 "#,
         );
 
-        assert!(
-            board_config(root.path(), "orangepi-5-plus")
-                .unwrap()
-                .is_some()
-        );
         assert!(find_board(root.path(), "orangepi").unwrap().is_none());
-        assert!(board_config(root.path(), "orangepi").unwrap().is_none());
     }
 }

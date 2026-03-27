@@ -81,7 +81,7 @@ pub(crate) fn load_board_file(path: &Path) -> anyhow::Result<AxvisorBoardFile> {
     })
 }
 
-pub fn resolve_build_info_path(
+pub(crate) fn resolve_build_info_path(
     axvisor_dir: &Path,
     target: &str,
     explicit_path: Option<PathBuf>,
@@ -97,11 +97,7 @@ pub fn resolve_build_info_path(
     ))
 }
 
-pub fn load_build_info(request: &ResolvedAxvisorRequest) -> anyhow::Result<AxvisorBuildInfo> {
-    Ok(load_build_config(request)?.build_info)
-}
-
-pub fn load_cargo_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<Cargo> {
+pub(crate) fn load_cargo_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<Cargo> {
     to_cargo_config(load_build_config(request)?, request)
 }
 
@@ -172,7 +168,7 @@ fn normalize_axvisor_platform_features(features: &mut Vec<String>) {
     }
 }
 
-pub fn load_target_from_build_config(path: &Path) -> anyhow::Result<Option<String>> {
+pub(crate) fn load_target_from_build_config(path: &Path) -> anyhow::Result<Option<String>> {
     let content = fs::read_to_string(path).map_err(|e| {
         anyhow!(
             "failed to read Axvisor build config {}: {e}",
@@ -337,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn load_build_info_writes_default_template_when_missing() {
+    fn load_cargo_config_writes_default_template_when_missing() {
         let root = tempdir().unwrap();
         let path = root
             .path()
@@ -356,16 +352,15 @@ vm_configs = []
 "#,
         );
 
-        let build_info = load_build_info(&request(
+        let cargo = load_cargo_config(&request(
             path.clone(),
             "aarch64",
             "aarch64-unknown-none-softfloat",
         ))
         .unwrap();
 
-        assert!(build_info.plat_dyn);
-        assert!(build_info.features.contains(&"ept-level-4".to_string()));
-        assert!(build_info.features.contains(&"axstd/bus-mmio".to_string()));
+        assert!(cargo.features.contains(&"ept-level-4".to_string()));
+        assert!(cargo.features.contains(&"axstd/bus-mmio".to_string()));
         assert!(path.exists());
     }
 

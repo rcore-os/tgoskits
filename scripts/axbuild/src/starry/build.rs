@@ -18,7 +18,7 @@ impl StarryBuildInfo {
     }
 }
 
-pub fn resolve_build_info_path(
+pub(crate) fn resolve_build_info_path(
     workspace_root: &Path,
     target: &str,
     explicit_path: Option<PathBuf>,
@@ -34,55 +34,17 @@ pub fn resolve_build_info_path(
     ))
 }
 
-pub fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result<StarryBuildInfo> {
+pub(crate) fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result<StarryBuildInfo> {
     crate::arceos::build::load_or_create_build_info(&request.build_info_path, || {
         StarryBuildInfo::default_starry_for_target(&request.target)
     })
 }
 
-pub fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Result<Cargo> {
+pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Result<Cargo> {
     to_cargo_config(load_build_info(request)?, request)
 }
 
-pub fn rootfs_image_name(arch: &str) -> String {
-    format!("rootfs-{arch}.img")
-}
-
-pub fn rootfs_artifact_dir(workspace_root: &Path, target: &str) -> PathBuf {
-    workspace_root.join("target").join(target)
-}
-
-pub fn rootfs_disk_image_path(workspace_root: &Path, target: &str) -> PathBuf {
-    rootfs_artifact_dir(workspace_root, target).join("disk.img")
-}
-
-pub fn default_qemu_args(disk_img: &Path) -> Vec<String> {
-    vec![
-        "-device".to_string(),
-        "virtio-blk-pci,drive=disk0".to_string(),
-        "-drive".to_string(),
-        format!("id=disk0,if=none,format=raw,file={}", disk_img.display()),
-        "-device".to_string(),
-        "virtio-net-pci,netdev=net0".to_string(),
-        "-netdev".to_string(),
-        "user,id=net0,hostfwd=tcp::5555-:5555".to_string(),
-    ]
-}
-
-pub fn ensure_rootfs_in_target_dir(
-    workspace_root: &Path,
-    arch: &str,
-    target: &str,
-) -> anyhow::Result<PathBuf> {
-    let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(crate::starry::rootfs::ensure_rootfs_in_target_dir(
-        workspace_root,
-        arch,
-        target,
-    ))
-}
-
-pub fn to_cargo_config(
+pub(crate) fn to_cargo_config(
     build_info: StarryBuildInfo,
     request: &ResolvedStarryRequest,
 ) -> anyhow::Result<Cargo> {
@@ -373,17 +335,6 @@ HELLO = "world"
     }
 
     #[test]
-    fn rootfs_disk_image_path_uses_workspace_target_triple_dir() {
-        let root = Path::new("/tmp/workspace");
-        let disk_img = rootfs_disk_image_path(root, "aarch64-unknown-none-softfloat");
-
-        assert_eq!(
-            disk_img,
-            PathBuf::from("/tmp/workspace/target/aarch64-unknown-none-softfloat/disk.img")
-        );
-    }
-
-    #[test]
     fn resolve_build_info_path_supports_starry_subworkspace_root() {
         let root = tempdir().unwrap();
         let starry_dir = root.path().join("starryos");
@@ -402,25 +353,6 @@ HELLO = "world"
             path,
             root.path()
                 .join("starryos/.build-aarch64-unknown-none-softfloat.toml")
-        );
-    }
-
-    #[test]
-    fn default_qemu_args_include_disk_and_network_defaults() {
-        let args = default_qemu_args(Path::new("/tmp/disk.img"));
-
-        assert_eq!(
-            args,
-            vec![
-                "-device".to_string(),
-                "virtio-blk-pci,drive=disk0".to_string(),
-                "-drive".to_string(),
-                "id=disk0,if=none,format=raw,file=/tmp/disk.img".to_string(),
-                "-device".to_string(),
-                "virtio-net-pci,netdev=net0".to_string(),
-                "-netdev".to_string(),
-                "user,id=net0,hostfwd=tcp::5555-:5555".to_string(),
-            ]
         );
     }
 

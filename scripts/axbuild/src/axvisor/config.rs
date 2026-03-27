@@ -8,11 +8,11 @@ use crate::{
     context::{AxvisorCommandSnapshot, snapshot_path_value},
 };
 
-pub fn default_build_config_path(axvisor_dir: &Path) -> PathBuf {
+pub(crate) fn default_build_config_path(axvisor_dir: &Path) -> PathBuf {
     axvisor_dir.join(".build.toml")
 }
 
-pub fn available_board_names(axvisor_dir: &Path) -> anyhow::Result<Vec<String>> {
+pub(crate) fn available_board_names(axvisor_dir: &Path) -> anyhow::Result<Vec<String>> {
     board::board_names(axvisor_dir)
 }
 
@@ -27,7 +27,7 @@ fn resolve_board(axvisor_dir: &Path, name: &str) -> anyhow::Result<Board> {
     })
 }
 
-pub fn write_defconfig(
+pub(crate) fn write_defconfig(
     workspace_root: &Path,
     axvisor_dir: &Path,
     board_name: &str,

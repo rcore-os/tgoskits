@@ -39,7 +39,7 @@ pub struct ShellAutoInitConfig {
     pub fail_regex: Vec<String>,
 }
 
-pub async fn prepare_linux_aarch64_guest_assets(
+pub(crate) async fn prepare_linux_aarch64_guest_assets(
     ctx: &AxvisorContext,
 ) -> anyhow::Result<PreparedLinuxGuestAssets> {
     let mut config = ImageConfig::read_config(ctx.workspace_root())?;
@@ -77,7 +77,9 @@ pub async fn prepare_linux_aarch64_guest_assets(
     })
 }
 
-pub async fn prepare_nimbos_x86_64_guest_vmconfig(ctx: &AxvisorContext) -> anyhow::Result<PathBuf> {
+pub(crate) async fn prepare_nimbos_x86_64_guest_vmconfig(
+    ctx: &AxvisorContext,
+) -> anyhow::Result<PathBuf> {
     let mut config = ImageConfig::read_config(ctx.workspace_root())?;
     config.local_storage = absolute_path(ctx.workspace_root(), &config.local_storage);
 
@@ -102,7 +104,7 @@ pub async fn prepare_nimbos_x86_64_guest_vmconfig(ctx: &AxvisorContext) -> anyho
     Ok(ctx.workspace_root().join(NIMBOS_X86_64_VMCONFIG))
 }
 
-pub fn shell_autoinit_qemu_override_args(
+pub(crate) fn shell_autoinit_qemu_override_args(
     request: &ResolvedAxvisorRequest,
     shell: &ShellAutoInitConfig,
 ) -> anyhow::Result<CargoQemuOverrideArgs> {

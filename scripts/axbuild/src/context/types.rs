@@ -207,15 +207,11 @@ macro_rules! impl_snapshot_file {
         }
 
         impl $snapshot_ty {
-            pub fn path_in(root: &std::path::Path) -> PathBuf {
-                root.join($file_name)
-            }
-
-            pub fn load(root: &std::path::Path) -> anyhow::Result<Self> {
+            pub(crate) fn load(root: &std::path::Path) -> anyhow::Result<Self> {
                 load_snapshot(root)
             }
 
-            pub fn store(&self, root: &std::path::Path) -> anyhow::Result<PathBuf> {
+            pub(crate) fn store(&self, root: &std::path::Path) -> anyhow::Result<PathBuf> {
                 store_snapshot(root, self)
             }
         }

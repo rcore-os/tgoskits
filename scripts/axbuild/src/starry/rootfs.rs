@@ -17,21 +17,17 @@ use crate::{
 
 const ROOTFS_URL: &str = "https://github.com/Starry-OS/rootfs/releases/download/20260214";
 
-pub fn rootfs_image_name(arch: &str) -> anyhow::Result<String> {
+pub(crate) fn rootfs_image_name(arch: &str) -> anyhow::Result<String> {
     let _ = starry_target_for_arch_checked(arch)?;
     Ok(format!("rootfs-{arch}.img"))
 }
 
-pub fn resolve_target_dir(workspace_root: &Path, target: &str) -> anyhow::Result<PathBuf> {
+pub(crate) fn resolve_target_dir(workspace_root: &Path, target: &str) -> anyhow::Result<PathBuf> {
     let _ = crate::context::starry_arch_for_target_checked(target)?;
     Ok(workspace_root.join("target").join(target))
 }
 
-pub fn default_disk_image_path(workspace_root: &Path, target: &str) -> anyhow::Result<PathBuf> {
-    Ok(resolve_target_dir(workspace_root, target)?.join("disk.img"))
-}
-
-pub async fn ensure_rootfs_in_target_dir(
+pub(crate) async fn ensure_rootfs_in_target_dir(
     workspace_root: &Path,
     arch: &str,
     target: &str,
@@ -71,7 +67,7 @@ pub async fn ensure_rootfs_in_target_dir(
     Ok(disk_img)
 }
 
-pub async fn default_qemu_args(
+pub(crate) async fn default_qemu_args(
     workspace_root: &Path,
     request: &ResolvedStarryRequest,
 ) -> anyhow::Result<Vec<String>> {
@@ -80,26 +76,7 @@ pub async fn default_qemu_args(
     qemu_args_for_disk_image(disk_img)
 }
 
-pub async fn test_qemu_args(
-    workspace_root: &Path,
-    request: &ResolvedStarryRequest,
-) -> anyhow::Result<Vec<String>> {
-    let base_disk_img =
-        ensure_rootfs_in_target_dir(workspace_root, &request.arch, &request.target).await?;
-    let isolated_disk_img = isolated_test_disk_image_path(workspace_root, request)?;
-    tokio_fs::copy(&base_disk_img, &isolated_disk_img)
-        .await
-        .with_context(|| {
-            format!(
-                "failed to copy {} to {}",
-                base_disk_img.display(),
-                isolated_disk_img.display()
-            )
-        })?;
-    qemu_args_for_disk_image(isolated_disk_img)
-}
-
-pub async fn prepare_test_qemu_config(
+pub(crate) async fn prepare_test_qemu_config(
     workspace_root: &Path,
     request: &ResolvedStarryRequest,
     template_path: &Path,
@@ -229,18 +206,6 @@ mod tests {
         assert_eq!(dir, root.path().join("target/x86_64-unknown-none"));
     }
 
-    #[test]
-    fn default_disk_image_path_appends_disk_img() {
-        let root = tempdir().unwrap();
-        let path = default_disk_image_path(root.path(), "aarch64-unknown-none-softfloat").unwrap();
-
-        assert_eq!(
-            path,
-            root.path()
-                .join("target/aarch64-unknown-none-softfloat/disk.img")
-        );
-    }
-
     #[tokio::test]
     async fn default_qemu_args_include_disk_and_network_defaults() {
         let root = tempdir().unwrap();
@@ -281,41 +246,6 @@ mod tests {
         assert_eq!(
             fs::read(root.path().join("target/x86_64-unknown-none/disk.img")).unwrap(),
             b"rootfs"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_qemu_args_use_isolated_disk_copy() {
-        let root = tempdir().unwrap();
-        let target_dir = root.path().join("target/x86_64-unknown-none");
-        fs::create_dir_all(&target_dir).unwrap();
-        fs::write(target_dir.join("rootfs-x86_64.img"), b"rootfs").unwrap();
-
-        let request = ResolvedStarryRequest {
-            package: "starryos-test".to_string(),
-            arch: "x86_64".to_string(),
-            target: "x86_64-unknown-none".to_string(),
-            plat_dyn: None,
-            build_info_path: PathBuf::from("/tmp/.build.toml"),
-            qemu_config: None,
-            uboot_config: None,
-        };
-
-        let args = test_qemu_args(root.path(), &request).await.unwrap();
-        let disk_arg = args
-            .windows(2)
-            .find_map(|window| (window[0] == "-drive").then_some(window[1].clone()))
-            .unwrap();
-
-        assert!(disk_arg.contains("disk-test-"));
-        assert!(
-            disk_arg.contains(
-                &root
-                    .path()
-                    .join("target/x86_64-unknown-none")
-                    .display()
-                    .to_string()
-            )
         );
     }
 

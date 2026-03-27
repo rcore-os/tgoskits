@@ -16,39 +16,25 @@ const SUPPORTED_TARGET_VALUES: &str = "x86_64-unknown-none, aarch64-unknown-none
                                        riscv64gc-unknown-none-elf, \
                                        loongarch64-unknown-none-softfloat";
 
-pub fn starry_target_for_arch(arch: &str) -> &'static str {
-    target_for_arch(arch)
-}
-
-pub fn target_for_arch(arch: &str) -> &'static str {
-    arch_target_entry(arch)
-        .map(|(_, target)| *target)
-        .unwrap_or_else(|| panic!("unsupported Starry architecture: {arch}"))
-}
-
-pub fn starry_arch_for_target(target: &str) -> Option<&'static str> {
-    arch_for_target(target)
-}
-
-pub fn arch_for_target(target: &str) -> Option<&'static str> {
+pub(crate) fn arch_for_target(target: &str) -> Option<&'static str> {
     ARCH_TARGETS
         .iter()
         .find_map(|(arch, candidate)| (*candidate == target).then_some(*arch))
 }
 
-pub fn starry_target_for_arch_checked(arch: &str) -> anyhow::Result<&'static str> {
+pub(crate) fn starry_target_for_arch_checked(arch: &str) -> anyhow::Result<&'static str> {
     target_for_arch_checked_impl(arch, "Starry")
 }
 
-pub fn target_for_arch_checked(arch: &str) -> anyhow::Result<&'static str> {
+pub(crate) fn target_for_arch_checked(arch: &str) -> anyhow::Result<&'static str> {
     target_for_arch_checked_impl(arch, "Starry")
 }
 
-pub fn starry_arch_for_target_checked(target: &str) -> anyhow::Result<&'static str> {
+pub(crate) fn starry_arch_for_target_checked(target: &str) -> anyhow::Result<&'static str> {
     arch_for_target_checked_impl(target, "Starry")
 }
 
-pub fn arch_for_target_checked(target: &str) -> anyhow::Result<&'static str> {
+pub(crate) fn arch_for_target_checked(target: &str) -> anyhow::Result<&'static str> {
     arch_for_target_checked_impl(target, "Starry")
 }
 

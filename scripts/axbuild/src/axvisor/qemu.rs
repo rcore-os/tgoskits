@@ -7,33 +7,13 @@ use ostool::{build::CargoQemuOverrideArgs, run::qemu::QemuConfig};
 
 use crate::context::{QemuRunConfig, ResolvedAxvisorRequest};
 
-pub fn default_qemu_config_template_path(axvisor_dir: &Path, arch: &str) -> PathBuf {
+pub(crate) fn default_qemu_config_template_path(axvisor_dir: &Path, arch: &str) -> PathBuf {
     axvisor_dir.join(format!("scripts/ostool/qemu-{arch}.toml"))
 }
 
-pub fn default_qemu_args(arch: &str) -> anyhow::Result<Vec<String>> {
-    let mut args = vec!["-m".to_string(), "2G".to_string()];
-    match arch {
-        "aarch64" => args.extend([
-            "-machine".to_string(),
-            "virt,virtualization=on,gic-version=3".to_string(),
-        ]),
-        "x86_64" => args.extend([
-            "-accel".to_string(),
-            "kvm".to_string(),
-            "-cpu".to_string(),
-            "host".to_string(),
-        ]),
-        "riscv64" | "loongarch64" => {}
-        _ => anyhow::bail!(
-            "unsupported Axvisor architecture `{arch}`; expected one of aarch64, x86_64, riscv64, \
-             loongarch64"
-        ),
-    }
-    Ok(args)
-}
-
-pub fn default_qemu_run_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<QemuRunConfig> {
+pub(crate) fn default_qemu_run_config(
+    request: &ResolvedAxvisorRequest,
+) -> anyhow::Result<QemuRunConfig> {
     let default_args = CargoQemuOverrideArgs {
         to_bin: Some(default_qemu_to_bin(&request.arch)?),
         args: Some(default_runtime_qemu_args(&request.arch, None)),
@@ -56,52 +36,7 @@ pub fn default_qemu_run_config(request: &ResolvedAxvisorRequest) -> anyhow::Resu
     })
 }
 
-pub fn prepare_default_qemu_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<PathBuf> {
-    let template_path = default_qemu_config_template_path(&request.axvisor_dir, &request.arch);
-    prepare_qemu_config_from_template(&template_path, request)
-}
-
-pub fn prepare_qemu_config_from_template(
-    template_path: &Path,
-    request: &ResolvedAxvisorRequest,
-) -> anyhow::Result<PathBuf> {
-    let mut content = fs::read_to_string(template_path).map_err(|e| {
-        anyhow!(
-            "failed to read QEMU config template {}: {e}",
-            template_path.display()
-        )
-    })?;
-
-    if let Some(rootfs_path) = infer_rootfs_path(&request.vmconfigs)? {
-        content = content.replace(r#"# "-drive","#, r#""-drive","#);
-        content = content.replace(
-            r#"# "id=disk0,if=none,format=raw,file=${workspaceFolder}/tmp/rootfs.img","#,
-            r#""id=disk0,if=none,format=raw,file=${workspaceFolder}/tmp/rootfs.img","#,
-        );
-        content = content.replace(
-            "${workspaceFolder}/tmp/rootfs.img",
-            &rootfs_path.display().to_string(),
-        );
-    }
-
-    let output_path = std::env::temp_dir().join(format!("axvisor-qemu-{}.toml", request.arch));
-    fs::write(&output_path, content).map_err(|e| {
-        anyhow!(
-            "failed to write generated QEMU config {}: {e}",
-            output_path.display()
-        )
-    })?;
-    Ok(output_path)
-}
-
-pub fn default_qemu_override_args(
-    request: &ResolvedAxvisorRequest,
-) -> anyhow::Result<CargoQemuOverrideArgs> {
-    let template_path = default_qemu_config_template_path(&request.axvisor_dir, &request.arch);
-    qemu_override_args_from_template(&template_path, request)
-}
-
-pub fn qemu_override_args_from_template(
+pub(crate) fn qemu_override_args_from_template(
     template_path: &Path,
     request: &ResolvedAxvisorRequest,
 ) -> anyhow::Result<CargoQemuOverrideArgs> {
@@ -274,30 +209,6 @@ mod tests {
             uboot_config: None,
             vmconfigs: vec![],
         }
-    }
-
-    #[test]
-    fn default_qemu_args_enable_virtualization_support() {
-        assert_eq!(
-            default_qemu_args("aarch64").unwrap(),
-            vec![
-                "-m".to_string(),
-                "2G".to_string(),
-                "-machine".to_string(),
-                "virt,virtualization=on,gic-version=3".to_string()
-            ]
-        );
-        assert_eq!(
-            default_qemu_args("x86_64").unwrap(),
-            vec![
-                "-m".to_string(),
-                "2G".to_string(),
-                "-accel".to_string(),
-                "kvm".to_string(),
-                "-cpu".to_string(),
-                "host".to_string()
-            ]
-        );
     }
 
     #[test]
