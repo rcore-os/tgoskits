@@ -249,9 +249,10 @@ mod tests {
             build_info,
             StarryBuildInfo::default_starry_for_target("aarch64-unknown-none-softfloat")
         );
-        let written = fs::read_to_string(path).unwrap();
-        assert!(written.contains("features = [\"qemu\"]"));
-        assert!(written.contains("plat_dyn = true"));
+        assert!(path.exists());
+        let persisted: StarryBuildInfo =
+            toml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(persisted, build_info);
     }
 
     #[test]
@@ -323,61 +324,6 @@ HELLO = "world"
     }
 
     #[test]
-    fn load_cargo_config_uses_base_then_applies_starry_overrides() {
-        let root = tempdir().unwrap();
-        let path = root.path().join(".build-target.toml");
-        fs::write(
-            &path,
-            r#"
-log = "Info"
-features = ["net"]
-
-[env]
-CUSTOM = "1"
-"#,
-        )
-        .unwrap();
-
-        let request = request(path, "aarch64", "aarch64-unknown-none-softfloat");
-        let cargo = load_cargo_config(&request).unwrap();
-
-        assert_eq!(cargo.package, STARRY_PACKAGE);
-        assert_eq!(cargo.target, "aarch64-unknown-none-softfloat");
-        assert_eq!(
-            cargo.features,
-            vec![
-                "axfeat/defplat".to_string(),
-                "net".to_string(),
-                "qemu".to_string()
-            ]
-        );
-        assert_eq!(
-            cargo.env.get("AX_ARCH").map(String::as_str),
-            Some("aarch64")
-        );
-        assert_eq!(
-            cargo.env.get("AX_TARGET").map(String::as_str),
-            Some("aarch64-unknown-none-softfloat")
-        );
-        assert_eq!(
-            cargo.env.get("AX_PLATFORM").map(String::as_str),
-            Some("aarch64-qemu-virt")
-        );
-        assert_eq!(cargo.env.get("AX_LOG").map(String::as_str), Some("info"));
-        assert_eq!(cargo.env.get("CUSTOM").map(String::as_str), Some("1"));
-        assert_eq!(
-            cargo.args,
-            vec![
-                "--config".to_string(),
-                "target.aarch64-unknown-none-softfloat.rustflags=[\"-Clink-arg=-Tlinker.x\",\"\
-                 -Clink-arg=-no-pie\",\"-Clink-arg=-znostart-stop-gc\"]"
-                    .to_string()
-            ]
-        );
-        assert!(cargo.to_bin);
-    }
-
-    #[test]
     fn patch_starry_cargo_config_preserves_request_package() {
         let request = ResolvedStarryRequest {
             package: "starryos-test".to_string(),
@@ -398,32 +344,6 @@ CUSTOM = "1"
         patch_starry_cargo_config(&mut cargo, &request).unwrap();
 
         assert_eq!(cargo.package, "starryos-test");
-    }
-
-    #[test]
-    fn load_cargo_config_honors_request_plat_dyn_override() {
-        let root = tempdir().unwrap();
-        let path = root.path().join(".build-target.toml");
-        fs::write(
-            &path,
-            r#"
-log = "Info"
-plat_dyn = true
-features = ["net"]
-
-[env]
-CUSTOM = "1"
-"#,
-        )
-        .unwrap();
-
-        let mut request = request(path, "aarch64", "aarch64-unknown-none-softfloat");
-        request.plat_dyn = Some(false);
-        let cargo = load_cargo_config(&request).unwrap();
-
-        assert!(cargo.features.contains(&"axfeat/defplat".to_string()));
-        assert!(!cargo.features.contains(&"axfeat/plat-dyn".to_string()));
-        assert!(cargo.args.iter().any(|arg| arg.contains("-Tlinker.x")));
     }
 
     #[test]

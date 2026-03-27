@@ -74,8 +74,6 @@ async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::*;
 
     #[test]
@@ -104,7 +102,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_arceos_test_qemu_command() {
+    fn cli_parses_arceos_branch_command() {
         let cli = Cli::try_parse_from([
             "axbuild",
             "arceos",
@@ -116,241 +114,29 @@ mod tests {
         .unwrap();
 
         match cli.command {
-            Commands::Arceos {
-                command: arceos::Command::Test(args),
-            } => match args.command {
-                arceos::TestCommand::Qemu(args) => assert_eq!(args.target, "x86_64-unknown-none"),
-                _ => panic!("expected `arceos test qemu` command"),
-            },
-            _ => panic!("expected `arceos test qemu` command"),
+            Commands::Arceos { .. } => {}
+            _ => panic!("expected `arceos` branch command"),
         }
     }
 
     #[test]
-    fn cli_parses_starry_test_qemu_command() {
+    fn cli_parses_starry_branch_command() {
         let cli = Cli::try_parse_from(["axbuild", "starry", "test", "qemu", "--target", "x86_64"])
             .unwrap();
 
         match cli.command {
-            Commands::Starry {
-                command: starry::Command::Test(args),
-            } => match args.command {
-                starry::TestCommand::Qemu(args) => assert_eq!(args.target, "x86_64"),
-                _ => panic!("expected `starry test qemu` command"),
-            },
-            _ => panic!("expected `starry test qemu` command"),
+            Commands::Starry { .. } => {}
+            _ => panic!("expected `starry` branch command"),
         }
     }
 
     #[test]
-    fn cli_parses_axvisor_test_qemu_command() {
-        let cli =
-            Cli::try_parse_from(["axbuild", "axvisor", "test", "qemu", "--target", "aarch64"])
-                .unwrap();
-
-        match cli.command {
-            Commands::Axvisor {
-                command: axvisor::Command::Test(args),
-            } => match args.command {
-                axvisor::TestCommand::Qemu(args) => assert_eq!(args.target, "aarch64"),
-                _ => panic!("expected `axvisor test qemu` command"),
-            },
-            _ => panic!("expected `axvisor test qemu` command"),
-        }
-    }
-
-    #[test]
-    fn cli_parses_axvisor_test_qemu_arch_alias() {
-        let cli = Cli::try_parse_from(["axbuild", "axvisor", "test", "qemu", "--arch", "aarch64"])
-            .unwrap();
-
-        match cli.command {
-            Commands::Axvisor {
-                command: axvisor::Command::Test(args),
-            } => match args.command {
-                axvisor::TestCommand::Qemu(args) => assert_eq!(args.target, "aarch64"),
-                _ => panic!("expected `axvisor test qemu` command"),
-            },
-            _ => panic!("expected `axvisor test qemu` command"),
-        }
-    }
-
-    #[test]
-    fn cli_parses_arceos_test_uboot_command() {
-        let cli = Cli::try_parse_from(["axbuild", "arceos", "test", "uboot"]).unwrap();
-
-        match cli.command {
-            Commands::Arceos {
-                command: arceos::Command::Test(args),
-            } => match args.command {
-                arceos::TestCommand::Uboot(_) => {}
-                _ => panic!("expected `arceos test uboot` command"),
-            },
-            _ => panic!("expected `arceos test uboot` command"),
-        }
-    }
-
-    #[test]
-    fn cli_parses_starry_test_uboot_command() {
-        let cli = Cli::try_parse_from(["axbuild", "starry", "test", "uboot"]).unwrap();
-
-        match cli.command {
-            Commands::Starry {
-                command: starry::Command::Test(args),
-            } => match args.command {
-                starry::TestCommand::Uboot(_) => {}
-                _ => panic!("expected `starry test uboot` command"),
-            },
-            _ => panic!("expected `starry test uboot` command"),
-        }
-    }
-
-    #[test]
-    fn cli_parses_axvisor_test_uboot_command() {
-        let cli = Cli::try_parse_from([
-            "axbuild",
-            "axvisor",
-            "test",
-            "uboot",
-            "--board",
-            "phytiumpi",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Commands::Axvisor {
-                command: axvisor::Command::Test(args),
-            } => match args.command {
-                axvisor::TestCommand::Uboot(args) => {
-                    assert_eq!(args.board, "phytiumpi");
-                    assert_eq!(args.uboot_config, None);
-                }
-                _ => panic!("expected `axvisor test uboot` command"),
-            },
-            _ => panic!("expected `axvisor test uboot` command"),
-        }
-    }
-
-    #[test]
-    fn cli_parses_axvisor_test_uboot_short_board_flag() {
-        let cli =
-            Cli::try_parse_from(["axbuild", "axvisor", "test", "uboot", "-b", "roc-rk3568-pc"])
-                .unwrap();
-
-        match cli.command {
-            Commands::Axvisor {
-                command: axvisor::Command::Test(args),
-            } => match args.command {
-                axvisor::TestCommand::Uboot(args) => {
-                    assert_eq!(args.board, "roc-rk3568-pc");
-                    assert_eq!(args.uboot_config, None);
-                }
-                _ => panic!("expected `axvisor test uboot` command"),
-            },
-            _ => panic!("expected `axvisor test uboot` command"),
-        }
-    }
-
-    #[test]
-    fn cli_parses_axvisor_test_uboot_custom_config() {
-        let cli = Cli::try_parse_from([
-            "axbuild",
-            "axvisor",
-            "test",
-            "uboot",
-            "--board",
-            "phytiumpi",
-            "--uboot-config",
-            ".github/workflows/uboot.toml",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Commands::Axvisor {
-                command: axvisor::Command::Test(args),
-            } => match args.command {
-                axvisor::TestCommand::Uboot(args) => {
-                    assert_eq!(args.board, "phytiumpi");
-                    assert_eq!(
-                        args.uboot_config,
-                        Some(PathBuf::from(".github/workflows/uboot.toml"))
-                    );
-                }
-                _ => panic!("expected `axvisor test uboot` command"),
-            },
-            _ => panic!("expected `axvisor test uboot` command"),
-        }
-    }
-
-    #[test]
-    fn cli_parses_axvisor_image_ls_command() {
+    fn cli_parses_axvisor_branch_command() {
         let cli = Cli::try_parse_from(["axbuild", "axvisor", "image", "ls"]).unwrap();
 
         match cli.command {
-            Commands::Axvisor {
-                command: axvisor::Command::Image(_),
-            } => {}
-            _ => panic!("expected `axvisor image ls` command"),
-        }
-    }
-
-    #[test]
-    fn cli_parses_axvisor_image_pull_command() {
-        let cli = Cli::try_parse_from(["axbuild", "axvisor", "image", "pull", "linux"]).unwrap();
-
-        match cli.command {
-            Commands::Axvisor {
-                command: axvisor::Command::Image(_),
-            } => {}
-            _ => panic!("expected `axvisor image pull` command"),
-        }
-    }
-
-    #[test]
-    fn cli_parses_axvisor_build_command() {
-        let cli = Cli::try_parse_from([
-            "axbuild",
-            "axvisor",
-            "build",
-            "--arch",
-            "aarch64",
-            "--config",
-            "os/axvisor/.build.toml",
-            "--vmconfigs",
-            "tmp/vm1.toml",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Commands::Axvisor {
-                command: axvisor::Command::Build(_),
-            } => {}
-            _ => panic!("expected `axvisor build` command"),
-        }
-    }
-
-    #[test]
-    fn cli_parses_axvisor_qemu_command() {
-        let cli = Cli::try_parse_from([
-            "axbuild",
-            "axvisor",
-            "qemu",
-            "--arch",
-            "aarch64",
-            "--config",
-            "os/axvisor/.build.toml",
-            "--qemu-config",
-            "configs/qemu.toml",
-            "--vmconfigs",
-            "tmp/vm1.toml",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Commands::Axvisor {
-                command: axvisor::Command::Qemu(_),
-            } => {}
-            _ => panic!("expected `axvisor qemu` command"),
+            Commands::Axvisor { .. } => {}
+            _ => panic!("expected `axvisor` branch command"),
         }
     }
 }

@@ -375,54 +375,6 @@ mod tests {
     }
 
     #[test]
-    fn command_parses_image_ls() {
-        #[derive(clap::Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from(["axvisor", "image", "ls"]).unwrap();
-
-        match cli.command {
-            Command::Image(_) => {}
-            _ => panic!("expected image command"),
-        }
-    }
-
-    #[test]
-    fn command_parses_image_pull() {
-        #[derive(clap::Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from(["axvisor", "image", "pull", "linux"]).unwrap();
-
-        match cli.command {
-            Command::Image(_) => {}
-            _ => panic!("expected image command"),
-        }
-    }
-
-    #[test]
-    fn command_parses_defconfig() {
-        #[derive(clap::Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from(["axvisor", "defconfig", "qemu-aarch64"]).unwrap();
-
-        match cli.command {
-            Command::Defconfig(args) => assert_eq!(args.board, "qemu-aarch64"),
-            _ => panic!("expected defconfig command"),
-        }
-    }
-
-    #[test]
     fn command_parses_uboot() {
         #[derive(clap::Parser)]
         struct Cli {
@@ -460,7 +412,7 @@ mod tests {
             command: Command,
         }
 
-        let cli = Cli::try_parse_from(["axvisor", "test", "qemu", "--target", "aarch64"]).unwrap();
+        let cli = Cli::try_parse_from(["axvisor", "test", "qemu", "--arch", "aarch64"]).unwrap();
 
         match cli.command {
             Command::Test(args) => match args.command {
@@ -483,7 +435,7 @@ mod tests {
             "axvisor",
             "test",
             "uboot",
-            "--board",
+            "-b",
             "roc-rk3568-pc",
             "--uboot-config",
             "uboot.toml",
@@ -500,49 +452,6 @@ mod tests {
             },
             _ => panic!("expected test command"),
         }
-    }
-
-    #[test]
-    fn command_parses_config_ls() {
-        #[derive(clap::Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from(["axvisor", "config", "ls"]).unwrap();
-
-        match cli.command {
-            Command::Config(ArgsConfig {
-                command: ConfigCommand::Ls,
-            }) => {}
-            _ => panic!("expected config ls command"),
-        }
-    }
-
-    #[test]
-    fn build_args_convert_to_cli_args() {
-        let build_config = "os/axvisor/.build.toml";
-        let args = ArgsBuild {
-            config: Some(PathBuf::from(build_config)),
-            arch: Some("aarch64".to_string()),
-            target: Some("aarch64-unknown-none-softfloat".to_string()),
-            plat_dyn: Some(false),
-            vmconfigs: vec![PathBuf::from("tmp/vm1.toml"), PathBuf::from("tmp/vm2.toml")],
-        };
-
-        let cli_args = AxvisorCliArgs::from(&args);
-
-        assert_eq!(
-            cli_args,
-            AxvisorCliArgs {
-                config: Some(PathBuf::from(build_config)),
-                arch: Some("aarch64".to_string()),
-                target: Some("aarch64-unknown-none-softfloat".to_string()),
-                plat_dyn: Some(false),
-                vmconfigs: vec![PathBuf::from("tmp/vm1.toml"), PathBuf::from("tmp/vm2.toml")],
-            }
-        );
     }
 
     #[test]

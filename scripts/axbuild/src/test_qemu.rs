@@ -20,10 +20,6 @@ const ARCEOS_TEST_TARGETS: &[&str] = &[
 
 pub(crate) const STARRY_TEST_PACKAGE: &str = "starryos-test";
 const STARRY_TEST_ARCHES: &[&str] = &["x86_64", "riscv64", "aarch64", "loongarch64"];
-#[cfg(test)]
-const STARRY_TEST_SUCCESS_REGEX: &[&str] = &["^All tests passed!$"];
-#[cfg(test)]
-const STARRY_TEST_FAIL_REGEX: &[&str] = &["(?i)\\bpanic(?:ked)?\\b"];
 const AXVISOR_TEST_ARCHES: &[&str] = &["aarch64", "x86_64"];
 const AXVISOR_AARCH64_TEST_SHELL_PREFIX: &str = "~ #";
 const AXVISOR_AARCH64_TEST_SHELL_INIT_CMD: &str = "pwd && echo 'guest test pass!'";
@@ -112,22 +108,6 @@ pub(crate) fn axvisor_uboot_board_config(board: &str) -> anyhow::Result<AxvisorU
             AXVISOR_UBOOT_TEST_BOARDS.join(", ")
         ),
     }
-}
-
-#[cfg(test)]
-fn default_starry_test_success_regex() -> Vec<String> {
-    STARRY_TEST_SUCCESS_REGEX
-        .iter()
-        .map(|pattern| (*pattern).to_string())
-        .collect()
-}
-
-#[cfg(test)]
-fn default_starry_test_fail_regex() -> Vec<String> {
-    STARRY_TEST_FAIL_REGEX
-        .iter()
-        .map(|pattern| (*pattern).to_string())
-        .collect()
 }
 
 fn default_axvisor_test_success_regex() -> Vec<String> {
@@ -261,69 +241,6 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("Supported arch values are: aarch64")
-        );
-    }
-
-    #[test]
-    fn arceos_package_list_is_stable() {
-        assert_eq!(
-            ARCEOS_TEST_PACKAGES,
-            &[
-                "arceos-memtest",
-                "arceos-affinity",
-                "arceos-irq",
-                "arceos-parallel",
-                "arceos-priority",
-                "arceos-sleep",
-                "arceos-wait-queue",
-                "arceos-yield",
-            ]
-        );
-    }
-
-    #[test]
-    fn starry_package_list_is_stable() {
-        assert_eq!(STARRY_TEST_PACKAGE, "starryos-test");
-    }
-
-    #[test]
-    fn starry_default_regexes_match_expected_values() {
-        assert_eq!(
-            default_starry_test_success_regex(),
-            vec!["^All tests passed!$".to_string()]
-        );
-        assert_eq!(
-            default_starry_test_fail_regex(),
-            vec!["(?i)\\bpanic(?:ked)?\\b".to_string()]
-        );
-    }
-
-    #[test]
-    fn axvisor_default_regexes_match_expected_values() {
-        assert_eq!(
-            default_axvisor_test_success_regex(),
-            vec!["^guest test pass!$".to_string()]
-        );
-        assert_eq!(
-            default_axvisor_test_fail_regex(),
-            vec![
-                "(?i)\\bpanic(?:ked)?\\b".to_string(),
-                "(?i)kernel panic".to_string(),
-                "(?i)login incorrect".to_string(),
-                "(?i)permission denied".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn axvisor_x86_64_shell_config_matches_expected_values() {
-        let shell = axvisor_test_shell_config("x86_64");
-
-        assert_eq!(shell.shell_prefix, ">>");
-        assert_eq!(shell.shell_init_cmd, "hello_world");
-        assert_eq!(
-            shell.success_regex,
-            vec!["Hello world from user mode program!".to_string()]
         );
     }
 

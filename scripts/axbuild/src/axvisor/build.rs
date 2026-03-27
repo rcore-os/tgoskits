@@ -622,6 +622,7 @@ vm_configs = []
     fn load_cargo_config_injects_vmconfigs() {
         let root = tempdir().unwrap();
         let config_path = root.path().join(".build.toml");
+        let vmconfigs = vec![root.path().join("a.toml"), root.path().join("b.toml")];
         fs::write(
             &config_path,
             r#"
@@ -642,7 +643,7 @@ plat_dyn = true
             build_info_path: config_path,
             qemu_config: None,
             uboot_config: None,
-            vmconfigs: vec![root.path().join("a.toml"), root.path().join("b.toml")],
+            vmconfigs: vmconfigs.clone(),
         })
         .unwrap();
 
@@ -656,42 +657,21 @@ plat_dyn = true
             cargo.env.get("AX_TARGET").map(String::as_str),
             Some("aarch64-unknown-none-softfloat")
         );
-        assert!(cargo.env.contains_key("AXVISOR_VM_CONFIGS"));
-        assert_eq!(cargo.args, vec!["--bin".to_string(), "axvisor".to_string()]);
-    }
-
-    #[test]
-    fn load_cargo_config_keeps_existing_explicit_bin_arg() {
-        let root = tempdir().unwrap();
-        let config_path = root.path().join(".build.toml");
-        fs::write(
-            &config_path,
-            r#"
-env = {}
-features = ["ept-level-4"]
-log = "Info"
-plat_dyn = true
-args = ["--bin", "custom-bin"]
-"#,
-        )
-        .unwrap();
-
-        let cargo = load_cargo_config(&ResolvedAxvisorRequest {
-            package: AXVISOR_PACKAGE.to_string(),
-            axvisor_dir: root.path().join("os/axvisor"),
-            arch: "aarch64".to_string(),
-            target: "aarch64-unknown-none-softfloat".to_string(),
-            plat_dyn: Some(true),
-            build_info_path: config_path,
-            qemu_config: None,
-            uboot_config: None,
-            vmconfigs: vec![],
-        })
-        .unwrap();
-
         assert_eq!(
-            cargo.args,
-            vec!["--bin".to_string(), "custom-bin".to_string()]
+            cargo.env.get("AXVISOR_VM_CONFIGS").map(String::as_str),
+            Some(
+                std::env::join_paths(&vmconfigs)
+                    .unwrap()
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert_eq!(
+            cargo
+                .args
+                .windows(2)
+                .find_map(|window| (window[0] == "--bin").then_some(window[1].as_str())),
+            Some("axvisor")
         );
     }
 

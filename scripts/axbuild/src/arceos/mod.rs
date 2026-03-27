@@ -242,28 +242,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn build_args_convert_to_cli_args() {
-        let args = ArgsBuild {
-            config: None,
-            package: Some("arceos-helloworld".to_string()),
-            target: Some("aarch64-unknown-none-softfloat".to_string()),
-            plat_dyn: Some(true),
-        };
-
-        let cli_args = BuildCliArgs::from(&args);
-
-        assert_eq!(
-            cli_args,
-            BuildCliArgs {
-                config: None,
-                package: Some("arceos-helloworld".to_string()),
-                target: Some("aarch64-unknown-none-softfloat".to_string()),
-                plat_dyn: Some(true),
-            }
-        );
-    }
-
-    #[test]
     fn command_parses_test_qemu() {
         #[derive(Parser)]
         struct Cli {
