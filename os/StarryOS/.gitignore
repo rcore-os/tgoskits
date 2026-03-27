@@ -12,4 +12,5 @@
 /mnt
 *.swp
 *.swo
+/.cargo/.config-local.toml
 
