@@ -112,7 +112,7 @@ fn restore() {
 
     let new_sp = uctx.sp() + 8;
     uctx.set_sp(new_sp);
-    thr.restore(&mut uctx);
+    thr.restore(&mut uctx).unwrap();
 
     assert_eq!(uctx.ip(), initial.ip());
     assert_eq!(uctx.sp(), initial.sp());

@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use axerrno::AxResult;
 use core::{
     alloc::Layout,
     mem::offset_of,
@@ -7,7 +8,7 @@ use core::{
 
 use axcpu::uspace::UserContext;
 use kspin::SpinNoIrq;
-use starry_vm::VmMutPtr;
+use starry_vm::{VmPtr, VmMutPtr};
 
 use super::ProcessSignalManager;
 use crate::{
@@ -192,16 +193,19 @@ impl ThreadSignalManager {
     }
 
     /// Restores the signal frame. Called by `sigreturn`.
-    pub fn restore(&self, uctx: &mut UserContext) {
+    pub fn restore(&self, uctx: &mut UserContext) -> AxResult<isize> {
         let frame_ptr = uctx.sp() as *const SignalFrame;
-        // FIXME: remove this `unsafe`
-        let frame = unsafe { &*frame_ptr };
+        // copy the saved frame back from uspace
+        let frame: SignalFrame = unsafe {
+            frame_ptr.vm_read_uninit()?.assume_init()
+        };
 
         *uctx = frame.uctx;
         frame.ucontext.mcontext.restore(uctx);
 
         *self.blocked.lock() = frame.ucontext.sigmask;
         self.possibly_has_signal.store(true, Ordering::Release);
+        Ok(0)
     }
 
     /// Sends a signal to the thread.
