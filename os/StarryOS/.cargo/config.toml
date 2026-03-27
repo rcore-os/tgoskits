@@ -1,0 +1,7 @@
+include = [{path = ".config-local.toml", optional = true}]
+
+[net]
+git-fetch-with-cli = true
+
+[alias]
+xtask = "run -p starryos --bin xtask --"

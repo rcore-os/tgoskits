@@ -8,7 +8,6 @@
 *.img
 /kernel-rv
 /kernel-la
-/.cargo
 /.crates*
 /mnt
 *.swp

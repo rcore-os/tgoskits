@@ -6811,9 +6811,11 @@ dependencies = [
 name = "starryos"
 version = "0.3.0-preview.3"
 dependencies = [
+ "anyhow",
  "axfeat",
  "axplat-riscv64-visionfive2",
  "starry-kernel",
+ "tokio",
 ]
 
 [[package]]
