@@ -6832,6 +6832,7 @@ dependencies = [
  "axbuild",
  "axfeat",
  "axplat-riscv64-visionfive2",
+ "clap",
  "starry-kernel",
  "tokio",
 ]

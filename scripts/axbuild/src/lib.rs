@@ -13,6 +13,7 @@ use crate::{arceos::ArceOS, axvisor::Axvisor, starry::Starry};
 
 pub mod arceos;
 pub mod axvisor;
+mod command_flow;
 pub mod context;
 mod download;
 mod logging;

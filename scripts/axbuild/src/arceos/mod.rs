@@ -4,6 +4,7 @@ use anyhow::Context;
 use clap::{Args, Subcommand};
 
 use crate::{
+    command_flow::{self, SnapshotPersistence},
     context::{AppContext, BuildCliArgs, QemuRunConfig, ResolvedBuildRequest},
     test_qemu,
 };
@@ -108,19 +109,28 @@ impl ArceOS {
     }
 
     async fn build(&mut self, args: ArgsBuild) -> anyhow::Result<()> {
-        let request = self.prepare_persisted_request((&args).into(), None, None)?;
+        let request =
+            self.prepare_request((&args).into(), None, None, SnapshotPersistence::Store)?;
         self.run_build_request(request).await
     }
 
     async fn qemu(&mut self, args: ArgsQemu) -> anyhow::Result<()> {
-        let request =
-            self.prepare_persisted_request((&args.build).into(), args.qemu_config, None)?;
+        let request = self.prepare_request(
+            (&args.build).into(),
+            args.qemu_config,
+            None,
+            SnapshotPersistence::Store,
+        )?;
         self.run_qemu_request(request).await
     }
 
     async fn uboot(&mut self, args: ArgsUboot) -> anyhow::Result<()> {
-        let request =
-            self.prepare_persisted_request((&args.build).into(), None, args.uboot_config)?;
+        let request = self.prepare_request(
+            (&args.build).into(),
+            None,
+            args.uboot_config,
+            SnapshotPersistence::Store,
+        )?;
         self.run_uboot_request(request).await
     }
 
@@ -148,8 +158,12 @@ impl ArceOS {
                 test_qemu::ARCEOS_TEST_PACKAGES.len(),
                 package
             );
-            let request =
-                self.prepare_request(Self::test_build_args(package, target), None, None)?;
+            let request = self.prepare_request(
+                Self::test_build_args(package, target),
+                None,
+                None,
+                SnapshotPersistence::Discard,
+            )?;
             match self
                 .run_qemu_request(request)
                 .await
@@ -175,24 +189,16 @@ impl ArceOS {
         args: BuildCliArgs,
         qemu_config: Option<PathBuf>,
         uboot_config: Option<PathBuf>,
+        persistence: SnapshotPersistence,
     ) -> anyhow::Result<ResolvedBuildRequest> {
-        let (request, _) = self
-            .app
-            .prepare_arceos_request(args, qemu_config, uboot_config)?;
-        Ok(request)
-    }
-
-    fn prepare_persisted_request(
-        &self,
-        args: BuildCliArgs,
-        qemu_config: Option<PathBuf>,
-        uboot_config: Option<PathBuf>,
-    ) -> anyhow::Result<ResolvedBuildRequest> {
-        let (request, snapshot) =
-            self.app
-                .prepare_arceos_request(args, qemu_config, uboot_config)?;
-        self.app.store_arceos_snapshot(&snapshot)?;
-        Ok(request)
+        command_flow::resolve_request(
+            persistence,
+            || {
+                self.app
+                    .prepare_arceos_request(args, qemu_config, uboot_config)
+            },
+            |snapshot| self.app.store_arceos_snapshot(snapshot),
+        )
     }
 
     fn test_build_args(package: &str, target: &str) -> BuildCliArgs {
@@ -204,29 +210,29 @@ impl ArceOS {
         }
     }
 
-    fn qemu_run_config(request: &ResolvedBuildRequest) -> QemuRunConfig {
-        QemuRunConfig {
+    fn qemu_run_config(request: &ResolvedBuildRequest) -> anyhow::Result<QemuRunConfig> {
+        Ok(QemuRunConfig {
             qemu_config: request.qemu_config.clone(),
             ..Default::default()
-        }
+        })
     }
 
     async fn run_qemu_request(&mut self, request: ResolvedBuildRequest) -> anyhow::Result<()> {
-        let cargo = build::load_cargo_config(&request)?;
-        let qemu = Self::qemu_run_config(&request);
-        self.app.qemu(cargo, request.build_info_path, qemu).await
+        command_flow::run_qemu(
+            &mut self.app,
+            request,
+            build::load_cargo_config,
+            Self::qemu_run_config,
+        )
+        .await
     }
 
     async fn run_build_request(&mut self, request: ResolvedBuildRequest) -> anyhow::Result<()> {
-        let cargo = build::load_cargo_config(&request)?;
-        self.app.build(cargo, request.build_info_path).await
+        command_flow::run_build(&mut self.app, request, build::load_cargo_config).await
     }
 
     async fn run_uboot_request(&mut self, request: ResolvedBuildRequest) -> anyhow::Result<()> {
-        let cargo = build::load_cargo_config(&request)?;
-        self.app
-            .uboot(cargo, request.build_info_path, request.uboot_config)
-            .await
+        command_flow::run_uboot(&mut self.app, request, build::load_cargo_config).await
     }
 }
 

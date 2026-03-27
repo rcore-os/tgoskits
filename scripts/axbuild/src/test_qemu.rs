@@ -1,4 +1,7 @@
-use crate::{axvisor::qemu_test::ShellAutoInitConfig, context::starry_target_for_arch_checked};
+use crate::{
+    axvisor::qemu_test::ShellAutoInitConfig,
+    context::{starry_target_for_arch_checked, target_for_arch_checked},
+};
 
 pub(crate) const ARCEOS_TEST_PACKAGES: &[&str] = &[
     "arceos-memtest",
@@ -60,20 +63,21 @@ pub(crate) fn validate_arceos_target(target: &str) -> anyhow::Result<&str> {
 }
 
 pub(crate) fn parse_starry_test_target(target: &str) -> anyhow::Result<(&str, &'static str)> {
-    validate_supported_arch_alias(target, "starry qemu tests", STARRY_TEST_ARCHES)?;
-    Ok((target, starry_target_for_arch_checked(target)?))
+    parse_arch_alias_target(
+        target,
+        "starry qemu tests",
+        STARRY_TEST_ARCHES,
+        starry_target_for_arch_checked,
+    )
 }
 
 pub(crate) fn parse_axvisor_test_target(target: &str) -> anyhow::Result<(&str, &'static str)> {
-    validate_supported_arch_alias(target, "axvisor qemu tests", AXVISOR_TEST_ARCHES)?;
-    Ok((
+    parse_arch_alias_target(
         target,
-        match target {
-            "aarch64" => "aarch64-unknown-none-softfloat",
-            "x86_64" => "x86_64-unknown-none",
-            _ => unreachable!(),
-        },
-    ))
+        "axvisor qemu tests",
+        AXVISOR_TEST_ARCHES,
+        target_for_arch_checked,
+    )
 }
 
 pub(crate) fn axvisor_uboot_board_config(board: &str) -> anyhow::Result<AxvisorUbootBoardConfig> {
@@ -151,6 +155,16 @@ fn validate_supported_arch_alias(
     }
 
     validate_supported_target(target, suite_name, "arch values", supported_arches)
+}
+
+fn parse_arch_alias_target<'a>(
+    target: &'a str,
+    suite_name: &str,
+    supported_arches: &[&str],
+    resolve_target: fn(&str) -> anyhow::Result<&'static str>,
+) -> anyhow::Result<(&'a str, &'static str)> {
+    validate_supported_arch_alias(target, suite_name, supported_arches)?;
+    Ok((target, resolve_target(target)?))
 }
 
 fn supported_board_names() -> String {

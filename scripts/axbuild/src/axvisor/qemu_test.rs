@@ -8,9 +8,9 @@ use ostool::build::CargoQemuOverrideArgs;
 
 use crate::{
     axvisor::{
-        build::{default_qemu_config_template_path, qemu_override_args_from_template},
         context::AxvisorContext,
         image::{config::ImageConfig, spec::ImageSpecRef, storage::Storage},
+        qemu::{default_qemu_config_template_path, qemu_override_args_from_template},
     },
     context::ResolvedAxvisorRequest,
 };
