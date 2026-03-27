@@ -152,6 +152,5 @@ pub fn sys_getcpu(cpu: *mut u32, node: *mut u32) -> AxResult<isize> {
         }
     }
     
-    // 成功处理完毕，向大堂经理汇报 0 (代表 OK)
     Ok(0)
 }
