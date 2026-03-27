@@ -13,6 +13,7 @@ use crate::{arceos::ArceOS, axvisor::Axvisor, starry::Starry};
 
 pub mod arceos;
 pub mod axvisor;
+mod clippy;
 mod command_flow;
 pub mod context;
 mod download;
@@ -32,6 +33,8 @@ struct Cli {
 enum Commands {
     /// Run std tests for the configured workspace package whitelist
     Test,
+    /// Run clippy for each root workspace package and each named feature in isolation
+    Clippy,
     /// Axvisor host-side commands
     Axvisor {
         #[command(subcommand)]
@@ -57,6 +60,7 @@ pub async fn run() -> anyhow::Result<()> {
 async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Commands::Test => test_std::run_std_test_command(),
+        Commands::Clippy => clippy::run_workspace_clippy_command(),
         Commands::Axvisor { command } => Axvisor::new()?.execute(command).await,
         Commands::Arceos { command } => ArceOS::new()?.execute(command).await,
         Commands::Starry { command } => Starry::new()?.execute(command).await,
@@ -80,6 +84,16 @@ mod tests {
     #[test]
     fn cli_rejects_legacy_test_std_command() {
         assert!(Cli::try_parse_from(["axbuild", "test", "std"]).is_err());
+    }
+
+    #[test]
+    fn cli_parses_clippy_command() {
+        let cli = Cli::try_parse_from(["axbuild", "clippy"]).unwrap();
+
+        match cli.command {
+            Commands::Clippy => {}
+            _ => panic!("expected `clippy` command"),
+        }
     }
 
     #[test]
