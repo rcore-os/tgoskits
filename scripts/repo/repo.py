@@ -178,6 +178,21 @@ class GitSubtreeManager:
         self.csv_manager = csv_manager
 
     @staticmethod
+    def _git_subtree_cmd(subcommand: str, args: List[str]) -> List[str]:
+        """Build a git-subtree command run via bash to avoid dash's hardcoded
+        recursion limit of 1000, which git-subtree (a #!/bin/sh script) hits
+        on repositories with large commit histories."""
+        exec_path_result = subprocess.run(
+            ['git', '--exec-path'],
+            capture_output=True, text=True
+        )
+        git_subtree_script = Path(exec_path_result.stdout.strip()) / 'git-subtree'
+        if git_subtree_script.exists():
+            return ['bash', str(git_subtree_script), subcommand] + args
+        # Fallback to the standard invocation if the script isn't found
+        return ['git', 'subtree', subcommand] + args
+
+    @staticmethod
     def _run_command(cmd: List[str], check: bool = True) -> subprocess.CompletedProcess:
         """Run a shell command and return the result."""
         print(f"Running: {' '.join(cmd)}")
@@ -373,11 +388,11 @@ class GitSubtreeManager:
         if force:
             # Some git-subtree versions strip the leading '+' from the refspec
             # before invoking `git push`, so perform the split/push explicitly.
-            split_cmd = [
-                'git', 'subtree', 'split',
+            # Use bash to invoke git-subtree to avoid dash's 1000-recursion limit.
+            split_cmd = self._git_subtree_cmd('split', [
                 '--quiet',
                 '--prefix=' + target_dir,
-            ]
+            ])
             split_rev = self._run_command_with_stdout(split_cmd)
             if not split_rev:
                 raise ValueError(f"Failed to split subtree at '{target_dir}'")
@@ -391,13 +406,14 @@ class GitSubtreeManager:
             self._run_command(push_cmd)
             return
 
-        cmd = [
-            'git', 'subtree', 'push',
+        # Use bash to invoke git-subtree to avoid dash's hardcoded 1000-recursion
+        # limit, which is hit when the repo history exceeds ~1000 commits.
+        cmd = self._git_subtree_cmd('push', [
             '--quiet',
             '--prefix=' + target_dir,
             url,
-            branch
-        ]
+            branch,
+        ])
         self._run_command(cmd)
 
     def switch_branch(self, url: str, target_dir: str, old_branch: str, new_branch: str) -> None:
