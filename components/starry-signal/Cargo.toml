@@ -9,6 +9,7 @@ license = "Apache-2.0"
 repository = "https://github.com/Starry-OS/starry-signal"
 
 [dependencies]
+axerrno = "0.2"
 axcpu = { version = "0.3.0-preview.5", features = ["uspace"] }
 bitflags = "2.6"
 cfg-if = "1"
