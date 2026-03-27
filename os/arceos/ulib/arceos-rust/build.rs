@@ -21,22 +21,22 @@ fn main() {
     let config_path = generate_config(&manifest_dir, &out_dir);
     println!("cargo:warning=config path: {}", config_path.display());
     // build the ArceOS library
-    let artifact_path = compile_foo_project(&lib_dir, &out_dir, &config_path);
+    let artifact_path = compile_project(&lib_dir, &out_dir, &config_path);
     // rename symbols to avoid conflicts
     let rename_list = lib_dir.join("symbol_rename.txt");
     let lib_file = artifact_path.join(format!("lib{}.a", LIB_NAME));
     rename_symbols(&lib_file, &rename_list);
     // copy linker script
     let linker_script_path = artifact_path.join(format!("linker_{}.lds", get_platform()));
-    let out_linker_script_path = env::var("AX_LINK")
-        .map(PathBuf::from)
-        .unwrap_or(out_dir)
-        .join("link.lds");
-    std::fs::copy(&linker_script_path, &out_linker_script_path)
-        .expect("Failed to copy linker script.");
+
+    // Also copy to artifact_path so it's in the linker search path
+    let artifact_linker_script = artifact_path.join("link.lds");
+    std::fs::copy(&linker_script_path, &artifact_linker_script)
+        .expect("Failed to copy linker script to artifact path.");
+
     println!(
         "cargo:warning=Linker script path: {}",
-        out_linker_script_path.display()
+        artifact_linker_script.display()
     );
 
     println!("cargo:rustc-link-search=native={}", artifact_path.display());
@@ -92,7 +92,7 @@ fn generate_config(manifest_dir: &Path, out_dir: &Path) -> PathBuf {
     out_config_path
 }
 
-fn compile_foo_project(lib_dir: &PathBuf, out_dir: &PathBuf, config_path: &PathBuf) -> PathBuf {
+fn compile_project(lib_dir: &PathBuf, out_dir: &PathBuf, config_path: &PathBuf) -> PathBuf {
     let profile = env::var("PROFILE").unwrap();
     let is_debug = profile == "debug";
     let arch = get_arch();
@@ -146,12 +146,28 @@ fn cargo() -> String {
 }
 
 fn rename_symbols(lib_path: &Path, rename_list: &Path) {
-    Command::new("objcopy")
+    let output = Command::new("rust-objcopy")
         .arg("--redefine-syms")
         .arg(rename_list)
         .arg(lib_path)
-        .status()
-        .expect("Failed to rename symbols in the library.");
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => panic!(
+            "Failed to rename symbols with rust-objcopy (exit: {}).\nstdout:\n{}\nstderr:\n{}",
+            output
+                .status
+                .code()
+                .map_or_else(|| "signal".to_string(), |c| c.to_string()),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        ),
+        Err(_) => panic!(
+            "Failed to run rust-objcopy. Please install required tools with:\n  rustup component \
+             add llvm-tools-preview\n  cargo install cargo-binutils"
+        ),
+    }
 }
 
 fn get_arch() -> String {
