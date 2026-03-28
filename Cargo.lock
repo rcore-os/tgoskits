@@ -404,7 +404,7 @@ name = "arceos-std-arce_agent"
 version = "0.2.0"
 dependencies = [
  "arceos-rust",
- "env_logger 0.11.10",
+ "env_logger",
  "log",
  "minreq",
  "serde",

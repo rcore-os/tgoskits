@@ -117,16 +117,6 @@ fn gen_linker_script(arch: &str, config: &LinkerConfig) -> Result<()> {
     } else {
         arch
     };
-    let entry_directive = if use_axvisor_loongarch_linker {
-        format!(
-            "EXTERN(_start)\n/*\n * QEMU LoongArch direct kernel boot keeps ELF e_entry as-is, so \
-             it must point\n * at the low physical entry even though the linked VMA lives in the \
-             higher\n * half.\n */\nENTRY({:#x})",
-            config.kernel_base_paddr + 0x40
-        )
-    } else {
-        "ENTRY(_start)".to_string()
-    };
     let ld_content = std::fs::read_to_string(LINKER_TEMPLATE_NAME)?
         .replace("%ARCH%", output_arch)
         .replace("%KERNEL_BASE%", &format!("{:#x}", config.kernel_base_vaddr))
@@ -135,7 +125,6 @@ fn gen_linker_script(arch: &str, config: &LinkerConfig) -> Result<()> {
             &format!("{:#x}", config.kernel_base_paddr),
         )
         .replace("%CPU_NUM%", &format!("{}", config.max_cpu_num))
-        .replace("%ENTRY_DIRECTIVE%", &entry_directive)
         .replace(
             "%DWARF%",
             if std::env::var("DWARF").is_ok_and(|v| v == "y") {
