@@ -84,6 +84,8 @@ pub fn init_scheduler() {
 
     // Initialize the run queue.
     crate::run_queue::init();
+    #[cfg(feature = "irq")]
+    crate::timers::init();
 
     info!("  use {} scheduler.", Scheduler::scheduler_name());
 }
@@ -106,6 +108,8 @@ pub(crate) fn cpu_mask_full() -> AxCpuMask {
 /// Initializes the task scheduler for secondary CPUs.
 pub fn init_scheduler_secondary() {
     crate::run_queue::init_secondary();
+    #[cfg(feature = "irq")]
+    crate::timers::init();
 }
 
 /// Handles periodic timer ticks for the task manager.
@@ -229,7 +233,7 @@ pub fn sleep(dur: core::time::Duration) {
 /// If the feature `irq` is not enabled, it uses busy-wait instead.
 pub fn sleep_until(deadline: axhal::time::TimeValue) {
     #[cfg(feature = "irq")]
-    crate::future::block_on(crate::future::sleep_until(deadline));
+    current_run_queue::<NoPreemptIrqSave>().sleep_until(deadline);
     #[cfg(not(feature = "irq"))]
     axhal::time::busy_wait_until(deadline);
 }

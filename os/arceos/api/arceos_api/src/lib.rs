@@ -177,6 +177,10 @@ pub mod task {
         /// The maximum number of tasks to wake up is specified by `count`. If
         /// `count` is `u32::MAX`, it will wake up all tasks in the wait queue.
         pub fn ax_wait_queue_wake(wq: &AxWaitQueueHandle, count: u32);
+        /// Wakes up one task in the wait queue after doing sth about it.
+        ///
+        /// Note: `func` will be protected by wait_queue lock.
+        pub fn ax_wait_queue_wake_one_with(wq: &AxWaitQueueHandle, func: impl Fn(u64));
     }
 }
 

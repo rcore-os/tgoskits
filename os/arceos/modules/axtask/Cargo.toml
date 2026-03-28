@@ -25,6 +25,7 @@ multitask = [
     "dep:memory_addr",
     "dep:percpu",
     "dep:spin",
+    "dep:timer_list",
 ]
 task-ext = ["dep:extern-trait"]
 irq = ["axhal/irq"]
@@ -60,6 +61,7 @@ log.workspace = true
 memory_addr = { workspace = true, optional = true }
 percpu = { workspace = true, optional = true }
 spin = { workspace = true, optional = true }
+timer_list = { version = "0.1", optional = true }
 
 [dev-dependencies]
 axhal = { workspace = true, features = ["fp-simd"] }
