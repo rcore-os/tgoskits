@@ -174,7 +174,7 @@ impl Starry {
             Some(value) => {
                 let path = Path::new(&value);
                 if path.exists() {
-                    let content = fs::read_to_string(&path).with_context(|| {
+                    let content = fs::read_to_string(path).with_context(|| {
                         format!("failed to read shell init cmd file: {}", path.display())
                     })?;
                     // Join multiple commands with &&

@@ -6,6 +6,7 @@ use std::{
 
 use anyhow::Context;
 use cargo_metadata::{Metadata, MetadataCommand, Package};
+use serde_json::Value;
 
 pub(crate) fn run_workspace_clippy_command() -> anyhow::Result<()> {
     let metadata = MetadataCommand::new()
@@ -49,6 +50,7 @@ enum ClippyCheckKind {
 struct ClippyCheck {
     package: String,
     kind: ClippyCheckKind,
+    target: Option<String>,
 }
 
 impl ClippyCheck {
@@ -64,41 +66,76 @@ impl ClippyCheck {
                 feature.clone(),
             ],
         };
+        if let Some(target) = &self.target {
+            args.extend(["--target".into(), target.clone()]);
+        }
         args.extend(["--".into(), "-D".into(), "warnings".into()]);
         args
     }
 
     fn label(&self) -> String {
-        match &self.kind {
-            ClippyCheckKind::Base => format!("{} (base)", self.package),
+        let base = match &self.kind {
+            ClippyCheckKind::Base => format!("{} (base", self.package),
             ClippyCheckKind::Feature(feature) => {
-                format!("{} (feature: {})", self.package, feature)
+                format!("{} (feature: {}", self.package, feature)
             }
+        };
+
+        match &self.target {
+            Some(target) => format!("{base}, target: {target})"),
+            None => format!("{base})"),
         }
     }
+}
+
+fn docs_rs_targets(package: &Package) -> Vec<String> {
+    let Some(docs_rs) = package.metadata.get("docs.rs").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+
+    let Some(targets) = docs_rs.get("targets").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+
+    let mut unique_targets = BTreeSet::new();
+    for target in targets.iter().filter_map(Value::as_str) {
+        unique_targets.insert(target.to_string());
+    }
+
+    unique_targets.into_iter().collect()
 }
 
 fn expand_clippy_checks(packages: &[Package]) -> Vec<ClippyCheck> {
     let mut checks = Vec::new();
 
     for package in packages {
-        checks.push(ClippyCheck {
-            package: package.name.to_string(),
-            kind: ClippyCheckKind::Base,
-        });
-
         let features: BTreeSet<_> = package
             .features
             .keys()
             .filter(|feature| feature.as_str() != "default")
             .cloned()
             .collect();
+        let targets = docs_rs_targets(package);
+        let target_iter = if targets.is_empty() {
+            vec![None]
+        } else {
+            targets.into_iter().map(Some).collect()
+        };
 
-        for feature in features {
+        for target in target_iter {
             checks.push(ClippyCheck {
                 package: package.name.to_string(),
-                kind: ClippyCheckKind::Feature(feature),
+                kind: ClippyCheckKind::Base,
+                target: target.clone(),
             });
+
+            for feature in &features {
+                checks.push(ClippyCheck {
+                    package: package.name.to_string(),
+                    kind: ClippyCheckKind::Feature(feature.clone()),
+                    target: target.clone(),
+                });
+            }
         }
     }
 
@@ -151,7 +188,19 @@ mod tests {
 
     use super::*;
 
-    fn pkg(name: &str, id: &str, features: &[(&str, &[&str])]) -> Package {
+    fn pkg(
+        name: &str,
+        id: &str,
+        features: &[(&str, &[&str])],
+        docs_rs_targets: Option<&[&str]>,
+    ) -> Package {
+        let metadata = docs_rs_targets.map(|targets| {
+            serde_json::json!({
+                "docs.rs": {
+                    "targets": targets,
+                }
+            })
+        });
         let value = serde_json::json!({
             "name": name,
             "version": "0.1.0",
@@ -173,7 +222,7 @@ mod tests {
             }],
             "features": features.iter().map(|(k, v)| ((*k).to_string(), v.iter().map(|item| (*item).to_string()).collect::<Vec<_>>())).collect::<HashMap<_, _>>(),
             "manifest_path": format!("/tmp/{name}/Cargo.toml"),
-            "metadata": null,
+            "metadata": metadata,
             "publish": null,
             "authors": [],
             "categories": [],
@@ -237,9 +286,9 @@ mod tests {
     fn workspace_package_extraction_keeps_only_workspace_members() {
         let metadata = metadata_with_packages(
             vec![
-                pkg("beta", "beta 0.1.0 (path+file:///tmp/beta)", &[]),
-                pkg("alpha", "alpha 0.1.0 (path+file:///tmp/alpha)", &[]),
-                pkg("gamma", "gamma 0.1.0 (path+file:///tmp/gamma)", &[]),
+                pkg("beta", "beta 0.1.0 (path+file:///tmp/beta)", &[], None),
+                pkg("alpha", "alpha 0.1.0 (path+file:///tmp/alpha)", &[], None),
+                pkg("gamma", "gamma 0.1.0 (path+file:///tmp/gamma)", &[], None),
             ],
             &[
                 "beta 0.1.0 (path+file:///tmp/beta)",
@@ -264,6 +313,7 @@ mod tests {
             "alpha",
             "alpha 0.1.0 (path+file:///tmp/alpha)",
             &[("default", &["feat-a"]), ("feat-b", &[]), ("feat-a", &[])],
+            None,
         )];
 
         let checks = expand_clippy_checks(&packages);
@@ -274,14 +324,17 @@ mod tests {
                 ClippyCheck {
                     package: "alpha".into(),
                     kind: ClippyCheckKind::Base,
+                    target: None,
                 },
                 ClippyCheck {
                     package: "alpha".into(),
                     kind: ClippyCheckKind::Feature("feat-a".into()),
+                    target: None,
                 },
                 ClippyCheck {
                     package: "alpha".into(),
                     kind: ClippyCheckKind::Feature("feat-b".into()),
+                    target: None,
                 },
             ]
         );
@@ -294,11 +347,13 @@ mod tests {
                 "beta",
                 "beta 0.1.0 (path+file:///tmp/beta)",
                 &[("zeta", &[]), ("alpha", &[])],
+                None,
             ),
             pkg(
                 "alpha",
                 "alpha 0.1.0 (path+file:///tmp/alpha)",
                 &[("middle", &[]), ("default", &[])],
+                None,
             ),
         ];
 
@@ -321,14 +376,19 @@ mod tests {
 
     #[test]
     fn package_without_features_yields_only_base_check() {
-        let checks =
-            expand_clippy_checks(&[pkg("alpha", "alpha 0.1.0 (path+file:///tmp/alpha)", &[])]);
+        let checks = expand_clippy_checks(&[pkg(
+            "alpha",
+            "alpha 0.1.0 (path+file:///tmp/alpha)",
+            &[],
+            None,
+        )]);
 
         assert_eq!(
             checks,
             vec![ClippyCheck {
                 package: "alpha".into(),
                 kind: ClippyCheckKind::Base,
+                target: None,
             }]
         );
     }
@@ -339,6 +399,7 @@ mod tests {
             "alpha",
             "alpha 0.1.0 (path+file:///tmp/alpha)",
             &[("b", &[]), ("a", &[])],
+            None,
         )]);
 
         assert_eq!(checks.len(), 3);
@@ -377,20 +438,111 @@ mod tests {
     }
 
     #[test]
+    fn docs_rs_targets_expand_base_and_feature_checks() {
+        let checks = expand_clippy_checks(&[pkg(
+            "alpha",
+            "alpha 0.1.0 (path+file:///tmp/alpha)",
+            &[("b", &[]), ("a", &[])],
+            Some(&["riscv64gc-unknown-none-elf"]),
+        )]);
+
+        assert_eq!(checks.len(), 3);
+        assert_eq!(
+            checks[0].cargo_args(),
+            vec![
+                "clippy",
+                "-p",
+                "alpha",
+                "--target",
+                "riscv64gc-unknown-none-elf",
+                "--",
+                "-D",
+                "warnings",
+            ]
+        );
+        assert_eq!(
+            checks[1].cargo_args(),
+            vec![
+                "clippy",
+                "-p",
+                "alpha",
+                "--no-default-features",
+                "--features",
+                "a",
+                "--target",
+                "riscv64gc-unknown-none-elf",
+                "--",
+                "-D",
+                "warnings",
+            ]
+        );
+        assert_eq!(
+            checks[2].label(),
+            "alpha (feature: b, target: riscv64gc-unknown-none-elf)"
+        );
+    }
+
+    #[test]
+    fn docs_rs_targets_are_sorted_and_deduplicated() {
+        let checks = expand_clippy_checks(&[pkg(
+            "alpha",
+            "alpha 0.1.0 (path+file:///tmp/alpha)",
+            &[("feat", &[])],
+            Some(&[
+                "x86_64-unknown-none",
+                "aarch64-unknown-none-softfloat",
+                "x86_64-unknown-none",
+            ]),
+        )]);
+
+        assert_eq!(
+            checks
+                .into_iter()
+                .map(|check| check.label())
+                .collect::<Vec<_>>(),
+            vec![
+                "alpha (base, target: aarch64-unknown-none-softfloat)",
+                "alpha (feature: feat, target: aarch64-unknown-none-softfloat)",
+                "alpha (base, target: x86_64-unknown-none)",
+                "alpha (feature: feat, target: x86_64-unknown-none)",
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_docs_rs_targets_fall_back_to_host_clippy() {
+        let package = pkg(
+            "alpha",
+            "alpha 0.1.0 (path+file:///tmp/alpha)",
+            &[],
+            Some(&[]),
+        );
+
+        assert!(docs_rs_targets(&package).is_empty());
+        assert_eq!(
+            expand_clippy_checks(&[package])[0].cargo_args(),
+            vec!["clippy", "-p", "alpha", "--", "-D", "warnings"]
+        );
+    }
+
+    #[test]
     fn fail_fast_runner_stops_after_first_failed_invocation() {
         let root = PathBuf::from("/tmp/workspace");
         let checks = vec![
             ClippyCheck {
                 package: "alpha".into(),
                 kind: ClippyCheckKind::Base,
+                target: None,
             },
             ClippyCheck {
                 package: "alpha".into(),
                 kind: ClippyCheckKind::Feature("feat-a".into()),
+                target: None,
             },
             ClippyCheck {
                 package: "beta".into(),
                 kind: ClippyCheckKind::Base,
+                target: None,
             },
         ];
         let mut runner = FakeCargoRunner::new(&[
