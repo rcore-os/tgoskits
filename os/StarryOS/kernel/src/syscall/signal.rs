@@ -79,17 +79,11 @@ pub fn sys_rt_sigaction(
         return Err(AxError::InvalidInput);
     }
 
-    let curr = current();
-    let mut actions = curr.as_thread().proc_data.signal.actions.lock();
-    if let Some(oldact) = oldact.nullable() {
-        oldact.vm_write(actions[signo].clone().into())?;
-    }
-    if let Some(act) = act.nullable() {
-        let act = unsafe { act.vm_read_uninit()?.assume_init() }.into();
-        debug!("sys_rt_sigaction <= signo: {signo:?}, act: {act:?}");
-        actions[signo] = act;
-    }
-    Ok(0)
+    current()
+        .as_thread()
+        .proc_data
+        .signal
+        .set_action(signo, act, oldact)
 }
 
 pub fn sys_rt_sigpending(set: *mut SignalSet, sigsetsize: usize) -> AxResult<isize> {
@@ -206,7 +200,7 @@ pub fn sys_rt_tgsigqueueinfo(
 
 pub fn sys_rt_sigreturn(uctx: &mut UserContext) -> AxResult<isize> {
     block_next_signal();
-    current().as_thread().signal.restore(uctx);
+    current().as_thread().signal.restore(uctx)?;
     Ok(uctx.retval() as isize)
 }
 
