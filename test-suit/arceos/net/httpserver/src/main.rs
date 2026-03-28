@@ -25,8 +25,9 @@ const LOCAL_PORT: u16 = 5555;
 macro_rules! header {
     () => {
         "\
-                                                                                HTTP/1.1 200 \
-         OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}"
+                                                                                                \
+         HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: \
+         close\r\n\r\n{}"
     };
 }
 
