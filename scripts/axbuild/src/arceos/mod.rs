@@ -9,36 +9,45 @@ use crate::{
     test_qemu,
 };
 
-/// Ensure the `disk.img` file required by `arceos-fs-shell` exists.
-/// Creates a 64 MiB FAT32 image if it is missing.
-fn ensure_fs_shell_disk_image() -> anyhow::Result<()> {
-    let disk_img = std::path::Path::new("test-suit/arceos/fs/shell/disk.img");
-    if disk_img.exists() {
+/// Prepare any runtime assets (disk images, etc.) required by `package`.
+fn ensure_package_runtime_assets(package: &str) -> anyhow::Result<()> {
+    match package {
+        "arceos-fs-shell" => ensure_fat32_image(
+            "test-suit/arceos/fs/shell/disk.img",
+            "64M",
+            "generating disk.img for arceos-fs-shell",
+        ),
+        _ => Ok(()),
+    }
+}
+
+/// Create a FAT32 disk image at `path` with the given `size` if it does not
+/// already exist.
+fn ensure_fat32_image(path: &str, size: &str, msg: &str) -> anyhow::Result<()> {
+    let image = std::path::Path::new(path);
+    if image.exists() {
         return Ok(());
     }
-    println!("generating disk.img for arceos-fs-shell ...");
-    let parent = disk_img
-        .parent()
-        .context("disk.img has no parent directory")?;
-    std::fs::create_dir_all(parent)?;
-    std::process::Command::new("truncate")
-        .args(["-s", "64M"])
-        .arg(disk_img)
-        .status()
-        .context("failed to run `truncate`")?
-        .success()
-        .then_some(())
-        .ok_or_else(|| anyhow::anyhow!("truncate failed"))?;
-    std::process::Command::new("mkfs.fat")
+    println!("{msg} ...");
+    if let Some(parent) = image.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let ran = |cmd: &mut std::process::Command| -> anyhow::Result<()> {
+        let name = cmd.get_program().to_string_lossy().to_string();
+        cmd.status()
+            .with_context(|| format!("failed to run `{name}`"))?
+            .success()
+            .then_some(())
+            .ok_or_else(|| anyhow::anyhow!("`{name}` exited with non-zero status"))
+    };
+    ran(std::process::Command::new("truncate")
+        .args(["-s", size])
+        .arg(image))?;
+    ran(std::process::Command::new("mkfs.fat")
         .args(["-F", "32"])
-        .arg(disk_img)
-        .stdout(std::process::Stdio::null())
-        .status()
-        .context("failed to run `mkfs.fat`")?
-        .success()
-        .then_some(())
-        .ok_or_else(|| anyhow::anyhow!("mkfs.fat failed"))?;
-    println!("disk.img generated");
+        .arg(image)
+        .stdout(std::process::Stdio::null()))?;
+    println!("{msg} ... done");
     Ok(())
 }
 
@@ -144,6 +153,7 @@ impl ArceOS {
     async fn build(&mut self, args: ArgsBuild) -> anyhow::Result<()> {
         let request =
             self.prepare_request((&args).into(), None, None, SnapshotPersistence::Store)?;
+        ensure_package_runtime_assets(&request.package)?;
         self.run_build_request(request).await
     }
 
@@ -154,6 +164,7 @@ impl ArceOS {
             None,
             SnapshotPersistence::Store,
         )?;
+        ensure_package_runtime_assets(&request.package)?;
         self.run_qemu_request(request).await
     }
 
@@ -164,6 +175,7 @@ impl ArceOS {
             args.uboot_config,
             SnapshotPersistence::Store,
         )?;
+        ensure_package_runtime_assets(&request.package)?;
         self.run_uboot_request(request).await
     }
 
@@ -184,8 +196,6 @@ impl ArceOS {
             target
         );
 
-        ensure_fs_shell_disk_image()?;
-
         for (index, package) in test_qemu::ARCEOS_TEST_PACKAGES.iter().enumerate() {
             println!(
                 "[{}/{}] arceos qemu {}",
@@ -193,6 +203,7 @@ impl ArceOS {
                 test_qemu::ARCEOS_TEST_PACKAGES.len(),
                 package
             );
+            ensure_package_runtime_assets(package)?;
             let request = self.prepare_request(
                 Self::test_build_args(package, target),
                 None,
