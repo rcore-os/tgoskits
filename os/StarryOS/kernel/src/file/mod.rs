@@ -68,7 +68,26 @@ impl Default for Kstat {
 impl From<Kstat> for stat {
     fn from(value: Kstat) -> Self {
         // SAFETY: valid for stat
-        let mut stat: stat = unsafe { core::mem::zeroed() };
+        let mut stat = stat {
+            st_dev: 0,
+            st_ino: 0,
+            st_nlink: 0,
+            st_mode: 0,
+            st_uid: 0,
+            st_gid: 0,
+            __pad0: 0,
+            st_rdev: 0,
+            st_size: 0,
+            st_blksize: 0,
+            st_blocks: 0,
+            st_atime: 0,
+            st_atime_nsec: 0,
+            st_mtime: 0,
+            st_mtime_nsec: 0,
+            st_ctime: 0,
+            st_ctime_nsec: 0,
+            __unused: [0; 3],
+        };
         stat.st_dev = value.dev as _;
         stat.st_ino = value.ino as _;
         stat.st_nlink = value.nlink as _;
@@ -94,7 +113,29 @@ impl From<Kstat> for stat {
 impl From<Kstat> for statx {
     fn from(value: Kstat) -> Self {
         // SAFETY: valid for statx
-        let mut statx: statx = unsafe { core::mem::zeroed() };
+        let mut statx = statx {
+            stx_mask: 0,
+            stx_blksize: 0,
+            stx_attributes: 0,
+            stx_nlink: 0,
+            stx_uid: 0,
+            stx_gid: 0,
+            stx_mode: 0,
+            __spare0: [0; 1],
+            stx_ino: 0,
+            stx_size: 0,
+            stx_blocks: 0,
+            stx_attributes_mask: 0,
+            stx_atime: statx_timestamp { tv_sec: 0, tv_nsec: 0, __reserved: 0 },
+            stx_btime: statx_timestamp { tv_sec: 0, tv_nsec: 0, __reserved: 0 },
+            stx_ctime: statx_timestamp { tv_sec: 0, tv_nsec: 0, __reserved: 0 },
+            stx_mtime: statx_timestamp { tv_sec: 0, tv_nsec: 0, __reserved: 0 },
+            stx_rdev_major: 0,
+            stx_rdev_minor: 0,
+            stx_dev_major: 0,
+            stx_dev_minor: 0,
+            __spare2: [0; 14],
+        };
         statx.stx_blksize = value.blksize as _;
         statx.stx_attributes = value.mode as _;
         statx.stx_nlink = value.nlink as _;
