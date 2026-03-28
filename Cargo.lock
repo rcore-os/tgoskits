@@ -1442,7 +1442,6 @@ version = "0.3.0-preview.3"
 dependencies = [
  "axsync",
  "axtask",
- "event-listener",
  "fastrand",
  "kspin",
  "lock_api",
@@ -1471,6 +1470,7 @@ dependencies = [
  "memory_addr",
  "percpu",
  "spin 0.10.0",
+ "timer_list 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
