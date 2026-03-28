@@ -911,7 +911,7 @@ dependencies = [
  "cap_access 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "lazyinit 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "log",
- "rsext4 0.1.0-pre.0",
+ "rsext4 0.1.0-pre.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "spin 0.10.0",
 ]
 
@@ -5878,8 +5878,6 @@ dependencies = [
 [[package]]
 name = "rsext4"
 version = "0.1.0-pre.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32c9e89b7c4314992d8b2f6147e8637cc7a578a8d0df083e516bde4b23a0b25d"
 dependencies = [
  "bitflags 2.11.0",
  "lazy_static",
@@ -5888,7 +5886,9 @@ dependencies = [
 
 [[package]]
 name = "rsext4"
-version = "0.1.0"
+version = "0.1.0-pre.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32c9e89b7c4314992d8b2f6147e8637cc7a578a8d0df083e516bde4b23a0b25d"
 dependencies = [
  "bitflags 2.11.0",
  "lazy_static",

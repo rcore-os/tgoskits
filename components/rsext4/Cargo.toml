@@ -1,12 +1,22 @@
 [package]
 name = "rsext4"
-version = "0.1.0"
+version = "0.1.0-pre.0"
 edition = "2024"
+description = "A lightweight ext4 file system."
+authors = ["Dirinkbottle <2909128143@qq.com>"]
+repository = "https://github.com/Starry-OS/rsext4"
+homepage = "https://github.com/Starry-OS/rsext4"
+documentation = "https://starry-os.github.io/rsext4/"
+license = "Apache-2.0"
+readme = "README.md"
+keywords = ["ext4", "filesystem", "rust"]
+categories = ["filesystem"]
 
 [dependencies]
 bitflags = "2.10"
 lazy_static = { version = "1.5", features = ["spin_no_std"] }
 log = "0.4"
+
 [features]
 default = ["USE_MULTILEVEL_CACHE"]
 USE_MULTILEVEL_CACHE = [] #启用多级缓存
