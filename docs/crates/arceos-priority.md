@@ -94,7 +94,7 @@ graph LR
 
 ### 3.3 主要消费者
 - `axtask` 调度器优先级路径改动后的回归。
-- `cargo xtask test arceos` 自动收集的任务语义测试集合。
+- `cargo arceos test qemu` 自动收集的任务语义测试集合。
 
 ## 4. 开发指南
 ### 4.1 推荐运行方式
@@ -105,7 +105,7 @@ cargo xtask arceos run --package arceos-priority --arch riscv64
 或：
 
 ```bash
-cargo xtask test arceos --target riscv64gc-unknown-none-elf
+cargo arceos test qemu --target riscv64gc-unknown-none-elf
 ```
 
 ### 4.2 修改时的注意点

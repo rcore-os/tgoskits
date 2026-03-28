@@ -97,7 +97,7 @@ graph LR
 - `axhal::percpu::this_cpu_id`：用来观察当前任务实际落在哪个 CPU 上。
 
 ### 3.3 主要消费者
-- `cargo xtask test arceos` 自动发现的任务回归集合。
+- `cargo arceos test qemu` 自动发现的任务回归集合。
 - 调整 `axtask`、`cpumask`、SMP 调度逻辑后的定向回归。
 
 ## 4. 开发指南
@@ -111,7 +111,7 @@ cargo xtask arceos run --package arceos-affinity --arch riscv64
 做完整回归时则更推荐：
 
 ```bash
-cargo xtask test arceos --target riscv64gc-unknown-none-elf
+cargo arceos test qemu --target riscv64gc-unknown-none-elf
 ```
 
 ### 4.2 修改时的注意点

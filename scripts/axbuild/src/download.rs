@@ -5,7 +5,7 @@ use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use tokio::{fs as tokio_fs, io::AsyncWriteExt};
 
-pub fn http_client() -> anyhow::Result<reqwest::Client> {
+pub(crate) fn http_client() -> anyhow::Result<reqwest::Client> {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
         .timeout(Duration::from_secs(60 * 30))
@@ -13,7 +13,7 @@ pub fn http_client() -> anyhow::Result<reqwest::Client> {
         .map_err(|e| anyhow!("failed to create HTTP client: {e}"))
 }
 
-pub async fn fetch_text(client: &reqwest::Client, url: &str) -> anyhow::Result<String> {
+pub(crate) async fn fetch_text(client: &reqwest::Client, url: &str) -> anyhow::Result<String> {
     client
         .get(url)
         .send()
@@ -26,7 +26,7 @@ pub async fn fetch_text(client: &reqwest::Client, url: &str) -> anyhow::Result<S
         .with_context(|| format!("failed to read response body from {url}"))
 }
 
-pub async fn download_to_path_with_progress(
+pub(crate) async fn download_to_path_with_progress(
     client: &reqwest::Client,
     url: &str,
     output_path: &Path,
@@ -61,7 +61,7 @@ pub async fn download_to_path_with_progress(
     Ok(())
 }
 
-pub fn new_progress_bar(total_size: Option<u64>, output_path: &Path) -> ProgressBar {
+pub(crate) fn new_progress_bar(total_size: Option<u64>, output_path: &Path) -> ProgressBar {
     match total_size {
         Some(total_size) => {
             let progress = ProgressBar::new(total_size);

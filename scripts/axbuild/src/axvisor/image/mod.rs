@@ -81,7 +81,7 @@ pub struct ArgsPull {
     pub no_extract: bool,
 }
 
-pub async fn run(args: Args, ctx: &AxvisorContext) -> anyhow::Result<()> {
+pub(crate) async fn run(args: Args, ctx: &AxvisorContext) -> anyhow::Result<()> {
     match args.command {
         Command::Ls(ls) => list_images(ctx, &args.overrides, ls).await,
         Command::Pull(pull) => pull_image(ctx, &args.overrides, pull).await,

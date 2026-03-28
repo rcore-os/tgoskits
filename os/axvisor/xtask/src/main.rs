@@ -19,12 +19,25 @@
 
 #![cfg_attr(not(any(windows, unix)), no_main)]
 #![cfg_attr(not(any(windows, unix)), no_std)]
-#![cfg(any(windows, unix))]
 
-use anyhow::Result;
+#[cfg(not(any(windows, unix)))]
+mod lang;
 
+#[cfg(any(windows, unix))]
+#[derive(clap::Parser)]
+struct Cli {
+    #[command(subcommand)]
+    command: axbuild::axvisor::Command,
+}
+
+#[cfg(any(windows, unix))]
 #[tokio::main]
-async fn main() -> Result<()> {
-    eprintln!("os/axvisor xtask is not implemented in this workspace yet");
+async fn main() -> anyhow::Result<()> {
+    use clap::Parser;
+
+    let cli = Cli::parse();
+    axbuild::axvisor::Axvisor::new()?
+        .execute(cli.command)
+        .await?;
     Ok(())
 }

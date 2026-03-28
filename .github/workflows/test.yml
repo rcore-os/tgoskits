@@ -25,11 +25,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: test
-          cache-targets: false
+          shared-key: test-std
+          save-if: ${{ github.event_name == 'push' }}
 
       - run: rustc --version
-      - run: cargo xtask test std
+      - run: cargo xtask test
 
   test_os_target:
     name: Test ${{ matrix.os }} ${{ matrix.target }}
@@ -73,11 +73,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: test
-          cache-targets: false
+          shared-key: test-${{ matrix.os }}-${{ matrix.target }}
+          save-if: ${{ github.event_name == 'push' }}
 
       - name: Run ${{ matrix.os }} tests
-        run: cargo xtask test qemu ${{ matrix.os }} --target ${{ matrix.target }}
+        run: cargo ${{ matrix.os }} test qemu --target ${{ matrix.target }}
 
   test_axvisor_x86_64:
     name: Test axvisor x86_64
@@ -94,7 +94,35 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test-axvisor-x86_64
-          cache-targets: false
+          cache-bin: false
+          save-if: ${{ github.event_name == 'push' }}
 
       - name: Run axvisor x86_64 tests
-        run: cargo xtask test qemu axvisor --target x86_64
+        run: cargo axvisor test qemu --target x86_64
+
+  test_axvisor_uboot_board:
+    name: Test axvisor ${{ matrix.board }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # - board: phytiumpi
+          - board: roc-rk3568-pc
+    runs-on:
+      - self-hosted
+      - linux
+      - ${{ matrix.board }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - run: rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test-axvisor-uboot-${{ matrix.board }}
+          cache-bin: false
+          save-if: ${{ github.event_name == 'push' }}
+
+      - name: Run axvisor board tests
+        run: cargo axvisor test uboot --board ${{ matrix.board }} --uboot-config .github/workflows/uboot.toml

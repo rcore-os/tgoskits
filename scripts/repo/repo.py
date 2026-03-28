@@ -185,6 +185,18 @@ class GitSubtreeManager:
         return result
 
     @staticmethod
+    def _run_command_with_stdout(cmd: List[str], check: bool = True) -> str:
+        """Run a command, keep stderr visible, and return stripped stdout."""
+        print(f"Running: {' '.join(cmd)}")
+        result = subprocess.run(
+            cmd,
+            check=check,
+            stdout=subprocess.PIPE,
+            text=True
+        )
+        return result.stdout.strip()
+
+    @staticmethod
     def get_repo_name(url: str) -> str:
         """Extract repo name from URL."""
         return url.rstrip('/').split('/')[-1]
@@ -358,13 +370,33 @@ class GitSubtreeManager:
             branch = PUSH_DEFAULT_BRANCH
             print(f"Using default push branch: {branch}")
 
-        refspec = f"+{branch}" if force else branch
+        if force:
+            # Some git-subtree versions strip the leading '+' from the refspec
+            # before invoking `git push`, so perform the split/push explicitly.
+            split_cmd = [
+                'git', 'subtree', 'split',
+                '--quiet',
+                '--prefix=' + target_dir,
+            ]
+            split_rev = self._run_command_with_stdout(split_cmd)
+            if not split_rev:
+                raise ValueError(f"Failed to split subtree at '{target_dir}'")
+
+            push_cmd = [
+                'git', 'push',
+                '--force',
+                url,
+                f'{split_rev}:refs/heads/{branch}'
+            ]
+            self._run_command(push_cmd)
+            return
 
         cmd = [
             'git', 'subtree', 'push',
+            '--quiet',
             '--prefix=' + target_dir,
             url,
-            refspec
+            branch
         ]
         self._run_command(cmd)
 

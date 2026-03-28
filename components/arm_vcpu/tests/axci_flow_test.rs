@@ -1,5 +1,4 @@
-use std::path::PathBuf;
-use std::process::Command;
+use std::{path::PathBuf, process::Command};
 
 #[test]
 fn run_all_tests_does_not_exit_after_first_status_count() {

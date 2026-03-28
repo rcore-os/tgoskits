@@ -1,10 +1,9 @@
-cargo_args = []
+env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = [
     "ept-level-4",
     "axstd/bus-mmio",
-    "dyn-plat",
 ]
 log = "Info"
+plat_dyn = true
 target = "aarch64-unknown-none-softfloat"
-to_bin = true
 vm_configs = []

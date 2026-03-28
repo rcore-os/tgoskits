@@ -1179,11 +1179,11 @@ def style_command_block(pkg: Package) -> str | None:
     if style == "test_suite":
         if path_matches(pkg.rel_dir, "test-suit/arceos/"):
             return (
-                "cargo xtask test arceos --target riscv64gc-unknown-none-elf\n"
+                "cargo arceos test qemu --target riscv64gc-unknown-none-elf\n"
                 f"cargo xtask arceos run --package {pkg.name} --arch riscv64"
             )
         return (
-            "cargo xtask test starry --target riscv64gc-unknown-none-elf\n"
+            "cargo starry test qemu --target riscv64\n"
             "cargo xtask starry run --arch riscv64 --package starryos-test"
         )
     if style == "starry_entry":
@@ -1249,9 +1249,9 @@ def dev_steps(pkg: Package) -> list[str]:
         ]
     if style == "test_suite":
         test_cmd = (
-            "`cargo xtask test arceos`"
+            "`cargo arceos test qemu`"
             if path_matches(pkg.rel_dir, "test-suit/arceos/")
-            else "`cargo xtask test starry`"
+            else "`cargo starry test qemu`"
         )
         return [
             "先明确该测试场景对应的目标架构、QEMU 配置和成功/失败判据。",

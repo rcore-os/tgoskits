@@ -91,7 +91,7 @@ graph LR
 - `axtask::yield_now`：真正对当前 run queue 触发让出和重新调度。
 
 ### 3.3 主要消费者
-- `cargo xtask test arceos` 自动收集的任务基础回归。
+- `cargo arceos test qemu` 自动收集的任务基础回归。
 - 修改 `axtask`、调度器 feature 或 cooperative 调度路径后的最小验证。
 
 ## 4. 开发指南
@@ -103,7 +103,7 @@ cargo xtask arceos run --package arceos-yield --arch riscv64
 或直接跑整套测试：
 
 ```bash
-cargo xtask test arceos --target riscv64gc-unknown-none-elf
+cargo arceos test qemu --target riscv64gc-unknown-none-elf
 ```
 
 ### 4.2 修改时的注意点

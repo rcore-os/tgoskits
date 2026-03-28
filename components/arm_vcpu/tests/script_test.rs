@@ -1,8 +1,10 @@
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    fs,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+    process::Command,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 fn unique_temp_dir(prefix: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -33,7 +35,8 @@ fn test_script_forces_host_target_for_axci_runner() {
     write_executable(
         &fake_axci_dir.join("tests.sh"),
         &format!(
-            "#!/bin/bash\nset -e\nprintf 'target=%s\\n' \"$CARGO_BUILD_TARGET\" > \"{}\"\nprintf 'pwd=%s\\n' \"$PWD\" >> \"{}\"\nprintf 'args=%s\\n' \"$*\" >> \"{}\"\n",
+            "#!/bin/bash\nset -e\nprintf 'target=%s\\n' \"$CARGO_BUILD_TARGET\" > \"{}\"\nprintf \
+             'pwd=%s\\n' \"$PWD\" >> \"{}\"\nprintf 'args=%s\\n' \"$*\" >> \"{}\"\n",
             marker_path.display(),
             marker_path.display(),
             marker_path.display()

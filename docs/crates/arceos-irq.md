@@ -101,7 +101,7 @@ graph LR
 - `axhal::asm`：读取和切换当前 CPU 的 IRQ 状态。
 
 ### 3.3 主要消费者
-- `cargo xtask test arceos` 自动回归。
+- `cargo arceos test qemu` 自动回归。
 - `axtask`、IRQ 相关上下文切换逻辑改动后的定向验证。
 
 ## 4. 开发指南
@@ -113,7 +113,7 @@ cargo xtask arceos run --package arceos-irq --arch riscv64
 或者：
 
 ```bash
-cargo xtask test arceos --target riscv64gc-unknown-none-elf
+cargo arceos test qemu --target riscv64gc-unknown-none-elf
 ```
 
 ### 4.2 修改时的注意点

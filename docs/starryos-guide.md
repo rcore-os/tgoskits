@@ -1,10 +1,6 @@
 # StarryOS 开发指南
 
-在 TGOSKits 里，StarryOS 不是一套完全孤立的内核，而是建立在 ArceOS 模块层之上的 Linux 兼容系统。理解 StarryOS 的关键是把这三层连起来看：
-
-- 共享基础组件
-- ArceOS 提供的基础能力
-- StarryOS 自己的内核逻辑与 rootfs 用户态验证
+在 TGOSKits 里，StarryOS 不是一套完全孤立的内核，而是建立在 ArceOS 模块层之上的 Linux 兼容系统。
 
 ## 1. StarryOS 在仓库里的位置
 
@@ -23,20 +19,21 @@
 
 ```bash
 cargo xtask starry rootfs --arch riscv64
-cargo xtask starry run --arch riscv64 --package starryos
+cargo starry qemu --arch riscv64
 ```
 
 根目录入口的特点：
 
 - `rootfs` 会把镜像准备到 Starry 的目标产物目录
-- `run` 在发现磁盘镜像缺失时也会自动补准备
-- 默认包是 `starryos`
+- `qemu` 在发现磁盘镜像缺失时也会自动补准备
+- 默认包固定就是 `starryos`
+- CLI 不需要也不接受 `--package`
+- 默认架构是 `aarch64`
 
-首次上手建议统一使用 `riscv64`。  
-如果你已经熟悉流程，可以尝试：
+如果你已经熟悉流程，也可以尝试：
 
 ```bash
-cargo xtask starry run --arch loongarch64 --package starryos
+cargo starry qemu --arch loongarch64
 ```
 
 ### `os/StarryOS/` 里的本地入口
@@ -80,12 +77,6 @@ flowchart TD
     StarryPackage --> StarryTests
 ```
 
-这条链路里最关键的判断是：
-
-- 如果你改的是底层通用能力，通常先看 `components/*` 或 `os/arceos/modules/*`
-- 如果你改的是 Linux 兼容行为，通常要看 `components/starry-*` 或 `os/StarryOS/kernel/*`
-- 如果你改的是启动包、feature 组合或目标平台范围，要看 `os/StarryOS/starryos`
-
 ## 4. 常见开发动作
 
 ### 4.1 修改共享基础能力
@@ -98,8 +89,8 @@ flowchart TD
 建议先确认 ArceOS 最小路径仍然工作，再回到 StarryOS：
 
 ```bash
-cargo xtask arceos run --package arceos-helloworld --arch riscv64
-cargo xtask starry run --arch riscv64 --package starryos
+cargo arceos qemu --package arceos-helloworld --target riscv64gc-unknown-none-elf
+cargo starry qemu --arch riscv64
 ```
 
 ### 4.2 修改 Starry 专用组件或内核逻辑
@@ -115,24 +106,17 @@ cargo xtask starry run --arch riscv64 --package starryos
 
 ```bash
 cargo xtask starry rootfs --arch riscv64
-cargo xtask starry run --arch riscv64 --package starryos
+cargo starry qemu --arch riscv64
 ```
 
 ### 4.3 增加 syscall 或用户可见行为
 
-这类改动通常会同时触及：
-
-- `os/StarryOS/kernel/` 里的 syscall / 进程 / 文件系统逻辑
-- rootfs 中的测试程序或用户态验证脚本
-
-推荐闭环是：
+常见闭环是：
 
 1. 先在内核里完成实现
 2. 准备一个最小用户态程序去触发它
 3. 把程序放入 rootfs
 4. 启动 StarryOS 验证行为
-
-如果你使用 Musl 工具链编译静态测试程序，最常见的做法是把它复制进挂载后的 rootfs 镜像中。
 
 ### 4.4 修改启动包和 feature 组合
 
@@ -145,16 +129,16 @@ cargo xtask starry run --arch riscv64 --package starryos
 
 ```bash
 cargo xtask starry rootfs --arch riscv64
-cargo xtask starry run --arch riscv64 --package starryos
+cargo starry qemu --arch riscv64
 ```
 
 ### 系统测试
 
 ```bash
-cargo xtask test starry --target riscv64gc-unknown-none-elf
+cargo starry test qemu --target riscv64
 ```
 
-根测试入口跑的其实是 `test-suit/starryos` 下的 `starryos-test` 包，而不是普通的 `starryos` 包。它更适合做自动化回归。
+根测试入口跑的其实是 `test-suit/starryos` 下的 `starryos-test` 包，而不是普通的 `starryos` 包。
 
 ### 本地 Makefile 路径
 
@@ -169,7 +153,7 @@ make ARCH=riscv64 debug
 
 ### 根目录 xtask 路径和本地 Makefile 路径不共享默认镜像位置
 
-- 根目录 `cargo xtask starry rootfs` 使用目标产物目录下的 `disk.img`
+- 根目录 `cargo xtask starry rootfs` / `cargo starry qemu` 使用目标产物目录下的 `disk.img`
 - `os/StarryOS/Makefile` 使用 `os/StarryOS/make/disk.img`
 
 这意味着：
@@ -179,7 +163,7 @@ make ARCH=riscv64 debug
 
 ### 如何查看 rootfs 内容
 
-如果你使用的是本地 Makefile 路径，最常见的是直接挂载 `os/StarryOS/make/disk.img`：
+如果你使用的是本地 Makefile 路径：
 
 ```bash
 mkdir -p /mnt/rootfs
@@ -188,13 +172,11 @@ ls /mnt/rootfs
 sudo umount /mnt/rootfs
 ```
 
-如果你使用的是根目录 xtask 路径，请先确认实际生成的 `disk.img` 位于哪个目标产物目录，再按同样方式挂载。
+如果你使用的是根目录 xtask 路径，请先确认实际生成的 `disk.img` 位于哪个 target 目录，再按同样方式挂载。
 
 ## 7. 调试建议
 
 ### 看更详细的日志
-
-本地 Makefile 路径最直接：
 
 ```bash
 cd os/StarryOS
@@ -202,8 +184,6 @@ make ARCH=riscv64 LOG=debug run
 ```
 
 ### 使用 GDB
-
-本地入口已经带有 `debug` / `justrun` 路径，比自己拼 QEMU 参数更稳妥：
 
 ```bash
 cd os/StarryOS
