@@ -23,6 +23,11 @@ impl RawMutex {
             owner_id: AtomicU64::new(0),
         }
     }
+
+    #[inline(always)]
+    fn is_owner(&self, owner_id: u64) -> bool {
+        self.owner_id.load(Ordering::Acquire) == owner_id
+    }
 }
 
 impl Default for RawMutex {
@@ -58,13 +63,16 @@ unsafe impl lock_api::RawMutex for RawMutex {
                 Ok(_) => break,
                 Err(owner_id) => {
                     assert_ne!(
-                        owner_id,
-                        current_id,
-                        "{} tried to acquire mutex it already owns.",
-                        current().id_name()
+                        owner_id, current_id,
+                        "Thread({current_id}) tried to acquire mutex it already owns.",
                     );
-                    // Wait until the lock looks unlocked before retrying
-                    self.wq.wait_until(|| !self.is_locked());
+                    // Wait until someone hands off lock to me or lock is released
+                    self.wq
+                        .wait_until(|| self.is_owner(current_id) || !self.is_locked());
+                    // This check is necessary: some newcomers may race with a wakened one.
+                    if self.is_owner(current_id) {
+                        break;
+                    }
                 }
             }
         }
@@ -82,14 +90,16 @@ unsafe impl lock_api::RawMutex for RawMutex {
 
     #[inline(always)]
     unsafe fn unlock(&self) {
-        let owner_id = self.owner_id.swap(0, Ordering::Release);
+        let owner_id = self.owner_id.load(Ordering::Acquire);
+        let current_id = current().id().as_u64();
         assert_eq!(
-            owner_id,
-            current().id().as_u64(),
-            "{} tried to release mutex it doesn't own",
-            current().id_name()
+            owner_id, current_id,
+            "Thread({current_id}) tried to release mutex it doesn't own",
         );
-        self.wq.notify_one(true);
+        // wake up one waiting thread.
+        self.wq.notify_one_with(true, |id: u64| {
+            self.owner_id.swap(id, Ordering::Release);
+        });
     }
 
     #[inline(always)]
