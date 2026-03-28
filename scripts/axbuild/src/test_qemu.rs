@@ -5,11 +5,19 @@ use crate::{
 
 pub(crate) const ARCEOS_TEST_PACKAGES: &[&str] = &[
     "arceos-memtest",
+    "arceos-display",
+    "arceos-exception",
     "arceos-affinity",
+    "arceos-net-echoserver",
+    "arceos-net-httpclient",
+    "arceos-net-httpserver",
     "arceos-irq",
     "arceos-parallel",
     "arceos-priority",
+    "arceos-fs-shell",
     "arceos-sleep",
+    "arceos-tls",
+    "arceos-net-udpserver",
     "arceos-wait-queue",
     "arceos-yield",
 ];

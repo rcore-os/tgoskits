@@ -1,0 +1,19 @@
+args = [
+    "-machine",
+    "virt",
+    "-cpu",
+    "cortex-a72",
+    "-m",
+    "128M",
+    "-smp",
+    "4",
+    "-nographic",
+    "-device",
+    "virtio-gpu-device",
+    "-serial",
+    "mon:stdio",
+]
+uefi = false
+to_bin = true
+success_regex = ["Display tests run OK!"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]

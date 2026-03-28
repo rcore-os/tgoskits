@@ -9,6 +9,39 @@ use crate::{
     test_qemu,
 };
 
+/// Ensure the `disk.img` file required by `arceos-fs-shell` exists.
+/// Creates a 64 MiB FAT32 image if it is missing.
+fn ensure_fs_shell_disk_image() -> anyhow::Result<()> {
+    let disk_img = std::path::Path::new("test-suit/arceos/fs/shell/disk.img");
+    if disk_img.exists() {
+        return Ok(());
+    }
+    println!("generating disk.img for arceos-fs-shell ...");
+    let parent = disk_img
+        .parent()
+        .context("disk.img has no parent directory")?;
+    std::fs::create_dir_all(parent)?;
+    std::process::Command::new("truncate")
+        .args(["-s", "64M"])
+        .arg(disk_img)
+        .status()
+        .context("failed to run `truncate`")?
+        .success()
+        .then_some(())
+        .ok_or_else(|| anyhow::anyhow!("truncate failed"))?;
+    std::process::Command::new("mkfs.fat")
+        .args(["-F", "32"])
+        .arg(disk_img)
+        .stdout(std::process::Stdio::null())
+        .status()
+        .context("failed to run `mkfs.fat`")?
+        .success()
+        .then_some(())
+        .ok_or_else(|| anyhow::anyhow!("mkfs.fat failed"))?;
+    println!("disk.img generated");
+    Ok(())
+}
+
 pub mod build;
 
 /// ArceOS subcommands
@@ -150,6 +183,8 @@ impl ArceOS {
             test_qemu::ARCEOS_TEST_PACKAGES.len(),
             target
         );
+
+        ensure_fs_shell_disk_image()?;
 
         for (index, package) in test_qemu::ARCEOS_TEST_PACKAGES.iter().enumerate() {
             println!(
