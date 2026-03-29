@@ -1,0 +1,21 @@
+{
+  "name": "tgoskits Dev Container",
+  "build": {
+    "dockerfile": "../container/Dockerfile"
+  },
+  "hostRequirements": {
+    "memory": "16gb"
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "ms-azuretools.vscode-docker"
+      ]
+    }
+  },
+  "postCreateCommand": "rustc --version && docker --version"
+}
