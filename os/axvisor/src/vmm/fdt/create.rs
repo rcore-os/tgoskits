@@ -27,6 +27,14 @@ use memory_addr::MemoryAddr;
 use crate::vmm::{VMRef, images::load_vm_image_from_memory};
 
 // use crate::vmm::fdt::print::{print_fdt, print_guest_fdt};
+
+fn should_skip_guest_cpu_prop(prop_name: &str) -> bool {
+    matches!(
+        prop_name,
+        "riscv,cbop-block-size" | "riscv,cboz-block-size" | "riscv,cbom-block-size"
+    )
+}
+
 /// Generate guest FDT and return DTB data
 ///
 /// # Parameters
@@ -99,6 +107,9 @@ pub fn crate_guest_fdt(
 
         // Copy all properties of the node
         for prop in node.propertys() {
+            if node_path.starts_with("/cpus") && should_skip_guest_cpu_prop(prop.name) {
+                continue;
+            }
             fdt_writer.property(prop.name, prop.raw_value()).unwrap();
         }
     }
@@ -464,6 +475,9 @@ pub fn update_cpu_node(fdt: &Fdt, host_fdt: &Fdt, crate_config: &AxVMCrateConfig
 
                 // Copy properties from host CPU node
                 for prop in node.propertys() {
+                    if should_skip_guest_cpu_prop(prop.name) {
+                        continue;
+                    }
                     new_fdt.property(prop.name, prop.raw_value()).unwrap();
                 }
 

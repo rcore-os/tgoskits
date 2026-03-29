@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # AxVisor Environment Setup and Launch Script
-# Supported platforms: qemu-aarch64, qemu-x86_64, phytiumpi, roc-rk3568-pc
+# Supported platforms: qemu-aarch64, qemu-riscv64, qemu-x86_64, phytiumpi, roc-rk3568-pc
 # Documentation: https://arceos-hypervisor.github.io/axvisorbook/docs/quickstart
 #
 
@@ -68,6 +68,7 @@ AxVisor Environment Setup and Launch Script
 
 Platforms:
     qemu-aarch64       QEMU AArch64 (ArceOS/Linux)
+    qemu-riscv64       QEMU RISC-V64 (ArceOS)
     qemu-x86_64        QEMU x86_64 (NimbOS)
     phytiumpi          Phytium Pi Board (ArceOS/Linux)
     roc-rk3568-pc      ROC-RK3568-PC Board (ArceOS/Linux)
@@ -87,6 +88,8 @@ Launch Options (for run/start commands):
         -a, --arceos        Launch single ArceOS guest (default)
         -l, --linux         Launch single Linux guest
         -m, --multi         Launch multiple guests (ArceOS+Linux)
+    QEMU RISC-V64:
+        -a, --arceos        Launch single ArceOS guest (default)
     QEMU x86_64:
         -n, --nimbos        Launch single NimbOS guest (default)
     Phytium Pi:
@@ -104,6 +107,9 @@ Examples:
     $0 qemu-aarch64 start --arceos                  # One-step: prepare + launch ArceOS
     $0 qemu-aarch64 start --linux                   # One-step: prepare + launch Linux
     $0 qemu-aarch64 start --multi                   # One-step: prepare + launch multiple guests
+
+    # QEMU RISC-V64
+    $0 qemu-riscv64 start --arceos                  # One-step: prepare + launch ArceOS
 
     # QEMU x86_64
     $0 qemu-x86_64 start --nimbos                   # One-step: prepare + launch NimbOS
@@ -128,6 +134,14 @@ Examples:
     $0 qemu-aarch64 run --arceos                    # Launch only
 
 EOF
+}
+
+run_axvisor_qemu() {
+    run_cmd cargo xtask qemu "$@"
+}
+
+run_axvisor_uboot() {
+    run_cmd cargo xtask uboot "$@"
 }
 
 # ============================================================================
@@ -170,7 +184,7 @@ setup_qemu_aarch64() {
 
 run_qemu_aarch64_arceos() {
     info "=== Launching QEMU AArch64 ArceOS Guest ==="
-    run_cmd cargo xtask qemu \
+    run_axvisor_qemu \
         --build-config tmp/configs/qemu-aarch64.toml \
         --qemu-config tmp/configs/qemu-aarch64-runtime.toml \
         --vmconfigs tmp/configs/arceos-aarch64-qemu-smp1.toml
@@ -178,7 +192,7 @@ run_qemu_aarch64_arceos() {
 
 run_qemu_aarch64_linux() {
     info "=== Launching QEMU AArch64 Linux Guest ==="
-    run_cmd cargo xtask qemu \
+    run_axvisor_qemu \
         --build-config tmp/configs/qemu-aarch64.toml \
         --qemu-config tmp/configs/qemu-aarch64-runtime.toml \
         --vmconfigs tmp/configs/linux-aarch64-qemu-smp1.toml
@@ -186,11 +200,47 @@ run_qemu_aarch64_linux() {
 
 run_qemu_aarch64_multi() {
     info "=== Launching QEMU AArch64 Multiple Guests (ArceOS + Linux) ==="
-    run_cmd cargo xtask qemu \
+    run_axvisor_qemu \
         --build-config tmp/configs/qemu-aarch64.toml \
         --qemu-config tmp/configs/qemu-aarch64-runtime.toml \
         --vmconfigs tmp/configs/arceos-aarch64-qemu-smp1.toml \
         --vmconfigs tmp/configs/linux-aarch64-qemu-smp1.toml
+}
+
+# ============================================================================
+# QEMU RISC-V64 Architecture Setup
+# ============================================================================
+
+setup_qemu_riscv64() {
+    info "=== QEMU RISC-V64 Preparation ==="
+
+    run_cmd mkdir -p tmp/{configs,images}
+
+    info "Downloading ArceOS image..."
+    run_cmd cargo axvisor image pull qemu_riscv64_arceos --output-dir tmp/images
+
+    info "Preparing board config file..."
+    run_cmd cp configs/board/qemu-riscv64.toml tmp/configs/
+
+    info "Preparing guest config file..."
+    run_cmd cp configs/vms/arceos-riscv64-qemu-smp1.toml tmp/configs/
+
+    run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/qemu_riscv64_arceos/qemu-riscv64"|g' tmp/configs/arceos-riscv64-qemu-smp1.toml
+    run_cmd sed -i 's|^image_location = "fs"|image_location = "memory"|g' tmp/configs/arceos-riscv64-qemu-smp1.toml
+
+    info "Preparing QEMU config file..."
+    run_cmd cp .github/workflows/qemu-riscv64.toml tmp/configs/qemu-riscv64-runtime.toml
+    run_cmd cp tmp/images/qemu_riscv64_arceos/rootfs.img tmp/rootfs.img
+
+    info "=== QEMU RISC-V64 Preparation Complete ==="
+}
+
+run_qemu_riscv64_arceos() {
+    info "=== Launching QEMU RISC-V64 ArceOS Guest ==="
+    run_axvisor_qemu \
+        --build-config tmp/configs/qemu-riscv64.toml \
+        --qemu-config tmp/configs/qemu-riscv64-runtime.toml \
+        --vmconfigs tmp/configs/arceos-riscv64-qemu-smp1.toml
 }
 
 # ============================================================================
@@ -222,7 +272,7 @@ setup_qemu_x86_64() {
 
 run_qemu_x86_64_nimbos() {
     info "=== Launching QEMU x86_64 NimbOS Guest ==="
-    run_cmd cargo xtask qemu \
+    run_axvisor_qemu \
         --build-config tmp/configs/qemu-x86_64.toml \
         --qemu-config tmp/configs/qemu-x86_64-runtime.toml \
         --vmconfigs tmp/configs/nimbos-x86_64-qemu-smp1.toml
@@ -324,7 +374,7 @@ setup_phytiumpi() {
 
 run_phytiumpi_arceos() {
     info "=== Launching Phytium Pi ArceOS Guest ==="
-    run_cmd cargo xtask uboot \
+    run_axvisor_uboot \
         --build-config tmp/configs/phytiumpi.toml \
         --uboot-config tmp/configs/phytiumpi-runtime.toml \
         --vmconfigs tmp/configs/arceos-aarch64-e2000-smp1.toml
@@ -332,7 +382,7 @@ run_phytiumpi_arceos() {
 
 run_phytiumpi_linux() {
     info "=== Launching Phytium Pi Linux Guest ==="
-    run_cmd cargo xtask uboot \
+    run_axvisor_uboot \
         --build-config tmp/configs/phytiumpi.toml \
         --uboot-config tmp/configs/phytiumpi-runtime.toml \
         --vmconfigs tmp/configs/linux-aarch64-e2000-smp1.toml
@@ -340,7 +390,7 @@ run_phytiumpi_linux() {
 
 run_phytiumpi_multi() {
     info "=== Launching Phytium Pi Multiple Guests (ArceOS + Linux) ==="
-    run_cmd cargo xtask uboot \
+    run_axvisor_uboot \
         --build-config tmp/configs/phytiumpi.toml \
         --uboot-config tmp/configs/phytiumpi-runtime.toml \
         --vmconfigs tmp/configs/arceos-aarch64-e2000-smp1.toml \
@@ -444,7 +494,7 @@ setup_roc_rk3568_pc() {
 
 run_roc_rk3568_pc_arceos() {
     info "=== Launching ROC-RK3568-PC ArceOS Guest ==="
-    run_cmd cargo xtask uboot \
+    run_axvisor_uboot \
         --build-config tmp/configs/roc-rk3568-pc.toml \
         --uboot-config tmp/configs/roc-rk3568-pc-runtime.toml \
         --vmconfigs tmp/configs/arceos-aarch64-rk3568-smp1.toml
@@ -452,7 +502,7 @@ run_roc_rk3568_pc_arceos() {
 
 run_roc_rk3568_pc_linux() {
     info "=== Launching ROC-RK3568-PC Linux Guest ==="
-    run_cmd cargo xtask uboot \
+    run_axvisor_uboot \
         --build-config tmp/configs/roc-rk3568-pc.toml \
         --uboot-config tmp/configs/roc-rk3568-pc-runtime.toml \
         --vmconfigs tmp/configs/linux-aarch64-rk3568-smp1.toml
@@ -460,7 +510,7 @@ run_roc_rk3568_pc_linux() {
 
 run_roc_rk3568_pc_multi() {
     info "=== Launching ROC-RK3568-PC Multiple Guests (ArceOS + Linux) ==="
-    run_cmd cargo xtask uboot \
+    run_axvisor_uboot \
         --build-config tmp/configs/roc-rk3568-pc.toml \
         --uboot-config tmp/configs/roc-rk3568-pc-runtime.toml \
         --vmconfigs tmp/configs/arceos-aarch64-rk3568-smp1.toml \
@@ -528,6 +578,70 @@ cmd_start_qemu_aarch64() {
     setup_qemu_aarch64
     echo ""
     cmd_run_qemu_aarch64 "$mode"
+}
+
+# ============================================================================
+# QEMU RISC-V64 Command Handling
+# ============================================================================
+
+cmd_setup_qemu_riscv64() {
+    setup_qemu_riscv64
+}
+
+cmd_run_qemu_riscv64() {
+    local mode="$1"
+
+    case "$mode" in
+        -a|--arceos|"")
+            run_qemu_riscv64_arceos
+            ;;
+        -l|--linux)
+            error "Unsupported combination: QEMU RISC-V64 quick start does not support Linux yet"
+            echo ""
+            echo "QEMU RISC-V64 platform currently supports the following guest system:"
+            echo "  - ArceOS (use --arceos)"
+            echo ""
+            echo "Cross-ISA guest boot (for example: riscv64 AxVisor -> aarch64 guest) is not"
+            echo "available in the current AxVisor hypervisor stack."
+            exit 1
+            ;;
+        -m|--multi)
+            error "Unsupported combination: QEMU RISC-V64 does not support multi-guest mode"
+            echo ""
+            echo "QEMU RISC-V64 platform currently supports the following guest system:"
+            echo "  - ArceOS (use --arceos)"
+            exit 1
+            ;;
+        -n|--nimbos)
+            error "Unsupported combination: QEMU RISC-V64 does not support NimbOS"
+            echo ""
+            echo "QEMU RISC-V64 platform currently supports the following guest system:"
+            echo "  - ArceOS (use --arceos)"
+            exit 1
+            ;;
+        *)
+            error "Unknown option: $mode"
+            echo ""
+            echo "QEMU RISC-V64 platform supports the following options:"
+            echo "  -a, --arceos    Launch ArceOS guest"
+            exit 1
+            ;;
+    esac
+}
+
+cmd_start_qemu_riscv64() {
+    local mode="$1"
+    case "$mode" in
+        -a|--arceos|"")
+            ;;
+        *)
+            cmd_run_qemu_riscv64 "$mode"
+            return
+            ;;
+    esac
+    setup_qemu_riscv64
+    echo ""
+    cmd_run_qemu_riscv64 "$mode"
 }
 
 # ============================================================================
@@ -805,6 +919,30 @@ case "$PLATFORM" in
                 ;;
             start)
                 cmd_start_qemu_aarch64 "$@"
+                ;;
+            *)
+                error "Unknown command: $CMD"
+                show_help
+                exit 1
+                ;;
+        esac
+        ;;
+    qemu-riscv64)
+        if [ $# -eq 0 ]; then
+            show_help
+            exit 0
+        fi
+        CMD="$1"
+        shift
+        case "$CMD" in
+            setup)
+                cmd_setup_qemu_riscv64
+                ;;
+            run)
+                cmd_run_qemu_riscv64 "$@"
+                ;;
+            start)
+                cmd_start_qemu_riscv64 "$@"
                 ;;
             *)
                 error "Unknown command: $CMD"

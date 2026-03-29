@@ -31,7 +31,7 @@ pub mod config {
 }
 
 pub const fn cpu_count() -> usize {
-    config::plat::CPU_NUM
+    config::plat::MAX_CPU_NUM
 }
 
 pub const fn plic_base() -> usize {

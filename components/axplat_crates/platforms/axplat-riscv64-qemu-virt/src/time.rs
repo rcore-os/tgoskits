@@ -56,16 +56,26 @@ impl TimeIf for TimeIfImpl {
     }
 
     /// Returns the IRQ number for the timer interrupt.
-    #[cfg(feature = "irq")]
     fn irq_num() -> usize {
-        crate::config::devices::TIMER_IRQ
+        #[cfg(feature = "irq")]
+        {
+            return crate::config::devices::TIMER_IRQ;
+        }
+
+        #[cfg(not(feature = "irq"))]
+        {
+            0
+        }
     }
 
     /// Set a one-shot timer.
     ///
     /// A timer interrupt will be triggered at the specified monotonic time deadline (in nanoseconds).
-    #[cfg(feature = "irq")]
     fn set_oneshot_timer(deadline_ns: u64) {
+        #[cfg(feature = "irq")]
         sbi_rt::set_timer(Self::nanos_to_ticks(deadline_ns));
+
+        #[cfg(not(feature = "irq"))]
+        let _ = deadline_ns;
     }
 }
