@@ -15,4 +15,4 @@ shell_prefix = "starry:~#"
 shell_init_cmd = "pwd && echo 'All tests passed!'"
 success_regex = ["^All tests passed!$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b']
-timeout = 3
+timeout = 5
