@@ -22,7 +22,7 @@ use core::alloc::Layout;
 
 use crate::vmm::{VM, images::ImageLoader, vm_list::push_vm};
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use crate::vmm::fdt::*;
 
 use alloc::sync::Arc;
@@ -128,7 +128,7 @@ pub mod config {
 }
 
 pub fn get_vm_dtb_arc(_vm_cfg: &AxVMConfig) -> Option<Arc<[u8]>> {
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     {
         let cache_lock = dtb_cache().lock();
         if let Some(dtb) = cache_lock.get(&_vm_cfg.id()) {
@@ -140,7 +140,7 @@ pub fn get_vm_dtb_arc(_vm_cfg: &AxVMConfig) -> Option<Arc<[u8]>> {
 
 pub fn init_guest_vms() {
     // Initialize the DTB cache in the fdt module
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     {
         init_dtb_cache();
     }
@@ -180,14 +180,14 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
         );
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     let mut vm_config = AxVMConfig::from(vm_create_config.clone());
 
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "riscv64")))]
     let vm_config = AxVMConfig::from(vm_create_config.clone());
 
-    // Handle FDT-related operations for aarch64
-    #[cfg(target_arch = "aarch64")]
+    // Handle FDT-related operations for architectures that boot guests with DTB.
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     handle_fdt_operations(&mut vm_config, &vm_create_config);
 
     // info!("after parse_vm_interrupt, crate VM[{}] with config: {:#?}", vm_config.id(), vm_config);

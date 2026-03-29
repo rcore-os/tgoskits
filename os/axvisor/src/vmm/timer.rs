@@ -15,9 +15,8 @@
 use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::Ordering;
 
-use std::os::arceos::modules::axhal;
-
 use alloc::boxed::Box;
+use axhal;
 use kspin::SpinNoIrq;
 use lazyinit::LazyInit;
 use timer_list::{TimeValue, TimerEvent, TimerList};
