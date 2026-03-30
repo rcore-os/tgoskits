@@ -1,7 +1,9 @@
 //! Multi-processor booting.
 
-use axplat::mem::{PAGE_SIZE_4K, PhysAddr, pa};
-use axplat::time::{Duration, busy_wait};
+use axplat::{
+    mem::{PAGE_SIZE_4K, PhysAddr, pa},
+    time::{Duration, busy_wait},
+};
 
 const START_PAGE_IDX: u8 = 6;
 const START_PAGE_PADDR: PhysAddr = pa!(START_PAGE_IDX as usize * PAGE_SIZE_4K);

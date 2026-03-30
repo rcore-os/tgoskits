@@ -1,8 +1,9 @@
 use core::sync::atomic::Ordering::{Acquire, Release};
+
+use axplat_crate::config::plat::BOOT_STACK_SIZE;
 use memory_addr::VirtAddr;
 
 use crate::{CPU_NUM, INITED_CPUS, init_kernel_secondary};
-use axplat_crate::config::plat::BOOT_STACK_SIZE;
 
 #[unsafe(link_section = ".bss.stack")]
 static mut SECONDARY_BOOT_STACK: [[u8; BOOT_STACK_SIZE]; CPU_NUM - 1] =

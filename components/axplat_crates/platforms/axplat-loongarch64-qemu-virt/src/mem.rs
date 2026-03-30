@@ -1,9 +1,11 @@
 use axplat::mem::{MemIf, PhysAddr, RawRange, VirtAddr, pa, va};
 
-use crate::config::devices::MMIO_RANGES;
-use crate::config::plat::{
-    HIGH_MEMORY_BASE, LOW_MEMORY_BASE, LOW_MEMORY_SIZE, PHYS_BOOT_OFFSET, PHYS_MEMORY_SIZE,
-    PHYS_VIRT_OFFSET,
+use crate::config::{
+    devices::MMIO_RANGES,
+    plat::{
+        HIGH_MEMORY_BASE, LOW_MEMORY_BASE, LOW_MEMORY_SIZE, PHYS_BOOT_OFFSET, PHYS_MEMORY_SIZE,
+        PHYS_VIRT_OFFSET,
+    },
 };
 
 struct MemIfImpl;

@@ -1,5 +1,7 @@
-use axplat::init::InitIf;
-use axplat::mem::{pa, phys_to_virt};
+use axplat::{
+    init::InitIf,
+    mem::{pa, phys_to_virt},
+};
 
 #[allow(unused_imports)]
 use crate::config::devices::{GICC_PADDR, GICD_PADDR, TIMER_IRQ, UART_IRQ, UART_PADDR};

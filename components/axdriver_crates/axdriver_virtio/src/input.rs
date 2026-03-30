@@ -3,9 +3,9 @@ use alloc::{borrow::ToOwned, string::String};
 use axdriver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
 use axdriver_input::{Event, EventType, InputDeviceId, InputDriverOps};
 use virtio_drivers::{
+    Hal,
     device::input::{InputConfigSelect, VirtIOInput as InnerDev},
     transport::Transport,
-    Hal,
 };
 
 use crate::as_dev_err;

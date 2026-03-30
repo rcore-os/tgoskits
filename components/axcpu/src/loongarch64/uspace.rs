@@ -8,9 +8,8 @@ use loongArch64::register::{
 };
 use memory_addr::VirtAddr;
 
-use crate::{trap::PageFaultFlags, TrapFrame};
-
 pub use crate::uspace_common::{ExceptionKind, ReturnReason};
+use crate::{TrapFrame, trap::PageFaultFlags};
 
 /// Context to enter user space.
 #[derive(Debug, Clone, Copy)]

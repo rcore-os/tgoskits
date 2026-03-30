@@ -4,7 +4,7 @@
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::quote;
-use syn::{parse::Error, parse_macro_input, ItemImpl, ItemTrait, PathArguments, PathSegment};
+use syn::{ItemImpl, ItemTrait, PathArguments, PathSegment, parse::Error, parse_macro_input};
 
 mod args;
 mod def_interface;

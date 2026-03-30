@@ -34,8 +34,9 @@ impl InitIf for InitIfImpl {
     fn init_later(_cpu_id: usize, _dtb: usize) {
         #[cfg(feature = "irq")]
         {
-            use crate::mem::phys_to_virt;
             use axplat::mem::pa;
+
+            use crate::mem::phys_to_virt;
             axplat_aarch64_peripherals::gic::init_gic(
                 phys_to_virt(pa!(GICD_PADDR)),
                 phys_to_virt(pa!(GICC_PADDR)),

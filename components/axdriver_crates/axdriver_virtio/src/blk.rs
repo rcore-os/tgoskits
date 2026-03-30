@@ -1,6 +1,6 @@
 use axdriver_base::{BaseDriverOps, DevResult, DeviceType};
 use axdriver_block::BlockDriverOps;
-use virtio_drivers::{device::blk::VirtIOBlk as InnerDev, transport::Transport, Hal};
+use virtio_drivers::{Hal, device::blk::VirtIOBlk as InnerDev, transport::Transport};
 
 use crate::as_dev_err;
 

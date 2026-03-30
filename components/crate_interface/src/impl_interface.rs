@@ -2,11 +2,13 @@
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn::{parse_quote, Error, ImplItem, ItemImpl, Type};
+use syn::{Error, ImplItem, ItemImpl, Type, parse_quote};
 
-use crate::args::ImplInterfaceArgs;
-use crate::naming::{alias_guard_name, extern_fn_name, extract_caller_args, namespace_guard_name};
-use crate::validator::validate_fn_signature;
+use crate::{
+    args::ImplInterfaceArgs,
+    naming::{alias_guard_name, extern_fn_name, extract_caller_args, namespace_guard_name},
+    validator::validate_fn_signature,
+};
 
 /// The implementation of the [`crate::impl_interface`] attribute macro.
 pub fn impl_interface(

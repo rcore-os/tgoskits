@@ -23,7 +23,6 @@ extern "C" {
     //   assumption (they are non-zero), causing unexpected runtime errors;
     // - Link-time errors because they are too far away from the program counter
     //.  (when Rust uses PC-relative addressing).
-    //
     // See https://github.com/arceos-org/percpu/issues/18 for more details.
     fn _percpu_load_start();
     fn _percpu_load_end();
@@ -79,8 +78,10 @@ pub fn init() -> usize {
         // rust will assume a `*const ()` is a valid pointer and will not be 0,
         // causing unexpected `0 != 0` assertion failure.
         assert_eq!(
-            percpu_symbol_vma!(_percpu_load_start), 0,
-            "The `.percpu` section must be loaded at VMA address 0 when feature \"non-zero-vma\" is disabled"
+            percpu_symbol_vma!(_percpu_load_start),
+            0,
+            "The `.percpu` section must be loaded at VMA address 0 when feature \"non-zero-vma\" \
+             is disabled"
         )
     }
 

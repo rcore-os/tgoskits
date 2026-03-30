@@ -1,9 +1,11 @@
-use axplat::init::InitIf;
+use axplat::{
+    init::InitIf,
+    mem::{pa, phys_to_virt},
+};
 
 #[allow(unused_imports)]
 use crate::config::devices::{GICC_PADDR, GICD_PADDR, RTC_PADDR, TIMER_IRQ, UART_IRQ, UART_PADDR};
 use crate::config::plat::PSCI_METHOD;
-use axplat::mem::{pa, phys_to_virt};
 
 struct InitIfImpl;
 

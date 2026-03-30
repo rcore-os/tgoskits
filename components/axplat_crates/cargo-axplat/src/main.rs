@@ -1,5 +1,4 @@
-use std::io::Write;
-use std::process::Command;
+use std::{io::Write, process::Command};
 
 use clap::{Args, Parser, Subcommand};
 use clap_cargo::style::CLAP_STYLING;

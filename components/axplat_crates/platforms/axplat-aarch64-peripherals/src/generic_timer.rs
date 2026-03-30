@@ -1,7 +1,6 @@
 //! ARM Generic Timer.
 
-use aarch64_cpu::registers::{CNTFRQ_EL0, CNTP_TVAL_EL0, CNTPCT_EL0};
-use aarch64_cpu::registers::{Readable, Writeable};
+use aarch64_cpu::registers::{CNTFRQ_EL0, CNTP_TVAL_EL0, CNTPCT_EL0, Readable, Writeable};
 use int_ratio::Ratio;
 
 static mut CNTPCT_TO_NANOS_RATIO: Ratio = Ratio::zero();

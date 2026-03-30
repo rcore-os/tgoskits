@@ -86,7 +86,6 @@ static mut GS: usize = 0;
 
 /// .
 /// # Safety
-///
 #[cfg(target_os = "linux")]
 #[no_mangle]
 pub unsafe extern "C" fn __get_gs() -> usize {

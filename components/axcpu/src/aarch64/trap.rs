@@ -8,9 +8,9 @@ use crate::trap::PageFaultFlags;
 #[derive(Debug)]
 pub(super) enum TrapKind {
     Synchronous = 0,
-    Irq = 1,
-    Fiq = 2,
-    SError = 3,
+    Irq         = 1,
+    Fiq         = 2,
+    SError      = 3,
 }
 
 #[repr(u8)]
@@ -178,7 +178,8 @@ fn aarch64_trap_handler(tf: &mut TrapFrame, kind: TrapKind, source: TrapSource) 
                     let ec_bits = esr.read(ESR_EL2::EC);
 
                     panic!(
-                        "Unhandled synchronous exception {:?} @ {:#x}: ESR={:#x} (EC {:#08b}, FAR: {:#x} ISS {:#x})\n{}",
+                        "Unhandled synchronous exception {:?} @ {:#x}: ESR={:#x} (EC {:#08b}, \
+                         FAR: {:#x} ISS {:#x})\n{}",
                         e,
                         tf.elr,
                         esr.get(),

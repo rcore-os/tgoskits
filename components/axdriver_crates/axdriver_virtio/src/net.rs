@@ -2,7 +2,7 @@ use alloc::{sync::Arc, vec::Vec};
 
 use axdriver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
 use axdriver_net::{EthernetAddress, NetBuf, NetBufBox, NetBufPool, NetBufPtr, NetDriverOps};
-use virtio_drivers::{device::net::VirtIONetRaw as InnerDev, transport::Transport, Hal};
+use virtio_drivers::{Hal, device::net::VirtIONetRaw as InnerDev, transport::Transport};
 
 use crate::as_dev_err;
 

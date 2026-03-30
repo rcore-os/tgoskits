@@ -1,7 +1,7 @@
 use x86::{controlregs::cr2, irq::*};
 use x86_64::structures::idt::PageFaultErrorCode;
 
-use super::{gdt, TrapFrame};
+use super::{TrapFrame, gdt};
 use crate::trap::PageFaultFlags;
 
 core::arch::global_asm!(
