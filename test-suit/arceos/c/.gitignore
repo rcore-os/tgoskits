@@ -1,0 +1,4 @@
+# Generated build artifacts for ArceOS C tests.
+*.o
+*.bin
+*.elf
