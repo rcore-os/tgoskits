@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use axhal::{self, mem::virt_to_phys};
 use axvisor_api::arch::ArchIf;
-use std::os::arceos::modules::axhal::{self, mem::virt_to_phys};
 
 struct ArchImpl;
 

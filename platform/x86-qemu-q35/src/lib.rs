@@ -21,8 +21,6 @@ extern crate log;
 #[macro_use]
 extern crate axplat;
 
-use core::ptr::addr_of;
-
 mod apic;
 mod boot;
 mod console;
@@ -66,9 +64,7 @@ unsafe extern "C" fn rust_entry_secondary(_magic: usize) {
 }
 
 pub fn cpu_count() -> usize {
-    unsafe extern "C" {
-        static SMP: usize;
-    }
-
-    addr_of!(SMP) as _
+    option_env!("AXVISOR_SMP")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(1)
 }

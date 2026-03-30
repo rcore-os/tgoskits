@@ -32,7 +32,8 @@ use spin::Mutex;
 
 pub use parser::*;
 // pub use print::print_fdt;
-pub use create::*;
+#[cfg(target_arch = "aarch64")]
+pub use create::update_fdt;
 pub use device::build_node_path;
 
 use crate::vmm::config::{config, get_vm_dtb_arc};
