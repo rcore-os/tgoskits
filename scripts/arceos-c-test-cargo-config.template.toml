@@ -1,0 +1,11 @@
+# Generated for `cargo arceos test qemu` C-test builds.
+# axbuild-managed: arceos-c-test-cargo-config
+# Safe to regenerate while this marker is present.
+
+[net]
+git-fetch-with-cli = true
+
+[resolver]
+incompatible-rust-versions = "allow"
+
+# axbuild-managed-patches: appended below
