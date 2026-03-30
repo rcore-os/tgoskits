@@ -17,7 +17,7 @@ pub use crate::timers::register_timer_callback;
 #[doc(cfg(feature = "multitask"))]
 pub use crate::{
     task::{CurrentTask, TaskId, TaskInner, TaskState},
-    wait_queue::WaitQueue,
+    wait_queue::{ReschedPolicy, WaitQueue},
 };
 
 /// The reference type of a task.
