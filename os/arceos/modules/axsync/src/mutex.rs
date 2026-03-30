@@ -7,8 +7,9 @@ use axtask::{WaitQueue, current};
 /// A [`lock_api::RawMutex`] implementation.
 ///
 /// When the mutex is locked, the current task will block and be put into the
-/// wait queue. When the mutex is unlocked, all tasks waiting on the queue
-/// will be woken up.
+/// wait queue. When the mutex is unlocked, ownership is handed off to at most
+/// one task waiting on the queue; if no tasks are waiting, the mutex simply
+/// becomes unlocked.
 pub struct RawMutex {
     wq: WaitQueue,
     owner_id: AtomicU64,
