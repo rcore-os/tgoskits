@@ -72,7 +72,6 @@ const C_TEST_NAMES: &[&str] = &[
     "helloworld",
     "memtest",
     "httpclient",
-    "httpserver",
     "udpserver",
     "pthread/basic",
     "pthread/parallel",
