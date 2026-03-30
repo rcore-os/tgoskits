@@ -619,7 +619,7 @@ fn gc_entry() {
                     // If I'm the last holder of the task, drop it immediately.
                     drop(task);
                 } else {
-                    // Otherwise (e.g, `switch_to` is not compeleted, held by the
+                    // Otherwise (e.g, `switch_to` is not completed, held by the
                     // joiner, etc), push it back and wait for them to drop first.
                     EXITED_TASKS.with_current(|exited_tasks| exited_tasks.push_back(task));
                 }
