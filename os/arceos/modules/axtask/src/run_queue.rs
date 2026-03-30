@@ -625,11 +625,21 @@ fn gc_entry() {
                 }
             }
         }
+        // Always wait with a timeout to:
+        // 1. Yield CPU to allow other tasks to complete `switch_to` and drop references
+        // 2. Handle the race condition where `notify_one` is called before the GC task enters wait,
+        //    causing the notification to be lost.
         // Note: we cannot block current task with preemption disabled,
         // use `current_ref_raw` to get the `WAIT_FOR_EXIT`'s reference here to avoid the use of `NoPreemptGuard`.
-        // Since gc task is pinned to the current CPU, there is no affection if the gc task is preempted during the process.
-        let wait_queue = unsafe { WAIT_FOR_EXIT.current_ref_raw() };
-        wait_queue.wait_until(|| EXITED_TASKS.with_current(|q| !q.is_empty()));
+        // Since gc task is pinned to the current CPU, there is no effect if the gc task is preempted during the process.
+        #[cfg(feature = "irq")]
+        unsafe {
+            let _timeout = WAIT_FOR_EXIT.current_ref_raw().wait_timeout(core::time::Duration::from_millis(100));
+        }
+        #[cfg(not(feature = "irq"))]
+        unsafe {
+            WAIT_FOR_EXIT.current_ref_raw().wait();
+        }
     }
 }
 
