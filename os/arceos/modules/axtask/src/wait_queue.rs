@@ -177,7 +177,13 @@ impl WaitQueue {
         }
     }
 
-    /// Wakes up one task in the wait queue after doing sth about it.
+    /// Wakes up one task in the wait queue and runs a callback on it.
+    ///
+    /// The callback `func` is invoked while holding the wait-queue lock and
+    /// before the selected task is unblocked. It receives the task's ID as a
+    /// `u64` when a task is available, or `0` if the wait queue is empty.
+    /// This can be used for lock handoff or other bookkeeping associated with
+    /// the waking task.
     ///
     /// If `resched` is true, the current task will be preempted when the
     /// preemption is enabled.
