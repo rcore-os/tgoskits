@@ -8,9 +8,9 @@
 *.img
 /kernel-rv
 /kernel-la
-/.cargo
 /.crates*
 /mnt
 *.swp
 *.swo
+/.cargo/.config-local.toml
 

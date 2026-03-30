@@ -89,7 +89,7 @@ graph LR
 - `axhal` 的时间和中断能力：提供超时唤醒所需的时钟推进。
 
 ### 3.3 主要消费者
-- `cargo xtask test arceos` 自动发现的任务时间语义回归。
+- `cargo arceos test qemu` 自动发现的任务时间语义回归。
 - 调整 timer、IRQ 或 `axtask` 睡眠路径后的快速验证。
 
 ## 4. 开发指南
@@ -101,7 +101,7 @@ cargo xtask arceos run --package arceos-sleep --arch riscv64
 或者统一跑：
 
 ```bash
-cargo xtask test arceos --target riscv64gc-unknown-none-elf
+cargo arceos test qemu --target riscv64gc-unknown-none-elf
 ```
 
 ### 4.2 修改时的注意点

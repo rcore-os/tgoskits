@@ -8,9 +8,9 @@ use ostool::build::CargoQemuOverrideArgs;
 
 use crate::{
     axvisor::{
-        build::{default_qemu_config_template_path, qemu_override_args_from_template},
         context::AxvisorContext,
         image::{config::ImageConfig, spec::ImageSpecRef, storage::Storage},
+        qemu::{default_qemu_config_template_path, qemu_override_args_from_template},
     },
     context::ResolvedAxvisorRequest,
 };
@@ -39,7 +39,7 @@ pub struct ShellAutoInitConfig {
     pub fail_regex: Vec<String>,
 }
 
-pub async fn prepare_linux_aarch64_guest_assets(
+pub(crate) async fn prepare_linux_aarch64_guest_assets(
     ctx: &AxvisorContext,
 ) -> anyhow::Result<PreparedLinuxGuestAssets> {
     let mut config = ImageConfig::read_config(ctx.workspace_root())?;
@@ -77,7 +77,9 @@ pub async fn prepare_linux_aarch64_guest_assets(
     })
 }
 
-pub async fn prepare_nimbos_x86_64_guest_vmconfig(ctx: &AxvisorContext) -> anyhow::Result<PathBuf> {
+pub(crate) async fn prepare_nimbos_x86_64_guest_vmconfig(
+    ctx: &AxvisorContext,
+) -> anyhow::Result<PathBuf> {
     let mut config = ImageConfig::read_config(ctx.workspace_root())?;
     config.local_storage = absolute_path(ctx.workspace_root(), &config.local_storage);
 
@@ -102,12 +104,11 @@ pub async fn prepare_nimbos_x86_64_guest_vmconfig(ctx: &AxvisorContext) -> anyho
     Ok(ctx.workspace_root().join(NIMBOS_X86_64_VMCONFIG))
 }
 
-pub fn shell_autoinit_qemu_override_args(
-    workspace_root: &Path,
+pub(crate) fn shell_autoinit_qemu_override_args(
     request: &ResolvedAxvisorRequest,
     shell: &ShellAutoInitConfig,
 ) -> anyhow::Result<CargoQemuOverrideArgs> {
-    let template_path = default_qemu_config_template_path(workspace_root, &request.arch);
+    let template_path = default_qemu_config_template_path(&request.axvisor_dir, &request.arch);
     let mut overrides = qemu_override_args_from_template(&template_path, request)?;
     overrides.success_regex = Some(shell.success_regex.clone());
     overrides.fail_regex = Some(shell.fail_regex.clone());
@@ -241,14 +242,15 @@ uefi = false
         .unwrap();
 
         let overrides = shell_autoinit_qemu_override_args(
-            dir.path(),
             &ResolvedAxvisorRequest {
                 package: "axvisor".to_string(),
+                axvisor_dir: dir.path().join("os/axvisor"),
                 arch: "aarch64".to_string(),
                 target: "aarch64-unknown-none-softfloat".to_string(),
                 plat_dyn: None,
                 build_info_path: dir.path().join(".build.toml"),
                 qemu_config: None,
+                uboot_config: None,
                 vmconfigs: vec![],
             },
             &ShellAutoInitConfig {

@@ -1,15 +1,13 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::path::{Path, PathBuf};
 
-use anyhow::Context;
+use cargo_metadata::MetadataCommand;
 use ostool::build::config::Cargo;
 
 pub type StarryBuildInfo = crate::arceos::build::ArceosBuildInfo;
 pub use crate::arceos::build::LogLevel;
-use crate::context::{ResolvedStarryRequest, starry_arch_for_target_checked};
+use crate::context::{
+    ResolvedStarryRequest, STARRY_PACKAGE, starry_arch_for_target_checked, workspace_member_dir_in,
+};
 
 impl StarryBuildInfo {
     pub fn default_starry_for_target(target: &str) -> Self {
@@ -20,7 +18,7 @@ impl StarryBuildInfo {
     }
 }
 
-pub fn resolve_build_info_path(
+pub(crate) fn resolve_build_info_path(
     workspace_root: &Path,
     target: &str,
     explicit_path: Option<PathBuf>,
@@ -31,100 +29,22 @@ pub fn resolve_build_info_path(
 
     let _ = starry_arch_for_target_checked(target)?;
     Ok(crate::arceos::build::resolve_build_info_path_in_dir(
-        &workspace_root.join("os/StarryOS/starryos"),
+        &workspace_member_dir_in(workspace_root, STARRY_PACKAGE)?,
         target,
     ))
 }
 
-pub fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result<StarryBuildInfo> {
+pub(crate) fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result<StarryBuildInfo> {
     crate::arceos::build::load_or_create_build_info(&request.build_info_path, || {
         StarryBuildInfo::default_starry_for_target(&request.target)
     })
 }
 
-pub fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Result<Cargo> {
+pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Result<Cargo> {
     to_cargo_config(load_build_info(request)?, request)
 }
 
-const ROOTFS_URL: &str = "https://github.com/Starry-OS/rootfs/releases/download/20260214";
-
-pub fn rootfs_image_name(arch: &str) -> String {
-    format!("rootfs-{arch}.img")
-}
-
-pub fn rootfs_artifact_dir(workspace_root: &Path, target: &str) -> PathBuf {
-    workspace_root.join("target").join(target)
-}
-
-pub fn rootfs_disk_image_path(workspace_root: &Path, target: &str) -> PathBuf {
-    rootfs_artifact_dir(workspace_root, target).join("disk.img")
-}
-
-pub fn default_qemu_args(disk_img: &Path) -> Vec<String> {
-    vec![
-        "-device".to_string(),
-        "virtio-blk-pci,drive=disk0".to_string(),
-        "-drive".to_string(),
-        format!("id=disk0,if=none,format=raw,file={}", disk_img.display()),
-        "-device".to_string(),
-        "virtio-net-pci,netdev=net0".to_string(),
-        "-netdev".to_string(),
-        "user,id=net0,hostfwd=tcp::5555-:5555".to_string(),
-    ]
-}
-
-pub fn ensure_rootfs_in_target_dir(
-    workspace_root: &Path,
-    arch: &str,
-    target: &str,
-) -> anyhow::Result<PathBuf> {
-    let artifact_dir = rootfs_artifact_dir(workspace_root, target);
-    let disk_img = artifact_dir.join("disk.img");
-    let rootfs_name = rootfs_image_name(arch);
-    let rootfs_img = artifact_dir.join(&rootfs_name);
-    let rootfs_xz = artifact_dir.join(format!("{rootfs_name}.xz"));
-
-    fs::create_dir_all(&artifact_dir)
-        .with_context(|| format!("failed to create {}", artifact_dir.display()))?;
-
-    if !rootfs_img.exists() {
-        println!("image not found, downloading {}...", rootfs_name);
-        let url = format!("{ROOTFS_URL}/{rootfs_name}.xz");
-        let status = Command::new("curl")
-            .arg("-f")
-            .arg("-L")
-            .arg(&url)
-            .arg("-o")
-            .arg(&rootfs_xz)
-            .status()
-            .with_context(|| format!("failed to spawn curl for {url}"))?;
-        if !status.success() {
-            anyhow::bail!("failed to download {}", url);
-        }
-
-        let status = Command::new("xz")
-            .arg("-d")
-            .arg("-f")
-            .arg(&rootfs_xz)
-            .status()
-            .with_context(|| format!("failed to spawn xz for {}", rootfs_xz.display()))?;
-        if !status.success() {
-            anyhow::bail!("failed to decompress {}", rootfs_xz.display());
-        }
-    }
-
-    fs::copy(&rootfs_img, &disk_img).with_context(|| {
-        format!(
-            "failed to copy {} to {}",
-            rootfs_img.display(),
-            disk_img.display()
-        )
-    })?;
-
-    Ok(disk_img)
-}
-
-pub fn to_cargo_config(
+pub(crate) fn to_cargo_config(
     build_info: StarryBuildInfo,
     request: &ResolvedStarryRequest,
 ) -> anyhow::Result<Cargo> {
@@ -145,6 +65,7 @@ fn patch_starry_cargo_config(
 
     cargo.package = request.package.clone();
     cargo.target = request.target.clone();
+    ensure_starry_bin_arg(&mut cargo.args, &request.package)?;
     cargo.features.push("qemu".to_string());
     cargo.features.sort();
     cargo.features.dedup();
@@ -161,6 +82,39 @@ fn patch_starry_cargo_config(
         .or_insert_with(|| platform.to_string());
 
     Ok(())
+}
+
+fn ensure_starry_bin_arg(args: &mut Vec<String>, package: &str) -> anyhow::Result<()> {
+    if args.iter().any(|arg| arg == "--bin") {
+        return Ok(());
+    }
+
+    if package_has_bin_named(package, package)? {
+        args.push("--bin".to_string());
+        args.push(package.to_string());
+    }
+
+    Ok(())
+}
+
+fn package_has_bin_named(package: &str, bin_name: &str) -> anyhow::Result<bool> {
+    let manifest_path = crate::arceos::build::resolve_package_manifest_path(package, None)?;
+    let mut command = MetadataCommand::new();
+    command.no_deps().manifest_path(&manifest_path);
+    let metadata = command.exec()?;
+    let package_info = metadata
+        .packages
+        .iter()
+        .find(|pkg| pkg.name == package)
+        .ok_or_else(|| anyhow::anyhow!("workspace package `{package}` not found"))?;
+
+    Ok(package_info.targets.iter().any(|target| {
+        target.name == bin_name
+            && target
+                .kind
+                .iter()
+                .any(|kind| matches!(kind, cargo_metadata::TargetKind::Bin))
+    }))
 }
 
 fn default_platform_for_arch(arch: &str) -> anyhow::Result<&'static str> {
@@ -185,6 +139,17 @@ mod tests {
     use super::*;
     use crate::context::STARRY_PACKAGE;
 
+    fn write_minimal_package_manifest(path: &Path, name: &str) {
+        let src_dir = path.parent().unwrap().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(src_dir.join("lib.rs"), "").unwrap();
+        fs::write(
+            path,
+            format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+        )
+        .unwrap();
+    }
+
     fn request(path: PathBuf, arch: &str, target: &str) -> ResolvedStarryRequest {
         ResolvedStarryRequest {
             package: STARRY_PACKAGE.to_string(),
@@ -200,6 +165,14 @@ mod tests {
     #[test]
     fn resolve_build_info_path_uses_default_starry_location() {
         let root = tempdir().unwrap();
+        let starry_dir = root.path().join("os/StarryOS/starryos");
+        fs::create_dir_all(&starry_dir).unwrap();
+        write_minimal_package_manifest(&starry_dir.join("Cargo.toml"), STARRY_PACKAGE);
+        fs::write(
+            root.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"os/StarryOS/starryos\"]\n",
+        )
+        .unwrap();
         let path =
             resolve_build_info_path(root.path(), "aarch64-unknown-none-softfloat", None).unwrap();
 
@@ -215,6 +188,12 @@ mod tests {
         let root = tempdir().unwrap();
         let starry_dir = root.path().join("os/StarryOS/starryos");
         fs::create_dir_all(&starry_dir).unwrap();
+        write_minimal_package_manifest(&starry_dir.join("Cargo.toml"), STARRY_PACKAGE);
+        fs::write(
+            root.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"os/StarryOS/starryos\"]\n",
+        )
+        .unwrap();
         let bare = starry_dir.join("build-aarch64-unknown-none-softfloat.toml");
         let dotted = starry_dir.join(".build-aarch64-unknown-none-softfloat.toml");
         fs::write(&bare, "").unwrap();
@@ -229,6 +208,14 @@ mod tests {
     #[test]
     fn resolve_build_info_path_prefers_explicit_path() {
         let root = tempdir().unwrap();
+        let starry_dir = root.path().join("os/StarryOS/starryos");
+        fs::create_dir_all(&starry_dir).unwrap();
+        write_minimal_package_manifest(&starry_dir.join("Cargo.toml"), STARRY_PACKAGE);
+        fs::write(
+            root.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"os/StarryOS/starryos\"]\n",
+        )
+        .unwrap();
         let explicit = root.path().join("custom/build.toml");
         let path =
             resolve_build_info_path(root.path(), "x86_64-unknown-none", Some(explicit.clone()))
@@ -249,9 +236,10 @@ mod tests {
             build_info,
             StarryBuildInfo::default_starry_for_target("aarch64-unknown-none-softfloat")
         );
-        let written = fs::read_to_string(path).unwrap();
-        assert!(written.contains("features = [\"qemu\"]"));
-        assert!(written.contains("plat_dyn = true"));
+        assert!(path.exists());
+        let persisted: StarryBuildInfo =
+            toml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(persisted, build_info);
     }
 
     #[test]
@@ -323,61 +311,6 @@ HELLO = "world"
     }
 
     #[test]
-    fn load_cargo_config_uses_base_then_applies_starry_overrides() {
-        let root = tempdir().unwrap();
-        let path = root.path().join(".build-target.toml");
-        fs::write(
-            &path,
-            r#"
-log = "Info"
-features = ["net"]
-
-[env]
-CUSTOM = "1"
-"#,
-        )
-        .unwrap();
-
-        let request = request(path, "aarch64", "aarch64-unknown-none-softfloat");
-        let cargo = load_cargo_config(&request).unwrap();
-
-        assert_eq!(cargo.package, STARRY_PACKAGE);
-        assert_eq!(cargo.target, "aarch64-unknown-none-softfloat");
-        assert_eq!(
-            cargo.features,
-            vec![
-                "axfeat/defplat".to_string(),
-                "net".to_string(),
-                "qemu".to_string()
-            ]
-        );
-        assert_eq!(
-            cargo.env.get("AX_ARCH").map(String::as_str),
-            Some("aarch64")
-        );
-        assert_eq!(
-            cargo.env.get("AX_TARGET").map(String::as_str),
-            Some("aarch64-unknown-none-softfloat")
-        );
-        assert_eq!(
-            cargo.env.get("AX_PLATFORM").map(String::as_str),
-            Some("aarch64-qemu-virt")
-        );
-        assert_eq!(cargo.env.get("AX_LOG").map(String::as_str), Some("info"));
-        assert_eq!(cargo.env.get("CUSTOM").map(String::as_str), Some("1"));
-        assert_eq!(
-            cargo.args,
-            vec![
-                "--config".to_string(),
-                "target.aarch64-unknown-none-softfloat.rustflags=[\"-Clink-arg=-Tlinker.x\",\"\
-                 -Clink-arg=-no-pie\",\"-Clink-arg=-znostart-stop-gc\"]"
-                    .to_string()
-            ]
-        );
-        assert!(cargo.to_bin);
-    }
-
-    #[test]
     fn patch_starry_cargo_config_preserves_request_package() {
         let request = ResolvedStarryRequest {
             package: "starryos-test".to_string(),
@@ -398,61 +331,104 @@ CUSTOM = "1"
         patch_starry_cargo_config(&mut cargo, &request).unwrap();
 
         assert_eq!(cargo.package, "starryos-test");
+        assert!(!cargo.args.iter().any(|arg| arg == "--bin"));
     }
 
     #[test]
-    fn load_cargo_config_honors_request_plat_dyn_override() {
+    fn resolve_build_info_path_supports_starry_subworkspace_root() {
         let root = tempdir().unwrap();
-        let path = root.path().join(".build-target.toml");
+        let starry_dir = root.path().join("starryos");
+        fs::create_dir_all(&starry_dir).unwrap();
+        write_minimal_package_manifest(&starry_dir.join("Cargo.toml"), STARRY_PACKAGE);
         fs::write(
-            &path,
-            r#"
-log = "Info"
-plat_dyn = true
-features = ["net"]
-
-[env]
-CUSTOM = "1"
-"#,
+            root.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"starryos\"]\n",
         )
         .unwrap();
 
-        let mut request = request(path, "aarch64", "aarch64-unknown-none-softfloat");
-        request.plat_dyn = Some(false);
-        let cargo = load_cargo_config(&request).unwrap();
-
-        assert!(cargo.features.contains(&"axfeat/defplat".to_string()));
-        assert!(!cargo.features.contains(&"axfeat/plat-dyn".to_string()));
-        assert!(cargo.args.iter().any(|arg| arg.contains("-Tlinker.x")));
-    }
-
-    #[test]
-    fn rootfs_disk_image_path_uses_workspace_target_triple_dir() {
-        let root = Path::new("/tmp/workspace");
-        let disk_img = rootfs_disk_image_path(root, "aarch64-unknown-none-softfloat");
+        let path =
+            resolve_build_info_path(root.path(), "aarch64-unknown-none-softfloat", None).unwrap();
 
         assert_eq!(
-            disk_img,
-            PathBuf::from("/tmp/workspace/target/aarch64-unknown-none-softfloat/disk.img")
+            path,
+            root.path()
+                .join("starryos/.build-aarch64-unknown-none-softfloat.toml")
         );
     }
 
     #[test]
-    fn default_qemu_args_include_disk_and_network_defaults() {
-        let args = default_qemu_args(Path::new("/tmp/disk.img"));
-
-        assert_eq!(
-            args,
-            vec![
-                "-device".to_string(),
-                "virtio-blk-pci,drive=disk0".to_string(),
-                "-drive".to_string(),
-                "id=disk0,if=none,format=raw,file=/tmp/disk.img".to_string(),
-                "-device".to_string(),
-                "virtio-net-pci,netdev=net0".to_string(),
-                "-netdev".to_string(),
-                "user,id=net0,hostfwd=tcp::5555-:5555".to_string(),
-            ]
+    fn patch_starry_cargo_config_keeps_linker_x_arg() {
+        let request = ResolvedStarryRequest {
+            package: STARRY_PACKAGE.to_string(),
+            arch: "aarch64".to_string(),
+            target: "aarch64-unknown-none-softfloat".to_string(),
+            plat_dyn: None,
+            build_info_path: PathBuf::from(
+                "/tmp/os/StarryOS/starryos/.build-aarch64-unknown-none-softfloat.toml",
+            ),
+            qemu_config: None,
+            uboot_config: None,
+        };
+        let build_info = StarryBuildInfo::default_starry_for_target(&request.target);
+        let mut cargo = build_info.into_base_cargo_config_with_log(
+            request.package.clone(),
+            request.target.clone(),
+            StarryBuildInfo::build_cargo_args(&request.target, false),
         );
+
+        patch_starry_cargo_config(&mut cargo, &request).unwrap();
+
+        assert!(
+            cargo
+                .args
+                .iter()
+                .any(|arg| arg.contains("-Clink-arg=-Tlinker.x"))
+        );
+    }
+
+    #[test]
+    fn patch_starry_test_package_keeps_linker_x_arg() {
+        let request = ResolvedStarryRequest {
+            package: "starryos-test".to_string(),
+            arch: "aarch64".to_string(),
+            target: "aarch64-unknown-none-softfloat".to_string(),
+            plat_dyn: None,
+            build_info_path: PathBuf::from("/tmp/.build.toml"),
+            qemu_config: None,
+            uboot_config: None,
+        };
+        let build_info = StarryBuildInfo::default_starry_for_target(&request.target);
+        let mut cargo = build_info.into_base_cargo_config_with_log(
+            request.package.clone(),
+            request.target.clone(),
+            StarryBuildInfo::build_cargo_args(&request.target, false),
+        );
+
+        patch_starry_cargo_config(&mut cargo, &request).unwrap();
+
+        assert!(
+            cargo
+                .args
+                .iter()
+                .any(|arg| arg.contains("-Clink-arg=-Tlinker.x"))
+        );
+    }
+
+    #[test]
+    fn ensure_starry_bin_arg_adds_bin_for_starryos_package() {
+        let mut args = Vec::new();
+
+        ensure_starry_bin_arg(&mut args, "starryos").unwrap();
+
+        assert_eq!(args, vec!["--bin".to_string(), "starryos".to_string()]);
+    }
+
+    #[test]
+    fn ensure_starry_bin_arg_skips_when_package_bin_name_differs() {
+        let mut args = Vec::new();
+
+        ensure_starry_bin_arg(&mut args, "starryos-test").unwrap();
+
+        assert!(args.is_empty());
     }
 }

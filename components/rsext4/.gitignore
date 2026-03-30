@@ -5,3 +5,8 @@ lwext4/
 *.lock
 .vscode/
 src/testfs/mount_point/*
+other
+.claude
+AGENTS.md
+CLAUDE.md
+.gitnexus

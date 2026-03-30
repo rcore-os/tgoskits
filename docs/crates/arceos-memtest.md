@@ -93,7 +93,7 @@ graph LR
 - `Vec`、`BTreeMap`、`String`：分别代表顺序容器、树形容器和字符串对象的典型分配形态。
 
 ### 3.3 主要消费者
-- `cargo xtask test arceos` 自动发现的内存/分配基础回归。
+- `cargo arceos test qemu` 自动发现的内存/分配基础回归。
 - 调整 `axalloc` 或更底层内存管理实现后的 smoke test。
 
 ## 4. 开发指南
@@ -105,7 +105,7 @@ cargo xtask arceos run --package arceos-memtest --arch riscv64
 或直接跑回归：
 
 ```bash
-cargo xtask test arceos --target riscv64gc-unknown-none-elf
+cargo arceos test qemu --target riscv64gc-unknown-none-elf
 ```
 
 ### 4.2 修改时的注意点

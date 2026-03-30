@@ -1,13 +1,13 @@
 # ArceOS 开发指南
 
-在 TGOSKits 里，ArceOS 既是一个可以单独运行的模块化操作系统，也是 StarryOS 与 Axvisor 复用的基础能力提供者。因此，理解 ArceOS 的关键不只是“怎么跑示例”，而是“一个能力如何从模块一路走到应用和测试”。
+在 TGOSKits 里，ArceOS 既是一个可以单独运行的模块化操作系统，也是 StarryOS 与 Axvisor 复用的基础能力提供者。
 
 ## 1. ArceOS 在仓库里的位置
 
 | 路径 | 角色 | 什么时候会改到 |
 | --- | --- | --- |
-| `os/arceos/modules/` | 内核模块层 | 改 HAL、调度、驱动、网络、文件系统、运行时 |
-| `os/arceos/api/` | feature 与对外 API 聚合 | 要新增 feature、能力开关或统一入口 |
+| `os/arceos/modules/` | 内核模块层 | HAL、调度、驱动、网络、文件系统、运行时 |
+| `os/arceos/api/` | feature 与对外 API 聚合 | 新增 feature、能力开关或统一入口 |
 | `os/arceos/ulib/` | 用户侧库 | 要把能力暴露给应用时 |
 | `os/arceos/examples/` | 示例应用 | 做最小验证、写新 demo |
 | `test-suit/arceos/` | 系统级测试 | 做自动化回归 |
@@ -23,18 +23,25 @@
 ### 仓库根目录的推荐入口
 
 ```bash
-cargo xtask arceos build --package arceos-helloworld --arch riscv64
-cargo xtask arceos run --package arceos-helloworld --arch riscv64
+cargo arceos build --package arceos-helloworld --target riscv64gc-unknown-none-elf
+cargo arceos qemu --package arceos-helloworld --target riscv64gc-unknown-none-elf
 ```
+
+当前根 CLI 的真实子命令是：
+
+- `build`: 只构建
+- `qemu`: 构建并在 QEMU 中运行
+- `uboot`: 构建并走 U-Boot 路径运行
 
 常用参数：
 
 - `--package`: 选择应用包，例如 `arceos-helloworld`
-- `--arch`: `riscv64`、`x86_64`、`aarch64`、`loongarch64`
-- `--platform`: 覆盖默认平台
-- `--features`: 传额外 feature
-- `--smp`: 指定 CPU 数量
-- `--plat-dyn`: 控制是否启用动态平台
+- `--target`: 选择目标 triple，例如 `riscv64gc-unknown-none-elf`
+- `--config`: 显式指定应用目录下的 build info 文件
+- `--plat_dyn`: 控制是否启用动态平台
+
+当前根 CLI 不再直接暴露 `--arch`、`--platform`、`--features`、`--smp`、`--net`、`--blk` 这类旧参数。  
+如果你需要这些能力，请修改应用目录下的 `.build-<target>.toml` / `build-<target>.toml`，或者使用 `os/arceos/Makefile` 本地入口。
 
 ### `os/arceos/` 里的本地入口
 
@@ -71,13 +78,6 @@ flowchart TD
     Ulib --> Tests
 ```
 
-这条链路对应了几种常见开发动作：
-
-- 改内部实现：动 `components/` 或 `modules/`
-- 新增 feature 开关：动 `axfeat`
-- 新增应用侧 API：动 `axstd` / `axlibc`
-- 新增验证样例：动 `examples/` 或 `test-suit/arceos/`
-
 ## 4. 常见开发动作
 
 ### 4.1 修改基础组件或模块
@@ -90,28 +90,22 @@ flowchart TD
 建议先跑最小消费者：
 
 ```bash
-cargo xtask arceos run --package arceos-helloworld --arch riscv64
+cargo arceos qemu --package arceos-helloworld --target riscv64gc-unknown-none-elf
 ```
 
-如果改的是特定能力，再换对应的示例：
+如果改动依赖特定功能，再换对应示例，或者修改该示例目录下的 build info 文件后再跑：
 
 ```bash
-# 网络相关
-cargo xtask arceos run --package arceos-httpserver --arch riscv64 --net
-
-# 文件系统相关
-cargo xtask arceos run --package arceos-shell --arch riscv64 --blk
+cargo arceos qemu --package arceos-httpclient --target riscv64gc-unknown-none-elf
 ```
 
 ### 4.2 新增 feature 或暴露给应用
 
-当一个能力已经在模块层实现，但你还希望应用可选启用时，常见接线顺序是：
+常见接线顺序是：
 
 1. 在 `os/arceos/modules/*` 完成或接入实现
 2. 在 `os/arceos/api/axfeat` 暴露 feature
 3. 需要给应用直接用时，再接到 `os/arceos/ulib/axstd` 或 `axlibc`
-
-如果你只做了第 1 步，没有走到 `axfeat` 或 `axstd`，应用层通常是看不到这个能力的。
 
 ### 4.3 添加一个新示例应用
 
@@ -127,7 +121,7 @@ edition.workspace = true
 axstd.workspace = true
 ```
 
-最小 `src/main.rs` 可以参考现有 `helloworld` 的写法：
+最小 `src/main.rs` 可以参考：
 
 ```rust
 #![cfg_attr(feature = "axstd", no_std)]
@@ -142,10 +136,10 @@ fn main() {
 }
 ```
 
-然后直接运行：
+然后运行：
 
 ```bash
-cargo xtask arceos run --package myapp --arch riscv64
+cargo arceos qemu --package myapp --target riscv64gc-unknown-none-elf
 ```
 
 ### 4.4 添加或修改平台
@@ -156,35 +150,26 @@ cargo xtask arceos run --package myapp --arch riscv64
 - `platform/axplat-dyn`
 - `platform/x86-qemu-q35`
 
-验证时通常要显式指定平台：
-
-```bash
-cargo xtask arceos run --package arceos-helloworld --arch aarch64 \
-    --platform axplat-aarch64-qemu-virt
-```
+验证时通常要显式指定 target triple；如果需要切平台或 feature，请配合 `--config` 指向对应 build info 文件，或者回到 `os/arceos/Makefile`。
 
 ## 5. 最常用的验证入口
 
 ### 示例应用
 
 ```bash
-cargo xtask arceos run --package arceos-helloworld --arch riscv64
-cargo xtask arceos run --package arceos-httpclient --arch riscv64
-cargo xtask arceos run --package arceos-httpserver --arch riscv64 --net
-cargo xtask arceos run --package arceos-shell --arch riscv64 --blk
+cargo arceos qemu --package arceos-helloworld --target riscv64gc-unknown-none-elf
+cargo arceos qemu --package arceos-httpclient --target riscv64gc-unknown-none-elf
 ```
 
 ### 系统测试
 
 ```bash
-cargo xtask test arceos --target riscv64gc-unknown-none-elf
+cargo arceos test qemu --target riscv64gc-unknown-none-elf
 ```
 
-这条命令会自动发现 `test-suit/arceos/` 下的测试包，例如任务调度相关测试。
+这条命令会自动发现 `test-suit/arceos/` 下的测试包。
 
 ### host / unit 测试
-
-对于适合在 host 上跑的基础 crate，优先先做：
 
 ```bash
 cargo test -p axerrno
@@ -194,8 +179,6 @@ cargo test -p axerrno
 
 ### 看更详细的运行日志
 
-本地 Makefile 路径最直接：
-
 ```bash
 cd os/arceos
 make A=examples/helloworld ARCH=riscv64 LOG=debug run
@@ -203,14 +186,12 @@ make A=examples/helloworld ARCH=riscv64 LOG=debug run
 
 ### 启动 GDB 调试
 
-ArceOS 本地 Makefile 已经有现成的 `debug` 目标：
-
 ```bash
 cd os/arceos
 make A=examples/helloworld ARCH=riscv64 debug
 ```
 
-这比在根目录命令里硬塞额外 QEMU 参数更可靠，因为根 `cargo xtask arceos run` 当前并不直接暴露原始 QEMU 参数透传接口。
+这比在根目录命令里硬塞额外 QEMU 参数更可靠，因为根 `cargo arceos qemu` 当前并不直接暴露原始 QEMU 参数透传接口。
 
 ### 什么时候优先用根目录入口
 

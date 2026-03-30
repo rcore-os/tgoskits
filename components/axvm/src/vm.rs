@@ -152,8 +152,11 @@ impl AxVM {
     /// Returns an error if the configuration is invalid.
     /// The VM is not started until `boot` is called.
     pub fn new(config: AxVMConfig) -> AxResult<AxVMRef> {
-        let address_space =
-            AddrSpace::new_empty(crate::vcpu::max_guest_page_table_levels(), GuestPhysAddr::from(VM_ASPACE_BASE), VM_ASPACE_SIZE)?;
+        let address_space = AddrSpace::new_empty(
+            crate::vcpu::max_guest_page_table_levels(),
+            GuestPhysAddr::from(VM_ASPACE_BASE),
+            VM_ASPACE_SIZE,
+        )?;
 
         let result = Arc::new(Self {
             id: config.id(),

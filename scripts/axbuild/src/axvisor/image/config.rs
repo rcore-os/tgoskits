@@ -52,7 +52,7 @@ impl ImageConfig {
     }
 }
 
-pub fn fallback_registry_url() -> String {
+pub(crate) fn fallback_registry_url() -> String {
     std::env::var("AXVISOR_REGISTRY_FALLBACK_URL")
         .unwrap_or_else(|_| DEFAULT_FALLBACK_REGISTRY_URL.to_string())
 }

@@ -24,7 +24,7 @@ use tracing_subscriber::{fmt, prelude::*, util::SubscriberInitExt};
 
 static LOG_FILE: OnceLock<Mutex<std::fs::File>> = OnceLock::new();
 
-pub fn init_logging(workspace_root: &Path) -> Result<()> {
+pub(crate) fn init_logging(workspace_root: &Path) -> Result<()> {
     let log_dir = workspace_root.join("target");
     fs::create_dir_all(&log_dir)
         .with_context(|| format!("failed to create log directory {}", log_dir.display()))?;

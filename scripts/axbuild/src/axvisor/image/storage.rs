@@ -239,14 +239,14 @@ impl Storage {
     }
 }
 
-pub fn image_archive_filename(spec: ImageSpecRef<'_>) -> String {
+pub(crate) fn image_archive_filename(spec: ImageSpecRef<'_>) -> String {
     match spec.version {
         Some(version) => format!("{}-{}.tar.gz", spec.name, version),
         None => format!("{}.tar.gz", spec.name),
     }
 }
 
-pub fn image_extract_dir_name(spec: ImageSpecRef<'_>) -> String {
+pub(crate) fn image_extract_dir_name(spec: ImageSpecRef<'_>) -> String {
     match spec.version {
         Some(version) => format!("{}-{}", spec.name, version),
         None => spec.name.to_string(),
