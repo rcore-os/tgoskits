@@ -17,6 +17,28 @@ fn test_app_context(root: &Path) -> AppContext {
     }
 }
 
+fn write_minimal_workspace_package(path: &Path, name: &str) {
+    let src_dir = path.parent().unwrap().join("src");
+    fs::create_dir_all(&src_dir).unwrap();
+    fs::write(src_dir.join("lib.rs"), "").unwrap();
+    fs::write(
+        path,
+        format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+    )
+    .unwrap();
+}
+
+fn prepare_starry_workspace(root: &Path) {
+    let starry_dir = root.join("os/StarryOS/starryos");
+    fs::create_dir_all(&starry_dir).unwrap();
+    write_minimal_workspace_package(&starry_dir.join("Cargo.toml"), STARRY_PACKAGE);
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"os/StarryOS/starryos\"]\n",
+    )
+    .unwrap();
+}
+
 #[test]
 fn snapshot_load_returns_default_when_missing() {
     let root = tempdir().unwrap();
@@ -381,6 +403,7 @@ fn starry_snapshot_store_round_trips() {
 #[test]
 fn prepare_starry_request_prefers_cli_over_snapshot() {
     let root = tempdir().unwrap();
+    prepare_starry_workspace(root.path());
     fs::write(
         root.path().join(STARRY_SNAPSHOT_FILE),
         r#"
@@ -433,6 +456,7 @@ uboot_config = "configs/snapshot-uboot.toml"
 #[test]
 fn prepare_starry_request_uses_snapshot_and_default_arch() {
     let root = tempdir().unwrap();
+    prepare_starry_workspace(root.path());
     fs::write(
         root.path().join(STARRY_SNAPSHOT_FILE),
         r#"
@@ -468,6 +492,7 @@ qemu_config = "configs/qemu.toml"
 #[test]
 fn prepare_starry_request_rejects_mismatched_arch_and_target() {
     let root = tempdir().unwrap();
+    prepare_starry_workspace(root.path());
     let app = test_app_context(root.path());
 
     let err = app
@@ -489,6 +514,7 @@ fn prepare_starry_request_rejects_mismatched_arch_and_target() {
 #[test]
 fn prepare_starry_request_cli_arch_overrides_snapshot_target() {
     let root = tempdir().unwrap();
+    prepare_starry_workspace(root.path());
     fs::write(
         root.path().join(STARRY_SNAPSHOT_FILE),
         r#"
@@ -525,6 +551,7 @@ target = "aarch64-unknown-none-softfloat"
 #[test]
 fn prepare_starry_request_cli_target_overrides_snapshot_arch() {
     let root = tempdir().unwrap();
+    prepare_starry_workspace(root.path());
     fs::write(
         root.path().join(STARRY_SNAPSHOT_FILE),
         r#"

@@ -80,6 +80,11 @@ jobs:
 
       - run: rustc --version
 
+      - name: Install FAT image tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends dosfstools
+
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test-${{ matrix.os }}-${{ matrix.target }}

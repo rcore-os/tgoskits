@@ -17,6 +17,42 @@ use crate::{
 
 const ROOTFS_URL: &str = "https://github.com/Starry-OS/rootfs/releases/download/20260214";
 
+/// Remove the timeout field from the configuration file
+fn remove_timeout_field(config: &str) -> String {
+    // Check if config contains timeout line
+    if !config.contains("timeout") {
+        return config.to_string();
+    }
+    // Remove timeout line while preserving original format
+    config
+        .lines()
+        .filter(|line| !line.trim().starts_with("timeout"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Update the timeout field in the configuration file to the specified value
+fn update_timeout_field(config: &str, timeout_seconds: u64) -> String {
+    let timeout_line = format!("timeout = {}", timeout_seconds);
+    if config.contains("timeout") {
+        // Replace existing timeout line
+        config
+            .lines()
+            .map(|line| {
+                if line.trim().starts_with("timeout") {
+                    timeout_line.clone()
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        // Add timeout field
+        format!("{}\n{}", config, timeout_line)
+    }
+}
+
 pub(crate) fn rootfs_image_name(arch: &str) -> anyhow::Result<String> {
     let _ = starry_target_for_arch_checked(arch)?;
     Ok(format!("rootfs-{arch}.img"))
@@ -80,6 +116,7 @@ pub(crate) async fn prepare_test_qemu_config(
     workspace_root: &Path,
     request: &ResolvedStarryRequest,
     template_path: &Path,
+    timeout_override: Option<u64>,
 ) -> anyhow::Result<PathBuf> {
     let base_disk_img =
         ensure_rootfs_in_target_dir(workspace_root, &request.arch, &request.target).await?;
@@ -99,6 +136,16 @@ pub(crate) async fn prepare_test_qemu_config(
         .await
         .with_context(|| format!("failed to read {}", template_path.display()))?;
     let config = config.replace(&shared_disk, &isolated_disk_img.display().to_string());
+
+    // Handle timeout override
+    let config = match timeout_override {
+        None => config,                           // Keep timeout from config file
+        Some(0) => remove_timeout_field(&config), // 0 means disable timeout
+        Some(seconds) => {
+            // Set the specified timeout value
+            update_timeout_field(&config, seconds)
+        }
+    };
 
     let generated_config = std::env::temp_dir().join(format!(
         "starry-test-qemu-{}-{}-{}.toml",
@@ -275,7 +322,7 @@ shell_prefix = "starry:~#"
             uboot_config: None,
         };
 
-        let generated = prepare_test_qemu_config(root.path(), &request, &template)
+        let generated = prepare_test_qemu_config(root.path(), &request, &template, None)
             .await
             .unwrap();
         let content = fs::read_to_string(generated).unwrap();
@@ -283,5 +330,58 @@ shell_prefix = "starry:~#"
         assert!(content.contains("disk-test-"));
         assert!(!content.contains("${workspace}/target/x86_64-unknown-none/disk.img"));
         assert!(content.contains("shell_prefix = \"starry:~#\""));
+    }
+
+    #[test]
+    fn remove_timeout_field_removes_timeout_line() {
+        let config = r#"args = ["-nographic"]
+shell_prefix = "starry:~#"
+timeout = 3
+"#;
+        let result = remove_timeout_field(config);
+        assert!(!result.contains("timeout"));
+        assert!(result.contains("args = [\"-nographic\"]"));
+        assert!(result.contains("shell_prefix = \"starry:~#\""));
+    }
+
+    #[test]
+    fn remove_timeout_field_handles_config_without_timeout() {
+        let config = r#"args = ["-nographic"]
+shell_prefix = "starry:~#"
+"#;
+        let result = remove_timeout_field(config);
+        assert_eq!(result, config);
+    }
+
+    #[test]
+    fn update_timeout_field_replaces_existing_timeout() {
+        let config = r#"args = ["-nographic"]
+shell_prefix = "starry:~#"
+timeout = 3
+"#;
+        let result = update_timeout_field(config, 10);
+        assert!(result.contains("timeout = 10"));
+        assert!(!result.contains("timeout = 3"));
+    }
+
+    #[test]
+    fn update_timeout_field_adds_timeout_when_not_present() {
+        let config = r#"args = ["-nographic"]
+shell_prefix = "starry:~#"
+"#;
+        let result = update_timeout_field(config, 30);
+        assert!(result.contains("timeout = 30"));
+        assert!(result.contains("args = [\"-nographic\"]"));
+        assert!(result.contains("shell_prefix = \"starry:~#\""));
+    }
+
+    #[test]
+    fn update_timeout_field_with_zero_disables_timeout() {
+        let config = r#"args = ["-nographic"]
+shell_prefix = "starry:~#"
+timeout = 3
+"#;
+        let result = remove_timeout_field(config);
+        assert!(!result.contains("timeout"));
     }
 }

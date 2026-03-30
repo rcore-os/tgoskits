@@ -11,4 +11,7 @@ documentation = "https://docs.rs/aarch64_sysreg"
 keywords = ["arceos", "arm", "aarch64", "registers"]
 categories = ["embedded", "no-std", "hardware-support", "os"]
 
+[package.metadata.docs.rs]
+targets = ["aarch64-unknown-none-softfloat"]
+
 [dependencies]

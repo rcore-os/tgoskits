@@ -9,9 +9,9 @@ Generic error code representation.
 It provides two error types and the corresponding result types:
 
 - [`AxError`] and [`AxResult`]: A generic error type similar to
-[`std::io::ErrorKind`].
+  [`std::io::ErrorKind`].
 - [`LinuxError`] and [`LinuxResult`]: Linux specific error codes defined in
-`errno.h`. It can be converted from [`AxError`].
+  `errno.h`. It can be converted from [`AxError`].
 
 [`AxError`]: https://docs.rs/axerrno/latest/axerrno/enum.AxError.html
 [`AxResult`]: https://docs.rs/axerrno/latest/axerrno/type.AxResult.html

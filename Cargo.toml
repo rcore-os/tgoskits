@@ -98,7 +98,11 @@ members = [
     "os/arceos/examples/shell",
 
     # test-suit
+    "test-suit/arceos/display",
+    "test-suit/arceos/exception",
+    "test-suit/arceos/fs/*",
     "test-suit/arceos/memtest",
+    "test-suit/arceos/net/*",
     "test-suit/arceos/task/*",
     "test-suit/starryos",
 
