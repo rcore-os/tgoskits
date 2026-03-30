@@ -634,7 +634,9 @@ fn gc_entry() {
         // Since gc task is pinned to the current CPU, there is no effect if the gc task is preempted during the process.
         #[cfg(feature = "irq")]
         unsafe {
-            let _timeout = WAIT_FOR_EXIT.current_ref_raw().wait_timeout(core::time::Duration::from_millis(100));
+            let _timeout = WAIT_FOR_EXIT
+                .current_ref_raw()
+                .wait_timeout(core::time::Duration::from_millis(100));
         }
         #[cfg(not(feature = "irq"))]
         unsafe {
