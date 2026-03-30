@@ -195,6 +195,7 @@ axdriver_display = { path = "components/axdriver_crates/axdriver_display" }
 axdriver_net = { path = "components/axdriver_crates/axdriver_net" }
 axdriver_pci = { path = "components/axdriver_crates/axdriver_pci" }
 axdriver_virtio = { path = "components/axdriver_crates/axdriver_virtio" }
+axdriver_input = { path = "components/axdriver_crates/axdriver_input" }
 
 # === percpu ===
 percpu = { path = "components/percpu/percpu" }
