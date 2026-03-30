@@ -122,7 +122,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # - board: phytiumpi
+          - board: phytiumpi
           - board: roc-rk3568-pc
     runs-on:
       - self-hosted
