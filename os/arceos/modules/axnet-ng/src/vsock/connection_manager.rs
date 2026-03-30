@@ -141,7 +141,8 @@ impl Connection {
 
     #[inline]
     pub fn tx_wait_queue_notify(&mut self) {
-        self.tx_wait_queue.notify_all(true);
+        self.tx_wait_queue
+            .notify_all_with(axtask::ReschedPolicy::YieldCurrent);
     }
 
     #[inline]
