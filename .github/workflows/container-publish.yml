@@ -2,8 +2,13 @@ name: Publish Container Image
 
 on:
   push:
-    tags:
-      - "container-*"
+    branches:
+      - main
+      - dev
+    paths:
+      - ".github/workflows/container-publish.yml"
+      - "container/Dockerfile"
+      - "rust-toolchain.toml"
 
 permissions: {}
 

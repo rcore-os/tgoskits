@@ -15,6 +15,9 @@ repository = "https://github.com/arceos-hypervisor/arm_vcpu"
 categories = ["embedded", "no-std"]
 keywords = ["hypervisor", "aarch64", "vcpu"]
 
+[package.metadata.docs.rs]
+targets = ["aarch64-unknown-none-softfloat"]
+
 [dependencies]
 log = "0.4"
 spin = "0.10"

@@ -16,6 +16,7 @@ RUN apt-get update \
         clang \
         cmake \
         curl \
+        dosfstools \
         git \
         libglib2.0-dev \
         libpixman-1-dev \
