@@ -51,8 +51,7 @@ impl WaitQueue {
     /// Cancel events by removing the task from the wait queue.
     /// If `from_timer_list` is true, try to remove the task from the timer list.
     fn cancel_events(&self, curr: CurrentTask, _from_timer_list: bool) {
-        // A task can be wake up only one events (timer or `notify()`), remove
-        // the event from another queue.
+        // A task can be woken by only one event (timer or `notify()`), so remove it from the other queue.
         if curr.in_wait_queue() {
             // wake up by timer (timeout).
             self.queue.lock().retain(|t| !curr.ptr_eq(t));
