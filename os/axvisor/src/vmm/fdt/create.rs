@@ -267,17 +267,29 @@ fn add_memory_node(new_memory: &[VMMemoryRegion], new_fdt: &mut FdtWriter) {
         new_value.push((size >> 32) as u32);
         new_value.push((size & 0xFFFFFFFF) as u32);
     }
-    info!("Adding memory node with value: 0x{new_value:x?}");
+    info!("Adding memory node with value: {new_value:x?}");
     new_fdt
         .property_array_u32("reg", new_value.as_ref())
         .unwrap();
     new_fdt.property_string("device_type", "memory").unwrap();
 }
 
+fn initrd_range_from_image_config(
+    ramdisk: Option<&axvm::config::RamdiskInfo>,
+) -> Option<(u64, u64)> {
+    let rd = ramdisk?;
+    let start = rd.load_gpa.as_usize() as u64;
+    let size = rd.size? as u64;
+    Some((start, start + size))
+}
+
 pub fn update_fdt(fdt_src: NonNull<u8>, dtb_size: usize, vm: VMRef) {
     let mut new_fdt = FdtWriter::new().unwrap();
     let mut previous_node_level = 0;
     let mut node_stack: Vec<FdtWriterNode> = Vec::new();
+    let initrd_range = vm.with_config(|config| {
+        initrd_range_from_image_config(config.image_config.ramdisk.as_ref())
+    });
 
     let fdt_bytes = unsafe { core::slice::from_raw_parts(fdt_src.as_ptr(), dtb_size) };
     let fdt = Fdt::from_bytes(fdt_bytes)
@@ -306,11 +318,15 @@ pub fn update_fdt(fdt_src: NonNull<u8>, dtb_size: usize, vm: VMRef) {
         if node.name() == "chosen" {
             for prop in node.propertys() {
                 if prop.name.starts_with("linux,initrd-") {
-                    info!(
-                        "Skipping property: {}, belonging to node: {}",
-                        prop.name,
-                        node.name()
-                    );
+                    if initrd_range.is_some() {
+                        info!(
+                            "Skipping property: {}, belonging to node: {}",
+                            prop.name,
+                            node.name()
+                        );
+                    } else {
+                        new_fdt.property(prop.name, prop.raw_value()).unwrap();
+                    }
                 } else if prop.name == "bootargs" {
                     let bootargs_str = prop.str();
                     let modified_bootargs = bootargs_str.replace(" ro ", " rw ");
@@ -333,6 +349,11 @@ pub fn update_fdt(fdt_src: NonNull<u8>, dtb_size: usize, vm: VMRef) {
                     );
                     new_fdt.property(prop.name, prop.raw_value()).unwrap();
                 }
+            }
+            if let Some((initrd_start, initrd_end)) = initrd_range {
+                info!("initrd_start: {:x}, initrd_end: {:x}", initrd_start, initrd_end);
+                new_fdt.property_u64("linux,initrd-start", initrd_start).unwrap();
+                new_fdt.property_u64("linux,initrd-end", initrd_end).unwrap();
             }
         } else {
             for prop in node.propertys() {
@@ -373,6 +394,31 @@ pub fn update_fdt(fdt_src: NonNull<u8>, dtb_size: usize, vm: VMRef) {
     // Load the updated FDT into VM
     load_vm_image_from_memory(&new_fdt_bytes, dest_addr, vm_clone)
         .expect("Failed to load VM images");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::initrd_range_from_image_config;
+    use axaddrspace::GuestPhysAddr;
+    use axvm::config::RamdiskInfo;
+
+    #[test]
+    fn initrd_range_requires_both_address_and_size() {
+        assert_eq!(
+            initrd_range_from_image_config(Some(&RamdiskInfo {
+                load_gpa: GuestPhysAddr::from(0xa000_0000usize),
+                size: None,
+            })),
+            None
+        );
+        assert_eq!(
+            initrd_range_from_image_config(Some(&RamdiskInfo {
+                load_gpa: GuestPhysAddr::from(0xa000_0000usize),
+                size: Some(0x1234),
+            })),
+            Some((0xa000_0000, 0xa000_1234))
+        );
+    }
 }
 
 fn calculate_dtb_load_addr(vm: VMRef, fdt_size: usize) -> GuestPhysAddr {

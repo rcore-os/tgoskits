@@ -168,7 +168,11 @@ impl Aarch64VCpu {
     /// Init guest context. Also set some el2 register value.
     fn init_vm_context(&mut self, config: Aarch64VCpuSetupConfig) {
         // CNTHCTL_EL2.modify(CNTHCTL_EL2::EL1PCEN::SET + CNTHCTL_EL2::EL1PCTEN::SET);
-        self.guest_system_regs.cntvoff_el2 = 0;
+        // Set CNTVOFF_EL2 to the current physical counter so the guest's
+        // virtual counter (CNTVCT_EL0 = CNTPCT_EL0 - CNTVOFF_EL2) starts near zero.
+        let cntpct: u64;
+        unsafe { core::arch::asm!("mrs {0}, CNTPCT_EL0", out(reg) cntpct) };
+        self.guest_system_regs.cntvoff_el2 = cntpct;
         self.guest_system_regs.cntkctl_el1 = 0;
         self.guest_system_regs.cnthctl_el2 = if config.passthrough_timer {
             (CNTHCTL_EL2::EL1PCEN::SET + CNTHCTL_EL2::EL1PCTEN::SET).into()
