@@ -1,5 +1,4 @@
 use alloc::sync::Arc;
-use axerrno::AxResult;
 use core::{
     alloc::Layout,
     mem::offset_of,
@@ -7,8 +6,9 @@ use core::{
 };
 
 use axcpu::uspace::UserContext;
+use axerrno::AxResult;
 use kspin::SpinNoIrq;
-use starry_vm::{VmPtr, VmMutPtr};
+use starry_vm::{VmMutPtr, VmPtr};
 
 use super::ProcessSignalManager;
 use crate::{
@@ -196,9 +196,7 @@ impl ThreadSignalManager {
     pub fn restore(&self, uctx: &mut UserContext) -> AxResult<isize> {
         let frame_ptr = uctx.sp() as *const SignalFrame;
         // copy the saved frame back from uspace
-        let frame: SignalFrame = unsafe {
-            frame_ptr.vm_read_uninit()?.assume_init()
-        };
+        let frame: SignalFrame = unsafe { frame_ptr.vm_read_uninit()?.assume_init() };
 
         *uctx = frame.uctx;
         frame.ucontext.mcontext.restore(uctx);
