@@ -95,25 +95,30 @@ fn discover_patch_paths(
         registry_dependency_names_in_workspace(&arceos_dir.join("Cargo.toml"))?;
     let mut patches = BTreeMap::new();
 
+    for (crate_name, package_dir) in &root_patch_paths {
+        let relative_path = relative_path_from(arceos_dir, package_dir)?;
+        patches.insert(crate_name.clone(), relative_path);
+    }
+
     for crate_name in registry_dependency_names {
-        let package_dir = if let Some(root_patch_path) = root_patch_paths.get(&crate_name) {
-            root_patch_path.clone()
-        } else {
-            match repo_local_packages.get(&crate_name).map(Vec::as_slice) {
-                Some([only_path]) => only_path.clone(),
-                Some(paths) => {
-                    let rendered = paths
-                        .iter()
-                        .map(|path| path.display().to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    bail!(
-                        "multiple repo-local packages named `{crate_name}` found while generating \
-                         ArceOS C-test patches: {rendered}"
-                    )
-                }
-                None => continue,
+        if patches.contains_key(&crate_name) {
+            continue;
+        }
+
+        let package_dir = match repo_local_packages.get(&crate_name).map(Vec::as_slice) {
+            Some([only_path]) => only_path.clone(),
+            Some(paths) => {
+                let rendered = paths
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                bail!(
+                    "multiple repo-local packages named `{crate_name}` found while generating \
+                     ArceOS C-test patches: {rendered}"
+                )
             }
+            None => continue,
         };
 
         let relative_path = relative_path_from(arceos_dir, &package_dir)?;
@@ -358,6 +363,19 @@ mod tests {
                 "expected generated C-test patch for `{crate_name}`"
             );
         }
+    }
+
+    #[test]
+    fn discover_patch_paths_keeps_root_patch_entries_for_transitive_local_crates() {
+        let root = repo_root();
+        let patches = discover_patch_paths(&root, &root.join("os/arceos")).unwrap();
+
+        assert_eq!(
+            patches.get("page_table_entry"),
+            Some(&PathBuf::from(
+                "../../components/page_table_multiarch/page_table_entry"
+            ))
+        );
     }
 
     #[test]
