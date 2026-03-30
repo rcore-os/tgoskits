@@ -17,7 +17,6 @@ multitask = [
     "dep:axsched",
     "dep:cpumask",
     "dep:crate_interface",
-    "dep:event-listener",
     "dep:futures-util",
     "dep:kernel_guard",
     "dep:kspin",
@@ -25,10 +24,9 @@ multitask = [
     "dep:memory_addr",
     "dep:percpu",
     "dep:spin",
-    "dep:timer_list",
 ]
 task-ext = ["dep:extern-trait"]
-irq = ["axhal/irq"]
+irq = ["axhal/irq", "dep:timer_list"]
 tls = ["axhal/tls"]
 preempt = ["irq", "percpu?/preempt", "kernel_guard/preempt"]
 smp = ["kspin/smp"]
@@ -48,7 +46,6 @@ axsched = { version = "0.3", optional = true }
 cfg-if.workspace = true
 cpumask = { version = "0.1", optional = true }
 crate_interface = { workspace = true, optional = true }
-event-listener = { workspace = true, optional = true }
 extern-trait = { version = "0.4", optional = true }
 futures-util = { version = "0.3", default-features = false, optional = true, features = [
     "alloc",

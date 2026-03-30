@@ -627,8 +627,9 @@ fn gc_entry() {
         }
         // Note: we cannot block current task with preemption disabled,
         // use `current_ref_raw` to get the `WAIT_FOR_EXIT`'s reference here to avoid the use of `NoPreemptGuard`.
-        // Since gc task is pinned to the current CPU, there is no effect if the gc task is preempted during the process.
-        unsafe { WAIT_FOR_EXIT.current_ref_raw() }.wait();
+        // Since gc task is pinned to the current CPU, there is no affection if the gc task is preempted during the process.
+        let wait_queue = unsafe { WAIT_FOR_EXIT.current_ref_raw() };
+        wait_queue.wait_until(|| EXITED_TASKS.with_current(|q| !q.is_empty()));
     }
 }
 

@@ -55,7 +55,8 @@ fn check_callbacks() {
     }
 }
 
-pub fn set_alarm_wakeup(deadline: TimeValue, task: AxTaskRef) {
+pub(crate) fn set_alarm_wakeup(deadline: TimeValue, task: AxTaskRef) {
+    let _g = NoPreemptIrqSave::new();
     TIMER_LIST.with_current(|timer_list| {
         let ticket_id = TIMER_TICKET_ID.fetch_add(1, Ordering::AcqRel);
         task.set_timer_ticket(ticket_id);
@@ -63,6 +64,8 @@ pub fn set_alarm_wakeup(deadline: TimeValue, task: AxTaskRef) {
     })
 }
 
+// SAFETY: only called in timer irq handler, so irq and preemption are
+// both disabled here.
 pub fn check_events() {
     check_callbacks();
     loop {
