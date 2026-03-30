@@ -313,24 +313,25 @@ axbuild = { path = "scripts/axbuild", version = "0.2" }
 
 starry-kernel = { path = "os/StarryOS/kernel", version = "0.3.0-preview.3" }
 
-axcpu = { version = "0.3.0-preview.8" }
-axplat = { version = "0.3.1-pre.6" }
-axplat-aarch64-bsta1000b = "0.3.1-pre.6"
-axplat-aarch64-peripherals = "0.3.1-pre.6"
-axplat-aarch64-phytium-pi = "0.3.1-pre.6"
-axplat-aarch64-qemu-virt = "0.3.1-pre.6"
-axplat-aarch64-raspi = "0.3.1-pre.6"
-axplat-loongarch64-qemu-virt = "0.3.1-pre.6"
-axplat-riscv64-qemu-virt = "0.3.1-pre.6"
-axplat-x86-pc = "0.3.1-pre.6"
-axdriver_base = "0.1.4-preview.3"
-axdriver_block = "0.1.4-preview.3"
-axdriver_display = "0.1.4-preview.3"
-axdriver_input = "0.1.4-preview.3"
-axdriver_net = "0.1.4-preview.3"
-axdriver_pci = "0.1.4-preview.3"
-axdriver_virtio = "0.1.4-preview.3"
-axdriver_vsock = "0.1.4-preview.3"
+axcpu = { version = "0.3.0-preview.8", path = "components/axcpu" }
+axplat = { version = "0.3.1-pre.6", path = "components/axplat_crates/axplat" }
+axplat-aarch64-bsta1000b = { version = "0.3.1-pre.6", path = "components/axplat_crates/platforms/axplat-aarch64-bsta1000b" }
+axplat-aarch64-peripherals = { version = "0.3.1-pre.6", path = "components/axplat_crates/platforms/axplat-aarch64-peripherals" }
+axplat-aarch64-phytium-pi = { version = "0.3.1-pre.6", path = "components/axplat_crates/platforms/axplat-aarch64-phytium-pi" }
+axplat-aarch64-qemu-virt = { version = "0.3.1-pre.6", path = "components/axplat_crates/platforms/axplat-aarch64-qemu-virt" }
+axplat-aarch64-raspi = { version = "0.3.1-pre.6", path = "components/axplat_crates/platforms/axplat-aarch64-raspi" }
+axplat-loongarch64-qemu-virt = { version = "0.3.1-pre.6", path = "components/axplat_crates/platforms/axplat-loongarch64-qemu-virt" }
+axplat-riscv64-qemu-virt = { version = "0.3.1-pre.6", path = "components/axplat_crates/platforms/axplat-riscv64-qemu-virt" }
+axplat-x86-pc = { version = "0.3.1-pre.6", path = "components/axplat_crates/platforms/axplat-x86-pc" }
+axdriver_base = { version = "0.1.4-preview.3", path = "components/axdriver_crates/axdriver_base" }
+axdriver_block = { version = "0.1.4-preview.3", path = "components/axdriver_crates/axdriver_block" }
+axdriver_display = { version = "0.1.4-preview.3", path = "components/axdriver_crates/axdriver_display" }
+axdriver_input = { version = "0.1.4-preview.3", path = "components/axdriver_crates/axdriver_input" }
+axdriver_net = { version = "0.1.4-preview.3", path = "components/axdriver_crates/axdriver_net" }
+axdriver_pci = { version = "0.1.4-preview.3", path = "components/axdriver_crates/axdriver_pci" }
+axdriver_virtio = { version = "0.1.4-preview.3", path = "components/axdriver_crates/axdriver_virtio" }
+axdriver_vsock = { version = "0.1.4-preview.3", path = "components/axdriver_crates/axdriver_vsock" }
+crate_interface = {version = "0.3", path = "components/crate_interface" }
 
 # === Other external crates ===
 anyhow = "1.0"
@@ -338,25 +339,24 @@ bindgen = "0.72"
 buddy-slab-allocator = "0.2"
 cfg-if = "1.0"
 chrono = { version = "0.4", default-features = false }
-crate_interface = "0.3"
-ctor_bare = "0.2"
+ctor_bare = { version = "0.2", path = "components/ctor_bare/ctor_bare" }
 event-listener = { version = "5.4.0", default-features = false }
-kernel_guard = "0.1"
-kspin = "0.1"
-lazyinit = "0.2"
+kernel_guard = { version = "0.1", path = "components/kernel_guard" }
+kspin = { version = "0.1", path = "components/kspin" }
+lazyinit = { version = "0.2", path = "components/lazyinit" }
 schemars = "1.2.1"
 toml = "1"
 
 # === starry-* ===
-starry-process = "0.2"
-starry-signal = "0.3"
-starry-vm = "0.3"
+starry-process = { version = "0.2", path = "components/starry-process" }
+starry-signal = { version = "0.3", path = "components/starry-signal" }
+starry-vm = { version = "0.3", path = "components/starry-vm" }
 lazy_static = { version = "1.5", features = ["spin_no_std"] }
 lock_api = { version = "0.4", default-features = false }
 log = "0.4"
-memory_addr = "0.4"
-page_table_multiarch = { version = "0.6", features = ["axerrno"] }
-percpu = "0.2.3-preview.1"
-scope-local = "0.1"
+memory_addr = { version = "0.4", path = "components/axmm_crates/memory_addr" }
+page_table_multiarch = { version = "0.6", features = ["axerrno"], path = "components/page_table_multiarch/page_table_multiarch" }
+percpu = { version = "0.2.3-preview.1", path = "components/percpu/percpu" }
+scope-local = { version = "0.1", path = "components/scope-local" }
 spin = "0.10"
 ostool = { version = "0.11" }

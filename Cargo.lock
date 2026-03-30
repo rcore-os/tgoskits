@@ -687,7 +687,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "indicatif",
- "jkconfig",
+ "jkconfig 0.1.8 (registry+https://github.com/rust-lang/crates.io-index)",
  "log",
  "object",
  "ostool",
@@ -791,7 +791,7 @@ version = "0.3.0-preview.3"
 dependencies = [
  "axdriver",
  "axsync",
- "lazyinit 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "lazyinit 0.2.2",
  "log",
 ]
 
@@ -820,11 +820,11 @@ dependencies = [
  "axdriver_base",
  "axdriver_block",
  "axdriver_display",
- "axdriver_input",
+ "axdriver_input 0.1.4-preview.3",
  "axdriver_net",
  "axdriver_pci",
  "axdriver_virtio",
- "axdriver_vsock",
+ "axdriver_vsock 0.1.4-preview.3",
  "axerrno 0.2.2",
  "axhal",
  "axplat-dyn",
@@ -854,6 +854,14 @@ name = "axdriver_display"
 version = "0.1.4-preview.3"
 dependencies = [
  "axdriver_base",
+]
+
+[[package]]
+name = "axdriver_input"
+version = "0.1.4-preview.3"
+dependencies = [
+ "axdriver_base",
+ "strum 0.27.2",
 ]
 
 [[package]]
@@ -891,11 +899,19 @@ dependencies = [
  "axdriver_base",
  "axdriver_block",
  "axdriver_display",
- "axdriver_input",
+ "axdriver_input 0.1.4-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "axdriver_net",
- "axdriver_vsock",
+ "axdriver_vsock 0.1.4-preview.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "log",
  "virtio-drivers",
+]
+
+[[package]]
+name = "axdriver_vsock"
+version = "0.1.4-preview.3"
+dependencies = [
+ "axdriver_base",
+ "log",
 ]
 
 [[package]]
@@ -1094,7 +1110,7 @@ version = "0.3.0-preview.3"
 dependencies = [
  "axdriver",
  "axsync",
- "lazyinit 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "lazyinit 0.2.2",
  "log",
 ]
 
@@ -1115,7 +1131,7 @@ dependencies = [
  "axconfig",
  "axhal",
  "kspin",
- "lazyinit 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "lazyinit 0.2.2",
  "log",
  "percpu",
 ]
@@ -1160,7 +1176,7 @@ dependencies = [
  "axerrno 0.2.2",
  "axhal",
  "kspin",
- "lazyinit 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "lazyinit 0.2.2",
  "log",
  "memory_addr",
  "memory_set",
@@ -1178,7 +1194,7 @@ dependencies = [
  "axsync",
  "axtask",
  "cfg-if",
- "lazyinit 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "lazyinit 0.2.2",
  "log",
  "spin 0.10.0",
  "starry-smoltcp",
@@ -1219,7 +1235,7 @@ dependencies = [
  "axplat-macros",
  "bitflags 2.11.0",
  "const-str",
- "crate_interface 0.3.0",
+ "crate_interface 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "handler_table 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "kspin",
  "memory_addr",
@@ -1511,7 +1527,7 @@ dependencies = [
  "axfeat",
  "axio",
  "kspin",
- "lazyinit 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "lazyinit 0.2.2",
  "lock_api",
  "spin 0.10.0",
 ]
@@ -1546,7 +1562,7 @@ dependencies = [
  "futures-util",
  "kernel_guard",
  "kspin",
- "lazyinit 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "lazyinit 0.2.2",
  "log",
  "memory_addr",
  "percpu",
@@ -1643,7 +1659,7 @@ dependencies = [
  "cfg-if",
  "clap",
  "cpumask 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "crate_interface 0.3.0",
+ "crate_interface 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "extern-trait",
  "fdt-parser",
  "hashbrown 0.14.5",
@@ -1685,7 +1701,7 @@ dependencies = [
  "axaddrspace",
  "axvisor_api_proc",
  "cpumask 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "crate_interface 0.3.0",
+ "crate_interface 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "memory_addr",
 ]
 
@@ -2373,6 +2389,15 @@ name = "crate_interface"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "70272a03a2cef15589bac05d3d15c023752f5f8f2da8be977d983a9d9e6250fb"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "crate_interface"
+version = "0.3.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3278,8 +3303,6 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 [[package]]
 name = "fitimage"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e99ae4a85d0135904ef62da3dfb2b4cc90846622a7b8dd5c7a0cd5fea79b10cf"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -4170,6 +4193,27 @@ dependencies = [
 [[package]]
 name = "jkconfig"
 version = "0.1.8"
+dependencies = [
+ "anyhow",
+ "axum",
+ "cargo_metadata",
+ "chrono",
+ "clap",
+ "cursive",
+ "log",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "tower",
+ "tower-http",
+]
+
+[[package]]
+name = "jkconfig"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "84a1e4236dc4855186772d3fefc7aec6f5aa289ac2f20a9ea4b9ec4a03d36d79"
 dependencies = [
@@ -4282,7 +4326,7 @@ name = "kernel_guard"
 version = "0.1.3"
 dependencies = [
  "cfg-if",
- "crate_interface 0.3.0",
+ "crate_interface 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -4875,8 +4919,6 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 [[package]]
 name = "ostool"
 version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a357e8e5d4c1b5e6bb27c003461e048e64d768a601a28b874ed2d7aeed8363e"
 dependencies = [
  "anyhow",
  "byte-unit",
@@ -4890,7 +4932,7 @@ dependencies = [
  "fitimage",
  "futures",
  "indicatif",
- "jkconfig",
+ "jkconfig 0.1.8",
  "log",
  "lzma-rs",
  "network-interface",
@@ -5894,7 +5936,7 @@ dependencies = [
  "bit_field",
  "bitflags 2.11.0",
  "cfg-if",
- "crate_interface 0.3.0",
+ "crate_interface 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "log",
  "memoffset",
  "memory_addr",
@@ -7654,8 +7696,6 @@ dependencies = [
 [[package]]
 name = "uboot-shell"
 version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6f5fe43e54f4e6cf96cd577556bd0cd1726b135a2563e19ca3ed8f98fa163b5"
 dependencies = [
  "colored",
  "log",
@@ -8664,7 +8704,7 @@ dependencies = [
  "bit_field",
  "bitflags 2.11.0",
  "cfg-if",
- "crate_interface 0.3.0",
+ "crate_interface 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "log",
  "memory_addr",
  "numeric-enum-macro",
