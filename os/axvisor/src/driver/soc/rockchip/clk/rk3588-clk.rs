@@ -50,8 +50,7 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
 
     let mmio_size = base_reg.size.unwrap_or(0x1000) as usize;
 
-    let mmio_base = iomap(base_reg.address, mmio_size)
-        .expect("Failed to iomap CRU");
+    let mmio_base = iomap(base_reg.address, mmio_size).expect("Failed to iomap CRU");
 
     let cru = Rk3588Cru::new(mmio_base);
     let clk = rdif_clk::Clk::new(ClkDrv::new(cru));

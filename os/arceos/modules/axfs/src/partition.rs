@@ -293,7 +293,11 @@ fn parse_gpt_partitions(disk: &mut Disk) -> AxResult<Vec<PartitionInfo>> {
 
         info!(
             "Found GPT partition {}: '{}' ({} bytes) with filesystem: {:?}, UUID: {:?}",
-            partition.index, partition.name, partition.size_bytes, partition.filesystem_type, partition.filesystem_uuid,
+            partition.index,
+            partition.name,
+            partition.size_bytes,
+            partition.filesystem_type,
+            partition.filesystem_uuid,
         );
 
         partitions.push(partition);

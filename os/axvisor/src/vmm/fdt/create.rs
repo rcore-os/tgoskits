@@ -287,9 +287,8 @@ pub fn update_fdt(fdt_src: NonNull<u8>, dtb_size: usize, vm: VMRef) {
     let mut new_fdt = FdtWriter::new().unwrap();
     let mut previous_node_level = 0;
     let mut node_stack: Vec<FdtWriterNode> = Vec::new();
-    let initrd_range = vm.with_config(|config| {
-        initrd_range_from_image_config(config.image_config.ramdisk.as_ref())
-    });
+    let initrd_range = vm
+        .with_config(|config| initrd_range_from_image_config(config.image_config.ramdisk.as_ref()));
 
     let fdt_bytes = unsafe { core::slice::from_raw_parts(fdt_src.as_ptr(), dtb_size) };
     let fdt = Fdt::from_bytes(fdt_bytes)
@@ -351,9 +350,16 @@ pub fn update_fdt(fdt_src: NonNull<u8>, dtb_size: usize, vm: VMRef) {
                 }
             }
             if let Some((initrd_start, initrd_end)) = initrd_range {
-                info!("initrd_start: {:x}, initrd_end: {:x}", initrd_start, initrd_end);
-                new_fdt.property_u64("linux,initrd-start", initrd_start).unwrap();
-                new_fdt.property_u64("linux,initrd-end", initrd_end).unwrap();
+                info!(
+                    "initrd_start: {:x}, initrd_end: {:x}",
+                    initrd_start, initrd_end
+                );
+                new_fdt
+                    .property_u64("linux,initrd-start", initrd_start)
+                    .unwrap();
+                new_fdt
+                    .property_u64("linux,initrd-end", initrd_end)
+                    .unwrap();
             }
         } else {
             for prop in node.propertys() {

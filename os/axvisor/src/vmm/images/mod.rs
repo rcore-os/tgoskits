@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use axaddrspace::GuestPhysAddr;
-use axerrno::{ax_err_type, AxResult};
+use axerrno::{AxResult, ax_err_type};
 
 use axvm::VMMemoryRegion;
 use axvm::config::AxVMCrateConfig;
@@ -149,13 +149,7 @@ impl ImageLoader {
     fn load_ramdisk_from_memory(&self, ramdisk: &[u8]) -> AxResult {
         let load_gpa = self
             .vm
-            .with_config(|config| {
-                config
-                    .image_config
-                    .ramdisk
-                    .as_ref()
-                    .map(|r| r.load_gpa)
-            })
+            .with_config(|config| config.image_config.ramdisk.as_ref().map(|r| r.load_gpa))
             .expect("Ramdisk image present but ramdisk info is missing");
         let size = ramdisk.len();
         self.vm.with_config(|config| {
@@ -175,13 +169,7 @@ impl ImageLoader {
     fn load_ramdisk_from_filesystem(&self, ramdisk_path: &str) -> AxResult {
         let load_gpa = self
             .vm
-            .with_config(|config| {
-                config
-                    .image_config
-                    .ramdisk
-                    .as_ref()
-                    .map(|r| r.load_gpa)
-            })
+            .with_config(|config| config.image_config.ramdisk.as_ref().map(|r| r.load_gpa))
             .ok_or_else(|| ax_err_type!(NotFound, "Ramdisk load addr is missed"))?;
         let (_, ramdisk_size) = fs::open_image_file(ramdisk_path)?;
         self.vm.with_config(|config| {
