@@ -164,7 +164,7 @@ fn statfs(loc: &Location) -> AxResult<statfs> {
     result.f_bavail = stat.blocks_available as _;
     result.f_files = stat.file_count as _;
     result.f_ffree = stat.free_file_count as _;
-// Generate dynamic fsid
+    // Generate dynamic fsid
     result.f_fsid = generate_fsid(loc.mountpoint().device() as u64, stat.fs_type as u64);
     result.f_fsid = generate_fsid(loc.mountpoint().device() as u64, stat.fs_type as u64);
     result.f_namelen = stat.name_length as _;
