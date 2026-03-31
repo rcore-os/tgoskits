@@ -97,7 +97,7 @@ pub fn sys_sysinfo(info: *mut sysinfo) -> AxResult<isize> {
 }
 
 pub fn sys_syslog(type_: i32, _buf: *mut c_char, _len: usize) -> AxResult<isize> {
-    info!("sys_syslog called! type: {}, len: {}", type_, _len);
+    debug!("sys_syslog called! type: {}, len: {}", type_, _len);
     
     // TODO: 这是一个模拟实现，后续需要对接内核真实的日志读取和控制逻辑
     match type_ {
