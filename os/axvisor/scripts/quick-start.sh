@@ -184,27 +184,63 @@ setup_qemu_aarch64() {
 
 run_qemu_aarch64_arceos() {
     info "=== Launching QEMU AArch64 ArceOS Guest ==="
-    run_axvisor_qemu \
-        --build-config tmp/configs/qemu-aarch64.toml \
-        --qemu-config tmp/configs/qemu-aarch64-runtime.toml \
-        --vmconfigs tmp/configs/arceos-aarch64-qemu-smp1.toml
+    run_cmd cargo xtask qemu \
+        --config "$(pwd)/tmp/configs/qemu-aarch64.toml" \
+        --qemu-config "$(pwd)/tmp/configs/qemu-aarch64-runtime.toml" \
+        --vmconfigs "$(pwd)/tmp/configs/arceos-aarch64-qemu-smp1.toml"
 }
 
 run_qemu_aarch64_linux() {
     info "=== Launching QEMU AArch64 Linux Guest ==="
-    run_axvisor_qemu \
-        --build-config tmp/configs/qemu-aarch64.toml \
-        --qemu-config tmp/configs/qemu-aarch64-runtime.toml \
-        --vmconfigs tmp/configs/linux-aarch64-qemu-smp1.toml
+    run_cmd cargo xtask qemu \
+        --config "$(pwd)/tmp/configs/qemu-aarch64.toml" \
+        --qemu-config "$(pwd)/tmp/configs/qemu-aarch64-runtime.toml" \
+        --vmconfigs "$(pwd)/tmp/configs/linux-aarch64-qemu-smp1.toml"
 }
 
 run_qemu_aarch64_multi() {
     info "=== Launching QEMU AArch64 Multiple Guests (ArceOS + Linux) ==="
+    run_cmd cargo xtask qemu \
+        --config "$(pwd)/tmp/configs/qemu-aarch64.toml" \
+        --qemu-config "$(pwd)/tmp/configs/qemu-aarch64-runtime.toml" \
+        --vmconfigs "$(pwd)/tmp/configs/arceos-aarch64-qemu-smp1.toml" \
+        --vmconfigs "$(pwd)/tmp/configs/linux-aarch64-qemu-smp1.toml"
+}
+
+# ============================================================================
+# QEMU RISC-V64 Architecture Setup
+# ============================================================================
+
+setup_qemu_riscv64() {
+    info "=== QEMU RISC-V64 Preparation ==="
+
+    run_cmd mkdir -p tmp/{configs,images}
+
+    info "Downloading ArceOS image..."
+    run_cmd cargo axvisor image pull qemu_riscv64_arceos --output-dir tmp/images
+
+    info "Preparing board config file..."
+    run_cmd cp configs/board/qemu-riscv64.toml tmp/configs/
+
+    info "Preparing guest config file..."
+    run_cmd cp configs/vms/arceos-riscv64-qemu-smp1.toml tmp/configs/
+
+    run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/qemu_riscv64_arceos/qemu-riscv64"|g' tmp/configs/arceos-riscv64-qemu-smp1.toml
+    run_cmd sed -i 's|^image_location = "fs"|image_location = "memory"|g' tmp/configs/arceos-riscv64-qemu-smp1.toml
+
+    info "Preparing QEMU config file..."
+    run_cmd cp .github/workflows/qemu-riscv64.toml tmp/configs/qemu-riscv64-runtime.toml
+    run_cmd cp tmp/images/qemu_riscv64_arceos/rootfs.img tmp/rootfs.img
+
+    info "=== QEMU RISC-V64 Preparation Complete ==="
+}
+
+run_qemu_riscv64_arceos() {
+    info "=== Launching QEMU RISC-V64 ArceOS Guest ==="
     run_axvisor_qemu \
-        --build-config tmp/configs/qemu-aarch64.toml \
-        --qemu-config tmp/configs/qemu-aarch64-runtime.toml \
-        --vmconfigs tmp/configs/arceos-aarch64-qemu-smp1.toml \
-        --vmconfigs tmp/configs/linux-aarch64-qemu-smp1.toml
+        --build-config tmp/configs/qemu-riscv64.toml \
+        --qemu-config tmp/configs/qemu-riscv64-runtime.toml \
+        --vmconfigs tmp/configs/arceos-riscv64-qemu-smp1.toml
 }
 
 # ============================================================================
@@ -272,10 +308,10 @@ setup_qemu_x86_64() {
 
 run_qemu_x86_64_nimbos() {
     info "=== Launching QEMU x86_64 NimbOS Guest ==="
-    run_axvisor_qemu \
-        --build-config tmp/configs/qemu-x86_64.toml \
-        --qemu-config tmp/configs/qemu-x86_64-runtime.toml \
-        --vmconfigs tmp/configs/nimbos-x86_64-qemu-smp1.toml
+    run_cmd cargo xtask qemu \
+        --config "$(pwd)/tmp/configs/qemu-x86_64.toml" \
+        --qemu-config "$(pwd)/tmp/configs/qemu-x86_64-runtime.toml" \
+        --vmconfigs "$(pwd)/tmp/configs/nimbos-x86_64-qemu-smp1.toml"
 }
 
 # ============================================================================
@@ -336,6 +372,7 @@ setup_phytiumpi() {
 
     info "Preparing uboot config file..."
     run_cmd cp .github/workflows/uboot.toml tmp/configs/phytiumpi-runtime.toml
+    run_cmd sed -i '/success_regex = \[/,/\]/c\success_regex = []' tmp/configs/phytiumpi-runtime.toml
 
     # Remove unnecessary commands
     run_cmd sed -i '/^board_power_off_cmd = "\${env:BOARD_POWER_OFF}"/d' tmp/configs/phytiumpi-runtime.toml
@@ -352,10 +389,10 @@ setup_phytiumpi() {
     # Set serial device only if specified
     if [ "$serial_specified" = true ]; then
         info "Setting serial device to: $serial_device"
-        run_cmd sed -i 's|^serial = "\${env:BOARD_COMM_UART}"|serial = "'"$serial_device"'"|g' tmp/configs/phytiumpi-runtime.toml
+        run_cmd sed -i 's|^serial = "\${env:BOARD_COMM_UART_DEV}"|serial = "'"$serial_device"'"|g' tmp/configs/phytiumpi-runtime.toml
     else
         # Remove serial line to keep it as environment variable
-        run_cmd sed -i '/^serial = "\${env:BOARD_COMM_UART}"/d' tmp/configs/phytiumpi-runtime.toml
+        run_cmd sed -i '/^serial = "\${env:BOARD_COMM_UART_DEV}"/d' tmp/configs/phytiumpi-runtime.toml
     fi
 
     info "Adding device tree file path to uboot config..."
@@ -374,27 +411,27 @@ setup_phytiumpi() {
 
 run_phytiumpi_arceos() {
     info "=== Launching Phytium Pi ArceOS Guest ==="
-    run_axvisor_uboot \
-        --build-config tmp/configs/phytiumpi.toml \
-        --uboot-config tmp/configs/phytiumpi-runtime.toml \
-        --vmconfigs tmp/configs/arceos-aarch64-e2000-smp1.toml
+    run_cmd cargo xtask uboot \
+        --config "$(pwd)/tmp/configs/phytiumpi.toml" \
+        --uboot-config "$(pwd)/tmp/configs/phytiumpi-runtime.toml" \
+        --vmconfigs "$(pwd)/tmp/configs/arceos-aarch64-e2000-smp1.toml"
 }
 
 run_phytiumpi_linux() {
     info "=== Launching Phytium Pi Linux Guest ==="
-    run_axvisor_uboot \
-        --build-config tmp/configs/phytiumpi.toml \
-        --uboot-config tmp/configs/phytiumpi-runtime.toml \
-        --vmconfigs tmp/configs/linux-aarch64-e2000-smp1.toml
+    run_cmd cargo xtask uboot \
+        --config "$(pwd)/tmp/configs/phytiumpi.toml" \
+        --uboot-config "$(pwd)/tmp/configs/phytiumpi-runtime.toml" \
+        --vmconfigs "$(pwd)/tmp/configs/linux-aarch64-e2000-smp1.toml"
 }
 
 run_phytiumpi_multi() {
     info "=== Launching Phytium Pi Multiple Guests (ArceOS + Linux) ==="
-    run_axvisor_uboot \
-        --build-config tmp/configs/phytiumpi.toml \
-        --uboot-config tmp/configs/phytiumpi-runtime.toml \
-        --vmconfigs tmp/configs/arceos-aarch64-e2000-smp1.toml \
-        --vmconfigs tmp/configs/linux-aarch64-e2000-smp1.toml
+    run_cmd cargo xtask uboot \
+        --config "$(pwd)/tmp/configs/phytiumpi.toml" \
+        --uboot-config "$(pwd)/tmp/configs/phytiumpi-runtime.toml" \
+        --vmconfigs "$(pwd)/tmp/configs/arceos-aarch64-e2000-smp1.toml" \
+        --vmconfigs "$(pwd)/tmp/configs/linux-aarch64-e2000-smp1.toml"
 }
 
 # ============================================================================
@@ -455,6 +492,7 @@ setup_roc_rk3568_pc() {
 
     info "Preparing uboot config file..."
     run_cmd cp .github/workflows/uboot.toml tmp/configs/roc-rk3568-pc-runtime.toml
+    run_cmd sed -i '/success_regex = \[/,/\]/c\success_regex = []' tmp/configs/roc-rk3568-pc-runtime.toml
 
     # Remove unnecessary commands
     run_cmd sed -i '/^board_power_off_cmd = "\${env:BOARD_POWER_OFF}"/d' tmp/configs/roc-rk3568-pc-runtime.toml
@@ -471,10 +509,10 @@ setup_roc_rk3568_pc() {
     # Set serial device only if specified
     if [ "$serial_specified" = true ]; then
         info "Setting serial device to: $serial_device"
-        run_cmd sed -i 's|^serial = "\${env:BOARD_COMM_UART}"|serial = "'"$serial_device"'"|g' tmp/configs/roc-rk3568-pc-runtime.toml
+        run_cmd sed -i 's|^serial = "\${env:BOARD_COMM_UART_DEV}"|serial = "'"$serial_device"'"|g' tmp/configs/roc-rk3568-pc-runtime.toml
     else
         # Remove serial line to keep it as environment variable
-        run_cmd sed -i '/^serial = "\${env:BOARD_COMM_UART}"/d' tmp/configs/roc-rk3568-pc-runtime.toml
+        run_cmd sed -i '/^serial = "\${env:BOARD_COMM_UART_DEV}"/d' tmp/configs/roc-rk3568-pc-runtime.toml
     fi
 
     info "Adding device tree file path to uboot config..."
@@ -494,27 +532,27 @@ setup_roc_rk3568_pc() {
 
 run_roc_rk3568_pc_arceos() {
     info "=== Launching ROC-RK3568-PC ArceOS Guest ==="
-    run_axvisor_uboot \
-        --build-config tmp/configs/roc-rk3568-pc.toml \
-        --uboot-config tmp/configs/roc-rk3568-pc-runtime.toml \
-        --vmconfigs tmp/configs/arceos-aarch64-rk3568-smp1.toml
+    run_cmd cargo xtask uboot \
+        --config "$(pwd)/tmp/configs/roc-rk3568-pc.toml" \
+        --uboot-config "$(pwd)/tmp/configs/roc-rk3568-pc-runtime.toml" \
+        --vmconfigs "$(pwd)/tmp/configs/arceos-aarch64-rk3568-smp1.toml"
 }
 
 run_roc_rk3568_pc_linux() {
     info "=== Launching ROC-RK3568-PC Linux Guest ==="
-    run_axvisor_uboot \
-        --build-config tmp/configs/roc-rk3568-pc.toml \
-        --uboot-config tmp/configs/roc-rk3568-pc-runtime.toml \
-        --vmconfigs tmp/configs/linux-aarch64-rk3568-smp1.toml
+    run_cmd cargo xtask uboot \
+        --config "$(pwd)/tmp/configs/roc-rk3568-pc.toml" \
+        --uboot-config "$(pwd)/tmp/configs/roc-rk3568-pc-runtime.toml" \
+        --vmconfigs "$(pwd)/tmp/configs/linux-aarch64-rk3568-smp1.toml"
 }
 
 run_roc_rk3568_pc_multi() {
     info "=== Launching ROC-RK3568-PC Multiple Guests (ArceOS + Linux) ==="
-    run_axvisor_uboot \
-        --build-config tmp/configs/roc-rk3568-pc.toml \
-        --uboot-config tmp/configs/roc-rk3568-pc-runtime.toml \
-        --vmconfigs tmp/configs/arceos-aarch64-rk3568-smp1.toml \
-        --vmconfigs tmp/configs/linux-aarch64-rk3568-smp1.toml
+    run_cmd cargo xtask uboot \
+        --config "$(pwd)/tmp/configs/roc-rk3568-pc.toml" \
+        --uboot-config "$(pwd)/tmp/configs/roc-rk3568-pc-runtime.toml" \
+        --vmconfigs "$(pwd)/tmp/configs/arceos-aarch64-rk3568-smp1.toml" \
+        --vmconfigs "$(pwd)/tmp/configs/linux-aarch64-rk3568-smp1.toml"
 }
 
 # ============================================================================

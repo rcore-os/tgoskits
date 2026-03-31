@@ -194,7 +194,7 @@ You can now run the QEMU test with:
 
   cd ${REPO_ROOT}
   cargo xtask qemu \\
-    --build-config configs/board/${BUILD_CONFIG} \\
+    --config configs/board/${BUILD_CONFIG} \\
     --qemu-config .github/workflows/${QEMU_CONFIG} \\
     --vmconfigs ${GENERATED_VMCONFIG_PATH}
 

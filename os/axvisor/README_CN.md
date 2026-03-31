@@ -89,11 +89,17 @@ AxVisor 使用分层配置系统，包含硬件平台配置和客户机配置两
 
 AxVisor 使用 xtask 工具进行构建管理，支持多种硬件平台和配置选项。快速构建及运行 AxVisor，请参见配置套文档中的[快速上手](https://arceos-hypervisor.github.io/axvisorbook/docs/category/quickstart)章节。
 
-1. **生成配置**：使用 `cargo xtask defconfig <board_name>` 选择 `configs/board/` 目录下目标硬件平台配置。此命令会将对应板级配置复制为 `.build.toml` 作为构建配置。
+1. **查看可用板级配置**：使用 `cargo xtask config ls` 查看 `configs/board/` 目录下可用的板级配置名。
 
-2. **修改配置**：使用 `cargo xtask menuconfig` 启动交互式配置界面，可调整目标架构、功能特性、日志级别等参数。
+2. **生成配置**：使用 `cargo xtask defconfig <board_name>` 选择目标硬件平台配置。此命令会将对应板级配置复制为 `.build.toml`。
 
-3. **执行构建**：使用 `cargo xtask build` 根据 `.build.toml` 配置文件编译项目，生成目标平台的二进制文件。
+3. **执行构建**：使用 `cargo xtask build` 根据 `.build.toml` 编译 AxVisor。若不想依赖 `.build.toml`，也可以直接指定配置文件，例如：`cargo xtask build --config configs/board/<board_name>.toml`。
+
+4. **运行 QEMU 或开发板**：
+   - QEMU：`cargo xtask qemu --config configs/board/qemu-aarch64.toml --qemu-config .github/workflows/qemu-aarch64.toml --vmconfigs configs/vms/arceos-aarch64-qemu-smp1.toml`
+   - U-Boot 开发板流程：`cargo xtask uboot --config configs/board/roc-rk3568-pc.toml --uboot-config .github/workflows/uboot.toml --vmconfigs configs/vms/arceos-aarch64-rk3568-smp1.toml`
+
+如果是本地快速验证，也可以直接使用 `./scripts/quick-start.sh` 启动当前脚本支持的 QEMU 和开发板平台。具体示例见 [QEMU 快速上手指南](doc/qemu-quickstart_cn.md)。
 
 ## QEMU 快速运行
 
