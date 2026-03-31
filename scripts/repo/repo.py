@@ -405,6 +405,8 @@ class GitSubtreeManager:
         if not self.is_added(target_dir):
             raise ValueError(f"Subtree at '{target_dir}' not found. Cannot push.")
 
+        repo_name = self.get_repo_name(url)
+
         # Push to the component dev branch by default.
         if branch == "":
             branch = PUSH_DEFAULT_BRANCH
@@ -447,13 +449,48 @@ class GitSubtreeManager:
             capture_output=True,
         )
 
-        cmd = self._git_subtree_cmd('push', [
+        push_args = [
             '--quiet',
             '--prefix=' + target_dir,
             url,
             branch,
-        ])
-        self._run_command(cmd, env=subtree_env)
+        ]
+        # axdriver_crates has duplicate subtree join trailers in the shared
+        # history.  `git subtree push` scans those trailers before splitting and
+        # can fail with "cache for <hash> already exists!" unless we bypass join
+        # discovery via --ignore-joins.
+        use_ignore_joins = repo_name == 'axdriver_crates'
+        if use_ignore_joins:
+            print(
+                f"Using --ignore-joins for {repo_name} to avoid duplicate subtree history conflicts.",
+                flush=True,
+            )
+            push_args.insert(1, '--ignore-joins')
+
+        cmd = self._git_subtree_cmd('push', push_args)
+        try:
+            self._run_command(cmd, env=subtree_env)
+        except subprocess.CalledProcessError as exc:
+            if use_ignore_joins:
+                raise
+
+            if exc.returncode != 1:
+                raise
+
+            # Other subtrees may hit the same git-subtree history bug after
+            # history repairs or duplicate join metadata, so retry once with
+            # --ignore-joins when we detect the characteristic cache error.
+            if 'cache for ' not in str(exc):
+                raise
+
+            print(
+                "Retrying git subtree push with --ignore-joins after detecting duplicate subtree cache history.",
+                flush=True,
+            )
+            retry_args = push_args.copy()
+            retry_args.insert(1, '--ignore-joins')
+            retry_cmd = self._git_subtree_cmd('push', retry_args)
+            self._run_command(retry_cmd, env=subtree_env)
 
     def switch_branch(self, url: str, target_dir: str, old_branch: str, new_branch: str) -> None:
         """Switch a subtree to a different branch."""
@@ -869,7 +906,20 @@ Examples:
                             help='Force pull: prefer remote changes on conflict')
 
     # Push command
-    push_parser = subparsers.add_parser('push', help='Push local changes to remote')
+    push_parser = subparsers.add_parser(
+        'push',
+        help='Push local changes to remote',
+        description=(
+            "Push local subtree changes to the configured remote branch.\n\n"
+            "Notes:\n"
+            "  - axdriver_crates is pushed with --ignore-joins by default to avoid\n"
+            "    duplicate subtree history conflicts.\n"
+            "  - Other repositories automatically retry with --ignore-joins if\n"
+            "    git-subtree reports the known 'cache for <hash> already exists!'\n"
+            "    error while scanning prior subtree joins."
+        ),
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
     push_parser.add_argument('repo_name', nargs='?', help='Repository name (or use --all)')
     push_parser.add_argument('--all', action='store_true', help='Push all repositories')
     push_parser.add_argument('-b', '--branch', default='',
