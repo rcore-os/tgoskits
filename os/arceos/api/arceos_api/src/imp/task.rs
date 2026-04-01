@@ -136,10 +136,10 @@ cfg_task! {
 
     pub fn ax_wait_queue_wake(wq: &AxWaitQueueHandle, count: u32) {
         if count == u32::MAX {
-            wq.0.notify_all(true);
+            wq.0.notify_all_with(axtask::ReschedPolicy::YieldCurrent);
         } else {
             for _ in 0..count {
-                wq.0.notify_one(true);
+                wq.0.notify_one_with(axtask::ReschedPolicy::YieldCurrent);
             }
         }
     }
