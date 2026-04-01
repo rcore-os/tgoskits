@@ -537,63 +537,111 @@ TGOSKits 当前使用 [`.github/workflows/release.yml`](/home/zcs/WORKSPACE/tgos
 
 也就是说，`main` 和 `dev` 都会参与“版本编排”，并且两条分支都会各自生成 release PR、各自执行正式发布。它们在流程上是两条独立发布线。
 
-### 7.3 工作流结构
+### 7.3 发布流程
 
-当前 workflow 由两个 job 组成：
+当前 workflow 里有两个固定 job：
 
-- `release-pr`：执行 `release-plz update`，然后由 CI 自己创建或更新 PR
-- `release`：在 `main` 和 `dev` 上执行 `release-plz release`
+- `Prepare release PR`：负责准备版本改动，不直接发布
+- `Publish release`：负责基于已经合入分支的版本提交执行正式发布
 
-其中：
+两者的分工可以先概括成一句话：
 
-- `release-pr` 负责扫描提交记录、分析 crate 变动、计算下一个版本、更新 changelog，并将结果提交到机器人分支 `release-plz-<base-branch>`
-- `release-pr` 随后会创建或更新一个 PR，使其从 `release-plz-<base-branch>` 合并回当前触发分支
-- `release` 负责在 `main` 和 `dev` 上，根据已经落在各自主线上的版本提交执行真正的发布动作
+- `Prepare release PR` 决定“应该发布什么版本”
+- `Publish release` 负责“把这个版本真正发出去”
 
-[`release-plz.toml`](/home/zcs/WORKSPACE/tgoskits/release-plz.toml) 中当前设置了：
+这套行为依赖 [`release-plz.toml`](/home/zcs/WORKSPACE/tgoskits/release-plz.toml) 中的配置：
 
 ```toml
 [workspace]
 release_always = false
 ```
 
-这个配置的含义是：普通 push 不会直接发版，只有在版本变更已经通过 `release-plz-*` 机器人分支对应的 release PR 合入目标分支后，`release` job 才会真正执行发布。
+这个配置的含义是：普通 push 不会直接发版。只有当版本改动已经通过 `release-plz-*` 机器人分支对应的 release PR 合入目标分支后，`Publish release` 才会真正执行发布。
 
-### 7.4 发布流程
+下面按三种最常见的场景来理解整个流程。
 
-完整流程如下：
+#### 7.3.1 `dev` 收到 push
+
+当新的功能提交进入 `dev` 时，会触发一次 `release.yml`：
+
+1. `Prepare release PR` 运行
+2. 它会分析从上一个已发布版本以来，哪些 crate 发生了变化
+3. 然后生成版本号、内部依赖版本、`Cargo.lock`、`CHANGELOG.md` 等改动
+4. 这些改动不会直接提交到 `dev`，而是先写到机器人分支 `release-plz-dev`
+5. 接着 CI 创建或更新 PR：`release-plz-dev -> dev`
+6. 同一次 workflow 中，`Publish release` 也会被调度
+7. 但因为此时 `dev` 上还没有合入这次 release PR，所以不会真正发布新版本
+
+这意味着：
+
+- 第一次 push 到 `dev`，看到的结果通常是“自动生成了一个 release PR”
+- 此时仓库里只是有了“待发布的版本改动”，还没有真正发布
+
+#### 7.3.2 `main` 收到 push
+
+当新的提交进入 `main` 时，流程和 `dev` 基本相同，只是目标分支换成了 `main`：
+
+1. `Prepare release PR` 运行
+2. 生成面向 `main` 的版本改动
+3. 推送机器人分支 `release-plz-main`
+4. 创建或更新 PR：`release-plz-main -> main`
+5. `Publish release` 同样会被调度
+6. 如果这次 push 本身不是 release PR 合并后的结果，那么它也不会真正发版
+
+因此，对 `main` 来说，普通开发合并或同步提交进入主线后，首先发生的也是“生成一个可审阅的 release PR”，而不是立即创建 tag 或立刻发布 crates.io。
+
+#### 7.3.3 `dev` 向 `main` 合并
+
+当维护者把 `dev` 合并到 `main` 时，`main` 会收到一次新的 push。这个场景要分两步看：
+
+第一步：
+
+- `main` 因为合并 `dev` 而触发 workflow
+- `Prepare release PR` 重新按 `main` 当前状态计算版本
+- 如果 `main` 上还没有对应的 release PR，就会创建或更新 `release-plz-main -> main`
+
+第二步：
+
+- 维护者审阅并合并 `release-plz-main -> main`
+- `main` 因为这次 release PR 合并再次触发 workflow
+- 这一次 `Publish release` 才会读取刚刚合入主线的版本提交
+- 然后创建 git tag、创建 GitHub Release，并把可发布 crate 发到 crates.io
+
+所以，“`dev` 合到 `main`”本身并不等于已经发布稳定版本。真正的稳定版发布，发生在 `main` 上的 release PR 被合并之后。
+
+从分支分工上看，这里也可以顺便这样理解：
+
+- `dev` 更偏向集成与预览发布线，适合先汇聚功能改动，再生成并合并面向 `dev` 的 release PR
+- `main` 更偏向稳定发布线，通常是在 `dev` 经过一轮集成后，再把结果合到 `main`，生成并合并面向 `main` 的 release PR
+
+因此，推荐的日常节奏是：
+
+- 开发 PR 一律先进入 `dev`
+- 当需要发布集成版本时，直接合并 `dev` 上的 release PR
+- 待一轮集成稳定后，再把 `dev` 合入 `main`
+- 当需要发布稳定版本时，再合并 `main` 上的 release PR
+
+#### 7.3.4 最终版本是如何发布出去的
+
+可以把完整发布动作理解成下面这个闭环：
 
 ```text
-功能开发 -> 合入 dev
-        -> release.yml 在 dev 上运行
-        -> release-plz 检测有发布价值的改动
-        -> 更新机器人分支 release-plz-dev
-        -> 创建或更新 PR: release-plz-dev -> dev
-        -> 合并该 PR 后，在 dev 上正式发布
-
-dev 定期合入 main
-        -> release.yml 在 main 上运行
-        -> 更新机器人分支 release-plz-main
-        -> 创建或更新 PR: release-plz-main -> main
-        -> 合并该 PR 后，在 main 上正式发布
-
-两条分支各自审核并合并自己的 release PR
-        -> release.yml 再次运行
-        -> release-plz release 执行正式发布
-        -> 创建 git tag / GitHub Release / 发布 crates.io
+代码提交进入分支
+  -> Prepare release PR 生成版本改动
+  -> 维护者审阅并合并 release PR
+  -> 分支再次触发 workflow
+  -> Publish release 创建 tag / GitHub Release / crates.io 发布
 ```
 
-从维护动作上看，维护者通常不需要手工修改版本号，也不需要手工先打 tag；更常见的动作是：
+也就是说，最终版本发布一定经过这三个阶段：
 
-1. 在 `dev` 或 `main` 上推进需要发布的改动
-2. 等待或检查该分支自动生成的 release PR
-3. 审阅版本号、changelog、待发布 crate 列表
-4. 合并该分支对应的 release PR
-5. 等待 workflow 自动完成该分支上的 tag、GitHub Release 和 crates.io publish
+1. 发现改动：识别哪些 crate 需要发版
+2. 固化版本：把版本号和相关文件改动合入 `main` 或 `dev`
+3. 正式发布：基于已经合入的版本提交执行 tag、GitHub Release 和 `cargo publish`
 
-### 7.5 版本号如何更新
+#### 7.3.5 版本号在什么时候更新
 
-release PR 会自动修改和发布相关的文件，通常包括：
+版本号不是在 `Publish release` 阶段才修改的，而是在 `Prepare release PR` 阶段就已经生成好了。release PR 通常会包含：
 
 - 各 crate 的 `Cargo.toml` 版本号
 - 依赖了这些 crate 的内部依赖版本
@@ -605,9 +653,13 @@ release PR 会自动修改和发布相关的文件，通常包括：
 - 对于在各自 `Cargo.toml` 中显式写了 `version = "..."` 的 crate，release-plz 会直接修改该 crate 自己的版本号
 - 对于使用 `version.workspace = true` 的 crate，实际版本源头在根 [`Cargo.toml`](/home/zcs/WORKSPACE/tgoskits/Cargo.toml) 的 `[workspace.package].version`，因此 release PR 也可能直接修改根 `Cargo.toml`
 
-这意味着：根 `Cargo.toml` 是否变化，取决于这次待发布的 crate 里是否包含使用 workspace 继承版本的公开包。
+因此：
 
-### 7.6 Tag 与 Release 命名
+- release PR 合并前，版本改动只存在于 release PR 和机器人分支中
+- release PR 合并后，版本改动才真正进入 `main` 或 `dev`
+- `Publish release` 发布的是“已经合入分支的版本”，而不是临时计算出来但尚未合并的版本
+
+### 7.4 Tag 与 Release 命名
 
 当 `main` 或 `dev` 分支上的 release PR 合并后，`release-plz` 会在当前仓库创建 git tag，并同步创建 GitHub Release。
 
@@ -624,21 +676,7 @@ release PR 会自动修改和发布相关的文件，通常包括：
 
 如果未来希望统一使用整仓 tag（例如 `v0.3.0`），则需要进一步调整 `release-plz` 配置，而不是依赖默认行为。
 
-### 7.7 `main` 与 `dev` 的分工
-
-虽然 workflow 在 `main` 和 `dev` 上都会运行，但两个分支承担的角色并不完全相同：
-
-- `dev`：集成与预览发布线，会生成面向 `dev` 的版本 PR，并在合并后独立发布
-- `main`：稳定发布线，会生成面向 `main` 的版本 PR，并在合并后独立发布
-
-因此，推荐的日常节奏是：
-
-- 开发 PR 一律先进入 `dev`
-- 当需要发布集成版本时，直接合并 `dev` 上的 release PR
-- 待一轮集成稳定后，再把 `dev` 合入 `main`
-- 当需要发布稳定版本时，再合并 `main` 上的 release PR
-
-### 7.8 需要的 Secrets 与权限
+### 7.5 需要的 Secrets 与权限
 
 要让发布流程完整生效，仓库通常需要准备以下 secrets：
 
@@ -648,7 +686,7 @@ release PR 会自动修改和发布相关的文件，通常包括：
 
 如果缺少 `CARGO_REGISTRY_TOKEN`，release PR 仍然可以创建，但 `main` 和 `dev` 上的正式 `cargo publish` 都会失败。
 
-### 7.9 维护建议
+### 7.6 维护建议
 
 为了让发布流程更稳定，建议遵循以下约定：
 

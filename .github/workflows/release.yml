@@ -43,6 +43,31 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+      - name: Bootstrap release tags for published packages
+        run: |
+          # Create git tags at HEAD for packages that are already published to
+          # crates.io but have no local tag yet.  Without a local tag,
+          # release-plz falls back to the commit hash stored in the crates.io
+          # vcs_info, which may point to a commit where the workspace was in an
+          # inconsistent state (e.g. a workspace member listed in Cargo.toml
+          # before its subtree was actually committed).  A tag at HEAD gives
+          # release-plz a valid baseline and avoids the broken checkout.
+          new_tags=()
+          while IFS= read -r tag; do
+            if [ -z "$(git tag -l "$tag")" ]; then
+              echo "Creating baseline tag: $tag"
+              git tag "$tag"
+              new_tags+=("$tag")
+            fi
+          done < <(
+            cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.publish != []) | "\(.name)-v\(.version)"'
+          )
+          if [ "${#new_tags[@]}" -gt 0 ]; then
+            git push origin "${new_tags[@]}"
+            echo "Pushed ${#new_tags[@]} new baseline tags"
+          fi
+
       - name: Generate release changes
         id: update
         run: |
@@ -123,4 +148,4 @@ jobs:
         run: cargo install --locked release-plz
 
       - name: Run release-plz release
-        run: release-plz release --config release-plz.toml
+        run: release-plz release --config release-plz.toml --forge github --git-token "${GITHUB_TOKEN}"
