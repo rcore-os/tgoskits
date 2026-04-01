@@ -41,10 +41,16 @@ fn signal_ignore() {
 #[test]
 fn can_restart() {
     let env = TestEnv::new();
-    assert!(!env.proc.can_restart(Signo::SIGTERM));
+    assert!(
+        !env.proc
+            .can_restart(Signo::SIGTERM, &env.proc.actions.lock())
+    );
 
     env.proc.actions.lock()[Signo::SIGTERM]
         .flags
         .insert(SignalActionFlags::RESTART);
-    assert!(env.proc.can_restart(Signo::SIGTERM));
+    assert!(
+        env.proc
+            .can_restart(Signo::SIGTERM, &env.proc.actions.lock())
+    );
 }
