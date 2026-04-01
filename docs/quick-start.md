@@ -94,7 +94,7 @@ StarryOS 当前根 CLI 的真实子命令是 `build`、`qemu`、`rootfs`、`uboo
 
 ### 5.1 预热 rootfs
 
-`rootfs` 会把镜像准备到工作区 target 目录下，并生成对应目标的 `disk.img`：
+`rootfs` 会把镜像准备到工作区 target 目录下，对应文件名为 `rootfs-<arch>.img`：
 
 ```bash
 cargo xtask starry rootfs --arch riscv64
@@ -220,7 +220,7 @@ rustup target add loongarch64-unknown-none-softfloat
 cargo xtask starry rootfs --arch riscv64
 ```
 
-然后确认目标产物目录下的 `disk.img` 是否已生成。只有本地 Makefile 路径才检查 `os/StarryOS/make/disk.img`。
+然后确认目标产物目录下的 `rootfs-<arch>.img` 是否已生成。只有本地 Makefile 路径才检查 `os/StarryOS/make/disk.img`。
 
 ### 9.3 Axvisor 启动不了 Guest
 

@@ -113,7 +113,7 @@ graph LR
 - `axplat-riscv64-visionfive2`：仅在 `vf2` feature 下引入，用于板级适配。
 
 ### 3.2 关键运行时外部条件
-- rootfs / `disk.img`：由 `cargo xtask starry rootfs` 或 `run` 路径自动准备。
+- rootfs / `rootfs-<arch>.img`：由 `cargo xtask starry rootfs` 或 `run` 路径自动准备。
 - 平台配置：由 `.axconfig.toml` 和 `ArceosConfigOverride` 共同决定。
 - QEMU 参数：由 `.qemu.toml` 和 xtask 运行参数共同决定。
 

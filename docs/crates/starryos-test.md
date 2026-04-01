@@ -26,7 +26,7 @@
 - `xtask/src/starry/build.rs` 把测试包名固定为 `STARRY_TEST_PACKAGE = "starryos-test"`。
 - `scripts/axbuild/src/starry/mod.rs::Starry::test_qemu()` 会构造测试请求并强制 `package = "starryos-test"`。
 - `xtask/src/starry/run.rs` 在包名等于 `starryos-test` 时使用 `RunScope::PackageRoot`。
-- `xtask/src/starry/config.rs` 通过 `cargo build -p starryos-test --target ... --features qemu` 解析测试产物目录和 `disk.img` 位置。
+- `xtask/src/starry/config.rs` 通过 `cargo build -p starryos-test --target ... --features qemu` 解析测试产物目录和 `rootfs-<arch>.img` 位置。
 
 也就是说，测试入口之所以独立，不是为了换一套运行时代码，而是为了换一条受控的测试构建/运行通道。
 

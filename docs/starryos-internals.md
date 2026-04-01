@@ -378,7 +378,7 @@ cargo xtask starry run --arch riscv64 --package starryos
 
 StarryOS 的 rootfs 有两个常见位置，根 xtask 路径和本地 Makefile 路径不共享默认镜像位置：
 
-- 根目录 xtask：通常位于 `target/<triple>/<profile>/disk.img`
+- 根目录 xtask：通常位于 `target/<triple>/rootfs-<arch>.img`
 - 本地 Makefile：`os/StarryOS/make/disk.img`
 
 "已准备 rootfs"不代表另一套入口也能直接复用。
