@@ -3,15 +3,14 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use axhal::time::{TimeValue, wall_time};
 use kernel_guard::{NoOp, NoPreemptIrqSave};
-use lazyinit::LazyInit;
 use timer_list::{TimerEvent, TimerList};
 
-use crate::{AxTaskRef, future::check_timer_events, select_run_queue};
+use crate::{AxTaskRef, select_run_queue};
 
 static TIMER_TICKET_ID: AtomicU64 = AtomicU64::new(1);
 
 percpu_static! {
-    TIMER_LIST: LazyInit<TimerList<TaskWakeupEvent>> = LazyInit::new(),
+    TIMER_LIST: TimerList<TaskWakeupEvent> = TimerList::new(),
     TIMER_CALLBACKS: Vec<Box<dyn Fn(TimeValue) + Send + Sync>> = Vec::new(),
 }
 
@@ -83,11 +82,5 @@ pub fn check_events() {
     }
 
     // Handle async timer events
-    check_timer_events();
-}
-
-pub fn init() {
-    TIMER_LIST.with_current(|timer_list| {
-        timer_list.init_once(TimerList::new());
-    });
+    crate::future::check_timer_events();
 }

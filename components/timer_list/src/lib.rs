@@ -55,7 +55,7 @@ impl<E> Eq for TimerEventWrapper<E> {}
 
 impl<E: TimerEvent> TimerList<E> {
     /// Creates a new empty timer list.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             events: BinaryHeap::new(),
         }

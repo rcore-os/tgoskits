@@ -395,9 +395,9 @@ dependencies = [
 
 [[package]]
 name = "axbuild"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e033d0e23e76a18bcdae0cd2c583929e91ff2d546687abc9e1624f83e307d343"
+checksum = "198ff3070512151a6f930c6eb60b93057599489856410f99f1c7cef29cc19bad"
 dependencies = [
  "anyhow",
  "axvmconfig",
@@ -408,7 +408,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "indicatif",
- "jkconfig 0.1.8 (registry+https://github.com/rust-lang/crates.io-index)",
+ "jkconfig",
  "log",
  "object",
  "ostool",
@@ -2487,6 +2487,8 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 [[package]]
 name = "fitimage"
 version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e99ae4a85d0135904ef62da3dfb2b4cc90846622a7b8dd5c7a0cd5fea79b10cf"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -3196,27 +3198,6 @@ dependencies = [
 [[package]]
 name = "jkconfig"
 version = "0.1.8"
-dependencies = [
- "anyhow",
- "axum",
- "cargo_metadata",
- "chrono",
- "clap",
- "cursive",
- "log",
- "schemars",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "toml 0.9.12+spec-1.1.0",
- "tower",
- "tower-http",
-]
-
-[[package]]
-name = "jkconfig"
-version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "84a1e4236dc4855186772d3fefc7aec6f5aa289ac2f20a9ea4b9ec4a03d36d79"
 dependencies = [
@@ -3897,7 +3878,9 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "ostool"
-version = "0.11.1"
+version = "0.11.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "252f2227f0d1d13a9784325bb87eec025655114fc4a1579b2f8e6748131b7d90"
 dependencies = [
  "anyhow",
  "byte-unit",
@@ -3911,7 +3894,7 @@ dependencies = [
  "fitimage",
  "futures",
  "indicatif",
- "jkconfig 0.1.8",
+ "jkconfig",
  "log",
  "lzma-rs",
  "network-interface",
@@ -6304,6 +6287,8 @@ dependencies = [
 [[package]]
 name = "uboot-shell"
 version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6f5fe43e54f4e6cf96cd577556bd0cd1726b135a2563e19ca3ed8f98fa163b5"
 dependencies = [
  "colored",
  "log",
