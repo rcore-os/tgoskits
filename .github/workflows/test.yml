@@ -135,6 +135,7 @@ jobs:
       matrix:
         include:
           # - board: phytiumpi
+          - board: orangepi-5-plus
           - board: roc-rk3568-pc
     runs-on:
       - self-hosted

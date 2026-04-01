@@ -54,6 +54,11 @@ pub(crate) struct AxvisorUbootBoardConfig {
 
 const AXVISOR_UBOOT_BOARD_CONFIGS: &[AxvisorUbootBoardConfig] = &[
     AxvisorUbootBoardConfig {
+        board: "orangepi-5-plus",
+        build_config: "os/axvisor/configs/board/orangepi-5-plus.toml",
+        vmconfig: "os/axvisor/configs/vms/linux-aarch64-orangepi5p-smp1.toml",
+    },
+    AxvisorUbootBoardConfig {
         board: "phytiumpi",
         build_config: "os/axvisor/configs/board/phytiumpi.toml",
         vmconfig: "os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml",
@@ -292,6 +297,14 @@ mod tests {
     #[test]
     fn parses_axvisor_uboot_board_config_for_linux_smoke() {
         assert_eq!(
+            axvisor_uboot_board_config("orangepi-5-plus").unwrap(),
+            AxvisorUbootBoardConfig {
+                board: "orangepi-5-plus",
+                build_config: "os/axvisor/configs/board/orangepi-5-plus.toml",
+                vmconfig: "os/axvisor/configs/vms/linux-aarch64-orangepi5p-smp1.toml",
+            }
+        );
+        assert_eq!(
             axvisor_uboot_board_config("phytiumpi").unwrap(),
             AxvisorUbootBoardConfig {
                 board: "phytiumpi",
@@ -311,12 +324,13 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_axvisor_uboot_board() {
-        let err = axvisor_uboot_board_config("orangepi-5-plus").unwrap_err();
+        let err = axvisor_uboot_board_config("unknown-board").unwrap_err();
 
         assert!(
             err.to_string()
-                .contains("unsupported board `orangepi-5-plus`")
+                .contains("unsupported board `unknown-board`")
         );
+        assert!(err.to_string().contains("orangepi-5-plus"));
         assert!(err.to_string().contains("phytiumpi"));
         assert!(err.to_string().contains("roc-rk3568-pc"));
     }
