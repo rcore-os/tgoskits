@@ -47,3 +47,5 @@ __pycache__/
 .arceos*
 .starry*
 .axvisor*
+# StarryOS static probe ELFs
+test-suit/starryos/probes/build-riscv64/
