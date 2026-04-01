@@ -1,5 +1,3 @@
-use std::os::arceos::modules::axhal;
-
 use axvisor_api::time::{CancelToken, Nanos, Ticks, TimeIf, TimeValue};
 
 use crate::vmm;

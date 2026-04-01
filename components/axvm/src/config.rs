@@ -41,6 +41,15 @@ pub struct AxVCpuConfig {
     pub ap_entry: GuestPhysAddr,
 }
 
+/// Ramdisk image information.
+#[derive(Debug, Default, Clone)]
+pub struct RamdiskInfo {
+    /// The load address in GPA for the ramdisk image.
+    pub load_gpa: GuestPhysAddr,
+    /// The size in bytes of the ramdisk image, `None` if not known yet.
+    pub size: Option<usize>,
+}
+
 /// A part of `AxVMConfig`, which stores configuration attributes related to the load address of VM images.
 #[derive(Debug, Default, Clone)]
 pub struct VMImageConfig {
@@ -50,8 +59,8 @@ pub struct VMImageConfig {
     pub bios_load_gpa: Option<GuestPhysAddr>,
     /// The load address in GPA for the device tree blob (DTB), `None` if not used.
     pub dtb_load_gpa: Option<GuestPhysAddr>,
-    /// The load address in GPA for the ramdisk image, `None` if not used.
-    pub ramdisk_load_gpa: Option<GuestPhysAddr>,
+    /// Ramdisk image info, `None` if not used.
+    pub ramdisk: Option<RamdiskInfo>,
 }
 
 /// A part of `AxVMCrateConfig`, which represents a `VM`.
@@ -94,7 +103,10 @@ impl From<AxVMCrateConfig> for AxVMConfig {
                 kernel_load_gpa: GuestPhysAddr::from(cfg.kernel.kernel_load_addr),
                 bios_load_gpa: cfg.kernel.bios_load_addr.map(GuestPhysAddr::from),
                 dtb_load_gpa: cfg.kernel.dtb_load_addr.map(GuestPhysAddr::from),
-                ramdisk_load_gpa: cfg.kernel.ramdisk_load_addr.map(GuestPhysAddr::from),
+                ramdisk: cfg.kernel.ramdisk_load_addr.map(|addr| RamdiskInfo {
+                    load_gpa: GuestPhysAddr::from(addr),
+                    size: None,
+                }),
             },
             // memory_regions: cfg.kernel.memory_regions,
             emu_devices: cfg.devices.emu_devices,

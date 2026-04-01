@@ -1,11 +1,11 @@
 use axdriver_base::{BaseDriverOps, DevResult, DeviceType};
 use axdriver_vsock::{VsockConnId, VsockDriverEvent, VsockDriverOps};
 use virtio_drivers::{
+    Hal,
     device::socket::{
         VirtIOSocket, VsockAddr, VsockConnectionManager as InnerDev, VsockEvent, VsockEventType,
     },
     transport::Transport,
-    Hal,
 };
 
 use crate::as_dev_err;

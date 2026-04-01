@@ -11,8 +11,9 @@ impl PowerIf for PowerImpl {
     /// CPU cores on the platform).
     #[cfg(feature = "smp")]
     fn cpu_boot(cpu_id: usize, stack_top_paddr: usize) {
-        use crate::config::plat::CPU_ID_LIST;
         use axplat::mem::{va, virt_to_phys};
+
+        use crate::config::plat::CPU_ID_LIST;
 
         let entry = virt_to_phys(va!(crate::boot::_start_secondary as *const () as usize));
         axplat_aarch64_peripherals::psci::cpu_on(

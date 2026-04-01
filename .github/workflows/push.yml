@@ -5,17 +5,20 @@ name: Push to Subrepos
 # ═══════════════════════════════════════════════════════════════════════════════
 #
 # 此工作流使用 scripts/repo/repo.py 将主仓库中修改的组件推送到子仓库。
-# 所有组件默认都推送到子仓库的 dev 分支。
+# 默认分支映射规则：
+# - tgoskits/main -> arceos-org/* 的 release 分支
+# - tgoskits/main -> 非 arceos-org/* 的 main 分支
+# - tgoskits/dev  -> 所有组件仓库的 dev 分支
 #
 # 【触发方式】
 # ─────────────────────────────────────────────────────────────────────────────
-# - 自动触发：推送到 main/master/dev/next 分支时自动检测变更并推送
+# - 自动触发：推送到 main/dev 分支时自动检测变更并推送
 # - 手动触发：Actions → Push to Subrepos → Run workflow
 #
 # 【手动触发参数】
 # ─────────────────────────────────────────────────────────────────────────────
 # - components: 指定组件（逗号分隔，留空自动检测）
-# - branch: 推送到子仓库的目标分支（默认：dev）
+# - branch: 手动覆盖推送到子仓库的目标分支（留空则按规则自动映射）
 # - push_all: 推送所有组件（忽略变更检测）
 # - force_push: 强制推送到子仓库（传递 repo.py push --force）
 #
@@ -38,6 +41,7 @@ name: Push to Subrepos
 on:
   push:
     branches:
+      - main
       - dev
   workflow_dispatch:
     inputs:
@@ -47,10 +51,10 @@ on:
         type: string
         default: ''
       branch:
-        description: '推送到子仓库的目标分支'
+        description: '推送到子仓库的目标分支（留空则按规则自动映射）'
         required: false
         type: string
-        default: 'dev'
+        default: ''
       push_all:
         description: '推送所有组件（忽略变更检测）'
         required: false
@@ -191,47 +195,110 @@ jobs:
           COMPONENTS: ${{ steps.detect.outputs.components }}
           INPUT_BRANCH: ${{ inputs.branch }}
           INPUT_FORCE_PUSH: ${{ inputs.force_push }}
+          GH_REF_NAME: ${{ github.ref_name }}
         run: |
-          TARGET_BRANCH="${INPUT_BRANCH:-dev}"
+          resolve_target_branch() {
+          python3 - "$1" "$2" "$3" <<'PY'
+          import csv
+          import sys
+          from pathlib import Path
+
+          repo_name = sys.argv[1]
+          source_branch = sys.argv[2]
+          explicit_branch = sys.argv[3]
+
+          if explicit_branch:
+              print(explicit_branch)
+              raise SystemExit(0)
+
+          csv_path = Path("scripts/repo/repos.csv")
+          with csv_path.open(newline="", encoding="utf-8") as f:
+              reader = csv.DictReader(f)
+              for row in reader:
+                  url = (row.get("url") or "").strip().rstrip("/")
+                  name = url.split("/")[-1]
+                  if name.endswith(".git"):
+                      name = name[:-4]
+                  if name != repo_name:
+                      continue
+
+                  owner = url.split("/")[-2] if "/" in url else ""
+                  if source_branch == "main":
+                      print("release" if owner == "arceos-org" else "main")
+                  elif source_branch == "dev":
+                      print("dev")
+                  else:
+                      print((row.get("branch") or "").strip() or "dev")
+                  raise SystemExit(0)
+
+          raise SystemExit(f"Repository '{repo_name}' not found in scripts/repo/repos.csv")
+          PY
+          }
+
           FORCE_ARGS=""
 
           if [ "$INPUT_FORCE_PUSH" = "true" ]; then
-            FORCE_ARGS="--force"
-            echo "Force push enabled"
+          FORCE_ARGS="--force"
+          echo "Force push enabled"
           fi
-          
+
           if [ "$COMPONENTS" = "__all__" ]; then
-            echo "Pushing ALL components to ${TARGET_BRANCH} branch..."
-            python3 scripts/repo/repo.py push --all -b "${TARGET_BRANCH}" ${FORCE_ARGS}
-            exit 0
+          COMPONENTS=$(python3 - <<'PY'
+          import csv
+          from pathlib import Path
+
+          csv_path = Path("scripts/repo/repos.csv")
+          names = []
+          with csv_path.open(newline="", encoding="utf-8") as f:
+              reader = csv.DictReader(f)
+              for row in reader:
+                  target_dir = (row.get("target_dir") or "").strip()
+                  if target_dir:
+                      names.append(target_dir)
+          print(",".join(names))
+          PY
+          )
           fi
-          
-          echo "Pushing changed components to ${TARGET_BRANCH} branch..."
+
+          if [ -n "$INPUT_BRANCH" ]; then
+          echo "Pushing changed components with manual target branch override: ${INPUT_BRANCH}"
+          else
+          echo "Pushing changed components using automatic branch mapping from source branch: ${GH_REF_NAME}"
+          fi
           echo "Components: ${COMPONENTS}"
-          
+
           IFS=',' read -ra COMP_ARRAY <<< "$COMPONENTS"
-          
+
           SUCCESS=0
           FAIL=0
-          
+
           for component in "${COMP_ARRAY[@]}"; do
-            component=$(echo "$component" | xargs)
-            repo_name=$(basename "${component}")
-            
-            echo ""
-            echo "=========================================="
-            echo "Pushing: ${repo_name}"
-            echo "=========================================="
-            
-            if python3 scripts/repo/repo.py push "${repo_name}" -b "${TARGET_BRANCH}" ${FORCE_ARGS}; then
-              echo "✅ Successfully pushed ${repo_name}"
-              SUCCESS=$((SUCCESS + 1))
-            else
-              echo "❌ Failed to push ${repo_name}"
-              FAIL=$((FAIL + 1))
-            fi
+          component=$(echo "$component" | xargs)
+          repo_name=$(basename "${component}")
+
+          echo ""
+          echo "=========================================="
+          echo "Pushing: ${repo_name}"
+          echo "=========================================="
+
+          TARGET_BRANCH=$(resolve_target_branch "${repo_name}" "${GH_REF_NAME}" "${INPUT_BRANCH}")
+          echo "CI branch mapping: tgoskits ${GH_REF_NAME} -> ${repo_name} ${TARGET_BRANCH}"
+
+          PUSH_CMD=(python3 scripts/repo/repo.py push "${repo_name}" -b "${TARGET_BRANCH}")
+
+          if [ -n "$FORCE_ARGS" ]; then
+            PUSH_CMD+=("${FORCE_ARGS}")
+          fi
+
+          if "${PUSH_CMD[@]}"; then
+            echo "✅ Successfully pushed ${repo_name}"
+            SUCCESS=$((SUCCESS + 1))
+          else
+            echo "❌ Failed to push ${repo_name}"
+            FAIL=$((FAIL + 1))
+          fi
           done
-          
+
           echo ""
           echo "=========================================="
           echo "Push Summary"
@@ -239,10 +306,10 @@ jobs:
           echo "✅ Success: ${SUCCESS}"
           echo "❌ Failed: ${FAIL}"
           echo "=========================================="
-          
+
           if [ $FAIL -gt 0 ]; then
-            echo "::error::${FAIL} component(s) failed to push"
-            exit 1
+          echo "::error::${FAIL} component(s) failed to push"
+          exit 1
           fi
 
       - name: Cleanup credentials
@@ -263,8 +330,16 @@ jobs:
           GH_REF_NAME: ${{ github.ref_name }}
           SUBTREE_PUSH_TOKEN: ${{ secrets.SUBTREE_PUSH_TOKEN }}
         run: |
-          TARGET_BRANCH="${INPUT_BRANCH:-dev}"
           DISPLAY_COMPONENTS="${COMPONENTS}"
+          if [ -n "$INPUT_BRANCH" ]; then
+            TARGET_DESC="${INPUT_BRANCH} (manual override)"
+          elif [ "$GH_REF_NAME" = "main" ]; then
+            TARGET_DESC="auto: arceos-org/* -> release, others -> main"
+          elif [ "$GH_REF_NAME" = "dev" ]; then
+            TARGET_DESC="auto: all -> dev"
+          else
+            TARGET_DESC="auto: fallback -> dev"
+          fi
 
           if [ -z "$DISPLAY_COMPONENTS" ]; then
             DISPLAY_COMPONENTS="No components were pushed"
@@ -273,14 +348,14 @@ jobs:
           echo "## Push to Subrepos Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Components**: ${DISPLAY_COMPONENTS}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Target Branch**: ${TARGET_BRANCH}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Target Branch Rule**: ${TARGET_DESC}" >> $GITHUB_STEP_SUMMARY
           echo "- **Force Push**: ${INPUT_FORCE_PUSH:-false}" >> $GITHUB_STEP_SUMMARY
           echo "- **Trigger**: ${GH_EVENT_NAME}" >> $GITHUB_STEP_SUMMARY
           echo "- **Source Branch**: ${GH_REF_NAME}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           if [ -n "$COMPONENTS" ]; then
-            echo "The listed components were pushed to the \`${TARGET_BRANCH}\` branch in their respective repositories." >> $GITHUB_STEP_SUMMARY
+            echo "The listed components were pushed according to the configured branch mapping rule." >> $GITHUB_STEP_SUMMARY
           else
             echo "No components were pushed in this run. If you expected a push, check whether the commit touched any configured component directories or specify components manually when dispatching the workflow." >> $GITHUB_STEP_SUMMARY
           fi

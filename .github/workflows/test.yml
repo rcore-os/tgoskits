@@ -2,7 +2,21 @@ name: Build & Test
 
 on:
   push:
+    paths-ignore:
+      - "**/*.md"
+      - "**/*.rst"
+      - "**/*.adoc"
+      - "docs/**"
+      - "**/docs/**"
+      - "**/doc/**"
   pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "**/*.rst"
+      - "**/*.adoc"
+      - "docs/**"
+      - "**/docs/**"
+      - "**/doc/**"
 
 permissions:
   contents: read
@@ -121,6 +135,7 @@ jobs:
       matrix:
         include:
           # - board: phytiumpi
+          - board: orangepi-5-plus
           - board: roc-rk3568-pc
     runs-on:
       - self-hosted

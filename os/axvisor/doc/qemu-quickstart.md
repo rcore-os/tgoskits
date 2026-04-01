@@ -110,6 +110,21 @@ After booting, you will enter the Rust user shell (`>>` prompt). Type `usertests
 
 > **Note**: NimbOS requires VT-x/KVM. If `/dev/kvm` does not exist or has insufficient permissions, you will get a `Permission denied` error. WSL2 requires nested virtualization support in the kernel to use KVM.
 
+### ArceOS (RISC-V64)
+
+```bash
+./scripts/setup_qemu.sh arceos-riscv64
+
+cargo xtask qemu \
+  --build-config configs/board/qemu-riscv64.toml \
+  --qemu-config .github/workflows/qemu-riscv64.toml \
+  --vmconfigs tmp/vmconfigs/arceos-riscv64-qemu-smp1.generated.toml
+```
+
+Success indicator: `Hello, world!` appears in the output.
+
+`qemu-riscv64` currently supports the RISC-V ArceOS guest path. Cross-ISA boot such as `riscv64 AxVisor -> aarch64 ArceOS` is not wired up in the current hypervisor stack.
+
 ## 5. What Does setup_qemu.sh Do?
 
 The script automates three steps, eliminating manual work:

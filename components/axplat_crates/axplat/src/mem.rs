@@ -1,7 +1,9 @@
 //! Physical memory information.
 
-use core::ops::{Deref, DerefMut};
-use core::{fmt, ops::Range};
+use core::{
+    fmt,
+    ops::{Deref, DerefMut, Range},
+};
 
 pub use memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr, pa, va};
 
@@ -307,7 +309,7 @@ mod tests {
         assert_eq!(
             f(
                 &[(0, 30)],
-                &[(0, 5), (5, 5), (10, 5), (15, 5), (20, 5), (25, 5)] // - 0..5, 5..10, 10..15, 15..20, 20..25, 25..30
+                &[(0, 5), (5, 5), (10, 5), (15, 5), (20, 5), (25, 5)] /* - 0..5, 5..10, 10..15, 15..20, 20..25, 25..30 */
             ),
             &[] // = []
         );

@@ -71,6 +71,7 @@ axstd = { version = "=0.3.0-preview.3", features = [
   "smp",
   "hv",
 ]}
+axhal = { version = "=0.3.0-preview.3", features = ["paging", "irq", "smp", "hv"] }
 
 # System dependent modules provided by ArceOS-Hypervisor (bare-metal only)
 axaddrspace = "0.3.0"
@@ -122,7 +123,9 @@ aarch64-cpu-ext = "0.1"
 arm-gic-driver = {version = "0.17", features = ["rdif"]}
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
-axplat-riscv64-qemu-virt = "0.3.1-pre.6"
+axplat-riscv64-qemu-virt = { path = "platform/riscv64-qemu-virt" }
+riscv_vcpu = "0.3"
+riscv_vplic = "0.2.2"
 
 # xtask dependencies (only used on host platforms)
 [target.'cfg(any(windows, unix))'.dependencies]

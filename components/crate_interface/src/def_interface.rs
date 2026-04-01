@@ -1,27 +1,30 @@
 //! The implementation of the [`crate::def_interface`] attribute macro.
 
+#[cfg(feature = "weak_default")]
+use std::collections::HashMap;
+
 use proc_macro2::TokenStream;
 #[cfg(feature = "weak_default")]
 use quote::format_ident;
 use quote::quote;
-use syn::{parse_quote, Error, ItemTrait, TraitItem};
 #[cfg(feature = "weak_default")]
 use syn::{
-    punctuated::Punctuated, visit_mut::VisitMut, Block, Expr, ExprPath, Ident, Path, PathSegment,
-    Signature,
+    Block, Expr, ExprPath, Ident, Path, PathSegment, Signature, punctuated::Punctuated,
+    visit_mut::VisitMut,
 };
+use syn::{Error, ItemTrait, TraitItem, parse_quote};
 
-#[cfg(feature = "weak_default")]
-use std::collections::HashMap;
-
-use crate::args::DefInterfaceArgs;
-use crate::errors::generic_not_allowed_error;
 #[cfg(not(feature = "weak_default"))]
 use crate::errors::weak_default_required_error;
-use crate::naming::{
-    alias_guard_name, extern_fn_mod_name, extern_fn_name, extract_caller_args, namespace_guard_name,
+use crate::{
+    args::DefInterfaceArgs,
+    errors::generic_not_allowed_error,
+    naming::{
+        alias_guard_name, extern_fn_mod_name, extern_fn_name, extract_caller_args,
+        namespace_guard_name,
+    },
+    validator::validate_fn_signature,
 };
-use crate::validator::validate_fn_signature;
 
 /// Rewrite all references to `Self::some_method` in the default body.
 ///

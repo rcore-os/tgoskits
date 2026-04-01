@@ -153,7 +153,7 @@ make ARCH=riscv64 debug
 
 ### 根目录 xtask 路径和本地 Makefile 路径不共享默认镜像位置
 
-- 根目录 `cargo xtask starry rootfs` / `cargo starry qemu` 使用目标产物目录下的 `disk.img`
+- 根目录 `cargo xtask starry rootfs` / `cargo starry qemu` 使用目标产物目录下的 `rootfs-<arch>.img`
 - `os/StarryOS/Makefile` 使用 `os/StarryOS/make/disk.img`
 
 这意味着：
@@ -172,7 +172,7 @@ ls /mnt/rootfs
 sudo umount /mnt/rootfs
 ```
 
-如果你使用的是根目录 xtask 路径，请先确认实际生成的 `disk.img` 位于哪个 target 目录，再按同样方式挂载。
+如果你使用的是根目录 xtask 路径，请先确认实际生成的 `rootfs-<arch>.img` 位于哪个 target 目录，再按同样方式挂载。
 
 ## 7. 调试建议
 

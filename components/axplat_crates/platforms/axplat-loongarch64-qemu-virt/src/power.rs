@@ -1,5 +1,7 @@
-use axplat::mem::{pa, phys_to_virt};
-use axplat::power::PowerIf;
+use axplat::{
+    mem::{pa, phys_to_virt},
+    power::PowerIf,
+};
 
 use crate::config::devices::GED_PADDR;
 

@@ -12,6 +12,7 @@ success_regex = [
     "root@firefly:~#",
     "^Phytium Pi",
     "Last login: *",
+    "orangepi5plus login: *",
 ]
 timeout = 300
 

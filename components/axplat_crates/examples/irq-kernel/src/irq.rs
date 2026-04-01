@@ -1,5 +1,7 @@
-use core::sync::atomic::AtomicU64;
-use core::sync::atomic::Ordering::{Acquire, Release};
+use core::sync::atomic::{
+    AtomicU64,
+    Ordering::{Acquire, Release},
+};
 
 use axcpu::trap::{IRQ, register_trap_handler};
 
@@ -64,7 +66,8 @@ pub fn test_irq() {
 
     if irq_count < irq_min_count {
         panic!(
-            "Timer IRQ was not triggered enough times within the expected time frame, expected at least {irq_min_count}, got {irq_count}"
+            "Timer IRQ was not triggered enough times within the expected time frame, expected at \
+             least {irq_min_count}, got {irq_count}"
         );
     }
 

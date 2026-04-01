@@ -16,11 +16,11 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use std::os::arceos::modules::axhal::paging::PagingHandlerImpl;
 use std::sync::Mutex;
 
 use axaddrspace::{GuestPhysAddr, HostPhysAddr};
 use axerrno::AxResult;
+use axhal::paging::PagingHandlerImpl;
 use page_table_multiarch::PagingHandler;
 
 /// A global btree map to store IVC channels,

@@ -1,8 +1,10 @@
 //! Wrapper functions for assembly instructions.
 
 use memory_addr::{PhysAddr, VirtAddr};
-use riscv::asm;
-use riscv::register::{satp, sstatus, stvec};
+use riscv::{
+    asm,
+    register::{satp, sstatus, stvec},
+};
 
 /// Allows the current CPU to respond to interrupts.
 #[inline]

@@ -1,5 +1,6 @@
-use crate::config::plat::{BOOT_STACK_SIZE, PHYS_VIRT_OFFSET};
 use axplat::mem::{Aligned4K, pa};
+
+use crate::config::plat::{BOOT_STACK_SIZE, PHYS_VIRT_OFFSET};
 
 #[unsafe(link_section = ".bss.stack")]
 static mut BOOT_STACK: [u8; BOOT_STACK_SIZE] = [0; BOOT_STACK_SIZE];

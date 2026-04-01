@@ -1,0 +1,9 @@
+[package]
+name = "tgmath"
+version = "0.1.0"
+edition = "2024"
+authors = ["TGOSKits Contributor <example@example.com>"]
+description = "A tiny math utility crate for TGOSKits demo."
+license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
+
+[dependencies]

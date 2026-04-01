@@ -19,11 +19,11 @@ mod init;
 mod irq;
 mod mp;
 
+use core::sync::atomic::Ordering::Release;
+
 use init::*;
 use irq::*;
 use mp::start_secondary_cpus;
-
-use core::sync::atomic::Ordering::Release;
 
 const CPU_NUM: usize = match option_env!("AX_CPU_NUM") {
     Some(val) => const_str::parse!(val, usize),

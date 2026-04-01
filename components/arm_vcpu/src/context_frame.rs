@@ -210,6 +210,17 @@ pub struct GuestSystemRegisters {
     hpfar_el2: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GuestTimerRegisters {
+    cntvoff_el2: u64,
+    cntp_cval_el0: u64,
+    cntv_cval_el0: u64,
+    cntkctl_el1: u32,
+    cntp_ctl_el0: u32,
+    cntv_ctl_el0: u32,
+    cnthctl_el2: u64,
+}
+
 impl GuestSystemRegisters {
     /// Resets the VM context by setting all registers to zero.
     ///
@@ -227,12 +238,14 @@ impl GuestSystemRegisters {
     pub unsafe fn store(&mut self) {
         unsafe {
             asm!("mrs {0}, CNTVOFF_EL2", out(reg) self.cntvoff_el2);
+            asm!("mrs {0}, CNTP_CVAL_EL0", out(reg) self.cntp_cval_el0);
             asm!("mrs {0}, CNTV_CVAL_EL0", out(reg) self.cntv_cval_el0);
             asm!("mrs {0:x}, CNTKCTL_EL1", out(reg) self.cntkctl_el1);
             asm!("mrs {0:x}, CNTP_CTL_EL0", out(reg) self.cntp_ctl_el0);
             asm!("mrs {0:x}, CNTV_CTL_EL0", out(reg) self.cntv_ctl_el0);
-            asm!("mrs {0:x}, CNTP_TVAL_EL0", out(reg) self.cntp_tval_el0);
-            asm!("mrs {0:x}, CNTV_TVAL_EL0", out(reg) self.cntv_tval_el0);
+            // TVAL registers are intentionally NOT saved.
+            // They are derived values (TVAL = CVAL - CNTVCT) and restoring them
+            // would overwrite CVAL with an incorrect deadline. See restore().
             asm!("mrs {0}, CNTVCT_EL0", out(reg) self.cntvct_el0);
             asm!("mrs {0}, CNTHCTL_EL2", out(reg) self.cnthctl_el2);
             // MRS!("self.vpidr_el2, VPIDR_EL2, "x");
@@ -277,10 +290,27 @@ impl GuestSystemRegisters {
     /// that the virtual machine or thread resumes execution with the correct context.
     pub unsafe fn restore(&self) {
         unsafe {
-            asm!("msr CNTV_CVAL_EL0, {0}", in(reg) self.cntv_cval_el0);
-            asm!("msr CNTKCTL_EL1, {0:x}", in (reg) self.cntkctl_el1);
-            asm!("msr CNTV_CTL_EL0, {0:x}", in (reg) self.cntv_ctl_el0);
-            asm!("msr CNTHCTL_EL2, {0}", in(reg) self.cnthctl_el2);
+            let timer = self.timer_registers();
+            asm!("msr CNTVOFF_EL2, {0}", in(reg) timer.cntvoff_el2);
+            asm!("msr CNTKCTL_EL1, {0:x}", in (reg) timer.cntkctl_el1);
+            asm!("msr CNTHCTL_EL2, {0}", in(reg) timer.cnthctl_el2);
+
+            // Restore CTL first (with ENABLE cleared to avoid spurious interrupts),
+            // then CVAL (absolute deadline), then CTL again with the real value.
+            //
+            // IMPORTANT: Do NOT restore TVAL registers here!
+            // Writing CNTP_TVAL_EL0 / CNTV_TVAL_EL0 implicitly overwrites the
+            // corresponding CVAL register (CVAL = CNTVCT + TVAL). Because the
+            // counter (CNTVCT/CNTPCT) has advanced since the values were saved,
+            // restoring TVAL would push the timer deadline into the future on every
+            // VM exit, causing guest timers (e.g. nanosleep / timerfd) to never fire.
+            // Restoring only CVAL preserves the original absolute deadline.
+            asm!("msr CNTP_CTL_EL0, xzr");
+            asm!("msr CNTV_CTL_EL0, xzr");
+            asm!("msr CNTP_CVAL_EL0, {0}", in(reg) timer.cntp_cval_el0);
+            asm!("msr CNTV_CVAL_EL0, {0}", in(reg) timer.cntv_cval_el0);
+            asm!("msr CNTP_CTL_EL0, {0:x}", in(reg) timer.cntp_ctl_el0);
+            asm!("msr CNTV_CTL_EL0, {0:x}", in(reg) timer.cntv_ctl_el0);
             // The restoration of SP_EL0 is done in `exception_return_el2`,
             // which move the value from `self.ctx.sp_el0` to `SP_EL0`.
             // asm!("msr SP_EL0, {0}", in(reg) self.sp_el0);
@@ -310,7 +340,18 @@ impl GuestSystemRegisters {
             asm!("msr VTTBR_EL2, {0}", in(reg) self.vttbr_el2);
             asm!("msr HCR_EL2, {0}", in(reg) self.hcr_el2);
             asm!("msr VMPIDR_EL2, {0}", in(reg) self.vmpidr_el2);
-            asm!("msr CNTVOFF_EL2, {0}", in(reg) self.cntvoff_el2);
+        }
+    }
+
+    fn timer_registers(&self) -> GuestTimerRegisters {
+        GuestTimerRegisters {
+            cntvoff_el2: self.cntvoff_el2,
+            cntp_cval_el0: self.cntp_cval_el0,
+            cntv_cval_el0: self.cntv_cval_el0,
+            cntkctl_el1: self.cntkctl_el1,
+            cntp_ctl_el0: self.cntp_ctl_el0,
+            cntv_ctl_el0: self.cntv_ctl_el0,
+            cnthctl_el2: self.cnthctl_el2,
         }
     }
 }

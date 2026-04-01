@@ -5,10 +5,9 @@ use core::{
 
 mod tp;
 
-pub use tp::*;
-
 #[cfg(feature = "preempt")]
 use kernel_guard::NoPreempt;
+pub use tp::*;
 
 #[repr(transparent)]
 pub struct PerCpuData<T> {

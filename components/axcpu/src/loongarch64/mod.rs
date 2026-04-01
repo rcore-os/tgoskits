@@ -11,5 +11,7 @@ pub mod init;
 #[cfg(feature = "uspace")]
 pub mod uspace;
 
-pub use self::context::{FpuState, GeneralRegisters, TaskContext, TrapFrame};
-pub use self::unaligned::UnalignedError;
+pub use self::{
+    context::{FpuState, GeneralRegisters, TaskContext, TrapFrame},
+    unaligned::UnalignedError,
+};

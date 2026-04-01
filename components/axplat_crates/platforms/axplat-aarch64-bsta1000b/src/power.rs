@@ -1,5 +1,4 @@
-use axplat::mem::pa;
-use axplat::power::PowerIf;
+use axplat::{mem::pa, power::PowerIf};
 
 struct PowerImpl;
 

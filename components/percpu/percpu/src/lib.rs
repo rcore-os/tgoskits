@@ -16,8 +16,9 @@ cfg_if::cfg_if! {
     }
 }
 
-pub use self::imp::*;
 pub use percpu_macros::def_percpu;
+
+pub use self::imp::*;
 
 #[doc(hidden)]
 pub mod __priv {

@@ -2,14 +2,13 @@
 
 use core::ops::{Deref, DerefMut};
 
-use aarch64_cpu::registers::{Readable, ESR_EL1, FAR_EL1};
+use aarch64_cpu::registers::{ESR_EL1, FAR_EL1, Readable};
 use memory_addr::VirtAddr;
 use tock_registers::LocalRegisterCopy;
 
-use super::trap::{is_valid_page_fault, TrapKind};
-use crate::{trap::PageFaultFlags, TrapFrame};
-
+use super::trap::{TrapKind, is_valid_page_fault};
 pub use crate::uspace_common::{ExceptionKind, ReturnReason};
+use crate::{TrapFrame, trap::PageFaultFlags};
 
 /// Context to enter user space.
 #[repr(C, align(16))]

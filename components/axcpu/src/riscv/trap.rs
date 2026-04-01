@@ -1,8 +1,12 @@
-use riscv::interrupt::supervisor::{Exception as E, Interrupt as I};
-use riscv::interrupt::Trap;
 #[cfg(feature = "fp-simd")]
 use riscv::register::sstatus;
-use riscv::register::{scause, stval};
+use riscv::{
+    interrupt::{
+        Trap,
+        supervisor::{Exception as E, Interrupt as I},
+    },
+    register::{scause, stval},
+};
 
 use super::TrapFrame;
 use crate::trap::PageFaultFlags;

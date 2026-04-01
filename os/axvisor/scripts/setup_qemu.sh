@@ -8,7 +8,7 @@ set -euo pipefail
 #   ./scripts/setup_qemu.sh --guest linux
 #   ./scripts/setup_qemu.sh nimbos
 #
-# Supported guests: arceos, linux, nimbos
+# Supported guests: arceos, arceos-riscv64, linux, nimbos
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE_STORAGE_ROOT="/tmp/.axvisor-images"
@@ -64,14 +64,16 @@ bootstrap_image_registry() {
 }
 
 usage() {
-  echo "Usage: $0 [--guest] <arceos|linux|nimbos>"
+  echo "Usage: $0 [--guest] <arceos|arceos-riscv64|linux|nimbos>"
   echo ""
-  echo "  arceos  - aarch64 ArceOS guest"
-  echo "  linux   - aarch64 Linux guest"
-  echo "  nimbos  - x86_64 NimbOS guest (requires VT-x/KVM)"
+  echo "  arceos          - aarch64 ArceOS guest"
+  echo "  arceos-riscv64  - riscv64 ArceOS guest"
+  echo "  linux           - aarch64 Linux guest"
+  echo "  nimbos          - x86_64 NimbOS guest (requires VT-x/KVM)"
   echo ""
   echo "Examples:"
   echo "  $0 arceos"
+  echo "  $0 --guest arceos-riscv64"
   echo "  $0 --guest linux"
   exit 1
 }
@@ -86,7 +88,7 @@ while [[ $# -gt 0 ]]; do
       shift
       break
       ;;
-    arceos|linux|nimbos)
+    arceos|arceos-riscv64|linux|nimbos)
       GUEST="$1"
       shift
       break
@@ -105,9 +107,10 @@ done
 
 # Guest configuration: image_name|vmconfig|build_config|qemu_config|kernel_file|success_msg
 case "$GUEST" in
-  arceos)  CFG="qemu_aarch64_arceos|arceos-aarch64-qemu-smp1.toml|qemu-aarch64.toml|qemu-aarch64.toml|qemu-aarch64|Hello, world!" ;;
-  linux)   CFG="qemu_aarch64_linux|linux-aarch64-qemu-smp1.toml|qemu-aarch64.toml|qemu-aarch64.toml|qemu-aarch64|test pass!" ;;
-  nimbos)  CFG="qemu_x86_64_nimbos|nimbos-x86_64-qemu-smp1.toml|qemu-x86_64.toml|qemu-x86_64-kvm.toml|qemu-x86_64|usertests passed!" ;;
+  arceos)         CFG="qemu_aarch64_arceos|arceos-aarch64-qemu-smp1.toml|qemu-aarch64.toml|qemu-aarch64.toml|qemu-aarch64|Hello, world!" ;;
+  arceos-riscv64) CFG="qemu_riscv64_arceos|arceos-riscv64-qemu-smp1.toml|qemu-riscv64.toml|qemu-riscv64.toml|qemu-riscv64|Hello, world!" ;;
+  linux)          CFG="qemu_aarch64_linux|linux-aarch64-qemu-smp1.toml|qemu-aarch64.toml|qemu-aarch64.toml|qemu-aarch64|test pass!" ;;
+  nimbos)         CFG="qemu_x86_64_nimbos|nimbos-x86_64-qemu-smp1.toml|qemu-x86_64.toml|qemu-x86_64-kvm.toml|qemu-x86_64|usertests passed!" ;;
   *)       echo "Unknown guest: $GUEST" >&2; usage ;;
 esac
 
@@ -179,7 +182,7 @@ if [[ "$GUEST" == "nimbos" ]]; then
 fi
 
 echo "[setup_qemu] Step 3: prepare rootfs..."
-mkdir -p "${REPO_ROOT}/tmp"
+mkdir -p "$(dirname "${ROOTFS_TARGET}")"
 cp "${ROOTFS_IMAGE}" "${ROOTFS_TARGET}"
 
 echo "  -> Copied ${ROOTFS_IMAGE} -> ${ROOTFS_TARGET}"

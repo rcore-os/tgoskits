@@ -24,10 +24,10 @@ sbi-rt = { version = "0.0.3", features = ["legacy"] }
 uart_16550 = "0.4.0"
 
 axconfig-macros = "0.2"
-axcpu = { version = "0.3.0-preview.8", features = ["arm-el2"] }
-axplat = "0.3.1-pre.6"
+axcpu = { workspace = true }
+axplat = { workspace = true }
 axvisor_api = "0.3"
-crate_interface = "0.3"
+crate_interface = { workspace = true }
 
 [package.metadata.docs.rs]
 targets = ["riscv64gc-unknown-none-elf"]

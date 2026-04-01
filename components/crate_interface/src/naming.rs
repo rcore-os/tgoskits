@@ -2,7 +2,7 @@
 
 use quote::format_ident;
 use syn::{
-    parse_quote, punctuated::Punctuated, token::Comma, Error, Expr, FnArg, Ident, Pat, Signature,
+    Error, Expr, FnArg, Ident, Pat, Signature, parse_quote, punctuated::Punctuated, token::Comma,
 };
 
 /// Extract the argument list from the function signature to be used by the caller.

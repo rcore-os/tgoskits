@@ -5,18 +5,16 @@ use core::ops::{Deref, DerefMut};
 use memory_addr::VirtAddr;
 #[cfg(feature = "fp-simd")]
 use riscv::register::sstatus::FS;
-use riscv::register::{scause, sstatus::Sstatus};
 use riscv::{
     interrupt::{
-        supervisor::{Exception as E, Interrupt as I},
         Trap,
+        supervisor::{Exception as E, Interrupt as I},
     },
-    register::stval,
+    register::{scause, sstatus::Sstatus, stval},
 };
 
-use crate::{trap::PageFaultFlags, GeneralRegisters, TrapFrame};
-
 pub use crate::uspace_common::{ExceptionKind, ReturnReason};
+use crate::{GeneralRegisters, TrapFrame, trap::PageFaultFlags};
 
 /// Context to enter user space.
 #[derive(Debug, Clone, Copy)]

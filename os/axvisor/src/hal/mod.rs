@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::os::arceos::{self, modules::axhal::percpu::this_cpu_id};
+use std::os::arceos;
 
-use arceos::modules::axhal;
 use axaddrspace::{AxMmHal, HostPhysAddr, HostVirtAddr};
+use axhal::{self, percpu::this_cpu_id};
 use axvm::AxVMPerCpu;
 use page_table_multiarch::PagingHandler;
 
@@ -55,7 +55,7 @@ impl AxMmHal for AxMmHalImpl {
     }
 
     fn virt_to_phys(vaddr: axaddrspace::HostVirtAddr) -> axaddrspace::HostPhysAddr {
-        std::os::arceos::modules::axhal::mem::virt_to_phys(vaddr)
+        axhal::mem::virt_to_phys(vaddr)
     }
 }
 
@@ -87,7 +87,7 @@ pub(crate) fn enable_virtualization() {
 
     hardware_check();
 
-    let cpu_count = std::os::arceos::modules::axhal::cpu_num();
+    let cpu_count = axhal::cpu_num();
 
     for cpu_id in 0..cpu_count {
         thread::spawn(move || {
@@ -122,8 +122,10 @@ pub(crate) fn enable_virtualization() {
 
     // Wait for all cores to enable virtualization.
     while CORES.load(Ordering::Acquire) != cpu_count {
-        // Use `yield_now` instead of `core::hint::spin_loop` to avoid deadlock.
         thread::yield_now();
+        for _ in 0..10 {
+            core::hint::spin_loop();
+        }
     }
 
     info!("All cores have enabled hardware virtualization support.");
