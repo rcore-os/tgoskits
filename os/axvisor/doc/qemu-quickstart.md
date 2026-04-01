@@ -75,7 +75,7 @@ This branch provides a one-click setup script `scripts/setup_qemu.sh` that autom
 ./scripts/setup_qemu.sh arceos
 
 cargo xtask qemu \
-  --build-config configs/board/qemu-aarch64.toml \
+  --config configs/board/qemu-aarch64.toml \
   --qemu-config .github/workflows/qemu-aarch64.toml \
   --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
 ```
@@ -88,7 +88,7 @@ Success indicator: `Hello, world!` appears in the output.
 ./scripts/setup_qemu.sh linux
 
 cargo xtask qemu \
-  --build-config configs/board/qemu-aarch64.toml \
+  --config configs/board/qemu-aarch64.toml \
   --qemu-config .github/workflows/qemu-aarch64.toml \
   --vmconfigs tmp/vmconfigs/linux-aarch64-qemu-smp1.generated.toml
 ```
@@ -101,7 +101,7 @@ Success indicator: `test pass!` appears in the output.
 ./scripts/setup_qemu.sh nimbos
 
 cargo xtask qemu \
-  --build-config configs/board/qemu-x86_64.toml \
+  --config configs/board/qemu-x86_64.toml \
   --qemu-config .github/workflows/qemu-x86_64-kvm.toml \
   --vmconfigs tmp/vmconfigs/nimbos-x86_64-qemu-smp1.generated.toml
 ```
