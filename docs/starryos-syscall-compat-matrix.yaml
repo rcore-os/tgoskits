@@ -1,0 +1,48 @@
+# StarryOS vs Linux syscall 兼容矩阵（骨架）
+# 用途：按 syscall 记录语义类别、StarryOS 状态与已知差异；随审计逐行填充。
+# 与 catalog 关系：catalog 偏「工程元数据」，本文件偏「行为对齐结论」。
+
+schema_version: 1
+linux_profile:
+  arch: riscv64
+  libc: musl
+  oracle_runner: qemu-riscv64
+
+entries:
+  - syscall: write
+    contract_probe: write_stdout
+    parity: partial
+    notes:
+      - "零长度 write stdout 已接 oracle + QEMU 用例"
+
+  - syscall: close
+    contract_probe: close_badfd
+    parity: partial
+    notes:
+      - "无效 fd -> EBADF 已接 oracle 期望行"
+
+  - syscall: read
+    contract_probe: read_stdin_zero
+    parity: partial
+    notes:
+      - "stdin read count=0 -> ret=0（与 write 零长度对称）"
+
+  - syscall: dup
+    contract_probe: dup_badfd
+    parity: partial
+    notes:
+      - "dup 非法 fd -> EBADF（errno=9）"
+
+  - syscall: fcntl
+    contract_probe: fcntl_badfd
+    parity: partial
+    notes:
+      - "F_GETFD on 非法 fd -> EBADF"
+
+  - syscall: openat
+    contract_probe: null
+    parity: unknown
+    notes:
+      - "catalog 已登记，待 contract"
+
+# 后续：为 catalog 中其余条目追加 rows，并链接 issues / errno 对照表。
