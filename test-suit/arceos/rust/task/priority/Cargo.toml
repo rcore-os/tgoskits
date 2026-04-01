@@ -1,6 +1,6 @@
 [package]
 name = "arceos-priority"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 authors = ["Haoxing Ye <yehx20@mails.tsinghua.edu.cn>"]
 

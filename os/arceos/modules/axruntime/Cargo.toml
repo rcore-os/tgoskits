@@ -54,6 +54,6 @@ axtask = { workspace = true, optional = true }
 cfg-if = { workspace = true }
 chrono = { version = "0.4", default-features = false }
 crate_interface = { workspace = true }
-ctor_bare = "0.2"
+ctor_bare = "0.3.1"
 indoc = "2"
 percpu = { workspace = true, optional = true }

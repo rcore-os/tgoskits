@@ -1,6 +1,6 @@
 [package]
 name = "axplat-macros"
-version = "0.1.0"
+version = "0.2.0"
 description = "Procedural macros for the `axplat` crate"
 documentation = "https://docs.rs/axplat-macros"
 keywords = ["arceos", "os", "hal", "embedded", "macros"]
@@ -17,7 +17,7 @@ quote = "1.0"
 syn = { version = "2.0", features = ["full"] }
 
 [dev-dependencies]
-crate_interface = "0.3"
+crate_interface = "0.4.0"
 
 [lib]
 proc-macro = true

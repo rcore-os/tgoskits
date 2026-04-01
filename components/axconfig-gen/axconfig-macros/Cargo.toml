@@ -19,7 +19,7 @@ nightly = []
 proc-macro2 = "1.0"
 quote = "1.0"
 syn = { version = "2.0", features = ["full"] }
-axconfig-gen = { path = "../axconfig-gen", version = "0.2" }
+axconfig-gen = { path = "../axconfig-gen", version = "0.3.1" }
 
 [lib]
 proc-macro = true

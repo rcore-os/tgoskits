@@ -1,6 +1,6 @@
 [package]
 name = "axsched"
-version = "0.3.1"
+version = "0.4.1"
 edition = "2021"
 authors = [
     "Yuekai Jia <equation618@gmail.com>",
@@ -14,4 +14,4 @@ documentation = "https://docs.rs/axsched"
 rust-version = "1.76"
 
 [dependencies]
-linked_list_r4l = "0.3"
+linked_list_r4l = "0.4.0"

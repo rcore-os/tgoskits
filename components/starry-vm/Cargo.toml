@@ -1,6 +1,6 @@
 [package]
 name = "starry-vm"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 authors = ["朝倉水希 <asakuramizu111@gmail.com>", "Mivik <mivikq@gmail.com>"]
 description = "Virtual memory management library for Starry OS"
@@ -13,7 +13,7 @@ default = ["alloc"]
 alloc = []
 
 [dependencies]
-axerrno = "0.2"
+axerrno = "0.3.2"
 bytemuck = { version = "1.24", features = [
     "align_offset",
     "const_zeroed",

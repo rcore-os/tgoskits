@@ -1,6 +1,6 @@
 [package]
 name = "arm_pl011"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Shiping Yuan <robert_yuan@pku.edu.com>", "Yuekai Jia <equation618@gmail.com>"]
 description = "ARM Uart pl011 register definitions and basic operations"

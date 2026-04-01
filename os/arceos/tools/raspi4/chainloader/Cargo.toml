@@ -1,6 +1,6 @@
 [package]
 name = "mingo"
-version = "0.6.0"
+version = "0.7.0"
 authors = ["Andre Richter <andre.o.richter@gmail.com>"]
 edition = "2024"
 

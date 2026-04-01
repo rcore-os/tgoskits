@@ -1,6 +1,6 @@
 [package]
 name = "arceos-net-httpclient"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>", "Dashuai Wu <wudashuaijss@foxmail.com>"]
 

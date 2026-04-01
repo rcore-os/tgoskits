@@ -4,7 +4,7 @@ resolver = "2"
 members = ["page_table_multiarch", "page_table_entry"]
 
 [workspace.package]
-version = "0.6.1"
+version = "0.7.1"
 edition = "2024"
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
@@ -16,5 +16,5 @@ categories = ["os", "hardware-support", "memory-management", "no-std"]
 rust-version = "1.85"
 
 [workspace.dependencies]
-memory_addr = "0.4"
-page_table_entry = { path = "page_table_entry", version = "0.6" }
+memory_addr = "0.5.1"
+page_table_entry = { path = "page_table_entry", version = "0.7.1" }

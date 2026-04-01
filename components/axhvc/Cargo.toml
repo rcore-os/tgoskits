@@ -1,6 +1,6 @@
 [package]
 name = "axhvc"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 authors = ["AxVisor Team"]
 description = "AxVisor HyperCall definitions for guest-hypervisor communication"
@@ -13,7 +13,7 @@ categories = ["no-std", "embedded", "os"]
 
 [dependencies]
 # Error types for ArceOS ecosystem
-axerrno = "0.2"
+axerrno = "0.3.2"
 
 [package.metadata.docs.rs]
 all-features = true

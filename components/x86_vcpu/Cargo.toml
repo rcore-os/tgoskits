@@ -1,6 +1,6 @@
 [package]
 name = "x86_vcpu"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 authors = [
     "Mingxian Su <aarkegz@gmail.com>",
@@ -26,16 +26,16 @@ x86_64 = "0.15"
 raw-cpuid = "11.0"
 numeric-enum-macro = "0.2"
 
-axerrno = "0.2.0"
-page_table_entry = "0.6"
-memory_addr = "0.4"
-crate_interface = "0.3"
+axerrno = "0.3.2"
+page_table_entry = "0.7.1"
+memory_addr = "0.5.1"
+crate_interface = "0.4.0"
 
-axaddrspace = "0.3"
-axvcpu = "0.3"
-x86_vlapic = "0.2.2"
-axdevice_base = "0.2.2"
-axvisor_api = "0.3"
+axaddrspace = "0.4.0"
+axvcpu = "0.4.0"
+x86_vlapic = "0.3.2"
+axdevice_base = "0.3.2"
+axvisor_api = "0.4.0"
 
 spin = { version = "0.10", default-features = false }
 
