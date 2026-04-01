@@ -22,11 +22,11 @@ entry_point = 0x4000_10bc
 # Load from file system.
 image_location = "memory"
 # The load address of the kernel image.
-kernel_path = "/path/to/kernel"
+kernel_path = "/path/to/zephyr.bin"
 ## The file path of the kernel image.
 kernel_load_addr = 0x4000_0000
 ## The file path of the device tree blob (DTB).
-dtb_path = "/path/to/dtb"
+#dtb_path = "/path/to/dtb"
 ## The load address of the device tree blob (DTB).
 dtb_load_addr = 0x47e0_0000
 
