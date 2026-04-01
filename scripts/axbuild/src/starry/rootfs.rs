@@ -90,15 +90,17 @@ pub(crate) async fn ensure_rootfs_in_target_dir(
     }
 
     let disk_img = target_dir.join("disk.img");
-    tokio_fs::copy(&rootfs_img, &disk_img)
-        .await
-        .with_context(|| {
-            format!(
-                "failed to copy {} to {}",
-                rootfs_img.display(),
-                disk_img.display()
-            )
-        })?;
+    if !disk_img.exists() {
+        tokio_fs::copy(&rootfs_img, &disk_img)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to copy {} to {}",
+                    rootfs_img.display(),
+                    disk_img.display()
+                )
+            })?;
+    }
 
     Ok(disk_img)
 }
