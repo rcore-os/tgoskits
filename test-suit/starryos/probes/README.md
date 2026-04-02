@@ -111,26 +111,34 @@ cargo xtask starry test qemu --target riscv64 \
 
 在 GitHub：**Actions → StarryOS syscall probes → Run workflow** 可在 `next` 等分支手动触发。
 
-## 串口行与 oracle 比对
+## 串口 / 日志 与 oracle 自动比对（推荐）
 
-从日志中提取含 `CASE` 的一行后：
+从 **QEMU 串口保存的文本**（或任意包含探针输出的日志）里取 **首行** `^CASE `，与 `expected/<探针名>.line` 对比：
 
 ```sh
-test-suit/starryos/scripts/diff-guest-line.sh read_stdin_zero 'CASE read_stdin_zero.zero_count ret=0 errno=0 note=handwritten'
+# 日志在文件里
+test-suit/starryos/scripts/verify-guest-log-oracle.sh write_stdout my-serial.log
+
+# 日志在管道里（例如重跑时把 xtask 输出存下来再验）
+cargo xtask starry test qemu ... 2>&1 | tee serial.log
+test-suit/starryos/scripts/verify-guest-log-oracle.sh write_stdout serial.log
+
+# 从 stdin 读入（等价于第二个参数写 `-`）
+grep . serial.log | test-suit/starryos/scripts/verify-guest-log-oracle.sh write_stdout -
 ```
+
+退出码：**0** 一致，**1** 与 oracle 不一致，**2** 日志中找不到 `^CASE ` 行。
+
+底层脚本（按需单独用）：
+
+- `extract-case-line.sh [file]`：只抽取首行 `CASE …`（去掉 `\r`）。
+- `diff-guest-line.sh <probe> [line]`：把一行与 `expected/<probe>.line` 比较。
 
 ## Catalog 与文件一致性
 
 ```sh
 python3 scripts/check_probe_coverage.py
 ./scripts/starryos-probes-ci.sh
-```
-
-## 从日志抽取 `CASE` 行
-
-```sh
-test-suit/starryos/scripts/extract-case-line.sh guest-serial.log
-# 或管道：... | test-suit/starryos/scripts/extract-case-line.sh | xargs -I{} test-suit/starryos/scripts/diff-guest-line.sh write_stdout {}
 ```
 
 ## 相关文档

@@ -12,7 +12,7 @@ exp="$PKG/probes/expected/${probe}.line"
 test -f "$exp" || { echo "Missing $exp" >&2; exit 1; }
 
 if [ "$#" -ge 2 ]; then
-  got="$2"
+  got="$(printf '%s' "$2" | tr -d '\r')"
 else
   got="$(cat)"
   got="$(printf '%s' "$got" | tr -d '\r')"
