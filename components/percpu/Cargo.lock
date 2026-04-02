@@ -22,9 +22,9 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "crate_interface"
-version = "0.1.4"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70272a03a2cef15589bac05d3d15c023752f5f8f2da8be977d983a9d9e6250fb"
+checksum = "2f1c8cc474160e37cbc4dd4358ef54fb4133d936d64fed30ba68afeed942ab3c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -33,9 +33,9 @@ dependencies = [
 
 [[package]]
 name = "kernel_guard"
-version = "0.1.3"
+version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d10c55bedf6789bc3748e0d8756ee639df1ae25144fd3525ed311044bd9a739f"
+checksum = "9d81cfd841632a3a0fab8313905f52d37b8d9e4ce94e3ca603708266dfefc511"
 dependencies = [
  "cfg-if",
  "crate_interface",
@@ -52,7 +52,7 @@ dependencies = [
 
 [[package]]
 name = "percpu"
-version = "0.2.3-preview.1"
+version = "0.4.3"
 dependencies = [
  "cfg-if",
  "kernel_guard",
@@ -63,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "percpu_macros"
-version = "0.2.3-preview.1"
+version = "0.4.3"
 dependencies = [
  "cfg-if",
  "proc-macro2",

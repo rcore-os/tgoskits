@@ -19,19 +19,9 @@ checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
 
 [[package]]
 name = "axerrno"
-version = "0.1.2"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a88b1fa2ce97a6ff4ce31ba9fda3065730ca4d77a1ba50dec000fc04f1fb686"
-dependencies = [
- "axerrno 0.2.2",
- "log",
-]
-
-[[package]]
-name = "axerrno"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f961d2868582a092fb1e71b90c16cc6f2cbbe7bb5fa7e4bd6fe61d882ce6bb34"
+checksum = "e23d0e535dccae27cd34fdc0bef986cb0ea05e259b0440fdd03cd3ece0d62ae4"
 dependencies = [
  "log",
  "strum",
@@ -93,13 +83,13 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "memory_addr"
-version = "0.4.1"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1f0625c50adb5f6aaf47f05cae3c4dbc13a74c659241b06c4576f3d7e1da940"
+checksum = "f941093c7509897c695772b0c905ed9696b004533db993acc1b17cc28e2e7f6d"
 
 [[package]]
 name = "page_table_entry"
-version = "0.6.1"
+version = "0.8.1"
 dependencies = [
  "aarch64-cpu",
  "bitflags 2.10.0",
@@ -109,10 +99,10 @@ dependencies = [
 
 [[package]]
 name = "page_table_multiarch"
-version = "0.6.1"
+version = "0.8.1"
 dependencies = [
  "arrayvec",
- "axerrno 0.1.2",
+ "axerrno",
  "bitmaps",
  "log",
  "memory_addr",

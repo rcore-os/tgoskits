@@ -54,7 +54,7 @@ dependencies = [
 
 [[package]]
 name = "axconfig-gen"
-version = "0.2.1"
+version = "0.4.1"
 dependencies = [
  "clap",
  "toml_edit",
@@ -62,7 +62,7 @@ dependencies = [
 
 [[package]]
 name = "axconfig-macros"
-version = "0.2.1"
+version = "0.4.1"
 dependencies = [
  "axconfig-gen",
  "proc-macro2",
