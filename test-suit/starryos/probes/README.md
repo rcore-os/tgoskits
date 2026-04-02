@@ -15,6 +15,15 @@ test-suit/starryos/scripts/build-probes.sh
 
 Binaries go to `probes/build-riscv64/`。
 
+### 编译卫生（警告）
+
+`build-probes.sh` 默认未加 `-Wall`。新增探针应避免隐式函数声明：补全头文件或使用合适 **feature test macro**（例如扩展 API 用 `#define _GNU_SOURCE` 且置于**任一** `#include` 之前）。单文件快速检查（标志需与 `build-probes.sh` 一致，含 `-static -no-pie` 等）：
+
+```sh
+$CC -Wall -Wextra -static -no-pie -O2 -fno-stack-protector -fno-pie -Wl,-no-pie \
+  -c -o /dev/null test-suit/starryos/probes/contract/your_probe.c
+```
+
 ## Linux oracle (user-mode QEMU)
 
 Needs `qemu-riscv64` (Debian/Ubuntu: `qemu-user`):
