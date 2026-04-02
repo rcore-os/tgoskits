@@ -1,0 +1,1 @@
+CASE getcwd.size_zero ret=-1 errno=22 note=handwritten

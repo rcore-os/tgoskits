@@ -105,6 +105,39 @@ int main(void) {{
 """
 
 
+def emit_getcwd_size0(syscall: str, note: str) -> str:
+    return f"""/* GENERATED — {syscall} — template contract_getcwd_size0 */
+#include <errno.h>
+#include <stdio.h>
+#include <unistd.h>
+
+int main(void) {{
+  char buf[4];
+  errno = 0;
+  char *r = getcwd(buf, 0);
+  int e = errno;
+  dprintf(1, "CASE getcwd.size_zero ret=%d errno=%d note={note}\\n", r ? 0 : -1, e);
+  return 0;
+}}
+"""
+
+
+def emit_unlink_enoent(syscall: str, note: str) -> str:
+    return f"""/* GENERATED — {syscall} — template contract_unlink_enoent */
+#include <errno.h>
+#include <stdio.h>
+#include <unistd.h>
+
+int main(void) {{
+  errno = 0;
+  int r = unlink("/__starryos_probe_unlink__/not_there");
+  int e = errno;
+  dprintf(1, "CASE unlink.enoent ret=%d errno=%d note={note}\\n", r, e);
+  return 0;
+}}
+"""
+
+
 def emit_ppoll_zero_fds(syscall: str, note: str) -> str:
     return f"""/* GENERATED — {syscall} — template contract_ppoll_zero_fds */
 #define _GNU_SOURCE
@@ -169,6 +202,10 @@ def main() -> None:
             body = emit_futex_wake_nop(name, "generated-from-catalog")
         elif tpl == "contract_ppoll_zero_fds":
             body = emit_ppoll_zero_fds(name, "generated-from-catalog")
+        elif tpl == "contract_getcwd_size0":
+            body = emit_getcwd_size0(name, "generated-from-catalog")
+        elif tpl == "contract_unlink_enoent":
+            body = emit_unlink_enoent(name, "generated-from-catalog")
         else:
             body = emit_stub(name, tpl)
         out = args.out_dir / f"{name}_generated.c"

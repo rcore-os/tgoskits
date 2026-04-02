@@ -107,4 +107,16 @@ entries:
       - "nfds=0 + 零超时 -> 立即返回；阻塞/信号掩码组合仍须扩展用例"
       - "SMP2 guest：run-smp2-guest-matrix.sh"
 
+  - syscall: getcwd
+    contract_probe: getcwd_size0
+    parity: partial
+    notes:
+      - "非 NULL buf 且 size=0 -> EINVAL（errno=22）"
+
+  - syscall: unlink
+    contract_probe: unlink_enoent
+    parity: partial
+    notes:
+      - "不存在绝对路径 -> ENOENT（errno=2）"
+
 # 后续：为 catalog 中其余条目追加 rows，并链接 issues / errno 对照表。

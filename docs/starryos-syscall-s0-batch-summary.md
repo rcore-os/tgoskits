@@ -10,7 +10,7 @@
 |------|------|------|
 | 分发表提取 | `scripts/extract_starry_syscalls.py` | 解析 `handle_syscall` 的 `match`，输出 JSON |
 | 机器可读分发表 | `docs/starryos-syscall-dispatch.json` | 当前约 210 条 syscall 条目（含分区注释与 cfg） |
-| Catalog 种子 | `docs/starryos-syscall-catalog.yaml` | 14 个高优先级 syscall 元数据（含 `pipe2` / `clock_gettime` / `ioctl` / `lseek` / `openat` / `dup` / `fcntl` 等） |
+| Catalog 种子 | `docs/starryos-syscall-catalog.yaml` | 16 个高优先级 syscall 元数据（含 `getcwd` / `unlink` / `pipe2` / `clock_gettime` 等） |
 | 探针生成器 | `scripts/gen_syscall_probes.py` | 从 catalog 生成 `*_generated.c` |
 | 手写 contract | `test-suit/starryos/probes/contract/*.c` | 含 `openat`/`ioctl`/`lseek` errno 类及 `read`/`write` 零长度等 |
 | 日常用法 | `docs/starryos-probes-daily.md` | 本地检查、oracle、QEMU、日志比对、SMP |

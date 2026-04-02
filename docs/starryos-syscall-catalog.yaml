@@ -304,3 +304,45 @@ syscalls:
       - errno_mismatch
     generator_hints:
       template: contract_ppoll_zero_fds
+
+  - syscall: getcwd
+    domain: fs
+    dispatch_path: os/StarryOS/kernel/src/syscall/mod.rs
+    impl_path: os/StarryOS/kernel/src/syscall/fs/ctl.rs
+    status: partial
+    semantic_class: fs_meta
+    boundary_profiles:
+      - buffer_size
+      - einval_size_zero
+    core_modes:
+      - smp1
+    linux_refs:
+      - man 3 getcwd
+    tests:
+      - test-suit/starryos/probes/contract/getcwd_size0.c
+    risk_tags:
+      - errno_mismatch
+      - user_buffer
+    generator_hints:
+      template: contract_getcwd_size0
+
+  - syscall: unlink
+    domain: fs
+    dispatch_path: os/StarryOS/kernel/src/syscall/mod.rs
+    impl_path: os/StarryOS/kernel/src/syscall/fs/ctl.rs
+    status: partial
+    semantic_class: fs_meta
+    boundary_profiles:
+      - path_lookup
+      - enoent_abs_path
+    core_modes:
+      - smp1
+      - smp2
+    linux_refs:
+      - man 2 unlink
+    tests:
+      - test-suit/starryos/probes/contract/unlink_enoent.c
+    risk_tags:
+      - errno_mismatch
+    generator_hints:
+      template: contract_unlink_enoent

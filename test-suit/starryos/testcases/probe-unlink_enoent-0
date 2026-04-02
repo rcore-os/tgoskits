@@ -1,0 +1,3 @@
+chmod +x /root/unlink_enoent
+/root/unlink_enoent
+echo 'All tests passed!'

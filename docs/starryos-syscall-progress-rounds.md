@@ -348,3 +348,13 @@
 **验证**：`verify-oracle io_zero_rw`；`run-smp2-guest-matrix.sh io_zero_rw`。
 
 ---
+
+## 第 36 轮 — catalog 扩展：`getcwd` / `unlink` errno contract
+
+**目标**：为分发表已存在、catalog 未覆盖的 **`getcwd`**、**`unlink`** 增加最小 errno 探针与矩阵行。
+
+**交付物**：**`getcwd_size0`**（**EINVAL**）、**`unlink_enoent`**（**ENOENT**）；catalog **`impl_path`** → **`fs/ctl.rs`**；**`gen_syscall_probes.py`** 模板 **`contract_getcwd_size0`** / **`contract_unlink_enoent`**。
+
+**验证**：`extract_starry_syscalls.py --check-catalog`；`verify-oracle-all`；**`run-smp2-guest-matrix.sh`**（含新探针）。
+
+---
