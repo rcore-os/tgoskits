@@ -12,6 +12,7 @@
 4. **Oracle 期望**：
    - **单行**：`test-suit/starryos/probes/expected/<probe_basename>.line`（与 `qemu-riscv64` 下 **首行** `^CASE ` 对齐）。
    - **多行（结构化）**：`expected/<probe_basename>.cases`，每行一条 `CASE …`，比较时对 **日志中所有 `^CASE ` 行与期望文件分别做 `sort -u`** 后比较集合（顺序无关）。**同一探针不要同时存在 `.line` 与 `.cases`**。试点探针：**`io_zero_rw`**（`read`/`write` 零长度两条 `CASE`）。
+   - **双轨制（Linux guest oracle）**：轨 A 仍为 **`qemu-riscv64`**（快）。轨 B 使用 **`qemu-system-riscv64`** + **真实内核**，固定锚点为 **Alpine Linux 3.23.3**（对应 **Linux 6.18 LTS**），详见 **`docs/starryos-linux-guest-oracle-pin.md`**。轨 B 的金色行建议放在 **`expected/guest-alpine323/<probe>.line`**（与轨 A 的 `expected/user/` 或根目录 `expected/*.line` 并存时，脚本通过环境变量选择轨道）。
 5. **Guest 回归**：`prepare-rootfs-with-probe.sh <basename>` 注入 `/root/<basename>`；`cargo xtask starry test qemu --test-disk-image … --shell-init-cmd test-suit/starryos/testcases/probe-<basename>-0`。
 
 ## 辅助脚本
@@ -53,6 +54,8 @@
 ## 与 Linux 行为对齐
 
 Contract 应优先选取 **跨 libc 稳定** 的边界（如 `EBADF` 的 errno 数值、零长度 `write` 返回值）。若平台差异大，应在 `expected` 文件名或 catalog `notes` 中标明仅针对 `riscv64` + `musl` oracle。
+
+**轨 A vs 轨 B**：`qemu-riscv64` 不是 RISC-V 上某一固定内核实现；与 **Alpine 3.23.3 / 6.18 LTS** 内核行为冲突时，以 **`docs/starryos-linux-guest-oracle-pin.md`** 为准刷新轨 B 期望，并在矩阵 **`notes`** 标明 golden 来源轨道。
 
 ## 生成器与手写 contract 的分工
 

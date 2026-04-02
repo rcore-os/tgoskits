@@ -15,6 +15,16 @@ schema_version: 1
 linux_profile:
   arch: riscv64
   libc: musl
+  # 轨 A（快）：linux-user oracle，默认 verify / 日常迭代
+  oracle_runner_fast: qemu-riscv64
+  # 轨 B（准）：system guest 内真实内核；锚点见 docs/starryos-linux-guest-oracle-pin.md
+  oracle_runner_guest: qemu-system-riscv64
+  guest_linux_anchor:
+    distro: Alpine Linux
+    distro_version: "3.23.3"
+    kernel_lineage: Linux 6.18 LTS
+    expected_track_dir: guest-alpine323
+  # 兼容旧字段：与 oracle_runner_fast 同义
   oracle_runner: qemu-riscv64
 
 entries:

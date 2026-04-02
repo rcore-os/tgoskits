@@ -17,6 +17,8 @@ VERIFY_STRICT=1 test-suit/starryos/scripts/run-diff-probes.sh verify-oracle-all
 
 单个探针：`…/run-diff-probes.sh verify-oracle <basename>`
 
+**轨 B（guest 真内核）**：固定锚点为 **Alpine Linux 3.23.3 / Linux 6.18 LTS**，见 **`docs/starryos-linux-guest-oracle-pin.md`**；金色行目录 **`expected/guest-alpine323/`**（接入 `run_linux_guest_oracle.sh` 后使用）。
+
 ## 3. StarryOS QEMU（单核，默认 TOML）
 
 ```sh
