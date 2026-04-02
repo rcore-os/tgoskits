@@ -1,0 +1,321 @@
+# StarryOS dispatch vs Linux riscv64 UAPI syscall names (v6.18.20).
+# Regenerate: python3 scripts/export_linux_riscv_syscall_gap.py --linux-header <unistd_64.h>
+schema_version: 1
+linux_kernel: v6.18.20
+target_arch: riscv64
+source_header: arch/riscv/include/generated/uapi/asm/unistd_64.h
+source_path: /tmp/linux-6.18.20/arch/riscv/include/generated/uapi/asm/unistd_64.h
+counts:
+  linux_uapi_named_syscalls: 326
+  linux_nr_syscalls_upper_bound: 470
+  starry_dispatch_entries: 210
+  only_in_linux_uapi: 140
+  only_in_starry_dispatch: 24
+
+only_in_linux_uapi:
+  - syscall: acct
+    __NR: 89
+  - syscall: add_key
+    __NR: 217
+  - syscall: adjtimex
+    __NR: 171
+  - syscall: cachestat
+    __NR: 451
+  - syscall: clock_adjtime
+    __NR: 266
+  - syscall: clock_settime
+    __NR: 112
+  - syscall: delete_module
+    __NR: 106
+  - syscall: execveat
+    __NR: 281
+  - syscall: fanotify_mark
+    __NR: 263
+  - syscall: fgetxattr
+    __NR: 10
+  - syscall: file_getattr
+    __NR: 468
+  - syscall: file_setattr
+    __NR: 469
+  - syscall: finit_module
+    __NR: 273
+  - syscall: flistxattr
+    __NR: 13
+  - syscall: fremovexattr
+    __NR: 16
+  - syscall: fsconfig
+    __NR: 431
+  - syscall: fsetxattr
+    __NR: 7
+  - syscall: fsmount
+    __NR: 432
+  - syscall: futex_requeue
+    __NR: 456
+  - syscall: futex_wait
+    __NR: 455
+  - syscall: futex_waitv
+    __NR: 449
+  - syscall: futex_wake
+    __NR: 454
+  - syscall: getcpu
+    __NR: 168
+  - syscall: getresgid
+    __NR: 150
+  - syscall: getresuid
+    __NR: 148
+  - syscall: getrlimit
+    __NR: 163
+  - syscall: getxattr
+    __NR: 8
+  - syscall: getxattrat
+    __NR: 464
+  - syscall: init_module
+    __NR: 105
+  - syscall: inotify_add_watch
+    __NR: 27
+  - syscall: inotify_rm_watch
+    __NR: 28
+  - syscall: io_cancel
+    __NR: 3
+  - syscall: io_destroy
+    __NR: 1
+  - syscall: io_getevents
+    __NR: 4
+  - syscall: io_pgetevents
+    __NR: 292
+  - syscall: io_setup
+    __NR: 0
+  - syscall: io_submit
+    __NR: 2
+  - syscall: io_uring_enter
+    __NR: 426
+  - syscall: io_uring_register
+    __NR: 427
+  - syscall: ioprio_get
+    __NR: 31
+  - syscall: ioprio_set
+    __NR: 30
+  - syscall: kcmp
+    __NR: 272
+  - syscall: kexec_file_load
+    __NR: 294
+  - syscall: kexec_load
+    __NR: 104
+  - syscall: keyctl
+    __NR: 219
+  - syscall: landlock_add_rule
+    __NR: 445
+  - syscall: landlock_create_ruleset
+    __NR: 444
+  - syscall: landlock_restrict_self
+    __NR: 446
+  - syscall: lgetxattr
+    __NR: 9
+  - syscall: listmount
+    __NR: 458
+  - syscall: listxattr
+    __NR: 11
+  - syscall: listxattrat
+    __NR: 465
+  - syscall: llistxattr
+    __NR: 12
+  - syscall: lookup_dcookie
+    __NR: 18
+  - syscall: lremovexattr
+    __NR: 15
+  - syscall: lsetxattr
+    __NR: 6
+  - syscall: lsm_get_self_attr
+    __NR: 459
+  - syscall: lsm_list_modules
+    __NR: 461
+  - syscall: lsm_set_self_attr
+    __NR: 460
+  - syscall: map_shadow_stack
+    __NR: 453
+  - syscall: mbind
+    __NR: 235
+  - syscall: migrate_pages
+    __NR: 238
+  - syscall: mknodat
+    __NR: 33
+  - syscall: mlockall
+    __NR: 230
+  - syscall: mount_setattr
+    __NR: 442
+  - syscall: move_mount
+    __NR: 429
+  - syscall: move_pages
+    __NR: 239
+  - syscall: mq_getsetattr
+    __NR: 185
+  - syscall: mq_notify
+    __NR: 184
+  - syscall: mq_open
+    __NR: 180
+  - syscall: mq_timedreceive
+    __NR: 183
+  - syscall: mq_timedsend
+    __NR: 182
+  - syscall: mq_unlink
+    __NR: 181
+  - syscall: mseal
+    __NR: 462
+  - syscall: munlock
+    __NR: 229
+  - syscall: munlockall
+    __NR: 231
+  - syscall: name_to_handle_at
+    __NR: 264
+  - syscall: nfsservctl
+    __NR: 42
+  - syscall: open_by_handle_at
+    __NR: 265
+  - syscall: open_tree_attr
+    __NR: 467
+  - syscall: openat2
+    __NR: 437
+  - syscall: personality
+    __NR: 92
+  - syscall: pivot_root
+    __NR: 41
+  - syscall: pkey_alloc
+    __NR: 289
+  - syscall: pkey_free
+    __NR: 290
+  - syscall: pkey_mprotect
+    __NR: 288
+  - syscall: process_madvise
+    __NR: 440
+  - syscall: process_mrelease
+    __NR: 448
+  - syscall: process_vm_readv
+    __NR: 270
+  - syscall: process_vm_writev
+    __NR: 271
+  - syscall: ptrace
+    __NR: 117
+  - syscall: quotactl
+    __NR: 60
+  - syscall: quotactl_fd
+    __NR: 443
+  - syscall: readahead
+    __NR: 213
+  - syscall: reboot
+    __NR: 142
+  - syscall: recvmmsg
+    __NR: 243
+  - syscall: remap_file_pages
+    __NR: 234
+  - syscall: removexattr
+    __NR: 14
+  - syscall: removexattrat
+    __NR: 466
+  - syscall: request_key
+    __NR: 218
+  - syscall: restart_syscall
+    __NR: 128
+  - syscall: riscv_hwprobe
+    __NR: 258
+  - syscall: rseq
+    __NR: 293
+  - syscall: sched_get_priority_max
+    __NR: 125
+  - syscall: sched_get_priority_min
+    __NR: 126
+  - syscall: sched_getattr
+    __NR: 275
+  - syscall: sched_rr_get_interval
+    __NR: 127
+  - syscall: sched_setattr
+    __NR: 274
+  - syscall: sched_setparam
+    __NR: 118
+  - syscall: semctl
+    __NR: 191
+  - syscall: semget
+    __NR: 190
+  - syscall: semop
+    __NR: 193
+  - syscall: semtimedop
+    __NR: 192
+  - syscall: sendmmsg
+    __NR: 269
+  - syscall: set_mempolicy
+    __NR: 237
+  - syscall: set_mempolicy_home_node
+    __NR: 450
+  - syscall: setdomainname
+    __NR: 162
+  - syscall: setfsgid
+    __NR: 152
+  - syscall: setfsuid
+    __NR: 151
+  - syscall: sethostname
+    __NR: 161
+  - syscall: setns
+    __NR: 268
+  - syscall: setpriority
+    __NR: 140
+  - syscall: setregid
+    __NR: 143
+  - syscall: setrlimit
+    __NR: 164
+  - syscall: settimeofday
+    __NR: 170
+  - syscall: setxattr
+    __NR: 5
+  - syscall: setxattrat
+    __NR: 463
+  - syscall: statmount
+    __NR: 457
+  - syscall: swapoff
+    __NR: 225
+  - syscall: swapon
+    __NR: 224
+  - syscall: sync_file_range
+    __NR: 84
+  - syscall: tee
+    __NR: 77
+  - syscall: timer_delete
+    __NR: 111
+  - syscall: timer_getoverrun
+    __NR: 109
+  - syscall: timerfd_gettime
+    __NR: 87
+  - syscall: timerfd_settime
+    __NR: 86
+  - syscall: unshare
+    __NR: 97
+  - syscall: vhangup
+    __NR: 58
+  - syscall: vmsplice
+    __NR: 75
+  - syscall: waitid
+    __NR: 95
+
+only_in_starry_dispatch:
+  - syscall: access
+  - syscall: arch_prctl
+  - syscall: chmod
+  - syscall: chown
+  - syscall: dup2
+  - syscall: fork
+  - syscall: fstatat
+  - syscall: lchown
+  - syscall: link
+  - syscall: lstat
+  - syscall: mkdir
+  - syscall: open
+  - syscall: pipe
+  - syscall: poll
+  - syscall: readlink
+  - syscall: rename
+  - syscall: renameat
+  - syscall: rmdir
+  - syscall: select
+  - syscall: stat
+  - syscall: symlink
+  - syscall: unlink
+  - syscall: utime
+  - syscall: utimes
