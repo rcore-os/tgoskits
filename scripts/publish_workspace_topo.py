@@ -345,6 +345,27 @@ def is_rate_limit_failure(detail: str) -> bool:
     return "429 Too Many Requests" in detail
 
 
+def resolve_publish_target(manifest_path: Path) -> str | None:
+    try:
+        data = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+
+    docs_rs = data.get("package", {}).get("metadata", {}).get("docs", {}).get("rs", {})
+    if not isinstance(docs_rs, dict):
+        return None
+
+    default_target = docs_rs.get("default-target")
+    if isinstance(default_target, str) and default_target:
+        return default_target
+
+    targets = docs_rs.get("targets")
+    if isinstance(targets, list) and len(targets) == 1 and isinstance(targets[0], str):
+        return targets[0]
+
+    return None
+
+
 def run_publish_command(pkg: Package, *, locked: bool) -> subprocess.CompletedProcess[str]:
     cmd = [
         "cargo",
@@ -353,6 +374,9 @@ def run_publish_command(pkg: Package, *, locked: bool) -> subprocess.CompletedPr
         str(pkg.manifest_path),
         "--allow-dirty",
     ]
+    publish_target = resolve_publish_target(pkg.manifest_path)
+    if publish_target is not None:
+        cmd.extend(["--target", publish_target])
     if locked:
         cmd.append("--locked")
     return run(cmd, check=False)
