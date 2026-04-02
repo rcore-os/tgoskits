@@ -698,7 +698,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "indicatif",
- "jkconfig",
+ "jkconfig 0.1.8",
  "log",
  "object",
  "ostool",
@@ -2849,6 +2849,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "data-encoding"
+version = "2.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7a1e2f27636f116493b8b860f5546edb47c8d8f8ea73e1d2a20be88e28d1fea"
+
+[[package]]
 name = "defmt"
 version = "0.3.100"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3338,8 +3344,6 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 [[package]]
 name = "fitimage"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e99ae4a85d0135904ef62da3dfb2b4cc90846622a7b8dd5c7a0cd5fea79b10cf"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -4242,6 +4246,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "jkconfig"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "cargo_metadata",
+ "clap",
+ "cursive",
+ "log",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 1.1.2+spec-1.1.0",
+]
+
+[[package]]
 name = "jni"
 version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4735,6 +4756,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "mio-serial"
+version = "5.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "029e1f407e261176a983a6599c084efd322d9301028055c87174beac71397ba3"
+dependencies = [
+ "log",
+ "mio",
+ "nix 0.29.0",
+ "serialport",
+ "winapi",
+]
+
+[[package]]
 name = "mmio-api"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4779,6 +4813,18 @@ checksum = "598beaf3cc6fdd9a5dfb1630c2800c7acd31df7aaf0f565796fba2b53ca1af1b"
 dependencies = [
  "bitflags 1.3.2",
  "cfg-if",
+ "libc",
+]
+
+[[package]]
+name = "nix"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
+dependencies = [
+ "bitflags 2.11.0",
+ "cfg-if",
+ "cfg_aliases",
  "libc",
 ]
 
@@ -4947,11 +4993,10 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "ostool"
-version = "0.11.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "252f2227f0d1d13a9784325bb87eec025655114fc4a1579b2f8e6748131b7d90"
+version = "0.12.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "byte-unit",
  "cargo_metadata",
  "chrono",
@@ -4963,7 +5008,7 @@ dependencies = [
  "fitimage",
  "futures",
  "indicatif",
- "jkconfig",
+ "jkconfig 0.2.0",
  "log",
  "lzma-rs",
  "network-interface",
@@ -4980,7 +5025,10 @@ dependencies = [
  "tftpd",
  "thiserror 2.0.18",
  "tokio",
- "toml 0.9.12+spec-1.1.0",
+ "tokio-serial",
+ "tokio-tungstenite",
+ "tokio-util",
+ "toml 1.1.2+spec-1.1.0",
  "uboot-shell",
  "ureq",
 ]
@@ -5580,9 +5628,9 @@ version = "0.3.4"
 
 [[package]]
 name = "ranges-ext"
-version = "0.6.1"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7dbbaa030b3eec58088755e56d3acb775fc74f4726565eda8633a415bfc44e0"
+checksum = "2c6c330c2b88fcc0e7a0da8837f91f05e8d9b7cec679bb6d2091c9ae67a57b08"
 dependencies = [
  "heapless 0.9.2",
  "thiserror 2.0.18",
@@ -5882,6 +5930,8 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "rustls-platform-verifier",
+ "serde",
+ "serde_json",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
@@ -6608,7 +6658,7 @@ dependencies = [
  "io-kit-sys",
  "libudev",
  "mach2",
- "nix",
+ "nix 0.26.4",
  "scopeguard",
  "unescaper",
  "windows-sys 0.52.0",
@@ -6812,9 +6862,9 @@ dependencies = [
 
 [[package]]
 name = "someboot"
-version = "0.1.11"
+version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4877fed8767a4012fee195bc791f3f0b5224a110ffd795566a3f4c579fe8a1fa"
+checksum = "d5e304b9b5b0edd2f608b645a34295c4d8090355ae3582b5b4a3067cd683011f"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64-cpu-ext",
@@ -6843,6 +6893,7 @@ dependencies = [
  "quote",
  "ranges-ext",
  "rgb",
+ "sbi-rt",
  "smccc",
  "some-serial",
  "somehal-macros",
@@ -6857,9 +6908,9 @@ dependencies = [
 
 [[package]]
 name = "somehal"
-version = "0.6.5"
+version = "0.6.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60cb0a4534555ab461547d0c43044fc27d6069044078ab30172994fed80a7cb5"
+checksum = "a87fde67a65eef15a83c22547e24bb4e079079dc1bb78674a84b1a22379ab11f"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "anyhow",
@@ -7497,6 +7548,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-serial"
+version = "5.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa1d5427f11ba7c5e6384521cfd76f2d64572ff29f3f4f7aa0f496282923fdc8"
+dependencies = [
+ "cfg-if",
+ "futures",
+ "log",
+ "mio-serial",
+ "serialport",
+ "tokio",
+]
+
+[[package]]
+name = "tokio-tungstenite"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d25a406cddcc431a75d3d9afc6a7c0f7428d4891dd973e4d54c56b46127bf857"
+dependencies = [
+ "futures-util",
+ "log",
+ "tokio",
+ "tungstenite",
+]
+
+[[package]]
 name = "tokio-util"
 version = "0.7.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7504,6 +7581,7 @@ checksum = "9ae9cec805b01e8fc3fd2fe289f89149a9b66dd16786abd8b19cfa7b48cb0098"
 dependencies = [
  "bytes",
  "futures-core",
+ "futures-io",
  "futures-sink",
  "pin-project-lite",
  "tokio",
@@ -7743,6 +7821,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
+name = "tungstenite"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8628dcc84e5a09eb3d8423d6cb682965dea9133204e8fb3efee74c2a0c259442"
+dependencies = [
+ "bytes",
+ "data-encoding",
+ "http",
+ "httparse",
+ "log",
+ "rand 0.9.2",
+ "sha1",
+ "thiserror 2.0.18",
+ "utf-8",
+]
+
+[[package]]
 name = "twox-hash"
 version = "2.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7782,11 +7877,11 @@ dependencies = [
 
 [[package]]
 name = "uboot-shell"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6f5fe43e54f4e6cf96cd577556bd0cd1726b135a2563e19ca3ed8f98fa163b5"
+version = "0.2.3"
 dependencies = [
  "colored",
+ "futures",
+ "futures-timer",
  "log",
 ]
 
@@ -7973,6 +8068,12 @@ dependencies = [
  "idna 0.5.0",
  "percent-encoding",
 ]
+
+[[package]]
+name = "utf-8"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09cc8ee72d2a9becf2f2febe0205bbed8fc6615b7cb429ad062dc7b7ddd036a9"
 
 [[package]]
 name = "utf16_iter"

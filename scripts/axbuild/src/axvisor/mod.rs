@@ -27,6 +27,8 @@ pub enum Command {
     Qemu(ArgsQemu),
     /// Build and run Axvisor with U-Boot
     Uboot(ArgsUboot),
+    /// List and run Axvisor on remote boards
+    Board(ArgsBoard),
     /// Generate a default board config
     Defconfig(ArgsDefconfig),
     /// Board config helpers
@@ -37,7 +39,7 @@ pub enum Command {
     Test(ArgsTest),
 }
 
-#[derive(Args, Clone)]
+#[derive(Args, Debug, Clone)]
 pub struct ArgsBuild {
     #[arg(short, long)]
     pub config: Option<PathBuf>,
@@ -71,6 +73,45 @@ pub struct ArgsUboot {
 
     #[arg(long)]
     pub uboot_config: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct ArgsBoard {
+    #[command(subcommand)]
+    pub command: BoardCommand,
+}
+
+#[derive(Subcommand)]
+pub enum BoardCommand {
+    /// List remote board types from ostool-server
+    Ls(ArgsBoardLs),
+    /// Build Axvisor and run it on a remote board
+    Run(ArgsBoardRun),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ArgsBoardLs {
+    #[arg(long, default_value = "127.0.0.1")]
+    pub server: String,
+
+    #[arg(long, default_value_t = 8080)]
+    pub port: u16,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ArgsBoardRun {
+    #[command(flatten)]
+    pub build: ArgsBuild,
+
+    /// Path to the board runner configuration file, defaults to `pwd/.board.toml`
+    #[arg(long = "board-config")]
+    pub board_config: Option<PathBuf>,
+
+    #[arg(long)]
+    pub server: Option<String>,
+
+    #[arg(long)]
+    pub port: Option<u16>,
 }
 
 #[derive(Args)]
@@ -148,6 +189,7 @@ impl Axvisor {
             Command::Build(args) => self.build(args).await,
             Command::Qemu(args) => self.qemu(args).await,
             Command::Uboot(args) => self.uboot(args).await,
+            Command::Board(args) => self.board(args).await,
             Command::Defconfig(args) => self.defconfig(args),
             Command::Config(args) => self.config(args),
             Command::Image(args) => self.image(args).await,
@@ -179,6 +221,28 @@ impl Axvisor {
             SnapshotPersistence::Store,
         )?;
         self.run_uboot_request(request).await
+    }
+
+    async fn board(&mut self, args: ArgsBoard) -> anyhow::Result<()> {
+        match args.command {
+            BoardCommand::Ls(args) => self.app.board_ls(&args.server, args.port).await,
+            BoardCommand::Run(args) => self.board_run(args).await,
+        }
+    }
+
+    async fn board_run(&mut self, args: ArgsBoardRun) -> anyhow::Result<()> {
+        let request =
+            self.prepare_request((&args.build).into(), None, None, SnapshotPersistence::Store)?;
+        let cargo = build::load_cargo_config(&request)?;
+        self.app
+            .board_run(
+                cargo,
+                request.build_info_path,
+                args.board_config,
+                args.server.as_deref(),
+                args.port,
+            )
+            .await
     }
 
     fn defconfig(&mut self, args: ArgsDefconfig) -> anyhow::Result<()> {
@@ -526,6 +590,77 @@ mod tests {
                 );
             }
             _ => panic!("expected qemu command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_board_ls() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from([
+            "axvisor", "board", "ls", "--server", "10.0.0.2", "--port", "9000",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Board(args) => match args.command {
+                BoardCommand::Ls(args) => {
+                    assert_eq!(args.server, "10.0.0.2");
+                    assert_eq!(args.port, 9000);
+                }
+                _ => panic!("expected board ls command"),
+            },
+            _ => panic!("expected board command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_board_run() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from([
+            "axvisor",
+            "board",
+            "run",
+            "--config",
+            "os/axvisor/.build.toml",
+            "--arch",
+            "aarch64",
+            "--vmconfigs",
+            "tmp/vm1.toml",
+            "--board-config",
+            "remote.board.toml",
+            "--server",
+            "10.0.0.2",
+            "--port",
+            "9000",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Board(args) => match args.command {
+                BoardCommand::Run(args) => {
+                    assert_eq!(
+                        args.build.config,
+                        Some(PathBuf::from("os/axvisor/.build.toml"))
+                    );
+                    assert_eq!(args.build.arch.as_deref(), Some("aarch64"));
+                    assert_eq!(args.build.vmconfigs, vec![PathBuf::from("tmp/vm1.toml")]);
+                    assert_eq!(args.board_config, Some(PathBuf::from("remote.board.toml")));
+                    assert_eq!(args.server.as_deref(), Some("10.0.0.2"));
+                    assert_eq!(args.port, Some(9000));
+                }
+                _ => panic!("expected board run command"),
+            },
+            _ => panic!("expected board command"),
         }
     }
 

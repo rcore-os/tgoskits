@@ -2,7 +2,15 @@ use std::path::{Path, PathBuf};
 
 use ostool::{
     Tool, ToolConfig,
-    build::{CargoRunnerKind, config::Cargo},
+    board::{
+        self as ostool_board, client::BoardServerClient, config::BoardRunConfig,
+        session::BoardSession,
+    },
+    build::{
+        CargoQemuRunnerArgs, CargoRunnerKind, CargoUbootRunnerArgs,
+        cargo_builder::CargoBuilder,
+        config::{BuildConfig, BuildSystem, Cargo},
+    },
 };
 
 mod arch;
@@ -76,7 +84,7 @@ impl AppContext {
         cargo: Cargo,
         build_config_path: PathBuf,
     ) -> anyhow::Result<()> {
-        self.set_build_config_path(build_config_path);
+        self.set_cargo_build_context(&cargo, build_config_path);
         self.tool.cargo_build(&cargo).await
     }
 
@@ -86,19 +94,19 @@ impl AppContext {
         build_config_path: PathBuf,
         mut qemu: QemuRunConfig,
     ) -> anyhow::Result<()> {
-        self.set_build_config_path(build_config_path);
+        self.set_cargo_build_context(&cargo, build_config_path);
         qemu.default_args.to_bin.get_or_insert(cargo.to_bin);
         self.tool
             .cargo_run(
                 &cargo,
-                &CargoRunnerKind::Qemu {
+                &CargoRunnerKind::Qemu(Box::new(CargoQemuRunnerArgs {
                     qemu_config: qemu.qemu_config,
                     debug: false,
                     dtb_dump: false,
                     default_args: qemu.default_args,
                     append_args: qemu.append_args,
                     override_args: qemu.override_args,
-                },
+                })),
             )
             .await
     }
@@ -109,15 +117,79 @@ impl AppContext {
         build_config_path: PathBuf,
         uboot_config: Option<PathBuf>,
     ) -> anyhow::Result<()> {
-        self.set_build_config_path(build_config_path);
+        self.set_cargo_build_context(&cargo, build_config_path);
         self.tool
-            .cargo_run(&cargo, &CargoRunnerKind::Uboot { uboot_config })
+            .cargo_run(
+                &cargo,
+                &CargoRunnerKind::Uboot(CargoUbootRunnerArgs { uboot_config }),
+            )
             .await
+    }
+
+    pub(crate) async fn board_ls(&self, server: &str, port: u16) -> anyhow::Result<()> {
+        ostool_board::list_boards(server, port).await
+    }
+
+    pub(crate) async fn board_run(
+        &mut self,
+        cargo: Cargo,
+        build_config_path: PathBuf,
+        board_config: Option<PathBuf>,
+        server: Option<&str>,
+        port: Option<u16>,
+    ) -> anyhow::Result<()> {
+        self.set_cargo_build_context(&cargo, build_config_path.clone());
+
+        CargoBuilder::build(&mut self.tool, &cargo, Some(build_config_path))
+            .skip_objcopy(true)
+            .resolve_artifact_from_json(true)
+            .execute()
+            .await?;
+
+        let board_config = BoardRunConfig::load_or_create(&self.tool, board_config).await?;
+        let (server, port) = board_config.resolve_server(server, port);
+        let client = BoardServerClient::new(&server, port)?;
+        let session = BoardSession::acquire(client.clone(), &board_config.board_type).await?;
+
+        println!("Allocated board session:");
+        println!("  board_type: {}", board_config.board_type);
+        println!("  board_id: {}", session.info().board_id);
+        println!("  session_id: {}", session.info().session_id);
+        println!("  lease_expires_at: {}", session.info().lease_expires_at);
+        println!("  boot_mode: {}", session.info().boot_mode);
+
+        let run_result = match session.info().boot_mode.as_str() {
+            "uboot" => {
+                self.tool
+                    .run_uboot_remote(&board_config, client, session.info().clone())
+                    .await
+            }
+            other => Err(anyhow!(
+                "unsupported board boot mode `{other}`; only `uboot` is supported"
+            )),
+        };
+
+        let release_result = session.release().await;
+        match (run_result, release_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(err), Ok(())) => Err(err),
+            (Ok(()), Err(err)) => Err(err),
+            (Err(run_err), Err(release_err)) => Err(run_err.context(format!(
+                "additionally failed to release board session: {release_err:#}"
+            ))),
+        }
     }
 
     fn set_build_config_path(&mut self, path: PathBuf) {
         self.build_config_path = Some(path.clone());
         self.tool.ctx_mut().build_config_path = Some(path);
+    }
+
+    fn set_cargo_build_context(&mut self, cargo: &Cargo, path: PathBuf) {
+        self.set_build_config_path(path);
+        self.tool.ctx_mut().build_config = Some(BuildConfig {
+            system: BuildSystem::Cargo(cargo.clone()),
+        });
     }
 }
 

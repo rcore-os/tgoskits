@@ -1,3 +1,10 @@
+//! Local Axvisor build board helpers.
+//!
+//! These functions only inspect `os/axvisor/configs/board/*.toml` for Axvisor
+//! build configuration discovery. Remote board types exposed by ostool-server
+//! are handled by `ostool::board` and are intentionally not filtered against
+//! these local config files.
+
 use std::{
     ffi::OsStr,
     fs,

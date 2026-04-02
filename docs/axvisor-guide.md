@@ -27,6 +27,7 @@ Axvisor 当前由根目录 `tg-xtask` 统一提供入口。也就是说：
 - `build`
 - `qemu`
 - `uboot`
+- `board`
 - `defconfig`
 - `config`
 - `image`
@@ -37,6 +38,7 @@ Axvisor 当前由根目录 `tg-xtask` 统一提供入口。也就是说：
 cargo axvisor defconfig qemu-aarch64
 cargo axvisor build --config os/axvisor/.build.toml
 cargo axvisor qemu --config os/axvisor/.build.toml --vmconfigs os/axvisor/tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
+cargo axvisor board ls
 ```
 
 ## 3. 第一条成功路径：QEMU AArch64
@@ -228,6 +230,16 @@ cargo axvisor defconfig qemu-aarch64
 
 # 查看可用板级配置
 cargo axvisor config ls
+
+# 查看 ostool-server 暴露的远端板型
+cargo axvisor board ls
+
+# 在远端板卡上构建并启动 Axvisor
+# 未显式传 --board-config 时，默认读取当前工作目录下的 .board.toml
+cargo axvisor board run \
+  --config os/axvisor/.build.toml \
+  --vmconfigs os/axvisor/tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml \
+  --board-config remote.board.toml
 
 # 只做构建，先排除编译问题
 cargo axvisor build --config os/axvisor/.build.toml
