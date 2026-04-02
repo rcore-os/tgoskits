@@ -13,7 +13,7 @@ export CC=/path/to/riscv64-linux-musl-gcc   # optional
 test-suit/starryos/scripts/build-probes.sh
 ```
 
-Binaries go to `probes/build-riscv64/`.
+Binaries go to `probes/build-riscv64/`。
 
 ## Linux oracle (user-mode QEMU)
 
@@ -40,6 +40,16 @@ VERIFY_ORACLE_TRACK=guest-alpine323 test-suit/starryos/scripts/run-diff-probes.s
 ```
 
 物化批次 guest 轨：`python3 scripts/materialize_syscall_batch.py --batch … --oracle-track guest-alpine323 --guest-kernel "$STARRY_LINUX_GUEST_IMAGE"`。
+
+### 新增 contract 探针（checklist）
+
+批次与脚手架见 **[docs/starryos-syscall-probe-rollout.yaml](../../../docs/starryos-syscall-probe-rollout.yaml)**（`python3 scripts/gen_probe_rollout.py`）。
+
+1. 添加 `contract/<basename>.c`，运行 `test-suit/starryos/scripts/build-probes.sh`。
+2. **轨 A（linux-user）**：`test-suit/starryos/scripts/run-diff-probes.sh verify-oracle <basename>`，提交对应 `expected/user/*.line` 或历史 `expected/*.line`。
+3. **轨 B（guest 真内核）**：`STARRY_LINUX_GUEST_IMAGE=... ./scripts/verify_linux_guest_oracle.sh -p <basename>`；全量金线 `scripts/refresh_guest_oracle_expected.sh`，或只增 `expected/guest-alpine323/<basename>.line`。**`CC` 与 `STARRY_LINUX_GUEST_CC` 应一致**（stub 与探针同一套交叉编译器）。
+4. 更新 **[docs/starryos-syscall-compat-matrix.yaml](../../../docs/starryos-syscall-compat-matrix.yaml)** 中该 syscall 的 `contract_probe` / `parity` / `notes`。
+5. 刷新行为证据表（可选）：`python3 scripts/render_starry_syscall_inventory.py --step 3`。
 
 ## Contract probes (hand-written)
 
