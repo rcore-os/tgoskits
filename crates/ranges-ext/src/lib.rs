@@ -105,7 +105,7 @@ pub trait VecOp<T: RangeOp>: Send + 'static {
             // 检查是否有重叠: new.start < existing.end && new.end > existing.start
             if new_range.start < existing_range.end && new_range.end > existing_range.start {
                 // 有重叠，检查是否可覆盖
-                if !existing.overwritable(&item) {
+                if !(existing.overwritable(&item) || existing.mergeable(&item)) {
                     // 不可覆盖，返回冲突错误
                     return Err(RangeError::Conflict {
                         new: item,
