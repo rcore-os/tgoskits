@@ -1,0 +1,2 @@
+CASE io_zero_rw.read_stdin_count0 ret=0 errno=0 note=handwritten
+CASE io_zero_rw.write_stdout_count0 ret=0 errno=0 note=handwritten

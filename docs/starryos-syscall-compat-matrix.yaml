@@ -19,6 +19,13 @@ entries:
     notes:
       - "零长度 write stdout 已接 oracle + QEMU 用例"
 
+  # 合成探针：同一 ELF 多条 CASE，期望文件为 expected/io_zero_rw.cases（结构化 diff 试点）
+  - syscall: io_zero_rw
+    contract_probe: io_zero_rw
+    parity: partial
+    notes:
+      - "read stdin count=0 + write stdout len=0；仅 .cases，无 .line"
+
   - syscall: close
     contract_probe: close_badfd
     parity: partial

@@ -1,0 +1,3 @@
+chmod +x /root/io_zero_rw
+/root/io_zero_rw
+echo 'All tests passed!'

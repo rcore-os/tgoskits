@@ -338,3 +338,13 @@
 **验证**：`./scripts/starryos-probes-ci.sh`；`VERIFY_STRICT=1 verify-oracle-all`。
 
 ---
+
+## 第 35 轮 — 多 `CASE` 试点：`io_zero_rw` + 仅 `.cases`
+
+**目标**：在真实 contract 上使用 **`expected/*.cases`**（无 **`.line`**），跑通 Linux oracle 与 SMP2 guest 矩阵。
+
+**交付物**：**`io_zero_rw`**（stdin `read` count=0 + stdout `write` len=0）；兼容矩阵 **`syscall: io_zero_rw`** 行；文档与 README 引用。
+
+**验证**：`verify-oracle io_zero_rw`；`run-smp2-guest-matrix.sh io_zero_rw`。
+
+---

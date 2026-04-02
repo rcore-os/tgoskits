@@ -11,7 +11,7 @@
    - **生成骨架**：`scripts/gen_syscall_probes.py` 按 `generator_hints.template` 写入 `probes/generated/`（占位，逐步替换为手写或半自动生成）。
 4. **Oracle 期望**：
    - **单行**：`test-suit/starryos/probes/expected/<probe_basename>.line`（与 `qemu-riscv64` 下 **首行** `^CASE ` 对齐）。
-   - **多行（结构化）**：`expected/<probe_basename>.cases`，每行一条 `CASE …`，比较时对 **日志中所有 `^CASE ` 行与期望文件分别做 `sort -u`** 后比较集合（顺序无关）。**同一探针不要同时存在 `.line` 与 `.cases`**。
+   - **多行（结构化）**：`expected/<probe_basename>.cases`，每行一条 `CASE …`，比较时对 **日志中所有 `^CASE ` 行与期望文件分别做 `sort -u`** 后比较集合（顺序无关）。**同一探针不要同时存在 `.line` 与 `.cases`**。试点探针：**`io_zero_rw`**（`read`/`write` 零长度两条 `CASE`）。
 5. **Guest 回归**：`prepare-rootfs-with-probe.sh <basename>` 注入 `/root/<basename>`；`cargo xtask starry test qemu --test-disk-image … --shell-init-cmd test-suit/starryos/testcases/probe-<basename>-0`。
 
 ## 辅助脚本
