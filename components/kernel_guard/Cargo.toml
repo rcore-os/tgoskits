@@ -1,6 +1,6 @@
 [package]
 name = "kernel_guard"
-version = "0.2.3"
+version = "0.3.3"
 edition = "2021"
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "RAII wrappers to create a critical section with local IRQs or preemption disabled"
@@ -17,4 +17,4 @@ default = []
 
 [dependencies]
 cfg-if = "1.0"
-crate_interface = "0.4.0"
+crate_interface = "0.5.0"

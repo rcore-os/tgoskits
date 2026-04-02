@@ -14,8 +14,8 @@ categories.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-axerrno = { version = "0.3.2", optional = true }
-memory_addr = { path = "../memory_addr", version = "0.5.1" }
+axerrno = { version = "0.4.2", optional = true }
+memory_addr = { path = "../memory_addr", version = "0.6.1" }
 
 [features]
 axerrno = ["dep:axerrno"]

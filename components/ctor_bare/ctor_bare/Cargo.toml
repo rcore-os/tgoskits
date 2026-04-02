@@ -13,4 +13,4 @@ categories.workspace = true
 readme = "README.md"
 
 [dependencies]
-ctor_bare_macros = "0.3.1"
+ctor_bare_macros = "0.4.1"

@@ -1,6 +1,6 @@
 [package]
 name = "crate_interface_lite"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["Yuekai Jia <equation618@gmail.com>", "Loi Chyan <loichyan@outlook.com>"]
 description = "Provides a way to define an interface (trait) in a crate, but can implement or use it in any crate."

@@ -1,6 +1,6 @@
 [package]
 name = "timer_list"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "A list of timed events that will be triggered sequentially when the timer expires"

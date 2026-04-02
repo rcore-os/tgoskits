@@ -15,15 +15,15 @@ repository.workspace = true
 irq = ["axplat/irq"]
 
 [dependencies]
-kspin = "0.2.1"
+kspin = "0.3.1"
 log = "0.4"
 spin = "0.10"
-int_ratio = "0.2.2"
-lazyinit = "0.3.2"
+int_ratio = "0.3.2"
+lazyinit = "0.4.2"
 aarch64-cpu = "11.0"
-arm_pl011 = "0.2.0"
+arm_pl011 = "0.3.0"
 arm-gic-driver = "0.16"
-arm_pl031 = "0.3.1"
+arm_pl031 = "0.4.1"
 axcpu = { workspace = true }
 axplat = { workspace = true }
 

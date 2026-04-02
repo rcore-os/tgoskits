@@ -35,8 +35,8 @@ custom-base = ["percpu_macros/custom-base"]
 
 [dependencies]
 cfg-if = "1.0"
-kernel_guard = { version = "0.2.3", optional = true }
-percpu_macros = { path = "../percpu_macros", version = "0.3.3" }
+kernel_guard = { version = "0.3.3", optional = true }
+percpu_macros = { path = "../percpu_macros", version = "0.4.3" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"

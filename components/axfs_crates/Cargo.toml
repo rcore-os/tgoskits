@@ -18,4 +18,4 @@ repository = "https://github.com/arceos-org/axfs_crates"
 categories = ["os", "no-std", "filesystem"]
 
 [workspace.dependencies]
-axfs_vfs = { path = "axfs_vfs", version = "0.2.2" }
+axfs_vfs = { path = "axfs_vfs", version = "0.3.2" }

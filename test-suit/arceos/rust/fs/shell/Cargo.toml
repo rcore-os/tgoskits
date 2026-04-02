@@ -1,6 +1,6 @@
 [package]
 name = "arceos-fs-shell"
-version = "0.2.0"
+version = "0.3.0"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 
@@ -11,8 +11,8 @@ use-ramfs = ["dep:axfs_vfs", "dep:axfs_ramfs", "dep:crate_interface"]
 default = []
 
 [dependencies]
-axfs_vfs = { version = "0.2.2", optional = true }
-axfs_ramfs = { version = "0.2.2", optional = true }
-crate_interface = { version = "0.4.0", optional = true }
+axfs_vfs = { version = "0.3.2", optional = true }
+axfs_ramfs = { version = "0.3.2", optional = true }
+crate_interface = { version = "0.5.0", optional = true }
 axstd = { workspace = true, features = ["alloc", "fs"], optional = true }
 

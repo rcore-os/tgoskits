@@ -20,20 +20,20 @@ homepage = "https://github.com/Starry-OS"
 repository = "https://github.com/Starry-OS/StarryOS"
 
 [workspace.dependencies]
-axfeat = { version = "0.4.0" }
+axfeat = { version = "0.5.0" }
 
-axalloc = { version = "0.4.0" }
-axconfig = { version = "0.4.0" }
-axdisplay = { version = "0.4.0" }
-axdriver = { version = "0.4.0" }
-axfs = { version = "0.4.0", package = "axfs-ng" }
-axhal = { version = "0.4.0" }
-axinput = { version = "0.4.0" }
-axlog = { version = "0.4.0" }
-axmm = { version = "0.4.0" }
-axnet = { version = "0.4.0", package = "axnet-ng" }
-axruntime = { version = "0.4.0" }
-axsync = { version = "0.4.0" }
-axtask = { version = "0.4.0" }
+axalloc = { version = "0.5.0" }
+axconfig = { version = "0.5.0" }
+axdisplay = { version = "0.5.0" }
+axdriver = { version = "0.5.0" }
+axfs = { version = "0.5.0", package = "axfs-ng" }
+axhal = { version = "0.5.0" }
+axinput = { version = "0.5.0" }
+axlog = { version = "0.5.0" }
+axmm = { version = "0.5.0" }
+axnet = { version = "0.5.0", package = "axnet-ng" }
+axruntime = { version = "0.5.0" }
+axsync = { version = "0.5.0" }
+axtask = { version = "0.5.0" }
 
-starry-kernel = { path = "kernel", version = "0.4.0" }
+starry-kernel = { path = "kernel", version = "0.5.0" }

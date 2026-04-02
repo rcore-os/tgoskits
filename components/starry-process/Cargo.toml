@@ -1,6 +1,6 @@
 [package]
 name = "starry-process"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 authors = ["朝倉水希 <asakuramizu111@gmail.com>"]
 description = "Process management for Starry OS"
@@ -9,10 +9,10 @@ license = "Apache-2.0"
 repository = "https://github.com/Starry-OS/starry-process"
 
 [dependencies]
-kspin = "0.2.1"
-lazyinit = "0.3.2"
+kspin = "0.3.1"
+lazyinit = "0.4.2"
 weak-map = "0.1"
 
 [dev-dependencies]
 ctor = "0.4.1"
-kspin = { version = "0.2.1", features = ["smp"] }
+kspin = { version = "0.3.1", features = ["smp"] }

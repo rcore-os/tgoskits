@@ -16,5 +16,5 @@ readme = "README.md"
 default = []
 
 [dependencies]
-axdriver_base = { version = "0.2.4" }
+axdriver_base = { version = "0.3.4" }
 log = "0.4"

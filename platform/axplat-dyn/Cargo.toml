@@ -19,7 +19,7 @@ hv = ["somehal/hv", "axcpu/arm-el2"]
 [dependencies]
 anyhow = { version = "1", default-features = false }
 axalloc.workspace = true
-axconfig-macros = "0.3.1"
+axconfig-macros = "0.4.1"
 axcpu.workspace = true
 axdriver_base.workspace = true
 axdriver_block.workspace = true

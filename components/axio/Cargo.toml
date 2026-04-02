@@ -1,6 +1,6 @@
 [package]
 name = "axio"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "`std::io` for `no_std` environment"
@@ -16,7 +16,7 @@ alloc = []
 default = []
 
 [dependencies]
-axerrno = "0.3.2"
+axerrno = "0.4.2"
 heapless = "0.9"
 memchr = { version = "2", default-features = false }
 

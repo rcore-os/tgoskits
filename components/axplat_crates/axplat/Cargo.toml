@@ -16,13 +16,13 @@ smp = ["kspin/smp"]
 irq = ["dep:handler_table"]
 
 [dependencies]
-memory_addr = "0.5.1"
+memory_addr = "0.6.1"
 bitflags = "2.6"
-crate_interface = "0.4.0"
-handler_table = { version = "0.2.2", optional = true }
+crate_interface = "0.5.0"
+handler_table = { version = "0.3.2", optional = true }
 const-str = "1.0"
 axplat-macros = { workspace = true }
-kspin = "0.2.1"
+kspin = "0.3.1"
 percpu.workspace = true
 
 [package.metadata.docs.rs]
