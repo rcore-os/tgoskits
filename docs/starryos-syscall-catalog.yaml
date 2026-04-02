@@ -37,17 +37,19 @@ syscalls:
     semantic_class: process_image
     boundary_profiles:
       - argv_envp_pointers
+      - enoent_abs_path
     core_modes:
       - smp1
     linux_refs:
       - man 2 execve
-    tests: []
+    tests:
+      - test-suit/starryos/probes/contract/execve_enoent.c
     risk_tags:
       - errno_mismatch
       - user_buffer
       - cloexec_nonblock
     generator_hints:
-      template: sequence_stub
+      template: contract_execve_enoent
 
   - syscall: wait4
     domain: task
@@ -58,17 +60,19 @@ syscalls:
     boundary_profiles:
       - status_ptr
       - options
+      - not_our_child_echild
     core_modes:
       - smp1
       - smp2
     linux_refs:
       - man 2 wait4
-    tests: []
+    tests:
+      - test-suit/starryos/probes/contract/wait4_echild.c
     risk_tags:
       - errno_mismatch
       - user_buffer
     generator_hints:
-      template: contract_errno
+      template: contract_wait4_echild
 
   - syscall: pipe2
     domain: fs

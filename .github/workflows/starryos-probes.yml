@@ -1,5 +1,6 @@
 # StarryOS syscall probes: catalog / coverage / shell syntax; optional Linux user-mode oracle.
 # Triggers on probe-related paths; use Actions → Run workflow for manual runs on any branch (e.g. next).
+# Heavy SMP2 guest + QEMU matrix: .github/workflows/starryos-probes-smp2-matrix.yml (nightly / workflow_dispatch only).
 
 name: StarryOS syscall probes
 
@@ -15,6 +16,7 @@ on:
       - "test-suit/starryos/**"
       - "docs/starryos-probes-daily.md"
       - ".github/workflows/starryos-probes.yml"
+      - ".github/workflows/starryos-probes-smp2-matrix.yml"
   workflow_dispatch:
 
 permissions:

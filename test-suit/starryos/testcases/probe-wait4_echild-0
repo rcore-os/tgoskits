@@ -1,0 +1,3 @@
+chmod +x /root/wait4_echild
+/root/wait4_echild
+echo 'All tests passed!'

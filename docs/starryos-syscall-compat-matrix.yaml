@@ -3,6 +3,7 @@
 # 与 catalog 关系：catalog 偏「工程元数据」，本文件偏「行为对齐结论」。
 
 schema_version: 1
+# parity 取值建议：partial | aligned | divergent | not_applicable（未接固定 oracle / 不适用单行 CASE）
 # 全手写 contract：建议在 SMP2（-smp 2）下再跑串口 CASE 与 oracle 对齐：
 #   test-suit/starryos/scripts/run-smp2-guest-matrix.sh
 # 说明见 docs/starryos-syscall-smp-notes.md
@@ -72,5 +73,29 @@ entries:
     notes:
       - "非法 dirfd -> EBADF（openat_badfd）"
       - "不存在绝对路径 -> ENOENT（openat_enoent）"
+
+  - syscall: execve
+    contract_probe: execve_enoent
+    parity: partial
+    notes:
+      - "不存在路径 -> ENOENT（errno=2）"
+
+  - syscall: wait4
+    contract_probe: wait4_echild
+    parity: partial
+    notes:
+      - "非本子进程 pid -> ECHILD（errno=10）"
+
+  - syscall: futex
+    contract_probe: ""
+    parity: not_applicable
+    notes:
+      - "多核唤醒/竞态敏感；不设固定 expected/*.line，待专用用例与匹配策略（见测试方法文档）"
+
+  - syscall: ppoll
+    contract_probe: ""
+    parity: not_applicable
+    notes:
+      - "阻塞/信号/超时组合敏感；不设固定 expected/*.line，待专用用例"
 
 # 后续：为 catalog 中其余条目追加 rows，并链接 issues / errno 对照表。

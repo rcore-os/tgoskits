@@ -26,6 +26,7 @@
 | 迭代纪要 | `docs/starryos-syscall-progress-rounds.md` | 多轮交付记录 |
 | 提交策略 | `docs/starryos-syscall-commit-strategy.md` | 分组 commit / PR 建议 |
 | CI 示例 | `docs/starryos-probes-ci-example.md` | GitHub Actions 片段 |
+| SMP2 矩阵 CI | `.github/workflows/starryos-probes-smp2-matrix.yml` | 仅 `workflow_dispatch` + nightly；跑 `run-smp2-guest-matrix.sh` |
 | 本地 CI | `scripts/starryos-probes-ci.sh` | 静态检查 + 可选交叉编译 |
 | xtask 扩展 | `scripts/axbuild`：`starry test qemu --test-disk-image` | 指定 ext4 基准盘用于单次测试的临时副本 |
 

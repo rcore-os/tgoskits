@@ -1,0 +1,1 @@
+CASE wait4.nochld ret=-1 errno=10 note=handwritten

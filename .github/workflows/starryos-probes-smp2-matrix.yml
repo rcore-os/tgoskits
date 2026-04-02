@@ -1,0 +1,58 @@
+# Heavy job: full contract list under -smp 2 + verify-guest-log-oracle (StarryOS QEMU).
+# Does not run on push. Use Actions → Run workflow, or nightly schedule.
+
+name: StarryOS probes SMP2 guest matrix
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 2 * * *"
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: starryos-probes-smp2-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smp2-guest-matrix:
+    name: SMP2 guest matrix vs oracle
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/${{ github.repository }}-container:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      CC: riscv64-linux-gnu-gcc
+      LOGDIR: ${{ github.workspace }}/starry-smp2-matrix-logs
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install QEMU user+system (riscv), e2fsprogs, cross gcc
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            qemu-user \
+            qemu-system-misc \
+            e2fsprogs \
+            gcc-riscv64-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: starryos-probes-smp2-matrix
+          save-if: ${{ github.event_name == 'schedule' }}
+
+      - name: Run SMP2 guest matrix
+        run: test-suit/starryos/scripts/run-smp2-guest-matrix.sh
+
+      - name: Upload SMP2 logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: starry-smp2-matrix-logs-${{ github.run_id }}
+          path: starry-smp2-matrix-logs/
+          if-no-files-found: ignore

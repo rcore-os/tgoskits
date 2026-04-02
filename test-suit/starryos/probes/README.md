@@ -43,6 +43,8 @@ VERIFY_STRICT=1 test-suit/starryos/scripts/run-diff-probes.sh verify-oracle-all
 | `ioctl_badfd` | ioctl(2) 非法 fd + FIONREAD → EBADF | `expected/ioctl_badfd.line` |
 | `pipe2_nullfd` | pipe2(2) pipefd=NULL → EFAULT | `expected/pipe2_nullfd.line` |
 | `clock_gettime_null_ts` | clock_gettime(2) timespec=NULL → EFAULT | `expected/clock_gettime_null_ts.line` |
+| `execve_enoent` | execve(2) 不存在路径 → ENOENT | `expected/execve_enoent.line` |
+| `wait4_echild` | wait4(2) 非子进程 pid → ECHILD | `expected/wait4_echild.line` |
 
 列出当前 contract 名称：`test-suit/starryos/scripts/list-contract-probes.sh`
 
@@ -143,7 +145,9 @@ cargo xtask starry test qemu --target riscv64 \
 - **static**：`./scripts/starryos-probes-ci.sh`（catalog、覆盖、`sh -n`；若 runner 上无交叉编译器则跳过构建）。
 - **linux-oracle**：安装 `python3-yaml`、`qemu-user`、`gcc-riscv64-linux-gnu`，用 **GNU** 交叉链静态编译后执行 **`VERIFY_STRICT=1 verify-oracle-all`**。
 
-在 GitHub：**Actions → StarryOS syscall probes → Run workflow** 可在 `next` 等分支手动触发。
+重负载 **SMP2 全 contract guest 矩阵**（不在 push 触发）：**`.github/workflows/starryos-probes-smp2-matrix.yml`** — **`workflow_dispatch`** 与 **每日定时**；需 **`ghcr.io/<repo>-container`**（与主仓库 `test.yml` 中 Starry 测试一致）。
+
+在 GitHub：**Actions → StarryOS syscall probes → Run workflow** 可在 `next` 等分支手动触发；SMP2 矩阵在 **StarryOS probes SMP2 guest matrix** 工作流中单独触发。
 
 ## 串口 / 日志 与 oracle 自动比对（推荐）
 

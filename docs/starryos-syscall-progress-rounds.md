@@ -100,7 +100,7 @@
 
 **交付物**：本文件十段纪要；工作区已具备 **多探针 oracle 入口**、**通用镜像注入**、**方法与矩阵骨架文档**（手写 contract 数量见第 20 轮收束）。
 
-**仍建议后续迭代**：安装 `qemu-riscv64` 后跑通 `verify-oracle-all`；guest 串口输出与 oracle **自动 diff**；**S0-6** SMP 用例矩阵；catalog 中其余 syscall 逐步替换 `generated` stub 为真实 contract；`git commit` 分组提交。
+**仍建议后续迭代**：安装 `qemu-riscv64` 后跑通 `verify-oracle-all`；guest 串口输出与 oracle **自动 diff**；catalog 中其余 syscall 逐步替换 `generated` stub 为真实 contract；`git commit` 分组提交。（**S0-6 SMP 矩阵**已见第 31 轮。）
 
 ---
 
@@ -300,6 +300,21 @@
 
 **交付物**：本文件第 21–30 节；手写 contract **5** 个（`write_stdout`、`close_badfd`、`read_stdin_zero`、`dup_badfd`、`fcntl_badfd`）；catalog **12** 条带 `generator_hints`。
 
-**仍建议后续迭代**：落地真实 `.github/workflows`（从示例粘贴）；`openat` 等路径类 contract；SMP 矩阵。
+**仍建议后续迭代**：`openat` 等路径类 contract 的进一步语义覆盖；**SMP 矩阵**已落地（第 31 轮 / `run-smp2-guest-matrix.sh`），后续可扩 futex/ppoll 专用用例。
+
+---
+
+## 第 31 轮 — CI 分层、SMP2 矩阵自动化、execve/wait4 contract 与文档收束
+
+**目标**：将「轻量 push CI」与「重 SMP2 guest 矩阵」分离；catalog/矩阵/测试方法反映 **S0-6 已落地**；补齐 **`execve`/`wait4`** 最小 errno contract；固定 **生成器 vs 手写** 与 **guest/Linux 分歧** 处理策略。
+
+**交付物**：
+- `.github/workflows/starryos-probes-smp2-matrix.yml`：`workflow_dispatch` + 每日 **UTC 02:00** 跑 **`run-smp2-guest-matrix.sh`**，上传 **`LOGDIR`** 日志 artifact；与主 probe 工作流分离（不在 push 上跑）。
+- `execve_enoent` / `wait4_echild`：`contract/*.c`、`expected/*.line`、`testcases/probe-*-0`；catalog **`tests:`** 与 **`gen_syscall_probes.py`** 模板 **`contract_execve_enoent`** / **`contract_wait4_echild`**。
+- `docs/starryos-syscall-compat-matrix.yaml`：`execve`/`wait4` 行；**`futex`/`ppoll`** 标 **`parity: not_applicable`** 与说明。
+- `docs/starryos-syscall-testing-method.md`：SMP 与矩阵脚本、生成器分工、分歧处理、`starryos-probes-smp2-matrix` Actions 说明。
+- `docs/starryos-syscall-progress-rounds.md`：本节收束。
+
+**验证**：`./scripts/starryos-probes-ci.sh`；`VERIFY_STRICT=1 verify-oracle-all`；本地 **`run-smp2-guest-matrix.sh`**（全 contract）。
 
 ---

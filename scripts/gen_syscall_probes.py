@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
-"""Generate probe skeleton C files from docs/starryos-syscall-catalog.yaml."""
+"""Generate probe skeleton C files from docs/starryos-syscall-catalog.yaml.
+
+Division of labor (see docs/starryos-syscall-testing-method.md):
+- ``contract_write_zero`` / ``contract_read_zero``: small self-contained templates that
+  compile and mirror the hand-written contracts for write/read.
+- ``contract_execve_enoent`` / ``contract_wait4_echild``: same for the errno probes
+  listed in catalog ``tests:``; hand-written sources in ``probes/contract/`` remain
+  the oracle source of truth — regenerate to refresh ``generated/*.c`` after catalog edits.
+- ``contract_errno`` / ``contract_stub`` / other unknown templates: ``emit_stub`` placeholders
+  only; replace with hand-written ``contract/*.c`` before relying on oracle lines.
+- **futex** / **ppoll**: keep ``contract_stub``; do not add fixed ``expected/*.line`` until
+  dedicated SMP-safe scenarios exist.
+"""
 
 from __future__ import annotations
 
@@ -32,6 +44,42 @@ int main(void) {{
   errno = 0;
   ssize_t n = read(0, NULL, 0);
   dprintf(1, "CASE {syscall}.zero_count ret=%zd errno=%d note={note}\\n", n, errno);
+  return 0;
+}}
+"""
+
+
+def emit_execve_enoent(syscall: str, note: str) -> str:
+    return f"""/* GENERATED — {syscall} — template contract_execve_enoent */
+#include <errno.h>
+#include <stdio.h>
+#include <unistd.h>
+
+int main(void) {{
+  char *argv[] = {{ "/__starryos_probe__/execve_no_such", NULL }};
+  char *envp[] = {{ NULL }};
+  errno = 0;
+  int r = execve("/__starryos_probe__/execve_no_such", argv, envp);
+  int e = errno;
+  dprintf(1, "CASE execve.enoent ret=%d errno=%d note={note}\\n", r, e);
+  return 0;
+}}
+"""
+
+
+def emit_wait4_echild(syscall: str, note: str) -> str:
+    return f"""/* GENERATED — {syscall} — template contract_wait4_echild */
+#include <errno.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+int main(void) {{
+  errno = 0;
+  pid_t r = wait4(999999, NULL, 0, NULL);
+  int e = errno;
+  dprintf(1, "CASE wait4.nochld ret=%d errno=%d note={note}\\n", (int)r, e);
   return 0;
 }}
 """
@@ -73,6 +121,10 @@ def main() -> None:
             body = emit_write_zero(name, "generated-from-catalog")
         elif tpl == "contract_read_zero":
             body = emit_read_zero(name, "generated-from-catalog")
+        elif tpl == "contract_execve_enoent":
+            body = emit_execve_enoent(name, "generated-from-catalog")
+        elif tpl == "contract_wait4_echild":
+            body = emit_wait4_echild(name, "generated-from-catalog")
         else:
             body = emit_stub(name, tpl)
         out = args.out_dir / f"{name}_generated.c"

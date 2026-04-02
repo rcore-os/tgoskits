@@ -70,4 +70,6 @@ test-suit/starryos/scripts/run-smp2-guest-matrix.sh
 
 本机 **`serial.log`**、**`serial-*.log`** 已在 **`.gitignore`**，避免误提交。
 
+GitHub 上 **SMP2 全量 guest 矩阵**（定时 + 手动）：工作流 **`starryos-probes-smp2-matrix.yml`**（见 **`docs/starryos-syscall-testing-method.md`**）。
+
 更完整的说明见 **`test-suit/starryos/probes/README.md`** 与 **`docs/starryos-syscall-testing-method.md`**。
