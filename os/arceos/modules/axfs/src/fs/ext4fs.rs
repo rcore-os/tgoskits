@@ -25,11 +25,10 @@ use axfs_vfs::{
     VfsResult,
 };
 use rsext4::{
-    Ext4FileSystem as Rsext4FileSystem, Jbd2Dev,
+    Ext4Error, Ext4FileSystem as Rsext4FileSystem, Ext4Result, Ext4Timestamp, Jbd2Dev,
     api::{OpenFile, fs_mount, lseek, open, read_at},
     dir::{get_inode_with_num, mkdir},
     entries::classic_dir::list_entries,
-    error::{BlockDevError, BlockDevResult},
     file::{delete_dir, mkfile, mv, truncate, unlink, write_file},
     loopfile::resolve_inode_block_allextend,
 };
@@ -222,10 +221,10 @@ impl VfsNodeOps for FileWrapper {
                 let mut inner = inner.lock();
                 match ty {
                     VfsNodeType::Dir => {
-                        mkdir(&mut inner, &mut fs, &fpath);
+                        let _ = mkdir(&mut inner, &mut fs, &fpath);
                     }
                     _ => {
-                        mkfile(&mut inner, &mut fs, &fpath, None, None);
+                        let _ = mkfile(&mut inner, &mut fs, &fpath, None, None);
                     }
                 }
             }
@@ -233,10 +232,10 @@ impl VfsNodeOps for FileWrapper {
                 let mut inner = inner.lock();
                 match ty {
                     VfsNodeType::Dir => {
-                        mkdir(&mut inner, &mut fs, &fpath);
+                        let _ = mkdir(&mut inner, &mut fs, &fpath);
                     }
                     _ => {
-                        mkfile(&mut inner, &mut fs, &fpath, None, None);
+                        let _ = mkfile(&mut inner, &mut fs, &fpath, None, None);
                     }
                 }
             }
@@ -269,17 +268,17 @@ impl VfsNodeOps for FileWrapper {
             Ext4Inner::Disk(ref inner) => {
                 let mut inner = inner.lock();
                 if inode.is_dir() {
-                    delete_dir(&mut fs, &mut inner, &fpath);
+                    let _ = delete_dir(&mut fs, &mut inner, &fpath);
                 } else {
-                    unlink(&mut fs, &mut inner, &fpath);
+                    let _ = unlink(&mut fs, &mut inner, &fpath);
                 }
             }
             Ext4Inner::Partition(ref inner) => {
                 let mut inner = inner.lock();
                 if inode.is_dir() {
-                    delete_dir(&mut fs, &mut inner, &fpath);
+                    let _ = delete_dir(&mut fs, &mut inner, &fpath);
                 } else {
-                    unlink(&mut fs, &mut inner, &fpath);
+                    let _ = unlink(&mut fs, &mut inner, &fpath);
                 }
             }
         }
@@ -436,7 +435,7 @@ impl VfsNodeOps for FileWrapper {
 
         if let Some(ref mut file) = *file_guard {
             let mut fs = self.fs.lock();
-            lseek(file, offset);
+            let _ = lseek(file, offset);
             let data = match self.inner {
                 Ext4Inner::Disk(ref inner) => {
                     let mut inner = inner.lock();
@@ -520,96 +519,122 @@ impl Drop for FileWrapper {
 }
 
 impl rsext4::BlockDevice for Disk {
-    fn write(&mut self, buffer: &[u8], block_id: u32, count: u32) -> BlockDevResult<()> {
+    fn write(
+        &mut self,
+        buffer: &[u8],
+        block_id: rsext4::bmalloc::AbsoluteBN,
+        count: u32,
+    ) -> Ext4Result<()> {
         // RVlwext4 uses 4096 byte blocks, but Disk uses 512 byte blocks
-        self.set_position(block_id as u64 * BLOCK_SIZE as u64);
+        self.set_position(block_id.raw() * BLOCK_SIZE as u64);
         let mut total_written = 0;
         let to_write = count as usize * BLOCK_SIZE;
 
         while total_written < to_write {
             let remaining = &buffer[total_written..];
-            let written = self
-                .write_one(remaining)
-                .map_err(|_| BlockDevError::WriteError)?;
+            let written = self.write_one(remaining).map_err(|_| Ext4Error::io())?;
             total_written += written;
         }
 
         Ok(())
     }
 
-    fn read(&mut self, buffer: &mut [u8], block_id: u32, count: u32) -> BlockDevResult<()> {
-        self.set_position(block_id as u64 * BLOCK_SIZE as u64);
+    fn read(
+        &mut self,
+        buffer: &mut [u8],
+        block_id: rsext4::bmalloc::AbsoluteBN,
+        count: u32,
+    ) -> Ext4Result<()> {
+        self.set_position(block_id.raw() * BLOCK_SIZE as u64);
         let mut total_read = 0;
         let to_read = count as usize * BLOCK_SIZE;
 
         while total_read < to_read {
             let remaining = &mut buffer[total_read..];
-            let read = self
-                .read_one(remaining)
-                .map_err(|_| BlockDevError::ReadError)?;
+            let read = self.read_one(remaining).map_err(|_| Ext4Error::io())?;
             total_read += read;
         }
 
         Ok(())
     }
 
-    fn open(&mut self) -> BlockDevResult<()> {
+    fn open(&mut self) -> Ext4Result<()> {
         Ok(())
     }
 
-    fn close(&mut self) -> BlockDevResult<()> {
+    fn close(&mut self) -> Ext4Result<()> {
         Ok(())
     }
 
     fn total_blocks(&self) -> u64 {
         // RVlwext4 uses 4096 byte blocks
         self.size() / BLOCK_SIZE as u64
+    }
+
+    fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
+        let now = axhal::time::wall_time();
+        let sec =
+            i64::try_from(now.as_secs()).map_err(|_| Ext4Error::from(rsext4::Errno::EOVERFLOW))?;
+        Ok(Ext4Timestamp::new(sec, now.subsec_nanos()))
     }
 }
 
 impl rsext4::BlockDevice for Partition {
-    fn write(&mut self, buffer: &[u8], block_id: u32, count: u32) -> BlockDevResult<()> {
-        self.set_position(block_id as u64 * BLOCK_SIZE as u64);
+    fn write(
+        &mut self,
+        buffer: &[u8],
+        block_id: rsext4::bmalloc::AbsoluteBN,
+        count: u32,
+    ) -> Ext4Result<()> {
+        self.set_position(block_id.raw() * BLOCK_SIZE as u64);
         let mut total_written = 0;
         let to_write = count as usize * BLOCK_SIZE;
 
         while total_written < to_write {
             let remaining = &buffer[total_written..];
-            let written = self
-                .write_one(remaining)
-                .map_err(|_| BlockDevError::WriteError)?;
+            let written = self.write_one(remaining).map_err(|_| Ext4Error::io())?;
             total_written += written;
         }
 
         Ok(())
     }
 
-    fn read(&mut self, buffer: &mut [u8], block_id: u32, count: u32) -> BlockDevResult<()> {
-        self.set_position(block_id as u64 * BLOCK_SIZE as u64);
+    fn read(
+        &mut self,
+        buffer: &mut [u8],
+        block_id: rsext4::bmalloc::AbsoluteBN,
+        count: u32,
+    ) -> Ext4Result<()> {
+        self.set_position(block_id.raw() * BLOCK_SIZE as u64);
         let mut total_read = 0;
         let to_read = count as usize * BLOCK_SIZE;
 
         while total_read < to_read {
             let remaining = &mut buffer[total_read..];
-            let read = self
-                .read_one(remaining)
-                .map_err(|_| BlockDevError::ReadError)?;
+            let read = self.read_one(remaining).map_err(|_| Ext4Error::io())?;
             total_read += read;
         }
 
         Ok(())
     }
 
-    fn open(&mut self) -> BlockDevResult<()> {
+    fn open(&mut self) -> Ext4Result<()> {
         Ok(())
     }
 
-    fn close(&mut self) -> BlockDevResult<()> {
+    fn close(&mut self) -> Ext4Result<()> {
         Ok(())
     }
 
     fn total_blocks(&self) -> u64 {
         // RVlwext4 uses 4096 byte blocks
         self.size() / BLOCK_SIZE as u64
+    }
+
+    fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
+        let now = axhal::time::wall_time();
+        let sec =
+            i64::try_from(now.as_secs()).map_err(|_| Ext4Error::from(rsext4::Errno::EOVERFLOW))?;
+        Ok(Ext4Timestamp::new(sec, now.subsec_nanos()))
     }
 }
