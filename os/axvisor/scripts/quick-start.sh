@@ -129,10 +129,9 @@ Examples:
     $0 roc-rk3568-pc start --serial /dev/ttyUSB0 --arceos # One-step: prepare + launch
     $0 roc-rk3568-pc start --serial /dev/ttyACM0 --multi # One-step with custom serial device
 
-    # RDK S100P (requires --serial for start)
-    $0 rdk-s100 setup                               # Prepare environment only
-    $0 rdk-s100 setup --serial /dev/ttyUSB0         # Prepare with custom serial device
-    $0 rdk-s100 run --arceos                        # Launch ArceOS (serial must be set in config)
+    # RDK S100P (board flow requires a valid serial config)
+    $0 rdk-s100 setup --serial /dev/ttyUSB0         # Prepare environment and write serial into runtime config
+    $0 rdk-s100 run --arceos                        # Launch ArceOS after setup has written serial into config
     $0 rdk-s100 start --serial /dev/ttyUSB0 --linux # One-step: prepare + launch Linux
     $0 rdk-s100 start --serial /dev/ttyUSB0 --multi # One-step with custom serial device
     $0 rdk-s100p start --serial /dev/ttyUSB0 --linux # Same as rdk-s100
@@ -597,9 +596,10 @@ setup_rdk_s100() {
     if [ "$serial_specified" = true ]; then
         info "Serial device set to: $serial_device"
     else
-        warn "IMPORTANT: Please set the correct serial device in tmp/configs/rdk-s100-runtime.toml"
-        warn "Example: serial = \"/dev/ttyUSB0\""
-        warn "Then run: $0 rdk-s100 run --arceos"
+        warn "IMPORTANT: tmp/configs/rdk-s100-runtime.toml is not runnable until serial is set"
+        warn "Preferred: rerun setup with --serial, for example:"
+        warn "  $0 rdk-s100 setup --serial /dev/ttyUSB0"
+        warn "Or edit tmp/configs/rdk-s100-runtime.toml and add: serial = \"/dev/ttyUSB0\""
     fi
 }
 
