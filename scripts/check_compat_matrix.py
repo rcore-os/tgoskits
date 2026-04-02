@@ -40,7 +40,7 @@ def main() -> int:
         "--require-guest-golden",
         action="store_true",
         help="also require expected/guest-alpine323/<probe>.line or .cases for partial/aligned "
-        "(phase B closure; guest golden must be committed)",
+        "(phase C: default in scripts/starryos-probes-ci.sh; guest golden must be committed)",
     )
     args = ap.parse_args()
     root = args.root

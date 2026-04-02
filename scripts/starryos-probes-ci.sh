@@ -11,8 +11,8 @@ python3 scripts/extract_starry_syscalls.py --check-catalog docs/starryos-syscall
 echo "== probe path coverage =="
 python3 scripts/check_probe_coverage.py
 
-echo "== compat matrix vs probes =="
-python3 scripts/check_compat_matrix.py
+echo "== compat matrix vs probes (incl. guest-alpine323 golden) =="
+python3 scripts/check_compat_matrix.py --require-guest-golden
 
 echo "== structured CASE selftest =="
 "$ROOT/test-suit/starryos/scripts/selftest-structured-cases.sh"
