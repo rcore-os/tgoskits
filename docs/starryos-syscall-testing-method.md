@@ -4,7 +4,7 @@
 
 ## 分层
 
-1. **分发表真相源**：`scripts/extract_starry_syscalls.py` 从 `handle_syscall` 的 `match` 生成 `docs/starryos-syscall-dispatch.json`。**可读表格**：`docs/starryos-syscall-dispatch-table.md`（`python3 scripts/render_starry_syscall_inventory.py --step 1`）。
+1. **分发表真相源**：`scripts/extract_starry_syscalls.py` 从 `handle_syscall` 的 `match` 生成 `docs/starryos-syscall-dispatch.json`。**可读表格**：`docs/starryos-syscall-dispatch-table.md`（`--step 1`）；**+ handler / catalog**：`docs/starryos-syscall-dispatch-handlers.md`（`--step 2`）。生成器：`python3 scripts/render_starry_syscall_inventory.py`。
 2. **Catalog**：`docs/starryos-syscall-catalog.yaml` 记录优先级、风险标签、实现路径与关联探针路径；与分发表一致性用 `--check-catalog` 校验。
 3. **探针**
    - **手写 contract**：`test-suit/starryos/probes/contract/*.c`，命名建议 `<syscall>_<scenario>.c`，产出静态 riscv64 ELF。
