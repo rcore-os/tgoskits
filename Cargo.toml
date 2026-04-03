@@ -373,6 +373,7 @@ buddy-slab-allocator = "0.2"
 cfg-if = "1.0"
 chrono = { version = "0.4", default-features = false }
 ctor_bare = { version = "0.4.1", path = "components/ctor_bare/ctor_bare" }
+env_logger = "0.11"
 event-listener = { version = "5.4.0", default-features = false }
 kernel_guard = { version = "0.3.3", path = "components/kernel_guard" }
 kspin = { version = "0.3.1", path = "components/kspin" }
@@ -392,4 +393,4 @@ page_table_multiarch = { version = "0.8.1", features = ["axerrno"], path = "comp
 percpu = { version = "0.4.3", path = "components/percpu/percpu" }
 scope-local = { version = "0.3.2", path = "components/scope-local" }
 spin = "0.10"
-ostool = { version = "0.11" }
+ostool = { version = "0.12" }
