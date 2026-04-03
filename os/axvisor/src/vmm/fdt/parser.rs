@@ -15,7 +15,10 @@
 //! FDT parsing and processing functionality.
 
 use alloc::{string::ToString, vec::Vec};
-use axvm::config::{AxVMConfig, AxVMCrateConfig, PassThroughDeviceConfig};
+use axaddrspace::MappingFlags;
+use axvm::config::{
+    AxVMConfig, AxVMCrateConfig, PassThroughDeviceConfig, VmMemConfig, VmMemMappingType,
+};
 use fdt_parser::{Fdt, FdtHeader, PciRange, PciSpace};
 
 use crate::vmm::fdt::crate_guest_fdt_with_cache;
@@ -56,6 +59,144 @@ pub fn setup_guest_fdt_from_vmm(
 
     let dtb_data = super::create::crate_guest_fdt(&fdt, &passthrough_device_names, crate_config);
     crate_guest_fdt_with_cache(dtb_data, crate_config);
+}
+
+fn is_reserved_memory_path(node_path: &str) -> bool {
+    node_path == "/reserved-memory" || node_path.starts_with("/reserved-memory/")
+}
+
+fn overlaps_memory_region(lhs_gpa: usize, lhs_size: usize, rhs: &VmMemConfig) -> bool {
+    let lhs_end = lhs_gpa.saturating_add(lhs_size);
+    let rhs_end = rhs.gpa.saturating_add(rhs.size);
+    lhs_gpa < rhs_end && rhs.gpa < lhs_end
+}
+
+fn is_covered_by_memory_region(gpa: usize, size: usize, region: &VmMemConfig) -> bool {
+    let end = gpa.saturating_add(size);
+    let region_end = region.gpa.saturating_add(region.size);
+    region.gpa <= gpa && region_end >= end
+}
+
+fn reserved_memory_regions(crate_cfg: &AxVMCrateConfig) -> impl Iterator<Item = &VmMemConfig> {
+    crate_cfg
+        .kernel
+        .memory_regions
+        .iter()
+        .filter(|region| region.map_type == VmMemMappingType::MapReserved)
+}
+
+fn is_memory_like_compatible(node: &fdt_parser::Node<'_>) -> bool {
+    node.compatibles().any(|compat| {
+        compat == "mmio-sram"
+            || compat.contains("shared-memory")
+            || compat.contains("shmem")
+            || compat.contains("sram")
+    })
+}
+
+fn should_skip_passthrough_node(
+    node: &fdt_parser::Node<'_>,
+    node_path: &str,
+    reserved_regions: &[VmMemConfig],
+) -> bool {
+    if !is_memory_like_compatible(node) {
+        return false;
+    }
+
+    let Some(reg_iter) = node.reg() else {
+        return false;
+    };
+
+    for reg in reg_iter {
+        let gpa = reg.address as usize;
+        let size = reg.size.unwrap_or(0);
+        if size == 0 {
+            continue;
+        }
+
+        if let Some(region) = reserved_regions
+            .iter()
+            .find(|region| overlaps_memory_region(gpa, size, region))
+        {
+            debug!(
+                "Skipping passthrough node {} [{:#x}~{:#x}] because memory-like compatible overlaps reserved region [{:#x}~{:#x}]",
+                node_path,
+                gpa,
+                gpa + size,
+                region.gpa,
+                region.gpa + region.size
+            );
+            return true;
+        }
+    }
+
+    false
+}
+
+pub fn parse_reserved_memory_regions(crate_cfg: &mut AxVMCrateConfig, dtb: &[u8]) {
+    let fdt = Fdt::from_bytes(dtb)
+        .expect("Failed to parse DTB image, perhaps the DTB is invalid or corrupted");
+    let all_nodes: Vec<_> = fdt.all_nodes().collect();
+    let default_flags = (MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE).bits();
+
+    let mut added_count = 0usize;
+    for (index, node) in all_nodes.iter().enumerate() {
+        let node_path = super::build_node_path(&all_nodes, index);
+        if !is_reserved_memory_path(&node_path) {
+            continue;
+        }
+
+        if let Some(reg_iter) = node.reg() {
+            for reg in reg_iter {
+                let gpa = reg.address as usize;
+                let size = reg.size.unwrap_or(0);
+                if size == 0 {
+                    continue;
+                }
+
+                if let Some(existing) = crate_cfg
+                    .kernel
+                    .memory_regions
+                    .iter()
+                    .find(|region| overlaps_memory_region(gpa, size, region))
+                {
+                    if is_covered_by_memory_region(gpa, size, existing) {
+                        debug!(
+                            "Skipping reserved-memory {} [{:#x}~{:#x}] because it is already covered by {:?}",
+                            node_path,
+                            gpa,
+                            gpa + size,
+                            existing
+                        );
+                    } else {
+                        warn!(
+                            "Skipping reserved-memory {} [{:#x}~{:#x}] because it partially overlaps existing {:?}",
+                            node_path,
+                            gpa,
+                            gpa + size,
+                            existing
+                        );
+                    }
+                    continue;
+                }
+
+                crate_cfg.kernel.memory_regions.push(VmMemConfig {
+                    gpa,
+                    size,
+                    flags: default_flags,
+                    map_type: VmMemMappingType::MapReserved,
+                });
+                added_count += 1;
+            }
+        }
+    }
+
+    if added_count > 0 {
+        info!(
+            "Added {} reserved-memory region(s) from DTB into VM kernel memory_regions",
+            added_count
+        );
+    }
 }
 
 pub fn set_phys_cpu_sets(vm_cfg: &mut AxVMConfig, fdt: &Fdt, crate_config: &AxVMCrateConfig) {
@@ -230,7 +371,11 @@ fn add_pci_ranges_config(vm_cfg: &mut AxVMConfig, node_name: &str, range: &PciRa
     );
 }
 
-pub fn parse_passthrough_devices_address(vm_cfg: &mut AxVMConfig, dtb: &[u8]) {
+pub fn parse_passthrough_devices_address(
+    vm_cfg: &mut AxVMConfig,
+    crate_cfg: &AxVMCrateConfig,
+    dtb: &[u8],
+) {
     let devices = vm_cfg.pass_through_devices().to_vec();
     if !devices.is_empty() && devices[0].length != 0 {
         for (index, device) in devices.iter().enumerate() {
@@ -250,10 +395,23 @@ pub fn parse_passthrough_devices_address(vm_cfg: &mut AxVMConfig, dtb: &[u8]) {
         // Clear existing passthrough device configurations
         vm_cfg.clear_pass_through_devices();
 
+        let all_nodes: Vec<_> = fdt.all_nodes().collect();
+        let reserved_regions: Vec<VmMemConfig> =
+            reserved_memory_regions(crate_cfg).cloned().collect();
+
         // Traverse all device tree nodes
-        for node in fdt.all_nodes() {
+        for (index, node) in all_nodes.iter().enumerate() {
+            let node_path = super::build_node_path(&all_nodes, index);
+
             // Skip root node
-            if node.name() == "/" || node.name().starts_with("memory") {
+            if node.name() == "/"
+                || node.name().starts_with("memory")
+                || is_reserved_memory_path(&node_path)
+            {
+                continue;
+            }
+
+            if should_skip_passthrough_node(node, &node_path, &reserved_regions) {
                 continue;
             }
 

@@ -48,6 +48,7 @@ const AXVISOR_TEST_FAIL_REGEX: &[&str] = &[
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AxvisorUbootBoardConfig {
     pub(crate) board: &'static str,
+    pub(crate) guest: &'static str,
     pub(crate) build_config: &'static str,
     pub(crate) vmconfig: &'static str,
 }
@@ -55,13 +56,27 @@ pub(crate) struct AxvisorUbootBoardConfig {
 const AXVISOR_UBOOT_BOARD_CONFIGS: &[AxvisorUbootBoardConfig] = &[
     AxvisorUbootBoardConfig {
         board: "phytiumpi",
+        guest: "linux",
         build_config: "os/axvisor/configs/board/phytiumpi.toml",
         vmconfig: "os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml",
     },
     AxvisorUbootBoardConfig {
         board: "roc-rk3568-pc",
+        guest: "linux",
         build_config: "os/axvisor/configs/board/roc-rk3568-pc.toml",
         vmconfig: "os/axvisor/configs/vms/linux-aarch64-rk3568-smp1.toml",
+    },
+    AxvisorUbootBoardConfig {
+        board: "rdk-s100",
+        guest: "linux",
+        build_config: "os/axvisor/configs/board/rdk-s100.toml",
+        vmconfig: "os/axvisor/configs/vms/linux-aarch64-s100-smp1.toml",
+    },
+    AxvisorUbootBoardConfig {
+        board: "rdk-s100",
+        guest: "arceos",
+        build_config: "os/axvisor/configs/board/rdk-s100.toml",
+        vmconfig: "os/axvisor/configs/vms/arceos-aarch64-s100-smp1.toml",
     },
 ];
 
@@ -88,16 +103,21 @@ pub(crate) fn parse_axvisor_test_target(target: &str) -> anyhow::Result<(&str, &
     )
 }
 
-pub(crate) fn axvisor_uboot_board_config(board: &str) -> anyhow::Result<AxvisorUbootBoardConfig> {
+pub(crate) fn axvisor_uboot_board_config(
+    board: &str,
+    guest: &str,
+) -> anyhow::Result<AxvisorUbootBoardConfig> {
     AXVISOR_UBOOT_BOARD_CONFIGS
         .iter()
         .copied()
-        .find(|config| config.board == board)
+        .find(|config| config.board == board && config.guest == guest)
         .ok_or_else(|| {
             anyhow!(
-                "unsupported board `{}` for axvisor uboot tests. Supported boards are: {}",
+                "unsupported axvisor uboot test target board=`{}` guest=`{}`. Supported \
+                 board/guest pairs are: {}",
                 board,
-                supported_board_names()
+                guest,
+                supported_board_guest_pairs()
             )
         })
 }
@@ -175,10 +195,10 @@ fn parse_arch_alias_target<'a>(
     Ok((target, resolve_target(target)?))
 }
 
-fn supported_board_names() -> String {
+fn supported_board_guest_pairs() -> String {
     AXVISOR_UBOOT_BOARD_CONFIGS
         .iter()
-        .map(|config| config.board)
+        .map(|config| format!("{}/{}", config.board, config.guest))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -292,33 +312,55 @@ mod tests {
     #[test]
     fn parses_axvisor_uboot_board_config_for_linux_smoke() {
         assert_eq!(
-            axvisor_uboot_board_config("phytiumpi").unwrap(),
+            axvisor_uboot_board_config("phytiumpi", "linux").unwrap(),
             AxvisorUbootBoardConfig {
                 board: "phytiumpi",
+                guest: "linux",
                 build_config: "os/axvisor/configs/board/phytiumpi.toml",
                 vmconfig: "os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml",
             }
         );
         assert_eq!(
-            axvisor_uboot_board_config("roc-rk3568-pc").unwrap(),
+            axvisor_uboot_board_config("roc-rk3568-pc", "linux").unwrap(),
             AxvisorUbootBoardConfig {
                 board: "roc-rk3568-pc",
+                guest: "linux",
                 build_config: "os/axvisor/configs/board/roc-rk3568-pc.toml",
                 vmconfig: "os/axvisor/configs/vms/linux-aarch64-rk3568-smp1.toml",
+            }
+        );
+        assert_eq!(
+            axvisor_uboot_board_config("rdk-s100", "linux").unwrap(),
+            AxvisorUbootBoardConfig {
+                board: "rdk-s100",
+                guest: "linux",
+                build_config: "os/axvisor/configs/board/rdk-s100.toml",
+                vmconfig: "os/axvisor/configs/vms/linux-aarch64-s100-smp1.toml",
+            }
+        );
+        assert_eq!(
+            axvisor_uboot_board_config("rdk-s100", "arceos").unwrap(),
+            AxvisorUbootBoardConfig {
+                board: "rdk-s100",
+                guest: "arceos",
+                build_config: "os/axvisor/configs/board/rdk-s100.toml",
+                vmconfig: "os/axvisor/configs/vms/arceos-aarch64-s100-smp1.toml",
             }
         );
     }
 
     #[test]
     fn rejects_unsupported_axvisor_uboot_board() {
-        let err = axvisor_uboot_board_config("orangepi-5-plus").unwrap_err();
+        let err = axvisor_uboot_board_config("orangepi-5-plus", "linux").unwrap_err();
 
         assert!(
             err.to_string()
-                .contains("unsupported board `orangepi-5-plus`")
+                .contains("unsupported axvisor uboot test target board=`orangepi-5-plus`")
         );
-        assert!(err.to_string().contains("phytiumpi"));
-        assert!(err.to_string().contains("roc-rk3568-pc"));
+        assert!(err.to_string().contains("phytiumpi/linux"));
+        assert!(err.to_string().contains("roc-rk3568-pc/linux"));
+        assert!(err.to_string().contains("rdk-s100/linux"));
+        assert!(err.to_string().contains("rdk-s100/arceos"));
     }
 
     #[test]

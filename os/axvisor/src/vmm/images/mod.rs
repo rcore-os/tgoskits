@@ -123,6 +123,7 @@ impl ImageLoader {
                 core::ptr::NonNull::new(_dtb_slice.as_ptr() as *mut u8).unwrap(),
                 _dtb_slice.len(),
                 self.vm.clone(),
+                &self.config,
             );
         } else {
             if let Some(buffer) = vm_imags.dtb {
@@ -271,6 +272,7 @@ pub mod fs {
                 core::ptr::NonNull::new(_dtb_slice.as_ptr() as *mut u8).unwrap(),
                 _dtb_slice.len(),
                 loader.vm.clone(),
+                &loader.config,
             );
         }
 

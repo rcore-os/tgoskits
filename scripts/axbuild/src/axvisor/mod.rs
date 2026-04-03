@@ -109,6 +109,9 @@ pub struct ArgsTestUboot {
     #[arg(short = 'b', long, value_name = "BOARD")]
     pub board: String,
 
+    #[arg(long, default_value = "linux", value_name = "GUEST")]
+    pub guest: String,
+
     #[arg(long)]
     pub uboot_config: Option<PathBuf>,
 }
@@ -255,7 +258,7 @@ impl Axvisor {
     }
 
     async fn test_uboot(&mut self, args: ArgsTestUboot) -> anyhow::Result<()> {
-        let board = test_qemu::axvisor_uboot_board_config(&args.board)?;
+        let board = test_qemu::axvisor_uboot_board_config(&args.board, &args.guest)?;
         let explicit_uboot_config = args.uboot_config.clone();
         let uboot_config_summary = explicit_uboot_config
             .as_ref()
@@ -272,8 +275,8 @@ impl Axvisor {
         }
 
         println!(
-            "running axvisor uboot test for board: {} with vmconfig: {}",
-            board.board, board.vmconfig
+            "running axvisor uboot test for board: {} guest: {} with vmconfig: {}",
+            board.board, board.guest, board.vmconfig
         );
 
         let mut request = self.prepare_request(
@@ -290,9 +293,13 @@ impl Axvisor {
             .await
             .with_context(|| {
                 format!(
-                    "axvisor uboot test failed for board `{}` (build_config={}, vmconfig={}, \
-                     uboot_config={})",
-                    board.board, board.build_config, board.vmconfig, uboot_config_summary
+                    "axvisor uboot test failed for board `{}` guest `{}` (build_config={}, \
+                     vmconfig={}, uboot_config={})",
+                    board.board,
+                    board.guest,
+                    board.build_config,
+                    board.vmconfig,
+                    uboot_config_summary
                 )
             })
     }
@@ -454,6 +461,8 @@ mod tests {
             "uboot",
             "-b",
             "roc-rk3568-pc",
+            "--guest",
+            "arceos",
             "--uboot-config",
             "uboot.toml",
         ])
@@ -463,8 +472,28 @@ mod tests {
             Command::Test(args) => match args.command {
                 TestCommand::Uboot(args) => {
                     assert_eq!(args.board, "roc-rk3568-pc");
+                    assert_eq!(args.guest, "arceos");
                     assert_eq!(args.uboot_config, Some(PathBuf::from("uboot.toml")));
                 }
+                _ => panic!("expected uboot test command"),
+            },
+            _ => panic!("expected test command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_test_uboot_with_default_guest() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from(["axvisor", "test", "uboot", "-b", "roc-rk3568-pc"]).unwrap();
+
+        match cli.command {
+            Command::Test(args) => match args.command {
+                TestCommand::Uboot(args) => assert_eq!(args.guest, "linux"),
                 _ => panic!("expected uboot test command"),
             },
             _ => panic!("expected test command"),

@@ -1888,9 +1888,9 @@ dependencies = [
 
 [[package]]
 name = "fdt-parser"
-version = "0.4.18"
+version = "0.4.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f95f0bda5ff920492f6573294d8e3a99b75ee2e5ef93ab313fc6d517fa46785"
+checksum = "1e175b7c46c98b80c8130665802cb3d5407fb6042b70a3d25f1b6edcb8f3de41"
 
 [[package]]
 name = "fdt-raw"
@@ -3773,7 +3773,3 @@ dependencies = [
  "quote",
  "syn 2.0.117",
 ]
-
-[[patch.unused]]
-name = "ostool"
-version = "0.11.1"

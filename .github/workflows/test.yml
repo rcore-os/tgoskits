@@ -115,13 +115,21 @@ jobs:
         run: cargo axvisor test qemu --target x86_64
 
   test_axvisor_uboot_board:
-    name: Test axvisor ${{ matrix.board }}
+    name: Test axvisor ${{ matrix.board }} ${{ matrix.guest }}
     strategy:
       fail-fast: false
       matrix:
         include:
           # - board: phytiumpi
           - board: roc-rk3568-pc
+            guest: linux
+            uboot_config: .github/workflows/uboot.toml
+          - board: rdk-s100
+            guest: linux
+            uboot_config: .github/workflows/uboot-rdk-s100.toml
+          - board: rdk-s100
+            guest: arceos
+            uboot_config: .github/workflows/uboot-rdk-s100.toml
     runs-on:
       - self-hosted
       - linux
@@ -138,5 +146,20 @@ jobs:
           cache-bin: false
           save-if: ${{ github.event_name == 'push' }}
 
+      - name: Prepare board-specific test inputs
+        run: |
+          case "${{ matrix.board }}/${{ matrix.guest }}" in
+            rdk-s100/linux)
+              : "${BOARD_GUEST_LINUX_KERNEL_PATH:?BOARD_GUEST_LINUX_KERNEL_PATH must point to the S100 Linux guest kernel image on the runner}"
+              sed -i "s|^kernel_path = .*|kernel_path = \"${BOARD_GUEST_LINUX_KERNEL_PATH}\"|g" \
+                os/axvisor/configs/vms/linux-aarch64-s100-smp1.toml
+              ;;
+            rdk-s100/arceos)
+              : "${BOARD_GUEST_ARCEOS_KERNEL_PATH:?BOARD_GUEST_ARCEOS_KERNEL_PATH must point to the S100 ArceOS guest kernel image on the runner}"
+              sed -i "s|^kernel_path = .*|kernel_path = \"${BOARD_GUEST_ARCEOS_KERNEL_PATH}\"|g" \
+                os/axvisor/configs/vms/arceos-aarch64-s100-smp1.toml
+              ;;
+          esac
+
       - name: Run axvisor board tests
-        run: cargo axvisor test uboot --board ${{ matrix.board }} --uboot-config .github/workflows/uboot.toml
+        run: cargo axvisor test uboot --board ${{ matrix.board }} --guest ${{ matrix.guest }} --uboot-config ${{ matrix.uboot_config }}
