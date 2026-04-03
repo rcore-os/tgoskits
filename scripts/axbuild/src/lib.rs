@@ -147,6 +147,18 @@ mod tests {
     }
 
     #[test]
+    fn cli_parses_board_config_command() {
+        let cli = Cli::try_parse_from(["axbuild", "board", "config"]).unwrap();
+
+        match cli.command {
+            Commands::Board {
+                command: board::Command::Config,
+            } => {}
+            _ => panic!("expected `board config` command"),
+        }
+    }
+
+    #[test]
     fn cli_rejects_legacy_test_qemu_command() {
         assert!(Cli::try_parse_from(["axbuild", "test", "qemu", "arceos"]).is_err());
     }

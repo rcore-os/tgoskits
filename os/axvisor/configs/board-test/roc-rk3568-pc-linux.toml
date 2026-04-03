@@ -1,0 +1,12 @@
+board_type = "ROC-RK3568-PC"
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "(?i)login incorrect",
+  "(?i)permission denied",
+]
+shell_init_cmd = "pwd && echo 'test pass'"
+shell_prefix = "root@firefly:~#"
+success_regex = [
+  "(?m)^test pass\\s*$",
+]

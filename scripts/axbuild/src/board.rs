@@ -1,5 +1,5 @@
 use clap::{Args, Subcommand};
-use ostool::board::{self, global_config::LoadedBoardGlobalConfig};
+use ostool::board;
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
@@ -7,6 +7,8 @@ pub enum Command {
     Ls(BoardServerArgs),
     /// Allocate a remote board and connect to its serial terminal
     Connect(ArgsConnect),
+    /// Edit the default board server configuration
+    Config,
 }
 
 #[derive(Args, Debug, Default, Clone)]
@@ -32,24 +34,19 @@ pub struct ArgsConnect {
 pub async fn execute(command: Command) -> anyhow::Result<()> {
     match command {
         Command::Ls(server) => {
-            let global_config = load_board_global_config_with_notice()?;
+            let global_config = board::load_board_global_config_with_notice()?;
             let (server, port) =
                 global_config.resolve_server(server.server.as_deref(), server.port);
-            board::list_boards(&server, port).await
+            let boards = board::fetch_board_types(&server, port).await?;
+            println!("{}", board::render_board_table(&boards));
+            Ok(())
         }
         Command::Connect(args) => {
-            let global_config = load_board_global_config_with_notice()?;
+            let global_config = board::load_board_global_config_with_notice()?;
             let (server, port) =
                 global_config.resolve_server(args.server.server.as_deref(), args.server.port);
             board::connect_board(&server, port, &args.board_type).await
         }
+        Command::Config => board::config(),
     }
-}
-
-fn load_board_global_config_with_notice() -> anyhow::Result<LoadedBoardGlobalConfig> {
-    let loaded = LoadedBoardGlobalConfig::load_or_create()?;
-    if loaded.created {
-        println!("Created default board config: {}", loaded.path.display());
-    }
-    Ok(loaded)
 }

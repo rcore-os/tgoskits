@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use ostool::{
     Tool, ToolConfig,
+    board::RunBoardArgs,
     build::{CargoQemuRunnerArgs, CargoRunnerKind, CargoUbootRunnerArgs, config::Cargo},
 };
 
@@ -116,6 +117,16 @@ impl AppContext {
                 &CargoRunnerKind::Uboot(CargoUbootRunnerArgs { uboot_config }),
             )
             .await
+    }
+
+    pub(crate) async fn board(
+        &mut self,
+        cargo: Cargo,
+        build_config_path: PathBuf,
+        board_args: RunBoardArgs,
+    ) -> anyhow::Result<()> {
+        self.set_build_config_path(build_config_path);
+        self.tool.cargo_run_board(&cargo, board_args).await
     }
 
     fn set_build_config_path(&mut self, path: PathBuf) {

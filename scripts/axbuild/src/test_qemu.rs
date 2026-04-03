@@ -52,6 +52,14 @@ pub(crate) struct AxvisorUbootBoardConfig {
     pub(crate) vmconfig: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AxvisorBoardTestGroup {
+    pub(crate) name: &'static str,
+    pub(crate) build_config: &'static str,
+    pub(crate) vmconfigs: &'static [&'static str],
+    pub(crate) board_test_config: &'static str,
+}
+
 const AXVISOR_UBOOT_BOARD_CONFIGS: &[AxvisorUbootBoardConfig] = &[
     AxvisorUbootBoardConfig {
         board: "orangepi-5-plus",
@@ -67,6 +75,34 @@ const AXVISOR_UBOOT_BOARD_CONFIGS: &[AxvisorUbootBoardConfig] = &[
         board: "roc-rk3568-pc",
         build_config: "os/axvisor/configs/board/roc-rk3568-pc.toml",
         vmconfig: "os/axvisor/configs/vms/linux-aarch64-rk3568-smp1.toml",
+    },
+];
+
+const PHYTIUMPI_LINUX_VMCONFIGS: &[&str] =
+    &["os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml"];
+const ORANGEPI_5_PLUS_LINUX_VMCONFIGS: &[&str] =
+    &["os/axvisor/configs/vms/linux-aarch64-orangepi5p-smp1.toml"];
+const ROC_RK3568_PC_LINUX_VMCONFIGS: &[&str] =
+    &["os/axvisor/configs/vms/linux-aarch64-rk3568-smp1.toml"];
+
+const AXVISOR_BOARD_TEST_GROUPS: &[AxvisorBoardTestGroup] = &[
+    AxvisorBoardTestGroup {
+        name: "phytiumpi-linux",
+        build_config: "os/axvisor/configs/board/phytiumpi.toml",
+        vmconfigs: PHYTIUMPI_LINUX_VMCONFIGS,
+        board_test_config: "os/axvisor/configs/board-test/phytiumpi-linux.toml",
+    },
+    AxvisorBoardTestGroup {
+        name: "orangepi-5-plus-linux",
+        build_config: "os/axvisor/configs/board/orangepi-5-plus.toml",
+        vmconfigs: ORANGEPI_5_PLUS_LINUX_VMCONFIGS,
+        board_test_config: "os/axvisor/configs/board-test/orangepi-5-plus-linux.toml",
+    },
+    AxvisorBoardTestGroup {
+        name: "roc-rk3568-pc-linux",
+        build_config: "os/axvisor/configs/board/roc-rk3568-pc.toml",
+        vmconfigs: ROC_RK3568_PC_LINUX_VMCONFIGS,
+        board_test_config: "os/axvisor/configs/board-test/roc-rk3568-pc-linux.toml",
     },
 ];
 
@@ -105,6 +141,26 @@ pub(crate) fn axvisor_uboot_board_config(board: &str) -> anyhow::Result<AxvisorU
                 supported_board_names()
             )
         })
+}
+
+pub(crate) fn axvisor_board_test_groups(
+    test_group: Option<&str>,
+) -> anyhow::Result<Vec<AxvisorBoardTestGroup>> {
+    match test_group {
+        Some(name) => AXVISOR_BOARD_TEST_GROUPS
+            .iter()
+            .copied()
+            .find(|group| group.name == name)
+            .map(|group| vec![group])
+            .ok_or_else(|| {
+                anyhow!(
+                    "unsupported axvisor board test group `{}`. Supported groups are: {}",
+                    name,
+                    supported_board_test_group_names()
+                )
+            }),
+        None => Ok(AXVISOR_BOARD_TEST_GROUPS.to_vec()),
+    }
 }
 
 fn default_axvisor_test_success_regex() -> Vec<String> {
@@ -188,6 +244,14 @@ fn supported_board_names() -> String {
         .join(", ")
 }
 
+fn supported_board_test_group_names() -> String {
+    AXVISOR_BOARD_TEST_GROUPS
+        .iter()
+        .map(|group| group.name)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn owned_patterns(patterns: &[&str]) -> Vec<String> {
     patterns
         .iter()
@@ -203,6 +267,19 @@ pub(crate) fn finalize_qemu_test_run(suite_name: &str, failed: &[String]) -> any
         bail!(
             "{} qemu tests failed for {} package(s): {}",
             suite_name,
+            failed.len(),
+            failed.join(", ")
+        )
+    }
+}
+
+pub(crate) fn finalize_board_test_run(failed: &[String]) -> anyhow::Result<()> {
+    if failed.is_empty() {
+        println!("all axvisor board tests passed");
+        Ok(())
+    } else {
+        bail!(
+            "axvisor board tests failed for {} group(s): {}",
             failed.len(),
             failed.join(", ")
         )
@@ -336,6 +413,45 @@ mod tests {
     }
 
     #[test]
+    fn returns_all_axvisor_board_test_groups_when_no_filter_is_given() {
+        let groups = axvisor_board_test_groups(None).unwrap();
+
+        assert_eq!(
+            groups.iter().map(|group| group.name).collect::<Vec<_>>(),
+            vec![
+                "phytiumpi-linux",
+                "orangepi-5-plus-linux",
+                "roc-rk3568-pc-linux"
+            ]
+        );
+    }
+
+    #[test]
+    fn filters_axvisor_board_test_group_by_name() {
+        let groups = axvisor_board_test_groups(Some("phytiumpi-linux")).unwrap();
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name, "phytiumpi-linux");
+        assert_eq!(
+            groups[0].vmconfigs,
+            &["os/axvisor/configs/vms/linux-aarch64-e2000-smp1.toml"]
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_axvisor_board_test_group() {
+        let err = axvisor_board_test_groups(Some("unknown-linux")).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("unsupported axvisor board test group `unknown-linux`")
+        );
+        assert!(err.to_string().contains("phytiumpi-linux"));
+        assert!(err.to_string().contains("orangepi-5-plus-linux"));
+        assert!(err.to_string().contains("roc-rk3568-pc-linux"));
+    }
+
+    #[test]
     fn qemu_failure_summary_is_aggregated() {
         let err = finalize_qemu_test_run("arceos", &["pkg-b".to_string(), "pkg-c".to_string()])
             .unwrap_err();
@@ -353,6 +469,16 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("arceos does not support `test uboot` yet")
+        );
+    }
+
+    #[test]
+    fn board_failure_summary_is_aggregated() {
+        let err = finalize_board_test_run(&["phytiumpi-linux".to_string()]).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("axvisor board tests failed for 1 group(s): phytiumpi-linux")
         );
     }
 }

@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use clap::{Args, Subcommand};
+use ostool::board::RunBoardArgs;
 
 use crate::{
     axvisor::context::AxvisorContext,
@@ -27,6 +28,8 @@ pub enum Command {
     Qemu(ArgsQemu),
     /// Build and run Axvisor with U-Boot
     Uboot(ArgsUboot),
+    /// Build and run Axvisor on a remote board
+    Board(ArgsBoard),
     /// Generate a default board config
     Defconfig(ArgsDefconfig),
     /// Board config helpers
@@ -74,6 +77,24 @@ pub struct ArgsUboot {
 }
 
 #[derive(Args)]
+pub struct ArgsBoard {
+    #[command(flatten)]
+    pub build: ArgsBuild,
+
+    #[arg(long = "board-config")]
+    pub board_config: Option<PathBuf>,
+
+    #[arg(short = 'b', long)]
+    pub board_type: Option<String>,
+
+    #[arg(long)]
+    pub server: Option<String>,
+
+    #[arg(long)]
+    pub port: Option<u16>,
+}
+
+#[derive(Args)]
 pub struct ArgsDefconfig {
     pub board: String,
 }
@@ -96,6 +117,8 @@ pub enum TestCommand {
     Qemu(ArgsTestQemu),
     /// Run Axvisor U-Boot board test suite
     Uboot(ArgsTestUboot),
+    /// Run Axvisor remote board test suite
+    Board(ArgsTestBoard),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -111,6 +134,24 @@ pub struct ArgsTestUboot {
 
     #[arg(long)]
     pub uboot_config: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone, Default)]
+pub struct ArgsTestBoard {
+    #[arg(short = 't', long = "test-group", value_name = "GROUP")]
+    pub test_group: Option<String>,
+
+    #[arg(long = "board-test-config")]
+    pub board_test_config: Option<PathBuf>,
+
+    #[arg(short = 'b', long = "board-type", value_name = "BOARD_TYPE")]
+    pub board_type: Option<String>,
+
+    #[arg(long)]
+    pub server: Option<String>,
+
+    #[arg(long)]
+    pub port: Option<u16>,
 }
 
 #[derive(Subcommand)]
@@ -148,6 +189,7 @@ impl Axvisor {
             Command::Build(args) => self.build(args).await,
             Command::Qemu(args) => self.qemu(args).await,
             Command::Uboot(args) => self.uboot(args).await,
+            Command::Board(args) => self.board(args).await,
             Command::Defconfig(args) => self.defconfig(args),
             Command::Config(args) => self.config(args),
             Command::Image(args) => self.image(args).await,
@@ -181,6 +223,25 @@ impl Axvisor {
         self.run_uboot_request(request).await
     }
 
+    async fn board(&mut self, args: ArgsBoard) -> anyhow::Result<()> {
+        let request =
+            self.prepare_request((&args.build).into(), None, None, SnapshotPersistence::Store)?;
+        let cargo = build::load_cargo_config(&request)?;
+        self.app
+            .board(
+                cargo,
+                request.build_info_path,
+                RunBoardArgs {
+                    config: None,
+                    board_config: args.board_config,
+                    board_type: args.board_type,
+                    server: args.server,
+                    port: args.port,
+                },
+            )
+            .await
+    }
+
     fn defconfig(&mut self, args: ArgsDefconfig) -> anyhow::Result<()> {
         let workspace_root = self.app.workspace_root().to_path_buf();
         let axvisor_dir = self.app.axvisor_dir()?.to_path_buf();
@@ -208,6 +269,7 @@ impl Axvisor {
         match args.command {
             TestCommand::Qemu(args) => self.test_qemu(args).await,
             TestCommand::Uboot(args) => self.test_uboot(args).await,
+            TestCommand::Board(args) => self.test_board(args).await,
         }
     }
 
@@ -297,6 +359,88 @@ impl Axvisor {
             })
     }
 
+    async fn test_board(&mut self, args: ArgsTestBoard) -> anyhow::Result<()> {
+        if args.board_test_config.is_some() && args.test_group.is_none() {
+            bail!(
+                "`--board-test-config` requires `--test-group` because board test configs embed a \
+                 single board_type"
+            );
+        }
+
+        if let Some(path) = args.board_test_config.as_ref()
+            && !path.exists()
+        {
+            bail!("missing explicit board test config `{}`", path.display());
+        }
+
+        let groups = test_qemu::axvisor_board_test_groups(args.test_group.as_deref())?;
+        let total = groups.len();
+        let mut failed = Vec::new();
+
+        for (index, group) in groups.into_iter().enumerate() {
+            let board_test_config = args
+                .board_test_config
+                .clone()
+                .unwrap_or_else(|| PathBuf::from(group.board_test_config));
+            let board_test_config_summary = board_test_config.display().to_string();
+
+            if !board_test_config.exists() {
+                eprintln!(
+                    "failed: {}: missing board test config `{}`",
+                    group.name, board_test_config_summary
+                );
+                failed.push(group.name.to_string());
+                continue;
+            }
+
+            println!("[{}/{}] axvisor board {}", index + 1, total, group.name);
+
+            let result = async {
+                let request = self.prepare_request(
+                    Self::board_test_build_args(group),
+                    None,
+                    None,
+                    SnapshotPersistence::Discard,
+                )?;
+                let cargo = build::load_cargo_config(&request)?;
+                self.app
+                    .board(
+                        cargo,
+                        request.build_info_path,
+                        RunBoardArgs {
+                            config: None,
+                            board_config: Some(board_test_config.clone()),
+                            board_type: args.board_type.clone(),
+                            server: args.server.clone(),
+                            port: args.port,
+                        },
+                    )
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "axvisor board test failed for group `{}` (build_config={}, \
+                             board_test_config={}, vmconfigs={})",
+                            group.name,
+                            group.build_config,
+                            board_test_config_summary,
+                            group.vmconfigs.join(", ")
+                        )
+                    })
+            }
+            .await;
+
+            match result {
+                Ok(()) => println!("ok: {}", group.name),
+                Err(err) => {
+                    eprintln!("failed: {}: {:#}", group.name, err);
+                    failed.push(group.name.to_string());
+                }
+            }
+        }
+
+        test_qemu::finalize_board_test_run(&failed)
+    }
+
     fn qemu_test_build_args(arch: &str, vmconfig: PathBuf) -> AxvisorCliArgs {
         AxvisorCliArgs {
             config: None,
@@ -314,6 +458,16 @@ impl Axvisor {
             target: None,
             plat_dyn: None,
             vmconfigs: vec![PathBuf::from(vmconfig)],
+        }
+    }
+
+    fn board_test_build_args(group: test_qemu::AxvisorBoardTestGroup) -> AxvisorCliArgs {
+        AxvisorCliArgs {
+            config: Some(PathBuf::from(group.build_config)),
+            arch: None,
+            target: None,
+            plat_dyn: None,
+            vmconfigs: group.vmconfigs.iter().map(PathBuf::from).collect(),
         }
     }
 
@@ -422,6 +576,45 @@ mod tests {
     }
 
     #[test]
+    fn command_parses_board() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from([
+            "axvisor",
+            "board",
+            "--arch",
+            "aarch64",
+            "--board-config",
+            "remote.board.toml",
+            "-b",
+            "rk3568",
+            "--server",
+            "10.0.0.2",
+            "--port",
+            "9000",
+            "--vmconfigs",
+            "tmp/vm1.toml",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Board(args) => {
+                assert_eq!(args.build.arch.as_deref(), Some("aarch64"));
+                assert_eq!(args.board_config, Some(PathBuf::from("remote.board.toml")));
+                assert_eq!(args.board_type.as_deref(), Some("rk3568"));
+                assert_eq!(args.server.as_deref(), Some("10.0.0.2"));
+                assert_eq!(args.port, Some(9000));
+                assert_eq!(args.build.vmconfigs, vec![PathBuf::from("tmp/vm1.toml")]);
+            }
+            _ => panic!("expected board command"),
+        }
+    }
+
+    #[test]
     fn command_parses_test_qemu() {
         #[derive(clap::Parser)]
         struct Cli {
@@ -466,6 +659,49 @@ mod tests {
                     assert_eq!(args.uboot_config, Some(PathBuf::from("uboot.toml")));
                 }
                 _ => panic!("expected uboot test command"),
+            },
+            _ => panic!("expected test command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_test_board() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from([
+            "axvisor",
+            "test",
+            "board",
+            "-t",
+            "phytiumpi-linux",
+            "-b",
+            "Phytiumpi",
+            "--board-test-config",
+            "board-test.toml",
+            "--server",
+            "10.0.0.2",
+            "--port",
+            "9000",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Test(args) => match args.command {
+                TestCommand::Board(args) => {
+                    assert_eq!(args.test_group.as_deref(), Some("phytiumpi-linux"));
+                    assert_eq!(args.board_type.as_deref(), Some("Phytiumpi"));
+                    assert_eq!(
+                        args.board_test_config,
+                        Some(PathBuf::from("board-test.toml"))
+                    );
+                    assert_eq!(args.server.as_deref(), Some("10.0.0.2"));
+                    assert_eq!(args.port, Some(9000));
+                }
+                _ => panic!("expected board test command"),
             },
             _ => panic!("expected test command"),
         }
