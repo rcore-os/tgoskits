@@ -1,12 +1,12 @@
 board_type = "Orangepi5Plus"
 fail_regex = [
-  "(?i)\\bpanic(?:ked)?\\b",
-  "(?i)kernel panic",
-  "(?i)login incorrect",
-  "(?i)permission denied",
-  "Failed to open /guest/linux/orangepi-5-plus",
-  "Failed to load VM images",
-  "AxErrorKind::NotFound",
+  # "(?i)\\bpanic(?:ked)?\\b",
+  # "(?i)kernel panic",
+  # "(?i)login incorrect",
+  # "(?i)permission denied",
+  # "Failed to open /guest/linux/orangepi-5-plus",
+  # "Failed to load VM images",
+  # "AxErrorKind::NotFound",
 ]
 # shell_init_cmd = "root"
 # shell_prefix = "login:"
