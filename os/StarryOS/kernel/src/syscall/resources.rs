@@ -72,11 +72,11 @@ impl Rusage {
 
 impl From<Rusage> for rusage {
     fn from(value: Rusage) -> Self {
-        // FIXME: Zeroable
-        let mut usage: rusage = unsafe { core::mem::zeroed() };
-        usage.ru_utime = __kernel_old_timeval::from_time_value(value.utime);
-        usage.ru_stime = __kernel_old_timeval::from_time_value(value.stime);
-        usage
+        rusage {
+            ru_utime: __kernel_old_timeval::from_time_value(value.utime),
+            ru_stime: __kernel_old_timeval::from_time_value(value.stime),
+            ..Default::default()
+        }
     }
 }
 

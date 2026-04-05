@@ -131,6 +131,27 @@ pub fn sys_faccessat2(dirfd: c_int, path: *const c_char, mode: u32, flags: u32) 
 
     Ok(0)
 }
+/// Generate a dynamic FSID using FNV-1a hash based on device ID and FS type.
+fn generate_fsid(device_id: u64, fs_type: u64) -> __kernel_fsid_t {
+    let mut h: u64 = 0xcbf29ce484222325;
+    let prime: u64 = 0x100000001b3;
+    
+    // 混淆设备物理 ID
+    h ^= device_id;
+    h = h.wrapping_mul(prime);
+    
+    // 混淆文件系统类型
+    h ^= fs_type;
+    h = h.wrapping_mul(prime);
+    
+    // 将 64 位哈希值安全拆分为两个 32 位的数组元素
+    let val0 = (h & 0xFFFFFFFF) as i32;
+    let val1 = (h >> 32) as i32;
+    
+    __kernel_fsid_t {
+        val: [val0 as _, val1 as _],
+    }
+}
 
 fn statfs(loc: &Location) -> AxResult<statfs> {
     let stat = loc.filesystem().stat()?;
@@ -143,10 +164,9 @@ fn statfs(loc: &Location) -> AxResult<statfs> {
     result.f_bavail = stat.blocks_available as _;
     result.f_files = stat.file_count as _;
     result.f_ffree = stat.free_file_count as _;
-    // TODO: fsid
-    result.f_fsid = __kernel_fsid_t {
-        val: [0, loc.mountpoint().device() as _],
-    };
+    // Generate dynamic fsid
+    result.f_fsid = generate_fsid(loc.mountpoint().device() as u64, stat.fs_type as u64);
+    result.f_fsid = generate_fsid(loc.mountpoint().device() as u64, stat.fs_type as u64);
     result.f_namelen = stat.name_length as _;
     result.f_frsize = stat.fragment_size as _;
     result.f_flags = stat.mount_flags as _;

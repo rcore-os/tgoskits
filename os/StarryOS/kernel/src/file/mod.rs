@@ -67,46 +67,30 @@ impl Default for Kstat {
 
 impl From<Kstat> for stat {
     fn from(value: Kstat) -> Self {
-        // SAFETY: valid for stat
-        let mut stat: stat = unsafe { core::mem::zeroed() };
-        stat.st_dev = value.dev as _;
-        stat.st_ino = value.ino as _;
-        stat.st_nlink = value.nlink as _;
-        stat.st_mode = value.mode as _;
-        stat.st_uid = value.uid as _;
-        stat.st_gid = value.gid as _;
-        stat.st_size = value.size as _;
-        stat.st_blksize = value.blksize as _;
-        stat.st_blocks = value.blocks as _;
-        stat.st_rdev = value.rdev.0 as _;
-
-        stat.st_atime = value.atime.as_secs() as _;
-        stat.st_atime_nsec = value.atime.subsec_nanos() as _;
-        stat.st_mtime = value.mtime.as_secs() as _;
-        stat.st_mtime_nsec = value.mtime.subsec_nanos() as _;
-        stat.st_ctime = value.ctime.as_secs() as _;
-        stat.st_ctime_nsec = value.ctime.subsec_nanos() as _;
-
-        stat
+        stat {
+            st_dev: value.dev as _,
+            st_ino: value.ino as _,
+            st_nlink: value.nlink as _,
+            st_mode: value.mode as _,
+            st_uid: value.uid as _,
+            st_gid: value.gid as _,
+            st_rdev: value.rdev.0 as _,
+            st_size: value.size as _,
+            st_blksize: value.blksize as _,
+            st_blocks: value.blocks as _,
+            st_atime: value.atime.as_secs() as _,
+            st_atime_nsec: value.atime.subsec_nanos() as _,
+            st_mtime: value.mtime.as_secs() as _,
+            st_mtime_nsec: value.mtime.subsec_nanos() as _,
+            st_ctime: value.ctime.as_secs() as _,
+            st_ctime_nsec: value.ctime.subsec_nanos() as _,
+            ..Default::default()
+        }
     }
 }
 
 impl From<Kstat> for statx {
     fn from(value: Kstat) -> Self {
-        // SAFETY: valid for statx
-        let mut statx: statx = unsafe { core::mem::zeroed() };
-        statx.stx_blksize = value.blksize as _;
-        statx.stx_attributes = value.mode as _;
-        statx.stx_nlink = value.nlink as _;
-        statx.stx_uid = value.uid as _;
-        statx.stx_gid = value.gid as _;
-        statx.stx_mode = value.mode as _;
-        statx.stx_ino = value.ino as _;
-        statx.stx_size = value.size as _;
-        statx.stx_blocks = value.blocks as _;
-        statx.stx_rdev_major = value.rdev.major();
-        statx.stx_rdev_minor = value.rdev.minor();
-
         fn time_to_statx(time: &Duration) -> statx_timestamp {
             statx_timestamp {
                 tv_sec: time.as_secs() as _,
@@ -114,14 +98,26 @@ impl From<Kstat> for statx {
                 __reserved: 0,
             }
         }
-        statx.stx_atime = time_to_statx(&value.atime);
-        statx.stx_ctime = time_to_statx(&value.ctime);
-        statx.stx_mtime = time_to_statx(&value.mtime);
 
-        statx.stx_dev_major = (value.dev >> 32) as _;
-        statx.stx_dev_minor = value.dev as _;
-
-        statx
+        statx {
+            stx_blksize: value.blksize as _,
+            stx_attributes: value.mode as _,
+            stx_nlink: value.nlink as _,
+            stx_uid: value.uid as _,
+            stx_gid: value.gid as _,
+            stx_mode: value.mode as _,
+            stx_ino: value.ino as _,
+            stx_size: value.size as _,
+            stx_blocks: value.blocks as _,
+            stx_rdev_major: value.rdev.major(),
+            stx_rdev_minor: value.rdev.minor(),
+            stx_atime: time_to_statx(&value.atime),
+            stx_ctime: time_to_statx(&value.ctime),
+            stx_mtime: time_to_statx(&value.mtime),
+            stx_dev_major: (value.dev >> 32) as _,
+            stx_dev_minor: value.dev as _,
+            ..Default::default()
+        }
     }
 }
 

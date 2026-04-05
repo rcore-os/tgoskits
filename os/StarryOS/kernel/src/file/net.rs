@@ -32,10 +32,16 @@ impl FileLike for Socket {
     }
 
     fn stat(&self) -> AxResult<Kstat> {
-        // TODO(mivik): implement stat for sockets
+        // Implement socket stat: Sockets are special files.
+        // They typically have a link count of 1, and 0 actual file size.
         Ok(Kstat {
-            mode: S_IFSOCK | 0o777u32, // rwxrwxrwx
+            mode: S_IFSOCK | 0o777u32, // Socket type with rwxrwxrwx permissions
+            nlink: 1,
+            uid: 0,
+            gid: 0,
+            size: 0,
             blksize: 4096,
+            blocks: 0,
             ..Default::default()
         })
     }
