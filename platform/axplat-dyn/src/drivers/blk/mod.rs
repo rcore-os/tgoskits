@@ -6,10 +6,6 @@ use spin::Mutex;
 
 use super::DmaImpl;
 
-#[cfg(feature = "phytium-blk")]
-mod phytium;
-#[cfg(feature = "sdmmc")]
-mod rockchip;
 mod virtio;
 
 pub struct Block {

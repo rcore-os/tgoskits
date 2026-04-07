@@ -22,7 +22,7 @@ use rdrive::{
 use sdmmc::emmc::{self, EMmcHost};
 use spin::Once;
 
-use crate::drivers::{blk::PlatformDeviceBlock, iomap};
+use crate::driver::{blk::PlatformDeviceBlock, iomap};
 
 module_driver!(
     name: "Rockchip sdhci",
@@ -49,7 +49,7 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
 
     let mmio_size = base_reg.size.unwrap_or(0x1000);
 
-    let mmio_base = iomap((base_reg.address as usize).into(), mmio_size as usize)?;
+    let mmio_base = iomap(base_reg.address, mmio_size as usize)?;
 
     let clock: Vec<_> = info.node.clocks().into_iter().collect();
 
@@ -115,8 +115,8 @@ impl DriverGeneric for BlockDivce {
     }
 }
 
-impl rd_block::Interface for BlockDivce {
-    fn create_queue(&mut self) -> Option<alloc::boxed::Box<dyn rd_block::IQueue>> {
+impl rdif_block::Interface for BlockDivce {
+    fn create_queue(&mut self) -> Option<alloc::boxed::Box<dyn rdif_block::IQueue>> {
         self.dev
             .take()
             .map(|dev| alloc::boxed::Box::new(BlockQueue { raw: dev }) as _)
@@ -134,12 +134,12 @@ impl rd_block::Interface for BlockDivce {
         false
     }
 
-    fn handle_irq(&mut self) -> rd_block::Event {
-        rd_block::Event::none()
+    fn handle_irq(&mut self) -> rdif_block::Event {
+        rdif_block::Event::none()
     }
 }
 
-impl rd_block::IQueue for BlockQueue {
+impl rdif_block::IQueue for BlockQueue {
     fn num_blocks(&self) -> usize {
         self.raw.get_block_num() as _
     }
@@ -152,8 +152,8 @@ impl rd_block::IQueue for BlockQueue {
         0
     }
 
-    fn buff_config(&self) -> rd_block::BuffConfig {
-        rd_block::BuffConfig {
+    fn buff_config(&self) -> rdif_block::BuffConfig {
+        rdif_block::BuffConfig {
             dma_mask: u64::MAX,
             align: 0x1000,
             size: self.block_size(),
@@ -162,37 +162,40 @@ impl rd_block::IQueue for BlockQueue {
 
     fn submit_request(
         &mut self,
-        request: rd_block::Request<'_>,
-    ) -> Result<rd_block::RequestId, rd_block::BlkError> {
+        request: rdif_block::Request<'_>,
+    ) -> Result<rdif_block::RequestId, rdif_block::BlkError> {
         let id = request.block_id;
         match request.kind {
-            rd_block::RequestKind::Read(mut buffer) => {
+            rdif_block::RequestKind::Read(mut buffer) => {
                 let blocks = buffer.len() / self.block_size();
                 self.raw
                     .read_blocks(id as _, blocks as _, &mut buffer)
                     .map_err(maping_dev_err_to_blk_err)?;
-                Ok(rd_block::RequestId::new(0))
+                Ok(rdif_block::RequestId::new(0))
             }
-            rd_block::RequestKind::Write(items) => {
+            rdif_block::RequestKind::Write(items) => {
                 let blocks = items.len() / self.block_size();
                 self.raw
                     .write_blocks(id as _, blocks as _, items)
                     .map_err(maping_dev_err_to_blk_err)?;
-                Ok(rd_block::RequestId::new(0))
+                Ok(rdif_block::RequestId::new(0))
             }
         }
     }
 
-    fn poll_request(&mut self, _request: rd_block::RequestId) -> Result<(), rd_block::BlkError> {
+    fn poll_request(
+        &mut self,
+        _request: rdif_block::RequestId,
+    ) -> Result<(), rdif_block::BlkError> {
         Ok(())
     }
 }
 
-fn maping_dev_err_to_blk_err(err: sdmmc::err::SdError) -> rd_block::BlkError {
+fn maping_dev_err_to_blk_err(err: sdmmc::err::SdError) -> rdif_block::BlkError {
     match err {
         sdmmc::err::SdError::Timeout | sdmmc::err::SdError::DataTimeout => {
             // transient timeout, ask caller to retry
-            rd_block::BlkError::Retry
+            rdif_block::BlkError::Retry
         }
         sdmmc::err::SdError::Crc
         | sdmmc::err::SdError::DataCrc
@@ -207,12 +210,12 @@ fn maping_dev_err_to_blk_err(err: sdmmc::err::SdError) -> rd_block::BlkError {
         | sdmmc::err::SdError::DataError
         | sdmmc::err::SdError::CardError(..) => {
             // CRC/response/transfer related errors => I/O error
-            rd_block::BlkError::Other("SD/MMC I/O error".into())
+            rdif_block::BlkError::Other("SD/MMC I/O error".into())
         }
-        sdmmc::err::SdError::IoError => rd_block::BlkError::Other("I/O error".into()),
+        sdmmc::err::SdError::IoError => rdif_block::BlkError::Other("I/O error".into()),
         sdmmc::err::SdError::NoCard | sdmmc::err::SdError::UnsupportedCard => {
             // No card or unsupported card — treat as not supported
-            rd_block::BlkError::NotSupported
+            rdif_block::BlkError::NotSupported
         }
         sdmmc::err::SdError::BusPower
         | sdmmc::err::SdError::Acmd12Error
@@ -221,13 +224,13 @@ fn maping_dev_err_to_blk_err(err: sdmmc::err::SdError) -> rd_block::BlkError {
         | sdmmc::err::SdError::TuningFailed
         | sdmmc::err::SdError::VoltageSwitchFailed
         | sdmmc::err::SdError::BusWidth => {
-            rd_block::BlkError::Other("SD/MMC controller error".into())
+            rdif_block::BlkError::Other("SD/MMC controller error".into())
         }
         sdmmc::err::SdError::InvalidArgument => {
-            rd_block::BlkError::Other("Invalid argument".into())
+            rdif_block::BlkError::Other("Invalid argument".into())
         }
         sdmmc::err::SdError::BufferOverflow | sdmmc::err::SdError::MemoryError => {
-            rd_block::BlkError::NoMemory
+            rdif_block::BlkError::NoMemory
         }
     }
 }

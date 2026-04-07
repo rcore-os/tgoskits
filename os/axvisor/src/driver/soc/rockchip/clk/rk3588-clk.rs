@@ -17,7 +17,7 @@ use rdrive::{
 };
 use rk3588_clk::Rk3588Cru;
 
-use crate::drivers::iomap;
+use crate::driver::iomap;
 
 module_driver!(
     name: "Rockchip CRU",
@@ -34,9 +34,8 @@ module_driver!(
 fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
     let base_reg = info
         .node
-        .regs()
-        .into_iter()
-        .next()
+        .reg()
+        .and_then(|mut regs| regs.next())
         .ok_or(OnProbeError::other(alloc::format!(
             "[{}] has no reg",
             info.node.name()
@@ -44,7 +43,7 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
 
     let mmio_size = base_reg.size.unwrap_or(0x1000);
 
-    let mmio_base = iomap((base_reg.address as usize).into(), mmio_size as usize)?;
+    let mmio_base = iomap(base_reg.address, mmio_size)?;
 
     let cru = Rk3588Cru::new(mmio_base);
     let clk = rdif_clk::Clk::new(ClkDrv::new(cru));
