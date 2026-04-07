@@ -1,4 +1,4 @@
-board_type = "Orangepi5Plus"
+board_type = "OrangePi-5-Plus"
 fail_regex = [
   # "(?i)\\bpanic(?:ked)?\\b",
   # "(?i)kernel panic",

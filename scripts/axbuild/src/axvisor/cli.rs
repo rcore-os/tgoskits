@@ -159,6 +159,8 @@ impl From<&ArgsBuild> for AxvisorCliArgs {
 
 #[cfg(test)]
 mod tests {
+    use clap::Parser;
+
     use super::*;
 
     #[test]
