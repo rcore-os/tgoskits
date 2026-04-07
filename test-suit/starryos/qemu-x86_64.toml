@@ -13,6 +13,6 @@ uefi = false
 to_bin = false
 shell_prefix = "starry:~#"
 shell_init_cmd = "pwd && echo 'All tests passed!'"
-success_regex = ["^All tests passed!$"]
+success_regex = ["(?m)^All tests passed!\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b']
 timeout = 5

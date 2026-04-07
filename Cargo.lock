@@ -3473,8 +3473,6 @@ checksum = "9844ddc3a6e533d62bba727eb6c28b5d360921d5175e9ff0f1e621a5c590a4d5"
 [[package]]
 name = "fitimage"
 version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8cb4d07a1e7a76a7ac4b6b754d45670b1a82c8a0484d80cceeb30c99ad65ce1d"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -4401,8 +4399,6 @@ dependencies = [
 [[package]]
 name = "jkconfig"
 version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab2488617c3f2fc80740b7a1d4933f58fc0256ba38f4252ff00c71b3aeaa22b1"
 dependencies = [
  "anyhow",
  "cargo_metadata",
@@ -5215,8 +5211,6 @@ dependencies = [
 [[package]]
 name = "ostool"
 version = "0.12.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d94a25414eb69bddeac0caec8c2c394b1e1be792da36476e272a738ac217e14e"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8328,8 +8322,6 @@ dependencies = [
 [[package]]
 name = "uboot-shell"
 version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3b3d5d2959cc2e9a28cb2c4ad30f99a33f6831f4f159b08c696604b9494b672"
 dependencies = [
  "colored",
  "futures",
