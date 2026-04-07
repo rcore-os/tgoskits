@@ -1,15 +1,7 @@
 board_type = "OrangePi-5-Plus"
-fail_regex = [
-  # "(?i)\\bpanic(?:ked)?\\b",
-  # "(?i)kernel panic",
-  # "(?i)login incorrect",
-  # "(?i)permission denied",
-  # "Failed to open /guest/linux/orangepi-5-plus",
-  # "Failed to load VM images",
-  # "AxErrorKind::NotFound",
+fail_regex = []
+shell_init_cmd = "pwd && echo 'test pass'"
+shell_prefix = "orangepi@orangepi5plus:~"
+success_regex = [
+  "(?m)^test pass\\s*$",
 ]
-# shell_init_cmd = "root"
-# shell_prefix = "login:"
-# success_regex = [
-#   "(?m)^root@.*#\\s*$",
-# ]

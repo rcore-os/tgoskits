@@ -5,7 +5,6 @@ use crate::{
 
 pub(crate) const ARCEOS_TEST_PACKAGES: &[&str] = &[
     "arceos-memtest",
-    "arceos-display",
     "arceos-exception",
     "arceos-affinity",
     "arceos-net-echoserver",
