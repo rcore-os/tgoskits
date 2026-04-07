@@ -198,7 +198,7 @@ CURATED_DOCS = {
     "arceos-affinity",
     "ax-helloworld",
     "ax-helloworld-myplat",
-    "arceos-httpclient",
+    "ax-httpclient",
     "arceos-httpserver",
     "arceos-irq",
     "arceos-memtest",

@@ -262,13 +262,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-httpclient"
-version = "0.3.0"
-dependencies = [
- "axstd",
-]
-
-[[package]]
 name = "arceos-httpserver"
 version = "0.3.0"
 dependencies = [
@@ -609,6 +602,13 @@ dependencies = [
  "axplat-x86-pc",
  "axstd",
  "cfg-if",
+]
+
+[[package]]
+name = "ax-httpclient"
+version = "0.3.0"
+dependencies = [
+ "axstd",
 ]
 
 [[package]]
