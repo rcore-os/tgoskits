@@ -5,9 +5,9 @@ use core::{
     net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
 };
 
+use ax_net::{TcpSocket, UdpSocket};
 use axerrno::{LinuxError, LinuxResult};
 use axio::PollState;
-use ax_net::{TcpSocket, UdpSocket};
 use axsync::Mutex;
 
 use super::fd_ops::FileLike;

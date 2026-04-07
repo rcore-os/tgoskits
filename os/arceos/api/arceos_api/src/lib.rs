@@ -396,6 +396,8 @@ pub mod modules {
     pub use ax_display;
     #[cfg(feature = "fs")]
     pub use ax_fs;
+    #[cfg(feature = "net")]
+    pub use ax_net;
     pub use ax_runtime;
     #[cfg(feature = "alloc")]
     pub use axalloc;
@@ -410,8 +412,6 @@ pub mod modules {
     pub use axlog;
     #[cfg(feature = "paging")]
     pub use axmm;
-    #[cfg(feature = "net")]
-    pub use ax_net;
     pub use axsync;
     #[cfg(feature = "multitask")]
     pub use axtask;
