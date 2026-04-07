@@ -1,12 +1,12 @@
-# `axplat-aarch64-bsta1000b` 技术文档
+# `ax-plat-aarch64-bsta1000b` 技术文档
 
-> 路径：`components/axplat_crates/platforms/axplat-aarch64-bsta1000b`
+> 路径：`components/axplat_crates/platforms/ax-plat-aarch64-bsta1000b`
 > 类型：库 crate
 > 分层：组件层 / AArch64 板级平台包
 > 版本：`0.3.1-pre.6`
 > 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`axconfig.toml`、`src/boot.rs`、`src/init.rs`、`src/dw_apb_uart.rs`、`src/mem.rs`、`src/power.rs`、`src/mp.rs`、`src/misc.rs`
 
-`axplat-aarch64-bsta1000b` 是 Black Sesame A1000B SoC 在 `axplat` 体系里的具体板级实现。它把 A1000B 的启动入口、早期页表、固定地址空间、PSCI 多核拉起、GIC/Generic Timer 接线以及本地 DesignWare APB UART 控制台组织成一组 `axplat` 接口，使上层内核能够按统一平台契约完成 bring-up。它不是通用 AArch64 外设库，也不是完整驱动栈；它解决的是“这块板子怎样从裸机入口走到 `axplat::call_main()`，并把最小可运行平台能力交给上层”的问题。
+`ax-plat-aarch64-bsta1000b` 是 Black Sesame A1000B SoC 在 `axplat` 体系里的具体板级实现。它把 A1000B 的启动入口、早期页表、固定地址空间、PSCI 多核拉起、GIC/Generic Timer 接线以及本地 DesignWare APB UART 控制台组织成一组 `axplat` 接口，使上层内核能够按统一平台契约完成 bring-up。它不是通用 AArch64 外设库，也不是完整驱动栈；它解决的是“这块板子怎样从裸机入口走到 `axplat::call_main()`，并把最小可运行平台能力交给上层”的问题。
 
 ## 1. 架构设计分析
 
@@ -73,7 +73,7 @@ flowchart TD
 | --- | --- | --- |
 | `axcpu` | EL 切换、MMU 打开、trap 初始化、FP 使能、`halt()` 等 CPU 原语 | A1000B 的 UART/GIC 基地址、RAM 布局、PSCI CPU ID 选择 |
 | `axplat-aarch64-peripherals` | PSCI、Generic Timer、GIC 的通用 glue 与 `TimeIf`/`IrqIf` 宏 | A1000B 启动汇编、引导页表、DW APB UART、板级内存布局 |
-| `axplat-aarch64-bsta1000b` | 启动入口、页表、板级地址配置、本地控制台、`MemIf`/`PowerIf` | 调度、页表管理策略、驱动枚举、上层 HAL 聚合 |
+| `ax-plat-aarch64-bsta1000b` | 启动入口、页表、板级地址配置、本地控制台、`MemIf`/`PowerIf` | 调度、页表管理策略、驱动枚举、上层 HAL 聚合 |
 | `ax-hal` | 若上层选择接入，则负责 DTB、全局内存视图、运行时初始化顺序整合 | 早期板级寄存器初始化和 SoC 复位寄存器语义 |
 
 尤其需要注意三点：
@@ -118,7 +118,7 @@ flowchart TD
 | `smp` | 编译次核入口和 `PowerIf::cpu_boot()` 路径 | `boot.rs`、`mp.rs`、`power.rs` |
 | `rtc` | Cargo feature 已预留，但当前源码没有对应实现，等价于占位开关 | `Cargo.toml` |
 
-这里最容易误解的是 `rtc`：和 `axplat-aarch64-qemu-virt` 不同，A1000B 平台当前并没有在本 crate 内接入 RTC 设备或墙钟偏移逻辑，因此这个 feature 现在不提供新增语义。
+这里最容易误解的是 `rtc`：和 `ax-plat-aarch64-qemu-virt` 不同，A1000B 平台当前并没有在本 crate 内接入 RTC 设备或墙钟偏移逻辑，因此这个 feature 现在不提供新增语义。
 
 ### 2.3 最关键的边界澄清
 
@@ -160,7 +160,7 @@ flowchart TD
 
 ```mermaid
 graph TD
-    A[axcpu / page_table_entry / axconfig-macros] --> B[axplat-aarch64-bsta1000b]
+    A[axcpu / page_table_entry / axconfig-macros] --> B[ax-plat-aarch64-bsta1000b]
     C[axplat-aarch64-peripherals] --> B
     D[dw_apb_uart / kspin] --> B
     E[axplat] --> B
@@ -176,7 +176,7 @@ graph TD
 
 ```toml
 [dependencies]
-axplat-aarch64-bsta1000b = { workspace = true, features = ["irq", "smp"] }
+ax-plat-aarch64-bsta1000b = { workspace = true, features = ["irq", "smp"] }
 ```
 
 然后在依赖树某处显式链接平台包：
@@ -246,4 +246,4 @@ fn kernel_main(cpu_id: usize, arg: usize) -> ! {
 
 ## 7. 总结
 
-`axplat-aarch64-bsta1000b` 的价值，在于它把 A1000B 这块 SoC 的板级事实准确收敛成 `axplat` 契约：启动从哪里进、页表先怎么铺、控制台走哪个 UART、PSCI 怎样关机和拉起次核、哪些物理地址属于 RAM 或 MMIO。它既复用了 AArch64 通用外设 glue，又保留了 A1000B 自己的启动和串口特性，是一个典型的“板级落地层”而不是“通用硬件抽象层”。
+`ax-plat-aarch64-bsta1000b` 的价值，在于它把 A1000B 这块 SoC 的板级事实准确收敛成 `axplat` 契约：启动从哪里进、页表先怎么铺、控制台走哪个 UART、PSCI 怎样关机和拉起次核、哪些物理地址属于 RAM 或 MMIO。它既复用了 AArch64 通用外设 glue，又保留了 A1000B 自己的启动和串口特性，是一个典型的“板级落地层”而不是“通用硬件抽象层”。

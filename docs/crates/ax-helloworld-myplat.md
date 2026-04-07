@@ -31,10 +31,10 @@
 ```mermaid
 graph LR
     current["ax-helloworld-myplat"]
-    current --> axplat_aarch64_bsta1000b["axplat-aarch64-bsta1000b"]
-    current --> axplat_aarch64_phytium_pi["axplat-aarch64-phytium-pi"]
-    current --> axplat_aarch64_qemu_virt["axplat-aarch64-qemu-virt"]
-    current --> axplat_aarch64_raspi["axplat-aarch64-raspi"]
+    current --> axplat_aarch64_bsta1000b["ax-plat-aarch64-bsta1000b"]
+    current --> axplat_aarch64_phytium_pi["ax-plat-aarch64-phytium-pi"]
+    current --> axplat_aarch64_qemu_virt["ax-plat-aarch64-qemu-virt"]
+    current --> axplat_aarch64_raspi["ax-plat-aarch64-raspi"]
     current --> axplat_loongarch64_qemu_virt["axplat-loongarch64-qemu-virt"]
     current --> axplat_riscv64_qemu_virt["axplat-riscv64-qemu-virt"]
     current --> axplat_x86_pc["axplat-x86-pc"]
@@ -42,10 +42,10 @@ graph LR
 ```
 
 ### 3.1 直接与间接依赖
-- `axplat-aarch64-bsta1000b`
-- `axplat-aarch64-phytium-pi`
-- `axplat-aarch64-qemu-virt`
-- `axplat-aarch64-raspi`
+- `ax-plat-aarch64-bsta1000b`
+- `ax-plat-aarch64-phytium-pi`
+- `ax-plat-aarch64-qemu-virt`
+- `ax-plat-aarch64-raspi`
 - `axplat-loongarch64-qemu-virt`
 - `axplat-riscv64-qemu-virt`
 - `axplat-x86-pc`

@@ -103,7 +103,7 @@ graph LR
     sample --> memaddr["memory_addr"]
     sample --> conststr["const-str"]
     sample --> x86["axplat-x86-pc(irq,smp)"]
-    sample --> a64["axplat-aarch64-qemu-virt(irq,smp)"]
+    sample --> a64["ax-plat-aarch64-qemu-virt(irq,smp)"]
     sample --> rv["axplat-riscv64-qemu-virt(irq,smp)"]
     sample --> loong["axplat-loongarch64-qemu-virt(irq,smp)"]
 ```

@@ -238,7 +238,7 @@ CURATED_DOCS = {
     "ax-net-ng",
     "axpoll",
     "axplat",
-    "axplat-aarch64-bsta1000b",
+    "ax-plat-aarch64-bsta1000b",
     "axdevice",
     "ax-display",
     "ax-dma",

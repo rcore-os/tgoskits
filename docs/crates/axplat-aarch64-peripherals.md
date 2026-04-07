@@ -14,7 +14,7 @@
 
 该 crate 解决的是 AArch64 平台族中的“横向复用”问题：
 
-- `axplat-aarch64-qemu-virt`、`axplat-aarch64-raspi`、`axplat-aarch64-phytium-pi` 等平台虽然板级地址不同，但串口、时钟、中断控制器和 PSCI 的接线模式高度相似。
+- `ax-plat-aarch64-qemu-virt`、`ax-plat-aarch64-raspi`、`ax-plat-aarch64-phytium-pi` 等平台虽然板级地址不同，但串口、时钟、中断控制器和 PSCI 的接线模式高度相似。
 - 如果每个平台包都各自实现 `ConsoleIf`、`TimeIf`、`IrqIf`，会导致大量重复代码。
 - 因此这里把“通用外设驱动 + `axplat` 接口实现宏”下沉为独立 crate，板级平台只保留地址与时序绑定。
 
@@ -169,10 +169,10 @@ generic_timer::enable_irqs(timer_irq);
 
 ### 3.2 主要消费者
 
-- `axplat-aarch64-qemu-virt`
-- `axplat-aarch64-raspi`
-- `axplat-aarch64-phytium-pi`
-- `axplat-aarch64-bsta1000b`
+- `ax-plat-aarch64-qemu-virt`
+- `ax-plat-aarch64-raspi`
+- `ax-plat-aarch64-phytium-pi`
+- `ax-plat-aarch64-bsta1000b`
 - 间接上层：`ax-hal` 及其所服务的 ArceOS/StarryOS/Axvisor 宿主环境
 
 ### 3.3 依赖关系示意
@@ -183,10 +183,10 @@ graph TD
     C[axplat] --> B
     D[lazyinit / kspin / int_ratio] --> B
 
-    B --> E[axplat-aarch64-qemu-virt]
-    B --> F[axplat-aarch64-raspi]
-    B --> G[axplat-aarch64-phytium-pi]
-    B --> H[axplat-aarch64-bsta1000b]
+    B --> E[ax-plat-aarch64-qemu-virt]
+    B --> F[ax-plat-aarch64-raspi]
+    B --> G[ax-plat-aarch64-phytium-pi]
+    B --> H[ax-plat-aarch64-bsta1000b]
     E --> I[ax-hal]
     F --> I
     G --> I
@@ -222,7 +222,7 @@ graph TD
 cargo build -p axplat-aarch64-peripherals --target aarch64-unknown-none --all-features
 ```
 
-但真正有意义的验证应放到板级平台包上进行，例如通过 `axplat-aarch64-qemu-virt` 运行 `hello-kernel`、`irq-kernel` 或多核示例，确认串口输出、时钟推进和中断分发都贯通。
+但真正有意义的验证应放到板级平台包上进行，例如通过 `ax-plat-aarch64-qemu-virt` 运行 `hello-kernel`、`irq-kernel` 或多核示例，确认串口输出、时钟推进和中断分发都贯通。
 
 ### 4.4 维护时的注意事项
 
@@ -241,7 +241,7 @@ cargo build -p axplat-aarch64-peripherals --target aarch64-unknown-none --all-fe
 ### 5.2 推荐测试分层
 
 - 构建测试：`aarch64-unknown-none` 下做 `--all-features` 构建，确认 GIC、timer、PL011、PL031 glue 同时可编译。
-- 平台集成测试：在 `axplat-aarch64-qemu-virt` 上验证串口输出、定时器 tick、GIC IRQ 和 PSCI 关机。
+- 平台集成测试：在 `ax-plat-aarch64-qemu-virt` 上验证串口输出、定时器 tick、GIC IRQ 和 PSCI 关机。
 - 多核测试：启用 `smp` 的平台包应额外验证次核初始化后 `gic::init_gicc()` 与 `generic_timer::enable_irqs()` 是否在每核都生效。
 - RTC 测试：启用 `rtc` 的板级包应验证 `epochoffset_nanos()` 是否能让墙钟与单调时钟正确拼接。
 

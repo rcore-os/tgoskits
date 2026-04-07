@@ -1,8 +1,8 @@
 [package]
-name = "axplat-aarch64-qemu-virt"
+name = "ax-plat-aarch64-qemu-virt"
 version.workspace = true
 description = "Implementation of `axplat` hardware abstraction layer for QEMU ARM64 virtual machine."
-documentation = "https://docs.rs/axplat-aarch64-qemu-virt"
+documentation = "https://docs.rs/ax-plat-aarch64-qemu-virt"
 keywords = ["arceos", "os", "hal", "embedded", "aarch64"]
 categories = ["embedded", "no-std", "hardware-support", "os"]
 edition.workspace = true

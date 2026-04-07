@@ -88,11 +88,11 @@
 | `ax-net` | ArceOS 层 | `os/arceos/modules/axnet` | 8 | 4 | [查看](./ax-net.md) |
 | `ax-net-ng` | ArceOS 层 | `os/arceos/modules/axnet-ng` | 11 | 2 | [查看](./ax-net-ng.md) |
 | `axplat` | 组件层 | `components/axplat_crates/axplat` | 6 | 15 | [查看](./axplat.md) |
-| `axplat-aarch64-bsta1000b` | 组件层 | `components/axplat_crates/platforms/axplat-aarch64-bsta1000b` | 6 | 1 | [查看](./axplat-aarch64-bsta1000b.md) |
+| `ax-plat-aarch64-bsta1000b` | 组件层 | `components/axplat_crates/platforms/ax-plat-aarch64-bsta1000b` | 6 | 1 | [查看](./ax-plat-aarch64-bsta1000b.md) |
 | `axplat-aarch64-peripherals` | 组件层 | `components/axplat_crates/platforms/axplat-aarch64-peripherals` | 7 | 4 | [查看](./axplat-aarch64-peripherals.md) |
-| `axplat-aarch64-phytium-pi` | 组件层 | `components/axplat_crates/platforms/axplat-aarch64-phytium-pi` | 5 | 1 | [查看](./axplat-aarch64-phytium-pi.md) |
-| `axplat-aarch64-qemu-virt` | 组件层 | `components/axplat_crates/platforms/axplat-aarch64-qemu-virt` | 5 | 5 | [查看](./axplat-aarch64-qemu-virt.md) |
-| `axplat-aarch64-raspi` | 组件层 | `components/axplat_crates/platforms/axplat-aarch64-raspi` | 5 | 1 | [查看](./axplat-aarch64-raspi.md) |
+| `ax-plat-aarch64-phytium-pi` | 组件层 | `components/axplat_crates/platforms/ax-plat-aarch64-phytium-pi` | 5 | 1 | [查看](./ax-plat-aarch64-phytium-pi.md) |
+| `ax-plat-aarch64-qemu-virt` | 组件层 | `components/axplat_crates/platforms/ax-plat-aarch64-qemu-virt` | 5 | 5 | [查看](./ax-plat-aarch64-qemu-virt.md) |
+| `ax-plat-aarch64-raspi` | 组件层 | `components/axplat_crates/platforms/ax-plat-aarch64-raspi` | 5 | 1 | [查看](./ax-plat-aarch64-raspi.md) |
 | `axplat-dyn` | 平台层 | `platform/axplat-dyn` | 11 | 2 | [查看](./axplat-dyn.md) |
 | `axplat-loongarch64-qemu-virt` | 组件层 | `components/axplat_crates/platforms/axplat-loongarch64-qemu-virt` | 6 | 5 | [查看](./axplat-loongarch64-qemu-virt.md) |
 | `axplat-macros` | 组件层 | `components/axplat_crates/axplat-macros` | 1 | 1 | [查看](./axplat-macros.md) |

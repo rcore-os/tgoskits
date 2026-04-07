@@ -11,7 +11,7 @@ repository = "https://github.com/arceos-org/arceos/tree/main/modules/axhal"
 [features]
 smp = [
     "axplat-x86-pc?/smp",
-    "axplat-aarch64-qemu-virt?/smp",
+    "ax-plat-aarch64-qemu-virt?/smp",
     "axplat-riscv64-qemu-virt?/smp",
     "axplat-loongarch64-qemu-virt?/smp",
     "axplat-dyn?/smp",
@@ -20,7 +20,7 @@ smp = [
 irq = [
     "dep:linkme",
     "axplat-x86-pc?/irq",
-    "axplat-aarch64-qemu-virt?/irq",
+    "ax-plat-aarch64-qemu-virt?/irq",
     "axplat-riscv64-qemu-virt?/irq",
     "axplat-loongarch64-qemu-virt?/irq",
     "axplat/irq",
@@ -29,13 +29,13 @@ irq = [
 fp-simd = [
     "axcpu/fp-simd",
     "axplat-x86-pc?/fp-simd",
-    "axplat-aarch64-qemu-virt?/fp-simd",
+    "ax-plat-aarch64-qemu-virt?/fp-simd",
     "axplat-riscv64-qemu-virt?/fp-simd",
     "axplat-loongarch64-qemu-virt?/fp-simd",
 ]
 rtc = [
     "axplat-x86-pc?/rtc",
-    "axplat-aarch64-qemu-virt?/rtc",
+    "ax-plat-aarch64-qemu-virt?/rtc",
     "axplat-riscv64-qemu-virt?/rtc",
     "axplat-loongarch64-qemu-virt?/rtc",
 ]
@@ -49,7 +49,7 @@ myplat = []
 plat-dyn = ["axplat-dyn"]
 defplat = [
     "dep:axplat-x86-pc",
-    "dep:axplat-aarch64-qemu-virt",
+    "dep:ax-plat-aarch64-qemu-virt",
     "dep:axplat-riscv64-qemu-virt",
     "dep:axplat-loongarch64-qemu-virt",
 ]
@@ -80,7 +80,7 @@ axplat-x86-pc = { workspace = true, optional = true }
 axplat-dyn = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
-axplat-aarch64-qemu-virt = { workspace = true, optional = true }
+ax-plat-aarch64-qemu-virt = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 axplat-riscv64-qemu-virt = { workspace = true, optional = true }

@@ -1,12 +1,12 @@
-# `axplat-aarch64-raspi` 技术文档
+# `ax-plat-aarch64-raspi` 技术文档
 
-> 路径：`components/axplat_crates/platforms/axplat-aarch64-raspi`
+> 路径：`components/axplat_crates/platforms/ax-plat-aarch64-raspi`
 > 类型：库 crate
 > 分层：组件层 / AArch64 板级平台包
 > 版本：`0.3.1-pre.6`
 > 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`axconfig.toml`、`src/boot.rs`、`src/init.rs`、`src/mem.rs`、`src/power.rs`、`src/mp.rs`，以及仓库内 Raspberry Pi 4 启动/调试说明
 
-`axplat-aarch64-raspi` 是 Raspberry Pi 4B 在 `axplat` 体系下的板级平台包。它把树莓派 4 的启动入口、早期页表、PL011/GIC/Generic Timer 接线、spin-table 多核唤醒、固定物理内存布局和最小电源语义组织成 `axplat` 接口，使内核能够在这块板子上以统一方式完成 bring-up。它不是树莓派外设全集，也不是设备树解释器；它只负责把“把板子带起来”所需的那一小层能力稳定地交给上层。
+`ax-plat-aarch64-raspi` 是 Raspberry Pi 4B 在 `axplat` 体系下的板级平台包。它把树莓派 4 的启动入口、早期页表、PL011/GIC/Generic Timer 接线、spin-table 多核唤醒、固定物理内存布局和最小电源语义组织成 `axplat` 接口，使内核能够在这块板子上以统一方式完成 bring-up。它不是树莓派外设全集，也不是设备树解释器；它只负责把“把板子带起来”所需的那一小层能力稳定地交给上层。
 
 ## 1. 架构设计分析
 
@@ -67,7 +67,7 @@ flowchart TD
 | --- | --- | --- |
 | `axcpu` | EL 切换、MMU 打开、trap 初始化、cache flush、`halt()` | spin-table 地址、PL011/GIC 基地址、树莓派电源语义 |
 | `axplat-aarch64-peripherals` | PL011、Generic Timer、GIC 的通用 glue | 树莓派启动入口、spin-table SMP、内存保留区、电源管理 |
-| `axplat-aarch64-raspi` | 启动页表、spin-table 次核启动、`MemIf`/`PowerIf` | 设备树解析、驱动枚举、完整关机流程 |
+| `ax-plat-aarch64-raspi` | 启动页表、spin-table 次核启动、`MemIf`/`PowerIf` | 设备树解析、驱动枚举、完整关机流程 |
 | `ax-hal` | 若上层接入，则负责更高层的 DTB、内存区域整合和运行时初始化 | 树莓派本地的启动寄存器和次核释放语义 |
 
 这里最值得写清的边界有四点：
@@ -155,7 +155,7 @@ flowchart TD
 
 ```mermaid
 graph TD
-    A[axcpu / page_table_entry / aarch64-cpu / axconfig-macros] --> B[axplat-aarch64-raspi]
+    A[axcpu / page_table_entry / aarch64-cpu / axconfig-macros] --> B[ax-plat-aarch64-raspi]
     C[axplat-aarch64-peripherals] --> B
     D[axplat] --> B
     B --> E[ax-helloworld-myplat]
@@ -170,7 +170,7 @@ graph TD
 
 ```toml
 [dependencies]
-axplat-aarch64-raspi = { workspace = true, features = ["irq", "smp"] }
+ax-plat-aarch64-raspi = { workspace = true, features = ["irq", "smp"] }
 ```
 
 并在依赖树某处显式链接：
@@ -181,7 +181,7 @@ extern crate axplat_aarch64_raspi;
 
 若走当前仓库文档里的树莓派开发路径，通常会搭配：
 
-- `MYPLAT=axplat-aarch64-raspi`
+- `MYPLAT=ax-plat-aarch64-raspi`
 - `make chainboot`
 - 或调试时使用 `make jtagboot`
 
@@ -237,4 +237,4 @@ extern crate axplat_aarch64_raspi;
 
 ## 7. 总结
 
-`axplat-aarch64-raspi` 的价值，在于它把树莓派 4 这块板子的启动现实准确压缩成了 `axplat` 语义：入口怎么进、页表先怎么铺、PL011 和 GIC 怎样接、次核如何靠 spin-table 被释放、哪些内存必须保留。它目前是一份偏实板 bring-up 的平台包，其中 SMP 路径是真实实现，而关机和 RTC 仍处于未完成状态，这一点必须在使用和维护时讲清楚。
+`ax-plat-aarch64-raspi` 的价值，在于它把树莓派 4 这块板子的启动现实准确压缩成了 `axplat` 语义：入口怎么进、页表先怎么铺、PL011 和 GIC 怎样接、次核如何靠 spin-table 被释放、哪些内存必须保留。它目前是一份偏实板 bring-up 的平台包，其中 SMP 路径是真实实现，而关机和 RTC 仍处于未完成状态，这一点必须在使用和维护时讲清楚。

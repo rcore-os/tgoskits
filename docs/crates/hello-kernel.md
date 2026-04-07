@@ -41,7 +41,7 @@ flowchart LR
 这里没有默认平台自动选择逻辑，而是按架构显式链接：
 
 - `axplat-x86-pc`
-- `axplat-aarch64-qemu-virt`
+- `ax-plat-aarch64-qemu-virt`
 - `axplat-riscv64-qemu-virt`
 - `axplat-loongarch64-qemu-virt`
 
@@ -79,7 +79,7 @@ flowchart LR
 graph LR
     sample["hello-kernel"] --> axplat["axplat"]
     sample --> x86["axplat-x86-pc"]
-    sample --> a64["axplat-aarch64-qemu-virt"]
+    sample --> a64["ax-plat-aarch64-qemu-virt"]
     sample --> rv["axplat-riscv64-qemu-virt"]
     sample --> loong["axplat-loongarch64-qemu-virt"]
 ```

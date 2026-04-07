@@ -195,11 +195,11 @@ ax-libc = { path = "os/arceos/ulib/axlibc" }
 # === axplat ===
 axplat = { path = "components/axplat_crates/axplat" }
 axplat-macros = { path = "components/axplat_crates/axplat-macros" }
-axplat-aarch64-bsta1000b = { path = "components/axplat_crates/platforms/axplat-aarch64-bsta1000b" }
+ax-plat-aarch64-bsta1000b = { path = "components/axplat_crates/platforms/axplat-aarch64-bsta1000b" }
 axplat-aarch64-peripherals = { path = "components/axplat_crates/platforms/axplat-aarch64-peripherals" }
-axplat-aarch64-phytium-pi = { path = "components/axplat_crates/platforms/axplat-aarch64-phytium-pi" }
-axplat-aarch64-qemu-virt = { path = "components/axplat_crates/platforms/axplat-aarch64-qemu-virt" }
-axplat-aarch64-raspi = { path = "components/axplat_crates/platforms/axplat-aarch64-raspi" }
+ax-plat-aarch64-phytium-pi = { path = "components/axplat_crates/platforms/axplat-aarch64-phytium-pi" }
+ax-plat-aarch64-qemu-virt = { path = "components/axplat_crates/platforms/axplat-aarch64-qemu-virt" }
+ax-plat-aarch64-raspi = { path = "components/axplat_crates/platforms/axplat-aarch64-raspi" }
 axplat-loongarch64-qemu-virt = { path = "components/axplat_crates/platforms/axplat-loongarch64-qemu-virt" }
 axplat-riscv64-qemu-virt = { path = "components/axplat_crates/platforms/axplat-riscv64-qemu-virt" }
 axplat-x86-pc = { path = "components/axplat_crates/platforms/axplat-x86-pc" }
@@ -348,11 +348,11 @@ starry-kernel = { path = "os/StarryOS/kernel", version = "0.5.0" }
 
 axcpu = { version = "0.5.0", path = "components/axcpu" }
 axplat = { version = "0.5.1", path = "components/axplat_crates/axplat" }
-axplat-aarch64-bsta1000b = { version = "0.5.1", path = "components/axplat_crates/platforms/axplat-aarch64-bsta1000b" }
+ax-plat-aarch64-bsta1000b = { version = "0.5.1", path = "components/axplat_crates/platforms/axplat-aarch64-bsta1000b" }
 axplat-aarch64-peripherals = { version = "0.5.1", path = "components/axplat_crates/platforms/axplat-aarch64-peripherals" }
-axplat-aarch64-phytium-pi = { version = "0.5.1", path = "components/axplat_crates/platforms/axplat-aarch64-phytium-pi" }
-axplat-aarch64-qemu-virt = { version = "0.5.1", path = "components/axplat_crates/platforms/axplat-aarch64-qemu-virt" }
-axplat-aarch64-raspi = { version = "0.5.1", path = "components/axplat_crates/platforms/axplat-aarch64-raspi" }
+ax-plat-aarch64-phytium-pi = { version = "0.5.1", path = "components/axplat_crates/platforms/axplat-aarch64-phytium-pi" }
+ax-plat-aarch64-qemu-virt = { version = "0.5.1", path = "components/axplat_crates/platforms/axplat-aarch64-qemu-virt" }
+ax-plat-aarch64-raspi = { version = "0.5.1", path = "components/axplat_crates/platforms/axplat-aarch64-raspi" }
 axplat-loongarch64-qemu-virt = { version = "0.5.1", path = "components/axplat_crates/platforms/axplat-loongarch64-qemu-virt" }
 axplat-riscv64-qemu-virt = { version = "0.5.0", path = "components/axplat_crates/platforms/axplat-riscv64-qemu-virt" }
 axplat-x86-pc = { version = "0.5.1", path = "components/axplat_crates/platforms/axplat-x86-pc" }

@@ -43,7 +43,7 @@
 
 ```mermaid
 flowchart TD
-    A["axplat-aarch64-qemu-virt::init_early"] --> B["generic_timer::init_early"]
+    A["ax-plat-aarch64-qemu-virt::init_early"] --> B["generic_timer::init_early"]
     B --> C["pl031::init_early(rtc_base)"]
     C --> D["Rtc::new(mmio_ptr)"]
     D --> E["get_unix_timestamp()"]
@@ -99,7 +99,7 @@ let _ = secs;
 graph LR
     chrono["chrono (optional)"] --> current["arm_pl031"]
     current --> peripherals["axplat-aarch64-peripherals"]
-    peripherals --> qemuvirt["axplat-aarch64-qemu-virt"]
+    peripherals --> qemuvirt["ax-plat-aarch64-qemu-virt"]
     qemuvirt --> arceos["ArceOS aarch64 平台路径"]
 ```
 
@@ -111,7 +111,7 @@ graph LR
 - `axplat-aarch64-peripherals`：这是本仓库中最重要的直接消费者，会在平台初始化时用 `Rtc` 标定墙钟偏移。
 
 ### 3.3 间接消费者
-- `axplat-aarch64-qemu-virt` 在启用 `rtc` 时会间接使用。
+- `ax-plat-aarch64-qemu-virt` 在启用 `rtc` 时会间接使用。
 - 通过 `axplat` / `ax-hal` 共享这条平台路径的 ArceOS 栈。
 - StarryOS、Axvisor 的依赖图中可能间接出现该 crate，但是否实际启用取决于具体平台包与 feature 组合。
 

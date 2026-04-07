@@ -1,12 +1,12 @@
-# `axplat-aarch64-phytium-pi` 技术文档
+# `ax-plat-aarch64-phytium-pi` 技术文档
 
-> 路径：`components/axplat_crates/platforms/axplat-aarch64-phytium-pi`
+> 路径：`components/axplat_crates/platforms/ax-plat-aarch64-phytium-pi`
 > 类型：库 crate
 > 分层：组件层 / AArch64 板级平台包
 > 版本：`0.3.1-pre.6`
 > 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`axconfig.toml`、`src/boot.rs`、`src/init.rs`、`src/mem.rs`、`src/power.rs`
 
-`axplat-aarch64-phytium-pi` 是飞腾派开发板在 `axplat` 体系下的板级平台包。它把启动入口、早期页表、CPU 硬件 ID 到逻辑 CPU ID 的映射、PL011/GIC/Generic Timer/PSCI 接线、固定物理内存布局和 PCIe 地址窗口组织成 `axplat` 可以消费的实现。它不是通用 AArch64 板级抽象，也不是 PCI 子系统；它只负责把“飞腾派这块板子怎么启动、地址在哪里、哪些最小平台能力可用”稳定地交给上层。
+`ax-plat-aarch64-phytium-pi` 是飞腾派开发板在 `axplat` 体系下的板级平台包。它把启动入口、早期页表、CPU 硬件 ID 到逻辑 CPU ID 的映射、PL011/GIC/Generic Timer/PSCI 接线、固定物理内存布局和 PCIe 地址窗口组织成 `axplat` 可以消费的实现。它不是通用 AArch64 板级抽象，也不是 PCI 子系统；它只负责把“飞腾派这块板子怎么启动、地址在哪里、哪些最小平台能力可用”稳定地交给上层。
 
 ## 1. 架构设计分析
 
@@ -35,7 +35,7 @@
 | `mem` | `MemIf` 实现 | RAM/MMIO 区间、线性映射、内核地址空间 |
 | `power` | `PowerIf` 实现 | PSCI 关机与次核拉起 |
 
-与 `axplat-aarch64-bsta1000b` 相比，这个 crate 本地代码更薄，因为控制台也交给了 `axplat-aarch64-peripherals`，自己主要承担板级配置和启动职责。
+与 `ax-plat-aarch64-bsta1000b` 相比，这个 crate 本地代码更薄，因为控制台也交给了 `axplat-aarch64-peripherals`，自己主要承担板级配置和启动职责。
 
 ### 1.3 启动主线与 CPU ID 映射
 
@@ -67,7 +67,7 @@ flowchart TD
 | --- | --- | --- |
 | `axcpu` | EL 切换、MMU 打开、trap 初始化、FP 使能等 CPU 原语 | 飞腾派的 UART/GIC/PCIe 基地址、CPU ID 重映射 |
 | `axplat-aarch64-peripherals` | PL011、Generic Timer、GIC、PSCI 的通用实现与接口 glue | 飞腾派启动入口、`CPU_ID_LIST`、RAM/MMIO 窗口、PCI 资源描述 |
-| `axplat-aarch64-phytium-pi` | 启动页表、CPU 逻辑编号、平台内存模型、`PowerIf` | 设备树解析、PCIe 枚举、驱动注册、上层 HAL 聚合 |
+| `ax-plat-aarch64-phytium-pi` | 启动页表、CPU 逻辑编号、平台内存模型、`PowerIf` | 设备树解析、PCIe 枚举、驱动注册、上层 HAL 聚合 |
 | `ax-hal` | 若被上层接入，则负责统一 DTB、内存区域和运行时初始化顺序 | 飞腾派本地寄存器初始值和板级 boot stub |
 
 几个尤其重要的边界如下：
@@ -153,7 +153,7 @@ flowchart TD
 
 ```mermaid
 graph TD
-    A[axcpu / page_table_entry / axconfig-macros] --> B[axplat-aarch64-phytium-pi]
+    A[axcpu / page_table_entry / axconfig-macros] --> B[ax-plat-aarch64-phytium-pi]
     C[axplat-aarch64-peripherals] --> B
     D[axplat] --> B
     B --> E[ax-helloworld-myplat]
@@ -168,7 +168,7 @@ graph TD
 
 ```toml
 [dependencies]
-axplat-aarch64-phytium-pi = { workspace = true, features = ["irq", "smp"] }
+ax-plat-aarch64-phytium-pi = { workspace = true, features = ["irq", "smp"] }
 ```
 
 在依赖树某处显式链接平台包：
@@ -179,7 +179,7 @@ extern crate axplat_aarch64_phytium_pi;
 
 如果走当前仓库里的 ArceOS 板卡流程，则通常会配合：
 
-- `MYPLAT=axplat-aarch64-phytium-pi`
+- `MYPLAT=ax-plat-aarch64-phytium-pi`
 - `ax-helloworld-myplat`
 - 文档里的 `ostool run uboot` 启动方式
 
@@ -232,4 +232,4 @@ extern crate axplat_aarch64_phytium_pi;
 
 ## 7. 总结
 
-`axplat-aarch64-phytium-pi` 的核心价值，不在于“覆盖了多少飞腾派外设”，而在于它把飞腾派启动所必需的那部分板级事实准确翻译成了 `axplat` 契约：入口怎么进、CPU 编号怎么规整、控制台和时钟怎么接、GIC/PSCI 怎样初始化、哪些地址属于 RAM 或 MMIO。它是一个偏板卡 bring-up 的平台包，而不是运行时驱动总线或设备树解释层。
+`ax-plat-aarch64-phytium-pi` 的核心价值，不在于“覆盖了多少飞腾派外设”，而在于它把飞腾派启动所必需的那部分板级事实准确翻译成了 `axplat` 契约：入口怎么进、CPU 编号怎么规整、控制台和时钟怎么接、GIC/PSCI 怎样初始化、哪些地址属于 RAM 或 MMIO。它是一个偏板卡 bring-up 的平台包，而不是运行时驱动总线或设备树解释层。

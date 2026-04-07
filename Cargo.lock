@@ -665,11 +665,11 @@ dependencies = [
 name = "ax-hal"
 version = "0.5.0"
 dependencies = [
+ "ax-plat-aarch64-qemu-virt",
  "axalloc",
  "axconfig",
  "axcpu 0.5.0",
  "axplat 0.5.1",
- "axplat-aarch64-qemu-virt",
  "axplat-dyn",
  "axplat-loongarch64-qemu-virt",
  "axplat-riscv64-qemu-virt 0.5.1",
@@ -697,11 +697,11 @@ dependencies = [
 name = "ax-helloworld-myplat"
 version = "0.3.0"
 dependencies = [
+ "ax-plat-aarch64-bsta1000b",
+ "ax-plat-aarch64-phytium-pi",
+ "ax-plat-aarch64-qemu-virt",
+ "ax-plat-aarch64-raspi",
  "ax-std",
- "axplat-aarch64-bsta1000b",
- "axplat-aarch64-phytium-pi",
- "axplat-aarch64-qemu-virt",
- "axplat-aarch64-raspi",
  "axplat-loongarch64-qemu-virt",
  "axplat-riscv64-qemu-virt 0.5.1",
  "axplat-x86-pc",
@@ -813,6 +813,57 @@ dependencies = [
  "ringbuf",
  "spin 0.10.0",
  "starry-smoltcp",
+]
+
+[[package]]
+name = "ax-plat-aarch64-bsta1000b"
+version = "0.5.1"
+dependencies = [
+ "axconfig-macros 0.4.1",
+ "axcpu 0.5.0",
+ "axplat 0.5.1",
+ "axplat-aarch64-peripherals",
+ "dw_apb_uart",
+ "kspin 0.3.1",
+ "log",
+ "page_table_entry 0.8.1",
+]
+
+[[package]]
+name = "ax-plat-aarch64-phytium-pi"
+version = "0.5.1"
+dependencies = [
+ "axconfig-macros 0.4.1",
+ "axcpu 0.5.0",
+ "axplat 0.5.1",
+ "axplat-aarch64-peripherals",
+ "log",
+ "page_table_entry 0.8.1",
+]
+
+[[package]]
+name = "ax-plat-aarch64-qemu-virt"
+version = "0.5.1"
+dependencies = [
+ "axconfig-macros 0.4.1",
+ "axcpu 0.5.0",
+ "axplat 0.5.1",
+ "axplat-aarch64-peripherals",
+ "log",
+ "page_table_entry 0.8.1",
+]
+
+[[package]]
+name = "ax-plat-aarch64-raspi"
+version = "0.5.1"
+dependencies = [
+ "aarch64-cpu 11.2.0",
+ "axconfig-macros 0.4.1",
+ "axcpu 0.5.0",
+ "axplat 0.5.1",
+ "axplat-aarch64-peripherals",
+ "log",
+ "page_table_entry 0.8.1",
 ]
 
 [[package]]
@@ -1372,20 +1423,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "axplat-aarch64-bsta1000b"
-version = "0.5.1"
-dependencies = [
- "axconfig-macros 0.4.1",
- "axcpu 0.5.0",
- "axplat 0.5.1",
- "axplat-aarch64-peripherals",
- "dw_apb_uart",
- "kspin 0.3.1",
- "log",
- "page_table_entry 0.8.1",
-]
-
-[[package]]
 name = "axplat-aarch64-peripherals"
 version = "0.5.1"
 dependencies = [
@@ -1400,43 +1437,6 @@ dependencies = [
  "lazyinit 0.4.2",
  "log",
  "spin 0.10.0",
-]
-
-[[package]]
-name = "axplat-aarch64-phytium-pi"
-version = "0.5.1"
-dependencies = [
- "axconfig-macros 0.4.1",
- "axcpu 0.5.0",
- "axplat 0.5.1",
- "axplat-aarch64-peripherals",
- "log",
- "page_table_entry 0.8.1",
-]
-
-[[package]]
-name = "axplat-aarch64-qemu-virt"
-version = "0.5.1"
-dependencies = [
- "axconfig-macros 0.4.1",
- "axcpu 0.5.0",
- "axplat 0.5.1",
- "axplat-aarch64-peripherals",
- "log",
- "page_table_entry 0.8.1",
-]
-
-[[package]]
-name = "axplat-aarch64-raspi"
-version = "0.5.1"
-dependencies = [
- "aarch64-cpu 11.2.0",
- "axconfig-macros 0.4.1",
- "axcpu 0.5.0",
- "axplat 0.5.1",
- "axplat-aarch64-peripherals",
- "log",
- "page_table_entry 0.8.1",
 ]
 
 [[package]]

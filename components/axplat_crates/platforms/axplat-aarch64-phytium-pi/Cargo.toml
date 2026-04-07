@@ -1,8 +1,8 @@
 [package]
-name = "axplat-aarch64-phytium-pi"
+name = "ax-plat-aarch64-phytium-pi"
 version.workspace = true
 description = "Implementation of `axplat` hardware abstraction layer for Phytium Pi board."
-documentation = "https://docs.rs/axplat-aarch64-phytium-pi"
+documentation = "https://docs.rs/ax-plat-aarch64-phytium-pi"
 keywords = ["arceos", "os", "hal", "embedded", "aarch64"]
 categories = ["embedded", "no-std", "hardware-support", "os"]
 edition.workspace = true

@@ -15,7 +15,7 @@ axplat = { workspace = true }
 axplat-x86-pc = { path = "../../platforms/axplat-x86-pc" }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
-axplat-aarch64-qemu-virt = { path = "../../platforms/axplat-aarch64-qemu-virt" }
+ax-plat-aarch64-qemu-virt = { path = "../../platforms/axplat-aarch64-qemu-virt" }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 axplat-riscv64-qemu-virt = { path = "../../platforms/axplat-riscv64-qemu-virt" }

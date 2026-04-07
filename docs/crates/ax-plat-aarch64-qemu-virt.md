@@ -1,12 +1,12 @@
-# `axplat-aarch64-qemu-virt` 技术文档
+# `ax-plat-aarch64-qemu-virt` 技术文档
 
-> 路径：`components/axplat_crates/platforms/axplat-aarch64-qemu-virt`
+> 路径：`components/axplat_crates/platforms/ax-plat-aarch64-qemu-virt`
 > 类型：库 crate
 > 分层：组件层 / AArch64 板级平台包
 > 版本：`0.3.1-pre.6`
 > 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`axconfig.toml` 及相关上层调用路径
 
-`axplat-aarch64-qemu-virt` 是 QEMU ARM64 `virt` 机器在 `axplat` 体系下的具体板级实现。它不是通用外设驱动库，而是把启动入口、早期页表、物理内存布局、PSCI 启停、QEMU `virt` 设备地址表以及 `axplat-aarch64-peripherals` 提供的 PL011/GIC/Generic Timer/PL031 glue 组合成一个可以直接被内核链接的完整平台包。
+`ax-plat-aarch64-qemu-virt` 是 QEMU ARM64 `virt` 机器在 `axplat` 体系下的具体板级实现。它不是通用外设驱动库，而是把启动入口、早期页表、物理内存布局、PSCI 启停、QEMU `virt` 设备地址表以及 `axplat-aarch64-peripherals` 提供的 PL011/GIC/Generic Timer/PL031 glue 组合成一个可以直接被内核链接的完整平台包。
 
 ## 1. 架构设计分析
 
@@ -215,7 +215,7 @@ flowchart TD
 
 ```mermaid
 graph TD
-    A[axcpu / page_table_entry / axconfig-macros] --> B[axplat-aarch64-qemu-virt]
+    A[axcpu / page_table_entry / axconfig-macros] --> B[ax-plat-aarch64-qemu-virt]
     C[axplat-aarch64-peripherals] --> B
     D[axplat] --> B
     B --> E[ax-hal]
@@ -252,7 +252,7 @@ graph TD
 仅验证 crate 本身时，可做裸机构建：
 
 ```bash
-cargo build -p axplat-aarch64-qemu-virt --target aarch64-unknown-none --features "irq smp rtc"
+cargo build -p ax-plat-aarch64-qemu-virt --target aarch64-unknown-none --features "irq smp rtc"
 ```
 
 更有意义的调试路径通常是选择依赖它的示例或系统镜像，在 QEMU `virt` 上验证：
@@ -301,4 +301,4 @@ cargo build -p axplat-aarch64-qemu-virt --target aarch64-unknown-none --features
 
 ## 7. 总结
 
-`axplat-aarch64-qemu-virt` 把 QEMU ARM64 `virt` 机器的“板级事实”转译成 `axplat` 可以消费的形式：它知道从哪里启动、如何打开 MMU、哪些地址属于 RAM 或 MMIO、如何通过 PSCI 拉起次核、如何把 PL011/GIC/Timer/RTC 接上统一接口。对 ArceOS 生态而言，它不仅是一个可用平台包，更是 AArch64 开发和回归的主力参考实现。
+`ax-plat-aarch64-qemu-virt` 把 QEMU ARM64 `virt` 机器的“板级事实”转译成 `axplat` 可以消费的形式：它知道从哪里启动、如何打开 MMU、哪些地址属于 RAM 或 MMIO、如何通过 PSCI 拉起次核、如何把 PL011/GIC/Timer/RTC 接上统一接口。对 ArceOS 生态而言，它不仅是一个可用平台包，更是 AArch64 开发和回归的主力参考实现。

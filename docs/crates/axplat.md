@@ -196,7 +196,7 @@ impl axplat::init::InitIf for InitIfImpl {
 
 ### 3.2 被谁依赖
 
-- 所有具体平台包：如 `axplat-aarch64-qemu-virt`、`axplat-x86-pc`、`axplat-riscv64-qemu-virt`。
+- 所有具体平台包：如 `ax-plat-aarch64-qemu-virt`、`axplat-x86-pc`、`axplat-riscv64-qemu-virt`。
 - `ax-hal`：通过选择某个 `axplat-*` 平台包把平台实现纳入构建。
 - `components/axplat_crates/examples/*`：示例内核直接使用 `axplat` 接口与平台包。
 - 上层 ArceOS/StarryOS/Axvisor 宿主侧内核：通常通过 `ax-hal` 间接消费，而不是直接依赖 `axplat`。
