@@ -1,7 +1,7 @@
 use std::{
     panic,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     thread,
@@ -9,6 +9,8 @@ use std::{
 
 use ctor::ctor;
 use scope_local::{ActiveScope, Scope, scope_local};
+
+static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[ctor]
 fn init_percpu() {
@@ -22,6 +24,7 @@ fn init_percpu() {
 
 #[test]
 fn scope_init() {
+    let _guard = TEST_LOCK.lock().unwrap();
     scope_local! {
         static DATA: usize = 42;
     }
@@ -30,6 +33,7 @@ fn scope_init() {
 
 #[test]
 fn scope() {
+    let _guard = TEST_LOCK.lock().unwrap();
     scope_local! {
         static DATA: usize = 0;
     }
@@ -51,6 +55,7 @@ fn scope() {
 
 #[test]
 fn scope_drop() {
+    let _guard = TEST_LOCK.lock().unwrap();
     scope_local! {
         static SHARED: Arc<()> = Arc::new(());
     }
@@ -70,6 +75,7 @@ fn scope_drop() {
 
 #[test]
 fn scope_panic_unwind_drop() {
+    let _guard = TEST_LOCK.lock().unwrap();
     scope_local! {
         static SHARED: Arc<()> = Arc::new(());
     }
@@ -87,6 +93,7 @@ fn scope_panic_unwind_drop() {
 
 #[test]
 fn thread_share_item() {
+    let _guard = TEST_LOCK.lock().unwrap();
     scope_local! {
         static SHARED: Arc<()> = Arc::new(());
     }
@@ -120,6 +127,7 @@ fn thread_share_item() {
 
 #[test]
 fn thread_share_scope() {
+    let _guard = TEST_LOCK.lock().unwrap();
     scope_local! {
         static SHARED: Arc<()> = Arc::new(());
     }
@@ -150,6 +158,7 @@ fn thread_share_scope() {
 
 #[test]
 fn thread_isolation() {
+    let _guard = TEST_LOCK.lock().unwrap();
     scope_local! {
         static DATA: usize = 42;
         static DATA2: AtomicUsize = AtomicUsize::new(42);
