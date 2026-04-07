@@ -47,3 +47,4 @@ __pycache__/
 .arceos*
 .starry*
 .axvisor*
+.board*

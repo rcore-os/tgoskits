@@ -12,7 +12,7 @@ use crate::{
         image::{config::ImageConfig, spec::ImageSpecRef, storage::Storage},
         qemu::{default_qemu_config_template_path, qemu_override_args_from_template},
     },
-    context::ResolvedAxvisorRequest,
+    context::{AxvisorCliArgs, ResolvedAxvisorRequest},
 };
 
 pub const LINUX_AARCH64_IMAGE_SPEC: &str = "qemu_aarch64_linux";
@@ -172,6 +172,38 @@ fn absolute_path(workspace_root: &Path, path: &Path) -> PathBuf {
         path.to_path_buf()
     } else {
         workspace_root.join(path)
+    }
+}
+
+pub(crate) fn qemu_test_build_args(arch: &str, vmconfig: PathBuf) -> AxvisorCliArgs {
+    AxvisorCliArgs {
+        config: None,
+        arch: Some(arch.to_string()),
+        target: None,
+        plat_dyn: None,
+        vmconfigs: vec![vmconfig],
+    }
+}
+
+pub(crate) fn uboot_test_build_args(build_config: &str, vmconfig: &str) -> AxvisorCliArgs {
+    AxvisorCliArgs {
+        config: Some(PathBuf::from(build_config)),
+        arch: None,
+        target: None,
+        plat_dyn: None,
+        vmconfigs: vec![PathBuf::from(vmconfig)],
+    }
+}
+
+pub(crate) fn board_test_build_args(
+    group: &crate::test_qemu::AxvisorBoardTestGroup,
+) -> AxvisorCliArgs {
+    AxvisorCliArgs {
+        config: Some(PathBuf::from(group.build_config)),
+        arch: None,
+        target: None,
+        plat_dyn: None,
+        vmconfigs: group.vmconfigs.iter().map(PathBuf::from).collect(),
     }
 }
 

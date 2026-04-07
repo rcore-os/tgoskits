@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 
 use ostool::{
     Tool, ToolConfig,
-    build::{CargoRunnerKind, config::Cargo},
+    board::RunBoardArgs,
+    build::{CargoQemuRunnerArgs, CargoRunnerKind, CargoUbootRunnerArgs, config::Cargo},
 };
 
 mod arch;
@@ -91,14 +92,14 @@ impl AppContext {
         self.tool
             .cargo_run(
                 &cargo,
-                &CargoRunnerKind::Qemu {
+                &CargoRunnerKind::Qemu(Box::new(CargoQemuRunnerArgs {
                     qemu_config: qemu.qemu_config,
                     debug: false,
                     dtb_dump: false,
                     default_args: qemu.default_args,
                     append_args: qemu.append_args,
                     override_args: qemu.override_args,
-                },
+                })),
             )
             .await
     }
@@ -111,8 +112,21 @@ impl AppContext {
     ) -> anyhow::Result<()> {
         self.set_build_config_path(build_config_path);
         self.tool
-            .cargo_run(&cargo, &CargoRunnerKind::Uboot { uboot_config })
+            .cargo_run(
+                &cargo,
+                &CargoRunnerKind::Uboot(CargoUbootRunnerArgs { uboot_config }),
+            )
             .await
+    }
+
+    pub(crate) async fn board(
+        &mut self,
+        cargo: Cargo,
+        build_config_path: PathBuf,
+        board_args: RunBoardArgs,
+    ) -> anyhow::Result<()> {
+        self.set_build_config_path(build_config_path);
+        self.tool.cargo_run_board(&cargo, board_args).await
     }
 
     fn set_build_config_path(&mut self, path: PathBuf) {

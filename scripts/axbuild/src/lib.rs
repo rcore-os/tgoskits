@@ -13,6 +13,7 @@ use crate::{arceos::ArceOS, axvisor::Axvisor, starry::Starry};
 
 pub mod arceos;
 pub mod axvisor;
+mod board;
 mod clippy;
 mod command_flow;
 pub mod context;
@@ -35,6 +36,11 @@ enum Commands {
     Test,
     /// Run clippy for each root workspace package and each named feature in isolation
     Clippy,
+    /// Remote board management via ostool-server
+    Board {
+        #[command(subcommand)]
+        command: board::Command,
+    },
     /// Axvisor host-side commands
     Axvisor {
         #[command(subcommand)]
@@ -61,6 +67,7 @@ async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Commands::Test => test_std::run_std_test_command(),
         Commands::Clippy => clippy::run_workspace_clippy_command(),
+        Commands::Board { command } => board::execute(command).await,
         Commands::Axvisor { command } => Axvisor::new()?.execute(command).await,
         Commands::Arceos { command } => ArceOS::new()?.execute(command).await,
         Commands::Starry { command } => Starry::new()?.execute(command).await,
@@ -93,6 +100,61 @@ mod tests {
         match cli.command {
             Commands::Clippy => {}
             _ => panic!("expected `clippy` command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_board_ls_command() {
+        let cli = Cli::try_parse_from([
+            "axbuild", "board", "ls", "--server", "10.0.0.2", "--port", "9000",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Board {
+                command: board::Command::Ls(server),
+            } => {
+                assert_eq!(server.server.as_deref(), Some("10.0.0.2"));
+                assert_eq!(server.port, Some(9000));
+            }
+            _ => panic!("expected `board ls` command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_board_connect_command() {
+        let cli = Cli::try_parse_from([
+            "axbuild",
+            "board",
+            "connect",
+            "-b",
+            "rk3568",
+            "--server",
+            "board.example",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Board {
+                command: board::Command::Connect(args),
+            } => {
+                assert_eq!(args.board_type, "rk3568");
+                assert_eq!(args.server.server.as_deref(), Some("board.example"));
+                assert_eq!(args.server.port, None);
+            }
+            _ => panic!("expected `board connect` command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_board_config_command() {
+        let cli = Cli::try_parse_from(["axbuild", "board", "config"]).unwrap();
+
+        match cli.command {
+            Commands::Board {
+                command: board::Command::Config,
+            } => {}
+            _ => panic!("expected `board config` command"),
         }
     }
 

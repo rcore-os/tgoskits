@@ -1,0 +1,7 @@
+board_type = "ROC-RK3568-PC"
+fail_regex = []
+shell_init_cmd = "pwd && echo 'test pass'"
+shell_prefix = "root@firefly:~#"
+success_regex = [
+  "(?m)^test pass\\s*$",
+]
