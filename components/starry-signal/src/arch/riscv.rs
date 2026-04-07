@@ -1,4 +1,4 @@
-use axcpu::{GeneralRegisters, uspace::UserContext};
+use ax-cpu::{GeneralRegisters, uspace::UserContext};
 
 use crate::{SignalSet, SignalStack};
 

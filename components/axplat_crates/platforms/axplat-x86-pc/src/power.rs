@@ -35,10 +35,10 @@ impl PowerIf for PowerImpl {
             unsafe { PortWriteOnly::new(0x604).write(0x2000u16) };
         }
 
-        axcpu::asm::halt();
+        ax-cpu::asm::halt();
         warn!("It should shutdown!");
         loop {
-            axcpu::asm::halt();
+            ax-cpu::asm::halt();
         }
     }
 

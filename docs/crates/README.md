@@ -55,7 +55,7 @@
 | `axconfig` | ArceOS 层 | `os/arceos/modules/axconfig` | 1 | 12 | [查看](./axconfig.md) |
 | `axconfig-gen` | 组件层 | `components/axconfig-gen/axconfig-gen` | 0 | 1 | [查看](./axconfig-gen.md) |
 | `axconfig-macros` | 组件层 | `components/axconfig-gen/axconfig-macros` | 1 | 12 | [查看](./axconfig-macros.md) |
-| `axcpu` | 组件层 | `components/axcpu` | 6 | 14 | [查看](./axcpu.md) |
+| `ax-cpu` | 组件层 | `components/axcpu` | 6 | 14 | [查看](./ax-cpu.md) |
 | `axdevice` | 组件层 | `components/axdevice` | 8 | 2 | [查看](./axdevice.md) |
 | `axdevice_base` | 组件层 | `components/axdevice_base` | 3 | 8 | [查看](./axdevice_base.md) |
 | `ax-display` | ArceOS 层 | `os/arceos/modules/axdisplay` | 3 | 4 | [查看](./ax-display.md) |

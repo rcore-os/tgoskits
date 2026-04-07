@@ -446,7 +446,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "axcpu"
+name = "ax-cpu"
 version = "0.5.0"
 dependencies = [
  "aarch32-cpu",
@@ -718,7 +718,7 @@ version = "0.5.0"
 dependencies = [
  "ax-alloc",
  "axconfig",
- "axcpu",
+ "ax-cpu",
  "axplat",
  "axplat-aarch64-qemu-virt",
  "axplat-dyn",
@@ -880,7 +880,7 @@ name = "axplat-aarch64-bsta1000b"
 version = "0.5.1"
 dependencies = [
  "axconfig-macros",
- "axcpu",
+ "ax-cpu",
  "axplat",
  "ax-plat-aarch64-peripherals",
  "dw_apb_uart",
@@ -897,7 +897,7 @@ dependencies = [
  "arm-gic-driver 0.16.5",
  "arm_pl011",
  "arm_pl031",
- "axcpu",
+ "ax-cpu",
  "axplat",
  "int_ratio",
  "kspin",
@@ -911,7 +911,7 @@ name = "axplat-aarch64-phytium-pi"
 version = "0.5.1"
 dependencies = [
  "axconfig-macros",
- "axcpu",
+ "ax-cpu",
  "axplat",
  "ax-plat-aarch64-peripherals",
  "log",
@@ -923,7 +923,7 @@ name = "axplat-aarch64-qemu-virt"
 version = "0.5.1"
 dependencies = [
  "axconfig-macros",
- "axcpu",
+ "ax-cpu",
  "axplat",
  "ax-plat-aarch64-peripherals",
  "log",
@@ -936,7 +936,7 @@ version = "0.5.1"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "axconfig-macros",
- "axcpu",
+ "ax-cpu",
  "axplat",
  "ax-plat-aarch64-peripherals",
  "log",
@@ -950,7 +950,7 @@ dependencies = [
  "anyhow",
  "ax-alloc",
  "axconfig-macros",
- "axcpu",
+ "ax-cpu",
  "axdriver_base",
  "axdriver_block",
  "axdriver_virtio",
@@ -974,7 +974,7 @@ name = "ax-plat-loongarch64-qemu-virt"
 version = "0.5.1"
 dependencies = [
  "axconfig-macros",
- "axcpu",
+ "ax-cpu",
  "axplat",
  "chrono",
  "kspin",
@@ -999,7 +999,7 @@ name = "ax-plat-riscv64-qemu-virt"
 version = "0.5.1"
 dependencies = [
  "axconfig-macros",
- "axcpu",
+ "ax-cpu",
  "axplat",
  "kspin",
  "lazyinit",
@@ -1016,7 +1016,7 @@ name = "ax-plat-x86-pc"
 version = "0.5.1"
 dependencies = [
  "axconfig-macros",
- "axcpu",
+ "ax-cpu",
  "axplat",
  "bitflags 2.11.0",
  "heapless 0.9.2",

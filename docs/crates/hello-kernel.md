@@ -91,7 +91,7 @@ graph LR
 
 ### 3.2 关键间接依赖
 - `axplat-macros`：支撑 `#[axplat::main]`。
-- `axcpu`、串口/时钟相关底层组件：由平台包继续下接。
+- `ax-cpu`、串口/时钟相关底层组件：由平台包继续下接。
 
 ### 3.3 主要消费者
 - `axplat` 平台包的 bring-up 验证。

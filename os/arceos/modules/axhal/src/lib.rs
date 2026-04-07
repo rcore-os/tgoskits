@@ -90,22 +90,22 @@ pub mod power {
 
 /// Trap handling.
 pub mod trap {
-    pub use axcpu::trap::{IRQ, PAGE_FAULT, PageFaultFlags, register_trap_handler};
+    pub use ax-cpu::trap::{IRQ, PAGE_FAULT, PageFaultFlags, register_trap_handler};
 }
 
 /// CPU register states for context switching.
 ///
 /// There are two types of context:
 ///
-/// - [`TaskContext`][axcpu::TaskContext]: The context of a task.
-/// - [`TrapFrame`][axcpu::TrapFrame]: The context of an interrupt or an exception.
+/// - [`TaskContext`][ax-cpu::TaskContext]: The context of a task.
+/// - [`TrapFrame`][ax-cpu::TrapFrame]: The context of an interrupt or an exception.
 pub mod context {
-    pub use axcpu::{TaskContext, TrapFrame};
+    pub use ax-cpu::{TaskContext, TrapFrame};
 }
 
-pub use axcpu::asm;
+pub use ax-cpu::asm;
 #[cfg(feature = "uspace")]
-pub use axcpu::uspace;
+pub use ax-cpu::uspace;
 pub use axplat::init::init_later;
 #[cfg(feature = "smp")]
 pub use axplat::init::{init_early_secondary, init_later_secondary};

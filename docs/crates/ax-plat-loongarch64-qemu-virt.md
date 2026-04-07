@@ -23,7 +23,7 @@
 
 这使它在平台栈中的位置非常清晰：
 
-- 向下依赖 `axcpu`、`loongArch64`、`uart_16550` 等架构/设备库。
+- 向下依赖 `ax-cpu`、`loongArch64`、`uart_16550` 等架构/设备库。
 - 向上直接把 LoongArch QEMU virt 的全部最小平台能力暴露给 `axplat`。
 - 在仓库里既是 `ax-hal` 的 LoongArch 默认平台之一，也是 `hello-kernel`、`irq-kernel`、`smp-kernel` 的示例平台。
 
@@ -58,7 +58,7 @@ flowchart TD
     C --> D[建立 BOOT_STACK]
     D --> E[enable_fp_simd]
     E --> F[init_boot_page_table]
-    F --> G[axcpu::init::init_mmu]
+    F --> G[ax-cpu::init::init_mmu]
     G --> H[把栈从 boot 映射平移到 PHYS_VIRT_OFFSET]
     H --> I[axplat::call_main cpu_id arg]
 ```
@@ -100,7 +100,7 @@ LoongArch QEMU virt 的中断模型在这个 crate 里被明确分层了：
 
 | 层 | 负责内容 | 不负责内容 |
 | --- | --- | --- |
-| `axcpu` | trap 初始化、MMU 打开、FP/LSX 使能、停机等 CPU 原语 | 串口、GED、EIOINTC/PCH PIC、平台地址窗口 |
+| `ax-cpu` | trap 初始化、MMU 打开、FP/LSX 使能、停机等 CPU 原语 | 串口、GED、EIOINTC/PCH PIC、平台地址窗口 |
 | `ax-plat-loongarch64-qemu-virt` | 启动头、地址映射、中断拓扑、串口、时间、关机、SMP glue | 调度、页表管理策略、驱动枚举、上层 HAL 组合 |
 | `ax-hal` | 上层统一内存视图、DTB/bootarg 进一步整合、运行时初始化组织 | LoongArch virt 本地寄存器初始化与外设语义 |
 
@@ -167,7 +167,7 @@ LoongArch QEMU virt 的中断模型在这个 crate 里被明确分层了：
 | 依赖 | 作用 |
 | --- | --- |
 | `axplat` | 平台抽象接口与 `call_main()` 契约 |
-| `axcpu` | trap/MMU/FP/LSX/停机等 LoongArch CPU 原语 |
+| `ax-cpu` | trap/MMU/FP/LSX/停机等 LoongArch CPU 原语 |
 | `loongArch64` | CSR、IOCSR、IPI、timer 等底层寄存器访问 |
 | `uart_16550` | MMIO 16550 控制台 |
 | `page_table_entry` | LoongArch64 引导页表项构造 |
@@ -188,7 +188,7 @@ LoongArch QEMU virt 的中断模型在这个 crate 里被明确分层了：
 
 ```mermaid
 graph TD
-    A[axcpu / loongArch64 / page_table_entry / uart_16550] --> B[ax-plat-loongarch64-qemu-virt]
+    A[ax-cpu / loongArch64 / page_table_entry / uart_16550] --> B[ax-plat-loongarch64-qemu-virt]
     C[axplat / axconfig-macros / lazyinit / kspin] --> B
     B --> D[ax-hal]
     B --> E[hello-kernel / irq-kernel / smp-kernel]

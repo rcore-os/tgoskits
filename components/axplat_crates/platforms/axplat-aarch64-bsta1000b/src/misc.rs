@@ -34,7 +34,7 @@ pub fn reset_cpu() {
         write_volatile(ptr, read_volatile(ptr) & !0b1);
     }
     loop {
-        axcpu::asm::halt();
+        ax-cpu::asm::halt();
     }
 }
 

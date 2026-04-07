@@ -152,7 +152,7 @@ ax-display = { path = "os/arceos/modules/axdisplay" }
 ax-dma = { path = "os/arceos/modules/axdma" }
 ax-hal = { path = "os/arceos/modules/axhal" }
 
-axcpu = { path = "components/axcpu" }
+ax-cpu = { path = "components/axcpu" }
 axio = { path = "components/axio" }
 axsched = { path = "components/axsched" }
 axpoll = { path = "components/axpoll" }
@@ -346,7 +346,7 @@ axbuild = { path = "scripts/axbuild", version = "0.4.0" }
 
 starry-kernel = { path = "os/StarryOS/kernel", version = "0.5.0" }
 
-axcpu = { version = "0.5.0", path = "components/axcpu" }
+ax-cpu = { version = "0.5.0", path = "components/axcpu" }
 axplat = { version = "0.5.1", path = "components/axplat_crates/axplat" }
 ax-plat-aarch64-bsta1000b = { version = "0.5.1", path = "components/axplat_crates/platforms/axplat-aarch64-bsta1000b" }
 ax-plat-aarch64-peripherals = { version = "0.5.1", path = "components/axplat_crates/platforms/axplat-aarch64-peripherals" }

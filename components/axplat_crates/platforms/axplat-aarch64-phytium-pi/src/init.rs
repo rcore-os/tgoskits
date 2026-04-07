@@ -17,7 +17,7 @@ impl InitIf for InitIfImpl {
     /// and performed earliest platform configuration and initialization (e.g.,
     /// early console, clocking).
     fn init_early(_cpu_id: usize, _dtb: usize) {
-        axcpu::init::init_trap();
+        ax-cpu::init::init_trap();
         ax_plat_aarch64_peripherals::pl011::init_early(phys_to_virt(pa!(UART_PADDR)));
         ax_plat_aarch64_peripherals::psci::init(PSCI_METHOD);
         ax_plat_aarch64_peripherals::generic_timer::init_early();
@@ -26,7 +26,7 @@ impl InitIf for InitIfImpl {
     /// Initializes the platform at the early stage for secondary cores.
     #[cfg(feature = "smp")]
     fn init_early_secondary(_cpu_id: usize) {
-        axcpu::init::init_trap();
+        ax-cpu::init::init_trap();
     }
 
     /// Initializes the platform at the later stage for the primary core.

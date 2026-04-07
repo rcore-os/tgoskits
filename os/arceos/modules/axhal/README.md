@@ -2,7 +2,7 @@
 
 ArceOS hardware abstraction layer: unified APIs for platform-specific operations (CPU, platform, paging, IRQ, etc.).
 
-Depends on `axconfig`, `axplat`, and `axcpu` for platform and architecture support.
+Depends on `axconfig`, `axplat`, and `ax-cpu` for platform and architecture support.
 
 ## License
 

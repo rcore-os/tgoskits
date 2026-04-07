@@ -12,7 +12,7 @@ homepage.workspace = true
 repository.workspace = true
 
 [features]
-fp-simd = ["axcpu/fp-simd"]
+fp-simd = ["ax-cpu/fp-simd"]
 irq = ["axplat/irq"]
 rtc = ["x86_rtc"]
 smp = ["axplat/smp", "kspin/smp"]
@@ -27,7 +27,7 @@ int_ratio = "0.3.2"
 percpu.workspace = true
 heapless = "0.9"
 axconfig-macros = "0.4.1"
-axcpu = { workspace = true }
+ax-cpu = { workspace = true }
 axplat = { workspace = true }
 
 x86 = "0.52"

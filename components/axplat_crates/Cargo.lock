@@ -139,7 +139,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "axcpu"
+name = "ax-cpu"
 version = "0.3.0-preview.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2c5c4f67041d8fee9de424f4e37e58b65ecf46489c1cbd80d9388b4bda5f592"
@@ -181,7 +181,7 @@ name = "axplat-aarch64-bsta1000b"
 version = "0.3.1-pre.6"
 dependencies = [
  "axconfig-macros",
- "axcpu",
+ "ax-cpu",
  "axplat",
  "ax-plat-aarch64-peripherals",
  "dw_apb_uart",
@@ -198,7 +198,7 @@ dependencies = [
  "arm-gic-driver",
  "arm_pl011",
  "arm_pl031",
- "axcpu",
+ "ax-cpu",
  "axplat",
  "int_ratio",
  "kspin",
@@ -212,7 +212,7 @@ name = "axplat-aarch64-phytium-pi"
 version = "0.3.1-pre.6"
 dependencies = [
  "axconfig-macros",
- "axcpu",
+ "ax-cpu",
  "axplat",
  "ax-plat-aarch64-peripherals",
  "log",
@@ -224,7 +224,7 @@ name = "axplat-aarch64-qemu-virt"
 version = "0.3.1-pre.6"
 dependencies = [
  "axconfig-macros",
- "axcpu",
+ "ax-cpu",
  "axplat",
  "ax-plat-aarch64-peripherals",
  "log",
@@ -237,7 +237,7 @@ version = "0.3.1-pre.6"
 dependencies = [
  "aarch64-cpu",
  "axconfig-macros",
- "axcpu",
+ "ax-cpu",
  "axplat",
  "ax-plat-aarch64-peripherals",
  "log",
@@ -249,7 +249,7 @@ name = "ax-plat-loongarch64-qemu-virt"
 version = "0.3.1-pre.6"
 dependencies = [
  "axconfig-macros",
- "axcpu",
+ "ax-cpu",
  "axplat",
  "chrono",
  "kspin",
@@ -275,7 +275,7 @@ name = "ax-plat-riscv64-qemu-virt"
 version = "0.3.1-pre.6"
 dependencies = [
  "axconfig-macros",
- "axcpu",
+ "ax-cpu",
  "axplat",
  "kspin",
  "lazyinit",
@@ -292,7 +292,7 @@ name = "ax-plat-x86-pc"
 version = "0.3.1-pre.6"
 dependencies = [
  "axconfig-macros",
- "axcpu",
+ "ax-cpu",
  "axplat",
  "bitflags 2.11.0",
  "heapless",
@@ -748,7 +748,7 @@ name = "irq-kernel"
 version = "0.1.0"
 dependencies = [
  "axconfig-macros",
- "axcpu",
+ "ax-cpu",
  "axplat",
  "axplat-aarch64-qemu-virt",
  "ax-plat-loongarch64-qemu-virt",
@@ -1172,7 +1172,7 @@ name = "smp-kernel"
 version = "0.1.0"
 dependencies = [
  "axconfig-macros",
- "axcpu",
+ "ax-cpu",
  "axplat",
  "axplat-aarch64-qemu-virt",
  "ax-plat-loongarch64-qemu-virt",

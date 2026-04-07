@@ -14,7 +14,7 @@ linkme = "0.3.33"
 percpu.workspace = true
 const-str = "1.0"
 memory_addr = "0.6.1"
-axcpu = { workspace = true }
+ax-cpu = { workspace = true }
 axplat = { workspace = true }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]

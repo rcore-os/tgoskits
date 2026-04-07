@@ -24,7 +24,7 @@ aarch64-cpu = "11.0"
 arm_pl011 = "0.3.0"
 arm-gic-driver = "0.16"
 arm_pl031 = "0.4.1"
-axcpu = { workspace = true }
+ax-cpu = { workspace = true }
 axplat = { workspace = true }
 
 [package.metadata.docs.rs]

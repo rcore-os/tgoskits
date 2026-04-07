@@ -42,7 +42,7 @@ unsafe fn enable_fp() {
     // instructions in the bootstrapping code to speed up the operations
     // like `memset` and `memcpy`.
     #[cfg(feature = "fp-simd")]
-    axcpu::asm::enable_fp();
+    ax-cpu::asm::enable_fp();
 }
 
 /// Kernel entry point with Linux image header.
@@ -104,8 +104,8 @@ unsafe extern "C" fn _start_primary() -> ! {
         ldr     x8, ={entry}
         blr     x8
         b      .",
-        switch_to_el1 = sym axcpu::init::switch_to_el1,
-        init_mmu = sym axcpu::init::init_mmu,
+        switch_to_el1 = sym ax-cpu::init::switch_to_el1,
+        init_mmu = sym ax-cpu::init::init_mmu,
         enable_fp = sym enable_fp,
         init_boot_page_table = sym init_boot_page_table,
         boot_stack = sym BOOT_STACK,
@@ -138,8 +138,8 @@ pub(crate) unsafe extern "C" fn _start_secondary() -> ! {
         ldr     x8, ={entry}
         blr     x8
         b      .",
-        switch_to_el1 = sym axcpu::init::switch_to_el1,
-        init_mmu = sym axcpu::init::init_mmu,
+        switch_to_el1 = sym ax-cpu::init::switch_to_el1,
+        init_mmu = sym ax-cpu::init::init_mmu,
         enable_fp = sym enable_fp,
         boot_pt = sym BOOT_PT_L0,
         phys_virt_offset = const PHYS_VIRT_OFFSET,

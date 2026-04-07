@@ -562,6 +562,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "ax-cpu"
+version = "0.5.0"
+dependencies = [
+ "aarch64-cpu 11.2.0",
+ "axbacktrace",
+ "cfg-if",
+ "lazyinit 0.4.2",
+ "linkme",
+ "log",
+ "loongArch64",
+ "memory_addr 0.6.1",
+ "page_table_entry 0.8.1",
+ "page_table_multiarch 0.8.1",
+ "percpu 0.4.3",
+ "riscv 0.16.0",
+ "tock-registers 0.10.1",
+ "x86",
+ "x86_64",
+]
+
+[[package]]
 name = "ax-display"
 version = "0.5.0"
 dependencies = [
@@ -682,12 +703,12 @@ name = "ax-hal"
 version = "0.5.0"
 dependencies = [
  "ax-alloc",
+ "ax-cpu",
  "ax-plat-aarch64-qemu-virt",
  "ax-plat-loongarch64-qemu-virt",
  "ax-plat-riscv64-qemu-virt 0.5.1",
  "ax-plat-x86-pc",
  "axconfig",
- "axcpu 0.5.0",
  "axplat 0.5.1",
  "axplat-dyn",
  "cfg-if",
@@ -835,9 +856,9 @@ dependencies = [
 name = "ax-plat-aarch64-bsta1000b"
 version = "0.5.1"
 dependencies = [
+ "ax-cpu",
  "ax-plat-aarch64-peripherals",
  "axconfig-macros 0.4.1",
- "axcpu 0.5.0",
  "axplat 0.5.1",
  "dw_apb_uart",
  "kspin 0.3.1",
@@ -853,7 +874,7 @@ dependencies = [
  "arm-gic-driver 0.16.5",
  "arm_pl011 0.3.0",
  "arm_pl031",
- "axcpu 0.5.0",
+ "ax-cpu",
  "axplat 0.5.1",
  "int_ratio",
  "kspin 0.3.1",
@@ -866,9 +887,9 @@ dependencies = [
 name = "ax-plat-aarch64-phytium-pi"
 version = "0.5.1"
 dependencies = [
+ "ax-cpu",
  "ax-plat-aarch64-peripherals",
  "axconfig-macros 0.4.1",
- "axcpu 0.5.0",
  "axplat 0.5.1",
  "log",
  "page_table_entry 0.8.1",
@@ -878,9 +899,9 @@ dependencies = [
 name = "ax-plat-aarch64-qemu-virt"
 version = "0.5.1"
 dependencies = [
+ "ax-cpu",
  "ax-plat-aarch64-peripherals",
  "axconfig-macros 0.4.1",
- "axcpu 0.5.0",
  "axplat 0.5.1",
  "log",
  "page_table_entry 0.8.1",
@@ -891,9 +912,9 @@ name = "ax-plat-aarch64-raspi"
 version = "0.5.1"
 dependencies = [
  "aarch64-cpu 11.2.0",
+ "ax-cpu",
  "ax-plat-aarch64-peripherals",
  "axconfig-macros 0.4.1",
- "axcpu 0.5.0",
  "axplat 0.5.1",
  "log",
  "page_table_entry 0.8.1",
@@ -903,8 +924,8 @@ dependencies = [
 name = "ax-plat-loongarch64-qemu-virt"
 version = "0.5.1"
 dependencies = [
+ "ax-cpu",
  "axconfig-macros 0.4.1",
- "axcpu 0.5.0",
  "axplat 0.5.1",
  "chrono",
  "kspin 0.3.1",
@@ -919,8 +940,8 @@ dependencies = [
 name = "ax-plat-riscv64-qemu-virt"
 version = "0.5.0"
 dependencies = [
+ "ax-cpu",
  "axconfig-macros 0.4.1",
- "axcpu 0.5.0",
  "axplat 0.5.1",
  "axvisor_api",
  "crate_interface 0.5.0",
@@ -938,8 +959,8 @@ dependencies = [
 name = "ax-plat-riscv64-qemu-virt"
 version = "0.5.1"
 dependencies = [
+ "ax-cpu",
  "axconfig-macros 0.4.1",
- "axcpu 0.5.0",
  "axplat 0.5.1",
  "kspin 0.3.1",
  "lazyinit 0.4.2",
@@ -955,8 +976,8 @@ dependencies = [
 name = "ax-plat-x86-pc"
 version = "0.5.1"
 dependencies = [
+ "ax-cpu",
  "axconfig-macros 0.4.1",
- "axcpu 0.5.0",
  "axplat 0.5.1",
  "bitflags 2.11.0",
  "heapless 0.9.2",
@@ -1234,9 +1255,9 @@ dependencies = [
 
 [[package]]
 name = "axcpu"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f107a5597e37751fd44e97b37e4625a5858c6808b2aa0df68eb4c87fd2452a7"
+checksum = "cd607e7fce348338de2e853c46888ebd66d37ec9c3db96cc703573c733e4ea9e"
 dependencies = [
  "aarch32-cpu",
  "aarch64-cpu 11.2.0",
@@ -1248,30 +1269,9 @@ dependencies = [
  "memory_addr 0.4.1",
  "page_table_entry 0.6.1",
  "page_table_multiarch 0.6.1",
- "percpu 0.3.2",
- "riscv 0.16.0",
- "static_assertions",
- "tock-registers 0.10.1",
- "x86",
- "x86_64",
-]
-
-[[package]]
-name = "axcpu"
-version = "0.5.0"
-dependencies = [
- "aarch64-cpu 11.2.0",
- "axbacktrace",
- "cfg-if",
- "lazyinit 0.4.2",
- "linkme",
- "log",
- "loongArch64",
- "memory_addr 0.6.1",
- "page_table_entry 0.8.1",
- "page_table_multiarch 0.8.1",
  "percpu 0.4.3",
  "riscv 0.16.0",
+ "static_assertions",
  "tock-registers 0.10.1",
  "x86",
  "x86_64",
@@ -1520,8 +1520,8 @@ version = "0.5.0"
 dependencies = [
  "anyhow",
  "ax-alloc",
+ "ax-cpu",
  "axconfig-macros 0.4.1",
- "axcpu 0.5.0",
  "axdriver_base",
  "axdriver_block",
  "axdriver_virtio",
@@ -1567,7 +1567,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "662ba689afa1972ce4addf32f7873c0aa7bc4ca11be17b69977f677805a2d356"
 dependencies = [
  "axconfig-macros 0.2.1",
- "axcpu 0.3.0",
+ "axcpu",
  "axplat 0.3.1-pre.6",
  "kspin 0.1.1",
  "lazyinit 0.2.2",
@@ -1583,8 +1583,8 @@ dependencies = [
 name = "axplat-x86-qemu-q35"
 version = "0.4.0"
 dependencies = [
+ "ax-cpu",
  "axconfig-macros 0.4.1",
- "axcpu 0.5.0",
  "axplat 0.5.1",
  "bitflags 2.11.0",
  "heapless 0.9.2",
@@ -5431,17 +5431,6 @@ dependencies = [
 
 [[package]]
 name = "percpu"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2a4c33508cf5a2e8ddccee074a1e5e7c2d5ca91341da8656268eb437bf4f8a2"
-dependencies = [
- "cfg-if",
- "percpu_macros 0.3.2",
- "x86",
-]
-
-[[package]]
-name = "percpu"
 version = "0.4.3"
 dependencies = [
  "cfg-if",
@@ -5458,17 +5447,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6660d83b91174e6d39fae0cdf893889dcdbffda6e99664f8ee8a45fde6a6936c"
 dependencies = [
  "cfg-if",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "percpu_macros"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d0188f16e062758e306b2f9fdd235c1e297f34e9423ab1f1ce11324dd5f2da1"
-dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -7492,7 +7470,7 @@ dependencies = [
 name = "starry-signal"
 version = "0.5.0"
 dependencies = [
- "axcpu 0.5.0",
+ "ax-cpu",
  "bitflags 2.11.0",
  "cfg-if",
  "derive_more",

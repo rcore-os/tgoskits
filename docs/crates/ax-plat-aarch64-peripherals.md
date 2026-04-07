@@ -160,7 +160,7 @@ generic_timer::enable_irqs(timer_irq);
 | `arm_pl031` | PL031 RTC 驱动 |
 | `arm-gic-driver` | GICv2 控制器访问与 trap 操作 |
 | `aarch64-cpu` | 访问系统寄存器和底层 CPU 能力 |
-| `axcpu` | 与 AArch64 CPU 辅助代码协作 |
+| `ax-cpu` | 与 AArch64 CPU 辅助代码协作 |
 | `axplat` | 目标接口定义与 glue 挂接目标 |
 | `lazyinit` | 早期单例初始化 |
 | `kspin` / `spin` | 自旋锁保护 |

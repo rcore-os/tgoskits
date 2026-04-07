@@ -122,7 +122,7 @@ ax-plat-x86-pc = { workspace = true, features = ["irq", "smp", "rtc"] }
 ```mermaid
 graph LR
     axplat["axplat"] --> current["ax-plat-x86-pc"]
-    axcpu["axcpu"] --> current
+    ax-cpu["ax-cpu"] --> current
     multiboot["multiboot"] --> current
     apic["x2apic / x86 / x86_64"] --> current
     uart["uart_16550"] --> current
@@ -135,7 +135,7 @@ graph LR
 
 ### 3.1 关键直接依赖
 - `axplat`：提供平台 trait 与 `call_main` / `call_secondary_main` 契约。
-- `axcpu`：trap 和 per-CPU 初始化相关能力。
+- `ax-cpu`：trap 和 per-CPU 初始化相关能力。
 - `multiboot`：解析引导信息。
 - `x2apic`、`x86`、`x86_64`：APIC、寄存器和架构级辅助。
 - `uart_16550`、`raw-cpuid`、可选 `x86_rtc`：对应控制台、CPU 频率信息和墙钟。
@@ -239,7 +239,7 @@ Axvisor 的主 x86 manifest 更明确地偏向 `axplat-x86-qemu-q35`，因此 `a
 graph LR
     current["ax-plat-x86-pc"]
     current --> axconfig_macros["axconfig-macros"]
-    current --> axcpu["axcpu"]
+    current --> ax-cpu["ax-cpu"]
     current --> axplat["axplat"]
     current --> int_ratio["int_ratio"]
     current --> kspin["kspin"]
@@ -254,7 +254,7 @@ graph LR
 
 ### 3.1 直接与间接依赖
 - `axconfig-macros`
-- `axcpu`
+- `ax-cpu`
 - `axplat`
 - `int_ratio`
 - `kspin`

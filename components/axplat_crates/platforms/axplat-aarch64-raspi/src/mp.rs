@@ -25,13 +25,13 @@ pub fn start_secondary_cpu(cpu_id: usize, stack_top: PhysAddr) {
     // set the boot stack of the given secondary CPU
     let stack_top_ptr = &raw mut SECONDARY_STACK_TOP;
     unsafe { stack_top_ptr.write_volatile(stack_top.as_usize()) };
-    axcpu::asm::flush_dcache_line(va!(stack_top_ptr as usize));
+    ax-cpu::asm::flush_dcache_line(va!(stack_top_ptr as usize));
 
     // set the boot code address of the given secondary CPU
     let spintable_vaddr = phys_to_virt(CPU_SPIN_TABLE[cpu_id]);
     let release_ptr = spintable_vaddr.as_mut_ptr() as *mut usize;
     unsafe { release_ptr.write_volatile(entry_paddr) };
-    axcpu::asm::flush_dcache_line(spintable_vaddr);
+    ax-cpu::asm::flush_dcache_line(spintable_vaddr);
 
     aarch64_cpu::asm::sev();
 }

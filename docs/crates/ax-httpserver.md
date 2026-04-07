@@ -48,7 +48,7 @@ graph LR
 - `axconfig`
 - `axconfig-gen`
 - `axconfig-macros`
-- `axcpu`
+- `ax-cpu`
 - `ax-display`
 - 另外还有 `66` 个同类项未在此展开
 

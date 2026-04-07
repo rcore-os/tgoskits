@@ -8,7 +8,7 @@ default = [
   "irq",
   "smp",
 ]
-fp-simd = ["axcpu/fp-simd"]
+fp-simd = ["ax-cpu/fp-simd"]
 irq = ["axplat/irq"]
 rtc = ["riscv_goldfish"]
 smp = ["axplat/smp"]
@@ -24,7 +24,7 @@ sbi-rt = { version = "0.0.3", features = ["legacy"] }
 uart_16550 = "0.4.0"
 
 axconfig-macros = "0.4.1"
-axcpu = { workspace = true }
+ax-cpu = { workspace = true }
 axplat = { workspace = true }
 axvisor_api = "0.5.0"
 crate_interface = { workspace = true }

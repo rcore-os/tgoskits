@@ -46,8 +46,8 @@ flowchart TD
     A[_start 带 Linux arm64 镜像头] --> B[_start_primary]
     B --> C[读取 MPIDR 与保存 DTB]
     C --> D[建立 BOOT_STACK]
-    D --> E[axcpu::init::switch_to_el1]
-    E --> F[enable_fp / init_boot_page_table / axcpu::init::init_mmu]
+    D --> E[ax-cpu::init::switch_to_el1]
+    E --> F[enable_fp / init_boot_page_table / ax-cpu::init::init_mmu]
     F --> G[栈切到高半区]
     G --> H[hart_to_logid]
     H --> I[axplat::call_main logical_cpu_id dtb]
@@ -65,7 +65,7 @@ flowchart TD
 
 | 层 | 负责内容 | 不负责内容 |
 | --- | --- | --- |
-| `axcpu` | EL 切换、MMU 打开、trap 初始化、FP 使能等 CPU 原语 | 飞腾派的 UART/GIC/PCIe 基地址、CPU ID 重映射 |
+| `ax-cpu` | EL 切换、MMU 打开、trap 初始化、FP 使能等 CPU 原语 | 飞腾派的 UART/GIC/PCIe 基地址、CPU ID 重映射 |
 | `ax-plat-aarch64-peripherals` | PL011、Generic Timer、GIC、PSCI 的通用实现与接口 glue | 飞腾派启动入口、`CPU_ID_LIST`、RAM/MMIO 窗口、PCI 资源描述 |
 | `ax-plat-aarch64-phytium-pi` | 启动页表、CPU 逻辑编号、平台内存模型、`PowerIf` | 设备树解析、PCIe 枚举、驱动注册、上层 HAL 聚合 |
 | `ax-hal` | 若被上层接入，则负责统一 DTB、内存区域和运行时初始化顺序 | 飞腾派本地寄存器初始值和板级 boot stub |
@@ -137,7 +137,7 @@ flowchart TD
 | 依赖 | 作用 |
 | --- | --- |
 | `axplat` | 平台抽象接口与 `call_main()` 契约 |
-| `axcpu` | EL 切换、MMU 初始化、trap 初始化 |
+| `ax-cpu` | EL 切换、MMU 初始化、trap 初始化 |
 | `ax-plat-aarch64-peripherals` | PL011、Generic Timer、GIC、PSCI glue |
 | `page_table_entry` | AArch64 引导页表项构造 |
 | `axconfig-macros` | 把 `axconfig.toml` 生成为 `config` 常量 |
@@ -153,7 +153,7 @@ flowchart TD
 
 ```mermaid
 graph TD
-    A[axcpu / page_table_entry / axconfig-macros] --> B[ax-plat-aarch64-phytium-pi]
+    A[ax-cpu / page_table_entry / axconfig-macros] --> B[ax-plat-aarch64-phytium-pi]
     C[ax-plat-aarch64-peripherals] --> B
     D[axplat] --> B
     B --> E[ax-helloworld-myplat]

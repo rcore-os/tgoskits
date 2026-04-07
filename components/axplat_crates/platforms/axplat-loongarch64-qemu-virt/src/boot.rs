@@ -51,13 +51,13 @@ fn enable_fp_simd() {
     // like `memset` and `memcpy`.
     #[cfg(feature = "fp-simd")]
     {
-        axcpu::asm::enable_fp();
-        axcpu::asm::enable_lsx();
+        ax-cpu::asm::enable_fp();
+        ax-cpu::asm::enable_lsx();
     }
 }
 
 fn init_mmu() {
-    axcpu::init::init_mmu(
+    ax-cpu::init::init_mmu(
         axplat::mem::virt_to_phys(va!(&raw const BOOT_PT_L0 as usize)),
         PHYS_BOOT_OFFSET,
     );

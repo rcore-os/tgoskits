@@ -6,13 +6,13 @@
 > 版本：`0.3.0-preview.3`
 > 文档依据：`Cargo.toml`、`src/lib.rs`、`src/dtb.rs`、`src/mem.rs`、`src/percpu.rs`、`src/irq.rs`、`src/paging.rs`、`src/tls.rs`、`build.rs`、`linker.lds.S`
 
-`ax-hal` 是 ArceOS 家族中最关键的“硬件抽象粘合层”。它并不试图独立实现所有架构/平台逻辑，而是把 `axcpu` 的 ISA 语义、`axplat` 的平台实现和上层运行时需要的统一接口收束成一套稳定的 HAL 边界，因此它既是 `ax-runtime` 的启动基座，也是 `ax-mm`、`ax-task`、StarryOS 与 Axvisor 共同复用的低层能力入口。
+`ax-hal` 是 ArceOS 家族中最关键的“硬件抽象粘合层”。它并不试图独立实现所有架构/平台逻辑，而是把 `ax-cpu` 的 ISA 语义、`axplat` 的平台实现和上层运行时需要的统一接口收束成一套稳定的 HAL 边界，因此它既是 `ax-runtime` 的启动基座，也是 `ax-mm`、`ax-task`、StarryOS 与 Axvisor 共同复用的低层能力入口。
 
 ## 1. 架构设计分析
 ### 1.1 设计定位
 `ax-hal` 处在三层之间：
 
-- 向下连接 `axcpu` 与 `axplat-*`，分别承接 ISA 级抽象和板级/平台级实现。
+- 向下连接 `ax-cpu` 与 `axplat-*`，分别承接 ISA 级抽象和板级/平台级实现。
 - 向上为 `ax-runtime`、`ax-mm`、`ax-task`、`ax-driver` 等模块提供统一 API。
 - 在 `plat-dyn`、`defplat`、`myplat` 等 feature 作用下，决定最终链接到哪一类平台实现。
 
@@ -66,14 +66,14 @@ flowchart TD
 ### 1.5 架构与平台分层
 `ax-hal` 的架构设计遵循“ISA 与板级分离”的原则：
 
-- `axcpu` 负责 ISA 级能力，如 `asm`、`TaskContext`、`TrapFrame`、trap 编号与可选 `uspace` 支持。
+- `ax-cpu` 负责 ISA 级能力，如 `asm`、`TaskContext`、`TrapFrame`、trap 编号与可选 `uspace` 支持。
 - `axplat` 负责平台/机器级能力，如控制台、物理内存布局、时钟、中断控制器、电源管理与 CPU 启动。
 - `ax-hal` 把二者统一包装成上层可依赖的稳定接口，例如 `console`、`power`、`trap`、`context`、`mem`、`time`、`irq`、`paging`。
 
 因此，修改 `ax-hal` 时要始终区分：
 
 - 这是 ISA 级语义问题，还是平台级实现问题。
-- 这是 `ax-hal` 的接口问题，还是 `axplat`/`axcpu` 的具体实现问题。
+- 这是 `ax-hal` 的接口问题，还是 `axplat`/`ax-cpu` 的具体实现问题。
 
 ## 2. 核心功能说明
 ### 2.1 主要功能
@@ -115,7 +115,7 @@ let bootargs = ax-hal::dtb::get_chosen_bootargs();
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    axcpu["axcpu"] --> ax-hal["ax-hal"]
+    ax-cpu["ax-cpu"] --> ax-hal["ax-hal"]
     axplat["axplat / axplat-*"] --> ax-hal
     axconfig["axconfig"] --> ax-hal
     ax-alloc["ax-alloc (paging)"] --> ax-hal
@@ -131,14 +131,14 @@ graph LR
 
 ### 3.1 关键直接依赖
 - `axplat` 与各 `axplat-*` 平台 crate：提供控制台、内存、时间、中断、电源、每 CPU 等真实平台实现。
-- `axcpu`：提供 ISA 级 trap、上下文与汇编抽象。
+- `ax-cpu`：提供 ISA 级 trap、上下文与汇编抽象。
 - `axconfig`：提供 `MAX_CPU_NUM`、平台名、地址布局等静态配置。
 - `page_table_multiarch`：在 `paging` feature 下提供多架构页表核心实现。
 - `ax-alloc`：在页表/虚拟化路径下承担帧或内存块来源。
 
 ### 3.2 关键间接依赖
 - 各类驱动基础组件，如 `axdriver_base`、`axdriver_virtio` 等，会通过 `axplat` 与上层模块间接参与平台 bring-up。
-- `percpu`、`kernel_guard`、`memory_addr` 等基础组件通过 `axcpu`、`axplat` 或 `paging` 路径提供底层支持。
+- `percpu`、`kernel_guard`、`memory_addr` 等基础组件通过 `ax-cpu`、`axplat` 或 `paging` 路径提供底层支持。
 
 ### 3.3 关键直接消费者
 - `ax-runtime`：系统 bring-up 总控，是 `ax-hal` 的第一直接消费者。

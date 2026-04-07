@@ -53,7 +53,7 @@ flowchart LR
 
 1. 注册平台定时器 IRQ 对应的回调。
 2. 打印 `Timer IRQ handler registered.` 作为观测点。
-3. 调用 `axcpu::asm::enable_irqs()` 真正打开中断。
+3. 调用 `ax-cpu::asm::enable_irqs()` 真正打开中断。
 
 也就是说，它验证的不只是 handler 注册，还有 IRQ 使能本身。
 
@@ -82,7 +82,7 @@ flowchart LR
 ```mermaid
 graph LR
     sample["irq-kernel"] --> axplat["axplat"]
-    sample --> axcpu["axcpu"]
+    sample --> ax-cpu["ax-cpu"]
     sample --> linkme["linkme / trap 注册"]
     sample --> x86["ax-plat-x86-pc(irq)"]
     sample --> a64["ax-plat-aarch64-qemu-virt(irq)"]
@@ -92,7 +92,7 @@ graph LR
 
 ### 3.1 直接依赖
 - `axplat`：平台抽象与 `irq`/`time` 接口。
-- `axcpu`：trap handler 注册与开中断辅助。
+- `ax-cpu`：trap handler 注册与开中断辅助。
 - `linkme`：支撑 `register_trap_handler` 这类分布式注册。
 - 各平台包的 `irq` feature：真正接入板级中断控制器与定时器。
 

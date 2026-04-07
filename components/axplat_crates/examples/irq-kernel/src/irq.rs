@@ -3,7 +3,7 @@ use core::sync::atomic::{
     Ordering::{Acquire, Release},
 };
 
-use axcpu::trap::{IRQ, register_trap_handler};
+use ax-cpu::trap::{IRQ, register_trap_handler};
 
 const TICKS_PER_SEC: u64 = 100;
 
@@ -42,7 +42,7 @@ pub fn init_irq() {
     axplat::console_println!("Timer IRQ handler registered.");
 
     // Enable the timer IRQ.
-    axcpu::asm::enable_irqs();
+    ax-cpu::asm::enable_irqs();
 }
 
 pub fn test_irq() {

@@ -97,7 +97,7 @@ flowchart TD
 
 | 层 | 负责内容 | 不负责内容 |
 | --- | --- | --- |
-| `axcpu` | trap 初始化、停机等 CPU 原语 | Q35 MMIO 窗口、Multiboot 内存图解析、APIC/TSC/串口接线 |
+| `ax-cpu` | trap 初始化、停机等 CPU 原语 | Q35 MMIO 窗口、Multiboot 内存图解析、APIC/TSC/串口接线 |
 | `axplat-x86-qemu-q35` | Multiboot 启动、COM1、TSC/LAPIC/IOAPIC、RAM/MMIO 描述、AP 启动 | VMX/EPT、虚拟设备、客户机管理、通用 HAL 聚合 |
 | `axplat` | 统一平台契约与 `call_main()` / `call_secondary_main()` | Q35 板级实现细节 |
 | `ax-hal` | 当前仓库里不是它的主要消费者 | 板级启动与 Q35 宿主环境 bring-up |
@@ -156,7 +156,7 @@ flowchart TD
 | 依赖 | 作用 |
 | --- | --- |
 | `axplat` | 平台抽象接口与统一入口契约 |
-| `axcpu` | trap 初始化、停机等底层 CPU 原语 |
+| `ax-cpu` | trap 初始化、停机等底层 CPU 原语 |
 | `multiboot` | 解析 Multiboot 信息结构 |
 | `uart_16550` | COM1 串口驱动 |
 | `x2apic` | LAPIC / IOAPIC 访问 |
@@ -177,7 +177,7 @@ flowchart TD
 ```mermaid
 graph TD
     A[multiboot / x2apic / x86 / x86_64 / uart_16550] --> B[axplat-x86-qemu-q35]
-    C[axplat / axcpu / percpu / int_ratio / lazyinit / kspin] --> B
+    C[axplat / ax-cpu / percpu / int_ratio / lazyinit / kspin] --> B
     B --> D[Axvisor]
     D --> E[x86_64 Q35 宿主环境]
 ```

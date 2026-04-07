@@ -66,7 +66,7 @@ graph LR
 - `axbacktrace`
 - `axconfig-gen`
 - `axconfig-macros`
-- `axcpu`
+- `ax-cpu`
 - `axdriver_base`
 - `axdriver_block`
 - `axdriver_display`

@@ -1,4 +1,4 @@
-# `axcpu` 技术文档
+# `ax-cpu` 技术文档
 
 > 路径：`components/axcpu`
 > 类型：库 crate
@@ -6,13 +6,13 @@
 > 版本：`0.3.0-preview.8`
 > 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs`、各架构 `mod.rs`/`asm.rs`/`context.rs`/`init.rs`/`trap.rs`
 
-`axcpu` 是 ArceOS 系栈中位于 `ax-hal` 之下、位于原始 CPU 指令之上的一层 ISA 抽象库。它负责把不同架构下的特权寄存器、异常现场、任务上下文切换、页表根寄存器、TLB 刷新和部分早期 CPU 初始化统一成可供内核/HAL 调用的接口。它不是页表库，也不是板级支持包，而是“面向 CPU 本身”的底层抽象层。
+`ax-cpu` 是 ArceOS 系栈中位于 `ax-hal` 之下、位于原始 CPU 指令之上的一层 ISA 抽象库。它负责把不同架构下的特权寄存器、异常现场、任务上下文切换、页表根寄存器、TLB 刷新和部分早期 CPU 初始化统一成可供内核/HAL 调用的接口。它不是页表库，也不是板级支持包，而是“面向 CPU 本身”的底层抽象层。
 
 ## 1. 架构设计分析
 
 ### 1.1 设计定位
 
-`axcpu` 处理的是“CPU 相关但又不能散落在平台代码里”的部分，包括：
+`ax-cpu` 处理的是“CPU 相关但又不能散落在平台代码里”的部分，包括：
 
 - 特权寄存器读写
 - trap/exception 入口与现场表达
@@ -24,7 +24,7 @@
 
 - `axplat`：负责“在什么时机调用这些 CPU 原语”
 - `page_table_entry` / `page_table_multiarch`：负责“页表内容是什么”
-- `axcpu`：负责“CPU 如何装载页表根、如何刷 TLB、如何响应 trap”
+- `ax-cpu`：负责“CPU 如何装载页表根、如何刷 TLB、如何响应 trap”
 
 ### 1.2 顶层模块结构
 
@@ -57,7 +57,7 @@
 
 ### 1.4 trap 与异常分发模型
 
-`axcpu` 在根层提供了 trap 注册与分发基础设施。关键特征有两个：
+`ax-cpu` 在根层提供了 trap 注册与分发基础设施。关键特征有两个：
 
 - 使用 `linkme` 风格的分布式切片注册 handler
 - 对 `IRQ` 与 `PAGE_FAULT` 两类关键入口做统一分发
@@ -84,7 +84,7 @@
 
 #### `PageFaultFlags`
 
-这类页错误语义最终来自 `page_table_entry::MappingFlags`，说明 `axcpu` 并不自己重新定义一套访问权限语言，而是复用整个页表栈的公共位语义。
+这类页错误语义最终来自 `page_table_entry::MappingFlags`，说明 `ax-cpu` 并不自己重新定义一套访问权限语言，而是复用整个页表栈的公共位语义。
 
 ### 1.6 典型架构差异
 
@@ -114,7 +114,7 @@
 
 ### 1.7 一个必须写清的边界
 
-`axcpu` 管的是：
+`ax-cpu` 管的是：
 
 - 页表根寄存器
 - TLB
@@ -142,7 +142,7 @@
 
 ### 2.2 典型调用场景
 
-| 场景 | `axcpu` 的作用 |
+| 场景 | `ax-cpu` 的作用 |
 | --- | --- |
 | 平台启动 | 初始化 trap 入口、切换异常级别、打开 MMU |
 | 任务切换 | 切换 `TaskContext`、可选切换 TLS/FP/用户页表根 |
@@ -157,7 +157,7 @@
 1. `page_table_entry` 定义页权限语义
 2. `page_table_multiarch` 维护页表内容
 3. `ax-mm` / `axaddrspace` 组织地址空间
-4. `axcpu::asm` 把页表根装载进 CPU，并执行 TLB 刷新
+4. `ax-cpu::asm` 把页表根装载进 CPU，并执行 TLB 刷新
 
 这正好体现了它在内存子系统中的位置：不是页表内容层，而是页表生效层。
 
@@ -186,7 +186,7 @@
 
 ```mermaid
 graph TD
-    A[page_table_entry] --> B[axcpu]
+    A[page_table_entry] --> B[ax-cpu]
     C[memory_addr] --> B
     B --> D[ax-hal]
     D --> E[axplat-*]
@@ -216,14 +216,14 @@ graph TD
 ### 4.3 与其他 crate 的协作边界
 
 - 新 trap 类型若需要上传给内核逻辑，应优先考虑 `ax-hal` 暴露的接口面
-- 页错误处理不要塞进 `axcpu`，应交给地址空间层
-- 板级初始化时序不要写进 `axcpu`，应留给 `axplat`
+- 页错误处理不要塞进 `ax-cpu`，应交给地址空间层
+- 板级初始化时序不要写进 `ax-cpu`，应留给 `axplat`
 
 ## 5. 测试策略
 
 ### 5.1 当前已有验证方式
 
-从仓库元数据看，`axcpu` 主要依赖：
+从仓库元数据看，`ax-cpu` 主要依赖：
 
 - 多目标构建
 - `clippy`
@@ -255,4 +255,4 @@ graph TD
 
 ## 7. 总结
 
-`axcpu` 的核心价值在于把“必须懂 CPU 才能写”的那一层能力系统化了。它不去管理页表内容，也不去管理板级设备，而是把 trap、上下文、页表根和特权寄存器这些真正属于 CPU 的责任集中起来，为 `ax-hal`、平台包和上层 OS/Hypervisor 代码提供了稳定的 ISA 接口面。
+`ax-cpu` 的核心价值在于把“必须懂 CPU 才能写”的那一层能力系统化了。它不去管理页表内容，也不去管理板级设备，而是把 trap、上下文、页表根和特权寄存器这些真正属于 CPU 的责任集中起来，为 `ax-hal`、平台包和上层 OS/Hypervisor 代码提供了稳定的 ISA 接口面。

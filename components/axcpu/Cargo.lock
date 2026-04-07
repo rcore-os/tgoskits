@@ -29,7 +29,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "axcpu"
+name = "ax-cpu"
 version = "0.3.0-preview.8"
 dependencies = [
  "aarch64-cpu",

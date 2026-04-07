@@ -27,7 +27,7 @@ irq = [
     "axplat-dyn?/irq",
 ]
 fp-simd = [
-    "axcpu/fp-simd",
+    "ax-cpu/fp-simd",
     "ax-plat-x86-pc?/fp-simd",
     "ax-plat-aarch64-qemu-virt?/fp-simd",
     "ax-plat-riscv64-qemu-virt?/fp-simd",
@@ -40,9 +40,9 @@ rtc = [
     "ax-plat-loongarch64-qemu-virt?/rtc",
 ]
 paging = ["dep:ax-alloc", "dep:page_table_multiarch"]
-tls = ["axcpu/tls"]
-uspace = ["paging", "axcpu/uspace", "axplat-dyn?/uspace"]
-hv = ["paging", "axcpu/arm-el2", "percpu/arm-el2", "axplat-dyn?/hv"]
+tls = ["ax-cpu/tls"]
+uspace = ["paging", "ax-cpu/uspace", "axplat-dyn?/uspace"]
+hv = ["paging", "ax-cpu/arm-el2", "percpu/arm-el2", "axplat-dyn?/hv"]
 
 # Custom or default platforms
 myplat = []
@@ -60,7 +60,7 @@ ipi = ["irq"]
 [dependencies]
 ax-alloc = { workspace = true, optional = true }
 axconfig.workspace = true
-axcpu.workspace = true
+ax-cpu.workspace = true
 axplat.workspace = true
 cfg-if.workspace = true
 fdt-parser = "0.4"

@@ -4,13 +4,13 @@
 
 ### Fixes
 
-* [Fix compile error on riscv when enable `uspace` feature](https://github.com/arceos-org/axcpu/pull/12).
+* [Fix compile error on riscv when enable `uspace` feature](https://github.com/arceos-org/ax-cpu/pull/12).
 
 ## 0.2.1
 
 ### Fixes
 
-* [Pad TrapFrame to multiple of 16 bytes for riscv64](https://github.com/arceos-org/axcpu/pull/11).
+* [Pad TrapFrame to multiple of 16 bytes for riscv64](https://github.com/arceos-org/ax-cpu/pull/11).
 
 ## 0.2.0
 
@@ -20,8 +20,8 @@
 
 ### New Features
 
-* [Add FP state switch for riscv64](https://github.com/arceos-org/axcpu/pull/2).
-* [Add hypervisor support for aarch64](https://github.com/arceos-org/axcpu/pull/10).
+* [Add FP state switch for riscv64](https://github.com/arceos-org/ax-cpu/pull/2).
+* [Add hypervisor support for aarch64](https://github.com/arceos-org/ax-cpu/pull/10).
 
 ### Other Improvements
 

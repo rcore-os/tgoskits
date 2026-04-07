@@ -14,7 +14,7 @@
 
 这个 crate 在 A1000B 平台栈中的位置可以概括为：
 
-- 向下依赖 `axcpu` 提供 EL 切换、MMU 打开、trap 初始化和缓存/停机等 CPU 原语。
+- 向下依赖 `ax-cpu` 提供 EL 切换、MMU 打开、trap 初始化和缓存/停机等 CPU 原语。
 - 横向复用 `ax-plat-aarch64-peripherals` 提供的 PSCI、Generic Timer 和 GIC glue。
 - 自己补上 A1000B 特有的启动代码、内存布局、CPU 硬件 ID 列表，以及非 PL011 的 `dw_apb_uart` 控制台实现。
 - 向上实现 `InitIf`、`MemIf`、`PowerIf`，并通过 `TimeIf` / `IrqIf` 宏展开接入 `axplat`。
@@ -47,10 +47,10 @@ flowchart TD
     A[_start 带 Linux arm64 镜像头] --> B[_start_primary]
     B --> C[读取 MPIDR 并保存 DTB 指针]
     C --> D[建立 BOOT_STACK]
-    D --> E[axcpu::init::switch_to_el1]
+    D --> E[ax-cpu::init::switch_to_el1]
     E --> F[enable_fp]
     F --> G[init_boot_page_table]
-    G --> H[axcpu::init::init_mmu]
+    G --> H[ax-cpu::init::init_mmu]
     H --> I[把栈切到高半区映射]
     I --> J[axplat::call_main cpu_id dtb]
     J --> K[内核 #[axplat::main] 入口]
@@ -67,11 +67,11 @@ flowchart TD
 
 ### 1.4 与相邻层的边界
 
-这份文档最需要澄清的，是它和 `axcpu`、`axplat`、`ax-plat-aarch64-peripherals`、`ax-hal` 之间的边界：
+这份文档最需要澄清的，是它和 `ax-cpu`、`axplat`、`ax-plat-aarch64-peripherals`、`ax-hal` 之间的边界：
 
 | 层 | 负责内容 | 不负责内容 |
 | --- | --- | --- |
-| `axcpu` | EL 切换、MMU 打开、trap 初始化、FP 使能、`halt()` 等 CPU 原语 | A1000B 的 UART/GIC 基地址、RAM 布局、PSCI CPU ID 选择 |
+| `ax-cpu` | EL 切换、MMU 打开、trap 初始化、FP 使能、`halt()` 等 CPU 原语 | A1000B 的 UART/GIC 基地址、RAM 布局、PSCI CPU ID 选择 |
 | `ax-plat-aarch64-peripherals` | PSCI、Generic Timer、GIC 的通用 glue 与 `TimeIf`/`IrqIf` 宏 | A1000B 启动汇编、引导页表、DW APB UART、板级内存布局 |
 | `ax-plat-aarch64-bsta1000b` | 启动入口、页表、板级地址配置、本地控制台、`MemIf`/`PowerIf` | 调度、页表管理策略、驱动枚举、上层 HAL 聚合 |
 | `ax-hal` | 若上层选择接入，则负责 DTB、全局内存视图、运行时初始化顺序整合 | 早期板级寄存器初始化和 SoC 复位寄存器语义 |
@@ -142,7 +142,7 @@ flowchart TD
 | 依赖 | 作用 |
 | --- | --- |
 | `axplat` | 目标平台抽象接口与 `call_main()` 契约 |
-| `axcpu` | EL 切换、MMU 初始化、trap 初始化、缓存/停机辅助 |
+| `ax-cpu` | EL 切换、MMU 初始化、trap 初始化、缓存/停机辅助 |
 | `ax-plat-aarch64-peripherals` | PSCI、Generic Timer、GIC 及 `TimeIf`/`IrqIf` glue |
 | `dw_apb_uart` | A1000B 控制台所用的 DesignWare 8250 UART 驱动 |
 | `page_table_entry` | 构造 AArch64 引导页表项 |
@@ -160,7 +160,7 @@ flowchart TD
 
 ```mermaid
 graph TD
-    A[axcpu / page_table_entry / axconfig-macros] --> B[ax-plat-aarch64-bsta1000b]
+    A[ax-cpu / page_table_entry / axconfig-macros] --> B[ax-plat-aarch64-bsta1000b]
     C[ax-plat-aarch64-peripherals] --> B
     D[dw_apb_uart / kspin] --> B
     E[axplat] --> B

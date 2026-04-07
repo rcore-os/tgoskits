@@ -4,7 +4,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(feature = "ipi")]
 pub use axconfig::devices::IPI_IRQ;
-use axcpu::trap::{IRQ, register_trap_handler};
+use ax-cpu::trap::{IRQ, register_trap_handler};
 #[cfg(feature = "ipi")]
 pub use axplat::irq::{IpiTarget, send_ipi};
 pub use axplat::irq::{handle, register, set_enable, unregister};

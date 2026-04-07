@@ -42,10 +42,10 @@
 flowchart TD
     A[_start] --> B[读取 MPIDR 与保存 DTB]
     B --> C[建立 BOOT_STACK]
-    C --> D[axcpu::init::switch_to_el1]
+    C --> D[ax-cpu::init::switch_to_el1]
     D --> E[enable_fp]
     E --> F[init_boot_page_table]
-    F --> G[axcpu::init::init_mmu]
+    F --> G[ax-cpu::init::init_mmu]
     G --> H[栈切到高半区]
     H --> I[axplat::call_main cpu_id dtb]
     I --> J[axplat::init::init_early]
@@ -59,13 +59,13 @@ flowchart TD
 - `modify_stack_and_start()` 会在次核真正执行 `_start_secondary` 前，把栈顶从高半区虚拟地址转换回物理视角。
 - 主核把次核入口地址写进 spin-table 后，调用 `sev()` 发事件唤醒。
 
-这条主线说明：**树莓派 4 的 SMP bring-up 是本 crate 的板级职责，不属于 `ax-plat-aarch64-peripherals`，也不属于 `axcpu`。**
+这条主线说明：**树莓派 4 的 SMP bring-up 是本 crate 的板级职责，不属于 `ax-plat-aarch64-peripherals`，也不属于 `ax-cpu`。**
 
 ### 1.4 与相邻层的边界
 
 | 层 | 负责内容 | 不负责内容 |
 | --- | --- | --- |
-| `axcpu` | EL 切换、MMU 打开、trap 初始化、cache flush、`halt()` | spin-table 地址、PL011/GIC 基地址、树莓派电源语义 |
+| `ax-cpu` | EL 切换、MMU 打开、trap 初始化、cache flush、`halt()` | spin-table 地址、PL011/GIC 基地址、树莓派电源语义 |
 | `ax-plat-aarch64-peripherals` | PL011、Generic Timer、GIC 的通用 glue | 树莓派启动入口、spin-table SMP、内存保留区、电源管理 |
 | `ax-plat-aarch64-raspi` | 启动页表、spin-table 次核启动、`MemIf`/`PowerIf` | 设备树解析、驱动枚举、完整关机流程 |
 | `ax-hal` | 若上层接入，则负责更高层的 DTB、内存区域整合和运行时初始化 | 树莓派本地的启动寄存器和次核释放语义 |
@@ -138,7 +138,7 @@ flowchart TD
 | 依赖 | 作用 |
 | --- | --- |
 | `axplat` | 平台抽象接口与 `call_main()` 契约 |
-| `axcpu` | EL 切换、MMU 初始化、trap 初始化、cache flush、停机 |
+| `ax-cpu` | EL 切换、MMU 初始化、trap 初始化、cache flush、停机 |
 | `ax-plat-aarch64-peripherals` | PL011、Generic Timer、GIC glue |
 | `page_table_entry` | AArch64 引导页表项构造 |
 | `aarch64-cpu` | 直接使用 `sev()` 指令唤醒次核 |
@@ -155,7 +155,7 @@ flowchart TD
 
 ```mermaid
 graph TD
-    A[axcpu / page_table_entry / aarch64-cpu / axconfig-macros] --> B[ax-plat-aarch64-raspi]
+    A[ax-cpu / page_table_entry / aarch64-cpu / axconfig-macros] --> B[ax-plat-aarch64-raspi]
     C[ax-plat-aarch64-peripherals] --> B
     D[axplat] --> B
     B --> E[ax-helloworld-myplat]

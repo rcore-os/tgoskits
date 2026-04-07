@@ -19,7 +19,7 @@ impl PowerIf for PowerImpl {
         log::info!("Shutting down...");
         // TODO
         loop {
-            axcpu::asm::halt();
+            ax-cpu::asm::halt();
         }
     }
 

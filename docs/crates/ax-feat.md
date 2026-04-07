@@ -70,7 +70,7 @@ graph LR
 - `axallocator`
 - `axconfig-gen`
 - `axconfig-macros`
-- `axcpu`
+- `ax-cpu`
 - `ax-dma`
 - `axdriver_base`
 - `axdriver_block`

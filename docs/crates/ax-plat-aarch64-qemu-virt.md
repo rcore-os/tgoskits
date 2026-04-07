@@ -14,7 +14,7 @@
 
 该 crate 在 AArch64 平台栈中的位置可以概括为：
 
-- 向下：依赖 `axcpu`、`page_table_entry` 和 `ax-plat-aarch64-peripherals`，完成 CPU 模式切换、早期页表和通用外设接入。
+- 向下：依赖 `ax-cpu`、`page_table_entry` 和 `ax-plat-aarch64-peripherals`，完成 CPU 模式切换、早期页表和通用外设接入。
 - 向上：实现 `InitIf`、`MemIf`、`PowerIf` 等 `axplat` 契约，并通过 `axplat::call_main()` 把控制权交给内核主函数。
 - 向旁：通过 `axconfig.toml` 固化 QEMU `virt` 板级的 RAM、MMIO、UART、GIC、RTC、PCI ECAM 等地址空间信息。
 
@@ -197,7 +197,7 @@ flowchart TD
 | 依赖 | 作用 |
 | --- | --- |
 | `axplat` | 平台抽象接口目标 |
-| `axcpu` | EL 切换、MMU 初始化和 CPU 辅助操作 |
+| `ax-cpu` | EL 切换、MMU 初始化和 CPU 辅助操作 |
 | `ax-plat-aarch64-peripherals` | PL011/GIC/Generic Timer/PL031/PSCI glue |
 | `page_table_entry` | AArch64 页表项构造 |
 | `axconfig-macros` | 编译期导入 `axconfig.toml` 配置 |
@@ -215,7 +215,7 @@ flowchart TD
 
 ```mermaid
 graph TD
-    A[axcpu / page_table_entry / axconfig-macros] --> B[ax-plat-aarch64-qemu-virt]
+    A[ax-cpu / page_table_entry / axconfig-macros] --> B[ax-plat-aarch64-qemu-virt]
     C[ax-plat-aarch64-peripherals] --> B
     D[axplat] --> B
     B --> E[ax-hal]

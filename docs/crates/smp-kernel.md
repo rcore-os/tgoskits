@@ -98,7 +98,7 @@ make ARCH=riscv64 run SMP=4
 ```mermaid
 graph LR
     sample["smp-kernel"] --> axplat["axplat"]
-    sample --> axcpu["axcpu"]
+    sample --> ax-cpu["ax-cpu"]
     sample --> percpu["percpu"]
     sample --> memaddr["memory_addr"]
     sample --> conststr["const-str"]
@@ -110,7 +110,7 @@ graph LR
 
 ### 3.1 直接依赖
 - `axplat`：统一平台抽象入口。
-- `axcpu`：IRQ/trap 与 CPU 辅助。
+- `ax-cpu`：IRQ/trap 与 CPU 辅助。
 - `percpu`：多核定时器中的 per-CPU 状态。
 - `memory_addr`：次核启动栈地址转换。
 - `const-str`：解析 `AX_CPU_NUM`。

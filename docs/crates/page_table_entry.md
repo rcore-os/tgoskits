@@ -6,7 +6,7 @@
 > 版本：`0.6.1`
 > 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs` 与 `src/arch/*`
 
-`page_table_entry` 是多架构页表栈里专门负责“页表项长什么样”的基础库。它不负责遍历页表树、不负责分配页表页，也不负责地址空间策略；它只把不同架构的 PTE/descriptor 编码抽象成统一接口，使上层 `page_table_multiarch`、`axaddrspace`、`axplat-*` 引导页表和 `axcpu` 等组件都能在不重复理解每套硬件位语义的前提下构造和查询页表项。
+`page_table_entry` 是多架构页表栈里专门负责“页表项长什么样”的基础库。它不负责遍历页表树、不负责分配页表页，也不负责地址空间策略；它只把不同架构的 PTE/descriptor 编码抽象成统一接口，使上层 `page_table_multiarch`、`axaddrspace`、`axplat-*` 引导页表和 `ax-cpu` 等组件都能在不重复理解每套硬件位语义的前提下构造和查询页表项。
 
 ## 1. 架构设计分析
 
@@ -146,7 +146,7 @@ LoongArch64 路径提供：
 
 - `page_table_multiarch`：把 `GenericPTE` 作为页表树操作的底层单元
 - `axplat-*` 平台包：在引导页表中直接手工创建 `A64PTE` 等静态项
-- `axcpu` / `axaddrspace`：在 MMU、嵌套页表或页错误处理中复用 `MappingFlags`
+- `ax-cpu` / `axaddrspace`：在 MMU、嵌套页表或页错误处理中复用 `MappingFlags`
 
 ### 2.3 设计边界
 
@@ -174,7 +174,7 @@ LoongArch64 路径提供：
 
 - `page_table_multiarch`
 - `axaddrspace`
-- `axcpu`
+- `ax-cpu`
 - `axvm`
 - `os/axvisor`
 - 多个 `axplat-*` 平台包
@@ -185,7 +185,7 @@ LoongArch64 路径提供：
 graph TD
     A[memory_addr] --> B[page_table_entry]
     B --> C[page_table_multiarch]
-    B --> D[axcpu]
+    B --> D[ax-cpu]
     B --> E[axaddrspace]
     C --> F[ax-mm]
     E --> G[axvm / Axvisor]
@@ -206,7 +206,7 @@ graph TD
 
 - 优先保证 `MappingFlags` 语义稳定，不要让上层因底层位布局变化而受影响
 - 对 `is_huge()`、`is_present()` 这类方法的语义修改尤其要谨慎，因为它们会直接影响页表树遍历逻辑
-- 修改 AArch64 缓存属性编码时，需要同步核对 `axcpu` 或平台初始化路径中的 MAIR 设定
+- 修改 AArch64 缓存属性编码时，需要同步核对 `ax-cpu` 或平台初始化路径中的 MAIR 设定
 
 ### 4.3 feature 传播
 
@@ -244,7 +244,7 @@ graph TD
 
 | 项目 | 位置 | 角色 | 核心作用 |
 | --- | --- | --- | --- |
-| ArceOS | 页表基础设施底层 | 多架构 PTE 统一定义层 | 为 `axcpu`、平台引导页表和 `ax-mm` 路径提供统一的页表项语义 |
+| ArceOS | 页表基础设施底层 | 多架构 PTE 统一定义层 | 为 `ax-cpu`、平台引导页表和 `ax-mm` 路径提供统一的页表项语义 |
 | StarryOS | 通过页表栈间接使用 | 底层页表项编码库 | StarryOS 多数通过 `page_table_multiarch` 间接依赖它，但权限语义与页表编码最终仍来自这里 |
 | Axvisor | 嵌套页表与虚拟化内存基础件 | 虚拟化页表项语义来源 | `axaddrspace`、`axvm`、x86/AArch64/RISC-V 虚拟化路径都复用它的 `MappingFlags` 与部分架构 PTE 实现 |
 

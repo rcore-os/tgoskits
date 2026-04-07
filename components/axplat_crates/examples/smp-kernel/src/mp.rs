@@ -41,7 +41,7 @@ fn secondary_main(cpu_id: usize) -> ! {
         core::hint::spin_loop();
     }
 
-    axcpu::asm::enable_irqs();
+    ax-cpu::asm::enable_irqs();
 
     // Infinite loop to receive and handle timer interrupts
     loop {

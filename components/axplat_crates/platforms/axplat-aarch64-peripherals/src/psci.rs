@@ -136,7 +136,7 @@ pub fn system_off() -> ! {
     psci_call(PSCI_0_2_FN_SYSTEM_OFF, 0, 0, 0).ok();
     warn!("It should shutdown!");
     loop {
-        axcpu::asm::halt();
+        ax-cpu::asm::halt();
     }
 }
 

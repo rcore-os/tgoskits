@@ -29,7 +29,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "axcpu"
+name = "ax-cpu"
 version = "0.3.0-preview.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf99fd0321a4e2a0eb1fb2a1a53ae47ea10a9c31a969545575ce302291934ea0"
@@ -453,7 +453,7 @@ checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
 name = "starry-signal"
 version = "0.3.0"
 dependencies = [
- "axcpu",
+ "ax-cpu",
  "bitflags 2.10.0",
  "cfg-if",
  "derive_more",

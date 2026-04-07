@@ -11,7 +11,7 @@ repository.workspace = true
 axconfig-macros = "0.4.1"
 cfg-if = "1.0"
 linkme = "0.3.33"
-axcpu = { workspace = true }
+ax-cpu = { workspace = true }
 axplat = { workspace = true }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]

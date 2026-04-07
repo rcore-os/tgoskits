@@ -14,13 +14,13 @@ default = ["smp", "irq"]
 smp = ["axplat/smp"]
 irq = ["axplat/irq"]
 uspace = ["somehal/uspace"]
-hv = ["somehal/hv", "axcpu/arm-el2"]
+hv = ["somehal/hv", "ax-cpu/arm-el2"]
 
 [dependencies]
 anyhow = { version = "1", default-features = false }
 ax-alloc.workspace = true
 axconfig-macros = "0.4.1"
-axcpu.workspace = true
+ax-cpu.workspace = true
 axdriver_base.workspace = true
 axdriver_block.workspace = true
 axdriver_virtio = { workspace = true, features = ["block"] }

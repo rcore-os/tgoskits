@@ -25,10 +25,10 @@ impl PowerIf for PowerImpl {
 
         info!("Shutting down...");
         unsafe { halt_addr.write_volatile(0x34) };
-        axcpu::asm::halt();
+        ax-cpu::asm::halt();
         warn!("It should shutdown!");
         loop {
-            axcpu::asm::halt();
+            ax-cpu::asm::halt();
         }
     }
 

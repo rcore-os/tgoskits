@@ -8,7 +8,7 @@ Implementation of [axplat](https://github.com/arceos-org/axplat_crates/tree/main
 ## Install
 
 ```bash
-cargo +nightly add axcpu axplat ax-plat-x86-pc
+cargo +nightly add ax-cpu axplat ax-plat-x86-pc
 ```
 
 ## Usage
@@ -19,7 +19,7 @@ cargo +nightly add axcpu axplat ax-plat-x86-pc
 #[axplat::main]
 fn kernel_main(cpu_id: usize, arg: usize) -> ! {
     // x86_64 requires the `percpu` crate to be initialized first.
-    axcpu::init::init_percpu(cpu_id);
+    ax-cpu::init::init_percpu(cpu_id);
     // Initialize trap, console, time.
     axplat::init::init_early(cpu_id, arg);
     // Initialize platform peripherals (not used in this example).

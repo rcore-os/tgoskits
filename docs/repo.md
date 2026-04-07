@@ -169,7 +169,7 @@ url,branch,target_dir,category,description
 
 | 字段 | 必填 | 说明 | 示例 |
 |------|:----:|------|------|
-| `url` | 是 | 组件仓库 URL | `https://github.com/arceos-org/axcpu` |
+| `url` | 是 | 组件仓库 URL | `https://github.com/arceos-org/ax-cpu` |
 | `branch` | 否 | 建议跟踪的分支；留空时由 `repo.py` 自动检测 | `dev` |
 | `target_dir` | 是 | 组件在主仓库中的路径 | `components/axcpu` |
 | `category` | 否 | 组件分类 | `ArceOS` |
@@ -294,8 +294,8 @@ python3 scripts/repo/repo.py push --all
 
 默认分支解析示例：
 
-- 执行 `python3 scripts/repo/repo.py push axcpu -b release`，会直接推送到 `release`
-- 如果 `repos.csv` 中 `axcpu` 的 `branch` 记录为 `dev`，执行 `python3 scripts/repo/repo.py push axcpu` 时会推送到 `dev`
+- 执行 `python3 scripts/repo/repo.py push ax-cpu -b release`，会直接推送到 `release`
+- 如果 `repos.csv` 中 `ax-cpu` 的 `branch` 记录为 `dev`，执行 `python3 scripts/repo/repo.py push ax-cpu` 时会推送到 `dev`
 - 如果 `repos.csv` 中 `arm_vcpu` 的 `branch` 为空，执行 `python3 scripts/repo/repo.py push arm_vcpu` 时会自动检测组件仓库默认分支并推送到该分支
 
 `repo.py push` 和 `pull` 在“分支来源优先级”上是相似的，都是优先尊重命令行参数，其次读取 `repos.csv`，最后再自动检测。因此，两者的主要差异不在优先级顺序，而在于“自动检测的对象”和“是否带源分支提示”。
@@ -311,7 +311,7 @@ python3 scripts/repo/repo.py push --all
 - `pull` 的自动检测主要用于决定“从哪个远端分支拉取并合并到主仓库”
 - `push` 的自动检测主要用于决定“把主仓库中的 subtree 改动推送到组件仓库的哪个远端分支”
 
-另外，`repo.py push` 会额外检测当前主仓库源分支并打印提示，例如 `tgoskits main -> axcpu release`。这个源分支信息仅用于日志展示，不参与手工 `push` 命令本身的目标分支解析。
+另外，`repo.py push` 会额外检测当前主仓库源分支并打印提示，例如 `tgoskits main -> ax-cpu release`。这个源分支信息仅用于日志展示，不参与手工 `push` 命令本身的目标分支解析。
 
 需要注意的是，`git subtree push` 本身并不支持单独的 `--force` 参数，强制推送是通过 refspec 形式（例如 `+dev`）实现的。如果组件仓库远端已经前进，通常应先做同步确认，再决定是否使用强制推送。
 

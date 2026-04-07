@@ -176,7 +176,7 @@ flowchart TD
 | `smp` | 透传到 `axplat/smp`，启用次核入口、次核初始化和 `cpu_boot()` 路径 |
 | `irq` | 透传到 `axplat/irq`，编译 `irq.rs` 并启用 timer IRQ 相关接口 |
 | `uspace` | 透传到 `somehal/uspace`，说明该路径允许 `somehal` 切换到含用户态支持的构建 |
-| `hv` | 透传到 `somehal/hv` 与 `axcpu/arm-el2`，为 hypervisor 场景准备 CPU 模式支持 |
+| `hv` | 透传到 `somehal/hv` 与 `ax-cpu/arm-el2`，为 hypervisor 场景准备 CPU 模式支持 |
 
 需要注意，默认 feature 就是 `["smp", "irq"]`，这意味着该 crate 被设计成优先服务多核且可中断的平台路径，而不是最小单核裸机包。
 
@@ -194,7 +194,7 @@ flowchart TD
 | --- | --- |
 | `axplat` | 提供平台契约与 `call_main()` / `call_secondary_main()` |
 | `somehal` | 提供真实平台事实与入口宏，是本 crate 的核心下层 |
-| `axcpu` | 在 `hv` 等场景提供 CPU 模式支持 |
+| `ax-cpu` | 在 `hv` 等场景提供 CPU 模式支持 |
 | `axklib` | 提供 `iomap()` 等内核内存映射辅助 |
 | `ax-alloc` | 为 `VirtIO` DMA 路径提供页分配 |
 | `rdrive`、`rd-block` | 提供运行时设备探测与块设备抽象 |
@@ -212,7 +212,7 @@ flowchart TD
 
 ```mermaid
 graph TD
-    A[somehal / axcpu / axklib] --> B[axplat-dyn]
+    A[somehal / ax-cpu / axklib] --> B[axplat-dyn]
     C[axplat] --> B
     D[rdrive / rd-block / dma-api / axdriver_virtio] --> B
 

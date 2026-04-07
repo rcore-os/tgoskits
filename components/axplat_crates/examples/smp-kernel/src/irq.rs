@@ -1,4 +1,4 @@
-use axcpu::trap::{IRQ, register_trap_handler};
+use ax-cpu::trap::{IRQ, register_trap_handler};
 
 #[register_trap_handler(IRQ)]
 fn irq_handler(vector: usize) -> bool {
@@ -36,5 +36,5 @@ pub fn init_irq() {
     axplat::console_println!("Timer IRQ handler registered.");
 
     // Enable the timer IRQ.
-    axcpu::asm::enable_irqs();
+    ax-cpu::asm::enable_irqs();
 }
