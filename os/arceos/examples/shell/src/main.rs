@@ -1,16 +1,16 @@
-#![cfg_attr(feature = "axstd", no_std)]
-#![cfg_attr(feature = "axstd", no_main)]
+#![cfg_attr(feature = "ax-std", no_std)]
+#![cfg_attr(feature = "ax-std", no_main)]
 
 #[macro_use]
-#[cfg(feature = "axstd")]
-extern crate axstd as std;
+#[cfg(feature = "ax-std")]
+extern crate ax_std as std;
 
-#[cfg(not(feature = "axstd"))]
+#[cfg(not(feature = "ax-std"))]
 fn path_to_str(path: &impl AsRef<std::ffi::OsStr>) -> &str {
     path.as_ref().to_str().unwrap()
 }
 
-#[cfg(feature = "axstd")]
+#[cfg(feature = "ax-std")]
 fn path_to_str(path: &str) -> &str {
     path
 }
@@ -35,7 +35,7 @@ fn print_prompt() {
     std::io::stdout().flush().unwrap();
 }
 
-#[cfg_attr(feature = "axstd", unsafe(no_mangle))]
+#[cfg_attr(feature = "ax-std", unsafe(no_mangle))]
 fn main() {
     let mut stdin = std::io::stdin();
     let mut stdout = std::io::stdout();

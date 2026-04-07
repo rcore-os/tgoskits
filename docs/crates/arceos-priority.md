@@ -78,13 +78,13 @@ flowchart LR
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    test["arceos-priority"] --> axstd["axstd(alloc, multitask)"]
-    axstd --> arceos_api["arceos_api::task"]
+    test["arceos-priority"] --> ax-std["ax-std(alloc, multitask)"]
+    ax-std --> arceos_api["arceos_api::task"]
     arceos_api --> axtask["axtask / scheduler"]
 ```
 
 ### 3.1 直接依赖
-- `axstd(alloc, multitask)`：需要堆对象、线程和 `join`。
+- `ax-std(alloc, multitask)`：需要堆对象、线程和 `join`。
 - `sched-rr` / `sched-cfs`：通过 feature 透传到底层调度器。
 
 ### 3.2 关键间接依赖

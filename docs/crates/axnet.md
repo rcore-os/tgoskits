@@ -111,7 +111,7 @@
 - `axruntime` 在启用老一代 `net` 路径时调用 `axnet::init_network(all_devices.net)`
 - `arceos_api` 直接导出 TCP、UDP、DNS 与 `ax_poll_interfaces()`
 - `arceos_posix_api` 用它实现 socket、`select`、`epoll` 等 POSIX 兼容接口
-- `axstd` 再经由更高层 API 把网络能力暴露给 ArceOS 应用
+- `ax-std` 再经由更高层 API 把网络能力暴露给 ArceOS 应用
 
 与之相对，当运行时选择 `net-ng` 时，初始化入口会切换到 `axnet_ng::init_network()`，这正好体现了两代实现的并存关系。
 
@@ -155,7 +155,7 @@
 
 ### 3.3 与样例程序的关系
 
-虽然 `ax-httpclient`、`ax-httpserver` 不直接依赖 `axnet` 的源码 API，但它们经由 `axstd`、`arceos_api`、`axruntime` 间接走的正是这条网络装配链。因此，这些示例更适合作为 `axnet` 的系统行为样例，而不是 `axnet` 自身的 API 示例。
+虽然 `ax-httpclient`、`ax-httpserver` 不直接依赖 `axnet` 的源码 API，但它们经由 `ax-std`、`arceos_api`、`axruntime` 间接走的正是这条网络装配链。因此，这些示例更适合作为 `axnet` 的系统行为样例，而不是 `axnet` 自身的 API 示例。
 
 ## 4. 开发指南
 

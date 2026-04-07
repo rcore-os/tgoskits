@@ -71,7 +71,7 @@ keywords = ["arceos", "kernel"]
 categories = ["os", "no-std"]
 
 [workspace.dependencies]
-axstd = { version = "0.5.0", path = "ulib/axstd" }
+ax-std = { version = "0.5.0", path = "ulib/axstd" }
 ax-libc = { version = "0.5.0", path = "ulib/axlibc" }
 
 arceos_api = { version = "0.5.0", path = "api/arceos_api" }

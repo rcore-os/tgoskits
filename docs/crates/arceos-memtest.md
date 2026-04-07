@@ -27,7 +27,7 @@
 
 ```mermaid
 flowchart LR
-    A["Vec / BTreeMap / String"] --> B["axstd(alloc)"]
+    A["Vec / BTreeMap / String"] --> B["ax-std(alloc)"]
     B --> C["arceos_api / alloc glue"]
     C --> D["axalloc / 全局分配器"]
     D --> E["底层页分配与内存管理"]
@@ -79,13 +79,13 @@ flowchart LR
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    test["arceos-memtest"] --> axstd["axstd(alloc)"]
+    test["arceos-memtest"] --> ax-std["ax-std(alloc)"]
     test --> rand["rand(small_rng)"]
-    axstd --> axalloc["axalloc / 全局分配器链"]
+    ax-std --> axalloc["axalloc / 全局分配器链"]
 ```
 
 ### 3.1 直接依赖
-- `axstd(alloc)`：说明本测试只关心分配相关能力，不涉及多任务或文件系统。
+- `ax-std(alloc)`：说明本测试只关心分配相关能力，不涉及多任务或文件系统。
 - `rand(small_rng)`：用固定种子生成可复现的数据集。
 
 ### 3.2 关键间接依赖

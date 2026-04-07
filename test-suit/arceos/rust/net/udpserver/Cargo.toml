@@ -5,4 +5,4 @@ edition.workspace = true
 authors = ["Dashuai Wu <wudashuaijss@foxmail.com>"]
 
 [dependencies]
-axstd = { workspace = true, features = ["net"], optional = true }
+ax-std = { workspace = true, features = ["net"], optional = true }

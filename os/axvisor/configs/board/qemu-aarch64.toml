@@ -1,7 +1,7 @@
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = [
     "ept-level-4",
-    "axstd/bus-mmio",
+    "ax-std/bus-mmio",
 ]
 log = "Info"
 plat_dyn = true

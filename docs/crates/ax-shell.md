@@ -31,11 +31,11 @@
 ```mermaid
 graph LR
     current["ax-shell"]
-    current --> axstd["axstd"]
+    current --> ax-std["ax-std"]
 ```
 
 ### 3.1 直接与间接依赖
-- `axstd`
+- `ax-std`
 
 ### 3.2 间接本地依赖
 - `arceos_api`

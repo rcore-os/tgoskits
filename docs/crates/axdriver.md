@@ -153,7 +153,7 @@ graph LR
 - `starry-kernel`：复用驱动接口层和若干设备抽象。
 
 ### 3.3 间接消费者
-- ArceOS 示例、测试与基于 `axstd` 的应用。
+- ArceOS 示例、测试与基于 `ax-std` 的应用。
 - Axvisor 中与块设备兼容层相关的 glue 路径。
 - 依赖 `axplat-dyn` 的动态平台运行环境。
 

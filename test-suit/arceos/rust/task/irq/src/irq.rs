@@ -1,8 +1,8 @@
-#[cfg(feature = "axstd")]
+#[cfg(feature = "ax-std")]
 use std::os::arceos::modules::axhal;
 
 pub fn assert_irq_enabled() {
-    #[cfg(feature = "axstd")]
+    #[cfg(feature = "ax-std")]
     {
         assert!(
             axhal::asm::irqs_enabled(),
@@ -13,7 +13,7 @@ pub fn assert_irq_enabled() {
 }
 
 pub fn assert_irq_disabled() {
-    #[cfg(feature = "axstd")]
+    #[cfg(feature = "ax-std")]
     {
         assert!(
             !axhal::asm::irqs_enabled(),
@@ -31,11 +31,11 @@ pub fn assert_irq_enabled_and_disabled() {
 }
 
 pub fn disable_irqs() {
-    #[cfg(feature = "axstd")]
+    #[cfg(feature = "ax-std")]
     axhal::asm::disable_irqs()
 }
 
 pub fn enable_irqs() {
-    #[cfg(feature = "axstd")]
+    #[cfg(feature = "ax-std")]
     axhal::asm::enable_irqs()
 }

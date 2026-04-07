@@ -40,8 +40,8 @@ pub mod config {
     /// Read VM configs from filesystem
     #[cfg(feature = "fs")]
     pub fn filesystem_vm_configs() -> Vec<String> {
-        use axstd::fs;
-        use axstd::io::{BufReader, Read};
+        use ax_std::fs;
+        use ax_std::io::{BufReader, Read};
 
         let config_dir = "/guest/vm_default";
 

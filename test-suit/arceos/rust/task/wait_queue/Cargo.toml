@@ -6,4 +6,4 @@ authors = ["Keyang Hu <keyang.hu@qq.com>"]
 description = "A simple demo to test the wait queue for tasks under ArceOS"
 
 [dependencies]
-axstd = { workspace = true, features = ["multitask", "irq"], optional = true }
+ax-std = { workspace = true, features = ["multitask", "irq"], optional = true }

@@ -133,7 +133,7 @@ graph LR
     axtask --> arceos_api["arceos_api"]
     axtask --> arceos_posix_api["arceos_posix_api"]
     axtask --> starry["starry-kernel"]
-    axtask --> axvisor["axvisor (via axstd/indirect)"]
+    axtask --> axvisor["axvisor (via ax-std/indirect)"]
 ```
 
 ### 3.1 关键直接依赖
@@ -217,4 +217,4 @@ axtask = { workspace = true }
 StarryOS 直接复用 `axtask` 作为线程调度基础，并借助 `TaskExt` 把 Linux 兼容线程对象挂接到任务实体上。因此，`axtask` 在 StarryOS 中承担的是“底层线程调度内核”，而不是外围帮助库。
 
 ### 6.3 Axvisor
-Axvisor 并不直接依赖 `axtask` 包名，但它通过 `axstd` 启用的任务能力，把每个 vCPU 组织成可调度任务，并利用 `TaskExt`、`WaitQueue` 和运行队列复用 Hypervisor 并发模型。因此，`axtask` 是 Axvisor 把“vCPU”转化成“宿主调度实体”的关键基础设施。
+Axvisor 并不直接依赖 `axtask` 包名，但它通过 `ax-std` 启用的任务能力，把每个 vCPU 组织成可调度任务，并利用 `TaskExt`、`WaitQueue` 和运行队列复用 Hypervisor 并发模型。因此，`axtask` 是 Axvisor 把“vCPU”转化成“宿主调度实体”的关键基础设施。

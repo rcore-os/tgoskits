@@ -23,7 +23,7 @@ enum AxFeaturePrefixFamily {
 impl AxFeaturePrefixFamily {
     fn prefix(self) -> &'static str {
         match self {
-            Self::AxStd => "axstd/",
+            Self::AxStd => "ax-std/",
             Self::AxFeat => "axfeat/",
         }
     }
@@ -81,7 +81,7 @@ impl ArceosBuildInfo {
         let has_myplat = self.features.iter().any(|feature| {
             matches!(
                 feature.as_str(),
-                "myplat" | "axstd/myplat" | "axfeat/myplat"
+                "myplat" | "ax-std/myplat" | "axfeat/myplat"
             )
         });
 
@@ -91,9 +91,9 @@ impl ArceosBuildInfo {
                 "plat-dyn"
                     | "defplat"
                     | "myplat"
-                    | "axstd/plat-dyn"
-                    | "axstd/defplat"
-                    | "axstd/myplat"
+                    | "ax-std/plat-dyn"
+                    | "ax-std/defplat"
+                    | "ax-std/myplat"
                     | "axfeat/plat-dyn"
                     | "axfeat/defplat"
                     | "axfeat/myplat"
@@ -132,7 +132,7 @@ impl ArceosBuildInfo {
                 }
                 warn!(
                     "failed to detect direct ax dependency for package {}: {}, defaulting to \
-                     axstd feature prefix",
+                     ax-std feature prefix",
                     package, err
                 );
                 AxFeaturePrefixFamily::AxStd
@@ -277,7 +277,7 @@ impl Default for ArceosBuildInfo {
         Self {
             env,
             log: LogLevel::Warn,
-            features: vec!["axstd".to_string()],
+            features: vec!["ax-std".to_string()],
             max_cpu_num: None,
             plat_dyn: false,
         }
@@ -372,7 +372,10 @@ pub(crate) fn resolve_build_info_path_in_dir(dir: &Path, target: &str) -> PathBu
 }
 
 fn feature_family_from_existing_features(features: &[String]) -> Option<AxFeaturePrefixFamily> {
-    if features.iter().any(|feature| feature.starts_with("axstd/")) {
+    if features
+        .iter()
+        .any(|feature| feature.starts_with("ax-std/"))
+    {
         return Some(AxFeaturePrefixFamily::AxStd);
     }
     if features
@@ -406,7 +409,7 @@ fn detect_ax_feature_prefix_family(
     let has_axstd = package_info
         .dependencies
         .iter()
-        .any(|dep| dep.name == "axstd" || dep.rename.as_deref() == Some("axstd"));
+        .any(|dep| dep.name == "ax-std" || dep.rename.as_deref() == Some("ax-std"));
     let has_axfeat = package_info
         .dependencies
         .iter()
@@ -416,7 +419,7 @@ fn detect_ax_feature_prefix_family(
         (true, true) | (true, false) => Ok(AxFeaturePrefixFamily::AxStd),
         (false, true) => Ok(AxFeaturePrefixFamily::AxFeat),
         (false, false) => Err(anyhow::anyhow!(
-            "package `{package}` must directly depend on `axstd` or `axfeat`"
+            "package `{package}` must directly depend on `ax-std` or `axfeat`"
         )),
     }
 }
@@ -463,13 +466,13 @@ fn resolve_platform_package(
         .map(|feature| {
             feature
                 .strip_prefix("axfeat/")
-                .or_else(|| feature.strip_prefix("axstd/"))
+                .or_else(|| feature.strip_prefix("ax-std/"))
                 .unwrap_or(feature.as_str())
         })
         .filter(|feature| {
             !matches!(
                 *feature,
-                "axstd" | "axfeat" | "plat-dyn" | "defplat" | "myplat"
+                "ax-std" | "axfeat" | "plat-dyn" | "defplat" | "myplat"
             )
         })
         .collect();
@@ -486,7 +489,7 @@ fn resolve_platform_package(
     if features.iter().any(|feature| {
         matches!(
             feature.as_str(),
-            "myplat" | "axstd/myplat" | "axfeat/myplat"
+            "myplat" | "ax-std/myplat" | "axfeat/myplat"
         )
     }) && let Some(dep) = package_info
         .dependencies
@@ -696,8 +699,8 @@ mod tests {
         let mut build_info = base_build_info();
         build_info.resolve_features("ax-helloworld", true);
 
-        assert!(build_info.features.contains(&"axstd/plat-dyn".to_string()));
-        assert!(!build_info.features.contains(&"axstd/defplat".to_string()));
+        assert!(build_info.features.contains(&"ax-std/plat-dyn".to_string()));
+        assert!(!build_info.features.contains(&"ax-std/defplat".to_string()));
 
         let args = ArceosBuildInfo::build_cargo_args("aarch64-unknown-none-softfloat", true);
         assert!(args.iter().any(|arg| arg.contains("-Taxplat.x")));
@@ -708,8 +711,8 @@ mod tests {
         let mut build_info = base_build_info();
         build_info.resolve_features("ax-helloworld", false);
 
-        assert!(build_info.features.contains(&"axstd/defplat".to_string()));
-        assert!(!build_info.features.contains(&"axstd/plat-dyn".to_string()));
+        assert!(build_info.features.contains(&"ax-std/defplat".to_string()));
+        assert!(!build_info.features.contains(&"ax-std/plat-dyn".to_string()));
 
         let args = ArceosBuildInfo::build_cargo_args("aarch64-unknown-none-softfloat", false);
         assert!(args.iter().any(|arg| arg.contains("-Tlinker.x")));
@@ -724,26 +727,26 @@ mod tests {
 
         build_info.resolve_features("ax-helloworld", false);
 
-        assert!(build_info.features.contains(&"axstd/smp".to_string()));
+        assert!(build_info.features.contains(&"ax-std/smp".to_string()));
     }
 
     #[test]
     fn preserves_axstd_myplat_for_non_dynamic_platforms() {
         let mut build_info = ArceosBuildInfo {
-            features: vec!["axstd".to_string(), "axstd/myplat".to_string()],
+            features: vec!["ax-std".to_string(), "ax-std/myplat".to_string()],
             ..ArceosBuildInfo::default()
         };
         build_info.resolve_features("ax-helloworld", false);
 
-        assert!(build_info.features.contains(&"axstd/myplat".to_string()));
-        assert!(!build_info.features.contains(&"axstd/defplat".to_string()));
+        assert!(build_info.features.contains(&"ax-std/myplat".to_string()));
+        assert!(!build_info.features.contains(&"ax-std/defplat".to_string()));
     }
 
     #[test]
     fn normalizes_myplat_to_axfeat_when_package_depends_on_axfeat() {
         let workspace = temp_workspace("axfeat-app", "axfeat = \"0.1.0\"\n").unwrap();
         let mut build_info = ArceosBuildInfo {
-            features: vec!["axstd/myplat".to_string()],
+            features: vec!["ax-std/myplat".to_string()],
             ..ArceosBuildInfo::default()
         };
 
@@ -752,7 +755,7 @@ mod tests {
                 .unwrap();
         assert_eq!(family, AxFeaturePrefixFamily::AxFeat);
 
-        build_info.features.retain(|feature| feature != "axstd");
+        build_info.features.retain(|feature| feature != "ax-std");
         build_info.resolve_features_with_manifest_path(
             "axfeat-app",
             false,
@@ -760,7 +763,7 @@ mod tests {
         );
 
         assert!(build_info.features.contains(&"axfeat/myplat".to_string()));
-        assert!(!build_info.features.contains(&"axstd/myplat".to_string()));
+        assert!(!build_info.features.contains(&"ax-std/myplat".to_string()));
         assert!(!build_info.features.contains(&"axfeat/defplat".to_string()));
     }
 
@@ -784,7 +787,7 @@ mod tests {
             ..ArceosBuildInfo::default()
         };
 
-        build_info.features.retain(|feature| feature != "axstd");
+        build_info.features.retain(|feature| feature != "ax-std");
         build_info.resolve_features_with_manifest_path(
             "axfeat-app",
             false,
@@ -797,7 +800,7 @@ mod tests {
     #[test]
     fn max_cpu_num_does_not_duplicate_existing_smp_feature() {
         let mut build_info = ArceosBuildInfo {
-            features: vec!["axstd".to_string(), "axstd/smp".to_string()],
+            features: vec!["ax-std".to_string(), "ax-std/smp".to_string()],
             max_cpu_num: Some(4),
             ..ArceosBuildInfo::default()
         };
@@ -808,7 +811,7 @@ mod tests {
             build_info
                 .features
                 .iter()
-                .filter(|feature| feature.as_str() == "axstd/smp")
+                .filter(|feature| feature.as_str() == "ax-std/smp")
                 .count(),
             1
         );
@@ -881,7 +884,7 @@ mod tests {
         assert!(
             fs::read_to_string(path)
                 .unwrap()
-                .contains("features = [\"axstd\"]")
+                .contains("features = [\"ax-std\"]")
         );
     }
 
@@ -908,7 +911,7 @@ mod tests {
         fs::write(
             &path,
             r#"
-features = ["axstd", "net"]
+features = ["ax-std", "net"]
 log = "Debug"
 max_cpu_num = 4
 
@@ -975,7 +978,7 @@ AX_IP = "127.0.0.1"
         .unwrap();
 
         assert_eq!(cargo.env.get("SMP"), Some(&"4".to_string()));
-        assert!(cargo.features.contains(&"axstd/smp".to_string()));
+        assert!(cargo.features.contains(&"ax-std/smp".to_string()));
     }
 
     #[test]
@@ -996,7 +999,7 @@ AX_IP = "127.0.0.1"
         .unwrap();
 
         assert_eq!(cargo.env.get("SMP"), Some(&"1".to_string()));
-        assert!(!cargo.features.contains(&"axstd/smp".to_string()));
+        assert!(!cargo.features.contains(&"ax-std/smp".to_string()));
     }
 
     #[test]
@@ -1026,7 +1029,7 @@ AX_IP = "127.0.0.1"
     #[test]
     fn build_info_toml_equivalent_config_converts_to_non_dynamic_cargo() {
         let toml = r#"
-features = ["axstd"]
+features = ["ax-std"]
 log = "Info"
 plat_dyn = true
 max_cpu_num = 4
@@ -1054,9 +1057,9 @@ AX_GW = "10.0.2.2"
 
         let cargo = build_info.into_cargo_config(&request).unwrap();
 
-        assert!(cargo.features.contains(&"axstd/defplat".to_string()));
-        assert!(cargo.features.contains(&"axstd/smp".to_string()));
-        assert!(!cargo.features.contains(&"axstd/plat-dyn".to_string()));
+        assert!(cargo.features.contains(&"ax-std/defplat".to_string()));
+        assert!(cargo.features.contains(&"ax-std/smp".to_string()));
+        assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
         assert!(cargo.args.iter().any(|arg| arg.contains("-Tlinker.x")));
         assert_eq!(cargo.env.get("SMP"), Some(&"4".to_string()));
         assert_eq!(

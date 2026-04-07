@@ -1,11 +1,11 @@
-#![cfg_attr(feature = "axstd", no_std)]
-#![cfg_attr(feature = "axstd", no_main)]
+#![cfg_attr(feature = "ax-std", no_std)]
+#![cfg_attr(feature = "ax-std", no_main)]
 
 #[macro_use]
-#[cfg(feature = "axstd")]
-extern crate axstd as std;
+#[cfg(feature = "ax-std")]
+extern crate ax_std as std;
 
-#[cfg(feature = "axstd")]
+#[cfg(feature = "ax-std")]
 use std::os::arceos::api::task::ax_set_current_priority;
 use std::{sync::Arc, thread, time, vec, vec::Vec};
 
@@ -57,9 +57,9 @@ fn load(n: &u64) -> u64 {
     sum
 }
 
-#[cfg_attr(feature = "axstd", unsafe(no_mangle))]
+#[cfg_attr(feature = "ax-std", unsafe(no_mangle))]
 fn main() {
-    #[cfg(feature = "axstd")]
+    #[cfg(feature = "ax-std")]
     ax_set_current_priority(-20).ok();
 
     let data = (0..PAYLOAD_KIND)
@@ -75,10 +75,10 @@ fn main() {
     for i in 0..PAYLOAD_KIND {
         let vec = data[i].clone();
         let data_len = TASK_PARAMS[i].data_len;
-        #[cfg(feature = "axstd")]
+        #[cfg(feature = "ax-std")]
         let nice = TASK_PARAMS[i].nice;
         tasks.push(thread::spawn(move || {
-            #[cfg(feature = "axstd")]
+            #[cfg(feature = "ax-std")]
             ax_set_current_priority(nice).ok();
 
             let left = 0;
@@ -109,7 +109,7 @@ fn main() {
         println!("task {} = {}ms", i, time);
     }
 
-    #[cfg(feature = "axstd")]
+    #[cfg(feature = "ax-std")]
     if cfg!(feature = "sched-cfs") && thread::available_parallelism().unwrap().get() == 1 {
         assert!(
             leave_times[0] > leave_times[1]

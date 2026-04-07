@@ -20,7 +20,7 @@
 
 - 语义实现放在这里
 - C ABI 包装留给 `ax-libc`
-- Rust `std` 风格包装留给 `axstd`
+- Rust `std` 风格包装留给 `ax-std`
 
 ### 1.2 顶层模块结构
 `src/lib.rs` 暴露出的主要内容有三类：
@@ -120,10 +120,10 @@ flowchart LR
 
 因此它是“POSIX 线程语义适配”，不是“把 Linux 线程 ABI 原封不动搬进来”。
 
-### 2.4 与 `axstd` / `ax-libc` 的边界
+### 2.4 与 `ax-std` / `ax-libc` 的边界
 三者职责需要明确区分：
 
-- `axstd`：Rust 高层接口，像 `std`
+- `ax-std`：Rust 高层接口，像 `std`
 - `arceos_posix_api`：POSIX 语义实现，像 `sys_*` 内核接口
 - `ax-libc`：C ABI 导出和 `errno` 处理，像 libc 壳层
 

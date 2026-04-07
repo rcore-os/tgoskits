@@ -1,9 +1,9 @@
-#![cfg_attr(feature = "axstd", no_std)]
-#![cfg_attr(feature = "axstd", no_main)]
+#![cfg_attr(feature = "ax-std", no_std)]
+#![cfg_attr(feature = "ax-std", no_main)]
 
 #[macro_use]
-#[cfg(feature = "axstd")]
-extern crate axstd as std;
+#[cfg(feature = "ax-std")]
+extern crate ax_std as std;
 
 use std::{
     sync::atomic::{AtomicUsize, Ordering},
@@ -13,7 +13,7 @@ use std::{
 const NUM_TASKS: usize = 10;
 static FINISHED_TASKS: AtomicUsize = AtomicUsize::new(0);
 
-#[cfg_attr(feature = "axstd", unsafe(no_mangle))]
+#[cfg_attr(feature = "ax-std", unsafe(no_mangle))]
 fn main() {
     for i in 0..NUM_TASKS {
         thread::spawn(move || {
@@ -23,7 +23,7 @@ fn main() {
             thread::yield_now();
 
             let _order = FINISHED_TASKS.fetch_add(1, Ordering::Relaxed);
-            #[cfg(feature = "axstd")]
+            #[cfg(feature = "ax-std")]
             if cfg!(not(feature = "sched-cfs"))
                 && thread::available_parallelism().unwrap().get() == 1
             {

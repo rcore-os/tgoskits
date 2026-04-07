@@ -25,7 +25,7 @@
 
 ```mermaid
 flowchart LR
-    A["thread::sleep(Duration)"] --> B["axstd::thread::sleep"]
+    A["thread::sleep(Duration)"] --> B["ax_std::thread::sleep"]
     B --> C["arceos_api::task::ax_sleep_until"]
     C --> D["axtask::sleep_until"]
     D --> E["IRQ/timer 驱动超时唤醒"]
@@ -75,14 +75,14 @@ flowchart LR
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    test["arceos-sleep"] --> axstd["axstd(multitask, irq)"]
-    axstd --> arceos_api["arceos_api::task"]
+    test["arceos-sleep"] --> ax-std["ax-std(multitask, irq)"]
+    ax-std --> arceos_api["arceos_api::task"]
     arceos_api --> axtask["axtask"]
     axtask --> axhal["axhal time/irq"]
 ```
 
 ### 3.1 直接依赖
-- `axstd(multitask, irq)`：说明测试直接依赖多任务和中断驱动的睡眠路径。
+- `ax-std(multitask, irq)`：说明测试直接依赖多任务和中断驱动的睡眠路径。
 
 ### 3.2 关键间接依赖
 - `axtask::sleep_until`：真正把当前任务挂入等待队列。

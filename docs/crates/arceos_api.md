@@ -15,7 +15,7 @@
 - 它不是运行时本体，不负责初始化系统，也不直接实现调度、内存、网络或文件系统算法。
 - 它是一层 **薄门面**：对外给出稳定、按域划分的 `ax_*` API，对内把实现集中到 `imp/`。
 - 它与 `axfeat` 配合，通过 feature 控制哪些 API 域进入最终镜像。
-- 它既是 `axstd` 的重要下层依赖，也是 ArceOS 模块能力暴露给更上层时最推荐的接入边界。
+- 它既是 `ax-std` 的重要下层依赖，也是 ArceOS 模块能力暴露给更上层时最推荐的接入边界。
 
 因此，理解 `arceos_api` 的关键不在复杂数据结构，而在“API 定义如何生成”“API 可见性如何由 feature 控制”“API 最终映射到哪些模块”。
 
@@ -118,7 +118,7 @@ graph LR
     axnet["axnet"] --> arceos_api
     axdisplay["axdisplay"] --> arceos_api
 
-    arceos_api --> axstd["axstd"]
+    arceos_api --> ax-std["ax-std"]
     arceos_api --> ax-libc["ax-libc (间接经更高层)"]
     arceos_api --> arceos_examples["ArceOS examples / tests (间接)"]
 ```
@@ -128,13 +128,13 @@ graph LR
 - 可选能力：`axalloc`、`axdma`、`axtask`、`axfs`、`axnet`、`axdisplay`、`axdriver`、`axipi`、`axmm`。
 
 ### 3.2 关键直接消费者
-- `axstd`：最重要的直接消费者，会把 `arceos_api` 作为用户库的重要下层能力来源。
+- `ax-std`：最重要的直接消费者，会把 `arceos_api` 作为用户库的重要下层能力来源。
 - 其他需要稳定 API 边界的上层 Rust 代码。
 
 ### 3.3 间接消费者
-- ArceOS 示例与测试程序，经 `axstd` 或更高层封装间接使用。
-- Axvisor，经 `axstd` 间接共享这套 API 栈。
-- StarryOS 若通过 `axstd` 走统一上层库路径时，也会间接使用，但内核本体通常直接依赖底层模块而不是本 crate。
+- ArceOS 示例与测试程序，经 `ax-std` 或更高层封装间接使用。
+- Axvisor，经 `ax-std` 间接共享这套 API 栈。
+- StarryOS 若通过 `ax-std` 走统一上层库路径时，也会间接使用，但内核本体通常直接依赖底层模块而不是本 crate。
 
 ## 4. 开发指南
 ### 4.1 依赖配置
@@ -164,7 +164,7 @@ arceos_api = { workspace = true, features = ["alloc", "multitask", "fs", "net"] 
 - 任务、DMA、文件系统和网络句柄等薄包装是否保持稳定语义。
 
 ### 5.3 集成测试重点
-- 通过 `axstd` 或最小 ArceOS 应用验证时间、I/O、任务、文件系统、网络等门面 API 的实际可用性。
+- 通过 `ax-std` 或最小 ArceOS 应用验证时间、I/O、任务、文件系统、网络等门面 API 的实际可用性。
 - 覆盖不同 feature 组合下的编译与运行路径，尤其是 `multitask`、`fs`、`net`、`dma`。
 - 对 `dummy-if-not-enabled`，至少要验证调用方不会误把占位 API 当成可运行实现。
 
@@ -175,10 +175,10 @@ arceos_api = { workspace = true, features = ["alloc", "multitask", "fs", "net"] 
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-`arceos_api` 是 ArceOS 官方的公共 API 门面层。它与 `axfeat` 协作，把一组离散的底层模块整理成稳定接口，是 `axstd` 等上层库最重要的下层边界之一。
+`arceos_api` 是 ArceOS 官方的公共 API 门面层。它与 `axfeat` 协作，把一组离散的底层模块整理成稳定接口，是 `ax-std` 等上层库最重要的下层边界之一。
 
 ### 6.2 StarryOS
 StarryOS 内核本体通常直接依赖更底层模块，而不是依赖 `arceos_api`。因此在 StarryOS 中，它更像“可选的统一上层库接口层”，而不是内核核心依赖。
 
 ### 6.3 Axvisor
-Axvisor 主要经 `axstd` 间接复用 `arceos_api`。因此它在 Axvisor 中扮演的是“共享上层 API 栈的一部分”，而不是 hypervisor 专用接口层。
+Axvisor 主要经 `ax-std` 间接复用 `arceos_api`。因此它在 Axvisor 中扮演的是“共享上层 API 栈的一部分”，而不是 hypervisor 专用接口层。

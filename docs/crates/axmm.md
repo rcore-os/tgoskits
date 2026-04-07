@@ -127,7 +127,7 @@ graph LR
 
 ### 3.3 间接消费者
 - 启用分页的 ArceOS 样例与测试。
-- 通过 `axstd`、`arceos_api` 或 `axruntime` 间接使用宿主页表栈的上层项目。
+- 通过 `ax-std`、`arceos_api` 或 `axruntime` 间接使用宿主页表栈的上层项目。
 - Axvisor 的宿主内核路径，但不包含 guest 二级页表策略本身。
 
 ## 4. 开发指南

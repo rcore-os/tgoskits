@@ -91,7 +91,7 @@
 
 仓库里的真实调用链大致分为四类：
 
-1. `axstd::io` 直接重导出 `axio` 的 trait 与类型，把它包装成 ArceOS 应用看到的 `std::io` 风格接口。
+1. `ax_std::io` 直接重导出 `axio` 的 trait 与类型，把它包装成 ArceOS 应用看到的 `std::io` 风格接口。
 2. `axfs`、`axfs-ng` 的文件对象实现 `Read` / `Write` / `Seek`，复用统一的缓冲器和默认读写逻辑。
 3. `axnet`、`axnet-ng` 以及更上层 socket 封装使用 `axio` 作为同步收发 trait 的公共接口。
 4. `arceos_api`、`arceos_posix_api`、StarryOS 的 `FileLike`/用户缓冲访问对象通过 `axio` 收敛系统调用读写路径。
@@ -111,7 +111,7 @@
 - `axio` 不关心对象属于文件、socket、pipe、TTY 还是内存；它只定义同步 I/O 语义
 - `axio` 不负责等待事件，也不直接注册 waker
 - `axio` 不提供 POSIX fd、系统调用协议或 socket 状态机
-- `axio` 不重新定义应用接口；应用通常通过 `axstd::io` 间接接触它
+- `axio` 不重新定义应用接口；应用通常通过 `ax_std::io` 间接接触它
 
 ## 3. 依赖关系
 
@@ -127,7 +127,7 @@
 
 直接或间接依赖 `axio` 的关键模块包括：
 
-- `axstd`、`ax-libc`
+- `ax-std`、`ax-libc`
 - `arceos_api`、`arceos_posix_api`
 - `axfs`、`axfs-ng`
 - `axnet`、`axnet-ng`
@@ -137,7 +137,7 @@
 
 | 层次 | 与 `axio` 的关系 |
 | --- | --- |
-| `axstd::io` | 面向 ArceOS 应用的重导出接口 |
+| `ax_std::io` | 面向 ArceOS 应用的重导出接口 |
 | `axfs*` | 把文件对象映射到统一同步 I/O trait |
 | `axnet*` | 把 socket 收发路径映射到统一同步 I/O trait |
 | `arceos_posix_api` | 把系统调用中的文件描述符读写逻辑落到统一 trait 上 |
@@ -206,7 +206,7 @@ cargo test -p axio --features alloc
 
 ### 6.1 ArceOS
 
-在 ArceOS 中，`axio` 是同步 I/O 语义基座。`axstd` 负责把它包装成应用接口，`axfs*` 和 `axnet*` 则负责把具体内核对象接到这层协议上。
+在 ArceOS 中，`axio` 是同步 I/O 语义基座。`ax-std` 负责把它包装成应用接口，`axfs*` 和 `axnet*` 则负责把具体内核对象接到这层协议上。
 
 ### 6.2 StarryOS
 

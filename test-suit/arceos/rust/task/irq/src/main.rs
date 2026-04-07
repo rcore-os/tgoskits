@@ -1,11 +1,11 @@
-#![cfg_attr(feature = "axstd", no_std)]
-#![cfg_attr(feature = "axstd", no_main)]
+#![cfg_attr(feature = "ax-std", no_std)]
+#![cfg_attr(feature = "ax-std", no_main)]
 
 #[macro_use]
-#[cfg(feature = "axstd")]
-extern crate axstd as std;
+#[cfg(feature = "ax-std")]
+extern crate ax_std as std;
 
-#[cfg(feature = "axstd")]
+#[cfg(feature = "ax-std")]
 use std::sync::atomic::AtomicBool;
 use std::{
     sync::atomic::{AtomicUsize, Ordering},
@@ -81,7 +81,7 @@ fn test_sleep() {
     println!("IRQ state tests on task sleep run OK!");
 }
 
-#[cfg(feature = "axstd")]
+#[cfg(feature = "ax-std")]
 fn test_wait_queue() {
     use std::os::arceos::modules::axtask;
 
@@ -132,13 +132,13 @@ fn test_wait_queue() {
     println!("IRQ state tests on task wait run OK!");
 }
 
-#[cfg_attr(feature = "axstd", unsafe(no_mangle))]
+#[cfg_attr(feature = "ax-std", unsafe(no_mangle))]
 fn main() {
     println!("Hello, main task");
 
     test_yielding();
     test_sleep();
-    #[cfg(feature = "axstd")]
+    #[cfg(feature = "ax-std")]
     test_wait_queue();
 
     println!("All tests passed!");

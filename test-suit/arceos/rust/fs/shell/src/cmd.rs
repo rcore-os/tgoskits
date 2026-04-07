@@ -1,4 +1,4 @@
-#[cfg(all(not(feature = "axstd"), unix))]
+#[cfg(all(not(feature = "ax-std"), unix))]
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::{
     fs::{self, File, FileType},
@@ -248,13 +248,13 @@ fn do_pwd(_args: &str) {
 fn do_uname(_args: &str) {
     let arch = option_env!("AX_ARCH").unwrap_or("");
     let platform = option_env!("AX_PLATFORM").unwrap_or("");
-    #[cfg(feature = "axstd")]
+    #[cfg(feature = "ax-std")]
     let smp = if std::thread::available_parallelism().unwrap().get() == 1 {
         ""
     } else {
         " SMP"
     };
-    #[cfg(not(feature = "axstd"))]
+    #[cfg(not(feature = "ax-std"))]
     let smp = "";
     let version = option_env!("CARGO_PKG_VERSION").unwrap_or("0.1.0");
     println!(

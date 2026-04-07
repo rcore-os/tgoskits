@@ -121,16 +121,16 @@ Examples are given below and in the [app-helloworld](https://github.com/arceos-o
 ### Rust
 
 1. Create a new rust package with `no_std` and `no_main` environment.
-2. Add `axstd` dependency and features to enable to `Cargo.toml`:
+2. Add `ax-std` dependency and features to enable to `Cargo.toml`:
 
     ```toml
     [dependencies]
-    axstd = { path = "/path/to/arceos/ulib/axstd", features = ["..."] }
+    ax-std = { path = "/path/to/arceos/ulib/axstd", features = ["..."] }
     # or use git repository:
-    # axstd = { git = "https://github.com/arceos-org/arceos.git", features = ["..."] }
+    # ax-std = { git = "https://github.com/arceos-org/arceos.git", features = ["..."] }
     ```
 
-3. Call library functions from `axstd` in your code, just like the Rust [std](https://doc.rust-lang.org/std/) library.
+3. Call library functions from `ax-std` in your code, just like the Rust [std](https://doc.rust-lang.org/std/) library.
 
     Remember to annotate the `main` function with `#[unsafe(no_mangle)]` (see this [example](examples/helloworld/src/main.rs)).
 

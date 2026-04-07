@@ -1,5 +1,5 @@
 [package]
-name = "axstd"
+name = "ax-std"
 version.workspace = true
 edition.workspace = true
 authors = [

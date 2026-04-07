@@ -1,9 +1,9 @@
-#![cfg_attr(feature = "axstd", no_std)]
-#![cfg_attr(feature = "axstd", no_main)]
+#![cfg_attr(feature = "ax-std", no_std)]
+#![cfg_attr(feature = "ax-std", no_main)]
 
 #[macro_use]
-#[cfg(feature = "axstd")]
-extern crate axstd as std;
+#[cfg(feature = "ax-std")]
+extern crate ax_std as std;
 
 use std::{collections::BTreeMap, vec::Vec};
 
@@ -38,7 +38,7 @@ fn test_btree_map(rng: &mut impl RngCore) {
     println!("test_btree_map() OK!");
 }
 
-#[cfg_attr(feature = "axstd", unsafe(no_mangle))]
+#[cfg_attr(feature = "ax-std", unsafe(no_mangle))]
 fn main() {
     println!("Running memory tests...");
 

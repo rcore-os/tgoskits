@@ -127,7 +127,7 @@ graph LR
     axruntime --> arceos_posix_api["arceos_posix_api"]
     axruntime --> axfeat["axfeat"]
     axruntime --> starry_kernel["starry-kernel"]
-    axruntime --> axstd["axstd (间接)"]
+    axruntime --> ax-std["ax-std (间接)"]
 ```
 
 ### 3.1 关键直接依赖
@@ -142,12 +142,12 @@ graph LR
 - `arceos_api` / `axfeat`：通过 feature 聚合把运行时纳入最终镜像。
 - `arceos_posix_api`：作为 POSIX 兼容 API 层，与 `axruntime` 共享 bring-up 结果。
 - `starry-kernel`：显式依赖 `axruntime`，把 Linux 兼容内核主体挂到同一运行时模型上。
-- `axstd`：通常不是直接依赖 `axruntime`，但会通过 `arceos_api` / `axfeat` 间接复用。
+- `ax-std`：通常不是直接依赖 `axruntime`，但会通过 `arceos_api` / `axfeat` 间接复用。
 
 ### 3.3 间接消费者
 - `os/arceos/examples/*` 与 `test-suit/arceos/*` 中的大量应用、测试与样例。
 - `starryos` 启动包与 `starryos-test`。
-- `axvisor` 主程序，经由 `axstd` / `arceos_api` 共享同一套运行时栈。
+- `axvisor` 主程序，经由 `ax-std` / `arceos_api` 共享同一套运行时栈。
 
 ## 4. 开发指南
 ### 4.1 依赖配置
@@ -156,7 +156,7 @@ graph LR
 axruntime = { workspace = true }
 ```
 
-但对绝大多数 ArceOS 应用来说，更常见的做法是依赖 `axstd`、`arceos_api` 或 `axfeat`，而不是直接把 `axruntime` 当普通库调用。
+但对绝大多数 ArceOS 应用来说，更常见的做法是依赖 `ax-std`、`arceos_api` 或 `axfeat`，而不是直接把 `axruntime` 当普通库调用。
 
 ### 4.2 初始化与改动约束
 1. 修改 `rust_main()` 时，应把它视为“系统启动级变更”，不能只从单模块角度评估影响。
@@ -197,4 +197,4 @@ axruntime = { workspace = true }
 StarryOS 并不重新实现一套裸机运行时，而是让 `starry-kernel` 和 `starryos` 复用 `axruntime` 的入口模型。因此在 StarryOS 中，`axruntime` 承担的是“Linux 兼容内核的底层 bring-up 框架”。
 
 ### 6.3 Axvisor
-Axvisor 不直接把 `axruntime` 当作 hypervisor 专用 API 使用，但其主程序依然通过 `axstd` / `arceos_api` 共享相同的运行时栈。因此 `axruntime` 在 Axvisor 中扮演的是“宿主内核启动与环境建立的公共基座”，而不是单独的虚拟化策略层。
+Axvisor 不直接把 `axruntime` 当作 hypervisor 专用 API 使用，但其主程序依然通过 `ax-std` / `arceos_api` 共享相同的运行时栈。因此 `axruntime` 在 Axvisor 中扮演的是“宿主内核启动与环境建立的公共基座”，而不是单独的虚拟化策略层。

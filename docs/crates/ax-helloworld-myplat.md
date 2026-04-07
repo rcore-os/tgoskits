@@ -38,7 +38,7 @@ graph LR
     current --> axplat_loongarch64_qemu_virt["axplat-loongarch64-qemu-virt"]
     current --> axplat_riscv64_qemu_virt["axplat-riscv64-qemu-virt"]
     current --> axplat_x86_pc["axplat-x86-pc"]
-    current --> axstd["axstd"]
+    current --> ax-std["ax-std"]
 ```
 
 ### 3.1 直接与间接依赖
@@ -49,7 +49,7 @@ graph LR
 - `axplat-loongarch64-qemu-virt`
 - `axplat-riscv64-qemu-virt`
 - `axplat-x86-pc`
-- `axstd`
+- `ax-std`
 
 ### 3.2 间接本地依赖
 - `arceos_api`

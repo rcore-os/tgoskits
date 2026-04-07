@@ -87,14 +87,14 @@ flowchart TD
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    test["arceos-irq"] --> axstd["axstd(multitask, irq)"]
+    test["arceos-irq"] --> ax-std["ax-std(multitask, irq)"]
     test --> axhal["axhal::asm"]
     test --> axtask["axtask::WaitQueue"]
-    axstd --> arceos_api["arceos_api::task"]
+    ax-std --> arceos_api["arceos_api::task"]
 ```
 
 ### 3.1 直接依赖
-- `axstd(multitask, irq)`：启用多任务与中断相关路径。
+- `ax-std(multitask, irq)`：启用多任务与中断相关路径。
 
 ### 3.2 关键间接依赖
 - `axtask`：任务切换、睡眠和等待队列的真实实现。

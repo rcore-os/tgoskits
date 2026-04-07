@@ -107,7 +107,7 @@ Axvisor 的典型场景不是“被别的 crate 调用”，而是：
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    axstd["axstd / ArceOS modules"] --> axvisor["axvisor"]
+    ax-std["ax-std / ArceOS modules"] --> axvisor["axvisor"]
     axvm["axvm"] --> axvisor
     axvcpu["axvcpu"] --> axvisor
     axaddrspace["axaddrspace"] --> axvisor
@@ -118,7 +118,7 @@ graph LR
 ```
 
 ### 3.1 关键直接依赖
-- `axstd`：为 Hypervisor 提供宿主侧运行时，包括任务、内存、时间、SMP 和虚拟化 feature。
+- `ax-std`：为 Hypervisor 提供宿主侧运行时，包括任务、内存、时间、SMP 和虚拟化 feature。
 - `axvm`：VM 资源层。
 - `axvcpu`：vCPU 抽象与执行路径。
 - `axaddrspace`：客户机地址空间与映射。
@@ -127,7 +127,7 @@ graph LR
 - `axbuild`：主要服务 `xtask` 路径，是构建工作流的重要依赖。
 
 ### 3.2 关键间接依赖
-- `axhal`、`axtask`、`axalloc`、`axmm` 等 ArceOS 模块会通过 `axstd` 与 `hal` 注入路径间接参与 Hypervisor 运行。
+- `axhal`、`axtask`、`axalloc`、`axmm` 等 ArceOS 模块会通过 `ax-std` 与 `hal` 注入路径间接参与 Hypervisor 运行。
 - `arm_vcpu`、`arm_vgic`、`x86_vcpu`、`riscv_vcpu` 等底层组件会通过 `axvm`/`axvcpu` 间接进入虚拟化主线。
 
 ### 3.3 被依赖情况

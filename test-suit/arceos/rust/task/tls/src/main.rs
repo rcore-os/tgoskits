@@ -1,11 +1,11 @@
-#![cfg_attr(feature = "axstd", no_std)]
-#![cfg_attr(feature = "axstd", no_main)]
+#![cfg_attr(feature = "ax-std", no_std)]
+#![cfg_attr(feature = "ax-std", no_main)]
 #![feature(thread_local)]
 #![allow(unused_unsafe)]
 
 #[macro_use]
-#[cfg(feature = "axstd")]
-extern crate axstd as std;
+#[cfg(feature = "ax-std")]
+extern crate ax_std as std;
 
 use std::{ptr::addr_of, str::from_utf8_unchecked, thread, vec::Vec};
 
@@ -45,7 +45,7 @@ macro_rules! add {
     };
 }
 
-#[cfg_attr(feature = "axstd", unsafe(no_mangle))]
+#[cfg_attr(feature = "ax-std", unsafe(no_mangle))]
 fn main() {
     println!("Running TLS tests...");
 

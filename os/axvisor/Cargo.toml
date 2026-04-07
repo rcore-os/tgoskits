@@ -39,8 +39,8 @@ path = "xtask/src/main.rs"
 [features]
 default = []
 ept-level-4 = []
-fs = ["axstd/fs"]
-dyn-plat = ["axstd/plat-dyn"]
+fs = ["ax-std/fs"]
+dyn-plat = ["ax-std/plat-dyn"]
 # Driver features (from former driver crate)
 rk3588-clk = ["dep:rk3588-clk"]
 rk3568-clk = ["dep:rk3568_clk"]
@@ -62,7 +62,7 @@ timer_list = "0.3.0"
 hashbrown = "0.14"
 
 # System dependent modules provided by ArceOS.
-axstd = { version = "0.5.0", features = [
+ax-std = { version = "0.5.0", features = [
   "alloc-level-1",
   "paging",
   "irq",

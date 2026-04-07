@@ -25,7 +25,7 @@
 - 收敛点：所有子任务 `join`
 
 ### 1.2 自制 barrier 的作用
-源码里的 `barrier()` 不是多余的，它明确让所有任务在完成自己的局部计算后，在同一个同步点汇合，然后再统一继续。对 `axstd` 场景，它使用：
+源码里的 `barrier()` 不是多余的，它明确让所有任务在完成自己的局部计算后，在同一个同步点汇合，然后再统一继续。对 `ax-std` 场景，它使用：
 
 - `AxWaitQueueHandle`
 - `ax_wait_queue_wait_until()`
@@ -74,14 +74,14 @@ flowchart LR
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    test["arceos-parallel"] --> axstd["axstd(alloc, multitask, irq)"]
+    test["arceos-parallel"] --> ax-std["ax-std(alloc, multitask, irq)"]
     test --> rand["rand(small_rng)"]
-    axstd --> arceos_api["arceos_api::task"]
+    ax-std --> arceos_api["arceos_api::task"]
     arceos_api --> axtask["axtask / wait queue"]
 ```
 
 ### 3.1 直接依赖
-- `axstd(alloc, multitask, irq)`：表明它同时依赖堆分配、多任务和超时等待。
+- `ax-std(alloc, multitask, irq)`：表明它同时依赖堆分配、多任务和超时等待。
 - `rand(small_rng)`：生成固定输入数据集。
 
 ### 3.2 关键间接依赖

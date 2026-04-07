@@ -7,8 +7,8 @@ authors = ["Yuekai Jia <equation618@gmail.com>"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-sched-rr = ["axstd?/sched-rr"]
-sched-cfs = ["axstd?/sched-cfs"]
+sched-rr = ["ax-std?/sched-rr"]
+sched-cfs = ["ax-std?/sched-cfs"]
 
 [dependencies]
-axstd = { workspace = true, features = ["multitask"], optional = true }
+ax-std = { workspace = true, features = ["multitask"], optional = true }

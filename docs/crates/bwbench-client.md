@@ -17,7 +17,7 @@
 从目录和源码看，`bwbench-client` 与仓库里的 HTTP 示例完全不同：
 
 - 它运行在宿主机 `std` 环境，而不是 `no_std` ArceOS 应用环境
-- 它不走 `axstd`，也不直接依赖仓库内的网络栈
+- 它不走 `ax-std`，也不直接依赖仓库内的网络栈
 - 它直接使用 Linux raw socket 与 `ioctl`
 
 因此，它不是“ArceOS 的一个网络示例”，而是“ArceOS 网络基准的宿主机配套工具”。

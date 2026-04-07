@@ -232,14 +232,14 @@ checksum = "993a810118f8f37e9c4411c86f1c4c940a09a7ab34b7bf2d88d06f50c553fab7"
 name = "arceos-affinity"
 version = "0.3.0"
 dependencies = [
- "axstd",
+ "ax-std",
 ]
 
 [[package]]
 name = "arceos-display"
 version = "0.3.0"
 dependencies = [
- "axstd",
+ "ax-std",
  "embedded-graphics",
 ]
 
@@ -247,7 +247,7 @@ dependencies = [
 name = "arceos-exception"
 version = "0.3.0"
 dependencies = [
- "axstd",
+ "ax-std",
  "linkme",
 ]
 
@@ -255,9 +255,9 @@ dependencies = [
 name = "arceos-fs-shell"
 version = "0.3.0"
 dependencies = [
+ "ax-std",
  "axfs_ramfs",
  "axfs_vfs",
- "axstd",
  "crate_interface 0.5.0",
 ]
 
@@ -265,14 +265,14 @@ dependencies = [
 name = "arceos-irq"
 version = "0.3.0"
 dependencies = [
- "axstd",
+ "ax-std",
 ]
 
 [[package]]
 name = "arceos-memtest"
 version = "0.3.0"
 dependencies = [
- "axstd",
+ "ax-std",
  "rand 0.8.5",
 ]
 
@@ -280,35 +280,35 @@ dependencies = [
 name = "arceos-net-echoserver"
 version = "0.3.0"
 dependencies = [
- "axstd",
+ "ax-std",
 ]
 
 [[package]]
 name = "arceos-net-httpclient"
 version = "0.3.0"
 dependencies = [
- "axstd",
+ "ax-std",
 ]
 
 [[package]]
 name = "arceos-net-httpserver"
 version = "0.3.0"
 dependencies = [
- "axstd",
+ "ax-std",
 ]
 
 [[package]]
 name = "arceos-net-udpserver"
 version = "0.3.0"
 dependencies = [
- "axstd",
+ "ax-std",
 ]
 
 [[package]]
 name = "arceos-parallel"
 version = "0.3.0"
 dependencies = [
- "axstd",
+ "ax-std",
  "rand 0.8.5",
 ]
 
@@ -316,35 +316,35 @@ dependencies = [
 name = "arceos-priority"
 version = "0.3.0"
 dependencies = [
- "axstd",
+ "ax-std",
 ]
 
 [[package]]
 name = "arceos-sleep"
 version = "0.3.0"
 dependencies = [
- "axstd",
+ "ax-std",
 ]
 
 [[package]]
 name = "arceos-tls"
 version = "0.3.0"
 dependencies = [
- "axstd",
+ "ax-std",
 ]
 
 [[package]]
 name = "arceos-wait-queue"
 version = "0.3.0"
 dependencies = [
- "axstd",
+ "ax-std",
 ]
 
 [[package]]
 name = "arceos-yield"
 version = "0.3.0"
 dependencies = [
- "axstd",
+ "ax-std",
 ]
 
 [[package]]
@@ -572,13 +572,14 @@ dependencies = [
 name = "ax-helloworld"
 version = "0.3.0"
 dependencies = [
- "axstd",
+ "ax-std",
 ]
 
 [[package]]
 name = "ax-helloworld-myplat"
 version = "0.3.0"
 dependencies = [
+ "ax-std",
  "axplat-aarch64-bsta1000b",
  "axplat-aarch64-phytium-pi",
  "axplat-aarch64-qemu-virt",
@@ -586,7 +587,6 @@ dependencies = [
  "axplat-loongarch64-qemu-virt",
  "axplat-riscv64-qemu-virt 0.5.1",
  "axplat-x86-pc",
- "axstd",
  "cfg-if",
 ]
 
@@ -594,14 +594,14 @@ dependencies = [
 name = "ax-httpclient"
 version = "0.3.0"
 dependencies = [
- "axstd",
+ "ax-std",
 ]
 
 [[package]]
 name = "ax-httpserver"
 version = "0.3.0"
 dependencies = [
- "axstd",
+ "ax-std",
 ]
 
 [[package]]
@@ -619,7 +619,21 @@ dependencies = [
 name = "ax-shell"
 version = "0.3.0"
 dependencies = [
- "axstd",
+ "ax-std",
+]
+
+[[package]]
+name = "ax-std"
+version = "0.5.0"
+dependencies = [
+ "arceos_api",
+ "axerrno",
+ "axfeat",
+ "axio",
+ "kspin 0.3.1",
+ "lazyinit 0.4.2",
+ "lock_api",
+ "spin 0.10.0",
 ]
 
 [[package]]
@@ -1571,20 +1585,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "axstd"
-version = "0.5.0"
-dependencies = [
- "arceos_api",
- "axerrno",
- "axfeat",
- "axio",
- "kspin 0.3.1",
- "lazyinit 0.4.2",
- "lock_api",
- "spin 0.10.0",
-]
-
-[[package]]
 name = "axsync"
 version = "0.5.0"
 dependencies = [
@@ -1690,6 +1690,7 @@ dependencies = [
  "aarch64-cpu-ext",
  "anyhow",
  "arm-gic-driver 0.17.0",
+ "ax-std",
  "axaddrspace",
  "axbuild",
  "axconfig",
@@ -1701,7 +1702,6 @@ dependencies = [
  "axklib",
  "axplat-riscv64-qemu-virt 0.5.0",
  "axplat-x86-qemu-q35",
- "axstd",
  "axvcpu",
  "axvisor_api",
  "axvm",

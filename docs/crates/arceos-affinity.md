@@ -45,7 +45,7 @@ flowchart LR
 - `sched-rr`
 - `sched-cfs`
 
-会透传到 `axstd` 对应的调度器 feature。这个 crate 本身并不强依赖某一种调度算法，但它确实依赖：
+会透传到 `ax-std` 对应的调度器 feature。这个 crate 本身并不强依赖某一种调度算法，但它确实依赖：
 
 - `multitask`
 - 可见 CPU 数
@@ -82,14 +82,14 @@ flowchart LR
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    test["arceos-affinity"] --> axstd["axstd(multitask)"]
-    axstd --> arceos_api["arceos_api::task"]
+    test["arceos-affinity"] --> ax-std["ax-std(multitask)"]
+    ax-std --> arceos_api["arceos_api::task"]
     arceos_api --> axtask["axtask"]
     test --> axhal["axhal::percpu::this_cpu_id"]
 ```
 
 ### 3.1 直接依赖
-- `axstd(multitask)`：提供线程创建、`yield_now()` 和 ArceOS 扩展任务 API 入口。
+- `ax-std(multitask)`：提供线程创建、`yield_now()` 和 ArceOS 扩展任务 API 入口。
 
 ### 3.2 关键间接依赖
 - `arceos_api::task::ax_set_current_affinity`：对上层暴露亲和性设置接口。

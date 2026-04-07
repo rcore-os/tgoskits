@@ -15,7 +15,7 @@ loongarch64-qemu-virt = ["dep:axplat-loongarch64-qemu-virt"]
 
 [dependencies]
 cfg-if.workspace = true
-axstd = { workspace = true, features = ["myplat"], optional = true }
+ax-std = { workspace = true, features = ["myplat"], optional = true }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 axplat-x86-pc = { workspace = true, features = ["smp", "irq"], optional = true }

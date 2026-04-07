@@ -182,7 +182,7 @@ CURATED_DOCS = {
     "axklib",
     "ax-libc",
     "axlog",
-    "axstd",
+    "ax-std",
     "axruntime",
     "axmm",
     "axdriver",
@@ -1290,7 +1290,7 @@ def dev_steps(pkg: Package) -> list[str]:
         ]
     if style == "arceos_ulib":
         return [
-            "将该 crate 视作应用接口层，先明确是走 `axstd` 风格还是 libc/POSIX 风格接入。",
+            "将该 crate 视作应用接口层，先明确是走 `ax-std` 风格还是 libc/POSIX 风格接入。",
             "根据应用所需能力开启 feature，并确认与 `arceos_api`/系统镜像配置保持一致。",
             "通过最小应用或示例程序验证线程、时间、I/O、文件系统或网络接口的语义是否正确。",
         ]

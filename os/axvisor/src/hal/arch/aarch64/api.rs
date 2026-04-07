@@ -40,7 +40,7 @@ impl ArchIf for ArchImpl {
     }
 
     fn read_vgicd_iidr() -> u32 {
-        // use axstd::os::arceos::modules::axhal::irq::MyVgic;
+        // use ax_std::os::arceos::modules::axhal::irq::MyVgic;
         // MyVgic::get_gicd().lock().get_iidr()
         let mut gic = rdrive::get_one::<rdif_intc::Intc>()
             .expect("Failed to get GIC driver")

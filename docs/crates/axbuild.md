@@ -44,12 +44,12 @@ flowchart TD
 
 - `resolve_ax_features()` 只保留模块级 feature，例如 `defplat`、`myplat`、`plat-dyn`
 - `resolve_lib_features()` 只保留库级 feature，例如 `fs`、`net`、`multitask`
-- `build_features()` 在 `ostool.rs` 中再根据应用实际直接依赖的是 `axstd` 还是 `axfeat`，决定拼接前缀：
-  - `axstd/<feature>`
+- `build_features()` 在 `ostool.rs` 中再根据应用实际直接依赖的是 `ax-std` 还是 `axfeat`，决定拼接前缀：
+  - `ax-std/<feature>`
   - `axfeat/<feature>`
   - `ax-libc/<feature>`
 
-`detect_ax_feature_prefix_family()` 甚至会通过 `cargo metadata` 检查应用是否直接依赖 `axstd` 或 `axfeat`。这一步体现了 `axbuild` 对真实调用关系的感知，而不是纯字符串拼接。
+`detect_ax_feature_prefix_family()` 甚至会通过 `cargo metadata` 检查应用是否直接依赖 `ax-std` 或 `axfeat`。这一步体现了 `axbuild` 对真实调用关系的感知，而不是纯字符串拼接。
 
 ### 1.4 宿主环境与目标环境的边界
 `src/arceos/ostool.rs` 显式构造了目标构建所需的宿主环境变量：

@@ -1,5 +1,5 @@
-#![cfg_attr(feature = "axstd", no_std)]
-#![cfg_attr(feature = "axstd", no_main)]
+#![cfg_attr(feature = "ax-std", no_std)]
+#![cfg_attr(feature = "ax-std", no_main)]
 
 cfg_if::cfg_if! {
     if #[cfg(all(target_arch = "aarch64", feature = "aarch64-qemu-virt"))] {
@@ -22,10 +22,10 @@ cfg_if::cfg_if! {
     }
 }
 
-#[cfg(feature = "axstd")]
-use axstd::println;
+#[cfg(feature = "ax-std")]
+use ax_std::println;
 
-#[cfg_attr(feature = "axstd", unsafe(no_mangle))]
+#[cfg_attr(feature = "ax-std", unsafe(no_mangle))]
 fn main() {
     println!("Hello, world!");
 }

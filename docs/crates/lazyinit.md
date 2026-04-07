@@ -60,7 +60,7 @@ stateDiagram-v2
 ### 2.2 关键 API 与真实使用位置
 - `LazyInit::new()`：大量平台和模块静态对象都以它声明，如 `axtask` 的运行队列、`axmm` 的内核地址空间、`axipi` 的 IPI 队列。
 - `init_once()`：平台 UART、IO APIC、GIC、显示/输入设备等对象初始化时广泛使用。
-- `call_once()`：用于“按需首次构造”的场景，如 `axplat-dyn` 内存区域表、`axstd` 标准 IO 包装器、`axbacktrace` 的地址范围缓存。
+- `call_once()`：用于“按需首次构造”的场景，如 `axplat-dyn` 内存区域表、`ax-std` 标准 IO 包装器、`axbacktrace` 的地址范围缓存。
 - `get()` / `Deref`：初始化完成后作为普通全局对象读取。
 
 ### 2.3 使用边界

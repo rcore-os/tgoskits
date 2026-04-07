@@ -1,23 +1,23 @@
-#![cfg_attr(feature = "axstd", no_std)]
-#![cfg_attr(feature = "axstd", no_main)]
+#![cfg_attr(feature = "ax-std", no_std)]
+#![cfg_attr(feature = "ax-std", no_main)]
 
 #[macro_use]
-#[cfg(feature = "axstd")]
-extern crate axstd as std;
+#[cfg(feature = "ax-std")]
+extern crate ax_std as std;
 
-#[cfg(feature = "axstd")]
+#[cfg(feature = "ax-std")]
 use std::os::arceos::api::task::{self as api, AxWaitQueueHandle};
-#[cfg(feature = "axstd")]
+#[cfg(feature = "ax-std")]
 use std::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     thread,
     time::Duration,
 };
 
-#[cfg(feature = "axstd")]
+#[cfg(feature = "ax-std")]
 const NUM_TASKS: usize = 16;
 
-#[cfg(feature = "axstd")]
+#[cfg(feature = "ax-std")]
 fn test_wait() {
     static WQ1: AxWaitQueueHandle = AxWaitQueueHandle::new();
     static WQ2: AxWaitQueueHandle = AxWaitQueueHandle::new();
@@ -48,7 +48,7 @@ fn test_wait() {
     println!("wait_queue: test_wait() OK!");
 }
 
-#[cfg(feature = "axstd")]
+#[cfg(feature = "ax-std")]
 fn test_wait_timeout_until() {
     static WQ3: AxWaitQueueHandle = AxWaitQueueHandle::new();
     static WQ4: AxWaitQueueHandle = AxWaitQueueHandle::new();
@@ -169,12 +169,12 @@ fn test_wait_timeout_until() {
     println!("wait_timeout_until: test tasks woken up by notification or timeout, test OK!");
 }
 
-#[cfg_attr(feature = "axstd", unsafe(no_mangle))]
+#[cfg_attr(feature = "ax-std", unsafe(no_mangle))]
 fn main() {
     println!("Hello, main task");
-    #[cfg(feature = "axstd")]
+    #[cfg(feature = "ax-std")]
     test_wait();
-    #[cfg(feature = "axstd")]
+    #[cfg(feature = "ax-std")]
     test_wait_timeout_until();
 
     println!("All tests passed!");

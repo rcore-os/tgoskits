@@ -118,19 +118,19 @@ version = "0.1.0"
 edition.workspace = true
 
 [dependencies]
-axstd.workspace = true
+ax-std.workspace = true
 ```
 
 最小 `src/main.rs` 可以参考：
 
 ```rust
-#![cfg_attr(feature = "axstd", no_std)]
-#![cfg_attr(feature = "axstd", no_main)]
+#![cfg_attr(feature = "ax-std", no_std)]
+#![cfg_attr(feature = "ax-std", no_main)]
 
-#[cfg(feature = "axstd")]
-use axstd::println;
+#[cfg(feature = "ax-std")]
+use ax_std::println;
 
-#[cfg_attr(feature = "axstd", unsafe(no_mangle))]
+#[cfg_attr(feature = "ax-std", unsafe(no_mangle))]
 fn main() {
     println!("Hello from myapp!");
 }

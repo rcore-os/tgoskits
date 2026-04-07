@@ -186,7 +186,7 @@ checksum = "993a810118f8f37e9c4411c86f1c4c940a09a7ab34b7bf2d88d06f50c553fab7"
 name = "arceos-helloworld"
 version = "0.3.0"
 dependencies = [
- "axstd",
+ "ax-std",
 ]
 
 [[package]]
@@ -200,7 +200,7 @@ dependencies = [
  "axplat-loongarch64-qemu-virt",
  "axplat-riscv64-qemu-virt",
  "axplat-x86-pc",
- "axstd",
+ "ax-std",
  "cfg-if",
 ]
 
@@ -208,21 +208,21 @@ dependencies = [
 name = "arceos-httpclient"
 version = "0.3.0"
 dependencies = [
- "axstd",
+ "ax-std",
 ]
 
 [[package]]
 name = "arceos-httpserver"
 version = "0.3.0"
 dependencies = [
- "axstd",
+ "ax-std",
 ]
 
 [[package]]
 name = "arceos-shell"
 version = "0.3.0"
 dependencies = [
- "axstd",
+ "ax-std",
 ]
 
 [[package]]
@@ -1080,7 +1080,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "axstd"
+name = "ax-std"
 version = "0.5.0"
 dependencies = [
  "arceos_api",

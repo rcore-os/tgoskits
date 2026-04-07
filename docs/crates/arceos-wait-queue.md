@@ -75,13 +75,13 @@ flowchart LR
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    test["arceos-wait-queue"] --> axstd["axstd(multitask, irq)"]
-    axstd --> arceos_api["arceos_api::task"]
+    test["arceos-wait-queue"] --> ax-std["ax-std(multitask, irq)"]
+    ax-std --> arceos_api["arceos_api::task"]
     arceos_api --> axtask["axtask::WaitQueue"]
 ```
 
 ### 3.1 直接依赖
-- `axstd(multitask, irq)`：说明本测试依赖多任务与基于中断的超时等待。
+- `ax-std(multitask, irq)`：说明本测试依赖多任务与基于中断的超时等待。
 
 ### 3.2 关键间接依赖
 - `arceos_api::task::AxWaitQueueHandle`

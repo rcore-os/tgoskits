@@ -78,13 +78,13 @@ flowchart LR
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    test["arceos-yield"] --> axstd["axstd(multitask)"]
-    axstd --> arceos_api["arceos_api::task"]
+    test["arceos-yield"] --> ax-std["ax-std(multitask)"]
+    ax-std --> arceos_api["arceos_api::task"]
     arceos_api --> axtask["axtask"]
 ```
 
 ### 3.1 直接依赖
-- `axstd(multitask)`：提供 `thread::spawn`、`thread::yield_now` 与 `available_parallelism()`。
+- `ax-std(multitask)`：提供 `thread::spawn`、`thread::yield_now` 与 `available_parallelism()`。
 
 ### 3.2 关键间接依赖
 - `arceos_api::task::ax_yield_now`：连接用户侧线程 API 与内核任务 API。

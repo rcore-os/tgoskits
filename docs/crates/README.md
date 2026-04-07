@@ -46,6 +46,7 @@
 | `ax-httpserver` | ArceOS 层 | `os/arceos/examples/httpserver` | 1 | 0 | [查看](./ax-httpserver.md) |
 | `ax-libc` | ArceOS 层 | `os/arceos/ulib/axlibc` | 4 | 0 | [查看](./ax-libc.md) |
 | `ax-shell` | ArceOS 层 | `os/arceos/examples/shell` | 1 | 0 | [查看](./ax-shell.md) |
+| `ax-std` | ArceOS 层 | `os/arceos/ulib/axstd` | 6 | 22 | [查看](./ax-std.md) |
 | `axaddrspace` | 组件层 | `components/axaddrspace` | 6 | 12 | [查看](./axaddrspace.md) |
 | `axalloc` | ArceOS 层 | `os/arceos/modules/axalloc` | 6 | 11 | [查看](./axalloc.md) |
 | `axallocator` | 组件层 | `components/axallocator` | 2 | 2 | [查看](./axallocator.md) |
@@ -102,7 +103,6 @@
 | `axpoll` | 组件层 | `components/axpoll` | 0 | 5 | [查看](./axpoll.md) |
 | `axruntime` | ArceOS 层 | `os/arceos/modules/axruntime` | 20 | 4 | [查看](./axruntime.md) |
 | `axsched` | 组件层 | `components/axsched` | 1 | 1 | [查看](./axsched.md) |
-| `axstd` | ArceOS 层 | `os/arceos/ulib/axstd` | 6 | 22 | [查看](./axstd.md) |
 | `axsync` | ArceOS 层 | `os/arceos/modules/axsync` | 2 | 9 | [查看](./axsync.md) |
 | `axtask` | ArceOS 层 | `os/arceos/modules/axtask` | 13 | 8 | [查看](./axtask.md) |
 | `axvcpu` | 组件层 | `components/axvcpu` | 5 | 5 | [查看](./axvcpu.md) |
