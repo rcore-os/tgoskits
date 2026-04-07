@@ -12,27 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::boxed::Box;
-
 use rdrive::{PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo};
-use some_serial::{BSerial, ns16550, pl011};
+use rockchip_pm::{RkBoard, RockchipPM};
 
-use crate::driver::iomap;
+use crate::drivers::iomap;
 
 module_driver!(
-    name: "common serial",
-    level: ProbeLevel::PreKernel,
-    priority: ProbePriority::DEFAULT,
+    name: "Rockchip Pm",
+    level: ProbeLevel::PostKernel,
+    priority: ProbePriority::CLK,
     probe_kinds: &[
         ProbeKind::Fdt {
-            compatibles: &["arm,pl011", "snps,dw-apb-uart"],
+            compatibles: &["rockchip,rk3588-pmu"],
             on_probe: probe
         }
     ],
 );
 
 fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
-    info!("Probing serial device: {}", info.node.name());
     let base_reg = info
         .node
         .reg()
@@ -43,26 +40,12 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
         )))?;
 
     let mmio_size = base_reg.size.unwrap_or(0x1000);
-    let mmio_base = iomap(base_reg.address, mmio_size)?;
+    let board = RkBoard::Rk3588;
 
-    let clock_freq = info.node.clock_frequency().unwrap_or(24_000_000);
+    let mmio_base = iomap((base_reg.address as usize).into(), mmio_size as usize)?;
+    let pm = RockchipPM::new(mmio_base, board);
 
-    let mut serial: Option<BSerial> = None;
-    for c in info.node.compatibles() {
-        if c == "arm,pl011" {
-            serial = Some(Box::new(pl011::Pl011::new(mmio_base, clock_freq)));
-            break;
-        }
-
-        if c == "snps,dw-apb-uart" {
-            serial = Some(Box::new(ns16550::Ns16550::new_mmio(mmio_base, clock_freq)));
-            break;
-        }
-    }
-    if let Some(s) = serial {
-        info!("Serial@{:#x} registered successfully", s.base());
-        plat_dev.register(s);
-    }
-
+    plat_dev.register(pm);
+    info!("Rockchip power manager registered successfully");
     Ok(())
 }

@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use axklib::{mem::iomap, time::busy_wait};
-
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{
     cmp,
     marker::{Send, Sync},
@@ -21,23 +20,19 @@ use core::{
     time::Duration,
 };
 
-use log::{debug, info};
-use rdrive::{PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo};
-
-use phytium_mci::sd::SdCard;
-use phytium_mci::{IoPad, PAD_ADDRESS, mci_host::err::MCIHostError};
+use axklib::time::busy_wait;
+use log::{debug, info, trace};
+use phytium_mci::{IoPad, PAD_ADDRESS, mci_host::err::MCIHostError, sd::SdCard};
 pub use phytium_mci::{Kernel, set_impl};
-
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use log::trace;
-
-use rdif_block::{BlkError, IQueue, Interface, Request, RequestId};
-use rdrive::DriverGeneric;
-
+use rd_block::{BlkError, IQueue, Interface, Request, RequestId};
+use rdrive::{
+    DriverGeneric, PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo,
+};
 use spin::Mutex;
 
 // pub use dma_api::{Direction, Impl as DmaImpl};
 // pub use dma_api::set_impl as set_dma_impl;
+use crate::drivers::{blk::PlatformDeviceBlock, iomap};
 
 const OFFSET: usize = 0x400_0000;
 const BLOCK_SIZE: usize = 512;
@@ -51,8 +46,6 @@ impl Kernel for KernelImpl {
 }
 
 set_impl!(KernelImpl);
-
-use crate::driver::blk::PlatformDeviceBlock;
 
 module_driver!(
     name: "Phytium SdCard",
@@ -93,13 +86,14 @@ fn probe_sdcard(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnPro
     let iopad_reg_base =
         iomap((PAD_ADDRESS as usize).into(), 0x2000).expect("Failed to iomap iopad reg");
 
-    info!("MCI reg base mapped at {:#x}", mci_reg_base.as_usize());
+    info!(
+        "MCI reg base mapped at {:#x}",
+        mci_reg_base.as_ptr() as usize
+    );
 
-    let mci_reg =
-        NonNull::new(mci_reg_base.as_usize() as *mut u8).expect("Failed to create NonNull pointer");
-
-    let iopad_reg = NonNull::new(iopad_reg_base.as_usize() as *mut u8)
-        .expect("Failed to create NonNull pointer for iopad");
+    let mci_reg = NonNull::new(mci_reg_base.as_ptr()).expect("Failed to create NonNull pointer");
+    let iopad_reg =
+        NonNull::new(iopad_reg_base.as_ptr()).expect("Failed to create NonNull pointer for iopad");
 
     let iopad = IoPad::new(iopad_reg);
 
@@ -155,8 +149,8 @@ impl Interface for SdCardDriver {
         false
     }
 
-    fn handle_irq(&mut self) -> rdif_block::Event {
-        rdif_block::Event::none()
+    fn handle_irq(&mut self) -> rd_block::Event {
+        rd_block::Event::none()
     }
 }
 
@@ -165,12 +159,10 @@ pub struct SdCardQueue {
 }
 
 impl IQueue for SdCardQueue {
-    /// Returns the number of blocks on the SD card.
     fn num_blocks(&self) -> usize {
         self.sd_card.lock().block_count() as usize
     }
 
-    /// Returns the block size in bytes.
     fn block_size(&self) -> usize {
         self.sd_card.lock().block_size() as usize
     }
@@ -179,8 +171,8 @@ impl IQueue for SdCardQueue {
         0
     }
 
-    fn buff_config(&self) -> rdif_block::BuffConfig {
-        rdif_block::BuffConfig {
+    fn buff_config(&self) -> rd_block::BuffConfig {
+        rd_block::BuffConfig {
             dma_mask: u64::MAX,
             align: 0x1000,
             size: self.block_size(),
@@ -191,7 +183,7 @@ impl IQueue for SdCardQueue {
         let actual_block_id = request.block_id + OFFSET / 512;
 
         match request.kind {
-            rdif_block::RequestKind::Read(mut buffer) => {
+            rd_block::RequestKind::Read(mut buffer) => {
                 trace!("read block {}", actual_block_id);
 
                 Self::validate_buffer(&buffer)?;
@@ -209,7 +201,7 @@ impl IQueue for SdCardQueue {
 
                 Ok(RequestId::new(0))
             }
-            rdif_block::RequestKind::Write(buffer) => {
+            rd_block::RequestKind::Write(buffer) => {
                 trace!("write block {}", actual_block_id);
 
                 Self::validate_buffer(&buffer)?;
@@ -227,10 +219,7 @@ impl IQueue for SdCardQueue {
         }
     }
 
-    fn poll_request(
-        &mut self,
-        _request: rdif_block::RequestId,
-    ) -> Result<(), rdif_block::BlkError> {
+    fn poll_request(&mut self, _request: RequestId) -> Result<(), BlkError> {
         Ok(())
     }
 }
@@ -293,22 +282,16 @@ impl core::error::Error for MCIErrorWrapper {}
 fn map_mci_error_to_blk_error(err: MCIHostError) -> BlkError {
     match err {
         MCIHostError::Timeout => BlkError::Retry,
-
         MCIHostError::OutOfRange | MCIHostError::InvalidArgument => {
             BlkError::Other(Box::new(MCIErrorWrapper(err)))
         }
-
         MCIHostError::CardDetectFailed | MCIHostError::CardInitFailed => BlkError::NotSupported,
-
         MCIHostError::InvalidVoltage
         | MCIHostError::SwitchVoltageFail
         | MCIHostError::SwitchVoltage18VFail33VSuccess => BlkError::NotSupported,
-
         MCIHostError::TransferFailed
         | MCIHostError::StopTransmissionFailed
         | MCIHostError::WaitWriteCompleteFailed => BlkError::Retry,
-
-        // 其他所有错误包装为Other
         _ => BlkError::Other(Box::new(MCIErrorWrapper(err))),
     }
 }
