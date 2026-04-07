@@ -130,7 +130,7 @@
 ### 4.2 新增实现时必须同步检查的地方
 1. `Cargo.toml` 的 feature 和可选依赖。
 2. `os/arceos/modules/axdriver/src/drivers.rs` 是否真的注册了 probe 路径。
-3. `axfeat` 顶层 feature 是否需要把该驱动能力暴露给整机配置。
+3. `ax-feat` 顶层 feature 是否需要把该驱动能力暴露给整机配置。
 4. 读写接口对块大小、缓冲区长度和对齐的约束是否写清楚。
 
 ### 4.3 常见坑

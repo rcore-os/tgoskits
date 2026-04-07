@@ -192,7 +192,7 @@ dependencies = [
  "axconfig",
  "axdriver",
  "axerrno 0.2.2",
- "axfeat",
+ "ax-feat",
  "axfs 0.2.0",
  "axhal",
  "axio",
@@ -580,7 +580,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "axfeat"
+name = "ax-feat"
 version = "0.3.0-preview.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "58bc376f478b85111d8b9ba475040d1016708c35f15e634efbdf8f8495272bb2"
@@ -1024,7 +1024,7 @@ checksum = "488fb97366c35a4591bd6ac8536e0d17fb32fd31f43f8e15a7fef98ca589293e"
 dependencies = [
  "ax-api",
  "axerrno 0.2.2",
- "axfeat",
+ "ax-feat",
  "axio",
  "kspin",
  "lazyinit",

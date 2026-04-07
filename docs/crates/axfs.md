@@ -136,7 +136,7 @@ graph LR
 axfs = { workspace = true }
 ```
 
-对大多数 ArceOS 使用者来说，更常见的接入点其实是 `axfeat`、`axruntime`、`ax-api` 或 `ax-posix-api`，而不是直接把 `axfs` 当独立库调用。
+对大多数 ArceOS 使用者来说，更常见的接入点其实是 `ax-feat`、`axruntime`、`ax-api` 或 `ax-posix-api`，而不是直接把 `axfs` 当独立库调用。
 
 ### 4.2 改动约束
 1. 任何对 `init_filesystems()`、`parse_root_spec()`、`find_root_partition()` 的修改，都应被视为启动路径变更。

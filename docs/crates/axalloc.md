@@ -124,7 +124,7 @@ axalloc = { workspace = true }
 1. 修改 `global_init()` 或扩堆逻辑时，要同时检查默认路径与 `hv` 路径是否保持语义一致。
 2. 修改 `UsageKind` 或统计规则时，要避免默认两级分配里的双重记账。
 3. 若调整 `GlobalPage`，必须坚持它只是“分配到的连续页块”所有权对象，不能把映射、cache 属性或 IOMMU 语义塞进来。
-4. 若新增 feature，需要同步检查 `axfeat` 与 `axruntime` 的 feature 传播是否正确。
+4. 若新增 feature，需要同步检查 `ax-feat` 与 `axruntime` 的 feature 传播是否正确。
 
 ### 4.3 开发建议
 - “算法选择”优先放在 `axallocator` 层，`axalloc` 更适合做全局装配。

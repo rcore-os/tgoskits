@@ -94,7 +94,7 @@ StarryOS 的 `pseudofs/dev/event.rs` 会：
 ### 3.2 主要消费者
 - `os/arceos/modules/axruntime`
 - `os/StarryOS/kernel/src/pseudofs/dev/event.rs`
-- 启用 `axfeat/input` 的整机构建路径
+- 启用 `ax-feat/input` 的整机构建路径
 
 ### 3.3 分层关系总结
 - 向下消费已经探测好的输入设备。

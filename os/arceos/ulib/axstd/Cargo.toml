@@ -19,80 +19,80 @@ repository = "https://github.com/arceos-org/arceos/tree/main/ulib/axstd"
 default = []
 
 # Multicore
-smp = ["axfeat/smp", "kspin/smp"]
+smp = ["ax-feat/smp", "kspin/smp"]
 
 # Floating point/SIMD
-fp-simd = ["axfeat/fp-simd"]
+fp-simd = ["ax-feat/fp-simd"]
 
 # User space support
-uspace = ["axfeat/uspace"]
+uspace = ["ax-feat/uspace"]
 
 # Hypervisor support
-hv = ["axfeat/hv"]
+hv = ["ax-feat/hv"]
 
 # Interrupts
-irq = ["ax-api/irq", "axfeat/irq"]
-ipi = ["ax-api/ipi", "axfeat/ipi"]
+irq = ["ax-api/irq", "ax-feat/irq"]
+ipi = ["ax-api/ipi", "ax-feat/ipi"]
 
 # Custom or default platforms
-myplat = ["axfeat/myplat"]
-defplat = ["axfeat/defplat"]
-plat-dyn = ["axfeat/plat-dyn"]
+myplat = ["ax-feat/myplat"]
+defplat = ["ax-feat/defplat"]
+plat-dyn = ["ax-feat/plat-dyn"]
 
 # Memory
-alloc = ["ax-api/alloc", "axfeat/alloc", "axio/alloc"]
-alloc-tlsf = ["axfeat/alloc-tlsf"]
-alloc-slab = ["axfeat/alloc-slab"]
-alloc-buddy = ["axfeat/alloc-buddy"]
-alloc-level-1 = ["axfeat/alloc-level-1", "alloc"]
-page-alloc-64g = ["axfeat/page-alloc-64g"]                 # Support up to 64G memory capacity
-page-alloc-4g = ["axfeat/page-alloc-4g"]                   # Support up to 4G memory capacity
-paging = ["axfeat/paging"]
-dma = ["ax-api/dma", "axfeat/dma"]
-tls = ["axfeat/tls"]
+alloc = ["ax-api/alloc", "ax-feat/alloc", "axio/alloc"]
+alloc-tlsf = ["ax-feat/alloc-tlsf"]
+alloc-slab = ["ax-feat/alloc-slab"]
+alloc-buddy = ["ax-feat/alloc-buddy"]
+alloc-level-1 = ["ax-feat/alloc-level-1", "alloc"]
+page-alloc-64g = ["ax-feat/page-alloc-64g"]                 # Support up to 64G memory capacity
+page-alloc-4g = ["ax-feat/page-alloc-4g"]                   # Support up to 4G memory capacity
+paging = ["ax-feat/paging"]
+dma = ["ax-api/dma", "ax-feat/dma"]
+tls = ["ax-feat/tls"]
 
 # Multi-threading and scheduler
-multitask = ["ax-api/multitask", "axfeat/multitask"]
-task-ext = ["axfeat/task-ext"]
-sched-fifo = ["axfeat/sched-fifo"]
-sched-rr = ["axfeat/sched-rr"]
-sched-cfs = ["axfeat/sched-cfs"]
+multitask = ["ax-api/multitask", "ax-feat/multitask"]
+task-ext = ["ax-feat/task-ext"]
+sched-fifo = ["ax-feat/sched-fifo"]
+sched-rr = ["ax-feat/sched-rr"]
+sched-cfs = ["ax-feat/sched-cfs"]
 
 # File system
-fs = ["ax-api/fs", "axfeat/fs"]
-ext4fs = ["ax-api/fs", "axfeat/fs"]
-fatfs = ["ax-api/fs", "axfeat/fs"]
+fs = ["ax-api/fs", "ax-feat/fs"]
+ext4fs = ["ax-api/fs", "ax-feat/fs"]
+fatfs = ["ax-api/fs", "ax-feat/fs"]
 
 # Networking
-net = ["ax-api/net", "axfeat/net"]
+net = ["ax-api/net", "ax-feat/net"]
 dns = []
 
 # Display
-display = ["ax-api/display", "axfeat/display"]
+display = ["ax-api/display", "ax-feat/display"]
 
 # Input
-input = ["axfeat/input"]
+input = ["ax-feat/input"]
 
 # Real Time Clock (RTC) Driver.
-rtc = ["axfeat/rtc"]
+rtc = ["ax-feat/rtc"]
 
 # Device drivers
-bus-mmio = ["axfeat/bus-mmio"]
-bus-pci = ["axfeat/bus-pci"]
-driver-ramdisk = ["axfeat/driver-ramdisk"]
-driver-sdmmc = ["axfeat/driver-sdmmc"]
-driver-ixgbe = ["axfeat/driver-ixgbe"]
-driver-fxmac = ["axfeat/driver-fxmac"]
-driver-bcm2835-sdhci = ["axfeat/driver-bcm2835-sdhci"]
-driver-ahci = ["axfeat/driver-ahci"]
+bus-mmio = ["ax-feat/bus-mmio"]
+bus-pci = ["ax-feat/bus-pci"]
+driver-ramdisk = ["ax-feat/driver-ramdisk"]
+driver-sdmmc = ["ax-feat/driver-sdmmc"]
+driver-ixgbe = ["ax-feat/driver-ixgbe"]
+driver-fxmac = ["ax-feat/driver-fxmac"]
+driver-bcm2835-sdhci = ["ax-feat/driver-bcm2835-sdhci"]
+driver-ahci = ["ax-feat/driver-ahci"]
 
 # Backtrace
-dwarf = ["axfeat/dwarf"]
+dwarf = ["ax-feat/dwarf"]
 
 [dependencies]
 ax-api.workspace = true
 axerrno.workspace = true
-axfeat.workspace = true
+ax-feat.workspace = true
 axio.workspace = true
 kspin.workspace = true
 lazyinit.workspace = true

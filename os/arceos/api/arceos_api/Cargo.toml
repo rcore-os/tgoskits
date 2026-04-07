@@ -11,15 +11,15 @@ repository = "https://github.com/arceos-org/arceos/tree/main/api/arceos_api"
 [features]
 default = []
 
-irq = ["axfeat/irq"]
-ipi = ["dep:axipi", "axfeat/ipi"]
-alloc = ["dep:axalloc", "axfeat/alloc"]
-paging = ["dep:axmm", "axfeat/paging"]
-dma = ["dep:axdma", "axfeat/dma"]
-multitask = ["axtask/multitask", "axsync/multitask", "axfeat/multitask"]
-fs = ["dep:axfs", "dep:axdriver", "axfeat/fs"]
-net = ["dep:axnet", "dep:axdriver", "axfeat/net"]
-display = ["dep:axdisplay", "dep:axdriver", "axfeat/display"]
+irq = ["ax-feat/irq"]
+ipi = ["dep:axipi", "ax-feat/ipi"]
+alloc = ["dep:axalloc", "ax-feat/alloc"]
+paging = ["dep:axmm", "ax-feat/paging"]
+dma = ["dep:axdma", "ax-feat/dma"]
+multitask = ["axtask/multitask", "axsync/multitask", "ax-feat/multitask"]
+fs = ["dep:axfs", "dep:axdriver", "ax-feat/fs"]
+net = ["dep:axnet", "dep:axdriver", "ax-feat/net"]
+display = ["dep:axdisplay", "dep:axdriver", "ax-feat/display"]
 
 
 # Use dummy functions if the feature is not enabled
@@ -32,7 +32,7 @@ axdisplay = { workspace = true, optional = true }
 axdma = { workspace = true, optional = true }
 axdriver = { workspace = true, optional = true }
 axerrno.workspace = true
-axfeat.workspace = true
+ax-feat.workspace = true
 axfs = { workspace = true, optional = true }
 axhal.workspace = true
 axio.workspace = true

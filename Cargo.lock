@@ -526,13 +526,13 @@ dependencies = [
 name = "ax-api"
 version = "0.5.0"
 dependencies = [
+ "ax-feat",
  "axalloc",
  "axconfig",
  "axdisplay",
  "axdma",
  "axdriver",
  "axerrno",
- "axfeat",
  "axfs",
  "axhal",
  "axio",
@@ -543,6 +543,28 @@ dependencies = [
  "axruntime",
  "axsync",
  "axtask",
+]
+
+[[package]]
+name = "ax-feat"
+version = "0.5.0"
+dependencies = [
+ "axalloc",
+ "axbacktrace",
+ "axconfig",
+ "axdisplay",
+ "axdriver",
+ "axfs",
+ "axfs-ng",
+ "axhal",
+ "axinput",
+ "axipi",
+ "axlog",
+ "axnet",
+ "axruntime",
+ "axsync",
+ "axtask",
+ "kspin 0.3.1",
 ]
 
 [[package]]
@@ -585,9 +607,9 @@ dependencies = [
 name = "ax-libc"
 version = "0.5.0"
 dependencies = [
+ "ax-feat",
  "ax-posix-api",
  "axerrno",
- "axfeat",
  "axio",
  "bindgen",
 ]
@@ -596,10 +618,10 @@ dependencies = [
 name = "ax-posix-api"
 version = "0.5.0"
 dependencies = [
+ "ax-feat",
  "axalloc",
  "axconfig",
  "axerrno",
- "axfeat",
  "axfs",
  "axhal",
  "axio",
@@ -627,8 +649,8 @@ name = "ax-std"
 version = "0.5.0"
 dependencies = [
  "ax-api",
+ "ax-feat",
  "axerrno",
- "axfeat",
  "axio",
  "kspin 0.3.1",
  "lazyinit 0.4.2",
@@ -1008,28 +1030,6 @@ checksum = "4bf1c27753a96a0f835cca49e6fb354912107d018c905d13c7eff39be757eb5a"
 dependencies = [
  "bitflags 2.11.0",
  "log",
-]
-
-[[package]]
-name = "axfeat"
-version = "0.5.0"
-dependencies = [
- "axalloc",
- "axbacktrace",
- "axconfig",
- "axdisplay",
- "axdriver",
- "axfs",
- "axfs-ng",
- "axhal",
- "axinput",
- "axipi",
- "axlog",
- "axnet",
- "axruntime",
- "axsync",
- "axtask",
- "kspin 0.3.1",
 ]
 
 [[package]]
@@ -7414,13 +7414,13 @@ dependencies = [
 name = "starry-kernel"
 version = "0.5.0"
 dependencies = [
+ "ax-feat",
  "axalloc",
  "axbacktrace",
  "axconfig",
  "axdisplay",
  "axdriver",
  "axerrno",
- "axfeat",
  "axfs-ng",
  "axfs-ng-vfs",
  "axhal",
@@ -7534,8 +7534,8 @@ name = "starryos"
 version = "0.5.0"
 dependencies = [
  "anyhow",
+ "ax-feat",
  "axbuild",
- "axfeat",
  "axplat-riscv64-visionfive2",
  "clap",
  "starry-kernel",
@@ -7546,7 +7546,7 @@ dependencies = [
 name = "starryos-test"
 version = "0.5.0"
 dependencies = [
- "axfeat",
+ "ax-feat",
  "axplat-riscv64-visionfive2",
  "starry-kernel",
 ]

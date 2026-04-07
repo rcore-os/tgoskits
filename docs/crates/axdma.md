@@ -105,11 +105,11 @@
 
 这说明 `axdma` 不只是驱动内部工具，也被设计成可向更高层 API 暴露的系统能力。
 
-### 2.3 与 `axruntime` / `axfeat` 的关系
+### 2.3 与 `axruntime` / `ax-feat` 的关系
 需要区分两个概念：
 
 - `axruntime` 的 `dma` feature 只是 `["paging"]`，它并不直接依赖 `axdma` crate。
-- `axfeat` 的 `dma` feature 表示整机要具备 DMA 所需的内存和分页能力。
+- `ax-feat` 的 `dma` feature 表示整机要具备 DMA 所需的内存和分页能力。
 
 也就是说，`axdma` 更像一个“可被 API 或驱动选用的具体实现模块”，而不是 runtime 自动初始化出来的独立子系统。
 

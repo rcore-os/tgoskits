@@ -1,5 +1,5 @@
 [package]
-name = "axfeat"
+name = "ax-feat"
 version.workspace = true
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]

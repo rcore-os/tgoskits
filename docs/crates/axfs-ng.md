@@ -142,7 +142,7 @@ graph LR
 axfs-ng = { workspace = true, features = ["ext4"] }
 ```
 
-如果要让 ArceOS runtime 真正初始化它，通常还需要从 `axfeat` 或上层构建 feature 侧启用 `fs-ng`。
+如果要让 ArceOS runtime 真正初始化它，通常还需要从 `ax-feat` 或上层构建 feature 侧启用 `fs-ng`。
 
 ### 4.2 改动约束
 1. 修改 `src/lib.rs` 的初始化路径时，要同步考虑 `axruntime` 的 `fs-ng` feature 选择逻辑。
@@ -183,7 +183,7 @@ axfs-ng = { workspace = true, features = ["ext4"] }
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-在 ArceOS 中，`axfs-ng` 是通过 `axfeat` 的 `fs-ng*` feature 链启用的新一代文件系统模块。它和旧 `axfs` 并行存在，但承担的是更现代的高层文件语义与 VFS 对象模型接口。
+在 ArceOS 中，`axfs-ng` 是通过 `ax-feat` 的 `fs-ng*` feature 链启用的新一代文件系统模块。它和旧 `axfs` 并行存在，但承担的是更现代的高层文件语义与 VFS 对象模型接口。
 
 ### 6.2 StarryOS
 在 StarryOS 中，`axfs-ng` 已经是实际主线：`kernel/Cargo.toml` 直接把它重命名为 `axfs`，文件系统调用层、pseudofs 挂载和很多设备/非阻塞 I/O 路径都围绕它构建。

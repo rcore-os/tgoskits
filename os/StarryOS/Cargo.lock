@@ -629,7 +629,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "axfeat"
+name = "ax-feat"
 version = "0.3.0-preview.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "58bc376f478b85111d8b9ba475040d1016708c35f15e634efbdf8f8495272bb2"
@@ -5527,7 +5527,7 @@ dependencies = [
  "axdisplay",
  "axdriver",
  "axerrno 0.2.2",
- "axfeat",
+ "ax-feat",
  "axfs-ng",
  "axfs-ng-vfs",
  "axhal",
@@ -5646,7 +5646,7 @@ version = "0.2.0-preview.2"
 dependencies = [
  "anyhow",
  "axbuild",
- "axfeat",
+ "ax-feat",
  "axplat-riscv64-visionfive2",
  "clap",
  "starry-kernel",

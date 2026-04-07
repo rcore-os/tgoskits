@@ -14,7 +14,7 @@ export ICOUNT := n
 # Generated Options
 export A := $(PWD)
 export NO_AXSTD := y
-export AX_LIB := axfeat
+export AX_LIB := ax-feat
 export APP_FEATURES := qemu
 
 ifeq ($(MEMTRACK), y)

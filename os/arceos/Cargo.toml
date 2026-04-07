@@ -76,7 +76,7 @@ ax-libc = { version = "0.5.0", path = "ulib/axlibc" }
 
 ax-api = { version = "0.5.0", path = "api/arceos_api" }
 ax-posix-api = { version = "0.5.0", path = "api/arceos_posix_api" }
-axfeat = { version = "0.5.0", path = "api/axfeat" }
+ax-feat = { version = "0.5.0", path = "api/axfeat" }
 
 axalloc = { version = "0.5.0", path = "modules/axalloc" }
 axconfig = { version = "0.5.0", path = "modules/axconfig" }

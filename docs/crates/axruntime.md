@@ -125,7 +125,7 @@ graph LR
 
     axruntime --> ax-api["ax-api"]
     axruntime --> ax-posix-api["ax-posix-api"]
-    axruntime --> axfeat["axfeat"]
+    axruntime --> ax-feat["ax-feat"]
     axruntime --> starry_kernel["starry-kernel"]
     axruntime --> ax-std["ax-std (间接)"]
 ```
@@ -139,10 +139,10 @@ graph LR
 - `axlog`、`axbacktrace`、`ctor_bare`、`axklib`：分别服务日志、panic/backtrace、构造器与平台辅助接口。
 
 ### 3.2 关键直接消费者
-- `ax-api` / `axfeat`：通过 feature 聚合把运行时纳入最终镜像。
+- `ax-api` / `ax-feat`：通过 feature 聚合把运行时纳入最终镜像。
 - `ax-posix-api`：作为 POSIX 兼容 API 层，与 `axruntime` 共享 bring-up 结果。
 - `starry-kernel`：显式依赖 `axruntime`，把 Linux 兼容内核主体挂到同一运行时模型上。
-- `ax-std`：通常不是直接依赖 `axruntime`，但会通过 `ax-api` / `axfeat` 间接复用。
+- `ax-std`：通常不是直接依赖 `axruntime`，但会通过 `ax-api` / `ax-feat` 间接复用。
 
 ### 3.3 间接消费者
 - `os/arceos/examples/*` 与 `test-suit/arceos/*` 中的大量应用、测试与样例。
@@ -156,13 +156,13 @@ graph LR
 axruntime = { workspace = true }
 ```
 
-但对绝大多数 ArceOS 应用来说，更常见的做法是依赖 `ax-std`、`ax-api` 或 `axfeat`，而不是直接把 `axruntime` 当普通库调用。
+但对绝大多数 ArceOS 应用来说，更常见的做法是依赖 `ax-std`、`ax-api` 或 `ax-feat`，而不是直接把 `axruntime` 当普通库调用。
 
 ### 4.2 初始化与改动约束
 1. 修改 `rust_main()` 时，应把它视为“系统启动级变更”，不能只从单模块角度评估影响。
 2. 所有新增初始化步骤都必须明确放在 `axhal::init_early()` 之前、`axhal::init_later()` 之后，还是 `main()` 前最后阶段。
 3. 涉及 `alloc`、`paging`、`irq`、`multitask`、`smp` 的改动，必须同时检查主核路径和次核路径是否保持一致。
-4. 若引入新的 feature 门控逻辑，需要同步确认 `axfeat`、`ax-api` 与上层入口包的 feature 传播是否一致。
+4. 若引入新的 feature 门控逻辑，需要同步确认 `ax-feat`、`ax-api` 与上层入口包的 feature 传播是否一致。
 
 ### 4.3 关键接入示例
 - 若要增加新的系统子系统初始化，推荐把它放在驱动聚合和中断初始化之间或之后，并明确它依赖哪些 feature。

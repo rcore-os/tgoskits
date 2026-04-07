@@ -26,18 +26,18 @@ default = []
 smp = ["ax-posix-api/smp"]
 
 # Floating point/SIMD
-fp-simd = ["axfeat/fp-simd"]
+fp-simd = ["ax-feat/fp-simd"]
 
 # Interrupts
-irq = ["ax-posix-api/irq", "axfeat/irq"]
+irq = ["ax-posix-api/irq", "ax-feat/irq"]
 
 # Custom or default platforms
-myplat = ["axfeat/myplat"]
-defplat = ["axfeat/defplat"]
+myplat = ["ax-feat/myplat"]
+defplat = ["ax-feat/defplat"]
 
 # Memory
 alloc = ["ax-posix-api/alloc"]
-tls = ["alloc", "axfeat/tls"]
+tls = ["alloc", "ax-feat/tls"]
 
 # Multi-task
 multitask = ["ax-posix-api/multitask"]
@@ -57,7 +57,7 @@ epoll = ["ax-posix-api/epoll"]
 [dependencies]
 ax-posix-api.workspace = true
 axerrno.workspace = true
-axfeat.workspace = true
+ax-feat.workspace = true
 axio.workspace = true
 
 [build-dependencies]

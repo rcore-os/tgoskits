@@ -159,7 +159,7 @@ ROLE_HINTS = {
 }
 
 FEATURE_LIKE_CRATES = {
-    "axfeat",
+    "ax-feat",
 }
 
 CURATED_DOCS = {
@@ -213,7 +213,7 @@ CURATED_DOCS = {
     "axconfig",
     "axconfig-gen",
     "axconfig-macros",
-    "axfeat",
+    "ax-feat",
     "axfs",
     "axfs-ng",
     "axfs-ng-vfs",

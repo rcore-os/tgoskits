@@ -41,7 +41,7 @@ graph LR
     current["ax-std"]
     current --> ax-api["ax-api"]
     current --> axerrno["axerrno"]
-    current --> axfeat["axfeat"]
+    current --> ax-feat["ax-feat"]
     current --> axio["axio"]
     current --> kspin["kspin"]
     current --> lazyinit["lazyinit"]
@@ -58,7 +58,7 @@ graph LR
 ### 3.1 直接与间接依赖
 - `ax-api`
 - `axerrno`
-- `axfeat`
+- `ax-feat`
 - `axio`
 - `kspin`
 - `lazyinit`

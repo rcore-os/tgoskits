@@ -85,7 +85,7 @@ graph LR
     axlog --> axruntime["axruntime"]
     axlog --> ax-api["ax-api"]
     axlog --> arceos_posix["ax-posix-api"]
-    axlog --> axfeat["axfeat"]
+    axlog --> ax-feat["ax-feat"]
     axlog --> starry_kernel["starry-kernel"]
 ```
 

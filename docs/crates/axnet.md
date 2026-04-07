@@ -151,7 +151,7 @@
 | `axruntime` | 在老一代 `net` 路径中初始化网络子系统 |
 | `ax-api` | 暴露 ArceOS 级 TCP/UDP/DNS 接口 |
 | `ax-posix-api` | 实现 POSIX 风格 socket 与多路复用路径 |
-| `axfeat` | 通过 feature 传播把网络能力装入最终镜像 |
+| `ax-feat` | 通过 feature 传播把网络能力装入最终镜像 |
 
 ### 3.3 与样例程序的关系
 
@@ -166,7 +166,7 @@
 axnet = { workspace = true }
 ```
 
-在实际系统镜像里，更常见的接入方式不是手动直接依赖，而是通过 `axruntime` / `axfeat` / `ax-api` 的 feature 传播把它装进系统。
+在实际系统镜像里，更常见的接入方式不是手动直接依赖，而是通过 `axruntime` / `ax-feat` / `ax-api` 的 feature 传播把它装进系统。
 
 ### 4.2 修改时必须同步检查的前提
 

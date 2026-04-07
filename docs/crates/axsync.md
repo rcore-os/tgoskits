@@ -179,7 +179,7 @@ axsync = { workspace = true, features = ["multitask"] }
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-`axsync` 是 ArceOS 内核模块共享的统一同步层。它通过 `multitask` feature 与 `axtask`、`axruntime`、`axfeat` 联动，确保“调度器语义”和“锁语义”一起切换。
+`axsync` 是 ArceOS 内核模块共享的统一同步层。它通过 `multitask` feature 与 `axtask`、`axruntime`、`ax-feat` 联动，确保“调度器语义”和“锁语义”一起切换。
 
 ### 6.2 StarryOS
 StarryOS 大量复用 `axsync::Mutex` 作为内核内部同步原语之一。因此在 StarryOS 中，`axsync` 扮演的是“兼容内核与 ArceOS 模块共享的基础锁层”。

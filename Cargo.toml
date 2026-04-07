@@ -186,7 +186,7 @@ axmm = { path = "os/arceos/modules/axmm" }
 axruntime = { path = "os/arceos/modules/axruntime" }
 axsync = { path = "os/arceos/modules/axsync" }
 axtask = { path = "os/arceos/modules/axtask" }
-axfeat = { path = "os/arceos/api/axfeat" }
+ax-feat = { path = "os/arceos/api/axfeat" }
 ax-api = { path = "os/arceos/api/arceos_api" }
 ax-posix-api = { path = "os/arceos/api/arceos_posix_api" }
 ax-std = { path = "os/arceos/ulib/axstd" }
@@ -301,7 +301,7 @@ ax-libc = { path = "os/arceos/ulib/axlibc", version = "0.5.0" }
 # api
 ax-api = { path = "os/arceos/api/arceos_api", version = "0.5.0" }
 ax-posix-api = { path = "os/arceos/api/arceos_posix_api", version = "0.5.0" }
-axfeat = { path = "os/arceos/api/axfeat", version = "0.5.0" }
+ax-feat = { path = "os/arceos/api/axfeat", version = "0.5.0" }
 
 # modules
 axalloc = { path = "os/arceos/modules/axalloc", version = "0.5.0" }

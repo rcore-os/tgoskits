@@ -132,7 +132,7 @@
 2. 在 `lib.rs` 中加 feature、导出和 `as_dev_type()` 映射。
 3. 在 `os/arceos/modules/axdriver/src/virtio.rs` 中补 `VirtIoDevMeta`。
 4. 在 `os/arceos/modules/axdriver/src/drivers.rs` 中注册对应类别驱动。
-5. 若需要顶层 feature，还要同步 `axdriver/Cargo.toml` 和 `axfeat/Cargo.toml`。
+5. 若需要顶层 feature，还要同步 `axdriver/Cargo.toml` 和 `ax-feat/Cargo.toml`。
 
 ### 4.2 HAL 接入注意事项
 - `VirtIoHal` 要正确实现 DMA 分配、回收、MMIO 地址转换、share/unshare。

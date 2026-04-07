@@ -1,72 +1,77 @@
-# `ax-api` 技术文档
+# `ax-feat` 技术文档
 
-> 路径：`os/arceos/api/arceos_api`
+> 路径：`os/arceos/api/axfeat`
 > 类型：库 crate
 > 分层：ArceOS 层 / ArceOS 公共 API/feature 聚合层
 > 版本：`0.5.0`
 > 文档依据：当前仓库源码、`Cargo.toml` 与 未检测到 crate 层 README
 
-`ax-api` 的核心定位是：Public APIs and types for ArceOS modules
+`ax-feat` 的核心定位是：Top-level feature selection for ArceOS
 
 ## 1. 架构设计分析
 - 目录角色：ArceOS 公共 API/feature 聚合层
 - crate 形态：库 crate
 - 工作区位置：子工作区 `os/arceos`
-- feature 视角：主要通过 `alloc`、`display`、`dma`、`dummy-if-not-enabled`、`fs`、`ipi`、`irq`、`multitask`、`net`、`paging` 控制编译期能力装配。
-- 关键数据结构：可直接观察到的关键数据结构/对象包括 `AxTimeValue`、`DMAInfo`、`AxTaskHandle`、`AxWaitQueueHandle`。
+- feature 视角：主要通过 `alloc`、`alloc-buddy`、`alloc-level-1`、`alloc-slab`、`alloc-tlsf`、`bus-mmio`、`bus-pci`、`defplat`、`display`、`dma` 等（另有 34 个 feature） 控制编译期能力装配。
+- 关键数据结构：该 crate 暴露的数据结构较少，关键复杂度主要体现在模块协作、trait 约束或初始化时序。
 
 ### 1.1 内部模块划分
-- `macros`：内部子模块
-- `imp`：内部实现细节与 trait/backend 绑定
+- 当前 crate 未显式声明多个顶层 `mod`，复杂度更可能集中在单文件入口、宏展开或下层子 crate。
 
 ### 1.2 核心算法/机制
-- 该 crate 的实现主要围绕顶层模块分工展开，重点在子系统边界、trait/类型约束以及初始化流程。
+- 该 crate 以 Cargo feature 编排和能力选择为主，核心价值在编译期装配而非运行时复杂算法。
 
 ## 2. 核心功能说明
-- 功能定位：Public APIs and types for ArceOS modules
-- 对外接口：从源码可见的主要公开入口包括 `ax_get_cpu_num`、`ax_terminate`、`ax_monotonic_time`、`ax_wall_time`、`ax_alloc`、`ax_dealloc`、`ax_alloc_coherent`、`ax_dealloc_coherent`。
+- 功能定位：Top-level feature selection for ArceOS
+- 对外接口：该 crate 的公开符号较少，更多承担内部桥接、配置注入或编排职责。
 - 典型使用场景：主要作为仓库中的专用支撑 crate 被上层组件调用。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `ax_alloc()` -> `ax_alloc_coherent()` -> `ax_spawn()` -> `ax_open_file()` -> `ax_open_dir()` -> ...。
+- 关键调用链示例：该 crate 没有单一固定的初始化链，通常由上层调用者按 feature/trait 组合接入。
 
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    current["ax-api"]
+    current["ax-feat"]
     current --> axalloc["axalloc"]
+    current --> axbacktrace["axbacktrace"]
     current --> axconfig["axconfig"]
     current --> axdisplay["axdisplay"]
-    current --> axdma["axdma"]
     current --> axdriver["axdriver"]
-    current --> axerrno["axerrno"]
-    current --> ax-feat["ax-feat"]
     current --> axfs["axfs"]
+    current --> axfs_ng["axfs-ng"]
+    current --> axhal["axhal"]
+    ax_api["ax-api"] --> current
+    ax_libc["ax-libc"] --> current
+    ax_posix_api["ax-posix-api"] --> current
     ax_std["ax-std"] --> current
+    starry_kernel["starry-kernel"] --> current
+    starryos["starryos"] --> current
+    starryos_test["starryos-test"] --> current
 ```
 
 ### 3.1 直接与间接依赖
 - `axalloc`
+- `axbacktrace`
 - `axconfig`
 - `axdisplay`
-- `axdma`
 - `axdriver`
-- `axerrno`
-- `ax-feat`
 - `axfs`
+- `axfs-ng`
 - `axhal`
-- `axio`
+- `axinput`
 - `axipi`
 - `axlog`
-- 另外还有 `5` 个同类项未在此展开
+- `axnet`
+- 另外还有 `4` 个同类项未在此展开
 
 ### 3.2 间接本地依赖
 - `arm_pl011`
 - `arm_pl031`
 - `axaddrspace`
 - `axallocator`
-- `axbacktrace`
 - `axconfig-gen`
 - `axconfig-macros`
 - `axcpu`
+- `axdma`
 - `axdriver_base`
 - `axdriver_block`
 - `axdriver_display`
@@ -74,7 +79,13 @@ graph LR
 - 另外还有 `48` 个同类项未在此展开
 
 ### 3.3 被依赖情况
+- `ax-api`
+- `ax-libc`
+- `ax-posix-api`
 - `ax-std`
+- `starry-kernel`
+- `starryos`
+- `starryos-test`
 
 ### 3.4 间接被依赖情况
 - `arceos-affinity`
@@ -98,10 +109,10 @@ graph LR
 ### 4.1 依赖配置
 ```toml
 [dependencies]
-ax-api = { workspace = true }
+ax-feat = { workspace = true }
 
 # 如果在仓库外独立验证，也可以显式绑定本地路径：
-# ax-api = { path = "os/arceos/api/arceos_api" }
+# ax-feat = { path = "os/arceos/api/axfeat" }
 ```
 
 ### 4.2 初始化流程
@@ -110,7 +121,7 @@ ax-api = { workspace = true }
 3. 在最小消费者路径上验证公开 API、错误分支与资源回收行为。
 
 ### 4.3 关键 API 使用提示
-- 优先关注函数入口：`ax_get_cpu_num`、`ax_terminate`、`ax_monotonic_time`、`ax_wall_time`、`ax_alloc`、`ax_dealloc`、`ax_alloc_coherent`、`ax_dealloc_coherent` 等（另有 60 项）。
+- 该 crate 更偏编排、配置或内部 glue 逻辑，关键使用点通常体现在 feature、命令或入口函数上。
 
 ## 5. 测试策略
 ### 5.1 当前仓库内的测试形态
@@ -127,10 +138,10 @@ ax-api = { workspace = true }
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-`ax-api` 直接位于 `os/arceos/` 目录树中，是 ArceOS 工程本体的一部分，承担 ArceOS 公共 API/feature 聚合层。
+`ax-feat` 直接位于 `os/arceos/` 目录树中，是 ArceOS 工程本体的一部分，承担 ArceOS 公共 API/feature 聚合层。
 
 ### 6.2 StarryOS
-当前未检测到 StarryOS 工程本体对 `ax-api` 的显式本地依赖，若参与该系统，通常经外部工具链、配置或更底层生态间接体现。
+`ax-feat` 不在 StarryOS 目录内部，但被 `starry-kernel`、`starryos`、`starryos-test` 等 StarryOS crate 直接依赖，说明它是该系统的共享构件或底层服务。
 
 ### 6.3 Axvisor
-`ax-api` 主要通过 `axvisor` 等上层 crate 被 Axvisor 间接复用，通常处于更底层的公共依赖层。
+`ax-feat` 主要通过 `axvisor` 等上层 crate 被 Axvisor 间接复用，通常处于更底层的公共依赖层。

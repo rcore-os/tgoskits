@@ -19,13 +19,13 @@ include = ["src/**/*.rs", "Cargo.toml", "build.rs", "ctypes.h"]
 [features]
 default = []
 
-smp = ["axfeat/smp"]
-irq = ["axfeat/irq"]
-alloc = ["dep:axalloc", "axfeat/alloc"]
-multitask = ["axtask/multitask", "axfeat/multitask", "axsync/multitask"]
+smp = ["ax-feat/smp"]
+irq = ["ax-feat/irq"]
+alloc = ["dep:axalloc", "ax-feat/alloc"]
+multitask = ["axtask/multitask", "ax-feat/multitask", "axsync/multitask"]
 fd = ["alloc", "dep:scope-local"]
-fs = ["dep:axfs", "axfeat/fs", "fd"]
-net = ["dep:axnet", "axfeat/net", "fd"]
+fs = ["dep:axfs", "ax-feat/fs", "fd"]
+net = ["dep:axnet", "ax-feat/net", "fd"]
 pipe = ["fd"]
 select = ["fd"]
 epoll = ["fd"]
@@ -34,7 +34,7 @@ epoll = ["fd"]
 # ArceOS modules
 axalloc = { workspace = true, optional = true }
 axconfig.workspace = true
-axfeat.workspace = true
+ax-feat.workspace = true
 axfs = { workspace = true, optional = true }
 axhal.workspace = true
 axlog.workspace = true

@@ -103,13 +103,13 @@ cargo xtask starry run --arch riscv64 --package starryos-test
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    axfeat["axfeat"] --> test["starryos-test"]
+    ax-feat["ax-feat"] --> test["starryos-test"]
     kernel["starry-kernel"] --> test
     vf2["axplat-riscv64-visionfive2 (optional)"] --> test
 ```
 
 ### 3.1 关键直接依赖
-- `axfeat`：提供底层平台、驱动和运行时装配。
+- `ax-feat`：提供底层平台、驱动和运行时装配。
 - `starry-kernel`：真正执行系统 bring-up。
 - `axplat-riscv64-visionfive2`：在 `vf2` feature 下可选引入。
 

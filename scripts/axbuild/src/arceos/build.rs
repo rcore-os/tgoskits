@@ -24,7 +24,7 @@ impl AxFeaturePrefixFamily {
     fn prefix(self) -> &'static str {
         match self {
             Self::AxStd => "ax-std/",
-            Self::AxFeat => "axfeat/",
+            Self::AxFeat => "ax-feat/",
         }
     }
 }
@@ -81,7 +81,7 @@ impl ArceosBuildInfo {
         let has_myplat = self.features.iter().any(|feature| {
             matches!(
                 feature.as_str(),
-                "myplat" | "ax-std/myplat" | "axfeat/myplat"
+                "myplat" | "ax-std/myplat" | "ax-feat/myplat"
             )
         });
 
@@ -94,9 +94,9 @@ impl ArceosBuildInfo {
                     | "ax-std/plat-dyn"
                     | "ax-std/defplat"
                     | "ax-std/myplat"
-                    | "axfeat/plat-dyn"
-                    | "axfeat/defplat"
-                    | "axfeat/myplat"
+                    | "ax-feat/plat-dyn"
+                    | "ax-feat/defplat"
+                    | "ax-feat/myplat"
             )
         });
 
@@ -380,7 +380,7 @@ fn feature_family_from_existing_features(features: &[String]) -> Option<AxFeatur
     }
     if features
         .iter()
-        .any(|feature| feature.starts_with("axfeat/"))
+        .any(|feature| feature.starts_with("ax-feat/"))
     {
         return Some(AxFeaturePrefixFamily::AxFeat);
     }
@@ -413,13 +413,13 @@ fn detect_ax_feature_prefix_family(
     let has_axfeat = package_info
         .dependencies
         .iter()
-        .any(|dep| dep.name == "axfeat" || dep.rename.as_deref() == Some("axfeat"));
+        .any(|dep| dep.name == "ax-feat" || dep.rename.as_deref() == Some("ax-feat"));
 
     match (has_axstd, has_axfeat) {
         (true, true) | (true, false) => Ok(AxFeaturePrefixFamily::AxStd),
         (false, true) => Ok(AxFeaturePrefixFamily::AxFeat),
         (false, false) => Err(anyhow::anyhow!(
-            "package `{package}` must directly depend on `ax-std` or `axfeat`"
+            "package `{package}` must directly depend on `ax-std` or `ax-feat`"
         )),
     }
 }
@@ -465,14 +465,14 @@ fn resolve_platform_package(
         .iter()
         .map(|feature| {
             feature
-                .strip_prefix("axfeat/")
+                .strip_prefix("ax-feat/")
                 .or_else(|| feature.strip_prefix("ax-std/"))
                 .unwrap_or(feature.as_str())
         })
         .filter(|feature| {
             !matches!(
                 *feature,
-                "ax-std" | "axfeat" | "plat-dyn" | "defplat" | "myplat"
+                "ax-std" | "ax-feat" | "plat-dyn" | "defplat" | "myplat"
             )
         })
         .collect();
@@ -489,7 +489,7 @@ fn resolve_platform_package(
     if features.iter().any(|feature| {
         matches!(
             feature.as_str(),
-            "myplat" | "ax-std/myplat" | "axfeat/myplat"
+            "myplat" | "ax-std/myplat" | "ax-feat/myplat"
         )
     }) && let Some(dep) = package_info
         .dependencies
@@ -744,35 +744,35 @@ mod tests {
 
     #[test]
     fn normalizes_myplat_to_axfeat_when_package_depends_on_axfeat() {
-        let workspace = temp_workspace("axfeat-app", "axfeat = \"0.1.0\"\n").unwrap();
+        let workspace = temp_workspace("ax-feat-app", "ax-feat = \"0.1.0\"\n").unwrap();
         let mut build_info = ArceosBuildInfo {
             features: vec!["ax-std/myplat".to_string()],
             ..ArceosBuildInfo::default()
         };
 
         let family =
-            detect_ax_feature_prefix_family("axfeat-app", Some(&workspace.join("Cargo.toml")))
+            detect_ax_feature_prefix_family("ax-feat-app", Some(&workspace.join("Cargo.toml")))
                 .unwrap();
         assert_eq!(family, AxFeaturePrefixFamily::AxFeat);
 
         build_info.features.retain(|feature| feature != "ax-std");
         build_info.resolve_features_with_manifest_path(
-            "axfeat-app",
+            "ax-feat-app",
             false,
             Some(&workspace.join("Cargo.toml")),
         );
 
-        assert!(build_info.features.contains(&"axfeat/myplat".to_string()));
+        assert!(build_info.features.contains(&"ax-feat/myplat".to_string()));
         assert!(!build_info.features.contains(&"ax-std/myplat".to_string()));
-        assert!(!build_info.features.contains(&"axfeat/defplat".to_string()));
+        assert!(!build_info.features.contains(&"ax-feat/defplat".to_string()));
     }
 
     #[test]
     fn detects_axfeat_direct_dependency_via_metadata() {
-        let workspace = temp_workspace("axfeat-app", "axfeat = \"0.1.0\"\n").unwrap();
+        let workspace = temp_workspace("ax-feat-app", "ax-feat = \"0.1.0\"\n").unwrap();
 
         let family =
-            detect_ax_feature_prefix_family("axfeat-app", Some(&workspace.join("Cargo.toml")))
+            detect_ax_feature_prefix_family("ax-feat-app", Some(&workspace.join("Cargo.toml")))
                 .unwrap();
 
         assert_eq!(family, AxFeaturePrefixFamily::AxFeat);
@@ -780,21 +780,21 @@ mod tests {
 
     #[test]
     fn max_cpu_num_adds_axfeat_smp_feature() {
-        let workspace = temp_workspace("axfeat-app", "axfeat = \"0.1.0\"\n").unwrap();
+        let workspace = temp_workspace("ax-feat-app", "ax-feat = \"0.1.0\"\n").unwrap();
         let mut build_info = ArceosBuildInfo {
-            features: vec!["axfeat/net".to_string()],
+            features: vec!["ax-feat/net".to_string()],
             max_cpu_num: Some(4),
             ..ArceosBuildInfo::default()
         };
 
         build_info.features.retain(|feature| feature != "ax-std");
         build_info.resolve_features_with_manifest_path(
-            "axfeat-app",
+            "ax-feat-app",
             false,
             Some(&workspace.join("Cargo.toml")),
         );
 
-        assert!(build_info.features.contains(&"axfeat/smp".to_string()));
+        assert!(build_info.features.contains(&"ax-feat/smp".to_string()));
     }
 
     #[test]

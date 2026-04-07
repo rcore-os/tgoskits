@@ -16,12 +16,12 @@ repository.workspace = true
 
 [features]
 dev-log = []
-input = ["dep:axinput", "axfeat/input"]
-memtrack = ["axfeat/dwarf", "axalloc/tracking", "dep:gimli"]
-vsock = ["axfeat/vsock"]
+input = ["dep:axinput", "ax-feat/input"]
+memtrack = ["ax-feat/dwarf", "axalloc/tracking", "dep:gimli"]
+vsock = ["ax-feat/vsock"]
 
 [dependencies]
-axfeat = { workspace = true, features = [
+ax-feat = { workspace = true, features = [
     "fp-simd",
     "irq",
     "uspace",
