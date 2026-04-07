@@ -3,7 +3,7 @@ use alloc::{
     sync::Arc,
 };
 
-use axfs::FS_CONTEXT;
+use ax_fs::FS_CONTEXT;
 use axhal::uspace::UserContext;
 use axsync::Mutex;
 use axtask::{AxTaskExt, spawn_task};

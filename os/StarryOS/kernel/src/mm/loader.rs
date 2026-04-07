@@ -3,8 +3,8 @@
 use alloc::{borrow::ToOwned, string::String, vec, vec::Vec};
 use core::{ffi::CStr, iter};
 
+use ax_fs::{CachedFile, FS_CONTEXT, FileBackend};
 use axerrno::{AxError, AxResult};
-use axfs::{CachedFile, FS_CONTEXT, FileBackend};
 use axfs_ng_vfs::Location;
 use axhal::{
     mem::virt_to_phys,

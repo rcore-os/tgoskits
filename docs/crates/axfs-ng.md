@@ -15,7 +15,7 @@
 - 第一层是“根文件系统接入层”：`init_filesystems()` 从 `axdriver` 取得第一个块设备，通过 `fs::new_default()` 创建一个默认文件系统实例，再把它包成根 `Mountpoint`。
 - 第二层是“高层文件语义层”：`FsContext`、`OpenOptions`、`File`、`FileBackend` 等对象在 `axfs-ng-vfs` 提供的节点模型之上，实现更接近现代内核/运行时使用习惯的路径解析与文件访问。
 
-与 `axfs` 相比，它的边界明显更窄也更清晰：
+与 `ax-fs` 相比，它的边界明显更窄也更清晰：
 
 - 不负责 GPT 扫描、`root=` 解析或多分区自动挂载。
 - 不在模块内部维护“全局根目录拼装树”。
@@ -31,7 +31,7 @@
 - `src/highlevel/file.rs`：高层打开文件模型，包含 `OpenOptions`、`FileFlags`、`FileBackend`、`CachedFile`、`File` 等核心对象。
 
 ### 1.3 根文件系统初始化与高层访问主线
-`axfs-ng` 的主线比 `axfs` 更短，但高层语义更强：
+`axfs-ng` 的主线比 `ax-fs` 更短，但高层语义更强：
 
 ```mermaid
 flowchart TD
@@ -66,10 +66,10 @@ flowchart TD
 #### 时间戳
 在启用 `times` feature 时，高层 `File` 会在 `Drop` 时把访问与修改信息写回节点元数据。这个逻辑是 `axfs-ng` 自己完成的，而不是 `axfs-ng-vfs` 自动提供的。
 
-### 1.5 与 `axfs` 的边界澄清
-- `axfs-ng` 不是“把旧 `axfs` 全部重写了一遍”。它没有旧栈的分区扫描、根目录拼装和全局 cwd 设计。
+### 1.5 与 `ax-fs` 的边界澄清
+- `axfs-ng` 不是“把旧 `ax-fs` 全部重写了一遍”。它没有旧栈的分区扫描、根目录拼装和全局 cwd 设计。
 - `axfs-ng` 也不是纯粹的 VFS 抽象层；真正承载 `Filesystem`/`Mountpoint`/`Location`/`Metadata` 的是 `axfs-ng-vfs`。
-- 在当前仓库里，StarryOS 的 `Cargo.toml` 直接把 `axfs-ng` 重命名为 `axfs` 使用，因此它已经不只是 ArceOS 的并行实验栈，而是有真实上层消费者的主线实现。
+- 在当前仓库里，StarryOS 的 `Cargo.toml` 直接把 `axfs-ng` 重命名为 `ax-fs` 使用，因此它已经不只是 ArceOS 的并行实验栈，而是有真实上层消费者的主线实现。
 
 ## 2. 核心功能说明
 ### 2.1 主要功能
@@ -100,7 +100,7 @@ flowchart TD
 ### 2.4 真实限制与注意事项
 - 默认只取第一个块设备，不做复杂根盘探测。
 - 根文件系统类型由编译期 feature 决定，不做运行期磁盘格式探测。
-- `OpenOptions::is_valid()` 允许“纯 path handle”这类不带读写权限的打开方式，因此和旧 `axfs::fops::OpenOptions` 的合法性规则并不相同。
+- `OpenOptions::is_valid()` 允许“纯 path handle”这类不带读写权限的打开方式，因此和旧 `ax_fs::fops::OpenOptions` 的合法性规则并不相同。
 
 ## 3. 依赖关系图谱
 ```mermaid
@@ -116,7 +116,7 @@ graph LR
 
     current --> ax-runtime["ax-runtime(fs-ng)"]
     current --> axnet_ng["ax-net-ng(unix)"]
-    current --> starry_kernel["StarryOS kernel（重命名为 axfs）"]
+    current --> starry_kernel["StarryOS kernel（重命名为 ax-fs）"]
 ```
 
 ### 3.1 关键直接依赖
@@ -179,14 +179,14 @@ axfs-ng = { workspace = true, features = ["ext4"] }
 - `ext4` 与 `fat` 同时开启时的默认后端优先级。
 - `NodeFlags` 改动导致的缓存/直通切换变化。
 - 符号链接最大跟随次数与循环解析。
-- StarryOS 重命名依赖名为 `axfs` 后的 API 兼容性。
+- StarryOS 重命名依赖名为 `ax-fs` 后的 API 兼容性。
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-在 ArceOS 中，`axfs-ng` 是通过 `ax-feat` 的 `fs-ng*` feature 链启用的新一代文件系统模块。它和旧 `axfs` 并行存在，但承担的是更现代的高层文件语义与 VFS 对象模型接口。
+在 ArceOS 中，`axfs-ng` 是通过 `ax-feat` 的 `fs-ng*` feature 链启用的新一代文件系统模块。它和旧 `ax-fs` 并行存在，但承担的是更现代的高层文件语义与 VFS 对象模型接口。
 
 ### 6.2 StarryOS
-在 StarryOS 中，`axfs-ng` 已经是实际主线：`kernel/Cargo.toml` 直接把它重命名为 `axfs`，文件系统调用层、pseudofs 挂载和很多设备/非阻塞 I/O 路径都围绕它构建。
+在 StarryOS 中，`axfs-ng` 已经是实际主线：`kernel/Cargo.toml` 直接把它重命名为 `ax-fs`，文件系统调用层、pseudofs 挂载和很多设备/非阻塞 I/O 路径都围绕它构建。
 
 ### 6.3 Axvisor
 当前仓库里的 `os/axvisor` 没有直接依赖 `axfs-ng`。因此在这棵代码树里，它的跨项目定位主要是“ArceOS 新栈 + StarryOS 主线文件系统模块”，而不是 Axvisor 当前运行时的公共基础层。

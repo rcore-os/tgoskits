@@ -1,8 +1,8 @@
 use alloc::{collections::BTreeMap, sync::Arc};
 use core::slice;
 
+use ax_fs::FileBackend;
 use axerrno::{AxError, AxResult};
-use axfs::FileBackend;
 use axhal::{
     mem::phys_to_virt,
     paging::{MappingFlags, PageSize, PageTableCursor, PagingError},

@@ -96,7 +96,7 @@
 
 - 向下：无本地依赖。
 - 向上：被所有类别层、总线适配层和聚合层共享。
-- 向旁：通过 `axdriver::prelude` 间接进入 `ax-display`、`axinput`、`axnet`、`axfs` 等上层模块。
+- 向旁：通过 `axdriver::prelude` 间接进入 `ax-display`、`axinput`、`axnet`、`ax-fs` 等上层模块。
 
 ## 4. 开发指南
 ### 4.1 何时应该修改本 crate

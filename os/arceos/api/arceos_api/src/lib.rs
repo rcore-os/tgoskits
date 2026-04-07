@@ -394,6 +394,8 @@ pub mod io {
 pub mod modules {
     #[cfg(feature = "display")]
     pub use ax_display;
+    #[cfg(feature = "fs")]
+    pub use ax_fs;
     pub use ax_runtime;
     #[cfg(feature = "alloc")]
     pub use axalloc;
@@ -402,8 +404,6 @@ pub mod modules {
     pub use axdma;
     #[cfg(any(feature = "fs", feature = "net", feature = "display"))]
     pub use axdriver;
-    #[cfg(feature = "fs")]
-    pub use axfs;
     pub use axhal;
     #[cfg(feature = "ipi")]
     pub use axipi;

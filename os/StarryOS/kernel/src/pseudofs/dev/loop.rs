@@ -3,8 +3,8 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
+use ax_fs::FileBackend;
 use axerrno::{AxError, AxResult, LinuxError};
-use axfs::FileBackend;
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsResult};
 use axsync::Mutex;
 use linux_raw_sys::{

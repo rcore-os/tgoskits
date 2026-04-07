@@ -83,7 +83,7 @@ axconfig = { version = "0.5.0", path = "modules/axconfig" }
 ax-display = { version = "0.5.0", path = "modules/axdisplay" }
 axdma = { version = "0.5.0", path = "modules/axdma" }
 axdriver = { version = "0.5.0", path = "modules/axdriver" }
-axfs = { version = "0.5.0", path = "modules/axfs" }
+ax-fs = { version = "0.5.0", path = "modules/axfs" }
 axfs-ng = { version = "0.5.0", path = "modules/axfs-ng" }
 axhal = { version = "0.5.0", path = "modules/axhal" }
 axinput = { version = "0.5.0", path = "modules/axinput" }

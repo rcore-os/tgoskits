@@ -6,7 +6,7 @@
 > 版本：`0.1.2`
 > 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`src/dir.rs`、`src/file.rs`、`src/tests.rs`、`os/arceos/modules/axfs/src/root.rs`、`os/arceos/modules/axfs/src/mounts.rs`
 
-`axfs_ramfs` 是旧文件系统栈中的纯内存文件系统实现。它以最小成本提供目录树和普通文件内容存储，既可以作为 `axfs` 在没有可识别磁盘文件系统时的回退根文件系统，也可以作为旧 `/proc`、`/sys` 兼容目录树的底层存储容器。
+`axfs_ramfs` 是旧文件系统栈中的纯内存文件系统实现。它以最小成本提供目录树和普通文件内容存储，既可以作为 `ax-fs` 在没有可识别磁盘文件系统时的回退根文件系统，也可以作为旧 `/proc`、`/sys` 兼容目录树的底层存储容器。
 
 ## 1. 架构设计分析
 ### 1.1 设计定位
@@ -31,7 +31,7 @@
 - `parent: Weak<dyn VfsNodeOps>`
 - `children: BTreeMap<String, VfsNodeRef>`
 
-目录节点支持递归路径拆分，因此旧 `axfs` 调它时不必自己逐层拆目录。
+目录节点支持递归路径拆分，因此旧 `ax-fs` 调它时不必自己逐层拆目录。
 
 #### 文件节点
 `FileNode` 内部只有一个 `RwLock<Vec<u8>>`。这说明：
@@ -51,7 +51,7 @@
 - 在内存中创建、查找和删除文件/目录。
 - 为普通文件提供 `read_at`、`write_at`、`truncate`。
 - 通过 `root_dir_node()` 暴露强类型根目录节点，便于直接枚举条目。
-- 在旧 `axfs` 中承担回退根文件系统和伪文件树承载层。
+- 在旧 `ax-fs` 中承担回退根文件系统和伪文件树承载层。
 
 ### 2.2 文件语义
 #### 空洞写入
@@ -72,8 +72,8 @@
 - `read_dir()` 会显式合成 `.` 和 `..`。
 - `parent()` 的正确性依赖挂载时 `set_parent()` 的修正。
 
-### 2.4 在旧 `axfs` 中的真实角色
-当前仓库里的旧 `axfs` 直接依赖 `axfs_ramfs` 做两件事：
+### 2.4 在旧 `ax-fs` 中的真实角色
+当前仓库里的旧 `ax-fs` 直接依赖 `axfs_ramfs` 做两件事：
 
 1. 没有识别到可用 FAT/ext4 根盘时，把 `ramfs` 作为回退根文件系统。
 2. 构建 `/proc` 与 `/sys` 这类兼容性伪文件树时，把它们的节点内容放进 `ramfs`。
@@ -85,7 +85,7 @@
 graph LR
     axfs_vfs["axfs_vfs"] --> current["axfs_ramfs"]
 
-    current --> axfs["axfs"]
+    current --> ax-fs["ax-fs"]
 ```
 
 ### 3.1 关键直接依赖
@@ -94,7 +94,7 @@ graph LR
 - `log`：创建/删除路径调试输出。
 
 ### 3.2 关键直接消费者
-- `axfs`：用它做回退根文件系统与伪文件树存储层。
+- `ax-fs`：用它做回退根文件系统与伪文件树存储层。
 
 ### 3.3 与相邻 crate 的关系
 - `axfs_ramfs` 与 `axfs_devfs` 一起构成旧栈中的两个重要伪文件系统叶子实现。
@@ -110,7 +110,7 @@ axfs_ramfs = { workspace = true }
 ### 4.2 使用与改动约束
 1. 当前仅支持 `File` 和 `Dir` 两种节点类型；如果传入其他 `VfsNodeType`，会返回 `Unsupported`。
 2. 修改 `write_at()` 或 `truncate()` 时，要特别注意“空洞读零”和“扩容补零”语义。
-3. 修改目录删除逻辑时，必须保留非空目录报错语义，否则会破坏旧 `axfs` 的目录安全假设。
+3. 修改目录删除逻辑时，必须保留非空目录报错语义，否则会破坏旧 `ax-fs` 的目录安全假设。
 4. 修改挂载逻辑时，要验证 `..` 是否还能回到挂载点父目录。
 
 ### 4.3 扩展建议
@@ -133,7 +133,7 @@ axfs_ramfs = { workspace = true }
 - 多层目录递归删除的错误路径。
 
 ### 5.3 建议的集成测试
-- 在旧 `axfs` 中作为回退根文件系统启动。
+- 在旧 `ax-fs` 中作为回退根文件系统启动。
 - `/proc`、`/sys` 伪文件树依赖的 `ramfs` 节点创建与读取。
 - 挂载到根目录后 `.`/`..` 与绝对/相对路径访问的一致性。
 

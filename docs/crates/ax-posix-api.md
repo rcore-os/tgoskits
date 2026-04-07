@@ -37,7 +37,7 @@ graph LR
     current --> axconfig["axconfig"]
     current --> axerrno["axerrno"]
     current --> ax-feat["ax-feat"]
-    current --> axfs["axfs"]
+    current --> ax-fs["ax-fs"]
     current --> axhal["axhal"]
     current --> axio["axio"]
     current --> axlog["axlog"]
@@ -49,7 +49,7 @@ graph LR
 - `axconfig`
 - `axerrno`
 - `ax-feat`
-- `axfs`
+- `ax-fs`
 - `axhal`
 - `axio`
 - `axlog`

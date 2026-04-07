@@ -1,8 +1,8 @@
 use alloc::format;
 use core::ffi::c_char;
 
+use ax_fs::{FS_CONTEXT, OpenOptions};
 use axerrno::{AxError, AxResult};
-use axfs::{FS_CONTEXT, OpenOptions};
 use linux_raw_sys::general::MFD_CLOEXEC;
 
 use crate::{

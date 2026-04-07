@@ -17,7 +17,7 @@ alloc = ["dep:axalloc", "ax-feat/alloc"]
 paging = ["dep:axmm", "ax-feat/paging"]
 dma = ["dep:axdma", "ax-feat/dma"]
 multitask = ["axtask/multitask", "axsync/multitask", "ax-feat/multitask"]
-fs = ["dep:axfs", "dep:axdriver", "ax-feat/fs"]
+fs = ["dep:ax-fs", "dep:axdriver", "ax-feat/fs"]
 net = ["dep:axnet", "dep:axdriver", "ax-feat/net"]
 display = ["dep:ax-display", "dep:axdriver", "ax-feat/display"]
 
@@ -33,7 +33,7 @@ axdma = { workspace = true, optional = true }
 axdriver = { workspace = true, optional = true }
 axerrno.workspace = true
 ax-feat.workspace = true
-axfs = { workspace = true, optional = true }
+ax-fs = { workspace = true, optional = true }
 axhal.workspace = true
 axio.workspace = true
 axipi = { workspace = true, optional = true }

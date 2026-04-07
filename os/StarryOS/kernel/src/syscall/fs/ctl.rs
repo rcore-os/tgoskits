@@ -5,8 +5,8 @@ use core::{
     time::Duration,
 };
 
+use ax_fs::{FS_CONTEXT, FsContext};
 use axerrno::{AxError, AxResult};
-use axfs::{FS_CONTEXT, FsContext};
 use axfs_ng_vfs::{MetadataUpdate, NodePermission, NodeType, path::Path};
 use axhal::time::wall_time;
 use axtask::current;

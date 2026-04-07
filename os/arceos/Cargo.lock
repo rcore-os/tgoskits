@@ -236,7 +236,7 @@ dependencies = [
  "axdriver",
  "axerrno",
  "ax-feat",
- "axfs",
+ "ax-fs",
  "axhal",
  "axio",
  "axipi",
@@ -256,7 +256,7 @@ dependencies = [
  "axconfig",
  "axerrno",
  "ax-feat",
- "axfs",
+ "ax-fs",
  "axhal",
  "axio",
  "axlog",
@@ -612,7 +612,7 @@ dependencies = [
  "axconfig",
  "ax-display",
  "axdriver",
- "axfs",
+ "ax-fs",
  "axfs-ng",
  "axhal",
  "axinput",
@@ -626,7 +626,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "axfs"
+name = "ax-fs"
 version = "0.5.0"
 dependencies = [
  "axdriver",
@@ -1052,7 +1052,7 @@ dependencies = [
  "axconfig",
  "ax-display",
  "axdriver",
- "axfs",
+ "ax-fs",
  "axfs-ng",
  "axhal",
  "axinput",

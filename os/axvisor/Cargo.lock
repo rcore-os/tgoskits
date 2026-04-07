@@ -193,7 +193,7 @@ dependencies = [
  "axdriver",
  "axerrno 0.2.2",
  "ax-feat",
- "axfs 0.2.0",
+ "ax-fs 0.2.0",
  "axhal",
  "axio",
  "axlog",
@@ -589,7 +589,7 @@ dependencies = [
  "axbacktrace",
  "axconfig",
  "axdriver",
- "axfs 0.2.0",
+ "ax-fs 0.2.0",
  "axhal",
  "axlog",
  "ax-runtime",
@@ -599,7 +599,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "axfs"
+name = "ax-fs"
 version = "0.3.0-preview.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b7b9d07fd327e010fd3b9c09ea9ccdfaccf329afd859ff802d2448dfb685ac9"
@@ -620,7 +620,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "axfs"
+name = "ax-fs"
 version = "0.2.0"
 source = "git+https://github.com/arceos-org/arceos.git?tag=dev-251216#16096568f5ae6ad2d687eff2927a4cb69cef8133"
 dependencies = [
@@ -989,7 +989,7 @@ dependencies = [
  "axconfig",
  "axdriver",
  "axerrno 0.2.2",
- "axfs 0.1.0",
+ "ax-fs 0.1.0",
  "axhal",
  "axklib",
  "axlog",

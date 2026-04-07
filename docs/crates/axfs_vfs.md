@@ -6,14 +6,14 @@
 > 版本：`0.1.2`
 > 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`src/structs.rs`、`src/path.rs`
 
-`axfs_vfs` 是旧文件系统栈使用的 VFS trait 契约。它提供的不是完整的挂载与名字空间对象模型，而是一组足够让 `axfs`、`axfs_ramfs`、`axfs_devfs` 和格式适配层对接起来的最小接口集合。
+`axfs_vfs` 是旧文件系统栈使用的 VFS trait 契约。它提供的不是完整的挂载与名字空间对象模型，而是一组足够让 `ax-fs`、`axfs_ramfs`、`axfs_devfs` 和格式适配层对接起来的最小接口集合。
 
 ## 1. 架构设计分析
 ### 1.1 设计定位
 `axfs_vfs` 的设计非常克制：
 
 - 它只定义文件系统与节点的基础操作接口。
-- 它把“当前目录”“挂载点选择”“跨文件系统路径路由”等更高层逻辑留给 `axfs` 去做。
+- 它把“当前目录”“挂载点选择”“跨文件系统路径路由”等更高层逻辑留给 `ax-fs` 去做。
 - 它更像一个稳定的旧栈 ABI，而不是一个带运行时对象图的 VFS 内核框架。
 
 因此，理解 `axfs_vfs` 的最好方式不是把它看成 Linux VFS 的缩影，而是把它看成“旧栈统一节点能力的 trait 合同”。
@@ -55,7 +55,7 @@
 ### 1.4 与 `axfs-ng-vfs` 的差异澄清
 - `axfs_vfs` 没有 `Mountpoint`、`Location`、`MetadataUpdate`、`NodeFlags`、`Pollable`、`user_data`。
 - `axfs_vfs` 的 `FileSystemInfo` 目前几乎是空壳结构；新栈的 `StatFs` 才是真正可用的统计结构。
-- `axfs_vfs` 不负责跨设备重命名/硬链接规则；旧 `axfs` 只能在自己那层做有限约束。
+- `axfs_vfs` 不负责跨设备重命名/硬链接规则；旧 `ax-fs` 只能在自己那层做有限约束。
 
 ## 2. 核心功能说明
 ### 2.1 主要功能
@@ -72,7 +72,7 @@
 ### 2.3 典型使用方式
 在当前仓库里，它的直接消费者主要有三类：
 
-- `axfs`：系统级聚合层。
+- `ax-fs`：系统级聚合层。
 - `axfs_ramfs`：内存文件系统。
 - `axfs_devfs`：设备文件系统。
 
@@ -83,7 +83,7 @@
 graph LR
     axerrno["axerrno"] --> current["axfs_vfs"]
 
-    current --> axfs["axfs"]
+    current --> ax-fs["ax-fs"]
     current --> axfs_ramfs["axfs_ramfs"]
     current --> axfs_devfs["axfs_devfs"]
 ```
@@ -94,14 +94,14 @@ graph LR
 - `log`：长目录项名警告等辅助日志。
 
 ### 3.2 关键直接消费者
-- `axfs`：通过它抽象 FAT/ext4/ramfs/devfs 节点。
+- `ax-fs`：通过它抽象 FAT/ext4/ramfs/devfs 节点。
 - `axfs_ramfs`：用它定义纯内存文件与目录。
 - `axfs_devfs`：用它定义设备目录树与字符设备节点。
 
 ### 3.3 与相邻 crate 的关系
 - `axfs_vfs` 在旧栈里处于“接口层”。
 - `axfs_ramfs`、`axfs_devfs` 是它之上的具体实现层。
-- `axfs` 则是再上一层的系统装配层。
+- `ax-fs` 则是再上一层的系统装配层。
 
 ## 4. 开发指南
 ### 4.1 接入方式
@@ -118,7 +118,7 @@ axfs_vfs = { workspace = true }
 
 ### 4.3 扩展建议
 - 如果你的目标是完整 Unix 语义、挂载图、轮询和节点级扩展点，继续扩展 `axfs_vfs` 的收益不高，优先考虑 `axfs-ng-vfs`。
-- 如果只是给旧 `axfs` 增加一种简单叶子文件系统，实现 `VfsOps`/`VfsNodeOps` 仍然是最低成本路径。
+- 如果只是给旧 `ax-fs` 增加一种简单叶子文件系统，实现 `VfsOps`/`VfsNodeOps` 仍然是最低成本路径。
 - 写 `rename()` 时要明确是否支持跨目录或跨挂载点；旧 trait 不会替你兜底。
 
 ## 5. 测试策略
@@ -133,7 +133,7 @@ axfs_vfs = { workspace = true }
 
 ### 5.3 建议的集成测试
 - 用一个最小 dummy fs 同时验证 `lookup`、`create`、`remove`、`read_dir`、`rename`。
-- 在 `axfs` 中验证 `VfsNodeAttr` 对权限与类型判断的影响。
+- 在 `ax-fs` 中验证 `VfsNodeAttr` 对权限与类型判断的影响。
 - 在 `axfs_ramfs`/`axfs_devfs` 中验证 `parent()` 与路径递归。
 
 ### 5.4 高风险回归点
@@ -143,7 +143,7 @@ axfs_vfs = { workspace = true }
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-`axfs_vfs` 是 ArceOS 旧文件系统栈的接口基石。`axfs`、`axfs_ramfs`、`axfs_devfs` 都围绕这套 trait 工作。
+`axfs_vfs` 是 ArceOS 旧文件系统栈的接口基石。`ax-fs`、`axfs_ramfs`、`axfs_devfs` 都围绕这套 trait 工作。
 
 ### 6.2 StarryOS
 当前仓库里的 StarryOS 已转向 `axfs-ng`/`axfs-ng-vfs` 栈，没有直接复用 `axfs_vfs`。因此它对 StarryOS 更像历史接口层，而不是主线基础设施。

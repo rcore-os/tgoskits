@@ -58,6 +58,6 @@ define cargo_doc
 endef
 
 define unit_test
-  $(call run_cmd,cargo test,-p axfs $(1) $(verbose) -- --nocapture)
-  $(call run_cmd,cargo test,--workspace --exclude axfs --exclude axplat-dyn $(1) $(verbose) -- --nocapture)
+  $(call run_cmd,cargo test,-p ax-fs $(1) $(verbose) -- --nocapture)
+  $(call run_cmd,cargo test,--workspace --exclude ax-fs --exclude axplat-dyn $(1) $(verbose) -- --nocapture)
 endef

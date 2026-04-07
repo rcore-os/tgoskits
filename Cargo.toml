@@ -173,7 +173,7 @@ axfs_vfs = { path = "components/axfs_crates/axfs_vfs" }
 axfs_ramfs = { path = "components/axfs_crates/axfs_ramfs" }
 axfs_devfs = { path = "components/axfs_crates/axfs_devfs" }
 
-axfs = { path = "os/arceos/modules/axfs" }
+ax-fs = { path = "os/arceos/modules/axfs" }
 axfs-ng = { path = "os/arceos/modules/axfs-ng" }
 axnet = { path = "os/arceos/modules/axnet" }
 ax-net-ng = { path = "os/arceos/modules/axnet-ng" }
@@ -309,7 +309,7 @@ axconfig = { path = "os/arceos/modules/axconfig", version = "0.5.0" }
 ax-display = { path = "os/arceos/modules/axdisplay", version = "0.5.0" }
 axdma = { path = "os/arceos/modules/axdma", version = "0.5.0" }
 axdriver = { path = "os/arceos/modules/axdriver", version = "0.5.0" }
-axfs = { path = "os/arceos/modules/axfs", version = "0.5.0" }
+ax-fs = { path = "os/arceos/modules/axfs", version = "0.5.0" }
 axfs-ng = { path = "os/arceos/modules/axfs-ng", version = "0.5.0" }
 axhal = { path = "os/arceos/modules/axhal", version = "0.5.0" }
 axinput = { path = "os/arceos/modules/axinput", version = "0.5.0" }

@@ -71,7 +71,7 @@
 | `axdriver_vsock` | 组件层 | `components/axdriver_crates/axdriver_vsock` | 1 | 2 | [查看](./axdriver_vsock.md) |
 | `axerrno` | 组件层 | `components/axerrno` | 0 | 36 | [查看](./axerrno.md) |
 | `ax-feat` | ArceOS 层 | `os/arceos/api/axfeat` | 16 | 7 | [查看](./ax-feat.md) |
-| `axfs` | ArceOS 层 | `os/arceos/modules/axfs` | 10 | 4 | [查看](./axfs.md) |
+| `ax-fs` | ArceOS 层 | `os/arceos/modules/axfs` | 10 | 4 | [查看](./ax-fs.md) |
 | `axfs-ng` | ArceOS 层 | `os/arceos/modules/axfs-ng` | 10 | 4 | [查看](./axfs-ng.md) |
 | `axfs-ng-vfs` | 组件层 | `components/axfs-ng-vfs` | 2 | 3 | [查看](./axfs-ng-vfs.md) |
 | `axfs_devfs` | 组件层 | `components/axfs_crates/axfs_devfs` | 1 | 1 | [查看](./axfs_devfs.md) |

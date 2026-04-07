@@ -64,7 +64,7 @@ fs = [
     "alloc",
     "paging",
     "axdriver/virtio-blk",
-    "dep:axfs",
+    "dep:ax-fs",
     "ax-runtime/fs",
 ] # TODO: try to remove "paging"
 fs-ng = ["fs", "ax-runtime/fs-ng"]
@@ -101,7 +101,7 @@ rtc = ["axhal/rtc", "ax-runtime/rtc"]
 # Device drivers
 bus-mmio = ["axdriver?/bus-mmio"]
 bus-pci = ["axdriver?/bus-pci"]
-driver-ramdisk = ["axdriver?/ramdisk", "axfs?/use-ramdisk"]
+driver-ramdisk = ["axdriver?/ramdisk", "ax-fs?/use-ramdisk"]
 driver-sdmmc = ["axdriver?/sdmmc"]
 driver-ixgbe = ["axdriver?/ixgbe"]
 driver-fxmac = ["axdriver?/fxmac"]                          # fxmac ethernet driver for PhytiumPi
@@ -117,7 +117,7 @@ axbacktrace.workspace = true
 axconfig = { workspace = true, optional = true }
 ax-display = { workspace = true, optional = true }
 axdriver = { workspace = true, optional = true }
-axfs = { workspace = true, optional = true }
+ax-fs = { workspace = true, optional = true }
 axfs-ng = { workspace = true, optional = true }
 axhal.workspace = true
 axinput = { workspace = true, optional = true }

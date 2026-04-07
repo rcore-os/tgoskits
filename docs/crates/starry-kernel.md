@@ -119,7 +119,7 @@ graph LR
     axhal["axhal"] --> starry
     axtask["axtask"] --> starry
     axmm["axmm"] --> starry
-    axfs["axfs-ng / axfs-ng-vfs"] --> starry
+    ax-fs["axfs-ng / axfs-ng-vfs"] --> starry
     axnet["ax-net-ng"] --> starry
     starry_process["starry-process"] --> starry
     starry_signal["starry-signal"] --> starry
@@ -188,7 +188,7 @@ StarryOS 的主验证方式是端到端系统运行：
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-`starry-kernel` 并不是 ArceOS 的被复用组件，而是构建在 ArceOS `ax*` 模块之上的更高层系统。它消费 `axhal`、`axtask`、`axmm`、`axfs`、`axnet` 等能力，把它们重组为 Linux 风格宏内核语义。
+`starry-kernel` 并不是 ArceOS 的被复用组件，而是构建在 ArceOS `ax*` 模块之上的更高层系统。它消费 `axhal`、`axtask`、`axmm`、`ax-fs`、`axnet` 等能力，把它们重组为 Linux 风格宏内核语义。
 
 ### 6.2 StarryOS
 这是 `starry-kernel` 的主战场。`starryos` 包本身只负责启动入口和参数准备，而真正的内核逻辑几乎都集中在 `starry-kernel` 中，因此它就是 StarryOS 的核心内核实现。

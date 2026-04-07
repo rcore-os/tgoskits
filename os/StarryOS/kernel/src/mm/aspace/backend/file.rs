@@ -5,8 +5,8 @@ use alloc::{
 };
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+use ax_fs::{CachedFile, FileFlags};
 use axerrno::{AxError, AxResult};
-use axfs::{CachedFile, FileFlags};
 use axhal::paging::{MappingFlags, PageSize, PageTableCursor, PagingError};
 use axsync::Mutex;
 use memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};

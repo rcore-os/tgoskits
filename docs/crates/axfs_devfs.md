@@ -13,7 +13,7 @@
 `axfs_devfs` 的定位非常明确：
 
 - 它是一个具体文件系统实现，而不是 VFS 抽象层。
-- 它服务于旧 `axfs` 栈，用于把设备节点挂入统一根目录。
+- 它服务于旧 `ax-fs` 栈，用于把设备节点挂入统一根目录。
 - 它更像“程序构造出的静态设备树”，而不是能处理热插拔、权限、设备号和复杂 ioctl 语义的完整 devfs。
 
 ### 1.2 内部模块划分
@@ -49,7 +49,7 @@
 - 维护一棵静态设备目录树。
 - 提供空设备、零设备、伪随机设备的最小实现。
 - 通过 `lookup`/`read_dir`/`parent` 支持路径遍历。
-- 在挂载到旧 `axfs` 根目录后提供兼容性的 `/dev/*` 节点。
+- 在挂载到旧 `ax-fs` 根目录后提供兼容性的 `/dev/*` 节点。
 
 ### 2.2 内置设备节点行为
 #### `NullDev`
@@ -78,7 +78,7 @@
 graph LR
     axfs_vfs["axfs_vfs"] --> current["axfs_devfs"]
 
-    current --> axfs["axfs"]
+    current --> ax-fs["ax-fs"]
 ```
 
 ### 3.1 关键直接依赖
@@ -87,10 +87,10 @@ graph LR
 - `log`：目录创建/删除等调试输出辅助。
 
 ### 3.2 关键直接消费者
-- `axfs`：把它作为旧栈根目录中的设备文件系统挂载来源。
+- `ax-fs`：把它作为旧栈根目录中的设备文件系统挂载来源。
 
 ### 3.3 与相邻 crate 的关系
-- `axfs_devfs` 和 `axfs_ramfs` 一样，都是 `axfs` 可以挂入根目录的具体叶子文件系统。
+- `axfs_devfs` 和 `axfs_ramfs` 一样，都是 `ax-fs` 可以挂入根目录的具体叶子文件系统。
 - 它不提供磁盘格式适配，也不参与块设备扫描。
 
 ## 4. 开发指南
@@ -125,7 +125,7 @@ axfs_devfs = { workspace = true }
 - 挂载前后 `parent()` 变化。
 
 ### 5.3 建议的集成测试
-- 在 `axfs` 根目录下挂载后，通过统一 API 访问 `/dev/null`、`/dev/zero`。
+- 在 `ax-fs` 根目录下挂载后，通过统一 API 访问 `/dev/null`、`/dev/zero`。
 - 验证挂载后 `..` 能正确返回外层目录。
 
 ### 5.4 高风险回归点
@@ -135,7 +135,7 @@ axfs_devfs = { workspace = true }
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-`axfs_devfs` 是 ArceOS 旧文件系统栈中的设备文件系统叶子实现，主要供 `axfs` 聚合后作为 `/dev` 一类设备节点来源。
+`axfs_devfs` 是 ArceOS 旧文件系统栈中的设备文件系统叶子实现，主要供 `ax-fs` 聚合后作为 `/dev` 一类设备节点来源。
 
 ### 6.2 StarryOS
 当前仓库中的 StarryOS 没有直接使用 `axfs_devfs`，而是基于 `axfs-ng-vfs` 自建 devfs。因此它在 StarryOS 里不是现行主线组件。

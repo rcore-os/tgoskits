@@ -26,7 +26,7 @@ plat-dyn = ["axdriver/dyn", "paging", "buddy-slab"]
 
 axdriver = ["dep:axdriver"]
 display = ["axdriver", "dep:ax-display"]
-fs = ["axdriver", "dep:axfs"]
+fs = ["axdriver", "dep:ax-fs"]
 fs-ng = ["axdriver", "dep:axfs-ng"]
 input = ["axdriver", "dep:axinput"]
 net = ["axdriver", "dep:axnet"]
@@ -39,7 +39,7 @@ axbacktrace = { workspace = true }
 axconfig = { workspace = true }
 ax-display = { workspace = true, optional = true }
 axdriver = { workspace = true, optional = true }
-axfs = { workspace = true, optional = true }
+ax-fs = { workspace = true, optional = true }
 axfs-ng = { workspace = true, optional = true }
 axhal = { workspace = true }
 axinput = { workspace = true, optional = true }

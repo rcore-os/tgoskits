@@ -1,8 +1,8 @@
 use alloc::{string::ToString, sync::Arc, vec::Vec};
 use core::ffi::c_char;
 
+use ax_fs::FS_CONTEXT;
 use axerrno::{AxError, AxResult};
-use axfs::FS_CONTEXT;
 use axhal::uspace::UserContext;
 use axtask::current;
 use starry_vm::vm_load_until_nul;

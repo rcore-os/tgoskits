@@ -6,7 +6,7 @@
 > 版本：`0.1.4-preview.3`
 > 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`src/ramdisk.rs`、`src/ramdisk_static.rs`、`src/sdmmc.rs`、`src/bcm2835sdhci.rs`、`os/arceos/modules/axdriver/src/drivers.rs`、`platform/axplat-dyn/src/drivers/blk/mod.rs`
 
-`axdriver_block` 不是文件系统，也不是块缓存层。它的真实定位是 ArceOS 驱动栈里的块设备类别接口 crate：一方面定义统一的 `BlockDriverOps`，另一方面在 feature 打开时提供少量叶子块设备实现，例如 `ramdisk`、`sdmmc`、`bcm2835-sdhci` 和 `ahci`。上层 `axdriver` 负责探测与聚合，`axfs`/`axfs-ng` 才是消费块设备并组织文件系统语义的地方。
+`axdriver_block` 不是文件系统，也不是块缓存层。它的真实定位是 ArceOS 驱动栈里的块设备类别接口 crate：一方面定义统一的 `BlockDriverOps`，另一方面在 feature 打开时提供少量叶子块设备实现，例如 `ramdisk`、`sdmmc`、`bcm2835-sdhci` 和 `ahci`。上层 `axdriver` 负责探测与聚合，`ax-fs`/`axfs-ng` 才是消费块设备并组织文件系统语义的地方。
 
 ## 1. 架构设计分析
 ### 1.1 设计定位
@@ -87,7 +87,7 @@
 1. `ax_runtime::init_drivers()` 调用 `axdriver::init_drivers()`。
 2. `axdriver` 根据 feature 选择 `ramdisk`、`sdmmc`、`bcm2835-sdhci` 或 `virtio-blk` 路径。
 3. 设备实例被包装成 `AxBlockDevice` 放入 `AllDevices.block`。
-4. `axfs` 或 `axfs-ng` 再接手这些块设备。
+4. `ax-fs` 或 `axfs-ng` 再接手这些块设备。
 
 也就是说，本 crate 输出的是“可供上层消费的块设备实例”，而不是最终文件系统能力。
 
@@ -144,7 +144,7 @@
 
 - `ramdisk` 的内存读写行为。
 - `axdriver` 初始化阶段是否能真正注册块设备。
-- `axfs` / `axfs-ng` 是否能基于这些设备完成挂载和读写。
+- `ax-fs` / `axfs-ng` 是否能基于这些设备完成挂载和读写。
 
 ### 5.2 建议补充的单元测试
 - `ramdisk` 的块对齐、越界与多块读写。

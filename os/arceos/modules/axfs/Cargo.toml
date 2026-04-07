@@ -1,5 +1,5 @@
 [package]
-name = "axfs"
+name = "ax-fs"
 version.workspace = true
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]

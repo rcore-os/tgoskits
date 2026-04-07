@@ -4,8 +4,8 @@ use core::{
     task::Context,
 };
 
+use ax_fs::{FS_CONTEXT, FileFlags, OpenOptions};
 use axerrno::{AxError, AxResult};
-use axfs::{FS_CONTEXT, FileFlags, OpenOptions};
 use axio::{Seek, SeekFrom};
 use axpoll::{IoEvents, Pollable};
 use axtask::current;

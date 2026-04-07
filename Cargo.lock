@@ -528,13 +528,13 @@ version = "0.5.0"
 dependencies = [
  "ax-display",
  "ax-feat",
+ "ax-fs",
  "ax-runtime",
  "axalloc",
  "axconfig",
  "axdma",
  "axdriver",
  "axerrno",
- "axfs",
  "axhal",
  "axio",
  "axipi",
@@ -560,12 +560,12 @@ name = "ax-feat"
 version = "0.5.0"
 dependencies = [
  "ax-display",
+ "ax-fs",
  "ax-runtime",
  "axalloc",
  "axbacktrace",
  "axconfig",
  "axdriver",
- "axfs",
  "axfs-ng",
  "axhal",
  "axinput",
@@ -575,6 +575,25 @@ dependencies = [
  "axsync",
  "axtask",
  "kspin 0.3.1",
+]
+
+[[package]]
+name = "ax-fs"
+version = "0.5.0"
+dependencies = [
+ "axdriver",
+ "axerrno",
+ "axfatfs",
+ "axfs_devfs",
+ "axfs_ramfs",
+ "axfs_vfs",
+ "axhal",
+ "axio",
+ "cap_access",
+ "lazyinit 0.4.2",
+ "log",
+ "rsext4",
+ "spin 0.10.0",
 ]
 
 [[package]]
@@ -657,11 +676,11 @@ name = "ax-posix-api"
 version = "0.5.0"
 dependencies = [
  "ax-feat",
+ "ax-fs",
  "ax-runtime",
  "axalloc",
  "axconfig",
  "axerrno",
- "axfs",
  "axhal",
  "axio",
  "axlog",
@@ -680,12 +699,12 @@ name = "ax-runtime"
 version = "0.5.0"
 dependencies = [
  "ax-display",
+ "ax-fs",
  "ax-net-ng",
  "axalloc",
  "axbacktrace",
  "axconfig",
  "axdriver",
- "axfs",
  "axfs-ng",
  "axhal",
  "axinput",
@@ -1087,25 +1106,6 @@ checksum = "4bf1c27753a96a0f835cca49e6fb354912107d018c905d13c7eff39be757eb5a"
 dependencies = [
  "bitflags 2.11.0",
  "log",
-]
-
-[[package]]
-name = "axfs"
-version = "0.5.0"
-dependencies = [
- "axdriver",
- "axerrno",
- "axfatfs",
- "axfs_devfs",
- "axfs_ramfs",
- "axfs_vfs",
- "axhal",
- "axio",
- "cap_access",
- "lazyinit 0.4.2",
- "log",
- "rsext4",
- "spin 0.10.0",
 ]
 
 [[package]]

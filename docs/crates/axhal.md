@@ -144,7 +144,7 @@ graph LR
 - `ax-runtime`：系统 bring-up 总控，是 `axhal` 的第一直接消费者。
 - `axmm`：使用 `paging`、地址转换与内存区域信息。
 - `axtask`：使用 CPU 本地状态、时间、IRQ、TLS 与上下文相关能力。
-- `axdriver`、`axnet`、`axfs*`：通过时间、中断、设备树和平台资源完成硬件接线。
+- `axdriver`、`axnet`、`ax-fs*`：通过时间、中断、设备树和平台资源完成硬件接线。
 - `starry-kernel`：复用 `UserContext`、分页、时间和控制台能力。
 - `axvisor`：通过 `axhal` 为虚拟化路径提供中断、时间、CPU ID、地址翻译等宿主能力。
 

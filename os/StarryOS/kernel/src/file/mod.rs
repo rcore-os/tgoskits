@@ -9,8 +9,8 @@ pub mod signalfd;
 use alloc::{borrow::Cow, sync::Arc};
 use core::{ffi::c_int, time::Duration};
 
+use ax_fs::{FS_CONTEXT, OpenOptions};
 use axerrno::{AxError, AxResult};
-use axfs::{FS_CONTEXT, OpenOptions};
 use axfs_ng_vfs::DeviceId;
 use axio::prelude::*;
 use axpoll::Pollable;

@@ -55,11 +55,11 @@ impl MemoryCategory {
                 "starry_process::process_group::ProcessGroup::new" => {
                     return Some("process group");
                 }
-                "axfs::fs::ext4::inode::Inode::new" => {
+                "ax_fs::fs::ext4::inode::Inode::new" => {
                     return Some("ext4 inode");
                 }
-                "axfs::highlevel::file::CachedFile::get_or_create"
-                | "axfs::highlevel::file::CachedFile::page_or_insert" => {
+                "ax_fs::highlevel::file::CachedFile::get_or_create"
+                | "ax_fs::highlevel::file::CachedFile::page_or_insert" => {
                     return Some("cached file");
                 }
                 "axtask::timers::set_alarm_wakeup" => {

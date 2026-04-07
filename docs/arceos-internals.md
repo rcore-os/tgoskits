@@ -38,7 +38,7 @@ flowchart LR
     reusableCrates["ReusableCrates: components/*"]
     platformLayer["PlatformLayer: axplat-* + platform/*"]
     requiredModules["RequiredModules: ax-runtime axhal axconfig axlog"]
-    optionalModules["OptionalModules: axalloc axmm axtask axsync axdriver axfs axnet ax-display"]
+    optionalModules["OptionalModules: axalloc axmm axtask axsync axdriver ax-fs axnet ax-display"]
     publicApi["PublicApi: ax-feat ax-api ax-posix-api"]
     userLib["UserLib: ax-std ax-libc"]
     appsAndTests["AppsAndTests: examples/* + test-suit/arceos/*"]
@@ -91,7 +91,7 @@ ArceOS 的基础骨架由四个必选模块组成：
 | `axtask` | `multitask`、`sched-*` | 任务创建、调度（FIFO/RR/CFS）、sleep、wait queue |
 | `axsync` | `multitask` | mutex、信号量等同步原语 |
 | `axdriver` | `driver-*`、`fs`、`net`、`display` | 设备探测与驱动初始化（virtio、AHCI、SDMMC 等） |
-| `axfs` | `fs` | 文件系统（FAT、ramfs、ext4） |
+| `ax-fs` | `fs` | 文件系统（FAT、ramfs、ext4） |
 | `axfs-ng` | `fs-ng` | 下一代文件系统（FAT、ext4，带 LRU 缓存） |
 | `axnet` | `net` | 网络栈（基于 smoltcp） |
 | `ax-net-ng` | `net-ng` | 下一代网络栈（异步感知） |
@@ -126,7 +126,7 @@ flowchart TD
     runtimeGate["ax-runtime: 根据 feature 选择模块"]
     memPath["MemoryPath: alloc paging -> axalloc axmm"]
     taskPath["TaskPath: multitask sched-* -> axtask axsync"]
-    ioPath["IoPath: fs net display -> axdriver + axfs axnet ax-display"]
+    ioPath["IoPath: fs net display -> axdriver + ax-fs axnet ax-display"]
     platformInit["PlatformInit: axhal init_early/init_later"]
     finalImage["FinalImage: 编译得到目标镜像"]
 
@@ -171,7 +171,7 @@ hv = ["axhal/hv", "axalloc/hv"]
 plat-dyn = ["axhal/plat-dyn"]
 axdriver = ["dep:axdriver"]
 # 文件系统
-fs = ["axdriver", "dep:axfs"]
+fs = ["axdriver", "dep:ax-fs"]
 fs-ng = ["axdriver", "dep:axfs-ng"]
 # 网络
 net = ["axdriver", "dep:axnet"]
@@ -226,7 +226,7 @@ sequenceDiagram
 
     App->>Axstd: 调用 println open spawn connect 等高层接口
     alt 通过 mini-std 直接使用模块
-        Axstd->>Modules: 直接调用 axtask axfs axnet 等能力
+        Axstd->>Modules: 直接调用 axtask ax-fs axnet 等能力
     else 通过公共 API 封装
         App->>ArceosApi: 调用 ax_* API
         ArceosApi->>Modules: 转发到具体模块
@@ -259,8 +259,8 @@ sequenceDiagram
 | `axmm` | `os/arceos/modules/axmm` | 地址空间、页表、映射后端 | `ax-runtime`、上层内存管理逻辑 |
 | `axtask` | `os/arceos/modules/axtask` | 调度器、任务创建、等待队列、定时器驱动的 sleep | `ax-runtime`、`axsync` |
 | `axsync` | `os/arceos/modules/axsync` | mutex 等同步原语 | `axtask`、任意并发模块 |
-| `axdriver` | `os/arceos/modules/axdriver` | 设备探测与驱动初始化 | `axfs`、`axnet`、`ax-display` |
-| `axfs` | `os/arceos/modules/axfs` | 文件系统挂载、文件/目录 API | `axdriver` |
+| `axdriver` | `os/arceos/modules/axdriver` | 设备探测与驱动初始化 | `ax-fs`、`axnet`、`ax-display` |
+| `ax-fs` | `os/arceos/modules/axfs` | 文件系统挂载、文件/目录 API | `axdriver` |
 | `axnet` | `os/arceos/modules/axnet` | 网络栈、socket 抽象 | `axdriver` |
 | `axconfig` | `os/arceos/modules/axconfig` | 构建期常量与目标参数 | 所有模块 |
 | `axlog` | `os/arceos/modules/axlog` | 多级日志与格式化输出 | 所有模块 |
@@ -275,10 +275,10 @@ sequenceDiagram
 ArceOS 的模块间交互可归纳为四条主线，覆盖从系统启动到应用调用的完整数据与控制流：
 
 1. 启动主线  
-   `ax-runtime -> axhal -> axalloc/axmm -> axtask -> axdriver -> axfs/axnet`
+   `ax-runtime -> axhal -> axalloc/axmm -> axtask -> axdriver -> ax-fs/axnet`
 
 2. API 主线  
-   `ax-std/arceos_api -> axtask/axfs/axnet/... -> axhal`
+   `ax-std/arceos_api -> axtask/ax-fs/axnet/... -> axhal`
 
 3. 平台主线  
    `axplat-* / platform/* -> axhal -> ax-runtime`
@@ -577,7 +577,7 @@ make A=examples/helloworld ARCH=riscv64 debug
 - 启动路径：减少不必要的模块初始化，检查 `ax-runtime` 中的 feature 分支。
 - 内存路径：关注 `axalloc`、`axmm` 以及是否存在过度映射或不必要分配。
 - 调度路径：分析 `axtask` 调度器选择与 wait queue 唤醒开销。
-- I/O 路径：检查 `axdriver -> axfs/axnet` 的调用链是否存在多余层次。
+- I/O 路径：检查 `axdriver -> ax-fs/axnet` 的调用链是否存在多余层次。
 - 跨系统影响：若模块被 StarryOS 或 AxVisor 复用，优化不能仅看 ArceOS 自身的表现。
 
 ## 9. 深入阅读
@@ -586,7 +586,7 @@ make A=examples/helloworld ARCH=riscv64 debug
 
 1. 从 `os/arceos/modules/axruntime/src/lib.rs` 阅读完整初始化路径。
 2. 阅读 `os/arceos/api/axfeat` 与 `ax-runtime/Cargo.toml`，理解 feature 到模块的装配关系。
-3. 根据关注的子系统分别进入 `axtask`、`axmm`、`axdriver`、`axfs`、`axnet`。
+3. 根据关注的子系统分别进入 `axtask`、`axmm`、`axdriver`、`ax-fs`、`axnet`。
 4. 若改动波及上层系统，继续阅读 [starryos-internals.md](starryos-internals.md) 与 [axvisor-internals.md](axvisor-internals.md)。
 
 关联文档：
