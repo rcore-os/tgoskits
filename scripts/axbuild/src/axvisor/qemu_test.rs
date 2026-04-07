@@ -195,7 +195,9 @@ pub(crate) fn uboot_test_build_args(build_config: &str, vmconfig: &str) -> Axvis
     }
 }
 
-pub(crate) fn board_test_build_args(group: &crate::test_qemu::AxvisorBoardTestGroup) -> AxvisorCliArgs {
+pub(crate) fn board_test_build_args(
+    group: &crate::test_qemu::AxvisorBoardTestGroup,
+) -> AxvisorCliArgs {
     AxvisorCliArgs {
         config: Some(PathBuf::from(group.build_config)),
         arch: None,

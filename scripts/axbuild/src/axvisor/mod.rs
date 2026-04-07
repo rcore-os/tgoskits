@@ -19,7 +19,10 @@ pub mod image;
 pub mod qemu;
 pub mod qemu_test;
 
-pub use cli::{ArgsBuild, ArgsBoard, ArgsConfig, ArgsDefconfig, ArgsQemu, ArgsTest, ArgsUboot, Command, ConfigCommand, TestCommand};
+pub use cli::{
+    ArgsBoard, ArgsBuild, ArgsConfig, ArgsDefconfig, ArgsQemu, ArgsTest, ArgsUboot, Command,
+    ConfigCommand, TestCommand,
+};
 
 pub struct Axvisor {
     app: AppContext,
