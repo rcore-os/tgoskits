@@ -199,7 +199,7 @@ CURATED_DOCS = {
     "ax-helloworld",
     "ax-helloworld-myplat",
     "ax-httpclient",
-    "arceos-httpserver",
+    "ax-httpserver",
     "arceos-irq",
     "arceos-memtest",
     "arceos-parallel",
