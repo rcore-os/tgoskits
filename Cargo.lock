@@ -1355,6 +1355,7 @@ name = "axplat-dyn"
 version = "0.5.0"
 dependencies = [
  "anyhow",
+ "arm-gic-driver 0.17.0",
  "axalloc",
  "axconfig-macros 0.4.1",
  "axcpu 0.5.0",
@@ -1371,6 +1372,7 @@ dependencies = [
  "memory_addr 0.6.1",
  "percpu 0.4.3",
  "rd-block",
+ "rdif-intc",
  "rdrive",
  "somehal",
  "spin 0.10.0",

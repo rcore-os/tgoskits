@@ -216,6 +216,9 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     #[cfg(feature = "multitask")]
     axtask::init_scheduler();
 
+    #[cfg(feature = "ipi")]
+    axipi::init();
+
     #[cfg(feature = "axdriver")]
     {
         #[allow(unused_variables)]

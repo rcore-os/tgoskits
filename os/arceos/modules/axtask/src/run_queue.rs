@@ -3,6 +3,8 @@ use alloc::sync::Weak;
 use alloc::{collections::VecDeque, sync::Arc};
 use core::mem::MaybeUninit;
 
+#[cfg(feature = "ipi")]
+use axhal::irq::{IPI_IRQ, IpiTarget, send_ipi};
 use axhal::percpu::this_cpu_id;
 use axsched::BaseScheduler;
 use kernel_guard::BaseGuard;
@@ -254,11 +256,16 @@ impl<G: BaseGuard> AxRunQueueRef<'_, G> {
             // Since now, the task to be unblocked is in the `Ready` state.
             let cpu_id = self.inner.cpu_id;
             debug!("task unblock: {task_id_name} on run_queue {cpu_id}");
-            // Note: when the task is unblocked on another CPU's run queue,
-            // we just ignore the `resched` flag.
-            if resched && cpu_id == this_cpu_id() {
-                #[cfg(feature = "preempt")]
-                crate::current().set_preempt_pending(true);
+            if resched {
+                if cpu_id == this_cpu_id() {
+                    #[cfg(feature = "preempt")]
+                    crate::current().set_preempt_pending(true);
+                } else {
+                    #[cfg(feature = "ipi")]
+                    {
+                        send_ipi(IPI_IRQ, IpiTarget::Other { cpu_id });
+                    }
+                }
             }
         }
     }

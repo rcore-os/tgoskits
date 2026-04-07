@@ -1,3 +1,5 @@
+extern crate alloc;
+
 use axplat::irq::{HandlerTable, IrqHandler, IrqIf};
 use somehal::irq_handler;
 
@@ -51,6 +53,84 @@ impl IrqIf for IrqIfImpl {
     }
 
     fn send_ipi(_id: usize, _target: axplat::irq::IpiTarget) {
+        #[cfg(target_arch = "aarch64")]
+        {
+            let mut gic = rdrive::get_one::<rdif_intc::Intc>()
+                .expect("Failed to get GIC driver")
+                .lock()
+                .unwrap();
+
+            if let Some(gic) = gic.typed_mut::<arm_gic_driver::v2::Gic>() {
+                use arm_gic_driver::{
+                    IntId,
+                    v2::{SGITarget, TargetList},
+                };
+
+                match _target {
+                    axplat::irq::IpiTarget::Current { cpu_id: _ } => {
+                        gic.send_sgi(IntId::sgi(_id as u32), SGITarget::Current);
+                    }
+                    axplat::irq::IpiTarget::Other { cpu_id } => {
+                        let target_list = TargetList::new(&mut [cpu_id].into_iter());
+                        gic.send_sgi(IntId::sgi(_id as u32), SGITarget::TargetList(target_list));
+                    }
+                    axplat::irq::IpiTarget::AllExceptCurrent {
+                        cpu_id: _,
+                        cpu_num: _,
+                    } => {
+                        gic.send_sgi(IntId::sgi(_id as u32), SGITarget::AllOther);
+                    }
+                }
+                return;
+            }
+
+            if let Some(_gic) = gic.typed_mut::<arm_gic_driver::v3::Gic>() {
+                use arm_gic_driver::{
+                    IntId,
+                    v3::{Affinity, SGITarget},
+                };
+
+                let cpu_affinity = |cpu_idx: usize| {
+                    let meta = somehal::smp::cpu_meta(cpu_idx)
+                        .unwrap_or_else(|| panic!("invalid cpu idx for ipi target: {cpu_idx}"));
+                    Affinity::from_mpidr(meta.cpu_id as u64)
+                };
+
+                match _target {
+                    axplat::irq::IpiTarget::Current { cpu_id } => {
+                        let aff = cpu_affinity(cpu_id);
+                        arm_gic_driver::v3::send_sgi(
+                            IntId::sgi(_id as u32),
+                            SGITarget::list([aff]),
+                        );
+                    }
+                    axplat::irq::IpiTarget::Other { cpu_id } => {
+                        let aff = cpu_affinity(cpu_id);
+                        arm_gic_driver::v3::send_sgi(
+                            IntId::sgi(_id as u32),
+                            SGITarget::list([aff]),
+                        );
+                    }
+                    axplat::irq::IpiTarget::AllExceptCurrent { cpu_id, cpu_num } => {
+                        let mut targets = alloc::vec::Vec::new();
+                        for i in 0..cpu_num {
+                            if i != cpu_id {
+                                targets.push(cpu_affinity(i));
+                            }
+                        }
+                        arm_gic_driver::v3::send_sgi(
+                            IntId::sgi(_id as u32),
+                            SGITarget::list(targets),
+                        );
+                    }
+                }
+                return;
+            }
+
+            panic!("no gic driver found")
+        }
+
+        #[cfg(not(target_arch = "aarch64"))]
         todo!()
     }
 }

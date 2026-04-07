@@ -23,7 +23,7 @@ hv = ["axhal/hv"]
 
 # Interrupts
 irq = ["axhal/irq", "axruntime/irq", "axtask?/irq", "axdriver?/irq"]
-ipi = ["irq", "dep:axipi", "axhal/ipi", "axruntime/ipi"]
+ipi = ["irq", "dep:axipi", "axhal/ipi", "axruntime/ipi", "axtask?/ipi"]
 
 # Custom or default platforms
 myplat = ["axhal/myplat"]

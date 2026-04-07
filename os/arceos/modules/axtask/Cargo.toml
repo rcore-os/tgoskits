@@ -27,6 +27,7 @@ multitask = [
 ]
 task-ext = ["dep:extern-trait"]
 irq = ["axhal/irq", "dep:timer_list"]
+ipi = ["irq", "axhal/ipi"]
 tls = ["axhal/tls"]
 preempt = ["irq", "percpu?/preempt", "kernel_guard/preempt"]
 smp = ["kspin/smp"]

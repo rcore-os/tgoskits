@@ -30,7 +30,7 @@ pub mod devices {
     #[doc = " Timer interrupt num (PPI, physical timer)."]
     pub const TIMER_IRQ: usize = 0xf0;
     #[doc = " IPI interrupt num."]
-    pub const IPI_IRQ: usize = 0;
+    pub const IPI_IRQ: usize = 1;
     #[doc = " VirtIO MMIO regions with format (`base_paddr`, `size`)."]
     pub const VIRTIO_MMIO_REGIONS: &[(usize, usize)] = &[];
     #[doc = " SDMMC controller physical address."]
