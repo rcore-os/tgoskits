@@ -478,7 +478,7 @@ make ARCH=riscv64 debug
 - syscall 分发开销：关注热路径 syscall 是否有不必要的复制、锁或抽象层。`handle_syscall()` 使用 `enum_dispatch` 进行分发，本身开销较低。
 - 进程创建与装载：关注 `clone()`、`execve()`、ELF loader 与地址空间映射。fork 的 COW 后端和 mmap 的延迟分配是关键路径。
 - futex 与调度：关注 `task/futex.rs` 中的等待队列实现与 `axtask` 的调度协作。
-- 文件与 rootfs：关注 FD 表查找效率、伪文件系统与底层文件系统交互。ext4 的缓存策略（axfs-ng LRU 缓存）影响 I/O 性能。
+- 文件与 rootfs：关注 FD 表查找效率、伪文件系统与底层文件系统交互。ext4 的缓存策略（ax-fs-ng LRU 缓存）影响 I/O 性能。
 - IPC 路径：关注消息队列、共享内存和管道的内核缓冲区管理。
 
 ## 9. 深入阅读

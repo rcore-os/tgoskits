@@ -74,7 +74,7 @@
 - 要求上层提供 `phy::Device`、时钟和 `SocketSet`
 - 提供 `Interface::poll`、`poll_at` 等协议推进机制
 - 不提供 `bind` / `accept4` / `sendmsg` 一类系统接口语义
-- 不理解 `axpoll`、`axtask`、`axfs-ng`、Unix socket、vsock 这些系统层概念
+- 不理解 `axpoll`、`axtask`、`ax-fs-ng`、Unix socket、vsock 这些系统层概念
 
 因此，`axnet` / `ax-net-ng` 不是“薄薄一层壳”，而是在把协议栈本体接到操作系统语义上。
 

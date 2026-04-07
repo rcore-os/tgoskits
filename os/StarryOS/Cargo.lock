@@ -639,7 +639,7 @@ dependencies = [
  "ax-display",
  "axdriver",
  "ax-fs",
- "axfs-ng",
+ "ax-fs-ng",
  "axhal",
  "axinput",
  "axlog",
@@ -671,7 +671,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "axfs-ng"
+name = "ax-fs-ng"
 version = "0.3.0-preview.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8da9b07f29bfffb5b7230f66507a6153b158f523675020152b6dfa3d6b73df9f"
@@ -867,7 +867,7 @@ dependencies = [
  "axconfig",
  "axdriver",
  "axerrno 0.2.2",
- "axfs-ng",
+ "ax-fs-ng",
  "axfs-ng-vfs",
  "axhal",
  "axio",
@@ -1078,7 +1078,7 @@ dependencies = [
  "ax-display",
  "axdriver",
  "ax-fs",
- "axfs-ng",
+ "ax-fs-ng",
  "axhal",
  "axinput",
  "axklib",
@@ -5528,7 +5528,7 @@ dependencies = [
  "axdriver",
  "axerrno 0.2.2",
  "ax-feat",
- "axfs-ng",
+ "ax-fs-ng",
  "axfs-ng-vfs",
  "axhal",
  "axinput",

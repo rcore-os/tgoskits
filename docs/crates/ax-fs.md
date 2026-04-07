@@ -57,7 +57,7 @@ flowchart TD
 ### 1.4 与相邻 crate 的边界
 - `ax-fs` 是聚合层，不是叶子文件系统。真正的叶子实现是 `axfs_ramfs`、`axfs_devfs`、`axfatfs` 适配层以及 `rsext4` 适配层。
 - `ax-fs` 自己维护挂载点表和根目录拼接逻辑；`axfs_vfs` 并不提供挂载图管理能力。
-- `ax-fs` 的当前工作目录是 `ROOT_DIR`/`CURRENT_DIR` 这组全局静态对象，而不是任务局部对象。这一点与 `axfs-ng` 的 `FS_CONTEXT` 有本质差异。
+- `ax-fs` 的当前工作目录是 `ROOT_DIR`/`CURRENT_DIR` 这组全局静态对象，而不是任务局部对象。这一点与 `ax-fs-ng` 的 `FS_CONTEXT` 有本质差异。
 - `root.rs` 顶部已经明确写出 TODO：当挂载点存在包含关系时，这套路由逻辑并不“工作得很好”。因此它更适合简单的根目录拼装，而不是复杂命名空间系统。
 
 ## 2. 核心功能说明
@@ -127,7 +127,7 @@ graph LR
 ### 3.3 与相邻 crate 的关系
 - `axfs_ramfs`/`axfs_devfs` 位于 `ax-fs` 之下，是旧栈的具体文件系统实现。
 - `rsext4` 比 `ax-fs` 更靠下，只负责 ext4 语义，不负责根目录、当前目录或挂载树。
-- `axfs-ng` 与 `ax-fs` 不是简单的“新旧版本号关系”，而是两套边界不同的文件系统栈。
+- `ax-fs-ng` 与 `ax-fs` 不是简单的“新旧版本号关系”，而是两套边界不同的文件系统栈。
 
 ## 4. 开发指南
 ### 4.1 接入方式
@@ -147,7 +147,7 @@ ax-fs = { workspace = true }
 ### 4.3 扩展建议
 - 若要继续扩展旧栈的块设备根盘识别，优先在 `partition.rs` 完成，而不是把格式探测散到 `root.rs`。
 - 若要增强目录/文件权限模型，需要同时修改 `VfsNodeAttr` 提供者与 `fops` 中的 `perm_to_cap()` 路径。
-- 若要支持更复杂的挂载命名空间或任务级 cwd，继续堆在 `root.rs` 上的收益已经不高，应优先考虑迁移到 `axfs-ng`/`axfs-ng-vfs` 风格。
+- 若要支持更复杂的挂载命名空间或任务级 cwd，继续堆在 `root.rs` 上的收益已经不高，应优先考虑迁移到 `ax-fs-ng`/`axfs-ng-vfs` 风格。
 
 ## 5. 测试策略
 ### 5.1 当前测试形态
@@ -177,7 +177,7 @@ ax-fs = { workspace = true }
 `ax-fs` 仍是 ArceOS 旧 `fs` 路径的核心文件系统模块，并且当前 `ax-api`、`ax-posix-api` 仍直接建立在它之上。因此它在 ArceOS 中的定位依旧是“对外可见的旧文件系统栈入口”。
 
 ### 6.2 StarryOS
-当前仓库里的 StarryOS 已转向 `axfs-ng`，并在 `Cargo.toml` 中把 `axfs-ng` 重命名为 `ax-fs` 使用；其 pseudofs 也建立在 `axfs-ng-vfs` 上，而不是继续复用旧 `ax-fs`。因此 `ax-fs` 对 StarryOS 来说更多是历史并行栈，而不是主干路径。
+当前仓库里的 StarryOS 已转向 `ax-fs-ng`，并在 `Cargo.toml` 中把 `ax-fs-ng` 重命名为 `ax-fs` 使用；其 pseudofs 也建立在 `axfs-ng-vfs` 上，而不是继续复用旧 `ax-fs`。因此 `ax-fs` 对 StarryOS 来说更多是历史并行栈，而不是主干路径。
 
 ### 6.3 Axvisor
 虽然源码版权和注释中能看到明显的 Axvisor 痕迹，但当前仓库里的 `os/axvisor` 并没有直接依赖 `ax-fs`。因此在这棵代码树里，`ax-fs` 更应理解为“被 Axvisor 团队扩展过的 ArceOS 旧文件系统模块”，而不是 Axvisor 当前运行时的直接文件系统入口。

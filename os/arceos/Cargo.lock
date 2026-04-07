@@ -613,7 +613,7 @@ dependencies = [
  "ax-display",
  "axdriver",
  "ax-fs",
- "axfs-ng",
+ "ax-fs-ng",
  "axhal",
  "axinput",
  "axipi",
@@ -645,7 +645,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "axfs-ng"
+name = "ax-fs-ng"
 version = "0.5.0"
 dependencies = [
  "axalloc",
@@ -842,7 +842,7 @@ dependencies = [
  "axconfig",
  "axdriver",
  "axerrno",
- "axfs-ng",
+ "ax-fs-ng",
  "axfs-ng-vfs",
  "axhal",
  "axio",
@@ -1053,7 +1053,7 @@ dependencies = [
  "ax-display",
  "axdriver",
  "ax-fs",
- "axfs-ng",
+ "ax-fs-ng",
  "axhal",
  "axinput",
  "axipi",

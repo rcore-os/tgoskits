@@ -119,7 +119,7 @@ graph LR
     axhal["axhal"] --> starry
     axtask["axtask"] --> starry
     axmm["axmm"] --> starry
-    ax-fs["axfs-ng / axfs-ng-vfs"] --> starry
+    ax-fs["ax-fs-ng / axfs-ng-vfs"] --> starry
     axnet["ax-net-ng"] --> starry
     starry_process["starry-process"] --> starry
     starry_signal["starry-signal"] --> starry
@@ -133,7 +133,7 @@ graph LR
 - `ax-feat`：把 `uspace`、`multitask`、`sched-rr`、`fs-ng-ext4`、`net-ng` 等能力一次性装配到内核。
 - `axhal`：用户态上下文、页表、trap、时间与控制台基础能力。
 - `axtask`：底层线程调度、`TaskExt` 和阻塞/唤醒机制。
-- `axfs-ng`、`axfs-ng-vfs`：文件系统与路径解析。
+- `ax-fs-ng`、`axfs-ng-vfs`：文件系统与路径解析。
 - `ax-net-ng`：网络与 socket 路径的底层支撑。
 - `starry-process`、`starry-signal`、`starry-vm`：分别承接进程模型、信号模型和用户内存安全访问。
 

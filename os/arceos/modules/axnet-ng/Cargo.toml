@@ -17,7 +17,7 @@ async-trait = "0.1"
 axconfig = { workspace = true }
 axdriver = { workspace = true, features = ["net"] }
 axerrno = { workspace = true }
-axfs-ng = { workspace = true }
+ax-fs-ng = { workspace = true }
 axfs-ng-vfs = { workspace = true }
 axhal = { workspace = true }
 axio = { workspace = true }

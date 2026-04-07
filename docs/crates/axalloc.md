@@ -91,7 +91,7 @@ graph LR
     axalloc --> axhal["axhal/paging"]
     axalloc --> axdriver["axdriver"]
     axalloc --> axdma["axdma"]
-    axalloc --> axfsng["axfs-ng"]
+    axalloc --> axfsng["ax-fs-ng"]
     axalloc --> ax-api["ax-api"]
     axalloc --> starry_kernel["starry-kernel"]
     axalloc --> axplat_dyn["axplat-dyn"]
@@ -107,7 +107,7 @@ graph LR
 ### 3.2 关键直接消费者
 - `ax-runtime`：启动期初始化全局分配器。
 - `axmm`、`axhal`：页级分配的主要消费者。
-- `axdriver`、`axdma`、`axfs-ng`：驱动、DMA、文件缓存等运行期场景。
+- `axdriver`、`axdma`、`ax-fs-ng`：驱动、DMA、文件缓存等运行期场景。
 - `ax-api` / `ax-posix-api`：向上层 API 暴露堆能力。
 - `starry-kernel`：可复用其 tracking 和页/堆分配能力。
 

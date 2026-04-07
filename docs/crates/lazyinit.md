@@ -74,7 +74,7 @@ graph LR
     lazyinit["lazyinit"] --> axtask["axtask"]
     lazyinit --> axmm["axmm"]
     lazyinit --> axipi["axipi"]
-    lazyinit --> ax-fs["ax-fs / axfs-ng"]
+    lazyinit --> ax-fs["ax-fs / ax-fs-ng"]
     lazyinit --> axnet["axnet / ax-net-ng"]
     lazyinit --> ax-display["ax-display"]
     lazyinit --> axinput["axinput"]

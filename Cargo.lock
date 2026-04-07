@@ -561,12 +561,12 @@ version = "0.5.0"
 dependencies = [
  "ax-display",
  "ax-fs",
+ "ax-fs-ng",
  "ax-runtime",
  "axalloc",
  "axbacktrace",
  "axconfig",
  "axdriver",
- "axfs-ng",
  "axhal",
  "axinput",
  "axipi",
@@ -594,6 +594,32 @@ dependencies = [
  "log",
  "rsext4",
  "spin 0.10.0",
+]
+
+[[package]]
+name = "ax-fs-ng"
+version = "0.5.0"
+dependencies = [
+ "axalloc",
+ "axdriver",
+ "axerrno",
+ "axfs-ng-vfs",
+ "axhal",
+ "axio",
+ "axpoll",
+ "axsync",
+ "bitflags 2.11.0",
+ "cfg-if",
+ "chrono",
+ "intrusive-collections",
+ "kspin 0.3.1",
+ "log",
+ "lru",
+ "lwext4_rust",
+ "scope-local",
+ "slab",
+ "spin 0.10.0",
+ "starry-fatfs",
 ]
 
 [[package]]
@@ -649,10 +675,10 @@ version = "0.5.0"
 dependencies = [
  "async-channel",
  "async-trait",
+ "ax-fs-ng",
  "axconfig",
  "axdriver",
  "axerrno",
- "axfs-ng",
  "axfs-ng-vfs",
  "axhal",
  "axio",
@@ -700,12 +726,12 @@ version = "0.5.0"
 dependencies = [
  "ax-display",
  "ax-fs",
+ "ax-fs-ng",
  "ax-net-ng",
  "axalloc",
  "axbacktrace",
  "axconfig",
  "axdriver",
- "axfs-ng",
  "axhal",
  "axinput",
  "axipi",
@@ -1106,32 +1132,6 @@ checksum = "4bf1c27753a96a0f835cca49e6fb354912107d018c905d13c7eff39be757eb5a"
 dependencies = [
  "bitflags 2.11.0",
  "log",
-]
-
-[[package]]
-name = "axfs-ng"
-version = "0.5.0"
-dependencies = [
- "axalloc",
- "axdriver",
- "axerrno",
- "axfs-ng-vfs",
- "axhal",
- "axio",
- "axpoll",
- "axsync",
- "bitflags 2.11.0",
- "cfg-if",
- "chrono",
- "intrusive-collections",
- "kspin 0.3.1",
- "log",
- "lru",
- "lwext4_rust",
- "scope-local",
- "slab",
- "spin 0.10.0",
- "starry-fatfs",
 ]
 
 [[package]]
@@ -7416,6 +7416,7 @@ version = "0.5.0"
 dependencies = [
  "ax-display",
  "ax-feat",
+ "ax-fs-ng",
  "ax-net-ng",
  "ax-runtime",
  "axalloc",
@@ -7423,7 +7424,6 @@ dependencies = [
  "axconfig",
  "axdriver",
  "axerrno",
- "axfs-ng",
  "axfs-ng-vfs",
  "axhal",
  "axinput",

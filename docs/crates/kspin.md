@@ -49,7 +49,7 @@
 
 ### 2.2 关键 API 与真实使用位置
 - `SpinNoIrq`：被 `axalloc`、`axipi`、`axlog`、`axmm`、Axvisor 计时器等路径广泛使用。
-- `SpinNoPreempt`：在 `axfs-ng` 等需要关抢占但不一定关 IRQ 的路径使用。
+- `SpinNoPreempt`：在 `ax-fs-ng` 等需要关抢占但不一定关 IRQ 的路径使用。
 - `SpinRaw`：被 `axtask::run_queue` 用来保护已由外层 guard 保证过的就绪队列状态。
 
 ### 2.3 使用边界

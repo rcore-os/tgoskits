@@ -14,7 +14,7 @@
 
 - 它直接面向 ext4 语义和块设备，而不是面向统一 VFS trait。
 - 它对外导出的接口既有高层 API（`mount`、`open`、`read_at`、`mkdir` 等），也有大量后端内部模块，属于“引擎 + 宽导出 API”的风格。
-- 在当前仓库里，旧 `ax_fs::fs::ext4fs` 通过适配层把它包装成 `axfs_vfs::VfsOps`；新 `axfs-ng` 的 ext4 路径则改用了 `lwext4_rust`，不再依赖它。
+- 在当前仓库里，旧 `ax_fs::fs::ext4fs` 通过适配层把它包装成 `axfs_vfs::VfsOps`；新 `ax-fs-ng` 的 ext4 路径则改用了 `lwext4_rust`，不再依赖它。
 
 ### 1.2 内部模块划分
 - `src/ext4_backend/blockdev.rs`：定义 `BlockDevice` trait、`BlockDev` 缓冲封装以及 `Jbd2Dev`。
@@ -65,7 +65,7 @@ flowchart TD
 ### 1.5 与相邻 crate 的边界
 - `rsext4` 在 `ax-fs` 之下，只负责 ext4 格式语义，不负责根目录、当前目录或挂载名字空间。
 - `rsext4` 和 `axfs-ng-vfs` 处于完全不同层级：前者是格式引擎，后者是 VFS 对象模型。
-- 当前仓库里的 StarryOS 和 `axfs-ng` 新栈不直接使用它。
+- 当前仓库里的 StarryOS 和 `ax-fs-ng` 新栈不直接使用它。
 
 ## 2. 核心功能说明
 ### 2.1 主要功能
@@ -130,7 +130,7 @@ graph LR
 ### 3.3 与相邻 crate 的关系
 - `rsext4` 只解决 ext4，不解决统一文件系统接口。
 - `ax_fs::fs::ext4fs` 负责把它翻译成旧 `axfs_vfs` 所需的节点语义。
-- 新 `axfs-ng` ext4 路径已转向 `lwext4_rust`。
+- 新 `ax-fs-ng` ext4 路径已转向 `lwext4_rust`。
 
 ## 4. 开发指南
 ### 4.1 接入方式
@@ -182,7 +182,7 @@ rsext4 = { workspace = true }
 在 ArceOS 旧文件系统栈里，`rsext4` 是 ext4 叶子格式引擎。它通过 `ax_fs::fs::ext4fs` 间接进入系统，而不是直接成为统一文件 API。
 
 ### 6.2 StarryOS
-当前仓库里的 StarryOS 主线已经转向 `axfs-ng` + `lwext4_rust` 组合，没有直接依赖 `rsext4`。因此它对 StarryOS 更像历史并行路线，而不是当前主干依赖。
+当前仓库里的 StarryOS 主线已经转向 `ax-fs-ng` + `lwext4_rust` 组合，没有直接依赖 `rsext4`。因此它对 StarryOS 更像历史并行路线，而不是当前主干依赖。
 
 ### 6.3 Axvisor
 当前仓库里的 `os/axvisor` 没有直接依赖 `rsext4`。它在这棵代码树中的跨项目定位主要是“旧 ArceOS 栈可复用的 ext4 引擎”，而不是 Axvisor 当前公共文件系统层。

@@ -5,8 +5,8 @@ use alloc::{boxed::Box, sync::Arc};
 use core::task::Context;
 
 use async_trait::async_trait;
+use ax_fs_ng::{FS_CONTEXT, OpenOptions};
 use axerrno::{AxError, AxResult};
-use axfs_ng::{FS_CONTEXT, OpenOptions};
 use axfs_ng_vfs::NodeType;
 use axio::{IoBuf, Read, Write};
 use axpoll::{IoEvents, Pollable};

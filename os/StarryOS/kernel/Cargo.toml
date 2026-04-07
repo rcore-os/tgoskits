@@ -43,7 +43,7 @@ axalloc.workspace = true
 axconfig.workspace = true
 ax-display.workspace = true
 axdriver.workspace = true
-ax-fs = { version = "0.5.0", package = "axfs-ng" }
+ax-fs = { version = "0.5.0", package = "ax-fs-ng" }
 axhal.workspace = true
 axinput = { workspace = true, optional = true }
 axlog.workspace = true

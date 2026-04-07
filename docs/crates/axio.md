@@ -92,7 +92,7 @@
 仓库里的真实调用链大致分为四类：
 
 1. `ax_std::io` 直接重导出 `axio` 的 trait 与类型，把它包装成 ArceOS 应用看到的 `std::io` 风格接口。
-2. `ax-fs`、`axfs-ng` 的文件对象实现 `Read` / `Write` / `Seek`，复用统一的缓冲器和默认读写逻辑。
+2. `ax-fs`、`ax-fs-ng` 的文件对象实现 `Read` / `Write` / `Seek`，复用统一的缓冲器和默认读写逻辑。
 3. `axnet`、`ax-net-ng` 以及更上层 socket 封装使用 `axio` 作为同步收发 trait 的公共接口。
 4. `ax-api`、`ax-posix-api`、StarryOS 的 `FileLike`/用户缓冲访问对象通过 `axio` 收敛系统调用读写路径。
 
@@ -129,7 +129,7 @@
 
 - `ax-std`、`ax-libc`
 - `ax-api`、`ax-posix-api`
-- `ax-fs`、`axfs-ng`
+- `ax-fs`、`ax-fs-ng`
 - `axnet`、`ax-net-ng`
 - StarryOS 的文件、网络、pipe、用户态缓冲访问和系统调用包装层
 

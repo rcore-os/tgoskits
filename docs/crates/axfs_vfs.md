@@ -146,7 +146,7 @@ axfs_vfs = { workspace = true }
 `axfs_vfs` 是 ArceOS 旧文件系统栈的接口基石。`ax-fs`、`axfs_ramfs`、`axfs_devfs` 都围绕这套 trait 工作。
 
 ### 6.2 StarryOS
-当前仓库里的 StarryOS 已转向 `axfs-ng`/`axfs-ng-vfs` 栈，没有直接复用 `axfs_vfs`。因此它对 StarryOS 更像历史接口层，而不是主线基础设施。
+当前仓库里的 StarryOS 已转向 `ax-fs-ng`/`axfs-ng-vfs` 栈，没有直接复用 `axfs_vfs`。因此它对 StarryOS 更像历史接口层，而不是主线基础设施。
 
 ### 6.3 Axvisor
 当前仓库里的 `os/axvisor` 没有直接依赖 `axfs_vfs`。它在这棵代码树中的主要意义是旧文件系统组件间的共享接口，而不是跨所有项目通用的 VFS 核心。

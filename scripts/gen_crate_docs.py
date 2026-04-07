@@ -215,7 +215,7 @@ CURATED_DOCS = {
     "axconfig-macros",
     "ax-feat",
     "ax-fs",
-    "axfs-ng",
+    "ax-fs-ng",
     "axfs-ng-vfs",
     "axfs_devfs",
     "axfs_ramfs",

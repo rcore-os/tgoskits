@@ -86,7 +86,7 @@
 
 - `axtask`：把同步 nonblocking I/O 封装成可等待 future
 - `ax-net-ng`：为 TCP、UDP、Unix domain socket、vsock、loopback 设备提供统一 readiness 语义
-- `axfs-ng` / `axfs-ng-vfs`：为文件节点暴露可轮询事件
+- `ax-fs-ng` / `axfs-ng-vfs`：为文件节点暴露可轮询事件
 - StarryOS 内核：为 `FileLike`、pipe、TTY、socket、eventfd、epoll 等对象复用同一套等待协议
 
 ### 2.3 `Pollable` 的职责边界
@@ -123,7 +123,7 @@
 | --- | --- |
 | `axtask` | 通过 `poll_io()`、IRQ waker 等机制消费 `Pollable` 与 `PollSet` |
 | `ax-net-ng` | 为不同地址族 socket 与设备统一事件位和 waker 注册 |
-| `axfs-ng` | 让文件节点支持统一 readiness 协议 |
+| `ax-fs-ng` | 让文件节点支持统一 readiness 协议 |
 | StarryOS 内核 | 作为 fd 世界底层的 readiness glue 层 |
 
 ## 4. 开发指南
@@ -175,7 +175,7 @@ cargo test -p axpoll
 
 ### 6.1 ArceOS
 
-在 ArceOS 中，`axpoll` 处在同步 nonblocking I/O 与任务等待之间，是 `axtask`、`ax-net-ng`、`axfs-ng` 的公共 readiness glue 层。
+在 ArceOS 中，`axpoll` 处在同步 nonblocking I/O 与任务等待之间，是 `axtask`、`ax-net-ng`、`ax-fs-ng` 的公共 readiness glue 层。
 
 ### 6.2 StarryOS
 

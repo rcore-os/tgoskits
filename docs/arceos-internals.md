@@ -92,7 +92,7 @@ ArceOS 的基础骨架由四个必选模块组成：
 | `axsync` | `multitask` | mutex、信号量等同步原语 |
 | `axdriver` | `driver-*`、`fs`、`net`、`display` | 设备探测与驱动初始化（virtio、AHCI、SDMMC 等） |
 | `ax-fs` | `fs` | 文件系统（FAT、ramfs、ext4） |
-| `axfs-ng` | `fs-ng` | 下一代文件系统（FAT、ext4，带 LRU 缓存） |
+| `ax-fs-ng` | `fs-ng` | 下一代文件系统（FAT、ext4，带 LRU 缓存） |
 | `axnet` | `net` | 网络栈（基于 smoltcp） |
 | `ax-net-ng` | `net-ng` | 下一代网络栈（异步感知） |
 | `ax-display` | `display` | 图形显示（帧缓冲） |
@@ -172,7 +172,7 @@ plat-dyn = ["axhal/plat-dyn"]
 axdriver = ["dep:axdriver"]
 # 文件系统
 fs = ["axdriver", "dep:ax-fs"]
-fs-ng = ["axdriver", "dep:axfs-ng"]
+fs-ng = ["axdriver", "dep:ax-fs-ng"]
 # 网络
 net = ["axdriver", "dep:axnet"]
 net-ng = ["axdriver", "dep:ax-net-ng"]
@@ -264,7 +264,7 @@ sequenceDiagram
 | `axnet` | `os/arceos/modules/axnet` | 网络栈、socket 抽象 | `axdriver` |
 | `axconfig` | `os/arceos/modules/axconfig` | 构建期常量与目标参数 | 所有模块 |
 | `axlog` | `os/arceos/modules/axlog` | 多级日志与格式化输出 | 所有模块 |
-| `axfs-ng` | `os/arceos/modules/axfs-ng` | 下一代文件系统（FAT、ext4，LRU 缓存） | `axdriver` |
+| `ax-fs-ng` | `os/arceos/modules/axfs-ng` | 下一代文件系统（FAT、ext4，LRU 缓存） | `axdriver` |
 | `ax-net-ng` | `os/arceos/modules/axnet-ng` | 下一代网络栈（异步感知，基于 starry-smoltcp） | `axdriver` |
 | `axdma` | `os/arceos/modules/axdma` | DMA 内存分配与管理 | `ax-runtime`、`axmm` |
 | `axipi` | `os/arceos/modules/axipi` | 处理器间中断管理 | `axhal` |

@@ -133,7 +133,7 @@ graph TD
     A[scope-local]
     B[percpu] --> A
     A --> C[StarryOS kernel]
-    A --> D[axfs-ng]
+    A --> D[ax-fs-ng]
     A --> E[ax-posix-api fd]
     C --> F[TaskExt 切换 Scope]
 ```
@@ -193,7 +193,7 @@ graph TD
 
 | 项目 | 位置 | 角色 | 核心作用 |
 | --- | --- | --- | --- |
-| ArceOS | 可选局部资源视图基础件 | scope 级局部存储库 | 为 `axfs-ng`、POSIX fd 等场景提供可切换的局部状态承载方式 |
+| ArceOS | 可选局部资源视图基础件 | scope 级局部存储库 | 为 `ax-fs-ng`、POSIX fd 等场景提供可切换的局部状态承载方式 |
 | StarryOS | 进程/任务资源域基础件 | 进程级局部存储核心件 | 通过 `TaskExt` 与 `ActiveScope` 把 FD 表等资源自然绑定到当前进程 |
 | Axvisor | 当前仓库中无直接使用主线 | 潜在可复用基础件 | 若未来 Hypervisor 需要按 VM 或 vCPU 切换一组局部状态，可复用这套 scope 模型 |
 
