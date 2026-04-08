@@ -158,7 +158,7 @@
 仓库内直接或间接依赖它的关键模块包括：
 
 - `memory_set`
-- `page_table_entry`
+- `ax-page-table-entry`
 - `ax-page-table-multiarch`
 - `axplat`
 - `ax-mm`
@@ -174,7 +174,7 @@
 graph TD
     A[memory_addr]
     A --> B[memory_set]
-    A --> C[page_table_entry]
+    A --> C[ax-page-table-entry]
     A --> D[ax-page-table-multiarch]
     A --> E[axplat]
     A --> F[ax-mm]
@@ -204,7 +204,7 @@ graph TD
 ### 4.3 与上层集成
 
 - 与 `memory_set` 集成时，`AddrRange` 是 `MemoryArea` 的直接区间载体
-- 与 `page_table_entry` / `ax-page-table-multiarch` 集成时，`PhysAddr` 是页表项和页表页操作的基础地址类型
+- 与 `ax-page-table-entry` / `ax-page-table-multiarch` 集成时，`PhysAddr` 是页表项和页表页操作的基础地址类型
 - 与 `axaddrspace` 集成时，宏扩展机制可直接派生出 GPA/GVA 类型
 
 ## 5. 测试策略

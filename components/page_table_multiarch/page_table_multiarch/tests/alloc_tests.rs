@@ -5,9 +5,9 @@ use std::{
     marker::PhantomData,
 };
 
+use ax_page_table_entry::{GenericPTE, MappingFlags};
 use ax_page_table_multiarch::{PageSize, PageTable64, PagingHandler, PagingMetaData, PagingResult};
 use memory_addr::{PhysAddr, VirtAddr};
-use page_table_entry::{GenericPTE, MappingFlags};
 use rand::{RngExt, SeedableRng, rngs::SmallRng};
 
 /// Creates a layout for allocating `num` pages with alignment of `2^align_pow2`
@@ -194,7 +194,7 @@ fn run_test_for_32bit<M: PagingMetaData<VirtAddr = VirtAddr>, PTE: GenericPTE>()
 fn test_dealloc_arm32() -> PagingResult<()> {
     run_test_for_32bit::<
         ax_page_table_multiarch::arm::A32PagingMetaData,
-        page_table_entry::arm::A32PTE,
+        ax_page_table_entry::arm::A32PTE,
     >()?;
     Ok(())
 }
@@ -204,7 +204,7 @@ fn test_dealloc_arm32() -> PagingResult<()> {
 fn test_dealloc_x86() -> PagingResult<()> {
     run_test_for::<
         ax_page_table_multiarch::x86_64::X64PagingMetaData,
-        page_table_entry::x86_64::X64PTE,
+        ax_page_table_entry::x86_64::X64PTE,
     >()?;
     Ok(())
 }
@@ -214,11 +214,11 @@ fn test_dealloc_x86() -> PagingResult<()> {
 fn test_dealloc_riscv() -> PagingResult<()> {
     run_test_for::<
         ax_page_table_multiarch::riscv::Sv39MetaData<VirtAddr>,
-        page_table_entry::riscv::Rv64PTE,
+        ax_page_table_entry::riscv::Rv64PTE,
     >()?;
     run_test_for::<
         ax_page_table_multiarch::riscv::Sv48MetaData<VirtAddr>,
-        page_table_entry::riscv::Rv64PTE,
+        ax_page_table_entry::riscv::Rv64PTE,
     >()?;
     Ok(())
 }
@@ -228,7 +228,7 @@ fn test_dealloc_riscv() -> PagingResult<()> {
 fn test_dealloc_aarch64() -> PagingResult<()> {
     run_test_for::<
         ax_page_table_multiarch::aarch64::A64PagingMetaData,
-        page_table_entry::aarch64::A64PTE,
+        ax_page_table_entry::aarch64::A64PTE,
     >()?;
     Ok(())
 }
@@ -238,7 +238,7 @@ fn test_dealloc_aarch64() -> PagingResult<()> {
 fn test_dealloc_loongarch64() -> PagingResult<()> {
     run_test_for::<
         ax_page_table_multiarch::loongarch64::LA64MetaData,
-        page_table_entry::loongarch64::LA64PTE,
+        ax_page_table_entry::loongarch64::LA64PTE,
     >()?;
     Ok(())
 }

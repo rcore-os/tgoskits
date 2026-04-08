@@ -13,10 +13,10 @@
 // limitations under the License.
 
 use ax_errno::{ax_err, ax_err_type};
+use ax_page_table_entry::MappingFlags;
 use ax_page_table_multiarch::{PageSize, PagingHandler};
 use memory_addr::PhysAddr;
 use memory_set::MappingError;
-use page_table_entry::MappingFlags;
 
 use crate::GuestPhysAddr;
 
@@ -82,7 +82,7 @@ impl<H: PagingHandler> NestedPageTable<H> {
         vaddr: crate::GuestPhysAddr,
         paddr: PhysAddr,
         size: PageSize,
-        flags: page_table_entry::MappingFlags,
+        flags: ax_page_table_entry::MappingFlags,
     ) -> memory_set::MappingResult {
         match self {
             #[cfg(not(target_arch = "x86_64"))]
@@ -162,7 +162,7 @@ impl<H: PagingHandler> NestedPageTable<H> {
         &mut self,
         start: GuestPhysAddr,
         size: usize,
-        new_flags: page_table_entry::MappingFlags,
+        new_flags: ax_page_table_entry::MappingFlags,
     ) -> bool {
         match self {
             #[cfg(not(target_arch = "x86_64"))]
@@ -181,8 +181,11 @@ impl<H: PagingHandler> NestedPageTable<H> {
     pub fn query(
         &self,
         vaddr: crate::GuestPhysAddr,
-    ) -> ax_page_table_multiarch::PagingResult<(PhysAddr, page_table_entry::MappingFlags, PageSize)>
-    {
+    ) -> ax_page_table_multiarch::PagingResult<(
+        PhysAddr,
+        ax_page_table_entry::MappingFlags,
+        PageSize,
+    )> {
         match self {
             #[cfg(not(target_arch = "x86_64"))]
             NestedPageTable::L3(pt) => pt.query(vaddr),

@@ -23,7 +23,7 @@ Currently supported architectures and page table structures:
 [1]: https://docs.rs/ax-page-table-multiarch/latest/ax_page_table_multiarch/struct.PageTable64.html
 [2]: https://docs.rs/ax-page-table-multiarch/latest/ax_page_table_multiarch/struct.PageTable32.html
 [3]: https://docs.rs/ax-page-table-multiarch/latest/ax_page_table_multiarch/trait.PagingMetaData.html
-[4]: https://docs.rs/page_table_entry/latest/page_table_entry/trait.GenericPTE.html
+[4]: https://docs.rs/ax-page-table-entry/latest/ax_page_table_entry/trait.GenericPTE.html
 [5]: https://docs.rs/ax-page-table-multiarch/latest/ax_page_table_multiarch/trait.PagingHandler.html
 [6]: https://docs.rs/ax-page-table-multiarch/latest/ax_page_table_multiarch/x86_64/type.X64PageTable.html
 [7]: https://docs.rs/ax-page-table-multiarch/latest/ax_page_table_multiarch/aarch64/type.A64PageTable.html

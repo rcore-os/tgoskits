@@ -250,7 +250,7 @@ graph LR
 - `lazyinit`
 - `memory_addr`
 - `memory_set`
-- `page_table_entry`
+- `ax-page-table-entry`
 - `ax-page-table-multiarch`
 - `percpu_macros`
 

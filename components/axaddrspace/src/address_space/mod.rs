@@ -26,8 +26,8 @@ use crate::{
 
 mod backend;
 
+pub use ax_page_table_entry::MappingFlags;
 pub use backend::Backend;
-pub use page_table_entry::MappingFlags;
 
 /// The virtual memory address space.
 pub struct AddrSpace<H: PagingHandler> {

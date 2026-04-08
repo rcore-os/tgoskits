@@ -58,7 +58,7 @@ graph LR
 - `crate_interface`
 - `lazyinit`
 - `memory_set`
-- `page_table_entry`
+- `ax-page-table-entry`
 - `ax-page-table-multiarch`
 
 ### 3.3 被依赖情况

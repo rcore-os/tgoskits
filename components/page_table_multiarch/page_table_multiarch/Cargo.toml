@@ -23,7 +23,7 @@ arrayvec = { version = "0.7", default-features = false }
 bitmaps = { version = "3.2", default-features = false, optional = true }
 log = "0.4"
 memory_addr.workspace = true
-page_table_entry.workspace = true
+ax-page-table-entry.workspace = true
 
 [target.'cfg(any(target_arch = "x86_64", doc, docsrs))'.dependencies]
 x86 = "0.52"

@@ -14,9 +14,9 @@ mod bits64;
 use core::fmt::Debug;
 
 use arrayvec::ArrayVec;
-use memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr};
 #[doc(no_inline)]
-pub use page_table_entry::{GenericPTE, MappingFlags};
+pub use ax_page_table_entry::{GenericPTE, MappingFlags};
+use memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr};
 
 #[cfg(any(target_pointer_width = "32", doc, docsrs))]
 pub use self::{

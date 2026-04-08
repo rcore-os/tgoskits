@@ -236,7 +236,7 @@ flowchart TD
 | --- | --- |
 | `memory_addr` | 地址类型、对齐和范围基础设施 |
 | `memory_set` | 区域集合与后端映射框架 |
-| `page_table_entry` | `MappingFlags` 与各架构页表项定义 |
+| `ax-page-table-entry` | `MappingFlags` 与各架构页表项定义 |
 | `ax-page-table-multiarch` | 底层页表引擎与 `PagingHandler` trait |
 | `ax-errno` | 错误模型 |
 | `bitflags` / `bit_field` / `numeric-enum-macro` | 辅助标志与枚举操作 |
@@ -260,7 +260,7 @@ flowchart TD
 ```mermaid
 graph TD
     A[memory_addr / memory_set] --> B[axaddrspace]
-    C[page_table_entry / ax-page-table-multiarch] --> B
+    C[ax-page-table-entry / ax-page-table-multiarch] --> B
     B --> D[axvm]
     B --> E[axdevice]
     B --> F[axvcpu]
@@ -292,7 +292,7 @@ graph TD
 - `AddrSpace` 的“地址空间基址”是 guest 物理地址，不是 guest 虚拟地址。
 - `translate_and_get_limit()` 比单纯 `translate()` 更适合设备和 DMA 路径，因为它能提供边界信息。
 - `GuestMemoryAccessor` 是 trait，本 crate 并未在根模块里直接完成所有实现；调用者需要根据具体对象补齐实现。
-- `arm-el2` 是默认 feature，会把 `page_table_entry/arm-el2` 透传下去。
+- `arm-el2` 是默认 feature，会把 `ax-page-table-entry/arm-el2` 透传下去。
 
 ## 5. 测试策略
 

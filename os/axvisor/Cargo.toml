@@ -92,7 +92,7 @@ crate_interface = "0.5.0"
 extern-trait = "0.4"
 fdt-parser = "0.4"
 memory_addr = "0.6.1"
-page_table_entry = { version = "0.8.1", features = ["arm-el2"] }
+ax-page-table-entry = { version = "0.8.1", features = ["arm-el2"] }
 ax-page-table-multiarch = "0.8.1"
 ax-percpu = { version = "0.4.3", features = ["arm-el2"] }
 

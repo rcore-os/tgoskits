@@ -1,4 +1,4 @@
-# `page_table_entry` 技术文档
+# `ax-page-table-entry` 技术文档
 
 > 路径：`components/page_table_multiarch/page_table_entry`
 > 类型：库 crate
@@ -6,7 +6,7 @@
 > 版本：`0.6.1`
 > 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs` 与 `src/arch/*`
 
-`page_table_entry` 是多架构页表栈里专门负责“页表项长什么样”的基础库。它不负责遍历页表树、不负责分配页表页，也不负责地址空间策略；它只把不同架构的 PTE/descriptor 编码抽象成统一接口，使上层 `ax-page-table-multiarch`、`axaddrspace`、`axplat-*` 引导页表和 `ax-cpu` 等组件都能在不重复理解每套硬件位语义的前提下构造和查询页表项。
+`ax-page-table-entry` 是多架构页表栈里专门负责“页表项长什么样”的基础库。它不负责遍历页表树、不负责分配页表页，也不负责地址空间策略；它只把不同架构的 PTE/descriptor 编码抽象成统一接口，使上层 `ax-page-table-multiarch`、`axaddrspace`、`axplat-*` 引导页表和 `ax-cpu` 等组件都能在不重复理解每套硬件位语义的前提下构造和查询页表项。
 
 ## 1. 架构设计分析
 
@@ -14,7 +14,7 @@
 
 该 crate 在页表体系中的职责边界非常清楚：
 
-- `page_table_entry`：定义页表项格式与 flags 编码
+- `ax-page-table-entry`：定义页表项格式与 flags 编码
 - `ax-page-table-multiarch`：实现页表树、cursor、map/query/unmap
 - `axaddrspace` / `ax-mm`：组织地址空间与映射策略
 
@@ -183,7 +183,7 @@ LoongArch64 路径提供：
 
 ```mermaid
 graph TD
-    A[memory_addr] --> B[page_table_entry]
+    A[memory_addr] --> B[ax-page-table-entry]
     B --> C[ax-page-table-multiarch]
     B --> D[ax-cpu]
     B --> E[axaddrspace]
@@ -250,4 +250,4 @@ graph TD
 
 ## 7. 总结
 
-`page_table_entry` 的价值，在于把最容易碎片化的“架构页表项位语义”统一收拢到一个地方。它让上层页表引擎和地址空间管理器可以围绕统一接口工作，同时又保留了各架构在权限、缓存属性和大页语义上的真实差异，是整个多架构页表栈的编码基座。
+`ax-page-table-entry` 的价值，在于把最容易碎片化的“架构页表项位语义”统一收拢到一个地方。它让上层页表引擎和地址空间管理器可以围绕统一接口工作，同时又保留了各架构在权限、缓存属性和大页语义上的真实差异，是整个多架构页表栈的编码基座。

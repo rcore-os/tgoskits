@@ -100,7 +100,7 @@
 
 ## 0.3.3
 
-- Support the use of `page_table_entry` at the ARM EL2 privilege level (via the `arm-el2` feature).
+- Support the use of `ax-page-table-entry` at the ARM EL2 privilege level (via the `arm-el2` feature).
 
 ## 0.3.2
 

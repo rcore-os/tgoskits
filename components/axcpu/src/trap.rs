@@ -1,10 +1,10 @@
 //! Trap handling.
 
+pub use ax_page_table_entry::MappingFlags as PageFaultFlags;
 pub use linkme::{
     distributed_slice as def_trap_handler, distributed_slice as register_trap_handler,
 };
 use memory_addr::VirtAddr;
-pub use page_table_entry::MappingFlags as PageFaultFlags;
 
 pub use crate::TrapFrame;
 

@@ -222,7 +222,7 @@ ax-percpu = { path = "components/percpu/percpu" }
 percpu_macros = { path = "components/percpu/percpu_macros" }
 
 # === page_table ===
-page_table_entry = { path = "components/page_table_multiarch/page_table_entry" }
+ax-page-table-entry = { path = "components/page_table_multiarch/page_table_entry" }
 ax-page-table-multiarch = { path = "components/page_table_multiarch/page_table_multiarch" }
 
 # === crate_interface ===

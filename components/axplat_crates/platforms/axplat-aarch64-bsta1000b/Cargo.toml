@@ -20,7 +20,7 @@ smp = ["ax-plat/smp", "ax-kspin/smp"]
 [dependencies]
 log = "0.4"
 ax-kspin = "0.3.1"
-page_table_entry = "0.8.1"
+ax-page-table-entry = "0.8.1"
 dw_apb_uart = "0.1"
 
 ax-config-macros = "0.4.1"

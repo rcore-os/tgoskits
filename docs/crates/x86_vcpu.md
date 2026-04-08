@@ -223,7 +223,7 @@ flowchart TD
 | --- | --- |
 | `axvcpu` | 提供架构无关的 vCPU 抽象与退出协议 |
 | `axaddrspace` | EPT 相关地址空间基础类型 |
-| `page_table_entry` | `MappingFlags` 等页表权限语义 |
+| `ax-page-table-entry` | `MappingFlags` 等页表权限语义 |
 | `memory_addr` | 地址类型基础 |
 | `axdevice_base` | 设备读写抽象接口 |
 | `axvisor_api` | VM/VCpu 标识与宿主侧接口 |

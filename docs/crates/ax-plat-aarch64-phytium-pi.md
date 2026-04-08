@@ -139,7 +139,7 @@ flowchart TD
 | `axplat` | 平台抽象接口与 `call_main()` 契约 |
 | `ax-cpu` | EL 切换、MMU 初始化、trap 初始化 |
 | `ax-plat-aarch64-peripherals` | PL011、Generic Timer、GIC、PSCI glue |
-| `page_table_entry` | AArch64 引导页表项构造 |
+| `ax-page-table-entry` | AArch64 引导页表项构造 |
 | `ax-config-macros` | 把 `axconfig.toml` 生成为 `config` 常量 |
 | `log` | 启动日志 |
 
@@ -153,7 +153,7 @@ flowchart TD
 
 ```mermaid
 graph TD
-    A[ax-cpu / page_table_entry / ax-config-macros] --> B[ax-plat-aarch64-phytium-pi]
+    A[ax-cpu / ax-page-table-entry / ax-config-macros] --> B[ax-plat-aarch64-phytium-pi]
     C[ax-plat-aarch64-peripherals] --> B
     D[axplat] --> B
     B --> E[ax-helloworld-myplat]

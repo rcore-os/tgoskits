@@ -17,4 +17,4 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 memory_addr = "0.6.1"
-page_table_entry = { path = "page_table_entry", version = "0.8.1" }
+ax-page-table-entry = { path = "page_table_entry", version = "0.8.1" }

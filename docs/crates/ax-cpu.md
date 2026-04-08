@@ -23,7 +23,7 @@
 它与相邻层的边界应明确区分：
 
 - `axplat`：负责“在什么时机调用这些 CPU 原语”
-- `page_table_entry` / `ax-page-table-multiarch`：负责“页表内容是什么”
+- `ax-page-table-entry` / `ax-page-table-multiarch`：负责“页表内容是什么”
 - `ax-cpu`：负责“CPU 如何装载页表根、如何刷 TLB、如何响应 trap”
 
 ### 1.2 顶层模块结构
@@ -84,7 +84,7 @@
 
 #### `PageFaultFlags`
 
-这类页错误语义最终来自 `page_table_entry::MappingFlags`，说明 `ax-cpu` 并不自己重新定义一套访问权限语言，而是复用整个页表栈的公共位语义。
+这类页错误语义最终来自 `ax_page_table_entry::MappingFlags`，说明 `ax-cpu` 并不自己重新定义一套访问权限语言，而是复用整个页表栈的公共位语义。
 
 ### 1.6 典型架构差异
 
@@ -154,7 +154,7 @@
 
 最常见的一条主线是：
 
-1. `page_table_entry` 定义页权限语义
+1. `ax-page-table-entry` 定义页权限语义
 2. `ax-page-table-multiarch` 维护页表内容
 3. `ax-mm` / `axaddrspace` 组织地址空间
 4. `ax-cpu::asm` 把页表根装载进 CPU，并执行 TLB 刷新
@@ -168,7 +168,7 @@
 | 依赖 | 作用 |
 | --- | --- |
 | `memory_addr` | 地址类型基础 |
-| `page_table_entry` | 页错误与页属性公共语义 |
+| `ax-page-table-entry` | 页错误与页属性公共语义 |
 | `axbacktrace` | 回溯支持 |
 | `linkme` | trap handler 分布式注册 |
 | 各架构专用依赖 | `x86`、`x86_64`、`aarch64-cpu`、`riscv`、`loongArch64` 等 |
@@ -186,7 +186,7 @@
 
 ```mermaid
 graph TD
-    A[page_table_entry] --> B[ax-cpu]
+    A[ax-page-table-entry] --> B[ax-cpu]
     C[memory_addr] --> B
     B --> D[ax-hal]
     D --> E[axplat-*]

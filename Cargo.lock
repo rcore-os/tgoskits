@@ -607,6 +607,7 @@ name = "ax-cpu"
 version = "0.5.0"
 dependencies = [
  "aarch64-cpu 11.2.0",
+ "ax-page-table-entry",
  "ax-page-table-multiarch",
  "ax-percpu",
  "axbacktrace",
@@ -616,7 +617,6 @@ dependencies = [
  "log",
  "loongArch64",
  "memory_addr 0.6.1",
- "page_table_entry 0.8.1",
  "riscv 0.16.0",
  "tock-registers 0.10.1",
  "x86",
@@ -1029,15 +1029,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "ax-page-table-entry"
+version = "0.8.1"
+dependencies = [
+ "aarch64-cpu 11.2.0",
+ "bitflags 2.11.0",
+ "memory_addr 0.6.1",
+ "x86_64",
+]
+
+[[package]]
 name = "ax-page-table-multiarch"
 version = "0.8.1"
 dependencies = [
  "arrayvec",
  "ax-errno",
+ "ax-page-table-entry",
  "bitmaps",
  "log",
  "memory_addr 0.6.1",
- "page_table_entry 0.8.1",
  "riscv 0.16.0",
  "x86",
 ]
@@ -1074,11 +1084,11 @@ dependencies = [
  "ax-config-macros",
  "ax-cpu",
  "ax-kspin",
+ "ax-page-table-entry",
  "ax-plat",
  "ax-plat-aarch64-peripherals",
  "dw_apb_uart",
  "log",
- "page_table_entry 0.8.1",
 ]
 
 [[package]]
@@ -1104,10 +1114,10 @@ version = "0.5.1"
 dependencies = [
  "ax-config-macros",
  "ax-cpu",
+ "ax-page-table-entry",
  "ax-plat",
  "ax-plat-aarch64-peripherals",
  "log",
- "page_table_entry 0.8.1",
 ]
 
 [[package]]
@@ -1116,10 +1126,10 @@ version = "0.5.1"
 dependencies = [
  "ax-config-macros",
  "ax-cpu",
+ "ax-page-table-entry",
  "ax-plat",
  "ax-plat-aarch64-peripherals",
  "log",
- "page_table_entry 0.8.1",
 ]
 
 [[package]]
@@ -1129,10 +1139,10 @@ dependencies = [
  "aarch64-cpu 11.2.0",
  "ax-config-macros",
  "ax-cpu",
+ "ax-page-table-entry",
  "ax-plat",
  "ax-plat-aarch64-peripherals",
  "log",
- "page_table_entry 0.8.1",
 ]
 
 [[package]]
@@ -1142,12 +1152,12 @@ dependencies = [
  "ax-config-macros",
  "ax-cpu",
  "ax-kspin",
+ "ax-page-table-entry",
  "ax-plat",
  "chrono",
  "lazyinit 0.4.2",
  "log",
  "loongArch64",
- "page_table_entry 0.8.1",
  "uart_16550 0.5.0",
 ]
 
@@ -1350,6 +1360,7 @@ version = "0.5.0"
 dependencies = [
  "assert_matches",
  "ax-errno",
+ "ax-page-table-entry",
  "ax-page-table-multiarch",
  "axin",
  "bit_field",
@@ -1361,7 +1372,6 @@ dependencies = [
  "memory_addr 0.6.1",
  "memory_set",
  "numeric-enum-macro",
- "page_table_entry 0.8.1",
  "spin 0.10.0",
  "x86",
 ]
@@ -1457,7 +1467,7 @@ dependencies = [
  "log",
  "loongArch64",
  "memory_addr 0.4.1",
- "page_table_entry 0.6.1",
+ "page_table_entry",
  "page_table_multiarch",
  "percpu 0.4.0",
  "riscv 0.16.0",
@@ -1727,6 +1737,7 @@ dependencies = [
  "ax-errno",
  "ax-hal",
  "ax-kspin",
+ "ax-page-table-entry",
  "ax-page-table-multiarch",
  "ax-percpu",
  "ax-plat-riscv64-qemu-virt 0.5.0",
@@ -1755,7 +1766,6 @@ dependencies = [
  "lazyinit 0.4.2",
  "log",
  "memory_addr 0.6.1",
- "page_table_entry 0.8.1",
  "pcie 0.5.0",
  "phytium-mci",
  "prettyplease",
@@ -1806,6 +1816,7 @@ dependencies = [
  "arm_vcpu",
  "arm_vgic",
  "ax-errno",
+ "ax-page-table-entry",
  "ax-page-table-multiarch",
  "ax-percpu",
  "axaddrspace",
@@ -1818,7 +1829,6 @@ dependencies = [
  "cpumask",
  "log",
  "memory_addr 0.6.1",
- "page_table_entry 0.8.1",
  "riscv_vcpu",
  "spin 0.10.0",
  "x86_vcpu",
@@ -5330,16 +5340,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "page_table_entry"
-version = "0.8.1"
-dependencies = [
- "aarch64-cpu 11.2.0",
- "bitflags 2.11.0",
- "memory_addr 0.6.1",
- "x86_64",
-]
-
-[[package]]
 name = "page_table_multiarch"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5348,7 +5348,7 @@ dependencies = [
  "arrayvec",
  "log",
  "memory_addr 0.4.1",
- "page_table_entry 0.6.1",
+ "page_table_entry",
  "riscv 0.16.0",
  "x86",
 ]
@@ -6464,6 +6464,7 @@ name = "riscv_vcpu"
 version = "0.5.0"
 dependencies = [
  "ax-errno",
+ "ax-page-table-entry",
  "axaddrspace",
  "axvcpu",
  "axvisor_api",
@@ -6474,7 +6475,6 @@ dependencies = [
  "log",
  "memoffset",
  "memory_addr 0.6.1",
- "page_table_entry 0.8.1",
  "riscv 0.14.0",
  "riscv-decode",
  "riscv-h",
@@ -9424,6 +9424,7 @@ name = "x86_vcpu"
 version = "0.5.0"
 dependencies = [
  "ax-errno",
+ "ax-page-table-entry",
  "axaddrspace",
  "axdevice_base",
  "axvcpu",
@@ -9435,7 +9436,6 @@ dependencies = [
  "log",
  "memory_addr 0.6.1",
  "numeric-enum-macro",
- "page_table_entry 0.8.1",
  "paste",
  "raw-cpuid 11.6.0",
  "spin 0.10.0",

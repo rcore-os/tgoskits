@@ -270,7 +270,7 @@ graph LR
 - `handler_table`
 - `kernel_guard`
 - `memory_addr`
-- `page_table_entry`
+- `ax-page-table-entry`
 - `ax-page-table-multiarch`
 - `percpu_macros`
 

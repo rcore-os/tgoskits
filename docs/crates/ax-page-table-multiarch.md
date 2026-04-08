@@ -145,7 +145,7 @@ flowchart TD
 从当前源码看：
 
 - `arch/aarch64.rs` 等元数据实现的是普通架构页表元数据与 TLB 刷新规则
-- `page_table_entry` 中 AArch64 页表项编码也偏向 Stage-1 语义
+- `ax-page-table-entry` 中 AArch64 页表项编码也偏向 Stage-1 语义
 - crate 本身 **没有** 单独声明“这是 EPT”或“这是 Stage-2”类型
 
 真正的 Stage-2/NPT 语义，是在 `axaddrspace::npt` 里通过：
@@ -200,7 +200,7 @@ flowchart TD
 
 | 依赖 | 作用 |
 | --- | --- |
-| `page_table_entry` | 页表项抽象与 `MappingFlags` |
+| `ax-page-table-entry` | 页表项抽象与 `MappingFlags` |
 | `memory_addr` | 地址类型、对齐与页大小辅助 |
 | `arrayvec` | 小规模 TLB 刷新地址缓存 |
 | `log` | 调试输出 |
@@ -221,7 +221,7 @@ flowchart TD
 
 ```mermaid
 graph TD
-    A[page_table_entry / memory_addr] --> B[ax-page-table-multiarch]
+    A[ax-page-table-entry / memory_addr] --> B[ax-page-table-multiarch]
     B --> C[ax-hal]
     B --> D[axaddrspace]
     C --> E[ax-mm]
