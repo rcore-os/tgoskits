@@ -1,7 +1,7 @@
 use core::sync::atomic::Ordering::{Acquire, Release};
 
-use axplat_crate::config::plat::BOOT_STACK_SIZE;
 use ax_memory_addr::VirtAddr;
+use axplat_crate::config::plat::BOOT_STACK_SIZE;
 
 use crate::{CPU_NUM, INITED_CPUS, init_kernel_secondary};
 

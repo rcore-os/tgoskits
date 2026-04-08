@@ -5,9 +5,9 @@ use std::{
     marker::PhantomData,
 };
 
+use ax_memory_addr::{PhysAddr, VirtAddr};
 use ax_page_table_entry::{GenericPTE, MappingFlags};
 use ax_page_table_multiarch::{PageSize, PageTable64, PagingHandler, PagingMetaData, PagingResult};
-use ax_memory_addr::{PhysAddr, VirtAddr};
 use rand::{RngExt, SeedableRng, rngs::SmallRng};
 
 /// Creates a layout for allocating `num` pages with alignment of `2^align_pow2`

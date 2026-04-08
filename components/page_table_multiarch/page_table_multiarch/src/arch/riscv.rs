@@ -1,7 +1,7 @@
 //! RISC-V specific page table structures.
 
-use ax_page_table_entry::riscv::Rv64PTE;
 use ax_memory_addr::VirtAddr;
+use ax_page_table_entry::riscv::Rv64PTE;
 
 use crate::{PageTable64, PageTable64Cursor, PagingMetaData};
 
