@@ -268,11 +268,18 @@ fn main() -> anyhow::Result<()> {
 
     println!("cargo:rustc-cfg=platform=\"{platform}\"");
 
+    let config_paths = get_config_paths().unwrap_or_default();
     let config_files = get_configs();
     let mut output_file = open_output_file();
 
     println!("cargo:rerun-if-env-changed=AXVISOR_VM_CONFIGS");
     println!("cargo:rerun-if-changed=build.rs");
+    for path in &config_paths {
+        println!(
+            "cargo:rerun-if-changed={}",
+            PathBuf::from(path.clone()).display()
+        );
+    }
 
     writeln!(
         output_file,
@@ -287,10 +294,6 @@ fn main() -> anyhow::Result<()> {
                 writeln!(output_file, "    vec![")?;
                 for config_file in &config_files {
                     writeln!(output_file, "        r###\"{}\"###,", config_file.content)?;
-                    println!(
-                        "cargo:rerun-if-changed={}",
-                        PathBuf::from(config_file.path.clone()).display()
-                    );
                 }
                 writeln!(output_file, "    ]")?;
             }

@@ -1,0 +1,19 @@
+baud_rate = "921600"
+dtb_file = "${env:BOARD_DTB}"
+fail_regex = [
+  "panicked at",
+]
+serial = "${env:BOARD_COMM_UART_DEV}"
+success_regex = [
+    "All tests passed!",
+    "Hello World!",
+    "root@firefly:~#",
+    "^Phytium Pi",
+    "Last login: *",
+    "ubuntu login:",
+]
+timeout = 300
+uboot_cmd = [
+    "run ab_select_cmd",
+    "run avb_boot",
+]

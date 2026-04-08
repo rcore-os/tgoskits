@@ -170,7 +170,7 @@ impl Axvisor {
     }
 
     async fn test_uboot(&mut self, args: cli::ArgsTestUboot) -> anyhow::Result<()> {
-        let board = test_qemu::axvisor_uboot_board_config(&args.board)?;
+        let board = test_qemu::axvisor_uboot_board_config(&args.board, &args.guest)?;
         let explicit_uboot_config = args.uboot_config.clone();
         let uboot_config_summary = explicit_uboot_config
             .as_ref()
@@ -187,8 +187,8 @@ impl Axvisor {
         }
 
         println!(
-            "running axvisor uboot test for board: {} with vmconfig: {}",
-            board.board, board.vmconfig
+            "running axvisor uboot test for board: {} guest: {} with vmconfig: {}",
+            board.board, board.guest, board.vmconfig
         );
 
         let mut request = self.prepare_request(
@@ -206,9 +206,13 @@ impl Axvisor {
             .await
             .with_context(|| {
                 format!(
-                    "axvisor uboot test failed for board `{}` (build_config={}, vmconfig={}, \
-                     uboot_config={})",
-                    board.board, board.build_config, board.vmconfig, uboot_config_summary
+                    "axvisor uboot test failed for board `{}` guest `{}` (build_config={}, \
+                     vmconfig={}, uboot_config={})",
+                    board.board,
+                    board.guest,
+                    board.build_config,
+                    board.vmconfig,
+                    uboot_config_summary
                 )
             })
     }

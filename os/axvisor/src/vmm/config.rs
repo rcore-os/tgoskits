@@ -170,7 +170,7 @@ pub fn init_guest_vms() {
 }
 
 pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
-    let vm_create_config =
+    let mut vm_create_config =
         AxVMCrateConfig::from_toml(raw_cfg).expect("Failed to resolve VM config");
 
     if let Some(linux) = super::images::get_image_header(&vm_create_config) {
@@ -188,7 +188,7 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
 
     // Handle FDT-related operations for architectures that boot guests with DTB.
     #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-    handle_fdt_operations(&mut vm_config, &vm_create_config);
+    handle_fdt_operations(&mut vm_config, &mut vm_create_config);
 
     // info!("after parse_vm_interrupt, crate VM[{}] with config: {:#?}", vm_config.id(), vm_config);
     info!("Creating VM[{}] {:?}", vm_config.id(), vm_config.name());

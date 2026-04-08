@@ -126,16 +126,22 @@ impl ImageLoader {
                 core::ptr::NonNull::new(_dtb_slice.as_ptr() as *mut u8).unwrap(),
                 _dtb_slice.len(),
                 self.vm.clone(),
+                &self.config,
             );
             #[cfg(target_arch = "riscv64")]
             load_vm_image_from_memory(_dtb_slice, self.dtb_load_gpa.unwrap(), self.vm.clone())
                 .expect("Failed to load DTB images");
         } else {
+            #[cfg(target_arch = "riscv64")]
             if let Some(buffer) = vm_imags.dtb {
-                #[cfg(target_arch = "riscv64")]
                 load_vm_image_from_memory(buffer, self.dtb_load_gpa.unwrap(), self.vm.clone())
                     .expect("Failed to load DTB images");
             } else {
+                info!("dtb_load_gpa not provided");
+            }
+
+            #[cfg(not(target_arch = "riscv64"))]
+            {
                 info!("dtb_load_gpa not provided");
             }
         }
@@ -307,6 +313,7 @@ pub mod fs {
                 core::ptr::NonNull::new(_dtb_slice.as_ptr() as *mut u8).unwrap(),
                 _dtb_slice.len(),
                 loader.vm.clone(),
+                &loader.config,
             );
             #[cfg(target_arch = "riscv64")]
             load_vm_image_from_memory(_dtb_slice, loader.dtb_load_gpa.unwrap(), loader.vm.clone())
