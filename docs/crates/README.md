@@ -163,7 +163,7 @@
 | `test-weak-partial` | 组件层 | `components/crate_interface/test_crates/test-weak-partial` | 3 | 0 | [查看](./test-weak-partial.md) |
 | `tg-xtask` | 工具层 | `xtask` | 1 | 0 | [查看](./tg-xtask.md) |
 | `tgmath` | 其他 | `examples/tgmath` | 0 | 0 | [查看](./tgmath.md) |
-| `timer_list` | 组件层 | `components/timer_list` | 0 | 2 | [查看](./timer_list.md) |
+| `ax-timer-list` | 组件层 | `components/timer_list` | 0 | 2 | [查看](./ax-timer-list.md) |
 | `x86_vcpu` | 组件层 | `components/x86_vcpu` | 9 | 1 | [查看](./x86_vcpu.md) |
 | `x86_vlapic` | 组件层 | `components/x86_vlapic` | 5 | 1 | [查看](./x86_vlapic.md) |
 

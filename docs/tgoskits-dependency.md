@@ -204,7 +204,7 @@ flowchart TB
         test_simple["test-simple\nv0.3.0"]
         test_weak["test-weak\nv0.3.0"]
         test_weak_partial["test-weak-partial\nv0.3.0"]
-        timer_list["timer_list\nv0.3.0"]
+        ax_timer_list["ax-timer-list\nv0.3.0"]
         x86_vcpu["x86_vcpu\nv0.5.0"]
         x86_vlapic["x86_vlapic\nv0.4.2"]
     end
@@ -535,7 +535,7 @@ flowchart TB
     ax_task --> axpoll
     ax_task --> lazyinit
     ax_task --> memory_addr
-    ax_task --> timer_list
+    ax_task --> ax_timer_list
     axaddrspace --> ax_errno
     axaddrspace --> ax_memory_set
     axaddrspace --> ax_page_table_entry
@@ -608,7 +608,7 @@ flowchart TB
     axvisor --> memory_addr
     axvisor --> riscv_vcpu
     axvisor --> riscv_vplic
-    axvisor --> timer_list
+    axvisor --> ax_timer_list
     axvisor_api --> ax_cpumask
     axvisor_api --> ax_crate_interface
     axvisor_api --> axaddrspace
@@ -897,7 +897,7 @@ flowchart TB
     class test_weak_partial cat_comp
     class tg_xtask cat_tool
     class tgmath cat_misc
-    class timer_list cat_comp
+    class ax_timer_list cat_comp
     class x86_vcpu cat_comp
     class x86_vlapic cat_comp
 ```
@@ -1013,7 +1013,7 @@ flowchart TB
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `riscv_plic` | `0.4.0` | `components/riscv_plic` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `rsext4` | `0.3.0` | `components/rsext4` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `smoltcp` | `0.14.0` | `components/starry-smoltcp` |
-| 0 | 基础层（无仓库内直接依赖） | 组件层 | `timer_list` | `0.3.0` | `components/timer_list` |
+| 0 | 基础层（无仓库内直接依赖） | 组件层 | `ax-timer-list` | `0.3.0` | `components/timer_list` |
 | 1 | 堆叠层 | 组件层 | `ax-allocator` | `0.4.0` | `components/axallocator` |
 | 1 | 堆叠层 | 组件层 | `ax-config-macros` | `0.4.1` | `components/axconfig-gen/axconfig-macros` |
 | 1 | 堆叠层 | 组件层 | `ax-driver-block` | `0.3.4` | `components/axdriver_crates/axdriver_block` |
@@ -1135,7 +1135,7 @@ flowchart TB
 
 | 层级 | 数 | 成员 |
 |------|-----|------|
-| 0 | 33 | `aarch64_sysreg` `ax-arm-pl011` `ax-arm-pl031` `ax-cap-access` `ax-config-gen` `ax-cpumask` `ax-crate-interface` `ax-driver-base` `ax-driver-pci` `ax-errno` `axbacktrace` `axpoll` `axvisor_api_proc` `bitmap-allocator` `bwbench-client` `cargo-axplat` `crate_interface_lite` `ctor_bare_macros` `deptool` `handler_table` `int_ratio` `lazyinit` `linked_list_r4l` `memory_addr` `mingo` `percpu_macros` `range-alloc-arceos` `riscv-h` `riscv_plic` `rsext4` `smoltcp` `tgmath` `timer_list` |
+| 0 | 33 | `aarch64_sysreg` `ax-arm-pl011` `ax-arm-pl031` `ax-cap-access` `ax-config-gen` `ax-cpumask` `ax-crate-interface` `ax-driver-base` `ax-driver-pci` `ax-errno` `axbacktrace` `axpoll` `axvisor_api_proc` `bitmap-allocator` `bwbench-client` `cargo-axplat` `crate_interface_lite` `ctor_bare_macros` `deptool` `handler_table` `int_ratio` `lazyinit` `linked_list_r4l` `memory_addr` `mingo` `percpu_macros` `range-alloc-arceos` `riscv-h` `riscv_plic` `rsext4` `smoltcp` `tgmath` `ax-timer-list` |
 | 1 | 23 | `ax-allocator` `ax-config-macros` `ax-driver-block` `ax-driver-display` `ax-driver-input` `ax-driver-vsock` `ax-fs-vfs` `ax-io` `ax-kernel-guard` `ax-memory-set` `ax-page-table-entry` `ax-plat-macros` `ax-sched` `axfs-ng-vfs` `axhvc` `axklib` `axvmconfig` `ctor_bare` `define-simple-traits` `define-weak-traits` `fxmac_rs` `smoltcp-fuzz` `starry-vm` |
 | 2 | 11 | `ax-config` `ax-driver-net` `ax-fs-devfs` `ax-fs-ramfs` `ax-kspin` `ax-page-table-multiarch` `ax-percpu` `axbuild` `impl-simple-traits` `impl-weak-partial` `impl-weak-traits` |
 | 3 | 12 | `ax-alloc` `ax-cpu` `ax-driver-virtio` `ax-log` `ax-plat` `axaddrspace` `scope-local` `starry-process` `test-simple` `test-weak` `test-weak-partial` `tg-xtask` |
@@ -1245,7 +1245,7 @@ flowchart TB
 | `ax-shell` | 16 | ArceOS 示例程序 | `ax-std` | — |
 | `ax-std` | 15 | ArceOS user library with an interface similar to … | `ax-api` `ax-errno` `ax-feat` `ax-io` `ax-kspin` `lazyinit` | `arceos-affinity` `arceos-display` `arceos-exception` `arceos-fs-shell` `arceos-irq` `arceos-memtest` `arceos-net-echoserver` `arceos-net-httpclient` `arceos-net-httpserver` `arceos-net-udpserver` `arceos-parallel` `arceos-priority` `arceos-sleep` `arceos-tls` `arceos-wait-queue` `arceos-yield` `ax-helloworld` `ax-helloworld-myplat` `ax-httpclient` `ax-httpserver` `ax-shell` `axvisor` |
 | `ax-sync` | 8 | ArceOS synchronization primitives | `ax-kspin` `ax-task` | `ax-api` `ax-display` `ax-feat` `ax-fs-ng` `ax-input` `ax-net` `ax-net-ng` `ax-posix-api` `starry-kernel` |
-| `ax-task` | 7 | ArceOS task management module | `ax-config` `ax-cpumask` `ax-crate-interface` `ax-errno` `ax-hal` `ax-kernel-guard` `ax-kspin` `ax-percpu` `ax-sched` `axpoll` `lazyinit` `memory_addr` `timer_list` | `ax-api` `ax-feat` `ax-net` `ax-net-ng` `ax-posix-api` `ax-runtime` `ax-sync` `starry-kernel` |
+| `ax-task` | 7 | ArceOS task management module | `ax-config` `ax-cpumask` `ax-crate-interface` `ax-errno` `ax-hal` `ax-kernel-guard` `ax-kspin` `ax-percpu` `ax-sched` `axpoll` `lazyinit` `memory_addr` `ax-timer-list` | `ax-api` `ax-feat` `ax-net` `ax-net-ng` `ax-posix-api` `ax-runtime` `ax-sync` `starry-kernel` |
 | `axaddrspace` | 3 | ArceOS-Hypervisor guest address space management … | `ax-errno` `ax-memory-set` `ax-page-table-entry` `ax-page-table-multiarch` `lazyinit` `memory_addr` | `arm_vcpu` `arm_vgic` `axdevice` `axdevice_base` `axvcpu` `axvisor` `axvisor_api` `axvm` `riscv_vcpu` `riscv_vplic` `x86_vcpu` `x86_vlapic` |
 | `axbacktrace` | 0 | Backtrace for ArceOS | — | `ax-alloc` `ax-cpu` `ax-feat` `ax-runtime` `starry-kernel` |
 | `axbuild` | 2 | An OS build lib toolkit used by arceos | `axvmconfig` | `axvisor` `starryos` `tg-xtask` |
@@ -1258,7 +1258,7 @@ flowchart TB
 | `axplat-x86-qemu-q35` | 4 | Hardware platform implementation for x86_64 QEMU … | `ax-config-macros` `ax-cpu` `ax-kspin` `ax-percpu` `ax-plat` `int_ratio` `lazyinit` | `axvisor` |
 | `axpoll` | 0 | A library for polling I/O events and waking up ta… | — | `ax-fs-ng` `ax-net-ng` `ax-task` `axfs-ng-vfs` `starry-kernel` |
 | `axvcpu` | 5 | Virtual CPU abstraction for ArceOS hypervisor | `ax-errno` `ax-percpu` `axaddrspace` `axvisor_api` `memory_addr` | `arm_vcpu` `axvisor` `axvm` `riscv_vcpu` `x86_vcpu` |
-| `axvisor` | 16 | A lightweight type-1 hypervisor based on ArceOS | `ax-config` `ax-cpumask` `ax-crate-interface` `ax-errno` `ax-hal` `ax-kernel-guard` `ax-kspin` `ax-page-table-entry` `ax-page-table-multiarch` `ax-percpu` `ax-plat-riscv64-qemu-virt` `ax-std` `axaddrspace` `axbuild` `axdevice` `axdevice_base` `axhvc` `axklib` `axplat-x86-qemu-q35` `axvcpu` `axvisor_api` `axvm` `lazyinit` `memory_addr` `riscv_vcpu` `riscv_vplic` `timer_list` | — |
+| `axvisor` | 16 | A lightweight type-1 hypervisor based on ArceOS | `ax-config` `ax-cpumask` `ax-crate-interface` `ax-errno` `ax-hal` `ax-kernel-guard` `ax-kspin` `ax-page-table-entry` `ax-page-table-multiarch` `ax-percpu` `ax-plat-riscv64-qemu-virt` `ax-std` `axaddrspace` `axbuild` `axdevice` `axdevice_base` `axhvc` `axklib` `axplat-x86-qemu-q35` `axvcpu` `axvisor_api` `axvm` `lazyinit` `memory_addr` `riscv_vcpu` `riscv_vplic` `ax-timer-list` | — |
 | `axvisor_api` | 4 | Basic API for components of the Hypervisor on Arc… | `ax-cpumask` `ax-crate-interface` `axaddrspace` `axvisor_api_proc` `memory_addr` | `arm_vcpu` `arm_vgic` `ax-plat-riscv64-qemu-virt` `axvcpu` `axvisor` `axvm` `riscv_vcpu` `riscv_vplic` `x86_vcpu` `x86_vlapic` |
 | `axvisor_api_proc` | 0 | Procedural macros for the `axvisor_api` crate | — | `axvisor_api` |
 | `axvm` | 7 | Virtual Machine resource management crate for Arc… | `arm_vcpu` `arm_vgic` `ax-cpumask` `ax-errno` `ax-page-table-entry` `ax-page-table-multiarch` `ax-percpu` `axaddrspace` `axdevice` `axdevice_base` `axvcpu` `axvisor_api` `axvmconfig` `memory_addr` `riscv_vcpu` `x86_vcpu` | `axvisor` |
@@ -1306,7 +1306,7 @@ flowchart TB
 | `test-weak-partial` | 3 | Integration tests for weak_default traits with PA… | `ax-crate-interface` `define-weak-traits` `impl-weak-partial` | — |
 | `tg-xtask` | 3 | 根工作区任务编排工具 | `axbuild` | — |
 | `tgmath` | 0 | A tiny math utility crate for TGOSKits demo. | — | — |
-| `timer_list` | 0 | A list of timed events that will be triggered seq… | — | `ax-task` `axvisor` |
+| `ax-timer-list` | 0 | A list of timed events that will be triggered seq… | — | `ax-task` `axvisor` |
 | `x86_vcpu` | 6 | x86 Virtual CPU implementation for the Arceos Hyp… | `ax-crate-interface` `ax-errno` `ax-page-table-entry` `axaddrspace` `axdevice_base` `axvcpu` `axvisor_api` `memory_addr` `x86_vlapic` | `axvm` |
 | `x86_vlapic` | 5 | x86 Virtual Local APIC | `ax-errno` `axaddrspace` `axdevice_base` `axvisor_api` `memory_addr` | `x86_vcpu` |
 
@@ -2191,4 +2191,3 @@ flowchart TB
 | `multiboot` `0.8.0` | — | `ax-plat-x86-pc` `axplat-x86-qemu-q35` | — |
 | `vm-fdt` `0.3.0` | — | — | — |
 | `xmas-elf` `0.9.1` | — | `starry-kernel` | — |
-
