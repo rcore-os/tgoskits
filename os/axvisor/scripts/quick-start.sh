@@ -176,6 +176,8 @@ setup_qemu_aarch64() {
     run_cmd cp .github/workflows/qemu-aarch64.toml tmp/configs/qemu-aarch64-runtime.toml
 
     ROOTFS_PATH="$(pwd)/tmp/images/qemu_aarch64_linux/rootfs.img"
+    run_cmd sed -i 's|^  # "-drive",$|  "-drive",|g' tmp/configs/qemu-aarch64-runtime.toml
+    run_cmd sed -i 's|^  # "id=disk0,if=none,format=raw,file=|  "id=disk0,if=none,format=raw,file=|g' tmp/configs/qemu-aarch64-runtime.toml
     run_cmd sed -i 's|file=${workspaceFolder}/tmp/rootfs.img|file='"$ROOTFS_PATH"'|g' tmp/configs/qemu-aarch64-runtime.toml
     run_cmd sed -i '/success_regex = \[/,/\]/c\success_regex = []' tmp/configs/qemu-aarch64-runtime.toml
 
