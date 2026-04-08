@@ -553,13 +553,13 @@ pub fn parse_vm_interrupt(vm_cfg: &mut AxVMConfig, dtb: &[u8]) {
         }
     }
 
-    vm_cfg.add_pass_through_device(PassThroughDeviceConfig {
-        name: "Fake Node".to_string(),
-        base_gpa: 0x0,
-        base_hpa: 0x0,
-        length: 0x20_0000,
-        irq_id: 0,
-    });
+    // vm_cfg.add_pass_through_device(PassThroughDeviceConfig {
+    //     name: "Fake Node".to_string(),
+    //     base_gpa: 0x0,
+    //     base_hpa: 0x0,
+    //     length: 0x20_0000,
+    //     irq_id: 0,
+    // });
 }
 
 pub fn update_provided_fdt(provided_dtb: &[u8], host_dtb: &[u8], crate_config: &AxVMCrateConfig) {
