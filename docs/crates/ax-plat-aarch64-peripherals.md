@@ -164,7 +164,7 @@ generic_timer::enable_irqs(timer_irq);
 | `axplat` | 目标接口定义与 glue 挂接目标 |
 | `lazyinit` | 早期单例初始化 |
 | `ax-kspin` / `spin` | 自旋锁保护 |
-| `int_ratio` | tick 与纳秒换算比例 |
+| `ax-int-ratio` | tick 与纳秒换算比例 |
 | `log` | 调试与错误日志 |
 
 ### 3.2 主要消费者
@@ -181,7 +181,7 @@ generic_timer::enable_irqs(timer_irq);
 graph TD
     A[ax-arm-pl011 / ax-arm-pl031 / arm-gic-driver / aarch64-cpu] --> B[ax-plat-aarch64-peripherals]
     C[axplat] --> B
-    D[lazyinit / ax-kspin / int_ratio] --> B
+    D[lazyinit / ax-kspin / ax-int-ratio] --> B
 
     B --> E[ax-plat-aarch64-qemu-virt]
     B --> F[ax-plat-aarch64-raspi]

@@ -241,7 +241,7 @@ graph LR
     current --> axconfig_macros["ax-config-macros"]
     current --> ax-cpu["ax-cpu"]
     current --> axplat["ax-plat"]
-    current --> int_ratio["int_ratio"]
+    current --> ax_int_ratio["ax-int-ratio"]
     current --> ax_kspin["ax-kspin"]
     current --> lazyinit["lazyinit"]
     current --> ax-percpu["ax-percpu"]
@@ -256,7 +256,7 @@ graph LR
 - `ax-config-macros`
 - `ax-cpu`
 - `axplat`
-- `int_ratio`
+- `ax-int-ratio`
 - `ax-kspin`
 - `lazyinit`
 - `ax-percpu`

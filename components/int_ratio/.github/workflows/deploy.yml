@@ -40,7 +40,7 @@ jobs:
 
       - name: Create index redirect
         run: |
-          printf '<meta http-equiv="refresh" content="0;url=int_ratio/index.html">' > target/doc/index.html
+          printf '<meta http-equiv="refresh" content="0;url=ax_int_ratio/index.html">' > target/doc/index.html
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

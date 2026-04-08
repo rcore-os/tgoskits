@@ -22,7 +22,7 @@ bitmap-allocator
 ax-cap-access
 ax-cpumask
 ax-handler-table
-int_ratio
+ax-int-ratio
 ax-kernel-guard
 ax-kspin
 lazyinit

@@ -1,4 +1,4 @@
-# `int_ratio` 技术文档
+# `ax-int-ratio` 技术文档
 
 > 路径：`components/int_ratio`
 > 类型：库 crate
@@ -6,7 +6,7 @@
 > 版本：`0.1.2`
 > 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`tests/test_int_ratio.rs`
 
-`int_ratio` 提供一个面向内核/平台代码的小型整数比例类型 `Ratio`。它把 `numerator / denominator` 预计算成 `mult / (1 << shift)` 形式，从而在运行时把“除法换乘移位”，减少高成本整数除法。它是纯数学叶子基础件：不是时间子系统、不是频率校准器，也不是通用数值库。
+`ax-int-ratio` 提供一个面向内核/平台代码的小型整数比例类型 `Ratio`。它把 `numerator / denominator` 预计算成 `mult / (1 << shift)` 形式，从而在运行时把“除法换乘移位”，减少高成本整数除法。它是纯数学叶子基础件：不是时间子系统、不是频率校准器，也不是通用数值库。
 
 ## 1. 架构设计分析
 ### 1.1 设计定位
@@ -56,20 +56,20 @@ numerator / denominator ~= mult / (1 << shift)
 - `Ratio::zero()`：常作为静态变量的初始化哨兵值。
 
 ### 2.3 使用边界
-- `int_ratio` 不做通用分数运算，没有加减除比较等完整代数接口。
+- `ax-int-ratio` 不做通用分数运算，没有加减除比较等完整代数接口。
 - 它只支持 `u32` 分子和分母，不是大整数比例库。
 - 它也不负责频率探测、校准和时间源选择；这些都属于平台时间子系统。
 
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    int_ratio["int_ratio"] --> x86pc["ax-plat-x86-pc"]
-    int_ratio --> x86q35["axplat-x86-qemu-q35"]
-    int_ratio --> aarch64["ax-plat-aarch64-peripherals"]
+    ax_int_ratio["ax-int-ratio"] --> x86pc["ax-plat-x86-pc"]
+    ax_int_ratio --> x86q35["axplat-x86-qemu-q35"]
+    ax_int_ratio --> aarch64["ax-plat-aarch64-peripherals"]
 ```
 
 ### 3.1 关键直接依赖
-`int_ratio` 没有本地 crate 依赖，体量非常小。
+`ax-int-ratio` 没有本地 crate 依赖，体量非常小。
 
 ### 3.2 关键直接消费者
 - `ax-plat-x86-pc` / `axplat-x86-qemu-q35`：LAPIC 计时换算。
@@ -79,7 +79,7 @@ graph LR
 ### 4.1 依赖配置
 ```toml
 [dependencies]
-int_ratio = { workspace = true }
+ax-int-ratio = { workspace = true }
 ```
 
 ### 4.2 修改时的关键约束
@@ -95,7 +95,7 @@ int_ratio = { workspace = true }
 
 ## 5. 测试策略
 ### 5.1 当前测试形态
-`int_ratio` 同时有单元测试和集成测试：
+`ax-int-ratio` 同时有单元测试和集成测试：
 
 - `src/lib.rs` 内联测试覆盖表示压缩、倒数和零值。
 - `tests/test_int_ratio.rs` 覆盖等价比例、舍入/截断差异、panic 路径和大数边界。
@@ -110,15 +110,15 @@ int_ratio = { workspace = true }
 - 中断定时器 deadline 设置是否受比例误差影响。
 
 ### 5.4 覆盖率要求
-- 对 `int_ratio`，panic 路径和极端数值边界必须有覆盖。
+- 对 `ax-int-ratio`，panic 路径和极端数值边界必须有覆盖。
 - 只验证普通小数例子还不够，必须保留 `u32::MAX` 级别测试。
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-在 ArceOS 相关平台实现里，`int_ratio` 主要承担高频时间换算的数学基础件角色。它服务于时间代码，但本身不是时间框架的一部分。
+在 ArceOS 相关平台实现里，`ax-int-ratio` 主要承担高频时间换算的数学基础件角色。它服务于时间代码，但本身不是时间框架的一部分。
 
 ### 6.2 StarryOS
-StarryOS 若复用相同平台栈，也会间接受益于 `int_ratio`。其定位仍然是底层比例计算工具。
+StarryOS 若复用相同平台栈，也会间接受益于 `ax-int-ratio`。其定位仍然是底层比例计算工具。
 
 ### 6.3 Axvisor
-当前仓库里 Axvisor 没有直接依赖 `int_ratio`；即便未来通过共享平台层复用，它也仍只是数值换算基础件，不会变成虚拟化时间管理层。
+当前仓库里 Axvisor 没有直接依赖 `ax-int-ratio`；即便未来通过共享平台层复用，它也仍只是数值换算基础件，不会变成虚拟化时间管理层。

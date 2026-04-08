@@ -159,7 +159,7 @@ axpoll = { path = "components/axpoll" }
 lazyinit = { path = "components/lazyinit" }
 linked_list_r4l = { path = "components/linked_list_r4l" }
 timer_list = { path = "components/timer_list" }
-int_ratio = { path = "components/int_ratio" }
+ax-int-ratio = { path = "components/int_ratio" }
 ax-cap-access = { path = "components/cap_access" }
 ax-handler-table = { path = "components/handler_table" }
 riscv_plic = { path = "components/riscv_plic" }

@@ -164,7 +164,7 @@ flowchart TD
 | `raw-cpuid` | 读取 APIC 与频率信息 |
 | `x86_rtc` | `rtc` 打开时提供墙钟 |
 | `ax-percpu` | 多核与局部状态配合 |
-| `int_ratio` / `lazyinit` / `ax-kspin` | 时间换算、全局对象初始化与锁 |
+| `ax-int-ratio` / `lazyinit` / `ax-kspin` | 时间换算、全局对象初始化与锁 |
 | `log` | 启动和调试日志 |
 
 ### 3.2 主要消费者
@@ -177,7 +177,7 @@ flowchart TD
 ```mermaid
 graph TD
     A[multiboot / x2apic / x86 / x86_64 / uart_16550] --> B[axplat-x86-qemu-q35]
-    C[axplat / ax-cpu / ax-percpu / int_ratio / lazyinit / ax-kspin] --> B
+    C[axplat / ax-cpu / ax-percpu / ax-int-ratio / lazyinit / ax-kspin] --> B
     B --> D[Axvisor]
     D --> E[x86_64 Q35 宿主环境]
 ```

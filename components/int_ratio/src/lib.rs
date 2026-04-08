@@ -28,7 +28,7 @@ impl Ratio {
     /// # Examples
     ///
     /// ```
-    /// use int_ratio::Ratio;
+    /// use ax_int_ratio::Ratio;
     ///
     /// let zero = Ratio::zero();
     /// assert_eq!(zero.mul_trunc(123), 0);
@@ -91,7 +91,7 @@ impl Ratio {
     /// # Examples
     ///
     /// ```
-    /// use int_ratio::Ratio;
+    /// use ax_int_ratio::Ratio;
     ///
     /// // The inverse of a standard ratio.
     /// let ratio = Ratio::new(1, 2);
@@ -111,7 +111,7 @@ impl Ratio {
     /// # Examples
     ///
     /// ```
-    /// use int_ratio::Ratio;
+    /// use ax_int_ratio::Ratio;
     ///
     /// let ratio = Ratio::new(2, 3);
     ///
@@ -131,7 +131,7 @@ impl Ratio {
     /// # Examples
     ///
     /// ```
-    /// use int_ratio::Ratio;
+    /// use ax_int_ratio::Ratio;
     ///
     /// let ratio = Ratio::new(2, 3);
     ///

@@ -29,7 +29,7 @@ ax-cpu = { workspace = true, features = ["arm-el2"] }
 ax-plat.workspace = true
 bitflags = "2.6"
 heapless = "0.9"
-int_ratio = "0.3.2"
+ax-int-ratio = "0.3.2"
 ax-kspin = "0.3.1"
 lazyinit = "0.4.2"
 log = "0.4"

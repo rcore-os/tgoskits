@@ -1,8 +1,8 @@
 // test_int_ratio.rs
 
-// The user prompt asked for `use int_ratio::*`, which is idiomatic for an
+// The user prompt asked for `use ax_int_ratio::*`, which is idiomatic for an
 // integration test located in the `tests/` directory of a crate.
-use int_ratio::Ratio;
+use ax_int_ratio::Ratio;
 
 #[test]
 fn test_equivalence_of_simplified_ratios() {

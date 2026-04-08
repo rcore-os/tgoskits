@@ -943,6 +943,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ax-int-ratio"
+version = "0.3.2"
+
+[[package]]
 name = "ax-io"
 version = "0.5.0"
 dependencies = [
@@ -1143,9 +1147,9 @@ dependencies = [
  "ax-arm-pl011",
  "ax-arm-pl031",
  "ax-cpu",
+ "ax-int-ratio",
  "ax-kspin",
  "ax-plat",
- "int_ratio",
  "lazyinit 0.4.2",
  "log",
  "spin 0.10.0",
@@ -1255,12 +1259,12 @@ version = "0.5.1"
 dependencies = [
  "ax-config-macros",
  "ax-cpu",
+ "ax-int-ratio",
  "ax-kspin",
  "ax-percpu",
  "ax-plat",
  "bitflags 2.11.0",
  "heapless 0.9.2",
- "int_ratio",
  "lazyinit 0.4.2",
  "log",
  "multiboot",
@@ -1678,12 +1682,12 @@ version = "0.4.0"
 dependencies = [
  "ax-config-macros",
  "ax-cpu",
+ "ax-int-ratio",
  "ax-kspin",
  "ax-percpu",
  "ax-plat",
  "bitflags 2.11.0",
  "heapless 0.9.2",
- "int_ratio",
  "lazyinit 0.4.2",
  "log",
  "multiboot",
@@ -4307,10 +4311,6 @@ dependencies = [
  "quote",
  "syn 2.0.117",
 ]
-
-[[package]]
-name = "int_ratio"
-version = "0.3.2"
 
 [[package]]
 name = "intrusive-collections"

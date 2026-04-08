@@ -1,8 +1,8 @@
-# int_ratio
+# ax-int-ratio
 
-[![Crates.io](https://img.shields.io/crates/v/int_ratio)](https://crates.io/crates/int_ratio)
-[![Docs.rs](https://docs.rs/int_ratio/badge.svg)](https://docs.rs/int_ratio)
-[![CI](https://github.com/arceos-org/int_ratio/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/arceos-org/int_ratio/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/ax-int-ratio)](https://crates.io/crates/ax-int-ratio)
+[![Docs.rs](https://docs.rs/ax-int-ratio/badge.svg)](https://docs.rs/ax-int-ratio)
+[![CI](https://github.com/arceos-org/ax-int-ratio/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/arceos-org/ax-int-ratio/actions/workflows/ci.yml)
 
 The type of ratios and related operations.
 
@@ -12,7 +12,7 @@ denominator.
 ## Examples
 
 ```rust
-use int_ratio::Ratio;
+use ax_int_ratio::Ratio;
 
 let ratio = Ratio::new(1, 3); // 1 / 3
 assert_eq!(ratio.mul_trunc(20), 6); // trunc(20 * 1 / 3) = trunc(6.66..) = 6

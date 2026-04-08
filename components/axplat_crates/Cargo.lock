@@ -200,7 +200,7 @@ dependencies = [
  "arm_pl031",
  "ax-cpu",
  "ax-plat",
- "int_ratio",
+ "ax-int-ratio",
  "kspin",
  "lazyinit",
  "log",
@@ -296,7 +296,7 @@ dependencies = [
  "ax-plat",
  "bitflags 2.11.0",
  "heapless",
- "int_ratio",
+ "ax-int-ratio",
  "kspin",
  "lazyinit",
  "log",
@@ -738,7 +738,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "int_ratio"
+name = "ax-int-ratio"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6045ea39e8d2862506c0dff6c65d068da362335df698bb1634033492740d2170"

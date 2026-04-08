@@ -2,9 +2,9 @@
 //!
 //! Currently, the TSC is used as the clock source.
 
-use ax_plat::time::TimeIf;
 #[cfg(feature = "irq")]
-use int_ratio::Ratio;
+use ax_int_ratio::Ratio;
+use ax_plat::time::TimeIf;
 use raw_cpuid::CpuId;
 
 #[cfg(feature = "irq")]

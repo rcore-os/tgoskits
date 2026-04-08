@@ -135,7 +135,7 @@
 | `impl-simple-traits` | 组件层 | `components/crate_interface/test_crates/impl-simple-traits` | 2 | 1 | [查看](./impl-simple-traits.md) |
 | `impl-weak-partial` | 组件层 | `components/crate_interface/test_crates/impl-weak-partial` | 2 | 1 | [查看](./impl-weak-partial.md) |
 | `impl-weak-traits` | 组件层 | `components/crate_interface/test_crates/impl-weak-traits` | 2 | 1 | [查看](./impl-weak-traits.md) |
-| `int_ratio` | 组件层 | `components/int_ratio` | 0 | 3 | [查看](./int_ratio.md) |
+| `ax-int-ratio` | 组件层 | `components/int_ratio` | 0 | 3 | [查看](./ax-int-ratio.md) |
 | `irq-kernel` | 组件层 | `components/axplat_crates/examples/irq-kernel` | 7 | 0 | [查看](./irq-kernel.md) |
 | `lazyinit` | 组件层 | `components/lazyinit` | 0 | 17 | [查看](./lazyinit.md) |
 | `linked_list_r4l` | 组件层 | `components/linked_list_r4l` | 0 | 1 | [查看](./linked_list_r4l.md) |
