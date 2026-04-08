@@ -59,7 +59,7 @@ graph LR
 - `lazyinit`
 - `memory_set`
 - `page_table_entry`
-- `page_table_multiarch`
+- `ax-page-table-multiarch`
 
 ### 3.3 被依赖情况
 - `x86_vcpu`

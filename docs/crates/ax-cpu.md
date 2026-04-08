@@ -23,7 +23,7 @@
 它与相邻层的边界应明确区分：
 
 - `axplat`：负责“在什么时机调用这些 CPU 原语”
-- `page_table_entry` / `page_table_multiarch`：负责“页表内容是什么”
+- `page_table_entry` / `ax-page-table-multiarch`：负责“页表内容是什么”
 - `ax-cpu`：负责“CPU 如何装载页表根、如何刷 TLB、如何响应 trap”
 
 ### 1.2 顶层模块结构
@@ -110,7 +110,7 @@
 #### LoongArch64
 
 - 负责页表根与 TLB refill 入口等专用初始化
-- 与 `page_table_multiarch` 的 LoongArch 元数据路径直接耦合
+- 与 `ax-page-table-multiarch` 的 LoongArch 元数据路径直接耦合
 
 ### 1.7 一个必须写清的边界
 
@@ -155,7 +155,7 @@
 最常见的一条主线是：
 
 1. `page_table_entry` 定义页权限语义
-2. `page_table_multiarch` 维护页表内容
+2. `ax-page-table-multiarch` 维护页表内容
 3. `ax-mm` / `axaddrspace` 组织地址空间
 4. `ax-cpu::asm` 把页表根装载进 CPU，并执行 TLB 刷新
 
@@ -192,7 +192,7 @@ graph TD
     D --> E[axplat-*]
     D --> F[ArceOS]
     D --> G[StarryOS]
-    H[page_table_multiarch / ax-mm / axaddrspace] --> D
+    H[ax-page-table-multiarch / ax-mm / axaddrspace] --> D
 ```
 
 ## 4. 开发指南

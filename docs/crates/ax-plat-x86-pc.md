@@ -271,7 +271,7 @@ graph LR
 - `kernel_guard`
 - `memory_addr`
 - `page_table_entry`
-- `page_table_multiarch`
+- `ax-page-table-multiarch`
 - `percpu_macros`
 
 ### 3.3 被依赖情况

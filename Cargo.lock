@@ -607,6 +607,7 @@ name = "ax-cpu"
 version = "0.5.0"
 dependencies = [
  "aarch64-cpu 11.2.0",
+ "ax-page-table-multiarch",
  "axbacktrace",
  "cfg-if",
  "lazyinit 0.4.2",
@@ -615,7 +616,6 @@ dependencies = [
  "loongArch64",
  "memory_addr 0.6.1",
  "page_table_entry 0.8.1",
- "page_table_multiarch 0.8.1",
  "percpu 0.4.3",
  "riscv 0.16.0",
  "tock-registers 0.10.1",
@@ -851,6 +851,7 @@ dependencies = [
  "ax-alloc",
  "ax-config",
  "ax-cpu",
+ "ax-page-table-multiarch",
  "ax-plat",
  "ax-plat-aarch64-qemu-virt",
  "ax-plat-loongarch64-qemu-virt",
@@ -864,7 +865,6 @@ dependencies = [
  "linkme",
  "log",
  "memory_addr 0.6.1",
- "page_table_multiarch 0.8.1",
  "percpu 0.4.3",
  "spin 0.10.0",
 ]
@@ -976,11 +976,11 @@ dependencies = [
  "ax-errno",
  "ax-hal",
  "ax-kspin",
+ "ax-page-table-multiarch",
  "lazyinit 0.4.2",
  "log",
  "memory_addr 0.6.1",
  "memory_set",
- "page_table_multiarch 0.8.1",
 ]
 
 [[package]]
@@ -1026,6 +1026,20 @@ dependencies = [
  "ringbuf",
  "spin 0.10.0",
  "starry-smoltcp",
+]
+
+[[package]]
+name = "ax-page-table-multiarch"
+version = "0.8.1"
+dependencies = [
+ "arrayvec",
+ "ax-errno",
+ "bitmaps",
+ "log",
+ "memory_addr 0.6.1",
+ "page_table_entry 0.8.1",
+ "riscv 0.16.0",
+ "x86",
 ]
 
 [[package]]
@@ -1325,6 +1339,7 @@ version = "0.5.0"
 dependencies = [
  "assert_matches",
  "ax-errno",
+ "ax-page-table-multiarch",
  "axin",
  "bit_field",
  "bitflags 2.11.0",
@@ -1336,7 +1351,6 @@ dependencies = [
  "memory_set",
  "numeric-enum-macro",
  "page_table_entry 0.8.1",
- "page_table_multiarch 0.8.1",
  "spin 0.10.0",
  "x86",
 ]
@@ -1433,7 +1447,7 @@ dependencies = [
  "loongArch64",
  "memory_addr 0.4.1",
  "page_table_entry 0.6.1",
- "page_table_multiarch 0.6.1",
+ "page_table_multiarch",
  "percpu 0.4.3",
  "riscv 0.16.0",
  "static_assertions",
@@ -1702,6 +1716,7 @@ dependencies = [
  "ax-errno",
  "ax-hal",
  "ax-kspin",
+ "ax-page-table-multiarch",
  "ax-plat-riscv64-qemu-virt 0.5.0",
  "ax-std",
  "axaddrspace",
@@ -1729,7 +1744,6 @@ dependencies = [
  "log",
  "memory_addr 0.6.1",
  "page_table_entry 0.8.1",
- "page_table_multiarch 0.8.1",
  "pcie 0.5.0",
  "percpu 0.4.3",
  "phytium-mci",
@@ -1781,6 +1795,7 @@ dependencies = [
  "arm_vcpu",
  "arm_vgic",
  "ax-errno",
+ "ax-page-table-multiarch",
  "axaddrspace",
  "axdevice",
  "axdevice_base",
@@ -1792,7 +1807,6 @@ dependencies = [
  "log",
  "memory_addr 0.6.1",
  "page_table_entry 0.8.1",
- "page_table_multiarch 0.8.1",
  "percpu 0.4.3",
  "riscv_vcpu",
  "spin 0.10.0",
@@ -5329,20 +5343,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "page_table_multiarch"
-version = "0.8.1"
-dependencies = [
- "arrayvec",
- "ax-errno",
- "bitmaps",
- "log",
- "memory_addr 0.6.1",
- "page_table_entry 0.8.1",
- "riscv 0.16.0",
- "x86",
-]
-
-[[package]]
 name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7406,6 +7406,7 @@ dependencies = [
  "ax-log",
  "ax-mm",
  "ax-net-ng",
+ "ax-page-table-multiarch",
  "ax-runtime",
  "ax-sync",
  "ax-task",
@@ -7436,7 +7437,6 @@ dependencies = [
  "memory_set",
  "num_enum",
  "ouroboros",
- "page_table_multiarch 0.8.1",
  "percpu 0.4.3",
  "rand 0.10.0",
  "ringbuf",

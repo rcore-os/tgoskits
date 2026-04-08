@@ -323,6 +323,7 @@ name = "ax-cpu"
 version = "0.5.0"
 dependencies = [
  "aarch64-cpu 11.2.0",
+ "ax-page-table-multiarch",
  "axbacktrace",
  "cfg-if",
  "lazyinit",
@@ -331,7 +332,6 @@ dependencies = [
  "loongArch64",
  "memory_addr",
  "page_table_entry",
- "page_table_multiarch",
  "percpu",
  "riscv",
  "tock-registers 0.10.1",
@@ -567,6 +567,7 @@ dependencies = [
  "ax-alloc",
  "ax-config",
  "ax-cpu",
+ "ax-page-table-multiarch",
  "ax-plat",
  "ax-plat-aarch64-qemu-virt",
  "ax-plat-loongarch64-qemu-virt",
@@ -580,7 +581,6 @@ dependencies = [
  "linkme",
  "log",
  "memory_addr",
- "page_table_multiarch",
  "percpu",
  "spin 0.10.0",
 ]
@@ -692,11 +692,11 @@ dependencies = [
  "ax-errno",
  "ax-hal",
  "ax-kspin",
+ "ax-page-table-multiarch",
  "lazyinit",
  "log",
  "memory_addr",
  "memory_set",
- "page_table_multiarch",
 ]
 
 [[package]]
@@ -742,6 +742,20 @@ dependencies = [
  "ringbuf",
  "spin 0.10.0",
  "starry-smoltcp",
+]
+
+[[package]]
+name = "ax-page-table-multiarch"
+version = "0.8.1"
+dependencies = [
+ "arrayvec",
+ "ax-errno",
+ "bitmaps",
+ "log",
+ "memory_addr",
+ "page_table_entry",
+ "riscv",
+ "x86",
 ]
 
 [[package]]
@@ -2384,20 +2398,6 @@ dependencies = [
  "bitflags 2.11.0",
  "memory_addr",
  "x86_64",
-]
-
-[[package]]
-name = "page_table_multiarch"
-version = "0.8.1"
-dependencies = [
- "arrayvec",
- "ax-errno",
- "bitmaps",
- "log",
- "memory_addr",
- "page_table_entry",
- "riscv",
- "x86",
 ]
 
 [[package]]

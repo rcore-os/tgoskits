@@ -30,7 +30,7 @@ ax-errno = "0.4.2"
 memory_addr = "0.6.1"
 memory_set = "0.6.1"
 page_table_entry = "0.8.1"
-page_table_multiarch = "0.8.1"
+ax-page-table-multiarch = "0.8.1"
 
 [target.'cfg(any(target_arch = "x86_64", doc))'.dependencies]
 x86 = "0.52"

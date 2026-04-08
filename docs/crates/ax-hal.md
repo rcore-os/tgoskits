@@ -26,7 +26,7 @@
 - `src/percpu.rs`：每 CPU 局部状态入口，维护当前任务指针并复用 `ax_plat::percpu` 提供的 CPU 本地能力。
 - `src/time.rs`：时间相关能力的再导出层，把时钟源、计时器和时间转换统一暴露给上层。
 - `src/irq.rs`：IRQ 处理桥接层，负责 trap handler 注册、IRQ hook、与 `ax_plat::irq` 的派发对接。
-- `src/paging.rs`：页表处理桥接层，向 `page_table_multiarch` 提供 `PagingHandlerImpl`，并在不同 ISA 下导出统一的页表类型。
+- `src/paging.rs`：页表处理桥接层，向 `ax-page-table-multiarch` 提供 `PagingHandlerImpl`，并在不同 ISA 下导出统一的页表类型。
 - `src/tls.rs`：内核态 TLS 布局与 `TlsArea` 管理，仅在 `tls` feature 启用时进入构建。
 - `build.rs` + `linker.lds.S`：根据 `axconfig` 注入链接脚本参数，例如内核基址、CPU 数、段布局等。
 
@@ -119,7 +119,7 @@ graph LR
     axplat["axplat / axplat-*"] --> ax-hal
     axconfig["ax-config"] --> ax-hal
     ax-alloc["ax-alloc (paging)"] --> ax-hal
-    page_table["page_table_multiarch"] --> ax-hal
+    page_table["ax-page-table-multiarch"] --> ax-hal
 
     ax-hal --> ax-runtime["ax-runtime"]
     ax-hal --> ax-mm["ax-mm"]
@@ -133,7 +133,7 @@ graph LR
 - `axplat` 与各 `axplat-*` 平台 crate：提供控制台、内存、时间、中断、电源、每 CPU 等真实平台实现。
 - `ax-cpu`：提供 ISA 级 trap、上下文与汇编抽象。
 - `axconfig`：提供 `MAX_CPU_NUM`、平台名、地址布局等静态配置。
-- `page_table_multiarch`：在 `paging` feature 下提供多架构页表核心实现。
+- `ax-page-table-multiarch`：在 `paging` feature 下提供多架构页表核心实现。
 - `ax-alloc`：在页表/虚拟化路径下承担帧或内存块来源。
 
 ### 3.2 关键间接依赖

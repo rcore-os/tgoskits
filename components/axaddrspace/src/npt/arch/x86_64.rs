@@ -14,9 +14,9 @@
 
 use core::{convert::TryFrom, fmt};
 
+use ax_page_table_multiarch::{PageTable64, PagingMetaData};
 use bit_field::BitField;
 use page_table_entry::{GenericPTE, MappingFlags};
-use page_table_multiarch::{PageTable64, PagingMetaData};
 
 use crate::{GuestPhysAddr, HostPhysAddr};
 

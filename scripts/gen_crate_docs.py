@@ -226,7 +226,7 @@ CURATED_DOCS = {
     "axdevice_base",
     "axvcpu",
     "axvisor_api",
-    "page_table_multiarch",
+    "ax-page-table-multiarch",
     "page_table_entry",
     "memory_addr",
     "memory_set",

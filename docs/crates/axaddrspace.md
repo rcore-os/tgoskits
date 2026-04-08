@@ -16,7 +16,7 @@
 
 - 地址与范围类型层：提供 `GuestPhysAddr`、`GuestVirtAddr`、`HostPhysAddr`、`HostVirtAddr` 以及系统寄存器、端口等设备地址类型。
 - 地址空间管理层：通过 `AddrSpace<H>` 维护一组内存区域及其页表映射。
-- 嵌套页表适配层：通过 `npt` 模块把 `page_table_multiarch` 组合成面向 Stage-2/NPT/EPT 语义的统一封装。
+- 嵌套页表适配层：通过 `npt` 模块把 `ax-page-table-multiarch` 组合成面向 Stage-2/NPT/EPT 语义的统一封装。
 
 最关键的一点是：`AddrSpace` 内部的“虚拟地址侧”并不是一般 OS 语义下的 GVA，而是 **GPA/IPA**。这点从源码可以直接看出：
 
@@ -237,7 +237,7 @@ flowchart TD
 | `memory_addr` | 地址类型、对齐和范围基础设施 |
 | `memory_set` | 区域集合与后端映射框架 |
 | `page_table_entry` | `MappingFlags` 与各架构页表项定义 |
-| `page_table_multiarch` | 底层页表引擎与 `PagingHandler` trait |
+| `ax-page-table-multiarch` | 底层页表引擎与 `PagingHandler` trait |
 | `ax-errno` | 错误模型 |
 | `bitflags` / `bit_field` / `numeric-enum-macro` | 辅助标志与枚举操作 |
 | `lazyinit` / `log` | 初始化与日志 |
@@ -260,7 +260,7 @@ flowchart TD
 ```mermaid
 graph TD
     A[memory_addr / memory_set] --> B[axaddrspace]
-    C[page_table_entry / page_table_multiarch] --> B
+    C[page_table_entry / ax-page-table-multiarch] --> B
     B --> D[axvm]
     B --> E[axdevice]
     B --> F[axvcpu]

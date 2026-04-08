@@ -87,7 +87,7 @@ axaddrspace = "0.3.0"
 ```rust
 use axaddrspace::{AddrSpace, AxMmHal, GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags};
 use memory_addr::{PhysAddr, VirtAddr};
-use page_table_multiarch::PagingHandler;
+use ax_page_table_multiarch::PagingHandler;
 
 struct MyHal;
 

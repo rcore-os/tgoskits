@@ -39,7 +39,7 @@ rtc = [
     "ax-plat-riscv64-qemu-virt?/rtc",
     "ax-plat-loongarch64-qemu-virt?/rtc",
 ]
-paging = ["dep:ax-alloc", "dep:page_table_multiarch"]
+paging = ["dep:ax-alloc", "dep:ax-page-table-multiarch"]
 tls = ["ax-cpu/tls"]
 uspace = ["paging", "ax-cpu/uspace", "axplat-dyn?/uspace"]
 hv = ["paging", "ax-cpu/arm-el2", "percpu/arm-el2", "axplat-dyn?/hv"]
@@ -69,7 +69,7 @@ kernel_guard.workspace = true
 linkme = { version = "0.3.33", optional = true }
 log.workspace = true
 memory_addr.workspace = true
-page_table_multiarch = { workspace = true, optional = true }
+ax-page-table-multiarch = { workspace = true, optional = true }
 percpu.workspace = true
 spin.workspace = true
 

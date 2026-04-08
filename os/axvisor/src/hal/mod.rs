@@ -15,9 +15,9 @@
 use std::os::arceos;
 
 use ax_hal::{self, percpu::this_cpu_id};
+use ax_page_table_multiarch::PagingHandler;
 use axaddrspace::{AxMmHal, HostPhysAddr, HostVirtAddr};
 use axvm::AxVMPerCpu;
-use page_table_multiarch::PagingHandler;
 
 #[cfg_attr(target_arch = "aarch64", path = "arch/aarch64/mod.rs")]
 #[cfg_attr(target_arch = "x86_64", path = "arch/x86_64/mod.rs")]

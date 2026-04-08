@@ -114,4 +114,4 @@ x86 = "0.52"
 riscv = "0.16"
 
 [target.'cfg(not(any(target_arch = "aarch64", target_arch = "loongarch64")))'.dependencies]
-page_table_multiarch = { version = "0.8.1", features = ["copy-from"] }
+ax-page-table-multiarch = { version = "0.8.1", features = ["copy-from"] }
