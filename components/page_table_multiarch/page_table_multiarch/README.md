@@ -1,7 +1,7 @@
-# page_table_multiarch
+# ax-page-table-multiarch
 
-[![Crates.io](https://img.shields.io/crates/v/page_table_multiarch)](https://crates.io/crates/page_table_multiarch)
-[![Docs.rs](https://docs.rs/page_table_multiarch/badge.svg)](https://docs.rs/page_table_multiarch)
+[![Crates.io](https://img.shields.io/crates/v/ax-page-table-multiarch)](https://crates.io/crates/ax-page-table-multiarch)
+[![Docs.rs](https://docs.rs/ax-page-table-multiarch/badge.svg)](https://docs.rs/ax-page-table-multiarch)
 [![CI](https://github.com/arceos-org/page_table_multiarch/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/arceos-org/page_table_multiarch/actions/workflows/ci.yml)
 
 This crate provides generic, unified, architecture-independent, and OS-free page table structures for various hardware architectures.
@@ -20,25 +20,25 @@ Currently supported architectures and page table structures:
 - RISC-V: [`riscv::Sv39PageTable`][9], [`riscv::Sv48PageTable`][10]
 - LoongArch64: [`loongarch64:LA64PageTable`][11]
 
-[1]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/struct.PageTable64.html
-[2]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/struct.PageTable32.html
-[3]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/trait.PagingMetaData.html
-[4]: https://docs.rs/page_table_entry/latest/page_table_entry/trait.GenericPTE.html
-[5]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/trait.PagingHandler.html
-[6]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/x86_64/type.X64PageTable.html
-[7]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/aarch64/type.A64PageTable.html
-[8]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/arm/type.A32PageTable.html
-[9]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/riscv/type.Sv39PageTable.html
-[10]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/riscv/type.Sv48PageTable.html
-[11]: https://docs.rs/page_table_multiarch/latest/page_table_multiarch/loongarch64/type.LA64PageTable.html
+[1]: https://docs.rs/ax-page-table-multiarch/latest/ax_page_table_multiarch/struct.PageTable64.html
+[2]: https://docs.rs/ax-page-table-multiarch/latest/ax_page_table_multiarch/struct.PageTable32.html
+[3]: https://docs.rs/ax-page-table-multiarch/latest/ax_page_table_multiarch/trait.PagingMetaData.html
+[4]: https://docs.rs/ax-page-table-entry/latest/ax_page_table_entry/trait.GenericPTE.html
+[5]: https://docs.rs/ax-page-table-multiarch/latest/ax_page_table_multiarch/trait.PagingHandler.html
+[6]: https://docs.rs/ax-page-table-multiarch/latest/ax_page_table_multiarch/x86_64/type.X64PageTable.html
+[7]: https://docs.rs/ax-page-table-multiarch/latest/ax_page_table_multiarch/aarch64/type.A64PageTable.html
+[8]: https://docs.rs/ax-page-table-multiarch/latest/ax_page_table_multiarch/arm/type.A32PageTable.html
+[9]: https://docs.rs/ax-page-table-multiarch/latest/ax_page_table_multiarch/riscv/type.Sv39PageTable.html
+[10]: https://docs.rs/ax-page-table-multiarch/latest/ax_page_table_multiarch/riscv/type.Sv48PageTable.html
+[11]: https://docs.rs/ax-page-table-multiarch/latest/ax_page_table_multiarch/loongarch64/type.LA64PageTable.html
 
 
 ## Examples (x86_64)
 
 ```rust
 use memory_addr::{MemoryAddr, PhysAddr, VirtAddr};
-use page_table_multiarch::x86_64::{X64PageTable};
-use page_table_multiarch::{MappingFlags, PagingHandler, PageSize};
+use ax_page_table_multiarch::x86_64::{X64PageTable};
+use ax_page_table_multiarch::{MappingFlags, PagingHandler, PageSize};
 
 use core::alloc::Layout;
 

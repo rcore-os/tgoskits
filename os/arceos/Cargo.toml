@@ -129,14 +129,14 @@ chrono = { version = "0.4", default-features = false }
 crate_interface = "0.5.0"
 ctor_bare = "0.4.1"
 event-listener = { version = "5.4.0", default-features = false }
-kernel_guard = "0.3.3"
+ax-kernel-guard = "0.3.3"
 ax-kspin = "0.3.1"
 lazyinit = "0.4.2"
 lazy_static = { version = "1.5", features = ["spin_no_std"] }
 lock_api = { version = "0.4", default-features = false }
 log = "0.4"
 memory_addr = "0.6.1"
-page_table_multiarch = { version = "0.8.1", features = ["ax-errno"] }
-percpu = "0.4.3"
+ax-page-table-multiarch = { version = "0.8.1", features = ["ax-errno"] }
+ax-percpu = "0.4.3"
 scope-local = "0.3.2"
 spin = "0.10"

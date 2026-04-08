@@ -11,7 +11,7 @@ pub fn init_irq() {
         // One timer interrupt per second.
         static PERIODIC_INTERVAL_NANOS: u64 = ax_plat::time::NANOS_PER_SEC;
         // Reset the timer for the next interrupt.
-        #[percpu::def_percpu]
+        #[ax_percpu::def_percpu]
         static NEXT_DEADLINE: u64 = 0;
 
         ax_plat::console_println!(

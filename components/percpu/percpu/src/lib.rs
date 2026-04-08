@@ -23,7 +23,7 @@ pub use self::imp::*;
 #[doc(hidden)]
 pub mod __priv {
     #[cfg(feature = "preempt")]
-    pub use kernel_guard::NoPreempt as NoPreemptGuard;
+    pub use ax_kernel_guard::NoPreempt as NoPreemptGuard;
 }
 
 cfg_if::cfg_if! {

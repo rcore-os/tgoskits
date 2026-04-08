@@ -1,7 +1,7 @@
 //! x86 specific page table structures.
 
+use ax_page_table_entry::x86_64::X64PTE;
 use memory_addr::VirtAddr;
-use page_table_entry::x86_64::X64PTE;
 
 use crate::{PageTable64, PageTable64Cursor, PagingMetaData};
 

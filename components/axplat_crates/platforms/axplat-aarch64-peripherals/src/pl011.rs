@@ -1,6 +1,6 @@
 //! PL011 UART.
 
-use arm_pl011::Pl011Uart;
+use ax_arm_pl011::Pl011Uart;
 use ax_kspin::SpinNoIrq;
 use ax_plat::mem::VirtAddr;
 use lazyinit::LazyInit;

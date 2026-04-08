@@ -12,6 +12,6 @@ license = "Apache-2.0"
 [dependencies]
 ax-errno = "0.4.2"
 memory_addr = "0.6.1"
-percpu = "0.4.3"
+ax-percpu = "0.4.3"
 axaddrspace = "0.5.0"
 axvisor_api = "0.5.0"

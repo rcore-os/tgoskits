@@ -1,7 +1,7 @@
 package
 aarch64_sysreg
-arm_pl011
-arm_pl031
+ax-arm-pl011
+ax-arm-pl031
 arm_vgic
 axaddrspace
 ax-allocator
@@ -23,7 +23,7 @@ ax-cap-access
 ax-cpumask
 handler_table
 int_ratio
-kernel_guard
+ax-kernel-guard
 ax-kspin
 lazyinit
 linked_list_r4l

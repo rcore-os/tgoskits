@@ -83,7 +83,7 @@ flowchart TD
 graph LR
     ax-allocator["ax-allocator"] --> ax-alloc["ax-alloc"]
     axbacktrace["axbacktrace (tracking)"] --> ax-alloc
-    percpu["percpu (tracking)"] --> ax-alloc
+    ax-percpu["ax-percpu (tracking)"] --> ax-alloc
     ax_kspin["ax-kspin"] --> ax-alloc
 
     ax-alloc --> ax-runtime["ax-runtime"]
@@ -101,7 +101,7 @@ graph LR
 - `ax-allocator`：默认路径的算法库来源。
 - `ax-kspin`：保护全局分配器内部状态。
 - `ax-errno`：把页对象和分配失败映射到 ArceOS 错误码。
-- `axbacktrace`、`percpu`：只在 `tracking` 下参与分配跟踪。
+- `axbacktrace`、`ax-percpu`：只在 `tracking` 下参与分配跟踪。
 - `buddy-slab-allocator`：只在 `hv` 下启用。
 
 ### 3.2 关键直接消费者

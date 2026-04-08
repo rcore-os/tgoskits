@@ -430,7 +430,7 @@ impl TaskInner {
 
     #[cfg(feature = "preempt")]
     fn current_check_preempt_pending() {
-        use kernel_guard::NoPreemptIrqSave;
+        use ax_kernel_guard::NoPreemptIrqSave;
         let curr = crate::current();
         if curr.need_resched.load(Ordering::Acquire) && curr.can_preempt(0) {
             // Note: if we want to print log msg during `preempt_resched`, we have to

@@ -97,7 +97,7 @@ flowchart TD
 - `phys_to_virt()` / `virt_to_phys()` 直接转发到 `somehal::mem`
 - `kernel_aspace()` 来自 `somehal::mem::kernel_space()`
 
-此外，`_percpu_base_ptr()` 通过 `somehal::smp::percpu_data_ptr()` 向 `percpu` crate 提供每核数据基址。这也解释了为什么 `ax-hal::mem` 在 `plat-dyn` 模式下不再额外注入一套传统平台包的内核保留区逻辑：此路径默认信任 `somehal` 给出的内存事实已经包含 `KImage` 和 `PerCpuData`。
+此外，`_percpu_base_ptr()` 通过 `somehal::smp::percpu_data_ptr()` 向 `ax-percpu` crate 提供每核数据基址。这也解释了为什么 `ax-hal::mem` 在 `plat-dyn` 模式下不再额外注入一套传统平台包的内核保留区逻辑：此路径默认信任 `somehal` 给出的内存事实已经包含 `KImage` 和 `PerCpuData`。
 
 #### 时间、中断与电源
 

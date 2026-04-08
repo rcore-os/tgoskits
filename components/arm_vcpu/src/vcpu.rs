@@ -24,15 +24,15 @@ use crate::{
     exception_utils::exception_class_value,
 };
 
-#[percpu::def_percpu]
+#[ax_percpu::def_percpu]
 static HOST_SP_EL0: u64 = 0;
 
-/// Save host's `SP_EL0` to the current percpu region.
+/// Save host's `SP_EL0` to the current ax-percpu region.
 unsafe fn save_host_sp_el0() {
     unsafe { HOST_SP_EL0.write_current_raw(SP_EL0.get()) }
 }
 
-/// Restore host's `SP_EL0` from the current percpu region.
+/// Restore host's `SP_EL0` from the current ax-percpu region.
 unsafe fn restore_host_sp_el0() {
     SP_EL0.set(unsafe { HOST_SP_EL0.read_current_raw() });
 }

@@ -1,6 +1,6 @@
 #![cfg(not(target_os = "macos"))]
 
-use percpu::*;
+use ax_percpu::*;
 
 // Initial value is unsupported for testing.
 

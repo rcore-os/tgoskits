@@ -23,7 +23,7 @@ handler_table = { version = "0.3.2", optional = true }
 const-str = "1.0"
 ax-plat-macros = { workspace = true }
 ax-kspin = "0.3.1"
-percpu.workspace = true
+ax-percpu.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true

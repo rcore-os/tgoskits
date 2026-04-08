@@ -21,9 +21,9 @@ spin = "0.10"
 int_ratio = "0.3.2"
 lazyinit = "0.4.2"
 aarch64-cpu = "11.0"
-arm_pl011 = "0.3.0"
+ax-arm-pl011 = "0.3.0"
 arm-gic-driver = "0.16"
-arm_pl031 = "0.4.1"
+ax-arm-pl031 = "0.4.1"
 ax-cpu = { workspace = true }
 ax-plat = { workspace = true }
 

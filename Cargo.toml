@@ -164,8 +164,8 @@ ax-cap-access = { path = "components/cap_access" }
 handler_table = { path = "components/handler_table" }
 riscv_plic = { path = "components/riscv_plic" }
 rsext4 = { path = "components/rsext4" }
-arm_pl011 = { path = "components/arm_pl011" }
-arm_pl031 = { path = "components/arm_pl031" }
+ax-arm-pl011 = { path = "components/arm_pl011" }
+ax-arm-pl031 = { path = "components/arm_pl031" }
 fxmac_rs = { path = "components/fxmac_rs" }
 smoltcp = { path = "components/starry-smoltcp" }
 axfs-ng-vfs = { path = "components/axfs-ng-vfs" }
@@ -217,13 +217,13 @@ ax-driver-virtio = { path = "components/axdriver_crates/axdriver_virtio" }
 ax-driver-input = { path = "components/axdriver_crates/axdriver_input" }
 ax-driver-vsock = { path = "components/axdriver_crates/axdriver_vsock" }
 
-# === percpu ===
-percpu = { path = "components/percpu/percpu" }
+# === ax-percpu ===
+ax-percpu = { path = "components/percpu/percpu" }
 percpu_macros = { path = "components/percpu/percpu_macros" }
 
 # === page_table ===
-page_table_entry = { path = "components/page_table_multiarch/page_table_entry" }
-page_table_multiarch = { path = "components/page_table_multiarch/page_table_multiarch" }
+ax-page-table-entry = { path = "components/page_table_multiarch/page_table_entry" }
+ax-page-table-multiarch = { path = "components/page_table_multiarch/page_table_multiarch" }
 
 # === crate_interface ===
 crate_interface = { path = "components/crate_interface" }
@@ -240,8 +240,8 @@ ax-memory-set = { path = "components/axmm_crates/memory_set" }
 # === bitmap-allocator ===
 bitmap-allocator = { path = "components/bitmap-allocator" }
 
-# === kernel_guard ===
-kernel_guard = { path = "components/kernel_guard" }
+# === ax-kernel-guard ===
+ax-kernel-guard = { path = "components/kernel_guard" }
 
 # === ax-kspin ===
 ax-kspin = { path = "components/kspin" }
@@ -375,7 +375,7 @@ chrono = { version = "0.4", default-features = false }
 ctor_bare = { version = "0.4.1", path = "components/ctor_bare/ctor_bare" }
 env_logger = "0.11"
 event-listener = { version = "5.4.0", default-features = false }
-kernel_guard = { version = "0.3.3", path = "components/kernel_guard" }
+ax-kernel-guard = { version = "0.3.3", path = "components/kernel_guard" }
 ax-kspin = { version = "0.3.1", path = "components/kspin" }
 lazyinit = { version = "0.4.2", path = "components/lazyinit" }
 schemars = "1.2.1"
@@ -389,8 +389,8 @@ lazy_static = { version = "1.5", features = ["spin_no_std"] }
 lock_api = { version = "0.4", default-features = false }
 log = "0.4"
 memory_addr = { version = "0.6.1", path = "components/axmm_crates/memory_addr" }
-page_table_multiarch = { version = "0.8.1", features = ["ax-errno"], path = "components/page_table_multiarch/page_table_multiarch" }
-percpu = { version = "0.4.3", path = "components/percpu/percpu" }
+ax-page-table-multiarch = { version = "0.8.1", features = ["ax-errno"], path = "components/page_table_multiarch/page_table_multiarch" }
+ax-percpu = { version = "0.4.3", path = "components/percpu/percpu" }
 scope-local = { version = "0.3.2", path = "components/scope-local" }
 spin = "0.10"
 ostool = { version = "0.12" }

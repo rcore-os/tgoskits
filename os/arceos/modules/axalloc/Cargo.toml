@@ -23,7 +23,7 @@ page-alloc-64g = [
     "dep:ax-allocator",
     "ax-allocator/page-alloc-64g",
 ] # Support up to 64GB memory capacity (default: 256MB)
-tracking = ["dep:percpu", "dep:axbacktrace"]
+tracking = ["dep:ax-percpu", "dep:axbacktrace"]
 
 [package.metadata.docs.rs]
 all-features = true
@@ -38,5 +38,5 @@ cfg-if.workspace = true
 ax-kspin.workspace = true
 log.workspace = true
 memory_addr.workspace = true
-percpu = { workspace = true, optional = true }
+ax-percpu = { workspace = true, optional = true }
 strum = { version = "0.27.2", default-features = false, features = ["derive"] }

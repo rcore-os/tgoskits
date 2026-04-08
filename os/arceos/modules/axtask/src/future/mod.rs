@@ -9,8 +9,8 @@ use core::{
 };
 
 use ax_errno::AxError;
+use ax_kernel_guard::NoPreemptIrqSave;
 use ax_kspin::SpinNoIrq;
-use kernel_guard::NoPreemptIrqSave;
 
 use crate::{AxTaskRef, WeakAxTaskRef, current, current_run_queue, select_run_queue};
 

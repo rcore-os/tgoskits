@@ -1,13 +1,13 @@
-# arm_pl031
+# ax-arm-pl031
 
-[![Crates.io](https://img.shields.io/crates/v/arm_pl031)](https://crates.io/crates/arm_pl031)
+[![Crates.io](https://img.shields.io/crates/v/ax-arm-pl031)](https://crates.io/crates/ax-arm-pl031)
 
 System Real Time Clock (RTC) Drivers for aarch64 based on PL031.
 
 ## Examples
 
 ```rust
-use arm_pl031::Rtc;
+use ax_arm_pl031::Rtc;
 
 let rtc = unsafe { Rtc::new(0x901_0000 as _) };
 let epoch_time = rtc.get_unix_timestamp();

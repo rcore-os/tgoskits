@@ -2,7 +2,7 @@
 
 use core::arch::asm;
 
-use page_table_entry::arm::A32PTE;
+use ax_page_table_entry::arm::A32PTE;
 
 use crate::{PageTable32, PageTable32Cursor, PagingMetaData};
 

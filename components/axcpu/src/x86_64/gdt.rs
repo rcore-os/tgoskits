@@ -8,11 +8,11 @@ use x86_64::{
     },
 };
 
-#[percpu::def_percpu]
+#[ax_percpu::def_percpu]
 #[unsafe(no_mangle)]
 static TSS: TaskStateSegment = TaskStateSegment::new();
 
-#[percpu::def_percpu]
+#[ax_percpu::def_percpu]
 static GDT: GlobalDescriptorTable = GlobalDescriptorTable::new();
 
 /// Kernel code segment for 64-bit mode.

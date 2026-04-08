@@ -52,4 +52,4 @@ ax-cpu = "0.5.0"
 ax-plat = { version = "0.5.1", path = "./axplat" }
 ax-plat-macros = { version = "0.3.0", path = "./axplat-macros" }
 ax-plat-aarch64-peripherals = { version = "0.5.1", path = "platforms/axplat-aarch64-peripherals" }
-percpu = "0.4.3"
+ax-percpu = "0.4.3"

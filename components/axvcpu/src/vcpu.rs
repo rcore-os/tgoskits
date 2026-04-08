@@ -307,7 +307,7 @@ impl<A: AxArchVCpu> AxVCpu<A> {
     }
 }
 
-#[percpu::def_percpu]
+#[ax_percpu::def_percpu]
 static mut CURRENT_VCPU: Option<*mut u8> = None;
 
 /// Get the current VCpu on the current physical CPU.

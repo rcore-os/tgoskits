@@ -1,4 +1,4 @@
-# `page_table_entry` 技术文档
+# `ax-page-table-entry` 技术文档
 
 > 路径：`components/page_table_multiarch/page_table_entry`
 > 类型：库 crate
@@ -6,7 +6,7 @@
 > 版本：`0.6.1`
 > 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs` 与 `src/arch/*`
 
-`page_table_entry` 是多架构页表栈里专门负责“页表项长什么样”的基础库。它不负责遍历页表树、不负责分配页表页，也不负责地址空间策略；它只把不同架构的 PTE/descriptor 编码抽象成统一接口，使上层 `page_table_multiarch`、`axaddrspace`、`axplat-*` 引导页表和 `ax-cpu` 等组件都能在不重复理解每套硬件位语义的前提下构造和查询页表项。
+`ax-page-table-entry` 是多架构页表栈里专门负责“页表项长什么样”的基础库。它不负责遍历页表树、不负责分配页表页，也不负责地址空间策略；它只把不同架构的 PTE/descriptor 编码抽象成统一接口，使上层 `ax-page-table-multiarch`、`axaddrspace`、`axplat-*` 引导页表和 `ax-cpu` 等组件都能在不重复理解每套硬件位语义的前提下构造和查询页表项。
 
 ## 1. 架构设计分析
 
@@ -14,8 +14,8 @@
 
 该 crate 在页表体系中的职责边界非常清楚：
 
-- `page_table_entry`：定义页表项格式与 flags 编码
-- `page_table_multiarch`：实现页表树、cursor、map/query/unmap
+- `ax-page-table-entry`：定义页表项格式与 flags 编码
+- `ax-page-table-multiarch`：实现页表树、cursor、map/query/unmap
 - `axaddrspace` / `ax-mm`：组织地址空间与映射策略
 
 因此它的核心价值是“架构相关的位级定义统一化”，而不是高层内存管理。
@@ -144,7 +144,7 @@ LoongArch64 路径提供：
 
 最典型的消费者有三类：
 
-- `page_table_multiarch`：把 `GenericPTE` 作为页表树操作的底层单元
+- `ax-page-table-multiarch`：把 `GenericPTE` 作为页表树操作的底层单元
 - `axplat-*` 平台包：在引导页表中直接手工创建 `A64PTE` 等静态项
 - `ax-cpu` / `axaddrspace`：在 MMU、嵌套页表或页错误处理中复用 `MappingFlags`
 
@@ -172,7 +172,7 @@ LoongArch64 路径提供：
 
 ### 3.2 主要消费者
 
-- `page_table_multiarch`
+- `ax-page-table-multiarch`
 - `axaddrspace`
 - `ax-cpu`
 - `axvm`
@@ -183,8 +183,8 @@ LoongArch64 路径提供：
 
 ```mermaid
 graph TD
-    A[memory_addr] --> B[page_table_entry]
-    B --> C[page_table_multiarch]
+    A[memory_addr] --> B[ax-page-table-entry]
+    B --> C[ax-page-table-multiarch]
     B --> D[ax-cpu]
     B --> E[axaddrspace]
     C --> F[ax-mm]
@@ -245,9 +245,9 @@ graph TD
 | 项目 | 位置 | 角色 | 核心作用 |
 | --- | --- | --- | --- |
 | ArceOS | 页表基础设施底层 | 多架构 PTE 统一定义层 | 为 `ax-cpu`、平台引导页表和 `ax-mm` 路径提供统一的页表项语义 |
-| StarryOS | 通过页表栈间接使用 | 底层页表项编码库 | StarryOS 多数通过 `page_table_multiarch` 间接依赖它，但权限语义与页表编码最终仍来自这里 |
+| StarryOS | 通过页表栈间接使用 | 底层页表项编码库 | StarryOS 多数通过 `ax-page-table-multiarch` 间接依赖它，但权限语义与页表编码最终仍来自这里 |
 | Axvisor | 嵌套页表与虚拟化内存基础件 | 虚拟化页表项语义来源 | `axaddrspace`、`axvm`、x86/AArch64/RISC-V 虚拟化路径都复用它的 `MappingFlags` 与部分架构 PTE 实现 |
 
 ## 7. 总结
 
-`page_table_entry` 的价值，在于把最容易碎片化的“架构页表项位语义”统一收拢到一个地方。它让上层页表引擎和地址空间管理器可以围绕统一接口工作，同时又保留了各架构在权限、缓存属性和大页语义上的真实差异，是整个多架构页表栈的编码基座。
+`ax-page-table-entry` 的价值，在于把最容易碎片化的“架构页表项位语义”统一收拢到一个地方。它让上层页表引擎和地址空间管理器可以围绕统一接口工作，同时又保留了各架构在权限、缓存属性和大页语义上的真实差异，是整个多架构页表栈的编码基座。

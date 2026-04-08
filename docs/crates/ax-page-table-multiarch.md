@@ -1,4 +1,4 @@
-# `page_table_multiarch` 技术文档
+# `ax-page-table-multiarch` 技术文档
 
 > 路径：`components/page_table_multiarch/page_table_multiarch`
 > 类型：库 crate
@@ -6,13 +6,13 @@
 > 版本：`0.6.1`
 > 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs`、`src/bits64.rs`、`src/bits32.rs` 与相关上层引用路径
 
-`page_table_multiarch` 是整个仓库中页表抽象最底层的通用实现。它不关心当前是在 ArceOS 内核页表、StarryOS 用户地址空间，还是 Axvisor 嵌套页表场景；它所做的事情是用泛型把“页表元数据”“页表项格式”“页帧分配/物理直映能力”三件事拆开，然后提供统一的建表、映射、撤销、查询、权限修改和 TLB 刷新框架。
+`ax-page-table-multiarch` 是整个仓库中页表抽象最底层的通用实现。它不关心当前是在 ArceOS 内核页表、StarryOS 用户地址空间，还是 Axvisor 嵌套页表场景；它所做的事情是用泛型把“页表元数据”“页表项格式”“页帧分配/物理直映能力”三件事拆开，然后提供统一的建表、映射、撤销、查询、权限修改和 TLB 刷新框架。
 
 ## 1. 架构设计分析
 
 ### 1.1 设计定位
 
-`page_table_multiarch` 的设计目标是把跨架构页表公共逻辑提炼成一个独立引擎：
+`ax-page-table-multiarch` 的设计目标是把跨架构页表公共逻辑提炼成一个独立引擎：
 
 - 对内核而言，它是通用页表实现库
 - 对 hypervisor 而言，它是构造 NPT/Stage-2/EPT 风格页表的底层积木
@@ -68,7 +68,7 @@
 - 页表引擎并不强制把输入地址当成 `memory_addr::VirtAddr`
 - 上层完全可以为 EPT、NPT 或 Stage-2 场景绑定自定义的“虚拟侧地址类型”
 
-也正因此，`page_table_multiarch` 虽然默认以普通页表元数据命名，但天然具备被 `axaddrspace` 复用到嵌套页表场景的能力。
+也正因此，`ax-page-table-multiarch` 虽然默认以普通页表元数据命名，但天然具备被 `axaddrspace` 复用到嵌套页表场景的能力。
 
 ### 1.5 `PagingHandler`
 
@@ -145,7 +145,7 @@ flowchart TD
 从当前源码看：
 
 - `arch/aarch64.rs` 等元数据实现的是普通架构页表元数据与 TLB 刷新规则
-- `page_table_entry` 中 AArch64 页表项编码也偏向 Stage-1 语义
+- `ax-page-table-entry` 中 AArch64 页表项编码也偏向 Stage-1 语义
 - crate 本身 **没有** 单独声明“这是 EPT”或“这是 Stage-2”类型
 
 真正的 Stage-2/NPT 语义，是在 `axaddrspace::npt` 里通过：
@@ -156,7 +156,7 @@ flowchart TD
 
 组合出来的。
 
-因此更准确的说法是：**`page_table_multiarch` 提供通用页表引擎，Stage-2/NPT 只是它的一种上层用法，而不是它内建的专属模式。**
+因此更准确的说法是：**`ax-page-table-multiarch` 提供通用页表引擎，Stage-2/NPT 只是它的一种上层用法，而不是它内建的专属模式。**
 
 ## 2. 核心功能说明
 
@@ -200,7 +200,7 @@ flowchart TD
 
 | 依赖 | 作用 |
 | --- | --- |
-| `page_table_entry` | 页表项抽象与 `MappingFlags` |
+| `ax-page-table-entry` | 页表项抽象与 `MappingFlags` |
 | `memory_addr` | 地址类型、对齐与页大小辅助 |
 | `arrayvec` | 小规模 TLB 刷新地址缓存 |
 | `log` | 调试输出 |
@@ -221,7 +221,7 @@ flowchart TD
 
 ```mermaid
 graph TD
-    A[page_table_entry / memory_addr] --> B[page_table_multiarch]
+    A[ax-page-table-entry / memory_addr] --> B[ax-page-table-multiarch]
     B --> C[ax-hal]
     B --> D[axaddrspace]
     C --> E[ax-mm]
@@ -293,4 +293,4 @@ graph TD
 
 ## 7. 总结
 
-`page_table_multiarch` 的价值，在于把“页表作为一种树形数据结构”的公共部分最大程度抽离出来：架构元数据、页表项格式和宿主页帧操作都被参数化，而映射、查询、权限更新和刷新逻辑则尽量统一。它不是 Axvisor 独有组件，也不是普通 OS 独有组件，而是整个仓库内多条内存与虚拟化路径共享的底层页表引擎。
+`ax-page-table-multiarch` 的价值，在于把“页表作为一种树形数据结构”的公共部分最大程度抽离出来：架构元数据、页表项格式和宿主页帧操作都被参数化，而映射、查询、权限更新和刷新逻辑则尽量统一。它不是 Axvisor 独有组件，也不是普通 OS 独有组件，而是整个仓库内多条内存与虚拟化路径共享的底层页表引擎。

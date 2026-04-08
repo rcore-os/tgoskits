@@ -19,7 +19,7 @@ unsafe extern "C" {
 /// # Notes
 /// Caller should ensure that the `.init_array` section will not be disturbed by other sections.
 pub fn call_ctors() {
-    for ctor_ptr in (__init_array_start as usize..__init_array_end as usize)
+    for ctor_ptr in (__init_array_start as *const () as usize..__init_array_end as *const () as usize)
         .step_by(core::mem::size_of::<*const core::ffi::c_void>())
     {
         unsafe {

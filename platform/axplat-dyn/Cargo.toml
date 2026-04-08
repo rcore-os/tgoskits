@@ -32,7 +32,7 @@ fdt-edit = "0.2"
 heapless = "0.9"
 log.workspace = true
 memory_addr.workspace = true
-percpu = { workspace = true, features = ["custom-base"] }
+ax-percpu = { workspace = true, features = ["custom-base"] }
 rd-block = "0.1"
 rdrive = "0.20"
 somehal = "0.6"

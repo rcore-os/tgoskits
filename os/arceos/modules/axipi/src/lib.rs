@@ -19,7 +19,7 @@ mod queue;
 pub use event::{Callback, MulticastCallback};
 use queue::IpiEventQueue;
 
-#[percpu::def_percpu]
+#[ax_percpu::def_percpu]
 static IPI_EVENT_QUEUE: LazyInit<SpinNoIrq<IpiEventQueue>> = LazyInit::new();
 
 /// Initialize the per-CPU IPI event queue.

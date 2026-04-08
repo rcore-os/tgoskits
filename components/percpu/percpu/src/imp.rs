@@ -87,7 +87,7 @@ pub fn init() -> usize {
 
     #[cfg(target_os = "linux")]
     {
-        // we not load the percpu section in ELF, allocate them here.
+        // we not load the ax-percpu section in ELF, allocate them here.
         let total_size = _percpu_end as *const () as usize - _percpu_start as *const () as usize;
         let layout = std::alloc::Layout::from_size_align(total_size, 0x1000).unwrap();
         PERCPU_AREA_BASE.call_once(|| unsafe { std::alloc::alloc(layout) as usize });
@@ -206,9 +206,9 @@ pub fn init_percpu_reg(cpu_id: usize) {
     unsafe { write_percpu_reg(tp) }
 }
 
-/// To use `percpu::__priv::NoPreemptGuard::new()` and `percpu::percpu_area_base()` in macro expansion.
+/// To use `ax_percpu::__priv::NoPreemptGuard::new()` and `ax_percpu::percpu_area_base()` in macro expansion.
 #[allow(unused_imports)]
-use crate as percpu;
+use crate as ax_percpu;
 
 /// On x86, we use `gs:SELF_PTR` to store the address of the per-CPU data area base.
 #[cfg(target_arch = "x86_64")]

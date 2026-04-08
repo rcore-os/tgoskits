@@ -14,12 +14,12 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[ctor]
 fn init_percpu() {
-    percpu::init();
-    percpu::init_percpu_reg(0);
+    ax_percpu::init();
+    ax_percpu::init_percpu_reg(0);
 
-    let base = percpu::read_percpu_reg();
+    let base = ax_percpu::read_percpu_reg();
     println!("per-CPU area base = {base:#x}");
-    println!("per-CPU area size = {}", percpu::percpu_area_size());
+    println!("per-CPU area size = {}", ax_percpu::percpu_area_size());
 }
 
 #[test]
@@ -97,12 +97,12 @@ fn thread_share_item() {
     scope_local! {
         static SHARED: Arc<()> = Arc::new(());
     }
-    let cpu_num = percpu::percpu_area_num().max(1);
+    let cpu_num = ax_percpu::percpu_area_num().max(1);
 
     let handles: Vec<_> = (0..cpu_num)
         .map(|cpu_id| {
             thread::spawn(move || {
-                percpu::init_percpu_reg(cpu_id);
+                ax_percpu::init_percpu_reg(cpu_id);
                 let global = &*SHARED;
 
                 let mut scope = Scope::new();
@@ -131,7 +131,7 @@ fn thread_share_scope() {
     scope_local! {
         static SHARED: Arc<()> = Arc::new(());
     }
-    let cpu_num = percpu::percpu_area_num().max(1);
+    let cpu_num = ax_percpu::percpu_area_num().max(1);
 
     let scope = Arc::new(Scope::new());
 
@@ -139,7 +139,7 @@ fn thread_share_scope() {
         .map(|cpu_id| {
             let scope = scope.clone();
             thread::spawn(move || {
-                percpu::init_percpu_reg(cpu_id);
+                ax_percpu::init_percpu_reg(cpu_id);
                 unsafe { ActiveScope::set(&scope) };
                 assert_eq!(Arc::strong_count(&SHARED), 1);
                 assert!(Arc::ptr_eq(&SHARED, &SHARED.scope(&scope)));
@@ -163,12 +163,12 @@ fn thread_isolation() {
         static DATA: usize = 42;
         static DATA2: AtomicUsize = AtomicUsize::new(42);
     }
-    let cpu_num = percpu::percpu_area_num().max(1);
+    let cpu_num = ax_percpu::percpu_area_num().max(1);
 
     let handles: Vec<_> = (0..cpu_num)
         .map(|i| {
             thread::spawn(move || {
-                percpu::init_percpu_reg(i);
+                ax_percpu::init_percpu_reg(i);
                 let mut scope = Scope::new();
                 *DATA.scope_mut(&mut scope) = i;
 

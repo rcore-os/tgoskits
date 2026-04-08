@@ -264,9 +264,9 @@ graph LR
 - `handler_table`
 - `kernel_guard`
 - `memory_addr`
-- `page_table_entry`
-- `page_table_multiarch`
-- `percpu`
+- `ax-page-table-entry`
+- `ax-page-table-multiarch`
+- `ax-percpu`
 - `percpu_macros`
 
 ### 3.3 被依赖情况

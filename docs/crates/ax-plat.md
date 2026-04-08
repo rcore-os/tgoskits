@@ -32,12 +32,12 @@
 | `mem` | 物理内存描述与辅助算法 | `MemIf`、`MemRegionFlags`、`PhysMemRegion`、区间差集与重叠检查 |
 | `power` | 电源与 CPU 启停接口 | `PowerIf`，涵盖 `system_off()`、`cpu_boot()`、`cpu_num()` |
 | `irq` | 中断控制抽象 | `IrqIf`、`IrqHandler`、`IpiTarget`、`HandlerTable` |
-| `percpu` | 每核辅助状态 | `CPU_ID`、`IS_BSP` 以及主核/次核 percpu 初始化 |
+| `ax-percpu` | 每核辅助状态 | `CPU_ID`、`IS_BSP` 以及主核/次核 ax-percpu 初始化 |
 
 这种划分有两个明显特点：
 
 - `ax-plat` 把真正“必须跨平台统一”的部分收敛到几个小 trait，不试图抽象完整驱动栈。
-- `percpu`、`mem` 中包含少量公共算法与状态容器，因此它不只是接口定义包，也承担平台层公共工具箱的职责。
+- `ax-percpu`、`mem` 中包含少量公共算法与状态容器，因此它不只是接口定义包，也承担平台层公共工具箱的职责。
 
 ### 1.3 关键数据结构与接口契约
 
@@ -80,12 +80,12 @@
 
 `IpiTarget` 明确了 IPI 目标选择：当前核、单核或除当前核外全部 CPU。
 
-#### `ConsoleIf`、`TimeIf`、`PowerIf`、`percpu`
+#### `ConsoleIf`、`TimeIf`、`PowerIf`、`ax-percpu`
 
 - `ConsoleIf` 用 `write_bytes()` / `read_bytes()` 提供最小串口抽象，必要时通过 `irq_num()` 暴露输入中断号。
 - `TimeIf` 同时保留“硬件 tick”与“纳秒时间”两个视角，并额外定义 `epochoffset_nanos()`，把单调时钟与墙钟语义拼接起来。
 - `PowerIf` 将系统关机、CPU 启动和 CPU 数量查询放进统一接口，覆盖 PSCI/SBI/APIC SIPI 等不同平台实现。
-- `percpu` 模块用 `percpu::def_percpu` 定义 `CPU_ID` 和 `IS_BSP`，为平台初始化和上层调度器提供一致的当前核信息。
+- `ax-percpu` 模块用 `ax_percpu::def_percpu` 定义 `CPU_ID` 和 `IS_BSP`，为平台初始化和上层调度器提供一致的当前核信息。
 
 ### 1.4 核心机制：接口定义、宏导出与动态分发
 
@@ -192,7 +192,7 @@ impl ax_plat::init::InitIf for InitIfImpl {
 | `bitflags` | 定义 `MemRegionFlags` |
 | `handler_table` | 在 `irq` feature 下提供 IRQ 处理函数表 |
 | `ax-kspin` | 控制台锁与 SMP 自旋场景 |
-| `percpu` | CPU 本地变量定义与寄存器初始化 |
+| `ax-percpu` | CPU 本地变量定义与寄存器初始化 |
 
 ### 3.2 被谁依赖
 
@@ -208,7 +208,7 @@ graph TD
     A[ax-plat-macros] --> B[ax-plat]
     C[crate_interface] --> B
     D[memory_addr] --> B
-    E[ax-kspin / percpu / bitflags] --> B
+    E[ax-kspin / ax-percpu / bitflags] --> B
 
     B --> F[ax-plat-* 平台包]
     F --> G[ax-hal]
@@ -227,7 +227,7 @@ graph TD
 2. 在平台 crate 中实现 `InitIf`、`ConsoleIf`、`MemIf`、`TimeIf`、`PowerIf`，如有中断则实现 `IrqIf`。
 3. 使用 `#[impl_plat_interface]` 挂接每个实现。
 4. 编写板级启动代码，在建立最小页表、栈、异常上下文后调用 `ax_plat::call_main()`。
-5. 若支持 SMP，则为次核入口调用 `ax_plat::call_secondary_main()`，并在 `percpu` 中完成次核注册。
+5. 若支持 SMP，则为次核入口调用 `ax_plat::call_secondary_main()`，并在 `ax-percpu` 中完成次核注册。
 6. 用 `assert_str_eq!` 校验平台包名与配置名一致，避免 `axconfig` 与 crate 错绑。
 
 ### 4.2 在内核中使用
@@ -249,7 +249,7 @@ cargo build -p ax-plat --all-features
 
 ### 4.3 常见注意事项
 
-- `percpu::init_primary()` / `init_secondary()` 应尽早调用，因为后续初始化可能依赖当前 CPU ID。
+- `ax_percpu::init_primary()` / `init_secondary()` 应尽早调用，因为后续初始化可能依赖当前 CPU ID。
 - `MemIf::virt_to_phys()` 只保证对 `phys_to_virt()` 生成的线性映射地址可逆，不能用来翻译任意虚拟地址。
 - `busy_wait()` 使用墙钟时间，平台若未正确设置 `epochoffset_nanos()`，墙钟语义可能不准确。
 - `irq` 与 `smp` 是显式 feature，平台包与上层 crate 的 feature 需要一致传播。
@@ -267,7 +267,7 @@ cargo build -p ax-plat --all-features
 - 单元测试：继续覆盖 `mem` 模块边界条件，如完全覆盖、相邻区间、空保留区等。
 - 契约测试：为每个接口提供最小 mock 平台实现，验证 `crate_interface` 分发语义没有回归。
 - 集成测试：在示例内核中验证 `call_main()`、`init_early()`、`console_println!()`、`system_off()` 能贯通。
-- 多核测试：在启用 `smp` 的平台上验证 `call_secondary_main()` 和 `percpu` 状态一致性。
+- 多核测试：在启用 `smp` 的平台上验证 `call_secondary_main()` 和 `ax-percpu` 状态一致性。
 
 ### 5.3 重点关注的风险
 

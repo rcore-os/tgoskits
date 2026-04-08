@@ -52,7 +52,7 @@ phytium-blk = ["dep:phytium-mci"]
 bitflags = "2.2"
 cfg-if = "1.0"
 ax-cpumask = "0.3.0"
-kernel_guard = "0.3.3"
+ax-kernel-guard = "0.3.3"
 ax-kspin = "0.3.1"
 lazy_static = {version = "1.5", default-features = false, features = ["spin_no_std"]}
 lazyinit = "0.4.2"
@@ -92,9 +92,9 @@ crate_interface = "0.5.0"
 extern-trait = "0.4"
 fdt-parser = "0.4"
 memory_addr = "0.6.1"
-page_table_entry = { version = "0.8.1", features = ["arm-el2"] }
-page_table_multiarch = "0.8.1"
-percpu = { version = "0.4.3", features = ["arm-el2"] }
+ax-page-table-entry = { version = "0.8.1", features = ["arm-el2"] }
+ax-page-table-multiarch = "0.8.1"
+ax-percpu = { version = "0.4.3", features = ["arm-el2"] }
 
 rdif-intc = "0.14"
 rdif-block = "0.7"

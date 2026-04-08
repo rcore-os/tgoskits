@@ -392,32 +392,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "arm_pl011"
-version = "0.3.0"
-dependencies = [
- "tock-registers 0.8.1",
-]
-
-[[package]]
-name = "arm_pl031"
-version = "0.4.1"
-dependencies = [
- "chrono",
-]
-
-[[package]]
 name = "arm_vcpu"
 version = "0.5.0"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "ax-errno",
+ "ax-percpu",
  "axaddrspace",
  "axdevice_base",
  "axvcpu",
  "axvisor_api",
  "log",
  "numeric-enum-macro",
- "percpu 0.4.3",
  "spin 0.10.0",
 ]
 
@@ -529,12 +515,12 @@ dependencies = [
  "ax-allocator",
  "ax-errno",
  "ax-kspin",
+ "ax-percpu",
  "axbacktrace",
  "buddy-slab-allocator",
  "cfg-if",
  "log",
  "memory_addr 0.6.1",
- "percpu 0.4.3",
  "strum 0.27.2",
 ]
 
@@ -577,6 +563,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ax-arm-pl011"
+version = "0.3.0"
+dependencies = [
+ "tock-registers 0.8.1",
+]
+
+[[package]]
+name = "ax-arm-pl031"
+version = "0.4.1"
+dependencies = [
+ "chrono",
+]
+
+[[package]]
 name = "ax-cap-access"
 version = "0.3.0"
 dependencies = [
@@ -614,6 +614,9 @@ name = "ax-cpu"
 version = "0.5.0"
 dependencies = [
  "aarch64-cpu 11.2.0",
+ "ax-page-table-entry",
+ "ax-page-table-multiarch",
+ "ax-percpu",
  "axbacktrace",
  "cfg-if",
  "lazyinit 0.4.2",
@@ -621,9 +624,6 @@ dependencies = [
  "log",
  "loongArch64",
  "memory_addr 0.6.1",
- "page_table_entry 0.8.1",
- "page_table_multiarch 0.8.1",
- "percpu 0.4.3",
  "riscv 0.16.0",
  "tock-registers 0.10.1",
  "x86",
@@ -865,6 +865,9 @@ dependencies = [
  "ax-alloc",
  "ax-config",
  "ax-cpu",
+ "ax-kernel-guard",
+ "ax-page-table-multiarch",
+ "ax-percpu",
  "ax-plat",
  "ax-plat-aarch64-qemu-virt",
  "ax-plat-loongarch64-qemu-virt",
@@ -874,12 +877,9 @@ dependencies = [
  "cfg-if",
  "fdt-parser",
  "heapless 0.9.2",
- "kernel_guard 0.3.3",
  "linkme",
  "log",
  "memory_addr 0.6.1",
- "page_table_multiarch 0.8.1",
- "percpu 0.4.3",
  "spin 0.10.0",
 ]
 
@@ -946,17 +946,25 @@ dependencies = [
  "ax-config",
  "ax-hal",
  "ax-kspin",
+ "ax-percpu",
  "lazyinit 0.4.2",
  "log",
- "percpu 0.4.3",
+]
+
+[[package]]
+name = "ax-kernel-guard"
+version = "0.3.3"
+dependencies = [
+ "cfg-if",
+ "crate_interface 0.5.0",
 ]
 
 [[package]]
 name = "ax-kspin"
 version = "0.3.1"
 dependencies = [
+ "ax-kernel-guard",
  "cfg-if",
- "kernel_guard 0.3.3",
 ]
 
 [[package]]
@@ -999,10 +1007,10 @@ dependencies = [
  "ax-hal",
  "ax-kspin",
  "ax-memory-set",
+ "ax-page-table-multiarch",
  "lazyinit 0.4.2",
  "log",
  "memory_addr 0.6.1",
- "page_table_multiarch 0.8.1",
 ]
 
 [[package]]
@@ -1051,17 +1059,52 @@ dependencies = [
 ]
 
 [[package]]
+name = "ax-page-table-entry"
+version = "0.8.1"
+dependencies = [
+ "aarch64-cpu 11.2.0",
+ "bitflags 2.11.0",
+ "memory_addr 0.6.1",
+ "x86_64",
+]
+
+[[package]]
+name = "ax-page-table-multiarch"
+version = "0.8.1"
+dependencies = [
+ "arrayvec",
+ "ax-errno",
+ "ax-page-table-entry",
+ "bitmaps",
+ "log",
+ "memory_addr 0.6.1",
+ "riscv 0.16.0",
+ "x86",
+]
+
+[[package]]
+name = "ax-percpu"
+version = "0.4.3"
+dependencies = [
+ "ax-kernel-guard",
+ "cfg-if",
+ "percpu_macros 0.4.3",
+ "spin 0.10.0",
+ "x86",
+]
+
+[[package]]
 name = "ax-plat"
 version = "0.5.1"
 dependencies = [
  "ax-kspin",
+ "ax-percpu",
  "ax-plat-macros",
  "bitflags 2.11.0",
  "const-str",
  "crate_interface 0.5.0",
  "handler_table 0.3.2",
  "memory_addr 0.6.1",
- "percpu 0.4.3",
 ]
 
 [[package]]
@@ -1071,11 +1114,11 @@ dependencies = [
  "ax-config-macros",
  "ax-cpu",
  "ax-kspin",
+ "ax-page-table-entry",
  "ax-plat",
  "ax-plat-aarch64-peripherals",
  "dw_apb_uart",
  "log",
- "page_table_entry 0.8.1",
 ]
 
 [[package]]
@@ -1084,8 +1127,8 @@ version = "0.5.1"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "arm-gic-driver 0.16.5",
- "arm_pl011 0.3.0",
- "arm_pl031",
+ "ax-arm-pl011",
+ "ax-arm-pl031",
  "ax-cpu",
  "ax-kspin",
  "ax-plat",
@@ -1101,10 +1144,10 @@ version = "0.5.1"
 dependencies = [
  "ax-config-macros",
  "ax-cpu",
+ "ax-page-table-entry",
  "ax-plat",
  "ax-plat-aarch64-peripherals",
  "log",
- "page_table_entry 0.8.1",
 ]
 
 [[package]]
@@ -1113,10 +1156,10 @@ version = "0.5.1"
 dependencies = [
  "ax-config-macros",
  "ax-cpu",
+ "ax-page-table-entry",
  "ax-plat",
  "ax-plat-aarch64-peripherals",
  "log",
- "page_table_entry 0.8.1",
 ]
 
 [[package]]
@@ -1126,10 +1169,10 @@ dependencies = [
  "aarch64-cpu 11.2.0",
  "ax-config-macros",
  "ax-cpu",
+ "ax-page-table-entry",
  "ax-plat",
  "ax-plat-aarch64-peripherals",
  "log",
- "page_table_entry 0.8.1",
 ]
 
 [[package]]
@@ -1139,12 +1182,12 @@ dependencies = [
  "ax-config-macros",
  "ax-cpu",
  "ax-kspin",
+ "ax-page-table-entry",
  "ax-plat",
  "chrono",
  "lazyinit 0.4.2",
  "log",
  "loongArch64",
- "page_table_entry 0.8.1",
  "uart_16550 0.5.0",
 ]
 
@@ -1200,6 +1243,7 @@ dependencies = [
  "ax-config-macros",
  "ax-cpu",
  "ax-kspin",
+ "ax-percpu",
  "ax-plat",
  "bitflags 2.11.0",
  "heapless 0.9.2",
@@ -1207,7 +1251,6 @@ dependencies = [
  "lazyinit 0.4.2",
  "log",
  "multiboot",
- "percpu 0.4.3",
  "raw-cpuid 11.6.0",
  "uart_16550 0.5.0",
  "x2apic",
@@ -1256,6 +1299,7 @@ dependencies = [
  "ax-mm",
  "ax-net",
  "ax-net-ng",
+ "ax-percpu",
  "ax-plat",
  "ax-task",
  "axbacktrace",
@@ -1265,7 +1309,6 @@ dependencies = [
  "crate_interface 0.5.0",
  "ctor_bare",
  "indoc",
- "percpu 0.4.3",
 ]
 
 [[package]]
@@ -1315,7 +1358,9 @@ dependencies = [
  "ax-cpumask",
  "ax-errno",
  "ax-hal",
+ "ax-kernel-guard",
  "ax-kspin",
+ "ax-percpu",
  "ax-sched",
  "ax-task",
  "axpoll",
@@ -1323,11 +1368,9 @@ dependencies = [
  "crate_interface 0.5.0",
  "extern-trait",
  "futures-util",
- "kernel_guard 0.3.3",
  "lazyinit 0.4.2",
  "log",
  "memory_addr 0.6.1",
- "percpu 0.4.3",
  "spin 0.10.0",
  "timer_list",
 ]
@@ -1348,6 +1391,8 @@ dependencies = [
  "assert_matches",
  "ax-errno",
  "ax-memory-set",
+ "ax-page-table-entry",
+ "ax-page-table-multiarch",
  "axin",
  "bit_field",
  "bitflags 2.11.0",
@@ -1357,8 +1402,6 @@ dependencies = [
  "log",
  "memory_addr 0.6.1",
  "numeric-enum-macro",
- "page_table_entry 0.8.1",
- "page_table_multiarch 0.8.1",
  "spin 0.10.0",
  "x86",
 ]
@@ -1454,9 +1497,9 @@ dependencies = [
  "log",
  "loongArch64",
  "memory_addr 0.4.1",
- "page_table_entry 0.6.1",
- "page_table_multiarch 0.6.1",
- "percpu 0.4.3",
+ "page_table_entry",
+ "page_table_multiarch",
+ "percpu 0.4.0",
  "riscv 0.16.0",
  "static_assertions",
  "tock-registers 0.10.1",
@@ -1572,6 +1615,7 @@ dependencies = [
  "ax-driver-block",
  "ax-driver-virtio",
  "ax-errno",
+ "ax-percpu",
  "ax-plat",
  "axklib",
  "dma-api 0.7.1",
@@ -1579,7 +1623,6 @@ dependencies = [
  "heapless 0.9.2",
  "log",
  "memory_addr 0.6.1",
- "percpu 0.4.3",
  "rd-block",
  "rdrive",
  "somehal",
@@ -1623,6 +1666,7 @@ dependencies = [
  "ax-config-macros",
  "ax-cpu",
  "ax-kspin",
+ "ax-percpu",
  "ax-plat",
  "bitflags 2.11.0",
  "heapless 0.9.2",
@@ -1630,7 +1674,6 @@ dependencies = [
  "lazyinit 0.4.2",
  "log",
  "multiboot",
- "percpu 0.4.3",
  "raw-cpuid 11.6.0",
  "uart_16550 0.4.0",
  "x2apic",
@@ -1707,10 +1750,10 @@ name = "axvcpu"
 version = "0.5.0"
 dependencies = [
  "ax-errno",
+ "ax-percpu",
  "axaddrspace",
  "axvisor_api",
  "memory_addr 0.6.1",
- "percpu 0.4.3",
 ]
 
 [[package]]
@@ -1724,7 +1767,11 @@ dependencies = [
  "ax-cpumask",
  "ax-errno",
  "ax-hal",
+ "ax-kernel-guard",
  "ax-kspin",
+ "ax-page-table-entry",
+ "ax-page-table-multiarch",
+ "ax-percpu",
  "ax-plat-riscv64-qemu-virt 0.5.0",
  "ax-std",
  "axaddrspace",
@@ -1745,15 +1792,11 @@ dependencies = [
  "extern-trait",
  "fdt-parser",
  "hashbrown 0.14.5",
- "kernel_guard 0.3.3",
  "lazy_static",
  "lazyinit 0.4.2",
  "log",
  "memory_addr 0.6.1",
- "page_table_entry 0.8.1",
- "page_table_multiarch 0.8.1",
  "pcie 0.5.0",
- "percpu 0.4.3",
  "phytium-mci",
  "prettyplease",
  "quote",
@@ -1804,6 +1847,9 @@ dependencies = [
  "arm_vgic",
  "ax-cpumask",
  "ax-errno",
+ "ax-page-table-entry",
+ "ax-page-table-multiarch",
+ "ax-percpu",
  "axaddrspace",
  "axdevice",
  "axdevice_base",
@@ -1813,9 +1859,6 @@ dependencies = [
  "cfg-if",
  "log",
  "memory_addr 0.6.1",
- "page_table_entry 0.8.1",
- "page_table_multiarch 0.8.1",
- "percpu 0.4.3",
  "riscv_vcpu",
  "spin 0.10.0",
  "x86_vcpu",
@@ -4545,14 +4588,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kernel_guard"
-version = "0.3.3"
-dependencies = [
- "cfg-if",
- "crate_interface 0.5.0",
-]
-
-[[package]]
 name = "kernutil"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4570,7 +4605,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d841fd3aeaa9a55871068f5c3ce48497a6dbcf14e20ca7784a9f68bfdb4c825"
 dependencies = [
  "cfg-if",
- "kernel_guard 0.1.3",
+ "kernel_guard",
 ]
 
 [[package]]
@@ -5305,16 +5340,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "page_table_entry"
-version = "0.8.1"
-dependencies = [
- "aarch64-cpu 11.2.0",
- "bitflags 2.11.0",
- "memory_addr 0.6.1",
- "x86_64",
-]
-
-[[package]]
 name = "page_table_multiarch"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5323,21 +5348,7 @@ dependencies = [
  "arrayvec",
  "log",
  "memory_addr 0.4.1",
- "page_table_entry 0.6.1",
- "riscv 0.16.0",
- "x86",
-]
-
-[[package]]
-name = "page_table_multiarch"
-version = "0.8.1"
-dependencies = [
- "arrayvec",
- "ax-errno",
- "bitmaps",
- "log",
- "memory_addr 0.6.1",
- "page_table_entry 0.8.1",
+ "page_table_entry",
  "riscv 0.16.0",
  "x86",
 ]
@@ -5431,12 +5442,12 @@ dependencies = [
 
 [[package]]
 name = "percpu"
-version = "0.4.3"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "53cf38d521e1c0c7d294e2653c4a93edb3b60ebb1bc529e2f19a647be8e36176"
 dependencies = [
  "cfg-if",
- "kernel_guard 0.3.3",
- "percpu_macros 0.4.3",
- "spin 0.10.0",
+ "percpu_macros 0.4.0",
  "x86",
 ]
 
@@ -5447,6 +5458,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6660d83b91174e6d39fae0cdf893889dcdbffda6e99664f8ee8a45fde6a6936c"
 dependencies = [
  "cfg-if",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "percpu_macros"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb63182b558734ab0fc668b599d89ea97f0f176dabdaae4fdde8ce564644487e"
+dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -6442,6 +6464,7 @@ name = "riscv_vcpu"
 version = "0.5.0"
 dependencies = [
  "ax-errno",
+ "ax-page-table-entry",
  "axaddrspace",
  "axvcpu",
  "axvisor_api",
@@ -6452,7 +6475,6 @@ dependencies = [
  "log",
  "memoffset",
  "memory_addr 0.6.1",
- "page_table_entry 0.8.1",
  "riscv 0.14.0",
  "riscv-decode",
  "riscv-h",
@@ -6837,8 +6859,8 @@ dependencies = [
 name = "scope-local"
 version = "0.3.2"
 dependencies = [
+ "ax-percpu",
  "ctor 0.6.3",
- "percpu 0.4.3",
  "spin 0.10.0",
 ]
 
@@ -6855,7 +6877,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd0dbda75ab3bc25f210eb7ad16f2bd1f877a05444e1aeea083c60221bf76f15"
 dependencies = [
  "aarch64-cpu 10.0.0",
- "arm_pl011 0.1.0",
+ "arm_pl011",
  "bare-test-macros",
  "bitflags 2.11.0",
  "cfg-if",
@@ -7402,11 +7424,14 @@ dependencies = [
  "ax-hal",
  "ax-input",
  "ax-io",
+ "ax-kernel-guard",
  "ax-kspin",
  "ax-log",
  "ax-memory-set",
  "ax-mm",
  "ax-net-ng",
+ "ax-page-table-multiarch",
+ "ax-percpu",
  "ax-runtime",
  "ax-sync",
  "ax-task",
@@ -7428,7 +7453,6 @@ dependencies = [
  "indoc",
  "inherit-methods-macro",
  "kernel-elf-parser",
- "kernel_guard 0.3.3",
  "lazy_static",
  "linkme",
  "linux-raw-sys 0.12.1",
@@ -7436,8 +7460,6 @@ dependencies = [
  "memory_addr 0.6.1",
  "num_enum",
  "ouroboros",
- "page_table_multiarch 0.8.1",
- "percpu 0.4.3",
  "rand 0.10.0",
  "ringbuf",
  "riscv 0.16.0",
@@ -9402,6 +9424,7 @@ name = "x86_vcpu"
 version = "0.5.0"
 dependencies = [
  "ax-errno",
+ "ax-page-table-entry",
  "axaddrspace",
  "axdevice_base",
  "axvcpu",
@@ -9413,7 +9436,6 @@ dependencies = [
  "log",
  "memory_addr 0.6.1",
  "numeric-enum-macro",
- "page_table_entry 0.8.1",
  "paste",
  "raw-cpuid 11.6.0",
  "spin 0.10.0",

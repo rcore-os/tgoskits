@@ -1,7 +1,7 @@
-# kernel_guard
+# ax-kernel-guard
 
-[![Crates.io](https://img.shields.io/crates/v/kernel_guard)](https://crates.io/crates/kernel_guard)
-[![Docs.rs](https://docs.rs/kernel_guard/badge.svg)](https://docs.rs/kernel_guard)
+[![Crates.io](https://img.shields.io/crates/v/ax-kernel-guard)](https://crates.io/crates/ax-kernel-guard)
+[![Docs.rs](https://docs.rs/ax-kernel-guard/badge.svg)](https://docs.rs/ax-kernel-guard)
 [![CI](https://github.com/arceos-org/kernel_guard/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/arceos-org/kernel_guard/actions/workflows/ci.yml)
 
 RAII wrappers to create a critical section with local IRQs or preemption
@@ -34,7 +34,7 @@ disabled by default.
 ## Examples
 
 ```rust
-use kernel_guard::{KernelGuardIf, NoPreempt};
+use ax_kernel_guard::{KernelGuardIf, NoPreempt};
 
 struct KernelGuardIfImpl;
 

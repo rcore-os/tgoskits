@@ -15,7 +15,7 @@ alloc = ["dep:ax-alloc"]
 dma = ["paging"]
 buddy-slab = ["ax-alloc/buddy-slab"]
 ipi = ["dep:ax-ipi"]
-irq = ["ax-hal/irq", "ax-task?/irq", "dep:percpu"]
+irq = ["ax-hal/irq", "ax-task?/irq", "dep:ax-percpu"]
 multitask = ["ax-task/multitask"]
 paging = ["ax-hal/paging", "dep:ax-mm", "dep:axklib"]
 rtc = []
@@ -56,4 +56,4 @@ chrono = { version = "0.4", default-features = false }
 crate_interface = { workspace = true }
 ctor_bare = "0.4.1"
 indoc = "2"
-percpu = { workspace = true, optional = true }
+ax-percpu = { workspace = true, optional = true }

@@ -1,5 +1,5 @@
+use ax_page_table_entry::{GenericPTE, MappingFlags, loongarch64::LA64PTE};
 use ax_plat::mem::{Aligned4K, pa, va};
-use page_table_entry::{GenericPTE, MappingFlags, loongarch64::LA64PTE};
 
 use crate::config::plat::{BOOT_STACK_SIZE, PHYS_BOOT_OFFSET, PHYS_VIRT_OFFSET};
 

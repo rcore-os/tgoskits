@@ -9,9 +9,9 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/Starry-OS/scope-local"
 
 [dependencies]
-percpu = "0.4.3"
+ax-percpu = "0.4.3"
 spin = { version = "0.10", default-features = false, features = ["lazy"] }
 
 [dev-dependencies]
 ctor = "0.6"
-percpu = { version = "0.4.3", features = ["non-zero-vma"] }
+ax-percpu = { version = "0.4.3", features = ["non-zero-vma"] }

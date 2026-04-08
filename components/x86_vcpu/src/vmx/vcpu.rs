@@ -587,7 +587,7 @@ impl VmxVcpu {
         VmcsHostNW::TR_BASE.write(get_tr_base(tr, &gdtp) as _)?;
         VmcsHostNW::GDTR_BASE.write(gdtp.base as _)?;
         VmcsHostNW::IDTR_BASE.write(idtp.base as _)?;
-        VmcsHostNW::RIP.write(Self::vmx_exit as usize)?;
+        VmcsHostNW::RIP.write(Self::vmx_exit as *const () as usize)?;
 
         VmcsHostNW::IA32_SYSENTER_ESP.write(0)?;
         VmcsHostNW::IA32_SYSENTER_EIP.write(0)?;

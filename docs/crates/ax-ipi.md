@@ -29,7 +29,7 @@
 - `MulticastCallback`：`Arc<dyn Fn()>` 封装的广播回调，可拆成多个单播回调。
 - `IpiEvent`：记录源 CPU ID 与具体回调。
 - `IpiEventQueue`：每 CPU 一个的待处理事件队列。
-- `IPI_EVENT_QUEUE`：通过 `#[percpu::def_percpu]` 声明的每 CPU 静态 `LazyInit<SpinNoIrq<IpiEventQueue>>`。
+- `IPI_EVENT_QUEUE`：通过 `#[ax_percpu::def_percpu]` 声明的每 CPU 静态 `LazyInit<SpinNoIrq<IpiEventQueue>>`。
 
 ### 1.4 发送与处理主线
 发送到单个 CPU 的流程如下：
@@ -80,7 +80,7 @@ graph LR
     axconfig["ax-config"] --> ax-ipi
     ax_kspin["ax-kspin"] --> ax-ipi
     lazyinit["lazyinit"] --> ax-ipi
-    percpu["percpu"] --> ax-ipi
+    ax-percpu["ax-percpu"] --> ax-ipi
 
     ax-ipi --> ax-runtime["ax-runtime"]
     ax-ipi --> ax-api["ax-api"]
@@ -92,7 +92,7 @@ graph LR
 - `axconfig`：广播时需要 `MAX_CPU_NUM`。
 - `ax-kspin`：保护每 CPU 队列。
 - `lazyinit`：按 CPU 惰性初始化队列。
-- `percpu`：声明每 CPU 静态存储。
+- `ax-percpu`：声明每 CPU 静态存储。
 
 ### 3.2 关键直接消费者
 - `ax-runtime`：负责在启动链中初始化队列，并在 IRQ 处理里调用 `ipi_handler()`。

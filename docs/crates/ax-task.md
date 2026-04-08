@@ -126,7 +126,7 @@ graph LR
     axconfig["ax-config"] --> ax-task
     kernel_guard["kernel_guard"] --> ax-task
     axpoll["axpoll"] --> ax-task
-    ax_cpumask["ax-cpumask"] --> ax-task
+    cpumask["cpumask"] --> ax-task
 
     ax-task --> ax-runtime["ax-runtime"]
     ax-task --> ax-sync["ax-sync"]
@@ -142,7 +142,7 @@ graph LR
 - `axconfig`：任务栈大小、CPU 数量上限等静态配置来源。
 - `kernel_guard`：抢占关闭/恢复的接口桥接。
 - `axpoll`：异步 poll 与 I/O 等待适配。
-- `ax-cpumask`、`percpu`、`ax-kspin`：SMP 与每核运行队列支持。
+- `cpumask`、`ax-percpu`、`ax-kspin`：SMP 与每核运行队列支持。
 
 ### 3.2 关键直接消费者
 - `ax-runtime`：在启动链中初始化调度器，并在 timer tick 中调用 `on_timer_tick()`。

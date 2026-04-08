@@ -11,7 +11,7 @@ repository.workspace = true
 ax-config-macros = "0.4.1"
 cfg-if = "1.0"
 linkme = "0.3.33"
-percpu.workspace = true
+ax-percpu.workspace = true
 const-str = "1.0"
 memory_addr = "0.6.1"
 ax-cpu = { workspace = true }

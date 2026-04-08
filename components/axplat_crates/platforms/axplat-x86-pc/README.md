@@ -18,7 +18,7 @@ cargo +nightly add ax-cpu axplat ax-plat-x86-pc
 ```rust
 #[ax_plat::main]
 fn kernel_main(cpu_id: usize, arg: usize) -> ! {
-    // x86_64 requires the `percpu` crate to be initialized first.
+    // x86_64 requires the `ax-percpu` crate to be initialized first.
     ax-cpu::init::init_percpu(cpu_id);
     // Initialize trap, console, time.
     ax_plat::init::init_early(cpu_id, arg);
@@ -95,6 +95,6 @@ Some symbols and sections are required to be defined in the linker script, liste
 - `_ebss`: End of BSS section.
 - `.text.boot`: Kernel boot code.
 - `.bss.stack`: Stack for kernel booting.
-- `.percpu` section and related symbols: CPU-local data managed by the [percpu](https://crates.io/crates/percpu) crate.
+- `.percpu` section and related symbols: CPU-local data managed by the [ax-percpu](https://crates.io/crates/ax-percpu) crate.
 
 [hello-kernel](https://github.com/arceos-org/axplat_crates/tree/main/examples/hello-kernel) is a complete example of a minimal kernel implemented using [axplat](https://github.com/arceos-org/axplat_crates/tree/main/axplat) and related platform packages.

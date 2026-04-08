@@ -39,10 +39,10 @@ rtc = [
     "ax-plat-riscv64-qemu-virt?/rtc",
     "ax-plat-loongarch64-qemu-virt?/rtc",
 ]
-paging = ["dep:ax-alloc", "dep:page_table_multiarch"]
+paging = ["dep:ax-alloc", "dep:ax-page-table-multiarch"]
 tls = ["ax-cpu/tls"]
 uspace = ["paging", "ax-cpu/uspace", "axplat-dyn?/uspace"]
-hv = ["paging", "ax-cpu/arm-el2", "percpu/arm-el2", "axplat-dyn?/hv"]
+hv = ["paging", "ax-cpu/arm-el2", "ax-percpu/arm-el2", "axplat-dyn?/hv"]
 
 # Custom or default platforms
 myplat = []
@@ -65,12 +65,12 @@ ax-plat.workspace = true
 cfg-if.workspace = true
 fdt-parser = "0.4"
 heapless = "0.9"
-kernel_guard.workspace = true
+ax-kernel-guard.workspace = true
 linkme = { version = "0.3.33", optional = true }
 log.workspace = true
 memory_addr.workspace = true
-page_table_multiarch = { workspace = true, optional = true }
-percpu.workspace = true
+ax-page-table-multiarch = { workspace = true, optional = true }
+ax-percpu.workspace = true
 spin.workspace = true
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]

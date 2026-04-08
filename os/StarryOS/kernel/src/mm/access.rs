@@ -14,9 +14,9 @@ use ax_hal::{
     trap::{PAGE_FAULT, register_trap_handler},
 };
 use ax_io::prelude::*;
+use ax_kernel_guard::IrqSave;
 use ax_task::current;
 use extern_trait::extern_trait;
-use kernel_guard::IrqSave;
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use starry_vm::{VmError, VmIo, VmResult, vm_load_until_nul, vm_read_slice, vm_write_slice};
 

@@ -119,7 +119,7 @@ pub fn with_vm_and_vcpu_on_pcpu(
     f: impl FnOnce(VMRef, VCpuRef) + 'static,
 ) -> AxResult {
     // Disables preemption and IRQs to prevent the current task from being preempted or re-scheduled.
-    let guard = kernel_guard::NoPreemptIrqSave::new();
+    let guard = ax_kernel_guard::NoPreemptIrqSave::new();
 
     let current_vm = ax_task::current().as_vcpu_task().vm().id();
     let current_vcpu = ax_task::current().as_vcpu_task().vcpu.id();

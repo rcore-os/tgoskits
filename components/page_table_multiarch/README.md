@@ -1,4 +1,4 @@
-# page_table_multiarch
+# ax-page-table-multiarch
 
 Generic, unified, architecture-independent, and OS-free page table structures for various hardware architectures.
 
@@ -12,5 +12,5 @@ Currently supported architectures:
 
 See the documentation of the following crates for more details:
 
-1. [page_table_entry](https://crates.io/crates/page_table_entry): Page table entry definition for various hardware architectures. [![Crates.io](https://img.shields.io/crates/v/page_table_entry)](https://crates.io/crates/page_table_entry)
-2. [page_table_multiarch](https://crates.io/crates/page_table_multiarch): Generic page table structures for various hardware architectures. [![Crates.io](https://img.shields.io/crates/v/page_table_multiarch)](https://crates.io/crates/page_table_multiarch)
+1. [ax-page-table-entry](https://crates.io/crates/ax-page-table-entry): Page table entry definition for various hardware architectures. [![Crates.io](https://img.shields.io/crates/v/ax-page-table-entry)](https://crates.io/crates/ax-page-table-entry)
+2. [ax-page-table-multiarch](https://crates.io/crates/ax-page-table-multiarch): Generic page table structures for various hardware architectures. [![Crates.io](https://img.shields.io/crates/v/ax-page-table-multiarch)](https://crates.io/crates/ax-page-table-multiarch)

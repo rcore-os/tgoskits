@@ -233,7 +233,7 @@ flowchart TD
 | `axaddrspace` | GPA/GVA 类型与访问宽度 |
 | `axvisor_api` | 访存和宿主地址转换辅助 |
 | `ax-errno` | 错误模型 |
-| `page_table_entry` / `memory_addr` | 页表相关辅助类型 |
+| `ax-page-table-entry` / `memory_addr` | 页表相关辅助类型 |
 | `memoffset` / `tock-registers` | 汇编偏移和寄存器组织辅助 |
 
 ### 3.2 主要消费者

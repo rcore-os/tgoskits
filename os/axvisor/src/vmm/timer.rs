@@ -53,7 +53,7 @@ impl TimerEvent for VmmTimerEvent {
     }
 }
 
-#[percpu::def_percpu]
+#[ax_percpu::def_percpu]
 static TIMER_LIST: LazyInit<SpinNoIrq<TimerList<VmmTimerEvent>>> = LazyInit::new();
 
 /// Registers a new timer that will execute at the specified deadline

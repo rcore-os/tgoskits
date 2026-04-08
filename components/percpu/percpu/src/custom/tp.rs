@@ -71,9 +71,9 @@ pub unsafe fn write_percpu_reg(tp: usize) {
     }
 }
 
-/// To use `percpu::__priv::NoPreemptGuard::new()` and `percpu::percpu_area_base()` in macro expansion.
+/// To use `ax_percpu::__priv::NoPreemptGuard::new()` and `ax_percpu::percpu_area_base()` in macro expansion.
 #[allow(unused_imports)]
-use crate as percpu;
+use crate as ax_percpu;
 
 /// On x86, we use `gs:SELF_PTR` to store the address of the per-CPU data area base.
 #[cfg(target_arch = "x86_64")]

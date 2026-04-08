@@ -6,7 +6,7 @@ use core::{
 mod tp;
 
 #[cfg(feature = "preempt")]
-use kernel_guard::NoPreempt;
+use ax_kernel_guard::NoPreempt;
 pub use tp::*;
 
 #[repr(transparent)]
@@ -261,7 +261,7 @@ mod _linux {
         unsafe {
             let base = g.as_slice().as_ptr() as usize;
             PERCPU_BASE = base;
-            println!("alloc percpu data @{:#x}, size: {:#x}", base, size);
+            println!("alloc ax-percpu data @{:#x}, size: {:#x}", base, size);
         }
         cpu_count
     }

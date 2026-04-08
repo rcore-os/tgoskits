@@ -131,7 +131,7 @@
 仓库内关键消费者包括：
 
 - `ax-kspin`
-- `percpu`
+- `ax-percpu`
 - `ax-task`
 - `ax-hal`
 - `os/StarryOS/kernel`
@@ -142,7 +142,7 @@
 ```mermaid
 graph TD
     A[kernel_guard] --> B[ax-kspin]
-    A --> C[percpu]
+    A --> C[ax-percpu]
     A --> D[ax-task]
     A --> E[ax-hal]
     D --> F[ArceOS 调度路径]
@@ -184,7 +184,7 @@ graph TD
 从仓库结构看，本 crate 本体的独立测试不多，更多依赖：
 
 - 多架构构建检查
-- 上层 `ax-kspin`、`percpu`、`ax-task` 的间接使用
+- 上层 `ax-kspin`、`ax-percpu`、`ax-task` 的间接使用
 
 这符合它的定位，因为很多关键语义要在目标架构和真实运行时上下文中才成立。
 

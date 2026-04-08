@@ -1,7 +1,7 @@
-# percpu
+# ax-percpu
 
-[![Crates.io](https://img.shields.io/crates/v/percpu)](https://crates.io/crates/percpu)
-[![Docs.rs](https://docs.rs/percpu/badge.svg)](https://docs.rs/percpu)
+[![Crates.io](https://img.shields.io/crates/v/ax-percpu)](https://crates.io/crates/ax-percpu)
+[![Docs.rs](https://docs.rs/ax-percpu/badge.svg)](https://docs.rs/ax-percpu)
 [![CI](https://github.com/arceos-org/percpu/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/arceos-org/percpu/actions/workflows/ci.yml)
 
 Define and access per-CPU data structures.
@@ -44,13 +44,13 @@ to access the corresponding field.
 ## Examples
 
 ```rust,no_run
-#[percpu::def_percpu]
+#[ax_percpu::def_percpu]
 static CPU_ID: usize = 0;
 
 // initialize per-CPU data areas.
-percpu::init();
+ax_percpu::init();
 // set the thread pointer register to the per-CPU data area 0.
-percpu::init_percpu_reg(0);
+ax_percpu::init_percpu_reg(0);
 
 // access the per-CPU data `CPU_ID` on the current CPU.
 println!("{}", CPU_ID.read_current()); // prints "0"

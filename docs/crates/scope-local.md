@@ -113,7 +113,7 @@ StarryOS 当前的集成模式很典型：
 
 | 依赖 | 作用 |
 | --- | --- |
-| `percpu` | 保存当前激活 scope 指针 |
+| `ax-percpu` | 保存当前激活 scope 指针 |
 | `spin` | 惰性初始化全局默认 scope |
 
 ### 3.2 主要消费者
@@ -131,7 +131,7 @@ StarryOS 当前的集成模式很典型：
 ```mermaid
 graph TD
     A[scope-local]
-    B[percpu] --> A
+    B[ax-percpu] --> A
     A --> C[StarryOS kernel]
     A --> D[ax-fs-ng]
     A --> E[ax-posix-api fd]
@@ -155,9 +155,9 @@ graph TD
 - 若没有任何调度/上下文钩子切换 `ActiveScope`，访问将始终落到 `GLOBAL_SCOPE`
 - `Scope` 生命周期必须与使用它的执行上下文一致，否则 `ACTIVE_SCOPE_PTR` 会悬空
 
-### 4.3 与 `percpu` / `ax-task` 的职责分工
+### 4.3 与 `ax-percpu` / `ax-task` 的职责分工
 
-- `percpu`：只负责“当前 CPU 有一个当前 scope 指针”
+- `ax-percpu`：只负责“当前 CPU 有一个当前 scope 指针”
 - `scope-local`：负责“如何根据当前 scope 指针解析局部项”
 - `ax-task`/Starry 调度层：决定“何时切换当前 scope”
 
@@ -173,7 +173,7 @@ graph TD
 - 显式 `Scope` 访问
 - `ActiveScope::set` / `set_global`
 - `Scope` drop 行为
-- 配合 `percpu` 的多线程/多 CPU 模拟
+- 配合 `ax-percpu` 的多线程/多 CPU 模拟
 
 这套测试对于一个链接段 + per-CPU + 堆分配混合实现的库来说已经比较关键。
 

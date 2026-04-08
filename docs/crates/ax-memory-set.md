@@ -3,7 +3,7 @@
 > 路径：`components/axmm_crates/memory_set`
 > 类型：库 crate
 > 分层：组件层 / 地址区间集合与映射元数据层
-> 版本：`0.6.1`
+> 版本：`0.4.1`
 > 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs`、`src/area.rs`、`src/backend.rs`、`src/set.rs`
 
 `ax-memory-set` 是 ArceOS/StarryOS/Axvisor 这条内存管理链上的“区间集合与操作骨架”。它不直接实现页表，也不直接决定物理页如何分配，而是围绕“若干不重叠地址区间”和“这些区间应如何映射”提供统一的数据结构与操作流程。可以把它理解为一层抽象的 `mmap`/`munmap`/`mprotect` 元数据引擎：上层负责地址空间语义，下层 `Backend` 负责真正操作页表。
@@ -199,7 +199,7 @@ graph TD
 
 ### 3.4 与页表库的边界
 
-需要特别指出的是，`ax-memory-set` 不直接依赖 `page_table_multiarch`。两者的联系发生在更上层：
+需要特别指出的是，`ax-memory-set` 不直接依赖 `ax-page-table-multiarch`。两者的联系发生在更上层：
 
 - `ax-mm`：把 `MemorySet` 与 `ax-hal::paging::PageTable` 拼起来
 - `axaddrspace`：把 `MemorySet` 与嵌套页表 `NestedPageTable` 拼起来

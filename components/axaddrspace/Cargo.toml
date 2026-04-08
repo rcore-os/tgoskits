@@ -14,7 +14,7 @@ repository = "https://github.com/arceos-hypervisor/axaddrspace"
 version = "0.5.0"
 
 [features]
-arm-el2 = ["page_table_entry/arm-el2"]
+arm-el2 = ["ax-page-table-entry/arm-el2"]
 default = ["arm-el2"]
 
 [dependencies]
@@ -29,8 +29,8 @@ numeric-enum-macro = "0.2"
 ax-errno = "0.4.2"
 memory_addr = "0.6.1"
 ax-memory-set = "0.6.1"
-page_table_entry = "0.8.1"
-page_table_multiarch = "0.8.1"
+ax-page-table-entry = "0.8.1"
+ax-page-table-multiarch = "0.8.1"
 
 [target.'cfg(any(target_arch = "x86_64", doc))'.dependencies]
 x86 = "0.52"

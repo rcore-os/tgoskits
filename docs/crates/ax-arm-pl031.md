@@ -1,4 +1,4 @@
-# `arm_pl031` 技术文档
+# `ax-arm-pl031` 技术文档
 
 > 路径：`components/arm_pl031`
 > 类型：库 crate
@@ -6,7 +6,7 @@
 > 版本：`0.2.1`
 > 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`src/chrono.rs`
 
-`arm_pl031` 是 ARM PrimeCell PL031 RTC 的薄封装驱动。它不负责设备树、页表映射、GIC 接线或平台时间策略，而是把一组固定布局的 MMIO 寄存器包装成 `Rtc` 句柄和少量 Unix 时间戳读写接口，供更高层平台代码接入墙钟语义。
+`ax-arm-pl031` 是 ARM PrimeCell PL031 RTC 的薄封装驱动。它不负责设备树、页表映射、GIC 接线或平台时间策略，而是把一组固定布局的 MMIO 寄存器包装成 `Rtc` 句柄和少量 Unix 时间戳读写接口，供更高层平台代码接入墙钟语义。
 
 ## 1. 架构设计分析
 ### 1.1 设计定位
@@ -16,7 +16,7 @@
 - 它对外暴露的是“秒级 Unix 时间戳”“匹配寄存器”“中断状态”这些最基础能力。
 - 它并不试图实现完整 RTC 子系统，更不会自己决定 wall clock 与 monotonic clock 的组合策略。
 
-因此，`arm_pl031` 更适合被视为“平台时间源的寄存器级基础组件”，而不是“通用时钟框架”。
+因此，`ax-arm-pl031` 更适合被视为“平台时间源的寄存器级基础组件”，而不是“通用时钟框架”。
 
 ### 1.2 内部模块划分
 - `src/lib.rs`：核心实现。定义寄存器布局 `Registers`、设备句柄 `Rtc` 以及所有 MMIO 读写方法。
@@ -39,7 +39,7 @@
 需要特别注意的是：结构体中虽然保留了 `CR` 字段，但当前公开 API 并未直接暴露对 `CR` 的操作。这意味着该 crate 假设硬件或更早的初始化阶段已经把设备置于可工作的状态。
 
 ### 1.4 在仓库中的实际使用主线
-在本仓库里，`arm_pl031` 最重要的真实接入路径不在它自己内部，而在 `ax-plat-aarch64-peripherals`：
+在本仓库里，`ax-arm-pl031` 最重要的真实接入路径不在它自己内部，而在 `ax-plat-aarch64-peripherals`：
 
 ```mermaid
 flowchart TD
@@ -51,7 +51,7 @@ flowchart TD
     F --> G["wall_time = monotonic_time + offset"]
 ```
 
-也就是说，`arm_pl031` 在平台栈中的主要角色不是“持续提供复杂时钟服务”，而是**在极早期读一次硬件墙钟，建立单调时间到真实墙钟的偏移量**。
+也就是说，`ax-arm-pl031` 在平台栈中的主要角色不是“持续提供复杂时钟服务”，而是**在极早期读一次硬件墙钟，建立单调时间到真实墙钟的偏移量**。
 
 ### 1.5 安全与平台假设
 `Rtc::new(base)` 的 `unsafe` 前提非常明确：
@@ -87,7 +87,7 @@ flowchart TD
 最常见的使用方式是平台代码在知道 MMIO 基址后构造 `Rtc`：
 
 ```rust
-let rtc = unsafe { arm_pl031::Rtc::new(mmio_ptr) };
+let rtc = unsafe { ax_arm_pl031::Rtc::new(mmio_ptr) };
 let secs = rtc.get_unix_timestamp();
 let _ = secs;
 ```
@@ -97,7 +97,7 @@ let _ = secs;
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    chrono["chrono (optional)"] --> current["arm_pl031"]
+    chrono["chrono (optional)"] --> current["ax-arm-pl031"]
     current --> peripherals["ax-plat-aarch64-peripherals"]
     peripherals --> qemuvirt["ax-plat-aarch64-qemu-virt"]
     qemuvirt --> arceos["ArceOS aarch64 平台路径"]
@@ -119,7 +119,7 @@ graph LR
 ### 4.1 依赖配置
 ```toml
 [dependencies]
-arm_pl031 = { workspace = true }
+ax-arm-pl031 = { workspace = true }
 ```
 
 若需要 `chrono` 风格接口，可显式保留默认 feature 或手动启用 `chrono`。
@@ -131,7 +131,7 @@ arm_pl031 = { workspace = true }
 4. 对 `chrono` 路径的修改要注意 `u32` 秒到 `DateTime<Utc>` 的转换边界。
 
 ### 4.3 关键开发建议
-- 保持 `arm_pl031` 继续作为薄封装，不要把平台策略下沉到这里。
+- 保持 `ax-arm-pl031` 继续作为薄封装，不要把平台策略下沉到这里。
 - 平台层若需要高精度或组合时钟语义，应在更上层完成，而不是让 PL031 驱动本身承担。
 - 若未来加入中断驱动路径，建议先补齐 `matched` / `pending` / `IMSC` / `ICR` 相关测试。
 
@@ -150,20 +150,20 @@ arm_pl031 = { workspace = true }
 - 验证未调用 `pl031::init_early()` 的平台是否会维持 `epochoffset_nanos == 0`。
 
 ### 5.4 覆盖率要求
-- 对 `arm_pl031`，重点是寄存器行为覆盖率而不是复杂业务覆盖率。
+- 对 `ax-arm-pl031`，重点是寄存器行为覆盖率而不是复杂业务覆盖率。
 - 至少要覆盖读、写、匹配、中断和 `chrono` 适配这五类路径。
 - 若新增更多寄存器控制，应同步增加对应的模拟寄存器测试。
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-在 ArceOS 的 aarch64 平台路径中，`arm_pl031` 主要承担“读取硬件墙钟、为平台建立 epoch 偏移”的角色，而不是完整的时钟子系统。
+在 ArceOS 的 aarch64 平台路径中，`ax-arm-pl031` 主要承担“读取硬件墙钟、为平台建立 epoch 偏移”的角色，而不是完整的时钟子系统。
 
 ### 6.2 StarryOS
-当前仓库中未看到 StarryOS 直接操作 `arm_pl031` 的主线代码，因此它在 StarryOS 中更多是通过共享 `axplat` 平台栈间接参与，而不是显式核心依赖。
+当前仓库中未看到 StarryOS 直接操作 `ax-arm-pl031` 的主线代码，因此它在 StarryOS 中更多是通过共享 `axplat` 平台栈间接参与，而不是显式核心依赖。
 
 ### 6.3 Axvisor
-Axvisor 的依赖图可能会间接包含 `arm_pl031`，但它更多体现为宿主平台栈的组成部分；如果 guest 设备树里也描述了 PL031，那是“客户机可见设备模型”的话题，不能与本 crate 在宿主 Rust 代码中的职责混为一谈。
-# `arm_pl031` 技术文档
+Axvisor 的依赖图可能会间接包含 `ax-arm-pl031`，但它更多体现为宿主平台栈的组成部分；如果 guest 设备树里也描述了 PL031，那是“客户机可见设备模型”的话题，不能与本 crate 在宿主 Rust 代码中的职责混为一谈。
+# `ax-arm-pl031` 技术文档
 
 > 路径：`components/arm_pl031`
 > 类型：库 crate
@@ -171,7 +171,7 @@ Axvisor 的依赖图可能会间接包含 `arm_pl031`，但它更多体现为宿
 > 版本：`0.2.1`
 > 文档依据：当前仓库源码、`Cargo.toml` 与 `components/arm_pl031/README.md`
 
-`arm_pl031` 的核心定位是：System Real Time Clock (RTC) Drivers for aarch64 based on PL031.
+`ax-arm-pl031` 的核心定位是：System Real Time Clock (RTC) Drivers for aarch64 based on PL031.
 
 ## 1. 架构设计分析
 - 目录角色：可复用基础组件
@@ -196,7 +196,7 @@ Axvisor 的依赖图可能会间接包含 `arm_pl031`，但它更多体现为宿
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    current["arm_pl031"]
+    current["ax-arm-pl031"]
     ax_plat_aarch64_peripherals["ax-plat-aarch64-peripherals"] --> current
 ```
 
@@ -231,10 +231,10 @@ graph LR
 ### 4.1 依赖配置
 ```toml
 [dependencies]
-arm_pl031 = { workspace = true }
+ax-arm-pl031 = { workspace = true }
 
 # 如果在仓库外独立验证，也可以显式绑定本地路径：
-# arm_pl031 = { path = "components/arm_pl031" }
+# ax-arm-pl031 = { path = "components/arm_pl031" }
 ```
 
 ### 4.2 初始化流程
@@ -261,10 +261,10 @@ arm_pl031 = { workspace = true }
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-`arm_pl031` 主要通过 `arceos-affinity`、`ax-helloworld`、`ax-helloworld-myplat`、`ax-httpclient`、`ax-httpserver`、`arceos-irq` 等（另有 26 项） 等上层 crate 被 ArceOS 间接复用，通常处于更底层的公共依赖层。
+`ax-arm-pl031` 主要通过 `arceos-affinity`、`ax-helloworld`、`ax-helloworld-myplat`、`ax-httpclient`、`ax-httpserver`、`arceos-irq` 等（另有 26 项） 等上层 crate 被 ArceOS 间接复用，通常处于更底层的公共依赖层。
 
 ### 6.2 StarryOS
-`arm_pl031` 主要通过 `starry-kernel`、`starryos`、`starryos-test` 等上层 crate 被 StarryOS 间接复用，通常处于更底层的公共依赖层。
+`ax-arm-pl031` 主要通过 `starry-kernel`、`starryos`、`starryos-test` 等上层 crate 被 StarryOS 间接复用，通常处于更底层的公共依赖层。
 
 ### 6.3 Axvisor
-`arm_pl031` 主要通过 `axvisor` 等上层 crate 被 Axvisor 间接复用，通常处于更底层的公共依赖层。
+`ax-arm-pl031` 主要通过 `axvisor` 等上层 crate 被 Axvisor 间接复用，通常处于更底层的公共依赖层。

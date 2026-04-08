@@ -4,8 +4,11 @@ fn main() {
     fn gen_pthread_mutex(out_file: &str) -> std::io::Result<()> {
         // TODO: Generate size and initial content automatically.
         println!("cargo:rerun-if-env-changed=CARGO_FEATURE_MULTITASK");
-        let (mutex_size, mutex_init) = if std::env::var("CARGO_FEATURE_MULTITASK").is_ok() {
-            if cfg!(feature = "smp") {
+        println!("cargo:rerun-if-env-changed=CARGO_FEATURE_SMP");
+        let has_multitask = std::env::var_os("CARGO_FEATURE_MULTITASK").is_some();
+        let has_smp = std::env::var_os("CARGO_FEATURE_SMP").is_some();
+        let (mutex_size, mutex_init) = if has_multitask {
+            if has_smp {
                 // core::mem::transmute::<_, [usize; 6]>(ax_sync::Mutex::new(()))
                 (6, "{0, 0, 8, 0, 0, 0}")
             } else {

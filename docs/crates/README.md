@@ -34,13 +34,14 @@
 | `arceos-tls` | 测试层 | `test-suit/arceos/rust/task/tls` | 1 | 0 | [查看](./arceos-tls.md) |
 | `arceos-wait-queue` | 测试层 | `test-suit/arceos/rust/task/wait_queue` | 1 | 0 | [查看](./arceos-wait-queue.md) |
 | `arceos-yield` | 测试层 | `test-suit/arceos/rust/task/yield` | 1 | 0 | [查看](./arceos-yield.md) |
-| `arm_pl011` | 组件层 | `components/arm_pl011` | 0 | 1 | [查看](./arm_pl011.md) |
-| `arm_pl031` | 组件层 | `components/arm_pl031` | 0 | 1 | [查看](./arm_pl031.md) |
 | `arm_vcpu` | 组件层 | `components/arm_vcpu` | 6 | 1 | [查看](./arm_vcpu.md) |
 | `arm_vgic` | 组件层 | `components/arm_vgic` | 6 | 2 | [查看](./arm_vgic.md) |
 | `ax-alloc` | ArceOS 层 | `os/arceos/modules/axalloc` | 6 | 11 | [查看](./ax-alloc.md) |
 | `ax-allocator` | 组件层 | `components/axallocator` | 2 | 2 | [查看](./ax-allocator.md) |
 | `ax-api` | ArceOS 层 | `os/arceos/api/arceos_api` | 17 | 1 | [查看](./ax-api.md) |
+| `ax-arm-pl011` | 组件层 | `components/arm_pl011` | 0 | 1 | [查看](./ax-arm-pl011.md) |
+| `ax-arm-pl031` | 组件层 | `components/arm_pl031` | 0 | 1 | [查看](./ax-arm-pl031.md) |
+| `ax-cap-access` | 组件层 | `components/cap_access` | 0 | 1 | [查看](./ax-cap-access.md) |
 | `ax-config` | ArceOS 层 | `os/arceos/modules/axconfig` | 1 | 12 | [查看](./ax-config.md) |
 | `ax-config-gen` | 组件层 | `components/axconfig-gen/axconfig-gen` | 0 | 1 | [查看](./ax-config-gen.md) |
 | `ax-config-macros` | 组件层 | `components/axconfig-gen/axconfig-macros` | 1 | 12 | [查看](./ax-config-macros.md) |
@@ -79,6 +80,9 @@
 | `ax-mm` | ArceOS 层 | `os/arceos/modules/axmm` | 8 | 4 | [查看](./ax-mm.md) |
 | `ax-net` | ArceOS 层 | `os/arceos/modules/axnet` | 8 | 4 | [查看](./ax-net.md) |
 | `ax-net-ng` | ArceOS 层 | `os/arceos/modules/axnet-ng` | 11 | 2 | [查看](./ax-net-ng.md) |
+| `ax-page-table-entry` | 组件层 | `components/page_table_multiarch/page_table_entry` | 1 | 12 | [查看](./ax-page-table-entry.md) |
+| `ax-page-table-multiarch` | 组件层 | `components/page_table_multiarch/page_table_multiarch` | 3 | 7 | [查看](./ax-page-table-multiarch.md) |
+| `ax-percpu` | 组件层 | `components/percpu/percpu` | 2 | 17 | [查看](./ax-percpu.md) |
 | `ax-plat` | 组件层 | `components/axplat_crates/axplat` | 6 | 15 | [查看](./ax-plat.md) |
 | `ax-plat-aarch64-bsta1000b` | 组件层 | `components/axplat_crates/platforms/axplat-aarch64-bsta1000b` | 6 | 1 | [查看](./ax-plat-aarch64-bsta1000b.md) |
 | `ax-plat-aarch64-peripherals` | 组件层 | `components/axplat_crates/platforms/axplat-aarch64-peripherals` | 7 | 4 | [查看](./ax-plat-aarch64-peripherals.md) |
@@ -116,7 +120,6 @@
 | `axvmconfig` | 组件层 | `components/axvmconfig` | 1 | 4 | [查看](./axvmconfig.md) |
 | `bitmap-allocator` | 组件层 | `components/bitmap-allocator` | 0 | 1 | [查看](./bitmap-allocator.md) |
 | `bwbench-client` | ArceOS 层 | `os/arceos/tools/bwbench_client` | 0 | 0 | [查看](./bwbench-client.md) |
-| `ax-cap-access` | 组件层 | `components/cap_access` | 0 | 1 | [查看](./ax-cap-access.md) |
 | `cargo-axplat` | 组件层 | `components/axplat_crates/cargo-axplat` | 0 | 0 | [查看](./cargo-axplat.md) |
 | `crate_interface` | 组件层 | `components/crate_interface` | 0 | 22 | [查看](./crate_interface.md) |
 | `crate_interface_lite` | 组件层 | `components/crate_interface/crate_interface_lite` | 0 | 0 | [查看](./crate_interface_lite.md) |
@@ -138,9 +141,6 @@
 | `linked_list_r4l` | 组件层 | `components/linked_list_r4l` | 0 | 1 | [查看](./linked_list_r4l.md) |
 | `memory_addr` | 组件层 | `components/axmm_crates/memory_addr` | 0 | 24 | [查看](./memory_addr.md) |
 | `mingo` | ArceOS 层 | `os/arceos/tools/raspi4/chainloader` | 0 | 0 | [查看](./mingo.md) |
-| `page_table_entry` | 组件层 | `components/page_table_multiarch/page_table_entry` | 1 | 12 | [查看](./page_table_entry.md) |
-| `page_table_multiarch` | 组件层 | `components/page_table_multiarch/page_table_multiarch` | 3 | 7 | [查看](./page_table_multiarch.md) |
-| `percpu` | 组件层 | `components/percpu/percpu` | 2 | 17 | [查看](./percpu.md) |
 | `percpu_macros` | 组件层 | `components/percpu/percpu_macros` | 0 | 1 | [查看](./percpu_macros.md) |
 | `range-alloc-arceos` | 组件层 | `components/range-alloc-arceos` | 0 | 1 | [查看](./range-alloc-arceos.md) |
 | `riscv-h` | 组件层 | `components/riscv-h` | 0 | 2 | [查看](./riscv-h.md) |

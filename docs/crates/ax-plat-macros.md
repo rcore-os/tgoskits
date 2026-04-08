@@ -14,7 +14,7 @@
 
 - `main` / `secondary_main`：把运行时入口绑定到固定导出符号，服务平台早期引导。
 - `def_plat_interface`：把平台 trait 接口接到 `crate_interface` 调用机制，服务运行期平台能力分发。
-- 它本身不提供 `percpu`、不负责板级初始化，也不包含任何硬件抽象实现。
+- 它本身不提供 `ax-percpu`、不负责板级初始化，也不包含任何硬件抽象实现。
 
 `README.md` 也明确说明：通常不应直接依赖 `ax-plat-macros`，而应通过 `axplat` 间接使用。
 
@@ -54,8 +54,8 @@
 
 这就是平台包与运行时之间的链接级耦合点。
 
-### 1.5 与 `percpu` 的边界
-`ax-plat-macros` 不提供 `percpu` 宏能力。`ax_plat::percpu` 使用的是单独的 `percpu` crate。因此在文档中不能把 `percpu` 初始化或 `#[percpu::def_percpu]` 误归为 `ax-plat-macros` 的职责。
+### 1.5 与 `ax-percpu` 的边界
+`ax-plat-macros` 不提供 `ax-percpu` 宏能力。`ax_plat::percpu` 使用的是单独的 `ax-percpu` crate。因此在文档中不能把 `ax-percpu` 初始化或 `#[ax_percpu::def_percpu]` 误归为 `ax-plat-macros` 的职责。
 
 ## 2. 核心功能说明
 ### 2.1 主要功能

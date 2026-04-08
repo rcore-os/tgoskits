@@ -1,7 +1,7 @@
 use alloc::collections::VecDeque;
 
+use ax_kernel_guard::{NoOp, NoPreemptIrqSave};
 use ax_kspin::{SpinNoIrq, SpinNoIrqGuard};
-use kernel_guard::{NoOp, NoPreemptIrqSave};
 
 use crate::{AxTaskRef, CurrentTask, current_run_queue, select_run_queue};
 

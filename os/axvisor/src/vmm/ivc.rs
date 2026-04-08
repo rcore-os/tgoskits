@@ -20,8 +20,8 @@ use std::sync::Mutex;
 
 use ax_errno::AxResult;
 use ax_hal::paging::PagingHandlerImpl;
+use ax_page_table_multiarch::PagingHandler;
 use axaddrspace::{GuestPhysAddr, HostPhysAddr};
-use page_table_multiarch::PagingHandler;
 
 /// A global btree map to store IVC channels,
 /// indexed by (publisher_vm_id, channel_key).

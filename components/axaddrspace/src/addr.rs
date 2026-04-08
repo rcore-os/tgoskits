@@ -37,7 +37,7 @@ pub type GuestVirtAddrRange = AddrRange<GuestVirtAddr>;
 pub type GuestPhysAddrRange = AddrRange<GuestPhysAddr>;
 
 #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
-impl page_table_multiarch::riscv::SvVirtAddr for GuestPhysAddr {
+impl ax_page_table_multiarch::riscv::SvVirtAddr for GuestPhysAddr {
     /// Flushes the TLB for the entire address space. The `_vaddr` parameter is ignored.
     /// This function always performs a full flush and does not support per-page invalidation.
     ///

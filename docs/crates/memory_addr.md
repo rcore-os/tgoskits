@@ -6,7 +6,7 @@
 > 版本：`0.4.1`
 > 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs`、`src/addr.rs`、`src/range.rs`、`src/iter.rs`
 
-`memory_addr` 是整个仓库内存子系统最底层的语义基石之一。它不做页表，不做映射策略，也不做物理页分配；它只做一件事：用类型化方式表达“地址”和“地址区间”，并提供对齐、算术和分页遍历等最基础但最容易出错的操作。`axplat`、`ax-mm`、`page_table_multiarch`、`axaddrspace`、虚拟化栈以及 StarryOS 的内存路径都把它当作共同语言层。
+`memory_addr` 是整个仓库内存子系统最底层的语义基石之一。它不做页表，不做映射策略，也不做物理页分配；它只做一件事：用类型化方式表达“地址”和“地址区间”，并提供对齐、算术和分页遍历等最基础但最容易出错的操作。`axplat`、`ax-mm`、`ax-page-table-multiarch`、`axaddrspace`、虚拟化栈以及 StarryOS 的内存路径都把它当作共同语言层。
 
 ## 1. 架构设计分析
 
@@ -145,7 +145,7 @@
 3. 用 `AddrRange::from_start_size()` 表示连续区间
 4. 用 `PageIter4K` 或 `DynPageIter` 遍历区间内每个页起点
 
-这条主线在 `ax-mm`、`ax-memory-set`、`page_table_multiarch` 和 `axaddrspace` 里都能看到。
+这条主线在 `ax-mm`、`ax-memory-set`、`ax-page-table-multiarch` 和 `axaddrspace` 里都能看到。
 
 ## 3. 依赖关系图谱
 
@@ -158,8 +158,8 @@
 仓库内直接或间接依赖它的关键模块包括：
 
 - `ax-memory-set`
-- `page_table_entry`
-- `page_table_multiarch`
+- `ax-page-table-entry`
+- `ax-page-table-multiarch`
 - `axplat`
 - `ax-mm`
 - `axaddrspace`
@@ -174,8 +174,8 @@
 graph TD
     A[memory_addr]
     A --> B[ax-memory-set]
-    A --> C[page_table_entry]
-    A --> D[page_table_multiarch]
+    A --> C[ax-page-table-entry]
+    A --> D[ax-page-table-multiarch]
     A --> E[axplat]
     A --> F[ax-mm]
     A --> G[axaddrspace]
@@ -204,7 +204,7 @@ graph TD
 ### 4.3 与上层集成
 
 - 与 `ax-memory-set` 集成时，`AddrRange` 是 `MemoryArea` 的直接区间载体
-- 与 `page_table_entry` / `page_table_multiarch` 集成时，`PhysAddr` 是页表项和页表页操作的基础地址类型
+- 与 `ax-page-table-entry` / `ax-page-table-multiarch` 集成时，`PhysAddr` 是页表项和页表页操作的基础地址类型
 - 与 `axaddrspace` 集成时，宏扩展机制可直接派生出 GPA/GVA 类型
 
 ## 5. 测试策略

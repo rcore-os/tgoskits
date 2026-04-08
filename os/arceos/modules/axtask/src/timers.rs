@@ -2,7 +2,7 @@ use alloc::{boxed::Box, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use ax_hal::time::{TimeValue, wall_time};
-use kernel_guard::{NoOp, NoPreemptIrqSave};
+use ax_kernel_guard::{NoOp, NoPreemptIrqSave};
 use timer_list::{TimerEvent, TimerList};
 
 use crate::{AxTaskRef, select_run_queue};

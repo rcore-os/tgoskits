@@ -17,8 +17,8 @@ use core::fmt;
 
 use ax_errno::{AxResult, ax_err};
 use ax_memory_set::{MemoryArea, MemorySet};
+use ax_page_table_multiarch::PagingHandler;
 use memory_addr::{MemoryAddr, PhysAddr, is_aligned_4k};
-use page_table_multiarch::PagingHandler;
 
 use crate::{
     GuestPhysAddr, GuestPhysAddrRange, mapping_err_to_ax_err, npt::NestedPageTable as PageTable,
@@ -26,8 +26,8 @@ use crate::{
 
 mod backend;
 
+pub use ax_page_table_entry::MappingFlags;
 pub use backend::Backend;
-pub use page_table_entry::MappingFlags;
 
 /// The virtual memory address space.
 pub struct AddrSpace<H: PagingHandler> {

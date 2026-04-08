@@ -28,7 +28,7 @@
 //! # Examples
 //!
 //! ```
-//! use kernel_guard::{KernelGuardIf, NoPreempt};
+//! use ax_kernel_guard::{KernelGuardIf, NoPreempt};
 //!
 //! struct KernelGuardIfImpl;
 //!

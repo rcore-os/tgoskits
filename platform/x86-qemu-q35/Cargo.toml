@@ -33,7 +33,7 @@ int_ratio = "0.3.2"
 ax-kspin = "0.3.1"
 lazyinit = "0.4.2"
 log = "0.4"
-percpu.workspace = true
+ax-percpu.workspace = true
 
 multiboot = "0.8"
 raw-cpuid = "11.5"

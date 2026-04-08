@@ -244,7 +244,7 @@ graph LR
     current --> int_ratio["int_ratio"]
     current --> ax_kspin["ax-kspin"]
     current --> lazyinit["lazyinit"]
-    current --> percpu["percpu"]
+    current --> ax-percpu["ax-percpu"]
     arceos_helloworld_myplat["ax-helloworld-myplat"] --> current
     ax-hal["ax-hal"] --> current
     hello_kernel["hello-kernel"] --> current
@@ -259,7 +259,7 @@ graph LR
 - `int_ratio`
 - `ax-kspin`
 - `lazyinit`
-- `percpu`
+- `ax-percpu`
 
 ### 3.2 间接本地依赖
 - `axbacktrace`
@@ -270,8 +270,8 @@ graph LR
 - `handler_table`
 - `kernel_guard`
 - `memory_addr`
-- `page_table_entry`
-- `page_table_multiarch`
+- `ax-page-table-entry`
+- `ax-page-table-multiarch`
 - `percpu_macros`
 
 ### 3.3 被依赖情况

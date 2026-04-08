@@ -42,7 +42,7 @@ pub trait AxArchPerCpu: Sized {
 /// - Define a per-CPU state in hypervisor:
 ///
 ///   ```ignore
-///   #[percpu::def_percpu]
+///   #[ax_percpu::def_percpu]
 ///   pub static AXVM_PER_CPU: AxPerCpu<MyArchPerCpuImpl> = AxPerCpu::new_uninit();
 ///   ```
 ///
@@ -52,7 +52,7 @@ pub trait AxArchPerCpu: Sized {
 ///   let percpu = unsafe {
 ///       AXVM_PER_CPU.current_ref_mut_raw()
 ///   };
-///   percpu.init(0).expect("Failed to initialize percpu state");
+///   percpu.init(0).expect("Failed to initialize ax-percpu state");
 ///   percpu.hardware_enable().expect("Failed to enable virtualization");
 ///   ```
 pub struct AxPerCpu<A: AxArchPerCpu> {

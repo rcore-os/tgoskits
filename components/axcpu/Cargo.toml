@@ -28,7 +28,7 @@ default = []
 fp-simd = []
 tls = []
 uspace = []
-arm-el2 = ["page_table_entry/arm-el2"]
+arm-el2 = ["ax-page-table-entry/arm-el2"]
 
 [dependencies]
 axbacktrace = "0.3.2"
@@ -36,11 +36,11 @@ cfg-if = "1.0"
 linkme = "0.3"
 log = "0.4"
 memory_addr = "0.6.1"
-page_table_entry = "0.8.1"
+ax-page-table-entry = "0.8.1"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 lazyinit = "0.4.2"
-percpu = "0.4.3"
+ax-percpu = "0.4.3"
 x86 = "0.52"
 x86_64 = { version = "0.15", default-features = false, features = [
     "instructions",
@@ -55,7 +55,7 @@ riscv = "0.16"
 
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
 loongArch64 = "0.2"
-page_table_multiarch = "0.8.1"
+ax-page-table-multiarch = "0.8.1"
 
 [lints.clippy]
 new_without_default = "allow"

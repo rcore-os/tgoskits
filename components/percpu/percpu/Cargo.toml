@@ -1,7 +1,7 @@
 [package]
-name = "percpu"
+name = "ax-percpu"
 description = "Define and access per-CPU data structures"
-documentation = "https://docs.rs/percpu"
+documentation = "https://docs.rs/ax-percpu"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -19,7 +19,7 @@ default = []
 sp-naive = ["percpu_macros/sp-naive"]
 
 # Whether the system enables preemption.
-preempt = ["percpu_macros/preempt", "dep:kernel_guard"]
+preempt = ["percpu_macros/preempt", "dep:ax-kernel-guard"]
 
 # ARM specific, whether to run at the EL2 privilege level.
 arm-el2 = ["percpu_macros/arm-el2"]
@@ -35,7 +35,7 @@ custom-base = ["percpu_macros/custom-base"]
 
 [dependencies]
 cfg-if = "1.0"
-kernel_guard = { version = "0.3.3", optional = true }
+ax-kernel-guard = { version = "0.3.3", optional = true }
 percpu_macros = { path = "../percpu_macros", version = "0.4.3" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]

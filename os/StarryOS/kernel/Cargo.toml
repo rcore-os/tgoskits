@@ -72,7 +72,7 @@ gimli = { version = "0.33", default-features = false, optional = true }
 hashbrown = "0.16"
 indoc = "2"
 inherit-methods-macro = "0.1.0"
-kernel_guard = "0.3.3"
+ax-kernel-guard = "0.3.3"
 kernel-elf-parser = "0.3.4"
 ax-kspin = "0.3.1"
 lazy_static = { version = "1.5", features = ["spin_no_std"] }
@@ -91,7 +91,7 @@ memory_addr = "0.6.1"
 ax-memory-set = "0.6.1"
 num_enum = { version = "0.7", default-features = false }
 ouroboros = { version = "0.18", default-features = false }
-percpu = "0.4.3"
+ax-percpu = "0.4.3"
 rand = { version = "0.10", default-features = false, features = ["alloc"] }
 ringbuf = { version = "0.4.8", default-features = false, features = ["alloc"] }
 scope-local = "0.3.2"
@@ -114,4 +114,4 @@ x86 = "0.52"
 riscv = "0.16"
 
 [target.'cfg(not(any(target_arch = "aarch64", target_arch = "loongarch64")))'.dependencies]
-page_table_multiarch = { version = "0.8.1", features = ["copy-from"] }
+ax-page-table-multiarch = { version = "0.8.1", features = ["copy-from"] }

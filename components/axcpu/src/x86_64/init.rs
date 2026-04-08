@@ -2,13 +2,13 @@
 
 /// Initializes the per-CPU data structures.
 ///
-/// It calls the initialization function of the [`percpu`] crate. It (or other
+/// It calls the initialization function of the [`ax-percpu`] crate. It (or other
 /// alternative initialization) should be called before [`init_trap`].
 ///
-/// [`percpu`]: https://docs.rs/percpu/latest/percpu/index.html
+/// [`ax-percpu`]: https://docs.rs/ax-percpu/latest/ax_percpu/index.html
 pub fn init_percpu(cpu_id: usize) {
-    percpu::init();
-    percpu::init_percpu_reg(cpu_id);
+    ax_percpu::init();
+    ax_percpu::init_percpu_reg(cpu_id);
 }
 
 /// Initializes trap handling on the current CPU.
@@ -18,11 +18,11 @@ pub fn init_percpu(cpu_id: usize) {
 /// configure the handler for `syscall` instruction.
 ///
 /// # Notes
-/// Before calling this function, the initialization function of the [`percpu`]
+/// Before calling this function, the initialization function of the [`ax-percpu`]
 /// crate should have been invoked to ensure that the per-CPU data structures
 /// are set up correctly (i.e., by calling [`init_percpu`]).
 ///
-/// [`percpu`]: https://docs.rs/percpu/latest/percpu/index.html
+/// [`ax-percpu`]: https://docs.rs/ax-percpu/latest/ax_percpu/index.html
 pub fn init_trap() {
     #[cfg(feature = "uspace")]
     crate::uspace_common::init_exception_table();

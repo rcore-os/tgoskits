@@ -14,9 +14,9 @@
 
 use core::{convert::TryFrom, fmt};
 
+use ax_page_table_entry::{GenericPTE, MappingFlags};
+use ax_page_table_multiarch::{PageTable64, PagingMetaData};
 use bit_field::BitField;
-use page_table_entry::{GenericPTE, MappingFlags};
-use page_table_multiarch::{PageTable64, PagingMetaData};
 
 use crate::{GuestPhysAddr, HostPhysAddr};
 
@@ -111,7 +111,7 @@ impl From<EPTFlags> for MappingFlags {
 }
 
 /// An x86_64 VMX extented page table entry.
-/// Note: The [EPTEntry] can be moved to the independent crate `page_table_entry`.
+/// Note: The [EPTEntry] can be moved to the independent crate `ax-page-table-entry`.
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct EPTEntry(u64);

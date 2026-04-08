@@ -81,7 +81,7 @@ make ARCH=riscv64 run SMP=4
 ### 2.3 `irq.rs` 的 per-CPU 定时器逻辑
 与 `irq-kernel` 不同，这里用的是：
 
-- `#[percpu::def_percpu] static NEXT_DEADLINE: u64 = 0;`
+- `#[ax_percpu::def_percpu] static NEXT_DEADLINE: u64 = 0;`
 
 这说明在多核场景下，每个 CPU 都维护自己下一次 one-shot timer 的到期时间。它不是全局共享一个 deadline，而是显式验证 per-CPU 数据和多核 timer IRQ 是否能共存。
 
@@ -99,7 +99,7 @@ make ARCH=riscv64 run SMP=4
 graph LR
     sample["smp-kernel"] --> axplat["ax-plat"]
     sample --> ax-cpu["ax-cpu"]
-    sample --> percpu["percpu"]
+    sample --> ax-percpu["ax-percpu"]
     sample --> memaddr["memory_addr"]
     sample --> conststr["const-str"]
     sample --> x86["ax-plat-x86-pc(irq,smp)"]
@@ -111,7 +111,7 @@ graph LR
 ### 3.1 直接依赖
 - `axplat`：统一平台抽象入口。
 - `ax-cpu`：IRQ/trap 与 CPU 辅助。
-- `percpu`：多核定时器中的 per-CPU 状态。
+- `ax-percpu`：多核定时器中的 per-CPU 状态。
 - `memory_addr`：次核启动栈地址转换。
 - `const-str`：解析 `AX_CPU_NUM`。
 - 各平台包的 `irq` + `smp` feature：真正提供 AP boot 与多核 IRQ 能力。

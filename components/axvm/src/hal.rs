@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use ax_page_table_multiarch::PagingHandler;
 use memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr};
-use page_table_multiarch::PagingHandler;
 
 pub struct PagingHandlerImpl;
 
