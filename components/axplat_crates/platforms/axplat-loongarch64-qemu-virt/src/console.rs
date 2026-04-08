@@ -1,6 +1,6 @@
 use ax_kspin::SpinNoIrq;
-use ax_plat::console::ConsoleIf;
 use ax_lazyinit::LazyInit;
+use ax_plat::console::ConsoleIf;
 use uart_16550::{Config, Uart16550, backend::MmioBackend};
 
 use crate::config::{devices::UART_PADDR, plat::PHYS_VIRT_OFFSET};

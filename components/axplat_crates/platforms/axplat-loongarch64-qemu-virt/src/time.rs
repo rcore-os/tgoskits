@@ -1,5 +1,5 @@
-use ax_plat::time::TimeIf;
 use ax_lazyinit::LazyInit;
+use ax_plat::time::TimeIf;
 use loongArch64::time::Time;
 
 static NANOS_PER_TICK: LazyInit<u64> = LazyInit::new();
