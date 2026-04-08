@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use ax_hal::time::{TimeValue, wall_time};
 use ax_kernel_guard::{NoOp, NoPreemptIrqSave};
-use timer_list::{TimerEvent, TimerList};
+use ax_timer_list::{TimerEvent, TimerList};
 
 use crate::{AxTaskRef, select_run_queue};
 

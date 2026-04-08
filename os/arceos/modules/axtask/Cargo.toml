@@ -26,7 +26,7 @@ multitask = [
     "dep:spin",
 ]
 task-ext = ["dep:extern-trait"]
-irq = ["ax-hal/irq", "dep:timer_list"]
+irq = ["ax-hal/irq", "dep:ax-timer-list"]
 tls = ["ax-hal/tls"]
 preempt = ["irq", "ax-percpu?/preempt", "ax-kernel-guard/preempt"]
 smp = ["ax-kspin/smp"]
@@ -58,7 +58,7 @@ log.workspace = true
 ax-memory-addr = { workspace = true, optional = true }
 ax-percpu = { workspace = true, optional = true }
 spin = { workspace = true, optional = true }
-timer_list = { workspace = true, optional = true }
+ax-timer-list = { workspace = true, optional = true }
 
 [dev-dependencies]
 ax-hal = { workspace = true, features = ["fp-simd"] }

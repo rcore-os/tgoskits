@@ -156,9 +156,9 @@ ax-cpu = { path = "components/axcpu" }
 ax-io = { path = "components/axio" }
 ax-sched = { path = "components/axsched" }
 axpoll = { path = "components/axpoll" }
+ax-timer-list = { path = "components/timer_list" }
 ax-lazyinit = { path = "components/ax-lazyinit" }
 ax-linked-list-r4l = { path = "components/linked_list_r4l" }
-timer_list = { path = "components/timer_list" }
 ax-int-ratio = { path = "components/int_ratio" }
 ax-cap-access = { path = "components/cap_access" }
 ax-handler-table = { path = "components/handler_table" }
@@ -335,7 +335,7 @@ axhvc = { path = "components/axhvc", version = "0.4.0" }
 ax-io = { path = "components/axio", version = "0.5.0" }
 axklib = { path = "components/axklib", version = "0.5.0" }
 axpoll = { path = "components/axpoll", version = "0.3.2" }
-timer_list = { path = "components/timer_list", version = "0.3.0" }
+ax-timer-list = { path = "components/timer_list", version = "0.3.0" }
 ax-sched = { path = "components/axsched", version = "0.5.1" }
 axvcpu = { path = "components/axvcpu", version = "0.5.0" }
 axvm = { path = "components/axvm", version = "0.5.0" }

@@ -19,7 +19,7 @@ use alloc::boxed::Box;
 use ax_hal;
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
-use timer_list::{TimeValue, TimerEvent, TimerList};
+use ax_timer_list::{TimeValue, TimerEvent, TimerList};
 
 static TOKEN: AtomicUsize = AtomicUsize::new(0);
 // const PERIODIC_INTERVAL_NANOS: u64 = ax_hal::time::NANOS_PER_SEC / ax_config::TICKS_PER_SEC as u64;

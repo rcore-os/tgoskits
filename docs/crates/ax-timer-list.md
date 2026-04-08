@@ -1,4 +1,4 @@
-# `timer_list` 技术文档
+# `ax-timer-list` 技术文档
 
 > 路径：`components/timer_list`
 > 类型：库 crate
@@ -6,7 +6,7 @@
 > 版本：`0.1.0`
 > 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`os/axvisor/src/vmm/timer.rs`
 
-`timer_list` 提供一个按截止时间排序的定时事件容器。它内部用 `BinaryHeap` 实现最小堆语义，向上暴露“插入事件、取消事件、取出最早到期事件”的接口。它是容器型叶子基础件：不是硬件定时器驱动、不是中断时钟源，也不是完整的定时器子系统。
+`ax-timer-list` 提供一个按截止时间排序的定时事件容器。它内部用 `BinaryHeap` 实现最小堆语义，向上暴露“插入事件、取消事件、取出最早到期事件”的接口。它是容器型叶子基础件：不是硬件定时器驱动、不是中断时钟源，也不是完整的定时器子系统。
 
 ## 1. 架构设计分析
 ### 1.1 设计定位
@@ -59,18 +59,18 @@ flowchart TD
 - `TimerEventFn::new()`：本 crate 测试里用于快速包装闭包事件。
 
 ### 2.3 使用边界
-- `timer_list` 不保证线程安全，真实系统里需要像 Axvisor 那样再包一层 `SpinNoIrq` 或其他锁。
-- `timer_list` 不负责重复定时器、周期性重装或硬件编程。
-- `timer_list` 也不是高性能 timer wheel；当前取消实现甚至直接使用 `BinaryHeap::retain()`，源码里明确写了 `TODO: performance optimization`。
+- `ax-timer-list` 不保证线程安全，真实系统里需要像 Axvisor 那样再包一层 `SpinNoIrq` 或其他锁。
+- `ax-timer-list` 不负责重复定时器、周期性重装或硬件编程。
+- `ax-timer-list` 也不是高性能 timer wheel；当前取消实现甚至直接使用 `BinaryHeap::retain()`，源码里明确写了 `TODO: performance optimization`。
 
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    timer_list["timer_list"] --> axvisor["axvisor VMM timer"]
+    ax_timer_list["ax-timer-list"] --> axvisor["axvisor VMM timer"]
 ```
 
 ### 3.1 关键直接依赖
-`timer_list` 没有本地 crate 依赖，保持了纯容器实现。
+`ax-timer-list` 没有本地 crate 依赖，保持了纯容器实现。
 
 ### 3.2 关键直接消费者
 - `axvisor`：在 `vmm/timer.rs` 中以 `LazyInit<SpinNoIrq<TimerList<VmmTimerEvent>>>` 的形式使用。
@@ -79,7 +79,7 @@ graph LR
 ### 4.1 依赖配置
 ```toml
 [dependencies]
-timer_list = { workspace = true }
+ax-timer-list = { workspace = true }
 ```
 
 ### 4.2 修改时的关键约束
@@ -89,13 +89,13 @@ timer_list = { workspace = true }
 4. `TimerEventFn` 使用 `FnOnce`，意味着事件天然是一次性的；不要误改成可重复调用而破坏消费语义。
 
 ### 4.3 开发建议
-- 需要线程安全时，在外层包锁，不要把锁策略硬塞进 `timer_list`。
+- 需要线程安全时，在外层包锁，不要把锁策略硬塞进 `ax-timer-list`。
 - 需要周期定时器时，在回调里重新插入新事件，或由上层另建策略层。
-- 若要接入硬件时钟源，应让平台时间层决定何时唤醒，再由 `timer_list` 只负责维护软件队列。
+- 若要接入硬件时钟源，应让平台时间层决定何时唤醒，再由 `ax-timer-list` 只负责维护软件队列。
 
 ## 5. 测试策略
 ### 5.1 当前测试形态
-`timer_list` 的测试位于 `src/lib.rs`：
+`ax-timer-list` 的测试位于 `src/lib.rs`：
 
 - `test_timer_list()`：覆盖排序、取消和按顺序到期。
 - `test_timer_list_fn()`：覆盖 `TimerEventFn` 闭包包装。
@@ -110,15 +110,15 @@ timer_list = { workspace = true }
 - 在多事件同一时刻到期时，上层循环是否能逐个取尽。
 
 ### 5.4 覆盖率要求
-- 对 `timer_list`，顺序语义和取消语义是核心。
+- 对 `ax-timer-list`，顺序语义和取消语义是核心。
 - 如果调整堆排序或取消算法，必须补覆盖同 deadline、多次 cancel、空队列等边界测试。
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-当前 ArceOS 主线模块没有直接把 `timer_list` 作为公共运行时定时器使用。若未来接入，它也应仍然只是一个定时事件容器。
+当前 ArceOS 主线模块没有直接把 `ax-timer-list` 作为公共运行时定时器使用。若未来接入，它也应仍然只是一个定时事件容器。
 
 ### 6.2 StarryOS
-当前仓库里 StarryOS 没有直接依赖 `timer_list`。即便后续复用，它也只适合作为低层延时队列，而不是完整定时框架。
+当前仓库里 StarryOS 没有直接依赖 `ax-timer-list`。即便后续复用，它也只适合作为低层延时队列，而不是完整定时框架。
 
 ### 6.3 Axvisor
-在 Axvisor 中，`timer_list` 承担的是 VMM 软件定时事件队列角色。真正的当前时间获取、轮询时机和回调执行仍由 Axvisor 自己负责。
+在 Axvisor 中，`ax-timer-list` 承担的是 VMM 软件定时事件队列角色。真正的当前时间获取、轮询时机和回调执行仍由 Axvisor 自己负责。

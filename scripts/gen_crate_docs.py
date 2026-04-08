@@ -292,7 +292,7 @@ CURATED_DOCS = {
     "test-simple",
     "test-weak",
     "test-weak-partial",
-    "timer_list",
+    "ax-timer-list",
     "tg-xtask",
     "ax-percpu",
     "x86_vcpu",

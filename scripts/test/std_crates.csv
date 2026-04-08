@@ -37,7 +37,7 @@ starry-process
 starry-signal
 smoltcp
 starry-vm
-timer_list
+ax-timer-list
 ax-alloc
 ax-config
 ax-display

@@ -58,7 +58,7 @@ lazy_static = {version = "1.5", default-features = false, features = ["spin_no_s
 ax-lazyinit = "0.4.2"
 log = "0.4"
 spin = "0.10"
-timer_list = "0.3.0"
+ax-timer-list = "0.3.0"
 hashbrown = "0.14"
 
 # System dependent modules provided by ArceOS.
