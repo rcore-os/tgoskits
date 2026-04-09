@@ -1,5 +1,8 @@
+extern crate alloc;
+
 use core::{fmt, ops::Range, str::FromStr};
 
+use alloc::vec::Vec;
 use ax_driver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
 use log::{debug, info};
 
@@ -112,6 +115,12 @@ impl fmt::Display for GptPartitionEntry {
             self.name, self.starting_lba, self.ending_lba, self.attributes
         )
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GptPartition {
+    pub entry: GptPartitionEntry,
+    pub range: Range<u64>,
 }
 
 fn block_size<T: BlockDriverOps>(inner: &T) -> DevResult<usize> {
@@ -231,6 +240,18 @@ where
     T: BlockDriverOps,
     F: FnMut(usize, &GptPartitionEntry) -> bool,
 {
+    let partitions = list_partitions(inner)?;
+    for (index, partition) in partitions.iter().enumerate() {
+        if predicate(index, &partition.entry) {
+            info!("Selected GPT partition: {}", partition.entry);
+            return Ok(Some(partition.range.clone()));
+        }
+    }
+
+    Ok(None)
+}
+
+pub fn list_partitions<T: BlockDriverOps>(inner: &mut T) -> DevResult<Vec<GptPartition>> {
     let block_size = block_size(inner)?;
     let block_size_u64 = u64::try_from(block_size).map_err(|_| DevError::BadState)?;
     let num_blocks = inner.num_blocks();
@@ -268,6 +289,7 @@ where
     let entry_array_offset = checked_mul(primary_header.partition_entry_lba, block_size_u64)?;
     let entry_count = usize::try_from(primary_header.number_of_partition_entries)
         .map_err(|_| DevError::BadState)?;
+    let mut partitions = Vec::new();
 
     for index in 0..entry_count {
         let index_u64 = u64::try_from(index).map_err(|_| DevError::BadState)?;
@@ -289,15 +311,14 @@ where
         }
 
         debug!("GPT partition[{index}]: {part}");
-        if predicate(index, &part) {
-            let range_end = checked_add(part.ending_lba, 1)?;
-            let range = part.starting_lba..range_end;
-            info!("Selected GPT partition: {part}");
-            return Ok(Some(range));
-        }
+        let range_end = checked_add(part.ending_lba, 1)?;
+        partitions.push(GptPartition {
+            entry: part,
+            range: part.starting_lba..range_end,
+        });
     }
 
-    Ok(None)
+    Ok(partitions)
 }
 
 pub struct GptPartitionDev<T> {

@@ -1,5 +1,5 @@
 env = {}
 log = "Info"
-features = ["rk3588", "smp"]
-max_cpu_num = 8
+features = ["rk3588"]
+max_cpu_num = 1
 plat_dyn = true
