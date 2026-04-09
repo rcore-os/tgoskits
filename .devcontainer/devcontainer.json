@@ -1,6 +1,7 @@
 {
   "name": "tgoskits Dev Container",
   "build": {
+    "context": "..",
     "dockerfile": "../container/Dockerfile"
   },
   "hostRequirements": {
