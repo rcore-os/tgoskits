@@ -7,8 +7,7 @@ authors = ["Yuekai Jia <equation618@gmail.com>"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-ax-std = ["linkme", "dep:ax-std"]
+ax-std = ["dep:ax-std"]
 
 [dependencies]
 ax-std = { workspace = true, optional = true, features = ["paging"] }
-linkme = { version = "0.3.31", optional = true }

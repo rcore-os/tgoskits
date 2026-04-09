@@ -96,7 +96,7 @@ impl UserContext {
             (PAGE_FAULT_VECTOR, Ok(flags)) => ReturnReason::PageFault(va!(cr2), flags),
             (LEGACY_SYSCALL_VECTOR, _) => ReturnReason::Syscall,
             (IRQ_VECTOR_START..=IRQ_VECTOR_END, _) => {
-                handle_trap!(IRQ, vector as _);
+                crate::trap::irq_handler(vector as _);
                 ReturnReason::Interrupt
             }
             _ => ReturnReason::Exception(ExceptionInfo {

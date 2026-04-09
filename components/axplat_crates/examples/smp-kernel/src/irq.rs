@@ -1,7 +1,7 @@
-use ax_cpu::trap::{IRQ, register_trap_handler};
+use ax_cpu::trap::irq_handler;
 
-#[register_trap_handler(IRQ)]
-fn irq_handler(vector: usize) -> bool {
+#[irq_handler]
+fn handle_irq(vector: usize) -> bool {
     ax_plat::irq::handle(vector);
     true
 }

@@ -33,7 +33,6 @@ arm-el2 = ["ax-page-table-entry/arm-el2"]
 [dependencies]
 axbacktrace = "0.3.2"
 cfg-if = "1.0"
-linkme = "0.3"
 log = "0.4"
 ax-memory-addr = "0.6.1"
 ax-page-table-entry = "0.8.1"

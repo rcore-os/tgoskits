@@ -5,7 +5,7 @@ mod utils;
 
 use std::{alloc::Allocator, collections::BTreeMap, io::Write};
 
-use allocator::{AllocatorRc, BuddyByteAllocator, SlabByteAllocator, TlsfByteAllocator};
+use ax_allocator::{AllocatorRc, BuddyByteAllocator, SlabByteAllocator, TlsfByteAllocator};
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use rand::{RngCore, SeedableRng, rngs::SmallRng, seq::SliceRandom};
 

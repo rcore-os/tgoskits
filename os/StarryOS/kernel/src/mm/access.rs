@@ -8,11 +8,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_hal::{
-    asm::user_copy,
-    paging::MappingFlags,
-    trap::{PAGE_FAULT, register_trap_handler},
-};
+use ax_hal::{asm::user_copy, paging::MappingFlags, trap::page_fault_handler};
 use ax_io::prelude::*;
 use ax_kernel_guard::IrqSave;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
@@ -255,7 +251,7 @@ macro_rules! nullable {
 
 pub(crate) use nullable;
 
-#[register_trap_handler(PAGE_FAULT)]
+#[page_fault_handler]
 fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
     debug!("Page fault at {vaddr:#x}, access_flags: {access_flags:#x?}");
 

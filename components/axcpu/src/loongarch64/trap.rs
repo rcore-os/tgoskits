@@ -19,7 +19,7 @@ fn handle_breakpoint(era: &mut usize) {
 
 fn handle_page_fault(tf: &mut TrapFrame, access_flags: PageFaultFlags) {
     let vaddr = va!(badv::read().vaddr());
-    if handle_trap!(PAGE_FAULT, vaddr, access_flags) {
+    if crate::trap::page_fault_handler(vaddr, access_flags) {
         return;
     }
     #[cfg(feature = "uspace")]
@@ -59,7 +59,7 @@ fn loongarch64_trap_handler(tf: &mut TrapFrame) {
         },
         Trap::Interrupt(_) => {
             let irq_num: usize = estat.is().trailing_zeros() as usize;
-            handle_trap!(IRQ, irq_num);
+            crate::trap::irq_handler(irq_num);
         }
         trap => {
             panic!(
