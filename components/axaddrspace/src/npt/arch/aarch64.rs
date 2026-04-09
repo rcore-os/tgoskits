@@ -207,7 +207,8 @@ impl GenericPTE for A64PTEHV {
         DescriptorAttr::from_bits_truncate(self.0).contains(DescriptorAttr::VALID)
     }
     fn is_huge(&self) -> bool {
-        !DescriptorAttr::from_bits_truncate(self.0).contains(DescriptorAttr::NON_BLOCK)
+        self.is_present()
+            && !DescriptorAttr::from_bits_truncate(self.0).contains(DescriptorAttr::NON_BLOCK)
     }
     fn clear(&mut self) {
         self.0 = 0
