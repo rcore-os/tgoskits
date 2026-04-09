@@ -123,7 +123,7 @@ ax-plat-x86-pc = "0.5.1"
 axpoll = "0.3.2"
 ax-timer-list = "0.3.0"
 bindgen = "0.72"
-buddy-slab-allocator = "0.2"
+buddy-slab-allocator = "0.3"
 cfg-if = "1.0"
 chrono = { version = "0.4", default-features = false }
 ax-crate-interface = "0.5.0"
