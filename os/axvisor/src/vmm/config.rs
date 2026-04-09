@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use ax_errno::AxResult;
 use axaddrspace::GuestPhysAddr;
-use axerrno::AxResult;
 use axvm::{
     VMMemoryRegion,
     config::{AxVMConfig, AxVMCrateConfig, VmMemMappingType},
@@ -40,8 +40,8 @@ pub mod config {
     /// Read VM configs from filesystem
     #[cfg(feature = "fs")]
     pub fn filesystem_vm_configs() -> Vec<String> {
-        use axstd::fs;
-        use axstd::io::{BufReader, Read};
+        use ax_std::fs;
+        use ax_std::io::{BufReader, Read};
 
         let config_dir = "/guest/vm_default";
 
@@ -226,7 +226,7 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
 fn config_guest_address(vm: &VM, main_memory: &VMMemoryRegion) {
     const MB: usize = 1024 * 1024;
     vm.with_config(|config| {
-        if main_memory.is_identical() {
+        if main_memory.is_identical() && main_memory.needs_dealloc {
             debug!(
                 "Adjusting kernel load address from {:#x} to {:#x}",
                 config.image_config.kernel_load_gpa, main_memory.gpa
