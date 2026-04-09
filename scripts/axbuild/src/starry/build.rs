@@ -62,13 +62,16 @@ fn patch_starry_cargo_config(
     request: &ResolvedStarryRequest,
 ) -> anyhow::Result<()> {
     let platform = default_platform_for_arch(&request.arch)?;
+    let static_defplat = uses_static_default_platform(&cargo.features);
 
     cargo.package = request.package.clone();
     cargo.target = request.target.clone();
     ensure_starry_bin_arg(&mut cargo.args, &request.package)?;
-    cargo.features.push("qemu".to_string());
-    cargo.features.sort();
-    cargo.features.dedup();
+    if static_defplat {
+        cargo.features.push("qemu".to_string());
+        cargo.features.sort();
+        cargo.features.dedup();
+    }
 
     cargo
         .env
@@ -76,12 +79,37 @@ fn patch_starry_cargo_config(
     cargo
         .env
         .insert("AX_TARGET".to_string(), request.target.clone());
-    cargo
-        .env
-        .entry("AX_PLATFORM".to_string())
-        .or_insert_with(|| platform.to_string());
+    if static_defplat {
+        cargo
+            .env
+            .entry("AX_PLATFORM".to_string())
+            .or_insert_with(|| platform.to_string());
+    }
 
     Ok(())
+}
+
+fn uses_static_default_platform(features: &[String]) -> bool {
+    let has_defplat = features.iter().any(|feature| {
+        matches!(
+            feature.as_str(),
+            "defplat" | "ax-feat/defplat" | "ax-std/defplat"
+        )
+    });
+    let has_dynamic = features.iter().any(|feature| {
+        matches!(
+            feature.as_str(),
+            "plat-dyn" | "ax-feat/plat-dyn" | "ax-std/plat-dyn"
+        )
+    });
+    let has_custom = features.iter().any(|feature| {
+        matches!(
+            feature.as_str(),
+            "myplat" | "ax-feat/myplat" | "ax-std/myplat"
+        )
+    });
+
+    has_defplat && !has_dynamic && !has_custom
 }
 
 fn ensure_starry_bin_arg(args: &mut Vec<String>, package: &str) -> anyhow::Result<()> {
@@ -332,6 +360,39 @@ HELLO = "world"
 
         assert_eq!(cargo.package, "starryos-test");
         assert!(!cargo.args.iter().any(|arg| arg == "--bin"));
+    }
+
+    #[test]
+    fn patch_starry_cargo_config_skips_qemu_for_dynamic_platforms() {
+        let request = request(
+            PathBuf::from("/tmp/.build.toml"),
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+        );
+        let build_info = StarryBuildInfo {
+            env: HashMap::new(),
+            features: vec!["ax-feat/plat-dyn".to_string(), "rk3588".to_string()],
+            log: LogLevel::Info,
+            max_cpu_num: Some(8),
+            plat_dyn: true,
+        };
+        let mut cargo = build_info.into_base_cargo_config_with_log(
+            STARRY_PACKAGE.to_string(),
+            request.target.clone(),
+            StarryBuildInfo::build_cargo_args(&request.target, true),
+        );
+
+        patch_starry_cargo_config(&mut cargo, &request).unwrap();
+
+        assert!(cargo.features.contains(&"rk3588".to_string()));
+        assert!(!cargo.features.contains(&"qemu".to_string()));
+        assert!(!cargo.env.contains_key("AX_PLATFORM"));
+        assert!(
+            cargo
+                .args
+                .iter()
+                .any(|arg| arg.contains("-Clink-arg=-Taxplat.x"))
+        );
     }
 
     #[test]

@@ -14,6 +14,7 @@ pub mod ramdisk_static;
 
 #[cfg(feature = "ahci")]
 pub mod ahci;
+pub mod gpt;
 #[cfg(feature = "sdmmc")]
 pub mod sdmmc;
 

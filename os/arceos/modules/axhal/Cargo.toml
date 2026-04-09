@@ -30,6 +30,7 @@ fp-simd = [
     "ax-plat-aarch64-qemu-virt?/fp-simd",
     "ax-plat-riscv64-qemu-virt?/fp-simd",
     "ax-plat-loongarch64-qemu-virt?/fp-simd",
+    "axplat-dyn?/fp-simd",
 ]
 rtc = [
     "ax-plat-x86-pc?/rtc",

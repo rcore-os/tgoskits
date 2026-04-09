@@ -30,7 +30,7 @@ module_driver!(
     priority: ProbePriority::DEFAULT,
     probe_kinds: &[
         ProbeKind::Fdt {
-            compatibles: &["rockchip,dwcmshc-sdhci"],
+            compatibles: &["rockchip,rk3588-dwcmshc", "rockchip,dwcmshc-sdhci"],
             on_probe: probe
         }
     ],
