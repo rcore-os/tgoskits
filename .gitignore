@@ -26,6 +26,7 @@
 # IDEs
 /.idea/
 /.vscode/
+/.zed/
 
 # Python cache
 __pycache__/

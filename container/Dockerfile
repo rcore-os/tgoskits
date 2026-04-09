@@ -2,7 +2,6 @@ FROM ubuntu:24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG QEMU_VERSION=10.2.1
-ARG RUST_TOOLCHAIN=nightly-2026-02-25
 
 ENV TZ=Etc/UTC \
     RUSTUP_HOME=/opt/rustup \
@@ -63,16 +62,16 @@ RUN set -eux; \
       rm -f "/tmp/${file}"; \
     done
 
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-    | sh -s -- -y --profile minimal --default-toolchain "${RUST_TOOLCHAIN}"
+COPY rust-toolchain.toml /tmp/rust-toolchain/rust-toolchain.toml
 
-RUN rustup component add rust-src llvm-tools rustfmt clippy \
-    && rustup target add \
-      x86_64-unknown-none \
-      riscv64gc-unknown-none-elf \
-      aarch64-unknown-none-softfloat \
-      loongarch64-unknown-none-softfloat \
-    && cargo install cargo-binutils ax-config-gen cargo-axplat
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --profile minimal --default-toolchain none
+
+RUN set -eux; \
+    cd /tmp/rust-toolchain; \
+    rustc --version; \
+    cargo --version; \
+    cargo install cargo-binutils axconfig-gen cargo-axplat
 
 WORKDIR /workspace
 

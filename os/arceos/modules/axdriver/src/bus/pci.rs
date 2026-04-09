@@ -14,7 +14,10 @@ fn config_pci_device(
 ) -> DevResult {
     let mut bar = 0;
     while bar < PCI_BAR_NUM {
-        let info = root.bar_info(bdf, bar).unwrap();
+        let info = root.bar_info(bdf, bar).map_err(|err| {
+            warn!("failed to read PCI BAR {bar} info for {bdf}: {err:?}");
+            DevError::Io
+        })?;
         if let BarInfo::Memory {
             address_type,
             address,
@@ -38,7 +41,10 @@ fn config_pci_device(
         }
 
         // read the BAR info again after assignment.
-        let info = root.bar_info(bdf, bar).unwrap();
+        let info = root.bar_info(bdf, bar).map_err(|err| {
+            warn!("failed to re-read PCI BAR {bar} info for {bdf}: {err:?}");
+            DevError::Io
+        })?;
         match info {
             BarInfo::IO { address, size } => {
                 if address > 0 && size > 0 {
