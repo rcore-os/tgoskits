@@ -6,7 +6,7 @@ Included toolchains:
 
 - Ubuntu 24.04 base image (minimal packages with `--no-install-recommends`)
 - QEMU `10.2.1` (built from source, with `aarch64/riscv64/loongarch64/x86_64` system targets)
-- Rust toolchain `nightly-2026-02-25` (same as `rust-toolchain.toml`)
+- Rust toolchain `nightly-2026-04-01` (same as `rust-toolchain.toml`)
 - musl cross compilers for `aarch64/riscv64/loongarch64/x86_64`
 
 ## Build
