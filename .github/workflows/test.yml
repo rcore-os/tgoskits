@@ -37,7 +37,6 @@ jobs:
 
   test_std:
     name: Test with std
-    if: ${{ (github.event_name == 'pull_request' && github.base_ref || github.ref_name) == 'main' }}
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/${{ github.repository }}-container:latest
@@ -125,15 +124,17 @@ jobs:
         run: cargo axvisor test qemu --target x86_64
 
   test_axvisor_board:
-    name: Test axvisor ${{ matrix.test_group }}
+    name: ${{ matrix.name }}
     if: ${{ (github.event_name == 'pull_request' && github.base_ref || github.ref_name) == 'main' }}
     strategy:
       fail-fast: false
       matrix:
         include:
           # - test_group: phytiumpi-linux
-          - test_group: orangepi-5-plus-linux
-          - test_group: roc-rk3568-pc-linux
+          - name: Test axvisor orangepi-5-plus-linux
+            test_group: orangepi-5-plus-linux
+          - name: Test axvisor roc-rk3568-pc-linux
+            test_group: roc-rk3568-pc-linux
     runs-on:
       - self-hosted
       - linux
