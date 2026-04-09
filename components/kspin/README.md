@@ -10,10 +10,13 @@ critical section.
 ## Cargo Features
 
 - `smp`: Use in the **multi-core** environment. For **single-core** environment (without this feature), the lock state is unnecessary and optimized out. CPU can always get the lock if we follow the proper guard in use. By default, this feature is disabled.
+- `lockdep`: Enable lightweight spin-lock dependency tracking for `SpinNoPreempt` and `SpinNoIrq`. It detects recursive acquisition, lock order inversion, and out-of-order unlocks.
 
 ## Examples
 
-```rust
+The following examples are illustrative and are intended for kernel-style targets.
+
+```rust,ignore
 use ax_kspin::{SpinNoIrq, SpinNoPreempt, SpinRaw};
 
 let data = SpinRaw::new(());
@@ -31,5 +34,3 @@ let mut guard = data.lock();
 /* critical section, both preemption and IRQs are disabled. */
 drop(guard);
 ```
-
-

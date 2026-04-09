@@ -21,9 +21,9 @@
 //! # Crate features
 //!
 //! - `preempt`: Use in the preemptive system. If this feature is enabled, you
-//!    need to implement the [`KernelGuardIf`] trait in other crates. Otherwise
-//!    the preemption enable/disable operations will be no-ops. This feature is
-//!    disabled by default.
+//!   need to implement the [`KernelGuardIf`] trait in other crates. Otherwise
+//!   the preemption enable/disable operations will be no-ops. This feature is
+//!   disabled by default.
 //!
 //! # Examples
 //!
@@ -75,6 +75,12 @@ pub trait BaseGuard {
 
     /// Something that must be done after leaving the critical section.
     fn release(state: Self::State);
+
+    /// Returns whether locks guarded by this type should participate in
+    /// lock dependency tracking.
+    fn lockdep_enabled() -> bool {
+        false
+    }
 }
 
 /// A no-op guard that does nothing around the critical section.
@@ -123,6 +129,12 @@ impl NoOp {
     }
 }
 
+impl Default for NoOp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Drop for NoOp {
     fn drop(&mut self) {}
 }
@@ -158,6 +170,10 @@ mod imp {
             #[cfg(feature = "preempt")]
             ax_crate_interface::call_interface!(KernelGuardIf::enable_preempt);
         }
+
+        fn lockdep_enabled() -> bool {
+            true
+        }
     }
 
     impl BaseGuard for NoPreemptIrqSave {
@@ -175,6 +191,10 @@ mod imp {
             // enable preempt
             #[cfg(feature = "preempt")]
             ax_crate_interface::call_interface!(KernelGuardIf::enable_preempt);
+        }
+
+        fn lockdep_enabled() -> bool {
+            true
         }
     }
 

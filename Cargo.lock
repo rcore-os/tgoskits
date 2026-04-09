@@ -997,6 +997,7 @@ name = "ax-kspin"
 version = "0.3.1"
 dependencies = [
  "ax-kernel-guard",
+ "ax-percpu",
  "cfg-if",
 ]
 
