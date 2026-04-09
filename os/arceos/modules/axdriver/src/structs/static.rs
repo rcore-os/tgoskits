@@ -1,5 +1,9 @@
 #[cfg(feature = "block")]
 pub use crate::drivers::AxBlockDevice;
+#[cfg(feature = "block")]
+pub fn block_device_ops(dev: &mut AxBlockDevice) -> &mut dyn crate::prelude::BlockDriverOps {
+    dev
+}
 #[cfg(feature = "display")]
 pub use crate::drivers::AxDisplayDevice;
 #[cfg(feature = "input")]
