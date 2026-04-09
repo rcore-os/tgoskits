@@ -108,32 +108,6 @@ impl From<AllocError> for AxError {
     }
 }
 
-#[cfg(not(feature = "buddy-slab"))]
-impl From<ax_allocator::AllocError> for AllocError {
-    fn from(value: ax_allocator::AllocError) -> Self {
-        match value {
-            ax_allocator::AllocError::InvalidParam => Self::InvalidParam,
-            ax_allocator::AllocError::MemoryOverlap => Self::MemoryOverlap,
-            ax_allocator::AllocError::NoMemory => Self::NoMemory,
-            ax_allocator::AllocError::NotAllocated => Self::NotAllocated,
-        }
-    }
-}
-
-#[cfg(feature = "buddy-slab")]
-impl From<buddy_slab_allocator::AllocError> for AllocError {
-    fn from(value: buddy_slab_allocator::AllocError) -> Self {
-        match value {
-            buddy_slab_allocator::AllocError::InvalidParam => Self::InvalidParam,
-            buddy_slab_allocator::AllocError::MemoryOverlap => Self::MemoryOverlap,
-            buddy_slab_allocator::AllocError::NoMemory => Self::NoMemory,
-            buddy_slab_allocator::AllocError::NotAllocated => Self::NotAllocated,
-            buddy_slab_allocator::AllocError::NotInitialized => Self::NotInitialized,
-            buddy_slab_allocator::AllocError::NotFound => Self::NotFound,
-        }
-    }
-}
-
 #[cfg(feature = "buddy-slab")]
 pub use buddy_slab_allocator::OsImpl;
 
@@ -170,27 +144,31 @@ pub trait AllocatorOps {
     fn dealloc(&self, pos: NonNull<u8>, layout: Layout);
 
     /// Allocates contiguous pages.
-    fn alloc_pages(
-        &self,
-        num_pages: usize,
-        align_pow2: usize,
-        kind: UsageKind,
-    ) -> AllocResult<usize>;
+    ///
+    /// `align` is the requested byte alignment, not a log2/exponent.
+    /// It must be a power-of-two byte alignment accepted by the backend page allocator.
+    fn alloc_pages(&self, num_pages: usize, align: usize, kind: UsageKind) -> AllocResult<usize>;
 
     /// Allocates contiguous DMA32 pages.
+    ///
+    /// `align` is the requested byte alignment, not a log2/exponent.
+    /// It must be a power-of-two byte alignment accepted by the backend page allocator.
     fn alloc_dma32_pages(
         &self,
         num_pages: usize,
-        align_pow2: usize,
+        align: usize,
         kind: UsageKind,
     ) -> AllocResult<usize>;
 
     /// Allocates contiguous pages starting from the given address.
+    ///
+    /// `align` is the requested byte alignment, not a log2/exponent.
+    /// It must be a power-of-two byte alignment accepted by the backend page allocator.
     fn alloc_pages_at(
         &self,
         start: usize,
         num_pages: usize,
-        align_pow2: usize,
+        align: usize,
         kind: UsageKind,
     ) -> AllocResult<usize>;
 

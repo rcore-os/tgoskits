@@ -166,9 +166,8 @@ impl GlobalAllocator {
 
     /// Gives back the allocated region to the byte allocator.
     ///
-    /// The region should be allocated by [`alloc`], and `align_pow2` should be
-    /// the same as the one used in [`alloc`]. Otherwise, the behavior is
-    /// undefined.
+    /// The region should be allocated by [`alloc`] with the same `layout`.
+    /// Otherwise, the behavior is undefined.
     pub fn dealloc(&self, pos: NonNull<u8>, layout: Layout) {
         self.usages
             .lock()
@@ -180,18 +179,18 @@ impl GlobalAllocator {
     ///
     /// It allocates `num_pages` pages from the page allocator.
     ///
-    /// `align_pow2` must be a power of 2, and the returned region bound will be
-    /// aligned to it.
+    /// `align` is the requested alignment in bytes, not a log2/exponent.
+    /// It must be a power-of-two byte alignment accepted by the page allocator.
     pub fn alloc_pages(
         &self,
         num_pages: usize,
-        align_pow2: usize,
+        alignment: usize,
         kind: UsageKind,
     ) -> AllocResult<usize> {
         let addr = self
             .palloc
             .lock()
-            .alloc_pages(num_pages, align_pow2)
+            .alloc_pages(num_pages, alignment)
             .map_err(crate::AllocError::from)?;
         if !matches!(kind, UsageKind::RustHeap) {
             self.usages.lock().alloc(kind, num_pages * PAGE_SIZE);
@@ -203,7 +202,7 @@ impl GlobalAllocator {
     pub fn alloc_dma32_pages(
         &self,
         _num_pages: usize,
-        _align_pow2: usize,
+        _alignment: usize,
         _kind: UsageKind,
     ) -> AllocResult<usize> {
         unimplemented!("default allocator does not support alloc_dma32_pages")
@@ -214,19 +213,19 @@ impl GlobalAllocator {
     /// It allocates `num_pages` pages from the page allocator starting from the
     /// given address.
     ///
-    /// `align_pow2` must be a power of 2, and the returned region bound will be
-    /// aligned to it.
+    /// `align` is the requested alignment in bytes, not a log2/exponent.
+    /// It must be a power-of-two byte alignment accepted by the page allocator.
     pub fn alloc_pages_at(
         &self,
         start: usize,
         num_pages: usize,
-        align_pow2: usize,
+        alignment: usize,
         kind: UsageKind,
     ) -> AllocResult<usize> {
         let addr = self
             .palloc
             .lock()
-            .alloc_pages_at(start, num_pages, align_pow2)
+            .alloc_pages_at(start, num_pages, alignment)
             .map_err(crate::AllocError::from)?;
         if !matches!(kind, UsageKind::RustHeap) {
             self.usages.lock().alloc(kind, num_pages * PAGE_SIZE);
@@ -236,9 +235,8 @@ impl GlobalAllocator {
 
     /// Gives back the allocated pages starts from `pos` to the page allocator.
     ///
-    /// The pages should be allocated by [`alloc_pages`], and `align_pow2`
-    /// should be the same as the one used in [`alloc_pages`]. Otherwise, the
-    /// behavior is undefined.
+    /// The pages should be allocated by [`alloc_pages`] or [`alloc_pages_at`].
+    /// Otherwise, the behavior is undefined.
     pub fn dealloc_pages(&self, pos: usize, num_pages: usize, kind: UsageKind) {
         self.usages.lock().dealloc(kind, num_pages * PAGE_SIZE);
         self.palloc.lock().dealloc_pages(pos, num_pages);
@@ -300,29 +298,29 @@ impl AllocatorOps for GlobalAllocator {
     fn alloc_pages(
         &self,
         num_pages: usize,
-        align_pow2: usize,
+        alignment: usize,
         kind: UsageKind,
     ) -> AllocResult<usize> {
-        GlobalAllocator::alloc_pages(self, num_pages, align_pow2, kind)
+        GlobalAllocator::alloc_pages(self, num_pages, alignment, kind)
     }
 
     fn alloc_dma32_pages(
         &self,
         num_pages: usize,
-        align_pow2: usize,
+        alignment: usize,
         kind: UsageKind,
     ) -> AllocResult<usize> {
-        GlobalAllocator::alloc_dma32_pages(self, num_pages, align_pow2, kind)
+        GlobalAllocator::alloc_dma32_pages(self, num_pages, alignment, kind)
     }
 
     fn alloc_pages_at(
         &self,
         start: usize,
         num_pages: usize,
-        align_pow2: usize,
+        alignment: usize,
         kind: UsageKind,
     ) -> AllocResult<usize> {
-        GlobalAllocator::alloc_pages_at(self, start, num_pages, align_pow2, kind)
+        GlobalAllocator::alloc_pages_at(self, start, num_pages, alignment, kind)
     }
 
     fn dealloc_pages(&self, pos: usize, num_pages: usize, kind: UsageKind) {
@@ -453,5 +451,16 @@ unsafe impl GlobalAlloc for GlobalAllocator {
 
         #[cfg(not(feature = "tracking"))]
         inner();
+    }
+}
+
+impl From<ax_allocator::AllocError> for super::AllocError {
+    fn from(value: ax_allocator::AllocError) -> Self {
+        match value {
+            ax_allocator::AllocError::InvalidParam => Self::InvalidParam,
+            ax_allocator::AllocError::MemoryOverlap => Self::MemoryOverlap,
+            ax_allocator::AllocError::NoMemory => Self::NoMemory,
+            ax_allocator::AllocError::NotAllocated => Self::NotAllocated,
+        }
     }
 }

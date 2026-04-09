@@ -16,16 +16,13 @@ impl MemoryIf for MemoryImpl {
         <AxMmHalImpl as AxMmHal>::alloc_frame()
     }
 
-    fn alloc_contiguous_frames(num_frames: usize, frame_align_pow2: usize) -> Option<HostPhysAddr> {
+    fn alloc_contiguous_frames(num_frames: usize, frame_align: usize) -> Option<HostPhysAddr> {
         arceos::modules::ax_alloc::global_allocator()
             .alloc(
-                Layout::from_size_align(
-                    num_frames * PAGE_SIZE_4K,
-                    PAGE_SIZE_4K << frame_align_pow2,
-                )
-                .unwrap(),
+                Layout::from_size_align(num_frames * PAGE_SIZE_4K, frame_align.max(PAGE_SIZE_4K))
+                    .unwrap(),
             )
-            // .alloc_pages(num_frames, PAGE_SIZE_4K << frame_align_pow2)
+            // .alloc_pages(num_frames, frame_align.max(PAGE_SIZE_4K))
             // .map(|vaddr| <AxMmHalImpl as AxMmHal>::virt_to_phys(vaddr.into()))
             .map(|vaddr| HostPhysAddr::from(vaddr.as_ptr() as usize))
             .ok()

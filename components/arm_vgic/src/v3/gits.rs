@@ -255,7 +255,8 @@ pub const QWORD_PER_CMD: usize = BYTES_PER_CMD >> 3; // 8 bytes per qword
 
 impl Cmdq {
     fn new(host_gits_base: HostPhysAddr) -> Self {
-        let phy_addr = axvisor_api::memory::alloc_contiguous_frames(16, 0).unwrap();
+        let phy_addr =
+            axvisor_api::memory::alloc_contiguous_frames(16, ax_memory_addr::PAGE_SIZE_4K).unwrap();
         trace!("Cmdq alloc 16 frames: {phy_addr:?}");
         let mut r = Self {
             phy_addr,
@@ -305,8 +306,12 @@ impl Cmdq {
             let ct_baser = ptr::read_volatile(ct_baser_ptr);
 
             // alloc 64 KiB (16 * 4-KiB frames) each for dt and ct
-            let dt_addr = axvisor_api::memory::alloc_contiguous_frames(16, 4).unwrap();
-            let ct_addr = axvisor_api::memory::alloc_contiguous_frames(16, 4).unwrap();
+            let dt_addr =
+                axvisor_api::memory::alloc_contiguous_frames(16, ax_memory_addr::PAGE_SIZE_4K << 4)
+                    .unwrap();
+            let ct_addr =
+                axvisor_api::memory::alloc_contiguous_frames(16, ax_memory_addr::PAGE_SIZE_4K << 4)
+                    .unwrap();
 
             let dt_baser = dt_baser
                 | (dt_addr.as_usize() as u64 & 0x0000_ffff_ffff_f000)

@@ -206,29 +206,29 @@ impl AllocatorOps for GlobalAllocator {
     fn alloc_pages(
         &self,
         num_pages: usize,
-        align_pow2: usize,
+        alignment: usize,
         kind: UsageKind,
     ) -> AllocResult<usize> {
-        GlobalAllocator::alloc_pages(self, num_pages, align_pow2, kind)
+        GlobalAllocator::alloc_pages(self, num_pages, alignment, kind)
     }
 
     fn alloc_dma32_pages(
         &self,
         num_pages: usize,
-        align_pow2: usize,
+        alignment: usize,
         kind: UsageKind,
     ) -> AllocResult<usize> {
-        GlobalAllocator::alloc_dma32_pages(self, num_pages, align_pow2, kind)
+        GlobalAllocator::alloc_dma32_pages(self, num_pages, alignment, kind)
     }
 
     fn alloc_pages_at(
         &self,
         start: usize,
         num_pages: usize,
-        align_pow2: usize,
+        alignment: usize,
         kind: UsageKind,
     ) -> AllocResult<usize> {
-        GlobalAllocator::alloc_pages_at(self, start, num_pages, align_pow2, kind)
+        GlobalAllocator::alloc_pages_at(self, start, num_pages, alignment, kind)
     }
 
     fn dealloc_pages(&self, pos: usize, num_pages: usize, kind: UsageKind) {
@@ -339,5 +339,18 @@ unsafe impl GlobalAlloc for GlobalAllocator {
 
         #[cfg(not(feature = "tracking"))]
         inner();
+    }
+}
+
+impl From<buddy_slab_allocator::AllocError> for super::AllocError {
+    fn from(value: buddy_slab_allocator::AllocError) -> Self {
+        match value {
+            buddy_slab_allocator::AllocError::InvalidParam => Self::InvalidParam,
+            buddy_slab_allocator::AllocError::MemoryOverlap => Self::MemoryOverlap,
+            buddy_slab_allocator::AllocError::NoMemory => Self::NoMemory,
+            buddy_slab_allocator::AllocError::NotAllocated => Self::NotAllocated,
+            buddy_slab_allocator::AllocError::NotInitialized => Self::NotInitialized,
+            buddy_slab_allocator::AllocError::NotFound => Self::NotFound,
+        }
     }
 }
