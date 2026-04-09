@@ -53,6 +53,8 @@ impl Wake for AxWaker {
 /// Note that this doesn't handle interruption and is not recommended for direct
 /// use in most cases.
 pub fn block_on<F: IntoFuture>(f: F) -> F::Output {
+    crate::api::might_sleep();
+
     let mut fut = pin!(f.into_future());
 
     let curr = current();

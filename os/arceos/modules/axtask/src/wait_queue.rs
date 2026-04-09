@@ -74,6 +74,7 @@ impl WaitQueue {
     /// Blocks the current task and put it into the wait queue, until other task
     /// notifies it.
     pub fn wait(&self) {
+        crate::api::might_sleep();
         current_run_queue::<NoPreemptIrqSave>().blocked_resched(self.queue.lock());
         self.cancel_events(crate::current(), false);
     }
@@ -87,6 +88,7 @@ impl WaitQueue {
     where
         F: Fn() -> bool,
     {
+        crate::api::might_sleep();
         let curr = crate::current();
         loop {
             let mut rq = current_run_queue::<NoPreemptIrqSave>();
@@ -105,6 +107,7 @@ impl WaitQueue {
     /// notify it, or the given duration has elapsed.
     #[cfg(feature = "irq")]
     pub fn wait_timeout(&self, dur: core::time::Duration) -> bool {
+        crate::api::might_sleep();
         let mut rq = current_run_queue::<NoPreemptIrqSave>();
         let curr = crate::current();
         let deadline = ax_hal::time::wall_time() + dur;
@@ -134,6 +137,7 @@ impl WaitQueue {
     where
         F: Fn() -> bool,
     {
+        crate::api::might_sleep();
         let curr = crate::current();
         let deadline = ax_hal::time::wall_time() + dur;
         debug!(
