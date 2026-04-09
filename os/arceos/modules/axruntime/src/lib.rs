@@ -308,32 +308,30 @@ fn init_allocator() {
         }
     }
 
-    #[cfg(feature = "buddy-slab")]
-    {
-        struct AddrTranslatorImpl;
-        impl ax_alloc::AddrTranslator for AddrTranslatorImpl {
-            fn virt_to_phys(&self, va: usize) -> Option<usize> {
-                Some(ax_hal::mem::virt_to_phys(va.into()).as_usize())
-            }
+    struct AllocatorOs;
+
+    impl ax_alloc::OsImpl for AllocatorOs {
+        fn current_cpu_idx(&self) -> usize {
+            ax_hal::percpu::this_cpu_id()
         }
 
-        static TRANSLATOR: AddrTranslatorImpl = AddrTranslatorImpl;
-
-        for r in memory_regions() {
-            if r.flags.contains(MemRegionFlags::FREE) && r.paddr == max_region_paddr {
-                ax_alloc::global_init(phys_to_virt(r.paddr).as_usize(), r.size, &TRANSLATOR);
-                break;
-            }
+        fn virt_to_phys(&self, vaddr: usize) -> usize {
+            ax_hal::mem::virt_to_phys(vaddr.into()).as_usize()
         }
     }
 
-    #[cfg(not(feature = "buddy-slab"))]
-    {
-        for r in memory_regions() {
-            if r.flags.contains(MemRegionFlags::FREE) && r.paddr == max_region_paddr {
-                ax_alloc::global_init(phys_to_virt(r.paddr).as_usize(), r.size);
-                break;
-            }
+    static OS: AllocatorOs = AllocatorOs;
+
+    for r in memory_regions() {
+        if r.flags.contains(MemRegionFlags::FREE) && r.paddr == max_region_paddr {
+            ax_alloc::global_init(
+                phys_to_virt(r.paddr).as_usize(),
+                r.size,
+                ax_hal::cpu_num(),
+                &OS,
+            )
+            .expect("initialize global allocator failed");
+            break;
         }
     }
 

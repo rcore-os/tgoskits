@@ -63,7 +63,6 @@ hashbrown = "0.14"
 
 # System dependent modules provided by ArceOS.
 ax-std = { version = "0.5.0", features = [
-  "alloc-level-1",
   "paging",
   "irq",
   "multitask",
