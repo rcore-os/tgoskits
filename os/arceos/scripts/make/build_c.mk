@@ -70,9 +70,21 @@ app-objs := main.o
 
 -include $(APP)/axbuild.mk  # override `app-objs`
 
-app-objs := $(addprefix $(APP)/,$(app-objs))
+app_obj_dir := $(APP)/build_$(ARCH)
+last_app_cflags := $(app_obj_dir)/.cflags
+app-objs := $(addprefix $(app_obj_dir)/,$(app-objs))
 
-$(APP)/%.o: $(APP)/%.c $(ulib_hdr)
+$(last_app_cflags): | $(app_obj_dir)
+	@if [ "$(CFLAGS) $(APP_CFLAGS)" != "`cat $(last_app_cflags) 2>&1`" ]; then \
+		echo "APP CFLAGS changed, rebuild"; \
+		echo "$(CFLAGS) $(APP_CFLAGS)" > $(last_app_cflags); \
+	fi
+
+$(app_obj_dir):
+	$(call run_cmd,mkdir,-p $@)
+
+$(app_obj_dir)/%.o: $(APP)/%.c $(ulib_hdr) $(last_app_cflags)
+	$(call run_cmd,mkdir,-p $(dir $@))
 	$(call run_cmd,$(CC),$(CFLAGS) $(APP_CFLAGS) -c -o $@ $<)
 
 $(OUT_ELF): $(libgcc) $(app-objs) $(c_lib) $(rust_lib)
