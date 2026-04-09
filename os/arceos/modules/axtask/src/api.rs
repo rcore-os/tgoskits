@@ -270,7 +270,7 @@ fn current_preempt_count() -> usize {
 }
 
 /// Returns whether the current context is atomic, meaning sleeping or
-/// voluntarily rescheduling is not allowed.
+/// rescheduling is not allowed.
 ///
 /// This matches the intent of Linux's `might_sleep()`: catch misuse from
 /// IRQ-disabled or preempt-disabled regions before a sleep-like action happens.
@@ -288,7 +288,7 @@ pub(crate) fn in_atomic_context() -> bool {
     false
 }
 
-/// Marks an operation as one that may sleep or voluntarily reschedule.
+/// Marks an operation as one that may sleep or reschedule.
 ///
 /// Panics if it is executed in an atomic context.
 #[track_caller]
@@ -300,8 +300,8 @@ pub(crate) fn might_sleep() {
     let preempt_count = current_preempt_count();
     if in_atomic_context() {
         panic!(
-            "sleeping is not allowed in atomic context: irq_enabled={irqs_enabled}, \
-             preempt_count={preempt_count}"
+            "sleeping or rescheduling is not allowed in atomic context: \
+             irq_enabled={irqs_enabled}, preempt_count={preempt_count}"
         );
     }
 }
