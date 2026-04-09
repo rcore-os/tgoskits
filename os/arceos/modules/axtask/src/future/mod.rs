@@ -85,6 +85,7 @@ pub fn block_on<F: IntoFuture>(f: F) -> F::Output {
                     // loop iteration will see it correctly.
                     *woke = false;
                     drop(woke);
+                    drop(rq);
                     crate::yield_now();
                 }
             }

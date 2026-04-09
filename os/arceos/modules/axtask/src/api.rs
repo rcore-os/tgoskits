@@ -215,9 +215,20 @@ pub fn set_current_affinity(cpumask: AxCpuMask) -> bool {
 
 /// Current task gives up the CPU time voluntarily, and switches to another
 /// ready task.
+#[track_caller]
 pub fn yield_now() {
     might_sleep();
 
+    yield_now_kernel();
+}
+
+/// Gives up the CPU from a kernel-internal path.
+///
+/// This bypasses the public `might_sleep()` guard and is intended only for
+/// carefully reviewed scheduler or syscall paths that must yield while running
+/// under internal kernel guards.
+#[doc(hidden)]
+pub fn yield_now_kernel() {
     current_run_queue::<NoPreemptIrqSave>().yield_current()
 }
 
@@ -301,7 +312,7 @@ pub(crate) fn might_sleep() {
 /// waiting for the next interrupt.
 pub fn run_idle() -> ! {
     loop {
-        current_run_queue::<NoPreemptIrqSave>().yield_current();
+        yield_now_kernel();
         trace!("idle task: waiting for IRQs...");
         #[cfg(feature = "irq")]
         ax_hal::asm::wait_for_irqs();
