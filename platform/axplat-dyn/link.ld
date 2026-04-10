@@ -11,6 +11,13 @@ SECTIONS {
 INSERT AFTER .tbss;
 
 SECTIONS {
+    __scope_local_end_marker : {
+        __bss_start = .;
+    }
+}
+INSERT AFTER scope_local;
+
+SECTIONS {
     debug_abbrev : { . += SIZEOF(.debug_abbrev); }
     debug_addr : { . += SIZEOF(.debug_addr); }
     debug_aranges : { . += SIZEOF(.debug_aranges); }
