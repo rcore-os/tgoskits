@@ -10,6 +10,7 @@ license = "Apache-2.0"
 
 [dependencies]
 ax-cpu = { version = "0.5.0", features = ["uspace"] }
+ax-errno = "0.4.2"
 bitflags = "2.6"
 cfg-if = "1"
 derive_more = { version = "2.0", default-features = false, features = ["full"] }

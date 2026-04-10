@@ -7483,6 +7483,7 @@ name = "starry-signal"
 version = "0.5.0"
 dependencies = [
  "ax-cpu",
+ "ax-errno",
  "ax-kspin",
  "bitflags 2.11.0",
  "cfg-if",
