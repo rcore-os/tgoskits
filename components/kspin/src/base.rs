@@ -160,7 +160,7 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
     pub fn is_locked(&self) -> bool {
         cfg_if::cfg_if! {
             if #[cfg(feature = "smp")] {
-                self.lock.load(Ordering::Relaxed)
+                self.lock.load(Ordering::Acquire)
             } else {
                 false
             }

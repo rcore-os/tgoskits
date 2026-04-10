@@ -164,7 +164,7 @@ impl GraphGuard {
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            while GRAPH_STATE.lock.load(Ordering::Relaxed) {
+            while GRAPH_STATE.lock.load(Ordering::Acquire) {
                 core::hint::spin_loop();
             }
         }
