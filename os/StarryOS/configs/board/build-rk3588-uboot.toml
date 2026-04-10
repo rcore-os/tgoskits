@@ -1,0 +1,7 @@
+# Build-time config for StarryOS on RK3588 boards via U-Boot.
+# U-Boot serial/DTB settings live in the separate U-Boot runner config.
+env = {}
+log = "Info"
+features = ["rk3588"]
+max_cpu_num = 8
+plat_dyn = true
