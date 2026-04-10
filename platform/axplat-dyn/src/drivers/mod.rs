@@ -4,6 +4,8 @@ use alloc::boxed::Box;
 use core::{alloc::Layout, ptr::NonNull};
 
 use ax_driver_block::BlockDriverOps;
+#[cfg(feature = "intel-net")]
+use ax_driver_net::NetDriverOps;
 use ax_errno::AxError;
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_plat::mem::PhysAddr;
@@ -17,12 +19,20 @@ mod serial;
 mod soc;
 
 pub mod blk;
+#[cfg(feature = "intel-net")]
+pub mod net;
 
 const MAX_BLOCK_DEVICES: usize = 16;
+#[cfg(feature = "intel-net")]
+const MAX_NET_DEVICES: usize = 16;
 
 pub type DynBlockDevice = Box<dyn BlockDriverOps>;
+#[cfg(feature = "intel-net")]
+pub type DynNetDevice = Box<dyn NetDriverOps>;
 
 static BLOCK_DEVICES: Mutex<Vec<DynBlockDevice, MAX_BLOCK_DEVICES>> = Mutex::new(Vec::new());
+#[cfg(feature = "intel-net")]
+static NET_DEVICES: Mutex<Vec<DynNetDevice, MAX_NET_DEVICES>> = Mutex::new(Vec::new());
 
 pub fn clear_block_devices() {
     BLOCK_DEVICES.lock().clear();
@@ -34,6 +44,22 @@ pub fn register_block_device(device: DynBlockDevice) -> Result<(), DynBlockDevic
 
 pub fn take_block_devices() -> Vec<DynBlockDevice, MAX_BLOCK_DEVICES> {
     let mut devices = BLOCK_DEVICES.lock();
+    core::mem::take(&mut *devices)
+}
+
+#[cfg(feature = "intel-net")]
+pub fn clear_net_devices() {
+    NET_DEVICES.lock().clear();
+}
+
+#[cfg(feature = "intel-net")]
+pub fn register_net_device(device: DynNetDevice) -> Result<(), DynNetDevice> {
+    NET_DEVICES.lock().push(device)
+}
+
+#[cfg(feature = "intel-net")]
+pub fn take_net_devices() -> Vec<DynNetDevice, MAX_NET_DEVICES> {
+    let mut devices = NET_DEVICES.lock();
     core::mem::take(&mut *devices)
 }
 
@@ -49,11 +75,24 @@ pub(crate) fn iomap(addr: PhysAddr, size: usize) -> Result<NonNull<u8>, OnProbeE
 
 pub fn probe_all_devices() -> Result<(), AxError> {
     clear_block_devices();
+    #[cfg(feature = "intel-net")]
+    clear_net_devices();
     rdrive::probe_all(true).map_err(|_| AxError::BadState)?;
 
     for dev in rdrive::get_list::<rd_block::Block>() {
         let block = Box::new(blk::Block::from(dev));
         if register_block_device(block).is_err() {
+            return Err(AxError::NoMemory);
+        }
+    }
+
+    #[cfg(feature = "intel-net")]
+    for dev in rdrive::get_list::<net::PlatformNetDevice>() {
+        let net = net::Net::try_from(dev).map_err(|err| match err {
+            ax_driver_base::DevError::NoMemory => AxError::NoMemory,
+            _ => AxError::BadState,
+        })?;
+        if register_net_device(Box::new(net)).is_err() {
             return Err(AxError::NoMemory);
         }
     }

@@ -215,6 +215,7 @@ ax-driver-pci = { path = "components/axdriver_crates/axdriver_pci" }
 ax-driver-virtio = { path = "components/axdriver_crates/axdriver_virtio" }
 ax-driver-input = { path = "components/axdriver_crates/axdriver_input" }
 ax-driver-vsock = { path = "components/axdriver_crates/axdriver_vsock" }
+dma-api = { git = "https://github.com/drivercraft/sparreal-os", rev = "decd04e2beaad11af62e2af39ceaf83a162cec39" }
 
 # === ax-percpu ===
 ax-percpu = { path = "components/percpu/percpu" }

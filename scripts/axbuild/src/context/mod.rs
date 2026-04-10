@@ -30,7 +30,8 @@ pub use types::{
     StarryUbootSnapshot,
 };
 pub(crate) use workspace::{
-    find_workspace_root, workspace_member_dir, workspace_member_dir_in, workspace_root_path,
+    find_workspace_root, workspace_manifest_path, workspace_member_dir, workspace_member_dir_in,
+    workspace_metadata_root_manifest, workspace_root_path,
 };
 
 pub struct AppContext {

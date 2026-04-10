@@ -10,7 +10,7 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["smp", "irq"]
+default = ["smp", "irq" ]
 smp = ["ax-plat/smp"]
 irq = ["ax-plat/irq"]
 fp-simd = ["ax-cpu/fp-simd"]
@@ -22,6 +22,7 @@ sdmmc = ["dep:sdmmc"]
 rockchip-pm = ["dep:rockchip-pm"]
 phytium-blk = ["dep:phytium-mci"]
 serial = ["dep:some-serial"]
+intel-net = ["dep:ax-driver-net", "dep:eth-intel", "dep:pcie", "dep:rd-net"]
 
 [dependencies]
 anyhow = { version = "1", default-features = false }
@@ -30,17 +31,21 @@ ax-config-macros = "0.4.1"
 ax-cpu.workspace = true
 ax-driver-base.workspace = true
 ax-driver-block.workspace = true
+ax-driver-net = { workspace = true, optional = true }
 ax-driver-virtio = { workspace = true, features = ["block"] }
 ax-errno.workspace = true
 axklib.workspace = true
 ax-plat.workspace = true
 dma-api = "0.7"
+eth-intel = { version = "0.1", optional = true }
 fdt-edit = "0.2"
 heapless = "0.9"
 log.workspace = true
 ax-memory-addr.workspace = true
 ax-percpu = { workspace = true, features = ["custom-base"] }
+pcie = { version = "0.6", optional = true }
 rd-block = "0.1"
+rd-net = { version = "0.1", optional = true }
 rdif-clk = "0.5"
 rdrive = "0.20"
 rk3568_clk = { version = "0.1", optional = true }

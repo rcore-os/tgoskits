@@ -1,0 +1,236 @@
+extern crate alloc;
+
+use alloc::{collections::VecDeque, sync::Arc};
+
+use ax_driver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
+use ax_driver_net::{EthernetAddress, NetBuf, NetBufBox, NetBufPool, NetBufPtr, NetDriverOps};
+use rd_net::{Interface, NetError};
+use rdrive::{Device, DriverGeneric};
+use spin::Mutex;
+
+use super::DmaImpl;
+
+#[cfg(feature = "intel-net")]
+mod intel;
+
+const DRIVER_NAME: &str = "eth-intel-e1000";
+const NET_BUF_LEN: usize = 2048;
+const NET_BUF_POOL_CAPACITY: usize = 512;
+const NET_QUEUE_SIZE: usize = 256;
+const RX_PREFETCH_TARGET: usize = 1;
+
+pub struct PlatformNetDevice {
+    name: &'static str,
+    net: rd_net::Net,
+}
+
+impl PlatformNetDevice {
+    fn new(name: &'static str, net: rd_net::Net) -> Self {
+        Self { name, net }
+    }
+}
+
+impl DriverGeneric for PlatformNetDevice {
+    fn name(&self) -> &str {
+        self.name
+    }
+}
+
+struct NetState {
+    tx_queue: rd_net::TxQueue,
+    rx_queue: rd_net::RxQueue,
+    pending_rx: VecDeque<NetBufBox>,
+}
+
+pub struct Net {
+    name: &'static str,
+    mac: [u8; 6],
+    buf_pool: Arc<NetBufPool>,
+    state: Mutex<NetState>,
+}
+
+impl TryFrom<Device<PlatformNetDevice>> for Net {
+    type Error = DevError;
+
+    fn try_from(device: Device<PlatformNetDevice>) -> Result<Self, Self::Error> {
+        let mut dev = device.lock().map_err(map_device_err_to_dev_err)?;
+        let name = dev.name;
+        let mac = dev.net.mac_address();
+        let tx_queue = dev.net.create_tx_queue().map_err(map_net_err_to_dev_err)?;
+        let rx_queue = dev.net.create_rx_queue().map_err(map_net_err_to_dev_err)?;
+        drop(dev);
+
+        Ok(Self {
+            name,
+            mac,
+            buf_pool: NetBufPool::new(NET_BUF_POOL_CAPACITY, NET_BUF_LEN)?,
+            state: Mutex::new(NetState {
+                tx_queue,
+                rx_queue,
+                pending_rx: VecDeque::with_capacity(RX_PREFETCH_TARGET),
+            }),
+        })
+    }
+}
+
+impl Net {
+    fn prefetch_rx_packets(&self, state: &mut NetState, target: usize) -> DevResult {
+        while state.pending_rx.len() < target {
+            let Some(result) = state.rx_queue.receive(|packet| {
+                let Some(mut net_buf) = self.buf_pool.alloc_boxed() else {
+                    return Err(DevError::NoMemory);
+                };
+
+                if packet.len() > net_buf.capacity() {
+                    warn!(
+                        "dropping oversized rx packet for {}: {} bytes",
+                        self.name,
+                        packet.len()
+                    );
+                    return Err(DevError::InvalidParam);
+                }
+
+                net_buf.set_header_len(0);
+                net_buf.set_packet_len(packet.len());
+                net_buf.packet_mut().copy_from_slice(packet);
+                Ok(net_buf)
+            }) else {
+                break;
+            };
+
+            match result {
+                Ok(net_buf) => state.pending_rx.push_back(net_buf),
+                Err(DevError::InvalidParam) => continue,
+                Err(err) => return Err(err),
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl BaseDriverOps for Net {
+    fn device_name(&self) -> &str {
+        self.name
+    }
+
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Net
+    }
+
+    fn irq_num(&self) -> Option<usize> {
+        None
+    }
+}
+
+impl NetDriverOps for Net {
+    fn mac_address(&self) -> EthernetAddress {
+        EthernetAddress(self.mac)
+    }
+
+    fn can_transmit(&self) -> bool {
+        let mut state = self.state.lock();
+        match state.tx_queue.prepare_send(0, |_| ()) {
+            Ok((_ret, _pending)) => true,
+            Err(NetError::Retry) => false,
+            Err(err) => {
+                warn!("failed to test tx readiness for {}: {err:?}", self.name);
+                false
+            }
+        }
+    }
+
+    fn can_receive(&self) -> bool {
+        let mut state = self.state.lock();
+        if let Err(err) = self.prefetch_rx_packets(&mut state, RX_PREFETCH_TARGET) {
+            warn!("failed to prefetch rx packets for {}: {err:?}", self.name);
+        }
+        !state.pending_rx.is_empty()
+    }
+
+    fn rx_queue_size(&self) -> usize {
+        NET_QUEUE_SIZE
+    }
+
+    fn tx_queue_size(&self) -> usize {
+        NET_QUEUE_SIZE
+    }
+
+    fn recycle_rx_buffer(&mut self, rx_buf: NetBufPtr) -> DevResult {
+        drop(unsafe { NetBuf::from_buf_ptr(rx_buf) });
+        Ok(())
+    }
+
+    fn recycle_tx_buffers(&mut self) -> DevResult {
+        Ok(())
+    }
+
+    fn transmit(&mut self, tx_buf: NetBufPtr) -> DevResult {
+        let tx_buf = unsafe { NetBuf::from_buf_ptr(tx_buf) };
+        let packet = tx_buf.packet();
+
+        let mut state = self.state.lock();
+        let (_ret, mut pending) = state
+            .tx_queue
+            .prepare_send(packet.len(), |buffer| {
+                buffer[..packet.len()].copy_from_slice(packet);
+            })
+            .map_err(map_net_err_to_dev_err)?;
+        pending.try_submit().map_err(map_net_err_to_dev_err)?;
+        drop(tx_buf);
+        Ok(())
+    }
+
+    fn receive(&mut self) -> DevResult<NetBufPtr> {
+        let mut state = self.state.lock();
+        self.prefetch_rx_packets(&mut state, RX_PREFETCH_TARGET)?;
+        state
+            .pending_rx
+            .pop_front()
+            .map(NetBuf::into_buf_ptr)
+            .ok_or(DevError::Again)
+    }
+
+    fn alloc_tx_buffer(&mut self, size: usize) -> DevResult<NetBufPtr> {
+        let mut net_buf = self.buf_pool.alloc_boxed().ok_or(DevError::NoMemory)?;
+        if size > net_buf.capacity() {
+            return Err(DevError::InvalidParam);
+        }
+
+        net_buf.set_header_len(0);
+        net_buf.set_packet_len(size);
+        Ok(net_buf.into_buf_ptr())
+    }
+}
+
+pub trait PlatformDeviceNet {
+    fn register_net<T>(self, name: &'static str, dev: T)
+    where
+        T: Interface + 'static;
+}
+
+impl PlatformDeviceNet for rdrive::PlatformDevice {
+    fn register_net<T>(self, name: &'static str, dev: T)
+    where
+        T: Interface + 'static,
+    {
+        let net = rd_net::Net::new(dev, &DmaImpl);
+        self.register(PlatformNetDevice::new(name, net));
+    }
+}
+
+fn map_net_err_to_dev_err(err: NetError) -> DevError {
+    match err {
+        NetError::Retry => DevError::Again,
+        NetError::NoMemory => DevError::NoMemory,
+        NetError::NotSupported => DevError::Unsupported,
+        NetError::LinkDown | NetError::Other(_) => DevError::Io,
+    }
+}
+
+fn map_device_err_to_dev_err(_err: rdrive::GetDeviceError) -> DevError {
+    DevError::BadState
+}
+
+#[allow(dead_code)]
+const _: &str = DRIVER_NAME;

@@ -6,12 +6,11 @@ use std::{
 use anyhow::{Context, anyhow};
 
 pub(crate) fn workspace_root_path() -> anyhow::Result<PathBuf> {
-    let current_dir = std::env::current_dir().context("failed to get current directory")?;
-    let cargo = workspace_metadata(&current_dir)?;
-
-    cargo
-        .workspace_root
-        .canonicalize()
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .context("failed to locate workspace root from axbuild crate")?;
+    root.canonicalize()
         .context("failed to canonicalize workspace root")
 }
 
@@ -34,6 +33,29 @@ pub(crate) fn find_workspace_root() -> PathBuf {
     workspace_root_path().expect("failed to resolve workspace root")
 }
 
+pub(crate) fn workspace_manifest_path() -> anyhow::Result<PathBuf> {
+    Ok(workspace_root_path()?.join("Cargo.toml"))
+}
+
+pub(crate) fn workspace_manifest_path_in(workspace_root: &Path) -> PathBuf {
+    workspace_root.join("Cargo.toml")
+}
+
+pub(crate) fn workspace_metadata_root_manifest(
+    workspace_manifest_path: &Path,
+) -> anyhow::Result<cargo_metadata::Metadata> {
+    cargo_metadata::MetadataCommand::new()
+        .no_deps()
+        .manifest_path(workspace_manifest_path)
+        .exec()
+        .with_context(|| {
+            format!(
+                "failed to get cargo metadata for workspace root {}",
+                workspace_manifest_path.display()
+            )
+        })
+}
+
 fn workspace_member_manifest_path(workspace_root: &Path, package: &str) -> anyhow::Result<PathBuf> {
     let metadata = workspace_metadata(workspace_root)?;
     let workspace_members: HashSet<_> = metadata.workspace_members.iter().cloned().collect();
@@ -46,9 +68,5 @@ fn workspace_member_manifest_path(workspace_root: &Path, package: &str) -> anyho
 }
 
 fn workspace_metadata(workspace_root: &Path) -> anyhow::Result<cargo_metadata::Metadata> {
-    cargo_metadata::MetadataCommand::new()
-        .no_deps()
-        .current_dir(workspace_root)
-        .exec()
-        .context("failed to get cargo metadata")
+    workspace_metadata_root_manifest(&workspace_manifest_path_in(workspace_root))
 }

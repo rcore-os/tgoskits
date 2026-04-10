@@ -1,14 +1,13 @@
 use std::{collections::HashSet, fs, path::Path, process::Command};
 
 use anyhow::Context;
-use cargo_metadata::{Metadata, MetadataCommand};
+use cargo_metadata::Metadata;
 
 const STD_CRATES_CSV: &str = "scripts/test/std_crates.csv";
 
 pub(crate) fn run_std_test_command() -> anyhow::Result<()> {
-    let metadata = MetadataCommand::new()
-        .no_deps()
-        .exec()
+    let workspace_manifest = crate::context::workspace_manifest_path()?;
+    let metadata = crate::context::workspace_metadata_root_manifest(&workspace_manifest)
         .context("failed to load cargo metadata")?;
     let workspace_root = metadata.workspace_root.clone().into_std_path_buf();
     let known_packages = workspace_package_names(&metadata);
@@ -229,7 +228,10 @@ mod tests {
 
     #[test]
     fn workspace_package_name_extraction_reads_current_workspace() {
-        let metadata = MetadataCommand::new().no_deps().exec().unwrap();
+        let metadata = cargo_metadata::MetadataCommand::new()
+            .no_deps()
+            .exec()
+            .unwrap();
         let names = workspace_package_names(&metadata);
 
         assert!(names.contains("axbuild"));

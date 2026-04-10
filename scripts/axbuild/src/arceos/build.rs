@@ -6,13 +6,15 @@ use std::{
 };
 
 use anyhow::{Context, bail};
-use cargo_metadata::MetadataCommand;
 use ostool::build::config::Cargo;
 pub use ostool::build::config::LogLevel;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::{context::ResolvedBuildRequest, process::ProcessExt};
+use crate::{
+    context::{ResolvedBuildRequest, workspace_manifest_path, workspace_metadata_root_manifest},
+    process::ProcessExt,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AxFeaturePrefixFamily {
@@ -441,15 +443,13 @@ fn feature_family_from_existing_features(features: &[String]) -> Option<AxFeatur
 
 fn detect_ax_feature_prefix_family(
     package: &str,
-    manifest_path: Option<&Path>,
+    workspace_manifest: Option<&Path>,
 ) -> anyhow::Result<AxFeaturePrefixFamily> {
-    let mut command = MetadataCommand::new();
-    command.no_deps();
-    if let Some(manifest_path) = manifest_path {
-        command.manifest_path(manifest_path);
-    }
-
-    let metadata = command.exec()?;
+    let manifest_path = workspace_manifest
+        .map(Path::to_path_buf)
+        .map(Ok)
+        .unwrap_or_else(workspace_manifest_path)?;
+    let metadata = workspace_metadata_root_manifest(&manifest_path)?;
     let workspace_members: std::collections::HashSet<_> =
         metadata.workspace_members.iter().cloned().collect();
     let package_info = metadata
@@ -478,15 +478,13 @@ fn detect_ax_feature_prefix_family(
 
 pub(crate) fn resolve_package_manifest_path(
     package: &str,
-    manifest_path: Option<&Path>,
+    workspace_manifest: Option<&Path>,
 ) -> anyhow::Result<PathBuf> {
-    let mut command = MetadataCommand::new();
-    command.no_deps();
-    if let Some(manifest_path) = manifest_path {
-        command.manifest_path(manifest_path);
-    }
-
-    let metadata = command.exec()?;
+    let manifest_path = workspace_manifest
+        .map(Path::to_path_buf)
+        .map(Ok)
+        .unwrap_or_else(workspace_manifest_path)?;
+    let metadata = workspace_metadata_root_manifest(&manifest_path)?;
     let workspace_members: std::collections::HashSet<_> =
         metadata.workspace_members.iter().cloned().collect();
     metadata
@@ -503,14 +501,12 @@ fn resolve_platform_package(
     features: &[String],
 ) -> anyhow::Result<String> {
     let arch = target_arch_name(target)?;
-    let manifest_path = resolve_package_manifest_path(package, None)?;
-    let mut command = MetadataCommand::new();
-    command.no_deps().manifest_path(&manifest_path);
-    let metadata = command.exec()?;
+    let workspace_manifest = workspace_manifest_path()?;
+    let metadata = workspace_metadata_root_manifest(&workspace_manifest)?;
     let package_info = metadata
         .packages
         .iter()
-        .find(|pkg| pkg.name == package)
+        .find(|pkg| metadata.workspace_members.contains(&pkg.id) && pkg.name == package)
         .ok_or_else(|| anyhow!("workspace package `{package}` not found"))?;
 
     let explicit_platform_features: Vec<_> = features
