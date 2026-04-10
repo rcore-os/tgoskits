@@ -6,8 +6,8 @@ use core::{marker::PhantomData, ptr::NonNull};
 use ax_alloc::{UsageKind, global_allocator};
 use ax_driver_base::DeviceType;
 use ax_driver_block::BlockDriverOps;
-use ax_driver_virtio::{BufferDirection, MmioTransport, PhysAddr as VirtIoPhysAddr, VirtIoHal};
-use ax_plat::mem::{PhysAddr, phys_to_virt};
+use ax_driver_virtio::{BufferDirection, PhysAddr as VirtIoPhysAddr, Transport, VirtIoHal};
+use ax_plat::mem::PhysAddr;
 use rdrive::{
     DriverGeneric, PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo,
 };
@@ -15,7 +15,7 @@ use rdrive::{
 use super::PlatformDeviceBlock;
 use crate::drivers::iomap;
 
-type Device<T> = ax_driver_virtio::VirtIoBlkDev<VirtIoHalImpl, T>;
+pub(super) type VirtIoBlkDevice<T> = ax_driver_virtio::VirtIoBlkDev<VirtIoHalImpl, T>;
 
 module_driver!(
     name: "Virtio Block",
@@ -52,33 +52,39 @@ fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError
         return Err(OnProbeError::NotMatch);
     }
 
-    let dev = Device::try_new(transport).map_err(|e| {
+    let dev = VirtIoBlkDevice::try_new(transport).map_err(|e| {
         OnProbeError::other(format!(
             "failed to initialize Virtio Block device at [PA:{mmio_base:?},): {e:?}"
         ))
     })?;
 
-    let dev = BlockDivce { dev: Some(dev) };
-    plat_dev.register_block(dev);
+    register_virtio_block(plat_dev, dev);
     debug!("virtio block device registered successfully");
     Ok(())
 }
 
-struct BlockDivce {
-    dev: Option<Device<MmioTransport>>,
+pub(super) fn register_virtio_block<T: Transport + 'static>(
+    plat_dev: PlatformDevice,
+    dev: VirtIoBlkDevice<T>,
+) {
+    plat_dev.register_block(BlockDevice { dev: Some(dev) });
 }
 
-struct BlockQueue {
-    raw: Device<MmioTransport>,
+struct BlockDevice<T: Transport + 'static> {
+    dev: Option<VirtIoBlkDevice<T>>,
 }
 
-impl DriverGeneric for BlockDivce {
+struct BlockQueue<T: Transport + 'static> {
+    raw: VirtIoBlkDevice<T>,
+}
+
+impl<T: Transport + 'static> DriverGeneric for BlockDevice<T> {
     fn name(&self) -> &str {
         "virtio-blk"
     }
 }
 
-impl rd_block::Interface for BlockDivce {
+impl<T: Transport + 'static> rd_block::Interface for BlockDevice<T> {
     fn create_queue(&mut self) -> Option<alloc::boxed::Box<dyn rd_block::IQueue>> {
         self.dev
             .take()
@@ -102,7 +108,7 @@ impl rd_block::Interface for BlockDivce {
     }
 }
 
-impl rd_block::IQueue for BlockQueue {
+impl<T: Transport + 'static> rd_block::IQueue for BlockQueue<T> {
     fn num_blocks(&self) -> usize {
         self.raw.num_blocks() as _
     }
@@ -132,13 +138,13 @@ impl rd_block::IQueue for BlockQueue {
             rd_block::RequestKind::Read(mut buffer) => {
                 self.raw
                     .read_block(id as _, &mut buffer)
-                    .map_err(maping_dev_err_to_blk_err)?;
+                    .map_err(map_dev_err_to_blk_err)?;
                 Ok(rd_block::RequestId::new(0))
             }
             rd_block::RequestKind::Write(items) => {
                 self.raw
                     .write_block(id as _, items)
-                    .map_err(maping_dev_err_to_blk_err)?;
+                    .map_err(map_dev_err_to_blk_err)?;
                 Ok(rd_block::RequestId::new(0))
             }
         }
@@ -149,7 +155,7 @@ impl rd_block::IQueue for BlockQueue {
     }
 }
 
-fn maping_dev_err_to_blk_err(err: ax_driver_base::DevError) -> rd_block::BlkError {
+fn map_dev_err_to_blk_err(err: ax_driver_base::DevError) -> rd_block::BlkError {
     match err {
         ax_driver_base::DevError::Again => rd_block::BlkError::Retry,
         ax_driver_base::DevError::AlreadyExists => {
@@ -168,7 +174,7 @@ fn maping_dev_err_to_blk_err(err: ax_driver_base::DevError) -> rd_block::BlkErro
     }
 }
 
-struct VirtIoHalImpl(PhantomData<()>);
+pub(super) struct VirtIoHalImpl(PhantomData<()>);
 
 unsafe impl VirtIoHal for VirtIoHalImpl {
     fn dma_alloc(pages: usize, _direction: BufferDirection) -> (VirtIoPhysAddr, NonNull<u8>) {
@@ -189,8 +195,8 @@ unsafe impl VirtIoHal for VirtIoHalImpl {
     }
 
     #[inline]
-    unsafe fn mmio_phys_to_virt(paddr: VirtIoPhysAddr, _size: usize) -> NonNull<u8> {
-        NonNull::new(phys_to_virt(paddr.into()).as_mut_ptr()).unwrap()
+    unsafe fn mmio_phys_to_virt(paddr: VirtIoPhysAddr, size: usize) -> NonNull<u8> {
+        iomap((paddr as usize).into(), size).expect("failed to map virtio MMIO region")
     }
 
     #[inline]

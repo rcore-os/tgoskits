@@ -17,6 +17,7 @@ SECTIONS {
 }
 INSERT AFTER scope_local;
 
+
 SECTIONS {
     debug_abbrev : { . += SIZEOF(.debug_abbrev); }
     debug_addr : { . += SIZEOF(.debug_addr); }

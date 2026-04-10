@@ -11,6 +11,7 @@ mod phytium;
 #[cfg(feature = "sdmmc")]
 mod rockchip;
 mod virtio;
+mod virtio_pci;
 
 pub struct Block {
     dev: Device<rd_block::Block>,
