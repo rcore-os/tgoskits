@@ -128,9 +128,7 @@ const fn as_dev_err(e: virtio_drivers::Error) -> DevError {
             NotConnected => DevError::BadState,
             InvalidOperation | InvalidNumber | UnknownOperation(_) => DevError::InvalidParam,
             OutputBufferTooShort(_) | BufferTooShort | BufferTooLong(..) => DevError::InvalidParam,
-            UnexpectedDataInPacket | PeerSocketShutdown => {
-                DevError::Io
-            }
+            UnexpectedDataInPacket | PeerSocketShutdown => DevError::Io,
             InsufficientBufferSpaceInPeer => DevError::Again,
             RecycledWrongBuffer => DevError::BadState,
         },
