@@ -27,14 +27,6 @@ qemu = [
   "starry-kernel/input",
   "starry-kernel/vsock",
 ]
-orangepi-5-plus = [
-  "common",
-  "ax-feat/plat-dyn",
-  "ax-feat/bus-mmio",
-  "ax-feat/driver-sdmmc",
-  "dep:axplat-dyn",
-  "axplat-dyn/orangepi-5-plus",
-]
 smp = ["ax-feat/smp", "axplat-riscv64-visionfive2?/smp"]
 
 vf2 = ["common", "dep:axplat-riscv64-visionfive2", "ax-feat/driver-sdmmc"]

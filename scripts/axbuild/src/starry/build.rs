@@ -372,8 +372,12 @@ HELLO = "world"
         let build_info = StarryBuildInfo {
             env: HashMap::new(),
             features: vec![
+                "common".to_string(),
+                "ax-feat/bus-mmio".to_string(),
+                "ax-feat/driver-sdmmc".to_string(),
                 "ax-feat/plat-dyn".to_string(),
-                "orangepi-5-plus".to_string(),
+                "axplat-dyn/rk3588-clk".to_string(),
+                "axplat-dyn/sdmmc".to_string(),
             ],
             log: LogLevel::Info,
             max_cpu_num: Some(8),
@@ -387,7 +391,12 @@ HELLO = "world"
 
         patch_starry_cargo_config(&mut cargo, &request).unwrap();
 
-        assert!(cargo.features.contains(&"orangepi-5-plus".to_string()));
+        assert!(
+            cargo
+                .features
+                .contains(&"axplat-dyn/rk3588-clk".to_string())
+        );
+        assert!(cargo.features.contains(&"axplat-dyn/sdmmc".to_string()));
         assert!(!cargo.features.contains(&"qemu".to_string()));
         assert!(!cargo.env.contains_key("AX_PLATFORM"));
         assert!(

@@ -2,6 +2,12 @@
 # Runtime U-Boot settings live in `orangepi-5-plus-uboot.toml`.
 env = {}
 log = "Info"
-features = ["orangepi-5-plus"]
+features = [
+  "common",
+  "ax-feat/bus-mmio",
+  "ax-feat/driver-sdmmc",
+  "axplat-dyn/rk3588-clk",
+  "axplat-dyn/sdmmc",
+]
 max_cpu_num = 8
 plat_dyn = true
