@@ -376,6 +376,10 @@ fn init_interrupt() {
         ax_ipi::ipi_handler();
     });
 
+    // Arm the first one-shot timer on the primary CPU. Otherwise the timer
+    // handler may never get the first chance to re-program subsequent ticks.
+    update_timer();
+
     // Enable IRQs before starting app
     ax_hal::asm::enable_irqs();
 }
