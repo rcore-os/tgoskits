@@ -7,7 +7,7 @@ use core::{
 #[cfg(any(test, doctest))]
 use std::cell::RefCell;
 
-use ax_kernel_guard::BaseGuard;
+use ax_kernel_guard::{BaseGuard, IrqSave};
 
 const MAX_LOCKS: usize = 1024;
 const MAX_HELD_LOCKS: usize = 32;
@@ -193,7 +193,19 @@ fn with_graph<R>(f: impl FnOnce(&mut LockGraph) -> R) -> R {
     f(graph)
 }
 
+fn with_tracking_context<R>(f: impl FnOnce() -> R) -> R {
+    let _guard = IrqSave::new();
+    f()
+}
+
 fn ensure_lock_id(map: &LockdepMap) -> u32 {
+    let existing = map.id.load(Ordering::Acquire);
+    if existing != 0 {
+        return existing;
+    }
+
+    let _guard = GraphGuard::acquire();
+
     let existing = map.id.load(Ordering::Acquire);
     if existing != 0 {
         return existing;
@@ -205,13 +217,8 @@ fn ensure_lock_id(map: &LockdepMap) -> u32 {
         "lockdep: exceeded maximum tracked lock instances ({MAX_LOCKS})"
     );
 
-    match map
-        .id
-        .compare_exchange(0, new_id, Ordering::AcqRel, Ordering::Acquire)
-    {
-        Ok(_) => new_id,
-        Err(existing) => existing,
-    }
+    map.id.store(new_id, Ordering::Release);
+    new_id
 }
 
 fn with_held_locks<R>(f: impl FnOnce(&mut HeldLockStack) -> R) -> R {
@@ -239,17 +246,35 @@ pub(crate) fn prepare_acquire<G: BaseGuard>(
         return None;
     }
 
-    let lock_id = ensure_lock_id(map);
-    with_held_locks(|stack| {
-        assert!(
-            !stack.contains(lock_id),
-            "lockdep: recursive spin lock acquisition detected for id={} addr={:#x} at {} with \
-             held stack {:?}",
-            lock_id,
-            addr,
-            caller,
-            stack
-        );
+    let lock_id = with_tracking_context(|| {
+        let lock_id = ensure_lock_id(map);
+        with_graph(|graph| {
+            with_held_locks(|stack| {
+                assert!(
+                    !stack.contains(lock_id),
+                    "lockdep: recursive spin lock acquisition detected for id={} addr={:#x} at {} \
+                     with held stack {:?}",
+                    lock_id,
+                    addr,
+                    caller,
+                    stack
+                );
+
+                for held in stack.iter() {
+                    assert!(
+                        !graph.reaches(lock_id, held.id),
+                        "lockdep: lock order inversion detected while acquiring id={} addr={:#x} \
+                         at {}; held lock {:?}; stack {:?}",
+                        lock_id,
+                        addr,
+                        caller,
+                        held,
+                        stack
+                    );
+                }
+            });
+        });
+        lock_id
     });
 
     Some((lock_id, caller))
@@ -260,31 +285,20 @@ pub(crate) fn finish_acquire(lockdep: Option<(u32, &'static Location<'static>)>,
         return;
     };
 
-    with_graph(|graph| {
-        with_held_locks(|stack| {
-            let max_id = NEXT_LOCK_ID.load(Ordering::Acquire).min(MAX_LOCKS as u32);
+    with_tracking_context(|| {
+        with_graph(|graph| {
+            with_held_locks(|stack| {
+                let max_id = NEXT_LOCK_ID.load(Ordering::Acquire).min(MAX_LOCKS as u32);
 
-            for held in stack.iter() {
-                assert!(
-                    !graph.reaches(lock_id, held.id),
-                    "lockdep: lock order inversion detected while acquiring id={} addr={:#x} at \
-                     {}; held lock {:?}; stack {:?}",
-                    lock_id,
+                for held in stack.iter() {
+                    graph.add_order(held.id, lock_id, max_id);
+                }
+
+                stack.push(HeldLock {
+                    id: lock_id,
                     addr,
                     caller,
-                    held,
-                    stack
-                );
-            }
-
-            for held in stack.iter() {
-                graph.add_order(held.id, lock_id, max_id);
-            }
-
-            stack.push(HeldLock {
-                id: lock_id,
-                addr,
-                caller,
+                });
             });
         });
     });
@@ -295,5 +309,16 @@ pub(crate) fn release(lock_id: Option<u32>) {
         return;
     };
 
-    with_held_locks(|stack| stack.pop_checked(lock_id));
+    with_tracking_context(|| with_held_locks(|stack| stack.pop_checked(lock_id)));
+}
+
+pub(crate) fn force_release<G: BaseGuard>(map: &LockdepMap) {
+    if !G::lockdep_enabled() {
+        return;
+    }
+
+    let lock_id = map.id.load(Ordering::Acquire);
+    if lock_id != 0 {
+        release(Some(lock_id));
+    }
 }
