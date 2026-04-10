@@ -25,7 +25,8 @@ qemu = [
   "ax-feat/bus-pci",
   "ax-feat/display",
   "starry-kernel/input",
-  "starry-kernel/vsock",
+  "starry-kernel/vsock", # auxilary features
+  "axplat-dyn/intel-net",
 ]
 smp = ["ax-feat/smp", "axplat-riscv64-visionfive2?/smp"]
 
