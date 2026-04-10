@@ -109,6 +109,7 @@ jobs:
 
   test_axvisor_x86_64:
     name: Test axvisor x86_64
+    if: github.repository_owner == 'rcore-os'
     runs-on:
       - self-hosted
       - linux
@@ -124,6 +125,7 @@ jobs:
 
   test_axvisor_board:
     name: Test axvisor ${{ matrix.test_group }}
+    if: github.repository_owner == 'rcore-os'
     strategy:
       fail-fast: false
       matrix:
