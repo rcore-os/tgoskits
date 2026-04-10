@@ -141,10 +141,10 @@ pub enum Command {
     Build(ArgsBuild),
     /// Build and run ArceOS application in QEMU
     Qemu(ArgsQemu),
-    /// Build and run ArceOS application with U-Boot
-    Uboot(ArgsUboot),
     /// Run ArceOS test suites
     Test(ArgsTest),
+    /// Build and run ArceOS application with U-Boot
+    Uboot(ArgsUboot),
 }
 
 #[derive(Args)]
@@ -153,6 +153,8 @@ pub struct ArgsBuild {
     pub config: Option<PathBuf>,
     #[arg(short, long)]
     pub package: Option<String>,
+    #[arg(long)]
+    pub arch: Option<String>,
     #[arg(short, long)]
     pub target: Option<String>,
     #[arg(long = "plat_dyn", alias = "plat-dyn")]
@@ -193,7 +195,7 @@ pub enum TestCommand {
 
 #[derive(Args, Debug, Clone)]
 pub struct ArgsTestQemu {
-    #[arg(long)]
+    #[arg(long, alias = "arch", value_name = "ARCH_OR_TARGET")]
     pub target: String,
     /// Only run Rust tests
     #[arg(long, conflicts_with = "only_c")]
@@ -225,6 +227,7 @@ impl From<&ArgsBuild> for BuildCliArgs {
         Self {
             config: args.config.clone(),
             package: args.package.clone(),
+            arch: args.arch.clone(),
             target: args.target.clone(),
             plat_dyn: args.plat_dyn,
         }
@@ -295,7 +298,7 @@ impl ArceOS {
     // ---- Rust QEMU tests ----
 
     async fn test_rust_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
-        let target = test_qemu::validate_arceos_target(&args.target)?;
+        let (_arch, target) = test_qemu::parse_arceos_test_target(&args.target)?;
         let mut failed = Vec::new();
 
         println!(
@@ -375,6 +378,7 @@ impl ArceOS {
         BuildCliArgs {
             config: None,
             package: Some(package.to_string()),
+            arch: None,
             target: Some(target.to_string()),
             plat_dyn: None,
         }
@@ -442,7 +446,7 @@ where
     PrepareConfig: FnMut(&Path) -> anyhow::Result<PathBuf>,
     RunTest: FnMut(&Path, &Path, &str, &str) -> anyhow::Result<()>,
 {
-    let target = test_qemu::validate_arceos_target(target)?;
+    let (_arch, target) = test_qemu::parse_arceos_test_target(target)?;
     let arch = arch_from_target(target);
     let arceos_dir = workspace_root.join("os/arceos");
     let c_test_root = workspace_root.join("test-suit/arceos/c");

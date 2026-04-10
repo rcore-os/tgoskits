@@ -1,7 +1,8 @@
 use anyhow::anyhow;
 
 use super::{
-    DEFAULT_AXVISOR_ARCH, DEFAULT_AXVISOR_TARGET, DEFAULT_STARRY_ARCH, DEFAULT_STARRY_TARGET,
+    DEFAULT_ARCEOS_ARCH, DEFAULT_ARCEOS_TARGET, DEFAULT_AXVISOR_ARCH, DEFAULT_AXVISOR_TARGET,
+    DEFAULT_STARRY_ARCH, DEFAULT_STARRY_TARGET,
 };
 
 const ARCH_TARGETS: &[(&str, &str)] = &[
@@ -48,6 +49,19 @@ pub(crate) fn resolve_starry_arch_and_target(
         DEFAULT_STARRY_ARCH,
         DEFAULT_STARRY_TARGET,
         "Starry",
+    )
+}
+
+pub(crate) fn resolve_arceos_arch_and_target(
+    arch: Option<String>,
+    target: Option<String>,
+) -> anyhow::Result<(String, String)> {
+    resolve_arch_and_target(
+        arch,
+        target,
+        DEFAULT_ARCEOS_ARCH,
+        DEFAULT_ARCEOS_TARGET,
+        "ArceOS",
     )
 }
 

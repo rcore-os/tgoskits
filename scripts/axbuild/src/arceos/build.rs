@@ -699,6 +699,17 @@ mod tests {
     ) -> ResolvedBuildRequest {
         ResolvedBuildRequest {
             package: package.to_string(),
+            arch: if target.starts_with("x86_64") {
+                "x86_64".to_string()
+            } else if target.starts_with("aarch64") {
+                "aarch64".to_string()
+            } else if target.starts_with("riscv64") {
+                "riscv64".to_string()
+            } else if target.starts_with("loongarch64") {
+                "loongarch64".to_string()
+            } else {
+                "unknown".to_string()
+            },
             target: target.to_string(),
             plat_dyn,
             build_info_path,

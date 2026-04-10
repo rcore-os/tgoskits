@@ -16,6 +16,7 @@ use crate::{
 };
 
 pub const LINUX_AARCH64_IMAGE_SPEC: &str = "qemu_aarch64_linux";
+pub const ARCEOS_RISCV64_IMAGE_SPEC: &str = "qemu_riscv64_arceos";
 pub const LINUX_AARCH64_VMCONFIG_TEMPLATE: &str =
     "os/axvisor/configs/vms/linux-aarch64-qemu-smp1.toml";
 pub const LINUX_AARCH64_GENERATED_VMCONFIG: &str =
@@ -42,22 +43,11 @@ pub struct ShellAutoInitConfig {
 pub(crate) async fn prepare_linux_aarch64_guest_assets(
     ctx: &AxvisorContext,
 ) -> anyhow::Result<PreparedLinuxGuestAssets> {
-    let mut config = ImageConfig::read_config(ctx.workspace_root())?;
-    config.local_storage = absolute_path(ctx.workspace_root(), &config.local_storage);
-
-    let storage = Storage::new_from_config(&config).await?;
-    let image_dir = storage
-        .pull_image(ImageSpecRef::parse(LINUX_AARCH64_IMAGE_SPEC), None, true)
-        .await?;
-
+    let image_dir = pull_guest_image(ctx, LINUX_AARCH64_IMAGE_SPEC).await?;
     let kernel_path = image_dir.join("qemu-aarch64");
-    let rootfs_src = image_dir.join("rootfs.img");
-    if !kernel_path.exists() {
-        anyhow::bail!("linux guest kernel not found at {}", kernel_path.display());
-    }
-    if !rootfs_src.exists() {
-        anyhow::bail!("linux guest rootfs not found at {}", rootfs_src.display());
-    }
+    let rootfs_src = guest_rootfs_path(&image_dir);
+    ensure_guest_kernel_exists(&kernel_path, "linux guest")?;
+    ensure_guest_rootfs_exists(&rootfs_src, "linux guest")?;
 
     let workspace_root = ctx.workspace_root();
     let generated_vmconfig = workspace_root.join(LINUX_AARCH64_GENERATED_VMCONFIG);
@@ -77,29 +67,44 @@ pub(crate) async fn prepare_linux_aarch64_guest_assets(
     })
 }
 
+pub(crate) async fn prepare_default_rootfs_for_arch(
+    ctx: &AxvisorContext,
+    arch: &str,
+) -> anyhow::Result<PathBuf> {
+    let image_spec = match arch {
+        "aarch64" => LINUX_AARCH64_IMAGE_SPEC,
+        "riscv64" => ARCEOS_RISCV64_IMAGE_SPEC,
+        "x86_64" => NIMBOS_X86_64_IMAGE_SPEC,
+        _ => return Ok(ctx.workspace_root().join(AXVISOR_ROOTFS_IMAGE)),
+    };
+    let guest_name = match arch {
+        "aarch64" => "linux guest",
+        "riscv64" => "riscv64 arceos guest",
+        "x86_64" => "nimbos guest",
+        _ => unreachable!(),
+    };
+
+    let image_dir = pull_guest_image(ctx, image_spec).await?;
+    let rootfs_src = guest_rootfs_path(&image_dir);
+    ensure_guest_rootfs_exists(&rootfs_src, guest_name)?;
+
+    let rootfs_dst = ctx.workspace_root().join(AXVISOR_ROOTFS_IMAGE);
+    copy_rootfs(&rootfs_src, &rootfs_dst)?;
+    Ok(rootfs_dst)
+}
+
 pub(crate) async fn prepare_nimbos_x86_64_guest_vmconfig(
     ctx: &AxvisorContext,
 ) -> anyhow::Result<PathBuf> {
-    let mut config = ImageConfig::read_config(ctx.workspace_root())?;
-    config.local_storage = absolute_path(ctx.workspace_root(), &config.local_storage);
-
-    let storage = Storage::new_from_config(&config).await?;
-    let image_dir = storage
-        .pull_image(ImageSpecRef::parse(NIMBOS_X86_64_IMAGE_SPEC), None, true)
-        .await?;
-
+    let image_dir = pull_guest_image(ctx, NIMBOS_X86_64_IMAGE_SPEC).await?;
     let kernel_path = image_dir.join("qemu-x86_64");
     let bios_path = image_dir.join("axvm-bios.bin");
-    let rootfs_path = image_dir.join("rootfs.img");
-    if !kernel_path.exists() {
-        anyhow::bail!("nimbos guest kernel not found at {}", kernel_path.display());
-    }
+    let rootfs_path = guest_rootfs_path(&image_dir);
+    ensure_guest_kernel_exists(&kernel_path, "nimbos guest")?;
     if !bios_path.exists() {
         anyhow::bail!("nimbos guest bios not found at {}", bios_path.display());
     }
-    if !rootfs_path.exists() {
-        anyhow::bail!("nimbos guest rootfs not found at {}", rootfs_path.display());
-    }
+    ensure_guest_rootfs_exists(&rootfs_path, "nimbos guest")?;
 
     Ok(ctx.workspace_root().join(NIMBOS_X86_64_VMCONFIG))
 }
@@ -150,6 +155,36 @@ fn copy_rootfs(rootfs_src: &Path, rootfs_dst: &Path) -> anyhow::Result<()> {
         )
     })?;
     Ok(())
+}
+
+async fn pull_guest_image(ctx: &AxvisorContext, image_spec: &str) -> anyhow::Result<PathBuf> {
+    let mut config = ImageConfig::read_config(ctx.workspace_root())?;
+    config.local_storage = absolute_path(ctx.workspace_root(), &config.local_storage);
+
+    let storage = Storage::new_from_config(&config).await?;
+    storage
+        .pull_image(ImageSpecRef::parse(image_spec), None, true)
+        .await
+}
+
+fn guest_rootfs_path(image_dir: &Path) -> PathBuf {
+    image_dir.join("rootfs.img")
+}
+
+fn ensure_guest_kernel_exists(kernel_path: &Path, guest_name: &str) -> anyhow::Result<()> {
+    if kernel_path.exists() {
+        Ok(())
+    } else {
+        anyhow::bail!("{guest_name} kernel not found at {}", kernel_path.display());
+    }
+}
+
+fn ensure_guest_rootfs_exists(rootfs_path: &Path, guest_name: &str) -> anyhow::Result<()> {
+    if rootfs_path.exists() {
+        Ok(())
+    } else {
+        anyhow::bail!("{guest_name} rootfs not found at {}", rootfs_path.display());
+    }
 }
 
 fn read_toml(path: &Path) -> anyhow::Result<toml::Value> {

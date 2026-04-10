@@ -15,17 +15,18 @@ mod types;
 mod workspace;
 
 pub(crate) use arch::{
-    arch_for_target_checked, resolve_axvisor_arch_and_target, resolve_starry_arch_and_target,
-    starry_arch_for_target_checked, starry_target_for_arch_checked, target_for_arch_checked,
+    arch_for_target_checked, resolve_arceos_arch_and_target, resolve_axvisor_arch_and_target,
+    resolve_starry_arch_and_target, starry_arch_for_target_checked, starry_target_for_arch_checked,
+    target_for_arch_checked,
 };
 pub(crate) use resolve::snapshot_path_value;
 pub use types::{
     ARCEOS_SNAPSHOT_FILE, AXVISOR_SNAPSHOT_FILE, ArceosCommandSnapshot, ArceosQemuSnapshot,
     ArceosUbootSnapshot, AxvisorCliArgs, AxvisorCommandSnapshot, AxvisorQemuSnapshot,
-    AxvisorUbootSnapshot, BuildCliArgs, DEFAULT_ARCEOS_TARGET, DEFAULT_AXVISOR_ARCH,
-    DEFAULT_AXVISOR_TARGET, DEFAULT_STARRY_ARCH, DEFAULT_STARRY_TARGET, QemuRunConfig,
-    ResolvedAxvisorRequest, ResolvedBuildRequest, ResolvedStarryRequest, STARRY_PACKAGE,
-    STARRY_SNAPSHOT_FILE, StarryCliArgs, StarryCommandSnapshot, StarryQemuSnapshot,
+    AxvisorUbootSnapshot, BuildCliArgs, DEFAULT_ARCEOS_ARCH, DEFAULT_ARCEOS_TARGET,
+    DEFAULT_AXVISOR_ARCH, DEFAULT_AXVISOR_TARGET, DEFAULT_STARRY_ARCH, DEFAULT_STARRY_TARGET,
+    QemuRunConfig, ResolvedAxvisorRequest, ResolvedBuildRequest, ResolvedStarryRequest,
+    STARRY_PACKAGE, STARRY_SNAPSHOT_FILE, StarryCliArgs, StarryCommandSnapshot, StarryQemuSnapshot,
     StarryUbootSnapshot,
 };
 pub(crate) use workspace::{
