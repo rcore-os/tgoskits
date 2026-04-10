@@ -7,7 +7,11 @@ use core::{
 };
 
 use ax_kspin::SpinNoIrq;
-use buddy_slab_allocator::{GlobalAllocator as InnerAllocator, OsImpl};
+use buddy_slab_allocator::{
+    GlobalAllocator as InnerAllocator, SizeClass, SlabAllocResult, SlabAllocator,
+    SlabDeallocResult, SlabPoolTrait, SlabTrait,
+    eii::{slab_pool_impl, virt_to_phys_impl},
+};
 
 use super::{AllocResult, AllocatorOps, UsageKind, Usages};
 
@@ -19,6 +23,98 @@ static GLOBAL_ALLOCATOR: GlobalAllocator = GlobalAllocator::new();
 pub type DefaultByteAllocator = buddy_slab_allocator::SlabAllocator<PAGE_SIZE>;
 
 const PAGE_SIZE: usize = 0x1000;
+
+#[ax_percpu::def_percpu]
+static PRECPU_SLAB: PrecpuSlab<PAGE_SIZE> = PrecpuSlab::new_uninit();
+
+static SLAB_POOL: SlabPool = SlabPool;
+
+struct PrecpuSlab<const PAGE_SIZE: usize = 0x1000> {
+    cpu_id: Option<u16>,
+    inner: SpinNoIrq<SlabAllocator<PAGE_SIZE>>,
+}
+
+impl<const PAGE_SIZE: usize> PrecpuSlab<PAGE_SIZE> {
+    const fn new_uninit() -> Self {
+        Self {
+            cpu_id: None,
+            inner: SpinNoIrq::new(SlabAllocator::new()),
+        }
+    }
+
+    fn init(&mut self, cpu_id: usize) {
+        let cpu_id = u16::try_from(cpu_id).expect("CPU id exceeds per-CPU slab range");
+        assert!(
+            self.cpu_id.is_none(),
+            "per-CPU slab is already initialized on this CPU",
+        );
+        self.cpu_id = Some(cpu_id);
+        *self.inner.lock() = SlabAllocator::new();
+    }
+
+    fn cpu_id_checked(&self) -> u16 {
+        self.cpu_id
+            .expect("per-CPU slab is not initialized on this CPU")
+    }
+}
+
+impl<const PAGE_SIZE: usize> SlabTrait for PrecpuSlab<PAGE_SIZE> {
+    fn cpu_id(&self) -> usize {
+        self.cpu_id_checked() as usize
+    }
+
+    fn page_size(&self) -> usize {
+        PAGE_SIZE
+    }
+
+    fn alloc(&self, layout: Layout) -> buddy_slab_allocator::AllocResult<SlabAllocResult> {
+        self.inner.lock().alloc(layout)
+    }
+
+    fn add_slab(&self, size_class: SizeClass, base: usize, bytes: usize) {
+        self.inner
+            .lock()
+            .add_slab(size_class, base, bytes, self.cpu_id_checked());
+    }
+
+    fn dealloc_local(&self, ptr: NonNull<u8>, layout: Layout) -> SlabDeallocResult {
+        self.inner.lock().dealloc(ptr, layout)
+    }
+}
+
+fn current_precpu_slab() -> &'static PrecpuSlab<PAGE_SIZE> {
+    // Safety: the outer allocator lock disables local IRQs/preemption before
+    // upstream buddy-slab-allocator calls this hook.
+    unsafe { PRECPU_SLAB.current_ref_raw() }
+}
+
+fn remote_precpu_slab(cpu_idx: usize) -> &'static PrecpuSlab<PAGE_SIZE> {
+    // Safety: the owner CPU id comes from slab metadata and references a valid
+    // per-CPU slab that was initialized during CPU bring-up.
+    unsafe { PRECPU_SLAB.remote_ref_raw(cpu_idx) }
+}
+
+struct SlabPool;
+
+impl SlabPoolTrait for SlabPool {
+    fn current_slab(&self) -> &dyn SlabTrait {
+        current_precpu_slab()
+    }
+
+    fn owner_slab(&self, cpu_idx: usize) -> &dyn SlabTrait {
+        remote_precpu_slab(cpu_idx)
+    }
+}
+
+#[slab_pool_impl]
+fn slab_pool() -> &'static dyn SlabPoolTrait {
+    &SLAB_POOL
+}
+
+#[virt_to_phys_impl]
+fn virt_to_phys(vaddr: usize) -> usize {
+    crate::eii::virt_to_phys(vaddr)
+}
 
 /// The global allocator used by ArceOS when `buddy-slab` is enabled.
 pub struct GlobalAllocator {
@@ -47,19 +143,13 @@ impl GlobalAllocator {
     }
 
     /// Initializes the allocator with the given region.
-    pub fn init(
-        &self,
-        start_vaddr: usize,
-        size: usize,
-        cpu_count: usize,
-        os: &'static dyn OsImpl,
-    ) -> AllocResult {
+    pub fn init(&self, start_vaddr: usize, size: usize) -> AllocResult {
         info!(
             "Initialize global memory allocator, start_vaddr: {:#x}, size: {:#x}",
             start_vaddr, size
         );
         let region = unsafe { slice::from_raw_parts_mut(start_vaddr as *mut u8, size) };
-        unsafe { self.inner.lock().init(region, cpu_count, os) }.map_err(Into::into)
+        unsafe { self.inner.lock().init(region) }.map_err(Into::into)
     }
 
     /// Add the given region to the allocator.
@@ -181,14 +271,8 @@ impl AllocatorOps for GlobalAllocator {
         GlobalAllocator::name(self)
     }
 
-    fn init(
-        &self,
-        start_vaddr: usize,
-        size: usize,
-        cpu_count: usize,
-        os: &'static dyn OsImpl,
-    ) -> AllocResult {
-        GlobalAllocator::init(self, start_vaddr, size, cpu_count, os)
+    fn init(&self, start_vaddr: usize, size: usize) -> AllocResult {
+        GlobalAllocator::init(self, start_vaddr, size)
     }
 
     fn add_memory(&self, start_vaddr: usize, size: usize) -> AllocResult {
@@ -261,19 +345,19 @@ pub fn global_allocator() -> &'static GlobalAllocator {
     &GLOBAL_ALLOCATOR
 }
 
+/// Initializes the per-CPU slab for the current CPU.
+pub fn init_precpu_slab(cpu_id: usize) {
+    PRECPU_SLAB.with_current(|slab| slab.init(cpu_id));
+}
+
 /// Initializes the global allocator with the given memory region.
-pub fn global_init(
-    start_vaddr: usize,
-    size: usize,
-    cpu_count: usize,
-    os: &'static dyn OsImpl,
-) -> AllocResult {
+pub fn global_init(start_vaddr: usize, size: usize) -> AllocResult {
     debug!(
         "initialize global allocator at: [{:#x}, {:#x})",
         start_vaddr,
         start_vaddr + size
     );
-    GLOBAL_ALLOCATOR.init(start_vaddr, size, cpu_count, os)?;
+    GLOBAL_ALLOCATOR.init(start_vaddr, size)?;
     info!("global allocator initialized");
     Ok(())
 }
@@ -346,6 +430,7 @@ impl From<buddy_slab_allocator::AllocError> for super::AllocError {
     fn from(value: buddy_slab_allocator::AllocError) -> Self {
         match value {
             buddy_slab_allocator::AllocError::InvalidParam => Self::InvalidParam,
+            buddy_slab_allocator::AllocError::AlreadyInitialized => Self::AlreadyInitialized,
             buddy_slab_allocator::AllocError::MemoryOverlap => Self::MemoryOverlap,
             buddy_slab_allocator::AllocError::NoMemory => Self::NoMemory,
             buddy_slab_allocator::AllocError::NotAllocated => Self::NotAllocated,

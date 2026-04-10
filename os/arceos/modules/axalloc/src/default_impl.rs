@@ -14,7 +14,7 @@ use core::{
 use ax_allocator::{BaseAllocator, BitmapPageAllocator, ByteAllocator, PageAllocator};
 use ax_kspin::SpinNoIrq;
 
-use super::{AllocResult, AllocatorOps, OsImpl, UsageKind, Usages};
+use super::{AllocResult, AllocatorOps, UsageKind, Usages};
 
 /// The global allocator instance for standard mode.
 #[cfg_attr(all(target_os = "none", not(test)), global_allocator)]
@@ -84,13 +84,7 @@ impl GlobalAllocator {
     /// It firstly adds the whole region to the page allocator, then allocates
     /// a small region (32 KB) to initialize the byte allocator. Therefore,
     /// the given region must be larger than 32 KB.
-    pub fn init(
-        &self,
-        start_vaddr: usize,
-        size: usize,
-        _cpu_count: usize,
-        _os: &'static dyn OsImpl,
-    ) -> AllocResult {
+    pub fn init(&self, start_vaddr: usize, size: usize) -> AllocResult {
         if size <= MIN_HEAP_SIZE {
             return Err(crate::AllocError::InvalidParam);
         }
@@ -273,14 +267,8 @@ impl AllocatorOps for GlobalAllocator {
         GlobalAllocator::name(self)
     }
 
-    fn init(
-        &self,
-        start_vaddr: usize,
-        size: usize,
-        cpu_count: usize,
-        os: &'static dyn OsImpl,
-    ) -> AllocResult {
-        GlobalAllocator::init(self, start_vaddr, size, cpu_count, os)
+    fn init(&self, start_vaddr: usize, size: usize) -> AllocResult {
+        GlobalAllocator::init(self, start_vaddr, size)
     }
 
     fn add_memory(&self, start_vaddr: usize, size: usize) -> AllocResult {
@@ -366,18 +354,13 @@ pub fn global_allocator() -> &'static GlobalAllocator {
 ///
 /// - `start_vaddr`: The starting virtual address of the memory region.
 /// - `size`: The size of the memory region in bytes.
-pub fn global_init(
-    start_vaddr: usize,
-    size: usize,
-    cpu_count: usize,
-    os: &'static dyn OsImpl,
-) -> AllocResult {
+pub fn global_init(start_vaddr: usize, size: usize) -> AllocResult {
     debug!(
         "initialize global allocator at: [{:#x}, {:#x})",
         start_vaddr,
         start_vaddr + size
     );
-    GLOBAL_ALLOCATOR.init(start_vaddr, size, cpu_count, os)
+    GLOBAL_ALLOCATOR.init(start_vaddr, size)
 }
 
 /// Add the given memory region to the global allocator.

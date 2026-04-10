@@ -6,6 +6,7 @@
 //! be registered as the standard library's default allocator.
 
 #![no_std]
+#![cfg_attr(feature = "buddy-slab", feature(extern_item_impls))]
 
 #[macro_use]
 extern crate log;
@@ -81,6 +82,8 @@ impl fmt::Debug for Usages {
 pub enum AllocError {
     /// Invalid size, alignment, or other input parameter.
     InvalidParam,
+    /// The allocator has already been initialized.
+    AlreadyInitialized,
     /// A region overlaps with an existing managed region.
     MemoryOverlap,
     /// Not enough memory is available to satisfy the request.
@@ -101,7 +104,7 @@ impl From<AllocError> for AxError {
         match value {
             AllocError::NoMemory => AxError::NoMemory,
             AllocError::NotFound => AxError::NotFound,
-            AllocError::NotInitialized => AxError::BadState,
+            AllocError::NotInitialized | AllocError::AlreadyInitialized => AxError::BadState,
             AllocError::MemoryOverlap => AxError::AlreadyExists,
             AllocError::InvalidParam | AllocError::NotAllocated => AxError::InvalidInput,
         }
@@ -109,15 +112,11 @@ impl From<AllocError> for AxError {
 }
 
 #[cfg(feature = "buddy-slab")]
-pub use buddy_slab_allocator::OsImpl;
-
-#[cfg(not(feature = "buddy-slab"))]
-pub trait OsImpl: Sync + Send {
-    /// Return the index of the current CPU (0-based).
-    fn current_cpu_idx(&self) -> usize;
-
+/// Platform hooks required by the buddy-slab backend.
+pub mod eii {
     /// Translate a virtual address to a physical address.
-    fn virt_to_phys(&self, vaddr: usize) -> usize;
+    #[eii(ax_alloc_virt_to_phys_impl)]
+    pub fn virt_to_phys(vaddr: usize) -> usize;
 }
 
 /// Unified allocator operations provided by all `ax-alloc` backends.
@@ -126,13 +125,7 @@ pub trait AllocatorOps {
     fn name(&self) -> &'static str;
 
     /// Initializes the allocator with the given region.
-    fn init(
-        &self,
-        start_vaddr: usize,
-        size: usize,
-        cpu_count: usize,
-        os: &'static dyn OsImpl,
-    ) -> AllocResult;
+    fn init(&self, start_vaddr: usize, size: usize) -> AllocResult;
 
     /// Adds an extra memory region to the allocator.
     fn add_memory(&self, start_vaddr: usize, size: usize) -> AllocResult;
@@ -201,6 +194,8 @@ use buddy_slab as imp;
 mod default_impl;
 #[cfg(not(feature = "buddy-slab"))]
 use default_impl as imp;
+#[cfg(feature = "buddy-slab")]
+pub use imp::init_precpu_slab;
 pub use imp::{DefaultByteAllocator, GlobalAllocator, global_add_memory, global_init};
 
 /// Returns the reference to the global allocator.

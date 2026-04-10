@@ -45,6 +45,9 @@ mod mp;
 #[cfg(feature = "paging")]
 mod klib;
 
+#[cfg(feature = "buddy-slab")]
+use ax_alloc::eii::ax_alloc_virt_to_phys_impl;
+
 #[cfg(feature = "smp")]
 pub use self::mp::rust_main_secondary;
 
@@ -62,6 +65,12 @@ d88P     888 888      "Y8888P  "Y8888   "Y88888P"   "Y8888P"
 unsafe extern "C" {
     /// Application's entry point.
     fn main();
+}
+
+#[cfg(feature = "buddy-slab")]
+#[ax_alloc_virt_to_phys_impl]
+fn ax_alloc_virt_to_phys(vaddr: usize) -> usize {
+    ax_hal::mem::virt_to_phys(vaddr.into()).as_usize()
 }
 
 struct LogIfImpl;
@@ -127,6 +136,8 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         ax_hal::mem::clear_bss()
     };
     ax_hal::percpu::init_primary(cpu_id);
+    #[cfg(all(feature = "alloc", feature = "buddy-slab"))]
+    ax_alloc::init_precpu_slab(cpu_id);
     ax_hal::init_early(cpu_id, arg);
     let log_level = option_env!("AX_LOG").unwrap_or("info");
 
@@ -308,29 +319,10 @@ fn init_allocator() {
         }
     }
 
-    struct AllocatorOs;
-
-    impl ax_alloc::OsImpl for AllocatorOs {
-        fn current_cpu_idx(&self) -> usize {
-            ax_hal::percpu::this_cpu_id()
-        }
-
-        fn virt_to_phys(&self, vaddr: usize) -> usize {
-            ax_hal::mem::virt_to_phys(vaddr.into()).as_usize()
-        }
-    }
-
-    static OS: AllocatorOs = AllocatorOs;
-
     for r in memory_regions() {
         if r.flags.contains(MemRegionFlags::FREE) && r.paddr == max_region_paddr {
-            ax_alloc::global_init(
-                phys_to_virt(r.paddr).as_usize(),
-                r.size,
-                ax_hal::cpu_num(),
-                &OS,
-            )
-            .expect("initialize global allocator failed");
+            ax_alloc::global_init(phys_to_virt(r.paddr).as_usize(), r.size)
+                .expect("initialize global allocator failed");
             break;
         }
     }

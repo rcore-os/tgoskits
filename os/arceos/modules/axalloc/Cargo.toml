@@ -10,7 +10,7 @@ repository = "https://github.com/arceos-org/arceos/tree/main/modules/axalloc"
 
 [features]
 default = ["tlsf", "ax-allocator/page-alloc-256m"]
-buddy-slab = ["dep:buddy-slab-allocator"]
+buddy-slab = ["dep:buddy-slab-allocator", "dep:ax-percpu"]
 buddy = ["dep:ax-allocator", "ax-allocator/buddy"]
 slab = ["dep:ax-allocator", "ax-allocator/slab"]
 tlsf = ["dep:ax-allocator", "ax-allocator/tlsf"]
