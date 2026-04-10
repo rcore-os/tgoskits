@@ -6,19 +6,16 @@ fn main() {
         println!("cargo:rerun-if-env-changed=CARGO_FEATURE_SMP");
         let has_multitask = std::env::var_os("CARGO_FEATURE_MULTITASK").is_some();
         let has_smp = std::env::var_os("CARGO_FEATURE_SMP").is_some();
-        let target = std::env::var("TARGET").unwrap_or_default();
         let (mutex_size, mutex_init) = if has_multitask {
-            if has_smp && (target.starts_with("x86_64") || target.starts_with("aarch64")) {
-                // x86_64 and aarch64 keep an extra padding word in
-                // `ax_sync::Mutex<()>` when the pthread path is built with SMP
-                // enabled.
+            if has_smp {
+                // Current 64-bit SMP targets keep an extra padding word in
+                // `ax_sync::Mutex<()>` for the pthread path.
                 //
                 // core::mem::transmute::<_, [usize; 6]>(ax_sync::Mutex::new(()))
                 (6, "{0, 0, 8, 0, 0, 0}")
             } else {
-                // Other currently supported targets, including riscv64, use
-                // the compact 5-word mutex layout even when the POSIX layer is
-                // built with `smp`.
+                // The non-SMP multitask path uses the compact 5-word mutex
+                // layout.
                 //
                 // core::mem::transmute::<_, [usize; 5]>(ax_sync::Mutex::new(()))
                 (5, "{0, 8, 0, 0, 0}")
