@@ -2130,9 +2130,7 @@ dependencies = [
 
 [[package]]
 name = "buddy-slab-allocator"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "edaafb583fd8524fc17c03145de026d03162b3bf381c0b985d1d709e1c508350"
+version = "0.3.1"
 dependencies = [
  "log",
  "spin 0.10.0",
