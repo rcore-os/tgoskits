@@ -1,4 +1,4 @@
-use memory_addr::VirtAddr;
+use ax_memory_addr::VirtAddr;
 
 use crate::{TrapFrame, trap::PageFaultFlags, uspace::ExceptionInfo};
 

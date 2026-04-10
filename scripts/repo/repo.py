@@ -37,7 +37,10 @@ class Repo:
     @property
     def repo_name(self) -> str:
         """Extract repo name from URL."""
-        return self.url.rstrip('/').split('/')[-1]
+        name = self.url.rstrip('/').split('/')[-1]
+        if name.endswith('.git'):
+            name = name[:-4]
+        return name
 
 
 class CSVManager:
@@ -178,28 +181,104 @@ class GitSubtreeManager:
         self.csv_manager = csv_manager
 
     @staticmethod
-    def _run_command(cmd: List[str], check: bool = True) -> subprocess.CompletedProcess:
+    def _git_subtree_env() -> Optional[Dict]:
+        """Return an env dict suitable for running git-subtree directly via bash.
+        git-subtree requires GIT_EXEC_PATH to be set and present in PATH."""
+        exec_path_result = subprocess.run(
+            ['git', '--exec-path'],
+            capture_output=True, text=True
+        )
+        exec_path = exec_path_result.stdout.strip()
+        if not exec_path:
+            return None
+        env = os.environ.copy()
+        env['GIT_EXEC_PATH'] = exec_path
+        env['PATH'] = exec_path + ':' + env.get('PATH', '')
+        return env
+
+    @staticmethod
+    def _git_subtree_cmd(subcommand: str, args: List[str]) -> List[str]:
+        """Build a git-subtree command run via bash to avoid dash's hardcoded
+        recursion limit of 1000, which git-subtree (a #!/bin/sh script) hits
+        on repositories with large commit histories."""
+        exec_path_result = subprocess.run(
+            ['git', '--exec-path'],
+            capture_output=True, text=True
+        )
+        git_subtree_script = Path(exec_path_result.stdout.strip()) / 'git-subtree'
+        if git_subtree_script.exists():
+            return ['bash', str(git_subtree_script), subcommand] + args
+        # Fallback to the standard invocation if the script isn't found
+        return ['git', 'subtree', subcommand] + args
+
+    @staticmethod
+    def _run_command(cmd: List[str], check: bool = True,
+                     env: Optional[Dict] = None) -> subprocess.CompletedProcess:
         """Run a shell command and return the result."""
-        print(f"Running: {' '.join(cmd)}")
-        result = subprocess.run(cmd, check=check, capture_output=False, text=True)
+        print(f"Running: {' '.join(cmd)}", flush=True)
+        result = subprocess.run(cmd, check=check, capture_output=False, text=True, env=env)
         return result
 
     @staticmethod
-    def _run_command_with_stdout(cmd: List[str], check: bool = True) -> str:
+    def _run_command_with_stdout(cmd: List[str], check: bool = True,
+                                 env: Optional[Dict] = None) -> str:
         """Run a command, keep stderr visible, and return stripped stdout."""
-        print(f"Running: {' '.join(cmd)}")
+        print(f"Running: {' '.join(cmd)}", flush=True)
         result = subprocess.run(
             cmd,
             check=check,
             stdout=subprocess.PIPE,
-            text=True
+            text=True,
+            env=env,
         )
         return result.stdout.strip()
 
     @staticmethod
     def get_repo_name(url: str) -> str:
         """Extract repo name from URL."""
-        return url.rstrip('/').split('/')[-1]
+        name = url.rstrip('/').split('/')[-1]
+        if name.endswith('.git'):
+            name = name[:-4]
+        return name
+
+    @staticmethod
+    def detect_current_branch() -> str:
+        """Detect the current source branch from git or CI environment."""
+        result = subprocess.run(
+            ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            branch = result.stdout.strip()
+            if branch and branch != "HEAD":
+                return branch
+
+        # GitHub Actions often checks out a detached HEAD, so fall back to env.
+        for env_name in ("GITHUB_REF_NAME", "GITHUB_HEAD_REF"):
+            branch = os.environ.get(env_name, "").strip()
+            if branch:
+                return branch
+
+        return ""
+
+    def detect_remote_branch(self, url: str, target_dir: str) -> str:
+        """Auto-detect the default branch for a repository by fetching a temp remote."""
+        remote_name = target_dir.replace('/', '_')
+        subprocess.run(['git', 'remote', 'add', remote_name, url], capture_output=True)
+
+        try:
+            fetch_result = subprocess.run(
+                ['git', 'fetch', remote_name, '--no-tags'],
+                capture_output=True,
+                text=True,
+            )
+            if fetch_result.returncode != 0:
+                raise ValueError(f"Failed to fetch from {url}")
+
+            return self.detect_branch(url, remote_name)
+        finally:
+            subprocess.run(['git', 'remote', 'remove', remote_name], capture_output=True)
 
     @staticmethod
     def check_working_tree_clean() -> bool:
@@ -365,7 +444,9 @@ class GitSubtreeManager:
         if not self.is_added(target_dir):
             raise ValueError(f"Subtree at '{target_dir}' not found. Cannot push.")
 
-        # Push to the component dev branch by default.
+        repo_name = self.get_repo_name(url)
+
+        # Fall back to dev only if the caller did not resolve a target branch.
         if branch == "":
             branch = PUSH_DEFAULT_BRANCH
             print(f"Using default push branch: {branch}")
@@ -373,12 +454,13 @@ class GitSubtreeManager:
         if force:
             # Some git-subtree versions strip the leading '+' from the refspec
             # before invoking `git push`, so perform the split/push explicitly.
-            split_cmd = [
-                'git', 'subtree', 'split',
+            # Use bash to invoke git-subtree to avoid dash's 1000-recursion limit.
+            subtree_env = self._git_subtree_env()
+            split_cmd = self._git_subtree_cmd('split', [
                 '--quiet',
                 '--prefix=' + target_dir,
-            ]
-            split_rev = self._run_command_with_stdout(split_cmd)
+            ])
+            split_rev = self._run_command_with_stdout(split_cmd, env=subtree_env)
             if not split_rev:
                 raise ValueError(f"Failed to split subtree at '{target_dir}'")
 
@@ -391,14 +473,63 @@ class GitSubtreeManager:
             self._run_command(push_cmd)
             return
 
-        cmd = [
-            'git', 'subtree', 'push',
+        # Use bash to invoke git-subtree to avoid dash's hardcoded 1000-recursion
+        # limit, which is hit when the repo history exceeds ~1000 commits.
+        subtree_env = self._git_subtree_env()
+
+        # Clear any stale subtree split cache before pushing.  Some git-subtree
+        # versions call `git notes add` (not `--force`) when caching a split
+        # result, which raises "fatal: cache for <hash> already exists!" if the
+        # same commit was previously cached.  Deleting the notes ref beforehand
+        # is safe; the cache is purely a performance optimisation and will be
+        # rebuilt automatically on the next operation.
+        subprocess.run(
+            ['git', 'update-ref', '-d', 'refs/notes/subtree-cache'],
+            capture_output=True,
+        )
+
+        push_args = [
             '--quiet',
             '--prefix=' + target_dir,
             url,
-            branch
+            branch,
         ]
-        self._run_command(cmd)
+        # axdriver_crates has duplicate subtree join trailers in the shared
+        # history.  `git subtree push` scans those trailers before splitting and
+        # can fail with "cache for <hash> already exists!" unless we bypass join
+        # discovery via --ignore-joins.
+        use_ignore_joins = repo_name == 'axdriver_crates'
+        if use_ignore_joins:
+            print(
+                f"Using --ignore-joins for {repo_name} to avoid duplicate subtree history conflicts.",
+                flush=True,
+            )
+            push_args.insert(1, '--ignore-joins')
+
+        cmd = self._git_subtree_cmd('push', push_args)
+        try:
+            self._run_command(cmd, env=subtree_env)
+        except subprocess.CalledProcessError as exc:
+            if use_ignore_joins:
+                raise
+
+            if exc.returncode != 1:
+                raise
+
+            # Other subtrees may hit the same git-subtree history bug after
+            # history repairs or duplicate join metadata, so retry once with
+            # --ignore-joins when we detect the characteristic cache error.
+            if 'cache for ' not in str(exc):
+                raise
+
+            print(
+                "Retrying git subtree push with --ignore-joins after detecting duplicate subtree cache history.",
+                flush=True,
+            )
+            retry_args = push_args.copy()
+            retry_args.insert(1, '--ignore-joins')
+            retry_cmd = self._git_subtree_cmd('push', retry_args)
+            self._run_command(retry_cmd, env=subtree_env)
 
     def switch_branch(self, url: str, target_dir: str, old_branch: str, new_branch: str) -> None:
         """Switch a subtree to a different branch."""
@@ -584,13 +715,29 @@ def cmd_push(args: argparse.Namespace) -> int:
             skipped.append(f"{repo.repo_name} (no target_dir)")
             continue
 
-        # Use command-line branch if specified, otherwise push to the default dev branch.
-        branch = args.branch if args.branch else PUSH_DEFAULT_BRANCH
+        if args.branch:
+            branch = args.branch
+            branch_source = "command-line override"
+        elif repo.branch:
+            branch = repo.branch
+            branch_source = "repos.csv"
+        else:
+            try:
+                branch = git_manager.detect_remote_branch(repo.url, repo.target_dir)
+            except ValueError as e:
+                print(f"Error resolving branch for {repo.repo_name}: {e}", file=sys.stderr)
+                if not args.all:
+                    return 1
+                continue
+            branch_source = "remote default branch"
 
         try:
-            print(f"\nPushing {repo.repo_name}...")
+            print(f"\nPushing {repo.repo_name}...", flush=True)
+            source_branch = git_manager.detect_current_branch() or "<unknown>"
+            print(f"Branch mapping: tgoskits {source_branch} -> {repo.repo_name} {branch}", flush=True)
+            print(f"Target branch source: {branch_source}", flush=True)
             if args.force:
-                print("Using force mode (will force-push subtree history)")
+                print("Using force mode (will force-push subtree history)", flush=True)
             git_manager.push_subtree(repo.url, repo.target_dir, branch, force=args.force)
         except (subprocess.CalledProcessError, ValueError) as e:
             print(f"Error pushing {repo.repo_name}: {e}", file=sys.stderr)
@@ -814,11 +961,24 @@ Examples:
                             help='Force pull: prefer remote changes on conflict')
 
     # Push command
-    push_parser = subparsers.add_parser('push', help='Push local changes to remote')
+    push_parser = subparsers.add_parser(
+        'push',
+        help='Push local changes to remote',
+        description=(
+            "Push local subtree changes to the configured remote branch.\n\n"
+            "Notes:\n"
+            "  - axdriver_crates is pushed with --ignore-joins by default to avoid\n"
+            "    duplicate subtree history conflicts.\n"
+            "  - Other repositories automatically retry with --ignore-joins if\n"
+            "    git-subtree reports the known 'cache for <hash> already exists!'\n"
+            "    error while scanning prior subtree joins."
+        ),
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
     push_parser.add_argument('repo_name', nargs='?', help='Repository name (or use --all)')
     push_parser.add_argument('--all', action='store_true', help='Push all repositories')
     push_parser.add_argument('-b', '--branch', default='',
-                             help=f'Branch name (default: {PUSH_DEFAULT_BRANCH})')
+                             help='Target branch override for all selected repositories')
     push_parser.add_argument('-f', '--force', action='store_true',
                              help='Force push subtree history to remote')
 

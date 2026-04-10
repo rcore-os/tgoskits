@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use memory_addr::PhysAddr;
-use page_table_multiarch::{MappingFlags, PagingHandler};
+use ax_memory_addr::PhysAddr;
+use ax_page_table_multiarch::{MappingFlags, PagingHandler};
 
 use super::Backend;
 use crate::{GuestPhysAddr, npt::NestedPageTable as PageTable};

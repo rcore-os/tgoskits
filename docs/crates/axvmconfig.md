@@ -228,7 +228,7 @@ cargo run -p axvmconfig -- generate --arch aarch64 --output vm.toml
 | --- | --- |
 | `serde` / `serde_repr` | 配置结构与枚举的序列化/反序列化 |
 | `toml` | TOML 解析与序列化 |
-| `axerrno` | 统一错误返回类型 |
+| `ax-errno` | 统一错误返回类型 |
 | `log` | 解析和容错路径中的告警 |
 | `enumerable` | `EmulatedDeviceType` 枚举遍历 |
 | `clap` | `std` 模式下的 CLI |

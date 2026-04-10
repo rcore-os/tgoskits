@@ -1,20 +1,20 @@
 use alloc::sync::Arc;
 use core::ffi::{c_char, c_int};
 
-use axerrno::{LinuxError, LinuxResult};
-use axfs::fops::OpenOptions;
-use axio::{PollState, SeekFrom};
-use axsync::Mutex;
+use ax_errno::{LinuxError, LinuxResult};
+use ax_fs::fops::OpenOptions;
+use ax_io::{PollState, SeekFrom};
+use ax_sync::Mutex;
 
 use super::fd_ops::{FileLike, get_file_like};
 use crate::{ctypes, utils::char_ptr_to_str};
 
 pub struct File {
-    inner: Mutex<axfs::fops::File>,
+    inner: Mutex<ax_fs::fops::File>,
 }
 
 impl File {
-    fn new(inner: axfs::fops::File) -> Self {
+    fn new(inner: ax_fs::fops::File) -> Self {
         Self {
             inner: Mutex::new(inner),
         }
@@ -111,7 +111,7 @@ pub fn sys_open(filename: *const c_char, flags: c_int, mode: ctypes::mode_t) -> 
     debug!("sys_open <= {filename:?} {flags:#o} {mode:#o}");
     syscall_body!(sys_open, {
         let options = flags_to_options(flags, mode);
-        let file = axfs::fops::File::open(filename?, &options)?;
+        let file = ax_fs::fops::File::open(filename?, &options)?;
         File::new(file).add_to_fd_table()
     })
 }
@@ -145,7 +145,7 @@ pub unsafe fn sys_stat(path: *const c_char, buf: *mut ctypes::stat) -> c_int {
         }
         let mut options = OpenOptions::new();
         options.read(true);
-        let file = axfs::fops::File::open(path?, &options)?;
+        let file = ax_fs::fops::File::open(path?, &options)?;
         let st = File::new(file).stat()?;
         unsafe { *buf = st };
         Ok(0)
@@ -191,7 +191,7 @@ pub fn sys_getcwd(buf: *mut c_char, size: usize) -> *mut c_char {
             return Ok(core::ptr::null::<c_char>() as _);
         }
         let dst = unsafe { core::slice::from_raw_parts_mut(buf as *mut u8, size as _) };
-        let cwd = axfs::api::current_dir()?;
+        let cwd = ax_fs::api::current_dir()?;
         let cwd = cwd.as_bytes();
         if cwd.len() < size {
             dst[..cwd.len()].copy_from_slice(cwd);
@@ -212,7 +212,7 @@ pub fn sys_rename(old: *const c_char, new: *const c_char) -> c_int {
         let old_path = char_ptr_to_str(old)?;
         let new_path = char_ptr_to_str(new)?;
         debug!("sys_rename <= old: {old_path:?}, new: {new_path:?}");
-        axfs::api::rename(old_path, new_path)?;
+        ax_fs::api::rename(old_path, new_path)?;
         Ok(0)
     })
 }

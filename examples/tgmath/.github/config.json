@@ -1,0 +1,17 @@
+{
+  "component": {
+    "name": "tgmath",
+    "crate_name": "tgmath"
+  },
+  "targets": [
+    "x86_64-unknown-linux-gnu"
+  ],
+  "unit_test_targets": [
+    "x86_64-unknown-linux-gnu"
+  ],
+  "rust_components": [
+    "rust-src",
+    "clippy",
+    "rustfmt"
+  ]
+}

@@ -1,4 +1,4 @@
-use arceos_api::net::{self as api, AxUdpSocketHandle};
+use ax_api::net::{self as api, AxUdpSocketHandle};
 
 use super::{SocketAddr, ToSocketAddrs};
 use crate::io;
@@ -58,7 +58,7 @@ impl UdpSocket {
     pub fn send_to<A: ToSocketAddrs>(&self, buf: &[u8], addr: A) -> io::Result<usize> {
         match addr.to_socket_addrs()?.next() {
             Some(addr) => api::ax_udp_send_to(&self.0, buf, addr),
-            None => axerrno::ax_err!(InvalidInput, "no addresses to send data to"),
+            None => ax_errno::ax_err!(InvalidInput, "no addresses to send data to"),
         }
     }
 

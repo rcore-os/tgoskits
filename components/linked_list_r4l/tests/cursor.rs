@@ -1,6 +1,6 @@
 use std::{fmt, sync::Arc};
 
-use linked_list_r4l::*;
+use ax_linked_list_r4l::*;
 
 def_node! {
     struct Node(String);

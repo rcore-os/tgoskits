@@ -3,8 +3,8 @@
 use alloc::sync::Arc;
 use core::sync::atomic::AtomicU32;
 
+use ax_kspin::SpinNoPreempt;
 use bytemuck::AnyBitPattern;
-use kspin::SpinNoPreempt;
 
 pub mod job;
 pub mod ldisc;

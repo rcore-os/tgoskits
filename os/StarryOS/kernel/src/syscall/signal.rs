@@ -1,8 +1,8 @@
 use core::{future::poll_fn, task::Poll};
 
-use axerrno::{AxError, AxResult, LinuxError};
-use axhal::uspace::UserContext;
-use axtask::{
+use ax_errno::{AxError, AxResult, LinuxError};
+use ax_hal::uspace::UserContext;
+use ax_task::{
     current,
     future::{self, block_on},
 };

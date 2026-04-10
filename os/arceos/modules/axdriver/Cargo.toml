@@ -1,6 +1,7 @@
 [package]
-name = "axdriver"
+name = "ax-driver"
 version.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
     "Yuekai Jia <equation618@gmail.com>",
@@ -8,56 +9,54 @@ authors = [
 ]
 description = "ArceOS device drivers"
 license.workspace = true
-homepage.workspace = true
-repository = "https://github.com/arceos-org/arceos/tree/main/modules/axdriver"
 
 [features]
 bus-mmio = []
-bus-pci = ["dep:axdriver_pci", "dep:axhal", "dep:axconfig"]
-net = ["dep:axdriver_net"]
-block = ["dep:axdriver_block"]
-display = ["dep:axdriver_display"]
-input = ["dep:axdriver_input"]
-vsock = ["axdriver_vsock"]
+bus-pci = ["dep:ax-driver-pci", "dep:ax-hal", "dep:ax-config"]
+net = ["dep:ax-driver-net"]
+block = ["dep:ax-driver-block"]
+display = ["dep:ax-driver-display"]
+input = ["dep:ax-driver-input"]
+vsock = ["ax-driver-vsock"]
 
 # Enabled by features `virtio-*`
-virtio = ["dep:axdriver_virtio", "dep:axalloc", "dep:axhal", "dep:axconfig"]
+virtio = ["dep:ax-driver-virtio", "dep:ax-alloc", "dep:ax-hal", "dep:ax-config"]
 
 # various types of drivers
-virtio-blk = ["block", "virtio", "axdriver_virtio/block"]
-virtio-net = ["net", "virtio", "axdriver_virtio/net"]
-virtio-gpu = ["display", "virtio", "axdriver_virtio/gpu"]
-virtio-input = ["input", "virtio", "axdriver_virtio/input"]
-virtio-socket = ["vsock", "virtio", "axdriver_virtio/socket"]
-ramdisk = ["block", "axdriver_block/ramdisk"]
-bcm2835-sdhci = ["block", "axdriver_block/bcm2835-sdhci"]
-sdmmc = ["block", "axdriver_block/sdmmc", "dep:axhal", "dep:axconfig"]
-ahci = ["block", "axdriver_block/ahci", "dep:axhal", "dep:axconfig"]
-ixgbe = ["net", "axdriver_net/ixgbe", "dep:axalloc", "dep:axhal", "dep:axdma"]
-fxmac = ["net", "axdriver_net/fxmac", "dep:axalloc", "dep:axhal", "dep:axdma"]
-# more devices example: e1000 = ["net", "axdriver_net/e1000"]
+virtio-blk = ["block", "virtio", "ax-driver-virtio/block"]
+virtio-net = ["net", "virtio", "ax-driver-virtio/net"]
+virtio-gpu = ["display", "virtio", "ax-driver-virtio/gpu"]
+virtio-input = ["input", "virtio", "ax-driver-virtio/input"]
+virtio-socket = ["vsock", "virtio", "ax-driver-virtio/socket"]
+ramdisk = ["block", "ax-driver-block/ramdisk"]
+bcm2835-sdhci = ["block", "ax-driver-block/bcm2835-sdhci"]
+sdmmc = ["block", "ax-driver-block/sdmmc", "dep:ax-hal", "dep:ax-config"]
+ahci = ["block", "ax-driver-block/ahci", "dep:ax-hal", "dep:ax-config"]
+ixgbe = ["net", "ax-driver-net/ixgbe", "dep:ax-alloc", "dep:ax-hal", "dep:ax-dma"]
+fxmac = ["net", "ax-driver-net/fxmac", "dep:ax-alloc", "dep:ax-hal", "dep:ax-dma"]
+# more devices example: e1000 = ["net", "ax-driver-net/e1000"]
 
 irq = []
-dyn = ["dep:axerrno", "dep:axplat-dyn"]
+dyn = ["dep:ax-errno", "dep:axplat-dyn"]
 
 default = ["bus-pci"]
 
 [dependencies]
-axalloc = { workspace = true, optional = true }
-axconfig = { workspace = true, optional = true }
-axdma = { workspace = true, optional = true }
-axdriver_base.workspace = true
-axdriver_block = { workspace = true, optional = true }
-axdriver_display = { workspace = true, optional = true }
-axdriver_input = { workspace = true, optional = true }
-axdriver_net = { workspace = true, optional = true }
-axdriver_pci = { workspace = true, optional = true }
-axdriver_virtio = { workspace = true, optional = true }
-axdriver_vsock = { workspace = true, optional = true }
-axerrno = { workspace = true, optional = true }
-axhal = { workspace = true, optional = true }
+ax-alloc = { workspace = true, optional = true }
+ax-config = { workspace = true, optional = true }
+ax-dma = { workspace = true, optional = true }
+ax-driver-base.workspace = true
+ax-driver-block = { workspace = true, optional = true }
+ax-driver-display = { workspace = true, optional = true }
+ax-driver-input = { workspace = true, optional = true }
+ax-driver-net = { workspace = true, optional = true }
+ax-driver-pci = { workspace = true, optional = true }
+ax-driver-virtio = { workspace = true, optional = true }
+ax-driver-vsock = { workspace = true, optional = true }
+ax-errno = { workspace = true, optional = true }
+ax-hal = { workspace = true, optional = true }
 cfg-if.workspace = true
-crate_interface.workspace = true
+ax-crate-interface.workspace = true
 log.workspace = true
 smallvec = { version = "1.15", features = ["const_generics", "union"] }
 axplat-dyn = { workspace = true, optional = true }

@@ -1,6 +1,7 @@
 [package]
-name = "axcpu"
-version = "0.3.0-preview.8"
+name = "ax-cpu"
+version = "0.5.0"
+repository = "https://github.com/rcore-os/tgoskits"
 edition = "2021"
 authors = [
     "Yuekai Jia <equation618@gmail.com>",
@@ -15,32 +16,28 @@ authors = [
     "朝倉水希 <asakuramizu111@gmail.com>",
 ]
 description = "Privileged instruction and structure abstractions for various CPU architectures"
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
-homepage = "https://github.com/arceos-org/axcpu"
-repository = "https://github.com/arceos-org/axcpu/tree/dev"
-documentation = "https://docs.rs/axcpu"
 keywords = ["arceos", "cpu", "architecture", "hal"]
 categories = ["embedded", "no-std", "hardware-support", "os"]
 rust-version = "1.88.0"
+license = "Apache-2.0"
 
 [features]
 default = []
 fp-simd = []
 tls = []
 uspace = []
-arm-el2 = ["page_table_entry/arm-el2"]
+arm-el2 = ["ax-page-table-entry/arm-el2"]
 
 [dependencies]
-axbacktrace = "0.1"
+axbacktrace = "0.3.2"
 cfg-if = "1.0"
-linkme = "0.3"
 log = "0.4"
-memory_addr = "0.4"
-page_table_entry = "0.6"
+ax-memory-addr = "0.6.1"
+ax-page-table-entry = "0.8.1"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-lazyinit = "0.2"
-percpu = "0.2.3-preview.1"
+ax-lazyinit = "0.4.2"
+ax-percpu = "0.4.3"
 x86 = "0.52"
 x86_64 = { version = "0.15", default-features = false, features = [
     "instructions",
@@ -55,7 +52,7 @@ riscv = "0.16"
 
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
 loongArch64 = "0.2"
-page_table_multiarch = "0.6"
+ax-page-table-multiarch = "0.8.1"
 
 [lints.clippy]
 new_without_default = "allow"

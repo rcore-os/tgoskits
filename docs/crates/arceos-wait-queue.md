@@ -20,19 +20,19 @@
 前者验证基本阻塞/唤醒流程，后者验证带超时的等待语义。
 
 ### 1.2 真实调用关系
-这个 crate 并没有绕过公开接口直接碰 `axtask::WaitQueue`，而是刻意使用 ArceOS 对外暴露的 API 句柄层：
+这个 crate 并没有绕过公开接口直接碰 `ax-task::WaitQueue`，而是刻意使用 ArceOS 对外暴露的 API 句柄层：
 
 ```mermaid
 flowchart LR
-    A["AxWaitQueueHandle::new()"] --> B["arceos_api::task 封装层"]
-    B --> C["axtask::WaitQueue"]
+    A["AxWaitQueueHandle::new()"] --> B["ax_api::task 封装层"]
+    B --> C["ax-task::WaitQueue"]
     C --> D["wait_until / wait_timeout_until"]
     D --> E["notify_one / notify_all"]
 ```
 
 具体来看：
 
-- `AxWaitQueueHandle` 在 `arceos_api::task` 中包装了 `axtask::WaitQueue`
+- `AxWaitQueueHandle` 在 `ax_api::task` 中包装了 `ax-task::WaitQueue`
 - `ax_wait_queue_wait_until()` 会在有 `irq` 时走 `wait_timeout_until` 路径
 - `ax_wait_queue_wake()` 最终映射到 `notify_one(true)` 或 `notify_all(true)`
 
@@ -75,23 +75,23 @@ flowchart LR
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    test["arceos-wait-queue"] --> axstd["axstd(multitask, irq)"]
-    axstd --> arceos_api["arceos_api::task"]
-    arceos_api --> axtask["axtask::WaitQueue"]
+    test["arceos-wait-queue"] --> ax-std["ax-std(multitask, irq)"]
+    ax-std --> ax-api["ax_api::task"]
+    ax-api --> ax-task["ax-task::WaitQueue"]
 ```
 
 ### 3.1 直接依赖
-- `axstd(multitask, irq)`：说明本测试依赖多任务与基于中断的超时等待。
+- `ax-std(multitask, irq)`：说明本测试依赖多任务与基于中断的超时等待。
 
 ### 3.2 关键间接依赖
-- `arceos_api::task::AxWaitQueueHandle`
-- `arceos_api::task::ax_wait_queue_wait_until`
-- `arceos_api::task::ax_wait_queue_wake`
-- `axtask::WaitQueue`
+- `ax_api::task::AxWaitQueueHandle`
+- `ax_api::task::ax_wait_queue_wait_until`
+- `ax_api::task::ax_wait_queue_wake`
+- `ax-task::WaitQueue`
 
 ### 3.3 主要消费者
 - `cargo arceos test qemu` 自动发现的任务同步回归。
-- 修改 `axtask::wait_queue` 或 `arceos_api::task` 封装后的首批验证对象。
+- 修改 `ax-task::wait_queue` 或 `ax_api::task` 封装后的首批验证对象。
 
 ## 4. 开发指南
 ### 4.1 推荐运行方式
@@ -137,7 +137,7 @@ cargo arceos test qemu --target riscv64gc-unknown-none-elf
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-它是 ArceOS 任务同步公开 API 的直接回归入口，重点验证 `arceos_api` 到 `axtask` 的等待队列桥接。
+它是 ArceOS 任务同步公开 API 的直接回归入口，重点验证 `ax-api` 到 `ax-task` 的等待队列桥接。
 
 ### 6.2 StarryOS
 StarryOS 不直接运行它，但共享底层任务同步实现时，这类回归对发现基础语义回退依然有价值。

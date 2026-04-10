@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use ax_errno::AxResult;
 use axaddrspace::{GuestPhysAddr, HostPhysAddr};
-use axerrno::AxResult;
 use axvisor_api::vmm::{VCpuId, VMId};
 
 use crate::exit::AxVCpuExitReason;

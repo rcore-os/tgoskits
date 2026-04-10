@@ -3,7 +3,7 @@
 //! This crate defines several traits using `#[def_interface]` that do NOT have
 //! any default implementations. These traits must be fully implemented.
 
-use crate_interface::def_interface;
+use ax_crate_interface::def_interface;
 
 /// A simple interface with basic methods.
 #[def_interface]

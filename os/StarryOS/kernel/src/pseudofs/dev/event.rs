@@ -2,14 +2,14 @@ use alloc::{format, sync::Arc};
 use core::{any::Any, task::Context, time::Duration};
 
 #[allow(unused_imports)]
-use axdriver::prelude::{
+use ax_driver::prelude::{
     AxInputDevice, BaseDriverOps, DevError, Event, EventType, InputDeviceId, InputDriverOps,
 };
-use axerrno::{AxError, AxResult};
+use ax_errno::{AxError, AxResult};
+use ax_hal::time::wall_time;
+use ax_sync::Mutex;
 use axfs_ng_vfs::{DeviceId, NodeFlags, NodeType, VfsResult};
-use axhal::time::wall_time;
 use axpoll::{IoEvents, Pollable};
-use axsync::Mutex;
 use bitmaps::Bitmap;
 use linux_raw_sys::{
     general::{__kernel_old_time_t, __kernel_suseconds_t},
@@ -324,7 +324,7 @@ impl Pollable for EventDev {
 pub fn input_devices(fs: Arc<SimpleFs>) -> DirMapping {
     let mut inputs = DirMapping::new();
     let mut input_id = 0;
-    let input_devices = axinput::take_inputs();
+    let input_devices = ax_input::take_inputs();
     let mut keys = [0; 0x300usize.div_ceil(8)];
     for (i, mut device) in input_devices.into_iter().enumerate() {
         assert!(device.get_event_bits(EventType::Key, &mut keys).unwrap());

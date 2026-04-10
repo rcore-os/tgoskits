@@ -3,7 +3,7 @@ extern crate alloc;
 use alloc::string::String;
 use core::fmt;
 
-use arceos_api::fs as api;
+use ax_api::fs as api;
 
 use super::FileType;
 use crate::io::Result;
@@ -146,7 +146,7 @@ impl DirBuilder {
     }
 
     fn create_dir_all(&self, _path: &str) -> Result<()> {
-        axerrno::ax_err!(
+        ax_errno::ax_err!(
             Unsupported,
             "Recursive directory creation is not supported yet"
         )

@@ -23,6 +23,10 @@ pub use axvmconfig::{
     VMInterruptMode, VMType, VmMemConfig, VmMemMappingType,
 };
 
+use crate::VMMemoryRegion;
+
+const BIOS_RESERVED_SIZE: usize = 2 * 1024 * 1024;
+
 // /// A part of `AxVCpuConfig`, which represents an architecture-dependent `VCpu`.
 // ///
 // /// The concrete type of configuration is defined in `AxArchVCpuImpl`.
@@ -41,6 +45,15 @@ pub struct AxVCpuConfig {
     pub ap_entry: GuestPhysAddr,
 }
 
+/// Ramdisk image information.
+#[derive(Debug, Default, Clone)]
+pub struct RamdiskInfo {
+    /// The load address in GPA for the ramdisk image.
+    pub load_gpa: GuestPhysAddr,
+    /// The size in bytes of the ramdisk image, `None` if not known yet.
+    pub size: Option<usize>,
+}
+
 /// A part of `AxVMConfig`, which stores configuration attributes related to the load address of VM images.
 #[derive(Debug, Default, Clone)]
 pub struct VMImageConfig {
@@ -50,8 +63,8 @@ pub struct VMImageConfig {
     pub bios_load_gpa: Option<GuestPhysAddr>,
     /// The load address in GPA for the device tree blob (DTB), `None` if not used.
     pub dtb_load_gpa: Option<GuestPhysAddr>,
-    /// The load address in GPA for the ramdisk image, `None` if not used.
-    pub ramdisk_load_gpa: Option<GuestPhysAddr>,
+    /// Ramdisk image info, `None` if not used.
+    pub ramdisk: Option<RamdiskInfo>,
 }
 
 /// A part of `AxVMCrateConfig`, which represents a `VM`.
@@ -94,7 +107,10 @@ impl From<AxVMCrateConfig> for AxVMConfig {
                 kernel_load_gpa: GuestPhysAddr::from(cfg.kernel.kernel_load_addr),
                 bios_load_gpa: cfg.kernel.bios_load_addr.map(GuestPhysAddr::from),
                 dtb_load_gpa: cfg.kernel.dtb_load_addr.map(GuestPhysAddr::from),
-                ramdisk_load_gpa: cfg.kernel.ramdisk_load_addr.map(GuestPhysAddr::from),
+                ramdisk: cfg.kernel.ramdisk_load_addr.map(|addr| RamdiskInfo {
+                    load_gpa: GuestPhysAddr::from(addr),
+                    size: None,
+                }),
             },
             // memory_regions: cfg.kernel.memory_regions,
             emu_devices: cfg.devices.emu_devices,
@@ -105,6 +121,21 @@ impl From<AxVMCrateConfig> for AxVMConfig {
             interrupt_mode: cfg.devices.interrupt_mode,
         }
     }
+}
+
+pub fn adjusted_kernel_load_gpa(
+    main_memory: &VMMemoryRegion,
+    bios_load_gpa: Option<GuestPhysAddr>,
+) -> Option<GuestPhysAddr> {
+    if !main_memory.is_identical() {
+        return None;
+    }
+
+    let mut kernel_addr = main_memory.gpa;
+    if bios_load_gpa.is_some() {
+        kernel_addr += BIOS_RESERVED_SIZE;
+    }
+    Some(kernel_addr)
 }
 
 impl AxVMConfig {
@@ -204,6 +235,30 @@ impl AxVMConfig {
     /// Returns the interrupt mode of the VM.
     pub fn interrupt_mode(&self) -> VMInterruptMode {
         self.interrupt_mode
+    }
+
+    /// Relocate the guest kernel image while preserving the configured
+    /// entry-point offsets relative to the load address.
+    pub fn relocate_kernel_image(&mut self, kernel_load_gpa: GuestPhysAddr) {
+        let old_load = self.image_config.kernel_load_gpa.as_usize();
+        let new_load = kernel_load_gpa.as_usize();
+
+        let bsp_offset = self
+            .cpu_config
+            .bsp_entry
+            .as_usize()
+            .checked_sub(old_load)
+            .expect("BSP entry must not be below kernel load address");
+        let ap_offset = self
+            .cpu_config
+            .ap_entry
+            .as_usize()
+            .checked_sub(old_load)
+            .expect("AP entry must not be below kernel load address");
+
+        self.image_config.kernel_load_gpa = kernel_load_gpa;
+        self.cpu_config.bsp_entry = GuestPhysAddr::from(new_load + bsp_offset);
+        self.cpu_config.ap_entry = GuestPhysAddr::from(new_load + ap_offset);
     }
 }
 

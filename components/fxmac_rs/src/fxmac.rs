@@ -192,7 +192,7 @@ pub enum FXmacPhyInterface {
 pub fn read_reg<T>(src: *const T) -> T {
     unsafe {
         core::ptr::read_volatile(
-            crate_interface::call_interface!(crate::KernelFunc::phys_to_virt(src as usize))
+            ax_crate_interface::call_interface!(crate::KernelFunc::phys_to_virt(src as usize))
                 as *const T,
         )
     }
@@ -205,7 +205,7 @@ pub fn read_reg<T>(src: *const T) -> T {
 pub fn write_reg<T>(dst: *mut T, value: T) {
     unsafe {
         core::ptr::write_volatile(
-            crate_interface::call_interface!(crate::KernelFunc::phys_to_virt(dst as usize))
+            ax_crate_interface::call_interface!(crate::KernelFunc::phys_to_virt(dst as usize))
                 as *mut T,
             value,
         );

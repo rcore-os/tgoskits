@@ -1,9 +1,9 @@
 use alloc::{boxed::Box, collections::VecDeque, vec};
 use core::ptr::NonNull;
 
-use axdriver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
+use ax_driver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
 pub use fxmac_rs::KernelFunc;
-use fxmac_rs::{self, xmac_init, FXmac, FXmacGetMacAddress, FXmacLwipPortTx, FXmacRecvHandler};
+use fxmac_rs::{self, FXmac, FXmacGetMacAddress, FXmacLwipPortTx, FXmacRecvHandler, xmac_init};
 use log::*;
 
 use crate::{EthernetAddress, NetBufPtr, NetDriverOps};

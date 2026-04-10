@@ -6,7 +6,7 @@
 > 版本：`0.2.1`
 > 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs`、`components/axallocator/src/bitmap.rs`、`components/axallocator/Cargo.toml`
 
-`bitmap-allocator` 的真实定位是一个**按位管理资源索引的分配算法组件**。它管理的是“哪些 bit 目前可用”，而不是直接管理页表、物理页或虚拟地址空间。当前仓库里，它被 `axallocator` 拿来实现页粒度分配器，但“页分配语义”是上层赋予它的，而不是这个 crate 自己具备的。
+`bitmap-allocator` 的真实定位是一个**按位管理资源索引的分配算法组件**。它管理的是“哪些 bit 目前可用”，而不是直接管理页表、物理页或虚拟地址空间。当前仓库里，它被 `ax-allocator` 拿来实现页粒度分配器，但“页分配语义”是上层赋予它的，而不是这个 crate 自己具备的。
 
 ## 1. 架构设计分析
 
@@ -92,7 +92,7 @@
 - `BitAlloc16M`
 - `BitAlloc256M`
 
-这些类型只是容量不同，算法模型完全相同。当前仓库里，`axallocator` 会根据 feature 选择其中一种：
+这些类型只是容量不同，算法模型完全相同。当前仓库里，`ax-allocator` 会根据 feature 选择其中一种：
 
 - `page-alloc-256m` -> `BitAlloc64K`
 - `page-alloc-4g` -> `BitAlloc1M`
@@ -117,7 +117,7 @@
 
 这说明它的连续分配能力是“位图扫描 + 摘要加速”，不是专门的伙伴算法。
 
-### 1.7 与 `axallocator` 的真实关系
+### 1.7 与 `ax-allocator` 的真实关系
 
 当前仓库中的真实消费者是 `components/axallocator/src/bitmap.rs`。上层 `BitmapPageAllocator` 会：
 
@@ -129,7 +129,7 @@
 因此：
 
 - `bitmap-allocator` 负责 bit 级算法
-- `axallocator` 负责把 bit 解释成“页”
+- `ax-allocator` 负责把 bit 解释成“页”
 
 ## 2. 核心功能说明
 
@@ -146,12 +146,12 @@
 
 真实链路是：
 
-1. `axallocator::BitmapPageAllocator` 根据 feature 选定一种 `BitAllocUsed`
+1. `ax_allocator::BitmapPageAllocator` 根据 feature 选定一种 `BitAllocUsed`
 2. `init()` 把可用页范围映射成可用 bit 范围并执行 `insert()`
 3. 页分配时调用 `alloc()` 或 `alloc_contiguous()`
 4. 页释放时调用 `dealloc()` 或 `dealloc_contiguous()`
 
-因此 `bitmap-allocator` 是 `axallocator` 里“页级位图算法内核”，但并不等于整个页分配器。
+因此 `bitmap-allocator` 是 `ax-allocator` 里“页级位图算法内核”，但并不等于整个页分配器。
 
 ### 2.3 最关键的边界澄清
 
@@ -176,18 +176,18 @@
 
 当前仓库内可确认的直接消费者：
 
-- `axallocator`
+- `ax-allocator`
 
 明确可见的传递链路：
 
-- `bitmap-allocator` -> `axallocator` -> 各依赖通用分配器的系统组件
+- `bitmap-allocator` -> `ax-allocator` -> 各依赖通用分配器的系统组件
 
 ### 3.3 关系解读
 
 | 层级 | 角色 |
 | --- | --- |
 | `bitmap-allocator` | bit 级空闲区管理算法 |
-| `axallocator` | 把 bit 映射为页粒度分配语义 |
+| `ax-allocator` | 把 bit 映射为页粒度分配语义 |
 | ArceOS/StarryOS/Axvisor 上层组件 | 通过统一分配器接口间接使用 |
 
 ## 4. 开发指南
@@ -217,7 +217,7 @@
 
 ### 4.3 与上层分页语义的分工
 
-- 地址对齐、页大小、容量窗口：上层 `axallocator`
+- 地址对齐、页大小、容量窗口：上层 `ax-allocator`
 - bit 级空闲搜索与连续分配：本 crate
 - 这条边界一旦混淆，就会把文档写成“页分配子系统”，这是不准确的
 
@@ -240,7 +240,7 @@
 - 大容量 type alias 的边界测试
 - 非法或极端 `align_log2` 输入测试
 - `insert/remove` 边界区间测试
-- 与 `axallocator` 的组合测试，验证地址与 bit 索引映射无偏差
+- 与 `ax-allocator` 的组合测试，验证地址与 bit 索引映射无偏差
 
 ### 5.3 风险点
 
@@ -252,8 +252,8 @@
 
 | 项目 | 位置 | 角色 | 说明 |
 | --- | --- | --- | --- |
-| ArceOS | `axallocator` 页分配路径 | 位图算法内核 | 通过统一分配器间接支撑内存分配 |
-| StarryOS | 共享分配器基础设施 | 位图算法内核 | 若复用 `axallocator` 位图路径则间接使用 |
+| ArceOS | `ax-allocator` 页分配路径 | 位图算法内核 | 通过统一分配器间接支撑内存分配 |
+| StarryOS | 共享分配器基础设施 | 位图算法内核 | 若复用 `ax-allocator` 位图路径则间接使用 |
 | Axvisor | 共享分配器基础设施 | 位图算法内核 | 若选择同一页分配实现则会被间接带入 |
 
 ## 7. 总结

@@ -1,59 +1,58 @@
 [package]
-name = "axruntime"
+name = "ax-runtime"
 version.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "Runtime library of ArceOS"
 license.workspace = true
-homepage.workspace = true
-repository = "https://github.com/arceos-org/arceos/tree/main/modules/axruntime"
 
 [features]
 default = []
 
-alloc = ["dep:axalloc"]
+alloc = ["dep:ax-alloc"]
 dma = ["paging"]
-buddy-slab = ["axalloc/buddy-slab"]
-ipi = ["dep:axipi"]
-irq = ["axhal/irq", "axtask?/irq", "dep:percpu"]
-multitask = ["axtask/multitask"]
-paging = ["axhal/paging", "dep:axmm", "dep:axklib"]
+buddy-slab = ["alloc", "ax-alloc/buddy-slab"]
+ipi = ["dep:ax-ipi"]
+irq = ["ax-hal/irq", "ax-task?/irq", "dep:ax-percpu"]
+multitask = ["ax-task/multitask"]
+paging = ["ax-hal/paging", "dep:ax-mm", "dep:axklib"]
 rtc = []
-smp = ["axhal/smp", "axtask?/smp"]
-tls = ["axhal/tls", "axtask?/tls"]
+smp = ["ax-hal/smp", "ax-task?/smp"]
+tls = ["ax-hal/tls", "ax-task?/tls"]
 
-plat-dyn = ["axdriver/dyn", "paging", "buddy-slab"]
+plat-dyn = ["ax-driver/dyn", "paging", "buddy-slab"]
 
-axdriver = ["dep:axdriver"]
-display = ["axdriver", "dep:axdisplay"]
-fs = ["axdriver", "dep:axfs"]
-fs-ng = ["axdriver", "dep:axfs-ng"]
-input = ["axdriver", "dep:axinput"]
-net = ["axdriver", "dep:axnet"]
-net-ng = ["axdriver", "dep:axnet-ng"]
-vsock = ["net-ng", "axnet-ng/vsock"]
+ax-driver = ["dep:ax-driver"]
+display = ["ax-driver", "dep:ax-display"]
+fs = ["ax-driver", "dep:ax-fs"]
+fs-ng = ["ax-driver", "dep:ax-fs-ng"]
+input = ["ax-driver", "dep:ax-input"]
+net = ["ax-driver", "dep:ax-net"]
+net-ng = ["ax-driver", "dep:ax-net-ng"]
+vsock = ["net-ng", "ax-net-ng/vsock"]
 
 [dependencies]
-axalloc = { workspace = true, optional = true }
+ax-alloc = { workspace = true, optional = true }
 axbacktrace = { workspace = true }
-axconfig = { workspace = true }
-axdisplay = { workspace = true, optional = true }
-axdriver = { workspace = true, optional = true }
-axfs = { workspace = true, optional = true }
-axfs-ng = { workspace = true, optional = true }
-axhal = { workspace = true }
-axinput = { workspace = true, optional = true }
-axipi = { workspace = true, optional = true }
+ax-config = { workspace = true }
+ax-display = { workspace = true, optional = true }
+ax-driver = { workspace = true, optional = true }
+ax-fs = { workspace = true, optional = true }
+ax-fs-ng = { workspace = true, optional = true }
+ax-hal = { workspace = true }
+ax-input = { workspace = true, optional = true }
+ax-ipi = { workspace = true, optional = true }
 axklib = { workspace = true, optional = true }
-axlog = { workspace = true }
-axmm = { workspace = true, optional = true }
-axnet = { workspace = true, optional = true }
-axnet-ng = { workspace = true, optional = true }
-axplat = { workspace = true }
-axtask = { workspace = true, optional = true }
+ax-log = { workspace = true }
+ax-mm = { workspace = true, optional = true }
+ax-net = { workspace = true, optional = true }
+ax-net-ng = { workspace = true, optional = true }
+ax-plat = { workspace = true }
+ax-task = { workspace = true, optional = true }
 cfg-if = { workspace = true }
 chrono = { version = "0.4", default-features = false }
-crate_interface = { workspace = true }
-ctor_bare = "0.2"
+ax-crate-interface = { workspace = true }
+ax-ctor-bare = "0.4.1"
 indoc = "2"
-percpu = { workspace = true, optional = true }
+ax-percpu = { workspace = true, optional = true }

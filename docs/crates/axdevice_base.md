@@ -147,7 +147,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for MyDevice {
 | 依赖 | 作用 |
 | --- | --- |
 | `axaddrspace` | 提供 `GuestPhysAddrRange`、`PortRange`、`SysRegAddrRange` 和 `AccessWidth` |
-| `axerrno` | 统一返回值类型 `AxResult` |
+| `ax-errno` | 统一返回值类型 `AxResult` |
 | `axvmconfig` | 重导出 `EmulatedDeviceType` |
 | `serde` | 为本 crate 自带的 `EmulatedDeviceConfig` 提供序列化能力 |
 | `memory_addr` | 地址生态依赖的一部分 |

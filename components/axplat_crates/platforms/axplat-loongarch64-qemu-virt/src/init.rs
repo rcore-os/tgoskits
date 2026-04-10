@@ -1,4 +1,4 @@
-use axplat::init::InitIf;
+use ax_plat::init::InitIf;
 
 struct InitIfImpl;
 
@@ -8,7 +8,7 @@ impl InitIf for InitIfImpl {
     /// and performed earliest platform configuration and initialization (e.g.,
     /// early console, clocking).
     fn init_early(_cpu_id: usize, _mbi: usize) {
-        axcpu::init::init_trap();
+        ax_cpu::init::init_trap();
         crate::console::init_early();
         crate::time::init_early();
     }
@@ -16,7 +16,7 @@ impl InitIf for InitIfImpl {
     /// Initializes the platform at the early stage for secondary cores.
     #[cfg(feature = "smp")]
     fn init_early_secondary(_cpu_id: usize) {
-        axcpu::init::init_trap();
+        ax_cpu::init::init_trap();
     }
 
     /// Initializes the platform at the later stage for the primary core.
@@ -30,7 +30,7 @@ impl InitIf for InitIfImpl {
         crate::time::init_percpu();
         #[cfg(feature = "smp")]
         {
-            axplat::irq::set_enable(crate::config::devices::IPI_IRQ, true);
+            ax_plat::irq::set_enable(crate::config::devices::IPI_IRQ, true);
         }
     }
 
@@ -38,6 +38,6 @@ impl InitIf for InitIfImpl {
     #[cfg(feature = "smp")]
     fn init_later_secondary(_cpu_id: usize) {
         crate::time::init_percpu();
-        axplat::irq::set_enable(crate::config::devices::IPI_IRQ, true);
+        ax_plat::irq::set_enable(crate::config::devices::IPI_IRQ, true);
     }
 }

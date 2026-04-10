@@ -1,7 +1,7 @@
-use axerrno::AxResult;
-use axhal::paging::{MappingFlags, PageSize};
-use axtask::current;
-use memory_addr::{VirtAddr, align_up_4k};
+use ax_errno::AxResult;
+use ax_hal::paging::{MappingFlags, PageSize};
+use ax_memory_addr::{VirtAddr, align_up_4k};
+use ax_task::current;
 
 use crate::{
     config::{USER_HEAP_BASE, USER_HEAP_SIZE, USER_HEAP_SIZE_MAX},

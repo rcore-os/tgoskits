@@ -34,7 +34,7 @@ use axaddrspace::{
     device::{AccessWidth, Port, SysRegAddr, SysRegAddrRange},
 };
 use axdevice_base::BaseDeviceOps;
-use axerrno::{AxResult, ax_err, ax_err_type};
+use ax_errno::{AxResult, ax_err, ax_err_type};
 use axvcpu::{AxArchVCpu, AxVCpuExitReason};
 use axvisor_api::vmm::{VCpuId, VMId};
 
@@ -587,7 +587,7 @@ impl VmxVcpu {
         VmcsHostNW::TR_BASE.write(get_tr_base(tr, &gdtp) as _)?;
         VmcsHostNW::GDTR_BASE.write(gdtp.base as _)?;
         VmcsHostNW::IDTR_BASE.write(idtp.base as _)?;
-        VmcsHostNW::RIP.write(Self::vmx_exit as usize)?;
+        VmcsHostNW::RIP.write(Self::vmx_exit as *const () as usize)?;
 
         VmcsHostNW::IA32_SYSENTER_ESP.write(0)?;
         VmcsHostNW::IA32_SYSENTER_EIP.write(0)?;
@@ -1145,7 +1145,7 @@ impl VmxVcpu {
             },
             EAX_FREQUENCY_INFO => {
                 /// Timer interrupt frequencyin Hz.
-                /// Todo: this should be the same as `axconfig::TIMER_FREQUENCY` defined in ArceOS's config file.
+                /// Todo: this should be the same as `ax_config::TIMER_FREQUENCY` defined in ArceOS's config file.
                 const TIMER_FREQUENCY_MHZ: u32 = 3_000;
                 let mut res = cpuid!(regs_clone.rax, regs_clone.rcx);
                 if res.eax == 0 {

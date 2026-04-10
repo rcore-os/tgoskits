@@ -6,10 +6,10 @@ use core::ffi::c_int;
 /// relax the CPU and wait for incoming interrupts.
 pub fn sys_sched_yield() -> c_int {
     #[cfg(feature = "multitask")]
-    axtask::yield_now();
+    ax_task::yield_now();
     #[cfg(not(feature = "multitask"))]
     if cfg!(feature = "irq") {
-        axhal::asm::wait_for_irqs();
+        ax_hal::asm::wait_for_irqs();
     } else {
         core::hint::spin_loop();
     }
@@ -21,7 +21,7 @@ pub fn sys_getpid() -> c_int {
     syscall_body!(sys_getpid,
         #[cfg(feature = "multitask")]
         {
-            Ok(axtask::current().id().as_u64() as c_int)
+            Ok(ax_task::current().id().as_u64() as c_int)
         }
         #[cfg(not(feature = "multitask"))]
         {
@@ -34,7 +34,7 @@ pub fn sys_getpid() -> c_int {
 pub fn sys_exit(exit_code: c_int) -> ! {
     debug!("sys_exit <= {exit_code}");
     #[cfg(feature = "multitask")]
-    axtask::exit(exit_code);
+    ax_task::exit(exit_code);
     #[cfg(not(feature = "multitask"))]
-    axhal::power::system_off();
+    ax_hal::power::system_off();
 }

@@ -1,29 +1,27 @@
 [package]
-name = "axplat"
+name = "ax-plat"
 version.workspace = true
+repository.workspace = true
 description = "This crate provides a unified abstraction layer for diverse hardware platforms."
-documentation = "https://docs.rs/axplat"
 keywords = ["arceos", "os", "hal", "embedded"]
 categories = ["embedded", "no-std", "hardware-support", "os"]
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-homepage.workspace = true
-repository.workspace = true
 
 [features]
-smp = ["kspin/smp"]
-irq = ["dep:handler_table"]
+smp = ["ax-kspin/smp"]
+irq = ["dep:ax-handler-table"]
 
 [dependencies]
-memory_addr = "0.4"
+ax-memory-addr = "0.6.1"
 bitflags = "2.6"
-crate_interface = "0.3"
-handler_table = { version = "0.1.2", optional = true }
+ax-crate-interface = "0.5.0"
+ax-handler-table = { version = "0.3.2", optional = true, path = "../../handler_table" }
 const-str = "1.0"
-axplat-macros = { workspace = true }
-kspin = "0.1"
-percpu.workspace = true
+ax-plat-macros = { workspace = true }
+ax-kspin = "0.3.1"
+ax-percpu.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true

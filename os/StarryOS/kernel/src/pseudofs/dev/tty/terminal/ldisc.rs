@@ -6,9 +6,9 @@ use core::{
     task::{Context, Poll, Waker},
 };
 
-use axerrno::{AxError, AxResult};
+use ax_errno::{AxError, AxResult};
+use ax_task::future::{block_on, poll_io};
 use axpoll::{IoEvents, PollSet, Pollable};
-use axtask::future::{block_on, poll_io};
 use linux_raw_sys::general::{
     ECHOCTL, ECHOK, ICRNL, IGNCR, ISIG, VEOF, VERASE, VKILL, VMIN, VTIME,
 };
@@ -255,7 +255,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             ProcessMode::Manual => Processor::Manual(reader),
             ProcessMode::External(register) => {
                 let poll_rx = Arc::new(PollSet::new());
-                axtask::spawn_with_name(
+                ax_task::spawn_with_name(
                     {
                         let poll_rx = poll_rx.clone();
                         let poll_tx = poll_tx.clone();

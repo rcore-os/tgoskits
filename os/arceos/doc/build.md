@@ -10,19 +10,19 @@ What happens when "make A=examples/httpserver ARCH=riscv64 LOG=info NET=y SMP=1 
     - Firstly check Makefile: Based on different parameters, select whether FS/NET/GRAPHIC param is yes or not. If it is y, it will be compiled in conditional compilation.
     - `cargo.mk` determines whether to add the corresponding feature based on whether FS/NET/GRAPHIC is set to y.
     ```
-    features-$(FS) += axstd/fs
-    features-$(NET) += axstd/net
-    features-$(GRAPHIC) += axstd/display
+    features-$(FS) += ax-std/fs
+    features-$(NET) += ax-std/net
+    features-$(GRAPHIC) += ax-std/display
     ```
 
     - `_cargo_build`: The `_cargo_build` method is defined in cargo.mk. Different compilation methods are selected based on the language. For example, for Rust, when `cargo_build,--manifest-path $(APP)/Cargo.toml` is called, where $(APP) represents the current application to be run.
-    - Taking httpserver as an example, let's see how ArceOS are conditionally compiled. First, in the `Cargo.toml` file of httpserver, the dependency is specified as: `axstd = { workspace = true, features = ["paging", "multitask", "net"] }`. This indicates that axstd needs to be compiled and has the three features mentioned above.
-    - After checking axstd, the following three features were found:
-        - `paging = ["axfeat/paging"]`
-        - `multitask = ["arceos_api/multitask", "axfeat/multitask"]`
-        - `net = ["arceos_api/net", "axfeat/net"]`
+    - Taking httpserver as an example, let's see how ArceOS are conditionally compiled. First, in the `Cargo.toml` file of httpserver, the dependency is specified as: `ax-std = { workspace = true, features = ["paging", "multitask", "net"] }`. This indicates that ax-std needs to be compiled and has the three features mentioned above.
+    - After checking ax-std, the following three features were found:
+        - `paging = ["ax-feat/paging"]`
+        - `multitask = ["ax-api/multitask", "ax-feat/multitask"]`
+        - `net = ["ax-api/net", "ax-feat/net"]`
 
-        This involves modules such as arceos_api, axfeat, and their dependencies like axtask, axnet, etc., and conditional compilation is performed on these modules.
+        This involves modules such as ax-api, ax-feat, and their dependencies like axtask, ax-net, etc., and conditional compilation is performed on these modules.
     - The above are some modules required for compilation, next we will look at how to perform conditional compilation. The `cargo.mk` file describes how to use the cargo method for conditional compilation, with the following build parameters:
     ```
     build_args := \
@@ -75,6 +75,6 @@ What happens when "make A=examples/httpserver ARCH=riscv64 LOG=info NET=y SMP=1 
         )
     }                       
     ```
-    - Later, it calls `axplat::call_main`, which will jump to the function marked with the `axplat::main` procedural macro. In ArceOS it is the `rust_main` in `axruntime`. After some conditional initialization, `rust_main` executes `main()`. Since this main is defined by the application, symbol linkage should be established and jumped to (no context switch is needed since it's a single address space).
+    - Later, it calls `axplat::call_main`, which will jump to the function marked with the `axplat::main` procedural macro. In ArceOS it is the `rust_main` in `ax-runtime`. After some conditional initialization, `rust_main` executes `main()`. Since this main is defined by the application, symbol linkage should be established and jumped to (no context switch is needed since it's a single address space).
 
-    -  Then, the user program begins executing through `axstd`'s API. The application runs in kernel mode, without the need for syscall and context switching, resulting in higher efficiency.
+    -  Then, the user program begins executing through `ax-std`'s API. The application runs in kernel mode, without the need for syscall and context switching, resulting in higher efficiency.

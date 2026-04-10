@@ -61,81 +61,81 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.3.0-preview.3"
+version = "0.5.0"
 edition = "2024"
 authors = ["Yuekai Jia <equation618@gmail.com>"]
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
-homepage = "https://github.com/arceos-org/arceos"
-repository = "https://github.com/arceos-org/arceos"
+repository = "https://github.com/rcore-os/tgoskits"
 keywords = ["arceos", "kernel"]
 categories = ["os", "no-std"]
+license = "Apache-2.0"
 
 [workspace.dependencies]
-axstd = { version = "=0.3.0-preview.3", path = "ulib/axstd" }
-axlibc = { version = "=0.3.0-preview.3", path = "ulib/axlibc" }
+ax-std = { version = "0.5.0", path = "ulib/axstd" }
+ax-libc = { version = "0.5.0", path = "ulib/axlibc" }
 
-arceos_api = { version = "=0.3.0-preview.3", path = "api/arceos_api" }
-arceos_posix_api = { version = "=0.3.0-preview.3", path = "api/arceos_posix_api" }
-axfeat = { version = "=0.3.0-preview.3", path = "api/axfeat" }
+ax-api = { version = "0.5.0", path = "api/arceos_api" }
+ax-posix-api = { version = "0.5.0", path = "api/arceos_posix_api" }
+ax-feat = { version = "0.5.0", path = "api/axfeat" }
 
-axalloc = { version = "=0.3.0-preview.3", path = "modules/axalloc" }
-axconfig = { version = "=0.3.0-preview.3", path = "modules/axconfig" }
-axdisplay = { version = "=0.3.0-preview.3", path = "modules/axdisplay" }
-axdma = { version = "=0.3.0-preview.3", path = "modules/axdma" }
-axdriver = { version = "=0.3.0-preview.3", path = "modules/axdriver" }
-axfs = { version = "=0.3.0-preview.3", path = "modules/axfs" }
-axfs-ng = { version = "=0.3.0-preview.3", path = "modules/axfs-ng" }
-axhal = { version = "=0.3.0-preview.3", path = "modules/axhal" }
-axinput = { version = "=0.3.0-preview.3", path = "modules/axinput" }
-axipi = { version = "=0.3.0-preview.3", path = "modules/axipi" }
-axlog = { version = "=0.3.0-preview.3", path = "modules/axlog" }
-axmm = { version = "=0.3.0-preview.3", path = "modules/axmm" }
-axnet = { version = "=0.3.0-preview.3", path = "modules/axnet" }
-axnet-ng = { version = "=0.3.0-preview.3", path = "modules/axnet-ng" }
-axplat-dyn = { version = "=0.3.0-preview.3", default-features = false }
-axruntime = { version = "=0.3.0-preview.3", path = "modules/axruntime" }
-axsync = { version = "=0.3.0-preview.3", path = "modules/axsync" }
-axtask = { version = "=0.3.0-preview.3", path = "modules/axtask" }
+ax-alloc = { version = "0.5.0", path = "modules/axalloc" }
+ax-config = { version = "0.5.0", path = "modules/axconfig" }
+ax-display = { version = "0.5.0", path = "modules/axdisplay" }
+ax-dma = { version = "0.5.0", path = "modules/axdma" }
+ax-driver = { version = "0.5.0", path = "modules/axdriver" }
+ax-fs = { version = "0.5.0", path = "modules/axfs" }
+ax-fs-ng = { version = "0.5.0", path = "modules/axfs-ng" }
+ax-hal = { version = "0.5.0", path = "modules/axhal" }
+ax-input = { version = "0.5.0", path = "modules/axinput" }
+ax-ipi = { version = "0.5.0", path = "modules/axipi" }
+ax-log = { version = "0.5.0", path = "modules/axlog" }
+ax-mm = { version = "0.5.0", path = "modules/axmm" }
+ax-net = { version = "0.5.0", path = "modules/axnet" }
+ax-net-ng = { version = "0.5.0", path = "modules/axnet-ng" }
+axplat-dyn = { version = "0.5.0", default-features = false }
+ax-runtime = { version = "0.5.0", path = "modules/axruntime" }
+ax-sync = { version = "0.5.0", path = "modules/axsync" }
+ax-task = { version = "0.5.0", path = "modules/axtask" }
 
-axallocator = { version = "0.2", features = ["axerrno"] }
-axbacktrace = "0.1"
-axdriver_base = "0.1.4-preview.3"
-axdriver_block = "0.1.4-preview.3"
-axdriver_display = "0.1.4-preview.3"
-axdriver_input = "0.1.4-preview.3"
-axdriver_net = "0.1.4-preview.3"
-axdriver_pci = "0.1.4-preview.3"
-axdriver_virtio = "0.1.4-preview.3"
-axdriver_vsock = "0.1.4-preview.3"
-axerrno = "0.2"
-axfs-ng-vfs = "0.1"
-axio = "0.3.0-pre.1"
-axklib = "0.3"
-axcpu = "0.3.0-preview.8"
-axplat = "0.3.1-pre.6"
-axplat-aarch64-bsta1000b = "0.3.1-pre.6"
-axplat-aarch64-phytium-pi = "0.3.1-pre.6"
-axplat-aarch64-qemu-virt = "0.3.1-pre.6"
-axplat-aarch64-raspi = "0.3.1-pre.6"
-axplat-loongarch64-qemu-virt = "0.3.1-pre.6"
-axplat-riscv64-qemu-virt = "0.3.1-pre.6"
-axplat-x86-pc = "0.3.1-pre.6"
-axpoll = "0.1"
+ax-allocator = { version = "0.4.0", features = ["ax-errno"] }
+axbacktrace = "0.3.2"
+ax-driver-base = "0.3.4"
+ax-driver-block = "0.3.4"
+ax-driver-display = "0.3.4"
+ax-driver-input = "0.3.4"
+ax-driver-net = "0.3.4"
+ax-driver-pci = "0.3.4"
+ax-driver-virtio = "0.3.4"
+ax-driver-vsock = "0.3.4"
+ax-errno = "0.4.2"
+axfs-ng-vfs = "0.3.1"
+ax-io = "0.5.0"
+axklib = "0.5.0"
+ax-cpu = "0.5.0"
+ax-plat = "0.5.1"
+ax-plat-aarch64-bsta1000b = "0.5.1"
+ax-plat-aarch64-phytium-pi = "0.5.1"
+ax-plat-aarch64-qemu-virt = "0.5.1"
+ax-plat-aarch64-raspi = "0.5.1"
+ax-plat-loongarch64-qemu-virt = "0.5.1"
+ax-plat-riscv64-qemu-virt = "0.5.0"
+ax-plat-x86-pc = "0.5.1"
+axpoll = "0.3.2"
+ax-timer-list = "0.3.0"
 bindgen = "0.72"
-buddy-slab-allocator = "0.2"
+buddy-slab-allocator = "0.4"
 cfg-if = "1.0"
 chrono = { version = "0.4", default-features = false }
-crate_interface = "0.3"
-ctor_bare = "0.2"
+ax-crate-interface = "0.5.0"
+ax-ctor-bare = "0.4.1"
 event-listener = { version = "5.4.0", default-features = false }
-kernel_guard = "0.1"
-kspin = "0.1"
-lazyinit = "0.2"
+ax-kernel-guard = "0.3.3"
+ax-kspin = "0.3.1"
+ax-lazyinit = "0.4.2"
 lazy_static = { version = "1.5", features = ["spin_no_std"] }
 lock_api = { version = "0.4", default-features = false }
 log = "0.4"
-memory_addr = "0.4"
-page_table_multiarch = { version = "0.6", features = ["axerrno"] }
-percpu = "0.2.3-preview.1"
-scope-local = "0.1"
+ax-memory-addr = "0.6.1"
+ax-page-table-multiarch = { version = "0.8.1", features = ["ax-errno"] }
+ax-percpu = "0.4.3"
+scope-local = "0.3.2"
 spin = "0.10"

@@ -44,7 +44,7 @@
 //!             // Handle hypervisor disable request
 //!             Ok(0)
 //!         }
-//!         _ => Err(axerrno::AxError::Unsupported),
+//!         _ => Err(ax_errno::AxError::Unsupported),
 //!     }
 //! }
 //! ```
@@ -56,7 +56,7 @@
 #![no_std]
 #![deny(missing_docs)]
 
-use axerrno::AxResult;
+use ax_errno::AxResult;
 
 /// Hypercall operation codes for AxVisor.
 ///

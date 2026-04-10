@@ -1,5 +1,6 @@
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![feature(extern_item_impls)]
 #![deny(missing_docs)]
 #![doc = include_str!("../README.md")]
 
@@ -7,7 +8,7 @@
 extern crate log;
 
 #[macro_use]
-extern crate memory_addr;
+extern crate ax_memory_addr;
 
 #[macro_use]
 pub mod trap;

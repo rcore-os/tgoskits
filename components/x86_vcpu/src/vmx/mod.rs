@@ -20,7 +20,7 @@ mod vcpu;
 mod vmcs;
 
 use self::structs::VmxBasic;
-use axerrno::ax_err_type;
+use ax_errno::ax_err_type;
 
 pub use self::definitions::VmxExitReason;
 pub use self::percpu::VmxPerCpuState as VmxArchPerCpuState;
@@ -40,7 +40,7 @@ pub fn read_vmcs_revision_id() -> u32 {
     VmxBasic::read().revision_id
 }
 
-fn as_axerr(err: x86::vmx::VmFail) -> axerrno::AxError {
+fn as_axerr(err: x86::vmx::VmFail) -> ax_errno::AxError {
     use x86::vmx::VmFail;
     match err {
         VmFail::VmFailValid => ax_err_type!(BadState, vmcs::instruction_error().as_str()),

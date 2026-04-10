@@ -1,31 +1,29 @@
 [package]
-name = "axdriver_virtio"
+name = "ax-driver-virtio"
 edition.workspace = true
 version.workspace = true
-authors.workspace = true
-description = "Wrappers of some devices in the `virtio-drivers` crate, that implement traits in the `axdriver_base` series crates"
-documentation = "https://arceos-org.github.io/axdriver_crates/axdriver_virtio"
-keywords = ["arceos", "driver", "virtio"]
-license.workspace = true
-homepage.workspace = true
 repository.workspace = true
+authors.workspace = true
+description = "Wrappers of some devices in the `virtio-drivers` crate, that implement traits in the `ax-driver-base` series crates"
+keywords = ["arceos", "driver", "virtio"]
 categories.workspace = true
 readme = "README.md"
+license.workspace = true
 
 [features]
 alloc = ["virtio-drivers/alloc"]
-block = ["axdriver_block"]
-gpu = ["alloc", "axdriver_display"]
-input = ["alloc", "axdriver_input"]
-net = ["alloc", "axdriver_net"]
-socket = ["alloc", "axdriver_vsock"]
+block = ["ax-driver-block"]
+gpu = ["alloc", "ax-driver-display"]
+input = ["alloc", "ax-driver-input"]
+net = ["alloc", "ax-driver-net"]
+socket = ["alloc", "ax-driver-vsock"]
 
 [dependencies]
-axdriver_base = { version = "0.1.4-preview.3" }
-axdriver_block = { version = "0.1.4-preview.3", optional = true }
-axdriver_display = { version = "0.1.4-preview.3", optional = true }
-axdriver_input = { version = "0.1.4-preview.3", optional = true }
-axdriver_net = { version = "0.1.4-preview.3", optional = true }
-axdriver_vsock = { version = "0.1.4-preview.3", optional = true }
+ax-driver-base = { version = "0.3.4" }
+ax-driver-block = { version = "0.3.4", optional = true }
+ax-driver-display = { version = "0.3.4", optional = true }
+ax-driver-input = { version = "0.3.4", optional = true }
+ax-driver-net = { version = "0.3.4", optional = true }
+ax-driver-vsock = { version = "0.3.4", optional = true }
 log = { workspace = true }
-virtio-drivers = { version = "0.7.4", default-features = false }
+virtio-drivers = { version = "0.13.0", default-features = false }

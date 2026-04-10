@@ -5,10 +5,10 @@ use core::{
     task::Context,
 };
 
-use axerrno::{AxError, AxResult, ax_bail, ax_err_type};
-use axio::prelude::*;
+use ax_errno::{AxError, AxResult, ax_bail, ax_err_type};
+use ax_io::prelude::*;
+use ax_sync::Mutex;
 use axpoll::{IoEvents, PollSet, Pollable};
-use axsync::Mutex;
 use smoltcp::{
     iface::SocketHandle,
     socket::tcp as smol,
@@ -300,7 +300,7 @@ impl SocketOps for TcpSocket {
             })?;
 
         // Hack: let the server listen
-        axtask::yield_now();
+        ax_task::yield_now();
 
         // Here our state must be `CONNECTING`, and only one thread can run here.
         self.general.send_poller(self, || {

@@ -13,7 +13,7 @@ use crate::{MemoryAddr, PhysAddr, VirtAddr};
 /// # Example
 ///
 /// ```
-/// use memory_addr::AddrRange;
+/// use ax_memory_addr::AddrRange;
 ///
 /// let range = AddrRange::<usize>::new(0x1000, 0x2000);
 /// assert_eq!(range.start, 0x1000);
@@ -41,7 +41,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use memory_addr::AddrRange;
+    /// use ax_memory_addr::AddrRange;
     ///
     /// let range = AddrRange::new(0x1000usize, 0x2000);
     /// assert_eq!(range.start, 0x1000);
@@ -51,7 +51,7 @@ where
     /// And this will panic:
     ///
     /// ```should_panic
-    /// # use memory_addr::AddrRange;
+    /// # use ax_memory_addr::AddrRange;
     /// let _ = AddrRange::new(0x2000usize, 0x1000);
     /// ```
     #[inline]
@@ -72,7 +72,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use memory_addr::AddrRange;
+    /// use ax_memory_addr::AddrRange;
     ///
     /// let range = AddrRange::try_new(0x1000usize, 0x2000).unwrap();
     /// assert_eq!(range.start, 0x1000);
@@ -99,7 +99,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use memory_addr::AddrRange;
+    /// use ax_memory_addr::AddrRange;
     ///
     /// let range = unsafe { AddrRange::new_unchecked(0x1000usize, 0x2000) };
     /// assert_eq!(range.start, 0x1000);
@@ -120,7 +120,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use memory_addr::AddrRange;
+    /// use ax_memory_addr::AddrRange;
     ///
     /// let range = AddrRange::from_start_size(0x1000usize, 0x1000);
     /// assert_eq!(range.start, 0x1000);
@@ -130,7 +130,7 @@ where
     /// And this will panic:
     ///
     /// ```should_panic
-    /// # use memory_addr::AddrRange;
+    /// # use ax_memory_addr::AddrRange;
     /// let _ = AddrRange::from_start_size(0x1000usize, usize::MAX);
     /// ```
     #[inline]
@@ -154,7 +154,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use memory_addr::AddrRange;
+    /// use ax_memory_addr::AddrRange;
     ///
     /// let range = AddrRange::try_from_start_size(0x1000usize, 0x1000).unwrap();
     /// assert_eq!(range.start, 0x1000);
@@ -178,7 +178,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use memory_addr::AddrRange;
+    /// use ax_memory_addr::AddrRange;
     ///
     /// let range = unsafe { AddrRange::from_start_size_unchecked(0x1000usize, 0x1000) };
     /// assert_eq!(range.start, 0x1000);
@@ -200,7 +200,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use memory_addr::AddrRange;
+    /// use ax_memory_addr::AddrRange;
     ///
     /// assert!(AddrRange::new(0x1000usize, 0x1000).is_empty());
     /// assert!(!AddrRange::new(0x1000usize, 0x2000).is_empty());
@@ -215,7 +215,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use memory_addr::AddrRange;
+    /// use ax_memory_addr::AddrRange;
     ///
     /// assert_eq!(AddrRange::new(0x1000usize, 0x1000).size(), 0);
     /// assert_eq!(AddrRange::new(0x1000usize, 0x2000).size(), 0x1000);
@@ -230,7 +230,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use memory_addr::AddrRange;
+    /// use ax_memory_addr::AddrRange;
     ///
     /// let range = AddrRange::new(0x1000usize, 0x2000);
     /// assert!(!range.contains(0x0fff));
@@ -248,7 +248,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use memory_addr::{addr_range, AddrRange};
+    /// use ax_memory_addr::{addr_range, AddrRange};
     ///
     /// let range = AddrRange::new(0x1000usize, 0x2000);
     /// assert!(!range.contains_range(addr_range!(0x0usize..0xfff)));
@@ -268,7 +268,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use memory_addr::{addr_range, AddrRange};
+    /// use ax_memory_addr::{addr_range, AddrRange};
     ///
     /// let range = AddrRange::new(0x1000usize, 0x2000);
     /// assert!(!range.contained_in(addr_range!(0xfffusize..0x1fff)));
@@ -286,7 +286,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use memory_addr::{addr_range, AddrRange};
+    /// use ax_memory_addr::{addr_range, AddrRange};
     ///
     /// let range = AddrRange::new(0x1000usize, 0x2000usize);
     /// assert!(!range.overlaps(addr_range!(0xfffusize..0xfff)));
@@ -375,7 +375,7 @@ pub type PhysAddrRange = AddrRange<PhysAddr>;
 /// # Example
 ///
 /// ```
-/// use memory_addr::{addr_range, AddrRange};
+/// use ax_memory_addr::{addr_range, AddrRange};
 ///
 /// let range: AddrRange<usize> = addr_range!(0x1000usize..0x2000);
 /// assert_eq!(range.start, 0x1000usize);
@@ -385,7 +385,7 @@ pub type PhysAddrRange = AddrRange<PhysAddr>;
 /// And this will panic:
 ///
 /// ```should_panic
-/// # use memory_addr::{addr_range, AddrRange};
+/// # use ax_memory_addr::{addr_range, AddrRange};
 /// let _: AddrRange<usize> = addr_range!(0x2000usize..0x1000);
 /// ```
 #[macro_export]
@@ -401,7 +401,7 @@ macro_rules! addr_range {
 /// # Example
 ///
 /// ```
-/// use memory_addr::va_range;
+/// use ax_memory_addr::va_range;
 ///
 /// let range = va_range!(0x1000..0x2000);
 /// assert_eq!(range.start, 0x1000.into());
@@ -411,7 +411,7 @@ macro_rules! addr_range {
 /// And this will panic:
 ///
 /// ```should_panic
-/// # use memory_addr::va_range;
+/// # use ax_memory_addr::va_range;
 /// let _ = va_range!(0x2000..0x1000);
 /// ```
 #[macro_export]
@@ -427,7 +427,7 @@ macro_rules! va_range {
 /// # Example
 ///
 /// ```
-/// use memory_addr::pa_range;
+/// use ax_memory_addr::pa_range;
 ///
 /// let range = pa_range!(0x1000..0x2000);
 /// assert_eq!(range.start, 0x1000.into());
@@ -437,7 +437,7 @@ macro_rules! va_range {
 /// And this will panic:
 ///
 /// ```should_panic
-/// # use memory_addr::pa_range;
+/// # use ax_memory_addr::pa_range;
 /// let _ = pa_range!(0x2000..0x1000);
 /// ```
 #[macro_export]

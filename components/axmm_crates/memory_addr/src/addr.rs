@@ -283,7 +283,7 @@ impl<T> MemoryAddr for T where T: Copy + From<usize> + Into<usize> + Ord {}
 /// # Example
 ///
 /// ```
-/// use memory_addr::{def_usize_addr, MemoryAddr};
+/// use ax_memory_addr::{def_usize_addr, MemoryAddr};
 ///
 /// def_usize_addr! {
 ///     /// A example address type.
@@ -400,7 +400,7 @@ macro_rules! def_usize_addr {
 /// # Example
 ///
 /// ```
-/// use memory_addr::{PhysAddr, VirtAddr, def_usize_addr, def_usize_addr_formatter};
+/// use ax_memory_addr::{PhysAddr, VirtAddr, def_usize_addr, def_usize_addr_formatter};
 ///
 /// def_usize_addr! {
 ///     /// An example address type.

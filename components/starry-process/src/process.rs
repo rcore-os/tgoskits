@@ -8,8 +8,8 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use kspin::SpinNoIrq;
-use lazyinit::LazyInit;
+use ax_kspin::SpinNoIrq;
+use ax_lazyinit::LazyInit;
 use weak_map::StrongMap;
 
 use crate::{Pid, ProcessGroup, Session};

@@ -1,9 +1,9 @@
 //! Interrupt request (IRQ) handling.
 
-pub use handler_table::HandlerTable;
+pub use ax_handler_table::HandlerTable;
 
 /// The type if an IRQ handler.
-pub type IrqHandler = handler_table::Handler;
+pub type IrqHandler = ax_handler_table::Handler;
 
 /// Target specification for inter-processor interrupts (IPIs).
 pub enum IpiTarget {

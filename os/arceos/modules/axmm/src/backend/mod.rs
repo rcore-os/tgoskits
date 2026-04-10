@@ -1,8 +1,8 @@
 //! Memory mapping backends.
 
-use axhal::paging::{MappingFlags, PageTable};
-use memory_addr::VirtAddr;
-use memory_set::MappingBackend;
+use ax_hal::paging::{MappingFlags, PageTable};
+use ax_memory_addr::VirtAddr;
+use ax_memory_set::MappingBackend;
 
 mod alloc;
 mod linear;

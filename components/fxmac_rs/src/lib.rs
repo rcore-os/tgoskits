@@ -28,7 +28,7 @@
 //! // Implement the KernelFunc trait for your platform
 //! pub struct FXmacDriver;
 //!
-//! #[crate_interface::impl_interface]
+//! #[ax_crate_interface::impl_interface]
 //! impl KernelFunc for FXmacDriver {
 //!     fn virt_to_phys(addr: usize) -> usize {
 //!         // Your implementation
@@ -149,7 +149,7 @@ pub use fxmac_phy::{FXmacPhyInit, FXmacPhyRead, FXmacPhyWrite};
 ///
 /// # Implementation Requirements
 ///
-/// All implementations must be `#[crate_interface::impl_interface]` compatible
+/// All implementations must be `#[ax_crate_interface::impl_interface]` compatible
 /// and provide thread-safe operations where applicable.
 ///
 /// # Example
@@ -157,7 +157,7 @@ pub use fxmac_phy::{FXmacPhyInit, FXmacPhyRead, FXmacPhyWrite};
 /// ```ignore
 /// pub struct MyPlatform;
 ///
-/// #[crate_interface::impl_interface]
+/// #[ax_crate_interface::impl_interface]
 /// impl fxmac_rs::KernelFunc for MyPlatform {
 ///     fn virt_to_phys(addr: usize) -> usize {
 ///         // Platform-specific virtual to physical address translation
@@ -186,7 +186,7 @@ pub use fxmac_phy::{FXmacPhyInit, FXmacPhyRead, FXmacPhyWrite};
 ///     }
 /// }
 /// ```
-#[crate_interface::def_interface]
+#[ax_crate_interface::def_interface]
 pub trait KernelFunc {
     /// Converts a virtual address to its corresponding physical address.
     ///

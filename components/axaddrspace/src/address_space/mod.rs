@@ -15,10 +15,10 @@
 use alloc::vec::Vec;
 use core::fmt;
 
-use axerrno::{AxResult, ax_err};
-use memory_addr::{MemoryAddr, PhysAddr, is_aligned_4k};
-use memory_set::{MemoryArea, MemorySet};
-use page_table_multiarch::PagingHandler;
+use ax_errno::{AxResult, ax_err};
+use ax_memory_addr::{MemoryAddr, PhysAddr, is_aligned_4k};
+use ax_memory_set::{MemoryArea, MemorySet};
+use ax_page_table_multiarch::PagingHandler;
 
 use crate::{
     GuestPhysAddr, GuestPhysAddrRange, mapping_err_to_ax_err, npt::NestedPageTable as PageTable,
@@ -26,8 +26,8 @@ use crate::{
 
 mod backend;
 
+pub use ax_page_table_entry::MappingFlags;
 pub use backend::Backend;
-pub use page_table_entry::MappingFlags;
 
 /// The virtual memory address space.
 pub struct AddrSpace<H: PagingHandler> {

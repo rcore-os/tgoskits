@@ -29,4 +29,4 @@ mod driver_dyn_config;
 pub use driver_dyn_config::*;
 
 #[cfg(not(feature = "plat-dyn"))]
-axconfig_macros::include_configs!(path_env = "AX_CONFIG_PATH", fallback = "dummy.toml");
+ax_config_macros::include_configs!(path_env = "AX_CONFIG_PATH", fallback = "dummy.toml");

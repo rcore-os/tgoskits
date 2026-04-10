@@ -13,7 +13,7 @@ pub mod fxmac;
 pub mod ixgbe;
 
 #[doc(no_inline)]
-pub use axdriver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
+pub use ax_driver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
 
 mod net_buf;
 pub use self::net_buf::{NetBuf, NetBufBox, NetBufPool, NetBufPtr};

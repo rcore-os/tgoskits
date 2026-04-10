@@ -2,8 +2,10 @@
 
 use core::arch::global_asm;
 
-use x86_64::registers::control::{Cr0Flags, Cr4Flags};
-use x86_64::registers::model_specific::EferFlags;
+use x86_64::registers::{
+    control::{Cr0Flags, Cr4Flags},
+    model_specific::EferFlags,
+};
 
 use crate::config::plat::{BOOT_STACK_SIZE, PHYS_VIRT_OFFSET};
 

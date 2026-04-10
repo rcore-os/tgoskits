@@ -23,8 +23,8 @@
 ### 仓库根目录的推荐入口
 
 ```bash
-cargo arceos build --package arceos-helloworld --target riscv64gc-unknown-none-elf
-cargo arceos qemu --package arceos-helloworld --target riscv64gc-unknown-none-elf
+cargo arceos build --package ax-helloworld --target riscv64gc-unknown-none-elf
+cargo arceos qemu --package ax-helloworld --target riscv64gc-unknown-none-elf
 ```
 
 当前根 CLI 的真实子命令是：
@@ -35,7 +35,7 @@ cargo arceos qemu --package arceos-helloworld --target riscv64gc-unknown-none-el
 
 常用参数：
 
-- `--package`: 选择应用包，例如 `arceos-helloworld`
+- `--package`: 选择应用包，例如 `ax-helloworld`
 - `--target`: 选择目标 triple，例如 `riscv64gc-unknown-none-elf`
 - `--config`: 显式指定应用目录下的 build info 文件
 - `--plat_dyn`: 控制是否启用动态平台
@@ -64,7 +64,7 @@ flowchart TD
     ReusableCrate["components/* reusable crates"]
     Modules["os/arceos/modules/*"]
     Axfeat["os/arceos/api/axfeat"]
-    Ulib["os/arceos/ulib/axstd or axlibc"]
+    Ulib["os/arceos/ulib/axstd or ax-libc"]
     Example["os/arceos/examples/*"]
     Tests["test-suit/arceos/*"]
     Platform["components/axplat_crates/platforms/* + platform/*"]
@@ -85,18 +85,18 @@ flowchart TD
 如果你改的是：
 
 - `components/axerrno`、`components/kspin`、`components/page_table_multiarch`
-- 或 `os/arceos/modules/axhal`、`axtask`、`axdriver`、`axnet`、`axfs`
+- 或 `os/arceos/modules/axhal`、`ax-task`、`ax-driver`、`ax-net`、`ax-fs`
 
 建议先跑最小消费者：
 
 ```bash
-cargo arceos qemu --package arceos-helloworld --target riscv64gc-unknown-none-elf
+cargo arceos qemu --package ax-helloworld --target riscv64gc-unknown-none-elf
 ```
 
 如果改动依赖特定功能，再换对应示例，或者修改该示例目录下的 build info 文件后再跑：
 
 ```bash
-cargo arceos qemu --package arceos-httpclient --target riscv64gc-unknown-none-elf
+cargo arceos qemu --package ax-httpclient --target riscv64gc-unknown-none-elf
 ```
 
 ### 4.2 新增 feature 或暴露给应用
@@ -105,7 +105,7 @@ cargo arceos qemu --package arceos-httpclient --target riscv64gc-unknown-none-el
 
 1. 在 `os/arceos/modules/*` 完成或接入实现
 2. 在 `os/arceos/api/axfeat` 暴露 feature
-3. 需要给应用直接用时，再接到 `os/arceos/ulib/axstd` 或 `axlibc`
+3. 需要给应用直接用时，再接到 `os/arceos/ulib/axstd` 或 `ax-libc`
 
 ### 4.3 添加一个新示例应用
 
@@ -118,19 +118,19 @@ version = "0.1.0"
 edition.workspace = true
 
 [dependencies]
-axstd.workspace = true
+ax-std.workspace = true
 ```
 
 最小 `src/main.rs` 可以参考：
 
 ```rust
-#![cfg_attr(feature = "axstd", no_std)]
-#![cfg_attr(feature = "axstd", no_main)]
+#![cfg_attr(feature = "ax-std", no_std)]
+#![cfg_attr(feature = "ax-std", no_main)]
 
-#[cfg(feature = "axstd")]
-use axstd::println;
+#[cfg(feature = "ax-std")]
+use ax_std::println;
 
-#[cfg_attr(feature = "axstd", unsafe(no_mangle))]
+#[cfg_attr(feature = "ax-std", unsafe(no_mangle))]
 fn main() {
     println!("Hello from myapp!");
 }
@@ -157,8 +157,8 @@ cargo arceos qemu --package myapp --target riscv64gc-unknown-none-elf
 ### 示例应用
 
 ```bash
-cargo arceos qemu --package arceos-helloworld --target riscv64gc-unknown-none-elf
-cargo arceos qemu --package arceos-httpclient --target riscv64gc-unknown-none-elf
+cargo arceos qemu --package ax-helloworld --target riscv64gc-unknown-none-elf
+cargo arceos qemu --package ax-httpclient --target riscv64gc-unknown-none-elf
 ```
 
 ### 系统测试
@@ -172,7 +172,7 @@ cargo arceos test qemu --target riscv64gc-unknown-none-elf
 ### host / unit 测试
 
 ```bash
-cargo test -p axerrno
+cargo test -p ax-errno
 ```
 
 ## 6. 调试建议

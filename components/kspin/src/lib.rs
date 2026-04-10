@@ -3,7 +3,7 @@
 
 mod base;
 
-use kernel_guard::{NoOp, NoPreempt, NoPreemptIrqSave};
+use ax_kernel_guard::{NoOp, NoPreempt, NoPreemptIrqSave};
 
 pub use self::base::{BaseSpinLock, BaseSpinLockGuard};
 

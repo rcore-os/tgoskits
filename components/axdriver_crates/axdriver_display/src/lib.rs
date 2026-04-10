@@ -3,7 +3,7 @@
 #![no_std]
 
 #[doc(no_inline)]
-pub use axdriver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
+pub use ax_driver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
 
 /// The information of the graphics device.
 #[derive(Debug, Clone, Copy)]
@@ -49,7 +49,7 @@ pub trait DisplayDriverOps: BaseDriverOps {
     fn info(&self) -> DisplayInfo;
 
     /// Get the framebuffer.
-    fn fb(&self) -> FrameBuffer;
+    fn fb(&self) -> FrameBuffer<'_>;
 
     /// Whether need to flush the framebuffer to the screen.
     fn need_flush(&self) -> bool;

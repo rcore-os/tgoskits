@@ -1,30 +1,28 @@
 [package]
-name = "axplat-aarch64-raspi"
+name = "ax-plat-aarch64-raspi"
 version.workspace = true
+repository.workspace = true
 description = "Implementation of `axplat` hardware abstraction layer for Raspberry Pi 4B board."
-documentation = "https://docs.rs/axplat-aarch64-raspi"
 keywords = ["arceos", "os", "hal", "aarch64", "raspi"]
 categories = ["embedded", "no-std", "hardware-support", "os"]
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-homepage.workspace = true
-repository.workspace = true
 
 [features]
-fp-simd = ["axcpu/fp-simd"]
-irq = ["axplat/irq", "axplat-aarch64-peripherals/irq"]
+fp-simd = ["ax-cpu/fp-simd"]
+irq = ["ax-plat/irq", "ax-plat-aarch64-peripherals/irq"]
 rtc = []                                               # Not implemented, currently no effect
-smp = ["axplat/smp"]
+smp = ["ax-plat/smp"]
 
 [dependencies]
 log = "0.4"
 aarch64-cpu = "11.0"
-page_table_entry = "0.6"
-axconfig-macros = "0.2"
-axplat-aarch64-peripherals = { workspace = true }
-axcpu = { workspace = true }
-axplat = { workspace = true }
+ax-page-table-entry = "0.8.1"
+ax-config-macros = "0.4.1"
+ax-plat-aarch64-peripherals = { workspace = true }
+ax-cpu = { workspace = true }
+ax-plat = { workspace = true }
 
 [package.metadata.docs.rs]
 targets = ["aarch64-unknown-none"]

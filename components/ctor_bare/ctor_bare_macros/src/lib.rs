@@ -1,12 +1,12 @@
 //！Macros for registering constructor functions for Rust under no_std, which is like __attribute__((constructor)) in C/C++.
 //!
-//! **DO NOT** use this crate directly. Use the [ctor_bare](https://docs.rs/ctor_bare) crate instead.
+//! **DO NOT** use this crate directly. Use the [ax-ctor-bare](https://docs.rs/ax-ctor-bare) crate instead.
 //!
 //! After attching the `register_ctor` macro to the given function, a pointer pointing to it will be stored in the `.init_array` section.
-//! When the program is loaded, this section will be linked into the binary. The `call_ctors` function in the `ctor_bare`
+//! When the program is loaded, this section will be linked into the binary. The `call_ctors` function in the `ax-ctor-bare`
 //! crate will call all the constructor functions in the `.init_array` section.
 //!
-//! See the documentation of the [ctor_bare](https://docs.rs/ctor_bare) crate for more details.
+//! See the documentation of the [ax-ctor-bare](https://docs.rs/ax-ctor-bare) crate for more details.
 
 use proc_macro::TokenStream;
 use proc_macro2::Span;
@@ -17,7 +17,7 @@ use syn::{Error, Item, parse_macro_input};
 ///
 /// The function should have no input arguments and return nothing.
 ///
-/// See the documentation of the [ctor_bare](https://docs.rs/ctor_bare) crate for more details.
+/// See the documentation of the [ax-ctor-bare](https://docs.rs/ax-ctor-bare) crate for more details.
 #[proc_macro_attribute]
 pub fn register_ctor(attr: TokenStream, function: TokenStream) -> TokenStream {
     if !attr.is_empty() {

@@ -90,7 +90,7 @@
 
 ### 2.3 关键边界
 
-- `smoltcp-fuzz` 不验证 `axnet` / `axnet-ng` 的系统 socket 语义
+- `smoltcp-fuzz` 不验证 `ax-net` / `ax-net-ng` 的系统 socket 语义
 - `smoltcp-fuzz` 不负责系统级连通性回归
 - `smoltcp-fuzz` 主要关注解析健壮性、repr/emit 一致性以及部分协议状态机面对畸形输入时的鲁棒性
 

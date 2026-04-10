@@ -2,7 +2,7 @@
 
 use core::arch::asm;
 
-use memory_addr::{MemoryAddr, PhysAddr, VirtAddr};
+use ax_memory_addr::{MemoryAddr, PhysAddr, VirtAddr};
 use x86::{controlregs, msr, tlb};
 use x86_64::instructions::interrupts;
 

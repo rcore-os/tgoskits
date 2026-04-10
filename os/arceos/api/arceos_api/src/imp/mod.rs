@@ -20,7 +20,7 @@ mod stdio {
     use core::fmt;
 
     pub fn ax_console_read_bytes(buf: &mut [u8]) -> crate::AxResult<usize> {
-        let len = axhal::console::read_bytes(buf);
+        let len = ax_hal::console::read_bytes(buf);
         for c in &mut buf[..len] {
             if *c == b'\r' {
                 *c = b'\n';
@@ -30,26 +30,26 @@ mod stdio {
     }
 
     pub fn ax_console_write_bytes(buf: &[u8]) -> crate::AxResult<usize> {
-        axhal::console::write_bytes(buf);
+        ax_hal::console::write_bytes(buf);
         Ok(buf.len())
     }
 
     pub fn ax_console_write_fmt(args: fmt::Arguments) -> fmt::Result {
-        axlog::print_fmt(args)
+        ax_log::print_fmt(args)
     }
 }
 
 mod sys {
-    pub use axhal::{cpu_num as ax_get_cpu_num, power::system_off as ax_terminate};
+    pub use ax_hal::{cpu_num as ax_get_cpu_num, power::system_off as ax_terminate};
 }
 
 mod time {
-    pub use axhal::time::{
+    pub use ax_hal::time::{
         TimeValue as AxTimeValue, monotonic_time as ax_monotonic_time, wall_time as ax_wall_time,
     };
 }
 
-pub use axhal::power::system_off as ax_terminate;
-pub use axio::PollState as AxPollState;
+pub use ax_hal::power::system_off as ax_terminate;
+pub use ax_io::PollState as AxPollState;
 
 pub use self::{mem::*, stdio::*, sys::*, task::*, time::*};

@@ -2,9 +2,9 @@
 
 #![allow(unused_imports, dead_code)]
 
-use axdriver_base::DeviceType;
+use ax_driver_base::DeviceType;
 #[cfg(feature = "bus-pci")]
-use axdriver_pci::{DeviceFunction, DeviceFunctionInfo, PciRoot};
+use ax_driver_pci::{ConfigurationAccess, DeviceFunction, DeviceFunctionInfo, PciRoot};
 
 pub use super::dummy::*;
 use crate::AxDeviceEnum;
@@ -22,8 +22,8 @@ pub trait DriverProbe {
     }
 
     #[cfg(bus = "pci")]
-    fn probe_pci(
-        _root: &mut PciRoot,
+    fn probe_pci<C: ConfigurationAccess>(
+        _root: &mut PciRoot<C>,
         _bdf: DeviceFunction,
         _dev_info: &DeviceFunctionInfo,
     ) -> Option<AxDeviceEnum> {
@@ -64,13 +64,13 @@ register_vsock_driver!(
 cfg_if::cfg_if! {
     if #[cfg(block_dev = "ramdisk")] {
         pub struct RamDiskDriver;
-        register_block_driver!(RamDiskDriver, axdriver_block::ramdisk::RamDisk);
+        register_block_driver!(RamDiskDriver, ax_driver_block::ramdisk::RamDisk);
 
         impl DriverProbe for RamDiskDriver {
             fn probe_global() -> Option<AxDeviceEnum> {
                 // TODO: format RAM disk
                 Some(AxDeviceEnum::from_block(
-                    axdriver_block::ramdisk::RamDisk::new(0x100_0000), // 16 MiB
+                    ax_driver_block::ramdisk::RamDisk::new(0x100_0000), // 16 MiB
                 ))
             }
         }
@@ -80,13 +80,13 @@ cfg_if::cfg_if! {
 cfg_if::cfg_if! {
     if #[cfg(block_dev = "sdmmc")] {
         pub struct SdMmcDriver;
-        register_block_driver!(SdMmcDriver, axdriver_block::sdmmc::SdMmcDriver);
+        register_block_driver!(SdMmcDriver, ax_driver_block::sdmmc::SdMmcDriver);
 
         impl DriverProbe for SdMmcDriver {
             fn probe_global() -> Option<AxDeviceEnum> {
                 let sdmmc = unsafe {
-                    axdriver_block::sdmmc::SdMmcDriver::new(
-                        axhal::mem::phys_to_virt(axconfig::devices::SDMMC_PADDR.into()).into(),
+                    ax_driver_block::sdmmc::SdMmcDriver::new(
+                        ax_hal::mem::phys_to_virt(ax_config::devices::SDMMC_PADDR.into()).into(),
                     )
                 };
                 Some(AxDeviceEnum::from_block(sdmmc))
@@ -98,12 +98,12 @@ cfg_if::cfg_if! {
 cfg_if::cfg_if! {
     if #[cfg(block_dev = "bcm2835-sdhci")]{
         pub struct BcmSdhciDriver;
-        register_block_driver!(BcmSdhciDriver, axdriver_block::bcm2835sdhci::SDHCIDriver);
+        register_block_driver!(BcmSdhciDriver, ax_driver_block::bcm2835sdhci::SDHCIDriver);
 
         impl DriverProbe for BcmSdhciDriver {
             fn probe_global() -> Option<AxDeviceEnum> {
                 debug!("mmc probe");
-                axdriver_block::bcm2835sdhci::SDHCIDriver::try_new()
+                ax_driver_block::bcm2835sdhci::SDHCIDriver::try_new()
                     .ok()
                     .map(AxDeviceEnum::from_block)
             }
@@ -115,15 +115,15 @@ cfg_if::cfg_if! {
     if #[cfg(net_dev = "ixgbe")] {
         use crate::ixgbe::IxgbeHalImpl;
         pub struct IxgbeDriver;
-        register_net_driver!(IxgbeDriver, axdriver_net::ixgbe::IxgbeNic<IxgbeHalImpl, 1024, 1>);
+        register_net_driver!(IxgbeDriver, ax_driver_net::ixgbe::IxgbeNic<IxgbeHalImpl, 1024, 1>);
         impl DriverProbe for IxgbeDriver {
             #[cfg(bus = "pci")]
-            fn probe_pci(
-                root: &mut axdriver_pci::PciRoot,
-                bdf: axdriver_pci::DeviceFunction,
-                dev_info: &axdriver_pci::DeviceFunctionInfo,
+            fn probe_pci<C: ax_driver_pci::ConfigurationAccess>(
+                root: &mut ax_driver_pci::PciRoot<C>,
+                bdf: ax_driver_pci::DeviceFunction,
+                dev_info: &ax_driver_pci::DeviceFunctionInfo,
             ) -> Option<crate::AxDeviceEnum> {
-                use axdriver_net::ixgbe::{INTEL_82599, INTEL_VEND, IxgbeNic};
+                use ax_driver_net::ixgbe::{INTEL_82599, INTEL_VEND, IxgbeNic};
                 if dev_info.vendor_id == INTEL_VEND && dev_info.device_id == INTEL_82599 {
                     // Intel 10Gb Network
                     info!("ixgbe PCI device found at {:?}", bdf);
@@ -135,15 +135,15 @@ cfg_if::cfg_if! {
                     const QS: usize = 1024;
                     let bar_info = root.bar_info(bdf, 0).unwrap();
                     match bar_info {
-                        axdriver_pci::BarInfo::Memory { address, size, .. } => {
+                        ax_driver_pci::BarInfo::Memory { address, size, .. } => {
                             let ixgbe_nic = IxgbeNic::<IxgbeHalImpl, QS, QN>::init(
-                                axhal::mem::phys_to_virt((address as usize).into()).into(),
+                                ax_hal::mem::phys_to_virt((address as usize).into()).into(),
                                 size as usize,
                             )
                             .expect("failed to initialize ixgbe device");
                             return Some(AxDeviceEnum::from_net(ixgbe_nic));
                         }
-                        axdriver_pci::BarInfo::IO { .. } => {
+                        ax_driver_pci::BarInfo::IO { .. } => {
                             error!("ixgbe: BAR0 is of I/O type");
                             return None;
                         }
@@ -157,17 +157,17 @@ cfg_if::cfg_if! {
 
 cfg_if::cfg_if! {
     if #[cfg(net_dev = "fxmac")]{
-        use axalloc::{UsageKind, global_allocator};
-        use axhal::mem::PAGE_SIZE_4K;
+        use ax_alloc::{UsageKind, global_allocator};
+        use ax_hal::mem::PAGE_SIZE_4K;
 
-        #[crate_interface::impl_interface]
-        impl axdriver_net::fxmac::KernelFunc for FXmacDriver {
+        #[ax_crate_interface::impl_interface]
+        impl ax_driver_net::fxmac::KernelFunc for FXmacDriver {
             fn virt_to_phys(addr: usize) -> usize {
-                axhal::mem::virt_to_phys(addr.into()).into()
+                ax_hal::mem::virt_to_phys(addr.into()).into()
             }
 
             fn phys_to_virt(addr: usize) -> usize {
-                axhal::mem::phys_to_virt(addr.into()).into()
+                ax_hal::mem::phys_to_virt(addr.into()).into()
             }
 
             fn dma_alloc_coherent(pages: usize) -> (usize, usize) {
@@ -176,7 +176,7 @@ cfg_if::cfg_if! {
                     error!("failed to alloc pages");
                     return (0, 0);
                 };
-                let paddr = axhal::mem::virt_to_phys((vaddr).into());
+                let paddr = ax_hal::mem::virt_to_phys((vaddr).into());
                 debug!("alloc pages @ vaddr={:#x}, paddr={:#x}", vaddr, paddr);
                 (vaddr, paddr.as_usize())
             }
@@ -190,13 +190,13 @@ cfg_if::cfg_if! {
             }
         }
 
-        register_net_driver!(FXmacDriver, axdriver_net::fxmac::FXmacNic);
+        register_net_driver!(FXmacDriver, ax_driver_net::fxmac::FXmacNic);
 
         pub struct FXmacDriver;
         impl DriverProbe for FXmacDriver {
             fn probe_global() -> Option<AxDeviceEnum> {
                 info!("fxmac for phytiumpi probe global");
-                axdriver_net::fxmac::FXmacNic::init(0)
+                ax_driver_net::fxmac::FXmacNic::init(0)
                     .ok()
                     .map(AxDeviceEnum::from_net)
             }

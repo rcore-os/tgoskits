@@ -63,6 +63,18 @@ pub(crate) fn resolve_target_dir(workspace_root: &Path, target: &str) -> anyhow:
     Ok(workspace_root.join("target").join(target))
 }
 
+fn rootfs_image_path(workspace_root: &Path, arch: &str, target: &str) -> anyhow::Result<PathBuf> {
+    let target_dir = resolve_target_dir(workspace_root, target)?;
+    Ok(target_dir.join(rootfs_image_name(arch)?))
+}
+
+fn shared_rootfs_image_path(target: &str, arch: &str) -> anyhow::Result<String> {
+    Ok(format!(
+        "${{workspace}}/target/{target}/{}",
+        rootfs_image_name(arch)?
+    ))
+}
+
 pub(crate) async fn ensure_rootfs_in_target_dir(
     workspace_root: &Path,
     arch: &str,
@@ -79,7 +91,7 @@ pub(crate) async fn ensure_rootfs_in_target_dir(
         .with_context(|| format!("failed to create {}", target_dir.display()))?;
 
     let rootfs_name = rootfs_image_name(arch)?;
-    let rootfs_img = target_dir.join(&rootfs_name);
+    let rootfs_img = rootfs_image_path(workspace_root, arch, target)?;
     let rootfs_xz = target_dir.join(format!("{rootfs_name}.xz"));
 
     if !rootfs_img.exists() {
@@ -89,18 +101,7 @@ pub(crate) async fn ensure_rootfs_in_target_dir(
         decompress_xz_file(&rootfs_xz, &rootfs_img).await?;
     }
 
-    let disk_img = target_dir.join("disk.img");
-    tokio_fs::copy(&rootfs_img, &disk_img)
-        .await
-        .with_context(|| {
-            format!(
-                "failed to copy {} to {}",
-                rootfs_img.display(),
-                disk_img.display()
-            )
-        })?;
-
-    Ok(disk_img)
+    Ok(rootfs_img)
 }
 
 pub(crate) async fn default_qemu_args(
@@ -131,7 +132,7 @@ pub(crate) async fn prepare_test_qemu_config(
             )
         })?;
 
-    let shared_disk = format!("${{workspace}}/target/{}/disk.img", request.target);
+    let shared_disk = shared_rootfs_image_path(&request.target, &request.arch)?;
     let config = tokio_fs::read_to_string(template_path)
         .await
         .with_context(|| format!("failed to read {}", template_path.display()))?;
@@ -254,7 +255,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_qemu_args_include_disk_and_network_defaults() {
+    async fn default_qemu_args_include_rootfs_and_network_defaults() {
         let root = tempdir().unwrap();
         let target_dir = root.path().join("target/x86_64-unknown-none");
         fs::create_dir_all(&target_dir).unwrap();
@@ -281,7 +282,7 @@ mod tests {
                 format!(
                     "id=disk0,if=none,format=raw,file={}",
                     root.path()
-                        .join("target/x86_64-unknown-none/disk.img")
+                        .join("target/x86_64-unknown-none/rootfs-x86_64.img")
                         .display()
                 ),
                 "-device".to_string(),
@@ -291,7 +292,11 @@ mod tests {
             ]
         );
         assert_eq!(
-            fs::read(root.path().join("target/x86_64-unknown-none/disk.img")).unwrap(),
+            fs::read(
+                root.path()
+                    .join("target/x86_64-unknown-none/rootfs-x86_64.img")
+            )
+            .unwrap(),
             b"rootfs"
         );
     }
@@ -306,7 +311,7 @@ mod tests {
         fs::write(
             &template,
             r#"
-args = ["-nographic", "-drive", "id=disk0,if=none,format=raw,file=${workspace}/target/x86_64-unknown-none/disk.img"]
+args = ["-nographic", "-drive", "id=disk0,if=none,format=raw,file=${workspace}/target/x86_64-unknown-none/rootfs-x86_64.img"]
 shell_prefix = "starry:~#"
 "#,
         )
@@ -328,7 +333,7 @@ shell_prefix = "starry:~#"
         let content = fs::read_to_string(generated).unwrap();
 
         assert!(content.contains("disk-test-"));
-        assert!(!content.contains("${workspace}/target/x86_64-unknown-none/disk.img"));
+        assert!(!content.contains("${workspace}/target/x86_64-unknown-none/rootfs-x86_64.img"));
         assert!(content.contains("shell_prefix = \"starry:~#\""));
     }
 

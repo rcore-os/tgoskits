@@ -8,10 +8,10 @@
 
 use alloc::vec;
 
-use axerrno::{AxError, AxResult};
-use axhal::paging::MappingFlags;
-use axtask::current;
-use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
+use ax_errno::{AxError, AxResult};
+use ax_hal::paging::MappingFlags;
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
+use ax_task::current;
 use starry_vm::vm_write_slice;
 
 use crate::task::AsThread;

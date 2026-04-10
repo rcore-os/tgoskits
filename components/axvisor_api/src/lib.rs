@@ -155,7 +155,7 @@ pub mod vmm;
 #[doc(hidden)]
 pub mod __priv {
     pub mod crate_interface {
-        pub use crate_interface::{call_interface, def_interface, impl_interface};
+        pub use ax_crate_interface::{call_interface, def_interface, impl_interface};
     }
 }
 

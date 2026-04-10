@@ -4,7 +4,7 @@ use core::{
     sync::atomic::{AtomicIsize, Ordering},
 };
 
-use linked_list_r4l::{GetLinks, Links, List};
+use ax_linked_list_r4l::{GetLinks, Links, List};
 
 use crate::BaseScheduler;
 

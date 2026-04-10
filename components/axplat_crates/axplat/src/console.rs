@@ -30,7 +30,7 @@ impl Write for EarlyConsole {
 }
 
 /// Lock for console operations to prevent mixed output from concurrent execution
-pub static CONSOLE_LOCK: kspin::SpinNoIrq<()> = kspin::SpinNoIrq::new(());
+pub static CONSOLE_LOCK: ax_kspin::SpinNoIrq<()> = ax_kspin::SpinNoIrq::new(());
 
 /// Simple console print operation.
 #[macro_export]

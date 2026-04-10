@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use ax_errno::{AxError, AxErrorKind, AxResult};
 use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, MappingFlags, device::AccessWidth};
-use axerrno::{AxError::InvalidData, AxResult};
-use axvcpu::{AxVCpuExitReason, AxVCpuHal};
+use axvcpu::AxVCpuExitReason;
 use riscv::register::{scause, sie, sstatus};
 use riscv_decode::{
     Instruction,
@@ -44,6 +44,8 @@ unsafe extern "C" {
 
 const TINST_PSEUDO_STORE: u32 = 0x3020;
 const TINST_PSEUDO_LOAD: u32 = 0x3000;
+const EID_TIME: usize = 0x5449_4D45;
+const FID_SET_TIMER: usize = 0;
 
 #[inline]
 fn instr_is_pseudo(ins: u32) -> bool {
@@ -63,7 +65,7 @@ pub struct RISCVVCpu {
 
 #[derive(RustSBI)]
 struct RISCVVCpuSbi {
-    #[rustsbi(console, pmu, fence, reset, info, hsm)]
+    #[rustsbi(console, pmu, fence, reset, info, hsm, timer)]
     forward: Forward,
 }
 
@@ -107,6 +109,11 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
         hstatus.set_vsxl(hstatus::VsxlValues::Vsxl64);
         // Set SPVP bit in order to accessing VS-mode memory from HS-mode.
         hstatus.set_spvp(true);
+        // Let the guest execute its normal supervisor instructions without
+        // spuriously trapping them back to the hypervisor.
+        hstatus.set_vtvm(false);
+        hstatus.set_vtw(false);
+        hstatus.set_vtsr(false);
         unsafe {
             hstatus.write();
         }
@@ -120,7 +127,9 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
     }
 
     fn set_ept_root(&mut self, ept_root: HostPhysAddr) -> AxResult {
-        self.regs.virtual_hs_csrs.hgatp = 8usize << 60 | usize::from(ept_root) >> 12;
+        // AxVM builds a 4-level guest stage-2 page table on RISC-V, so hgatp
+        // must use Sv48x4 as well.
+        self.regs.virtual_hs_csrs.hgatp = 9usize << 60 | usize::from(ept_root) >> 12;
         Ok(())
     }
 
@@ -266,7 +275,7 @@ impl RISCVVCpu {
         // Try to convert the raw trap cause to a standard RISC-V trap cause.
         let trap: Trap<Interrupt, Exception> = scause.cause().try_into().map_err(|_| {
             error!("Unknown trap cause: scause={:#x}", scause.bits());
-            InvalidData
+            AxError::from(AxErrorKind::InvalidData)
         })?;
 
         match trap {
@@ -312,6 +321,20 @@ impl RISCVVCpu {
                                 "Unsupported SBI legacy extension id {extension_id:#x} function \
                                  id {function_id:#x}"
                             );
+                        }
+                    },
+                    EID_TIME => match function_id {
+                        FID_SET_TIMER => {
+                            sbi_rt::set_timer(param[0] as u64);
+                            unsafe {
+                                hvip::clear_vstip();
+                            }
+                            self.sbi_return(RET_SUCCESS, 0);
+                            return Ok(AxVCpuExitReason::Nothing);
+                        }
+                        _ => {
+                            self.sbi_return(RET_ERR_NOT_SUPPORTED, 0);
+                            return Ok(AxVCpuExitReason::Nothing);
                         }
                     },
                     // Handle HSM extension
@@ -479,10 +502,22 @@ impl RISCVVCpu {
             ) => self.handle_guest_page_fault(gpf == Exception::StoreGuestPageFault),
             _ => {
                 panic!(
-                    "Unhandled trap: {:?}, sepc: {:#x}, stval: {:#x}",
+                    "Unhandled trap: {:?}, sepc: {:#x}, stval: {:#x}, htval: {:#x}, htinst: \
+                     {:#x}, vsepc: {:#x}, vstval: {:#x}, vsatp: {:#x}, hgatp: {:#x}, a0-a3: \
+                     [{:#x}, {:#x}, {:#x}, {:#x}]",
                     scause.cause(),
                     self.regs.guest_regs.sepc,
-                    self.regs.trap_csrs.stval
+                    self.regs.trap_csrs.stval,
+                    self.regs.trap_csrs.htval,
+                    self.regs.trap_csrs.htinst,
+                    self.regs.vs_csrs.vsepc,
+                    self.regs.vs_csrs.vstval,
+                    self.regs.vs_csrs.vsatp,
+                    self.regs.virtual_hs_csrs.hgatp,
+                    self.regs.guest_regs.gprs.reg(GprIndex::A0),
+                    self.regs.guest_regs.gprs.reg(GprIndex::A1),
+                    self.regs.guest_regs.gprs.reg(GprIndex::A2),
+                    self.regs.guest_regs.gprs.reg(GprIndex::A3)
                 );
             }
         }
@@ -513,7 +548,7 @@ impl RISCVVCpu {
             };
         } else if instr_is_pseudo(instr as u32) {
             error!("fault on 1st stage page table walk");
-            return Err(axerrno::ax_err_type!(
+            return Err(ax_errno::ax_err_type!(
                 Unsupported,
                 "risc-v vcpu guest page fault handler encountered pseudo instruction"
             ));
@@ -532,7 +567,7 @@ impl RISCVVCpu {
 
         riscv_decode::decode(instr as u32)
             .map_err(|_| {
-                axerrno::ax_err_type!(
+                ax_errno::ax_err_type!(
                     Unsupported,
                     "risc-v vcpu guest pf handler decoding instruction failed"
                 )

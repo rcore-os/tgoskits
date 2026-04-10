@@ -1,29 +1,27 @@
 [package]
-name = "page_table_multiarch"
+name = "ax-page-table-multiarch"
 description = "Generic page table structures for various hardware architectures"
-documentation = "https://docs.rs/page_table_multiarch"
 version.workspace = true
+repository.workspace = true
 edition.workspace = true
 authors.workspace = true
-license.workspace = true
-homepage.workspace = true
-repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [features]
 default = []
-axerrno = ["dep:axerrno"]
+ax-errno = ["dep:ax-errno"]
 copy-from = ["dep:bitmaps"]
 
 [dependencies]
-axerrno = { version = "0.2", optional = true }
+ax-errno = { version = "0.4.2", optional = true }
 arrayvec = { version = "0.7", default-features = false }
 bitmaps = { version = "3.2", default-features = false, optional = true }
 log = "0.4"
-memory_addr.workspace = true
-page_table_entry.workspace = true
+ax-memory-addr.workspace = true
+ax-page-table-entry.workspace = true
 
 [target.'cfg(any(target_arch = "x86_64", doc, docsrs))'.dependencies]
 x86 = "0.52"

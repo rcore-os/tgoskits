@@ -7,8 +7,8 @@
 #![allow(clippy::missing_safety_doc)]
 
 #[macro_use]
-extern crate axlog;
-extern crate axruntime;
+extern crate ax_log;
+extern crate ax_runtime;
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
@@ -20,7 +20,7 @@ mod imp;
 
 /// Platform-specific constants and parameters.
 pub mod config {
-    pub use axconfig::*;
+    pub use ax_config::*;
 }
 
 /// POSIX C types.

@@ -7,7 +7,7 @@ use std::{
     io::Write,
 };
 
-use axallocator::{AllocatorRc, BuddyByteAllocator, SlabByteAllocator, TlsfByteAllocator};
+use ax_allocator::{AllocatorRc, BuddyByteAllocator, SlabByteAllocator, TlsfByteAllocator};
 use rand::{Rng, prelude::SliceRandom};
 
 const POOL_SIZE: usize = 1024 * 1024 * 128;

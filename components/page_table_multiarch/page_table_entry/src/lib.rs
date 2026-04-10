@@ -4,7 +4,7 @@
 
 use core::fmt;
 
-use memory_addr::PhysAddr;
+use ax_memory_addr::PhysAddr;
 
 mod arch;
 pub use self::arch::*;

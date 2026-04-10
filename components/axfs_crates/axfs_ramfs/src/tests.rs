@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axfs_vfs::{VfsError, VfsNodeType, VfsResult};
+use ax_fs_vfs::{VfsError, VfsNodeType, VfsResult};
 
 use crate::*;
 

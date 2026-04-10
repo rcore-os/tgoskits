@@ -5,11 +5,11 @@ use core::{
     time::Duration,
 };
 
-use axerrno::{AxError, AxResult};
-use axfs::{FS_CONTEXT, FsContext};
+use ax_errno::{AxError, AxResult};
+use ax_fs::{FS_CONTEXT, FsContext};
+use ax_hal::time::wall_time;
+use ax_task::current;
 use axfs_ng_vfs::{MetadataUpdate, NodePermission, NodeType, path::Path};
-use axhal::time::wall_time;
-use axtask::current;
 use linux_raw_sys::{
     general::*,
     ioctl::{FIONBIO, TIOCGWINSZ},

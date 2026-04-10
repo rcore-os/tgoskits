@@ -1,9 +1,9 @@
 use alloc::vec::Vec;
 use core::{fmt, time::Duration};
 
-use axerrno::{AxError, AxResult};
+use ax_errno::{AxError, AxResult};
+use ax_task::future::{self, block_on, poll_io};
 use axpoll::IoEvents;
-use axtask::future::{self, block_on, poll_io};
 use bitmaps::Bitmap;
 use linux_raw_sys::{
     general::*,

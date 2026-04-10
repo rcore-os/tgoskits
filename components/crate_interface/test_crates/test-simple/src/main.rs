@@ -8,7 +8,7 @@
 //!
 //! Exit code 0 means all tests passed.
 
-use crate_interface::call_interface;
+use ax_crate_interface::call_interface;
 
 // Import the implementation crate to link the implementations
 use impl_simple_traits::{AdvancedImpl, CallerImpl, NamespacedImpl, SimpleImpl};

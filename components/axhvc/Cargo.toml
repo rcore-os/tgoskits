@@ -1,19 +1,19 @@
 [package]
 name = "axhvc"
-version = "0.2.0"
+version = "0.4.0"
 edition = "2024"
 authors = ["AxVisor Team"]
 description = "AxVisor HyperCall definitions for guest-hypervisor communication"
 documentation = "https://docs.rs/axhvc"
 repository = "https://github.com/arceos-hypervisor/axhvc"
 readme = "README.md"
-license = "Apache-2.0"
 keywords = ["hypervisor", "hypercall", "virtualization", "arceos", "axvisor"]
 categories = ["no-std", "embedded", "os"]
+license = "Apache-2.0"
 
 [dependencies]
 # Error types for ArceOS ecosystem
-axerrno = "0.2"
+ax-errno = "0.4.2"
 
 [package.metadata.docs.rs]
 all-features = true

@@ -17,16 +17,16 @@ use core::ops::Range;
 
 #[cfg(target_arch = "aarch64")]
 use arm_vgic::Vgic;
+use ax_errno::{AxResult, ax_err};
+#[cfg(target_arch = "aarch64")]
+use ax_memory_addr::PhysAddr;
+use ax_memory_addr::is_aligned_4k;
 use axaddrspace::{
     GuestPhysAddr, GuestPhysAddrRange,
     device::{AccessWidth, DeviceAddrRange, Port, PortRange, SysRegAddr, SysRegAddrRange},
 };
 use axdevice_base::{BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps};
-use axerrno::{AxResult, ax_err};
 use axvmconfig::{EmulatedDeviceConfig, EmulatedDeviceType};
-#[cfg(target_arch = "aarch64")]
-use memory_addr::PhysAddr;
-use memory_addr::is_aligned_4k;
 use range_alloc_arceos::RangeAllocator;
 #[cfg(target_arch = "riscv64")]
 use riscv_vplic::VPlicGlobal;
@@ -323,7 +323,7 @@ impl AxVmDevices {
                 .allocate_range(size)
                 .map_err(|e| {
                     warn!("Failed to allocate IVC channel range: {e:x?}");
-                    axerrno::ax_err_type!(NoMemory, "IVC channel allocation failed")
+                    ax_errno::ax_err_type!(NoMemory, "IVC channel allocation failed")
                 })
                 .map(|range| {
                     debug!("Allocated IVC channel range: {range:x?}");

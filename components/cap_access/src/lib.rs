@@ -36,7 +36,7 @@ impl<T> WithCap<T> {
     /// # Examples
     ///
     /// ```
-    /// use cap_access::{Cap, WithCap};
+    /// use ax_cap_access::{Cap, WithCap};
     ///
     /// let data = WithCap::new(42, Cap::READ);
     ///
@@ -62,7 +62,7 @@ impl<T> WithCap<T> {
     /// # Examples
     ///
     /// ```
-    /// use cap_access::{Cap, WithCap};
+    /// use ax_cap_access::{Cap, WithCap};
     ///
     /// let data = WithCap::new(42, Cap::READ);
     ///
@@ -83,7 +83,7 @@ impl<T> WithCap<T> {
     /// # Examples
     ///
     /// ```
-    /// use cap_access::{Cap, WithCap};
+    /// use ax_cap_access::{Cap, WithCap};
     ///
     /// let data = WithCap::new(42, Cap::READ);
     ///

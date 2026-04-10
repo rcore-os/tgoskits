@@ -1,7 +1,7 @@
 use alloc::string::String;
 use core::{ffi::c_char, fmt};
 
-use axio::Write;
+use ax_io::Write;
 
 use crate::ctypes;
 
@@ -12,7 +12,7 @@ pub trait WriteByte: fmt::Write {
 struct StringWriter(pub *mut u8, pub usize);
 
 impl Write for StringWriter {
-    fn write(&mut self, buf: &[u8]) -> axerrno::AxResult<usize> {
+    fn write(&mut self, buf: &[u8]) -> ax_errno::AxResult<usize> {
         if self.1 > 1 {
             let copy_size = buf.len().min(self.1 - 1);
             unsafe {
@@ -26,7 +26,7 @@ impl Write for StringWriter {
         Ok(buf.len())
     }
 
-    fn flush(&mut self) -> axerrno::AxResult {
+    fn flush(&mut self) -> ax_errno::AxResult {
         Ok(())
     }
 }
@@ -76,7 +76,7 @@ impl<T: WriteByte> WriteByte for CountingWriter<T> {
 }
 
 impl<T: Write> Write for CountingWriter<T> {
-    fn write(&mut self, buf: &[u8]) -> axerrno::AxResult<usize> {
+    fn write(&mut self, buf: &[u8]) -> ax_errno::AxResult<usize> {
         let res = self.inner.write(buf);
         if let Ok(written) = res {
             self.written += written;
@@ -84,7 +84,7 @@ impl<T: Write> Write for CountingWriter<T> {
         res
     }
 
-    fn write_all(&mut self, buf: &[u8]) -> axerrno::AxResult {
+    fn write_all(&mut self, buf: &[u8]) -> ax_errno::AxResult {
         match self.inner.write_all(buf) {
             Ok(()) => (),
             Err(err) => return Err(err),
@@ -93,7 +93,7 @@ impl<T: Write> Write for CountingWriter<T> {
         Ok(())
     }
 
-    fn flush(&mut self) -> axerrno::AxResult {
+    fn flush(&mut self) -> ax_errno::AxResult {
         self.inner.flush()
     }
 }

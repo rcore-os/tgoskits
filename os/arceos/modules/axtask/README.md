@@ -1,7 +1,7 @@
-# axtask
+# ax-task
 
-[![Crates.io](https://img.shields.io/crates/v/axtask)](https://crates.io/crates/axtask)
-[![Docs.rs](https://docs.rs/axtask/badge.svg)](https://docs.rs/axtask)
+[![Crates.io](https://img.shields.io/crates/v/ax-task)](https://crates.io/crates/ax-task)
+[![Docs.rs](https://docs.rs/ax-task/badge.svg)](https://docs.rs/ax-task)
 
 [ArceOS](https://github.com/arceos-org/arceos) task management module.
 

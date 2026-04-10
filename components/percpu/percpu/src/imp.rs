@@ -1,6 +1,6 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use percpu_macros::percpu_symbol_vma;
+use ax_percpu_macros::percpu_symbol_vma;
 
 static IS_INIT: AtomicBool = AtomicBool::new(false);
 
@@ -23,7 +23,6 @@ extern "C" {
     //   assumption (they are non-zero), causing unexpected runtime errors;
     // - Link-time errors because they are too far away from the program counter
     //.  (when Rust uses PC-relative addressing).
-    //
     // See https://github.com/arceos-org/percpu/issues/18 for more details.
     fn _percpu_load_start();
     fn _percpu_load_end();
@@ -79,14 +78,16 @@ pub fn init() -> usize {
         // rust will assume a `*const ()` is a valid pointer and will not be 0,
         // causing unexpected `0 != 0` assertion failure.
         assert_eq!(
-            percpu_symbol_vma!(_percpu_load_start), 0,
-            "The `.percpu` section must be loaded at VMA address 0 when feature \"non-zero-vma\" is disabled"
+            percpu_symbol_vma!(_percpu_load_start),
+            0,
+            "The `.percpu` section must be loaded at VMA address 0 when feature \"non-zero-vma\" \
+             is disabled"
         )
     }
 
     #[cfg(target_os = "linux")]
     {
-        // we not load the percpu section in ELF, allocate them here.
+        // we not load the ax-percpu section in ELF, allocate them here.
         let total_size = _percpu_end as *const () as usize - _percpu_start as *const () as usize;
         let layout = std::alloc::Layout::from_size_align(total_size, 0x1000).unwrap();
         PERCPU_AREA_BASE.call_once(|| unsafe { std::alloc::alloc(layout) as usize });
@@ -205,12 +206,12 @@ pub fn init_percpu_reg(cpu_id: usize) {
     unsafe { write_percpu_reg(tp) }
 }
 
-/// To use `percpu::__priv::NoPreemptGuard::new()` and `percpu::percpu_area_base()` in macro expansion.
+/// To use `ax_percpu::__priv::NoPreemptGuard::new()` and `ax_percpu::percpu_area_base()` in macro expansion.
 #[allow(unused_imports)]
-use crate as percpu;
+use crate as ax_percpu;
 
 /// On x86, we use `gs:SELF_PTR` to store the address of the per-CPU data area base.
 #[cfg(target_arch = "x86_64")]
 #[no_mangle]
-#[percpu_macros::def_percpu]
+#[ax_percpu_macros::def_percpu]
 static SELF_PTR: usize = 0;

@@ -1,7 +1,7 @@
-use std::os::arceos::modules::{axhal, axtask};
+use std::os::arceos::modules::{ax_hal, ax_task};
 
+use ax_errno::{AxResult, ax_err_type};
 use axaddrspace::{HostPhysAddr, HostVirtAddr};
-use axerrno::{AxResult, ax_err_type};
 use axvisor_api::vmm::{InterruptVector, VCpuId, VCpuSet, VMId, VmmIf};
 
 use crate::{task::AsVCpuTask, vmm};
@@ -9,23 +9,23 @@ use crate::{task::AsVCpuTask, vmm};
 struct VmmImpl;
 
 fn virt_to_phys(vaddr: HostVirtAddr) -> HostPhysAddr {
-    axhal::mem::virt_to_phys(vaddr)
+    ax_hal::mem::virt_to_phys(vaddr)
 }
 
 fn current_time_nanos() -> u64 {
-    axhal::time::monotonic_time_nanos()
+    ax_hal::time::monotonic_time_nanos()
 }
 
 fn current_vm_id() -> usize {
-    axtask::current().as_vcpu_task().vm().id()
+    ax_task::current().as_vcpu_task().vm().id()
 }
 
 fn current_vcpu_id() -> usize {
-    axtask::current().as_vcpu_task().vcpu.id()
+    ax_task::current().as_vcpu_task().vcpu.id()
 }
 
 fn current_pcpu_id() -> usize {
-    axhal::percpu::this_cpu_id()
+    ax_hal::percpu::this_cpu_id()
 }
 
 fn vcpu_resides_on(vm_id: usize, vcpu_id: usize) -> AxResult<usize> {
@@ -42,11 +42,11 @@ fn inject_irq_to_vcpu(vm_id: usize, vcpu_id: usize, irq: usize) -> AxResult {
 #[axvisor_api::api_impl]
 impl VmmIf for VmmImpl {
     fn current_vm_id() -> usize {
-        axtask::current().as_vcpu_task().vm().id()
+        ax_task::current().as_vcpu_task().vm().id()
     }
 
     fn current_vcpu_id() -> usize {
-        axtask::current().as_vcpu_task().vcpu.id()
+        ax_task::current().as_vcpu_task().vcpu.id()
     }
 
     fn vcpu_num(vm_id: VMId) -> Option<usize> {

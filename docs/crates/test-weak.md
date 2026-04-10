@@ -198,7 +198,7 @@ components/crate_interface/test_crates/run_tests.sh weak
 
 | 项目 | 位置 | 角色 | 核心作用 |
 | --- | --- | --- | --- |
-| ArceOS | 无主线直接依赖 | 间接保护测试资产 | 间接保护 `axlog`、`axruntime`、`axtask` 等真实使用 `crate_interface` 的覆盖语义 |
+| ArceOS | 无主线直接依赖 | 间接保护测试资产 | 间接保护 `ax-log`、`ax-runtime`、`ax-task` 等真实使用 `crate_interface` 的覆盖语义 |
 | StarryOS | 无主线直接依赖 | 间接保护测试资产 | 通过复用公共基础设施，间接受益于弱默认覆盖路径的回归验证 |
 | Axvisor | 无主线直接依赖 | 间接保护测试资产 | `axvisor_api` 等组件使用 `crate_interface`，但不会直接消费该测试二进制 |
 

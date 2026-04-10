@@ -13,7 +13,7 @@ define resolve_config
 endef
 
 define validate_config
-  $(eval package := $(shell axconfig-gen $(PLAT_CONFIG) -r package 2>/dev/null)) \
+  $(eval package := $(shell ax-config-gen $(PLAT_CONFIG) -r package 2>/dev/null)) \
   $(if $(strip $(package)),,$(error PLAT_CONFIG=$(PLAT_CONFIG) is not a valid platform configuration file)) \
   $(if $(filter "$(PLAT_PACKAGE)",$(package)),,\
     $(error `PLAT_PACKAGE` field mismatch: expected $(PLAT_PACKAGE), got $(package)))
@@ -22,13 +22,13 @@ endef
 ifeq ($(MYPLAT),)
   # `MYPLAT` is not specified, use the default platform for each architecture
   ifeq ($(ARCH), x86_64)
-    PLAT_PACKAGE := axplat-x86-pc
+    PLAT_PACKAGE := ax-plat-x86-pc
   else ifeq ($(ARCH), aarch64)
-    PLAT_PACKAGE := axplat-aarch64-qemu-virt
+    PLAT_PACKAGE := ax-plat-aarch64-qemu-virt
   else ifeq ($(ARCH), riscv64)
-    PLAT_PACKAGE := axplat-riscv64-qemu-virt
+    PLAT_PACKAGE := ax-plat-riscv64-qemu-virt
   else ifeq ($(ARCH), loongarch64)
-    PLAT_PACKAGE := axplat-loongarch64-qemu-virt
+    PLAT_PACKAGE := ax-plat-loongarch64-qemu-virt
   else
     $(error "ARCH" must be one of "x86_64", "riscv64", "aarch64" or "loongarch64")
   endif
@@ -47,7 +47,7 @@ else
   $(call validate_config)
 
   # Read the architecture name from the configuration file
-  _arch := $(patsubst "%",%,$(shell axconfig-gen $(PLAT_CONFIG) -r arch))
+  _arch := $(patsubst "%",%,$(shell ax-config-gen $(PLAT_CONFIG) -r arch))
   ifeq ($(origin ARCH),command line)
     ifneq ($(ARCH),$(_arch))
       $(error "ARCH=$(ARCH)" is not compatible with "MYPLAT=$(MYPLAT)")
@@ -56,4 +56,4 @@ else
   ARCH := $(_arch)
 endif
 
-PLAT_NAME := $(patsubst "%",%,$(shell axconfig-gen $(PLAT_CONFIG) -r platform))
+PLAT_NAME := $(patsubst "%",%,$(shell ax-config-gen $(PLAT_CONFIG) -r platform))

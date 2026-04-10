@@ -1,4 +1,4 @@
-use axconfig_gen::{Config, ConfigValue, OutputFormat};
+use ax_config_gen::{Config, ConfigValue, OutputFormat};
 use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clap::Parser;
 

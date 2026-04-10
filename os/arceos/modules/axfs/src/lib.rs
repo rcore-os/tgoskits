@@ -33,7 +33,7 @@ use alloc::{
     vec::Vec,
 };
 
-use axdriver::{AxBlockDevice, AxDeviceContainer, prelude::*};
+use ax_driver::{AxBlockDevice, AxDeviceContainer, prelude::*};
 
 use crate::partition::PartitionInfo;
 

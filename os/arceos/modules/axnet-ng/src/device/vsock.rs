@@ -4,10 +4,10 @@ use core::{
     time::Duration,
 };
 
-use axdriver::prelude::*;
-use axerrno::{AxError, AxResult, ax_bail};
-use axsync::Mutex;
-use axtask::future::{block_on, interruptible};
+use ax_driver::prelude::*;
+use ax_errno::{AxError, AxResult, ax_bail};
+use ax_sync::Mutex;
+use ax_task::future::{block_on, interruptible};
 
 use crate::vsock::connection_manager::VSOCK_CONN_MANAGER;
 
@@ -78,7 +78,7 @@ pub fn start_vsock_poll() {
         if !POLL_TASK_RUNNING.swap(true, Ordering::SeqCst) {
             drop(count);
             debug!("Starting vsock poll task");
-            axtask::spawn_with_name(vsock_poll_loop, "vsock-poll".to_string());
+            ax_task::spawn_with_name(vsock_poll_loop, "vsock-poll".to_string());
         } else {
             warn!("Poll task already running!");
         }
@@ -124,7 +124,7 @@ async fn poll_interfaces_adaptive() -> AxResult<()> {
     if idle_count > 0 && idle_count % 10 == 0 {
         trace!("Poll frequency: idle_count={idle_count}, interval={interval_us}μs",);
     }
-    axtask::future::sleep(interval).await;
+    ax_task::future::sleep(interval).await;
     Ok(())
 }
 

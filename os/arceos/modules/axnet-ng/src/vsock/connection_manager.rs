@@ -1,9 +1,9 @@
 use alloc::{collections::BTreeMap, sync::Arc};
 
-use axerrno::{AxError, AxResult, ax_bail};
+use ax_errno::{AxError, AxResult, ax_bail};
+use ax_sync::Mutex;
+use ax_task::WaitQueue;
 use axpoll::PollSet;
-use axsync::Mutex;
-use axtask::WaitQueue;
 use ringbuf::{HeapCons, HeapProd, HeapRb, traits::*};
 
 use super::{VsockAddr, VsockConnId};

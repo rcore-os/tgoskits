@@ -1,4 +1,4 @@
-use axplat::power::PowerIf;
+use ax_plat::power::PowerIf;
 
 struct PowerImpl;
 
@@ -11,7 +11,7 @@ impl PowerIf for PowerImpl {
     /// CPU cores on the platform).
     #[cfg(feature = "smp")]
     fn cpu_boot(cpu_id: usize, stack_top_paddr: usize) {
-        crate::mp::start_secondary_cpu(cpu_id, axplat::mem::pa!(stack_top_paddr));
+        crate::mp::start_secondary_cpu(cpu_id, ax_plat::mem::pa!(stack_top_paddr));
     }
 
     /// Shutdown the whole system.
@@ -19,7 +19,7 @@ impl PowerIf for PowerImpl {
         log::info!("Shutting down...");
         // TODO
         loop {
-            axcpu::asm::halt();
+            ax_cpu::asm::halt();
         }
     }
 

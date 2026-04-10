@@ -1,18 +1,18 @@
 use x86_64::{
+    PrivilegeLevel,
     instructions::tables::load_tss,
-    registers::segmentation::{Segment, SegmentSelector, CS},
+    registers::segmentation::{CS, Segment, SegmentSelector},
     structures::{
         gdt::{Descriptor, GlobalDescriptorTable},
         tss::TaskStateSegment,
     },
-    PrivilegeLevel,
 };
 
-#[percpu::def_percpu]
+#[ax_percpu::def_percpu]
 #[unsafe(no_mangle)]
 static TSS: TaskStateSegment = TaskStateSegment::new();
 
-#[percpu::def_percpu]
+#[ax_percpu::def_percpu]
 static GDT: GlobalDescriptorTable = GlobalDescriptorTable::new();
 
 /// Kernel code segment for 64-bit mode.

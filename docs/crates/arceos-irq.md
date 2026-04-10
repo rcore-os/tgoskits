@@ -29,16 +29,16 @@
 - `disable_irqs()`
 - `enable_irqs()`
 
-这些函数直接读写 `axhal::asm::{irqs_enabled, disable_irqs, enable_irqs}`，所以它们观察的是真实的 CPU IRQ 状态，而不是某个模拟标志位。
+这些函数直接读写 `ax-hal::asm::{irqs_enabled, disable_irqs, enable_irqs}`，所以它们观察的是真实的 CPU IRQ 状态，而不是某个模拟标志位。
 
 ### 1.3 三条真实调用链
 本 crate 实际上在验证下面三种任务路径：
 
 ```mermaid
 flowchart TD
-    A["yield_now()"] --> B["axtask::yield_now"]
-    C["sleep()"] --> D["axtask::sleep_until"]
-    E["WaitQueue wait/notify"] --> F["axtask::WaitQueue"]
+    A["yield_now()"] --> B["ax-task::yield_now"]
+    C["sleep()"] --> D["ax-task::sleep_until"]
+    E["WaitQueue wait/notify"] --> F["ax-task::WaitQueue"]
     B --> G["检查 IRQ 状态"]
     D --> G
     F --> G
@@ -66,7 +66,7 @@ flowchart TD
 这部分更接近“timer 驱动的任务阻塞/唤醒路径 IRQ 语义回归”。
 
 ### 2.3 `test_wait_queue()`
-这里直接使用 `axtask::WaitQueue`，而不是 `AxWaitQueueHandle`。它验证：
+这里直接使用 `ax-task::WaitQueue`，而不是 `AxWaitQueueHandle`。它验证：
 
 - `wait_timeout_until`
 - `wait_until`
@@ -87,22 +87,22 @@ flowchart TD
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    test["arceos-irq"] --> axstd["axstd(multitask, irq)"]
-    test --> axhal["axhal::asm"]
-    test --> axtask["axtask::WaitQueue"]
-    axstd --> arceos_api["arceos_api::task"]
+    test["arceos-irq"] --> ax-std["ax-std(multitask, irq)"]
+    test --> ax-hal["ax-hal::asm"]
+    test --> ax-task["ax-task::WaitQueue"]
+    ax-std --> ax-api["ax_api::task"]
 ```
 
 ### 3.1 直接依赖
-- `axstd(multitask, irq)`：启用多任务与中断相关路径。
+- `ax-std(multitask, irq)`：启用多任务与中断相关路径。
 
 ### 3.2 关键间接依赖
-- `axtask`：任务切换、睡眠和等待队列的真实实现。
-- `axhal::asm`：读取和切换当前 CPU 的 IRQ 状态。
+- `ax-task`：任务切换、睡眠和等待队列的真实实现。
+- `ax-hal::asm`：读取和切换当前 CPU 的 IRQ 状态。
 
 ### 3.3 主要消费者
 - `cargo arceos test qemu` 自动回归。
-- `axtask`、IRQ 相关上下文切换逻辑改动后的定向验证。
+- `ax-task`、IRQ 相关上下文切换逻辑改动后的定向验证。
 
 ## 4. 开发指南
 ### 4.1 推荐运行方式

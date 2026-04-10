@@ -15,19 +15,19 @@ pub fn sys_sysconf(name: c_int) -> c_long {
             // Page size
             ctypes::_SC_PAGE_SIZE => Ok(PAGE_SIZE_4K),
             // Number of processors in use
-            ctypes::_SC_NPROCESSORS_ONLN => Ok(axconfig::plat::MAX_CPU_NUM),
+            ctypes::_SC_NPROCESSORS_ONLN => Ok(ax_config::plat::MAX_CPU_NUM),
             // Total physical pages
-            ctypes::_SC_PHYS_PAGES => Ok(axhal::mem::total_ram_size() / PAGE_SIZE_4K),
+            ctypes::_SC_PHYS_PAGES => Ok(ax_hal::mem::total_ram_size() / PAGE_SIZE_4K),
             // Avaliable physical pages
             ctypes::_SC_AVPHYS_PAGES => {
                 #[cfg(feature = "alloc")]
                 {
-                    Ok(axalloc::global_allocator().available_pages())
+                    Ok(ax_alloc::global_allocator().available_pages())
                 }
                 #[cfg(not(feature = "alloc"))]
                 {
-                    let total_pages = axhal::mem::total_ram_size() / PAGE_SIZE_4K;
-                    let reserved_pages = axhal::mem::reserved_phys_ram_ranges()
+                    let total_pages = ax_hal::mem::total_ram_size() / PAGE_SIZE_4K;
+                    let reserved_pages = ax_hal::mem::reserved_phys_ram_ranges()
                         .iter()
                         .map(|range| range.1 / PAGE_SIZE_4K)
                         .sum::<usize>();

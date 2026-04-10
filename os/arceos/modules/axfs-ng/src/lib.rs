@@ -13,7 +13,7 @@ extern crate alloc;
 #[macro_use]
 extern crate log;
 
-use axdriver::{AxBlockDevice, AxDeviceContainer, prelude::*};
+use ax_driver::{AxBlockDevice, AxDeviceContainer, prelude::*};
 
 mod fs;
 

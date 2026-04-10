@@ -55,7 +55,7 @@ macro_rules! def_interface {
 /// name; otherwise, it will result in a compile error.
 ///
 /// ```rust,compile_fail
-/// # use crate_interface_lite::*;
+/// # use ax_crate_interface_lite::*;
 /// def_interface!(
 ///     trait MyIf {
 ///         fn foo();

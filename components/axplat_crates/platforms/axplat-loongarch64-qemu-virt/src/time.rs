@@ -1,5 +1,5 @@
-use axplat::time::TimeIf;
-use lazyinit::LazyInit;
+use ax_lazyinit::LazyInit;
+use ax_plat::time::TimeIf;
 use loongArch64::time::Time;
 
 static NANOS_PER_TICK: LazyInit<u64> = LazyInit::new();
@@ -14,7 +14,7 @@ pub(super) fn init_percpu() {
         tcfg::set_init_val(0);
         tcfg::set_periodic(false);
         tcfg::set_en(true);
-        axplat::irq::set_enable(crate::config::devices::TIMER_IRQ, true);
+        ax_plat::irq::set_enable(crate::config::devices::TIMER_IRQ, true);
     }
 }
 
@@ -28,7 +28,7 @@ pub(super) fn init_percpu() {
 /// [2]: https://gitlab.com/qemu-project/qemu/-/blob/1cf9bc6eba7506ab6d9de635f224259225f63466/hw/rtc/ls7a_rtc.c
 #[cfg(feature = "rtc")]
 fn init_rtc() {
-    use axplat::mem::{PhysAddr, pa, phys_to_virt};
+    use ax_plat::mem::{PhysAddr, pa, phys_to_virt};
     use chrono::{TimeZone, Timelike, Utc};
 
     const SYS_TOY_READ0: usize = 0x2C;
@@ -67,7 +67,7 @@ fn init_rtc() {
             extract_bits(toy_low, 4..10),
         )
         .unwrap()
-        .with_nanosecond(extract_bits(toy_low, 0..4) * axplat::time::NANOS_PER_MILLIS as u32)
+        .with_nanosecond(extract_bits(toy_low, 0..4) * ax_plat::time::NANOS_PER_MILLIS as u32)
         .unwrap();
 
     if let Some(epoch_time_nanos) = date_time.timestamp_nanos_opt() {
@@ -80,7 +80,7 @@ fn init_rtc() {
 
 pub(super) fn init_early() {
     NANOS_PER_TICK
-        .init_once(axplat::time::NANOS_PER_SEC / loongArch64::time::get_timer_freq() as u64);
+        .init_once(ax_plat::time::NANOS_PER_SEC / loongArch64::time::get_timer_freq() as u64);
 
     #[cfg(feature = "rtc")]
     init_rtc();

@@ -3,7 +3,7 @@ use core::{
     time::Duration,
 };
 
-use axerrno::LinuxError;
+use ax_errno::LinuxError;
 
 use crate::{
     ctypes,
@@ -47,8 +47,8 @@ pub unsafe fn sys_clock_gettime(clk: ctypes::clockid_t, ts: *mut ctypes::timespe
             return Err(LinuxError::EFAULT);
         }
         let now = match clk as u32 {
-            CLOCK_REALTIME => axhal::time::wall_time().into(),
-            CLOCK_MONOTONIC => axhal::time::monotonic_time().into(),
+            CLOCK_REALTIME => ax_hal::time::wall_time().into(),
+            CLOCK_MONOTONIC => ax_hal::time::monotonic_time().into(),
             _ => {
                 warn!("Called sys_clock_gettime for unsupported clock {clk}");
                 return Err(LinuxError::EINVAL);
@@ -76,14 +76,14 @@ pub unsafe fn sys_nanosleep(req: *const ctypes::timespec, rem: *mut ctypes::time
             Duration::from(*req)
         };
 
-        let now = axhal::time::monotonic_time();
+        let now = ax_hal::time::monotonic_time();
 
         #[cfg(feature = "multitask")]
-        axtask::sleep(dur);
+        ax_task::sleep(dur);
         #[cfg(not(feature = "multitask"))]
-        axhal::time::busy_wait(dur);
+        ax_hal::time::busy_wait(dur);
 
-        let after = axhal::time::monotonic_time();
+        let after = ax_hal::time::monotonic_time();
         let actual = after - now;
 
         if let Some(diff) = dur.checked_sub(actual) {

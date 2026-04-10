@@ -3,47 +3,47 @@
 
 cfg_if::cfg_if! {
     if #[cfg(target_arch = "x86_64")] {
-        extern crate axplat_x86_pc;
+        extern crate ax_plat_x86_pc;
     } else if #[cfg(target_arch = "aarch64")] {
-        extern crate axplat_aarch64_qemu_virt;
+        extern crate ax_plat_aarch64_qemu_virt;
     } else if #[cfg(target_arch = "riscv64")] {
-        extern crate axplat_riscv64_qemu_virt;
+        extern crate ax_plat_riscv64_qemu_virt;
     } else if #[cfg(target_arch = "loongarch64")] {
-        extern crate axplat_loongarch64_qemu_virt;
+        extern crate ax_plat_loongarch64_qemu_virt;
     } else {
         compile_error!("Unsupported target architecture");
     }
 }
 
 fn init_kernel(cpu_id: usize, arg: usize) {
-    axplat::percpu::init_primary(cpu_id);
+    ax_plat::percpu::init_primary(cpu_id);
 
     // Initialize trap, console, time.
-    axplat::init::init_early(cpu_id, arg);
+    ax_plat::init::init_early(cpu_id, arg);
 
     // Initialize platform peripherals (not used in this example).
-    axplat::init::init_later(cpu_id, arg);
+    ax_plat::init::init_later(cpu_id, arg);
 }
 
-#[axplat::main]
+#[ax_plat::main]
 fn main(cpu_id: usize, arg: usize) -> ! {
     init_kernel(cpu_id, arg);
 
-    axplat::console_println!("Hello, ArceOS!");
-    axplat::console_println!("cpu_id = {cpu_id}, arg = {arg:#x}");
+    ax_plat::console_println!("Hello, ArceOS!");
+    ax_plat::console_println!("cpu_id = {cpu_id}, arg = {arg:#x}");
 
     for _ in 0..5 {
-        axplat::time::busy_wait(axplat::time::TimeValue::from_secs(1));
-        axplat::console_println!("{:?} elapsed.", axplat::time::monotonic_time());
+        ax_plat::time::busy_wait(ax_plat::time::TimeValue::from_secs(1));
+        ax_plat::console_println!("{:?} elapsed.", ax_plat::time::monotonic_time());
     }
 
-    axplat::console_println!("All done, shutting down!");
-    axplat::power::system_off();
+    ax_plat::console_println!("All done, shutting down!");
+    ax_plat::power::system_off();
 }
 
 #[cfg(all(target_os = "none", not(test)))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    axplat::console_println!("{info}");
-    axplat::power::system_off()
+    ax_plat::console_println!("{info}");
+    ax_plat::power::system_off()
 }

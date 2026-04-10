@@ -1,11 +1,11 @@
 use alloc::sync::Arc;
 
-use axerrno::{AxError, AxResult};
-use axfs::FS_CONTEXT;
-use axhal::uspace::UserContext;
-use axtask::{AxTaskExt, current, spawn_task};
+use ax_errno::{AxError, AxResult};
+use ax_fs::FS_CONTEXT;
+use ax_hal::uspace::UserContext;
+use ax_kspin::SpinNoIrq;
+use ax_task::{AxTaskExt, current, spawn_task};
 use bitflags::bitflags;
-use kspin::SpinNoIrq;
 use linux_raw_sys::general::*;
 use starry_process::Pid;
 use starry_signal::Signo;

@@ -5,7 +5,7 @@ use std::{
     collections::VecDeque,
 };
 
-use axio::{
+use ax_io::{
     BufReader, BufWriter, Cursor, DEFAULT_BUF_SIZE, Result, copy, prelude::*, repeat, sink,
 };
 

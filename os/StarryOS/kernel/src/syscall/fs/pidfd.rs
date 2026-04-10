@@ -1,4 +1,4 @@
-use axerrno::{AxError, AxResult};
+use ax_errno::{AxError, AxResult};
 use bitflags::bitflags;
 use starry_signal::SignalInfo;
 

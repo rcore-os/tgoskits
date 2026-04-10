@@ -38,7 +38,7 @@ fn apply_cargo_toml_template(orig: &mut DocumentMut, new: &DocumentMut, axplat_p
     if let Some(path) = axplat_path {
         let mut axplat = toml_edit::InlineTable::new();
         axplat.insert("path", path.into());
-        orig["dependencies"]["axplat"] = axplat.into();
+        orig["dependencies"]["ax-plat"] = axplat.into();
     }
 }
 

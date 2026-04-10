@@ -1,7 +1,7 @@
 use core::sync::atomic::Ordering;
 
-use axerrno::{AxError, AxResult, LinuxError};
-use axtask::current;
+use ax_errno::{AxError, AxResult, LinuxError};
+use ax_task::current;
 use linux_raw_sys::general::{
     FUTEX_CMD_MASK, FUTEX_CMP_REQUEUE, FUTEX_REQUEUE, FUTEX_WAIT, FUTEX_WAIT_BITSET, FUTEX_WAKE,
     FUTEX_WAKE_BITSET, robust_list_head, timespec,
@@ -86,7 +86,7 @@ pub fn sys_futex(
                 };
                 count = futex.wq.wake(value as _, bitset);
             }
-            axtask::yield_now();
+            ax_task::yield_now();
             Ok(count as _)
         }
         FUTEX_REQUEUE | FUTEX_CMP_REQUEUE => {

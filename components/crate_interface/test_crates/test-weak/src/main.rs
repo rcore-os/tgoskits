@@ -7,7 +7,7 @@
 
 #![feature(linkage)]
 
-use crate_interface::call_interface;
+use ax_crate_interface::call_interface;
 
 // Import the implementation crate to link the implementations
 use impl_weak_traits::{

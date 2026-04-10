@@ -1,4 +1,4 @@
-use axplat::mem::{MemIf, PhysAddr, RawRange, VirtAddr, pa, va};
+use ax_plat::mem::{MemIf, PhysAddr, RawRange, VirtAddr, pa, va};
 
 use crate::config::devices::MMIO_RANGES;
 use crate::config::plat::{

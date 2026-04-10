@@ -14,7 +14,7 @@
 
 //! Multi-processor booting.
 
-use axplat::{
+use ax_plat::{
     mem::{PAGE_SIZE_4K, PhysAddr, pa},
     time::{Duration, busy_wait},
 };
@@ -35,7 +35,7 @@ unsafe fn setup_startup_page(stack_top: PhysAddr) {
     }
     const U64_PER_PAGE: usize = PAGE_SIZE_4K / 8;
 
-    let start_page_ptr = axplat::mem::phys_to_virt(START_PAGE_PADDR).as_mut_ptr() as *mut u64;
+    let start_page_ptr = ax_plat::mem::phys_to_virt(START_PAGE_PADDR).as_mut_ptr() as *mut u64;
     let start_page = unsafe { core::slice::from_raw_parts_mut(start_page_ptr, U64_PER_PAGE) };
     unsafe {
         core::ptr::copy_nonoverlapping(

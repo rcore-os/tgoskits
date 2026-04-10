@@ -1,11 +1,11 @@
 use alloc::sync::Arc;
 
-use axerrno::{AxError, AxResult};
-use axfs::FileBackend;
-use axhal::paging::{MappingFlags, PageSize};
-use axtask::current;
+use ax_errno::{AxError, AxResult};
+use ax_fs::FileBackend;
+use ax_hal::paging::{MappingFlags, PageSize};
+use ax_memory_addr::{MemoryAddr, VirtAddr, VirtAddrRange, align_up_4k};
+use ax_task::current;
 use linux_raw_sys::general::*;
-use memory_addr::{MemoryAddr, VirtAddr, VirtAddrRange, align_up_4k};
 use starry_vm::{vm_load, vm_write_slice};
 
 use crate::{

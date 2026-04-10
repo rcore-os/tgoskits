@@ -1,6 +1,7 @@
 [package]
-name = "arceos_posix_api"
+name = "ax-posix-api"
 version.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
     "Yuekai Jia <equation618@gmail.com>",
@@ -11,41 +12,39 @@ authors = [
     "Shiping Yuan <robert_yuan@pku.edu.com>",
 ]
 description = "POSIX-compatible APIs for ArceOS modules"
-license.workspace = true
-homepage.workspace = true
-repository = "https://github.com/arceos-org/arceos/tree/main/api/arceos_posix_api"
 include = ["src/**/*.rs", "Cargo.toml", "build.rs", "ctypes.h"]
+license.workspace = true
 
 [features]
 default = []
 
-smp = ["axfeat/smp"]
-irq = ["axfeat/irq"]
-alloc = ["dep:axalloc", "axfeat/alloc"]
-multitask = ["axtask/multitask", "axfeat/multitask", "axsync/multitask"]
+smp = ["ax-feat/smp"]
+irq = ["ax-feat/irq"]
+alloc = ["dep:ax-alloc", "ax-feat/alloc"]
+multitask = ["ax-task/multitask", "ax-feat/multitask", "ax-sync/multitask"]
 fd = ["alloc", "dep:scope-local"]
-fs = ["dep:axfs", "axfeat/fs", "fd"]
-net = ["dep:axnet", "axfeat/net", "fd"]
+fs = ["dep:ax-fs", "ax-feat/fs", "fd"]
+net = ["dep:ax-net", "ax-feat/net", "fd"]
 pipe = ["fd"]
 select = ["fd"]
 epoll = ["fd"]
 
 [dependencies]
 # ArceOS modules
-axalloc = { workspace = true, optional = true }
-axconfig.workspace = true
-axfeat.workspace = true
-axfs = { workspace = true, optional = true }
-axhal.workspace = true
-axlog.workspace = true
-axnet = { workspace = true, optional = true }
-axruntime.workspace = true
-axsync.workspace = true
-axtask = { workspace = true, optional = true }
+ax-alloc = { workspace = true, optional = true }
+ax-config.workspace = true
+ax-feat.workspace = true
+ax-fs = { workspace = true, optional = true }
+ax-hal.workspace = true
+ax-log.workspace = true
+ax-net = { workspace = true, optional = true }
+ax-runtime.workspace = true
+ax-sync.workspace = true
+ax-task = { workspace = true, optional = true }
 
 # Other crates
-axerrno.workspace = true
-axio.workspace = true
+ax-errno.workspace = true
+ax-io.workspace = true
 flatten_objects = "0.2"
 lazy_static.workspace = true
 scope-local = { workspace = true, optional = true }

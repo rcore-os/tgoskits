@@ -1,55 +1,81 @@
-# smp-kernel
+<h1 align="center">smp-kernel</h1>
 
-A minimal example of a kernel with multi-core and timer interrupt support using [axplat](../../axplat) and related [platform crates](../../platforms).
+<p align="center">smp-kernel component for TGOSKits</p>
 
-# Build & Run
+<div align="center">
+
+[![Crates.io](https://img.shields.io/crates/v/smp-kernel.svg)](https://crates.io/crates/smp-kernel)
+[![Docs.rs](https://docs.rs/smp-kernel/badge.svg)](https://docs.rs/smp-kernel)
+[![Rust](https://img.shields.io/badge/edition-2024-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+
+</div>
+
+English | [中文](README_CN.md)
+
+# Introduction
+
+`smp-kernel` provides smp-kernel component for TGOSKits. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
+
+## Quick Start
+
+### Installation
+
+Add this crate to your `Cargo.toml`:
+
+```toml
+[dependencies]
+smp-kernel = "0.3.0"
+```
+
+### Run Check and Test
 
 ```bash
-make ARCH=<arch> run
+# Enter the crate directory
+cd components/axplat_crates/examples/smp-kernel
+
+# Format code
+cargo fmt --all
+
+# Run clippy
+cargo clippy --all-targets --all-features
+
+# Run tests
+cargo test --all-features
+
+# Build documentation
+cargo doc --no-deps
 ```
 
-Where `<arch>` is one of `x86_64`, `aarch64`, `riscv64`, or `loongarch64`.
+## Integration
 
-It will run the minimal kernel in QEMU and output a message of the following form:
+### Example
 
-```
-Hello, ArceOS!
-Primary CPU 0 started.
-Timer IRQ handler registered.
-2.57776ms elapsed. Timer IRQ processed on CPU 0.
-Primary CPU 0 init OK.
-1.004237792s elapsed. Timer IRQ processed on CPU 0.
-Primary CPU 0 finished. Shutting down...
+```rust
+use smp_kernel as _;
+
+fn main() {
+    // Integrate `smp-kernel` into your project here.
+}
 ```
 
-If you want to run the kernel with multiple cores, you can add `SMP` argument to the `make` command. For example, to run with 4 cores:
+### Documentation
+
+Generate and view API documentation:
 
 ```bash
-make ARCH=<arch> run SMP=4
+cargo doc --no-deps --open
 ```
 
-In this case, the output will be similar to:
+Online documentation: [docs.rs/smp-kernel](https://docs.rs/smp-kernel)
 
-```
-Hello, ArceOS!
-Primary CPU 0 started.
-Secondary CPU 1 init OK.
-Secondary CPU 2 init OK.
-Secondary CPU 3 init OK.
-Timer IRQ handler registered.
-43.6855ms elapsed. Timer IRQ processed on CPU 0.
-Primary CPU 0 init OK.
-44.741ms elapsed. Timer IRQ processed on CPU 1.
-44.775ms elapsed. Timer IRQ processed on CPU 3.
-44.7756ms elapsed. Timer IRQ processed on CPU 2.
-1.0462813s elapsed. Timer IRQ processed on CPU 3.
-1.0464641s elapsed. Timer IRQ processed on CPU 1.
-1.046386s elapsed. Timer IRQ processed on CPU 2.
-1.0463975s elapsed. Timer IRQ processed on CPU 0.
-...
-4.0457381s elapsed. Timer IRQ processed on CPU 1.
-4.0457352s elapsed. Timer IRQ processed on CPU 0.
-4.045778s elapsed. Timer IRQ processed on CPU 2.
-4.0457964s elapsed. Timer IRQ processed on CPU 3.
-Primary CPU 0 finished. Shutting down...
-```
+# Contributing
+
+1. Fork the repository and create a branch
+2. Run local format and checks
+3. Run local tests relevant to this crate
+4. Submit a PR and ensure CI passes
+
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

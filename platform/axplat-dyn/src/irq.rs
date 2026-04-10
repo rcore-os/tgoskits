@@ -1,4 +1,4 @@
-use axplat::irq::{HandlerTable, IrqHandler, IrqIf};
+use ax_plat::irq::{HandlerTable, IrqHandler, IrqIf};
 use somehal::irq_handler;
 
 /// The maximum number of IRQs.
@@ -50,7 +50,7 @@ impl IrqIf for IrqIfImpl {
         Some(irq.raw())
     }
 
-    fn send_ipi(_id: usize, _target: axplat::irq::IpiTarget) {
+    fn send_ipi(_id: usize, _target: ax_plat::irq::IpiTarget) {
         todo!()
     }
 }

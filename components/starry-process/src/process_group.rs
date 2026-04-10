@@ -4,7 +4,7 @@ use alloc::{
 };
 use core::fmt;
 
-use kspin::SpinNoIrq;
+use ax_kspin::SpinNoIrq;
 use weak_map::WeakMap;
 
 use crate::{Pid, Process, Session};

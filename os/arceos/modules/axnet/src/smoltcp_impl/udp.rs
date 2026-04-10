@@ -3,9 +3,9 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use axerrno::{AxError, AxResult, ax_err, ax_err_type};
-use axio::PollState;
-use axsync::Mutex;
+use ax_errno::{AxError, AxResult, ax_err, ax_err_type};
+use ax_io::PollState;
+use ax_sync::Mutex;
 use smoltcp::{
     iface::SocketHandle,
     socket::udp::{self, BindError, SendError},
@@ -266,7 +266,7 @@ impl UdpSocket {
                 SOCKET_SET.poll_interfaces();
                 match f() {
                     Ok(t) => return Ok(t),
-                    Err(AxError::WouldBlock) => axtask::yield_now(),
+                    Err(AxError::WouldBlock) => ax_task::yield_now(),
                     Err(e) => return Err(e),
                 }
             }

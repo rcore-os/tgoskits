@@ -12,12 +12,13 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 publish = false
+license = "Apache-2.0"
 
 [workspace.dependencies]
-crate_interface = { path = ".." }
+ax-crate-interface = { path = ".." }
 define-simple-traits = { path = "./define-simple-traits" }
 define-weak-traits = { path = "./define-weak-traits" }
 impl-simple-traits = { path = "./impl-simple-traits" }

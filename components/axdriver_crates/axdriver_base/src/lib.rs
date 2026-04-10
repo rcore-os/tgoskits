@@ -9,9 +9,9 @@
 //! - [`axdriver_net`][4]: Common traits and types for network (NIC) drivers.
 //!
 //! [1]: https://github.com/arceos-org/arceos
-//! [2]: ../axdriver_block/index.html
-//! [3]: ../axdriver_display/index.html
-//! [4]: ../axdriver_net/index.html
+//! [2]: ../ax-driver-block/index.html
+//! [3]: ../ax-driver-display/index.html
+//! [4]: ../ax-driver-net/index.html
 
 #![no_std]
 

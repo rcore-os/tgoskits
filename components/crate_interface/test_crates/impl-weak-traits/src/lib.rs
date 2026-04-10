@@ -8,7 +8,7 @@
 
 #![feature(linkage)]
 
-use crate_interface::impl_interface;
+use ax_crate_interface::impl_interface;
 use define_weak_traits::{
     AllDefaultIf, CallerWeakIf, NamespacedWeakIf, SelfRefIf, WeakDefaultIf,
 };

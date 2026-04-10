@@ -2,7 +2,7 @@
 
 use core::arch::asm;
 
-use page_table_entry::arm::A32PTE;
+use ax_page_table_entry::arm::A32PTE;
 
 use crate::{PageTable32, PageTable32Cursor, PagingMetaData};
 
@@ -13,7 +13,7 @@ impl PagingMetaData for A32PagingMetaData {
     const LEVELS: usize = 2; // ARMv7-A uses 2-level page tables
     const PA_MAX_BITS: usize = 32;
     const VA_MAX_BITS: usize = 32;
-    type VirtAddr = memory_addr::VirtAddr;
+    type VirtAddr = ax_memory_addr::VirtAddr;
 
     fn vaddr_is_valid(_vaddr: usize) -> bool {
         // All 32-bit addresses are valid
@@ -22,7 +22,7 @@ impl PagingMetaData for A32PagingMetaData {
     }
 
     #[inline]
-    fn flush_tlb(vaddr: Option<memory_addr::VirtAddr>) {
+    fn flush_tlb(vaddr: Option<ax_memory_addr::VirtAddr>) {
         unsafe {
             if let Some(vaddr) = vaddr {
                 // Invalidate unified TLB entry by MVA

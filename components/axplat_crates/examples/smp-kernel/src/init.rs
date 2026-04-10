@@ -9,21 +9,21 @@ pub fn init_smp_ok() -> bool {
 }
 
 pub fn init_kernel(cpu_id: usize, arg: usize) {
-    axplat::percpu::init_primary(cpu_id);
+    ax_plat::percpu::init_primary(cpu_id);
 
     // Initialize trap, console, time.
-    axplat::init::init_early(cpu_id, arg);
+    ax_plat::init::init_early(cpu_id, arg);
 
     // Initialize platform peripherals, such as IRQ handlers.
-    axplat::init::init_later(cpu_id, arg);
+    ax_plat::init::init_later(cpu_id, arg);
 }
 
 pub fn init_kernel_secondary(cpu_id: usize) {
-    axplat::percpu::init_secondary(cpu_id);
+    ax_plat::percpu::init_secondary(cpu_id);
 
     // Initialize trap, console, time.
-    axplat::init::init_early_secondary(cpu_id);
+    ax_plat::init::init_early_secondary(cpu_id);
 
     // Initialize platform peripherals, such as IRQ handlers.
-    axplat::init::init_later_secondary(cpu_id);
+    ax_plat::init::init_later_secondary(cpu_id);
 }

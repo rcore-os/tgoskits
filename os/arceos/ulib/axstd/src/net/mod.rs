@@ -43,6 +43,6 @@ where
         }
     }
     Err(last_err.unwrap_or_else(|| {
-        axerrno::ax_err_type!(InvalidInput, "could not resolve to any addresses")
+        ax_errno::ax_err_type!(InvalidInput, "could not resolve to any addresses")
     }))
 }

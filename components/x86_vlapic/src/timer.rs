@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use alloc::boxed::Box;
-use axerrno::{AxResult, ax_err};
+use ax_errno::{AxResult, ax_err};
 use axvisor_api::{
     time::{self, current_ticks, register_timer, ticks_to_nanos, ticks_to_time},
     vmm::{VCpuId, VMId, inject_interrupt},

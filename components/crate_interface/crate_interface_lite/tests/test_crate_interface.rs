@@ -1,4 +1,4 @@
-use crate_interface_lite::*;
+use ax_crate_interface_lite::*;
 
 def_interface!(
     trait SimpleIf {

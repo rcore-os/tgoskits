@@ -12,5 +12,5 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub use page_table_entry::riscv::Rv64PTE;
-pub use page_table_multiarch::riscv::{Sv39MetaData, Sv48MetaData};
+pub use ax_page_table_entry::riscv::Rv64PTE;
+pub use ax_page_table_multiarch::riscv::{Sv39MetaData, Sv48MetaData};

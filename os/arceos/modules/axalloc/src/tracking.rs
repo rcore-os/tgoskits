@@ -5,12 +5,12 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+use ax_kspin::SpinNoIrq;
 use axbacktrace::Backtrace;
-use kspin::SpinNoIrq;
 
 pub(crate) static TRACKING_ENABLED: AtomicBool = AtomicBool::new(false);
 
-#[percpu::def_percpu]
+#[ax_percpu::def_percpu]
 pub(crate) static IN_GLOBAL_ALLOCATOR: bool = false;
 
 /// Metadata for each allocation made by the global allocator.

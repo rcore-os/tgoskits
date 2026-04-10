@@ -1,4 +1,4 @@
-use axerrno::{AxError, AxResult, LinuxError};
+use ax_errno::{AxError, AxResult, LinuxError};
 use axnet::options::{Configurable, GetSocketOption, SetSocketOption};
 use linux_raw_sys::net::socklen_t;
 
@@ -12,7 +12,7 @@ const PROTO_TCP: u32 = linux_raw_sys::net::IPPROTO_TCP as u32;
 const PROTO_IP: u32 = linux_raw_sys::net::IPPROTO_IP as u32;
 
 mod conv {
-    use axerrno::{AxError, AxResult};
+    use ax_errno::{AxError, AxResult};
     use axnet::options::UnixCredentials;
     use linux_raw_sys::{general::timeval, net::ucred};
 

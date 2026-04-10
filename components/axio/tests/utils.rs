@@ -2,7 +2,7 @@
 
 use std::{fmt, io::BorrowedBuf, mem::MaybeUninit};
 
-use axio::{Empty, Error, Repeat, SeekFrom, Sink, empty, prelude::*, repeat, sink};
+use ax_io::{Empty, Error, Repeat, SeekFrom, Sink, empty, prelude::*, repeat, sink};
 
 struct ErrorDisplay;
 

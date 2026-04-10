@@ -8,10 +8,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use axerrno::AxResult;
-use kspin::SpinNoIrq;
-use linux_raw_sys::general::kernel_sigaction;
-use starry_vm::{VmMutPtr, VmPtr};
+use ax_kspin::SpinNoIrq;
 
 use crate::{
     DefaultSignalAction, PendingSignals, SignalAction, SignalActionFlags, SignalDisposition,

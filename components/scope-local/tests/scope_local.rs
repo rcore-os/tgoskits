@@ -1,7 +1,7 @@
 use std::{
     panic,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     thread,
@@ -10,18 +10,21 @@ use std::{
 use ctor::ctor;
 use scope_local::{ActiveScope, Scope, scope_local};
 
+static TEST_LOCK: Mutex<()> = Mutex::new(());
+
 #[ctor]
 fn init_percpu() {
-    percpu::init();
-    percpu::init_percpu_reg(0);
+    ax_percpu::init();
+    ax_percpu::init_percpu_reg(0);
 
-    let base = percpu::read_percpu_reg();
+    let base = ax_percpu::read_percpu_reg();
     println!("per-CPU area base = {base:#x}");
-    println!("per-CPU area size = {}", percpu::percpu_area_size());
+    println!("per-CPU area size = {}", ax_percpu::percpu_area_size());
 }
 
 #[test]
 fn scope_init() {
+    let _guard = TEST_LOCK.lock().unwrap();
     scope_local! {
         static DATA: usize = 42;
     }
@@ -30,6 +33,7 @@ fn scope_init() {
 
 #[test]
 fn scope() {
+    let _guard = TEST_LOCK.lock().unwrap();
     scope_local! {
         static DATA: usize = 0;
     }
@@ -51,6 +55,7 @@ fn scope() {
 
 #[test]
 fn scope_drop() {
+    let _guard = TEST_LOCK.lock().unwrap();
     scope_local! {
         static SHARED: Arc<()> = Arc::new(());
     }
@@ -70,6 +75,7 @@ fn scope_drop() {
 
 #[test]
 fn scope_panic_unwind_drop() {
+    let _guard = TEST_LOCK.lock().unwrap();
     scope_local! {
         static SHARED: Arc<()> = Arc::new(());
     }
@@ -87,15 +93,16 @@ fn scope_panic_unwind_drop() {
 
 #[test]
 fn thread_share_item() {
+    let _guard = TEST_LOCK.lock().unwrap();
     scope_local! {
         static SHARED: Arc<()> = Arc::new(());
     }
-    let cpu_num = percpu::percpu_area_num().max(1);
+    let cpu_num = ax_percpu::percpu_area_num().max(1);
 
     let handles: Vec<_> = (0..cpu_num)
         .map(|cpu_id| {
             thread::spawn(move || {
-                percpu::init_percpu_reg(cpu_id);
+                ax_percpu::init_percpu_reg(cpu_id);
                 let global = &*SHARED;
 
                 let mut scope = Scope::new();
@@ -120,10 +127,11 @@ fn thread_share_item() {
 
 #[test]
 fn thread_share_scope() {
+    let _guard = TEST_LOCK.lock().unwrap();
     scope_local! {
         static SHARED: Arc<()> = Arc::new(());
     }
-    let cpu_num = percpu::percpu_area_num().max(1);
+    let cpu_num = ax_percpu::percpu_area_num().max(1);
 
     let scope = Arc::new(Scope::new());
 
@@ -131,7 +139,7 @@ fn thread_share_scope() {
         .map(|cpu_id| {
             let scope = scope.clone();
             thread::spawn(move || {
-                percpu::init_percpu_reg(cpu_id);
+                ax_percpu::init_percpu_reg(cpu_id);
                 unsafe { ActiveScope::set(&scope) };
                 assert_eq!(Arc::strong_count(&SHARED), 1);
                 assert!(Arc::ptr_eq(&SHARED, &SHARED.scope(&scope)));
@@ -150,16 +158,17 @@ fn thread_share_scope() {
 
 #[test]
 fn thread_isolation() {
+    let _guard = TEST_LOCK.lock().unwrap();
     scope_local! {
         static DATA: usize = 42;
         static DATA2: AtomicUsize = AtomicUsize::new(42);
     }
-    let cpu_num = percpu::percpu_area_num().max(1);
+    let cpu_num = ax_percpu::percpu_area_num().max(1);
 
     let handles: Vec<_> = (0..cpu_num)
         .map(|i| {
             thread::spawn(move || {
-                percpu::init_percpu_reg(i);
+                ax_percpu::init_percpu_reg(i);
                 let mut scope = Scope::new();
                 *DATA.scope_mut(&mut scope) = i;
 

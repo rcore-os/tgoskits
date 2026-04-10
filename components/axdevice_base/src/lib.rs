@@ -39,7 +39,7 @@
 //! ```rust,ignore
 //! use axdevice_base::{BaseDeviceOps, EmuDeviceType};
 //! use axaddrspace::{GuestPhysAddrRange, device::AccessWidth};
-//! use axerrno::AxResult;
+//! use ax_errno::AxResult;
 //!
 //! struct MyDevice {
 //!     base_addr: usize,
@@ -87,11 +87,11 @@ extern crate alloc;
 use alloc::{string::String, sync::Arc, vec::Vec};
 use core::any::Any;
 
+use ax_errno::AxResult;
 use axaddrspace::{
     GuestPhysAddrRange,
     device::{AccessWidth, DeviceAddrRange, PortRange, SysRegAddrRange},
 };
-use axerrno::AxResult;
 pub use axvmconfig::EmulatedDeviceType as EmuDeviceType;
 
 /// Represents the configuration of an emulated device for a virtual machine.

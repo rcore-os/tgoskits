@@ -1,6 +1,6 @@
 //! SD/MMC driver based on SDIO.
 
-use axdriver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
+use ax_driver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
 use simple_sdmmc::SdMmc;
 
 use crate::BlockDriverOps;

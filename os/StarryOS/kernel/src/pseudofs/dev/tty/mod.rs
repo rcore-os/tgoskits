@@ -7,14 +7,14 @@ mod terminal;
 use alloc::sync::{Arc, Weak};
 use core::{any::Any, ops::Deref, sync::atomic::Ordering, task::Context};
 
-use axerrno::{AxError, AxResult};
-use axfs_ng_vfs::NodeFlags;
-use axpoll::{IoEvents, Pollable};
-use axsync::Mutex;
-use axtask::{
+use ax_errno::{AxError, AxResult};
+use ax_sync::Mutex;
+use ax_task::{
     current,
     future::{block_on, poll_io},
 };
+use axfs_ng_vfs::NodeFlags;
+use axpoll::{IoEvents, Pollable};
 use starry_process::Process;
 use starry_vm::{VmMutPtr, VmPtr};
 

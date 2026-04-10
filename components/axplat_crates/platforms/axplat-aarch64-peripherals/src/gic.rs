@@ -1,9 +1,9 @@
 //! ARM Generic Interrupt Controller (GIC).
 
 use arm_gic_driver::v2::{Ack, Gic, IntId, SGITarget, TargetList, TrapOp, Trigger, VirtAddr};
-use axplat::irq::{HandlerTable, IpiTarget, IrqHandler};
-use kspin::SpinNoIrq;
-use lazyinit::LazyInit;
+use ax_kspin::SpinNoIrq;
+use ax_lazyinit::LazyInit;
+use ax_plat::irq::{HandlerTable, IpiTarget, IrqHandler};
 
 /// The maximum number of IRQs.
 const MAX_IRQ_COUNT: usize = 1024;
@@ -82,7 +82,7 @@ pub fn handle_irq(_irq: usize) -> Option<usize> {
 }
 
 /// Initializes GIC
-pub fn init_gic(gicd_base: axplat::mem::VirtAddr, gicc_base: axplat::mem::VirtAddr) {
+pub fn init_gic(gicd_base: ax_plat::mem::VirtAddr, gicc_base: ax_plat::mem::VirtAddr) {
     info!("Initialize GICv2...");
     let gicd_base = VirtAddr::new(gicd_base.into());
     let gicc_base = VirtAddr::new(gicc_base.into());
@@ -129,14 +129,14 @@ pub fn send_ipi(irq_num: usize, target: IpiTarget) {
     }
 }
 
-/// Default implementation of [`axplat::irq::IrqIf`] using the GIC.
+/// Default implementation of [`ax_plat::irq::IrqIf`] using the GIC.
 #[macro_export]
 macro_rules! irq_if_impl {
     ($name:ident) => {
         struct $name;
 
         #[impl_plat_interface]
-        impl axplat::irq::IrqIf for $name {
+        impl ax_plat::irq::IrqIf for $name {
             /// Enables or disables the given IRQ.
             fn set_enable(irq: usize, enabled: bool) {
                 $crate::gic::set_enable(irq, enabled);
@@ -146,7 +146,7 @@ macro_rules! irq_if_impl {
             ///
             /// It also enables the IRQ if the registration succeeds. It returns `false`
             /// if the registration failed.
-            fn register(irq: usize, handler: axplat::irq::IrqHandler) -> bool {
+            fn register(irq: usize, handler: ax_plat::irq::IrqHandler) -> bool {
                 $crate::gic::register_handler(irq, handler)
             }
 
@@ -154,7 +154,7 @@ macro_rules! irq_if_impl {
             ///
             /// It also disables the IRQ if the unregistration succeeds. It returns the
             /// existing handler if it is registered, `None` otherwise.
-            fn unregister(irq: usize) -> Option<axplat::irq::IrqHandler> {
+            fn unregister(irq: usize) -> Option<ax_plat::irq::IrqHandler> {
                 $crate::gic::unregister_handler(irq)
             }
 
@@ -168,7 +168,7 @@ macro_rules! irq_if_impl {
             }
 
             /// Sends an inter-processor interrupt (IPI) to the specified target CPU or all CPUs.
-            fn send_ipi(irq_num: usize, target: axplat::irq::IpiTarget) {
+            fn send_ipi(irq_num: usize, target: ax_plat::irq::IpiTarget) {
                 $crate::gic::send_ipi(irq_num, target);
             }
         }

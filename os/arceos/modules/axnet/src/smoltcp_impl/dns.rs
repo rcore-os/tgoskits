@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use core::net::IpAddr;
 
-use axerrno::{AxError, AxResult, ax_err_type};
+use ax_errno::{AxError, AxResult, ax_err_type};
 use smoltcp::{
     iface::SocketHandle,
     socket::dns::{self, GetQueryResultError, StartQueryError},
@@ -69,7 +69,7 @@ impl DnsSocket {
                     }
                     return Ok(res);
                 }
-                Err(AxError::WouldBlock) => axtask::yield_now(),
+                Err(AxError::WouldBlock) => ax_task::yield_now(),
                 Err(e) => return Err(e),
             }
         }

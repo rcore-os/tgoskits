@@ -1,4 +1,4 @@
-use axerrno::AxResult;
+use ax_errno::AxResult;
 
 use crate::task::do_exit;
 

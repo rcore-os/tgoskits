@@ -1,55 +1,81 @@
-# **riscv_vcpu**
+<h1 align="center">riscv_vcpu</h1>
 
-riscv64 virtual CPU (vCPU) implementation for hypervisors. This crate provides the core vCPU structure and virtualization-related interface support specifically designed for the riscv64 architecture.
+<p align="center">ArceOS-Hypervisor RISC-V vCPU module</p>
 
-[![CI](https://github.com/arceos-hypervisor/riscv_vcpu/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/arceos-hypervisor/riscv_vcpu/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)]
+<div align="center">
 
-## Overview
+[![Crates.io](https://img.shields.io/crates/v/riscv_vcpu.svg)](https://crates.io/crates/riscv_vcpu)
+[![Docs.rs](https://docs.rs/riscv_vcpu/badge.svg)](https://docs.rs/riscv_vcpu)
+[![Rust](https://img.shields.io/badge/edition-2024-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-riscv_vcpu implements a minimal RISC-V Virtual CPU (VCPU) abstraction layer compliant with the RISC-V Hypervisor Extension (RVH). Designed for embedded hypervisors and educational use, it can operates in no_std environments.
+</div>
 
-## Features
+English | [中文](README_CN.md)
 
-- **Complete vCPU Implementation**: Full virtual CPU structure for riscv64 guests
-- **Exception Handling**: Comprehensive trap and exception handling for virtualized environments
-- **EPT (Extended Page Tables)**: Memory virtualization support
-- **VMCS Management**: Virtual Machine Control Structure operations
-- **Per-CPU Support**: Efficient per-CPU data structures and management
-- **No-std Compatible**: Works in bare-metal and embedded environments
+# Introduction
 
-## Usage
+`riscv_vcpu` provides ArceOS-Hypervisor RISC-V vCPU module. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
 
-Add this to your `Cargo.toml`:
+## Quick Start
+
+### Installation
+
+Add this crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-riscv_vcpu = "0.1"
+riscv_vcpu = "0.5.0"
 ```
 
-## Basic Usage
+### Run Check and Test
 
-```rust,ignore
-use riscv_vcpu::{RISCVVCpu, RISCVVCpuCreateConfig, has_hardware_support};
+```bash
+# Enter the crate directory
+cd components/riscv_vcpu
 
-// Check if hardware virtualization is supported
-if has_hardware_support() {
-    // Create vCPU configuration
-    let config = RISCVVCpuCreateConfig::default();
-    
-    // Create and configure the virtual CPU
-    let vcpu = RISCVVCpu::new(config)?;
-    
-    // Run the virtual CPU
-    vcpu.run()?;
+# Format code
+cargo fmt --all
+
+# Run clippy
+cargo clippy --all-targets --all-features
+
+# Run tests
+cargo test --all-features
+
+# Build documentation
+cargo doc --no-deps
+```
+
+## Integration
+
+### Example
+
+```rust
+use riscv_vcpu as _;
+
+fn main() {
+    // Integrate `riscv_vcpu` into your project here.
 }
 ```
 
-## Related Projects 
+### Documentation
 
-+ [ArceOS](https://github.com/arceos-org/arceos) - An experimental modular OS (or Unikernel)
-+ [AxVisor](https://github.com/arceos-hypervisor/axvisor) - Hypervisor implementation
+Generate and view API documentation:
 
-## License
+```bash
+cargo doc --no-deps --open
+```
 
-Riscv_vcpu is licensed under the Apache License, Version 2.0. See the [LICENSE](./LICENSE) file for details.
+Online documentation: [docs.rs/riscv_vcpu](https://docs.rs/riscv_vcpu)
+
+# Contributing
+
+1. Fork the repository and create a branch
+2. Run local format and checks
+3. Run local tests relevant to this crate
+4. Submit a PR and ensure CI passes
+
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

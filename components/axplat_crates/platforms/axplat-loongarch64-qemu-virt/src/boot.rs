@@ -1,5 +1,5 @@
-use axplat::mem::{Aligned4K, pa, va};
-use page_table_entry::{GenericPTE, MappingFlags, loongarch64::LA64PTE};
+use ax_page_table_entry::{GenericPTE, MappingFlags, loongarch64::LA64PTE};
+use ax_plat::mem::{Aligned4K, pa, va};
 
 use crate::config::plat::{BOOT_STACK_SIZE, PHYS_BOOT_OFFSET, PHYS_VIRT_OFFSET};
 
@@ -19,10 +19,10 @@ unsafe fn init_boot_page_table() {
     unsafe {
         let l1_va = va!(&raw const BOOT_PT_L1 as usize);
         // 0x0000_0000_0000 ~ 0x0080_0000_0000, table
-        BOOT_PT_L0[0x100] = LA64PTE::new_table(axplat::mem::virt_to_phys(l1_va));
+        BOOT_PT_L0[0x100] = LA64PTE::new_table(ax_plat::mem::virt_to_phys(l1_va));
         let l2_va = va!(&raw const BOOT_PT_L2 as usize);
         // 0x0000_0000..0x4000_0000, table
-        BOOT_PT_L1[0] = LA64PTE::new_table(axplat::mem::virt_to_phys(l2_va));
+        BOOT_PT_L1[0] = LA64PTE::new_table(ax_plat::mem::virt_to_phys(l2_va));
         for i in 0..512 {
             BOOT_PT_L2[i] = LA64PTE::new_page(
                 pa!(i << 21),
@@ -51,14 +51,14 @@ fn enable_fp_simd() {
     // like `memset` and `memcpy`.
     #[cfg(feature = "fp-simd")]
     {
-        axcpu::asm::enable_fp();
-        axcpu::asm::enable_lsx();
+        ax_cpu::asm::enable_fp();
+        ax_cpu::asm::enable_lsx();
     }
 }
 
 fn init_mmu() {
-    axcpu::init::init_mmu(
-        axplat::mem::virt_to_phys(va!(&raw const BOOT_PT_L0 as usize)),
+    ax_cpu::init::init_mmu(
+        ax_plat::mem::virt_to_phys(va!(&raw const BOOT_PT_L0 as usize)),
         PHYS_BOOT_OFFSET,
     );
 }
@@ -123,7 +123,7 @@ unsafe extern "C" fn _start() -> ! {
         enable_fp_simd = sym enable_fp_simd,
         init_boot_page_table = sym init_boot_page_table,
         init_mmu = sym init_mmu,
-        entry = sym axplat::call_main,
+        entry = sym ax_plat::call_main,
     )
 }
 
@@ -157,6 +157,6 @@ pub(crate) unsafe extern "C" fn _start_secondary() -> ! {
 
         enable_fp_simd = sym enable_fp_simd,
         init_mmu = sym init_mmu,
-        entry = sym axplat::call_secondary_main,
+        entry = sym ax_plat::call_secondary_main,
     )
 }

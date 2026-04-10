@@ -2,7 +2,7 @@
 
 mod stdio;
 
-pub use axio::{BufRead, BufReader, Error, Read, Seek, SeekFrom, Write, prelude};
+pub use ax_io::{BufRead, BufReader, Error, Read, Seek, SeekFrom, Write, prelude};
 
 #[doc(hidden)]
 pub use self::stdio::__print_impl;
@@ -10,7 +10,7 @@ pub use self::stdio::{Stdin, StdinLock, Stdout, StdoutLock, stdin, stdout};
 
 /// A specialized [`Result`] type for I/O operations.
 ///
-/// This type is broadly used across [`axstd::io`] for any operation which may
+/// This type is broadly used across [`ax_std::io`] for any operation which may
 /// produce an error.
 ///
 /// This typedef is generally used to avoid writing out [`io::Error`] directly and
@@ -22,6 +22,6 @@ pub use self::stdio::{Stdin, StdinLock, Stdout, StdoutLock, stdin, stdout};
 /// will generally use `io::Result` instead of shadowing the [prelude]'s import
 /// of [`std::result::Result`][`Result`].
 ///
-/// [`axstd::io`]: crate::io
+/// [`ax_std::io`]: crate::io
 /// [`io::Error`]: Error
-pub type Result<T> = axio::Result<T>;
+pub type Result<T> = ax_io::Result<T>;

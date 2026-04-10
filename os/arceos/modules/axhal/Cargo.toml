@@ -1,92 +1,90 @@
 [package]
-name = "axhal"
+name = "ax-hal"
 version.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "ArceOS hardware abstraction layer, provides unified APIs for platform-specific operations"
 license.workspace = true
-homepage.workspace = true
-repository = "https://github.com/arceos-org/arceos/tree/main/modules/axhal"
 
 [features]
 smp = [
-    "axplat-x86-pc?/smp",
-    "axplat-aarch64-qemu-virt?/smp",
-    "axplat-riscv64-qemu-virt?/smp",
-    "axplat-loongarch64-qemu-virt?/smp",
+    "ax-plat-x86-pc?/smp",
+    "ax-plat-aarch64-qemu-virt?/smp",
+    "ax-plat-riscv64-qemu-virt?/smp",
+    "ax-plat-loongarch64-qemu-virt?/smp",
     "axplat-dyn?/smp",
-    "axplat/smp",
+    "ax-plat/smp",
 ]
 irq = [
-    "dep:linkme",
-    "axplat-x86-pc?/irq",
-    "axplat-aarch64-qemu-virt?/irq",
-    "axplat-riscv64-qemu-virt?/irq",
-    "axplat-loongarch64-qemu-virt?/irq",
-    "axplat/irq",
+    "ax-plat-x86-pc?/irq",
+    "ax-plat-aarch64-qemu-virt?/irq",
+    "ax-plat-riscv64-qemu-virt?/irq",
+    "ax-plat-loongarch64-qemu-virt?/irq",
+    "ax-plat/irq",
     "axplat-dyn?/irq",
 ]
 fp-simd = [
-    "axcpu/fp-simd",
-    "axplat-x86-pc?/fp-simd",
-    "axplat-aarch64-qemu-virt?/fp-simd",
-    "axplat-riscv64-qemu-virt?/fp-simd",
-    "axplat-loongarch64-qemu-virt?/fp-simd",
+    "ax-cpu/fp-simd",
+    "ax-plat-x86-pc?/fp-simd",
+    "ax-plat-aarch64-qemu-virt?/fp-simd",
+    "ax-plat-riscv64-qemu-virt?/fp-simd",
+    "ax-plat-loongarch64-qemu-virt?/fp-simd",
+    "axplat-dyn?/fp-simd",
 ]
 rtc = [
-    "axplat-x86-pc?/rtc",
-    "axplat-aarch64-qemu-virt?/rtc",
-    "axplat-riscv64-qemu-virt?/rtc",
-    "axplat-loongarch64-qemu-virt?/rtc",
+    "ax-plat-x86-pc?/rtc",
+    "ax-plat-aarch64-qemu-virt?/rtc",
+    "ax-plat-riscv64-qemu-virt?/rtc",
+    "ax-plat-loongarch64-qemu-virt?/rtc",
 ]
-paging = ["dep:axalloc", "dep:page_table_multiarch"]
-tls = ["axcpu/tls"]
-uspace = ["paging", "axcpu/uspace", "axplat-dyn?/uspace"]
-hv = ["paging", "axcpu/arm-el2", "percpu/arm-el2", "axplat-dyn?/hv"]
+paging = ["dep:ax-alloc", "dep:ax-page-table-multiarch"]
+tls = ["ax-cpu/tls"]
+uspace = ["paging", "ax-cpu/uspace", "axplat-dyn?/uspace"]
+hv = ["paging", "ax-cpu/arm-el2", "ax-percpu/arm-el2", "axplat-dyn?/hv"]
 
 # Custom or default platforms
 myplat = []
 plat-dyn = ["axplat-dyn"]
 defplat = [
-    "dep:axplat-x86-pc",
-    "dep:axplat-aarch64-qemu-virt",
-    "dep:axplat-riscv64-qemu-virt",
-    "dep:axplat-loongarch64-qemu-virt",
+    "dep:ax-plat-x86-pc",
+    "dep:ax-plat-aarch64-qemu-virt",
+    "dep:ax-plat-riscv64-qemu-virt",
+    "dep:ax-plat-loongarch64-qemu-virt",
 ]
 
 default = []
 ipi = ["irq"]
 
 [dependencies]
-axalloc = { workspace = true, optional = true }
-axconfig.workspace = true
-axcpu.workspace = true
-axplat.workspace = true
+ax-alloc = { workspace = true, optional = true }
+ax-config.workspace = true
+ax-cpu.workspace = true
+ax-plat.workspace = true
 cfg-if.workspace = true
 fdt-parser = "0.4"
 heapless = "0.9"
-kernel_guard.workspace = true
-linkme = { version = "0.3.33", optional = true }
+ax-kernel-guard.workspace = true
 log.workspace = true
-memory_addr.workspace = true
-page_table_multiarch = { workspace = true, optional = true }
-percpu.workspace = true
+ax-memory-addr.workspace = true
+ax-page-table-multiarch = { workspace = true, optional = true }
+ax-percpu.workspace = true
 spin.workspace = true
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-axplat-x86-pc = { workspace = true, optional = true }
+ax-plat-x86-pc = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "none")'.dependencies]
 axplat-dyn = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
-axplat-aarch64-qemu-virt = { workspace = true, optional = true }
+ax-plat-aarch64-qemu-virt = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
-axplat-riscv64-qemu-virt = { workspace = true, optional = true }
+ax-plat-riscv64-qemu-virt = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
-axplat-loongarch64-qemu-virt = { workspace = true, optional = true }
+ax-plat-loongarch64-qemu-virt = { workspace = true, optional = true }
 
 [build-dependencies]
-axconfig.workspace = true
+ax-config.workspace = true

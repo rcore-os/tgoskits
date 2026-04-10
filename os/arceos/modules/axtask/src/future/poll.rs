@@ -1,6 +1,6 @@
 use core::{future::poll_fn, task::Poll};
 
-use axerrno::{AxError, AxResult};
+use ax_errno::{AxError, AxResult};
 use axpoll::{IoEvents, Pollable};
 
 /// A helper to wrap a synchronous non-blocking I/O function into an
@@ -43,8 +43,8 @@ pub async fn poll_io<P: Pollable, F: FnMut() -> AxResult<T>, T>(
 pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
     use alloc::collections::BTreeMap;
 
+    use ax_kspin::SpinNoIrq;
     use axpoll::PollSet;
-    use kspin::SpinNoIrq;
 
     static POLL_IRQ: SpinNoIrq<BTreeMap<usize, PollSet>> = SpinNoIrq::new(BTreeMap::new());
 
@@ -53,9 +53,9 @@ pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
             s.wake();
         }
     }
-    axhal::irq::register_irq_hook(irq_hook);
+    ax_hal::irq::register_irq_hook(irq_hook);
 
     POLL_IRQ.lock().entry(irq).or_default().register(waker);
 
-    axhal::irq::set_enable(irq, true);
+    ax_hal::irq::set_enable(irq, true);
 }

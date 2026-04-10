@@ -1,7 +1,7 @@
 use core::mem::{self, MaybeUninit};
 
-use axerrno::{AxError, AxResult};
-use axhal::uspace::UserContext;
+use ax_errno::{AxError, AxResult};
+use ax_hal::uspace::UserContext;
 use bytemuck::AnyBitPattern;
 use starry_vm::vm_read_slice;
 
@@ -27,7 +27,7 @@ pub struct Clone3Args {
 const MIN_CLONE_ARGS_SIZE: usize = core::mem::size_of::<u64>() * 8;
 
 impl TryFrom<Clone3Args> for CloneArgs {
-    type Error = axerrno::AxError;
+    type Error = ax_errno::AxError;
 
     fn try_from(args: Clone3Args) -> AxResult<Self> {
         if args.set_tid != 0 || args.set_tid_size != 0 {

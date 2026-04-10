@@ -3,7 +3,7 @@
 use core::arch::asm;
 
 use aarch64_cpu::{asm::barrier, registers::*};
-use memory_addr::{PhysAddr, VirtAddr};
+use ax_memory_addr::{PhysAddr, VirtAddr};
 
 /// Allows the current CPU to respond to interrupts.
 ///

@@ -1,5 +1,5 @@
-use axplat::mem::{Aligned4K, pa};
-use page_table_entry::{GenericPTE, MappingFlags, aarch64::A64PTE};
+use ax_page_table_entry::{GenericPTE, MappingFlags, aarch64::A64PTE};
+use ax_plat::mem::{Aligned4K, pa};
 
 use crate::config::plat::{BOOT_STACK_SIZE, PHYS_VIRT_OFFSET};
 
@@ -36,7 +36,7 @@ unsafe fn enable_fp() {
     // instructions in the bootstrapping code to speed up the operations
     // like `memset` and `memcpy`.
     #[cfg(feature = "fp-simd")]
-    axcpu::asm::enable_fp();
+    ax_cpu::asm::enable_fp();
 }
 
 fn hart_to_logid(hard_id: usize) -> usize {
@@ -106,8 +106,8 @@ unsafe extern "C" fn _start_primary() -> ! {
         ldr     x8, ={entry}            // call_main(cpu_id, dtb)
         blr     x8
         b      .",
-        switch_to_el1 = sym axcpu::init::switch_to_el1,
-        init_mmu = sym axcpu::init::init_mmu,
+        switch_to_el1 = sym ax_cpu::init::switch_to_el1,
+        init_mmu = sym ax_cpu::init::init_mmu,
         enable_fp = sym enable_fp,
         init_boot_page_table = sym init_boot_page_table,
         boot_stack = sym BOOT_STACK,
@@ -115,7 +115,7 @@ unsafe extern "C" fn _start_primary() -> ! {
         boot_pt = sym BOOT_PT_L0,
         phys_virt_offset = const PHYS_VIRT_OFFSET,
         hart_to_logid = sym hart_to_logid,
-        entry = sym axplat::call_main,
+        entry = sym ax_plat::call_main,
     )
 }
 
@@ -142,12 +142,12 @@ pub(crate) unsafe extern "C" fn _start_secondary() -> ! {
         ldr     x8, ={entry}            // call_secondary_main(cpu_id)
         blr     x8
         b      .",
-        switch_to_el1 = sym axcpu::init::switch_to_el1,
-        init_mmu = sym axcpu::init::init_mmu,
+        switch_to_el1 = sym ax_cpu::init::switch_to_el1,
+        init_mmu = sym ax_cpu::init::init_mmu,
         enable_fp = sym enable_fp,
         boot_pt = sym BOOT_PT_L0,
         phys_virt_offset = const PHYS_VIRT_OFFSET,
         hart_to_logid = sym hart_to_logid,
-        entry = sym axplat::call_secondary_main,
+        entry = sym ax_plat::call_secondary_main,
     )
 }

@@ -7,7 +7,7 @@ use core::{
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
 };
 
-use axerrno::{AxError, AxResult, LinuxError};
+use ax_errno::{AxError, AxResult, LinuxError};
 #[cfg(feature = "vsock")]
 use axnet::vsock::VsockAddr;
 use axnet::{SocketAddrEx, unix::UnixSocketAddr};

@@ -1,7 +1,9 @@
-use std::env;
-use std::fs::File;
-use std::io::{self, Write};
-use std::path::Path;
+use std::{
+    env,
+    fs::File,
+    io::{self, Write},
+    path::Path,
+};
 
 const TEMPLATE_DIR: &str = "template";
 

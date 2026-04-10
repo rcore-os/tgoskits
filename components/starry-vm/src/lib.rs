@@ -5,7 +5,7 @@
 
 use core::{mem::MaybeUninit, slice};
 
-use axerrno::AxError;
+use ax_errno::AxError;
 use extern_trait::extern_trait;
 
 /// Errors that can occur during virtual memory operations.

@@ -116,7 +116,7 @@ graph LR
     axvcpu["axvcpu"] --> current["arm_vcpu"]
     axvisor_api["axvisor_api"] --> current
     axaddrspace["axaddrspace"] --> current
-    percpu["percpu"] --> current
+    ax-percpu["ax-percpu"] --> current
     aarch64_cpu["aarch64-cpu"] --> current
 
     current --> axvm["axvm"]
@@ -127,7 +127,7 @@ graph LR
 - `axvcpu`：提供架构无关 vCPU trait 契约。
 - `axvisor_api`：提供宿主中断注入和架构辅助接口。
 - `axaddrspace`：服务 guest 地址空间 / Stage-2 相关协作。
-- `percpu`：保存 EL2 本地状态。
+- `ax-percpu`：保存 EL2 本地状态。
 - `aarch64-cpu`、`numeric-enum-macro`：寄存器访问和异常编码辅助。
 
 ### 3.2 关键直接消费者
@@ -135,7 +135,7 @@ graph LR
 
 ### 3.3 间接消费者
 - `axvisor`：通过 `axvm` 复用这套 ARM vCPU 栈。
-- 宿主侧 IRQ 处理路径：经 `axvisor_api` 与 `axhal::irq` 协作。
+- 宿主侧 IRQ 处理路径：经 `axvisor_api` 与 `ax-hal::irq` 协作。
 
 ## 4. 开发指南
 ### 4.1 依赖配置
@@ -227,31 +227,31 @@ graph LR
     current["arm_vcpu"]
     current --> axaddrspace["axaddrspace"]
     current --> axdevice_base["axdevice_base"]
-    current --> axerrno["axerrno"]
+    current --> ax_errno["ax-errno"]
     current --> axvcpu["axvcpu"]
     current --> axvisor_api["axvisor_api"]
-    current --> percpu["percpu"]
+    current --> ax-percpu["ax-percpu"]
     axvm["axvm"] --> current
 ```
 
 ### 3.1 直接与间接依赖
 - `axaddrspace`
 - `axdevice_base`
-- `axerrno`
+- `ax-errno`
 - `axvcpu`
 - `axvisor_api`
-- `percpu`
+- `ax-percpu`
 
 ### 3.2 间接本地依赖
 - `axvisor_api_proc`
 - `axvmconfig`
 - `crate_interface`
 - `kernel_guard`
-- `lazyinit`
+- `ax-lazyinit`
 - `memory_addr`
-- `memory_set`
-- `page_table_entry`
-- `page_table_multiarch`
+- `ax-memory-set`
+- `ax-page-table-entry`
+- `ax-page-table-multiarch`
 - `percpu_macros`
 
 ### 3.3 被依赖情况

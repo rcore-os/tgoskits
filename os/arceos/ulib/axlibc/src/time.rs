@@ -1,6 +1,6 @@
 use core::ffi::c_int;
 
-use arceos_posix_api::{sys_clock_gettime, sys_nanosleep};
+use ax_posix_api::{sys_clock_gettime, sys_nanosleep};
 
 use crate::{ctypes, utils::e};
 

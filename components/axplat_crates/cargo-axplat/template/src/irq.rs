@@ -1,4 +1,4 @@
-use axplat::irq::{IpiTarget, IrqHandler, IrqIf};
+use ax_plat::irq::{IpiTarget, IrqHandler, IrqIf};
 
 struct IrqIfImpl;
 

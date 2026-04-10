@@ -15,7 +15,7 @@
 #[cfg(test)]
 pub mod mock {
     use axvisor_api::{api_impl, memory::MemoryIf};
-    use memory_addr::{PhysAddr, VirtAddr};
+    use ax_memory_addr::{PhysAddr, VirtAddr};
     use spin::Mutex;
 
     static GLOBAL_LOCK: Mutex<MockMmHalState> = Mutex::new(MockMmHalState::new());
@@ -52,17 +52,14 @@ pub mod mock {
                 if (state.alloc_mask & bit) == 0 {
                     state.alloc_mask |= bit;
                     let phys_addr = 0x1000 + (i * 4096);
-                    return Some(memory_addr::PhysAddr::from(phys_addr));
+                    return Some(ax_memory_addr::PhysAddr::from(phys_addr));
                 }
             }
             None
         }
 
         /// Allocate a number of contiguous frames, with a specified alignment.
-        fn alloc_contiguous_frames(
-            _num_frames: usize,
-            _frame_align_pow2: usize,
-        ) -> Option<PhysAddr> {
+        fn alloc_contiguous_frames(_num_frames: usize, _frame_align: usize) -> Option<PhysAddr> {
             unimplemented!()
         }
 
@@ -94,9 +91,9 @@ pub mod mock {
                 let offset = (addr - 0x1000) % 4096;
 
                 let page_ptr = state.memory_pool[page_index].as_ptr();
-                memory_addr::VirtAddr::from(unsafe { page_ptr.add(offset) as usize })
+                ax_memory_addr::VirtAddr::from(unsafe { page_ptr.add(offset) as usize })
             } else {
-                memory_addr::VirtAddr::from(addr)
+                ax_memory_addr::VirtAddr::from(addr)
             }
         }
 
@@ -109,9 +106,9 @@ pub mod mock {
 
             if vaddr.as_usize() >= pool_start && vaddr.as_usize() < pool_end {
                 let offset = vaddr.as_usize() - pool_start;
-                memory_addr::PhysAddr::from(0x1000 + offset)
+                ax_memory_addr::PhysAddr::from(0x1000 + offset)
             } else {
-                memory_addr::PhysAddr::from(vaddr.as_usize())
+                ax_memory_addr::PhysAddr::from(vaddr.as_usize())
             }
         }
     }
@@ -135,7 +132,7 @@ pub mod mock {
 
         // Check if a physical address is allocated
         #[allow(dead_code)]
-        pub fn is_allocated(paddr: memory_addr::PhysAddr) -> bool {
+        pub fn is_allocated(paddr: ax_memory_addr::PhysAddr) -> bool {
             let state = GLOBAL_LOCK.lock();
 
             let addr = paddr.as_usize();

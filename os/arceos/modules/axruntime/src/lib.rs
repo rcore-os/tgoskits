@@ -34,7 +34,7 @@
 #![allow(missing_abi)]
 
 #[macro_use]
-extern crate axlog;
+extern crate ax_log;
 
 #[cfg(all(target_os = "none", not(test)))]
 mod lang_items;
@@ -44,6 +44,9 @@ mod mp;
 
 #[cfg(feature = "paging")]
 mod klib;
+
+#[cfg(feature = "buddy-slab")]
+use ax_alloc::eii::ax_alloc_virt_to_phys_impl;
 
 #[cfg(feature = "smp")]
 pub use self::mp::rust_main_secondary;
@@ -64,22 +67,28 @@ unsafe extern "C" {
     fn main();
 }
 
+#[cfg(feature = "buddy-slab")]
+#[ax_alloc_virt_to_phys_impl]
+fn ax_alloc_virt_to_phys(vaddr: usize) -> usize {
+    ax_hal::mem::virt_to_phys(vaddr.into()).as_usize()
+}
+
 struct LogIfImpl;
 
-#[crate_interface::impl_interface]
-impl axlog::LogIf for LogIfImpl {
+#[ax_crate_interface::impl_interface]
+impl ax_log::LogIf for LogIfImpl {
     fn console_write_str(s: &str) {
-        axhal::console::write_bytes(s.as_bytes());
+        ax_hal::console::write_bytes(s.as_bytes());
     }
 
     fn current_time() -> core::time::Duration {
-        axhal::time::monotonic_time()
+        ax_hal::time::monotonic_time()
     }
 
     fn current_cpu_id() -> Option<usize> {
         #[cfg(feature = "smp")]
         if is_init_ok() {
-            Some(axhal::percpu::this_cpu_id())
+            Some(ax_hal::percpu::this_cpu_id())
         } else {
             None
         }
@@ -91,7 +100,7 @@ impl axlog::LogIf for LogIfImpl {
         if is_init_ok() {
             #[cfg(feature = "multitask")]
             {
-                axtask::current_may_uninit().map(|curr| curr.id().as_u64())
+                ax_task::current_may_uninit().map(|curr| curr.id().as_u64())
             }
             #[cfg(not(feature = "multitask"))]
             None
@@ -107,27 +116,29 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 static INITED_CPUS: AtomicUsize = AtomicUsize::new(0);
 
 fn is_init_ok() -> bool {
-    INITED_CPUS.load(Ordering::Acquire) == axhal::cpu_num()
+    INITED_CPUS.load(Ordering::Acquire) == ax_hal::cpu_num()
 }
 
 /// The main entry point of the ArceOS runtime.
 ///
 /// It is called from the bootstrapping code in the specific platform crate (see
-/// [`axplat::main`]).
+/// [`ax_plat::main`]).
 ///
 /// `cpu_id` is the logic ID of the current CPU, and `arg` is passed from the
 /// bootloader (typically the device tree blob address).
 ///
 /// In multi-core environment, this function is called on the primary core, and
 /// secondary cores call [`rust_main_secondary`].
-#[cfg_attr(not(test), axplat::main)]
+#[cfg_attr(not(test), ax_plat::main)]
 pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     #[cfg(not(feature = "plat-dyn"))]
     unsafe {
-        axhal::mem::clear_bss()
+        ax_hal::mem::clear_bss()
     };
-    axhal::percpu::init_primary(cpu_id);
-    axhal::init_early(cpu_id, arg);
+    ax_hal::percpu::init_primary(cpu_id);
+    #[cfg(all(feature = "alloc", feature = "buddy-slab"))]
+    ax_alloc::init_precpu_slab(cpu_id);
+    ax_hal::init_early(cpu_id, arg);
     let log_level = option_env!("AX_LOG").unwrap_or("info");
 
     ax_println!("{}", LOGO);
@@ -141,28 +152,28 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
             backtrace = {}
             smp = {}
         "},
-        axconfig::ARCH,
-        axconfig::PLATFORM,
+        ax_config::ARCH,
+        ax_config::PLATFORM,
         option_env!("AX_TARGET").unwrap_or(""),
         option_env!("AX_MODE").unwrap_or(""),
         log_level,
         axbacktrace::is_enabled(),
-        axhal::cpu_num()
+        ax_hal::cpu_num()
     );
 
     #[cfg(feature = "rtc")]
     ax_println!(
         "Boot at {}\n",
-        chrono::DateTime::from_timestamp_nanos(axhal::time::wall_time_nanos() as _),
+        chrono::DateTime::from_timestamp_nanos(ax_hal::time::wall_time_nanos() as _),
     );
 
-    axlog::init();
-    axlog::set_max_level(log_level); // no effect if set `log-level-*` features
+    ax_log::init();
+    ax_log::set_max_level(log_level); // no effect if set `log-level-*` features
     info!("Logging is enabled.");
     info!("Primary CPU {cpu_id} started, arg = {arg:#x}.");
 
     info!("Found physcial memory regions:");
-    for r in axhal::mem::memory_regions() {
+    for r in ax_hal::mem::memory_regions() {
         info!(
             "  [{:x?}, {:x?}) {} ({:?})",
             r.paddr,
@@ -196,7 +207,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         );
     }
 
-    let (kernel_space_start, kernel_space_size) = axhal::mem::kernel_aspace();
+    let (kernel_space_start, kernel_space_size) = ax_hal::mem::kernel_aspace();
 
     info!(
         "kernel aspace: [{:#x?}, {:#x?})",
@@ -205,47 +216,47 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     );
 
     #[cfg(feature = "paging")]
-    axmm::init_memory_management();
+    ax_mm::init_memory_management();
 
     // #[cfg(feature = "plat-dyn")]
-    // axdriver::setup(arg);
+    // ax_driver::setup(arg);
 
     info!("Initialize platform devices...");
-    axhal::init_later(cpu_id, arg);
+    ax_hal::init_later(cpu_id, arg);
 
     #[cfg(feature = "multitask")]
-    axtask::init_scheduler();
+    ax_task::init_scheduler();
 
-    #[cfg(feature = "axdriver")]
+    #[cfg(feature = "ax-driver")]
     {
         #[allow(unused_variables)]
-        let all_devices = axdriver::init_drivers();
+        let all_devices = ax_driver::init_drivers();
 
         cfg_if::cfg_if! {
             if #[cfg(feature = "fs-ng")] {
-                axfs_ng::init_filesystems(all_devices.block);
+                ax_fs_ng::init_filesystems(all_devices.block);
             } else
             if #[cfg(feature = "fs")] {
-                axfs::init_filesystems(all_devices.block, axhal::dtb::get_chosen_bootargs());
+                ax_fs::init_filesystems(all_devices.block, ax_hal::dtb::get_chosen_bootargs());
             }
         }
 
         cfg_if::cfg_if! {
             if #[cfg(feature = "net-ng")] {
-                axnet_ng::init_network(all_devices.net);
+                ax_net_ng::init_network(all_devices.net);
 
                 #[cfg(feature = "vsock")]
-                axnet_ng::init_vsock(all_devices.vsock);
+                ax_net_ng::init_vsock(all_devices.vsock);
             } else if #[cfg(feature = "net")] {
-                axnet::init_network(all_devices.net);
+                ax_net::init_network(all_devices.net);
             }
         }
 
         #[cfg(feature = "display")]
-        axdisplay::init_display(all_devices.display);
+        ax_display::init_display(all_devices.display);
 
         #[cfg(feature = "input")]
-        axinput::init_input(all_devices.input);
+        ax_input::init_input(all_devices.input);
     }
 
     #[cfg(feature = "smp")]
@@ -263,7 +274,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         init_tls();
     }
 
-    ctor_bare::call_ctors();
+    ax_ctor_bare::call_ctors();
 
     info!("Primary CPU {cpu_id} init OK.");
     INITED_CPUS.fetch_add(1, Ordering::Release);
@@ -275,20 +286,20 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     unsafe { main() };
 
     #[cfg(feature = "multitask")]
-    axtask::exit(0);
+    ax_task::exit(0);
     #[cfg(not(feature = "multitask"))]
     {
         debug!("main task exited: exit_code={}", 0);
-        axhal::power::system_off();
+        ax_hal::power::system_off();
     }
 }
 
 #[cfg(feature = "alloc")]
 fn init_allocator() {
-    use axhal::mem::{MemRegionFlags, memory_regions, phys_to_virt};
+    use ax_hal::mem::{MemRegionFlags, memory_regions, phys_to_virt};
 
     info!("Initialize global memory allocator...");
-    info!("  use {} allocator.", axalloc::global_allocator().name());
+    info!("  use {} allocator.", ax_alloc::global_allocator().name());
 
     let mut max_region_size = 0;
     let mut max_region_paddr = 0.into();
@@ -308,38 +319,17 @@ fn init_allocator() {
         }
     }
 
-    #[cfg(feature = "buddy-slab")]
-    {
-        struct AddrTranslatorImpl;
-        impl axalloc::AddrTranslator for AddrTranslatorImpl {
-            fn virt_to_phys(&self, va: usize) -> Option<usize> {
-                Some(axhal::mem::virt_to_phys(va.into()).as_usize())
-            }
-        }
-
-        static TRANSLATOR: AddrTranslatorImpl = AddrTranslatorImpl;
-
-        for r in memory_regions() {
-            if r.flags.contains(MemRegionFlags::FREE) && r.paddr == max_region_paddr {
-                axalloc::global_init(phys_to_virt(r.paddr).as_usize(), r.size, &TRANSLATOR);
-                break;
-            }
-        }
-    }
-
-    #[cfg(not(feature = "buddy-slab"))]
-    {
-        for r in memory_regions() {
-            if r.flags.contains(MemRegionFlags::FREE) && r.paddr == max_region_paddr {
-                axalloc::global_init(phys_to_virt(r.paddr).as_usize(), r.size);
-                break;
-            }
+    for r in memory_regions() {
+        if r.flags.contains(MemRegionFlags::FREE) && r.paddr == max_region_paddr {
+            ax_alloc::global_init(phys_to_virt(r.paddr).as_usize(), r.size)
+                .expect("initialize global allocator failed");
+            break;
         }
     }
 
     for r in memory_regions() {
         if r.flags.contains(MemRegionFlags::FREE) && r.paddr != max_region_paddr {
-            axalloc::global_add_memory(phys_to_virt(r.paddr).as_usize(), r.size)
+            ax_alloc::global_add_memory(phys_to_virt(r.paddr).as_usize(), r.size)
                 .expect("add heap memory region failed");
         }
     }
@@ -349,40 +339,44 @@ fn init_allocator() {
 fn init_interrupt() {
     // Setup timer interrupt handler
     const PERIODIC_INTERVAL_NANOS: u64 =
-        axhal::time::NANOS_PER_SEC / axconfig::TICKS_PER_SEC as u64;
+        ax_hal::time::NANOS_PER_SEC / ax_config::TICKS_PER_SEC as u64;
 
-    #[percpu::def_percpu]
+    #[ax_percpu::def_percpu]
     static NEXT_DEADLINE: u64 = 0;
 
     fn update_timer() {
-        let now_ns = axhal::time::monotonic_time_nanos();
+        let now_ns = ax_hal::time::monotonic_time_nanos();
         // Safety: we have disabled preemption in IRQ handler.
         let mut deadline = unsafe { NEXT_DEADLINE.read_current_raw() };
         if now_ns >= deadline {
             deadline = now_ns + PERIODIC_INTERVAL_NANOS;
         }
         unsafe { NEXT_DEADLINE.write_current_raw(deadline + PERIODIC_INTERVAL_NANOS) };
-        axhal::time::set_oneshot_timer(deadline);
+        ax_hal::time::set_oneshot_timer(deadline);
     }
 
-    axhal::irq::register(axhal::time::irq_num(), || {
+    ax_hal::irq::register(ax_hal::time::irq_num(), || {
         update_timer();
         #[cfg(feature = "multitask")]
-        axtask::on_timer_tick();
+        ax_task::on_timer_tick();
     });
 
     #[cfg(feature = "ipi")]
-    axhal::irq::register(axhal::irq::IPI_IRQ, || {
-        axipi::ipi_handler();
+    ax_hal::irq::register(ax_hal::irq::IPI_IRQ, || {
+        ax_ipi::ipi_handler();
     });
 
+    // Arm the first one-shot timer on the primary CPU. Otherwise the timer
+    // handler may never get the first chance to re-program subsequent ticks.
+    update_timer();
+
     // Enable IRQs before starting app
-    axhal::asm::enable_irqs();
+    ax_hal::asm::enable_irqs();
 }
 
 #[cfg(all(feature = "tls", not(feature = "multitask")))]
 fn init_tls() {
-    let main_tls = axhal::tls::TlsArea::alloc();
-    unsafe { axhal::asm::write_thread_pointer(main_tls.tls_ptr() as usize) };
+    let main_tls = ax_hal::tls::TlsArea::alloc();
+    unsafe { ax_hal::asm::write_thread_pointer(main_tls.tls_ptr() as usize) };
     core::mem::forget(main_tls);
 }

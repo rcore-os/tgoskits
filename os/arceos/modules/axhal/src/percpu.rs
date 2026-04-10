@@ -1,8 +1,8 @@
 //! CPU-local data structures.
 
-pub use axplat::percpu::*;
+pub use ax_plat::percpu::*;
 
-#[percpu::def_percpu]
+#[ax_percpu::def_percpu]
 static CURRENT_TASK_PTR: usize = 0;
 
 /// Gets the pointer to the current task with preemption-safety.
@@ -24,7 +24,7 @@ pub fn current_task_ptr<T>() -> *const T {
     ))]
     unsafe {
         // on RISC-V and LA64, reading `CURRENT_TASK_PTR` requires multiple instruction, so we disable local IRQs.
-        let _guard = kernel_guard::IrqSave::new();
+        let _guard = ax_kernel_guard::IrqSave::new();
         CURRENT_TASK_PTR.read_current_raw() as _
     }
 }
@@ -50,7 +50,7 @@ pub unsafe fn set_current_task_ptr<T>(ptr: *const T) {
         target_arch = "loongarch64"
     ))]
     {
-        let _guard = kernel_guard::IrqSave::new();
+        let _guard = ax_kernel_guard::IrqSave::new();
         unsafe { CURRENT_TASK_PTR.write_current_raw(ptr as usize) }
     }
 }

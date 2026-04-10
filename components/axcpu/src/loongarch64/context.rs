@@ -1,7 +1,8 @@
 use core::arch::naked_asm;
 #[cfg(feature = "fp-simd")]
 use core::mem::offset_of;
-use memory_addr::VirtAddr;
+
+use ax_memory_addr::VirtAddr;
 
 /// General registers of Loongarch64.
 #[allow(missing_docs)]
@@ -253,7 +254,7 @@ impl TaskContext {
     /// The hardware register for user page table root (`pgdl` for loongarch64)
     /// will be updated to the next task's after [`Self::switch_to`].
     #[cfg(feature = "uspace")]
-    pub fn set_page_table_root(&mut self, pgdl: memory_addr::PhysAddr) {
+    pub fn set_page_table_root(&mut self, pgdl: ax_memory_addr::PhysAddr) {
         self.pgdl = pgdl.as_usize();
     }
 

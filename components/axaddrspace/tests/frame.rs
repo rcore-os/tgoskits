@@ -19,9 +19,9 @@ mod test_utils;
 use alloc::vec::Vec;
 
 use assert_matches::assert_matches;
+use ax_memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
 use axaddrspace::PhysFrame;
 use axin::axin;
-use memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
 use test_utils::{BASE_PADDR, MockHal, mock_hal_test, test_dealloc_count};
 
 #[test]
@@ -100,6 +100,6 @@ fn test_alloc_no_memory() {
     MockHal::set_alloc_fail(true);
     let result = PhysFrame::<MockHal>::alloc();
     // Assert that allocation failed and verify the specific error type.
-    assert_matches!(result, Err(axerrno::AxError::NoMemory));
+    assert_matches!(result, Err(ax_errno::AxError::NoMemory));
     MockHal::set_alloc_fail(false); // Reset for other tests
 }

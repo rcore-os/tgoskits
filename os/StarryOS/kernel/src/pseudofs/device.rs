@@ -1,14 +1,14 @@
 use alloc::sync::Arc;
 use core::{any::Any, task::Context};
 
-use axfs::CachedFile;
+use ax_fs::CachedFile;
+use ax_memory_addr::PhysAddrRange;
 use axfs_ng_vfs::{
     DeviceId, FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps,
     NodePermission, NodeType, VfsError, VfsResult,
 };
 use axpoll::{IoEvents, Pollable};
 use inherit_methods_macro::inherit_methods;
-use memory_addr::PhysAddrRange;
 
 use super::{SimpleFs, SimpleFsNode};
 

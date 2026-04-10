@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 
 use ostool::{
     Tool, ToolConfig,
-    build::{CargoRunnerKind, config::Cargo},
+    board::RunBoardArgs,
+    build::{CargoQemuRunnerArgs, CargoRunnerKind, CargoUbootRunnerArgs, config::Cargo},
 };
 
 mod arch;
@@ -14,17 +15,18 @@ mod types;
 mod workspace;
 
 pub(crate) use arch::{
-    arch_for_target_checked, resolve_axvisor_arch_and_target, resolve_starry_arch_and_target,
-    starry_arch_for_target_checked, starry_target_for_arch_checked, target_for_arch_checked,
+    arch_for_target_checked, resolve_arceos_arch_and_target, resolve_axvisor_arch_and_target,
+    resolve_starry_arch_and_target, starry_arch_for_target_checked, starry_target_for_arch_checked,
+    target_for_arch_checked,
 };
 pub(crate) use resolve::snapshot_path_value;
 pub use types::{
     ARCEOS_SNAPSHOT_FILE, AXVISOR_SNAPSHOT_FILE, ArceosCommandSnapshot, ArceosQemuSnapshot,
     ArceosUbootSnapshot, AxvisorCliArgs, AxvisorCommandSnapshot, AxvisorQemuSnapshot,
-    AxvisorUbootSnapshot, BuildCliArgs, DEFAULT_ARCEOS_TARGET, DEFAULT_AXVISOR_ARCH,
-    DEFAULT_AXVISOR_TARGET, DEFAULT_STARRY_ARCH, DEFAULT_STARRY_TARGET, QemuRunConfig,
-    ResolvedAxvisorRequest, ResolvedBuildRequest, ResolvedStarryRequest, STARRY_PACKAGE,
-    STARRY_SNAPSHOT_FILE, StarryCliArgs, StarryCommandSnapshot, StarryQemuSnapshot,
+    AxvisorUbootSnapshot, BuildCliArgs, DEFAULT_ARCEOS_ARCH, DEFAULT_ARCEOS_TARGET,
+    DEFAULT_AXVISOR_ARCH, DEFAULT_AXVISOR_TARGET, DEFAULT_STARRY_ARCH, DEFAULT_STARRY_TARGET,
+    QemuRunConfig, ResolvedAxvisorRequest, ResolvedBuildRequest, ResolvedStarryRequest,
+    STARRY_PACKAGE, STARRY_SNAPSHOT_FILE, StarryCliArgs, StarryCommandSnapshot, StarryQemuSnapshot,
     StarryUbootSnapshot,
 };
 pub(crate) use workspace::{
@@ -91,14 +93,14 @@ impl AppContext {
         self.tool
             .cargo_run(
                 &cargo,
-                &CargoRunnerKind::Qemu {
+                &CargoRunnerKind::Qemu(Box::new(CargoQemuRunnerArgs {
                     qemu_config: qemu.qemu_config,
                     debug: false,
                     dtb_dump: false,
                     default_args: qemu.default_args,
                     append_args: qemu.append_args,
                     override_args: qemu.override_args,
-                },
+                })),
             )
             .await
     }
@@ -111,8 +113,21 @@ impl AppContext {
     ) -> anyhow::Result<()> {
         self.set_build_config_path(build_config_path);
         self.tool
-            .cargo_run(&cargo, &CargoRunnerKind::Uboot { uboot_config })
+            .cargo_run(
+                &cargo,
+                &CargoRunnerKind::Uboot(CargoUbootRunnerArgs { uboot_config }),
+            )
             .await
+    }
+
+    pub(crate) async fn board(
+        &mut self,
+        cargo: Cargo,
+        build_config_path: PathBuf,
+        board_args: RunBoardArgs,
+    ) -> anyhow::Result<()> {
+        self.set_build_config_path(build_config_path);
+        self.tool.cargo_run_board(&cargo, board_args).await
     }
 
     fn set_build_config_path(&mut self, path: PathBuf) {

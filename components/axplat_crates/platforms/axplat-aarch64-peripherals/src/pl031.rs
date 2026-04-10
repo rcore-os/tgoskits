@@ -1,7 +1,7 @@
 //! PL031 Real Time Clock (RTC) driver.
 
-use arm_pl031::Rtc;
-use axplat::mem::VirtAddr;
+use ax_arm_pl031::Rtc;
+use ax_plat::mem::VirtAddr;
 
 use crate::generic_timer::{current_ticks, ticks_to_nanos};
 

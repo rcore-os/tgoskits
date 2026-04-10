@@ -1,6 +1,6 @@
 use core::sync::atomic::{Ordering, compiler_fence};
 
-use axerrno::{AxError, AxResult};
+use ax_errno::{AxError, AxResult};
 
 /// Memory barrier commands
 const MEMBARRIER_CMD_QUERY: i32 = 0;

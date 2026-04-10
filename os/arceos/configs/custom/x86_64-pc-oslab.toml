@@ -3,7 +3,7 @@ arch = "x86_64"                 # str
 # Platform identifier.
 platform = "x86_64-pc-oslab"    # str
 # Platform package.
-package = "axplat-x86-pc"       # str
+package = "ax-plat-x86-pc"       # str
 
 #
 # Platform configs

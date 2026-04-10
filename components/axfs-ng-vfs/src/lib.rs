@@ -13,7 +13,7 @@ pub use mount::*;
 pub use node::*;
 pub use types::*;
 
-pub type VfsError = axerrno::AxError;
+pub type VfsError = ax_errno::AxError;
 pub type VfsResult<T> = Result<T, VfsError>;
 
 use spin::{Mutex, MutexGuard};

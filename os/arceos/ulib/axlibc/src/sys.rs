@@ -1,6 +1,6 @@
 use core::ffi::{c_int, c_long};
 
-use arceos_posix_api::sys_sysconf;
+use ax_posix_api::sys_sysconf;
 
 /// Return system configuration infomation
 ///

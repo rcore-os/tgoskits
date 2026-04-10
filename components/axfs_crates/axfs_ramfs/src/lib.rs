@@ -14,12 +14,12 @@ mod tests;
 
 use alloc::sync::Arc;
 
-use axfs_vfs::{VfsNodeRef, VfsOps, VfsResult};
+use ax_fs_vfs::{VfsNodeRef, VfsOps, VfsResult};
 use spin::once::Once;
 
 pub use self::{dir::DirNode, file::FileNode};
 
-/// A RAM filesystem that implements [`axfs_vfs::VfsOps`].
+/// A RAM filesystem that implements [`ax_fs_vfs::VfsOps`].
 pub struct RamFileSystem {
     parent: Once<VfsNodeRef>,
     root: Arc<DirNode>,

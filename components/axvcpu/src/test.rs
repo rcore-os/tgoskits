@@ -23,8 +23,8 @@ mod tests {
     };
     use core::cell::RefCell;
 
+    use ax_errno::{AxError, AxResult};
     use axaddrspace::{GuestPhysAddr, HostPhysAddr};
-    use axerrno::{AxError, AxResult};
     use axvisor_api::vmm::{VCpuId, VMId};
 
     use crate::{AxArchVCpu, AxVCpu, VCpuState, exit::AxVCpuExitReason};
@@ -199,7 +199,7 @@ mod tests {
         assert_eq!(calls[2], "set_ept_root");
         assert_eq!(calls[3], "setup");
 
-        // Note: State transitions are not tested here due to percpu limitations
+        // Note: State transitions are not tested here due to ax-percpu limitations
     }
 
     #[test]
@@ -255,7 +255,7 @@ mod tests {
     fn test_vcpu_run() {
         let (vcpu, call_log) = create_mock_vcpu();
 
-        // Setup arch_vcpu directly to avoid percpu code
+        // Setup arch_vcpu directly to avoid ax-percpu code
         let arch_vcpu = vcpu.get_arch_vcpu();
         let entry = GuestPhysAddr::from(0x1000);
         let ept_root = HostPhysAddr::from(0x2000);
@@ -427,7 +427,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // Integration test - simplified to avoid percpu issues
+    // Integration test - simplified to avoid ax-percpu issues
     #[test]
     fn test_arch_vcpu_lifecycle() {
         let (vcpu, call_log) = create_mock_vcpu();
@@ -462,7 +462,7 @@ mod tests {
         assert!(calls.contains(&"unbind".to_string()));
     }
 
-    // Note: Per-CPU tests are omitted due to percpu crate linking conflicts in test environment.
-    // The percpu crate requires kernel-space linking which is incompatible with cargo test.
+    // Note: Per-CPU tests are omitted due to ax-percpu crate linking conflicts in test environment.
+    // The ax-percpu crate requires kernel-space linking which is incompatible with cargo test.
     // In a real hypervisor environment, AxPerCpu would be tested differently.
 }

@@ -16,7 +16,7 @@
 - 调用点必须足够直白，便于平台代码或驱动代码直接复用。
 - ABI 必须尽量稳定，避免每个项目都重新发明一套 helper trait。
 
-在当前仓库里，`axruntime/src/klib.rs` 就是 `axklib::Klib` 的一个真实实现方；`platform/axplat-dyn` 和 `os/axvisor` 的驱动代码则是典型使用方。
+在当前仓库里，`ax-runtime/src/klib.rs` 就是 `axklib::Klib` 的一个真实实现方；`platform/axplat-dyn` 和 `os/axvisor` 的驱动代码则是典型使用方。
 
 ### 1.2 核心接口
 `axklib` 只有一个核心 trait：
@@ -37,29 +37,29 @@
 
 ### 1.3 类型与桥接方式
 - `PhysAddr` / `VirtAddr`：直接复用 `memory_addr` 的地址类型。
-- `AxResult`：复用 `axerrno` 的错误结果类型。
+- `AxResult`：复用 `ax-errno` 的错误结果类型。
 - `IrqHandler`：简单的 `fn()` 函数指针。
 - `#[def_extern_trait]`：由 `trait-ffi` 生成跨 crate 调用所需的桥接层。
 
 因此，`axklib` 的本质更接近“trait ABI 定义”，而不是“helper 函数具体实现集合”。
 
 ### 1.4 真实实现主线
-以 `axruntime/src/klib.rs` 为例，当前仓库里的实现关系是：
+以 `ax-runtime/src/klib.rs` 为例，当前仓库里的实现关系是：
 
 ```mermaid
 flowchart TD
     A["axklib::mem::iomap"] --> B["Klib::mem_iomap"]
-    B --> C["axruntime::KlibImpl"]
-    C --> D["axmm::iomap"]
+    B --> C["ax_runtime::KlibImpl"]
+    C --> D["ax-mm::iomap"]
 
     E["axklib::time::busy_wait"] --> F["Klib::time_busy_wait"]
-    F --> G["axhal::time::busy_wait"]
+    F --> G["ax-hal::time::busy_wait"]
 
     H["axklib::irq::register/set_enable"] --> I["KlibImpl"]
-    I --> J["axhal::irq::* 或 unimplemented!()"]
+    I --> J["ax-hal::irq::* 或 unimplemented!()"]
 ```
 
-其中一个很重要的细节是：在 `axruntime` 当前实现里，如果没有打开 `irq` feature，`irq_set_enable()` 和 `irq_register()` 会直接 `unimplemented!()`。所以 `axklib` 本身提供的是接口承诺，不保证所有实现方在所有 feature 组合下都完整可用。
+其中一个很重要的细节是：在 `ax-runtime` 当前实现里，如果没有打开 `irq` feature，`irq_set_enable()` 和 `irq_register()` 会直接 `unimplemented!()`。所以 `axklib` 本身提供的是接口承诺，不保证所有实现方在所有 feature 组合下都完整可用。
 
 ## 2. 核心功能说明
 ### 2.1 主要功能
@@ -74,29 +74,29 @@ flowchart TD
 - `Klib` trait：由 `os/arceos/modules/axruntime/src/klib.rs` 真实实现。
 
 ### 2.3 使用边界
-- `axklib` 不是 `axmm` 的替代品；它只暴露 `iomap` 能力，不管理地址空间对象。
+- `axklib` 不是 `ax-mm` 的替代品；它只暴露 `iomap` 能力，不管理地址空间对象。
 - `axklib` 不是 IRQ 框架；它只暴露最小 IRQ helper。
 - `axklib` 也不是驱动模型；它只是给驱动/平台层提供几项共同 helper。
 
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    axerrno["axerrno"] --> axklib["axklib"]
+    ax_errno["ax-errno"] --> axklib["axklib"]
     memory_addr["memory_addr"] --> axklib
     trait_ffi["trait-ffi"] --> axklib
 
-    axklib --> axruntime["axruntime 实现方"]
+    axklib --> ax-runtime["ax-runtime 实现方"]
     axklib --> axplat_dyn["axplat-dyn 使用方"]
     axklib --> axvisor["axvisor 使用方"]
 ```
 
 ### 3.1 关键直接依赖
-- `axerrno`：统一错误结果类型。
+- `ax-errno`：统一错误结果类型。
 - `memory_addr`：统一地址类型。
 - `trait-ffi`：生成 trait 调用桥接。
 
 ### 3.2 关键直接消费者
-- `axruntime`：当前 ArceOS 侧的主要实现方。
+- `ax-runtime`：当前 ArceOS 侧的主要实现方。
 - `axplat-dyn`：动态平台与设备接入路径的调用方。
 - `axvisor`：若干驱动直接通过 `axklib` 访问 iomap 与 busy-wait。
 
@@ -122,7 +122,7 @@ axklib = { workspace = true }
 ### 5.1 当前测试形态
 `axklib` 本体没有独立测试；当前验证主要依赖实现方和调用方：
 
-- `axruntime` 对 `Klib` 的实现是否与 `axmm` / `axhal` 对齐；
+- `ax-runtime` 对 `Klib` 的实现是否与 `ax-mm` / `ax-hal` 对齐；
 - `axplat-dyn` 和 Axvisor 驱动是否能通过 `iomap`、`busy_wait` 正常工作。
 
 ### 5.2 单元测试重点
@@ -139,7 +139,7 @@ axklib = { workspace = true }
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-在 ArceOS 中，`axklib` 是 `axruntime` 对外提供的小型 helper ABI。它把 `axmm`、`axhal` 这些真实子系统收束成更容易复用的接口。
+在 ArceOS 中，`axklib` 是 `ax-runtime` 对外提供的小型 helper ABI。它把 `ax-mm`、`ax-hal` 这些真实子系统收束成更容易复用的接口。
 
 ### 6.2 StarryOS
 当前仓库里 StarryOS 没有把 `axklib` 作为直接主路径依赖来扩展自己的子系统，因此它在 StarryOS 侧更多是潜在共享基件，而不是现有系统层。

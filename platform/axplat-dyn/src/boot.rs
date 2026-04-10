@@ -1,7 +1,7 @@
 use core::ptr::NonNull;
 
-use axerrno::AxError;
-use axplat::mem::phys_to_virt;
+use ax_errno::AxError;
+use ax_plat::mem::phys_to_virt;
 use somehal::{KernelOp, setup::*};
 
 #[somehal::entry(Kernel)]
@@ -11,13 +11,13 @@ fn main() -> ! {
         args = fdt;
     }
 
-    axplat::call_main(0, args)
+    ax_plat::call_main(0, args)
 }
 
 #[somehal::secondary_entry]
 fn secondary_main() {
     #[cfg(feature = "smp")]
-    axplat::call_secondary_main(meta.cpu_idx);
+    ax_plat::call_secondary_main(meta.cpu_idx);
 }
 
 pub struct Kernel;

@@ -25,13 +25,13 @@ pub enum MappingError {
     BadState,
 }
 
-#[cfg(feature = "axerrno")]
-impl From<MappingError> for axerrno::AxError {
+#[cfg(feature = "ax-errno")]
+impl From<MappingError> for ax_errno::AxError {
     fn from(err: MappingError) -> Self {
         match err {
-            MappingError::InvalidParam => axerrno::AxError::InvalidInput,
-            MappingError::AlreadyExists => axerrno::AxError::AlreadyExists,
-            MappingError::BadState => axerrno::AxError::BadState,
+            MappingError::InvalidParam => ax_errno::AxError::InvalidInput,
+            MappingError::AlreadyExists => ax_errno::AxError::AlreadyExists,
+            MappingError::BadState => ax_errno::AxError::BadState,
         }
     }
 }

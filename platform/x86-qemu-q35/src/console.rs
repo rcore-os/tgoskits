@@ -14,8 +14,8 @@
 
 //! Uart 16550 serial port.
 
-use axplat::console::ConsoleIf;
-use kspin::SpinNoIrq;
+use ax_kspin::SpinNoIrq;
+use ax_plat::console::ConsoleIf;
 use uart_16550::SerialPort;
 
 static COM1: SpinNoIrq<SerialPort> = unsafe { SpinNoIrq::new(SerialPort::new(0x3f8)) };

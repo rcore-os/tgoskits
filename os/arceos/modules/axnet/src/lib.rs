@@ -30,7 +30,7 @@ cfg_if::cfg_if! {
     }
 }
 
-use axdriver::{AxDeviceContainer, prelude::*};
+use ax_driver::{AxDeviceContainer, prelude::*};
 
 pub use self::net_impl::{
     TcpSocket, UdpSocket, bench_receive, bench_transmit, dns_query, poll_interfaces,

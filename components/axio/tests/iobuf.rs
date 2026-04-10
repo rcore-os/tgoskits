@@ -1,4 +1,4 @@
-use axio::{BufReader, BufWriter, Cursor, SeekFrom, empty, prelude::*, repeat, sink};
+use ax_io::{BufReader, BufWriter, Cursor, SeekFrom, empty, prelude::*, repeat, sink};
 
 #[test]
 fn test_slice() {
@@ -144,14 +144,14 @@ fn test_strict_write_to() {
     }
 
     impl Write for StrictWriter {
-        fn write(&mut self, buf: &[u8]) -> axio::Result<usize> {
+        fn write(&mut self, buf: &[u8]) -> ax_io::Result<usize> {
             assert!(buf.len() <= self.rest);
             let to_write = buf.len();
             self.rest -= to_write;
             Ok(to_write)
         }
 
-        fn flush(&mut self) -> axio::Result<()> {
+        fn flush(&mut self) -> ax_io::Result<()> {
             Ok(())
         }
     }
@@ -176,7 +176,7 @@ fn test_strict_read_from() {
     }
 
     impl Read for StrictReader {
-        fn read(&mut self, buf: &mut [u8]) -> axio::Result<usize> {
+        fn read(&mut self, buf: &mut [u8]) -> ax_io::Result<usize> {
             assert!(buf.len() <= self.rest);
             let to_read = buf.len();
             self.rest -= to_read;
@@ -205,7 +205,7 @@ fn test_small_read_from() {
     struct SmallReader;
 
     impl Read for SmallReader {
-        fn read(&mut self, buf: &mut [u8]) -> axio::Result<usize> {
+        fn read(&mut self, buf: &mut [u8]) -> ax_io::Result<usize> {
             let to_read = std::cmp::min(buf.len(), 3);
             for b in &mut buf[..to_read] {
                 *b = 0;

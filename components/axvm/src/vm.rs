@@ -15,15 +15,15 @@
 use alloc::{boxed::Box, format, sync::Arc, vec::Vec};
 use core::{alloc::Layout, fmt};
 
+use ax_cpumask::CpuMask;
+use ax_errno::{AxError, AxResult, ax_err, ax_err_type};
+use ax_memory_addr::{align_down_4k, align_up_4k};
 use axaddrspace::{
     AddrSpace, GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, device::AccessWidth,
 };
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
-use axerrno::{AxError, AxResult, ax_err, ax_err_type};
 use axvcpu::{AxVCpu, AxVCpuExitReason};
 use axvisor_api::vmm::InterruptVector;
-use cpumask::CpuMask;
-use memory_addr::{align_down_4k, align_up_4k};
 use spin::{Mutex, Once};
 
 #[cfg(not(target_arch = "x86_64"))]

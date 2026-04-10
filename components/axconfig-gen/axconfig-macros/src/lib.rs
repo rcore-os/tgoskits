@@ -7,7 +7,7 @@ use syn::parse::{Parse, ParseStream};
 use syn::parse_macro_input;
 use syn::{Error, Ident, LitStr, Result, Token};
 
-use axconfig_gen::{Config, OutputFormat};
+use ax_config_gen::{Config, OutputFormat};
 
 fn compiler_error<T: ToTokens>(tokens: T, msg: String) -> TokenStream {
     Error::new_spanned(tokens, msg).to_compile_error().into()
@@ -81,7 +81,7 @@ pub fn include_configs(args: TokenStream) -> TokenStream {
     };
 
     quote! {
-        ::axconfig_macros::parse_configs!(#config_toml);
+        ::ax_config_macros::parse_configs!(#config_toml);
     }
     .into()
 }

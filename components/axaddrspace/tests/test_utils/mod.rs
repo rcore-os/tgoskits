@@ -14,10 +14,10 @@
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use ax_memory_addr::{PAGE_SIZE_4K as PAGE_SIZE, PhysAddr, VirtAddr};
+use ax_page_table_multiarch::PagingHandler;
 use axaddrspace::{AxMmHal, HostPhysAddr, HostVirtAddr};
 use lazy_static::lazy_static;
-use memory_addr::{PAGE_SIZE_4K as PAGE_SIZE, PhysAddr, VirtAddr};
-use page_table_multiarch::PagingHandler;
 use spin::Mutex;
 
 /// The starting physical address for the simulated memory region in tests.

@@ -11,7 +11,7 @@
 //! crate (with strong symbol), the linker will choose the strong symbol.
 //! In the same crate, the strong symbol will cause a compile-time conflict.
 
-use crate_interface::*;
+use ax_crate_interface::*;
 
 /// A trait with default implementations.
 /// When `weak_default` feature is enabled, the default implementation will be

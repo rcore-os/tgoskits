@@ -3,8 +3,8 @@
 use alloc::{borrow::ToOwned, collections::binary_heap::BinaryHeap, sync::Arc};
 use core::{mem, time::Duration};
 
-use axhal::time::{NANOS_PER_SEC, TimeValue, monotonic_time_nanos, wall_time};
-use axtask::{
+use ax_hal::time::{NANOS_PER_SEC, TimeValue, monotonic_time_nanos, wall_time};
+use ax_task::{
     WeakAxTaskRef, current,
     future::{block_on, timeout_at},
 };
@@ -269,9 +269,9 @@ async fn alarm_task() {
 /// Spawns the alarm task.
 pub fn spawn_alarm_task() {
     info!("Initialize alarm...");
-    axtask::spawn_raw(
+    ax_task::spawn_raw(
         || block_on(alarm_task()),
         "alarm_task".to_owned(),
-        axconfig::TASK_STACK_SIZE,
+        ax_config::TASK_STACK_SIZE,
     );
 }

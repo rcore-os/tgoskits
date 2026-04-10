@@ -1,4 +1,4 @@
-use memory_addr::MemoryAddr;
+use ax_memory_addr::MemoryAddr;
 
 /// Underlying operations to do when manipulating mappings within the specific
 /// [`MemoryArea`](crate::MemoryArea).

@@ -9,7 +9,7 @@ use super::prelude::*;
 
 cfg_if! {
     if #[cfg(net_dev = "dummy")] {
-        use axdriver_net::{EthernetAddress, NetBuf, NetBufBox, NetBufPool, NetBufPtr};
+        use ax_driver_net::{EthernetAddress, NetBuf, NetBufBox, NetBufPool, NetBufPtr};
 
         pub struct DummyNetDev;
         pub struct DummyNetDrvier;
@@ -86,10 +86,10 @@ cfg_if! {
         }
 
         impl DisplayDriverOps for DummyDisplayDev {
-            fn info(&self) -> axdriver_display::DisplayInfo {
+            fn info(&self) -> ax_driver_display::DisplayInfo {
                 unreachable!()
             }
-            fn fb(&self) -> axdriver_display::FrameBuffer<'_> {
+            fn fb(&self) -> ax_driver_display::FrameBuffer<'_> {
                 unreachable!()
             }
             fn need_flush(&self) -> bool {

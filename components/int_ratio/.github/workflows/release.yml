@@ -78,8 +78,8 @@ jobs:
           body: |
             ## ${{ github.ref_name }}
 
-            - [Documentation](https://docs.rs/int_ratio)
-            - [crates.io](https://crates.io/crates/int_ratio)
+            - [Documentation](https://docs.rs/ax-int-ratio)
+            - [crates.io](https://crates.io/crates/ax-int-ratio)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

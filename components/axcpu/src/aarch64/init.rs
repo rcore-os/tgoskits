@@ -1,7 +1,7 @@
 //! Helper functions to initialize the CPU states on systems bootstrapping.
 
 use aarch64_cpu::{asm::barrier, registers::*};
-use memory_addr::PhysAddr;
+use ax_memory_addr::PhysAddr;
 
 /// Swtich current exception level to EL1.
 ///
@@ -61,7 +61,7 @@ pub unsafe fn switch_to_el1() {
 ///
 /// This function is unsafe as it changes the address translation configuration.
 pub unsafe fn init_mmu(root_paddr: PhysAddr) {
-    use page_table_entry::aarch64::MemAttr;
+    use ax_page_table_entry::aarch64::MemAttr;
 
     MAIR_EL1.set(MemAttr::MAIR_VALUE);
 

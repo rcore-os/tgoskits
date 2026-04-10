@@ -1,4 +1,4 @@
-use arceos_api::net::{self as api, AxTcpSocketHandle};
+use ax_api::net::{self as api, AxTcpSocketHandle};
 
 use super::{SocketAddr, ToSocketAddrs};
 use crate::io::{self, prelude::*};

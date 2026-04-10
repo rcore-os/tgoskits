@@ -1,8 +1,8 @@
 use alloc::{string::String, vec};
 use core::task::Waker;
 
-use axdriver::prelude::*;
-use axtask::future::register_irq_waker;
+use ax_driver::prelude::*;
+use ax_task::future::register_irq_waker;
 use hashbrown::HashMap;
 use smoltcp::{
     storage::{PacketBuffer, PacketMetadata},

@@ -1,7 +1,11 @@
-use crate::config::devices::{A1000BASE_SAFETYCRM, A1000BASE_TOPCRM};
-use crate::mem::phys_to_virt;
-use axplat::time::{Duration, busy_wait};
 use core::ptr::{read_volatile, write_volatile};
+
+use ax_plat::time::{Duration, busy_wait};
+
+use crate::{
+    config::devices::{A1000BASE_SAFETYCRM, A1000BASE_TOPCRM},
+    mem::phys_to_virt,
+};
 
 /// Do QSPI reset
 pub fn reset_qspi() {
@@ -24,13 +28,13 @@ pub fn reset_qspi() {
 pub fn reset_cpu() {
     reset_qspi();
 
-    //Data Width = 32
+    // Data Width = 32
     let ptr = phys_to_virt((A1000BASE_SAFETYCRM + 0x8).into()).as_mut_ptr() as *mut u32;
     unsafe {
         write_volatile(ptr, read_volatile(ptr) & !0b1);
     }
     loop {
-        axcpu::asm::halt();
+        ax_cpu::asm::halt();
     }
 }
 

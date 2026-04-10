@@ -16,7 +16,7 @@
 
 - 向上承接 `sys_kill`、`sys_rt_sigaction`、`sys_rt_sigprocmask`、`sys_rt_sigreturn` 等系统调用语义。
 - 向内与 `Thread` / `ProcessData` 结合，决定某个信号应落到哪个线程。
-- 向下依赖 `axcpu::uspace::UserContext` 和 `starry-vm`，把信号帧压到用户栈并恢复上下文。
+- 向下依赖 `ax-cpu::uspace::UserContext` 和 `starry-vm`，把信号帧压到用户栈并恢复上下文。
 
 因此它不是简单的常量定义 crate，而是 StarryOS 用户态信号路径的核心组件。
 
@@ -125,8 +125,8 @@ let wake_tid = proc_signal.send_signal(sig);
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    axcpu["axcpu"] --> sig["starry-signal"]
-    kspin["kspin"] --> sig
+    ax-cpu["ax-cpu"] --> sig["starry-signal"]
+    ax_kspin["ax-kspin"] --> sig
     vm["starry-vm"] --> sig
     linux["linux-raw-sys"] --> sig
 
@@ -136,9 +136,9 @@ graph LR
 ```
 
 ### 3.1 关键直接依赖
-- `axcpu`：提供 `UserContext` 及寄存器定义，是保存/恢复信号现场的基础。
+- `ax-cpu`：提供 `UserContext` 及寄存器定义，是保存/恢复信号现场的基础。
 - `starry-vm`：用于把 `SignalFrame` 写入用户栈，以及读写用户空间中的 signal 相关对象。
-- `kspin`：保护动作表、mask、pending 队列等可变状态。
+- `ax-kspin`：保护动作表、mask、pending 队列等可变状态。
 - `linux-raw-sys`：提供 `siginfo_t`、`kernel_sigaction`、`SA_*`、`sigset_t` 等兼容定义。
 
 ### 3.2 关键直接消费者

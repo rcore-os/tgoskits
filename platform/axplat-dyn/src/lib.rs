@@ -2,10 +2,11 @@
 #![cfg(not(any(windows, unix)))]
 #![feature(used_with_arg)]
 
+extern crate alloc;
 extern crate somehal;
 
 #[macro_use]
-extern crate axplat;
+extern crate ax_plat;
 #[allow(unused_imports)]
 #[macro_use]
 extern crate log;
@@ -31,7 +32,7 @@ fn somehal_handle_irq(_irq: somehal::irq::IrqId) {}
 //     //! Otherwise, it will fall back to the `axconfig.toml` file in the current directory and generate the default configuration.
 //     //!
 //     //! If the `PACKAGE` field in the configuration does not match the package name, it will panic with an error message.
-//     axconfig_macros::include_configs!(path_env = "AX_CONFIG_PATH", fallback = "axconfig.toml");
+//     ax_config_macros::include_configs!(path_env = "AX_CONFIG_PATH", fallback = "axconfig.toml");
 //     assert_str_eq!(
 //         PACKAGE,
 //         env!("CARGO_PKG_NAME"),

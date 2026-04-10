@@ -1,4 +1,4 @@
-use lazyinit::LazyInit;
+use ax_lazyinit::LazyInit;
 use x86_64::{
     addr::VirtAddr,
     structures::idt::{Entry, InterruptDescriptorTable},

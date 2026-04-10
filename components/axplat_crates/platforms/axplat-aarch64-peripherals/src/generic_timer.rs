@@ -1,8 +1,7 @@
 //! ARM Generic Timer.
 
-use aarch64_cpu::registers::{CNTFRQ_EL0, CNTP_TVAL_EL0, CNTPCT_EL0};
-use aarch64_cpu::registers::{Readable, Writeable};
-use int_ratio::Ratio;
+use aarch64_cpu::registers::{CNTFRQ_EL0, CNTP_TVAL_EL0, CNTPCT_EL0, Readable, Writeable};
+use ax_int_ratio::Ratio;
 
 static mut CNTPCT_TO_NANOS_RATIO: Ratio = Ratio::zero();
 static mut NANOS_TO_CNTPCT_RATIO: Ratio = Ratio::zero();
@@ -44,7 +43,7 @@ pub fn set_oneshot_timer(deadline_ns: u64) {
 pub fn init_early() {
     let freq = CNTFRQ_EL0.get();
     unsafe {
-        CNTPCT_TO_NANOS_RATIO = Ratio::new(axplat::time::NANOS_PER_SEC as u32, freq as u32);
+        CNTPCT_TO_NANOS_RATIO = Ratio::new(ax_plat::time::NANOS_PER_SEC as u32, freq as u32);
         NANOS_TO_CNTPCT_RATIO = CNTPCT_TO_NANOS_RATIO.inverse();
     }
 }
@@ -58,10 +57,10 @@ pub fn enable_irqs(timer_irq_num: usize) {
     use aarch64_cpu::registers::CNTP_CTL_EL0;
     CNTP_CTL_EL0.write(CNTP_CTL_EL0::ENABLE::SET);
     CNTP_TVAL_EL0.set(0);
-    axplat::irq::set_enable(timer_irq_num, true);
+    ax_plat::irq::set_enable(timer_irq_num, true);
 }
 
-/// Default implementation of [`axplat::time::TimeIf`] using the generic
+/// Default implementation of [`ax_plat::time::TimeIf`] using the generic
 /// timer.
 #[macro_export]
 #[allow(clippy::crate_in_macro_def)]
@@ -70,7 +69,7 @@ macro_rules! time_if_impl {
         struct $name;
 
         #[impl_plat_interface]
-        impl axplat::time::TimeIf for $name {
+        impl ax_plat::time::TimeIf for $name {
             /// Returns the current clock time in hardware ticks.
             fn current_ticks() -> u64 {
                 $crate::generic_timer::current_ticks()

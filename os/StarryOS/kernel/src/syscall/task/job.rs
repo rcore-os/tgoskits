@@ -1,5 +1,5 @@
-use axerrno::{AxError, AxResult};
-use axtask::current;
+use ax_errno::{AxError, AxResult};
+use ax_task::current;
 use starry_process::Pid;
 
 use crate::task::{AsThread, get_process_data, get_process_group};

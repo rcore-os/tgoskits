@@ -1,9 +1,11 @@
 //! Physical memory information.
 
-use core::ops::{Deref, DerefMut};
-use core::{fmt, ops::Range};
+use core::{
+    fmt,
+    ops::{Deref, DerefMut, Range},
+};
 
-pub use memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr, pa, va};
+pub use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr, pa, va};
 
 bitflags::bitflags! {
     /// The flags of a physical memory region.
@@ -183,7 +185,7 @@ pub type OverlapErr = (Range<usize>, Range<usize>);
 /// # Example
 ///
 /// ```rust
-/// # use axplat::mem::check_sorted_ranges_overlap;
+/// # use ax_plat::mem::check_sorted_ranges_overlap;
 /// assert!(check_sorted_ranges_overlap([(0, 10), (10, 10)].into_iter()).is_ok());
 /// assert_eq!(
 ///     check_sorted_ranges_overlap([(0, 10), (5, 10)].into_iter()),
@@ -216,7 +218,7 @@ pub fn check_sorted_ranges_overlap(
 /// # Example
 ///
 /// ```rust
-/// # use axplat::mem::ranges_difference;
+/// # use ax_plat::mem::ranges_difference;
 /// let mut res = Vec::new();
 /// // 0..10, 20..30 - 5..15, 15..25 = 0..5, 25..30
 /// ranges_difference(&[(0, 10), (20, 10)], &[(5, 10), (15, 10)], |r| res.push(r)).unwrap();
@@ -307,7 +309,7 @@ mod tests {
         assert_eq!(
             f(
                 &[(0, 30)],
-                &[(0, 5), (5, 5), (10, 5), (15, 5), (20, 5), (25, 5)] // - 0..5, 5..10, 10..15, 15..20, 20..25, 25..30
+                &[(0, 5), (5, 5), (10, 5), (15, 5), (20, 5), (25, 5)] /* - 0..5, 5..10, 10..15, 15..20, 20..25, 25..30 */
             ),
             &[] // = []
         );

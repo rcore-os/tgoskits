@@ -1,12 +1,11 @@
 //! Physical memory information.
 
-use axplat::mem::{MemIf, PhysAddr, RawRange, VirtAddr, pa, va};
+use ax_lazyinit::LazyInit;
+use ax_plat::mem::{MemIf, PhysAddr, RawRange, VirtAddr, pa, va};
 use heapless::Vec;
-use lazyinit::LazyInit;
 use multiboot::information::{MemoryManagement, MemoryType, Multiboot, PAddr};
 
-use crate::config::devices::MMIO_RANGES;
-use crate::config::plat::PHYS_VIRT_OFFSET;
+use crate::config::{devices::MMIO_RANGES, plat::PHYS_VIRT_OFFSET};
 
 const MAX_REGIONS: usize = 16;
 

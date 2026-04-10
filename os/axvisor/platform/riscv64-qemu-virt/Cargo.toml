@@ -1,33 +1,35 @@
 [package]
 edition = "2024"
-name = "axplat-riscv64-qemu-virt"
-version = "0.3.0"
+name = "ax-plat-riscv64-qemu-virt"
+version = "0.5.0"
+repository = "https://github.com/rcore-os/tgoskits"
+license = "Apache-2.0"
 
 [features]
 default = [
   "irq",
   "smp",
 ]
-fp-simd = ["axcpu/fp-simd"]
-irq = ["axplat/irq"]
+fp-simd = ["ax-cpu/fp-simd"]
+irq = ["ax-plat/irq"]
 rtc = ["riscv_goldfish"]
-smp = ["axplat/smp"]
+smp = ["ax-plat/smp"]
 
 [dependencies]
-kspin = "0.1"
-lazyinit = "0.2"
+ax-kspin = "0.3.1"
+ax-lazyinit = "0.4.2"
 log = "0.4"
 riscv = "0.14.0"
 riscv_goldfish = { version = "0.1", optional = true }
-riscv_plic = "0.2"
+ax-riscv-plic = "0.4.0"
 sbi-rt = { version = "0.0.3", features = ["legacy"] }
 uart_16550 = "0.4.0"
 
-axconfig-macros = "0.2"
-axcpu = { version = "0.3.0-preview.8", features = ["arm-el2"] }
-axplat = "0.3.1-pre.6"
-axvisor_api = "0.3"
-crate_interface = "0.3"
+ax-config-macros = "0.4.1"
+ax-cpu = { workspace = true }
+ax-plat = { workspace = true }
+axvisor_api = "0.5.0"
+ax-crate-interface = { workspace = true }
 
 [package.metadata.docs.rs]
 targets = ["riscv64gc-unknown-none-elf"]

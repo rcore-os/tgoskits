@@ -3,7 +3,7 @@
 //! This crate provides the platform-side glue that implements the small set
 //! of kernel helper functions defined in `axklib`. The implementation is
 //! intentionally minimal: it forwards memory mapping requests to `axmm`,
-//! delegates timing to `axhal`, and wires IRQ operations to `axhal` when the
+//! delegates timing to `ax-hal`, and wires IRQ operations to `ax-hal` when the
 //! `irq` feature is enabled.
 //!
 //! The implementation uses the `impl_trait!` helper to generate the FFI
@@ -20,32 +20,32 @@ impl_trait! {
     impl Klib for KlibImpl {
         /// Map a physical region by delegating to the memory manager (`axmm`).
         ///
-        /// This function forwards the request to `axmm::iomap` and returns the
+        /// This function forwards the request to `ax_mm::iomap` and returns the
         /// resulting virtual address wrapped in an `AxResult`.
         fn mem_iomap(addr: PhysAddr, size: usize) -> AxResult<VirtAddr> {
-            // Convert from AxError (struct in axerrno 0.2) to AxErrorKind (enum used by axklib)
-            axmm::iomap(addr, size)
+            // Convert from AxError (struct in ax_errno 0.2) to AxErrorKind (enum used by axklib)
+            ax_mm::iomap(addr, size)
         }
 
-        /// Busy-wait for the given duration by calling into `axhal`.
+        /// Busy-wait for the given duration by calling into `ax-hal`.
         ///
         /// Short delays are serviced by the hardware abstraction layer's
         /// busy-wait implementation. This is suitable for small spin waits
         /// but should not be used for long sleeps.
         fn time_busy_wait(dur: Duration) {
-            axhal::time::busy_wait(dur);
+            ax_hal::time::busy_wait(dur);
         }
 
         /// Enable or disable the specified IRQ line.
         ///
         /// When the `irq` feature is enabled this forwards to
-        /// `axhal::irq::set_enable`. If the feature is not enabled the
+        /// `ax_hal::irq::set_enable`. If the feature is not enabled the
         /// function currently panics via `unimplemented!()`; callers should
         /// avoid relying on IRQ operations when the platform omits IRQ
         /// support.
         fn irq_set_enable(_irq: usize, _enabled: bool) {
             #[cfg(feature = "irq")]
-            axhal::irq::set_enable(_irq, _enabled);
+            ax_hal::irq::set_enable(_irq, _enabled);
             #[cfg(not(feature = "irq"))]
             unimplemented!();
         }
@@ -53,13 +53,13 @@ impl_trait! {
         /// Register an IRQ handler for the given IRQ number.
         ///
         /// Returns `true` when registration succeeds. With the `irq`
-        /// feature enabled this delegates to `axhal::irq::register`.
+        /// feature enabled this delegates to `ax_hal::irq::register`.
         /// When IRQs are not enabled the function is currently unimplemented
         /// and will panic if called.
         fn irq_register(_irq: usize, _handler: IrqHandler) -> bool {
             #[cfg(feature = "irq")]
             {
-                axhal::irq::register(_irq, _handler)
+                ax_hal::irq::register(_irq, _handler)
             }
             #[cfg(not(feature = "irq"))]
             {

@@ -1,4 +1,4 @@
-use axplat::mem::PhysAddr;
+use ax_plat::mem::PhysAddr;
 use loongArch64::ipi::{csr_mail_send, send_ipi_single};
 
 use crate::config::plat::{PHYS_BOOT_OFFSET, PHYS_VIRT_OFFSET};

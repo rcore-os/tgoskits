@@ -2,7 +2,7 @@
 
 use core::ops::{Deref, DerefMut};
 
-use axdriver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
+use ax_driver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
 
 use crate::BlockDriverOps;
 

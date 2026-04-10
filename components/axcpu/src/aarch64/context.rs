@@ -1,6 +1,6 @@
-use core::arch::naked_asm;
-use core::fmt;
-use memory_addr::VirtAddr;
+use core::{arch::naked_asm, fmt};
+
+use ax_memory_addr::VirtAddr;
 
 /// Saved registers when a trap (exception) occurs.
 #[repr(C)]
@@ -190,7 +190,7 @@ pub struct TaskContext {
     pub tpidr_el0: u64,
     /// The `ttbr0_el1` register value, i.e., the page table root.
     #[cfg(feature = "uspace")]
-    pub ttbr0_el1: memory_addr::PhysAddr,
+    pub ttbr0_el1: ax_memory_addr::PhysAddr,
     #[cfg(feature = "fp-simd")]
     pub fp_state: FpState,
 }
@@ -220,7 +220,7 @@ impl TaskContext {
     /// The hardware register for user page table root (`ttbr0_el1` for aarch64 in EL1)
     /// will be updated to the next task's after [`Self::switch_to`].
     #[cfg(feature = "uspace")]
-    pub fn set_page_table_root(&mut self, ttbr0_el1: memory_addr::PhysAddr) {
+    pub fn set_page_table_root(&mut self, ttbr0_el1: ax_memory_addr::PhysAddr) {
         self.ttbr0_el1 = ttbr0_el1;
     }
 

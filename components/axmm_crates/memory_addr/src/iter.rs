@@ -10,7 +10,7 @@ use crate::MemoryAddr;
 /// # Examples
 ///
 /// ```
-/// use memory_addr::PageIter;
+/// use ax_memory_addr::PageIter;
 ///
 /// let mut iter = PageIter::<0x1000, usize>::new(0x1000, 0x3000).unwrap();
 /// assert_eq!(iter.next(), Some(0x1000));
@@ -71,7 +71,7 @@ where
 /// # Examples
 ///
 /// ```
-/// use memory_addr::DynPageIter;
+/// use ax_memory_addr::DynPageIter;
 ///
 /// let mut iter = DynPageIter::<usize>::new(0x1000, 0x3000, 0x1000).unwrap();
 /// assert_eq!(iter.next(), Some(0x1000));

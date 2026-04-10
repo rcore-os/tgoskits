@@ -1,7 +1,7 @@
 #![no_std]
 #![doc = include_str!("../README.md")]
 
-pub use ctor_bare_macros::register_ctor;
+pub use ax_ctor_bare_macros::register_ctor;
 
 /// Placeholder for the `.init_array` section, so that
 /// the `__init_array_start` and `__init_array_end` symbols can be generated.
@@ -19,7 +19,7 @@ unsafe extern "C" {
 /// # Notes
 /// Caller should ensure that the `.init_array` section will not be disturbed by other sections.
 pub fn call_ctors() {
-    for ctor_ptr in (__init_array_start as usize..__init_array_end as usize)
+    for ctor_ptr in (__init_array_start as *const () as usize..__init_array_end as *const () as usize)
         .step_by(core::mem::size_of::<*const core::ffi::c_void>())
     {
         unsafe {

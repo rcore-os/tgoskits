@@ -8,7 +8,7 @@ use std::{
     mem::MaybeUninit,
 };
 
-use axio::{BufRead, BufReader, Cursor, DEFAULT_BUF_SIZE, Error, Read, Result, Seek, SeekFrom};
+use ax_io::{BufRead, BufReader, Cursor, DEFAULT_BUF_SIZE, Error, Read, Result, Seek, SeekFrom};
 
 #[cfg(feature = "alloc")]
 #[test]
@@ -291,7 +291,7 @@ fn chain_bufread() {
 #[test]
 fn chain_splitted_char() {
     let chain = b"\xc3".chain(b"\xa9".as_slice());
-    assert_eq!(axio::read_to_string(chain).unwrap(), "é");
+    assert_eq!(ax_io::read_to_string(chain).unwrap(), "é");
 
     let mut chain = b"\xc3".chain(b"\xa9\n".as_slice());
     let mut buf = String::new();
@@ -316,9 +316,9 @@ fn chain_zero_length_read_is_not_eof() {
 #[cfg_attr(miri, ignore)] // Miri isn't fast...
 fn bench_read_to_end(b: &mut test::Bencher) {
     b.iter(|| {
-        let mut lr = axio::repeat(1).take(10000000);
+        let mut lr = ax_io::repeat(1).take(10000000);
         let mut vec = Vec::with_capacity(1024);
-        axio::default_read_to_end(&mut lr, &mut vec, None)
+        ax_io::default_read_to_end(&mut lr, &mut vec, None)
     });
 }
 

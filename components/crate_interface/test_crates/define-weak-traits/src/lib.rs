@@ -8,7 +8,7 @@
 
 #![feature(linkage)]
 
-use crate_interface::def_interface;
+use ax_crate_interface::def_interface;
 
 /// A trait with some methods having default implementations.
 ///

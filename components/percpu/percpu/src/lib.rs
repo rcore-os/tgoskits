@@ -2,7 +2,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![doc = include_str!("../README.md")]
 
-extern crate percpu_macros;
+extern crate ax_percpu_macros;
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "sp-naive")] {
@@ -16,13 +16,14 @@ cfg_if::cfg_if! {
     }
 }
 
+pub use ax_percpu_macros::def_percpu;
+
 pub use self::imp::*;
-pub use percpu_macros::def_percpu;
 
 #[doc(hidden)]
 pub mod __priv {
     #[cfg(feature = "preempt")]
-    pub use kernel_guard::NoPreempt as NoPreemptGuard;
+    pub use ax_kernel_guard::NoPreempt as NoPreemptGuard;
 }
 
 cfg_if::cfg_if! {

@@ -98,7 +98,7 @@ pub fn gen_current_ptr(symbol: &Ident, ty: &Type) -> proc_macro2::TokenStream {
         let base: usize;
         #[cfg(target_arch = "x86_64")]
         {
-            // `__PERCPU_SELF_PTR` stores GS_BASE, which is defined in crate `percpu`.
+            // `__PERCPU_SELF_PTR` stores GS_BASE, which is defined in crate `ax-percpu`.
             ::core::arch::asm!(
                 "mov {0}, gs:[offset __PERCPU_SELF_PTR]",
                 "add {0}, offset {VAR}",

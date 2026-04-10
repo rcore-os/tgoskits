@@ -1,12 +1,12 @@
 //! Physical memory management.
 
-pub use axplat::mem::{
+pub use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange, VirtAddr, VirtAddrRange, pa, va};
+pub use ax_plat::mem::{
     MemRegionFlags, PhysMemRegion, kernel_aspace, mmio_ranges, phys_ram_ranges, phys_to_virt,
     reserved_phys_ram_ranges, total_ram_size, virt_to_phys,
 };
-use axplat::mem::{check_sorted_ranges_overlap, ranges_difference};
+use ax_plat::mem::{check_sorted_ranges_overlap, ranges_difference};
 use heapless::Vec;
-pub use memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange, VirtAddr, VirtAddrRange, pa, va};
 use spin::Lazy;
 
 #[allow(unused_imports)]

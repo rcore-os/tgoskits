@@ -33,7 +33,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.3.1-pre.6"
+version = "0.5.1"
 edition = "2024"
 authors = [
     "Yuekai Jia <equation618@gmail.com>",
@@ -43,13 +43,12 @@ authors = [
     "RobertYuan <634954435@qq.com>",
     "hky1999 <keyang.hu@qq.com>",
 ]
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
-homepage = "https://github.com/arceos-org/arceos"
-repository = "https://github.com/arceos-org/axplat_crates"
+repository = "https://github.com/rcore-os/tgoskits"
+license = "Apache-2.0"
 
 [workspace.dependencies]
-axcpu = "0.3.0-preview.7"
-axplat = { version = "0.3.1-pre.6", path = "./axplat" }
-axplat-macros = { version = "0.1.0", path = "./axplat-macros" }
-axplat-aarch64-peripherals = { version = "0.3.1-pre.6", path = "platforms/axplat-aarch64-peripherals" }
-percpu = "0.2.3-preview.1"
+ax-cpu = "0.5.0"
+ax-plat = { version = "0.5.1", path = "./axplat" }
+ax-plat-macros = { version = "0.3.0", path = "./axplat-macros" }
+ax-plat-aarch64-peripherals = { version = "0.5.1", path = "platforms/axplat-aarch64-peripherals" }
+ax-percpu = "0.4.3"

@@ -1,0 +1,24 @@
+args = [
+    "-machine",
+    "virt",
+    "-bios",
+    "default",
+    "-m",
+    "128M",
+    "-smp",
+    "4",
+    "-nographic",
+    "-device",
+    "virtio-blk-pci,drive=disk0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/test-suit/arceos/rust/fs/shell/disk.img",
+    "-serial",
+    "mon:stdio",
+]
+uefi = false
+to_bin = true
+shell_prefix = "arceos:"
+shell_init_cmd = "pwd && echo 'FS shell tests passed!'"
+success_regex = ["FS shell tests passed!"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+timeout=3

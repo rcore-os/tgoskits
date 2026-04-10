@@ -54,7 +54,7 @@ fn common_main(item: TokenStream, arg_num: usize, export_name: &str, err_msg: &s
 ///
 /// ```rust
 /// # use axplat_macros as axplat;
-/// #[axplat::main]
+/// #[ax_plat::main]
 /// fn primary_main(cpu_id: usize, arg: usize) -> ! {
 ///     todo!() // Your code here
 /// }
@@ -63,7 +63,7 @@ pub fn main(attr: TokenStream, item: TokenStream) -> TokenStream {
     if !attr.is_empty() {
         return compiler_error(Error::new(
             Span::call_site(),
-            "expect an empty attribute or `#[axplat::main]`",
+            "expect an empty attribute or `#[ax_plat::main]`",
         ));
     };
     common_main(
@@ -85,7 +85,7 @@ pub fn main(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// ```rust
 /// # use axplat_macros as axplat;
-/// #[axplat::secondary_main]
+/// #[ax_plat::secondary_main]
 /// fn secondary_main(cpu_id: usize) -> ! {
 ///     todo!() // Your code here
 /// }
@@ -94,7 +94,7 @@ pub fn secondary_main(attr: TokenStream, item: TokenStream) -> TokenStream {
     if !attr.is_empty() {
         return compiler_error(Error::new(
             Span::call_site(),
-            "expect an empty attribute or `#[axplat::secondary_main]`",
+            "expect an empty attribute or `#[ax_plat::secondary_main]`",
         ));
     };
     common_main(

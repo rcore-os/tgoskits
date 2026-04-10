@@ -2,15 +2,14 @@
 
 use core::ops::{Deref, DerefMut};
 
+use ax_memory_addr::VirtAddr;
 use loongArch64::register::{
     badi, badv,
     estat::{self, Exception, Trap},
 };
-use memory_addr::VirtAddr;
-
-use crate::{trap::PageFaultFlags, TrapFrame};
 
 pub use crate::uspace_common::{ExceptionKind, ReturnReason};
+use crate::{TrapFrame, trap::PageFaultFlags};
 
 /// Context to enter user space.
 #[derive(Debug, Clone, Copy)]
@@ -52,7 +51,7 @@ impl UserContext {
         let ret = match estat.cause() {
             Trap::Interrupt(_) => {
                 let irq_num: usize = estat.is().trailing_zeros() as usize;
-                handle_trap!(IRQ, irq_num);
+                crate::trap::irq_handler(irq_num);
                 ReturnReason::Interrupt
             }
             Trap::Exception(Exception::Syscall) => {

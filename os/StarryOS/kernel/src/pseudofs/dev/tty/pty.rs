@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, sync::Arc};
 
+use ax_kspin::SpinNoPreempt;
 use axpoll::PollSet;
-use kspin::SpinNoPreempt;
 use ringbuf::{
     Cons, HeapRb, Prod,
     traits::{Consumer, Producer},

@@ -5,8 +5,8 @@ extern crate alloc;
 use alloc::{string::String, sync::Arc};
 use core::{cell::UnsafeCell, num::NonZeroU64};
 
-use arceos_api::task::{self as api, AxTaskHandle};
-use axerrno::ax_err_type;
+use ax_api::task::{self as api, AxTaskHandle};
+use ax_errno::ax_err_type;
 
 use crate::io;
 
@@ -97,9 +97,7 @@ impl Builder {
         T: Send + 'static,
     {
         let name = self.name.unwrap_or_default();
-        let stack_size = self
-            .stack_size
-            .unwrap_or(arceos_api::config::TASK_STACK_SIZE);
+        let stack_size = self.stack_size.unwrap_or(ax_api::config::TASK_STACK_SIZE);
 
         let my_packet = Arc::new(Packet {
             result: UnsafeCell::new(None),
@@ -143,7 +141,7 @@ pub fn current() -> Thread {
 /// spawned thread.
 ///
 /// The default task name is an empty string. The default thread stack size is
-/// [`arceos_api::config::TASK_STACK_SIZE`].
+/// [`ax_api::config::TASK_STACK_SIZE`].
 ///
 /// [`join`]: JoinHandle::join
 pub fn spawn<T, F>(f: F) -> JoinHandle<T>

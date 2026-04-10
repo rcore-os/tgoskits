@@ -7,9 +7,9 @@ ifeq ($(shell cargo axplat --version 2>/dev/null),)
 endif
 
 # Tool to generate platform configuration files
-ifeq ($(shell axconfig-gen --version 2>/dev/null),)
-  $(info Installing axconfig-gen...)
-  $(shell cargo install axconfig-gen)
+ifeq ($(shell ax-config-gen --version 2>/dev/null),)
+  $(info Installing ax-config-gen...)
+  $(shell cargo install ax-config-gen)
 endif
 
 # Cargo binutils

@@ -1,15 +1,15 @@
 use alloc::{collections::BTreeMap, sync::Arc};
 use core::slice;
 
-use axerrno::{AxError, AxResult};
-use axfs::FileBackend;
-use axhal::{
+use ax_errno::{AxError, AxResult};
+use ax_fs::FileBackend;
+use ax_hal::{
     mem::phys_to_virt,
     paging::{MappingFlags, PageSize, PageTableCursor, PagingError},
 };
-use axsync::Mutex;
-use kspin::SpinNoIrq;
-use memory_addr::{PhysAddr, VirtAddr, VirtAddrRange};
+use ax_kspin::SpinNoIrq;
+use ax_memory_addr::{PhysAddr, VirtAddr, VirtAddrRange};
+use ax_sync::Mutex;
 
 use super::{
     AddrSpace, Backend, BackendOps, PopulateCallback, alloc_frame, dealloc_frame, pages_in,

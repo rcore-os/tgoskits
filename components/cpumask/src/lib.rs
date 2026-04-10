@@ -419,7 +419,7 @@ impl From<CpuMask<1024>> for [u128; 8] {
 /// # Examples
 ///
 /// ```rust
-/// # use cpumask::CpuMask;
+/// # use ax_cpumask::CpuMask;
 /// let mut cpumask: CpuMask<10> = CpuMask::new();
 /// cpumask.set(3, true);
 /// cpumask.set(5, true);

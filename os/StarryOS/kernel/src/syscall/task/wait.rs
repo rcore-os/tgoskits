@@ -1,8 +1,8 @@
 use alloc::vec::Vec;
 use core::{future::poll_fn, task::Poll};
 
-use axerrno::{AxError, AxResult, LinuxError};
-use axtask::{
+use ax_errno::{AxError, AxResult, LinuxError};
+use ax_task::{
     current,
     future::{block_on, interruptible},
 };

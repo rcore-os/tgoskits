@@ -25,9 +25,9 @@ use alloc::{
     vec::Vec,
 };
 
-use axerrno::{AxError, AxResult};
-use axfs_vfs::{VfsDirEntry, VfsNodeAttr, VfsNodeOps, VfsNodeRef, VfsNodeType, VfsOps, VfsResult};
-use lazyinit::LazyInit;
+use ax_errno::{AxError, AxResult};
+use ax_fs_vfs::{VfsDirEntry, VfsNodeAttr, VfsNodeOps, VfsNodeRef, VfsNodeType, VfsOps, VfsResult};
+use ax_lazyinit::LazyInit;
 use spin::Mutex;
 
 use crate::{
@@ -141,7 +141,7 @@ impl RootDirectory {
 }
 
 impl VfsNodeOps for RootDirectory {
-    axfs_vfs::impl_vfs_dir_default! {}
+    ax_fs_vfs::impl_vfs_dir_default! {}
 
     fn get_attr(&self) -> VfsResult<VfsNodeAttr> {
         self.main_fs.root_dir().get_attr()
@@ -173,7 +173,7 @@ impl VfsNodeOps for RootDirectory {
         let normalized_path = self.normalize_path(path);
         if let Some((mount_fs, rest_path)) = self.find_best_mount(normalized_path) {
             if rest_path.is_empty() {
-                Err(axfs_vfs::VfsError::PermissionDenied)
+                Err(ax_fs_vfs::VfsError::PermissionDenied)
             } else {
                 mount_fs.root_dir().remove(rest_path)
             }
@@ -462,10 +462,10 @@ fn parent_node_of(dir: Option<&VfsNodeRef>, path: &str) -> VfsNodeRef {
 
 pub(crate) fn absolute_path(path: &str) -> AxResult<String> {
     if path.starts_with('/') {
-        Ok(axfs_vfs::path::canonicalize(path))
+        Ok(ax_fs_vfs::path::canonicalize(path))
     } else {
         let path = CURRENT_DIR_PATH.lock().clone() + path;
-        Ok(axfs_vfs::path::canonicalize(&path))
+        Ok(ax_fs_vfs::path::canonicalize(&path))
     }
 }
 

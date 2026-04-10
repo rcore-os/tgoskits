@@ -14,7 +14,7 @@
 
 use core::fmt::LowerHex;
 
-use memory_addr::AddrRange;
+use ax_memory_addr::AddrRange;
 
 use super::{Port, SysRegAddr};
 use crate::GuestPhysAddr;

@@ -5,11 +5,11 @@ use alloc::{
 };
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use axerrno::{AxError, AxResult};
-use axfs::{CachedFile, FileFlags};
-use axhal::paging::{MappingFlags, PageSize, PageTableCursor, PagingError};
-use axsync::Mutex;
-use memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
+use ax_errno::{AxError, AxResult};
+use ax_fs::{CachedFile, FileFlags};
+use ax_hal::paging::{MappingFlags, PageSize, PageTableCursor, PagingError};
+use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
+use ax_sync::Mutex;
 
 use super::{AddrSpace, Backend, BackendOps, PopulateCallback, pages_in};
 

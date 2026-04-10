@@ -41,13 +41,13 @@ endef
 clippy_args := -A unsafe_op_in_unsafe_fn
 
 define cargo_clippy
-  $(call run_cmd,cargo clippy,--workspace --exclude axlog --exclude axplat-dyn --exclude "arceos-*" $(1) $(verbose) -- $(clippy_args))
-  $(call run_cmd,cargo clippy,-p axlog $(1) $(verbose) -- $(clippy_args))
+  $(call run_cmd,cargo clippy,--workspace --exclude ax-log --exclude axplat-dyn --exclude "arceos-*" $(1) $(verbose) -- $(clippy_args))
+  $(call run_cmd,cargo clippy,-p ax-log $(1) $(verbose) -- $(clippy_args))
 endef
 
 all_packages := \
   $(filter-out axplat-dyn,$(shell ls $(CURDIR)/modules)) \
-  axfeat arceos_api axstd axlibc
+  ax-feat ax-api ax-std ax-libc
 
 define cargo_doc
   $(call run_cmd,cargo doc,--no-deps --all-features --workspace --exclude "arceos-*" --exclude axplat-dyn $(verbose))
@@ -58,6 +58,6 @@ define cargo_doc
 endef
 
 define unit_test
-  $(call run_cmd,cargo test,-p axfs $(1) $(verbose) -- --nocapture)
-  $(call run_cmd,cargo test,--workspace --exclude axfs --exclude axplat-dyn $(1) $(verbose) -- --nocapture)
+  $(call run_cmd,cargo test,-p ax-fs $(1) $(verbose) -- --nocapture)
+  $(call run_cmd,cargo test,--workspace --exclude ax-fs --exclude axplat-dyn $(1) $(verbose) -- --nocapture)
 endef

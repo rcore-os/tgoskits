@@ -2,8 +2,8 @@
 
 use core::arch::asm;
 
+use ax_memory_addr::{PhysAddr, VirtAddr};
 use loongArch64::register::{crmd, ecfg, eentry, pgdh, pgdl};
-use memory_addr::{PhysAddr, VirtAddr};
 
 /// Allows the current CPU to respond to interrupts.
 #[inline]

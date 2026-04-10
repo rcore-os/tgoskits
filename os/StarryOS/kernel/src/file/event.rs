@@ -4,9 +4,9 @@ use core::{
     task::Context,
 };
 
-use axerrno::AxError;
+use ax_errno::AxError;
+use ax_task::future::{block_on, poll_io};
 use axpoll::{IoEvents, PollSet, Pollable};
-use axtask::future::{block_on, poll_io};
 
 use crate::file::{FileLike, IoDst, IoSrc};
 
@@ -33,7 +33,7 @@ impl EventFd {
 }
 
 impl FileLike for EventFd {
-    fn read(&self, dst: &mut IoDst) -> axio::Result<usize> {
+    fn read(&self, dst: &mut IoDst) -> ax_io::Result<usize> {
         if dst.remaining_mut() < size_of::<u64>() {
             return Err(AxError::InvalidInput);
         }
@@ -60,7 +60,7 @@ impl FileLike for EventFd {
         }))
     }
 
-    fn write(&self, src: &mut IoSrc) -> axio::Result<usize> {
+    fn write(&self, src: &mut IoSrc) -> ax_io::Result<usize> {
         if src.remaining() < size_of::<u64>() {
             return Err(AxError::InvalidInput);
         }
@@ -96,7 +96,7 @@ impl FileLike for EventFd {
         self.non_blocking.load(Ordering::Acquire)
     }
 
-    fn set_nonblocking(&self, non_blocking: bool) -> axio::Result {
+    fn set_nonblocking(&self, non_blocking: bool) -> ax_io::Result {
         self.non_blocking.store(non_blocking, Ordering::Release);
         Ok(())
     }

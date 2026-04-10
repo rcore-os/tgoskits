@@ -13,8 +13,8 @@
 
 ### Other Changes
 
-- Make sure the percpu data area is initialized only once.
-- Automatically detect number of CPUs in `percpu::init`.
+- Make sure the ax-percpu data area is initialized only once.
+- Automatically detect number of CPUs in `ax_percpu::init`.
 - x86_64:
     + Use `mov` instruction instead of `movabs` to get the per-CPU variable offset.
 

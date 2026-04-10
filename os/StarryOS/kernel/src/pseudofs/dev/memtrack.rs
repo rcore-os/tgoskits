@@ -55,14 +55,14 @@ impl MemoryCategory {
                 "starry_process::process_group::ProcessGroup::new" => {
                     return Some("process group");
                 }
-                "axfs::fs::ext4::inode::Inode::new" => {
+                "ax_fs::fs::ext4::inode::Inode::new" => {
                     return Some("ext4 inode");
                 }
-                "axfs::highlevel::file::CachedFile::get_or_create"
-                | "axfs::highlevel::file::CachedFile::page_or_insert" => {
+                "ax_fs::highlevel::file::CachedFile::get_or_create"
+                | "ax_fs::highlevel::file::CachedFile::page_or_insert" => {
                     return Some("cached file");
                 }
-                "axtask::timers::set_alarm_wakeup" => {
+                "ax_task::timers::set_alarm_wakeup" => {
                     return Some("timer");
                 }
                 "axfs_ng_vfs::node::dir::DirNode::lookup_locked"
@@ -91,7 +91,7 @@ impl fmt::Display for MemoryCategory {
 
 fn run_memory_analysis() {
     // Wait for gc
-    axtask::yield_now();
+    ax_task::yield_now();
     cleanup_task_tables();
     clear_elf_cache();
 
@@ -101,10 +101,10 @@ fn run_memory_analysis() {
     );
 
     let from = STAMPED_GENERATION.load(Ordering::SeqCst);
-    let to = axalloc::current_generation();
+    let to = ax_alloc::current_generation();
 
     let mut allocations: BTreeMap<MemoryCategory, Vec<Layout>> = BTreeMap::new();
-    axalloc::allocations_in(from..to, |info| {
+    ax_alloc::allocations_in(from..to, |info| {
         let category = MemoryCategory::new(&info.backtrace);
         allocations.entry(category).or_default().push(info.layout);
     });
@@ -142,14 +142,14 @@ impl DeviceOps for MemTrack {
         if offset == 0 && !buf.is_empty() {
             match buf {
                 b"start\n" => {
-                    let generation = axalloc::current_generation();
+                    let generation = ax_alloc::current_generation();
                     STAMPED_GENERATION.store(generation, Ordering::SeqCst);
                     ax_println!("Memory allocation generation stamped: {}", generation);
-                    axalloc::enable_tracking();
+                    ax_alloc::enable_tracking();
                 }
                 b"end\n" => {
                     run_memory_analysis();
-                    axalloc::disable_tracking();
+                    ax_alloc::disable_tracking();
                 }
                 _ => {}
             }

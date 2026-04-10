@@ -18,9 +18,9 @@ use alloc::boxed::Box;
 use core::time::Duration;
 
 use aarch64_sysreg::SystemRegType;
+use ax_errno::AxResult;
 use axaddrspace::device::{AccessWidth, DeviceAddrRange, SysRegAddr, SysRegAddrRange};
 use axdevice_base::{BaseDeviceOps, EmuDeviceType};
-use axerrno::AxResult;
 use axvisor_api::time::{current_time_nanos, register_timer};
 use log::info;
 

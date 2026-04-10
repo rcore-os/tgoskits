@@ -4,7 +4,7 @@
 > 类型：二进制 crate
 > 分层：ArceOS 层 / 宿主机配套工具
 > 版本：`0.1.0`
-> 文档依据：`Cargo.toml`、`README.md`、`src/main.rs`、`src/device.rs`、`os/arceos/modules/axnet/src/smoltcp_impl/bench.rs`
+> 文档依据：`Cargo.toml`、`README.md`、`src/main.rs`、`src/device.rs`、`os/arceos/modules/ax-net/src/smoltcp_impl/bench.rs`
 
 `bwbench-client` 是一个运行在 Linux 宿主机上的原始以太网带宽对测工具。它通过 `AF_PACKET` raw socket 直接向指定网卡或 tap 设备发送/接收帧，并按秒输出吞吐统计。它不是 ArceOS 镜像里的应用，也不是可复用网络库；它的真实定位是给 ArceOS 网络基准路径提供一个宿主机侧对端。
 
@@ -17,7 +17,7 @@
 从目录和源码看，`bwbench-client` 与仓库里的 HTTP 示例完全不同：
 
 - 它运行在宿主机 `std` 环境，而不是 `no_std` ArceOS 应用环境
-- 它不走 `axstd`，也不直接依赖仓库内的网络栈
+- 它不走 `ax-std`，也不直接依赖仓库内的网络栈
 - 它直接使用 Linux raw socket 与 `ioctl`
 
 因此，它不是“ArceOS 的一个网络示例”，而是“ArceOS 网络基准的宿主机配套工具”。
@@ -78,12 +78,12 @@
 
 `README.md` 明确把它描述成与 ArceOS 带宽基准配对使用的宿主工具，并给出了 tap 设备示例。当前仓库中，能直接对上的客体侧入口是：
 
-- `axnet::bench_transmit()`
-- `axnet::bench_receive()`
+- `ax-net::bench_transmit()`
+- `ax-net::bench_receive()`
 
 也就是说，这个工具真正的使命是充当这些基准入口的宿主机对端。
 
-需要特别说明的是：`README.md` 里提到的 `make A=apps/net/bwbench ...` 来自更早期的应用组织方式；在当前仓库快照里，直接能对应上的仍是 `axnet` 中的基准函数，而不是独立存在于同目录的 ArceOS 应用源码。
+需要特别说明的是：`README.md` 里提到的 `make A=apps/net/bwbench ...` 来自更早期的应用组织方式；在当前仓库快照里，直接能对应上的仍是 `ax-net` 中的基准函数，而不是独立存在于同目录的 ArceOS 应用源码。
 
 ### 2.4 关键边界
 
@@ -105,7 +105,7 @@
 `bwbench-client` 没有直接依赖仓库内其他 crate。它与仓库的关系主要体现在“测试配对”上：
 
 - 宿主机侧：`bwbench-client`
-- 客体侧：`axnet::bench_transmit()` / `bench_receive()`
+- 客体侧：`ax-net::bench_transmit()` / `bench_receive()`
 
 ### 3.3 跨层关系
 
@@ -113,7 +113,7 @@
 | --- | --- |
 | `bwbench-client` | 宿主机 raw socket 基准工具 |
 | Linux raw socket | 提供二层帧收发能力 |
-| ArceOS `axnet` 基准入口 | 提供客体侧发送/接收对端 |
+| ArceOS `ax-net` 基准入口 | 提供客体侧发送/接收对端 |
 
 ## 4. 开发指南
 

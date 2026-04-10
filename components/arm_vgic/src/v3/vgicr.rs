@@ -14,11 +14,11 @@
 
 use core::{cell::UnsafeCell, ptr};
 
+use ax_memory_addr::PhysAddr;
 use axaddrspace::{GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr};
 use axdevice_base::BaseDeviceOps;
 use axvisor_api::memory::phys_to_virt;
 use log::{debug, trace};
-use memory_addr::PhysAddr;
 use spin::{Mutex, Once};
 
 use super::{
@@ -91,7 +91,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicR {
         &self,
         addr: <GuestPhysAddrRange as axaddrspace::device::DeviceAddrRange>::Addr,
         width: axaddrspace::device::AccessWidth,
-    ) -> axerrno::AxResult<usize> {
+    ) -> ax_errno::AxResult<usize> {
         let gicr_base = self.host_gicr_base_this_cpu;
         let reg = addr - self.addr;
 
@@ -160,7 +160,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicR {
         addr: <GuestPhysAddrRange as axaddrspace::device::DeviceAddrRange>::Addr,
         width: axaddrspace::device::AccessWidth,
         value: usize,
-    ) -> axerrno::AxResult<()> {
+    ) -> ax_errno::AxResult<()> {
         let gicr_base = self.host_gicr_base_this_cpu;
         let reg = addr - self.addr;
 
@@ -244,15 +244,16 @@ impl LpiPropTable {
     ) -> Self {
         let size_per_gicr = size_per_gicr.unwrap_or(DEFAULT_SIZE_PER_GICR);
         let id_bits = (host_gicd_typer >> 19) & 0x1f;
-        let page_num: usize = ((1 << (id_bits + 1)) - 8192) / memory_addr::PAGE_SIZE_4K;
+        let page_num: usize = ((1 << (id_bits + 1)) - 8192) / ax_memory_addr::PAGE_SIZE_4K;
 
         debug!(
             "Creating LPI prop table: id_bits: {id_bits}, page_num: {page_num}, size_per_gicr: \
              {size_per_gicr}"
         );
 
-        let f = axvisor_api::memory::alloc_contiguous_frames(page_num, 0)
-            .expect("Failed to allocate contiguous frames for LPI prop table");
+        let f =
+            axvisor_api::memory::alloc_contiguous_frames(page_num, ax_memory_addr::PAGE_SIZE_4K)
+                .expect("Failed to allocate contiguous frames for LPI prop table");
         let propreg = f.as_usize() | 0x78f;
         for id in 0..cpu_num {
             let propbaser = host_gicr_base + id * size_per_gicr + GICR_PROPBASER;

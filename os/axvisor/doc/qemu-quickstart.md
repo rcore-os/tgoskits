@@ -75,7 +75,7 @@ This branch provides a one-click setup script `scripts/setup_qemu.sh` that autom
 ./scripts/setup_qemu.sh arceos
 
 cargo xtask qemu \
-  --build-config configs/board/qemu-aarch64.toml \
+  --config configs/board/qemu-aarch64.toml \
   --qemu-config .github/workflows/qemu-aarch64.toml \
   --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
 ```
@@ -88,7 +88,7 @@ Success indicator: `Hello, world!` appears in the output.
 ./scripts/setup_qemu.sh linux
 
 cargo xtask qemu \
-  --build-config configs/board/qemu-aarch64.toml \
+  --config configs/board/qemu-aarch64.toml \
   --qemu-config .github/workflows/qemu-aarch64.toml \
   --vmconfigs tmp/vmconfigs/linux-aarch64-qemu-smp1.generated.toml
 ```
@@ -101,7 +101,7 @@ Success indicator: `test pass!` appears in the output.
 ./scripts/setup_qemu.sh nimbos
 
 cargo xtask qemu \
-  --build-config configs/board/qemu-x86_64.toml \
+  --config configs/board/qemu-x86_64.toml \
   --qemu-config .github/workflows/qemu-x86_64-kvm.toml \
   --vmconfigs tmp/vmconfigs/nimbos-x86_64-qemu-smp1.generated.toml
 ```
@@ -109,6 +109,21 @@ cargo xtask qemu \
 After booting, you will enter the Rust user shell (`>>` prompt). Type `usertests` to run the test suite. All tests passing will print `usertests passed!`
 
 > **Note**: NimbOS requires VT-x/KVM. If `/dev/kvm` does not exist or has insufficient permissions, you will get a `Permission denied` error. WSL2 requires nested virtualization support in the kernel to use KVM.
+
+### ArceOS (RISC-V64)
+
+```bash
+./scripts/setup_qemu.sh arceos-riscv64
+
+cargo xtask qemu \
+  --build-config configs/board/qemu-riscv64.toml \
+  --qemu-config .github/workflows/qemu-riscv64.toml \
+  --vmconfigs tmp/vmconfigs/arceos-riscv64-qemu-smp1.generated.toml
+```
+
+Success indicator: `Hello, world!` appears in the output.
+
+`qemu-riscv64` currently supports the RISC-V ArceOS guest path. Cross-ISA boot such as `riscv64 AxVisor -> aarch64 ArceOS` is not wired up in the current hypervisor stack.
 
 ## 5. What Does setup_qemu.sh Do?
 

@@ -14,10 +14,10 @@
 
 use std::sync::{Arc, Mutex};
 
+use ax_errno::AxResult;
 use axaddrspace::{GuestPhysAddr, GuestPhysAddrRange, device::AccessWidth};
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
 use axdevice_base::BaseDeviceOps;
-use axerrno::AxResult;
 use axvmconfig::EmulatedDeviceType;
 
 struct MockMmioDevice {

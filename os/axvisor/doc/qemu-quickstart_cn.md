@@ -75,7 +75,7 @@ id  # 输出应包含 "kvm"
 ./scripts/setup_qemu.sh arceos
 
 cargo xtask qemu \
-  --build-config configs/board/qemu-aarch64.toml \
+  --config configs/board/qemu-aarch64.toml \
   --qemu-config .github/workflows/qemu-aarch64.toml \
   --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
 ```
@@ -88,7 +88,7 @@ cargo xtask qemu \
 ./scripts/setup_qemu.sh linux
 
 cargo xtask qemu \
-  --build-config configs/board/qemu-aarch64.toml \
+  --config configs/board/qemu-aarch64.toml \
   --qemu-config .github/workflows/qemu-aarch64.toml \
   --vmconfigs tmp/vmconfigs/linux-aarch64-qemu-smp1.generated.toml
 ```
@@ -101,7 +101,7 @@ cargo xtask qemu \
 ./scripts/setup_qemu.sh nimbos
 
 cargo xtask qemu \
-  --build-config configs/board/qemu-x86_64.toml \
+  --config configs/board/qemu-x86_64.toml \
   --qemu-config .github/workflows/qemu-x86_64-kvm.toml \
   --vmconfigs tmp/vmconfigs/nimbos-x86_64-qemu-smp1.generated.toml
 ```
@@ -109,6 +109,21 @@ cargo xtask qemu \
 启动成功后会进入 Rust user shell（`>>` 提示符），输入 `usertests` 运行测试套件，全部通过后输出 `usertests passed!`
 
 > **注意**：NimbOS 依赖 VT-x/KVM。如果 `/dev/kvm` 不存在或权限不足，会报 `Permission denied` 错误。WSL2 需要内核支持嵌套虚拟化才能使用 KVM。
+
+### ArceOS（RISC-V64）
+
+```bash
+./scripts/setup_qemu.sh arceos-riscv64
+
+cargo xtask qemu \
+  --build-config configs/board/qemu-riscv64.toml \
+  --qemu-config .github/workflows/qemu-riscv64.toml \
+  --vmconfigs tmp/vmconfigs/arceos-riscv64-qemu-smp1.generated.toml
+```
+
+启动成功标志：输出中出现 `Hello, world!`
+
+当前 `qemu-riscv64` 这条快速启动链路支持的是 RISC-V 版 ArceOS Guest。像 `riscv64 AxVisor -> aarch64 ArceOS` 这样的跨 ISA 启动，在现有 hypervisor 栈里还没有接通。
 
 ## 5. setup_qemu.sh 做了什么
 

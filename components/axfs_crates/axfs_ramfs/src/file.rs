@@ -1,11 +1,11 @@
 use alloc::vec::Vec;
 
-use axfs_vfs::{VfsNodeAttr, VfsNodeOps, VfsResult, impl_vfs_non_dir_default};
+use ax_fs_vfs::{VfsNodeAttr, VfsNodeOps, VfsResult, impl_vfs_non_dir_default};
 use spin::RwLock;
 
 /// The file node in the RAM filesystem.
 ///
-/// It implements [`axfs_vfs::VfsNodeOps`].
+/// It implements [`ax_fs_vfs::VfsNodeOps`].
 pub struct FileNode {
     content: RwLock<Vec<u8>>,
 }

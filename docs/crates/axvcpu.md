@@ -104,7 +104,7 @@ flowchart LR
 
 ### 1.6 当前 vCPU 绑定机制
 
-`vcpu.rs` 里使用 `percpu::def_percpu` 定义：
+`vcpu.rs` 里使用 `ax_percpu::def_percpu` 定义：
 
 - `CURRENT_VCPU: Option<*mut u8>`
 
@@ -118,7 +118,7 @@ flowchart LR
 这个设计有两个好处：
 
 - 架构后端实现无需在 trait 方法参数中额外传入外壳对象
-- 对于“当前正在运行的是哪一个 vCPU”这种语义，可以统一通过 percpu 状态查询
+- 对于“当前正在运行的是哪一个 vCPU”这种语义，可以统一通过 ax-percpu 状态查询
 
 同时，源码显式禁止嵌套 `with_current_cpu_set()`，否则会 panic。这说明当前模型默认一个物理 CPU 在任意时刻只处理一个 vCPU 上下文。
 
@@ -219,10 +219,10 @@ flowchart TD
 
 | 依赖 | 作用 |
 | --- | --- |
-| `axerrno` | 错误模型 |
+| `ax-errno` | 错误模型 |
 | `axaddrspace` | `GuestPhysAddr`、`HostPhysAddr` 与 `AxMmHal` |
 | `axvisor_api` | `VMId`、`VCpuId` 等基础 ID 类型 |
-| `percpu` | current vCPU 与 per-CPU 虚拟化状态 |
+| `ax-percpu` | current vCPU 与 per-CPU 虚拟化状态 |
 | `memory_addr` | 地址相关基础类型 |
 
 ### 3.2 主要消费者
@@ -237,7 +237,7 @@ flowchart TD
 
 ```mermaid
 graph TD
-    A[axaddrspace / percpu / axvisor_api] --> B[axvcpu]
+    A[axaddrspace / ax-percpu / axvisor_api] --> B[axvcpu]
     B --> C[arm_vcpu]
     B --> D[riscv_vcpu]
     B --> E[x86_vcpu]

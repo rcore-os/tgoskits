@@ -1,5 +1,5 @@
-use axhal::uspace::{ExceptionKind, ReturnReason, UserContext};
-use axtask::TaskInner;
+use ax_hal::uspace::{ExceptionKind, ReturnReason, UserContext};
+use ax_task::TaskInner;
 use starry_process::Pid;
 use starry_signal::{SignalInfo, Signo};
 use starry_vm::{VmMutPtr, VmPtr};
@@ -13,7 +13,7 @@ use crate::syscall::handle_syscall;
 pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) -> TaskInner {
     TaskInner::new(
         move || {
-            let curr = axtask::current();
+            let curr = ax_task::current();
 
             if let Some(tid) = (set_child_tid as *mut Pid).nullable() {
                 tid.vm_write(curr.id().as_u64() as Pid).ok();

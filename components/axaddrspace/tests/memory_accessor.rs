@@ -14,10 +14,10 @@
 
 mod test_utils;
 
+use ax_errno::AxResult;
+use ax_memory_addr::PhysAddr;
 use axaddrspace::{GuestMemoryAccessor, GuestPhysAddr};
-use axerrno::AxResult;
 use axin::axin;
-use memory_addr::PhysAddr;
 use test_utils::{BASE_PADDR, MEMORY_LEN, MockHal, mock_hal_test};
 
 /// Mock implementation of GuestMemoryAccessor for testing

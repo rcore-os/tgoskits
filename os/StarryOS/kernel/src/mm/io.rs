@@ -1,7 +1,7 @@
 use core::mem::{self, MaybeUninit};
 
-use axerrno::{AxError, AxResult};
-use axio::prelude::*;
+use ax_errno::{AxError, AxResult};
+use ax_io::prelude::*;
 use bytemuck::AnyBitPattern;
 use starry_vm::{VmPtr, vm_read_slice, vm_write_slice};
 

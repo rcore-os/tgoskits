@@ -1,8 +1,8 @@
 use core::{alloc::Layout, ptr::NonNull};
 
-use axdma::{BusAddr, DMAInfo, alloc_coherent, dealloc_coherent};
-use axdriver_net::ixgbe::{IxgbeHal, PhysAddr as IxgbePhysAddr};
-use axhal::mem::{phys_to_virt, virt_to_phys};
+use ax_dma::{BusAddr, DMAInfo, alloc_coherent, dealloc_coherent};
+use ax_driver_net::ixgbe::{IxgbeHal, PhysAddr as IxgbePhysAddr};
+use ax_hal::mem::{phys_to_virt, virt_to_phys};
 
 pub struct IxgbeHalImpl;
 
@@ -34,7 +34,7 @@ unsafe impl IxgbeHal for IxgbeHalImpl {
     }
 
     fn wait_until(duration: core::time::Duration) -> Result<(), &'static str> {
-        axhal::time::busy_wait_until(duration);
+        ax_hal::time::busy_wait_until(duration);
         Ok(())
     }
 }

@@ -1,8 +1,8 @@
 use core::ffi::{c_int, c_void};
 
-use axerrno::{LinuxError, LinuxResult};
+use ax_errno::{LinuxError, LinuxResult};
 #[cfg(not(feature = "fd"))]
-use axio::prelude::*;
+use ax_io::prelude::*;
 
 use crate::ctypes;
 #[cfg(feature = "fd")]

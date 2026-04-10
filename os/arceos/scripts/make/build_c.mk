@@ -1,4 +1,4 @@
-rust_lib_name := axlibc
+rust_lib_name := ax_libc
 rust_lib := $(TARGET_DIR)/$(TARGET)/$(MODE)/lib$(rust_lib_name).a
 
 ulib_dir := ulib/axlibc

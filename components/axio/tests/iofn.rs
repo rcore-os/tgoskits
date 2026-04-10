@@ -1,4 +1,4 @@
-use axio::{prelude::*, read_fn, write_fn};
+use ax_io::{prelude::*, read_fn, write_fn};
 
 #[test]
 fn test_slice_read_fn() {
@@ -43,7 +43,7 @@ fn test_copy_iofn() {
         move |b| buf.write(b)
     });
 
-    axio::copy(&mut reader, &mut writer).unwrap();
+    ax_io::copy(&mut reader, &mut writer).unwrap();
 
     assert_eq!(out, data);
 }

@@ -22,7 +22,7 @@
 `axpoll` 正是为这两件事存在的。它位于：
 
 - `axio` 之上：`axio` 只管同步 I/O 接口，不管等待
-- `axtask` future 机制之下：`axtask::future::poll_io` 依赖 `Pollable`
+- `ax-task` future 机制之下：`ax-task::future::poll_io` 依赖 `Pollable`
 - ArceOS/StarryOS 多路复用实现之下：更高层 `select` / `poll` / `epoll` 轮询的对象，底层往往实现 `Pollable`
 
 ### 1.2 单文件核心结构
@@ -60,7 +60,7 @@
 
 因此，`PollSet` 的真实语义更接近“有限容量的唤醒集合”，而不是严格意义上的公平等待队列。
 
-### 1.5 与 `axtask` 的桥接关系
+### 1.5 与 `ax-task` 的桥接关系
 
 `os/arceos/modules/axtask/src/future/poll.rs` 展示了 `axpoll` 在系统里的标准用法：
 
@@ -84,9 +84,9 @@
 
 当前仓库中直接依赖 `axpoll` 的关键路径包括：
 
-- `axtask`：把同步 nonblocking I/O 封装成可等待 future
-- `axnet-ng`：为 TCP、UDP、Unix domain socket、vsock、loopback 设备提供统一 readiness 语义
-- `axfs-ng` / `axfs-ng-vfs`：为文件节点暴露可轮询事件
+- `ax-task`：把同步 nonblocking I/O 封装成可等待 future
+- `ax-net-ng`：为 TCP、UDP、Unix domain socket、vsock、loopback 设备提供统一 readiness 语义
+- `ax-fs-ng` / `axfs-ng-vfs`：为文件节点暴露可轮询事件
 - StarryOS 内核：为 `FileLike`、pipe、TTY、socket、eventfd、epoll 等对象复用同一套等待协议
 
 ### 2.3 `Pollable` 的职责边界
@@ -101,7 +101,7 @@
 ### 2.4 关键边界
 
 - `axpoll` 不负责读写语义；那是 `axio` 的职责
-- `axpoll` 不负责超时策略；超时通常由 `axtask::future::timeout` 或上层 socket 层处理
+- `axpoll` 不负责超时策略；超时通常由 `ax-task::future::timeout` 或上层 socket 层处理
 - `axpoll` 不负责系统调用级 `poll` / `epoll` 数据结构和 fd 管理
 - `axpoll` 不替对象生成事件，只消费对象已经判断好的 readiness
 
@@ -121,9 +121,9 @@
 
 | 消费者 | 使用方式 |
 | --- | --- |
-| `axtask` | 通过 `poll_io()`、IRQ waker 等机制消费 `Pollable` 与 `PollSet` |
-| `axnet-ng` | 为不同地址族 socket 与设备统一事件位和 waker 注册 |
-| `axfs-ng` | 让文件节点支持统一 readiness 协议 |
+| `ax-task` | 通过 `poll_io()`、IRQ waker 等机制消费 `Pollable` 与 `PollSet` |
+| `ax-net-ng` | 为不同地址族 socket 与设备统一事件位和 waker 注册 |
+| `ax-fs-ng` | 让文件节点支持统一 readiness 协议 |
 | StarryOS 内核 | 作为 fd 世界底层的 readiness glue 层 |
 
 ## 4. 开发指南
@@ -140,7 +140,7 @@ axpoll = { workspace = true }
 1. `poll()` 中只读当前状态，不要在这里阻塞或睡眠。
 2. `register()` 中只保存/转发 waker；真正的 `wake()` 必须发生在状态变化点。
 3. 如果对象有不同类型的唤醒源，优先按读、写、关闭、异常分开组织 `PollSet`。
-4. 如果对象本身有 IRQ 或设备事件来源，可参考 `axtask` 与 `axnet-ng` 的做法，把底层事件桥接到 `PollSet`。
+4. 如果对象本身有 IRQ 或设备事件来源，可参考 `ax-task` 与 `ax-net-ng` 的做法，把底层事件桥接到 `PollSet`。
 
 ### 4.3 修改实现时的风险点
 
@@ -163,7 +163,7 @@ axpoll = { workspace = true }
 - 注册后立即就绪时是否仍能正确返回
 - 超容量覆盖时旧 waker 是否被唤醒
 - 对象或 `PollSet` 被销毁时是否留下悬挂等待者
-- 任何 `Pollable` 语义调整都应补一条 `axtask::future::poll_io` 集成验证
+- 任何 `Pollable` 语义调整都应补一条 `ax-task::future::poll_io` 集成验证
 
 ### 5.3 推荐验证命令
 
@@ -175,7 +175,7 @@ cargo test -p axpoll
 
 ### 6.1 ArceOS
 
-在 ArceOS 中，`axpoll` 处在同步 nonblocking I/O 与任务等待之间，是 `axtask`、`axnet-ng`、`axfs-ng` 的公共 readiness glue 层。
+在 ArceOS 中，`axpoll` 处在同步 nonblocking I/O 与任务等待之间，是 `ax-task`、`ax-net-ng`、`ax-fs-ng` 的公共 readiness glue 层。
 
 ### 6.2 StarryOS
 

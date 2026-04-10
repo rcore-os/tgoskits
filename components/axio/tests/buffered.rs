@@ -11,7 +11,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use axio::{
+use ax_io::{
     BufReader, BufWriter, Cursor, Error, LineWriter, Result, SeekFrom, empty, prelude::*, sink,
 };
 

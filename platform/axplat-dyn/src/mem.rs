@@ -1,4 +1,4 @@
-use axplat::mem::{MemIf, PhysAddr, RawRange, VirtAddr};
+use ax_plat::mem::{MemIf, PhysAddr, RawRange, VirtAddr};
 use heapless::Vec;
 use somehal::mem::MemoryType;
 use spin::Once;

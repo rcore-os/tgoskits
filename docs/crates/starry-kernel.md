@@ -77,7 +77,7 @@ flowchart TD
 - `Thread` 管理线程级退出、信号、时间统计与用户态恢复相关状态。
 - `clone`、`execve`、`wait`、`futex` 等复杂语义都围绕这两层展开。
 
-这种设计使 StarryOS 可以在复用 `axtask` 线程调度能力的同时，补齐 Linux 风格进程模型。
+这种设计使 StarryOS 可以在复用 `ax-task` 线程调度能力的同时，补齐 Linux 风格进程模型。
 
 ## 2. 核心功能说明
 ### 2.1 主要功能
@@ -115,12 +115,12 @@ starry_kernel::syscall::handle_syscall(&mut uctx);
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    axfeat["axfeat"] --> starry["starry-kernel"]
-    axhal["axhal"] --> starry
-    axtask["axtask"] --> starry
-    axmm["axmm"] --> starry
-    axfs["axfs-ng / axfs-ng-vfs"] --> starry
-    axnet["axnet-ng"] --> starry
+    ax-feat["ax-feat"] --> starry["starry-kernel"]
+    ax-hal["ax-hal"] --> starry
+    ax-task["ax-task"] --> starry
+    ax-mm["ax-mm"] --> starry
+    ax-fs["ax-fs-ng / axfs-ng-vfs"] --> starry
+    ax-net["ax-net-ng"] --> starry
     starry_process["starry-process"] --> starry
     starry_signal["starry-signal"] --> starry
     starry_vm["starry-vm"] --> starry
@@ -130,11 +130,11 @@ graph LR
 ```
 
 ### 3.1 关键直接依赖
-- `axfeat`：把 `uspace`、`multitask`、`sched-rr`、`fs-ng-ext4`、`net-ng` 等能力一次性装配到内核。
-- `axhal`：用户态上下文、页表、trap、时间与控制台基础能力。
-- `axtask`：底层线程调度、`TaskExt` 和阻塞/唤醒机制。
-- `axfs-ng`、`axfs-ng-vfs`：文件系统与路径解析。
-- `axnet-ng`：网络与 socket 路径的底层支撑。
+- `ax-feat`：把 `uspace`、`multitask`、`sched-rr`、`fs-ng-ext4`、`net-ng` 等能力一次性装配到内核。
+- `ax-hal`：用户态上下文、页表、trap、时间与控制台基础能力。
+- `ax-task`：底层线程调度、`TaskExt` 和阻塞/唤醒机制。
+- `ax-fs-ng`、`axfs-ng-vfs`：文件系统与路径解析。
+- `ax-net-ng`：网络与 socket 路径的底层支撑。
 - `starry-process`、`starry-signal`、`starry-vm`：分别承接进程模型、信号模型和用户内存安全访问。
 
 ### 3.2 关键直接消费者
@@ -188,7 +188,7 @@ StarryOS 的主验证方式是端到端系统运行：
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-`starry-kernel` 并不是 ArceOS 的被复用组件，而是构建在 ArceOS `ax*` 模块之上的更高层系统。它消费 `axhal`、`axtask`、`axmm`、`axfs`、`axnet` 等能力，把它们重组为 Linux 风格宏内核语义。
+`starry-kernel` 并不是 ArceOS 的被复用组件，而是构建在 ArceOS `ax*` 模块之上的更高层系统。它消费 `ax-hal`、`ax-task`、`ax-mm`、`ax-fs`、`ax-net` 等能力，把它们重组为 Linux 风格宏内核语义。
 
 ### 6.2 StarryOS
 这是 `starry-kernel` 的主战场。`starryos` 包本身只负责启动入口和参数准备，而真正的内核逻辑几乎都集中在 `starry-kernel` 中，因此它就是 StarryOS 的核心内核实现。

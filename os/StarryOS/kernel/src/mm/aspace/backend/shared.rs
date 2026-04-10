@@ -1,10 +1,10 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::ops::Deref;
 
-use axerrno::AxResult;
-use axhal::paging::{MappingFlags, PageSize, PageTableCursor};
-use axsync::Mutex;
-use memory_addr::{MemoryAddr, PhysAddr, VirtAddr, VirtAddrRange};
+use ax_errno::AxResult;
+use ax_hal::paging::{MappingFlags, PageSize, PageTableCursor};
+use ax_memory_addr::{MemoryAddr, PhysAddr, VirtAddr, VirtAddrRange};
+use ax_sync::Mutex;
 
 use super::{AddrSpace, Backend, BackendOps, alloc_frame, dealloc_frame, divide_page, pages_in};
 

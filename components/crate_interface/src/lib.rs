@@ -4,7 +4,7 @@
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::quote;
-use syn::{parse::Error, parse_macro_input, ItemImpl, ItemTrait, PathArguments, PathSegment};
+use syn::{ItemImpl, ItemTrait, PathArguments, PathSegment, parse::Error, parse_macro_input};
 
 mod args;
 mod def_interface;
@@ -44,7 +44,7 @@ fn compiler_error(err: Error) -> TokenStream {
 /// allowed. Only associated functions (static methods) are supported:
 ///
 /// ```rust,compile_fail
-/// # use crate_interface::*;
+/// # use ax_crate_interface::*;
 /// #[def_interface]
 /// trait MyIf {
 ///     fn foo(&self); // error: methods with receiver (self) are not allowed
@@ -58,7 +58,7 @@ fn compiler_error(err: Error) -> TokenStream {
 /// parameters:
 ///
 /// ```rust,compile_fail
-/// # use crate_interface::*;
+/// # use ax_crate_interface::*;
 /// #[def_interface]
 /// trait MyIf {
 ///     fn foo<T>(x: T); // error: generic parameters are not allowed
@@ -93,7 +93,7 @@ pub fn def_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// name; otherwise, it will result in a compile error.
 ///
 /// ```rust,compile_fail
-/// # use crate_interface::*;
+/// # use ax_crate_interface::*;
 /// #[def_interface]
 /// trait MyIf {
 ///     fn foo();
@@ -113,7 +113,7 @@ pub fn def_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// the interface. For example, the following will result in a compile error:
 ///
 /// ```rust,compile_fail
-/// # use crate_interface::*;
+/// # use ax_crate_interface::*;
 /// #[def_interface(namespace = MyNs)]
 /// trait MyIf {
 ///     fn foo();
@@ -133,7 +133,7 @@ pub fn def_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// allowed in the implementation either:
 ///
 /// ```rust,compile_fail
-/// # use crate_interface::*;
+/// # use ax_crate_interface::*;
 /// trait MyIf {
 ///     fn foo(&self);
 /// }
@@ -151,7 +151,7 @@ pub fn def_interface(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Generic parameters are not supported in the implementation either:
 ///
 /// ```rust,compile_fail
-/// # use crate_interface::*;
+/// # use ax_crate_interface::*;
 /// trait MyIf {
 ///     fn foo<T>(x: T);
 /// }

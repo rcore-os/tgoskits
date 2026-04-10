@@ -154,17 +154,17 @@ fn ensure_axvisor_bin_arg(args: &mut Vec<String>) {
 }
 
 fn normalize_axvisor_platform_features(features: &mut Vec<String>) {
-    let has_axstd_defplat = features.iter().any(|feature| feature == "axstd/defplat");
-    let has_axstd_myplat = features.iter().any(|feature| feature == "axstd/myplat");
+    let has_axstd_defplat = features.iter().any(|feature| feature == "ax-std/defplat");
+    let has_axstd_myplat = features.iter().any(|feature| feature == "ax-std/myplat");
 
     if has_axstd_defplat && !has_axstd_myplat {
         for feature in features.iter_mut() {
-            if feature == "axstd/defplat" {
-                *feature = "axstd/myplat".to_string();
+            if feature == "ax-std/defplat" {
+                *feature = "ax-std/myplat".to_string();
             }
         }
     } else {
-        features.retain(|feature| feature != "axstd/defplat");
+        features.retain(|feature| feature != "ax-std/defplat");
     }
 }
 
@@ -345,7 +345,7 @@ mod tests {
             r#"
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "aarch64-unknown-none-softfloat"
-features = ["ept-level-4", "axstd/bus-mmio"]
+features = ["ept-level-4", "ax-std/bus-mmio"]
 log = "Info"
 plat_dyn = true
 vm_configs = []
@@ -360,7 +360,7 @@ vm_configs = []
         .unwrap();
 
         assert!(cargo.features.contains(&"ept-level-4".to_string()));
-        assert!(cargo.features.contains(&"axstd/bus-mmio".to_string()));
+        assert!(cargo.features.contains(&"ax-std/bus-mmio".to_string()));
         assert!(path.exists());
     }
 
@@ -482,9 +482,9 @@ vm_configs = []
         );
         assert!(cargo.features.contains(&"ept-level-4".to_string()));
         assert!(cargo.features.contains(&"fs".to_string()));
-        assert!(!cargo.features.contains(&"axstd/plat-dyn".to_string()));
-        assert!(!cargo.features.contains(&"axstd/defplat".to_string()));
-        assert!(cargo.features.contains(&"axstd/myplat".to_string()));
+        assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+        assert!(!cargo.features.contains(&"ax-std/defplat".to_string()));
+        assert!(cargo.features.contains(&"ax-std/myplat".to_string()));
     }
 
     #[test]
@@ -495,7 +495,7 @@ vm_configs = []
             &config_path,
             r#"
 env = {}
-features = ["axstd", "axstd/defplat", "ept-level-4"]
+features = ["ax-std", "ax-std/defplat", "ept-level-4"]
 log = "Info"
 plat_dyn = false
 "#,
@@ -515,7 +515,7 @@ plat_dyn = false
         })
         .unwrap();
 
-        assert!(!cargo.features.contains(&"axstd/defplat".to_string()));
-        assert!(cargo.features.contains(&"axstd/myplat".to_string()));
+        assert!(!cargo.features.contains(&"ax-std/defplat".to_string()));
+        assert!(cargo.features.contains(&"ax-std/myplat".to_string()));
     }
 }

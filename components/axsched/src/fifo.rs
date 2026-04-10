@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 
-use linked_list_r4l::{List, def_node};
+use ax_linked_list_r4l::{List, def_node};
 
 use crate::BaseScheduler;
 

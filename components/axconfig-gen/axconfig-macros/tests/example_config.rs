@@ -1,5 +1,5 @@
 #[macro_use]
-extern crate axconfig_macros;
+extern crate ax_config_macros;
 
 mod config {
     include_configs!("../example-configs/defconfig.toml"); // root: CARGO_MANIFEST_DIR

@@ -14,9 +14,9 @@ pub mod tty;
 use alloc::{format, sync::Arc};
 use core::any::Any;
 
-use axerrno::AxError;
+use ax_errno::AxError;
+use ax_sync::Mutex;
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsResult};
-use axsync::Mutex;
 #[cfg(feature = "dev-log")]
 pub use log::bind_dev_log;
 use rand::{Rng, SeedableRng, rngs::SmallRng};
@@ -198,7 +198,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             Arc::new(rtc::Rtc),
         ),
     );
-    if axdisplay::has_display() {
+    if ax_display::has_display() {
         root.add(
             "fb0",
             Device::new(

@@ -16,7 +16,7 @@
 //!
 //! This crate provides the procedural macros used to define and implement
 //! AxVisor API interfaces. These macros are built on top of the
-//! `crate_interface` crate and provide a convenient way to create
+//! `ax-crate-interface` crate and provide a convenient way to create
 //! link-time-resolved API interfaces.
 //!
 //! # Macros
@@ -49,7 +49,7 @@
 //!
 //! # How It Works
 //!
-//! The macros use `crate_interface` under the hood, which leverages Rust's
+//! The macros use `ax-crate-interface` under the hood, which leverages Rust's
 //! link-time symbol resolution to connect API definitions with their
 //! implementations. This allows for a cleaner API without explicit generic
 //! parameters.
@@ -80,7 +80,7 @@ fn axvisor_api_crate() -> TokenStream {
 /// Get the namespace identifier used for AxVisor APIs.
 ///
 /// All AxVisor APIs share a common namespace to avoid conflicts with other
-/// uses of `crate_interface`.
+/// uses of `ax-crate-interface`.
 fn axvisor_api_namespace() -> Ident {
     const AXVISOR_API_NS: &str = "AxVisorApi";
     Ident::new(AXVISOR_API_NS, Span::call_site())
@@ -126,7 +126,7 @@ macro_rules! assert_empty_attr {
 /// # Generated Code
 ///
 /// The macro generates:
-/// 1. The original trait definition with `crate_interface::def_interface`
+/// 1. The original trait definition with `ax_crate_interface::def_interface`
 ///    attribute.
 /// 2. Free-standing caller functions for each trait method at the same
 ///    module level.
@@ -137,7 +137,7 @@ macro_rules! assert_empty_attr {
 ///
 /// # Implementation
 ///
-/// This macro uses `crate_interface::def_interface` internally with the
+/// This macro uses `ax_crate_interface::def_interface` internally with the
 /// `gen_caller` option to generate the caller functions.
 #[proc_macro_attribute]
 pub fn api_def(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
@@ -193,7 +193,7 @@ pub fn api_def(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
 ///
 /// # Implementation
 ///
-/// This macro uses `crate_interface::impl_interface` internally.
+/// This macro uses `ax_crate_interface::impl_interface` internally.
 #[proc_macro_attribute]
 pub fn api_impl(attr: TokenStream1, input: TokenStream1) -> TokenStream1 {
     assert_empty_attr!(attr);

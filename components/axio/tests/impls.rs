@@ -2,7 +2,7 @@
 
 extern crate test;
 
-use axio::prelude::*;
+use ax_io::prelude::*;
 
 #[bench]
 fn bench_read_slice(b: &mut test::Bencher) {

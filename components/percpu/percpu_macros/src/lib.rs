@@ -1,8 +1,8 @@
 //! Macros to define and access a per-CPU data structure.
 //!
-//! **DO NOT** use this crate directly. Use the [percpu] crate instead.
+//! **DO NOT** use this crate directly. Use the [ax-percpu] crate instead.
 //!
-//! [percpu]: https://docs.rs/percpu
+//! [ax-percpu]: https://docs.rs/ax-percpu
 //!
 //! ## Implementation details of the `def_percpu` macro
 //!
@@ -49,7 +49,6 @@
 //! - A static variable `X` of type `X_WRAPPER` that is used to access the per-CPU data.
 //!
 //!   This variable is always generated with the same visibility and attributes as the original static variable.
-//!
 
 use proc_macro::TokenStream;
 use proc_macro2::Span;
@@ -87,7 +86,7 @@ fn def_percpu_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     let is_primitive_int = ["bool", "u8", "u16", "u32", "u64", "usize"].contains(&ty_str.as_str());
 
     let no_preempt_guard = if cfg!(feature = "preempt") {
-        quote! { let _guard = percpu::__priv::NoPreemptGuard::new(); }
+        quote! { let _guard = ax_percpu::__priv::NoPreemptGuard::new(); }
     } else {
         quote! {}
     };
@@ -221,7 +220,7 @@ fn def_percpu_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
             /// - data races will not happen.
             #[inline]
             pub unsafe fn remote_ptr(&self, cpu_id: usize) -> *const #ty {
-                let base = percpu::percpu_area_base(cpu_id);
+                let base = ax_percpu::percpu_area_base(cpu_id);
                 let offset = #offset;
                 (base + offset) as *const #ty
             }
@@ -260,7 +259,7 @@ fn def_percpu_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// It should be used on a `static` variable definition.
 ///
-/// See the documentation of the [percpu](https://docs.rs/percpu) crate for more details.
+/// See the documentation of the [ax-percpu](https://docs.rs/ax-percpu) crate for more details.
 #[proc_macro_attribute]
 pub fn def_percpu(attr: TokenStream, item: TokenStream) -> TokenStream {
     def_percpu_impl(attr, item)
@@ -300,7 +299,7 @@ fn def_percpu_impl(attr: TokenStream, input: TokenStream) -> TokenStream {
     quote! {
         #[unsafe(link_section = ".percpu")]
         #(#attrs)*
-        #vis #static_token #mutability #ident : percpu::PerCpuData<#ty> = percpu::PerCpuData::new(#expr);
+        #vis #static_token #mutability #ident : ax_percpu::PerCpuData<#ty> = ax_percpu::PerCpuData::new(#expr);
     }
     .into()
 }

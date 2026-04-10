@@ -40,7 +40,7 @@ dtb_load_addr = 0x8220_0000
 # Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
 # For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`.
 memory_regions = [
-  [0x8000_0000, 0x800_0000, 0x7, 0], # System RAM 1G MAP_ALLOC
+  [0x8000_0000, 0x400_0000, 0x7, 0], # System RAM 64M MAP_ALLOC
 ]
 
 #

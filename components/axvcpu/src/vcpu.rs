@@ -14,8 +14,8 @@
 
 use core::cell::{RefCell, UnsafeCell};
 
+use ax_errno::{AxResult, ax_err};
 use axaddrspace::{GuestPhysAddr, HostPhysAddr};
-use axerrno::{AxResult, ax_err};
 use axvisor_api::vmm::{VCpuId, VMId};
 
 use super::{AxArchVCpu, AxVCpuExitReason};
@@ -307,7 +307,7 @@ impl<A: AxArchVCpu> AxVCpu<A> {
     }
 }
 
-#[percpu::def_percpu]
+#[ax_percpu::def_percpu]
 static mut CURRENT_VCPU: Option<*mut u8> = None;
 
 /// Get the current VCpu on the current physical CPU.

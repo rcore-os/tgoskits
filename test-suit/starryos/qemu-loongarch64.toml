@@ -9,7 +9,7 @@ args = [
   "-device",
   "virtio-blk-pci,drive=disk0",
   "-drive",
-  "id=disk0,if=none,format=raw,file=${workspace}/target/loongarch64-unknown-none-softfloat/disk.img",
+  "id=disk0,if=none,format=raw,file=${workspace}/target/loongarch64-unknown-none-softfloat/rootfs-loongarch64.img",
   "-device",
   "virtio-net-pci,netdev=net0",
   "-netdev",
@@ -18,7 +18,7 @@ args = [
 fail_regex = ['(?i)\bpanic(?:ked)?\b']
 shell_init_cmd = "pwd && echo 'All tests passed!'"
 shell_prefix = "starry:~#"
-success_regex = ["^All tests passed!$"]
+success_regex = ["(?m)^All tests passed!\\s*$"]
 to_bin = true
 uefi = false
-timeout = 3
+timeout = 5

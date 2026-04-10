@@ -1,15 +1,13 @@
 [package]
-name = "kspin"
-version = "0.1.1"
+name = "ax-kspin"
+version = "0.3.1"
+repository = "https://github.com/rcore-os/tgoskits"
 edition = "2021"
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "Spinlocks used for kernel space that can disable preemption or IRQs in the critical section."
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
-homepage = "https://github.com/arceos-org/arceos"
-repository = "https://github.com/arceos-org/kspin"
-documentation = "https://docs.rs/kspin"
 keywords = ["arceos", "synchronization", "spinlock", "no-irq"]
 categories = ["os", "no-std"]
+license = "Apache-2.0"
 
 [features]
 # To use in the multi-core environment
@@ -18,4 +16,4 @@ default = []
 
 [dependencies]
 cfg-if = "1.0"
-kernel_guard = "0.1"
+ax-kernel-guard = "0.3.3"

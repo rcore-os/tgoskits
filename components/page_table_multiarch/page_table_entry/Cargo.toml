@@ -1,16 +1,14 @@
 [package]
-name = "page_table_entry"
+name = "ax-page-table-entry"
 description = "Page table entry definition for various hardware architectures"
-documentation = "https://docs.rs/page_table_entry"
 version.workspace = true
+repository.workspace = true
 edition.workspace = true
 authors.workspace = true
-license.workspace = true
-homepage.workspace = true
-repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [features]
 arm-el2 = []
@@ -18,7 +16,7 @@ xuantie-c9xx = []
 
 [dependencies]
 bitflags = "2.9"
-memory_addr.workspace = true
+ax-memory-addr.workspace = true
 
 [target.'cfg(any(target_arch = "aarch64", doc, docsrs))'.dependencies]
 aarch64-cpu = "11.0"

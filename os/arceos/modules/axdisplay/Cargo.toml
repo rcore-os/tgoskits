@@ -1,15 +1,14 @@
 [package]
-name = "axdisplay"
+name = "ax-display"
 version.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Shiping Yuan <robert_yuan@pku.edu.com>"]
 description = "ArceOS graphics module"
 license.workspace = true
-homepage.workspace = true
-repository = "https://github.com/arceos-org/arceos/tree/main/modules/axdisplay"
 
 [dependencies]
-axdriver = { workspace = true, features = ["display"] }
-axsync.workspace = true
-lazyinit.workspace = true
+ax-driver = { workspace = true, features = ["display"] }
+ax-sync.workspace = true
+ax-lazyinit.workspace = true
 log.workspace = true

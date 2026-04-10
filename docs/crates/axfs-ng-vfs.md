@@ -16,7 +16,7 @@
 
 - 对具体文件系统实现者：提供 `FilesystemOps`、`DirNodeOps`、`FileNodeOps` 三组 trait，作为 ext4、FAT、tmpfs、devfs、procfs 等后端的落点。
 - 对高层文件接口：提供 `Location`、`Mountpoint`、`Metadata`、`NodeFlags`、`Path`/`PathBuf` 等“有状态对象”，让上层不必自己重新维护挂载树或路径解析。
-- 对跨项目消费者：ArceOS 的 `axfs-ng`、`axnet-ng` 的 Unix socket、StarryOS 的 pseudofs 都可以在同一套节点语义上工作。
+- 对跨项目消费者：ArceOS 的 `ax-fs-ng`、`ax-net-ng` 的 Unix socket、StarryOS 的 pseudofs 都可以在同一套节点语义上工作。
 
 ### 1.2 模块划分
 - `src/fs.rs`：定义 `FilesystemOps`、`Filesystem` 和 `StatFs`。这是“一个文件系统实例”的外部门面。
@@ -60,8 +60,8 @@ graph TD
 #### 每节点用户数据
 `DirEntry::user_data()`/`Location::user_data()` 暴露了一个 `TypeMap`。这不是装饰性接口：
 
-- `axfs-ng::CachedFile` 会把共享页缓存状态挂在这里。
-- `axnet-ng` 的 Unix socket 会把 `BindSlot` 挂在 socket 节点上。
+- `ax_fs_ng::CachedFile` 会把共享页缓存状态挂在这里。
+- `ax-net-ng` 的 Unix socket 会把 `BindSlot` 挂在 socket 节点上。
 
 也就是说，它是新栈跨层协作的重要扩展点。
 
@@ -90,34 +90,34 @@ graph TD
 - `unmount()` 只能作用在挂载点根节点；如果还有子挂载点，必须先清理，或者改用 `unmount_all()`。
 
 ### 2.4 真实使用场景
-- `axfs-ng` 用它组织 ext4/FAT 根文件系统、任务局部 cwd 与页缓存共享。
-- `axnet-ng` 用它把 Unix socket 地址映射到文件节点。
+- `ax-fs-ng` 用它组织 ext4/FAT 根文件系统、任务局部 cwd 与页缓存共享。
+- `ax-net-ng` 用它把 Unix socket 地址映射到文件节点。
 - StarryOS 用它实现 `tmpfs`、`devfs`、`procfs`、`sysfs` 一类 pseudofs，并支撑文件系统调用层。
 
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    axerrno["axerrno"] --> current["axfs-ng-vfs"]
+    ax_errno["ax-errno"] --> current["axfs-ng-vfs"]
     axpoll["axpoll"] --> current
 
-    current --> axfs_ng["axfs-ng"]
-    current --> axnet_ng["axnet-ng"]
+    current --> axfs_ng["ax-fs-ng"]
+    current --> ax-net_ng["ax-net-ng"]
     current --> starry_pseudofs["StarryOS pseudofs / file layer"]
 ```
 
 ### 3.1 关键直接依赖
-- `axerrno`：统一错误类型。
+- `ax-errno`：统一错误类型。
 - `axpoll`：文件/节点轮询接口。
 - `spin`、`hashbrown`、`smallvec`：为目录项缓存、挂载点管理与轻量集合提供支撑。
 
 ### 3.2 关键直接消费者
-- `axfs-ng`：最主要的高层消费者。
-- `axnet-ng`：把 socket 地址空间接到文件系统对象模型里。
+- `ax-fs-ng`：最主要的高层消费者。
+- `ax-net-ng`：把 socket 地址空间接到文件系统对象模型里。
 - StarryOS：在 pseudofs、文件描述符层和设备节点模型中大量使用。
 
 ### 3.3 关键边界关系
 - 具体文件系统实现依赖 `axfs-ng-vfs`，但不必了解更高层 `FsContext` 或页缓存。
-- `axfs-ng-vfs` 自身不负责“块设备选择”或“默认根文件系统初始化”；那是 `axfs-ng` 的职责。
+- `axfs-ng-vfs` 自身不负责“块设备选择”或“默认根文件系统初始化”；那是 `ax-fs-ng` 的职责。
 
 ## 4. 开发指南
 ### 4.1 接入方式
@@ -148,7 +148,7 @@ axfs-ng-vfs = { workspace = true }
 - `user_data()` 在共享缓存与节点扩展中的生命周期。
 
 ### 5.3 建议的集成测试
-- `axfs-ng` 的页缓存共享状态是否正确挂在 `user_data()` 上。
+- `ax-fs-ng` 的页缓存共享状态是否正确挂在 `user_data()` 上。
 - Unix socket 路径绑定与 `BindSlot` 复用。
 - StarryOS pseudofs 在多挂载点、多层目录和动态目录项下的行为。
 
@@ -160,7 +160,7 @@ axfs-ng-vfs = { workspace = true }
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-`axfs-ng-vfs` 是 ArceOS 新文件系统栈的底层对象模型。`axfs-ng` 之所以能拥有更完整的路径、元数据和挂载语义，根基就在这里。
+`axfs-ng-vfs` 是 ArceOS 新文件系统栈的底层对象模型。`ax-fs-ng` 之所以能拥有更完整的路径、元数据和挂载语义，根基就在这里。
 
 ### 6.2 StarryOS
 在 StarryOS 中，它的地位更接近“文件系统内核框架”。`tmpfs`、`devfs`、`procfs`、socket 路径命名空间、文件描述符层都直接建立在这套对象模型之上。

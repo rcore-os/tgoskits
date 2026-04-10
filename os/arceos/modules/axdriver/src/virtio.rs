@@ -1,19 +1,19 @@
 use core::{marker::PhantomData, ptr::NonNull};
 
-use axalloc::{UsageKind, global_allocator};
-use axdriver_base::{BaseDriverOps, DevResult, DeviceType};
-use axdriver_virtio::{BufferDirection, PhysAddr, VirtIoHal};
-use axhal::mem::{phys_to_virt, virt_to_phys};
+use ax_alloc::{UsageKind, global_allocator};
+use ax_driver_base::{BaseDriverOps, DevResult, DeviceType};
+use ax_driver_virtio::{BufferDirection, PhysAddr, VirtIoHal};
+use ax_hal::mem::{phys_to_virt, virt_to_phys};
 use cfg_if::cfg_if;
 
 use crate::{AxDeviceEnum, drivers::DriverProbe};
 
 cfg_if! {
     if #[cfg(bus = "pci")] {
-        use axdriver_pci::{PciRoot, DeviceFunction, DeviceFunctionInfo};
-        type VirtIoTransport = axdriver_virtio::PciTransport;
+        use ax_driver_pci::{ConfigurationAccess, DeviceFunction, DeviceFunctionInfo, PciRoot};
+        type VirtIoTransport = ax_driver_virtio::PciTransport;
     } else if #[cfg(bus =  "mmio")] {
-        type VirtIoTransport = axdriver_virtio::MmioTransport;
+        type VirtIoTransport = ax_driver_virtio::MmioTransport;
     }
 }
 
@@ -33,7 +33,7 @@ cfg_if! {
 
         impl VirtIoDevMeta for VirtIoNet {
             const DEVICE_TYPE: DeviceType = DeviceType::Net;
-            type Device = axdriver_virtio::VirtIoNetDev<VirtIoHalImpl, VirtIoTransport, 64>;
+            type Device = ax_driver_virtio::VirtIoNetDev<VirtIoHalImpl, VirtIoTransport, 64>;
 
             fn try_new(transport: VirtIoTransport, irq: Option<usize>) -> DevResult<AxDeviceEnum> {
                 Ok(AxDeviceEnum::from_net(Self::Device::try_new(transport, irq)?))
@@ -48,7 +48,7 @@ cfg_if! {
 
         impl VirtIoDevMeta for VirtIoBlk {
             const DEVICE_TYPE: DeviceType = DeviceType::Block;
-            type Device = axdriver_virtio::VirtIoBlkDev<VirtIoHalImpl, VirtIoTransport>;
+            type Device = ax_driver_virtio::VirtIoBlkDev<VirtIoHalImpl, VirtIoTransport>;
 
             fn try_new(transport: VirtIoTransport, _irq: Option<usize>) -> DevResult<AxDeviceEnum> {
                 Ok(AxDeviceEnum::from_block(Self::Device::try_new(transport)?))
@@ -63,7 +63,7 @@ cfg_if! {
 
         impl VirtIoDevMeta for VirtIoGpu {
             const DEVICE_TYPE: DeviceType = DeviceType::Display;
-            type Device = axdriver_virtio::VirtIoGpuDev<VirtIoHalImpl, VirtIoTransport>;
+            type Device = ax_driver_virtio::VirtIoGpuDev<VirtIoHalImpl, VirtIoTransport>;
 
             fn try_new(transport: VirtIoTransport, _irq: Option<usize>) -> DevResult<AxDeviceEnum> {
                 Ok(AxDeviceEnum::from_display(Self::Device::try_new(transport)?))
@@ -78,7 +78,7 @@ cfg_if! {
 
         impl VirtIoDevMeta for VirtIoInput {
             const DEVICE_TYPE: DeviceType = DeviceType::Input;
-            type Device = axdriver_virtio::VirtIoInputDev<VirtIoHalImpl, VirtIoTransport>;
+            type Device = ax_driver_virtio::VirtIoInputDev<VirtIoHalImpl, VirtIoTransport>;
 
             fn try_new(transport: VirtIoTransport, _irq: Option<usize>) -> DevResult<AxDeviceEnum> {
                 Ok(AxDeviceEnum::from_input(Self::Device::try_new(transport)?))
@@ -93,7 +93,7 @@ cfg_if! {
 
         impl VirtIoDevMeta for VirtIoSocket {
             const DEVICE_TYPE: DeviceType = DeviceType::Vsock;
-            type Device = axdriver_virtio::VirtIoSocketDev<VirtIoHalImpl, VirtIoTransport>;
+            type Device = ax_driver_virtio::VirtIoSocketDev<VirtIoHalImpl, VirtIoTransport>;
 
             fn try_new(transport: VirtIoTransport, _irq:  Option<usize>) -> DevResult<AxDeviceEnum> {
                 Ok(AxDeviceEnum::from_vsock(Self::Device::try_new(transport)?))
@@ -110,7 +110,7 @@ impl<D: VirtIoDevMeta> DriverProbe for VirtIoDriver<D> {
     fn probe_mmio(mmio_base: usize, mmio_size: usize) -> Option<AxDeviceEnum> {
         let base_vaddr = phys_to_virt(mmio_base.into());
         if let Some((ty, transport)) =
-            axdriver_virtio::probe_mmio_device(base_vaddr.as_mut_ptr(), mmio_size)
+            ax_driver_virtio::probe_mmio_device(base_vaddr.as_mut_ptr(), mmio_size)
             && ty == D::DEVICE_TYPE
         {
             match D::try_new(transport, None) {
@@ -130,8 +130,8 @@ impl<D: VirtIoDevMeta> DriverProbe for VirtIoDriver<D> {
     }
 
     #[cfg(bus = "pci")]
-    fn probe_pci(
-        root: &mut PciRoot,
+    fn probe_pci<C: ConfigurationAccess>(
+        root: &mut PciRoot<C>,
         bdf: DeviceFunction,
         dev_info: &DeviceFunctionInfo,
     ) -> Option<AxDeviceEnum> {
@@ -148,7 +148,7 @@ impl<D: VirtIoDevMeta> DriverProbe for VirtIoDriver<D> {
         }
 
         if let Some((ty, transport, irq)) =
-            axdriver_virtio::probe_pci_device::<VirtIoHalImpl>(root, bdf, dev_info)
+            ax_driver_virtio::probe_pci_device::<VirtIoHalImpl, C>(root, bdf, dev_info)
             && ty == D::DEVICE_TYPE
         {
             match D::try_new(transport, Some(irq)) {
@@ -175,7 +175,7 @@ unsafe impl VirtIoHal for VirtIoHalImpl {
         };
         let paddr = virt_to_phys(vaddr.into());
         let ptr = NonNull::new(vaddr as _).unwrap();
-        (paddr.as_usize(), ptr)
+        (paddr.as_usize() as PhysAddr, ptr)
     }
 
     unsafe fn dma_dealloc(_paddr: PhysAddr, vaddr: NonNull<u8>, pages: usize) -> i32 {
@@ -185,13 +185,13 @@ unsafe impl VirtIoHal for VirtIoHalImpl {
 
     #[inline]
     unsafe fn mmio_phys_to_virt(paddr: PhysAddr, _size: usize) -> NonNull<u8> {
-        NonNull::new(phys_to_virt(paddr.into()).as_mut_ptr()).unwrap()
+        NonNull::new(phys_to_virt((paddr as usize).into()).as_mut_ptr()).unwrap()
     }
 
     #[inline]
     unsafe fn share(buffer: NonNull<[u8]>, _direction: BufferDirection) -> PhysAddr {
         let vaddr = buffer.as_ptr() as *mut u8 as usize;
-        virt_to_phys(vaddr.into()).into()
+        virt_to_phys(vaddr.into()).as_usize() as PhysAddr
     }
 
     #[inline]

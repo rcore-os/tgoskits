@@ -1,7 +1,43 @@
-# `axmm_crates`
+<h1 align="center">axmm_crates</h1>
 
-Crates for memory management.
+<p align="center">Workspace for memory management crates used by ArceOS</p>
 
-- `memory_addr`([docs](https://docs.rs/memory_addr)|[crates.io](https://crates.io/crates/memory_addr)|[readme](memory_addr/README.md)): Wrappers and helper functions for physical and virtual memory addresses.
-- `memory_set`([docs](https://docs.rs/memory_set)|[crates.io](https://crates.io/crates/memory_set)|[readme](memory_set/README.md)): Data structures and operations for managing memory mappings.
+<div align="center">
 
+[![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+
+</div>
+
+English | [中文](README_CN.md)
+
+# Introduction
+
+`axmm_crates` is a workspace that groups related TGOSKits components under a unified layout. It helps organize closely related crates that are typically developed, versioned, and used together.
+
+> axmm_crates was derived from https://github.com/arceos-org/axmm_crates
+
+## Workspace Members
+
+- `memory_addr`
+- `memory_set`
+
+## Quick Start
+
+```bash
+# Enter the workspace directory
+cd components/axmm_crates
+
+# Format code
+cargo fmt --all
+
+# Run clippy
+cargo clippy --workspace --all-targets --all-features
+
+# Run tests
+cargo test --workspace --all-features
+```
+
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

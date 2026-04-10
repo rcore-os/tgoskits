@@ -3,10 +3,10 @@ use alloc::{
     sync::Arc,
 };
 
-use axfs::FS_CONTEXT;
-use axhal::uspace::UserContext;
-use axsync::Mutex;
-use axtask::{AxTaskExt, spawn_task};
+use ax_fs::FS_CONTEXT;
+use ax_hal::uspace::UserContext;
+use ax_sync::Mutex;
+use ax_task::{AxTaskExt, spawn_task};
 use starry_process::{Pid, Process};
 
 use crate::{

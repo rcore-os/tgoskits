@@ -17,11 +17,11 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::cell::OnceCell;
 
-use axfatfs::{Dir, File, LossyOemCpConverter, NullTimeProvider, Read, Seek, SeekFrom, Write};
-use axfs_vfs::{
+use ax_fs_vfs::{
     VfsDirEntry, VfsError, VfsNodeAttr, VfsNodeOps, VfsNodePerm, VfsNodeRef, VfsNodeType, VfsOps,
     VfsResult,
 };
+use axfatfs::{Dir, File, LossyOemCpConverter, NullTimeProvider, Read, Seek, SeekFrom, Write};
 use spin::Mutex;
 
 use crate::dev::{Disk, Partition};
@@ -183,7 +183,7 @@ impl FatFileSystem {
 }
 
 impl VfsNodeOps for FileWrapper<'static> {
-    axfs_vfs::impl_vfs_non_dir_default! {}
+    ax_fs_vfs::impl_vfs_non_dir_default! {}
 
     fn get_attr(&self) -> VfsResult<VfsNodeAttr> {
         let size = self.0.lock().seek(SeekFrom::End(0)).map_err(as_vfs_err)?;
@@ -231,7 +231,7 @@ impl VfsNodeOps for FileWrapper<'static> {
 }
 
 impl VfsNodeOps for DirWrapper<'static> {
-    axfs_vfs::impl_vfs_dir_default! {}
+    ax_fs_vfs::impl_vfs_dir_default! {}
 
     fn get_attr(&self) -> VfsResult<VfsNodeAttr> {
         // FAT fs doesn't support permissions, we just set everything to 755

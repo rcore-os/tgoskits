@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use ax_hal::{self, mem::virt_to_phys};
 use axvisor_api::arch::ArchIf;
-use std::os::arceos::modules::axhal::{self, mem::virt_to_phys};
 
 struct ArchImpl;
 
@@ -40,7 +40,7 @@ impl ArchIf for ArchImpl {
     }
 
     fn read_vgicd_iidr() -> u32 {
-        // use axstd::os::arceos::modules::axhal::irq::MyVgic;
+        // use ax_std::os::arceos::modules::ax_hal::irq::MyVgic;
         // MyVgic::get_gicd().lock().get_iidr()
         let mut gic = rdrive::get_one::<rdif_intc::Intc>()
             .expect("Failed to get GIC driver")
@@ -58,7 +58,7 @@ impl ArchIf for ArchImpl {
         panic!("No GIC driver found");
     }
 
-    fn get_host_gicd_base() -> memory_addr::PhysAddr {
+    fn get_host_gicd_base() -> ax_memory_addr::PhysAddr {
         let mut gic = rdrive::get_one::<rdif_intc::Intc>()
             .expect("Failed to get GIC driver")
             .lock()
@@ -76,7 +76,7 @@ impl ArchIf for ArchImpl {
         panic!("No GIC driver found");
     }
 
-    fn get_host_gicr_base() -> memory_addr::PhysAddr {
+    fn get_host_gicr_base() -> ax_memory_addr::PhysAddr {
         let mut gic = rdrive::get_one::<rdif_intc::Intc>()
             .expect("Failed to get GIC driver")
             .lock()
@@ -104,6 +104,6 @@ impl ArchIf for ArchImpl {
     }
 
     fn handle_irq() {
-        axhal::irq::irq_handler(0);
+        ax_hal::trap::irq_handler(0);
     }
 }

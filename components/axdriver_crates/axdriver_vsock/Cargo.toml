@@ -1,20 +1,18 @@
 [package]
-name = "axdriver_vsock"
+name = "ax-driver-vsock"
 edition.workspace = true
 version.workspace = true
+repository.workspace = true
 authors.workspace = true
 description = "Common traits and types for vsock drivers"
-documentation = "https://arceos-org.github.io/axdriver_crates/axdriver_vsock"
 keywords = ["arceos", "driver", "vsock"]
-license.workspace = true
-homepage.workspace = true
-repository.workspace = true
 categories.workspace = true
 readme = "README.md"
+license.workspace = true
 
 [features]
 default = []
 
 [dependencies]
-axdriver_base = { version = "0.1.4-preview.3" }
+ax-driver-base = { version = "0.3.4" }
 log = "0.4"

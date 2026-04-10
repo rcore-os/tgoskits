@@ -16,12 +16,12 @@ mod tests;
 
 use alloc::sync::Arc;
 
-use axfs_vfs::{VfsNodeRef, VfsOps, VfsResult};
+use ax_fs_vfs::{VfsNodeRef, VfsOps, VfsResult};
 use spin::once::Once;
 
 pub use self::{dir::DirNode, null::NullDev, urandom::UrandomDev, zero::ZeroDev};
 
-/// A device filesystem that implements [`axfs_vfs::VfsOps`].
+/// A device filesystem that implements [`ax_fs_vfs::VfsOps`].
 pub struct DeviceFileSystem {
     parent: Once<VfsNodeRef>,
     root: Arc<DirNode>,
@@ -43,7 +43,7 @@ impl DeviceFileSystem {
 
     /// Add a node to the root directory.
     ///
-    /// The node must implement [`axfs_vfs::VfsNodeOps`], and be wrapped in [`Arc`].
+    /// The node must implement [`ax_fs_vfs::VfsNodeOps`], and be wrapped in [`Arc`].
     pub fn add(&self, name: &'static str, node: VfsNodeRef) {
         self.root.add(name, node);
     }

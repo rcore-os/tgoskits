@@ -3,7 +3,7 @@ arch = "loongarch64"                            # str
 # Platform identifier.
 platform = "loongarch64-qemu-virt"              # str
 # Platform package.
-package = "axplat-loongarch64-qemu-virt"        # str
+package = "ax-plat-loongarch64-qemu-virt"        # str
 
 #
 # Platform configs

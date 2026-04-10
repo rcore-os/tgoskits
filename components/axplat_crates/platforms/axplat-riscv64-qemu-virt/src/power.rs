@@ -1,4 +1,4 @@
-use axplat::power::PowerIf;
+use ax_plat::power::PowerIf;
 
 struct PowerImpl;
 
@@ -11,7 +11,7 @@ impl PowerIf for PowerImpl {
     /// CPU cores on the platform).
     #[cfg(feature = "smp")]
     fn cpu_boot(cpu_id: usize, stack_top_paddr: usize) {
-        use axplat::mem::{va, virt_to_phys};
+        use ax_plat::mem::{va, virt_to_phys};
         if sbi_rt::probe_extension(sbi_rt::Hsm).is_unavailable() {
             warn!("HSM SBI extension is not supported for current SEE.");
             return;
@@ -26,7 +26,7 @@ impl PowerIf for PowerImpl {
         sbi_rt::system_reset(sbi_rt::Shutdown, sbi_rt::NoReason);
         warn!("It should shutdown!");
         loop {
-            axcpu::asm::halt();
+            ax_cpu::asm::halt();
         }
     }
 

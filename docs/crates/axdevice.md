@@ -211,7 +211,7 @@ let mut devices = AxVmDevices::new(config);
 | `axaddrspace` | GPA、端口、系统寄存器地址类型与访问宽度 |
 | `range-alloc-arceos` | IVC 区间分配 |
 | `memory_addr` | 4K 对齐检查等辅助能力 |
-| `axerrno` | 统一错误类型 |
+| `ax-errno` | 统一错误类型 |
 | `spin` | IVC 分配器锁 |
 | `arm_vgic` | AArch64 虚拟 GIC 设备实现 |
 | `riscv_vplic` | RISC-V 虚拟 PLIC 设备实现 |

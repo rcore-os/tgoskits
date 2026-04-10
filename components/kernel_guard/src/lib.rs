@@ -5,7 +5,7 @@
 //! ended when the guard falls out of scope.
 //!
 //! The crate user must implement the [`KernelGuardIf`] trait using
-//! [`crate_interface::impl_interface`] to provide the low-level implementantion
+//! [`ax_crate_interface::impl_interface`] to provide the low-level implementantion
 //! of how to enable/disable kernel preemption, if the feature `preempt` is
 //! enabled.
 //!
@@ -28,11 +28,11 @@
 //! # Examples
 //!
 //! ```
-//! use kernel_guard::{KernelGuardIf, NoPreempt};
+//! use ax_kernel_guard::{KernelGuardIf, NoPreempt};
 //!
 //! struct KernelGuardIfImpl;
 //!
-//! #[crate_interface::impl_interface]
+//! #[ax_crate_interface::impl_interface]
 //! impl KernelGuardIf for KernelGuardIfImpl {
 //!     fn enable_preempt() {
 //!         // Your implementation here
@@ -56,7 +56,7 @@
 mod arch;
 
 /// Low-level interfaces that must be implemented by the crate user.
-#[crate_interface::def_interface]
+#[ax_crate_interface::def_interface]
 pub trait KernelGuardIf {
     /// How to enable kernel preemption.
     fn enable_preempt();
@@ -151,12 +151,12 @@ mod imp {
         fn acquire() -> Self::State {
             // disable preempt
             #[cfg(feature = "preempt")]
-            crate_interface::call_interface!(KernelGuardIf::disable_preempt);
+            ax_crate_interface::call_interface!(KernelGuardIf::disable_preempt);
         }
         fn release(_state: Self::State) {
             // enable preempt
             #[cfg(feature = "preempt")]
-            crate_interface::call_interface!(KernelGuardIf::enable_preempt);
+            ax_crate_interface::call_interface!(KernelGuardIf::enable_preempt);
         }
     }
 
@@ -165,7 +165,7 @@ mod imp {
         fn acquire() -> Self::State {
             // disable preempt
             #[cfg(feature = "preempt")]
-            crate_interface::call_interface!(KernelGuardIf::disable_preempt);
+            ax_crate_interface::call_interface!(KernelGuardIf::disable_preempt);
             // disable IRQs and save IRQ states
             super::arch::local_irq_save_and_disable()
         }
@@ -174,7 +174,7 @@ mod imp {
             super::arch::local_irq_restore(state);
             // enable preempt
             #[cfg(feature = "preempt")]
-            crate_interface::call_interface!(KernelGuardIf::enable_preempt);
+            ax_crate_interface::call_interface!(KernelGuardIf::enable_preempt);
         }
     }
 

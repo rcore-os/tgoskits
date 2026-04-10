@@ -1,0 +1,11 @@
+[package]
+name = "arceos-parallel"
+version = "0.3.0"
+edition.workspace = true
+authors = ["Yuekai Jia <equation618@gmail.com>"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rand = { version = "0.8", default-features = false, features = ["small_rng"] }
+ax-std = { workspace = true, features = ["alloc", "multitask", "irq"], optional = true }

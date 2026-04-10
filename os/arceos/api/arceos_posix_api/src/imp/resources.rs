@@ -1,6 +1,6 @@
 use core::ffi::c_int;
 
-use axerrno::LinuxError;
+use ax_errno::LinuxError;
 
 use crate::ctypes;
 
@@ -21,8 +21,8 @@ pub unsafe fn sys_getrlimit(resource: c_int, rlimits: *mut ctypes::rlimit) -> c_
         }
         match resource as u32 {
             ctypes::RLIMIT_STACK => unsafe {
-                (*rlimits).rlim_cur = axconfig::TASK_STACK_SIZE as _;
-                (*rlimits).rlim_max = axconfig::TASK_STACK_SIZE as _;
+                (*rlimits).rlim_cur = ax_config::TASK_STACK_SIZE as _;
+                (*rlimits).rlim_max = ax_config::TASK_STACK_SIZE as _;
             },
             #[cfg(feature = "fd")]
             ctypes::RLIMIT_NOFILE => unsafe {

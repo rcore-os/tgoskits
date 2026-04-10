@@ -19,7 +19,7 @@ use bit::BitIndex;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
 use axaddrspace::{HostPhysAddr, device::AccessWidth};
-use axerrno::{AxError, AxResult, ax_err_type};
+use ax_errno::{AxError, AxResult, ax_err_type};
 use axvisor_api::{memory::PhysFrame, vmm};
 
 use crate::consts::{

@@ -14,9 +14,9 @@
 
 use core::cell::UnsafeCell;
 
+use ax_errno::AxResult;
 use axaddrspace::{GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr, device::AccessWidth};
 use axdevice_base::{BaseDeviceOps, EmuDeviceType};
-use axerrno::AxResult;
 use axvisor_api::memory::phys_to_virt;
 use bitmaps::Bitmap;
 use log::debug;
@@ -112,7 +112,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicD {
         &self,
         addr: <GuestPhysAddrRange as axaddrspace::device::DeviceAddrRange>::Addr,
         width: axaddrspace::device::AccessWidth,
-    ) -> axerrno::AxResult<usize> {
+    ) -> ax_errno::AxResult<usize> {
         let gicd_base = self.host_gicd_addr;
         let reg = addr - self.addr;
 
@@ -183,7 +183,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicD {
         addr: <GuestPhysAddrRange as axaddrspace::device::DeviceAddrRange>::Addr,
         width: axaddrspace::device::AccessWidth,
         val: usize,
-    ) -> axerrno::AxResult {
+    ) -> ax_errno::AxResult {
         let gicd_base = self.host_gicd_addr;
         let reg = addr - self.addr;
 

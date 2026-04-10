@@ -4,9 +4,9 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU8, Ordering},
 };
 
-use axerrno::{AxError, AxResult, ax_err, ax_err_type};
-use axio::PollState;
-use axsync::Mutex;
+use ax_errno::{AxError, AxResult, ax_err, ax_err_type};
+use ax_io::PollState;
+use ax_sync::Mutex;
 use smoltcp::{
     iface::SocketHandle,
     socket::tcp::{self, ConnectError, State},
@@ -206,7 +206,7 @@ impl TcpSocket {
 
     /// Starts listening on the bound address and port.
     ///
-    /// It's must be called after [`bind`](Self::bind) and before
+    /// It must be called after [`bind`](Self::bind) and before
     /// [`accept`](Self::accept).
     pub fn listen(&self) -> AxResult {
         self.update_state(STATE_CLOSED, STATE_LISTENING, || {
@@ -226,7 +226,7 @@ impl TcpSocket {
     /// This function will block the calling thread until a new TCP connection
     /// is established. When established, a new [`TcpSocket`] is returned.
     ///
-    /// It's must be called after [`bind`](Self::bind) and [`listen`](Self::listen).
+    /// It must be called after [`bind`](Self::bind) and [`listen`](Self::listen).
     pub fn accept(&self) -> AxResult<TcpSocket> {
         if !self.is_listening() {
             return ax_err!(InvalidInput, "socket accept() failed: not listen");
@@ -529,7 +529,7 @@ impl TcpSocket {
                 SOCKET_SET.poll_interfaces();
                 match f() {
                     Ok(t) => return Ok(t),
-                    Err(AxError::WouldBlock) => axtask::yield_now(),
+                    Err(AxError::WouldBlock) => ax_task::yield_now(),
                     Err(e) => return Err(e),
                 }
             }

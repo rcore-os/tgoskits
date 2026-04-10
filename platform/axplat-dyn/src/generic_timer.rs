@@ -3,7 +3,7 @@
 struct GenericTimer;
 
 #[impl_plat_interface]
-impl axplat::time::TimeIf for GenericTimer {
+impl ax_plat::time::TimeIf for GenericTimer {
     /// Returns the current clock time in hardware ticks.
     fn current_ticks() -> u64 {
         somehal::timer::ticks() as _
@@ -15,7 +15,7 @@ impl axplat::time::TimeIf for GenericTimer {
         if freq == 0 {
             return 0;
         }
-        (ticks * axplat::time::NANOS_PER_SEC) / freq
+        (ticks * ax_plat::time::NANOS_PER_SEC) / freq
     }
 
     /// Converts nanoseconds to hardware ticks.
@@ -24,7 +24,7 @@ impl axplat::time::TimeIf for GenericTimer {
         if freq == 0 {
             return 0;
         }
-        (nanos * freq) / axplat::time::NANOS_PER_SEC
+        (nanos * freq) / ax_plat::time::NANOS_PER_SEC
     }
 
     /// Return epoch offset in nanoseconds (wall time offset to monotonic

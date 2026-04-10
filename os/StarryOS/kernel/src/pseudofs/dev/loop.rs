@@ -3,10 +3,10 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
-use axerrno::{AxError, AxResult, LinuxError};
-use axfs::FileBackend;
+use ax_errno::{AxError, AxResult, LinuxError};
+use ax_fs::FileBackend;
+use ax_sync::Mutex;
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsResult};
-use axsync::Mutex;
 use linux_raw_sys::{
     ioctl::{BLKGETSIZE, BLKGETSIZE64, BLKRAGET, BLKRASET, BLKROGET, BLKROSET},
     loop_device::{LOOP_CLR_FD, LOOP_GET_STATUS, LOOP_SET_FD, LOOP_SET_STATUS, loop_info},

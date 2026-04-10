@@ -6,7 +6,7 @@
 > 版本：`0.2.0-preview.2`
 > 文档依据：`Cargo.toml`、`src/main.rs`、`src/init.sh`、`.axconfig.toml`、`.qemu.toml`、`os/StarryOS/README.md`、`os/StarryOS/kernel/src/entry.rs`、`xtask/src/starry/{build.rs,run.rs}`
 
-`starryos` 是 StarryOS 的默认启动镜像包。它不实现 syscall、进程管理或虚拟内存，而是负责把 `axfeat`、平台配置、`starry-kernel` 和默认 init 命令线装配成一个可启动、可进入交互 shell 的系统镜像。
+`starryos` 是 StarryOS 的默认启动镜像包。它不实现 syscall、进程管理或虚拟内存，而是负责把 `ax-feat`、平台配置、`starry-kernel` 和默认 init 命令线装配成一个可启动、可进入交互 shell 的系统镜像。
 
 换句话说，`starryos` 负责的是“把内核打包成一个能启动的 StarryOS 镜像”，而不是“内核本体”。真正的系统核心仍在 `starry-kernel`。
 
@@ -24,9 +24,9 @@
 ### 1.2 feature 与装配关系
 `Cargo.toml` 里的 feature 设计直接决定镜像长什么样：
 
-- `qemu`：二进制 `[[bin]]` 的必需 feature，同时启用 `axfeat/defplat`、`axfeat/bus-pci`、`axfeat/display`、`axfeat/fs-ng-times`，以及 `starry-kernel` 的 `input`、`vsock`、`dev-log`。
-- `smp`：启用 `axfeat/smp`，并在 VisionFive2 平台上联动开启 SMP。
-- `vf2`：引入可选依赖 `axplat-riscv64-visionfive2`，并额外打开 `axfeat/driver-sdmmc`。
+- `qemu`：二进制 `[[bin]]` 的必需 feature，同时启用 `ax-feat/defplat`、`ax-feat/bus-pci`、`ax-feat/display`、`ax-feat/fs-ng-times`，以及 `starry-kernel` 的 `input`、`vsock`、`dev-log`。
+- `smp`：启用 `ax-feat/smp`，并在 VisionFive2 平台上联动开启 SMP。
+- `vf2`：引入可选依赖 `axplat-riscv64-visionfive2`，并额外打开 `ax-feat/driver-sdmmc`。
 
 这意味着 `starryos` 的主要复杂度不在运行时逻辑，而在于“生成哪一类镜像”。
 
@@ -102,18 +102,18 @@ cargo xtask starry run --arch riscv64 --package starryos
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    axfeat["axfeat"] --> starryos["starryos"]
+    ax-feat["ax-feat"] --> starryos["starryos"]
     kernel["starry-kernel"] --> starryos
     vf2["axplat-riscv64-visionfive2 (optional)"] --> starryos
 ```
 
 ### 3.1 关键直接依赖
-- `axfeat`：把底层 ArceOS 运行时、驱动和平台 feature 接到镜像入口包上。
+- `ax-feat`：把底层 ArceOS 运行时、驱动和平台 feature 接到镜像入口包上。
 - `starry-kernel`：真正的内核实现，`starryos` 只在 `main()` 里调用其入口。
 - `axplat-riscv64-visionfive2`：仅在 `vf2` feature 下引入，用于板级适配。
 
 ### 3.2 关键运行时外部条件
-- rootfs / `disk.img`：由 `cargo xtask starry rootfs` 或 `run` 路径自动准备。
+- rootfs / `rootfs-<arch>.img`：由 `cargo xtask starry rootfs` 或 `run` 路径自动准备。
 - 平台配置：由 `.axconfig.toml` 和 `ArceosConfigOverride` 共同决定。
 - QEMU 参数：由 `.qemu.toml` 和 xtask 运行参数共同决定。
 
@@ -157,7 +157,7 @@ cargo xtask starry run --arch riscv64 --package starryos
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-`starryos` 建立在 ArceOS 的 `axfeat`/平台/运行时能力之上，但不是 ArceOS 本体的一部分。它消费的是 ArceOS 的底座能力。
+`starryos` 建立在 ArceOS 的 `ax-feat`/平台/运行时能力之上，但不是 ArceOS 本体的一部分。它消费的是 ArceOS 的底座能力。
 
 ### 6.2 StarryOS
 这是 StarryOS 的默认启动镜像入口。用户平时执行 `cargo xtask starry run --package starryos`，真正启动的就是这个包。

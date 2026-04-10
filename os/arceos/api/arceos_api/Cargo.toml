@@ -1,45 +1,44 @@
 [package]
-name = "arceos_api"
+name = "ax-api"
 version.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "Public APIs and types for ArceOS modules"
 license.workspace = true
-homepage.workspace = true
-repository = "https://github.com/arceos-org/arceos/tree/main/api/arceos_api"
 
 [features]
 default = []
 
-irq = ["axfeat/irq"]
-ipi = ["dep:axipi", "axfeat/ipi"]
-alloc = ["dep:axalloc", "axfeat/alloc"]
-paging = ["dep:axmm", "axfeat/paging"]
-dma = ["dep:axdma", "axfeat/dma"]
-multitask = ["axtask/multitask", "axsync/multitask", "axfeat/multitask"]
-fs = ["dep:axfs", "dep:axdriver", "axfeat/fs"]
-net = ["dep:axnet", "dep:axdriver", "axfeat/net"]
-display = ["dep:axdisplay", "dep:axdriver", "axfeat/display"]
+irq = ["ax-feat/irq"]
+ipi = ["dep:ax-ipi", "ax-feat/ipi"]
+alloc = ["dep:ax-alloc", "ax-feat/alloc"]
+paging = ["dep:ax-mm", "ax-feat/paging"]
+dma = ["dep:ax-dma", "ax-feat/dma"]
+multitask = ["ax-task/multitask", "ax-sync/multitask", "ax-feat/multitask"]
+fs = ["dep:ax-fs", "dep:ax-driver", "ax-feat/fs"]
+net = ["dep:ax-net", "dep:ax-driver", "ax-feat/net"]
+display = ["dep:ax-display", "dep:ax-driver", "ax-feat/display"]
 
 
 # Use dummy functions if the feature is not enabled
 dummy-if-not-enabled = []
 
 [dependencies]
-axalloc = { workspace = true, optional = true }
-axconfig.workspace = true
-axdisplay = { workspace = true, optional = true }
-axdma = { workspace = true, optional = true }
-axdriver = { workspace = true, optional = true }
-axerrno.workspace = true
-axfeat.workspace = true
-axfs = { workspace = true, optional = true }
-axhal.workspace = true
-axio.workspace = true
-axipi = { workspace = true, optional = true }
-axlog.workspace = true
-axmm = { workspace = true, optional = true }
-axnet = { workspace = true, optional = true }
-axruntime.workspace = true
-axsync.workspace = true
-axtask = { workspace = true, optional = true }
+ax-alloc = { workspace = true, optional = true }
+ax-config.workspace = true
+ax-display = { workspace = true, optional = true }
+ax-dma = { workspace = true, optional = true }
+ax-driver = { workspace = true, optional = true }
+ax-errno.workspace = true
+ax-feat.workspace = true
+ax-fs = { workspace = true, optional = true }
+ax-hal.workspace = true
+ax-io.workspace = true
+ax-ipi = { workspace = true, optional = true }
+ax-log.workspace = true
+ax-mm = { workspace = true, optional = true }
+ax-net = { workspace = true, optional = true }
+ax-runtime.workspace = true
+ax-sync.workspace = true
+ax-task = { workspace = true, optional = true }

@@ -6,7 +6,7 @@
 > 版本：`0.1.0`
 > 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`src/ext4_backend/ext4.rs`、`src/ext4_backend/api.rs`、`src/ext4_backend/blockdev.rs`、`src/ext4_backend/jbd2/jbd2.rs`、`src/ext4_backend/datablock_cache.rs`、`src/ext4_backend/inodetable_cache.rs`、`src/ext4_backend/bitmap_cache.rs`、`src/testfs/test_example.rs`、`src/main.rs`、`os/arceos/modules/axfs/src/fs/ext4fs.rs`
 
-`rsext4` 是当前仓库里的独立 ext4 引擎。它自己定义块设备接口、挂载与卸载流程、目录/文件 API、JBD2 日志代理、多级缓存和若干 host 侧验证程序；在这棵代码树里，它主要作为旧 `axfs` 的 ext4 叶子后端被消费，而不是作为系统的 VFS 层或名字空间层存在。
+`rsext4` 是当前仓库里的独立 ext4 引擎。它自己定义块设备接口、挂载与卸载流程、目录/文件 API、JBD2 日志代理、多级缓存和若干 host 侧验证程序；在这棵代码树里，它主要作为旧 `ax-fs` 的 ext4 叶子后端被消费，而不是作为系统的 VFS 层或名字空间层存在。
 
 ## 1. 架构设计分析
 ### 1.1 设计定位
@@ -14,7 +14,7 @@
 
 - 它直接面向 ext4 语义和块设备，而不是面向统一 VFS trait。
 - 它对外导出的接口既有高层 API（`mount`、`open`、`read_at`、`mkdir` 等），也有大量后端内部模块，属于“引擎 + 宽导出 API”的风格。
-- 在当前仓库里，旧 `axfs::fs::ext4fs` 通过适配层把它包装成 `axfs_vfs::VfsOps`；新 `axfs-ng` 的 ext4 路径则改用了 `lwext4_rust`，不再依赖它。
+- 在当前仓库里，旧 `ax_fs::fs::ext4fs` 通过适配层把它包装成 `ax_fs_vfs::VfsOps`；新 `ax-fs-ng` 的 ext4 路径则改用了 `lwext4_rust`，不再依赖它。
 
 ### 1.2 内部模块划分
 - `src/ext4_backend/blockdev.rs`：定义 `BlockDevice` trait、`BlockDev` 缓冲封装以及 `Jbd2Dev`。
@@ -36,12 +36,12 @@ flowchart TD
     D --> E["bitmap/inode/data caches"]
     D --> F["dir.rs / file.rs 操作"]
     F --> G["api.rs 高层封装"]
-    G --> H["旧 axfs::fs::ext4fs 适配层"]
+    G --> H["旧 ax_fs::fs::ext4fs 适配层"]
 ```
 
 ### 1.4 关键机制
 #### 固定 4 KiB ext4 block
-`config.rs` 把 ext4 block size 固定为 `4096`，而 `BlockDevice::block_size()` 默认值是 `512`。因此像旧 `axfs::fs::ext4fs` 这种外层适配器必须负责把 512B block 设备转换成 `rsext4` 眼中的 4 KiB block 设备。
+`config.rs` 把 ext4 block size 固定为 `4096`，而 `BlockDevice::block_size()` 默认值是 `512`。因此像旧 `ax_fs::fs::ext4fs` 这种外层适配器必须负责把 512B block 设备转换成 `rsext4` 眼中的 4 KiB block 设备。
 
 #### 多级缓存
 默认 feature `USE_MULTILEVEL_CACHE` 开启时：
@@ -63,9 +63,9 @@ flowchart TD
 也就是说，它更像“为 ext4 核心补上元数据日志持久化”的块设备代理，而不是完整实现 Linux 内核同等级的 JBD2 子系统。
 
 ### 1.5 与相邻 crate 的边界
-- `rsext4` 在 `axfs` 之下，只负责 ext4 格式语义，不负责根目录、当前目录或挂载名字空间。
+- `rsext4` 在 `ax-fs` 之下，只负责 ext4 格式语义，不负责根目录、当前目录或挂载名字空间。
 - `rsext4` 和 `axfs-ng-vfs` 处于完全不同层级：前者是格式引擎，后者是 VFS 对象模型。
-- 当前仓库里的 StarryOS 和 `axfs-ng` 新栈不直接使用它。
+- 当前仓库里的 StarryOS 和 `ax-fs-ng` 新栈不直接使用它。
 
 ## 2. 核心功能说明
 ### 2.1 主要功能
@@ -114,7 +114,7 @@ graph LR
     lazy_static["lazy_static(spin_no_std)"] --> current
     log["log"] --> current
 
-    current --> axfs_ext4["axfs::fs::ext4fs 适配层"]
+    current --> axfs_ext4["ax_fs::fs::ext4fs 适配层"]
     current --> host_demo["src/main.rs / testfs host 回归"]
 ```
 
@@ -124,13 +124,13 @@ graph LR
 - `log`：调试与事务日志输出。
 
 ### 3.2 关键直接消费者
-- 旧 `axfs::fs::ext4fs`：当前仓库里的主要生产消费者。
+- 旧 `ax_fs::fs::ext4fs`：当前仓库里的主要生产消费者。
 - `src/main.rs`：host 侧文件镜像驱动的演示与回归程序。
 
 ### 3.3 与相邻 crate 的关系
 - `rsext4` 只解决 ext4，不解决统一文件系统接口。
-- `axfs::fs::ext4fs` 负责把它翻译成旧 `axfs_vfs` 所需的节点语义。
-- 新 `axfs-ng` ext4 路径已转向 `lwext4_rust`。
+- `ax_fs::fs::ext4fs` 负责把它翻译成旧 `axfs_vfs` 所需的节点语义。
+- 新 `ax-fs-ng` ext4 路径已转向 `lwext4_rust`。
 
 ## 4. 开发指南
 ### 4.1 接入方式
@@ -139,13 +139,13 @@ graph LR
 rsext4 = { workspace = true }
 ```
 
-如果你是在旧 `axfs` 栈中接入，一般不会直接暴露 `rsext4` 给上层，而是通过 ext4 适配层消费。
+如果你是在旧 `ax-fs` 栈中接入，一般不会直接暴露 `rsext4` 给上层，而是通过 ext4 适配层消费。
 
 ### 4.2 使用与改动约束
 1. 先实现 `BlockDevice`，再用 `Jbd2Dev::initial_jbd2dev()` 包装。
 2. 在需要“真正落盘”的边界上调用 `sync_filesystem()`、`umount()` 或显式 flush。
 3. 修改缓存实现时，必须同时考虑淘汰写回、顺序同步和 journal 回放三条路径。
-4. 修改 block size、superblock 或块组描述符相关代码时，要重新验证旧 `axfs` 的 512B/4096B 适配层。
+4. 修改 block size、superblock 或块组描述符相关代码时，要重新验证旧 `ax-fs` 的 512B/4096B 适配层。
 
 ### 4.3 扩展建议
 - 如果你只是想在系统里“支持 ext4”，优先在外层做 VFS 适配，不要直接把 `rsext4` 暴露给所有调用者。
@@ -167,7 +167,7 @@ rsext4 = { workspace = true }
 - JBD2 descriptor / commit / replay 的结构与顺序。
 
 ### 5.3 建议的集成测试
-- 旧 `axfs::fs::ext4fs` 适配层与 `rsext4` 的联调。
+- 旧 `ax_fs::fs::ext4fs` 适配层与 `rsext4` 的联调。
 - 512B 底层块设备经过 4 KiB block 适配后的读写正确性。
 - journal 打开后的断电回放。
 
@@ -175,14 +175,14 @@ rsext4 = { workspace = true }
 - 默认多级缓存打开时的持久化语义。
 - `Jbd2Dev` 元数据写回顺序。
 - `truncate`、`mv`、`link`、`symlink` 组合路径。
-- 旧 `axfs` 适配层对 block size 的换算。
+- 旧 `ax-fs` 适配层对 block size 的换算。
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-在 ArceOS 旧文件系统栈里，`rsext4` 是 ext4 叶子格式引擎。它通过 `axfs::fs::ext4fs` 间接进入系统，而不是直接成为统一文件 API。
+在 ArceOS 旧文件系统栈里，`rsext4` 是 ext4 叶子格式引擎。它通过 `ax_fs::fs::ext4fs` 间接进入系统，而不是直接成为统一文件 API。
 
 ### 6.2 StarryOS
-当前仓库里的 StarryOS 主线已经转向 `axfs-ng` + `lwext4_rust` 组合，没有直接依赖 `rsext4`。因此它对 StarryOS 更像历史并行路线，而不是当前主干依赖。
+当前仓库里的 StarryOS 主线已经转向 `ax-fs-ng` + `lwext4_rust` 组合，没有直接依赖 `rsext4`。因此它对 StarryOS 更像历史并行路线，而不是当前主干依赖。
 
 ### 6.3 Axvisor
 当前仓库里的 `os/axvisor` 没有直接依赖 `rsext4`。它在这棵代码树中的跨项目定位主要是“旧 ArceOS 栈可复用的 ext4 引擎”，而不是 Axvisor 当前公共文件系统层。

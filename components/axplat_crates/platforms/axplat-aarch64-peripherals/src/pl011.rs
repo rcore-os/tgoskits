@@ -1,9 +1,9 @@
 //! PL011 UART.
 
-use arm_pl011::Pl011Uart;
-use axplat::mem::VirtAddr;
-use kspin::SpinNoIrq;
-use lazyinit::LazyInit;
+use ax_arm_pl011::Pl011Uart;
+use ax_kspin::SpinNoIrq;
+use ax_lazyinit::LazyInit;
+use ax_plat::mem::VirtAddr;
 
 static UART: LazyInit<SpinNoIrq<Pl011Uart>> = LazyInit::new();
 
@@ -59,7 +59,7 @@ pub fn init_early(uart_base: VirtAddr) {
     }));
 }
 
-/// Default implementation of [`axplat::console::ConsoleIf`] using the
+/// Default implementation of [`ax_plat::console::ConsoleIf`] using the
 /// PL011 UART.
 #[macro_export]
 #[allow(clippy::crate_in_macro_def)]
@@ -67,8 +67,8 @@ macro_rules! console_if_impl {
     ($name:ident) => {
         struct $name;
 
-        #[axplat::impl_plat_interface]
-        impl axplat::console::ConsoleIf for $name {
+        #[ax_plat::impl_plat_interface]
+        impl ax_plat::console::ConsoleIf for $name {
             /// Writes given bytes to the console.
             fn write_bytes(bytes: &[u8]) {
                 $crate::pl011::write_bytes(bytes);

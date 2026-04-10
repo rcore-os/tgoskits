@@ -13,8 +13,8 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+use ax_task::{AxTaskRef, WeakAxTaskRef, current};
 use axfs_ng_vfs::{Filesystem, NodeType, VfsError, VfsResult};
-use axtask::{AxTaskRef, WeakAxTaskRef, current};
 use indoc::indoc;
 use starry_process::Process;
 
@@ -371,7 +371,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     root.add(
         "meminfo2",
         SimpleFile::new_regular(fs.clone(), || {
-            let allocator = axalloc::global_allocator();
+            let allocator = ax_alloc::global_allocator();
             Ok(format!("{:?}\n", allocator.usages()))
         }),
     );
@@ -391,7 +391,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     {
         static IRQ_CNT: AtomicUsize = AtomicUsize::new(0);
 
-        axtask::register_timer_callback(|_| {
+        ax_task::register_timer_callback(|_| {
             IRQ_CNT.fetch_add(1, Ordering::Relaxed);
         });
 

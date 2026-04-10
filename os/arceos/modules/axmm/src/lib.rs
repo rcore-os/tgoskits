@@ -9,14 +9,14 @@ extern crate alloc;
 mod aspace;
 mod backend;
 
-use axerrno::{AxError, AxResult};
-use axhal::{
+use ax_errno::{AxError, AxResult};
+use ax_hal::{
     mem::{MemRegionFlags, phys_to_virt},
     paging::MappingFlags,
 };
-use kspin::SpinNoIrq;
-use lazyinit::LazyInit;
-use memory_addr::{MemoryAddr, PhysAddr, VirtAddr};
+use ax_kspin::SpinNoIrq;
+use ax_lazyinit::LazyInit;
+use ax_memory_addr::{MemoryAddr, PhysAddr, VirtAddr};
 
 pub use self::{aspace::AddrSpace, backend::Backend};
 
@@ -57,9 +57,9 @@ pub fn new_user_aspace(base: VirtAddr, size: usize) -> AxResult<AddrSpace> {
 
 /// Creates a new address space for kernel itself.
 pub fn new_kernel_aspace() -> AxResult<AddrSpace> {
-    let (base, size) = axhal::mem::kernel_aspace();
+    let (base, size) = ax_hal::mem::kernel_aspace();
     let mut aspace = AddrSpace::new_empty(base, size)?;
-    for r in axhal::mem::memory_regions() {
+    for r in ax_hal::mem::memory_regions() {
         // mapped range should contain the whole region if it is not aligned.
         let start = r.paddr.align_down_4k();
         let end = (r.paddr + r.size).align_up_4k();
@@ -94,16 +94,16 @@ pub fn init_memory_management() {
     debug!("kernel address space init OK: {kernel_aspace:#x?}");
     KERNEL_ASPACE.init_once(SpinNoIrq::new(kernel_aspace));
     unsafe {
-        axhal::asm::write_kernel_page_table(kernel_page_table_root());
-        axhal::asm::flush_tlb(None);
+        ax_hal::asm::write_kernel_page_table(kernel_page_table_root());
+        ax_hal::asm::flush_tlb(None);
     }
 }
 
 /// Initializes kernel paging for secondary CPUs.
 pub fn init_memory_management_secondary() {
     unsafe {
-        axhal::asm::write_kernel_page_table(kernel_page_table_root());
-        axhal::asm::flush_tlb(None);
+        ax_hal::asm::write_kernel_page_table(kernel_page_table_root());
+        ax_hal::asm::flush_tlb(None);
     }
 }
 

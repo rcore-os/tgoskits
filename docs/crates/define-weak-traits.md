@@ -114,7 +114,7 @@
 
 ## 6. 跨项目定位
 
-仓库中有若干正式组件依赖 `crate_interface` 生态，例如 ArceOS 的 `axlog`/`axruntime`、`kernel_guard`/`axtask`，以及 Axvisor 侧的 `axvisor_api` 宏封装；但这些正式组件都不会直接链接 `define-weak-traits`。
+仓库中有若干正式组件依赖 `crate_interface` 生态，例如 ArceOS 的 `ax-log`/`ax-runtime`、`kernel_guard`/`ax-task`，以及 Axvisor 侧的 `axvisor_api` 宏封装；但这些正式组件都不会直接链接 `define-weak-traits`。
 
 因此，这个 crate 在跨项目层面的定位并不是“给主线系统提供默认实现库”，而是作为 `crate_interface` 弱默认分支的定义端回归样本，间接保护未来或现有正式组件所依赖的宏展开、符号命名和链接期选择语义。
 

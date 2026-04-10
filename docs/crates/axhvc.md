@@ -65,7 +65,7 @@
 
 - `type HyperCallResult = AxResult<usize>`
 
-也就是说，它统一了“hypercall 成功返回一个 `usize`，失败返回 `axerrno` 错误”的 ABI 表达方式，但并没有引入更高层的返回值协议。
+也就是说，它统一了“hypercall 成功返回一个 `usize`，失败返回 `ax-errno` 错误”的 ABI 表达方式，但并没有引入更高层的返回值协议。
 
 ### 1.5 与 Axvisor 当前实现的真实关系
 
@@ -126,7 +126,7 @@
 
 | 依赖 | 作用 |
 | --- | --- |
-| `axerrno` | 统一 HyperCall 错误返回类型 |
+| `ax-errno` | 统一 HyperCall 错误返回类型 |
 
 ### 3.2 主要消费者
 

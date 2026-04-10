@@ -127,7 +127,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "axconfig-macros"
+name = "ax-config-macros"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b2decc5437a10ddb659f0fbd819b9308362ea1d11455ddb5a1c47ea3973920d"
@@ -139,7 +139,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "axcpu"
+name = "ax-cpu"
 version = "0.3.0-preview.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2c5c4f67041d8fee9de424f4e37e58b65ecf46489c1cbd80d9388b4bda5f592"
@@ -163,10 +163,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "axplat"
+name = "ax-plat"
 version = "0.3.1-pre.6"
 dependencies = [
- "axplat-macros",
+ "ax-plat-macros",
  "bitflags 2.11.0",
  "const-str",
  "crate_interface 0.3.0",
@@ -180,10 +180,10 @@ dependencies = [
 name = "axplat-aarch64-bsta1000b"
 version = "0.3.1-pre.6"
 dependencies = [
- "axconfig-macros",
- "axcpu",
- "axplat",
- "axplat-aarch64-peripherals",
+ "ax-config-macros",
+ "ax-cpu",
+ "ax-plat",
+ "ax-plat-aarch64-peripherals",
  "dw_apb_uart",
  "kspin",
  "log",
@@ -191,16 +191,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "axplat-aarch64-peripherals"
+name = "ax-plat-aarch64-peripherals"
 version = "0.3.1-pre.6"
 dependencies = [
  "aarch64-cpu",
  "arm-gic-driver",
  "arm_pl011",
  "arm_pl031",
- "axcpu",
- "axplat",
- "int_ratio",
+ "ax-cpu",
+ "ax-plat",
+ "ax-int-ratio",
  "kspin",
  "lazyinit",
  "log",
@@ -211,10 +211,10 @@ dependencies = [
 name = "axplat-aarch64-phytium-pi"
 version = "0.3.1-pre.6"
 dependencies = [
- "axconfig-macros",
- "axcpu",
- "axplat",
- "axplat-aarch64-peripherals",
+ "ax-config-macros",
+ "ax-cpu",
+ "ax-plat",
+ "ax-plat-aarch64-peripherals",
  "log",
  "page_table_entry",
 ]
@@ -223,10 +223,10 @@ dependencies = [
 name = "axplat-aarch64-qemu-virt"
 version = "0.3.1-pre.6"
 dependencies = [
- "axconfig-macros",
- "axcpu",
- "axplat",
- "axplat-aarch64-peripherals",
+ "ax-config-macros",
+ "ax-cpu",
+ "ax-plat",
+ "ax-plat-aarch64-peripherals",
  "log",
  "page_table_entry",
 ]
@@ -236,21 +236,21 @@ name = "axplat-aarch64-raspi"
 version = "0.3.1-pre.6"
 dependencies = [
  "aarch64-cpu",
- "axconfig-macros",
- "axcpu",
- "axplat",
- "axplat-aarch64-peripherals",
+ "ax-config-macros",
+ "ax-cpu",
+ "ax-plat",
+ "ax-plat-aarch64-peripherals",
  "log",
  "page_table_entry",
 ]
 
 [[package]]
-name = "axplat-loongarch64-qemu-virt"
+name = "ax-plat-loongarch64-qemu-virt"
 version = "0.3.1-pre.6"
 dependencies = [
- "axconfig-macros",
- "axcpu",
- "axplat",
+ "ax-config-macros",
+ "ax-cpu",
+ "ax-plat",
  "chrono",
  "kspin",
  "lazyinit",
@@ -261,7 +261,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "axplat-macros"
+name = "ax-plat-macros"
 version = "0.1.0"
 dependencies = [
  "crate_interface 0.3.0",
@@ -271,12 +271,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "axplat-riscv64-qemu-virt"
+name = "ax-plat-riscv64-qemu-virt"
 version = "0.3.1-pre.6"
 dependencies = [
- "axconfig-macros",
- "axcpu",
- "axplat",
+ "ax-config-macros",
+ "ax-cpu",
+ "ax-plat",
  "kspin",
  "lazyinit",
  "log",
@@ -288,15 +288,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "axplat-x86-pc"
+name = "ax-plat-x86-pc"
 version = "0.3.1-pre.6"
 dependencies = [
- "axconfig-macros",
- "axcpu",
- "axplat",
+ "ax-config-macros",
+ "ax-cpu",
+ "ax-plat",
  "bitflags 2.11.0",
  "heapless",
- "int_ratio",
+ "ax-int-ratio",
  "kspin",
  "lazyinit",
  "log",
@@ -617,11 +617,11 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 name = "hello-kernel"
 version = "0.1.0"
 dependencies = [
- "axplat",
+ "ax-plat",
  "axplat-aarch64-qemu-virt",
- "axplat-loongarch64-qemu-virt",
- "axplat-riscv64-qemu-virt",
- "axplat-x86-pc",
+ "ax-plat-loongarch64-qemu-virt",
+ "ax-plat-riscv64-qemu-virt",
+ "ax-plat-x86-pc",
  "cfg-if",
 ]
 
@@ -738,7 +738,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "int_ratio"
+name = "ax-int-ratio"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6045ea39e8d2862506c0dff6c65d068da362335df698bb1634033492740d2170"
@@ -747,13 +747,13 @@ checksum = "6045ea39e8d2862506c0dff6c65d068da362335df698bb1634033492740d2170"
 name = "irq-kernel"
 version = "0.1.0"
 dependencies = [
- "axconfig-macros",
- "axcpu",
- "axplat",
+ "ax-config-macros",
+ "ax-cpu",
+ "ax-plat",
  "axplat-aarch64-qemu-virt",
- "axplat-loongarch64-qemu-virt",
- "axplat-riscv64-qemu-virt",
- "axplat-x86-pc",
+ "ax-plat-loongarch64-qemu-virt",
+ "ax-plat-riscv64-qemu-virt",
+ "ax-plat-x86-pc",
  "cfg-if",
  "linkme",
 ]
@@ -1171,13 +1171,13 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 name = "smp-kernel"
 version = "0.1.0"
 dependencies = [
- "axconfig-macros",
- "axcpu",
- "axplat",
+ "ax-config-macros",
+ "ax-cpu",
+ "ax-plat",
  "axplat-aarch64-qemu-virt",
- "axplat-loongarch64-qemu-virt",
- "axplat-riscv64-qemu-virt",
- "axplat-x86-pc",
+ "ax-plat-loongarch64-qemu-virt",
+ "ax-plat-riscv64-qemu-virt",
+ "ax-plat-x86-pc",
  "cfg-if",
  "const-str",
  "linkme",

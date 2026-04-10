@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use ax_errno::{AxResult, ax_err_type};
 use axaddrspace::GuestPhysAddr;
-use axerrno::AxResult;
 
 use axvm::VMMemoryRegion;
 use axvm::config::AxVMCrateConfig;
@@ -59,7 +59,6 @@ pub struct ImageLoader {
     kernel_load_gpa: GuestPhysAddr,
     bios_load_gpa: Option<GuestPhysAddr>,
     dtb_load_gpa: Option<GuestPhysAddr>,
-    ramdisk_load_gpa: Option<GuestPhysAddr>,
 }
 
 impl ImageLoader {
@@ -71,7 +70,6 @@ impl ImageLoader {
             kernel_load_gpa: GuestPhysAddr::default(),
             bios_load_gpa: None,
             dtb_load_gpa: None,
-            ramdisk_load_gpa: None,
         }
     }
 
@@ -88,7 +86,6 @@ impl ImageLoader {
             self.kernel_load_gpa = config.image_config.kernel_load_gpa;
             self.dtb_load_gpa = config.image_config.dtb_load_gpa;
             self.bios_load_gpa = config.image_config.bios_load_gpa;
-            self.ramdisk_load_gpa = config.image_config.ramdisk_load_gpa;
         });
 
         match self.config.kernel.image_location.as_deref() {
@@ -113,6 +110,12 @@ impl ImageLoader {
 
         load_vm_image_from_memory(vm_imags.kernel, self.kernel_load_gpa, self.vm.clone())
             .expect("Failed to load VM images");
+
+        // Load Ramdisk image and record its size before regenerating the DTB.
+        if let Some(buffer) = vm_imags.ramdisk {
+            self.load_ramdisk_from_memory(buffer)
+                .expect("Failed to load Ramdisk images");
+        }
         // Load DTB image
         let vm_config = axvm::config::AxVMConfig::from(self.config.clone());
 
@@ -124,6 +127,9 @@ impl ImageLoader {
                 _dtb_slice.len(),
                 self.vm.clone(),
             );
+            #[cfg(target_arch = "riscv64")]
+            load_vm_image_from_memory(_dtb_slice, self.dtb_load_gpa.unwrap(), self.vm.clone())
+                .expect("Failed to load DTB images");
         } else {
             if let Some(buffer) = vm_imags.dtb {
                 #[cfg(target_arch = "riscv64")]
@@ -140,13 +146,47 @@ impl ImageLoader {
                 .expect("Failed to load BIOS images");
         }
 
-        // Load Ramdisk image
-        if let Some(buffer) = vm_imags.ramdisk {
-            load_vm_image_from_memory(buffer, self.ramdisk_load_gpa.unwrap(), self.vm.clone())
-                .expect("Failed to load Ramdisk images");
-        };
-
         Ok(())
+    }
+
+    fn load_ramdisk_from_memory(&self, ramdisk: &[u8]) -> AxResult {
+        let load_gpa = self
+            .vm
+            .with_config(|config| config.image_config.ramdisk.as_ref().map(|r| r.load_gpa))
+            .expect("Ramdisk image present but ramdisk info is missing");
+        let size = ramdisk.len();
+        self.vm.with_config(|config| {
+            if let Some(ref mut rd) = config.image_config.ramdisk {
+                rd.size = Some(size);
+            }
+        });
+        info!(
+            "Loading ramdisk image from memory ({} bytes) into GPA @{:#x}",
+            size,
+            load_gpa.as_usize()
+        );
+        load_vm_image_from_memory(ramdisk, load_gpa, self.vm.clone())
+    }
+
+    #[cfg(feature = "fs")]
+    fn load_ramdisk_from_filesystem(&self, ramdisk_path: &str) -> AxResult {
+        let load_gpa = self
+            .vm
+            .with_config(|config| config.image_config.ramdisk.as_ref().map(|r| r.load_gpa))
+            .ok_or_else(|| ax_err_type!(NotFound, "Ramdisk load addr is missed"))?;
+        let (_, ramdisk_size) = fs::open_image_file(ramdisk_path)?;
+        self.vm.with_config(|config| {
+            if let Some(ref mut rd) = config.image_config.ramdisk {
+                rd.size = Some(ramdisk_size);
+            }
+        });
+        info!(
+            "Loading ramdisk image from filesystem {} ({} bytes) into GPA @{:#x}",
+            ramdisk_path,
+            ramdisk_size,
+            load_gpa.as_usize()
+        );
+        fs::load_vm_image(ramdisk_path, load_gpa, self.vm.clone())
     }
 }
 
@@ -203,7 +243,7 @@ pub fn load_vm_image_from_memory(
 pub mod fs {
     use super::*;
     use crate::hal::CacheOp;
-    use axerrno::{AxResult, ax_err, ax_err_type};
+    use ax_errno::{AxResult, ax_err, ax_err_type};
     use std::{fs::File, vec::Vec};
 
     pub fn kernal_read(config: &AxVMCrateConfig, read_size: usize) -> AxResult<Vec<u8>> {
@@ -256,11 +296,7 @@ pub mod fs {
         };
         // Load Ramdisk image if needed.
         if let Some(ramdisk_path) = &loader.config.kernel.ramdisk_path {
-            if let Some(ramdisk_load_addr) = loader.ramdisk_load_gpa {
-                load_vm_image(ramdisk_path, ramdisk_load_addr, loader.vm.clone())?;
-            } else {
-                return ax_err!(NotFound, "Ramdisk load addr is missed");
-            }
+            loader.load_ramdisk_from_filesystem(ramdisk_path)?;
         };
         // Load DTB image if needed.
         let vm_config = axvm::config::AxVMConfig::from(loader.config.clone());
@@ -272,12 +308,19 @@ pub mod fs {
                 _dtb_slice.len(),
                 loader.vm.clone(),
             );
+            #[cfg(target_arch = "riscv64")]
+            load_vm_image_from_memory(_dtb_slice, loader.dtb_load_gpa.unwrap(), loader.vm.clone())
+                .expect("Failed to load DTB images");
         }
 
         Ok(())
     }
 
-    fn load_vm_image(image_path: &str, image_load_gpa: GuestPhysAddr, vm: VMRef) -> AxResult {
+    pub(crate) fn load_vm_image(
+        image_path: &str,
+        image_load_gpa: GuestPhysAddr,
+        vm: VMRef,
+    ) -> AxResult {
         use std::io::{BufReader, Read};
         let (image_file, image_size) = open_image_file(image_path)?;
 

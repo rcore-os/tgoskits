@@ -16,19 +16,19 @@
 
 use core::fmt;
 
-use axerrno::{AxError, AxResult, ax_err_type};
-use axfs_vfs::VfsNodeRef;
-use axio::SeekFrom;
-use cap_access::{Cap, WithCap};
+use ax_cap_access::{Cap, WithCap};
+use ax_errno::{AxError, AxResult, ax_err_type};
+use ax_fs_vfs::VfsNodeRef;
+use ax_io::SeekFrom;
 
-/// Alias of [`axfs_vfs::VfsNodeType`].
-pub type FileType = axfs_vfs::VfsNodeType;
-/// Alias of [`axfs_vfs::VfsDirEntry`].
-pub type DirEntry = axfs_vfs::VfsDirEntry;
-/// Alias of [`axfs_vfs::VfsNodeAttr`].
-pub type FileAttr = axfs_vfs::VfsNodeAttr;
-/// Alias of [`axfs_vfs::VfsNodePerm`].
-pub type FilePerm = axfs_vfs::VfsNodePerm;
+/// Alias of [`ax_fs_vfs::VfsNodeType`].
+pub type FileType = ax_fs_vfs::VfsNodeType;
+/// Alias of [`ax_fs_vfs::VfsDirEntry`].
+pub type DirEntry = ax_fs_vfs::VfsDirEntry;
+/// Alias of [`ax_fs_vfs::VfsNodeAttr`].
+pub type FileAttr = ax_fs_vfs::VfsNodeAttr;
+/// Alias of [`ax_fs_vfs::VfsNodePerm`].
+pub type FilePerm = ax_fs_vfs::VfsNodePerm;
 
 /// An opened file object, with open permissions and a cursor.
 pub struct File {

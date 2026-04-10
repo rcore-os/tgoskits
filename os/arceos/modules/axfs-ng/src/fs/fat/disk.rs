@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, vec};
 use core::mem;
 
-use axdriver::prelude::*;
+use ax_driver::prelude::*;
 
 fn take<'a>(buf: &mut &'a [u8], cnt: usize) -> &'a [u8] {
     let (first, rem) = buf.split_at(cnt);

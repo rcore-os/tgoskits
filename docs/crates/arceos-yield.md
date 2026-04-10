@@ -24,11 +24,11 @@
 
 ```mermaid
 flowchart LR
-    A["thread::spawn"] --> B["axtask::spawn_raw"]
+    A["thread::spawn"] --> B["ax-task::spawn_raw"]
     B --> C["任务执行"]
     C --> D["thread::yield_now()"]
-    D --> E["arceos_api::task::ax_yield_now"]
-    E --> F["axtask::yield_now"]
+    D --> E["ax_api::task::ax_yield_now"]
+    E --> F["ax-task::yield_now"]
     F --> G["当前 run queue 重新调度"]
 ```
 
@@ -78,21 +78,21 @@ flowchart LR
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    test["arceos-yield"] --> axstd["axstd(multitask)"]
-    axstd --> arceos_api["arceos_api::task"]
-    arceos_api --> axtask["axtask"]
+    test["arceos-yield"] --> ax-std["ax-std(multitask)"]
+    ax-std --> ax-api["ax_api::task"]
+    ax-api --> ax-task["ax-task"]
 ```
 
 ### 3.1 直接依赖
-- `axstd(multitask)`：提供 `thread::spawn`、`thread::yield_now` 与 `available_parallelism()`。
+- `ax-std(multitask)`：提供 `thread::spawn`、`thread::yield_now` 与 `available_parallelism()`。
 
 ### 3.2 关键间接依赖
-- `arceos_api::task::ax_yield_now`：连接用户侧线程 API 与内核任务 API。
-- `axtask::yield_now`：真正对当前 run queue 触发让出和重新调度。
+- `ax_api::task::ax_yield_now`：连接用户侧线程 API 与内核任务 API。
+- `ax-task::yield_now`：真正对当前 run queue 触发让出和重新调度。
 
 ### 3.3 主要消费者
 - `cargo arceos test qemu` 自动收集的任务基础回归。
-- 修改 `axtask`、调度器 feature 或 cooperative 调度路径后的最小验证。
+- 修改 `ax-task`、调度器 feature 或 cooperative 调度路径后的最小验证。
 
 ## 4. 开发指南
 ### 4.1 推荐运行方式

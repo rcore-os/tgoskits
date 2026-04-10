@@ -6,7 +6,7 @@
 > 版本：`0.1.0`
 > 文档依据：`Cargo.toml`、`src/main.rs`、`qemu-riscv64.toml`、`docs/arceos-guide.md`
 
-`arceos-affinity` 是一个专门验证“当前任务 CPU 亲和性设置与迁移是否正确”的系统级回归入口。它通过批量创建任务、设置单核亲和掩码、循环 `yield_now()` 并检查当前 CPU ID，来确认 `axtask` 的亲和性语义没有回退。
+`arceos-affinity` 是一个专门验证“当前任务 CPU 亲和性设置与迁移是否正确”的系统级回归入口。它通过批量创建任务、设置单核亲和掩码、循环 `yield_now()` 并检查当前 CPU ID，来确认 `ax-task` 的亲和性语义没有回退。
 
 它的核心边界非常明确：**这不是 CPU 亲和性管理库，也不是通用并发框架；它只是拿 `ax_set_current_affinity()` 这条真实调用链做回归验证。**
 
@@ -28,16 +28,16 @@
 
 ```mermaid
 flowchart LR
-    A["thread::spawn"] --> B["arceos_api::task::ax_spawn"]
-    B --> C["axtask::spawn_raw"]
+    A["thread::spawn"] --> B["ax_api::task::ax_spawn"]
+    B --> C["ax-task::spawn_raw"]
     C --> D["任务开始执行"]
     D --> E["ax_set_current_affinity"]
-    E --> F["axtask::set_current_affinity"]
+    E --> F["ax-task::set_current_affinity"]
     F --> G["必要时触发迁移"]
     G --> H["this_cpu_id() 断言"]
 ```
 
-关键点在于 `axtask::set_current_affinity()` 并不只是记录一个掩码；在开启 SMP 时，如果当前 CPU 不再满足亲和性，它会立刻走迁移路径。
+关键点在于 `ax-task::set_current_affinity()` 并不只是记录一个掩码；在开启 SMP 时，如果当前 CPU 不再满足亲和性，它会立刻走迁移路径。
 
 ### 1.3 feature 与调度器关系
 `Cargo.toml` 中的：
@@ -45,7 +45,7 @@ flowchart LR
 - `sched-rr`
 - `sched-cfs`
 
-会透传到 `axstd` 对应的调度器 feature。这个 crate 本身并不强依赖某一种调度算法，但它确实依赖：
+会透传到 `ax-std` 对应的调度器 feature。这个 crate 本身并不强依赖某一种调度算法，但它确实依赖：
 
 - `multitask`
 - 可见 CPU 数
@@ -82,23 +82,23 @@ flowchart LR
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    test["arceos-affinity"] --> axstd["axstd(multitask)"]
-    axstd --> arceos_api["arceos_api::task"]
-    arceos_api --> axtask["axtask"]
-    test --> axhal["axhal::percpu::this_cpu_id"]
+    test["arceos-affinity"] --> ax-std["ax-std(multitask)"]
+    ax-std --> ax-api["ax_api::task"]
+    ax-api --> ax-task["ax-task"]
+    test --> ax-hal["ax-hal::percpu::this_cpu_id"]
 ```
 
 ### 3.1 直接依赖
-- `axstd(multitask)`：提供线程创建、`yield_now()` 和 ArceOS 扩展任务 API 入口。
+- `ax-std(multitask)`：提供线程创建、`yield_now()` 和 ArceOS 扩展任务 API 入口。
 
 ### 3.2 关键间接依赖
-- `arceos_api::task::ax_set_current_affinity`：对上层暴露亲和性设置接口。
-- `axtask::set_current_affinity`：实际执行亲和性更新与迁移。
-- `axhal::percpu::this_cpu_id`：用来观察当前任务实际落在哪个 CPU 上。
+- `ax_api::task::ax_set_current_affinity`：对上层暴露亲和性设置接口。
+- `ax-task::set_current_affinity`：实际执行亲和性更新与迁移。
+- `ax-hal::percpu::this_cpu_id`：用来观察当前任务实际落在哪个 CPU 上。
 
 ### 3.3 主要消费者
 - `cargo arceos test qemu` 自动发现的任务回归集合。
-- 调整 `axtask`、`cpumask`、SMP 调度逻辑后的定向回归。
+- 调整 `ax-task`、`ax-cpumask`、SMP 调度逻辑后的定向回归。
 
 ## 4. 开发指南
 ### 4.1 推荐运行方式
@@ -148,7 +148,7 @@ cargo arceos test qemu --target riscv64gc-unknown-none-elf
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-它属于 ArceOS 的任务回归集，直接服务 `axtask` 的 SMP 与 affinity 语义验证，是系统测试入口，不是系统功能的一部分。
+它属于 ArceOS 的任务回归集，直接服务 `ax-task` 的 SMP 与 affinity 语义验证，是系统测试入口，不是系统功能的一部分。
 
 ### 6.2 StarryOS
 StarryOS 可能间接受益于底层调度和 CPU 掩码实现的修复，但不会直接运行这个测试包。

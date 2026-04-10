@@ -1,18 +1,10 @@
-/* 
+/*
  * Test linker script that works for both architectures
  * The actual OUTPUT_ARCH will be determined by the target
  */
 
 INCLUDE "link.x"
 __SMP = {{SMP}};
-SECTIONS {
-    linkme_IRQ : { KEEP(*(linkme_IRQ)) }
-    linkm2_IRQ : { KEEP(*(linkm2_IRQ)) }
-    linkme_PAGE_FAULT : { KEEP(*(linkme_PAGE_FAULT)) }
-    linkm2_PAGE_FAULT : { KEEP(*(linkm2_PAGE_FAULT)) }
-    scope_local : { KEEP(*(scope_local)) }
-}
-INSERT AFTER .tbss;
 
 SECTIONS {
     debug_abbrev : { . += SIZEOF(.debug_abbrev); }
@@ -28,8 +20,10 @@ SECTIONS {
 }
 INSERT AFTER .rodata;
 
-SECTIONS { 
-    Ex_table : ALIGN(0x10){ 
+SECTIONS {
+    scope_local : { KEEP(*(scope_local)) }
+
+    ex_table : ALIGN(0x10){
         _ex_table_start = .;
         KEEP(*(__ex_table))
         _ex_table_end = .;

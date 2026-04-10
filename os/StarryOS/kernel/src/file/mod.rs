@@ -9,12 +9,12 @@ pub mod signalfd;
 use alloc::{borrow::Cow, sync::Arc};
 use core::{ffi::c_int, time::Duration};
 
-use axerrno::{AxError, AxResult};
-use axfs::{FS_CONTEXT, OpenOptions};
+use ax_errno::{AxError, AxResult};
+use ax_fs::{FS_CONTEXT, OpenOptions};
+use ax_io::prelude::*;
+use ax_task::current;
 use axfs_ng_vfs::DeviceId;
-use axio::prelude::*;
 use axpoll::Pollable;
-use axtask::current;
 use downcast_rs::{DowncastSync, impl_downcast};
 use flatten_objects::FlattenObjects;
 use linux_raw_sys::general::{RLIMIT_NOFILE, stat, statx, statx_timestamp};

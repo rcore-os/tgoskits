@@ -11,7 +11,7 @@ mod mutex;
 
 #[cfg(not(feature = "multitask"))]
 #[doc(cfg(not(feature = "multitask")))]
-pub use kspin::{SpinRaw as Mutex, SpinRawGuard as MutexGuard};
+pub use ax_kspin::{SpinRaw as Mutex, SpinRawGuard as MutexGuard};
 
 #[cfg(feature = "multitask")]
 #[doc(cfg(feature = "multitask"))]

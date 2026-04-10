@@ -1,4 +1,4 @@
-use axdriver::AxBlockDevice;
+use ax_driver::AxBlockDevice;
 use axfs_ng_vfs::{Filesystem, VfsResult};
 
 cfg_if::cfg_if! {

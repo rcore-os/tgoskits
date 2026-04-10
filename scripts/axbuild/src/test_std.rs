@@ -150,8 +150,8 @@ mod tests {
 
     fn known_packages() -> HashSet<String> {
         HashSet::from([
-            "axfeat".to_string(),
-            "axhal".to_string(),
+            "ax-feat".to_string(),
+            "ax-hal".to_string(),
             "starry-process".to_string(),
         ])
     }
@@ -185,7 +185,7 @@ mod tests {
     fn parses_valid_std_csv() {
         let packages = parse_std_crates_csv("package\naxfeat\naxhal\n", &known_packages()).unwrap();
 
-        assert_eq!(packages, vec!["axfeat".to_string(), "axhal".to_string()]);
+        assert_eq!(packages, vec!["ax-feat".to_string(), "ax-hal".to_string()]);
     }
 
     #[test]
@@ -193,7 +193,7 @@ mod tests {
         let packages =
             parse_std_crates_csv("\npackage\n\naxfeat\n\naxhal\n", &known_packages()).unwrap();
 
-        assert_eq!(packages, vec!["axfeat".to_string(), "axhal".to_string()]);
+        assert_eq!(packages, vec!["ax-feat".to_string(), "ax-hal".to_string()]);
     }
 
     #[test]
@@ -224,7 +224,7 @@ mod tests {
     fn rejects_duplicate_package() {
         let err = parse_std_crates_csv("package\naxfeat\naxfeat\n", &known_packages()).unwrap_err();
 
-        assert!(err.to_string().contains("duplicate package `axfeat`"));
+        assert!(err.to_string().contains("duplicate package `ax-feat`"));
     }
 
     #[test]
@@ -240,13 +240,13 @@ mod tests {
     fn std_test_runner_collects_all_failures() {
         let root = PathBuf::from("/tmp/workspace");
         let packages = vec![
-            "axfeat".to_string(),
-            "axhal".to_string(),
+            "ax-feat".to_string(),
+            "ax-hal".to_string(),
             "starry-process".to_string(),
         ];
         let mut runner = FakeCargoRunner::new(&[
-            ("axfeat", true),
-            ("axhal", false),
+            ("ax-feat", true),
+            ("ax-hal", false),
             ("starry-process", false),
         ]);
 
@@ -254,13 +254,13 @@ mod tests {
 
         assert_eq!(
             failed,
-            vec!["axhal".to_string(), "starry-process".to_string()]
+            vec!["ax-hal".to_string(), "starry-process".to_string()]
         );
         assert_eq!(
             runner.invocations,
             vec![
-                (root.clone(), "axfeat".to_string()),
-                (root.clone(), "axhal".to_string()),
+                (root.clone(), "ax-feat".to_string()),
+                (root.clone(), "ax-hal".to_string()),
                 (root, "starry-process".to_string()),
             ]
         );
@@ -269,8 +269,8 @@ mod tests {
     #[test]
     fn std_test_runner_returns_empty_failures_when_all_pass() {
         let root = PathBuf::from("/tmp/workspace");
-        let packages = vec!["axfeat".to_string(), "axhal".to_string()];
-        let mut runner = FakeCargoRunner::new(&[("axfeat", true), ("axhal", true)]);
+        let packages = vec!["ax-feat".to_string(), "ax-hal".to_string()];
+        let mut runner = FakeCargoRunner::new(&[("ax-feat", true), ("ax-hal", true)]);
 
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
 

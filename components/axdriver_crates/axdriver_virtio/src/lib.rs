@@ -1,5 +1,5 @@
 //! Wrappers of some devices in the [`virtio-drivers`][1] crate, that implement
-//! traits in the [`axdriver_base`][2] series crates.
+//! traits in the [`ax-driver-base`][2] series crates.
 //!
 //! Like the [`virtio-drivers`][1] crate, you must implement the [`VirtIoHal`]
 //! trait (alias of [`virtio-drivers::Hal`][3]), to allocate DMA regions and
@@ -38,16 +38,20 @@ pub use self::net::VirtIoNetDev;
 
 #[cfg(feature = "socket")]
 mod socket;
+use ax_driver_base::{DevError, DeviceType};
+use virtio_drivers::transport::DeviceType as VirtIoDevType;
+pub use virtio_drivers::{
+    BufferDirection, Hal as VirtIoHal, PhysAddr,
+    transport::{
+        Transport,
+        pci::{PciTransport, bus as pci},
+    },
+};
+pub type MmioTransport = virtio_drivers::transport::mmio::MmioTransport<'static>;
+
+use self::pci::{ConfigurationAccess, DeviceFunction, DeviceFunctionInfo, PciRoot};
 #[cfg(feature = "socket")]
 pub use self::socket::VirtIoSocketDev;
-
-pub use virtio_drivers::transport::pci::bus as pci;
-pub use virtio_drivers::transport::{mmio::MmioTransport, pci::PciTransport, Transport};
-pub use virtio_drivers::{BufferDirection, Hal as VirtIoHal, PhysAddr};
-
-use self::pci::{DeviceFunction, DeviceFunctionInfo, PciRoot};
-use axdriver_base::{DevError, DeviceType};
-use virtio_drivers::transport::DeviceType as VirtIoDevType;
 
 /// Try to probe a VirtIO MMIO device from the given memory region.
 ///
@@ -55,13 +59,14 @@ use virtio_drivers::transport::DeviceType as VirtIoDevType;
 /// for later operations. Otherwise, returns [`None`].
 pub fn probe_mmio_device(
     reg_base: *mut u8,
-    _reg_size: usize,
+    reg_size: usize,
 ) -> Option<(DeviceType, MmioTransport)> {
     use core::ptr::NonNull;
+
     use virtio_drivers::transport::mmio::VirtIOHeader;
 
     let header = NonNull::new(reg_base as *mut VirtIOHeader).unwrap();
-    let transport = unsafe { MmioTransport::new(header) }.ok()?;
+    let transport = unsafe { MmioTransport::new(header, reg_size) }.ok()?;
     let dev_type = as_dev_type(transport.device_type())?;
     Some((dev_type, transport))
 }
@@ -70,8 +75,8 @@ pub fn probe_mmio_device(
 ///
 /// If the device is recognized, returns the device type and a transport object
 /// for later operations. Otherwise, returns [`None`].
-pub fn probe_pci_device<H: VirtIoHal>(
-    root: &mut PciRoot,
+pub fn probe_pci_device<H: VirtIoHal, C: ConfigurationAccess>(
+    root: &mut PciRoot<C>,
     bdf: DeviceFunction,
     dev_info: &DeviceFunctionInfo,
 ) -> Option<(DeviceType, PciTransport, usize)> {
@@ -87,7 +92,7 @@ pub fn probe_pci_device<H: VirtIoHal>(
     const PCI_IRQ_BASE: usize = 0x23;
 
     let dev_type = virtio_device_type(dev_info).and_then(as_dev_type)?;
-    let transport = PciTransport::new::<H>(root, bdf).ok()?;
+    let transport = PciTransport::new::<H, C>(root, bdf).ok()?;
     let irq = PCI_IRQ_BASE + (bdf.device & 3) as usize;
     Some((dev_type, transport, irq))
 }
@@ -106,8 +111,7 @@ const fn as_dev_type(t: VirtIoDevType) -> Option<DeviceType> {
 
 #[allow(dead_code)]
 const fn as_dev_err(e: virtio_drivers::Error) -> DevError {
-    use virtio_drivers::device::socket::SocketError::*;
-    use virtio_drivers::Error::*;
+    use virtio_drivers::{Error::*, device::socket::SocketError::*};
     match e {
         QueueFull => DevError::BadState,
         NotReady => DevError::Again,
@@ -123,12 +127,8 @@ const fn as_dev_err(e: virtio_drivers::Error) -> DevError {
             ConnectionExists => DevError::AlreadyExists,
             NotConnected => DevError::BadState,
             InvalidOperation | InvalidNumber | UnknownOperation(_) => DevError::InvalidParam,
-            OutputBufferTooShort(_) | BufferTooShort | BufferTooLong(_, _) => {
-                DevError::InvalidParam
-            }
-            UnexpectedDataInPacket | PeerSocketShutdown | NoResponseReceived | ConnectionFailed => {
-                DevError::Io
-            }
+            OutputBufferTooShort(_) | BufferTooShort | BufferTooLong(..) => DevError::InvalidParam,
+            UnexpectedDataInPacket | PeerSocketShutdown => DevError::Io,
             InsufficientBufferSpaceInPeer => DevError::Again,
             RecycledWrongBuffer => DevError::BadState,
         },

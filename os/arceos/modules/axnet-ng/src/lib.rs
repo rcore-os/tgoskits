@@ -40,8 +40,8 @@ mod wrapper;
 
 use alloc::{borrow::ToOwned, boxed::Box};
 
-use axdriver::{AxDeviceContainer, prelude::*};
-use axsync::Mutex;
+use ax_driver::{AxDeviceContainer, prelude::*};
+use ax_sync::Mutex;
 use smoltcp::wire::{EthernetAddress, Ipv4Address, Ipv4Cidr};
 use spin::{Lazy, Once};
 
@@ -60,7 +60,7 @@ static SOCKET_SET: Lazy<SocketSetWrapper> = Lazy::new(SocketSetWrapper::new);
 
 static SERVICE: Once<Mutex<Service>> = Once::new();
 
-fn get_service() -> axsync::MutexGuard<'static, Service> {
+fn get_service() -> ax_sync::MutexGuard<'static, Service> {
     SERVICE
         .get()
         .expect("Network service not initialized")

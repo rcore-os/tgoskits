@@ -23,7 +23,7 @@
 `src/irq.rs` 里有三块关键内容：
 
 1. `#[register_trap_handler(IRQ)] fn irq_handler(vector)`  
-   把平台收到的 IRQ 交给 `axplat::irq::handle(vector)` 分发。
+   把平台收到的 IRQ 交给 `ax_plat::irq::handle(vector)` 分发。
 2. `init_irq()`  
    注册定时器处理函数并开中断。
 3. `test_irq()`  
@@ -34,7 +34,7 @@
 ```mermaid
 flowchart LR
     A["定时器硬件触发 IRQ"] --> B["irq_handler"]
-    B --> C["axplat::irq::handle(vector)"]
+    B --> C["ax_plat::irq::handle(vector)"]
     C --> D["update_timer()"]
     D --> E["IRQ_COUNTER += 1"]
     E --> F["set_oneshot_timer(deadline)"]
@@ -53,7 +53,7 @@ flowchart LR
 
 1. 注册平台定时器 IRQ 对应的回调。
 2. 打印 `Timer IRQ handler registered.` 作为观测点。
-3. 调用 `axcpu::asm::enable_irqs()` 真正打开中断。
+3. 调用 `ax-cpu::asm::enable_irqs()` 真正打开中断。
 
 也就是说，它验证的不只是 handler 注册，还有 IRQ 使能本身。
 
@@ -81,25 +81,25 @@ flowchart LR
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    sample["irq-kernel"] --> axplat["axplat"]
-    sample --> axcpu["axcpu"]
+    sample["irq-kernel"] --> axplat["ax-plat"]
+    sample --> ax-cpu["ax-cpu"]
     sample --> linkme["linkme / trap 注册"]
-    sample --> x86["axplat-x86-pc(irq)"]
-    sample --> a64["axplat-aarch64-qemu-virt(irq)"]
-    sample --> rv["axplat-riscv64-qemu-virt(irq)"]
-    sample --> loong["axplat-loongarch64-qemu-virt(irq)"]
+    sample --> x86["ax-plat-x86-pc(irq)"]
+    sample --> a64["ax-plat-aarch64-qemu-virt(irq)"]
+    sample --> rv["ax-plat-riscv64-qemu-virt(irq)"]
+    sample --> loong["ax-plat-loongarch64-qemu-virt(irq)"]
 ```
 
 ### 3.1 直接依赖
 - `axplat`：平台抽象与 `irq`/`time` 接口。
-- `axcpu`：trap handler 注册与开中断辅助。
+- `ax-cpu`：trap handler 注册与开中断辅助。
 - `linkme`：支撑 `register_trap_handler` 这类分布式注册。
 - 各平台包的 `irq` feature：真正接入板级中断控制器与定时器。
 
 ### 3.2 关键间接依赖
-- `axplat::irq::register`
-- `axplat::irq::handle`
-- `axplat::time::set_oneshot_timer`
+- `ax_plat::irq::register`
+- `ax_plat::irq::handle`
+- `ax_plat::time::set_oneshot_timer`
 - 平台配置中的 `config::devices::TIMER_IRQ`
 
 ### 3.3 主要消费者
@@ -144,7 +144,7 @@ make ARCH=<x86_64|aarch64|riscv64|loongarch64> run
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-ArceOS 不直接依赖这个样例，但会复用相同的 `axplat` 平台包和 IRQ 底座。因此它对 ArceOS 的意义是“先确认平台 IRQ 最小链路成立，再进入 `axruntime` 和 `axtask` 的更复杂场景”。
+ArceOS 不直接依赖这个样例，但会复用相同的 `axplat` 平台包和 IRQ 底座。因此它对 ArceOS 的意义是“先确认平台 IRQ 最小链路成立，再进入 `ax-runtime` 和 `ax-task` 的更复杂场景”。
 
 ### 6.2 StarryOS
 StarryOS 也不会直接运行它。这个样例只是帮助确认共享平台包的 trap/IRQ 基础能力仍然健全。

@@ -15,17 +15,20 @@
 //! FDT parsing and processing functionality.
 
 use alloc::{string::ToString, vec::Vec};
+use ax_hal::{dtb, mem};
 use axvm::config::{AxVMConfig, AxVMCrateConfig, PassThroughDeviceConfig};
 use fdt_parser::{Fdt, FdtHeader, PciRange, PciSpace};
 
 use crate::vmm::fdt::crate_guest_fdt_with_cache;
+#[cfg(not(target_arch = "riscv64"))]
 use crate::vmm::fdt::create::update_cpu_node;
 
 pub fn get_host_fdt() -> &'static [u8] {
     const FDT_VALID_MAGIC: u32 = 0xd00d_feed;
-    let bootarg: usize = std::os::arceos::modules::axhal::dtb::get_bootarg();
+    let bootarg: usize = dtb::get_bootarg();
+    let fdt_vaddr = mem::phys_to_virt(bootarg.into());
     let header = unsafe {
-        core::slice::from_raw_parts(bootarg as *const u8, core::mem::size_of::<FdtHeader>())
+        core::slice::from_raw_parts(fdt_vaddr.as_ptr(), core::mem::size_of::<FdtHeader>())
     };
     let fdt_header = FdtHeader::from_bytes(header)
         .map_err(|e| format!("Failed to parse FDT header: {e:#?}"))
@@ -39,7 +42,7 @@ pub fn get_host_fdt() -> &'static [u8] {
         );
     }
 
-    unsafe { core::slice::from_raw_parts(bootarg as *const u8, fdt_header.total_size()) }
+    unsafe { core::slice::from_raw_parts(fdt_vaddr.as_ptr(), fdt_header.total_size()) }
 }
 
 pub fn setup_guest_fdt_from_vmm(
@@ -402,10 +405,19 @@ pub fn parse_vm_interrupt(vm_cfg: &mut AxVMConfig, dtb: &[u8]) {
 }
 
 pub fn update_provided_fdt(provided_dtb: &[u8], host_dtb: &[u8], crate_config: &AxVMCrateConfig) {
-    let provided_fdt = Fdt::from_bytes(provided_dtb)
-        .expect("Failed to parse DTB image, perhaps the DTB is invalid or corrupted");
-    let host_fdt = Fdt::from_bytes(host_dtb)
-        .expect("Failed to parse DTB image, perhaps the DTB is invalid or corrupted");
-    let provided_dtb_data = update_cpu_node(&provided_fdt, &host_fdt, crate_config);
-    crate_guest_fdt_with_cache(provided_dtb_data, crate_config);
+    #[cfg(target_arch = "riscv64")]
+    {
+        let _ = host_dtb;
+        crate_guest_fdt_with_cache(provided_dtb.to_vec(), crate_config);
+    }
+
+    #[cfg(not(target_arch = "riscv64"))]
+    {
+        let provided_fdt = Fdt::from_bytes(provided_dtb)
+            .expect("Failed to parse DTB image, perhaps the DTB is invalid or corrupted");
+        let host_fdt = Fdt::from_bytes(host_dtb)
+            .expect("Failed to parse DTB image, perhaps the DTB is invalid or corrupted");
+        let provided_dtb_data = update_cpu_node(&provided_fdt, &host_fdt, crate_config);
+        crate_guest_fdt_with_cache(provided_dtb_data, crate_config);
+    }
 }

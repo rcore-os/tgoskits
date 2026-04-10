@@ -3,7 +3,7 @@
 use core::ops::{Add, AddAssign, Sub, SubAssign};
 pub use core::time::Duration;
 
-use arceos_api::time::AxTimeValue;
+use ax_api::time::AxTimeValue;
 
 /// A measurement of a monotonically nondecreasing clock.
 /// Opaque and useful only with [`Duration`].
@@ -13,7 +13,7 @@ pub struct Instant(AxTimeValue);
 impl Instant {
     /// Returns an instant corresponding to "now".
     pub fn now() -> Instant {
-        Instant(arceos_api::time::ax_wall_time())
+        Instant(ax_api::time::ax_wall_time())
     }
 
     /// Returns the amount of time elapsed from another instant to this one,

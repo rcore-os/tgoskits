@@ -18,7 +18,7 @@ pub mod ahci;
 pub mod sdmmc;
 
 #[doc(no_inline)]
-pub use axdriver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
+pub use ax_driver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
 
 /// Operations that require a block storage device driver to implement.
 pub trait BlockDriverOps: BaseDriverOps {

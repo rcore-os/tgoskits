@@ -1,6 +1,6 @@
 use core::ffi::c_int;
 
-use axerrno::AxResult;
+use ax_errno::AxResult;
 use bitflags::bitflags;
 use linux_raw_sys::general::{O_CLOEXEC, O_NONBLOCK};
 use starry_vm::VmMutPtr;

@@ -3,7 +3,7 @@
 #[macro_use]
 extern crate log;
 #[macro_use]
-extern crate axplat;
+extern crate ax_plat;
 
 #[cfg(feature = "irq")]
 pub mod irq;
@@ -22,7 +22,7 @@ pub mod config {
     //! Otherwise, it will fall back to the `axconfig.toml` file in the current directory and generate the default configuration.
     //!
     //! If the `PACKAGE` field in the configuration does not match the package name, it will panic with an error message.
-    axconfig_macros::include_configs!(path_env = "AX_CONFIG_PATH", fallback = "axconfig.toml");
+    ax_config_macros::include_configs!(path_env = "AX_CONFIG_PATH", fallback = "axconfig.toml");
     assert_str_eq!(
         PACKAGE,
         env!("CARGO_PKG_NAME"),
@@ -31,7 +31,7 @@ pub mod config {
 }
 
 pub const fn cpu_count() -> usize {
-    config::plat::CPU_NUM
+    config::plat::MAX_CPU_NUM
 }
 
 pub const fn plic_base() -> usize {

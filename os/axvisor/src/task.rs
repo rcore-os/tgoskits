@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use alloc::sync::{Arc, Weak};
-use std::os::arceos::modules::axtask::{TaskExt, TaskInner};
+use std::os::arceos::modules::ax_task::{TaskExt, TaskInner};
 
 use crate::vmm::{VCpuRef, VM, VMRef};
 

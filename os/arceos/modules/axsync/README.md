@@ -7,8 +7,8 @@
 
 ## Primitives
 
-- **Mutex**: A mutual exclusion primitive. With the `multitask` feature, it uses task-aware locking; otherwise it is an alias of `kspin::SpinNoIrq`.
-- **spin**: Re-export of the [kspin](https://crates.io/crates/kspin) crate (spinlocks).
+- **Mutex**: A mutual exclusion primitive. With the `multitask` feature, it uses task-aware locking; otherwise it is an alias of `ax_kspin::SpinNoIrq`.
+- **spin**: Re-export of the [ax-kspin](https://crates.io/crates/ax-kspin) crate (spinlocks).
 
 ## Features
 

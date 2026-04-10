@@ -1,0 +1,92 @@
+/dts-v1/;
+
+/ {
+	#address-cells = <2>;
+	#size-cells = <2>;
+	model = "QEMU Cortex-A53";
+	compatible = "qemu,arm-cortex-a53";
+
+	chosen {
+		zephyr,sram = &sram0;
+		zephyr,console = &uart0;
+		zephyr,shell-uart = &uart0;
+		stdout-path = "/soc/uart@9000000";
+	};
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu@0 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a53";
+			reg = <0>;
+		};
+
+		cpu@1 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a53";
+			reg = <1>;
+		};
+	};
+
+	psci {
+		compatible = "arm,psci-0.2";
+		method = "hvc";
+	};
+
+	timer {
+		compatible = "arm,armv8-timer";
+		interrupt-parent = <&gic>;
+		interrupts = <1 13 2 0xa0>,
+			     <1 14 2 0xa0>,
+			     <1 11 2 0xa0>,
+			     <1 10 2 0xa0>;
+	};
+
+	uartclk: apb-pclk {
+		compatible = "fixed-clock";
+		clock-frequency = <24000000>;
+		#clock-cells = <0>;
+	};
+
+	soc {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		compatible = "simple-bus";
+		ranges;
+		interrupt-parent = <&gic>;
+
+		gic: interrupt-controller@8000000 {
+			compatible = "arm,gic-v3", "arm,gic";
+			reg = <0x0 0x08000000 0x0 0x00010000>,
+			      <0x0 0x080a0000 0x0 0x00f60000>;
+			interrupt-controller;
+			#interrupt-cells = <4>;
+			#address-cells = <2>;
+			#size-cells = <2>;
+			status = "okay";
+
+			its: its@8080000 {
+				compatible = "arm,gic-v3-its";
+				reg = <0x0 0x08080000 0x0 0x00020000>;
+				msi-controller;
+			};
+		};
+
+		uart0: uart@9000000 {
+			compatible = "arm,pl011";
+			reg = <0x0 0x09000000 0x0 0x1000>;
+			interrupts = <0 1 2 0>;
+			interrupt-names = "irq_0";
+			clocks = <&uartclk>;
+			current-speed = <115200>;
+			status = "okay";
+		};
+
+		sram0: memory@40000000 {
+			compatible = "mmio-sram";
+			reg = <0x0 0x40000000 0x0 0x08000000>;
+		};
+	};
+};

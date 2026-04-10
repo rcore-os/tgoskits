@@ -1,11 +1,11 @@
 use core::{any::Any, slice};
 
 #[allow(unused_imports)]
-use axdriver::prelude::DisplayDriverOps;
-use axerrno::AxError;
+use ax_driver::prelude::DisplayDriverOps;
+use ax_errno::AxError;
+use ax_hal::mem::virt_to_phys;
+use ax_memory_addr::{PhysAddrRange, VirtAddr};
 use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
-use axhal::mem::virt_to_phys;
-use memory_addr::{PhysAddrRange, VirtAddr};
 use starry_vm::VmMutPtr;
 
 use crate::pseudofs::{DeviceMmap, DeviceOps};
@@ -81,10 +81,10 @@ struct FixScreenInfo {
 async fn refresh_task() {
     let delay = core::time::Duration::from_secs_f32(1. / 60.);
     loop {
-        if !axdisplay::framebuffer_flush() {
+        if !ax_display::framebuffer_flush() {
             warn!("Failed to refresh framebuffer");
         }
-        axtask::future::sleep(delay).await;
+        ax_task::future::sleep(delay).await;
     }
 }
 
@@ -94,11 +94,11 @@ pub struct FrameBuffer {
 }
 impl FrameBuffer {
     pub fn new() -> Self {
-        axtask::spawn_with_name(
-            || axtask::future::block_on(refresh_task()),
+        ax_task::spawn_with_name(
+            || ax_task::future::block_on(refresh_task()),
             "fb-refresh".into(),
         );
-        let info = axdisplay::framebuffer_info();
+        let info = ax_display::framebuffer_info();
         Self {
             base: VirtAddr::from(info.fb_base_vaddr),
             size: info.fb_size,
@@ -134,7 +134,7 @@ impl DeviceOps for FrameBuffer {
         match cmd {
             // FBIOGET_VSCREENINFO
             0x4600 => {
-                let info = axdisplay::framebuffer_info();
+                let info = ax_display::framebuffer_info();
                 let line_length = (info.fb_size / info.height as usize) as u32;
                 let bpp = line_length / info.width;
                 (arg as *mut VarScreenInfo).vm_write(VarScreenInfo {
@@ -190,7 +190,7 @@ impl DeviceOps for FrameBuffer {
             0x4601 => Ok(0),
             // FBIOGET_FSCREENINFO
             0x4602 => {
-                let info = axdisplay::framebuffer_info();
+                let info = ax_display::framebuffer_info();
                 (arg as *mut FixScreenInfo).vm_write(FixScreenInfo {
                     id: *b"Virtio Framebuf\0",
                     smem_start: info.fb_base_vaddr as u64,

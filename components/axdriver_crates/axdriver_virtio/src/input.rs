@@ -1,11 +1,11 @@
 use alloc::{borrow::ToOwned, string::String};
 
-use axdriver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
-use axdriver_input::{Event, EventType, InputDeviceId, InputDriverOps};
+use ax_driver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
+use ax_driver_input::{Event, EventType, InputDeviceId, InputDriverOps};
 use virtio_drivers::{
+    Hal,
     device::input::{InputConfigSelect, VirtIOInput as InnerDev},
     transport::Transport,
-    Hal,
 };
 
 use crate::as_dev_err;
@@ -70,7 +70,8 @@ impl<H: Hal, T: Transport> InputDriverOps for VirtIoInputDev<H, T> {
     fn get_event_bits(&mut self, ty: EventType, out: &mut [u8]) -> DevResult<bool> {
         let read = self
             .inner
-            .query_config_select(InputConfigSelect::EvBits, ty as u8, out);
+            .query_config_select(InputConfigSelect::EvBits, ty as u8, out)
+            .map_err(as_dev_err)?;
         Ok(read != 0)
     }
 

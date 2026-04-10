@@ -40,7 +40,7 @@ impl DeviceOps for Rtc {
         match cmd {
             RTC_RD_TIME => {
                 let wall =
-                    chrono::DateTime::from_timestamp_nanos(axhal::time::wall_time_nanos() as _);
+                    chrono::DateTime::from_timestamp_nanos(ax_hal::time::wall_time_nanos() as _);
                 (arg as *mut rtc_time).vm_write(rtc_time {
                     tm_sec: wall.second() as _,
                     tm_min: wall.minute() as _,

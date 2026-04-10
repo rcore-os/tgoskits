@@ -8,9 +8,9 @@ use alloc::{
 };
 use core::{ffi::c_int, time::Duration};
 
-use axerrno::{LinuxError, LinuxResult};
-use axhal::time::wall_time;
-use axsync::Mutex;
+use ax_errno::{LinuxError, LinuxResult};
+use ax_hal::time::wall_time;
+use ax_sync::Mutex;
 
 use crate::{
     ctypes,
@@ -131,7 +131,7 @@ impl FileLike for EpollInstance {
         self
     }
 
-    fn poll(&self) -> LinuxResult<axio::PollState> {
+    fn poll(&self) -> LinuxResult<ax_io::PollState> {
         Err(LinuxError::ENOSYS)
     }
 
@@ -189,7 +189,7 @@ pub unsafe fn sys_epoll_wait(
         let epoll_instance = EpollInstance::from_fd(epfd)?;
         loop {
             #[cfg(feature = "net")]
-            axnet::poll_interfaces();
+            ax_net::poll_interfaces();
             let events_num = epoll_instance.poll_all(events)?;
             if events_num > 0 {
                 return Ok(events_num as c_int);

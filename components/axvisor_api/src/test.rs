@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use memory_addr::{pa, va};
+use ax_memory_addr::{pa, va};
 
 mod memory_impl {
     extern crate std; // in test only
 
-    use memory_addr::{PhysAddr, VirtAddr, pa, va};
+    use ax_memory_addr::{PhysAddr, VirtAddr, pa, va};
     use std::sync::{
         Mutex, MutexGuard,
         atomic::{AtomicUsize, Ordering},
@@ -38,10 +38,7 @@ mod memory_impl {
             Some(pa!(value * 0x1000))
         }
 
-        fn alloc_contiguous_frames(
-            _num_frames: usize,
-            _frame_align_pow2: usize,
-        ) -> Option<PhysAddr> {
+        fn alloc_contiguous_frames(_num_frames: usize, _frame_align: usize) -> Option<PhysAddr> {
             unimplemented!();
         }
 

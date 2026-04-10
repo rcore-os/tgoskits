@@ -113,7 +113,7 @@ StarryOS 当前的集成模式很典型：
 
 | 依赖 | 作用 |
 | --- | --- |
-| `percpu` | 保存当前激活 scope 指针 |
+| `ax-percpu` | 保存当前激活 scope 指针 |
 | `spin` | 惰性初始化全局默认 scope |
 
 ### 3.2 主要消费者
@@ -131,10 +131,10 @@ StarryOS 当前的集成模式很典型：
 ```mermaid
 graph TD
     A[scope-local]
-    B[percpu] --> A
+    B[ax-percpu] --> A
     A --> C[StarryOS kernel]
-    A --> D[axfs-ng]
-    A --> E[arceos_posix_api fd]
+    A --> D[ax-fs-ng]
+    A --> E[ax-posix-api fd]
     C --> F[TaskExt 切换 Scope]
 ```
 
@@ -155,11 +155,11 @@ graph TD
 - 若没有任何调度/上下文钩子切换 `ActiveScope`，访问将始终落到 `GLOBAL_SCOPE`
 - `Scope` 生命周期必须与使用它的执行上下文一致，否则 `ACTIVE_SCOPE_PTR` 会悬空
 
-### 4.3 与 `percpu` / `axtask` 的职责分工
+### 4.3 与 `ax-percpu` / `ax-task` 的职责分工
 
-- `percpu`：只负责“当前 CPU 有一个当前 scope 指针”
+- `ax-percpu`：只负责“当前 CPU 有一个当前 scope 指针”
 - `scope-local`：负责“如何根据当前 scope 指针解析局部项”
-- `axtask`/Starry 调度层：决定“何时切换当前 scope”
+- `ax-task`/Starry 调度层：决定“何时切换当前 scope”
 
 不要把调度策略写回 `scope-local`，否则它会失去通用性。
 
@@ -173,7 +173,7 @@ graph TD
 - 显式 `Scope` 访问
 - `ActiveScope::set` / `set_global`
 - `Scope` drop 行为
-- 配合 `percpu` 的多线程/多 CPU 模拟
+- 配合 `ax-percpu` 的多线程/多 CPU 模拟
 
 这套测试对于一个链接段 + per-CPU + 堆分配混合实现的库来说已经比较关键。
 
@@ -193,7 +193,7 @@ graph TD
 
 | 项目 | 位置 | 角色 | 核心作用 |
 | --- | --- | --- | --- |
-| ArceOS | 可选局部资源视图基础件 | scope 级局部存储库 | 为 `axfs-ng`、POSIX fd 等场景提供可切换的局部状态承载方式 |
+| ArceOS | 可选局部资源视图基础件 | scope 级局部存储库 | 为 `ax-fs-ng`、POSIX fd 等场景提供可切换的局部状态承载方式 |
 | StarryOS | 进程/任务资源域基础件 | 进程级局部存储核心件 | 通过 `TaskExt` 与 `ActiveScope` 把 FD 表等资源自然绑定到当前进程 |
 | Axvisor | 当前仓库中无直接使用主线 | 潜在可复用基础件 | 若未来 Hypervisor 需要按 VM 或 vCPU 切换一组局部状态，可复用这套 scope 模型 |
 

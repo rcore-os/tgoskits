@@ -80,7 +80,7 @@ endif
 $(OUT_UIMG): $(OUT_BIN)
 	$(call run_cmd,mkimage,\
 		-A $(uimg_arch) -O linux -T kernel -C none \
-		-a $(subst _,,$(shell axconfig-gen "$(OUT_CONFIG)" -r plat.kernel-base-paddr)) \
+		-a $(subst _,,$(shell ax-config-gen "$(OUT_CONFIG)" -r plat.kernel-base-paddr)) \
 		-d $(OUT_BIN) $@)
 
 .PHONY: _cargo_build _dwarf

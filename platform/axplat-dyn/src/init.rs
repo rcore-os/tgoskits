@@ -1,4 +1,4 @@
-use axplat::init::InitIf;
+use ax_plat::init::InitIf;
 
 struct InitIfImpl;
 
@@ -10,14 +10,24 @@ impl InitIf for InitIfImpl {
     /// and performed earliest platform configuration and initialization (e.g.,
     /// early console, clocking).
     fn init_early(_cpu_id: usize, _dtb: usize) {
-        axcpu::init::init_trap();
+        ax_cpu::init::init_trap();
+        #[cfg(all(target_arch = "aarch64", feature = "fp-simd"))]
+        {
+            ax_cpu::asm::enable_fp();
+            debug!("axplat-dyn: fp/simd enabled");
+        }
         somehal::timer::enable();
     }
 
     /// Initializes the platform at the early stage for secondary cores.
     #[cfg(feature = "smp")]
     fn init_early_secondary(_cpu_id: usize) {
-        axcpu::init::init_trap();
+        ax_cpu::init::init_trap();
+        #[cfg(all(target_arch = "aarch64", feature = "fp-simd"))]
+        {
+            ax_cpu::asm::enable_fp();
+            debug!("axplat-dyn: secondary fp/simd enabled");
+        }
         somehal::timer::enable();
     }
 

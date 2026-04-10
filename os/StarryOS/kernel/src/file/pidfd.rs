@@ -7,7 +7,7 @@ use core::{
     task::Context,
 };
 
-use axerrno::{AxError, AxResult};
+use ax_errno::{AxError, AxResult};
 use axpoll::{IoEvents, PollSet, Pollable};
 
 use crate::{

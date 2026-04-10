@@ -1,11 +1,11 @@
 [package]
-name = "axfs-ng"
+name = "ax-fs-ng"
 version.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Mivik <mivikq@gmail.com>"]
 description = "ArceOS filesystem module"
 license.workspace = true
-homepage.workspace = true
 
 [features]
 fat = ["dep:fatfs"]
@@ -14,19 +14,19 @@ times = []
 std = ["lwext4_rust?/std"]
 
 [dependencies]
-axalloc = { workspace = true }
-axdriver = { workspace = true, features = ["block"] }
-axerrno = { workspace = true }
+ax-alloc = { workspace = true }
+ax-driver = { workspace = true, features = ["block"] }
+ax-errno = { workspace = true }
 axfs-ng-vfs = { workspace = true }
-axhal = { workspace = true }
-axio = { workspace = true, features = ["alloc"] }
+ax-hal = { workspace = true }
+ax-io = { workspace = true, features = ["alloc"] }
 axpoll = { workspace = true }
-axsync = { workspace = true }
+ax-sync = { workspace = true }
 bitflags = "2.10"
 cfg-if = { workspace = true }
 chrono = { workspace = true }
 intrusive-collections = "0.9"
-kspin = { workspace = true }
+ax-kspin = { workspace = true }
 log = { workspace = true }
 lru = "0.16"
 scope-local = { workspace = true }

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use axerrno::AxResult;
+use ax_errno::AxResult;
 use axvisor_api::vmm::current_vcpu_id;
 use spin::Mutex;
 

@@ -11,7 +11,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! axlog = { version = "0.1", features = ["std"] }
+//! ax-log = { version = "0.1", features = ["std"] }
 //! ```
 //!
 //! # Cargo features:
@@ -22,12 +22,12 @@
 //! # Examples
 //!
 //! ```
-//! use axlog::{debug, error, info, trace, warn};
+//! use ax_log::{debug, error, info, trace, warn};
 //!
 //! // Initialize the logger.
-//! axlog::init();
+//! ax_log::init();
 //! // Set the maximum log level to `info`.
-//! axlog::set_max_level("info");
+//! ax_log::set_max_level("info");
 //!
 //! // The following logs will be printed.
 //! error!("error");
@@ -49,7 +49,7 @@ use core::{
 };
 
 #[cfg(not(feature = "std"))]
-use crate_interface::call_interface;
+use ax_crate_interface::call_interface;
 use log::{Level, LevelFilter, Log, Metadata, Record};
 pub use log::{debug, error, info, trace, warn};
 
@@ -101,7 +101,7 @@ enum ColorCode {
 }
 
 /// Extern interfaces that must be implemented in other crates.
-#[crate_interface::def_interface]
+#[ax_crate_interface::def_interface]
 pub trait LogIf {
     /// Writes a string to the console.
     fn console_write_str(s: &str);
@@ -219,7 +219,7 @@ impl Log for Logger {
 
 /// Prints the formatted string to the console.
 pub fn print_fmt(args: fmt::Arguments) -> fmt::Result {
-    use kspin::SpinNoIrq; // TODO: more efficient
+    use ax_kspin::SpinNoIrq; // TODO: more efficient
     static LOCK: SpinNoIrq<()> = SpinNoIrq::new(());
 
     let _guard = LOCK.lock();

@@ -1,6 +1,6 @@
 use core::time::Duration;
 
-use axerrno::{AxError, AxResult, LinuxError};
+use ax_errno::{AxError, AxResult, LinuxError};
 use enum_dispatch::enum_dispatch;
 
 macro_rules! define_options {

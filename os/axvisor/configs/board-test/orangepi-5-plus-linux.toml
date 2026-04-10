@@ -1,0 +1,7 @@
+board_type = "OrangePi-5-Plus"
+fail_regex = []
+shell_init_cmd = "pwd && echo 'test pass'"
+shell_prefix = "orangepi@orangepi5plus:~"
+success_regex = [
+  "(?m)^test pass\\s*$",
+]

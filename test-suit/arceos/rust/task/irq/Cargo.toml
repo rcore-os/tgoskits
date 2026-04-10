@@ -1,0 +1,9 @@
+[package]
+name = "arceos-irq"
+version = "0.3.0"
+edition.workspace = true
+authors = ["Keyang Hu <keyang.hu@qq.com>"]
+description = "A simple demo to test the irq state of tasks under ArceOS"
+
+[dependencies]
+ax-std = { workspace = true, features = ["multitask", "irq"], optional = true }

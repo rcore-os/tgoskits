@@ -19,11 +19,11 @@ extern crate alloc;
 mod macros;
 mod imp;
 
-pub use axerrno::{AxError, AxResult};
+pub use ax_errno::{AxError, AxResult};
 
 /// Platform-specific constants and parameters.
 pub mod config {
-    pub use axconfig::*;
+    pub use ax_config::*;
 }
 
 /// System operations.
@@ -177,6 +177,13 @@ pub mod task {
         /// The maximum number of tasks to wake up is specified by `count`. If
         /// `count` is `u32::MAX`, it will wake up all tasks in the wait queue.
         pub fn ax_wait_queue_wake(wq: &AxWaitQueueHandle, count: u32);
+        /// Wakes up at most one task in the wait queue after performing an
+        /// operation on it via the provided callback `func`.
+        ///
+        /// The callback `func` is invoked while holding the wait-queue lock. If a
+        /// task is woken, `func` is called with an implementation-defined `u64`
+        /// value associated with that task.
+        pub fn ax_wait_queue_wake_one_with(wq: &AxWaitQueueHandle, func: impl Fn(u64));
     }
 }
 
@@ -386,26 +393,26 @@ pub mod io {
 /// here should only be used if other APIs do not meet your requirements.
 pub mod modules {
     #[cfg(feature = "alloc")]
-    pub use axalloc;
-    pub use axconfig;
+    pub use ax_alloc;
+    pub use ax_config;
     #[cfg(feature = "display")]
-    pub use axdisplay;
+    pub use ax_display;
     #[cfg(feature = "dma")]
-    pub use axdma;
+    pub use ax_dma;
     #[cfg(any(feature = "fs", feature = "net", feature = "display"))]
-    pub use axdriver;
+    pub use ax_driver;
     #[cfg(feature = "fs")]
-    pub use axfs;
-    pub use axhal;
+    pub use ax_fs;
+    pub use ax_hal;
     #[cfg(feature = "ipi")]
-    pub use axipi;
-    pub use axlog;
+    pub use ax_ipi;
+    pub use ax_log;
     #[cfg(feature = "paging")]
-    pub use axmm;
+    pub use ax_mm;
     #[cfg(feature = "net")]
-    pub use axnet;
-    pub use axruntime;
-    pub use axsync;
+    pub use ax_net;
+    pub use ax_runtime;
+    pub use ax_sync;
     #[cfg(feature = "multitask")]
-    pub use axtask;
+    pub use ax_task;
 }

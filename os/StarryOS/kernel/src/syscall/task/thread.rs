@@ -1,5 +1,5 @@
-use axerrno::{AxError, AxResult};
-use axtask::current;
+use ax_errno::{AxError, AxResult};
+use ax_task::current;
 
 use crate::task::AsThread;
 
@@ -55,7 +55,7 @@ pub fn sys_set_tid_address(clear_child_tid: usize) -> AxResult<isize> {
 
 #[cfg(target_arch = "x86_64")]
 pub fn sys_arch_prctl(
-    uctx: &mut axhal::uspace::UserContext,
+    uctx: &mut ax_hal::uspace::UserContext,
     code: i32,
     addr: usize,
 ) -> AxResult<isize> {
@@ -84,6 +84,6 @@ pub fn sys_arch_prctl(
             Ok(0)
         }
         ArchPrctlCode::GetCpuid => Ok(0),
-        ArchPrctlCode::SetCpuid => Err(axerrno::AxError::NoSuchDevice),
+        ArchPrctlCode::SetCpuid => Err(ax_errno::AxError::NoSuchDevice),
     }
 }

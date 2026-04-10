@@ -3,14 +3,14 @@ use alloc::{
     sync::{Arc, Weak},
 };
 
-use axfs_vfs::{
+use ax_fs_vfs::{
     VfsDirEntry, VfsError, VfsNodeAttr, VfsNodeOps, VfsNodeRef, VfsNodeType, VfsResult,
 };
 use spin::RwLock;
 
 /// The directory node in the device filesystem.
 ///
-/// It implements [`axfs_vfs::VfsNodeOps`].
+/// It implements [`ax_fs_vfs::VfsNodeOps`].
 pub struct DirNode {
     parent: RwLock<Weak<dyn VfsNodeOps>>,
     children: RwLock<BTreeMap<&'static str, VfsNodeRef>>,
@@ -131,7 +131,7 @@ impl VfsNodeOps for DirNode {
         }
     }
 
-    axfs_vfs::impl_vfs_dir_default! {}
+    ax_fs_vfs::impl_vfs_dir_default! {}
 }
 
 fn split_path(path: &str) -> (&str, Option<&str>) {

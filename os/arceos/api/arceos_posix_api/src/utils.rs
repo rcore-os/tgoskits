@@ -3,7 +3,7 @@
 
 use core::ffi::{CStr, c_char};
 
-use axerrno::{LinuxError, LinuxResult};
+use ax_errno::{LinuxError, LinuxResult};
 
 pub fn char_ptr_to_str<'a>(str: *const c_char) -> LinuxResult<&'a str> {
     if str.is_null() {
@@ -34,9 +34,9 @@ pub fn check_null_mut_ptr<T>(ptr: *mut T) -> LinuxResult {
 macro_rules! syscall_body {
     ($fn: ident, $($stmt: tt)*) => {{
         #[allow(clippy::redundant_closure_call)]
-        let res = (|| -> axerrno::LinuxResult<_> { $($stmt)* })();
+        let res = (|| -> ax_errno::LinuxResult<_> { $($stmt)* })();
         match res {
-            Ok(_) | Err(axerrno::LinuxError::EAGAIN) => debug!(concat!(stringify!($fn), " => {:?}"),  res),
+            Ok(_) | Err(ax_errno::LinuxError::EAGAIN) => debug!(concat!(stringify!($fn), " => {:?}"),  res),
             Err(_) => info!(concat!(stringify!($fn), " => {:?}"), res),
         }
         match res {
@@ -51,7 +51,7 @@ macro_rules! syscall_body {
 macro_rules! syscall_body_no_debug {
     ($($stmt: tt)*) => {{
         #[allow(clippy::redundant_closure_call)]
-        let res = (|| -> axerrno::LinuxResult<_> { $($stmt)* })();
+        let res = (|| -> ax_errno::LinuxResult<_> { $($stmt)* })();
         match res {
             Ok(v) => v as _,
             Err(e) => {

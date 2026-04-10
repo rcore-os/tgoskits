@@ -7,17 +7,13 @@ use core::{
     ptr, slice, str,
 };
 
-use axerrno::{AxError, AxResult};
-use axhal::{
-    asm::user_copy,
-    paging::MappingFlags,
-    trap::{PAGE_FAULT, register_trap_handler},
-};
-use axio::prelude::*;
-use axtask::current;
+use ax_errno::{AxError, AxResult};
+use ax_hal::{asm::user_copy, paging::MappingFlags, trap::page_fault_handler};
+use ax_io::prelude::*;
+use ax_kernel_guard::IrqSave;
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
+use ax_task::current;
 use extern_trait::extern_trait;
-use kernel_guard::IrqSave;
-use memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use starry_vm::{VmError, VmIo, VmResult, vm_load_until_nul, vm_read_slice, vm_write_slice};
 
 use crate::{
@@ -255,7 +251,7 @@ macro_rules! nullable {
 
 pub(crate) use nullable;
 
-#[register_trap_handler(PAGE_FAULT)]
+#[page_fault_handler]
 fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
     debug!("Page fault at {vaddr:#x}, access_flags: {access_flags:#x?}");
 
@@ -327,7 +323,7 @@ unsafe impl VmIo for Vm {
 
 /// A read-only buffer in the VM's memory.
 ///
-/// It implements the `axio::Read` trait, allowing it to be used with other I/O
+/// It implements the `ax_io::Read` trait, allowing it to be used with other I/O
 /// operations.
 pub struct VmBytes {
     /// The pointer to the start of the buffer in the VM's memory.
@@ -350,7 +346,7 @@ impl VmBytes {
 
 impl Read for VmBytes {
     /// Reads bytes from the VM's memory into the provided buffer.
-    fn read(&mut self, buf: &mut [u8]) -> axio::Result<usize> {
+    fn read(&mut self, buf: &mut [u8]) -> ax_io::Result<usize> {
         let len = self.len.min(buf.len());
         vm_read_slice(self.ptr, unsafe {
             transmute::<&mut [u8], &mut [MaybeUninit<u8>]>(&mut buf[..len])
@@ -369,7 +365,7 @@ impl IoBuf for VmBytes {
 
 /// A mutable buffer in the VM's memory.
 ///
-/// It implements the `axio::Write` trait, allowing it to be used with other I/O
+/// It implements the `ax_io::Write` trait, allowing it to be used with other I/O
 /// operations.
 pub struct VmBytesMut {
     /// The pointer to the start of the buffer in the VM's memory.
@@ -392,7 +388,7 @@ impl VmBytesMut {
 
 impl Write for VmBytesMut {
     /// Writes bytes from the provided buffer into the VM's memory.
-    fn write(&mut self, buf: &[u8]) -> axio::Result<usize> {
+    fn write(&mut self, buf: &[u8]) -> ax_io::Result<usize> {
         let len = self.len.min(buf.len());
         vm_write_slice(self.ptr, &buf[..len])?;
         self.ptr = self.ptr.wrapping_add(len);
@@ -401,7 +397,7 @@ impl Write for VmBytesMut {
     }
 
     /// Flushes the buffer. This is a no-op for `VmBytesMut`.
-    fn flush(&mut self) -> axio::Result {
+    fn flush(&mut self) -> ax_io::Result {
         Ok(())
     }
 }

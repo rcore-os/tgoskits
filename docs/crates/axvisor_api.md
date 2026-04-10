@@ -16,7 +16,7 @@
 
 - 定义一组所有 hypervisor 组件都能直接调用的普通 Rust API
 - 这些 API 本身不由组件实现，而由最终的 hypervisor 或宿主侧 glue 层统一实现
-- API 定义与实现通过 `crate_interface` 连接，而不是通过泛型参数层层向上传播
+- API 定义与实现通过 `ax-crate-interface` 连接，而不是通过泛型参数层层向上传播
 
 这使它在架构上更接近“组件公共服务总线”，而不是传统意义上的 HAL trait 集合。
 
@@ -31,7 +31,7 @@
 | `vmm` | VM 管理 API | 当前 VM/vCPU ID、vCPU 数量、向 vCPU 注入中断 |
 | `host` | 宿主全局信息 | CPU 数量 |
 | `arch` | 架构相关扩展 | 当前仅 AArch64 的虚拟中断注入与 host GIC 信息 |
-| `__priv` | 宏展开私有支撑 | `crate_interface` 的内部重导出 |
+| `__priv` | 宏展开私有支撑 | `ax-crate-interface` 的内部重导出 |
 
 除此之外，还有独立的过程宏 crate：
 
@@ -57,7 +57,7 @@ pub mod memory {
 过程宏会把它转换成：
 
 - 可直接调用的普通 `pub fn`
-- 一组基于 `crate_interface` 的 `def_interface` trait
+- 一组基于 `ax-crate-interface` 的 `def_interface` trait
 - 对应的 `call_interface!` 调用桥
 
 调用方因此只需要像调用普通函数那样使用 `axvisor_api::memory::alloc_frame()`。
@@ -73,7 +73,7 @@ mod memory_api_impl {
 }
 ```
 
-过程宏会把它转成对相应 `crate_interface` trait 的唯一实现。
+过程宏会把它转成对相应 `ax-crate-interface` trait 的唯一实现。
 
 这种机制的意义在于：
 
@@ -81,13 +81,13 @@ mod memory_api_impl {
 - 实现方只需要在最终宿主环境注册一次
 - 避免在每个 crate 上携带层层泛型 HAL 参数
 
-### 1.4 与 `crate_interface` 的关系
+### 1.4 与 `ax-crate-interface` 的关系
 
-`axvisor_api` 不是从零实现这套动态绑定能力，而是在 `crate_interface` 之上做了更友好的语法包装。
+`axvisor_api` 不是从零实现这套动态绑定能力，而是在 `ax-crate-interface` 之上做了更友好的语法包装。
 
 因此可以把它理解为：
 
-- `crate_interface`：底层机制
+- `ax-crate-interface`：底层机制
 - `axvisor_api_proc`：面向 Axvisor 场景的语法糖
 - `axvisor_api`：具体公共 API 的定义集合
 
@@ -187,7 +187,7 @@ mod memory_api_impl {
 flowchart TD
     A[组件 crate 调用 axvisor_api::memory::alloc_frame] --> B[call_interface]
     B --> C[os/axvisor 中 memory_api_impl]
-    C --> D[AxMmHalImpl / axalloc / axhal]
+    C --> D[AxMmHalImpl / ax-alloc / ax-hal]
 ```
 
 类似地：
@@ -210,7 +210,7 @@ flowchart TD
 | 依赖 | 作用 |
 | --- | --- |
 | `axvisor_api_proc` | `api_mod` / `api_mod_impl` 过程宏 |
-| `crate_interface` | 定义和调用接口的底层机制 |
+| `ax-crate-interface` | 定义和调用接口的底层机制 |
 | `memory_addr` | 基础地址类型 |
 | `axaddrspace` | `AxMmHal` 与 `PhysFrame` 桥接 |
 
@@ -229,7 +229,7 @@ flowchart TD
 ```mermaid
 graph TD
     A[axvisor_api_proc] --> B[axvisor_api]
-    C[crate_interface] --> B
+    C[ax-crate-interface] --> B
     D[axaddrspace] --> B
     B --> E[arm_vcpu / arm_vgic / riscv_vcpu / riscv_vplic / axvcpu]
     F[os/axvisor::hal] --> B
@@ -284,7 +284,7 @@ graph TD
 
 | 项目 | 位置 | 角色 | 核心作用 |
 | --- | --- | --- | --- |
-| ArceOS | 宿主能力提供侧 | 不是直接消费者，而是能力来源 | `axvisor_api` 最终很多实现都转发到 ArceOS 的 `axhal`、`axalloc`、时间与中断设施 |
+| ArceOS | 宿主能力提供侧 | 不是直接消费者，而是能力来源 | `axvisor_api` 最终很多实现都转发到 ArceOS 的 `ax-hal`、`ax-alloc`、时间与中断设施 |
 | StarryOS | 当前仓库未见直接依赖 | 非核心路径 | 当前仓库中 StarryOS 没有直接依赖 `axvisor_api` |
 | Axvisor | 多 crate 生态的公共接口中枢 | Hypervisor 组件窄腰层 | 把宿主实现细节与组件调用面隔开，是 `arm_vcpu`、`riscv_vcpu`、`axvcpu`、`arm_vgic` 等组件共享的统一服务面 |
 

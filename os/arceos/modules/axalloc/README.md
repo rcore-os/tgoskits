@@ -1,4 +1,4 @@
-# axalloc
+# ax-alloc
 
 ArceOS global memory allocator. Provides [`GlobalAllocator`] implementing [`core::alloc::GlobalAlloc`] for use with `#[global_allocator]`.
 
@@ -10,7 +10,7 @@ Uses the [axallocator](https://docs.rs/axallocator) crate for the underlying byt
 - `slab` – slab byte allocator
 - `buddy` – buddy byte allocator
 - `page-alloc-256m` (default), `page-alloc-4g`, `page-alloc-64g` – page allocator capacity
-- `tracking` – allocation tracking (requires `percpu`, `axbacktrace`)
+- `tracking` – allocation tracking (requires `ax-percpu`, `axbacktrace`)
 
 ## License
 

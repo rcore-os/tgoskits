@@ -97,19 +97,19 @@ impl<const PAGE_SIZE: usize> BaseAllocator for BitmapPageAllocator<PAGE_SIZE> {
 impl<const PAGE_SIZE: usize> PageAllocator for BitmapPageAllocator<PAGE_SIZE> {
     const PAGE_SIZE: usize = PAGE_SIZE;
 
-    fn alloc_pages(&mut self, num_pages: usize, align_pow2: usize) -> AllocResult<usize> {
-        // Check if the alignment is valid.
-        if align_pow2 > MAX_ALIGN_1GB || !crate::is_aligned(align_pow2, PAGE_SIZE) {
+    fn alloc_pages(&mut self, num_pages: usize, align: usize) -> AllocResult<usize> {
+        // Check if the byte alignment is valid.
+        if align > MAX_ALIGN_1GB || !crate::is_aligned(align, PAGE_SIZE) {
             return Err(AllocError::InvalidParam);
         }
-        let align_pow2 = align_pow2 / PAGE_SIZE;
-        if !align_pow2.is_power_of_two() {
+        let align_pages = align / PAGE_SIZE;
+        if !align_pages.is_power_of_two() {
             return Err(AllocError::InvalidParam);
         }
         if num_pages > self.available_pages() {
             return Err(AllocError::NoMemory);
         }
-        let align_log2 = align_pow2.trailing_zeros() as usize;
+        let align_log2 = align_pages.trailing_zeros() as usize;
         match num_pages.cmp(&1) {
             core::cmp::Ordering::Equal => self.inner.alloc().map(|idx| idx * PAGE_SIZE + self.base),
             core::cmp::Ordering::Greater => self
@@ -127,22 +127,22 @@ impl<const PAGE_SIZE: usize> PageAllocator for BitmapPageAllocator<PAGE_SIZE> {
         &mut self,
         base: usize,
         num_pages: usize,
-        align_pow2: usize,
+        align: usize,
     ) -> AllocResult<usize> {
-        // Check if the alignment is valid,
+        // Check if the byte alignment is valid,
         // and the base address is aligned to the given alignment.
-        if align_pow2 > MAX_ALIGN_1GB
-            || !crate::is_aligned(align_pow2, PAGE_SIZE)
-            || !crate::is_aligned(base, align_pow2)
+        if align > MAX_ALIGN_1GB
+            || !crate::is_aligned(align, PAGE_SIZE)
+            || !crate::is_aligned(base, align)
         {
             return Err(AllocError::InvalidParam);
         }
 
-        let align_pow2 = align_pow2 / PAGE_SIZE;
-        if !align_pow2.is_power_of_two() {
+        let align_pages = align / PAGE_SIZE;
+        if !align_pages.is_power_of_two() {
             return Err(AllocError::InvalidParam);
         }
-        let align_log2 = align_pow2.trailing_zeros() as usize;
+        let align_log2 = align_pages.trailing_zeros() as usize;
 
         let idx = (base - self.base) / PAGE_SIZE;
 

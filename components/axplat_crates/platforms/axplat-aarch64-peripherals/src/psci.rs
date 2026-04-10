@@ -22,15 +22,15 @@ static PSCI_METHOD_HVC: AtomicBool = AtomicBool::new(false);
 #[derive(PartialEq, Debug)]
 #[repr(i32)]
 enum PsciError {
-    NotSupported = -1,
-    InvalidParams = -2,
-    Denied = -3,
-    AlreadyOn = -4,
-    OnPending = -5,
+    NotSupported    = -1,
+    InvalidParams   = -2,
+    Denied          = -3,
+    AlreadyOn       = -4,
+    OnPending       = -5,
     InternalFailure = -6,
-    NotPresent = -7,
-    Disabled = -8,
-    InvalidAddress = -9,
+    NotPresent      = -7,
+    Disabled        = -8,
+    InvalidAddress  = -9,
 }
 
 impl From<i32> for PsciError {
@@ -136,7 +136,7 @@ pub fn system_off() -> ! {
     psci_call(PSCI_0_2_FN_SYSTEM_OFF, 0, 0, 0).ok();
     warn!("It should shutdown!");
     loop {
-        axcpu::asm::halt();
+        ax_cpu::asm::halt();
     }
 }
 

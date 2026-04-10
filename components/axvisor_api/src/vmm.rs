@@ -75,7 +75,7 @@ pub type InterruptVector = u8;
 pub const MAX_VCPU_NUM: usize = 64;
 
 /// A set of virtual CPUs.
-pub type VCpuSet = cpumask::CpuMask<MAX_VCPU_NUM>;
+pub type VCpuSet = ax_cpumask::CpuMask<MAX_VCPU_NUM>;
 
 /// The API trait for virtual machine management functionalities.
 ///

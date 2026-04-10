@@ -6,12 +6,12 @@ use alloc::{
     vec::Vec,
 };
 
+use ax_io::{Read, Write};
+use ax_sync::Mutex;
 use axfs_ng_vfs::{
     Location, Metadata, NodePermission, NodeType, VfsError, VfsResult,
     path::{Component, Components, Path, PathBuf},
 };
-use axio::{Read, Write};
-use axsync::Mutex;
 use spin::Once;
 
 use super::File;

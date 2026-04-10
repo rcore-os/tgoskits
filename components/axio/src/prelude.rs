@@ -5,7 +5,7 @@
 //!
 //! ```
 //! # #![allow(unused_imports)]
-//! use axio::prelude::*;
+//! use ax_io::prelude::*;
 //! ```
 
 pub use crate::{BufRead, IoBuf, IoBufExt, IoBufMut, IoBufMutExt, Read, Seek, Write};

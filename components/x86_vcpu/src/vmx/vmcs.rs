@@ -21,8 +21,8 @@ use bit_field::BitField;
 use x86::bits64::vmx;
 
 use axaddrspace::{GuestPhysAddr, HostPhysAddr, NestedPageFaultInfo};
-use axerrno::{AxResult, ax_err};
-use page_table_entry::MappingFlags;
+use ax_errno::{AxResult, ax_err};
+use ax_page_table_entry::MappingFlags;
 
 use super::as_axerr;
 use super::definitions::{VmxExitReason, VmxInstructionError, VmxInterruptionType};

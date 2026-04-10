@@ -1,4 +1,4 @@
-use axerrno::{AxError, AxResult};
+use ax_errno::{AxError, AxResult};
 use bitflags::bitflags;
 use linux_raw_sys::general::{O_CLOEXEC, O_NONBLOCK};
 use starry_signal::SignalSet;

@@ -15,10 +15,10 @@
 use bit_field::BitField;
 use bitflags::bitflags;
 
-use memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
+use ax_memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
 
 use axaddrspace::HostPhysAddr;
-use axerrno::AxResult;
+use ax_errno::AxResult;
 use axvisor_api::memory::PhysFrame;
 
 use crate::msr::{Msr, MsrReadWrite};
@@ -386,8 +386,8 @@ mod tests {
     #[test]
     fn test_ept_pointer_creation() {
         // Test EPTPointer creation with from_table_phys method
-        let ept_ptr1 = EPTPointer::from_table_phys(memory_addr::PhysAddr::from(0x1000));
-        let ept_ptr2 = EPTPointer::from_table_phys(memory_addr::PhysAddr::from(0x2000));
+        let ept_ptr1 = EPTPointer::from_table_phys(ax_memory_addr::PhysAddr::from(0x1000));
+        let ept_ptr2 = EPTPointer::from_table_phys(ax_memory_addr::PhysAddr::from(0x2000));
 
         // Verify the EPT pointers were created successfully
         assert_ne!(ept_ptr1.0, ept_ptr2.0);
@@ -395,7 +395,7 @@ mod tests {
 
     #[test]
     fn test_ept_pointer_getters() {
-        let phys_addr = memory_addr::PhysAddr::from(0x3000);
+        let phys_addr = ax_memory_addr::PhysAddr::from(0x3000);
         let ept_ptr = EPTPointer::from_table_phys(phys_addr);
 
         // Test that we can create EPT pointer and it has expected flags

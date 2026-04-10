@@ -4,8 +4,8 @@ use core::{
     ffi::{c_int, c_void},
 };
 
-use axerrno::{LinuxError, LinuxResult};
-use axtask::AxTaskRef;
+use ax_errno::{LinuxError, LinuxResult};
+use ax_task::AxTaskRef;
 use spin::RwLock;
 
 use crate::ctypes;
@@ -15,7 +15,7 @@ pub mod mutex;
 lazy_static::lazy_static! {
     static ref TID_TO_PTHREAD: RwLock<BTreeMap<u64, ForceSendSync<ctypes::pthread_t>>> = {
         let mut map = BTreeMap::new();
-        let main_task = axtask::current();
+        let main_task = ax_task::current();
         let main_tid = main_task.id().as_u64();
         let main_thread = Pthread {
             inner: main_task.clone(),
@@ -61,7 +61,7 @@ impl Pthread {
             drop(their_packet);
         };
 
-        let task_inner = axtask::spawn(main);
+        let task_inner = ax_task::spawn(main);
         let tid = task_inner.id().as_u64();
         let thread = Pthread {
             inner: task_inner,
@@ -73,7 +73,7 @@ impl Pthread {
     }
 
     fn current_ptr() -> *mut Pthread {
-        let tid = axtask::current().id().as_u64();
+        let tid = ax_task::current().id().as_u64();
         match TID_TO_PTHREAD.read().get(&tid) {
             None => core::ptr::null_mut(),
             Some(ptr) => ptr.0 as *mut Pthread,
@@ -87,7 +87,7 @@ impl Pthread {
     fn exit_current(retval: *mut c_void) -> ! {
         let thread = Self::current().expect("fail to get current thread");
         unsafe { *thread.retval.result.get() = retval };
-        axtask::exit(0);
+        ax_task::exit(0);
     }
 
     fn join(ptr: ctypes::pthread_t) -> LinuxResult<*mut c_void> {

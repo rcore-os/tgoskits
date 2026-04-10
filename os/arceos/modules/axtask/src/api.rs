@@ -5,7 +5,7 @@ use alloc::{
     sync::{Arc, Weak},
 };
 
-use kernel_guard::NoPreemptIrqSave;
+use ax_kernel_guard::NoPreemptIrqSave;
 
 pub(crate) use crate::run_queue::{current_run_queue, select_run_queue};
 #[doc(cfg(all(feature = "multitask", feature = "task-ext")))]
@@ -26,21 +26,21 @@ pub type AxTaskRef = Arc<AxTask>;
 /// The weak reference type of a task.
 pub type WeakAxTaskRef = Weak<AxTask>;
 
-/// The wrapper type for [`cpumask::CpuMask`] with SMP configuration.
-pub type AxCpuMask = cpumask::CpuMask<{ axconfig::plat::MAX_CPU_NUM }>;
+/// The wrapper type for [`ax_cpumask::CpuMask`] with SMP configuration.
+pub type AxCpuMask = ax_cpumask::CpuMask<{ ax_config::plat::MAX_CPU_NUM }>;
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "sched-rr")] {
         const MAX_TIME_SLICE: usize = 5;
-        pub(crate) type AxTask = axsched::RRTask<TaskInner, MAX_TIME_SLICE>;
-        pub(crate) type Scheduler = axsched::RRScheduler<TaskInner, MAX_TIME_SLICE>;
+        pub(crate) type AxTask = ax_sched::RRTask<TaskInner, MAX_TIME_SLICE>;
+        pub(crate) type Scheduler = ax_sched::RRScheduler<TaskInner, MAX_TIME_SLICE>;
     } else if #[cfg(feature = "sched-cfs")] {
-        pub(crate) type AxTask = axsched::CFSTask<TaskInner>;
-        pub(crate) type Scheduler = axsched::CFScheduler<TaskInner>;
+        pub(crate) type AxTask = ax_sched::CFSTask<TaskInner>;
+        pub(crate) type Scheduler = ax_sched::CFScheduler<TaskInner>;
     } else {
         // If no scheduler features are set, use FIFO as the default.
-        pub(crate) type AxTask = axsched::FifoTask<TaskInner>;
-        pub(crate) type Scheduler = axsched::FifoScheduler<TaskInner>;
+        pub(crate) type AxTask = ax_sched::FifoTask<TaskInner>;
+        pub(crate) type Scheduler = ax_sched::FifoScheduler<TaskInner>;
     }
 }
 
@@ -48,8 +48,8 @@ cfg_if::cfg_if! {
 struct KernelGuardIfImpl;
 
 #[cfg(feature = "preempt")]
-#[crate_interface::impl_interface]
-impl kernel_guard::KernelGuardIf for KernelGuardIfImpl {
+#[ax_crate_interface::impl_interface]
+impl ax_kernel_guard::KernelGuardIf for KernelGuardIfImpl {
     fn disable_preempt() {
         if let Some(curr) = current_may_uninit() {
             curr.disable_preempt();
@@ -92,7 +92,7 @@ pub(crate) fn cpu_mask_full() -> AxCpuMask {
     use spin::Lazy;
 
     static CPU_MASK_FULL: Lazy<AxCpuMask> = Lazy::new(|| {
-        let cpu_num = axhal::cpu_num();
+        let cpu_num = ax_hal::cpu_num();
         let mut cpumask = AxCpuMask::new();
         for cpu_id in 0..cpu_num {
             cpumask.set(cpu_id, true);
@@ -114,10 +114,10 @@ pub fn init_scheduler_secondary() {
 #[cfg(feature = "irq")]
 #[doc(cfg(feature = "irq"))]
 pub fn on_timer_tick() {
-    use kernel_guard::NoOp;
+    use ax_kernel_guard::NoOp;
     crate::timers::check_events();
     // Since irq and preemption are both disabled here,
-    // we can get current run queue with the default `kernel_guard::NoOp`.
+    // we can get current run queue with the default `ax_kernel_guard::NoOp`.
     current_run_queue::<NoOp>().scheduler_timer_tick();
 }
 
@@ -138,20 +138,20 @@ where
     spawn_task(TaskInner::new(f, name, stack_size))
 }
 
-/// Spawns a new task with the given name and the default stack size ([`axconfig::TASK_STACK_SIZE`]).
+/// Spawns a new task with the given name and the default stack size ([`ax_config::TASK_STACK_SIZE`]).
 ///
 /// Returns the task reference.
 pub fn spawn_with_name<F>(f: F, name: String) -> AxTaskRef
 where
     F: FnOnce() + Send + 'static,
 {
-    spawn_raw(f, name, axconfig::TASK_STACK_SIZE)
+    spawn_raw(f, name, ax_config::TASK_STACK_SIZE)
 }
 
 /// Spawns a new task with the default parameters.
 ///
 /// The default task name is an empty string. The default task stack size is
-/// [`axconfig::TASK_STACK_SIZE`].
+/// [`ax_config::TASK_STACK_SIZE`].
 ///
 /// Returns the task reference.
 pub fn spawn<F>(f: F) -> AxTaskRef
@@ -189,7 +189,7 @@ pub fn set_current_affinity(cpumask: AxCpuMask) -> bool {
         // After setting the affinity, we need to check if current cpu matches
         // the affinity. If not, we need to migrate the task to the correct CPU.
         #[cfg(feature = "smp")]
-        if !cpumask.get(axhal::percpu::this_cpu_id()) {
+        if !cpumask.get(ax_hal::percpu::this_cpu_id()) {
             const MIGRATION_TASK_STACK_SIZE: usize = 4096;
             // Spawn a new migration task for migrating.
             let migration_task = TaskInner::new(
@@ -203,7 +203,7 @@ pub fn set_current_affinity(cpumask: AxCpuMask) -> bool {
             current_run_queue::<NoPreemptIrqSave>().migrate_current(migration_task);
 
             assert!(
-                cpumask.get(axhal::percpu::this_cpu_id()),
+                cpumask.get(ax_hal::percpu::this_cpu_id()),
                 "Migration failed"
             );
         }
@@ -221,17 +221,17 @@ pub fn yield_now() {
 ///
 /// If the feature `irq` is not enabled, it uses busy-wait instead.
 pub fn sleep(dur: core::time::Duration) {
-    sleep_until(axhal::time::wall_time() + dur);
+    sleep_until(ax_hal::time::wall_time() + dur);
 }
 
 /// Current task is going to sleep, it will be woken up at the given deadline.
 ///
 /// If the feature `irq` is not enabled, it uses busy-wait instead.
-pub fn sleep_until(deadline: axhal::time::TimeValue) {
+pub fn sleep_until(deadline: ax_hal::time::TimeValue) {
     #[cfg(feature = "irq")]
-    crate::future::block_on(crate::future::sleep_until(deadline));
+    current_run_queue::<NoPreemptIrqSave>().sleep_until(deadline);
     #[cfg(not(feature = "irq"))]
-    axhal::time::busy_wait_until(deadline);
+    ax_hal::time::busy_wait_until(deadline);
 }
 
 /// Exits the current task.
@@ -247,6 +247,6 @@ pub fn run_idle() -> ! {
         yield_now();
         trace!("idle task: waiting for IRQs...");
         #[cfg(feature = "irq")]
-        axhal::asm::wait_for_irqs();
+        ax_hal::asm::wait_for_irqs();
     }
 }

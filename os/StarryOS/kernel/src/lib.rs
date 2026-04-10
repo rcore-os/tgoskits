@@ -8,10 +8,10 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 extern crate alloc;
-extern crate axruntime;
+extern crate ax_runtime;
 
 #[macro_use]
-extern crate axlog;
+extern crate ax_log;
 
 pub mod entry;
 

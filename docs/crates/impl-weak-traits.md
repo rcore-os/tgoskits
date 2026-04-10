@@ -156,7 +156,7 @@
 
 | 项目 | 与本 crate 的关系 | 实际意义 |
 | --- | --- | --- |
-| ArceOS | `axlog`、`axruntime`、`axtask`、`axdriver` 等模块使用 `crate_interface`，但不会链接本 crate | 本 crate 间接保护 `crate_interface` 的实现端与链接期优先级语义 |
+| ArceOS | `ax-log`、`ax-runtime`、`ax-task`、`ax-driver` 等模块使用 `crate_interface`，但不会链接本 crate | 本 crate 间接保护 `crate_interface` 的实现端与链接期优先级语义 |
 | StarryOS | 当前源码下未见 `os/StarryOS` 直接引用 `crate_interface` | 本 crate 更像仓库级能力保底，而不是 StarryOS 运行时依赖 |
 | Axvisor | `axvisor_api` 通过宏封装 `crate_interface`，但不会直接使用本 crate | 本 crate 为 Axvisor 侧的底层接口桥接语义提供回归样本 |
 

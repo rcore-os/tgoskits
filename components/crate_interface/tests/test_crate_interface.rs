@@ -1,4 +1,4 @@
-use crate_interface::*;
+use ax_crate_interface::*;
 
 #[def_interface]
 trait SimpleIf {
@@ -39,14 +39,14 @@ impl WithCallerIf for WithCallerIfImpl {
 }
 
 mod a {
-    #[crate_interface::def_interface(gen_caller, namespace = A_NS)]
+    #[ax_crate_interface::def_interface(gen_caller, namespace = A_NS)]
     pub trait NamespaceIf {
         fn qux() -> i32;
     }
 }
 
 mod b {
-    #[crate_interface::def_interface(gen_caller, namespace = B_NS)]
+    #[ax_crate_interface::def_interface(gen_caller, namespace = B_NS)]
     pub trait NamespaceIf {
         fn qux() -> i32;
     }
@@ -55,14 +55,14 @@ mod b {
 struct NamespaceIfImplA;
 struct NamespaceIfImplB;
 
-#[crate_interface::impl_interface(namespace = A_NS)]
+#[ax_crate_interface::impl_interface(namespace = A_NS)]
 impl a::NamespaceIf for NamespaceIfImplA {
     fn qux() -> i32 {
         1
     }
 }
 
-#[crate_interface::impl_interface(namespace = B_NS)]
+#[ax_crate_interface::impl_interface(namespace = B_NS)]
 impl b::NamespaceIf for NamespaceIfImplB {
     fn qux() -> i32 {
         2

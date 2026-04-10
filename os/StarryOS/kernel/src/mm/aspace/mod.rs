@@ -1,17 +1,17 @@
 use alloc::sync::Arc;
 use core::{fmt, ops::DerefMut};
 
-use axerrno::{AxError, AxResult, ax_bail};
-use axhal::{
+use ax_errno::{AxError, AxResult, ax_bail};
+use ax_hal::{
     mem::phys_to_virt,
     paging::{MappingFlags, PageTable},
     trap::PageFaultFlags,
 };
-use axsync::Mutex;
-use memory_addr::{
+use ax_memory_addr::{
     MemoryAddr, PAGE_SIZE_4K, PageIter4K, PhysAddr, VirtAddr, VirtAddrRange, is_aligned_4k,
 };
-use memory_set::{MemoryArea, MemorySet};
+use ax_memory_set::{MemoryArea, MemorySet};
+use ax_sync::Mutex;
 
 mod backend;
 

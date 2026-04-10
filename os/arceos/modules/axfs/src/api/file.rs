@@ -14,7 +14,7 @@
 
 use core::fmt;
 
-use axio::{Result, SeekFrom, prelude::*};
+use ax_io::{Result, SeekFrom, prelude::*};
 
 use crate::fops;
 

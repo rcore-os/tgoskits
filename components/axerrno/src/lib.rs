@@ -340,7 +340,7 @@ impl AxError {
     /// # Examples
     ///
     /// ```
-    /// # use axerrno::{AxError, AxErrorKind, LinuxError};
+    /// # use ax_errno::{AxError, AxErrorKind, LinuxError};
     /// let linux_err = AxError::from(LinuxError::EACCES);
     /// let canonical_err = linux_err.canonicalize();
     /// assert_eq!(canonical_err, AxError::from(AxErrorKind::PermissionDenied));
@@ -479,7 +479,7 @@ pub type AxResult<T = ()> = Result<T, AxError>;
 /// # Examples
 ///
 /// ```
-/// # use axerrno::{ax_err_type, AxError};
+/// # use ax_errno::{ax_err_type, AxError};
 /// #
 /// // Also print "[AxError::AlreadyExists]" if the `log` crate is enabled.
 /// assert_eq!(ax_err_type!(AlreadyExists), AxError::AlreadyExists,);
@@ -513,7 +513,7 @@ macro_rules! ax_err_type {
 /// ## Examples
 ///
 /// ```rust
-/// # use axerrno::{ensure, ax_err, AxError, AxResult};
+/// # use ax_errno::{ensure, ax_err, AxError, AxResult};
 ///
 /// fn example(user_id: i32) -> AxResult {
 ///     ensure!(user_id > 0, ax_err!(InvalidInput));
@@ -537,7 +537,7 @@ macro_rules! ensure {
 /// # Examples
 ///
 /// ```
-/// # use axerrno::{ax_err, AxResult, AxError};
+/// # use ax_errno::{ax_err, AxResult, AxError};
 /// #
 /// // Also print "[AxError::AlreadyExists]" if the `log` crate is enabled.
 /// assert_eq!(

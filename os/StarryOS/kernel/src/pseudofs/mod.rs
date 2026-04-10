@@ -10,8 +10,8 @@ mod tmp;
 
 use alloc::sync::Arc;
 
-use axerrno::LinuxResult;
-use axfs::{FS_CONTEXT, FsContext};
+use ax_errno::LinuxResult;
+use ax_fs::{FS_CONTEXT, FsContext};
 use axfs_ng_vfs::{
     DirNodeOps, FileNodeOps, Filesystem, NodePermission, WeakDirEntry,
     path::{Path, PathBuf},

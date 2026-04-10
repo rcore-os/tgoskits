@@ -1,4 +1,4 @@
-use axerrno::LinuxError;
+use ax_errno::LinuxError;
 use axfs_ng_vfs::{NodeType, VfsError};
 use lwext4_rust::{Ext4Error, InodeType, SystemHal};
 
@@ -8,7 +8,7 @@ pub struct AxHal;
 impl SystemHal for AxHal {
     fn now() -> Option<core::time::Duration> {
         if cfg!(feature = "times") {
-            Some(axhal::time::wall_time())
+            Some(ax_hal::time::wall_time())
         } else {
             None
         }

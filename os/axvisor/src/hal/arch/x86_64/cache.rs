@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use memory_addr::VirtAddr;
+use ax_memory_addr::VirtAddr;
 
 use crate::hal::CacheOp;
 

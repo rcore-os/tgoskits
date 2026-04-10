@@ -1,6 +1,6 @@
 use core::ffi::c_int;
 
-use arceos_posix_api::{sys_exit, sys_getpid};
+use ax_posix_api::{sys_exit, sys_getpid};
 
 /// Get current thread ID.
 #[unsafe(no_mangle)]

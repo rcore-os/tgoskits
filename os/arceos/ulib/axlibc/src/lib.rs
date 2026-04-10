@@ -40,7 +40,7 @@ mod ctypes {
         include!(concat!(env!("OUT_DIR"), "/libctypes_gen.rs"));
     }
 
-    pub use arceos_posix_api::ctypes::*;
+    pub use ax_posix_api::ctypes::*;
     pub use libctypes::*;
 }
 

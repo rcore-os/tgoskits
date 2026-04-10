@@ -5,9 +5,9 @@ use std::{
     marker::PhantomData,
 };
 
-use memory_addr::{PhysAddr, VirtAddr};
-use page_table_entry::{GenericPTE, MappingFlags};
-use page_table_multiarch::{PageSize, PageTable64, PagingHandler, PagingMetaData, PagingResult};
+use ax_memory_addr::{PhysAddr, VirtAddr};
+use ax_page_table_entry::{GenericPTE, MappingFlags};
+use ax_page_table_multiarch::{PageSize, PageTable64, PagingHandler, PagingMetaData, PagingResult};
 use rand::{RngExt, SeedableRng, rngs::SmallRng};
 
 /// Creates a layout for allocating `num` pages with alignment of `2^align_pow2`
@@ -142,7 +142,7 @@ fn run_test_for<M: PagingMetaData<VirtAddr = VirtAddr>, PTE: GenericPTE>() -> Pa
 #[cfg(target_pointer_width = "32")]
 fn run_test_for_32bit<M: PagingMetaData<VirtAddr = VirtAddr>, PTE: GenericPTE>() -> PagingResult<()>
 {
-    use page_table_multiarch::PageTable32;
+    use ax_page_table_multiarch::PageTable32;
     ALLOCATED.with_borrow_mut(|it| {
         it.clear();
     });
@@ -193,8 +193,8 @@ fn run_test_for_32bit<M: PagingMetaData<VirtAddr = VirtAddr>, PTE: GenericPTE>()
 #[cfg(target_pointer_width = "32")]
 fn test_dealloc_arm32() -> PagingResult<()> {
     run_test_for_32bit::<
-        page_table_multiarch::arm::A32PagingMetaData,
-        page_table_entry::arm::A32PTE,
+        ax_page_table_multiarch::arm::A32PagingMetaData,
+        ax_page_table_entry::arm::A32PTE,
     >()?;
     Ok(())
 }
@@ -203,8 +203,8 @@ fn test_dealloc_arm32() -> PagingResult<()> {
 #[cfg(any(target_arch = "x86_64", docsrs))]
 fn test_dealloc_x86() -> PagingResult<()> {
     run_test_for::<
-        page_table_multiarch::x86_64::X64PagingMetaData,
-        page_table_entry::x86_64::X64PTE,
+        ax_page_table_multiarch::x86_64::X64PagingMetaData,
+        ax_page_table_entry::x86_64::X64PTE,
     >()?;
     Ok(())
 }
@@ -213,12 +213,12 @@ fn test_dealloc_x86() -> PagingResult<()> {
 #[cfg(any(target_arch = "riscv32", target_arch = "riscv64", docsrs))]
 fn test_dealloc_riscv() -> PagingResult<()> {
     run_test_for::<
-        page_table_multiarch::riscv::Sv39MetaData<VirtAddr>,
-        page_table_entry::riscv::Rv64PTE,
+        ax_page_table_multiarch::riscv::Sv39MetaData<VirtAddr>,
+        ax_page_table_entry::riscv::Rv64PTE,
     >()?;
     run_test_for::<
-        page_table_multiarch::riscv::Sv48MetaData<VirtAddr>,
-        page_table_entry::riscv::Rv64PTE,
+        ax_page_table_multiarch::riscv::Sv48MetaData<VirtAddr>,
+        ax_page_table_entry::riscv::Rv64PTE,
     >()?;
     Ok(())
 }
@@ -227,8 +227,8 @@ fn test_dealloc_riscv() -> PagingResult<()> {
 #[cfg(any(target_arch = "aarch64", docsrs))]
 fn test_dealloc_aarch64() -> PagingResult<()> {
     run_test_for::<
-        page_table_multiarch::aarch64::A64PagingMetaData,
-        page_table_entry::aarch64::A64PTE,
+        ax_page_table_multiarch::aarch64::A64PagingMetaData,
+        ax_page_table_entry::aarch64::A64PTE,
     >()?;
     Ok(())
 }
@@ -237,8 +237,8 @@ fn test_dealloc_aarch64() -> PagingResult<()> {
 #[cfg(any(target_arch = "loongarch64", docsrs))]
 fn test_dealloc_loongarch64() -> PagingResult<()> {
     run_test_for::<
-        page_table_multiarch::loongarch64::LA64MetaData,
-        page_table_entry::loongarch64::LA64PTE,
+        ax_page_table_multiarch::loongarch64::LA64MetaData,
+        ax_page_table_entry::loongarch64::LA64PTE,
     >()?;
     Ok(())
 }

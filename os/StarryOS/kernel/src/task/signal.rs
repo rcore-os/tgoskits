@@ -1,8 +1,8 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use axerrno::{AxError, AxResult};
-use axhal::uspace::UserContext;
-use axtask::{TaskInner, current};
+use ax_errno::{AxError, AxResult};
+use ax_hal::uspace::UserContext;
+use ax_task::{TaskInner, current};
 use starry_process::Pid;
 use starry_signal::{SignalInfo, SignalOSAction, SignalSet};
 

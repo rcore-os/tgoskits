@@ -14,10 +14,10 @@
 
 use core::{arch::asm, fmt};
 
-use page_table_entry::{GenericPTE, MappingFlags};
-use page_table_multiarch::PagingMetaData;
+use ax_page_table_entry::{GenericPTE, MappingFlags};
+use ax_page_table_multiarch::PagingMetaData;
 
-// use memory_addr::HostPhysAddr;
+// use ax_memory_addr::HostPhysAddr;
 use crate::{GuestPhysAddr, HostPhysAddr};
 
 bitflags::bitflags! {
@@ -207,7 +207,8 @@ impl GenericPTE for A64PTEHV {
         DescriptorAttr::from_bits_truncate(self.0).contains(DescriptorAttr::VALID)
     }
     fn is_huge(&self) -> bool {
-        !DescriptorAttr::from_bits_truncate(self.0).contains(DescriptorAttr::NON_BLOCK)
+        self.is_present()
+            && !DescriptorAttr::from_bits_truncate(self.0).contains(DescriptorAttr::NON_BLOCK)
     }
     fn clear(&mut self) {
         self.0 = 0

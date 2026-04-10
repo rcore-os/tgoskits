@@ -4,8 +4,8 @@
 
 use core::result::Result::Ok;
 
+use ax_errno::AxResult;
 use axaddrspace::{HostPhysAddr, device::AccessWidth};
-use axerrno::AxResult;
 
 /// Performs a volatile MMIO read operation.
 pub(crate) fn perform_mmio_read(addr: HostPhysAddr, width: AccessWidth) -> AxResult<usize> {

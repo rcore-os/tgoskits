@@ -1,4 +1,4 @@
-use axplat::mem::{MemIf, PhysAddr, RawRange, VirtAddr};
+use ax_plat::mem::{MemIf, PhysAddr, RawRange, VirtAddr};
 
 struct MemIfImpl;
 

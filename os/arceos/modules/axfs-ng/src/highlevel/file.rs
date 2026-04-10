@@ -7,14 +7,14 @@ use alloc::{
 use core::sync::atomic::{AtomicU8, Ordering};
 use core::{num::NonZeroUsize, ops::Range, task::Context};
 
-use axalloc::{UsageKind, global_allocator};
+use ax_alloc::{UsageKind, global_allocator};
+use ax_hal::mem::{PhysAddr, VirtAddr, virt_to_phys};
+use ax_io::{SeekFrom, prelude::*};
+use ax_sync::Mutex;
 use axfs_ng_vfs::{
     FileNode, Location, NodeFlags, NodePermission, NodeType, VfsError, VfsResult, path::Path,
 };
-use axhal::mem::{PhysAddr, VirtAddr, virt_to_phys};
-use axio::{SeekFrom, prelude::*};
 use axpoll::{IoEvents, Pollable};
-use axsync::Mutex;
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter};
 use lru::LruCache;
 use spin::RwLock;
@@ -734,7 +734,7 @@ impl FileBackend {
     pub fn read_at(&self, mut dst: impl Write + IoBufMut, mut offset: u64) -> VfsResult<usize> {
         match self {
             Self::Cached(cached) => cached.read_at(dst, offset),
-            Self::Direct(loc) => dst.read_from(&mut axio::read_fn(|buf| {
+            Self::Direct(loc) => dst.read_from(&mut ax_io::read_fn(|buf| {
                 loc.entry().as_file()?.read_at(buf, offset).inspect(|read| {
                     offset += *read as u64;
                 })
@@ -746,7 +746,7 @@ impl FileBackend {
     pub fn write_at(&self, mut src: impl Read + IoBuf, mut offset: u64) -> VfsResult<usize> {
         match self {
             Self::Cached(cached) => cached.write_at(src, offset),
-            Self::Direct(loc) => src.write_to(&mut axio::write_fn(|buf| {
+            Self::Direct(loc) => src.write_to(&mut ax_io::write_fn(|buf| {
                 loc.entry()
                     .as_file()?
                     .write_at(buf, offset)
@@ -763,7 +763,7 @@ impl FileBackend {
             Self::Cached(cached) => cached.append(src),
             Self::Direct(loc) => {
                 let mut end = 0;
-                src.write_to(&mut axio::write_fn(|buf| {
+                src.write_to(&mut ax_io::write_fn(|buf| {
                     loc.entry().as_file()?.append(buf).map(|(n, offset)| {
                         end = offset;
                         n
@@ -898,7 +898,7 @@ impl File {
     }
 
     /// Reads data from the current position, advancing the cursor.
-    pub fn read(&self, dst: impl Write + IoBufMut) -> axio::Result<usize> {
+    pub fn read(&self, dst: impl Write + IoBufMut) -> ax_io::Result<usize> {
         #[cfg(feature = "times")]
         {
             self.access_flags.fetch_or(1, Ordering::AcqRel);
@@ -914,7 +914,7 @@ impl File {
     }
 
     /// Writes data at the current position (or appends), advancing the cursor.
-    pub fn write(&self, src: impl Read + IoBuf) -> axio::Result<usize> {
+    pub fn write(&self, src: impl Read + IoBuf) -> ax_io::Result<usize> {
         #[cfg(feature = "times")]
         {
             self.access_flags.fetch_or(3, Ordering::AcqRel);
@@ -937,30 +937,30 @@ impl File {
     }
 
     /// Flushes any internally buffered data. Currently a no-op.
-    pub fn flush(&self) -> axio::Result {
+    pub fn flush(&self) -> ax_io::Result {
         self.access(FileFlags::empty())?;
         Ok(())
     }
 }
 
 impl Read for &File {
-    fn read(&mut self, buf: &mut [u8]) -> axio::Result<usize> {
+    fn read(&mut self, buf: &mut [u8]) -> ax_io::Result<usize> {
         (*self).read(buf)
     }
 }
 
 impl Write for &File {
-    fn write(&mut self, buf: &[u8]) -> axio::Result<usize> {
+    fn write(&mut self, buf: &[u8]) -> ax_io::Result<usize> {
         (*self).write(buf)
     }
 
-    fn flush(&mut self) -> axio::Result {
+    fn flush(&mut self) -> ax_io::Result {
         (*self).flush()
     }
 }
 
 impl Seek for &File {
-    fn seek(&mut self, pos: SeekFrom) -> axio::Result<u64> {
+    fn seek(&mut self, pos: SeekFrom) -> ax_io::Result<u64> {
         self.access(FileFlags::empty())?;
 
         if let Some(guard) = self.position.as_ref() {
@@ -1000,10 +1000,10 @@ impl Drop for File {
         if flags != 0 {
             let mut update = axfs_ng_vfs::MetadataUpdate::default();
             if flags & 1 != 0 {
-                update.atime = Some(axhal::time::wall_time());
+                update.atime = Some(ax_hal::time::wall_time());
             }
             if flags & 2 != 0 {
-                update.mtime = Some(axhal::time::wall_time());
+                update.mtime = Some(ax_hal::time::wall_time());
             }
             if let Err(err) = self.inner.location().update_metadata(update) {
                 warn!("Failed to update file times on drop: {err:?}");

@@ -14,9 +14,9 @@ mod bits64;
 use core::fmt::Debug;
 
 use arrayvec::ArrayVec;
-use memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr};
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr};
 #[doc(no_inline)]
-pub use page_table_entry::{GenericPTE, MappingFlags};
+pub use ax_page_table_entry::{GenericPTE, MappingFlags};
 
 #[cfg(any(target_pointer_width = "32", doc, docsrs))]
 pub use self::{
@@ -45,12 +45,12 @@ pub enum PagingError {
     MappedToHugePage,
 }
 
-#[cfg(feature = "axerrno")]
-impl From<PagingError> for axerrno::AxError {
+#[cfg(feature = "ax-errno")]
+impl From<PagingError> for ax_errno::AxError {
     fn from(value: PagingError) -> Self {
         match value {
-            PagingError::NoMemory => axerrno::AxError::NoMemory,
-            _ => axerrno::AxError::InvalidInput,
+            PagingError::NoMemory => ax_errno::AxError::NoMemory,
+            _ => ax_errno::AxError::InvalidInput,
         }
     }
 }
@@ -146,12 +146,12 @@ impl PageSize {
 
     /// Checks whether a given address or size is aligned to the page size.
     pub const fn is_aligned(self, addr_or_size: usize) -> bool {
-        memory_addr::is_aligned(addr_or_size, self as usize)
+        ax_memory_addr::is_aligned(addr_or_size, self as usize)
     }
 
     /// Returns the offset of the address within the page size.
     pub const fn align_offset(self, addr: usize) -> usize {
-        memory_addr::align_offset(addr, self as usize)
+        ax_memory_addr::align_offset(addr, self as usize)
     }
 }
 

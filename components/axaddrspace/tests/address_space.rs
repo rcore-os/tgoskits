@@ -16,9 +16,9 @@ mod test_utils;
 
 use core::sync::atomic::Ordering;
 
+use ax_memory_addr::PhysAddr;
 use axaddrspace::{AddrSpace, GuestPhysAddr, MappingFlags};
 use axin::axin;
-use memory_addr::PhysAddr;
 use test_utils::{
     ALLOC_COUNT, BASE_PADDR, DEALLOC_COUNT, MEMORY_LEN, MockHal, mock_hal_test, test_dealloc_count,
 };

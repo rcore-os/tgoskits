@@ -25,9 +25,9 @@
 
 ```mermaid
 flowchart LR
-    A["thread::sleep(Duration)"] --> B["axstd::thread::sleep"]
-    B --> C["arceos_api::task::ax_sleep_until"]
-    C --> D["axtask::sleep_until"]
+    A["thread::sleep(Duration)"] --> B["ax_std::thread::sleep"]
+    B --> C["ax_api::task::ax_sleep_until"]
+    C --> D["ax-task::sleep_until"]
     D --> E["IRQ/timer 驱动超时唤醒"]
 ```
 
@@ -75,22 +75,22 @@ flowchart LR
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    test["arceos-sleep"] --> axstd["axstd(multitask, irq)"]
-    axstd --> arceos_api["arceos_api::task"]
-    arceos_api --> axtask["axtask"]
-    axtask --> axhal["axhal time/irq"]
+    test["arceos-sleep"] --> ax-std["ax-std(multitask, irq)"]
+    ax-std --> ax-api["ax_api::task"]
+    ax-api --> ax-task["ax-task"]
+    ax-task --> ax-hal["ax-hal time/irq"]
 ```
 
 ### 3.1 直接依赖
-- `axstd(multitask, irq)`：说明测试直接依赖多任务和中断驱动的睡眠路径。
+- `ax-std(multitask, irq)`：说明测试直接依赖多任务和中断驱动的睡眠路径。
 
 ### 3.2 关键间接依赖
-- `axtask::sleep_until`：真正把当前任务挂入等待队列。
-- `axhal` 的时间和中断能力：提供超时唤醒所需的时钟推进。
+- `ax-task::sleep_until`：真正把当前任务挂入等待队列。
+- `ax-hal` 的时间和中断能力：提供超时唤醒所需的时钟推进。
 
 ### 3.3 主要消费者
 - `cargo arceos test qemu` 自动发现的任务时间语义回归。
-- 调整 timer、IRQ 或 `axtask` 睡眠路径后的快速验证。
+- 调整 timer、IRQ 或 `ax-task` 睡眠路径后的快速验证。
 
 ## 4. 开发指南
 ### 4.1 推荐运行方式
@@ -136,7 +136,7 @@ cargo arceos test qemu --target riscv64gc-unknown-none-elf
 
 ## 6. 跨项目定位分析
 ### 6.1 ArceOS
-它是 ArceOS 时间与调度基本语义的一条行为回归入口，直接服务 `axtask` 和 timer 相关实现。
+它是 ArceOS 时间与调度基本语义的一条行为回归入口，直接服务 `ax-task` 和 timer 相关实现。
 
 ### 6.2 StarryOS
 StarryOS 不直接运行它，但底层时间推进和任务睡眠问题往往会先在这种简单回归里被发现。

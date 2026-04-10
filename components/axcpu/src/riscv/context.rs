@@ -1,5 +1,6 @@
 use core::arch::naked_asm;
-use memory_addr::VirtAddr;
+
+use ax_memory_addr::VirtAddr;
 use riscv::register::sstatus::{self, FS};
 
 /// General registers of RISC-V.
@@ -98,7 +99,7 @@ impl FpState {
         }
         // restore the next task's FP state
         match next_fp_state.fs {
-            FS::Clean => next_fp_state.restore(), // the next task's FP state is clean, we should restore it
+            FS::Clean => next_fp_state.restore(), /* the next task's FP state is clean, we should restore it */
             FS::Initial => FpState::clear(),      // restore the FP state as constant values(all 0)
             FS::Off => {}                         // do nothing
             FS::Dirty => unreachable!("FP state of the next task should not be dirty"),
@@ -286,7 +287,7 @@ pub struct TaskContext {
     pub tp: usize,
     /// The `satp` register value, i.e., the page table root.
     #[cfg(feature = "uspace")]
-    pub satp: memory_addr::PhysAddr,
+    pub satp: ax_memory_addr::PhysAddr,
     #[cfg(feature = "fp-simd")]
     pub fp_state: FpState,
 }
@@ -320,7 +321,7 @@ impl TaskContext {
     /// The hardware register for page table root (`satp` for riscv64) will be
     /// updated to the next task's after [`Self::switch_to`].
     #[cfg(feature = "uspace")]
-    pub fn set_page_table_root(&mut self, satp: memory_addr::PhysAddr) {
+    pub fn set_page_table_root(&mut self, satp: ax_memory_addr::PhysAddr) {
         self.satp = satp;
     }
 

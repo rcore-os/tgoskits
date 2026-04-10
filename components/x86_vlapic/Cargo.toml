@@ -1,13 +1,13 @@
 [package]
 name = "x86_vlapic"
-version = "0.2.2"
+version = "0.4.2"
 edition = "2024"
 description = "x86 Virtual Local APIC"
 authors = ["Keyang Hu <keyang.hu@qq.com>", "Mingxian Su <aarkegz@gmail.com>"]
-license = "Apache-2.0"
 categories = ["virtualization"]
 repository = "https://github.com/arceos-hypervisor/x86_vlapic"
 keywords = ["x86", "hypervisor", "arceos"]
+license = "Apache-2.0"
 
 [package.metadata.docs.rs]
 targets = ["x86_64-unknown-none"]
@@ -18,9 +18,9 @@ paste = "1.0.15"
 tock-registers = "0.10.0"
 bit = "0.1.1"
 
-memory_addr = "0.4"
-axerrno = "0.2"
+ax-memory-addr = "0.6.1"
+ax-errno = "0.4.2"
 
-axaddrspace = "0.3"
-axdevice_base = "0.2.2"
-axvisor_api = "0.3"
+axaddrspace = "0.5.0"
+axdevice_base = "0.4.2"
+axvisor_api = "0.5.0"

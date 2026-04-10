@@ -4,7 +4,7 @@
 #![cfg_attr(doc, feature(doc_cfg))]
 
 #[doc(no_inline)]
-pub use axdriver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
+pub use ax_driver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
 
 /// Vsock address.
 #[derive(Copy, Clone, Debug, Default, Hash, PartialEq, Eq, PartialOrd, Ord)]

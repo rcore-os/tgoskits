@@ -5,12 +5,12 @@ members = ["axvisor_api_proc"]
 [workspace.package]
 authors = ["Su Mingxian <aarkegz@gmail.com>"]
 edition = "2024"
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0" # MulanPubL2 is not included in SPDX
 repository = "https://github.com/arceos-hypervisor/axvisor_api"
+license = "Apache-2.0"
 
 [package]
 name = "axvisor_api"
-version = "0.3.0"
+version = "0.5.0"
 description = "Basic API for components of the Hypervisor on ArceOS"
 documentation = "https://docs.rs/axvisor_api"
 readme = "README.md"
@@ -18,23 +18,23 @@ keywords = ["axvisor", "api", "embedded", "hypervisor"]
 categories = ["embedded", "no-std"]
 authors.workspace = true
 edition.workspace = true
-license.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [dependencies]
 # === Core Components ===
 # Procedural macro definitions
-axvisor_api_proc = { path = "axvisor_api_proc", version = "0.3.0"}
+axvisor_api_proc = { path = "axvisor_api_proc", version = "0.5.0"}
 
 # === Third-party Libraries ===
 # Address space abstraction
-axaddrspace = "0.3"
+axaddrspace = "0.5.0"
 # Interface definition tools
-crate_interface = "0.3"
+ax-crate-interface = "0.5.0"
 # Physical/virtual address types
-memory_addr = "0.4"
+ax-memory-addr = "0.6.1"
 # CPU mask
-cpumask = "0.1.0"
+ax-cpumask = "0.3.0"
 
 
 [package.metadata.docs.rs]

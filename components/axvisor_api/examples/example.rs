@@ -13,12 +13,12 @@
 // limitations under the License.
 
 extern crate axvisor_api;
-extern crate memory_addr;
+extern crate ax_memory_addr;
 use axvisor_api::__priv;
 
 pub mod some_demo {
-    use memory_addr::MemoryAddr;
-    pub use memory_addr::PhysAddr;
+    use ax_memory_addr::MemoryAddr;
+    pub use ax_memory_addr::PhysAddr;
 
     #[axvisor_api::api_def]
     pub trait SomeDemoIf {
@@ -41,11 +41,11 @@ mod some_demo_impl {
 
     #[axvisor_api::api_impl]
     impl SomeDemoIf for SomeDemoImpl {
-        fn some_func() -> memory_addr::PhysAddr {
-            memory_addr::pa!(0x42)
+        fn some_func() -> ax_memory_addr::PhysAddr {
+            ax_memory_addr::pa!(0x42)
         }
 
-        fn another_func(addr: memory_addr::PhysAddr) {
+        fn another_func(addr: ax_memory_addr::PhysAddr) {
             println!("Wow, the answer is {:?}", addr);
         }
     }

@@ -4,11 +4,11 @@ use core::{
     task::Context,
 };
 
-use axerrno::{AxError, AxResult};
-use axfs::{FS_CONTEXT, FileFlags, OpenOptions};
-use axio::{Seek, SeekFrom};
+use ax_errno::{AxError, AxResult};
+use ax_fs::{FS_CONTEXT, FileFlags, OpenOptions};
+use ax_io::{Seek, SeekFrom};
+use ax_task::current;
 use axpoll::{IoEvents, Pollable};
-use axtask::current;
 use linux_raw_sys::general::__kernel_off_t;
 use starry_vm::{VmMutPtr, VmPtr};
 use syscalls::Sysno;

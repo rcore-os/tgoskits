@@ -4,8 +4,8 @@ use alloc::{
 };
 use core::{ffi::c_long, sync::atomic::Ordering};
 
-use axerrno::{AxError, AxResult};
-use axtask::{AxTaskRef, TaskInner, WeakAxTaskRef, current};
+use ax_errno::{AxError, AxResult};
+use ax_task::{AxTaskRef, TaskInner, WeakAxTaskRef, current};
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::ROBUST_LIST_LIMIT;
 use spin::RwLock;
@@ -191,7 +191,7 @@ pub fn exit_robust_list(head: *const RobustListHead) -> AxResult<()> {
         if limit == 0 {
             return Err(AxError::FilesystemLoop);
         }
-        axtask::yield_now();
+        ax_task::yield_now();
     }
 
     Ok(())
@@ -211,7 +211,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         if let Some(futex) = guard {
             futex.wq.wake(1, u32::MAX);
         }
-        axtask::yield_now();
+        ax_task::yield_now();
     }
     let head = thr.robust_list_head() as *const RobustListHead;
     if !head.is_null()

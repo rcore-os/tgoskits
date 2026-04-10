@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use memory_addr::VirtAddr;
+use ax_memory_addr::VirtAddr;
 use sbi_spec::binary::{Physical, SbiRet};
 
 pub const EID_DBCN: usize = 0x4442434e;

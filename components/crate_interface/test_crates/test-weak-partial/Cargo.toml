@@ -3,8 +3,9 @@ name = "test-weak-partial"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
-crate_interface.workspace = true
+ax-crate-interface.workspace = true
 define-weak-traits.workspace = true
 impl-weak-partial.workspace = true

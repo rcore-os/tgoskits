@@ -3,7 +3,7 @@
 //! This crate demonstrates that trait definition and implementation can be in
 //! separate crates, which is a key feature of `crate_interface`.
 
-use crate_interface::impl_interface;
+use ax_crate_interface::impl_interface;
 use define_simple_traits::{AdvancedIf, CallerIf, NamespacedIf, SimpleIf};
 
 /// Implementation struct for SimpleIf.

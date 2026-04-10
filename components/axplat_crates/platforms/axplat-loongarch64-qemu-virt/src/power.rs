@@ -1,5 +1,7 @@
-use axplat::mem::{pa, phys_to_virt};
-use axplat::power::PowerIf;
+use ax_plat::{
+    mem::{pa, phys_to_virt},
+    power::PowerIf,
+};
 
 use crate::config::devices::GED_PADDR;
 
@@ -23,10 +25,10 @@ impl PowerIf for PowerImpl {
 
         info!("Shutting down...");
         unsafe { halt_addr.write_volatile(0x34) };
-        axcpu::asm::halt();
+        ax_cpu::asm::halt();
         warn!("It should shutdown!");
         loop {
-            axcpu::asm::halt();
+            ax_cpu::asm::halt();
         }
     }
 

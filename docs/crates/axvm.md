@@ -136,8 +136,8 @@ graph LR
 - `arm_vgic`：在 AArch64 路径上参与虚拟中断控制器与定时设备支持。
 
 ### 3.2 关键间接依赖
-- `page_table_multiarch`、`page_table_entry`：通过地址空间和页表路径参与 VM 内存管理。
-- `memory_set`、`range-alloc-arceos` 等：在地址空间和内存建模路径上间接提供支撑。
+- `ax-page-table-multiarch`、`ax-page-table-entry`：通过地址空间和页表路径参与 VM 内存管理。
+- `ax-memory-set`、`range-alloc-arceos` 等：在地址空间和内存建模路径上间接提供支撑。
 - `axvisor_api` 生态：更多出现在消费者侧，但会影响 `axvm` 的宿主接入方式。
 
 ### 3.3 关键直接消费者

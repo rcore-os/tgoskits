@@ -5,7 +5,7 @@ use alloc::{
     vec::Vec,
 };
 
-use axfs_vfs::{
+use ax_fs_vfs::{
     VfsDirEntry, VfsError, VfsNodeAttr, VfsNodeOps, VfsNodeRef, VfsNodeType, VfsResult,
 };
 use spin::RwLock;
@@ -14,7 +14,7 @@ use crate::file::FileNode;
 
 /// The directory node in the RAM filesystem.
 ///
-/// It implements [`axfs_vfs::VfsNodeOps`].
+/// It implements [`ax_fs_vfs::VfsNodeOps`].
 pub struct DirNode {
     this: Weak<DirNode>,
     parent: RwLock<Weak<dyn VfsNodeOps>>,
@@ -169,7 +169,7 @@ impl VfsNodeOps for DirNode {
         }
     }
 
-    axfs_vfs::impl_vfs_dir_default! {}
+    ax_fs_vfs::impl_vfs_dir_default! {}
 }
 
 fn split_path(path: &str) -> (&str, Option<&str>) {

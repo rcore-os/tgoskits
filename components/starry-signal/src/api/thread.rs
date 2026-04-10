@@ -5,10 +5,9 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use axcpu::uspace::UserContext;
-use axerrno::AxResult;
-use kspin::SpinNoIrq;
-use starry_vm::{VmMutPtr, VmPtr};
+use ax_cpu::uspace::UserContext;
+use ax_kspin::SpinNoIrq;
+use starry_vm::VmMutPtr;
 
 use super::ProcessSignalManager;
 use crate::{

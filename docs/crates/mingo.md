@@ -174,7 +174,7 @@ flowchart TD
 | `aarch64-cpu` | 目标架构依赖 | 提供 AArch64 指令级辅助能力 |
 | `tock-registers` | 可选依赖 | 为 PL011 与 GPIO MMIO 寄存器建模 |
 
-这个依赖面非常说明问题：`mingo` 不依赖 `axruntime`、`axhal`、`axdriver`、`axplat-aarch64-raspi` 等 ArceOS 主线部件，它不是内核体系中的一个可插拔模块，而是一个边缘位置很清晰的独立工具程序。
+这个依赖面非常说明问题：`mingo` 不依赖 `ax-runtime`、`ax-hal`、`ax-driver`、`ax-plat-aarch64-raspi` 等 ArceOS 主线部件，它不是内核体系中的一个可插拔模块，而是一个边缘位置很清晰的独立工具程序。
 
 ### 4.2 仓库内真实协作方
 
@@ -188,12 +188,12 @@ flowchart TD
 
 ### 4.3 与下一级 payload 的关系
 
-`mingo` 本身不关心 payload 来自哪个 crate，只要求它是一个可以从 `0x8_0000` 起跳的 AArch64 镜像。因此它与 `axplat-aarch64-raspi`、ArceOS 示例程序、甚至其他自制内核的关系都是“加载器与被加载物”的关系，而不是 Rust 级别的依赖关系。
+`mingo` 本身不关心 payload 来自哪个 crate，只要求它是一个可以从 `0x8_0000` 起跳的 AArch64 镜像。因此它与 `ax-plat-aarch64-raspi`、ArceOS 示例程序、甚至其他自制内核的关系都是“加载器与被加载物”的关系，而不是 Rust 级别的依赖关系。
 
 也就是说：
 
-- `mingo` 不链接 `axplat-aarch64-raspi`。
-- 但 ArceOS 在 Raspberry Pi 上构建出的镜像，常常是由 `axplat-aarch64-raspi` 支撑的平台 payload。
+- `mingo` 不链接 `ax-plat-aarch64-raspi`。
+- 但 ArceOS 在 Raspberry Pi 上构建出的镜像，常常是由 `ax-plat-aarch64-raspi` 支撑的平台 payload。
 - `mingo` 负责把这些 payload 搬到正确位置并交出控制权。
 
 ## 5. 开发指南
@@ -221,7 +221,7 @@ make JTAG=y
 首次部署时，通常需要把生成的 `kernel8.img` 放到 SD 卡，让树莓派固件先启动 `mingo`。之后才在 ArceOS 主工程里执行类似如下命令，把真正要运行的系统镜像通过串口推送过去：
 
 ```bash
-make A=examples/helloworld MYPLAT=axplat-aarch64-raspi chainboot
+make A=examples/helloworld MYPLAT=ax-plat-aarch64-raspi chainboot
 ```
 
 ### 5.2 修改时必须同步关注的点
@@ -283,17 +283,17 @@ make A=examples/helloworld MYPLAT=axplat-aarch64-raspi chainboot
 
 `mingo` 只处在 ArceOS 的树莓派 bring-up 边缘：
 
-- 它不属于 `axruntime` / `axhal` / `axdriver` 主线层次。
+- 它不属于 `ax-runtime` / `ax-hal` / `ax-driver` 主线层次。
 - 它不参与正常的内核内部抽象。
 - 它负责的是“把内核送上板并起跳”之前的那一步。
 
 所以它与 ArceOS 主工程的关系是“开发链路前置工具”，不是“内核组成部分”。
 
-### 7.2 与 `axplat-aarch64-raspi` 的关系
+### 7.2 与 `ax-plat-aarch64-raspi` 的关系
 
-`axplat-aarch64-raspi` 解决的是“下一级系统在 Raspberry Pi 4 上如何启动和运行”的平台抽象问题；`mingo` 解决的是“下一级系统镜像如何更快地送到板上并开始执行”的装载问题。两者互补，但不相互依赖：
+`ax-plat-aarch64-raspi` 解决的是“下一级系统在 Raspberry Pi 4 上如何启动和运行”的平台抽象问题；`mingo` 解决的是“下一级系统镜像如何更快地送到板上并开始执行”的装载问题。两者互补，但不相互依赖：
 
-- `axplat-aarch64-raspi` 属于平台包。
+- `ax-plat-aarch64-raspi` 属于平台包。
 - `mingo` 属于板端加载器。
 - 一个是被跳转进入后的运行平台，一个是跳转之前的交付通道。
 

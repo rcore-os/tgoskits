@@ -2,7 +2,7 @@
 
 extern crate test;
 
-use axio::{Cursor, SeekFrom, prelude::*};
+use ax_io::{Cursor, SeekFrom, prelude::*};
 
 #[cfg(feature = "alloc")]
 #[test]

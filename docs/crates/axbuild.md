@@ -6,7 +6,7 @@
 > 版本：`0.3.0-preview.3`
 > 文档依据：`Cargo.toml`、`src/lib.rs`、`src/arceos/mod.rs`、`src/arceos/build.rs`、`src/arceos/ostool.rs`、`src/arceos/config.rs`、`src/arceos/features.rs`、`src/axvisor/image/mod.rs`、`src/axvisor/xtest/mod.rs`
 
-`axbuild` 是当前工作区里承上启下的宿主侧构建基础库。它不属于目标镜像，也不参与内核热路径；它负责把“应用配置、平台配置、feature 装配、QEMU 参数、产物路径”这些宿主机侧信息整理成可执行的构建/运行计划，并将底层执行委托给 `ostool`、`axconfig-gen`、`cargo axplat` 等工具。
+`axbuild` 是当前工作区里承上启下的宿主侧构建基础库。它不属于目标镜像，也不参与内核热路径；它负责把“应用配置、平台配置、feature 装配、QEMU 参数、产物路径”这些宿主机侧信息整理成可执行的构建/运行计划，并将底层执行委托给 `ostool`、`ax-config-gen`、`cargo axplat` 等工具。
 
 ## 1. 架构设计分析
 ### 1.1 设计定位
@@ -24,7 +24,7 @@
 ```mermaid
 flowchart TD
     A["ArceosConfig / Override"] --> B["resolve_effective_smp + resolve_platform"]
-    B --> C["调用 axconfig-gen 生成 .axconfig.toml"]
+    B --> C["调用 ax-config-gen 生成 .axconfig.toml"]
     C --> D["FeatureResolver 计算 ax_features / lib_features"]
     D --> E["ostool::build_cargo_spec"]
     E --> F["ostool 执行 cargo build / qemu"]
@@ -33,9 +33,9 @@ flowchart TD
 其中几个实现细节非常关键：
 
 - `prepare_artifacts()` 会先解析架构、平台、SMP、内存、feature 等信息。
-- `generate_config()` 会调用宿主机上的 `axconfig-gen` 命令，把 defconfig、平台配置和命令行覆写合成为 `.axconfig.toml`。
+- `generate_config()` 会调用宿主机上的 `ax-config-gen` 命令，把 defconfig、平台配置和命令行覆写合成为 `.axconfig.toml`。
 - `resolve_platform_config_path()` 会调用 `cargo axplat info` 找到平台配置文件。
-- `is_c_app()` 会读取应用 `Cargo.toml`，通过是否出现 `axlibc` 判断这是 C 应用还是 Rust 应用。
+- `is_c_app()` 会读取应用 `Cargo.toml`，通过是否出现 `ax-libc` 判断这是 C 应用还是 Rust 应用。
 
 因此，`axbuild` 是把配置链、feature 链和实际构建链连接起来的中枢。
 
@@ -44,12 +44,12 @@ flowchart TD
 
 - `resolve_ax_features()` 只保留模块级 feature，例如 `defplat`、`myplat`、`plat-dyn`
 - `resolve_lib_features()` 只保留库级 feature，例如 `fs`、`net`、`multitask`
-- `build_features()` 在 `ostool.rs` 中再根据应用实际直接依赖的是 `axstd` 还是 `axfeat`，决定拼接前缀：
-  - `axstd/<feature>`
-  - `axfeat/<feature>`
-  - `axlibc/<feature>`
+- `build_features()` 在 `ostool.rs` 中再根据应用实际直接依赖的是 `ax-std` 还是 `ax-feat`，决定拼接前缀：
+  - `ax-std/<feature>`
+  - `ax-feat/<feature>`
+  - `ax-libc/<feature>`
 
-`detect_ax_feature_prefix_family()` 甚至会通过 `cargo metadata` 检查应用是否直接依赖 `axstd` 或 `axfeat`。这一步体现了 `axbuild` 对真实调用关系的感知，而不是纯字符串拼接。
+`detect_ax_feature_prefix_family()` 甚至会通过 `cargo metadata` 检查应用是否直接依赖 `ax-std` 或 `ax-feat`。这一步体现了 `axbuild` 对真实调用关系的感知，而不是纯字符串拼接。
 
 ### 1.4 宿主环境与目标环境的边界
 `src/arceos/ostool.rs` 显式构造了目标构建所需的宿主环境变量：
@@ -112,7 +112,7 @@ flowchart TD
 ```mermaid
 graph LR
     xtask["tg-xtask / Axvisor xtask"] --> axbuild["axbuild"]
-    axbuild --> axconfig_gen["axconfig-gen（命令）"]
+    axbuild --> ax_config_gen["ax-config-gen（命令）"]
     axbuild --> cargo_axplat["cargo axplat"]
     axbuild --> ostool["ostool"]
     axbuild --> axvmconfig["axvmconfig"]
@@ -172,7 +172,7 @@ graph LR
 - Axvisor 镜像规格解析
 
 ### 5.3 建议继续加强的点
-- `axconfig-gen` 调用失败时的错误路径
+- `ax-config-gen` 调用失败时的错误路径
 - `cargo axplat info` 失败时的诊断信息
 - `is_c_app()` 对不同应用布局的识别
 - Axvisor 镜像下载和解压的更细粒度测试

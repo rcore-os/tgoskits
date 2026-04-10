@@ -6,12 +6,12 @@
 //! ab -n 5000 -c 20 http://X.X.X.X:5555/
 //! ```
 
-#![cfg_attr(feature = "axstd", no_std)]
-#![cfg_attr(feature = "axstd", no_main)]
+#![cfg_attr(feature = "ax-std", no_std)]
+#![cfg_attr(feature = "ax-std", no_main)]
 
 #[macro_use]
-#[cfg(feature = "axstd")]
-extern crate axstd as std;
+#[cfg(feature = "ax-std")]
+extern crate ax_std as std;
 
 use std::{
     io::{self, prelude::*},
@@ -92,7 +92,7 @@ fn accept_loop() -> io::Result<()> {
     }
 }
 
-#[cfg_attr(feature = "axstd", unsafe(no_mangle))]
+#[cfg_attr(feature = "ax-std", unsafe(no_mangle))]
 fn main() {
     println!("Hello, ArceOS HTTP server!");
     accept_loop().expect("test HTTP server failed");

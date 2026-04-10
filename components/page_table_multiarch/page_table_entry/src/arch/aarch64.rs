@@ -3,7 +3,7 @@
 use core::fmt;
 
 use aarch64_cpu::registers::MAIR_EL1;
-use memory_addr::PhysAddr;
+use ax_memory_addr::PhysAddr;
 
 use crate::{GenericPTE, MappingFlags};
 
@@ -255,7 +255,8 @@ impl GenericPTE for A64PTE {
     }
 
     fn is_huge(&self) -> bool {
-        !DescriptorAttr::from_bits_truncate(self.0).contains(DescriptorAttr::NON_BLOCK)
+        self.is_present()
+            && !DescriptorAttr::from_bits_truncate(self.0).contains(DescriptorAttr::NON_BLOCK)
     }
 
     fn clear(&mut self) {

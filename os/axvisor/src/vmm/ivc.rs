@@ -16,12 +16,12 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use std::os::arceos::modules::axhal::paging::PagingHandlerImpl;
 use std::sync::Mutex;
 
+use ax_errno::AxResult;
+use ax_hal::paging::PagingHandlerImpl;
+use ax_page_table_multiarch::PagingHandler;
 use axaddrspace::{GuestPhysAddr, HostPhysAddr};
-use axerrno::AxResult;
-use page_table_multiarch::PagingHandler;
 
 /// A global btree map to store IVC channels,
 /// indexed by (publisher_vm_id, channel_key).
@@ -37,7 +37,7 @@ pub fn insert_channel(
         .insert((publisher_vm_id, channel.key), channel)
         .is_some()
     {
-        Err(axerrno::ax_err_type!(
+        Err(ax_errno::ax_err_type!(
             AlreadyExists,
             "IVC channel already exists"
         ))
@@ -58,7 +58,7 @@ pub fn unpublish_channel(
     let mut channels = IVC_CHANNELS.lock();
     if let Some(mut channel) = channels.remove(&(publisher_vm_id, key)) {
         let base_gpa = channel.base_gpa_in_publisher().ok_or_else(|| {
-            axerrno::ax_err_type!(
+            ax_errno::ax_err_type!(
                 NotFound,
                 format!(
                     "IVC channel for publisher VM {} with key {} has no base GPA, it may have been marked as unpublished",
@@ -74,7 +74,7 @@ pub fn unpublish_channel(
         }
         Ok(Some((base_gpa, size)))
     } else {
-        Err(axerrno::ax_err_type!(
+        Err(ax_errno::ax_err_type!(
             NotFound,
             format!(
                 "IVC channel for publisher VM {} with key {} not found",
@@ -89,7 +89,7 @@ pub fn get_channel_size(publisher_vm_id: usize, key: usize) -> AxResult<usize> {
     if let Some(channel) = channels.get(&(publisher_vm_id, key)) {
         Ok(channel.size())
     } else {
-        Err(axerrno::ax_err_type!(
+        Err(ax_errno::ax_err_type!(
             NotFound,
             format!(
                 "IVC channel for publisher VM {} with key {} not found",
@@ -113,7 +113,7 @@ pub fn subscribe_to_channel_of_publisher(
         channel.add_subscriber(subscriber_vm_id, subscriber_gpa);
         Ok((channel.base_hpa(), channel.size()))
     } else {
-        Err(axerrno::ax_err_type!(
+        Err(ax_errno::ax_err_type!(
             NotFound,
             format!(
                 "IVC channel for publisher VM [{}] key {:#x} not found",
@@ -137,7 +137,7 @@ pub fn unsubscribe_from_channel_of_publisher(
         if let Some(subscriber_gpa) = channel.remove_subscriber(subscriber_vm_id) {
             Ok((subscriber_gpa, channel.size()))
         } else {
-            Err(axerrno::ax_err_type!(
+            Err(ax_errno::ax_err_type!(
                 NotFound,
                 format!(
                     "VM[{}] tries to unsubscribe non-existed channel publisher VM[{}] Key {:#x}",
@@ -146,7 +146,7 @@ pub fn unsubscribe_from_channel_of_publisher(
             ))
         }
     } else {
-        Err(axerrno::ax_err_type!(
+        Err(ax_errno::ax_err_type!(
             NotFound,
             format!("IVC channel for publisher VM {} not found", publisher_vm_id)
         ))
@@ -247,7 +247,7 @@ impl<H: PagingHandler> IVCChannel<H> {
         // TODO: support larger shared region sizes with alloc_frames API.
         let shared_region_size = shared_region_size.min(4096);
         let shared_region_base = H::alloc_frame().ok_or_else(|| {
-            axerrno::ax_err_type!(NoMemory, "Failed to allocate shared region frame")
+            ax_errno::ax_err_type!(NoMemory, "Failed to allocate shared region frame")
         })?;
 
         let mut channel = IVCChannel {

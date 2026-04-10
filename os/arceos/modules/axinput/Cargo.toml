@@ -1,18 +1,17 @@
 [package]
-name = "axinput"
+name = "ax-input"
 version.workspace = true
+repository.workspace = true
 edition.workspace = true
 authors.workspace = true
 description = "Input device management for ArceOS"
-license.workspace = true
-homepage.workspace = true
-repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
+license.workspace = true
 
 [dependencies]
-axdriver = { workspace = true, features = ["input"] }
-axsync = { workspace = true }
+ax-driver = { workspace = true, features = ["input"] }
+ax-sync = { workspace = true }
 
-lazyinit = { workspace = true }
+ax-lazyinit = { workspace = true }
 log = { workspace = true }

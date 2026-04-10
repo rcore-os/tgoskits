@@ -1,4 +1,4 @@
-use axcpu::uspace::UserContext;
+use ax_cpu::uspace::UserContext;
 use starry_signal::{SignalDisposition, SignalInfo, SignalOSAction, SignalSet, Signo};
 
 mod common;

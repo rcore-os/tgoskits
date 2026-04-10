@@ -5,10 +5,10 @@ use core::{
     ops::{Deref, DerefMut},
 };
 
-use axerrno::{AxError, AxResult};
-use axfs::{FS_CONTEXT, FileBackend, OpenOptions, OpenResult};
+use ax_errno::{AxError, AxResult};
+use ax_fs::{FS_CONTEXT, FileBackend, OpenOptions, OpenResult};
+use ax_task::current;
 use axfs_ng_vfs::{DirEntry, FileNode, Location, NodePermission, NodeType, Reference};
-use axtask::current;
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 
@@ -77,7 +77,7 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
                         Reference::new(Some(pts.entry().clone()), pty_number.to_string()),
                     );
                     let loc = Location::new(file.location().mountpoint().clone(), entry);
-                    file = axfs::File::new(FileBackend::Direct(loc), file.flags());
+                    file = ax_fs::File::new(FileBackend::Direct(loc), file.flags());
                 } else if inner.is::<tty::CurrentTty>() {
                     let term = current()
                         .as_thread()
@@ -95,7 +95,7 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
                         panic!("unknown terminal type")
                     };
                     let loc = FS_CONTEXT.lock().resolve(&path)?;
-                    file = axfs::File::new(FileBackend::Direct(loc), file.flags());
+                    file = ax_fs::File::new(FileBackend::Direct(loc), file.flags());
                 }
             }
             Arc::new(File::new(file))

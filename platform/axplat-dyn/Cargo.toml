@@ -11,29 +11,43 @@ repository.workspace = true
 
 [features]
 default = ["smp", "irq"]
-smp = ["axplat/smp"]
-irq = ["axplat/irq"]
+smp = ["ax-plat/smp"]
+irq = ["ax-plat/irq"]
+fp-simd = ["ax-cpu/fp-simd"]
 uspace = ["somehal/uspace"]
-hv = ["somehal/hv", "axcpu/arm-el2"]
+hv = ["somehal/hv", "ax-cpu/arm-el2"]
+rk3588-clk = ["dep:rk3588-clk"]
+rk3568-clk = ["dep:rk3568_clk"]
+sdmmc = ["dep:sdmmc"]
+rockchip-pm = ["dep:rockchip-pm"]
+phytium-blk = ["dep:phytium-mci"]
+serial = ["dep:some-serial"]
 
 [dependencies]
 anyhow = { version = "1", default-features = false }
-axalloc.workspace = true
-axconfig-macros = "0.2"
-axcpu.workspace = true
-axdriver_base.workspace = true
-axdriver_block.workspace = true
-axdriver_virtio = { workspace = true, features = ["block"] }
-axerrno.workspace = true
+ax-alloc = { version = "0.5.0", path = "../../os/arceos/modules/axalloc", default-features = false, features = ["buddy-slab"] }
+ax-config-macros = "0.4.1"
+ax-cpu.workspace = true
+ax-driver-base.workspace = true
+ax-driver-block.workspace = true
+ax-driver-virtio = { workspace = true, features = ["block"] }
+ax-errno.workspace = true
 axklib.workspace = true
-axplat.workspace = true
+ax-plat.workspace = true
 dma-api = "0.7"
 fdt-edit = "0.2"
 heapless = "0.9"
 log.workspace = true
-memory_addr.workspace = true
-percpu = { workspace = true, features = ["custom-base"] }
+ax-memory-addr.workspace = true
+ax-percpu = { workspace = true, features = ["custom-base"] }
 rd-block = "0.1"
+rdif-clk = "0.5"
 rdrive = "0.20"
+rk3568_clk = { version = "0.1", optional = true }
+rk3588-clk = { version = "0.1", optional = true }
+rockchip-pm = { version = "0.4", optional = true }
+phytium-mci = { version = "0.1", default-features = false, features = ["pio"], optional = true }
+sdmmc = { version = "0.1", default-features = false, features = ["pio"], optional = true }
 somehal = "0.6"
+some-serial = { version = "0.3.1", optional = true }
 spin = "0.10"

@@ -1,6 +1,6 @@
 use core::ffi::{c_int, c_void};
 
-use arceos_posix_api as api;
+use ax_posix_api as api;
 
 use crate::{ctypes, utils::e};
 

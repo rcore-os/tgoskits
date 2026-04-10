@@ -12,9 +12,9 @@
 
 ### 1.1 真实定位
 
-这个 crate 和仓库里另一个 `axplat-x86-pc` 很容易被混淆，但它们的定位并不相同：
+这个 crate 和仓库里另一个 `ax-plat-x86-pc` 很容易被混淆，但它们的定位并不相同：
 
-- `axplat-x86-pc` 位于 `components/axplat_crates`，更偏 ArceOS 侧的标准 PC 参考平台。
+- `ax-plat-x86-pc` 位于 `components/axplat_crates`，更偏 ArceOS 侧的标准 PC 参考平台。
 - `axplat-x86-qemu-q35` 位于根目录 `platform/`，是 Axvisor 当前 x86_64 宿主平台依赖。
 - 前者走 `axplat_crates` 的常规平台组织方式；后者把 Q35 和 Axvisor 的构建约束直接内嵌进自己的 `build.rs` 与链接脚本。
 
@@ -59,10 +59,10 @@ flowchart TD
     C --> D[设置 CR0 CR4 EFER]
     D --> E[切到 64 位 bsp_entry64]
     E --> F[rust_entry magic mbi]
-    F --> G[axplat::call_main current_cpu_id mbi]
-    G --> H[axplat::init::init_early]
+    F --> G[ax_plat::call_main current_cpu_id mbi]
+    G --> H[ax_plat::init::init_early]
     H --> I[console::init / time::init_early / mem::init]
-    I --> J[axplat::init::init_later]
+    I --> J[ax_plat::init::init_later]
     J --> K[apic::init_primary / time::init_primary]
 ```
 
@@ -97,20 +97,20 @@ flowchart TD
 
 | 层 | 负责内容 | 不负责内容 |
 | --- | --- | --- |
-| `axcpu` | trap 初始化、停机等 CPU 原语 | Q35 MMIO 窗口、Multiboot 内存图解析、APIC/TSC/串口接线 |
+| `ax-cpu` | trap 初始化、停机等 CPU 原语 | Q35 MMIO 窗口、Multiboot 内存图解析、APIC/TSC/串口接线 |
 | `axplat-x86-qemu-q35` | Multiboot 启动、COM1、TSC/LAPIC/IOAPIC、RAM/MMIO 描述、AP 启动 | VMX/EPT、虚拟设备、客户机管理、通用 HAL 聚合 |
 | `axplat` | 统一平台契约与 `call_main()` / `call_secondary_main()` | Q35 板级实现细节 |
-| `axhal` | 当前仓库里不是它的主要消费者 | 板级启动与 Q35 宿主环境 bring-up |
+| `ax-hal` | 当前仓库里不是它的主要消费者 | 板级启动与 Q35 宿主环境 bring-up |
 | Axvisor 虚拟化核心 | VCPU、VM exit、EPT、设备虚拟化 | 宿主侧 COM1/APIC/TSC/Multiboot 平台初始化 |
 
 这里最重要的边界澄清是：**这个 crate 是 Axvisor 的宿主板级平台，而不是 Axvisor 的虚拟化核心。** 它负责把 x86_64 Q35 宿主机带起来，但不会负责任何客户机运行时语义。
 
-### 1.6 与 `axplat-x86-pc` 的差异
+### 1.6 与 `ax-plat-x86-pc` 的差异
 
-| 维度 | `axplat-x86-pc` | `axplat-x86-qemu-q35` |
+| 维度 | `ax-plat-x86-pc` | `axplat-x86-qemu-q35` |
 | --- | --- | --- |
 | 代码位置 | `components/axplat_crates/platforms` | 根目录 `platform/` |
-| 主要消费者 | ArceOS `axhal` 默认 x86 平台 | Axvisor x86_64 宿主平台 |
+| 主要消费者 | ArceOS `ax-hal` 默认 x86 平台 | Axvisor x86_64 宿主平台 |
 | 配置来源 | `axconfig` 体系 | `build.rs` + `linker.lds.S` + `AXVISOR_SMP` |
 | 目标机型 | 标准 PC / Multiboot 参考实现 | QEMU Q35 明确机型 |
 
@@ -156,15 +156,15 @@ flowchart TD
 | 依赖 | 作用 |
 | --- | --- |
 | `axplat` | 平台抽象接口与统一入口契约 |
-| `axcpu` | trap 初始化、停机等底层 CPU 原语 |
+| `ax-cpu` | trap 初始化、停机等底层 CPU 原语 |
 | `multiboot` | 解析 Multiboot 信息结构 |
 | `uart_16550` | COM1 串口驱动 |
 | `x2apic` | LAPIC / IOAPIC 访问 |
 | `x86` / `x86_64` | 控制寄存器、MSR、端口和架构辅助 |
 | `raw-cpuid` | 读取 APIC 与频率信息 |
 | `x86_rtc` | `rtc` 打开时提供墙钟 |
-| `percpu` | 多核与局部状态配合 |
-| `int_ratio` / `lazyinit` / `kspin` | 时间换算、全局对象初始化与锁 |
+| `ax-percpu` | 多核与局部状态配合 |
+| `int_ratio` / `ax-lazyinit` / `ax-kspin` | 时间换算、全局对象初始化与锁 |
 | `log` | 启动和调试日志 |
 
 ### 3.2 主要消费者
@@ -177,7 +177,7 @@ flowchart TD
 ```mermaid
 graph TD
     A[multiboot / x2apic / x86 / x86_64 / uart_16550] --> B[axplat-x86-qemu-q35]
-    C[axplat / axcpu / percpu / int_ratio / lazyinit / kspin] --> B
+    C[axplat / ax-cpu / ax-percpu / int_ratio / ax-lazyinit / ax-kspin] --> B
     B --> D[Axvisor]
     D --> E[x86_64 Q35 宿主环境]
 ```
@@ -226,7 +226,7 @@ AXVISOR_SMP=4 cargo build -p axplat-x86-qemu-q35 --target x86_64-unknown-none
 
 ### 5.2 推荐测试矩阵
 
-- 启动冒烟：验证 `_start -> axplat::call_main()`。
+- 启动冒烟：验证 `_start -> ax_plat::call_main()`。
 - 串口验证：确认 COM1 在最早期即可输出。
 - 内存验证：确认 Multiboot RAM 解析和低 2 MiB 保留语义。
 - IRQ 验证：确认 IOAPIC 外部中断、LAPIC timer 和 IPI 三条路径。
@@ -244,7 +244,7 @@ AXVISOR_SMP=4 cargo build -p axplat-x86-qemu-q35 --target x86_64-unknown-none
 
 | 项目 | 位置 | 角色 | 核心作用 |
 | --- | --- | --- | --- |
-| ArceOS | 当前无仓库内直接接入 | 潜在 x86 平台包 | 若未来要接入 ArceOS，需要额外完成 `axhal` 平台链路整合；当前并不是默认 x86 平台 |
+| ArceOS | 当前无仓库内直接接入 | 潜在 x86 平台包 | 若未来要接入 ArceOS，需要额外完成 `ax-hal` 平台链路整合；当前并不是默认 x86 平台 |
 | StarryOS | 当前无仓库内直接接入 | 潜在宿主平台基础 | 目前仓库中没有直接依赖，也不是 StarryOS 默认平台路径 |
 | Axvisor | x86_64 宿主默认平台之一 | 宿主板级平台包 | 直接承担 Multiboot、串口、内存、APIC、时间和多核 bring-up，但不承担 VMX/EPT 等虚拟化核心职责 |
 

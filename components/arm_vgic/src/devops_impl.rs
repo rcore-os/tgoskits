@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use ax_errno::AxResult;
 use axaddrspace::{
     GuestPhysAddrRange,
     device::{AccessWidth, DeviceAddrRange},
 };
 use axdevice_base::{BaseDeviceOps, EmuDeviceType};
-use axerrno::AxResult;
 
 use crate::vgic::Vgic;
 

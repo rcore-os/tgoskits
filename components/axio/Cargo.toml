@@ -1,22 +1,20 @@
 [package]
-name = "axio"
-version = "0.3.0-pre.1"
+name = "ax-io"
+version = "0.5.0"
+repository = "https://github.com/rcore-os/tgoskits"
 edition = "2024"
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "`std::io` for `no_std` environment"
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
-homepage = "https://github.com/arceos-org/arceos"
-repository = "https://github.com/arceos-org/axio"
-documentation = "https://docs.rs/axio"
 keywords = ["arceos", "io", "no-std"]
 categories = ["no-std"]
+license = "Apache-2.0"
 
 [features]
 alloc = []
 default = []
 
 [dependencies]
-axerrno = "0.2"
+ax-errno = "0.4.2"
 heapless = "0.9"
 memchr = { version = "2", default-features = false }
 

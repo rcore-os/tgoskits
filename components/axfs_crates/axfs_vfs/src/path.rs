@@ -10,7 +10,7 @@ use alloc::string::String;
 /// # Examples
 ///
 /// ```
-/// use axfs_vfs::path::canonicalize;
+/// use ax_fs_vfs::path::canonicalize;
 ///
 /// assert_eq!(canonicalize("/path/./to//foo"), "/path/to/foo");
 /// assert_eq!(canonicalize("/./path/to/../bar.rs"), "/path/bar.rs");

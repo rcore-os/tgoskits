@@ -1,20 +1,19 @@
 [package]
-name = "axipi"
+name = "ax-ipi"
 version.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Keyang Hu <keyang.hu@qq.com>"]
 description = "ArceOS IPI management module"
 license.workspace = true
-homepage.workspace = true
-repository = "https://github.com/arceos-org/arceos/tree/main/modules/axipi"
 
 [features]
 default = []
 
 [dependencies]
-axconfig.workspace = true
-axhal = { workspace = true, features = ["ipi"] }
-kspin.workspace = true
-lazyinit.workspace = true
+ax-config.workspace = true
+ax-hal = { workspace = true, features = ["ipi"] }
+ax-kspin.workspace = true
+ax-lazyinit.workspace = true
 log.workspace = true
-percpu.workspace = true
+ax-percpu.workspace = true

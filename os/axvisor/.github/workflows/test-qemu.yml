@@ -111,12 +111,12 @@ jobs:
           if [ "${{ matrix.vmconfigs_name }}" = "NimbOS" ]; then
             python3 scripts/ci_run_qemu_nimbos.py -- \
               cargo xtask qemu \
-              --build-config configs/board/qemu-${{ matrix.arch }}.toml \
+              --config configs/board/qemu-${{ matrix.arch }}.toml \
               --qemu-config .github/workflows/qemu-${{ matrix.arch }}.toml \
               --vmconfigs ${{ matrix.vmconfigs }}
           else
             cargo xtask qemu \
-              --build-config configs/board/qemu-${{ matrix.arch }}.toml \
+              --config configs/board/qemu-${{ matrix.arch }}.toml \
               --qemu-config .github/workflows/qemu-${{ matrix.arch }}.toml \
               --vmconfigs ${{ matrix.vmconfigs }}
           fi

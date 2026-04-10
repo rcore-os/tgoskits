@@ -15,15 +15,14 @@
 use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::Ordering;
 
-use std::os::arceos::modules::axhal;
-
 use alloc::boxed::Box;
-use kspin::SpinNoIrq;
-use lazyinit::LazyInit;
-use timer_list::{TimeValue, TimerEvent, TimerList};
+use ax_hal;
+use ax_kspin::SpinNoIrq;
+use ax_lazyinit::LazyInit;
+use ax_timer_list::{TimeValue, TimerEvent, TimerList};
 
 static TOKEN: AtomicUsize = AtomicUsize::new(0);
-// const PERIODIC_INTERVAL_NANOS: u64 = axhal::time::NANOS_PER_SEC / axconfig::TICKS_PER_SEC as u64;
+// const PERIODIC_INTERVAL_NANOS: u64 = ax_hal::time::NANOS_PER_SEC / ax_config::TICKS_PER_SEC as u64;
 
 /// Represents a timer event in the virtual machine monitor (VMM).
 ///
@@ -54,7 +53,7 @@ impl TimerEvent for VmmTimerEvent {
     }
 }
 
-#[percpu::def_percpu]
+#[ax_percpu::def_percpu]
 static TIMER_LIST: LazyInit<SpinNoIrq<TimerList<VmmTimerEvent>>> = LazyInit::new();
 
 /// Registers a new timer that will execute at the specified deadline
@@ -96,10 +95,10 @@ pub fn cancel_timer(token: usize) {
 /// Check and process any pending timer events
 pub fn check_events() {
     // info!("Checking timer events...");
-    // info!("now is {:#?}", axhal::time::wall_time());
+    // info!("now is {:#?}", ax_hal::time::wall_time());
     let timer_list = unsafe { TIMER_LIST.current_ref_mut_raw() };
     loop {
-        let now = axhal::time::wall_time();
+        let now = ax_hal::time::wall_time();
         let event = timer_list.lock().expire_one(now);
         if let Some((_deadline, event)) = event {
             trace!("pick one {_deadline:#?} to handle!!!");
@@ -113,10 +112,10 @@ pub fn check_events() {
 // /// Schedule the next timer event based on the periodic interval
 // pub fn scheduler_next_event() {
 //     trace!("Scheduling next event...");
-//     let now_ns = axhal::time::monotonic_time_nanos();
+//     let now_ns = ax_hal::time::monotonic_time_nanos();
 //     let deadline = now_ns + PERIODIC_INTERVAL_NANOS;
 //     debug!("PHY deadline {} !!!", deadline);
-//     axhal::time::set_oneshot_timer(deadline);
+//     ax_hal::time::set_oneshot_timer(deadline);
 // }
 
 /// Initialize the hypervisor timer system

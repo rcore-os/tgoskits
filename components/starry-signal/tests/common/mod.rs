@@ -3,8 +3,8 @@ use std::{
     sync::{Arc, LazyLock, Mutex, MutexGuard},
 };
 
+use ax_kspin::SpinNoIrq;
 use extern_trait::extern_trait;
-use kspin::SpinNoIrq;
 use starry_signal::api::{ProcessSignalManager, SignalActions, ThreadSignalManager};
 use starry_vm::{VmError, VmIo, VmResult};
 

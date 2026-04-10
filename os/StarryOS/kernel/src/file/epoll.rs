@@ -18,11 +18,11 @@ use core::{
     task::{Context, Waker},
 };
 
-use axerrno::{AxError, AxResult};
+use ax_errno::{AxError, AxResult};
+use ax_kspin::SpinNoPreempt;
 use axpoll::{IoEvents, PollSet, Pollable};
 use bitflags::bitflags;
 use hashbrown::HashMap;
-use kspin::SpinNoPreempt;
 use linux_raw_sys::general::{EPOLLET, EPOLLONESHOT, epoll_event};
 
 use crate::file::{FileLike, get_file_like};

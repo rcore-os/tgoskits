@@ -1,9 +1,9 @@
 use core::ffi::c_int;
 
 #[cfg(feature = "select")]
-use arceos_posix_api::sys_select;
+use ax_posix_api::sys_select;
 #[cfg(feature = "epoll")]
-use arceos_posix_api::{sys_epoll_create, sys_epoll_ctl, sys_epoll_wait};
+use ax_posix_api::{sys_epoll_create, sys_epoll_ctl, sys_epoll_wait};
 
 use crate::{ctypes, utils::e};
 

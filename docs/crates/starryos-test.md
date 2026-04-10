@@ -26,7 +26,7 @@
 - `xtask/src/starry/build.rs` 把测试包名固定为 `STARRY_TEST_PACKAGE = "starryos-test"`。
 - `scripts/axbuild/src/starry/mod.rs::Starry::test_qemu()` 会构造测试请求并强制 `package = "starryos-test"`。
 - `xtask/src/starry/run.rs` 在包名等于 `starryos-test` 时使用 `RunScope::PackageRoot`。
-- `xtask/src/starry/config.rs` 通过 `cargo build -p starryos-test --target ... --features qemu` 解析测试产物目录和 `disk.img` 位置。
+- `xtask/src/starry/config.rs` 通过 `cargo build -p starryos-test --target ... --features qemu` 解析测试产物目录和 `rootfs-<arch>.img` 位置。
 
 也就是说，测试入口之所以独立，不是为了换一套运行时代码，而是为了换一条受控的测试构建/运行通道。
 
@@ -103,13 +103,13 @@ cargo xtask starry run --arch riscv64 --package starryos-test
 ## 3. 依赖关系图谱
 ```mermaid
 graph LR
-    axfeat["axfeat"] --> test["starryos-test"]
+    ax-feat["ax-feat"] --> test["starryos-test"]
     kernel["starry-kernel"] --> test
     vf2["axplat-riscv64-visionfive2 (optional)"] --> test
 ```
 
 ### 3.1 关键直接依赖
-- `axfeat`：提供底层平台、驱动和运行时装配。
+- `ax-feat`：提供底层平台、驱动和运行时装配。
 - `starry-kernel`：真正执行系统 bring-up。
 - `axplat-riscv64-visionfive2`：在 `vf2` feature 下可选引入。
 

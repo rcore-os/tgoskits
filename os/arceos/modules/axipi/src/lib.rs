@@ -6,12 +6,12 @@
 extern crate log;
 extern crate alloc;
 
-use axhal::{
+use ax_hal::{
     irq::{IPI_IRQ, IpiTarget},
     percpu::this_cpu_id,
 };
-use kspin::SpinNoIrq;
-use lazyinit::LazyInit;
+use ax_kspin::SpinNoIrq;
+use ax_lazyinit::LazyInit;
 
 mod event;
 mod queue;
@@ -19,7 +19,7 @@ mod queue;
 pub use event::{Callback, MulticastCallback};
 use queue::IpiEventQueue;
 
-#[percpu::def_percpu]
+#[ax_percpu::def_percpu]
 static IPI_EVENT_QUEUE: LazyInit<SpinNoIrq<IpiEventQueue>> = LazyInit::new();
 
 /// Initialize the per-CPU IPI event queue.
@@ -39,7 +39,7 @@ pub fn run_on_cpu<T: Into<Callback>>(dest_cpu: usize, callback: T) {
         unsafe { IPI_EVENT_QUEUE.remote_ref_raw(dest_cpu) }
             .lock()
             .push(this_cpu_id(), callback.into());
-        axhal::irq::send_ipi(IPI_IRQ, IpiTarget::Other { cpu_id: dest_cpu });
+        ax_hal::irq::send_ipi(IPI_IRQ, IpiTarget::Other { cpu_id: dest_cpu });
     }
 }
 
@@ -47,7 +47,7 @@ pub fn run_on_cpu<T: Into<Callback>>(dest_cpu: usize, callback: T) {
 pub fn run_on_each_cpu<T: Into<MulticastCallback>>(callback: T) {
     info!("Send IPI event to all other CPUs");
     let current_cpu_id = this_cpu_id();
-    let cpu_num = axconfig::plat::MAX_CPU_NUM;
+    let cpu_num = ax_config::plat::MAX_CPU_NUM;
     let callback = callback.into();
 
     // Execute callback on current CPU immediately
@@ -61,7 +61,7 @@ pub fn run_on_each_cpu<T: Into<MulticastCallback>>(callback: T) {
         }
     }
     // Send IPI to all other CPUs to trigger their callbacks
-    axhal::irq::send_ipi(
+    ax_hal::irq::send_ipi(
         IPI_IRQ,
         IpiTarget::AllExceptCurrent {
             cpu_id: current_cpu_id,

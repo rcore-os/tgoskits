@@ -1,6 +1,6 @@
 use crate::io::AxPollState;
-use axerrno::AxResult;
-use axnet::{UdpSocket, TcpSocket};
+use ax_errno::AxResult;
+use ax_net::{UdpSocket, TcpSocket};
 use core::net::{IpAddr, SocketAddr};
 
 /// A handle to a TCP socket.
@@ -122,10 +122,10 @@ pub fn ax_udp_poll(socket: &AxUdpSocketHandle) -> AxResult<AxPollState> {
 ////////////////////////////////////////////////////////////////////////////////
 
 pub fn ax_dns_query(domain_name: &str) -> AxResult<alloc::vec::Vec<IpAddr>> {
-    axnet::dns_query(domain_name)
+    ax_net::dns_query(domain_name)
 }
 
 pub fn ax_poll_interfaces() -> AxResult {
-    axnet::poll_interfaces();
+    ax_net::poll_interfaces();
     Ok(())
 }

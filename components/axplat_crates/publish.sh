@@ -109,23 +109,23 @@ echo ""
 echo "Step 2: Publishing platform-specific crates with appropriate targets..."
 echo "-----------------------------------------------------------------------"
 
-# 3. Publish axplat-aarch64-peripherals (depends on axplat, needs aarch64 target)
-publish_crate "axplat-aarch64-peripherals" "platforms/axplat-aarch64-peripherals" "${AARCH64_TARGET}"
+# 3. Publish ax-plat-aarch64-peripherals (depends on axplat, needs aarch64 target)
+publish_crate "ax-plat-aarch64-peripherals" "platforms/axplat-aarch64-peripherals" "${AARCH64_TARGET}"
 
-# 4. Publish aarch64 platform crates (all depend on axplat-aarch64-peripherals)
+# 4. Publish aarch64 platform crates (all depend on ax-plat-aarch64-peripherals)
 publish_crate "axplat-aarch64-qemu-virt" "platforms/axplat-aarch64-qemu-virt" "${AARCH64_TARGET}"
 publish_crate "axplat-aarch64-raspi" "platforms/axplat-aarch64-raspi" "${AARCH64_TARGET}"
 publish_crate "axplat-aarch64-bsta1000b" "platforms/axplat-aarch64-bsta1000b" "${AARCH64_TARGET}"
 publish_crate "axplat-aarch64-phytium-pi" "platforms/axplat-aarch64-phytium-pi" "${AARCH64_TARGET}"
 
 # 5. Publish x86_64 platform crate
-publish_crate "axplat-x86-pc" "platforms/axplat-x86-pc" "${X86_64_TARGET}"
+publish_crate "ax-plat-x86-pc" "platforms/axplat-x86-pc" "${X86_64_TARGET}"
 
 # 6. Publish riscv64 platform crate
-publish_crate "axplat-riscv64-qemu-virt" "platforms/axplat-riscv64-qemu-virt" "${RISCV64_TARGET}"
+publish_crate "ax-plat-riscv64-qemu-virt" "platforms/axplat-riscv64-qemu-virt" "${RISCV64_TARGET}"
 
 # 7. Publish loongarch64 platform crate
-publish_crate "axplat-loongarch64-qemu-virt" "platforms/axplat-loongarch64-qemu-virt" "${LOONGARCH64_TARGET}"
+publish_crate "ax-plat-loongarch64-qemu-virt" "platforms/axplat-loongarch64-qemu-virt" "${LOONGARCH64_TARGET}"
 
 echo ""
 echo "=========================================="

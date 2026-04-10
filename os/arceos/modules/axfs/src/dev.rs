@@ -16,7 +16,7 @@
 
 use alloc::sync::Arc;
 
-use axdriver::prelude::*;
+use ax_driver::prelude::*;
 use spin::Mutex;
 
 const BLOCK_SIZE: usize = 512;

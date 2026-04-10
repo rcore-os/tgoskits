@@ -15,9 +15,9 @@
 use x86::bits64::vmx;
 use x86_64::registers::control::{Cr0, Cr4, Cr4Flags};
 
-use axerrno::{AxResult, ax_err, ax_err_type};
+use ax_errno::{AxResult, ax_err, ax_err_type};
 use axvcpu::AxArchPerCpu;
-use memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
+use ax_memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
 
 use crate::msr::Msr;
 use crate::vmx::has_hardware_support;

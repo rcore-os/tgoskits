@@ -69,7 +69,7 @@ impl Drop for Scope {
 
 static GLOBAL_SCOPE: Lazy<Scope> = Lazy::new(Scope::new);
 
-#[percpu::def_percpu]
+#[ax_percpu::def_percpu]
 pub(crate) static ACTIVE_SCOPE_PTR: usize = 0;
 
 /// Currently active scope.

@@ -25,7 +25,7 @@ extern crate log;
 use alloc::{string::String, vec::Vec};
 use core::fmt::{Display, Formatter};
 
-use axerrno::AxResult;
+use ax_errno::AxResult;
 use enumerable::Enumerable;
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
@@ -405,7 +405,7 @@ impl AxVMCrateConfig {
     pub fn from_toml(raw_cfg_str: &str) -> AxResult<Self> {
         let config: AxVMCrateConfig = toml::from_str(raw_cfg_str).map_err(|err| {
             warn!("Config TOML parse error {:?}", err.message());
-            axerrno::ax_err_type!(InvalidInput, alloc::format!("Error details {err:?}"))
+            ax_errno::ax_err_type!(InvalidInput, alloc::format!("Error details {err:?}"))
         })?;
         Ok(config)
     }

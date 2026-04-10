@@ -1,11 +1,11 @@
 use alloc::sync::Arc;
 use core::cell::OnceCell;
 
-use axdriver::AxBlockDevice;
+use ax_driver::AxBlockDevice;
+use ax_kspin::{SpinNoPreempt as Mutex, SpinNoPreemptGuard as MutexGuard};
 use axfs_ng_vfs::{
     DirEntry, DirNode, Filesystem, FilesystemOps, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
 };
-use kspin::{SpinNoPreempt as Mutex, SpinNoPreemptGuard as MutexGuard};
 use lwext4_rust::{FsConfig, ffi::EXT4_ROOT_INO};
 
 use super::{

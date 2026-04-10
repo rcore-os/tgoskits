@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use alloc::{collections::BTreeMap, vec::Vec};
-use cpumask::CpuMask;
+use ax_cpumask::CpuMask;
 
 use core::{
     cell::UnsafeCell,
@@ -23,13 +23,13 @@ use core::{
 use std::os::arceos::{
     api::task::{AxCpuMask, ax_wait_queue_wake},
     modules::{
-        axhal::{self, time::busy_wait},
-        axtask::{self, AxTaskExt},
+        ax_hal::{self, time::busy_wait},
+        ax_task::{self, AxTaskExt},
     },
 };
 
+use ax_task::{AxTaskRef, TaskInner, WaitQueue};
 use axaddrspace::GuestPhysAddr;
-use axtask::{AxTaskRef, TaskInner, WaitQueue};
 use axvcpu::{AxVCpuExitReason, VCpuState};
 
 use crate::{hal::arch::inject_interrupt, task::VCpuTask};
@@ -422,7 +422,7 @@ fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> AxTaskRef {
         vcpu_task.id_name(),
         vcpu_task.cpumask()
     );
-    axtask::spawn_task(vcpu_task)
+    ax_task::spawn_task(vcpu_task)
 }
 
 /// The main routine for VCpu task.
@@ -431,7 +431,7 @@ fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> AxTaskRef {
 /// When the VCpu first starts running, it waits for the VM to be in the running state.
 /// It then enters a loop where it runs the VCpu and handles the various exit reasons.
 fn vcpu_run() {
-    let curr = axtask::current();
+    let curr = ax_task::current();
 
     let vm = curr.as_vcpu_task().vm();
     let vcpu = curr.as_vcpu_task().vcpu.clone();
@@ -483,7 +483,7 @@ fn vcpu_run() {
                     debug!("VM[{vm_id}] run VCpu[{vcpu_id}] get irq {vector}");
 
                     // TODO: maybe move this irq dispatcher to lower layer to accelerate the interrupt handling
-                    axhal::irq::irq_handler(vector as usize);
+                    ax_hal::trap::irq_handler(vector as usize);
                     super::timer::check_events();
                 }
                 AxVCpuExitReason::Halt => {

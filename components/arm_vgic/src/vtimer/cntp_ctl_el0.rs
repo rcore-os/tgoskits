@@ -13,9 +13,9 @@
 // limitations under the License.
 
 use aarch64_sysreg::SystemRegType;
+use ax_errno::AxResult;
 use axaddrspace::device::{AccessWidth, DeviceAddrRange, SysRegAddr, SysRegAddrRange};
 use axdevice_base::{BaseDeviceOps, EmuDeviceType};
-use axerrno::AxResult;
 use log::info;
 
 impl BaseDeviceOps<SysRegAddrRange> for SysCntpCtlEl0 {

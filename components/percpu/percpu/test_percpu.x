@@ -1,9 +1,9 @@
 /* Newer linkers prohibit VMA lower than image base (typically 0x20_0000), even
- * for NOLOAD sections. So we place the percpu section at a high VMA which does
+ * for NOLOAD sections. So we place the ax-percpu section at a high VMA which does
  * not overlap with other sections. This address is chosen arbitrarily, but it's
  * okay as it's never actually used.
  *
- * This is ONLY necessary for test_percpu.x, normal kernels SHOULD place percpu
+ * This is ONLY necessary for test_percpu.x, normal kernels SHOULD place ax-percpu
  * sections in their linker scripts with 0x0 VMA and no NOLOAD attribute as
  * before. See the linker script snippet used in ArceOS as an example:
  *

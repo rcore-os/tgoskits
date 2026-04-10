@@ -8,10 +8,10 @@ mod udp;
 use alloc::vec;
 use core::{cell::RefCell, ops::DerefMut};
 
-use axdriver::prelude::*;
-use axhal::time::{NANOS_PER_MICROS, wall_time_nanos};
-use axsync::Mutex;
-use lazyinit::LazyInit;
+use ax_driver::prelude::*;
+use ax_hal::time::{NANOS_PER_MICROS, wall_time_nanos};
+use ax_lazyinit::LazyInit;
+use ax_sync::Mutex;
 use smoltcp::{
     iface::{Config, Interface, SocketHandle, SocketSet},
     phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken},

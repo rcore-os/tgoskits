@@ -1,14 +1,14 @@
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 
-use axerrno::{AxError, AxResult};
-use axhal::{
+use ax_errno::{AxError, AxResult};
+use ax_hal::{
     paging::{MappingFlags, PageSize},
     time::monotonic_time_nanos,
 };
-use axsync::Mutex;
-use axtask::current;
+use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
+use ax_sync::Mutex;
+use ax_task::current;
 use linux_raw_sys::{ctypes::c_ushort, general::*};
-use memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use starry_process::Pid;
 
 use super::{IPC_PRIVATE, IPC_RMID, IPC_SET, IPC_STAT, IpcPerm, next_ipc_id};
@@ -100,7 +100,7 @@ impl ShmInner {
     pub fn new(key: i32, shmid: i32, size: usize, mapping_flags: MappingFlags, pid: Pid) -> Self {
         ShmInner {
             shmid,
-            page_num: memory_addr::align_up_4k(size) / PAGE_SIZE_4K,
+            page_num: ax_memory_addr::align_up_4k(size) / PAGE_SIZE_4K,
             va_range: BTreeMap::new(),
             phys_pages: None,
             rmid: false,
@@ -372,7 +372,7 @@ impl ShmManager {
 pub static SHM_MANAGER: Mutex<ShmManager> = Mutex::new(ShmManager::new());
 
 pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
-    let page_num = memory_addr::align_up_4k(size) / PAGE_SIZE_4K;
+    let page_num = ax_memory_addr::align_up_4k(size) / PAGE_SIZE_4K;
     if page_num == 0 {
         return Err(AxError::InvalidInput);
     }
@@ -437,7 +437,7 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> AxResult<isize> {
     let pid = proc_data.proc.pid();
     let mut aspace = proc_data.aspace.lock();
 
-    let start_aligned = memory_addr::align_down_4k(addr);
+    let start_aligned = ax_memory_addr::align_down_4k(addr);
     let length = shm_inner.page_num * PAGE_SIZE_4K;
 
     // alloc the virtual address range

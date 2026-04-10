@@ -1,6 +1,6 @@
 use core::fmt;
 
-use arceos_api::fs as api;
+use ax_api::fs as api;
 
 use crate::io::{Result, SeekFrom, prelude::*};
 

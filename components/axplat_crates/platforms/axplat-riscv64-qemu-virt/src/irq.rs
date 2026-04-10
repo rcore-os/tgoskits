@@ -4,13 +4,13 @@ use core::{
     sync::atomic::{AtomicPtr, Ordering},
 };
 
-use axplat::{
+use ax_kspin::SpinNoIrq;
+use ax_plat::{
     irq::{HandlerTable, IpiTarget, IrqHandler, IrqIf},
     percpu::this_cpu_id,
 };
-use kspin::SpinNoIrq;
+use ax_riscv_plic::Plic;
 use riscv::register::sie;
-use riscv_plic::Plic;
 use sbi_rt::HartMask;
 
 use crate::config::{devices::PLIC_PADDR, plat::PHYS_VIRT_OFFSET};
@@ -57,7 +57,13 @@ pub(super) fn init_percpu() {
 }
 
 macro_rules! with_cause {
-    ($cause: expr, @S_TIMER => $timer_op: expr, @S_SOFT => $ipi_op: expr, @S_EXT => $ext_op: expr, @EX_IRQ => $plic_op: expr $(,)?) => {
+    (
+        $cause:expr, @S_TIMER =>
+        $timer_op:expr, @S_SOFT =>
+        $ipi_op:expr, @S_EXT =>
+        $ext_op:expr, @EX_IRQ =>
+        $plic_op:expr $(,)?
+    ) => {
         match $cause {
             S_TIMER => $timer_op,
             S_SOFT => $ipi_op,

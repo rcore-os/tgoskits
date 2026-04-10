@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use axerrno::{AxError, AxResult};
+use ax_errno::{AxError, AxResult};
 use axvcpu::AxArchPerCpu;
 use riscv::register::sie;
 use riscv_h::register::{hedeleg, hideleg, hvip};

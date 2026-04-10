@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Lightweight declaration-macro companion crate `crate_interface_lite`.
+- Lightweight declaration-macro companion crate `ax-crate-interface-lite`.
 - `gen_caller` option in `def_interface`.
 - `namespace` option in `def_interface`, `impl_interface`, and `call_interface`.
 - Support for item attributes on interface methods.

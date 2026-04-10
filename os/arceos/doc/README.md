@@ -14,21 +14,21 @@ Modules are **OS-related** components that are tightly bound to the design princ
 
 Most of the modules are optional, depending on the features enabled by the application. A few modules are required by all applications, as shown below:
 
-* [axruntime](../modules/axruntime/): Bootstrapping from the bare-metal environment, and initialization.
-* [axhal](../modules/axhal/): Hardware abstraction layer, provides unified APIs for cross-platform.
+* [ax-runtime](../modules/axruntime/): Bootstrapping from the bare-metal environment, and initialization.
+* [ax-hal](../modules/axhal/): Hardware abstraction layer, provides unified APIs for cross-platform.
 * [axconfig](../modules/axconfig/): Platform constants and kernel parameters, such as physical memory base, kernel load addresses, stack size, etc.
-* [axlog](../modules/axlog/): Multi-level formatted logging.
+* [ax-log](../modules/axlog/): Multi-level formatted logging.
 
 Other optional modules and their corresponding features are as follows:
 
 | Modules | Dependent features | Description |
 |-|-|-|
-| [axalloc](../modules/axalloc) | alloc | ArceOS global memory allocator. |
-| [axdisplay](../modules/axdisplay) | display | ArceOS graphics module. |
-| [axfs](../modules/axfs) | fs | ArceOS filesystem module. |
-| [axnet](../modules/axnet) | net | ArceOS network module. |
+| [ax-alloc](../modules/axalloc) | alloc | ArceOS global memory allocator. |
+| [ax-display](../modules/axdisplay) | display | ArceOS graphics module. |
+| [ax-fs](../modules/axfs) | fs | ArceOS filesystem module. |
+| [ax-net](../modules/ax-net) | net | ArceOS network module. |
 | [axdriver](../modules/axdriver) | driver-*, fs, net, display | ArceOS device drivers. |
-| [axtask](../modules/axtask) | multitask | ArceOS task management module. |
+| [ax-task](../modules/axtask) | multitask | ArceOS task management module. |
 | [axsync](../modules/axsync) | multitask | ArceOS synchronization primitives. |
 
 See [arceos-apps](https://github.com/arceos-org/arceos-apps) for example applications and their required modules and features.
@@ -43,5 +43,5 @@ Documentation of ArceOS [modules](../modules), [api](../api), and [ulib](../ulib
 
 * [Rust std support](https://github.com/arceos-org/arceos/discussions/92)
 * [ArceOS for ARM64](https://github.com/arceos-org/arceos/discussions/101)
-* [ArceOS for RISCV Hardware](https://github.com/arceos-org/arceos/discussions/120)
+* [ArceOS for RISC-V Hardware](https://github.com/arceos-org/arceos/discussions/120)
 * [Per-CPU scheduling](https://github.com/arceos-org/arceos/discussions/181)

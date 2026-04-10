@@ -2,10 +2,9 @@
 //! attributes and the `call_interface!` macro.
 
 use syn::{
-    parenthesized,
+    Expr, Ident, Path, Result, Token, parenthesized,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
-    Expr, Ident, Path, Result, Token,
 };
 
 use crate::errors::{duplicate_arg_error, unknown_arg_error};

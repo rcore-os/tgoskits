@@ -1,6 +1,6 @@
-use axerrno::{AxError, AxResult};
-use axhal::time::TimeValue;
-use axtask::{
+use ax_errno::{AxError, AxResult};
+use ax_hal::time::TimeValue;
+use ax_task::{
     AxCpuMask, current,
     future::{block_on, interruptible, sleep},
 };
@@ -16,7 +16,7 @@ use crate::{
 };
 
 pub fn sys_sched_yield() -> AxResult<isize> {
-    axtask::yield_now();
+    ax_task::yield_now();
     Ok(0)
 }
 
@@ -38,7 +38,7 @@ pub fn sys_nanosleep(req: *const timespec, rem: *mut timespec) -> AxResult<isize
     let req = unsafe { req.vm_read_uninit()?.assume_init() }.try_into_time_value()?;
     debug!("sys_nanosleep <= req: {req:?}");
 
-    let actual = sleep_impl(axhal::time::monotonic_time, req);
+    let actual = sleep_impl(ax_hal::time::monotonic_time, req);
 
     if let Some(diff) = req.checked_sub(actual) {
         debug!("sys_nanosleep => rem: {diff:?}");
@@ -58,8 +58,8 @@ pub fn sys_clock_nanosleep(
     rem: *mut timespec,
 ) -> AxResult<isize> {
     let clock = match clock_id as u32 {
-        CLOCK_REALTIME => axhal::time::wall_time,
-        CLOCK_MONOTONIC => axhal::time::monotonic_time,
+        CLOCK_REALTIME => ax_hal::time::wall_time,
+        CLOCK_MONOTONIC => ax_hal::time::monotonic_time,
         _ => {
             warn!("Unsupported clock_id: {clock_id}");
             return Err(AxError::InvalidInput);
@@ -89,7 +89,7 @@ pub fn sys_clock_nanosleep(
 }
 
 pub fn sys_sched_getaffinity(pid: i32, cpusetsize: usize, user_mask: *mut u8) -> AxResult<isize> {
-    if cpusetsize * 8 < axhal::cpu_num() {
+    if cpusetsize * 8 < ax_hal::cpu_num() {
         return Err(AxError::InvalidInput);
     }
 
@@ -111,18 +111,18 @@ pub fn sys_sched_setaffinity(
     cpusetsize: usize,
     user_mask: *const u8,
 ) -> AxResult<isize> {
-    let size = cpusetsize.min(axhal::cpu_num().div_ceil(8));
+    let size = cpusetsize.min(ax_hal::cpu_num().div_ceil(8));
     let user_mask = vm_load(user_mask, size)?;
     let mut cpu_mask = AxCpuMask::new();
 
-    for i in 0..(size * 8).min(axhal::cpu_num()) {
+    for i in 0..(size * 8).min(ax_hal::cpu_num()) {
         if user_mask[i / 8] & (1 << (i % 8)) != 0 {
             cpu_mask.set(i, true);
         }
     }
 
     // TODO: support other threads
-    axtask::set_current_affinity(cpu_mask);
+    ax_task::set_current_affinity(cpu_mask);
 
     Ok(0)
 }

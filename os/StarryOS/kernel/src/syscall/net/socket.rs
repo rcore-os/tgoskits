@@ -1,4 +1,5 @@
-use axerrno::{AxError, AxResult, LinuxError};
+use ax_errno::{AxError, AxResult, LinuxError};
+use ax_task::current;
 #[cfg(feature = "vsock")]
 use axnet::vsock::{VsockSocket, VsockStreamTransport};
 use axnet::{
@@ -7,7 +8,6 @@ use axnet::{
     udp::UdpSocket,
     unix::{DgramTransport, StreamTransport, UnixSocket},
 };
-use axtask::current;
 use linux_raw_sys::{
     general::{O_CLOEXEC, O_NONBLOCK},
     net::{

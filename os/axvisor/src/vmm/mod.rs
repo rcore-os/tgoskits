@@ -21,16 +21,16 @@ pub mod timer;
 pub mod vcpus;
 pub mod vm_list;
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub mod fdt;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::os::arceos::{
     api::task::{self, AxWaitQueueHandle},
-    modules::axtask,
+    modules::ax_task,
 };
 
-use axerrno::{AxResult, ax_err_type};
+use ax_errno::{AxResult, ax_err_type};
 
 use crate::task::AsVCpuTask;
 pub use timer::init_percpu as init_timer_percpu;
@@ -55,7 +55,7 @@ pub fn init() {
     // Initialize guest VM according to config file.
     config::init_guest_vms();
 
-    // Setup vcpus, spawn axtask for primary VCpu.
+    // Setup vCPUs, spawn an ax-task for the primary vCPU.
     info!("Setting up vcpus...");
     for vm in vm_list::get_vm_list() {
         vcpus::setup_vm_primary_vcpu(vm);
@@ -119,10 +119,10 @@ pub fn with_vm_and_vcpu_on_pcpu(
     f: impl FnOnce(VMRef, VCpuRef) + 'static,
 ) -> AxResult {
     // Disables preemption and IRQs to prevent the current task from being preempted or re-scheduled.
-    let guard = kernel_guard::NoPreemptIrqSave::new();
+    let guard = ax_kernel_guard::NoPreemptIrqSave::new();
 
-    let current_vm = axtask::current().as_vcpu_task().vm().id();
-    let current_vcpu = axtask::current().as_vcpu_task().vcpu.id();
+    let current_vm = ax_task::current().as_vcpu_task().vm().id();
+    let current_vcpu = ax_task::current().as_vcpu_task().vcpu.id();
 
     // The target vCPU is the current task, execute the closure directly.
     if current_vm == vm_id && current_vcpu == vcpu_id {
@@ -138,7 +138,7 @@ pub fn with_vm_and_vcpu_on_pcpu(
 
     unimplemented!();
     // use std::os::arceos::modules::axipi;
-    // Ok(axipi::send_ipi_event_to_one(pcpu_id as usize, move || {
+    // Ok(ax_ipi::send_ipi_event_to_one(pcpu_id as usize, move || {
     // with_vm_and_vcpu_on_pcpu(vm_id, vcpu_id, f);
     // }))
 }

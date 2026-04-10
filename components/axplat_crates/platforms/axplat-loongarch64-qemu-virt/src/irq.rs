@@ -1,4 +1,4 @@
-use axplat::irq::{HandlerTable, IpiTarget, IrqHandler, IrqIf};
+use ax_plat::irq::{HandlerTable, IpiTarget, IrqHandler, IrqIf};
 use loongArch64::{
     iocsr::{iocsr_read_w, iocsr_write_w},
     register::{

@@ -1,7 +1,7 @@
 use alloc::{borrow::Cow, format, sync::Arc};
 use core::{ffi::c_int, ops::Deref, task::Context};
 
-use axerrno::{AxError, AxResult};
+use ax_errno::{AxError, AxResult};
 use axnet::{
     RecvOptions, SendOptions, Socket as SocketInner, SocketOps,
     options::{Configurable, GetSocketOption, SetSocketOption},

@@ -1,23 +1,22 @@
 [package]
-name = "axmm"
+name = "ax-mm"
 version.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "ArceOS virtual memory management module"
 license.workspace = true
-homepage.workspace = true
-repository = "https://github.com/arceos-org/arceos/tree/main/modules/axmm"
 
 [features]
-copy = ["page_table_multiarch/copy-from"]
+copy = ["ax-page-table-multiarch/copy-from"]
 
 [dependencies]
-axalloc.workspace = true
-axerrno.workspace = true
-axhal = { workspace = true, features = ["paging"] }
-kspin.workspace = true
-lazyinit.workspace = true
+ax-alloc.workspace = true
+ax-errno.workspace = true
+ax-hal = { workspace = true, features = ["paging"] }
+ax-kspin.workspace = true
+ax-lazyinit.workspace = true
 log.workspace = true
-memory_addr.workspace = true
-memory_set = { version = "0.4", features = ["axerrno"] }
-page_table_multiarch = { workspace = true, optional = true }
+ax-memory-addr.workspace = true
+ax-memory-set = { version = "0.6.1", features = ["ax-errno"] }
+ax-page-table-multiarch = { workspace = true, optional = true }

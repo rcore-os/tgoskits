@@ -1,6 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use axerrno::{AxError, AxResult};
+use ax_errno::{AxError, AxResult};
 use linux_raw_sys::net::{SCM_RIGHTS, SOL_SOCKET, cmsghdr};
 
 use crate::{

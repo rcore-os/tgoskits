@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use kspin::SpinNoIrq;
+use ax_kspin::SpinNoIrq;
 use starry_signal::{
     SignalActionFlags, SignalDisposition, SignalInfo, Signo,
     api::{ProcessSignalManager, SignalActions, ThreadSignalManager},

@@ -1,7 +1,7 @@
 use core::ffi::c_int;
 
-use axerrno::{LinuxError, LinuxResult};
-use axhal::time::wall_time;
+use ax_errno::{LinuxError, LinuxResult};
+use ax_hal::time::wall_time;
 
 use crate::{ctypes, imp::fd_ops::get_file_like};
 
@@ -135,7 +135,7 @@ pub unsafe fn sys_select(
 
         loop {
             #[cfg(feature = "net")]
-            axnet::poll_interfaces();
+            ax_net::poll_interfaces();
             let res = fd_sets.poll_all(readfds, writefds, exceptfds)?;
             if res > 0 {
                 return Ok(res);

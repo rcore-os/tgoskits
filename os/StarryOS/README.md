@@ -1,11 +1,17 @@
-# Starry OS
+<h1 align="center">StarryOS</h1>
 
-*An experimental monolithic OS based on ArceOS*
+<p align="center">An experimental monolithic OS based on ArceOS</p>
+
+<div align="center">
 
 [![GitHub Stars](https://img.shields.io/github/stars/Starry-OS/StarryOS?style=for-the-badge)](https://github.com/Starry-OS/StarryOS/stargazers)
 [![GitHub Forks](https://img.shields.io/github/forks/Starry-OS/StarryOS?style=for-the-badge)](https://github.com/Starry-OS/StarryOS/network)
 [![GitHub License](https://img.shields.io/github/license/Starry-OS/StarryOS?style=for-the-badge)](https://github.com/Starry-OS/StarryOS/blob/main/LICENSE)
 [![Build status](https://img.shields.io/github/check-runs/Starry-OS/StarryOS/main?style=for-the-badge)](https://github.com/Starry-OS/StarryOS/actions)
+
+</div>
+
+English | [中文](README_CN.md)
 
 ## Supported Architectures
 

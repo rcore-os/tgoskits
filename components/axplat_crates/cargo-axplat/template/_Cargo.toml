@@ -1,12 +1,12 @@
 [package]
-name = "axplat-example" # to be overwritten
+name = "ax-plat-example" # to be overwritten
 version = "0.2.0"       # to be overwritten
 edition = "2021"        # to be overwritten
 
 [features]
-irq = ["axplat/irq"]
-smp = ["axplat/smp"]
+irq = ["ax-plat/irq"]
+smp = ["ax-plat/smp"]
 
 [dependencies]
-axconfig-macros = "0.2"
-axplat = "0.3"
+ax-config-macros = "0.2"
+ax-plat = "0.3"

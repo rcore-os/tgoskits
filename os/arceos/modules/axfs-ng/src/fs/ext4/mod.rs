@@ -3,7 +3,7 @@ mod inode;
 mod util;
 
 #[allow(unused_imports)]
-use axdriver::{AxBlockDevice, prelude::BlockDriverOps};
+use ax_driver::{AxBlockDevice, prelude::BlockDriverOps};
 pub use fs::*;
 pub use inode::*;
 use lwext4_rust::{BlockDevice, Ext4Error, Ext4Result, ffi::EIO};

@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use ax_errno::{AxResult, ax_err, ax_err_type};
 use axaddrspace::{GuestPhysAddr, MappingFlags};
-use axerrno::{AxResult, ax_err, ax_err_type};
 use axhvc::{HyperCallCode, HyperCallResult};
 
 use crate::vmm::ivc::{self, IVCChannel};

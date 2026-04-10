@@ -8,23 +8,20 @@ mod dma;
 
 use core::{alloc::Layout, ptr::NonNull};
 
-#[cfg(not(feature = "buddy-slab"))]
-use axallocator::AllocResult;
-#[cfg(feature = "buddy-slab")]
-use buddy_slab_allocator::AllocResult;
-use memory_addr::PhysAddr;
+use ax_alloc::AllocResult;
+use ax_memory_addr::PhysAddr;
 
 use self::dma::ALLOCATOR;
 
 /// Converts a physical address to a bus address.
 ///
 /// It assumes that there is a linear mapping with the offset
-/// [`axconfig::plat::PHYS_BUS_OFFSET`], that maps all the physical memory
+/// [`ax_config::plat::PHYS_BUS_OFFSET`], that maps all the physical memory
 /// to the virtual space at the address plus the offset. So we have
 /// `baddr = paddr + PHYS_BUS_OFFSET`.
 #[inline]
 pub const fn phys_to_bus(paddr: PhysAddr) -> BusAddr {
-    BusAddr::new((paddr.as_usize() + axconfig::plat::PHYS_BUS_OFFSET) as u64)
+    BusAddr::new((paddr.as_usize() + ax_config::plat::PHYS_BUS_OFFSET) as u64)
 }
 
 /// Allocates **coherent** memory that meets Direct Memory Access (DMA)

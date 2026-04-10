@@ -1,6 +1,6 @@
 use core::bstr::ByteStr;
 
-use axerrno::LinuxResult;
+use ax_errno::LinuxResult;
 use axnet::{
     RecvOptions, SocketAddrEx, SocketOps,
     unix::{DgramTransport, UnixSocket, UnixSocketAddr},
@@ -9,7 +9,7 @@ use axnet::{
 pub fn bind_dev_log() -> LinuxResult<()> {
     let server = UnixSocket::new(DgramTransport::new(1));
     server.bind(SocketAddrEx::Unix(UnixSocketAddr::Path("/dev/log".into())))?;
-    axtask::spawn_with_name(
+    ax_task::spawn_with_name(
         move || {
             let mut buf = [0u8; 65536];
             loop {

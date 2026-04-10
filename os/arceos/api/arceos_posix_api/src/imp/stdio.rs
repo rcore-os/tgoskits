@@ -1,11 +1,11 @@
-use axerrno::AxResult;
-use axio::{BufReader, prelude::*};
-use axsync::Mutex;
+use ax_errno::AxResult;
+use ax_io::{BufReader, prelude::*};
+use ax_sync::Mutex;
 #[cfg(feature = "fd")]
-use {alloc::sync::Arc, axerrno::LinuxError, axerrno::LinuxResult, axio::PollState};
+use {alloc::sync::Arc, ax_errno::LinuxError, ax_errno::LinuxResult, ax_io::PollState};
 
 fn console_read_bytes(buf: &mut [u8]) -> AxResult<usize> {
-    let len = axhal::console::read_bytes(buf);
+    let len = ax_hal::console::read_bytes(buf);
     for c in &mut buf[..len] {
         if *c == b'\r' {
             *c = b'\n';
@@ -15,7 +15,7 @@ fn console_read_bytes(buf: &mut [u8]) -> AxResult<usize> {
 }
 
 fn console_write_bytes(buf: &[u8]) -> AxResult<usize> {
-    axhal::console::write_bytes(buf);
+    ax_hal::console::write_bytes(buf);
     Ok(buf.len())
 }
 

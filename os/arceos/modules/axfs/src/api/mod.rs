@@ -19,7 +19,7 @@ mod file;
 
 use alloc::{string::String, vec::Vec};
 
-use axio::{self as io, prelude::*};
+use ax_io::{self as io, prelude::*};
 
 pub use self::{
     dir::{DirBuilder, DirEntry, ReadDir},

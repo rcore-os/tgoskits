@@ -1,6 +1,6 @@
 use core::{arch::naked_asm, fmt};
 
-use memory_addr::VirtAddr;
+use ax_memory_addr::VirtAddr;
 
 /// Saved registers when a trap (interrupt or exception) occurs.
 #[allow(missing_docs)]
@@ -247,7 +247,7 @@ pub struct TaskContext {
     pub ext_state: ExtendedState,
     /// The `CR3` register value, i.e., the page table root.
     #[cfg(feature = "uspace")]
-    pub cr3: memory_addr::PhysAddr,
+    pub cr3: ax_memory_addr::PhysAddr,
 }
 
 impl TaskContext {
@@ -297,7 +297,7 @@ impl TaskContext {
     /// The hardware register for page table root (`CR3` for x86) will be
     /// updated to the next task's after [`Self::switch_to`].
     #[cfg(feature = "uspace")]
-    pub fn set_page_table_root(&mut self, cr3: memory_addr::PhysAddr) {
+    pub fn set_page_table_root(&mut self, cr3: ax_memory_addr::PhysAddr) {
         self.cr3 = cr3;
     }
 
