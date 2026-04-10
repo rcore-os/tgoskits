@@ -219,7 +219,7 @@ pub fn set_current_affinity(cpumask: AxCpuMask) -> bool {
 pub fn yield_now() {
     might_sleep();
 
-    yield_now_kernel();
+    yield_now_unchecked();
 }
 
 /// Gives up the CPU from a kernel-internal path.
@@ -228,7 +228,7 @@ pub fn yield_now() {
 /// carefully reviewed scheduler or syscall paths that must yield while running
 /// under internal kernel guards.
 #[doc(hidden)]
-pub fn yield_now_kernel() {
+pub fn yield_now_unchecked() {
     current_run_queue::<NoPreemptIrqSave>().yield_current()
 }
 
@@ -293,15 +293,12 @@ pub(crate) fn in_atomic_context() -> bool {
 /// Panics if it is executed in an atomic context.
 #[track_caller]
 pub(crate) fn might_sleep() {
-    #[cfg(feature = "irq")]
-    let irqs_enabled = ax_hal::asm::irqs_enabled();
-    #[cfg(not(feature = "irq"))]
-    let irqs_enabled = true;
-    let preempt_count = current_preempt_count();
     if in_atomic_context() {
         panic!(
-            "sleeping or rescheduling is not allowed in atomic context: \
-             irq_enabled={irqs_enabled}, preempt_count={preempt_count}"
+            "sleeping or rescheduling is not allowed in atomic context: irq_enabled={}, \
+             preempt_count={}",
+            ax_hal::asm::irqs_enabled(),
+            current_preempt_count()
         );
     }
 }
@@ -312,7 +309,7 @@ pub(crate) fn might_sleep() {
 /// waiting for the next interrupt.
 pub fn run_idle() -> ! {
     loop {
-        yield_now_kernel();
+        yield_now_unchecked();
         trace!("idle task: waiting for IRQs...");
         #[cfg(feature = "irq")]
         ax_hal::asm::wait_for_irqs();
