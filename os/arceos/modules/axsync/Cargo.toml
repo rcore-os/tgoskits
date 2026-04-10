@@ -1,12 +1,11 @@
 [package]
 name = "ax-sync"
 version.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "ArceOS synchronization primitives"
 license.workspace = true
-homepage.workspace = true
-repository = "https://github.com/arceos-org/arceos/tree/main/modules/axsync"
 
 [features]
 multitask = ["ax-task/multitask"]

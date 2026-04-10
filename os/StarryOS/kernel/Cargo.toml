@@ -10,9 +10,8 @@ authors = [
     "朝倉水希 <asakuramizu111@gmail.com>",
     "Mivik <mivikq@gmail.com>",
 ]
-license.workspace = true
-homepage.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [features]
 dev-log = []
@@ -76,7 +75,6 @@ ax-kernel-guard = "0.3.3"
 kernel-elf-parser = "0.3.4"
 ax-kspin = "0.3.1"
 lazy_static = { version = "1.5", features = ["spin_no_std"] }
-linkme = "0.3"
 linux-raw-sys = { version = "0.12", default-features = false, features = [
     "no_std",
     "general",

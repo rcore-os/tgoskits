@@ -62,6 +62,9 @@ impl Axvisor {
             None,
             SnapshotPersistence::Store,
         )?;
+        if qemu::infer_rootfs_path(&request.vmconfigs)?.is_none() {
+            qemu_test::prepare_default_rootfs_for_arch(&self.ctx, &request.arch).await?;
+        }
         self.run_qemu_request(request).await
     }
 
@@ -311,8 +314,10 @@ impl Axvisor {
 
     fn qemu_run_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<QemuRunConfig> {
         if let Some(path) = request.qemu_config.clone() {
+            let override_args = qemu::qemu_override_args_from_template(&path, request)?;
             Ok(QemuRunConfig {
                 qemu_config: Some(path),
+                override_args,
                 ..Default::default()
             })
         } else {

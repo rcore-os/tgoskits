@@ -4,7 +4,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(feature = "ipi")]
 pub use ax_config::devices::IPI_IRQ;
-use ax_cpu::trap::{IRQ, register_trap_handler};
+use ax_cpu::trap::irq_handler;
 #[cfg(feature = "ipi")]
 pub use ax_plat::irq::{IpiTarget, send_ipi};
 pub use ax_plat::irq::{handle, register, set_enable, unregister};
@@ -32,8 +32,8 @@ pub fn register_irq_hook(hook: fn(usize)) -> bool {
 /// # Warn
 ///
 /// Make sure called in an interrupt context or hypervisor VM exit handler.
-#[register_trap_handler(IRQ)]
-pub fn irq_handler(vector: usize) -> bool {
+#[irq_handler]
+pub fn handle_irq(vector: usize) -> bool {
     let guard = ax_kernel_guard::NoPreempt::new();
 
     if let Some(irq) = handle(vector) {

@@ -1,15 +1,13 @@
 [package]
 name = "ax-arm-pl031"
 version = "0.4.1"
+repository = "https://github.com/rcore-os/tgoskits"
 edition = "2021"
 authors = ["Keyang Hu <keyang.hu@qq.com>"]
 description = "System Real Time Clock (RTC) Drivers for aarch64 based on PL031."
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
-homepage = "https://github.com/arceos-org/arceos"
-repository = "https://github.com/arceos-org/arm_pl031"
-documentation = "https://docs.rs/ax-arm-pl031"
 keywords = ["arceos", "aarch64", "rtc", "pl031"]
 categories = ["os", "hardware-support", "no-std"]
+license = "Apache-2.0"
 
 [dependencies]
 chrono = { version = "0.4.38", default-features = false, optional = true }

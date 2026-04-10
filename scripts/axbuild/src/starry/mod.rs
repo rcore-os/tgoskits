@@ -26,13 +26,12 @@ pub enum Command {
     Build(ArgsBuild),
     /// Build and run StarryOS application
     Qemu(ArgsQemu),
-    /// Download rootfs image into workspace target directory
-    Rootfs(ArgsRootfs),
-
-    /// Build and run StarryOS application with U-Boot
-    Uboot(ArgsUboot),
     /// Run StarryOS test suites
     Test(ArgsTest),
+    /// Download rootfs image into workspace target directory
+    Rootfs(ArgsRootfs),
+    /// Build and run StarryOS application with U-Boot
+    Uboot(ArgsUboot),
 }
 
 #[derive(Args, Clone)]

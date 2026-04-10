@@ -6,9 +6,8 @@ keywords = ["arceos", "hal", "hardware", "cargo-subcommand"]
 categories = ["development-tools", "development-tools::cargo-plugins", "embedded", "hardware-support", "os"]
 edition.workspace = true
 authors.workspace = true
-license.workspace = true
-homepage.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

@@ -65,7 +65,7 @@ impl AxMmHal for AxMmHalImpl {
 //     type MmHal = AxMmHalImpl;
 
 //     fn irq_hanlder() {
-//         ax_hal::irq::irq_handler(0);
+//         ax_hal::trap::irq_handler(0);
 //     }
 // }
 

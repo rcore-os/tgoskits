@@ -1,29 +1,84 @@
-# ax-memory-addr
+<h1 align="center">ax-memory-addr</h1>
 
-[![Crates.io](https://img.shields.io/crates/v/ax-memory-addr)](https://crates.io/crates/ax-memory-addr)
+<p align="center">Wrappers and helper functions for physical and virtual addresses</p>
+
+<div align="center">
+
+[![Crates.io](https://img.shields.io/crates/v/ax-memory-addr.svg)](https://crates.io/crates/ax-memory-addr)
 [![Docs.rs](https://docs.rs/ax-memory-addr/badge.svg)](https://docs.rs/ax-memory-addr)
-[![CI](https://github.com/arceos-org/axmm_crates/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/arceos-org/axmm_crates/actions/workflows/ci.yml)
+[![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-Wrappers and helper functions for physical and virtual memory addresses.
+</div>
 
-## Examples
+English | [中文](README_CN.md)
+
+# Introduction
+
+`ax-memory-addr` provides Wrappers and helper functions for physical and virtual addresses. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
+
+
+> ax-memory-addr was derived from https://github.com/arceos-org/axmm_crates
+
+## Quick Start
+
+### Installation
+
+Add this crate to your `Cargo.toml`:
+
+```toml
+[dependencies]
+ax-memory-addr = "0.6.1"
+```
+
+### Run Check and Test
+
+```bash
+# Enter the crate directory
+cd components/axmm_crates/memory_addr
+
+# Format code
+cargo fmt --all
+
+# Run clippy
+cargo clippy --all-targets --all-features
+
+# Run tests
+cargo test --all-features
+
+# Build documentation
+cargo doc --no-deps
+```
+
+## Integration
+
+### Example
 
 ```rust
-use ax_memory_addr::{pa, va, va_range, PhysAddr, VirtAddr, MemoryAddr};
+use ax_memory_addr as _;
 
-let phys_addr = PhysAddr::from(0x12345678);
-let virt_addr = VirtAddr::from(0x87654321);
-
-assert_eq!(phys_addr.align_down(0x1000usize), pa!(0x12345000));
-assert_eq!(phys_addr.align_offset_4k(), 0x678);
-assert_eq!(virt_addr.align_up_4k(), va!(0x87655000));
-assert!(!virt_addr.is_aligned_4k());
-assert!(va!(0xabcedf0).is_aligned(16usize));
-
-let va_range = va_range!(0x87654000..0x87655000);
-assert_eq!(va_range.start, va!(0x87654000));
-assert_eq!(va_range.size(), 0x1000);
-assert!(va_range.contains(virt_addr));
-assert!(va_range.contains_range(va_range!(virt_addr..virt_addr + 0x100)));
-assert!(!va_range.contains_range(va_range!(virt_addr..virt_addr + 0x1000)));
+fn main() {
+    // Integrate `ax-memory-addr` into your project here.
+}
 ```
+
+### Documentation
+
+Generate and view API documentation:
+
+```bash
+cargo doc --no-deps --open
+```
+
+Online documentation: [docs.rs/ax-memory-addr](https://docs.rs/ax-memory-addr)
+
+# Contributing
+
+1. Fork the repository and create a branch
+2. Run local format and checks
+3. Run local tests relevant to this crate
+4. Submit a PR and ensure CI passes
+
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

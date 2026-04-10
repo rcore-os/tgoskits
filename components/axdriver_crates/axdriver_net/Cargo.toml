@@ -2,6 +2,7 @@
 name = "ax-driver-net"
 edition.workspace = true
 version.workspace = true
+repository.workspace = true
 authors = [
     "Yuekai Jia <equation618@gmail.com>",
     "ChengXiang Qi <kuangjux@outlook.com>",
@@ -9,13 +10,10 @@ authors = [
     "Yu Chen <yuchen@tsinghua.edu.cn>"
 ]
 description = "Common traits and types for network device (NIC) drivers"
-documentation = "https://arceos-org.github.io/axdriver_crates/axdriver_net"
 keywords = ["arceos", "driver", "nic"]
-license.workspace = true
-homepage.workspace = true
-repository.workspace = true
 categories.workspace = true
 readme = "README.md"
+license.workspace = true
 
 [features]
 default = []

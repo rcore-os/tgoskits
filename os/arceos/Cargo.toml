@@ -64,11 +64,10 @@ default-members = [
 version = "0.5.0"
 edition = "2024"
 authors = ["Yuekai Jia <equation618@gmail.com>"]
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
-homepage = "https://github.com/arceos-org/arceos"
-repository = "https://github.com/arceos-org/arceos"
+repository = "https://github.com/rcore-os/tgoskits"
 keywords = ["arceos", "kernel"]
 categories = ["os", "no-std"]
+license = "Apache-2.0"
 
 [workspace.dependencies]
 ax-std = { version = "0.5.0", path = "ulib/axstd" }
@@ -123,7 +122,7 @@ ax-plat-x86-pc = "0.5.1"
 axpoll = "0.3.2"
 ax-timer-list = "0.3.0"
 bindgen = "0.72"
-buddy-slab-allocator = "0.2"
+buddy-slab-allocator = "0.4"
 cfg-if = "1.0"
 chrono = { version = "0.4", default-features = false }
 ax-crate-interface = "0.5.0"

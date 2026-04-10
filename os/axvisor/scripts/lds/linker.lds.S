@@ -30,7 +30,7 @@ SECTIONS
         _sdata = .;
         *(.data.boot_page_table)
         . = ALIGN(4K);
-        
+
         __sdriver_register = .;
         KEEP(*(.driver.register*))
         __edriver_register = .;
@@ -89,12 +89,6 @@ SECTIONS
 }
 
 SECTIONS {
-    linkme_IRQ : { *(linkme_IRQ) }
-    linkm2_IRQ : { *(linkm2_IRQ) }
-    linkme_PAGE_FAULT : { *(linkme_PAGE_FAULT) }
-    linkm2_PAGE_FAULT : { *(linkm2_PAGE_FAULT) }
-    linkme_SYSCALL : { *(linkme_SYSCALL) }
-    linkm2_SYSCALL : { *(linkm2_SYSCALL) }
     scope_local : { *(scope_local) }
 }
 INSERT AFTER .tbss;

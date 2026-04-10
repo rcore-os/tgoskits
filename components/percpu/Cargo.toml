@@ -15,10 +15,8 @@ authors = [
     "Su Mingxian <aarkegz@gmail.com>",
     "yufeng <321353225@qq.com>",
 ]
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
-homepage = "https://github.com/arceos-org/arceos"
-documentation = "https://arceos-org.github.io/percpu"
-repository = "https://github.com/arceos-org/percpu"
+repository = "https://github.com/rcore-os/tgoskits"
 keywords = ["arceos", "percpu"]
 categories = ["development-tools::procedural-macro-helpers", "no-std"]
 rust-version = "1.66"
+license = "Apache-2.0"

@@ -1,8 +1,10 @@
 [package]
 name = "ax-shell"
 version = "0.3.0"
+repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
+license.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

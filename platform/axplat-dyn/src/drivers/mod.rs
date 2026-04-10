@@ -1,10 +1,7 @@
 extern crate alloc;
 
-use alloc::{
-    alloc::{alloc, alloc_zeroed, dealloc},
-    boxed::Box,
-};
-use core::ptr::NonNull;
+use alloc::boxed::Box;
+use core::{alloc::Layout, ptr::NonNull};
 
 use ax_driver_block::BlockDriverOps;
 use ax_errno::AxError;
@@ -66,6 +63,73 @@ pub fn probe_all_devices() -> Result<(), AxError> {
 
 pub(crate) struct DmaImpl;
 
+struct DmaPages {
+    cpu_addr: NonNull<u8>,
+    dma_addr: u64,
+}
+
+impl DmaPages {
+    fn layout_pages(layout: Layout) -> usize {
+        layout.size().div_ceil(PAGE_SIZE_4K)
+    }
+
+    fn layout_align(layout: Layout) -> usize {
+        layout.align().max(PAGE_SIZE_4K)
+    }
+
+    unsafe fn alloc_for_layout(dma_mask: u64, layout: Layout) -> Result<Self, dma_api::DmaError> {
+        if layout.size() == 0 {
+            return Ok(Self {
+                cpu_addr: NonNull::dangling(),
+                dma_addr: 0,
+            });
+        }
+
+        let num_pages = Self::layout_pages(layout);
+        let align = Self::layout_align(layout);
+        let cpu_vaddr = if dma_mask <= u32::MAX as u64 {
+            ax_alloc::global_allocator().alloc_dma32_pages(
+                num_pages,
+                align,
+                ax_alloc::UsageKind::Dma,
+            )
+        } else {
+            ax_alloc::global_allocator().alloc_pages(num_pages, align, ax_alloc::UsageKind::Dma)
+        }
+        .map_err(|_| dma_api::DmaError::NoMemory)?;
+
+        let cpu_addr = NonNull::new(cpu_vaddr as *mut u8).ok_or(dma_api::DmaError::NoMemory)?;
+        let dma_addr = dma_addr_from_ptr(cpu_addr);
+        if !dma_range_fits_mask(dma_addr, layout.size(), dma_mask) {
+            unsafe { Self::dealloc_pages(cpu_addr, num_pages) };
+            return Err(dma_api::DmaError::DmaMaskNotMatch {
+                addr: dma_addr.into(),
+                mask: dma_mask,
+            });
+        }
+        if !dma_addr_is_aligned(dma_addr, layout.align()) {
+            unsafe { Self::dealloc_pages(cpu_addr, num_pages) };
+            return Err(dma_api::DmaError::AlignMismatch {
+                required: layout.align(),
+                address: dma_addr.into(),
+            });
+        }
+
+        Ok(Self { cpu_addr, dma_addr })
+    }
+
+    unsafe fn dealloc_pages(cpu_addr: NonNull<u8>, num_pages: usize) {
+        if num_pages == 0 {
+            return;
+        }
+        ax_alloc::global_allocator().dealloc_pages(
+            cpu_addr.as_ptr() as usize,
+            num_pages,
+            ax_alloc::UsageKind::Dma,
+        );
+    }
+}
+
 #[inline]
 fn dma_addr_from_ptr(ptr: NonNull<u8>) -> u64 {
     somehal::mem::virt_to_phys(ptr.as_ptr()) as u64
@@ -101,7 +165,7 @@ impl dma_api::DmaOp for DmaImpl {
         align: usize,
         direction: dma_api::DmaDirection,
     ) -> Result<dma_api::DmaMapHandle, dma_api::DmaError> {
-        let layout = core::alloc::Layout::from_size_align(size.get(), align)?;
+        let layout = Layout::from_size_align(size.get(), align)?;
         let dma_addr = dma_addr_from_ptr(addr);
 
         if dma_range_fits_mask(dma_addr, size.get(), dma_mask)
@@ -110,8 +174,8 @@ impl dma_api::DmaOp for DmaImpl {
             return Ok(unsafe { dma_api::DmaMapHandle::new(addr, dma_addr.into(), layout, None) });
         }
 
-        let map_ptr = unsafe { alloc(layout) };
-        let map_virt = NonNull::new(map_ptr).ok_or(dma_api::DmaError::NoMemory)?;
+        let map_pages = unsafe { DmaPages::alloc_for_layout(dma_mask, layout)? };
+        let map_virt = map_pages.cpu_addr;
 
         if matches!(
             direction,
@@ -124,55 +188,29 @@ impl dma_api::DmaOp for DmaImpl {
             }
         }
 
-        let map_dma_addr = dma_addr_from_ptr(map_virt);
-        if !dma_range_fits_mask(map_dma_addr, size.get(), dma_mask) {
-            unsafe { dealloc(map_virt.as_ptr(), layout) };
-            return Err(dma_api::DmaError::DmaMaskNotMatch {
-                addr: map_dma_addr.into(),
-                mask: dma_mask,
-            });
-        }
-        if !dma_addr_is_aligned(map_dma_addr, align) {
-            unsafe { dealloc(map_virt.as_ptr(), layout) };
-            return Err(dma_api::DmaError::AlignMismatch {
-                required: align,
-                address: map_dma_addr.into(),
-            });
-        }
-
-        Ok(
-            unsafe {
-                dma_api::DmaMapHandle::new(addr, map_dma_addr.into(), layout, Some(map_virt))
-            },
-        )
+        Ok(unsafe {
+            dma_api::DmaMapHandle::new(addr, map_pages.dma_addr.into(), layout, Some(map_virt))
+        })
     }
 
     unsafe fn unmap_single(&self, handle: dma_api::DmaMapHandle) {
         if let Some(map_virt) = handle.alloc_virt() {
-            unsafe { dealloc(map_virt.as_ptr(), handle.layout()) };
+            let num_pages = DmaPages::layout_pages(handle.layout());
+            unsafe { DmaPages::dealloc_pages(map_virt, num_pages) };
         }
     }
 
-    unsafe fn alloc_coherent(
-        &self,
-        dma_mask: u64,
-        layout: core::alloc::Layout,
-    ) -> Option<dma_api::DmaHandle> {
-        let ptr = unsafe { alloc_zeroed(layout) };
-        let cpu_addr = NonNull::new(ptr)?;
-
-        let dma_addr = dma_addr_from_ptr(cpu_addr);
-        if !dma_range_fits_mask(dma_addr, layout.size(), dma_mask)
-            || !dma_addr_is_aligned(dma_addr, layout.align())
-        {
-            unsafe { dealloc(cpu_addr.as_ptr(), layout) };
-            return None;
+    unsafe fn alloc_coherent(&self, dma_mask: u64, layout: Layout) -> Option<dma_api::DmaHandle> {
+        let pages = unsafe { DmaPages::alloc_for_layout(dma_mask, layout).ok()? };
+        unsafe {
+            pages.cpu_addr.as_ptr().write_bytes(0, layout.size());
         }
 
-        Some(unsafe { dma_api::DmaHandle::new(cpu_addr, dma_addr.into(), layout) })
+        Some(unsafe { dma_api::DmaHandle::new(pages.cpu_addr, pages.dma_addr.into(), layout) })
     }
 
     unsafe fn dealloc_coherent(&self, handle: dma_api::DmaHandle) {
-        unsafe { dealloc(handle.as_ptr().as_ptr(), handle.layout()) };
+        let num_pages = DmaPages::layout_pages(handle.layout());
+        unsafe { DmaPages::dealloc_pages(handle.as_ptr(), num_pages) };
     }
 }

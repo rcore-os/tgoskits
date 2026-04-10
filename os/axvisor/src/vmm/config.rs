@@ -16,7 +16,7 @@ use ax_errno::AxResult;
 use axaddrspace::GuestPhysAddr;
 use axvm::{
     VMMemoryRegion,
-    config::{AxVMConfig, AxVMCrateConfig, VmMemMappingType},
+    config::{AxVMConfig, AxVMCrateConfig, VmMemMappingType, adjusted_kernel_load_gpa},
 };
 use core::alloc::Layout;
 
@@ -224,21 +224,15 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
 }
 
 fn config_guest_address(vm: &VM, main_memory: &VMMemoryRegion) {
-    const MB: usize = 1024 * 1024;
     vm.with_config(|config| {
-        if main_memory.is_identical() {
-            debug!(
+        if let Some(kernel_addr) =
+            adjusted_kernel_load_gpa(main_memory, config.image_config.bios_load_gpa)
+        {
+            info!(
                 "Adjusting kernel load address from {:#x} to {:#x}",
-                config.image_config.kernel_load_gpa, main_memory.gpa
+                config.image_config.kernel_load_gpa, kernel_addr
             );
-            let mut kernel_addr = main_memory.gpa;
-            if config.image_config.bios_load_gpa.is_some() {
-                kernel_addr += MB * 2; // leave 2MB for BIOS
-            }
-
-            config.image_config.kernel_load_gpa = kernel_addr;
-            config.cpu_config.bsp_entry = kernel_addr;
-            config.cpu_config.ap_entry = kernel_addr;
+            config.relocate_kernel_image(kernel_addr);
         }
     });
 }

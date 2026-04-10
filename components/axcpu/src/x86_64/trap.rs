@@ -20,7 +20,7 @@ fn handle_page_fault(tf: &mut TrapFrame) {
     let access_flags = err_code_to_flags(tf.error_code)
         .unwrap_or_else(|e| panic!("Invalid #PF error code: {:#x}", e));
     let vaddr = va!(unsafe { cr2() });
-    if handle_trap!(PAGE_FAULT, vaddr, access_flags) {
+    if crate::trap::page_fault_handler(vaddr, access_flags) {
         return;
     }
     #[cfg(feature = "uspace")]
@@ -53,7 +53,7 @@ fn x86_trap_handler(tf: &mut TrapFrame) {
             );
         }
         IRQ_VECTOR_START..=IRQ_VECTOR_END => {
-            handle_trap!(IRQ, tf.vector as _);
+            crate::trap::irq_handler(tf.vector as _);
         }
         _ => {
             panic!(

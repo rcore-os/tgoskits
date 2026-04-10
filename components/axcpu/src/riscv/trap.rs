@@ -24,7 +24,7 @@ fn handle_breakpoint(sepc: &mut usize) {
 
 fn handle_page_fault(tf: &mut TrapFrame, access_flags: PageFaultFlags) {
     let vaddr = va!(stval::read());
-    if handle_trap!(PAGE_FAULT, vaddr, access_flags) {
+    if crate::trap::page_fault_handler(vaddr, access_flags) {
         return;
     }
     #[cfg(feature = "uspace")]
@@ -53,7 +53,7 @@ fn riscv_trap_handler(tf: &mut TrapFrame) {
             }
             Trap::Exception(E::Breakpoint) => handle_breakpoint(&mut tf.sepc),
             Trap::Interrupt(_) => {
-                handle_trap!(IRQ, scause.bits());
+                crate::trap::irq_handler(scause.bits());
             }
             _ => {
                 panic!(

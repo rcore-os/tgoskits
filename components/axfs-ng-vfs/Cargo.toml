@@ -5,8 +5,8 @@ edition = "2024"
 authors = ["Mivik <mivikq@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>"]
 description = "Virtual filesystem layer for ArceOS"
 keywords = ["vfs", "filesystem", "ax-fs-ng", "arceos"]
-license = "MIT OR Apache-2.0"
 repository = "https://github.com/Starry-OS/axfs-ng-vfs"
+license = "Apache-2.0"
 
 [dependencies]
 ax-errno = "0.4.2"

@@ -1,11 +1,84 @@
-# ax-plat-macros
+<h1 align="center">ax-plat-macros</h1>
 
-[![Crates.io](https://img.shields.io/crates/v/ax-plat-macros)](https://crates.io/crates/axplat)
+<p align="center">Procedural macros for the `axplat` crate</p>
+
+<div align="center">
+
+[![Crates.io](https://img.shields.io/crates/v/ax-plat-macros.svg)](https://crates.io/crates/ax-plat-macros)
 [![Docs.rs](https://docs.rs/ax-plat-macros/badge.svg)](https://docs.rs/ax-plat-macros)
-[![CI](https://github.com/arceos-org/axplat_crates/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/arceos-org/axplat_crates/actions/workflows/ci.yml)
+[![Rust](https://img.shields.io/badge/edition-2024-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-Procedural macros for the [axplat] crate.
+</div>
 
-**DO NOT** use this crate directly, use the [axplat] crate instead.
+English | [中文](README_CN.md)
 
-[axplat]: https://docs.rs/axplat
+# Introduction
+
+`ax-plat-macros` provides Procedural macros for the `axplat` crate. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
+
+
+> ax-plat-macros was derived from https://github.com/arceos-org/axplat_crates
+
+## Quick Start
+
+### Installation
+
+Add this crate to your `Cargo.toml`:
+
+```toml
+[dependencies]
+ax-plat-macros = "0.3.0"
+```
+
+### Run Check and Test
+
+```bash
+# Enter the crate directory
+cd components/axplat_crates/axplat-macros
+
+# Format code
+cargo fmt --all
+
+# Run clippy
+cargo clippy --all-targets --all-features
+
+# Run tests
+cargo test --all-features
+
+# Build documentation
+cargo doc --no-deps
+```
+
+## Integration
+
+### Example
+
+```rust
+use ax_plat_macros as _;
+
+fn main() {
+    // Integrate `ax-plat-macros` into your project here.
+}
+```
+
+### Documentation
+
+Generate and view API documentation:
+
+```bash
+cargo doc --no-deps --open
+```
+
+Online documentation: [docs.rs/ax-plat-macros](https://docs.rs/ax-plat-macros)
+
+# Contributing
+
+1. Fork the repository and create a branch
+2. Run local format and checks
+3. Run local tests relevant to this crate
+4. Submit a PR and ensure CI passes
+
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

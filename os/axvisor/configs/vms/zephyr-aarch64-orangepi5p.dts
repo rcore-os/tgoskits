@@ -1,0 +1,128 @@
+/dts-v1/;
+
+/* node '/' defined in zephyr/dts/common/skeleton.dtsi:9 */
+/ {
+	#address-cells = < 0x1 >;               /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:11 */
+	#size-cells = < 0x1 >;                  /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:12 */
+	interrupt-parent = < &gic >;            /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:15 */
+	model = "Xunlong Orange Pi 5 Plus";     /* in zephyr/boards/xunlong/orangepi_5_plus_rk3588/orangepi_5_plus_rk3588.dts:12 */
+	compatible = "xunlong,orangepi-5-plus",
+	             "rockchip,rk3588";         /* in zephyr/boards/xunlong/orangepi_5_plus_rk3588/orangepi_5_plus_rk3588.dts:13 */
+
+	/* node '/chosen' defined in zephyr/dts/common/skeleton.dtsi:13 */
+	chosen {
+		zephyr,sram = &sram0;       /* in zephyr/boards/xunlong/orangepi_5_plus_rk3588/orangepi_5_plus_rk3588.dts:16 */
+		zephyr,console = &uart2;    /* in zephyr/boards/xunlong/orangepi_5_plus_rk3588/orangepi_5_plus_rk3588.dts:17 */
+		zephyr,shell-uart = &uart2; /* in zephyr/boards/xunlong/orangepi_5_plus_rk3588/orangepi_5_plus_rk3588.dts:18 */
+	};
+
+	/* node '/aliases' defined in zephyr/dts/common/skeleton.dtsi:15 */
+	aliases {
+	};
+
+	/* node '/soc' defined in zephyr/dts/arm64/armv8-a.dtsi:10 */
+	soc {
+		#address-cells = < 0x1 >;  /* in zephyr/dts/arm64/armv8-a.dtsi:11 */
+		#size-cells = < 0x1 >;     /* in zephyr/dts/arm64/armv8-a.dtsi:12 */
+		compatible = "simple-bus"; /* in zephyr/dts/arm64/armv8-a.dtsi:13 */
+		ranges;                    /* in zephyr/dts/arm64/armv8-a.dtsi:14 */
+	};
+
+	/* node '/cpus' defined in zephyr/dts/arm64/rockchip/rk3588.dtsi:17 */
+	cpus {
+		#address-cells = < 0x1 >; /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:18 */
+		#size-cells = < 0x0 >;    /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:19 */
+
+		/* node '/cpus/cpu@0' defined in zephyr/dts/arm64/rockchip/rk3588.dtsi:21 */
+		cpu@0 {
+			device_type = "cpu";             /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:22 */
+			compatible = "arm,cortex-a55";   /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:23 */
+			enable-method = "psci";          /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:24 */
+			clock-frequency = < 0x16e3600 >; /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:25 */
+			reg = < 0x0 >;                   /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:26 */
+		};
+
+		/* node '/cpus/cpu@100' defined in zephyr/dts/arm64/rockchip/rk3588.dtsi:29 */
+		cpu@100 {
+			device_type = "cpu";           /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:30 */
+			compatible = "arm,cortex-a55"; /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:31 */
+			enable-method = "psci";        /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:32 */
+			reg = < 0x100 >;               /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:33 */
+		};
+
+		/* node '/cpus/cpu@200' defined in zephyr/dts/arm64/rockchip/rk3588.dtsi:36 */
+		cpu@200 {
+			device_type = "cpu";           /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:37 */
+			compatible = "arm,cortex-a55"; /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:38 */
+			enable-method = "psci";        /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:39 */
+			reg = < 0x200 >;               /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:40 */
+		};
+
+		/* node '/cpus/cpu@300' defined in zephyr/dts/arm64/rockchip/rk3588.dtsi:43 */
+		cpu@300 {
+			device_type = "cpu";           /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:44 */
+			compatible = "arm,cortex-a55"; /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:45 */
+			enable-method = "psci";        /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:46 */
+			reg = < 0x300 >;               /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:47 */
+		};
+	};
+
+	/* node '/interrupt-controller@fe600000' defined in zephyr/dts/arm64/rockchip/rk3588.dtsi:51 */
+	gic: interrupt-controller@fe600000 {
+		#address-cells = < 0x1 >;      /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:52 */
+		compatible = "arm,gic-v3",
+		             "arm,gic";        /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:53 */
+		#interrupt-cells = < 0x4 >;    /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:54 */
+		interrupt-controller;          /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:55 */
+		reg = < 0xfe600000 0x10000 >,
+		      < 0xfe680000 0x100000 >; /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:57 */
+		status = "okay";               /* in zephyr/boards/xunlong/orangepi_5_plus_rk3588/orangepi_5_plus_rk3588.dts:33 */
+		phandle = < 0x1 >;             /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:15 */
+	};
+
+	/* node '/psci' defined in zephyr/dts/arm64/rockchip/rk3588.dtsi:62 */
+	psci {
+		compatible = "arm,psci-0.2",
+		             "arm,psci";     /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:63 */
+		method = "smc";              /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:64 */
+	};
+
+	/* node '/timer' defined in zephyr/dts/arm64/rockchip/rk3588.dtsi:67 */
+	timer {
+		compatible = "arm,armv8-timer";    /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:68 */
+		interrupts = < 0x1 0xd 0x2 0xa0 >,
+		             < 0x1 0xe 0x2 0xa0 >,
+		             < 0x1 0xb 0x2 0xa0 >,
+		             < 0x1 0xa 0x2 0xa0 >; /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:69 */
+		interrupt-parent = < &gic >;       /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:73 */
+	};
+
+	/* node '/serial@feb50000' defined in zephyr/dts/arm64/rockchip/rk3588.dtsi:76 */
+	uart2: serial@feb50000 {
+		compatible = "rockchip,rk3588-uart",
+		             "ns16550";              /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:77 */
+		reg = < 0xfeb50000 0x100 >;          /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:78 */
+		interrupts = < 0x0 0x14d 0x4 0xa0 >; /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:79 */
+		clock-frequency = < 0xb71b00 >;      /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:80 */
+		reg-shift = < 0x2 >;                 /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:81 */
+		status = "okay";                     /* in zephyr/boards/xunlong/orangepi_5_plus_rk3588/orangepi_5_plus_rk3588.dts:29 */
+	};
+
+	/* node '/serial@feb60000' defined in zephyr/dts/arm64/rockchip/rk3588.dtsi:85 */
+	uart3: serial@feb60000 {
+		compatible = "rockchip,rk3588-uart",
+		             "ns16550";              /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:86 */
+		reg = < 0xfeb60000 0x100 >;          /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:87 */
+		interrupts = < 0x0 0x14e 0x4 0xa0 >; /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:88 */
+		clock-frequency = < 0x16e3600 >;     /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:89 */
+		reg-shift = < 0x2 >;                 /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:90 */
+		status = "disabled";                 /* in zephyr/dts/arm64/rockchip/rk3588.dtsi:91 */
+	};
+
+	/* node '/memory@40000000' defined in zephyr/boards/xunlong/orangepi_5_plus_rk3588/orangepi_5_plus_rk3588.dts:21 */
+	sram0: memory@40000000 {
+		device_type = "memory";          /* in zephyr/boards/xunlong/orangepi_5_plus_rk3588/orangepi_5_plus_rk3588.dts:22 */
+		compatible = "mmio-sram";        /* in zephyr/boards/xunlong/orangepi_5_plus_rk3588/orangepi_5_plus_rk3588.dts:23 */
+		reg = < 0x40000000 0x40000000 >; /* in zephyr/boards/xunlong/orangepi_5_plus_rk3588/orangepi_5_plus_rk3588.dts:24 */
+	};
+};

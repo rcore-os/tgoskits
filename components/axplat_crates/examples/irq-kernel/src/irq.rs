@@ -3,7 +3,7 @@ use core::sync::atomic::{
     Ordering::{Acquire, Release},
 };
 
-use ax_cpu::trap::{IRQ, register_trap_handler};
+use ax_cpu::trap::irq_handler;
 
 const TICKS_PER_SEC: u64 = 100;
 
@@ -13,8 +13,8 @@ pub fn irq_count() -> u64 {
     IRQ_COUNTER.load(Acquire)
 }
 
-#[register_trap_handler(IRQ)]
-fn irq_handler(vector: usize) -> bool {
+#[irq_handler]
+fn handle_irq(vector: usize) -> bool {
     ax_plat::irq::handle(vector);
     true
 }

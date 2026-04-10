@@ -1,63 +1,84 @@
-# LinkedList
+<h1 align="center">ax-linked-list-r4l</h1>
 
-[![Crates.io](https://img.shields.io/crates/v/ax-linked-list-r4l)](https://crates.io/crates/ax-linked-list-r4l)
-[![Doc.rs](https://docs.rs/ax-linked-list-r4l/badge.svg)](https://docs.rs/ax-linked-list-r4l)
-[![CI](https://github.com/arceos-org/linked_list_r4l/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/arceos-org/linked_list_r4l/actions/workflows/ci.yml)
+<p align="center">Linked lists that supports arbitrary removal in constant time</p>
 
- Linked lists that supports arbitrary removal in constant time.
+<div align="center">
 
- It is based on the linked list implementation in [Rust-for-Linux][1].
+[![Crates.io](https://img.shields.io/crates/v/ax-linked-list-r4l.svg)](https://crates.io/crates/ax-linked-list-r4l)
+[![Docs.rs](https://docs.rs/ax-linked-list-r4l/badge.svg)](https://docs.rs/ax-linked-list-r4l)
+[![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
- [1]: https://github.com/Rust-for-Linux/linux/blob/rust/rust/kernel/linked_list.rs
+</div>
 
-## Examples 
+English | [中文](README_CN.md)
 
- ```rust
- use ax_linked_list_r4l::{GetLinks, Links, List};
+# Introduction
 
- type InnerType = usize;
+`ax-linked-list-r4l` provides Linked lists that supports arbitrary removal in constant time. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
 
- pub struct ExampleNode {
-     pub inner: InnerType,
-     links: Links<Self>,
- }
 
- impl GetLinks for ExampleNode {
-     type EntryType = Self;
+> ax-linked-list-r4l was derived from https://github.com/arceos-org/linked_list_r4l
 
-     fn get_links(t: &Self) -> &Links<Self> {
-         &t.links
-     }
- }
+## Quick Start
 
- impl ExampleNode {
-     fn new(inner: InnerType) -> Self {
-         Self {
-             inner,
-             links: Links::new()
-         }
-     }
+### Installation
 
-     fn inner(&self) -> &InnerType {
-         &self.inner
-     }
- }
+Add this crate to your `Cargo.toml`:
 
- let node1 = Box::new(ExampleNode::new(0));
- let node2 = Box::new(ExampleNode::new(1));
- let mut list =  List::<Box<ExampleNode>>::new();
+```toml
+[dependencies]
+ax-linked-list-r4l = "0.5.0"
+```
 
- list.push_back(node1);
- list.push_back(node2);
+### Run Check and Test
 
- // Support Iter
- for (i,e) in list.iter().enumerate() {
-     assert!(*e.inner() == i);
- }
+```bash
+# Enter the crate directory
+cd components/linked_list_r4l
 
- // Pop drop
- assert!(*list.pop_front().unwrap().inner() == 0);
- assert!(*list.pop_front().unwrap().inner() == 1);
+# Format code
+cargo fmt --all
 
- ```
+# Run clippy
+cargo clippy --all-targets --all-features
 
+# Run tests
+cargo test --all-features
+
+# Build documentation
+cargo doc --no-deps
+```
+
+## Integration
+
+### Example
+
+```rust
+use ax_linked_list_r4l as _;
+
+fn main() {
+    // Integrate `ax-linked-list-r4l` into your project here.
+}
+```
+
+### Documentation
+
+Generate and view API documentation:
+
+```bash
+cargo doc --no-deps --open
+```
+
+Online documentation: [docs.rs/ax-linked-list-r4l](https://docs.rs/ax-linked-list-r4l)
+
+# Contributing
+
+1. Fork the repository and create a branch
+2. Run local format and checks
+3. Run local tests relevant to this crate
+4. Submit a PR and ensure CI passes
+
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

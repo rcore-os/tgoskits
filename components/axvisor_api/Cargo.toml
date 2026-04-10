@@ -5,8 +5,8 @@ members = ["axvisor_api_proc"]
 [workspace.package]
 authors = ["Su Mingxian <aarkegz@gmail.com>"]
 edition = "2024"
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0" # MulanPubL2 is not included in SPDX
 repository = "https://github.com/arceos-hypervisor/axvisor_api"
+license = "Apache-2.0"
 
 [package]
 name = "axvisor_api"
@@ -18,8 +18,8 @@ keywords = ["axvisor", "api", "embedded", "hypervisor"]
 categories = ["embedded", "no-std"]
 authors.workspace = true
 edition.workspace = true
-license.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [dependencies]
 # === Core Components ===

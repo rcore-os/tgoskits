@@ -3,6 +3,7 @@ name = "mingo"
 version = "0.8.0"
 authors = ["Andre Richter <andre.o.richter@gmail.com>"]
 edition = "2024"
+license.workspace = true
 
 [profile.release]
 lto = true
@@ -31,3 +32,7 @@ tock-registers = { version = "0.8.x", default-features = false, features = ["reg
 aarch64-cpu = { version = "9.x.x" }
 
 [workspace]
+
+
+[workspace.package]
+license = "Apache-2.0"

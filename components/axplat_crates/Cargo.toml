@@ -43,9 +43,8 @@ authors = [
     "RobertYuan <634954435@qq.com>",
     "hky1999 <keyang.hu@qq.com>",
 ]
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
-homepage = "https://github.com/arceos-org/arceos"
-repository = "https://github.com/arceos-org/axplat_crates"
+repository = "https://github.com/rcore-os/tgoskits"
+license = "Apache-2.0"
 
 [workspace.dependencies]
 ax-cpu = "0.5.0"

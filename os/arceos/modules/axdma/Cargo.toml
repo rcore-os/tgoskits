@@ -2,17 +2,16 @@
 name = "ax-dma"
 edition.workspace = true
 version.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
 authors = ["Zhour Rui <zrufo747@outlook.com>"]
 description = "ArceOS global DMA allocator"
-license.workspace = true
-homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
-repository = "https://github.com/arceos-org/arceos/tree/main/modules/axdma"
+license.workspace = true
 
 [features]
 default = []
-buddy-slab = ["dep:buddy-slab-allocator"]
+buddy-slab = ["dep:buddy-slab-allocator", "ax-alloc/buddy-slab"]
 
 [dependencies]
 ax-alloc.workspace = true

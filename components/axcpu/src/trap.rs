@@ -2,32 +2,19 @@
 
 use ax_memory_addr::VirtAddr;
 pub use ax_page_table_entry::MappingFlags as PageFaultFlags;
-pub use linkme::{
-    distributed_slice as def_trap_handler, distributed_slice as register_trap_handler,
-};
 
 pub use crate::TrapFrame;
 
-/// A slice of IRQ handler functions.
-#[def_trap_handler]
-pub static IRQ: [fn(usize) -> bool];
+/// IRQ handler.
+#[eii]
+pub fn irq_handler(irq: usize) -> bool {
+    trace!("IRQ {} triggered", irq);
+    false
+}
 
-/// A slice of page fault handler functions.
-#[def_trap_handler]
-pub static PAGE_FAULT: [fn(VirtAddr, PageFaultFlags) -> bool];
-
-#[allow(unused_macros)]
-macro_rules! handle_trap {
-    ($trap:ident, $($args:tt)*) => {{
-        let mut iter = $crate::trap::$trap.iter();
-        if let Some(func) = iter.next() {
-            if iter.next().is_some() {
-                warn!("Multiple handlers for trap {} are not currently supported", stringify!($trap));
-            }
-            func($($args)*)
-        } else {
-            warn!("No registered handler for trap {}", stringify!($trap));
-            false
-        }
-    }}
+/// Page fault handler.
+#[eii]
+pub fn page_fault_handler(addr: VirtAddr, flags: PageFaultFlags) -> bool {
+    warn!("Page fault at {:#x} with flags {:?}", addr, flags);
+    false
 }

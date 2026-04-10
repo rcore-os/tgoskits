@@ -4,10 +4,10 @@ version = "0.4.2"
 edition = "2024"
 description = "x86 Virtual Local APIC"
 authors = ["Keyang Hu <keyang.hu@qq.com>", "Mingxian Su <aarkegz@gmail.com>"]
-license = "Apache-2.0"
 categories = ["virtualization"]
 repository = "https://github.com/arceos-hypervisor/x86_vlapic"
 keywords = ["x86", "hypervisor", "arceos"]
+license = "Apache-2.0"
 
 [package.metadata.docs.rs]
 targets = ["x86_64-unknown-none"]

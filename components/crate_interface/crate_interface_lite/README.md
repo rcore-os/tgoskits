@@ -1,98 +1,84 @@
-# ax-crate-interface-lite
+<h1 align="center">ax-crate-interface-lite</h1>
 
-[![Crates.io](https://img.shields.io/crates/v/ax-crate-interface-lite)](https://crates.io/crates/ax-crate-interface-lite)
+<p align="center">Provides a way to define an interface (trait) in a crate, but can implement or use it in any crate</p>
+
+<div align="center">
+
+[![Crates.io](https://img.shields.io/crates/v/ax-crate-interface-lite.svg)](https://crates.io/crates/ax-crate-interface-lite)
 [![Docs.rs](https://docs.rs/ax-crate-interface-lite/badge.svg)](https://docs.rs/ax-crate-interface-lite)
-[![CI](https://github.com/arceos-org/crate_interface/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/arceos-org/crate_interface/actions/workflows/ci.yml)
+[![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-A lightweight version of [ax-crate-interface](https://crates.io/crates/ax-crate-interface)
-written with declarative macros.
+</div>
 
-## Example
+English | [中文](README_CN.md)
+
+# Introduction
+
+`ax-crate-interface-lite` provides Provides a way to define an interface (trait) in a crate, but can implement or use it in any crate. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
+
+
+> ax-crate-interface-lite was derived from https://github.com/arceos-org/crate_interface
+
+## Quick Start
+
+### Installation
+
+Add this crate to your `Cargo.toml`:
+
+```toml
+[dependencies]
+ax-crate-interface-lite = "0.3.0"
+```
+
+### Run Check and Test
+
+```bash
+# Enter the crate directory
+cd components/crate_interface/crate_interface_lite
+
+# Format code
+cargo fmt --all
+
+# Run clippy
+cargo clippy --all-targets --all-features
+
+# Run tests
+cargo test --all-features
+
+# Build documentation
+cargo doc --no-deps
+```
+
+## Integration
+
+### Example
 
 ```rust
-// Define the interface
-ax_crate_interface_lite::def_interface!(
-    pub trait HelloIf {
-        fn hello(name: &str, id: usize) -> String;
-    }
-);
+use ax_crate_interface_lite as _;
 
-// Implement the interface in any crate
-struct HelloIfImpl;
-ax_crate_interface_lite::impl_interface!(
-    impl HelloIf for HelloIfImpl {
-        fn hello(name: &str, id: usize) -> String {
-            format!("Hello, {} {}!", name, id)
-        }
-    }
-);
-
-// Call `HelloIfImpl::hello` in any crate
-use ax_crate_interface_lite::call_interface;
-assert_eq!(
-    call_interface!(HelloIf::hello("world", 123)),
-    "Hello, world 123!"
-);
-assert_eq!(
-    call_interface!(HelloIf::hello, "rust", 456), // another calling style
-    "Hello, rust 456!"
-);
-```
-
-## Comparison with [ax-crate-interface](https://crates.io/crates/ax-crate-interface)
-
-### Similar: APIs
-
-The public APIs are almost the same as ax-crate-interface. One major difference is
-that you cannot use the exported macros as attributes.
-
-```rust,ignore
-// With ax-crate-interface...
-#[ax_crate_interface::def_interface]
-pub trait HelloIf {
-    fn hello(name: &str, id: usize) -> String;
+fn main() {
+    // Integrate `ax-crate-interface-lite` into your project here.
 }
-// With ax-crate-interface-lite...
-ax_crate_interface_lite::def_interface!(
-    pub trait HelloIf {
-        fn hello(name: &str, id: usize) -> String;
-    }
-);
 ```
 
-### Different: No proc-macro related dependencies
+### Documentation
 
-This is the major reason to use this crate, as it would result in a tidier
-dependency tree of your project and slightly speed up the compilation. However,
-if you already have proc-macro related dependencies in your crate’s dependency
-graph, there is almost no benefit from using this crate.
+Generate and view API documentation:
 
-### Different: No support for method receivers
-
-Unlike `ax_crate_interface::def_interface`, the macro in this crate does not support
-method receivers, namely `self`, `&self`, `&mut self`, etc. But in most cases, you
-don't need them, since the `impl_interface` is often applied to an unit struct.
-
-```rust,compile_fail
-ax_crate_interface_lite::def_interface!(
-    pub trait HelloIf {
-        fn hello(self, name: &str, id: usize) -> String;
-        //       ^^^^ Not supported!
-    }
-);
+```bash
+cargo doc --no-deps --open
 ```
 
-### Different: No support for default implementations
+Online documentation: [docs.rs/ax-crate-interface-lite](https://docs.rs/ax-crate-interface-lite)
 
-The `def_interface` in this crate does not support default implementations of
-trait functions. In the future, we may support using default implementations as
-fallbacks when no other implementations are provided.
+# Contributing
 
-```rust,compile_fail
-ax_crate_interface_lite::def_interface!(
-    pub trait HelloIf {
-        fn hello(name: &str, id: usize) -> String { todo!() }
-        //                                        ^^^^^^^^^^^ Not supported!
-    }
-);
-```
+1. Fork the repository and create a branch
+2. Run local format and checks
+3. Run local tests relevant to this crate
+4. Submit a PR and ensure CI passes
+
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

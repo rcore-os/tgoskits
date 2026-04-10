@@ -1,15 +1,13 @@
 [package]
 name = "ax-int-ratio"
 version = "0.3.2"
+repository = "https://github.com/rcore-os/tgoskits"
 edition = "2021"
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "The type of ratios represented by two integers."
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
-homepage = "https://github.com/arceos-org/arceos"
-repository = "https://github.com/arceos-org/ax-int-ratio"
-documentation = "https://docs.rs/ax-int-ratio"
 keywords = ["ratio", "fraction", "integer", "approximation"]
 categories = ["mathematics"]
 rust-version = "1.57.0"
+license = "Apache-2.0"
 
 [dependencies]

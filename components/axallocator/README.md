@@ -1,44 +1,84 @@
-# ax-allocator
+<h1 align="center">ax-allocator</h1>
 
-[![Crates.io](https://img.shields.io/crates/v/ax-allocator.svg?style=flat-square)](https://crates.io/crates/ax-allocator)
-[![Documentation](https://docs.rs/ax-allocator/badge.svg?style=flat-square)](https://docs.rs/ax-allocator)
-[![License](https://img.shields.io/crates/l/ax-allocator.svg?style=flat-square)](https://crates.io/crates/ax-allocator)
+<p align="center">Various allocator algorithms in a unified interface</p>
 
-Various allocator algorithms behind a unified interface for `no_std` environments.
+<div align="center">
 
-## Allocator types
+[![Crates.io](https://img.shields.io/crates/v/ax-allocator.svg)](https://crates.io/crates/ax-allocator)
+[![Docs.rs](https://docs.rs/ax-allocator/badge.svg)](https://docs.rs/ax-allocator)
+[![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-- **Byte-granularity**: [`BuddyByteAllocator`], [`SlabByteAllocator`], [`TlsfByteAllocator`]
-- **Page-granularity**: [`BitmapPageAllocator`]
-- **ID allocator**: [`IdAllocator`]
+</div>
 
-[`BuddyByteAllocator`]: https://docs.rs/ax-allocator/latest/ax_allocator/struct.BuddyByteAllocator.html
-[`SlabByteAllocator`]: https://docs.rs/ax-allocator/latest/ax_allocator/struct.SlabByteAllocator.html
-[`TlsfByteAllocator`]: https://docs.rs/ax-allocator/latest/ax_allocator/struct.TlsfByteAllocator.html
-[`BitmapPageAllocator`]: https://docs.rs/ax-allocator/latest/ax_allocator/struct.BitmapPageAllocator.html
-[`IdAllocator`]: https://docs.rs/ax-allocator/latest/ax_allocator/trait.IdAllocator.html
+English | [中文](README_CN.md)
 
-## Features
+# Introduction
 
-| Feature         | Description                                    |
-| --------------- | ---------------------------------------------- |
-| `bitmap`        | Bitmap-based page allocator                    |
-| `tlsf`          | TLSF byte allocator                            |
-| `slab`          | Slab byte allocator (uses `ax_slab_allocator`) |
-| `buddy`         | Buddy byte allocator                           |
-| `allocator_api` | Implement `Allocator` (nightly)                |
-| `page-alloc-*`  | Page size / range (e.g. `page-alloc-256m`)     |
-| `ax-errno`       | `AxError` integration                          |
+`ax-allocator` provides Various allocator algorithms in a unified interface. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
 
-Default: `page-alloc-256m`. Use `full` for all allocators and `allocator_api`.
 
-## Usage
+> ax-allocator was derived from https://github.com/arceos-org/allocator
+
+## Quick Start
+
+### Installation
+
+Add this crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ax-allocator = { version = "0.2", features = ["slab", "buddy"] }
+ax-allocator = "0.4.0"
 ```
 
-## License
+### Run Check and Test
 
-GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0. See [LICENSE](LICENSE).
+```bash
+# Enter the crate directory
+cd components/axallocator
+
+# Format code
+cargo fmt --all
+
+# Run clippy
+cargo clippy --all-targets --all-features
+
+# Run tests
+cargo test --all-features
+
+# Build documentation
+cargo doc --no-deps
+```
+
+## Integration
+
+### Example
+
+```rust
+use ax_allocator as _;
+
+fn main() {
+    // Integrate `ax-allocator` into your project here.
+}
+```
+
+### Documentation
+
+Generate and view API documentation:
+
+```bash
+cargo doc --no-deps --open
+```
+
+Online documentation: [docs.rs/ax-allocator](https://docs.rs/ax-allocator)
+
+# Contributing
+
+1. Fork the repository and create a branch
+2. Run local format and checks
+3. Run local tests relevant to this crate
+4. Submit a PR and ensure CI passes
+
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

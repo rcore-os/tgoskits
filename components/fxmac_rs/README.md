@@ -1,77 +1,81 @@
-# FXMAC ethernet driver
-fxmac ethernet driver in Rust on PhytiumPi board.
+<h1 align="center">fxmac_rs</h1>
+
+<p align="center">FXMAC Ethernet driver in Rust for PhytiumPi (Phytium Pi) board, supporting DMA-based packet transmission and reception</p>
+
+<div align="center">
+
+[![Crates.io](https://img.shields.io/crates/v/fxmac_rs.svg)](https://crates.io/crates/fxmac_rs)
+[![Docs.rs](https://docs.rs/fxmac_rs/badge.svg)](https://docs.rs/fxmac_rs)
+[![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+
+</div>
+
+English | [中文](README_CN.md)
+
+# Introduction
+
+`fxmac_rs` provides FXMAC Ethernet driver in Rust for PhytiumPi (Phytium Pi) board, supporting DMA-based packet transmission and reception. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
 
 ## Quick Start
 
-For instance, [fxmac_rs ethernet driver in Rust on ArceOS](https://github.com/arceos-org/arceos/blob/7e52baa8bed7a9dbfc59acfb9e07d3f71551d651/modules/axdriver/src/drivers.rs#L133)
+### Installation
 
-![fxmac_rs on arceos](doc/PhytiumPi-ethernet-arceos.jpg)
+Add this crate to your `Cargo.toml`:
 
-* Initialize ethernet driver
+```toml
+[dependencies]
+fxmac_rs = "0.4.1"
 ```
-pub struct FXmacDriver;
 
-#[crate_interface::impl_interface]
-impl ax_driver_net::fxmac::KernelFunc for FXmacDriver{
-	/// 虚拟地址转换成物理地址
-	fn virt_to_phys(addr: usize) -> usize {
-	}
+### Run Check and Test
 
-	/// 物理地址转换成虚拟地址
-	fn phys_to_virt(addr: usize) -> usize {
-	}
+```bash
+# Enter the crate directory
+cd components/fxmac_rs
 
-	/// 申请页对齐的DMA连续内存页
-	/// 返回((cpu virtual address, dma physical address))
-	fn dma_alloc_coherent(pages: usize) -> (usize, usize) {
-	}
+# Format code
+cargo fmt --all
 
-	/// 释放DMA内存页
-	fn dma_free_coherent(vaddr: usize, pages: usize) {
-	}
+# Run clippy
+cargo clippy --all-targets --all-features
 
-	/// 使能并注册网卡中断
-	fn dma_request_irq(_irq: usize, _handler: fn()) {
-		warn!("unimplemented dma_request_irq for fxmax");
-	}
+# Run tests
+cargo test --all-features
+
+# Build documentation
+cargo doc --no-deps
+```
+
+## Integration
+
+### Example
+
+```rust
+use fxmac_rs as _;
+
+fn main() {
+    // Integrate `fxmac_rs` into your project here.
 }
-
-let hwaddr: [u8; 6] = [0x55, 0x44, 0x33, 0x22, 0x11, 0x00];
-let fxmac_device: &'static mut FXmac = fxmac_rs::fxmac::xmac_init(&hwaddr);
 ```
 
-* Sending network packets
-```
-let mut tx_vec = Vec::new();
-tx_vec.push(packet.to_vec());
-FXmacLwipPortTx(fxmac_device, tx_vec);
-```
+### Documentation
 
-* Receiving network packets
-```
-let recv_packets = FXmacRecvHandler(fxmac_device);
+Generate and view API documentation:
 
+```bash
+cargo doc --no-deps --open
 ```
 
-### Build
+Online documentation: [docs.rs/fxmac_rs](https://docs.rs/fxmac_rs)
 
-```
-cargo build --target=aarch64-unknown-none-softfloat
-```
+# Contributing
 
-## Testing (建议)
+1. Fork the repository and create a branch
+2. Run local format and checks
+3. Run local tests relevant to this crate
+4. Submit a PR and ensure CI passes
 
-由于该驱动强依赖硬件与 DMA，建议分层补充测试并按能力选择运行环境：
+# License
 
-- 单元测试/文档测试（主机可跑）：`cargo test --all-features`、`cargo test --doc`
-- 功能测试（mock/模拟）：对 BD ring、地址转换与错误分支做行为验证
-- 系统测试（真实板子）：在 PhytiumPi 上验证链路协商、收发路径与中断处理
-
-## About ethernet
-PHY: Motorcomm YT8521
-
-![yt8521](doc/phtpi-eth.jpg)
-
-## Reference
-* [phytium-standalone-sdk](https://gitee.com/phytium_embedded/phytium-standalone-sdk/tree/master) *sdk驱动的代码质量及逻辑写得一言难尽啊 *
-* [Linux 5.10](https://gitee.com/phytium_embedded/phytium-linux-kernel/blob/linux-5.10/drivers/net/ethernet/cadence/macb_main.c)
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

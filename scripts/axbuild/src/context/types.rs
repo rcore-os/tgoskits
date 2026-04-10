@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use super::snapshot::{CommandSnapshotFile, load_snapshot, store_snapshot};
 
 pub const ARCEOS_SNAPSHOT_FILE: &str = ".arceos.toml";
+pub const DEFAULT_ARCEOS_ARCH: &str = "aarch64";
 pub const DEFAULT_ARCEOS_TARGET: &str = "aarch64-unknown-none-softfloat";
 pub const AXVISOR_SNAPSHOT_FILE: &str = ".axvisor.toml";
 pub const DEFAULT_AXVISOR_ARCH: &str = "aarch64";
@@ -19,6 +20,7 @@ pub const STARRY_PACKAGE: &str = "starryos";
 pub struct BuildCliArgs {
     pub config: Option<PathBuf>,
     pub package: Option<String>,
+    pub arch: Option<String>,
     pub target: Option<String>,
     pub plat_dyn: Option<bool>,
 }
@@ -57,6 +59,8 @@ pub struct ArceosCommandSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plat_dyn: Option<bool>,
@@ -69,6 +73,7 @@ pub struct ArceosCommandSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedBuildRequest {
     pub package: String,
+    pub arch: String,
     pub target: String,
     pub plat_dyn: Option<bool>,
     pub build_info_path: PathBuf,

@@ -72,7 +72,7 @@ fn esr_value() -> u64 {
 
 fn handle_page_fault(tf: &mut TrapFrame, access_flags: PageFaultFlags) {
     let vaddr = va!(fault_addr());
-    if handle_trap!(PAGE_FAULT, vaddr, access_flags) {
+    if crate::trap::page_fault_handler(vaddr, access_flags) {
         return;
     }
     #[cfg(feature = "uspace")]
@@ -106,7 +106,7 @@ fn aarch64_trap_handler(tf: &mut TrapFrame, kind: TrapKind, source: TrapSource) 
             panic!("Unhandled exception {:?}:\n{:#x?}", kind, tf);
         }
         TrapKind::Irq => {
-            handle_trap!(IRQ, 0);
+            crate::trap::irq_handler(0);
         }
         TrapKind::Synchronous => {
             #[cfg(not(feature = "arm-el2"))]

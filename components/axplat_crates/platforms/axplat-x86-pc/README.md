@@ -1,100 +1,84 @@
-# ax-plat-x86-pc
+<h1 align="center">ax-plat-x86-pc</h1>
 
-[![Crates.io](https://img.shields.io/crates/v/ax-plat-x86-pc)](https://crates.io/crates/ax-plat-x86-pc)
-[![CI](https://github.com/arceos-org/axplat_crates/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/arceos-org/axplat_crates/actions/workflows/ci.yml)
+<p align="center">Implementation of `axplat` hardware abstraction layer for x86 Standard PC machine</p>
 
-Implementation of [axplat](https://github.com/arceos-org/axplat_crates/tree/main/axplat) hardware abstraction layer for x86 Standard PC machine.
+<div align="center">
 
-## Install
+[![Crates.io](https://img.shields.io/crates/v/ax-plat-x86-pc.svg)](https://crates.io/crates/ax-plat-x86-pc)
+[![Docs.rs](https://docs.rs/ax-plat-x86-pc/badge.svg)](https://docs.rs/ax-plat-x86-pc)
+[![Rust](https://img.shields.io/badge/edition-2024-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+
+</div>
+
+English | [中文](README_CN.md)
+
+# Introduction
+
+`ax-plat-x86-pc` provides Implementation of `axplat` hardware abstraction layer for x86 Standard PC machine. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
+
+
+> ax-plat-x86-pc was derived from https://github.com/arceos-org/axplat_crates
+
+## Quick Start
+
+### Installation
+
+Add this crate to your `Cargo.toml`:
+
+```toml
+[dependencies]
+ax-plat-x86-pc = "0.5.1"
+```
+
+### Run Check and Test
 
 ```bash
-cargo +nightly add ax-cpu axplat ax-plat-x86-pc
+# Enter the crate directory
+cd components/axplat_crates/platforms/axplat-x86-pc
+
+# Format code
+cargo fmt --all
+
+# Run clippy
+cargo clippy --all-targets --all-features
+
+# Run tests
+cargo test --all-features
+
+# Build documentation
+cargo doc --no-deps
 ```
 
-## Usage
+## Integration
 
-#### 1. Write your kernel code
+### Example
 
 ```rust
-#[ax_plat::main]
-fn kernel_main(cpu_id: usize, arg: usize) -> ! {
-    // x86_64 requires the `ax-percpu` crate to be initialized first.
-    ax-cpu::init::init_percpu(cpu_id);
-    // Initialize trap, console, time.
-    ax_plat::init::init_early(cpu_id, arg);
-    // Initialize platform peripherals (not used in this example).
-    ax_plat::init::init_later(cpu_id, arg);
+use ax_plat_x86_pc as _;
 
-    // Write your kernel code here.
-    ax_plat::console_println!("Hello, ArceOS!");
-
-    // Power off the system.
-    ax_plat::power::system_off();
+fn main() {
+    // Integrate `ax-plat-x86-pc` into your project here.
 }
 ```
 
-#### 2. Link your kernel with this package
+### Documentation
 
-```rust
-// Can be located at any dependency crate.
-extern crate ax_plat_x86_pc;
+Generate and view API documentation:
+
+```bash
+cargo doc --no-deps --open
 ```
 
-#### 3. Use a linker script like the following
+Online documentation: [docs.rs/ax-plat-x86-pc](https://docs.rs/ax-plat-x86-pc)
 
-```text
-ENTRY(_start)
-SECTIONS
-{
-    . = 0xffff000040200000;
-    _skernel = .;                   /* Symbol `_skernel` is required */
+# Contributing
 
-    .text : ALIGN(4K) {
-        *(.text.boot)               /* This section is required */
-        *(.text .text.*)
-    }
+1. Fork the repository and create a branch
+2. Run local format and checks
+3. Run local tests relevant to this crate
+4. Submit a PR and ensure CI passes
 
-    .rodata : ALIGN(4K) {
-        *(.rodata .rodata.*)
-    }
+# License
 
-    .data : ALIGN(4K) {
-        *(.data .data.*)
-    }
-
-    /* .percpu section and related symbols are required */
-    . = ALIGN(4K);
-    _percpu_start = .;
-    _percpu_end = _percpu_start + SIZEOF(.percpu);
-    .percpu 0x0 : AT(_percpu_start) {
-        _percpu_load_start = .;
-        *(.percpu .percpu.*)
-        _percpu_load_end = .;
-        . = _percpu_load_start + ALIGN(64) * 1;
-    }
-    . = _percpu_end;
-    _edata = .;                     /* Symbol `_edata` is required */
-
-    .bss : ALIGN(4K) {
-        *(.bss.stack)               /* This section is required */
-        . = ALIGN(4K);
-        *(.bss .bss.*)
-        *(COMMON)
-        _ebss = .;                  /* Symbol `_ebss` is required */
-    }
-
-    /DISCARD/ : {
-        *(.comment)
-    }
-}
-```
-
-Some symbols and sections are required to be defined in the linker script, listed as below:
-- `_skernel`: Start of kernel image.
-- `_edata`: End of data section.
-- `_ebss`: End of BSS section.
-- `.text.boot`: Kernel boot code.
-- `.bss.stack`: Stack for kernel booting.
-- `.percpu` section and related symbols: CPU-local data managed by the [ax-percpu](https://crates.io/crates/ax-percpu) crate.
-
-[hello-kernel](https://github.com/arceos-org/axplat_crates/tree/main/examples/hello-kernel) is a complete example of a minimal kernel implemented using [axplat](https://github.com/arceos-org/axplat_crates/tree/main/axplat) and related platform packages.
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

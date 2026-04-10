@@ -1,16 +1,84 @@
-# axdriver_virtio
+<h1 align="center">ax-driver-virtio</h1>
 
-Wrappers of devices in the [virtio-drivers](https://docs.rs/virtio-drivers) crate that implement traits from the axdriver_* crates. For use in `no_std` environments.
+<p align="center">Wrappers of some devices in the `virtio-drivers` crate, that implement traits in the `ax-driver-base` series crates</p>
 
-Part of the [axdriver_crates](https://github.com/arceos-org/axdriver_crates) workspace.
+<div align="center">
 
-## Features
+[![Crates.io](https://img.shields.io/crates/v/ax-driver-virtio.svg)](https://crates.io/crates/ax-driver-virtio)
+[![Docs.rs](https://docs.rs/ax-driver-virtio/badge.svg)](https://docs.rs/ax-driver-virtio)
+[![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-- `alloc` – enable allocator support in virtio-drivers
-- `block` – VirtIO block device (requires `axdriver_block`)
-- `gpu` – VirtIO GPU (requires `axdriver_display`)
-- `net` – VirtIO net (requires `axdriver_net`)
+</div>
 
-## License
+English | [中文](README_CN.md)
 
-GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0. See repository root LICENSE.
+# Introduction
+
+`ax-driver-virtio` provides Wrappers of some devices in the `virtio-drivers` crate, that implement traits in the `ax-driver-base` series crates. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
+
+
+> ax-driver-virtio was derived from https://github.com/arceos-org/axdriver_crates
+
+## Quick Start
+
+### Installation
+
+Add this crate to your `Cargo.toml`:
+
+```toml
+[dependencies]
+ax-driver-virtio = "0.3.4"
+```
+
+### Run Check and Test
+
+```bash
+# Enter the crate directory
+cd components/axdriver_crates/axdriver_virtio
+
+# Format code
+cargo fmt --all
+
+# Run clippy
+cargo clippy --all-targets --all-features
+
+# Run tests
+cargo test --all-features
+
+# Build documentation
+cargo doc --no-deps
+```
+
+## Integration
+
+### Example
+
+```rust
+use ax_driver_virtio as _;
+
+fn main() {
+    // Integrate `ax-driver-virtio` into your project here.
+}
+```
+
+### Documentation
+
+Generate and view API documentation:
+
+```bash
+cargo doc --no-deps --open
+```
+
+Online documentation: [docs.rs/ax-driver-virtio](https://docs.rs/ax-driver-virtio)
+
+# Contributing
+
+1. Fork the repository and create a branch
+2. Run local format and checks
+3. Run local tests relevant to this crate
+4. Submit a PR and ensure CI passes
+
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

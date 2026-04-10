@@ -1,48 +1,84 @@
-# ax-page-table-entry
+<h1 align="center">ax-page-table-entry</h1>
 
-[![Crates.io](https://img.shields.io/crates/v/ax-page-table-entry)](https://crates.io/crates/ax-page-table-entry)
+<p align="center">Page table entry definition for various hardware architectures</p>
+
+<div align="center">
+
+[![Crates.io](https://img.shields.io/crates/v/ax-page-table-entry.svg)](https://crates.io/crates/ax-page-table-entry)
 [![Docs.rs](https://docs.rs/ax-page-table-entry/badge.svg)](https://docs.rs/ax-page-table-entry)
-[![CI](https://github.com/arceos-org/page_table_multiarch/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/arceos-org/page_table_multiarch/actions/workflows/ci.yml)
+[![Rust](https://img.shields.io/badge/edition-2024-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-This crate provides the definition of page table entry for various hardware
-architectures.
+</div>
 
-Currently supported architectures and page table entry types:
+English | [中文](README_CN.md)
 
-- x86: [`x86_64::X64PTE`][1]
-- ARM: [`aarch64::A64PTE`][2]
-- ARM (32-bit): [`arm::A32PTE`][3]
-- RISC-V: [`riscv::Rv64PTE`][4]
-- LoongArch: [`loongarch64::LA64PTE`][5]
+# Introduction
 
-All these types implement the [`GenericPTE`][6] trait, which provides unified
-methods for manipulating various page table entries.
+`ax-page-table-entry` provides Page table entry definition for various hardware architectures. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
 
-[1]: https://docs.rs/ax-page-table-entry/latest/ax_page_table_entry/x86_64/struct.X64PTE.html
-[2]: https://docs.rs/ax-page-table-entry/latest/ax_page_table_entry/aarch64/struct.A64PTE.html
-[3]: https://docs.rs/ax-page-table-entry/latest/ax_page_table_entry/arm/struct.A32PTE.html
-[4]: https://docs.rs/ax-page-table-entry/latest/ax_page_table_entry/riscv/struct.Rv64PTE.html
-[5]: https://docs.rs/ax-page-table-entry/latest/ax_page_table_entry/loongarch64/struct.LA64PTE.html
-[6]: https://docs.rs/ax-page-table-entry/latest/ax_page_table_entry/trait.GenericPTE.html
 
-## Examples (x86_64)
+> ax-page-table-entry was derived from https://github.com/arceos-org/page_table_multiarch
+
+## Quick Start
+
+### Installation
+
+Add this crate to your `Cargo.toml`:
+
+```toml
+[dependencies]
+ax-page-table-entry = "0.8.1"
+```
+
+### Run Check and Test
+
+```bash
+# Enter the crate directory
+cd components/page_table_multiarch/page_table_entry
+
+# Format code
+cargo fmt --all
+
+# Run clippy
+cargo clippy --all-targets --all-features
+
+# Run tests
+cargo test --all-features
+
+# Build documentation
+cargo doc --no-deps
+```
+
+## Integration
+
+### Example
 
 ```rust
-use memory_addr::PhysAddr;
-use x86_64::structures::paging::page_table::PageTableFlags;
-use ax_page_table_entry::{GenericPTE, MappingFlags, x86_64::X64PTE};
+use ax_page_table_entry as _;
 
-let paddr = PhysAddr::from(0x233000);
-let pte = X64PTE::new_page(
-    paddr,
-    /* flags: */ MappingFlags::READ | MappingFlags::WRITE,
-    /* is_huge: */ false,
-);
-assert!(!pte.is_unused());
-assert!(pte.is_present());
-assert_eq!(pte.paddr(), paddr);
-assert_eq!(
-    pte.bits(),
-    0x800_0000000233_003, // PRESENT | WRITE | NO_EXECUTE | paddr(0x233000)
-);
+fn main() {
+    // Integrate `ax-page-table-entry` into your project here.
+}
 ```
+
+### Documentation
+
+Generate and view API documentation:
+
+```bash
+cargo doc --no-deps --open
+```
+
+Online documentation: [docs.rs/ax-page-table-entry](https://docs.rs/ax-page-table-entry)
+
+# Contributing
+
+1. Fork the repository and create a branch
+2. Run local format and checks
+3. Run local tests relevant to this crate
+4. Submit a PR and ensure CI passes
+
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

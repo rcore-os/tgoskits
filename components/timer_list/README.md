@@ -1,34 +1,84 @@
-# ax-timer-list
+<h1 align="center">ax-timer-list</h1>
 
-[![Crates.io](https://img.shields.io/crates/v/ax-timer-list)](https://crates.io/crates/ax-timer-list)
+<p align="center">A list of timed events that will be triggered sequentially when the timer expires</p>
+
+<div align="center">
+
+[![Crates.io](https://img.shields.io/crates/v/ax-timer-list.svg)](https://crates.io/crates/ax-timer-list)
 [![Docs.rs](https://docs.rs/ax-timer-list/badge.svg)](https://docs.rs/ax-timer-list)
-[![CI](https://github.com/arceos-org/timer_list/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/arceos-org/timer_list/actions/workflows/ci.yml)
+[![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-A list of timed events that will be triggered sequentially when the timer
-expires.
+</div>
 
-## Examples
+English | [中文](README_CN.md)
+
+# Introduction
+
+`ax-timer-list` provides A list of timed events that will be triggered sequentially when the timer expires. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
+
+
+> ax-timer-list was derived from https://github.com/arceos-org/timer_list
+
+## Quick Start
+
+### Installation
+
+Add this crate to your `Cargo.toml`:
+
+```toml
+[dependencies]
+ax-timer-list = "0.3.0"
+```
+
+### Run Check and Test
+
+```bash
+# Enter the crate directory
+cd components/timer_list
+
+# Format code
+cargo fmt --all
+
+# Run clippy
+cargo clippy --all-targets --all-features
+
+# Run tests
+cargo test --all-features
+
+# Build documentation
+cargo doc --no-deps
+```
+
+## Integration
+
+### Example
 
 ```rust
-use ax_timer_list::{TimerEvent, TimerEventFn, TimerList};
-use std::time::{Duration, Instant};
+use ax_timer_list as _;
 
-let mut timer_list = TimerList::new();
-
-// set a timer that will be triggered after 1 second
-let start_time = Instant::now();
-timer_list.set(Duration::from_secs(1), TimerEventFn::new(|now| {
-    println!("timer event after {:?}", now);
-}));
-
-while !timer_list.is_empty() {
-    // check if there is any event that is expired
-    let now = Instant::now().duration_since(start_time);
-    if let Some((deadline, event)) = timer_list.expire_one(now) {
-        // trigger the event, will print "timer event after 1.00s"
-        event.callback(now);
-        break;
-    }
-    std::thread::sleep(Duration::from_millis(10)); // relax the CPU
+fn main() {
+    // Integrate `ax-timer-list` into your project here.
 }
 ```
+
+### Documentation
+
+Generate and view API documentation:
+
+```bash
+cargo doc --no-deps --open
+```
+
+Online documentation: [docs.rs/ax-timer-list](https://docs.rs/ax-timer-list)
+
+# Contributing
+
+1. Fork the repository and create a branch
+2. Run local format and checks
+3. Run local tests relevant to this crate
+4. Submit a PR and ensure CI passes
+
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

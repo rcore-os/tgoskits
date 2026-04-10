@@ -7,9 +7,9 @@ description = "Basic traits and structures for emulated devices in ArceOS hyperv
 documentation = "https://docs.rs/axdevice_base"
 repository = "https://github.com/arceos-hypervisor/axdevice_base"
 readme = "README.md"
-license = "Apache-2.0"
 keywords = ["arceos", "hypervisor", "virtualization", "device", "no-std"]
 categories = ["no-std", "virtualization"]
+license = "Apache-2.0"
 
 [dependencies]
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }

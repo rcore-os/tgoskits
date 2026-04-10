@@ -45,6 +45,9 @@ mod mp;
 #[cfg(feature = "paging")]
 mod klib;
 
+#[cfg(feature = "buddy-slab")]
+use ax_alloc::eii::ax_alloc_virt_to_phys_impl;
+
 #[cfg(feature = "smp")]
 pub use self::mp::rust_main_secondary;
 
@@ -62,6 +65,12 @@ d88P     888 888      "Y8888P  "Y8888   "Y88888P"   "Y8888P"
 unsafe extern "C" {
     /// Application's entry point.
     fn main();
+}
+
+#[cfg(feature = "buddy-slab")]
+#[ax_alloc_virt_to_phys_impl]
+fn ax_alloc_virt_to_phys(vaddr: usize) -> usize {
+    ax_hal::mem::virt_to_phys(vaddr.into()).as_usize()
 }
 
 struct LogIfImpl;
@@ -127,6 +136,8 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         ax_hal::mem::clear_bss()
     };
     ax_hal::percpu::init_primary(cpu_id);
+    #[cfg(all(feature = "alloc", feature = "buddy-slab"))]
+    ax_alloc::init_precpu_slab(cpu_id);
     ax_hal::init_early(cpu_id, arg);
     let log_level = option_env!("AX_LOG").unwrap_or("info");
 
@@ -308,32 +319,11 @@ fn init_allocator() {
         }
     }
 
-    #[cfg(feature = "buddy-slab")]
-    {
-        struct AddrTranslatorImpl;
-        impl ax_alloc::AddrTranslator for AddrTranslatorImpl {
-            fn virt_to_phys(&self, va: usize) -> Option<usize> {
-                Some(ax_hal::mem::virt_to_phys(va.into()).as_usize())
-            }
-        }
-
-        static TRANSLATOR: AddrTranslatorImpl = AddrTranslatorImpl;
-
-        for r in memory_regions() {
-            if r.flags.contains(MemRegionFlags::FREE) && r.paddr == max_region_paddr {
-                ax_alloc::global_init(phys_to_virt(r.paddr).as_usize(), r.size, &TRANSLATOR);
-                break;
-            }
-        }
-    }
-
-    #[cfg(not(feature = "buddy-slab"))]
-    {
-        for r in memory_regions() {
-            if r.flags.contains(MemRegionFlags::FREE) && r.paddr == max_region_paddr {
-                ax_alloc::global_init(phys_to_virt(r.paddr).as_usize(), r.size);
-                break;
-            }
+    for r in memory_regions() {
+        if r.flags.contains(MemRegionFlags::FREE) && r.paddr == max_region_paddr {
+            ax_alloc::global_init(phys_to_virt(r.paddr).as_usize(), r.size)
+                .expect("initialize global allocator failed");
+            break;
         }
     }
 
@@ -375,6 +365,10 @@ fn init_interrupt() {
     ax_hal::irq::register(ax_hal::irq::IPI_IRQ, || {
         ax_ipi::ipi_handler();
     });
+
+    // Arm the first one-shot timer on the primary CPU. Otherwise the timer
+    // handler may never get the first chance to re-program subsequent ticks.
+    update_timer();
 
     // Enable IRQs before starting app
     ax_hal::asm::enable_irqs();

@@ -11,10 +11,10 @@ repository = "https://github.com/smoltcp-rs/smoltcp.git"
 readme = "README.md"
 keywords = ["ip", "tcp", "udp", "ethernet", "network"]
 categories = ["embedded", "network-programming"]
-license = "0BSD"
 # Each example should have an explicit `[[example]]` section here to
 # ensure that the correct features are enabled.
 autoexamples = false
+license = "Apache-2.0"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }

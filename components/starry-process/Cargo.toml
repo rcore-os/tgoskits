@@ -5,8 +5,8 @@ edition = "2024"
 authors = ["朝倉水希 <asakuramizu111@gmail.com>"]
 description = "Process management for Starry OS"
 keywords = ["starry-os"]
-license = "Apache-2.0"
 repository = "https://github.com/Starry-OS/starry-process"
+license = "Apache-2.0"
 
 [dependencies]
 ax-kspin = "0.3.1"

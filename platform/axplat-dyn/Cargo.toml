@@ -24,7 +24,7 @@ serial = ["dep:some-serial"]
 
 [dependencies]
 anyhow = { version = "1", default-features = false }
-ax-alloc.workspace = true
+ax-alloc = { version = "0.5.0", path = "../../os/arceos/modules/axalloc", default-features = false, features = ["buddy-slab"] }
 ax-config-macros = "0.4.1"
 ax-cpu.workspace = true
 ax-driver-base.workspace = true

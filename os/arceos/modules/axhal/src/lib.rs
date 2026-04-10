@@ -90,7 +90,7 @@ pub mod power {
 
 /// Trap handling.
 pub mod trap {
-    pub use ax_cpu::trap::{IRQ, PAGE_FAULT, PageFaultFlags, register_trap_handler};
+    pub use ax_cpu::trap::{PageFaultFlags, irq_handler, page_fault_handler};
 }
 
 /// CPU register states for context switching.

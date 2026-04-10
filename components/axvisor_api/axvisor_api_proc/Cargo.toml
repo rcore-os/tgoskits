@@ -8,8 +8,8 @@ keywords = ["axvisor", "api", "embedded", "macros"]
 categories = ["development-tools::procedural-macro-helpers"]
 authors.workspace = true
 edition.workspace = true
-license.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [lib]
 proc-macro = true

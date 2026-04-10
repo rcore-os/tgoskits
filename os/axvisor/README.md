@@ -1,9 +1,3 @@
-<!-- <div align="center">
-
-<img src="https://arceos-hypervisor.github.io/doc/assets/logo.svg" alt="axvisor-logo" width="64">
-
-</div> -->
-
 <h1 align="center">AxVisor</h1>
 
 <p align="center">A unified modular Type I hypervisor</p>
@@ -22,7 +16,7 @@ English | [中文](README_CN.md)
 
 AxVisor is a Hypervisor implemented based on the ArceOS kernel. Its goal is to leverage the basic operating system functionalities provided by ArceOS as a foundation to implement a lightweight unified modular Hypervisor.
 
-- **Unified** means using the same codebase to support three architectures—x86_64, Arm (aarch64), and RISC-V—maximizing the reuse of architecture-agnostic code and simplifying development and maintenance costs.
+- **Unified** means using the same codebase to support three architectures: x86_64, Arm (aarch64), and RISC-V, maximizing the reuse of architecture-agnostic code and simplifying development and maintenance costs.
 
 - **Modular** means that the Hypervisor's functionalities are decomposed into multiple independently usable components. Each component implements a specific function, and components communicate through standardized interfaces to achieve decoupling and reusability.
 
@@ -77,7 +71,7 @@ AxVisor uses a layered configuration system, including hardware platform configu
 
 Hardware platform configuration files are located in the `configs/board/` directory, with each configuration file corresponding to a development board (or QEMU platform architecture) that we have verified. They specify the target architecture, feature sets, driver support, log levels, and build options.
 
-> The guest configuration item `vm_configs` is not specified by default and needs to be specified in actual use!
+> The guest configuration item `vm_configs` is not specified by default and needs to be specified in actual use.
 
 ### Guest Configuration
 
@@ -119,4 +113,4 @@ You are also welcome to scan the QR code below to join the discussion group (ple
 
 # License
 
-Axvisor is licensed under the Apache License, Version 2.0. See the [LICENSE](./LICENSE) file for details.
+AxVisor is licensed under the Apache License, Version 2.0. See the [LICENSE](./LICENSE) file for details.

@@ -2,15 +2,13 @@
 name = "ax-driver-display"
 edition.workspace = true
 version.workspace = true
+repository.workspace = true
 authors.workspace = true
 description = "Common traits and types for graphics device drivers"
-documentation = "https://arceos-org.github.io/axdriver_crates/axdriver_display"
 keywords = ["arceos", "driver", "gpu", "framebuffer"]
-license.workspace = true
-homepage.workspace = true
-repository.workspace = true
 categories.workspace = true
 readme = "README.md"
+license.workspace = true
 
 [dependencies]
 ax-driver-base = { version = "0.3.4" }

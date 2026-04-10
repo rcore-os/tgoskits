@@ -3,7 +3,6 @@ edition = "2024"
 version = "0.5.0"
 authors = ["RCore Team <yuchen@tsinghua.edu.cn>"]
 license = "Apache-2.0"
-homepage = "https://github.com/rcore-os/tgoskits"
 repository = "https://github.com/rcore-os/tgoskits"
 keywords = ["arceos", "kernel"]
 categories = ["os", "no-std"]
@@ -369,7 +368,7 @@ ax-crate-interface = {version = "0.5.0", path = "components/crate_interface" }
 # === Other external crates ===
 anyhow = "1.0"
 bindgen = "0.72"
-buddy-slab-allocator = "0.2"
+buddy-slab-allocator = "0.4"
 cfg-if = "1.0"
 chrono = { version = "0.4", default-features = false }
 ax-ctor-bare = { version = "0.4.1", path = "components/ctor_bare/ctor_bare" }

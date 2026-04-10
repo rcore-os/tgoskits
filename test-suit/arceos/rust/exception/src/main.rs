@@ -24,10 +24,10 @@ fn raise_break_exception() {
 fn raise_page_fault() {
     use std::os::arceos::modules::ax_hal;
 
-    use ax_hal::{mem::VirtAddr, paging::MappingFlags};
+    use ax_hal::{mem::VirtAddr, paging::MappingFlags, trap::page_fault_handler};
 
-    #[linkme::distributed_slice(ax_hal::trap::PAGE_FAULT)]
-    fn page_fault_handler(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
+    #[page_fault_handler]
+    fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
         println!(
             "Page fault @ {:#x}, access_flags: {:?}",
             vaddr, access_flags

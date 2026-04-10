@@ -1,12 +1,11 @@
 [package]
 name = "ax-fs"
 version.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "ArceOS filesystem module"
 license.workspace = true
-homepage.workspace = true
-repository = "https://github.com/arceos-org/arceos/tree/main/modules/axfs"
 
 [features]
 default = []

@@ -1,20 +1,84 @@
-# ax-errno
+<h1 align="center">ax-errno</h1>
 
-[![Crates.io](https://img.shields.io/crates/v/ax-errno)](https://crates.io/crates/ax-errno)
+<p align="center">Generic error code representation</p>
+
+<div align="center">
+
+[![Crates.io](https://img.shields.io/crates/v/ax-errno.svg)](https://crates.io/crates/ax-errno)
 [![Docs.rs](https://docs.rs/ax-errno/badge.svg)](https://docs.rs/ax-errno)
-[![CI](https://github.com/arceos-org/axerrno/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/arceos-org/axerrno/actions/workflows/ci.yml)
+[![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-Generic error code representation.
+</div>
 
-It provides two error types and the corresponding result types:
+English | [中文](README_CN.md)
 
-- [`AxError`] and [`AxResult`]: A generic error type similar to
-  [`std::io::ErrorKind`].
-- [`LinuxError`] and [`LinuxResult`]: Linux specific error codes defined in
-  `errno.h`. It can be converted from [`AxError`].
+# Introduction
 
-[`AxError`]: https://docs.rs/ax-errno/latest/ax-errno/enum.AxError.html
-[`AxResult`]: https://docs.rs/ax-errno/latest/ax-errno/type.AxResult.html
-[`LinuxError`]: https://docs.rs/ax-errno/latest/ax-errno/enum.LinuxError.html
-[`LinuxResult`]: https://docs.rs/ax-errno/latest/ax-errno/type.LinuxResult.html
-[`std::io::ErrorKind`]: https://doc.rust-lang.org/std/io/enum.ErrorKind.html
+`ax-errno` provides Generic error code representation. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
+
+
+> ax-errno was derived from https://github.com/arceos-org/errno
+
+## Quick Start
+
+### Installation
+
+Add this crate to your `Cargo.toml`:
+
+```toml
+[dependencies]
+ax-errno = "0.4.2"
+```
+
+### Run Check and Test
+
+```bash
+# Enter the crate directory
+cd components/axerrno
+
+# Format code
+cargo fmt --all
+
+# Run clippy
+cargo clippy --all-targets --all-features
+
+# Run tests
+cargo test --all-features
+
+# Build documentation
+cargo doc --no-deps
+```
+
+## Integration
+
+### Example
+
+```rust
+use ax_errno as _;
+
+fn main() {
+    // Integrate `ax-errno` into your project here.
+}
+```
+
+### Documentation
+
+Generate and view API documentation:
+
+```bash
+cargo doc --no-deps --open
+```
+
+Online documentation: [docs.rs/ax-errno](https://docs.rs/ax-errno)
+
+# Contributing
+
+1. Fork the repository and create a branch
+2. Run local format and checks
+3. Run local tests relevant to this crate
+4. Submit a PR and ensure CI passes
+
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

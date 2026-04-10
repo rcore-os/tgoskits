@@ -1,15 +1,13 @@
 [package]
 name = "ax-plat-aarch64-qemu-virt"
 version.workspace = true
+repository.workspace = true
 description = "Implementation of `axplat` hardware abstraction layer for QEMU ARM64 virtual machine."
-documentation = "https://docs.rs/ax-plat-aarch64-qemu-virt"
 keywords = ["arceos", "os", "hal", "embedded", "aarch64"]
 categories = ["embedded", "no-std", "hardware-support", "os"]
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-homepage.workspace = true
-repository.workspace = true
 
 [features]
 fp-simd = ["ax-cpu/fp-simd"]

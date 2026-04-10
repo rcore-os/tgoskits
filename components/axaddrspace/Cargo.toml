@@ -8,10 +8,10 @@ categories = ["embedded", "no-std"]
 description = "ArceOS-Hypervisor guest address space management module"
 edition = "2024"
 keywords = ["hypervisor", "address-space"]
-license = "Apache-2.0"
 name = "axaddrspace"
 repository = "https://github.com/arceos-hypervisor/axaddrspace"
 version = "0.5.0"
+license = "Apache-2.0"
 
 [features]
 arm-el2 = ["ax-page-table-entry/arm-el2"]

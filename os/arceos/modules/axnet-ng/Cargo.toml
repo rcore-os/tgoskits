@@ -1,12 +1,11 @@
 [package]
 name = "ax-net-ng"
 version.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Mivik <mivikq@gmail.com>"]
 description = "ArceOS network module"
 license.workspace = true
-homepage.workspace = true
-repository = "https://github.com/arceos-org/arceos/tree/main/modules/axnet"
 
 [features]
 vsock = ["ax-driver/vsock"]

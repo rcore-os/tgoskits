@@ -1,32 +1,84 @@
-# ax-cap-access
+<h1 align="center">ax-cap-access</h1>
 
-[![Crates.io](https://img.shields.io/crates/v/ax-cap-access)](https://crates.io/crates/ax-cap-access)
+<p align="center">Provide basic capability-based access control to objects</p>
+
+<div align="center">
+
+[![Crates.io](https://img.shields.io/crates/v/ax-cap-access.svg)](https://crates.io/crates/ax-cap-access)
 [![Docs.rs](https://docs.rs/ax-cap-access/badge.svg)](https://docs.rs/ax-cap-access)
-[![CI](https://github.com/arceos-org/cap_access/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/arceos-org/cap_access/actions/workflows/ci.yml)
+[![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-Provide basic [capability-based][1] access control to objects.
+</div>
 
-The wrapper type [`WithCap`] associates a **capability** to an object, that
-is a set of access rights. When accessing the object, we must explicitly
-specify the access capability, and it must not violate the capability
-associated with the object at initialization.
+English | [中文](README_CN.md)
 
-## Examples
+# Introduction
 
-```rust
-use ax_cap_access::{Cap, WithCap};
+`ax-cap-access` provides Provide basic capability-based access control to objects. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
 
-let data = WithCap::new(42, Cap::READ | Cap::WRITE);
 
-// Access with the correct capability.
-assert_eq!(data.access(Cap::READ).unwrap(), &42);
-assert_eq!(data.access(Cap::WRITE).unwrap(), &42);
-assert_eq!(data.access(Cap::READ | Cap::WRITE).unwrap(), &42);
+> ax-cap-access was derived from https://github.com/arceos-org/cap_access
 
-// Access with the incorrect capability.
-assert!(data.access(Cap::EXECUTE).is_none());
-assert!(data.access(Cap::READ | Cap::EXECUTE).is_none());
+## Quick Start
+
+### Installation
+
+Add this crate to your `Cargo.toml`:
+
+```toml
+[dependencies]
+ax-cap-access = "0.3.0"
 ```
 
-[1]: https://en.wikipedia.org/wiki/Capability-based_security
-[`WithCap`]: https://docs.rs/capability/latest/capability/struct.WithCap.html
+### Run Check and Test
+
+```bash
+# Enter the crate directory
+cd components/cap_access
+
+# Format code
+cargo fmt --all
+
+# Run clippy
+cargo clippy --all-targets --all-features
+
+# Run tests
+cargo test --all-features
+
+# Build documentation
+cargo doc --no-deps
+```
+
+## Integration
+
+### Example
+
+```rust
+use ax_cap_access as _;
+
+fn main() {
+    // Integrate `ax-cap-access` into your project here.
+}
+```
+
+### Documentation
+
+Generate and view API documentation:
+
+```bash
+cargo doc --no-deps --open
+```
+
+Online documentation: [docs.rs/ax-cap-access](https://docs.rs/ax-cap-access)
+
+# Contributing
+
+1. Fork the repository and create a branch
+2. Run local format and checks
+3. Run local tests relevant to this crate
+4. Submit a PR and ensure CI passes
+
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

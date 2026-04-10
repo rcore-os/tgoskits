@@ -1,11 +1,11 @@
 [package]
 name = "ax-fs-ng"
 version.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Mivik <mivikq@gmail.com>"]
 description = "ArceOS filesystem module"
 license.workspace = true
-homepage.workspace = true
 
 [features]
 fat = ["dep:fatfs"]

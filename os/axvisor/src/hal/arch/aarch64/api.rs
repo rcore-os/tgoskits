@@ -104,6 +104,6 @@ impl ArchIf for ArchImpl {
     }
 
     fn handle_irq() {
-        ax_hal::irq::irq_handler(0);
+        ax_hal::trap::irq_handler(0);
     }
 }

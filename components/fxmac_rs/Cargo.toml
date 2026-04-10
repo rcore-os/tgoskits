@@ -8,9 +8,9 @@ documentation = "https://docs.rs/fxmac_rs"
 repository = "https://github.com/elliott10/fxmac_rs"
 homepage = "https://github.com/elliott10/fxmac_rs"
 readme = "README.md"
-license = "GPL-2.0-only"
 keywords = ["ethernet", "driver", "phytium", "aarch64", "no_std"]
 categories = ["embedded", "hardware-support", "no-std"]
+license = "Apache-2.0"
 
 [features]
 debug = []

@@ -1,14 +1,12 @@
 [package]
 name = "ax-handler-table"
 version = "0.3.2"
+repository = "https://github.com/rcore-os/tgoskits"
 edition = "2021"
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "A lock-free table of event handlers"
-license = "Apache-2.0"
-homepage = "https://github.com/arceos-org/arceos"
-repository = "https://github.com/arceos-org/ax-handler-table"
-documentation = "https://docs.rs/ax-handler-table"
 keywords = ["arceos", "event", "lock-free"]
 categories = ["no-std"]
+license = "Apache-2.0"
 
 [dependencies]

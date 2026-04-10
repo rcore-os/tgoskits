@@ -1,160 +1,81 @@
-# AxVCpu
+<h1 align="center">axvcpu</h1>
 
-[![CI](https://github.com/arceos-hypervisor/x86_vcpu/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/arceos-hypervisor/x86_vcpu/actions/workflows/ci.yml)
+<p align="center">vCPU abstraction for ArceOS hypervisor</p>
 
-AxVCpu is a virtual CPU abstraction library for ArceOS hypervisors, providing a unified, architecture-independent interface for managing virtual CPUs in hypervisor environments.
+<div align="center">
 
-## Features
+[![Crates.io](https://img.shields.io/crates/v/axvcpu.svg)](https://crates.io/crates/axvcpu)
+[![Docs.rs](https://docs.rs/axvcpu/badge.svg)](https://docs.rs/axvcpu)
+[![Rust](https://img.shields.io/badge/edition-2024-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-- **Architecture Agnostic**: Unified interface supporting multiple architectures (x86_64, ARM64, RISC-V)
-- **State Management**: Robust VCpu lifecycle management with clear state transitions
-- **Per-CPU Virtualization**: Efficient per-CPU state management and resource isolation  
-- **Hardware Abstraction**: Clean separation between architecture-specific and common operations
-- **CPU Affinity**: Support for CPU binding and affinity management
-- **Exit Handling**: Comprehensive VM exit reason handling and processing
+</div>
 
-## Architecture
+English | [中文](README_CN.md)
 
-AxVCpu follows a layered architecture design:
+# Introduction
 
-```
-┌─────────────────────────────────────────┐
-│            Application Layer            │  ← Hypervisor/VMM
-├─────────────────────────────────────────┤
-│         AxVCpu Core Interface           │  ← Main API
-├─────────────────────────────────────────┤
-│         Architecture Abstraction        │  ← AxArchVCpu trait
-├─────────────────────────────────────────┤
-│       Hardware Abstraction Layer        │  ← AxVCpuHal trait
-├─────────────────────────────────────────┤
-│     Architecture-Specific Backends      │  ← x86_64, ARM64, etc.
-└─────────────────────────────────────────┘
-```
-
-## Core Components
-
-### VCpu State Machine
-
-```
-Created → Free → Ready → Running → Blocked
-    ↓       ↓      ↓        ↓        ↓
-    └───────┴──────┴────────┴────────┘
-                 Invalid
-```
-
-- **Created**: Initial state after VCpu creation
-- **Free**: Initialized and ready to be bound to a physical CPU
-- **Ready**: Bound to a physical CPU and ready for execution
-- **Running**: Currently executing on a physical CPU
-- **Blocked**: Execution blocked (waiting for I/O, etc.)
-- **Invalid**: Error state when transitions fail
-
-### Key Traits
-
-- `AxArchVCpu`: Architecture-specific VCpu implementation interface
-- `AxVCpuHal`: Hardware abstraction layer for hypervisor operations
-- `AxVCpuExitReason`: VM exit reason enumeration and handling
+`axvcpu` provides vCPU abstraction for ArceOS hypervisor. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
 
 ## Quick Start
 
-Add AxVCpu to your `Cargo.toml`:
+### Installation
+
+Add this crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-axvcpu = "0.1.0"
+axvcpu = "0.5.0"
 ```
 
-### Basic Usage
+### Run Check and Test
+
+```bash
+# Enter the crate directory
+cd components/axvcpu
+
+# Format code
+cargo fmt --all
+
+# Run clippy
+cargo clippy --all-targets --all-features
+
+# Run tests
+cargo test --all-features
+
+# Build documentation
+cargo doc --no-deps
+```
+
+## Integration
+
+### Example
 
 ```rust
-use axvcpu::{AxVCpu, VCpuState};
+use axvcpu as _;
 
-// Mock implementation for example
-struct MyArchVCpu;
-impl AxArchVCpu for MyArchVCpu {
-    // Implement required methods...
-}
-
-// Create a new virtual CPU
-let vcpu = AxVCpu::<MyArchVCpu>::new(
-    vm_id,       // VM identifier
-    vcpu_id,     // VCpu identifier  
-    favor_cpu,   // Preferred physical CPU
-    cpu_set,     // CPU affinity mask
-    config       // Architecture-specific config
-)?;
-
-// Check VCpu state
-assert_eq!(vcpu.state(), VCpuState::Created);
-
-// Setup the VCpu
-vcpu.setup(entry_addr, ept_root, setup_config)?;
-
-// Bind to current physical CPU and run
-vcpu.bind()?;
-let exit_reason = vcpu.run()?;
-
-// Handle VM exit
-match exit_reason {
-    AxVCpuExitReason::Halt => {
-        println!("Guest halted");
-    },
-    AxVCpuExitReason::Io { port, is_write, .. } => {
-        println!("I/O access on port {}", port);
-    },
-    // ... handle other exit reasons
+fn main() {
+    // Integrate `axvcpu` into your project here.
 }
 ```
 
-## Architecture Implementation
+### Documentation
 
-To implement AxVCpu for a new architecture:
+Generate and view API documentation:
 
-```rust
-use axvcpu::AxArchVCpu;
-
-struct MyArchVCpu {
-    // Architecture-specific fields
-}
-
-impl AxArchVCpu for MyArchVCpu {
-    type CreateConfig = MyCreateConfig;
-    type SetupConfig = MySetupConfig;
-
-    fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> AxResult<Self> {
-        // Initialize architecture-specific VCpu
-        Ok(Self { /* ... */ })
-    }
-
-    fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
-        // Set guest entry point
-        Ok(())
-    }
-
-    fn set_ept_root(&mut self, ept_root: HostPhysAddr) -> AxResult {
-        // Configure memory virtualization
-        Ok(())
-    }
-
-    fn setup(&mut self, config: Self::SetupConfig) -> AxResult {
-        // Complete VCpu initialization
-        Ok(())
-    }
-
-    fn run(&mut self) -> AxResult<AxVCpuExitReason> {
-        // Execute guest code until VM exit
-        Ok(AxVCpuExitReason::Halt)
-    }
-
-    // Implement other required methods...
-}
+```bash
+cargo doc --no-deps --open
 ```
 
-## Related Projects
+Online documentation: [docs.rs/axvcpu](https://docs.rs/axvcpu)
 
-- [ArceOS](https://github.com/arceos-org/arceos) - A component-based OS kernel
-- [AxVisor](https://github.com/arceos-hypervisor/axvisor) - A hypervisor implemented based on the ArceOS unikernel framework.
+# Contributing
 
-## License
+1. Fork the repository and create a branch
+2. Run local format and checks
+3. Run local tests relevant to this crate
+4. Submit a PR and ensure CI passes
 
-Axvcpu is licensed under the Apache License, Version 2.0. See the [LICENSE](LICENSE) file for details.
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

@@ -1,31 +1,84 @@
-# ax-handler-table
+<h1 align="center">ax-handler-table</h1>
 
-[![Crates.io](https://img.shields.io/crates/v/ax-handler-table)](https://crates.io/crates/ax-handler-table)
+<p align="center">A lock-free table of event handlers</p>
+
+<div align="center">
+
+[![Crates.io](https://img.shields.io/crates/v/ax-handler-table.svg)](https://crates.io/crates/ax-handler-table)
 [![Docs.rs](https://docs.rs/ax-handler-table/badge.svg)](https://docs.rs/ax-handler-table)
-[![CI](https://github.com/arceos-org/ax-handler-table/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/arceos-org/ax-handler-table/actions/workflows/ci.yml)
+[![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-A lock-free table of event handlers.
+</div>
 
-## Examples
+English | [中文](README_CN.md)
+
+# Introduction
+
+`ax-handler-table` provides A lock-free table of event handlers. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
+
+
+> ax-handler-table was derived from https://github.com/arceos-org/handler_table
+
+## Quick Start
+
+### Installation
+
+Add this crate to your `Cargo.toml`:
+
+```toml
+[dependencies]
+ax-handler-table = "0.3.2"
+```
+
+### Run Check and Test
+
+```bash
+# Enter the crate directory
+cd components/handler_table
+
+# Format code
+cargo fmt --all
+
+# Run clippy
+cargo clippy --all-targets --all-features
+
+# Run tests
+cargo test --all-features
+
+# Build documentation
+cargo doc --no-deps
+```
+
+## Integration
+
+### Example
 
 ```rust
-use ax_handler_table::HandlerTable;
+use ax_handler_table as _;
 
-static TABLE: HandlerTable<8> = HandlerTable::new();
-
-TABLE.register_handler(0, || {
-   println!("Hello, event 0!");
-});
-TABLE.register_handler(1, || {
-   println!("Hello, event 1!");
-});
-
-assert!(TABLE.handle(0)); // print "Hello, event 0!"
-assert!(!TABLE.handle(2)); // unregistered
-
-assert!(TABLE.unregister_handler(2).is_none());
-let func = TABLE.unregister_handler(1).unwrap(); // retrieve the handler
-func(); // print "Hello, event 1!"
-
-assert!(!TABLE.handle(1)); // unregistered
+fn main() {
+    // Integrate `ax-handler-table` into your project here.
+}
 ```
+
+### Documentation
+
+Generate and view API documentation:
+
+```bash
+cargo doc --no-deps --open
+```
+
+Online documentation: [docs.rs/ax-handler-table](https://docs.rs/ax-handler-table)
+
+# Contributing
+
+1. Fork the repository and create a branch
+2. Run local format and checks
+3. Run local tests relevant to this crate
+4. Submit a PR and ensure CI passes
+
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

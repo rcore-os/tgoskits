@@ -1,15 +1,13 @@
 [package]
 name = "ax-plat-aarch64-peripherals"
 version.workspace = true
+repository.workspace = true
 description = "ARM64 common peripheral drivers with `axplat` compatibility"
-documentation = "https://docs.rs/ax-plat-aarch64-peripherals"
 keywords = ["arceos", "os", "hal", "peripheral", "aarch64"]
 categories = ["embedded", "no-std", "hardware-support", "os"]
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-homepage.workspace = true
-repository.workspace = true
 
 [features]
 irq = ["ax-plat/irq"]

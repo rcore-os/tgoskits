@@ -337,7 +337,6 @@ dependencies = [
  "ax-percpu",
  "axbacktrace",
  "cfg-if",
- "linkme",
  "log",
  "loongArch64",
  "riscv",
@@ -619,7 +618,6 @@ dependencies = [
  "cfg-if",
  "fdt-parser",
  "heapless 0.9.2",
- "linkme",
  "log",
  "spin 0.10.0",
 ]
@@ -1148,15 +1146,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "axallocator"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3894f6027940d4b013f1d1f9e2e61b47a9e4a7dbf1a0ba10dd33e7bb265ea733"
-dependencies = [
- "cfg-if",
-]
-
-[[package]]
 name = "axbacktrace"
 version = "0.3.2"
 dependencies = [
@@ -1349,12 +1338,10 @@ dependencies = [
 
 [[package]]
 name = "buddy-slab-allocator"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e10a1b61411589daf2647252449679e12ae5a07adef75d9f3eac1978b7d9986"
+version = "0.4.0"
 dependencies = [
- "axallocator",
- "cfg-if",
+ "log",
+ "spin 0.10.0",
 ]
 
 [[package]]
@@ -2253,26 +2240,6 @@ checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
 dependencies = [
  "cfg-if",
  "windows-link",
-]
-
-[[package]]
-name = "linkme"
-version = "0.3.35"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e3283ed2d0e50c06dd8602e0ab319bb048b6325d0bba739db64ed8205179898"
-dependencies = [
- "linkme-impl",
-]
-
-[[package]]
-name = "linkme-impl"
-version = "0.3.35"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5cec0ec4228b4853bb129c84dbf093a27e6c7a20526da046defc334a1b017f7"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
 ]
 
 [[package]]

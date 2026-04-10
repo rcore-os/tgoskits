@@ -1,79 +1,84 @@
-# axplat-aarch64-raspi
+<h1 align="center">ax-plat-aarch64-raspi</h1>
 
-[![Crates.io](https://img.shields.io/crates/v/axplat-aarch64-raspi)](https://crates.io/crates/axplat-aarch64-raspi)
-[![CI](https://github.com/arceos-org/axplat_crates/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/arceos-org/axplat_crates/actions/workflows/ci.yml)
+<p align="center">Implementation of `axplat` hardware abstraction layer for Raspberry Pi 4B board</p>
 
-Implementation of [axplat](https://github.com/arceos-org/axplat_crates/tree/main/axplat) hardware abstraction layer for Raspberry Pi 4B board.
+<div align="center">
 
-## Install
+[![Crates.io](https://img.shields.io/crates/v/ax-plat-aarch64-raspi.svg)](https://crates.io/crates/ax-plat-aarch64-raspi)
+[![Docs.rs](https://docs.rs/ax-plat-aarch64-raspi/badge.svg)](https://docs.rs/ax-plat-aarch64-raspi)
+[![Rust](https://img.shields.io/badge/edition-2024-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+
+</div>
+
+English | [中文](README_CN.md)
+
+# Introduction
+
+`ax-plat-aarch64-raspi` provides Implementation of `axplat` hardware abstraction layer for Raspberry Pi 4B board. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
+
+
+> ax-plat-aarch64-raspi was derived from https://github.com/arceos-org/axplat_crates
+
+## Quick Start
+
+### Installation
+
+Add this crate to your `Cargo.toml`:
+
+```toml
+[dependencies]
+ax-plat-aarch64-raspi = "0.5.1"
+```
+
+### Run Check and Test
 
 ```bash
-cargo +nightly add axplat axplat-aarch64-raspi
+# Enter the crate directory
+cd components/axplat_crates/platforms/axplat-aarch64-raspi
+
+# Format code
+cargo fmt --all
+
+# Run clippy
+cargo clippy --all-targets --all-features
+
+# Run tests
+cargo test --all-features
+
+# Build documentation
+cargo doc --no-deps
 ```
 
-## Usage
+## Integration
 
-#### 1. Write your kernel code
+### Example
 
 ```rust
-#[ax_plat::main]
-fn kernel_main(cpu_id: usize, arg: usize) -> ! {
-    // Initialize trap, console, time.
-    ax_plat::init::init_early(cpu_id, arg);
-    // Initialize platform peripherals (not used in this example).
-    ax_plat::init::init_later(cpu_id, arg);
+use ax_plat_aarch64_raspi as _;
 
-    // Write your kernel code here.
-    ax_plat::console_println!("Hello, ArceOS!");
-
-    // Power off the system.
-    ax_plat::power::system_off();
+fn main() {
+    // Integrate `ax-plat-aarch64-raspi` into your project here.
 }
 ```
 
-#### 2. Link your kernel with this package
+### Documentation
 
-```rust
-// Can be located at any dependency crate.
-extern crate axplat_aarch64_raspi;
+Generate and view API documentation:
+
+```bash
+cargo doc --no-deps --open
 ```
 
-#### 3. Use a linker script like the following
+Online documentation: [docs.rs/ax-plat-aarch64-raspi](https://docs.rs/ax-plat-aarch64-raspi)
 
-```text
-ENTRY(_start)
-SECTIONS
-{
-    . = 0xffff000000080000;
+# Contributing
 
-    .text : ALIGN(4K) {
-        *(.text.boot)               /* This section is required */
-        *(.text .text.*)
-    }
+1. Fork the repository and create a branch
+2. Run local format and checks
+3. Run local tests relevant to this crate
+4. Submit a PR and ensure CI passes
 
-    .rodata : ALIGN(4K) {
-        *(.rodata .rodata.*)
-    }
+# License
 
-    .data : ALIGN(4K) {
-        *(.data .data.*)
-    }
-
-    .bss : ALIGN(4K) {
-        *(.bss.stack)               /* This section is required */
-        . = ALIGN(4K);
-        *(.bss .bss.*)
-        *(COMMON)
-    }
-
-    /DISCARD/ : {
-        *(.comment)
-    }
-}
-```
-
-Some sections are required to be defined in the linker script, listed as below:
-- `.text.boot`: Kernel boot code.
-- `.bss.stack`: Stack for kernel booting.
-
-[hello-kernel](https://github.com/arceos-org/axplat_crates/tree/main/examples/hello-kernel) is a complete example of a minimal kernel implemented using [axplat](https://github.com/arceos-org/axplat_crates/tree/main/axplat) and related platform packages.
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

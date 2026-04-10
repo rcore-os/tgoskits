@@ -43,5 +43,5 @@ Documentation of ArceOS [modules](../modules), [api](../api), and [ulib](../ulib
 
 * [Rust std support](https://github.com/arceos-org/arceos/discussions/92)
 * [ArceOS for ARM64](https://github.com/arceos-org/arceos/discussions/101)
-* [ArceOS for RISCV Hardware](https://github.com/arceos-org/arceos/discussions/120)
+* [ArceOS for RISC-V Hardware](https://github.com/arceos-org/arceos/discussions/120)
 * [Per-CPU scheduling](https://github.com/arceos-org/arceos/discussions/181)

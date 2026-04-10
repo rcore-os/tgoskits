@@ -1,20 +1,18 @@
 [package]
 name = "ax-alloc"
 version.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "ArceOS global memory allocator"
-homepage.workspace = true
 license.workspace = true
-repository = "https://github.com/arceos-org/arceos/tree/main/modules/axalloc"
 
 [features]
 default = ["tlsf", "ax-allocator/page-alloc-256m"]
-buddy-slab = ["dep:buddy-slab-allocator"]
+buddy-slab = ["dep:buddy-slab-allocator", "dep:ax-percpu"]
 buddy = ["dep:ax-allocator", "ax-allocator/buddy"]
 slab = ["dep:ax-allocator", "ax-allocator/slab"]
 tlsf = ["dep:ax-allocator", "ax-allocator/tlsf"]
-level-1 = []
 page-alloc-4g = [
     "dep:ax-allocator",
     "ax-allocator/page-alloc-4g",

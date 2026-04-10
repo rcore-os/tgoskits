@@ -1,15 +1,13 @@
 [package]
 name = "ax-plat-x86-pc"
 version.workspace = true
+repository.workspace = true
 description = "Implementation of `axplat` hardware abstraction layer for x86 Standard PC machine."
-documentation = "https://docs.rs/ax-plat-x86-pc"
 keywords = ["arceos", "os", "hal", "x86"]
 categories = ["no-std", "hardware-support", "os"]
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-homepage.workspace = true
-repository.workspace = true
 
 [features]
 fp-simd = ["ax-cpu/fp-simd"]

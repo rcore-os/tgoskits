@@ -3,14 +3,12 @@ name = "smp-kernel"
 version = "0.3.0"
 edition.workspace = true
 authors.workspace = true
-license.workspace = true
-homepage.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [dependencies]
 ax-config-macros = "0.4.1"
 cfg-if = "1.0"
-linkme = "0.3.33"
 ax-percpu.workspace = true
 const-str = "1.0"
 ax-memory-addr = "0.6.1"

@@ -3,6 +3,7 @@ name = "bwbench-client"
 version = "0.3.0"
 edition = "2024"
 authors = ["ChengXiang Qi <kuangjux@outlook.com>"]
+license.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -11,3 +12,7 @@ chrono = "0.4"
 libc = "0.2.18"
 
 [workspace]
+
+
+[workspace.package]
+license = "Apache-2.0"

@@ -1,51 +1,81 @@
-# axklib
+<h1 align="center">axklib</h1>
+
+<p align="center">Small kernel-helper abstractions used across the microkernel</p>
+
+<div align="center">
 
 [![Crates.io](https://img.shields.io/crates/v/axklib.svg)](https://crates.io/crates/axklib)
-[![Docs](https://img.shields.io/badge/docs-latest-blue.svg)](https://numpy1314.github.io/axklib)
-[![License](https://img.shields.io/crates/l/axklib.svg)](https://github.com/numpy1314/axklib/blob/main/LICENSE)
+[![Docs.rs](https://docs.rs/axklib/badge.svg)](https://docs.rs/axklib)
+[![Rust](https://img.shields.io/badge/edition-2024-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-**axklib** — Small kernel-helper abstractions used across the ArceOS microkernel.
+</div>
 
-## Overview
+English | [中文](README_CN.md)
 
-This crate exposes a tiny, `no_std`-compatible trait (`Klib`) that the platform/board layer must implement. The trait provides a handful of common kernel helpers such as:
+# Introduction
 
-- Memory mapping helpers
-- Timing utilities (busy-wait)
-- IRQ registration and enabling/disabling
+`axklib` provides Small kernel-helper abstractions used across the microkernel. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
 
-The implementation is typically supplied by the platform layer (e.g., `modules/axklib-impl`) and consumed by drivers and other modules.
+## Quick Start
 
-The crate also provides small convenience modules (`mem`, `time`, `irq`) that re-export the trait methods with shorter names to make call sites more ergonomic.
+### Installation
 
-## Usage
-
-Add this to your `Cargo.toml`:
+Add this crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-axklib = "0.2.0"
+axklib = "0.5.0"
 ```
 
-## Example
+### Run Check and Test
+
+```bash
+# Enter the crate directory
+cd components/axklib
+
+# Format code
+cargo fmt --all
+
+# Run clippy
+cargo clippy --all-targets --all-features
+
+# Run tests
+cargo test --all-features
+
+# Build documentation
+cargo doc --no-deps
+```
+
+## Integration
+
+### Example
 
 ```rust
-// 1. Map 4K of device MMIO at physical address `paddr`
-// Returns ax_errno::AxResult<VirtAddr>
-let vaddr = axklib::mem::iomap(paddr, 0x1000)?;
+use axklib as _;
 
-// 2. Busy-wait for 100 microseconds
-axklib::time::busy_wait(core::time::Duration::from_micros(100));
-
-// 3. Register an IRQ handler
-// Returns bool indicating success
-axklib::irq::register(32, my_irq_handler);
-
-fn my_irq_handler() {
-    // Handle interrupt...
+fn main() {
+    // Integrate `axklib` into your project here.
 }
 ```
 
-## License
+### Documentation
 
-Axklib is licensed under the Apache License, Version 2.0. See the [LICENSE](./LICENSE) file for details.
+Generate and view API documentation:
+
+```bash
+cargo doc --no-deps --open
+```
+
+Online documentation: [docs.rs/axklib](https://docs.rs/axklib)
+
+# Contributing
+
+1. Fork the repository and create a branch
+2. Run local format and checks
+3. Run local tests relevant to this crate
+4. Submit a PR and ensure CI passes
+
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

@@ -11,18 +11,18 @@ pub enum Command {
     Build(ArgsBuild),
     /// Build and run Axvisor in QEMU
     Qemu(ArgsQemu),
-    /// Build and run Axvisor with U-Boot
-    Uboot(ArgsUboot),
     /// Build and run Axvisor on a remote board
     Board(ArgsBoard),
+    /// Run Axvisor test suites
+    Test(ArgsTest),
+    /// Build and run Axvisor with U-Boot
+    Uboot(ArgsUboot),
     /// Generate a default board config
     Defconfig(ArgsDefconfig),
     /// Board config helpers
     Config(ArgsConfig),
     /// Guest image management
     Image(super::image::Args),
-    /// Run Axvisor test suites
-    Test(ArgsTest),
 }
 
 #[derive(Args, Clone)]

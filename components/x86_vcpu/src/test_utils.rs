@@ -59,10 +59,7 @@ pub mod mock {
         }
 
         /// Allocate a number of contiguous frames, with a specified alignment.
-        fn alloc_contiguous_frames(
-            _num_frames: usize,
-            _frame_align_pow2: usize,
-        ) -> Option<PhysAddr> {
+        fn alloc_contiguous_frames(_num_frames: usize, _frame_align: usize) -> Option<PhysAddr> {
             unimplemented!()
         }
 

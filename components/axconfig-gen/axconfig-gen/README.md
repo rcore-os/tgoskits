@@ -1,68 +1,84 @@
-# ax-config-gen
+<h1 align="center">ax-config-gen</h1>
 
-A TOML-based configuration generation tool for [ArceOS](https://github.com/arceos-org/arceos).
+<p align="center">A TOML-based configuration generation tool for ArceOS</p>
 
-### Executable Usage
+<div align="center">
 
-```text
-Usage: ax-config-gen [OPTIONS] <SPEC>...
+[![Crates.io](https://img.shields.io/crates/v/ax-config-gen.svg)](https://crates.io/crates/ax-config-gen)
+[![Docs.rs](https://docs.rs/ax-config-gen/badge.svg)](https://docs.rs/ax-config-gen)
+[![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-Arguments:
-  <SPEC>...  Paths to the config specification files
+</div>
 
-Options:
-  -c, --oldconfig <OLDCONFIG>  Path to the old config file
-  -o, --output <OUTPUT>        Path to the output config file
-  -f, --fmt <FMT>              The output format [default: toml] [possible values: toml, rust]
-  -r, --read <RD_CONFIG>       Getting a config item with format `table.key`
-  -w, --write <WR_CONFIG>      Setting a config item with format `table.key=value`
-  -v, --verbose                Verbose mode
-  -h, --help                   Print help
-  -V, --version                Print version
+English | [中文](README_CN.md)
+
+# Introduction
+
+`ax-config-gen` provides A TOML-based configuration generation tool for ArceOS. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
+
+
+> ax-config-gen was derived from https://github.com/arceos-org/axconfig-gen
+
+## Quick Start
+
+### Installation
+
+Add this crate to your `Cargo.toml`:
+
+```toml
+[dependencies]
+ax-config-gen = "0.4.1"
 ```
 
-For example, to generate a config file `.axconfig.toml` from the config specifications distributed in `a.toml` and `b.toml`, you can run:
+### Run Check and Test
 
-```console
-$ ax-config-gen a.toml b.toml -o .axconfig.toml -f toml
+```bash
+# Enter the crate directory
+cd components/axconfig-gen/axconfig-gen
+
+# Format code
+cargo fmt --all
+
+# Run clippy
+cargo clippy --all-targets --all-features
+
+# Run tests
+cargo test --all-features
+
+# Build documentation
+cargo doc --no-deps
 ```
 
-See [defconfig.toml](https://github.com/arceos-org/axconfig-gen/blob/main/example-configs/defconfig.toml) for an example of a config specification file.
+## Integration
 
-Value types are necessary for generating Rust constant definitions. Types can be specified by the comment following the config item. Currently supported types are `bool`, `int`, `uint`, `str`, `(type1, type2, ...)` for tuples, and `[type]` for arrays. If no type is specified, it will try to infer the type from the value.
-
-### Library Usage
+### Example
 
 ```rust
-use ax_config_gen::{Config, OutputFormat};
+use ax_config_gen as _;
 
-let config_toml = r#"
-are-you-ok = true
-one-two-three = 123
-
-[hello]
-"one-two-three" = "456"     # int
-array = [1, 2, 3]           # [uint]
-tuple = [1, "abc", 3]
-"#;
-
-let config = Config::from_toml(config_toml).unwrap();
-let rust_code = config.dump(OutputFormat::Rust).unwrap();
-
-assert_eq!(rust_code,
-r#"pub const ARE_YOU_OK: bool = true;
-pub const ONE_TWO_THREE: usize = 123;
-
-pub mod hello {
-    pub const ARRAY: &[usize] = &[1, 2, 3];
-    pub const ONE_TWO_THREE: isize = 456;
-    pub const TUPLE: (usize, &str, usize) = (1, "abc", 3);
+fn main() {
+    // Integrate `ax-config-gen` into your project here.
 }
-"#);
 ```
 
-### Related libraries
+### Documentation
 
-There is also a procedural macro library [`ax-config-macros`](https://docs.rs/ax-config-macros) that can be
-used to include TOML files in your project and convert them to Rust code at
-compile time.
+Generate and view API documentation:
+
+```bash
+cargo doc --no-deps --open
+```
+
+Online documentation: [docs.rs/ax-config-gen](https://docs.rs/ax-config-gen)
+
+# Contributing
+
+1. Fork the repository and create a branch
+2. Run local format and checks
+3. Run local tests relevant to this crate
+4. Submit a PR and ensure CI passes
+
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

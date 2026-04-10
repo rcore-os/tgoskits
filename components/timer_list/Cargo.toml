@@ -1,14 +1,12 @@
 [package]
 name = "ax-timer-list"
 version = "0.3.0"
+repository = "https://github.com/rcore-os/tgoskits"
 edition = "2021"
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "A list of timed events that will be triggered sequentially when the timer expires"
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
-homepage = "https://github.com/arceos-org/arceos"
-repository = "https://github.com/arceos-org/timer_list"
-documentation = "https://docs.rs/ax-timer-list"
 keywords = ["arceos", "timer", "events"]
 categories = ["no-std", "data-structures", "date-and-time"]
+license = "Apache-2.0"
 
 [dependencies]

@@ -6,13 +6,15 @@
 //! be registered as the standard library's default allocator.
 
 #![no_std]
+#![cfg_attr(feature = "buddy-slab", feature(extern_item_impls))]
 
 #[macro_use]
 extern crate log;
 extern crate alloc;
 
-use core::fmt;
+use core::{alloc::Layout, fmt, ptr::NonNull};
 
+use ax_errno::AxError;
 use strum::{IntoStaticStr, VariantArray};
 
 const PAGE_SIZE: usize = 0x1000;
@@ -75,25 +77,126 @@ impl fmt::Debug for Usages {
     }
 }
 
-// Select implementation based on features
-// When axvisor is enabled, use axvisor_impl (axallocator features are ignored)
-#[cfg(feature = "buddy-slab")]
-mod axvisor_impl;
-#[cfg(feature = "buddy-slab")]
-use axvisor_impl as imp;
+/// The error type used for allocation operations in `ax-alloc`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AllocError {
+    /// Invalid size, alignment, or other input parameter.
+    InvalidParam,
+    /// The allocator has already been initialized.
+    AlreadyInitialized,
+    /// A region overlaps with an existing managed region.
+    MemoryOverlap,
+    /// Not enough memory is available to satisfy the request.
+    NoMemory,
+    /// Attempted to deallocate memory that was not allocated.
+    NotAllocated,
+    /// The allocator has not been initialized.
+    NotInitialized,
+    /// The requested address or entity was not found.
+    NotFound,
+}
 
-// When axvisor is not enabled, use default_impl with axallocator
+/// A [`Result`] alias with [`AllocError`] as the error type.
+pub type AllocResult<T = ()> = Result<T, AllocError>;
+
+impl From<AllocError> for AxError {
+    fn from(value: AllocError) -> Self {
+        match value {
+            AllocError::NoMemory => AxError::NoMemory,
+            AllocError::NotFound => AxError::NotFound,
+            AllocError::NotInitialized | AllocError::AlreadyInitialized => AxError::BadState,
+            AllocError::MemoryOverlap => AxError::AlreadyExists,
+            AllocError::InvalidParam | AllocError::NotAllocated => AxError::InvalidInput,
+        }
+    }
+}
+
+#[cfg(feature = "buddy-slab")]
+/// Platform hooks required by the buddy-slab backend.
+pub mod eii {
+    /// Translate a virtual address to a physical address.
+    #[eii(ax_alloc_virt_to_phys_impl)]
+    pub fn virt_to_phys(vaddr: usize) -> usize;
+}
+
+/// Unified allocator operations provided by all `ax-alloc` backends.
+pub trait AllocatorOps {
+    /// Returns the allocator name.
+    fn name(&self) -> &'static str;
+
+    /// Initializes the allocator with the given region.
+    fn init(&self, start_vaddr: usize, size: usize) -> AllocResult;
+
+    /// Adds an extra memory region to the allocator.
+    fn add_memory(&self, start_vaddr: usize, size: usize) -> AllocResult;
+
+    /// Allocates arbitrary bytes.
+    fn alloc(&self, layout: Layout) -> AllocResult<NonNull<u8>>;
+
+    /// Deallocates a prior byte allocation.
+    fn dealloc(&self, pos: NonNull<u8>, layout: Layout);
+
+    /// Allocates contiguous pages.
+    ///
+    /// `align` is the requested byte alignment, not a log2/exponent.
+    /// It must be a power-of-two byte alignment accepted by the backend page allocator.
+    fn alloc_pages(&self, num_pages: usize, align: usize, kind: UsageKind) -> AllocResult<usize>;
+
+    /// Allocates contiguous DMA32 pages.
+    ///
+    /// `align` is the requested byte alignment, not a log2/exponent.
+    /// It must be a power-of-two byte alignment accepted by the backend page allocator.
+    fn alloc_dma32_pages(
+        &self,
+        num_pages: usize,
+        align: usize,
+        kind: UsageKind,
+    ) -> AllocResult<usize>;
+
+    /// Allocates contiguous pages starting from the given address.
+    ///
+    /// `align` is the requested byte alignment, not a log2/exponent.
+    /// It must be a power-of-two byte alignment accepted by the backend page allocator.
+    fn alloc_pages_at(
+        &self,
+        start: usize,
+        num_pages: usize,
+        align: usize,
+        kind: UsageKind,
+    ) -> AllocResult<usize>;
+
+    /// Deallocates a prior page allocation.
+    fn dealloc_pages(&self, pos: usize, num_pages: usize, kind: UsageKind);
+
+    /// Returns used byte count.
+    fn used_bytes(&self) -> usize;
+
+    /// Returns available byte count.
+    fn available_bytes(&self) -> usize;
+
+    /// Returns used page count.
+    fn used_pages(&self) -> usize;
+
+    /// Returns available page count.
+    fn available_pages(&self) -> usize;
+
+    /// Returns usage statistics.
+    fn usages(&self) -> Usages;
+}
+
+// Select implementation based on features.
+#[cfg(feature = "buddy-slab")]
+mod buddy_slab;
+#[cfg(feature = "buddy-slab")]
+use buddy_slab as imp;
+
 #[cfg(not(feature = "buddy-slab"))]
 mod default_impl;
 #[cfg(not(feature = "buddy-slab"))]
 use default_impl as imp;
-// Re-export AddrTranslator when using buddy-slab implementation
 #[cfg(feature = "buddy-slab")]
-pub use imp::AddrTranslator;
-// Re-export DefaultByteAllocator from both implementations
-pub use imp::DefaultByteAllocator;
-// Re-export types and functions from the implementation
-pub use imp::{GlobalAllocator, global_add_memory, global_init};
+pub use imp::init_precpu_slab;
+pub use imp::{DefaultByteAllocator, GlobalAllocator, global_add_memory, global_init};
 
 /// Returns the reference to the global allocator.
 pub fn global_allocator() -> &'static GlobalAllocator {

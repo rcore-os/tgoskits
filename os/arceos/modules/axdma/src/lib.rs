@@ -8,11 +8,8 @@ mod dma;
 
 use core::{alloc::Layout, ptr::NonNull};
 
-#[cfg(not(feature = "buddy-slab"))]
-use ax_allocator::AllocResult;
+use ax_alloc::AllocResult;
 use ax_memory_addr::PhysAddr;
-#[cfg(feature = "buddy-slab")]
-use buddy_slab_allocator::AllocResult;
 
 use self::dma::ALLOCATOR;
 

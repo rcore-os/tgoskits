@@ -1,15 +1,13 @@
 [package]
 name = "ax-plat"
 version.workspace = true
+repository.workspace = true
 description = "This crate provides a unified abstraction layer for diverse hardware platforms."
-documentation = "https://docs.rs/ax-plat"
 keywords = ["arceos", "os", "hal", "embedded"]
 categories = ["embedded", "no-std", "hardware-support", "os"]
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-homepage.workspace = true
-repository.workspace = true
 
 [features]
 smp = ["ax-kspin/smp"]

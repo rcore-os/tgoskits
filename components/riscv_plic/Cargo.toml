@@ -1,15 +1,13 @@
 [package]
 name = "ax-riscv-plic"
 version = "0.4.0"
+repository = "https://github.com/rcore-os/tgoskits"
 edition = "2024"
 authors = ["Keyang Hu <keyang.hu@qq.com>"]
 description = "RISC-V platform-level interrupt controller (PLIC) register definitions and basic operations"
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
-homepage = "https://github.com/arceos-org/arceos"
-repository = "https://github.com/arceos-org/ax-riscv-plic"
-documentation = "https://docs.rs/ax-riscv-plic"
 keywords = ["arceos", "riscv", "riscv64", "plic", "interrupt-controller"]
 categories = ["embedded", "no-std", "hardware-support", "os"]
+license = "Apache-2.0"
 
 [dependencies]
 tock-registers = "0.10"

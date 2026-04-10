@@ -1,69 +1,84 @@
-# ax-lazyinit
+<h1 align="center">ax-lazyinit</h1>
 
-[![Crates.io](https://img.shields.io/crates/v/ax-lazyinit)](https://crates.io/crates/ax-lazyinit)
+<p align="center">Initialize a static value lazily</p>
+
+<div align="center">
+
+[![Crates.io](https://img.shields.io/crates/v/ax-lazyinit.svg)](https://crates.io/crates/ax-lazyinit)
 [![Docs.rs](https://docs.rs/ax-lazyinit/badge.svg)](https://docs.rs/ax-lazyinit)
-[![CI](https://github.com/arceos-org/lazyinit/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/arceos-org/lazyinit/actions/workflows/ci.yml)
+[![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-Initialize a static value lazily.
+</div>
 
-The crate provides a type for initializing static values lazily in a thread-safe manner.  
-Unlike compile-time initialization or macro-based solutions like [`lazy_static`][1], this type allows runtime initialization with arbitrary logic while guaranteeing that initialization occurs exactly once across all threads.
+English | [中文](README_CN.md)
 
-The core abstraction is a struct that wraps a value and manages its initialization state through atomic operations. The value remains uninitialized until the first call to `init_once` or `call_once`, at which point it becomes permanently initialized and accessible.
+# Introduction
 
-[1]: https://docs.rs/lazy_static
+`ax-lazyinit` provides Initialize a static value lazily. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
 
-## Features
 
-- Thread-Safe Initialization: Guarantees exactly one initialization across multiple threads
-- Flexible Initialization: Supports both direct value initialization and closure-based initialization
-- Safe Access Patterns: Provides both safe and unsafe access methods
-- State Inspection: Allows checking initialization status without accessing the value
-- Direct Access: Implements `Deref` and `DerefMut` for transparent access after initialization
-- No-std Compatibility: Works in embedded and kernel environments without the standard library. No external dependencies.
+> ax-lazyinit was derived from https://github.com/arceos-org/lazyinit
 
-## Examples
+## Quick Start
 
-```rust
-use ax_lazyinit::LazyInit;
+### Installation
 
-static VALUE: LazyInit<u32> = LazyInit::new();
-assert!(!VALUE.is_inited());
-// println!("{}", *VALUE); // panic: use uninitialized value
-assert_eq!(VALUE.get(), None);
+Add this crate to your `Cargo.toml`:
 
-VALUE.init_once(233);
-// VALUE.init_once(666); // panic: already initialized
-assert!(VALUE.is_inited());
-assert_eq!(*VALUE, 233);
-assert_eq!(VALUE.get(), Some(&233));
+```toml
+[dependencies]
+ax-lazyinit = "0.4.2"
 ```
 
-Only one of the multiple initializations can succeed:
+### Run Check and Test
+
+```bash
+# Enter the crate directory
+cd components/ax-lazyinit
+
+# Format code
+cargo fmt --all
+
+# Run clippy
+cargo clippy --all-targets --all-features
+
+# Run tests
+cargo test --all-features
+
+# Build documentation
+cargo doc --no-deps
+```
+
+## Integration
+
+### Example
 
 ```rust
-use ax_lazyinit::LazyInit;
-use std::time::Duration;
+use ax_lazyinit as _;
 
-const N: usize = 16;
-static VALUE: LazyInit<usize> = LazyInit::new();
-
-let threads = (0..N)
-    .map(|i| {
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(10));
-            VALUE.call_once(|| i)
-        })
-    })
-    .collect::<Vec<_>>();
-
-let mut ok = 0;
-for (i, thread) in threads.into_iter().enumerate() {
-    if thread.join().unwrap().is_some() {
-        ok += 1;
-        assert_eq!(*VALUE, i);
-    }
+fn main() {
+    // Integrate `ax-lazyinit` into your project here.
 }
-
-assert_eq!(ok, 1);
 ```
+
+### Documentation
+
+Generate and view API documentation:
+
+```bash
+cargo doc --no-deps --open
+```
+
+Online documentation: [docs.rs/ax-lazyinit](https://docs.rs/ax-lazyinit)
+
+# Contributing
+
+1. Fork the repository and create a branch
+2. Run local format and checks
+3. Run local tests relevant to this crate
+4. Submit a PR and ensure CI passes
+
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

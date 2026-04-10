@@ -1,19 +1,18 @@
 [package]
 name = "ax-runtime"
 version.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 description = "Runtime library of ArceOS"
 license.workspace = true
-homepage.workspace = true
-repository = "https://github.com/arceos-org/arceos/tree/main/modules/axruntime"
 
 [features]
 default = []
 
 alloc = ["dep:ax-alloc"]
 dma = ["paging"]
-buddy-slab = ["ax-alloc/buddy-slab"]
+buddy-slab = ["alloc", "ax-alloc/buddy-slab"]
 ipi = ["dep:ax-ipi"]
 irq = ["ax-hal/irq", "ax-task?/irq", "dep:ax-percpu"]
 multitask = ["ax-task/multitask"]

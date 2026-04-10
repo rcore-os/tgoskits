@@ -599,7 +599,7 @@ impl AxRunQueue {
 
             (*prev_ctx_ptr).switch_to(&*next_ctx_ptr);
 
-            // Current it's **next_task** running on this CPU, clear the `prev_task`'s `on_cpu` field
+            // The current task is now **next_task** on this CPU, so clear `prev_task.on_cpu`
             // to indicate that it has finished its scheduling process and no longer running on this CPU.
             #[cfg(feature = "smp")]
             clear_prev_task_on_cpu();

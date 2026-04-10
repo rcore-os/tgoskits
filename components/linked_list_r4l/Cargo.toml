@@ -1,14 +1,12 @@
 [package]
 name = "ax-linked-list-r4l"
 version = "0.5.0"
+repository = "https://github.com/rcore-os/tgoskits"
 edition = "2021"
 authors = ["Wedson Almeida Filho <wedsonaf@google.com>", "WeiKang Guo <guoweikang.kernel@gmail.com>"]
 description = "Linked lists that supports arbitrary removal in constant time"
-license = "GPL-2.0-or-later"
-homepage = "https://github.com/arceos-org/arceos"
-repository = "https://github.com/arceos-org/linked_list_r4l"
-documentation = "https://docs.rs/ax-linked-list-r4l"
 keywords = ["list"]
 categories = ["no-std", "rust-patterns"]
+license = "Apache-2.0"
 
 [dependencies]

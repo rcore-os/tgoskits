@@ -5,9 +5,9 @@ use anyhow::anyhow;
 use super::{
     ARCEOS_SNAPSHOT_FILE, AppContext, ArceosCommandSnapshot, ArceosQemuSnapshot,
     ArceosUbootSnapshot, AxvisorCliArgs, AxvisorCommandSnapshot, AxvisorQemuSnapshot,
-    AxvisorUbootSnapshot, BuildCliArgs, DEFAULT_ARCEOS_TARGET, ResolvedAxvisorRequest,
-    ResolvedBuildRequest, ResolvedStarryRequest, STARRY_PACKAGE, StarryCliArgs,
-    StarryCommandSnapshot, StarryQemuSnapshot, StarryUbootSnapshot,
+    AxvisorUbootSnapshot, BuildCliArgs, ResolvedAxvisorRequest, ResolvedBuildRequest,
+    ResolvedStarryRequest, STARRY_PACKAGE, StarryCliArgs, StarryCommandSnapshot,
+    StarryQemuSnapshot, StarryUbootSnapshot, resolve_arceos_arch_and_target,
     resolve_axvisor_arch_and_target, resolve_starry_arch_and_target,
 };
 
@@ -36,11 +36,21 @@ impl AppContext {
                     ARCEOS_SNAPSHOT_FILE
                 )
             })?;
-        let target = cli
-            .target
-            .clone()
-            .or_else(|| snapshot.target.clone())
-            .unwrap_or_else(|| DEFAULT_ARCEOS_TARGET.to_string());
+        let effective_arch = cli.arch.clone().or_else(|| {
+            if cli.target.is_some() {
+                None
+            } else {
+                snapshot.arch.clone()
+            }
+        });
+        let effective_target = cli.target.clone().or_else(|| {
+            if cli.arch.is_some() {
+                None
+            } else {
+                snapshot.target.clone()
+            }
+        });
+        let (arch, target) = resolve_arceos_arch_and_target(effective_arch, effective_target)?;
         let plat_dyn = cli.plat_dyn.or(snapshot.plat_dyn);
         let runtime_paths = self.resolve_runtime_paths(
             qemu_config,
@@ -53,6 +63,7 @@ impl AppContext {
 
         let request = ResolvedBuildRequest {
             package: package.clone(),
+            arch: arch.clone(),
             target: target.clone(),
             plat_dyn,
             build_info_path,
@@ -62,6 +73,7 @@ impl AppContext {
 
         let snapshot = ArceosCommandSnapshot {
             package: Some(package),
+            arch: Some(arch),
             target: Some(target),
             plat_dyn,
             qemu: ArceosQemuSnapshot {
@@ -188,9 +200,9 @@ impl AppContext {
     ) -> anyhow::Result<(ResolvedAxvisorRequest, AxvisorCommandSnapshot)> {
         let axvisor_dir = self.axvisor_dir()?.to_path_buf();
         let snapshot = AxvisorCommandSnapshot::load(&self.root)?;
-        let explicit_config =
+        let resolved_config =
             self.resolve_command_path(cli.config.clone(), snapshot.config.as_ref());
-        let config_target = explicit_config
+        let config_target = resolved_config
             .as_ref()
             .filter(|path| path.exists())
             .map(|path| crate::axvisor::build::load_target_from_build_config(path))
@@ -212,6 +224,12 @@ impl AppContext {
             }
         });
         let (arch, target) = resolve_axvisor_arch_and_target(effective_arch, effective_target)?;
+        let explicit_config = normalize_axvisor_build_config_path(
+            cli.config.as_ref(),
+            &axvisor_dir,
+            &target,
+            resolved_config,
+        )?;
         let plat_dyn = cli.plat_dyn.or(snapshot.plat_dyn);
         let build_info_path =
             crate::axvisor::build::resolve_build_info_path(&axvisor_dir, &target, explicit_config)?;
@@ -321,6 +339,39 @@ impl AppContext {
             self.root.join(path)
         }
     }
+}
+
+fn normalize_axvisor_build_config_path(
+    cli_config: Option<&PathBuf>,
+    axvisor_dir: &Path,
+    target: &str,
+    resolved_config: Option<PathBuf>,
+) -> anyhow::Result<Option<PathBuf>> {
+    if cli_config.is_some() {
+        return Ok(resolved_config);
+    }
+
+    let Some(path) = resolved_config else {
+        return Ok(None);
+    };
+
+    if is_generated_axvisor_build_info_path(&path, axvisor_dir)
+        && path != crate::axvisor::build::resolve_build_info_path(axvisor_dir, target, None)?
+    {
+        return Ok(None);
+    }
+
+    Ok(Some(path))
+}
+
+fn is_generated_axvisor_build_info_path(path: &Path, axvisor_dir: &Path) -> bool {
+    path.parent() == Some(axvisor_dir)
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                name == ".build.toml" || (name.starts_with(".build-") && name.ends_with(".toml"))
+            })
 }
 
 pub(crate) fn resolve_snapshot_path(root: &Path, path: Option<&PathBuf>) -> Option<PathBuf> {

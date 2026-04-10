@@ -1,16 +1,14 @@
 [package]
 name = "ax-percpu"
 description = "Define and access per-CPU data structures"
-documentation = "https://docs.rs/ax-percpu"
 version.workspace = true
+repository.workspace = true
 edition.workspace = true
 authors.workspace = true
-license.workspace = true
-homepage.workspace = true
-repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [features]
 default = []

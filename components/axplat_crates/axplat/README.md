@@ -1,93 +1,84 @@
-# ax-plat
+<h1 align="center">ax-plat</h1>
 
-[![Crates.io](https://img.shields.io/crates/v/ax-plat)](https://crates.io/crates/ax-plat)
+<p align="center">This crate provides a unified abstraction layer for diverse hardware platforms</p>
+
+<div align="center">
+
+[![Crates.io](https://img.shields.io/crates/v/ax-plat.svg)](https://crates.io/crates/ax-plat)
 [![Docs.rs](https://docs.rs/ax-plat/badge.svg)](https://docs.rs/ax-plat)
-[![CI](https://github.com/arceos-org/axplat_crates/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/arceos-org/axplat_crates/actions/workflows/ci.yml)
+[![Rust](https://img.shields.io/badge/edition-2024-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-This crate provides a unified abstraction layer for diverse hardware platforms. It allows kernel developers to bootstrap custom kernels across various platforms and interact with essential peripherals using hardware-agnostic APIs.
+</div>
 
-Interfaces can be divided into the following categories:
+English | [中文](README_CN.md)
 
-| Category | Trait       | Description                 |
-| -------- | ----------- | --------------------------- |
-| init     | `InitIf`    | Platform initialization     |
-| console  | `ConsoleIf` | Console input and output    |
-| power    | `PowerIf`   | Power management            |
-| mem      | `MemIf`     | Physical memory information |
-| time     | `TimeIf`    | Time-related operations     |
-| irq      | `IrqIf`     | Interrupt request handling  |
+# Introduction
 
-Each category of interfaces provides a trait (e.g., `ConsoleIf`) for a platform package to implement. You can use the corresponding platform-related functions in your project directly from the [ax-plat](https://crates.io/crates/ax-plat) crate without importing the specific platform package.
+`ax-plat` provides This crate provides a unified abstraction layer for diverse hardware platforms. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
 
-## How to use in your kernel project
+
+> ax-plat was derived from https://github.com/arceos-org/axplat_crates
+
+## Quick Start
+
+### Installation
+
+Add this crate to your `Cargo.toml`:
+
+```toml
+[dependencies]
+ax-plat = "0.5.1"
+```
+
+### Run Check and Test
+
+```bash
+# Enter the crate directory
+cd components/axplat_crates/axplat
+
+# Format code
+cargo fmt --all
+
+# Run clippy
+cargo clippy --all-targets --all-features
+
+# Run tests
+cargo test --all-features
+
+# Build documentation
+cargo doc --no-deps
+```
+
+## Integration
+
+### Example
 
 ```rust
-// Link you kernel with the specific platform package in some crate.
-// extern crate your_platform_crate;
+use ax_plat as _;
 
-// Write your kernel code (can be in another crate).
-#[ax_plat::main]
-fn kernel_main(cpu_id: usize, arg: usize) -> ! {
-    // Initialize trap, console, time.
-    ax_plat::init::init_early(cpu_id, arg);
-    // Initialize platform peripherals (not used in this example).
-    ax_plat::init::init_later(cpu_id, arg);
-
-    // Write your kernel code here.
-    ax_plat::console_println!("Hello, ArceOS!");
-
-    // Power off the system.
-    ax_plat::power::system_off();
+fn main() {
+    // Integrate `ax-plat` into your project here.
 }
 ```
 
-More APIs can be found in the [documentation](https://docs.rs/ax-plat/latest/ax_plat/). More example kernels can be found in the [examples](https://github.com/arceos-org/axplat_crates/tree/main/examples) directory.
+### Documentation
 
-## How to write a platform package
+Generate and view API documentation:
 
-#### 1. Implement each interface trait
-
-```rust
-use ax_plat::impl_plat_interface;
-
-/// Implementation of Platform initialization.
-struct InitIfImpl;
-
-#[impl_plat_interface]
-impl ax_plat::init::InitIf for InitIfImpl {
-    fn init_early(cpu_id: usize, arg: usize) { /* ... */ }
-    fn init_later(cpu_id: usize, arg: usize) { /* ... */ }
-    fn init_early_secondary(cpu_id: usize) { /* ... */ }
-    fn init_later_secondary(cpu_id: usize) { /* ... */ }
-}
-
-/// Implementation of Console input and output.
-struct ConsoleIfImpl;
-
-#[impl_plat_interface]
-impl ax_plat::console::ConsoleIf for ConsoleIfImpl {
-    fn write_bytes(bytes: &[u8]) { /* ... */ }
-    fn read_bytes(bytes: &mut [u8]) -> usize { /* ... */ 0 }
-    #[cfg(feature = "irq")]
-    fn irq_num() -> Option<usize> { None }
-}
-
-// Implementation of other traits...
+```bash
+cargo doc --no-deps --open
 ```
 
-#### 2. Implement platform bootstrapping code and call the entry function of ax-plat
+Online documentation: [docs.rs/ax-plat](https://docs.rs/ax-plat)
 
-```rust
-#[unsafe(no_mangle)]
-unsafe extern "C" fn __start() -> ! {
-    // platform bootstrapping code here.
-    /* ... */
+# Contributing
 
-    // Call the entry function of ax-plat.
-    ax_plat::call_main(0, 0xdeadbeef); // cpu_id = 0, arg = 0xdeadbeef
-}
-```
+1. Fork the repository and create a branch
+2. Run local format and checks
+3. Run local tests relevant to this crate
+4. Submit a PR and ensure CI passes
 
-We also provide a cargo plugin called [cargo-axplat](https://github.com/arceos-org/axplat_crates/tree/main/cargo-axplat) for creating a new platform package and adding it into your project.
+# License
 
-Some examples of platform packages for various platforms are listed in the [platforms](https://github.com/arceos-org/axplat_crates/tree/main/platforms) directory.
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

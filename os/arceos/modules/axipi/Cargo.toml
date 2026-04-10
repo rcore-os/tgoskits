@@ -1,12 +1,11 @@
 [package]
 name = "ax-ipi"
 version.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Keyang Hu <keyang.hu@qq.com>"]
 description = "ArceOS IPI management module"
 license.workspace = true
-homepage.workspace = true
-repository = "https://github.com/arceos-org/arceos/tree/main/modules/axipi"
 
 [features]
 default = []

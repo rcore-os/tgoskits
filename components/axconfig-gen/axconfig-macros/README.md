@@ -1,48 +1,84 @@
-# ax-config-macros
+<h1 align="center">ax-config-macros</h1>
 
-Procedural macros for converting TOML format configurations to equivalent Rust constant definitions.
+<p align="center">Procedural macros for converting TOML format configurations to Rust constant definitions</p>
 
-## Example
+<div align="center">
 
-```rust
-ax_config_macros::parse_configs!(r#"
-are-you-ok = true
-one-two-three = 123
+[![Crates.io](https://img.shields.io/crates/v/ax-config-macros.svg)](https://crates.io/crates/ax-config-macros)
+[![Docs.rs](https://docs.rs/ax-config-macros/badge.svg)](https://docs.rs/ax-config-macros)
+[![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-[hello]
-"one-two-three" = "456"     # int
-array = [1, 2, 3]           # [uint]
-tuple = [1, "abc", 3]
-"#);
+</div>
 
-assert_eq!(ARE_YOU_OK, true);
-assert_eq!(ONE_TWO_THREE, 123usize);
-assert_eq!(hello::ONE_TWO_THREE, 456isize);
-assert_eq!(hello::ARRAY, [1, 2, 3]);
-assert_eq!(hello::TUPLE, (1, "abc", 3));
+English | [中文](README_CN.md)
+
+# Introduction
+
+`ax-config-macros` provides Procedural macros for converting TOML format configurations to Rust constant definitions. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
+
+
+> ax-config-macros was derived from https://github.com/arceos-org/axconfig-gen
+
+## Quick Start
+
+### Installation
+
+Add this crate to your `Cargo.toml`:
+
+```toml
+[dependencies]
+ax-config-macros = "0.4.1"
 ```
 
-Value types are necessary for generating Rust constant definitions. Types can be specified by the comment following the config item. Currently supported types are `bool`, `int`, `uint`, `str`, `(type1, type2, ...)` for tuples, and `[type]` for arrays. If no type is specified, it will try to infer the type from the value.
+### Run Check and Test
 
-The above example will generate the following constants:
+```bash
+# Enter the crate directory
+cd components/axconfig-gen/axconfig-macros
+
+# Format code
+cargo fmt --all
+
+# Run clippy
+cargo clippy --all-targets --all-features
+
+# Run tests
+cargo test --all-features
+
+# Build documentation
+cargo doc --no-deps
+```
+
+## Integration
+
+### Example
 
 ```rust
-pub const ARE_YOU_OK: bool = true;
-pub const ONE_TWO_THREE: usize = 123;
+use ax_config_macros as _;
 
-pub mod hello {
-    pub const ARRAY: &[usize] = &[1, 2, 3];
-    pub const ONE_TWO_THREE: isize = 456;
-    pub const TUPLE: (usize, &str, usize) = (1, "abc", 3);
+fn main() {
+    // Integrate `ax-config-macros` into your project here.
 }
 ```
 
-You can also include the configuration file directly:
+### Documentation
 
-```rust,ignore
-ax_config_macros::include_configs!("path/to/config.toml");
-// or specify the config file path via an environment variable
-ax_config_macros::include_configs!(path_env = "AX_CONFIG_PATH");
-// or with a fallback path if the environment variable is not set
-ax_config_macros::include_configs!(path_env = "AX_CONFIG_PATH", fallback = "path/to/defconfig.toml");
+Generate and view API documentation:
+
+```bash
+cargo doc --no-deps --open
 ```
+
+Online documentation: [docs.rs/ax-config-macros](https://docs.rs/ax-config-macros)
+
+# Contributing
+
+1. Fork the repository and create a branch
+2. Run local format and checks
+3. Run local tests relevant to this crate
+4. Submit a PR and ensure CI passes
+
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

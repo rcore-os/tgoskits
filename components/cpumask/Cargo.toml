@@ -1,15 +1,13 @@
 [package]
 name = "ax-cpumask"
 version = "0.3.0"
+repository = "https://github.com/rcore-os/tgoskits"
 edition = "2021"
 authors = ["keyang.hu@qq.com"]
 description = "CPU mask library in Rust"
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
-homepage = "https://github.com/arceos-org/arceos"
-repository = "https://github.com/arceos-org/cpumask"
-documentation = "https://docs.rs/ax-cpumask"
 keywords = ["arceos", "cpu-affinity", "cpumask"]
 categories = ["os", "no-std"]
+license = "Apache-2.0"
 
 [dependencies]
 bitmaps = { version = "3.2.1", default-features = false }

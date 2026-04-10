@@ -1,90 +1,84 @@
-# ax-memory-set
+<h1 align="center">ax-memory-set</h1>
 
-[![Crates.io](https://img.shields.io/crates/v/ax-memory-set)](https://crates.io/crates/ax-memory-set)
+<p align="center">Data structures and operations for managing memory mappings</p>
+
+<div align="center">
+
+[![Crates.io](https://img.shields.io/crates/v/ax-memory-set.svg)](https://crates.io/crates/ax-memory-set)
 [![Docs.rs](https://docs.rs/ax-memory-set/badge.svg)](https://docs.rs/ax-memory-set)
-[![CI](https://github.com/arceos-org/axmm_crates/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/arceos-org/axmm_crates/actions/workflows/ci.yml)
+[![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-Data structures and operations for managing memory mappings.
+</div>
 
-It is useful to implement [`mmap`][1], [`munmap`][1] and [`mprotect`][2].
+English | [中文](README_CN.md)
 
-[1]: https://man7.org/linux/man-pages/man2/mmap.2.html
-[2]: https://man7.org/linux/man-pages/man2/mprotect.2.html
+# Introduction
 
-## Examples
+`ax-memory-set` provides Data structures and operations for managing memory mappings. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
+
+
+> ax-memory-set was derived from https://github.com/arceos-org/axmm_crates
+
+## Quick Start
+
+### Installation
+
+Add this crate to your `Cargo.toml`:
+
+```toml
+[dependencies]
+ax-memory-set = "0.6.1"
+```
+
+### Run Check and Test
+
+```bash
+# Enter the crate directory
+cd components/axmm_crates/memory_set
+
+# Format code
+cargo fmt --all
+
+# Run clippy
+cargo clippy --all-targets --all-features
+
+# Run tests
+cargo test --all-features
+
+# Build documentation
+cargo doc --no-deps
+```
+
+## Integration
+
+### Example
 
 ```rust
-use memory_addr::{va, va_range, VirtAddr};
-use ax_memory_set::{MappingBackend, MemoryArea, MemorySet};
+use ax_memory_set as _;
 
-const MAX_ADDR: usize = 0x10000;
-
-/// A mock memory flags.
-type MockFlags = u8;
-/// A mock page table, which is a simple array that maps addresses to flags.
-type MockPageTable = [MockFlags; MAX_ADDR];
-
-/// A mock mapping backend that manipulates the page table on `map` and `unmap`.
-#[derive(Clone)]
-struct MockBackend;
-
-let mut pt = [0; MAX_ADDR];
-let mut memory_set = MemorySet::<MockBackend>::new();
-
-// Map [0x1000..0x5000).
-memory_set.map(
-    /* area: */ MemoryArea::new(va!(0x1000), 0x4000, 1, MockBackend),
-    /* page_table: */ &mut pt,
-    /* unmap_overlap */ false,
-).unwrap();
-// Unmap [0x2000..0x4000), will split the area into two parts.
-memory_set.unmap(va!(0x2000), 0x2000, &mut pt).unwrap();
-
-let areas = memory_set.iter().collect::<Vec<_>>();
-assert_eq!(areas.len(), 2);
-assert_eq!(areas[0].va_range(), va_range!(0x1000..0x2000));
-assert_eq!(areas[1].va_range(), va_range!(0x4000..0x5000));
-
-// Underlying operations to do when manipulating mappings.
-impl MappingBackend for MockBackend {
-    type Addr = VirtAddr;
-    type Flags = MockFlags;
-    type PageTable = MockPageTable;
-
-    fn map(&self, start: VirtAddr, size: usize, flags: MockFlags, pt: &mut MockPageTable) -> bool {
-        for entry in pt.iter_mut().skip(start.as_usize()).take(size) {
-            if *entry != 0 {
-                return false;
-            }
-            *entry = flags;
-        }
-        true
-    }
-
-    fn unmap(&self, start: VirtAddr, size: usize, pt: &mut MockPageTable) -> bool {
-        for entry in pt.iter_mut().skip(start.as_usize()).take(size) {
-            if *entry == 0 {
-                return false;
-            }
-            *entry = 0;
-        }
-        true
-    }
-
-    fn protect(
-        &self,
-        start: VirtAddr,
-        size: usize,
-        new_flags: MockFlags,
-        pt: &mut MockPageTable,
-    ) -> bool {
-        for entry in pt.iter_mut().skip(start.as_usize()).take(size) {
-            if *entry == 0 {
-                return false;
-            }
-            *entry = new_flags;
-        }
-        true
-    }
+fn main() {
+    // Integrate `ax-memory-set` into your project here.
 }
 ```
+
+### Documentation
+
+Generate and view API documentation:
+
+```bash
+cargo doc --no-deps --open
+```
+
+Online documentation: [docs.rs/ax-memory-set](https://docs.rs/ax-memory-set)
+
+# Contributing
+
+1. Fork the repository and create a branch
+2. Run local format and checks
+3. Run local tests relevant to this crate
+4. Submit a PR and ensure CI passes
+
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

@@ -1,43 +1,84 @@
-# axio
+<h1 align="center">ax-io</h1>
 
-[![Crates.io](https://img.shields.io/crates/v/axio)](https://crates.io/crates/axio)
-[![Docs.rs](https://docs.rs/ax-io/badge.svg)](https://docs.rs/axio)
-[![CI](https://github.com/arceos-org/ax-io/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/arceos-org/ax-io/actions/workflows/ci.yml)
+<p align="center">`std::io` for `no_std` environment</p>
 
-[`std::io`][1] for `no_std` environment.
+<div align="center">
 
-[1]: https://doc.rust-lang.org/std/io/index.html
+[![Crates.io](https://img.shields.io/crates/v/ax-io.svg)](https://crates.io/crates/ax-io)
+[![Docs.rs](https://docs.rs/ax-io/badge.svg)](https://docs.rs/ax-io)
+[![Rust](https://img.shields.io/badge/edition-2024-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-### Features
+</div>
 
-- **alloc**:
-  - Enables extra methods on `Read`: `read_to_end`, `read_to_string`.
-  - Enables extra methods on `BufRead`: `read_until`, `read_line`, `split`, `lines`.
-  - Enables implementations of axio traits for `alloc` types like `Vec<u8>`, `Box<T>`, etc.
-  - Enables `BufWriter::with_capacity`. (If `alloc` is disabled, only `BufWriter::new` is available.)
-  - Removes the capacity limit on `BufReader`. (If `alloc` is disabled, `BufReader::with_capacity` will panic if the capacity is larger than a fixed limit.)
+English | [中文](README_CN.md)
 
-### Differences to `std::io`
+# Introduction
 
-- Error types from `ax-errno` instead of `std::io::Error`.
-- No `IoSlice` and `*_vectored` APIs.
+`ax-io` provides `std::io` for `no_std` environment. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
 
-### Limitations
 
-- Requires nightly Rust.
+> ax-io was derived from https://github.com/arceos-org/io
 
-## License
+## Quick Start
 
-Licensed under either of
+### Installation
 
-- GNU General Public License v3.0 or later, (<https://www.gnu.org/licenses/gpl-3.0.html>)
-- Apache License, Version 2.0, (<https://www.apache.org/licenses/LICENSE-2.0>)
-- Mulan Permissive Software License, Version 2, (<https://license.coscl.org.cn/MulanPSL2>)
+Add this crate to your `Cargo.toml`:
 
-at your option.
+```toml
+[dependencies]
+ax-io = "0.5.0"
+```
 
----
+### Run Check and Test
 
-Almost all of the code in this repository is a copy of the [Rust language codebase](https://github.com/rust-lang/rust) with minor modifications.
+```bash
+# Enter the crate directory
+cd components/axio
 
-For attributions, see <https://thanks.rust-lang.org/>.
+# Format code
+cargo fmt --all
+
+# Run clippy
+cargo clippy --all-targets --all-features
+
+# Run tests
+cargo test --all-features
+
+# Build documentation
+cargo doc --no-deps
+```
+
+## Integration
+
+### Example
+
+```rust
+use ax_io as _;
+
+fn main() {
+    // Integrate `ax-io` into your project here.
+}
+```
+
+### Documentation
+
+Generate and view API documentation:
+
+```bash
+cargo doc --no-deps --open
+```
+
+Online documentation: [docs.rs/ax-io](https://docs.rs/ax-io)
+
+# Contributing
+
+1. Fork the repository and create a branch
+2. Run local format and checks
+3. Run local tests relevant to this crate
+4. Submit a PR and ensure CI passes
+
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

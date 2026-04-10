@@ -20,11 +20,9 @@ authors = [
     "朝倉水希 <asakuramizu111@gmail.com>",
     "Yu Chen <yuchen@tsinghua.edu.cn>"
 ]
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
-homepage = "https://github.com/arceos-org/arceos"
-documentation = "https://arceos-org.github.io/axdriver_crates"
-repository = "https://github.com/arceos-org/axdriver_crates"
+repository = "https://github.com/rcore-os/tgoskits"
 categories = ["os", "no-std", "hardware-support"]
+license = "Apache-2.0"
 
 [workspace.dependencies]
 ax-driver-base = { path = "axdriver_base", version = "0.3.4" }

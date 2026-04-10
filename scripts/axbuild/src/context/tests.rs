@@ -58,6 +58,7 @@ fn snapshot_store_round_trips() {
     let root = tempdir().unwrap();
     let snapshot = ArceosCommandSnapshot {
         package: Some("ax-helloworld".into()),
+        arch: Some("aarch64".into()),
         target: Some("target".into()),
         plat_dyn: Some(true),
         qemu: ArceosQemuSnapshot {
@@ -106,6 +107,7 @@ fn prepare_request_prefers_cli_over_snapshot() {
         root.path().join(ARCEOS_SNAPSHOT_FILE),
         r#"
 package = "from-snapshot"
+arch = "riscv64"
 target = "snapshot-target"
 plat_dyn = false
 
@@ -125,7 +127,8 @@ uboot_config = "configs/snapshot-uboot.toml"
             BuildCliArgs {
                 config: Some(PathBuf::from("/tmp/custom-build.toml")),
                 package: Some("from-cli".into()),
-                target: Some("cli-target".into()),
+                arch: Some("aarch64".into()),
+                target: Some(DEFAULT_ARCEOS_TARGET.into()),
                 plat_dyn: Some(true),
             },
             Some(PathBuf::from("/tmp/qemu.toml")),
@@ -134,7 +137,7 @@ uboot_config = "configs/snapshot-uboot.toml"
         .unwrap();
 
     assert_eq!(request.package, "from-cli");
-    assert_eq!(request.target, "cli-target");
+    assert_eq!(request.target, DEFAULT_ARCEOS_TARGET);
     assert_eq!(request.plat_dyn, Some(true));
     assert_eq!(
         request.build_info_path,
@@ -146,7 +149,8 @@ uboot_config = "configs/snapshot-uboot.toml"
         Some(root.path().join("configs/snapshot-uboot.toml"))
     );
     assert_eq!(snapshot.package.as_deref(), Some("from-cli"));
-    assert_eq!(snapshot.target.as_deref(), Some("cli-target"));
+    assert_eq!(snapshot.arch.as_deref(), Some("aarch64"));
+    assert_eq!(snapshot.target.as_deref(), Some(DEFAULT_ARCEOS_TARGET));
     assert_eq!(snapshot.plat_dyn, Some(true));
     assert_eq!(
         snapshot.qemu.qemu_config,
@@ -175,12 +179,14 @@ qemu_config = "configs/qemu.toml"
         .unwrap();
 
     assert_eq!(request.package, "ax-helloworld");
+    assert_eq!(request.arch, DEFAULT_ARCEOS_ARCH);
     assert_eq!(request.target, DEFAULT_ARCEOS_TARGET);
     assert_eq!(request.plat_dyn, None);
     assert_eq!(
         request.qemu_config,
         Some(root.path().join("configs/qemu.toml"))
     );
+    assert_eq!(snapshot.arch.as_deref(), Some(DEFAULT_ARCEOS_ARCH));
     assert_eq!(snapshot.target.as_deref(), Some(DEFAULT_ARCEOS_TARGET));
 }
 
@@ -194,6 +200,31 @@ fn prepare_request_requires_package() {
         .unwrap_err();
 
     assert!(err.to_string().contains("missing ArceOS package"));
+}
+
+#[test]
+fn prepare_request_resolves_arceos_target_from_arch() {
+    let root = tempdir().unwrap();
+    let app = test_app_context(root.path());
+
+    let (request, snapshot) = app
+        .prepare_arceos_request(
+            BuildCliArgs {
+                config: None,
+                package: Some("ax-helloworld".into()),
+                arch: Some("x86_64".into()),
+                target: None,
+                plat_dyn: None,
+            },
+            None,
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(request.arch, "x86_64");
+    assert_eq!(request.target, "x86_64-unknown-none");
+    assert_eq!(snapshot.arch.as_deref(), Some("x86_64"));
+    assert_eq!(snapshot.target.as_deref(), Some("x86_64-unknown-none"));
 }
 
 #[test]
@@ -308,7 +339,8 @@ uboot_config = "configs/uboot.toml"
     assert_eq!(request.plat_dyn, None);
     assert_eq!(
         request.build_info_path,
-        root.path().join("os/axvisor/.build.toml")
+        root.path()
+            .join("os/axvisor/.build-aarch64-unknown-none-softfloat.toml")
     );
     assert_eq!(
         request.qemu_config,
@@ -327,7 +359,9 @@ uboot_config = "configs/uboot.toml"
     );
     assert_eq!(
         snapshot.config,
-        Some(PathBuf::from("os/axvisor/.build.toml"))
+        Some(PathBuf::from(
+            "os/axvisor/.build-aarch64-unknown-none-softfloat.toml"
+        ))
     );
     assert_eq!(snapshot.arch.as_deref(), Some(DEFAULT_AXVISOR_ARCH));
     assert_eq!(snapshot.target.as_deref(), Some(DEFAULT_AXVISOR_TARGET));
@@ -369,6 +403,38 @@ fn prepare_axvisor_request_resolves_target_from_arch() {
     );
     assert_eq!(snapshot.arch.as_deref(), Some("x86_64"));
     assert_eq!(snapshot.target.as_deref(), Some("x86_64-unknown-none"));
+}
+
+#[test]
+fn prepare_axvisor_request_rewrites_stale_generated_snapshot_config_path() {
+    let root = tempdir().unwrap();
+    fs::write(
+        root.path().join(AXVISOR_SNAPSHOT_FILE),
+        r#"
+config = "os/axvisor/.build-riscv64gc-unknown-none-elf.toml"
+arch = "aarch64"
+target = "aarch64-unknown-none-softfloat"
+"#,
+    )
+    .unwrap();
+
+    let mut app = test_app_context(root.path());
+
+    let (request, snapshot) = app
+        .prepare_axvisor_request(AxvisorCliArgs::default(), None, None)
+        .unwrap();
+
+    assert_eq!(
+        request.build_info_path,
+        root.path()
+            .join("os/axvisor/.build-aarch64-unknown-none-softfloat.toml")
+    );
+    assert_eq!(
+        snapshot.config,
+        Some(PathBuf::from(
+            "os/axvisor/.build-aarch64-unknown-none-softfloat.toml"
+        ))
+    );
 }
 
 #[test]

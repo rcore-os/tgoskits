@@ -2,15 +2,13 @@
 name = "ax-driver-block"
 edition.workspace = true
 version.workspace = true
+repository.workspace = true
 authors.workspace = true
 description = "Common traits and types for block storage drivers"
-documentation = "https://arceos-org.github.io/axdriver_crates/axdriver_block"
 keywords = ["arceos", "driver", "blk"]
-license.workspace = true
-homepage.workspace = true
-repository.workspace = true
 categories.workspace = true
 readme = "README.md"
+license.workspace = true
 
 [features]
 ramdisk = []

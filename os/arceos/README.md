@@ -1,14 +1,21 @@
-# ArceOS
+<h1 align="center">ArceOS</h1>
+
+<p align="center">An experimental modular operating system (or unikernel) written in Rust</p>
+
+<div align="center">
 
 [![CI](https://github.com/arceos-org/arceos/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/arceos-org/arceos/actions/workflows/build.yml)
 [![CI](https://github.com/arceos-org/arceos/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/arceos-org/arceos/actions/workflows/test.yml)
 [![Docs](https://img.shields.io/badge/docs-pages-green)](https://arceos-org.github.io/arceos/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-An experimental modular operating system (or unikernel) written in Rust.
+</div>
+
+English | [中文](README_CN.md)
 
 ArceOS was inspired a lot by [Unikraft](https://github.com/unikraft/unikraft).
 
-🚧 Working In Progress.
+Working in progress.
 
 ## Features & TODOs
 
@@ -38,6 +45,7 @@ docker build -t arceos -f Dockerfile .
 ```
 
 Create a container and build/run app:
+
 ```bash
 docker run -it -v $(pwd):/arceos -w /arceos arceos bash
 
@@ -46,6 +54,7 @@ make A=examples/helloworld ARCH=aarch64 run
 ```
 
 ### Manually Build and Run
+
 #### 1. Install Build Dependencies
 
 Install [cargo-binutils](https://github.com/rust-embedded/cargo-binutils) to use `rust-objcopy` and `rust-objdump` tools, and [`ax-config-gen`](https://github.com/arceos-org/axconfig-gen) for kernel configuration, and [cargo-axplat](https://github.com/arceos-org/axplat_crates/tree/dev/cargo-axplat) for platform configuration:
@@ -207,7 +216,7 @@ make PLAT_CONFIG=$(pwd)/configs/custom/x86_64-pc-oslab.toml A=examples/httpserve
 
 ```toml
 # In Cargo.toml
-[dependencies]
+ [dependencies]
 ax-alloc = { git = "https://github.com/arceos-org/arceos.git", tag = "v0.2.0" } # modules/axalloc
 ax-hal = { git = "https://github.com/arceos-org/arceos.git", tag = "v0.2.0" } # modules/axhal
 ```

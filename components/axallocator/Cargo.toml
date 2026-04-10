@@ -1,16 +1,15 @@
 [package]
 name = "ax-allocator"
 version = "0.4.0"
+repository = "https://github.com/rcore-os/tgoskits"
 edition = "2021"
 authors = [
     "Yuekai Jia <equation618@gmail.com>",
     "Yu Chen <yuchen@tsinghua.edu.cn>",
 ]
 description = "Various allocator algorithms in a unified interface"
-license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
-homepage = "https://github.com/arceos-org/arceos"
-repository = "https://github.com/arceos-org/axallocator"
 readme = "README.md"
+license = "Apache-2.0"
 
 [features]
 default = ["page-alloc-256m"]

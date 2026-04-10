@@ -251,8 +251,9 @@ impl LpiPropTable {
              {size_per_gicr}"
         );
 
-        let f = axvisor_api::memory::alloc_contiguous_frames(page_num, 0)
-            .expect("Failed to allocate contiguous frames for LPI prop table");
+        let f =
+            axvisor_api::memory::alloc_contiguous_frames(page_num, ax_memory_addr::PAGE_SIZE_4K)
+                .expect("Failed to allocate contiguous frames for LPI prop table");
         let propreg = f.as_usize() | 0x78f;
         for id in 0..cpu_num {
             let propbaser = host_gicr_base + id * size_per_gicr + GICR_PROPBASER;

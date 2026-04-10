@@ -1,108 +1,43 @@
-# ax-config-gen
+<h1 align="center">axconfig-gen</h1>
 
-[![CI](https://github.com/arceos-org/axconfig-gen/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/arceos-org/axconfig-gen/actions/workflows/ci.yml)
+<p align="center">Workspace for TOML-based configuration generation crates</p>
 
-* [ax-config-gen](axconfig-gen): A TOML-based configuration generation tool for [ArceOS](https://github.com/arceos-org/arceos). [![Crates.io](https://img.shields.io/crates/v/ax-config-gen)](https://crates.io/crates/ax-config-gen)[![Docs.rs](https://docs.rs/ax-config-gen/badge.svg)](https://docs.rs/ax-config-gen)
-* [ax-config-macros](ax-config-macros): Procedural macros for converting TOML format configurations to Rust constant definitions. [![Crates.io](https://img.shields.io/crates/v/ax-config-macros)](https://crates.io/crates/ax-config-macros)[![Docs.rs](https://docs.rs/ax-config-macros/badge.svg)](https://docs.rs/ax-config-macros)
+<div align="center">
 
-### Executable Usage
+[![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-```text
-Usage: ax-config-gen [OPTIONS] <SPEC>...
+</div>
 
-Arguments:
-  <SPEC>...  Paths to the config specification files
+English | [中文](README_CN.md)
 
-Options:
-  -c, --oldconfig <OLDCONFIG>  Path to the old config file
-  -o, --output <OUTPUT>        Path to the output config file
-  -f, --fmt <FMT>              The output format [default: toml] [possible values: toml, rust]
-  -r, --read <RD_CONFIG>       Getting a config item with format `table.key`
-  -w, --write <WR_CONFIG>      Setting a config item with format `table.key=value`
-  -v, --verbose                Verbose mode
-  -h, --help                   Print help
-  -V, --version                Print version
+# Introduction
+
+`axconfig-gen` is a workspace that groups related TGOSKits components under a unified layout. It helps organize closely related crates that are typically developed, versioned, and used together.
+
+> axconfig-gen was derived from https://github.com/arceos-org/axconfig-gen
+
+## Workspace Members
+
+- `axconfig-gen`
+- `axconfig-macros`
+
+## Quick Start
+
+```bash
+# Enter the workspace directory
+cd components/axconfig-gen
+
+# Format code
+cargo fmt --all
+
+# Run clippy
+cargo clippy --workspace --all-targets --all-features
+
+# Run tests
+cargo test --workspace --all-features
 ```
 
-For example, to generate a config file `.axconfig.toml` from the config specifications distributed in `a.toml` and `b.toml`, you can run:
+# License
 
-```console
-$ ax-config-gen a.toml b.toml -o .axconfig.toml -f toml
-```
-
-See [defconfig.toml](example-configs/defconfig.toml) for an example of a config specification file.
-
-Value types are necessary for generating Rust constant definitions. Types can be specified by the comment following the config item. Currently supported types are `bool`, `int`, `uint`, `str`, `(type1, type2, ...)` for tuples, and `[type]` for arrays. If no type is specified, it will try to infer the type from the value.
-
-### Library Usage
-
-```rust
-use ax_config_gen::{Config, OutputFormat};
-
-let config_toml = r#"
-are-you-ok = true
-one-two-three = 123
-
-[hello]
-"one-two-three" = "456"     # int
-array = [1, 2, 3]           # [uint]
-tuple = [1, "abc", 3]
-"#;
-
-let config = Config::from_toml(config_toml).unwrap();
-let rust_code = config.dump(OutputFormat::Rust).unwrap();
-
-assert_eq!(rust_code,
-r#"pub const ARE_YOU_OK: bool = true;
-pub const ONE_TWO_THREE: usize = 123;
-
-pub mod hello {
-    pub const ARRAY: &[usize] = &[1, 2, 3];
-    pub const ONE_TWO_THREE: isize = 456;
-    pub const TUPLE: (usize, &str, usize) = (1, "abc", 3);
-}
-"#);
-```
-
-### Macro Usage
-
-```rust
-ax_config_macros::parse_configs!(r#"
-are-you-ok = true
-one-two-three = 123
-
-[hello]
-"one-two-three" = "456"     # int
-array = [1, 2, 3]           # [uint]
-tuple = [1, "abc", 3]
-"#);
-
-assert_eq!(ARE_YOU_OK, true);
-assert_eq!(ONE_TWO_THREE, 123usize);
-assert_eq!(hello::ONE_TWO_THREE, 456isize);
-assert_eq!(hello::ARRAY, [1, 2, 3]);
-assert_eq!(hello::TUPLE, (1, "abc", 3));
-```
-
-The above example will generate the following constants:
-
-```rust
-pub const ARE_YOU_OK: bool = true;
-pub const ONE_TWO_THREE: usize = 123;
-
-pub mod hello {
-    pub const ARRAY: &[usize] = &[1, 2, 3];
-    pub const ONE_TWO_THREE: isize = 456;
-    pub const TUPLE: (usize, &str, usize) = (1, "abc", 3);
-}
-```
-
-You can also include the configuration file directly:
-
-```rust
-ax_config_macros::include_configs!("path/to/config.toml");
-// or specify the config file path via an environment variable
-ax_config_macros::include_configs!(path_env = "AX_CONFIG_PATH");
-// or with a fallback path if the environment variable is not set
-ax_config_macros::include_configs!(path_env = "AX_CONFIG_PATH", fallback = "path/to/defconfig.toml");
-```
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

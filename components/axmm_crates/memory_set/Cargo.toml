@@ -1,17 +1,15 @@
 [package]
 name = "ax-memory-set"
 description = "Data structures and operations for managing memory mappings"
-documentation = "https://docs.rs/ax-memory-set"
 keywords = ["arceos", "virtual-memory", "memory-area", "mmap"]
 
 version.workspace = true
+repository.workspace = true
 edition.workspace = true
 authors.workspace = true
-license.workspace = true
-homepage.workspace = true
-repository.workspace = true
 categories.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
 ax-errno = { version = "0.4.2", optional = true }

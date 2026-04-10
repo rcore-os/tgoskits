@@ -1,15 +1,13 @@
 [package]
 name = "ax-plat-aarch64-bsta1000b"
 version.workspace = true
+repository.workspace = true
 description = "Implementation of `axplat` hardware abstraction layer for Black Sesame Technology A1000b SoC."
-documentation = "https://docs.rs/axplat-aarch64-bsta1000b"
 keywords = ["arceos", "os", "hal", "embedded", "aarch64"]
 categories = ["embedded", "no-std", "hardware-support", "os"]
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-homepage.workspace = true
-repository.workspace = true
 
 [features]
 fp-simd = ["ax-cpu/fp-simd"]

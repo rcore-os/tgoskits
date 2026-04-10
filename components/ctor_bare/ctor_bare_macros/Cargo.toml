@@ -2,15 +2,13 @@
 name = "ax-ctor-bare-macros"
 edition.workspace = true
 description = "Macros for registering constructor functions for Rust under no_std."
-documentation = "https://docs.rs/ax-ctor-bare-macros"
 version.workspace = true
-authors.workspace = true
-license.workspace = true
-homepage.workspace = true
 repository.workspace = true
+authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 readme = "README.md"
+license.workspace = true
 
 [dependencies]
 proc-macro2 = "1.0"

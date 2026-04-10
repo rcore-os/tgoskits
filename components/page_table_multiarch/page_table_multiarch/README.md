@@ -1,87 +1,84 @@
-# ax-page-table-multiarch
+<h1 align="center">ax-page-table-multiarch</h1>
 
-[![Crates.io](https://img.shields.io/crates/v/ax-page-table-multiarch)](https://crates.io/crates/ax-page-table-multiarch)
+<p align="center">Generic page table structures for various hardware architectures</p>
+
+<div align="center">
+
+[![Crates.io](https://img.shields.io/crates/v/ax-page-table-multiarch.svg)](https://crates.io/crates/ax-page-table-multiarch)
 [![Docs.rs](https://docs.rs/ax-page-table-multiarch/badge.svg)](https://docs.rs/ax-page-table-multiarch)
-[![CI](https://github.com/arceos-org/page_table_multiarch/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/arceos-org/page_table_multiarch/actions/workflows/ci.yml)
+[![Rust](https://img.shields.io/badge/edition-2024-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-This crate provides generic, unified, architecture-independent, and OS-free page table structures for various hardware architectures.
+</div>
 
-The core structs are [`PageTable64<M, PTE, H>`][1] (for 64-bit) and [`PageTable32<M, PTE, H>`][2] (for 32-bit). OS-functions and architecture-dependent types are provided by generic parameters:
+English | [中文](README_CN.md)
 
-- `M`: The architecture-dependent metadata, requires to implement the [`PagingMetaData`][3] trait.
-- `PTE`: The architecture-dependent page table entry, requires to implement the [`GenericPTE`][4] trait.
-- `H`: OS-functions such as physical memory allocation, requires to implement the [`PagingHandler`][5] trait.
+# Introduction
 
-Currently supported architectures and page table structures:
-
-- x86: [`x86_64::X64PageTable`][6]
-- ARM (64-bit): [`aarch64::A64PageTable`][7]
-- ARM (32-bit): [`arm::A32PageTable`][8]
-- RISC-V: [`riscv::Sv39PageTable`][9], [`riscv::Sv48PageTable`][10]
-- LoongArch64: [`loongarch64:LA64PageTable`][11]
-
-[1]: https://docs.rs/ax-page-table-multiarch/latest/ax_page_table_multiarch/struct.PageTable64.html
-[2]: https://docs.rs/ax-page-table-multiarch/latest/ax_page_table_multiarch/struct.PageTable32.html
-[3]: https://docs.rs/ax-page-table-multiarch/latest/ax_page_table_multiarch/trait.PagingMetaData.html
-[4]: https://docs.rs/ax-page-table-entry/latest/ax_page_table_entry/trait.GenericPTE.html
-[5]: https://docs.rs/ax-page-table-multiarch/latest/ax_page_table_multiarch/trait.PagingHandler.html
-[6]: https://docs.rs/ax-page-table-multiarch/latest/ax_page_table_multiarch/x86_64/type.X64PageTable.html
-[7]: https://docs.rs/ax-page-table-multiarch/latest/ax_page_table_multiarch/aarch64/type.A64PageTable.html
-[8]: https://docs.rs/ax-page-table-multiarch/latest/ax_page_table_multiarch/arm/type.A32PageTable.html
-[9]: https://docs.rs/ax-page-table-multiarch/latest/ax_page_table_multiarch/riscv/type.Sv39PageTable.html
-[10]: https://docs.rs/ax-page-table-multiarch/latest/ax_page_table_multiarch/riscv/type.Sv48PageTable.html
-[11]: https://docs.rs/ax-page-table-multiarch/latest/ax_page_table_multiarch/loongarch64/type.LA64PageTable.html
+`ax-page-table-multiarch` provides Generic page table structures for various hardware architectures. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
 
 
-## Examples (x86_64)
+> ax-page-table-multiarch was derived from https://github.com/arceos-org/page_table_multiarch
+
+## Quick Start
+
+### Installation
+
+Add this crate to your `Cargo.toml`:
+
+```toml
+[dependencies]
+ax-page-table-multiarch = "0.8.1"
+```
+
+### Run Check and Test
+
+```bash
+# Enter the crate directory
+cd components/page_table_multiarch/page_table_multiarch
+
+# Format code
+cargo fmt --all
+
+# Run clippy
+cargo clippy --all-targets --all-features
+
+# Run tests
+cargo test --all-features
+
+# Build documentation
+cargo doc --no-deps
+```
+
+## Integration
+
+### Example
 
 ```rust
-use memory_addr::{MemoryAddr, PhysAddr, VirtAddr};
-use ax_page_table_multiarch::x86_64::{X64PageTable};
-use ax_page_table_multiarch::{MappingFlags, PagingHandler, PageSize};
+use ax_page_table_multiarch as _;
 
-use core::alloc::Layout;
-
-extern crate alloc;
-
-struct PagingHandlerImpl;
-
-impl PagingHandler for PagingHandlerImpl {
-    fn alloc_frame() -> Option<PhysAddr> {
-        let layout = Layout::from_size_align(0x1000, 0x1000).unwrap();
-        let ptr = unsafe { alloc::alloc::alloc(layout) };
-        Some(PhysAddr::from(ptr as usize))
-    }
-
-    fn alloc_frames(num_pages: usize, align: usize) -> Option<PhysAddr> {
-        let layout = Layout::from_size_align(num_pages * 0x1000, align).unwrap();
-        let ptr = unsafe { alloc::alloc::alloc(layout) };
-        Some(PhysAddr::from(ptr as usize))
-    }
-
-    fn dealloc_frame(paddr: PhysAddr) {
-        let layout = Layout::from_size_align(0x1000, 0x1000).unwrap();
-        let ptr = paddr.as_usize() as *mut u8;
-        unsafe { alloc::alloc::dealloc(ptr, layout) };
-    }
-    
-    fn dealloc_frames(paddr: PhysAddr, num_pages: usize) {
-        let layout = Layout::from_size_align(num_pages * 0x1000, 0x1000).unwrap();
-        let ptr = paddr.as_usize() as *mut u8;
-        unsafe { alloc::alloc::dealloc(ptr, layout) };
-    }
-
-    fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
-        VirtAddr::from(paddr.as_usize())
-    }
+fn main() {
+    // Integrate `ax-page-table-multiarch` into your project here.
 }
-
-let vaddr = VirtAddr::from(0xdead_beef_000);
-let paddr = PhysAddr::from(0x2000);
-let flags = MappingFlags::READ | MappingFlags::WRITE;
-let mut pt = X64PageTable::<PagingHandlerImpl>::try_new().unwrap();
-
-assert!(pt.root_paddr().is_aligned_4k());
-assert!(pt.cursor().map(vaddr, paddr, PageSize::Size4K, flags).is_ok());
-assert_eq!(pt.query(vaddr), Ok((paddr, flags, PageSize::Size4K)));
 ```
+
+### Documentation
+
+Generate and view API documentation:
+
+```bash
+cargo doc --no-deps --open
+```
+
+Online documentation: [docs.rs/ax-page-table-multiarch](https://docs.rs/ax-page-table-multiarch)
+
+# Contributing
+
+1. Fork the repository and create a branch
+2. Run local format and checks
+3. Run local tests relevant to this crate
+4. Submit a PR and ensure CI passes
+
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

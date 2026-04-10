@@ -1,7 +1,6 @@
 [package]
 authors.workspace = true
 edition.workspace = true
-homepage.workspace = true
 license.workspace = true
 name = "tg-xtask"
 publish = false

@@ -2,7 +2,6 @@
 name = "axvisor"
 authors = ["Keyang Hu <keyang.hu@qq.com>", "周睿 <zrufo747@outlook.com>"]
 edition = "2024"
-license = "Apache-2.0"
 version = "0.5.0"
 description = "A lightweight type-1 hypervisor based on ArceOS"
 repository = "https://github.com/arceos-hypervisor/axvisor"
@@ -11,6 +10,7 @@ documentation = "https://docs.rs/axvisor"
 readme = "README.md"
 keywords = ["hypervisor", "virtualization", "arceos", "type-1"]
 categories = ["os", "no-std", "embedded"]
+license = "Apache-2.0"
 include = [
     ".cargo/config.toml",
     ".github/*/**",
@@ -63,7 +63,6 @@ hashbrown = "0.14"
 
 # System dependent modules provided by ArceOS.
 ax-std = { version = "0.5.0", features = [
-  "alloc-level-1",
   "paging",
   "irq",
   "multitask",

@@ -1,250 +1,81 @@
- # rsext4
+<h1 align="center">rsext4</h1>
 
+<p align="center">A lightweight ext4 file system</p>
 
-### 注意！！在开启 **USE_MULTILEVEL_CACHE**(使用多级缓存,默认开启!)feature的情况rsext4 使用多级缓存来提升读写性能,写操作只修改内存缓存，不会立即写入磁盘。在需要确保所有数据已经实际写入磁盘的时机前，请调用
- ```rust
-        // 同步所有缓存数据到磁盘
-        self.sync_filesystem(block_dev)?;
- ```
- ### 不需要多级缓存的特殊情况可以在```Cargo.toml```关闭掉**USE_MULTILEVEL_CACHE** feature来禁用多级缓存
+<div align="center">
 
- 
- **如何使用rsext4**。
- 
- ## 1. 接入块设备（实现 `BlockDevice` trait）
- 
- 你需要提供一个块设备实现，并实现 `rsext4::BlockDevice`：
- 
- - **`read(&mut self, buffer, block_id, count)`**：从 `block_id` 开始读取 `count` 个块到 `buffer`
- - **`write(&mut self, buffer, block_id, count)`**：从 `buffer` 写入 `count` 个块到设备
- - **`open/close`**：可选的设备打开/关闭（可为空实现）
- - **`total_blocks()`**：设备总块数
- - **`block_size()`**：块大小（通常为 `BLOCK_SIZE`）
- 
- 下面是一个参考实现：使用宿主机文件模拟块设备（来自 `src/main.rs`）。
- 
- ```rust
- use std::fs::{File, OpenOptions};
- use std::io::{Read, Seek, SeekFrom, Write};
- use std::path::Path;
- 
- use rsext4::{BlockDevError, BlockDevResult, BlockDevice, BLOCK_SIZE};
- 
- struct FileBlockDev {
-     file: File,
-     total_blocks: u64,
- }
- 
- impl FileBlockDev {
-     fn open_or_create<P: AsRef<Path>>(path: P, total_blocks: u64) -> std::io::Result<Self> {
-         let path = path.as_ref();
-         let block_size = BLOCK_SIZE as u64;
-         let size_bytes = total_blocks * block_size;
- 
-         let file = OpenOptions::new()
-             .read(true)
-             .write(true)
-             .create(true)
-             .open(path)?;
- 
-         let metadata = file.metadata()?;
-         if metadata.len() < size_bytes {
-             file.set_len(size_bytes)?;
-         }
- 
-         Ok(Self { file, total_blocks })
-     }
- }
- 
- impl BlockDevice for FileBlockDev {
-     fn write(&mut self, buffer: &[u8], block_id: u32, count: u32) -> BlockDevResult<()> {
-         let block_size = self.block_size() as usize;
-         let required = block_size * count as usize;
-         if buffer.len() < required {
-             return Err(BlockDevError::BufferTooSmall { provided: buffer.len(), required });
-         }
- 
-         let offset = block_id as u64 * block_size as u64;
-         let bytes = &buffer[..required];
- 
-         self.file.seek(SeekFrom::Start(offset)).map_err(|_| BlockDevError::IoError)?;
-         self.file.write_all(bytes).map_err(|_| BlockDevError::IoError)?;
-         self.file.flush().map_err(|_| BlockDevError::IoError)?;
-         Ok(())
-     }
- 
-     fn read(&mut self, buffer: &mut [u8], block_id: u32, count: u32) -> BlockDevResult<()> {
-         let block_size = self.block_size() as usize;
-         let required = block_size * count as usize;
-         if buffer.len() < required {
-             return Err(BlockDevError::BufferTooSmall { provided: buffer.len(), required });
-         }
- 
-         let offset = block_id as u64 * block_size as u64;
-         let mut f = &self.file;
-         f.seek(SeekFrom::Start(offset)).map_err(|_| BlockDevError::IoError)?;
-         f.read_exact(&mut buffer[..required]).map_err(|_| BlockDevError::IoError)?;
-         Ok(())
-     }
- 
-     fn open(&mut self) -> BlockDevResult<()> { Ok(()) }
- 
-     fn close(&mut self) -> BlockDevResult<()> {
-         self.file.flush().map_err(|_| BlockDevError::IoError)?;
-         Ok(())
-     }
- 
-     fn total_blocks(&self) -> u64 { self.total_blocks }
- 
-     fn block_size(&self) -> u32 { BLOCK_SIZE as u32 }
- }
- ```
+[![Crates.io](https://img.shields.io/crates/v/rsext4.svg)](https://crates.io/crates/rsext4)
+[![Docs.rs](https://docs.rs/rsext4/badge.svg)](https://docs.rs/rsext4)
+[![Rust](https://img.shields.io/badge/edition-2024-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
+</div>
 
- 
- ## 2. 用 `Jbd2Dev` 包装块设备,目前只支持ordered模式,ordered会储存完整元数据内容然后写主盘，如果对性能有较高要求请关闭
-  
- `rsext4` 的所有读写都通过 `Jbd2Dev<B>` 进行：
- 
- ```rust
- use rsext4::Jbd2Dev;
- 
- // _mode: 日志级别（当前实现里只用 0 - ordered）
- // use_journal: 是否启用 journaling
- let mut dev = Jbd2Dev::initial_jbd2dev(0, block_dev, /*use_journal=*/ true);
- ```
- 
- 运行时可以切换 journal 开关：
- 如果在mount之后启用需要手动读取日志超级块并且注入!
- 
- ```rust
- dev.set_journal_use(true);
- dev.set_journal_use(false);
- ```
- 
- 如果你需要手动重放日志（注意：会有性能影响）：
- 
- ```rust
- dev.journal_replay();
- ```
- 
- 注意：`mkfs()` 内部会临时关闭 journal，避免在 journal superblock 尚未注入时触发 JBD2 逻辑；`mkfs()` 结束前会恢复原先的开关状态（见 `src/ext4_backend/ext4.rs`）。
- 
- ## 3. 创建文件系统（mkfs）
- 
- ```rust
- use rsext4::mkfs;
- 
- mkfs(&mut dev)?;
- ```
- 
- ## 4. 挂载与卸载
- 
- 你可以直接用 `mount/umount`，也可以用 `fs_mount/fs_umount`（它们只是转发到 `ext4::mount/umount`）。
- 
- ```rust
- use rsext4::{mount, umount};
- 
- let mut fs = mount(&mut dev)?;
- 
- // ... 对 fs 进行各种操作 ...
- 
- umount(fs, &mut dev)?; //数据块缓存，inode缓存，同步超级块，同步块组描述符
- ```
- 
- ## 5. 常用 API 使用
- 
- 下面这些调用方式来自 `src/testfs/test_example.rs`（建议直接看该文件作为更完整的用例集合）。
- 
- ### 5.1 目录与文件创建
- 
- ```rust
- use rsext4::{mkdir, mkfile};
- 
- mkdir(&mut dev, &mut fs, "/test_dir/");
- 
- let data = vec![b'a'; 4096];
- mkfile(&mut dev, &mut fs, "/test_dir/hello", Some(&data),None);//最后的是文件类型，仅仅作用于inode标志和entry标志。对数据结构不产生任何影响
- mkfile(&mut dev, &mut fs, "/test_dir/empty", None,None);
- ```
- 
- ### 5.2 读取整个文件
- 
- ```rust
- use rsext4::read_file;
- 
- let content = read_file(&mut dev, &mut fs, "/test_dir/hello")?;
- if let Some(bytes) = content {
-     // bytes: Vec<u8>
- }
- ```
- 
- ### 5.3 打开文件句柄 + 基于 offset 的写入/读取
- 
- `open()` 返回 `OpenFile { path, inode, offset }`，并维护 `offset`。
- 
- ```rust
- use rsext4::{open, append, read_at, lseek};
- 
- let mut f = open(&mut dev, &mut fs, "/test_dir/f", true)?;
- 
- append(&mut dev, &mut fs, &mut f, b"hello")?;
- append(&mut dev, &mut fs, &mut f, b" world")?;
- 
- // 移动 offset
- let ok = lseek(&mut f, 0);
- assert!(ok);
- 
- // 从当前 offset 读取最多 len 字节；会更新 f.offset
- let buf = read_at(&mut dev, &mut fs, &mut f, 5)?;
- ```
- 
- ### 5.4 rename / mv
- 
- ```rust
- use rsext4::{rename, mv};
- 
- rename(&mut dev, &mut fs, "/renametest/a", "/renametest/c")?;
- mv(&mut fs, &mut dev, "/mvtest/a/f1", "/mvtest/b/f1_moved")?;
- ```
- 
- ### 5.5 link / unlink
- 
- ```rust
- use rsext4::{link, unlink};
- 
- link(&mut fs, &mut dev, "/linktest/l1", "/linktest/target");
- unlink(&mut fs, &mut dev, "/linktest/l1");
- ```
- 
- ### 5.6 符号链接
- 
- ```rust
- use rsext4::create_symbol_link;
- 
- create_symbol_link(&mut dev, &mut fs, "/symlinktest/target", "/symlinktest/l1")?;
- ```
- 
- ### 5.7 truncate
- 
- ```rust
- use rsext4::truncate;
- 
- truncate(&mut dev, &mut fs, "/truncatetest/f1", 0)?;
- truncate(&mut dev, &mut fs, "/truncatetest/f1", 128 * 1024)?;
- ```
- 
- ### 5.8 删除
- 
- ```rust
- use rsext4::{delete_file, delete_dir};
- 
- delete_file(&mut fs, &mut dev, "/path/to/file");
- delete_dir(&mut fs, &mut dev, "/path/to/dir");
- ```
- 
+English | [中文](README_CN.md)
 
+# Introduction
 
- 
+`rsext4` provides A lightweight ext4 file system. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
 
+## Quick Start
 
+### Installation
+
+Add this crate to your `Cargo.toml`:
+
+```toml
+[dependencies]
+rsext4 = "0.3.0"
+```
+
+### Run Check and Test
+
+```bash
+# Enter the crate directory
+cd components/rsext4
+
+# Format code
+cargo fmt --all
+
+# Run clippy
+cargo clippy --all-targets --all-features
+
+# Run tests
+cargo test --all-features
+
+# Build documentation
+cargo doc --no-deps
+```
+
+## Integration
+
+### Example
+
+```rust
+use rsext4 as _;
+
+fn main() {
+    // Integrate `rsext4` into your project here.
+}
+```
+
+### Documentation
+
+Generate and view API documentation:
+
+```bash
+cargo doc --no-deps --open
+```
+
+Online documentation: [docs.rs/rsext4](https://docs.rs/rsext4)
+
+# Contributing
+
+1. Fork the repository and create a branch
+2. Run local format and checks
+3. Run local tests relevant to this crate
+4. Submit a PR and ensure CI passes
+
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

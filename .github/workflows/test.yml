@@ -55,7 +55,7 @@ jobs:
       - run: cargo xtask test
 
   test_os_target:
-    name: Test ${{ matrix.os }} ${{ matrix.target }}
+    name: Test ${{ matrix.os }} ${{ matrix.arch }}
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/${{ github.repository }}-container:latest
@@ -69,25 +69,25 @@ jobs:
         include:
           # axvisor
           - os: axvisor
-            target: aarch64
+            arch: aarch64
           # starry
           - os: starry
-            target: riscv64
+            arch: riscv64
           - os: starry
-            target: aarch64
+            arch: aarch64
           - os: starry
-            target: loongarch64
+            arch: loongarch64
           - os: starry
-            target: x86_64
+            arch: x86_64
           # arceos
           - os: arceos
-            target: x86_64-unknown-none
+            arch: x86_64
           - os: arceos
-            target: riscv64gc-unknown-none-elf
+            arch: riscv64
           - os: arceos
-            target: aarch64-unknown-none-softfloat
+            arch: aarch64
           - os: arceos
-            target: loongarch64-unknown-none-softfloat
+            arch: loongarch64
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -101,14 +101,15 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: test-${{ matrix.os }}-${{ matrix.target }}
+          shared-key: test-${{ matrix.os }}-${{ matrix.arch }}
           save-if: ${{ github.event_name == 'push' }}
 
       - name: Run ${{ matrix.os }} tests
-        run: cargo ${{ matrix.os }} test qemu --target ${{ matrix.target }}
+        run: cargo ${{ matrix.os }} test qemu --target ${{ matrix.arch }}
 
   test_axvisor_x86_64:
     name: Test axvisor x86_64
+    if: github.repository_owner == 'rcore-os'
     runs-on:
       - self-hosted
       - linux
@@ -124,6 +125,7 @@ jobs:
 
   test_axvisor_board:
     name: Test axvisor ${{ matrix.test_group }}
+    if: github.repository_owner == 'rcore-os'
     strategy:
       fail-fast: false
       matrix:

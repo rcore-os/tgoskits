@@ -9,10 +9,10 @@ authors = [
     "周睿 <zrufo747@outlook.com>"
 ]
 description = "ArceOS-Hypervisor riscv vcpu module"
-license = "Apache-2.0"
 repository = "https://github.com/arceos-hypervisor/riscv_vcpu"
 categories = ["embedded", "no-std"]
 keywords = ["hypervisor", "riscv", "vcpu"]
+license = "Apache-2.0"
 
 [package.metadata.docs.rs]
 default-target = "riscv64gc-unknown-none-elf"

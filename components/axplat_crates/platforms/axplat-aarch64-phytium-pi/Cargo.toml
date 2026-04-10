@@ -1,15 +1,13 @@
 [package]
 name = "ax-plat-aarch64-phytium-pi"
 version.workspace = true
+repository.workspace = true
 description = "Implementation of `axplat` hardware abstraction layer for Phytium Pi board."
-documentation = "https://docs.rs/ax-plat-aarch64-phytium-pi"
 keywords = ["arceos", "os", "hal", "embedded", "aarch64"]
 categories = ["embedded", "no-std", "hardware-support", "os"]
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-homepage.workspace = true
-repository.workspace = true
 
 [features]
 fp-simd = ["ax-cpu/fp-simd"]

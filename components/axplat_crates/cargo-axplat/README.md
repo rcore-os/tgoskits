@@ -1,70 +1,81 @@
-# cargo-axplat
+<h1 align="center">cargo-axplat</h1>
 
-[![Crates.io](https://img.shields.io/crates/v/cargo-axplat)](https://crates.io/crates/cargo-axplat)
-[![CI](https://github.com/arceos-org/axplat_crates/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/arceos-org/axplat_crates/actions/workflows/ci.yml)
+<p align="center">Manages hardware platform packages using `axplat`</p>
 
-A cargo subcommand to manage hardware platform packages using [axplat](https://github.com/arceos-org/axplat_crates/tree/main/axplat).
+<div align="center">
 
-## Install
+[![Crates.io](https://img.shields.io/crates/v/cargo-axplat.svg)](https://crates.io/crates/cargo-axplat)
+[![Docs.rs](https://docs.rs/cargo-axplat/badge.svg)](https://docs.rs/cargo-axplat)
+[![Rust](https://img.shields.io/badge/edition-2024-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-```console
-$ cargo install --locked cargo-axplat
-```
+</div>
 
-## Usage
+English | [中文](README_CN.md)
 
-```text
-Usage: cargo axplat [COMMAND]
+# Introduction
 
-Commands:
-  new   Create a new platform package
-  add   Add platform package dependencies to a Cargo.toml manifest file
-  info  Display information about a platform package
-  help  Print this message or the help of the given subcommand(s)
+`cargo-axplat` provides Manages hardware platform packages using `axplat`. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
 
-Options:
-  -V, --version  Print version
-  -h, --help     Print help
-```
+## Quick Start
 
-## Examples
+### Installation
 
-### 1. Create a new platform package
-
-It will create a new platform package named `axplat-aarch64-my-plat` in the current directory:
-
-```console
-$ cargo axplat new axplat-aarch64-my-plat --arch aarch64
-    Creating library `axplat-aarch64-my-plat` package
-note: see more `Cargo.toml` keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-```
-
-### 2. Add the platform package as dependency
-
-Run in your project directory:
-
-```console
-$ cd my-project
-$ cargo axplat add axplat-aarch64-my-plat --path ../axplat-aarch64-my-plat
-      Adding axplat-aarch64-my-plat (local) to dependencies
-    Updating crates.io index
-      Adding axplat-aarch64-my-plat v0.1.0 (/home/user/axplat-aarch64-my-plat)
-```
-
-It will add `axplat-aarch64-my-plat` as a dependency in your project's `Cargo.toml` file:
+Add this crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-axplat-aarch64-my-plat = { path = "./axplat-aarch64-my-plat" }
+cargo-axplat = "0.4.5"
 ```
 
-### 3. Display information about the platform package
+### Run Check and Test
 
-```console
-$ cargo axplat info axplat-aarch64-my-plat
-platform: axplat-aarch64-my-plat
-arch: aarch64
-version: 0.1.0
-source: path+file:///home/user/axplat-aarch64-my-plat#0.1.0
-config_path: /home/user/axplat-aarch64-my-plat/axconfig.toml
+```bash
+# Enter the crate directory
+cd components/axplat_crates/cargo-axplat
+
+# Format code
+cargo fmt --all
+
+# Run clippy
+cargo clippy --all-targets --all-features
+
+# Run tests
+cargo test --all-features
+
+# Build documentation
+cargo doc --no-deps
 ```
+
+## Integration
+
+### Example
+
+```rust
+use cargo_axplat as _;
+
+fn main() {
+    // Integrate `cargo-axplat` into your project here.
+}
+```
+
+### Documentation
+
+Generate and view API documentation:
+
+```bash
+cargo doc --no-deps --open
+```
+
+Online documentation: [docs.rs/cargo-axplat](https://docs.rs/cargo-axplat)
+
+# Contributing
+
+1. Fork the repository and create a branch
+2. Run local format and checks
+3. Run local tests relevant to this crate
+4. Submit a PR and ensure CI passes
+
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

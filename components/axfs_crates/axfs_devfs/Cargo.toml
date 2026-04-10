@@ -1,15 +1,13 @@
 [package]
 name = "ax-fs-devfs"
 description = "Device filesystem used by ArceOS"
-documentation = "https://docs.rs/axfs_devfs"
 keywords = ["arceos", "filesystem", "devfs"]
 edition.workspace = true
 version = "0.3.2"
-authors.workspace = true
-license.workspace = true
-homepage.workspace = true
 repository.workspace = true
+authors.workspace = true
 categories.workspace = true
+license.workspace = true
 
 [dependencies]
 ax-fs-vfs.workspace = true

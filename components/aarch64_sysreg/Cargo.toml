@@ -4,12 +4,12 @@ version = "0.3.1"
 edition = "2021"
 authors = ["Debin <luodeb@outlook.com>"]
 description = "Address translation of system registers"
-license = "Apache-2.0"
 homepage = "https://github.com/arceos-org/arceos"
 repository = "https://github.com/arceos-org/aarch64_sysreg"
 documentation = "https://docs.rs/aarch64_sysreg"
 keywords = ["arceos", "arm", "aarch64", "registers"]
 categories = ["embedded", "no-std", "hardware-support", "os"]
+license = "Apache-2.0"
 
 [package.metadata.docs.rs]
 targets = ["aarch64-unknown-none-softfloat"]
