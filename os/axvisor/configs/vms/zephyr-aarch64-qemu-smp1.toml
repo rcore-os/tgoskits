@@ -1,0 +1,64 @@
+# Vm base info configs
+#
+[base]
+# Guest vm id.
+id = 1
+# Guest vm name.
+name = "zephyr-qemu"
+# Virtualization type.
+vm_type = 1
+# The number of virtual CPUs.
+cpu_num = 1
+# The physical CPU ids.
+phys_cpu_ids = [0]
+
+#
+# Vm kernel configs
+#
+[kernel]
+# The entry point of the kernel image.
+entry_point = 0x4000_10b4
+# The location of image: "memory" | "fs".
+# Load from file system.
+image_location = "memory"
+## The file path of the kernel image.
+kernel_path = "/path/to/zephyr.bin"
+# The load address of the kernel image.
+kernel_load_addr = 0x4000_0000
+## The file path of the device tree blob (DTB).
+#dtb_path = "/path/to/dtb"
+## The load address of the device tree blob (DTB).
+dtb_load_addr = 0x47e0_0000
+
+# Zephyr qemu_cortex_a53 links RAM at 0x4000_0000 with a precise ELF entry.
+memory_regions = [
+  [0x4000_0000, 0x0800_0000, 0x7, 0], # System RAM 128M MAP_ALLOC
+]
+
+#
+# Device specifications
+#
+[devices]
+# The interrupt mode.
+interrupt_mode = "passthrough"
+# Emu_devices.
+# Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig.
+emu_devices = []
+
+# Pass-through devices.
+# Name Base-Ipa Base-Pa Length Alloc-Irq.
+passthrough_devices = [
+    ["/"],
+    #["/timer"],
+]
+
+# Passthrough addresses.
+# Base-GPA  Length.
+passthrough_addresses = [
+    #[0x28041000, 0x100_0000]
+]
+
+# Devices that are not desired to be passed through to the guest
+excluded_devices = [
+   # ["/gic-v3"],
+]

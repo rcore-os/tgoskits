@@ -23,6 +23,10 @@ pub use axvmconfig::{
     VMInterruptMode, VMType, VmMemConfig, VmMemMappingType,
 };
 
+use crate::VMMemoryRegion;
+
+const BIOS_RESERVED_SIZE: usize = 2 * 1024 * 1024;
+
 // /// A part of `AxVCpuConfig`, which represents an architecture-dependent `VCpu`.
 // ///
 // /// The concrete type of configuration is defined in `AxArchVCpuImpl`.
@@ -117,6 +121,21 @@ impl From<AxVMCrateConfig> for AxVMConfig {
             interrupt_mode: cfg.devices.interrupt_mode,
         }
     }
+}
+
+pub fn adjusted_kernel_load_gpa(
+    main_memory: &VMMemoryRegion,
+    bios_load_gpa: Option<GuestPhysAddr>,
+) -> Option<GuestPhysAddr> {
+    if !main_memory.is_identical() {
+        return None;
+    }
+
+    let mut kernel_addr = main_memory.gpa;
+    if bios_load_gpa.is_some() {
+        kernel_addr += BIOS_RESERVED_SIZE;
+    }
+    Some(kernel_addr)
 }
 
 impl AxVMConfig {
@@ -216,6 +235,30 @@ impl AxVMConfig {
     /// Returns the interrupt mode of the VM.
     pub fn interrupt_mode(&self) -> VMInterruptMode {
         self.interrupt_mode
+    }
+
+    /// Relocate the guest kernel image while preserving the configured
+    /// entry-point offsets relative to the load address.
+    pub fn relocate_kernel_image(&mut self, kernel_load_gpa: GuestPhysAddr) {
+        let old_load = self.image_config.kernel_load_gpa.as_usize();
+        let new_load = kernel_load_gpa.as_usize();
+
+        let bsp_offset = self
+            .cpu_config
+            .bsp_entry
+            .as_usize()
+            .checked_sub(old_load)
+            .expect("BSP entry must not be below kernel load address");
+        let ap_offset = self
+            .cpu_config
+            .ap_entry
+            .as_usize()
+            .checked_sub(old_load)
+            .expect("AP entry must not be below kernel load address");
+
+        self.image_config.kernel_load_gpa = kernel_load_gpa;
+        self.cpu_config.bsp_entry = GuestPhysAddr::from(new_load + bsp_offset);
+        self.cpu_config.ap_entry = GuestPhysAddr::from(new_load + ap_offset);
     }
 }
 
