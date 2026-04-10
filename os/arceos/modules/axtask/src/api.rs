@@ -228,7 +228,7 @@ pub fn yield_now() {
 /// carefully reviewed scheduler or syscall paths that must yield while running
 /// under internal kernel guards.
 #[doc(hidden)]
-pub fn yield_now_unchecked() {
+pub(crate) fn yield_now_unchecked() {
     current_run_queue::<NoPreemptIrqSave>().yield_current()
 }
 
