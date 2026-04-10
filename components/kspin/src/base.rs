@@ -220,8 +220,6 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
                 lock: &self.lock,
             })
         } else {
-            #[cfg(feature = "lockdep")]
-            let _ = lockdep;
             G::release(irq_state);
             None
         }
