@@ -140,6 +140,25 @@ impl ArceosBuildInfo {
         }
     }
 
+    fn normalize_legacy_feature_aliases(&mut self) -> bool {
+        let mut changed = false;
+
+        for feature in &mut self.features {
+            let normalized = normalize_legacy_feature_alias(feature);
+            if *feature != normalized {
+                *feature = normalized;
+                changed = true;
+            }
+        }
+
+        if changed {
+            self.features.sort();
+            self.features.dedup();
+        }
+
+        changed
+    }
+
     pub(crate) fn prepare_log_env(&mut self) {
         self.env
             .insert("AX_LOG".into(), format!("{:?}", self.log).to_lowercase());
@@ -301,9 +320,28 @@ pub(crate) fn resolve_build_info_path(
 }
 
 pub(crate) fn load_build_info(request: &ResolvedBuildRequest) -> anyhow::Result<ArceosBuildInfo> {
-    load_or_create_build_info(&request.build_info_path, || {
+    let mut build_info = load_or_create_build_info(&request.build_info_path, || {
         ArceosBuildInfo::default_for_target(&request.target)
-    })
+    })?;
+
+    if build_info.normalize_legacy_feature_aliases() {
+        warn!(
+            "normalizing legacy feature aliases in build config {}",
+            request.build_info_path.display()
+        );
+        fs::write(
+            &request.build_info_path,
+            toml::to_string_pretty(&build_info)?,
+        )
+        .with_context(|| {
+            format!(
+                "failed to rewrite normalized build info {}",
+                request.build_info_path.display()
+            )
+        })?;
+    }
+
+    Ok(build_info)
 }
 
 pub(crate) fn load_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Result<Cargo> {
@@ -355,6 +393,20 @@ fn default_to_bin_for_target(target: &str) -> bool {
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+fn normalize_legacy_feature_alias(feature: &str) -> String {
+    if feature == "axstd" {
+        "ax-std".to_string()
+    } else if let Some(rest) = feature.strip_prefix("axstd/") {
+        format!("ax-std/{rest}")
+    } else if feature == "axfeat" {
+        "ax-feat".to_string()
+    } else if let Some(rest) = feature.strip_prefix("axfeat/") {
+        format!("ax-feat/{rest}")
+    } else {
+        feature.to_string()
+    }
 }
 
 pub(crate) fn resolve_build_info_path_in_dir(dir: &Path, target: &str) -> PathBuf {
@@ -956,6 +1008,40 @@ AX_IP = "127.0.0.1"
         assert_eq!(build_info.max_cpu_num, Some(4));
         assert!(build_info.features.contains(&"net".to_string()));
         assert_eq!(build_info.env.get("AX_IP"), Some(&"127.0.0.1".to_string()));
+    }
+
+    #[test]
+    fn load_build_info_normalizes_legacy_feature_aliases() {
+        let root = tempdir().unwrap();
+        let path = root.path().join(".build-target.toml");
+        fs::write(
+            &path,
+            r#"
+features = ["axstd", "axstd/smp", "axfeat/net"]
+log = "Warn"
+
+[env]
+AX_IP = "10.0.2.15"
+"#,
+        )
+        .unwrap();
+        let request = request("ax-helloworld", "target", None, path.clone());
+
+        let build_info = load_build_info(&request).unwrap();
+
+        assert!(build_info.features.contains(&"ax-std".to_string()));
+        assert!(build_info.features.contains(&"ax-std/smp".to_string()));
+        assert!(build_info.features.contains(&"ax-feat/net".to_string()));
+        assert!(!build_info.features.contains(&"axstd".to_string()));
+        assert!(!build_info.features.contains(&"axstd/smp".to_string()));
+        assert!(!build_info.features.contains(&"axfeat/net".to_string()));
+
+        let rewritten = fs::read_to_string(path).unwrap();
+        assert!(rewritten.contains("ax-std"));
+        assert!(rewritten.contains("ax-std/smp"));
+        assert!(rewritten.contains("ax-feat/net"));
+        assert!(!rewritten.contains("axstd"));
+        assert!(!rewritten.contains("axfeat/net"));
     }
 
     #[test]

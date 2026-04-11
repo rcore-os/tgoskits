@@ -13,6 +13,7 @@ repository.workspace = true
 default = ["smp", "irq"]
 smp = ["ax-plat/smp"]
 irq = ["ax-plat/irq"]
+fp-simd = ["ax-cpu/fp-simd"]
 uspace = ["somehal/uspace"]
 hv = ["somehal/hv", "ax-cpu/arm-el2"]
 rk3588-clk = ["dep:rk3588-clk"]

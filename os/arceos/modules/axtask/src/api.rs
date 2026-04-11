@@ -180,6 +180,8 @@ pub fn set_priority(prio: isize) -> bool {
 ///
 /// TODO: support set the affinity for other tasks.
 pub fn set_current_affinity(cpumask: AxCpuMask) -> bool {
+    might_sleep();
+
     if cpumask.is_empty() {
         false
     } else {
@@ -213,7 +215,20 @@ pub fn set_current_affinity(cpumask: AxCpuMask) -> bool {
 
 /// Current task gives up the CPU time voluntarily, and switches to another
 /// ready task.
+#[track_caller]
 pub fn yield_now() {
+    might_sleep();
+
+    yield_now_unchecked();
+}
+
+/// Gives up the CPU from a kernel-internal path.
+///
+/// This bypasses the public `might_sleep()` guard and is intended only for
+/// carefully reviewed scheduler or syscall paths that must yield while running
+/// under internal kernel guards.
+#[doc(hidden)]
+pub(crate) fn yield_now_unchecked() {
     current_run_queue::<NoPreemptIrqSave>().yield_current()
 }
 
@@ -229,6 +244,8 @@ pub fn sleep(dur: core::time::Duration) {
 /// If the feature `irq` is not enabled, it uses busy-wait instead.
 pub fn sleep_until(deadline: ax_hal::time::TimeValue) {
     #[cfg(feature = "irq")]
+    might_sleep();
+    #[cfg(feature = "irq")]
     current_run_queue::<NoPreemptIrqSave>().sleep_until(deadline);
     #[cfg(not(feature = "irq"))]
     ax_hal::time::busy_wait_until(deadline);
@@ -236,15 +253,63 @@ pub fn sleep_until(deadline: ax_hal::time::TimeValue) {
 
 /// Exits the current task.
 pub fn exit(exit_code: i32) -> ! {
+    might_sleep();
+
     current_run_queue::<NoPreemptIrqSave>().exit_current(exit_code)
+}
+
+fn current_preempt_count() -> usize {
+    #[cfg(feature = "preempt")]
+    {
+        current_may_uninit().map_or(0, |curr| curr.preempt_count())
+    }
+    #[cfg(not(feature = "preempt"))]
+    {
+        0
+    }
+}
+
+/// Returns whether the current context is atomic, meaning sleeping or
+/// rescheduling is not allowed.
+///
+/// This matches the intent of Linux's `might_sleep()`: catch misuse from
+/// IRQ-disabled or preempt-disabled regions before a sleep-like action happens.
+pub(crate) fn in_atomic_context() -> bool {
+    #[cfg(feature = "irq")]
+    if !ax_hal::asm::irqs_enabled() {
+        return true;
+    }
+
+    #[cfg(feature = "preempt")]
+    if current_preempt_count() != 0 {
+        return true;
+    }
+
+    false
+}
+
+/// Marks an operation as one that may sleep or reschedule.
+///
+/// Panics if it is executed in an atomic context.
+#[track_caller]
+pub(crate) fn might_sleep() {
+    if in_atomic_context() {
+        panic!(
+            "sleeping or rescheduling is not allowed in atomic context: irq_enabled={}, \
+             preempt_count={}",
+            ax_hal::asm::irqs_enabled(),
+            current_preempt_count()
+        );
+    }
 }
 
 /// The idle task routine.
 ///
-/// It runs an infinite loop that keeps calling [`yield_now()`].
+/// It runs an infinite loop that keeps trying to hand over the CPU before
+/// waiting for the next interrupt.
 pub fn run_idle() -> ! {
     loop {
-        yield_now();
+        yield_now_unchecked();
         trace!("idle task: waiting for IRQs...");
         #[cfg(feature = "irq")]
         ax_hal::asm::wait_for_irqs();

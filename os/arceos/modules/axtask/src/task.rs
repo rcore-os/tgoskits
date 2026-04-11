@@ -179,6 +179,7 @@ impl TaskInner {
     ///
     /// It will return immediately if the task has already exited (but not dropped).
     pub fn join(&self) -> i32 {
+        crate::api::might_sleep();
         self.wait_for_exit
             .wait_until(|| self.state() == TaskState::Exited);
         self.exit_code.load(Ordering::Acquire)
@@ -405,6 +406,12 @@ impl TaskInner {
     #[cfg(feature = "preempt")]
     pub(crate) fn set_preempt_pending(&self, pending: bool) {
         self.need_resched.store(pending, Ordering::Release)
+    }
+
+    #[inline]
+    #[cfg(feature = "preempt")]
+    pub(crate) fn preempt_count(&self) -> usize {
+        self.preempt_disable_count.load(Ordering::Acquire)
     }
 
     #[inline]

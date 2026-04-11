@@ -18,7 +18,7 @@ English | [中文](README_CN.md)
 `ax-sched` provides Various scheduler algorithms in a unified interface. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
 
 
-> ax-sched was derived from https://github.com/arceos-org/sched
+> ax-sched was derived from https://github.com/arceos-org/axsched
 
 ## Quick Start
 

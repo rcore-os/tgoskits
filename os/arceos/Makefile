@@ -233,6 +233,7 @@ clean: clean_c
 clean_c::
 	rm -rf ulib/axlibc/build_*
 	rm -rf $(app-objs)
+	rm -rf $(app_obj_dir)
 
 .PHONY: all defconfig oldconfig \
 	build disasm run justrun debug \

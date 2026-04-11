@@ -5,10 +5,6 @@
 
 INCLUDE "link.x"
 __SMP = {{SMP}};
-SECTIONS {
-    scope_local : { KEEP(*(scope_local)) }
-}
-INSERT AFTER .tbss;
 
 SECTIONS {
     debug_abbrev : { . += SIZEOF(.debug_abbrev); }
@@ -25,7 +21,9 @@ SECTIONS {
 INSERT AFTER .rodata;
 
 SECTIONS {
-    Ex_table : ALIGN(0x10){
+    scope_local : { KEEP(*(scope_local)) }
+
+    ex_table : ALIGN(0x10){
         _ex_table_start = .;
         KEEP(*(__ex_table))
         _ex_table_end = .;

@@ -18,7 +18,7 @@ English | [中文](README_CN.md)
 `ax-cpu` provides Privileged instruction and structure abstractions for various CPU architectures. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
 
 
-> ax-cpu was derived from https://github.com/arceos-org/cpu
+> ax-cpu was derived from https://github.com/arceos-org/axcpu
 
 ## Quick Start
 
