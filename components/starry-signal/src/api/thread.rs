@@ -219,7 +219,7 @@ impl ThreadSignalManager {
         // Lock by `actions`
         let actions = self.proc.actions.lock();
         debug!("signal: {signo:?}");
-        if self.proc.signal_ignored(signo, &actions) {
+        if actions[signo].is_ignore(signo) {
             return false;
         }
 

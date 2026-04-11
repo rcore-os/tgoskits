@@ -9,7 +9,7 @@ use linux_raw_sys::{
     signal_macros::sig_ign,
 };
 
-use crate::SignalSet;
+use crate::{SignalSet, Signo};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DefaultSignalAction {
@@ -84,6 +84,22 @@ pub struct SignalAction {
     pub mask: SignalSet,
     pub disposition: SignalDisposition,
     pub restorer: __sigrestore_t,
+}
+
+impl SignalAction {
+    pub fn is_ignore(&self, signo: Signo) -> bool {
+        match self.disposition {
+            SignalDisposition::Ignore => true,
+            SignalDisposition::Default => {
+                matches!(signo.default_action(), DefaultSignalAction::Ignore)
+            }
+            SignalDisposition::Handler(_) => false,
+        }
+    }
+
+    pub fn is_restartable(&self) -> bool {
+        self.flags.contains(SignalActionFlags::RESTART)
+    }
 }
 
 impl From<SignalAction> for kernel_sigaction {

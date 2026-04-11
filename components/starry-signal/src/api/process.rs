@@ -13,10 +13,7 @@ use ax_kspin::SpinNoIrq;
 use linux_raw_sys::general::kernel_sigaction;
 use starry_vm::{VmMutPtr, VmPtr};
 
-use crate::{
-    DefaultSignalAction, PendingSignals, SignalAction, SignalActionFlags, SignalDisposition,
-    SignalInfo, SignalSet, Signo, api::ThreadSignalManager,
-};
+use crate::{PendingSignals, SignalAction, SignalInfo, SignalSet, Signo, api::ThreadSignalManager};
 
 /// Signal actions for a process.
 #[derive(Clone)]
@@ -80,22 +77,6 @@ impl ProcessSignalManager {
         result
     }
 
-    /// Checks if a signal is ignored by the process.
-    pub(crate) fn signal_ignored(&self, signo: Signo, actions: &SignalActions) -> bool {
-        match &actions[signo].disposition {
-            SignalDisposition::Ignore => true,
-            SignalDisposition::Default => {
-                matches!(signo.default_action(), DefaultSignalAction::Ignore)
-            }
-            _ => false,
-        }
-    }
-
-    /// Checks if syscalls interrupted by the given signal can be restarted.
-    pub fn can_restart(&self, signo: Signo, actions: &SignalActions) -> bool {
-        actions[signo].flags.contains(SignalActionFlags::RESTART)
-    }
-
     /// Sends a signal to the process.
     ///
     /// Returns `Some(tid)` if the signal wakes up a thread.
@@ -107,7 +88,7 @@ impl ProcessSignalManager {
 
         // Lock by `actions`
         let actions = self.actions.lock();
-        if self.signal_ignored(signo, &actions) {
+        if actions[signo].is_ignore(signo) {
             return None;
         }
 
