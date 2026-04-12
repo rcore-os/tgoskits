@@ -1,0 +1,7 @@
+name = "axvisor-examples"
+
+[arches.aarch64]
+cases = [
+  "example/pass-report",
+  "example/fail-report",
+]

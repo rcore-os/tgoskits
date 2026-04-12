@@ -1,0 +1,10 @@
+[package]
+name = "axvisor-guestlib"
+version = "0.1.0"
+edition.workspace = true
+
+[features]
+ax-std = ["dep:ax-std"]
+
+[dependencies]
+ax-std = { workspace = true, optional = true }

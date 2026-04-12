@@ -31,7 +31,7 @@ struct LoadedAxvisorBuildConfig {
     target: String,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub(crate) struct AxvisorBoardFile {
     pub(crate) target: String,
     #[serde(flatten)]

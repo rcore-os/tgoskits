@@ -1,0 +1,5 @@
+id = "example.fail_report"
+tags = ["example"]
+arch = ["aarch64"]
+timeout_secs = 5
+description = "Minimal example that reports fail."

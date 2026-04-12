@@ -1553,6 +1553,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "starry-fatfs",
  "syn 2.0.117",
  "tar",
  "tempfile",
@@ -1925,6 +1926,29 @@ dependencies = [
  "syn 2.0.117",
  "tokio",
  "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
+name = "axvisor-example-fail-report"
+version = "0.1.0"
+dependencies = [
+ "ax-std",
+ "axvisor-guestlib",
+]
+
+[[package]]
+name = "axvisor-example-pass-report"
+version = "0.1.0"
+dependencies = [
+ "ax-std",
+ "axvisor-guestlib",
+]
+
+[[package]]
+name = "axvisor-guestlib"
+version = "0.1.0"
+dependencies = [
+ "ax-std",
 ]
 
 [[package]]

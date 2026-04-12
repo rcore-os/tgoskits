@@ -15,6 +15,7 @@ use crate::{
 
 pub mod board;
 pub mod build;
+pub mod cases;
 pub mod cli;
 pub mod config;
 pub mod context;
@@ -23,8 +24,8 @@ pub mod qemu;
 pub mod qemu_test;
 
 pub use cli::{
-    ArgsBoard, ArgsBuild, ArgsConfig, ArgsDefconfig, ArgsQemu, ArgsTest, ArgsUboot, Command,
-    ConfigCommand, TestCommand,
+    ArgsBoard, ArgsBuild, ArgsConfig, ArgsDefconfig, ArgsQemu, ArgsTest, ArgsTestCases, ArgsUboot,
+    Command, ConfigCommand, TestCommand,
 };
 
 pub struct Axvisor {
@@ -131,7 +132,14 @@ impl Axvisor {
             TestCommand::Qemu(args) => self.test_qemu(args).await,
             TestCommand::Uboot(args) => self.test_uboot(args).await,
             TestCommand::Board(args) => self.test_board(args).await,
+            TestCommand::Cases(args) => self.test_cases(args).await,
         }
+    }
+
+    async fn test_cases(&mut self, args: cli::ArgsTestCases) -> anyhow::Result<()> {
+        let app = &mut self.app;
+        let ctx = &self.ctx;
+        cases::run(args, app, ctx).await
     }
 
     async fn test_qemu(&mut self, args: cli::ArgsTestQemu) -> anyhow::Result<()> {

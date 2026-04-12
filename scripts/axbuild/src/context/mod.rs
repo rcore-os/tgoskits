@@ -8,6 +8,7 @@ use ostool::{
     Tool, ToolConfig,
     board::{RunBoardOptions, config::BoardRunConfig},
     build::{CargoQemuRunnerArgs, CargoRunnerKind, CargoUbootRunnerArgs, config::Cargo},
+    ctx::OutputArtifacts,
     run::{qemu::QemuConfig, uboot::UbootConfig},
 };
 
@@ -94,6 +95,16 @@ impl AppContext {
     ) -> anyhow::Result<()> {
         self.set_build_config_path(build_config_path);
         self.tool.cargo_build(&cargo).await
+    }
+
+    pub(crate) async fn build_with_artifacts(
+        &mut self,
+        cargo: Cargo,
+        build_config_path: PathBuf,
+    ) -> anyhow::Result<OutputArtifacts> {
+        self.set_build_config_path(build_config_path);
+        self.tool.cargo_build(&cargo).await?;
+        Ok(self.tool.ctx().artifacts.clone())
     }
 
     pub(crate) async fn qemu(

@@ -1,0 +1,11 @@
+[package]
+name = "axvisor-example-pass-report"
+version = "0.1.0"
+edition.workspace = true
+
+[features]
+ax-std = ["dep:ax-std", "axvisor-guestlib/ax-std"]
+
+[dependencies]
+ax-std = { workspace = true, optional = true }
+axvisor-guestlib = { path = "../../common/guestlib" }

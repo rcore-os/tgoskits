@@ -108,6 +108,9 @@ members = [
     "test-suit/arceos/rust/memtest",
     "test-suit/arceos/rust/net/*",
     "test-suit/arceos/rust/task/*",
+    "test-suit/axvisor/common/*",
+    "test-suit/axvisor/example/*",
+
     # os/axvisor
     "os/axvisor",
 

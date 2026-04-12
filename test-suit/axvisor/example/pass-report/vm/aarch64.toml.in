@@ -1,0 +1,34 @@
+[base]
+id = 1
+name = "axcases-example-pass-report"
+vm_type = 1
+cpu_num = 1
+phys_cpu_ids = [0]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "fs"
+kernel_path = "/axcases/images/example.pass_report/kernel.bin"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+
+memory_regions = [
+  [0x8000_0000, 0x4000_0000, 0x7, 1],
+]
+
+[devices]
+passthrough_devices = [
+  ["/chosen"],
+  ["/aliases"],
+  ["/pl011@9000000"],
+  ["/intc@8000000"],
+  ["/timer"],
+  ["/psci"],
+]
+
+passthrough_addresses = []
+excluded_devices = [
+  ["/pcie@10000000"],
+]
+emu_devices = []
+interrupt_mode = "passthrough"

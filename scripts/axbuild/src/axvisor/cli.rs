@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
-use clap::{Args, Subcommand};
+use clap::{ArgGroup, Args, Subcommand};
 
-use crate::context::AxvisorCliArgs;
+use crate::context::{AxvisorCliArgs, DEFAULT_AXVISOR_ARCH};
 
 /// Axvisor host-side commands
 #[derive(Subcommand)]
@@ -110,6 +110,8 @@ pub enum TestCommand {
     Uboot(ArgsTestUboot),
     /// Run Axvisor remote board test suite
     Board(ArgsTestBoard),
+    /// Run AxVisor guest test cases
+    Cases(ArgsTestCases),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -146,6 +148,26 @@ pub struct ArgsTestBoard {
 
     #[arg(long)]
     pub port: Option<u16>,
+}
+
+#[derive(Args, Debug, Clone)]
+#[command(group(
+    ArgGroup::new("selection")
+        .required(true)
+        .args(["suite", "case"])
+))]
+pub struct ArgsTestCases {
+    #[arg(long, value_name = "ARCH", default_value = DEFAULT_AXVISOR_ARCH)]
+    pub arch: String,
+
+    #[arg(long, value_name = "SUITE")]
+    pub suite: Option<PathBuf>,
+
+    #[arg(long, value_name = "CASE_DIR")]
+    pub case: Option<PathBuf>,
+
+    #[arg(long, value_name = "BOOL", num_args = 1)]
+    pub guest_log: Option<bool>,
 }
 
 #[derive(Subcommand)]
@@ -356,6 +378,148 @@ mod tests {
             },
             _ => panic!("expected test command"),
         }
+    }
+
+    #[test]
+    fn command_parses_test_cases_suite() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from([
+            "axvisor",
+            "test",
+            "cases",
+            "--arch",
+            "aarch64",
+            "--suite",
+            "test-suit/axvisor/suites/examples.toml",
+            "--guest-log",
+            "false",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Test(args) => match args.command {
+                TestCommand::Cases(args) => {
+                    assert_eq!(args.arch, "aarch64");
+                    assert_eq!(
+                        args.suite,
+                        Some(PathBuf::from("test-suit/axvisor/suites/examples.toml"))
+                    );
+                    assert_eq!(args.case, None);
+                    assert_eq!(args.guest_log, Some(false));
+                }
+                _ => panic!("expected cases test command"),
+            },
+            _ => panic!("expected test command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_test_cases_case() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from([
+            "axvisor",
+            "test",
+            "cases",
+            "--arch",
+            "x86_64",
+            "--case",
+            "test-suit/axvisor/example/pass-report",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Test(args) => match args.command {
+                TestCommand::Cases(args) => {
+                    assert_eq!(args.arch, "x86_64");
+                    assert_eq!(
+                        args.case,
+                        Some(PathBuf::from("test-suit/axvisor/example/pass-report"))
+                    );
+                    assert_eq!(args.suite, None);
+                    assert_eq!(args.guest_log, None);
+                }
+                _ => panic!("expected cases test command"),
+            },
+            _ => panic!("expected test command"),
+        }
+    }
+
+    #[test]
+    fn command_defaults_test_cases_arch_to_aarch64() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from([
+            "axvisor",
+            "test",
+            "cases",
+            "--case",
+            "test-suit/axvisor/example/fail-report",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Test(args) => match args.command {
+                TestCommand::Cases(args) => {
+                    assert_eq!(args.arch, "aarch64");
+                    assert_eq!(
+                        args.case,
+                        Some(PathBuf::from("test-suit/axvisor/example/fail-report"))
+                    );
+                    assert_eq!(args.suite, None);
+                }
+                _ => panic!("expected cases test command"),
+            },
+            _ => panic!("expected test command"),
+        }
+    }
+
+    #[test]
+    fn command_rejects_test_cases_without_case_or_suite() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        assert!(Cli::try_parse_from(["axvisor", "test", "cases"]).is_err());
+    }
+
+    #[test]
+    fn command_rejects_test_cases_with_case_and_suite() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        assert!(
+            Cli::try_parse_from([
+                "axvisor",
+                "test",
+                "cases",
+                "--arch",
+                "aarch64",
+                "--suite",
+                "suite.toml",
+                "--case",
+                "case-dir",
+            ])
+            .is_err()
+        );
     }
 
     #[test]

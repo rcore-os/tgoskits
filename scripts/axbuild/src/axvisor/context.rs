@@ -20,6 +20,14 @@ impl AxvisorContext {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn new_in(workspace_root: PathBuf, axvisor_dir: PathBuf) -> Self {
+        Self {
+            workspace_root,
+            axvisor_dir,
+        }
+    }
+
     pub fn workspace_root(&self) -> &Path {
         &self.workspace_root
     }
