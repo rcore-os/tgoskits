@@ -1,15 +1,18 @@
 #!/bin/sh
 
 export HOME=/root
+export USER=root
+export HOSTNAME=starry
 
-echo -e "Welcome to \e[96m\e[1mStarry OS\e[0m!"
+printf "Welcome to \033[96m\033[1mStarry OS\033[0m!\n"
 env
 echo
 
-echo -e "Use \e[1m\e[3mapk\e[0m to install packages."
+printf "Use \033[1m\033[3mapk\033[0m to install packages.\n"
 echo
 
 # Do your initialization here!
 
-cd ~
-sh --login
+cd "$HOME" || cd /
+export PS1='${USER}@${HOSTNAME}:${PWD} # '
+exec /bin/sh -i

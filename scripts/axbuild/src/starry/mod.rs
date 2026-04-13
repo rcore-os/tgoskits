@@ -17,6 +17,7 @@ use crate::{
 };
 
 pub mod build;
+pub mod quick_start;
 pub mod rootfs;
 
 /// StarryOS subcommands
@@ -30,6 +31,9 @@ pub enum Command {
     Test(ArgsTest),
     /// Download rootfs image into workspace target directory
     Rootfs(ArgsRootfs),
+    /// Convenience entrypoints for common QEMU and Orange Pi workflows
+    #[command(name = "quick-start")]
+    QuickStart(quick_start::ArgsQuickStart),
     /// Build and run StarryOS application with U-Boot
     Uboot(ArgsUboot),
 }
@@ -131,6 +135,7 @@ impl Starry {
             Command::Build(args) => self.build(args).await,
             Command::Qemu(args) => self.qemu(args).await,
             Command::Rootfs(args) => self.rootfs(args).await,
+            Command::QuickStart(args) => self.quick_start(args).await,
             Command::Uboot(args) => self.uboot(args).await,
             Command::Test(args) => self.test(args).await,
         }
@@ -169,6 +174,39 @@ impl Starry {
             SnapshotPersistence::Store,
         )?;
         self.run_uboot_request(request).await
+    }
+
+    async fn quick_start(&mut self, args: quick_start::ArgsQuickStart) -> anyhow::Result<()> {
+        use quick_start::{QuickOrangeAction, QuickQemuPlatform, QuickStartCommand};
+
+        match args.command {
+            QuickStartCommand::List => {
+                quick_start::print_supported_platforms(self.app.workspace_root());
+                Ok(())
+            }
+            QuickStartCommand::QemuAarch64(args) => {
+                self.quick_start_qemu(QuickQemuPlatform::Aarch64, args.action)
+                    .await
+            }
+            QuickStartCommand::QemuRiscv64(args) => {
+                self.quick_start_qemu(QuickQemuPlatform::Riscv64, args.action)
+                    .await
+            }
+            QuickStartCommand::QemuLoongarch64(args) => {
+                self.quick_start_qemu(QuickQemuPlatform::Loongarch64, args.action)
+                    .await
+            }
+            QuickStartCommand::QemuX8664(args) => {
+                self.quick_start_qemu(QuickQemuPlatform::X8664, args.action)
+                    .await
+            }
+            QuickStartCommand::Orangepi5Plus(args) => match args.action {
+                QuickOrangeAction::Build(build_args) => {
+                    self.quick_start_orangepi_build(build_args).await
+                }
+                QuickOrangeAction::Run(run_args) => self.quick_start_orangepi_run(run_args).await,
+            },
+        }
     }
 
     fn resolve_shell_init_cmd(input: Option<String>) -> anyhow::Result<Option<String>> {
@@ -277,6 +315,16 @@ impl Starry {
         }
     }
 
+    fn quick_start_build_args(arch: &str, config: PathBuf) -> StarryCliArgs {
+        StarryCliArgs {
+            config: Some(config),
+            arch: Some(arch.to_string()),
+            target: None,
+            plat_dyn: None,
+            debug: false,
+        }
+    }
+
     fn qemu_run_config(
         qemu_config: Option<PathBuf>,
         qemu_args: Vec<String>,
@@ -355,6 +403,93 @@ impl Starry {
 
     async fn run_uboot_request(&mut self, request: ResolvedStarryRequest) -> anyhow::Result<()> {
         command_flow::run_uboot(&mut self.app, request, build::load_cargo_config).await
+    }
+
+    async fn quick_start_qemu(
+        &mut self,
+        platform: quick_start::QuickQemuPlatform,
+        action: quick_start::QuickQemuAction,
+    ) -> anyhow::Result<()> {
+        let arch = platform.arch();
+
+        match action {
+            quick_start::QuickQemuAction::Build => {
+                let target = starry_target_for_arch_checked(arch)?.to_string();
+                quick_start::refresh_qemu_configs(self.app.workspace_root(), platform)?;
+                rootfs::ensure_rootfs_in_target_dir(self.app.workspace_root(), arch, &target)
+                    .await?;
+                let request = self.prepare_request(
+                    Self::quick_start_build_args(
+                        arch,
+                        quick_start::tmp_qemu_build_config_path(
+                            self.app.workspace_root(),
+                            platform,
+                        ),
+                    ),
+                    None,
+                    None,
+                    SnapshotPersistence::Store,
+                )?;
+                self.run_build_request(request).await
+            }
+            quick_start::QuickQemuAction::Run => {
+                quick_start::ensure_qemu_configs(self.app.workspace_root(), platform)?;
+                let request = self.prepare_request(
+                    Self::quick_start_build_args(
+                        arch,
+                        quick_start::tmp_qemu_build_config_path(
+                            self.app.workspace_root(),
+                            platform,
+                        ),
+                    ),
+                    Some(quick_start::tmp_qemu_run_config_path(
+                        self.app.workspace_root(),
+                        platform,
+                    )),
+                    None,
+                    SnapshotPersistence::Store,
+                )?;
+                self.run_qemu_request(request).await
+            }
+        }
+    }
+
+    async fn quick_start_orangepi_build(
+        &mut self,
+        args: quick_start::QuickOrangeConfigArgs,
+    ) -> anyhow::Result<()> {
+        quick_start::refresh_orangepi_configs(self.app.workspace_root())?;
+        quick_start::prepare_orangepi_uboot_config(self.app.workspace_root(), &args)?;
+        let request = self.prepare_request(
+            Self::quick_start_build_args(
+                "aarch64",
+                quick_start::tmp_orangepi_build_config_path(self.app.workspace_root()),
+            ),
+            None,
+            None,
+            SnapshotPersistence::Store,
+        )?;
+        self.run_build_request(request).await
+    }
+
+    async fn quick_start_orangepi_run(
+        &mut self,
+        args: quick_start::QuickOrangeRunArgs,
+    ) -> anyhow::Result<()> {
+        quick_start::ensure_orangepi_configs(self.app.workspace_root())?;
+        let request = self.prepare_request(
+            Self::quick_start_build_args(
+                "aarch64",
+                quick_start::tmp_orangepi_build_config_path(self.app.workspace_root()),
+            ),
+            None,
+            Some(quick_start::prepare_orangepi_uboot_config(
+                self.app.workspace_root(),
+                &args,
+            )?),
+            SnapshotPersistence::Store,
+        )?;
+        self.run_uboot_request(request).await
     }
 }
 
@@ -464,5 +599,93 @@ mod tests {
 
         let result = Starry::resolve_shell_init_cmd(Some(file.display().to_string())).unwrap();
         assert_eq!(result, Some("echo 'from file' && ls -la".to_string()));
+    }
+
+    #[test]
+    fn command_parses_quick_start_qemu_build() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from(["starry", "quick-start", "qemu-aarch64", "build"]).unwrap();
+
+        match cli.command {
+            Command::QuickStart(args) => match args.command {
+                quick_start::QuickStartCommand::QemuAarch64(inner) => {
+                    assert!(matches!(inner.action, quick_start::QuickQemuAction::Build));
+                }
+                _ => panic!("expected qemu-aarch64 quick-start command"),
+            },
+            _ => panic!("expected quick-start command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_quick_start_orangepi_run() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from([
+            "starry",
+            "quick-start",
+            "orangepi-5-plus",
+            "run",
+            "--serial",
+            "/dev/ttyUSB0",
+            "--baud",
+            "1500000",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::QuickStart(args) => match args.command {
+                quick_start::QuickStartCommand::Orangepi5Plus(inner) => match inner.action {
+                    quick_start::QuickOrangeAction::Run(run) => {
+                        assert_eq!(run.serial.as_deref(), Some("/dev/ttyUSB0"));
+                        assert_eq!(run.baud.as_deref(), Some("1500000"));
+                    }
+                    _ => panic!("expected orangepi run quick-start command"),
+                },
+                _ => panic!("expected orangepi quick-start command"),
+            },
+            _ => panic!("expected quick-start command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_quick_start_orangepi_build_with_overrides() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from([
+            "starry",
+            "quick-start",
+            "orangepi-5-plus",
+            "build",
+            "--serial",
+            "/dev/ttyUSB0",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::QuickStart(args) => match args.command {
+                quick_start::QuickStartCommand::Orangepi5Plus(inner) => match inner.action {
+                    quick_start::QuickOrangeAction::Build(build) => {
+                        assert_eq!(build.serial.as_deref(), Some("/dev/ttyUSB0"));
+                    }
+                    _ => panic!("expected orangepi build quick-start command"),
+                },
+                _ => panic!("expected orangepi quick-start command"),
+            },
+            _ => panic!("expected quick-start command"),
+        }
     }
 }
