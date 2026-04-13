@@ -36,7 +36,7 @@ ax-driver-virtio = { workspace = true, features = ["block"] }
 ax-errno.workspace = true
 axklib.workspace = true
 ax-plat.workspace = true
-dma-api = "0.7"
+dma-api.workspace = true
 eth-intel = { version = "0.1", optional = true }
 fdt-edit = "0.2"
 heapless = "0.9"
