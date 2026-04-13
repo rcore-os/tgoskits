@@ -1,0 +1,301 @@
+name: CI
+
+on:
+  push:
+    paths-ignore:
+      - "**/*.md"
+      - "**/*.rst"
+      - "**/*.adoc"
+      - "docs/**"
+      - "**/docs/**"
+      - "**/doc/**"
+  pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "**/*.rst"
+      - "**/*.adoc"
+      - "docs/**"
+      - "**/docs/**"
+      - "**/doc/**"
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  detect_changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      container_publish: ${{ steps.filter.outputs.container_publish }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Detect container-related changes
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            container_publish:
+              - ".github/workflows/ci.yml"
+              - ".github/workflows/container-publish.yml"
+              - "container/Dockerfile"
+              - "rust-toolchain.toml"
+
+  fmt:
+    name: Check formatting
+    needs: detect_changes
+    uses: ./.github/workflows/reusable-host-command.yml
+    with:
+      command: cargo fmt --all -- --check
+
+  clippy:
+    name: Run clippy
+    needs: fmt
+    uses: ./.github/workflows/reusable-container-command.yml
+    with:
+      command: cargo xtask clippy
+      cache_key: clippy
+      container_image: ghcr.io/${{ github.repository }}-container:latest
+
+  test_std:
+    name: Test with std
+    needs: clippy
+    uses: ./.github/workflows/reusable-container-command.yml
+    with:
+      command: cargo xtask test
+      cache_key: test-std
+      container_image: ghcr.io/${{ github.repository }}-container:latest
+
+  test_qemu_matrix:
+    name: Test ${{ matrix.os }} ${{ matrix.arch }}
+    needs: test_std
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: axvisor
+            arch: aarch64
+          - os: starry
+            arch: riscv64
+          - os: starry
+            arch: aarch64
+          - os: starry
+            arch: loongarch64
+          - os: starry
+            arch: x86_64
+          - os: arceos
+            arch: x86_64
+          - os: arceos
+            arch: riscv64
+          - os: arceos
+            arch: aarch64
+          - os: arceos
+            arch: loongarch64
+    uses: ./.github/workflows/reusable-container-command.yml
+    with:
+      command: cargo xtask ${{ matrix.os }} test qemu --target ${{ matrix.arch }}
+      cache_key: test-${{ matrix.os }}-${{ matrix.arch }}
+      container_image: ghcr.io/${{ github.repository }}-container:latest
+      install_fat_tools: true
+
+  test_axvisor_self_hosted:
+    name: Test axvisor ${{ matrix.label }}
+    if: github.repository_owner == 'rcore-os'
+    needs: test_qemu_matrix
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - label: x86_64
+            runs_on: '["self-hosted","linux","intel"]'
+            command: cargo xtask axvisor test qemu --target x86_64
+          - label: orangepi-5-plus-linux
+            runs_on: '["self-hosted","linux","board"]'
+            command: cargo xtask axvisor test board -t orangepi-5-plus-linux
+          - label: roc-rk3568-pc-linux
+            runs_on: '["self-hosted","linux","board"]'
+            command: cargo xtask axvisor test board -t roc-rk3568-pc-linux
+    uses: ./.github/workflows/reusable-host-command.yml
+    with:
+      runs_on: ${{ matrix.runs_on }}
+      command: ${{ matrix.command }}
+
+  container_publish:
+    name: Publish container image
+    if: >-
+      ${{
+        always()
+        && needs.test_qemu_matrix.result == 'success'
+        && (needs.test_axvisor_self_hosted.result == 'success' || needs.test_axvisor_self_hosted.result == 'skipped')
+        && github.event_name == 'push'
+        && (github.ref_name == 'main' || github.ref_name == 'dev')
+        && needs.detect_changes.outputs.container_publish == 'true'
+      }}
+    needs:
+      - detect_changes
+      - test_qemu_matrix
+      - test_axvisor_self_hosted
+    uses: ./.github/workflows/container-publish.yml
+    permissions:
+      contents: read
+      packages: write
+
+  release_plz_pr_dev:
+    name: Prepare release-plz PR for dev
+    if: >-
+      ${{
+        always()
+        && needs.test_qemu_matrix.result == 'success'
+        && (needs.test_axvisor_self_hosted.result == 'success' || needs.test_axvisor_self_hosted.result == 'skipped')
+        && (needs.container_publish.result == 'success' || needs.container_publish.result == 'skipped')
+        && github.event_name == 'push'
+        && github.ref_name == 'dev'
+        && github.repository_owner == 'rcore-os'
+      }}
+    needs:
+      - test_qemu_matrix
+      - test_axvisor_self_hosted
+      - container_publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      BASE_BRANCH: dev
+      BOT_BRANCH: release-plz-dev
+      GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ env.GH_TOKEN }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install release-plz CLI
+        run: cargo install --locked release-plz
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Bootstrap release tags for published packages
+        run: |
+          new_tags=()
+          while IFS= read -r tag; do
+            if [ -z "$(git tag -l "$tag")" ]; then
+              echo "Creating baseline tag: $tag"
+              git tag "$tag"
+              new_tags+=("$tag")
+            fi
+          done < <(
+            cargo metadata --no-deps --format-version 1 \
+              | jq -r '.packages[] | select(.publish != []) | "\(.name)-v\(.version)"'
+          )
+          if [ "${#new_tags[@]}" -gt 0 ]; then
+            git push origin "${new_tags[@]}"
+            echo "Pushed ${#new_tags[@]} new baseline tags"
+          fi
+
+      - name: Generate release changes
+        id: update
+        run: |
+          release-plz update --config release-plz.toml
+
+          if git diff --quiet; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and push release branch
+        if: steps.update.outputs.has_changes == 'true'
+        run: |
+          git checkout -B "$BOT_BRANCH"
+          git add -A
+          git commit -m "chore(release): prepare release for $BASE_BRANCH"
+          git push --force-with-lease origin "$BOT_BRANCH"
+
+      - name: Create or update release PR
+        if: steps.update.outputs.has_changes == 'true'
+        run: |
+          PR_NUMBER="$(gh pr list \
+            --base "$BASE_BRANCH" \
+            --head "$BOT_BRANCH" \
+            --state open \
+            --json number \
+            --jq '.[0].number')"
+
+          TITLE="chore(release): prepare release for $BASE_BRANCH"
+          BODY=$(cat <<EOF
+          Automated release PR for \`$BASE_BRANCH\`.
+
+          This PR was generated by \`release-plz update\` and contains:
+          - version bumps for changed crates
+          - dependency version updates
+          - lockfile and changelog updates when applicable
+          EOF
+          )
+
+          if [ -n "$PR_NUMBER" ] && [ "$PR_NUMBER" != "null" ]; then
+            gh pr edit "$PR_NUMBER" \
+              --title "$TITLE" \
+              --body "$BODY"
+          else
+            gh pr create \
+              --base "$BASE_BRANCH" \
+              --head "$BOT_BRANCH" \
+              --title "$TITLE" \
+              --body "$BODY"
+          fi
+
+      - name: Summarize no-op release-plz update
+        if: steps.update.outputs.has_changes != 'true'
+        run: |
+          echo "## release-plz PR" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "No release changes were generated for \`dev\`." >> "$GITHUB_STEP_SUMMARY"
+
+  release_placeholder_main:
+    name: Release placeholder for main
+    if: >-
+      ${{
+        always()
+        && needs.test_qemu_matrix.result == 'success'
+        && (needs.test_axvisor_self_hosted.result == 'success' || needs.test_axvisor_self_hosted.result == 'skipped')
+        && (needs.container_publish.result == 'success' || needs.container_publish.result == 'skipped')
+        && github.event_name == 'push'
+        && github.ref_name == 'main'
+      }}
+    needs:
+      - test_qemu_matrix
+      - test_axvisor_self_hosted
+      - container_publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summarize future release flow
+        run: |
+          echo "## Release placeholder" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "All checks finished successfully on \`main\`." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Future release commands:" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`release-plz update --config release-plz.toml\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`release-plz release --config release-plz.toml --forge github --git-token \\\"\${GITHUB_TOKEN}\\\"\`" >> "$GITHUB_STEP_SUMMARY"

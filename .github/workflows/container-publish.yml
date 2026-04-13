@@ -1,16 +1,7 @@
-name: Publish Container Image
+name: Reusable Container Publish
 
 on:
-  push:
-    branches:
-      - main
-      - dev
-    paths:
-      - ".github/workflows/container-publish.yml"
-      - "container/Dockerfile"
-      - "rust-toolchain.toml"
-
-permissions: {}
+  workflow_call:
 
 jobs:
   publish:
