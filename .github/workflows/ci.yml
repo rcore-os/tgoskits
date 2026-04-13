@@ -82,7 +82,7 @@ jobs:
 
   test_qemu_matrix:
     name: Test ${{ matrix.os }} ${{ matrix.arch }}
-    needs: test_std
+    needs: clippy
     strategy:
       fail-fast: true
       matrix:
@@ -115,7 +115,7 @@ jobs:
   test_axvisor_self_hosted:
     name: Test axvisor ${{ matrix.label }}
     if: github.repository_owner == 'rcore-os'
-    needs: test_qemu_matrix
+    needs: clippy
     strategy:
       fail-fast: true
       matrix:
@@ -139,6 +139,7 @@ jobs:
     if: >-
       ${{
         always()
+        && needs.test_std.result == 'success'
         && needs.test_qemu_matrix.result == 'success'
         && (needs.test_axvisor_self_hosted.result == 'success' || needs.test_axvisor_self_hosted.result == 'skipped')
         && github.event_name == 'push'
@@ -147,6 +148,7 @@ jobs:
       }}
     needs:
       - detect_changes
+      - test_std
       - test_qemu_matrix
       - test_axvisor_self_hosted
     uses: ./.github/workflows/container-publish.yml
@@ -159,17 +161,17 @@ jobs:
     if: >-
       ${{
         always()
+        && needs.test_std.result == 'success'
         && needs.test_qemu_matrix.result == 'success'
         && (needs.test_axvisor_self_hosted.result == 'success' || needs.test_axvisor_self_hosted.result == 'skipped')
-        && (needs.container_publish.result == 'success' || needs.container_publish.result == 'skipped')
         && github.event_name == 'push'
         && github.ref_name == 'dev'
         && github.repository_owner == 'rcore-os'
       }}
     needs:
+      - test_std
       - test_qemu_matrix
       - test_axvisor_self_hosted
-      - container_publish
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -278,16 +280,16 @@ jobs:
     if: >-
       ${{
         always()
+        && needs.test_std.result == 'success'
         && needs.test_qemu_matrix.result == 'success'
         && (needs.test_axvisor_self_hosted.result == 'success' || needs.test_axvisor_self_hosted.result == 'skipped')
-        && (needs.container_publish.result == 'success' || needs.container_publish.result == 'skipped')
         && github.event_name == 'push'
         && github.ref_name == 'main'
       }}
     needs:
+      - test_std
       - test_qemu_matrix
       - test_axvisor_self_hosted
-      - container_publish
     runs-on: ubuntu-latest
     steps:
       - name: Summarize future release flow
