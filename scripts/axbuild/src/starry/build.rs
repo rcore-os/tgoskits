@@ -318,7 +318,7 @@ HELLO = "world"
 
         assert_eq!(cargo.package, STARRY_PACKAGE);
         assert_eq!(cargo.target, "aarch64-unknown-none-softfloat");
-        assert_eq!(cargo.features, vec!["net".to_string(), "qemu".to_string()]);
+        assert_eq!(cargo.features, vec!["net".to_string()]);
         assert_eq!(
             cargo.env.get("AX_ARCH").map(String::as_str),
             Some("aarch64")
@@ -327,10 +327,7 @@ HELLO = "world"
             cargo.env.get("AX_TARGET").map(String::as_str),
             Some("aarch64-unknown-none-softfloat")
         );
-        assert_eq!(
-            cargo.env.get("AX_PLATFORM").map(String::as_str),
-            Some("aarch64-qemu-virt")
-        );
+        assert_eq!(cargo.env.get("AX_PLATFORM").map(String::as_str), None);
         assert_eq!(cargo.env.get("AX_LOG").map(String::as_str), Some("info"));
         assert_eq!(cargo.env.get("CUSTOM").map(String::as_str), Some("1"));
         assert!(cargo.to_bin);

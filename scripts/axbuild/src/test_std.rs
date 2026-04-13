@@ -182,7 +182,8 @@ mod tests {
 
     #[test]
     fn parses_valid_std_csv() {
-        let packages = parse_std_crates_csv("package\naxfeat\naxhal\n", &known_packages()).unwrap();
+        let packages =
+            parse_std_crates_csv("package\nax-feat\nax-hal\n", &known_packages()).unwrap();
 
         assert_eq!(packages, vec!["ax-feat".to_string(), "ax-hal".to_string()]);
     }
@@ -190,7 +191,7 @@ mod tests {
     #[test]
     fn parses_std_csv_with_blank_lines() {
         let packages =
-            parse_std_crates_csv("\npackage\n\naxfeat\n\naxhal\n", &known_packages()).unwrap();
+            parse_std_crates_csv("\npackage\n\nax-feat\n\nax-hal\n", &known_packages()).unwrap();
 
         assert_eq!(packages, vec!["ax-feat".to_string(), "ax-hal".to_string()]);
     }
@@ -204,7 +205,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_header() {
-        let err = parse_std_crates_csv("crate\naxfeat\n", &known_packages()).unwrap_err();
+        let err = parse_std_crates_csv("crate\nax-feat\n", &known_packages()).unwrap_err();
 
         assert!(err.to_string().contains("invalid header"));
     }
@@ -221,7 +222,8 @@ mod tests {
 
     #[test]
     fn rejects_duplicate_package() {
-        let err = parse_std_crates_csv("package\naxfeat\naxfeat\n", &known_packages()).unwrap_err();
+        let err =
+            parse_std_crates_csv("package\nax-feat\nax-feat\n", &known_packages()).unwrap_err();
 
         assert!(err.to_string().contains("duplicate package `ax-feat`"));
     }

@@ -286,7 +286,7 @@ mod tests {
                         .display()
                 ),
                 "-device".to_string(),
-                "virtio-net-pci,netdev=net0".to_string(),
+                "e1000,netdev=net0".to_string(),
                 "-netdev".to_string(),
                 "user,id=net0".to_string(),
             ]
