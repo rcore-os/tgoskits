@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "starry-testing": {
+      "command": "node",
+      "args": ["/Users/chaoge/workspace/tgoskits/os/StarryOS/mcp-servers/starry-testing/index.js"],
+      "env": {
+        "STARRY_ROOT": "/Users/chaoge/workspace/tgoskits/os/StarryOS"
+      }
+    }
+  }
+}

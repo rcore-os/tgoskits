@@ -1,0 +1,53 @@
+{
+  "version": "1.0",
+  "last_updated": "2026-04-12T00:00:00Z",
+  "syscalls": [
+    {
+      "name": "read",
+      "number": 63,
+      "category": "fs",
+      "status": "implemented",
+      "file": "kernel/src/syscall/fs/io.rs",
+      "line": 15,
+      "tested": false,
+      "test_file": null,
+      "test_coverage": 0,
+      "bugs_found": 0,
+      "bugs_fixed": 0,
+      "priority": "high",
+      "complexity": "medium",
+      "last_analyzed": null,
+      "notes": ""
+    },
+    {
+      "name": "futex",
+      "number": 98,
+      "category": "sync",
+      "status": "incomplete",
+      "file": "kernel/src/syscall/sync/futex.rs",
+      "line": 20,
+      "tested": false,
+      "test_file": null,
+      "test_coverage": 0,
+      "bugs_found": 0,
+      "bugs_fixed": 0,
+      "priority": "critical",
+      "complexity": "high",
+      "last_analyzed": null,
+      "notes": "Missing priority inheritance"
+    }
+  ],
+  "bugs": [],
+  "test_results": [],
+  "statistics": {
+    "total_syscalls": 2,
+    "implemented": 1,
+    "stub": 0,
+    "missing": 0,
+    "tested": 0,
+    "test_coverage_avg": 0,
+    "bugs_open": 0,
+    "bugs_fixed": 0,
+    "last_scan": "2026-04-12"
+  }
+}

@@ -1,0 +1,16 @@
+# Node modules
+node_modules/
+
+# NPM
+package-lock.json
+npm-debug.log*
+
+# Test outputs
+test-cases/syscall/*.o
+test-cases/syscall/test_*
+!test-cases/syscall/*.c
+
+# Temporary files
+*.tmp
+*.log
+.DS_Store
