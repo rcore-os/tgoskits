@@ -44,7 +44,7 @@ name = "xtask"
 path = "xtask/main.rs"
 
 [dependencies]
-ax-feat = { workspace = true, features = ["fs-ng-times"] }
+ax-feat = { workspace = true, features = ["fs-ng-times", "irq"] }
 starry-kernel = { workspace = true, features = ["dev-log"] }
 axplat-dyn = { workspace = true, optional = true }
 
