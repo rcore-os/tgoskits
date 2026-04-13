@@ -8,6 +8,10 @@ pub type AxNetDevice = Box<dyn NetDriverOps>;
 /// The unified type of the block storage devices.
 #[cfg(feature = "block")]
 pub type AxBlockDevice = Box<dyn BlockDriverOps>;
+#[cfg(feature = "block")]
+pub fn block_device_ops(dev: &mut AxBlockDevice) -> &mut dyn BlockDriverOps {
+    dev.as_mut()
+}
 /// The unified type of the graphics display devices.
 #[cfg(feature = "display")]
 pub type AxDisplayDevice = Box<dyn DisplayDriverOps>;

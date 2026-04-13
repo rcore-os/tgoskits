@@ -3,6 +3,8 @@
 #![no_std]
 #![cfg_attr(doc, feature(doc_cfg))]
 
+extern crate alloc;
+
 #[cfg(feature = "bcm2835-sdhci")]
 pub mod bcm2835sdhci;
 
@@ -14,6 +16,7 @@ pub mod ramdisk_static;
 
 #[cfg(feature = "ahci")]
 pub mod ahci;
+pub mod partition;
 #[cfg(feature = "sdmmc")]
 pub mod sdmmc;
 

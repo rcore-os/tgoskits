@@ -234,7 +234,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
 
         cfg_if::cfg_if! {
             if #[cfg(feature = "fs-ng")] {
-                ax_fs_ng::init_filesystems(all_devices.block);
+                ax_fs_ng::init_filesystems(all_devices.block, ax_hal::dtb::get_chosen_bootargs());
             } else
             if #[cfg(feature = "fs")] {
                 ax_fs::init_filesystems(all_devices.block, ax_hal::dtb::get_chosen_bootargs());
