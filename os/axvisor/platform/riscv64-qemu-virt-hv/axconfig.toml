@@ -3,7 +3,7 @@ arch = "riscv64"                                # str
 # Platform identifier.
 platform = "riscv64-qemu-virt"                  # str
 # Platform package.
-package = "ax-plat-riscv64-qemu-virt"            # str
+package = "riscv64-qemu-virt-hv"                 # str
 
 #
 # Platform configs

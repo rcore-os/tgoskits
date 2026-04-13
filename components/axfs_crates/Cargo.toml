@@ -3,8 +3,8 @@ resolver = "2"
 
 members = [
     "axfs_vfs",
-    "ax-fs-devfs",
-    "ax-fs-ramfs",
+    "axfs_devfs",
+    "axfs_ramfs",
 ]
 
 [workspace.package]

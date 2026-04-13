@@ -1,6 +1,6 @@
 [package]
 edition = "2024"
-name = "ax-plat-riscv64-qemu-virt"
+name = "riscv64-qemu-virt-hv"
 version = "0.5.0"
 repository = "https://github.com/rcore-os/tgoskits"
 license = "Apache-2.0"

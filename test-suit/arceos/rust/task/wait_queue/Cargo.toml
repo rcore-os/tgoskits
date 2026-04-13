@@ -1,6 +1,7 @@
 [package]
 name = "arceos-wait-queue"
 version = "0.3.0"
+publish = false
 edition.workspace = true
 authors = ["Keyang Hu <keyang.hu@qq.com>"]
 description = "A simple demo to test the wait queue for tasks under ArceOS"

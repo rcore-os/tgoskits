@@ -1,6 +1,7 @@
 [package]
 name = "arceos-yield"
 version = "0.3.0"
+publish = false
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 

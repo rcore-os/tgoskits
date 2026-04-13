@@ -1,2 +1,94 @@
 [workspace]
 release_always = false
+
+[[package]]
+name = "tgmath"
+release = false
+
+[[package]]
+name = "ax-helloworld"
+release = false
+
+[[package]]
+name = "ax-helloworld-myplat"
+release = false
+
+[[package]]
+name = "ax-httpclient"
+release = false
+
+[[package]]
+name = "ax-httpserver"
+release = false
+
+[[package]]
+name = "ax-shell"
+release = false
+
+[[package]]
+name = "arceos-display"
+release = false
+
+[[package]]
+name = "arceos-exception"
+release = false
+
+[[package]]
+name = "arceos-fs-shell"
+release = false
+
+[[package]]
+name = "arceos-memtest"
+release = false
+
+[[package]]
+name = "arceos-net-echoserver"
+release = false
+
+[[package]]
+name = "arceos-net-httpclient"
+release = false
+
+[[package]]
+name = "arceos-net-httpserver"
+release = false
+
+[[package]]
+name = "arceos-net-udpserver"
+release = false
+
+[[package]]
+name = "arceos-affinity"
+release = false
+
+[[package]]
+name = "arceos-irq"
+release = false
+
+[[package]]
+name = "arceos-parallel"
+release = false
+
+[[package]]
+name = "arceos-priority"
+release = false
+
+[[package]]
+name = "arceos-sleep"
+release = false
+
+[[package]]
+name = "arceos-tls"
+release = false
+
+[[package]]
+name = "arceos-wait-queue"
+release = false
+
+[[package]]
+name = "arceos-yield"
+release = false
+
+[[package]]
+name = "starryos-test"
+release = false

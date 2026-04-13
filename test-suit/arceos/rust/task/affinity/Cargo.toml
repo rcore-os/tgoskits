@@ -1,6 +1,7 @@
 [package]
 name = "arceos-affinity"
 version = "0.3.0"
+publish = false
 edition.workspace = true
 authors = ["Keyang Hu <keyang.hu@qq.com>"]
 description = "A simple demo to test the cpu affinity of tasks under ArceOS"

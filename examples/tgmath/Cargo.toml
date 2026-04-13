@@ -1,6 +1,7 @@
 [package]
 name = "tgmath"
 version = "0.3.0"
+publish = false
 edition = "2024"
 authors = ["TGOSKits Contributor <72115@163.com>"]
 description = "A tiny math utility crate for TGOSKits demo."

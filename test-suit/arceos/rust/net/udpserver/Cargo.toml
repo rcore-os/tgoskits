@@ -1,6 +1,7 @@
 [package]
 name = "arceos-net-udpserver"
 version = "0.3.0"
+publish = false
 edition.workspace = true
 authors = ["Dashuai Wu <wudashuaijss@foxmail.com>"]
 

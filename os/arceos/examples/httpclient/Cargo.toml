@@ -1,6 +1,7 @@
 [package]
 name = "ax-httpclient"
 version = "0.3.0"
+publish = false
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>", "Dashuai Wu <wudashuaijss@foxmail.com>"]

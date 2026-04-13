@@ -1,6 +1,7 @@
 [package]
 name = "starryos-test"
 version.workspace = true
+publish = false
 edition.workspace = true
 description = "A Linux-compatible OS kernel built on ArceOS unikernel"
 authors = [
