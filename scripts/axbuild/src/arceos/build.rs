@@ -1287,7 +1287,7 @@ AX_GW = "10.0.2.2"
     #[test]
     fn resolve_platform_package_ignores_unselected_axplat_dependency() {
         let package = resolve_platform_package(
-            "starryos-test",
+            "starryos",
             "riscv64gc-unknown-none-elf",
             &["qemu".to_string()],
         )

@@ -21,6 +21,7 @@ pub mod build;
 pub mod quick_start;
 pub mod config;
 pub mod rootfs;
+pub mod test_suit;
 
 /// StarryOS subcommands
 #[derive(Subcommand)]
@@ -116,8 +117,10 @@ pub enum ConfigCommand {
 
 #[derive(Args, Debug, Clone)]
 pub struct ArgsTestQemu {
-    #[arg(long, alias = "arch", value_name = "ARCH")]
+    #[arg(short = 't', long, alias = "arch", value_name = "ARCH")]
     pub target: String,
+    #[arg(short = 'c', long, value_name = "CASE")]
+    pub test_case: Option<String>,
     #[arg(long, value_name = "CMD_OR_FILE")]
     pub shell_init_cmd: Option<String>,
     #[arg(
@@ -283,49 +286,54 @@ impl Starry {
     }
 
     async fn test_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
-        let (arch, target) =
-            test_qemu::parse_starry_test_target(self.app.workspace_root(), &args.target)?;
-        let package = test_qemu::STARRY_TEST_PACKAGE;
+        let (arch, target) = test_suit::parse_test_target(self.app.workspace_root(), &args.target)?;
+        let cases = test_suit::discover_qemu_cases(
+            self.app.workspace_root(),
+            &arch,
+            args.test_case.as_deref(),
+        )?;
+        let package = crate::context::STARRY_PACKAGE;
+        let shell_init_cmd = Self::resolve_shell_init_cmd(args.shell_init_cmd)?;
 
         println!(
             "running starry qemu tests for package {} on arch: {} (target: {})",
             package, arch, target
         );
 
-        println!("[1/1] starry qemu {}", package);
-        let mut request = self.prepare_request(
+        config::write_default_qemu_defconfig_for_target(self.app.workspace_root(), &target)?;
+        let request = self.prepare_request(
             Self::test_build_args(&arch),
             None,
             None,
             SnapshotPersistence::Discard,
         )?;
-        request.package = package.to_string();
-        config::write_default_qemu_defconfig_for_target(self.app.workspace_root(), &target)?;
-        let qemu_config = rootfs::prepare_test_qemu_config(
-            self.app.workspace_root(),
-            &request,
-            &self.test_qemu_config_path(&arch),
-            args.timeout,
-        )
-        .await?;
 
-        // Parse shell_init_cmd: if file path, read content
-        let shell_init_cmd = Self::resolve_shell_init_cmd(args.shell_init_cmd)?;
+        let total = cases.len();
+        let mut failed = Vec::new();
+        for (index, case) in cases.iter().enumerate() {
+            println!("[{}/{}] starry qemu {}", index + 1, total, case.name);
+            let qemu_config = test_suit::prepare_test_qemu_config(
+                self.app.workspace_root(),
+                &request,
+                &case.qemu_config_path,
+                args.timeout,
+            )
+            .await?;
 
-        match self
-            .run_test_qemu_request(request, qemu_config, shell_init_cmd)
-            .await
-            .with_context(|| "starry qemu test failed")
-        {
-            Ok(()) => {
-                println!("ok: {}", package);
-                test_qemu::finalize_qemu_test_run("starry", &[])
-            }
-            Err(err) => {
-                eprintln!("failed: {}: {:#}", package, err);
-                test_qemu::finalize_qemu_test_run("starry", &[package.to_string()])
+            match self
+                .run_test_qemu_request(request.clone(), qemu_config, shell_init_cmd.clone())
+                .await
+                .with_context(|| format!("starry qemu test failed for case `{}`", case.name))
+            {
+                Ok(()) => println!("ok: {}", case.name),
+                Err(err) => {
+                    eprintln!("failed: {}: {:#}", case.name, err);
+                    failed.push(case.name.clone());
+                }
             }
         }
+
+        test_suit::finalize_qemu_case_run(&failed)
     }
 
     async fn test_uboot(&mut self, _args: ArgsTestUboot) -> anyhow::Result<()> {
@@ -381,14 +389,6 @@ impl Starry {
             },
             ..Default::default()
         })
-    }
-
-    fn test_qemu_config_path(&self, arch: &str) -> PathBuf {
-        self.app
-            .workspace_root()
-            .join("test-suit")
-            .join("starryos")
-            .join(format!("qemu-{arch}.toml"))
     }
 
     async fn run_qemu_request(&mut self, request: ResolvedStarryRequest) -> anyhow::Result<()> {
@@ -634,8 +634,10 @@ mod tests {
             "starry",
             "test",
             "qemu",
-            "--target",
+            "-t",
             "x86_64",
+            "-c",
+            "smoke",
             "--shell-init-cmd",
             "echo 'test'",
             "--timeout",
@@ -647,6 +649,7 @@ mod tests {
             Command::Test(args) => match args.command {
                 TestCommand::Qemu(args) => {
                     assert_eq!(args.target, "x86_64");
+                    assert_eq!(args.test_case, Some("smoke".to_string()));
                     assert_eq!(args.shell_init_cmd, Some("echo 'test'".to_string()));
                     assert_eq!(args.timeout, Some(10));
                 }

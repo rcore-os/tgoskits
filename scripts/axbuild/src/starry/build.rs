@@ -337,7 +337,7 @@ HELLO = "world"
     #[test]
     fn patch_starry_cargo_config_preserves_request_package() {
         let request = ResolvedStarryRequest {
-            package: "starryos-test".to_string(),
+            package: STARRY_PACKAGE.to_string(),
             arch: "x86_64".to_string(),
             target: "x86_64-unknown-none".to_string(),
             plat_dyn: None,
@@ -355,8 +355,11 @@ HELLO = "world"
 
         patch_starry_cargo_config(&mut cargo, &request).unwrap();
 
-        assert_eq!(cargo.package, "starryos-test");
-        assert!(!cargo.args.iter().any(|arg| arg == "--bin"));
+        assert_eq!(cargo.package, STARRY_PACKAGE);
+        assert_eq!(
+            cargo.args,
+            vec!["--bin".to_string(), STARRY_PACKAGE.to_string()]
+        );
     }
 
     #[test]
@@ -457,36 +460,6 @@ HELLO = "world"
         );
     }
 
-    #[test]
-    fn patch_starry_test_package_keeps_linker_x_arg() {
-        let request = ResolvedStarryRequest {
-            package: "starryos-test".to_string(),
-            arch: "aarch64".to_string(),
-            target: "aarch64-unknown-none-softfloat".to_string(),
-            plat_dyn: None,
-            debug: false,
-            build_info_path: PathBuf::from("/tmp/.build.toml"),
-            qemu_config: None,
-            uboot_config: None,
-        };
-        let build_info = StarryBuildInfo::default_starry_for_target(&request.target);
-        let mut cargo = build_info.into_base_cargo_config_with_log(
-            request.package.clone(),
-            request.target.clone(),
-            StarryBuildInfo::build_cargo_args(&request.target, false),
-        );
-
-        patch_starry_cargo_config(&mut cargo, &request).unwrap();
-
-        assert!(
-            cargo
-                .args
-                .iter()
-                .any(|arg| arg.contains("-Clink-arg=-Tlinker.x"))
-        );
-    }
-
-    #[test]
     fn ensure_starry_bin_arg_adds_bin_for_starryos_package() {
         let mut args = Vec::new();
 
@@ -496,11 +469,11 @@ HELLO = "world"
     }
 
     #[test]
-    fn ensure_starry_bin_arg_skips_when_package_bin_name_differs() {
-        let mut args = Vec::new();
+    fn ensure_starry_bin_arg_keeps_existing_bin_arg() {
+        let mut args = vec!["--bin".to_string(), "starryos".to_string()];
 
-        ensure_starry_bin_arg(&mut args, "starryos-test").unwrap();
+        ensure_starry_bin_arg(&mut args, STARRY_PACKAGE).unwrap();
 
-        assert!(args.is_empty());
+        assert_eq!(args, vec!["--bin".to_string(), "starryos".to_string()]);
     }
 }

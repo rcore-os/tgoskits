@@ -11,7 +11,7 @@
 | `components/starry-*` | Starry 专用复用组件 | `starry-process`、`starry-signal`、`starry-vm` 等 |
 | `components/axpoll`、`components/rsext4` 等 | Starry 常用共享组件 | I/O 多路复用、文件系统等 |
 | `os/arceos/modules/*` | StarryOS 复用的底层能力 | HAL、任务、驱动、网络、内存 |
-| `test-suit/starryos/` | 系统测试入口 | 回归测试 |
+| `test-suit/starryos/` | 系统测试数据目录 | 维护 StarryOS 回归测例与运行判据 |
 
 ## 2. 最短运行路径
 
@@ -136,9 +136,10 @@ cargo starry qemu --arch riscv64
 
 ```bash
 cargo starry test qemu --target riscv64
+cargo starry test qemu -t riscv64 -c stress-ng-0
 ```
 
-根测试入口跑的其实是 `test-suit/starryos` 下的 `starryos-test` 包，而不是普通的 `starryos` 包。
+这里直接构建并运行的是 `starryos` 包本体；`test-suit/starryos/` 只负责按测例目录提供 `qemu-<arch>.toml` 测试配置。默认会跑该架构下所有匹配 case，`-c/--test-case` 可只跑单个 case。
 
 ### 本地 Makefile 路径
 

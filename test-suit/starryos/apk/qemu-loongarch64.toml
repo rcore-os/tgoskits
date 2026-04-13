@@ -1,0 +1,29 @@
+args = [
+  "-machine",
+  "virt",
+  "-cpu",
+  "la464",
+  "-nographic",
+  "-m",
+  "128M",
+  "-device",
+  "virtio-blk-pci,drive=disk0",
+  "-drive",
+  "id=disk0,if=none,format=raw,file=${workspace}/target/loongarch64-unknown-none-softfloat/rootfs-loongarch64.img",
+  "-device",
+  "virtio-net-pci,netdev=net0",
+  "-netdev",
+  "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "starry:~#"
+shell_init_cmd = '''
+apk update && \
+apk add curl && \
+curl --version && \
+echo 'All tests passed!'
+'''
+success_regex = ["(?m)^All tests passed!\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', 'failed:']
+timeout = 50

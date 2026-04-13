@@ -7574,15 +7574,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "starryos-test"
-version = "0.5.0"
-dependencies = [
- "ax-feat",
- "axplat-riscv64-visionfive2",
- "starry-kernel",
-]
-
-[[package]]
 name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
