@@ -55,6 +55,7 @@
 //! [dyn]: https://doc.rust-lang.org/std/keyword.dyn.html
 
 #![no_std]
+#![cfg_attr(feature = "virtio", feature(associated_type_defaults))]
 
 #[macro_use]
 extern crate log;

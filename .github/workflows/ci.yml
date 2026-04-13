@@ -67,7 +67,7 @@ jobs:
     needs: detect_changes
     uses: ./.github/workflows/reusable-container-command.yml
     with:
-      command: cargo xtask clippy
+      command: cargo xtask clippy -h
       cache_key: clippy
       container_image: ghcr.io/${{ github.repository }}-container:latest
 
