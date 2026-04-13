@@ -15,11 +15,14 @@ use rdrive::{
 };
 use spin::Mutex;
 
-use super::virtio::{VirtIoBlkDevice, register_virtio_block};
+use super::PlatformDeviceNetDriver;
 use crate::drivers::virtio::VirtIoHalImpl;
 
+const DRIVER_NAME: &str = "virtio-net-pci";
+type VirtIoNetDevice<T> = ax_driver_virtio::VirtIoNetDev<VirtIoHalImpl, T, 64>;
+
 module_driver!(
-    name: "Virtio PCI Block",
+    name: "Virtio PCI Network",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,
     probe_kinds: &[ProbeKind::Pci { on_probe: probe }],
@@ -27,7 +30,7 @@ module_driver!(
 
 fn probe(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
     match (endpoint.vendor_id(), endpoint.device_id()) {
-        (0x1af4, 0x1001 | 0x1042) => {}
+        (0x1af4, 0x1000 | 0x1041) => {}
         _ => return Err(OnProbeError::NotMatch),
     }
 
@@ -35,22 +38,22 @@ fn probe(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnPr
     let dev_info = as_device_function_info(endpoint);
     let mut root = PciRoot::new(EndpointConfigAccess::new(bdf, endpoint.take()));
 
-    let (ty, transport, _irq) =
+    let (ty, transport, irq) =
         ax_driver_virtio::probe_pci_device::<VirtIoHalImpl, _>(&mut root, bdf, &dev_info)
             .ok_or(OnProbeError::NotMatch)?;
 
-    if ty != DeviceType::Block {
+    if ty != DeviceType::Net {
         return Err(OnProbeError::NotMatch);
     }
 
-    let dev = VirtIoBlkDevice::try_new(transport).map_err(|err| {
+    let dev = VirtIoNetDevice::try_new(transport, Some(irq)).map_err(|err| {
         OnProbeError::other(format!(
-            "failed to initialize Virtio PCI block device at {bdf}: {err:?}"
+            "failed to initialize Virtio PCI network device at {bdf}: {err:?}"
         ))
     })?;
 
-    register_virtio_block(plat_dev, dev);
-    debug!("virtio PCI block device registered successfully at {bdf}");
+    plat_dev.register_net_driver(DRIVER_NAME, dev);
+    debug!("virtio PCI network device registered successfully at {bdf}");
     Ok(())
 }
 

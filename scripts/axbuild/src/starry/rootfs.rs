@@ -171,7 +171,7 @@ fn qemu_args_for_disk_image(disk_img: PathBuf) -> anyhow::Result<Vec<String>> {
         "-drive".to_string(),
         format!("id=disk0,if=none,format=raw,file={}", disk_img.display()),
         "-device".to_string(),
-        "e1000,netdev=net0".to_string(),
+        "virtio-net-pci,netdev=net0".to_string(),
         "-netdev".to_string(),
         "user,id=net0".to_string(),
     ])
@@ -286,7 +286,7 @@ mod tests {
                         .display()
                 ),
                 "-device".to_string(),
-                "e1000,netdev=net0".to_string(),
+                "virtio-net-pci,netdev=net0".to_string(),
                 "-netdev".to_string(),
                 "user,id=net0".to_string(),
             ]

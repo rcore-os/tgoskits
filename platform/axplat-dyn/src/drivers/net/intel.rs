@@ -8,8 +8,10 @@ use rdrive::{
     },
 };
 
-use super::{DRIVER_NAME, PlatformDeviceNet};
+use super::PlatformDeviceNet;
 use crate::{boot::Kernel, drivers::DmaImpl};
+
+const DRIVER_NAME: &str = "eth-intel-e1000";
 
 module_driver!(
     name: "Intel E1000 PCI Network",

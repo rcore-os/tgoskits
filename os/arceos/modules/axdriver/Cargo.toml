@@ -13,7 +13,7 @@ license.workspace = true
 [features]
 bus-mmio = []
 bus-pci = ["dep:ax-driver-pci", "dep:ax-hal", "dep:ax-config"]
-net = ["dep:ax-driver-net", "axplat-dyn?/intel-net"]
+net = ["dep:ax-driver-net", "axplat-dyn?/net"]
 block = ["dep:ax-driver-block"]
 display = ["dep:ax-driver-display"]
 input = ["dep:ax-driver-input"]

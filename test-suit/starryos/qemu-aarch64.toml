@@ -7,7 +7,7 @@ args = [
     "-drive",
     "id=disk0,if=none,format=raw,file=${workspace}/target/aarch64-unknown-none-softfloat/rootfs-aarch64.img",
     "-device",
-    "e1000,netdev=net0",
+    "virtio-net-pci,netdev=net0",
     "-netdev",
     "user,id=net0",
 ]

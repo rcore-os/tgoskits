@@ -1,6 +1,6 @@
 extern crate alloc;
 
-use alloc::{collections::VecDeque, sync::Arc};
+use alloc::{boxed::Box, collections::VecDeque, sync::Arc};
 
 use ax_driver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
 use ax_driver_net::{EthernetAddress, NetBuf, NetBufBox, NetBufPool, NetBufPtr, NetDriverOps};
@@ -12,8 +12,9 @@ use super::DmaImpl;
 
 #[cfg(feature = "intel-net")]
 mod intel;
+#[cfg(feature = "virtio-net-pci")]
+mod virtio_pci;
 
-const DRIVER_NAME: &str = "eth-intel-e1000";
 const NET_BUF_LEN: usize = 2048;
 const NET_BUF_POOL_CAPACITY: usize = 512;
 const NET_QUEUE_SIZE: usize = 256;
@@ -31,6 +32,17 @@ impl PlatformNetDevice {
 }
 
 impl DriverGeneric for PlatformNetDevice {
+    fn name(&self) -> &str {
+        self.name
+    }
+}
+
+pub struct PlatformNetDriver {
+    name: &'static str,
+    dev: Option<Box<dyn NetDriverOps>>,
+}
+
+impl DriverGeneric for PlatformNetDriver {
     fn name(&self) -> &str {
         self.name
     }
@@ -219,6 +231,31 @@ impl PlatformDeviceNet for rdrive::PlatformDevice {
     }
 }
 
+pub trait PlatformDeviceNetDriver {
+    fn register_net_driver<T>(self, name: &'static str, dev: T)
+    where
+        T: NetDriverOps + 'static;
+}
+
+impl PlatformDeviceNetDriver for rdrive::PlatformDevice {
+    fn register_net_driver<T>(self, name: &'static str, dev: T)
+    where
+        T: NetDriverOps + 'static,
+    {
+        self.register(PlatformNetDriver {
+            name,
+            dev: Some(Box::new(dev)),
+        });
+    }
+}
+
+pub(super) fn take_net_driver(
+    device: Device<PlatformNetDriver>,
+) -> Result<Box<dyn NetDriverOps>, DevError> {
+    let mut dev = device.lock().map_err(map_device_err_to_dev_err)?;
+    dev.dev.take().ok_or(DevError::BadState)
+}
+
 fn map_net_err_to_dev_err(err: NetError) -> DevError {
     match err {
         NetError::Retry => DevError::Again,
@@ -231,6 +268,3 @@ fn map_net_err_to_dev_err(err: NetError) -> DevError {
 fn map_device_err_to_dev_err(_err: rdrive::GetDeviceError) -> DevError {
     DevError::BadState
 }
-
-#[allow(dead_code)]
-const _: &str = DRIVER_NAME;

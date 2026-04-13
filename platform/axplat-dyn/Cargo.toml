@@ -22,7 +22,9 @@ sdmmc = ["dep:sdmmc"]
 rockchip-pm = ["dep:rockchip-pm"]
 phytium-blk = ["dep:phytium-mci"]
 serial = ["dep:some-serial"]
-intel-net = ["dep:ax-driver-net", "dep:eth-intel", "dep:pcie", "dep:rd-net"]
+net = ["dep:ax-driver-net", "dep:rd-net"]
+intel-net = ["net", "dep:eth-intel", "dep:pcie"]
+virtio-net-pci = ["net"]
 
 [dependencies]
 anyhow = { version = "1", default-features = false }
@@ -32,7 +34,7 @@ ax-cpu.workspace = true
 ax-driver-base.workspace = true
 ax-driver-block.workspace = true
 ax-driver-net = { workspace = true, optional = true }
-ax-driver-virtio = { workspace = true, features = ["block"] }
+ax-driver-virtio = { workspace = true, features = ["block", "net"] }
 ax-errno.workspace = true
 axklib.workspace = true
 ax-plat.workspace = true
