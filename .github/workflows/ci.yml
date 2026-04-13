@@ -46,7 +46,7 @@ jobs:
 
       - name: Detect container-related changes
         id: filter
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             container_publish:
