@@ -1,10 +1,9 @@
 env = {AX_IP = "10.0.2.15", AX_GW = "10.0.2.2"}
 features = [
-  "ax-feat/defplat",
-  "ax-feat/bus-pci",
-  "ax-feat/display",
   "starry-kernel/input",
   "starry-kernel/vsock", # auxilary features
+  "axplat-dyn/intel-net",
+  "axplat-dyn/virtio-net-pci",
 ]
 log = "Warn"
 plat_dyn = false

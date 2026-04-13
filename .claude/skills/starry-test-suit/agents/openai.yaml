@@ -1,0 +1,4 @@
+interface:
+  display_name: "Starry Test Suit"
+  short_description: "Add and maintain Starry test-suit cases"
+  default_prompt: "Use $starry-test-suit to add or adapt a StarryOS test-suit case in this repo."
