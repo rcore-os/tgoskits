@@ -70,7 +70,8 @@ impl<H: Hal, T: Transport> InputDriverOps for VirtIoInputDev<H, T> {
     fn get_event_bits(&mut self, ty: EventType, out: &mut [u8]) -> DevResult<bool> {
         let read = self
             .inner
-            .query_config_select(InputConfigSelect::EvBits, ty as u8, out);
+            .query_config_select(InputConfigSelect::EvBits, ty as u8, out)
+            .map_err(as_dev_err)?;
         Ok(read != 0)
     }
 

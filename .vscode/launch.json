@@ -1,0 +1,156 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "ArceOS Main (AArch64)",
+      "type": "lldb",
+      "request": "custom",
+      "initCommands": [
+        "process handle SIGINT -p false -s false -n false"
+      ],
+      "preLaunchTask": "TGOS: Start ArceOS QEMU debug",
+      "postDebugTask": "TGOS: Stop ArceOS QEMU debug",
+      "targetCreateCommands": [
+        "target create ${workspaceFolder}/target/aarch64-unknown-none-softfloat/debug/ax-helloworld",
+        "target modules load --file ${workspaceFolder}/target/aarch64-unknown-none-softfloat/debug/ax-helloworld --slide 0"
+      ],
+      "processCreateCommands": [
+        "gdb-remote 127.0.0.1:1234"
+      ],
+      "postRunCommands": [
+        "breakpoint set --file /home/zcs/WORKSPACE/tgoskits/os/arceos/examples/helloworld/src/main.rs --line 8",
+        "continue"
+      ],
+      "sourceLanguages": [
+        "rust"
+      ]
+    },
+    {
+      "name": "ArceOS Boot (AArch64)",
+      "type": "lldb",
+      "request": "custom",
+      "initCommands": [
+        "process handle SIGINT -p false -s false -n false"
+      ],
+      "preLaunchTask": "TGOS: Start ArceOS QEMU debug",
+      "postDebugTask": "TGOS: Stop ArceOS QEMU debug",
+      "targetCreateCommands": [
+        "target create ${workspaceFolder}/target/aarch64-unknown-none-softfloat/debug/ax-helloworld",
+        "target modules load --file ${workspaceFolder}/target/aarch64-unknown-none-softfloat/debug/ax-helloworld --slide 0"
+      ],
+      "processCreateCommands": [
+        "gdb-remote 127.0.0.1:1234"
+      ],
+      "postRunCommands": [
+        // "breakpoint set --file /home/zcs/WORKSPACE/tgoskits/components/axplat_crates/platforms/axplat-aarch64-qemu-virt/src/boot.rs --line 76",
+        "breakpoint set --name ax_plat::call_main",
+        "breakpoint set --file /home/zcs/WORKSPACE/tgoskits/os/arceos/modules/axruntime/src/lib.rs --line 141",
+        "breakpoint set --file /home/zcs/WORKSPACE/tgoskits/os/arceos/examples/helloworld/src/main.rs --line 8"
+      ],
+      "sourceLanguages": [
+        "rust"
+      ]
+    },
+    {
+      "name": "Axvisor Main (AArch64)",
+      "type": "lldb",
+      "request": "custom",
+      "initCommands": [
+        "process handle SIGINT -p false -s false -n false",
+        "settings set target.process.thread.step-avoid-regexp ^(core::|alloc::|bitflags::|ax_page_table_entry::|page_table_multiarch::)"
+      ],
+      "preLaunchTask": "TGOS: Start Axvisor QEMU debug",
+      "postDebugTask": "TGOS: Stop Axvisor QEMU debug",
+      "targetCreateCommands": [
+        "target create ${workspaceFolder}/target/aarch64-unknown-none-softfloat/debug/axvisor",
+        "target modules load --file ${workspaceFolder}/target/aarch64-unknown-none-softfloat/debug/axvisor --slide 0"
+      ],
+      "processCreateCommands": [
+        "gdb-remote 127.0.0.1:1234"
+      ],
+      "postRunCommands": [
+        "breakpoint set --file /home/zcs/WORKSPACE/tgoskits/os/axvisor/src/main.rs --line 42",
+        "continue"
+      ],
+      "sourceLanguages": [
+        "rust"
+      ]
+    },
+    {
+      "name": "Axvisor Boot (AArch64)",
+      "type": "lldb",
+      "request": "custom",
+      "initCommands": [
+        "process handle SIGINT -p false -s false -n false",
+        "settings set target.process.thread.step-avoid-regexp ^(core::|alloc::|bitflags::|ax_page_table_entry::|page_table_multiarch::)"
+      ],
+      "preLaunchTask": "TGOS: Start Axvisor QEMU debug",
+      "postDebugTask": "TGOS: Stop Axvisor QEMU debug",
+      "targetCreateCommands": [
+        "target create ${workspaceFolder}/target/aarch64-unknown-none-softfloat/debug/axvisor",
+        "target modules load --file ${workspaceFolder}/target/aarch64-unknown-none-softfloat/debug/axvisor --slide 0"
+      ],
+      "processCreateCommands": [
+        "gdb-remote 127.0.0.1:1234"
+      ],
+      "postRunCommands": [
+        "breakpoint set --file /home/zcs/WORKSPACE/tgoskits/platform/axplat-dyn/src/boot.rs --line 8",
+        "breakpoint set --file /home/zcs/WORKSPACE/tgoskits/os/axvisor/src/main.rs --line 42"
+      ],
+      "sourceLanguages": [
+        "rust"
+      ]
+    },
+    {
+      "name": "StarryOS Main (AArch64)",
+      "type": "lldb",
+      "request": "custom",
+      "initCommands": [
+        "process handle SIGINT -p false -s false -n false"
+      ],
+      "preLaunchTask": "TGOS: Start StarryOS QEMU debug",
+      "postDebugTask": "TGOS: Stop StarryOS QEMU debug",
+      "targetCreateCommands": [
+        "target create ${workspaceFolder}/target/aarch64-unknown-none-softfloat/debug/starryos",
+        "target modules load --file ${workspaceFolder}/target/aarch64-unknown-none-softfloat/debug/starryos --slide 0"
+      ],
+      "processCreateCommands": [
+        "gdb-remote 127.0.0.1:1234"
+      ],
+      "postRunCommands": [
+        "breakpoint set --hardware true --file /home/zcs/WORKSPACE/tgoskits/os/StarryOS/starryos/src/main.rs --line 12",
+        "continue"
+      ],
+      "sourceLanguages": [
+        "rust"
+      ]
+    },
+    {
+      "name": "StarryOS Boot (AArch64)",
+      "type": "lldb",
+      "request": "custom",
+      "initCommands": [
+        "process handle SIGINT -p false -s false -n false"
+      ],
+      "preLaunchTask": "TGOS: Start StarryOS QEMU debug",
+      "postDebugTask": "TGOS: Stop StarryOS QEMU debug",
+      "targetCreateCommands": [
+        "target create ${workspaceFolder}/target/aarch64-unknown-none-softfloat/debug/starryos",
+        "target modules load --file ${workspaceFolder}/target/aarch64-unknown-none-softfloat/debug/starryos --slide 0"
+      ],
+      "processCreateCommands": [
+        "gdb-remote 127.0.0.1:1234"
+      ],
+      "postRunCommands": [
+        // "breakpoint set --file /home/zcs/WORKSPACE/tgoskits/components/axplat_crates/platforms/axplat-aarch64-qemu-virt/src/boot.rs --line 76",
+        "breakpoint set --name ax_plat::call_main",
+        "breakpoint set --file /home/zcs/WORKSPACE/tgoskits/os/arceos/modules/axruntime/src/lib.rs --line 141",
+        "breakpoint set --name starry_kernel::entry::init",
+        "breakpoint set --file /home/zcs/WORKSPACE/tgoskits/os/StarryOS/starryos/src/main.rs --line 12"
+      ],
+      "sourceLanguages": [
+        "rust"
+      ]
+    }
+  ]
+}

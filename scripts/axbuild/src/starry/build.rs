@@ -1,12 +1,12 @@
 use std::path::{Path, PathBuf};
 
-use cargo_metadata::MetadataCommand;
 use ostool::build::config::Cargo;
 
 pub type StarryBuildInfo = crate::arceos::build::ArceosBuildInfo;
 pub use crate::arceos::build::LogLevel;
 use crate::context::{
-    ResolvedStarryRequest, STARRY_PACKAGE, starry_arch_for_target_checked, workspace_member_dir_in,
+    ResolvedStarryRequest, STARRY_PACKAGE, starry_arch_for_target_checked, workspace_manifest_path,
+    workspace_member_dir_in, workspace_metadata_root_manifest,
 };
 
 impl StarryBuildInfo {
@@ -62,13 +62,16 @@ fn patch_starry_cargo_config(
     request: &ResolvedStarryRequest,
 ) -> anyhow::Result<()> {
     let platform = default_platform_for_arch(&request.arch)?;
+    let static_defplat = uses_static_default_platform(&cargo.features);
 
     cargo.package = request.package.clone();
     cargo.target = request.target.clone();
     ensure_starry_bin_arg(&mut cargo.args, &request.package)?;
-    cargo.features.push("qemu".to_string());
-    cargo.features.sort();
-    cargo.features.dedup();
+    if static_defplat {
+        cargo.features.push("qemu".to_string());
+        cargo.features.sort();
+        cargo.features.dedup();
+    }
 
     cargo
         .env
@@ -76,12 +79,37 @@ fn patch_starry_cargo_config(
     cargo
         .env
         .insert("AX_TARGET".to_string(), request.target.clone());
-    cargo
-        .env
-        .entry("AX_PLATFORM".to_string())
-        .or_insert_with(|| platform.to_string());
+    if static_defplat {
+        cargo
+            .env
+            .entry("AX_PLATFORM".to_string())
+            .or_insert_with(|| platform.to_string());
+    }
 
     Ok(())
+}
+
+fn uses_static_default_platform(features: &[String]) -> bool {
+    let has_defplat = features.iter().any(|feature| {
+        matches!(
+            feature.as_str(),
+            "defplat" | "ax-feat/defplat" | "ax-std/defplat"
+        )
+    });
+    let has_dynamic = features.iter().any(|feature| {
+        matches!(
+            feature.as_str(),
+            "plat-dyn" | "ax-feat/plat-dyn" | "ax-std/plat-dyn"
+        )
+    });
+    let has_custom = features.iter().any(|feature| {
+        matches!(
+            feature.as_str(),
+            "myplat" | "ax-feat/myplat" | "ax-std/myplat"
+        )
+    });
+
+    has_defplat && !has_dynamic && !has_custom
 }
 
 fn ensure_starry_bin_arg(args: &mut Vec<String>, package: &str) -> anyhow::Result<()> {
@@ -98,14 +126,12 @@ fn ensure_starry_bin_arg(args: &mut Vec<String>, package: &str) -> anyhow::Resul
 }
 
 fn package_has_bin_named(package: &str, bin_name: &str) -> anyhow::Result<bool> {
-    let manifest_path = crate::arceos::build::resolve_package_manifest_path(package, None)?;
-    let mut command = MetadataCommand::new();
-    command.no_deps().manifest_path(&manifest_path);
-    let metadata = command.exec()?;
+    let workspace_manifest = workspace_manifest_path()?;
+    let metadata = workspace_metadata_root_manifest(&workspace_manifest)?;
     let package_info = metadata
         .packages
         .iter()
-        .find(|pkg| pkg.name == package)
+        .find(|pkg| metadata.workspace_members.contains(&pkg.id) && pkg.name == package)
         .ok_or_else(|| anyhow::anyhow!("workspace package `{package}` not found"))?;
 
     Ok(package_info.targets.iter().any(|target| {
@@ -156,6 +182,7 @@ mod tests {
             arch: arch.to_string(),
             target: target.to_string(),
             plat_dyn: None,
+            debug: false,
             build_info_path: path,
             qemu_config: None,
             uboot_config: None,
@@ -292,7 +319,7 @@ HELLO = "world"
 
         assert_eq!(cargo.package, STARRY_PACKAGE);
         assert_eq!(cargo.target, "aarch64-unknown-none-softfloat");
-        assert_eq!(cargo.features, vec!["net".to_string(), "qemu".to_string()]);
+        assert_eq!(cargo.features, vec!["net".to_string()]);
         assert_eq!(
             cargo.env.get("AX_ARCH").map(String::as_str),
             Some("aarch64")
@@ -301,10 +328,7 @@ HELLO = "world"
             cargo.env.get("AX_TARGET").map(String::as_str),
             Some("aarch64-unknown-none-softfloat")
         );
-        assert_eq!(
-            cargo.env.get("AX_PLATFORM").map(String::as_str),
-            Some("aarch64-qemu-virt")
-        );
+        assert_eq!(cargo.env.get("AX_PLATFORM").map(String::as_str), None);
         assert_eq!(cargo.env.get("AX_LOG").map(String::as_str), Some("info"));
         assert_eq!(cargo.env.get("CUSTOM").map(String::as_str), Some("1"));
         assert!(cargo.to_bin);
@@ -317,6 +341,7 @@ HELLO = "world"
             arch: "x86_64".to_string(),
             target: "x86_64-unknown-none".to_string(),
             plat_dyn: None,
+            debug: false,
             build_info_path: PathBuf::from("/tmp/.build.toml"),
             qemu_config: None,
             uboot_config: None,
@@ -332,6 +357,51 @@ HELLO = "world"
 
         assert_eq!(cargo.package, "starryos-test");
         assert!(!cargo.args.iter().any(|arg| arg == "--bin"));
+    }
+
+    #[test]
+    fn patch_starry_cargo_config_skips_qemu_for_dynamic_platforms() {
+        let request = request(
+            PathBuf::from("/tmp/.build.toml"),
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+        );
+        let build_info = StarryBuildInfo {
+            env: HashMap::new(),
+            features: vec![
+                "common".to_string(),
+                "ax-feat/bus-mmio".to_string(),
+                "ax-feat/driver-sdmmc".to_string(),
+                "ax-feat/plat-dyn".to_string(),
+                "axplat-dyn/rk3588-clk".to_string(),
+                "axplat-dyn/sdmmc".to_string(),
+            ],
+            log: LogLevel::Info,
+            max_cpu_num: Some(8),
+            plat_dyn: true,
+        };
+        let mut cargo = build_info.into_base_cargo_config_with_log(
+            STARRY_PACKAGE.to_string(),
+            request.target.clone(),
+            StarryBuildInfo::build_cargo_args(&request.target, true),
+        );
+
+        patch_starry_cargo_config(&mut cargo, &request).unwrap();
+
+        assert!(
+            cargo
+                .features
+                .contains(&"axplat-dyn/rk3588-clk".to_string())
+        );
+        assert!(cargo.features.contains(&"axplat-dyn/sdmmc".to_string()));
+        assert!(!cargo.features.contains(&"qemu".to_string()));
+        assert!(!cargo.env.contains_key("AX_PLATFORM"));
+        assert!(
+            cargo
+                .args
+                .iter()
+                .any(|arg| arg.contains("-Clink-arg=-Taxplat.x"))
+        );
     }
 
     #[test]
@@ -363,6 +433,7 @@ HELLO = "world"
             arch: "aarch64".to_string(),
             target: "aarch64-unknown-none-softfloat".to_string(),
             plat_dyn: None,
+            debug: false,
             build_info_path: PathBuf::from(
                 "/tmp/os/StarryOS/starryos/.build-aarch64-unknown-none-softfloat.toml",
             ),
@@ -393,6 +464,7 @@ HELLO = "world"
             arch: "aarch64".to_string(),
             target: "aarch64-unknown-none-softfloat".to_string(),
             plat_dyn: None,
+            debug: false,
             build_info_path: PathBuf::from("/tmp/.build.toml"),
             qemu_config: None,
             uboot_config: None,

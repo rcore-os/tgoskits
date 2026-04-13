@@ -12,8 +12,10 @@ license = "Apache-2.0"
 [features]
 # To use in the multi-core environment
 smp = []
+lockdep = ["dep:ax-percpu"]
 default = []
 
 [dependencies]
 cfg-if = "1.0"
 ax-kernel-guard = "0.3.3"
+ax-percpu = { version = "0.4.3", optional = true }

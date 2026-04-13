@@ -1,7 +1,12 @@
 #![cfg_attr(not(test), no_std)]
 #![doc = include_str!("../README.md")]
 
+#[cfg(any(test, doctest))]
+extern crate std;
+
 mod base;
+#[cfg(feature = "lockdep")]
+mod lockdep;
 
 use ax_kernel_guard::{NoOp, NoPreempt, NoPreemptIrqSave};
 

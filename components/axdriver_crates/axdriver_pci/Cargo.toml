@@ -11,4 +11,4 @@ readme = "README.md"
 license.workspace = true
 
 [dependencies]
-virtio-drivers = "0.7.4"
+virtio-drivers = { version = "0.13.0", default-features = false }

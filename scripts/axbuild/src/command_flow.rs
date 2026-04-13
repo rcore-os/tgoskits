@@ -15,6 +15,7 @@ pub(crate) enum SnapshotPersistence {
 pub(crate) trait CommandRequest {
     fn build_info_path(&self) -> PathBuf;
     fn uboot_config(&self) -> Option<PathBuf>;
+    fn debug(&self) -> bool;
 }
 
 impl CommandRequest for ResolvedBuildRequest {
@@ -24,6 +25,10 @@ impl CommandRequest for ResolvedBuildRequest {
 
     fn uboot_config(&self) -> Option<PathBuf> {
         self.uboot_config.clone()
+    }
+
+    fn debug(&self) -> bool {
+        self.debug
     }
 }
 
@@ -35,6 +40,10 @@ impl CommandRequest for ResolvedStarryRequest {
     fn uboot_config(&self) -> Option<PathBuf> {
         self.uboot_config.clone()
     }
+
+    fn debug(&self) -> bool {
+        self.debug
+    }
 }
 
 impl CommandRequest for ResolvedAxvisorRequest {
@@ -44,6 +53,10 @@ impl CommandRequest for ResolvedAxvisorRequest {
 
     fn uboot_config(&self) -> Option<PathBuf> {
         self.uboot_config.clone()
+    }
+
+    fn debug(&self) -> bool {
+        self.debug
     }
 }
 
@@ -72,6 +85,7 @@ where
     R: CommandRequest,
     LoadCargo: FnOnce(&R) -> anyhow::Result<Cargo>,
 {
+    app.set_debug_mode(request.debug())?;
     let cargo = load_cargo(&request)?;
     app.build(cargo, request.build_info_path()).await
 }
@@ -87,6 +101,7 @@ where
     LoadCargo: FnOnce(&R) -> anyhow::Result<Cargo>,
     LoadQemu: FnOnce(&R) -> anyhow::Result<QemuRunConfig>,
 {
+    app.set_debug_mode(request.debug())?;
     let cargo = load_cargo(&request)?;
     let qemu = load_qemu(&request)?;
     app.qemu(cargo, request.build_info_path(), qemu).await
@@ -101,6 +116,7 @@ where
     R: CommandRequest,
     LoadCargo: FnOnce(&R) -> anyhow::Result<Cargo>,
 {
+    app.set_debug_mode(request.debug())?;
     let cargo = load_cargo(&request)?;
     app.uboot(cargo, request.build_info_path(), request.uboot_config())
         .await

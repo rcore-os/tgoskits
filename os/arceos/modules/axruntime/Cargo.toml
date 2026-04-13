@@ -12,7 +12,7 @@ default = []
 
 alloc = ["dep:ax-alloc"]
 dma = ["paging"]
-buddy-slab = ["ax-alloc/buddy-slab"]
+buddy-slab = ["alloc", "ax-alloc/buddy-slab"]
 ipi = ["dep:ax-ipi"]
 irq = ["ax-hal/irq", "ax-task?/irq", "dep:ax-percpu"]
 multitask = ["ax-task/multitask"]

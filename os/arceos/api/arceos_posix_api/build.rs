@@ -2,16 +2,21 @@ fn main() {
     use std::io::Write;
 
     fn gen_pthread_mutex(out_file: &str) -> std::io::Result<()> {
-        // TODO: Generate size and initial content automatically.
         println!("cargo:rerun-if-env-changed=CARGO_FEATURE_MULTITASK");
         println!("cargo:rerun-if-env-changed=CARGO_FEATURE_SMP");
         let has_multitask = std::env::var_os("CARGO_FEATURE_MULTITASK").is_some();
         let has_smp = std::env::var_os("CARGO_FEATURE_SMP").is_some();
         let (mutex_size, mutex_init) = if has_multitask {
             if has_smp {
+                // Current 64-bit SMP targets keep an extra padding word in
+                // `ax_sync::Mutex<()>` for the pthread path.
+                //
                 // core::mem::transmute::<_, [usize; 6]>(ax_sync::Mutex::new(()))
                 (6, "{0, 0, 8, 0, 0, 0}")
             } else {
+                // The non-SMP multitask path uses the compact 5-word mutex
+                // layout.
+                //
                 // core::mem::transmute::<_, [usize; 5]>(ax_sync::Mutex::new(()))
                 (5, "{0, 8, 0, 0, 0}")
             }

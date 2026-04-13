@@ -38,7 +38,7 @@ pub use tlsf::TlsfByteAllocator;
 /// The error type used for allocation.
 #[derive(Debug)]
 pub enum AllocError {
-    /// Invalid `size` or `align_pow2`. (e.g. unaligned)
+    /// Invalid `size` or alignment. (e.g. unaligned)
     InvalidParam,
     /// Memory added by `add_memory` overlapped with existed memory.
     MemoryOverlap,
@@ -93,19 +93,19 @@ pub trait PageAllocator: BaseAllocator {
     /// The size of a memory page.
     const PAGE_SIZE: usize;
 
-    /// Allocate contiguous memory pages with given count and alignment.
-    fn alloc_pages(&mut self, num_pages: usize, align_pow2: usize) -> AllocResult<usize>;
+    /// Allocate contiguous memory pages with given count and byte alignment.
+    ///
+    /// `align` is the requested alignment in bytes, not a log2/exponent.
+    fn alloc_pages(&mut self, num_pages: usize, align: usize) -> AllocResult<usize>;
 
     /// Deallocate contiguous memory pages with given position and count.
     fn dealloc_pages(&mut self, pos: usize, num_pages: usize);
 
-    /// Allocate contiguous memory pages with given base address, count and alignment.
-    fn alloc_pages_at(
-        &mut self,
-        base: usize,
-        num_pages: usize,
-        align_pow2: usize,
-    ) -> AllocResult<usize>;
+    /// Allocate contiguous memory pages with given base address, count and byte alignment.
+    ///
+    /// `align` is the requested alignment in bytes, not a log2/exponent.
+    fn alloc_pages_at(&mut self, base: usize, num_pages: usize, align: usize)
+    -> AllocResult<usize>;
 
     /// Returns the total number of memory pages.
     fn total_pages(&self) -> usize;

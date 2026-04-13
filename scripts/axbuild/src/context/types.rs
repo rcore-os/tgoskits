@@ -23,6 +23,7 @@ pub struct BuildCliArgs {
     pub arch: Option<String>,
     pub target: Option<String>,
     pub plat_dyn: Option<bool>,
+    pub debug: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -31,6 +32,7 @@ pub struct StarryCliArgs {
     pub arch: Option<String>,
     pub target: Option<String>,
     pub plat_dyn: Option<bool>,
+    pub debug: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -39,6 +41,7 @@ pub struct AxvisorCliArgs {
     pub arch: Option<String>,
     pub target: Option<String>,
     pub plat_dyn: Option<bool>,
+    pub debug: bool,
     pub vmconfigs: Vec<PathBuf>,
 }
 
@@ -76,6 +79,7 @@ pub struct ResolvedBuildRequest {
     pub arch: String,
     pub target: String,
     pub plat_dyn: Option<bool>,
+    pub debug: bool,
     pub build_info_path: PathBuf,
     pub qemu_config: Option<PathBuf>,
     pub uboot_config: Option<PathBuf>,
@@ -118,6 +122,7 @@ pub struct ResolvedAxvisorRequest {
     pub arch: String,
     pub target: String,
     pub plat_dyn: Option<bool>,
+    pub debug: bool,
     pub build_info_path: PathBuf,
     pub qemu_config: Option<PathBuf>,
     pub uboot_config: Option<PathBuf>,
@@ -156,6 +161,7 @@ pub struct ResolvedStarryRequest {
     pub arch: String,
     pub target: String,
     pub plat_dyn: Option<bool>,
+    pub debug: bool,
     pub build_info_path: PathBuf,
     pub qemu_config: Option<PathBuf>,
     pub uboot_config: Option<PathBuf>,

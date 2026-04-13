@@ -145,7 +145,7 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
                 continue;
             }
 
-            if ch.is_ascii_graphic() {
+            if ch == b' ' || ch.is_ascii_graphic() {
                 self.line_buf.push(ch);
                 continue;
             }
@@ -354,6 +354,17 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         }
 
         let mut total_read = 0;
+        if let Processor::Manual(reader) = &mut self.processor {
+            loop {
+                reader.poll();
+                total_read += self.buf_rx.pop_slice(&mut buf[total_read..]);
+                if total_read >= vmin {
+                    return Ok(total_read);
+                }
+                ax_task::yield_now();
+            }
+        }
+
         let set = match &self.processor {
             Processor::Manual(_) => None,
             Processor::External(set) => Some(set),

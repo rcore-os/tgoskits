@@ -1,0 +1,146 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "TGOS: Start ArceOS QEMU debug",
+      "hide": true,
+      "type": "process",
+      "command": "${workspaceFolder}/.vscode/session.sh",
+      "args": [
+        "start"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "TGOS_DEBUG_COMMAND": "cargo xtask arceos qemu --debug --package ax-helloworld --arch aarch64",
+          "TGOS_DEBUG_PORT": "1234",
+          "TGOS_DEBUG_SESSION": "arceos",
+          "TGOS_DEBUG_STATE_DIR": "${workspaceFolder}/target/qemu-debug"
+        }
+      },
+      "presentation": {
+        "close": true,
+        "echo": false,
+        "panel": "shared",
+        "reveal": "silent"
+      }
+    },
+    {
+      "label": "TGOS: Stop ArceOS QEMU debug",
+      "hide": true,
+      "type": "process",
+      "command": "${workspaceFolder}/.vscode/session.sh",
+      "args": [
+        "stop"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "TGOS_DEBUG_SESSION": "arceos",
+          "TGOS_DEBUG_STATE_DIR": "${workspaceFolder}/target/qemu-debug"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "close": true,
+        "echo": false,
+        "panel": "shared",
+        "reveal": "never"
+      }
+    },
+    {
+      "label": "TGOS: Start Axvisor QEMU debug",
+      "hide": true,
+      "type": "process",
+      "command": "${workspaceFolder}/.vscode/session.sh",
+      "args": [
+        "start"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "TGOS_DEBUG_COMMAND": "cargo xtask axvisor qemu --debug --config os/axvisor/.build.toml",
+          "TGOS_DEBUG_PORT": "1234",
+          "TGOS_DEBUG_SESSION": "axvisor",
+          "TGOS_DEBUG_STATE_DIR": "${workspaceFolder}/target/qemu-debug"
+        }
+      },
+      "presentation": {
+        "close": true,
+        "echo": false,
+        "panel": "shared",
+        "reveal": "silent"
+      }
+    },
+    {
+      "label": "TGOS: Stop Axvisor QEMU debug",
+      "hide": true,
+      "type": "process",
+      "command": "${workspaceFolder}/.vscode/session.sh",
+      "args": [
+        "stop"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "TGOS_DEBUG_SESSION": "axvisor",
+          "TGOS_DEBUG_STATE_DIR": "${workspaceFolder}/target/qemu-debug"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "close": true,
+        "echo": false,
+        "panel": "shared",
+        "reveal": "never"
+      }
+    },
+    {
+      "label": "TGOS: Start StarryOS QEMU debug",
+      "hide": true,
+      "type": "process",
+      "command": "${workspaceFolder}/.vscode/session.sh",
+      "args": [
+        "start"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "TGOS_DEBUG_COMMAND": "cargo xtask starry qemu --debug --arch aarch64",
+          "TGOS_DEBUG_PORT": "1234",
+          "TGOS_DEBUG_SESSION": "starry",
+          "TGOS_DEBUG_STATE_DIR": "${workspaceFolder}/target/qemu-debug"
+        }
+      },
+      "presentation": {
+        "close": true,
+        "echo": false,
+        "panel": "shared",
+        "reveal": "silent"
+      }
+    },
+    {
+      "label": "TGOS: Stop StarryOS QEMU debug",
+      "hide": true,
+      "type": "process",
+      "command": "${workspaceFolder}/.vscode/session.sh",
+      "args": [
+        "stop"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "TGOS_DEBUG_SESSION": "starry",
+          "TGOS_DEBUG_STATE_DIR": "${workspaceFolder}/target/qemu-debug"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "close": true,
+        "echo": false,
+        "panel": "shared",
+        "reveal": "never"
+      }
+    }
+  ]
+}

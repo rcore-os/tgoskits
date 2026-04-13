@@ -32,6 +32,7 @@ ax-input = { version = "0.5.0" }
 ax-log = { version = "0.5.0" }
 ax-mm = { version = "0.5.0" }
 axnet = { version = "0.5.0", package = "ax-net-ng" }
+axplat-dyn = { version = "0.5.0", default-features = false }
 ax-runtime = { version = "0.5.0" }
 ax-sync = { version = "0.5.0" }
 ax-task = { version = "0.5.0" }

@@ -40,6 +40,9 @@ pub struct ArgsBuild {
     pub plat_dyn: Option<bool>,
 
     #[arg(long)]
+    pub debug: bool,
+
+    #[arg(long)]
     pub vmconfigs: Vec<PathBuf>,
 }
 
@@ -152,6 +155,7 @@ impl From<&ArgsBuild> for AxvisorCliArgs {
             arch: args.arch.clone(),
             target: args.target.clone(),
             plat_dyn: args.plat_dyn,
+            debug: args.debug,
             vmconfigs: args.vmconfigs.clone(),
         }
     }

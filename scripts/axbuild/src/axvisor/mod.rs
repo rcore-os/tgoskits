@@ -81,6 +81,7 @@ impl Axvisor {
     async fn board(&mut self, args: ArgsBoard) -> anyhow::Result<()> {
         let request =
             self.prepare_request((&args.build).into(), None, None, SnapshotPersistence::Store)?;
+        self.app.set_debug_mode(request.debug)?;
         let cargo = build::load_cargo_config(&request)?;
         self.app
             .board(
@@ -378,6 +379,7 @@ mod tests {
             arch: "aarch64".to_string(),
             target: "aarch64-unknown-none-softfloat".to_string(),
             plat_dyn: None,
+            debug: false,
             build_info_path: PathBuf::from("os/axvisor/.build-aarch64-unknown-none-softfloat.toml"),
             qemu_config: None,
             uboot_config: None,

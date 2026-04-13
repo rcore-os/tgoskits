@@ -14,6 +14,7 @@ fn test_app_context(root: &Path) -> AppContext {
         build_config_path: None,
         root: root.to_path_buf(),
         axvisor_dir: Some(root.join("os/axvisor")),
+        debug: false,
     }
 }
 
@@ -130,6 +131,7 @@ uboot_config = "configs/snapshot-uboot.toml"
                 arch: Some("aarch64".into()),
                 target: Some(DEFAULT_ARCEOS_TARGET.into()),
                 plat_dyn: Some(true),
+                debug: true,
             },
             Some(PathBuf::from("/tmp/qemu.toml")),
             None,
@@ -139,6 +141,7 @@ uboot_config = "configs/snapshot-uboot.toml"
     assert_eq!(request.package, "from-cli");
     assert_eq!(request.target, DEFAULT_ARCEOS_TARGET);
     assert_eq!(request.plat_dyn, Some(true));
+    assert!(request.debug);
     assert_eq!(
         request.build_info_path,
         PathBuf::from("/tmp/custom-build.toml")
@@ -215,6 +218,7 @@ fn prepare_request_resolves_arceos_target_from_arch() {
                 arch: Some("x86_64".into()),
                 target: None,
                 plat_dyn: None,
+                debug: false,
             },
             None,
             None,
@@ -257,6 +261,7 @@ uboot_config = "configs/snapshot-uboot.toml"
                 arch: Some("aarch64".into()),
                 target: Some(DEFAULT_AXVISOR_TARGET.into()),
                 plat_dyn: Some(true),
+                debug: true,
                 vmconfigs: vec![
                     PathBuf::from("/tmp/vm1.toml"),
                     PathBuf::from("/tmp/vm2.toml"),
@@ -271,6 +276,7 @@ uboot_config = "configs/snapshot-uboot.toml"
     assert_eq!(request.arch, DEFAULT_AXVISOR_ARCH);
     assert_eq!(request.target, DEFAULT_AXVISOR_TARGET);
     assert_eq!(request.plat_dyn, Some(true));
+    assert!(request.debug);
     assert_eq!(
         request.build_info_path,
         PathBuf::from("/tmp/custom-build.toml")
@@ -387,6 +393,7 @@ fn prepare_axvisor_request_resolves_target_from_arch() {
                 arch: Some("x86_64".into()),
                 target: None,
                 plat_dyn: None,
+                debug: false,
                 vmconfigs: vec![],
             },
             None,
@@ -495,6 +502,7 @@ uboot_config = "configs/snapshot-uboot.toml"
                 arch: Some("aarch64".into()),
                 target: Some(DEFAULT_STARRY_TARGET.into()),
                 plat_dyn: Some(true),
+                debug: true,
             },
             Some(PathBuf::from("/tmp/qemu.toml")),
             None,
@@ -505,6 +513,7 @@ uboot_config = "configs/snapshot-uboot.toml"
     assert_eq!(request.arch, DEFAULT_STARRY_ARCH);
     assert_eq!(request.target, DEFAULT_STARRY_TARGET);
     assert_eq!(request.plat_dyn, Some(true));
+    assert!(request.debug);
     assert_eq!(
         request.build_info_path,
         PathBuf::from("/tmp/starry-build.toml")
@@ -568,6 +577,7 @@ fn prepare_starry_request_rejects_mismatched_arch_and_target() {
                 arch: Some("aarch64".into()),
                 target: Some("x86_64-unknown-none".into()),
                 plat_dyn: None,
+                debug: false,
             },
             None,
             None,
@@ -599,6 +609,7 @@ target = "aarch64-unknown-none-softfloat"
                 arch: Some("riscv64".into()),
                 target: None,
                 plat_dyn: None,
+                debug: false,
             },
             None,
             None,
@@ -636,6 +647,7 @@ target = "aarch64-unknown-none-softfloat"
                 arch: None,
                 target: Some("x86_64-unknown-none".into()),
                 plat_dyn: None,
+                debug: false,
             },
             None,
             None,

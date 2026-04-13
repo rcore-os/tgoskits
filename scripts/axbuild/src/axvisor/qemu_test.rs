@@ -216,6 +216,7 @@ pub(crate) fn qemu_test_build_args(arch: &str, vmconfig: PathBuf) -> AxvisorCliA
         arch: Some(arch.to_string()),
         target: None,
         plat_dyn: None,
+        debug: false,
         vmconfigs: vec![vmconfig],
     }
 }
@@ -226,6 +227,7 @@ pub(crate) fn uboot_test_build_args(build_config: &str, vmconfig: &str) -> Axvis
         arch: None,
         target: None,
         plat_dyn: None,
+        debug: false,
         vmconfigs: vec![PathBuf::from(vmconfig)],
     }
 }
@@ -238,6 +240,7 @@ pub(crate) fn board_test_build_args(
         arch: None,
         target: None,
         plat_dyn: None,
+        debug: false,
         vmconfigs: group.vmconfigs.iter().map(PathBuf::from).collect(),
     }
 }
@@ -315,6 +318,7 @@ uefi = false
                 arch: "aarch64".to_string(),
                 target: "aarch64-unknown-none-softfloat".to_string(),
                 plat_dyn: None,
+                debug: false,
                 build_info_path: dir.path().join(".build.toml"),
                 qemu_config: None,
                 uboot_config: None,

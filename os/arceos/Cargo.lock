@@ -234,12 +234,12 @@ dependencies = [
  "ax-allocator",
  "ax-errno",
  "ax-kspin",
+ "ax-memory-addr",
  "ax-percpu",
  "axbacktrace",
  "buddy-slab-allocator",
  "cfg-if",
  "log",
- "memory_addr",
  "strum",
 ]
 
@@ -293,6 +293,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ax-cap-access"
+version = "0.3.0"
+dependencies = [
+ "bitflags 2.11.0",
+]
+
+[[package]]
 name = "ax-config"
 version = "0.5.0"
 dependencies = [
@@ -323,16 +330,15 @@ name = "ax-cpu"
 version = "0.5.0"
 dependencies = [
  "aarch64-cpu 11.2.0",
+ "ax-lazyinit",
+ "ax-memory-addr",
  "ax-page-table-entry",
  "ax-page-table-multiarch",
  "ax-percpu",
  "axbacktrace",
  "cfg-if",
- "lazyinit",
- "linkme",
  "log",
  "loongArch64",
- "memory_addr",
  "riscv",
  "tock-registers 0.10.1",
  "x86",
@@ -340,12 +346,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "ax-cpumask"
+version = "0.3.0"
+dependencies = [
+ "bitmaps",
+]
+
+[[package]]
+name = "ax-crate-interface"
+version = "0.5.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "ax-ctor-bare"
+version = "0.4.1"
+dependencies = [
+ "ax-ctor-bare-macros",
+]
+
+[[package]]
+name = "ax-ctor-bare-macros"
+version = "0.4.1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "ax-display"
 version = "0.5.0"
 dependencies = [
  "ax-driver",
+ "ax-lazyinit",
  "ax-sync",
- "lazyinit",
  "log",
 ]
 
@@ -358,10 +396,10 @@ dependencies = [
  "ax-config",
  "ax-hal",
  "ax-kspin",
+ "ax-memory-addr",
  "ax-mm",
  "buddy-slab-allocator",
  "log",
- "memory_addr",
 ]
 
 [[package]]
@@ -370,6 +408,7 @@ version = "0.5.0"
 dependencies = [
  "ax-alloc",
  "ax-config",
+ "ax-crate-interface",
  "ax-dma",
  "ax-driver-base",
  "ax-driver-block",
@@ -383,7 +422,6 @@ dependencies = [
  "ax-hal",
  "axplat-dyn",
  "cfg-if",
- "crate_interface",
  "log",
  "smallvec",
 ]
@@ -492,6 +530,7 @@ dependencies = [
 name = "ax-fs"
 version = "0.5.0"
 dependencies = [
+ "ax-cap-access",
  "ax-driver",
  "ax-errno",
  "ax-fs-devfs",
@@ -499,9 +538,8 @@ dependencies = [
  "ax-fs-vfs",
  "ax-hal",
  "ax-io",
+ "ax-lazyinit",
  "axfatfs",
- "cap_access",
- "lazyinit",
  "log",
  "rsext4",
  "spin 0.10.0",
@@ -567,6 +605,8 @@ dependencies = [
  "ax-alloc",
  "ax-config",
  "ax-cpu",
+ "ax-kernel-guard",
+ "ax-memory-addr",
  "ax-page-table-multiarch",
  "ax-percpu",
  "ax-plat",
@@ -578,12 +618,13 @@ dependencies = [
  "cfg-if",
  "fdt-parser",
  "heapless 0.9.2",
- "kernel_guard",
- "linkme",
  "log",
- "memory_addr",
  "spin 0.10.0",
 ]
+
+[[package]]
+name = "ax-handler-table"
+version = "0.3.2"
 
 [[package]]
 name = "ax-helloworld"
@@ -626,10 +667,14 @@ name = "ax-input"
 version = "0.5.0"
 dependencies = [
  "ax-driver",
+ "ax-lazyinit",
  "ax-sync",
- "lazyinit",
  "log",
 ]
+
+[[package]]
+name = "ax-int-ratio"
+version = "0.3.2"
 
 [[package]]
 name = "ax-io"
@@ -648,18 +693,30 @@ dependencies = [
  "ax-config",
  "ax-hal",
  "ax-kspin",
+ "ax-lazyinit",
  "ax-percpu",
- "lazyinit",
  "log",
+]
+
+[[package]]
+name = "ax-kernel-guard"
+version = "0.3.3"
+dependencies = [
+ "ax-crate-interface",
+ "cfg-if",
 ]
 
 [[package]]
 name = "ax-kspin"
 version = "0.3.1"
 dependencies = [
+ "ax-kernel-guard",
  "cfg-if",
- "kernel_guard",
 ]
+
+[[package]]
+name = "ax-lazyinit"
+version = "0.4.2"
 
 [[package]]
 name = "ax-libc"
@@ -673,15 +730,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "ax-linked-list-r4l"
+version = "0.5.0"
+
+[[package]]
 name = "ax-log"
 version = "0.5.0"
 dependencies = [
+ "ax-crate-interface",
  "ax-kspin",
  "ax-log",
  "cfg-if",
  "chrono",
- "crate_interface",
  "log",
+]
+
+[[package]]
+name = "ax-memory-addr"
+version = "0.6.1"
+
+[[package]]
+name = "ax-memory-set"
+version = "0.6.1"
+dependencies = [
+ "ax-errno",
+ "ax-memory-addr",
 ]
 
 [[package]]
@@ -692,11 +765,11 @@ dependencies = [
  "ax-errno",
  "ax-hal",
  "ax-kspin",
- "ax-page-table-multiarch",
- "lazyinit",
- "log",
- "memory_addr",
+ "ax-lazyinit",
+ "ax-memory-addr",
  "ax-memory-set",
+ "ax-page-table-multiarch",
+ "log",
 ]
 
 [[package]]
@@ -707,10 +780,10 @@ dependencies = [
  "ax-errno",
  "ax-hal",
  "ax-io",
+ "ax-lazyinit",
  "ax-sync",
  "ax-task",
  "cfg-if",
- "lazyinit",
  "log",
  "spin 0.10.0",
  "starry-smoltcp",
@@ -749,8 +822,8 @@ name = "ax-page-table-entry"
 version = "0.8.1"
 dependencies = [
  "aarch64-cpu 11.2.0",
+ "ax-memory-addr",
  "bitflags 2.11.0",
- "memory_addr",
  "x86_64",
 ]
 
@@ -760,10 +833,10 @@ version = "0.8.1"
 dependencies = [
  "arrayvec",
  "ax-errno",
+ "ax-memory-addr",
  "ax-page-table-entry",
  "bitmaps",
  "log",
- "memory_addr",
  "riscv",
  "x86",
 ]
@@ -772,25 +845,35 @@ dependencies = [
 name = "ax-percpu"
 version = "0.4.3"
 dependencies = [
+ "ax-kernel-guard",
  "ax-percpu-macros",
  "cfg-if",
- "kernel_guard",
  "spin 0.10.0",
  "x86",
+]
+
+[[package]]
+name = "ax-percpu-macros"
+version = "0.4.3"
+dependencies = [
+ "cfg-if",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
 name = "ax-plat"
 version = "0.5.1"
 dependencies = [
+ "ax-crate-interface",
+ "ax-handler-table",
  "ax-kspin",
+ "ax-memory-addr",
  "ax-percpu",
  "ax-plat-macros",
  "bitflags 2.11.0",
  "const-str",
- "crate_interface",
- "handler_table",
- "memory_addr",
 ]
 
 [[package]]
@@ -816,10 +899,10 @@ dependencies = [
  "ax-arm-pl011",
  "ax-arm-pl031",
  "ax-cpu",
- "ax-kspin",
- "ax-plat",
  "ax-int-ratio",
- "lazyinit",
+ "ax-kspin",
+ "ax-lazyinit",
+ "ax-plat",
  "log",
  "spin 0.10.0",
 ]
@@ -868,10 +951,10 @@ dependencies = [
  "ax-config-macros",
  "ax-cpu",
  "ax-kspin",
+ "ax-lazyinit",
  "ax-page-table-entry",
  "ax-plat",
  "chrono",
- "lazyinit",
  "log",
  "loongArch64",
  "uart_16550",
@@ -893,12 +976,12 @@ dependencies = [
  "ax-config-macros",
  "ax-cpu",
  "ax-kspin",
+ "ax-lazyinit",
  "ax-plat",
- "lazyinit",
+ "ax-riscv-plic",
  "log",
  "riscv",
  "riscv_goldfish",
- "riscv_plic",
  "sbi-rt",
  "uart_16550",
 ]
@@ -909,13 +992,13 @@ version = "0.5.1"
 dependencies = [
  "ax-config-macros",
  "ax-cpu",
+ "ax-int-ratio",
  "ax-kspin",
+ "ax-lazyinit",
  "ax-percpu",
  "ax-plat",
  "bitflags 2.11.0",
  "heapless 0.9.2",
- "ax-int-ratio",
- "lazyinit",
  "log",
  "multiboot",
  "raw-cpuid 11.6.0",
@@ -950,11 +1033,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ax-riscv-plic"
+version = "0.4.0"
+dependencies = [
+ "tock-registers 0.10.1",
+]
+
+[[package]]
 name = "ax-runtime"
 version = "0.5.0"
 dependencies = [
  "ax-alloc",
  "ax-config",
+ "ax-crate-interface",
+ "ax-ctor-bare",
  "ax-display",
  "ax-driver",
  "ax-fs",
@@ -973,8 +1065,6 @@ dependencies = [
  "axklib",
  "cfg-if",
  "chrono",
- "crate_interface",
- "ctor_bare",
  "indoc",
 ]
 
@@ -1001,7 +1091,7 @@ dependencies = [
  "ax-feat",
  "ax-io",
  "ax-kspin",
- "lazyinit",
+ "ax-lazyinit",
  "lock_api",
  "spin 0.10.0",
 ]
@@ -1022,25 +1112,29 @@ name = "ax-task"
 version = "0.5.0"
 dependencies = [
  "ax-config",
+ "ax-cpumask",
+ "ax-crate-interface",
  "ax-errno",
  "ax-hal",
+ "ax-kernel-guard",
  "ax-kspin",
+ "ax-lazyinit",
+ "ax-memory-addr",
  "ax-percpu",
  "ax-sched",
  "ax-task",
+ "ax-timer-list",
  "axpoll",
  "cfg-if",
- "cpumask",
- "crate_interface",
  "extern-trait",
  "futures-util",
- "kernel_guard",
- "lazyinit",
  "log",
- "memory_addr",
  "spin 0.10.0",
- "timer_list",
 ]
+
+[[package]]
+name = "ax-timer-list"
+version = "0.3.0"
 
 [[package]]
 name = "ax_slab_allocator"
@@ -1049,15 +1143,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a04dda49054845b496a16f62a58614b1935ed2b4df0b91f9eea4179a5820f08"
 dependencies = [
  "buddy_system_allocator 0.12.0",
-]
-
-[[package]]
-name = "axallocator"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3894f6027940d4b013f1d1f9e2e61b47a9e4a7dbf1a0ba10dd33e7bb265ea733"
-dependencies = [
- "cfg-if",
 ]
 
 [[package]]
@@ -1102,7 +1187,7 @@ name = "axklib"
 version = "0.5.0"
 dependencies = [
  "ax-errno",
- "memory_addr",
+ "ax-memory-addr",
  "trait-ffi",
 ]
 
@@ -1118,6 +1203,7 @@ dependencies = [
  "ax-driver-block",
  "ax-driver-virtio",
  "ax-errno",
+ "ax-memory-addr",
  "ax-percpu",
  "ax-plat",
  "axklib",
@@ -1125,8 +1211,8 @@ dependencies = [
  "fdt-edit",
  "heapless 0.9.2",
  "log",
- "memory_addr",
  "rd-block",
+ "rdif-clk",
  "rdrive",
  "somehal",
  "spin 0.10.0",
@@ -1252,12 +1338,10 @@ dependencies = [
 
 [[package]]
 name = "buddy-slab-allocator"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e10a1b61411589daf2647252449679e12ae5a07adef75d9f3eac1978b7d9986"
+version = "0.4.0"
 dependencies = [
- "axallocator",
- "cfg-if",
+ "log",
+ "spin 0.10.0",
 ]
 
 [[package]]
@@ -1302,13 +1386,6 @@ name = "byteorder"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
-
-[[package]]
-name = "cap_access"
-version = "0.3.0"
-dependencies = [
- "bitflags 2.11.0",
-]
 
 [[package]]
 name = "cc"
@@ -1472,22 +1549,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cpumask"
-version = "0.3.0"
-dependencies = [
- "bitmaps",
-]
-
-[[package]]
-name = "crate_interface"
-version = "0.5.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
 name = "critical-section"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1498,22 +1559,6 @@ name = "crossbeam-utils"
 version = "0.8.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
-
-[[package]]
-name = "ctor_bare"
-version = "0.4.1"
-dependencies = [
- "ctor_bare_macros",
-]
-
-[[package]]
-name = "ctor_bare_macros"
-version = "0.4.1"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
 
 [[package]]
 name = "darling"
@@ -1947,7 +1992,7 @@ name = "fxmac_rs"
 version = "0.4.1"
 dependencies = [
  "aarch64-cpu 10.0.0",
- "crate_interface",
+ "ax-crate-interface",
  "log",
 ]
 
@@ -1965,10 +2010,6 @@ name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
-
-[[package]]
-name = "handler_table"
-version = "0.3.2"
 
 [[package]]
 name = "hash32"
@@ -2078,10 +2119,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ax-int-ratio"
-version = "0.3.2"
-
-[[package]]
 name = "intrusive-collections"
 version = "0.9.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2141,14 +2178,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kernel_guard"
-version = "0.3.3"
-dependencies = [
- "cfg-if",
- "crate_interface",
-]
-
-[[package]]
 name = "kernutil"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2167,10 +2196,6 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 dependencies = [
  "spin 0.9.8",
 ]
-
-[[package]]
-name = "lazyinit"
-version = "0.4.2"
 
 [[package]]
 name = "lenient_semver"
@@ -2215,30 +2240,6 @@ checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
 dependencies = [
  "cfg-if",
  "windows-link",
-]
-
-[[package]]
-name = "ax-linked-list-r4l"
-version = "0.5.0"
-
-[[package]]
-name = "linkme"
-version = "0.3.35"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e3283ed2d0e50c06dd8602e0ab319bb048b6325d0bba739db64ed8205179898"
-dependencies = [
- "linkme-impl",
-]
-
-[[package]]
-name = "linkme-impl"
-version = "0.3.35"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5cec0ec4228b4853bb129c84dbf093a27e6c7a20526da046defc334a1b017f7"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
 ]
 
 [[package]]
@@ -2316,18 +2317,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
-]
-
-[[package]]
-name = "memory_addr"
-version = "0.6.1"
-
-[[package]]
-name = "ax-memory-set"
-version = "0.6.1"
-dependencies = [
- "ax-errno",
- "memory_addr",
 ]
 
 [[package]]
@@ -2440,16 +2429,6 @@ dependencies = [
  "pci_types",
  "rdif-pcie",
  "thiserror",
-]
-
-[[package]]
-name = "ax-percpu-macros"
-version = "0.4.3"
-dependencies = [
- "cfg-if",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
 ]
 
 [[package]]
@@ -2633,6 +2612,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdif-clk"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b043140cf3c809e5904b5205f7b7205283867da44a44a29820916df08abc362"
+dependencies = [
+ "rdif-base 0.8.0",
+]
+
+[[package]]
 name = "rdif-def"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2789,13 +2777,6 @@ name = "riscv_goldfish"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07aac72f95e774476db82916d79f2d303191310393830573c1ab5c821b21660a"
-
-[[package]]
-name = "riscv_plic"
-version = "0.4.0"
-dependencies = [
- "tock-registers 0.10.1",
-]
 
 [[package]]
 name = "rlsf"
@@ -3225,10 +3206,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "timer_list"
-version = "0.3.0"
-
-[[package]]
 name = "tock-registers"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3642,6 +3619,10 @@ name = "arm_vgic"
 version = "0.4.2"
 
 [[patch.unused]]
+name = "ax-crate-interface-lite"
+version = "0.3.0"
+
+[[patch.unused]]
 name = "axaddrspace"
 version = "0.5.0"
 
@@ -3684,10 +3665,6 @@ version = "0.5.0"
 [[patch.unused]]
 name = "axvmconfig"
 version = "0.4.2"
-
-[[patch.unused]]
-name = "ax-crate-interface-lite"
-version = "0.3.0"
 
 [[patch.unused]]
 name = "define-simple-traits"

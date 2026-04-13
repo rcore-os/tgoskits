@@ -44,12 +44,12 @@ pub use virtio_drivers::{
     BufferDirection, Hal as VirtIoHal, PhysAddr,
     transport::{
         Transport,
-        mmio::MmioTransport,
         pci::{PciTransport, bus as pci},
     },
 };
+pub type MmioTransport = virtio_drivers::transport::mmio::MmioTransport<'static>;
 
-use self::pci::{DeviceFunction, DeviceFunctionInfo, PciRoot};
+use self::pci::{ConfigurationAccess, DeviceFunction, DeviceFunctionInfo, PciRoot};
 #[cfg(feature = "socket")]
 pub use self::socket::VirtIoSocketDev;
 
@@ -59,14 +59,14 @@ pub use self::socket::VirtIoSocketDev;
 /// for later operations. Otherwise, returns [`None`].
 pub fn probe_mmio_device(
     reg_base: *mut u8,
-    _reg_size: usize,
+    reg_size: usize,
 ) -> Option<(DeviceType, MmioTransport)> {
     use core::ptr::NonNull;
 
     use virtio_drivers::transport::mmio::VirtIOHeader;
 
     let header = NonNull::new(reg_base as *mut VirtIOHeader).unwrap();
-    let transport = unsafe { MmioTransport::new(header) }.ok()?;
+    let transport = unsafe { MmioTransport::new(header, reg_size) }.ok()?;
     let dev_type = as_dev_type(transport.device_type())?;
     Some((dev_type, transport))
 }
@@ -75,8 +75,8 @@ pub fn probe_mmio_device(
 ///
 /// If the device is recognized, returns the device type and a transport object
 /// for later operations. Otherwise, returns [`None`].
-pub fn probe_pci_device<H: VirtIoHal>(
-    root: &mut PciRoot,
+pub fn probe_pci_device<H: VirtIoHal, C: ConfigurationAccess>(
+    root: &mut PciRoot<C>,
     bdf: DeviceFunction,
     dev_info: &DeviceFunctionInfo,
 ) -> Option<(DeviceType, PciTransport, usize)> {
@@ -92,7 +92,7 @@ pub fn probe_pci_device<H: VirtIoHal>(
     const PCI_IRQ_BASE: usize = 0x23;
 
     let dev_type = virtio_device_type(dev_info).and_then(as_dev_type)?;
-    let transport = PciTransport::new::<H>(root, bdf).ok()?;
+    let transport = PciTransport::new::<H, C>(root, bdf).ok()?;
     let irq = PCI_IRQ_BASE + (bdf.device & 3) as usize;
     Some((dev_type, transport, irq))
 }
@@ -128,9 +128,7 @@ const fn as_dev_err(e: virtio_drivers::Error) -> DevError {
             NotConnected => DevError::BadState,
             InvalidOperation | InvalidNumber | UnknownOperation(_) => DevError::InvalidParam,
             OutputBufferTooShort(_) | BufferTooShort | BufferTooLong(..) => DevError::InvalidParam,
-            UnexpectedDataInPacket | PeerSocketShutdown | NoResponseReceived | ConnectionFailed => {
-                DevError::Io
-            }
+            UnexpectedDataInPacket | PeerSocketShutdown => DevError::Io,
             InsufficientBufferSpaceInPeer => DevError::Again,
             RecycledWrongBuffer => DevError::BadState,
         },

@@ -50,6 +50,8 @@ pub fn start_secondary_cpus(primary_cpu_id: usize) {
 #[ax_plat::secondary_main]
 pub fn rust_main_secondary(cpu_id: usize) -> ! {
     ax_hal::percpu::init_secondary(cpu_id);
+    #[cfg(all(feature = "alloc", feature = "buddy-slab"))]
+    ax_alloc::init_precpu_slab(cpu_id);
     ax_hal::init_early_secondary(cpu_id);
 
     ENTERED_CPUS.fetch_add(1, Ordering::Release);

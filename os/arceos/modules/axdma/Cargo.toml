@@ -11,7 +11,7 @@ license.workspace = true
 
 [features]
 default = []
-buddy-slab = ["dep:buddy-slab-allocator"]
+buddy-slab = ["dep:buddy-slab-allocator", "ax-alloc/buddy-slab"]
 
 [dependencies]
 ax-alloc.workspace = true

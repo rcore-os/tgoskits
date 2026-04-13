@@ -44,6 +44,9 @@ pub struct ArgsBuild {
     pub target: Option<String>,
     #[arg(long = "plat_dyn", alias = "plat-dyn")]
     pub plat_dyn: Option<bool>,
+
+    #[arg(long)]
+    pub debug: bool,
 }
 
 #[derive(Args)]
@@ -112,6 +115,7 @@ impl From<&ArgsBuild> for StarryCliArgs {
             arch: args.arch.clone(),
             target: args.target.clone(),
             plat_dyn: args.plat_dyn,
+            debug: args.debug,
         }
     }
 }
@@ -269,6 +273,7 @@ impl Starry {
             arch: Some(arch.to_string()),
             target: None,
             plat_dyn: None,
+            debug: false,
         }
     }
 

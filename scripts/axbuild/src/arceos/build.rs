@@ -6,13 +6,15 @@ use std::{
 };
 
 use anyhow::{Context, bail};
-use cargo_metadata::MetadataCommand;
 use ostool::build::config::Cargo;
 pub use ostool::build::config::LogLevel;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::{context::ResolvedBuildRequest, process::ProcessExt};
+use crate::{
+    context::{ResolvedBuildRequest, workspace_manifest_path, workspace_metadata_root_manifest},
+    process::ProcessExt,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AxFeaturePrefixFamily {
@@ -138,6 +140,25 @@ impl ArceosBuildInfo {
                 AxFeaturePrefixFamily::AxStd
             }
         }
+    }
+
+    fn normalize_legacy_feature_aliases(&mut self) -> bool {
+        let mut changed = false;
+
+        for feature in &mut self.features {
+            let normalized = normalize_legacy_feature_alias(feature);
+            if *feature != normalized {
+                *feature = normalized;
+                changed = true;
+            }
+        }
+
+        if changed {
+            self.features.sort();
+            self.features.dedup();
+        }
+
+        changed
     }
 
     pub(crate) fn prepare_log_env(&mut self) {
@@ -301,9 +322,28 @@ pub(crate) fn resolve_build_info_path(
 }
 
 pub(crate) fn load_build_info(request: &ResolvedBuildRequest) -> anyhow::Result<ArceosBuildInfo> {
-    load_or_create_build_info(&request.build_info_path, || {
+    let mut build_info = load_or_create_build_info(&request.build_info_path, || {
         ArceosBuildInfo::default_for_target(&request.target)
-    })
+    })?;
+
+    if build_info.normalize_legacy_feature_aliases() {
+        warn!(
+            "normalizing legacy feature aliases in build config {}",
+            request.build_info_path.display()
+        );
+        fs::write(
+            &request.build_info_path,
+            toml::to_string_pretty(&build_info)?,
+        )
+        .with_context(|| {
+            format!(
+                "failed to rewrite normalized build info {}",
+                request.build_info_path.display()
+            )
+        })?;
+    }
+
+    Ok(build_info)
 }
 
 pub(crate) fn load_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Result<Cargo> {
@@ -357,6 +397,20 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+fn normalize_legacy_feature_alias(feature: &str) -> String {
+    if feature == "axstd" {
+        "ax-std".to_string()
+    } else if let Some(rest) = feature.strip_prefix("axstd/") {
+        format!("ax-std/{rest}")
+    } else if feature == "axfeat" {
+        "ax-feat".to_string()
+    } else if let Some(rest) = feature.strip_prefix("axfeat/") {
+        format!("ax-feat/{rest}")
+    } else {
+        feature.to_string()
+    }
+}
+
 pub(crate) fn resolve_build_info_path_in_dir(dir: &Path, target: &str) -> PathBuf {
     let bare_path = dir.join(format!("build-{target}.toml"));
     if bare_path.exists() {
@@ -389,15 +443,13 @@ fn feature_family_from_existing_features(features: &[String]) -> Option<AxFeatur
 
 fn detect_ax_feature_prefix_family(
     package: &str,
-    manifest_path: Option<&Path>,
+    workspace_manifest: Option<&Path>,
 ) -> anyhow::Result<AxFeaturePrefixFamily> {
-    let mut command = MetadataCommand::new();
-    command.no_deps();
-    if let Some(manifest_path) = manifest_path {
-        command.manifest_path(manifest_path);
-    }
-
-    let metadata = command.exec()?;
+    let manifest_path = workspace_manifest
+        .map(Path::to_path_buf)
+        .map(Ok)
+        .unwrap_or_else(workspace_manifest_path)?;
+    let metadata = workspace_metadata_root_manifest(&manifest_path)?;
     let workspace_members: std::collections::HashSet<_> =
         metadata.workspace_members.iter().cloned().collect();
     let package_info = metadata
@@ -426,15 +478,13 @@ fn detect_ax_feature_prefix_family(
 
 pub(crate) fn resolve_package_manifest_path(
     package: &str,
-    manifest_path: Option<&Path>,
+    workspace_manifest: Option<&Path>,
 ) -> anyhow::Result<PathBuf> {
-    let mut command = MetadataCommand::new();
-    command.no_deps();
-    if let Some(manifest_path) = manifest_path {
-        command.manifest_path(manifest_path);
-    }
-
-    let metadata = command.exec()?;
+    let manifest_path = workspace_manifest
+        .map(Path::to_path_buf)
+        .map(Ok)
+        .unwrap_or_else(workspace_manifest_path)?;
+    let metadata = workspace_metadata_root_manifest(&manifest_path)?;
     let workspace_members: std::collections::HashSet<_> =
         metadata.workspace_members.iter().cloned().collect();
     metadata
@@ -451,14 +501,12 @@ fn resolve_platform_package(
     features: &[String],
 ) -> anyhow::Result<String> {
     let arch = target_arch_name(target)?;
-    let manifest_path = resolve_package_manifest_path(package, None)?;
-    let mut command = MetadataCommand::new();
-    command.no_deps().manifest_path(&manifest_path);
-    let metadata = command.exec()?;
+    let workspace_manifest = workspace_manifest_path()?;
+    let metadata = workspace_metadata_root_manifest(&workspace_manifest)?;
     let package_info = metadata
         .packages
         .iter()
-        .find(|pkg| pkg.name == package)
+        .find(|pkg| metadata.workspace_members.contains(&pkg.id) && pkg.name == package)
         .ok_or_else(|| anyhow!("workspace package `{package}` not found"))?;
 
     let explicit_platform_features: Vec<_> = features
@@ -534,6 +582,10 @@ fn linker_platform_name(platform_package: &str) -> &str {
 }
 
 fn resolve_platform_config_path(app_dir: &Path, platform_package: &str) -> anyhow::Result<PathBuf> {
+    if let Some(local_path) = find_local_platform_config_path(platform_package)? {
+        return Ok(local_path);
+    }
+
     let workspace_root = workspace_root_path()?;
     let root_manifest = workspace_root.join("Cargo.toml");
     let output = Command::new("cargo")
@@ -565,6 +617,20 @@ fn resolve_platform_config_path(app_dir: &Path, platform_package: &str) -> anyho
     }
 
     Ok(config_path)
+}
+
+fn find_local_platform_config_path(platform_package: &str) -> anyhow::Result<Option<PathBuf>> {
+    let workspace_root = workspace_root_path()?;
+    let platform_dir_name = platform_package
+        .strip_prefix("ax-plat-")
+        .map(|suffix| format!("axplat-{suffix}"))
+        .unwrap_or_else(|| platform_package.to_string());
+    let candidate = workspace_root
+        .join("components/axplat_crates/platforms")
+        .join(platform_dir_name)
+        .join("axconfig.toml");
+
+    Ok(candidate.exists().then_some(candidate))
 }
 
 fn ensure_arceos_tooling_installed() -> anyhow::Result<()> {
@@ -712,6 +778,7 @@ mod tests {
             },
             target: target.to_string(),
             plat_dyn,
+            debug: false,
             build_info_path,
             qemu_config: None,
             uboot_config: None,
@@ -959,6 +1026,40 @@ AX_IP = "127.0.0.1"
     }
 
     #[test]
+    fn load_build_info_normalizes_legacy_feature_aliases() {
+        let root = tempdir().unwrap();
+        let path = root.path().join(".build-target.toml");
+        fs::write(
+            &path,
+            r#"
+features = ["axstd", "axstd/smp", "axfeat/net"]
+log = "Warn"
+
+[env]
+AX_IP = "10.0.2.15"
+"#,
+        )
+        .unwrap();
+        let request = request("ax-helloworld", "target", None, path.clone());
+
+        let build_info = load_build_info(&request).unwrap();
+
+        assert!(build_info.features.contains(&"ax-std".to_string()));
+        assert!(build_info.features.contains(&"ax-std/smp".to_string()));
+        assert!(build_info.features.contains(&"ax-feat/net".to_string()));
+        assert!(!build_info.features.contains(&"axstd".to_string()));
+        assert!(!build_info.features.contains(&"axstd/smp".to_string()));
+        assert!(!build_info.features.contains(&"axfeat/net".to_string()));
+
+        let rewritten = fs::read_to_string(path).unwrap();
+        assert!(rewritten.contains("ax-std"));
+        assert!(rewritten.contains("ax-std/smp"));
+        assert!(rewritten.contains("ax-feat/net"));
+        assert!(!rewritten.contains("axstd"));
+        assert!(!rewritten.contains("axfeat/net"));
+    }
+
+    #[test]
     fn load_build_info_rejects_zero_max_cpu_num() {
         let err = ArceosBuildInfo {
             max_cpu_num: Some(0),
@@ -1064,6 +1165,17 @@ AX_IP = "127.0.0.1"
         .unwrap();
 
         assert_eq!(platform, "ax-plat-aarch64-qemu-virt");
+    }
+
+    #[test]
+    fn find_local_platform_config_path_resolves_repo_platforms() {
+        let path = find_local_platform_config_path("ax-plat-aarch64-qemu-virt")
+            .unwrap()
+            .expect("repo-local platform config should exist");
+
+        assert!(path.ends_with(
+            "components/axplat_crates/platforms/axplat-aarch64-qemu-virt/axconfig.toml"
+        ));
     }
 
     #[test]

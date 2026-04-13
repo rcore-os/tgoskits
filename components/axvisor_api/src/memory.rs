@@ -88,14 +88,14 @@ pub trait MemoryIf {
     /// # Arguments
     ///
     /// * `num_frames` - The number of contiguous frames to allocate.
-    /// * `frame_align_pow2` - The alignment requirement as a power of 2
-    ///   (e.g., 0 for 4KB alignment, 1 for 8KB alignment).
+    /// * `frame_align` - The alignment requirement in bytes.
+    ///   This is a direct alignment value, not a log2/exponent.
     ///
     /// # Returns
     ///
     /// - `Some(PhysAddr)` - The physical address of the first allocated frame.
     /// - `None` - If allocation fails.
-    fn alloc_contiguous_frames(num_frames: usize, frame_align_pow2: usize) -> Option<PhysAddr>;
+    fn alloc_contiguous_frames(num_frames: usize, frame_align: usize) -> Option<PhysAddr>;
 
     /// Deallocate a frame previously allocated by [`alloc_frame`].
     ///

@@ -19,19 +19,15 @@ pub struct PagingHandlerImpl;
 
 impl PagingHandler for PagingHandlerImpl {
     fn alloc_frames(num: usize, align: usize) -> Option<PhysAddr> {
-        let align_frames = if align.is_multiple_of(PAGE_SIZE_4K) {
-            align / PAGE_SIZE_4K
-        } else {
+        if !align.is_multiple_of(PAGE_SIZE_4K) {
             panic!("align must be multiple of PAGE_SIZE_4K")
-        };
+        }
 
-        let align_frames_pow2 = if align_frames.is_power_of_two() {
-            align_frames.trailing_zeros()
-        } else {
+        if !align.is_power_of_two() {
             panic!("align must be a power of 2")
-        };
+        }
 
-        axvisor_api::memory::alloc_contiguous_frames(num, align_frames_pow2 as _)
+        axvisor_api::memory::alloc_contiguous_frames(num, align)
     }
 
     fn dealloc_frames(paddr: PhysAddr, num: usize) {

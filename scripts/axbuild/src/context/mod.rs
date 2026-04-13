@@ -30,7 +30,8 @@ pub use types::{
     StarryUbootSnapshot,
 };
 pub(crate) use workspace::{
-    find_workspace_root, workspace_member_dir, workspace_member_dir_in, workspace_root_path,
+    find_workspace_root, workspace_manifest_path, workspace_member_dir, workspace_member_dir_in,
+    workspace_metadata_root_manifest, workspace_root_path,
 };
 
 pub struct AppContext {
@@ -38,6 +39,7 @@ pub struct AppContext {
     build_config_path: Option<PathBuf>,
     root: PathBuf,
     axvisor_dir: Option<PathBuf>,
+    debug: bool,
 }
 
 impl AppContext {
@@ -53,6 +55,7 @@ impl AppContext {
             build_config_path: None,
             root: workspace_root,
             axvisor_dir: None,
+            debug: false,
         })
     }
 
@@ -95,7 +98,7 @@ impl AppContext {
                 &cargo,
                 &CargoRunnerKind::Qemu(Box::new(CargoQemuRunnerArgs {
                     qemu_config: qemu.qemu_config,
-                    debug: false,
+                    debug: self.debug,
                     dtb_dump: false,
                     default_args: qemu.default_args,
                     append_args: qemu.append_args,
@@ -128,6 +131,24 @@ impl AppContext {
     ) -> anyhow::Result<()> {
         self.set_build_config_path(build_config_path);
         self.tool.cargo_run_board(&cargo, board_args).await
+    }
+
+    pub(crate) fn set_debug_mode(&mut self, debug: bool) -> anyhow::Result<()> {
+        if self.debug == debug {
+            return Ok(());
+        }
+
+        self.tool = Tool::new(ToolConfig {
+            debug,
+            ..ToolConfig::default()
+        })?;
+        self.debug = debug;
+
+        if let Some(path) = self.build_config_path.clone() {
+            self.tool.ctx_mut().build_config_path = Some(path);
+        }
+
+        Ok(())
     }
 
     fn set_build_config_path(&mut self, path: PathBuf) {
