@@ -63,6 +63,7 @@ hashbrown = "0.14"
 
 # System dependent modules provided by ArceOS.
 ax-std = { version = "0.5.0", features = [
+  "myplat",
   "paging",
   "irq",
   "multitask",
@@ -70,7 +71,7 @@ ax-std = { version = "0.5.0", features = [
   "smp",
   "hv",
 ]}
-ax-hal = { version = "0.5.0", features = ["paging", "irq", "smp", "hv"] }
+ax-hal = { version = "0.5.0", features = ["myplat", "paging", "irq", "smp", "hv"] }
 
 # System dependent modules provided by ArceOS-Hypervisor (bare-metal only)
 axaddrspace = "0.5.0"
@@ -93,7 +94,7 @@ fdt-parser = "0.4"
 ax-memory-addr = "0.6.1"
 ax-page-table-entry = { version = "0.8.1", features = ["arm-el2"] }
 ax-page-table-multiarch = "0.8.1"
-ax-percpu = { version = "0.4.3", features = ["arm-el2"] }
+ax-percpu = { version = "0.4.3", features = ["arm-el2", "non-zero-vma"] }
 
 rdif-intc = "0.14"
 rdrive = "0.20"
@@ -110,6 +111,9 @@ ax-config = { version = "0.5.0", features = ["plat-dyn"] }
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 aarch64-cpu-ext = "0.1"
 arm-gic-driver = {version = "0.17", features = ["rdif"]}
+
+[target.'cfg(target_arch = "loongarch64")'.dependencies]
+ax-plat-loongarch64-qemu-virt = { version = "0.5.0", default-features = false, features = ["irq", "smp"] }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 ax-plat-riscv64-qemu-virt = { path = "platform/riscv64-qemu-virt" }

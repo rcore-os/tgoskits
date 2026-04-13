@@ -60,7 +60,7 @@ pub fn crate_guest_fdt_with_cache(dtb_data: Vec<u8>, crate_config: &AxVMCrateCon
     cache_lock.insert(crate_config.base.id, dtb_data);
 }
 
-/// Handle all FDT-related operations for aarch64 architecture
+/// Handle all FDT-related operations for guest architectures that boot with DTB.
 pub fn handle_fdt_operations(vm_config: &mut AxVMConfig, vm_create_config: &AxVMCrateConfig) {
     let host_fdt_bytes = get_host_fdt();
     let host_fdt = Fdt::from_bytes(host_fdt_bytes)
@@ -83,6 +83,7 @@ pub fn handle_fdt_operations(vm_config: &mut AxVMConfig, vm_create_config: &AxVM
     if let Some(dtb_arc) = get_vm_dtb_arc(vm_config) {
         let dtb = dtb_arc.as_ref();
         parse_passthrough_devices_address(vm_config, dtb);
+        #[cfg(target_arch = "aarch64")]
         parse_vm_interrupt(vm_config, dtb);
     } else {
         error!(

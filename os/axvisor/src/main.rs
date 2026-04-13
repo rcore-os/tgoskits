@@ -29,6 +29,8 @@ extern crate alloc;
 
 extern crate ax_std as std;
 
+#[cfg(target_arch = "loongarch64")]
+extern crate ax_plat_loongarch64_qemu_virt;
 #[cfg(target_arch = "x86_64")]
 extern crate axplat_x86_qemu_q35;
 
@@ -43,7 +45,18 @@ fn main() {
     logo::print_logo();
 
     info!("Starting virtualization...");
-    info!("Hardware support: {:?}", axvm::has_hardware_support());
+    let hardware_support = axvm::has_hardware_support();
+    info!("Hardware support: {:?}", hardware_support);
+
+    #[cfg(target_arch = "loongarch64")]
+    if !hardware_support {
+        warn!(
+            "LoongArch LVZ virtualization is not available on this platform. Skipping hypervisor enable/VMM startup and entering the shell."
+        );
+        shell::console_init();
+        return;
+    }
+
     hal::enable_virtualization();
 
     vmm::init();

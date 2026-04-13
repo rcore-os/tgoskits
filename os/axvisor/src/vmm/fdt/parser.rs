@@ -20,7 +20,7 @@ use axvm::config::{AxVMConfig, AxVMCrateConfig, PassThroughDeviceConfig};
 use fdt_parser::{Fdt, FdtHeader, PciRange, PciSpace};
 
 use crate::vmm::fdt::crate_guest_fdt_with_cache;
-#[cfg(not(target_arch = "riscv64"))]
+#[cfg(target_arch = "aarch64")]
 use crate::vmm::fdt::create::update_cpu_node;
 
 pub fn get_host_fdt() -> &'static [u8] {
@@ -405,13 +405,13 @@ pub fn parse_vm_interrupt(vm_cfg: &mut AxVMConfig, dtb: &[u8]) {
 }
 
 pub fn update_provided_fdt(provided_dtb: &[u8], host_dtb: &[u8], crate_config: &AxVMCrateConfig) {
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64"))]
     {
         let _ = host_dtb;
         crate_guest_fdt_with_cache(provided_dtb.to_vec(), crate_config);
     }
 
-    #[cfg(not(target_arch = "riscv64"))]
+    #[cfg(target_arch = "aarch64")]
     {
         let provided_fdt = Fdt::from_bytes(provided_dtb)
             .expect("Failed to parse DTB image, perhaps the DTB is invalid or corrupted");
