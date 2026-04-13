@@ -64,7 +64,7 @@ jobs:
 
   clippy:
     name: Run clippy
-    needs: fmt
+    needs: detect_changes
     uses: ./.github/workflows/reusable-container-command.yml
     with:
       command: cargo xtask clippy
@@ -73,7 +73,9 @@ jobs:
 
   test_std:
     name: Test with std
-    needs: clippy
+    needs:
+      - fmt
+      - clippy
     uses: ./.github/workflows/reusable-container-command.yml
     with:
       command: cargo xtask test
@@ -82,7 +84,9 @@ jobs:
 
   test_qemu_matrix:
     name: Test ${{ matrix.os }} ${{ matrix.arch }}
-    needs: clippy
+    needs:
+      - fmt
+      - clippy
     strategy:
       fail-fast: true
       matrix:
@@ -115,7 +119,9 @@ jobs:
   test_axvisor_self_hosted:
     name: Test axvisor ${{ matrix.label }}
     if: github.repository_owner == 'rcore-os'
-    needs: clippy
+    needs:
+      - fmt
+      - clippy
     strategy:
       fail-fast: true
       matrix:
@@ -138,19 +144,12 @@ jobs:
     name: Publish container image
     if: >-
       ${{
-        always()
-        && needs.test_std.result == 'success'
-        && needs.test_qemu_matrix.result == 'success'
-        && (needs.test_axvisor_self_hosted.result == 'success' || needs.test_axvisor_self_hosted.result == 'skipped')
-        && github.event_name == 'push'
+        github.event_name == 'push'
         && (github.ref_name == 'main' || github.ref_name == 'dev')
         && needs.detect_changes.outputs.container_publish == 'true'
       }}
     needs:
       - detect_changes
-      - test_std
-      - test_qemu_matrix
-      - test_axvisor_self_hosted
     uses: ./.github/workflows/container-publish.yml
     permissions:
       contents: read
