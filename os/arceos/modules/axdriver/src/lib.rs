@@ -55,8 +55,6 @@
 //! [dyn]: https://doc.rust-lang.org/std/keyword.dyn.html
 
 #![no_std]
-#![feature(used_with_arg)]
-#![feature(associated_type_defaults)]
 
 #[macro_use]
 extern crate log;

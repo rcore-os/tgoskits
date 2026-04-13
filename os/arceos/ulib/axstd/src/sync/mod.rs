@@ -10,9 +10,9 @@ pub use core::sync::atomic;
 mod mutex;
 
 #[cfg(not(feature = "multitask"))]
-#[doc(cfg(not(feature = "multitask")))]
+#[cfg_attr(doc, doc(cfg(not(feature = "multitask"))))]
 pub use ax_kspin::{SpinRaw as Mutex, SpinRawGuard as MutexGuard};
 
 #[cfg(feature = "multitask")]
-#[doc(cfg(feature = "multitask"))]
+#[cfg_attr(doc, doc(cfg(feature = "multitask")))]
 pub use self::mutex::{Mutex, MutexGuard}; // never used in IRQ context

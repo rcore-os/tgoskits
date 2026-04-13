@@ -20,9 +20,9 @@ pub use ax_kspin as spin;
 mod mutex;
 
 #[cfg(not(feature = "multitask"))]
-#[doc(cfg(not(feature = "multitask")))]
+#[cfg_attr(doc, doc(cfg(not(feature = "multitask"))))]
 pub use ax_kspin::{SpinNoIrq as Mutex, SpinNoIrqGuard as MutexGuard};
 
 #[cfg(feature = "multitask")]
-#[doc(cfg(feature = "multitask"))]
+#[cfg_attr(doc, doc(cfg(feature = "multitask")))]
 pub use self::mutex::{Mutex, MutexGuard, RawMutex};
