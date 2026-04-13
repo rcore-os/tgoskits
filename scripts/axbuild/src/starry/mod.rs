@@ -16,8 +16,10 @@ use crate::{
     test_qemu,
 };
 
+pub mod board;
 pub mod build;
 pub mod quick_start;
+pub mod config;
 pub mod rootfs;
 
 /// StarryOS subcommands
@@ -27,6 +29,10 @@ pub enum Command {
     Build(ArgsBuild),
     /// Build and run StarryOS application
     Qemu(ArgsQemu),
+    /// Generate a default StarryOS board config
+    Defconfig(ArgsDefconfig),
+    /// StarryOS board config helpers
+    Config(ArgsConfig),
     /// Run StarryOS test suites
     Test(ArgsTest),
     /// Download rootfs image into workspace target directory
@@ -78,6 +84,17 @@ pub struct ArgsRootfs {
 }
 
 #[derive(Args)]
+pub struct ArgsDefconfig {
+    pub board: String,
+}
+
+#[derive(Args)]
+pub struct ArgsConfig {
+    #[command(subcommand)]
+    pub command: ConfigCommand,
+}
+
+#[derive(Args)]
 pub struct ArgsTest {
     #[command(subcommand)]
     pub command: TestCommand,
@@ -89,6 +106,12 @@ pub enum TestCommand {
     Qemu(ArgsTestQemu),
     /// Reserved StarryOS U-Boot test suite entrypoint
     Uboot(ArgsTestUboot),
+}
+
+#[derive(Subcommand)]
+pub enum ConfigCommand {
+    /// List available board names
+    Ls,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -134,6 +157,8 @@ impl Starry {
         match command {
             Command::Build(args) => self.build(args).await,
             Command::Qemu(args) => self.qemu(args).await,
+            Command::Defconfig(args) => self.defconfig(args),
+            Command::Config(args) => self.config(args),
             Command::Rootfs(args) => self.rootfs(args).await,
             Command::QuickStart(args) => self.quick_start(args).await,
             Command::Uboot(args) => self.uboot(args).await,
@@ -163,6 +188,23 @@ impl Starry {
         let disk_img =
             rootfs::ensure_rootfs_in_target_dir(self.app.workspace_root(), &arch, &target).await?;
         println!("rootfs ready at {}", disk_img.display());
+        Ok(())
+    }
+
+    fn defconfig(&mut self, args: ArgsDefconfig) -> anyhow::Result<()> {
+        let path = config::write_defconfig(self.app.workspace_root(), &args.board)?;
+        println!("Generated {} for board {}", path.display(), args.board);
+        Ok(())
+    }
+
+    fn config(&mut self, args: ArgsConfig) -> anyhow::Result<()> {
+        match args.command {
+            ConfigCommand::Ls => {
+                for board in config::available_board_names(self.app.workspace_root())? {
+                    println!("{board}");
+                }
+            }
+        }
         Ok(())
     }
 
@@ -241,7 +283,8 @@ impl Starry {
     }
 
     async fn test_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
-        let (arch, target) = test_qemu::parse_starry_test_target(&args.target)?;
+        let (arch, target) =
+            test_qemu::parse_starry_test_target(self.app.workspace_root(), &args.target)?;
         let package = test_qemu::STARRY_TEST_PACKAGE;
 
         println!(
@@ -251,16 +294,17 @@ impl Starry {
 
         println!("[1/1] starry qemu {}", package);
         let mut request = self.prepare_request(
-            Self::test_build_args(arch),
+            Self::test_build_args(&arch),
             None,
             None,
             SnapshotPersistence::Discard,
         )?;
         request.package = package.to_string();
+        config::write_default_qemu_defconfig_for_target(self.app.workspace_root(), &target)?;
         let qemu_config = rootfs::prepare_test_qemu_config(
             self.app.workspace_root(),
             &request,
-            &self.test_qemu_config_path(arch),
+            &self.test_qemu_config_path(&arch),
             args.timeout,
         )
         .await?;
@@ -522,6 +566,40 @@ mod tests {
                 _ => panic!("expected qemu test command"),
             },
             _ => panic!("expected test command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_defconfig() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from(["starry", "defconfig", "qemu-aarch64"]).unwrap();
+
+        match cli.command {
+            Command::Defconfig(args) => assert_eq!(args.board, "qemu-aarch64"),
+            _ => panic!("expected defconfig command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_config_ls() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from(["starry", "config", "ls"]).unwrap();
+
+        match cli.command {
+            Command::Config(args) => match args.command {
+                ConfigCommand::Ls => {}
+            },
+            _ => panic!("expected config ls command"),
         }
     }
 

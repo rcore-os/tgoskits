@@ -30,22 +30,22 @@ qemu = [
   "axplat-dyn?/intel-net",
   "axplat-dyn?/virtio-net-pci",
 ]
-smp = ["ax-feat/smp", "axplat-dyn/smp", "axplat-riscv64-visionfive2?/smp"]
+smp = ["ax-feat/smp", "axplat-dyn?/smp", "axplat-riscv64-visionfive2?/smp"]
 
-vf2 = ["common", "dep:axplat-riscv64-visionfive2", "ax-feat/driver-sdmmc"]
+vf2 = ["dep:axplat-riscv64-visionfive2", "ax-feat/driver-sdmmc"]
 
 [[bin]]
 name = "starryos"
 path = "src/main.rs"
-required-features = ["common"]
+# required-features = ["common"]
 
 [[bin]]
 name = "xtask"
 path = "xtask/main.rs"
 
 [dependencies]
-ax-feat.workspace = true
-starry-kernel.workspace = true
+ax-feat = { workspace = true, features = ["fs-ng-times"] }
+starry-kernel = { workspace = true, features = ["dev-log"] }
 axplat-dyn = { workspace = true, optional = true }
 
 [dependencies.axplat-riscv64-visionfive2]

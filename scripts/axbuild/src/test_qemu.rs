@@ -1,6 +1,9 @@
+use std::{collections::BTreeSet, path::Path};
+
 use crate::{
     axvisor::qemu_test::ShellAutoInitConfig,
     context::{arch_for_target_checked, starry_target_for_arch_checked, target_for_arch_checked},
+    starry::board,
 };
 
 pub(crate) const ARCEOS_TEST_PACKAGES: &[&str] = &[
@@ -30,7 +33,6 @@ const ARCEOS_TEST_TARGETS: &[&str] = &[
 const ARCEOS_TEST_ARCHES: &[&str] = &["x86_64", "riscv64", "aarch64", "loongarch64"];
 
 pub(crate) const STARRY_TEST_PACKAGE: &str = "starryos-test";
-const STARRY_TEST_ARCHES: &[&str] = &["x86_64", "riscv64", "aarch64", "loongarch64"];
 const AXVISOR_TEST_ARCHES: &[&str] = &["aarch64", "x86_64"];
 const AXVISOR_AARCH64_TEST_SHELL_PREFIX: &str = "~ #";
 const AXVISOR_AARCH64_TEST_SHELL_INIT_CMD: &str = "pwd && echo 'guest test pass!'";
@@ -117,20 +119,50 @@ pub(crate) fn parse_arceos_test_target(target: &str) -> anyhow::Result<(&str, &s
     )
 }
 
-pub(crate) fn parse_starry_test_target(target: &str) -> anyhow::Result<(&str, &str)> {
-    parse_arch_or_target(
-        target,
-        "starry qemu tests",
-        STARRY_TEST_ARCHES,
-        &[
-            "x86_64-unknown-none",
-            "riscv64gc-unknown-none-elf",
-            "aarch64-unknown-none-softfloat",
-            "loongarch64-unknown-none-softfloat",
-        ],
-        starry_target_for_arch_checked,
-        arch_for_target_checked,
-    )
+pub(crate) fn parse_starry_test_target(
+    workspace_root: &Path,
+    target: &str,
+) -> anyhow::Result<(String, String)> {
+    let supported_targets = board::board_default_list(workspace_root)?
+        .into_iter()
+        .filter(|board| board.name.starts_with("qemu-"))
+        .map(|board| board.target)
+        .collect::<Vec<_>>();
+
+    let supported_target_refs = supported_targets
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let supported_arches = supported_targets
+        .iter()
+        .map(|target| arch_for_target_checked(target))
+        .collect::<anyhow::Result<BTreeSet<_>>>()?
+        .into_iter()
+        .collect::<Vec<_>>();
+
+    if target.contains('-') {
+        validate_supported_target(
+            target,
+            "starry qemu tests",
+            "targets",
+            &supported_target_refs,
+        )?;
+        Ok((
+            arch_for_target_checked(target)?.to_string(),
+            target.to_string(),
+        ))
+    } else {
+        validate_supported_target(
+            target,
+            "starry qemu tests",
+            "arch values",
+            &supported_arches,
+        )?;
+        Ok((
+            target.to_string(),
+            starry_target_for_arch_checked(target)?.to_string(),
+        ))
+    }
 }
 
 pub(crate) fn parse_axvisor_test_target(target: &str) -> anyhow::Result<(&str, &str)> {
@@ -314,7 +346,48 @@ pub(crate) fn unsupported_uboot_test_command(os: &str) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
     use super::*;
+
+    fn write_starry_workspace(root: &Path) {
+        let starry_workspace_dir = root.join("os/StarryOS");
+        let starry_dir = root.join("os/StarryOS/starryos");
+        let src_dir = starry_dir.join("src");
+        fs::create_dir_all(root.join("os/StarryOS/configs/board")).unwrap();
+        fs::create_dir_all(&starry_workspace_dir).unwrap();
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(src_dir.join("lib.rs"), "").unwrap();
+        fs::write(
+            starry_dir.join("Cargo.toml"),
+            "[package]\nname = \"starryos\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        fs::write(
+            starry_workspace_dir.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"starryos\"]\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"os/StarryOS/starryos\"]\n",
+        )
+        .unwrap();
+    }
+
+    fn write_starry_board(root: &Path, name: &str, target: &str) {
+        fs::write(
+            root.join("os/StarryOS/configs/board")
+                .join(format!("{name}.toml")),
+            format!(
+                "target = \"{target}\"\nenv = {{ AX_IP = \"10.0.2.15\", AX_GW = \"10.0.2.2\" \
+                 }}\nlog = \"Warn\"\nfeatures = [\"qemu\"]\nplat_dyn = false\n"
+            ),
+        )
+        .unwrap();
+    }
 
     #[test]
     fn accepts_supported_arceos_targets() {
@@ -352,21 +425,37 @@ mod tests {
 
     #[test]
     fn parses_supported_starry_arch_aliases() {
+        let root = tempdir().unwrap();
+        write_starry_workspace(root.path());
+        write_starry_board(root.path(), "qemu-x86_64", "x86_64-unknown-none");
+        write_starry_board(
+            root.path(),
+            "qemu-aarch64",
+            "aarch64-unknown-none-softfloat",
+        );
+
         assert_eq!(
-            parse_starry_test_target("x86_64").unwrap(),
-            ("x86_64", "x86_64-unknown-none")
+            parse_starry_test_target(root.path(), "x86_64").unwrap(),
+            ("x86_64".to_string(), "x86_64-unknown-none".to_string())
         );
         assert_eq!(
-            parse_starry_test_target("aarch64").unwrap(),
-            ("aarch64", "aarch64-unknown-none-softfloat")
+            parse_starry_test_target(root.path(), "aarch64").unwrap(),
+            (
+                "aarch64".to_string(),
+                "aarch64-unknown-none-softfloat".to_string()
+            )
         );
     }
 
     #[test]
     fn accepts_starry_full_target_triples() {
+        let root = tempdir().unwrap();
+        write_starry_workspace(root.path());
+        write_starry_board(root.path(), "qemu-x86_64", "x86_64-unknown-none");
+
         assert_eq!(
-            parse_starry_test_target("x86_64-unknown-none").unwrap(),
-            ("x86_64", "x86_64-unknown-none")
+            parse_starry_test_target(root.path(), "x86_64-unknown-none").unwrap(),
+            ("x86_64".to_string(), "x86_64-unknown-none".to_string())
         );
     }
 
