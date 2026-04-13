@@ -121,6 +121,8 @@ pub struct ArgsTestQemu {
     pub target: String,
     #[arg(short = 'c', long, value_name = "CASE")]
     pub test_case: Option<String>,
+    #[arg(long, help = "Run stress StarryOS qemu test cases")]
+    pub stress: bool,
     #[arg(long, value_name = "CMD_OR_FILE")]
     pub shell_init_cmd: Option<String>,
     #[arg(
@@ -287,17 +289,26 @@ impl Starry {
 
     async fn test_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
         let (arch, target) = test_suit::parse_test_target(self.app.workspace_root(), &args.target)?;
+        let test_group = if args.stress {
+            test_suit::StarryTestGroup::Stress
+        } else {
+            test_suit::StarryTestGroup::Normal
+        };
         let cases = test_suit::discover_qemu_cases(
             self.app.workspace_root(),
             &arch,
             args.test_case.as_deref(),
+            test_group,
         )?;
         let package = crate::context::STARRY_PACKAGE;
         let shell_init_cmd = Self::resolve_shell_init_cmd(args.shell_init_cmd)?;
 
         println!(
-            "running starry qemu tests for package {} on arch: {} (target: {})",
-            package, arch, target
+            "running starry {} qemu tests for package {} on arch: {} (target: {})",
+            test_group.as_str(),
+            package,
+            arch,
+            target
         );
 
         config::write_default_qemu_defconfig_for_target(self.app.workspace_root(), &target)?;
@@ -333,7 +344,7 @@ impl Starry {
             }
         }
 
-        test_suit::finalize_qemu_case_run(&failed)
+        test_suit::finalize_qemu_case_run(&failed, test_group)
     }
 
     async fn test_uboot(&mut self, _args: ArgsTestUboot) -> anyhow::Result<()> {
@@ -562,7 +573,10 @@ mod tests {
 
         match cli.command {
             Command::Test(args) => match args.command {
-                TestCommand::Qemu(args) => assert_eq!(args.target, "x86_64"),
+                TestCommand::Qemu(args) => {
+                    assert_eq!(args.target, "x86_64");
+                    assert!(!args.stress);
+                }
                 _ => panic!("expected qemu test command"),
             },
             _ => panic!("expected test command"),
@@ -638,6 +652,7 @@ mod tests {
             "x86_64",
             "-c",
             "smoke",
+            "--stress",
             "--shell-init-cmd",
             "echo 'test'",
             "--timeout",
@@ -650,6 +665,7 @@ mod tests {
                 TestCommand::Qemu(args) => {
                     assert_eq!(args.target, "x86_64");
                     assert_eq!(args.test_case, Some("smoke".to_string()));
+                    assert!(args.stress);
                     assert_eq!(args.shell_init_cmd, Some("echo 'test'".to_string()));
                     assert_eq!(args.timeout, Some(10));
                 }

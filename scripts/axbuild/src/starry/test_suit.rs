@@ -13,6 +13,21 @@ use crate::context::{
     ResolvedStarryRequest, arch_for_target_checked, starry_target_for_arch_checked,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StarryTestGroup {
+    Normal,
+    Stress,
+}
+
+impl StarryTestGroup {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Stress => "stress",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StarryQemuCase {
     pub(crate) name: String,
@@ -69,16 +84,18 @@ pub(crate) fn discover_qemu_cases(
     workspace_root: &Path,
     arch: &str,
     selected_case: Option<&str>,
+    group: StarryTestGroup,
 ) -> anyhow::Result<Vec<StarryQemuCase>> {
-    let test_suite_dir = test_suite_dir(workspace_root);
+    let test_suite_dir = test_suite_dir(workspace_root, group);
     let config_name = qemu_config_name(arch);
 
     if let Some(case_name) = selected_case {
         let case_dir = test_suite_dir.join(case_name);
         if !case_dir.is_dir() {
             bail!(
-                "unknown Starry test case `{case_name}` in {}; available cases are discovered \
+                "unknown Starry {} test case `{case_name}` in {}; available cases are discovered \
                  from direct subdirectories",
+                group.as_str(),
                 test_suite_dir.display()
             );
         }
@@ -122,7 +139,8 @@ pub(crate) fn discover_qemu_cases(
 
     if cases.is_empty() {
         bail!(
-            "no Starry qemu test cases for arch `{arch}` found under {}",
+            "no Starry {} qemu test cases for arch `{arch}` found under {}",
+            group.as_str(),
             test_suite_dir.display()
         );
     }
@@ -176,13 +194,17 @@ pub(crate) async fn prepare_test_qemu_config(
     Ok(generated_config)
 }
 
-pub(crate) fn finalize_qemu_case_run(failed: &[String]) -> anyhow::Result<()> {
+pub(crate) fn finalize_qemu_case_run(
+    failed: &[String],
+    group: StarryTestGroup,
+) -> anyhow::Result<()> {
     if failed.is_empty() {
-        println!("all starry qemu test cases passed");
+        println!("all starry {} qemu test cases passed", group.as_str());
         Ok(())
     } else {
         bail!(
-            "starry qemu tests failed for {} case(s): {}",
+            "starry {} qemu tests failed for {} case(s): {}",
+            group.as_str(),
             failed.len(),
             failed.join(", ")
         )
@@ -208,8 +230,11 @@ fn validate_supported_target(
     }
 }
 
-fn test_suite_dir(workspace_root: &Path) -> PathBuf {
-    workspace_root.join("test-suit").join("starryos")
+fn test_suite_dir(workspace_root: &Path, group: StarryTestGroup) -> PathBuf {
+    workspace_root
+        .join("test-suit")
+        .join("starryos")
+        .join(group.as_str())
 }
 
 fn qemu_config_name(arch: &str) -> String {
@@ -312,8 +337,8 @@ mod tests {
         .unwrap();
     }
 
-    fn write_case(root: &Path, case_name: &str, arch: &str, body: &str) {
-        let case_dir = test_suite_dir(root).join(case_name);
+    fn write_case(root: &Path, group: StarryTestGroup, case_name: &str, arch: &str, body: &str) {
+        let case_dir = test_suite_dir(root, group).join(case_name);
         fs::create_dir_all(&case_dir).unwrap();
         fs::write(case_dir.join(qemu_config_name(arch)), body).unwrap();
     }
@@ -355,29 +380,90 @@ mod tests {
     }
 
     #[test]
-    fn discovers_cases_in_lexicographic_order() {
+    fn discovers_normal_cases_in_lexicographic_order() {
         let root = tempdir().unwrap();
-        write_case(root.path(), "stress-ng-0", "riscv64", "timeout = 10\n");
-        write_case(root.path(), "smoke", "riscv64", "timeout = 5\n");
-        write_case(root.path(), "board-only", "aarch64", "timeout = 5\n");
+        write_case(
+            root.path(),
+            StarryTestGroup::Normal,
+            "apk",
+            "riscv64",
+            "timeout = 10\n",
+        );
+        write_case(
+            root.path(),
+            StarryTestGroup::Normal,
+            "smoke",
+            "riscv64",
+            "timeout = 5\n",
+        );
+        write_case(
+            root.path(),
+            StarryTestGroup::Stress,
+            "stress-ng-0",
+            "riscv64",
+            "timeout = 5\n",
+        );
 
-        let cases = discover_qemu_cases(root.path(), "riscv64", None).unwrap();
+        let cases =
+            discover_qemu_cases(root.path(), "riscv64", None, StarryTestGroup::Normal).unwrap();
         assert_eq!(
             cases
                 .iter()
                 .map(|case| case.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["smoke", "stress-ng-0"]
+            vec!["apk", "smoke"]
         );
     }
 
     #[test]
-    fn filters_to_selected_case() {
+    fn discovers_stress_cases() {
         let root = tempdir().unwrap();
-        write_case(root.path(), "smoke", "riscv64", "timeout = 5\n");
-        write_case(root.path(), "stress-ng-0", "riscv64", "timeout = 10\n");
+        write_case(
+            root.path(),
+            StarryTestGroup::Normal,
+            "smoke",
+            "riscv64",
+            "timeout = 5\n",
+        );
+        write_case(
+            root.path(),
+            StarryTestGroup::Stress,
+            "stress-ng-0",
+            "riscv64",
+            "timeout = 10\n",
+        );
 
-        let cases = discover_qemu_cases(root.path(), "riscv64", Some("stress-ng-0")).unwrap();
+        let cases =
+            discover_qemu_cases(root.path(), "riscv64", None, StarryTestGroup::Stress).unwrap();
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].name, "stress-ng-0");
+    }
+
+    #[test]
+    fn filters_to_selected_case_in_current_group() {
+        let root = tempdir().unwrap();
+        write_case(
+            root.path(),
+            StarryTestGroup::Normal,
+            "smoke",
+            "riscv64",
+            "timeout = 5\n",
+        );
+        write_case(
+            root.path(),
+            StarryTestGroup::Stress,
+            "stress-ng-0",
+            "riscv64",
+            "timeout = 10\n",
+        );
+
+        let cases = discover_qemu_cases(
+            root.path(),
+            "riscv64",
+            Some("stress-ng-0"),
+            StarryTestGroup::Stress,
+        )
+        .unwrap();
         assert_eq!(cases.len(), 1);
         assert_eq!(cases[0].name, "stress-ng-0");
     }
@@ -385,23 +471,71 @@ mod tests {
     #[test]
     fn rejects_missing_selected_case() {
         let root = tempdir().unwrap();
-        write_case(root.path(), "smoke", "riscv64", "timeout = 5\n");
+        write_case(
+            root.path(),
+            StarryTestGroup::Normal,
+            "smoke",
+            "riscv64",
+            "timeout = 5\n",
+        );
 
-        let err = discover_qemu_cases(root.path(), "riscv64", Some("missing")).unwrap_err();
+        let err = discover_qemu_cases(
+            root.path(),
+            "riscv64",
+            Some("missing"),
+            StarryTestGroup::Normal,
+        )
+        .unwrap_err();
         assert!(
             err.to_string()
-                .contains("unknown Starry test case `missing`")
+                .contains("unknown Starry normal test case `missing`")
         );
     }
 
     #[test]
     fn rejects_selected_case_without_target_arch() {
         let root = tempdir().unwrap();
-        write_case(root.path(), "smoke", "aarch64", "timeout = 5\n");
+        write_case(
+            root.path(),
+            StarryTestGroup::Normal,
+            "smoke",
+            "aarch64",
+            "timeout = 5\n",
+        );
 
-        let err = discover_qemu_cases(root.path(), "riscv64", Some("smoke")).unwrap_err();
+        let err = discover_qemu_cases(
+            root.path(),
+            "riscv64",
+            Some("smoke"),
+            StarryTestGroup::Normal,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("does not provide"));
         assert!(err.to_string().contains("qemu-riscv64.toml"));
+    }
+
+    #[test]
+    fn rejects_selected_case_from_other_group() {
+        let root = tempdir().unwrap();
+        write_case(
+            root.path(),
+            StarryTestGroup::Stress,
+            "stress-ng-0",
+            "riscv64",
+            "timeout = 5\n",
+        );
+
+        let err = discover_qemu_cases(
+            root.path(),
+            "riscv64",
+            Some("stress-ng-0"),
+            StarryTestGroup::Normal,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unknown Starry normal test case `stress-ng-0`")
+        );
     }
 
     #[tokio::test]
@@ -425,6 +559,7 @@ shell_prefix = "starry:~#"
             arch: "x86_64".to_string(),
             target: "x86_64-unknown-none".to_string(),
             plat_dyn: None,
+            debug: false,
             build_info_path: PathBuf::from("/tmp/.build.toml"),
             qemu_config: None,
             uboot_config: None,
@@ -463,11 +598,14 @@ timeout = 3
 
     #[test]
     fn finalize_qemu_case_run_reports_case_names() {
-        let err =
-            finalize_qemu_case_run(&["smoke".to_string(), "stress-ng-0".to_string()]).unwrap_err();
+        let err = finalize_qemu_case_run(
+            &["smoke".to_string(), "stress-ng-0".to_string()],
+            StarryTestGroup::Stress,
+        )
+        .unwrap_err();
         assert!(
             err.to_string()
-                .contains("starry qemu tests failed for 2 case(s): smoke, stress-ng-0")
+                .contains("starry stress qemu tests failed for 2 case(s): smoke, stress-ng-0")
         );
     }
 

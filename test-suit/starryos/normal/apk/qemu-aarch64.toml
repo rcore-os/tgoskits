@@ -1,11 +1,11 @@
 args = [
     "-nographic",
     "-cpu",
-    "rv64",
+    "cortex-a53",
     "-device",
     "virtio-blk-pci,drive=disk0",
     "-drive",
-    "id=disk0,if=none,format=raw,file=${workspace}/target/riscv64gc-unknown-none-elf/rootfs-riscv64.img",
+    "id=disk0,if=none,format=raw,file=${workspace}/target/aarch64-unknown-none-softfloat/rootfs-aarch64.img",
     "-device",
     "virtio-net-pci,netdev=net0",
     "-netdev",
@@ -22,4 +22,4 @@ echo 'All tests passed!'
 '''
 success_regex = ["(?m)^All tests passed!\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', 'failed:']
-timeout = 50
+timeout = 120

@@ -431,19 +431,20 @@ ensure_rootfs_in_target_dir(workspace_root, arch, target)
 
 ### 2.14 `starry test qemu` — 测试执行流程
 
-StarryOS 的 QEMU 测试直接构建 `starryos`，并从 `test-suit/starryos/<case>/qemu-<arch>.toml` 发现测例。每次测试都会复制一份 rootfs 副本用于隔离，避免测试过程污染原始镜像。测试还支持通过 `--shell-init-cmd` 注入自定义 shell 初始化命令，以及通过 `--timeout` 控制超时行为。
+StarryOS 的 QEMU 测试直接构建 `starryos`，并从 `test-suit/starryos/normal/<case>/qemu-<arch>.toml` 或 `test-suit/starryos/stress/<case>/qemu-<arch>.toml` 发现测例。每次测试都会复制一份 rootfs 副本用于隔离，避免测试过程污染原始镜像。测试还支持通过 `--shell-init-cmd` 注入自定义 shell 初始化命令，以及通过 `--timeout` 控制超时行为。
 
 ```
 Starry::test_qemu(args)
   ├── parse_test_target(&args.target)                          ← 解析 arch + target
-  ├── discover_qemu_cases(arch, args.test_case)               ← 发现/筛选 case
+  ├── choose test group                                        ← 默认 normal, --stress 切到 stress
+  ├── discover_qemu_cases(arch, args.test_case, group)         ← 在当前组发现/筛选 case
   ├── write_default_qemu_defconfig_for_target(target)
   ├── prepare_request(test_build_args(arch), ...)             ← package 固定是 starryos
   ├── for case in cases
   │     ├── prepare_test_qemu_config(case.qemu_config_path, ...)   ← 生成隔离测试配置
   │     │     ├── ensure_rootfs_in_target_dir(...)                ← 确保 base rootfs 存在
   │     │     ├── 复制 base rootfs → disk-test-{pid}-{timestamp}.img
-  │     │     ├── 读取 test-suit/starryos/<case>/qemu-{arch}.toml
+  │     │     ├── 读取 test-suit/starryos/<group>/<case>/qemu-{arch}.toml
   │     │     ├── 替换 rootfs 路径为隔离副本路径
   │     │     └── 处理 timeout 覆盖
   │     ├── resolve_shell_init_cmd(args.shell_init_cmd)      ← 可选覆盖 case 配置
@@ -457,10 +458,11 @@ Starry::test_qemu(args)
 | --- | --- |
 | `-t, --target <arch>` | 目标架构（必填） |
 | `-c, --test-case <case>` | 只运行指定测例；不传则运行该架构下全部匹配测例 |
+| `--stress` | 切换到 `stress` 组；默认运行 `normal` 组 |
 | `--shell-init-cmd <cmd\|file>` | Shell 初始化命令或命令文件路径 |
 | `--timeout <seconds>` | 测试超时（0=禁用超时） |
 
-**关键设计**：测试使用 rootfs 的**隔离副本**，并把运行判据下沉到测例目录，避免再维护单独的 Starry 测试 crate。
+**关键设计**：测试使用 rootfs 的**隔离副本**，并把运行判据下沉到分组测例目录，避免再维护单独的 Starry 测试 crate。
 
 ---
 

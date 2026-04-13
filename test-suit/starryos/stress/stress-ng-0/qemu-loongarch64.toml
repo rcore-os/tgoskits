@@ -15,15 +15,16 @@ args = [
   "-netdev",
   "user,id=net0",
 ]
-uefi = false
 to_bin = true
+uefi = false
 shell_prefix = "starry:~#"
 shell_init_cmd = '''
 apk update && \
-apk add curl && \
-curl --version && \
-echo 'All tests passed!'
+apk add stress-ng && \
+stress-ng --cpu 8 --timeout 10s && \
+stress-ng --sigsegv 8 --sigsegv-ops 1000    && \
+pwd && ls -al && echo 'All tests passed!'
 '''
 success_regex = ["(?m)^All tests passed!\\s*$"]
-fail_regex = ['(?i)\bpanic(?:ked)?\b', 'failed:']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^stress-ng: info: .*failed: [1-9]\\d*\\s*$']
 timeout = 50
