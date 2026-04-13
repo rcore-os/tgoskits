@@ -202,6 +202,11 @@ impl AxVM {
                 hart_id: vcpu_id as _,
                 dtb_addr: dtb_addr.unwrap_or_default().as_usize(),
             };
+            #[cfg(target_arch = "loongarch64")]
+            let arch_config = AxVCpuCreateConfig {
+                cpu_id: vcpu_id,
+                dtb_addr: dtb_addr.unwrap_or_default().as_usize(),
+            };
 
             // FIXME: VCpu is neither `Send` nor `Sync` by design, check whether
             // 1. we should make it `Send` and `Sync`, or
@@ -213,6 +218,8 @@ impl AxVM {
                 0, // Currently not used.
                 phys_cpu_set,
                 #[cfg(target_arch = "aarch64")]
+                arch_config,
+                #[cfg(target_arch = "loongarch64")]
                 arch_config,
                 #[cfg(target_arch = "riscv64")]
                 arch_config,
