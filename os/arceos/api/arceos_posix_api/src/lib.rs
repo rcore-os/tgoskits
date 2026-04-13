@@ -3,7 +3,6 @@
 //! [ArceOS]: https://github.com/arceos-org/arceos
 
 #![cfg_attr(all(not(test), not(doc)), no_std)]
-#![feature(doc_cfg)]
 #![allow(clippy::missing_safety_doc)]
 
 #[macro_use]

@@ -42,7 +42,7 @@
 //! [ArceOS]: https://github.com/arceos-org/arceos
 
 #![cfg_attr(all(not(test), not(doc)), no_std)]
-#![feature(doc_cfg)]
+#![cfg_attr(doc, feature(doc_cfg))]
 
 #[cfg(feature = "alloc")]
 extern crate alloc;

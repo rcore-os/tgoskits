@@ -14,7 +14,6 @@
 
 #![no_std]
 #![cfg(target_arch = "aarch64")]
-#![feature(doc_cfg)]
 #![doc = include_str!("../README.md")]
 
 #[macro_use]

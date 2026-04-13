@@ -12,7 +12,7 @@
 //!   feature is enabled by default.
 
 #![cfg_attr(not(test), no_std)]
-#![feature(doc_cfg)]
+#![cfg_attr(doc, feature(doc_cfg))]
 
 pub use ax_kspin as spin;
 

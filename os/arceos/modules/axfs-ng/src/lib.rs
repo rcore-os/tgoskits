@@ -5,7 +5,6 @@
 //! `std::fs`-like APIs.
 
 #![cfg_attr(all(not(test), not(doc)), no_std)]
-#![feature(doc_cfg)]
 #![allow(clippy::new_ret_no_self)]
 
 extern crate alloc;

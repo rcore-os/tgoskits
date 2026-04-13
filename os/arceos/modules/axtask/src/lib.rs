@@ -26,8 +26,7 @@
 //! [3]: ax_sched::CFScheduler
 
 #![cfg_attr(not(test), no_std)]
-#![feature(doc_cfg)]
-#![feature(linkage)]
+#![cfg_attr(doc, feature(doc_cfg))]
 
 #[cfg(test)]
 mod tests;

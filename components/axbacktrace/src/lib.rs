@@ -41,11 +41,14 @@ pub struct Frame {
 }
 
 impl Frame {
+    #[cfg(feature = "alloc")]
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     const OFFSET: usize = 0;
+    #[cfg(feature = "alloc")]
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     const OFFSET: usize = 1;
 
+    #[cfg(feature = "alloc")]
     fn read(fp: usize) -> Option<Self> {
         if fp == 0 || !fp.is_multiple_of(core::mem::align_of::<Frame>()) {
             return None;

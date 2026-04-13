@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #![no_std]
-#![feature(doc_cfg)]
 #![feature(riscv_ext_intrinsics)]
 #![doc = include_str!("../README.md")]
 
