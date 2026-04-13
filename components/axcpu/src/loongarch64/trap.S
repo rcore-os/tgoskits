@@ -86,33 +86,11 @@ handle_tlb_refill:
     csrrd   $t0, LA_CSR_PGD
 
     lddir   $t0, $t0, 3
-    beqz    $t0, .Ltlb_invalid
-
     lddir   $t0, $t0, 2
-    beqz    $t0, .Ltlb_invalid
-
     lddir   $t0, $t0, 1
-    beqz    $t0, .Ltlb_invalid
 
     ldpte   $t0, 0
     ldpte   $t0, 1
-
-    b       .Ltlb_refill
-
-.Ltlb_invalid:
-    csrrd   $t0, LA_CSR_TLBREHI
-    ori     $t0, $t0, 0xC   // 4 KiB
-    csrwr   $t0, LA_CSR_TLBREHI
-
-    rotri.d $t0, $t0, 61
-    ori     $t0, $t0, 3     // NR NX
-    rotri.d $t0, $t0, 3
-
-    csrwr   $t0, LA_CSR_TLBRELO0
-    csrrd   $t0, LA_CSR_TLBRELO0
-    csrwr   $t0, LA_CSR_TLBRELO1
-
-.Ltlb_refill:
     tlbfill
     csrrd   $t0, LA_CSR_TLBRSAVE
     ertn

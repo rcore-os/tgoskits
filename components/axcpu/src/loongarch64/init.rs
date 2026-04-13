@@ -2,7 +2,7 @@
 
 use ax_memory_addr::PhysAddr;
 use ax_page_table_multiarch::loongarch64::LA64MetaData;
-use loongArch64::register::{crmd, stlbps, tlbidx, tlbrehi, tlbrentry};
+use loongArch64::register::{MemoryAccessType, crmd, stlbps, tlbidx, tlbrehi, tlbrentry};
 
 /// Initializes TLB and MMU related registers on the current CPU.
 ///
@@ -32,7 +32,9 @@ pub fn init_mmu(root_paddr: PhysAddr, phys_virt_offset: usize) {
     }
     crate::asm::flush_tlb(None);
 
-    // Enable mapped address translation mode
+    crmd::set_da(false);
+    crmd::set_datf(MemoryAccessType::CoherentCached);
+    crmd::set_datm(MemoryAccessType::CoherentCached);
     crmd::set_pg(true);
 }
 

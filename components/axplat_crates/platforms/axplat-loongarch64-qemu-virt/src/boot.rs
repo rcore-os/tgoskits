@@ -104,6 +104,8 @@ unsafe extern "C" fn _start() -> ! {
         bl          {enable_fp_simd}    # enable FP/SIMD instructions
         bl          {init_boot_page_table}
         bl          {init_mmu}          # setup boot page table and enable MMU
+        dbar        0
+        ibar        0
 
         # Adjust stack pointer
         li.d        $t0, {boot_to_virt}
