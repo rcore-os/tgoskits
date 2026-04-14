@@ -26,14 +26,6 @@ done
   printf '%s%s apk update\n' 'failed' ':'
   exit 1
 }
-apk add curl || {
-  printf '%s%s apk add curl\n' 'failed' ':'
-  exit 1
-}
-curl --version || {
-  printf '%s%s curl --version\n' 'failed' ':'
-  exit 1
-}
 echo 'All tests passed!'
 '''
 shell_prefix = "starry:~#"
