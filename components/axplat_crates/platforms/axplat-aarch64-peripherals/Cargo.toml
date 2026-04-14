@@ -18,12 +18,14 @@ log = "0.4"
 spin = "0.10"
 ax-int-ratio = "0.3.2"
 ax-lazyinit = "0.4.2"
+ax-cpu = { workspace = true }
+ax-plat = { workspace = true }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
 aarch64-cpu = "11.0"
 ax-arm-pl011 = "0.3.0"
 arm-gic-driver = "0.16"
 ax-arm-pl031 = "0.4.1"
-ax-cpu = { workspace = true }
-ax-plat = { workspace = true }
 
 [package.metadata.docs.rs]
 targets = ["aarch64-unknown-none"]
