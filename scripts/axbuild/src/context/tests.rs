@@ -467,6 +467,7 @@ fn starry_snapshot_store_round_trips() {
     let snapshot = StarryCommandSnapshot {
         arch: Some(DEFAULT_STARRY_ARCH.into()),
         target: Some(DEFAULT_STARRY_TARGET.into()),
+        smp: None,
         qemu: StarryQemuSnapshot {
             qemu_config: Some(PathBuf::from("configs/qemu.toml")),
         },
@@ -509,6 +510,7 @@ uboot_config = "configs/snapshot-uboot.toml"
                 config: Some(PathBuf::from("/tmp/starry-build.toml")),
                 arch: Some("aarch64".into()),
                 target: Some("aarch64-unknown-none-softfloat".into()),
+                smp: Some(4),
                 debug: true,
             },
             Some(PathBuf::from("/tmp/qemu.toml")),
@@ -520,6 +522,7 @@ uboot_config = "configs/snapshot-uboot.toml"
     assert_eq!(request.arch, "aarch64");
     assert_eq!(request.target, "aarch64-unknown-none-softfloat");
     assert_eq!(request.plat_dyn, None);
+    assert_eq!(request.smp, Some(4));
     assert!(request.debug);
     assert_eq!(
         request.build_info_path,
@@ -535,6 +538,7 @@ uboot_config = "configs/snapshot-uboot.toml"
         snapshot.target.as_deref(),
         Some("aarch64-unknown-none-softfloat")
     );
+    assert_eq!(snapshot.smp, Some(4));
 }
 
 #[test]
@@ -585,6 +589,7 @@ fn prepare_starry_request_rejects_mismatched_arch_and_target() {
                 config: None,
                 arch: Some("aarch64".into()),
                 target: Some("x86_64-unknown-none".into()),
+                smp: None,
                 debug: false,
             },
             None,
@@ -616,6 +621,7 @@ target = "aarch64-unknown-none-softfloat"
                 config: None,
                 arch: Some("riscv64".into()),
                 target: None,
+                smp: None,
                 debug: false,
             },
             None,
@@ -653,6 +659,7 @@ target = "aarch64-unknown-none-softfloat"
                 config: None,
                 arch: None,
                 target: Some("x86_64-unknown-none".into()),
+                smp: None,
                 debug: false,
             },
             None,

@@ -136,6 +136,7 @@ impl From<&ArgsBuild> for StarryCliArgs {
             config: args.config.clone(),
             arch: args.arch.clone(),
             target: args.target.clone(),
+            smp: args.smp,
             debug: args.debug,
         }
     }
@@ -360,6 +361,7 @@ impl Starry {
             config: None,
             arch: Some(arch.to_string()),
             target: None,
+            smp: None,
             debug: false,
         }
     }
@@ -369,6 +371,7 @@ impl Starry {
             config: Some(config),
             arch: Some(arch.to_string()),
             target: None,
+            smp: None,
             debug: false,
         }
     }

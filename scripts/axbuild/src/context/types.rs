@@ -33,6 +33,7 @@ pub struct StarryCliArgs {
     pub config: Option<PathBuf>,
     pub arch: Option<String>,
     pub target: Option<String>,
+    pub smp: Option<usize>,
     pub debug: bool,
 }
 
@@ -155,6 +156,8 @@ pub struct StarryCommandSnapshot {
     pub arch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smp: Option<usize>,
     #[serde(default, skip_serializing_if = "StarryQemuSnapshot::is_empty")]
     pub qemu: StarryQemuSnapshot,
     #[serde(default, skip_serializing_if = "StarryUbootSnapshot::is_empty")]

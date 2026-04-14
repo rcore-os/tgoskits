@@ -155,6 +155,7 @@ plat_dyn = false
         let existing_snapshot = StarryCommandSnapshot {
             arch: Some("aarch64".to_string()),
             target: Some("aarch64-unknown-none-softfloat".to_string()),
+            smp: None,
             qemu: StarryQemuSnapshot {
                 qemu_config: Some(PathBuf::from("test-suit/starryos/smoke/qemu-riscv64.toml")),
             },
@@ -234,6 +235,7 @@ plat_dyn = false
         let existing_snapshot = StarryCommandSnapshot {
             arch: Some("aarch64".to_string()),
             target: Some("aarch64-unknown-none-softfloat".to_string()),
+            smp: None,
             qemu: StarryQemuSnapshot::default(),
             uboot: StarryUbootSnapshot::default(),
         };
