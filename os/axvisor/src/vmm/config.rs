@@ -228,7 +228,7 @@ fn config_guest_address(vm: &VM, main_memory: &VMMemoryRegion) {
         if let Some(kernel_addr) =
             adjusted_kernel_load_gpa(main_memory, config.image_config.bios_load_gpa)
         {
-            info!(
+            debug!(
                 "Adjusting kernel load address from {:#x} to {:#x}",
                 config.image_config.kernel_load_gpa, kernel_addr
             );
@@ -255,7 +255,7 @@ fn vm_alloc_memorys(vm_create_config: &AxVMCrateConfig, vm: &VM) {
                     .expect("Failed to allocate memory region for VM");
             }
             VmMemMappingType::MapReserved => {
-                info!("VM[{}] map same region: {:#x?}", vm.id(), memory);
+                debug!("VM[{}] map same region: {:#x?}", vm.id(), memory);
                 let layout = Layout::from_size_align(memory.size, ALIGN).unwrap();
                 vm.map_reserved_memory_region(layout, Some(GuestPhysAddr::from(memory.gpa)))
                     .expect("Failed to map memory region for VM");

@@ -390,7 +390,7 @@ pub fn update_fdt(
                     let modified_bootargs = sanitize_bootargs(bootargs_str);
 
                     if modified_bootargs != bootargs_str {
-                        info!(
+                        debug!(
                             "Modifying bootargs: {} -> {}",
                             bootargs_str, modified_bootargs
                         );
@@ -450,7 +450,7 @@ pub fn update_fdt(
     // crate::vmm::fdt::print::print_guest_fdt(new_fdt_bytes.as_slice());
     let vm_clone = vm.clone();
     let dest_addr = calculate_dtb_load_addr(vm, new_fdt_bytes.len());
-    info!(
+    debug!(
         "New FDT will be loaded at {:x}, size: 0x{:x}",
         dest_addr,
         new_fdt_bytes.len()

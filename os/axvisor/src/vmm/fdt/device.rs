@@ -67,7 +67,7 @@ pub fn find_all_passthrough_devices(vm_cfg: &mut AxVMConfig, fdt: &Fdt) -> Vec<S
         }
     }
 
-    info!(
+    debug!(
         "Phase 1 completed: Found {} new descendant device names",
         additional_device_names.len()
     );
@@ -111,7 +111,7 @@ pub fn find_all_passthrough_devices(vm_cfg: &mut AxVMConfig, fdt: &Fdt) -> Vec<S
         }
     }
 
-    info!(
+    debug!(
         "Phase 2 completed: Found {} new dependency device names",
         dependency_device_names.len()
     );
@@ -176,7 +176,7 @@ pub fn find_all_passthrough_devices(vm_cfg: &mut AxVMConfig, fdt: &Fdt) -> Vec<S
     all_device_names.retain(|device_name| device_name != "/");
 
     let final_device_count = all_device_names.len();
-    info!(
+    debug!(
         "Passthrough devices analysis completed. Total devices: {} (added: {})",
         final_device_count,
         final_device_count - initial_device_count

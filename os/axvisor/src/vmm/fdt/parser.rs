@@ -16,7 +16,7 @@
 
 use alloc::{string::ToString, vec::Vec};
 use axaddrspace::MappingFlags;
-use axhal::{dtb, mem};
+use ax_hal::{dtb, mem};
 use axvm::config::{
     AxVMConfig, AxVMCrateConfig, PassThroughDeviceConfig, VmMemConfig, VmMemMappingType,
 };
@@ -195,7 +195,7 @@ pub fn parse_reserved_memory_regions(crate_cfg: &mut AxVMCrateConfig, dtb: &[u8]
     }
 
     if added_count > 0 {
-        info!(
+        debug!(
             "Added {} reserved-memory region(s) from DTB into VM kernel memory_regions",
             added_count
         );
@@ -496,7 +496,7 @@ pub fn parse_vm_interrupt(vm_cfg: &mut AxVMConfig, dtb: &[u8]) {
             || name.starts_with("intc")
             || name.starts_with("its")
         {
-            info!("skipping node {name} to use vGIC");
+            debug!("skipping node {name} to use vGIC");
             continue;
         }
 
