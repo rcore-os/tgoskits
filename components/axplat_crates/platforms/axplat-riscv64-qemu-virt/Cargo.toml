@@ -19,15 +19,16 @@ smp = ["ax-plat/smp"]
 ax-kspin = "0.3.1"
 ax-lazyinit = "0.4.2"
 log = "0.4"
+ax-config-macros = "0.4.1"
+ax-cpu = { workspace = true }
+ax-plat = { workspace = true }
+
+[target.'cfg(target_arch = "riscv64")'.dependencies]
 riscv = "0.16"
 riscv_goldfish = { version = "0.1", optional = true }
 ax-riscv-plic = { version = "0.4.0", optional = true }
 sbi-rt = { version = "0.0.3", features = ["legacy"] }
 uart_16550 = "0.5.0"
-
-ax-config-macros = "0.4.1"
-ax-cpu = { workspace = true }
-ax-plat = { workspace = true }
 
 [package.metadata.docs.rs]
 targets = ["riscv64gc-unknown-none-elf"]
