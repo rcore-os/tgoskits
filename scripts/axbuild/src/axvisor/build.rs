@@ -121,6 +121,7 @@ fn patch_axvisor_cargo_config(
 ) -> anyhow::Result<()> {
     cargo.package = request.package.clone();
     cargo.target = request.target.clone();
+    cargo.to_bin = default_axvisor_to_bin(&request.arch);
     ensure_axvisor_bin_arg(&mut cargo.args);
     cargo
         .env
@@ -142,6 +143,10 @@ fn patch_axvisor_cargo_config(
     cargo.features.sort();
     cargo.features.dedup();
     Ok(())
+}
+
+fn default_axvisor_to_bin(arch: &str) -> bool {
+    !matches!(arch, "x86_64" | "loongarch64")
 }
 
 fn ensure_axvisor_bin_arg(args: &mut Vec<String>) {
@@ -278,7 +283,6 @@ mod tests {
             arch: arch.to_string(),
             target: target.to_string(),
             plat_dyn: None,
-            debug: false,
             build_info_path: path,
             qemu_config: None,
             uboot_config: None,
@@ -387,7 +391,6 @@ plat_dyn = true
             arch: "aarch64".to_string(),
             target: "aarch64-unknown-none-softfloat".to_string(),
             plat_dyn: Some(true),
-            debug: false,
             build_info_path: config_path,
             qemu_config: None,
             uboot_config: None,
@@ -470,7 +473,6 @@ vm_configs = []
             arch: "x86_64".to_string(),
             target: "x86_64-unknown-none".to_string(),
             plat_dyn: None,
-            debug: false,
             build_info_path: path.clone(),
             qemu_config: None,
             uboot_config: None,
@@ -511,7 +513,6 @@ plat_dyn = false
             arch: "aarch64".to_string(),
             target: "aarch64-unknown-none-softfloat".to_string(),
             plat_dyn: Some(false),
-            debug: false,
             build_info_path: config_path,
             qemu_config: None,
             uboot_config: None,
@@ -521,5 +522,67 @@ plat_dyn = false
 
         assert!(!cargo.features.contains(&"ax-std/defplat".to_string()));
         assert!(cargo.features.contains(&"ax-std/myplat".to_string()));
+    }
+
+    #[test]
+    fn load_cargo_config_keeps_loongarch64_elf_as_runtime_artifact() {
+        let root = tempdir().unwrap();
+        let config_path = root.path().join(".build.toml");
+        fs::write(
+            &config_path,
+            r#"
+env = {}
+features = ["ax-std", "ept-level-4"]
+log = "Info"
+plat_dyn = false
+"#,
+        )
+        .unwrap();
+
+        let cargo = load_cargo_config(&ResolvedAxvisorRequest {
+            package: AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: root.path().join("os/axvisor"),
+            arch: "loongarch64".to_string(),
+            target: "loongarch64-unknown-none-softfloat".to_string(),
+            plat_dyn: Some(false),
+            build_info_path: config_path,
+            qemu_config: None,
+            uboot_config: None,
+            vmconfigs: vec![],
+        })
+        .unwrap();
+
+        assert!(!cargo.to_bin);
+    }
+
+    #[test]
+    fn load_cargo_config_keeps_aarch64_bin_conversion() {
+        let root = tempdir().unwrap();
+        let config_path = root.path().join(".build.toml");
+        fs::write(
+            &config_path,
+            r#"
+env = {}
+features = ["ax-std"]
+log = "Info"
+plat_dyn = false
+"#,
+        )
+        .unwrap();
+
+        let cargo = load_cargo_config(&ResolvedAxvisorRequest {
+            package: AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: root.path().join("os/axvisor"),
+            arch: "aarch64".to_string(),
+            target: "aarch64-unknown-none-softfloat".to_string(),
+            plat_dyn: Some(false),
+            build_info_path: config_path,
+            qemu_config: None,
+            uboot_config: None,
+            vmconfigs: vec![],
+        })
+        .unwrap();
+
+        assert!(cargo.to_bin);
     }
 }

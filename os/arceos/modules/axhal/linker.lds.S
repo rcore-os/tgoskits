@@ -1,29 +1,30 @@
 OUTPUT_ARCH(%ARCH%)
 
 BASE_ADDRESS = %KERNEL_BASE%;
+%LINKER_CONSTANTS%
 
-ENTRY(_start)
+%ENTRY_DIRECTIVE%
 SECTIONS
 {
     . = BASE_ADDRESS;
     _skernel = .;
 
-    .text : ALIGN(4K) {
+    .text%TEXT_AT% ALIGN(4K) {
         _stext = .;
-        *(.text.boot)
+        KEEP(*(.text.boot))
         *(.text .text.*)
         . = ALIGN(4K);
         _etext = .;
     }
 
     _srodata = .;
-    .rodata : ALIGN(4K) {
+    .rodata%RODATA_AT% ALIGN(4K) {
         *(.rodata .rodata.*)
         *(.srodata .srodata.*)
         *(.sdata2 .sdata2.*)
     }
 
-    .init_array : ALIGN(0x10) {
+    .init_array%INIT_ARRAY_AT% ALIGN(0x10) {
         __init_array_start = .;
         *(.init_array .init_array.*)
         __init_array_end = .;
@@ -34,7 +35,7 @@ SECTIONS
     . = ALIGN(4K);
     _erodata = .;
 
-    .data : ALIGN(4K) {
+    .data%DATA_AT% ALIGN(4K) {
         _sdata = .;
         *(.data.boot_page_table)
         . = ALIGN(4K);
@@ -53,34 +54,27 @@ SECTIONS
         _ex_table_end = .;
     }
 
-    .tdata : ALIGN(0x10) {
+%LINKME_SECTION%
+
+    .tdata%TDATA_AT% ALIGN(0x10) {
         _stdata = .;
         *(.tdata .tdata.*)
         _etdata = .;
     }
 
-    .tbss : ALIGN(0x10) {
+    .tbss%TBSS_AT% ALIGN(0x10) {
         _stbss = .;
         *(.tbss .tbss.*)
         *(.tcommon)
         _etbss = .;
     }
 
-    . = ALIGN(4K);
-    _percpu_start = .;
-    _percpu_end = _percpu_start + SIZEOF(.percpu);
-    .percpu 0x0 : AT(_percpu_start) {
-        _percpu_load_start = .;
-        *(.percpu .percpu.*)
-        _percpu_load_end = .;
-        . = _percpu_load_start + ALIGN(64) * %CPU_NUM%;
-    }
-    . = _percpu_end;
+%PERCPU_SECTION%
 
     . = ALIGN(4K);
     _edata = .;
 
-    .bss : AT(.) ALIGN(4K) {
+    .bss%BSS_AT% ALIGN(4K) {
         boot_stack = .;
         *(.bss.stack)
         . = ALIGN(4K);

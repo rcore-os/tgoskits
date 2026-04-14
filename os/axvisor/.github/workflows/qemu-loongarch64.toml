@@ -1,0 +1,21 @@
+args = [
+  "-machine",
+  "virt",
+  "-cpu",
+  "la464",
+  "-m",
+  "2G",
+  "-smp",
+  "1",
+  "-nographic",
+  "-serial",
+  "mon:stdio",
+  "-no-reboot",
+]
+fail_regex = ["panicked at"]
+success_regex = [
+  "Welcome to AxVisor Shell!",
+  "axvisor:\\$",
+]
+to_bin = false
+uefi = false

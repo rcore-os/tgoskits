@@ -1,4 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::{
+    env,
+    ffi::OsString,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use ostool::{
     Tool, ToolConfig,
@@ -46,6 +51,7 @@ impl AppContext {
     pub(crate) fn new() -> anyhow::Result<Self> {
         let workspace_root = find_workspace_root();
         crate::logging::init_logging(&workspace_root)?;
+        configure_loongarch_qemu_path(&workspace_root)?;
 
         info!("Workspace root: {}", workspace_root.display());
 
@@ -82,7 +88,11 @@ impl AppContext {
         build_config_path: PathBuf,
     ) -> anyhow::Result<()> {
         self.set_build_config_path(build_config_path);
-        self.tool.cargo_build(&cargo).await
+        self.tool.cargo_build(&cargo).await?;
+        if !cargo.to_bin {
+            self.remove_stale_bin_artifact()?;
+        }
+        Ok(())
     }
 
     pub(crate) async fn qemu(
@@ -155,10 +165,98 @@ impl AppContext {
         self.build_config_path = Some(path.clone());
         self.tool.ctx_mut().build_config_path = Some(path);
     }
+
+    fn remove_stale_bin_artifact(&mut self) -> anyhow::Result<()> {
+        let Some(elf_path) = self.tool.ctx().artifacts.elf.as_ref() else {
+            return Ok(());
+        };
+
+        let Some(stem) = elf_path.file_stem() else {
+            return Ok(());
+        };
+
+        let bin_path = elf_path.with_file_name(format!("{}.bin", stem.to_string_lossy()));
+        match fs::remove_file(&bin_path) {
+            Ok(()) => {
+                info!(
+                    "Removed stale BIN artifact for ELF-first build: {}",
+                    bin_path.display()
+                );
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(anyhow::anyhow!(
+                    "failed to remove stale BIN artifact {}: {err}",
+                    bin_path.display()
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Default for AppContext {
     fn default() -> Self {
         Self::new().expect("failed to initialize AppContext")
     }
+}
+
+fn configure_loongarch_qemu_path(workspace_root: &Path) -> anyhow::Result<()> {
+    let Some(qemu_dir) = find_loongarch_qemu_dir(workspace_root) else {
+        return Ok(());
+    };
+
+    prepend_dir_to_path(&qemu_dir)?;
+    info!(
+        "Using LoongArch QEMU from PATH-prepended directory: {}",
+        qemu_dir.display()
+    );
+    Ok(())
+}
+
+fn find_loongarch_qemu_dir(workspace_root: &Path) -> Option<PathBuf> {
+    let env_executable = env::var_os("AXBUILD_QEMU_SYSTEM_LOONGARCH64")
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+        .and_then(|path| path.parent().map(Path::to_path_buf));
+
+    if let Some(dir) = env_executable.filter(|dir| dir.join("qemu-system-loongarch64").exists()) {
+        return Some(dir);
+    }
+
+    let env_dir = env::var_os("AXBUILD_QEMU_DIR")
+        .map(PathBuf::from)
+        .filter(|dir| dir.join("qemu-system-loongarch64").exists());
+
+    if env_dir.is_some() {
+        return env_dir;
+    }
+
+    for ancestor in workspace_root.ancestors() {
+        for suffix in ["QEMU-LVZ/build", "qemu-lvz/build"] {
+            let dir = ancestor.join(suffix);
+            if dir.join("qemu-system-loongarch64").exists() {
+                return Some(dir);
+            }
+        }
+    }
+
+    None
+}
+
+fn prepend_dir_to_path(dir: &Path) -> anyhow::Result<()> {
+    let current = env::var_os("PATH").unwrap_or_default();
+    let mut paths: Vec<PathBuf> = env::split_paths(&current).collect();
+    if paths.iter().any(|path| path == dir) {
+        return Ok(());
+    }
+
+    paths.insert(0, dir.to_path_buf());
+    let joined = env::join_paths(paths.iter())
+        .map_err(|err| anyhow::anyhow!("failed to update PATH with {}: {err}", dir.display()))?;
+
+    unsafe {
+        env::set_var("PATH", OsString::from(joined));
+    }
+    Ok(())
 }

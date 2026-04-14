@@ -1,0 +1,18 @@
+args = [
+  "-machine",
+  "virt",
+  "-cpu",
+  "la464",
+  "-m",
+  "2G",
+  "-smp",
+  "1",
+  "-nographic",
+  "-serial",
+  "mon:stdio",
+  "-no-reboot",
+]
+fail_regex = []
+success_regex = []
+to_bin = false
+uefi = false

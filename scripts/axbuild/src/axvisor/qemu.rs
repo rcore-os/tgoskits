@@ -59,7 +59,8 @@ pub(crate) fn qemu_override_args_from_template(
 
 fn default_qemu_to_bin(arch: &str) -> anyhow::Result<bool> {
     match arch {
-        "aarch64" | "riscv64" | "loongarch64" => Ok(true),
+        "aarch64" | "riscv64" => Ok(true),
+        "loongarch64" => Ok(false),
         "x86_64" => Ok(false),
         _ => anyhow::bail!(
             "unsupported Axvisor architecture `{arch}`; expected one of aarch64, x86_64, riscv64, \
@@ -217,7 +218,6 @@ mod tests {
             arch: arch.to_string(),
             target: target.to_string(),
             plat_dyn: None,
-            debug: false,
             build_info_path: path,
             qemu_config: None,
             uboot_config: None,
@@ -272,6 +272,18 @@ kernel_path = "{}"
     }
 
     #[test]
+    fn loongarch64_default_qemu_run_config_keeps_elf_kernel() {
+        let request = request(
+            PathBuf::from("os/axvisor/.build-loongarch64-unknown-none-softfloat.toml"),
+            "loongarch64",
+            "loongarch64-unknown-none-softfloat",
+        );
+        let run_config = default_qemu_run_config(&request).unwrap();
+
+        assert_eq!(run_config.default_args.to_bin, Some(false));
+    }
+
+    #[test]
     fn default_qemu_run_config_overrides_rootfs_when_vmconfig_provides_one() {
         let root = tempdir().unwrap();
         let image_dir = root.path().join("image");
@@ -297,7 +309,6 @@ kernel_path = "{}"
             arch: "aarch64".to_string(),
             target: "aarch64-unknown-none-softfloat".to_string(),
             plat_dyn: None,
-            debug: false,
             build_info_path: root.path().join(".build.toml"),
             qemu_config: None,
             uboot_config: None,
@@ -339,7 +350,6 @@ uefi = false
                 arch: "aarch64".to_string(),
                 target: "aarch64-unknown-none-softfloat".to_string(),
                 plat_dyn: None,
-                debug: false,
                 build_info_path: axvisor_dir.join(".build.toml"),
                 qemu_config: Some(qemu_config.clone()),
                 uboot_config: None,

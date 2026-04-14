@@ -125,6 +125,7 @@ members = [
 exclude = [
     # workspace directories
     "components/axplat_crates",
+    "components/loongarch_vcpu",
     "os/arceos",
     "os/StarryOS",
     "components/percpu",
@@ -203,6 +204,7 @@ ax-plat-loongarch64-qemu-virt = { path = "components/axplat_crates/platforms/axp
 ax-plat-riscv64-qemu-virt = { path = "components/axplat_crates/platforms/axplat-riscv64-qemu-virt" }
 ax-plat-x86-pc = { path = "components/axplat_crates/platforms/axplat-x86-pc" }
 axplat-x86-qemu-q35 = { path = "platform/x86-qemu-q35" }
+loongarch_vcpu = { path = "components/loongarch_vcpu" }
 
 axplat-dyn = { path = "platform/axplat-dyn" }
 

@@ -1,0 +1,9 @@
+env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
+features = [
+    "ax-std/bus-mmio",
+    "ept-level-4",
+]
+log = "Info"
+target = "loongarch64-unknown-none-softfloat"
+vm_configs = []
+max_cpu_num = 1
