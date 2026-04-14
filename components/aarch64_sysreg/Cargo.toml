@@ -1,12 +1,10 @@
 [package]
 name = "aarch64_sysreg"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 authors = ["Debin <luodeb@outlook.com>"]
 description = "Address translation of system registers"
-homepage = "https://github.com/arceos-org/arceos"
-repository = "https://github.com/arceos-org/aarch64_sysreg"
-documentation = "https://docs.rs/aarch64_sysreg"
+repository = "https://github.com/rcore-os/tgoskits"
 keywords = ["arceos", "arm", "aarch64", "registers"]
 categories = ["embedded", "no-std", "hardware-support", "os"]
 license = "Apache-2.0"

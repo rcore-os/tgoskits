@@ -45,7 +45,7 @@ dependencies = [
 
 [[package]]
 name = "aarch64_sysreg"
-version = "0.3.1"
+version = "0.3.2"
 
 [[package]]
 name = "acpi"

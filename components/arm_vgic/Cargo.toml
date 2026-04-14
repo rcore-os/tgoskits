@@ -27,7 +27,7 @@ axdevice_base = "0.4.2"
 axvisor_api = "0.5.0"
 
 aarch64-cpu = "11.0"
-aarch64_sysreg = "0.3.1"
+aarch64_sysreg = "0.3.2"
 ax-errno = "0.4.2"
 bitmaps = {version = "3.2", default-features = false}
 log = "0.4"

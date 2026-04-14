@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import ssl
 import subprocess
 import sys
 import time
@@ -51,9 +52,12 @@ LOCKED_FAILURE_MARKERS = [
     "because --locked was passed",
 ]
 PUBLISH_INTERVAL_SECONDS = 60
+CRATES_IO_RETRY_ATTEMPTS = 3
+CRATES_IO_RETRY_DELAY_SECONDS = 2.0
 EXCLUDED_SUBTREES = (
     Path("os/arceos/tools"),
 )
+EXCLUDED_DIR_NAMES = frozenset({"examples", "tools", "scripts"})
 
 
 @dataclass(frozen=True)
@@ -136,6 +140,8 @@ def is_path_under(path: Path, parent: Path) -> bool:
 
 def is_excluded_path(path: Path, repo_root: Path) -> bool:
     resolved_path = path.resolve()
+    if any(part in EXCLUDED_DIR_NAMES for part in resolved_path.parts):
+        return True
     return any(
         is_path_under(resolved_path, (repo_root / subtree).resolve())
         for subtree in EXCLUDED_SUBTREES
@@ -678,31 +684,41 @@ def crates_io_version_status(
     version_q = urllib.parse.quote(version, safe="")
     url = f"https://crates.io/api/v1/crates/{crate_q}/{version_q}"
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.load(resp)
-            version_data = data.get("version", {})
-            return CratesIoVersionStatus(
-                exists=200 <= resp.status < 300,
-                yanked=bool(version_data.get("yanked", False)),
-            )
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return CratesIoVersionStatus(exists=False)
-        raise
+    for attempt in range(1, CRATES_IO_RETRY_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.load(resp)
+                version_data = data.get("version", {})
+                return CratesIoVersionStatus(
+                    exists=200 <= resp.status < 300,
+                    yanked=bool(version_data.get("yanked", False)),
+                )
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return CratesIoVersionStatus(exists=False)
+            raise
+        except (urllib.error.URLError, TimeoutError, ssl.SSLError):
+            if attempt == CRATES_IO_RETRY_ATTEMPTS:
+                raise
+            time.sleep(CRATES_IO_RETRY_DELAY_SECONDS)
 
 
 def crates_io_has_crate(crate: str, timeout: float = 15.0) -> bool:
     crate_q = urllib.parse.quote(crate, safe="")
     url = f"https://crates.io/api/v1/crates/{crate_q}"
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return 200 <= resp.status < 300
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return False
-        raise
+    for attempt in range(1, CRATES_IO_RETRY_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return 200 <= resp.status < 300
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return False
+            raise
+        except (urllib.error.URLError, TimeoutError, ssl.SSLError):
+            if attempt == CRATES_IO_RETRY_ATTEMPTS:
+                raise
+            time.sleep(CRATES_IO_RETRY_DELAY_SECONDS)
 
 
 def normalize_owner(owner: str) -> str:
