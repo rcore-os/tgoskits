@@ -38,7 +38,7 @@ buddy_system_allocator = { version = "0.10", default-features = false, optional 
 ax_slab_allocator = { version = "0.4", optional = true }
 bitmap-allocator = { version = "0.4.1", optional = true }
 
-[dev-dependencies]
+[target.'cfg(not(target_os = "none"))'.dev-dependencies]
 ax-allocator = { path = ".", features = ["full"] }
 rand = { version = "0.8", features = ["small_rng"] }
 criterion = { version = "0.5", features = ["html_reports"] }

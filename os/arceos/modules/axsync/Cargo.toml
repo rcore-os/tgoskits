@@ -16,7 +16,7 @@ ax-task.workspace = true
 ax-kspin.workspace = true
 lock_api.workspace = true
 
-[dev-dependencies]
+[target.'cfg(not(target_os = "none"))'.dev-dependencies]
 ax-sync = { path = ".", features = ["multitask"] }
 ax-task = { workspace = true, features = ["test"] }
 # FIXME: `rand` crate can not be used since https://github.com/google/zerocopy/pull/2574
