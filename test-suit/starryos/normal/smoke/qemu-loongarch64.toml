@@ -17,7 +17,7 @@ args = [
 ]
 fail_regex = ['(?i)\bpanic(?:ked)?\b']
 shell_init_cmd = "pwd && echo 'All tests passed!'"
-shell_prefix = "starry:~#"
+shell_prefix = "root@starry:"
 success_regex = ["(?m)^All tests passed!\\s*$"]
 to_bin = true
 uefi = false
