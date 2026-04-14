@@ -47,6 +47,9 @@ RATE_LIMIT_MARKERS = [
     "status 429 Too Many Requests",
     "You have published too many new crates in a short period of time",
 ]
+LOCKED_FAILURE_MARKERS = [
+    "because --locked was passed",
+]
 PUBLISH_INTERVAL_SECONDS = 60
 EXCLUDED_SUBTREES = (
     Path("os/arceos/tools"),
@@ -70,6 +73,12 @@ class Package:
     @property
     def rel_dir(self) -> str:
         return os.path.relpath(self.crate_dir, Path.cwd())
+
+
+@dataclass(frozen=True)
+class CratesIoVersionStatus:
+    exists: bool
+    yanked: bool = False
 
 
 def run(
@@ -480,17 +489,24 @@ def workspace_external_registry_blockers(
     return blockers
 
 
-def crates_io_has_version(crate: str, version: str, timeout: float = 15.0) -> bool:
+def crates_io_version_status(
+    crate: str, version: str, timeout: float = 15.0
+) -> CratesIoVersionStatus:
     crate_q = urllib.parse.quote(crate, safe="")
     version_q = urllib.parse.quote(version, safe="")
     url = f"https://crates.io/api/v1/crates/{crate_q}/{version_q}"
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return 200 <= resp.status < 300
+            data = json.load(resp)
+            version_data = data.get("version", {})
+            return CratesIoVersionStatus(
+                exists=200 <= resp.status < 300,
+                yanked=bool(version_data.get("yanked", False)),
+            )
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
-            return False
+            return CratesIoVersionStatus(exists=False)
         raise
 
 
@@ -595,24 +611,42 @@ def check_owners(crate: str, expected_owners: list[str]) -> tuple[str, str]:
     return "MISSING", f"expected one of: {', '.join(expected_owners)}"
 
 
-def publish_package(pkg: Package, dry_run: bool) -> tuple[str, str]:
-    if dry_run:
-        return "DRY-RUN", "not published"
-
+def run_publish_command(pkg: Package, *, locked: bool) -> subprocess.CompletedProcess[str]:
     cmd = [
         "cargo",
         "publish",
         "--manifest-path",
         str(pkg.manifest_path),
-        "--locked",
     ]
-    proc = run(cmd, check=False)
+    if locked:
+        cmd.append("--locked")
+    return run(cmd, check=False)
+
+
+def publish_package(pkg: Package, dry_run: bool) -> tuple[str, str]:
+    if dry_run:
+        return "DRY-RUN", "not published"
+
+    proc = run_publish_command(pkg, locked=True)
+    retried_without_locked = False
+
+    if proc.returncode != 0:
+        detail = (proc.stderr.strip() or proc.stdout.strip() or f"exit code {proc.returncode}")
+        if any(marker in detail for marker in LOCKED_FAILURE_MARKERS):
+            proc = run_publish_command(pkg, locked=False)
+            retried_without_locked = True
+
     if proc.returncode == 0:
-        return "PUBLISHED", "ok"
+        detail = "ok"
+        if retried_without_locked:
+            detail += " (retried without --locked)"
+        return "PUBLISHED", detail
 
     stderr = proc.stderr.strip()
     stdout = proc.stdout.strip()
     detail = stderr or stdout or f"exit code {proc.returncode}"
+    if retried_without_locked:
+        detail = f"{detail}\n(retried without --locked after lockfile update was required)"
     if any(marker in detail for marker in RATE_LIMIT_MARKERS):
         return "RATE-LIMITED", detail
     return "FAILED", detail
@@ -748,13 +782,20 @@ def main() -> int:
             prefix = f"[{completed_count}/{len(order)}] {pkg.name} {pkg.version} ({pkg.rel_dir})"
             package_failed = False
             crate_exists = False
-            has_version = False
+            version_status = CratesIoVersionStatus(exists=False)
             should_sync_owner = False
             try:
                 if args.check:
                     crate_exists = crates_io_has_crate(pkg.name)
-                has_version = crates_io_has_version(pkg.name, pkg.version)
-                if has_version:
+                version_status = crates_io_version_status(pkg.name, pkg.version)
+                if version_status.exists and version_status.yanked:
+                    any_failed = True
+                    package_failed = True
+                    print(
+                        f"{prefix} -> FAILED version exists on crates.io but is yanked; "
+                        "bump the version or unyank it before publishing dependents"
+                    )
+                elif version_status.exists:
                     print(f"{prefix} -> SKIP already exists on crates.io")
                     ready_packages.add(package_id)
                 elif args.check and crate_exists:
