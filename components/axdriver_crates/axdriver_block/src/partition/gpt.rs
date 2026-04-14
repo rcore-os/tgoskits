@@ -1,5 +1,3 @@
-extern crate alloc;
-
 use alloc::{
     format,
     string::{String, ToString},
@@ -145,7 +143,7 @@ enum HeaderProbeError {
     Invalid(DevError),
 }
 
-fn try_read_valid_header<I: BlockIo>(
+fn try_read_valid_header<I>(
     disk: &mut Disk<I>,
     lba: Lba,
     block_buf: &mut [u8],
@@ -256,7 +254,7 @@ fn validate_header_pair(primary: &GptHeader, secondary: &GptHeader, num_blocks: 
     Ok(())
 }
 
-fn load_partition_table<I: BlockIo>(
+fn load_partition_table<I>(
     disk: &mut Disk<I>,
     header: &GptHeader,
     block_size: BlockSize,

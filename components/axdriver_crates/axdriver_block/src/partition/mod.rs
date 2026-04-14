@@ -1,5 +1,3 @@
-extern crate alloc;
-
 mod device;
 mod gpt;
 
@@ -22,6 +20,13 @@ pub struct PartitionRegion {
 }
 
 impl PartitionRegion {
+    pub const fn from_num_blocks(num_blocks: u64) -> Self {
+        Self {
+            start_lba: 0,
+            end_lba: num_blocks,
+        }
+    }
+
     pub const fn num_blocks(self) -> u64 {
         self.end_lba.saturating_sub(self.start_lba)
     }
@@ -57,8 +62,4 @@ pub fn scan_partitions<T: BlockDriverOps + ?Sized>(inner: &mut T) -> DevResult<P
     }
 
     Ok(PartitionTable::empty())
-}
-
-pub fn scan_partitions_dyn(inner: &mut dyn BlockDriverOps) -> DevResult<PartitionTable> {
-    scan_partitions(inner)
 }

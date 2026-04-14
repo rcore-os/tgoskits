@@ -17,7 +17,7 @@ impl<T: BlockDriverOps> PartitionBlockDevice<T> {
 
     fn check_io_bounds(&self, block_id: u64, buf_len: usize) -> DevResult {
         let block_size = self.inner.block_size();
-        if block_size == 0 || (buf_len % block_size) != 0 {
+        if block_size == 0 || !buf_len.is_multiple_of(block_size) {
             return Err(DevError::InvalidParam);
         }
 

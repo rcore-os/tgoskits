@@ -1,5 +1,4 @@
-use ax_driver::AxBlockDevice;
-use ax_driver_block::partition::PartitionRegion;
+use ax_driver::{AxBlockDevice, PartitionRegion};
 use axfs_ng_vfs::{Filesystem, VfsResult};
 
 cfg_if::cfg_if! {
@@ -12,16 +11,13 @@ cfg_if::cfg_if! {
     } else {
         struct DefaultFilesystem;
         impl DefaultFilesystem {
-            pub fn new_in_region(_dev: AxBlockDevice, _region: Option<PartitionRegion>) -> VfsResult<Filesystem> {
+            pub fn new(_dev: AxBlockDevice, _region: PartitionRegion) -> VfsResult<Filesystem> {
                 panic!("No filesystem feature enabled");
             }
         }
     }
 }
 
-pub fn new_default_in_region(
-    dev: AxBlockDevice,
-    region: Option<PartitionRegion>,
-) -> VfsResult<Filesystem> {
-    DefaultFilesystem::new_in_region(dev, region)
+pub fn new_default(dev: AxBlockDevice, region: PartitionRegion) -> VfsResult<Filesystem> {
+    DefaultFilesystem::new(dev, region)
 }

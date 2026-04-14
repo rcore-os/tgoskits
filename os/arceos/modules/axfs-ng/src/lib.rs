@@ -18,10 +18,11 @@ use alloc::{
     vec::Vec,
 };
 
-use ax_driver::{AxBlockDevice, AxDeviceContainer, block_device_ops};
-#[cfg(any(feature = "ext4", feature = "fat"))]
-use ax_driver_block::BlockDriverOps;
-use ax_driver_block::partition::{PartitionInfo, PartitionTableKind, scan_partitions_dyn};
+use ax_driver::{
+    AxBlockDevice, AxDeviceContainer, PartitionInfo, PartitionRegion, PartitionTableKind,
+    prelude::{BaseDriverOps, BlockDriverOps},
+    scan_partitions,
+};
 
 mod fs;
 
@@ -108,12 +109,13 @@ pub fn init_filesystems(mut block_devs: AxDeviceContainer<AxBlockDevice>, bootar
         });
         (
             describe_selection(selected.disk_index, selected_partition_info),
-            selected_partition_info.map(|part| part.info.region),
+            selected_partition_info
+                .map_or_else(|| full_region(&selected.dev), |part| part.info.region),
         )
     };
     info!("  selected root device: {}", description);
 
-    let fs = fs::new_default_in_region(selected.dev, region).unwrap_or_else(|err| {
+    let fs = fs::new_default(selected.dev, region).unwrap_or_else(|err| {
         panic!(
             "failed to initialize filesystem on {}: {err:?}",
             description
@@ -129,14 +131,14 @@ fn collect_disks(block_devs: &mut AxDeviceContainer<AxBlockDevice>) -> Vec<Disco
     let mut disks = Vec::new();
 
     for (disk_index, mut dev) in block_devs.drain(..).enumerate() {
-        let device_name = block_device_ops(&mut dev).device_name().to_string();
-        match scan_partitions_dyn(block_device_ops(&mut dev)) {
+        let device_name = dev.device_name().to_string();
+        match scan_partitions(&mut dev) {
             Ok(table) if !table.partitions.is_empty() => {
                 let partitions: Vec<DetectedPartition> = table
                     .partitions
                     .into_iter()
                     .map(|partition| {
-                        let filesystem = detect_filesystem(&mut dev, Some(partition.region));
+                        let filesystem = detect_filesystem(&mut dev, partition.region);
                         info!(
                             "    partition {} name={:?} fs={:?} lba {}..{}",
                             partition.index + 1,
@@ -170,7 +172,8 @@ fn collect_disks(block_devs: &mut AxDeviceContainer<AxBlockDevice>) -> Vec<Disco
                         "  block device {} ({}) has no partition table",
                         disk_index, device_name
                     );
-                    let raw_fs = detect_filesystem(&mut dev, None);
+                    let raw_region = full_region(&dev);
+                    let raw_fs = detect_filesystem(&mut dev, raw_region);
                     info!("    raw device fs={:?}", raw_fs);
                     disks.push(DiscoveredDisk {
                         disk_index,
@@ -180,9 +183,17 @@ fn collect_disks(block_devs: &mut AxDeviceContainer<AxBlockDevice>) -> Vec<Disco
                 } else {
                     warn!(
                         "  block device {} ({}) has a {:?} partition table but no usable \
-                         partitions",
+                         partitions; treating the whole disk as a candidate",
                         disk_index, device_name, table.kind
                     );
+                    let raw_region = full_region(&dev);
+                    let raw_fs = detect_filesystem(&mut dev, raw_region);
+                    info!("    raw device fs={:?}", raw_fs);
+                    disks.push(DiscoveredDisk {
+                        disk_index,
+                        dev,
+                        partitions: Vec::new(),
+                    });
                 }
             }
             Err(err) => {
@@ -448,23 +459,17 @@ fn parse_sd_path(path: &str) -> RootSpec {
     RootSpec::default()
 }
 
-fn detect_filesystem(
-    dev: &mut AxBlockDevice,
-    region: Option<ax_driver_block::partition::PartitionRegion>,
-) -> Option<FilesystemKind> {
+fn detect_filesystem(dev: &mut AxBlockDevice, region: PartitionRegion) -> Option<FilesystemKind> {
     #[cfg(not(any(feature = "ext4", feature = "fat")))]
     let _ = (&mut *dev, region);
 
-    #[cfg(any(feature = "ext4", feature = "fat"))]
-    let ops = block_device_ops(dev);
-
     #[cfg(feature = "ext4")]
-    if region_has_ext4(ops, region) {
+    if region_has_ext4(dev, region) {
         return Some(FilesystemKind::Ext4);
     }
 
     #[cfg(feature = "fat")]
-    if region_has_fat(ops, region) {
+    if region_has_fat(dev, region) {
         return Some(FilesystemKind::Fat);
     }
 
@@ -472,10 +477,7 @@ fn detect_filesystem(
 }
 
 #[cfg(feature = "ext4")]
-fn region_has_ext4(
-    dev: &mut dyn BlockDriverOps,
-    region: Option<ax_driver_block::partition::PartitionRegion>,
-) -> bool {
+fn region_has_ext4(dev: &mut AxBlockDevice, region: PartitionRegion) -> bool {
     const EXT4_SUPERBLOCK_OFFSET: usize = 1024;
     const EXT4_MAGIC_OFFSET: usize = 0x38;
     const EXT4_MAGIC: u16 = 0xEF53;
@@ -488,34 +490,34 @@ fn region_has_ext4(
 }
 
 #[cfg(feature = "fat")]
-fn region_has_fat(
-    dev: &mut dyn BlockDriverOps,
-    region: Option<ax_driver_block::partition::PartitionRegion>,
-) -> bool {
+fn region_has_fat(dev: &mut AxBlockDevice, region: PartitionRegion) -> bool {
     const FAT16_MAGIC: &[u8; 5] = b"FAT16";
     const FAT32_MAGIC: &[u8; 5] = b"FAT32";
-    let start_lba = region.map_or(0, |r| r.start_lba);
-    let visible_blocks = region.map_or_else(
-        || dev.num_blocks(),
-        |r| r.end_lba.saturating_sub(r.start_lba),
-    );
+    let start_lba = region.start_lba;
+    let visible_blocks = region.num_blocks();
     if visible_blocks == 0 {
         return false;
     }
 
     let block_size = dev.block_size();
+    if block_size < 512 {
+        return false;
+    }
+
     let mut buf = alloc::vec![0u8; block_size];
     if dev.read_block(start_lba, &mut buf).is_err() {
         return false;
     }
 
-    buf.ends_with(&[0x55, 0xAA]) && (&buf[54..59] == FAT16_MAGIC || &buf[82..87] == FAT32_MAGIC)
+    buf.get(510..512) == Some([0x55, 0xAA].as_slice())
+        && (buf.get(54..59) == Some(FAT16_MAGIC.as_slice())
+            || buf.get(82..87) == Some(FAT32_MAGIC.as_slice()))
 }
 
 #[cfg(feature = "ext4")]
 fn region_has_magic_u16(
-    dev: &mut dyn BlockDriverOps,
-    region: Option<ax_driver_block::partition::PartitionRegion>,
+    dev: &mut AxBlockDevice,
+    region: PartitionRegion,
     byte_offset: usize,
     magic: u16,
 ) -> bool {
@@ -524,11 +526,8 @@ fn region_has_magic_u16(
         return false;
     }
 
-    let start_lba = region.map_or(0, |r| r.start_lba);
-    let visible_blocks = region.map_or_else(
-        || dev.num_blocks(),
-        |r| r.end_lba.saturating_sub(r.start_lba),
-    );
+    let start_lba = region.start_lba;
+    let visible_blocks = region.num_blocks();
     let block_index = byte_offset / block_size;
     let within_block = byte_offset % block_size;
     if visible_blocks == 0 || within_block + 2 > block_size {
@@ -538,8 +537,11 @@ fn region_has_magic_u16(
     let Some(block_index_u64) = u64::try_from(block_index).ok() else {
         return false;
     };
+    let Some(end_lba) = start_lba.checked_add(visible_blocks) else {
+        return false;
+    };
     let block_id = match start_lba.checked_add(block_index_u64) {
-        Some(block_id) if block_id < start_lba + visible_blocks => block_id,
+        Some(block_id) if block_id < end_lba => block_id,
         _ => return false,
     };
 
@@ -549,6 +551,10 @@ fn region_has_magic_u16(
     }
 
     u16::from_le_bytes([buf[within_block], buf[within_block + 1]]) == magic
+}
+
+fn full_region(dev: &AxBlockDevice) -> PartitionRegion {
+    PartitionRegion::from_num_blocks(dev.num_blocks())
 }
 
 const fn filesystem_name(fs: FilesystemKind) -> &'static str {

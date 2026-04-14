@@ -2,7 +2,16 @@
 
 pub use ax_driver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
 #[cfg(feature = "block")]
-pub use {crate::structs::AxBlockDevice, ax_driver_block::BlockDriverOps};
+pub use {
+    crate::structs::AxBlockDevice,
+    ax_driver_block::{
+        BlockDriverOps,
+        partition::{
+            PartitionBlockDevice, PartitionInfo, PartitionRegion, PartitionTable,
+            PartitionTableKind, scan_partitions,
+        },
+    },
+};
 #[cfg(feature = "display")]
 pub use {
     crate::structs::AxDisplayDevice,

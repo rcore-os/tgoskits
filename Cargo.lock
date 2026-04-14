@@ -844,7 +844,6 @@ version = "0.5.0"
 dependencies = [
  "ax-alloc",
  "ax-driver",
- "ax-driver-block",
  "ax-errno",
  "ax-hal",
  "ax-io",

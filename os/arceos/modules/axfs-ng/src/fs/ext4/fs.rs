@@ -1,8 +1,7 @@
 use alloc::sync::Arc;
 use core::cell::OnceCell;
 
-use ax_driver::AxBlockDevice;
-use ax_driver_block::partition::PartitionRegion;
+use ax_driver::{AxBlockDevice, PartitionRegion};
 use ax_kspin::{SpinNoPreempt as Mutex, SpinNoPreemptGuard as MutexGuard};
 use axfs_ng_vfs::{
     DirEntry, DirNode, Filesystem, FilesystemOps, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
@@ -22,10 +21,7 @@ pub struct Ext4Filesystem {
 }
 
 impl Ext4Filesystem {
-    pub fn new_in_region(
-        dev: AxBlockDevice,
-        region: Option<PartitionRegion>,
-    ) -> VfsResult<Filesystem> {
+    pub fn new(dev: AxBlockDevice, region: PartitionRegion) -> VfsResult<Filesystem> {
         let ext4 = lwext4_rust::Ext4Filesystem::new(Ext4Disk::new(dev, region), EXT4_CONFIG)
             .map_err(into_vfs_err)?;
 
