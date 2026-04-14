@@ -50,8 +50,6 @@ pub struct ArgsBuild {
     pub arch: Option<String>,
     #[arg(short, long)]
     pub target: Option<String>,
-    #[arg(long = "plat_dyn", alias = "plat-dyn")]
-    pub plat_dyn: Option<bool>,
 
     #[arg(long)]
     pub debug: bool,
@@ -135,7 +133,6 @@ impl From<&ArgsBuild> for StarryCliArgs {
             config: args.config.clone(),
             arch: args.arch.clone(),
             target: args.target.clone(),
-            plat_dyn: args.plat_dyn,
             debug: args.debug,
         }
     }
@@ -360,7 +357,6 @@ impl Starry {
             config: None,
             arch: Some(arch.to_string()),
             target: None,
-            plat_dyn: None,
             debug: false,
         }
     }
@@ -370,7 +366,6 @@ impl Starry {
             config: Some(config),
             arch: Some(arch.to_string()),
             target: None,
-            plat_dyn: None,
             debug: false,
         }
     }
@@ -695,6 +690,17 @@ mod tests {
             },
             _ => panic!("expected quick-start command"),
         }
+    }
+
+    #[test]
+    fn command_rejects_removed_plat_dyn_flag() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        assert!(Cli::try_parse_from(["starry", "qemu", "--plat-dyn"]).is_err());
     }
 
     #[test]

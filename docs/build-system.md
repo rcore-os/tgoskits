@@ -355,10 +355,9 @@ StarryOS 的参数体系与 ArceOS 基本一致，但不支持 `--package`（因
 
 | 参数 | 说明 | 默认值 |
 | --- | --- | --- |
-| `--arch <arch>` | 架构别名 | `DEFAULT_STARRY_ARCH` (= `aarch64`) |
+| `--arch <arch>` | 架构别名 | `DEFAULT_STARRY_ARCH` (= `riscv64`) |
 | `--target <tgt>` | 完整 target triple | 由 arch 推导 |
 | `--config <path>` | build info 路径 | 自动推导 |
-| `--plat-dyn` | 动态平台链接 | target 默认值 |
 | `--qemu-config <path>` | （仅 qemu）QEMU 配置覆盖 | 无 |
 | `--uboot-config <path>` | （仅 uboot）U-Boot 配置覆盖 | 无 |
 
