@@ -282,12 +282,32 @@ def _cleanup() -> None:
 # Commands
 # ---------------------------------------------------------------------------
 
+def _start_stdin_forwarder(write_chunk: callable) -> threading.Thread | None:
+    """Forward terminal input to the child process if stdin is available."""
+    try:
+        stdin_fd = sys.stdin.fileno()
+    except (AttributeError, OSError):
+        return None
+
+    def _stdin_loop() -> None:
+        try:
+            while chunk := os.read(stdin_fd, 1024):
+                write_chunk(chunk)
+        except OSError:
+            pass
+
+    thread = threading.Thread(target=_stdin_loop, daemon=True)
+    thread.start()
+    return thread
+
 def _cmd_start(debug_command: str) -> int:
     _state_dir.mkdir(parents=True, exist_ok=True)
     _cleanup()  # Evict any stale session from a previous run.
     print(f"QEMU_DEBUG_STARTING session={_session} port={_port}", flush=True)
 
     log_fh = open(_log_file, "wb")
+    input_thread: threading.Thread | None = None
+    master_fd: int | None = None
 
     if _tee and _has_pty:
         # Allocate a PTY so cargo / QEMU see a real terminal on their stdout.
@@ -301,7 +321,7 @@ def _cmd_start(debug_command: str) -> int:
             debug_command,
             shell=True,
             start_new_session=_has_process_groups,
-            stdin=subprocess.DEVNULL,
+            stdin=slave_fd,
             stdout=slave_fd,
             stderr=slave_fd,
             close_fds=True,
@@ -317,14 +337,10 @@ def _cmd_start(debug_command: str) -> int:
                     log_fh.flush()
             except OSError:
                 pass  # EIO once all slave-side fds are closed (QEMU exited).
-            finally:
-                try:
-                    os.close(master_fd)
-                except OSError:
-                    pass
 
         tee_thread: threading.Thread | None = threading.Thread(target=_tee_loop, daemon=True)
         tee_thread.start()
+        input_thread = _start_stdin_forwarder(lambda chunk: os.write(master_fd, chunk))
     else:
         # Fall back to pipe-based teeing when PTY support is unavailable.
         stdout_target = subprocess.PIPE if _tee else log_fh
@@ -332,7 +348,7 @@ def _cmd_start(debug_command: str) -> int:
             debug_command,
             shell=True,
             start_new_session=_has_process_groups,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE,
             stdout=stdout_target,
             stderr=subprocess.STDOUT,
             bufsize=0,
@@ -356,6 +372,11 @@ def _cmd_start(debug_command: str) -> int:
         else:
             tee_thread = None
 
+        if proc.stdin is not None:
+            input_thread = _start_stdin_forwarder(
+                lambda chunk: (proc.stdin.write(chunk), proc.stdin.flush())
+            )
+
     child_pgid = _pgid_of(proc.pid) or proc.pid
     _pid_file.write_text(str(proc.pid))
     _pgid_file.write_text(str(child_pgid))
@@ -376,6 +397,13 @@ def _cmd_start(debug_command: str) -> int:
         proc.wait()
         if tee_thread:
             tee_thread.join(timeout=2)
+        if input_thread:
+            input_thread.join(timeout=0.2)
+        if master_fd is not None:
+            try:
+                os.close(master_fd)
+            except OSError:
+                pass
         log_fh.close()
         # QEMU exited cleanly (or was stopped by `stop`).  All processes in its
         # group are already gone; clear state files and skip the orphan scan.
@@ -390,6 +418,11 @@ def _cmd_start(debug_command: str) -> int:
         print("\n".join(_log_file.read_text(errors="replace").splitlines()[-80:]), flush=True)
     except OSError:
         pass
+    if master_fd is not None:
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
     log_fh.close()
     _cleanup()
     return 1
