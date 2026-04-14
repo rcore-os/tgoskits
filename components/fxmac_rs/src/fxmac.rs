@@ -616,7 +616,7 @@ fn FXmacDmaReset(instance_p: &mut FXmac) {
     // let dma_brust_length = 16;
 
     let mut rx_buf_size: u32 = max_frame_size / FXMAC_RX_BUF_UNIT;
-    rx_buf_size += if (max_frame_size % FXMAC_RX_BUF_UNIT) != 0 {
+    rx_buf_size += if !max_frame_size.is_multiple_of(FXMAC_RX_BUF_UNIT) {
         1
     } else {
         0
@@ -942,7 +942,7 @@ fn FXmacSetOptions(instance_p: &mut FXmac, options: u32, queue_num: u32) -> u32 
                 reg &= !FXMAC_DMACR_RXBUF_MASK;
 
                 rx_buf_size = instance_p.max_frame_size / FXMAC_RX_BUF_UNIT;
-                rx_buf_size += if (instance_p.max_frame_size % FXMAC_RX_BUF_UNIT) != 0 {
+                rx_buf_size += if !instance_p.max_frame_size.is_multiple_of(FXMAC_RX_BUF_UNIT) {
                     1
                 } else {
                     0
@@ -953,7 +953,7 @@ fn FXmacSetOptions(instance_p: &mut FXmac, options: u32, queue_num: u32) -> u32 
             } else if queue_num < instance_p.config.max_queue_num {
                 let mut rx_buf_size: u32 = 0;
                 rx_buf_size = instance_p.max_frame_size / FXMAC_RX_BUF_UNIT;
-                rx_buf_size += if (instance_p.max_frame_size % FXMAC_RX_BUF_UNIT) != 0 {
+                rx_buf_size += if !instance_p.max_frame_size.is_multiple_of(FXMAC_RX_BUF_UNIT) {
                     1
                 } else {
                     0
@@ -1118,7 +1118,7 @@ fn FXmacClearOptions(instance_p: &mut FXmac, options: u32, queue_num: u32) -> u3
                 reg &= !FXMAC_DMACR_RXBUF_MASK;
 
                 rx_buf_size = instance_p.max_frame_size / FXMAC_RX_BUF_UNIT;
-                rx_buf_size += if instance_p.max_frame_size % FXMAC_RX_BUF_UNIT != 0 {
+                rx_buf_size += if !instance_p.max_frame_size.is_multiple_of(FXMAC_RX_BUF_UNIT) {
                     1
                 } else {
                     0
@@ -1130,7 +1130,7 @@ fn FXmacClearOptions(instance_p: &mut FXmac, options: u32, queue_num: u32) -> u3
             } else if (queue_num < instance_p.config.max_queue_num) {
                 let mut rx_buf_size: u32 = 0;
                 rx_buf_size = instance_p.max_frame_size / FXMAC_RX_BUF_UNIT;
-                rx_buf_size += if (instance_p.max_frame_size % FXMAC_RX_BUF_UNIT) != 0 {
+                rx_buf_size += if !instance_p.max_frame_size.is_multiple_of(FXMAC_RX_BUF_UNIT) {
                     1
                 } else {
                     0

@@ -217,7 +217,7 @@ pub fn FXmacPhyRead(
 ///
 /// * `instance_p` - Mutable reference to the FXMAC instance.
 /// * `reset_flag` - Set to `XMAC_PHY_RESET_ENABLE` to perform a PHY reset
-///                  before configuration, or `XMAC_PHY_RESET_DISABLE` to skip.
+///   before configuration, or `XMAC_PHY_RESET_DISABLE` to skip.
 ///
 /// # Returns
 ///
