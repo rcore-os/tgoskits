@@ -6,6 +6,7 @@ use std::{
 
 use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
+use ostool::build::CargoQemuAppendArgs;
 use regex::Regex;
 
 use crate::{
@@ -367,6 +368,9 @@ pub struct ArgsBuild {
     #[arg(long = "plat_dyn", alias = "plat-dyn")]
     pub plat_dyn: Option<bool>,
 
+    #[arg(long, value_name = "CPUS")]
+    pub smp: Option<usize>,
+
     #[arg(long)]
     pub debug: bool,
 }
@@ -440,6 +444,7 @@ impl From<&ArgsBuild> for BuildCliArgs {
             arch: args.arch.clone(),
             target: args.target.clone(),
             plat_dyn: args.plat_dyn,
+            smp: args.smp,
             debug: args.debug,
         }
     }
@@ -592,6 +597,7 @@ impl ArceOS {
             arch: None,
             target: Some(target.to_string()),
             plat_dyn: None,
+            smp: None,
             debug: false,
         }
     }
@@ -613,8 +619,14 @@ impl ArceOS {
     }
 
     fn qemu_run_config(request: &ResolvedBuildRequest) -> anyhow::Result<QemuRunConfig> {
+        let append_args = CargoQemuAppendArgs {
+            args: build::effective_max_cpu_num(request)?
+                .map(|cpu_num| vec!["-smp".to_string(), cpu_num.to_string()]),
+            ..Default::default()
+        };
         Ok(QemuRunConfig {
             qemu_config: request.qemu_config.clone(),
+            append_args,
             ..Default::default()
         })
     }

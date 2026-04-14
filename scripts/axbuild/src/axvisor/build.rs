@@ -101,6 +101,12 @@ pub(crate) fn load_cargo_config(request: &ResolvedAxvisorRequest) -> anyhow::Res
     to_cargo_config(load_build_config(request)?, request)
 }
 
+pub(crate) fn effective_max_cpu_num(
+    request: &ResolvedAxvisorRequest,
+) -> anyhow::Result<Option<usize>> {
+    Ok(load_build_config(request)?.build_info.max_cpu_num)
+}
+
 fn to_cargo_config(
     mut config: LoadedAxvisorBuildConfig,
     request: &ResolvedAxvisorRequest,
@@ -203,9 +209,13 @@ fn load_build_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<LoadedA
                     request.build_info_path.display()
                 )
             })?;
-            return Ok(default_board
+            let mut loaded = default_board
                 .config
-                .into_loaded(default_board.target.clone()));
+                .into_loaded(default_board.target.clone());
+            if let Some(smp) = request.smp {
+                loaded.build_info.max_cpu_num = Some(smp);
+            }
+            return Ok(loaded);
         }
 
         let default_build_info = AxvisorBuildInfo::default_axvisor_for_target(&request.target);
@@ -214,10 +224,14 @@ fn load_build_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<LoadedA
             toml::to_string_pretty(&default_build_info)?,
         )?;
 
-        return Ok(LoadedAxvisorBuildConfig {
+        let mut loaded = LoadedAxvisorBuildConfig {
             build_info: default_build_info,
             target: request.target.clone(),
-        });
+        };
+        if let Some(smp) = request.smp {
+            loaded.build_info.max_cpu_num = Some(smp);
+        }
+        return Ok(loaded);
     }
 
     let content = fs::read_to_string(&request.build_info_path).map_err(|e| {
@@ -228,14 +242,24 @@ fn load_build_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<LoadedA
     })?;
 
     if let Ok(board_config) = toml::from_str::<AxvisorBoardFile>(&content) {
-        return Ok(board_config.into_loaded());
+        let mut loaded = board_config.into_loaded();
+        if let Some(smp) = request.smp {
+            loaded.build_info.max_cpu_num = Some(smp);
+        }
+        return Ok(loaded);
     }
 
     if request.build_info_path.exists() {
         return toml::from_str::<AxvisorBuildInfo>(&content)
-            .map(|build_info| LoadedAxvisorBuildConfig {
-                build_info,
-                target: request.target.clone(),
+            .map(|build_info| {
+                let mut loaded = LoadedAxvisorBuildConfig {
+                    build_info,
+                    target: request.target.clone(),
+                };
+                if let Some(smp) = request.smp {
+                    loaded.build_info.max_cpu_num = Some(smp);
+                }
+                loaded
             })
             .map_err(|e| {
                 anyhow!(
@@ -278,6 +302,7 @@ mod tests {
             arch: arch.to_string(),
             target: target.to_string(),
             plat_dyn: None,
+            smp: None,
             debug: false,
             build_info_path: path,
             qemu_config: None,
@@ -387,6 +412,7 @@ plat_dyn = true
             arch: "aarch64".to_string(),
             target: "aarch64-unknown-none-softfloat".to_string(),
             plat_dyn: Some(true),
+            smp: None,
             debug: false,
             build_info_path: config_path,
             qemu_config: None,
@@ -470,6 +496,7 @@ vm_configs = []
             arch: "x86_64".to_string(),
             target: "x86_64-unknown-none".to_string(),
             plat_dyn: None,
+            smp: None,
             debug: false,
             build_info_path: path.clone(),
             qemu_config: None,
@@ -511,6 +538,7 @@ plat_dyn = false
             arch: "aarch64".to_string(),
             target: "aarch64-unknown-none-softfloat".to_string(),
             plat_dyn: Some(false),
+            smp: None,
             debug: false,
             build_info_path: config_path,
             qemu_config: None,

@@ -17,19 +17,25 @@ pub(crate) fn default_qemu_config_template_path(axvisor_dir: &Path, arch: &str) 
 pub(crate) fn default_qemu_run_config(
     request: &ResolvedAxvisorRequest,
 ) -> anyhow::Result<QemuRunConfig> {
+    let smp = crate::axvisor::build::effective_max_cpu_num(request)?;
     let default_rootfs = default_rootfs_path(&request.axvisor_dir);
     let default_args = CargoQemuOverrideArgs {
         to_bin: Some(default_qemu_to_bin(&request.arch)?),
         args: Some(default_runtime_qemu_args(
             &request.arch,
             Some(&default_rootfs),
+            smp,
         )),
         ..Default::default()
     };
 
     let override_args = infer_rootfs_path(&request.vmconfigs)?.and_then(|rootfs_path| {
         (rootfs_path != default_rootfs).then_some(CargoQemuOverrideArgs {
-            args: Some(default_runtime_qemu_args(&request.arch, Some(&rootfs_path))),
+            args: Some(default_runtime_qemu_args(
+                &request.arch,
+                Some(&rootfs_path),
+                smp,
+            )),
             ..Default::default()
         })
     });
@@ -50,6 +56,10 @@ pub(crate) fn qemu_override_args_from_template(
     let rootfs_path = infer_rootfs_path(&request.vmconfigs)?
         .unwrap_or_else(|| default_rootfs_path(&request.axvisor_dir));
     replace_rootfs_arg(&mut config.args, &rootfs_path);
+    replace_or_append_smp_arg(
+        &mut config.args,
+        crate::axvisor::build::effective_max_cpu_num(request)?,
+    );
 
     Ok(CargoQemuOverrideArgs {
         args: Some(config.args),
@@ -68,7 +78,11 @@ fn default_qemu_to_bin(arch: &str) -> anyhow::Result<bool> {
     }
 }
 
-fn default_runtime_qemu_args(arch: &str, rootfs_path: Option<&Path>) -> Vec<String> {
+fn default_runtime_qemu_args(
+    arch: &str,
+    rootfs_path: Option<&Path>,
+    smp: Option<usize>,
+) -> Vec<String> {
     let rootfs = rootfs_path
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| AXVISOR_DEFAULT_ROOTFS.to_string());
@@ -81,7 +95,7 @@ fn default_runtime_qemu_args(arch: &str, rootfs_path: Option<&Path>) -> Vec<Stri
             "-machine".to_string(),
             "virt,virtualization=on,gic-version=3".to_string(),
             "-smp".to_string(),
-            "4".to_string(),
+            smp.unwrap_or(4).to_string(),
             "-device".to_string(),
             "virtio-blk-device,drive=disk0".to_string(),
             "-drive".to_string(),
@@ -100,7 +114,7 @@ fn default_runtime_qemu_args(arch: &str, rootfs_path: Option<&Path>) -> Vec<Stri
             "-bios".to_string(),
             "default".to_string(),
             "-smp".to_string(),
-            "4".to_string(),
+            smp.unwrap_or(4).to_string(),
             "-device".to_string(),
             "virtio-blk-device,drive=disk0".to_string(),
             "-drive".to_string(),
@@ -117,7 +131,7 @@ fn default_runtime_qemu_args(arch: &str, rootfs_path: Option<&Path>) -> Vec<Stri
             "-machine".to_string(),
             "q35".to_string(),
             "-smp".to_string(),
-            "1".to_string(),
+            smp.unwrap_or(1).to_string(),
             "-accel".to_string(),
             "kvm".to_string(),
             "-device".to_string(),
@@ -130,7 +144,7 @@ fn default_runtime_qemu_args(arch: &str, rootfs_path: Option<&Path>) -> Vec<Stri
         "loongarch64" => vec![
             "-nographic".to_string(),
             "-smp".to_string(),
-            "4".to_string(),
+            smp.unwrap_or(4).to_string(),
             "-device".to_string(),
             "virtio-blk-device,drive=disk0".to_string(),
             "-drive".to_string(),
@@ -142,6 +156,22 @@ fn default_runtime_qemu_args(arch: &str, rootfs_path: Option<&Path>) -> Vec<Stri
         ],
         _ => vec![],
     }
+}
+
+fn replace_or_append_smp_arg(args: &mut Vec<String>, smp: Option<usize>) {
+    let Some(cpu_num) = smp else {
+        return;
+    };
+
+    if let Some(index) = args.iter().position(|arg| arg == "-smp")
+        && let Some(value) = args.get_mut(index + 1)
+    {
+        *value = cpu_num.to_string();
+        return;
+    }
+
+    args.push("-smp".to_string());
+    args.push(cpu_num.to_string());
 }
 
 fn default_rootfs_path(axvisor_dir: &Path) -> PathBuf {
@@ -217,6 +247,7 @@ mod tests {
             arch: arch.to_string(),
             target: target.to_string(),
             plat_dyn: None,
+            smp: None,
             debug: false,
             build_info_path: path,
             qemu_config: None,
@@ -265,7 +296,8 @@ kernel_path = "{}"
             run_config.default_args.args,
             Some(default_runtime_qemu_args(
                 "aarch64",
-                Some(&default_rootfs_path(&request.axvisor_dir))
+                Some(&default_rootfs_path(&request.axvisor_dir)),
+                None,
             ))
         );
         assert!(run_config.override_args.args.is_none());
@@ -297,6 +329,7 @@ kernel_path = "{}"
             arch: "aarch64".to_string(),
             target: "aarch64-unknown-none-softfloat".to_string(),
             plat_dyn: None,
+            smp: None,
             debug: false,
             build_info_path: root.path().join(".build.toml"),
             qemu_config: None,
@@ -307,7 +340,11 @@ kernel_path = "{}"
 
         assert_eq!(
             run_config.override_args.args,
-            Some(default_runtime_qemu_args("aarch64", Some(&rootfs_path)))
+            Some(default_runtime_qemu_args(
+                "aarch64",
+                Some(&rootfs_path),
+                None
+            ))
         );
     }
 
@@ -339,6 +376,7 @@ uefi = false
                 arch: "aarch64".to_string(),
                 target: "aarch64-unknown-none-softfloat".to_string(),
                 plat_dyn: None,
+                smp: None,
                 debug: false,
                 build_info_path: axvisor_dir.join(".build.toml"),
                 qemu_config: Some(qemu_config.clone()),
@@ -356,6 +394,62 @@ uefi = false
                     "id=disk0,if=none,format=raw,file={}",
                     axvisor_dir.join("tmp/rootfs.img").display()
                 )
+            ])
+        );
+    }
+
+    #[test]
+    fn qemu_override_args_from_template_replaces_smp_when_requested() {
+        let root = tempdir().unwrap();
+        let axvisor_dir = root.path().join("os/axvisor");
+        let qemu_config = root.path().join("qemu-aarch64.toml");
+        fs::create_dir_all(&axvisor_dir).unwrap();
+        fs::write(
+            axvisor_dir.join(".build.toml"),
+            r#"
+env = {}
+features = []
+log = "Warn"
+max_cpu_num = 6
+"#,
+        )
+        .unwrap();
+        fs::write(
+            &qemu_config,
+            r#"
+args = ["-nographic", "-smp", "4"]
+success_regex = []
+fail_regex = []
+to_bin = true
+uefi = false
+"#,
+        )
+        .unwrap();
+
+        let overrides = qemu_override_args_from_template(
+            &qemu_config,
+            &ResolvedAxvisorRequest {
+                package: crate::axvisor::build::AXVISOR_PACKAGE.to_string(),
+                axvisor_dir: axvisor_dir.clone(),
+                arch: "aarch64".to_string(),
+                target: "aarch64-unknown-none-softfloat".to_string(),
+                plat_dyn: None,
+                smp: None,
+                debug: false,
+                build_info_path: axvisor_dir.join(".build.toml"),
+                qemu_config: Some(qemu_config.clone()),
+                uboot_config: None,
+                vmconfigs: vec![],
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            overrides.args,
+            Some(vec![
+                "-nographic".to_string(),
+                "-smp".to_string(),
+                "6".to_string()
             ])
         );
     }

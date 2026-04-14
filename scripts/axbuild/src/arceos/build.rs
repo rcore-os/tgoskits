@@ -343,7 +343,17 @@ pub(crate) fn load_build_info(request: &ResolvedBuildRequest) -> anyhow::Result<
         })?;
     }
 
+    if let Some(smp) = request.smp {
+        build_info.max_cpu_num = Some(smp);
+    }
+
     Ok(build_info)
+}
+
+pub(crate) fn effective_max_cpu_num(
+    request: &ResolvedBuildRequest,
+) -> anyhow::Result<Option<usize>> {
+    Ok(load_build_info(request)?.max_cpu_num)
 }
 
 pub(crate) fn load_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Result<Cargo> {
@@ -778,6 +788,7 @@ mod tests {
             },
             target: target.to_string(),
             plat_dyn,
+            smp: None,
             debug: false,
             build_info_path,
             qemu_config: None,

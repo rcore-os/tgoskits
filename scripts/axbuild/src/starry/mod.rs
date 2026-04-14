@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::Context;
 use clap::{Args, Subcommand};
-use ostool::build::CargoQemuOverrideArgs;
+use ostool::build::{CargoQemuAppendArgs, CargoQemuOverrideArgs};
 
 use crate::{
     command_flow::{self, SnapshotPersistence},
@@ -48,6 +48,9 @@ pub struct ArgsBuild {
     pub target: Option<String>,
     #[arg(long = "plat_dyn", alias = "plat-dyn")]
     pub plat_dyn: Option<bool>,
+
+    #[arg(long, value_name = "CPUS")]
+    pub smp: Option<usize>,
 
     #[arg(long)]
     pub debug: bool,
@@ -119,6 +122,7 @@ impl From<&ArgsBuild> for StarryCliArgs {
             arch: args.arch.clone(),
             target: args.target.clone(),
             plat_dyn: args.plat_dyn,
+            smp: args.smp,
             debug: args.debug,
         }
     }
@@ -311,6 +315,7 @@ impl Starry {
             arch: Some(arch.to_string()),
             target: None,
             plat_dyn: None,
+            smp: None,
             debug: false,
         }
     }
@@ -321,6 +326,7 @@ impl Starry {
             arch: Some(arch.to_string()),
             target: None,
             plat_dyn: None,
+            smp: None,
             debug: false,
         }
     }
@@ -328,13 +334,19 @@ impl Starry {
     fn qemu_run_config(
         qemu_config: Option<PathBuf>,
         qemu_args: Vec<String>,
+        smp: Option<usize>,
     ) -> anyhow::Result<QemuRunConfig> {
+        let append_args = CargoQemuAppendArgs {
+            args: smp.map(|cpu_num| vec!["-smp".to_string(), cpu_num.to_string()]),
+            ..Default::default()
+        };
         Ok(QemuRunConfig {
             qemu_config,
             default_args: CargoQemuOverrideArgs {
                 args: Some(qemu_args),
                 ..Default::default()
             },
+            append_args,
             ..Default::default()
         })
     }
@@ -348,20 +360,23 @@ impl Starry {
     }
 
     async fn run_qemu_request(&mut self, request: ResolvedStarryRequest) -> anyhow::Result<()> {
+        let smp = build::load_build_info(&request)?.max_cpu_num;
         let qemu_args = rootfs::default_qemu_args(self.app.workspace_root(), &request).await?;
-        self.run_qemu_request_with_args(request, qemu_args).await
+        self.run_qemu_request_with_args(request, qemu_args, smp)
+            .await
     }
 
     async fn run_qemu_request_with_args(
         &mut self,
         request: ResolvedStarryRequest,
         qemu_args: Vec<String>,
+        smp: Option<usize>,
     ) -> anyhow::Result<()> {
         command_flow::run_qemu(
             &mut self.app,
             request,
             build::load_cargo_config,
-            move |request| Self::qemu_run_config(request.qemu_config.clone(), qemu_args),
+            move |request| Self::qemu_run_config(request.qemu_config.clone(), qemu_args, smp),
         )
         .await
     }
@@ -599,6 +614,25 @@ mod tests {
 
         let result = Starry::resolve_shell_init_cmd(Some(file.display().to_string())).unwrap();
         assert_eq!(result, Some("echo 'from file' && ls -la".to_string()));
+    }
+
+    #[test]
+    fn qemu_run_config_always_appends_smp() {
+        let run_config = Starry::qemu_run_config(
+            None,
+            vec!["-device".to_string(), "virtio-blk".to_string()],
+            Some(4),
+        )
+        .unwrap();
+
+        assert_eq!(
+            run_config.default_args.args,
+            Some(vec!["-device".to_string(), "virtio-blk".to_string()])
+        );
+        assert_eq!(
+            run_config.append_args.args,
+            Some(vec!["-smp".to_string(), "4".to_string()])
+        );
     }
 
     #[test]

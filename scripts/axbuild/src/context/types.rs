@@ -23,6 +23,7 @@ pub struct BuildCliArgs {
     pub arch: Option<String>,
     pub target: Option<String>,
     pub plat_dyn: Option<bool>,
+    pub smp: Option<usize>,
     pub debug: bool,
 }
 
@@ -32,6 +33,7 @@ pub struct StarryCliArgs {
     pub arch: Option<String>,
     pub target: Option<String>,
     pub plat_dyn: Option<bool>,
+    pub smp: Option<usize>,
     pub debug: bool,
 }
 
@@ -41,6 +43,7 @@ pub struct AxvisorCliArgs {
     pub arch: Option<String>,
     pub target: Option<String>,
     pub plat_dyn: Option<bool>,
+    pub smp: Option<usize>,
     pub debug: bool,
     pub vmconfigs: Vec<PathBuf>,
 }
@@ -67,6 +70,8 @@ pub struct ArceosCommandSnapshot {
     pub target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plat_dyn: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smp: Option<usize>,
     #[serde(default, skip_serializing_if = "ArceosQemuSnapshot::is_empty")]
     pub qemu: ArceosQemuSnapshot,
     #[serde(default, skip_serializing_if = "ArceosUbootSnapshot::is_empty")]
@@ -79,6 +84,7 @@ pub struct ResolvedBuildRequest {
     pub arch: String,
     pub target: String,
     pub plat_dyn: Option<bool>,
+    pub smp: Option<usize>,
     pub debug: bool,
     pub build_info_path: PathBuf,
     pub qemu_config: Option<PathBuf>,
@@ -106,6 +112,8 @@ pub struct AxvisorCommandSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plat_dyn: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smp: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vmconfigs: Vec<PathBuf>,
@@ -122,6 +130,7 @@ pub struct ResolvedAxvisorRequest {
     pub arch: String,
     pub target: String,
     pub plat_dyn: Option<bool>,
+    pub smp: Option<usize>,
     pub debug: bool,
     pub build_info_path: PathBuf,
     pub qemu_config: Option<PathBuf>,
@@ -149,6 +158,8 @@ pub struct StarryCommandSnapshot {
     pub target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plat_dyn: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smp: Option<usize>,
     #[serde(default, skip_serializing_if = "StarryQemuSnapshot::is_empty")]
     pub qemu: StarryQemuSnapshot,
     #[serde(default, skip_serializing_if = "StarryUbootSnapshot::is_empty")]
@@ -161,6 +172,7 @@ pub struct ResolvedStarryRequest {
     pub arch: String,
     pub target: String,
     pub plat_dyn: Option<bool>,
+    pub smp: Option<usize>,
     pub debug: bool,
     pub build_info_path: PathBuf,
     pub qemu_config: Option<PathBuf>,

@@ -379,6 +379,7 @@ mod tests {
             arch: "aarch64".to_string(),
             target: "aarch64-unknown-none-softfloat".to_string(),
             plat_dyn: None,
+            smp: None,
             debug: false,
             build_info_path: PathBuf::from("os/axvisor/.build-aarch64-unknown-none-softfloat.toml"),
             qemu_config: None,
