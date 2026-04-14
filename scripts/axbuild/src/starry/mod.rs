@@ -15,8 +15,8 @@ use crate::{
 
 pub mod board;
 pub mod build;
-pub mod quick_start;
 pub mod config;
+pub mod quick_start;
 pub mod rootfs;
 pub mod test_suit;
 
