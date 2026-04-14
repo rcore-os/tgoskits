@@ -78,18 +78,6 @@ const AXVISOR_UBOOT_BOARD_CONFIGS: &[AxvisorUbootBoardConfig] = &[
         build_config: "os/axvisor/configs/board/roc-rk3568-pc.toml",
         vmconfig: "os/axvisor/configs/vms/linux-aarch64-rk3568-smp1.toml",
     },
-    AxvisorUbootBoardConfig {
-        board: "rdk-s100",
-        guest: "linux",
-        build_config: "os/axvisor/configs/board/rdk-s100.toml",
-        vmconfig: "os/axvisor/configs/vms/linux-aarch64-s100-smp1.toml",
-    },
-    AxvisorUbootBoardConfig {
-        board: "rdk-s100",
-        guest: "arceos",
-        build_config: "os/axvisor/configs/board/rdk-s100.toml",
-        vmconfig: "os/axvisor/configs/vms/arceos-aarch64-s100-smp1.toml",
-    },
 ];
 
 const PHYTIUMPI_LINUX_VMCONFIGS: &[&str] =
@@ -98,6 +86,7 @@ const ORANGEPI_5_PLUS_LINUX_VMCONFIGS: &[&str] =
     &["os/axvisor/configs/vms/linux-aarch64-orangepi5p-smp1.toml"];
 const ROC_RK3568_PC_LINUX_VMCONFIGS: &[&str] =
     &["os/axvisor/configs/vms/linux-aarch64-rk3568-smp1.toml"];
+const RDK_S100_LINUX_VMCONFIGS: &[&str] = &["os/axvisor/configs/vms/linux-aarch64-s100-smp1.toml"];
 
 const AXVISOR_BOARD_TEST_GROUPS: &[AxvisorBoardTestGroup] = &[
     AxvisorBoardTestGroup {
@@ -117,6 +106,12 @@ const AXVISOR_BOARD_TEST_GROUPS: &[AxvisorBoardTestGroup] = &[
         build_config: "os/axvisor/configs/board/roc-rk3568-pc.toml",
         vmconfigs: ROC_RK3568_PC_LINUX_VMCONFIGS,
         board_test_config: "os/axvisor/configs/board-test/roc-rk3568-pc-linux.toml",
+    },
+    AxvisorBoardTestGroup {
+        name: "rdk-s100-linux",
+        build_config: "os/axvisor/configs/board/rdk-s100.toml",
+        vmconfigs: RDK_S100_LINUX_VMCONFIGS,
+        board_test_config: "os/axvisor/configs/board-test/rdk-s100-linux.toml",
     },
 ];
 
@@ -412,24 +407,6 @@ mod tests {
                 vmconfig: "os/axvisor/configs/vms/linux-aarch64-rk3568-smp1.toml",
             }
         );
-        assert_eq!(
-            axvisor_uboot_board_config("rdk-s100", "linux").unwrap(),
-            AxvisorUbootBoardConfig {
-                board: "rdk-s100",
-                guest: "linux",
-                build_config: "os/axvisor/configs/board/rdk-s100.toml",
-                vmconfig: "os/axvisor/configs/vms/linux-aarch64-s100-smp1.toml",
-            }
-        );
-        assert_eq!(
-            axvisor_uboot_board_config("rdk-s100", "arceos").unwrap(),
-            AxvisorUbootBoardConfig {
-                board: "rdk-s100",
-                guest: "arceos",
-                build_config: "os/axvisor/configs/board/rdk-s100.toml",
-                vmconfig: "os/axvisor/configs/vms/arceos-aarch64-s100-smp1.toml",
-            }
-        );
     }
 
     #[test]
@@ -443,8 +420,6 @@ mod tests {
         assert!(err.to_string().contains("orangepi-5-plus/linux"));
         assert!(err.to_string().contains("phytiumpi/linux"));
         assert!(err.to_string().contains("roc-rk3568-pc/linux"));
-        assert!(err.to_string().contains("rdk-s100/linux"));
-        assert!(err.to_string().contains("rdk-s100/arceos"));
     }
 
     #[test]
@@ -456,7 +431,8 @@ mod tests {
             vec![
                 "phytiumpi-linux",
                 "orangepi-5-plus-linux",
-                "roc-rk3568-pc-linux"
+                "roc-rk3568-pc-linux",
+                "rdk-s100-linux"
             ]
         );
     }
@@ -484,6 +460,7 @@ mod tests {
         assert!(err.to_string().contains("phytiumpi-linux"));
         assert!(err.to_string().contains("orangepi-5-plus-linux"));
         assert!(err.to_string().contains("roc-rk3568-pc-linux"));
+        assert!(err.to_string().contains("rdk-s100-linux"));
     }
 
     #[test]

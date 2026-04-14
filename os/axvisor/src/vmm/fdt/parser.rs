@@ -15,8 +15,8 @@
 //! FDT parsing and processing functionality.
 
 use alloc::{string::ToString, vec::Vec};
-use axaddrspace::MappingFlags;
 use ax_hal::{dtb, mem};
+use axaddrspace::MappingFlags;
 use axvm::config::{
     AxVMConfig, AxVMCrateConfig, PassThroughDeviceConfig, VmMemConfig, VmMemMappingType,
 };

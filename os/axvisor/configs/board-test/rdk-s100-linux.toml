@@ -1,0 +1,20 @@
+board_type = "RDK-S100P"
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "(?i)login incorrect",
+  "(?i)permission denied",
+]
+uboot_cmd = [
+  "run ab_select_cmd",
+  "run avb_boot",
+]
+shell_init_cmd = """
+root
+root
+pwd && echo 'test pass'
+"""
+shell_prefix = "ubuntu login:"
+success_regex = [
+  "(?m)^test pass\\s*$",
+]
