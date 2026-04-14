@@ -455,7 +455,7 @@ fn starry_snapshot_load_returns_default_when_missing() {
 fn starry_snapshot_store_round_trips() {
     let root = tempdir().unwrap();
     let snapshot = StarryCommandSnapshot {
-        arch: Some("aarch64".into()),
+        arch: Some(DEFAULT_STARRY_ARCH.into()),
         target: Some(DEFAULT_STARRY_TARGET.into()),
         plat_dyn: Some(false),
         qemu: StarryQemuSnapshot {
@@ -500,7 +500,7 @@ uboot_config = "configs/snapshot-uboot.toml"
             StarryCliArgs {
                 config: Some(PathBuf::from("/tmp/starry-build.toml")),
                 arch: Some("aarch64".into()),
-                target: Some(DEFAULT_STARRY_TARGET.into()),
+                target: Some("aarch64-unknown-none-softfloat".into()),
                 plat_dyn: Some(true),
                 debug: true,
             },
@@ -510,8 +510,8 @@ uboot_config = "configs/snapshot-uboot.toml"
         .unwrap();
 
     assert_eq!(request.package, STARRY_PACKAGE);
-    assert_eq!(request.arch, DEFAULT_STARRY_ARCH);
-    assert_eq!(request.target, DEFAULT_STARRY_TARGET);
+    assert_eq!(request.arch, "aarch64");
+    assert_eq!(request.target, "aarch64-unknown-none-softfloat");
     assert_eq!(request.plat_dyn, Some(true));
     assert!(request.debug);
     assert_eq!(
@@ -523,8 +523,11 @@ uboot_config = "configs/snapshot-uboot.toml"
         request.uboot_config,
         Some(root.path().join("configs/snapshot-uboot.toml"))
     );
-    assert_eq!(snapshot.arch.as_deref(), Some(DEFAULT_STARRY_ARCH));
-    assert_eq!(snapshot.target.as_deref(), Some(DEFAULT_STARRY_TARGET));
+    assert_eq!(snapshot.arch.as_deref(), Some("aarch64"));
+    assert_eq!(
+        snapshot.target.as_deref(),
+        Some("aarch64-unknown-none-softfloat")
+    );
     assert_eq!(snapshot.plat_dyn, Some(true));
 }
 
@@ -554,7 +557,7 @@ qemu_config = "configs/qemu.toml"
     assert_eq!(
         request.build_info_path,
         root.path()
-            .join("os/StarryOS/starryos/.build-aarch64-unknown-none-softfloat.toml")
+            .join("os/StarryOS/starryos/.build-riscv64gc-unknown-none-elf.toml")
     );
     assert_eq!(
         request.qemu_config,
@@ -663,7 +666,7 @@ target = "aarch64-unknown-none-softfloat"
 #[test]
 fn starry_arch_target_mapping_helpers_work() {
     assert_eq!(
-        starry_target_for_arch_checked("aarch64").unwrap(),
+        starry_target_for_arch_checked(DEFAULT_STARRY_ARCH).unwrap(),
         DEFAULT_STARRY_TARGET
     );
     assert_eq!(

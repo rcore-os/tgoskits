@@ -6,5 +6,5 @@ features = [
   "axplat-dyn/virtio-net-pci",
 ]
 log = "Warn"
-plat_dyn = false
+plat_dyn = true
 target = "aarch64-unknown-none-softfloat"

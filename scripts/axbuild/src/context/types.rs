@@ -13,8 +13,8 @@ pub const AXVISOR_SNAPSHOT_FILE: &str = ".axvisor.toml";
 pub const DEFAULT_AXVISOR_ARCH: &str = "aarch64";
 pub const DEFAULT_AXVISOR_TARGET: &str = "aarch64-unknown-none-softfloat";
 pub const STARRY_SNAPSHOT_FILE: &str = ".starry.toml";
-pub const DEFAULT_STARRY_ARCH: &str = "aarch64";
-pub const DEFAULT_STARRY_TARGET: &str = "aarch64-unknown-none-softfloat";
+pub const DEFAULT_STARRY_ARCH: &str = "riscv64";
+pub const DEFAULT_STARRY_TARGET: &str = "riscv64gc-unknown-none-elf";
 pub const STARRY_PACKAGE: &str = "starryos";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

@@ -173,6 +173,17 @@ impl Starry {
             None,
             SnapshotPersistence::Store,
         )?;
+        if let Some(board) = config::ensure_default_build_config_for_target(
+            self.app.workspace_root(),
+            &request.target,
+            &request.build_info_path,
+        )? {
+            println!(
+                "generated missing Starry qemu build config {} from board {}",
+                request.build_info_path.display(),
+                board.name
+            );
+        }
         self.run_qemu_request(request).await
     }
 
