@@ -98,6 +98,8 @@ cargo xtask arceos test qemu --target riscv64
 cargo xtask starry rootfs --arch riscv64
 cargo xtask starry qemu --arch riscv64
 cargo xtask starry test qemu --target riscv64
+cargo xtask starry test qemu --stress -t riscv64
+cargo xtask starry test qemu --stress -t riscv64 -c stress-ng-0
 
 # Axvisor：先准备 Guest 和 rootfs，跑最小启动，再跑统一 QEMU 测试
 (cd os/axvisor && ./scripts/setup_qemu.sh arceos)

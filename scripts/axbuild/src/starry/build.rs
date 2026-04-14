@@ -35,14 +35,13 @@ pub(crate) fn resolve_build_info_path(
 }
 
 pub(crate) fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result<StarryBuildInfo> {
-    let mut build_info =
-        crate::arceos::build::load_or_create_build_info(&request.build_info_path, || {
-            StarryBuildInfo::default_starry_for_target(&request.target)
-        })?;
-    if let Some(smp) = request.smp {
-        build_info.max_cpu_num = Some(smp);
+    if let Some(build_info) = &request.build_info_override {
+        return Ok(build_info.clone());
     }
-    Ok(build_info)
+
+    crate::arceos::build::load_or_create_build_info(&request.build_info_path, || {
+        StarryBuildInfo::default_starry_for_target(&request.target)
+    })
 }
 
 pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Result<Cargo> {
@@ -190,6 +189,7 @@ mod tests {
             smp: None,
             debug: false,
             build_info_path: path,
+            build_info_override: None,
             qemu_config: None,
             uboot_config: None,
         }
@@ -303,6 +303,24 @@ HELLO = "world"
     }
 
     #[test]
+    fn load_build_info_prefers_request_override_without_writing_file() {
+        let root = tempdir().unwrap();
+        let path = root.path().join(".build-target.toml");
+        let mut request = request(path.clone(), "aarch64", "aarch64-unknown-none-softfloat");
+        request.build_info_override = Some(StarryBuildInfo {
+            log: LogLevel::Info,
+            features: vec!["net".to_string()],
+            ..StarryBuildInfo::default_starry_for_target("aarch64-unknown-none-softfloat")
+        });
+
+        let build_info = load_build_info(&request).unwrap();
+
+        assert_eq!(build_info.log, LogLevel::Info);
+        assert_eq!(build_info.features, vec!["net".to_string()]);
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn patch_starry_cargo_config_injects_required_features_and_env() {
         let request = request(
             PathBuf::from("/tmp/.build.toml"),
@@ -343,13 +361,14 @@ HELLO = "world"
     #[test]
     fn patch_starry_cargo_config_preserves_request_package() {
         let request = ResolvedStarryRequest {
-            package: "starryos-test".to_string(),
+            package: STARRY_PACKAGE.to_string(),
             arch: "x86_64".to_string(),
             target: "x86_64-unknown-none".to_string(),
             plat_dyn: None,
             smp: None,
             debug: false,
             build_info_path: PathBuf::from("/tmp/.build.toml"),
+            build_info_override: None,
             qemu_config: None,
             uboot_config: None,
         };
@@ -362,8 +381,11 @@ HELLO = "world"
 
         patch_starry_cargo_config(&mut cargo, &request).unwrap();
 
-        assert_eq!(cargo.package, "starryos-test");
-        assert!(!cargo.args.iter().any(|arg| arg == "--bin"));
+        assert_eq!(cargo.package, STARRY_PACKAGE);
+        assert_eq!(
+            cargo.args,
+            vec!["--bin".to_string(), STARRY_PACKAGE.to_string()]
+        );
     }
 
     #[test]
@@ -445,36 +467,7 @@ HELLO = "world"
             build_info_path: PathBuf::from(
                 "/tmp/os/StarryOS/starryos/.build-aarch64-unknown-none-softfloat.toml",
             ),
-            qemu_config: None,
-            uboot_config: None,
-        };
-        let build_info = StarryBuildInfo::default_starry_for_target(&request.target);
-        let mut cargo = build_info.into_base_cargo_config_with_log(
-            request.package.clone(),
-            request.target.clone(),
-            StarryBuildInfo::build_cargo_args(&request.target, false),
-        );
-
-        patch_starry_cargo_config(&mut cargo, &request).unwrap();
-
-        assert!(
-            cargo
-                .args
-                .iter()
-                .any(|arg| arg.contains("-Clink-arg=-Tlinker.x"))
-        );
-    }
-
-    #[test]
-    fn patch_starry_test_package_keeps_linker_x_arg() {
-        let request = ResolvedStarryRequest {
-            package: "starryos-test".to_string(),
-            arch: "aarch64".to_string(),
-            target: "aarch64-unknown-none-softfloat".to_string(),
-            plat_dyn: None,
-            smp: None,
-            debug: false,
-            build_info_path: PathBuf::from("/tmp/.build.toml"),
+            build_info_override: None,
             qemu_config: None,
             uboot_config: None,
         };
@@ -505,11 +498,11 @@ HELLO = "world"
     }
 
     #[test]
-    fn ensure_starry_bin_arg_skips_when_package_bin_name_differs() {
-        let mut args = Vec::new();
+    fn ensure_starry_bin_arg_keeps_existing_bin_arg() {
+        let mut args = vec!["--bin".to_string(), "starryos".to_string()];
 
-        ensure_starry_bin_arg(&mut args, "starryos-test").unwrap();
+        ensure_starry_bin_arg(&mut args, STARRY_PACKAGE).unwrap();
 
-        assert!(args.is_empty());
+        assert_eq!(args, vec!["--bin".to_string(), "starryos".to_string()]);
     }
 }

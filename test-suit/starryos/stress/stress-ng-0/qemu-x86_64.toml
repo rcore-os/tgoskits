@@ -12,7 +12,13 @@ args = [
 uefi = false
 to_bin = false
 shell_prefix = "starry:~#"
-shell_init_cmd = "pwd && echo 'All tests passed!'"
+shell_init_cmd = '''
+apk update && \
+apk add stress-ng && \
+stress-ng --cpu 8 --timeout 10s && \
+stress-ng --sigsegv 8 --sigsegv-ops 1000    && \
+pwd && ls -al && echo 'All tests passed!'
+'''
 success_regex = ["(?m)^All tests passed!\\s*$"]
-fail_regex = ['(?i)\bpanic(?:ked)?\b']
-timeout = 5
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^stress-ng: info: .*failed: [1-9]\\d*\\s*$']
+timeout = 50

@@ -30,7 +30,7 @@ fn test_alloc_dealloc_cycle() {
     let frame = PhysFrame::<MockHal>::alloc()
         .unwrap_or_else(|e| panic!("Failed to allocate frame: {:?}", e));
     assert_eq!(frame.start_paddr().as_usize(), BASE_PADDR);
-    // frame is dropped here, dealloc_frame should be called
+    drop(frame);
 }
 
 #[test]
@@ -42,6 +42,7 @@ fn test_alloc_zero() {
     let ptr = frame.as_mut_ptr();
     let page = unsafe { &*(ptr as *const [u8; PAGE_SIZE]) };
     assert!(page.iter().all(|&x| x == 0));
+    drop(frame);
 }
 
 #[test]
@@ -54,6 +55,7 @@ fn test_fill_operation() {
     let ptr = frame.as_mut_ptr();
     let page = unsafe { &*(ptr as *const [u8; PAGE_SIZE]) };
     assert!(page.iter().all(|&x| x == 0xAA));
+    drop(frame);
 }
 
 #[test]
@@ -82,6 +84,8 @@ fn test_fill_multiple_frames() {
             patterns[i]
         );
     }
+
+    drop(frames);
 }
 
 #[test]

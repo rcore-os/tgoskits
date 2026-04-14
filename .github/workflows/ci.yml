@@ -116,6 +116,27 @@ jobs:
       container_image: ghcr.io/${{ github.repository }}-container:latest
       install_fat_tools: true
 
+  test_starry_stress_matrix:
+    name: Stress starry ${{ matrix.arch }}
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    needs:
+      - fmt
+      - clippy
+    strategy:
+      fail-fast: true
+      matrix:
+        arch:
+          - aarch64
+          - riscv64
+          - loongarch64
+          - x86_64
+    uses: ./.github/workflows/reusable-container-command.yml
+    with:
+      command: cargo xtask starry test qemu --stress --target ${{ matrix.arch }}
+      cache_key: test-starry-stress-${{ matrix.arch }}
+      container_image: ghcr.io/${{ github.repository }}-container:latest
+      install_fat_tools: true
+
   test_axvisor_self_hosted:
     name: Test axvisor ${{ matrix.label }}
     if: github.repository_owner == 'rcore-os'

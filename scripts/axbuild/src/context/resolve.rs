@@ -137,8 +137,6 @@ impl AppContext {
             }
         });
         let (arch, target) = resolve_starry_arch_and_target(effective_arch, effective_target)?;
-        let plat_dyn = cli.plat_dyn.or(snapshot.plat_dyn);
-        let smp = cli.smp.or(snapshot.smp);
         let runtime_paths = self.resolve_runtime_paths(
             qemu_config,
             snapshot.qemu.qemu_config.as_ref(),
@@ -152,10 +150,10 @@ impl AppContext {
             package: STARRY_PACKAGE.to_string(),
             arch: arch.clone(),
             target: target.clone(),
-            plat_dyn,
-            smp,
+            plat_dyn: None,
             debug: cli.debug,
             build_info_path,
+            build_info_override: None,
             qemu_config: runtime_paths.qemu_config.clone(),
             uboot_config: runtime_paths.uboot_config.clone(),
         };
@@ -163,8 +161,6 @@ impl AppContext {
         let snapshot = StarryCommandSnapshot {
             arch: Some(arch),
             target: Some(target),
-            plat_dyn,
-            smp,
             qemu: StarryQemuSnapshot {
                 qemu_config: runtime_paths
                     .qemu_config

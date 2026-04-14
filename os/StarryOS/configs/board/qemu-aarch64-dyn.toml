@@ -1,0 +1,10 @@
+env = {AX_IP = "10.0.2.15", AX_GW = "10.0.2.2"}
+features = [
+  "starry-kernel/input",
+  "starry-kernel/vsock", # auxilary features
+  "axplat-dyn/intel-net",
+  "axplat-dyn/virtio-net-pci",
+]
+log = "Warn"
+plat_dyn = true
+target = "aarch64-unknown-none-softfloat"

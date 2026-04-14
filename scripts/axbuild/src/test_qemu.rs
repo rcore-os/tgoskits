@@ -1,6 +1,6 @@
 use crate::{
     axvisor::qemu_test::ShellAutoInitConfig,
-    context::{arch_for_target_checked, starry_target_for_arch_checked, target_for_arch_checked},
+    context::{arch_for_target_checked, target_for_arch_checked},
 };
 
 pub(crate) const ARCEOS_TEST_PACKAGES: &[&str] = &[
@@ -29,8 +29,6 @@ const ARCEOS_TEST_TARGETS: &[&str] = &[
 ];
 const ARCEOS_TEST_ARCHES: &[&str] = &["x86_64", "riscv64", "aarch64", "loongarch64"];
 
-pub(crate) const STARRY_TEST_PACKAGE: &str = "starryos-test";
-const STARRY_TEST_ARCHES: &[&str] = &["x86_64", "riscv64", "aarch64", "loongarch64"];
 const AXVISOR_TEST_ARCHES: &[&str] = &["aarch64", "x86_64"];
 const AXVISOR_AARCH64_TEST_SHELL_PREFIX: &str = "~ #";
 const AXVISOR_AARCH64_TEST_SHELL_INIT_CMD: &str = "pwd && echo 'guest test pass!'";
@@ -113,22 +111,6 @@ pub(crate) fn parse_arceos_test_target(target: &str) -> anyhow::Result<(&str, &s
         ARCEOS_TEST_ARCHES,
         ARCEOS_TEST_TARGETS,
         target_for_arch_checked,
-        arch_for_target_checked,
-    )
-}
-
-pub(crate) fn parse_starry_test_target(target: &str) -> anyhow::Result<(&str, &str)> {
-    parse_arch_or_target(
-        target,
-        "starry qemu tests",
-        STARRY_TEST_ARCHES,
-        &[
-            "x86_64-unknown-none",
-            "riscv64gc-unknown-none-elf",
-            "aarch64-unknown-none-softfloat",
-            "loongarch64-unknown-none-softfloat",
-        ],
-        starry_target_for_arch_checked,
         arch_for_target_checked,
     )
 }
@@ -347,26 +329,6 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("unsupported target `mips64-unknown-none`")
-        );
-    }
-
-    #[test]
-    fn parses_supported_starry_arch_aliases() {
-        assert_eq!(
-            parse_starry_test_target("x86_64").unwrap(),
-            ("x86_64", "x86_64-unknown-none")
-        );
-        assert_eq!(
-            parse_starry_test_target("aarch64").unwrap(),
-            ("aarch64", "aarch64-unknown-none-softfloat")
-        );
-    }
-
-    #[test]
-    fn accepts_starry_full_target_triples() {
-        assert_eq!(
-            parse_starry_test_target("x86_64-unknown-none").unwrap(),
-            ("x86_64", "x86_64-unknown-none")
         );
     }
 

@@ -1,0 +1,26 @@
+args = [
+    "-nographic",
+    "-cpu",
+    "cortex-a53",
+    "-device",
+    "virtio-blk-pci,drive=disk0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/target/aarch64-unknown-none-softfloat/rootfs-aarch64.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "starry:~#"
+shell_init_cmd = '''
+apk update && \
+apk add stress-ng && \
+stress-ng --cpu 8 --timeout 10s && \
+stress-ng --sigsegv 8 --sigsegv-ops 1000    && \
+pwd && ls -al && echo 'All tests passed!'
+'''
+success_regex = ["(?m)^All tests passed!\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^stress-ng: info: .*failed: [1-9]\\d*\\s*$']
+timeout = 50

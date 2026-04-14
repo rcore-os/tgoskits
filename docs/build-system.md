@@ -355,10 +355,9 @@ StarryOS 的参数体系与 ArceOS 基本一致，但不支持 `--package`（因
 
 | 参数 | 说明 | 默认值 |
 | --- | --- | --- |
-| `--arch <arch>` | 架构别名 | `DEFAULT_STARRY_ARCH` (= `aarch64`) |
+| `--arch <arch>` | 架构别名 | `DEFAULT_STARRY_ARCH` (= `riscv64`) |
 | `--target <tgt>` | 完整 target triple | 由 arch 推导 |
 | `--config <path>` | build info 路径 | 自动推导 |
-| `--plat-dyn` | 动态平台链接 | target 默认值 |
 | `--qemu-config <path>` | （仅 qemu）QEMU 配置覆盖 | 无 |
 | `--uboot-config <path>` | （仅 uboot）U-Boot 配置覆盖 | 无 |
 
@@ -431,41 +430,32 @@ ensure_rootfs_in_target_dir(workspace_root, arch, target)
 
 ### 2.14 `starry test qemu` — 测试执行流程
 
-StarryOS 的 QEMU 测试使用固定的 `starryos-test` 包，并采用 rootfs 隔离机制——每次测试都会复制一份 rootfs 副本用于测试，避免测试过程污染原始镜像。测试还支持通过 `--shell-init-cmd` 注入自定义 shell 初始化命令，以及通过 `--timeout` 控制超时行为。下图展示了从参数解析到测试结果判定的完整流程。
+StarryOS 的 QEMU 测试直接构建 `starryos`，并从 `test-suit/starryos/normal/<case>/qemu-<arch>.toml` 或 `test-suit/starryos/stress/<case>/qemu-<arch>.toml` 发现测例。测试会先确保共享 rootfs 已准备好，然后把 case 的 `qemu-<arch>.toml` 原样作为显式 `qemu_config` 交给 `ostool`；`${workspace}` / `${workspaceFolder}`、`shell_init_cmd`、`success_regex`、`fail_regex`、`timeout` 都由该配置文件直接决定。
 
 ```
 Starry::test_qemu(args)
-  ├── parse_starry_test_target(&args.target)               ← 解析 arch + target
-  ├── package = "starryos-test"                            ← 固定测试包
-  │
-  ├── prepare_request(test_build_args(arch), ...)          ← SnapshotPersistence::Discard
-  ├── prepare_test_qemu_config(...)                        ← ★ 生成隔离测试配置
-  │     ├── ensure_rootfs_in_target_dir(...)               ← 确保 base rootfs 存在（可能下载）
-  │     ├── 复制 base rootfs → disk-test-{pid}-{timestamp}.img  ← 隔离副本
-  │     ├── 读取 test-suit/starryos/qemu-{arch}.toml 模板
-  │     ├── 替换模板中 rootfs 路径为隔离副本路径
-  │     └── 处理 timeout 覆盖（0=移除 timeout 字段, 其他=设置值）
-  │         └── 写入临时文件: /tmp/starry-test-qemu-{arch}-{pid}-{nanos}.toml
-  │
-  ├── resolve_shell_init_cmd(args.shell_init_cmd)          ← 解析 shell 初始化命令
-  │     └── 如果是文件路径 → 读取内容，多行用 && 连接
-  │
-  └── run_test_qemu_request(request, qemu_config, shell_init_cmd)
-        └── app.qemu(cargo, build_info_path, QemuRunConfig {
-              qemu_config: Some(生成的临时 toml),
-              override_args: { shell_init_cmd: ... },      ← 可选 shell 初始化命令
-            })
+  ├── parse_test_target(&args.target)                          ← 解析 arch + target
+  ├── choose test group                                        ← 默认 normal, --stress 切到 stress
+  ├── discover_qemu_cases(arch, args.test_case, group)         ← 在当前组发现/筛选 case
+  ├── write_default_qemu_defconfig_for_target(target)
+  ├── prepare_request(test_build_args(arch), ...)             ← package 固定是 starryos
+  ├── ensure_rootfs_in_target_dir(...)                         ← 确保共享 rootfs 存在
+  ├── load_cargo_config(request)                               ← 准备基础 Cargo 配置
+  ├── for case in cases
+  │     └── app.qemu(cargo, request.build_info_path, case.qemu_config_path)
+  │            └── ostool 直接读取 case qemu 配置并运行
+  └── finalize_qemu_case_run(...)                            ← 按 case 汇总结果
 ```
 
 **test qemu 特有参数**：
 
 | 参数 | 说明 |
 | --- | --- |
-| `--target <arch>` | 目标架构（必填） |
-| `--shell-init-cmd <cmd\|file>` | Shell 初始化命令或命令文件路径 |
-| `--timeout <seconds>` | 测试超时（0=禁用超时） |
+| `-t, --target <arch>` | 目标架构（必填） |
+| `-c, --test-case <case>` | 只运行指定测例；不传则运行该架构下全部匹配测例 |
+| `--stress` | 切换到 `stress` 组；默认运行 `normal` 组 |
 
-**关键设计**：测试使用 rootfs 的**隔离副本**，避免测试修改原始 rootfs。
+**关键设计**：测试把运行判据完全下沉到分组测例目录，并直接透传 case `qemu-<arch>.toml` 给 `ostool`，不再由 `axbuild` 外部改写测试配置。
 
 ---
 
@@ -784,7 +774,7 @@ image::pull_image(ctx, overrides, ArgsPull { image, output_dir, no_extract })
 | `axvisor test qemu --target aarch64` | 始终 | `qemu_aarch64_linux` (Linux Guest) | 测试用 Guest |
 | `axvisor test qemu --target x86_64` | 始终 | `qemu_x86_64_nimbos` (NIMBOS Guest) | 测试用 Guest |
 | `starry qemu` | 始终 | StarryOS rootfs (来自 GitHub Releases) | 运行时磁盘 |
-| `starry test qemu` | 始终 | StarryOS rootfs (隔离副本) | 测试用磁盘 |
+| `starry test qemu` | 始终 | StarryOS rootfs (共享 target 镜像) | 测试用磁盘 |
 | `starry rootfs` | 始终 | StarryOS rootfs | 单独准备 |
 
 **预定义 Image Spec 与架构映射**：
