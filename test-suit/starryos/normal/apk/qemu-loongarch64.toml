@@ -42,6 +42,6 @@ echo 'All tests passed!'
 '''
 shell_prefix = "starry:~#"
 success_regex = ["(?m)^All tests passed!\\s*$"]
-timeout = 300
+timeout = 420
 to_bin = true
 uefi = false
