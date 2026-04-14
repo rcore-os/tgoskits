@@ -25,9 +25,6 @@ include = [
     "LICENSE*",
 ]
 
-[profile.release]
-lto = true
-
 [[bin]]
 name = "axvisor"
 path = "src/main.rs"

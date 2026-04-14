@@ -5,10 +5,15 @@ use core::{
     hint::unlikely,
     mem::{MaybeUninit, transmute},
     ptr, slice, str,
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_hal::{asm::user_copy, paging::MappingFlags, trap::page_fault_handler};
+use ax_hal::{
+    asm::user_copy,
+    paging::MappingFlags,
+    trap::{page_fault_handler, set_page_fault_handler},
+};
 use ax_io::prelude::*;
 use ax_kernel_guard::IrqSave;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
@@ -21,9 +26,22 @@ use crate::{
     task::AsThread,
 };
 
+static PAGE_FAULT_HANDLER_INSTALLED: AtomicBool = AtomicBool::new(false);
+
+fn ensure_page_fault_handler_installed() {
+    if PAGE_FAULT_HANDLER_INSTALLED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        let _ = set_page_fault_handler(handle_page_fault);
+    }
+}
+
 /// Enables scoped access into user memory, allowing page faults to occur inside
 /// kernel.
 pub fn access_user_memory<R>(f: impl FnOnce() -> R) -> R {
+    ensure_page_fault_handler_installed();
+
     let curr = current();
     let Some(thr) = curr.try_as_thread() else {
         panic!("access_user_memory called outside of thread context");
@@ -251,7 +269,6 @@ macro_rules! nullable {
 
 pub(crate) use nullable;
 
-#[page_fault_handler]
 fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
     debug!("Page fault at {vaddr:#x}, access_flags: {access_flags:#x?}");
 

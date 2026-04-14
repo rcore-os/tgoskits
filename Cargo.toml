@@ -228,7 +228,6 @@ ax-page-table-multiarch = { path = "components/page_table_multiarch/page_table_m
 
 # === crate_interface ===
 ax-crate-interface = { path = "components/crate_interface" }
-ax-crate-interface-lite = { path = "components/crate_interface/crate_interface_lite" }
 
 # === ax-ctor-bare ===
 ax-ctor-bare = { path = "components/ctor_bare/ctor_bare" }
@@ -288,11 +287,6 @@ ax-config-macros = { path = "components/axconfig-gen/axconfig-macros" }
 # === drivers ===
 # fxmac_rs = { path = "components/fxmac_rs", version = "0.2.1" }
 
-define-simple-traits = { path = "components/crate_interface/test_crates/define-simple-traits" }
-define-weak-traits = { path = "components/crate_interface/test_crates/define-weak-traits" }
-impl-simple-traits = { path = "components/crate_interface/test_crates/impl-simple-traits" }
-impl-weak-partial = { path = "components/crate_interface/test_crates/impl-weak-partial" }
-impl-weak-traits = { path = "components/crate_interface/test_crates/impl-weak-traits" }
 [workspace.dependencies]
 # === os/arceos crates (0.3.0-preview.3) ===
 # ulib

@@ -337,6 +337,3 @@ required-features = ["std", "medium-ieee802154", "phy-raw_socket", "proto-sixlow
 [[example]]
 name = "dns"
 required-features = ["std", "medium-ethernet", "medium-ip", "phy-tuntap_interface", "proto-ipv4", "socket-dns"]
-
-[profile.release]
-debug = 2

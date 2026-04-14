@@ -16,7 +16,9 @@
 
 use alloc::{string::ToString, vec::Vec};
 use ax_hal::{dtb, mem};
-use axvm::config::{AxVMConfig, AxVMCrateConfig, PassThroughDeviceConfig};
+#[cfg(target_arch = "aarch64")]
+use axvm::config::PassThroughDeviceConfig;
+use axvm::config::{AxVMConfig, AxVMCrateConfig};
 use fdt_parser::{Fdt, FdtHeader, PciRange, PciSpace};
 
 use crate::vmm::fdt::crate_guest_fdt_with_cache;
@@ -321,6 +323,7 @@ pub fn parse_passthrough_devices_address(vm_cfg: &mut AxVMConfig, dtb: &[u8]) {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
 pub fn parse_vm_interrupt(vm_cfg: &mut AxVMConfig, dtb: &[u8]) {
     const GIC_PHANDLE: usize = 1;
     let fdt = Fdt::from_bytes(dtb)

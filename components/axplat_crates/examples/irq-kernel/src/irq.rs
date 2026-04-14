@@ -3,7 +3,7 @@ use core::sync::atomic::{
     Ordering::{Acquire, Release},
 };
 
-use ax_cpu::trap::irq_handler;
+use ax_cpu::trap::set_irq_handler;
 
 const TICKS_PER_SEC: u64 = 100;
 
@@ -13,13 +13,14 @@ pub fn irq_count() -> u64 {
     IRQ_COUNTER.load(Acquire)
 }
 
-#[irq_handler]
 fn handle_irq(vector: usize) -> bool {
     ax_plat::irq::handle(vector);
     true
 }
 
 pub fn init_irq() {
+    let _ = set_irq_handler(handle_irq);
+
     fn update_timer() {
         static PERIODIC_INTERVAL_NANOS: u64 = ax_plat::time::NANOS_PER_SEC / TICKS_PER_SEC;
 

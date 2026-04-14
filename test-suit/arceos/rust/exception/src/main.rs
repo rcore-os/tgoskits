@@ -24,9 +24,12 @@ fn raise_break_exception() {
 fn raise_page_fault() {
     use std::os::arceos::modules::ax_hal;
 
-    use ax_hal::{mem::VirtAddr, paging::MappingFlags, trap::page_fault_handler};
+    use ax_hal::{
+        mem::VirtAddr,
+        paging::MappingFlags,
+        trap::{page_fault_handler, set_page_fault_handler},
+    };
 
-    #[page_fault_handler]
     fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
         println!(
             "Page fault @ {:#x}, access_flags: {:?}",
@@ -35,6 +38,8 @@ fn raise_page_fault() {
         println!("Page fault test OK!");
         ax_hal::power::system_off();
     }
+
+    let _ = set_page_fault_handler(handle_page_fault);
 
     let fault_addr = 0xdeadbeef as *mut u8;
     unsafe {

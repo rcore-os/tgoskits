@@ -4,7 +4,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(feature = "ipi")]
 pub use ax_config::devices::IPI_IRQ;
-use ax_cpu::trap::irq_handler;
+use ax_cpu::trap::set_irq_handler;
 #[cfg(feature = "ipi")]
 pub use ax_plat::irq::{IpiTarget, send_ipi};
 pub use ax_plat::irq::{handle, register, set_enable, unregister};
@@ -32,7 +32,6 @@ pub fn register_irq_hook(hook: fn(usize)) -> bool {
 /// # Warn
 ///
 /// Make sure called in an interrupt context or hypervisor VM exit handler.
-#[irq_handler]
 pub fn handle_irq(vector: usize) -> bool {
     let guard = ax_kernel_guard::NoPreempt::new();
 
@@ -46,4 +45,9 @@ pub fn handle_irq(vector: usize) -> bool {
 
     drop(guard); // rescheduling may occur when preemption is re-enabled.
     true
+}
+
+/// Installs the default ArceOS IRQ dispatcher into `ax-cpu`.
+pub fn init_common_irq_handler() {
+    let _ = set_irq_handler(handle_irq);
 }

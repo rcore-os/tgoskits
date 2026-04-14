@@ -89,7 +89,9 @@ pub mod power {
 
 /// Trap handling.
 pub mod trap {
-    pub use ax_cpu::trap::{PageFaultFlags, irq_handler, page_fault_handler};
+    pub use ax_cpu::trap::{
+        PageFaultFlags, irq_handler, page_fault_handler, set_irq_handler, set_page_fault_handler,
+    };
 }
 
 /// CPU register states for context switching.
@@ -113,6 +115,8 @@ pub use ax_plat::init::{init_early_secondary, init_later_secondary};
 /// This function should be called as early as possible.
 pub fn init_early(cpu_id: usize, arg: usize) {
     dtb::init(arg);
+    #[cfg(feature = "irq")]
+    irq::init_common_irq_handler();
     ax_plat::init::init_early(cpu_id, arg);
 }
 
