@@ -1,12 +1,15 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use ostool::board::RunBoardArgs;
+use ostool::{
+    board::{RunBoardOptions, config::BoardRunConfig},
+    build::config::Cargo,
+};
 
 use crate::{
     axvisor::context::AxvisorContext,
     command_flow::{self, SnapshotPersistence},
-    context::{AppContext, AxvisorCliArgs, QemuRunConfig, ResolvedAxvisorRequest},
+    context::{AppContext, AxvisorCliArgs, ResolvedAxvisorRequest},
     test_qemu,
 };
 
@@ -83,13 +86,15 @@ impl Axvisor {
             self.prepare_request((&args.build).into(), None, None, SnapshotPersistence::Store)?;
         self.app.set_debug_mode(request.debug)?;
         let cargo = build::load_cargo_config(&request)?;
+        let board_config = self
+            .load_board_config(&request, &cargo, args.board_config.as_deref())
+            .await?;
         self.app
             .board(
                 cargo,
                 request.build_info_path,
-                RunBoardArgs {
-                    config: None,
-                    board_config: args.board_config,
+                board_config,
+                RunBoardOptions {
                     board_type: args.board_type,
                     server: args.server,
                     port: args.port,
@@ -153,21 +158,13 @@ impl Axvisor {
             None,
             SnapshotPersistence::Discard,
         )?;
-        let qemu_config =
-            qemu::default_qemu_config_template_path(&request.axvisor_dir, &request.arch);
         let shell = test_qemu::axvisor_test_shell_config(arch)?;
-        let override_args = qemu_test::shell_autoinit_qemu_override_args(&request, &shell)?;
+        let cargo = build::load_cargo_config(&request)?;
+        let mut qemu_config = self.load_qemu_config(&request, &cargo).await?;
+        qemu_test::apply_shell_autoinit_config(&mut qemu_config, &shell);
 
         self.app
-            .qemu(
-                build::load_cargo_config(&request)?,
-                request.build_info_path,
-                QemuRunConfig {
-                    qemu_config: Some(qemu_config),
-                    override_args,
-                    ..Default::default()
-                },
-            )
+            .qemu(cargo, request.build_info_path, Some(qemu_config))
             .await
             .with_context(|| "axvisor qemu test failed")
     }
@@ -203,8 +200,9 @@ impl Axvisor {
         request.uboot_config = explicit_uboot_config;
 
         let cargo = build::load_cargo_config(&request)?;
+        let uboot = self.load_uboot_config(&request, &cargo).await?;
         self.app
-            .uboot(cargo, request.build_info_path, request.uboot_config)
+            .uboot(cargo, request.build_info_path, uboot)
             .await
             .with_context(|| {
                 format!(
@@ -259,13 +257,15 @@ impl Axvisor {
                     SnapshotPersistence::Discard,
                 )?;
                 let cargo = build::load_cargo_config(&request)?;
+                let board_config = self
+                    .load_board_config(&request, &cargo, Some(board_test_config.as_path()))
+                    .await?;
                 self.app
                     .board(
                         cargo,
                         request.build_info_path,
-                        RunBoardArgs {
-                            config: None,
-                            board_config: Some(board_test_config.clone()),
+                        board_config,
+                        RunBoardOptions {
                             board_type: args.board_type.clone(),
                             server: args.server.clone(),
                             port: args.port,
@@ -313,27 +313,69 @@ impl Axvisor {
         Ok(request)
     }
 
-    fn qemu_run_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<QemuRunConfig> {
-        if let Some(path) = request.qemu_config.clone() {
-            let override_args = qemu::qemu_override_args_from_template(&path, request)?;
-            Ok(QemuRunConfig {
-                qemu_config: Some(path),
-                override_args,
-                ..Default::default()
-            })
-        } else {
-            qemu::default_qemu_run_config(request)
+    async fn load_qemu_config(
+        &mut self,
+        request: &ResolvedAxvisorRequest,
+        cargo: &Cargo,
+    ) -> anyhow::Result<ostool::run::qemu::QemuConfig> {
+        let config_path = request.qemu_config.clone().unwrap_or_else(|| {
+            qemu::default_qemu_config_template_path(&request.axvisor_dir, &request.arch)
+        });
+        let mut qemu = self
+            .app
+            .load_qemu_config_from_path(cargo, &request.build_info_path, &config_path)
+            .await?;
+        qemu::apply_rootfs_path(&mut qemu, request)?;
+        Ok(qemu)
+    }
+
+    async fn load_uboot_config(
+        &mut self,
+        request: &ResolvedAxvisorRequest,
+        cargo: &Cargo,
+    ) -> anyhow::Result<Option<ostool::run::uboot::UbootConfig>> {
+        match request.uboot_config.as_deref() {
+            Some(path) => self
+                .app
+                .load_uboot_config_from_path(cargo, &request.build_info_path, path)
+                .await
+                .map(Some),
+            None => Ok(None),
+        }
+    }
+
+    async fn load_board_config(
+        &mut self,
+        request: &ResolvedAxvisorRequest,
+        cargo: &Cargo,
+        board_config_path: Option<&Path>,
+    ) -> anyhow::Result<BoardRunConfig> {
+        match board_config_path {
+            Some(path) => {
+                self.app
+                    .load_board_run_config_from_path(cargo, &request.build_info_path, path)
+                    .await
+            }
+            None => {
+                let workspace_root = self.app.workspace_root().to_path_buf();
+                self.app
+                    .load_board_run_config_from_dir(
+                        cargo,
+                        &request.build_info_path,
+                        &workspace_root,
+                    )
+                    .await
+            }
         }
     }
 
     async fn run_qemu_request(&mut self, request: ResolvedAxvisorRequest) -> anyhow::Result<()> {
-        command_flow::run_qemu(
-            &mut self.app,
-            request,
-            build::load_cargo_config,
-            Self::qemu_run_config,
-        )
-        .await
+        self.app.set_debug_mode(request.debug)?;
+        let cargo = build::load_cargo_config(&request)?;
+        let qemu = self.load_qemu_config(&request, &cargo).await?;
+        self.app
+            .qemu(cargo, request.build_info_path, Some(qemu))
+            .await
     }
 
     async fn run_build_request(&mut self, request: ResolvedAxvisorRequest) -> anyhow::Result<()> {
@@ -341,7 +383,10 @@ impl Axvisor {
     }
 
     async fn run_uboot_request(&mut self, request: ResolvedAxvisorRequest) -> anyhow::Result<()> {
-        command_flow::run_uboot(&mut self.app, request, build::load_cargo_config).await
+        self.app.set_debug_mode(request.debug)?;
+        let cargo = build::load_cargo_config(&request)?;
+        let uboot = self.load_uboot_config(&request, &cargo).await?;
+        self.app.uboot(cargo, request.build_info_path, uboot).await
     }
 }
 
@@ -354,7 +399,7 @@ impl Default for Axvisor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::{ResolvedAxvisorRequest, workspace_member_dir, workspace_root_path};
+    use crate::context::{workspace_member_dir, workspace_root_path};
 
     #[test]
     fn context_resolves_workspace_root() {
@@ -372,22 +417,12 @@ mod tests {
     }
 
     #[test]
-    fn default_qemu_run_config_lets_ostool_resolve_default_path() {
-        let run_config = qemu::default_qemu_run_config(&ResolvedAxvisorRequest {
-            package: "axvisor".to_string(),
-            axvisor_dir: PathBuf::from("os/axvisor"),
-            arch: "aarch64".to_string(),
-            target: "aarch64-unknown-none-softfloat".to_string(),
-            plat_dyn: None,
-            debug: false,
-            build_info_path: PathBuf::from("os/axvisor/.build-aarch64-unknown-none-softfloat.toml"),
-            qemu_config: None,
-            uboot_config: None,
-            vmconfigs: vec![],
-        })
-        .unwrap();
+    fn default_qemu_template_path_uses_axvisor_script_location() {
+        let path = qemu::default_qemu_config_template_path(Path::new("os/axvisor"), "aarch64");
 
-        assert_eq!(run_config.qemu_config, None);
-        assert!(run_config.default_args.args.is_some());
+        assert_eq!(
+            path,
+            PathBuf::from("os/axvisor/scripts/ostool/qemu-aarch64.toml")
+        );
     }
 }

@@ -2,8 +2,12 @@ use std::path::{Path, PathBuf};
 
 use ostool::{
     Tool, ToolConfig,
-    board::RunBoardArgs,
-    build::{CargoQemuRunnerArgs, CargoRunnerKind, CargoUbootRunnerArgs, config::Cargo},
+    board::{RunBoardOptions, config::BoardRunConfig},
+    build::{
+        CargoQemuRunnerArgs, CargoRunnerKind, CargoUbootRunnerArgs,
+        config::{BuildConfig, BuildSystem, Cargo},
+    },
+    run::{qemu::QemuConfig, uboot::UbootConfig},
 };
 
 mod arch;
@@ -25,8 +29,8 @@ pub use types::{
     ArceosUbootSnapshot, AxvisorCliArgs, AxvisorCommandSnapshot, AxvisorQemuSnapshot,
     AxvisorUbootSnapshot, BuildCliArgs, DEFAULT_ARCEOS_ARCH, DEFAULT_ARCEOS_TARGET,
     DEFAULT_AXVISOR_ARCH, DEFAULT_AXVISOR_TARGET, DEFAULT_STARRY_ARCH, DEFAULT_STARRY_TARGET,
-    QemuRunConfig, ResolvedAxvisorRequest, ResolvedBuildRequest, ResolvedStarryRequest,
-    STARRY_PACKAGE, STARRY_SNAPSHOT_FILE, StarryCliArgs, StarryCommandSnapshot, StarryQemuSnapshot,
+    ResolvedAxvisorRequest, ResolvedBuildRequest, ResolvedStarryRequest, STARRY_PACKAGE,
+    STARRY_SNAPSHOT_FILE, StarryCliArgs, StarryCommandSnapshot, StarryQemuSnapshot,
     StarryUbootSnapshot,
 };
 pub(crate) use workspace::{
@@ -81,29 +85,30 @@ impl AppContext {
         cargo: Cargo,
         build_config_path: PathBuf,
     ) -> anyhow::Result<()> {
-        self.set_build_config_path(build_config_path);
-        self.tool.cargo_build(&cargo).await
+        self.seed_cargo_tool_context(&cargo, &build_config_path);
+        self.tool
+            .build_with_config(&BuildConfig {
+                system: BuildSystem::Cargo(cargo),
+            })
+            .await
     }
 
     pub(crate) async fn qemu(
         &mut self,
         cargo: Cargo,
         build_config_path: PathBuf,
-        mut qemu: QemuRunConfig,
+        qemu: Option<QemuConfig>,
     ) -> anyhow::Result<()> {
-        self.set_build_config_path(build_config_path);
-        qemu.default_args.to_bin.get_or_insert(cargo.to_bin);
+        self.seed_cargo_tool_context(&cargo, &build_config_path);
         self.tool
             .cargo_run(
                 &cargo,
-                &CargoRunnerKind::Qemu(Box::new(CargoQemuRunnerArgs {
-                    qemu_config: qemu.qemu_config,
+                &CargoRunnerKind::Qemu(CargoQemuRunnerArgs {
+                    qemu,
                     debug: self.debug,
                     dtb_dump: false,
-                    default_args: qemu.default_args,
-                    append_args: qemu.append_args,
-                    override_args: qemu.override_args,
-                })),
+                    show_output: true,
+                }),
             )
             .await
     }
@@ -112,13 +117,16 @@ impl AppContext {
         &mut self,
         cargo: Cargo,
         build_config_path: PathBuf,
-        uboot_config: Option<PathBuf>,
+        uboot: Option<UbootConfig>,
     ) -> anyhow::Result<()> {
-        self.set_build_config_path(build_config_path);
+        self.seed_cargo_tool_context(&cargo, &build_config_path);
         self.tool
             .cargo_run(
                 &cargo,
-                &CargoRunnerKind::Uboot(CargoUbootRunnerArgs { uboot_config }),
+                &CargoRunnerKind::Uboot(CargoUbootRunnerArgs {
+                    uboot,
+                    show_output: true,
+                }),
             )
             .await
     }
@@ -127,10 +135,19 @@ impl AppContext {
         &mut self,
         cargo: Cargo,
         build_config_path: PathBuf,
-        board_args: RunBoardArgs,
+        board_config: BoardRunConfig,
+        options: RunBoardOptions,
     ) -> anyhow::Result<()> {
-        self.set_build_config_path(build_config_path);
-        self.tool.cargo_run_board(&cargo, board_args).await
+        self.seed_cargo_tool_context(&cargo, &build_config_path);
+        self.tool
+            .run_board(
+                &BuildConfig {
+                    system: BuildSystem::Cargo(cargo),
+                },
+                &board_config,
+                options,
+            )
+            .await
     }
 
     pub(crate) fn set_debug_mode(&mut self, debug: bool) -> anyhow::Result<()> {
@@ -149,6 +166,67 @@ impl AppContext {
         }
 
         Ok(())
+    }
+
+    pub(crate) async fn load_qemu_config_for_cargo(
+        &mut self,
+        cargo: &Cargo,
+        build_config_path: &Path,
+    ) -> anyhow::Result<QemuConfig> {
+        self.seed_cargo_tool_context(cargo, build_config_path);
+        self.tool.load_qemu_config_for_cargo(cargo).await
+    }
+
+    pub(crate) async fn load_qemu_config_from_path(
+        &mut self,
+        cargo: &Cargo,
+        build_config_path: &Path,
+        qemu_config_path: &Path,
+    ) -> anyhow::Result<QemuConfig> {
+        self.seed_cargo_tool_context(cargo, build_config_path);
+        self.tool.load_qemu_config_from_path(qemu_config_path).await
+    }
+
+    pub(crate) async fn load_uboot_config_from_path(
+        &mut self,
+        cargo: &Cargo,
+        build_config_path: &Path,
+        uboot_config_path: &Path,
+    ) -> anyhow::Result<UbootConfig> {
+        self.seed_cargo_tool_context(cargo, build_config_path);
+        self.tool
+            .load_uboot_config_from_path(uboot_config_path)
+            .await
+    }
+
+    pub(crate) async fn load_board_run_config_from_dir(
+        &mut self,
+        cargo: &Cargo,
+        build_config_path: &Path,
+        dir: &Path,
+    ) -> anyhow::Result<BoardRunConfig> {
+        self.seed_cargo_tool_context(cargo, build_config_path);
+        self.tool.load_board_run_config_from_dir(dir).await
+    }
+
+    pub(crate) async fn load_board_run_config_from_path(
+        &mut self,
+        cargo: &Cargo,
+        build_config_path: &Path,
+        board_config_path: &Path,
+    ) -> anyhow::Result<BoardRunConfig> {
+        self.seed_cargo_tool_context(cargo, build_config_path);
+        self.tool
+            .load_board_run_config_from_path(board_config_path)
+            .await
+    }
+
+    fn seed_cargo_tool_context(&mut self, cargo: &Cargo, path: &Path) {
+        let build_config = BuildConfig {
+            system: BuildSystem::Cargo(cargo.clone()),
+        };
+        self.set_build_config_path(path.to_path_buf());
+        self.tool.ctx_mut().build_config = Some(build_config);
     }
 
     fn set_build_config_path(&mut self, path: PathBuf) {

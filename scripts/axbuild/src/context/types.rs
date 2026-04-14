@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use ostool::build::{CargoQemuAppendArgs, CargoQemuOverrideArgs};
 use serde::{Deserialize, Serialize};
 
 use super::snapshot::{CommandSnapshotFile, load_snapshot, store_snapshot};
@@ -164,14 +163,6 @@ pub struct ResolvedStarryRequest {
     pub build_info_override: Option<ArceosBuildInfo>,
     pub qemu_config: Option<PathBuf>,
     pub uboot_config: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct QemuRunConfig {
-    pub qemu_config: Option<PathBuf>,
-    pub default_args: CargoQemuOverrideArgs,
-    pub append_args: CargoQemuAppendArgs,
-    pub override_args: CargoQemuOverrideArgs,
 }
 
 impl ArceosQemuSnapshot {
