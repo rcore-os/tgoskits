@@ -35,14 +35,9 @@ pub(crate) fn resolve_build_info_path(
 }
 
 pub(crate) fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result<StarryBuildInfo> {
-    let mut build_info =
-        crate::arceos::build::load_or_create_build_info(&request.build_info_path, || {
-            StarryBuildInfo::default_starry_for_target(&request.target)
-        })?;
-    if let Some(smp) = request.smp {
-        build_info.max_cpu_num = Some(smp);
-    }
-    Ok(build_info)
+    crate::arceos::build::load_or_create_build_info(&request.build_info_path, || {
+        StarryBuildInfo::default_starry_for_target(&request.target)
+    })
 }
 
 pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Result<Cargo> {
@@ -187,7 +182,6 @@ mod tests {
             arch: arch.to_string(),
             target: target.to_string(),
             plat_dyn: None,
-            smp: None,
             debug: false,
             build_info_path: path,
             qemu_config: None,
@@ -347,7 +341,6 @@ HELLO = "world"
             arch: "x86_64".to_string(),
             target: "x86_64-unknown-none".to_string(),
             plat_dyn: None,
-            smp: None,
             debug: false,
             build_info_path: PathBuf::from("/tmp/.build.toml"),
             qemu_config: None,
@@ -440,7 +433,6 @@ HELLO = "world"
             arch: "aarch64".to_string(),
             target: "aarch64-unknown-none-softfloat".to_string(),
             plat_dyn: None,
-            smp: None,
             debug: false,
             build_info_path: PathBuf::from(
                 "/tmp/os/StarryOS/starryos/.build-aarch64-unknown-none-softfloat.toml",
@@ -472,7 +464,6 @@ HELLO = "world"
             arch: "aarch64".to_string(),
             target: "aarch64-unknown-none-softfloat".to_string(),
             plat_dyn: None,
-            smp: None,
             debug: false,
             build_info_path: PathBuf::from("/tmp/.build.toml"),
             qemu_config: None,
