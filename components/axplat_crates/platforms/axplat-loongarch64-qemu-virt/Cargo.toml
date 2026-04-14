@@ -20,13 +20,14 @@ chrono = { version = "0.4", default-features = false, optional = true }
 ax-kspin = "0.3.1"
 ax-lazyinit = "0.4.2"
 log = "0.4"
-loongArch64 = "0.2.4"
 ax-page-table-entry = "0.8.1"
-uart_16550 = "0.5"
-
 ax-config-macros = "0.4.1"
 ax-cpu = { workspace = true }
 ax-plat = { workspace = true }
+
+[target.'cfg(target_arch = "loongarch64")'.dependencies]
+loongArch64 = "0.2.4"
+uart_16550 = "0.5"
 
 [package.metadata.docs.rs]
 targets = ["loongarch64-unknown-none"]

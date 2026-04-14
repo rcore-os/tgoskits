@@ -1,9 +1,21 @@
 #![no_std]
 
-#[macro_use]
-extern crate log;
+macro_rules! loongarch64_only {
+    ($($item:item)*) => {
+        $(
+            #[cfg(target_arch = "loongarch64")]
+            $item
+        )*
+    };
+}
+
 #[macro_use]
 extern crate ax_plat;
+
+loongarch64_only! {
+    #[macro_use]
+    extern crate log;
+}
 
 pub mod config {
     //! Platform configuration module.
@@ -21,13 +33,15 @@ pub mod config {
     );
 }
 
-mod boot;
-mod console;
-mod init;
-#[cfg(feature = "irq")]
-mod irq;
-mod mem;
-#[cfg(feature = "smp")]
-mod mp;
-mod power;
-mod time;
+loongarch64_only! {
+    mod boot;
+    mod console;
+    mod init;
+    #[cfg(feature = "irq")]
+    mod irq;
+    mod mem;
+    #[cfg(feature = "smp")]
+    mod mp;
+    mod power;
+    mod time;
+}
