@@ -37,12 +37,13 @@ impl FatFilesystem {
         dev: AxBlockDevice,
         region: Option<PartitionRegion>,
     ) -> VfsResult<Filesystem> {
+        let disk = match region {
+            Some(region) => SeekableDisk::new_in_region(dev, Some(region)),
+            None => SeekableDisk::new(dev),
+        };
         let mut inner = FatFilesystemInner {
-            inner: ff::FileSystem::new(
-                SeekableDisk::new_in_region(dev, region),
-                fatfs::FsOptions::new(),
-            )
-            .expect("failed to initialize FAT filesystem"),
+            inner: ff::FileSystem::new(disk, fatfs::FsOptions::new())
+                .expect("failed to initialize FAT filesystem"),
             inode_allocator: Slab::new(),
             _pinned: PhantomPinned,
         };
