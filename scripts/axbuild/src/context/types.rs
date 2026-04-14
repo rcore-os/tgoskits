@@ -4,6 +4,7 @@ use ostool::build::{CargoQemuAppendArgs, CargoQemuOverrideArgs};
 use serde::{Deserialize, Serialize};
 
 use super::snapshot::{CommandSnapshotFile, load_snapshot, store_snapshot};
+use crate::arceos::build::ArceosBuildInfo;
 
 pub const ARCEOS_SNAPSHOT_FILE: &str = ".arceos.toml";
 pub const DEFAULT_ARCEOS_ARCH: &str = "aarch64";
@@ -155,7 +156,7 @@ pub struct StarryCommandSnapshot {
     pub uboot: StarryUbootSnapshot,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedStarryRequest {
     pub package: String,
     pub arch: String,
@@ -163,6 +164,7 @@ pub struct ResolvedStarryRequest {
     pub plat_dyn: Option<bool>,
     pub debug: bool,
     pub build_info_path: PathBuf,
+    pub build_info_override: Option<ArceosBuildInfo>,
     pub qemu_config: Option<PathBuf>,
     pub uboot_config: Option<PathBuf>,
 }
@@ -170,6 +172,7 @@ pub struct ResolvedStarryRequest {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct QemuRunConfig {
     pub qemu_config: Option<PathBuf>,
+    pub timeout_seconds: Option<u64>,
     pub default_args: CargoQemuOverrideArgs,
     pub append_args: CargoQemuAppendArgs,
     pub override_args: CargoQemuOverrideArgs,

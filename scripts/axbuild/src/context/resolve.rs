@@ -151,6 +151,7 @@ impl AppContext {
             plat_dyn,
             debug: cli.debug,
             build_info_path,
+            build_info_override: None,
             qemu_config: runtime_paths.qemu_config.clone(),
             uboot_config: runtime_paths.uboot_config.clone(),
         };

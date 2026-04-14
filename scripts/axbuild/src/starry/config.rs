@@ -65,32 +65,6 @@ pub(crate) fn write_defconfig(workspace_root: &Path, board_name: &str) -> anyhow
     Ok(build_config_path)
 }
 
-pub(crate) fn write_default_qemu_defconfig_for_target(
-    workspace_root: &Path,
-    target: &str,
-) -> anyhow::Result<PathBuf> {
-    let board = board::default_board_for_target(workspace_root, target)?.ok_or_else(|| {
-        let available = board::board_default_list(workspace_root)
-            .map(|boards| {
-                boards
-                    .into_iter()
-                    .filter(|board| board.name.starts_with("qemu-"))
-                    .map(|board| board.name)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        anyhow!(
-            "missing Starry qemu defconfig for target `{}` in {}; available qemu boards: {}",
-            target,
-            board::board_dir(workspace_root)
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|_| "os/StarryOS/configs/board".to_string()),
-            available.join(", ")
-        )
-    })?;
-    write_board_to_default_build_config(workspace_root, &board)
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -209,76 +183,6 @@ plat_dyn = false
             .to_string();
         assert!(err.contains("unknown Starry board `missing`"));
         assert!(err.contains(&board::board_dir(root.path()).unwrap().display().to_string()));
-        assert!(err.contains("qemu-aarch64"));
-    }
-
-    #[test]
-    fn write_default_qemu_defconfig_for_target_uses_matching_qemu_board() {
-        let root = tempdir().unwrap();
-        write_workspace(root.path());
-        write_board(
-            root.path(),
-            "qemu-aarch64",
-            r#"
-target = "aarch64-unknown-none-softfloat"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
-features = ["qemu"]
-log = "Warn"
-plat_dyn = false
-"#,
-        );
-        write_board(
-            root.path(),
-            "qemu-riscv64",
-            r#"
-target = "riscv64gc-unknown-none-elf"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
-features = ["qemu"]
-log = "Warn"
-plat_dyn = false
-"#,
-        );
-
-        let path =
-            write_default_qemu_defconfig_for_target(root.path(), "aarch64-unknown-none-softfloat")
-                .unwrap();
-        assert_eq!(
-            path,
-            root.path()
-                .join("os/StarryOS/starryos/.build-aarch64-unknown-none-softfloat.toml")
-        );
-        assert!(
-            fs::read_to_string(path)
-                .unwrap()
-                .contains("target = \"aarch64-unknown-none-softfloat\"")
-        );
-    }
-
-    #[test]
-    fn write_default_qemu_defconfig_for_target_reports_missing_target() {
-        let root = tempdir().unwrap();
-        write_workspace(root.path());
-        write_board(
-            root.path(),
-            "qemu-aarch64",
-            r#"
-target = "aarch64-unknown-none-softfloat"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
-features = ["qemu"]
-log = "Warn"
-plat_dyn = false
-"#,
-        );
-
-        let err = write_default_qemu_defconfig_for_target(
-            root.path(),
-            "loongarch64-unknown-none-softfloat",
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(err.contains(
-            "missing Starry qemu defconfig for target `loongarch64-unknown-none-softfloat`"
-        ));
         assert!(err.contains("qemu-aarch64"));
     }
 }

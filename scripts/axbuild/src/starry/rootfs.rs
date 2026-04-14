@@ -161,6 +161,7 @@ mod tests {
             plat_dyn: None,
             debug: false,
             build_info_path: PathBuf::from("/tmp/.build.toml"),
+            build_info_override: None,
             qemu_config: None,
             uboot_config: None,
         };

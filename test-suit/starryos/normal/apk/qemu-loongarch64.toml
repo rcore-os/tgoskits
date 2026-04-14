@@ -15,15 +15,33 @@ args = [
   "-netdev",
   "user,id=net0",
 ]
-uefi = false
-to_bin = true
-shell_prefix = "starry:~#"
+fail_regex = ['(?i)\bpanic(?:ked)?\b', 'failed:']
 shell_init_cmd = '''
-apk update && \
-apk add curl && \
-curl --version && \
+updated=0
+for attempt in 1 2 3; do
+  if apk update; then
+    updated=1
+    break
+  fi
+  echo "apk update retry ${attempt}"
+  sleep 1
+done
+[ "$updated" -eq 1 ] || {
+  printf '%s%s apk update\n' 'failed' ':'
+  exit 1
+}
+apk add curl || {
+  printf '%s%s apk add curl\n' 'failed' ':'
+  exit 1
+}
+curl --version || {
+  printf '%s%s curl --version\n' 'failed' ':'
+  exit 1
+}
 echo 'All tests passed!'
 '''
+shell_prefix = "starry:~#"
 success_regex = ["(?m)^All tests passed!\\s*$"]
-fail_regex = ['(?i)\bpanic(?:ked)?\b', 'failed:']
-timeout = 120
+timeout = 180
+to_bin = true
+uefi = false

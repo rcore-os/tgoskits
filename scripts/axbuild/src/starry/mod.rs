@@ -311,19 +311,28 @@ impl Starry {
             target
         );
 
-        config::write_default_qemu_defconfig_for_target(self.app.workspace_root(), &target)?;
-        let request = self.prepare_request(
+        let default_board = board::default_board_for_target(self.app.workspace_root(), &target)?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "missing Starry qemu defconfig for target `{target}` in tests; expected a \
+                     default qemu board config under os/StarryOS/configs/board"
+                )
+            })?;
+        let mut request = self.prepare_request(
             Self::test_build_args(&arch),
             None,
             None,
             SnapshotPersistence::Discard,
         )?;
+        request.plat_dyn = Some(default_board.build_info.plat_dyn);
+        request.build_info_override = Some(default_board.build_info.clone());
+        self.run_build_request(request.clone()).await?;
 
         let total = cases.len();
         let mut failed = Vec::new();
         for (index, case) in cases.iter().enumerate() {
             println!("[{}/{}] starry qemu {}", index + 1, total, case.name);
-            let qemu_config = test_suit::prepare_test_qemu_config(
+            let qemu_config = test_suit::prepare_test_qemu_run_config(
                 self.app.workspace_root(),
                 &request,
                 &case.qemu_config_path,
@@ -332,7 +341,7 @@ impl Starry {
             .await?;
 
             match self
-                .run_test_qemu_request(request.clone(), qemu_config, shell_init_cmd.clone())
+                .run_test_qemu_request(qemu_config, shell_init_cmd.clone())
                 .await
                 .with_context(|| format!("starry qemu test failed for case `{}`", case.name))
             {
@@ -423,33 +432,14 @@ impl Starry {
 
     async fn run_test_qemu_request(
         &mut self,
-        request: ResolvedStarryRequest,
-        qemu_config: PathBuf,
+        mut qemu_config: QemuRunConfig,
         shell_init_cmd_override: Option<String>,
     ) -> anyhow::Result<()> {
-        let cargo = build::load_cargo_config(&request)?;
+        if let Some(cmd) = shell_init_cmd_override {
+            qemu_config.override_args.shell_init_cmd = Some(cmd);
+        }
 
-        // Use override_args if shell_init_cmd is provided
-        let override_args = if let Some(cmd) = shell_init_cmd_override {
-            CargoQemuOverrideArgs {
-                shell_init_cmd: Some(cmd),
-                ..Default::default()
-            }
-        } else {
-            CargoQemuOverrideArgs::default()
-        };
-
-        self.app
-            .qemu(
-                cargo,
-                request.build_info_path,
-                QemuRunConfig {
-                    qemu_config: Some(qemu_config),
-                    override_args,
-                    ..Default::default()
-                },
-            )
-            .await
+        self.app.qemu_run_only(qemu_config).await
     }
 
     async fn run_build_request(&mut self, request: ResolvedStarryRequest) -> anyhow::Result<()> {

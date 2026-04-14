@@ -35,6 +35,10 @@ pub(crate) fn resolve_build_info_path(
 }
 
 pub(crate) fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result<StarryBuildInfo> {
+    if let Some(build_info) = &request.build_info_override {
+        return Ok(build_info.clone());
+    }
+
     crate::arceos::build::load_or_create_build_info(&request.build_info_path, || {
         StarryBuildInfo::default_starry_for_target(&request.target)
     })
@@ -184,6 +188,7 @@ mod tests {
             plat_dyn: None,
             debug: false,
             build_info_path: path,
+            build_info_override: None,
             qemu_config: None,
             uboot_config: None,
         }
@@ -297,6 +302,24 @@ HELLO = "world"
     }
 
     #[test]
+    fn load_build_info_prefers_request_override_without_writing_file() {
+        let root = tempdir().unwrap();
+        let path = root.path().join(".build-target.toml");
+        let mut request = request(path.clone(), "aarch64", "aarch64-unknown-none-softfloat");
+        request.build_info_override = Some(StarryBuildInfo {
+            log: LogLevel::Info,
+            features: vec!["net".to_string()],
+            ..StarryBuildInfo::default_starry_for_target("aarch64-unknown-none-softfloat")
+        });
+
+        let build_info = load_build_info(&request).unwrap();
+
+        assert_eq!(build_info.log, LogLevel::Info);
+        assert_eq!(build_info.features, vec!["net".to_string()]);
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn patch_starry_cargo_config_injects_required_features_and_env() {
         let request = request(
             PathBuf::from("/tmp/.build.toml"),
@@ -343,6 +366,7 @@ HELLO = "world"
             plat_dyn: None,
             debug: false,
             build_info_path: PathBuf::from("/tmp/.build.toml"),
+            build_info_override: None,
             qemu_config: None,
             uboot_config: None,
         };
@@ -440,6 +464,7 @@ HELLO = "world"
             build_info_path: PathBuf::from(
                 "/tmp/os/StarryOS/starryos/.build-aarch64-unknown-none-softfloat.toml",
             ),
+            build_info_override: None,
             qemu_config: None,
             uboot_config: None,
         };
@@ -460,6 +485,7 @@ HELLO = "world"
         );
     }
 
+    #[test]
     fn ensure_starry_bin_arg_adds_bin_for_starryos_package() {
         let mut args = Vec::new();
 
