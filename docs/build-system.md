@@ -431,7 +431,7 @@ ensure_rootfs_in_target_dir(workspace_root, arch, target)
 
 ### 2.14 `starry test qemu` — 测试执行流程
 
-StarryOS 的 QEMU 测试直接构建 `starryos`，并从 `test-suit/starryos/normal/<case>/qemu-<arch>.toml` 或 `test-suit/starryos/stress/<case>/qemu-<arch>.toml` 发现测例。每次测试都会复制一份 rootfs 副本用于隔离，避免测试过程污染原始镜像。测试还支持通过 `--shell-init-cmd` 注入自定义 shell 初始化命令，以及通过 `--timeout` 控制超时行为。
+StarryOS 的 QEMU 测试直接构建 `starryos`，并从 `test-suit/starryos/normal/<case>/qemu-<arch>.toml` 或 `test-suit/starryos/stress/<case>/qemu-<arch>.toml` 发现测例。测试会先确保共享 rootfs 已准备好，然后把 case 的 `qemu-<arch>.toml` 原样作为显式 `qemu_config` 交给 `ostool`；`${workspace}` / `${workspaceFolder}`、`shell_init_cmd`、`success_regex`、`fail_regex`、`timeout` 都由该配置文件直接决定。
 
 ```
 Starry::test_qemu(args)
@@ -440,15 +440,11 @@ Starry::test_qemu(args)
   ├── discover_qemu_cases(arch, args.test_case, group)         ← 在当前组发现/筛选 case
   ├── write_default_qemu_defconfig_for_target(target)
   ├── prepare_request(test_build_args(arch), ...)             ← package 固定是 starryos
+  ├── ensure_rootfs_in_target_dir(...)                         ← 确保共享 rootfs 存在
+  ├── load_cargo_config(request)                               ← 准备基础 Cargo 配置
   ├── for case in cases
-  │     ├── prepare_test_qemu_config(case.qemu_config_path, ...)   ← 生成隔离测试配置
-  │     │     ├── ensure_rootfs_in_target_dir(...)                ← 确保 base rootfs 存在
-  │     │     ├── 复制 base rootfs → disk-test-{pid}-{timestamp}.img
-  │     │     ├── 读取 test-suit/starryos/<group>/<case>/qemu-{arch}.toml
-  │     │     ├── 替换 rootfs 路径为隔离副本路径
-  │     │     └── 处理 timeout 覆盖
-  │     ├── resolve_shell_init_cmd(args.shell_init_cmd)      ← 可选覆盖 case 配置
-  │     └── run_test_qemu_request(request, qemu_config, shell_init_cmd)
+  │     └── app.qemu(cargo, request.build_info_path, case.qemu_config_path)
+  │            └── ostool 直接读取 case qemu 配置并运行
   └── finalize_qemu_case_run(...)                            ← 按 case 汇总结果
 ```
 
@@ -459,10 +455,8 @@ Starry::test_qemu(args)
 | `-t, --target <arch>` | 目标架构（必填） |
 | `-c, --test-case <case>` | 只运行指定测例；不传则运行该架构下全部匹配测例 |
 | `--stress` | 切换到 `stress` 组；默认运行 `normal` 组 |
-| `--shell-init-cmd <cmd\|file>` | Shell 初始化命令或命令文件路径 |
-| `--timeout <seconds>` | 测试超时（0=禁用超时） |
 
-**关键设计**：测试使用 rootfs 的**隔离副本**，并把运行判据下沉到分组测例目录，避免再维护单独的 Starry 测试 crate。
+**关键设计**：测试把运行判据完全下沉到分组测例目录，并直接透传 case `qemu-<arch>.toml` 给 `ostool`，不再由 `axbuild` 外部改写测试配置。
 
 ---
 
@@ -781,7 +775,7 @@ image::pull_image(ctx, overrides, ArgsPull { image, output_dir, no_extract })
 | `axvisor test qemu --target aarch64` | 始终 | `qemu_aarch64_linux` (Linux Guest) | 测试用 Guest |
 | `axvisor test qemu --target x86_64` | 始终 | `qemu_x86_64_nimbos` (NIMBOS Guest) | 测试用 Guest |
 | `starry qemu` | 始终 | StarryOS rootfs (来自 GitHub Releases) | 运行时磁盘 |
-| `starry test qemu` | 始终 | StarryOS rootfs (隔离副本) | 测试用磁盘 |
+| `starry test qemu` | 始终 | StarryOS rootfs (共享 target 镜像) | 测试用磁盘 |
 | `starry rootfs` | 始终 | StarryOS rootfs | 单独准备 |
 
 **预定义 Image Spec 与架构映射**：

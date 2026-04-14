@@ -172,7 +172,6 @@ pub struct ResolvedStarryRequest {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct QemuRunConfig {
     pub qemu_config: Option<PathBuf>,
-    pub timeout_seconds: Option<u64>,
     pub default_args: CargoQemuOverrideArgs,
     pub append_args: CargoQemuAppendArgs,
     pub override_args: CargoQemuOverrideArgs,

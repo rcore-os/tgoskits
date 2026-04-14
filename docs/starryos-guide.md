@@ -140,7 +140,7 @@ cargo starry test qemu --stress -t riscv64
 cargo starry test qemu --stress -t riscv64 -c stress-ng-0
 ```
 
-这里直接构建并运行的是 `starryos` 包本体；`test-suit/starryos/normal/<case>/` 和 `test-suit/starryos/stress/<case>/` 负责提供 `qemu-<arch>.toml` 测试配置。默认只跑 `normal` 组，传 `--stress` 后只跑 `stress` 组，`-c/--test-case` 只在当前组内筛选单个 case。
+这里直接构建并运行的是 `starryos` 包本体；`test-suit/starryos/normal/<case>/` 和 `test-suit/starryos/stress/<case>/` 负责提供 `qemu-<arch>.toml` 测试配置。默认只跑 `normal` 组，传 `--stress` 后只跑 `stress` 组，`-c/--test-case` 只在当前组内筛选单个 case。测试命令会先自动准备共享 rootfs，再把对应 case 的 `qemu-<arch>.toml` 直接交给 `ostool` 处理，因此 `shell_init_cmd`、正则判据和 `timeout` 都以 case 配置文件为准。
 
 ### 本地 Makefile 路径
 

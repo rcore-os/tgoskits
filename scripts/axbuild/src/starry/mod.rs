@@ -1,7 +1,4 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::path::PathBuf;
 
 use anyhow::Context;
 use clap::{Args, Subcommand};
@@ -123,14 +120,6 @@ pub struct ArgsTestQemu {
     pub test_case: Option<String>,
     #[arg(long, help = "Run stress StarryOS qemu test cases")]
     pub stress: bool,
-    #[arg(long, value_name = "CMD_OR_FILE")]
-    pub shell_init_cmd: Option<String>,
-    #[arg(
-        long,
-        value_name = "SECONDS",
-        help = "Test timeout in seconds (0 to disable timeout)"
-    )]
-    pub timeout: Option<u64>,
 }
 
 #[derive(Args, Debug, Clone, Default)]
@@ -255,31 +244,6 @@ impl Starry {
             },
         }
     }
-
-    fn resolve_shell_init_cmd(input: Option<String>) -> anyhow::Result<Option<String>> {
-        match input {
-            None => Ok(None),
-            Some(value) => {
-                let path = Path::new(&value);
-                if path.exists() {
-                    let content = fs::read_to_string(path).with_context(|| {
-                        format!("failed to read shell init cmd file: {}", path.display())
-                    })?;
-                    // Join multiple commands with &&
-                    let content = content
-                        .lines()
-                        .map(|line| line.trim())
-                        .filter(|line| !line.is_empty())
-                        .collect::<Vec<_>>()
-                        .join(" && ");
-                    Ok(Some(content))
-                } else {
-                    Ok(Some(value))
-                }
-            }
-        }
-    }
-
     async fn test(&mut self, args: ArgsTest) -> anyhow::Result<()> {
         match args.command {
             TestCommand::Qemu(args) => self.test_qemu(args).await,
@@ -301,7 +265,6 @@ impl Starry {
             test_group,
         )?;
         let package = crate::context::STARRY_PACKAGE;
-        let shell_init_cmd = Self::resolve_shell_init_cmd(args.shell_init_cmd)?;
 
         println!(
             "running starry {} qemu tests for package {} on arch: {} (target: {})",
@@ -326,22 +289,26 @@ impl Starry {
         )?;
         request.plat_dyn = Some(default_board.build_info.plat_dyn);
         request.build_info_override = Some(default_board.build_info.clone());
-        self.run_build_request(request.clone()).await?;
+        rootfs::ensure_rootfs_in_target_dir(
+            self.app.workspace_root(),
+            &request.arch,
+            &request.target,
+        )
+        .await?;
+        let cargo = build::load_cargo_config(&request)?;
 
         let total = cases.len();
         let mut failed = Vec::new();
         for (index, case) in cases.iter().enumerate() {
             println!("[{}/{}] starry qemu {}", index + 1, total, case.name);
-            let qemu_config = test_suit::prepare_test_qemu_run_config(
-                self.app.workspace_root(),
-                &request,
-                &case.qemu_config_path,
-                args.timeout,
-            )
-            .await?;
 
             match self
-                .run_test_qemu_request(qemu_config, shell_init_cmd.clone())
+                .app
+                .qemu(
+                    cargo.clone(),
+                    request.build_info_path.clone(),
+                    Self::test_qemu_run_config(case.qemu_config_path.clone()),
+                )
                 .await
                 .with_context(|| format!("starry qemu test failed for case `{}`", case.name))
             {
@@ -411,6 +378,13 @@ impl Starry {
         })
     }
 
+    fn test_qemu_run_config(qemu_config: PathBuf) -> QemuRunConfig {
+        QemuRunConfig {
+            qemu_config: Some(qemu_config),
+            ..Default::default()
+        }
+    }
+
     async fn run_qemu_request(&mut self, request: ResolvedStarryRequest) -> anyhow::Result<()> {
         let qemu_args = rootfs::default_qemu_args(self.app.workspace_root(), &request).await?;
         self.run_qemu_request_with_args(request, qemu_args).await
@@ -428,18 +402,6 @@ impl Starry {
             move |request| Self::qemu_run_config(request.qemu_config.clone(), qemu_args),
         )
         .await
-    }
-
-    async fn run_test_qemu_request(
-        &mut self,
-        mut qemu_config: QemuRunConfig,
-        shell_init_cmd_override: Option<String>,
-    ) -> anyhow::Result<()> {
-        if let Some(cmd) = shell_init_cmd_override {
-            qemu_config.override_args.shell_init_cmd = Some(cmd);
-        }
-
-        self.app.qemu_run_only(qemu_config).await
     }
 
     async fn run_build_request(&mut self, request: ResolvedStarryRequest) -> anyhow::Result<()> {
@@ -547,7 +509,6 @@ impl Default for Starry {
 #[cfg(test)]
 mod tests {
     use clap::Parser;
-    use tempfile::tempdir;
 
     use super::*;
 
@@ -627,7 +588,7 @@ mod tests {
     }
 
     #[test]
-    fn command_parses_test_qemu_with_shell_init_cmd() {
+    fn command_parses_test_qemu_with_case_and_stress() {
         #[derive(Parser)]
         struct Cli {
             #[command(subcommand)]
@@ -635,18 +596,7 @@ mod tests {
         }
 
         let cli = Cli::try_parse_from([
-            "starry",
-            "test",
-            "qemu",
-            "-t",
-            "x86_64",
-            "-c",
-            "smoke",
-            "--stress",
-            "--shell-init-cmd",
-            "echo 'test'",
-            "--timeout",
-            "10",
+            "starry", "test", "qemu", "-t", "x86_64", "-c", "smoke", "--stress",
         ])
         .unwrap();
 
@@ -656,8 +606,6 @@ mod tests {
                     assert_eq!(args.target, "x86_64");
                     assert_eq!(args.test_case, Some("smoke".to_string()));
                     assert!(args.stress);
-                    assert_eq!(args.shell_init_cmd, Some("echo 'test'".to_string()));
-                    assert_eq!(args.timeout, Some(10));
                 }
                 _ => panic!("expected qemu test command"),
             },
@@ -666,26 +614,55 @@ mod tests {
     }
 
     #[test]
-    fn resolve_shell_init_cmd_returns_none_for_none_input() {
-        let result = Starry::resolve_shell_init_cmd(None).unwrap();
-        assert!(result.is_none());
+    fn command_rejects_removed_shell_init_cmd_flag() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        assert!(
+            Cli::try_parse_from([
+                "starry",
+                "test",
+                "qemu",
+                "--target",
+                "x86_64",
+                "--shell-init-cmd",
+                "echo test",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
-    fn resolve_shell_init_cmd_returns_value_for_nonexistent_path() {
-        let result =
-            Starry::resolve_shell_init_cmd(Some("echo 'direct command'".to_string())).unwrap();
-        assert_eq!(result, Some("echo 'direct command'".to_string()));
+    fn command_rejects_removed_timeout_flag() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        assert!(
+            Cli::try_parse_from([
+                "starry",
+                "test",
+                "qemu",
+                "--target",
+                "x86_64",
+                "--timeout",
+                "10",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
-    fn resolve_shell_init_cmd_reads_file_content() {
-        let dir = tempdir().unwrap();
-        let file = dir.path().join("test-cmd.txt");
-        fs::write(&file, "echo 'from file'\nls -la\n").unwrap();
+    fn test_qemu_run_config_uses_case_path_verbatim() {
+        let path = PathBuf::from("test-suit/starryos/normal/smoke/qemu-riscv64.toml");
+        let config = Starry::test_qemu_run_config(path.clone());
 
-        let result = Starry::resolve_shell_init_cmd(Some(file.display().to_string())).unwrap();
-        assert_eq!(result, Some("echo 'from file' && ls -la".to_string()));
+        assert_eq!(config.qemu_config, Some(path));
     }
 
     #[test]

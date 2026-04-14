@@ -1,16 +1,10 @@
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::path::{Path, PathBuf};
 
-use anyhow::{Context, anyhow};
 use ostool::{
     Tool, ToolConfig,
     board::RunBoardArgs,
     build::{CargoQemuRunnerArgs, CargoRunnerKind, CargoUbootRunnerArgs, config::Cargo},
-    run::qemu::RunQemuArgs,
 };
-use tokio::time;
 
 mod arch;
 mod resolve;
@@ -114,21 +108,6 @@ impl AppContext {
             .await
     }
 
-    pub(crate) async fn qemu_run_only(&mut self, qemu: QemuRunConfig) -> anyhow::Result<()> {
-        self.run_qemu_with_timeout(
-            RunQemuArgs {
-                qemu_config: qemu.qemu_config,
-                dtb_dump: false,
-                show_output: true,
-            },
-            qemu.default_args,
-            qemu.append_args,
-            qemu.override_args,
-            qemu.timeout_seconds,
-        )
-        .await
-    }
-
     pub(crate) async fn uboot(
         &mut self,
         cargo: Cargo,
@@ -175,27 +154,6 @@ impl AppContext {
     fn set_build_config_path(&mut self, path: PathBuf) {
         self.build_config_path = Some(path.clone());
         self.tool.ctx_mut().build_config_path = Some(path);
-    }
-
-    async fn run_qemu_with_timeout(
-        &mut self,
-        run_args: RunQemuArgs,
-        default_args: ostool::build::CargoQemuOverrideArgs,
-        append_args: ostool::build::CargoQemuAppendArgs,
-        override_args: ostool::build::CargoQemuOverrideArgs,
-        timeout_seconds: Option<u64>,
-    ) -> anyhow::Result<()> {
-        let run =
-            self.tool
-                .run_qemu_with_layers(run_args, default_args, append_args, override_args);
-
-        match timeout_seconds.filter(|seconds| *seconds > 0) {
-            Some(seconds) => time::timeout(Duration::from_secs(seconds), run)
-                .await
-                .map_err(|_| anyhow!("QEMU timed out after {seconds} seconds"))?
-                .with_context(|| format!("QEMU run failed before timeout ({seconds} seconds)")),
-            None => run.await,
-        }
     }
 }
 
