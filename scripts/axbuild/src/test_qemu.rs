@@ -86,7 +86,8 @@ const ORANGEPI_5_PLUS_LINUX_VMCONFIGS: &[&str] =
     &["os/axvisor/configs/vms/linux-aarch64-orangepi5p-smp1.toml"];
 const ROC_RK3568_PC_LINUX_VMCONFIGS: &[&str] =
     &["os/axvisor/configs/vms/linux-aarch64-rk3568-smp1.toml"];
-const RDK_S100_LINUX_VMCONFIGS: &[&str] = &["os/axvisor/configs/board-test/linux-aarch64-s100-ci.toml"];
+const RDK_S100_LINUX_VMCONFIGS: &[&str] =
+    &["os/axvisor/configs/board-test/linux-aarch64-s100-ci.toml"];
 
 const AXVISOR_BOARD_TEST_GROUPS: &[AxvisorBoardTestGroup] = &[
     AxvisorBoardTestGroup {
