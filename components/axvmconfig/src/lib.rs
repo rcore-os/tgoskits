@@ -350,6 +350,9 @@ pub struct VMKernelConfig {
     pub disk_path: Option<String>,
     /// Memory Information
     pub memory_regions: Vec<VmMemConfig>,
+    /// Number of memory_regions that came directly from the user-provided config.
+    #[serde(skip)]
+    pub configured_memory_region_count: usize,
 }
 
 /// Specifies how the VM should handle interrupts and interrupt controllers.
@@ -403,10 +406,11 @@ pub struct AxVMCrateConfig {
 impl AxVMCrateConfig {
     /// Deserialize the toml string to `AxVMCrateConfig`.
     pub fn from_toml(raw_cfg_str: &str) -> AxResult<Self> {
-        let config: AxVMCrateConfig = toml::from_str(raw_cfg_str).map_err(|err| {
+        let mut config: AxVMCrateConfig = toml::from_str(raw_cfg_str).map_err(|err| {
             warn!("Config TOML parse error {:?}", err.message());
             ax_errno::ax_err_type!(InvalidInput, alloc::format!("Error details {err:?}"))
         })?;
+        config.kernel.configured_memory_region_count = config.kernel.memory_regions.len();
         Ok(config)
     }
 }

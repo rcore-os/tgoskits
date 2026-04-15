@@ -276,6 +276,15 @@ fn add_memory_node(
     crate_config: &AxVMCrateConfig,
     new_fdt: &mut FdtWriter,
 ) {
+    let configured_region_count = if crate_config.kernel.configured_memory_region_count == 0 {
+        crate_config.kernel.memory_regions.len()
+    } else {
+        crate_config
+            .kernel
+            .configured_memory_region_count
+            .min(crate_config.kernel.memory_regions.len())
+    };
+
     if new_memory.len() != crate_config.kernel.memory_regions.len() {
         warn!(
             "VM memory region count {} does not match config region count {}; filtering /memory by zipped order",
@@ -285,14 +294,13 @@ fn add_memory_node(
     }
 
     let mut new_value: Vec<u32> = Vec::new();
-    for (mem, cfg) in new_memory
-        .iter()
-        .zip(crate_config.kernel.memory_regions.iter())
-    {
-        if cfg.map_type == VmMemMappingType::MapReserved {
-            continue;
-        }
-
+    for (mem, cfg) in new_memory.iter().take(configured_region_count).zip(
+        crate_config
+            .kernel
+            .memory_regions
+            .iter()
+            .take(configured_region_count),
+    ) {
         let gpa = mem.gpa.as_usize() as u64;
         let size = mem.size() as u64;
         new_value.push((gpa >> 32) as u32);
