@@ -129,6 +129,24 @@ git rebase upstream/main
 
 **Please keep PRs as small as possible** to make them easier to review and maintain. A PR should focus on one specific feature or fix.
 
+#### PR Title Convention
+
+PR titles should also follow Conventional Commits style:
+
+```text
+<type>(<scope>): <subject>
+```
+
+Prefer the primary affected crate name as the `scope` when one crate clearly dominates the change. For broader changes without a single main crate, repository or subsystem scopes such as `ci`, `repo`, or `docs` are also acceptable.
+
+**Examples**:
+
+```text
+feat(axbuild): add Starry remote board test flow
+fix(starry-process): correct tty session cleanup
+chore(ci): split Starry self-hosted board matrix
+```
+
 #### PR Description
 
 When creating a PR, please:
