@@ -262,7 +262,10 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
                 // TODO: We need to support dynamically changing O_APPEND flag
                 // For now, log a warning if there's a mismatch
                 if has_append != wants_append {
-                    warn!("F_SETFL: O_APPEND flag change not yet supported (current: {}, wants: {})", has_append, wants_append);
+                    warn!(
+                        "F_SETFL: O_APPEND flag change not yet supported (current: {}, wants: {})",
+                        has_append, wants_append
+                    );
                 }
             }
 
