@@ -509,7 +509,7 @@ dependencies = [
 
 [[package]]
 name = "ax-alloc"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-allocator",
  "ax-errno",
@@ -540,7 +540,7 @@ dependencies = [
 
 [[package]]
 name = "ax-api"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -584,7 +584,7 @@ dependencies = [
 
 [[package]]
 name = "ax-config"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-config-macros",
  "const-str",
@@ -662,7 +662,7 @@ dependencies = [
 
 [[package]]
 name = "ax-display"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-driver",
  "ax-lazyinit",
@@ -672,7 +672,7 @@ dependencies = [
 
 [[package]]
 name = "ax-dma"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-alloc",
  "ax-allocator",
@@ -687,7 +687,7 @@ dependencies = [
 
 [[package]]
 name = "ax-driver"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -790,7 +790,7 @@ dependencies = [
 
 [[package]]
 name = "ax-feat"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -812,7 +812,7 @@ dependencies = [
 
 [[package]]
 name = "ax-fs"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-cap-access",
  "ax-driver",
@@ -840,7 +840,7 @@ dependencies = [
 
 [[package]]
 name = "ax-fs-ng"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-alloc",
  "ax-driver",
@@ -884,7 +884,7 @@ dependencies = [
 
 [[package]]
 name = "ax-hal"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -948,7 +948,7 @@ dependencies = [
 
 [[package]]
 name = "ax-input"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-driver",
  "ax-lazyinit",
@@ -972,7 +972,7 @@ dependencies = [
 
 [[package]]
 name = "ax-ipi"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-config",
  "ax-hal",
@@ -1005,7 +1005,7 @@ version = "0.4.2"
 
 [[package]]
 name = "ax-libc"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-errno",
  "ax-feat",
@@ -1020,7 +1020,7 @@ version = "0.5.0"
 
 [[package]]
 name = "ax-log"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-crate-interface",
  "ax-kspin",
@@ -1044,7 +1044,7 @@ dependencies = [
 
 [[package]]
 name = "ax-mm"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-alloc",
  "ax-errno",
@@ -1059,7 +1059,7 @@ dependencies = [
 
 [[package]]
 name = "ax-net"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-driver",
  "ax-errno",
@@ -1076,7 +1076,7 @@ dependencies = [
 
 [[package]]
 name = "ax-net-ng"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -1296,7 +1296,7 @@ dependencies = [
 
 [[package]]
 name = "ax-posix-api"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -1326,7 +1326,7 @@ dependencies = [
 
 [[package]]
 name = "ax-runtime"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -1369,7 +1369,7 @@ dependencies = [
 
 [[package]]
 name = "ax-std"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-api",
  "ax-errno",
@@ -1383,7 +1383,7 @@ dependencies = [
 
 [[package]]
 name = "ax-sync"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-kspin",
  "ax-sync",
@@ -1394,7 +1394,7 @@ dependencies = [
 
 [[package]]
 name = "ax-task"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-config",
  "ax-cpumask",
@@ -1642,7 +1642,7 @@ dependencies = [
 
 [[package]]
 name = "axplat-dyn"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "ax-alloc",
@@ -7467,7 +7467,7 @@ dependencies = [
 
 [[package]]
 name = "starry-kernel"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -7586,7 +7586,7 @@ dependencies = [
 
 [[package]]
 name = "starryos"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "ax-feat",
@@ -7856,7 +7856,7 @@ checksum = "e5416993d37cd34e93dbb9ca8777dda4d0c6e307661c5d519fd88e2a70a1f20b"
 
 [[package]]
 name = "tg-xtask"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "axbuild",

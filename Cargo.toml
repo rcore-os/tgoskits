@@ -1,6 +1,6 @@
 [workspace.package]
 edition = "2024"
-version = "0.5.0"
+version = "0.5.1"
 authors = ["RCore Team <yuchen@tsinghua.edu.cn>"]
 license = "Apache-2.0"
 repository = "https://github.com/rcore-os/tgoskits"
@@ -291,33 +291,33 @@ impl-weak-traits = { path = "components/crate_interface/test_crates/impl-weak-tr
 [workspace.dependencies]
 # === os/arceos crates (0.3.0-preview.3) ===
 # ulib
-ax-std = { path = "os/arceos/ulib/axstd", version = "0.5.0" }
-ax-libc = { path = "os/arceos/ulib/axlibc", version = "0.5.0" }
+ax-std = { path = "os/arceos/ulib/axstd", version = "0.5.1" }
+ax-libc = { path = "os/arceos/ulib/axlibc", version = "0.5.1" }
 
 # api
-ax-api = { path = "os/arceos/api/arceos_api", version = "0.5.0" }
-ax-posix-api = { path = "os/arceos/api/arceos_posix_api", version = "0.5.0" }
-ax-feat = { path = "os/arceos/api/axfeat", version = "0.5.0" }
+ax-api = { path = "os/arceos/api/arceos_api", version = "0.5.1" }
+ax-posix-api = { path = "os/arceos/api/arceos_posix_api", version = "0.5.1" }
+ax-feat = { path = "os/arceos/api/axfeat", version = "0.5.1" }
 
 # modules
-ax-alloc = { path = "os/arceos/modules/axalloc", version = "0.5.0" }
-ax-config = { path = "os/arceos/modules/axconfig", version = "0.5.0" }
-ax-display = { path = "os/arceos/modules/axdisplay", version = "0.5.0" }
-ax-dma = { path = "os/arceos/modules/axdma", version = "0.5.0" }
-ax-driver = { path = "os/arceos/modules/axdriver", version = "0.5.0" }
-ax-fs = { path = "os/arceos/modules/axfs", version = "0.5.0" }
-ax-fs-ng = { path = "os/arceos/modules/axfs-ng", version = "0.5.0" }
-ax-hal = { path = "os/arceos/modules/axhal", version = "0.5.0" }
-ax-input = { path = "os/arceos/modules/axinput", version = "0.5.0" }
-ax-ipi = { path = "os/arceos/modules/axipi", version = "0.5.0" }
-ax-log = { path = "os/arceos/modules/axlog", version = "0.5.0" }
-ax-mm = { path = "os/arceos/modules/axmm", version = "0.5.0" }
-ax-net = { path = "os/arceos/modules/axnet", version = "0.5.0" }
-ax-net-ng = { path = "os/arceos/modules/axnet-ng", version = "0.5.0" }
+ax-alloc = { path = "os/arceos/modules/axalloc", version = "0.5.1" }
+ax-config = { path = "os/arceos/modules/axconfig", version = "0.5.1" }
+ax-display = { path = "os/arceos/modules/axdisplay", version = "0.5.1" }
+ax-dma = { path = "os/arceos/modules/axdma", version = "0.5.1" }
+ax-driver = { path = "os/arceos/modules/axdriver", version = "0.5.1" }
+ax-fs = { path = "os/arceos/modules/axfs", version = "0.5.1" }
+ax-fs-ng = { path = "os/arceos/modules/axfs-ng", version = "0.5.1" }
+ax-hal = { path = "os/arceos/modules/axhal", version = "0.5.1" }
+ax-input = { path = "os/arceos/modules/axinput", version = "0.5.1" }
+ax-ipi = { path = "os/arceos/modules/axipi", version = "0.5.1" }
+ax-log = { path = "os/arceos/modules/axlog", version = "0.5.1" }
+ax-mm = { path = "os/arceos/modules/axmm", version = "0.5.1" }
+ax-net = { path = "os/arceos/modules/axnet", version = "0.5.1" }
+ax-net-ng = { path = "os/arceos/modules/axnet-ng", version = "0.5.1" }
 axplat-dyn = { path = "platform/axplat-dyn", version = "0.5.0", default-features = false }
-ax-runtime = { path = "os/arceos/modules/axruntime", version = "0.5.0" }
-ax-sync = { path = "os/arceos/modules/axsync", version = "0.5.0" }
-ax-task = { path = "os/arceos/modules/axtask", version = "0.5.0" }
+ax-runtime = { path = "os/arceos/modules/axruntime", version = "0.5.1" }
+ax-sync = { path = "os/arceos/modules/axsync", version = "0.5.1" }
+ax-task = { path = "os/arceos/modules/axtask", version = "0.5.1" }
 
 # === components (actual versions) ===
 axaddrspace = { path = "components/axaddrspace", version = "0.5.1" }

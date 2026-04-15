@@ -230,13 +230,13 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 [[package]]
 name = "ax-alloc"
 version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0c91f20f0017b3d40cf420959652af5f5ec93b4f74087e6a844ea0528be800d"
 dependencies = [
- "ax-allocator",
  "ax-errno",
  "ax-kspin",
  "ax-memory-addr",
  "ax-percpu",
- "axbacktrace",
  "buddy-slab-allocator",
  "cfg-if",
  "log",
@@ -245,14 +245,14 @@ dependencies = [
 
 [[package]]
 name = "ax-alloc"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0c91f20f0017b3d40cf420959652af5f5ec93b4f74087e6a844ea0528be800d"
+version = "0.5.1"
 dependencies = [
+ "ax-allocator",
  "ax-errno",
  "ax-kspin",
  "ax-memory-addr",
  "ax-percpu",
+ "axbacktrace",
  "buddy-slab-allocator",
  "cfg-if",
  "log",
@@ -275,9 +275,9 @@ dependencies = [
 
 [[package]]
 name = "ax-api"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
- "ax-alloc 0.5.0",
+ "ax-alloc 0.5.1",
  "ax-config",
  "ax-display",
  "ax-dma",
@@ -325,7 +325,7 @@ dependencies = [
 
 [[package]]
 name = "ax-config"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-config-macros",
  "const-str",
@@ -417,7 +417,7 @@ dependencies = [
 
 [[package]]
 name = "ax-display"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-driver",
  "ax-lazyinit",
@@ -427,9 +427,9 @@ dependencies = [
 
 [[package]]
 name = "ax-dma"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
- "ax-alloc 0.5.0",
+ "ax-alloc 0.5.1",
  "ax-allocator",
  "ax-config",
  "ax-hal",
@@ -442,9 +442,9 @@ dependencies = [
 
 [[package]]
 name = "ax-driver"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
- "ax-alloc 0.5.0",
+ "ax-alloc 0.5.1",
  "ax-config",
  "ax-crate-interface",
  "ax-dma",
@@ -562,9 +562,9 @@ dependencies = [
 
 [[package]]
 name = "ax-feat"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
- "ax-alloc 0.5.0",
+ "ax-alloc 0.5.1",
  "ax-config",
  "ax-display",
  "ax-driver",
@@ -584,7 +584,7 @@ dependencies = [
 
 [[package]]
 name = "ax-fs"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-cap-access",
  "ax-driver",
@@ -614,9 +614,9 @@ dependencies = [
 
 [[package]]
 name = "ax-fs-ng"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
- "ax-alloc 0.5.0",
+ "ax-alloc 0.5.1",
  "ax-driver",
  "ax-errno",
  "ax-hal",
@@ -662,9 +662,9 @@ dependencies = [
 
 [[package]]
 name = "ax-hal"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
- "ax-alloc 0.5.0",
+ "ax-alloc 0.5.1",
  "ax-config",
  "ax-cpu",
  "ax-kernel-guard",
@@ -728,7 +728,7 @@ dependencies = [
 
 [[package]]
 name = "ax-input"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-driver",
  "ax-lazyinit",
@@ -756,7 +756,7 @@ dependencies = [
 
 [[package]]
 name = "ax-ipi"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-config",
  "ax-hal",
@@ -794,7 +794,7 @@ checksum = "17904aa9e23afa2e032c84631302d9b3b03d7170b74aafc5eb9951ab369f17df"
 
 [[package]]
 name = "ax-libc"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-errno",
  "ax-feat",
@@ -811,7 +811,7 @@ checksum = "cb6a0a115c3ecfd45184638e1bdfb87aee180eeb86701773804ed6421d21ca91"
 
 [[package]]
 name = "ax-log"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-crate-interface",
  "ax-kspin",
@@ -839,9 +839,9 @@ dependencies = [
 
 [[package]]
 name = "ax-mm"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
- "ax-alloc 0.5.0",
+ "ax-alloc 0.5.1",
  "ax-errno",
  "ax-hal",
  "ax-kspin",
@@ -854,7 +854,7 @@ dependencies = [
 
 [[package]]
 name = "ax-net"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-driver",
  "ax-errno",
@@ -871,7 +871,7 @@ dependencies = [
 
 [[package]]
 name = "ax-net-ng"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -1119,9 +1119,9 @@ dependencies = [
 
 [[package]]
 name = "ax-posix-api"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
- "ax-alloc 0.5.0",
+ "ax-alloc 0.5.1",
  "ax-config",
  "ax-errno",
  "ax-feat",
@@ -1151,9 +1151,9 @@ dependencies = [
 
 [[package]]
 name = "ax-runtime"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
- "ax-alloc 0.5.0",
+ "ax-alloc 0.5.1",
  "ax-config",
  "ax-crate-interface",
  "ax-ctor-bare",
@@ -1196,7 +1196,7 @@ dependencies = [
 
 [[package]]
 name = "ax-std"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-api",
  "ax-errno",
@@ -1210,7 +1210,7 @@ dependencies = [
 
 [[package]]
 name = "ax-sync"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-kspin",
  "ax-sync",
@@ -1221,7 +1221,7 @@ dependencies = [
 
 [[package]]
 name = "ax-task"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ax-config",
  "ax-cpumask",
@@ -1318,7 +1318,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29dc46d3f010db4500edadbf221fe4c49fc0d8c5b60a82d181d47b9f3f62e5cd"
 dependencies = [
  "anyhow",
- "ax-alloc 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "ax-alloc 0.5.0",
  "ax-config-macros",
  "ax-cpu",
  "ax-driver-base",
