@@ -33,6 +33,16 @@ pub(crate) struct StarryQemuCase {
     pub(crate) qemu_config_path: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StarryBoardTestGroup {
+    pub(crate) name: String,
+    pub(crate) board_name: String,
+    pub(crate) arch: String,
+    pub(crate) target: String,
+    pub(crate) build_config_path: PathBuf,
+    pub(crate) board_test_config_path: PathBuf,
+}
+
 pub(crate) fn parse_test_target(
     workspace_root: &Path,
     target: &str,
@@ -164,6 +174,51 @@ pub(crate) fn finalize_qemu_case_run(
     }
 }
 
+pub(crate) fn discover_board_test_groups(
+    workspace_root: &Path,
+    selected_group: Option<&str>,
+) -> anyhow::Result<Vec<StarryBoardTestGroup>> {
+    let test_suite_dir = test_suite_dir(workspace_root, StarryTestGroup::Normal);
+    let mut groups = collect_board_test_groups(workspace_root, &test_suite_dir)?;
+    groups.sort_by(|left, right| left.name.cmp(&right.name));
+
+    if let Some(group_name) = selected_group {
+        return groups
+            .into_iter()
+            .find(|group| group.name == group_name)
+            .map(|group| vec![group])
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unsupported Starry board test group `{group_name}`. Supported groups are: {}",
+                    supported_board_test_group_names(workspace_root)
+                        .unwrap_or_else(|_| "<none>".to_string())
+                )
+            });
+    }
+
+    if groups.is_empty() {
+        bail!(
+            "no Starry board test groups found under {}",
+            test_suite_dir.display()
+        );
+    }
+
+    Ok(groups)
+}
+
+pub(crate) fn finalize_board_test_run(failed: &[String]) -> anyhow::Result<()> {
+    if failed.is_empty() {
+        println!("all starry board test groups passed");
+        Ok(())
+    } else {
+        bail!(
+            "starry board tests failed for {} group(s): {}",
+            failed.len(),
+            failed.join(", ")
+        )
+    }
+}
+
 fn test_suite_dir(workspace_root: &Path, group: StarryTestGroup) -> PathBuf {
     workspace_root
         .join("test-suit")
@@ -173,4 +228,179 @@ fn test_suite_dir(workspace_root: &Path, group: StarryTestGroup) -> PathBuf {
 
 fn qemu_config_name(arch: &str) -> String {
     format!("qemu-{arch}.toml")
+}
+
+fn collect_board_test_groups(
+    workspace_root: &Path,
+    test_suite_dir: &Path,
+) -> anyhow::Result<Vec<StarryBoardTestGroup>> {
+    let mut groups = Vec::new();
+    for entry in fs::read_dir(test_suite_dir)
+        .with_context(|| format!("failed to read {}", test_suite_dir.display()))?
+    {
+        let entry = entry?;
+        let case_dir = entry.path();
+        if !case_dir.is_dir() {
+            continue;
+        }
+
+        let case_name = match entry.file_name().into_string() {
+            Ok(name) => name,
+            Err(_) => continue,
+        };
+
+        for config_entry in fs::read_dir(&case_dir)
+            .with_context(|| format!("failed to read {}", case_dir.display()))?
+        {
+            let config_entry = config_entry?;
+            let config_path = config_entry.path();
+            if !config_path.is_file() || config_path.extension().is_none_or(|ext| ext != "toml") {
+                continue;
+            }
+
+            let Some(stem) = config_path.file_stem().and_then(|stem| stem.to_str()) else {
+                continue;
+            };
+            let Some(board_name) = stem.strip_prefix("board-") else {
+                continue;
+            };
+
+            let build_config_path = workspace_root
+                .join("os/StarryOS/configs/board")
+                .join(format!("{board_name}.toml"));
+            if !build_config_path.is_file() {
+                bail!(
+                    "Starry board test group `{}-{board_name}` maps to missing build config `{}`",
+                    case_name,
+                    build_config_path.display()
+                );
+            }
+
+            let board_file = board::load_board_file(&build_config_path).with_context(|| {
+                format!(
+                    "failed to load mapped Starry build config for board test group \
+                     `{}-{board_name}`",
+                    case_name
+                )
+            })?;
+            groups.push(StarryBoardTestGroup {
+                name: format!("{case_name}-{board_name}"),
+                board_name: board_name.to_string(),
+                arch: arch_for_target_checked(&board_file.target)?.to_string(),
+                target: board_file.target,
+                build_config_path,
+                board_test_config_path: config_path,
+            });
+        }
+    }
+
+    Ok(groups)
+}
+
+fn supported_board_test_group_names(workspace_root: &Path) -> anyhow::Result<String> {
+    let test_suite_dir = test_suite_dir(workspace_root, StarryTestGroup::Normal);
+    let mut groups = collect_board_test_groups(workspace_root, &test_suite_dir)?
+        .into_iter()
+        .map(|group| group.name)
+        .collect::<Vec<_>>();
+    groups.sort();
+    Ok(groups.join(", "))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::*;
+
+    fn write_board_build_config(root: &Path, board_name: &str, target: &str) {
+        let path = root
+            .join("os/StarryOS/configs/board")
+            .join(format!("{board_name}.toml"));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            path,
+            format!(
+                "target = \"{target}\"\nenv = {{}}\nfeatures = [\"qemu\"]\nlog = \
+                 \"Info\"\nplat_dyn = false\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    fn write_board_test_config(root: &Path, case_name: &str, board_name: &str) -> PathBuf {
+        let path = root
+            .join("test-suit/starryos/normal")
+            .join(case_name)
+            .join(format!("board-{board_name}.toml"));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            "board_type = \"OrangePi-5-Plus\"\nshell_prefix = \
+             \"orangepi@orangepi5plus:~\"\nshell_init_cmd = \"pwd && echo 'test \
+             pass'\"\nsuccess_regex = [\"(?m)^test pass\\\\s*$\"]\nfail_regex = []\ntimeout = \
+             300\n",
+        )
+        .unwrap();
+        path
+    }
+
+    #[test]
+    fn discovers_board_test_group_and_build_mapping() {
+        let root = tempdir().unwrap();
+        write_board_build_config(
+            root.path(),
+            "orangepi-5-plus",
+            "aarch64-unknown-none-softfloat",
+        );
+        let board_test_config = write_board_test_config(root.path(), "smoke", "orangepi-5-plus");
+
+        let groups = discover_board_test_groups(root.path(), None).unwrap();
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name, "smoke-orangepi-5-plus");
+        assert_eq!(groups[0].board_name, "orangepi-5-plus");
+        assert_eq!(groups[0].arch, "aarch64");
+        assert_eq!(groups[0].target, "aarch64-unknown-none-softfloat");
+        assert_eq!(
+            groups[0].build_config_path,
+            root.path()
+                .join("os/StarryOS/configs/board/orangepi-5-plus.toml")
+        );
+        assert_eq!(groups[0].board_test_config_path, board_test_config);
+    }
+
+    #[test]
+    fn filters_board_test_group_by_name() {
+        let root = tempdir().unwrap();
+        write_board_build_config(
+            root.path(),
+            "orangepi-5-plus",
+            "aarch64-unknown-none-softfloat",
+        );
+        write_board_build_config(root.path(), "vision-five2", "riscv64gc-unknown-none-elf");
+        write_board_test_config(root.path(), "smoke", "orangepi-5-plus");
+        write_board_test_config(root.path(), "smoke", "vision-five2");
+
+        let groups =
+            discover_board_test_groups(root.path(), Some("smoke-orangepi-5-plus")).unwrap();
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name, "smoke-orangepi-5-plus");
+    }
+
+    #[test]
+    fn rejects_missing_mapped_board_build_config() {
+        let root = tempdir().unwrap();
+        write_board_test_config(root.path(), "smoke", "orangepi-5-plus");
+
+        let err = discover_board_test_groups(root.path(), None)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("smoke-orangepi-5-plus"));
+        assert!(err.contains("os/StarryOS/configs/board/orangepi-5-plus.toml"));
+    }
 }

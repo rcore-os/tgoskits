@@ -138,7 +138,7 @@ jobs:
       install_fat_tools: true
 
   test_axvisor_self_hosted:
-    name: Test axvisor ${{ matrix.label }}
+    name: Test axvisor self-hosted ${{ matrix.label }}
     if: github.repository_owner == 'rcore-os'
     needs:
       - fmt
@@ -156,6 +156,24 @@ jobs:
           - label: roc-rk3568-pc-linux
             runs_on: '["self-hosted","linux","board"]'
             command: cargo xtask axvisor test board -t roc-rk3568-pc-linux
+    uses: ./.github/workflows/reusable-host-command.yml
+    with:
+      runs_on: ${{ matrix.runs_on }}
+      command: ${{ matrix.command }}
+
+  test_starry_self_hosted:
+    name: Test starry self-hosted ${{ matrix.label }}
+    if: github.repository_owner == 'rcore-os'
+    needs:
+      - fmt
+      - clippy
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - label: smoke-orangepi-5-plus
+            runs_on: '["self-hosted","linux","board"]'
+            command: cargo xtask starry test board -t smoke-orangepi-5-plus
     uses: ./.github/workflows/reusable-host-command.yml
     with:
       runs_on: ${{ matrix.runs_on }}
@@ -184,6 +202,7 @@ jobs:
         && needs.test_std.result == 'success'
         && needs.test_qemu_matrix.result == 'success'
         && (needs.test_axvisor_self_hosted.result == 'success' || needs.test_axvisor_self_hosted.result == 'skipped')
+        && (needs.test_starry_self_hosted.result == 'success' || needs.test_starry_self_hosted.result == 'skipped')
         && github.event_name == 'push'
         && github.ref_name == 'dev'
         && github.repository_owner == 'rcore-os'
@@ -192,6 +211,7 @@ jobs:
       - test_std
       - test_qemu_matrix
       - test_axvisor_self_hosted
+      - test_starry_self_hosted
     runs-on: ubuntu-latest
     permissions:
       contents: write

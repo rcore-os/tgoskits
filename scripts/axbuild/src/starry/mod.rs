@@ -125,6 +125,8 @@ pub enum TestCommand {
     Qemu(ArgsTestQemu),
     /// Reserved StarryOS U-Boot test suite entrypoint
     Uboot(ArgsTestUboot),
+    /// Run StarryOS remote board test suite
+    Board(ArgsTestBoard),
 }
 
 #[derive(Subcommand)]
@@ -145,6 +147,24 @@ pub struct ArgsTestQemu {
 
 #[derive(Args, Debug, Clone, Default)]
 pub struct ArgsTestUboot;
+
+#[derive(Args, Debug, Clone, Default)]
+pub struct ArgsTestBoard {
+    #[arg(short = 't', long = "test-group", value_name = "GROUP")]
+    pub test_group: Option<String>,
+
+    #[arg(long = "board-test-config")]
+    pub board_test_config: Option<PathBuf>,
+
+    #[arg(short = 'b', long = "board-type", value_name = "BOARD_TYPE")]
+    pub board_type: Option<String>,
+
+    #[arg(long)]
+    pub server: Option<String>,
+
+    #[arg(long)]
+    pub port: Option<u16>,
+}
 
 pub struct Starry {
     app: AppContext,
@@ -302,6 +322,7 @@ impl Starry {
         match args.command {
             TestCommand::Qemu(args) => self.test_qemu(args).await,
             TestCommand::Uboot(args) => self.test_uboot(args).await,
+            TestCommand::Board(args) => self.test_board(args).await,
         }
     }
 
@@ -376,6 +397,87 @@ impl Starry {
         test_qemu::unsupported_uboot_test_command("starry")
     }
 
+    async fn test_board(&mut self, args: ArgsTestBoard) -> anyhow::Result<()> {
+        ensure_board_test_args(&args)?;
+
+        if let Some(path) = args.board_test_config.as_ref()
+            && !path.exists()
+        {
+            anyhow::bail!("missing explicit board test config `{}`", path.display());
+        }
+
+        let groups = test_suit::discover_board_test_groups(
+            self.app.workspace_root(),
+            args.test_group.as_deref(),
+        )?;
+        let total = groups.len();
+        let mut failed = Vec::new();
+
+        for (index, group) in groups.into_iter().enumerate() {
+            let board_test_config = args
+                .board_test_config
+                .clone()
+                .unwrap_or_else(|| group.board_test_config_path.clone());
+            let board_test_config_summary = board_test_config.display().to_string();
+
+            if !board_test_config.exists() {
+                eprintln!(
+                    "failed: {}: missing board test config `{}`",
+                    group.name, board_test_config_summary
+                );
+                failed.push(group.name.clone());
+                continue;
+            }
+
+            println!("[{}/{}] starry board {}", index + 1, total, group.name);
+
+            let result = async {
+                let request = self.prepare_request(
+                    Self::test_board_build_args(&group),
+                    None,
+                    None,
+                    SnapshotPersistence::Discard,
+                )?;
+                let cargo = build::load_cargo_config(&request)?;
+                let board_config = self
+                    .load_board_config(&cargo, Some(board_test_config.as_path()))
+                    .await?;
+                self.app
+                    .board(
+                        cargo,
+                        request.build_info_path,
+                        board_config,
+                        RunBoardOptions {
+                            board_type: args.board_type.clone(),
+                            server: args.server.clone(),
+                            port: args.port,
+                        },
+                    )
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "starry board test failed for group `{}` (build_config={}, \
+                             board_test_config={})",
+                            group.name,
+                            group.build_config_path.display(),
+                            board_test_config_summary
+                        )
+                    })
+            }
+            .await;
+
+            match result {
+                Ok(()) => println!("ok: {}", group.name),
+                Err(err) => {
+                    eprintln!("failed: {}: {:#}", group.name, err);
+                    failed.push(group.name);
+                }
+            }
+        }
+
+        test_suit::finalize_board_test_run(&failed)
+    }
+
     fn prepare_request(
         &self,
         args: StarryCliArgs,
@@ -397,6 +499,15 @@ impl Starry {
             config: None,
             arch: Some(arch.to_string()),
             target: None,
+            debug: false,
+        }
+    }
+
+    fn test_board_build_args(group: &test_suit::StarryBoardTestGroup) -> StarryCliArgs {
+        StarryCliArgs {
+            config: Some(group.build_config_path.clone()),
+            arch: None,
+            target: Some(group.target.clone()),
             debug: false,
         }
     }
@@ -617,6 +728,17 @@ impl Default for Starry {
     }
 }
 
+fn ensure_board_test_args(args: &ArgsTestBoard) -> anyhow::Result<()> {
+    if args.board_test_config.is_some() && args.test_group.is_none() {
+        anyhow::bail!(
+            "`--board-test-config` requires `--test-group` because board test configs embed a \
+             single board_type"
+        );
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
@@ -696,6 +818,66 @@ mod tests {
             },
             _ => panic!("expected test command"),
         }
+    }
+
+    #[test]
+    fn command_parses_test_board() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from([
+            "starry",
+            "test",
+            "board",
+            "-t",
+            "smoke-orangepi-5-plus",
+            "-b",
+            "OrangePi-5-Plus",
+            "--board-test-config",
+            "board-test.toml",
+            "--server",
+            "10.0.0.2",
+            "--port",
+            "9000",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Test(args) => match args.command {
+                TestCommand::Board(args) => {
+                    assert_eq!(args.test_group.as_deref(), Some("smoke-orangepi-5-plus"));
+                    assert_eq!(args.board_type.as_deref(), Some("OrangePi-5-Plus"));
+                    assert_eq!(
+                        args.board_test_config,
+                        Some(PathBuf::from("board-test.toml"))
+                    );
+                    assert_eq!(args.server.as_deref(), Some("10.0.0.2"));
+                    assert_eq!(args.port, Some(9000));
+                }
+                _ => panic!("expected board test command"),
+            },
+            _ => panic!("expected test command"),
+        }
+    }
+
+    #[test]
+    fn board_test_requires_group_when_override_config_is_present() {
+        let err = ensure_board_test_args(&ArgsTestBoard {
+            test_group: None,
+            board_test_config: Some(PathBuf::from("board-test.toml")),
+            board_type: None,
+            server: None,
+            port: None,
+        })
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("`--board-test-config` requires `--test-group`")
+        );
     }
 
     #[test]

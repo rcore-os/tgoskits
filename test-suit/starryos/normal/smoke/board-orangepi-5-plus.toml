@@ -1,0 +1,6 @@
+board_type = "OrangePi-5-Plus"
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = "pwd && echo 'test pass'"
+success_regex = ["(?m)^test pass\\s*$"]
+fail_regex = []
+timeout = 300
