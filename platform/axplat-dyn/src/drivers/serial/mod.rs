@@ -43,7 +43,9 @@ static SERIAL_IRQ_HANDLERS: [Mutex<Option<some_serial::BIrqHandler>>; MAX_SERIAL
     Mutex::new(None),
 ];
 
-trait PlatformSerialDevice: rdrive::DriverGeneric {
+trait PlatformSerialDevice: Send {
+    fn name(&self) -> &str;
+
     fn base_addr(&self) -> usize;
 
     #[cfg(feature = "irq")]
@@ -55,8 +57,12 @@ trait PlatformSerialDevice: rdrive::DriverGeneric {
 
 impl<T> PlatformSerialDevice for T
 where
-    T: InterfaceRaw + rdrive::DriverGeneric,
+    T: InterfaceRaw + Send,
 {
+    fn name(&self) -> &str {
+        InterfaceRaw::name(self)
+    }
+
     fn base_addr(&self) -> usize {
         InterfaceRaw::base_addr(self)
     }
@@ -76,7 +82,7 @@ where
 
 impl rdrive::DriverGeneric for Box<dyn PlatformSerialDevice> {
     fn name(&self) -> &str {
-        self.as_ref().name()
+        PlatformSerialDevice::name(self.as_ref())
     }
 }
 
