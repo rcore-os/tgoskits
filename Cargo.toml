@@ -391,4 +391,4 @@ ax-page-table-multiarch = { version = "0.8.1", features = ["ax-errno"], path = "
 ax-percpu = { version = "0.4.3", path = "components/percpu/percpu" }
 scope-local = { version = "0.3.2", path = "components/scope-local" }
 spin = "0.10"
-ostool = { version = "0.14" }
+ostool = { version = "0.15" }

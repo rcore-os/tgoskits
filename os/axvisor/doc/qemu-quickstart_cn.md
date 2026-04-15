@@ -31,7 +31,7 @@ source "$HOME/.cargo/env"
 
 ```bash
 cargo install cargo-binutils
-cargo +stable install ostool --version '^0.8'
+cargo +stable install ostool --version '^0.15'
 ```
 
 - `cargo-binutils`：提供 `rust-objcopy`、`rust-objdump` 等工具

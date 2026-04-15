@@ -31,7 +31,7 @@ Install additional Cargo tools:
 
 ```bash
 cargo install cargo-binutils
-cargo +stable install ostool --version '^0.8'
+cargo +stable install ostool --version '^0.15'
 ```
 
 - `cargo-binutils`: provides `rust-objcopy`, `rust-objdump`, etc.
