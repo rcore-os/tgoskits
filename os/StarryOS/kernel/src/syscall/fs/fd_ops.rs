@@ -123,23 +123,57 @@ pub fn sys_openat(
     let path = vm_load_string(path)?;
     debug!("sys_openat <= {dirfd} {path:?} {flags:#o} {mode:#o}");
 
+    // Empty path should return ENOENT
+    if path.is_empty() {
+        return Err(AxError::NotFound);
+    }
+
     let mode = mode & !current().as_thread().proc_data.umask();
 
     let options = flags_to_options(flags, mode, (sys_geteuid()? as _, sys_getegid()? as _));
-    let file = with_fs(dirfd, |fs| options.open(fs, path))?;
+
+    // Check for O_DIRECTORY flag and validate it BEFORE opening
+    // According to Linux: O_DIRECTORY requires the target to be a directory
+    use linux_raw_sys::general::{O_ACCMODE, O_DIRECTORY, O_RDONLY, O_WRONLY, S_IFDIR, S_IFMT};
+    let has_o_directory = (flags as u32) & O_DIRECTORY != 0;
+
+    // If O_DIRECTORY is specified, we need to check if the path exists and is a directory
+    // This needs to be done before the actual open to return ENOTDIR correctly
+    if has_o_directory {
+        // First check if the path exists and what type it is
+        match with_fs(dirfd, |fs| fs.metadata(&path)) {
+            Ok(metadata) => {
+                use crate::file::metadata_to_kstat;
+                let kstat = metadata_to_kstat(&metadata);
+                if (kstat.mode & S_IFMT) != S_IFDIR {
+                    info!("openat: O_DIRECTORY flag on non-directory file, returning ENOTDIR");
+                    return Err(AxError::NotADirectory);
+                }
+            }
+            Err(e) => {
+                // If metadata check fails, let the open proceed and handle errors there
+                // This handles both ENOENT (file doesn't exist) and other cases
+            }
+        }
+    }
+
+    let file = with_fs(dirfd, |fs| options.open(fs, &path))?;
 
     // Check if opening a directory with write access (O_WRONLY or O_RDWR)
     // According to Linux open(2) man page and kernel implementation:
     // "For directories it's -EISDIR, for other non-regulars - -EINVAL"
-    use linux_raw_sys::general::{O_ACCMODE, O_WRONLY, S_IFDIR, S_IFMT};
-
     use crate::file::metadata_to_kstat;
-    // Check if this is a directory being opened with write access
+
+    // Check both OpenResult::File (directory opened without O_DIRECTORY)
+    // and OpenResult::Dir (directory opened with O_DIRECTORY flag)
     match &file {
         OpenResult::File(f) => {
             let metadata = f.location().metadata()?;
             let kstat = metadata_to_kstat(&metadata);
-            if (kstat.mode & S_IFMT) == S_IFDIR {
+            let is_dir = (kstat.mode & S_IFMT) == S_IFDIR;
+
+            // Directory with write access -> EISDIR
+            if is_dir {
                 let access_mode = flags as u32 & O_ACCMODE;
                 if access_mode == O_WRONLY as u32 || access_mode == O_RDWR as u32 {
                     return Err(AxError::IsADirectory);
@@ -147,7 +181,8 @@ pub fn sys_openat(
             }
         }
         OpenResult::Dir(_) => {
-            // Directories opened with O_DIRECTORY flag
+            // Directory opened with O_DIRECTORY flag
+            // This should only happen if the file is actually a directory
             let access_mode = flags as u32 & O_ACCMODE;
             if access_mode == O_WRONLY as u32 || access_mode == O_RDWR as u32 {
                 return Err(AxError::IsADirectory);

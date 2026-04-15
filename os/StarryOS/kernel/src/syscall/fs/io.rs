@@ -89,6 +89,12 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<i
         return Err(AxError::from(LinuxError::ESPIPE));
     }
 
+    // Check for negative offset with SEEK_SET (whence == 0)
+    // Negative offset is only valid for SEEK_CUR and SEEK_END
+    if whence == 0 && offset < 0 {
+        return Err(AxError::InvalidInput);
+    }
+
     let pos = match whence {
         0 => SeekFrom::Start(offset as _),
         1 => SeekFrom::Current(offset as _),
