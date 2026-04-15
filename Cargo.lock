@@ -293,6 +293,7 @@ dependencies = [
 name = "arceos-net-httpclient"
 version = "0.3.1"
 dependencies = [
+ "ax-io",
  "ax-std",
 ]
 
@@ -688,7 +689,6 @@ dependencies = [
  "ax-kspin",
  "ax-memory-addr",
  "ax-mm",
- "buddy-slab-allocator",
  "log",
 ]
 

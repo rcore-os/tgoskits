@@ -54,6 +54,7 @@ pub(crate) enum PollAt {
 /// [AnySocket]: trait.AnySocket.html
 /// [SocketSet::get]: struct.SocketSet.html#method.get
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)] // Preserves the public enum layout without boxing socket variants.
 pub enum Socket<'a> {
     #[cfg(feature = "socket-raw")]
     Raw(raw::Socket<'a>),

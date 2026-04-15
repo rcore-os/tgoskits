@@ -215,7 +215,7 @@ impl<'a> Socket<'a> {
 
         match &mut self.queries {
             ManagedSlice::Borrowed(_) => None,
-            #[cfg(feature = "alloc")]
+            #[cfg(any(feature = "std", feature = "alloc"))]
             ManagedSlice::Owned(queries) => {
                 queries.push(None);
                 let index = queries.len() - 1;
@@ -251,7 +251,7 @@ impl<'a> Socket<'a> {
 
         let mut mdns = MulticastDns::Disabled;
         #[cfg(feature = "socket-mdns")]
-        if name.split(|&c| c == b'.').last().unwrap() == b"local" {
+        if name.split(|&c| c == b'.').next_back().unwrap() == b"local" {
             net_trace!("Starting a mDNS query");
             mdns = MulticastDns::Enabled;
         }

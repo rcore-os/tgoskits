@@ -1,7 +1,7 @@
 [package]
 name = "arceos-tls"
 version = "0.3.1"
-edition = "2021"
+edition = "2024"
 authors = ["Yuekai Jia <equation618@gmail.com>"]
 publish = false
 

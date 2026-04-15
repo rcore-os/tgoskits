@@ -40,6 +40,8 @@ static mut U64: u64 = 0xa2ce05_a2ce05;
 #[thread_local]
 static mut STR: [u8; 13] = *b"Hello, world!";
 
+const STR_LEN: usize = 13;
+
 macro_rules! get {
     ($var:expr) => {
         unsafe { $var }
@@ -106,7 +108,7 @@ fn main() {
             assert_eq!(get!(U32), 0xdeadbeed + i as u32);
             assert_eq!(get!(U64), 0xa2ce05_a2ce05 + i as u64);
             assert_eq!(get!(STR[5]), 48 + i as u8);
-            assert_eq!(get!(STR.len()), 13);
+            assert_eq!(STR_LEN, 13);
         }));
     }
 
