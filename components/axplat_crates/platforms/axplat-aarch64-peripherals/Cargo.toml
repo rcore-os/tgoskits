@@ -35,4 +35,4 @@ arm-gic-driver = "0.16"
 ax-arm-pl031 = "0.4.2"
 
 [package.metadata.docs.rs]
-targets = ["aarch64-unknown-none"]
+targets = ["aarch64-unknown-none-softfloat"]

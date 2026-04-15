@@ -37,4 +37,4 @@ loongArch64 = "0.2.4"
 uart_16550 = "0.5"
 
 [package.metadata.docs.rs]
-targets = ["loongarch64-unknown-none"]
+targets = ["loongarch64-unknown-none-softfloat"]

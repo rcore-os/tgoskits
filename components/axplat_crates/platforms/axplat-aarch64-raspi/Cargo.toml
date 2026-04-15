@@ -34,4 +34,4 @@ ax-plat = { workspace = true }
 aarch64-cpu = "11.0"
 
 [package.metadata.docs.rs]
-targets = ["aarch64-unknown-none"]
+targets = ["aarch64-unknown-none-softfloat"]
