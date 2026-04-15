@@ -120,9 +120,20 @@ pub fn sys_mmap(
     ) {
         return Err(AxError::InvalidInput);
     }
-    if map_flags.contains(MmapFlags::ANONYMOUS) != (fd <= 0) {
-        return Err(AxError::InvalidInput);
+
+    // Check fd validity based on MAP_ANONYMOUS flag
+    if map_flags.contains(MmapFlags::ANONYMOUS) {
+        // With MAP_ANONYMOUS, fd should be -1 (or <= 0)
+        if fd > 0 {
+            return Err(AxError::InvalidInput);
+        }
+    } else {
+        // Without MAP_ANONYMOUS, fd must be valid
+        if fd <= 0 {
+            return Err(AxError::BadFileDescriptor);
+        }
     }
+
     if fd <= 0 && offset != 0 {
         return Err(AxError::InvalidInput);
     }
@@ -177,6 +188,40 @@ pub fn sys_mmap(
     } else {
         None
     };
+
+    // Check file permissions for mmap request
+    if let Some(file) = &file {
+        use linux_raw_sys::general::{O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY};
+
+        let file_flags = file.flags();
+        let access_mode = file_flags & O_ACCMODE;
+
+        // Check if requested permissions are compatible with file open mode
+        let wants_read = permission_flags.contains(MmapProt::READ);
+        let wants_write = permission_flags.contains(MmapProt::WRITE);
+
+        // File access mode validation
+        // Handle the case where file.flags() might return O_RDONLY|O_WRONLY for O_RDWR
+        let has_read = (access_mode & O_RDONLY != 0) || (file_flags & O_RDONLY != 0);
+        let has_write = (access_mode & O_WRONLY != 0) || (file_flags & O_WRONLY != 0);
+        let is_rdwr =
+            access_mode == O_RDWR || ((file_flags & O_RDONLY != 0) && (file_flags & O_WRONLY != 0));
+
+        let can_read = has_read || is_rdwr;
+        let can_write = has_write || is_rdwr;
+
+        if wants_read && !can_read {
+            return Err(AxError::PermissionDenied);
+        }
+        if wants_write && !can_write {
+            return Err(AxError::PermissionDenied);
+        }
+
+        // For shared writable mappings, file must be writable
+        if map_type.contains(MmapFlags::SHARED) && wants_write && !can_write {
+            return Err(AxError::PermissionDenied);
+        }
+    }
 
     let backend = match map_type {
         MmapFlags::SHARED | MmapFlags::SHARED_VALIDATE => {

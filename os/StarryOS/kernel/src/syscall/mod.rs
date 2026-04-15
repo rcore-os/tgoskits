@@ -418,6 +418,8 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg2() as _,
             uctx.arg3() as _,
         ),
+        Sysno::getrlimit => sys_getrlimit(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::setrlimit => sys_setrlimit(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::capget => sys_capget(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::capset => sys_capset(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::umask => sys_umask(uctx.arg0() as _),
@@ -479,7 +481,10 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg3() as _,
         ),
         Sysno::rt_sigsuspend => sys_rt_sigsuspend(uctx, uctx.arg0() as _, uctx.arg1() as _),
-        Sysno::pause => sys_pause(uctx),
+        _ if sysno as u32 == 34 => {
+            // pause syscall (number 34) - handle via system call number for cross-arch compatibility
+            sys_pause(uctx)
+        }
         Sysno::kill => sys_kill(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::tkill => sys_tkill(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::tgkill => sys_tgkill(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),

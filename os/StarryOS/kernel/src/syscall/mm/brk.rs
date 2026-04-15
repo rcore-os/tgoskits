@@ -6,6 +6,7 @@ use ax_task::current;
 use crate::{
     config::{USER_HEAP_BASE, USER_HEAP_SIZE, USER_HEAP_SIZE_MAX},
     mm::Backend,
+    syscall::mm::rlimit::check_brk_rlimit,
     task::AsThread,
 };
 
@@ -21,6 +22,11 @@ pub fn sys_brk(addr: usize) -> AxResult<isize> {
 
     if addr < USER_HEAP_BASE || addr > heap_limit {
         return Ok(current_top as isize);
+    }
+
+    // Check RLIMIT_DATA before expanding heap
+    if addr > current_top {
+        check_brk_rlimit(addr)?;
     }
 
     let new_top_aligned = align_up_4k(addr);
