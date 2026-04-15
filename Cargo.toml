@@ -314,7 +314,7 @@ ax-log = { path = "os/arceos/modules/axlog", version = "0.5.1" }
 ax-mm = { path = "os/arceos/modules/axmm", version = "0.5.1" }
 ax-net = { path = "os/arceos/modules/axnet", version = "0.5.1" }
 ax-net-ng = { path = "os/arceos/modules/axnet-ng", version = "0.5.1" }
-axplat-dyn = { path = "platform/axplat-dyn", version = "0.5.0", default-features = false }
+axplat-dyn = { path = "platform/axplat-dyn", version = "0.5.1", default-features = false }
 ax-runtime = { path = "os/arceos/modules/axruntime", version = "0.5.1" }
 ax-sync = { path = "os/arceos/modules/axsync", version = "0.5.1" }
 ax-task = { path = "os/arceos/modules/axtask", version = "0.5.1" }

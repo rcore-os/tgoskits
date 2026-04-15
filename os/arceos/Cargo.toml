@@ -91,7 +91,7 @@ ax-log = { version = "0.5.1", path = "modules/axlog" }
 ax-mm = { version = "0.5.1", path = "modules/axmm" }
 ax-net = { version = "0.5.1", path = "modules/axnet" }
 ax-net-ng = { version = "0.5.1", path = "modules/axnet-ng" }
-axplat-dyn = { version = "0.5.0", default-features = false }
+axplat-dyn = { version = "0.5.1", default-features = false }
 ax-runtime = { version = "0.5.1", path = "modules/axruntime" }
 ax-sync = { version = "0.5.1", path = "modules/axsync" }
 ax-task = { version = "0.5.1", path = "modules/axtask" }
