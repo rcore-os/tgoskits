@@ -89,6 +89,15 @@ impl CowBackend {
         self.file.is_none()
     }
 
+    /// Returns a clone with a different start address.
+    pub fn with_start(&self, new_start: VirtAddr) -> Self {
+        Self {
+            start: new_start,
+            size: self.size,
+            file: self.file.clone(),
+        }
+    }
+
     fn alloc_new_frame(&self, zeroed: bool) -> AxResult<PhysAddr> {
         let frame = alloc_frame(zeroed, self.size)?;
         FRAME_TABLE.lock().init_frame(frame);

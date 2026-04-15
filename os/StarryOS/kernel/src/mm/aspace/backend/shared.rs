@@ -61,6 +61,14 @@ impl SharedBackend {
         &self.pages
     }
 
+    /// Returns a clone with a different start address.
+    pub fn with_start(&self, new_start: VirtAddr) -> Self {
+        Self {
+            start: new_start,
+            pages: self.pages.clone(),
+        }
+    }
+
     fn pages_starting_from(&self, start: VirtAddr) -> &[PhysAddr] {
         debug_assert!(start.is_aligned(self.pages.size));
         let start_index = divide_page(start - self.start, self.pages.size);

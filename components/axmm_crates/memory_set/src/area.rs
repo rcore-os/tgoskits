@@ -152,13 +152,8 @@ impl<B: MappingBackend> MemoryArea<B> {
         Ok(())
     }
 
-    /// Grows the memory area at the right side.
-    ///
-    /// The end address is increased by `additional_size`. The new region
-    /// is mapped via the backend (e.g., for COW backends this is a no-op
-    /// since pages are demand-faulted).
-    ///
-    /// `additional_size` must be greater than 0.
+    /// Inverse of [`shrink_right`]: extends the end by `additional_size`
+    /// and maps the new region via the backend.
     pub(crate) fn grow_right(
         &mut self,
         additional_size: usize,

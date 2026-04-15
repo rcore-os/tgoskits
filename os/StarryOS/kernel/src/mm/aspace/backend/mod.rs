@@ -116,6 +116,18 @@ pub enum Backend {
     File(file::FileBackend),
 }
 
+impl Backend {
+    /// Clone with a different base address (for mremap moves).
+    pub fn relocated(&self, new_start: VirtAddr, aspace: &Arc<Mutex<AddrSpace>>) -> Self {
+        match self {
+            Self::Cow(cb) => Self::Cow(cb.with_start(new_start)),
+            Self::Shared(sb) => Self::Shared(sb.with_start(new_start)),
+            Self::Linear(lb) => Self::Linear(lb.clone()),
+            Self::File(fb) => Self::File(fb.with_start(new_start, aspace)),
+        }
+    }
+}
+
 impl MappingBackend for Backend {
     type Addr = VirtAddr;
     type Flags = MappingFlags;

@@ -310,39 +310,32 @@ fn find_free(aspace: &crate::mm::AddrSpace, hint: VirtAddr, size: usize) -> AxRe
         .ok_or(AxError::NoMemory)
 }
 
-/// Copy data from `src` to `target`, then handle the source.
-/// If `dontunmap`, the source is replaced with a faulting anonymous mapping.
 fn mremap_move(
     aspace: &mut crate::mm::AddrSpace,
+    aspace_ref: &Arc<ax_sync::Mutex<crate::mm::AddrSpace>>,
     src: VirtAddr,
     src_size: usize,
     target: VirtAddr,
     target_size: usize,
+    src_backend: &Backend,
     flags: MappingFlags,
     dontunmap: bool,
 ) -> AxResult {
-    let copy_size = src_size.min(target_size);
-    let data = aspace.read_to_vec(src, copy_size)?;
+    let backend = src_backend.relocated(target, aspace_ref);
+    aspace.map(target, target_size, flags, false, backend)?;
 
-    let backend = Backend::new_alloc(target, PageSize::Size4K);
-    aspace.map(target, target_size, flags, true, backend)?;
-    if let Err(e) = aspace.write(target, &data) {
-        let _ = aspace.unmap(target, target_size);
-        return Err(e);
-    }
-
-    let cleanup = |aspace: &mut crate::mm::AddrSpace| {
-        let _ = aspace.unmap(target, target_size);
-    };
+    let move_size = src_size.min(target_size);
+    aspace.move_pages(src, target, move_size);
 
     if let Err(e) = aspace.unmap(src, src_size) {
-        cleanup(aspace);
+        let _ = aspace.unmap(target, target_size);
         return Err(e);
     }
+
     if dontunmap {
         let empty = Backend::new_alloc(src, PageSize::Size4K);
         if let Err(e) = aspace.map(src, src_size, flags, false, empty) {
-            cleanup(aspace);
+            let _ = aspace.unmap(target, target_size);
             return Err(e);
         }
     }
@@ -379,20 +372,16 @@ pub fn sys_mremap(
     let fixed = flags & MREMAP_FIXED != 0;
     let dontunmap = flags & MREMAP_DONTUNMAP != 0;
 
-    // MREMAP_FIXED and MREMAP_DONTUNMAP both require MREMAP_MAYMOVE.
     if (fixed || dontunmap) && !may_move {
         return Err(AxError::InvalidInput);
     }
-    // MREMAP_DONTUNMAP requires old_size == new_size.
     if dontunmap && old_size != new_size {
         return Err(AxError::InvalidInput);
     }
-    // Validate new_addr for MREMAP_FIXED.
     if fixed {
         if !new_addr.is_multiple_of(PageSize::Size4K as usize) {
             return Err(AxError::InvalidInput);
         }
-        // Old and new ranges must not overlap.
         let old_end = addr.as_usize() + old_size;
         let new_end = new_addr + new_size;
         if old_end > new_addr && new_end > addr.as_usize() {
@@ -401,39 +390,41 @@ pub fn sys_mremap(
     }
 
     let curr = current();
-    let mut aspace = curr.as_thread().proc_data.aspace.lock();
+    let aspace_ref = &curr.as_thread().proc_data.aspace;
+    let mut aspace = aspace_ref.lock();
 
-    // Extract VMA properties into locals to release the immutable borrow
-    // before any mutable operations.
-    let (vma_end, vma_flags, is_private_anon, shared_pages) = {
+    let (vma_end, vma_flags, src_backend, shared_pages) = {
         let area = aspace.find_area(addr).ok_or(AxError::BadAddress)?;
-        let is_private_anon = matches!(area.backend(), Backend::Cow(cb) if cb.is_anonymous());
         let shared_pages = match area.backend() {
             Backend::Shared(sb) => Some(sb.pages().clone()),
             _ => None,
         };
-        (area.end(), area.flags(), is_private_anon, shared_pages)
+        (
+            area.end(),
+            area.flags(),
+            area.backend().clone(),
+            shared_pages,
+        )
     };
 
-    // MREMAP_DONTUNMAP is only valid for private anonymous mappings.
-    if dontunmap && !is_private_anon {
+    // DONTUNMAP only for Cow and Shared (Linux 5.13+ relaxed this from
+    // private-anonymous-only to exclude VM_DONTEXPAND/VM_MIXEDMAP).
+    if dontunmap && !matches!(src_backend, Backend::Cow(_) | Backend::Shared(_)) {
         return Err(AxError::InvalidInput);
     }
 
-    // old_size == 0 special case: only valid for shared mappings with MAYMOVE.
+    // old_size == 0: duplicate a shared mapping (Linux special case).
     if old_size == 0 {
         if shared_pages.is_none() || !may_move {
             return Err(AxError::InvalidInput);
         }
         let pages = shared_pages.unwrap();
-        // Clamp new_size to the shared allocation size to avoid
-        // creating a VMA larger than the backing SharedPages.
         let page_size = PageSize::Size4K as usize;
         let shared_size = pages.len() * page_size;
         let dup_size = new_size.min(shared_size);
 
         let target = if fixed {
-            aspace.unmap(VirtAddr::from(new_addr), dup_size)?;
+            aspace.unmap(VirtAddr::from(new_addr), new_size)?;
             VirtAddr::from(new_addr)
         } else {
             find_free(&aspace, addr, dup_size)?
@@ -443,7 +434,6 @@ pub fn sys_mremap(
         return Ok(target.as_usize() as isize);
     }
 
-    // Validate that old_size fits within the VMA.
     if addr + old_size > vma_end {
         return Err(AxError::BadAddress);
     }
@@ -453,10 +443,12 @@ pub fn sys_mremap(
         aspace.unmap(target, new_size)?;
         mremap_move(
             &mut aspace,
+            aspace_ref,
             addr,
             old_size,
             target,
             new_size,
+            &src_backend,
             vma_flags,
             dontunmap,
         )?;
@@ -476,10 +468,12 @@ pub fn sys_mremap(
         let target = find_free(&aspace, addr + old_size, new_size)?;
         mremap_move(
             &mut aspace,
+            aspace_ref,
             addr,
             old_size,
             target,
             new_size,
+            &src_backend,
             vma_flags,
             true,
         )?;
@@ -488,10 +482,6 @@ pub fn sys_mremap(
 
     let delta = new_size - old_size;
 
-    // Try in-place growth: extend the existing VMA rather than creating
-    // a separate adjacent mapping. This preserves a single contiguous VMA.
-    // Only fall through to move if the space is occupied or out of range;
-    // propagate other errors (e.g., OOM from backend.map).
     if addr + old_size == vma_end {
         match aspace.extend_area(addr, delta) {
             Ok(()) => return Ok(addr.as_usize() as isize),
@@ -500,19 +490,19 @@ pub fn sys_mremap(
         }
     }
 
-    // Can't grow in-place.
     if !may_move {
         return Err(AxError::NoMemory);
     }
 
-    // Move: allocate new region, copy data, free old.
     let target = find_free(&aspace, addr + old_size, new_size)?;
     mremap_move(
         &mut aspace,
+        aspace_ref,
         addr,
         old_size,
         target,
         new_size,
+        &src_backend,
         vma_flags,
         false,
     )?;
