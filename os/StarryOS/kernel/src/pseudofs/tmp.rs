@@ -150,7 +150,7 @@ impl Inode {
             uid: 0,
             gid: 0,
             size: 0,
-            block_size: 0,
+            block_size: 4096, // Standard page size for Linux compatibility
             blocks: 0,
             rdev: DeviceId::default(),
             atime: Duration::default(),

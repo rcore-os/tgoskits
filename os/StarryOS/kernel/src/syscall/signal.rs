@@ -307,3 +307,26 @@ pub fn sys_sigaltstack(ss: *const SignalStack, old_ss: *mut SignalStack) -> AxRe
     }
     Ok(0)
 }
+
+/// pause() system call - suspend process until a signal is received
+/// Returns: -1 with errno=EINTR when interrupted by a signal handler
+pub fn sys_pause(uctx: &mut UserContext) -> AxResult<isize> {
+    let curr = current();
+    let thr = curr.as_thread();
+
+    // pause always returns -EINTR when a signal is caught
+    // We set this in uctx before check_signals so it's saved in SignalFrame
+    uctx.set_retval(-LinuxError::EINTR.code() as usize);
+
+    // Block until a signal arrives
+    block_on(poll_fn(|cx| {
+        if check_signals(thr, uctx, None) {
+            return Poll::Ready(());
+        }
+        let _ = curr.poll_interrupt(cx);
+        Poll::Pending
+    }));
+
+    // pause always returns -EINTR
+    Err(AxError::Interrupted)
+}

@@ -523,3 +523,56 @@ pub fn sys_syncfs(_fd: i32) -> AxResult<isize> {
     warn!("dummy sys_syncfs");
     Ok(0)
 }
+
+const S_IFMT: u32 = 0o170000;
+
+/// Converts mode_t to NodeType
+fn mode_to_node_type(mode: u32) -> Option<NodeType> {
+    match mode & S_IFMT {
+        S_IFIFO => Some(NodeType::Fifo),
+        S_IFCHR => Some(NodeType::CharacterDevice),
+        S_IFBLK => Some(NodeType::BlockDevice),
+        S_IFDIR => Some(NodeType::Directory),
+        S_IFREG => Some(NodeType::RegularFile),
+        S_IFLNK => Some(NodeType::Symlink),
+        S_IFSOCK => Some(NodeType::Socket),
+        _ => None,
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn sys_mknod(path: *const c_char, mode: u32, dev: u64) -> AxResult<isize> {
+    sys_mknodat(AT_FDCWD, path, mode, dev)
+}
+
+pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> AxResult<isize> {
+    let path = vm_load_string(path)?;
+    debug!("sys_mknodat <= dirfd: {dirfd}, path: {path}, mode: {mode:#o}, dev: {dev}");
+
+    let node_type = mode_to_node_type(mode).ok_or(AxError::InvalidInput)?;
+
+    // For FIFO, character device, and block device, extract permissions from mode
+    let permission = NodePermission::from_bits_truncate((mode & 0o7777) as u16);
+
+    with_fs(dirfd, |fs| {
+        // TODO: For character and block devices, we need to create device nodes
+        // For now, only support FIFO creation
+        match node_type {
+            NodeType::Fifo => {
+                let (parent_dir, name) = fs.resolve_nonexistent(Path::new(&path))?;
+                parent_dir.create(name, node_type, permission)?;
+                Ok(0)
+            }
+            NodeType::CharacterDevice | NodeType::BlockDevice => {
+                warn!("mknodat: character/block device creation not fully supported");
+                let (parent_dir, name) = fs.resolve_nonexistent(Path::new(&path))?;
+                parent_dir.create(name, node_type, permission)?;
+                Ok(0)
+            }
+            _ => {
+                warn!("mknodat: unsupported node type {:?}", node_type);
+                Err(AxError::InvalidInput)
+            }
+        }
+    })
+}

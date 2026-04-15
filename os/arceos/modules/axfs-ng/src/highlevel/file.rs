@@ -298,9 +298,9 @@ impl OpenOptions {
                 }
             }
             (_, true) => {
-                if self.truncate && !self.create_new {
-                    return false;
-                }
+                // O_APPEND can be combined with O_TRUNC
+                // Linux allows O_TRUNC | O_APPEND: truncate file first, then append
+                // The check for create_new was too restrictive
             }
         }
         true

@@ -7,7 +7,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_fs::{FS_CONTEXT, FsContext};
+use ax_fs::{FS_CONTEXT, FileFlags, FsContext};
 use ax_sync::Mutex;
 use ax_task::future::{block_on, poll_io};
 use axfs_ng_vfs::{Location, Metadata, NodeFlags};
@@ -116,6 +116,22 @@ impl File {
 
     fn is_blocking(&self) -> bool {
         self.inner.location().flags().contains(NodeFlags::BLOCKING)
+    }
+
+    pub fn flags(&self) -> u32 {
+        // Convert FileFlags to u32 representation
+        let flags = self.inner.flags();
+        let mut ret = 0u32;
+        if flags.contains(FileFlags::READ) {
+            ret |= linux_raw_sys::general::O_RDONLY;
+        }
+        if flags.contains(FileFlags::WRITE) {
+            ret |= linux_raw_sys::general::O_WRONLY;
+        }
+        if flags.contains(FileFlags::APPEND) {
+            ret |= linux_raw_sys::general::O_APPEND;
+        }
+        ret
     }
 }
 

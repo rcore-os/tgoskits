@@ -50,6 +50,14 @@ pub fn sys_fstatat(
 
     debug!("sys_fstatat <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
+    // Validate flags parameter according to fstatat(2) spec
+    // Valid flags are: 0, AT_EMPTY_PATH, AT_SYMLINK_NOFOLLOW, AT_SYMLINK_NOFOLLOW_ANY
+    // Any other flag bits should return EINVAL
+    const VALID_FLAGS: u32 = 0x1000 | 0x100 | 0x800; // AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW | AT_SYMLINK_NOFOLLOW_ANY
+    if flags & !VALID_FLAGS {
+        return Err(AxError::InvalidInput); // EINVAL
+    }
+
     let loc = resolve_at(dirfd, path.as_deref(), flags)?;
     statbuf.vm_write(loc.stat()?.into())?;
 

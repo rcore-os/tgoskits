@@ -250,7 +250,22 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
             Ok(0)
         }
         F_SETFL => {
-            get_file_like(fd)?.set_nonblocking(arg & (O_NONBLOCK as usize) > 0)?;
+            let f = get_file_like(fd)?;
+            f.set_nonblocking(arg & (O_NONBLOCK as usize) > 0)?;
+
+            // Handle O_APPEND flag changes
+            if let Ok(file) = f.downcast_arc::<crate::file::File>() {
+                let current_flags = file.flags();
+                let has_append = (current_flags & (O_APPEND as u32)) != 0;
+                let wants_append = (arg & (O_APPEND as usize)) != 0;
+
+                // TODO: We need to support dynamically changing O_APPEND flag
+                // For now, log a warning if there's a mismatch
+                if has_append != wants_append {
+                    warn!("F_SETFL: O_APPEND flag change not yet supported (current: {}, wants: {})", has_append, wants_append);
+                }
+            }
+
             Ok(0)
         }
         F_GETFL => {
@@ -261,12 +276,20 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
                 ret |= O_NONBLOCK;
             }
 
-            let perm = NodePermission::from_bits_truncate(f.stat()?.mode as _);
-            if perm.contains(NodePermission::OWNER_WRITE) {
-                if perm.contains(NodePermission::OWNER_READ) {
-                    ret |= O_RDWR;
-                } else {
-                    ret |= O_WRONLY;
+            // Try to get file flags if it's a regular File
+            if let Ok(file) = f.clone().downcast_arc::<crate::file::File>() {
+                let file_flags = file.flags();
+                // The flags are already converted to Linux format in File::flags()
+                ret |= file_flags;
+            } else {
+                // Fallback to permission-based detection for other file types
+                let perm = NodePermission::from_bits_truncate(f.stat()?.mode as _);
+                if perm.contains(NodePermission::OWNER_WRITE) {
+                    if perm.contains(NodePermission::OWNER_READ) {
+                        ret |= O_RDWR;
+                    } else {
+                        ret |= O_WRONLY;
+                    }
                 }
             }
 
