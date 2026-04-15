@@ -196,7 +196,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -207,7 +207,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -509,7 +509,7 @@ dependencies = [
 
 [[package]]
 name = "ax-alloc"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ax-allocator",
  "ax-errno",
@@ -540,7 +540,7 @@ dependencies = [
 
 [[package]]
 name = "ax-api"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -584,7 +584,7 @@ dependencies = [
 
 [[package]]
 name = "ax-config"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ax-config-macros",
  "const-str",
@@ -662,7 +662,7 @@ dependencies = [
 
 [[package]]
 name = "ax-display"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ax-driver",
  "ax-lazyinit",
@@ -672,7 +672,7 @@ dependencies = [
 
 [[package]]
 name = "ax-dma"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ax-alloc",
  "ax-allocator",
@@ -687,7 +687,7 @@ dependencies = [
 
 [[package]]
 name = "ax-driver"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -790,7 +790,7 @@ dependencies = [
 
 [[package]]
 name = "ax-feat"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -812,7 +812,7 @@ dependencies = [
 
 [[package]]
 name = "ax-fs"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ax-cap-access",
  "ax-driver",
@@ -840,7 +840,7 @@ dependencies = [
 
 [[package]]
 name = "ax-fs-ng"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ax-alloc",
  "ax-driver",
@@ -884,7 +884,7 @@ dependencies = [
 
 [[package]]
 name = "ax-hal"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -948,7 +948,7 @@ dependencies = [
 
 [[package]]
 name = "ax-input"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ax-driver",
  "ax-lazyinit",
@@ -972,7 +972,7 @@ dependencies = [
 
 [[package]]
 name = "ax-ipi"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ax-config",
  "ax-hal",
@@ -1005,7 +1005,7 @@ version = "0.4.2"
 
 [[package]]
 name = "ax-libc"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ax-errno",
  "ax-feat",
@@ -1020,7 +1020,7 @@ version = "0.5.0"
 
 [[package]]
 name = "ax-log"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ax-crate-interface",
  "ax-kspin",
@@ -1044,7 +1044,7 @@ dependencies = [
 
 [[package]]
 name = "ax-mm"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ax-alloc",
  "ax-errno",
@@ -1059,7 +1059,7 @@ dependencies = [
 
 [[package]]
 name = "ax-net"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ax-driver",
  "ax-errno",
@@ -1076,7 +1076,7 @@ dependencies = [
 
 [[package]]
 name = "ax-net-ng"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -1296,7 +1296,7 @@ dependencies = [
 
 [[package]]
 name = "ax-posix-api"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -1326,7 +1326,7 @@ dependencies = [
 
 [[package]]
 name = "ax-runtime"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -1369,7 +1369,7 @@ dependencies = [
 
 [[package]]
 name = "ax-std"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ax-api",
  "ax-errno",
@@ -1383,7 +1383,7 @@ dependencies = [
 
 [[package]]
 name = "ax-sync"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ax-kspin",
  "ax-sync",
@@ -1394,7 +1394,7 @@ dependencies = [
 
 [[package]]
 name = "ax-task"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ax-config",
  "ax-cpumask",
@@ -1642,7 +1642,7 @@ dependencies = [
 
 [[package]]
 name = "axplat-dyn"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "anyhow",
  "ax-alloc",
@@ -2414,7 +2414,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3415,7 +3415,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4404,7 +4404,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5106,7 +5106,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6720,7 +6720,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6779,7 +6779,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -7302,7 +7302,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -7467,7 +7467,7 @@ dependencies = [
 
 [[package]]
 name = "starry-kernel"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -7586,7 +7586,7 @@ dependencies = [
 
 [[package]]
 name = "starryos"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "anyhow",
  "ax-feat",
@@ -7773,7 +7773,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -7856,7 +7856,7 @@ checksum = "e5416993d37cd34e93dbb9ca8777dda4d0c6e307661c5d519fd88e2a70a1f20b"
 
 [[package]]
 name = "tg-xtask"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "anyhow",
  "axbuild",
@@ -8983,7 +8983,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
