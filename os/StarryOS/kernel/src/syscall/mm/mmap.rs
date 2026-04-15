@@ -187,8 +187,9 @@ pub fn sys_mmap(
     // According to Linux mmap(2) man page and kernel implementation:
     // "Mapping a directory is not supported and returns ENODEV"
     if fd > 0 {
-        use crate::file::get_file_like;
         use linux_raw_sys::general::{S_IFDIR, S_IFMT};
+
+        use crate::file::get_file_like;
 
         if let Ok(file_like) = get_file_like(fd) {
             let kstat = file_like.stat()?;
@@ -353,6 +354,7 @@ pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> AxResult<isize> {
     // Check if this is a file mapping and verify permissions
     if let Some(area) = aspace.find_area(start_addr) {
         use ax_hal::paging::MappingFlags;
+
         use crate::mm::Backend;
 
         // For file-backed mappings, check if requested permissions exceed file permissions

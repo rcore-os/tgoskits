@@ -265,8 +265,13 @@ fn dup_fd_with_min(old_fd: c_int, min_fd: c_int, cloexec: bool) -> AxResult<isiz
 }
 
 /// Add a file to the file descriptor table with minimum fd requirement
-fn add_file_like_with_min(f: alloc::sync::Arc<dyn FileLike>, min_fd: c_int, cloexec: bool) -> AxResult<c_int> {
-    let max_nofile = current().as_thread().proc_data.rlim.read()[linux_raw_sys::general::RLIMIT_NOFILE].current;
+fn add_file_like_with_min(
+    f: alloc::sync::Arc<dyn FileLike>,
+    min_fd: c_int,
+    cloexec: bool,
+) -> AxResult<c_int> {
+    let max_nofile =
+        current().as_thread().proc_data.rlim.read()[linux_raw_sys::general::RLIMIT_NOFILE].current;
     let mut table = FD_TABLE.write();
     if table.count() as u64 >= max_nofile {
         return Err(ax_errno::AxError::TooManyOpenFiles);
@@ -282,7 +287,9 @@ fn add_file_like_with_min(f: alloc::sync::Arc<dyn FileLike>, min_fd: c_int, cloe
     }
 
     let fd = FileDescriptor { inner: f, cloexec };
-    table.add_at(target_fd, fd).map_err(|_| ax_errno::AxError::TooManyOpenFiles)?;
+    table
+        .add_at(target_fd, fd)
+        .map_err(|_| ax_errno::AxError::TooManyOpenFiles)?;
     Ok(target_fd as c_int)
 }
 
