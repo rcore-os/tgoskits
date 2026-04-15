@@ -1691,7 +1691,7 @@ dependencies = [
  "rk3588-clk",
  "rockchip-pm",
  "sdmmc",
- "some-serial",
+ "some-serial 0.3.1",
  "somehal",
  "spin 0.10.0",
 ]
@@ -6230,6 +6230,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdif-serial"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc1c74da11abd5ed2038fe1f2dbfd8dfd50c09e7a73ec3ea8d71d880ea00fe8f"
+dependencies = [
+ "bitflags 2.11.1",
+ "futures",
+ "heapless 0.9.2",
+ "rdif-base 0.8.0",
+ "spin 0.10.0",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "rdrive"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7316,7 +7330,23 @@ dependencies = [
  "heapless 0.9.2",
  "log",
  "mbarrier",
- "rdif-serial",
+ "rdif-serial 0.6.0",
+ "thiserror 2.0.18",
+ "tock-registers 0.10.1",
+ "x86",
+]
+
+[[package]]
+name = "some-serial"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9243d4d1dc16ad8ecbb1146508c9bd92222a3a3d8a77d79f383d72269fa5c963"
+dependencies = [
+ "bitflags 2.11.1",
+ "enum_dispatch",
+ "heapless 0.9.2",
+ "log",
+ "rdif-serial 0.7.0",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
  "x86",
@@ -7324,9 +7354,9 @@ dependencies = [
 
 [[package]]
 name = "someboot"
-version = "0.1.12"
+version = "0.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5e304b9b5b0edd2f608b645a34295c4d8090355ae3582b5b4a3067cd683011f"
+checksum = "b8b04101da637e9c20c1a8b5ac23f18c9368f6485fd090abfcc99a375b4e3d28"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64-cpu-ext",
@@ -7357,7 +7387,7 @@ dependencies = [
  "rgb",
  "sbi-rt",
  "smccc",
- "some-serial",
+ "some-serial 0.4.0",
  "somehal-macros",
  "spin 0.10.0",
  "syn 2.0.117",
