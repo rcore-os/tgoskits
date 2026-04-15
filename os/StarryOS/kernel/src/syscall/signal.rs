@@ -7,8 +7,8 @@ use ax_task::{
     future::{self, block_on},
 };
 use linux_raw_sys::general::{
-    MINSIGSTKSZ, SI_TKILL, SI_USER, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK, kernel_sigaction, siginfo,
-    timespec,
+    MINSIGSTKSZ, SI_TKILL, SI_USER, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK, SS_DISABLE,
+    kernel_sigaction, siginfo, timespec,
 };
 use starry_process::Pid;
 use starry_signal::{SignalInfo, SignalSet, SignalStack, Signo};
@@ -360,7 +360,7 @@ pub fn sys_sigaltstack(ss: *const SignalStack, old_ss: *mut SignalStack) -> AxRe
 
     if let Some(ss) = ss.nullable() {
         let ss = unsafe { ss.vm_read_uninit()?.assume_init() };
-        if ss.size < MINSIGSTKSZ as usize {
+        if ss.flags != SS_DISABLE && ss.size < MINSIGSTKSZ as usize {
             return Err(AxError::NoMemory);
         }
         sig.set_stack(ss);
