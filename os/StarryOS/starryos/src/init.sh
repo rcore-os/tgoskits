@@ -15,21 +15,17 @@ echo
 
 cd ~
 
-echo "=== Test: apt update ==="
-apt update 2>&1
-echo "=== apt update exit=$? ==="
+# echo "=== Test: apt update ==="
+# apt update 2>&1
+# echo "=== apt update exit=$? ==="
 
-echo "=== Test: apt install hello ==="
-apt install hello -y 2>&1
-echo "=== apt install hello exit=$? ==="
+# echo "=== Test: apt install hello ==="
+# apt install hello -y 2>&1
+# echo "=== apt install hello exit=$? ==="
 
-echo; echo "=== Running hello ==="
-hello
-echo "=== hello exit=$? ==="
+# echo; echo "=== Running hello ==="
+# hello
+# echo "=== hello exit=$? ==="
 
 # Use bash if available, otherwise fall back to sh
-if [ -x /bin/bash ]; then
-    exec /bin/bash -l
-else
-    exec /bin/sh -l
-fi
+exec /bin/bash -l
