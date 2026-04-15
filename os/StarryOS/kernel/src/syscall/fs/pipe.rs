@@ -20,11 +20,11 @@ bitflags! {
 
 pub fn sys_pipe2(fds: *mut [c_int; 2], flags: u32) -> AxResult<isize> {
     let flags = {
-        let new_flags = PipeFlags::from_bits_truncate(flags);
-        if new_flags.bits() != flags {
-            warn!("sys_pipe2 <= unrecognized flags: {flags}");
+        // Check for invalid flags - should return EINVAL for unrecognized bits
+        match PipeFlags::from_bits(flags) {
+            Some(f) => f,
+            None => return Err(ax_errno::AxError::InvalidInput),
         }
-        new_flags
     };
 
     let cloexec = flags.contains(PipeFlags::CLOEXEC);

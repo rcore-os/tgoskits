@@ -14,8 +14,8 @@ use linux_raw_sys::general::*;
 
 use crate::{
     file::{
-        Directory, FD_TABLE, File, FileLike, Pipe, add_file_like, close_file_like, get_file_like,
-        with_fs,
+        Directory, FD_TABLE, File, FileDescriptor, FileLike, Pipe, add_file_like, close_file_like,
+        get_file_like, with_fs,
     },
     mm::{UserPtr, vm_load_string},
     pseudofs::{Device, dev::tty},
@@ -254,6 +254,38 @@ fn dup_fd(old_fd: c_int, cloexec: bool) -> AxResult<isize> {
     Ok(new_fd as _)
 }
 
+fn dup_fd_with_min(old_fd: c_int, min_fd: c_int, cloexec: bool) -> AxResult<isize> {
+    // F_DUPFD with negative arg should return EINVAL
+    if min_fd < 0 {
+        return Err(ax_errno::AxError::InvalidInput);
+    }
+    let f = get_file_like(old_fd)?;
+    let new_fd = add_file_like_with_min(f, min_fd, cloexec)?;
+    Ok(new_fd as _)
+}
+
+/// Add a file to the file descriptor table with minimum fd requirement
+fn add_file_like_with_min(f: alloc::sync::Arc<dyn FileLike>, min_fd: c_int, cloexec: bool) -> AxResult<c_int> {
+    let max_nofile = current().as_thread().proc_data.rlim.read()[linux_raw_sys::general::RLIMIT_NOFILE].current;
+    let mut table = FD_TABLE.write();
+    if table.count() as u64 >= max_nofile {
+        return Err(ax_errno::AxError::TooManyOpenFiles);
+    }
+
+    // Find the next available fd >= min_fd
+    let mut target_fd = min_fd.max(0) as usize;
+    while table.get(target_fd).is_some() {
+        target_fd += 1;
+        if target_fd as u64 >= max_nofile {
+            return Err(ax_errno::AxError::TooManyOpenFiles);
+        }
+    }
+
+    let fd = FileDescriptor { inner: f, cloexec };
+    table.add_at(target_fd, fd).map_err(|_| ax_errno::AxError::TooManyOpenFiles)?;
+    Ok(target_fd as c_int)
+}
+
 pub fn sys_dup(old_fd: c_int) -> AxResult<isize> {
     debug!("sys_dup <= {old_fd}");
     dup_fd(old_fd, false)
@@ -302,8 +334,8 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
     debug!("sys_fcntl <= fd: {fd} cmd: {cmd} arg: {arg}");
 
     match cmd as u32 {
-        F_DUPFD => dup_fd(fd, false),
-        F_DUPFD_CLOEXEC => dup_fd(fd, true),
+        F_DUPFD => dup_fd_with_min(fd, arg as c_int, false),
+        F_DUPFD_CLOEXEC => dup_fd_with_min(fd, arg as c_int, true),
         F_SETLK | F_SETLKW => Ok(0),
         F_OFD_SETLK | F_OFD_SETLKW => Ok(0),
         F_GETLK | F_OFD_GETLK => {
