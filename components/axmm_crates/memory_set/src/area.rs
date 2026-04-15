@@ -152,6 +152,32 @@ impl<B: MappingBackend> MemoryArea<B> {
         Ok(())
     }
 
+    /// Grows the memory area at the right side.
+    ///
+    /// The end address is increased by `additional_size`. The new region
+    /// is mapped via the backend (e.g., for COW backends this is a no-op
+    /// since pages are demand-faulted).
+    ///
+    /// `additional_size` must be greater than 0.
+    pub(crate) fn grow_right(
+        &mut self,
+        additional_size: usize,
+        page_table: &mut B::PageTable,
+    ) -> MappingResult {
+        assert!(additional_size > 0);
+        assert!(
+            self.end().is_aligned_4k()
+                && additional_size % ax_memory_addr::PAGE_SIZE_4K == 0,
+            "grow_right: end and additional_size must be page-aligned"
+        );
+        let map_start = self.end();
+        if !self.backend.map(map_start, additional_size, self.flags, page_table) {
+            return Err(MappingError::BadState);
+        }
+        self.va_range.end = self.va_range.end.wrapping_add(additional_size);
+        Ok(())
+    }
+
     /// Splits the memory area at the given position.
     ///
     /// The original memory area is shrunk to the left part, and the right part

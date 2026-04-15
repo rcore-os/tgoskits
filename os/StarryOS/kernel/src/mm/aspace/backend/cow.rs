@@ -84,6 +84,11 @@ pub struct CowBackend {
 }
 
 impl CowBackend {
+    /// Returns `true` if this is an anonymous private mapping (no file backing).
+    pub fn is_anonymous(&self) -> bool {
+        self.file.is_none()
+    }
+
     fn alloc_new_frame(&self, zeroed: bool) -> AxResult<PhysAddr> {
         let frame = alloc_frame(zeroed, self.size)?;
         FRAME_TABLE.lock().init_frame(frame);
