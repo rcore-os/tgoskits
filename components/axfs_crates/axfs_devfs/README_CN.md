@@ -28,7 +28,7 @@
 
 ```toml
 [dependencies]
-ax-fs-devfs = "0.3.2"
+ax-fs-devfs = "0.3.3"
 ```
 
 ### 检查与测试

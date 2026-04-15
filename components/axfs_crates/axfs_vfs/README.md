@@ -28,7 +28,7 @@ Add this crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ax-fs-vfs = "0.3.2"
+ax-fs-vfs = "0.3.3"
 ```
 
 ### Run Check and Test

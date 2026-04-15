@@ -831,7 +831,7 @@ dependencies = [
 
 [[package]]
 name = "ax-fs-devfs"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "ax-fs-vfs",
  "log",
@@ -866,7 +866,7 @@ dependencies = [
 
 [[package]]
 name = "ax-fs-ramfs"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "ax-fs-vfs",
  "log",
@@ -875,7 +875,7 @@ dependencies = [
 
 [[package]]
 name = "ax-fs-vfs"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "ax-errno",
  "bitflags 2.11.1",

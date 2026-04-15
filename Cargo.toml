@@ -336,7 +336,7 @@ ax-sched = { path = "components/axsched", version = "0.5.1" }
 axvcpu = { path = "components/axvcpu", version = "0.5.0" }
 axvm = { path = "components/axvm", version = "0.5.0" }
 axvmconfig = { path = "components/axvmconfig", version = "0.4.2" }
-ax-fs-vfs = { path = "components/axfs_crates/axfs_vfs", version = "0.3.2" }
+ax-fs-vfs = { path = "components/axfs_crates/axfs_vfs", version = "0.3.3" }
 
 axbuild = { path = "scripts/axbuild", version = "0.4.0" }
 
