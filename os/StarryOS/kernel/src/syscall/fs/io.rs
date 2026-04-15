@@ -181,11 +181,11 @@ pub fn sys_pwrite64(
     len: usize,
     offset: __kernel_off_t,
 ) -> AxResult<isize> {
-    if len == 0 {
-        return Ok(0);
-    }
     if offset < 0 {
         return Err(AxError::InvalidInput);
+    }
+    if len == 0 {
+        return Ok(0);
     }
     let f = file_for_seek(fd)?;
     let write = f.inner().write_at(VmBytes::new(buf, len), offset as _)?;
@@ -235,7 +235,9 @@ pub fn sys_preadv2(
     _flags: u32,
 ) -> AxResult<isize> {
     let offset = pos_from_hilo(pos_h, pos_l);
-    debug!("sys_preadv2 <= fd: {fd}, iovcnt: {iovcnt}, offset: {offset}, flags: {_flags}");
+    if offset < 0 {
+        return Err(AxError::InvalidInput);
+    }
     let f = file_for_seek(fd)?;
     f.inner()
         .read_at(IoVectorBuf::new(iov, iovcnt)?.into_io(), offset as _)
@@ -251,7 +253,9 @@ pub fn sys_pwritev2(
     _flags: u32,
 ) -> AxResult<isize> {
     let offset = pos_from_hilo(pos_h, pos_l);
-    debug!("sys_pwritev2 <= fd: {fd}, iovcnt: {iovcnt}, offset: {offset}, flags: {_flags}");
+    if offset < 0 {
+        return Err(AxError::InvalidInput);
+    }
     let f = file_for_seek(fd)?;
     f.inner()
         .write_at(IoVectorBuf::new(iov, iovcnt)?.into_io(), offset as _)
