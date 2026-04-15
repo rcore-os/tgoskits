@@ -27,7 +27,10 @@ pub(crate) struct Board {
 
 pub(crate) fn starry_dir(workspace_root: &Path) -> anyhow::Result<PathBuf> {
     let path = workspace_root.join("os/StarryOS");
-    if path.join("Cargo.toml").exists() {
+    if path.is_dir()
+        && path.join("starryos/Cargo.toml").exists()
+        && path.join("configs/board").is_dir()
+    {
         Ok(path)
     } else {
         Err(anyhow!(
