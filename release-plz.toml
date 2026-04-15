@@ -88,7 +88,3 @@ release = false
 [[package]]
 name = "arceos-yield"
 release = false
-
-[[package]]
-name = "starryos-test"
-release = false
