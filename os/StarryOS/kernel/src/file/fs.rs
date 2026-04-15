@@ -115,6 +115,15 @@ impl File {
         }
     }
 
+    pub fn new_with_append(inner: ax_fs::File, has_append: bool) -> Self {
+        Self {
+            inner,
+            nonblock: AtomicBool::new(false),
+            dynamic_flags: AtomicU32::new(0),
+            dynamic_append: AtomicU32::new(if has_append { 1 } else { 0 }),
+        }
+    }
+
     pub fn inner(&self) -> &ax_fs::File {
         &self.inner
     }
@@ -143,30 +152,31 @@ impl File {
             }
         }
 
-        // For O_APPEND, check if it was dynamically modified
-        // dynamic_append: 0=not set, 1=explicitly set, 2=explicitly cleared
-        let dynamic_append = self.dynamic_append.load(core::sync::atomic::Ordering::Relaxed);
+        // For O_APPEND, check the dynamic_append state
+        // dynamic_append: 0=not set, 1=explicitly set (via F_SETFL or open), 2=explicitly cleared (via F_SETFL)
+        let dynamic_append = self
+            .dynamic_append
+            .load(core::sync::atomic::Ordering::Relaxed);
         let append_mask = linux_raw_sys::general::O_APPEND as u32;
 
         match dynamic_append {
             1 => {
-                // Explicitly set via F_SETFL
+                // O_APPEND is set (either via F_SETFL or opened with O_APPEND)
                 ret |= append_mask;
             }
             2 => {
-                // Explicitly cleared via F_SETFL
-                // Don't set O_APPEND even if file was opened with it
+                // Explicitly cleared via F_SETFL - don't set O_APPEND
             }
             _ => {
-                // Not dynamically set, use original file flag
-                if flags.contains(FileFlags::APPEND) {
-                    ret |= append_mask;
-                }
+                // Not dynamically set, don't set O_APPEND (we don't pass it to ax_fs anymore)
             }
         }
 
         // Merge in other dynamically modified flags (not O_APPEND)
-        ret |= self.dynamic_flags.load(core::sync::atomic::Ordering::Relaxed) & !append_mask;
+        ret |= self
+            .dynamic_flags
+            .load(core::sync::atomic::Ordering::Relaxed)
+            & !append_mask;
 
         ret
     }
@@ -177,13 +187,19 @@ impl File {
         // Handle O_APPEND specially with dynamic_append state
         if (mask & append_mask) != 0 {
             let append_value = (value & append_mask) != 0;
-            self.dynamic_append.store(if append_value { 1 } else { 2 }, core::sync::atomic::Ordering::Relaxed);
+            self.dynamic_append.store(
+                if append_value { 1 } else { 2 },
+                core::sync::atomic::Ordering::Relaxed,
+            );
         }
 
         // Handle other flags
-        let mut current = self.dynamic_flags.load(core::sync::atomic::Ordering::Relaxed);
+        let mut current = self
+            .dynamic_flags
+            .load(core::sync::atomic::Ordering::Relaxed);
         current = (current & !mask) | (value & mask);
-        self.dynamic_flags.store(current, core::sync::atomic::Ordering::Relaxed);
+        self.dynamic_flags
+            .store(current, core::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn has_append(&self) -> bool {
@@ -210,12 +226,13 @@ impl FileLike for File {
     }
 
     fn write(&self, src: &mut IoSrc) -> AxResult<usize> {
-        // Handle O_APPEND: seek to end before writing
+        // Handle O_APPEND: if dynamically set, seek to end before writing
+        // Note: We can't rely on the underlying file's APPEND flag since it can't be changed dynamically
         if self.has_append() {
             let mut inner = self.inner();
-            // Seek to end of file
+            // Seek to end of file before writing
             let _ = inner.seek(SeekFrom::End(0))?;
-            // Now perform the write from the end
+            // Perform the write from the end
             if likely(self.is_blocking()) {
                 inner.write(src)
             } else {
@@ -224,6 +241,7 @@ impl FileLike for File {
                 }))
             }
         } else {
+            // No O_APPEND, write from current position
             let inner = self.inner();
             if likely(self.is_blocking()) {
                 inner.write(src)

@@ -1,17 +1,22 @@
-use alloc::{collections::BTreeMap, format, string::ToString, sync::Arc};
+use alloc::{collections::BTreeMap, format, string::ToString, sync::Arc, vec::Vec};
 use core::{
     ffi::{c_char, c_int},
-    mem,
+    future, mem,
     ops::{Deref, DerefMut},
+    sync::atomic::{AtomicU32, Ordering},
+    task::{Context, Poll},
 };
-use spin::Once;
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::{FS_CONTEXT, FileBackend, OpenOptions, OpenResult};
-use ax_task::current;
+use ax_sync::Mutex;
+use ax_task::{current, future::block_on};
 use axfs_ng_vfs::{DirEntry, FileNode, Location, NodePermission, NodeType, Reference};
+use axpoll::PollSet;
 use bitflags::bitflags;
-use linux_raw_sys::general::*;
+use linux_raw_sys::general::{F_RDLCK, F_UNLCK, F_WRLCK, flock64, *};
+use spin::Once;
+use starry_vm::VmPtr;
 
 use crate::{
     file::{
@@ -25,6 +30,8 @@ use crate::{
 };
 
 /// Convert open flags to [`OpenOptions`].
+/// Note: O_APPEND is NOT passed to ax_fs to allow dynamic F_SETFL modification.
+/// Instead, it's stored in the File wrapper for manual handling.
 fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32)) -> OpenOptions {
     let flags = flags as u32;
     let mut options = OpenOptions::new();
@@ -34,34 +41,41 @@ fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32))
         O_WRONLY => options.write(true),
         _ => options.read(true).write(true),
     };
-    if flags & O_APPEND != 0 {
-        options.append(true);
-    }
+    // O_TRUNC: truncate the file to length 0
     if flags & O_TRUNC != 0 {
         options.truncate(true);
     }
+    // O_CREAT: create file if it doesn't exist
     if flags & O_CREAT != 0 {
         options.create(true);
     }
+    // O_PATH: obtain a file descriptor without actually opening the file
     if flags & O_PATH != 0 {
         options.path(true);
     }
+    // O_EXCL: used with O_CREAT, fail if the file already exists
     if flags & O_EXCL != 0 {
         options.create_new(true);
     }
+    // O_DIRECTORY: only open if the file is a directory
     if flags & O_DIRECTORY != 0 {
         options.directory(true);
     }
+    // O_NOFOLLOW: don't follow symbolic links
     if flags & O_NOFOLLOW != 0 {
         options.no_follow(true);
     }
+    // O_DIRECT: direct I/O (bypass cache)
     if flags & O_DIRECT != 0 {
         options.direct(true);
     }
+    // Note: O_APPEND is NOT passed to ax_fs - it's handled by the File wrapper
+    // to allow dynamic modification via F_SETFL
     options
 }
 
 fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
+    let has_append = (flags & linux_raw_sys::general::O_APPEND as u32) != 0;
     let f: Arc<dyn FileLike> = match result {
         OpenResult::File(mut file) => {
             // /dev/xx handling
@@ -99,7 +113,7 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
                     file = ax_fs::File::new(FileBackend::Direct(loc), file.flags());
                 }
             }
-            Arc::new(File::new(file))
+            Arc::new(File::new_with_append(file, has_append))
         }
         OpenResult::Dir(dir) => Arc::new(Directory::new(dir)),
     };
@@ -344,11 +358,125 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
     match cmd as u32 {
         F_DUPFD => dup_fd_with_min(fd, arg as c_int, false),
         F_DUPFD_CLOEXEC => dup_fd_with_min(fd, arg as c_int, true),
-        F_SETLK | F_SETLKW => Ok(0),
+        F_SETLK | F_SETLKW => {
+            // fcntl record locks - basic implementation
+            let flk = unsafe { (arg as *const flock64).vm_read_uninit()?.assume_init() };
+
+            // Get file key for lock management
+            let file_key = get_file_key_for_fcntl(fd)?;
+            let pid = current().as_thread().proc_data.proc.pid() as i32;
+
+            let lock_type = flk.l_type as i32;
+            let is_unlock = lock_type == F_UNLCK as i32;
+            let is_blocking = cmd as u32 == F_SETLKW;
+
+            let mut flock_table = get_fcntl_lock_table().lock();
+
+            // Remove existing lock if unlocking
+            if is_unlock {
+                flock_table.remove(&(file_key, pid));
+
+                // Wake up any waiters for this file
+                let mut wait_queue = get_fcntl_lock_wait_queue().lock();
+                wait_queue.retain(|waiter| {
+                    if waiter.file_key == file_key {
+                        waiter.wakeup_event.wake();
+                        false // Remove from wait queue
+                    } else {
+                        true
+                    }
+                });
+
+                return Ok(0);
+            }
+
+            // Try to acquire the lock
+            if check_fcntl_lock_conflicts(&flock_table, file_key, &flk, pid) {
+                // Return error for non-blocking mode
+                if !is_blocking {
+                    return Err(AxError::WouldBlock);
+                }
+
+                // For blocking mode, wait for the lock to become available
+                let wakeup_event = Arc::new(PollSet::new());
+
+                // Add to wait queue
+                {
+                    let mut wait_queue = get_fcntl_lock_wait_queue().lock();
+                    wait_queue.push(FcntlLockWaiter {
+                        file_key,
+                        pid,
+                        lock_request: flk.clone(),
+                        wakeup_event: wakeup_event.clone(),
+                    });
+                }
+
+                // Release the lock table lock before waiting
+                drop(flock_table);
+
+                // Wait for the lock to become available using async/await
+                block_on(core::future::poll_fn(|cx| {
+                    // Check if we can now acquire the lock
+                    let mut flock_table = get_fcntl_lock_table().lock();
+                    if !check_fcntl_lock_conflicts(&flock_table, file_key, &flk, pid) {
+                        // Remove from wait queue and add the lock
+                        let mut wait_queue = get_fcntl_lock_wait_queue().lock();
+                        wait_queue.retain(|w| w.pid != pid);
+
+                        let lock_entry = FcntlLockEntry {
+                            pid,
+                            l_type: flk.l_type,
+                            l_whence: flk.l_whence,
+                            l_start: flk.l_start,
+                            l_len: flk.l_len,
+                        };
+                        flock_table.insert((file_key, pid), lock_entry);
+                        Poll::Ready(())
+                    } else {
+                        // Register waker and continue waiting
+                        wakeup_event.register(cx.waker());
+                        Poll::Pending
+                    }
+                }));
+
+                return Ok(0);
+            }
+
+            // Add the lock
+            let lock_entry = FcntlLockEntry {
+                pid,
+                l_type: flk.l_type,
+                l_whence: flk.l_whence,
+                l_start: flk.l_start,
+                l_len: flk.l_len,
+            };
+
+            flock_table.insert((file_key, pid), lock_entry);
+            Ok(0)
+        }
         F_OFD_SETLK | F_OFD_SETLKW => Ok(0),
         F_GETLK | F_OFD_GETLK => {
-            let arg = UserPtr::<flock64>::from(arg);
-            arg.get_as_mut()?.l_type = F_UNLCK as _;
+            let flk_ptr = arg as *mut flock64;
+            let flk = unsafe { flk_ptr.vm_read_uninit()?.assume_init() };
+            let file_key = get_file_key_for_fcntl(fd)?;
+            let pid = current().as_thread().proc_data.proc.pid() as i32;
+
+            let flock_table = get_fcntl_lock_table().lock();
+
+            // Check for conflicting locks
+            if let Some(conflict) = get_first_fcntl_lock_conflict(&flock_table, file_key, &flk, pid)
+            {
+                // Return the first conflicting lock
+                let result = unsafe { &mut *flk_ptr };
+                result.l_type = conflict.l_type;
+                result.l_whence = conflict.l_whence;
+                result.l_start = conflict.l_start;
+                result.l_len = conflict.l_len;
+                result.l_pid = conflict.pid as _;
+            } else {
+                // No conflict, set to F_UNLCK
+                unsafe { (&mut *flk_ptr).l_type = F_UNLCK as _ };
+            }
             Ok(0)
         }
         F_SETFL => {
@@ -426,10 +554,10 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
 }
 
 // flock operation constants
-const LOCK_SH: i32 = 1;  // Shared lock
-const LOCK_EX: i32 = 2;  // Exclusive lock
-const LOCK_UN: i32 = 8;  // Unlock
-const LOCK_NB: i32 = 4;  // Non-blocking
+const LOCK_SH: i32 = 1; // Shared lock
+const LOCK_EX: i32 = 2; // Exclusive lock
+const LOCK_UN: i32 = 8; // Unlock
+const LOCK_NB: i32 = 4; // Non-blocking
 
 // Global flock table mapping inode -> lock type
 static FLOCK_TABLE: Once<spin::Mutex<BTreeMap<u64, i32>>> = Once::new();
@@ -452,7 +580,6 @@ pub fn sys_flock(fd: c_int, operation: c_int) -> AxResult<isize> {
 
     // Extract lock operation
     let is_unlock = (operation & LOCK_UN) != 0;
-    let is_shared = (operation & LOCK_SH) != 0;
     let is_exclusive = (operation & LOCK_EX) != 0;
     let is_nonblocking = (operation & LOCK_NB) != 0;
 
@@ -487,4 +614,102 @@ pub fn sys_flock(fd: c_int, operation: c_int) -> AxResult<isize> {
     flock_table.insert(file_key, lock_type);
 
     Ok(0)
+}
+
+// fcntl record locks (F_SETLK/F_GETLK)
+#[derive(Clone)]
+struct FcntlLockEntry {
+    pid: i32,
+    l_type: i16,
+    l_whence: i16,
+    l_start: i64,
+    l_len: i64,
+}
+
+// Fcntl lock wait queue entry
+struct FcntlLockWaiter {
+    file_key: u64,
+    pid: i32,
+    lock_request: flock64,
+    wakeup_event: Arc<PollSet>,
+}
+
+// Global fcntl lock table - key is (inode, pid)
+static FCNTL_LOCK_TABLE: Once<Mutex<BTreeMap<(u64, i32), FcntlLockEntry>>> = Once::new();
+
+// Global fcntl lock wait queue
+static FCNTL_LOCK_WAIT_QUEUE: Once<Mutex<Vec<FcntlLockWaiter>>> = Once::new();
+
+fn get_fcntl_lock_table() -> &'static Mutex<BTreeMap<(u64, i32), FcntlLockEntry>> {
+    FCNTL_LOCK_TABLE.call_once(|| Mutex::new(BTreeMap::new()))
+}
+
+fn get_fcntl_lock_wait_queue() -> &'static Mutex<Vec<FcntlLockWaiter>> {
+    FCNTL_LOCK_WAIT_QUEUE.call_once(|| Mutex::new(Vec::new()))
+}
+
+// Get file key for fcntl locks (use inode number)
+fn get_file_key_for_fcntl(fd: c_int) -> AxResult<u64> {
+    let file = File::from_fd(fd)?;
+    let kstat = file.stat()?;
+    Ok(kstat.ino)
+}
+
+// Check for conflicting fcntl locks
+fn check_fcntl_lock_conflicts(
+    table: &BTreeMap<(u64, i32), FcntlLockEntry>,
+    file_key: u64,
+    new_lock: &flock64,
+    pid: i32,
+) -> bool {
+    let new_type = new_lock.l_type as i32;
+    let is_write = new_type == F_WRLCK as i32;
+
+    table.iter().any(|((key_ino, key_pid), lock)| {
+        *key_ino == file_key && *key_pid != pid && {
+            let lock_type = lock.l_type as i32;
+            let lock_is_write = lock_type == F_WRLCK as i32;
+
+            // Write locks conflict with any lock (read or write)
+            // Read locks conflict with write locks
+            if is_write || lock_is_write {
+                // Check for range overlap
+                // For simplicity, we'll consider any overlap as conflict
+                true // TODO: Implement proper range overlap checking
+            } else {
+                false
+            }
+        }
+    })
+}
+
+// Get first conflicting lock for F_GETLK
+fn get_first_fcntl_lock_conflict(
+    table: &BTreeMap<(u64, i32), FcntlLockEntry>,
+    file_key: u64,
+    new_lock: &flock64,
+    pid: i32,
+) -> Option<FcntlLockEntry> {
+    let new_type = new_lock.l_type as i32;
+    let is_write = new_type == F_WRLCK as i32;
+
+    table
+        .iter()
+        .find(|((key_ino, key_pid), lock)| {
+            *key_ino == file_key && *key_pid != pid && {
+                let lock_type = lock.l_type as i32;
+                let lock_is_write = lock_type == F_WRLCK as i32;
+
+                // Write locks conflict with any lock (read or write)
+                // Read locks conflict with write locks
+                if is_write || lock_is_write {
+                    // Check for range overlap
+                    // For simplicity, we'll consider any overlap as conflict
+                    true // TODO: Implement proper range overlap checking
+                } else {
+                    false
+                }
+            }
+        })
+        .map(|(_, lock)| lock.clone())
 }
