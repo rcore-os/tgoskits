@@ -18,6 +18,18 @@ use axpoll::Pollable;
 use downcast_rs::{DowncastSync, impl_downcast};
 use flatten_objects::FlattenObjects;
 use linux_raw_sys::general::{RLIMIT_NOFILE, stat, statx, statx_timestamp};
+
+// STATX constants as defined in Linux kernel
+const STATX_TYPE: u32 = 0x0001;
+const STATX_MODE: u32 = 0x0002;
+const STATX_NLINK: u32 = 0x0004;
+const STATX_UID: u32 = 0x0008;
+const STATX_GID: u32 = 0x0010;
+const STATX_ATIME: u32 = 0x0020;
+const STATX_MTIME: u32 = 0x0040;
+const STATX_CTIME: u32 = 0x0080;
+const STATX_SIZE: u32 = 0x0100;
+const STATX_BASIC_STATS: u32 = STATX_TYPE | STATX_MODE | STATX_NLINK | STATX_UID | STATX_GID | STATX_ATIME | STATX_MTIME | STATX_CTIME | STATX_SIZE;
 use spin::RwLock;
 
 pub use self::{
@@ -120,6 +132,9 @@ impl From<Kstat> for statx {
 
         statx.stx_dev_major = (value.dev >> 32) as _;
         statx.stx_dev_minor = value.dev as _;
+
+        // Set stx_mask to indicate which fields are valid
+        statx.stx_mask = STATX_BASIC_STATS;
 
         statx
     }

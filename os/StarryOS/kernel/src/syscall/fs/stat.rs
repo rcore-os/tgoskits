@@ -54,7 +54,7 @@ pub fn sys_fstatat(
     // Valid flags are: 0, AT_EMPTY_PATH, AT_SYMLINK_NOFOLLOW, AT_SYMLINK_NOFOLLOW_ANY
     // Any other flag bits should return EINVAL
     const VALID_FLAGS: u32 = 0x1000 | 0x100 | 0x800; // AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW | AT_SYMLINK_NOFOLLOW_ANY
-    if flags & !VALID_FLAGS {
+    if (flags & !VALID_FLAGS) != 0 {
         return Err(AxError::InvalidInput); // EINVAL
     }
 

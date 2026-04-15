@@ -178,7 +178,7 @@ pub fn sys_pwrite64(
 /// Combine pos_l and pos_h into a single offset, matching Linux
 /// `pos_from_hilo`. On 64-bit, pos_h is unused since the full
 /// offset fits in a single register-width argument.
-fn pos_from_hilo(pos_h: usize, pos_l: usize) -> __kernel_off_t {
+fn pos_from_hilo(_pos_h: usize, pos_l: usize) -> __kernel_off_t {
     #[cfg(target_pointer_width = "64")]
     {
         pos_l as __kernel_off_t
