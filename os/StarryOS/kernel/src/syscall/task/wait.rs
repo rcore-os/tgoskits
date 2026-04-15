@@ -61,6 +61,16 @@ impl WaitPid {
 }
 
 pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isize> {
+    // Validate options: check for invalid bits
+    let valid_options = WaitOptions::WNOHANG
+        | WaitOptions::WUNTRACED
+        | WaitOptions::WCONTINUED
+        | WaitOptions::WNOWAIT;
+    let invalid_bits = options & !valid_options.bits();
+    if invalid_bits != 0 {
+        info!("sys_waitpid: invalid options bits: {:#x}", invalid_bits);
+        return Err(AxError::from(LinuxError::EINVAL));
+    }
     let options = WaitOptions::from_bits_truncate(options);
     info!("sys_waitpid <= pid: {pid:?}, options: {options:?}");
 
@@ -90,7 +100,37 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
     }
 
     let check_children = || {
+        // Check for continued children (WCONTINUED) - check BEFORE zombie
+        // This is critical because a continued child may exit quickly and become zombie
+        if options.contains(WaitOptions::WCONTINUED) {
+            // Check both running and zombie children that have been continued
+            if let Some(child) = children.iter().find(|child| {
+                child.is_continued() || (child.is_zombie() && child.stop_signal() != 0)
+            }) {
+                // Return continued status, clear the flag, but don't free yet
+                child.clear_continued();
+                if let Some(exit_code) = exit_code.nullable() {
+                    exit_code.vm_write(0xffff)?;
+                }
+                return Ok(Some(child.pid() as _));
+            }
+        }
+
+        // Check for stopped children (WUNTRACED)
+        if options.contains(WaitOptions::WUNTRACED) {
+            if let Some(child) = children.iter().find(|child| child.is_stopped()) {
+                if let Some(exit_code) = exit_code.nullable() {
+                    // Return stopped status: 0x7f << 8 | signal
+                    let stop_signal = child.stop_signal();
+                    exit_code.vm_write((stop_signal << 8 | 0x7f) as i32)?;
+                }
+                return Ok(Some(child.pid() as _));
+            }
+        }
+
+        // Check for zombie children
         if let Some(child) = children.iter().find(|child| child.is_zombie()) {
+            // Normal exit handling
             if !options.contains(WaitOptions::WNOWAIT) {
                 child.free();
             }

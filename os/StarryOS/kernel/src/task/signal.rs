@@ -27,11 +27,29 @@ pub fn check_signals(
             do_exit(128 + signo as i32, true);
         }
         SignalOSAction::Stop => {
-            // TODO: implement stop
-            do_exit(1, true);
+            // Stop the process - record the signal that caused the stop
+            let proc = &thr.proc_data.proc;
+            proc.stop(signo as i32);
+
+            // Wake up parent process that might be waiting with WUNTRACED
+            if let Some(parent) = proc.parent() {
+                if let Ok(parent_data) = get_process_data(parent.pid()) {
+                    parent_data.child_exit_event.wake();
+                }
+            }
         }
         SignalOSAction::Continue => {
-            // TODO: implement continue
+            // Continue a stopped process
+            let proc = &thr.proc_data.proc;
+            if proc.is_stopped() {
+                proc.continue_process();
+                // Wake up parent process that might be waiting with WCONTINUED
+                if let Some(parent) = proc.parent() {
+                    if let Ok(parent_data) = get_process_data(parent.pid()) {
+                        parent_data.child_exit_event.wake();
+                    }
+                }
+            }
         }
         SignalOSAction::Handler => {
             // do nothing

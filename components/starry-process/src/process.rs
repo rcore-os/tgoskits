@@ -5,7 +5,7 @@ use alloc::{
 };
 use core::{
     fmt,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicI32, Ordering},
 };
 
 use ax_kspin::SpinNoIrq;
@@ -25,6 +25,9 @@ pub(crate) struct ThreadGroup {
 pub struct Process {
     pid: Pid,
     is_zombie: AtomicBool,
+    is_stopped: AtomicBool,
+    stop_signal: AtomicI32,
+    is_continued: AtomicBool,
     pub(crate) tg: SpinNoIrq<ThreadGroup>,
 
     // TODO: child subreaper9
@@ -230,6 +233,50 @@ impl Process {
             parent.children.lock().remove(&self.pid);
         }
     }
+
+    /// Returns `true` if the [`Process`] is currently stopped.
+    pub fn is_stopped(&self) -> bool {
+        self.is_stopped.load(Ordering::Acquire)
+    }
+
+    /// Stops the [`Process`] due to a signal (e.g., SIGSTOP).
+    ///
+    /// This marks the process as stopped and records the signal that caused it.
+    pub fn stop(self: &Arc<Self>, signal: i32) {
+        self.is_stopped.store(true, Ordering::Release);
+        self.stop_signal.store(signal, Ordering::Release);
+    }
+
+    /// Continues a stopped [`Process`] (e.g., after SIGCONT).
+    ///
+    /// This clears the stopped state, allowing the process to continue
+    /// execution.
+    pub fn continue_process(self: &Arc<Self>) {
+        self.is_stopped.store(false, Ordering::Release);
+        self.is_continued.store(true, Ordering::Release);
+    }
+
+    /// Returns the signal that caused the process to stop.
+    ///
+    /// Returns the last stop signal even after the process has been continued.
+    pub fn stop_signal(&self) -> i32 {
+        self.stop_signal.load(Ordering::Acquire)
+    }
+
+    /// Returns `true` if the process has been continued (after being stopped).
+    pub fn is_continued(&self) -> bool {
+        self.is_continued.load(Ordering::Acquire)
+    }
+
+    /// Marks the process as continued (after being stopped).
+    pub fn mark_continued(self: &Arc<Self>) {
+        self.is_continued.store(true, Ordering::Release);
+    }
+
+    /// Clears the continued flag (after reporting to parent).
+    pub fn clear_continued(self: &Arc<Self>) {
+        self.is_continued.store(false, Ordering::Release);
+    }
 }
 
 impl fmt::Debug for Process {
@@ -267,6 +314,9 @@ impl Process {
         let process = Arc::new(Process {
             pid,
             is_zombie: AtomicBool::new(false),
+            is_stopped: AtomicBool::new(false),
+            stop_signal: AtomicI32::new(0),
+            is_continued: AtomicBool::new(false),
             tg: SpinNoIrq::new(ThreadGroup::default()),
             children: SpinNoIrq::new(StrongMap::new()),
             parent: SpinNoIrq::new(parent.as_ref().map(Arc::downgrade).unwrap_or_default()),

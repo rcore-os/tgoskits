@@ -1,10 +1,9 @@
 use alloc::{collections::BTreeMap, format, string::ToString, sync::Arc, vec::Vec};
 use core::{
     ffi::{c_char, c_int},
-    future, mem,
+    mem,
     ops::{Deref, DerefMut},
-    sync::atomic::{AtomicU32, Ordering},
-    task::{Context, Poll},
+    task::Poll,
 };
 
 use ax_errno::{AxError, AxResult};
@@ -14,7 +13,7 @@ use ax_task::{current, future::block_on};
 use axfs_ng_vfs::{DirEntry, FileNode, Location, NodePermission, NodeType, Reference};
 use axpoll::PollSet;
 use bitflags::bitflags;
-use linux_raw_sys::general::{F_RDLCK, F_UNLCK, F_WRLCK, flock64, *};
+use linux_raw_sys::general::{F_UNLCK, F_WRLCK, flock64, *};
 use spin::Once;
 use starry_vm::VmPtr;
 
@@ -23,7 +22,7 @@ use crate::{
         Directory, FD_TABLE, File, FileDescriptor, FileLike, Pipe, add_file_like, close_file_like,
         get_file_like, with_fs,
     },
-    mm::{UserPtr, vm_load_string},
+    mm::vm_load_string,
     pseudofs::{Device, dev::tty},
     syscall::sys::{sys_getegid, sys_geteuid},
     task::AsThread,
@@ -165,7 +164,7 @@ pub fn sys_openat(
                     return Err(AxError::NotADirectory);
                 }
             }
-            Err(e) => {
+            Err(_e) => {
                 // If metadata check fails, let the open proceed and handle errors there
                 // This handles both ENOENT (file doesn't exist) and other cases
             }
