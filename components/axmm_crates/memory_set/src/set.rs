@@ -102,10 +102,7 @@ impl<B: MappingBackend> MemorySet<B> {
         }
     }
 
-    /// Extends the area containing `addr` by `additional_size` at its end.
-    ///
-    /// Returns an error if no area contains `addr`, or if the extension
-    /// would overlap with another area.
+    /// Grows the area containing `addr` by `additional_size` at its end.
     pub fn extend_area(
         &mut self,
         addr: B::Addr,

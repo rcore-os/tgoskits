@@ -187,16 +187,37 @@ impl AddrSpace {
         Ok(())
     }
 
-    /// Extends the mapping containing `addr` by `additional_size` at its end.
-    ///
-    /// The extended region uses the same backend (e.g., for COW mappings,
-    /// new pages are demand-faulted on access). Returns an error if no
-    /// mapping contains `addr` or if the extension overlaps another mapping.
+    /// Relocates page table entries from `[src, src+size)` to `[dst, dst+size)`.
+    /// Pages already mapped at `dst` (shared backends) are skipped.
+    /// Individual failures are skipped to keep the source consistent.
+    pub fn move_pages(&mut self, src: VirtAddr, dst: VirtAddr, size: usize) {
+        let mut cursor = self.pt.cursor();
+        let mut offset = 0;
+        while offset < size {
+            let src_va = src + offset;
+            let dst_va = dst + offset;
+            match cursor.query(src_va) {
+                Ok((paddr, flags, page_size)) => {
+                    if cursor.query(dst_va).is_err() {
+                        if cursor.map(dst_va, paddr, page_size, flags).is_ok() {
+                            let _ = cursor.unmap(src_va);
+                        }
+                        // map failed; page will fault in at dst later
+                    }
+                    offset += page_size as usize;
+                }
+                Err(_) => {
+                    offset += PAGE_SIZE_4K;
+                }
+            }
+        }
+    }
+
+    /// Grows the mapping containing `addr` by `additional_size` at its end.
     pub fn extend_area(&mut self, addr: VirtAddr, additional_size: usize) -> AxResult {
         if additional_size == 0 {
             return Ok(());
         }
-        // Verify the extension stays within the address space.
         let area = self.areas.find(addr).ok_or(AxError::InvalidInput)?;
         if area
             .end()
@@ -210,19 +231,10 @@ impl AddrSpace {
         Ok(())
     }
 
-    /// Iterates over pages in `[start, start+size)`, calling `f` for each
-    /// mapped page with `(phys_virt_addr, byte_offset, chunk_size)`.
+    /// To process data in this area with the given function.
     ///
-    /// If `skip_unmapped` is true, unmapped pages are silently skipped
-    /// (useful for reading demand-paged regions). Otherwise, unmapped
-    /// pages return `BadAddress`.
-    fn process_area_data<F>(
-        &self,
-        start: VirtAddr,
-        size: usize,
-        skip_unmapped: bool,
-        mut f: F,
-    ) -> AxResult
+    /// Now it supports reading and writing data in the given interval.
+    fn process_area_data<F>(&self, start: VirtAddr, size: usize, mut f: F) -> AxResult
     where
         F: FnMut(VirtAddr, usize, usize),
     {
@@ -230,46 +242,33 @@ impl AddrSpace {
             ax_bail!(InvalidInput, "address out of range");
         }
         let mut cnt = 0;
+        // If start is aligned to 4K, start_align_down will be equal to start_align_up.
         let end_align_up = (start + size).align_up_4k();
         for vaddr in PageIter4K::new(start.align_down_4k(), end_align_up)
             .expect("Failed to create page iterator")
         {
+            let (mut paddr, ..) = self.pt.query(vaddr).map_err(|_| AxError::BadAddress)?;
+
             let mut copy_size = (size - cnt).min(PAGE_SIZE_4K);
+
             if copy_size == 0 {
                 break;
             }
-
-            match self.pt.query(vaddr) {
-                Ok((mut paddr, ..)) => {
-                    if vaddr == start.align_down_4k() && start.align_offset_4k() != 0 {
-                        let align_offset = start.align_offset_4k();
-                        copy_size = copy_size.min(PAGE_SIZE_4K - align_offset);
-                        paddr += align_offset;
-                    }
-                    f(phys_to_virt(paddr), cnt, copy_size);
-                }
-                Err(_) if skip_unmapped => {}
-                Err(_) => return Err(AxError::BadAddress),
+            if vaddr == start.align_down_4k() && start.align_offset_4k() != 0 {
+                let align_offset = start.align_offset_4k();
+                copy_size = copy_size.min(PAGE_SIZE_4K - align_offset);
+                paddr += align_offset;
             }
+            f(phys_to_virt(paddr), cnt, copy_size);
             cnt += copy_size;
         }
         Ok(())
     }
 
     pub fn read(&self, start: VirtAddr, buf: &mut [u8]) -> AxResult {
-        self.process_area_data(start, buf.len(), false, |src, offset, read_size| unsafe {
+        self.process_area_data(start, buf.len(), |src, offset, read_size| unsafe {
             core::ptr::copy_nonoverlapping(src.as_ptr(), buf.as_mut_ptr().add(offset), read_size);
         })
-    }
-
-    /// Like `read`, but returns a `Vec` and treats unmapped demand-paged
-    /// pages as zero-filled instead of returning an error.
-    pub fn read_to_vec(&self, start: VirtAddr, size: usize) -> AxResult<alloc::vec::Vec<u8>> {
-        let mut buf = alloc::vec![0u8; size];
-        self.process_area_data(start, size, true, |src, offset, read_size| unsafe {
-            core::ptr::copy_nonoverlapping(src.as_ptr(), buf.as_mut_ptr().add(offset), read_size);
-        })?;
-        Ok(buf)
     }
 
     /// To write data to the address space.
@@ -279,7 +278,7 @@ impl AddrSpace {
     /// * `start_vaddr` - The start virtual address to write.
     /// * `buf` - The buffer to write to the address space.
     pub fn write(&self, start: VirtAddr, buf: &[u8]) -> AxResult {
-        self.process_area_data(start, buf.len(), false, |dst, offset, write_size| unsafe {
+        self.process_area_data(start, buf.len(), |dst, offset, write_size| unsafe {
             core::ptr::copy_nonoverlapping(buf.as_ptr().add(offset), dst.as_mut_ptr(), write_size);
         })
     }
