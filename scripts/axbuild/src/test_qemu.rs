@@ -189,7 +189,7 @@ pub(crate) fn axvisor_test_shell_config(arch: &str) -> anyhow::Result<ShellAutoI
     }
 }
 
-fn validate_supported_target(
+pub(crate) fn validate_supported_target(
     target: &str,
     suite_name: &str,
     supported_kind: &str,

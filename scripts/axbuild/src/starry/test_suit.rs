@@ -7,7 +7,10 @@ use std::{
 use anyhow::{Context, bail};
 
 use super::board;
-use crate::context::{arch_for_target_checked, starry_target_for_arch_checked};
+use crate::{
+    context::{arch_for_target_checked, starry_target_for_arch_checked},
+    test_qemu::validate_supported_target,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StarryTestGroup {
@@ -157,25 +160,6 @@ pub(crate) fn finalize_qemu_case_run(
             group.as_str(),
             failed.len(),
             failed.join(", ")
-        )
-    }
-}
-
-fn validate_supported_target(
-    target: &str,
-    suite_name: &str,
-    supported_kind: &str,
-    supported: &[&str],
-) -> anyhow::Result<()> {
-    if supported.contains(&target) {
-        Ok(())
-    } else {
-        bail!(
-            "unsupported target `{}` for {}. Supported {} are: {}",
-            target,
-            suite_name,
-            supported_kind,
-            supported.join(", ")
         )
     }
 }

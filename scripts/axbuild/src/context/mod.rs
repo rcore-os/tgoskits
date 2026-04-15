@@ -100,12 +100,12 @@ impl AppContext {
         self.tool
             .cargo_run(
                 &cargo,
-                &CargoRunnerKind::Qemu(CargoQemuRunnerArgs {
+                &CargoRunnerKind::Qemu(Box::new(CargoQemuRunnerArgs {
                     qemu,
                     debug: self.debug,
                     dtb_dump: false,
                     show_output: true,
-                }),
+                })),
             )
             .await
     }
@@ -120,10 +120,10 @@ impl AppContext {
         self.tool
             .cargo_run(
                 &cargo,
-                &CargoRunnerKind::Uboot(CargoUbootRunnerArgs {
+                &CargoRunnerKind::Uboot(Box::new(CargoUbootRunnerArgs {
                     uboot,
                     show_output: true,
-                }),
+                })),
             )
             .await
     }

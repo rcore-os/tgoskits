@@ -2,8 +2,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use clap::{Args, Subcommand};
-use ostool::board::{RunBoardOptions, config::BoardRunConfig};
-use ostool::build::config::Cargo;
+use ostool::{
+    board::{RunBoardOptions, config::BoardRunConfig},
+    build::config::Cargo,
+};
 
 use crate::{
     command_flow::{self, SnapshotPersistence},
@@ -892,10 +894,7 @@ mod tests {
         match cli.command {
             Command::Board(args) => {
                 assert_eq!(args.build.arch.as_deref(), Some("aarch64"));
-                assert_eq!(
-                    args.board_config,
-                    Some(PathBuf::from("remote.board.toml"))
-                );
+                assert_eq!(args.board_config, Some(PathBuf::from("remote.board.toml")));
                 assert_eq!(args.board_type.as_deref(), Some("rk3568"));
                 assert_eq!(args.server.as_deref(), Some("10.0.0.2"));
                 assert_eq!(args.port, Some(9000));

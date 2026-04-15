@@ -82,9 +82,12 @@ pub(crate) async fn prepare_per_case_rootfs(
 
     // Clean up old per-case copy from a previous run
     if case_rootfs.exists() {
-        tokio_fs::remove_file(&case_rootfs)
-            .await
-            .with_context(|| format!("failed to remove old per-case rootfs {}", case_rootfs.display()))?;
+        tokio_fs::remove_file(&case_rootfs).await.with_context(|| {
+            format!(
+                "failed to remove old per-case rootfs {}",
+                case_rootfs.display()
+            )
+        })?;
     }
 
     // Copy base rootfs to per-case path
