@@ -415,6 +415,34 @@ impl AddrSpace {
     pub fn areas(&self) -> impl Iterator<Item = &MemoryArea<Backend>> {
         self.areas.iter()
     }
+
+    /// Collects VMA fragments overlapping `[start, start+size)`, clamped to
+    /// the range boundaries. Returns `(frag_start, frag_size, flags, backend)`.
+    pub fn areas_in_range(
+        &self,
+        start: VirtAddr,
+        size: usize,
+    ) -> alloc::vec::Vec<(VirtAddr, usize, MappingFlags, Backend)> {
+        let end = start + size;
+        let mut result = alloc::vec::Vec::new();
+        for area in self.areas.iter() {
+            if area.start() >= end {
+                break;
+            }
+            if area.end() <= start {
+                continue;
+            }
+            let frag_start = area.start().max(start);
+            let frag_end = area.end().min(end);
+            result.push((
+                frag_start,
+                frag_end - frag_start,
+                area.flags(),
+                area.backend().clone(),
+            ));
+        }
+        result
+    }
 }
 
 impl fmt::Debug for AddrSpace {
