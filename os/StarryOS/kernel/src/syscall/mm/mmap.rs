@@ -189,13 +189,47 @@ pub fn sys_mmap(
         None
     };
 
-    // Check file permissions for mmap request (TEMPORARILY DISABLED FOR DEBUGGING)
+    // Check file permissions for mmap request
     if let Some(file) = &file {
-        // TODO: Re-enable permission checks after debugging
-        // use linux_raw_sys::general::{O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY};
-        // let file_flags = file.flags();
-        // let access_mode = file_flags & O_ACCMODE;
-        // debug!("mmap: file_flags={}, access_mode={}", file_flags, access_mode);
+        use linux_raw_sys::general::{O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY};
+
+        let file_flags = file.flags();
+        let access_mode = file_flags & O_ACCMODE;
+
+        // Check if requested permissions are compatible with file open mode
+        let wants_read = permission_flags.contains(MmapProt::READ);
+        let wants_write = permission_flags.contains(MmapProt::WRITE);
+
+        // File access mode validation
+        let can_read = access_mode == O_RDONLY || access_mode == O_RDWR;
+        let can_write = access_mode == O_WRONLY || access_mode == O_RDWR;
+
+        info!(
+            "mmap permission check: map_type={:?}, access_mode={:?}, wants_read={}, \
+             wants_write={}, can_read={}, can_write={}",
+            map_type, access_mode, wants_read, wants_write, can_read, can_write
+        );
+
+        // For MAP_PRIVATE, write permission is less strict because of copy-on-write
+        if map_type.contains(MmapFlags::PRIVATE) {
+            // Private mappings can be writable even if file is read-only (copy-on-write)
+            // But they still need read permission to map the file
+            if wants_read && !can_read {
+                info!("mmap: private mapping needs read permission, returning EACCES");
+                return Err(AxError::PermissionDenied);
+            }
+            // For private mappings, we don't check write permission against file
+        } else {
+            // For shared mappings, check both read and write permissions
+            if wants_read && !can_read {
+                info!("mmap: shared mapping needs read permission, returning EACCES");
+                return Err(AxError::PermissionDenied);
+            }
+            if wants_write && !can_write {
+                info!("mmap: shared write mapping needs write permission, returning EACCES");
+                return Err(AxError::PermissionDenied);
+            }
+        }
     }
 
     let backend = match map_type {

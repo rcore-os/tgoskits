@@ -2,7 +2,7 @@
 
 use core::ops::{Index, IndexMut};
 
-use linux_raw_sys::general::{RLIM_NLIMITS, RLIMIT_NOFILE, RLIMIT_STACK};
+use linux_raw_sys::general::{RLIM_NLIMITS, RLIMIT_AS, RLIMIT_DATA, RLIMIT_NOFILE, RLIMIT_STACK};
 
 /// The maximum number of open files
 pub const AX_FILE_LIMIT: usize = 1024;
@@ -43,6 +43,9 @@ impl Default for Rlimits {
         let mut result = Self(Default::default());
         result[RLIMIT_STACK] = (crate::config::USER_STACK_SIZE as u64).into();
         result[RLIMIT_NOFILE] = (AX_FILE_LIMIT as u64).into();
+        // Set RLIMIT_DATA and RLIMIT_AS to unlimited by default
+        result[RLIMIT_DATA] = Rlimit::new(u64::MAX, u64::MAX);
+        result[RLIMIT_AS] = Rlimit::new(u64::MAX, u64::MAX);
         result
     }
 }
