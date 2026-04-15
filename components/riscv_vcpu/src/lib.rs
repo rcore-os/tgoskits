@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #![no_std]
+#![cfg(target_arch = "riscv64")]
 #![feature(riscv_ext_intrinsics)]
 #![doc = include_str!("../README.md")]
 

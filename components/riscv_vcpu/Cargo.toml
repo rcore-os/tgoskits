@@ -18,7 +18,7 @@ license = "Apache-2.0"
 default-target = "riscv64gc-unknown-none-elf"
 targets = ["riscv64gc-unknown-none-elf"]
 
-[dependencies]
+[target.'cfg(target_arch = "riscv64")'.dependencies]
 log = "0.4"
 cfg-if = "1.0"
 bitflags = "2.2"
