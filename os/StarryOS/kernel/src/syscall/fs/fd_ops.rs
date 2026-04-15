@@ -126,9 +126,36 @@ pub fn sys_openat(
     let mode = mode & !current().as_thread().proc_data.umask();
 
     let options = flags_to_options(flags, mode, (sys_geteuid()? as _, sys_getegid()? as _));
-    with_fs(dirfd, |fs| options.open(fs, path))
-        .and_then(|it| add_to_fd(it, flags as _))
-        .map(|fd| fd as isize)
+    let file = with_fs(dirfd, |fs| options.open(fs, path))?;
+
+    // Check if opening a directory with write access (O_WRONLY or O_RDWR)
+    // According to Linux open(2) man page and kernel implementation:
+    // "For directories it's -EISDIR, for other non-regulars - -EINVAL"
+    use linux_raw_sys::general::{O_ACCMODE, O_WRONLY, S_IFDIR, S_IFMT};
+
+    use crate::file::metadata_to_kstat;
+    // Check if this is a directory being opened with write access
+    match &file {
+        OpenResult::File(f) => {
+            let metadata = f.location().metadata()?;
+            let kstat = metadata_to_kstat(&metadata);
+            if (kstat.mode & S_IFMT) == S_IFDIR {
+                let access_mode = flags as u32 & O_ACCMODE;
+                if access_mode == O_WRONLY as u32 || access_mode == O_RDWR as u32 {
+                    return Err(AxError::IsADirectory);
+                }
+            }
+        }
+        OpenResult::Dir(_) => {
+            // Directories opened with O_DIRECTORY flag
+            let access_mode = flags as u32 & O_ACCMODE;
+            if access_mode == O_WRONLY as u32 || access_mode == O_RDWR as u32 {
+                return Err(AxError::IsADirectory);
+            }
+        }
+    }
+
+    add_to_fd(file, flags as _).map(|fd| fd as isize)
 }
 
 /// Open a file by `filename` and insert it into the file descriptor table.
@@ -326,7 +353,7 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
         }
         _ => {
             warn!("unsupported fcntl parameters: cmd: {cmd}");
-            Ok(0)
+            Err(AxError::InvalidInput)
         }
     }
 }

@@ -189,6 +189,17 @@ pub fn sys_mmap(
         None
     };
 
+    // Check if mapping a directory
+    // According to Linux mmap(2) man page and kernel implementation:
+    // "Mapping a directory is not supported and returns ENODEV"
+    if let Some(file) = &file {
+        use linux_raw_sys::general::{S_IFDIR, S_IFMT};
+        let kstat = file.stat()?;
+        if (kstat.mode & S_IFMT) == S_IFDIR {
+            return Err(AxError::NoSuchDevice);
+        }
+    }
+
     // Check file permissions for mmap request
     if let Some(file) = &file {
         use linux_raw_sys::general::{O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY};

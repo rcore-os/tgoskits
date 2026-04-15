@@ -35,7 +35,7 @@ const STATX_BASIC_STATS: u32 = 0x000007ff;
 use spin::RwLock;
 
 pub use self::{
-    fs::{Directory, File, resolve_at, with_fs},
+    fs::{Directory, File, metadata_to_kstat, resolve_at, with_fs},
     net::Socket,
     pidfd::PidFd,
     pipe::Pipe,
