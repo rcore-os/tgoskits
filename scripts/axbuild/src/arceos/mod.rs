@@ -620,7 +620,8 @@ impl ArceOS {
         match request.qemu_config.as_deref() {
             Some(path) => self
                 .app
-                .load_qemu_config_from_path(cargo, &request.build_info_path, path)
+                .tool_mut()
+                .read_qemu_config_from_path_for_cargo(cargo, path)
                 .await
                 .map(Some),
             None => Ok(None),
@@ -635,7 +636,8 @@ impl ArceOS {
         match request.uboot_config.as_deref() {
             Some(path) => self
                 .app
-                .load_uboot_config_from_path(cargo, &request.build_info_path, path)
+                .tool_mut()
+                .read_uboot_config_from_path_for_cargo(cargo, path)
                 .await
                 .map(Some),
             None => Ok(None),

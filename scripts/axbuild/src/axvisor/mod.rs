@@ -87,7 +87,7 @@ impl Axvisor {
         self.app.set_debug_mode(request.debug)?;
         let cargo = build::load_cargo_config(&request)?;
         let board_config = self
-            .load_board_config(&request, &cargo, args.board_config.as_deref())
+            .load_board_config(&cargo, args.board_config.as_deref())
             .await?;
         self.app
             .board(
@@ -258,7 +258,7 @@ impl Axvisor {
                 )?;
                 let cargo = build::load_cargo_config(&request)?;
                 let board_config = self
-                    .load_board_config(&request, &cargo, Some(board_test_config.as_path()))
+                    .load_board_config(&cargo, Some(board_test_config.as_path()))
                     .await?;
                 self.app
                     .board(
@@ -323,7 +323,8 @@ impl Axvisor {
         });
         let mut qemu = self
             .app
-            .load_qemu_config_from_path(cargo, &request.build_info_path, &config_path)
+            .tool_mut()
+            .read_qemu_config_from_path_for_cargo(cargo, &config_path)
             .await?;
         qemu::apply_rootfs_path(&mut qemu, request)?;
         Ok(qemu)
@@ -337,7 +338,8 @@ impl Axvisor {
         match request.uboot_config.as_deref() {
             Some(path) => self
                 .app
-                .load_uboot_config_from_path(cargo, &request.build_info_path, path)
+                .tool_mut()
+                .read_uboot_config_from_path_for_cargo(cargo, path)
                 .await
                 .map(Some),
             None => Ok(None),
@@ -346,24 +348,21 @@ impl Axvisor {
 
     async fn load_board_config(
         &mut self,
-        request: &ResolvedAxvisorRequest,
         cargo: &Cargo,
         board_config_path: Option<&Path>,
     ) -> anyhow::Result<BoardRunConfig> {
         match board_config_path {
             Some(path) => {
                 self.app
-                    .load_board_run_config_from_path(cargo, &request.build_info_path, path)
+                    .tool_mut()
+                    .read_board_run_config_from_path_for_cargo(cargo, path)
                     .await
             }
             None => {
                 let workspace_root = self.app.workspace_root().to_path_buf();
                 self.app
-                    .load_board_run_config_from_dir(
-                        cargo,
-                        &request.build_info_path,
-                        &workspace_root,
-                    )
+                    .tool_mut()
+                    .ensure_board_run_config_in_dir_for_cargo(cargo, &workspace_root)
                     .await
             }
         }

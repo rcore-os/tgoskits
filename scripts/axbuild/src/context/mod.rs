@@ -3,10 +3,7 @@ use std::path::{Path, PathBuf};
 use ostool::{
     Tool, ToolConfig,
     board::{RunBoardOptions, config::BoardRunConfig},
-    build::{
-        CargoQemuRunnerArgs, CargoRunnerKind, CargoUbootRunnerArgs,
-        config::{BuildConfig, BuildSystem, Cargo},
-    },
+    build::{CargoQemuRunnerArgs, CargoRunnerKind, CargoUbootRunnerArgs, config::Cargo},
     run::{qemu::QemuConfig, uboot::UbootConfig},
 };
 
@@ -67,6 +64,10 @@ impl AppContext {
         &self.root
     }
 
+    pub(crate) fn tool_mut(&mut self) -> &mut Tool {
+        &mut self.tool
+    }
+
     pub(crate) fn axvisor_dir(&mut self) -> anyhow::Result<&Path> {
         if self.axvisor_dir.is_none() {
             let axvisor_dir = workspace_member_dir(crate::axvisor::build::AXVISOR_PACKAGE)?;
@@ -85,12 +86,8 @@ impl AppContext {
         cargo: Cargo,
         build_config_path: PathBuf,
     ) -> anyhow::Result<()> {
-        self.seed_cargo_tool_context(&cargo, &build_config_path);
-        self.tool
-            .build_with_config(&BuildConfig {
-                system: BuildSystem::Cargo(cargo),
-            })
-            .await
+        self.set_build_config_path(build_config_path);
+        self.tool.cargo_build(&cargo).await
     }
 
     pub(crate) async fn qemu(
@@ -99,7 +96,7 @@ impl AppContext {
         build_config_path: PathBuf,
         qemu: Option<QemuConfig>,
     ) -> anyhow::Result<()> {
-        self.seed_cargo_tool_context(&cargo, &build_config_path);
+        self.set_build_config_path(build_config_path);
         self.tool
             .cargo_run(
                 &cargo,
@@ -119,7 +116,7 @@ impl AppContext {
         build_config_path: PathBuf,
         uboot: Option<UbootConfig>,
     ) -> anyhow::Result<()> {
-        self.seed_cargo_tool_context(&cargo, &build_config_path);
+        self.set_build_config_path(build_config_path);
         self.tool
             .cargo_run(
                 &cargo,
@@ -138,15 +135,9 @@ impl AppContext {
         board_config: BoardRunConfig,
         options: RunBoardOptions,
     ) -> anyhow::Result<()> {
-        self.seed_cargo_tool_context(&cargo, &build_config_path);
+        self.set_build_config_path(build_config_path);
         self.tool
-            .run_board(
-                &BuildConfig {
-                    system: BuildSystem::Cargo(cargo),
-                },
-                &board_config,
-                options,
-            )
+            .cargo_run_board(&cargo, &board_config, options)
             .await
     }
 
@@ -161,77 +152,15 @@ impl AppContext {
         })?;
         self.debug = debug;
 
-        if let Some(path) = self.build_config_path.clone() {
-            self.tool.ctx_mut().build_config_path = Some(path);
-        }
+        self.tool
+            .set_build_config_path(self.build_config_path.clone());
 
         Ok(())
     }
 
-    pub(crate) async fn load_qemu_config_for_cargo(
-        &mut self,
-        cargo: &Cargo,
-        build_config_path: &Path,
-    ) -> anyhow::Result<QemuConfig> {
-        self.seed_cargo_tool_context(cargo, build_config_path);
-        self.tool.load_qemu_config_for_cargo(cargo).await
-    }
-
-    pub(crate) async fn load_qemu_config_from_path(
-        &mut self,
-        cargo: &Cargo,
-        build_config_path: &Path,
-        qemu_config_path: &Path,
-    ) -> anyhow::Result<QemuConfig> {
-        self.seed_cargo_tool_context(cargo, build_config_path);
-        self.tool.load_qemu_config_from_path(qemu_config_path).await
-    }
-
-    pub(crate) async fn load_uboot_config_from_path(
-        &mut self,
-        cargo: &Cargo,
-        build_config_path: &Path,
-        uboot_config_path: &Path,
-    ) -> anyhow::Result<UbootConfig> {
-        self.seed_cargo_tool_context(cargo, build_config_path);
-        self.tool
-            .load_uboot_config_from_path(uboot_config_path)
-            .await
-    }
-
-    pub(crate) async fn load_board_run_config_from_dir(
-        &mut self,
-        cargo: &Cargo,
-        build_config_path: &Path,
-        dir: &Path,
-    ) -> anyhow::Result<BoardRunConfig> {
-        self.seed_cargo_tool_context(cargo, build_config_path);
-        self.tool.load_board_run_config_from_dir(dir).await
-    }
-
-    pub(crate) async fn load_board_run_config_from_path(
-        &mut self,
-        cargo: &Cargo,
-        build_config_path: &Path,
-        board_config_path: &Path,
-    ) -> anyhow::Result<BoardRunConfig> {
-        self.seed_cargo_tool_context(cargo, build_config_path);
-        self.tool
-            .load_board_run_config_from_path(board_config_path)
-            .await
-    }
-
-    fn seed_cargo_tool_context(&mut self, cargo: &Cargo, path: &Path) {
-        let build_config = BuildConfig {
-            system: BuildSystem::Cargo(cargo.clone()),
-        };
-        self.set_build_config_path(path.to_path_buf());
-        self.tool.ctx_mut().build_config = Some(build_config);
-    }
-
     fn set_build_config_path(&mut self, path: PathBuf) {
         self.build_config_path = Some(path.clone());
-        self.tool.ctx_mut().build_config_path = Some(path);
+        self.tool.set_build_config_path(Some(path));
     }
 }
 

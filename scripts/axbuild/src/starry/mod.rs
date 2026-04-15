@@ -373,12 +373,14 @@ impl Starry {
         let mut qemu = match request.qemu_config.as_deref() {
             Some(path) => {
                 self.app
-                    .load_qemu_config_from_path(cargo, &request.build_info_path, path)
+                    .tool_mut()
+                    .read_qemu_config_from_path_for_cargo(cargo, path)
                     .await?
             }
             None => {
                 self.app
-                    .load_qemu_config_for_cargo(cargo, &request.build_info_path)
+                    .tool_mut()
+                    .ensure_qemu_config_for_cargo(cargo)
                     .await?
             }
         };
@@ -398,7 +400,8 @@ impl Starry {
         match request.uboot_config.as_deref() {
             Some(path) => self
                 .app
-                .load_uboot_config_from_path(cargo, &request.build_info_path, path)
+                .tool_mut()
+                .read_uboot_config_from_path_for_cargo(cargo, path)
                 .await
                 .map(Some),
             None => Ok(None),
@@ -413,7 +416,8 @@ impl Starry {
     ) -> anyhow::Result<()> {
         let qemu = self
             .app
-            .load_qemu_config_from_path(cargo, &request.build_info_path, &qemu_config_path)
+            .tool_mut()
+            .read_qemu_config_from_path_for_cargo(cargo, &qemu_config_path)
             .await?;
         self.app
             .qemu(cargo.clone(), request.build_info_path.clone(), Some(qemu))
