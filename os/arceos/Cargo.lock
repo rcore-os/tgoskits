@@ -466,18 +466,19 @@ dependencies = [
 
 [[package]]
 name = "ax-driver-base"
-version = "0.3.4"
+version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1334dde21d4b1bd486e403deee61eb7f69a584b7175ca24543ac2e9f5d671ce"
+checksum = "e8a1c9293fd1e6ed1672a3bc3908b700406b685b4e2bf5aa10fa443b7fdc7d1f"
 
 [[package]]
 name = "ax-driver-block"
-version = "0.3.4"
+version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5926c0df1bc1bd46661827d9947ccb1bef9d630bfa13b3c95191b738673b944"
+checksum = "3d458c80c5c36665e0ad29e97a989d34c94415ba6c36d11c46aa6d1db6a4243a"
 dependencies = [
  "ax-driver-base",
  "bcm2835-sdhci",
+ "gpt_disk_io",
  "log",
  "simple-ahci",
  "simple-sdmmc",
@@ -485,18 +486,18 @@ dependencies = [
 
 [[package]]
 name = "ax-driver-display"
-version = "0.3.4"
+version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3cc641034e0164132ae588d7844bba0a04895733e94c98e8f77e04eeb930f72a"
+checksum = "1c2726a567dbfd96757c81105975f5ff2027ee72998d5ca26bea323ea212df77"
 dependencies = [
  "ax-driver-base",
 ]
 
 [[package]]
 name = "ax-driver-input"
-version = "0.3.4"
+version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d59688be51c4a5ac7042e5d288d324b8bc08767371cfe18ab269ff362bfdc499"
+checksum = "f0c8f478f165303b610015c384d94a462d414f523f502de5d009a44cc5b60b9c"
 dependencies = [
  "ax-driver-base",
  "strum",
@@ -504,9 +505,9 @@ dependencies = [
 
 [[package]]
 name = "ax-driver-net"
-version = "0.3.4"
+version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d64eaf3ec38556a391720f19f0819b3adbf0ae25d507e9fd20406f68467bd58"
+checksum = "5b04f1d684a215ab7bc08c786d8eb1f9b2f43c114463230028fa7cc86625acb1"
 dependencies = [
  "ax-driver-base",
  "fxmac_rs",
@@ -517,18 +518,18 @@ dependencies = [
 
 [[package]]
 name = "ax-driver-pci"
-version = "0.3.4"
+version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "55ca9480f7f941e153b05d0baff01e0f771ac6e55271d46c6d73c3f20e69e4ed"
+checksum = "a1f303678f85859f82fae7ffeb1a1829e779170d1dee2198b0b9b72162619876"
 dependencies = [
  "virtio-drivers",
 ]
 
 [[package]]
 name = "ax-driver-virtio"
-version = "0.3.4"
+version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ce8a251ea366d6901cedfbcbfe3b5dd3379c4e89850e097cd0786846429fd49"
+checksum = "c6d2177915bd264846c4a36b36b6d2fd8eac099006f9796b81930c2abd7cb3b7"
 dependencies = [
  "ax-driver-base",
  "ax-driver-block",
@@ -542,9 +543,9 @@ dependencies = [
 
 [[package]]
 name = "ax-driver-vsock"
-version = "0.3.4"
+version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a4706dd7e1b32d36dd019eb59c649d5d3bee22e7dd6253644ea834f86e0f319"
+checksum = "850a27d5ab8d317b6f1ce245003adfbd38c00898239fc1af5152fd0215207aba"
 dependencies = [
  "ax-driver-base",
  "log",
@@ -1510,6 +1511,20 @@ name = "bytemuck"
 version = "1.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8efb64bd706a16a1bdde310ae86b351e4d21550d98d056f22f8a7f7a2183fec"
+dependencies = [
+ "bytemuck_derive",
+]
+
+[[package]]
+name = "bytemuck_derive"
+version = "1.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9abbd1bc6865053c427f7198e6af43bfdedc55ab791faed4fbd361d789575ff"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
 
 [[package]]
 name = "byteorder"
@@ -1677,6 +1692,21 @@ checksum = "0667304c32ea56cb4cd6d2d7c0cfe9a2f8041229db8c033af7f8d69492429def"
 dependencies = [
  "cfg-if",
 ]
+
+[[package]]
+name = "crc"
+version = "3.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5eb8a2a1cd12ab0d987a5d5e825195d372001a4094a0376319d5a0ad71c1ba0d"
+dependencies = [
+ "crc-catalog",
+]
+
+[[package]]
+name = "crc-catalog"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19d374276b40fb8bbdee95aef7c7fa6b5316ec764510eb64b8dd0e2ed0d7e7f5"
 
 [[package]]
 name = "critical-section"
@@ -2119,9 +2149,9 @@ dependencies = [
 
 [[package]]
 name = "fxmac_rs"
-version = "0.4.1"
+version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41a16404d6a836c440e0f660b6037312b8d84b4e4451129e0f6f0e2d4526983c"
+checksum = "341c881488757af7a376460666026924d80b249360cbe682e468f23795920725"
 dependencies = [
  "aarch64-cpu 10.0.0",
  "ax-crate-interface",
@@ -2142,6 +2172,28 @@ name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
+
+[[package]]
+name = "gpt_disk_io"
+version = "0.16.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb194b955ba40423510e4342a077df49c70a599cf692cd0e30a86a32d8a9c7b1"
+dependencies = [
+ "bytemuck",
+ "gpt_disk_types",
+]
+
+[[package]]
+name = "gpt_disk_types"
+version = "0.16.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3972298dc4cef533492b66bdd75747133618917f44885a11dc8abd24c4e3f1f0"
+dependencies = [
+ "bytemuck",
+ "crc",
+ "ucs2",
+ "uguid",
+]
 
 [[package]]
 name = "hash32"
@@ -3493,6 +3545,9 @@ name = "uguid"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c8352f8c05e47892e7eaf13b34abd76a7f4aeaf817b716e88789381927f199c"
+dependencies = [
+ "bytemuck",
+]
 
 [[package]]
 name = "unicode-ident"
