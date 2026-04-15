@@ -134,7 +134,7 @@ pub fn sys_openat(
 
     // Check for O_DIRECTORY flag and validate it BEFORE opening
     // According to Linux: O_DIRECTORY requires the target to be a directory
-    use linux_raw_sys::general::{O_ACCMODE, O_DIRECTORY, O_RDONLY, O_WRONLY, S_IFDIR, S_IFMT};
+    use linux_raw_sys::general::{O_ACCMODE, O_DIRECTORY, O_WRONLY, S_IFDIR, S_IFMT};
     let has_o_directory = (flags as u32) & O_DIRECTORY != 0;
 
     // If O_DIRECTORY is specified, we need to check if the path exists and is a directory

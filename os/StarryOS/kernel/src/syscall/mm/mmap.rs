@@ -183,22 +183,27 @@ pub fn sys_mmap(
             .ok_or(AxError::NoMemory)?
     };
 
+    // Check if mapping a directory BEFORE converting to File
+    // According to Linux mmap(2) man page and kernel implementation:
+    // "Mapping a directory is not supported and returns ENODEV"
+    if fd > 0 {
+        use crate::file::get_file_like;
+        use linux_raw_sys::general::{S_IFDIR, S_IFMT};
+
+        if let Ok(file_like) = get_file_like(fd) {
+            let kstat = file_like.stat()?;
+            if (kstat.mode & S_IFMT) == S_IFDIR {
+                return Err(AxError::NoSuchDevice);
+            }
+        }
+        // If get_file_like fails, continue to File::from_fd for proper error handling
+    }
+
     let file = if fd > 0 {
         Some(File::from_fd(fd)?)
     } else {
         None
     };
-
-    // Check if mapping a directory
-    // According to Linux mmap(2) man page and kernel implementation:
-    // "Mapping a directory is not supported and returns ENODEV"
-    if let Some(file) = &file {
-        use linux_raw_sys::general::{S_IFDIR, S_IFMT};
-        let kstat = file.stat()?;
-        if (kstat.mode & S_IFMT) == S_IFDIR {
-            return Err(AxError::NoSuchDevice);
-        }
-    }
 
     // Check file permissions for mmap request
     if let Some(file) = &file {
@@ -339,6 +344,30 @@ pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> AxResult<isize> {
     let mut aspace = curr.as_thread().proc_data.aspace.lock();
     let length = align_up_4k(length);
     let start_addr = VirtAddr::from(addr);
+
+    // Check if the address range is mapped - mprotect should fail with ENOMEM for unmapped ranges
+    if aspace.find_area(start_addr).is_none() {
+        return Err(AxError::NoMemory);
+    }
+
+    // Check if this is a file mapping and verify permissions
+    if let Some(area) = aspace.find_area(start_addr) {
+        use ax_hal::paging::MappingFlags;
+        use crate::mm::Backend;
+
+        // For file-backed mappings, check if requested permissions exceed file permissions
+        if let Backend::File(file_backend) = area.backend() {
+            let new_flags: MappingFlags = permission_flags.into();
+            // Check if adding write permission to a read-only file mapping
+            if new_flags.contains(MappingFlags::WRITE) {
+                // Try to check the file flags - this will fail if file doesn't have write permission
+                if let Err(_) = file_backend.check_flags(new_flags) {
+                    return Err(AxError::PermissionDenied);
+                }
+            }
+        }
+    }
+
     aspace.protect(start_addr, length, permission_flags.into())?;
 
     Ok(0)
