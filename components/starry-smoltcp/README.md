@@ -1,11 +1,11 @@
-<h1 align="center">starry-smoltcp</h1>
+<h1 align="center">smoltcp</h1>
 
 <p align="center">A TCP/IP stack designed for bare-metal, real-time systems without a heap</p>
 
 <div align="center">
 
-[![Crates.io](https://img.shields.io/crates/v/starry-smoltcp.svg)](https://crates.io/crates/starry-smoltcp)
-[![Docs.rs](https://docs.rs/starry-smoltcp/badge.svg)](https://docs.rs/starry-smoltcp)
+[![Crates.io](https://img.shields.io/crates/v/smoltcp.svg)](https://crates.io/crates/smoltcp)
+[![Docs.rs](https://docs.rs/smoltcp/badge.svg)](https://docs.rs/smoltcp)
 [![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
@@ -15,7 +15,7 @@ English | [中文](README_CN.md)
 
 # Introduction
 
-`starry-smoltcp` provides A TCP/IP stack designed for bare-metal, real-time systems without a heap. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
+`smoltcp` provides A TCP/IP stack designed for bare-metal, real-time systems without a heap. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
 
 ## Quick Start
 
@@ -25,7 +25,7 @@ Add this crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-smoltcp = { package = "starry-smoltcp", version = "0.14.0" }
+smoltcp = "0.14.0"
 ```
 
 ### Run Check and Test
@@ -67,7 +67,7 @@ Generate and view API documentation:
 cargo doc --no-deps --open
 ```
 
-Online documentation: [docs.rs/starry-smoltcp](https://docs.rs/starry-smoltcp)
+Online documentation: [docs.rs/smoltcp](https://docs.rs/smoltcp)
 
 # Contributing
 

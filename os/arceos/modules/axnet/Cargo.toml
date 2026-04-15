@@ -28,7 +28,7 @@ log.workspace = true
 spin.workspace = true
 
 [dependencies.smoltcp]
-version = "0.14.0"
+version = "0.12.1-preview.1"
 package = "starry-smoltcp"
 optional = true
 default-features = false

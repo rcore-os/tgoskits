@@ -164,7 +164,7 @@ rsext4 = { path = "components/rsext4" }
 ax-arm-pl011 = { path = "components/arm_pl011" }
 ax-arm-pl031 = { path = "components/arm_pl031" }
 fxmac_rs = { path = "components/fxmac_rs" }
-starry-smoltcp = { path = "components/starry-smoltcp" }
+smoltcp = { path = "components/starry-smoltcp" }
 axfs-ng-vfs = { path = "components/axfs-ng-vfs" }
 ax-fs-vfs = { path = "components/axfs_crates/axfs_vfs" }
 ax-fs-ramfs = { path = "components/axfs_crates/axfs_ramfs" }

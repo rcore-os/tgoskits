@@ -1,11 +1,11 @@
-<h1 align="center">starry-smoltcp</h1>
+<h1 align="center">smoltcp</h1>
 
 <p align="center">A TCP/IP stack designed for bare-metal, real-time systems without a heap</p>
 
 <div align="center">
 
-[![Crates.io](https://img.shields.io/crates/v/starry-smoltcp.svg)](https://crates.io/crates/starry-smoltcp)
-[![Docs.rs](https://docs.rs/starry-smoltcp/badge.svg)](https://docs.rs/starry-smoltcp)
+[![Crates.io](https://img.shields.io/crates/v/smoltcp.svg)](https://crates.io/crates/smoltcp)
+[![Docs.rs](https://docs.rs/smoltcp/badge.svg)](https://docs.rs/smoltcp)
 [![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
@@ -15,7 +15,7 @@
 
 # 介绍
 
-`starry-smoltcp` 提供了 A TCP/IP stack designed for bare-metal, real-time systems without a heap。它是 TGOSKits 组件集合的一部分，可用于集成 ArceOS、AxVisor 及相关底层系统软件的 Rust 项目。
+`smoltcp` 提供了 A TCP/IP stack designed for bare-metal, real-time systems without a heap。它是 TGOSKits 组件集合的一部分，可用于集成 ArceOS、AxVisor 及相关底层系统软件的 Rust 项目。
 
 ## 快速开始
 
@@ -25,7 +25,7 @@
 
 ```toml
 [dependencies]
-smoltcp = { package = "starry-smoltcp", version = "0.14.0" }
+smoltcp = "0.14.0"
 ```
 
 ### 检查与测试
@@ -67,7 +67,7 @@ fn main() {
 cargo doc --no-deps --open
 ```
 
-在线文档：[docs.rs/starry-smoltcp](https://docs.rs/starry-smoltcp)
+在线文档：[docs.rs/smoltcp](https://docs.rs/smoltcp)
 
 # 贡献
 
