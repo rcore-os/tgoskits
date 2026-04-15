@@ -143,8 +143,6 @@ jobs:
     needs:
       - fmt
       - clippy
-    env:
-      AXVISOR_IMAGE_LOCAL_STORAGE: /home/runner/.axvisor-images
     strategy:
       fail-fast: true
       matrix:
