@@ -23,7 +23,7 @@ reboot-on-system-off = []
 rtc = ["dep:x86_rtc"]
 smp = ["ax-plat/smp", "ax-kspin/smp"]
 
-[dependencies]
+[target.'cfg(target_arch = "x86_64")'.dependencies]
 ax-config-macros = "0.4"
 ax-cpu = { workspace = true, features = ["arm-el2"] }
 ax-plat.workspace = true
