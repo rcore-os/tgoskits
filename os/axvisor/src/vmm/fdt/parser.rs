@@ -221,11 +221,12 @@ pub fn parse_reserved_memory_regions(crate_cfg: &mut AxVMCrateConfig, dtb: &[u8]
     let fdt = Fdt::from_bytes(dtb)
         .expect("Failed to parse DTB image, perhaps the DTB is invalid or corrupted");
     let all_nodes: Vec<_> = fdt.all_nodes().collect();
+    let all_paths = super::build_all_node_paths(&all_nodes);
     let default_flags = (MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE).bits();
 
     let mut added_count = 0usize;
     for (index, node) in all_nodes.iter().enumerate() {
-        let node_path = super::build_node_path(&all_nodes, index);
+        let node_path = &all_paths[index];
         if !is_reserved_memory_path(&node_path) {
             continue;
         }
@@ -559,12 +560,13 @@ pub fn parse_passthrough_devices_address(
         vm_cfg.clear_pass_through_devices();
 
         let all_nodes: Vec<_> = fdt.all_nodes().collect();
+        let all_paths = super::build_all_node_paths(&all_nodes);
         let reserved_regions: Vec<VmMemConfig> =
             reserved_memory_regions(crate_cfg).cloned().collect();
 
         // Traverse all device tree nodes
         for (index, node) in all_nodes.iter().enumerate() {
-            let node_path = super::build_node_path(&all_nodes, index);
+            let node_path = &all_paths[index];
 
             // Skip root node
             if node.name() == "/"

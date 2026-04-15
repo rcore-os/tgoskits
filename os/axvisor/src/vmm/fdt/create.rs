@@ -64,9 +64,10 @@ pub fn crate_guest_fdt(
         .expect("ERROR: phys_cpu_ids is None");
 
     let all_nodes: Vec<Node> = fdt.all_nodes().collect();
+    let all_paths = super::build_all_node_paths(&all_nodes);
 
     for (index, node) in all_nodes.iter().enumerate() {
-        let node_path = super::build_node_path(&all_nodes, index);
+        let node_path = &all_paths[index];
         let node_action = determine_node_action(node, &node_path, passthrough_device_names);
 
         match node_action {
@@ -536,9 +537,11 @@ pub fn update_cpu_node(fdt: &Fdt, host_fdt: &Fdt, crate_config: &AxVMCrateConfig
     // Collect all nodes from both FDTs
     let fdt_all_nodes: Vec<Node> = fdt.all_nodes().collect();
     let host_fdt_all_nodes: Vec<Node> = host_fdt.all_nodes().collect();
+    let fdt_all_paths = super::build_all_node_paths(&fdt_all_nodes);
+    let host_fdt_all_paths = super::build_all_node_paths(&host_fdt_all_nodes);
 
     for (index, node) in fdt_all_nodes.iter().enumerate() {
-        let node_path = super::build_node_path(&fdt_all_nodes, index);
+        let node_path = &fdt_all_paths[index];
 
         if node.name() == "/" {
             node_stack.push(new_fdt.begin_node("").unwrap());
@@ -566,7 +569,7 @@ pub fn update_cpu_node(fdt: &Fdt, host_fdt: &Fdt, crate_config: &AxVMCrateConfig
 
     // Process all CPU nodes from host_fdt
     for (index, node) in host_fdt_all_nodes.iter().enumerate() {
-        let node_path = super::build_node_path(&host_fdt_all_nodes, index);
+        let node_path = &host_fdt_all_paths[index];
 
         if node_path.starts_with("/cpus") {
             // For CPU nodes, apply filtering based on host_fdt nodes
