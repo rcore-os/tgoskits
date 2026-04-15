@@ -608,14 +608,15 @@ impl Starry {
             .read_qemu_config_from_path_for_cargo(cargo, &qemu_config_path)
             .await?;
 
-        let case_rootfs = rootfs::prepare_per_case_rootfs(
+        let case_assets = rootfs::prepare_case_assets(
             self.app.workspace_root(),
             &request.arch,
             &request.target,
             case_name,
         )
         .await?;
-        rootfs::apply_disk_image_qemu_args(&mut qemu, case_rootfs);
+        rootfs::apply_disk_image_qemu_args(&mut qemu, case_assets.rootfs_path);
+        qemu.args.extend(case_assets.extra_qemu_args);
         rootfs::apply_smp_qemu_arg(&mut qemu, request.smp);
 
         self.app

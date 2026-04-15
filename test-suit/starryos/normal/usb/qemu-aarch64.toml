@@ -1,0 +1,20 @@
+args = [
+    "-nographic",
+    "-cpu",
+    "cortex-a53",
+    "-device",
+    "virtio-blk-pci,drive=disk0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/target/aarch64-unknown-none-softfloat/rootfs-aarch64.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "/usr/bin/usb-transfer-test"
+success_regex = ["(?m)^USB transfer tests passed!\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^USB test failed:']
+timeout = 90
