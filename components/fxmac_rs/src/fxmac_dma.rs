@@ -527,7 +527,7 @@ pub fn FXmacBdRingCreate(
     ring_ptr.post_cnt = 0;
 
     // 该地址必须对齐alignment=128
-    assert!(virt_addr_loc.is_multiple_of(alignment));
+    assert_eq!(virt_addr_loc.checked_rem(alignment), Some(0));
     assert!(bd_count > 0);
 
     // 相邻BD之间隔多少bytes
