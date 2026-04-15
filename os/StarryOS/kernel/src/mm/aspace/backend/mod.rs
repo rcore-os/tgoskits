@@ -118,12 +118,20 @@ pub enum Backend {
 
 impl Backend {
     /// Clone with a different base address (for mremap moves).
-    pub fn relocated(&self, new_start: VirtAddr, aspace: &Arc<Mutex<AddrSpace>>) -> Self {
+    /// `src_offset` is the distance from the original VMA start to the
+    /// mremap source address, used to adjust file/page offsets.
+    pub fn relocated(
+        &self,
+        new_start: VirtAddr,
+        src_offset: usize,
+        aspace: &Arc<Mutex<AddrSpace>>,
+    ) -> Self {
+        let adjusted = new_start - src_offset;
         match self {
-            Self::Cow(cb) => Self::Cow(cb.with_start(new_start)),
-            Self::Shared(sb) => Self::Shared(sb.with_start(new_start)),
+            Self::Cow(cb) => Self::Cow(cb.with_start(adjusted)),
+            Self::Shared(sb) => Self::Shared(sb.with_start(adjusted)),
             Self::Linear(lb) => Self::Linear(lb.clone()),
-            Self::File(fb) => Self::File(fb.with_start(new_start, aspace)),
+            Self::File(fb) => Self::File(fb.with_start(adjusted, aspace)),
         }
     }
 }

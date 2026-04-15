@@ -320,8 +320,9 @@ fn mremap_move(
     src_backend: &Backend,
     flags: MappingFlags,
     dontunmap: bool,
+    src_offset: usize,
 ) -> AxResult {
-    let backend = src_backend.relocated(target, aspace_ref);
+    let backend = src_backend.relocated(target, src_offset, aspace_ref);
     aspace.map(target, target_size, flags, false, backend)?;
 
     let move_size = src_size.min(target_size);
@@ -382,8 +383,13 @@ pub fn sys_mremap(
         if !new_addr.is_multiple_of(PageSize::Size4K as usize) {
             return Err(AxError::InvalidInput);
         }
-        let old_end = addr.as_usize() + old_size;
-        let new_end = new_addr + new_size;
+        let old_end = addr
+            .as_usize()
+            .checked_add(old_size)
+            .ok_or(AxError::InvalidInput)?;
+        let new_end = new_addr
+            .checked_add(new_size)
+            .ok_or(AxError::InvalidInput)?;
         if old_end > new_addr && new_end > addr.as_usize() {
             return Err(AxError::InvalidInput);
         }
@@ -393,13 +399,14 @@ pub fn sys_mremap(
     let aspace_ref = &curr.as_thread().proc_data.aspace;
     let mut aspace = aspace_ref.lock();
 
-    let (vma_end, vma_flags, src_backend, shared_pages) = {
+    let (vma_start, vma_end, vma_flags, src_backend, shared_pages) = {
         let area = aspace.find_area(addr).ok_or(AxError::BadAddress)?;
         let shared_pages = match area.backend() {
             Backend::Shared(sb) => Some(sb.pages().clone()),
             _ => None,
         };
         (
+            area.start(),
             area.end(),
             area.flags(),
             area.backend().clone(),
@@ -419,8 +426,7 @@ pub fn sys_mremap(
             return Err(AxError::InvalidInput);
         }
         let pages = shared_pages.unwrap();
-        let page_size = PageSize::Size4K as usize;
-        let shared_size = pages.len() * page_size;
+        let shared_size = pages.len() * pages.size as usize;
         let dup_size = new_size.min(shared_size);
 
         let target = if fixed {
@@ -435,12 +441,45 @@ pub fn sys_mremap(
     }
 
     if addr + old_size > vma_end {
-        return Err(AxError::BadAddress);
+        // Multi-VMA: only allowed for FIXED + same-size (Linux 6.17+).
+        if !fixed || old_size != new_size {
+            return Err(AxError::BadAddress);
+        }
     }
+
+    let src_offset = addr - vma_start;
 
     if fixed {
         let target = VirtAddr::from(new_addr);
         aspace.unmap(target, new_size)?;
+
+        if old_size == new_size && addr + old_size > vma_end {
+            // Multi-VMA move: collect all fragments in [addr, addr+old_size).
+            let fragments = aspace.areas_in_range(addr, old_size);
+            if fragments.is_empty() {
+                return Err(AxError::BadAddress);
+            }
+            for (frag_start, frag_size, frag_flags, frag_backend) in &fragments {
+                let offset_in_range = *frag_start - addr;
+                let frag_target = target + offset_in_range;
+                let frag_vma_start = aspace
+                    .find_area(*frag_start)
+                    .expect("fragment must belong to a VMA")
+                    .start();
+                let frag_src_offset = *frag_start - frag_vma_start;
+
+                let backend = frag_backend.relocated(frag_target, frag_src_offset, aspace_ref);
+                aspace.map(frag_target, *frag_size, *frag_flags, false, backend)?;
+                aspace.move_pages(*frag_start, frag_target, *frag_size);
+            }
+            aspace.unmap(addr, old_size)?;
+            if dontunmap {
+                let empty = Backend::new_alloc(addr, PageSize::Size4K);
+                aspace.map(addr, old_size, vma_flags, false, empty)?;
+            }
+            return Ok(target.as_usize() as isize);
+        }
+
         mremap_move(
             &mut aspace,
             aspace_ref,
@@ -451,6 +490,7 @@ pub fn sys_mremap(
             &src_backend,
             vma_flags,
             dontunmap,
+            src_offset,
         )?;
         return Ok(target.as_usize() as isize);
     }
@@ -476,6 +516,7 @@ pub fn sys_mremap(
             &src_backend,
             vma_flags,
             true,
+            src_offset,
         )?;
         return Ok(target.as_usize() as isize);
     }
@@ -505,6 +546,7 @@ pub fn sys_mremap(
         &src_backend,
         vma_flags,
         false,
+        src_offset,
     )?;
     Ok(target.as_usize() as isize)
 }
