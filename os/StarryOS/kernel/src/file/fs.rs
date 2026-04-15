@@ -12,7 +12,7 @@ use ax_sync::Mutex;
 use ax_task::future::{block_on, poll_io};
 use axfs_ng_vfs::{Location, Metadata, NodeFlags};
 use axpoll::{IoEvents, Pollable};
-use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW};
+use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_RDWR};
 
 use super::{FileLike, Kstat, get_file_like};
 use crate::file::{IoDst, IoSrc};
@@ -122,12 +122,22 @@ impl File {
         // Convert FileFlags to u32 representation
         let flags = self.inner.flags();
         let mut ret = 0u32;
-        if flags.contains(FileFlags::READ) {
-            ret |= linux_raw_sys::general::O_RDONLY;
+
+        let has_read = flags.contains(FileFlags::READ);
+        let has_write = flags.contains(FileFlags::WRITE);
+
+        // Use O_RDWR when both read and write are present
+        if has_read && has_write {
+            ret |= linux_raw_sys::general::O_RDWR;
+        } else {
+            if has_read {
+                ret |= linux_raw_sys::general::O_RDONLY;
+            }
+            if has_write {
+                ret |= linux_raw_sys::general::O_WRONLY;
+            }
         }
-        if flags.contains(FileFlags::WRITE) {
-            ret |= linux_raw_sys::general::O_WRONLY;
-        }
+
         if flags.contains(FileFlags::APPEND) {
             ret |= linux_raw_sys::general::O_APPEND;
         }

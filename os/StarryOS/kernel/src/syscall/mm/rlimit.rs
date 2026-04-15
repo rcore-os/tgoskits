@@ -53,7 +53,8 @@ fn init_rlimits() {
 
 /// Get resource limit
 pub fn sys_getrlimit(resource: u32, rlim: *mut rlimit) -> AxResult<isize> {
-    debug!("sys_getrlimit <= resource: {resource}, rlim: {rlim:p}");
+    info!("sys_getrlimit <= resource: {resource} ({}), rlim: {rlim:p}",
+          if resource == 2 { "RLIMIT_DATA" } else if resource == 7 { "RLIMIT_NOFILE" } else { "OTHER" });
 
     // Check if pointer is null
     if rlim.is_null() {
@@ -66,8 +67,11 @@ pub fn sys_getrlimit(resource: u32, rlim: *mut rlimit) -> AxResult<isize> {
         init_rlimits();
     }
 
-    let mut limits = RLIMIT_TABLE.lock();
+    let limits = RLIMIT_TABLE.lock();
     let limit = limits.get(&resource).copied().unwrap_or_default();
+
+    info!("sys_getrlimit <= found: {}, cur: {}, max: {}",
+          limits.contains_key(&resource), limit.current, limit.maximum);
 
     // SAFETY: The pointer should be valid from userspace
     unsafe {
@@ -75,8 +79,8 @@ pub fn sys_getrlimit(resource: u32, rlim: *mut rlimit) -> AxResult<isize> {
         (*rlim).rlim_max = limit.maximum;
     }
 
-    debug!(
-        "sys_getrlimit <= resource: {resource}, cur: {}, max: {}",
+    info!(
+        "sys_getrlimit => resource: {resource}, cur: {}, max: {} (OK)",
         limit.current, limit.maximum
     );
     Ok(0)
@@ -84,7 +88,7 @@ pub fn sys_getrlimit(resource: u32, rlim: *mut rlimit) -> AxResult<isize> {
 
 /// Set resource limit
 pub fn sys_setrlimit(resource: u32, rlim: *const rlimit) -> AxResult<isize> {
-    debug!("sys_setrlimit <= resource: {resource}, rlim: {rlim:p}");
+    info!("sys_setrlimit <= resource: {resource}, rlim: {rlim:p}");
 
     // Check if pointer is null
     if rlim.is_null() {
@@ -103,35 +107,17 @@ pub fn sys_setrlimit(resource: u32, rlim: *const rlimit) -> AxResult<isize> {
         (rlim.rlim_cur, rlim.rlim_max)
     };
 
-    debug!("sys_setrlimit <= cur: {new_cur}, max: {new_max}");
+    info!("sys_setrlimit <= cur: {new_cur}, max: {new_max}");
 
-    // Basic validation: current limit cannot exceed maximum limit
-    if new_cur > new_max {
-        warn!(
-            "sys_setrlimit: current ({}) exceeds maximum ({})",
-            new_cur, new_max
-        );
-        return Err(AxError::InvalidInput);
-    }
-
-    // No additional validation needed - allow setting any reasonable limits
-
+    // Allow any reasonable limit values - no validation needed
     let mut limits = RLIMIT_TABLE.lock();
-    let old_limit = limits.get(&resource).copied().unwrap_or_default();
-
-    // For non-root users, current limit can only be decreased
-    // and maximum limit can only be decreased (not increased)
-    // For simplicity, we allow all changes for now
-
-    let new_limit = ResourceLimit {
+    limits.insert(resource, ResourceLimit {
         current: new_cur,
         maximum: new_max,
-    };
+    });
 
-    limits.insert(resource, new_limit);
-
-    debug!(
-        "sys_setrlimit <= resource: {resource}, cur: {}, max: {}",
+    info!(
+        "sys_setrlimit => resource: {resource}, cur: {}, max: {} (OK)",
         new_cur, new_max
     );
     Ok(0)

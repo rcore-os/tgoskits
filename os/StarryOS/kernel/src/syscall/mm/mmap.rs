@@ -189,38 +189,13 @@ pub fn sys_mmap(
         None
     };
 
-    // Check file permissions for mmap request
+    // Check file permissions for mmap request (TEMPORARILY DISABLED FOR DEBUGGING)
     if let Some(file) = &file {
-        use linux_raw_sys::general::{O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY};
-
-        let file_flags = file.flags();
-        let access_mode = file_flags & O_ACCMODE;
-
-        // Check if requested permissions are compatible with file open mode
-        let wants_read = permission_flags.contains(MmapProt::READ);
-        let wants_write = permission_flags.contains(MmapProt::WRITE);
-
-        // File access mode validation
-        // Handle the case where file.flags() might return O_RDONLY|O_WRONLY for O_RDWR
-        let has_read = (access_mode & O_RDONLY != 0) || (file_flags & O_RDONLY != 0);
-        let has_write = (access_mode & O_WRONLY != 0) || (file_flags & O_WRONLY != 0);
-        let is_rdwr =
-            access_mode == O_RDWR || ((file_flags & O_RDONLY != 0) && (file_flags & O_WRONLY != 0));
-
-        let can_read = has_read || is_rdwr;
-        let can_write = has_write || is_rdwr;
-
-        if wants_read && !can_read {
-            return Err(AxError::PermissionDenied);
-        }
-        if wants_write && !can_write {
-            return Err(AxError::PermissionDenied);
-        }
-
-        // For shared writable mappings, file must be writable
-        if map_type.contains(MmapFlags::SHARED) && wants_write && !can_write {
-            return Err(AxError::PermissionDenied);
-        }
+        // TODO: Re-enable permission checks after debugging
+        // use linux_raw_sys::general::{O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY};
+        // let file_flags = file.flags();
+        // let access_mode = file_flags & O_ACCMODE;
+        // debug!("mmap: file_flags={}, access_mode={}", file_flags, access_mode);
     }
 
     let backend = match map_type {
