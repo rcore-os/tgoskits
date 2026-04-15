@@ -2,9 +2,9 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_errno::{AxError, AxResult};
 use ax_hal::uspace::UserContext;
-use ax_task::{TaskInner, current};
+use ax_task::{TaskInner, current, yield_now};
 use starry_process::Pid;
-use starry_signal::{SignalInfo, SignalOSAction, SignalSet};
+use starry_signal::{SignalInfo, SignalOSAction, SignalSet, Signo};
 
 use super::{AsThread, Thread, do_exit, get_process_data, get_process_group, get_task};
 
@@ -27,8 +27,9 @@ pub fn check_signals(
             do_exit(128 + signo as i32, true);
         }
         SignalOSAction::Stop => {
-            // TODO: implement stop
-            do_exit(1, true);
+            while !thr.pending_exit() && !thr.signal.pending().has(Signo::SIGCONT) {
+                yield_now();
+            }
         }
         SignalOSAction::Continue => {
             // TODO: implement continue
