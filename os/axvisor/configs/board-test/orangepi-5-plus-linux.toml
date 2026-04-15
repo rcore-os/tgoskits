@@ -5,3 +5,4 @@ shell_prefix = "orangepi@orangepi5plus:~"
 success_regex = [
   "(?m)^test pass\\s*$",
 ]
+timeout = 300

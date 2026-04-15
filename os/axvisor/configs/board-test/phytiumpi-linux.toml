@@ -10,3 +10,4 @@ shell_prefix = "login:"
 success_regex = [
   "(?m)^root@.*#\\s*$",
 ]
+timeout = 300
