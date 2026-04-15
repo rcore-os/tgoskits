@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.13](https://github.com/drivercraft/sparreal-os/compare/someboot-v0.1.12...someboot-v0.1.13) - 2026-04-15
+
+### Other
+
+- ✨ feat: 添加 some-serial 统一串口驱动集合，支持 ARM PL011 和 NS16550 ([#75](https://github.com/drivercraft/sparreal-os/pull/75))
+
 ## [0.1.12](https://github.com/drivercraft/sparreal-os/compare/someboot-v0.1.11...someboot-v0.1.12) - 2026-04-02
 
 ### Other
