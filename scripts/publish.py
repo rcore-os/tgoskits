@@ -928,7 +928,9 @@ def check_owners(crate: str, expected_owners: list[str]) -> tuple[str, str]:
     return "MISSING", f"expected one of: {', '.join(expected_owners)}"
 
 
-def run_publish_command(pkg: Package, *, locked: bool) -> subprocess.CompletedProcess[str]:
+def run_publish_command(
+    pkg: Package, *, locked: bool, allow_dirty: bool
+) -> subprocess.CompletedProcess[str]:
     cmd = [
         "cargo",
         "publish",
@@ -937,20 +939,22 @@ def run_publish_command(pkg: Package, *, locked: bool) -> subprocess.CompletedPr
     ]
     if locked:
         cmd.append("--locked")
+    if allow_dirty:
+        cmd.append("--allow-dirty")
     return run(cmd, check=False)
 
 
-def publish_package(pkg: Package, dry_run: bool) -> tuple[str, str]:
+def publish_package(pkg: Package, dry_run: bool, *, allow_dirty: bool) -> tuple[str, str]:
     if dry_run:
         return "DRY-RUN", "not published"
 
-    proc = run_publish_command(pkg, locked=True)
+    proc = run_publish_command(pkg, locked=True, allow_dirty=allow_dirty)
     retried_without_locked = False
 
     if proc.returncode != 0:
         detail = (proc.stderr.strip() or proc.stdout.strip() or f"exit code {proc.returncode}")
         if any(marker in detail for marker in LOCKED_FAILURE_MARKERS):
-            proc = run_publish_command(pkg, locked=False)
+            proc = run_publish_command(pkg, locked=False, allow_dirty=allow_dirty)
             retried_without_locked = True
 
     if proc.returncode == 0:
@@ -987,6 +991,14 @@ def main() -> int:
         "--dry-run",
         action="store_true",
         help="Only print the publish plan and skip cargo publish.",
+    )
+    parser.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help=(
+            "Pass --allow-dirty to cargo publish. Use this only when you intend "
+            "to publish the current uncommitted workspace state."
+        ),
     )
     parser.add_argument(
         "--sync-owner",
@@ -1169,7 +1181,11 @@ def main() -> int:
                         )
                         time.sleep(PUBLISH_INTERVAL_SECONDS)
                     while True:
-                        status, detail = publish_package(pkg, args.dry_run)
+                        status, detail = publish_package(
+                            pkg,
+                            args.dry_run,
+                            allow_dirty=args.allow_dirty,
+                        )
                         if not args.dry_run:
                             publish_attempts += 1
                         if status != "RATE-LIMITED":

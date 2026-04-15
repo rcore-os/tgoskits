@@ -378,7 +378,7 @@ dma-api = { version = "0.7.2" }
 
 # === starry-* ===
 starry-process = { version = "0.4.1", path = "components/starry-process" }
-starry-signal = { version = "0.5.1", path = "components/starry-signal" }
+starry-signal = { version = "0.5.2", path = "components/starry-signal" }
 starry-vm = { version = "0.5.1", path = "components/starry-vm" }
 lazy_static = { version = "1.5", features = ["spin_no_std"] }
 lock_api = { version = "0.4", default-features = false }
