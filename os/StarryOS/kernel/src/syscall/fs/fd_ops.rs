@@ -1,9 +1,10 @@
-use alloc::{format, string::ToString, sync::Arc};
+use alloc::{collections::BTreeMap, format, string::ToString, sync::Arc};
 use core::{
     ffi::{c_char, c_int},
     mem,
     ops::{Deref, DerefMut},
 };
+use spin::Once;
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::{FS_CONTEXT, FileBackend, OpenOptions, OpenResult};
@@ -356,18 +357,10 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
 
             // Handle O_APPEND flag changes
             if let Ok(file) = f.downcast_arc::<crate::file::File>() {
-                let current_flags = file.flags();
-                let has_append = (current_flags & (O_APPEND as u32)) != 0;
-                let wants_append = (arg & (O_APPEND as usize)) != 0;
-
-                // TODO: We need to support dynamically changing O_APPEND flag
-                // For now, log a warning if there's a mismatch
-                if has_append != wants_append {
-                    warn!(
-                        "F_SETFL: O_APPEND flag change not yet supported (current: {}, wants: {})",
-                        has_append, wants_append
-                    );
-                }
+                // O_APPEND and O_NONBLOCK are the only flags that can be changed via F_SETFL
+                let append_mask = linux_raw_sys::general::O_APPEND as u32;
+                let append_value = (arg & (O_APPEND as usize)) as u32;
+                file.set_flags(append_mask, append_value);
             }
 
             Ok(0)
@@ -432,8 +425,66 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
     }
 }
 
+// flock operation constants
+const LOCK_SH: i32 = 1;  // Shared lock
+const LOCK_EX: i32 = 2;  // Exclusive lock
+const LOCK_UN: i32 = 8;  // Unlock
+const LOCK_NB: i32 = 4;  // Non-blocking
+
+// Global flock table mapping inode -> lock type
+static FLOCK_TABLE: Once<spin::Mutex<BTreeMap<u64, i32>>> = Once::new();
+
+fn get_flock_table() -> &'static spin::Mutex<BTreeMap<u64, i32>> {
+    FLOCK_TABLE.call_once(|| spin::Mutex::new(BTreeMap::new()))
+}
+
+// Get file key for flock (use inode number)
+fn get_file_key_for_flock(fd: c_int) -> AxResult<u64> {
+    let file = File::from_fd(fd)?;
+    let kstat = file.stat()?;
+    Ok(kstat.ino)
+}
+
 pub fn sys_flock(fd: c_int, operation: c_int) -> AxResult<isize> {
     debug!("flock <= fd: {fd}, operation: {operation}");
-    // TODO: flock
+
+    let file_key = get_file_key_for_flock(fd)?;
+
+    // Extract lock operation
+    let is_unlock = (operation & LOCK_UN) != 0;
+    let is_shared = (operation & LOCK_SH) != 0;
+    let is_exclusive = (operation & LOCK_EX) != 0;
+    let is_nonblocking = (operation & LOCK_NB) != 0;
+
+    let mut flock_table = get_flock_table().lock();
+
+    if is_unlock {
+        // Release lock
+        flock_table.remove(&file_key);
+        return Ok(0);
+    }
+
+    // Check for existing lock conflicts
+    if let Some(&existing_lock) = flock_table.get(&file_key) {
+        let conflict = if is_exclusive {
+            // Exclusive lock conflicts with any existing lock
+            true
+        } else {
+            // Shared lock conflicts with exclusive lock
+            (existing_lock & LOCK_EX) != 0
+        };
+
+        if conflict {
+            if is_nonblocking {
+                return Err(AxError::WouldBlock);
+            }
+            // TODO: Implement proper blocking flock behavior
+        }
+    }
+
+    // Set the lock
+    let lock_type = if is_exclusive { LOCK_EX } else { LOCK_SH };
+    flock_table.insert(file_key, lock_type);
+
     Ok(0)
 }

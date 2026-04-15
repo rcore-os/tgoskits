@@ -2,12 +2,13 @@ use alloc::{borrow::Cow, string::ToString, sync::Arc};
 use core::{
     ffi::c_int,
     hint::likely,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
     task::Context,
 };
 
 use ax_errno::{AxError, AxResult};
 use ax_fs::{FS_CONTEXT, FileFlags, FsContext};
+use ax_io::{Seek, SeekFrom};
 use ax_sync::Mutex;
 use ax_task::future::{block_on, poll_io};
 use axfs_ng_vfs::{Location, Metadata, NodeFlags};
@@ -100,6 +101,8 @@ pub fn metadata_to_kstat(metadata: &Metadata) -> Kstat {
 pub struct File {
     inner: ax_fs::File,
     nonblock: AtomicBool,
+    dynamic_flags: AtomicU32,
+    dynamic_append: AtomicU32, // 0=not set, 1=explicitly set, 2=explicitly cleared
 }
 
 impl File {
@@ -107,6 +110,8 @@ impl File {
         Self {
             inner,
             nonblock: AtomicBool::new(false),
+            dynamic_flags: AtomicU32::new(0),
+            dynamic_append: AtomicU32::new(0),
         }
     }
 
@@ -138,10 +143,52 @@ impl File {
             }
         }
 
-        if flags.contains(FileFlags::APPEND) {
-            ret |= linux_raw_sys::general::O_APPEND;
+        // For O_APPEND, check if it was dynamically modified
+        // dynamic_append: 0=not set, 1=explicitly set, 2=explicitly cleared
+        let dynamic_append = self.dynamic_append.load(core::sync::atomic::Ordering::Relaxed);
+        let append_mask = linux_raw_sys::general::O_APPEND as u32;
+
+        match dynamic_append {
+            1 => {
+                // Explicitly set via F_SETFL
+                ret |= append_mask;
+            }
+            2 => {
+                // Explicitly cleared via F_SETFL
+                // Don't set O_APPEND even if file was opened with it
+            }
+            _ => {
+                // Not dynamically set, use original file flag
+                if flags.contains(FileFlags::APPEND) {
+                    ret |= append_mask;
+                }
+            }
         }
+
+        // Merge in other dynamically modified flags (not O_APPEND)
+        ret |= self.dynamic_flags.load(core::sync::atomic::Ordering::Relaxed) & !append_mask;
+
         ret
+    }
+
+    pub fn set_flags(&self, mask: u32, value: u32) {
+        let append_mask = linux_raw_sys::general::O_APPEND as u32;
+
+        // Handle O_APPEND specially with dynamic_append state
+        if (mask & append_mask) != 0 {
+            let append_value = (value & append_mask) != 0;
+            self.dynamic_append.store(if append_value { 1 } else { 2 }, core::sync::atomic::Ordering::Relaxed);
+        }
+
+        // Handle other flags
+        let mut current = self.dynamic_flags.load(core::sync::atomic::Ordering::Relaxed);
+        current = (current & !mask) | (value & mask);
+        self.dynamic_flags.store(current, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn has_append(&self) -> bool {
+        let flags = self.flags();
+        (flags & linux_raw_sys::general::O_APPEND as u32) != 0
     }
 }
 
@@ -163,13 +210,28 @@ impl FileLike for File {
     }
 
     fn write(&self, src: &mut IoSrc) -> AxResult<usize> {
-        let inner = self.inner();
-        if likely(self.is_blocking()) {
-            inner.write(src)
+        // Handle O_APPEND: seek to end before writing
+        if self.has_append() {
+            let mut inner = self.inner();
+            // Seek to end of file
+            let _ = inner.seek(SeekFrom::End(0))?;
+            // Now perform the write from the end
+            if likely(self.is_blocking()) {
+                inner.write(src)
+            } else {
+                block_on(poll_io(self, IoEvents::OUT, self.nonblocking(), || {
+                    inner.write(&mut *src)
+                }))
+            }
         } else {
-            block_on(poll_io(self, IoEvents::OUT, self.nonblocking(), || {
-                inner.write(&mut *src)
-            }))
+            let inner = self.inner();
+            if likely(self.is_blocking()) {
+                inner.write(src)
+            } else {
+                block_on(poll_io(self, IoEvents::OUT, self.nonblocking(), || {
+                    inner.write(&mut *src)
+                }))
+            }
         }
     }
 
