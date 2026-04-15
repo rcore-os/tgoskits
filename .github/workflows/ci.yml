@@ -174,9 +174,11 @@ jobs:
           - label: smoke-orangepi-5-plus
             runs_on: '["self-hosted","linux","board"]'
             command: cargo xtask starry test board -t smoke-orangepi-5-plus
+            apt_packages: cmake
     uses: ./.github/workflows/reusable-host-command.yml
     with:
       runs_on: ${{ matrix.runs_on }}
+      apt_packages: ${{ matrix.apt_packages }}
       command: ${{ matrix.command }}
 
   container_publish:

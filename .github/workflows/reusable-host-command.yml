@@ -17,6 +17,11 @@ on:
         required: false
         type: string
         default: ""
+      apt_packages:
+        description: Space-separated apt packages to install before running the command.
+        required: false
+        type: string
+        default: ""
 
 jobs:
   run:
@@ -31,6 +36,22 @@ jobs:
         with:
           shared-key: ${{ inputs.cache_key }}
           save-if: ${{ github.event_name == 'push' }}
+
+      - name: Install apt packages
+        if: inputs.apt_packages != ''
+        run: |
+          if ! command -v apt-get >/dev/null 2>&1; then
+            echo "apt-get is required to install: ${{ inputs.apt_packages }}"
+            exit 1
+          fi
+
+          if command -v sudo >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends ${{ inputs.apt_packages }}
+          else
+            apt-get update
+            apt-get install -y --no-install-recommends ${{ inputs.apt_packages }}
+          fi
 
       - name: Show Rust version
         run: rustc --version
