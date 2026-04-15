@@ -1,7 +1,8 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use clap::{Args, Subcommand};
+use ostool::board::{RunBoardOptions, config::BoardRunConfig};
 use ostool::build::config::Cargo;
 
 use crate::{
@@ -40,6 +41,8 @@ pub enum Command {
     QuickStart(quick_start::ArgsQuickStart),
     /// Build and run StarryOS application with U-Boot
     Uboot(ArgsUboot),
+    /// Build and run StarryOS on a remote board
+    Board(ArgsBoard),
 }
 
 #[derive(Args, Clone)]
@@ -71,6 +74,24 @@ pub struct ArgsUboot {
 
     #[arg(long)]
     pub uboot_config: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct ArgsBoard {
+    #[command(flatten)]
+    pub build: ArgsBuild,
+
+    #[arg(long = "board-config")]
+    pub board_config: Option<PathBuf>,
+
+    #[arg(short = 'b', long)]
+    pub board_type: Option<String>,
+
+    #[arg(long)]
+    pub server: Option<String>,
+
+    #[arg(long)]
+    pub port: Option<u16>,
 }
 
 #[derive(Args)]
@@ -153,6 +174,7 @@ impl Starry {
             Command::Rootfs(args) => self.rootfs(args).await,
             Command::QuickStart(args) => self.quick_start(args).await,
             Command::Uboot(args) => self.uboot(args).await,
+            Command::Board(args) => self.board(args).await,
             Command::Test(args) => self.test(args).await,
         }
     }
@@ -218,6 +240,28 @@ impl Starry {
             SnapshotPersistence::Store,
         )?;
         self.run_uboot_request(request).await
+    }
+
+    async fn board(&mut self, args: ArgsBoard) -> anyhow::Result<()> {
+        let request =
+            self.prepare_request((&args.build).into(), None, None, SnapshotPersistence::Store)?;
+        self.app.set_debug_mode(request.debug)?;
+        let cargo = build::load_cargo_config(&request)?;
+        let board_config = self
+            .load_board_config(&cargo, args.board_config.as_deref())
+            .await?;
+        self.app
+            .board(
+                cargo,
+                request.build_info_path,
+                board_config,
+                RunBoardOptions {
+                    board_type: args.board_type,
+                    server: args.server,
+                    port: args.port,
+                },
+            )
+            .await
     }
 
     async fn quick_start(&mut self, args: quick_start::ArgsQuickStart) -> anyhow::Result<()> {
@@ -311,7 +355,7 @@ impl Starry {
             println!("[{}/{}] starry qemu {}", index + 1, total, case.name);
 
             match self
-                .run_qemu_case(&request, &cargo, case.qemu_config_path.clone())
+                .run_qemu_case(&request, &cargo, &case.name, case.qemu_config_path.clone())
                 .await
                 .with_context(|| format!("starry qemu test failed for case `{}`", case.name))
             {
@@ -408,17 +452,50 @@ impl Starry {
         }
     }
 
+    async fn load_board_config(
+        &mut self,
+        cargo: &Cargo,
+        board_config_path: Option<&Path>,
+    ) -> anyhow::Result<BoardRunConfig> {
+        match board_config_path {
+            Some(path) => {
+                self.app
+                    .tool_mut()
+                    .read_board_run_config_from_path_for_cargo(cargo, path)
+                    .await
+            }
+            None => {
+                let workspace_root = self.app.workspace_root().to_path_buf();
+                self.app
+                    .tool_mut()
+                    .ensure_board_run_config_in_dir_for_cargo(cargo, &workspace_root)
+                    .await
+            }
+        }
+    }
+
     async fn run_qemu_case(
         &mut self,
         request: &ResolvedStarryRequest,
         cargo: &Cargo,
+        case_name: &str,
         qemu_config_path: PathBuf,
     ) -> anyhow::Result<()> {
-        let qemu = self
+        let mut qemu = self
             .app
             .tool_mut()
             .read_qemu_config_from_path_for_cargo(cargo, &qemu_config_path)
             .await?;
+
+        let case_rootfs = rootfs::prepare_per_case_rootfs(
+            self.app.workspace_root(),
+            &request.arch,
+            &request.target,
+            case_name,
+        )
+        .await?;
+        rootfs::apply_disk_image_qemu_args(&mut qemu, case_rootfs);
+
         self.app
             .qemu(cargo.clone(), request.build_info_path.clone(), Some(qemu))
             .await
@@ -785,6 +862,45 @@ mod tests {
                 _ => panic!("expected orangepi quick-start command"),
             },
             _ => panic!("expected quick-start command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_board() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from([
+            "starry",
+            "board",
+            "--arch",
+            "aarch64",
+            "--board-config",
+            "remote.board.toml",
+            "-b",
+            "rk3568",
+            "--server",
+            "10.0.0.2",
+            "--port",
+            "9000",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Board(args) => {
+                assert_eq!(args.build.arch.as_deref(), Some("aarch64"));
+                assert_eq!(
+                    args.board_config,
+                    Some(PathBuf::from("remote.board.toml"))
+                );
+                assert_eq!(args.board_type.as_deref(), Some("rk3568"));
+                assert_eq!(args.server.as_deref(), Some("10.0.0.2"));
+                assert_eq!(args.port, Some(9000));
+            }
+            _ => panic!("expected board command"),
         }
     }
 }

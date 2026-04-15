@@ -61,6 +61,46 @@ pub(crate) async fn ensure_rootfs_in_target_dir(
     Ok(rootfs_img)
 }
 
+fn per_case_rootfs_path(
+    workspace_root: &Path,
+    arch: &str,
+    target: &str,
+    case_name: &str,
+) -> anyhow::Result<PathBuf> {
+    let target_dir = resolve_target_dir(workspace_root, target)?;
+    Ok(target_dir.join(format!("rootfs-{arch}-{case_name}.img")))
+}
+
+pub(crate) async fn prepare_per_case_rootfs(
+    workspace_root: &Path,
+    arch: &str,
+    target: &str,
+    case_name: &str,
+) -> anyhow::Result<PathBuf> {
+    let base = rootfs_image_path(workspace_root, arch, target)?;
+    let case_rootfs = per_case_rootfs_path(workspace_root, arch, target, case_name)?;
+
+    // Clean up old per-case copy from a previous run
+    if case_rootfs.exists() {
+        tokio_fs::remove_file(&case_rootfs)
+            .await
+            .with_context(|| format!("failed to remove old per-case rootfs {}", case_rootfs.display()))?;
+    }
+
+    // Copy base rootfs to per-case path
+    let src = base.clone();
+    let dst = case_rootfs.clone();
+    tokio::task::spawn_blocking(move || {
+        std::fs::copy(&src, &dst)
+            .with_context(|| format!("failed to copy {} to {}", src.display(), dst.display()))?;
+        Ok::<(), anyhow::Error>(())
+    })
+    .await
+    .context("rootfs copy task failed")??;
+
+    Ok(case_rootfs)
+}
+
 pub(crate) async fn apply_default_qemu_args(
     workspace_root: &Path,
     request: &ResolvedStarryRequest,
@@ -72,7 +112,7 @@ pub(crate) async fn apply_default_qemu_args(
     Ok(())
 }
 
-fn apply_disk_image_qemu_args(qemu: &mut QemuConfig, disk_img: PathBuf) {
+pub(crate) fn apply_disk_image_qemu_args(qemu: &mut QemuConfig, disk_img: PathBuf) {
     let disk_value = format!("id=disk0,if=none,format=raw,file={}", disk_img.display());
     let args = &mut qemu.args;
 
