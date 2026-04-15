@@ -182,7 +182,7 @@ impl FileLike for File {
             if any.is::<Directory>() {
                 AxError::IsADirectory
             } else {
-                AxError::BrokenPipe
+                AxError::InvalidInput
             }
         })
     }

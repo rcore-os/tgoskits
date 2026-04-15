@@ -4,7 +4,7 @@ use core::{
     task::Context,
 };
 
-use ax_errno::{AxError, AxResult};
+use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs::{FS_CONTEXT, FileFlags, OpenOptions};
 use ax_io::{Seek, SeekFrom};
 use ax_task::current;
@@ -72,6 +72,20 @@ pub fn sys_writev(fd: i32, iov: *const IoVec, iovcnt: usize) -> AxResult<isize> 
         .map(|n| n as _)
 }
 
+/// Get a `File` from the given fd for seek operations (lseek, pread, pwrite).
+///
+/// Returns `ESPIPE` if the fd refers to a non-seekable file type (pipe, socket, etc.),
+/// per POSIX requirements.
+fn file_for_seek(fd: c_int) -> AxResult<Arc<File>> {
+    File::from_fd(fd).map_err(|e| {
+        if e == AxError::InvalidInput {
+            AxError::from(LinuxError::ESPIPE)
+        } else {
+            e
+        }
+    })
+}
+
 pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<isize> {
     debug!("sys_lseek <= {fd} {offset} {whence}");
     let pos = match whence {
@@ -80,7 +94,7 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<i
         2 => SeekFrom::End(offset as _),
         _ => return Err(AxError::InvalidInput),
     };
-    let off = File::from_fd(fd)?.inner().seek(pos)?;
+    let off = file_for_seek(fd)?.inner().seek(pos)?;
     Ok(off as _)
 }
 
@@ -144,7 +158,7 @@ pub fn sys_fadvise64(
 ) -> AxResult<isize> {
     debug!("sys_fadvise64 <= fd: {fd}, offset: {offset}, len: {len}, advice: {advice}");
     if Pipe::from_fd(fd).is_ok() {
-        return Err(AxError::BrokenPipe);
+        return Err(AxError::from(LinuxError::ESPIPE));
     }
     if advice > 5 {
         return Err(AxError::InvalidInput);
@@ -153,7 +167,7 @@ pub fn sys_fadvise64(
 }
 
 pub fn sys_pread64(fd: c_int, buf: *mut u8, len: usize, offset: __kernel_off_t) -> AxResult<isize> {
-    let f = File::from_fd(fd)?;
+    let f = file_for_seek(fd)?;
     if offset < 0 {
         return Err(AxError::InvalidInput);
     }
@@ -173,7 +187,7 @@ pub fn sys_pwrite64(
     if offset < 0 {
         return Err(AxError::InvalidInput);
     }
-    let f = File::from_fd(fd)?;
+    let f = file_for_seek(fd)?;
     let write = f.inner().write_at(VmBytes::new(buf, len), offset as _)?;
     Ok(write as _)
 }
@@ -222,7 +236,7 @@ pub fn sys_preadv2(
 ) -> AxResult<isize> {
     let offset = pos_from_hilo(pos_h, pos_l);
     debug!("sys_preadv2 <= fd: {fd}, iovcnt: {iovcnt}, offset: {offset}, flags: {_flags}");
-    let f = File::from_fd(fd)?;
+    let f = file_for_seek(fd)?;
     f.inner()
         .read_at(IoVectorBuf::new(iov, iovcnt)?.into_io(), offset as _)
         .map(|n| n as _)
@@ -238,7 +252,7 @@ pub fn sys_pwritev2(
 ) -> AxResult<isize> {
     let offset = pos_from_hilo(pos_h, pos_l);
     debug!("sys_pwritev2 <= fd: {fd}, iovcnt: {iovcnt}, offset: {offset}, flags: {_flags}");
-    let f = File::from_fd(fd)?;
+    let f = file_for_seek(fd)?;
     f.inner()
         .write_at(IoVectorBuf::new(iov, iovcnt)?.into_io(), offset as _)
         .map(|n| n as _)
