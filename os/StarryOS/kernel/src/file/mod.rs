@@ -19,25 +19,19 @@ use downcast_rs::{DowncastSync, impl_downcast};
 use flatten_objects::FlattenObjects;
 use linux_raw_sys::general::{RLIMIT_NOFILE, stat, statx, statx_timestamp};
 
-// STATX constants as defined in Linux kernel
-const STATX_TYPE: u32 = 0x0001;
-const STATX_MODE: u32 = 0x0002;
-const STATX_NLINK: u32 = 0x0004;
-const STATX_UID: u32 = 0x0008;
-const STATX_GID: u32 = 0x0010;
-const STATX_ATIME: u32 = 0x0020;
-const STATX_MTIME: u32 = 0x0040;
-const STATX_CTIME: u32 = 0x0080;
-const STATX_SIZE: u32 = 0x0100;
-const STATX_BASIC_STATS: u32 = STATX_TYPE
-    | STATX_MODE
-    | STATX_NLINK
-    | STATX_UID
-    | STATX_GID
-    | STATX_ATIME
-    | STATX_MTIME
-    | STATX_CTIME
-    | STATX_SIZE;
+// STATX constants as defined in Linux kernel (include/uapi/linux/stat.h)
+const STATX_TYPE: u32 = 0x00000001;
+const STATX_MODE: u32 = 0x00000002;
+const STATX_NLINK: u32 = 0x00000004;
+const STATX_UID: u32 = 0x00000008;
+const STATX_GID: u32 = 0x00000010;
+const STATX_ATIME: u32 = 0x00000020;
+const STATX_MTIME: u32 = 0x00000040;
+const STATX_CTIME: u32 = 0x00000080;
+const STATX_INO: u32 = 0x00000100;
+const STATX_SIZE: u32 = 0x00000200;
+const STATX_BLOCKS: u32 = 0x00000400;
+const STATX_BASIC_STATS: u32 = 0x000007ff;
 use spin::RwLock;
 
 pub use self::{

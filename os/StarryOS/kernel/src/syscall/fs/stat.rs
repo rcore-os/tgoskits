@@ -68,9 +68,16 @@ pub fn sys_statx(
     dirfd: c_int,
     path: *const c_char,
     flags: u32,
-    _mask: u32,
+    mask: u32,
     statxbuf: *mut statx,
 ) -> AxResult<isize> {
+    // Check for reserved bit in mask (STATX__RESERVED = 0x80000000)
+    if mask & 0x80000000 != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
+    // `statx()` uses pathname, dirfd, and flags to identify the target
+    // file in one of the following ways:
     // `statx()` uses pathname, dirfd, and flags to identify the target
     // file in one of the following ways:
 
@@ -99,9 +106,18 @@ pub fn sys_statx(
     //        file descriptor dirfd.
 
     let path = path.nullable().map(vm_load_string).transpose()?;
-    debug!("sys_statx <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
+    debug!("sys_statx <= dirfd: {dirfd}, path: {path:?}, flags: {flags}, mask: {mask:x}");
 
-    statxbuf.vm_write(resolve_at(dirfd, path.as_deref(), flags)?.stat()?.into())?;
+    // Get the stat and convert to statx
+    let mut stx: statx = resolve_at(dirfd, path.as_deref(), flags)?.stat()?.into();
+
+    // According to statx(2) man page, stx_mask should indicate which fields
+    // were successfully filled in, limited by what the user requested in mask.
+    // The conversion sets stx_mask to STATX_BASIC_STATS, but we need to
+    // intersect it with what the user actually requested.
+    stx.stx_mask &= mask;
+
+    statxbuf.vm_write(stx)?;
 
     Ok(0)
 }
