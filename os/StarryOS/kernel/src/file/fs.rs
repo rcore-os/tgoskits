@@ -100,13 +100,15 @@ pub fn metadata_to_kstat(metadata: &Metadata) -> Kstat {
 pub struct File {
     inner: ax_fs::File,
     nonblock: AtomicBool,
+    open_flags: u32,
 }
 
 impl File {
-    pub fn new(inner: ax_fs::File) -> Self {
+    pub fn new(inner: ax_fs::File, open_flags: u32) -> Self {
         Self {
             inner,
             nonblock: AtomicBool::new(false),
+            open_flags,
         }
     }
 
@@ -162,6 +164,10 @@ impl FileLike for File {
 
     fn nonblocking(&self) -> bool {
         self.nonblock.load(Ordering::Acquire)
+    }
+
+    fn open_flags(&self) -> u32 {
+        self.open_flags
     }
 
     fn path(&self) -> Cow<'_, str> {
