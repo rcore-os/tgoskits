@@ -1,6 +1,6 @@
 [package]
 name = "fxmac_rs"
-version = "0.4.6"
+version = "0.4.7"
 edition = "2021"
 authors = ["xiaoluoyuan@163.com"]
 description = "FXMAC Ethernet driver in Rust for PhytiumPi (Phytium Pi) board, supporting DMA-based packet transmission and reception."
