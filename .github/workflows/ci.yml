@@ -149,16 +149,16 @@ jobs:
         include:
           - label: x86_64
             runs_on: '["self-hosted","linux","intel"]'
-            command: cargo xtask axvisor test qemu --target x86_64
+            command: AXVISOR_IMAGE_LOCAL_STORAGE=/home/runner/.axvisor-images cargo xtask axvisor test qemu --target x86_64
           - label: orangepi-5-plus-linux
             runs_on: '["self-hosted","linux","board"]'
-            command: cargo xtask axvisor test board -t orangepi-5-plus-linux
+            command: AXVISOR_IMAGE_LOCAL_STORAGE=/home/runner/.axvisor-images cargo xtask axvisor test board -t orangepi-5-plus-linux
           - label: roc-rk3568-pc-linux
             runs_on: '["self-hosted","linux","board"]'
-            command: cargo xtask axvisor test board -t roc-rk3568-pc-linux
+            command: AXVISOR_IMAGE_LOCAL_STORAGE=/home/runner/.axvisor-images cargo xtask axvisor test board -t roc-rk3568-pc-linux
           - label: rdk-s100-linux
             runs_on: '["self-hosted","linux","board"]'
-            command: cargo xtask axvisor test board -t rdk-s100-linux
+            command: AXVISOR_IMAGE_LOCAL_STORAGE=/home/runner/.axvisor-images cargo xtask axvisor test board -t rdk-s100-linux
     uses: ./.github/workflows/reusable-host-command.yml
     with:
       runs_on: ${{ matrix.runs_on }}

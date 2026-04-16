@@ -20,6 +20,7 @@ use crate::download::{download_to_path_with_progress, http_client};
 
 pub const REGISTRY_FILENAME: &str = "images.toml";
 const LAST_SYNC_FILENAME: &str = ".last_sync";
+const EXTRACTED_SHA256_FILENAME: &str = ".archive.sha256";
 
 #[derive(Debug)]
 pub struct Storage {
@@ -142,7 +143,15 @@ impl Storage {
         }
 
         let extract_dir = output_dir.join(image_extract_dir_name(spec));
-        extract_archive(&archive_path, &extract_dir).await?;
+        if extracted_archive_matches(&extract_dir, &image.sha256)? {
+            println!(
+                "image already extracted and up to date at {}",
+                extract_dir.display()
+            );
+            return Ok(extract_dir);
+        }
+
+        extract_archive(&archive_path, &extract_dir, &image.sha256).await?;
         println!("image extracted to {}", extract_dir.display());
         Ok(extract_dir)
     }
@@ -309,7 +318,31 @@ fn image_verify_sha256(file_path: &Path, expected_sha256: &str) -> anyhow::Resul
     Ok(actual_sha256 == expected_sha256)
 }
 
-async fn extract_archive(archive_path: &Path, extract_dir: &Path) -> anyhow::Result<()> {
+fn extracted_archive_matches(extract_dir: &Path, expected_sha256: &str) -> anyhow::Result<bool> {
+    if !extract_dir.exists() {
+        return Ok(false);
+    }
+
+    let marker_path = extract_dir.join(EXTRACTED_SHA256_FILENAME);
+    let actual_sha256 = match fs::read_to_string(&marker_path) {
+        Ok(actual_sha256) => actual_sha256,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => {
+            return Err(anyhow!(
+                "failed to read extraction marker {}: {err}",
+                marker_path.display()
+            ));
+        }
+    };
+
+    Ok(actual_sha256.trim() == expected_sha256)
+}
+
+async fn extract_archive(
+    archive_path: &Path,
+    extract_dir: &Path,
+    expected_sha256: &str,
+) -> anyhow::Result<()> {
     if extract_dir.exists() {
         fs::remove_dir_all(extract_dir)
             .with_context(|| format!("failed to remove {}", extract_dir.display()))?;
@@ -321,6 +354,7 @@ async fn extract_archive(archive_path: &Path, extract_dir: &Path) -> anyhow::Res
     let extract_dir = extract_dir.to_path_buf();
     let archive_path_for_task = archive_path.clone();
     let extract_dir_for_task = extract_dir.clone();
+    let expected_sha256 = expected_sha256.to_string();
     let progress = ProgressBar::new_spinner();
     progress.set_message(format!("extracting {}", archive_path.display()));
     progress.enable_steady_tick(std::time::Duration::from_millis(100));
@@ -332,6 +366,16 @@ async fn extract_archive(archive_path: &Path, extract_dir: &Path) -> anyhow::Res
         let mut archive = Archive::new(decoder);
         archive.unpack(&extract_dir_for_task).with_context(|| {
             format!("failed to extract into {}", extract_dir_for_task.display())
+        })?;
+        fs::write(
+            extract_dir_for_task.join(EXTRACTED_SHA256_FILENAME),
+            expected_sha256,
+        )
+        .with_context(|| {
+            format!(
+                "failed to write extraction marker in {}",
+                extract_dir_for_task.display()
+            )
         })?;
         Ok(())
     })
@@ -508,6 +552,52 @@ url = "https://example.com/linux-0.0.1.tar.gz"
 
         assert_eq!(storage.image_registry.images.len(), 1);
         assert!(dir.path().join(REGISTRY_FILENAME).exists());
+    }
+
+    #[tokio::test]
+    async fn pull_image_skips_reextract_when_marker_matches() {
+        let dir = tempdir().unwrap();
+        let image_name = "linux";
+        let archive_bytes = make_tar_gz(&[("kernel.bin", b"kernel")]);
+        let sha256 = sha256_hex(&archive_bytes);
+        let registry_path = dir.path().join(REGISTRY_FILENAME);
+        fs::write(
+            &registry_path,
+            format!(
+                r#"
+[[images]]
+name = "{image_name}"
+version = "0.0.1"
+released_at = "2025-01-01T00:00:00Z"
+description = "Linux guest"
+sha256 = "{sha256}"
+arch = "aarch64"
+url = "https://example.com/{image_name}.tar.gz"
+"#
+            ),
+        )
+        .unwrap();
+        fs::write(
+            dir.path()
+                .join(image_archive_filename(ImageSpecRef::parse(image_name))),
+            archive_bytes,
+        )
+        .unwrap();
+        let extract_dir = dir
+            .path()
+            .join(image_extract_dir_name(ImageSpecRef::parse(image_name)));
+        fs::create_dir_all(&extract_dir).unwrap();
+        fs::write(extract_dir.join(EXTRACTED_SHA256_FILENAME), &sha256).unwrap();
+        fs::write(extract_dir.join("sentinel"), b"keep").unwrap();
+
+        let storage = Storage::new(dir.path().to_path_buf()).unwrap();
+        let extracted = storage
+            .pull_image(ImageSpecRef::parse(image_name), None, true)
+            .await
+            .unwrap();
+
+        assert_eq!(extracted, extract_dir);
+        assert_eq!(fs::read(extract_dir.join("sentinel")).unwrap(), b"keep");
     }
 
     #[test]
