@@ -123,6 +123,10 @@ pub fn sys_openat(
     let path = vm_load_string(path)?;
     debug!("sys_openat <= {dirfd} {path:?} {flags:#o} {mode:#o}");
 
+    if path.is_empty() {
+        return Err(AxError::NotFound);
+    }
+
     let mode = mode & !current().as_thread().proc_data.umask();
 
     let options = flags_to_options(flags, mode, (sys_geteuid()? as _, sys_getegid()? as _));

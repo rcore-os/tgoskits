@@ -61,7 +61,7 @@ impl WaitPid {
 }
 
 pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isize> {
-    let options = WaitOptions::from_bits_truncate(options);
+    let options = WaitOptions::from_bits(options).ok_or(AxError::InvalidInput)?;
     info!("sys_waitpid <= pid: {pid:?}, options: {options:?}");
 
     let curr = current();
