@@ -24,6 +24,13 @@ pub const LINUX_AARCH64_GENERATED_VMCONFIG: &str =
 pub const NIMBOS_X86_64_IMAGE_SPEC: &str = "qemu_x86_64_nimbos";
 pub const NIMBOS_X86_64_VMCONFIG: &str = "os/axvisor/configs/vms/nimbos-x86_64-qemu-smp1.toml";
 pub const AXVISOR_ROOTFS_IMAGE: &str = "os/axvisor/tmp/rootfs.img";
+const RDK_S100_LINUX_GROUP_NAME: &str = "rdk-s100-linux";
+const RDK_S100_LINUX_VMCONFIG_TEMPLATE: &str =
+    "os/axvisor/configs/vms/linux-aarch64-s100-smp1.toml";
+const RDK_S100_LINUX_GENERATED_VMCONFIG: &str =
+    "os/axvisor/tmp/vmconfigs/linux-aarch64-s100-ci.generated.toml";
+const RDK_S100_LINUX_IMAGE_SPEC: &str = "rdk-s100p_linux";
+const RDK_S100_LINUX_KERNEL_IN_IMAGE: &str = "rdk-s100p";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedLinuxGuestAssets {
@@ -113,30 +120,21 @@ pub(crate) async fn prepare_board_test_vmconfigs(
     ctx: &AxvisorContext,
     group: &AxvisorBoardTestGroup,
 ) -> anyhow::Result<Vec<PathBuf>> {
-    let Some(memory_guest) = group.memory_guest else {
+    if group.name != RDK_S100_LINUX_GROUP_NAME {
         return Ok(group.vmconfigs.iter().map(PathBuf::from).collect());
-    };
+    }
 
-    let image_dir = pull_guest_image(ctx, memory_guest.image_spec).await?;
-    let kernel_path = image_dir.join(memory_guest.kernel_path_in_image);
+    let image_dir = pull_guest_image(ctx, RDK_S100_LINUX_IMAGE_SPEC).await?;
+    let kernel_path = image_dir.join(RDK_S100_LINUX_KERNEL_IN_IMAGE);
     ensure_guest_kernel_exists(&kernel_path, group.name)?;
 
-    let dtb_path = match memory_guest.dtb_path_in_image {
-        Some(path) => {
-            let resolved = image_dir.join(path);
-            ensure_guest_dtb_exists(&resolved, group.name)?;
-            Some(resolved)
-        }
-        None => None,
-    };
-
     let workspace_root = ctx.workspace_root();
-    let generated_vmconfig = workspace_root.join(memory_guest.generated_vmconfig);
+    let generated_vmconfig = workspace_root.join(RDK_S100_LINUX_GENERATED_VMCONFIG);
     generate_vmconfig_with_guest_assets(
-        &workspace_root.join(memory_guest.template_vmconfig),
+        &workspace_root.join(RDK_S100_LINUX_VMCONFIG_TEMPLATE),
         &generated_vmconfig,
         &kernel_path,
-        dtb_path.as_deref(),
+        None,
         None,
         None,
     )?;
@@ -245,14 +243,6 @@ fn ensure_guest_rootfs_exists(rootfs_path: &Path, guest_name: &str) -> anyhow::R
         Ok(())
     } else {
         anyhow::bail!("{guest_name} rootfs not found at {}", rootfs_path.display());
-    }
-}
-
-fn ensure_guest_dtb_exists(dtb_path: &Path, guest_name: &str) -> anyhow::Result<()> {
-    if dtb_path.exists() {
-        Ok(())
-    } else {
-        anyhow::bail!("{guest_name} dtb not found at {}", dtb_path.display());
     }
 }
 

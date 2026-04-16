@@ -57,16 +57,6 @@ pub(crate) struct AxvisorBoardTestGroup {
     pub(crate) build_config: &'static str,
     pub(crate) vmconfigs: &'static [&'static str],
     pub(crate) board_test_config: &'static str,
-    pub(crate) memory_guest: Option<AxvisorBoardTestMemoryGuest>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct AxvisorBoardTestMemoryGuest {
-    pub(crate) template_vmconfig: &'static str,
-    pub(crate) generated_vmconfig: &'static str,
-    pub(crate) image_spec: &'static str,
-    pub(crate) kernel_path_in_image: &'static str,
-    pub(crate) dtb_path_in_image: Option<&'static str>,
 }
 
 const AXVISOR_UBOOT_BOARD_CONFIGS: &[AxvisorUbootBoardConfig] = &[
@@ -97,13 +87,6 @@ const ORANGEPI_5_PLUS_LINUX_VMCONFIGS: &[&str] =
 const ROC_RK3568_PC_LINUX_VMCONFIGS: &[&str] =
     &["os/axvisor/configs/vms/linux-aarch64-rk3568-smp1.toml"];
 const RDK_S100_LINUX_VMCONFIGS: &[&str] = &["os/axvisor/configs/vms/linux-aarch64-s100-smp1.toml"];
-const RDK_S100_LINUX_MEMORY_GUEST: AxvisorBoardTestMemoryGuest = AxvisorBoardTestMemoryGuest {
-    template_vmconfig: "os/axvisor/configs/vms/linux-aarch64-s100-smp1.toml",
-    generated_vmconfig: "os/axvisor/tmp/vmconfigs/linux-aarch64-s100-ci.generated.toml",
-    image_spec: "rdk-s100p_linux",
-    kernel_path_in_image: "rdk-s100p",
-    dtb_path_in_image: None,
-};
 
 const AXVISOR_BOARD_TEST_GROUPS: &[AxvisorBoardTestGroup] = &[
     AxvisorBoardTestGroup {
@@ -111,28 +94,24 @@ const AXVISOR_BOARD_TEST_GROUPS: &[AxvisorBoardTestGroup] = &[
         build_config: "os/axvisor/configs/board/phytiumpi.toml",
         vmconfigs: PHYTIUMPI_LINUX_VMCONFIGS,
         board_test_config: "os/axvisor/configs/board-test/phytiumpi-linux.toml",
-        memory_guest: None,
     },
     AxvisorBoardTestGroup {
         name: "orangepi-5-plus-linux",
         build_config: "os/axvisor/configs/board/orangepi-5-plus.toml",
         vmconfigs: ORANGEPI_5_PLUS_LINUX_VMCONFIGS,
         board_test_config: "os/axvisor/configs/board-test/orangepi-5-plus-linux.toml",
-        memory_guest: None,
     },
     AxvisorBoardTestGroup {
         name: "roc-rk3568-pc-linux",
         build_config: "os/axvisor/configs/board/roc-rk3568-pc.toml",
         vmconfigs: ROC_RK3568_PC_LINUX_VMCONFIGS,
         board_test_config: "os/axvisor/configs/board-test/roc-rk3568-pc-linux.toml",
-        memory_guest: None,
     },
     AxvisorBoardTestGroup {
         name: "rdk-s100-linux",
         build_config: "os/axvisor/configs/board/rdk-s100.toml",
         vmconfigs: RDK_S100_LINUX_VMCONFIGS,
         board_test_config: "os/axvisor/configs/board-test/rdk-s100-linux.toml",
-        memory_guest: Some(RDK_S100_LINUX_MEMORY_GUEST),
     },
 ];
 
