@@ -120,11 +120,13 @@ pub fn sys_mmap(
     ) {
         return Err(AxError::InvalidInput);
     }
-    if map_flags.contains(MmapFlags::ANONYMOUS) != (fd <= 0) {
-        return Err(AxError::InvalidInput);
-    }
-    if fd <= 0 && offset != 0 {
-        return Err(AxError::InvalidInput);
+    if map_flags.contains(MmapFlags::ANONYMOUS) {
+        if offset != 0 {
+            return Err(AxError::InvalidInput);
+        }
+    } else if fd < 0 {
+        // Non-anonymous mapping requires a valid file descriptor.
+        return Err(AxError::BadFileDescriptor);
     }
     let offset: usize = offset.try_into().map_err(|_| AxError::InvalidInput)?;
     if !PageSize::Size4K.is_aligned(offset) {

@@ -130,9 +130,21 @@ pub fn sys_openat(
     let mode = mode & !current().as_thread().proc_data.umask();
 
     let options = flags_to_options(flags, mode, (sys_geteuid()? as _, sys_getegid()? as _));
-    with_fs(dirfd, |fs| options.open(fs, path))
-        .and_then(|it| add_to_fd(it, flags as _))
-        .map(|fd| fd as isize)
+    let uflags = flags as u32;
+    let access = uflags & 0b11;
+    let result = with_fs(dirfd, |fs| options.open(fs, path)).map_err(|e| {
+        // O_DIRECTORY on a non-directory should report ENOTDIR, not EISDIR.
+        if uflags & O_DIRECTORY != 0 && e == AxError::IsADirectory {
+            AxError::NotADirectory
+        } else {
+            e
+        }
+    })?;
+    // Reject write modes when the target is a directory.
+    if matches!(result, OpenResult::Dir(_)) && (access == O_WRONLY || access == O_RDWR) {
+        return Err(AxError::IsADirectory);
+    }
+    add_to_fd(result, flags as _).map(|fd| fd as isize)
 }
 
 /// Open a file by `filename` and insert it into the file descriptor table.
