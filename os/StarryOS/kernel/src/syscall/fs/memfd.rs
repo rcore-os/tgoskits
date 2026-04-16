@@ -25,7 +25,9 @@ pub fn sys_memfd_create(_name: UserConstPtr<c_char>, flags: u32) -> AxResult<isi
                 .open(&fs, &name)?
                 .into_file()?;
             let cloexec = flags & MFD_CLOEXEC != 0;
-            return File::new(file, O_RDWR).add_to_fd_table(cloexec).map(|fd| fd as _);
+            return File::new(file, O_RDWR)
+                .add_to_fd_table(cloexec)
+                .map(|fd| fd as _);
         }
     }
     Err(AxError::TooManyOpenFiles)
