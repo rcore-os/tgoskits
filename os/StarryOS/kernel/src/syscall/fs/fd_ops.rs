@@ -240,8 +240,18 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
     debug!("sys_fcntl <= fd: {fd} cmd: {cmd} arg: {arg}");
 
     match cmd as u32 {
-        F_DUPFD => dup_fd(fd, false),
-        F_DUPFD_CLOEXEC => dup_fd(fd, true),
+        F_DUPFD => {
+            if (arg as i32) < 0 {
+                return Err(AxError::InvalidInput);
+            }
+            dup_fd(fd, false)
+        }
+        F_DUPFD_CLOEXEC => {
+            if (arg as i32) < 0 {
+                return Err(AxError::InvalidInput);
+            }
+            dup_fd(fd, true)
+        }
         F_SETLK | F_SETLKW => Ok(0),
         F_OFD_SETLK | F_OFD_SETLKW => Ok(0),
         F_GETLK | F_OFD_GETLK => {
@@ -299,8 +309,8 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
             Ok(0)
         }
         _ => {
-            warn!("unsupported fcntl parameters: cmd: {cmd}");
-            Ok(0)
+            warn!("unsupported fcntl cmd: {cmd}");
+            Err(AxError::InvalidInput)
         }
     }
 }
