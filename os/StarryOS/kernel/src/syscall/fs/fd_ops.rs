@@ -208,6 +208,30 @@ fn dup_fd(old_fd: c_int, cloexec: bool) -> AxResult<isize> {
     Ok(new_fd as _)
 }
 
+/// Duplicate `old_fd` to the first available descriptor >= `minfd` (F_DUPFD/F_DUPFD_CLOEXEC).
+fn dup_fd_with_minfd(old_fd: c_int, minfd: usize, cloexec: bool) -> AxResult<isize> {
+    use crate::{file::FileDescriptor, task::AX_FILE_LIMIT};
+    use linux_raw_sys::general::RLIMIT_NOFILE;
+    let f = get_file_like(old_fd)?;
+    let max_nofile = current().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current;
+    let mut table = FD_TABLE.write();
+    if table.count() as u64 >= max_nofile {
+        return Err(AxError::TooManyOpenFiles);
+    }
+    let mut fd = minfd;
+    while fd < AX_FILE_LIMIT && table.is_assigned(fd) {
+        fd += 1;
+    }
+    if fd >= AX_FILE_LIMIT {
+        return Err(AxError::TooManyOpenFiles);
+    }
+    let entry = FileDescriptor { inner: f, cloexec };
+    table
+        .add_at(fd, entry)
+        .map_err(|_| AxError::TooManyOpenFiles)?;
+    Ok(fd as isize)
+}
+
 pub fn sys_dup(old_fd: c_int) -> AxResult<isize> {
     debug!("sys_dup <= {old_fd}");
     dup_fd(old_fd, false)
@@ -260,13 +284,13 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
             if (arg as i32) < 0 {
                 return Err(AxError::InvalidInput);
             }
-            dup_fd(fd, false)
+            dup_fd_with_minfd(fd, arg as usize, false)
         }
         F_DUPFD_CLOEXEC => {
             if (arg as i32) < 0 {
                 return Err(AxError::InvalidInput);
             }
-            dup_fd(fd, true)
+            dup_fd_with_minfd(fd, arg as usize, true)
         }
         F_SETLK | F_SETLKW => Ok(0),
         F_OFD_SETLK | F_OFD_SETLKW => Ok(0),
