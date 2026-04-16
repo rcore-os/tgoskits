@@ -45,7 +45,7 @@ dependencies = [
 
 [[package]]
 name = "aarch64_sysreg"
-version = "0.3.5"
+version = "0.3.6"
 
 [[package]]
 name = "acpi"
@@ -399,7 +399,7 @@ dependencies = [
 
 [[package]]
 name = "arm_vcpu"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "ax-errno",
@@ -415,7 +415,7 @@ dependencies = [
 
 [[package]]
 name = "arm_vgic"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64_sysreg",
@@ -516,7 +516,7 @@ dependencies = [
 
 [[package]]
 name = "ax-alloc"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-allocator",
  "ax-errno",
@@ -532,7 +532,7 @@ dependencies = [
 
 [[package]]
 name = "ax-allocator"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "ax-allocator",
  "ax-errno",
@@ -547,7 +547,7 @@ dependencies = [
 
 [[package]]
 name = "ax-api"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -570,28 +570,28 @@ dependencies = [
 
 [[package]]
 name = "ax-arm-pl011"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "tock-registers 0.8.1",
 ]
 
 [[package]]
 name = "ax-arm-pl031"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "chrono",
 ]
 
 [[package]]
 name = "ax-cap-access"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "bitflags 2.11.1",
 ]
 
 [[package]]
 name = "ax-config"
-version = "0.5.5"
+version = "0.5.9"
 dependencies = [
  "ax-config-macros",
  "const-str",
@@ -599,7 +599,7 @@ dependencies = [
 
 [[package]]
 name = "ax-config-gen"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "clap",
  "toml_edit 0.22.27",
@@ -607,7 +607,7 @@ dependencies = [
 
 [[package]]
 name = "ax-config-macros"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "ax-config-gen",
  "proc-macro2",
@@ -617,7 +617,7 @@ dependencies = [
 
 [[package]]
 name = "ax-cpu"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "ax-lazyinit",
@@ -637,14 +637,14 @@ dependencies = [
 
 [[package]]
 name = "ax-cpumask"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "bitmaps",
 ]
 
 [[package]]
 name = "ax-crate-interface"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -653,14 +653,14 @@ dependencies = [
 
 [[package]]
 name = "ax-ctor-bare"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "ax-ctor-bare-macros",
 ]
 
 [[package]]
 name = "ax-ctor-bare-macros"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -669,7 +669,7 @@ dependencies = [
 
 [[package]]
 name = "ax-display"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-driver",
  "ax-lazyinit",
@@ -679,7 +679,7 @@ dependencies = [
 
 [[package]]
 name = "ax-dma"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-alloc",
  "ax-allocator",
@@ -694,7 +694,7 @@ dependencies = [
 
 [[package]]
 name = "ax-driver"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -718,11 +718,11 @@ dependencies = [
 
 [[package]]
 name = "ax-driver-base"
-version = "0.3.9"
+version = "0.3.10"
 
 [[package]]
 name = "ax-driver-block"
-version = "0.3.9"
+version = "0.3.10"
 dependencies = [
  "ax-driver-base",
  "bcm2835-sdhci",
@@ -734,14 +734,14 @@ dependencies = [
 
 [[package]]
 name = "ax-driver-display"
-version = "0.3.9"
+version = "0.3.10"
 dependencies = [
  "ax-driver-base",
 ]
 
 [[package]]
 name = "ax-driver-input"
-version = "0.3.9"
+version = "0.3.10"
 dependencies = [
  "ax-driver-base",
  "strum 0.27.2",
@@ -749,7 +749,7 @@ dependencies = [
 
 [[package]]
 name = "ax-driver-net"
-version = "0.3.9"
+version = "0.3.10"
 dependencies = [
  "ax-driver-base",
  "fxmac_rs",
@@ -760,14 +760,14 @@ dependencies = [
 
 [[package]]
 name = "ax-driver-pci"
-version = "0.3.9"
+version = "0.3.10"
 dependencies = [
  "virtio-drivers",
 ]
 
 [[package]]
 name = "ax-driver-virtio"
-version = "0.3.9"
+version = "0.3.10"
 dependencies = [
  "ax-driver-base",
  "ax-driver-block",
@@ -781,7 +781,7 @@ dependencies = [
 
 [[package]]
 name = "ax-driver-vsock"
-version = "0.3.9"
+version = "0.3.10"
 dependencies = [
  "ax-driver-base",
  "log",
@@ -789,7 +789,7 @@ dependencies = [
 
 [[package]]
 name = "ax-errno"
-version = "0.4.6"
+version = "0.4.7"
 dependencies = [
  "log",
  "strum 0.27.2",
@@ -797,7 +797,7 @@ dependencies = [
 
 [[package]]
 name = "ax-feat"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -819,7 +819,7 @@ dependencies = [
 
 [[package]]
 name = "ax-fs"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-cap-access",
  "ax-driver",
@@ -838,7 +838,7 @@ dependencies = [
 
 [[package]]
 name = "ax-fs-devfs"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "ax-fs-vfs",
  "log",
@@ -847,7 +847,7 @@ dependencies = [
 
 [[package]]
 name = "ax-fs-ng"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-alloc",
  "ax-driver",
@@ -873,7 +873,7 @@ dependencies = [
 
 [[package]]
 name = "ax-fs-ramfs"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "ax-fs-vfs",
  "log",
@@ -882,7 +882,7 @@ dependencies = [
 
 [[package]]
 name = "ax-fs-vfs"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "ax-errno",
  "bitflags 2.11.1",
@@ -891,7 +891,7 @@ dependencies = [
 
 [[package]]
 name = "ax-hal"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -915,7 +915,7 @@ dependencies = [
 
 [[package]]
 name = "ax-handler-table"
-version = "0.3.5"
+version = "0.3.6"
 
 [[package]]
 name = "ax-helloworld"
@@ -955,7 +955,7 @@ dependencies = [
 
 [[package]]
 name = "ax-input"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-driver",
  "ax-lazyinit",
@@ -965,11 +965,11 @@ dependencies = [
 
 [[package]]
 name = "ax-int-ratio"
-version = "0.3.5"
+version = "0.3.6"
 
 [[package]]
 name = "ax-io"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "autocfg",
  "ax-errno",
@@ -979,7 +979,7 @@ dependencies = [
 
 [[package]]
 name = "ax-ipi"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-config",
  "ax-hal",
@@ -991,7 +991,7 @@ dependencies = [
 
 [[package]]
 name = "ax-kernel-guard"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "ax-crate-interface",
  "cfg-if",
@@ -999,7 +999,7 @@ dependencies = [
 
 [[package]]
 name = "ax-kspin"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "ax-kernel-guard",
  "ax-percpu",
@@ -1008,11 +1008,11 @@ dependencies = [
 
 [[package]]
 name = "ax-lazyinit"
-version = "0.4.5"
+version = "0.4.6"
 
 [[package]]
 name = "ax-libc"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-errno",
  "ax-feat",
@@ -1023,11 +1023,11 @@ dependencies = [
 
 [[package]]
 name = "ax-linked-list-r4l"
-version = "0.5.3"
+version = "0.5.4"
 
 [[package]]
 name = "ax-log"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-crate-interface",
  "ax-kspin",
@@ -1039,11 +1039,11 @@ dependencies = [
 
 [[package]]
 name = "ax-memory-addr"
-version = "0.6.5"
+version = "0.6.6"
 
 [[package]]
 name = "ax-memory-set"
-version = "0.6.5"
+version = "0.6.6"
 dependencies = [
  "ax-errno",
  "ax-memory-addr",
@@ -1051,7 +1051,7 @@ dependencies = [
 
 [[package]]
 name = "ax-mm"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-alloc",
  "ax-errno",
@@ -1066,7 +1066,7 @@ dependencies = [
 
 [[package]]
 name = "ax-net"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-driver",
  "ax-errno",
@@ -1083,7 +1083,7 @@ dependencies = [
 
 [[package]]
 name = "ax-net-ng"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -1111,7 +1111,7 @@ dependencies = [
 
 [[package]]
 name = "ax-page-table-entry"
-version = "0.8.5"
+version = "0.8.6"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "ax-memory-addr",
@@ -1121,7 +1121,7 @@ dependencies = [
 
 [[package]]
 name = "ax-page-table-multiarch"
-version = "0.8.5"
+version = "0.8.6"
 dependencies = [
  "arrayvec",
  "ax-errno",
@@ -1135,7 +1135,7 @@ dependencies = [
 
 [[package]]
 name = "ax-percpu"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "ax-kernel-guard",
  "ax-percpu-macros",
@@ -1146,7 +1146,7 @@ dependencies = [
 
 [[package]]
 name = "ax-percpu-macros"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "cfg-if",
  "proc-macro2",
@@ -1156,7 +1156,7 @@ dependencies = [
 
 [[package]]
 name = "ax-plat"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-crate-interface",
  "ax-handler-table",
@@ -1170,7 +1170,7 @@ dependencies = [
 
 [[package]]
 name = "ax-plat-aarch64-bsta1000b"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-config-macros",
  "ax-cpu",
@@ -1184,7 +1184,7 @@ dependencies = [
 
 [[package]]
 name = "ax-plat-aarch64-peripherals"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "arm-gic-driver 0.16.5",
@@ -1201,7 +1201,7 @@ dependencies = [
 
 [[package]]
 name = "ax-plat-aarch64-phytium-pi"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-config-macros",
  "ax-cpu",
@@ -1213,7 +1213,7 @@ dependencies = [
 
 [[package]]
 name = "ax-plat-aarch64-qemu-virt"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-config-macros",
  "ax-cpu",
@@ -1225,7 +1225,7 @@ dependencies = [
 
 [[package]]
 name = "ax-plat-aarch64-raspi"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "ax-config-macros",
@@ -1238,7 +1238,7 @@ dependencies = [
 
 [[package]]
 name = "ax-plat-loongarch64-qemu-virt"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-config-macros",
  "ax-cpu",
@@ -1254,7 +1254,7 @@ dependencies = [
 
 [[package]]
 name = "ax-plat-macros"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1263,7 +1263,7 @@ dependencies = [
 
 [[package]]
 name = "ax-plat-riscv64-qemu-virt"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-config-macros",
  "ax-cpu",
@@ -1280,7 +1280,7 @@ dependencies = [
 
 [[package]]
 name = "ax-plat-x86-pc"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-config-macros",
  "ax-cpu",
@@ -1303,7 +1303,7 @@ dependencies = [
 
 [[package]]
 name = "ax-posix-api"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -1326,14 +1326,14 @@ dependencies = [
 
 [[package]]
 name = "ax-riscv-plic"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "tock-registers 0.10.1",
 ]
 
 [[package]]
 name = "ax-runtime"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -1362,7 +1362,7 @@ dependencies = [
 
 [[package]]
 name = "ax-sched"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "ax-linked-list-r4l",
 ]
@@ -1376,7 +1376,7 @@ dependencies = [
 
 [[package]]
 name = "ax-std"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-api",
  "ax-errno",
@@ -1390,7 +1390,7 @@ dependencies = [
 
 [[package]]
 name = "ax-sync"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-kspin",
  "ax-sync",
@@ -1401,7 +1401,7 @@ dependencies = [
 
 [[package]]
 name = "ax-task"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-config",
  "ax-cpumask",
@@ -1426,7 +1426,7 @@ dependencies = [
 
 [[package]]
 name = "ax-timer-list"
-version = "0.3.3"
+version = "0.3.4"
 
 [[package]]
 name = "ax_slab_allocator"
@@ -1439,7 +1439,7 @@ dependencies = [
 
 [[package]]
 name = "axaddrspace"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "assert_matches",
  "ax-errno",
@@ -1461,7 +1461,7 @@ dependencies = [
 
 [[package]]
 name = "axbacktrace"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "addr2line",
  "cfg-if",
@@ -1473,7 +1473,7 @@ dependencies = [
 
 [[package]]
 name = "axbuild"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "anyhow",
  "axvmconfig",
@@ -1553,7 +1553,7 @@ dependencies = [
 
 [[package]]
 name = "axdevice"
-version = "0.4.6"
+version = "0.4.7"
 dependencies = [
  "arm_vgic",
  "ax-errno",
@@ -1570,7 +1570,7 @@ dependencies = [
 
 [[package]]
 name = "axdevice_base"
-version = "0.4.6"
+version = "0.4.7"
 dependencies = [
  "ax-errno",
  "axaddrspace",
@@ -1590,7 +1590,7 @@ dependencies = [
 
 [[package]]
 name = "axfs-ng-vfs"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "ax-errno",
  "axpoll",
@@ -1605,7 +1605,7 @@ dependencies = [
 
 [[package]]
 name = "axhvc"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "ax-errno",
 ]
@@ -1624,7 +1624,7 @@ dependencies = [
 
 [[package]]
 name = "axklib"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-errno",
  "ax-memory-addr",
@@ -1649,7 +1649,7 @@ dependencies = [
 
 [[package]]
 name = "axplat-dyn"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "anyhow",
  "ax-alloc",
@@ -1716,7 +1716,7 @@ dependencies = [
 
 [[package]]
 name = "axplat-x86-qemu-q35"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "ax-config-macros",
  "ax-cpu",
@@ -1739,7 +1739,7 @@ dependencies = [
 
 [[package]]
 name = "axpoll"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "bitflags 2.11.1",
  "futures",
@@ -1802,7 +1802,7 @@ dependencies = [
 
 [[package]]
 name = "axvcpu"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "ax-errno",
  "ax-memory-addr",
@@ -1813,7 +1813,7 @@ dependencies = [
 
 [[package]]
 name = "axvisor"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "aarch64-cpu-ext",
  "anyhow",
@@ -1867,7 +1867,7 @@ dependencies = [
 
 [[package]]
 name = "axvisor_api"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-cpumask",
  "ax-crate-interface",
@@ -1878,7 +1878,7 @@ dependencies = [
 
 [[package]]
 name = "axvisor_api_proc"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -1888,7 +1888,7 @@ dependencies = [
 
 [[package]]
 name = "axvm"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "arm_vcpu",
  "arm_vgic",
@@ -1913,7 +1913,7 @@ dependencies = [
 
 [[package]]
 name = "axvmconfig"
-version = "0.4.6"
+version = "0.4.7"
 dependencies = [
  "ax-errno",
  "clap",
@@ -2057,7 +2057,7 @@ checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
 
 [[package]]
 name = "bitmap-allocator"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "bit_field",
 ]
@@ -3753,7 +3753,7 @@ dependencies = [
 
 [[package]]
 name = "fxmac_rs"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "aarch64-cpu 10.0.0",
  "ax-crate-interface",
@@ -5958,7 +5958,7 @@ checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
 name = "range-alloc-arceos"
-version = "0.3.7"
+version = "0.3.8"
 
 [[package]]
 name = "ranges-ext"
@@ -6447,7 +6447,7 @@ checksum = "68b59d645e392e041ad18f5e529ed13242d8405c66bb192f59703ea2137017d0"
 
 [[package]]
 name = "riscv-h"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "bare-metal",
  "bit_field",
@@ -6492,7 +6492,7 @@ checksum = "d3f2ad9f15a07f4a0e1677124f9120ce7e83ab7e1ca7186af0ca9da529b62e80"
 
 [[package]]
 name = "riscv64-qemu-virt-hv"
-version = "0.5.2"
+version = "0.5.4"
 dependencies = [
  "ax-config-macros",
  "ax-cpu",
@@ -6526,7 +6526,7 @@ dependencies = [
 
 [[package]]
 name = "riscv_vcpu"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "ax-crate-interface",
  "ax-errno",
@@ -6551,7 +6551,7 @@ dependencies = [
 
 [[package]]
 name = "riscv_vplic"
-version = "0.4.6"
+version = "0.4.7"
 dependencies = [
  "ax-errno",
  "axaddrspace",
@@ -6645,7 +6645,7 @@ dependencies = [
 
 [[package]]
 name = "rsext4"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "bitflags 2.11.1",
  "lazy_static",
@@ -6931,7 +6931,7 @@ dependencies = [
 
 [[package]]
 name = "scope-local"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "ax-percpu",
  "ctor 0.6.3",
@@ -7502,7 +7502,7 @@ dependencies = [
 
 [[package]]
 name = "starry-kernel"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -7569,7 +7569,7 @@ dependencies = [
 
 [[package]]
 name = "starry-process"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "ax-kspin",
  "ax-lazyinit",
@@ -7579,7 +7579,7 @@ dependencies = [
 
 [[package]]
 name = "starry-signal"
-version = "0.5.6"
+version = "0.5.7"
 dependencies = [
  "ax-cpu",
  "ax-errno",
@@ -7612,7 +7612,7 @@ dependencies = [
 
 [[package]]
 name = "starry-vm"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "ax-errno",
  "bytemuck",
@@ -7621,7 +7621,7 @@ dependencies = [
 
 [[package]]
 name = "starryos"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "anyhow",
  "ax-feat",
@@ -7891,7 +7891,7 @@ checksum = "e5416993d37cd34e93dbb9ca8777dda4d0c6e307661c5d519fd88e2a70a1f20b"
 
 [[package]]
 name = "tg-xtask"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "anyhow",
  "axbuild",
@@ -9504,7 +9504,7 @@ dependencies = [
 
 [[package]]
 name = "x86_vcpu"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "ax-crate-interface",
  "ax-errno",
@@ -9529,7 +9529,7 @@ dependencies = [
 
 [[package]]
 name = "x86_vlapic"
-version = "0.4.6"
+version = "0.4.7"
 dependencies = [
  "ax-errno",
  "ax-memory-addr",
@@ -9689,24 +9689,24 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[patch.unused]]
 name = "ax-crate-interface-lite"
-version = "0.3.3"
+version = "0.3.4"
 
 [[patch.unused]]
 name = "define-simple-traits"
-version = "0.3.2"
+version = "0.3.3"
 
 [[patch.unused]]
 name = "define-weak-traits"
-version = "0.3.2"
+version = "0.3.3"
 
 [[patch.unused]]
 name = "impl-simple-traits"
-version = "0.3.2"
+version = "0.3.3"
 
 [[patch.unused]]
 name = "impl-weak-partial"
-version = "0.3.2"
+version = "0.3.3"
 
 [[patch.unused]]
 name = "impl-weak-traits"
-version = "0.3.2"
+version = "0.3.3"
