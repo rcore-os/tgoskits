@@ -165,34 +165,7 @@ Updated `sys_mremap()` to determine the original mapping's sharing type (shared 
 - The test program should correctly preserve shared mapping semantics after mremap
 - Private mappings should continue to work correctly
 
-## Bug #7: sys_accept4 returns local address instead of peer address
-
-- **Status**: Fixed
-- **Severity**: High
-- **File**: `kernel/src/syscall/net/socket.rs`
-
-### Description
-`sys_accept4()` called `socket.local_addr()` instead of `socket.peer_addr()` when returning the remote address to the caller. This meant `accept()` always returned the server's own socket address instead of the client's address, making it impossible for network servers to determine the client's IP and port.
-
-### Root Cause
-Wrong method call — `local_addr()` was called instead of `peer_addr()`. The variable was correctly named `remote_addr`, indicating the intent was to get the peer address.
-
-### Test Plan
-1. Create a TCP server/client pair
-2. Connect the client to the server
-3. Call `accept()` and check the returned address
-4. Verify the returned address is the client's address, not the server's address
-5. Without the fix: accept() returns the server's own address
-6. With the fix: accept() returns the client's peer address
-
-### Fix
-Changed `socket.local_addr()` to `socket.peer_addr()` in the `sys_accept4` implementation.
-
-### Verification
-- The test program should show that accept() returns the client's address
-- Network servers should now correctly identify connecting clients
-
-## Bug #8: Directory read/write returns EBADF instead of EISDIR
+## Bug #7: Directory read/write returns EBADF instead of EISDIR
 
 - **Status**: Fixed
 - **Severity**: Medium
@@ -218,7 +191,7 @@ Changed `AxError::BadFileDescriptor` to `AxError::IsADirectory` in both `Directo
 - The test program should show EISDIR for read/write on directory fds
 - `cargo fmt` and `cargo clippy` should pass
 
-## Bug #9: File::from_fd() returns EPIPE for non-File/non-Directory fds, causing lseek on pipes to return wrong errno
+## Bug #8: File::from_fd() returns EPIPE for non-File/non-Directory fds, causing lseek on pipes to return wrong errno
 
 - **Status**: Fixed
 - **Severity**: Medium
