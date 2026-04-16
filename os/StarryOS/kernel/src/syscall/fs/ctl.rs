@@ -99,6 +99,36 @@ pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize
     })
 }
 
+/// `mknodat(dirfd, path, mode, dev)`. Currently supports regular files
+/// (S_IFREG, when type bits are zero) and FIFOs (S_IFIFO).
+pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, _dev: u64) -> AxResult<isize> {
+    use linux_raw_sys::general::{S_IFIFO, S_IFMT, S_IFREG};
+
+    let path = vm_load_string(path)?;
+    debug!("sys_mknodat <= dirfd: {dirfd}, path: {path}, mode: {mode:#o}");
+
+    let umask = current().as_thread().proc_data.umask();
+    let perm = NodePermission::from_bits_truncate((mode & !umask) as u16);
+    let ty = mode & S_IFMT;
+    let node_type = match ty {
+        0 | S_IFREG => NodeType::RegularFile,
+        S_IFIFO => NodeType::Fifo,
+        _ => return Err(AxError::OperationNotSupported),
+    };
+
+    with_fs(dirfd, |fs| {
+        let (dir, name) = fs.resolve_nonexistent(Path::new(path.as_str()))?;
+        dir.create(name, node_type, perm)?;
+        Ok(0)
+    })
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn sys_mknod(path: *const c_char, mode: u32, dev: u64) -> AxResult<isize> {
+    use linux_raw_sys::general::AT_FDCWD;
+    sys_mknodat(AT_FDCWD as _, path, mode, dev)
+}
+
 // Directory buffer for getdents64 syscall
 struct DirBuffer {
     buf: Vec<u8>,

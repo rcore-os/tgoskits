@@ -79,6 +79,13 @@ pub fn metadata_to_kstat(metadata: &Metadata) -> Kstat {
     let ty = metadata.node_type as u8;
     let perm = metadata.mode.bits() as u32;
     let mode = ((ty as u32) << 12) | perm;
+    // Linux always reports a non-zero st_blksize (typically the FS preferred
+    // I/O block size). Fall back to one 4K page when the FS reports 0.
+    let blksize = if metadata.block_size == 0 {
+        4096
+    } else {
+        metadata.block_size as _
+    };
     Kstat {
         dev: metadata.device,
         ino: metadata.inode,
@@ -87,7 +94,7 @@ pub fn metadata_to_kstat(metadata: &Metadata) -> Kstat {
         uid: metadata.uid,
         gid: metadata.gid,
         size: metadata.size,
-        blksize: metadata.block_size as _,
+        blksize,
         blocks: metadata.blocks,
         rdev: metadata.rdev,
         atime: metadata.atime,

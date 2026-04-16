@@ -4,7 +4,8 @@ use ax_errno::{AxError, AxResult};
 use ax_fs::FS_CONTEXT;
 use axfs_ng_vfs::{Location, NodePermission};
 use linux_raw_sys::general::{
-    __kernel_fsid_t, AT_EMPTY_PATH, R_OK, W_OK, X_OK, stat, statfs, statx,
+    __kernel_fsid_t, AT_EMPTY_PATH, AT_NO_AUTOMOUNT, AT_SYMLINK_NOFOLLOW, R_OK, W_OK, X_OK, stat,
+    statfs, statx,
 };
 use starry_vm::{VmMutPtr, VmPtr};
 
@@ -50,6 +51,12 @@ pub fn sys_fstatat(
 
     debug!("sys_fstatat <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
+    // Reject unknown bits (Linux fstatat returns EINVAL).
+    const KNOWN: u32 = AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH | AT_NO_AUTOMOUNT;
+    if flags & !KNOWN != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
     let loc = resolve_at(dirfd, path.as_deref(), flags)?;
     statbuf.vm_write(loc.stat()?.into())?;
 
@@ -60,9 +67,14 @@ pub fn sys_statx(
     dirfd: c_int,
     path: *const c_char,
     flags: u32,
-    _mask: u32,
+    mask: u32,
     statxbuf: *mut statx,
 ) -> AxResult<isize> {
+    use linux_raw_sys::general::STATX__RESERVED;
+    // Reserved bit in the mask must be zero (Linux statx ABI).
+    if mask & STATX__RESERVED != 0 {
+        return Err(AxError::InvalidInput);
+    }
     // `statx()` uses pathname, dirfd, and flags to identify the target
     // file in one of the following ways:
 

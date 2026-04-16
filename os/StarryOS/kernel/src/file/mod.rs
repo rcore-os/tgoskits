@@ -93,8 +93,25 @@ impl From<Kstat> for stat {
 
 impl From<Kstat> for statx {
     fn from(value: Kstat) -> Self {
+        use linux_raw_sys::general::{
+            STATX_ATIME, STATX_BLOCKS, STATX_BTIME, STATX_CTIME, STATX_GID, STATX_INO, STATX_MODE,
+            STATX_MTIME, STATX_NLINK, STATX_SIZE, STATX_TYPE, STATX_UID,
+        };
         // SAFETY: valid for statx
         let mut statx: statx = unsafe { core::mem::zeroed() };
+        // Indicate which fields we have populated.
+        statx.stx_mask = STATX_TYPE
+            | STATX_MODE
+            | STATX_NLINK
+            | STATX_UID
+            | STATX_GID
+            | STATX_INO
+            | STATX_SIZE
+            | STATX_BLOCKS
+            | STATX_ATIME
+            | STATX_MTIME
+            | STATX_CTIME;
+        let _ = STATX_BTIME; // not populated
         statx.stx_blksize = value.blksize as _;
         statx.stx_attributes = value.mode as _;
         statx.stx_nlink = value.nlink as _;
