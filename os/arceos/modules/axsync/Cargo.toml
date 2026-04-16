@@ -9,6 +9,7 @@ license.workspace = true
 
 [features]
 multitask = ["ax-task/multitask"]
+lockdep = ["multitask", "ax-task/lockdep"]
 default = []
 
 [dependencies]
