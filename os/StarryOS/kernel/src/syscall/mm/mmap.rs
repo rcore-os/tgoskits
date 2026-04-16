@@ -294,6 +294,10 @@ pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> AxResult<isize> {
         return Err(AxError::InvalidInput);
     }
 
+    // Linux mprotect requires page-aligned addr (returns EINVAL otherwise).
+    if !addr.is_multiple_of(PageSize::Size4K as usize) {
+        return Err(AxError::InvalidInput);
+    }
     let curr = current();
     let mut aspace = curr.as_thread().proc_data.aspace.lock();
     let length = align_up_4k(length);

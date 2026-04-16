@@ -93,8 +93,12 @@ impl<B: MappingBackend> MemoryArea<B> {
         new_flags: B::Flags,
         page_table: &mut B::PageTable,
     ) -> MappingResult {
-        self.backend
-            .protect(self.start(), self.size(), new_flags, page_table);
+        if !self
+            .backend
+            .protect(self.start(), self.size(), new_flags, page_table)
+        {
+            return Err(MappingError::BadState);
+        }
         Ok(())
     }
 

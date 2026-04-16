@@ -252,6 +252,35 @@ impl AddrSpace {
     pub fn protect(&mut self, start: VirtAddr, size: usize, flags: MappingFlags) -> AxResult {
         self.validate_region(start, size)?;
 
+        // Reject mprotect on completely unmapped ranges (Linux ENOMEM).
+        let range = VirtAddrRange::from_start_size(start, size);
+        let r_start = range.start.as_usize();
+        let r_end = range.end.as_usize();
+        let mut any_covered = false;
+        for area in self.areas.iter() {
+            let a_start = area.start().as_usize();
+            let a_end = area.end().as_usize();
+            if a_end <= r_start || a_start >= r_end {
+                continue;
+            }
+            any_covered = true;
+            break;
+        }
+        if !any_covered {
+            ax_bail!(NoMemory, "range is not mapped");
+        }
+
+        // Pre-validate: ask each affected area's backend whether the new flags
+        // are allowed (e.g. PROT_WRITE on a read-only file mapping must fail
+        // with EACCES, not silently succeed).
+        for area in self.areas.iter() {
+            if area.end() <= range.start || area.start() >= range.end {
+                continue;
+            }
+            let mut cursor = self.pt.cursor();
+            BackendOps::on_protect(area.backend(), range, flags, &mut cursor)?;
+        }
+
         self.areas
             .protect(start, size, |_| Some(flags), &mut self.pt)?;
 
