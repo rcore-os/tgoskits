@@ -109,6 +109,9 @@ pub fn sys_truncate(path: UserConstPtr<c_char>, length: __kernel_off_t) -> AxRes
 
 pub fn sys_ftruncate(fd: c_int, length: __kernel_off_t) -> AxResult<isize> {
     debug!("sys_ftruncate <= {fd} {length}");
+    if length < 0 {
+        return Err(AxError::InvalidInput);
+    }
     let f = File::from_fd(fd)?;
     f.inner().access(FileFlags::WRITE)?.set_len(length as _)?;
     Ok(0)
@@ -176,6 +179,9 @@ pub fn sys_pwrite64(
     len: usize,
     offset: __kernel_off_t,
 ) -> AxResult<isize> {
+    if offset < 0 {
+        return Err(AxError::InvalidInput);
+    }
     if len == 0 {
         return Ok(0);
     }

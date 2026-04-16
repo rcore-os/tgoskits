@@ -101,7 +101,11 @@ pub fn sys_getrandom(buf: *mut u8, len: usize, flags: u32) -> AxResult<isize> {
     if len == 0 {
         return Ok(0);
     }
-    let flags = GetRandomFlags::from_bits_retain(flags);
+    let flags = GetRandomFlags::from_bits(flags).ok_or(AxError::InvalidInput)?;
+    // GRND_INSECURE and GRND_RANDOM are mutually exclusive (Linux man getrandom(2)).
+    if flags.contains(GetRandomFlags::INSECURE | GetRandomFlags::RANDOM) {
+        return Err(AxError::InvalidInput);
+    }
 
     debug!("sys_getrandom <= buf: {buf:p}, len: {len}, flags: {flags:?}");
 
