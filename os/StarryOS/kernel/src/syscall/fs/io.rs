@@ -355,7 +355,7 @@ pub fn sys_copy_file_range(
     fd_out: c_int,
     off_out: *mut u64,
     len: usize,
-    _flags: u32,
+    flags: u32,
 ) -> AxResult<isize> {
     debug!(
         "sys_copy_file_range <= fd_in: {}, off_in: {}, fd_out: {}, off_out: {}, len: {}, flags: {}",
@@ -364,21 +364,47 @@ pub fn sys_copy_file_range(
         fd_out,
         !off_out.is_null(),
         len,
-        _flags
+        flags
     );
 
-    // TODO: check flags
-    // TODO: check both regular files
-    // TODO: check same file and overlap
+    // Linux reserves all flags; non-zero is invalid (Linux man copy_file_range(2)).
+    if flags != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
+    // Both fds must refer to regular files (reject pipes/sockets/dirs).
+    let src_file = File::from_fd(fd_in).map_err(|_| AxError::InvalidInput)?;
+    let dst_file = File::from_fd(fd_out).map_err(|_| AxError::InvalidInput)?;
+
+    // Same-file overlap: forbidden when the source and destination ranges
+    // within the same file overlap.
+    if Arc::ptr_eq(&src_file, &dst_file) {
+        // Determine effective source and destination start offsets.
+        let src_start = if !off_in.is_null() {
+            unsafe { off_in.vm_read_uninit()?.assume_init() }
+        } else {
+            0
+        };
+        let dst_start = if !off_out.is_null() {
+            unsafe { off_out.vm_read_uninit()?.assume_init() }
+        } else {
+            0
+        };
+        let end = |start: u64| start.saturating_add(len as u64);
+        let overlap = src_start < end(dst_start) && dst_start < end(src_start);
+        if overlap {
+            return Err(AxError::InvalidInput);
+        }
+    }
 
     let src = if !off_in.is_null() {
-        SendFile::Offset(File::from_fd(fd_in)?, off_in)
+        SendFile::Offset(src_file, off_in)
     } else {
         SendFile::Direct(get_file_like(fd_in)?)
     };
 
     let dst = if !off_out.is_null() {
-        SendFile::Offset(File::from_fd(fd_out)?, off_out)
+        SendFile::Offset(dst_file, off_out)
     } else {
         SendFile::Direct(get_file_like(fd_out)?)
     };

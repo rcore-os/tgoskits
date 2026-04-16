@@ -40,11 +40,13 @@ pub fn sys_setgid(_gid: u32) -> AxResult<isize> {
 
 pub fn sys_getgroups(size: usize, list: *mut u32) -> AxResult<isize> {
     debug!("sys_getgroups <= size: {size}");
-    if size < 1 {
+    // We do not yet track per-process supplementary groups; report empty.
+    // size == 0 is a query: return the count without writing to the buffer.
+    let count: isize = 0;
+    if size != 0 && (size as isize) < count {
         return Err(AxError::InvalidInput);
     }
-    vm_write_slice(list, &[0])?;
-    Ok(1)
+    Ok(count)
 }
 
 pub fn sys_setgroups(_size: usize, _list: *const u32) -> AxResult<isize> {
