@@ -16,4 +16,4 @@ categories = ["os", "no-std", "filesystem"]
 license = "Apache-2.0"
 
 [workspace.dependencies]
-ax-fs-vfs = { path = "axfs_vfs", version = "0.3.5" }
+ax-fs-vfs = { path = "axfs_vfs", version = "0.3" }

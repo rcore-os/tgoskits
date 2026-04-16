@@ -12,6 +12,6 @@ documentation = "https://arceos-hypervisor.github.io/axklib"
 license = "Apache-2.0"
 
 [dependencies]
-ax-errno = "0.4.5"
-ax-memory-addr = "0.6.3"
+ax-errno = "0.4"
+ax-memory-addr = "0.6"
 trait-ffi = "0.2"

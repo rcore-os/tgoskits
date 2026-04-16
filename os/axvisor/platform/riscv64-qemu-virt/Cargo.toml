@@ -16,19 +16,19 @@ rtc = ["riscv_goldfish"]
 smp = ["ax-plat/smp"]
 
 [dependencies]
-ax-kspin = "0.3.3"
-ax-lazyinit = "0.4.4"
+ax-kspin = "0.3"
+ax-lazyinit = "0.4"
 log = "0.4"
 riscv = "0.14.0"
 riscv_goldfish = { version = "0.1", optional = true }
-ax-riscv-plic = "0.4.2"
+ax-riscv-plic = "0.4"
 sbi-rt = { version = "0.0.3", features = ["legacy"] }
 uart_16550 = "0.4.0"
 
-ax-config-macros = "0.4.3"
+ax-config-macros = "0.4"
 ax-cpu = { workspace = true }
 ax-plat = { workspace = true }
-axvisor_api = "0.5.3"
+axvisor_api = "0.5"
 ax-crate-interface = { workspace = true }
 
 [package.metadata.docs.rs]

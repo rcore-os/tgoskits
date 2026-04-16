@@ -14,7 +14,7 @@ alloc = []
 default = []
 
 [dependencies]
-ax-errno = "0.4.5"
+ax-errno = "0.4"
 heapless = "0.9"
 memchr = { version = "2", default-features = false }
 

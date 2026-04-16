@@ -9,8 +9,8 @@ repository = "https://github.com/Starry-OS/axfs-ng-vfs"
 license = "Apache-2.0"
 
 [dependencies]
-ax-errno = "0.4.5"
-axpoll = "0.3.5"
+ax-errno = "0.4"
+axpoll = "0.3"
 bitflags = "2.10"
 cfg-if = "1"
 hashbrown = "0.16"

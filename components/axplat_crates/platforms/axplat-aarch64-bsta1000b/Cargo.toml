@@ -17,11 +17,11 @@ smp = ["ax-plat/smp", "ax-kspin/smp"]
 
 [dependencies]
 log = "0.4"
-ax-kspin = "0.3.3"
-ax-page-table-entry = "0.8.3"
+ax-kspin = "0.3"
+ax-page-table-entry = "0.8"
 dw_apb_uart = "0.1"
 
-ax-config-macros = "0.4.3"
+ax-config-macros = "0.4"
 ax-plat-aarch64-peripherals = { workspace = true }
 ax-cpu = { workspace = true }
 ax-plat = { workspace = true }

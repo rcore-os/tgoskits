@@ -24,14 +24,14 @@ rtc = ["dep:x86_rtc"]
 smp = ["ax-plat/smp", "ax-kspin/smp"]
 
 [dependencies]
-ax-config-macros = "0.4.3"
+ax-config-macros = "0.4"
 ax-cpu = { workspace = true, features = ["arm-el2"] }
 ax-plat.workspace = true
 bitflags = "2.6"
 heapless = "0.9"
-ax-int-ratio = "0.3.4"
-ax-kspin = "0.3.3"
-ax-lazyinit = "0.4.4"
+ax-int-ratio = "0.3"
+ax-kspin = "0.3"
+ax-lazyinit = "0.4"
 log = "0.4"
 ax-percpu.workspace = true
 

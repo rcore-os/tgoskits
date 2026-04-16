@@ -20,21 +20,21 @@ repository = "https://github.com/Starry-OS/StarryOS"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-ax-feat = { version = "0.5.4" }
+ax-feat = { version = "0.5" }
 
-ax-alloc = { version = "0.5.4" }
-ax-config = { version = "0.5.4" }
-ax-display = { version = "0.5.4" }
-ax-driver = { version = "0.5.4" }
-ax-fs = { version = "0.5.4", package = "ax-fs-ng" }
-ax-hal = { version = "0.5.4" }
-ax-input = { version = "0.5.4" }
-ax-log = { version = "0.5.4" }
-ax-mm = { version = "0.5.4" }
-axnet = { version = "0.5.4", package = "ax-net-ng" }
-axplat-dyn = { version = "0.5.4", default-features = false }
-ax-runtime = { version = "0.5.4" }
-ax-sync = { version = "0.5.4" }
-ax-task = { version = "0.5.4" }
+ax-alloc = { version = "0.5" }
+ax-config = { version = "0.5" }
+ax-display = { version = "0.5" }
+ax-driver = { version = "0.5" }
+ax-fs = { version = "0.5", package = "ax-fs-ng" }
+ax-hal = { version = "0.5" }
+ax-input = { version = "0.5" }
+ax-log = { version = "0.5" }
+ax-mm = { version = "0.5" }
+axnet = { version = "0.5", package = "ax-net-ng" }
+axplat-dyn = { version = "0.5", default-features = false }
+ax-runtime = { version = "0.5" }
+ax-sync = { version = "0.5" }
+ax-task = { version = "0.5" }
 
-starry-kernel = { path = "kernel", version = "0.5.4" }
+starry-kernel = { path = "kernel", version = "0.5" }

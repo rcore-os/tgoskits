@@ -11,7 +11,7 @@ description = "An OS build lib toolkit used by arceos"
 
 [dependencies]
 anyhow = {workspace = true}
-axvmconfig = {version = "0.4.5", features = ["std"]}
+axvmconfig = {version = "0.4", features = ["std"]}
 cargo_metadata = "0.23"
 chrono = {version = "0.4", features = ["serde"]}
 clap = {version = "4.6", features = ["derive"], optional = true}

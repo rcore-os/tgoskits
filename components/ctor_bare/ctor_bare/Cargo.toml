@@ -11,4 +11,4 @@ readme = "README.md"
 license.workspace = true
 
 [dependencies]
-ax-ctor-bare-macros = { version = "0.4.3", path = "../ctor_bare_macros" }
+ax-ctor-bare-macros = { version = "0.4", path = "../ctor_bare_macros" }

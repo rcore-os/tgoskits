@@ -14,5 +14,5 @@ rust-version = "1.85"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-ax-memory-addr = "0.6.3"
-ax-page-table-entry = { path = "page_table_entry", version = "0.8.3" }
+ax-memory-addr = "0.6"
+ax-page-table-entry = { path = "page_table_entry", version = "0.8" }

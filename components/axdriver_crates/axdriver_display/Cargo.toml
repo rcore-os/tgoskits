@@ -11,4 +11,4 @@ readme = "README.md"
 license.workspace = true
 
 [dependencies]
-ax-driver-base = { version = "0.3.7" }
+ax-driver-base = { version = "0.3" }

@@ -47,8 +47,8 @@ repository = "https://github.com/rcore-os/tgoskits"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-ax-cpu = "0.5.2"
-ax-plat = { version = "0.5.3", path = "./axplat" }
-ax-plat-macros = { version = "0.3.2", path = "./axplat-macros" }
-ax-plat-aarch64-peripherals = { version = "0.5.3", path = "platforms/axplat-aarch64-peripherals" }
-ax-percpu = "0.4.5"
+ax-cpu = "0.5"
+ax-plat = { version = "0.5", path = "./axplat" }
+ax-plat-macros = { version = "0.3", path = "./axplat-macros" }
+ax-plat-aarch64-peripherals = { version = "0.5", path = "platforms/axplat-aarch64-peripherals" }
+ax-percpu = "0.4"

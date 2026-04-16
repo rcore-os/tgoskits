@@ -28,8 +28,8 @@ virtio-net-pci = ["net"]
 
 [dependencies]
 anyhow = { version = "1", default-features = false }
-ax-alloc = { version = "0.5.4", path = "../../os/arceos/modules/axalloc", default-features = false, features = ["buddy-slab"] }
-ax-config-macros = "0.4.3"
+ax-alloc = { version = "0.5", path = "../../os/arceos/modules/axalloc", default-features = false, features = ["buddy-slab"] }
+ax-config-macros = "0.4"
 ax-cpu.workspace = true
 ax-driver-base.workspace = true
 ax-driver-block.workspace = true

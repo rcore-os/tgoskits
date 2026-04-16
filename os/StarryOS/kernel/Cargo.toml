@@ -42,21 +42,21 @@ ax-alloc.workspace = true
 ax-config.workspace = true
 ax-display.workspace = true
 ax-driver.workspace = true
-ax-fs = { version = "0.5.4", package = "ax-fs-ng" }
+ax-fs = { version = "0.5", package = "ax-fs-ng" }
 ax-hal.workspace = true
 ax-input = { workspace = true, optional = true }
 ax-log.workspace = true
 ax-mm.workspace = true
-axnet = { version = "0.5.4", package = "ax-net-ng" }
+axnet = { version = "0.5", package = "ax-net-ng" }
 ax-runtime.workspace = true
 ax-sync.workspace = true
 ax-task.workspace = true
 
-axbacktrace = "0.3.5"
-ax-errno = "0.4.5"
-axfs-ng-vfs = "0.3.4"
-ax-io = "0.5.2"
-axpoll = "0.3.5"
+axbacktrace = "0.3"
+ax-errno = "0.4"
+axfs-ng-vfs = "0.3"
+ax-io = "0.5"
+axpoll = "0.3"
 bitflags = "2.10"
 bitmaps = { version = "3.2", default-features = false }
 bytemuck = { version = "1.23", features = ["unsound_ptr_pod_impl", "derive"] }
@@ -71,9 +71,9 @@ gimli = { version = "0.33", default-features = false, optional = true }
 hashbrown = "0.16"
 indoc = "2"
 inherit-methods-macro = "0.1.0"
-ax-kernel-guard = "0.3.5"
+ax-kernel-guard = "0.3"
 kernel-elf-parser = "0.3.4"
-ax-kspin = "0.3.3"
+ax-kspin = "0.3"
 lazy_static = { version = "1.5", features = ["spin_no_std"] }
 linux-raw-sys = { version = "0.12", default-features = false, features = [
     "no_std",
@@ -85,19 +85,19 @@ linux-raw-sys = { version = "0.12", default-features = false, features = [
     "loop_device",
 ] }
 lock_api = { version = "0.4", features = ["arc_lock"] }
-ax-memory-addr = "0.6.3"
-ax-memory-set = "0.6.3"
+ax-memory-addr = "0.6"
+ax-memory-set = "0.6"
 num_enum = { version = "0.7", default-features = false }
 ouroboros = { version = "0.18", default-features = false }
-ax-percpu = "0.4.5"
+ax-percpu = "0.4"
 rand = { version = "0.10", default-features = false, features = ["alloc"] }
 ringbuf = { version = "0.4.8", default-features = false, features = ["alloc"] }
-scope-local = "0.3.4"
+scope-local = "0.3"
 slab = { version = "0.4.9", default-features = false }
 spin = "0.10"
-starry-process = "0.4.3"
-starry-signal = "0.5.4"
-starry-vm = "0.5.3"
+starry-process = "0.4"
+starry-signal = "0.5"
+starry-vm = "0.5"
 strum = { version = "0.28", default-features = false, features = ["derive"] }
 syscalls = { version = "0.8", default-features = false }
 uluru = "3.1.0"
@@ -112,4 +112,4 @@ x86 = "0.52"
 riscv = "0.16"
 
 [target.'cfg(not(any(target_arch = "aarch64", target_arch = "loongarch64")))'.dependencies]
-ax-page-table-multiarch = { version = "0.8.3", features = ["copy-from"] }
+ax-page-table-multiarch = { version = "0.8", features = ["copy-from"] }

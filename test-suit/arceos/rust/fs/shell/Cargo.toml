@@ -12,7 +12,7 @@ use-ramfs = ["dep:ax-fs-vfs", "dep:ax-fs-ramfs", "dep:ax-crate-interface"]
 default = []
 
 [dependencies]
-ax-fs-vfs = { version = "0.3.5", optional = true }
-ax-fs-ramfs = { version = "0.3.5", optional = true }
-ax-crate-interface = { version = "0.5.2", optional = true }
+ax-fs-vfs = { version = "0.3", optional = true }
+ax-fs-ramfs = { version = "0.3", optional = true }
+ax-crate-interface = { version = "0.5", optional = true }
 ax-std = { workspace = true, features = ["alloc", "fs"], optional = true }

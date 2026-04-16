@@ -15,9 +15,9 @@ license = "Apache-2.0"
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
 
 # ArceOS and AxVisor crates.
-axaddrspace = "0.5.3"
-ax-errno = "0.4.5"
-axvmconfig = {version = "0.4.5", default-features = false}
+axaddrspace = "0.5"
+ax-errno = "0.4"
+axvmconfig = {version = "0.4", default-features = false}
 
 [dev-dependencies]
 

@@ -15,16 +15,16 @@ license = "Apache-2.0"
 default = []
 
 [dependencies]
-axaddrspace = "0.5.3"
-axdevice_base = "0.4.5"
-axvisor_api = "0.5.3"
+axaddrspace = "0.5"
+axdevice_base = "0.4"
+axvisor_api = "0.5"
 
-ax-errno = "0.4.5"
+ax-errno = "0.4"
 bitmaps = { version = "3.2", default-features = false }
 log = "0.4"
 spin = "0.10"
 
-riscv-h = "0.4.2"
+riscv-h = "0.4"
 
 [package.metadata.docs.rs]
 default-target = ["riscv64gc-unknown-none-elf"]

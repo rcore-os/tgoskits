@@ -88,6 +88,11 @@ def bump_patch(version: str) -> str:
     return f"{major}.{minor}.{patch + 1}"
 
 
+def dependency_requirement(version: str) -> str:
+    major, minor, _patch = parse_semver(version)
+    return f"{major}.{minor}"
+
+
 def is_ignored_manifest(manifest: Path) -> bool:
     relative = manifest.resolve().relative_to(REPO_ROOT)
     return any(part in IGNORED_PATH_PARTS for part in relative.parts)
@@ -526,7 +531,7 @@ def update_inline_dependency_block(
         return block_lines, False
 
     old_req = version_match.group(2)
-    new_req = package.new
+    new_req = dependency_requirement(package.new)
     if old_req == new_req:
         return block_lines, False
 
@@ -553,7 +558,7 @@ def update_string_dependency_line(
         return line, False
 
     old_req = match.group(3)
-    new_req = package.new
+    new_req = dependency_requirement(package.new)
     if old_req == new_req:
         return line, False
 

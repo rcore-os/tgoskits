@@ -16,7 +16,7 @@ ax-errno = ["dep:ax-errno"]
 copy-from = ["dep:bitmaps"]
 
 [dependencies]
-ax-errno = { version = "0.4.5", optional = true }
+ax-errno = { version = "0.4", optional = true }
 arrayvec = { version = "0.7", default-features = false }
 bitmaps = { version = "3.2", default-features = false, optional = true }
 log = "0.4"

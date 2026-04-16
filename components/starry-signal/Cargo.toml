@@ -9,19 +9,19 @@ repository = "https://github.com/Starry-OS/starry-signal"
 license = "Apache-2.0"
 
 [dependencies]
-ax-cpu = { version = "0.5.2", features = ["uspace"] }
-ax-errno = "0.4.5"
+ax-cpu = { version = "0.5", features = ["uspace"] }
+ax-errno = "0.4"
 bitflags = "2.6"
 cfg-if = "1"
 derive_more = { version = "2.0", default-features = false, features = ["full"] }
 event-listener = { version = "5.4", default-features = false }
-ax-kspin = "0.3.3"
+ax-kspin = "0.3"
 linux-raw-sys = { version = "0.12", default-features = false, features = [
     "general",
     "no_std",
 ] }
 log = "0.4"
-starry-vm = "0.5.3"
+starry-vm = "0.5"
 strum = { version = "0.27", default-features = false, features = ["derive"] }
 
 [dev-dependencies]

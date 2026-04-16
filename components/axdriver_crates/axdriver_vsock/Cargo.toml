@@ -14,5 +14,5 @@ license.workspace = true
 default = []
 
 [dependencies]
-ax-driver-base = { version = "0.3.7" }
+ax-driver-base = { version = "0.3" }
 log = "0.4"

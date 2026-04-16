@@ -10,8 +10,8 @@ keywords = ["vcpu", "hypervisor", "arceos"]
 license = "Apache-2.0"
 
 [dependencies]
-ax-errno = "0.4.5"
-ax-memory-addr = "0.6.3"
-ax-percpu = "0.4.5"
-axaddrspace = "0.5.3"
-axvisor_api = "0.5.3"
+ax-errno = "0.4"
+ax-memory-addr = "0.6"
+ax-percpu = "0.4"
+axaddrspace = "0.5"
+axvisor_api = "0.5"

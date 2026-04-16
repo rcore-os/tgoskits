@@ -22,15 +22,15 @@ default = []
 vgicv3 = []
 
 [dependencies]
-axaddrspace = "0.5.3"
-axdevice_base = "0.4.5"
-axvisor_api = "0.5.3"
+axaddrspace = "0.5"
+axdevice_base = "0.4"
+axvisor_api = "0.5"
 
 aarch64-cpu = "11.0"
-aarch64_sysreg = "0.3.4"
-ax-errno = "0.4.5"
+aarch64_sysreg = "0.3"
+ax-errno = "0.4"
 bitmaps = {version = "3.2", default-features = false}
 log = "0.4"
-ax-memory-addr = "0.6.3"
+ax-memory-addr = "0.6"
 spin = "0.10"
 tock-registers = "0.10"

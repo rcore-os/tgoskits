@@ -24,17 +24,17 @@ license.workspace = true
 [dependencies]
 # === Core Components ===
 # Procedural macro definitions
-axvisor_api_proc = { path = "axvisor_api_proc", version = "0.5.3"}
+axvisor_api_proc = { path = "axvisor_api_proc", version = "0.5"}
 
 # === Third-party Libraries ===
 # Address space abstraction
-axaddrspace = "0.5.3"
+axaddrspace = "0.5"
 # Interface definition tools
-ax-crate-interface = "0.5.2"
+ax-crate-interface = "0.5"
 # Physical/virtual address types
-ax-memory-addr = "0.6.3"
+ax-memory-addr = "0.6"
 # CPU mask
-ax-cpumask = "0.3.2"
+ax-cpumask = "0.3"
 
 
 [package.metadata.docs.rs]

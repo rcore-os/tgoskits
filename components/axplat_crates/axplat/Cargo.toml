@@ -14,13 +14,13 @@ smp = ["ax-kspin/smp"]
 irq = ["dep:ax-handler-table"]
 
 [dependencies]
-ax-memory-addr = "0.6.3"
+ax-memory-addr = "0.6"
 bitflags = "2.6"
-ax-crate-interface = "0.5.2"
-ax-handler-table = { version = "0.3.4", optional = true, path = "../../handler_table" }
+ax-crate-interface = "0.5"
+ax-handler-table = { version = "0.3", optional = true, path = "../../handler_table" }
 const-str = "1.0"
 ax-plat-macros = { workspace = true }
-ax-kspin = "0.3.3"
+ax-kspin = "0.3"
 ax-percpu.workspace = true
 
 [package.metadata.docs.rs]

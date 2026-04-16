@@ -53,6 +53,6 @@ ax-task = { workspace = true, optional = true }
 cfg-if = { workspace = true }
 chrono = { version = "0.4", default-features = false }
 ax-crate-interface = { workspace = true }
-ax-ctor-bare = "0.4.3"
+ax-ctor-bare = "0.4"
 indoc = "2"
 ax-percpu = { workspace = true, optional = true }

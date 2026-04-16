@@ -15,7 +15,7 @@ quote = "1.0"
 syn = { version = "2.0", features = ["full"] }
 
 [dev-dependencies]
-ax-crate-interface = "0.5.2"
+ax-crate-interface = "0.5"
 
 [lib]
 proc-macro = true

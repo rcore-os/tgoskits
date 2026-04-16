@@ -15,4 +15,4 @@ default = []
 
 [dependencies]
 cfg-if = "1.0"
-ax-crate-interface = "0.5.2"
+ax-crate-interface = "0.5"
