@@ -17,6 +17,7 @@ jobs:
     if: ${{ github.repository_owner == 'rcore-os' }}
     permissions:
       contents: write
+      packages: read
     steps:
       - &checkout
         name: Checkout repository
