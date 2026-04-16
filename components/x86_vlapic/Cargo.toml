@@ -1,6 +1,6 @@
 [package]
 name = "x86_vlapic"
-version = "0.4.6"
+version = "0.4.7"
 edition = "2024"
 description = "x86 Virtual Local APIC"
 authors = ["Keyang Hu <keyang.hu@qq.com>", "Mingxian Su <aarkegz@gmail.com>"]

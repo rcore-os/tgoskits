@@ -10,7 +10,7 @@ license = "Apache-2.0"
 
 [package]
 name = "axvisor_api"
-version = "0.5.5"
+version = "0.5.6"
 description = "Basic API for components of the Hypervisor on ArceOS"
 documentation = "https://docs.rs/axvisor_api"
 readme = "README.md"

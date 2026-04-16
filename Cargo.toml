@@ -1,6 +1,6 @@
 [workspace.package]
 edition = "2024"
-version = "0.5.5"
+version = "0.5.6"
 authors = ["RCore Team <yuchen@tsinghua.edu.cn>"]
 license = "Apache-2.0"
 repository = "https://github.com/rcore-os/tgoskits"

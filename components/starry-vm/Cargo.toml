@@ -1,6 +1,6 @@
 [package]
 name = "starry-vm"
-version = "0.5.5"
+version = "0.5.6"
 edition = "2024"
 authors = ["朝倉水希 <asakuramizu111@gmail.com>", "Mivik <mivikq@gmail.com>"]
 description = "Virtual memory management library for Starry OS"

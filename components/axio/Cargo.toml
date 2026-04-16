@@ -1,6 +1,6 @@
 [package]
 name = "ax-io"
-version = "0.5.3"
+version = "0.5.4"
 repository = "https://github.com/rcore-os/tgoskits"
 edition = "2024"
 authors = ["Yuekai Jia <equation618@gmail.com>"]

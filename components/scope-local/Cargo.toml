@@ -1,6 +1,6 @@
 [package]
 name = "scope-local"
-version = "0.3.5"
+version = "0.3.6"
 edition = "2024"
 description = "Scope local storage"
 authors = ["朝倉水希 <asakuramizu111@gmail.com>"]

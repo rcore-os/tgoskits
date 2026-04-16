@@ -4,7 +4,7 @@ members = ["starryos", "kernel"]
 exclude = ["arceos"]
 
 [workspace.package]
-version = "0.5.6"
+version = "0.5.7"
 edition = "2024"
 description = "A Linux-compatible OS kernel built on ArceOS unikernel"
 
