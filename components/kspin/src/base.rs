@@ -120,19 +120,17 @@ impl<G: BaseGuard, T> BaseSpinLock<G, T> {
 impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
     #[inline(always)]
     #[cfg(not(feature = "smp"))]
-    fn finish_lockdep_with_irqsave(lockdep: LockdepAcquire) {
+    fn finish_lockdep_with_irqsave(_lockdep: LockdepAcquire) {
         #[cfg(feature = "lockdep")]
         {
             let _lockdep_irq_guard = IrqSave::new();
-            lockdep.finish();
+            _lockdep.finish();
         }
-        #[cfg(not(feature = "lockdep"))]
-        let _ = lockdep;
     }
 
     #[inline(always)]
     #[cfg(feature = "smp")]
-    fn acquire_once_weak(&self, lockdep: LockdepAcquire) -> bool {
+    fn acquire_once_weak(&self, _lockdep: LockdepAcquire) -> bool {
         cfg_if::cfg_if! {
             if #[cfg(feature = "lockdep")] {
                 let _lockdep_irq_guard = IrqSave::new();
@@ -141,7 +139,7 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
                     .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
                     .is_ok();
                 if acquired {
-                    lockdep.finish();
+                    _lockdep.finish();
                 }
                 acquired
             } else {
@@ -155,7 +153,7 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
 
     #[inline(always)]
     #[cfg(feature = "smp")]
-    fn acquire_once_strong(&self, lockdep: LockdepAcquire) -> bool {
+    fn acquire_once_strong(&self, _lockdep: LockdepAcquire) -> bool {
         cfg_if::cfg_if! {
             if #[cfg(feature = "lockdep")] {
                 let _lockdep_irq_guard = IrqSave::new();
@@ -164,7 +162,7 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinLock<G, T> {
                     .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
                     .is_ok();
                 if acquired {
-                    lockdep.finish();
+                    _lockdep.finish();
                 }
                 acquired
             } else {

@@ -27,6 +27,7 @@ multitask = [
 ]
 preempt = ["irq", "ax-percpu?/preempt", "ax-kernel-guard/preempt"]
 smp = ["ax-kspin/smp"]
+lockdep = ["multitask"]
 task-ext = ["dep:extern-trait"]
 tls = ["ax-hal/tls"]
 

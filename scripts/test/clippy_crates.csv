@@ -44,6 +44,7 @@ ax-mm
 ax-riscv-plic
 ax-sched
 ax-sync
+ax-task
 ax-timer-list
 axbacktrace
 axbuild
