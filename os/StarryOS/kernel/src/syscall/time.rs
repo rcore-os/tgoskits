@@ -119,3 +119,16 @@ pub fn sys_setitimer(
     }
     Ok(0)
 }
+
+/// Schedule a SIGALRM after `seconds` seconds. Returns remaining seconds of
+/// the previous alarm (rounded up), or 0 if no alarm was scheduled.
+pub fn sys_alarm(seconds: u32) -> AxResult<isize> {
+    let new_remained = (seconds as usize).saturating_mul(1_000_000_000);
+    let old = current()
+        .as_thread()
+        .time
+        .borrow_mut()
+        .set_itimer(ITimerType::Real, 0, new_remained);
+    let prev_secs = (old.1.as_nanos() as u64).div_ceil(1_000_000_000);
+    Ok(prev_secs as isize)
+}

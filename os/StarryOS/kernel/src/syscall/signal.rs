@@ -290,6 +290,24 @@ pub fn sys_rt_sigsuspend(
     Err(AxError::Interrupted)
 }
 
+/// Sleep until any signal is delivered, then return -EINTR.
+pub fn sys_pause(uctx: &mut UserContext) -> AxResult<isize> {
+    let curr = current();
+    let thr = curr.as_thread();
+
+    uctx.set_retval(-LinuxError::EINTR.code() as usize);
+
+    block_on(poll_fn(|cx| {
+        if check_signals(thr, uctx, None) {
+            return Poll::Ready(());
+        }
+        let _ = curr.poll_interrupt(cx);
+        Poll::Pending
+    }));
+
+    Err(AxError::Interrupted)
+}
+
 pub fn sys_sigaltstack(ss: *const SignalStack, old_ss: *mut SignalStack) -> AxResult<isize> {
     let curr = current();
     let sig = &curr.as_thread().signal;

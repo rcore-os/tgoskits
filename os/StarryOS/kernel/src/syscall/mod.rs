@@ -528,6 +528,10 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::clock_getres => sys_clock_getres(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::getitimer => sys_getitimer(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::setitimer => sys_setitimer(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
+        #[cfg(target_arch = "x86_64")]
+        Sysno::alarm => sys_alarm(uctx.arg0() as _),
+        #[cfg(target_arch = "x86_64")]
+        Sysno::pause => sys_pause(uctx),
 
         // msg
         Sysno::msgget => sys_msgget(uctx.arg0() as _, uctx.arg1() as _),
