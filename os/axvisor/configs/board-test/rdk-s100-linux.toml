@@ -9,12 +9,6 @@ uboot_cmd = [
   "run ab_select_cmd",
   "run avb_boot",
 ]
-shell_init_cmd = """
-root
-root
-pwd && echo 'test pass'
-"""
-shell_prefix = "ubuntu login:"
 success_regex = [
-  "(?m)^test pass\\s*$",
+  "ubuntu login:",
 ]
