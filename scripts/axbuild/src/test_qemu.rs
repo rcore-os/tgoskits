@@ -7,6 +7,7 @@ pub(crate) const ARCEOS_TEST_PACKAGES: &[&str] = &[
     "arceos-memtest",
     "arceos-exception",
     "arceos-affinity",
+    "arceos-ipi",
     "arceos-net-echoserver",
     "arceos-net-httpclient",
     "arceos-net-httpserver",
