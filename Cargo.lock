@@ -261,6 +261,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-ipi"
+version = "0.3.0"
+dependencies = [
+ "ax-std",
+]
+
+[[package]]
 name = "arceos-irq"
 version = "0.3.1"
 dependencies = [
