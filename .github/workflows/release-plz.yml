@@ -6,24 +6,47 @@ on:
       - ver
 
 jobs:
-
-  release-plz-pr:
-    name: Release-plz PR
+  release-plz-release:
+    name: Release-plz release
     runs-on: ubuntu-latest
     if: ${{ github.repository_owner == 'rcore-os' }}
     permissions:
-      pull-requests: write
       contents: write
-    concurrency:
-      group: release-plz-${{ github.ref }}
-      cancel-in-progress: false
     steps:
-      - *checkout
-      - *install-rust
+      - &checkout
+        name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - &install-rust
+        name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
       - name: Run release-plz
         uses: release-plz/action@v0.5
         with:
-          command: release-pr
+          command: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  # release-plz-pr:
+  #   name: Release-plz PR
+  #   runs-on: ubuntu-latest
+  #   if: ${{ github.repository_owner == 'rcore-os' }}
+  #   permissions:
+  #     pull-requests: write
+  #     contents: write
+  #   concurrency:
+  #     group: release-plz-${{ github.ref }}
+  #     cancel-in-progress: false
+  #   steps:
+  #     - *checkout
+  #     - *install-rust
+  #     - name: Run release-plz
+  #       uses: release-plz/action@v0.5
+  #       with:
+  #         command: release-pr
+  #       env:
+  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  #         CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
