@@ -4,7 +4,7 @@ use core::{
     task::Context,
 };
 
-use ax_errno::{AxError, AxResult};
+use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs::{FS_CONTEXT, FileFlags, OpenOptions};
 use ax_io::{Seek, SeekFrom};
 use ax_task::current;
@@ -75,11 +75,20 @@ pub fn sys_writev(fd: i32, iov: *const IoVec, iovcnt: usize) -> AxResult<isize> 
 pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<isize> {
     debug!("sys_lseek <= {fd} {offset} {whence}");
     let pos = match whence {
-        0 => SeekFrom::Start(offset as _),
-        1 => SeekFrom::Current(offset as _),
-        2 => SeekFrom::End(offset as _),
+        0 => {
+            if offset < 0 {
+                return Err(AxError::InvalidInput);
+            }
+            SeekFrom::Start(offset as u64)
+        }
+        1 => SeekFrom::Current(offset),
+        2 => SeekFrom::End(offset),
         _ => return Err(AxError::InvalidInput),
     };
+    // Pipes are not seekable; return ESPIPE rather than EBADF/EPIPE.
+    if get_file_like(fd)?.as_any().is::<Pipe>() {
+        return Err(LinuxError::ESPIPE.into());
+    }
     let off = File::from_fd(fd)?.inner().seek(pos)?;
     Ok(off as _)
 }
