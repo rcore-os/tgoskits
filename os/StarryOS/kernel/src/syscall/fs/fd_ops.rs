@@ -6,7 +6,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_fs::{FS_CONTEXT, FileBackend, OpenOptions, OpenResult};
+use ax_fs::{FS_CONTEXT, FileBackend, FileFlags, OpenOptions, OpenResult};
 use ax_task::current;
 use axfs_ng_vfs::{DirEntry, FileNode, Location, NodePermission, NodeType, Reference};
 use bitflags::bitflags;
@@ -300,7 +300,11 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
             Ok(0)
         }
         F_SETFL => {
-            get_file_like(fd)?.set_nonblocking(arg & (O_NONBLOCK as usize) > 0)?;
+            let f = get_file_like(fd)?;
+            f.set_nonblocking(arg & (O_NONBLOCK as usize) > 0)?;
+            if let Some(file) = f.as_any().downcast_ref::<File>() {
+                file.inner().set_append(arg & (O_APPEND as usize) > 0);
+            }
             Ok(0)
         }
         F_GETFL => {
@@ -310,13 +314,27 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
             if f.nonblocking() {
                 ret |= O_NONBLOCK;
             }
-
-            let perm = NodePermission::from_bits_truncate(f.stat()?.mode as _);
-            if perm.contains(NodePermission::OWNER_WRITE) {
-                if perm.contains(NodePermission::OWNER_READ) {
+            // Reflect file access mode and O_APPEND from the underlying File.
+            if let Some(file) = f.as_any().downcast_ref::<File>() {
+                let flags = file.inner().flags();
+                let read = flags.contains(FileFlags::READ);
+                let write = flags.contains(FileFlags::WRITE);
+                if read && write {
                     ret |= O_RDWR;
-                } else {
+                } else if write {
                     ret |= O_WRONLY;
+                } // else O_RDONLY == 0
+                if flags.contains(FileFlags::APPEND) {
+                    ret |= O_APPEND;
+                }
+            } else {
+                let perm = NodePermission::from_bits_truncate(f.stat()?.mode as _);
+                if perm.contains(NodePermission::OWNER_WRITE) {
+                    if perm.contains(NodePermission::OWNER_READ) {
+                        ret |= O_RDWR;
+                    } else {
+                        ret |= O_WRONLY;
+                    }
                 }
             }
 

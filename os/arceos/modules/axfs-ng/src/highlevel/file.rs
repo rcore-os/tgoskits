@@ -3,7 +3,6 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-#[cfg(feature = "times")]
 use core::sync::atomic::{AtomicU8, Ordering};
 use core::{num::NonZeroUsize, ops::Range, task::Context};
 
@@ -298,9 +297,8 @@ impl OpenOptions {
                 }
             }
             (_, true) => {
-                if self.truncate && !self.create_new {
-                    return false;
-                }
+                // O_APPEND with O_TRUNC is unusual but legal on Linux
+                // (truncate at open, then append on every write).
             }
         }
         true
@@ -802,7 +800,7 @@ impl FileBackend {
 /// Provides `std::fs::File`-like interface.
 pub struct File {
     inner: FileBackend,
-    flags: FileFlags,
+    flags: AtomicU8,
     position: Option<Mutex<u64>>,
     #[cfg(feature = "times")]
     access_flags: AtomicU8,
@@ -822,7 +820,7 @@ impl File {
         };
         Self {
             inner,
-            flags,
+            flags: AtomicU8::new(flags.bits()),
             position,
             #[cfg(feature = "times")]
             access_flags: AtomicU8::new(0),
@@ -850,7 +848,7 @@ impl File {
 
     /// Checks that the file has the required `flags` and returns the backend.
     pub fn access(&self, flags: FileFlags) -> VfsResult<&FileBackend> {
-        if self.flags.contains(flags) && !self.is_path() {
+        if self.flags().contains(flags) && !self.is_path() {
             Ok(&self.inner)
         } else {
             Err(VfsError::BadFileDescriptor)
@@ -859,12 +857,31 @@ impl File {
 
     /// Returns `true` if this is a path-only handle (no I/O permitted).
     pub fn is_path(&self) -> bool {
-        self.flags.contains(FileFlags::PATH)
+        self.flags().contains(FileFlags::PATH)
     }
 
     /// Returns the access flags this file was opened with.
     pub fn flags(&self) -> FileFlags {
-        self.flags
+        FileFlags::from_bits_truncate(self.flags.load(Ordering::Acquire))
+    }
+
+    /// Toggle [`FileFlags::APPEND`] on the open file (used by F_SETFL).
+    pub fn set_append(&self, append: bool) {
+        loop {
+            let cur = self.flags.load(Ordering::Acquire);
+            let new = if append {
+                cur | FileFlags::APPEND.bits()
+            } else {
+                cur & !FileFlags::APPEND.bits()
+            };
+            if self
+                .flags
+                .compare_exchange(cur, new, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                break;
+            }
+        }
     }
 
     /// Returns a reference to the underlying [`FileBackend`].
