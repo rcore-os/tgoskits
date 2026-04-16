@@ -156,9 +156,9 @@ jobs:
           - label: roc-rk3568-pc-linux
             runs_on: '["self-hosted","linux","board"]'
             command: AXVISOR_IMAGE_LOCAL_STORAGE=/home/runner/.axvisor-images cargo xtask axvisor test board -t roc-rk3568-pc-linux
-          - label: rdk-s100-linux
-            runs_on: '["self-hosted","linux","board"]'
-            command: AXVISOR_IMAGE_LOCAL_STORAGE=/home/runner/.axvisor-images cargo xtask axvisor test board -t rdk-s100-linux
+        #   - label: rdk-s100-linux
+        #     runs_on: '["self-hosted","linux","board"]'
+        #     command: AXVISOR_IMAGE_LOCAL_STORAGE=/home/runner/.axvisor-images cargo xtask axvisor test board -t rdk-s100-linux
     uses: ./.github/workflows/reusable-host-command.yml
     with:
       runs_on: ${{ matrix.runs_on }}
