@@ -198,16 +198,19 @@ impl OpenOptions {
         let flags = self.to_flags()?;
 
         if self.directory {
-            if flags.contains(FileFlags::WRITE) {
+            loc.check_is_dir()?;
+            if flags.contains(FileFlags::WRITE) && !self.path {
                 return Err(VfsError::IsADirectory);
             }
-            loc.check_is_dir()?;
         }
         if self.truncate {
             loc.entry().as_file()?.set_len(0)?;
         }
 
         Ok(if loc.is_dir() {
+            if flags.contains(FileFlags::WRITE) && !self.path {
+                return Err(VfsError::IsADirectory);
+            }
             OpenResult::Dir(loc)
         } else {
             // TODO(mivik): is this correct?
@@ -242,8 +245,12 @@ impl OpenOptions {
         if !self.is_valid() {
             return Err(VfsError::InvalidInput);
         }
+        let path = path.as_ref();
+        if path.as_str().is_empty() {
+            return Err(VfsError::NotFound);
+        }
 
-        let loc = match context.resolve_parent(path.as_ref()) {
+        let loc = match context.resolve_parent(path) {
             Ok((parent, name)) => {
                 let mut loc = parent.open_file(
                     &name,
