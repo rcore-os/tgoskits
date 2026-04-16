@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use ax_errno::{AxError, AxResult};
-use ax_fs::FileBackend;
+use ax_fs::{FileBackend, FileFlags};
 use ax_hal::paging::{MappingFlags, PageSize};
 use ax_memory_addr::{MemoryAddr, VirtAddr, VirtAddrRange, align_up_4k};
 use ax_task::current;
@@ -174,11 +174,33 @@ pub fn sys_mmap(
             .ok_or(AxError::NoMemory)?
     };
 
-    let file = if fd > 0 {
-        Some(File::from_fd(fd)?)
+    let file = if !map_flags.contains(MmapFlags::ANONYMOUS) {
+        // mmap on a directory should report ENODEV (Linux semantics).
+        Some(File::from_fd(fd).map_err(|e| {
+            if e == AxError::IsADirectory {
+                AxError::NoSuchDevice
+            } else {
+                e
+            }
+        })?)
     } else {
         None
     };
+
+    // Linux: file mapping requires fd to be open for reading;
+    // MAP_SHARED with PROT_WRITE additionally requires write access.
+    if let Some(ref f) = file {
+        let flags = f.inner().flags();
+        if !flags.contains(FileFlags::READ) {
+            return Err(AxError::PermissionDenied);
+        }
+        if permission_flags.contains(MmapProt::WRITE)
+            && map_type.contains(MmapFlags::SHARED)
+            && !flags.contains(FileFlags::WRITE)
+        {
+            return Err(AxError::PermissionDenied);
+        }
+    }
 
     let backend = match map_type {
         MmapFlags::SHARED | MmapFlags::SHARED_VALIDATE => {
