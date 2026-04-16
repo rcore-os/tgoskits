@@ -410,6 +410,10 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg2() as _,
             uctx.arg3() as _,
         ),
+        #[cfg(target_arch = "x86_64")]
+        Sysno::getrlimit => sys_getrlimit(uctx.arg0() as _, uctx.arg1() as _),
+        #[cfg(target_arch = "x86_64")]
+        Sysno::setrlimit => sys_setrlimit(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::capget => sys_capget(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::capset => sys_capset(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::umask => sys_umask(uctx.arg0() as _),

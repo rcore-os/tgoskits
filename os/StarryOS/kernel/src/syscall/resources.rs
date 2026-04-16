@@ -10,6 +10,16 @@ use crate::{
     time::TimeValueLike,
 };
 
+/// Equivalent to `prlimit64(0, resource, NULL, old_limit)`.
+pub fn sys_getrlimit(resource: u32, old_limit: *mut rlimit64) -> AxResult<isize> {
+    sys_prlimit64(0, resource, core::ptr::null(), old_limit)
+}
+
+/// Equivalent to `prlimit64(0, resource, new_limit, NULL)`.
+pub fn sys_setrlimit(resource: u32, new_limit: *const rlimit64) -> AxResult<isize> {
+    sys_prlimit64(0, resource, new_limit, core::ptr::null_mut())
+}
+
 pub fn sys_prlimit64(
     pid: Pid,
     resource: u32,
@@ -37,14 +47,11 @@ pub fn sys_prlimit64(
         }
 
         let limit = &mut proc_data.rlim.write()[resource];
-        if new_limit.rlim_max <= limit.max {
-            limit.max = new_limit.rlim_max;
-        } else {
-            // TODO: patch resources
-            // return Err(AxError::OperationNotPermitted);
-            return Ok(0);
+        // Unprivileged processes may only lower the hard limit.
+        if new_limit.rlim_max > limit.max {
+            return Err(AxError::OperationNotPermitted);
         }
-
+        limit.max = new_limit.rlim_max;
         limit.current = new_limit.rlim_cur;
     }
 

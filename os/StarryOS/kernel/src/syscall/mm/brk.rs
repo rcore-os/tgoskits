@@ -2,6 +2,7 @@ use ax_errno::AxResult;
 use ax_hal::paging::{MappingFlags, PageSize};
 use ax_memory_addr::{VirtAddr, align_up_4k};
 use ax_task::current;
+use linux_raw_sys::general::RLIMIT_DATA;
 
 use crate::{
     config::{USER_HEAP_BASE, USER_HEAP_SIZE, USER_HEAP_SIZE_MAX},
@@ -13,7 +14,14 @@ pub fn sys_brk(addr: usize) -> AxResult<isize> {
     let curr = current();
     let proc_data = &curr.as_thread().proc_data;
     let current_top = proc_data.get_heap_top() as usize;
-    let heap_limit = USER_HEAP_BASE + USER_HEAP_SIZE_MAX;
+    // Honor RLIMIT_DATA in addition to the compile-time heap cap.
+    let rlim_data = proc_data.rlim.read()[RLIMIT_DATA].current as usize;
+    let heap_size_cap = if rlim_data == 0 {
+        USER_HEAP_SIZE_MAX
+    } else {
+        rlim_data.min(USER_HEAP_SIZE_MAX)
+    };
+    let heap_limit = USER_HEAP_BASE + heap_size_cap;
 
     if addr == 0 {
         return Ok(current_top as isize);
