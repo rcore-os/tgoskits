@@ -430,7 +430,7 @@ ensure_rootfs_in_target_dir(workspace_root, arch, target)
 
 ### 2.14 `starry test qemu` — 测试执行流程
 
-StarryOS 的 QEMU 测试直接构建 `starryos`，并从 `test-suit/starryos/normal/<case>/qemu-<arch>.toml` 或 `test-suit/starryos/stress/<case>/qemu-<arch>.toml` 发现测例。测试会先确保共享 rootfs 已准备好，然后把 case 的 `qemu-<arch>.toml` 原样作为显式 `qemu_config` 交给 `ostool`；`${workspace}` / `${workspaceFolder}`、`shell_init_cmd`、`success_regex`、`fail_regex`、`timeout` 都由该配置文件直接决定。
+StarryOS 的 QEMU 测试直接构建 `starryos`，并从 `test-suit/starryos/normal/<case>/qemu-<arch>.toml` 或 `test-suit/starryos/stress/<case>/qemu-<arch>.toml` 发现测例。批量模式会扫描当前组下所有一级子目录，只执行存在 `qemu-<arch>.toml` 的 case；显式 `-c/--test-case` 则要求该目录和当前架构配置都存在，否则直接报错。`${workspace}` / `${workspaceFolder}`、`shell_init_cmd`、`success_regex`、`fail_regex`、`timeout` 仍全部由 case 自己的 QEMU 配置文件决定。
 
 ```
 Starry::test_qemu(args)
@@ -442,9 +442,16 @@ Starry::test_qemu(args)
   ├── ensure_rootfs_in_target_dir(...)                         ← 确保共享 rootfs 存在
   ├── load_cargo_config(request)                               ← 准备基础 Cargo 配置
   ├── for case in cases
+  │     ├── copy shared rootfs to per-case rootfs
+  │     ├── optional case `c/`
+  │     │     ├── extract staging rootfs
+  │     │     ├── optional `c/prebuild.sh`
+  │     │     ├── cmake --build
+  │     │     ├── cmake --install → overlay
+  │     │     └── inject overlay back into per-case rootfs
   │     └── app.qemu(cargo, request.build_info_path, case.qemu_config_path)
   │            └── ostool 直接读取 case qemu 配置并运行
-  └── finalize_qemu_case_run(...)                            ← 按 case 汇总结果
+  └── finalize_qemu_case_run(...)                            ← 总是打印成功/失败/耗时汇总
 ```
 
 **test qemu 特有参数**：
@@ -452,10 +459,10 @@ Starry::test_qemu(args)
 | 参数 | 说明 |
 | --- | --- |
 | `-t, --target <arch>` | 目标架构（必填） |
-| `-c, --test-case <case>` | 只运行指定测例；不传则运行该架构下全部匹配测例 |
+| `-c, --test-case <case>` | 只运行指定测例；不传则运行该架构下全部匹配测例，缺少当前架构配置的目录在批量模式下会被跳过 |
 | `--stress` | 切换到 `stress` 组；默认运行 `normal` 组 |
 
-**关键设计**：测试把运行判据完全下沉到分组测例目录，并直接透传 case `qemu-<arch>.toml` 给 `ostool`，不再由 `axbuild` 外部改写测试配置。
+**关键设计**：测试把运行判据完全下沉到分组测例目录，并直接透传 case `qemu-<arch>.toml` 给 `ostool`；如果 case 提供 `c/`，则由 `axbuild` 统一负责 `prebuild.sh`、CMake 构建、install overlay 与 rootfs 回写，而不是在 `axbuild` 内对具体 case 名做构建特判。
 
 ### 2.15 `starry test board` — 远程板测执行流程
 

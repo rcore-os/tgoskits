@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::Instant,
+};
 
 use anyhow::Context;
 use clap::{Args, Subcommand};
@@ -377,24 +380,41 @@ impl Starry {
         let cargo = build::load_cargo_config(&request)?;
 
         let total = cases.len();
-        let mut failed = Vec::new();
+        let suite_started = Instant::now();
+        let mut reports = Vec::new();
         for (index, case) in cases.iter().enumerate() {
             println!("[{}/{}] starry qemu {}", index + 1, total, case.name);
 
+            let case_started = Instant::now();
             match self
-                .run_qemu_case(&request, &cargo, &case.name, case.qemu_config_path.clone())
+                .run_qemu_case(&request, &cargo, case)
                 .await
                 .with_context(|| format!("starry qemu test failed for case `{}`", case.name))
             {
-                Ok(()) => println!("ok: {}", case.name),
+                Ok(()) => {
+                    println!("ok: {}", case.name);
+                    reports.push(test_suit::StarryQemuCaseReport {
+                        name: case.name.clone(),
+                        outcome: test_suit::StarryQemuCaseOutcome::Passed,
+                        duration: case_started.elapsed(),
+                    });
+                }
                 Err(err) => {
                     eprintln!("failed: {}: {:#}", case.name, err);
-                    failed.push(case.name.clone());
+                    reports.push(test_suit::StarryQemuCaseReport {
+                        name: case.name.clone(),
+                        outcome: test_suit::StarryQemuCaseOutcome::Failed,
+                        duration: case_started.elapsed(),
+                    });
                 }
             }
         }
 
-        test_suit::finalize_qemu_case_run(&failed, test_group)
+        test_suit::finalize_qemu_case_run(&test_suit::StarryQemuRunReport {
+            group: test_group,
+            cases: reports,
+            total_duration: suite_started.elapsed(),
+        })
     }
 
     async fn test_uboot(&mut self, _args: ArgsTestUboot) -> anyhow::Result<()> {
@@ -599,20 +619,19 @@ impl Starry {
         &mut self,
         request: &ResolvedStarryRequest,
         cargo: &Cargo,
-        case_name: &str,
-        qemu_config_path: PathBuf,
+        case: &test_suit::StarryQemuCase,
     ) -> anyhow::Result<()> {
         let mut qemu = self
             .app
             .tool_mut()
-            .read_qemu_config_from_path_for_cargo(cargo, &qemu_config_path)
+            .read_qemu_config_from_path_for_cargo(cargo, &case.qemu_config_path)
             .await?;
 
         let case_assets = rootfs::prepare_case_assets(
             self.app.workspace_root(),
             &request.arch,
             &request.target,
-            case_name,
+            case,
         )
         .await?;
         rootfs::apply_disk_image_qemu_args(&mut qemu, case_assets.rootfs_path);

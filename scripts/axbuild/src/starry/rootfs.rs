@@ -1,6 +1,7 @@
 use std::{
+    collections::BTreeMap,
     fs,
-    io::{self, Read, Write},
+    io::{Read, Write},
     net::IpAddr,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
@@ -13,6 +14,7 @@ use ostool::run::qemu::QemuConfig;
 use tokio::fs as tokio_fs;
 use xz2::read::XzDecoder;
 
+use super::test_suit::StarryQemuCase;
 use crate::{
     context::{ResolvedStarryRequest, starry_target_for_arch_checked},
     download::download_to_path_with_progress,
@@ -20,22 +22,27 @@ use crate::{
 };
 
 const ROOTFS_URL: &str = "https://github.com/Starry-OS/rootfs/releases/download/20260214";
-const USB_CASE_NAME: &str = "usb";
-const USB_GUEST_BINARY_PATH: &str = "/usr/bin/usb-transfer-test";
-const USB_GUEST_BINARY_NAME: &str = "usb-transfer-test";
-const USB_GUEST_LIBUSB_PATH: &str = "/usr/lib/libusb-1.0.so.0";
-const USB_STAGE_LIBUSB_NAME: &str = "libusb-1.0.so.0.5.0";
-const USB_WORK_DIR_NAME: &str = "starry-usb";
-const USB_STAGING_DIR_NAME: &str = "staging-root";
-const USB_BUILD_DIR_NAME: &str = "build";
-const USB_TOOLCHAIN_DIR_NAME: &str = "toolchain";
-const USB_APK_CACHE_DIR_NAME: &str = "apk-cache";
-const USB_STICK_IMAGE_NAME: &str = "usb-stick.raw";
-const USB_STICK_IMAGE_SIZE: u64 = 16 * 1024 * 1024;
+const CASE_WORK_ROOT_NAME: &str = "starry-cases";
+const CASE_STAGING_DIR_NAME: &str = "staging-root";
+const CASE_BUILD_DIR_NAME: &str = "build";
+const CASE_OVERLAY_DIR_NAME: &str = "overlay";
+const CASE_TOOLCHAIN_DIR_NAME: &str = "toolchain";
+const CASE_COMMAND_WRAPPER_DIR_NAME: &str = "guest-bin";
+const CASE_APK_CACHE_DIR_NAME: &str = "apk-cache";
+const CASE_C_DIR_NAME: &str = "c";
+const CASE_PREBUILD_SCRIPT_NAME: &str = "prebuild.sh";
+const CASE_CMAKE_FILE_NAME: &str = "CMakeLists.txt";
+const STARRY_STAGING_ROOT_VAR: &str = "STARRY_STAGING_ROOT";
+const STARRY_CASE_DIR_VAR: &str = "STARRY_CASE_DIR";
+const STARRY_CASE_C_DIR_VAR: &str = "STARRY_CASE_C_DIR";
+const STARRY_CASE_WORK_DIR_VAR: &str = "STARRY_CASE_WORK_DIR";
+const STARRY_CASE_BUILD_DIR_VAR: &str = "STARRY_CASE_BUILD_DIR";
+const STARRY_CASE_OVERLAY_DIR_VAR: &str = "STARRY_CASE_OVERLAY_DIR";
 const HOST_RESOLV_CONF_PATH: &str = "/etc/resolv.conf";
 const HOST_RESOLVED_CONF_PATH: &str = "/run/systemd/resolve/resolv.conf";
 const DEFAULT_DNS_SERVERS: &[&str] = &["1.1.1.1", "8.8.8.8"];
-const USB_APK_PACKAGES: &[&str] = &["build-base", "cmake", "pkgconf", "libusb-dev"];
+const USB_STICK_IMAGE_NAME: &str = "usb-stick.raw";
+const USB_STICK_IMAGE_SIZE: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StarryCaseAssets {
@@ -44,14 +51,32 @@ pub(crate) struct StarryCaseAssets {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct UsbCaseLayout {
+struct CaseAssetLayout {
     work_dir: PathBuf,
     staging_root: PathBuf,
     build_dir: PathBuf,
+    overlay_dir: PathBuf,
     toolchain_dir: PathBuf,
+    command_wrapper_dir: PathBuf,
     apk_cache_dir: PathBuf,
-    host_binary_path: PathBuf,
     usb_stick_path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct GuestBuildEnv {
+    cc: PathBuf,
+    ar: PathBuf,
+    ranlib: PathBuf,
+    strip: PathBuf,
+    pkg_config: PathBuf,
+    make_program: PathBuf,
+    configure_envs: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone)]
+struct GuestPrebuildEnv {
+    qemu_runner: PathBuf,
+    script_envs: Vec<(String, String)>,
 }
 
 pub(crate) fn rootfs_image_name(arch: &str) -> anyhow::Result<String> {
@@ -117,7 +142,6 @@ pub(crate) async fn prepare_per_case_rootfs(
     let base = rootfs_image_path(workspace_root, arch, target)?;
     let case_rootfs = per_case_rootfs_path(workspace_root, arch, target, case_name)?;
 
-    // Clean up old per-case copy from a previous run
     if case_rootfs.exists() {
         tokio_fs::remove_file(&case_rootfs).await.with_context(|| {
             format!(
@@ -127,7 +151,6 @@ pub(crate) async fn prepare_per_case_rootfs(
         })?;
     }
 
-    // Copy base rootfs to per-case path
     let src = base.clone();
     let dst = case_rootfs.clone();
     tokio::task::spawn_blocking(move || {
@@ -145,30 +168,39 @@ pub(crate) async fn prepare_case_assets(
     workspace_root: &Path,
     arch: &str,
     target: &str,
-    case_name: &str,
+    case: &StarryQemuCase,
 ) -> anyhow::Result<StarryCaseAssets> {
-    let case_rootfs = prepare_per_case_rootfs(workspace_root, arch, target, case_name).await?;
+    let case_rootfs = prepare_per_case_rootfs(workspace_root, arch, target, &case.name).await?;
+    let needs_assets = case_uses_c_pipeline(case) || case_uses_usb_qemu_assets(arch, case);
 
-    if uses_usb_case_assets(arch, case_name) {
-        let workspace_root = workspace_root.to_path_buf();
-        let target = target.to_string();
-        let case_rootfs_for_task = case_rootfs.clone();
-        let extra_qemu_args = tokio::task::spawn_blocking(move || {
-            prepare_usb_case_assets_sync(&workspace_root, &target, &case_rootfs_for_task)
-        })
-        .await
-        .context("usb case asset task failed")??;
-
-        Ok(StarryCaseAssets {
-            rootfs_path: case_rootfs,
-            extra_qemu_args,
-        })
-    } else {
-        Ok(StarryCaseAssets {
+    if !needs_assets {
+        return Ok(StarryCaseAssets {
             rootfs_path: case_rootfs,
             extra_qemu_args: Vec::new(),
-        })
+        });
     }
+
+    let workspace_root = workspace_root.to_path_buf();
+    let arch = arch.to_string();
+    let target = target.to_string();
+    let case_rootfs_for_task = case_rootfs.clone();
+    let case = case.clone();
+    let extra_qemu_args = tokio::task::spawn_blocking(move || {
+        prepare_case_assets_sync(
+            &workspace_root,
+            &arch,
+            &target,
+            &case,
+            &case_rootfs_for_task,
+        )
+    })
+    .await
+    .context("starry case asset task failed")??;
+
+    Ok(StarryCaseAssets {
+        rootfs_path: case_rootfs,
+        extra_qemu_args,
+    })
 }
 
 pub(crate) async fn apply_default_qemu_args(
@@ -261,27 +293,42 @@ async fn download_with_progress(url: &str, output_path: &Path) -> anyhow::Result
     download_to_path_with_progress(&client, url, output_path).await
 }
 
-fn uses_usb_case_assets(arch: &str, case_name: &str) -> bool {
-    arch == "aarch64" && case_name == USB_CASE_NAME
+fn case_uses_c_pipeline(case: &StarryQemuCase) -> bool {
+    case_c_source_dir(case).is_dir()
 }
 
-fn usb_case_layout(workspace_root: &Path, target: &str) -> anyhow::Result<UsbCaseLayout> {
+fn case_uses_usb_qemu_assets(arch: &str, case: &StarryQemuCase) -> bool {
+    let _ = arch;
+    let _ = case;
+    false
+}
+
+fn case_c_source_dir(case: &StarryQemuCase) -> PathBuf {
+    case.case_dir.join(CASE_C_DIR_NAME)
+}
+
+fn case_prebuild_script_path(case: &StarryQemuCase) -> PathBuf {
+    case_c_source_dir(case).join(CASE_PREBUILD_SCRIPT_NAME)
+}
+
+fn case_asset_layout(
+    workspace_root: &Path,
+    target: &str,
+    case_name: &str,
+) -> anyhow::Result<CaseAssetLayout> {
     let target_dir = resolve_target_dir(workspace_root, target)?;
-    let work_dir = target_dir.join(USB_WORK_DIR_NAME);
-    let build_dir = work_dir.join(USB_BUILD_DIR_NAME);
-    Ok(UsbCaseLayout {
-        staging_root: work_dir.join(USB_STAGING_DIR_NAME),
-        toolchain_dir: work_dir.join(USB_TOOLCHAIN_DIR_NAME),
-        apk_cache_dir: work_dir.join(USB_APK_CACHE_DIR_NAME),
-        host_binary_path: build_dir.join(USB_GUEST_BINARY_NAME),
+    let work_dir = target_dir.join(CASE_WORK_ROOT_NAME).join(case_name);
+
+    Ok(CaseAssetLayout {
+        staging_root: work_dir.join(CASE_STAGING_DIR_NAME),
+        build_dir: work_dir.join(CASE_BUILD_DIR_NAME),
+        overlay_dir: work_dir.join(CASE_OVERLAY_DIR_NAME),
+        toolchain_dir: work_dir.join(CASE_TOOLCHAIN_DIR_NAME),
+        command_wrapper_dir: work_dir.join(CASE_COMMAND_WRAPPER_DIR_NAME),
+        apk_cache_dir: work_dir.join(CASE_APK_CACHE_DIR_NAME),
         usb_stick_path: work_dir.join(USB_STICK_IMAGE_NAME),
         work_dir,
-        build_dir,
     })
-}
-
-fn usb_case_source_dir(workspace_root: &Path) -> PathBuf {
-    workspace_root.join("test-suit/starryos/normal/usb")
 }
 
 fn usb_qemu_args(usb_stick_path: &Path) -> Vec<String> {
@@ -298,31 +345,75 @@ fn usb_qemu_args(usb_stick_path: &Path) -> Vec<String> {
     ]
 }
 
-fn prepare_usb_case_assets_sync(
+fn prepare_case_assets_sync(
     workspace_root: &Path,
+    arch: &str,
     target: &str,
+    case: &StarryQemuCase,
     case_rootfs: &Path,
 ) -> anyhow::Result<Vec<String>> {
-    let layout = usb_case_layout(workspace_root, target)?;
+    let layout = case_asset_layout(workspace_root, target, &case.name)?;
     fs::create_dir_all(&layout.work_dir)
         .with_context(|| format!("failed to create {}", layout.work_dir.display()))?;
 
+    if case_uses_c_pipeline(case) {
+        prepare_c_case_assets_sync(arch, case, case_rootfs, &layout)?;
+    }
+
+    let mut extra_qemu_args = Vec::new();
+    if case_uses_usb_qemu_assets(arch, case) {
+        create_usb_backing_image(&layout.usb_stick_path)?;
+        extra_qemu_args.extend(usb_qemu_args(&layout.usb_stick_path));
+    }
+
+    Ok(extra_qemu_args)
+}
+
+fn prepare_c_case_assets_sync(
+    arch: &str,
+    case: &StarryQemuCase,
+    case_rootfs: &Path,
+    layout: &CaseAssetLayout,
+) -> anyhow::Result<()> {
+    let source_dir = case_c_source_dir(case);
+    let cmake_lists = source_dir.join(CASE_CMAKE_FILE_NAME);
+    ensure!(
+        cmake_lists.is_file(),
+        "missing case CMake project entry `{}`",
+        cmake_lists.display()
+    );
+
     reset_dir(&layout.staging_root)?;
     reset_dir(&layout.build_dir)?;
-    fs::create_dir_all(&layout.toolchain_dir)
-        .with_context(|| format!("failed to create {}", layout.toolchain_dir.display()))?;
+    reset_dir(&layout.overlay_dir)?;
+    reset_dir(&layout.toolchain_dir)?;
+    reset_dir(&layout.command_wrapper_dir)?;
     fs::create_dir_all(&layout.apk_cache_dir)
         .with_context(|| format!("failed to create {}", layout.apk_cache_dir.display()))?;
 
     populate_staging_root(case_rootfs, &layout.staging_root)?;
     write_host_resolver_config(&layout.staging_root)?;
-    install_usb_build_dependencies(&layout.staging_root, &layout.apk_cache_dir)?;
-    let build_env = prepare_usb_build_env(&layout)?;
-    build_usb_test_binary(workspace_root, &layout, &build_env)?;
-    inject_usb_test_assets(case_rootfs, &layout)?;
-    create_usb_backing_image(&layout.usb_stick_path)?;
+    let prebuild_env = prepare_guest_prebuild_env(arch, case, layout)?;
 
-    Ok(usb_qemu_args(&layout.usb_stick_path))
+    let prebuild_script = case_prebuild_script_path(case);
+    if prebuild_script.is_file() {
+        let mut command = build_prebuild_command(case, &prebuild_script, layout, &prebuild_env)?;
+        command.exec().context("failed to run case prebuild.sh")?;
+    }
+    let build_env = prepare_guest_build_env(layout, &prebuild_env.qemu_runner)?;
+
+    let mut configure = build_cmake_configure_command(case, layout, &build_env);
+    configure
+        .exec()
+        .context("failed to configure case C project")?;
+
+    let mut build = build_cmake_build_command(layout, &build_env);
+    build.exec().context("failed to build case C project")?;
+
+    let mut install = build_cmake_install_command(layout, &build_env);
+    install.exec().context("failed to install case C project")?;
+
+    inject_overlay_tree(case_rootfs, &layout.overlay_dir)
 }
 
 fn reset_dir(path: &Path) -> anyhow::Result<()> {
@@ -404,120 +495,73 @@ fn parse_nameserver_line(line: &str) -> Option<IpAddr> {
     }
 }
 
-fn install_usb_build_dependencies(staging_root: &Path, apk_cache_dir: &Path) -> anyhow::Result<()> {
-    let apk_bin = staging_root.join("sbin/apk");
-    let repositories_file = staging_root.join("etc/apk/repositories");
-    let keys_dir = staging_root.join("etc/apk/keys");
+fn prepare_guest_prebuild_env(
+    arch: &str,
+    case: &StarryQemuCase,
+    layout: &CaseAssetLayout,
+) -> anyhow::Result<GuestPrebuildEnv> {
+    let qemu_runner = find_host_binary(qemu_user_binary_name(arch)?)?;
+    write_guest_command_wrappers(layout, &qemu_runner)?;
 
-    let output = Command::new("qemu-aarch64-static")
-        .arg("-L")
-        .arg(staging_root)
-        .arg(&apk_bin)
-        .arg("--root")
-        .arg(staging_root)
-        .arg("--repositories-file")
-        .arg(&repositories_file)
-        .arg("--keys-dir")
-        .arg(&keys_dir)
-        .arg("--cache-dir")
-        .arg(apk_cache_dir)
-        .arg("--update-cache")
-        .arg("--timeout")
-        .arg("60")
-        .arg("--no-interactive")
-        .arg("--force-no-chroot")
-        .arg("add")
-        .args(USB_APK_PACKAGES)
-        .output()
-        .with_context(|| format!("failed to run {}", apk_bin.display()))?;
-
-    io::stdout()
-        .write_all(&output.stdout)
-        .context("failed to forward apk stdout")?;
-    io::stderr()
-        .write_all(&output.stderr)
-        .context("failed to forward apk stderr")?;
-
-    if !output.status.success() {
-        eprintln!(
-            "warning: apk exited with status {}; continuing after verifying installed artifacts",
-            output.status
-        );
-    }
-
-    let include_dir = staging_root.join("usr/include/libusb-1.0/libusb.h");
-    let pkgconfig_dir = staging_root.join("usr/lib/pkgconfig/libusb-1.0.pc");
-    ensure!(
-        include_dir.is_file() && pkgconfig_dir.is_file(),
-        "usb staging root is missing libusb development files after apk install"
-    );
-
-    Ok(())
+    Ok(GuestPrebuildEnv {
+        qemu_runner,
+        script_envs: case_script_envs(case, layout),
+    })
 }
 
-#[derive(Debug, Clone)]
-struct UsbBuildEnv {
-    cc: PathBuf,
-    ar: PathBuf,
-    ranlib: PathBuf,
-    strip: PathBuf,
-    pkg_config: PathBuf,
-    configure_envs: Vec<(String, String)>,
-}
-
-fn prepare_usb_build_env(layout: &UsbCaseLayout) -> anyhow::Result<UsbBuildEnv> {
+fn prepare_guest_build_env(
+    layout: &CaseAssetLayout,
+    qemu_runner: &Path,
+) -> anyhow::Result<GuestBuildEnv> {
     let staging_root = &layout.staging_root;
     let pkg_config = find_host_binary("pkg-config")?;
+    let make_program = find_host_binary("make")?;
+    let gcc_wrapper = layout.toolchain_dir.join("cc");
+    let ar_wrapper = layout.toolchain_dir.join("ar");
+    let ranlib_wrapper = layout.toolchain_dir.join("ranlib");
+    let strip_wrapper = layout.toolchain_dir.join("strip");
+
+    ensure_guest_tool_exists(staging_root, "usr/bin/gcc")?;
+    ensure_guest_tool_exists(staging_root, "usr/bin/ar")?;
+    ensure_guest_tool_exists(staging_root, "usr/bin/ranlib")?;
+    ensure_guest_tool_exists(staging_root, "usr/bin/strip")?;
+
+    write_guest_exec_wrapper(
+        &gcc_wrapper,
+        qemu_runner,
+        staging_root,
+        "usr/bin/gcc",
+        Some(format!("--sysroot {}", shell_single_quote(staging_root))),
+    )?;
+    write_guest_exec_wrapper(&ar_wrapper, qemu_runner, staging_root, "usr/bin/ar", None)?;
+    write_guest_exec_wrapper(
+        &ranlib_wrapper,
+        qemu_runner,
+        staging_root,
+        "usr/bin/ranlib",
+        None,
+    )?;
+    write_guest_exec_wrapper(
+        &strip_wrapper,
+        qemu_runner,
+        staging_root,
+        "usr/bin/strip",
+        None,
+    )?;
+
     let pkgconfig_libdir = format!(
         "{}:{}",
         staging_root.join("usr/lib/pkgconfig").display(),
         staging_root.join("usr/share/pkgconfig").display()
     );
 
-    let gcc_wrapper = layout.toolchain_dir.join("cc");
-    let ar_wrapper = layout.toolchain_dir.join("ar");
-    let ranlib_wrapper = layout.toolchain_dir.join("ranlib");
-    let strip_wrapper = layout.toolchain_dir.join("strip");
-
-    write_wrapper_script(
-        &gcc_wrapper,
-        &format!(
-            "export QEMU_LD_PREFIX={root}\nexec qemu-aarch64-static -L {root} {root}/usr/bin/gcc \
-             --sysroot {root} \"$@\"\n",
-            root = shell_single_quote(staging_root)
-        ),
-    )?;
-    write_wrapper_script(
-        &ar_wrapper,
-        &format!(
-            "export QEMU_LD_PREFIX={root}\nexec qemu-aarch64-static -L {root} {root}/usr/bin/ar \
-             \"$@\"\n",
-            root = shell_single_quote(staging_root)
-        ),
-    )?;
-    write_wrapper_script(
-        &ranlib_wrapper,
-        &format!(
-            "export QEMU_LD_PREFIX={root}\nexec qemu-aarch64-static -L {root} \
-             {root}/usr/bin/ranlib \"$@\"\n",
-            root = shell_single_quote(staging_root)
-        ),
-    )?;
-    write_wrapper_script(
-        &strip_wrapper,
-        &format!(
-            "export QEMU_LD_PREFIX={root}\nexec qemu-aarch64-static -L {root} \
-             {root}/usr/bin/strip \"$@\"\n",
-            root = shell_single_quote(staging_root)
-        ),
-    )?;
-
-    Ok(UsbBuildEnv {
+    Ok(GuestBuildEnv {
         cc: gcc_wrapper,
         ar: ar_wrapper,
         ranlib: ranlib_wrapper,
         strip: strip_wrapper,
         pkg_config,
+        make_program,
         configure_envs: vec![
             ("PKG_CONFIG_LIBDIR".to_string(), pkgconfig_libdir),
             (
@@ -527,6 +571,261 @@ fn prepare_usb_build_env(layout: &UsbCaseLayout) -> anyhow::Result<UsbBuildEnv> 
             ("PKG_CONFIG_PATH".to_string(), String::new()),
         ],
     })
+}
+
+fn build_prebuild_command(
+    case: &StarryQemuCase,
+    prebuild_script: &Path,
+    layout: &CaseAssetLayout,
+    prebuild_env: &GuestPrebuildEnv,
+) -> anyhow::Result<Command> {
+    let guest_busybox = layout.staging_root.join("bin/busybox");
+    let guest_shell = layout.staging_root.join("bin/sh");
+    let mut command = Command::new(&prebuild_env.qemu_runner);
+    command.arg("-L").arg(&layout.staging_root);
+    if guest_busybox.is_file() {
+        command.arg(&guest_busybox).arg("sh");
+    } else {
+        ensure!(
+            guest_shell.is_file(),
+            "staging root is missing guest shell `{}`",
+            guest_shell.display()
+        );
+        command.arg(&guest_shell);
+    }
+    command
+        .arg("-eu")
+        .arg(prebuild_script)
+        .current_dir(case_c_source_dir(case));
+    apply_case_script_envs(&mut command, layout, &prebuild_env.script_envs);
+    Ok(command)
+}
+
+fn build_cmake_configure_command(
+    case: &StarryQemuCase,
+    layout: &CaseAssetLayout,
+    build_env: &GuestBuildEnv,
+) -> Command {
+    let mut command = Command::new("cmake");
+    command
+        .arg("-S")
+        .arg(case_c_source_dir(case))
+        .arg("-B")
+        .arg(&layout.build_dir)
+        .arg("-G")
+        .arg("Unix Makefiles")
+        .arg("-DCMAKE_BUILD_TYPE=Release")
+        .arg("-DCMAKE_INSTALL_PREFIX=/")
+        .arg("-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY")
+        .arg(format!("-DCMAKE_SYSROOT={}", layout.staging_root.display()))
+        .arg(format!("-DCMAKE_C_COMPILER={}", build_env.cc.display()))
+        .arg(format!("-DCMAKE_AR={}", build_env.ar.display()))
+        .arg(format!("-DCMAKE_RANLIB={}", build_env.ranlib.display()))
+        .arg(format!("-DCMAKE_STRIP={}", build_env.strip.display()))
+        .arg(format!(
+            "-DCMAKE_MAKE_PROGRAM={}",
+            build_env.make_program.display()
+        ))
+        .arg(format!(
+            "-DPKG_CONFIG_EXECUTABLE={}",
+            build_env.pkg_config.display()
+        ))
+        .arg(format!(
+            "-D{STARRY_STAGING_ROOT_VAR}={}",
+            layout.staging_root.display()
+        ));
+
+    for (key, value) in &build_env.configure_envs {
+        command.env(key, value);
+    }
+
+    command
+}
+
+fn build_cmake_build_command(layout: &CaseAssetLayout, build_env: &GuestBuildEnv) -> Command {
+    let mut command = Command::new("cmake");
+    command
+        .arg("--build")
+        .arg(&layout.build_dir)
+        .arg("--parallel");
+
+    for (key, value) in &build_env.configure_envs {
+        command.env(key, value);
+    }
+
+    command
+}
+
+fn build_cmake_install_command(layout: &CaseAssetLayout, build_env: &GuestBuildEnv) -> Command {
+    let mut command = Command::new("cmake");
+    command.arg("--install").arg(&layout.build_dir);
+    command.env("DESTDIR", &layout.overlay_dir);
+
+    for (key, value) in &build_env.configure_envs {
+        command.env(key, value);
+    }
+
+    command
+}
+
+fn apply_case_script_envs(
+    command: &mut Command,
+    layout: &CaseAssetLayout,
+    script_envs: &[(String, String)],
+) {
+    let host_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut path_entries = Vec::new();
+    path_entries.push(layout.command_wrapper_dir.clone());
+    path_entries.extend(std::env::split_paths(&host_path));
+
+    command.env("PATH", std::env::join_paths(path_entries).unwrap());
+    command.env("QEMU_LD_PREFIX", &layout.staging_root);
+
+    for (key, value) in script_envs {
+        command.env(key, value);
+    }
+}
+
+fn case_script_envs(case: &StarryQemuCase, layout: &CaseAssetLayout) -> Vec<(String, String)> {
+    vec![
+        (
+            STARRY_STAGING_ROOT_VAR.to_string(),
+            layout.staging_root.display().to_string(),
+        ),
+        (
+            STARRY_CASE_DIR_VAR.to_string(),
+            case.case_dir.display().to_string(),
+        ),
+        (
+            STARRY_CASE_C_DIR_VAR.to_string(),
+            case_c_source_dir(case).display().to_string(),
+        ),
+        (
+            STARRY_CASE_WORK_DIR_VAR.to_string(),
+            layout.work_dir.display().to_string(),
+        ),
+        (
+            STARRY_CASE_BUILD_DIR_VAR.to_string(),
+            layout.build_dir.display().to_string(),
+        ),
+        (
+            STARRY_CASE_OVERLAY_DIR_VAR.to_string(),
+            layout.overlay_dir.display().to_string(),
+        ),
+    ]
+}
+
+fn write_guest_command_wrappers(
+    layout: &CaseAssetLayout,
+    qemu_runner: &Path,
+) -> anyhow::Result<()> {
+    let mut guest_commands = BTreeMap::new();
+    for relative_dir in ["bin", "sbin", "usr/bin", "usr/sbin"] {
+        let dir_path = layout.staging_root.join(relative_dir);
+        if !dir_path.is_dir() {
+            continue;
+        }
+
+        let mut entries = fs::read_dir(&dir_path)
+            .with_context(|| format!("failed to read {}", dir_path.display()))?
+            .collect::<Result<Vec<_>, _>>()
+            .with_context(|| format!("failed to read {}", dir_path.display()))?;
+        entries.sort_by_key(|left| left.file_name());
+
+        for entry in entries {
+            let name = entry.file_name();
+            if guest_commands.contains_key(name.as_os_str()) {
+                continue;
+            }
+
+            let file_type = entry.file_type().with_context(|| {
+                format!("failed to inspect guest command {}", entry.path().display())
+            })?;
+            if !file_type.is_file() && !file_type.is_symlink() {
+                continue;
+            }
+            guest_commands.insert(
+                name,
+                format!("{relative_dir}/{}", entry.file_name().to_string_lossy()),
+            );
+        }
+    }
+
+    for (name, relative_guest_path) in guest_commands {
+        let wrapper_path = layout.command_wrapper_dir.join(&name);
+        if relative_guest_path == "sbin/apk" {
+            write_apk_wrapper_script(&wrapper_path, qemu_runner, &layout.staging_root, layout)?;
+        } else {
+            write_guest_exec_wrapper(
+                &wrapper_path,
+                qemu_runner,
+                &layout.staging_root,
+                &relative_guest_path,
+                None,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn ensure_guest_tool_exists(staging_root: &Path, relative_path: &str) -> anyhow::Result<()> {
+    let path = staging_root.join(relative_path);
+    ensure!(
+        path.is_file(),
+        "staging root is missing required guest tool `{}`; install it in prebuild.sh",
+        path.display()
+    );
+    Ok(())
+}
+
+fn qemu_user_binary_name(arch: &str) -> anyhow::Result<&'static str> {
+    match arch {
+        "aarch64" => Ok("qemu-aarch64-static"),
+        _ => bail!("Starry C test cases are currently only supported on aarch64, but got `{arch}`"),
+    }
+}
+
+fn write_guest_exec_wrapper(
+    path: &Path,
+    qemu_runner: &Path,
+    staging_root: &Path,
+    guest_relative_path: &str,
+    extra_args: Option<String>,
+) -> anyhow::Result<()> {
+    let mut body = format!(
+        "export QEMU_LD_PREFIX={root}\nexec {qemu} -L {root} {guest}",
+        root = shell_single_quote(staging_root),
+        qemu = shell_single_quote(qemu_runner),
+        guest = shell_single_quote(staging_root.join(guest_relative_path)),
+    );
+    if let Some(extra_args) = extra_args {
+        body.push(' ');
+        body.push_str(&extra_args);
+    }
+    body.push_str(" \"$@\"\n");
+
+    write_wrapper_script(path, &body)
+}
+
+fn write_apk_wrapper_script(
+    path: &Path,
+    qemu_runner: &Path,
+    staging_root: &Path,
+    layout: &CaseAssetLayout,
+) -> anyhow::Result<()> {
+    let body = format!(
+        "export QEMU_LD_PREFIX={root}\nexec {qemu} -L {root} {apk} --root {root} \
+         --repositories-file {repositories} --keys-dir {keys} --cache-dir {cache} --update-cache \
+         --timeout 60 --no-interactive --force-no-chroot \"$@\"\n",
+        root = shell_single_quote(staging_root),
+        qemu = shell_single_quote(qemu_runner),
+        apk = shell_single_quote(staging_root.join("sbin/apk")),
+        repositories = shell_single_quote(staging_root.join("etc/apk/repositories")),
+        keys = shell_single_quote(staging_root.join("etc/apk/keys")),
+        cache = shell_single_quote(&layout.apk_cache_dir),
+    );
+    write_wrapper_script(path, &body)
 }
 
 fn write_wrapper_script(path: &Path, body: &str) -> anyhow::Result<()> {
@@ -539,104 +838,82 @@ fn write_wrapper_script(path: &Path, body: &str) -> anyhow::Result<()> {
     fs::set_permissions(path, perms).with_context(|| format!("failed to chmod {}", path.display()))
 }
 
-fn build_usb_test_binary(
-    workspace_root: &Path,
-    layout: &UsbCaseLayout,
-    build_env: &UsbBuildEnv,
-) -> anyhow::Result<()> {
-    let source_dir = usb_case_source_dir(workspace_root);
-    let host_make = find_host_binary("make")?;
+fn inject_overlay_tree(rootfs_img: &Path, overlay_dir: &Path) -> anyhow::Result<()> {
     ensure!(
-        source_dir.join("CMakeLists.txt").is_file(),
-        "missing usb case CMakeLists.txt at {}",
-        source_dir.display()
+        overlay_has_entries(overlay_dir)?,
+        "cmake install did not produce any files under {}",
+        overlay_dir.display()
     );
 
-    let mut configure = Command::new("cmake");
-    configure
-        .arg("-S")
-        .arg(&source_dir)
-        .arg("-B")
-        .arg(&layout.build_dir)
-        .arg("-G")
-        .arg("Unix Makefiles")
-        .arg("-DCMAKE_BUILD_TYPE=Release")
-        .arg("-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY")
-        .arg(format!("-DCMAKE_SYSROOT={}", layout.staging_root.display()))
-        .arg(format!("-DCMAKE_C_COMPILER={}", build_env.cc.display()))
-        .arg(format!("-DCMAKE_AR={}", build_env.ar.display()))
-        .arg(format!("-DCMAKE_RANLIB={}", build_env.ranlib.display()))
-        .arg(format!("-DCMAKE_STRIP={}", build_env.strip.display()))
-        .arg(format!("-DCMAKE_MAKE_PROGRAM={}", host_make.display()))
-        .arg(format!(
-            "-DPKG_CONFIG_EXECUTABLE={}",
-            build_env.pkg_config.display()
-        ));
-    for (key, value) in &build_env.configure_envs {
-        configure.env(key, value);
-    }
-    configure.exec().context("failed to configure usb C test")?;
-
-    let mut build = Command::new("cmake");
-    build
-        .arg("--build")
-        .arg(&layout.build_dir)
-        .arg("--parallel");
-    for (key, value) in &build_env.configure_envs {
-        build.env(key, value);
-    }
-    build.exec().context("failed to build usb C test")?;
-
-    ensure!(
-        layout.host_binary_path.is_file(),
-        "usb test binary was not produced at {}",
-        layout.host_binary_path.display()
-    );
-
-    Ok(())
-}
-
-fn inject_usb_test_assets(case_rootfs: &Path, layout: &UsbCaseLayout) -> anyhow::Result<()> {
-    let stage_libusb = layout
-        .staging_root
-        .join(format!("usr/lib/{USB_STAGE_LIBUSB_NAME}"));
-    ensure!(
-        stage_libusb.is_file(),
-        "missing staged libusb runtime at {}",
-        stage_libusb.display()
-    );
-
+    let mut commands = Vec::new();
+    collect_overlay_debugfs_commands(overlay_dir, Path::new(""), &mut commands)?;
     run_debugfs_script(
-        case_rootfs,
-        &[
-            "cd /usr/bin".to_string(),
-            format!(
-                "write {} {}",
-                layout.host_binary_path.display(),
-                USB_GUEST_BINARY_NAME
-            ),
-            format!("sif {} mode 0100755", USB_GUEST_BINARY_NAME),
-        ],
+        rootfs_img,
+        &commands,
         &format!(
-            "failed to inject {} into {}",
-            USB_GUEST_BINARY_PATH,
-            case_rootfs.display()
-        ),
-    )?;
-
-    run_debugfs_script(
-        case_rootfs,
-        &[
-            "cd /usr/lib".to_string(),
-            format!("write {} libusb-1.0.so.0", stage_libusb.display()),
-            "sif libusb-1.0.so.0 mode 0100644".to_string(),
-        ],
-        &format!(
-            "failed to inject {} into {}",
-            USB_GUEST_LIBUSB_PATH,
-            case_rootfs.display()
+            "failed to inject overlay {} into {}",
+            overlay_dir.display(),
+            rootfs_img.display()
         ),
     )
+}
+
+fn overlay_has_entries(overlay_dir: &Path) -> anyhow::Result<bool> {
+    Ok(fs::read_dir(overlay_dir)
+        .with_context(|| format!("failed to read {}", overlay_dir.display()))?
+        .next()
+        .is_some())
+}
+
+fn collect_overlay_debugfs_commands(
+    overlay_dir: &Path,
+    relative_dir: &Path,
+    commands: &mut Vec<String>,
+) -> anyhow::Result<()> {
+    let current_dir = if relative_dir.as_os_str().is_empty() {
+        overlay_dir.to_path_buf()
+    } else {
+        overlay_dir.join(relative_dir)
+    };
+    let mut entries = fs::read_dir(&current_dir)
+        .with_context(|| format!("failed to read {}", current_dir.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("failed to read {}", current_dir.display()))?;
+    entries.sort_by_key(|left| left.file_name());
+
+    for entry in entries {
+        let file_name = PathBuf::from(entry.file_name());
+        let relative_path = relative_dir.join(&file_name);
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to inspect {}", entry.path().display()))?;
+
+        if file_type.is_dir() {
+            commands.push(format!("mkdir /{}", relative_path.display()));
+            collect_overlay_debugfs_commands(overlay_dir, &relative_path, commands)?;
+            continue;
+        }
+
+        ensure!(
+            file_type.is_file(),
+            "unsupported overlay entry `{}`; only regular files and directories are supported",
+            entry.path().display()
+        );
+        let metadata = fs::metadata(entry.path())
+            .with_context(|| format!("failed to stat {}", entry.path().display()))?;
+        commands.push(format!(
+            "write {} /{}",
+            entry.path().display(),
+            relative_path.display()
+        ));
+        commands.push(format!(
+            "sif /{} mode 0{:o}",
+            relative_path.display(),
+            metadata.permissions().mode()
+        ));
+    }
+
+    Ok(())
 }
 
 fn create_usb_backing_image(path: &Path) -> anyhow::Result<()> {
@@ -690,8 +967,8 @@ fn find_optional_host_binary(name: &str) -> Option<PathBuf> {
     })
 }
 
-fn shell_single_quote(path: &Path) -> String {
-    let value = path.display().to_string().replace('\'', "'\\''");
+fn shell_single_quote(path: impl AsRef<Path>) -> String {
+    let value = path.as_ref().display().to_string().replace('\'', "'\\''");
     format!("'{value}'")
 }
 
@@ -739,13 +1016,39 @@ async fn decompress_xz_file(input_path: &Path, output_path: &Path) -> anyhow::Re
         .with_context(|| format!("failed to remove {}", input_path.display()))?;
     Ok(())
 }
+
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{ffi::OsStr, fs, path::PathBuf, time::Duration};
 
     use tempfile::tempdir;
 
     use super::*;
+
+    fn fake_case(root: &Path, name: &str) -> StarryQemuCase {
+        let case_dir = root.join("test-suit/starryos/normal").join(name);
+        fs::create_dir_all(&case_dir).unwrap();
+        StarryQemuCase {
+            name: name.to_string(),
+            case_dir: case_dir.clone(),
+            qemu_config_path: case_dir.join("qemu-aarch64.toml"),
+        }
+    }
+
+    fn command_env(command: &Command, key: &str) -> Option<String> {
+        command.get_envs().find_map(|(name, value)| {
+            (name == OsStr::new(key))
+                .then(|| value.map(|value| value.to_string_lossy().into_owned()))
+                .flatten()
+        })
+    }
+
+    fn command_args(command: &Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
 
     #[test]
     fn resolve_target_dir_uses_workspace_target_directory() {
@@ -918,8 +1221,9 @@ mod tests {
         let target_dir = root.path().join("target/x86_64-unknown-none");
         fs::create_dir_all(&target_dir).unwrap();
         fs::write(target_dir.join("rootfs-x86_64.img"), b"rootfs").unwrap();
+        let case = fake_case(root.path(), "smoke");
 
-        let assets = prepare_case_assets(root.path(), "x86_64", "x86_64-unknown-none", "smoke")
+        let assets = prepare_case_assets(root.path(), "x86_64", "x86_64-unknown-none", &case)
             .await
             .unwrap();
 
@@ -932,19 +1236,15 @@ mod tests {
     }
 
     #[test]
-    fn usb_case_layout_and_qemu_args_use_stable_paths() {
+    fn case_asset_layout_and_usb_qemu_args_use_stable_paths() {
         let root = tempdir().unwrap();
-        let layout = usb_case_layout(root.path(), "aarch64-unknown-none-softfloat").unwrap();
+        let layout =
+            case_asset_layout(root.path(), "aarch64-unknown-none-softfloat", "usb").unwrap();
 
         assert_eq!(
             layout.work_dir,
             root.path()
-                .join("target/aarch64-unknown-none-softfloat/starry-usb")
-        );
-        assert_eq!(
-            layout.host_binary_path,
-            root.path()
-                .join("target/aarch64-unknown-none-softfloat/starry-usb/build/usb-transfer-test")
+                .join("target/aarch64-unknown-none-softfloat/starry-cases/usb")
         );
         assert_eq!(
             usb_qemu_args(&layout.usb_stick_path),
@@ -960,7 +1260,94 @@ mod tests {
                 "usb-storage,drive=usbstick0,bus=xhci.0".to_string(),
             ]
         );
-        assert_eq!(USB_GUEST_BINARY_PATH, "/usr/bin/usb-transfer-test");
+    }
+
+    #[test]
+    fn build_prebuild_command_uses_guest_shell_and_case_envs() {
+        let root = tempdir().unwrap();
+        let case = fake_case(root.path(), "usb");
+        let layout =
+            case_asset_layout(root.path(), "aarch64-unknown-none-softfloat", "usb").unwrap();
+        fs::create_dir_all(layout.staging_root.join("bin")).unwrap();
+        fs::write(layout.staging_root.join("bin/sh"), b"").unwrap();
+        let prebuild_env = GuestPrebuildEnv {
+            qemu_runner: PathBuf::from("/usr/bin/qemu-aarch64-static"),
+            script_envs: case_script_envs(&case, &layout),
+        };
+        let prebuild_script = case_c_source_dir(&case).join("prebuild.sh");
+
+        let command =
+            build_prebuild_command(&case, &prebuild_script, &layout, &prebuild_env).unwrap();
+
+        assert_eq!(
+            command.get_program(),
+            std::ffi::OsStr::new("/usr/bin/qemu-aarch64-static")
+        );
+        assert_eq!(
+            command_args(&command),
+            vec![
+                "-L".to_string(),
+                layout.staging_root.display().to_string(),
+                layout.staging_root.join("bin/sh").display().to_string(),
+                "-eu".to_string(),
+                prebuild_script.display().to_string(),
+            ]
+        );
+        assert_eq!(
+            command.get_current_dir(),
+            Some(case_c_source_dir(&case).as_path())
+        );
+        assert_eq!(
+            command_env(&command, STARRY_CASE_OVERLAY_DIR_VAR),
+            Some(layout.overlay_dir.display().to_string())
+        );
+    }
+
+    #[test]
+    fn cmake_configure_command_passes_staging_root_define() {
+        let root = tempdir().unwrap();
+        let case = fake_case(root.path(), "usb");
+        let layout =
+            case_asset_layout(root.path(), "aarch64-unknown-none-softfloat", "usb").unwrap();
+        let build_env = GuestBuildEnv {
+            cc: PathBuf::from("/toolchain/cc"),
+            ar: PathBuf::from("/toolchain/ar"),
+            ranlib: PathBuf::from("/toolchain/ranlib"),
+            strip: PathBuf::from("/toolchain/strip"),
+            pkg_config: PathBuf::from("/usr/bin/pkg-config"),
+            make_program: PathBuf::from("/usr/bin/make"),
+            configure_envs: vec![("PKG_CONFIG_LIBDIR".to_string(), "/sysroot".to_string())],
+        };
+
+        let command = build_cmake_configure_command(&case, &layout, &build_env);
+        let args = command_args(&command);
+
+        assert!(args.contains(&format!(
+            "-D{STARRY_STAGING_ROOT_VAR}={}",
+            layout.staging_root.display()
+        )));
+        assert_eq!(
+            command_env(&command, "PKG_CONFIG_LIBDIR"),
+            Some("/sysroot".to_string())
+        );
+    }
+
+    #[test]
+    fn overlay_debugfs_commands_include_paths_and_modes() {
+        let root = tempdir().unwrap();
+        let overlay_dir = root.path().join("overlay");
+        fs::create_dir_all(overlay_dir.join("usr/bin")).unwrap();
+        let binary = overlay_dir.join("usr/bin/test-bin");
+        fs::write(&binary, b"bin").unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut commands = Vec::new();
+        collect_overlay_debugfs_commands(&overlay_dir, Path::new(""), &mut commands).unwrap();
+
+        assert_eq!(commands[0], "mkdir /usr");
+        assert!(commands.contains(&"mkdir /usr/bin".to_string()));
+        assert!(commands.contains(&format!("write {} /usr/bin/test-bin", binary.display())));
+        assert!(commands.contains(&"sif /usr/bin/test-bin mode 0100755".to_string()));
     }
 
     #[test]
@@ -973,5 +1360,32 @@ mod tests {
             .map(|addr| format!("nameserver {addr}"))
             .collect::<Vec<_>>();
         assert_eq!(usable, vec!["nameserver 8.8.8.8".to_string()]);
+    }
+
+    #[test]
+    fn case_script_envs_include_expected_paths() {
+        let root = tempdir().unwrap();
+        let case = fake_case(root.path(), "usb");
+        let layout =
+            case_asset_layout(root.path(), "aarch64-unknown-none-softfloat", "usb").unwrap();
+
+        let envs = case_script_envs(&case, &layout);
+
+        assert!(envs.contains(&(
+            STARRY_CASE_DIR_VAR.to_string(),
+            case.case_dir.display().to_string()
+        )));
+        assert!(envs.contains(&(
+            STARRY_CASE_BUILD_DIR_VAR.to_string(),
+            layout.build_dir.display().to_string()
+        )));
+    }
+
+    #[test]
+    fn format_duration_like_summary_helpers_are_precise_enough() {
+        assert_eq!(
+            format!("{:.2}", Duration::from_millis(1250).as_secs_f64()),
+            "1.25"
+        );
     }
 }

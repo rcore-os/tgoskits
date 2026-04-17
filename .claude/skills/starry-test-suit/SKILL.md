@@ -25,6 +25,8 @@ This skill captures the repo-specific way to maintain StarryOS system tests. Sta
 - `cargo starry test qemu --stress -t <arch>` only runs `stress`.
 - `-c/--test-case` only searches inside the current group.
 - Keep case directories one level below `normal/` or `stress/`; do not add extra nesting.
+- Batch QEMU runs skip case directories that do not contain `qemu-<arch>.toml`; explicit `-c` still requires the directory and matching config to exist.
+- Cases may optionally provide `c/CMakeLists.txt` and `c/prebuild.sh`; anything that must land in the guest rootfs should be installed via CMake `install()`, not left as a prebuild side effect.
 
 ## Case Content
 

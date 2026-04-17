@@ -64,6 +64,9 @@ static int wait_until_ready(usb_msc_device_t *device) {
 }
 
 int main(void) {
+    puts("todo usb test");
+    return 0;
+
     usb_msc_device_t device;
     uint32_t last_lba = 0;
     uint32_t block_size = 0;
