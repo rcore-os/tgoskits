@@ -126,14 +126,25 @@ impl ProcessSignalManager {
         act: *const kernel_sigaction,
         oldact: *mut kernel_sigaction,
     ) -> AxResult<isize> {
-        let mut actions = self.actions.lock();
-        if let Some(oldact) = oldact.nullable() {
-            oldact.vm_write(actions[signo].clone().into())?;
-        }
-        if let Some(act) = act.nullable() {
+        let new_action = if let Some(act) = act.nullable() {
             let act = unsafe { act.vm_read_uninit()?.assume_init() }.into();
             debug!("sys_rt_sigaction <= signo: {signo:?}, act: {act:?}");
-            actions[signo] = act;
+            Some(act)
+        } else {
+            None
+        };
+
+        let old_action = {
+            let mut actions = self.actions.lock();
+            let old = actions[signo].clone();
+            if let Some(act) = new_action {
+                actions[signo] = act;
+            }
+            old
+        };
+
+        if let Some(oldact) = oldact.nullable() {
+            oldact.vm_write(old_action.into())?;
         }
         Ok(0)
     }
