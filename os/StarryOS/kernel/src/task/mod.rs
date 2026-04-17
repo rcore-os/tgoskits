@@ -44,6 +44,23 @@ impl<T> Deref for AssumeSync<T> {
     }
 }
 
+/// A one-shot flag that suppresses exactly one signal check.
+struct NextSignalCheckBlock(AtomicBool);
+
+impl NextSignalCheckBlock {
+    const fn new() -> Self {
+        Self(AtomicBool::new(false))
+    }
+
+    fn block(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    fn unblock(&self) -> bool {
+        self.0.swap(false, Ordering::AcqRel)
+    }
+}
+
 /// The inner data of a thread.
 pub struct Thread {
     /// The process data shared by all threads in the process.
@@ -78,6 +95,9 @@ pub struct Thread {
     /// Indicates whether the thread is currently accessing user memory.
     accessing_user_memory: AtomicBool,
 
+    /// Skips one signal check after returning from a user-space signal handler.
+    block_next_signal_check: NextSignalCheckBlock,
+
     /// Self exit event
     pub exit_event: Arc<PollSet>,
 }
@@ -94,6 +114,7 @@ impl Thread {
             exit: Arc::new(AtomicBool::new(false)),
             oom_score_adj: AtomicI32::new(200),
             accessing_user_memory: AtomicBool::new(false),
+            block_next_signal_check: NextSignalCheckBlock::new(),
             exit_event: Arc::default(),
         })
     }
@@ -149,6 +170,16 @@ impl Thread {
     pub fn set_accessing_user_memory(&self, accessing: bool) {
         self.accessing_user_memory
             .store(accessing, Ordering::Release);
+    }
+
+    /// Block the next signal check for this thread.
+    pub fn block_next_signal_check(&self) {
+        self.block_next_signal_check.block();
+    }
+
+    /// Consume and clear the one-shot signal-check block flag.
+    pub fn unblock_next_signal_check(&self) -> bool {
+        self.block_next_signal_check.unblock()
     }
 }
 
@@ -284,5 +315,51 @@ impl ProcessData {
     /// Set the umask and return the old value.
     pub fn replace_umask(&self, umask: u32) -> u32 {
         self.umask.swap(umask, Ordering::SeqCst)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    use super::NextSignalCheckBlock;
+
+    #[test]
+    fn old_global_signal_check_block_leaks_between_threads() {
+        static OLD_BLOCK_NEXT_SIGNAL_CHECK: AtomicBool = AtomicBool::new(false);
+
+        fn block_next_signal() {
+            OLD_BLOCK_NEXT_SIGNAL_CHECK.store(true, Ordering::SeqCst);
+        }
+
+        fn unblock_next_signal() -> bool {
+            OLD_BLOCK_NEXT_SIGNAL_CHECK.swap(false, Ordering::SeqCst)
+        }
+
+        // Simulate thread A returning from `rt_sigreturn()`.
+        block_next_signal();
+
+        // Simulate thread B reaching the user return path first and incorrectly
+        // consuming thread A's one-shot state.
+        assert!(
+            unblock_next_signal(),
+            "the old global flag leaks across logical threads"
+        );
+        assert!(!unblock_next_signal());
+    }
+
+    #[test]
+    fn per_thread_signal_check_block_is_isolated() {
+        let thread_a = NextSignalCheckBlock::new();
+        let thread_b = NextSignalCheckBlock::new();
+
+        thread_a.block();
+
+        assert!(
+            !thread_b.unblock(),
+            "thread B must not observe thread A's signal-check block"
+        );
+        assert!(thread_a.unblock());
+        assert!(!thread_a.unblock());
     }
 }

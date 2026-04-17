@@ -1,5 +1,3 @@
-use core::sync::atomic::{AtomicBool, Ordering};
-
 use ax_errno::{AxError, AxResult};
 use ax_hal::uspace::UserContext;
 use ax_task::{TaskInner, current};
@@ -40,14 +38,12 @@ pub fn check_signals(
     true
 }
 
-static BLOCK_NEXT_SIGNAL_CHECK: AtomicBool = AtomicBool::new(false);
-
 pub fn block_next_signal() {
-    BLOCK_NEXT_SIGNAL_CHECK.store(true, Ordering::SeqCst);
+    current().as_thread().block_next_signal_check();
 }
 
 pub fn unblock_next_signal() -> bool {
-    BLOCK_NEXT_SIGNAL_CHECK.swap(false, Ordering::SeqCst)
+    current().as_thread().unblock_next_signal_check()
 }
 
 pub fn with_blocked_signals<R>(
