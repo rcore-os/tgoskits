@@ -526,11 +526,16 @@ impl CachedFile {
             }
         }
 
-        // Page not in cache, read it
+        // Page not in cache, read it.
+        //
+        // `PageCache::new` hands back an uninitialised physical page. We must
+        // zero it first so that bytes beyond the file's current length — or
+        // inside a sparse hole that the underlying filesystem has not
+        // allocated yet — read back as zero rather than whatever the page
+        // allocator last had there.
         let mut page = PageCache::new()?;
-        if self.in_memory {
-            page.data().fill(0);
-        } else {
+        page.data().fill(0);
+        if !self.in_memory {
             file.read_at(page.data(), pn as u64 * PAGE_SIZE as u64)?;
         }
         cache.put(pn, page);
@@ -604,14 +609,16 @@ impl CachedFile {
 
     fn write_at_locked(&self, mut buf: impl Read + IoBuf, offset: u64) -> VfsResult<usize> {
         let end = offset + buf.remaining() as u64;
+        // Extend through `CachedFile::set_len` (not the raw `FileNode::set_len`)
+        // so that the page cache zero-fills the hole between the old EOF and
+        // the write offset. Otherwise a later read of the hole returns stale
+        // allocator memory or disk contents instead of zeros.
+        if end > self.inner.len()? {
+            self.set_len(end)?;
+        }
         self.with_pages(
             offset..end,
-            |file| {
-                if end > file.len()? {
-                    file.set_len(end)?;
-                }
-                Ok(0)
-            },
+            |_file| Ok(0),
             |written, page, range| {
                 let len = range.end - range.start;
                 buf.read(&mut page.data()[range.start..range.end])?;
