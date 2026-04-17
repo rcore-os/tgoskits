@@ -74,7 +74,7 @@ pub fn check_signals(
         SignalOSAction::CoreDump => do_exit(128 + signo as i32, true),
         SignalOSAction::Stop => do_exit(1, true),
         SignalOSAction::Continue => {}
-        SignalOSAction::Handler => {}
+        SignalOSAction::NoFurtherAction => {}
     }
     true
 }
