@@ -33,17 +33,10 @@ fn handle_signal() {
     let initial = UserContext::new(0, initial_sp().into(), 0);
 
     let mut uctx = initial;
-    let restore_blocked = thr.blocked();
-    let action = proc.actions.lock()[signo].clone();
-    let result = thr.handle_signal(
-        &mut uctx,
-        restore_blocked,
-        &sig,
-        &action,
-        &mut proc.actions.lock(),
-    );
+    assert!(thr.send_signal(sig.clone()));
+    let (_si, result) = thr.check_signals(&mut uctx, None).unwrap();
 
-    assert_eq!(result, Some(SignalOSAction::Handler));
+    assert_eq!(result, SignalOSAction::Handler);
     assert_eq!(uctx.ip(), test_handler as *const () as usize);
     assert!(uctx.sp() < initial.sp());
     assert_eq!(uctx.arg0(), signo as usize);
@@ -112,15 +105,9 @@ fn restore() {
     let initial = UserContext::new(0x219, initial_sp().into(), 0);
 
     let mut uctx = initial;
-    let restore_blocked = thr.blocked();
-    let action = proc.actions.lock()[sig.signo()].clone();
-    thr.handle_signal(
-        &mut uctx,
-        restore_blocked,
-        &sig,
-        &action,
-        &mut proc.actions.lock(),
-    );
+    assert!(thr.send_signal(sig.clone()));
+    let (_si, action) = thr.check_signals(&mut uctx, None).unwrap();
+    assert_eq!(action, SignalOSAction::Handler);
 
     let new_sp = uctx.sp() + 8;
     uctx.set_sp(new_sp);
