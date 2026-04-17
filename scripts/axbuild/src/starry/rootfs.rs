@@ -26,8 +26,9 @@ const CASE_WORK_ROOT_NAME: &str = "starry-cases";
 const CASE_STAGING_DIR_NAME: &str = "staging-root";
 const CASE_BUILD_DIR_NAME: &str = "build";
 const CASE_OVERLAY_DIR_NAME: &str = "overlay";
-const CASE_TOOLCHAIN_DIR_NAME: &str = "toolchain";
 const CASE_COMMAND_WRAPPER_DIR_NAME: &str = "guest-bin";
+const CASE_CROSS_BIN_DIR_NAME: &str = "cross-bin";
+const CASE_CMAKE_TOOLCHAIN_FILE_NAME: &str = "cmake-toolchain.cmake";
 const CASE_APK_CACHE_DIR_NAME: &str = "apk-cache";
 const CASE_C_DIR_NAME: &str = "c";
 const CASE_PREBUILD_SCRIPT_NAME: &str = "prebuild.sh";
@@ -59,22 +60,28 @@ struct CaseAssetLayout {
     staging_root: PathBuf,
     build_dir: PathBuf,
     overlay_dir: PathBuf,
-    toolchain_dir: PathBuf,
     command_wrapper_dir: PathBuf,
+    cross_bin_dir: PathBuf,
+    cmake_toolchain_file: PathBuf,
     apk_cache_dir: PathBuf,
     usb_stick_path: PathBuf,
 }
 
 #[derive(Debug, Clone)]
-struct GuestBuildEnv {
+struct HostCrossBuildEnv {
     cmake: PathBuf,
-    cc: PathBuf,
-    ar: PathBuf,
-    ranlib: PathBuf,
-    strip: PathBuf,
     pkg_config: PathBuf,
     make_program: PathBuf,
+    cmake_toolchain_file: PathBuf,
     command_envs: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CrossCompileSpec {
+    llvm_target: &'static str,
+    cmake_system_processor: &'static str,
+    guest_tool_dir: &'static str,
+    gnu_tool_prefix: &'static str,
 }
 
 #[derive(Debug, Clone)]
@@ -349,8 +356,9 @@ fn case_asset_layout(
         staging_root: work_dir.join(CASE_STAGING_DIR_NAME),
         build_dir: work_dir.join(CASE_BUILD_DIR_NAME),
         overlay_dir: work_dir.join(CASE_OVERLAY_DIR_NAME),
-        toolchain_dir: work_dir.join(CASE_TOOLCHAIN_DIR_NAME),
         command_wrapper_dir: work_dir.join(CASE_COMMAND_WRAPPER_DIR_NAME),
+        cross_bin_dir: work_dir.join(CASE_CROSS_BIN_DIR_NAME),
+        cmake_toolchain_file: work_dir.join(CASE_CMAKE_TOOLCHAIN_FILE_NAME),
         apk_cache_dir: work_dir.join(CASE_APK_CACHE_DIR_NAME),
         usb_stick_path: work_dir.join(USB_STICK_IMAGE_NAME),
         work_dir,
@@ -412,8 +420,8 @@ fn prepare_c_case_assets_sync(
     reset_dir(&layout.staging_root)?;
     reset_dir(&layout.build_dir)?;
     reset_dir(&layout.overlay_dir)?;
-    reset_dir(&layout.toolchain_dir)?;
     reset_dir(&layout.command_wrapper_dir)?;
+    reset_dir(&layout.cross_bin_dir)?;
     fs::create_dir_all(&layout.apk_cache_dir)
         .with_context(|| format!("failed to create {}", layout.apk_cache_dir.display()))?;
 
@@ -429,7 +437,7 @@ fn prepare_c_case_assets_sync(
         command.exec().context("failed to run case prebuild.sh")?;
     }
     let qemu_runner = find_host_binary_candidates(qemu_user_binary_names(arch)?)?;
-    let build_env = prepare_guest_build_env(layout, &qemu_runner)?;
+    let build_env = prepare_host_cross_build_env(arch, layout, &qemu_runner)?;
 
     let mut configure = build_cmake_configure_command(case, layout, &build_env);
     configure
@@ -442,6 +450,7 @@ fn prepare_c_case_assets_sync(
     let mut install = build_cmake_install_command(layout, &build_env);
     install.exec().context("failed to install case C project")?;
 
+    sync_runtime_dependencies(&layout.staging_root, &layout.overlay_dir)?;
     inject_overlay_tree(case_rootfs, &layout.overlay_dir)
 }
 
@@ -630,126 +639,186 @@ fn prepare_guest_prebuild_env(
     })
 }
 
-fn prepare_guest_build_env(
+fn prepare_host_cross_build_env(
+    arch: &str,
     layout: &CaseAssetLayout,
     qemu_runner: &Path,
-) -> anyhow::Result<GuestBuildEnv> {
-    let staging_root = &layout.staging_root;
-    write_guest_command_wrappers(layout, qemu_runner)?;
+) -> anyhow::Result<HostCrossBuildEnv> {
+    let spec = cross_compile_spec(arch)?;
+    let cmake = find_host_binary_candidates(&["cmake"])?;
+    let clang = find_host_binary_candidates(&["clang"])?;
+    let pkg_config = find_host_binary_candidates(&["pkg-config"])?;
+    let make_program = find_host_binary_candidates(&["make", "gmake"])?;
 
-    let cmake = find_guest_tool_path(staging_root, &["usr/bin/cmake"])?;
-    let pkg_config =
-        find_guest_tool_path(staging_root, &["usr/bin/pkg-config", "usr/bin/pkgconf"])?;
-    let make_program = find_guest_tool_path(staging_root, &["usr/bin/make", "usr/bin/gmake"])?;
-    let gcc_wrapper = layout.toolchain_dir.join("cc");
-    let ar_wrapper = layout.toolchain_dir.join("ar");
-    let ranlib_wrapper = layout.toolchain_dir.join("ranlib");
-    let strip_wrapper = layout.toolchain_dir.join("strip");
-
-    ensure_guest_tool_exists(staging_root, "usr/bin/gcc")?;
-    ensure_guest_tool_exists(staging_root, "usr/bin/ar")?;
-    ensure_guest_tool_exists(staging_root, "usr/bin/ranlib")?;
-    ensure_guest_tool_exists(staging_root, "usr/bin/strip")?;
-
-    wrap_guest_executable_in_place(&cmake, qemu_runner, staging_root)?;
-    wrap_guest_executable_in_place(&pkg_config, qemu_runner, staging_root)?;
-    wrap_guest_executable_in_place(&make_program, qemu_runner, staging_root)?;
-    wrap_guest_gcc_toolchain_helpers(staging_root, qemu_runner)?;
-    write_guest_cc_wrapper(
-        &gcc_wrapper,
-        qemu_runner,
-        staging_root,
-        &layout.command_wrapper_dir,
-        "usr/bin/gcc",
-        Some(format!("--sysroot {}", shell_single_quote(staging_root))),
-    )?;
-    write_guest_exec_wrapper(&ar_wrapper, qemu_runner, staging_root, "usr/bin/ar", None)?;
-    write_guest_exec_wrapper(
-        &ranlib_wrapper,
-        qemu_runner,
-        staging_root,
-        "usr/bin/ranlib",
-        None,
-    )?;
-    write_guest_exec_wrapper(
-        &strip_wrapper,
-        qemu_runner,
-        staging_root,
-        "usr/bin/strip",
-        None,
-    )?;
+    write_cross_bin_wrappers(layout, spec, qemu_runner)?;
+    write_cmake_toolchain_file(layout, spec, &clang)?;
 
     let pkgconfig_libdir = format!(
         "{}:{}",
-        staging_root.join("usr/lib/pkgconfig").display(),
-        staging_root.join("usr/share/pkgconfig").display()
+        layout.staging_root.join("usr/lib/pkgconfig").display(),
+        layout.staging_root.join("usr/share/pkgconfig").display()
     );
-    let mut command_envs = vec![
-        (
-            "PATH".to_string(),
-            join_guest_wrapper_path(&layout.command_wrapper_dir)?,
-        ),
-        (
-            "QEMU_LD_PREFIX".to_string(),
-            staging_root.display().to_string(),
-        ),
+    let command_envs = vec![
         ("PKG_CONFIG_LIBDIR".to_string(), pkgconfig_libdir),
         (
             "PKG_CONFIG_SYSROOT_DIR".to_string(),
-            staging_root.display().to_string(),
+            layout.staging_root.display().to_string(),
         ),
         ("PKG_CONFIG_PATH".to_string(), String::new()),
     ];
-    if let Some(shell) = find_optional_guest_command_wrapper(layout, &["sh"]) {
-        let shell = shell.display().to_string();
-        command_envs.push(("SHELL".to_string(), shell.clone()));
-        command_envs.push(("CONFIG_SHELL".to_string(), shell));
-    }
 
-    Ok(GuestBuildEnv {
+    Ok(HostCrossBuildEnv {
         cmake,
-        cc: gcc_wrapper,
-        ar: ar_wrapper,
-        ranlib: ranlib_wrapper,
-        strip: strip_wrapper,
         pkg_config,
         make_program,
+        cmake_toolchain_file: layout.cmake_toolchain_file.clone(),
         command_envs,
     })
 }
 
-fn find_optional_guest_command_wrapper(
+fn cross_compile_spec(arch: &str) -> anyhow::Result<CrossCompileSpec> {
+    match arch {
+        "aarch64" => Ok(CrossCompileSpec {
+            llvm_target: "aarch64-linux-musl",
+            cmake_system_processor: "aarch64",
+            guest_tool_dir: "usr/aarch64-alpine-linux-musl/bin",
+            gnu_tool_prefix: "aarch64-linux-musl",
+        }),
+        "riscv64" => Ok(CrossCompileSpec {
+            llvm_target: "riscv64-linux-musl",
+            cmake_system_processor: "riscv64",
+            guest_tool_dir: "usr/riscv64-alpine-linux-musl/bin",
+            gnu_tool_prefix: "riscv64-linux-musl",
+        }),
+        "x86_64" => Ok(CrossCompileSpec {
+            llvm_target: "x86_64-linux-musl",
+            cmake_system_processor: "x86_64",
+            guest_tool_dir: "usr/x86_64-alpine-linux-musl/bin",
+            gnu_tool_prefix: "x86_64-linux-musl",
+        }),
+        "loongarch64" => Ok(CrossCompileSpec {
+            llvm_target: "loongarch64-linux-musl",
+            cmake_system_processor: "loongarch64",
+            guest_tool_dir: "usr/loongarch64-alpine-linux-musl/bin",
+            gnu_tool_prefix: "loongarch64-linux-musl",
+        }),
+        _ => bail!(
+            "Starry C test cases are only supported on aarch64, riscv64, x86_64, and loongarch64, \
+             but got `{arch}`"
+        ),
+    }
+}
+
+fn write_cross_bin_wrappers(
     layout: &CaseAssetLayout,
-    candidates: &[&str],
-) -> Option<PathBuf> {
-    candidates
-        .iter()
-        .map(|candidate| layout.command_wrapper_dir.join(candidate))
-        .find(|candidate| candidate.is_file())
+    spec: CrossCompileSpec,
+    qemu_runner: &Path,
+) -> anyhow::Result<()> {
+    fs::create_dir_all(&layout.cross_bin_dir)
+        .with_context(|| format!("failed to create {}", layout.cross_bin_dir.display()))?;
+    for tool in [
+        "ld", "as", "ar", "ranlib", "strip", "nm", "objcopy", "objdump", "readelf",
+    ] {
+        let guest_relative_path = format!("{}/{tool}", spec.guest_tool_dir);
+        ensure_guest_tool_exists(&layout.staging_root, &guest_relative_path)?;
+        write_guest_exec_wrapper(
+            &layout.cross_bin_dir.join(tool),
+            qemu_runner,
+            &layout.staging_root,
+            &guest_relative_path,
+            None,
+        )?;
+        write_guest_exec_wrapper(
+            &layout
+                .cross_bin_dir
+                .join(format!("{}-{tool}", spec.gnu_tool_prefix)),
+            qemu_runner,
+            &layout.staging_root,
+            &guest_relative_path,
+            None,
+        )?;
+    }
+
+    Ok(())
 }
 
-fn join_guest_wrapper_path(wrapper_dir: &Path) -> anyhow::Result<String> {
-    let host_path = std::env::var_os("PATH").unwrap_or_default();
-    let mut path_entries = Vec::new();
-    path_entries.push(wrapper_dir.to_path_buf());
-    path_entries.extend(std::env::split_paths(&host_path));
-    let joined = std::env::join_paths(path_entries).context("failed to join PATH entries")?;
-    joined
-        .into_string()
-        .map_err(|_| anyhow::anyhow!("guest wrapper PATH contains non-utf8 data"))
+fn write_cmake_toolchain_file(
+    layout: &CaseAssetLayout,
+    spec: CrossCompileSpec,
+    clang: &Path,
+) -> anyhow::Result<()> {
+    if let Some(parent) = layout.cmake_toolchain_file.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let sysroot = &layout.staging_root;
+    let gcc_toolchain_root = sysroot.join("usr");
+    let common_flags = format!(
+        "--sysroot={} --gcc-toolchain={} -B{}",
+        sysroot.display(),
+        gcc_toolchain_root.display(),
+        layout.cross_bin_dir.display()
+    );
+
+    let mut content = include_str!("cmake-toolchain.cmake.in").to_string();
+    for (needle, value) in [
+        (
+            "@CMAKE_SYSTEM_PROCESSOR@",
+            spec.cmake_system_processor.to_string(),
+        ),
+        ("@CMAKE_SYSROOT@", cmake_literal(sysroot)),
+        ("@CMAKE_FIND_ROOT_PATH@", cmake_literal(sysroot)),
+        ("@CMAKE_C_COMPILER@", cmake_literal(clang)),
+        ("@CMAKE_C_COMPILER_TARGET@", spec.llvm_target.to_string()),
+        ("@CMAKE_ASM_COMPILER@", cmake_literal(clang)),
+        ("@CMAKE_ASM_COMPILER_TARGET@", spec.llvm_target.to_string()),
+        ("@CMAKE_AR@", cmake_literal(layout.cross_bin_dir.join("ar"))),
+        (
+            "@CMAKE_RANLIB@",
+            cmake_literal(layout.cross_bin_dir.join("ranlib")),
+        ),
+        (
+            "@CMAKE_STRIP@",
+            cmake_literal(layout.cross_bin_dir.join("strip")),
+        ),
+        (
+            "@CMAKE_LINKER@",
+            cmake_literal(layout.cross_bin_dir.join("ld")),
+        ),
+        ("@CMAKE_NM@", cmake_literal(layout.cross_bin_dir.join("nm"))),
+        (
+            "@CMAKE_OBJCOPY@",
+            cmake_literal(layout.cross_bin_dir.join("objcopy")),
+        ),
+        (
+            "@CMAKE_OBJDUMP@",
+            cmake_literal(layout.cross_bin_dir.join("objdump")),
+        ),
+        (
+            "@CMAKE_READELF@",
+            cmake_literal(layout.cross_bin_dir.join("readelf")),
+        ),
+        (
+            "@CMAKE_C_COMPILER_AR@",
+            cmake_literal(layout.cross_bin_dir.join("ar")),
+        ),
+        (
+            "@CMAKE_C_COMPILER_RANLIB@",
+            cmake_literal(layout.cross_bin_dir.join("ranlib")),
+        ),
+        ("@CMAKE_C_FLAGS_INIT@", cmake_literal(&common_flags)),
+        ("@CMAKE_ASM_FLAGS_INIT@", cmake_literal(&common_flags)),
+        ("@CMAKE_LINKER_FLAGS_INIT@", cmake_literal(&common_flags)),
+    ] {
+        content = content.replace(needle, &value);
+    }
+
+    fs::write(&layout.cmake_toolchain_file, content)
+        .with_context(|| format!("failed to write {}", layout.cmake_toolchain_file.display()))
 }
 
-fn find_guest_tool_path(staging_root: &Path, candidates: &[&str]) -> anyhow::Result<PathBuf> {
-    candidates
-        .iter()
-        .map(|candidate| staging_root.join(candidate))
-        .find(|candidate| candidate.is_file())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "staging root is missing required guest tool `{}`; install it in prebuild.sh",
-                candidates.join("` or `")
-            )
-        })
+fn cmake_literal(value: impl AsRef<Path>) -> String {
+    value.as_ref().display().to_string().replace('\\', "/")
 }
 
 fn build_prebuild_command(
@@ -783,7 +852,7 @@ fn build_prebuild_command(
 fn build_cmake_configure_command(
     case: &StarryQemuCase,
     layout: &CaseAssetLayout,
-    build_env: &GuestBuildEnv,
+    build_env: &HostCrossBuildEnv,
 ) -> Command {
     let mut command = Command::new(&build_env.cmake);
     command
@@ -796,11 +865,10 @@ fn build_cmake_configure_command(
         .arg("-DCMAKE_BUILD_TYPE=Release")
         .arg("-DCMAKE_INSTALL_PREFIX=/")
         .arg("-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY")
-        .arg(format!("-DCMAKE_SYSROOT={}", layout.staging_root.display()))
-        .arg(format!("-DCMAKE_C_COMPILER={}", build_env.cc.display()))
-        .arg(format!("-DCMAKE_AR={}", build_env.ar.display()))
-        .arg(format!("-DCMAKE_RANLIB={}", build_env.ranlib.display()))
-        .arg(format!("-DCMAKE_STRIP={}", build_env.strip.display()))
+        .arg(format!(
+            "-DCMAKE_TOOLCHAIN_FILE={}",
+            build_env.cmake_toolchain_file.display()
+        ))
         .arg(format!(
             "-DCMAKE_MAKE_PROGRAM={}",
             build_env.make_program.display()
@@ -821,7 +889,7 @@ fn build_cmake_configure_command(
     command
 }
 
-fn build_cmake_build_command(layout: &CaseAssetLayout, build_env: &GuestBuildEnv) -> Command {
+fn build_cmake_build_command(layout: &CaseAssetLayout, build_env: &HostCrossBuildEnv) -> Command {
     let mut command = Command::new(&build_env.cmake);
     command
         .arg("--build")
@@ -835,7 +903,7 @@ fn build_cmake_build_command(layout: &CaseAssetLayout, build_env: &GuestBuildEnv
     command
 }
 
-fn build_cmake_install_command(layout: &CaseAssetLayout, build_env: &GuestBuildEnv) -> Command {
+fn build_cmake_install_command(layout: &CaseAssetLayout, build_env: &HostCrossBuildEnv) -> Command {
     let mut command = Command::new(&build_env.cmake);
     command.arg("--install").arg(&layout.build_dir);
     command.env("DESTDIR", &layout.overlay_dir);
@@ -971,32 +1039,6 @@ fn qemu_user_binary_names(arch: &str) -> anyhow::Result<&'static [&'static str]>
     }
 }
 
-fn write_guest_cc_wrapper(
-    path: &Path,
-    qemu_runner: &Path,
-    staging_root: &Path,
-    command_wrapper_dir: &Path,
-    guest_relative_path: &str,
-    extra_args: Option<String>,
-) -> anyhow::Result<()> {
-    let guest_path = staging_root.join(guest_relative_path);
-    let mut body = format!(
-        "export QEMU_LD_PREFIX={root}\nexport PATH={wrapper}:$PATH\nexec {qemu} -0 {guest} -L \
-         {root} {guest}",
-        root = shell_single_quote(staging_root),
-        wrapper = shell_single_quote(command_wrapper_dir),
-        qemu = shell_single_quote(qemu_runner),
-        guest = shell_single_quote(&guest_path),
-    );
-    if let Some(extra_args) = extra_args {
-        body.push(' ');
-        body.push_str(&extra_args);
-    }
-    body.push_str(" \"$@\"\n");
-
-    write_wrapper_script(path, &body)
-}
-
 fn write_guest_exec_wrapper(
     path: &Path,
     qemu_runner: &Path,
@@ -1018,131 +1060,6 @@ fn write_guest_exec_wrapper(
     body.push_str(" \"$@\"\n");
 
     write_wrapper_script(path, &body)
-}
-
-fn wrap_guest_gcc_toolchain_helpers(staging_root: &Path, qemu_runner: &Path) -> anyhow::Result<()> {
-    for root in guest_gcc_helper_roots(staging_root)? {
-        for path in collect_wrappable_files(&root)? {
-            if path.extension().is_some_and(|ext| ext == "so") {
-                continue;
-            }
-            wrap_guest_executable_in_place(&path, qemu_runner, staging_root)?;
-        }
-    }
-
-    Ok(())
-}
-
-fn guest_gcc_helper_roots(staging_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
-    let mut roots = Vec::new();
-    for candidate in ["usr/libexec/gcc", "usr/lib/gcc"] {
-        let root = staging_root.join(candidate);
-        if root.is_dir() {
-            roots.push(root);
-        }
-    }
-
-    let usr_root = staging_root.join("usr");
-    if usr_root.is_dir() {
-        let mut entries = fs::read_dir(&usr_root)
-            .with_context(|| format!("failed to read {}", usr_root.display()))?
-            .collect::<Result<Vec<_>, _>>()
-            .with_context(|| format!("failed to read {}", usr_root.display()))?;
-        entries.sort_by_key(|left| left.file_name());
-
-        for entry in entries {
-            let path = entry.path();
-            let file_type = entry
-                .file_type()
-                .with_context(|| format!("failed to inspect {}", path.display()))?;
-            if !file_type.is_dir() {
-                continue;
-            }
-
-            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            if !(name.contains("-linux-") && name.ends_with("musl")) {
-                continue;
-            }
-
-            let bin_dir = path.join("bin");
-            if bin_dir.is_dir() {
-                roots.push(bin_dir);
-            }
-        }
-    }
-
-    Ok(roots)
-}
-
-fn collect_wrappable_files(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    for entry in fs::read_dir(root).with_context(|| format!("failed to read {}", root.display()))? {
-        let entry = entry?;
-        let path = entry.path();
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("failed to inspect {}", path.display()))?;
-        if file_type.is_dir() {
-            files.extend(collect_wrappable_files(&path)?);
-        } else if file_type.is_file() || file_type.is_symlink() {
-            files.push(path);
-        }
-    }
-    Ok(files)
-}
-
-fn wrap_guest_executable_in_place(
-    path: &Path,
-    qemu_runner: &Path,
-    staging_root: &Path,
-) -> anyhow::Result<()> {
-    let metadata =
-        fs::metadata(path).with_context(|| format!("failed to stat {}", path.display()))?;
-    if metadata.is_dir() {
-        return Ok(());
-    }
-    if metadata.permissions().mode() & 0o111 == 0 {
-        return Ok(());
-    }
-    if !is_elf_binary(path)? {
-        return Ok(());
-    }
-
-    let wrapped_path = path.with_extension("guest-real");
-    if wrapped_path.exists() {
-        return Ok(());
-    }
-
-    fs::rename(path, &wrapped_path).with_context(|| {
-        format!(
-            "failed to move guest executable {} to {}",
-            path.display(),
-            wrapped_path.display()
-        )
-    })?;
-    write_wrapper_script(
-        path,
-        &format!(
-            "export QEMU_LD_PREFIX={root}\nexec {qemu} -0 {argv0} -L {root} {guest} \"$@\"\n",
-            root = shell_single_quote(staging_root),
-            qemu = shell_single_quote(qemu_runner),
-            argv0 = shell_single_quote(path),
-            guest = shell_single_quote(&wrapped_path),
-        ),
-    )?;
-    Ok(())
-}
-
-fn is_elf_binary(path: &Path) -> anyhow::Result<bool> {
-    let mut header = [0u8; 4];
-    let mut file =
-        fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    let read = file
-        .read(&mut header)
-        .with_context(|| format!("failed to read {}", path.display()))?;
-    Ok(read == 4 && header == [0x7f, b'E', b'L', b'F'])
 }
 
 fn write_apk_wrapper_script(
@@ -1200,6 +1117,135 @@ fn overlay_has_entries(overlay_dir: &Path) -> anyhow::Result<bool> {
         .with_context(|| format!("failed to read {}", overlay_dir.display()))?
         .next()
         .is_some())
+}
+
+fn sync_runtime_dependencies(staging_root: &Path, overlay_dir: &Path) -> anyhow::Result<()> {
+    let readelf = find_host_binary_candidates(&["readelf"])?;
+    let mut pending = collect_regular_files(overlay_dir)?;
+    let mut processed = BTreeMap::new();
+
+    while let Some(path) = pending.pop() {
+        if processed.contains_key(&path) || !is_elf_binary(&path)? {
+            continue;
+        }
+        processed.insert(path.clone(), ());
+
+        let needed = read_needed_shared_libraries(&readelf, &path)?;
+        for library in needed {
+            let Some(source_path) = find_runtime_library_in_staging_root(staging_root, &library)?
+            else {
+                continue;
+            };
+            let relative_path = source_path
+                .strip_prefix(staging_root)
+                .with_context(|| format!("failed to relativize {}", source_path.display()))?;
+            let overlay_path = overlay_dir.join(relative_path);
+            if overlay_path.exists() {
+                pending.push(overlay_path);
+                continue;
+            }
+
+            if let Some(parent) = overlay_path.parent() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("failed to create {}", parent.display()))?;
+            }
+
+            let resolved_source =
+                fs::canonicalize(&source_path).unwrap_or_else(|_| source_path.clone());
+            fs::copy(&resolved_source, &overlay_path).with_context(|| {
+                format!(
+                    "failed to copy runtime dependency {} to {}",
+                    resolved_source.display(),
+                    overlay_path.display()
+                )
+            })?;
+            let mode = fs::metadata(&resolved_source)
+                .with_context(|| format!("failed to stat {}", resolved_source.display()))?
+                .permissions()
+                .mode();
+            fs::set_permissions(&overlay_path, fs::Permissions::from_mode(mode))
+                .with_context(|| format!("failed to chmod {}", overlay_path.display()))?;
+            pending.push(overlay_path);
+        }
+    }
+
+    Ok(())
+}
+
+fn collect_regular_files(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    if !root.is_dir() {
+        return Ok(files);
+    }
+    for entry in fs::read_dir(root).with_context(|| format!("failed to read {}", root.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to inspect {}", path.display()))?;
+        if file_type.is_dir() {
+            files.extend(collect_regular_files(&path)?);
+        } else if file_type.is_file() {
+            files.push(path);
+        }
+    }
+    Ok(files)
+}
+
+fn read_needed_shared_libraries(readelf: &Path, binary: &Path) -> anyhow::Result<Vec<String>> {
+    let output = Command::new(readelf)
+        .arg("-d")
+        .arg(binary)
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to run {} on {}",
+                readelf.display(),
+                binary.display()
+            )
+        })?;
+    if !output.status.success() {
+        bail!(
+            "readelf failed for {} with status {}",
+            binary.display(),
+            output.status
+        );
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(parse_needed_shared_library_line)
+        .collect())
+}
+
+fn parse_needed_shared_library_line(line: &str) -> Option<String> {
+    let marker = "Shared library: [";
+    let start = line.find(marker)? + marker.len();
+    let end = line[start..].find(']')?;
+    Some(line[start..start + end].to_string())
+}
+
+fn is_elf_binary(path: &Path) -> anyhow::Result<bool> {
+    let mut header = [0u8; 4];
+    let mut file =
+        fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let read = file
+        .read(&mut header)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    Ok(read == 4 && header == [0x7f, b'E', b'L', b'F'])
+}
+
+fn find_runtime_library_in_staging_root(
+    staging_root: &Path,
+    library: &str,
+) -> anyhow::Result<Option<PathBuf>> {
+    for relative_dir in ["lib", "usr/lib", "usr/local/lib"] {
+        let candidate = staging_root.join(relative_dir).join(library);
+        if candidate.exists() {
+            return Ok(Some(candidate));
+        }
+    }
+    Ok(None)
 }
 
 fn collect_overlay_debugfs_commands(
@@ -1667,19 +1713,12 @@ mod tests {
         let case = fake_case(root.path(), "usb");
         let layout =
             case_asset_layout(root.path(), "aarch64-unknown-none-softfloat", "usb").unwrap();
-        let build_env = GuestBuildEnv {
-            cmake: PathBuf::from("/guest-bin/cmake"),
-            cc: PathBuf::from("/toolchain/cc"),
-            ar: PathBuf::from("/toolchain/ar"),
-            ranlib: PathBuf::from("/toolchain/ranlib"),
-            strip: PathBuf::from("/toolchain/strip"),
-            pkg_config: PathBuf::from("/guest-bin/pkg-config"),
-            make_program: PathBuf::from("/guest-bin/make"),
-            command_envs: vec![
-                ("PATH".to_string(), "/guest-bin:/usr/bin".to_string()),
-                ("QEMU_LD_PREFIX".to_string(), "/sysroot".to_string()),
-                ("PKG_CONFIG_LIBDIR".to_string(), "/sysroot".to_string()),
-            ],
+        let build_env = HostCrossBuildEnv {
+            cmake: PathBuf::from("/usr/bin/cmake"),
+            pkg_config: PathBuf::from("/usr/bin/pkg-config"),
+            make_program: PathBuf::from("/usr/bin/make"),
+            cmake_toolchain_file: PathBuf::from("/tmp/cmake-toolchain.cmake"),
+            command_envs: vec![("PKG_CONFIG_LIBDIR".to_string(), "/sysroot".to_string())],
         };
 
         let command = build_cmake_configure_command(&case, &layout, &build_env);
@@ -1687,8 +1726,12 @@ mod tests {
 
         assert_eq!(
             command.get_program(),
-            std::ffi::OsStr::new("/guest-bin/cmake")
+            std::ffi::OsStr::new("/usr/bin/cmake")
         );
+        assert!(args.contains(&format!(
+            "-DCMAKE_TOOLCHAIN_FILE={}",
+            build_env.cmake_toolchain_file.display()
+        )));
         assert!(args.contains(&format!(
             "-D{STARRY_STAGING_ROOT_VAR}={}",
             layout.staging_root.display()
@@ -1697,29 +1740,88 @@ mod tests {
             command_env(&command, "PKG_CONFIG_LIBDIR"),
             Some("/sysroot".to_string())
         );
+    }
+
+    #[test]
+    fn cross_compile_spec_maps_supported_arches() {
         assert_eq!(
-            command_env(&command, "PATH"),
-            Some("/guest-bin:/usr/bin".to_string())
+            cross_compile_spec("aarch64").unwrap(),
+            CrossCompileSpec {
+                llvm_target: "aarch64-linux-musl",
+                cmake_system_processor: "aarch64",
+                guest_tool_dir: "usr/aarch64-alpine-linux-musl/bin",
+                gnu_tool_prefix: "aarch64-linux-musl",
+            }
         );
         assert_eq!(
-            command_env(&command, "QEMU_LD_PREFIX"),
-            Some("/sysroot".to_string())
+            cross_compile_spec("loongarch64").unwrap(),
+            CrossCompileSpec {
+                llvm_target: "loongarch64-linux-musl",
+                cmake_system_processor: "loongarch64",
+                guest_tool_dir: "usr/loongarch64-alpine-linux-musl/bin",
+                gnu_tool_prefix: "loongarch64-linux-musl",
+            }
         );
     }
 
     #[test]
-    fn guest_gcc_helper_roots_include_triplet_bin_directory() {
+    fn write_cross_bin_wrappers_generates_prefixed_and_plain_tools() {
         let root = tempdir().unwrap();
-        let staging_root = root.path().join("staging-root");
-        fs::create_dir_all(staging_root.join("usr/libexec/gcc")).unwrap();
-        fs::create_dir_all(staging_root.join("usr/lib/gcc")).unwrap();
-        fs::create_dir_all(staging_root.join("usr/aarch64-alpine-linux-musl/bin")).unwrap();
+        let layout =
+            case_asset_layout(root.path(), "aarch64-unknown-none-softfloat", "usb").unwrap();
+        fs::create_dir_all(
+            layout
+                .staging_root
+                .join("usr/aarch64-alpine-linux-musl/bin"),
+        )
+        .unwrap();
+        for tool in [
+            "ld", "as", "ar", "ranlib", "strip", "nm", "objcopy", "objdump", "readelf",
+        ] {
+            let path = layout
+                .staging_root
+                .join("usr/aarch64-alpine-linux-musl/bin")
+                .join(tool);
+            fs::write(path, b"").unwrap();
+        }
 
-        let roots = guest_gcc_helper_roots(&staging_root).unwrap();
+        write_cross_bin_wrappers(
+            &layout,
+            cross_compile_spec("aarch64").unwrap(),
+            Path::new("/usr/bin/qemu-aarch64-static"),
+        )
+        .unwrap();
 
-        assert!(roots.contains(&staging_root.join("usr/libexec/gcc")));
-        assert!(roots.contains(&staging_root.join("usr/lib/gcc")));
-        assert!(roots.contains(&staging_root.join("usr/aarch64-alpine-linux-musl/bin")));
+        let plain = fs::read_to_string(layout.cross_bin_dir.join("ld")).unwrap();
+        let prefixed =
+            fs::read_to_string(layout.cross_bin_dir.join("aarch64-linux-musl-ld")).unwrap();
+        assert!(plain.contains("qemu-aarch64-static"));
+        assert!(plain.contains("usr/aarch64-alpine-linux-musl/bin/ld"));
+        assert!(prefixed.contains("usr/aarch64-alpine-linux-musl/bin/ld"));
+        assert!(prefixed.contains("-0"));
+    }
+
+    #[test]
+    fn write_cmake_toolchain_file_contains_clang_cross_settings() {
+        let root = tempdir().unwrap();
+        let layout =
+            case_asset_layout(root.path(), "aarch64-unknown-none-softfloat", "usb").unwrap();
+        fs::create_dir_all(&layout.cross_bin_dir).unwrap();
+
+        write_cmake_toolchain_file(
+            &layout,
+            cross_compile_spec("aarch64").unwrap(),
+            Path::new("/usr/bin/clang"),
+        )
+        .unwrap();
+
+        let content = fs::read_to_string(&layout.cmake_toolchain_file).unwrap();
+        assert!(content.contains("set(CMAKE_SYSTEM_NAME Linux)"));
+        assert!(content.contains("set(CMAKE_C_COMPILER \"/usr/bin/clang\")"));
+        assert!(content.contains("set(CMAKE_C_COMPILER_TARGET \"aarch64-linux-musl\")"));
+        assert!(content.contains("--gcc-toolchain="));
+        assert!(content.contains("-B"));
+        assert!(content.contains("CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER"));
     }
 
     #[test]
