@@ -30,6 +30,15 @@ use starry_signal::{
 pub use self::{futex::*, ops::*, resources::*, signal::*, stat::*, timer::*, user::*};
 use crate::mm::AddrSpace;
 
+/// Size of the syscall instruction for the current architecture.
+/// Used by SA_RESTART to back up the program counter.
+#[cfg(target_arch = "x86_64")]
+pub const SYSCALL_INSN_LEN: usize = 2;
+/// Size of the syscall instruction for the current architecture.
+/// Used by SA_RESTART to back up the program counter.
+#[cfg(not(target_arch = "x86_64"))]
+pub const SYSCALL_INSN_LEN: usize = 4;
+
 ///  A wrapper type that assumes the inner type is `Sync`.
 #[repr(transparent)]
 pub struct AssumeSync<T>(pub T);

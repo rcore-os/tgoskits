@@ -4,38 +4,66 @@ use ax_errno::{AxError, AxResult};
 use ax_hal::uspace::UserContext;
 use ax_task::{TaskInner, current};
 use starry_process::Pid;
-use starry_signal::{SignalInfo, SignalOSAction, SignalSet};
+use starry_signal::{SignalActionFlags, SignalInfo, SignalOSAction, SignalSet};
 
-use super::{AsThread, Thread, do_exit, get_process_data, get_process_group, get_task};
+use super::{
+    AsThread, SYSCALL_INSN_LEN, Thread, do_exit, get_process_data, get_process_group, get_task,
+};
+
+/// Information needed to restart a syscall if SA_RESTART applies.
+pub struct SyscallRestartInfo {
+    /// The original first argument (a0) before the syscall overwrote it.
+    pub saved_a0: usize,
+}
 
 pub fn check_signals(
     thr: &Thread,
     uctx: &mut UserContext,
     restore_blocked: Option<SignalSet>,
+    restart_info: Option<&SyscallRestartInfo>,
 ) -> bool {
-    let Some((sig, os_action)) = thr.signal.check_signals(uctx, restore_blocked) else {
+    let blocked = thr.signal.blocked();
+    let mask = !blocked;
+    let restore_blocked = restore_blocked.unwrap_or(blocked);
+
+    let Some(sig) = thr.signal.dequeue_signal(&mask) else {
         return false;
     };
 
     let signo = sig.signo();
+    let mut actions = thr.signal.process().actions.lock();
+    let action = actions[signo].clone();
+
+    if let Some(info) = restart_info {
+        let eintr = -(ax_errno::LinuxError::EINTR.code() as isize);
+        if (uctx.retval() as isize) == eintr {
+            if action.flags.contains(SignalActionFlags::RESTART) {
+                let new_ip = uctx.ip() - SYSCALL_INSN_LEN;
+                uctx.set_ip(new_ip);
+                uctx.set_arg0(info.saved_a0);
+                // On RISC-V (and ARM/MIPS), a0 is used for both the first
+                // argument and the return value. set_arg0 already wrote the
+                // correct value for the restart — do NOT call set_retval
+                // which would overwrite it.
+            } else {
+                uctx.set_retval(0);
+            }
+        }
+    }
+
+    let Some(os_action) =
+        thr.signal
+            .handle_signal(uctx, restore_blocked, &sig, &action, &mut actions)
+    else {
+        return true;
+    };
+
     match os_action {
-        SignalOSAction::Terminate => {
-            do_exit(signo as i32, true);
-        }
-        SignalOSAction::CoreDump => {
-            // TODO: implement core dump
-            do_exit(128 + signo as i32, true);
-        }
-        SignalOSAction::Stop => {
-            // TODO: implement stop
-            do_exit(1, true);
-        }
-        SignalOSAction::Continue => {
-            // TODO: implement continue
-        }
-        SignalOSAction::Handler => {
-            // do nothing
-        }
+        SignalOSAction::Terminate => do_exit(signo as i32, true),
+        SignalOSAction::CoreDump => do_exit(128 + signo as i32, true),
+        SignalOSAction::Stop => do_exit(1, true),
+        SignalOSAction::Continue => {}
+        SignalOSAction::Handler => {}
     }
     true
 }
