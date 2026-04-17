@@ -37,6 +37,7 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
+      ci_checks: ${{ steps.filter.outputs.ci_checks }}
       container_publish: ${{ steps.filter.outputs.container_publish }}
     steps:
       - name: Checkout code
@@ -44,11 +45,25 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Detect container-related changes
+      - name: Detect CI-relevant changes
         id: filter
         uses: dorny/paths-filter@v4
         with:
           filters: |
+            ci_checks:
+              - ".cargo/**"
+              - ".github/workflows/ci.yml"
+              - ".github/workflows/reusable-command.yml"
+              - "Cargo.toml"
+              - "Cargo.lock"
+              - "rust-toolchain.toml"
+              - "components/**"
+              - "examples/**"
+              - "os/**"
+              - "platform/**"
+              - "scripts/**"
+              - "test-suit/**"
+              - "xtask/**"
             container_publish:
               - ".github/workflows/ci.yml"
               - ".github/workflows/container-publish.yml"
@@ -57,13 +72,18 @@ jobs:
 
   fmt:
     name: Check formatting
+    needs: detect_changes
+    if: needs.detect_changes.outputs.ci_checks == 'true'
     uses: ./.github/workflows/reusable-command.yml
     with:
       command: cargo fmt --all -- --check
 
   post_fmt_checks:
     name: ${{ matrix.name }}
-    needs: fmt
+    if: needs.detect_changes.outputs.ci_checks == 'true'
+    needs:
+      - detect_changes
+      - fmt
     strategy:
       fail-fast: true
       matrix:
@@ -237,6 +257,18 @@ jobs:
       container_image: ${{ matrix.container_image }}
       required_repository_owner: ${{ matrix.required_repository_owner }}
       main_pr_only: ${{ matrix.main_pr_only }}
+
+  skip_non_test_changes:
+    name: Skip CI checks for non-test changes
+    if: needs.detect_changes.outputs.ci_checks != 'true'
+    needs: detect_changes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summarize skip reason
+        run: |
+          echo "## CI checks skipped" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Changed files do not match the test-relevant path set, so fmt and follow-up checks were skipped." >> "$GITHUB_STEP_SUMMARY"
 
   container_publish:
     name: Publish container image
