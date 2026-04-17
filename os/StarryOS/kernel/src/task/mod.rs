@@ -80,6 +80,10 @@ pub struct Thread {
 
     /// Self exit event
     pub exit_event: Arc<PollSet>,
+
+    /// The registered rseq area pointer (user address) for restartable
+    /// sequences.
+    rseq_area: AtomicUsize,
 }
 
 impl Thread {
@@ -95,6 +99,7 @@ impl Thread {
             oom_score_adj: AtomicI32::new(200),
             accessing_user_memory: AtomicBool::new(false),
             exit_event: Arc::default(),
+            rseq_area: AtomicUsize::new(0),
         })
     }
 
@@ -149,6 +154,16 @@ impl Thread {
     pub fn set_accessing_user_memory(&self, accessing: bool) {
         self.accessing_user_memory
             .store(accessing, Ordering::Release);
+    }
+
+    /// Get the registered rseq area pointer.
+    pub fn rseq_area(&self) -> usize {
+        self.rseq_area.load(Ordering::SeqCst)
+    }
+
+    /// Set the registered rseq area pointer.
+    pub fn set_rseq_area(&self, addr: usize) {
+        self.rseq_area.store(addr, Ordering::SeqCst);
     }
 }
 

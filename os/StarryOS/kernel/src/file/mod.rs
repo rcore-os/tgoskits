@@ -10,7 +10,7 @@ use alloc::{borrow::Cow, sync::Arc};
 use core::{ffi::c_int, time::Duration};
 
 use ax_errno::{AxError, AxResult};
-use ax_fs::{FS_CONTEXT, OpenOptions};
+use ax_fs::{FS_CONTEXT, FileBackend, FileFlags, OpenOptions};
 use ax_io::prelude::*;
 use ax_task::current;
 use axfs_ng_vfs::DeviceId;
@@ -26,7 +26,10 @@ pub use self::{
     pidfd::PidFd,
     pipe::Pipe,
 };
-use crate::task::{AX_FILE_LIMIT, AsThread};
+use crate::{
+    pseudofs::DeviceMmap,
+    task::{AX_FILE_LIMIT, AsThread},
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Kstat {
@@ -148,6 +151,14 @@ pub trait FileLike: Pollable + DowncastSync {
     }
 
     fn path(&self) -> Cow<'_, str>;
+
+    fn file_mmap(&self) -> AxResult<(FileBackend, FileFlags)> {
+        Err(AxError::BadFileDescriptor)
+    }
+
+    fn device_mmap(&self, _offset: u64) -> AxResult<DeviceMmap> {
+        Err(AxError::BadFileDescriptor)
+    }
 
     fn ioctl(&self, _cmd: u32, _arg: usize) -> AxResult<usize> {
         Err(AxError::NotATty)

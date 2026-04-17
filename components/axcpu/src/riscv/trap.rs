@@ -17,9 +17,12 @@ core::arch::global_asm!(
     trapframe_size = const core::mem::size_of::<TrapFrame>(),
 );
 
-fn handle_breakpoint(sepc: &mut usize) {
-    debug!("Exception(Breakpoint) @ {sepc:#x} ");
-    *sepc += 2
+fn handle_breakpoint(tf: &mut TrapFrame) {
+    debug!("Exception(Breakpoint) @ {:#x} ", tf.sepc);
+    if crate::trap::breakpoint_handler(tf) {
+        return;
+    }
+    tf.sepc += 2;
 }
 
 fn handle_page_fault(tf: &mut TrapFrame, access_flags: PageFaultFlags) {
@@ -52,7 +55,7 @@ fn riscv_trap_handler(tf: &mut TrapFrame) {
             Trap::Exception(E::InstructionPageFault) => {
                 handle_page_fault(tf, PageFaultFlags::EXECUTE)
             }
-            Trap::Exception(E::Breakpoint) => handle_breakpoint(&mut tf.sepc),
+            Trap::Exception(E::Breakpoint) => handle_breakpoint(tf),
             Trap::Interrupt(_) => {
                 crate::trap::irq_handler(scause.bits());
             }

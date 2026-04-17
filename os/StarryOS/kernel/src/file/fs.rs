@@ -7,7 +7,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_fs::{FS_CONTEXT, FsContext};
+use ax_fs::{FS_CONTEXT, FileBackend, FileFlags, FsContext};
 use ax_sync::Mutex;
 use ax_task::future::{block_on, poll_io};
 use axfs_ng_vfs::{Location, Metadata, NodeFlags};
@@ -153,6 +153,10 @@ impl FileLike for File {
 
     fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
         self.inner().backend()?.location().ioctl(cmd, arg)
+    }
+
+    fn file_mmap(&self) -> AxResult<(FileBackend, FileFlags)> {
+        Ok((self.inner().backend()?.clone(), self.inner().flags()))
     }
 
     fn set_nonblocking(&self, flag: bool) -> AxResult {

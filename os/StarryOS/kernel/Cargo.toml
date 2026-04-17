@@ -17,6 +17,7 @@ license.workspace = true
 dev-log = []
 input = ["dep:ax-input", "ax-feat/input"]
 memtrack = ["ax-feat/dwarf", "ax-alloc/tracking", "dep:gimli"]
+rknpu = ["dep:axplat-dyn", "axplat-dyn/rknpu"]
 vsock = ["ax-feat/vsock"]
 
 [dependencies]
@@ -48,6 +49,7 @@ ax-input = { workspace = true, optional = true }
 ax-log.workspace = true
 ax-mm.workspace = true
 axnet = { version = "0.5", package = "ax-net-ng" }
+axplat-dyn = { workspace = true, optional = true }
 ax-runtime.workspace = true
 ax-sync.workspace = true
 ax-task.workspace = true

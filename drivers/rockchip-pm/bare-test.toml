@@ -1,0 +1,10 @@
+[qemu]
+machine = "virt"
+cpu = "cortex-a76"  # 更适合 RK3588 的核心架构
+graphic = false
+args = "-smp 8"  # 模拟 8 核心 CPU
+
+# Orange Pi 5 Plus 等开发板的测试配置
+[target]
+board = "rk3588-generic"
+compatible = ["rockchip,rk3588", "rockchip,rk3588s"]

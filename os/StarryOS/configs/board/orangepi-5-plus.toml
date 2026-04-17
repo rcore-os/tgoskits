@@ -7,6 +7,7 @@ features = [
   "ax-feat/driver-sdmmc",
   "axplat-dyn/rk3588-clk",
   "axplat-dyn/sdmmc",
+  "rknpu",
 ]
 log = "Info"
 max_cpu_num = 8

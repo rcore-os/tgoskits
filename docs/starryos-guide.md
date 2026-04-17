@@ -147,7 +147,16 @@ cargo starry test board -t smoke-orangepi-5-plus --server <ip> --port <port>
 - 远程板测使用 `board-<name>.toml`
 - `board-<name>.toml` 只保存板测运行判据，实际构建配置仍映射到 `os/StarryOS/configs/board/<name>.toml`
 
-默认 `test qemu` 只跑 `normal` 组，传 `--stress` 后只跑 `stress` 组，`-c/--test-case` 只在当前组内筛选单个 case。`test board` 当前只发现 `normal` 组里的 `board-*.toml`，并把 group 名生成为 `<case>-<board>`，例如 `smoke-orangepi-5-plus`。QEMU 测试会先自动准备共享 rootfs，再把对应 case 的 `qemu-<arch>.toml` 直接交给 `ostool` 处理；板测则直接把对应 `board-<name>.toml` 作为 `ostool` 的 board run config。
+默认 `test qemu` 只跑 `normal` 组，传 `--stress` 后只跑 `stress` 组，`-c/--test-case` 只在当前组内按目录名精确筛选单个 case。批量模式会扫描当前组下所有一级子目录，只执行存在 `qemu-<arch>.toml` 的 case；没有当前架构 QEMU 配置的目录会被直接跳过。`test board` 当前只发现 `normal` 组里的 `board-*.toml`，并把 group 名生成为 `<case>-<board>`，例如 `smoke-orangepi-5-plus`。
+
+Starry QEMU case 还支持可选的 `c/` 子目录约定：
+
+- `test-suit/starryos/<group>/<case>/c/CMakeLists.txt`：必需，作为该 case 的 CMake 项目入口
+- `test-suit/starryos/<group>/<case>/c/prebuild.sh`：可选，若存在则会在 CMake 配置前通过 guest `/bin/sh` 执行
+- `prebuild.sh` 只负责准备 staging rootfs 内的构建环境，不会自动把副作用同步回最终 rootfs
+- 需要进入 guest rootfs 的文件，必须通过 `install()` 输出，并由 `axbuild` 通过 `cmake --install` 生成 overlay 后回写到 case rootfs
+
+QEMU 测试会先自动准备共享 rootfs，再为每个 case 复制出独立的 per-case rootfs；如果 case 下存在 `c/`，还会按顺序执行 `prebuild.sh`、`cmake --build`、`cmake --install`，然后把 overlay 写回该 case 的 rootfs，最后再把对应 case 的 `qemu-<arch>.toml` 交给 `ostool` 处理。每轮批量执行结束后都会统一打印成功列表、失败列表以及每个 case 的运行时间。板测则直接把对应 `board-<name>.toml` 作为 `ostool` 的 board run config。
 
 ### 本地 Makefile 路径
 

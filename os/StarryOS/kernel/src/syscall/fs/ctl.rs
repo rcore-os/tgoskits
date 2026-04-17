@@ -9,7 +9,7 @@ use ax_errno::{AxError, AxResult};
 use ax_fs::{FS_CONTEXT, FsContext};
 use ax_hal::time::wall_time;
 use ax_task::current;
-use axfs_ng_vfs::{MetadataUpdate, NodePermission, NodeType, path::Path};
+use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, path::Path};
 use linux_raw_sys::{
     general::*,
     ioctl::{FIONBIO, TIOCGWINSZ},
@@ -19,6 +19,7 @@ use starry_vm::{VmPtr, vm_write_slice};
 use crate::{
     file::{Directory, FileLike, get_file_like, resolve_at, with_fs},
     mm::vm_load_string,
+    pseudofs::Device,
     task::AsThread,
     time::TimeValueLike,
 };
@@ -97,6 +98,50 @@ pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize
         fs.create_dir(path, mode)?;
         Ok(0)
     })
+}
+
+pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Result<isize, AxError> {
+    let path = vm_load_string(path)?;
+    debug!(
+        "sys_mknodat <= dirfd: {}, path: {:?}, mode: {}, dev: {}",
+        dirfd, path, mode, dev
+    );
+
+    // Split type and permission bits
+    let ftype = mode & S_IFMT;
+    let mut perm = mode & !S_IFMT;
+    // apply umask like mkdir
+    perm &= !current().as_thread().proc_data.umask();
+
+    let node_type = match ftype {
+        S_IFREG => NodeType::RegularFile,
+        S_IFCHR => NodeType::CharacterDevice,
+        S_IFBLK => NodeType::BlockDevice,
+        S_IFIFO => NodeType::Fifo,
+        S_IFSOCK => NodeType::Socket,
+        _ => return Err(AxError::InvalidInput),
+    };
+
+    let res = with_fs(dirfd, |fs| {
+        let (dir, name) = fs.resolve_nonexistent(Path::new(&path))?;
+        let loc = dir.create(
+            name,
+            node_type,
+            NodePermission::from_bits_truncate(perm as u16),
+        )?;
+
+        // If device node, set rdev
+        if matches!(node_type, NodeType::CharacterDevice | NodeType::BlockDevice) {
+            if let Ok(dev_node) = loc.entry().downcast::<Device>() {
+                dev_node.set_device_id(DeviceId(dev));
+            } else {
+                warn!("not a device node, cannot set rdev");
+            }
+        }
+
+        Ok(0)
+    })?;
+    Ok(res)
 }
 
 // Directory buffer for getdents64 syscall

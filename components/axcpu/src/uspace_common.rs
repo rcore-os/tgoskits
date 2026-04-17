@@ -21,6 +21,9 @@ pub enum ReturnReason {
 /// A generalized kind for [`ExceptionInfo`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExceptionKind {
+    #[cfg(target_arch = "x86_64")]
+    /// A debug exception.
+    Debug,
     /// A breakpoint exception.
     Breakpoint,
     /// An illegal instruction exception.

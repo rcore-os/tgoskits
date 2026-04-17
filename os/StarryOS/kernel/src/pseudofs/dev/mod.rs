@@ -1,5 +1,13 @@
 //! Special devices
 
+#[cfg(feature = "rknpu")]
+mod card0;
+#[cfg(feature = "rknpu")]
+mod card1;
+#[cfg(feature = "rknpu")]
+mod dma_heap;
+#[cfg(feature = "rknpu")]
+mod drm;
 #[cfg(feature = "input")]
 mod event;
 mod fb;
@@ -274,6 +282,47 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         "shm",
         SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
     );
+
+    #[cfg(feature = "rknpu")]
+    {
+        // DMA heap devices
+        let mut dma_heap_dir = DirMapping::new();
+        dma_heap_dir.add(
+            "system",
+            Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                dma_heap::DMA_HEAP_SYSTEM_DEVICE_ID,
+                Arc::new(dma_heap::DmaHeapSystem::new()),
+            ),
+        );
+        root.add(
+            "dma_heap",
+            SimpleDir::new_maker(fs.clone(), Arc::new(dma_heap_dir)),
+        );
+
+        // DRI devices
+        let mut dri_dir = DirMapping::new();
+        dri_dir.add(
+            "card0",
+            Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                card0::CARD0_SYSTEM_DEVICE_ID,
+                Arc::new(card0::Card0::new()),
+            ),
+        );
+        dri_dir.add(
+            "card1",
+            Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                card1::CARD1_SYSTEM_DEVICE_ID,
+                Arc::new(card1::Card1::new()),
+            ),
+        );
+        root.add("dri", SimpleDir::new_maker(fs.clone(), Arc::new(dri_dir)));
+    }
 
     // Loop devices
     for i in 0..16 {

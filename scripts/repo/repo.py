@@ -570,12 +570,12 @@ def cmd_add(args: argparse.Namespace) -> int:
     category = args.category or ""
     description = args.description or ""
 
-    # Add to CSV (skip if already exists)
-    added = csv_manager.add_repo(url, target_dir, branch, category, description, skip_if_exists=True)
-    if added:
-        print(f"Added to CSV: {url} -> {target_dir}")
-    else:
-        print(f"Repository already exists in CSV: {url}")
+    # Check working tree is clean before making any changes
+    if not git_manager.check_working_tree_clean():
+        print("Error: Working tree has uncommitted changes. "
+              "Please commit or stash your changes before adding a subtree.",
+              file=sys.stderr)
+        return 1
 
     # Add git subtree (this will check if already added to git)
     try:
@@ -584,6 +584,13 @@ def cmd_add(args: argparse.Namespace) -> int:
     except subprocess.CalledProcessError as e:
         print(f"Error adding git subtree: {e}", file=sys.stderr)
         return 1
+
+    # Add to CSV (skip if already exists)
+    added = csv_manager.add_repo(url, target_dir, branch, category, description, skip_if_exists=True)
+    if added:
+        print(f"Added to CSV: {url} -> {target_dir}")
+    else:
+        print(f"Repository already exists in CSV: {url}")
 
     return 0
 
