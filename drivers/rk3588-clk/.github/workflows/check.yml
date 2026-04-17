@@ -1,0 +1,87 @@
+name: Quality Checks
+
+on:
+  workflow_call:
+
+jobs:
+  fmt:
+    name: Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-04-01
+          components: rustfmt
+
+      - name: Check code format
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy Lint
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        targets: [aarch64-unknown-none-softfloat, aarch64-unknown-none]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-04-01
+          components: rust-src, clippy
+          targets: ${{ matrix.targets }}
+
+      - name: Run clippy
+        run: cargo clippy -Zbuild-std=core,alloc --target ${{ matrix.targets }} -- -D warnings
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        targets: [aarch64-unknown-none-softfloat, aarch64-unknown-none]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-04-01
+          components: rust-src
+          targets: ${{ matrix.targets }}
+
+      - name: Build library
+        run: cargo build -Zbuild-std=core,alloc --target ${{ matrix.targets }}
+
+  doc:
+    name: Documentation
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        targets: [aarch64-unknown-none-softfloat, aarch64-unknown-none]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-04-01
+          components: rust-src
+          targets: ${{ matrix.targets }}
+
+      - name: Build documentation
+        run: cargo doc -Zbuild-std=core,alloc --no-deps --target ${{ matrix.targets }}

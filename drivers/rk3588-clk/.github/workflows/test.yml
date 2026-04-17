@@ -1,0 +1,49 @@
+name: Test
+
+on:
+  workflow_call:
+
+jobs:
+  build-test:
+    name: Build Test Binary
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        targets: [aarch64-unknown-none-softfloat, aarch64-unknown-none]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-04-01
+          components: rust-src
+          targets: ${{ matrix.targets }}
+
+      - name: Build test binary
+        run: cargo build -Zbuild-std=core,alloc --release --target ${{ matrix.targets }} --test test
+
+  integration-test:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        targets: [aarch64-unknown-none-softfloat, aarch64-unknown-none]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-04-01
+          components: rust-src
+          targets: ${{ matrix.targets }}
+
+      - name: Build and check integration tests
+        run: cargo test -Zbuild-std=core,alloc --target ${{ matrix.targets }} --test test --no-run

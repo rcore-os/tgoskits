@@ -1,0 +1,5 @@
+serial = "/dev/ttyUSB0"
+baud_rate = "1500000"
+success_regex = []
+fail_regex = []
+dtb_file = "/home/yanlien/Workspace/QCL/crates_check/rockchip-pm/dtb/orangepi5plus.dtb"
