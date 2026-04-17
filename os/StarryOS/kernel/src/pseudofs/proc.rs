@@ -133,17 +133,21 @@ impl SimpleDirOps for ProcessTaskDir {
 
 #[rustfmt::skip]
 fn task_status(task: &AxTaskRef) -> String {
+    let thread = task.as_thread();
+    let cred = thread.cred();
     format!(
         "Tgid:\t{}\n\
         Pid:\t{}\n\
-        Uid:\t0 0 0 0\n\
-        Gid:\t0 0 0 0\n\
+        Uid:\t{}\t{}\t{}\t{}\n\
+        Gid:\t{}\t{}\t{}\t{}\n\
         Cpus_allowed:\t1\n\
         Cpus_allowed_list:\t0\n\
         Mems_allowed:\t1\n\
         Mems_allowed_list:\t0",
-        task.as_thread().proc_data.proc.pid(),
-        task.id().as_u64()
+        thread.proc_data.proc.pid(),
+        task.id().as_u64(),
+        cred.uid, cred.euid, cred.suid, cred.fsuid,
+        cred.gid, cred.egid, cred.sgid, cred.fsgid,
     )
 }
 

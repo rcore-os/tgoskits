@@ -16,8 +16,8 @@ use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
     task::{
-        AsThread, block_next_signal, check_signals, processes, send_signal_to_process,
-        send_signal_to_process_group, send_signal_to_thread,
+        AsThread, block_next_signal, check_signals, get_task, processes, send_signal_to_process,
+        send_signal_to_thread,
     },
     time::TimeValueLike,
 };
@@ -104,48 +104,103 @@ fn make_siginfo(signo: u32, code: i32) -> AxResult<Option<SignalInfo>> {
     )))
 }
 
+/// Check whether the current process has permission to send a signal to
+/// `target_pid`.
+///
+/// Permission rules:
+/// - Root (euid==0, approximating CAP_KILL) can signal anyone
+/// - Same process is always allowed
+/// - Otherwise: sender's {euid, uid} must match target's {uid, euid, suid}
+///
+/// TODO: SIGCONT is allowed to any process in the same session (job control).
+/// Implementing this requires passing the signal number into this function
+/// and checking session membership.
+fn check_kill_permission(target_pid: Pid) -> AxResult<()> {
+    let sender = current().as_thread().cred();
+    if sender.euid == 0 {
+        return Ok(());
+    }
+    let self_pid = current().as_thread().proc_data.proc.pid();
+    if target_pid == self_pid {
+        return Ok(());
+    }
+    let target_task = get_task(target_pid).map_err(|_| AxError::NoSuchProcess)?;
+    let target_cred = target_task
+        .try_as_thread()
+        .map(|t| t.cred())
+        .ok_or(AxError::NoSuchProcess)?;
+    // Linux checks: {sender.euid, sender.uid} × {target.uid, target.euid, target.suid}
+    if sender.euid == target_cred.uid
+        || sender.euid == target_cred.euid
+        || sender.euid == target_cred.suid
+        || sender.uid == target_cred.uid
+        || sender.uid == target_cred.suid
+    {
+        Ok(())
+    } else {
+        Err(AxError::OperationNotPermitted)
+    }
+}
+
+/// Send a signal to each member of a process group, checking
+/// per-member permission. EPERM for individual members is swallowed
+/// (matches Linux behavior).
+fn kill_process_group_checked(pgid: Pid, sig: Option<SignalInfo>) -> AxResult<()> {
+    let pg = crate::task::get_process_group(pgid)?;
+    if let Some(sig) = sig {
+        for proc in pg.processes() {
+            if check_kill_permission(proc.pid()).is_ok() {
+                let _ = send_signal_to_process(proc.pid(), Some(sig.clone()));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn sys_kill(pid: i32, signo: u32) -> AxResult<isize> {
     debug!("sys_kill: pid = {pid}, signo = {signo}");
     let sig = make_siginfo(signo, SI_USER as _)?;
 
     match pid {
         1.. => {
+            check_kill_permission(pid as _)?;
             send_signal_to_process(pid as _, sig)?;
         }
         0 => {
             let pgid = current().as_thread().proc_data.proc.group().pgid();
-            send_signal_to_process_group(pgid, sig)?;
+            kill_process_group_checked(pgid, sig)?;
         }
         -1 => {
+            // Broadcast: send to all processes the caller may signal,
+            // except init and self. EPERM is silently swallowed per Linux.
             let curr_pid = current().as_thread().proc_data.proc.pid();
             if let Some(sig) = sig {
                 for proc_data in processes() {
-                    // POSIX.1 requires that kill(-1,sig) send sig to all processes that
-                    //    the calling process may send signals to, except possibly for some
-                    //    implementation-defined system processes.  Linux allows a process
-                    //    to signal itself, but on Linux the call kill(-1,sig) does not
-                    //    signal the calling process.
                     if proc_data.proc.is_init() || proc_data.proc.pid() == curr_pid {
                         continue;
                     }
-                    let _ = send_signal_to_process(proc_data.proc.pid(), Some(sig.clone()));
+                    if check_kill_permission(proc_data.proc.pid()).is_ok() {
+                        let _ = send_signal_to_process(proc_data.proc.pid(), Some(sig.clone()));
+                    }
                 }
             }
         }
         ..-1 => {
-            send_signal_to_process_group((-pid) as Pid, sig)?;
+            kill_process_group_checked((-pid) as Pid, sig)?;
         }
     }
     Ok(0)
 }
 
 pub fn sys_tkill(tid: Pid, signo: u32) -> AxResult<isize> {
+    check_kill_permission(tid)?;
     let sig = make_siginfo(signo, SI_TKILL)?;
     send_signal_to_thread(None, tid, sig)?;
     Ok(0)
 }
 
 pub fn sys_tgkill(tgid: Pid, tid: Pid, signo: u32) -> AxResult<isize> {
+    check_kill_permission(tgid)?;
     let sig = make_siginfo(signo, SI_TKILL)?;
     send_signal_to_thread(Some(tgid), tid, sig)?;
     Ok(0)

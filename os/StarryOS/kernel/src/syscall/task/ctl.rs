@@ -30,11 +30,21 @@ pub fn sys_capget(
 ) -> AxResult<isize> {
     validate_cap_header(header)?;
 
-    data.vm_write(__user_cap_data_struct {
-        effective: u32::MAX,
-        permitted: u32::MAX,
-        inheritable: u32::MAX,
-    })?;
+    let cred = current().as_thread().cred();
+    let caps = if cred.euid == 0 { u32::MAX } else { 0 };
+    let data_struct = __user_cap_data_struct {
+        effective: caps,
+        permitted: caps,
+        inheritable: caps,
+    };
+    // Capability version 3 uses an array of TWO __user_cap_data_struct
+    // entries (low 32 bits and high 32 bits). Write both.
+    unsafe {
+        (data as *mut __user_cap_data_struct).vm_write(data_struct)?;
+        (data as *mut __user_cap_data_struct)
+            .add(1)
+            .vm_write(data_struct)?;
+    }
     Ok(0)
 }
 
@@ -44,6 +54,11 @@ pub fn sys_capset(
 ) -> AxResult<isize> {
     validate_cap_header(header)?;
 
+    let cred = current().as_thread().cred();
+    if cred.euid != 0 {
+        return Err(AxError::OperationNotPermitted);
+    }
+    // For now, accept and ignore the values (no real capability tracking).
     Ok(0)
 }
 
@@ -51,18 +66,6 @@ pub fn sys_umask(mask: u32) -> AxResult<isize> {
     let curr = current();
     let old = curr.as_thread().proc_data.replace_umask(mask);
     Ok(old as isize)
-}
-
-pub fn sys_setreuid(_ruid: u32, _euid: u32) -> AxResult<isize> {
-    Ok(0)
-}
-
-pub fn sys_setresuid(_ruid: u32, _euid: u32, _suid: u32) -> AxResult<isize> {
-    Ok(0)
-}
-
-pub fn sys_setresgid(_rgid: u32, _egid: u32, _sgid: u32) -> AxResult<isize> {
-    Ok(0)
 }
 
 pub fn sys_get_mempolicy(
